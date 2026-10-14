@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -67,6 +66,11 @@ interface MouseEvent : UIEvent {
                          optional EventTarget? relatedTargetArg = null);
   // Introduced in DOM Level 3:
   boolean                           getModifierState(DOMString keyArg);
+
+  [ChromeOnly]
+  // The event that triggered this event.
+  // This will be available for popupshowing event only.
+  readonly attribute Event? triggerEvent;
 };
 
 // Suggested initMouseEvent replacement initializer:

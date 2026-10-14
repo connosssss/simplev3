@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -8,25 +6,33 @@
 #ifndef mozilla_dom_InspectorUtils_h
 #define mozilla_dom_InspectorUtils_h
 
-#include "mozilla/dom/InspectorUtilsBinding.h"
-#include "mozilla/UniquePtr.h"
-#include "nsLayoutUtils.h"
+#include "Units.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/dom/InspectorUtilsBindingFwd.h"
+#include "nsTArray.h"
 
 class nsAtom;
 class nsINode;
-class nsINodeList;
-class nsRange;
+namespace mozilla::dom {
+class Range;
+}  // namespace mozilla::dom
 
 namespace mozilla {
+class ErrorResult;
 class StyleSheet;
 namespace css {
 class Rule;
 }  // namespace css
 namespace dom {
+class BrowsingContext;
+enum class InspectorPropertyType : uint8_t;
 class CharacterData;
 class Document;
 class Element;
+class GlobalObject;
 class InspectorFontFace;
+class NodeList;
+class OwningCSSRuleOrInspectorDeclaration;
 }  // namespace dom
 }  // namespace mozilla
 
@@ -103,9 +109,24 @@ class InspectorUtils {
                                       nsTArray<nsString>& aResult,
                                       ErrorResult& aRv);
 
+  // Get a list of all the CSS wide keywords.
+  static void GetCSSWideKeywords(GlobalObject& aGlobal,
+                                 nsTArray<nsString>& aResult);
+
   // Utilities for working with CSS colors
   static void RgbToColorName(GlobalObject& aGlobal, uint8_t aR, uint8_t aG,
                              uint8_t aB, nsACString& aResult);
+
+  static void RgbToNearestColorName(GlobalObject&, float aR, float aG, float aB,
+                                    InspectorNearestColor& aResult);
+
+  static void RgbToHsv(GlobalObject&, float aR, float aG, float aB,
+                       nsTArray<float>& aResult);
+
+  static void HsvToRgb(GlobalObject&, float aH, float aS, float aV,
+                       nsTArray<float>& aResult);
+
+  static float RelativeLuminance(GlobalObject&, float aR, float aG, float aB);
 
   // Convert a given CSS color string to rgba. Returns null on failure or an
   // InspectorRGBATuple on success.
@@ -123,6 +144,10 @@ class InspectorUtils {
   // Check whether a given color is a valid CSS color.
   static bool IsValidCSSColor(GlobalObject& aGlobal,
                               const nsACString& aColorString);
+
+  // Check whether a given string is a valid CSS <image> value.
+  static bool IsValidCSSImage(GlobalObject& aGlobal,
+                              const nsACString& aImageString);
 
   // Utilities for obtaining information about a CSS property.
 
@@ -199,11 +224,11 @@ class InspectorUtils {
                                  ErrorResult& aRv);
   static uint64_t GetContentState(GlobalObject& aGlobal, Element& aElement);
 
-  static void GetUsedFontFaces(GlobalObject& aGlobal, nsRange& aRange,
+  static void GetUsedFontFaces(GlobalObject& aGlobal, dom::Range& aRange,
                                uint32_t aMaxRanges,  // max number of ranges to
                                                      // record for each face
                                bool aSkipCollapsedWhitespace,
-                               nsLayoutUtils::UsedFontFaceList& aResult,
+                               nsTArray<UniquePtr<InspectorFontFace>>& aResult,
                                ErrorResult& aRv);
 
   /**
@@ -232,11 +257,13 @@ class InspectorUtils {
 
   static Element* ContainingBlockOf(GlobalObject&, Element&);
 
+  static bool IsBlockContainer(GlobalObject&, Element&);
+
   static void GetBlockLineCounts(GlobalObject&, Element&,
                                  Nullable<nsTArray<uint32_t>>& aResult);
 
   MOZ_CAN_RUN_SCRIPT
-  static already_AddRefed<nsINodeList> GetOverflowingChildrenOfElement(
+  static already_AddRefed<NodeList> GetOverflowingChildrenOfElement(
       GlobalObject& aGlobal, Element& element);
 
   /**
@@ -279,6 +306,7 @@ class InspectorUtils {
    * Returns whether or not a CSS property value is valid for the passed syntax
    */
   static bool ValueMatchesSyntax(GlobalObject&, Document& aDocument,
+                                 const nsACString& aProperty,
                                  const nsACString& aValue,
                                  const nsACString& aSyntax);
 
@@ -297,10 +325,26 @@ class InspectorUtils {
       nsACString& aNewStyleSheetText);
 
   static void SetVerticalClipping(GlobalObject&, BrowsingContext* aContext,
-                                  mozilla::ScreenIntCoord aOffset);
+                                  mozilla::CSSCoord aOffset);
   static void SetDynamicToolbarMaxHeight(GlobalObject&,
                                          BrowsingContext* aContext,
-                                         mozilla::ScreenIntCoord aHeight);
+                                         mozilla::CSSCoord aHeight);
+  static uint16_t GetGridContainerType(GlobalObject&, Element&);
+  static void GetAnchorFor(GlobalObject&, Element&, const nsAString& aName,
+                           Nullable<InspectorAnchorElement>&);
+  static void GetAnchorNamesFor(GlobalObject& aGlobal, Element&,
+                                nsTArray<nsString>& aResult);
+  static void GetComputationStepsSupportedCSSFunctions(
+      GlobalObject& aGlobal, nsTArray<nsCString>& aResult);
+  static void GetComputationSteps(GlobalObject& aGlobal,
+                                  const nsACString& aProperty,
+                                  const nsACString& aExpression, Element&,
+                                  const nsAString& aPseudo,
+                                  nsTArray<nsCString>& aResult);
+  static void GetSubstitutedValue(GlobalObject& aGlobal,
+                                  const nsACString& aExpression, Element&,
+                                  const nsAString& aPseudo,
+                                  nsACString& aResult);
 };
 
 }  // namespace mozilla::dom

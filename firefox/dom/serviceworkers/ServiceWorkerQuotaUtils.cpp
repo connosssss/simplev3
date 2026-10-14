@@ -1,12 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "MainThreadUtils.h"
 #include "ServiceWorkerQuotaUtils.h"
 
+#include "MainThreadUtils.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_dom.h"
@@ -28,7 +26,8 @@ namespace mozilla::dom {
 /*
  * QuotaUsageChecker implements the quota usage checking algorithm.
  *
- * 1. Getting the given origin/group usage through QuotaManagerService.
+ * 1. Getting the given origin usage (GetUsageForPrincipal()) and group usage
+ *    and limit (EstimateGroupUsage()) through QuotaManagerService.
  *    QuotaUsageCheck::Start() implements this step.
  * 2. Checking if the group usage headroom is satisfied.
  *    It could be following three situations.
@@ -47,7 +46,7 @@ class QuotaUsageChecker final : public nsIQuotaCallback,
                                 public nsIClearDataCallback {
  public:
   NS_DECL_ISUPPORTS
-  // For QuotaManagerService::Estimate()
+  // For QuotaManagerService::EstimateGroupUsage()
   NS_DECL_NSIQUOTACALLBACK
 
   // For QuotaManagerService::GetUsageForPrincipal()
@@ -124,8 +123,8 @@ void QuotaUsageChecker::Start() {
 
   // Asynchronious getting group usage and limit
   nsCOMPtr<nsIQuotaRequest> request;
-  if (NS_WARN_IF(
-          NS_FAILED(qms->Estimate(mPrincipal, getter_AddRefs(request))))) {
+  if (NS_WARN_IF(NS_FAILED(
+          qms->EstimateGroupUsage(mPrincipal, getter_AddRefs(request))))) {
     return;
   }
   request->SetCallback(this);
@@ -251,7 +250,7 @@ NS_IMETHODIMP QuotaUsageChecker::OnUsageResult(
 
   // Call CheckQuotaHeadroom() when both
   // QuotaManagerService::GetUsageForPrincipal() and
-  // QuotaManagerService::Estimate() are done.
+  // QuotaManagerService::EstimateGroupUsage() are done.
   if (mGettingOriginUsageDone && mGettingGroupUsageDone) {
     CheckQuotaHeadroom();
   }
@@ -297,7 +296,7 @@ NS_IMETHODIMP QuotaUsageChecker::OnComplete(nsIQuotaRequest* aRequest) {
 
   // Call CheckQuotaHeadroom() when both
   // QuotaManagerService::GetUsageForPrincipal() and
-  // QuotaManagerService::Estimate() are done.
+  // QuotaManagerService::EstimateGroupUsage() are done.
   if (mGettingOriginUsageDone && mGettingGroupUsageDone) {
     CheckQuotaHeadroom();
   }

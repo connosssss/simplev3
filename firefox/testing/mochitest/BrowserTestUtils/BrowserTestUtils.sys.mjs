@@ -14,6 +14,7 @@
 
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
+import { clearTimeout, setTimeout } from "resource://gre/modules/Timer.sys.mjs";
 import { TestUtils } from "resource://testing-common/TestUtils.sys.mjs";
 
 const lazy = {};
@@ -24,9 +25,10 @@ ChromeUtils.defineESModuleGetters(lazy, {
 });
 
 XPCOMUtils.defineLazyServiceGetters(lazy, {
+  gfxInfo: ["@mozilla.org/gfx/info;1", Ci.nsIGfxInfo],
   ProtocolProxyService: [
     "@mozilla.org/network/protocol-proxy-service;1",
-    "nsIProtocolProxyService",
+    Ci.nsIProtocolProxyService,
   ],
 });
 
@@ -34,8 +36,34 @@ let gListenerId = 0;
 
 const DISABLE_CONTENT_PROCESS_REUSE_PREF = "dom.ipc.disableContentProcessReuse";
 
+// Upper bound on the tabs BrowserTestUtils.overflowTabs opens.
+const MAX_TABS_FOR_OVERFLOW = 200;
+
+// Default bound on BrowserTestUtils.waitForMutationCondition, past the point
+// where a wait is plausibly still going to pass.
+const DEFAULT_MUTATION_TIMEOUT_MS = 10000;
+
 const kAboutPageRegistrationContentScript =
   "chrome://mochikit/content/tests/BrowserTestUtils/content-about-page-utils.js";
+
+/**
+ * Names a mutation wait whose caller passed no message, so that a wait which
+ * fails can still say which one it was.
+ *
+ * @param {function} checkFn  The condition the wait is testing.
+ * @param {nsIStackFrame} frame  The frame that started the wait.
+ * @returns {string}
+ */
+function describeMutationWait(checkFn, frame) {
+  let source = checkFn.toString().replace(/\s+/g, " ");
+  if (source.length > 100) {
+    source = source.slice(0, 100) + "...";
+  }
+  if (!frame) {
+    return source;
+  }
+  return `${frame.filename.replace(/.*\//, "")}:${frame.lineNumber} - ${source}`;
+}
 
 /**
  * Create and register the BrowserTestUtils and ContentEventListener window
@@ -55,6 +83,7 @@ function registerActors() {
     },
     allFrames: true,
     includeChrome: true,
+    safeForUntrustedWebProcess: true,
   });
 
   ChromeUtils.registerWindowActor("ContentEventListener", {
@@ -72,6 +101,7 @@ function registerActors() {
       },
     },
     allFrames: true,
+    safeForUntrustedWebProcess: true,
   });
 }
 
@@ -88,23 +118,47 @@ registerActors();
  */
 export var BrowserTestUtils = {
   /**
+   * Whether minimizing a window has any observable effect on this platform.
+   * Wayland offers no way to tell that a window was minimized, so neither a
+   * sizemodechange event nor the window's deactivation follows
+   * ``window.minimize()`` there. See bug 2063202.
+   *
+   * @returns {boolean}
+   */
+  get canMinimize() {
+    return !(
+      AppConstants.platform == "linux" &&
+      lazy.gfxInfo.windowProtocol == "wayland"
+    );
+  },
+
+  // We define the function separately, rather than using an arrow function
+  // inline due to https://github.com/jsdoc/jsdoc/issues/2143.
+  /**
+   * @template T
+   * @typedef {Function} withNewTabTaskFn
+   * @param {MozBrowser} browser
+   * @returns {Promise<T> | T}
+   */
+
+  /**
    * Loads a page in a new tab, executes a Task and closes the tab.
    *
-   * @param {Object|String} options
+   * @template T
+   * @param {object | string} options
    *        If this is a string it is the url to open and will be opened in the
    *        currently active browser window.
-   * @param {tabbrowser} [options.gBrowser
+   * @param {tabbrowser} [options.gBrowser]
    *        A reference to the ``tabbrowser`` element where the new tab should
    *        be opened,
    * @param {string} options.url
    *        The URL of the page to load.
-   * @param {Function} taskFn
+   * @param {withNewTabTaskFn<T>} taskFn
    *        Async function representing that will be executed while
    *        the tab is loaded. The first argument passed to the function is a
    *        reference to the browser object for the new tab.
    *
-   * @return {Any} Returns the value that is returned from taskFn.
-   * @resolves When the tab has been closed.
+   * @return {Promise<T>} Resolves to the value that is returned from taskFn.
    * @rejects Any exception from taskFn is propagated.
    */
   async withNewTab(options, taskFn) {
@@ -115,12 +169,12 @@ export var BrowserTestUtils = {
       };
     }
     let tab = await BrowserTestUtils.openNewForegroundTab(options);
-    let originalWindow = tab.ownerGlobal;
+    let originalWindow = tab.documentGlobal;
     let result;
     try {
       result = await taskFn(tab.linkedBrowser);
     } finally {
-      let finalWindow = tab.ownerGlobal;
+      let finalWindow = tab.documentGlobal;
       if (originalWindow == finalWindow && !tab.closing && tab.linkedBrowser) {
         // taskFn may resolve within a tick after opening a new tab.
         // We shouldn't remove the newly opened tab in the same tick.
@@ -147,7 +201,7 @@ export var BrowserTestUtils = {
    *
    * @param {tabbrowser} gBrowser
    *        The tabbrowser to open the tab new in.
-   * @param {string} opening (or url)
+   * @param {string|function} opening (or url)
    *        May be either a string URL to load in the tab, or a function that
    *        will be called to open a foreground tab. Defaults to "about:blank".
    * @param {boolean} waitForLoad
@@ -161,15 +215,12 @@ export var BrowserTestUtils = {
    *
    * @return {Promise}
    *         Resolves when the tab is ready and loaded as necessary.
-   * @resolves The new tab.
    */
   openNewForegroundTab(tabbrowser, ...args) {
-    let startTime = Cu.now();
+    let startTime = ChromeUtils.now();
     let options;
-    if (
-      tabbrowser.ownerGlobal &&
-      tabbrowser === tabbrowser.ownerGlobal.gBrowser
-    ) {
+    let win = tabbrowser.documentGlobal;
+    if (win && tabbrowser === win.gBrowser) {
       // tabbrowser is a tabbrowser, read the rest of the arguments from args.
       let [
         opening = "about:blank",
@@ -193,6 +244,7 @@ export var BrowserTestUtils = {
 
       tabbrowser = tabbrowser.gBrowser;
       options = { opening, waitForLoad, waitForStateStop, forceNewProcess };
+      win = tabbrowser.documentGlobal;
     }
 
     let {
@@ -221,11 +273,31 @@ export var BrowserTestUtils = {
               opening
             );
           }
+        }).then(async result => {
+          // The content process only gets the browser's size once we have
+          // reflowed it, so until then callers that synthesize input would hit
+          // test against a 0x0 viewport. Callers that opted out of waiting for
+          // the load want the tab before it is ready, and tests don't interact
+          // with a minimized or fully occluded window, whose refresh driver is
+          // throttled anyway.
+          if (aWaitForLoad && win.browsingContext.isActive) {
+            await win.promiseDocumentFlushed(() => {});
+            // Avoid ever resolving in the middle of a refresh driver tick,
+            // which would otherwise happen whenever this is the last promise
+            // to resolve.
+            await TestUtils.waitForTick();
+          }
+          return result;
         }),
       ];
 
       if (aWaitForLoad) {
-        promises.push(BrowserTestUtils.browserLoaded(tab.linkedBrowser));
+        // accept any load, including about:blank
+        promises.push(
+          BrowserTestUtils.browserLoaded(tab.linkedBrowser, {
+            wantLoad: () => true,
+          })
+        );
       }
       if (aWaitForStateStop) {
         promises.push(BrowserTestUtils.browserStopped(tab.linkedBrowser));
@@ -237,7 +309,7 @@ export var BrowserTestUtils = {
       }
     }
     return Promise.all(promises).then(() => {
-      let { innerWindowId } = tabbrowser.ownerGlobal.windowGlobalChild;
+      let { innerWindowId } = win.windowGlobalChild;
       ChromeUtils.addProfilerMarker(
         "BrowserTestUtils",
         { startTime, category: "Test", innerWindowId },
@@ -274,7 +346,7 @@ export var BrowserTestUtils = {
       return BrowserTestUtils.isHidden(element.getRootNode().host);
     }
 
-    let win = element.ownerGlobal;
+    let win = element.documentGlobal;
     let style = win.getComputedStyle(element);
     if (style.display == "none") {
       return true;
@@ -310,7 +382,7 @@ export var BrowserTestUtils = {
       return BrowserTestUtils.isVisible(element.getRootNode().host);
     }
 
-    let win = element.ownerGlobal;
+    let win = element.documentGlobal;
     let style = win.getComputedStyle(element);
     if (style.display == "none") {
       return false;
@@ -352,17 +424,23 @@ export var BrowserTestUtils = {
    *
    * @return {Promise}
    *         Resolves when the tab has been switched to.
-   * @resolves The tab switched to.
    */
   switchTab(tabbrowser, tab) {
-    let startTime = Cu.now();
-    let { innerWindowId } = tabbrowser.ownerGlobal.windowGlobalChild;
+    let startTime = ChromeUtils.now();
+    let win = tabbrowser.documentGlobal;
+    let { innerWindowId } = win.windowGlobalChild;
+
+    // Some tests depend on the delay and TabSwitched only fires if the browser is visible.
+    // Bug 1977993 tracks always dispatching TabSwitched.
+    let switchEvent =
+      Services.prefs.getBoolPref("test.wait300msAfterTabSwitch", false) ||
+      tabbrowser.ownerDocument.hidden
+        ? "TabSwitchDone"
+        : "TabSwitched";
 
     let promise = new Promise(resolve => {
       tabbrowser.addEventListener(
-        Services.prefs.getBoolPref("test.wait300msAfterTabSwitch", false)
-          ? "TabSwitchDone"
-          : "TabSwitched",
+        switchEvent,
         function () {
           TestUtils.executeSoon(() => {
             ChromeUtils.addProfilerMarker(
@@ -386,13 +464,16 @@ export var BrowserTestUtils = {
   },
 
   /**
-   * Waits for an ongoing page load in a browser window to complete.
+   * Waits for an ongoing page load in a browser window to complete. By default
+   * about:blank loads are ignored.
    *
    * This can be used in conjunction with any synchronous method for starting a
    * load, like the "addTab" method on "tabbrowser", and must be called before
-   * yielding control to the event loop. Note that calling this after multiple
-   * successive load operations can be racy, so ``wantLoad`` should be specified
-   * in these cases.
+   * yielding control to the event loop.
+   *
+   * Note that calling this after multiple successive load operations can be racy,
+   * so ``wantLoad`` should be specified in these cases. The same holds if we're
+   * interested in about:blank to load.
    *
    * This function works by listening for custom load events on ``browser``. These
    * are sent by a BrowserTestUtils window actor in response to "load" and
@@ -400,28 +481,38 @@ export var BrowserTestUtils = {
    *
    * @param {xul:browser} browser
    *        A xul:browser.
-   * @param {Boolean} [includeSubFrames = false]
+   * @param {object} options
+   * @param {boolean} [options.includeSubFrames = false]
    *        A boolean indicating if loads from subframes should be included.
-   * @param {string|function} [wantLoad = null]
+   * @param {string|function} [options.wantLoad]
    *        If a function, takes a URL and returns true if that's the load we're
    *        interested in. If a string, gives the URL of the load we're interested
-   *        in. If not present, the first load resolves the promise.
-   * @param {boolean} [maybeErrorPage = false]
+   *        in. If not present, the first non-about:blank load resolves the promise.
+   * @param {boolean} [options.maybeErrorPage = false]
    *        If true, this uses DOMContentLoaded event instead of load event.
    *        Also wantLoad will be called with visible URL, instead of
    *        'about:neterror?...' for error page.
    *
    * @return {Promise}
-   * @resolves When a load event is triggered for the browser.
+   *   Resovles when a load event is triggered for the browser.
    */
-  browserLoaded(
-    browser,
-    includeSubFrames = false,
-    wantLoad = null,
-    maybeErrorPage = false
-  ) {
-    let startTime = Cu.now();
-    let { innerWindowId } = browser.ownerGlobal.windowGlobalChild;
+  browserLoaded(browser, ...args) {
+    const options =
+      args.length && typeof args[0] === "object"
+        ? args[0]
+        : {
+            includeSubFrames: args[0] ?? false,
+            wantLoad: args[1] ?? null,
+            maybeErrorPage: args[2] ?? false,
+          };
+    const {
+      includeSubFrames = false,
+      wantLoad = null,
+      maybeErrorPage = false,
+    } = options;
+    let startTime = ChromeUtils.now();
+    let win = browser.documentGlobal;
+    let { innerWindowId } = win.windowGlobalChild;
 
     // Passing a url as second argument is a common mistake we should prevent.
     if (includeSubFrames && typeof includeSubFrames != "boolean") {
@@ -437,17 +528,17 @@ export var BrowserTestUtils = {
 
     // If browser belongs to tabbrowser-tab, ensure it has been
     // inserted into the document.
-    let tabbrowser = browser.ownerGlobal.gBrowser;
+    let tabbrowser = win.gBrowser;
     if (tabbrowser && tabbrowser.getTabForBrowser) {
       let tab = tabbrowser.getTabForBrowser(browser);
       if (tab) {
-        tabbrowser._insertBrowser(tab);
+        tabbrowser.insertBrowser(tab);
       }
     }
 
     function isWanted(url) {
       if (!wantLoad) {
-        return true;
+        return !url.startsWith("about:blank");
       } else if (typeof wantLoad == "function") {
         return wantLoad(url);
       }
@@ -522,11 +613,11 @@ export var BrowserTestUtils = {
         }
 
         browser.removeEventListener(eventName, listener, true);
-        browser.ownerGlobal.removeEventListener("unload", listener);
+        win.removeEventListener("unload", listener);
       }
 
       browser.addEventListener(eventName, listener, true);
-      browser.ownerGlobal.addEventListener("unload", listener);
+      win.addEventListener("unload", listener);
     });
   },
 
@@ -539,15 +630,15 @@ export var BrowserTestUtils = {
    * @param {xul:window} window
    *        A newly opened window for which we're waiting for the
    *        first browser load.
-   * @param {Boolean} aboutBlank [optional]
+   * @param {boolean} aboutBlank [optional]
    *        If false, about:blank loads are ignored and we continue
    *        to wait.
    * @param {function|null} checkFn [optional]
    *        If checkFn(browser) returns false, the load is ignored
    *        and we continue to wait.
    *
-   * @return {Promise}
-   * @resolves Once the selected browser fires its load event.
+   * @return {Promise<Event>}
+   *   Resolves to the fired load event.
    */
   firstBrowserLoaded(win, aboutBlank = true, checkFn = null) {
     return this.waitForEvent(
@@ -578,14 +669,14 @@ export var BrowserTestUtils = {
    *
    * @param {xul:browser} browser
    *        A xul:browser.
-   * @param {String} expectedURI (optional)
+   * @param {string} expectedURI (optional)
    *        A specific URL to check the channel load against
    * @param {Function} checkFn
    *        If checkFn(aStateFlags, aStatus) returns false, the state change
    *        is ignored and we continue to wait.
    *
-   * @return {Promise}
-   * @resolves When the desired state change reaches the tab's progress listener
+   * @return {Promise<void>}
+   *   Resolves when the desired state change reaches the tab's progress listener.
    */
   waitForBrowserStateChange(browser, expectedURI, checkFn) {
     return new Promise(resolve => {
@@ -638,14 +729,14 @@ export var BrowserTestUtils = {
    *
    * @param {xul:browser} browser
    *        A xul:browser.
-   * @param {String} expectedURI (optional)
+   * @param {string} expectedURI (optional)
    *        A specific URL to check the channel load against
-   * @param {Boolean} checkAborts (optional, defaults to false)
+   * @param {boolean} checkAborts (optional, defaults to false)
    *        Whether NS_BINDING_ABORTED stops 'count' as 'real' stops
    *        (e.g. caused by the stop button or equivalent APIs)
    *
-   * @return {Promise}
-   * @resolves When STATE_STOP reaches the tab's progress listener
+   * @return {Promise<void>}
+   *   Resolves when STATE_STOP reaches the tab's progress listener.
    */
   browserStopped(browser, expectedURI, checkAborts = false) {
     let testFn = function (aStateFlags, aStatus) {
@@ -673,11 +764,11 @@ export var BrowserTestUtils = {
    *
    * @param {xul:browser} browser
    *        A xul:browser.
-   * @param {String} expectedURI (optional)
+   * @param {string} expectedURI (optional)
    *        A specific URL to check the channel load against
    *
-   * @return {Promise}
-   * @resolves When STATE_START reaches the tab's progress listener
+   * @return {Promise<void>}
+   *   Resolves when STATE_START reaches the tab's progress listener
    */
   browserStarted(browser, expectedURI) {
     let testFn = function (aStateFlags) {
@@ -718,8 +809,8 @@ export var BrowserTestUtils = {
    *        See ``browserLoaded`` function.
    *
    * @return {Promise}
-   * @resolves With the {xul:tab} when a tab is opened and its location changes
-   *           to the given URL and optionally that browser has loaded.
+   *   Resolves with the {xul:tab} when a tab is opened and its location changes
+   *   to the given URL and optionally that browser has loaded.
    *
    * NB: this method will not work if you open a new tab with e.g. BrowserCommands.openTab
    * and the tab does not load a URL, because no onLocationChange will fire.
@@ -750,17 +841,20 @@ export var BrowserTestUtils = {
             );
           }
           let newTab = openEvent.target;
+          if (wantLoad == "about:blank") {
+            TestUtils.executeSoon(() => resolve(newTab));
+            return;
+          }
           let newBrowser = newTab.linkedBrowser;
           let result;
           if (waitForLoad) {
             // If waiting for load, resolve with promise for that, which when load
             // completes resolves to the new tab.
-            result = BrowserTestUtils.browserLoaded(
-              newBrowser,
-              false,
-              urlMatches,
-              maybeErrorPage
-            ).then(() => newTab);
+            result = BrowserTestUtils.browserLoaded(newBrowser, {
+              includeSubFrames: false,
+              wantLoad: urlMatches,
+              maybeErrorPage,
+            }).then(() => newTab);
           } else {
             // If not waiting for load, just resolve with the new tab.
             result = newTab;
@@ -801,8 +895,7 @@ export var BrowserTestUtils = {
    * @param {string} [url]
    *        The string URL to look for. The URL must match the URL in the
    *        location bar exactly.
-   * @return {Promise}
-   * @resolves {webProgress, request, flags} When onLocationChange fires.
+   * @return {Promise<{webProgress: nsIWebProgress, request: nsIRequest, flags: number}>}
    */
   waitForLocationChange(tabbrowser, url) {
     return new Promise(resolve => {
@@ -826,7 +919,7 @@ export var BrowserTestUtils = {
   /**
    * Waits for the next browser window to open and be fully loaded.
    *
-   * @param {Object} aParams
+   * @param {object} aParams
    * @param {string} [aParams.url]
    *        The url to await being loaded. If unset this may or may not wait for
    *        any page to be loaded, according to the waitForAnyURLLoaded param.
@@ -865,12 +958,7 @@ export var BrowserTestUtils = {
             Services.ww.unregisterNotification(observe);
           }
 
-          // Add these event listeners now since they may fire before the
-          // DOMContentLoaded event down below.
-          let promises = [
-            this.waitForEvent(win, "focus", true),
-            this.waitForEvent(win, "activate"),
-          ];
+          let promises = [];
 
           if (url || waitForAnyURLLoaded) {
             await this.waitForEvent(win, "DOMContentLoaded");
@@ -880,24 +968,27 @@ export var BrowserTestUtils = {
             }
           }
 
-          promises.push(
-            TestUtils.topicObserved(
-              "browser-delayed-startup-finished",
-              subject => subject == win
-            )
-          );
+          if (!(win.gBrowserInit && win.gBrowserInit.delayedStartupFinished)) {
+            promises.push(
+              TestUtils.topicObserved(
+                "browser-delayed-startup-finished",
+                subject => subject == win
+              )
+            );
+          }
 
           if (url || waitForAnyURLLoaded) {
-            let loadPromise = this.browserLoaded(
-              win.gBrowser.selectedBrowser,
-              false,
-              waitForAnyURLLoaded ? null : url,
-              maybeErrorPage
-            );
+            let loadPromise = this.browserLoaded(win.gBrowser.selectedBrowser, {
+              includeSubFrames: false,
+              wantLoad: waitForAnyURLLoaded ? null : url,
+              maybeErrorPage,
+            });
             promises.push(loadPromise);
           }
 
           await Promise.all(promises);
+
+          await this.ensureWindowActivated(win);
 
           if (anyWindow) {
             Services.ww.unregisterNotification(observe);
@@ -927,11 +1018,31 @@ export var BrowserTestUtils = {
    *        A xul:browser.
    * @param {string} uri
    *        The URI to load.
+   * @param {number} loadFlags [optional]
+   *        Load flags to pass to nsIWebNavigation.loadURI.
    */
-  startLoadingURIString(browser, uri) {
+  startLoadingURIString(browser, uri, loadFlags) {
     browser.fixupAndLoadURIString(uri, {
       triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      loadFlags,
     });
+  },
+
+  /**
+   * Loads a given URI in the specified tab and waits for the load to complete.
+   *
+   * @param {object} options
+   * @param {xul:browser} options.browser
+   *   The browser to load the URI into.
+   * @param {string} options.uriString
+   *   The string URI to load.
+   * @param {string} [options.finalURI]
+   *   The expected final URI to wait for, e.g. if the load is automatically
+   *   redirected.
+   */
+  loadURIString({ browser, uriString, finalURI = uriString }) {
+    this.startLoadingURIString(browser, uriString);
+    return this.browserLoaded(browser, { wantLoad: finalURI });
   },
 
   /**
@@ -941,7 +1052,7 @@ export var BrowserTestUtils = {
    *        The tabbrowser in which to preload a browser.
    */
   async maybeCreatePreloadedBrowser(gBrowser) {
-    let win = gBrowser.ownerGlobal;
+    let win = gBrowser.documentGlobal;
     win.NewTabPagePreloading.maybeCreatePreloadedBrowser(win);
 
     // We cannot use the regular BrowserTestUtils helper for waiting here, since that
@@ -1015,6 +1126,25 @@ export var BrowserTestUtils = {
   },
 
   /**
+   * Ensures a chrome window is activated. On Windows, new windows may be shown
+   * without OS activation (SW_SHOWNOACTIVATE) when another process has the
+   * foreground, so focus/activate events never fire. This checks whether
+   * activation already occurred and forces it if not.
+   *
+   * @param {ChromeWindow} win
+   */
+  async ensureWindowActivated(win) {
+    if (Services.focus.activeWindow !== win) {
+      let activatePromise = Promise.all([
+        this.waitForEvent(win, "focus", true),
+        this.waitForEvent(win, "activate"),
+      ]);
+      win.focus();
+      await activatePromise;
+    }
+  },
+
+  /**
    * @param win (optional)
    *        The window we should wait to have "domwindowclosed" sent through
    *        the observer service for. If this is not supplied, we'll just
@@ -1040,9 +1170,9 @@ export var BrowserTestUtils = {
    * This relies on OpenBrowserWindow in browser.js, and waits for the window
    * to be completely loaded before resolving.
    *
-   * @param {Object} [options]
+   * @param {object} [options]
    *        Options to pass to OpenBrowserWindow. Additionally, supports:
-   * @param {bool} [options.waitForTabURL]
+   * @param {string} [options.waitForTabURL]
    *        Forces the initial browserLoaded check to wait for the tab to
    *        load the given URL (instead of about:blank)
    *
@@ -1050,7 +1180,7 @@ export var BrowserTestUtils = {
    *         Resolves with the new window once it is loaded.
    */
   async openNewBrowserWindow(options = {}) {
-    let startTime = Cu.now();
+    let startTime = ChromeUtils.now();
 
     let openerWindow = lazy.BrowserWindowTracker.getTopWindow({
       private: false,
@@ -1060,31 +1190,25 @@ export var BrowserTestUtils = {
       ...options,
     });
 
-    let promises = [
-      this.waitForEvent(win, "focus", true),
-      this.waitForEvent(win, "activate"),
-    ];
-
     // Wait for browser-delayed-startup-finished notification, it indicates
     // that the window has loaded completely and is ready to be used for
     // testing.
-    promises.push(
+    let promises = [
       TestUtils.topicObserved(
         "browser-delayed-startup-finished",
         subject => subject == win
-      ).then(() => win)
-    );
-
-    promises.push(
+      ).then(() => win),
       this.firstBrowserLoaded(win, !options.waitForTabURL, browser => {
         return (
           !options.waitForTabURL ||
           options.waitForTabURL == browser.currentURI.spec
         );
-      })
-    );
+      }),
+    ];
 
     await Promise.all(promises);
+
+    await this.ensureWindowActivated(win);
     ChromeUtils.addProfilerMarker(
       "BrowserTestUtils",
       { startTime, category: "Test" },
@@ -1134,7 +1258,7 @@ export var BrowserTestUtils = {
         // Ensure all browsers have been inserted or we won't get
         // messages back from them.
         browserSet.forEach(browser => {
-          win.gBrowser._insertBrowser(win.gBrowser.getTabForBrowser(browser));
+          win.gBrowser.insertBrowser(win.gBrowser.getTabForBrowser(browser));
         });
 
         let observer = subject => {
@@ -1165,8 +1289,8 @@ export var BrowserTestUtils = {
    *
    * @param {xul:tab} tab
    *        The tab that will be removed.
-   * @returns {Promise}
-   * @resolves When the SessionStore information is updated.
+   * @returns {Promise<void>}
+   *   Resolves when the SessionStore information is updated.
    */
   waitForSessionStoreUpdate(tab) {
     let browser = tab.linkedBrowser;
@@ -1177,8 +1301,8 @@ export var BrowserTestUtils = {
   },
 
   /**
-   * @returns {Promise}
-   * @resolves When the locale has been changed.
+   * @returns {Promise<void>}
+   *   Resolves when the locale has been changed.
    */
   enableRtlLocale() {
     let localeChanged = TestUtils.topicObserved("intl:app-locales-changed");
@@ -1187,8 +1311,8 @@ export var BrowserTestUtils = {
   },
 
   /**
-   * @returns {Promise}
-   * @resolves When the locale has been changed.
+   * @returns {Promise<void>}
+   *   Resolves when the locale has been changed.
    */
   disableRtlLocale() {
     let localeChanged = TestUtils.topicObserved("intl:app-locales-changed");
@@ -1243,16 +1367,24 @@ export var BrowserTestUtils = {
    * @param {bool} [wantsUntrusted=false]
    *        True to receive synthetic events dispatched by web content.
    *
-   * @note Because this function is intended for testing, any error in checkFn
+   * Note: Because this function is intended for testing, any error in checkFn
    *       will cause the returned promise to be rejected instead of waiting for
    *       the next event, since this is probably a bug in the test.
    *
-   * @returns {Promise}
-   * @resolves The Event object.
+   * @returns {Promise<Event>}
    */
   waitForEvent(subject, eventName, capture, checkFn, wantsUntrusted) {
-    let startTime = Cu.now();
-    let innerWindowId = subject.ownerGlobal?.windowGlobalChild.innerWindowId;
+    let startTime = ChromeUtils.now();
+    let innerWindowId = (() => {
+      if (subject.windowGlobalChild) {
+        return subject.windowGlobalChild.innerWindowId;
+      }
+      if ("ownerDocument" in subject) {
+        let win = subject.documentGlobal;
+        return win.windowGlobalChild.innerWindowId;
+      }
+      return null;
+    })();
 
     return new Promise((resolve, reject) => {
       let removed = false;
@@ -1327,14 +1459,15 @@ export var BrowserTestUtils = {
    * @param {bool} wantUntrusted [optional]
    *        Whether to accept untrusted events
    *
-   * @note As of bug 1588193, this function no longer rejects the returned
+   * Note: As of bug 1588193, this function no longer rejects the returned
    *       promise in the case of a checkFn error. Instead, since checkFn is now
    *       called through eval in the content process, the error is thrown in
    *       the listener created by ContentEventListenerChild. Work to improve
    *       error handling (eg. to reject the promise as before and to preserve
    *       the filename/stack) is being tracked in bug 1593811.
    *
-   * @returns {Promise}
+   * @returns {Promise<string>}
+   *   Resolves with the event name.
    */
   waitForContentEvent(
     browser,
@@ -1374,6 +1507,40 @@ export var BrowserTestUtils = {
       return Promise.resolve();
     }
     return this.waitForEvent(popup, "popup" + eventSuffix);
+  },
+
+  /**
+   * Activate a menu item the way a user would, and wait for the menu to close.
+   *
+   * Activating an item dismisses the menu it is in, which is what this waits
+   * for. The menu has to be open already, as activateItem() throws
+   * "Popup is not open" otherwise. Prefer this over clicking the item: while
+   * the menu is still opening, its items are not focusable and not exposed to
+   * the accessibility APIs, so the click activates nothing.
+   *
+   * @param {Element} item
+   *        The menuitem to activate, in a menupopup that is already open.
+   */
+  async activateMenuItem(item) {
+    let popup = item.closest("menupopup");
+    let hidden = this.waitForPopupEvent(popup, "hidden");
+    popup.activateItem(item);
+    await hidden;
+  },
+
+  /**
+   * Open the menulist a menu item belongs to and activate the item, the way a
+   * user would, waiting for the dropdown to open first and to close afterwards.
+   *
+   * @param {Element} item
+   *        The menuitem to activate.
+   */
+  async selectMenulistItem(item) {
+    let menulist = item.closest("menulist");
+    let shown = this.waitForPopupEvent(menulist.menupopup, "shown");
+    menulist.open = true;
+    await shown;
+    await this.activateMenuItem(item);
   },
 
   /**
@@ -1420,13 +1587,11 @@ export var BrowserTestUtils = {
     let getPanel = () => win.document.getElementById("DateTimePickerPanel");
     let panel = getPanel();
     let ensureReady = async () => {
-      let frame = panel.querySelector("#dateTimePopupFrame");
+      let frame = panel.querySelector("#DateTimePickerPanelPopupFrame");
       let isValidUrl = () => {
         return (
           frame.browsingContext?.currentURI?.spec ==
-            "chrome://global/content/datepicker.xhtml" ||
-          frame.browsingContext?.currentURI?.spec ==
-            "chrome://global/content/timepicker.xhtml"
+          "chrome://global/content/datetimepicker.xhtml"
         );
       };
 
@@ -1612,42 +1777,132 @@ export var BrowserTestUtils = {
    * Intended as an easy-to-use alternative to waitForCondition.
    *
    * @param {Element} target    The target in which to observe mutations.
-   * @param {Object}  options   The options to pass to MutationObserver.observe();
+   * @param {object}  options   The options to pass to MutationObserver.observe();
    * @param {function} checkFn  Function that returns true when it wants the promise to be
    * resolved.
+   * @param {object} [waitOptions]
+   * @param {string} [waitOptions.msg]
+   *        Describes what's being waited for. Used in the rejection message and
+   *        to label the profiler marker. Defaults to the call site and the
+   *        source of `checkFn`.
+   * @param {number} [waitOptions.timeout=DEFAULT_MUTATION_TIMEOUT_MS]
+   *        Milliseconds to wait before rejecting. Pass Infinity to wait
+   *        indefinitely, in which case the wait still rejects if the test
+   *        finishes while it's pending.
+   * @returns {Promise<any>}    The value returned by `checkFn`.
    */
-  waitForMutationCondition(target, options, checkFn) {
-    if (checkFn()) {
-      return Promise.resolve();
+  waitForMutationCondition(
+    target,
+    options,
+    checkFn,
+    { msg, timeout = DEFAULT_MUTATION_TIMEOUT_MS } = {}
+  ) {
+    let retVal;
+    if ((retVal = checkFn())) {
+      return Promise.resolve(retVal);
     }
-    return new Promise(resolve => {
-      let obs = new target.ownerGlobal.MutationObserver(function () {
-        if (checkFn()) {
-          obs.disconnect();
-          resolve();
+    let startTime = ChromeUtils.now();
+    let label = `waitForMutationCondition - ${
+      msg ?? describeMutationWait(checkFn, Components.stack.caller)
+    }`;
+
+    return new Promise((resolve, reject) => {
+      let win = target.documentGlobal;
+      let timer = 0;
+      let settled = false;
+      let obs = new win.MutationObserver(() => {
+        if ((retVal = checkFn())) {
+          stop();
+          resolve(retVal);
         }
       });
+
+      // Don't chain the returned promise (no .then()/.finally()): the extra
+      // microtask defers when an awaiting caller resumes, and tests that drive
+      // the UI right after a wait are sensitive to that. Clean up and record
+      // the wait here instead, before settling.
+      function stop() {
+        settled = true;
+        obs.disconnect();
+        clearTimeout(timer);
+        ChromeUtils.addProfilerMarker(
+          "BrowserTestUtils",
+          { startTime, category: "Test" },
+          label
+        );
+      }
+
       obs.observe(target, options);
+
+      if (timeout !== Infinity) {
+        timer = setTimeout(() => {
+          label += ` - timed out after ${timeout}ms`;
+          stop();
+          reject(label);
+        }, timeout);
+      }
+
+      TestUtils.promiseTestFinished?.then(() => {
+        if (settled) {
+          return;
+        }
+        label += " - still pending at the end of the test";
+        stop();
+        reject(label);
+      });
     });
+  },
+
+  /**
+   * Waits until painting is no longer suppressed in a browsing context.
+   *
+   * This is needed before synthesizing a mouse event on a freshly loaded
+   * document, because hit testing ignores content while painting is
+   * suppressed: the click resolves to the document root and fires no event.
+   *
+   * @param {BrowsingContext} browsingContext
+   *        The browsing context to wait for. Note that painting is suppressed
+   *        per document, so for content in an iframe this needs to be the
+   *        iframe's browsing context rather than the top level one.
+   */
+  async waitForPaintingUnsuppressed(browsingContext) {
+    try {
+      await this.sendQuery(
+        browsingContext,
+        "BrowserTestUtils:WaitForPaintingUnsuppressed"
+      );
+    } catch (ex) {
+      // The document may have gone away while we were waiting, eg. because the
+      // error page was only transient. There is nothing left to paint then.
+      console.warn(`waitForPaintingUnsuppressed: ${ex}`);
+    }
   },
 
   /**
    * Like browserLoaded, but waits for an error page to appear.
    *
+   * Also waits for painting to be unsuppressed in the browser, so that clicks
+   * synthesized on the error page actually hit test to its content.
+   *
    * @param {xul:browser} browser
    *        A xul:browser.
    *
-   * @return {Promise}
-   * @resolves When an error page has been loaded in the browser.
+   * @return {Promise<string>}
+   *   Resolves when an error page has been loaded in the browser, with the name
+   *   of the event.
    */
-  waitForErrorPage(browser) {
-    return this.waitForContentEvent(
+  async waitForErrorPage(browser) {
+    let eventName = await this.waitForContentEvent(
       browser,
       "AboutNetErrorLoad",
       false,
       null,
       true
     );
+
+    await this.waitForPaintingUnsuppressed(browser.browsingContext);
+
+    return eventName;
   },
 
   /**
@@ -1741,7 +1996,7 @@ export var BrowserTestUtils = {
    *        x offset from target's left bounding edge
    * @param {integer} offsetY
    *        y offset from target's top bounding edge
-   * @param {Object} event object
+   * @param {object} event object
    *        Additional arguments, similar to the EventUtils.sys.mjs version
    * @param {BrowserContext|MozFrameLoaderOwner} browsingContext
    *        Browsing context or browser element, must not be null
@@ -1749,8 +2004,8 @@ export var BrowserTestUtils = {
    *        Whether the synthesize should be perfomed while simulating
    *        user interaction (making windowUtils.isHandlingUserInput be true).
    *
-   * @returns {Promise}
-   * @resolves True if the mouse event was cancelled.
+   * @returns {Promise<boolean>}
+   *   Resolves to true if the mouse event was cancelled.
    */
   synthesizeMouse(
     target,
@@ -1796,13 +2051,13 @@ export var BrowserTestUtils = {
    *        x offset from target's left bounding edge
    * @param {integer} offsetY
    *        y offset from target's top bounding edge
-   * @param {Object} event object
+   * @param {object} event object
    *        Additional arguments, similar to the EventUtils.sys.mjs version
    * @param {BrowserContext|MozFrameLoaderOwner} browsingContext
    *        Browsing context or browser element, must not be null
    *
-   * @returns {Promise}
-   * @resolves True if the touch event was cancelled.
+   * @returns {Promise<boolean>}
+   *   Resolves to true if the touch event was cancelled.
    */
   synthesizeTouch(target, offsetX, offsetY, event, browsingContext) {
     let targetFn = null;
@@ -1828,7 +2083,7 @@ export var BrowserTestUtils = {
    *
    * @param {nsIMessageManager} messageManager
    *                            The message manager that should be used.
-   * @param {String}            message
+   * @param {string}            message
    *                            The message we're waiting for.
    * @param {Function}          checkFn (optional)
    *                            Optional function to invoke to check the message.
@@ -1885,16 +2140,17 @@ export var BrowserTestUtils = {
    *        Extra options to pass to tabbrowser's removeTab method.
    */
   removeTab(tab, options = {}) {
-    tab.ownerGlobal.gBrowser.removeTab(tab, options);
+    let win = tab.documentGlobal;
+    win.gBrowser.removeTab(tab, options);
   },
 
   /**
    * Returns a Promise that resolves once the tab starts closing.
    *
-   * @param (tab) tab
+   * @param {tab} tab
    *        The tab that will be removed.
-   * @returns (Promise)
-   * @resolves When the tab starts closing. Does not get passed a value.
+   * @returns {Promise<Event>}
+   *   Resolves with the event when the tab starts closing.
    */
   waitForTabClosing(tab) {
     return this.waitForEvent(tab, "TabClose");
@@ -1904,35 +2160,53 @@ export var BrowserTestUtils = {
    *
    * @param {tab} tab
    *        The tab that will be reloaded.
-   * @param {Object} [options]
+   * @param {object} [options]
    *        Options for the reload.
-   * @param {Boolean} options.includeSubFrames = false [optional]
+   * @param {boolean} options.includeSubFrames = false [optional]
    *        A boolean indicating if loads from subframes should be included
    *        when waiting for the frame to reload.
-   * @param {Boolean} options.bypassCache = false [optional]
+   * @param {boolean} options.bypassCache = false [optional]
    *        A boolean indicating if loads should bypass the cache.
    *        If bypassCache is true, this skips some steps that normally happen
    *        when a user reloads a tab.
    * @returns {Promise}
-   * @resolves When the tab finishes reloading.
+   *   Resolves when the tab finishes reloading.
    */
   reloadTab(tab, options = {}) {
-    const finished = BrowserTestUtils.browserLoaded(
-      tab.linkedBrowser,
-      !!options.includeSubFrames
-    );
+    const finished = BrowserTestUtils.browserLoaded(tab.linkedBrowser, {
+      includeSubFrames: !!options.includeSubFrames,
+    });
     if (options.bypassCache) {
       tab.linkedBrowser.reloadWithFlags(
         Ci.nsIWebNavigation.LOAD_FLAGS_BYPASS_CACHE
       );
     } else {
-      tab.ownerGlobal.gBrowser.reloadTab(tab);
+      let win = tab.documentGlobal;
+      win.gBrowser.reloadTab(tab);
     }
     return finished;
   },
 
   /**
+   * Waits until every tab in the window has finished opening.
+   *
+   * @param {Window} win
+   * @returns {Promise<void>}
+   */
+  allTabOpenAnimationsFinished(win) {
+    let { gBrowser } = win;
+    return TestUtils.waitForCondition(
+      () =>
+        gBrowser.tabs.every(tab =>
+          gBrowser.tabContainer.openAnimationFinished(tab)
+        ),
+      "Tabs are fully open"
+    );
+  },
+
+  /**
    * Create enough tabs to cause a tab overflow in the given window.
+   *
    * @param {Function|null} registerCleanupFunction
    *    The test framework doesn't keep its cleanup stuff anywhere accessible,
    *    so the first argument is a reference to your cleanup registration
@@ -1946,7 +2220,12 @@ export var BrowserTestUtils = {
    *          Determines whether the new tabs are added at the beginning of the
    *          URL bar or at the end of it.
    *        overflowTabFactor: 3 | 1.1
-   *          Factor that helps in determining the tab count for overflow.
+   *          Factor that helps in determining the tab count for overflow. More
+   *          tabs are opened if that count doesn't overflow the tab strip.
+   *        overflowBy: number
+   *          How far the tab strip's content has to exceed its scrollport, in
+   *          tabs. Use this when the test depends on how much room there is to
+   *          scroll, since the tab count above only approximates it.
    */
   async overflowTabs(registerCleanupFunction, win, params = {}) {
     if (!params.hasOwnProperty("overflowAtStart")) {
@@ -1961,18 +2240,21 @@ export var BrowserTestUtils = {
       : "width";
     let tabIndex = params.overflowAtStart ? 0 : undefined;
     let arrowScrollbox = gBrowser.tabContainer.arrowScrollbox;
-    if (arrowScrollbox.hasAttribute("overflowing")) {
+    let overflowAmount = () =>
+      arrowScrollbox.scrollSize - arrowScrollbox.scrollClientSize;
+
+    let size = ele => ele.getBoundingClientRect()[overflowDirection];
+    let tabMinSize = gBrowser.tabContainer.verticalMode
+      ? size(gBrowser.selectedTab)
+      : parseInt(win.getComputedStyle(gBrowser.selectedTab).minWidth);
+    let overflowTarget = (params.overflowBy ?? 0) * tabMinSize;
+
+    if (
+      arrowScrollbox.hasAttribute("overflowing") &&
+      overflowAmount() > overflowTarget
+    ) {
       return;
     }
-    let promises = [];
-    promises.push(
-      BrowserTestUtils.waitForEvent(
-        arrowScrollbox,
-        "overflow",
-        false,
-        e => e.target == arrowScrollbox
-      )
-    );
     const originalSmoothScroll = arrowScrollbox.smoothScroll;
     arrowScrollbox.smoothScroll = false;
     if (registerCleanupFunction) {
@@ -1981,22 +2263,42 @@ export var BrowserTestUtils = {
       });
     }
 
-    let size = ele => ele.getBoundingClientRect()[overflowDirection];
-    let tabMinSize = gBrowser.tabContainer.verticalMode
-      ? size(gBrowser.selectedTab)
-      : parseInt(win.getComputedStyle(gBrowser.selectedTab).minWidth);
-    let tabCountForOverflow = Math.ceil(
-      (size(arrowScrollbox) / tabMinSize) * params.overflowTabFactor
+    let addTab = () =>
+      BrowserTestUtils.addTab(gBrowser, "about:blank", {
+        skipAnimation: true,
+        tabIndex,
+      });
+
+    let tabCountForOverflow = Math.min(
+      MAX_TABS_FOR_OVERFLOW,
+      Math.ceil((size(arrowScrollbox) / tabMinSize) * params.overflowTabFactor)
     );
     while (gBrowser.tabs.length < tabCountForOverflow) {
-      promises.push(
-        BrowserTestUtils.addTab(gBrowser, "about:blank", {
-          skipAnimation: true,
-          tabIndex,
-        })
-      );
+      addTab();
     }
-    await Promise.all(promises);
+
+    // The tabs share the scrollport with other elements, so the estimate above
+    // can fall short. Top it up until the content really doesn't fit, keeping
+    // a lid on the tab count in case something else stops the strip from
+    // overflowing. A tab only takes up its share of the scrollport once it is
+    // fully open, so measuring before then would badly overshoot.
+    while (gBrowser.tabs.length < MAX_TABS_FOR_OVERFLOW) {
+      await this.allTabOpenAnimationsFinished(win);
+      let missingSpace = overflowTarget - overflowAmount();
+      if (missingSpace < 0) {
+        break;
+      }
+      for (let i = Math.max(1, Math.ceil(missingSpace / tabMinSize)); i; i--) {
+        addTab();
+      }
+    }
+
+    await BrowserTestUtils.waitForMutationCondition(
+      arrowScrollbox,
+      { attributes: true, attributeFilter: ["overflowing"] },
+      () => arrowScrollbox.hasAttribute("overflowing"),
+      { msg: `Tab strip overflows with ${gBrowser.tabs.length} tabs` }
+    );
   },
 
   /**
@@ -2022,8 +2324,8 @@ export var BrowserTestUtils = {
    *            If specified and `true`, cause the crash asynchronously.
    *
    * @returns (Promise)
-   * @resolves An Object with key-value pairs representing the data from the
-   *           crash report's extra file (if applicable).
+   *   An Object with key-value pairs representing the data from the crash
+   *   report's extra file (if applicable).
    */
   async crashFrame(
     browser,
@@ -2089,15 +2391,9 @@ export var BrowserTestUtils = {
 
         Services.obs.removeObserver(observer, "ipc:content-shutdown");
 
-        let dumpID;
-        if (AppConstants.MOZ_CRASHREPORTER) {
-          dumpID = subject.getPropertyAsAString("dumpID");
-          if (!dumpID) {
-            reject(
-              "dumpID was not present despite crash reporting being enabled"
-            );
-            return;
-          }
+        const dumpID = subject.get("dumpID");
+        if (AppConstants.MOZ_CRASHREPORTER && !dumpID) {
+          dump("dumpID was not present despite crash reporting being enabled");
         }
 
         let removalPromise = Promise.resolve();
@@ -2172,7 +2468,7 @@ export var BrowserTestUtils = {
     await Promise.all(expectedPromises);
 
     if (shouldShowTabCrashPage) {
-      let gBrowser = browser.ownerGlobal.gBrowser;
+      let gBrowser = browser.documentGlobal.gBrowser;
       let tab = gBrowser.getTabForBrowser(browser);
       if (tab.getAttribute("crashed") != "true") {
         throw new Error("Tab should be marked as crashed");
@@ -2189,8 +2485,7 @@ export var BrowserTestUtils = {
    *
    * @param browser (<xul:browser>)
    *   The browser to simulate a content process launch failure on.
-   * @return Promise
-   * @resolves undefined
+   * @return {Promise<void>}
    *   Resolves when the TabCrashHandler should be done handling the
    *   simulated crash.
    */
@@ -2217,7 +2512,7 @@ export var BrowserTestUtils = {
       ? "oop-browser-buildid-mismatch"
       : "oop-browser-crashed";
 
-    let event = new browser.ownerGlobal.CustomEvent(eventType, {
+    let event = new browser.documentGlobal.CustomEvent(eventType, {
       bubbles: true,
     });
     event.isTopFrame = true;
@@ -2235,20 +2530,24 @@ export var BrowserTestUtils = {
   /**
    * Returns a promise that is resolved when element gains attribute (or,
    * optionally, when it is set to value).
-   * @param {String} attr
+   *
+   * @param {string} attr
    *        The attribute to wait for
    * @param {Element} element
    *        The element which should gain the attribute
-   * @param {String} value (optional)
-   *        Optional, the value the attribute should have.
+   * @param {string|boolean} value (optional)
+   *        Optional, the value the attribute should have. Pass a boolean to
+   *        wait for a boolean attribute to be present (true) or absent (false).
    *
    * @returns {Promise}
    */
   waitForAttribute(attr, element, value) {
-    let MutationObserver = element.ownerGlobal.MutationObserver;
+    let win = element.documentGlobal;
+    let MutationObserver = win.MutationObserver;
     return new Promise(resolve => {
       let mut = new MutationObserver(() => {
         if (
+          (typeof value == "boolean" && element.hasAttribute(attr) == value) ||
           (!value && element.hasAttribute(attr)) ||
           (value && element.getAttribute(attr) === value)
         ) {
@@ -2263,7 +2562,8 @@ export var BrowserTestUtils = {
 
   /**
    * Returns a promise that is resolved when element loses an attribute.
-   * @param {String} attr
+   *
+   * @param {string} attr
    *        The attribute to wait for
    * @param {Element} element
    *        The element which should lose the attribute
@@ -2275,7 +2575,8 @@ export var BrowserTestUtils = {
       return Promise.resolve();
     }
 
-    let MutationObserver = element.ownerGlobal.MutationObserver;
+    let win = element.documentGlobal;
+    let MutationObserver = win.MutationObserver;
     return new Promise(resolve => {
       dump("Waiting for removal\n");
       let mut = new MutationObserver(() => {
@@ -2295,13 +2596,13 @@ export var BrowserTestUtils = {
    * event was fired. Instead of a Window, a Browser or Browsing Context
    * is required to be passed to this function.
    *
-   * @param {String} char
+   * @param {string} char
    *        A character for the keypress event that is sent to the browser.
    * @param {BrowserContext|MozFrameLoaderOwner} browsingContext
    *        Browsing context or browser element, must not be null
    *
-   * @returns {Promise}
-   * @resolves True if the keypress event was synthesized.
+   * @returns {Promise<boolean>}
+   *   Resolves to true if the keypress event was synthesized.
    */
   sendChar(char, browsingContext) {
     browsingContext = this.getBrowsingContextFrom(browsingContext);
@@ -2314,9 +2615,9 @@ export var BrowserTestUtils = {
    * event was fired. Instead of a Window, a Browser or Browsing Context
    * is required to be passed to this function.
    *
-   * @param {String} key
+   * @param {string} key
    *        See the documentation available for EventUtils#synthesizeKey.
-   * @param {Object} event
+   * @param {object} event
    *        See the documentation available for EventUtils#synthesizeKey.
    * @param {BrowserContext|MozFrameLoaderOwner} browsingContext
    *        Browsing context or browser element, must not be null
@@ -2337,13 +2638,13 @@ export var BrowserTestUtils = {
    * resolve when the event was fired. Instead of a Window, a Browser or
    * Browsing Context is required to be passed to this function.
    *
-   * @param {Object} event
+   * @param {object} event
    *        See the documentation available for EventUtils#synthesizeComposition.
    * @param {BrowserContext|MozFrameLoaderOwner} browsingContext
    *        Browsing context or browser element, must not be null
    *
-   * @returns {Promise}
-   * @resolves False if the composition event could not be synthesized.
+   * @returns {Promise<boolean>}
+   *   Resolves to false if the composition event could not be synthesized.
    */
   synthesizeComposition(event, browsingContext) {
     browsingContext = this.getBrowsingContextFrom(browsingContext);
@@ -2358,7 +2659,7 @@ export var BrowserTestUtils = {
    * Promise that will resolve when the event was fired. Instead of a Window, a
    * Browser or Browsing Context object is required to be passed to this function.
    *
-   * @param {Object} event
+   * @param {object} event
    *        See the documentation available for EventUtils#synthesizeCompositionChange.
    * @param {BrowserContext|MozFrameLoaderOwner} browsingContext
    *        Browsing context or browser element, must not be null
@@ -2372,9 +2673,6 @@ export var BrowserTestUtils = {
     });
   },
 
-  // TODO: Fix consumers and remove me.
-  waitForCondition: TestUtils.waitForCondition,
-
   /**
    * Waits for a <xul:notification> with a particular value to appear
    * for the <xul:notificationbox> of the passed in browser.
@@ -2385,7 +2683,7 @@ export var BrowserTestUtils = {
    *        gBrowser.
    * @param {xul:browser} browser
    *        The browser that should be showing the notification.
-   * @param {String} notificationValue
+   * @param {string} notificationValue
    *        The "value" of the notification, which is often used as
    *        a unique identifier. Example: "plugin-crashed".
    *
@@ -2407,7 +2705,7 @@ export var BrowserTestUtils = {
    * @param {Window} win
    *        The browser window in whose global notificationbox the
    *        notification is expected to appear.
-   * @param {String} notificationValue
+   * @param {string} notificationValue
    *        The "value" of the notification, which is often used as
    *        a unique identifier. Example: "captive-portal-detected".
    *
@@ -2447,7 +2745,7 @@ export var BrowserTestUtils = {
    *
    * @param {Element} element
    *        The element that will transition.
-   * @param {Number} timeout
+   * @param {number} timeout
    *        The maximum time to wait in milliseconds. Defaults to 5 seconds.
    * @return {Promise}
    *        Resolves when transitions complete or rejects if the timeout is hit.
@@ -2459,7 +2757,7 @@ export var BrowserTestUtils = {
         element.removeEventListener("transitionend", listener);
       };
 
-      let timer = element.ownerGlobal.setTimeout(() => {
+      let timer = element.documentGlobal.setTimeout(() => {
         cleanup();
         reject();
       }, timeout);
@@ -2473,7 +2771,7 @@ export var BrowserTestUtils = {
           transitionCount--;
           if (transitionCount == 0) {
             cleanup();
-            element.ownerGlobal.clearTimeout(timer);
+            element.documentGlobal.clearTimeout(timer);
             resolve();
           }
         }
@@ -2497,11 +2795,11 @@ export var BrowserTestUtils = {
    *        The test framework doesn't keep its cleanup stuff anywhere accessible,
    *        so the first argument is a reference to your cleanup registration
    *        function, allowing us to clean up after you if necessary.
-   * @param {String} aboutModule
+   * @param {string} aboutModule
    *        The name of the about page.
-   * @param {String} pageURI
+   * @param {string} pageURI
    *        The URI the about: page should point to.
-   * @param {Number} flags
+   * @param {number} flags
    *        The nsIAboutModule flags to use for registration.
    *
    * @returns {Promise}
@@ -2687,8 +2985,8 @@ export var BrowserTestUtils = {
         Services.scriptSecurityManager.getSystemPrincipal();
     }
     if (beforeLoadFunc) {
-      let window = tabbrowser.ownerGlobal;
-      window.addEventListener(
+      let win = tabbrowser.documentGlobal;
+      win.addEventListener(
         "TabOpen",
         function (e) {
           beforeLoadFunc(e.target);
@@ -2754,7 +3052,7 @@ export var BrowserTestUtils = {
    *
    * @param {BrowsingContext} aBrowsingContext
    *        The browsing context associated with the content process to listen to.
-   * @param {String[]} aTopics array of observer topics
+   * @param {string[]} aTopics array of observer topics
    * @returns {Promise} resolves when the listeners have been added.
    */
   startObservingTopics(aBrowsingContext, aTopics) {
@@ -2772,7 +3070,7 @@ export var BrowserTestUtils = {
    *
    * @param {BrowsingContext} aBrowsingContext
    *        The browsing context associated with the content process to listen to.
-   * @param {String[]} aTopics array of observer topics. If empty, then all
+   * @param {string[]} aTopics array of observer topics. If empty, then all
    *                           current topics being listened to are removed.
    * @returns {Promise} promise that fails if an unexpected observer occurs.
    */
@@ -2788,6 +3086,7 @@ export var BrowserTestUtils = {
 
   /**
    * Sends a message to a specific BrowserTestUtils window actor.
+   *
    * @param {BrowsingContext} aBrowsingContext
    *        The browsing context where the actor lives.
    * @param {string} aMessageName
@@ -2807,6 +3106,7 @@ export var BrowserTestUtils = {
 
   /**
    * Sends a query to a specific BrowserTestUtils window actor.
+   *
    * @param {BrowsingContext} aBrowsingContext
    *        The browsing context where the actor lives.
    * @param {string} aMessageName
@@ -2815,7 +3115,7 @@ export var BrowserTestUtils = {
    *        Extra information to pass to the actor.
    */
   async sendQuery(aBrowsingContext, aMessageName, aMessageData) {
-    let startTime = Cu.now();
+    let startTime = ChromeUtils.now();
     if (!aBrowsingContext.currentWindowGlobal) {
       await this.waitForCondition(() => aBrowsingContext.currentWindowGlobal);
     }
@@ -2851,6 +3151,42 @@ export var BrowserTestUtils = {
     await wizardReady;
 
     return wizardTab;
+  },
+
+  /**
+   * Run a query selector that pierces into open and closed Shadow DOM roots.
+   *
+   * @param {Document | ShadowRoot | Element} root
+   * @param {string} selector
+   * @returns {Element | null}
+   */
+  querySelectorDeep(root, selector) {
+    if (!root) {
+      return null;
+    }
+
+    const direct = root.querySelector?.(selector);
+    if (direct) {
+      return direct;
+    }
+
+    const doc = root.ownerDocument ?? root;
+    const treeWalker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+
+    // Walk child elements to find other shadow roots.
+    let current = treeWalker.currentNode;
+    while (current) {
+      const shadow = current.openOrClosedShadowRoot;
+      if (shadow) {
+        const match = BrowserTestUtils.querySelectorDeep(shadow, selector);
+        if (match) {
+          return match;
+        }
+      }
+      current = treeWalker.nextNode();
+    }
+
+    return null;
   },
 
   /**

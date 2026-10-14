@@ -3,6 +3,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "RTCSctpTransport.h"
+
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/EventBinding.h"
 #include "mozilla/dom/RTCSctpTransportBinding.h"
@@ -20,12 +21,15 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(RTCSctpTransport)
 NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
 RTCSctpTransport::RTCSctpTransport(nsPIDOMWindowInner* aWindow,
-                                   RTCDtlsTransport& aDtlsTransport,
-                                   double aMaxMessageSize,
+                                   const Nullable<double> aMaxMessageSize,
                                    const Nullable<uint16_t>& aMaxChannels)
     : DOMEventTargetHelper(aWindow),
       mState(RTCSctpTransportState::Connecting),
-      mDtlsTransport(&aDtlsTransport),
+      // The RTCDtlsTransport does not exist until a local description has been
+      // applied, so an RTCSctpTransport created in have-remote-offer starts
+      // with a null transport (webrtc-pc made the member nullable). It is
+      // filled in via SetTransport once the DtlsTransport is created.
+      mDtlsTransport(nullptr),
       mMaxMessageSize(aMaxMessageSize),
       mMaxChannels(aMaxChannels) {}
 

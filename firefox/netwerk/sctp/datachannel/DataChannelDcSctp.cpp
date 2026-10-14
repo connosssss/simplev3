@@ -1,24 +1,39 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "DataChannelDcSctp.h"
-#include "mozilla/Components.h"
-#include "mozilla/RandomNum.h"
+
+#include <algorithm>
+#include <memory>
+
 #include "DataChannelLog.h"
+#include "mozilla/Components.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/RandomNum.h"
+#include "mozilla/TimeStamp.h"
+#include "mozilla/dom/PMediaTransport.h"
+#include "mozilla/dom/RTCErrorBinding.h"
 #include "transport/runnable_utils.h"
 
 namespace mozilla {
+
+// dcsctp announces the full SCTP stream range up front (see DcSctpOptions'
+// announced_maximum_*_streams, which default to this) and does not support
+// RFC6525 Add-Streams renegotiation. Streams 0..kDcSctpMaxStreams-1 are usable.
+static constexpr uint16_t kDcSctpMaxStreams = 65535;
 
 DataChannelConnectionDcSctp::DataChannelConnectionDcSctp(
     DataConnectionListener* aListener, nsISerialEventTarget* aTarget,
     MediaTransportHandler* aHandler)
     : DataChannelConnection(aListener, aTarget, aHandler) {
-  // dcsctp does not expose anything related to negotiation of maximum stream
-  // id.
-  mNegotiatedIdLimit = MAX_NUM_STREAMS;
+  // We do not second-guess dcsctp's limit here. This is tightened to the
+  // negotiated value in OnConnected().
+  mNegotiatedIdLimit = kDcSctpMaxStreams;
+}
+
+uint16_t DataChannelConnectionDcSctp::GetStreamIdCeiling() const {
+  return kDcSctpMaxStreams;
 }
 
 void DataChannelConnectionDcSctp::Destroy() {
@@ -39,8 +54,9 @@ void DataChannelConnectionDcSctp::Destroy() {
 bool DataChannelConnectionDcSctp::RaiseStreamLimitTo(uint16_t aNewLimit) {
   MOZ_ASSERT(mSTS->IsOnCurrentThread());
   DC_DEBUG(("%s: %p", __func__, this));
-  // dcsctp does not expose anything related to negotiation of maximum stream
-  // id. It probably just negotiates 65534. Just smile and nod.
+  // dcsctp announces the maximum number of streams up front and does not
+  // support RFC6525 Add-Streams renegotiation, so there is never anything to
+  // raise. Just smile and nod.
   return true;
 }
 
@@ -74,8 +90,7 @@ void DataChannelConnectionDcSctp::OnTransportReady() {
 }
 
 bool DataChannelConnectionDcSctp::Init(const uint16_t aLocalPort,
-                                       const uint16_t aNumStreams,
-                                       const Maybe<uint64_t>& aMaxMessageSize) {
+                                       const uint16_t aNumStreams) {
   return true;
 }
 
@@ -149,23 +164,24 @@ void DataChannelConnectionDcSctp::OnSctpPacketReceived(
   if (!mDcSctp) {
     return;
   }
-  rtc::ArrayView<const uint8_t> data(aPacket.data(), aPacket.len());
+  std::span<const uint8_t> data(aPacket.data(), aPacket.len());
   mDcSctp->ReceivePacket(data);
 }
 
-void DataChannelConnectionDcSctp::ResetStreams(nsTArray<uint16_t>& aStreams) {
+bool DataChannelConnectionDcSctp::ResetStreams(nsTArray<uint16_t>& aStreams) {
   MOZ_ASSERT(mSTS->IsOnCurrentThread());
   DC_DEBUG(("%s: %p", __func__, this));
   if (!mDcSctp) {
-    return;
+    return false;
   }
   std::vector<StreamID> converted;
   for (auto id : aStreams) {
     DC_DEBUG(("%s: %p Resetting %u", __func__, this, id));
     converted.push_back(StreamID(id));
   }
-  mDcSctp->ResetStreams(rtc::ArrayView<const StreamID>(converted));
+  auto result = mDcSctp->ResetStreams(std::span<const StreamID>(converted));
   aStreams.Clear();
+  return result == ResetStreamsStatus::kPerformed;
 }
 
 void DataChannelConnectionDcSctp::OnStreamOpen(uint16_t aStream) {
@@ -182,10 +198,10 @@ void DataChannelConnectionDcSctp::OnStreamOpen(uint16_t aStream) {
 }
 
 SendPacketStatus DataChannelConnectionDcSctp::SendPacketWithStatus(
-    rtc::ArrayView<const uint8_t> aData) {
+    std::span<const uint8_t> aData) {
   MOZ_ASSERT(mSTS->IsOnCurrentThread());
   DC_DEBUG(("%s: %p", __func__, this));
-  std::unique_ptr<MediaPacket> packet(new MediaPacket);
+  auto packet = std::make_unique<MediaPacket>();
   packet->SetType(MediaPacket::SCTP);
   packet->Copy(aData.data(), aData.size());
 
@@ -214,7 +230,7 @@ class DcSctpTimeout : public Timeout {
                     static_cast<unsigned>(timeout_id.value())));
           connection->HandleTimeout(timeout_id);
         },
-        duration.value(), nsITimer::TYPE_ONE_SHOT, "DcSctpTimeout::Start");
+        duration.value(), nsITimer::TYPE_ONE_SHOT, "DcSctpTimeout::Start"_ns);
     if (result.isOk()) {
       mTimer = result.unwrap();
     }
@@ -245,7 +261,7 @@ std::unique_ptr<Timeout> DataChannelConnectionDcSctp::CreateTimeout(
   MOZ_ASSERT(mSTS->IsOnCurrentThread());
   DC_DEBUG(("%s: %p", __func__, this));
   // There is no such thing as a low precision TYPE_ONE_SHOT
-  Unused << aPrecision;
+  (void)aPrecision;
   return std::make_unique<DcSctpTimeout>(this);
 }
 
@@ -255,6 +271,11 @@ void DataChannelConnectionDcSctp::HandleTimeout(TimeoutID aId) {
   if (mDcSctp) {
     mDcSctp->HandleTimeout(aId);
   }
+}
+
+webrtc::Timestamp DataChannelConnectionDcSctp::Now() {
+  return webrtc::Timestamp::Micros(static_cast<int64_t>(
+      (TimeStamp::Now() - TimeStamp::ProcessCreation()).ToMicroseconds()));
 }
 
 uint32_t DataChannelConnectionDcSctp::GetRandomInt(uint32_t aLow,
@@ -276,7 +297,7 @@ void DataChannelConnectionDcSctp::OnMessageReceived(DcSctpMessage aMessage) {
   msg.Append(aMessage.payload().data(), aMessage.payload().size());
   if (msg.GetPpid() == DATA_CHANNEL_PPID_CONTROL) {
     HandleDCEPMessage(std::move(msg));
-  } else if (channel) {
+  } else if (channel && !HasPreChannelData(msg.GetStreamId())) {
     HandleDataMessage(std::move(msg));
   } else {
     mPreChannelData.push_back(std::move(msg));
@@ -295,7 +316,13 @@ void DataChannelConnectionDcSctp::OnAborted(ErrorKind aError,
   MOZ_ASSERT(mSTS->IsOnCurrentThread());
   DC_ERROR(("%s: %p %d %s", __func__, this, static_cast<int>(aError),
             std::string(aMessage).c_str()));
-  Stop();
+  // The SCTP association was aborted; surface this to content as an
+  // "sctp-failure" RTCError on the data channels. dcSCTP exposes only its own
+  // ErrorKind (not a numeric SCTP cause code), so sctpCauseCode is left unset.
+  dom::RTCErrorParams params;
+  params.errorInit().mErrorDetail = dom::RTCErrorDetailType::Sctp_failure;
+  params.message() = nsCString(aMessage.data(), aMessage.length());
+  CloseAll_s(Some(std::move(params)));
 }
 
 void DataChannelConnectionDcSctp::OnConnected() {
@@ -304,10 +331,20 @@ void DataChannelConnectionDcSctp::OnConnected() {
   DataChannelConnectionState state = GetState();
   // TODO: Some duplicate code here, refactor
   if (state == DataChannelConnectionState::Connecting) {
+    // The negotiated stream counts are now known. maxChannels is the minimum
+    // of the negotiated incoming and outgoing streams; this tightens our id
+    // limit if the peer announced fewer streams than we did.
+    // Must happen before SetState(Open), which dispatches the
+    // NotifySctpConnected that carries maxChannels to DOM.
+    if (std::optional<dcsctp::Metrics> metrics = mDcSctp->GetMetrics()) {
+      mNegotiatedIdLimit =
+          std::min(metrics->negotiated_maximum_incoming_streams,
+                   metrics->negotiated_maximum_outgoing_streams);
+    }
+
     SetState(DataChannelConnectionState::Open);
 
-    Dispatch(do_AddRef(new DataChannelOnMessageAvailable(
-        DataChannelOnMessageAvailable::EventType::OnConnection, this)));
+    OnConnected();
     DC_DEBUG(("%s: %p DTLS connect() succeeded!  Entering connected mode",
               __func__, this));
 
@@ -328,7 +365,7 @@ void DataChannelConnectionDcSctp::OnConnected() {
 void DataChannelConnectionDcSctp::OnClosed() {
   MOZ_ASSERT(mSTS->IsOnCurrentThread());
   DC_DEBUG(("%s: %p", __func__, this));
-  Stop();
+  CloseAll_s();
 }
 
 void DataChannelConnectionDcSctp::OnConnectionRestarted() {
@@ -337,25 +374,32 @@ void DataChannelConnectionDcSctp::OnConnectionRestarted() {
 }
 
 void DataChannelConnectionDcSctp::OnStreamsResetFailed(
-    rtc::ArrayView<const StreamID> aOutgoingStreams,
-    absl::string_view aReason) {
+    std::span<const StreamID> aOutgoingStreams, absl::string_view aReason) {
   MOZ_ASSERT(mSTS->IsOnCurrentThread());
   DC_ERROR(("%s: %p", __func__, this));
   // It probably does not make much sense to retry this here. If dcsctp doesn't
   // want to retry, we probably don't either.
-  Unused << aOutgoingStreams;
-  Unused << aReason;
+  (void)aReason;
+  std::vector<uint16_t> streamsReset;
+  for (auto id : aOutgoingStreams) {
+    streamsReset.push_back(id.value());
+  }
+  OnStreamsResetComplete(std::move(streamsReset));
 }
 
 void DataChannelConnectionDcSctp::OnStreamsResetPerformed(
-    rtc::ArrayView<const StreamID> aOutgoingStreams) {
+    std::span<const StreamID> aOutgoingStreams) {
   MOZ_ASSERT(mSTS->IsOnCurrentThread());
   DC_DEBUG(("%s: %p", __func__, this));
-  Unused << aOutgoingStreams;
+  std::vector<uint16_t> streamsReset;
+  for (auto id : aOutgoingStreams) {
+    streamsReset.push_back(id.value());
+  }
+  OnStreamsResetComplete(std::move(streamsReset));
 }
 
 void DataChannelConnectionDcSctp::OnIncomingStreamsReset(
-    rtc::ArrayView<const StreamID> aIncomingStreams) {
+    std::span<const StreamID> aIncomingStreams) {
   MOZ_ASSERT(mSTS->IsOnCurrentThread());
   DC_DEBUG(("%s: %p", __func__, this));
   std::vector<uint16_t> streamsReset;
@@ -441,6 +485,15 @@ void DataChannelConnectionDcSctp::OnDCEPMessageDone(LifecycleId aLifecycleId) {
   UpdateBufferedAmount(StreamID(stream));
 
   mBufferedDCEPBytes.erase(it);
+}
+
+bool DataChannelConnectionDcSctp::HasPreChannelData(uint16_t aStream) const {
+  for (const auto& msg : mPreChannelData) {
+    if (msg.GetStreamId() == aStream) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace mozilla

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -81,23 +79,6 @@ class MOZ_RAII AutoEmptyNursery : public AutoAssertEmptyNursery {
   explicit AutoEmptyNursery(JSContext* cx);
 };
 
-// Abstract base class for exclusive heap access for tracing or GC.
-class MOZ_RAII AutoHeapSession {
- public:
-  ~AutoHeapSession();
-
- protected:
-  AutoHeapSession(GCRuntime* gc, JS::HeapState state);
-
- private:
-  AutoHeapSession(const AutoHeapSession&) = delete;
-  void operator=(const AutoHeapSession&) = delete;
-
-  GCRuntime* gc;
-  JS::HeapState prevState;
-  mozilla::Maybe<AutoGeckoProfilerEntry> profilingStackFrame;
-};
-
 class MOZ_RAII AutoGCSession : public AutoHeapSession {
  public:
   explicit AutoGCSession(GCRuntime* gc, JS::HeapState state)
@@ -107,28 +88,6 @@ class MOZ_RAII AutoGCSession : public AutoHeapSession {
 class MOZ_RAII AutoMajorGCProfilerEntry : public AutoGeckoProfilerEntry {
  public:
   explicit AutoMajorGCProfilerEntry(GCRuntime* gc);
-};
-
-class MOZ_RAII AutoTraceSession : public AutoHeapSession {
- public:
-  explicit AutoTraceSession(JSRuntime* rt)
-      : AutoHeapSession(&rt->gc, JS::HeapState::Tracing) {}
-};
-
-struct MOZ_RAII AutoFinishGC {
-  explicit AutoFinishGC(JSContext* cx, JS::GCReason reason) {
-    FinishGC(cx, reason);
-  }
-};
-
-// This class should be used by any code that needs exclusive access to the heap
-// in order to trace through it.
-class MOZ_RAII AutoPrepareForTracing : private AutoFinishGC,
-                                       public AutoTraceSession {
- public:
-  explicit AutoPrepareForTracing(JSContext* cx)
-      : AutoFinishGC(cx, JS::GCReason::PREPARE_FOR_TRACING),
-        AutoTraceSession(cx->runtime()) {}
 };
 
 // This class should be used by any code that needs exclusive access to the heap
@@ -143,18 +102,6 @@ class MOZ_RAII AutoEmptyNurseryAndPrepareForTracing : private AutoFinishGC,
       : AutoFinishGC(cx, JS::GCReason::PREPARE_FOR_TRACING),
         AutoEmptyNursery(cx),
         AutoTraceSession(cx->runtime()) {}
-};
-
-/*
- * Temporarily disable incremental barriers.
- */
-class AutoDisableBarriers {
- public:
-  explicit AutoDisableBarriers(GCRuntime* gc);
-  ~AutoDisableBarriers();
-
- private:
-  GCRuntime* gc;
 };
 
 // Set compartments' maybeAlive flags if anything is marked while this class is
@@ -199,15 +146,13 @@ class MOZ_RAII AutoRunParallelTask : public GCParallelTask {
 
 class MOZ_RAII AutoStopVerifyingBarriers {
   GCRuntime* gc;
-  bool restartPreVerifier;
+  bool restartPreVerifier = false;
 
  public:
   AutoStopVerifyingBarriers(JSRuntime* rt, bool isShutdown) : gc(&rt->gc) {
     if (gc->isVerifyPreBarriersEnabled()) {
       gc->endVerifyPreBarriers();
       restartPreVerifier = !isShutdown;
-    } else {
-      restartPreVerifier = false;
     }
   }
 
@@ -216,18 +161,18 @@ class MOZ_RAII AutoStopVerifyingBarriers {
     // inside of an outer minor GC. This is not allowed by the
     // gc::Statistics phase tree. So we pause the "real" GC, if in fact one
     // is in progress.
-    gcstats::PhaseKind outer = gc->stats().currentPhaseKind();
-    if (outer != gcstats::PhaseKind::NONE) {
-      gc->stats().endPhase(outer);
-    }
-    MOZ_ASSERT(gc->stats().currentPhaseKind() == gcstats::PhaseKind::NONE);
-
     if (restartPreVerifier) {
-      gc->startVerifyPreBarriers();
-    }
+      gcstats::PhaseKind outer = gc->stats().currentPhaseKind();
+      if (outer != gcstats::PhaseKind::NONE) {
+        gc->stats().endPhase(outer);
+      }
+      MOZ_ASSERT(gc->stats().currentPhaseKind() == gcstats::PhaseKind::NONE);
 
-    if (outer != gcstats::PhaseKind::NONE) {
-      gc->stats().beginPhase(outer);
+      gc->startVerifyPreBarriers();
+
+      if (outer != gcstats::PhaseKind::NONE) {
+        gc->stats().beginPhase(outer);
+      }
     }
   }
 };
@@ -333,7 +278,7 @@ struct MovingTracer final : public GenericTracerImpl<MovingTracer> {
 
  private:
   template <typename T>
-  void onEdge(T** thingp, const char* name);
+  bool onEdge(T** thingp, const char* name);
   friend class GenericTracerImpl<MovingTracer>;
 };
 
@@ -343,7 +288,7 @@ struct MinorSweepingTracer final
 
  private:
   template <typename T>
-  void onEdge(T** thingp, const char* name);
+  bool onEdge(T** thingp, const char* name);
   friend class GenericTracerImpl<MinorSweepingTracer>;
 };
 

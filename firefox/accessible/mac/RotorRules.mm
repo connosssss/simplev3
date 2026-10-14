@@ -1,5 +1,4 @@
 /* clang-format off */
-/* -*- Mode: Objective-C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* clang-format on */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -34,7 +33,15 @@ uint16_t RotorRule::Match(Accessible* aAcc) {
     result |= nsIAccessibleTraversalRule::FILTER_IGNORE_SUBTREE;
   }
 
-  if (mDirectDescendantsFrom && (aAcc != mDirectDescendantsFrom)) {
+  if (mDirectDescendantsFrom && aAcc != mDirectDescendantsFrom) {
+    if (aAcc->TagName() == nsGkAtoms::body && mDirectDescendantsFrom->IsDoc() &&
+        aAcc->Parent() == mDirectDescendantsFrom) {
+      // The body is often the only direct descendant of the document. If it
+      // is present, skip it and treat its content as "direct" instead.
+      // FILTER_MATCH can't be set yet, so returning result leaves the body
+      // unmatched.
+      return result;
+    }
     result |= nsIAccessibleTraversalRule::FILTER_IGNORE_SUBTREE;
   }
 

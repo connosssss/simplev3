@@ -82,3 +82,34 @@ tests.forEach(
             () => builder.reshape(input, test.newShape, options), regrexp);
       }
     }, test.name));
+
+promise_test(async t => {
+  const builder = new MLGraphBuilder(context);
+
+  const input = builder.input('input', {dataType: 'float32', shape: [2]});
+  const newShape =
+      new Array(context.opSupportLimits().expand.output.rankRange.max + 1)
+          .fill(1);
+  newShape[0] = 2;
+
+  const label = 'reshape_xxx';
+  const options = {label};
+  const regrexp = new RegExp('\\[' + label + '\\]');
+  assert_throws_with_label(
+      () => builder.reshape(input, newShape, options), regrexp);
+}, '[expand] throw if new shape rank exceeds limit');
+
+validateOperandRank('reshape', 'input', (builder, input) => {
+  // All dimensions are kExampleDimSize, so permuting them gives back the same
+  // shape. Fold the first dimension into the last one instead: same rank and
+  // element count, but a different shape, so this isn't a no-op. Ranks 0 and 1
+  // have no same-rank alternative, so prepend a 1 there.
+  const newShape = Array.from(input.shape);
+  if (newShape.length >= 2) {
+    newShape[newShape.length - 1] *= newShape[0];
+    newShape[0] = 1;
+  } else {
+    newShape.unshift(1);
+  }
+  return builder.reshape(input, newShape);
+});

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=4 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,19 +7,12 @@
 
 #include "mozilla/intl/UnicodeProperties.h"
 
+#include "mozilla/Assertions.h"
 #include "mozilla/Span.h"
+#include "mozilla/Utf16.h"
 #include "nsBidiUtils.h"
 #include "nsUGenCategory.h"
 #include "harfbuzz/hb.h"
-
-struct nsCharProps2 {
-  // Currently only 2 bits are defined here, so 6 more could be added without
-  // affecting the storage requirements for this struct. Or we could pack two
-  // records per byte, at the cost of a slightly more complex accessor.
-  unsigned char mIdType : 2;
-};
-
-const nsCharProps2& GetCharProps2(uint32_t aCh);
 
 namespace mozilla {
 
@@ -44,12 +35,10 @@ enum PairedBracketType {
   PAIRED_BRACKET_TYPE_CLOSE = 2
 };
 
-/* Flags for Unicode security IdentifierType.txt attributes. Only a subset
-   of these are currently checked by Gecko, so we only define flags for the
-   ones we need. */
-enum IdentifierType {
-  IDTYPE_RESTRICTED = 0,
-  IDTYPE_ALLOWED = 1,
+/* This values must match the values by UIdentifierStatus by ICU */
+enum IdentifierStatus {
+  IDSTATUS_RESTRICTED = 0,
+  IDSTATUS_ALLOWED = 1,
 };
 
 enum EmojiPresentation { TextOnly = 0, TextDefault = 1, EmojiDefault = 2 };
@@ -128,7 +117,40 @@ inline bool IsDefaultIgnorable(uint32_t aCh) {
       aCh, intl::UnicodeProperties::BinaryProperty::DefaultIgnorableCodePoint);
 }
 
+namespace detail {
+static inline bool Is8BitPotentialEmojiCodepoint(uint32_t aCh) {
+  return aCh - '0' <= '9' - '0' || aCh == '#' || aCh == '*' || aCh == 0x00A9 ||
+         aCh == 0x00AE;
+}
+}  // namespace detail
+
 inline EmojiPresentation GetEmojiPresentation(uint32_t aCh) {
+  // The only characters below U+2000 with any emoji properties:
+  // 0023          ; Emoji                # E0.0   [1] hash sign
+  // 002A          ; Emoji                # E0.0   [1] asterisk
+  // 0030..0039    ; Emoji                # E0.0  [10] digit zero..digit nine
+  // 00A9          ; Emoji                # E0.6   [1] copyright
+  // 00AE          ; Emoji                # E0.6   [1] registered
+  if (detail::Is8BitPotentialEmojiCodepoint(aCh)) {
+    MOZ_ASSERT(intl::UnicodeProperties::HasBinaryProperty(
+        aCh, intl::UnicodeProperties::BinaryProperty::Emoji));
+    MOZ_ASSERT(!intl::UnicodeProperties::HasBinaryProperty(
+        aCh, intl::UnicodeProperties::BinaryProperty::EmojiPresentation));
+    return TextDefault;
+  }
+
+  if (aCh < 0x2000) {
+    return TextOnly;
+  }
+
+  // There are no characters with emoji properties from the CJK Compatibility
+  // block at U+3300 until the Mah-Jong tiles at U+1F000.
+  if (aCh - 0x3300 < 0x1F000 - 0x3300) {
+    MOZ_ASSERT(!intl::UnicodeProperties::HasBinaryProperty(
+        aCh, intl::UnicodeProperties::BinaryProperty::Emoji));
+    return TextOnly;
+  }
+
   if (!intl::UnicodeProperties::HasBinaryProperty(
           aCh, intl::UnicodeProperties::BinaryProperty::Emoji)) {
     return TextOnly;
@@ -141,6 +163,18 @@ inline EmojiPresentation GetEmojiPresentation(uint32_t aCh) {
   return TextDefault;
 }
 
+// For 16-bit callers who don't care about decoding surrogates first.
+inline EmojiPresentation GetEmojiPresentation(char16_t aCh) {
+  return mozilla::IsSurrogate(aCh) ? TextOnly
+                                   : GetEmojiPresentation((uint32_t)aCh);
+}
+
+// Reduced version of GetEmojiPresentation that handles only 8-bit character
+// codes, for use by 8-bit gfxFontGroup::ComputeRanges fast-path.
+inline EmojiPresentation GetEmojiPresentation(uint8_t aCh) {
+  return detail::Is8BitPotentialEmojiCodepoint(aCh) ? TextDefault : TextOnly;
+}
+
 // returns the simplified Gen Category as defined in nsUGenCategory
 inline nsUGenCategory GetGenCategory(uint32_t aCh) {
   return sDetailedToGeneralCategory[GetGeneralCategory(aCh)];
@@ -151,8 +185,9 @@ inline VerticalOrientation GetVerticalOrientation(uint32_t aCh) {
       aCh, intl::UnicodeProperties::IntProperty::VerticalOrientation));
 }
 
-inline IdentifierType GetIdentifierType(uint32_t aCh) {
-  return IdentifierType(GetCharProps2(aCh).mIdType);
+inline IdentifierStatus GetIdentifierStatus(uint32_t aCh) {
+  return IdentifierStatus(intl::UnicodeProperties::GetIntPropertyValue(
+      aCh, intl::UnicodeProperties::IntProperty::IdentifierStatus));
 }
 
 uint32_t GetFullWidth(uint32_t aCh);

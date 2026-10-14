@@ -37,6 +37,13 @@ $(RUNNABLE_TIERS)::
 # Special rule that does install-manifests (cf. Makefile.in) + compile
 binaries::
 	+$(MAKE) recurse_compile
+# On macOS, `mach run` launches the binaries from the application bundle
+# (.app/Contents/MacOS), which holds separate copies of what is linked into
+# dist/bin. Those copies are refreshed by the tools tier, so run it after the
+# compile tier to ensure `mach build binaries` produces a runnable bundle.
+ifdef MOZ_MACBUNDLE_NAME
+	+$(MAKE) recurse_tools
+endif
 
 # Get current tier and corresponding subtiers from the data in root.mk.
 CURRENT_TIER := $(filter $(foreach tier,$(RUNNABLE_TIERS) $(non_default_tiers),recurse_$(tier) $(tier)-deps),$(MAKECMDGOALS))
@@ -89,18 +96,20 @@ recurse_syms: $(syms_targets)
 ifneq ($(CURRENT_TIER),compile)
 
 # Recursion rule for all directories traversed for all subtiers in the
-# current tier.
-$(addsuffix /$(CURRENT_TIER),$(CURRENT_DIRS)): %/$(CURRENT_TIER):
+# current tier, except the ones the rule above already covers.
+current_tier_targets := $(filter-out $(pre_compile_targets) $(compile_targets) $(syms_targets),$(addsuffix /$(CURRENT_TIER),$(CURRENT_DIRS)))
+
+$(current_tier_targets): %/$(CURRENT_TIER):
 	$(call RECURSE,$(CURRENT_TIER),$*)
 
-.PHONY: $(addsuffix /$(CURRENT_TIER),$(CURRENT_DIRS))
+.PHONY: $(current_tier_targets)
 
 # Dummy rules for possibly inexisting dependencies for the above tier targets
 $(addsuffix /Makefile,$(CURRENT_DIRS)) $(addsuffix /backend.mk,$(CURRENT_DIRS)):
 
 ifeq ($(CURRENT_TIER),export)
-# At least build/export requires config/export for buildid, but who knows what
-# else, so keep this global dependency to make config/export first for now.
+# config/export builds the STL and system wrappers. Keep it first until the
+# export consumers are audited.
 $(addsuffix /$(CURRENT_TIER),$(filter-out config,$(CURRENT_DIRS))): config/$(CURRENT_TIER)
 
 # The export tier requires nsinstall, which is built from config. So every
@@ -162,12 +171,6 @@ ifeq ($(MOZ_WIDGET_TOOLKIT),android)
 recurse_pre-export: mobile/android/pre-export
 endif
 
-# CSS2Properties.webidl needs ServoCSSPropList.py from layout/style
-dom/bindings/export: layout/style/ServoCSSPropList.py
-
-# Various telemetry histogram files need ServoCSSPropList.py from layout/style
-toolkit/components/telemetry/export: layout/style/ServoCSSPropList.py
-
 ifeq ($(TARGET_ENDIANNESS),big)
 config/external/icu/data/target-objects: config/external/icu/data/$(MDDEPDIR)/icudt$(MOZ_ICU_VERSION)b.dat.stub
 config/external/icu/data/$(MDDEPDIR)/icudt$(MOZ_ICU_VERSION)b.dat.stub: config/external/icu/icupkg/host
@@ -192,10 +195,6 @@ endif
 
 # Interdependencies that moz.build world don't know about yet for compilation.
 # Note some others are hardcoded or "guessed" in recursivemake.py and emitter.py
-ifdef MOZ_USING_WASM_SANDBOXING
-dom/media/ogg/target-objects extensions/spellcheck/hunspell/glue/target-objects gfx/thebes/target-objects parser/expat/target-objects parser/htmlparser/target-objects gfx/ots/src/target-objects: security/rlbox/pre-compile
-dom/media/target-objects dom/media/mediasink/target-objects: media/libsoundtouch/src/pre-compile
-endif
 
 # Most things are built during compile (target/host), but some things happen during export
 # Those need to depend on config/export for system wrappers.

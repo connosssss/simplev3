@@ -10,19 +10,18 @@ import glob
 import multiprocessing
 import os
 import pathlib
+import plistlib
 import re
 import subprocess
 import sys
-import tempfile
 from shutil import copyfile, rmtree
 
 from mozsystemmonitor.resourcemonitor import SystemResourceMonitor
-from six import string_types
 
 import mozharness
 from mozharness.base.errors import PythonErrorList
 from mozharness.base.log import CRITICAL, DEBUG, ERROR, INFO, OutputParser
-from mozharness.base.python import Python3Virtualenv
+from mozharness.base.python import perfherder_schema_path
 from mozharness.base.vcs.vcsbase import MercurialScript
 from mozharness.mozilla.automation import (
     EXIT_STATUS_DICT,
@@ -79,9 +78,7 @@ FFMPEG_LOCAL_CACHE = {
 }
 
 
-class Raptor(
-    TestingMixin, MercurialScript, CodeCoverageMixin, AndroidMixin, Python3Virtualenv
-):
+class Raptor(TestingMixin, MercurialScript, CodeCoverageMixin, AndroidMixin):
     """
     Install and run Raptor tests
     """
@@ -181,6 +178,16 @@ class Raptor(
             [
                 ["--test"],
                 {"action": "store", "dest": "test", "help": "Raptor test to run"},
+            ],
+            [
+                ["--power-profile"],
+                {
+                    "action": "store",
+                    "choices": ["performance"],
+                    "dest": "power_profile",
+                    "help": "Set the host power-profiles-daemon profile to performance "
+                    "for the duration of the Raptor run.",
+                },
             ],
             [
                 ["--app"],
@@ -565,6 +572,42 @@ class Raptor(
                 },
             ],
             [
+                ["--simpleperf"],
+                {
+                    "action": "store_true",
+                    "dest": "simpleperf",
+                    "default": False,
+                    "help": ("Enable Simpleperf profiling (Android only)."),
+                },
+            ],
+            [
+                ["--etw-profile"],
+                {
+                    "action": "store_true",
+                    "dest": "etw_profile",
+                    "default": False,
+                    "help": ("Enable ETW (Xperf) profiling (Windows only)."),
+                },
+            ],
+            [
+                ["--samply-profile"],
+                {
+                    "action": "store_true",
+                    "dest": "samply_profile",
+                    "default": False,
+                    "help": ("Enable Samply profiling (macOS only)."),
+                },
+            ],
+            [
+                ["--perf-profile"],
+                {
+                    "action": "store_true",
+                    "dest": "perf_profile",
+                    "default": False,
+                    "help": ("Enable perf profiling (Linux only)."),
+                },
+            ],
+            [
                 ["--extra-summary-methods"],
                 {
                     "action": "append",
@@ -631,6 +674,17 @@ class Raptor(
                     "help": "Run power usage testing on mobile tests using a USB power meter.",
                 },
             ],
+            [
+                ["--install-extension"],
+                {
+                    "action": "append",
+                    "dest": "install_extensions",
+                    "default": [],
+                    "help": "Install a webextension into the test profile before "
+                    "running. Accepts an AMO addon GUID/slug, a direct .xpi URL, or a "
+                    "local .xpi path. May be specified multiple times.",
+                },
+            ],
         ]
         + testing_config_options
         + copy.deepcopy(code_coverage_config_options)
@@ -646,6 +700,8 @@ class Raptor(
                 "download-and-extract",
                 "populate-webroot",
                 "create-virtualenv",
+                "start-emulator",
+                "verify-device",
                 "install-chrome-android",
                 "install-chromium-android",
                 "install-chromium-distribution",
@@ -667,7 +723,10 @@ class Raptor(
             ],
         )
         kwargs.setdefault("config", {})
-        super(Raptor, self).__init__(**kwargs)
+        super().__init__(**kwargs)
+
+        if not self.device_serial and self.config.get("device_serial"):
+            self.device_serial = self.config["device_serial"]
 
         # Convenience
         self.workdir = self.query_abs_dirs()["abs_work_dir"]
@@ -774,21 +833,25 @@ class Raptor(
         if self.gecko_profile:
             gecko_results.append("--gecko-profile")
             if self.gecko_profile_interval:
-                gecko_results.extend(
-                    ["--gecko-profile-interval", str(self.gecko_profile_interval)]
-                )
+                gecko_results.extend([
+                    "--gecko-profile-interval",
+                    str(self.gecko_profile_interval),
+                ])
             if self.gecko_profile_entries:
-                gecko_results.extend(
-                    ["--gecko-profile-entries", str(self.gecko_profile_entries)]
-                )
+                gecko_results.extend([
+                    "--gecko-profile-entries",
+                    str(self.gecko_profile_entries),
+                ])
             if self.gecko_profile_features:
-                gecko_results.extend(
-                    ["--gecko-profile-features", self.gecko_profile_features]
-                )
+                gecko_results.extend([
+                    "--gecko-profile-features",
+                    self.gecko_profile_features,
+                ])
             if self.gecko_profile_threads:
-                gecko_results.extend(
-                    ["--gecko-profile-threads", self.gecko_profile_threads]
-                )
+                gecko_results.extend([
+                    "--gecko-profile-threads",
+                    self.gecko_profile_threads,
+                ])
         elif self.extra_profiler_run:
             gecko_results.append("--extra-profiler-run")
         return gecko_results
@@ -796,13 +859,25 @@ class Raptor(
     def query_abs_dirs(self):
         if self.abs_dirs:
             return self.abs_dirs
-        abs_dirs = super(Raptor, self).query_abs_dirs()
+        abs_dirs = super().query_abs_dirs()
         abs_dirs["abs_blob_upload_dir"] = os.path.join(
             abs_dirs["abs_work_dir"], "blobber_upload_dir"
         )
         abs_dirs["abs_test_install_dir"] = os.path.join(
             abs_dirs["abs_work_dir"], "tests"
         )
+
+        # When running on an emulator, AndroidMixin.start_emulator / adb_path
+        # expect the SDK and AVD directories in abs_dirs; these are not part of
+        # the default raptor (hardware) layout, so derive them from the fetches.
+        if self.is_emulator:
+            work_dir = os.environ.get("MOZ_FETCHES_DIR") or abs_dirs["abs_work_dir"]
+            abs_dirs["abs_sdk_dir"] = os.path.join(
+                work_dir, self.config.get("sdk_dir_name", "android-sdk-linux")
+            )
+            abs_dirs["abs_avds_dir"] = os.path.join(
+                work_dir, self.config.get("avds_dir_name", "android-device")
+            )
 
         self.abs_dirs = abs_dirs
         return self.abs_dirs
@@ -842,46 +917,57 @@ class Raptor(
         self.device.install_app(str(cstm_car_m_apk))
         self.info("Custom Chromium-as-Release for Android successfully installed")
 
-    def download_chrome_android(self):
-        # Fetch the APK
-        tmpdir = tempfile.mkdtemp()
-        self.tooltool_fetch(
-            os.path.join(
-                self.raptor_path,
-                "raptor",
-                "tooltool-manifests",
-                "chrome-android",
-                "chrome87.manifest",
-            ),
-            output_dir=tmpdir,
+    def _log_safari_version(self):
+        app_name = {
+            "safari": "Safari",
+            "safari-tp": "Safari Technology Preview",
+        }[self.app]
+        plist_path = pathlib.Path(
+            "/Applications", app_name + ".app", "Contents", "version.plist"
         )
-        files = os.listdir(tmpdir)
-        if len(files) > 1:
-            raise Exception(
-                "Found more than one chrome APK file after tooltool download"
-            )
-        chromeapk = os.path.join(tmpdir, files[0])
-
-        # Disable verification and install the APK
-        self.device.shell_output("settings put global verifier_verify_adb_installs 0")
-        self.install_android_app(chromeapk, replace=True)
-
-        # Re-enable verification and delete the temporary directory
-        self.device.shell_output("settings put global verifier_verify_adb_installs 1")
-        rmtree(tmpdir)
-
-    def install_safari_technology_preview(self):
-        """Ensure latest version of Safari TP binary is running in CI"""
-
-        if self.app != "safari-tp" or self.run_local:
+        try:
+            with plist_path.open("rb") as plist_file:
+                plist = plistlib.load(plist_file)
+            short_version = plist.get("CFBundleShortVersionString")
+            bundle_version = plist.get("CFBundleVersion")
+        except Exception as exc:
+            self.warning(f"Unable to read {app_name} version from {plist_path}: {exc}")
             return
 
-        import mozprocess
+        missing_keys = [
+            key
+            for key, value in (
+                ("CFBundleShortVersionString", short_version),
+                ("CFBundleVersion", bundle_version),
+            )
+            if not value
+        ]
+        if missing_keys:
+            self.warning(
+                f"Unable to read {app_name} version: missing {', '.join(missing_keys)}"
+            )
+            return
 
-        self.info("Checking for Safari Technology Preview updates...")
-        install_script = "/usr/local/bin/install_safari_softwareupdate_updates.py"
-        cmd = [sys.executable, install_script]
-        mozprocess.run_and_wait(cmd)
+        self.info(
+            f"{app_name} version: {short_version} (CFBundleShortVersionString), "
+            f"{bundle_version} (CFBundleVersion)"
+        )
+
+    def install_safari_technology_preview(self):
+        """Update Safari TP in CI, then log the Safari or Safari TP version"""
+
+        if self.app not in ("safari", "safari-tp") or self.run_local:
+            return
+
+        if self.app == "safari-tp":
+            import mozprocess
+
+            self.info("Checking for Safari Technology Preview updates...")
+            install_script = "/usr/local/bin/install_safari_softwareupdate_updates.py"
+            cmd = [sys.executable, install_script]
+            mozprocess.run_and_wait(cmd)
+
+        self._log_safari_version()
 
     def install_chromium_distribution(self):
         """Install Google Chromium distribution in production"""
@@ -918,31 +1004,29 @@ class Raptor(
                 self.chromium_dist_path = "/usr/bin/google-chrome"
             elif mac in self.platform_name():
                 self.chromium_dist_path = (
-                    "/Applications/Google Chrome.app/" "Contents/MacOS/Google Chrome"
+                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
                 )
             else:
                 self.error(
-                    "Chrome is not installed on the platform %s yet."
-                    % self.platform_name()
+                    f"Chrome is not installed on the platform {self.platform_name()} yet."
                 )
 
             if os.path.exists(self.chromium_dist_path):
                 self.info(
-                    "Google Chrome found in expected location %s"
-                    % self.chromium_dist_path
+                    f"Google Chrome found in expected location {self.chromium_dist_path}"
                 )
             else:
-                self.error("Cannot find Google Chrome at %s" % self.chromium_dist_path)
+                self.error(f"Cannot find Google Chrome at {self.chromium_dist_path}")
 
             return
 
         chromium_dist = self.app
 
         if self.config.get("run_local"):
-            self.info("Expecting %s to be pre-installed locally" % chromium_dist)
+            self.info(f"Expecting {chromium_dist} to be pre-installed locally")
             return
 
-        self.info("Getting fetched %s build" % chromium_dist)
+        self.info(f"Getting fetched {chromium_dist} build")
         self.chromium_dist_dest = os.path.normpath(
             os.path.abspath(os.environ["MOZ_FETCHES_DIR"])
         )
@@ -962,17 +1046,16 @@ class Raptor(
                 self.chromium_dist_dest, *binary_location[chromium_dist][win]
             )
 
-        self.info("%s dest is: %s" % (chromium_dist, self.chromium_dist_dest))
-        self.info("%s path is: %s" % (chromium_dist, self.chromium_dist_path))
+        self.info(f"{chromium_dist} dest is: {self.chromium_dist_dest}")
+        self.info(f"{chromium_dist} path is: {self.chromium_dist_path}")
 
         # Now ensure Chromium binary exists
         if os.path.exists(self.chromium_dist_path):
             self.info(
-                "Successfully installed %s to: %s"
-                % (chromium_dist, self.chromium_dist_path)
+                f"Successfully installed {chromium_dist} to: {self.chromium_dist_path}"
             )
         else:
-            self.info("Abort: failed to install %s" % chromium_dist)
+            self.info(f"Abort: failed to install {chromium_dist}")
 
     def raptor_options(self, args=None, **kw):
         """Return options to Raptor"""
@@ -999,8 +1082,7 @@ class Raptor(
                 # i.e. fennec_aurora or fennec_release etc.
                 kw_options["binary"] = self.query_package_name()
                 self.info(
-                    "Set binary to %s instead of %s"
-                    % (kw_options["binary"], binary_path)
+                    f"Set binary to {kw_options['binary']} instead of {binary_path}"
                 )
         elif self.app == "safari" and not self.run_local:
             binary_path = "/Applications/Safari.app/Contents/MacOS/Safari"
@@ -1085,29 +1167,39 @@ class Raptor(
             options.extend([f"--setpref={i}" for i in self.config.get("extra_prefs")])
         if self.config.get("environment"):
             options.extend([f"--setenv={i}" for i in self.config.get("environment")])
+        for extension in self.config.get("install_extensions") or []:
+            options.extend(["--install-extension", extension])
         if self.config.get("enable_marionette_trace", False):
             options.extend(["--enable-marionette-trace"])
         if self.config.get("browser_cycles"):
-            options.extend(
-                ["--browser-cycles={}".format(self.config.get("browser_cycles"))]
-            )
+            options.extend([f"--browser-cycles={self.config.get('browser_cycles')}"])
         if self.config.get("test_bytecode_cache", False):
             options.extend(["--test-bytecode-cache"])
-        if self.config.get("collect_perfstats", False):
+        # Also opt in on try via `mach try --env MOZ_RAPTOR_COLLECT_PERFSTATS=1`.
+        if (
+            self.config.get("collect_perfstats", False)
+            or os.environ.get("MOZ_RAPTOR_COLLECT_PERFSTATS") == "1"
+        ):
             options.extend(["--collect-perfstats"])
+        if self.config.get("simpleperf", False):
+            options.extend(["--simpleperf"])
+        if self.config.get("etw_profile", False):
+            options.extend(["--etw-profile"])
+        if self.config.get("samply_profile", False):
+            options.extend(["--samply-profile"])
+        if self.config.get("perf_profile", False):
+            options.extend(["--perf-profile"])
         if self.config.get("extra_summary_methods"):
-            options.extend(
-                [
-                    f"--extra-summary-methods={method}"
-                    for method in self.config.get("extra_summary_methods")
-                ]
-            )
+            options.extend([
+                f"--extra-summary-methods={method}"
+                for method in self.config.get("extra_summary_methods")
+            ])
         if self.config.get("page_timeout"):
             options.extend([f"--page-timeout={self.page_timeout}"])
         if self.config.get("post_startup_delay"):
-            options.extend(
-                [f"--post-startup-delay={self.config['post_startup_delay']}"]
-            )
+            options.extend([
+                f"--post-startup-delay={self.config['post_startup_delay']}"
+            ])
         if (
             self.config.get("screenshot_on_failure", False)
             or os.environ.get("MOZ_AUTOMATION", None) is not None
@@ -1115,7 +1207,6 @@ class Raptor(
             options.extend(["--screenshot-on-failure"])
         if self.config.get("power_test", False):
             options.extend(["--power-test"])
-
         for (arg,), details in Raptor.browsertime_options:
             # Allow overriding defaults on the `./mach raptor-test ...` command-line
             value = self.config.get(details["dest"])
@@ -1123,7 +1214,7 @@ class Raptor(
                 # Check for modifications done to the instance variables
                 value = getattr(self, details["dest"], None)
             if value and arg not in self.config.get("raptor_cmd_line_args", []):
-                if isinstance(value, string_types):
+                if isinstance(value, str):
                     options.extend([arg, os.path.expandvars(value)])
                 elif isinstance(value, (tuple, list)):
                     for val in value:
@@ -1132,7 +1223,7 @@ class Raptor(
                     options.extend([arg])
 
         for key, value in kw_options.items():
-            options.extend(["--%s" % key, value])
+            options.extend([f"--{key}", value])
 
         return options
 
@@ -1147,7 +1238,7 @@ class Raptor(
     def clobber(self):
         # Recreate the upload directory for storing the logcat collected
         # during APK installation.
-        super(Raptor, self).clobber()
+        super().clobber()
         upload_dir = self.query_abs_dirs()["abs_blob_upload_dir"]
         if not os.path.isdir(upload_dir):
             self.mkdir_p(upload_dir)
@@ -1158,7 +1249,7 @@ class Raptor(
         # the logcat file will be left in the upload directory.
         self.logcat_start()
         try:
-            super(Raptor, self).install_android_app(apk, replace=replace)
+            super().install_android_app(apk, replace=replace)
         finally:
             self.logcat_stop()
 
@@ -1170,7 +1261,7 @@ class Raptor(
             "tools/wpt_third_party/h2/*",
             "tools/wpt_third_party/pywebsocket3/*",
         ]
-        return super(Raptor, self).download_and_extract(
+        return super().download_and_extract(
             extract_dirs=extract_dirs, suite_categories=["common", "condprof", "raptor"]
         )
 
@@ -1238,42 +1329,28 @@ class Raptor(
         # Add modules required for visual metrics. Packages with non-Python
         # components are particularly fussy about python version.
         py3_minor = sys.version_info.minor
-        if py3_minor <= 7:
-            modules.extend(
-                [
-                    "numpy==1.16.1",
-                    "Pillow==6.1.0",
-                    "scipy==1.2.3",
-                    "pyssim==0.4",
-                    "opencv-python==4.5.4.60",
-                ]
-            )
-        elif py3_minor <= 11:
-            modules.extend(
-                [
-                    "numpy==1.23.5",
-                    "Pillow==9.2.0",
-                    "scipy==1.9.3",
-                    "pyssim==0.4",
-                    "opencv-python==4.6.0.66",
-                ]
-            )
+        if py3_minor <= 11:
+            modules.extend([
+                "numpy==1.23.5",
+                "Pillow==9.2.0",
+                "scipy==1.9.3",
+                "pyssim==0.4",
+                "opencv-python==4.6.0.66",
+            ])
         else:  # python version >= 3.12
-            modules.extend(
-                [
-                    "numpy==2.2.3",
-                    "Pillow==11.1.0",
-                    "scipy==1.15.2",
-                    "pyssim==0.7",
-                    "opencv-python==4.11.0.86",
-                ]
-            )
+            modules.extend([
+                "numpy==2.2.3",
+                "Pillow==11.1.0",
+                "scipy==1.15.2",
+                "pyssim==0.7",
+                "opencv-python==4.11.0.86",
+            ])
 
         if self.run_local:
             self.setup_local_ffmpeg()
 
         # Require pip >= 1.5 so pip will prefer .whl files to install
-        super(Raptor, self).create_virtualenv(modules=modules)
+        super().create_virtualenv(modules=modules)
 
         # Install Raptor dependencies
         self.install_module(requirements=[raptor_requirements])
@@ -1308,16 +1385,28 @@ class Raptor(
         if os.path.exists(path_to_ffmpeg):
             os.environ["PATH"] += os.pathsep + path_to_ffmpeg
             self.browsertime_ffmpeg = path_to_ffmpeg
-            self.info(
-                "Added local ffmpeg found at: %s to environment." % path_to_ffmpeg
-            )
+            self.info(f"Added local ffmpeg found at: {path_to_ffmpeg} to environment.")
         else:
             raise Exception(
-                "No local ffmpeg binary found. Expected it to be here: %s"
-                % path_to_ffmpeg
+                f"No local ffmpeg binary found. Expected it to be here: {path_to_ffmpeg}"
             )
 
     def install(self):
+        if self.app in self.android_browsers:
+            # Clear app data/cache so leftover state (e.g. a profile written
+            # under the wrong storage path on a previous iteration) doesn't
+            # carry over into the next run. Done even when --no-install is
+            # set since stale data is what we're trying to flush.
+            if not self.device.confirm_clear_app_data(self.binary_path):
+                raise Exception("Abort: Declined to clear app data, can't run tests.")
+            try:
+                self.device.shell_output(f"pm clear {self.binary_path}")
+            except Exception as e:
+                self.info(
+                    f"pm clear {self.binary_path} failed "
+                    f"(app may not be installed yet): {e}"
+                )
+
         if not self.config.get("no_install", False):
             if self.app in self.firefox_android_browsers:
                 self.device.uninstall_app(self.binary_path)
@@ -1331,20 +1420,24 @@ class Raptor(
                     installer_path = self.installer_path
 
                 self.info(f"Installing APK from: {installer_path}")
-                self.install_android_app(str(installer_path))
+                if self.app == "fenix":
+                    self.info("Installing Fenix APK with baseline profile")
+                    self.device.install_app_baseline_profile(installer_path)
+                else:
+                    self.install_android_app(str(installer_path))
             else:
-                super(Raptor, self).install()
+                super().install()
 
     def _artifact_perf_data(self, src, dest):
         if not os.path.isdir(os.path.dirname(dest)):
             # create upload dir if it doesn't already exist
-            self.info("Creating dir: %s" % os.path.dirname(dest))
+            self.info(f"Creating dir: {os.path.dirname(dest)}")
             os.makedirs(os.path.dirname(dest))
-        self.info("Copying raptor results from %s to %s" % (src, dest))
+        self.info(f"Copying raptor results from {src} to {dest}")
         try:
             copyfile(src, dest)
         except Exception as e:
-            self.critical("Error copying results %s to upload dir %s" % (src, dest))
+            self.critical(f"Error copying results {src} to upload dir {dest}")
             self.info(str(e))
 
     def run_tests(self, args=None, **kw):
@@ -1368,6 +1461,7 @@ class Raptor(
         if not os.path.isdir(env["MOZ_UPLOAD_DIR"]):
             self.mkdir_p(env["MOZ_UPLOAD_DIR"])
         env = self.query_env(partial_env=env, log_level=INFO)
+        power_profile = self.config.get("power_profile")
         # adjust PYTHONPATH to be able to use raptor as a python package
         if "PYTHONPATH" in env:
             env["PYTHONPATH"] = self.raptor_path + os.pathsep + env["PYTHONPATH"]
@@ -1377,6 +1471,7 @@ class Raptor(
         # mitmproxy needs path to mozharness when installing the cert, and tooltool
         env["SCRIPTSPATH"] = scripts_path
         env["EXTERNALTOOLSPATH"] = external_tools_path
+        env["PERFHERDER_SCHEMA_PATH"] = perfherder_schema_path()
 
         # xpcshell may come from local build, or fetched from build artifacts in
         # the case of CI.
@@ -1396,6 +1491,13 @@ class Raptor(
             env["XPCSHELL_PATH"] = os.path.join(
                 self.obj_path, "dist", "bin", "xpcshell.exe"
             )
+
+        if not self.run_local:
+            env["MOZ_INTERNAL_UPLOAD_DIR"] = os.path.join(
+                os.path.dirname(env["MOZ_UPLOAD_DIR"]), "perftest"
+            )
+            if not os.path.exists(env["MOZ_INTERNAL_UPLOAD_DIR"]):
+                os.makedirs(env["MOZ_INTERNAL_UPLOAD_DIR"])
 
         # Needed to load unsigned Raptor WebExt on release builds
         if self.is_release_build:
@@ -1418,10 +1520,9 @@ class Raptor(
         mozlog_opts = [f"--log-tbpl-level={self.config['log_level']}"]
 
         if not self.run_local and "suite" in self.config:
-            fname_pattern = "%s_%%s.log" % self.config["test"]
+            fname_pattern = f"{self.config['test']}_%s.log"
             mozlog_opts.append(
-                "--log-errorsummary=%s"
-                % os.path.join(env["MOZ_UPLOAD_DIR"], fname_pattern % "errorsummary")
+                f"--log-errorsummary={os.path.join(env['MOZ_UPLOAD_DIR'], fname_pattern % 'errorsummary')}"
             )
 
         def launch_in_debug_mode(cmdline):
@@ -1434,6 +1535,30 @@ class Raptor(
             self.logcat_start()
 
         command = [python, run_tests] + options + mozlog_opts
+        if power_profile:
+            command = [
+                "powerprofilesctl",
+                "launch",
+                "--profile",
+                "performance",
+                "--reason",
+                "Raptor performance test",
+                "--appid",
+                "org.mozilla.raptor",
+                "--",
+                "/bin/sh",
+                "-c",
+                (
+                    'profile="$(powerprofilesctl get)" || exit $?; '
+                    'printf "Active power profile: %s\\n" "$profile"; '
+                    'if [ "$profile" != performance ]; then '
+                    'printf "Expected active power profile performance, got %s\\n" '
+                    '"$profile" >&2; exit 1; fi; '
+                    'exec "$@"'
+                ),
+                "raptor-power-profile",
+            ] + command
+
         if launch_in_debug_mode(command):
             raptor_process = subprocess.Popen(command, cwd=self.workdir, env=env)
             raptor_process.wait()
@@ -1480,7 +1605,7 @@ class Raptor(
 
                 src = file
                 dest = os.path.join(
-                    env["MOZ_UPLOAD_DIR"], "perfherder-data-%s.json" % data_name
+                    env["MOZ_UPLOAD_DIR"], f"perfherder-data-{data_name}.json"
                 )
                 self._artifact_perf_data(src, dest)
 
@@ -1498,8 +1623,7 @@ class Raptor(
         if parser.tbpl_status != TBPL_SUCCESS:
             parser_status = EXIT_STATUS_DICT[parser.tbpl_status]
             self.info(
-                "return code %s changed to %s due to log output"
-                % (str(self.return_code), str(parser_status))
+                f"return code {str(self.return_code)} changed to {str(parser_status)} due to log output"
             )
             self.return_code = parser_status
 
@@ -1511,7 +1635,7 @@ class RaptorOutputParser(OutputParser):
     RE_PERF_DATA = re.compile(r".*PERFHERDER_DATA:\s+(\{.*\})")
 
     def __init__(self, **kwargs):
-        super(RaptorOutputParser, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.minidump_output = None
         self.found_perf_data = []
         self.tbpl_status = TBPL_SUCCESS
@@ -1528,7 +1652,7 @@ class RaptorOutputParser(OutputParser):
             self.found_perf_data.append(m.group(1))
 
         if self.harness_retry_re.search(line):
-            self.critical(" %s" % line)
+            self.critical(f" {line}")
             self.worst_log_level = self.worst_level(CRITICAL, self.worst_log_level)
             self.tbpl_status = self.worst_level(
                 TBPL_RETRY, self.tbpl_status, levels=TBPL_WORST_LEVEL_TUPLE
@@ -1546,4 +1670,4 @@ class RaptorOutputParser(OutputParser):
                 return
             else:
                 SystemResourceMonitor.record_event(raptor_line)
-        super(RaptorOutputParser, self).parse_single_line(line)
+        super().parse_single_line(line)

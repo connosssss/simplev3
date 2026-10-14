@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_devtools_DeserializedNode__
-#define mozilla_devtools_DeserializedNode__
+#ifndef mozilla_devtools_DeserializedNode_
+#define mozilla_devtools_DeserializedNode_
 
 #include <utility>
 
@@ -48,7 +47,6 @@ struct DeserializedEdge {
   DeserializedEdge(DeserializedEdge&& rhs);
   DeserializedEdge& operator=(DeserializedEdge&& rhs);
 
- private:
   DeserializedEdge(const DeserializedEdge&) = delete;
   DeserializedEdge& operator=(const DeserializedEdge&) = delete;
 };
@@ -91,7 +89,7 @@ struct DeserializedNode {
         scriptFilename(filename),
         descriptiveTypeName(descriptiveName),
         owner(&owner) {}
-  virtual ~DeserializedNode() {}
+  virtual ~DeserializedNode() = default;
 
   DeserializedNode(DeserializedNode&& rhs)
       : id(rhs.id),
@@ -112,6 +110,9 @@ struct DeserializedNode {
     return *this;
   }
 
+  DeserializedNode(const DeserializedNode&) = delete;
+  DeserializedNode& operator=(const DeserializedNode&) = delete;
+
   // Get a borrowed reference to the given edge's referent. This method is
   // virtual to provide a hook for gmock and gtest.
   virtual JS::ubi::Node getEdgeReferent(const DeserializedEdge& edge);
@@ -131,10 +132,6 @@ struct DeserializedNode {
         scriptFilename(nullptr),
         descriptiveTypeName(nullptr),
         owner(nullptr) {}
-
- private:
-  DeserializedNode(const DeserializedNode&) = delete;
-  DeserializedNode& operator=(const DeserializedNode&) = delete;
 };
 
 static inline js::HashNumber hashIdDerivedFromPtr(uint64_t id) {
@@ -305,4 +302,4 @@ class ConcreteStackFrame<DeserializedStackFrame> : public BaseStackFrame {
 }  // namespace ubi
 }  // namespace JS
 
-#endif  // mozilla_devtools_DeserializedNode__
+#endif  // mozilla_devtools_DeserializedNode_

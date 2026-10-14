@@ -5,21 +5,24 @@
 #ifndef mozilla_intl_locale_MozLocaleBindings_h
 #define mozilla_intl_locale_MozLocaleBindings_h
 
+#include "nsTArray.h"
+#include "nsTString.h"
+
 #include "mozilla/intl/unic_langid_ffi_generated.h"
 #include "mozilla/intl/fluent_langneg_ffi_generated.h"
 
-#include "mozilla/UniquePtr.h"
+#include <memory>
 
-namespace mozilla {
+namespace std {
 
 template <>
-class DefaultDelete<intl::ffi::LanguageIdentifier> {
+struct default_delete<mozilla::intl::ffi::LanguageIdentifier> {
  public:
-  void operator()(intl::ffi::LanguageIdentifier* aPtr) const {
+  void operator()(mozilla::intl::ffi::LanguageIdentifier* aPtr) const {
     unic_langid_destroy(aPtr);
   }
 };
 
-}  // namespace mozilla
+}  // namespace std
 
 #endif

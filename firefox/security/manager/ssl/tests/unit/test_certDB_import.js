@@ -1,4 +1,3 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // Any copyright is dedicated to the Public Domain.
 // http://creativecommons.org/publicdomain/zero/1.0/
 "use strict";
@@ -68,27 +67,10 @@ function getCertAsByteArray(certPath) {
   return byteArray;
 }
 
-function commonFindCertBy(propertyName, value) {
-  for (let cert of gCertDB.getCerts()) {
-    if (cert[propertyName] == value) {
-      return cert;
-    }
-  }
-  return null;
-}
-
-function findCertByCommonName(commonName) {
-  return commonFindCertBy("commonName", commonName);
-}
-
-function findCertByEmailAddress(emailAddress) {
-  return commonFindCertBy("emailAddress", emailAddress);
-}
-
-function testImportCACert() {
+async function testImportCACert() {
   // Sanity check the CA cert is missing.
   equal(
-    findCertByCommonName(CA_CERT_COMMON_NAME),
+    await findCertByCommonName(CA_CERT_COMMON_NAME),
     null,
     "CA cert should not be in the database before import"
   );
@@ -107,7 +89,7 @@ function testImportCACert() {
     "Confirmation dialog for the CA cert should only be shown once"
   );
 
-  let caCert = findCertByCommonName(CA_CERT_COMMON_NAME);
+  let caCert = await findCertByCommonName(CA_CERT_COMMON_NAME);
   notEqual(caCert, null, "CA cert should now be found in the database");
   ok(
     gCertDB.isCertTrusted(
@@ -146,7 +128,7 @@ function testImportEmptyUserCert() {
   );
 }
 
-function run_test() {
+add_task(async function run_test() {
   let certificateDialogsCID = MockRegistrar.register(
     "@mozilla.org/nsCertificateDialogs;1",
     gCertificateDialogs
@@ -157,7 +139,7 @@ function run_test() {
 
   // Sanity check the e-mail cert is missing.
   equal(
-    findCertByEmailAddress(TEST_EMAIL_ADDRESS),
+    await findCertByEmailAddress(TEST_EMAIL_ADDRESS),
     null,
     "E-mail cert should not be in the database before import"
   );
@@ -174,7 +156,7 @@ function run_test() {
     emailArray.length,
     gInterfaceRequestor
   );
-  let emailCert = findCertByEmailAddress(TEST_EMAIL_ADDRESS);
+  let emailCert = await findCertByEmailAddress(TEST_EMAIL_ADDRESS);
   notEqual(emailCert, null, "E-mail cert should now be found in the database");
   let bundle = Services.strings.createBundle(
     "chrome://pipnss/locale/pipnss.properties"
@@ -184,4 +166,4 @@ function run_test() {
     bundle.GetStringFromName("PrivateTokenDescription"),
     "cert's tokenName should be the expected localized value"
   );
-}
+});

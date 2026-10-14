@@ -87,6 +87,10 @@ support-files = [
   "file_bug1018265.xhtml",
   "markA.ttf",
   "markB.ttf",
+  "2in_blue.pdf",
+  "2in_blue_3pages.pdf",
+  "2in_by_3in_blue.pdf",
+  "2in_by_4in_blue.pdf",
 ]
 
 ["test_bug396367-1.html"]
@@ -149,6 +153,7 @@ tags = "openwindow"
 ["test_printer_default_settings.html"]
 
 ["test_printpreview.xhtml"]
+tags = "os_integration"
 
 ["test_printpreview_bug396024.xhtml"]
 
@@ -157,4 +162,6 @@ tags = "openwindow"
 ["test_scrolling_repaints.html"]
 
 ["test_will_change.html"]
-skip-if = ["true"]
+skip-if = [
+  "true",
+]

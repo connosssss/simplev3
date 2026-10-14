@@ -33,7 +33,7 @@ using monostate = std::monostate;
 // Apple Platforms provide std::bad_variant_access only in newer versions of OS.
 // To keep API compatible with any version of OS - we are providing our own
 // implementation of nostd::bad_variant_access exception.
-#  if __EXCEPTIONS
+#  if OPENTELEMETRY_HAVE_EXCEPTIONS
 
 // nostd::bad_variant_access
 class bad_variant_access : public std::exception
@@ -48,7 +48,7 @@ public:
 }
 #  endif
 
-#  if __EXCEPTIONS
+#  if OPENTELEMETRY_HAVE_EXCEPTIONS
 #    define THROW_BAD_VARIANT_ACCESS throw_bad_variant_access()
 #  else
 #    define THROW_BAD_VARIANT_ACCESS std::terminate()
@@ -220,13 +220,9 @@ inline constexpr bool holds_alternative(const variant<Ts...> &v) noexcept
   return v.index() == I;
 }
 
-template <typename T, template<typename...> typename U, typename... Ts>
-inline constexpr bool holds_alternative(const U<Ts...> &v) noexcept
+template <typename T, typename... Ts>
+inline constexpr bool holds_alternative(const variant<Ts...> &v) noexcept
 {
-  // Clang 18.1.7 on Ubuntu 24.04 does not disambiguate between this
-  // and std::holds_alternative if argument type is std::variant<Ts...>
-  static_assert(std::is_same_v<U<Ts...>, std::variant<Ts...>>,
-                "Unsupported argument type");
   return std::holds_alternative<T, Ts...>(v);
 }
 

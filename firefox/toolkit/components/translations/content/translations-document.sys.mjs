@@ -897,6 +897,13 @@ export class TranslationsDocument {
   #scheduler;
 
   /**
+   * The script direction of the source language.
+   *
+   * @type {("ltr"|"rtl")}
+   */
+  #sourceScriptDirection;
+
+  /**
    * The script direction of the target language.
    *
    * @type {("ltr"|"rtl")}
@@ -1071,6 +1078,7 @@ export class TranslationsDocument {
    *                                           for a translation is about to occur.
    * @param {LRUCache} translationsCache - A cache in which to store translated text.
    * @param {boolean} isFindBarOpen - Whether the find bar was open in the current tab upon construction.
+   * @param {number | null} [subFrameSchedulerId=null] - An id to distinguish the scheduler logs if this doc corresponds to an <iframe>.
    */
   constructor(
     document,
@@ -1081,18 +1089,21 @@ export class TranslationsDocument {
     requestNewPort,
     reportVisibleChange,
     translationsCache,
-    isFindBarOpen
+    isFindBarOpen,
+    subFrameSchedulerId = null
   ) {
     /** @type {WindowProxy} */
-    const ownerGlobal = ensureExists(document.ownerGlobal);
-    ownerGlobal.addEventListener("scroll", this.#handleScrollEvent);
+    const documentGlobal = ensureExists(document.documentGlobal);
+    documentGlobal.addEventListener("scroll", this.#handleScrollEvent);
 
-    this.#domParser = new ownerGlobal.DOMParser();
+    this.#domParser = new documentGlobal.DOMParser();
     this.#innerWindowId = innerWindowId;
     this.#sourceDocument = document;
     this.#documentLanguage = documentLanguage;
     this.#translationsCache = translationsCache;
     this.#actorReportFirstVisibleChange = reportVisibleChange;
+    this.#sourceScriptDirection =
+      Services.intl.getScriptDirection(documentLanguage);
     this.#targetScriptDirection =
       Services.intl.getScriptDirection(targetLanguage);
     this.#translationsMode = isFindBarOpen ? "content-eager" : "lazy";
@@ -1101,7 +1112,9 @@ export class TranslationsDocument {
       port,
       this.#innerWindowId,
       translationsCache,
-      requestNewPort
+      requestNewPort,
+      documentGlobal === documentGlobal.top,
+      subFrameSchedulerId
     );
 
     /**
@@ -1145,7 +1158,7 @@ export class TranslationsDocument {
      *
      * @type {typeof IntersectionObserver}
      */
-    const DocumentIntersectionObserver = ownerGlobal.IntersectionObserver;
+    const DocumentIntersectionObserver = documentGlobal.IntersectionObserver;
 
     this.#intersectionObserverForContentTranslationsWithinViewport =
       new DocumentIntersectionObserver(
@@ -1163,7 +1176,7 @@ export class TranslationsDocument {
           // The count of nodes that exited this observer's proximity.
           let exitedCount = 0;
 
-          const startTime = Cu.now();
+          const startTime = ChromeUtils.now();
           for (const { target, isIntersecting } of entries) {
             isIntersecting ? enteredCount++ : exitedCount++;
 
@@ -1220,7 +1233,7 @@ export class TranslationsDocument {
           // The count of nodes that exited this observer's proximity.
           let exitedCount = 0;
 
-          const startTime = Cu.now();
+          const startTime = ChromeUtils.now();
           for (const { target, isIntersecting } of entries) {
             if (isIntersecting) {
               // The target has entered the boundary, so we will enqueue it for translation.
@@ -1284,7 +1297,7 @@ export class TranslationsDocument {
           // The count of nodes that exited this observer's proximity.
           let exitedCount = 0;
 
-          const startTime = Cu.now();
+          const startTime = ChromeUtils.now();
           for (const { target, isIntersecting } of entries) {
             isIntersecting ? enteredCount++ : exitedCount++;
 
@@ -1339,7 +1352,7 @@ export class TranslationsDocument {
           // The count of nodes that exited this observer's proximity.
           let exitedCount = 0;
 
-          const startTime = Cu.now();
+          const startTime = ChromeUtils.now();
           for (const { target, isIntersecting } of entries) {
             if (isIntersecting) {
               // The target has entered the boundary, so we will enqueue it for translation.
@@ -1389,13 +1402,13 @@ export class TranslationsDocument {
      *
      * @type {typeof MutationObserver}
      */
-    const DocumentMutationObserver = ownerGlobal.MutationObserver;
+    const DocumentMutationObserver = documentGlobal.MutationObserver;
 
     this.#mutationObserver = new DocumentMutationObserver(
       async mutationsList => {
         await this.#waitForFirstIntersectionObservations();
 
-        const startTime = Cu.now();
+        const startTime = ChromeUtils.now();
 
         // The count of attribute mutations in this observation.
         let attributeCount = 0;
@@ -1443,7 +1456,7 @@ export class TranslationsDocument {
 
               // New nodes could have been added, make sure we can follow their shadow roots.
               ensureExists(
-                this.#sourceDocument.ownerGlobal
+                this.#sourceDocument.documentGlobal
               ).requestAnimationFrame(() => {
                 this.#addShadowRootsToObserver(pendingParentElement);
               });
@@ -1476,19 +1489,57 @@ export class TranslationsDocument {
                 cancelledFromEngineCount +=
                   contentPreventionResult.cancelledFromEngineCount;
 
-                const selfOrParentElement =
-                  asElement(removedNode) ?? asElement(removedNode.parentNode);
+                // We want to consider both elements if they are distinct,
+                // but handle once if they're the same, so we will deduplicate with a Set.
+                const observableElements = new Set([
+                  getObservableElementForContentTranslation(removedNode),
+                  getObservableElementForContentTranslation(mutation.target),
+                ]);
 
-                if (selfOrParentElement) {
-                  deleteFromNestedMap(
-                    this.#pendingContentTranslations,
-                    selfOrParentElement,
-                    removedNode
-                  );
-                  this.#removeFromContentIntersectionObservation(
-                    selfOrParentElement,
-                    removedNode
-                  );
+                for (const observableElement of observableElements) {
+                  if (!observableElement) {
+                    continue;
+                  }
+
+                  const observedNodes =
+                    this.#intersectionObservedContentElements.get(
+                      observableElement
+                    );
+
+                  if (!observedNodes) {
+                    continue;
+                  }
+
+                  // The following loop may mutate the structure of observedNodes,
+                  // so we will loop through a snapshot of the Set.
+                  for (const targetNode of [...observedNodes]) {
+                    if (
+                      targetNode !== removedNode &&
+                      !removedNode.contains(targetNode)
+                    ) {
+                      continue;
+                    }
+
+                    deleteFromNestedMap(
+                      this.#queuedIntersectionPrunableContentElements,
+                      observableElement,
+                      targetNode
+                    );
+                    deleteFromNestedMap(
+                      this.#queuedIntersectionExemptContentElements,
+                      observableElement,
+                      targetNode
+                    );
+                    deleteFromNestedMap(
+                      this.#pendingContentTranslations,
+                      observableElement,
+                      targetNode
+                    );
+                    this.#removeFromContentIntersectionObservation(
+                      observableElement,
+                      targetNode
+                    );
+                  }
                 }
 
                 const element = asElement(removedNode);
@@ -1576,11 +1627,15 @@ export class TranslationsDocument {
     );
 
     const addRootElements = () => {
-      const startTime = Cu.now();
+      const startTime = ChromeUtils.now();
 
       this.#addRootElement(document.body);
       this.#addRootElement(document.head);
       this.#addRootElement(document.querySelector("title"));
+      if (!document.body && document.documentElement) {
+        // Handle documents such as standalone SVGs that lack a body.
+        this.#addRootElement(document.documentElement);
+      }
 
       ChromeUtils.addProfilerMarker(
         "TranslationsDocument Initialize",
@@ -1615,7 +1670,13 @@ export class TranslationsDocument {
       }
     };
 
-    if (document.body) {
+    if (
+      // There exists a document body, so we are clear to continue.
+      document.body ||
+      // The page has finished loading, but there is no document body.
+      // There may still be roots to add, such as in the case of a standalone SVG.
+      document.readyState !== "loading"
+    ) {
       addRootElements();
     } else {
       // The TranslationsDocument was invoked before the DOM was ready, wait for
@@ -1711,7 +1772,7 @@ export class TranslationsDocument {
       );
     }
 
-    const window = ensureExists(this.#sourceDocument.ownerGlobal);
+    const window = ensureExists(this.#sourceDocument.documentGlobal);
     const { visualViewport } = window;
     if (visualViewport.width > 0 && visualViewport.height > 0) {
       // The only time we should call this function is in test cases where the
@@ -1797,25 +1858,25 @@ export class TranslationsDocument {
     this.#processedContentNodes.delete(node);
     this.#nodesWithMutatedContent.add(node);
 
-    const selfOrParentElement = asElement(node) ?? asElement(node.parentNode);
+    const observableElement = getObservableElementForContentTranslation(node);
 
-    if (selfOrParentElement) {
+    if (observableElement) {
       deleteFromNestedMap(
         this.#pendingContentTranslations,
-        selfOrParentElement,
+        observableElement,
         node
       );
 
-      if (this.#intersectionObservedContentElements.has(selfOrParentElement)) {
+      if (this.#intersectionObservedContentElements.has(observableElement)) {
         // If the mutated content belongs to an element that we are already observing
         // for intersection, we must re-register it with the Beyond-Viewport intersection
         // observer, which will ensure that any mutated elements within extended-viewport
         // proximity will be re-enqueued for prioritization when the next observer cycle runs.
         this.#intersectionObserverForContentTranslationsBeyondViewport.unobserve(
-          selfOrParentElement
+          observableElement
         );
         this.#intersectionObserverForContentTranslationsBeyondViewport.observe(
-          selfOrParentElement
+          observableElement
         );
       }
     }
@@ -1905,12 +1966,12 @@ export class TranslationsDocument {
     }
 
     this.#hasPendingMutatedNodesCallback = true;
-    const ownerGlobal = ensureExists(this.#sourceDocument.ownerGlobal);
+    const documentGlobal = ensureExists(this.#sourceDocument.documentGlobal);
 
     // Nodes can be mutated in a tight loop. To guard against the performance of re-translating nodes too frequently,
     // we will batch the processing of mutated nodes into a double requestAnimationFrame.
-    ownerGlobal.requestAnimationFrame(() => {
-      ownerGlobal.requestAnimationFrame(async () => {
+    documentGlobal.requestAnimationFrame(() => {
+      documentGlobal.requestAnimationFrame(async () => {
         // We should not handle any mutations until the intersection observers have completed their first observations.
         await this.#waitForFirstIntersectionObservations();
 
@@ -1923,7 +1984,7 @@ export class TranslationsDocument {
         const attributeElementCount = this.#elementsWithMutatedAttributes.size;
         let attributeRequestCount = 0;
 
-        const startTime = Cu.now();
+        const startTime = ChromeUtils.now();
 
         // Ensure the nodes are still alive.
         const liveNodes = [];
@@ -1988,24 +2049,36 @@ export class TranslationsDocument {
   }
 
   /**
-   * If a pending node contains or is the target node, return that pending node.
+   * Return the element used to cancel pending content translations associated
+   * with the target.
    *
    * @param {Node} target
    *
-   * @returns {Element | undefined}
+   * @returns {Element | null}
    */
   #getPendingParentElementFromTarget(target) {
+    const targetObservableElement =
+      getObservableElementForContentTranslation(target);
+    if (
+      targetObservableElement &&
+      this.#pendingContentTranslations.has(targetObservableElement)
+    ) {
+      return targetObservableElement;
+    }
+
     const pendingParent = this.#nodeToPendingParent.get(target);
     const pendingParentElement = asElement(pendingParent);
+    const pendingParentObservableElement =
+      getObservableElementForContentTranslation(pendingParentElement);
 
     if (
-      pendingParentElement &&
-      this.#pendingContentTranslations.has(pendingParentElement)
+      pendingParentObservableElement &&
+      this.#pendingContentTranslations.has(pendingParentObservableElement)
     ) {
       return pendingParentElement;
     }
 
-    return undefined;
+    return null;
   }
 
   /**
@@ -2032,7 +2105,11 @@ export class TranslationsDocument {
     const parentElement = asElement(node.parentNode);
 
     if (textNode && parentElement) {
-      const pendingNodes = this.#pendingContentTranslations.get(parentElement);
+      const observableElement =
+        getObservableElementForContentTranslation(textNode);
+      const pendingNodes =
+        observableElement &&
+        this.#pendingContentTranslations.get(observableElement);
       const translationId = pendingNodes?.get(textNode);
 
       if (translationId) {
@@ -2049,7 +2126,7 @@ export class TranslationsDocument {
       }
     }
 
-    const element = asElement(node);
+    const element = asElement(node) ?? parentElement;
     if (!element) {
       return {
         preventedCount: 0,
@@ -2062,8 +2139,18 @@ export class TranslationsDocument {
     let cancelledFromSchedulerCount = 0;
     let cancelledFromEngineCount = 0;
 
+    const observableElement =
+      getObservableElementForContentTranslation(element);
+    if (!observableElement) {
+      return {
+        preventedCount,
+        cancelledFromSchedulerCount,
+        cancelledFromEngineCount,
+      };
+    }
+
     const preventionResult =
-      this.#preventUnscheduledContentTranslations(element);
+      this.#preventUnscheduledContentTranslations(observableElement);
 
     if (preventionResult.preventedNodeSet) {
       // We were able to prevent these content translations before
@@ -2073,7 +2160,8 @@ export class TranslationsDocument {
         preventionResult.cancelledFromSchedulerCount;
     }
 
-    const pendingNodes = this.#pendingContentTranslations.get(element);
+    const pendingNodes =
+      this.#pendingContentTranslations.get(observableElement);
     if (!pendingNodes) {
       // No pending content translations were found for this element.
       // They either already completed, or never existed.
@@ -2099,8 +2187,8 @@ export class TranslationsDocument {
     }
 
     if (pendingNodes.size === 0) {
-      removeMozTranslationsIds(element);
-      this.#pendingContentTranslations.delete(element);
+      removeMozTranslationsIds(observableElement);
+      this.#pendingContentTranslations.delete(observableElement);
     }
 
     return {
@@ -2331,9 +2419,16 @@ export class TranslationsDocument {
         this.#handleVisibilityChange
       );
 
-      const window = this.#sourceDocument.ownerGlobal;
+      const window = this.#sourceDocument.documentGlobal;
       if (window) {
-        window.removeEventListener("scroll", this.#handleScrollEvent);
+        try {
+          window.removeEventListener("scroll", this.#handleScrollEvent);
+        } catch (error) {
+          lazy.console.error(
+            "Failed to remove Translations scroll event listener.",
+            error
+          );
+        }
       }
     }
   }
@@ -2395,7 +2490,7 @@ export class TranslationsDocument {
       return;
     }
 
-    const element = asHTMLElement(node);
+    const element = asElement(node);
     if (!element) {
       return;
     }
@@ -2430,7 +2525,7 @@ export class TranslationsDocument {
       return;
     }
 
-    const contentStartTime = Cu.now();
+    const contentStartTime = ChromeUtils.now();
     this.#subdivideNodeForContentTranslations(element);
     ChromeUtils.addProfilerMarker(
       "TranslationsDocument Add Root",
@@ -2438,7 +2533,7 @@ export class TranslationsDocument {
       `Subdivided new root "${node.nodeName}" for content translations`
     );
 
-    const attributeStartTime = Cu.now();
+    const attributeStartTime = ChromeUtils.now();
     this.#subdivideNodeForAttributeTranslations(element);
     ChromeUtils.addProfilerMarker(
       "TranslationsDocument Add Root",
@@ -2668,7 +2763,7 @@ export class TranslationsDocument {
     }
 
     if (
-      nodeOrParentIncludesItself(
+      isContentTranslationTargetRegistered(
         node,
         this.#intersectionObservedContentElements
       )
@@ -2713,24 +2808,20 @@ export class TranslationsDocument {
    * @param {Element} element
    */
   #enqueueForIntersectionPrunableContentPrioritization(element) {
-    if (this.#queuedIntersectionPrunableContentElements.has(element)) {
-      return;
-    }
-
     const nodeSet =
       this.#intersectionObservedContentElements.get(element) ??
       new Set([element]);
 
-    let queuedNodes =
+    const queuedNodes =
       this.#queuedIntersectionPrunableContentElements.get(element);
 
-    if (queuedNodes) {
-      for (const node of nodeSet) {
-        queuedNodes.add(node);
-      }
-    } else {
-      queuedNodes = nodeSet;
-      this.#queuedIntersectionPrunableContentElements.set(element, queuedNodes);
+    if (!queuedNodes) {
+      this.#queuedIntersectionPrunableContentElements.set(element, nodeSet);
+      return;
+    }
+
+    for (const node of nodeSet) {
+      queuedNodes.add(node);
     }
   }
 
@@ -2745,24 +2836,20 @@ export class TranslationsDocument {
    * @param {Element} element
    */
   #enqueueForIntersectionExemptContentPrioritization(element) {
-    if (this.#queuedIntersectionExemptContentElements.has(element)) {
-      return;
-    }
-
     const nodeSet =
       this.#intersectionObservedContentElements.get(element) ??
       new Set([element]);
 
-    let queuedNodes =
+    const queuedNodes =
       this.#queuedIntersectionExemptContentElements.get(element);
 
-    if (queuedNodes) {
-      for (const node of nodeSet) {
-        queuedNodes.add(node);
-      }
-    } else {
-      queuedNodes = nodeSet;
-      this.#queuedIntersectionExemptContentElements.set(element, queuedNodes);
+    if (!queuedNodes) {
+      this.#queuedIntersectionExemptContentElements.set(element, nodeSet);
+      return;
+    }
+
+    for (const node of nodeSet) {
+      queuedNodes.add(node);
     }
   }
 
@@ -2905,7 +2992,7 @@ export class TranslationsDocument {
     let detachedElementCount = 0;
     let updatedAttributeCount = 0;
 
-    const startTime = Cu.now();
+    const startTime = ChromeUtils.now();
 
     // Stop the mutations so that the updates won't trigger observations.
     this.#pauseMutationObserverAndThen(() => {
@@ -2972,10 +3059,11 @@ export class TranslationsDocument {
    */
   #submitForContentTranslation(priority, observableElement, nodeSet) {
     for (const targetNode of nodeSet) {
+      const targetElement = asElement(targetNode);
       // Give each element an id that gets passed through the translation so it can be reunited later on.
-      if (observableElement === targetNode) {
+      if (targetElement) {
         /** @type {Array<Element>} */
-        const elements = observableElement.querySelectorAll("*");
+        const elements = targetElement.querySelectorAll("*");
 
         elements.forEach((el, i) => {
           const dataset = getDataset(el);
@@ -2990,23 +3078,31 @@ export class TranslationsDocument {
       /** @type {boolean} */
       let isHTML;
 
-      if (
+      if (asTextNode(targetNode)) {
         // This node is a text node, therefore it cannot be an HTML translation.
-        asTextNode(targetNode) ||
+        sourceText = targetNode.textContent ?? "";
+        isHTML = false;
+      } else if (
         // When an element has no child elements and its textContent is exactly
         // equal to its innerHTML, then it is safe to treat as a text translation.
-        (observableElement.childElementCount === 0 &&
-          observableElement.textContent === observableElement.innerHTML)
+        targetElement?.childElementCount === 0 &&
+        targetElement.textContent === targetElement.innerHTML
       ) {
         sourceText = targetNode.textContent ?? "";
         isHTML = false;
-      } else {
-        sourceText = /** @type {string} */ (observableElement.innerHTML);
+      } else if (targetElement) {
+        sourceText = targetElement.innerHTML;
         isHTML = true;
+      } else {
+        continue;
       }
 
       if (sourceText.trim().length === 0) {
-        return;
+        this.#removeFromContentIntersectionObservation(
+          observableElement,
+          targetNode
+        );
+        continue;
       }
       const translationId = this.#lastTranslationId++;
 
@@ -3043,11 +3139,11 @@ export class TranslationsDocument {
             pendingNodes.delete(targetNode);
             if (pendingNodes.size === 0) {
               this.#pendingContentTranslations.delete(observableElement);
-              this.#removeFromContentIntersectionObservation(
-                observableElement,
-                targetNode
-              );
             }
+            this.#removeFromContentIntersectionObservation(
+              observableElement,
+              targetNode
+            );
           }
         })
         .catch(error => {
@@ -3060,11 +3156,11 @@ export class TranslationsDocument {
             pendingNodes.delete(targetNode);
             if (pendingNodes.size === 0) {
               this.#pendingContentTranslations.delete(observableElement);
-              this.#removeFromContentIntersectionObservation(
-                observableElement,
-                targetNode
-              );
             }
+            this.#removeFromContentIntersectionObservation(
+              observableElement,
+              targetNode
+            );
           }
         });
     }
@@ -3204,6 +3300,48 @@ export class TranslationsDocument {
   }
 
   /**
+   * Ensure the element and certain structured ancestors use the target
+   * script direction when it differs from the source script direction.
+   *
+   * No-op if the source and target directions match.
+   *
+   * @param {Element | null} element
+   */
+  #maybeUpdateScriptDirection(element) {
+    const targetScriptDirection = this.#targetScriptDirection;
+
+    if (!element || this.#sourceScriptDirection === targetScriptDirection) {
+      return;
+    }
+
+    /** @param {Element?} [el] */
+    const ensureDirection = el => {
+      el?.setAttribute("dir", targetScriptDirection);
+    };
+
+    ensureDirection(element);
+
+    const listItemAncestor = element.closest("li");
+    if (listItemAncestor) {
+      ensureDirection(listItemAncestor);
+      ensureDirection(listItemAncestor.closest("ul, ol"));
+    }
+
+    const tableCell = element.closest("th, td, caption");
+    if (tableCell) {
+      ensureDirection(tableCell);
+
+      const row = tableCell.closest("tr");
+      ensureDirection(row);
+
+      const body = row?.closest("tbody");
+      ensureDirection(body);
+
+      ensureDirection(body?.closest("table"));
+    }
+  }
+
+  /**
    * Updates all nodes that have completed attribute translation requests.
    *
    * This function is called asynchronously, so nodes may already be dead. Before
@@ -3217,7 +3355,7 @@ export class TranslationsDocument {
     let textNodeCount = 0;
     let elementCount = 0;
 
-    const startTime = Cu.now();
+    const startTime = ChromeUtils.now();
 
     // Stop the mutations so that the updates won't trigger observations.
     this.#pauseMutationObserverAndThen(() => {
@@ -3241,20 +3379,28 @@ export class TranslationsDocument {
         } else if (eligibility === "detached") {
           // This node is detached from the DOM: there is no point in updating it.
           detachedNodeCount++;
-        } else if (element === targetNode) {
-          elementCount++;
-
-          const translationsDocument = this.#domParser.parseFromString(
-            `<!DOCTYPE html><div>${translatedContent}</div>`,
-            "text/html"
-          );
-
-          updateElement(translationsDocument, element);
-          this.#processedContentNodes.add(targetNode);
         } else {
-          textNodeCount++;
-          targetNode.textContent = translatedContent;
-          this.#processedContentNodes.add(targetNode);
+          const targetElement = asElement(targetNode);
+          if (targetElement) {
+            elementCount++;
+
+            const translationsDocument = this.#domParser.parseFromSafeString(
+              `<!DOCTYPE html><div>${translatedContent}</div>`,
+              "text/html"
+            );
+
+            updateElement(translationsDocument, targetElement);
+            this.#maybeUpdateScriptDirection(targetElement);
+
+            this.#processedContentNodes.add(targetElement);
+          } else {
+            textNodeCount++;
+
+            targetNode.textContent = translatedContent;
+            this.#maybeUpdateScriptDirection(asElement(targetNode.parentNode));
+
+            this.#processedContentNodes.add(targetNode);
+          }
         }
 
         deleteFromNestedMap(
@@ -3402,6 +3548,13 @@ export class TranslationsDocument {
   }
 
   /**
+   * Notifies the scheduler that the associated engine has terminated.
+   */
+  handleEngineTerminated() {
+    this.#scheduler.handleEngineTerminated();
+  }
+
+  /**
    * Retrieves the current status of the TranslationsEngine that is handling translations
    * for this TranslationsDocument instance.
    *
@@ -3469,7 +3622,7 @@ export class TranslationsDocument {
    * callback without the need to explicitly bind `this` to the function object.
    */
   #handleScrollEvent = () => {
-    if (Cu.now() - this.#mostRecentScrollTimestamp < 100) {
+    if (ChromeUtils.now() - this.#mostRecentScrollTimestamp < 100) {
       // Scrolling can fire a lot of events in rapid succession, and computing the scrollY value can
       // trigger reflow, so we will limit how often we take the time to compute the scrollY value.
       // Scroll hints are critical to providing a smooth translation experience, but it's not the
@@ -3477,13 +3630,13 @@ export class TranslationsDocument {
       return;
     }
 
-    const scrollY = ensureExists(this.#sourceDocument.ownerGlobal).scrollY;
+    const scrollY = ensureExists(this.#sourceDocument.documentGlobal).scrollY;
 
     this.#mostRecentScrollDirection =
       scrollY >= this.#previousScrollY ? "down" : "up";
 
     this.#previousScrollY = scrollY;
-    this.#mostRecentScrollTimestamp = Cu.now();
+    this.#mostRecentScrollTimestamp = ChromeUtils.now();
   };
 
   /**
@@ -3492,7 +3645,7 @@ export class TranslationsDocument {
    * @returns {boolean}
    */
   #hasUserScrolledRecently() {
-    return Cu.now() - this.#mostRecentScrollTimestamp < 200;
+    return ChromeUtils.now() - this.#mostRecentScrollTimestamp < 200;
   }
 
   /**
@@ -3672,7 +3825,7 @@ export class TranslationsDocument {
         let contentRequestCount = 0;
         let attributeRequestCount = 0;
 
-        const startTime = Cu.now();
+        const startTime = ChromeUtils.now();
 
         const {
           inViewportContentPriority,
@@ -4116,16 +4269,7 @@ export class TranslationsDocument {
    * @param {Node} node
    */
   #observeOrEnqueueNodeForContentPrioritization(node) {
-    let observableElement;
-    let translatableNode;
-
-    const element = asElement(node);
-    if (element) {
-      observableElement = element;
-      translatableNode = element;
-    } else if ((translatableNode = asTextNode(node))) {
-      observableElement = asElement(node.parentNode);
-    }
+    const translatableNode = asElement(node) ?? asTextNode(node);
 
     if (!translatableNode) {
       // This node is not translatable, and it should have been filtered earlier.
@@ -4134,6 +4278,9 @@ export class TranslationsDocument {
       );
       return;
     }
+
+    const observableElement =
+      getObservableElementForContentTranslation(translatableNode);
 
     if (!observableElement) {
       // This node is translatable, but its immediate parent is not observable for intersection.
@@ -4815,6 +4962,25 @@ class TranslationScheduler {
   }
 
   /**
+   * Creates the debug label used to distinguish scheduler logs for each document.
+   *
+   * @param {boolean} isTopLevelDocument
+   * @param {number | null} subFrameSchedulerId
+   * @returns {string}
+   */
+  static #createSchedulerLabel(isTopLevelDocument, subFrameSchedulerId) {
+    if (isTopLevelDocument) {
+      return "top";
+    }
+
+    if (subFrameSchedulerId === null) {
+      return "___";
+    }
+
+    return `f${String(subFrameSchedulerId).padStart(2, "_")}`;
+  }
+
+  /**
    * The port that sends translation requests to the TranslationsEngine.
    *
    * @type {MessagePort | null}
@@ -4936,6 +5102,13 @@ class TranslationScheduler {
   #innerWindowId;
 
   /**
+   * A fixed-width label to identify this scheduler in debug logs.
+   *
+   * @type {string}
+   */
+  #schedulerLabel;
+
+  /**
    * A cache of translations that have already been computed.
    * This is cache is shared with the TranslationsDocument.
    *
@@ -4950,11 +5123,28 @@ class TranslationScheduler {
    * @param {number} innerWindowId - The innerWindowId for profiler markers.
    * @param {LRUCache} translationsCache - A cache of completed translations, shared with the TranslationsDocument.
    * @param {() => void} actorRequestNewPort - The function to call to ask the actor for a new port.
+   * @param {boolean} isTopLevelDocument - Whether this scheduler belongs to the top-level document.
+   * @param {number | null} subFrameSchedulerId - The debug-only scheduler id assigned by the top-level actor.
    */
-  constructor(port, innerWindowId, translationsCache, actorRequestNewPort) {
+  constructor(
+    port,
+    innerWindowId,
+    translationsCache,
+    actorRequestNewPort,
+    isTopLevelDocument,
+    subFrameSchedulerId
+  ) {
     this.#innerWindowId = innerWindowId;
     this.#translationsCache = translationsCache;
     this.#actorRequestNewPort = actorRequestNewPort;
+    this.#schedulerLabel = "___";
+
+    if (lazy.console.shouldLog("Debug")) {
+      this.#schedulerLabel = TranslationScheduler.#createSchedulerLabel(
+        isTopLevelDocument,
+        subFrameSchedulerId
+      );
+    }
 
     if (port) {
       this.acquirePort(port);
@@ -4996,6 +5186,10 @@ class TranslationScheduler {
 
     // Wire up message handling
     port.onmessage = event => {
+      if (port !== this.#port) {
+        return;
+      }
+
       /** @type {{data: PortToPage}} */
       const { data } = /** @type {any} */ (event);
 
@@ -5038,8 +5232,7 @@ class TranslationScheduler {
           break;
         }
         case "TranslationsPort:EngineTerminated": {
-          this.#discardPort();
-          this.maybeScheduleMoreTranslationRequests();
+          this.handleEngineTerminated();
           break;
         }
         default: {
@@ -5105,10 +5298,20 @@ class TranslationScheduler {
     if (this.#port) {
       this.#port.close();
       this.#port = null;
-      this.#portRequest = null;
     }
 
+    this.#portRequest?.resolve();
+    this.#portRequest = null;
     this.#engineStatus = "uninitialized";
+  }
+
+  /**
+   * Discards the current port and schedules any remaining translation requests
+   * to resume on a fresh engine port.
+   */
+  handleEngineTerminated() {
+    this.#discardPort();
+    this.maybeScheduleMoreTranslationRequests();
   }
 
   /**
@@ -5172,6 +5375,10 @@ class TranslationScheduler {
     translationId,
     priority
   ) {
+    if (this.#engineStatus === "error") {
+      return Promise.resolve(null);
+    }
+
     const { promise, resolve, reject } = Promise.withResolvers();
     this.#unscheduledRequestPriorities.set(translationId, priority);
 
@@ -5369,6 +5576,10 @@ class TranslationScheduler {
       return false;
     }
 
+    if (this.#engineStatus === "error") {
+      return false;
+    }
+
     if (this.#portRequest) {
       // We are still waiting for a port: we will try again if a port is acquired.
       return false;
@@ -5538,32 +5749,38 @@ class TranslationScheduler {
    *
    * Example:
    *
-   * "Scheduler(_1 | 422) [ __1, 165, 132, __1, 106, __1, __8, __8 ] => P0(__1), P1(__2)"
-   *             ╻    ╻      ╻    ╻    ╻    ╻    ╻    ╻    ╻    ╻       ╻        ╻
-   *             │    │      │    │    │    │    │    │    │    │       │        │
-   *             │    │      │    │    │    │    │    │    │    │       │        2 P1 requests were scheduled in this batch.
-   *             │    │      │    │    │    │    │    │    │    │       │
-   *             │    │      │    │    │    │    │    │    │    │       1 P0 request was scheduled in this batch.
-   *             │    │      │    │    │    │    │    │    │    │
-   *             │    │      │    │    │    │    │    │    │    There are 8 P7 requests
-   *             │    │      │    │    │    │    │    │    │
-   *             │    │      │    │    │    │    │    │    There are 8 P6 requests.
-   *             │    │      │    │    │    │    │    │
-   *             │    │      │    │    │    │    │    There is 1 P5 request.
-   *             │    │      │    │    │    │    │
-   *             │    │      │    │    │    │    There are 106 P4 requests.
-   *             │    │      │    │    │    │
-   *             │    │      │    │    │    There is 1 P3 request.
-   *             │    │      │    │    │
-   *             │    │      │    │    There are 132 P2 requests.
-   *             │    │      │    │
-   *             │    │      │    There are 165 P1 requests.
-   *             │    │      │
-   *             │    │      There is 1 P0 request.
+   * "Scheduler[top](_1 | 422) [ __1, 165, 132, __1, 106, ___, __8, __8 ] => P0(__1), P1(__2)"
+   *           [f_1]  ╻    ╻      ╻    ╻    ╻    ╻    ╻    ╻    ╻    ╻       ╻        ╻
+   *           [f_2]  │    │      │    │    │    │    │    │    │    │       │        │
+   *           [...]  │    │      │    │    │    │    │    │    │    │       │        2 P1 requests were scheduled in this batch.
+   *             ╻    │    │      │    │    │    │    │    │    │    │       │
+   *             │    │    │      │    │    │    │    │    │    │    │       1 P0 request was scheduled in this batch.
+   *             │    │    │      │    │    │    │    │    │    │    │
+   *             │    │    │      │    │    │    │    │    │    │    There are 8 P7 requests
+   *             │    │    │      │    │    │    │    │    │    │
+   *             │    │    │      │    │    │    │    │    │    There are 8 P6 requests.
+   *             │    │    │      │    │    │    │    │    │
+   *             │    │    │      │    │    │    │    │    There are no P5 requests.
+   *             │    │    │      │    │    │    │    │
+   *             │    │    │      │    │    │    │    There are 106 P4 requests.
+   *             │    │    │      │    │    │    │
+   *             │    │    │      │    │    │    There is 1 P3 request.
+   *             │    │    │      │    │    │
+   *             │    │    │      │    │    There are 132 P2 requests.
+   *             │    │    │      │    │
+   *             │    │    │      │    There are 165 P1 requests.
+   *             │    │    │      │
+   *             │    │    │      There is 1 P0 request.
+   *             │    │    │
+   *             │    │    There are 422 pending requests.
    *             │    │
-   *             │    There are 422 pending requests.
+   *             │    There is 1 active request.
    *             │
-   *             There is 1 active request.
+   *             Corresponds to the active scheduler that is submitting this log.
+   *               * [top] corresponds to the scheduler for the top-level document.
+   *               * [f_1] corresponds to the scheduler for the first initialized <iframe>.
+   *               * [f_2] corresponds to the scheduler for the second initialized <iframe>.
+   *               * [...] and so on.
    *
    * @param {Array<number>?} stackSizesAtStart – The size of each stack prior to the slice of scheduling that just occurred.
    * @param {number} activeRequestsAtStart - The number of active requests that the TranslationsEngine was processing at the
@@ -5626,7 +5843,7 @@ class TranslationScheduler {
     ).padStart(3, "_");
 
     lazy.console.debug(
-      `Scheduler(${activeRequestsString} | ${unscheduledRequestsString}) ` +
+      `Scheduler[${this.#schedulerLabel}](${activeRequestsString} | ${unscheduledRequestsString}) ` +
         TranslationScheduler.#formatSizesAtStart(stackSizesAtStart) +
         ` => ${segments.join(", ")}`
     );
@@ -5771,13 +5988,19 @@ class TranslationScheduler {
 }
 
 /**
- * Returns true if an HTML element is hidden based on factors such as collapsed state and
+ * Returns true if a node is hidden based on factors such as collapsed state and
  * computed style, otherwise false.
  *
- * @param {HTMLElement} element
+ * @param {Node} node
  * @returns {boolean}
  */
-function isHTMLElementHidden(element) {
+function isNodeHidden(node) {
+  const element = getHTMLElementForStyle(node);
+
+  if (!element) {
+    return true;
+  }
+
   // This is a cheap and easy check that will not compute style or force reflow.
   if (element.hidden) {
     // The element is explicitly hidden.
@@ -5808,14 +6031,23 @@ function isHTMLElementHidden(element) {
     return true;
   }
 
-  const { ownerGlobal } = element;
-  if (!ownerGlobal) {
-    // We cannot compute the style without ownerGlobal, so we will assume it is not visible.
+  // The element may still have a zero-sized bounding client rectangle.
+  const boundingClientRect = element.getBoundingClientRect();
+  if (
+    boundingClientRect &&
+    (boundingClientRect.width === 0 || boundingClientRect.height === 0)
+  ) {
+    return true;
+  }
+
+  const { documentGlobal } = element;
+  if (!documentGlobal) {
+    // We cannot compute the style without documentGlobal, so we will assume it is not visible.
     return true;
   }
 
   // This flushes the style, which is a performance cost.
-  const style = ownerGlobal.getComputedStyle(element);
+  const style = documentGlobal.getComputedStyle(element);
   if (!style) {
     // We were unable to compute the style, so we will assume it is not visible.
     return true;
@@ -5878,7 +6110,7 @@ function getHTMLElementForStyle(node) {
  * @returns {NodeSpatialContext}
  */
 function getNodeSpatialContext(node) {
-  const window = node.ownerGlobal;
+  const window = node.documentGlobal;
   const document = node.ownerDocument;
   if (!window || !document || !document.documentElement) {
     // We won't be able to calculate the spatial context for this node.
@@ -5891,7 +6123,7 @@ function getNodeSpatialContext(node) {
     return {};
   }
 
-  if (isHTMLElementHidden(element)) {
+  if (isNodeHidden(element)) {
     // If the element is hidden, then the spatial context is not important.
     return {};
   }
@@ -5999,6 +6231,10 @@ function updateElement(translationsDocument, element) {
    * @type {Map<Node, string>}
    */
   const nodeValues = new Map();
+  const selectElement = asHTMLSelectElement(element);
+  if (selectElement) {
+    nodeValues.set(selectElement, selectElement.value);
+  }
   for (const select of element.querySelectorAll("select")) {
     nodeValues.set(select, select.value);
   }
@@ -6009,9 +6245,8 @@ function updateElement(translationsDocument, element) {
   }
 
   // Restore the <select> values.
-  if (element.tagName === "SELECT") {
-    /** @type {HTMLSelectElement} */ (element).value =
-      nodeValues.get(element) ?? "";
+  if (selectElement) {
+    selectElement.value = nodeValues.get(selectElement) ?? "";
   }
   for (const select of element.querySelectorAll("select")) {
     select.value = nodeValues.get(select);
@@ -6331,19 +6566,24 @@ function containsExcludedNode(node, excludedNodeSelector) {
 
 /**
  *
- * Check if this node or its parent's node is already included in the given Map or Set.
+ * Check if this node or one of its ancestors is already registered as a
+ * content-translation target in the given Map.
  *
  * @param {Node} node
- * @param { Map<Node, Set<Node>> } map
+ * @param {Map<Element, Set<Node>>} map
  *
  * @returns {boolean}
  */
-function nodeOrParentIncludesItself(node, map) {
+function isContentTranslationTargetRegistered(node, map) {
   if (map.size === 0) {
     return false;
   }
 
-  if (map.get(node)?.has(node)) {
+  const observableElement = getObservableElementForContentTranslation(node);
+  const observableTargetSet = observableElement
+    ? map.get(observableElement)
+    : undefined;
+  if (observableTargetSet?.has(node)) {
     return true;
   }
 
@@ -6360,7 +6600,10 @@ function nodeOrParentIncludesItself(node, map) {
   let parentNode;
   let lastNode = node;
   while ((parentNode = lastNode.parentNode)) {
-    if (map.get(parentNode)?.has(parentNode)) {
+    if (
+      map.get(parentNode)?.has(parentNode) ||
+      observableTargetSet?.has(parentNode)
+    ) {
       return true;
     }
     lastNode = parentNode;
@@ -6384,8 +6627,8 @@ function getIsBlockLike(node) {
     return false;
   }
 
-  const { ownerGlobal } = element;
-  if (!ownerGlobal) {
+  const { documentGlobal } = element;
+  if (!documentGlobal) {
     return false;
   }
 
@@ -6397,7 +6640,7 @@ function getIsBlockLike(node) {
 
   /** @type {Record<string, string>} */
   // @ts-expect-error - This is a workaround for the CSSStyleDeclaration not being indexable.
-  const style = ownerGlobal.getComputedStyle(element) ?? { display: null };
+  const style = documentGlobal.getComputedStyle(element) ?? { display: null };
 
   return style.display !== "inline" && style.display !== "none";
 }
@@ -6573,7 +6816,7 @@ function asTextNode(node) {
 /**
  * Use TypeScript to determine if the Node is an HTMLElement.
  *
- * @param {Node | null} node
+ * @param {Node | null | undefined} node
  *
  * @returns {HTMLElement | null}
  */
@@ -6610,6 +6853,52 @@ function ensureExists(item, message = "Item did not exist") {
 }
 
 /**
+ * Use TypeScript to determine if the Node is an HTML <select> element.
+ *
+ * @param {Node | null | undefined} node
+ *
+ * @returns {HTMLSelectElement | null}
+ */
+function asHTMLSelectElement(node) {
+  if (HTMLSelectElement.isInstance) {
+    if (HTMLSelectElement.isInstance(node)) {
+      return /** @type {HTMLSelectElement} */ (node);
+    }
+  } else if (
+    // eslint-disable-next-line mozilla/use-isInstance
+    node instanceof HTMLSelectElement
+  ) {
+    return /** @type {HTMLSelectElement} */ (node);
+  }
+  return null;
+}
+
+/**
+ * Determine which element should be observed for a content-translation node.
+ *
+ * @param {Node | null | undefined} node
+ *
+ * @returns {Element | null}
+ */
+function getObservableElementForContentTranslation(node) {
+  if (!node) {
+    return null;
+  }
+
+  // An <option> or <optgroup> may not have an observable box while its owning
+  // <select> is closed, even though its content is represented by the <select>.
+  const htmlElement = getHTMLElementForStyle(node);
+  const select = htmlElement?.closest("select");
+
+  const selectElement = asHTMLSelectElement(select);
+  if (selectElement) {
+    return selectElement;
+  }
+
+  return asElement(node) ?? asElement(node.parentNode);
+}
+
+/**
  * Get the ShadowRoot from the chrome-only openOrClosedShadowRoot API.
  *
  * @param {Node} node
@@ -6617,7 +6906,11 @@ function ensureExists(item, message = "Item did not exist") {
  * @returns {ShadowRoot | null}
  */
 function getShadowRoot(node) {
-  return asElement(node)?.openOrClosedShadowRoot ?? null;
+  const root = asElement(node)?.openOrClosedShadowRoot;
+  if (!root || root.isUAWidget()) {
+    return null;
+  }
+  return root;
 }
 
 /**

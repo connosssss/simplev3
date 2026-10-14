@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18,6 +17,7 @@
 #include "NativeMenuMac.h"
 #import <Carbon/Carbon.h>
 
+#include "ASWebAuthSessionHandler.h"
 #include "CustomCocoaEvents.h"
 #include "gfxPlatform.h"
 #include "nsCOMPtr.h"
@@ -43,23 +43,24 @@
 #include "nsCocoaUtils.h"
 #include "nsMenuBarX.h"
 #include "mozilla/NeverDestroyed.h"
-
-class AutoAutoreleasePool {
- public:
-  AutoAutoreleasePool() { mLocalPool = [[NSAutoreleasePool alloc] init]; }
-  ~AutoAutoreleasePool() { [mLocalPool release]; }
-
- private:
-  NSAutoreleasePool* mLocalPool;
-};
+#include "MacAutoreleasePool.h"
 
 @interface MacApplicationDelegate : NSObject <NSApplicationDelegate> {
 }
 
-// This is used as a workaround for bug 1478347 in order to make OS-provided
-// menu items such as the emoji picker available in the Edit menu, especially
-// in multi-language environments.
+// Standard Edit menu selectors. Setting these as the action on our Edit
+// menu items lets native text fields (e.g. an NSSavePanel sheet's
+// filename field, bug 2036608) handle Cmd+C/V/X/Z/A natively via the
+// responder chain. When no responder handles them, these forwarders
+// route to [nsMenuBarX::sNativeEventTarget menuItemHit:] so the
+// command still reaches Gecko via the normal menu path.
+- (IBAction)undo:(id)aSender;
+- (IBAction)redo:(id)aSender;
+- (IBAction)cut:(id)aSender;
 - (IBAction)copy:(id)aSender;
+- (IBAction)paste:(id)aSender;
+- (IBAction)delete:(id)aSender;
+- (IBAction)selectAll:(id)aSender;
 
 @end
 
@@ -67,7 +68,7 @@ enum class LaunchStatus {
   Initial,
   DelegateIsSetup,
   CollectingURLs,
-  CollectedURLs
+  CollectedURLs,
 };
 
 static LaunchStatus sLaunchStatus = LaunchStatus::Initial;
@@ -107,7 +108,7 @@ void SetupMacApplicationDelegate(bool* gRestartedByOS) {
 
   // this is called during startup, outside an event loop, and therefore
   // needs an autorelease pool to avoid cocoa object leakage (bug 559075)
-  AutoAutoreleasePool pool;
+  mozilla::MacAutoreleasePool pool;
 
   // Ensure that InitializeMacApp() doesn't regress bug 377166.
   [GeckoNSApplication sharedApplication];
@@ -130,10 +131,16 @@ void SetupMacApplicationDelegate(bool* gRestartedByOS) {
       "Launch status should be in intial state when setting up delegate");
   sLaunchStatus = LaunchStatus::DelegateIsSetup;
 
+  // Apple requires the session handler to be registered before
+  // applicationDidFinishLaunching returns. We register here, as early as
+  // possible, so auth requests that arrive during startup are queued rather
+  // than dropped.
+  RegisterASWebAuthSessionHandler();
+
   NS_OBJC_END_TRY_IGNORE_BLOCK;
 }
 
-// Run the mac app and stop it immediately after launch. This allows us to
+// Run the mac app and stop it ASAP. This allows us to
 // (a) Initialize accessibility early enough for modals that appear before
 //     the main app and nest their own event loop to be accessible.
 // (b) Collect URLs that were provided to the app at open time.
@@ -145,6 +152,38 @@ void InitializeMacApp() {
 
   sLaunchStatus = LaunchStatus::CollectingURLs;
   if (!gfxPlatform::IsHeadless()) {
+    // Spin the event loop so that any URLs the app was launched to open are
+    // buffered into StartupURLs(). Observer is released inside the callback.
+    CFRunLoopObserverRef observer = CFRunLoopObserverCreate(
+        kCFAllocatorDefault, kCFRunLoopBeforeWaiting, /* repeats = */ false,
+        /* order = */ 0,
+        [](CFRunLoopObserverRef aObserver, CFRunLoopActivity, void*) {
+          CFRunLoopObserverInvalidate(aObserver);
+          CFRelease(aObserver);
+
+          // Stop the inner run loop. We'll call `run` again when the main event
+          // loop should start.
+          [NSApp stop:NSApp];
+
+          // Send a bogus event so that the internal "app stopped" flag is
+          // processed. Since we aren't calling this from a responder, we need
+          // to post an event to have the loop iterate and respond to the
+          // stopped flag.
+          [NSApp postEvent:[NSEvent
+                               otherEventWithType:NSEventTypeApplicationDefined
+                                         location:NSMakePoint(0, 0)
+                                    modifierFlags:0
+                                        timestamp:0
+                                     windowNumber:0
+                                          context:nullptr
+                                          subtype:kEventSubtypeNone
+                                            data1:0
+                                            data2:0]
+                   atStart:NO];
+        },
+        nullptr);
+    CFRunLoopAddObserver(CFRunLoopGetCurrent(), observer,
+                         kCFRunLoopCommonModes);
     [NSApp run];
   }
   sLaunchStatus = LaunchStatus::CollectedURLs;
@@ -154,7 +193,31 @@ nsTArray<nsCString> TakeStartupURLs() { return std::move(StartupURLs()); }
 
 @implementation MacApplicationDelegate
 
+- (IBAction)undo:(id)aSender {
+  [nsMenuBarX::sNativeEventTarget menuItemHit:aSender];
+}
+
+- (IBAction)redo:(id)aSender {
+  [nsMenuBarX::sNativeEventTarget menuItemHit:aSender];
+}
+
+- (IBAction)cut:(id)aSender {
+  [nsMenuBarX::sNativeEventTarget menuItemHit:aSender];
+}
+
 - (IBAction)copy:(id)aSender {
+  [nsMenuBarX::sNativeEventTarget menuItemHit:aSender];
+}
+
+- (IBAction)paste:(id)aSender {
+  [nsMenuBarX::sNativeEventTarget menuItemHit:aSender];
+}
+
+- (IBAction)delete:(id)aSender {
+  [nsMenuBarX::sNativeEventTarget menuItemHit:aSender];
+}
+
+- (IBAction)selectAll:(id)aSender {
   [nsMenuBarX::sNativeEventTarget menuItemHit:aSender];
 }
 
@@ -262,32 +325,6 @@ nsTArray<nsCString> TakeStartupURLs() { return std::move(StartupURLs()); }
        forKey:@"NSFullScreenMenuItemEverywhere"];
 }
 
-- (void)applicationDidFinishLaunching:(NSNotification*)notification {
-  if (sLaunchStatus == LaunchStatus::CollectingURLs) {
-    // We are in an inner `run` loop that we are spinning in order to get
-    // URLs that were requested while launching. `application:openURLs:` will
-    // have been called by this point and we will have finished reconstructing
-    // the command line. We now stop the app loop for the rest of startup to be
-    // processed and will call `run` again when the main event loop should
-    // start.
-    [NSApp stop:self];
-
-    // Send a bogus event so that the internal "app stopped" flag is processed.
-    // Since we aren't calling this from a responder, we need to post an event
-    // to have the loop iterate and respond to the stopped flag.
-    [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined
-                                        location:NSMakePoint(0, 0)
-                                   modifierFlags:0
-                                       timestamp:0
-                                    windowNumber:0
-                                         context:NULL
-                                         subtype:kEventSubtypeNone
-                                           data1:0
-                                           data2:0]
-             atStart:NO];
-  }
-}
-
 // If we don't handle applicationShouldTerminate:, a call to [NSApp terminate:]
 // (from the browser or from the OS) can result in an unclean shutdown.
 - (NSApplicationTerminateReply)applicationShouldTerminate:
@@ -310,9 +347,10 @@ nsTArray<nsCString> TakeStartupURLs() { return std::move(StartupURLs()); }
   nsCOMPtr<nsIAppStartup> appService =
       do_GetService("@mozilla.org/toolkit/app-startup;1");
   if (appService) {
-    bool userAllowedQuit = true;
-    appService->Quit(nsIAppStartup::eForceQuit, 0, &userAllowedQuit);
-    if (!userAllowedQuit) {
+    // Quit does not start a shutdown if the user keeps a window open from a
+    // beforeunload prompt.
+    appService->Quit(nsIAppStartup::eForceQuit, 0);
+    if (!appService->GetShuttingDown()) {
       return NSTerminateCancel;
     }
   }
@@ -352,6 +390,7 @@ nsTArray<nsCString> TakeStartupURLs() { return std::move(StartupURLs()); }
   nsTArray<const char*> args([urls count] * 2 + 2);
   // Placeholder for unused program name.
   args.AppendElement(nullptr);
+  bool bufferedURLs = false;
 
   for (NSURL* url in urls) {
     if (!url || !url.scheme ||
@@ -362,6 +401,7 @@ nsTArray<nsCString> TakeStartupURLs() { return std::move(StartupURLs()); }
     const char* const urlString = [[url absoluteString] UTF8String];
     if (sLaunchStatus == LaunchStatus::CollectingURLs) {
       StartupURLs().AppendElement(urlString);
+      bufferedURLs = true;
       continue;
     }
 
@@ -370,8 +410,9 @@ nsTArray<nsCString> TakeStartupURLs() { return std::move(StartupURLs()); }
   }
 
   if (args.Length() <= 1) {
-    // No URLs were added to the command line.
-    return NO;
+    // No URLs were added to the command line for immediate dispatch.
+    // Return YES if URLs were buffered for startup processing.
+    return bufferedURLs ? YES : NO;
   }
 
   nsCOMPtr<nsICommandLineRunner> cmdLine(new nsCommandLine());

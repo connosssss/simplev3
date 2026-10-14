@@ -8,7 +8,6 @@
 import itertools
 import json
 import sys
-from collections import OrderedDict
 from os import path
 
 from mozparsers import parse_events
@@ -158,28 +157,24 @@ def generate_JSON_definitions(output, *filenames):
             print("\nError processing %s:\n%s\n" % (filename, str(ex)), file=sys.stderr)
             sys.exit(1)
 
-    event_definitions = OrderedDict()
+    event_definitions = {}
     for event in events:
         category = event.category
 
         if category not in event_definitions:
-            event_definitions[category] = OrderedDict()
+            event_definitions[category] = {}
 
-        event_definitions[category][event.name] = OrderedDict(
-            {
-                "methods": event.methods,
-                "objects": event.objects,
-                "extra_keys": event.extra_keys,
-                "record_on_release": (
-                    True if event.dataset_short == "opt-out" else False
-                ),
-                # We don't expire dynamic-builtin scalars: they're only meant for
-                # use in local developer builds anyway. They will expire when rebuilding.
-                "expires": event.expiry_version,
-                "expired": False,
-                "products": event.products,
-            }
-        )
+        event_definitions[category][event.name] = {
+            "methods": event.methods,
+            "objects": event.objects,
+            "extra_keys": event.extra_keys,
+            "record_on_release": (True if event.dataset_short == "opt-out" else False),
+            # We don't expire dynamic-builtin scalars: they're only meant for
+            # use in local developer builds anyway. They will expire when rebuilding.
+            "expires": event.expiry_version,
+            "expired": False,
+            "products": event.products,
+        }
 
     json.dump(event_definitions, output, sort_keys=True)
 

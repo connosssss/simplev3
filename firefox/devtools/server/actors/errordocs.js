@@ -31,10 +31,14 @@ loader.lazyGetter(this, "supportBaseURL", () => {
   return url;
 });
 
+const { getMdnLinkParams } = ChromeUtils.importESModule(
+  "resource://devtools/shared/mdn.mjs",
+  { global: "contextual" }
+);
+
 const baseErrorURL =
   "https://developer.mozilla.org/docs/Web/JavaScript/Reference/Errors/";
-const params =
-  "?utm_source=mozilla&utm_medium=firefox-console-errors&utm_campaign=default";
+const params = "?" + getMdnLinkParams("firefox-console-errors");
 
 const ErrorDocs = {
   JSMSG_READ_ONLY: "Read-only",
@@ -141,6 +145,8 @@ const DOCTYPE_MODES_LEARN_MORE =
   "https://developer.mozilla.org/docs/Web/HTML/Guides/Quirks_Mode_and_Standards_Mode";
 const BOUNCE_TRACKING_PROTECTION_LEARN_MORE =
   "https://firefox-source-docs.mozilla.org/toolkit/components/antitracking/anti-tracking/bounce-tracking-protection/index.html";
+const SAFE_PROMISE_RESOLVE_LEARN_MORE =
+  "https://firefox-source-docs.mozilla.org/dom/promise/safe-promise-resolve.html";
 
 const ErrorCategories = {
   "X-Frame-Options": X_FRAME_OPTIONS_LEARN_MORE,
@@ -151,6 +157,7 @@ const ErrorCategories = {
   "Invalid HSTS Headers": STRICT_TRANSPORT_SECURITY_LEARN_MORE,
   "Tracking Protection": TRACKING_PROTECTION_LEARN_MORE,
   MIMEMISMATCH: MIME_TYPE_MISMATCH_LEARN_MORE,
+  SafePromiseResolve: SAFE_PROMISE_RESOLVE_LEARN_MORE,
   "source map": SOURCE_MAP_LEARN_MORE,
   TLS: TLS_LEARN_MORE,
   requestStorageAccess: REQUEST_STORAGE_ACCESS_LEARN_MORE,
@@ -162,8 +169,7 @@ const ErrorCategories = {
 
 const baseCorsErrorUrl =
   "https://developer.mozilla.org/docs/Web/HTTP/Guides/CORS/Errors/";
-const corsParams =
-  "?utm_source=devtools&utm_medium=firefox-cors-errors&utm_campaign=default";
+const corsParams = "?" + getMdnLinkParams("firefox-cors-errors");
 const CorsErrorDocs = {
   CORSDisabled: "CORSDisabled",
   CORSDidNotSucceed2: "CORSDidNotSucceed",
@@ -185,7 +191,7 @@ const CorsErrorDocs = {
 const baseStorageAccessPolicyErrorUrl =
   "https://developer.mozilla.org/docs/Web/Privacy/Guides/Storage_Access_Policy/Errors/";
 const storageAccessPolicyParams =
-  "?utm_source=devtools&utm_medium=firefox-cookie-errors&utm_campaign=default";
+  "?" + getMdnLinkParams("firefox-cookie-errors");
 const StorageAccessPolicyErrorDocs = {
   cookieBlockedPermission: "CookieBlockedByPermission",
   cookieBlockedTracker: "CookieBlockedTracker",

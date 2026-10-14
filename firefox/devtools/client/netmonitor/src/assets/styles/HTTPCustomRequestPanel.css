@@ -105,6 +105,8 @@
   flex: 1 1 auto;
   height: auto;
   overflow: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .network-monitor .http-custom-input-and-map-form :is(.http-custom-input, .map-add-new-inputs) {
@@ -133,7 +135,13 @@
   padding-bottom: 2px;
 }
 
+#http-custom-postdata {
+  flex-grow: 1;
+  flex-wrap: nowrap;
+}
+
 #http-custom-postdata-value.tabpanel-summary-input {
+  height: 100%;
   padding-inline-start: 14px;
 }
 
@@ -196,7 +204,7 @@
   box-shadow:
     0 0 0 1px #0a84ff inset,
     0 0 0 1px #0a84ff,
-    0 0 0 4px rgba(10, 132, 255, 0.3);
+    0 0 0 4px rgb(10 132 255 / 0.3);
 }
 
 .network-monitor .http-custom-request-button-container #http-custom-request-send-button {
@@ -361,7 +369,7 @@
 :root.theme-light .network-monitor #http-custom-request-clear-button:focus {
   outline: 2px solid var(--blue-50);
   outline-offset: -2px;
-  box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.3);
+  box-shadow: 0 0 0 2px rgb(10 132 255 / 0.3);
   border-radius: 2px;
 }
 

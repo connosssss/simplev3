@@ -1,26 +1,16 @@
-// -*- tab-width: 2; indent-tabs-mode: nil; js-indent-level: 2 -*-
-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const nsPK11TokenDB = "@mozilla.org/security/pk11tokendb;1";
-const nsIPK11TokenDB = Ci.nsIPK11TokenDB;
-const nsIDialogParamBlock = Ci.nsIDialogParamBlock;
-const nsPKCS11ModuleDB = "@mozilla.org/security/pkcs11moduledb;1";
-const nsIPKCS11ModuleDB = Ci.nsIPKCS11ModuleDB;
-const nsIPKCS11Slot = Ci.nsIPKCS11Slot;
-const nsIPK11Token = Ci.nsIPK11Token;
-
-var params;
-var pw1;
+const lazy = {};
+ChromeUtils.defineESModuleGetters(lazy, {
+  ProfileKekPassword: "resource://gre/modules/ProfileKekPassword.sys.mjs",
+});
 
 function init() {
-  pw1 = document.getElementById("pw1");
-
   process();
   document.addEventListener("dialogaccept", setPassword);
-  pw1.addEventListener("input", () => {
+  document.getElementById("pw1").addEventListener("input", () => {
     setPasswordStrength();
     checkPasswords();
   });
@@ -28,35 +18,23 @@ function init() {
 }
 
 function process() {
-  // If the token is unitialized, don't use the old password box.
+  // If the token doesn't have a password, don't use the old password box.
   // Otherwise, do.
-
-  let tokenDB = Cc["@mozilla.org/security/pk11tokendb;1"].getService(
-    Ci.nsIPK11TokenDB
+  let token = Cc["@mozilla.org/security/internalkeytoken;1"].createInstance(
+    Ci.nsIPKCS11Token
   );
-  let token = tokenDB.getInternalKeyToken();
-  if (token) {
-    let oldpwbox = document.getElementById("oldpw");
-    let msgBox = document.getElementById("message");
-    if ((token.needsLogin() && token.needsUserInit) || !token.needsLogin()) {
-      oldpwbox.hidden = true;
-      msgBox.hidden = false;
-
-      if (!token.needsLogin()) {
-        oldpwbox.setAttribute("inited", "empty");
-      } else {
-        oldpwbox.setAttribute("inited", "true");
-      }
-
-      // Select first password field
-      document.getElementById("pw1").focus();
-    } else {
-      // Select old password field
-      oldpwbox.hidden = false;
-      msgBox.hidden = true;
-      oldpwbox.setAttribute("inited", "false");
-      oldpwbox.focus();
-    }
+  let oldpwbox = document.getElementById("oldpw");
+  let msgBox = document.getElementById("message");
+  if (!token.hasPassword) {
+    oldpwbox.hidden = true;
+    msgBox.hidden = false;
+    // Select first password field
+    document.getElementById("pw1").focus();
+  } else {
+    // Select old password field
+    oldpwbox.hidden = false;
+    msgBox.hidden = true;
+    oldpwbox.focus();
   }
 
   if (
@@ -64,11 +42,6 @@ function process() {
     !Services.policies.isAllowed("removeMasterPassword")
   ) {
     document.getElementById("admin").hidden = false;
-  }
-
-  if (params) {
-    // Return value 0 means "canceled"
-    params.SetInt(1, 0);
   }
 
   checkPasswords();
@@ -82,63 +55,70 @@ async function createAlert(titleL10nId, messageL10nId) {
   Services.prompt.alert(window, title, message);
 }
 
-function setPassword() {
-  var pk11db = Cc[nsPK11TokenDB].getService(nsIPK11TokenDB);
-  var token = pk11db.getInternalKeyToken();
+async function setPassword(event) {
+  event.preventDefault();
 
-  var oldpwbox = document.getElementById("oldpw");
-  var initpw = oldpwbox.getAttribute("inited");
+  let token = Cc["@mozilla.org/security/internalkeytoken;1"].createInstance(
+    Ci.nsIPKCS11Token
+  );
 
-  if (initpw == "false" || initpw == "empty") {
-    try {
-      var oldpw = "";
-      var passok = 0;
-
-      if (initpw == "empty") {
-        passok = 1;
-      } else {
-        oldpw = oldpwbox.value;
-        passok = token.checkPassword(oldpw);
-      }
-
-      if (passok) {
-        if (initpw == "empty" && pw1.value == "") {
-          // This makes no sense that we arrive here,
-          // we reached a case that should have been prevented by checkPasswords.
-        } else {
-          if (pw1.value == "") {
-            var secmoddb = Cc[nsPKCS11ModuleDB].getService(nsIPKCS11ModuleDB);
-            if (secmoddb.isFIPSEnabled) {
-              // empty passwords are not allowed in FIPS mode
-              createAlert(
-                "pw-change-failed-title",
-                "pp-change2empty-in-fips-mode"
-              );
-              passok = 0;
-            }
-          }
-          if (passok) {
-            token.changePassword(oldpw, pw1.value);
-            if (pw1.value == "") {
-              createAlert("pw-change-success-title", "settings-pp-erased-ok");
-            } else {
-              createAlert("pw-change-success-title", "pp-change-ok");
-            }
-          }
-        }
-      } else {
-        oldpwbox.focus();
-        oldpwbox.setAttribute("value", "");
-        createAlert("pw-change-failed-title", "incorrect-pp");
-      }
-    } catch (e) {
-      console.error(e);
-      createAlert("pw-change-failed-title", "failed-pp-change");
+  let oldpwbox = document.getElementById("oldpw");
+  let pw1 = document.getElementById("pw1");
+  if (pw1.value == "") {
+    const fipsUtils = Cc["@mozilla.org/security/fipsutils;1"].getService(
+      Ci.nsIFIPSUtils
+    );
+    if (fipsUtils.isFIPSEnabled) {
+      // empty passwords are not allowed in FIPS mode
+      createAlert("pw-change-failed-title", "pp-change2empty-in-fips-mode");
+      return;
     }
-  } else {
-    token.initPassword(pw1.value);
-    if (pw1.value == "") {
-      createAlert("pw-change-success-title", "settings-pp-not-wanted");
+  }
+
+  let kekMoved = false;
+  try {
+    // token.changePassword can't be reverted. Update lockstore KEK first, if
+    // it fails, it rolls changes back, so failure leaves a working state.
+    // Without a KEK the update would create one from an old password nothing
+    // here can verify, so that is left to the next startup, which checks it
+    // against the token first.
+    if (!token.hasPassword || (await lazy.ProfileKekPassword.exists())) {
+      await lazy.ProfileKekPassword.update(oldpwbox.value, pw1.value);
+      kekMoved = true;
+    }
+    await token.changePassword(oldpwbox.value, pw1.value);
+    createAlert(
+      "pw-change-success-title",
+      pw1.value == "" ? "settings-pp-erased-ok" : "pp-change-ok"
+    );
+    window.close();
+  } catch (e) {
+    if (kekMoved) {
+      await lazy.ProfileKekPassword.update(pw1.value, oldpwbox.value).catch(
+        rollbackError =>
+          console.error("Failed to roll back the lockstore KEK", rollbackError)
+      );
+    }
+    let nssErrorsService = Cc["@mozilla.org/nss_errors_service;1"].getService(
+      Ci.nsINSSErrorsService
+    );
+    // SEC_ERROR_BASE + 15 = SEC_ERROR_BAD_PASSWORD
+    let badPasswordResult = nssErrorsService.getXPCOMFromNSSError(
+      Ci.nsINSSErrorsService.NSS_SEC_ERROR_BASE + 15
+    );
+    // The lockstore unlock reports a wrong password as NS_ERROR_ABORT rather
+    // than the token's bad-password code. Only reachable with kekMoved unset:
+    // past that point the KEK is done with and the token, which reports
+    // failures as NSS codes, is what failed.
+    if (
+      e.result == badPasswordResult ||
+      (!kekMoved && e.result == Cr.NS_ERROR_ABORT)
+    ) {
+      oldpwbox.focus();
+      oldpwbox.setAttribute("value", "");
+      createAlert("pw-change-failed-title", "incorrect-pp");
+    } else {
+      createAlert("pw-change-failed-title", "failed-pp-change");
     }
   }
 }
@@ -200,28 +180,21 @@ function checkPasswords() {
   var pw2 = document.getElementById("pw2").value;
   var ok = document.getElementById("changemp").getButton("accept");
 
-  var oldpwbox = document.getElementById("oldpw");
-  if (oldpwbox) {
-    var initpw = oldpwbox.getAttribute("inited");
-
-    if (initpw == "empty" && pw1 == "") {
-      // The token has already been initialized, therefore this dialog
-      // was called with the intention to change the password.
-      // The token currently uses an empty password.
-      // We will not allow changing the password from empty to empty.
-      ok.setAttribute("disabled", "true");
-      return;
-    }
+  let token = Cc["@mozilla.org/security/internalkeytoken;1"].createInstance(
+    Ci.nsIPKCS11Token
+  );
+  if (!token.hasPassword && pw1 == "") {
+    // The default password for the internal key token is the empty string. It
+    // makes no sense to change the password from the empty string to the empty
+    // string.
+    ok.toggleAttribute("disabled", true);
+    return;
   }
 
-  if (
+  let enabled =
     pw1 == pw2 &&
-    (pw1 != "" || Services.policies.isAllowed("removeMasterPassword"))
-  ) {
-    ok.setAttribute("disabled", "false");
-  } else {
-    ok.setAttribute("disabled", "true");
-  }
+    (pw1 != "" || Services.policies.isAllowed("removeMasterPassword"));
+  ok.toggleAttribute("disabled", !enabled);
 }
 
 window.addEventListener("load", init);

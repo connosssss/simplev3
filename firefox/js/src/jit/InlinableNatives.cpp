@@ -1,26 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jit/InlinableNatives.h"
 
 #ifdef JS_HAS_INTL_API
-#  include "builtin/intl/Collator.h"
-#  include "builtin/intl/DateTimeFormat.h"
-#  include "builtin/intl/DisplayNames.h"
-#  include "builtin/intl/DurationFormat.h"
-#  include "builtin/intl/ListFormat.h"
-#  include "builtin/intl/NumberFormat.h"
-#  include "builtin/intl/PluralRules.h"
-#  include "builtin/intl/RelativeTimeFormat.h"
 #  include "builtin/intl/Segmenter.h"
 #endif
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
-#  include "builtin/AsyncDisposableStackObject.h"
-#  include "builtin/DisposableStackObject.h"
-#endif
+#include "builtin/AsyncDisposableStackObject.h"
+#include "builtin/DisposableStackObject.h"
 #include "builtin/MapObject.h"
 #include "js/experimental/JitInfo.h"
 #include "vm/ArrayBufferObject.h"
@@ -44,37 +32,11 @@ const JSClass* js::jit::InlinableNativeGuardToClass(InlinableNative native) {
   switch (native) {
 #ifdef JS_HAS_INTL_API
     // Intl natives.
-    case InlinableNative::IntlGuardToCollator:
-      return &CollatorObject::class_;
-    case InlinableNative::IntlGuardToDateTimeFormat:
-      return &DateTimeFormatObject::class_;
-    case InlinableNative::IntlGuardToDisplayNames:
-      return &DisplayNamesObject::class_;
-    case InlinableNative::IntlGuardToDurationFormat:
-      return &DurationFormatObject::class_;
-    case InlinableNative::IntlGuardToListFormat:
-      return &ListFormatObject::class_;
-    case InlinableNative::IntlGuardToNumberFormat:
-      return &NumberFormatObject::class_;
-    case InlinableNative::IntlGuardToPluralRules:
-      return &PluralRulesObject::class_;
-    case InlinableNative::IntlGuardToRelativeTimeFormat:
-      return &RelativeTimeFormatObject::class_;
-    case InlinableNative::IntlGuardToSegmenter:
-      return &SegmenterObject::class_;
     case InlinableNative::IntlGuardToSegments:
-      return &SegmentsObject::class_;
+      return &intl::SegmentsObject::class_;
     case InlinableNative::IntlGuardToSegmentIterator:
-      return &SegmentIteratorObject::class_;
+      return &intl::SegmentIteratorObject::class_;
 #else
-    case InlinableNative::IntlGuardToCollator:
-    case InlinableNative::IntlGuardToDateTimeFormat:
-    case InlinableNative::IntlGuardToDisplayNames:
-    case InlinableNative::IntlGuardToListFormat:
-    case InlinableNative::IntlGuardToNumberFormat:
-    case InlinableNative::IntlGuardToPluralRules:
-    case InlinableNative::IntlGuardToRelativeTimeFormat:
-    case InlinableNative::IntlGuardToSegmenter:
     case InlinableNative::IntlGuardToSegments:
     case InlinableNative::IntlGuardToSegmentIterator:
       MOZ_CRASH("Intl API disabled");
@@ -101,12 +63,10 @@ const JSClass* js::jit::InlinableNativeGuardToClass(InlinableNative native) {
 #endif
     case InlinableNative::IntrinsicGuardToAsyncIteratorHelper:
       return &AsyncIteratorHelperObject::class_;
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
     case InlinableNative::IntrinsicGuardToAsyncDisposableStack:
       return &AsyncDisposableStackObject::class_;
     case InlinableNative::IntrinsicGuardToDisposableStack:
       return &DisposableStackObject::class_;
-#endif
 
     case InlinableNative::IntrinsicGuardToMapObject:
       return &MapObject::class_;
@@ -121,6 +81,23 @@ const JSClass* js::jit::InlinableNativeGuardToClass(InlinableNative native) {
       MOZ_CRASH("Not a GuardTo instruction");
   }
 }
+
+#define NATIVE_STRING_CASE(native) \
+  case InlinableNative::native:    \
+    return #native;
+
+const char* js::jit::InlinableNativeToString(InlinableNative native) {
+  switch (native) {
+    INLINABLE_NATIVE_LIST(NATIVE_STRING_CASE)
+
+    case InlinableNative::Limit:
+      break;
+  }
+
+  MOZ_CRASH("Unknown native");
+}
+
+#undef NATIVE_STRING_CASE
 
 // Returns true if |native| can be inlined cross-realm. Especially inlined
 // natives that can allocate objects or throw exceptions shouldn't be inlined
@@ -179,15 +156,6 @@ bool js::jit::CanInlineNativeCrossRealm(InlinableNative native) {
       // RNG state is per-realm.
       return false;
 
-    case InlinableNative::IntlGuardToCollator:
-    case InlinableNative::IntlGuardToDateTimeFormat:
-    case InlinableNative::IntlGuardToDisplayNames:
-    case InlinableNative::IntlGuardToDurationFormat:
-    case InlinableNative::IntlGuardToListFormat:
-    case InlinableNative::IntlGuardToNumberFormat:
-    case InlinableNative::IntlGuardToPluralRules:
-    case InlinableNative::IntlGuardToRelativeTimeFormat:
-    case InlinableNative::IntlGuardToSegmenter:
     case InlinableNative::IntlGuardToSegments:
     case InlinableNative::IntlGuardToSegmentIterator:
     case InlinableNative::IsRegExpObject:
@@ -215,7 +183,6 @@ bool js::jit::CanInlineNativeCrossRealm(InlinableNative native) {
     case InlinableNative::IntrinsicIsObject:
     case InlinableNative::IntrinsicIsCrossRealmArrayConstructor:
     case InlinableNative::IntrinsicCanOptimizeArraySpecies:
-    case InlinableNative::IntrinsicCanOptimizeStringProtoSymbolLookup:
     case InlinableNative::IntrinsicToInteger:
     case InlinableNative::IntrinsicToLength:
     case InlinableNative::IntrinsicIsConstructing:
@@ -248,14 +215,9 @@ bool js::jit::CanInlineNativeCrossRealm(InlinableNative native) {
     case InlinableNative::IntrinsicRegExpExec:
     case InlinableNative::IntrinsicRegExpExecForTest:
     case InlinableNative::IntrinsicTypedArrayLength:
-    case InlinableNative::IntrinsicTypedArrayLengthZeroOnOutOfBounds:
-    case InlinableNative::IntrinsicTypedArrayByteOffset:
-    case InlinableNative::IntrinsicTypedArrayElementSize:
     case InlinableNative::IntrinsicArrayIteratorPrototypeOptimizable:
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
     case InlinableNative::IntrinsicGuardToAsyncDisposableStack:
     case InlinableNative::IntrinsicGuardToDisposableStack:
-#endif
       MOZ_CRASH("Unexpected cross-realm intrinsic call");
 
     case InlinableNative::TestBailout:
@@ -270,6 +232,7 @@ bool js::jit::CanInlineNativeCrossRealm(InlinableNative native) {
     case InlinableNative::ArrayShift:
     case InlinableNative::ArrayPush:
     case InlinableNative::ArraySlice:
+    case InlinableNative::ArrayBufferByteLength:
     case InlinableNative::AtomicsCompareExchange:
     case InlinableNative::AtomicsExchange:
     case InlinableNative::AtomicsLoad:
@@ -306,6 +269,9 @@ bool js::jit::CanInlineNativeCrossRealm(InlinableNative native) {
     case InlinableNative::DataViewSetFloat64:
     case InlinableNative::DataViewSetBigInt64:
     case InlinableNative::DataViewSetBigUint64:
+    case InlinableNative::DataViewByteLength:
+    case InlinableNative::DataViewByteOffset:
+    case InlinableNative::Date:
     case InlinableNative::DateGetTime:
     case InlinableNative::DateGetFullYear:
     case InlinableNative::DateGetMonth:
@@ -314,21 +280,57 @@ bool js::jit::CanInlineNativeCrossRealm(InlinableNative native) {
     case InlinableNative::DateGetHours:
     case InlinableNative::DateGetMinutes:
     case InlinableNative::DateGetSeconds:
+    case InlinableNative::DateNow:
+    case InlinableNative::DateParse:
+    case InlinableNative::DurationYears:
+    case InlinableNative::DurationMonths:
+    case InlinableNative::DurationWeeks:
+    case InlinableNative::DurationDays:
+    case InlinableNative::DurationHours:
+    case InlinableNative::DurationMinutes:
+    case InlinableNative::DurationSeconds:
+    case InlinableNative::DurationMilliseconds:
+    case InlinableNative::DurationMicroseconds:
+    case InlinableNative::DurationNanoseconds:
+    case InlinableNative::PlainTimeHour:
+    case InlinableNative::PlainTimeMinute:
+    case InlinableNative::PlainTimeSecond:
+    case InlinableNative::PlainTimeMillisecond:
+    case InlinableNative::PlainTimeMicrosecond:
+    case InlinableNative::PlainTimeNanosecond:
+    case InlinableNative::PlainDateTimeHour:
+    case InlinableNative::PlainDateTimeMinute:
+    case InlinableNative::PlainDateTimeSecond:
+    case InlinableNative::PlainDateTimeMillisecond:
+    case InlinableNative::PlainDateTimeMicrosecond:
+    case InlinableNative::PlainDateTimeNanosecond:
+    case InlinableNative::InstantEpochMilliseconds:
+    case InlinableNative::ZonedDateTimeEpochMilliseconds:
     case InlinableNative::FunctionBind:
     case InlinableNative::MapConstructor:
     case InlinableNative::MapGet:
     case InlinableNative::MapHas:
     case InlinableNative::MapDelete:
     case InlinableNative::MapSet:
+    case InlinableNative::MapSize:
     case InlinableNative::Number:
     case InlinableNative::NumberParseInt:
     case InlinableNative::NumberToString:
     case InlinableNative::ReflectGetPrototypeOf:
+    case InlinableNative::RegExpDotAll:
+    case InlinableNative::RegExpGlobal:
+    case InlinableNative::RegExpHasIndices:
+    case InlinableNative::RegExpIgnoreCase:
+    case InlinableNative::RegExpMultiline:
+    case InlinableNative::RegExpSticky:
+    case InlinableNative::RegExpUnicode:
+    case InlinableNative::RegExpUnicodeSets:
     case InlinableNative::SetConstructor:
     case InlinableNative::SetHas:
     case InlinableNative::SetDelete:
     case InlinableNative::SetAdd:
     case InlinableNative::SetSize:
+    case InlinableNative::SharedArrayBufferByteLength:
     case InlinableNative::String:
     case InlinableNative::StringToString:
     case InlinableNative::StringValueOf:
@@ -345,6 +347,8 @@ bool js::jit::CanInlineNativeCrossRealm(InlinableNative native) {
     case InlinableNative::StringEndsWith:
     case InlinableNative::StringToLowerCase:
     case InlinableNative::StringToUpperCase:
+    case InlinableNative::StringToLocaleLowerCase:
+    case InlinableNative::StringToLocaleUpperCase:
     case InlinableNative::StringTrim:
     case InlinableNative::StringTrimStart:
     case InlinableNative::StringTrimEnd:
@@ -355,6 +359,15 @@ bool js::jit::CanInlineNativeCrossRealm(InlinableNative native) {
     case InlinableNative::ObjectKeys:
     case InlinableNative::ObjectToString:
     case InlinableNative::TypedArrayConstructor:
+    case InlinableNative::TypedArrayFill:
+    case InlinableNative::TypedArraySet:
+    case InlinableNative::TypedArraySubarray:
+    case InlinableNative::TypedArrayLength:
+    case InlinableNative::TypedArrayByteLength:
+    case InlinableNative::TypedArrayByteOffset:
+    case InlinableNative::WeakMapGet:
+    case InlinableNative::WeakMapHas:
+    case InlinableNative::WeakSetHas:
 #ifdef FUZZING_JS_FUZZILLI
     case InlinableNative::FuzzilliHash:
 #endif

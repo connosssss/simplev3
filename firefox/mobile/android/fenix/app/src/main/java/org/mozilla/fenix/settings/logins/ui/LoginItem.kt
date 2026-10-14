@@ -4,16 +4,14 @@
 
 package org.mozilla.fenix.settings.logins.ui
 
-import java.net.URI
-
 /**
- *  An item representing a saved login
+ * An item representing a saved login
  *
- *  @property guid The id of the login.
- *  @property url The site where the login is created.
- *  @property username The username of the login.
- *  @property password The password of the login.
- *  @property timeLastUsed The time in milliseconds when the login was last used.
+ * @property guid The id of the login.
+ * @property url The site where the login is created.
+ * @property username The username of the login.
+ * @property password The password of the login.
+ * @property timeLastUsed The time in milliseconds when the login was last used.
  */
 data class LoginItem(
     val guid: String,
@@ -22,5 +20,3 @@ data class LoginItem(
     val password: String,
     val timeLastUsed: Long = 0L,
 )
-
-internal fun LoginItem.getDomainName(): String = URI(url).host.removePrefix("www.")

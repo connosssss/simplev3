@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -81,10 +79,8 @@ enum class DeclarationKind : uint8_t {
   Var,
   Let,
   Const,
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
   Using,
   AwaitUsing,
-#endif
   Class,  // Handled as same as `let` after parsing.
   Import,
   BodyLevelFunction,
@@ -126,11 +122,9 @@ static inline BindingKind DeclarationKindToBindingKind(DeclarationKind kind) {
     case DeclarationKind::Const:
       return BindingKind::Const;
 
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
     case DeclarationKind::AwaitUsing:
     case DeclarationKind::Using:
       return BindingKind::Using;
-#endif
 
     case DeclarationKind::Import:
       return BindingKind::Import;
@@ -188,7 +182,6 @@ class DeclaredNameInfo {
         closedOver_(bool(closedOver)),
         privateNameKind_(PrivateNameKind::None),
         placement_(FieldPlacement::Unspecified) {
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
     // TODO: present we are brute forcing our way to
     // enforce creating an environment object whenever we encounter
     // a using declaration. This is temporary for prototyping
@@ -196,7 +189,6 @@ class DeclaredNameInfo {
     if (kind == DeclarationKind::Using || kind == DeclarationKind::AwaitUsing) {
       closedOver_ = true;
     }
-#endif
   }
 
   // Needed for InlineMap.
@@ -280,8 +272,8 @@ class NameLocation {
   // If the name is closed over and accessed via EnvironmentCoordinate, the
   // number of dynamic environments to skip.
   //
-  // Otherwise UINT8_MAX.
-  uint8_t hops_;
+  // Otherwise UINT16_MAX.
+  uint16_t hops_;
 
   // If the name lives on the frame, the slot frame.
   //
@@ -294,7 +286,7 @@ class NameLocation {
   static_assert(LOCALNO_BITS == ENVCOORD_SLOT_BITS,
                 "Frame and environment slots must be same sized.");
 
-  NameLocation(Kind kind, BindingKind bindingKind, uint8_t hops = UINT8_MAX,
+  NameLocation(Kind kind, BindingKind bindingKind, uint16_t hops = UINT16_MAX,
                uint32_t slot = 0)
       : kind_(kind), bindingKind_(bindingKind), hops_(hops), slot_(slot) {}
 
@@ -330,13 +322,13 @@ class NameLocation {
     return NameLocation(Kind::FrameSlot, bindKind, 0, slot);
   }
 
-  static NameLocation EnvironmentCoordinate(BindingKind bindKind, uint8_t hops,
+  static NameLocation EnvironmentCoordinate(BindingKind bindKind, uint16_t hops,
                                             uint32_t slot) {
     MOZ_ASSERT(slot < ENVCOORD_SLOT_LIMIT);
     return NameLocation(Kind::EnvironmentCoordinate, bindKind, hops, slot);
   }
   static NameLocation DebugEnvironmentCoordinate(BindingKind bindKind,
-                                                 uint8_t hops, uint32_t slot) {
+                                                 uint16_t hops, uint32_t slot) {
     MOZ_ASSERT(slot < ENVCOORD_SLOT_LIMIT);
     return NameLocation(Kind::DebugEnvironmentCoordinate, bindKind, hops, slot);
   }
@@ -349,12 +341,7 @@ class NameLocation {
     return NameLocation(Kind::DynamicAnnexBVar, BindingKind::Var);
   }
 
-  bool operator==(const NameLocation& other) const {
-    return kind_ == other.kind_ && bindingKind_ == other.bindingKind_ &&
-           hops_ == other.hops_ && slot_ == other.slot_;
-  }
-
-  bool operator!=(const NameLocation& other) const { return !(*this == other); }
+  bool operator==(const NameLocation& other) const = default;
 
   Kind kind() const { return kind_; }
 
@@ -368,7 +355,7 @@ class NameLocation {
     return slot_;
   }
 
-  NameLocation addHops(uint8_t more) {
+  NameLocation addHops(uint16_t more) {
     MOZ_ASSERT(hops_ < ENVCOORD_HOPS_LIMIT - more);
     MOZ_ASSERT(kind_ == Kind::EnvironmentCoordinate);
     return NameLocation(kind_, bindingKind_, hops_ + more, slot_);
@@ -390,7 +377,10 @@ class NameLocation {
 
   bool isLexical() const { return BindingKindIsLexical(bindingKind()); }
 
-  bool isConst() const { return bindingKind() == BindingKind::Const; }
+  bool isConst() const {
+    return bindingKind() == BindingKind::Const ||
+           bindingKind() == BindingKind::Using;
+  }
 
   bool isSynthetic() const { return bindingKind() == BindingKind::Synthetic; }
 

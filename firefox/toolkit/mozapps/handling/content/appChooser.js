@@ -8,6 +8,9 @@ const { PrivateBrowsingUtils } = ChromeUtils.importESModule(
 const { EnableDelayHelper } = ChromeUtils.importESModule(
   "resource://gre/modules/PromptUtils.sys.mjs"
 );
+const { getMozRemoteImageURL } = ChromeUtils.importESModule(
+  "moz-src:///toolkit/modules/FaviconUtils.sys.mjs"
+);
 
 class MozHandler extends window.MozElements.MozRichlistitem {
   static get markup() {
@@ -55,10 +58,15 @@ let dialog = {
    */
   initialize() {
     let args = window.arguments[0].wrappedJSObject || window.arguments[0];
-    let { handler, outArgs, usePrivateBrowsing, enableButtonDelay } = args;
+    let { handler, outArgs, usePrivateBrowsing, enableButtonDelay, kind } =
+      args;
 
     this._handlerInfo = handler.QueryInterface(Ci.nsIHandlerInfo);
     this._outArgs = outArgs;
+    // "mailto" tailors this generic chooser into the mailto handler picker:
+    // web mailers + OS default only, email-specific labels, and an inverted
+    // "always ask" checkbox.
+    this._kind = kind;
 
     this.isPrivate =
       usePrivateBrowsing ||
@@ -85,6 +93,19 @@ let dialog = {
     // UI is ready, lets populate our list
     this.populateList();
 
+    if (this._kind === "mailto") {
+      // The mailto picker only offers configured web mailers and the OS
+      // default; it intentionally omits the generic "choose another
+      // application" file-picker option.
+      this._itemChoose.hidden = true;
+      if (!this.selectedItem || this.selectedItem == this._itemChoose) {
+        this.selectedItem = items.querySelector("richlistitem:not([hidden])");
+      }
+      // Drop the shared chooser's l10n id so it doesn't set the generic button
+      // labels; initL10n applies the mailto labels via Fluent instead.
+      this._dialog.removeAttribute("data-l10n-id");
+    }
+
     this.initL10n();
 
     if (enableButtonDelay) {
@@ -104,11 +125,35 @@ let dialog = {
 
   initL10n() {
     let rememberLabel = document.getElementById("remember-label");
+    let description = document.getElementById("description");
+
+    if (this._kind === "mailto") {
+      document.l10n.setAttributes(
+        document.documentElement,
+        "mailto-handler-picker-window"
+      );
+      document.l10n.setAttributes(
+        rememberLabel,
+        "mailto-handler-picker-always-ask"
+      );
+      document.l10n.setAttributes(
+        description,
+        "mailto-handler-picker-subtitle"
+      );
+      document.l10n.setAttributes(
+        this._dialog.getButton("accept"),
+        "mailto-handler-picker-set-default"
+      );
+      document.l10n.setAttributes(
+        this._dialog.getButton("cancel"),
+        "mailto-handler-picker-not-now"
+      );
+      return;
+    }
+
     document.l10n.setAttributes(rememberLabel, "chooser-dialog-remember", {
       scheme: this._handlerInfo.type,
     });
-
-    let description = document.getElementById("description");
     document.l10n.setAttributes(description, "chooser-dialog-description", {
       scheme: this._handlerInfo.type,
     });
@@ -123,6 +168,11 @@ let dialog = {
     var preferredHandler = this._handlerInfo.preferredApplicationHandler;
     for (let i = possibleHandlers.length - 1; i >= 0; --i) {
       let app = possibleHandlers.queryElementAt(i, Ci.nsIHandlerApp);
+      // The mailto picker only lists web mailers (plus the OS default added
+      // below); skip native apps.
+      if (this._kind === "mailto" && !(app instanceof Ci.nsIWebHandlerApp)) {
+        continue;
+      }
       let elm = document.createXULElement("richlistitem", {
         is: "mozapps-handler",
       });
@@ -146,7 +196,10 @@ let dialog = {
           // and users won't visit the handler's URL template, they'll only
           // visit URLs derived from that template (i.e. with %s in the template
           // replaced by the URL of the content being handled).
-          elm.setAttribute("image", uri.prePath + "/favicon.ico");
+          elm.setAttribute(
+            "image",
+            getMozRemoteImageURL(uri.prePath + "/favicon.ico", { size: 32 })
+          );
         }
         elm.setAttribute("description", uri.prePath);
 
@@ -164,8 +217,6 @@ let dialog = {
             }
           }
         }
-      } else if (app instanceof Ci.nsIDBusHandlerApp) {
-        elm.setAttribute("description", app.method);
       } else if (!(app instanceof Ci.nsIGIOMimeApp)) {
         // We support GIO application handler, but no action required there
         throw new Error("unknown handler type");
@@ -192,8 +243,8 @@ let dialog = {
       }
     }
 
-    // Add gio handlers
-    if (Cc["@mozilla.org/gio-service;1"]) {
+    // Add gio handlers (native apps, not shown in the mailto picker)
+    if (Cc["@mozilla.org/gio-service;1"] && this._kind !== "mailto") {
       let gIOSvc = Cc["@mozilla.org/gio-service;1"].getService(
         Ci.nsIGIOService
       );
@@ -277,7 +328,13 @@ let dialog = {
    * Function called when the OK button is pressed.
    */
   onAccept() {
-    this.updateHandlerData(this._rememberCheck.checked);
+    // In the mailto picker the checkbox is "always ask" (the inverse of the
+    // generic "remember / skip asking" checkbox), so invert before storing.
+    let skipAsk =
+      this._kind === "mailto"
+        ? !this._rememberCheck.checked
+        : this._rememberCheck.checked;
+    this.updateHandlerData(skipAsk);
     this._outArgs.setProperty("openHandler", true);
   },
 
@@ -285,7 +342,7 @@ let dialog = {
    * Determines if the accept button should be disabled or not
    */
   updateAcceptButton() {
-    this._dialog.setAttribute(
+    this._dialog.toggleAttribute(
       "buttondisabledaccept",
       this._acceptBtnDisabled || this._itemChoose.selected
     );
@@ -293,6 +350,7 @@ let dialog = {
 
   /**
    * Update the handler info to reflect the user choice.
+   *
    * @param {boolean} skipAsk - Whether we should persist the application
    * choice and skip asking next time.
    */

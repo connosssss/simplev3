@@ -9,8 +9,10 @@ import android.view.LayoutInflater
 import android.widget.Button
 import android.widget.TextView
 import androidx.annotation.UiContext
-import androidx.appcompat.app.AlertDialog
 import androidx.lifecycle.LifecycleOwner
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import mozilla.components.browser.state.action.ExtensionsProcessAction
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.support.ktx.android.content.appName
@@ -20,31 +22,34 @@ import org.mozilla.fenix.components.AppStore
 import org.mozilla.fenix.ext.components
 
 /**
- * Controller for handling extensions process spawning disabled events. When the app is in
- * foreground this will call for a dialog to decide on correct action to take (retry enabling
- * process spawning or disable extensions).
+ * Controller for handling extensions process spawning disabled events. When the app is in foreground this will call for
+ * a dialog to decide on correct action to take (retry enabling process spawning or disable extensions).
  *
  * @param context to show the AlertDialog
  * @param browserStore The [BrowserStore] which holds the state for showing the dialog
  * @param appStore The [AppStore] containing the application state
  * @param builder to use for creating the dialog which can be styled as needed
  * @param appName to be added to the message. Optional and mainly relevant for testing
+ * @param dispatcher The [CoroutineDispatcher] to use for the observer logic.
  */
 class ExtensionsProcessDisabledForegroundController(
     @UiContext context: Context,
     browserStore: BrowserStore = context.components.core.store,
     appStore: AppStore = context.components.appStore,
-    builder: AlertDialog.Builder = AlertDialog.Builder(context),
+    builder: MaterialAlertDialogBuilder = MaterialAlertDialogBuilder(context),
     appName: String = context.appName,
-) : ExtensionsProcessDisabledPromptObserver(
-    store = browserStore,
-    shouldCancelOnStop = true,
-    {
-        if (appStore.state.isForeground) {
-            presentDialog(context, browserStore, builder, appName)
-        }
-    },
-) {
+    dispatcher: CoroutineDispatcher = Dispatchers.Main,
+) :
+    ExtensionsProcessDisabledPromptObserver(
+        store = browserStore,
+        shouldCancelOnStop = true,
+        dispatcher = dispatcher,
+        {
+            if (appStore.state.isForeground) {
+                presentDialog(context, browserStore, builder, appName)
+            }
+        },
+    ) {
     override fun onDestroy(owner: LifecycleOwner) {
         super.onDestroy(owner)
         // In case the activity gets destroyed, we want to re-create the dialog.
@@ -55,9 +60,9 @@ class ExtensionsProcessDisabledForegroundController(
         private var shouldCreateDialog: Boolean = true
 
         /**
-         * Present a dialog to the user notifying of extensions process spawning disabled and also asking
-         * whether they would like to continue trying or disable extensions. If the user chooses to retry,
-         * enable the extensions process spawning. Otherwise, disable it.
+         * Present a dialog to the user notifying of extensions process spawning disabled and also asking whether they
+         * would like to continue trying or disable extensions. If the user chooses to retry, enable the extensions
+         * process spawning. Otherwise, disable it.
          *
          * @param context to show the AlertDialog
          * @param store The [BrowserStore] which holds the state for showing the dialog
@@ -67,7 +72,7 @@ class ExtensionsProcessDisabledForegroundController(
         private fun presentDialog(
             @UiContext context: Context,
             store: BrowserStore,
-            builder: AlertDialog.Builder,
+            builder: MaterialAlertDialogBuilder,
             appName: String,
         ) {
             if (!shouldCreateDialog) {
@@ -76,8 +81,7 @@ class ExtensionsProcessDisabledForegroundController(
 
             val message = context.getString(R.string.extension_process_crash_dialog_message, appName)
             var onDismissDialog: (() -> Unit)? = null
-            val layout = LayoutInflater.from(context)
-                .inflate(R.layout.crash_extension_dialog, null, false)
+            val layout = LayoutInflater.from(context).inflate(R.layout.crash_extension_dialog, null, false)
             layout?.apply {
                 findViewById<TextView>(R.id.message)?.text = message
                 findViewById<Button>(R.id.positive)?.setOnClickListener {

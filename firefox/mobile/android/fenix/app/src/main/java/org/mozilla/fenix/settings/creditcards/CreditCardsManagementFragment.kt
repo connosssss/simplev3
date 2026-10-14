@@ -13,10 +13,11 @@ import androidx.navigation.fragment.findNavController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import mozilla.components.lib.state.ext.consumeFrom
+import mozilla.components.lib.state.helpers.StoreProvider.Companion.storeProvider
 import org.mozilla.fenix.R
 import org.mozilla.fenix.SecureFragment
-import org.mozilla.fenix.components.StoreProvider
 import org.mozilla.fenix.databinding.ComponentCreditCardsBinding
+import org.mozilla.fenix.e2e.SystemInsetsPaddedFragment
 import org.mozilla.fenix.ext.components
 import org.mozilla.fenix.ext.redirectToReAuth
 import org.mozilla.fenix.ext.showToolbar
@@ -28,10 +29,8 @@ import org.mozilla.fenix.settings.creditcards.interactor.CreditCardsManagementIn
 import org.mozilla.fenix.settings.creditcards.interactor.DefaultCreditCardsManagementInteractor
 import org.mozilla.fenix.settings.creditcards.view.CreditCardsManagementView
 
-/**
- * Displays a list of saved credit cards.
- */
-class CreditCardsManagementFragment : SecureFragment() {
+/** Displays a list of saved credit cards. */
+class CreditCardsManagementFragment : SecureFragment(), SystemInsetsPaddedFragment {
 
     private lateinit var store: AutofillFragmentStore
     private lateinit var interactor: CreditCardsManagementInteractor
@@ -44,15 +43,14 @@ class CreditCardsManagementFragment : SecureFragment() {
     ): View? {
         val view = inflater.inflate(CreditCardsManagementView.LAYOUT_ID, container, false)
 
-        store = StoreProvider.get(this) {
-            AutofillFragmentStore(AutofillFragmentState())
+        store = storeProvider.get { restoredState ->
+            AutofillFragmentStore(restoredState ?: AutofillFragmentState())
         }
 
-        interactor = DefaultCreditCardsManagementInteractor(
-            controller = DefaultCreditCardsManagementController(
-                navController = findNavController(),
-            ),
-        )
+        interactor =
+            DefaultCreditCardsManagementInteractor(
+                controller = DefaultCreditCardsManagementController(navController = findNavController())
+            )
         val binding = ComponentCreditCardsBinding.bind(view)
 
         creditCardsView = CreditCardsManagementView(binding, interactor)
@@ -78,9 +76,7 @@ class CreditCardsManagementFragment : SecureFragment() {
         showToolbar(getString(R.string.credit_cards_saved_cards))
     }
 
-    /**
-     * When the fragment is paused, navigate back to the settings page to reauthenticate.
-     */
+    /** When the fragment is paused, navigate back to the settings page to reauthenticate. */
     override fun onPause() {
         // Don't redirect if the user is navigating to the credit card editor fragment.
         redirectToReAuth(
@@ -93,8 +89,8 @@ class CreditCardsManagementFragment : SecureFragment() {
     }
 
     /**
-     * Fetches all the credit cards from the autofill storage and updates the
-     * [AutofillFragmentStore] with the list of credit cards.
+     * Fetches all the credit cards from the autofill storage and updates the [AutofillFragmentStore] with the list of
+     * credit cards.
      */
     private fun loadCreditCards() {
         lifecycleScope.launch(Dispatchers.IO) {

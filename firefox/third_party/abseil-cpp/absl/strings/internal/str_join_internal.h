@@ -42,10 +42,12 @@
 #include <type_traits>
 #include <utility>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/config.h"
+#include "absl/base/internal/iterator_traits.h"
 #include "absl/base/internal/raw_logging.h"
 #include "absl/strings/internal/ostringstream.h"
-#include "absl/strings/internal/resize_uninitialized.h"
+#include "absl/strings/resize_and_overwrite.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 
@@ -228,10 +230,9 @@ std::string JoinAlgorithm(Iterator start, Iterator end, absl::string_view s,
 // range will be traversed twice: once to calculate the total needed size, and
 // then again to copy the elements and delimiters to the output string.
 template <typename Iterator,
-          typename = typename std::enable_if<std::is_convertible<
-              typename std::iterator_traits<Iterator>::iterator_category,
-              std::forward_iterator_tag>::value>::type>
-std::string JoinAlgorithm(Iterator start, Iterator end, absl::string_view s,
+          typename = std::enable_if_t<
+              base_internal::IsAtLeastForwardIterator<Iterator>::value>>
+std::string JoinAlgorithm(Iterator start, Iterator end, absl::string_view sep,
                           NoFormatter) {
   std::string result;
   if (start != end) {
@@ -241,7 +242,7 @@ std::string JoinAlgorithm(Iterator start, Iterator end, absl::string_view s,
     // in memory strings to overflow a uint64_t.
     uint64_t result_size = start_value.size();
     for (Iterator it = start; ++it != end;) {
-      result_size += s.size();
+      result_size += sep.size();
       result_size += (*it).size();
     }
 
@@ -249,23 +250,22 @@ std::string JoinAlgorithm(Iterator start, Iterator end, absl::string_view s,
       constexpr uint64_t kMaxSize =
           uint64_t{(std::numeric_limits<size_t>::max)()};
       ABSL_INTERNAL_CHECK(result_size <= kMaxSize, "size_t overflow");
-      STLStringResizeUninitialized(&result, static_cast<size_t>(result_size));
 
-      // Joins strings
-      char* result_buf = &*result.begin();
-
-      memcpy(result_buf, start_value.data(), start_value.size());
-      result_buf += start_value.size();
-      for (Iterator it = start; ++it != end;) {
-        memcpy(result_buf, s.data(), s.size());
-        result_buf += s.size();
-        auto&& value = *it;
-        memcpy(result_buf, value.data(), value.size());
-        result_buf += value.size();
-      }
+      StringResizeAndOverwrite(
+          result, static_cast<size_t>(result_size),
+          [&start, &end, &start_value, sep](char* result_buf,
+                                            size_t result_buf_size) {
+            // Joins strings
+            result_buf = absl::c_copy(start_value, result_buf);
+            for (Iterator it = start; ++it != end;) {
+              result_buf = absl::c_copy(sep, result_buf);
+              auto&& value = *it;
+              result_buf = absl::c_copy(value, result_buf);
+            }
+            return result_buf_size;
+          });
     }
   }
-
   return result;
 }
 

@@ -11,13 +11,14 @@ directly from the lit.all.mjs file.
 
 eg.
 
-```
+```js
 // Standard npm package:
 import { LitElement } from "lit";
 import { classMap } from "lit/directives/class-map.js";
 
 // Using lit.all.mjs (pathing to lit.all.mjs may differ)
 import { classMap, LitElement } from "../vendor/lit.all.mjs";
+```
 
 ## To update the lit bundle
 
@@ -28,19 +29,52 @@ the moz.yaml file for instructions.
 
 ### Using mach vendor
 
-```
+```sh
 ./mach vendor toolkit/content/vendor/lit/moz.yaml
-hg ci -m "Update to lit@<version>"
+git commit -am "Update to lit@<version>"
 ```
 
 ### Manually updating the bundle
 
-To manually update, you'll need to checkout a copy of lit/lit, find the tag you
-want and manually run our import commands.
+To manually update, you'll need to checkout a copy of lit/lit. First we apply
+our patches to the last version we imported:
 
-  1. Clone https://github.com/lit/lit outside of moz-central
-  2. Copy *.patch from this directory into the lit repo
-  3. git apply *.patch
-  4. npm install && npm run build
-  5. Copy packages/lit/lit-all.min.js to toolkit/content/widgets/vendor/lit.all.mjs
-  6. hg ci -m "Update to lit@<version>"
+```sh
+# Examples assume you have some root folder like this with lit and firefox
+export PROJECTS_ROOT=~/Projects
+cd "$PROJECTS_ROOT"
+git clone https://github.com/lit/lit
+cd lit
+git checkout lit@<last-version>
+git am "$PROJECTS_ROOT"/firefox/toolkit/content/vendor/lit/*.patch
+npm ci && npm run build
+```
+
+This should build our version of Lit from the last release we were using. Since
+we previously build off this tag, the build should be successful. Now we can
+rebase onto the new version with `git rebase lit@<new-version>`. Resolve any
+conflicts as necessary. If you need to make updates to the patches, make commits
+as usual in a git repo. If you're revising an existing patch then amend it. New
+commits can be authored as well.
+
+```sh
+git rebase lit@<new-version>
+# Resolve any conflicts
+# Amend or make new patches if necessary
+# Verify it builds
+npm ci && npm run build
+# Export the new patches.
+git format-patch lit@<last-version>
+rm  "$PROJECTS_ROOT"/firefox/toolkit/content/vendor/lit/*.patch
+mv -f *.patch "$PROJECTS_ROOT"/firefox/toolkit/content/vendor/lit/
+# Commit the updated patches to firefox
+cd "$PROJECTS_ROOT"/firefox
+git commit -am "Update Lit patches to lit@<version>"
+# Build and commit the new Lit bundle in firefox
+./mach vendor toolkit/content/vendor/lit/moz.yaml
+git commit -am "Update Lit to lit@<version>"
+```
+
+## The lit.all.d.ts file
+
+The [lit](https://github.com/lit/lit) npm package is installed *only for its types*, which are exported from a custom [lit.all.d.ts](/toolkit/content/widgets/vendor/lit.all.d.ts) file. This file contains all of Lit's types used throughout the project and using it is preferred vs importing types from each of Lit's files directly, mainly to avoid having to update paths in so many places if their paths in the Lit project ever change. The file doesn't have every exported Lit type by default. Any Lit type that is necessary in the project will need to be explicitly added and re-exported from this file.

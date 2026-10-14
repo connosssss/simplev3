@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,9 +8,10 @@
 #include "mozilla/Atomics.h"
 #include "mozilla/DataMutex.h"
 #include "mozilla/net/rust_helper.h"
-#include "nsString.h"
 #include "nsIDNSService.h"
 #include "nsIProtocolProxyService2.h"
+#include "nsString.h"
+#include "nsTHashMap.h"
 
 class nsICancelable;
 class nsIProxyInfo;
@@ -34,8 +34,12 @@ class TRRServiceBase : public nsIProxyConfigChangedCallback {
   already_AddRefed<nsHttpConnectionInfo> TRRConnectionInfo();
   // Called to initialize the connection info. Once the connection info is
   // created first time, mTRRConnectionInfoInited will be set to true.
-  virtual void InitTRRConnectionInfo();
+  // When aForceReinit is true, we always create the conncetion info again.
+  virtual void InitTRRConnectionInfo(bool aForceReinit = false);
   bool TRRConnectionInfoInited() const { return mTRRConnectionInfoInited; }
+
+  void SetHttp3FirstForServer(const nsACString& aServer, bool aEnabled);
+  bool GetHttp3FirstForServer(const nsACString& aServer);
 
  protected:
   virtual ~TRRServiceBase();
@@ -54,7 +58,6 @@ class TRRServiceBase : public nsIProxyConfigChangedCallback {
   void OnTRRModeChange();
   void OnTRRURIChange();
 
-  void DoReadEtcHostsFile(ParsingCallback aCallback);
   virtual void ReadEtcHostsFile() = 0;
   // Called to create a connection info that will be used by TRRServiceChannel.
   // Note that when this function is called, mDefaultTRRConnectionInfo will be
@@ -70,6 +73,9 @@ class TRRServiceBase : public nsIProxyConfigChangedCallback {
   void RegisterProxyChangeListener();
   void UnregisterProxyChangeListener();
 
+  already_AddRefed<nsHttpConnectionInfo> CreateConnInfoHelper(
+      nsIURI* aURI, nsIProxyInfo* aProxyInfo);
+
   nsCString mPrivateURI;  // protected by mMutex
   // Pref caches should only be used on the main thread.
   nsCString mURIPref;
@@ -81,8 +87,15 @@ class TRRServiceBase : public nsIProxyConfigChangedCallback {
       nsIDNSService::MODE_NATIVEONLY};
   Atomic<bool, Relaxed> mURISetByDetection{false};
   Atomic<bool, Relaxed> mTRRConnectionInfoInited{false};
+  // Incremented every time a new connection info lookup is started. The async
+  // ProxyConfigLookup callback only stores its result if this still matches,
+  // so a stale lookup can't overwrite the result of a newer one.
+  Atomic<uint32_t, Relaxed> mTRRConnectionInfoGeneration{0};
   DataMutex<RefPtr<nsHttpConnectionInfo>> mDefaultTRRConnectionInfo;
   bool mNativeHTTPSQueryEnabled{false};
+
+  Mutex mLock{"TRRService"};
+  nsTHashMap<nsCString, bool> mHttp3FirstServers MOZ_GUARDED_BY(mLock);
 };
 
 }  // namespace net

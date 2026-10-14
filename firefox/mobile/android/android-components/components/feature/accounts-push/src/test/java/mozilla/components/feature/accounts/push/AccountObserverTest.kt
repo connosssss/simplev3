@@ -4,9 +4,9 @@
 
 package mozilla.components.feature.accounts.push
 
-import android.os.Looper.getMainLooper
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
+import kotlinx.coroutines.test.runTest
 import mozilla.components.concept.base.crash.CrashReporting
 import mozilla.components.concept.sync.AuthType
 import mozilla.components.concept.sync.DeviceConstellation
@@ -29,7 +29,6 @@ import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoMoreInteractions
 import org.mockito.Mockito.`when`
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows.shadowOf
 
 @RunWith(RobolectricTestRunner::class)
 class AccountObserverTest {
@@ -50,45 +49,50 @@ class AccountObserverTest {
     }
 
     @Test
-    fun `register device observer for existing accounts`() {
+    fun `register device observer for existing accounts`() = runTest {
         val lifecycle: Lifecycle = mock()
         val lifecycleOwner: LifecycleOwner = mock()
-        val observer = AccountObserver(
-            testContext,
-            pushFeature,
-            pushScope,
-            crashReporter,
-            lifecycleOwner,
-            false,
-        )
+        val observer =
+            AccountObserver(
+                testContext,
+                pushFeature,
+                pushScope,
+                crashReporter,
+                lifecycleOwner,
+                this,
+                false,
+            )
         `when`(lifecycle.currentState).thenReturn(Lifecycle.State.STARTED)
         `when`(lifecycleOwner.lifecycle).thenReturn(lifecycle)
 
         observer.onAuthenticated(account, AuthType.Existing)
-        shadowOf(getMainLooper()).idle()
+        testScheduler.advanceUntilIdle()
 
         verify(constellation).registerDeviceObserver(any(), eq(lifecycleOwner), anyBoolean())
 
         reset(constellation)
 
         observer.onAuthenticated(account, AuthType.Recovered)
-        shadowOf(getMainLooper()).idle()
+        testScheduler.advanceUntilIdle()
 
         verify(constellation).registerDeviceObserver(any(), eq(lifecycleOwner), anyBoolean())
     }
 
     @Test
-    fun `onLoggedOut removes cache`() {
-        val observer = AccountObserver(
-            testContext,
-            pushFeature,
-            pushScope,
-            crashReporter,
-            mock(),
-            false,
-        )
+    fun `onLoggedOut removes cache`() = runTest {
+        val observer =
+            AccountObserver(
+                testContext,
+                pushFeature,
+                pushScope,
+                crashReporter,
+                mock(),
+                this,
+                false,
+            )
 
-        preference(testContext).edit()
+        preference(testContext)
+            .edit()
             .putString(PREF_LAST_VERIFIED, "{\"timestamp\": 100, \"totalCount\": 0}")
             .putString(PREF_FXA_SCOPE, "12345")
             .apply()
@@ -102,15 +106,17 @@ class AccountObserverTest {
     }
 
     @Test
-    fun `feature does not subscribe when authenticating`() {
-        val observer = AccountObserver(
-            testContext,
-            pushFeature,
-            pushScope,
-            crashReporter,
-            mock(),
-            false,
-        )
+    fun `feature does not subscribe when authenticating`() = runTest {
+        val observer =
+            AccountObserver(
+                testContext,
+                pushFeature,
+                pushScope,
+                crashReporter,
+                mock(),
+                this,
+                false,
+            )
 
         observer.onAuthenticated(account, AuthType.Existing)
 
@@ -132,15 +138,17 @@ class AccountObserverTest {
     }
 
     @Test
-    fun `feature and service invoked on logout`() {
-        val observer = AccountObserver(
-            testContext,
-            pushFeature,
-            pushScope,
-            crashReporter,
-            mock(),
-            false,
-        )
+    fun `feature and service invoked on logout`() = runTest {
+        val observer =
+            AccountObserver(
+                testContext,
+                pushFeature,
+                pushScope,
+                crashReporter,
+                mock(),
+                this,
+                false,
+            )
 
         observer.onLoggedOut()
 
@@ -148,15 +156,17 @@ class AccountObserverTest {
     }
 
     @Test
-    fun `feature and service not invoked for any other callback`() {
-        val observer = AccountObserver(
-            testContext,
-            pushFeature,
-            pushScope,
-            crashReporter,
-            mock(),
-            false,
-        )
+    fun `feature and service not invoked for any other callback`() = runTest {
+        val observer =
+            AccountObserver(
+                testContext,
+                pushFeature,
+                pushScope,
+                crashReporter,
+                mock(),
+                this,
+                false,
+            )
 
         observer.onAuthenticationProblems()
         observer.onProfileUpdated(mock())

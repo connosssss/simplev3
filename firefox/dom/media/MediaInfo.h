@@ -1,24 +1,23 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#if !defined(MediaInfo_h)
-#  define MediaInfo_h
+#ifndef MediaInfo_h
+#define MediaInfo_h
 
-#  include "mozilla/UniquePtr.h"
-#  include "mozilla/RefPtr.h"
-#  include "mozilla/Variant.h"
-#  include "nsTHashMap.h"
-#  include "nsString.h"
-#  include "nsTArray.h"
-#  include "AudioConfig.h"
-#  include "ImageTypes.h"
-#  include "MediaData.h"
-#  include "TimeUnits.h"
-#  include "mozilla/gfx/Point.h"  // for gfx::IntSize
-#  include "mozilla/gfx/Rect.h"   // for gfx::IntRect
-#  include "mozilla/gfx/Types.h"  // for gfx::ColorDepth
+#include "AudioConfig.h"
+#include "ImageTypes.h"
+#include "MediaData.h"
+#include "TimeUnits.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/UniquePtr.h"
+#include "mozilla/Variant.h"
+#include "mozilla/gfx/Point.h"  // for gfx::IntSize
+#include "mozilla/gfx/Rect.h"   // for gfx::IntRect
+#include "mozilla/gfx/Types.h"  // for gfx::ColorDepth
+#include "nsString.h"
+#include "nsTArray.h"
+#include "nsTHashMap.h"
 
 namespace mozilla {
 
@@ -80,7 +79,9 @@ struct AacCodecSpecificData {
 
   // The total number of frames of the media, that is, excluding the encoder
   // delay and the padding of the last packet, that must be discarded.
-  uint64_t mMediaFrameCount{0};
+  // Unset when the exact count is unknown (e.g. Matroska has no frame table
+  // and counting would require reading the whole file).
+  Maybe<uint64_t> mMediaFrameCount;
 
   // The bytes of the ES_Descriptor field parsed out of esds box. We store
   // this as a blob as some decoders want this.
@@ -110,10 +111,7 @@ struct FlacCodecSpecificData {
 };
 
 struct Mp3CodecSpecificData final {
-  bool operator==(const Mp3CodecSpecificData& rhs) const {
-    return mEncoderDelayFrames == rhs.mEncoderDelayFrames &&
-           mEncoderPaddingFrames == rhs.mEncoderPaddingFrames;
-  }
+  bool operator==(const Mp3CodecSpecificData& rhs) const = default;
 
   auto MutTiedFields() {
     return std::tie(mEncoderDelayFrames, mEncoderPaddingFrames);
@@ -133,6 +131,7 @@ struct Mp3CodecSpecificData final {
 struct OpusCodecSpecificData {
   bool operator==(const OpusCodecSpecificData& rhs) const {
     return mContainerCodecDelayFrames == rhs.mContainerCodecDelayFrames &&
+           mOutputChannels == rhs.mOutputChannels &&
            *mHeadersBinaryBlob == *rhs.mHeadersBinaryBlob;
   }
   // The codec delay (aka pre-skip) in audio frames.
@@ -148,6 +147,13 @@ struct OpusCodecSpecificData {
   // A binary blob of opus header data, specifically the Identification Header.
   // See https://datatracker.ietf.org/doc/html/rfc7845.html#section-5.1
   RefPtr<MediaByteBuffer> mHeadersBinaryBlob{new MediaByteBuffer};
+
+  // The number of channels the audio will be rendered as, which may be fewer
+  // than the stream has when playback is configured to downmix. Opus codes
+  // wide stereo using intensity stereo phase inversion, which cancels itself
+  // out once the two channels are mixed together, so a decoder must disable
+  // it when this is 1.
+  uint32_t mOutputChannels{0};
 };
 
 struct VorbisCodecSpecificData {
@@ -330,6 +336,7 @@ enum class VideoRotation {
   kDegree_90 = 90,
   kDegree_180 = 180,
   kDegree_270 = 270,
+  // Keep in sync with VideoRotationValidator.
 };
 
 // Stores info relevant to presenting media frames.
@@ -370,6 +377,7 @@ class VideoInfo : public TrackInfo {
     mColorSpace = aOther.mColorSpace;
     mColorPrimaries = aOther.mColorPrimaries;
     mTransferFunction = aOther.mTransferFunction;
+    mHDRMetadata = aOther.mHDRMetadata;
     mColorRange = aOther.mColorRange;
     mImageRect = aOther.mImageRect;
     mAlphaPresent = aOther.mAlphaPresent;
@@ -403,6 +411,16 @@ class VideoInfo : public TrackInfo {
 
   void SetImageRect(const gfx::IntRect& aRect) { mImageRect = Some(aRect); }
   void ResetImageRect() { mImageRect.reset(); }
+
+  // Adopts an image size decoded from the bitstream. The picture rectangle is
+  // expressed relative to the image size, so a change in size invalidates it
+  // and it is discarded; an unchanged size keeps the existing rectangle.
+  void AdoptImageSize(const gfx::IntSize& aImage) {
+    if (mImage != aImage) {
+      ResetImageRect();
+    }
+    mImage = aImage;
+  }
 
   // Returned the crop rectangle scaled to aWidth/aHeight size relative to
   // mImage size.
@@ -476,6 +494,8 @@ class VideoInfo : public TrackInfo {
   // Transfer functions get their own member, which may not be strongly
   // correlated to the colorspace.
   Maybe<gfx::TransferFunction> mTransferFunction;
+
+  Maybe<gfx::HDRMetadata> mHDRMetadata;
 
   // True indicates no restriction on Y, U, V values (otherwise 16-235 for 8
   // bits etc)

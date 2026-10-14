@@ -1,18 +1,15 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:expandtab:shiftwidth=4:tabstop=4:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __nsGdkKeyUtils_h__
-#define __nsGdkKeyUtils_h__
+#ifndef _nsGdkKeyUtils_h_
+#define _nsGdkKeyUtils_h_
+
+#include <gdk/gdk.h>
 
 #include "mozilla/EventForwards.h"
 #include "nsIWidget.h"
 #include "nsTArray.h"
-
-#include <gdk/gdk.h>
 #ifdef MOZ_X11
 #  include <X11/XKBlib.h>
 #endif
@@ -64,6 +61,13 @@ namespace widget {
 
 class KeymapWrapper {
  public:
+  /**
+   * Return the string is not empty and has only one grapheme cluster (meaning
+   * the string does not have 2 or more grapheme clusters. E.g., if the string
+   * has a part of a grapheme cluster, returns true).
+   */
+  [[nodiscard]] static bool StringHasOnlyOneGraphemeCluster(const nsAString&);
+
   /**
    * Compute an our DOM keycode from a GDK keyval.
    */
@@ -130,11 +134,17 @@ class KeymapWrapper {
   static uint32_t ComputeKeyModifiers(guint aGdkModifierState);
 
   /**
+   * Return true if our editor may handle the modifier state as text input.
+   */
+  [[nodiscard]] static bool EditorMayHandleKeyPressEventAsTextInput(
+      guint aGdkModifierState);
+
+  /**
    * Convert native modifiers for `nsIWidget::SynthesizeNative*()` to
    * GDK's state.
    */
   static guint ConvertWidgetModifierToGdkState(
-      nsIWidget::Modifiers aNativeModifiers);
+      nsIWidget::NativeModifiers aNativeModifiers);
 
   /**
    * InitInputEvent() initializes the aInputEvent with aModifierState.
@@ -149,10 +159,26 @@ class KeymapWrapper {
    * @param aKeyEvent         It's an WidgetKeyboardEvent which needs to be
    *                          initialized.
    * @param aGdkKeyEvent      A native GDK key event.
+   * @param aCommitCharReceivedByIMContext
+   *                          Set to non-void string if the IMContext received
+   *                          commit string for aGdkKeyEvent.
    * @param aIsProcessedByIME true if aGdkKeyEvent is handled by IME.
    */
   static void InitKeyEvent(WidgetKeyboardEvent& aKeyEvent,
-                           GdkEventKey* aGdkKeyEvent, bool aIsProcessedByIME);
+                           GdkEventKey* aGdkKeyEvent,
+                           const nsAString& aCommitCharReceivedByIMContext,
+                           bool aIsProcessedByIME);
+
+  /**
+   * InitKeyEventFromCommitString() initializes aKeyEvent for a character
+   * committed via text-input protocol (e.g., Wayland) where there is no
+   * native GDK key event.
+   *
+   * @param aKeyEvent         The WidgetKeyboardEvent to initialize.
+   * @param aCommitString     The committed string (should be single char).
+   */
+  static void InitKeyEventFromCommitString(WidgetKeyboardEvent& aKeyEvent,
+                                           const nsAString& aCommitString);
 
   /**
    * DispatchKeyDownOrKeyUpEvent() dispatches eKeyDown or eKeyUp event.
@@ -160,15 +186,18 @@ class KeymapWrapper {
    * @param aWindow           The window to dispatch a keyboard event.
    * @param aGdkKeyEvent      A native GDK_KEY_PRESS or GDK_KEY_RELEASE
    *                          event.
+   * @param aStringReceivedByIMContext
+   *                          Set to non-void if IMContext received commit
+   *                          string for aGdkKeyEvent.
    * @param aIsProcessedByIME true if the event is handled by IME.
    * @param aIsCancelled      [Out] true if the default is prevented.
    * @return                  true if eKeyDown event is actually dispatched.
    *                          Otherwise, false.
    */
-  static bool DispatchKeyDownOrKeyUpEvent(nsWindow* aWindow,
-                                          GdkEventKey* aGdkKeyEvent,
-                                          bool aIsProcessedByIME,
-                                          bool* aIsCancelled);
+  static bool DispatchKeyDownOrKeyUpEvent(
+      nsWindow* aWindow, GdkEventKey* aGdkKeyEvent,
+      const nsAString& aStringReceivedByIMContext, bool aIsProcessedByIME,
+      bool* aIsCancelled);
 
   /**
    * DispatchKeyDownOrKeyUpEvent() dispatches eKeyDown or eKeyUp event.
@@ -225,15 +254,9 @@ class KeymapWrapper {
   static void HandleKeymap(uint32_t format, int fd, uint32_t size);
 
   /**
-   * Wayland global focus handlers
-   */
-  static void SetFocusIn(wl_surface* aFocusSurface, uint32_t aFocusSerial);
-  static void SetFocusOut(wl_surface* aFocusSurface);
-  static void GetFocusInfo(wl_surface** aFocusSurface, uint32_t* aFocusSerial);
-
-  /**
    * Key repeat helpers for Wayland
    */
+  static void ResetRepeatState();
   static void KeyboardHandlerForWayland(uint32_t aSerial,
                                         uint32_t aHardwareKeycode,
                                         uint32_t aState);
@@ -314,7 +337,7 @@ class KeymapWrapper {
     INDEX_LEVEL5,
     COUNT_OF_MODIFIER_INDEX
   };
-  guint mModifierMasks[COUNT_OF_MODIFIER_INDEX];
+  guint mModifierMasks[COUNT_OF_MODIFIER_INDEX] = {};
 
   guint GetGdkModifierMask(MappedModifier aModifier) const;
 
@@ -435,6 +458,13 @@ class KeymapWrapper {
   uint32_t GetUnmodifiedCharCodeFor(const GdkEventKey* aGdkKeyEvent);
 
   /**
+   * Return the char code for aGdkKeyEvent and if it's 0, return the unmodified
+   * char code instead.
+   */
+  static uint32_t GetCharCodeOrUnmodifiedCharCodeFor(
+      const GdkEventKey* aGdkKeyEvent);
+
+  /**
    * GetKeyLevel() returns level of the aGdkKeyEvent in mGdkKeymap.
    *
    * @param aGdkKeyEvent      Native key event, must not be nullptr.
@@ -533,14 +563,9 @@ class KeymapWrapper {
   void SetModifierMask(xkb_keymap* aKeymap, ModifierIndex aModifierIndex,
                        const char* aModifierName);
 #endif
-
-#ifdef MOZ_WAYLAND
-  wl_surface* mFocusSurface = nullptr;
-  uint32_t mFocusSerial = 0;
-#endif
 };
 
 }  // namespace widget
 }  // namespace mozilla
 
-#endif /* __nsGdkKeyUtils_h__ */
+#endif /* _nsGdkKeyUtils_h_ */

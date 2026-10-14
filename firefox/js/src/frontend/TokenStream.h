@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -279,8 +277,7 @@ class TokenStreamPosition;
  */
 class TokenStreamShared {
  protected:
-  // 1 current + (3 lookahead if EXPLICIT_RESOURCE_MANAGEMENT is enabled
-  // else 2 lookahead and rounded up to ^2)
+  // 1 current + 3 lookahead tokens.
   // NOTE: This must be power of 2, in order to make `ntokensMask` work.
   static constexpr size_t ntokens = 4;
 
@@ -290,12 +287,8 @@ class TokenStreamShared {
   friend class TokenStreamPosition;
 
  public:
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
   // We need a lookahead buffer of atleast 3 for the AwaitUsing syntax.
   static constexpr unsigned maxLookahead = 3;
-#else
-  static constexpr unsigned maxLookahead = 2;
-#endif
 
   using Modifier = Token::Modifier;
   static constexpr Modifier SlashIsDiv = Token::SlashIsDiv;
@@ -325,9 +318,9 @@ class MOZ_STACK_CLASS TokenStreamPosition final {
   inline explicit TokenStreamPosition(
       TokenStreamSpecific<Unit, AnyCharsAccess>& tokenStream);
 
- private:
   TokenStreamPosition(const TokenStreamPosition&) = delete;
 
+ private:
   // Technically only TokenStreamSpecific<Unit, AnyCharsAccess>::seek with
   // Unit constant and AnyCharsAccess varying must be friended, but 1) it's
   // hard to friend one function in template classes, and 2) C++ doesn't
@@ -544,22 +537,6 @@ class ChunkInfo {
   }
 };
 
-enum class InvalidEscapeType {
-  // No invalid character escapes.
-  None,
-  // A malformed \x escape.
-  Hexadecimal,
-  // A malformed \u escape.
-  Unicode,
-  // An otherwise well-formed \u escape which represents a
-  // codepoint > 10FFFF.
-  UnicodeOverflow,
-  // An octal escape in a template token.
-  Octal,
-  // NonOctalDecimalEscape - \8 or \9.
-  EightOrNine
-};
-
 class TokenStreamAnyChars : public TokenStreamShared {
  private:
   // Constant-at-construction fields.
@@ -634,24 +611,6 @@ class TokenStreamAnyChars : public TokenStreamShared {
    * of the last column computation performed, relative to source start.
    */
   mutable JS::ColumnNumberUnsignedOffset lastComputedColumnOffset_;
-
-  // Intra-token fields.
-
-  /**
-   * The offset of the first invalid escape in a template literal.  (If there is
-   * one -- if not, the value of this field is meaningless.)
-   *
-   * See also |invalidTemplateEscapeType|.
-   */
-  uint32_t invalidTemplateEscapeOffset = 0;
-
-  /**
-   * The type of the first invalid escape in a template literal.  (If there
-   * isn't one, this will be |None|.)
-   *
-   * See also |invalidTemplateEscapeOffset|.
-   */
-  InvalidEscapeType invalidTemplateEscapeType = InvalidEscapeType::None;
 
   // Fields with values relevant across tokens (and therefore potentially across
   // function boundaries, such that lazy function parsing and stream-seeking
@@ -809,27 +768,11 @@ class TokenStreamAnyChars : public TokenStreamShared {
     setSawDeprecatedContent(DeprecatedContent::EightOrNineEscape);
   }
 
-  bool hasInvalidTemplateEscape() const {
-    return invalidTemplateEscapeType != InvalidEscapeType::None;
-  }
-  void clearInvalidTemplateEscape() {
-    invalidTemplateEscapeType = InvalidEscapeType::None;
-  }
-
  private:
   // This is private because it should only be called by the tokenizer while
   // tokenizing not by, for example, BytecodeEmitter.
   bool strictMode() const {
     return strictModeGetter_ && strictModeGetter_->strictMode();
-  }
-
-  void setInvalidTemplateEscape(uint32_t offset, InvalidEscapeType type) {
-    MOZ_ASSERT(type != InvalidEscapeType::None);
-    if (invalidTemplateEscapeType != InvalidEscapeType::None) {
-      return;
-    }
-    invalidTemplateEscapeOffset = offset;
-    invalidTemplateEscapeType = type;
   }
 
  public:
@@ -1683,11 +1626,6 @@ class TokenStreamCharsBase : public TokenStreamCharsShared {
     return this->sourceUnits.internalMatchCodeUnit(Unit(expect));
   }
 
-  template <typename T>
-  bool matchCodeUnit(T) = delete;
-  template <typename T>
-  bool matchLineTerminator(T) = delete;
-
   int32_t peekCodeUnit() {
     return MOZ_LIKELY(!sourceUnits.atEnd())
                ? CodeUnitValue(sourceUnits.peekCodeUnit())
@@ -1696,13 +1634,6 @@ class TokenStreamCharsBase : public TokenStreamCharsShared {
 
   /** Consume a known, non-EOF code unit. */
   inline void consumeKnownCodeUnit(int32_t unit);
-
-  // Forbid accidental calls to consumeKnownCodeUnit *not* with the single
-  // unit-or-EOF type.  Unit should use SourceUnits::consumeKnownCodeUnit;
-  // CodeUnitValue() results should go through toUnit(), or better yet just
-  // use the original Unit.
-  template <typename T>
-  inline void consumeKnownCodeUnit(T) = delete;
 
   /**
    * Add a null-terminated line of context to error information, for the line
@@ -1719,6 +1650,19 @@ class TokenStreamCharsBase : public TokenStreamCharsShared {
    */
   [[nodiscard]] bool addLineOfContext(ErrorMetadata* err,
                                       uint32_t offset) const;
+
+ public:
+  template <typename T>
+  bool matchCodeUnit(T) = delete;
+  template <typename T>
+  bool matchLineTerminator(T) = delete;
+
+  // Forbid accidental calls to consumeKnownCodeUnit *not* with the single
+  // unit-or-EOF type.  Unit should use SourceUnits::consumeKnownCodeUnit;
+  // CodeUnitValue() results should go through toUnit(), or better yet just
+  // use the original Unit.
+  template <typename T>
+  inline void consumeKnownCodeUnit(T) = delete;
 };
 
 template <>
@@ -2040,11 +1984,21 @@ class GeneralTokenStreamChars : public SpecializedTokenStreamCharsBase<Unit> {
   void newAtomToken(TokenKind kind, TaggedParserAtomIndex atom,
                     TokenStart start, TokenStreamShared::Modifier modifier,
                     TokenKind* out) {
-    MOZ_ASSERT(kind == TokenKind::String || kind == TokenKind::TemplateHead ||
-               kind == TokenKind::NoSubsTemplate);
+    MOZ_ASSERT(kind == TokenKind::String);
 
     Token* token = newToken(kind, start, modifier, out);
     token->setAtom(atom);
+  }
+
+  void newTemplateToken(TokenKind kind, TaggedParserAtomIndex atom,
+                        uint32_t invalidEscapeOffset,
+                        InvalidEscapeType invalidEscapeType, TokenStart start,
+                        TokenStreamShared::Modifier modifier, TokenKind* out) {
+    MOZ_ASSERT(kind == TokenKind::TemplateHead ||
+               kind == TokenKind::NoSubsTemplate);
+
+    Token* token = newToken(kind, start, modifier, out);
+    token->setTemplate(atom, invalidEscapeOffset, invalidEscapeType);
   }
 
   void newNameToken(TaggedParserAtomIndex name, TokenStart start,
@@ -2487,6 +2441,7 @@ class MOZ_STACK_CLASS TokenStreamSpecific
   using GeneralCharsBase::newPrivateNameToken;
   using GeneralCharsBase::newRegExpToken;
   using GeneralCharsBase::newSimpleToken;
+  using GeneralCharsBase::newTemplateToken;
   using SpecializedChars::getNonAsciiCodePoint;
   using SpecializedChars::getNonAsciiCodePointDontNormalize;
   using TokenStreamCharsShared::copyCharBufferTo;
@@ -2529,12 +2484,13 @@ class MOZ_STACK_CLASS TokenStreamSpecific
   // If there is an invalid escape in a template, report it and return false,
   // otherwise return true.
   bool checkForInvalidTemplateEscapeError() {
-    if (anyCharsAccess().invalidTemplateEscapeType == InvalidEscapeType::None) {
+    const Token& token = anyCharsAccess().currentToken();
+    if (!token.hasInvalidTemplateEscape()) {
       return true;
     }
 
-    reportInvalidEscapeError(anyCharsAccess().invalidTemplateEscapeOffset,
-                             anyCharsAccess().invalidTemplateEscapeType);
+    reportInvalidEscapeError(token.invalidTemplateEscapeOffset(),
+                             token.invalidTemplateEscapeType());
     return false;
   }
 

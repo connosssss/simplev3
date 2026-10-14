@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -24,6 +22,12 @@ MOZ_NO_STACK_PROTECTOR NTSTATUS NTAPI patched_NtMapViewOfSection(
     SECTION_INHERIT aInheritDisposition, ULONG aAllocationType,
     ULONG aProtectionFlags);
 
+MOZ_NO_STACK_PROTECTOR NTSTATUS NTAPI patched_NtCreateSection(
+    PHANDLE aSectionHandle, ACCESS_MASK aDesiredAccess,
+    POBJECT_ATTRIBUTES aObjectAttributes, PLARGE_INTEGER aMaximumSize,
+    ULONG aSectionPageProtection, ULONG aAllocationAttributes,
+    HANDLE aFileHandle);
+
 using LdrLoadDllPtr = decltype(&::LdrLoadDll);
 
 extern CrossProcessDllInterceptor::FuncHookType<LdrLoadDllPtr> stub_LdrLoadDll;
@@ -32,6 +36,11 @@ using NtMapViewOfSectionPtr = decltype(&::NtMapViewOfSection);
 
 extern CrossProcessDllInterceptor::FuncHookType<NtMapViewOfSectionPtr>
     stub_NtMapViewOfSection;
+
+using NtCreateSectionPtr = decltype(&::NtCreateSection);
+
+extern CrossProcessDllInterceptor::FuncHookType<NtCreateSectionPtr>
+    stub_NtCreateSection;
 
 }  // namespace freestanding
 }  // namespace mozilla

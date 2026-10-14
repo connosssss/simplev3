@@ -4,6 +4,11 @@
 
 "use strict";
 
+/* import-globals-from ../../mochitest/states.js */
+loadScripts({ name: "states.js", dir: MOCHITESTS_DIR });
+
+requestLongerTimeout(2);
+
 async function testEditable(browser, acc, aBefore = "", aAfter = "") {
   async function resetInput() {
     if (acc.childCount <= 1) {
@@ -42,7 +47,15 @@ async function testEditable(browser, acc, aBefore = "", aAfter = "") {
   await testDeleteText(acc, 5, 10, aBefore.length);
   await isFinalValueCorrect(browser, acc, [aBefore, "hello", aAfter]);
   await testDeleteText(acc, 0, 5, aBefore.length);
-  await isFinalValueCorrect(browser, acc, [aBefore, "", aAfter]);
+  // When a contentEditable inside a document is cleared, it contains a single
+  //  line feed. See dom::HTMLBrElement::IsPaddingForEmptyEditor.
+  const clearedText =
+    acc.role == ROLE_DOCUMENT ||
+    acc.id == DEFAULT_CONTENT_DOC_BODY_ID ||
+    acc.attributes.getStringProperty("tag") == "input"
+      ? ""
+      : "\n";
+  await isFinalValueCorrect(browser, acc, [aBefore, clearedText, aAfter]);
 
   // XXX: clipboard operation tests don't work well with editable documents.
   if (acc.role == ROLE_DOCUMENT) {
@@ -79,7 +92,7 @@ async function testEditable(browser, acc, aBefore = "", aAfter = "") {
   await isFinalValueCorrect(browser, acc, [aBefore, "ehhlloeo", aAfter]);
 
   await testCutText(acc, 0, 8, aBefore.length);
-  await isFinalValueCorrect(browser, acc, [aBefore, "", aAfter]);
+  await isFinalValueCorrect(browser, acc, [aBefore, clearedText, aAfter]);
 
   await resetInput();
 
@@ -114,7 +127,7 @@ addAccessibleTask(
       ""
     );
   },
-  { chrome: true, topLevel: false /* bug 1834129 */ }
+  { chrome: true, topLevel: true }
 );
 
 addAccessibleTask(
@@ -132,7 +145,7 @@ addAccessibleTask(
       "pseudo element"
     );
   },
-  { chrome: true, topLevel: false /* bug 1834129 */ }
+  { chrome: true, topLevel: true }
 );
 
 addAccessibleTask(
@@ -149,7 +162,7 @@ addAccessibleTask(
       "pseudo element"
     );
   },
-  { chrome: true, topLevel: false /* bug 1834129 */ }
+  { chrome: true, topLevel: true }
 );
 
 addAccessibleTask(
@@ -170,7 +183,7 @@ addAccessibleTask(
       "after"
     );
   },
-  { chrome: true, topLevel: false /* bug 1834129 */ }
+  { chrome: true, topLevel: true }
 );
 
 addAccessibleTask(
@@ -185,7 +198,7 @@ addAccessibleTask(
     document.execCommand("delete");
     await testEditable(browser, findAccessibleChildByID(docAcc, "input"));
   },
-  { chrome: true, topLevel: false /* bug 1834129 */ }
+  { chrome: true, topLevel: true }
 );
 
 addAccessibleTask(
@@ -209,19 +222,74 @@ addAccessibleTask(
       "after"
     );
   },
-  { chrome: true, topLevel: false /* bug 1834129 */ }
+  { chrome: true, topLevel: true }
 );
 
 addAccessibleTask(
   ``,
-  async function (browser, docAcc) {
+  async function testRootIsEditable(browser, docAcc) {
     await testEditable(browser, docAcc);
+  },
+  {
+    chrome: true,
+    topLevel: true,
+    contentDocAttrs: { contentEditable: "true" },
+  }
+);
+
+addAccessibleTask(
+  ``,
+  async function testBodyIsEditable(browser, docAcc) {
+    const body = findAccessibleChildByID(docAcc, DEFAULT_CONTENT_DOC_BODY_ID);
+    await testEditable(browser, body);
   },
   {
     chrome: true,
     topLevel: true,
     contentDocBodyAttrs: { contentEditable: "true" },
   }
+);
+
+/**
+ * Verify that making the body editable at runtime cascades the EDITABLE state
+ * to the document, and that the acc created to represent the body is targetted
+ * for editable events.
+ */
+addAccessibleTask(
+  ``,
+  async function testBodyBecomesEditable(browser, docAcc) {
+    // initially, the root (docAcc) shouldn't be editable
+    testStates(docAcc, 0, 0, 0, EXT_STATE_EDITABLE);
+
+    const evs = waitForEvents([
+      [
+        EVENT_STATE_CHANGE,
+        e => {
+          const sc = e.QueryInterface(nsIAccessibleStateChangeEvent);
+          return (
+            e.accessible == docAcc &&
+            sc.isExtraState &&
+            sc.state == EXT_STATE_EDITABLE &&
+            sc.isEnabled
+          );
+        },
+      ],
+      [EVENT_SHOW, DEFAULT_CONTENT_DOC_BODY_ID],
+    ]);
+    // set contentEditable on the body
+    await invokeContentTask(browser, [], () => {
+      content.document.body.contentEditable = "true";
+    });
+    await evs;
+    const bodyAcc = findAccessibleChildByID(
+      docAcc,
+      DEFAULT_CONTENT_DOC_BODY_ID
+    );
+    await testEditable(browser, bodyAcc);
+
+    testStates(docAcc, 0, EXT_STATE_EDITABLE);
+  },
+  { chrome: true, topLevel: true }
 );
 
 /**
@@ -258,4 +326,71 @@ addAccessibleTask(
     await changed;
     is(input.value, "aefdef", "input value correct after pasting");
   }
+);
+
+addAccessibleTask(
+  `<div id="editable" contenteditable="true"><p id="p">one</p></div>`,
+  async function testNoRoleEditable(browser, docAcc) {
+    const editable = findAccessibleChildByID(docAcc, "editable");
+    is(editable.value, "one", "initial value correct");
+    ok(true, "Set initial text");
+    await invokeContentTask(browser, [], () => {
+      content.document.getElementById("p").firstChild.data = "two";
+    });
+    await untilCacheIs(() => editable.value, "two", "value changed correctly");
+
+    function isMultiline() {
+      let extState = {};
+      editable.getState({}, extState);
+      return (
+        !!(extState.value & EXT_STATE_MULTI_LINE) &&
+        !(extState.value & EXT_STATE_SINGLE_LINE)
+      );
+    }
+
+    ok(isMultiline(), "Editable is in multiline state");
+    await invokeSetAttribute(browser, "editable", "aria-multiline", "false");
+    await untilCacheOk(() => !isMultiline(), "editable is in singleline state");
+
+    await invokeSetAttribute(browser, "editable", "aria-multiline");
+    await untilCacheOk(() => isMultiline(), "editable is in multi-line again");
+
+    await invokeSetAttribute(browser, "editable", "contenteditable");
+    await untilCacheOk(() => {
+      let extState = {};
+      editable.getState({}, extState);
+      return (
+        !(extState.value & EXT_STATE_MULTI_LINE) &&
+        !(extState.value & EXT_STATE_SINGLE_LINE)
+      );
+    }, "editable should have neither multi-line nor single-line state");
+  },
+  {
+    chrome: true,
+    topLevel: true,
+  }
+);
+
+/**
+ * Test that a node without an Accessible gets an Accessible if it becomes
+ * contentEditable. This is similar to testBodyBecomesEditable, but with an
+ * arbitrary node instead of the body.
+ */
+addAccessibleTask(
+  `<span id="editable"></span>`,
+  async function testEditableBecomesAccessible(browser, docAcc) {
+    // initially, the span shouldn't have an Accessible.
+    let editable = findAccessibleChildByID(docAcc, "editable");
+    ok(!editable, "editable does not have an Accessible");
+
+    const shown = waitForEvent(EVENT_SHOW, "editable");
+    info("Setting contentEditable on editable");
+    await invokeContentTask(browser, [], () => {
+      content.document.getElementById("editable").contentEditable = "true";
+    });
+    editable = (await shown).accessible;
+    ok(editable, "editable has an Accessible");
+    testStates(editable, 0, EXT_STATE_EDITABLE);
+  },
+  { chrome: true, topLevel: true }
 );

@@ -9,18 +9,18 @@ import mozilla.components.lib.state.Action
 import mozilla.components.lib.state.Middleware
 import mozilla.components.lib.state.State
 import mozilla.components.lib.state.Store
-import mozilla.components.lib.state.UiStore
 import org.mozilla.fenix.reviewprompt.ui.CustomReviewPrompt
 
 /** [Store] for holding [CustomReviewPromptState] and applying [CustomReviewPromptAction]s. */
 class CustomReviewPromptStore(
     initialState: CustomReviewPromptState,
     middleware: List<Middleware<CustomReviewPromptState, CustomReviewPromptAction>> = emptyList(),
-) : UiStore<CustomReviewPromptState, CustomReviewPromptAction>(
-    initialState = initialState,
-    reducer = ::reduceCustomReviewPromptActions,
-    middleware = middleware,
-) {
+) :
+    Store<CustomReviewPromptState, CustomReviewPromptAction>(
+        initialState = initialState,
+        reducer = ::reduceCustomReviewPromptActions,
+        middleware = middleware,
+    ) {
     val navigationEvents = MutableSharedFlow<CustomReviewPromptNavigationEvent>()
 }
 
@@ -38,9 +38,6 @@ enum class CustomReviewPromptState : State {
 
 /** [Action]s to dispatch to [CustomReviewPromptStore] to modify [CustomReviewPromptState]. */
 sealed class CustomReviewPromptAction : Action {
-    /** Dispatched when the accessibility affordance to dismiss the prompt is clicked. */
-    data object DismissRequested : CustomReviewPromptAction()
-
     /** Dispatched when the negative button in the pre-prompt is clicked. */
     data object NegativePrePromptButtonClicked : CustomReviewPromptAction()
 
@@ -55,16 +52,20 @@ sealed class CustomReviewPromptAction : Action {
 
     /** Dispatched when the custom review prompt is shown to the user. */
     data object Displayed : CustomReviewPromptAction()
+
+    /** Dispatched when the custom review prompt is dismissed. */
+    data object Dismissed : CustomReviewPromptAction()
 }
 
 internal fun reduceCustomReviewPromptActions(
     state: CustomReviewPromptState,
     action: CustomReviewPromptAction,
-): CustomReviewPromptState = when (action) {
-    CustomReviewPromptAction.NegativePrePromptButtonClicked -> CustomReviewPromptState.Feedback
-    CustomReviewPromptAction.PositivePrePromptButtonClicked -> CustomReviewPromptState.Rate
-    CustomReviewPromptAction.DismissRequested -> state
-    CustomReviewPromptAction.RateButtonClicked -> state
-    CustomReviewPromptAction.LeaveFeedbackButtonClicked -> state
-    CustomReviewPromptAction.Displayed -> state
-}
+): CustomReviewPromptState =
+    when (action) {
+        CustomReviewPromptAction.NegativePrePromptButtonClicked -> CustomReviewPromptState.Feedback
+        CustomReviewPromptAction.PositivePrePromptButtonClicked -> CustomReviewPromptState.Rate
+        CustomReviewPromptAction.RateButtonClicked -> state
+        CustomReviewPromptAction.LeaveFeedbackButtonClicked -> state
+        CustomReviewPromptAction.Displayed -> state
+        CustomReviewPromptAction.Dismissed -> state
+    }

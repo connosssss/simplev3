@@ -1,18 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsFrameList_h___
-#define nsFrameList_h___
+#ifndef nsFrameList_h_
+#define nsFrameList_h_
 
 #include <stdio.h> /* for FILE* */
-#include "nsDebug.h"
-#include "nsTArray.h"
+
 #include "mozilla/EnumSet.h"
 #include "mozilla/FunctionTypeTraits.h"
-#include "mozilla/RefPtr.h"
+#include "nsDebug.h"
+#include "nsTArray.h"
 
 #if defined(DEBUG) || defined(MOZ_DUMP_PAINTING) || defined(MOZ_LAYOUT_DEBUGGER)
 // DEBUG_FRAME_DUMP enables nsIFrame::List and related methods.
@@ -34,17 +32,23 @@ class FrameChildList;
 enum class FrameChildListID {
   // The individual concrete child lists.
   Principal,
-  ColGroup,
   Absolute,
-  Fixed,
+  PushedAbsolute,
   Overflow,
   OverflowContainers,
   ExcessOverflowContainers,
-  OverflowOutOfFlow,
+  // Floats placed by the block. Their placeholders are in the block's in-flow
+  // lines.
   Float,
-  Bullet,
+  // Floats pushed to the block's next-in-flow because they didn't fit. The list
+  // can hold floats' first-in-flows and next-in-flows, and it is expected to be
+  // drained by the block's next-in-flow during reflow.
   PushedFloats,
-  Backdrop,
+  // Floats whose placeholders are in the overflow lines. This list collects the
+  // floats' real frames so they are drained with their placeholders by the
+  // block's next-in-flow.
+  OverflowFloats,
+  Marker,
   // A special alias for FrameChildListID::Principal that suppress the reflow
   // request that is normally done when manipulating child lists.
   NoReflowPrincipal,
@@ -248,13 +252,13 @@ class nsFrameList {
   template <typename Predicate>
   nsFrameList Split(Predicate&& aPredicate) {
     static_assert(
-        std::is_same<
+        std::is_same_v<
             typename mozilla::FunctionTypeTraits<Predicate>::ReturnType,
-            bool>::value &&
+            bool> &&
             mozilla::FunctionTypeTraits<Predicate>::arity == 1 &&
-            std::is_same<typename mozilla::FunctionTypeTraits<
-                             Predicate>::template ParameterType<0>,
-                         nsIFrame*>::value,
+            std::is_same_v<typename mozilla::FunctionTypeTraits<
+                               Predicate>::template ParameterType<0>,
+                           nsIFrame*>,
         "aPredicate should be of this function signature: bool(nsIFrame*)");
 
     for (nsIFrame* f : *this) {
@@ -270,7 +274,7 @@ class nsFrameList {
   nsIFrame* LastChild() const { return mLastChild; }
 
   nsIFrame* FrameAt(int32_t aIndex) const;
-  int32_t IndexOf(nsIFrame* aFrame) const;
+  int32_t IndexOf(const nsIFrame* aFrame) const;
 
   bool IsEmpty() const { return nullptr == mFirstChild; }
 
@@ -348,6 +352,8 @@ class nsFrameList {
         : mStart(aList.FirstChild()), mEnd(nullptr) {}
     Slice(nsIFrame* aStart, nsIFrame* aEnd) : mStart(aStart), mEnd(aEnd) {}
 
+    void operator delete(void*) = delete;
+
     iterator begin() const { return iterator(mStart); }
     const_iterator cbegin() const { return begin(); }
     iterator end() const { return iterator(mEnd); }
@@ -400,13 +406,7 @@ class nsFrameList {
       return ret;
     }
 
-    bool operator==(const Iterator<FrameTraversal>& aOther) const {
-      return mCurrent == aOther.mCurrent;
-    }
-
-    bool operator!=(const Iterator<FrameTraversal>& aOther) const {
-      return !(*this == aOther);
-    }
+    bool operator==(const Iterator<FrameTraversal>& aOther) const = default;
 
    private:
     nsIFrame* mCurrent;
@@ -422,8 +422,6 @@ class nsFrameList {
   const_reverse_iterator crend() const { return rend(); }
 
  private:
-  void operator delete(void*) = delete;
-
   static const nsFrameList sEmptyList;
 
 #ifdef DEBUG_FRAME_LIST
@@ -481,4 +479,4 @@ class MOZ_RAII AutoFrameListPtr final {
 
 }  // namespace mozilla
 
-#endif /* nsFrameList_h___ */
+#endif /* nsFrameList_h_ */

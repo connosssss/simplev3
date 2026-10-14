@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -49,6 +47,36 @@ wr::WrExternalImage RenderTextureHostWrapper::Lock(uint8_t aChannelIndex,
 void RenderTextureHostWrapper::Unlock() {
   if (mTextureHost) {
     mTextureHost->Unlock();
+  }
+}
+
+wr::WrExternalImage RenderTextureHostWrapper::LockSWGL(
+    uint8_t aChannelIndex, void* aContext, RenderCompositor* aCompositor) {
+  if (!mTextureHost) {
+    return InvalidToWrExternalImage();
+  }
+
+  return mTextureHost->LockSWGL(aChannelIndex, aContext, aCompositor);
+}
+
+void RenderTextureHostWrapper::UnlockSWGL() {
+  if (mTextureHost) {
+    mTextureHost->UnlockSWGL();
+  }
+}
+
+bool RenderTextureHostWrapper::LockSWGLCompositeSurface(
+    void* aContext, wr::SWGLCompositeSurfaceInfo* aInfo) {
+  if (!mTextureHost) {
+    return false;
+  }
+
+  return mTextureHost->LockSWGLCompositeSurface(aContext, aInfo);
+}
+
+void RenderTextureHostWrapper::UnlockSWGLCompositeSurface() {
+  if (mTextureHost) {
+    mTextureHost->UnlockSWGLCompositeSurface();
   }
 }
 
@@ -134,12 +162,28 @@ RenderDMABUFTextureHost* RenderTextureHostWrapper::AsRenderDMABUFTextureHost() {
   return mTextureHost->AsRenderDMABUFTextureHost();
 }
 
+RenderWaylandTextureHost*
+RenderTextureHostWrapper::AsRenderWaylandTextureHost() {
+  if (!mTextureHost) {
+    return nullptr;
+  }
+  return mTextureHost->AsRenderWaylandTextureHost();
+}
+
 RenderAndroidHardwareBufferTextureHost*
 RenderTextureHostWrapper::AsRenderAndroidHardwareBufferTextureHost() {
   if (!mTextureHost) {
     return nullptr;
   }
   return mTextureHost->AsRenderAndroidHardwareBufferTextureHost();
+}
+
+RenderAndroidImageReaderImageTextureHost*
+RenderTextureHostWrapper::AsRenderAndroidImageReaderImageTextureHost() {
+  if (!mTextureHost) {
+    return nullptr;
+  }
+  return mTextureHost->AsRenderAndroidImageReaderImageTextureHost();
 }
 
 RenderAndroidSurfaceTextureHost*
@@ -164,6 +208,13 @@ RenderTextureHostSWGL* RenderTextureHostWrapper::EnsureRenderTextureHostSWGL()
     return nullptr;
   }
   return mTextureHost->AsRenderTextureHostSWGL();
+}
+
+void RenderTextureHostWrapper::SetReadFenceFd(UniqueFileHandle&& aFenceFd) {
+  if (!mTextureHost) {
+    return;
+  }
+  mTextureHost->SetReadFenceFd(std::move(aFenceFd));
 }
 
 void RenderTextureHostWrapper::SetIsSoftwareDecodedVideo() {
@@ -225,6 +276,13 @@ gfx::YUVRangedColorSpace RenderTextureHostWrapper::GetYUVColorSpace() const {
     return swglHost->GetYUVColorSpace();
   }
   return gfx::YUVRangedColorSpace::Default;
+}
+
+gfx::TransferFunction RenderTextureHostWrapper::GetTransferFunction() const {
+  if (RenderTextureHostSWGL* swglHost = EnsureRenderTextureHostSWGL()) {
+    return swglHost->GetTransferFunction();
+  }
+  return gfx::TransferFunction::BT709;
 }
 
 bool RenderTextureHostWrapper::MapPlane(RenderCompositor* aCompositor,

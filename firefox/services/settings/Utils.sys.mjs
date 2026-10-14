@@ -5,6 +5,7 @@
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 import { ServiceRequest } from "resource://gre/modules/ServiceRequest.sys.mjs";
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
+import { setTimeout } from "resource://gre/modules/Timer.sys.mjs";
 
 const lazy = {};
 
@@ -16,13 +17,13 @@ XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "CaptivePortalService",
   "@mozilla.org/network/captive-portal-service;1",
-  "nsICaptivePortalService"
+  Ci.nsICaptivePortalService
 );
 XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "gNetworkLinkService",
   "@mozilla.org/network/network-link-service;1",
-  "nsINetworkLinkService"
+  Ci.nsINetworkLinkService
 );
 
 // Create a new instance of the ConsoleAPI so we can control the maxLogLevel with a pref.
@@ -50,7 +51,7 @@ ChromeUtils.defineLazyGetter(lazy, "isRunningTests", () => {
 
 // Overriding the server URL is normally disabled on Beta and Release channels,
 // except under some conditions.
-ChromeUtils.defineLazyGetter(lazy, "allowServerURLOverride", () => {
+ChromeUtils.defineLazyGetter(lazy, "allowServerURL", () => {
   if (!AppConstants.RELEASE_OR_BETA) {
     // Always allow to override the server URL on Nightly/DevEdition.
     return true;
@@ -65,13 +66,15 @@ ChromeUtils.defineLazyGetter(lazy, "allowServerURLOverride", () => {
     return true;
   }
 
-  if (lazy.gServerURL != AppConstants.REMOTE_SETTINGS_SERVER_URL) {
-    log.warn("Ignoring preference override of remote settings server");
-    log.warn(
-      "Allow by setting MOZ_REMOTE_SETTINGS_DEVTOOLS=1 in the environment"
-    );
+  // eslint-disable-next-line mozilla/valid-lazy
+  if (AppConstants.REMOTE_SETTINGS_SERVER_URLS.includes(lazy.gServerURL)) {
+    return true;
   }
 
+  log.warn("Ignoring preference override of remote settings server");
+  log.warn(
+    "Allow by setting MOZ_REMOTE_SETTINGS_DEVTOOLS=1 in the environment"
+  );
   return false;
 });
 
@@ -79,7 +82,7 @@ XPCOMUtils.defineLazyPreferenceGetter(
   lazy,
   "gServerURL",
   "services.settings.server",
-  AppConstants.REMOTE_SETTINGS_SERVER_URL
+  AppConstants.REMOTE_SETTINGS_SERVER_URLS[0]
 );
 
 XPCOMUtils.defineLazyPreferenceGetter(
@@ -89,17 +92,23 @@ XPCOMUtils.defineLazyPreferenceGetter(
   false
 );
 
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "gAttachmentsBaseUrl",
+  "services.settings.base_attachments_url",
+  ""
+);
+
 function _isUndefined(value) {
   return typeof value === "undefined";
 }
 
-const _cdnURLs = {};
-
 export var Utils = {
   get SERVER_URL() {
-    return lazy.allowServerURLOverride
-      ? lazy.gServerURL
-      : AppConstants.REMOTE_SETTINGS_SERVER_URL;
+    return lazy.allowServerURL
+      ? // eslint-disable-next-line mozilla/valid-lazy
+        lazy.gServerURL
+      : AppConstants.REMOTE_SETTINGS_SERVER_URLS[0];
   },
 
   CHANGES_PATH: "/buckets/monitor/collections/changes/changeset",
@@ -109,16 +118,26 @@ export var Utils = {
    */
   log,
 
-  get shouldSkipRemoteActivityDueToTests() {
-    return (
+  get shouldSkipRemoteActivity() {
+    if (
       (lazy.isRunningTests || Cu.isInAutomation) &&
       this.SERVER_URL == "data:,#remote-settings-dummy/v1"
-    );
+    ) {
+      return true;
+    }
+    return Services.policies?.isAllowed("remoteSettings") === false;
   },
 
   get CERT_CHAIN_ROOT_IDENTIFIER() {
-    if (this.SERVER_URL == AppConstants.REMOTE_SETTINGS_SERVER_URL) {
-      return Ci.nsIContentSignatureVerifier.ContentSignatureProdRoot;
+    if (Services.env.exists("XPCSHELL_TEST_PROFILE_DIR")) {
+      return Ci.nsIX509CertDB.AppXPCShellRoot;
+    }
+    if (
+      this.SERVER_URL.match(
+        /^https?:\/\/(remote-settings\.localhost|127\.0\.0\.1|localhost)(:\d+)?\/v1/
+      )
+    ) {
+      return Ci.nsIContentSignatureVerifier.ContentSignatureLocalRoot;
     }
     if (this.SERVER_URL.includes("allizom.")) {
       return Ci.nsIContentSignatureVerifier.ContentSignatureStageRoot;
@@ -126,24 +145,29 @@ export var Utils = {
     if (this.SERVER_URL.includes("dev.")) {
       return Ci.nsIContentSignatureVerifier.ContentSignatureDevRoot;
     }
-    if (Services.env.exists("XPCSHELL_TEST_PROFILE_DIR")) {
-      return Ci.nsIX509CertDB.AppXPCShellRoot;
-    }
-    return Ci.nsIContentSignatureVerifier.ContentSignatureLocalRoot;
+    return Ci.nsIContentSignatureVerifier.ContentSignatureProdRoot;
   },
 
   get LOAD_DUMPS() {
     // Load dumps only if pulling data from the production server, or in tests.
     return (
-      this.SERVER_URL == AppConstants.REMOTE_SETTINGS_SERVER_URL ||
+      AppConstants.REMOTE_SETTINGS_SERVER_URLS.includes(this.SERVER_URL) ||
       lazy.isRunningTests
     );
   },
 
   get PREVIEW_MODE() {
+    // Release and beta require dev-tools or tests to use preview
+    if (
+      AppConstants.RELEASE_OR_BETA &&
+      !lazy.isRunningTests &&
+      Services.env.get("MOZ_REMOTE_SETTINGS_DEVTOOLS") !== "1"
+    ) {
+      return false;
+    }
     // We want to offer the ability to set preview mode via a preference
     // for consumers who want to pull from the preview bucket on startup.
-    if (_isUndefined(this._previewModeEnabled) && lazy.allowServerURLOverride) {
+    if (_isUndefined(this._previewModeEnabled)) {
       return lazy.gPreviewEnabled;
     }
     return !!this._previewModeEnabled;
@@ -151,6 +175,7 @@ export var Utils = {
 
   /**
    * Internal method to enable pulling data from preview buckets.
+   *
    * @param enabled
    */
   enablePreviewMode(enabled) {
@@ -218,6 +243,7 @@ export var Utils = {
   async fetch(input, init = {}) {
     return new Promise(function (resolve, reject) {
       const request = new ServiceRequest();
+      const { method = "GET", headers = {}, bypassProxy = false } = init;
       function fallbackOrReject(err) {
         if (
           // At most one recursive Utils.fetch call (bypassProxy=false to true).
@@ -263,8 +289,6 @@ export var Utils = {
         resolve(new Response(request.response, responseAttributes));
       };
 
-      const { method = "GET", headers = {}, bypassProxy = false } = init;
-
       request.open(method, input, { bypassProxy });
       // By default, XMLHttpRequest converts the response based on the
       // Content-Type header, or UTF-8 otherwise. This may mangle binary
@@ -279,14 +303,21 @@ export var Utils = {
     });
   },
 
+  _baseAttachmentsURLPromise: null,
+
   /**
    * Retrieves the base URL for attachments from the server configuration.
    *
    * If the URL has been previously fetched and cached, it returns the cached URL.
    *
+   * Note: it is important to not hard-code this value in consumer code.
+   *
    * @async
    * @function baseAttachmentsURL
    * @memberof Utils
+   * @param {object} options Some download options.
+   * @param {number} options.retries Number of times server fetch should be retried (default: `0`)
+   * @param {number} options.retryWaitMsec Wait milliseconds between each retry (default: `1000`)
    * @returns {Promise<string>} A promise that resolves to the base URL for attachments.
    *
    * @throws {Error} If there is an error fetching or parsing the server response.
@@ -295,21 +326,66 @@ export var Utils = {
    * const attachmentsURL = await Downloader.baseAttachmentsURL();
    * console.log(attachmentsURL);
    */
-  async baseAttachmentsURL() {
-    if (!_cdnURLs[Utils.SERVER_URL]) {
-      const resp = await Utils.fetch(`${Utils.SERVER_URL}/`);
-      const serverInfo = await resp.json();
+  async baseAttachmentsURL(options = {}) {
+    if (Utils._baseAttachmentsURLPromise) {
+      // Wait for ongoing call to finish.
+      return Utils._baseAttachmentsURLPromise;
+    }
+
+    // We save the obtained value in a pref, so that it's only fetched from
+    // the server on first use. When the remote server changes (eg. using the DevTools for QA)
+    // the value will be fetched again from the server.
+    const [server_url = "", attachments_url = ""] =
+      lazy.gAttachmentsBaseUrl.split("|", 2);
+    if (
+      server_url == Utils.SERVER_URL &&
+      /^https?:\/\/(.+)\/$/.test(attachments_url)
+    ) {
+      return attachments_url;
+    }
+
+    // Saved attachments URL does not match current server (eg. on empty profile, or
+    // user switched remote environment), fetch it again from the server.
+    const { retries = 0, retryWaitMsec = 1000 } = options;
+    Utils._baseAttachmentsURLPromise = (async () => {
+      let retried = 0;
+      let serverInfo;
+      while (retried <= retries) {
+        try {
+          const resp = await Utils.fetch(`${Utils.SERVER_URL}/`);
+          if (!resp.ok) {
+            throw new Error(`Failed to fetch server info: ${resp.status}`);
+          }
+          serverInfo = await resp.json();
+          break;
+        } catch (error) {
+          retried++;
+          if (retried > retries) {
+            throw error;
+          }
+          await new Promise(resolve =>
+            setTimeout(resolve, retryWaitMsec * retried)
+          );
+        }
+      }
       // Server capabilities expose attachments configuration.
       const {
         capabilities: {
           attachments: { base_url },
         },
       } = serverInfo;
-      // Make sure the URL always has a trailing slash.
-      _cdnURLs[Utils.SERVER_URL] =
-        base_url + (base_url.endsWith("/") ? "" : "/");
+      Services.prefs.setStringPref(
+        "services.settings.base_attachments_url",
+        `${Utils.SERVER_URL}|${base_url}`
+      );
+      return base_url;
+    })();
+
+    try {
+      return await Utils._baseAttachmentsURLPromise;
+    } finally {
+      Utils._baseAttachmentsURLPromise = null;
     }
-    return _cdnURLs[Utils.SERVER_URL];
   },
 
   /**
@@ -326,8 +402,8 @@ export var Utils = {
   /**
    * Check if we ship a JSON dump for the specified bucket and collection.
    *
-   * @param {String} bucket
-   * @param {String} collection
+   * @param {string} bucket
+   * @param {string} collection
    * @return {bool} Whether it is present or not.
    */
   async hasLocalDump(bucket, collection) {
@@ -347,8 +423,8 @@ export var Utils = {
   /**
    * Look up the last modification time of the JSON dump.
    *
-   * @param {String} bucket
-   * @param {String} collection
+   * @param {string} bucket
+   * @param {string} collection
    * @return {int} The last modification time of the dump. -1 if non-existent.
    */
   async getLocalDumpLastModified(bucket, collection) {
@@ -400,13 +476,14 @@ export var Utils = {
    *     "metadata": {}
    *   }
    * ```
-   * @param {String} serverUrl         The server URL (eg. `https://server.org/v1`)
+   *
+   * @param {string} serverUrl         The server URL (eg. `https://server.org/v1`)
    * @param {int}    expectedTimestamp The timestamp that the server is supposed to return.
    *                                   We obtained it from the Megaphone notification payload,
    *                                   and we use it only for cache busting (Bug 1497159).
-   * @param {String} lastEtag          (optional) The Etag of the latest poll to be matched
+   * @param {string} lastEtag          (optional) The Etag of the latest poll to be matched
    *                                   by the server (eg. `"123456789"`).
-   * @param {Object} filters
+   * @param {object} filters
    */
   async fetchLatestChanges(serverUrl, options = {}) {
     const { expectedTimestamp, lastEtag = "", filters = {} } = options;
@@ -484,7 +561,7 @@ export var Utils = {
 
     return {
       changes,
-      currentEtag: `"${timestamp}"`,
+      timestamp,
       serverTimeMillis,
       backoffSeconds,
       ageSeconds,
@@ -494,9 +571,9 @@ export var Utils = {
   /**
    * Test if a single object matches all given filters.
    *
-   * @param  {Object} filters  The filters object.
-   * @param  {Object} entry    The object to filter.
-   * @return {Boolean}
+   * @param  {object} filters  The filters object.
+   * @param  {object} entry    The object to filter.
+   * @return {boolean}
    */
   filterObject(filters, entry) {
     return Object.entries(filters).every(([filter, value]) => {
@@ -515,7 +592,7 @@ export var Utils = {
   /**
    * Sorts records in a list according to a given ordering.
    *
-   * @param  {String} order The ordering, eg. `-last_modified`.
+   * @param  {string} order The ordering, eg. `-last_modified`.
    * @param  {Array}  list  The collection to order.
    * @return {Array}
    */
@@ -547,7 +624,7 @@ export var Utils = {
    * @async
    * @function fetchChangesetsBundle
    * @memberof Utils
-   * @returns {Promise<Array<Object>>} A promise that resolves to an array of parsed changesets.
+   * @returns {Promise<Array<object>>} A promise that resolves to an array of parsed changesets.
    *
    * @throws {Error} Throws an error if there is an issue fetching the server info or the changeset bundle,
    *                 or if there is an error during the extraction and parsing of the changesets.

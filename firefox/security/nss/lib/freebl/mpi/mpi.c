@@ -584,7 +584,7 @@ mp_div_d(const mp_int *a, mp_digit d, mp_int *q, mp_digit *r)
     res = s_mp_div_d(&qp, d, &rem);
 
     if (s_mp_cmp_d(&qp, 0) == 0)
-        SIGN(q) = ZPOS;
+        SIGN(&qp) = ZPOS;
 
     if (r) {
         *r = rem;
@@ -1024,7 +1024,7 @@ mp_sqr(const mp_int *a, mp_int *sqr)
         for (ix = 3; --count > 0; ix += 2) {
             d = *pa++;
             s_mpv_mul_d_add(pa, count, d, MP_DIGITS(sqr) + ix);
-        }                                    /* for(ix ...) */
+        } /* for(ix ...) */
         MP_DIGIT(sqr, MP_USED(sqr) - 1) = 0; /* above loop stopped short of this. */
 
         /* now sqr *= 2 */

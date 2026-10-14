@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -9,6 +7,7 @@
 #include "jit/MIR-wasm.h"
 #include "jit/MIR.h"
 #include "vm/ArrayObject.h"
+#include "vm/DateObject.h"
 #include "vm/Iteration.h"
 #include "vm/JSFunction.h"
 #include "vm/PlainObject.h"  // js::PlainObject
@@ -28,6 +27,7 @@ KnownClass jit::GetObjectKnownClass(const MDefinition* def) {
     case MDefinition::Opcode::ArgumentsSlice:
     case MDefinition::Opcode::FrameArgumentsSlice:
     case MDefinition::Opcode::InlineArgumentsSlice:
+    case MDefinition::Opcode::ArrayFromArgumentsObject:
       return KnownClass::Array;
 
     case MDefinition::Opcode::NewObject:
@@ -41,6 +41,9 @@ KnownClass jit::GetObjectKnownClass(const MDefinition* def) {
 
     case MDefinition::Opcode::RegExp:
       return KnownClass::RegExp;
+
+    case MDefinition::Opcode::NewDateObject:
+      return KnownClass::Date;
 
     case MDefinition::Opcode::NewIterator:
       switch (def->toNewIterator()->type()) {
@@ -96,6 +99,8 @@ const JSClass* jit::GetObjectKnownJSClass(const MDefinition* def) {
       return &FunctionClass;
     case KnownClass::RegExp:
       return &RegExpObject::class_;
+    case KnownClass::Date:
+      return &DateObject::class_;
     case KnownClass::ArrayIterator:
       return &ArrayIteratorObject::class_;
     case KnownClass::StringIterator:

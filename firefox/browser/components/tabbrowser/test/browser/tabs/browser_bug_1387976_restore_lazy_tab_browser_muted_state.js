@@ -4,7 +4,7 @@
 "use strict";
 
 const { TabState } = ChromeUtils.importESModule(
-  "resource:///modules/sessionstore/TabState.sys.mjs"
+  "moz-src:///browser/components/sessionstore/TabState.sys.mjs"
 );
 
 /**
@@ -13,7 +13,7 @@ const { TabState } = ChromeUtils.importESModule(
  *
  * @param tab
  *        The tab to restart.
- * @return {Object} the restored lazy tab
+ * @return {object} the restored lazy tab
  */
 const restartTab = async function (tab) {
   let tabData = TabState.clone(tab);

@@ -1,21 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "TelemetryScalar.h"
 
+#include "ETWTools.h"
 #include "ipc/TelemetryIPCAccumulator.h"
 #include "js/Array.h"               // JS::GetArrayLength, JS::IsArrayObject
 #include "js/PropertyAndElement.h"  // JS_DefineProperty, JS_DefineUCProperty, JS_Enumerate, JS_GetElement, JS_GetProperty, JS_GetPropertyById, JS_HasProperty
 #include "mozilla/dom/ContentParent.h"
-#include "mozilla/JSONWriter.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/TelemetryComms.h"
-#include "mozilla/Unused.h"
 #include "nsBaseHashtable.h"
 #include "nsClassHashtable.h"
 #include "nsContentUtils.h"
@@ -62,10 +59,31 @@ namespace TelemetryIPCAccumulator = mozilla::TelemetryIPCAccumulator;
 
 namespace geckoprofiler::markers {
 
-struct ScalarMarker {
-  static constexpr mozilla::Span<const char> MarkerTypeName() {
-    return mozilla::MakeStringSpan("Scalar");
-  }
+struct ScalarMarker : public mozilla::BaseMarkerType<ScalarMarker> {
+  static constexpr const char* Name = "Scalar";
+  // Only the name tells "Scalar::Set" from "Scalar::Add", and either of them
+  // from their "ChildScalar::" counterparts.
+  static constexpr bool ETWStoreName = true;
+  using MS = mozilla::MarkerSchema;
+  static constexpr MS::Location Locations[] = {
+      MS::Location::MarkerChart,
+      MS::Location::MarkerTable,
+  };
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"id", MS::InputType::CString, "Scalar Name", MS::Format::UniqueString},
+      {"key", MS::InputType::CString, "Key", MS::Format::String},
+      {"scalarType", MS::InputType::CString, "Type", MS::Format::UniqueString},
+      // "val" is a uint, a string or a bool depending on the scalar's type, so
+      // this InputType should be CString for ETW to carry all of them. That
+      // isn't possible yet, see bug 2072225; in the meantime use Uint64, which
+      // is only meaningful for uint and bool scalars.
+      {"val", MS::InputType::Uint64, "Value", MS::Format::String},
+  };
+  static constexpr const char* TooltipLabel =
+      "{marker.data.id}[{marker.data.key}] {marker.data.val}";
+  static constexpr const char* TableLabel =
+      "{marker.data.id}[{marker.data.key}]: "
+      "{marker.data.val}";
   static void StreamJSONMarkerData(
       mozilla::baseprofiler::SpliceableJSONWriter& aWriter,
       const mozilla::ProfilerString8View& aName, const uint32_t& aKind,
@@ -74,38 +92,47 @@ struct ScalarMarker {
     if (!aKey.IsEmpty()) {
       aWriter.StringProperty("key", mozilla::MakeStringSpan(aKey.get()));
     }
+    aWriter.UniqueStringProperty("scalarType", ScalarTypeToString(aKind));
     if (aKind == nsITelemetry::SCALAR_TYPE_COUNT) {
-      aWriter.UniqueStringProperty("scalarType", "uint");
       aWriter.IntProperty("val", aValue.as<uint32_t>());
     } else if (aKind == nsITelemetry::SCALAR_TYPE_STRING) {
-      aWriter.UniqueStringProperty("scalarType", "string");
       aWriter.StringProperty(
           "val", mozilla::MakeStringSpan(
                      NS_ConvertUTF16toUTF8(aValue.as<nsString>()).get()));
     } else {
-      aWriter.UniqueStringProperty("scalarType", "bool");
       aWriter.BoolProperty("val", aValue.as<bool>());
     }
   }
-  using MS = mozilla::MarkerSchema;
-  static MS MarkerTypeDisplay() {
-    MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
-    schema.AddKeyLabelFormatSearchable("id", "Scalar Name",
-                                       MS::Format::UniqueString,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("key", "Key", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("scalarType", "Type",
-                                       MS::Format::UniqueString,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("val", "Value", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.SetTooltipLabel(
-        "{marker.data.id}[{marker.data.key}] {marker.data.val}");
-    schema.SetTableLabel(
-        "{marker.name} - {marker.data.id}[{marker.data.key}]: "
-        "{marker.data.val}");
-    return schema;
+
+  static void TranslateMarkerInputToSchema(
+      void* aContext, const mozilla::ProfilerString8View& aName,
+      const uint32_t& aKind, const nsCString& aKey,
+      const ScalarVariant& aValue) {
+    ETW::OutputMarkerSchema(
+        aContext, ScalarMarker{}, aName, mozilla::ProfilerString8View(aKey),
+        ScalarTypeToString(aKind), ScalarValueToUint64(aKind, aValue));
+  }
+
+ private:
+  static mozilla::ProfilerString8View ScalarTypeToString(uint32_t aKind) {
+    if (aKind == nsITelemetry::SCALAR_TYPE_COUNT) {
+      return "uint";
+    }
+    if (aKind == nsITelemetry::SCALAR_TYPE_STRING) {
+      return "string";
+    }
+    return "bool";
+  }
+
+  static uint64_t ScalarValueToUint64(uint32_t aKind,
+                                      const ScalarVariant& aValue) {
+    if (aKind == nsITelemetry::SCALAR_TYPE_COUNT) {
+      return aValue.as<uint32_t>();
+    }
+    if (aKind == nsITelemetry::SCALAR_TYPE_STRING) {
+      return 0;
+    }
+    return aValue.as<bool>() ? 1 : 0;
   }
 };
 
@@ -152,7 +179,6 @@ struct ScalarMarker {
 namespace {
 
 const uint32_t kMaximumNumberOfKeys = 100;
-const uint32_t kMaxEventSummaryKeys = 500;
 const uint32_t kMaximumKeyStringLength = 72;
 const uint32_t kMaximumStringValueLength = 50;
 // The category and scalar name maximum lengths are used by the dynamic
@@ -316,16 +342,12 @@ class ScalarBase {
   virtual ~ScalarBase() = default;
 
   // Convenience methods used by the C++ API.
-  virtual void SetValue(uint32_t aValue) {
-    mozilla::Unused << HandleUnsupported();
-  }
+  virtual void SetValue(uint32_t aValue) { (void)HandleUnsupported(); }
   virtual ScalarResult SetValue(const nsAString& aValue) {
     return HandleUnsupported();
   }
-  virtual void SetValue(bool aValue) { mozilla::Unused << HandleUnsupported(); }
-  virtual void AddValue(uint32_t aValue) {
-    mozilla::Unused << HandleUnsupported();
-  }
+  virtual void SetValue(bool aValue) { (void)HandleUnsupported(); }
+  virtual void AddValue(uint32_t aValue) { (void)HandleUnsupported(); }
 
   // GetValue is used to get the value of the scalar when persisting it to JS.
   virtual nsresult GetValue(const nsACString& aStoreName, bool aClearStore,
@@ -440,12 +462,12 @@ class ScalarUnsigned : public ScalarBase {
                     nsCOMPtr<nsIVariant>& aResult) final;
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const final;
 
- private:
-  nsTArray<uint32_t> mStorage;
-
   // Prevent copying.
   ScalarUnsigned(const ScalarUnsigned& aOther) = delete;
   void operator=(const ScalarUnsigned& aOther) = delete;
+
+ private:
+  nsTArray<uint32_t> mStorage;
 };
 
 void ScalarUnsigned::SetValue(uint32_t aValue) {
@@ -513,12 +535,12 @@ class ScalarString : public ScalarBase {
                     nsCOMPtr<nsIVariant>& aResult) final;
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const final;
 
- private:
-  nsTArray<nsString> mStorage;
-
   // Prevent copying.
   ScalarString(const ScalarString& aOther) = delete;
   void operator=(const ScalarString& aOther) = delete;
+
+ private:
+  nsTArray<nsString> mStorage;
 };
 
 ScalarResult ScalarString::SetValue(const nsAString& aValue) {
@@ -588,12 +610,12 @@ class ScalarBoolean : public ScalarBase {
                     nsCOMPtr<nsIVariant>& aResult) final;
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const final;
 
- private:
-  nsTArray<bool> mStorage;
-
   // Prevent copying.
   ScalarBoolean(const ScalarBoolean& aOther) = delete;
   void operator=(const ScalarBoolean& aOther) = delete;
+
+ private:
+  nsTArray<bool> mStorage;
 };
 
 void ScalarBoolean::SetValue(bool aValue) {
@@ -943,13 +965,13 @@ MOZ_RUNINIT ScalarMapType gScalarNameIDMap(kScalarCount);
 // The (Process Id -> (Scalar ID -> Scalar Object)) map. This is a
 // nsClassHashtable, it owns the scalar instances and takes care of deallocating
 // them when they are removed from the map.
-MOZ_RUNINIT ProcessesScalarsMapType gScalarStorageMap;
+constinit ProcessesScalarsMapType gScalarStorageMap;
 // As above, for the keyed scalars.
-MOZ_RUNINIT ProcessesKeyedScalarsMapType gKeyedScalarStorageMap;
+constinit ProcessesKeyedScalarsMapType gKeyedScalarStorageMap;
 // Provide separate storage for "dynamic builtin" plain and keyed scalars,
 // needed to support "build faster" in local developer builds.
-MOZ_RUNINIT ProcessesScalarsMapType gDynamicBuiltinScalarStorageMap;
-MOZ_RUNINIT ProcessesKeyedScalarsMapType gDynamicBuiltinKeyedScalarStorageMap;
+constinit ProcessesScalarsMapType gDynamicBuiltinScalarStorageMap;
+constinit ProcessesKeyedScalarsMapType gDynamicBuiltinKeyedScalarStorageMap;
 }  // namespace
 
 ////////////////////////////////////////////////////////////////////////
@@ -1323,7 +1345,7 @@ void internal_BroadcastDefinitions(
 
   // Broadcast the definitions to the other content processes.
   for (auto parent : parents) {
-    mozilla::Unused << parent->SendAddDynamicScalars(scalarDefs);
+    (void)parent->SendAddDynamicScalars(scalarDefs);
   }
 }
 
@@ -1789,18 +1811,8 @@ void TelemetryScalar::InitializeGlobalState(bool aCanRecordBase,
     entry->SetData(ScalarKey{i, false});
   }
 
-  // To summarize dynamic events we need a dynamic scalar.
-  const nsTArray<DynamicScalarInfo> initialDynamicScalars({
-      DynamicScalarInfo{
-          nsITelemetry::SCALAR_TYPE_COUNT,
-          true /* recordOnRelease */,
-          false /* expired */,
-          nsAutoCString("telemetry.dynamic_event_counts"),
-          true /* keyed */,
-          {} /* stores */,
-      },
-  });
-  internal_RegisterScalars(locker, initialDynamicScalars);
+  // Initializes gDynamicScalarInfo and gDynamicStoreNames.
+  internal_RegisterScalars(locker, {});
 
   gTelemetryScalarInitDone = true;
 }
@@ -2444,7 +2456,7 @@ nsresult TelemetryScalar::RegisterScalars(const nsACString& aCategoryName,
       }
       // In the event of the usual case (just "main"), save the storage.
       if (stores.Length() == 1 && stores[0].EqualsLiteral("main")) {
-        stores.TruncateLength(0);
+        stores.ClearAndRetainStorage();
       }
     }
 
@@ -2470,42 +2482,6 @@ nsresult TelemetryScalar::RegisterScalars(const nsACString& aCategoryName,
   ::internal_BroadcastDefinitions(ipcDefinitions);
 
   return NS_OK;
-}
-
-/**
- * Count in Scalars how many of which events were recorded. See bug 1440673
- *
- * Event Telemetry unfortunately cannot use vanilla ScalarAdd because it needs
- * to summarize events recorded in different processes to the
- * telemetry.event_counts of the same process. Including "dynamic".
- *
- * @param aUniqueEventName - expected to be category#object#method
- * @param aProcessType - the process of the event being summarized
- */
-void TelemetryScalar::SummarizeEvent(const nsCString& aUniqueEventName,
-                                     ProcessID aProcessType) {
-  MOZ_ASSERT(XRE_IsParentProcess(),
-             "Only summarize events in the parent process");
-  if (!XRE_IsParentProcess()) {
-    return;
-  }
-
-  StaticMutexAutoLock lock(gTelemetryScalarsMutex);
-
-  ScalarKey scalarKey{static_cast<uint32_t>(ScalarID::TELEMETRY_EVENT_COUNTS)};
-  KeyedScalar* scalar = nullptr;
-  nsresult rv =
-      internal_GetKeyedScalarByEnum(lock, scalarKey, aProcessType, &scalar);
-
-  if (NS_FAILED(rv)) {
-    NS_WARNING("NS_FAILED getting keyed scalar for event summary. Wut.");
-    return;
-  }
-
-  // Set this each time as it may have been cleared and recreated between calls
-  scalar->SetMaximumNumberOfKeys(kMaxEventSummaryKeys);
-
-  scalar->AddValue(lock, NS_ConvertASCIItoUTF16(aUniqueEventName), 1);
 }
 
 /**

@@ -1,3 +1,5 @@
+// |jit-test| test-also=--setpref=wasm_baseline_debug=true; skip-variant-if: --setpref=wasm_baseline_debug=true, wasmCompileMode() == "ion"
+
 assertEq(wasmEvalText('(module (func (result i32) (i32.const -1)) (export "" (func 0)))').exports[""](), -1);
 assertEq(wasmEvalText('(module (func (result i32) (i32.const -2147483648)) (export "" (func 0)))').exports[""](), -2147483648);
 assertEq(wasmEvalText('(module (func (result i32) (i32.const 4294967295)) (export "" (func 0)))').exports[""](), -1);
@@ -204,10 +206,12 @@ testBinary64('div_s', 40, 7, 5);
 testBinary64('div_s', "0x1234567887654321", 2, "0x91a2b3c43b2a190");
 testBinary64('div_s', "0x1234567887654321", "0x1000000000", "0x1234567");
 testBinary64('div_s', -1, "0x100000000", 0);
+testBinary64('div_s', "0x700000000", "0x300000000", 2);
 testBinary64('div_u', -40, 2, "0x7fffffffffffffec");
 testBinary64('div_u', "0x1234567887654321", 9, "0x205d0b80f0b4059");
 testBinary64('div_u', 40, 2, 20);
 testBinary64('div_u', 40, 8, 5);
+testBinary64('div_u', "0xa00000000", "0x300000000", 3);
 testBinary64('rem_s', 40, -3, 1);
 testBinary64('rem_s', 0, -3, 0);
 testBinary64('rem_s', 5, 2, 1);
@@ -216,11 +220,13 @@ testBinary64('rem_s', "0x1234567887654321", "0x1000000000", "0x887654321");
 testBinary64('rem_s', "0x7fffffffffffffff", -1, 0);
 testBinary64('rem_s', "0x8000000000000001", 1000, -807);
 testBinary64('rem_s', "0x8000000000000000", -1, 0);
+testBinary64('rem_s', "0x700000000", "0x300000000", "0x100000000");
 testBinary64('rem_u', 40, -3, 40);
 testBinary64('rem_u', 41, 8, 1);
 testBinary64('rem_u', "0x1234567887654321", "0x1000000000", "0x887654321");
 testBinary64('rem_u', "0x8000000000000000", -1, "0x8000000000000000");
 testBinary64('rem_u', "0x8ff00ff00ff00ff0", "0x100000001", "0x80000001");
+testBinary64('rem_u', "0xa00000000", "0x300000000", "0x100000000");
 
 testTrap64('div_s', 10, 0, /integer divide by zero/);
 testTrap64('div_s', "0x8000000000000000", -1, /integer overflow/);

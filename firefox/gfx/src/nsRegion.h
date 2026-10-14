@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsRegion_h__
-#define nsRegion_h__
+#ifndef nsRegion_h_
+#define nsRegion_h_
 
 #include <stddef.h>  // for size_t
 #include <stdint.h>  // for uint32_t, uint64_t
@@ -13,6 +11,7 @@
 #include <ostream>  // for std::ostream
 #include <utility>  // for mozilla::Move
 
+#include "fmt/ostream.h"
 #include "mozilla/ArrayView.h"      // for ArrayView
 #include "mozilla/gfx/MatrixFwd.h"  // for mozilla::gfx::Matrix4x4
 #include "nsCoord.h"                // for nscoord
@@ -2222,7 +2221,7 @@ class BaseIntRegion {
   MOZ_IMPLICIT BaseIntRegion(const Rect& aRect) : mImpl(ToRect(aRect)) {}
   explicit BaseIntRegion(mozilla::gfx::ArrayView<pixman_box32_t> aRects)
       : mImpl(aRects) {}
-  BaseIntRegion(const BaseIntRegion& aRegion) : mImpl(aRegion.mImpl) {}
+  BaseIntRegion(const BaseIntRegion& aRegion) = default;
   BaseIntRegion(BaseIntRegion&& aRegion) : mImpl(std::move(aRegion.mImpl)) {}
   Derived& operator=(const Rect& aRect) {
     mImpl = ToRect(aRect);
@@ -2528,5 +2527,11 @@ class IntRegionTyped
 }  // namespace mozilla
 
 typedef mozilla::gfx::IntRegion nsIntRegion;
+
+template <>
+struct fmt::formatter<nsRegion> : fmt::ostream_formatter {};
+template <class Units>
+struct fmt::formatter<mozilla::gfx::IntRegionTyped<Units>>
+    : fmt::ostream_formatter {};
 
 #endif

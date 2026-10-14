@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -14,15 +12,14 @@ EXPORTS += [
 ]
 
 EXPORTS.mozilla += [
-    "!GeckoProcessTypes.h",
-    "!Services.h",
+    "!GeckoProcessTypes.inc",
     "FileLocation.h",
     "IOInterposer.h",
     "LateWriteChecks.h",
     "Omnijar.h",
     "PoisonIOInterposer.h",
     "SmallArrayLRUCache.h",
-    "XPCOM.h",
+    "StaticXREAppData.h",
     "XREAppData.h",
 ]
 
@@ -43,6 +40,9 @@ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
     if CONFIG["TARGET_CPU"] != "aarch64":
         SOURCES += ["mach_override.c"]
         SOURCES["mach_override.c"].flags += ["-Wno-unused-function"]
+        SOURCE_HEADERS += [
+            "mach_override.h",
+        ]
 else:
     SOURCES += ["PoisonIOInterposerStub.cpp"]
 
@@ -64,17 +64,16 @@ UNIFIED_SOURCES += [
     "XPCOMInit.cpp",
 ]
 
-SOURCES += ["!Services.cpp"]
-
 if CONFIG["OS_ARCH"] != "WINNT":
     SOURCES += [
         "NSPRInterposer.cpp",
     ]
+    SOURCE_HEADERS += [
+        "NSPRInterposer.h",
+    ]
 
-GeneratedFile("Services.cpp", script="Services.py", entry_point="services_cpp")
-GeneratedFile("Services.h", script="Services.py", entry_point="services_h")
 GeneratedFile(
-    "GeckoProcessTypes.h",
+    "GeckoProcessTypes.inc",
     script="gen_process_types.py",
     entry_point="main",
 )
@@ -106,3 +105,11 @@ if CONFIG["MOZ_VPX"]:
 
 if CONFIG["MOZ_PHC"]:
     DEFINES["MOZ_PHC"] = 1
+
+SOURCE_HEADERS += [
+    "BinaryPath.h",
+    "IOInterposerPrivate.h",
+    "MainThreadIOLogger.h",
+    "nsXPCOMPrivate.h",
+    "XPCOMModule.h",
+]

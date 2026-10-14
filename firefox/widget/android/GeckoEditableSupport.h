@@ -1,20 +1,19 @@
-/* -*- Mode: c++; c-basic-offset: 2; tab-width: 20; indent-tabs-mode: nil; -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef mozilla_widget_GeckoEditableSupport_h
 #define mozilla_widget_GeckoEditableSupport_h
 
-#include "nsAppShell.h"
-#include "nsIWidget.h"
-#include "nsTArray.h"
-
-#include "mozilla/java/GeckoEditableChildNatives.h"
-#include "mozilla/java/SessionTextInputWrappers.h"
+#include "GeckoViewSupport.h"
 #include "mozilla/TextEventDispatcher.h"
 #include "mozilla/TextEventDispatcherListener.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/java/GeckoEditableChildNatives.h"
+#include "mozilla/java/SessionTextInputWrappers.h"
+#include "nsAppShell.h"
+#include "nsIWidget.h"
+#include "nsTArray.h"
 
 class nsWindow;
 
@@ -77,6 +76,16 @@ class GeckoEditableSupport final
   bool mIMETextChangedDuringFlush;
   bool mIMEMonitorCursor;
 
+  struct WaitingReplyKeyEvent {
+    uint32_t mUniqueId = 0;
+    mozilla::jni::Object::GlobalRef mOriginalEvent;
+  };
+
+  AutoTArray<WaitingReplyKeyEvent, 8> mWaitingReplyKeyEvents;
+  // Unique ID of key event that is used whether GeckoEditable handles default
+  // key event.
+  static uint32_t sUniqueKeyEventId;
+
   // The cached selection data
   struct Selection {
     Selection() : mStartOffset(-1), mEndOffset(-1) {}
@@ -119,6 +128,7 @@ class GeckoEditableSupport final
   void OnNotifyIMEOfCompositionEventHandled();
   void NotifyIMEContext(const InputContext& aContext,
                         const InputContextAction& aAction);
+  void EnsureEditableParent(uint64_t aTabId);
 
  public:
   template <typename Functor>
@@ -195,6 +205,8 @@ class GeckoEditableSupport final
 
   bool HasIMEFocus() const { return mIMEFocusCount != 0; }
 
+  void PostHandleKeyEvent(mozilla::WidgetKeyboardEvent* aEvent);
+
   void AddBlocker() { mDisposeBlockCount++; }
 
   void ReleaseBlocker() {
@@ -249,7 +261,7 @@ class GeckoEditableSupport final
   void OnKeyEvent(int32_t aAction, int32_t aKeyCode, int32_t aScanCode,
                   int32_t aMetaState, int32_t aKeyPressMetaState, int64_t aTime,
                   int32_t aDomPrintableKeyValue, int32_t aRepeatCount,
-                  int32_t aFlags, bool aIsSynthesizedImeKey,
+                  int32_t aFlags, bool aIsSynthesizedImeKey, bool aWaitingReply,
                   jni::Object::Param originalEvent);
 
   // Synchronize Gecko thread with the InputConnection thread.

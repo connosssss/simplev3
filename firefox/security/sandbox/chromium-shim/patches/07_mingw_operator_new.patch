@@ -11,7 +11,7 @@ MozReview-Commit-ID: GCKj5Ao2Y2n
 diff --git a/sandbox/win/src/sandbox_nt_util.cc b/sandbox/win/src/sandbox_nt_util.cc
 --- a/sandbox/win/src/sandbox_nt_util.cc
 +++ b/sandbox/win/src/sandbox_nt_util.cc
-@@ -663,16 +663,21 @@ void* operator new(size_t size, sandbox:
+@@ -689,16 +689,21 @@ void* operator new(size_t size, sandbox:
  
    // TODO: Returning nullptr from operator new has undefined behavior, but
    // the Allocate() functions called above can return nullptr. Consider checking
@@ -28,16 +28,16 @@ diff --git a/sandbox/win/src/sandbox_nt_util.cc b/sandbox/win/src/sandbox_nt_uti
  void operator delete(void* memory, sandbox::AllocationType type) {
    if (type == sandbox::NT_ALLOC) {
      // Use default flags.
-     VERIFY(sandbox::g_nt.RtlFreeHeap(sandbox::g_heap, 0, memory));
+     VERIFY(sandbox::GetNtExports()->RtlFreeHeap(sandbox::g_heap, 0, memory));
    } else if (type == sandbox::NT_PAGE) {
      void* base = memory;
      SIZE_T size = 0;
-     VERIFY_SUCCESS(sandbox::g_nt.FreeVirtualMemory(NtCurrentProcess, &base,
+     VERIFY_SUCCESS(sandbox::GetNtExports()->FreeVirtualMemory(
 diff --git a/sandbox/win/src/sandbox_nt_util.h b/sandbox/win/src/sandbox_nt_util.h
 --- a/sandbox/win/src/sandbox_nt_util.h
 +++ b/sandbox/win/src/sandbox_nt_util.h
-@@ -13,16 +13,19 @@
- #include "base/macros.h"
+@@ -18,16 +18,19 @@
+ #include "base/memory/raw_ptr_exclusion.h"
  #include "sandbox/win/src/nt_internals.h"
  #include "sandbox/win/src/sandbox_nt_types.h"
  

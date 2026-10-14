@@ -207,9 +207,7 @@ def test_mochitest_profiling(fake_file_path):
         "mozperftest.test.functionaltestrunner.FunctionalTestRunner.test"
     ) as test_mock, mock.patch(
         "mozperftest.test.mochitest.install_requirements_file"
-    ), mock.patch(
-        "mozperftest.test.mochitest.Path"
-    ):
+    ), mock.patch("mozperftest.test.mochitest.Path"):
         test_mock.return_value = (0, mock.MagicMock())
         try:
             with pytest.raises(NoPerfMetricsError):
@@ -393,6 +391,7 @@ def test_mochitest_ci_subsuite(
 @mock.patch("moztest.resolve.TestResolver", new=mock.MagicMock())
 @mock.patch("mozperftest.test.mochitest.ON_TRY", new=True)
 @mock.patch("mozperftest.utils.ON_TRY", new=True)
+@mock.patch("mochitest_options.MochitestArgumentParser", new=mock.MagicMock())
 @mock.patch("mochitest.mochitest_options.MochitestArgumentParser", new=mock.MagicMock())
 @mock.patch("manifestparser.TestManifest", new=mock.MagicMock())
 def test_mochitest_android_ci_metrics(formatter_mock, run_test_harness_mock):

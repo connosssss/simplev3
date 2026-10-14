@@ -8,8 +8,6 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
-import android.os.Build
-import android.os.Build.VERSION.SDK_INT
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationCompat.BADGE_ICON_NONE
 import androidx.core.app.NotificationManagerCompat
@@ -20,14 +18,13 @@ import androidx.lifecycle.LifecycleOwner
 import mozilla.components.browser.state.selector.findCustomTab
 import mozilla.components.browser.state.state.ExternalAppType
 import mozilla.components.browser.state.store.BrowserStore
+import mozilla.components.feature.pwa.R as pwaR
 import mozilla.components.support.base.android.NotificationsDelegate
 import mozilla.components.support.base.ids.SharedIdsHelper
 import mozilla.components.support.base.ids.cancel
 import org.mozilla.fenix.R
 
-/**
- * Displays a "Powered by Firefox Preview" notification when a Trusted Web Activity is running.
- */
+/** Displays a "Powered by Firefox Preview" notification when a Trusted Web Activity is running. */
 class PoweredByNotification(
     private val applicationContext: Context,
     private val store: BrowserStore,
@@ -46,13 +43,10 @@ class PoweredByNotification(
     }
 
     override fun onPause(owner: LifecycleOwner) {
-        NotificationManagerCompat.from(applicationContext)
-            .cancel(applicationContext, NOTIFICATION_TAG)
+        NotificationManagerCompat.from(applicationContext).cancel(applicationContext, NOTIFICATION_TAG)
     }
 
-    /**
-     * Build the notification with site controls to be displayed while the web app is active.
-     */
+    /** Build the notification with site controls to be displayed while the web app is active. */
     private fun buildNotification(): Notification {
         val channelId = ensureChannelExists()
 
@@ -76,17 +70,16 @@ class PoweredByNotification(
      * Returns the channel id to be used for notifications.
      */
     private fun ensureChannelExists(): String {
-        if (SDK_INT >= Build.VERSION_CODES.O) {
-            val notificationManager: NotificationManager = applicationContext.getSystemService()!!
+        val notificationManager: NotificationManager = applicationContext.getSystemService()!!
 
-            val channel = NotificationChannel(
+        val channel =
+            NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
-                applicationContext.getString(R.string.mozac_feature_pwa_site_controls_notification_channel),
+                applicationContext.getString(pwaR.string.mozac_feature_pwa_site_controls_notification_channel),
                 NotificationManager.IMPORTANCE_MIN,
             )
 
-            notificationManager.createNotificationChannel(channel)
-        }
+        notificationManager.createNotificationChannel(channel)
 
         return NOTIFICATION_CHANNEL_ID
     }

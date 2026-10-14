@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,7 +9,6 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/UniquePtr.h"
 #include "nsCOMPtr.h"
 #include "nsIObserver.h"
 #include "nsIProxyInfo.h"
@@ -101,6 +99,9 @@ class nsSSLIOLayerHelpers : public nsIObserver {
 
   mozilla::Mutex mutex MOZ_UNANNOTATED;
   uint32_t mTlsFlags;
+#ifdef DEBUG
+  bool mRegisteredPrefObservers = false;
+#endif
 };
 
 namespace {
@@ -141,16 +142,5 @@ SECStatus brotliCertificateDecode(const SECItem* input, unsigned char* output,
 
 SECStatus zstdCertificateDecode(const SECItem* input, unsigned char* output,
                                 size_t outputLen, size_t* usedLen);
-
-extern "C" {
-using FindObjectsCallback = void (*)(uint8_t type, size_t id_len,
-                                     const uint8_t* id, size_t data_len,
-                                     const uint8_t* data, void* ctx);
-void DoFindObjects(FindObjectsCallback cb, void* ctx);
-using SignCallback = void (*)(size_t data_len, const uint8_t* data, void* ctx);
-void DoSign(size_t cert_len, const uint8_t* cert, size_t data_len,
-            const uint8_t* data, size_t params_len, const uint8_t* params,
-            SignCallback cb, void* ctx);
-}
 
 #endif  // nsNSSIOLayer_h

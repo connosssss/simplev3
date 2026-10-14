@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20,7 +19,6 @@ class nsIContent;
 class nsIEditor;
 class nsINode;
 class nsISelectionController;
-class nsRange;
 
 namespace mozilla {
 
@@ -32,6 +30,7 @@ namespace dom {
 class AbstractRange;
 class Document;
 class Element;
+class Range;
 class StaticRange;
 };  // namespace dom
 
@@ -63,7 +62,7 @@ class TextServicesDocument final : public nsIEditActionListener {
      */
     Result<IteratorStatus, nsresult> Init(
         FilteredContentIterator& aFilteredIter, IteratorStatus aIteratorStatus,
-        nsRange* aIterRange, nsAString* aAllTextInBlock = nullptr);
+        dom::Range* aIterRange, nsAString* aAllTextInBlock = nullptr);
 
     /**
      * Returns index of first `OffsetEntry` which manages aTextNode.
@@ -206,7 +205,7 @@ class TextServicesDocument final : public nsIEditActionListener {
   nsCOMPtr<nsIContent> mPrevTextBlock;
   nsCOMPtr<nsIContent> mNextTextBlock;
   OffsetEntryArray mOffsetTable;
-  RefPtr<nsRange> mExtent;
+  RefPtr<dom::Range> mExtent;
 
   uint32_t mTxtSvcFilterType;
   IteratorStatus mIteratorStatus;
@@ -389,8 +388,8 @@ class TextServicesDocument final : public nsIEditActionListener {
       FilteredContentIterator** aFilteredIter);
 
   dom::Element* GetDocumentContentRootNode() const;
-  already_AddRefed<nsRange> CreateDocumentContentRange();
-  already_AddRefed<nsRange> CreateDocumentContentRootToNodeOffsetRange(
+  already_AddRefed<dom::Range> CreateDocumentContentRange();
+  already_AddRefed<dom::Range> CreateDocumentContentRootToNodeOffsetRange(
       nsINode* aParent, uint32_t aOffset, bool aToStart);
   nsresult CreateDocumentContentIterator(
       FilteredContentIterator** aFilteredIter);

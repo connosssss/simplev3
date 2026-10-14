@@ -1,19 +1,17 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:expandtab:shiftwidth=2:tabstop=2:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/dom/TimeoutManager.h"
-
-#include "nsContentUtils.h"
 #include "WebTaskSchedulerMainThread.h"
+
+#include "mozilla/dom/TimeoutManager.h"
+#include "nsContentUtils.h"
+#include "nsGlobalWindowInner.h"
 
 namespace mozilla::dom {
 
-MOZ_CONSTINIT uint32_t
-    gNumNormalOrHighPriorityQueuesHaveTaskScheduledMainThread = 0;
+constinit uint32_t gNumNormalOrHighPriorityQueuesHaveTaskScheduledMainThread =
+    0;
 
 NS_IMETHODIMP WebTaskMainThreadRunnable::Run() {
   if (mScheduler) {
@@ -25,8 +23,8 @@ NS_IMETHODIMP WebTaskMainThreadRunnable::Run() {
   return NS_OK;
 }
 
-nsresult WebTaskSchedulerMainThread::SetTimeoutForDelayedTask(
-    WebTask* aTask, uint64_t aDelay, EventQueuePriority aPriority) {
+nsresult WebTaskSchedulerMainThread::SetTimeoutForDelayedTask(WebTask* aTask,
+                                                              uint64_t aDelay) {
   JSContext* cx = nsContentUtils::GetCurrentJSContext();
   if (!cx) {
     return NS_ERROR_UNEXPECTED;
@@ -35,7 +33,7 @@ nsresult WebTaskSchedulerMainThread::SetTimeoutForDelayedTask(
   MOZ_ASSERT(global);
 
   RefPtr<DelayedWebTaskHandler> handler =
-      new DelayedWebTaskHandler(cx, this, aTask, aPriority);
+      new DelayedWebTaskHandler(cx, this, aTask);
 
   int32_t delay = aDelay > INT32_MAX ? INT32_MAX : (int32_t)aDelay;
 

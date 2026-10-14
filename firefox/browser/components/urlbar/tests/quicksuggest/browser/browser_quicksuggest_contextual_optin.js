@@ -4,8 +4,22 @@
 "use strict";
 
 add_setup(async function () {
+  // This feature's selection hooks do live-DOM work through the parent-side
+  // provider, which can't run on the Urlbar actor's message path, so keep it on
+  // the direct path even under the pref-on variant.
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["browser.urlbar.ipc.chromeMessagePassing", false],
+      // Tests get no default Top Sites, but this test opens the view on an
+      // empty string and expects a result even when the opt-in is hidden.
+      [
+        "browser.newtabpage.activity-stream.default.sites",
+        "https://example.com/",
+      ],
+    ],
+  });
   registerCleanupFunction(async () => {
-    UrlbarPrefs.clear("quicksuggest.dataCollection.enabled");
+    UrlbarPrefs.clear("quicksuggest.online.enabled");
     UrlbarPrefs.clear("quicksuggest.contextualOptIn");
     UrlbarPrefs.clear("quicksuggest.contextualOptIn.lastDismissedTime");
     UrlbarPrefs.clear("quicksuggest.contextualOptIn.dismissedCount");
@@ -27,7 +41,7 @@ add_setup(async function () {
 
 add_task(async function accept() {
   info("Setup");
-  UrlbarPrefs.set("quicksuggest.dataCollection.enabled", false);
+  UrlbarPrefs.set("quicksuggest.online.enabled", false);
   UrlbarPrefs.set("quicksuggest.contextualOptIn", true);
   UrlbarPrefs.set("quicksuggest.contextualOptIn.dismissedCount", 0);
   UrlbarPrefs.set("quicksuggest.contextualOptIn.lastDismissedTime", 0);
@@ -56,22 +70,23 @@ add_task(async function accept() {
       window
     );
   });
-  Assert.ok(UrlbarPrefs.get("quicksuggest.dataCollection.enabled"));
+  Assert.ok(UrlbarPrefs.get("quicksuggest.online.enabled"));
 
-  info(
-    "Check whether the contextual opt-in result was removed from last query"
-  );
-  let { queryContext } = gURLBar.controller._lastQueryContextWrapper;
-  Assert.ok(
-    !queryContext.results.some(
-      r => r.providerName == "UrlbarProviderQuickSuggestContextualOptIn"
-    )
-  );
+  info("The contextual opt-in should no longer be offered after opting in");
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({ window, value: "" });
+  for (let i = 0; i < UrlbarTestUtils.getResultCount(window); i++) {
+    let { result: r } = await UrlbarTestUtils.getDetailsOfResultAt(window, i);
+    Assert.notEqual(
+      r.providerName,
+      "UrlbarProviderQuickSuggestContextualOptIn",
+      "Opt-in result should not be shown after opting in"
+    );
+  }
 });
 
 add_task(async function dismiss() {
   info("Setup");
-  UrlbarPrefs.set("quicksuggest.dataCollection.enabled", false);
+  UrlbarPrefs.set("quicksuggest.online.enabled", false);
   UrlbarPrefs.set("quicksuggest.contextualOptIn", true);
   UrlbarPrefs.set("quicksuggest.contextualOptIn.lastDismissedTime", 0);
   UrlbarPrefs.set("quicksuggest.contextualOptIn.dismissedCount", 0);
@@ -164,7 +179,7 @@ add_task(async function dismiss_by_impressions_count_fisrt() {
   info("Setup");
   const IMPRESSION_LIMIT = 5;
   const IMPRESSION_DAYS_LIMIT = 10;
-  UrlbarPrefs.set("quicksuggest.dataCollection.enabled", false);
+  UrlbarPrefs.set("quicksuggest.online.enabled", false);
   UrlbarPrefs.set("quicksuggest.contextualOptIn", true);
   UrlbarPrefs.set("quicksuggest.contextualOptIn.dismissedCount", 0);
   UrlbarPrefs.set("quicksuggest.contextualOptIn.lastDismissedTime", 0);
@@ -222,7 +237,7 @@ add_task(async function dismiss_by_impressions_elapsed_days_fisrt() {
   info("Setup");
   const IMPRESSION_LIMIT = 5;
   const IMPRESSION_DAYS_LIMIT = 10;
-  UrlbarPrefs.set("quicksuggest.dataCollection.enabled", false);
+  UrlbarPrefs.set("quicksuggest.online.enabled", false);
   UrlbarPrefs.set("quicksuggest.contextualOptIn", true);
   UrlbarPrefs.set("quicksuggest.contextualOptIn.dismissedCount", 0);
   UrlbarPrefs.set("quicksuggest.contextualOptIn.lastDismissedTime", 0);
@@ -354,7 +369,15 @@ async function makeImpression() {
     result.providerName,
     "UrlbarProviderQuickSuggestContextualOptIn"
   );
+  let before = UrlbarPrefs.get("quicksuggest.contextualOptIn.impressionCount");
   await UrlbarTestUtils.promisePopupClose(window, () => gURLBar.blur());
+  // The abandonment fires the provider's onImpression, which counts the
+  // impression; that round-trips over the actor on the message path.
+  await TestUtils.waitForCondition(
+    () =>
+      UrlbarPrefs.get("quicksuggest.contextualOptIn.impressionCount") > before,
+    "Waiting for the impression to be counted"
+  );
 }
 
 add_task(async function nimbus() {

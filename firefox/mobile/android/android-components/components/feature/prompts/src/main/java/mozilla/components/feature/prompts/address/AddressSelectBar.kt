@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.util.AttributeSet
 import android.view.View
+import androidx.annotation.LayoutRes
 import androidx.appcompat.widget.AppCompatImageView
 import androidx.appcompat.widget.AppCompatTextView
 import androidx.constraintlayout.widget.ConstraintLayout
@@ -27,16 +28,14 @@ import mozilla.components.feature.prompts.facts.emitAddressAutofillExpandedFact
 import mozilla.components.feature.prompts.facts.emitSuccessfulAddressAutofillSuccessFact
 import mozilla.components.support.ktx.android.view.hideKeyboard
 
-/**
- * A customizable "Select addresses" bar.
- */
-class AddressSelectBar @JvmOverloads constructor(
+/** A customizable "Select addresses" bar. */
+class AddressSelectBar
+@JvmOverloads
+constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0,
-) : ConstraintLayout(context, attrs, defStyleAttr),
-    AutocompletePrompt<Address>,
-    ExpandablePrompt {
+) : ConstraintLayout(context, attrs, defStyleAttr), AutocompletePrompt<Address>, ExpandablePrompt {
 
     private var view: View? = null
     private var recyclerView: RecyclerView? = null
@@ -46,6 +45,7 @@ class AddressSelectBar @JvmOverloads constructor(
     private var headerTextStyle: Int? = null
     override var isPromptDisplayed: Boolean = false
         private set
+
     private var isExpanded: Boolean = false
 
     private val listAdapter = AddressAdapter { address ->
@@ -127,23 +127,25 @@ class AddressSelectBar @JvmOverloads constructor(
     }
 
     private fun bindViews() {
-        recyclerView = findViewById<RecyclerView>(R.id.address_list).apply {
-            layoutManager = LinearLayoutManager(context, RecyclerView.VERTICAL, false)
-            adapter = listAdapter
-        }
-
-        headerView = findViewById<AppCompatTextView>(R.id.select_address_header).apply {
-            setOnClickListener {
-                toggleSelectAddressHeader(shouldExpand = recyclerView?.isVisible != true)
+        recyclerView =
+            findViewById<RecyclerView>(R.id.address_list).apply {
+                layoutManager = LinearLayoutManager(context, RecyclerView.VERTICAL, false)
+                adapter = listAdapter
             }
 
-            headerTextStyle?.let { appearance ->
-                TextViewCompat.setTextAppearance(this, appearance)
-                currentTextColor.let { color ->
-                    TextViewCompat.setCompoundDrawableTintList(this, ColorStateList.valueOf(color))
+        headerView =
+            findViewById<AppCompatTextView>(R.id.select_address_header).apply {
+                setOnClickListener {
+                    toggleSelectAddressHeader(shouldExpand = recyclerView?.isVisible != true)
+                }
+
+                headerTextStyle?.let { appearance ->
+                    TextViewCompat.setTextAppearance(this, appearance)
+                    currentTextColor.let { color ->
+                        TextViewCompat.setCompoundDrawableTintList(this, ColorStateList.valueOf(color))
+                    }
                 }
             }
-        }
 
         expanderView =
             findViewById<AppCompatImageView>(R.id.mozac_feature_address_expander).apply {
@@ -156,11 +158,12 @@ class AddressSelectBar @JvmOverloads constructor(
                 }
             }
 
-        manageAddressesView = findViewById<AppCompatTextView>(R.id.manage_addresses).apply {
-            setOnClickListener {
-                selectablePromptListener?.onManageOptions()
+        manageAddressesView =
+            findViewById<AppCompatTextView>(R.id.manage_addresses).apply {
+                setOnClickListener {
+                    selectablePromptListener?.onManageOptions()
+                }
             }
-        }
     }
 
     /**
@@ -173,7 +176,7 @@ class AddressSelectBar @JvmOverloads constructor(
     }
 
     companion object {
-        val LAYOUT_ID = R.layout.mozac_feature_prompts_address_select_prompt
+        @LayoutRes val LAYOUT_ID = R.layout.mozac_feature_prompts_address_select_prompt
 
         private const val ROTATE_180 = 180F
     }

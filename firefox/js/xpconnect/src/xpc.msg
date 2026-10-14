@@ -1,5 +1,4 @@
-/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -85,6 +84,7 @@ XPC_MSG_DEF(NS_ERROR_FACTORY_REGISTER_AGAIN        , "Factory not registered (ma
 XPC_MSG_DEF(NS_ERROR_FACTORY_NOT_LOADED            , "Factory not loaded")
 XPC_MSG_DEF(NS_ERROR_FACTORY_NO_SIGNATURE_SUPPORT  , "Factory does not support signatures")
 XPC_MSG_DEF(NS_ERROR_FACTORY_EXISTS                , "Factory already exists")
+XPC_MSG_DEF(NS_ERROR_INVALID_SIGNATURE             , "Invalid signature")
 
 /* added from nsError.h on Feb 28 2001... */
 
@@ -139,7 +139,6 @@ XPC_MSG_DEF(NS_ERROR_FIRST_HEADER_FIELD_COMPONENT_EMPTY, "Couldn't extract first
 XPC_MSG_DEF(NS_ERROR_ALREADY_CONNECTED              , "The connection is already established")
 XPC_MSG_DEF(NS_ERROR_NOT_CONNECTED                  , "The connection does not exist")
 XPC_MSG_DEF(NS_ERROR_CONNECTION_REFUSED             , "The connection was refused")
-XPC_MSG_DEF(NS_ERROR_SUPERFLUOS_AUTH                , "User refused navigation to potentially unsafe URL with embedded credentials/superfluos authentication")
 XPC_MSG_DEF(NS_ERROR_BASIC_HTTP_AUTH_DISABLED       , "User attempted basic HTTP authentication when it is disabled")
 XPC_MSG_DEF(NS_ERROR_LOCAL_NETWORK_ACCESS_DENIED    , "The access to local network is denied")
 
@@ -217,6 +216,12 @@ XPC_MSG_DEF(NS_ERROR_SIGNED_JAR_MANIFEST_INVALID    , "The JAR's manifest or sig
 XPC_MSG_DEF(NS_ERROR_CMS_VERIFY_NO_CONTENT_INFO     , "The PKCS#7 signature is malformed or invalid.")
 XPC_MSG_DEF(NS_ERROR_CMS_VERIFY_NOT_SIGNED          , "The PKCS#7 information is not signed.")
 
+/* Codes related to pdf signature verification */
+XPC_MSG_DEF(NS_ERROR_CMS_VERIFY_ERROR_PROCESSING    , "The PKCS#7 parsing has failed.")
+XPC_MSG_DEF(NS_ERROR_CMS_VERIFY_NOT_YET_ATTEMPTED   , "The PKCS#7 certificate verification was cancelled.")
+XPC_MSG_DEF(NS_ERROR_CMS_VERIFY_BAD_SIGNATURE       , "Invalid signature.")
+XPC_MSG_DEF(NS_ERROR_CMS_VERIFY_NOCERT              , "No certificate was found.")
+
 /* Codes related to signed manifests */
 XPC_MSG_DEF(NS_ERROR_SIGNED_APP_MANIFEST_INVALID   , "The signed app manifest or signature file is invalid.")
 
@@ -240,6 +245,7 @@ XPC_MSG_DEF(NS_ERROR_DOM_PUSH_INVALID_KEY_ERR         , "Invalid raw ECDSA P-256
 XPC_MSG_DEF(NS_ERROR_DOM_PUSH_MISMATCHED_KEY_ERR      , "A subscription with a different application server key already exists.")
 
 /* Codes defined in WebIDL https://heycam.github.io/webidl/#idl-DOMException-error-names */
+XPC_MSG_DEF(NS_ERROR_DOM_NETWORK_ERR                  , "A network error occurred.")
 XPC_MSG_DEF(NS_ERROR_DOM_NOT_FOUND_ERR                , "The object can not be found here.")
 XPC_MSG_DEF(NS_ERROR_DOM_NOT_ALLOWED_ERR              , "The request is not allowed.")
 
@@ -254,6 +260,8 @@ XPC_MSG_DEF(NS_ERROR_FINGERPRINTING_URI               , "The URI is fingerprinti
 XPC_MSG_DEF(NS_ERROR_CRYPTOMINING_URI                 , "The URI is cryptomining")
 XPC_MSG_DEF(NS_ERROR_SOCIALTRACKING_URI               , "The URI is social tracking")
 XPC_MSG_DEF(NS_ERROR_EMAILTRACKING_URI                , "The URI is email tracking")
+XPC_MSG_DEF(NS_ERROR_HARMFULADDON_URI                 , "The URI is not available for add-ons")
+XPC_MSG_DEF(NS_ERROR_SAVE_LINK_AS_TIMEOUT             , "Save Link As failed to see the headers early enough to choose a filename")
 
 /* Profile manager error codes */
 XPC_MSG_DEF(NS_ERROR_DATABASE_CHANGED                 , "Flushing the profiles to disk would have overwritten changes made elsewhere.")
@@ -269,3 +277,6 @@ XPC_MSG_DEF(NS_ERROR_WDBA_BUILD                       , "The existing UserChoice
 
 /* Codes related to QuotaManager */
 XPC_MSG_DEF(NS_ERROR_DOM_QM_CLIENT_INIT_ORIGIN_UNINITIALIZED, "Client initialization attempted before origin has been initialized.")
+
+/* Codes related to IndexedDB */
+XPC_MSG_DEF(NS_ERROR_DOM_INDEXEDDB_NOT_ALLOWED_ERR    , "A mutation operation was attempted on a database that did not allow mutations.")

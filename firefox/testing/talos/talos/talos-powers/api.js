@@ -14,7 +14,8 @@ ChromeUtils.defineESModuleGetters(this, {
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
   PerTestCoverageUtils:
     "resource://testing-common/PerTestCoverageUtils.sys.mjs",
-  SessionStore: "resource:///modules/sessionstore/SessionStore.sys.mjs",
+  SessionStore:
+    "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
   setTimeout: "resource://gre/modules/Timer.sys.mjs",
 });
 
@@ -22,7 +23,7 @@ XPCOMUtils.defineLazyServiceGetter(
   this,
   "resProto",
   "@mozilla.org/network/protocol;1?name=resource",
-  "nsISubstitutingProtocolHandler"
+  Ci.nsISubstitutingProtocolHandler
 );
 
 // These are not automagically defined for us because we are an extension.
@@ -181,7 +182,7 @@ TalosPowersService.prototype = {
    *        Marker name.
    */
   profilerSubtestStart(marker = null) {
-    profilerSubtestStartTime = Cu.now();
+    profilerSubtestStartTime = ChromeUtils.now();
 
     if (marker) {
       this.addInstantMarker(marker);
@@ -192,7 +193,6 @@ TalosPowersService.prototype = {
    * Adds an instant marker to the Profile in the parent process.
    *
    * @param marker (string)  A marker to set.
-   *
    */
   addInstantMarker(marker) {
     ChromeUtils.addProfilerMarker("Talos", { category: "Test" }, marker);
@@ -286,12 +286,12 @@ TalosPowersService.prototype = {
       // that would cause us to write a mostly empty cache to the
       // about:home startup cache on shutdown, which causes that test
       // to break periodically.
-      AboutNewTab.onBrowserReady();
+      //
       // There aren't currently any easily observable notifications or
       // events to let us know when the feed is ready, so we'll just poll
       // for now.
       let pollForFeed = async function () {
-        let foundFeed = AboutNewTab.activityStream.store.feeds.get(
+        let foundFeed = AboutNewTab.activityStream?.store.feeds.get(
           "feeds.system.topsites"
         );
         if (!foundFeed) {
@@ -303,7 +303,12 @@ TalosPowersService.prototype = {
       let feed = await pollForFeed();
       await feed._contile.refresh();
       await feed.refresh({ broadcast: true });
-      await AboutHomeStartupCache.cacheNow();
+      // Only write the about:home cache if the cache machinery has been
+      // initialized. In tests where the about:home cache is disabled, init
+      // early-returns before this.log is set, so calling cacheNow() crashes.
+      if (AboutHomeStartupCache.initted) {
+        await AboutHomeStartupCache.cacheNow();
+      }
     }
 
     await SessionStore.promiseAllWindowsRestored;
@@ -425,7 +430,7 @@ TalosPowersService.prototype = {
     this.ParentExecServices[command.name](
       command.data,
       sendResult,
-      msg.target.ownerGlobal
+      msg.target.documentGlobal
     );
   },
 };

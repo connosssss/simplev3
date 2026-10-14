@@ -17,6 +17,10 @@ about-processes-kill-process =
     .title = Kill process
 about-processes-shutdown-tab =
     .title = Close tab
+about-processes-unload-tab =
+    .title = Unload tab
+about-processes-go-to-tab =
+    .title = Go to tab
 
 # Profiler icons
 # Variables:
@@ -33,6 +37,11 @@ about-processes-profile-process =
 about-processes-column-name = Name
 about-processes-column-memory-resident = Memory
 about-processes-column-cpu-total = CPU
+# Same visible header as about-processes-column-cpu-total, but the tooltip clarifies a different meaning here.
+about-processes-column-cpu-total-tab = CPU
+    .title = % of total CPU capacity across all cores
+# Shortened from the shared "Memory" to reclaim column width in the narrower view shown in a sidebar.
+about-processes-column-memory-resident-tab = RAM
 
 ## Process names
 ## Variables:
@@ -61,16 +70,19 @@ about-processes-inference-process = Inference ({ $pid })
 #    $type (String) The raw type for this process.
 about-processes-unknown-process = Other: { $type } ({ $pid })
 
+## Properties of isolated web processes
+
+about-processes-web-isolated-property-private = private
+about-processes-web-isolated-property-serviceworker = serviceworker
+about-processes-web-isolated-property-jit-disabled = JIT disabled
+about-processes-web-isolated-property-with-coop-coep = cross-origin isolated
+
 ## Isolated process names
 ## Variables:
-##    $pid (String) The process id of this process, assigned by the OS.
 ##    $origin (String) The domain name for this process.
+##    $properties (String) A formatted list of properties from the above strings.
 
-about-processes-web-isolated-process = { $origin } ({ $pid })
-about-processes-web-serviceworker = { $origin } ({ $pid }, serviceworker)
-about-processes-with-coop-coep-process = { $origin } ({ $pid }, cross-origin isolated)
-about-processes-web-isolated-process-private = { $origin } — Private ({ $pid })
-about-processes-with-coop-coep-process-private = { $origin } — Private ({ $pid }, cross-origin isolated)
+about-processes-web-isolated-process2 = { $origin } ({ $properties })
 
 ## Details within processes
 
@@ -135,6 +147,8 @@ about-processes-utility-actor-mf-media-engine = Windows Media Foundation Media E
 about-processes-utility-actor-js-oracle = JavaScript Oracle
 about-processes-utility-actor-windows-utils = Windows Utils
 about-processes-utility-actor-windows-file-dialog = Windows File Dialog
+about-processes-utility-actor-pkcs11-module = Security Module Helper
+about-processes-utility-actor-hw-inference = Hardware Accelerated Inference
 
 ## Displaying CPU (percentage and total)
 ## Variables:
@@ -160,6 +174,17 @@ about-processes-cpu-almost-idle = < 0.1%
 # Special case: process or thread is currently idle.
 about-processes-cpu-fully-idle = idle
     .title = Total CPU time: { NUMBER($total, maximumFractionDigits: 0) }{ $unit }
+
+# A tab's share of total CPU capacity across all cores. Unlike about-processes-cpu, no tooltip.
+# Variables:
+#    $percent (Number) Always >= 0, and never above 1.
+about-processes-tab-cpu = { NUMBER($percent, maximumSignificantDigits: 2, style: "percent") }
+
+# Special case: a tab is currently idle.
+about-processes-tab-cpu-fully-idle = idle
+
+# Special case: a tab's CPU share rounds to less than 0.1% of total capacity.
+about-processes-tab-cpu-almost-idle = < 0.1%
 
 ## Displaying Memory (total and delta)
 ## Variables:

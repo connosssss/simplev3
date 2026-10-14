@@ -37,7 +37,7 @@
 #[macro_export]
 macro_rules! trace {
     ($($tt:tt)*) => {
-        println!($($tt)*);
+        ::std::println!($($tt)*);
     }
 }
 
@@ -45,6 +45,29 @@ macro_rules! trace {
 #[macro_export]
 macro_rules! trace {
     ($($tt:tt)*) => {};
+}
+
+/// Print out tracing information, then return the first argument as a value
+///
+/// Use this want to run a trace while returning a value.
+#[cfg(feature = "ffi-trace")]
+#[macro_export]
+macro_rules! trace_and_return {
+    ($expr:expr, $($tt:tt)*) => {
+        {
+            ::std::println!($($tt)*);
+            $expr
+        }
+    }
+}
+
+#[cfg(not(feature = "ffi-trace"))]
+#[macro_export]
+macro_rules! trace_and_return {
+    ($expr:expr, $($tt:tt)*) => {
+        #[allow(clippy::let_and_return)]
+        $expr
+    };
 }
 
 use anyhow::bail;

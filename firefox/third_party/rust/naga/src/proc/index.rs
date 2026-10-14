@@ -99,8 +99,8 @@ pub struct BoundsCheckPolicies {
     ///
     /// [`GlobalVariable`]: crate::GlobalVariable
     /// [`space`]: crate::GlobalVariable::space
-    /// [`Restrict`]: crate::back::BoundsCheckPolicy::Restrict
-    /// [`ReadZeroSkipWrite`]: crate::back::BoundsCheckPolicy::ReadZeroSkipWrite
+    /// [`Restrict`]: crate::proc::BoundsCheckPolicy::Restrict
+    /// [`ReadZeroSkipWrite`]: crate::proc::BoundsCheckPolicy::ReadZeroSkipWrite
     /// [`Access`]: crate::Expression::Access
     /// [`AccessIndex`]: crate::Expression::AccessIndex
     /// [`Storage`]: crate::AddressSpace::Storage
@@ -242,7 +242,7 @@ pub fn find_checked_indexes(
             // There's no need to handle `AccessIndex` expressions, as their
             // indices never need to be cached.
             match *expr {
-                Ex::Access { base, index } => {
+                Ex::Access { base, index }
                     if policies.choose_policy(base, &module.types, info)
                         == BoundsCheckPolicy::ReadZeroSkipWrite
                         && access_needs_check(
@@ -252,10 +252,9 @@ pub fn find_checked_indexes(
                             &function.expressions,
                             info,
                         )
-                        .is_some()
-                    {
-                        guarded_indices.insert(index);
-                    }
+                        .is_some() =>
+                {
+                    guarded_indices.insert(index);
                 }
                 Ex::ImageLoad {
                     coordinate,
@@ -263,18 +262,16 @@ pub fn find_checked_indexes(
                     sample,
                     level,
                     ..
-                } => {
-                    if policies.image_load == BoundsCheckPolicy::ReadZeroSkipWrite {
-                        guarded_indices.insert(coordinate);
-                        if let Some(array_index) = array_index {
-                            guarded_indices.insert(array_index);
-                        }
-                        if let Some(sample) = sample {
-                            guarded_indices.insert(sample);
-                        }
-                        if let Some(level) = level {
-                            guarded_indices.insert(level);
-                        }
+                } if policies.image_load == BoundsCheckPolicy::ReadZeroSkipWrite => {
+                    guarded_indices.insert(coordinate);
+                    if let Some(array_index) = array_index {
+                        guarded_indices.insert(array_index);
+                    }
+                    if let Some(sample) = sample {
+                        guarded_indices.insert(sample);
+                    }
+                    if let Some(level) = level {
+                        guarded_indices.insert(level);
                     }
                 }
                 _ => {}
@@ -483,7 +480,7 @@ impl GuardedIndex {
         expressions: &crate::Arena<crate::Expression>,
         module: &crate::Module,
     ) -> Self {
-        match module.to_ctx().eval_expr_to_u32_from(expr, expressions) {
+        match module.to_ctx().get_const_val_from(expr, expressions) {
             Ok(value) => Self::Known(value),
             Err(_) => Self::Expression(expr),
         }

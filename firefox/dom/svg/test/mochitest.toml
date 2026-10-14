@@ -1,9 +1,5 @@
 [DEFAULT]
-prefs = [
-  "dom.svg.pathSegment.enabled=true",
-]
 support-files = [
-  "MutationEventChecker.js",
   "a_href_destination.svg",
   "a_href_helper_01.svg",
   "a_href_helper_02_03.svg",
@@ -22,7 +18,6 @@ support-files = [
   "matrixUtils.js",
   "object-delayed-intrinsic-size.sjs",
   "object-immediate-intrinsic-size.sjs",
-  "pointer-events.js",
   "scientific-helper.svg",
   "selectSubString-helper.svg",
   "switch-helper.svg",
@@ -84,8 +79,6 @@ support-files = [
 
 ["test_dataTypes.html"]
 
-["test_dataTypesModEvents.html"]
-
 ["test_dynamic-move-under-mouse.html"]
 
 ["test_fragments.html"]
@@ -94,7 +87,7 @@ support-files = [
 
 ["test_getElementById.xhtml"]
 
-["test_getPathSegmentAtLength_with_d_property.html"]
+["test_getPathSegmentAtLength.html"]
 
 ["test_getSubStringLength.xhtml"]
 
@@ -103,7 +96,9 @@ support-files = [
 ["test_hit-testing-and-viewbox.xhtml"]
 
 ["test_lang.xhtml"]
-skip-if = ["true"] # disabled-for-intermittent-failures--bug-701060
+skip-if = [
+  "true", # disabled-for-intermittent-failures--bug-701060
+]
 
 ["test_length.xhtml"]
 
@@ -130,10 +125,6 @@ skip-if = ["true"] # disabled-for-intermittent-failures--bug-701060
 ["test_pathAnimInterpolation.xhtml"]
 
 ["test_pointAtLength.xhtml"]
-
-["test_pointer-events-1a.xhtml"]
-
-["test_pointer-events-1b.xhtml"]
 
 ["test_pointer-events-2.xhtml"]
 

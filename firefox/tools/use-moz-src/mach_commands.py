@@ -27,7 +27,8 @@ An error occurred running ripgrep. Please check the following error messages:
 """.strip()
 
 NO_MODULES_TO_REWRITE_MSG = """
-Found no EXTRA_JS_MODULES we could convert in the moz.build file(s) passed.
+Found no EXTRA_JS_MODULES or FINAL_TARGET_FILES.actors we could convert in the
+moz.build file(s) passed.
 """.strip()
 
 CANNOT_CONVERT_ERROR_MSG = """
@@ -41,6 +42,14 @@ moz.build file in a copy of the original EXTRA_JS_MODULES instruction.
 The list of excluded module patterns is in tools/use-moz-src/mach_commands.py
 and should have a comment explaining why it cannot be automatically moved to
 moz-src:///.
+""".strip()
+
+NEWTAB_WARNING = """
+WARNING: Some files in browser/extensions/newtab/ cannot be automatically
+updated for moz-src. You should manually replace the relevant imports
+with the ImportHelper.import() method as needed.
+
+The affected files are:
 """.strip()
 
 excluded_from_convert_re = list(
@@ -72,46 +81,74 @@ def is_excluded_from_convert(path):
     return False
 
 
+NEWTAB_NORM = os.path.normpath("browser/extensions/newtab/")
+ACTOR_VARIABLE = "FINAL_TARGET_FILES"
+MODULES_VARIABLE = "EXTRA_JS_MODULES"
+
+
+def is_path_newtab_extension(path):
+    """Returns true if the path is in browser/extensions/newtab/"""
+    return os.path.normpath(path).startswith(NEWTAB_NORM)
+
+
 def extract_info_from_mozbuild(command_context, paths):
     mozbuilds_for_fixing = set()
     urlmap = dict()
     reader = command_context.mozbuild_reader(config_mode="empty")
     for mozbuild_path in paths:
-        is_browser = mozbuild_path.startswith("browser") or (
-            mozbuild_path.startswith("devtools")
-            and not mozbuild_path.startswith("devtools/platform")
-        )
-        assignments = reader.find_variables_from_ast(
-            variables="EXTRA_JS_MODULES", path=mozbuild_path, all_relevant_files=False
-        )
-        for path, _variable, key, value in assignments:
-            module_path = path.replace("moz.build", "") + value
-            if is_excluded_from_convert(module_path):
-                _log.log(logging.ERROR, CANNOT_CONVERT_ERROR_MSG.format(value))
-                return [], dict()
+        for variables in [ACTOR_VARIABLE, MODULES_VARIABLE]:
+            is_browser = mozbuild_path.startswith("browser") or (
+                mozbuild_path.startswith("devtools")
+                and not mozbuild_path.startswith("devtools/platform")
+            )
+            assignments = reader.find_variables_from_ast(
+                variables, path=mozbuild_path, all_relevant_files=False
+            )
+            for path, _variable, key, value in assignments:
+                module_path = path.replace("moz.build", "") + value
+                if is_excluded_from_convert(module_path):
+                    _log.log(logging.ERROR, CANNOT_CONVERT_ERROR_MSG.format(value))
+                    return [], dict()
 
-            newurl = "moz-src:///" + module_path
-            module_name = os.path.basename(module_path)
-            keystr = "/".join(key.split(".")) + "/" if key else ""
-            resource_suffix = "modules/" + keystr + module_name
-            if is_browser:
-                urlmap["resource:///" + resource_suffix] = newurl
-            else:
-                urlmap["resource://gre/" + resource_suffix] = newurl
+                if variables == ACTOR_VARIABLE and key != "actors":
+                    continue
 
-            mozbuilds_for_fixing.add(mozbuild_path)
+                prefix = "" if variables == ACTOR_VARIABLE else "modules/"
+                newurl = "moz-src:///" + module_path
+                module_name = os.path.basename(module_path)
+                keystr = "/".join(key.split(".")) + "/" if key else ""
+                resource_suffix = prefix + keystr + module_name
+                # Handle aliases for modules in services/.
+                if module_path.startswith("services/common/"):
+                    urlmap["resource://services-common/" + module_name] = newurl
+                elif module_path.startswith("services/crypto/"):
+                    urlmap["resource://services-crypto/" + module_name] = newurl
+                elif module_path.startswith("services/settings/"):
+                    urlmap["resource://services-settings/" + module_name] = newurl
+                elif module_path.startswith("services/sync/"):
+                    urlmap["resource://services-sync/" + module_name] = newurl
+
+                # Handle standard resource URLs.
+                if is_browser:
+                    urlmap["resource:///" + resource_suffix] = newurl
+                else:
+                    urlmap["resource://gre/" + resource_suffix] = newurl
+
+                mozbuilds_for_fixing.add(mozbuild_path)
 
     return mozbuilds_for_fixing, urlmap
 
 
-extra_js_modules_re = re.compile('EXTRA_JS_MODULES(["\\.\\w/\\[\\]]*) [+=]+')
+to_moz_src_re = re.compile(
+    '(EXTRA_JS_MODULES|FINAL_TARGET_FILES.actors)(["\\.\\w/\\[\\]-]*) [+=]+'
+)
 
 
 def rewrite_mozbuilds(mozbuilds):
     for path in mozbuilds:
         with open(path, "r+", encoding="utf-8", newline="\n") as f:
             contents = f.read()
-            contents = re.sub(extra_js_modules_re, "MOZ_SRC_FILES +=", contents)
+            contents = re.sub(to_moz_src_re, "MOZ_SRC_FILES +=", contents)
             f.seek(0)
             f.write(contents)
             f.truncate()
@@ -208,11 +245,10 @@ async def find_and_replace_refs(urlmap):
 def use_moz_src(command_context, paths):
     """
     This command does two things:
-    1. replace use of EXTRA_JS_MODULES in the moz.build file passed with
-       MOZ_SRC_FILES.
-    2. fix up consumers across the tree that rely on any files in
-       EXTRA_JS_MODULES using `resource` URLs to use `moz-src` ones
-       instead.
+    1. replace use of EXTRA_JS_MODULES and FINAL_TARGET_FILES.actors in the moz.build file
+       passed with MOZ_SRC_FILES.
+    2. fix up consumers across the tree that rely on those files using `resource` URLs to
+       use `moz-src` ones instead.
 
     Note that this only uses the moz.build file in question; it will not
     recurse into `DIRS`. If you want to convert subdirectories, use
@@ -261,6 +297,18 @@ def use_moz_src(command_context, paths):
             linters=["eslint"],
             paths=updated_files,
             fix=True,
+        )
+        newtab_files = list(filter(is_path_newtab_extension, updated_files))
+        if len(newtab_files) > 0:
+            _log.log(
+                logging.ERROR,
+                NEWTAB_WARNING + "\n  {}".format("\n  ".join(newtab_files)),
+            )
+
+        command_context._mach_context.commands.dispatch(
+            "ts",
+            command_context._mach_context,
+            subcommand="paths",
         )
 
     _log.log(

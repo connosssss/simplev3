@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -44,9 +42,7 @@ static bool LoopContainsPossibleCall(MIRGraph& graph, MBasicBlock* header,
       continue;
     }
 
-    for (auto insIter(block->begin()), insEnd(block->end()); insIter != insEnd;
-         ++insIter) {
-      MInstruction* ins = *insIter;
+    for (auto ins : *block) {
       if (ins->possiblyCalls()) {
 #ifdef JS_JITSPEW
         JitSpew(JitSpew_LICM, "    Possible call found at %s%u", ins->opName(),
@@ -79,9 +75,7 @@ static bool LoopContainsBigTableSwitch(MIRGraph& graph, MBasicBlock* header,
       continue;
     }
 
-    for (auto insIter(block->begin()), insEnd(block->end()); insIter != insEnd;
-         ++insIter) {
-      MInstruction* ins = *insIter;
+    for (auto ins : *block) {
       if (ins->isTableSwitch() &&
           ins->toTableSwitch()->numSuccessors() > LargestAllowedTableSwitch) {
         *numSuccessors = ins->toTableSwitch()->numSuccessors();
@@ -311,7 +305,11 @@ bool jit::LICM(const MIRGenerator* mir, MIRGraph& graph) {
     //     addition to its normal entry is tricky.  In theory we could clone
     //     the instruction and insert phis.  In practice we don't bother.
     //
-    // (b) If the loop contains a large number of blocks, we play safe and
+    // (b) If the loop has a generator resume dispatch, hoisted instructions
+    //     would also be executed on the generator-resume path into the loop.
+    //     See bug 2073268.
+    //
+    // (c) If the loop contains a large number of blocks, we play safe and
     //     punt, in order to reduce the risk of creating excessive register
     //     pressure by hoisting lots of values out of the loop.  In a larger
     //     loop there's more likely to be duplication of invariant expressions
@@ -319,19 +317,24 @@ bool jit::LICM(const MIRGenerator* mir, MIRGraph& graph) {
     //     within the scope of the loop body, so there's less loss from not
     //     lifting them out of the loop entirely.
     //
-    // (c) If the loop contains a multiway switch with many successors, there
+    // (d) If the loop contains a multiway switch with many successors, there
     //     could be paths with low probabilities, from which LICMing will be a
     //     net loss, especially if a large number of values are hoisted out.
     //     See bug 1708381 for a spectacular example and bug 1712078 for
     //     further discussion.
     //
-    // It's preferable to perform test (c) only if (a) and (b) pass since (c)
-    // is more expensive to determine -- requiring a visit to all the MIR
-    // nodes -- than (a) or (b), which only involve visiting all blocks.
+    // It's preferable to perform test (d) only if (a), (b) and (c) pass since
+    // (d) is more expensive to determine -- requiring a visit to all the MIR
+    // nodes -- than the others, which only involve visiting all blocks.
 
     bool doVisit = true;
     if (canOsr) {
       JitSpew(JitSpew_LICM, "  Skipping loop with header block%u due to OSR",
+              header->id());
+      doVisit = false;
+    } else if (header->hasGeneratorResumeEntry()) {
+      JitSpew(JitSpew_LICM,
+              "  Skipping loop with header block%u due to generator resume",
               header->id());
       doVisit = false;
     } else if (numBlocks > LargestAllowedLoop) {

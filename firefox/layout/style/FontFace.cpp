@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,7 +5,14 @@
 #include "mozilla/dom/FontFace.h"
 
 #include <algorithm>
+
 #include "gfxFontUtils.h"
+#include "mozilla/CycleCollectedJSContext.h"
+#include "mozilla/ServoBindings.h"
+#include "mozilla/ServoCSSParser.h"
+#include "mozilla/ServoStyleSet.h"
+#include "mozilla/ServoUtils.h"
+#include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/dom/CSSFontFaceRule.h"
 #include "mozilla/dom/FontFaceBinding.h"
 #include "mozilla/dom/FontFaceImpl.h"
@@ -15,16 +20,9 @@
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/TypedArray.h"
 #include "mozilla/dom/UnionTypes.h"
-#include "mozilla/CycleCollectedJSContext.h"
-#include "mozilla/ServoBindings.h"
-#include "mozilla/ServoCSSParser.h"
-#include "mozilla/ServoStyleSet.h"
-#include "mozilla/ServoUtils.h"
-#include "mozilla/StaticPrefs_layout.h"
 #include "nsStyleUtil.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // -- Utility functions ------------------------------------------------------
 
@@ -70,9 +68,7 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(FontFace)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(FontFace)
 
-FontFace::FontFace(nsIGlobalObject* aParent) : mLoadedRejection(NS_OK) {
-  BindToOwner(aParent);
-}
+FontFace::FontFace(nsIGlobalObject* aParent) { BindToGlobal(aParent); }
 
 FontFace::~FontFace() {
   // Assert that we don't drop any FontFace objects during a Servo traversal,
@@ -101,7 +97,7 @@ already_AddRefed<FontFace> FontFace::CreateForRule(
   FontFaceSetImpl* setImpl = aFontFaceSet->GetImpl();
   MOZ_ASSERT(setImpl);
 
-  RefPtr<FontFace> obj = new FontFace(aGlobal);
+  RefPtr<FontFace> obj = do_AddRef(new FontFace(aGlobal));
   obj->mImpl = FontFaceImpl::CreateForRule(obj, setImpl, aRule);
   return obj.forget();
 }
@@ -124,8 +120,8 @@ already_AddRefed<FontFace> FontFace::Constructor(
     return nullptr;
   }
 
-  RefPtr<FontFace> obj = new FontFace(global);
-  obj->mImpl = new FontFaceImpl(obj, setImpl);
+  RefPtr<FontFace> obj = do_AddRef(new FontFace((global)));
+  obj->mImpl = MakeRefPtr<FontFaceImpl>(obj, setImpl);
   if (!obj->mImpl->SetDescriptors(aFamily, aDescriptors)) {
     return obj.forget();
   }
@@ -168,10 +164,10 @@ void FontFace::SetWeight(const nsACString& aValue, ErrorResult& aRv) {
   mImpl->SetWeight(aValue, aRv);
 }
 
-void FontFace::GetStretch(nsACString& aResult) { mImpl->GetStretch(aResult); }
+void FontFace::GetWidth(nsACString& aResult) { mImpl->GetWidth(aResult); }
 
-void FontFace::SetStretch(const nsACString& aValue, ErrorResult& aRv) {
-  mImpl->SetStretch(aValue, aRv);
+void FontFace::SetWidth(const nsACString& aValue, ErrorResult& aRv) {
+  mImpl->SetWidth(aValue, aRv);
 }
 
 void FontFace::GetUnicodeRange(nsACString& aResult) {
@@ -253,7 +249,8 @@ Promise* FontFace::Load(ErrorResult& aRv) {
     return nullptr;
   }
 
-  mImpl->Load(aRv);
+  mImpl->Load();
+  mImpl->UpdateOwnerKeepAlive();
   return mLoaded;
 }
 
@@ -265,56 +262,57 @@ Promise* FontFace::GetLoaded(ErrorResult& aRv) {
     return nullptr;
   }
 
+  if (mImpl) {
+    mImpl->UpdateOwnerKeepAlive();
+  }
+
   return mLoaded;
 }
 
 void FontFace::MaybeResolve() {
   gfxFontUtils::AssertSafeThreadOrServoFontMetricsLocked();
+  MOZ_ASSERT(!NS_IsMainThread() || nsContentUtils::IsSafeToRunScript());
+  MOZ_ASSERT(!gfxFontUtils::CurrentServoStyleSet());
 
-  if (!mLoaded) {
-    return;
+  if (RefPtr loaded = mLoaded) {
+    loaded->MaybeResolve(this);
   }
-
-  if (ServoStyleSet* ss = gfxFontUtils::CurrentServoStyleSet()) {
-    // See comments in Gecko_GetFontMetrics.
-    ss->AppendTask(PostTraversalTask::ResolveFontFaceLoadedPromise(this));
-    return;
-  }
-
-  mLoaded->MaybeResolve(this);
 }
 
-void FontFace::MaybeReject(nsresult aResult) {
+void FontFace::MaybeReject(FontFaceLoadedRejectReason aReason,
+                           nsCString&& aMessage) {
   gfxFontUtils::AssertSafeThreadOrServoFontMetricsLocked();
-
-  if (ServoStyleSet* ss = gfxFontUtils::CurrentServoStyleSet()) {
-    // See comments in Gecko_GetFontMetrics.
-    ss->AppendTask(
-        PostTraversalTask::RejectFontFaceLoadedPromise(this, aResult));
-    return;
-  }
+  MOZ_ASSERT(!NS_IsMainThread() || nsContentUtils::IsSafeToRunScript());
+  MOZ_ASSERT(!gfxFontUtils::CurrentServoStyleSet());
 
   if (mLoaded) {
-    mLoaded->MaybeReject(aResult);
-  } else if (mLoadedRejection == NS_OK) {
-    mLoadedRejection = aResult;
+    switch (aReason) {
+      case FontFaceLoadedRejectReason::Network:
+        mLoaded->MaybeRejectWithNetworkError(aMessage);
+        break;
+      case FontFaceLoadedRejectReason::Syntax:
+        mLoaded->MaybeRejectWithSyntaxError(aMessage);
+        break;
+    }
+  } else if (!mLoadedRejection) {
+    mLoadedRejection = MakeUnique<FontFaceLoadedRejection>(
+        FontFaceLoadedRejection{aReason, std::move(aMessage)});
   }
 }
 
 void FontFace::EnsurePromise() {
-  if (mLoaded || !mImpl || !GetOwnerGlobal()) {
+  if (mLoaded || !mImpl || !GetRelevantGlobal()) {
     return;
   }
 
-  ErrorResult rv;
-  mLoaded = Promise::Create(GetOwnerGlobal(), rv);
+  mLoaded = Promise::CreateInfallible(GetRelevantGlobal());
 
   if (mImpl->Status() == FontFaceLoadStatus::Loaded) {
     mLoaded->MaybeResolve(this);
-  } else if (mLoadedRejection != NS_OK) {
-    mLoaded->MaybeReject(mLoadedRejection);
+  } else if (mLoadedRejection) {
+    auto rejection = std::move(mLoadedRejection);
+    MaybeReject(rejection->mReason, std::move(rejection->mMessage));
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

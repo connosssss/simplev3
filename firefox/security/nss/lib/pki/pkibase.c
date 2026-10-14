@@ -19,10 +19,10 @@ nssPKIObject_Lock(nssPKIObject *object)
 {
     switch (object->lockType) {
         case nssPKIMonitor:
-            PZ_EnterMonitor(object->sync.mlock);
+            PR_EnterMonitor(object->sync.mlock);
             break;
         case nssPKILock:
-            PZ_Lock(object->sync.lock);
+            PR_Lock(object->sync.lock);
             break;
         default:
             PORT_Assert(0);
@@ -34,10 +34,10 @@ nssPKIObject_Unlock(nssPKIObject *object)
 {
     switch (object->lockType) {
         case nssPKIMonitor:
-            PZ_ExitMonitor(object->sync.mlock);
+            PR_ExitMonitor(object->sync.mlock);
             break;
         case nssPKILock:
-            PZ_Unlock(object->sync.lock);
+            PR_Unlock(object->sync.lock);
             break;
         default:
             PORT_Assert(0);
@@ -50,10 +50,10 @@ nssPKIObject_NewLock(nssPKIObject *object, nssPKILockType lockType)
     object->lockType = lockType;
     switch (lockType) {
         case nssPKIMonitor:
-            object->sync.mlock = PZ_NewMonitor(nssILockSSL);
+            object->sync.mlock = PR_NewMonitor();
             return (object->sync.mlock ? PR_SUCCESS : PR_FAILURE);
         case nssPKILock:
-            object->sync.lock = PZ_NewLock(nssILockSSL);
+            object->sync.lock = PR_NewLock();
             return (object->sync.lock ? PR_SUCCESS : PR_FAILURE);
         default:
             PORT_Assert(0);
@@ -66,11 +66,11 @@ nssPKIObject_DestroyLock(nssPKIObject *object)
 {
     switch (object->lockType) {
         case nssPKIMonitor:
-            PZ_DestroyMonitor(object->sync.mlock);
+            PR_DestroyMonitor(object->sync.mlock);
             object->sync.mlock = NULL;
             break;
         case nssPKILock:
-            PZ_DestroyLock(object->sync.lock);
+            PR_DestroyLock(object->sync.lock);
             object->sync.lock = NULL;
             break;
         default:
@@ -132,8 +132,9 @@ nssPKIObject_Destroy(
     nssPKIObject *object)
 {
     PRUint32 i;
-    PR_ASSERT(object->refCount > 0);
-    if (PR_ATOMIC_DECREMENT(&object->refCount) == 0) {
+    PRInt32 refCount = PR_ATOMIC_DECREMENT(&object->refCount);
+    PORT_ReleaseAssert(refCount >= 0);
+    if (refCount == 0) {
         for (i = 0; i < object->numInstances; i++) {
             nssCryptokiObject_Destroy(object->instances[i]);
         }
@@ -148,7 +149,8 @@ NSS_IMPLEMENT nssPKIObject *
 nssPKIObject_AddRef(
     nssPKIObject *object)
 {
-    PR_ATOMIC_INCREMENT(&object->refCount);
+    PRInt32 refCount = PR_ATOMIC_INCREMENT(&object->refCount);
+    PORT_ReleaseAssert(refCount > 1);
     return object;
 }
 
@@ -370,13 +372,6 @@ nssCertificateArray_Destroy(
     }
 }
 
-NSS_IMPLEMENT void
-NSSCertificateArray_Destroy(
-    NSSCertificate **certs)
-{
-    nssCertificateArray_Destroy(certs);
-}
-
 NSS_IMPLEMENT NSSCertificate **
 nssCertificateArray_Join(
     NSSCertificate **certs1,
@@ -519,25 +514,6 @@ nssCertificateArray_FindBestCertificate(
     return bestCert;
 }
 
-NSS_IMPLEMENT PRStatus
-nssCertificateArray_Traverse(
-    NSSCertificate **certs,
-    PRStatus (*callback)(NSSCertificate *c, void *arg),
-    void *arg)
-{
-    PRStatus status = PR_SUCCESS;
-    if (certs) {
-        NSSCertificate **certp;
-        for (certp = certs; *certp; certp++) {
-            status = (*callback)(*certp, arg);
-            if (status != PR_SUCCESS) {
-                break;
-            }
-        }
-    }
-    return status;
-}
-
 NSS_IMPLEMENT void
 nssCRLArray_Destroy(
     NSSCRL **crls)
@@ -558,17 +534,12 @@ nssCRLArray_Destroy(
 typedef enum {
     pkiObjectType_Certificate = 0,
     pkiObjectType_CRL = 1,
-    pkiObjectType_PrivateKey = 2,
-    pkiObjectType_PublicKey = 3
 } pkiObjectType;
 
 /* Each object is defined by a set of items that uniquely identify it.
  * Here are the uid sets:
  *
  * NSSCertificate ==>  { issuer, serial }
- * NSSPrivateKey
- *         (RSA) ==> { modulus, public exponent }
- *
  */
 #define MAX_ITEMS_FOR_UID 2
 
@@ -899,14 +870,6 @@ nssPKIObjectCollection_Traverse(
                 (void)(*callback->func.crl)((NSSCRL *)node->object,
                                             callback->arg);
                 break;
-            case pkiObjectType_PrivateKey:
-                (void)(*callback->func.pvkey)((NSSPrivateKey *)node->object,
-                                              callback->arg);
-                break;
-            case pkiObjectType_PublicKey:
-                (void)(*callback->func.pbkey)((NSSPublicKey *)node->object,
-                                              callback->arg);
-                break;
         }
         link = PR_NEXT_LINK(link);
     }
@@ -1010,19 +973,20 @@ cert_getUIDFromInstance(nssCryptokiObject *instance, NSSItem *uid,
 static nssPKIObject *
 cert_createObject(nssPKIObject *o)
 {
-    NSSCertificate *cert;
-    cert = nssCertificate_Create(o);
-    /*    if (STAN_GetCERTCertificate(cert) == NULL) {
-        nssCertificate_Destroy(cert);
-        return (nssPKIObject *)NULL;
-    } */
-    /* In 3.4, have to maintain uniqueness of cert pointers by caching all
-     * certs.  Cache the cert here, before returning.  If it is already
-     * cached, take the cached entry.
-     */
-    {
-        NSSTrustDomain *td = o->trustDomain;
-        nssTrustDomain_AddCertsToCache(td, &cert, 1);
+    NSSCertificate *cert = nssCertificate_Create(o);
+    if (!cert) {
+        return NULL;
+    }
+    NSSTrustDomain *td = o->trustDomain;
+    /* nssTrustDomain_AddCertToCache takes ownership of the reference to cert,
+     * so first increase the refcount so it doesn't go away. */
+    nssCertificate_AddRef(cert);
+    NSSCertificate *certInCache = nssTrustDomain_AddCertToCache(td, cert);
+    if (certInCache) {
+        // This code should probably use the certificate returned from the cache,
+        // but currently the merge tests rely on not doing so. Discard it
+        // instead.
+        nssCertificate_Destroy(certInCache);
     }
     return (nssPKIObject *)cert;
 }

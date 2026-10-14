@@ -1,9 +1,23 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
 const scriptPage = url =>
   `<html><head><meta charset="utf-8"><script src="${url}"></script></head><body>Test Popup</body></html>`;
+
+function sendKeys() {
+  EventUtils.synthesizeKey("j", { altKey: true, shiftKey: true });
+  EventUtils.synthesizeKey("3", { altKey: true, shiftKey: true });
+}
+
+// pageAction.show() only places the button in the urlbar from a
+// requestAnimationFrame callback, and panelAnchorNodeForAction() measures its
+// candidates without flushing layout, so a popup opened before the button has
+// been laid out finds no anchor node and throws.
+function awaitPageActionButton(extension) {
+  return TestUtils.waitForCondition(async () => {
+    let button = await getPageActionButton(extension);
+    return button && window.windowUtils.getBoundsWithoutFlushing(button).width;
+  }, "waiting for the page action button to be laid out in the urlbar");
+}
 
 add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
@@ -62,10 +76,7 @@ add_task(async function test_execute_page_action_without_popup() {
     },
   });
 
-  extension.onMessage("send-keys", () => {
-    EventUtils.synthesizeKey("j", { altKey: true, shiftKey: true });
-    EventUtils.synthesizeKey("3", { altKey: true, shiftKey: true });
-  });
+  extension.onMessage("send-keys", sendKeys);
 
   await extension.startup();
   await extension.awaitFinish("page-action-without-popup");
@@ -101,7 +112,14 @@ add_task(async function test_execute_page_action_with_popup() {
     files: {
       "popup.html": scriptPage("popup.js"),
       "popup.js": function () {
-        browser.runtime.sendMessage("popup-opened");
+        // TODO(Bug 2039637) consider removing this workaround along with fixing the actual underlying issue).
+        window.addEventListener(
+          "load",
+          () => {
+            browser.runtime.sendMessage("popup-opened");
+          },
+          { once: true }
+        );
       },
     },
 
@@ -122,7 +140,7 @@ add_task(async function test_execute_page_action_with_popup() {
               tabs.forEach(tab => {
                 browser.pageAction.show(tab.id);
               });
-              browser.test.sendMessage("send-keys");
+              browser.test.sendMessage("send-keys-when-shown");
             });
           }
         }
@@ -147,9 +165,10 @@ add_task(async function test_execute_page_action_with_popup() {
     },
   });
 
-  extension.onMessage("send-keys", () => {
-    EventUtils.synthesizeKey("j", { altKey: true, shiftKey: true });
-    EventUtils.synthesizeKey("3", { altKey: true, shiftKey: true });
+  extension.onMessage("send-keys", sendKeys);
+  extension.onMessage("send-keys-when-shown", async () => {
+    await awaitPageActionButton(extension);
+    sendKeys();
   });
 
   await extension.startup();
@@ -194,6 +213,7 @@ add_task(async function test_execute_page_action_with_matching() {
     window.gBrowser,
     "http://example.com/"
   );
+  await awaitPageActionButton(extension);
   EventUtils.synthesizeKey("j", { altKey: true, shiftKey: true });
   info("Waiting for pageAction open.");
   await extension.awaitFinish("page-action-with-popup");

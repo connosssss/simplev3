@@ -57,15 +57,7 @@ double get_amplification_factor(TX_TYPE tx_type, TX_SIZE tx_size);
 void reference_hybrid_2d(double *in, double *out, TX_TYPE tx_type,
                          TX_SIZE tx_size);
 template <typename Type1, typename Type2>
-static double compute_avg_abs_error(const Type1 *a, const Type2 *b,
-                                    const int size) {
-  double error = 0;
-  for (int i = 0; i < size; i++) {
-    error += fabs(static_cast<double>(a[i]) - static_cast<double>(b[i]));
-  }
-  error = error / size;
-  return error;
-}
+double compute_avg_abs_error(const Type1 *a, const Type2 *b, const int size);
 
 template <typename Type>
 void fliplr(Type *dest, int width, int height, int stride);
@@ -76,12 +68,12 @@ void flipud(Type *dest, int width, int height, int stride);
 template <typename Type>
 void fliplrud(Type *dest, int width, int height, int stride);
 
-typedef void (*TxfmFunc)(const int32_t *in, int32_t *out, const int8_t cos_bit,
-                         const int8_t *range_bit);
+using TxfmFunc = void (*)(const int32_t *in, int32_t *out, const int8_t cos_bit,
+                          const int8_t *range_bit);
 
-typedef void (*InvTxfm2dFunc)(const int32_t *, uint16_t *, int, TX_TYPE, int);
-typedef void (*LbdInvTxfm2dFunc)(const int32_t *, uint8_t *, int, TX_TYPE,
-                                 TX_SIZE, int);
+using InvTxfm2dFunc = void (*)(const int32_t *, uint16_t *, int, TX_TYPE, int);
+using LbdInvTxfm2dFunc = void (*)(const int32_t *, uint8_t *, int, TX_TYPE,
+                                  TX_SIZE, int);
 
 static const int bd = 10;
 static const int input_base = (1 << bd);

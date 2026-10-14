@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,12 +22,12 @@ class DataChannelConnectionDcSctp : public DataChannelConnection,
   // DataChannelConnection API
   void Destroy() override;
   bool RaiseStreamLimitTo(uint16_t aNewLimit) override;
+  uint16_t GetStreamIdCeiling() const override;
   void OnTransportReady() override;
-  bool Init(const uint16_t aLocalPort, const uint16_t aNumStreams,
-            const Maybe<uint64_t>& aMaxMessageSize) override;
+  bool Init(const uint16_t aLocalPort, const uint16_t aNumStreams) override;
   int SendMessage(DataChannel& aChannel, OutgoingMsg&& aMsg) override;
   void OnSctpPacketReceived(const MediaPacket& aPacket) override;
-  void ResetStreams(nsTArray<uint16_t>& aStreams) override;
+  bool ResetStreams(nsTArray<uint16_t>& aStreams) override;
   // This is called after an ACK comes in, to prompt subclasses to deliver
   // anything they've buffered while awaiting the ACK.
   void OnStreamOpen(uint16_t aStream) override;
@@ -41,7 +39,7 @@ class DataChannelConnectionDcSctp : public DataChannelConnection,
   // Note that it's NOT ALLOWED to call into this library from within this
   // callback.
   SendPacketStatus SendPacketWithStatus(
-      rtc::ArrayView<const uint8_t> aData) override;
+      std::span<const uint8_t> aData) override;
 
   // Called when the library wants to create a Timeout. The callback must return
   // an object that implements that interface.
@@ -58,6 +56,12 @@ class DataChannelConnectionDcSctp : public DataChannelConnection,
   std::unique_ptr<Timeout> CreateTimeout(
       webrtc::TaskQueueBase::DelayPrecision aPrecision) override;
   void HandleTimeout(TimeoutID aId);
+
+  // Returns the current time (from any epoch).
+  //
+  // Note that it's NOT ALLOWED to call into this library from within this
+  // callback.
+  webrtc::Timestamp Now() override;
 
   // Called when the library needs a random number uniformly distributed between
   // `low` (inclusive) and `high` (exclusive). The random numbers used by the
@@ -111,21 +115,21 @@ class DataChannelConnectionDcSctp : public DataChannelConnection,
   // Indicates that a stream reset request has failed.
   //
   // It is allowed to call into this library from within this callback.
-  void OnStreamsResetFailed(rtc::ArrayView<const StreamID> aOutgoingStreams,
+  void OnStreamsResetFailed(std::span<const StreamID> aOutgoingStreams,
                             absl::string_view aReason) override;
 
   // Indicates that a stream reset request has been performed.
   //
   // It is allowed to call into this library from within this callback.
   void OnStreamsResetPerformed(
-      rtc::ArrayView<const StreamID> aOutgoingStreams) override;
+      std::span<const StreamID> aOutgoingStreams) override;
 
   // When a peer has reset some of its outgoing streams, this will be called. An
   // empty list indicates that all streams have been reset.
   //
   // It is allowed to call into this library from within this callback.
   void OnIncomingStreamsReset(
-      rtc::ArrayView<const StreamID> aIncomingStreams) override;
+      std::span<const StreamID> aIncomingStreams) override;
 
   // Will be called when the amount of data buffered to be sent falls to or
   // below the threshold set when calling `SetBufferedAmountLowThreshold`.
@@ -140,6 +144,8 @@ class DataChannelConnectionDcSctp : public DataChannelConnection,
  private:
   void UpdateBufferedAmount(StreamID aStreamId);
   void OnDCEPMessageDone(LifecycleId aLifecycleId);
+
+  bool HasPreChannelData(uint16_t aStream) const;
 
   std::unique_ptr<DcSctpSocketInterface> mDcSctp;
   std::set<uint16_t> mStreamsAwaitingAck;

@@ -7,6 +7,7 @@ loader: taskgraph.loader.transform:loader
 transforms:
     - taskgraph.transforms.from_deps
     - gecko_taskgraph.transforms.name_sanity
+    - gecko_taskgraph.transforms.zucchini_partial_rollout:partials_transforms
     - gecko_taskgraph.transforms.partials
     - gecko_taskgraph.transforms.task
 
@@ -18,6 +19,9 @@ only-for-attributes:
     - nightly
     - shippable
 
+task-defaults:
+    run-on-repo-type: [hg]
+
 only-for-build-platforms:
     - macosx64-shippable/opt
     - macosx64-devedition/opt
@@ -27,8 +31,6 @@ only-for-build-platforms:
     - win64-devedition/opt
     - win64-aarch64-shippable/opt
     - win64-aarch64-devedition/opt
-    - linux-shippable/opt
-    - linux-devedition/opt
     - linux64-shippable/opt
     - linux64-aarch64-shippable/opt
     - linux64-devedition/opt

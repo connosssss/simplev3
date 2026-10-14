@@ -52,14 +52,9 @@ async function checkCache(suffixes, originAttributes) {
 }
 
 add_task(async function () {
-  info("Disable predictor and accept all");
+  info("accept all");
   await SpecialPowers.pushPrefEnv({
-    set: [
-      ["test.wait300msAfterTabSwitch", true],
-      ["network.predictor.enabled", false],
-      ["network.predictor.enable-prefetch", false],
-      ["network.cookie.cookieBehavior", 0],
-    ],
+    set: [["network.cookie.cookieBehavior", 0]],
   });
 
   const originAttributes = { partitionKey: "(http,example.org)" };

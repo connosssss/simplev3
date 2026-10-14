@@ -1,12 +1,10 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsJARChannel_h__
-#define nsJARChannel_h__
+#ifndef nsJARChannel_h_
+#define nsJARChannel_h_
 
-#include "mozilla/net/MemoryDownloader.h"
 #include "nsIJARChannel.h"
 #include "nsIJARURI.h"
 #include "nsIEventTarget.h"
@@ -28,7 +26,6 @@
 #include "mozilla/Logging.h"
 
 class nsJARInputThunk;
-class nsJARProtocolHandler;
 class nsInputStreamPump;
 
 //-----------------------------------------------------------------------------
@@ -76,7 +73,6 @@ class nsJARChannel final : public nsIJARChannel,
   mozilla::Atomic<bool, mozilla::ReleaseAcquire> mCanceled{false};
   bool mOnDataCalled = false;
 
-  RefPtr<nsJARProtocolHandler> mJarHandler;
   nsCOMPtr<nsIJARURI> mJarURI;
   nsCOMPtr<nsIURI> mOriginalURI;
   nsCOMPtr<nsISupports> mOwner;
@@ -85,6 +81,7 @@ class nsJARChannel final : public nsIJARChannel,
   nsCOMPtr<nsIProgressEventSink> mProgressSink;
   nsCOMPtr<nsILoadGroup> mLoadGroup;
   nsCOMPtr<nsIStreamListener> mListener;
+  RefPtr<mozilla::dom::ParentProcessChannelHandle> mParentProcessChannelHandle;
   nsCString mContentType;
   nsCString mContentCharset;
   int64_t mContentLength = -1;
@@ -113,4 +110,4 @@ class nsJARChannel final : public nsIJARChannel,
   nsCOMPtr<nsIEventTarget> mWorker;
 };
 
-#endif  // nsJARChannel_h__
+#endif  // nsJARChannel_h_

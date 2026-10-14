@@ -11,22 +11,21 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{exit, Command};
+use std::process::{Command, exit};
 use std::slice;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::time::SystemTime;
-use toml;
 use toml::value::Table;
 
-lazy_static! {
-    static ref OUTDIR_PATH: PathBuf = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("gecko");
-}
+static OUTDIR_PATH: LazyLock<PathBuf> =
+    LazyLock::new(|| PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("gecko"));
 
-const STRUCTS_FILE: &'static str = "structs.rs";
+const STRUCTS_FILE: &str = "structs.rs";
 
 fn read_config(path: &PathBuf) -> Table {
     println!("cargo:rerun-if-changed={}", path.to_str().unwrap());
-    update_last_modified(&path);
+    update_last_modified(path);
 
     let mut contents = String::new();
     File::open(path)
@@ -39,32 +38,36 @@ fn read_config(path: &PathBuf) -> Table {
     }
 }
 
-lazy_static! {
-    static ref CONFIG: Table = {
-        // Load Gecko's binding generator config from the source tree.
-        let path = mozbuild::TOPSRCDIR.join("layout/style/ServoBindings.toml");
-        read_config(&path)
-    };
-    static ref BINDGEN_FLAGS: Vec<String> = {
-        mozbuild::config::BINDGEN_SYSTEM_FLAGS
-            .iter()
-            .chain(&mozbuild::config::NSPR_CFLAGS)
-            .chain(&mozbuild::config::MOZ_PIXMAN_CFLAGS)
-            .chain(&mozbuild::config::MOZ_ICU_CFLAGS)
-            .map(|s| s.to_string())
-            .collect()
-    };
-    static ref INCLUDE_RE: Regex = Regex::new(r#"#include\s*"(.+?)""#).unwrap();
-    static ref DISTDIR_PATH: PathBuf = mozbuild::TOPOBJDIR.join("dist");
-    static ref SEARCH_PATHS: Vec<PathBuf> = vec![
+static CONFIG: LazyLock<Table> = LazyLock::new(|| {
+    // Load Gecko's binding generator config from the source tree.
+    let path = mozbuild::TOPSRCDIR.join("layout/style/ServoBindings.toml");
+    read_config(&path)
+});
+static BINDGEN_FLAGS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    mozbuild::config::BINDGEN_SYSTEM_FLAGS
+        .iter()
+        .chain(&mozbuild::config::NSPR_CFLAGS)
+        .chain(&mozbuild::config::MOZ_PIXMAN_CFLAGS)
+        .chain(&mozbuild::config::MOZ_ICU_CFLAGS)
+        .map(|s| s.to_string())
+        .collect()
+});
+static INCLUDE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"#include\s*"(.+?)""#).unwrap());
+static DISTDIR_PATH: LazyLock<PathBuf> = LazyLock::new(|| mozbuild::TOPOBJDIR.join("dist"));
+static SEARCH_PATHS: LazyLock<Vec<PathBuf>> = LazyLock::new(|| {
+    vec![
         DISTDIR_PATH.join("include"),
         DISTDIR_PATH.join("include/nspr"),
-    ];
-    static ref ADDED_PATHS: Mutex<HashSet<PathBuf>> = Mutex::new(HashSet::new());
-    static ref LAST_MODIFIED: Mutex<SystemTime> =
-        Mutex::new(get_modified_time(&env::current_exe().unwrap())
-                   .expect("Failed to get modified time of executable"));
-}
+    ]
+});
+static ADDED_PATHS: LazyLock<Mutex<HashSet<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+static LAST_MODIFIED: LazyLock<Mutex<SystemTime>> = LazyLock::new(|| {
+    Mutex::new(
+        get_modified_time(&env::current_exe().unwrap())
+            .expect("Failed to get modified time of executable"),
+    )
+});
 
 fn get_modified_time(file: &Path) -> Option<SystemTime> {
     file.metadata().and_then(|m| m.modified()).ok()
@@ -110,7 +113,7 @@ fn add_include(name: &str) -> String {
         None => panic!("Include not found: {}", name),
     };
     let result = String::from(file.to_str().unwrap());
-    add_headers_recursively(file, &mut *added_paths);
+    add_headers_recursively(file, &mut added_paths);
     result
 }
 
@@ -185,8 +188,7 @@ fn write_binding_file(builder: Builder, file: &str, fixups: &[Fixup]) {
         result = Regex::new(&fixup.pat)
             .unwrap()
             .replace_all(&result, &*fixup.rep)
-            .into_owned()
-            .into();
+            .into_owned();
     }
     let bytes = result.into_bytes();
     File::create(&out_file)
@@ -226,11 +228,11 @@ impl<'a> BuilderWithConfig<'a> {
             used_keys,
         }
     }
-    fn handle_items<F>(self, key: &'static str, mut func: F) -> BuilderWithConfig<'a>
+    fn handle_items<F>(self, key: &'static str, func: F) -> BuilderWithConfig<'a>
     where
         F: FnMut(Builder, &'a toml::Value) -> Builder,
     {
-        self.handle_list(key, |b, iter| iter.fold(b, |b, item| func(b, item)))
+        self.handle_list(key, |b, iter| iter.fold(b, func))
     }
     fn handle_str_items<F>(self, key: &'static str, mut func: F) -> BuilderWithConfig<'a>
     where
@@ -363,14 +365,13 @@ fn setup_logging() -> bool {
     }
 }
 
-fn generate_atoms() {
+fn generate_pseudo_elements() {
     let script = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
         .join("gecko")
-        .join("regen_atoms.py");
+        .join("regen_pseudo_elements.py");
     println!("cargo:rerun-if-changed={}", script.display());
     let status = Command::new(&*PYTHON)
         .arg(&script)
-        .arg(DISTDIR_PATH.as_os_str())
         .arg(OUTDIR_PATH.as_os_str())
         .status()
         .unwrap();
@@ -384,7 +385,7 @@ pub fn generate() {
     fs::create_dir_all(&*OUTDIR_PATH).unwrap();
     setup_logging();
     generate_structs();
-    generate_atoms();
+    generate_pseudo_elements();
 
     for path in ADDED_PATHS.lock().unwrap().iter() {
         println!("cargo:rerun-if-changed={}", path.to_str().unwrap());

@@ -35,10 +35,18 @@ void Pkcs11KeyPairGenerator::GenerateKey(ScopedSECKEYPrivateKey* priv_key,
   ScopedPK11SlotInfo slot(PK11_GetInternalKeySlot());
   ASSERT_TRUE(slot);
 
-  SECKEYPublicKey* pub_tmp;
+  SECKEYPublicKey* pub_tmp = NULL;
   ScopedSECKEYPrivateKey priv_tmp(
       PK11_GenerateKeyPair(slot.get(), mech_, params->get(), &pub_tmp, PR_FALSE,
                            sensitive ? PR_TRUE : PR_FALSE, nullptr));
+#ifdef NSS_DISABLE_DSA
+  if (mech_ == CKM_DSA_KEY_PAIR_GEN) {
+    ASSERT_EQ(nullptr, priv_tmp);
+    ASSERT_EQ(nullptr, pub_tmp);
+    ASSERT_EQ(PORT_GetError(), SEC_ERROR_INVALID_ALGORITHM);
+    return;
+  }
+#endif
   ASSERT_NE(nullptr, priv_tmp)
       << "PK11_GenerateKeyPair failed: " << PORT_ErrorToName(PORT_GetError());
   ASSERT_NE(nullptr, pub_tmp);
@@ -158,14 +166,18 @@ std::unique_ptr<ParamHolder> Pkcs11KeyPairGenerator::MakeParams() const {
       return std::unique_ptr<ParamHolder>(new EcParamHolder(curve_));
 
     case CKM_NSS_KYBER_KEY_PAIR_GEN:
-      std::cerr << "Generate Kyber768 pair" << std::endl;
-      return std::unique_ptr<ParamHolder>(
-          new KyberParamHolder(CKP_NSS_KYBER_768_ROUND3));
-
     case CKM_NSS_ML_KEM_KEY_PAIR_GEN:
-      std::cerr << "Generate ML-KEM768 pair" << std::endl;
-      return std::unique_ptr<ParamHolder>(
-          new KyberParamHolder(CKP_NSS_ML_KEM_768));
+    case CKM_ML_KEM_KEY_PAIR_GEN: {
+      // A single mechanism covers more than one parameter set, so inferring
+      // one from the mechanism would silently generate the wrong key.
+      if (kem_params_ == CKP_INVALID_ID) {
+        ADD_FAILURE() << "KEM key generation needs an explicit parameter set";
+        return nullptr;
+      }
+      std::cerr << "Generate KEM pair, parameter set " << kem_params_
+                << std::endl;
+      return std::unique_ptr<ParamHolder>(new KyberParamHolder(kem_params_));
+    }
 
     default:
       ADD_FAILURE() << "unknown OID " << mech_;

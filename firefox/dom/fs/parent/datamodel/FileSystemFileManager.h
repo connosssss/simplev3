@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,6 +7,7 @@
 
 #include "ErrorList.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/dom/FileSystemCipherKeyManager.h"
 #include "mozilla/dom/FileSystemTypes.h"
 #include "mozilla/dom/QMResult.h"
 #include "nsIFile.h"
@@ -71,11 +70,14 @@ Result<nsCOMPtr<nsIFile>, QMResult> GetDatabaseFile(
  *
  * @param aOrigin Specified origin
  * @param aDirectoryLockId Directory lock id from the quota manager
+ * @param aMaybeCipherKey Key the database is encrypted with, for a private
+ * origin
  * @return Result<nsCOMPtr<nsIFileURL>, QMResult> Database file URL object
  */
 Result<nsCOMPtr<nsIFileURL>, QMResult> GetDatabaseFileURL(
     const quota::OriginMetadata& aOriginMetadata,
-    const int64_t aDirectoryLockId);
+    const int64_t aDirectoryLockId,
+    const Maybe<FileSystemCipherKey>& aMaybeCipherKey);
 
 /**
  * @brief Creates and removes disk-backed representations of the file systems'

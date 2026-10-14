@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,6 +6,7 @@
 #define vm_ArrayBufferObject_h
 
 #include "mozilla/Maybe.h"
+#include "mozilla/Span.h"
 
 #include <tuple>  // std::tuple
 
@@ -28,6 +27,7 @@ class JSONPrinter;
 
 class ArrayBufferViewObject;
 class AutoSetNewObjectMetadata;
+class FixedLengthTypedArrayObject;
 class WasmArrayRawBuffer;
 
 namespace wasm {
@@ -38,7 +38,7 @@ struct MemoryDesc;
 // of size `initialCommittedSize`.  Both arguments denote bytes and must be
 // multiples of the page size, with `initialCommittedSize` <= `mappedSize`.
 // Returns nullptr on failure.
-void* MapBufferMemory(wasm::AddressType, size_t mappedSize,
+void* MapBufferMemory(wasm::AddressType, wasm::PageSize, size_t mappedSize,
                       size_t initialCommittedSize);
 
 // Commit additional memory in an existing mapping.  `dataEnd` must be the
@@ -109,8 +109,7 @@ uint64_t WasmReservedBytes();
 // separated completely.
 //
 // Most APIs will only accept ArrayBufferObject.  ArrayBufferObjectMaybeShared
-// exists as a join point to allow APIs that can take or use either, notably
-// AsmJS.
+// exists as a join point to allow APIs that can take or use either.
 //
 // In contrast with the separation of ArrayBufferObject and
 // SharedArrayBufferObject, the TypedArray types can map either.
@@ -134,6 +133,7 @@ class ArrayBufferObjectMaybeShared;
 
 wasm::AddressType WasmArrayBufferAddressType(
     const ArrayBufferObjectMaybeShared* buf);
+wasm::PageSize WasmArrayBufferPageSize(const ArrayBufferObjectMaybeShared* buf);
 wasm::Pages WasmArrayBufferPages(const ArrayBufferObjectMaybeShared* buf);
 wasm::Pages WasmArrayBufferClampedMaxPages(
     const ArrayBufferObjectMaybeShared* buf);
@@ -158,6 +158,7 @@ class ArrayBufferObjectMaybeShared : public NativeObject {
   wasm::AddressType wasmAddressType() const {
     return WasmArrayBufferAddressType(this);
   }
+  wasm::PageSize wasmPageSize() const { return WasmArrayBufferPageSize(this); }
   wasm::Pages wasmPages() const { return WasmArrayBufferPages(this); }
   wasm::Pages wasmClampedMaxPages() const {
     return WasmArrayBufferClampedMaxPages(this);
@@ -167,7 +168,6 @@ class ArrayBufferObjectMaybeShared : public NativeObject {
   }
   size_t wasmMappedSize() const { return WasmArrayBufferMappedSize(this); }
 
-  inline bool isPreparedForAsmJS() const;
   inline bool isWasm() const;
 };
 
@@ -210,10 +210,10 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared {
 #endif
 
  public:
-  static const uint8_t DATA_SLOT = 0;
-  static const uint8_t BYTE_LENGTH_SLOT = 1;
-  static const uint8_t FIRST_VIEW_SLOT = 2;
-  static const uint8_t FLAGS_SLOT = 3;
+  JS_DEFINE_TYPED_SLOT(0, DATA_SLOT, Private);
+  JS_DEFINE_TYPED_SLOT(1, BYTE_LENGTH_SLOT, Private);
+  JS_DEFINE_TYPED_SLOT(2, FIRST_VIEW_SLOT, Object, Null);
+  JS_DEFINE_TYPED_SLOT(3, FLAGS_SLOT, Int32);
 
   static const uint8_t RESERVED_SLOTS = 4;
 
@@ -222,7 +222,7 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared {
   // aligned.
   static constexpr size_t ARRAY_BUFFER_ALIGNMENT = 8;
 
-  static_assert(FLAGS_SLOT == JS_ARRAYBUFFER_FLAGS_SLOT,
+  static_assert(FLAGS_SLOT.index() == JS_ARRAYBUFFER_FLAGS_SLOT,
                 "self-hosted code with burned-in constants must get the "
                 "right flags slot");
 
@@ -285,12 +285,7 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared {
     // Resizable ArrayBuffer.
     RESIZABLE = 0b1'0000,
 
-    // This MALLOCED, MAPPED, or EXTERNAL buffer has been prepared for asm.js
-    // and cannot henceforth be transferred/detached.  (WASM, USER_OWNED, and
-    // INLINE_DATA buffers can't be prepared for asm.js -- although if an
-    // INLINE_DATA buffer is used with asm.js, it's silently rewritten into a
-    // MALLOCED buffer which *can* be prepared.)
-    FOR_ASMJS = 0b10'0000,
+    // (0b10'0000 is unused)
 
     // The length is temporarily pinned, so it should not be detached. In the
     // future, this will also prevent GrowableArrayBuffer/ResizeableArrayBuffer
@@ -474,12 +469,11 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared {
 
   static bool class_constructor(JSContext* cx, unsigned argc, Value* vp);
 
-  static bool isOriginalByteLengthGetter(Native native) {
-    return native == byteLengthGetter;
-  }
-
   static ArrayBufferObject* createForContents(JSContext* cx, size_t nbytes,
                                               BufferContents contents);
+
+  static ArrayBufferObject* createFromTypedArrayMallocedElements(
+      JSContext* cx, Handle<FixedLengthTypedArrayObject*> tarray);
 
  protected:
   template <class ArrayBufferType>
@@ -503,6 +497,10 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared {
  public:
   static FixedLengthArrayBufferObject* createZeroed(
       JSContext* cx, size_t nbytes, HandleObject proto = nullptr);
+
+  static FixedLengthArrayBufferObject* createCopied(
+      JSContext* cx, mozilla::Span<const uint8_t> src,
+      HandleObject proto = nullptr);
 
   // Create an ArrayBufferObject that is safely finalizable and can later be
   // initialize()d to become a real, content-visible ArrayBufferObject.
@@ -565,13 +563,14 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared {
   static void detach(JSContext* cx, Handle<ArrayBufferObject*> buffer);
 
   static constexpr size_t offsetOfByteLengthSlot() {
-    return getFixedSlotOffset(BYTE_LENGTH_SLOT);
+    return getFixedSlotOffsetTyped(BYTE_LENGTH_SLOT);
   }
   static constexpr size_t offsetOfFlagsSlot() {
-    return getFixedSlotOffset(FLAGS_SLOT);
+    return getFixedSlotOffsetTyped(FLAGS_SLOT);
   }
 
  protected:
+  void initFirstView();
   void setFirstView(ArrayBufferViewObject* view);
 
  private:
@@ -580,6 +579,7 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared {
     void* freeUserData;
   };
   FreeInfo* freeInfo() const;
+  void setFreeInfo(BufferContents contents);
 
  public:
   uint8_t* dataPointer() const;
@@ -615,25 +615,19 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared {
   bool isDetached() const { return flags() & DETACHED; }
   bool isResizable() const { return flags() & RESIZABLE; }
   bool isLengthPinned() const { return flags() & PINNED_LENGTH; }
-  bool isPreparedForAsmJS() const { return flags() & FOR_ASMJS; }
   bool isImmutable() const { return flags() & IMMUTABLE; }
 
-  // Only WASM and asm.js buffers have a non-undefined [[ArrayBufferDetachKey]].
+  // Only WASM buffers have a non-undefined [[ArrayBufferDetachKey]].
   //
   // https://tc39.es/ecma262/#sec-properties-of-the-arraybuffer-instances
-  bool hasDefinedDetachKey() const { return isWasm() || isPreparedForAsmJS(); }
+  bool hasDefinedDetachKey() const { return isWasm(); }
 
   // WebAssembly support:
-
-  /**
-   * Prepare this ArrayBuffer for use with asm.js.  Returns true on success,
-   * false on failure.  This function reports no errors.
-   */
-  [[nodiscard]] bool prepareForAsmJS();
 
   size_t wasmMappedSize() const;
 
   wasm::AddressType wasmAddressType() const;
+  wasm::PageSize wasmPageSize() const;
   wasm::Pages wasmPages() const;
   wasm::Pages wasmClampedMaxPages() const;
   mozilla::Maybe<wasm::Pages> wasmSourceMaxPages() const;
@@ -653,7 +647,9 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared {
                                              size_t length);
 
  protected:
+  void initDataPointer(BufferContents contents);
   void setDataPointer(BufferContents contents);
+  void initByteLength(size_t length);
   void setByteLength(size_t length);
 
   /**
@@ -670,6 +666,7 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared {
   size_t associatedBytes() const;
 
   uint32_t flags() const;
+  void initFlags(uint32_t flags);
   void setFlags(uint32_t flags);
 
   void setIsDetached() {
@@ -677,20 +674,13 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared {
     MOZ_ASSERT(!isImmutable());
     setFlags(flags() | DETACHED);
   }
-  void setIsPreparedForAsmJS() {
-    MOZ_ASSERT(!isWasm());
-    MOZ_ASSERT(!hasUserOwnedData());
-    MOZ_ASSERT(!isInlineData());
-    MOZ_ASSERT(isMalloced() || isMapped() || isExternal());
-    setFlags(flags() | FOR_ASMJS);
-  }
 
   void initialize(size_t byteLength, BufferContents contents) {
     MOZ_ASSERT(contents.isAligned(byteLength));
-    setByteLength(byteLength);
-    setFlags(0);
-    setFirstView(nullptr);
-    setDataPointer(contents);
+    initByteLength(byteLength);
+    initFlags(0);
+    initFirstView();
+    initDataPointer(contents);
   }
 
  public:
@@ -708,7 +698,7 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared {
  * for ArrayBuffer objects, including inline data, malloc'ed memory, mapped
  * memory, and user-owner memory.
  *
- * Fixed-length ArrayBuffers can be used for asm.js and WebAssembly.
+ * Fixed-length ArrayBuffers can be used for WebAssembly.
  */
 class FixedLengthArrayBufferObject : public ArrayBufferObject {
   friend class ArrayBufferObject;
@@ -752,7 +742,7 @@ class FixedLengthArrayBufferObject : public ArrayBufferObject {
  * When a resizable ArrayBuffer object is detached, its maximum byte length
  * slot is set to zero in addition to the byte length slot.
  *
- * Resizable ArrayBuffers can neither be used for asm.js nor WebAssembly.
+ * Resizable ArrayBuffers cannot be used for WebAssembly.
  */
 class ResizableArrayBufferObject : public ArrayBufferObject {
   friend class ArrayBufferObject;
@@ -776,28 +766,30 @@ class ResizableArrayBufferObject : public ArrayBufferObject {
 
   void setMaxByteLength(size_t length) {
     MOZ_ASSERT(length <= ArrayBufferObject::ByteLengthLimit);
-    setFixedSlot(MAX_BYTE_LENGTH_SLOT, PrivateValue(length));
+    setFixedSlotTyped(MAX_BYTE_LENGTH_SLOT, PrivateValue(length));
   }
 
   void initialize(size_t byteLength, size_t maxByteLength,
                   BufferContents contents) {
     MOZ_ASSERT(contents.isAligned(byteLength));
-    setByteLength(byteLength);
+    initByteLength(byteLength);
     setMaxByteLength(maxByteLength);
-    setFlags(RESIZABLE);
-    setFirstView(nullptr);
-    setDataPointer(contents);
+    initFlags(RESIZABLE);
+    initFirstView();
+    initDataPointer(contents);
   }
 
   // Resize this buffer.
   void resize(size_t newByteLength);
+  void notifyViewsAfterResize();
 
   static ResizableArrayBufferObject* copy(
       JSContext* cx, size_t newByteLength,
       JS::Handle<ResizableArrayBufferObject*> source);
 
  public:
-  static const uint8_t MAX_BYTE_LENGTH_SLOT = ArrayBufferObject::RESERVED_SLOTS;
+  JS_DEFINE_TYPED_SLOT(ArrayBufferObject::RESERVED_SLOTS, MAX_BYTE_LENGTH_SLOT,
+                       Private, Undefined);
 
   static const uint8_t RESERVED_SLOTS = ArrayBufferObject::RESERVED_SLOTS + 1;
 
@@ -808,7 +800,7 @@ class ResizableArrayBufferObject : public ArrayBufferObject {
   static const JSClass class_;
 
   size_t maxByteLength() const {
-    return size_t(getFixedSlot(MAX_BYTE_LENGTH_SLOT).toPrivate());
+    return size_t(getFixedSlotTyped(MAX_BYTE_LENGTH_SLOT).toPrivate());
   }
 
   static ResizableArrayBufferObject* copyAndDetach(
@@ -828,7 +820,7 @@ class ResizableArrayBufferObject : public ArrayBufferObject {
  * memory stores for ArrayBuffer objects, including inline data, malloc'ed
  * memory, mapped memory, and user-owner memory.
  *
- * Immutable ArrayBuffers can neither be used for asm.js nor WebAssembly.
+ * Immutable ArrayBuffers cannot be used for WebAssembly.
  */
 class ImmutableArrayBufferObject : public ArrayBufferObject {
   friend class ArrayBufferObject;
@@ -846,10 +838,10 @@ class ImmutableArrayBufferObject : public ArrayBufferObject {
 
   void initialize(size_t byteLength, BufferContents contents) {
     MOZ_ASSERT(contents.isAligned(byteLength));
-    setByteLength(byteLength);
-    setFlags(IMMUTABLE);
-    setFirstView(nullptr);
-    setDataPointer(contents);
+    initByteLength(byteLength);
+    initFlags(IMMUTABLE);
+    initFirstView();
+    initDataPointer(contents);
   }
 
  public:
@@ -987,17 +979,19 @@ class MutableWrappedPtrOperations<InnerViewTable, Wrapper>
 
 class WasmArrayRawBuffer {
   wasm::AddressType addressType_;
+  wasm::PageSize pageSize_;
   wasm::Pages clampedMaxPages_;
   mozilla::Maybe<wasm::Pages> sourceMaxPages_;
   size_t mappedSize_;  // See comment on mappedSize().
   size_t length_;
 
  protected:
-  WasmArrayRawBuffer(wasm::AddressType addressType, uint8_t* buffer,
-                     wasm::Pages clampedMaxPages,
+  WasmArrayRawBuffer(wasm::AddressType addressType, wasm::PageSize pageSize,
+                     uint8_t* buffer, wasm::Pages clampedMaxPages,
                      const mozilla::Maybe<wasm::Pages>& sourceMaxPages,
                      size_t mappedSize, size_t length)
       : addressType_(addressType),
+        pageSize_(pageSize),
         clampedMaxPages_(clampedMaxPages),
         sourceMaxPages_(sourceMaxPages),
         mappedSize_(mappedSize),
@@ -1005,12 +999,15 @@ class WasmArrayRawBuffer {
     // Assert that this WasmArrayRawBuffer was allocated in the correct place
     // relative to its data.
     MOZ_ASSERT(buffer == dataPointer());
+    MOZ_ASSERT(pageSize == clampedMaxPages.pageSize());
+    MOZ_ASSERT_IF(sourceMaxPages.isSome(),
+                  (pageSize == sourceMaxPages->pageSize()));
   }
 
  public:
   static WasmArrayRawBuffer* AllocateWasm(
-      wasm::AddressType addressType, wasm::Pages initialPages,
-      wasm::Pages clampedMaxPages,
+      wasm::AddressType addressType, wasm::PageSize pageSize,
+      wasm::Pages initialPages, wasm::Pages clampedMaxPages,
       const mozilla::Maybe<wasm::Pages>& sourceMaxPages,
       const mozilla::Maybe<size_t>& mappedSize);
   static void Release(void* mem);
@@ -1031,6 +1028,7 @@ class WasmArrayRawBuffer {
   }
 
   wasm::AddressType addressType() const { return addressType_; }
+  wasm::PageSize pageSize() const { return pageSize_; }
 
   uint8_t* basePointer() { return dataPointer() - gc::SystemPageSize(); }
 
@@ -1055,7 +1053,7 @@ class WasmArrayRawBuffer {
   size_t byteLength() const { return length_; }
 
   wasm::Pages pages() const {
-    return wasm::Pages::fromByteLengthExact(length_);
+    return wasm::Pages::fromByteLengthExact(length_, pageSize());
   }
 
   /*

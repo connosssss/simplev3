@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,8 +6,8 @@
 #define DOM_FRAGMENTDIRECTIVE_H_
 
 #include "js/TypeDecls.h"
-#include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/fragmentdirectives_ffi_generated.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsStringFwd.h"
@@ -17,9 +15,10 @@
 
 class nsINode;
 class nsIURI;
-class nsRange;
+
 namespace mozilla::dom {
 class Document;
+class Range;
 class Promise;
 class Text;
 class TextDirectiveFinder;
@@ -42,7 +41,7 @@ class TextDirectiveFinder;
  */
 class FragmentDirective final : public nsISupports, public nsWrapperCache {
  public:
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(FragmentDirective)
 
  public:
@@ -73,7 +72,7 @@ class FragmentDirective final : public nsISupports, public nsWrapperCache {
   /** Inserts all text directive ranges into a `eTargetText` `Selection`. */
   MOZ_CAN_RUN_SCRIPT
   void HighlightTextDirectives(
-      const nsTArray<RefPtr<nsRange>>& aTextDirectiveRanges);
+      const nsTArray<RefPtr<Range>>& aTextDirectiveRanges);
 
   /** Searches for the current uninvoked text directives and creates a range for
    * each one that is found.
@@ -85,7 +84,7 @@ class FragmentDirective final : public nsISupports, public nsWrapperCache {
    * to find a matching range for a text directive. However, instead of using
    * collator-based search, the Gecko find-in-page algorithm is used (`nsFind`).
    */
-  nsTArray<RefPtr<nsRange>> FindTextFragmentsInDocument();
+  nsTArray<RefPtr<Range>> FindTextFragmentsInDocument();
 
   /** Utility function which parses the fragment directive and removes it from
    * the hash of the given URI. This operation happens in-place.
@@ -129,7 +128,7 @@ class FragmentDirective final : public nsISupports, public nsWrapperCache {
    *
    * This is exposed as a Chrome-Only API.
    */
-  void GetTextDirectiveRanges(nsTArray<RefPtr<nsRange>>& aRanges) const;
+  void GetTextDirectiveRanges(nsTArray<RefPtr<Range>>& aRanges) const;
 
   /** Removes all text directive ranges.
    *
@@ -143,7 +142,8 @@ class FragmentDirective final : public nsISupports, public nsWrapperCache {
    * @return Returns the created text directive as resolved promise, or a
    *         rejected promise in case of an error.
    */
-  already_AddRefed<Promise> CreateTextDirectiveForSelection();
+  already_AddRefed<Promise> CreateTextDirectiveForRanges(
+      const Sequence<OwningNonNull<Range>>& aRanges);
 
  private:
   RefPtr<Document> mDocument;

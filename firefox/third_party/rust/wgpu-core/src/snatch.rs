@@ -1,9 +1,9 @@
-use core::{cell::UnsafeCell, fmt};
+use core::{cell::UnsafeCell, fmt, mem::ManuallyDrop};
 
-use crate::lock::{rank, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use crate::lock::{rank, RankData, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// A guard that provides read access to snatchable data.
-pub struct SnatchGuard<'a>(#[expect(dead_code)] RwLockReadGuard<'a, ()>);
+pub struct SnatchGuard<'a>(RwLockReadGuard<'a, ()>);
 /// A guard that allows snatching the snatchable data.
 pub struct ExclusiveSnatchGuard<'a>(#[expect(dead_code)] RwLockWriteGuard<'a, ()>);
 
@@ -13,20 +13,22 @@ pub struct ExclusiveSnatchGuard<'a>(#[expect(dead_code)] RwLockWriteGuard<'a, ()
 /// In order to safely access the underlying data, the device's global snatchable
 /// lock must be taken. To guarantee it, methods take a read or write guard of that
 /// special lock.
-pub struct Snatchable<T> {
-    value: UnsafeCell<Option<T>>,
+pub struct SnatchableInner<T> {
+    value: UnsafeCell<T>,
 }
+
+pub type Snatchable<T> = SnatchableInner<Option<T>>;
 
 impl<T> Snatchable<T> {
     pub fn new(val: T) -> Self {
-        Snatchable {
+        SnatchableInner {
             value: UnsafeCell::new(Some(val)),
         }
     }
 
     #[allow(dead_code)]
     pub fn empty() -> Self {
-        Snatchable {
+        SnatchableInner {
             value: UnsafeCell::new(None),
         }
     }
@@ -52,13 +54,13 @@ impl<T> Snatchable<T> {
 
 // Can't safely print the contents of a snatchable object without holding
 // the lock.
-impl<T> fmt::Debug for Snatchable<T> {
+impl<T> fmt::Debug for SnatchableInner<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "<snatchable>")
     }
 }
 
-unsafe impl<T> Sync for Snatchable<T> {}
+unsafe impl<T> Sync for SnatchableInner<T> {}
 
 use trace::LockTrace;
 #[cfg(all(debug_assertions, feature = "std"))]
@@ -143,7 +145,7 @@ impl SnatchLock {
 
     /// Request read access to snatchable resources.
     #[track_caller]
-    pub fn read(&self) -> SnatchGuard {
+    pub fn read(&self) -> SnatchGuard<'_> {
         LockTrace::enter("read");
         SnatchGuard(self.lock.read())
     }
@@ -154,9 +156,36 @@ impl SnatchLock {
     /// a high risk of causing lock contention if called concurrently with other
     /// wgpu work.
     #[track_caller]
-    pub fn write(&self) -> ExclusiveSnatchGuard {
+    pub fn write(&self) -> ExclusiveSnatchGuard<'_> {
         LockTrace::enter("write");
         ExclusiveSnatchGuard(self.lock.write())
+    }
+
+    #[track_caller]
+    pub unsafe fn force_unlock_read(&self, data: RankData) {
+        // This is unsafe because it can cause deadlocks if the lock is held.
+        // It should only be used in very specific cases, like when a resource
+        // needs to be snatched in a panic handler.
+        LockTrace::exit();
+        unsafe { self.lock.force_unlock_read(data) };
+    }
+}
+
+impl SnatchGuard<'_> {
+    /// Forget the guard, leaving the lock in a locked state with no guard.
+    ///
+    /// This is equivalent to `std::mem::forget`, but preserves the information about the lock
+    /// rank.
+    pub fn forget(this: Self) -> RankData {
+        // Cancel the drop implementation of the current guard.
+        let manually_drop = ManuallyDrop::new(this);
+
+        // As we are unable to destructure out of this guard due to the drop implementation,
+        // so we manually read the inner value.
+        // SAFETY: This is safe because we never access the original guard again.
+        let inner_guard = unsafe { core::ptr::read(&manually_drop.0) };
+
+        RwLockReadGuard::forget(inner_guard)
     }
 }
 

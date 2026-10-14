@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,14 +6,13 @@
 #define jit_arm64_Architecture_arm64_h
 
 #include "mozilla/Assertions.h"
-#include "mozilla/MathAlgorithms.h"
 
 #include <algorithm>
-#include <iterator>
+#include <bit>
 
+#include "jit/arm64/vixl/Cpu-Features-vixl.h"
 #include "jit/arm64/vixl/Instructions-vixl.h"
 #include "jit/shared/Architecture-shared.h"
-
 #include "js/Utility.h"
 
 #define JS_HAS_HIDDEN_SP
@@ -143,15 +140,14 @@ class Registers {
     uintptr_t r;
   };
 
-  static uint32_t SetSize(SetType x) {
-    static_assert(sizeof(SetType) == 4, "SetType must be 32 bits");
-    return mozilla::CountPopulation32(x);
-  }
+  static uint32_t SetSize(SetType x) { return std::popcount(x); }
   static uint32_t FirstBit(SetType x) {
-    return mozilla::CountTrailingZeroes32(x);
+    MOZ_ASSERT(x);
+    return std::countr_zero(x);
   }
   static uint32_t LastBit(SetType x) {
-    return 31 - mozilla::CountLeadingZeroes32(x);
+    MOZ_ASSERT(x);
+    return std::bit_width(x) - 1;
   }
 
   static const char* GetName(uint32_t code) {
@@ -180,7 +176,7 @@ class Registers {
   static const SetType ArgRegMask =
       (1 << Registers::x0) | (1 << Registers::x1) | (1 << Registers::x2) |
       (1 << Registers::x3) | (1 << Registers::x4) | (1 << Registers::x5) |
-      (1 << Registers::x6) | (1 << Registers::x7) | (1 << Registers::x8);
+      (1 << Registers::x6) | (1 << Registers::x7);
 
   static const SetType VolatileMask =
       (1 << Registers::x0) | (1 << Registers::x1) | (1 << Registers::x2) |
@@ -198,7 +194,7 @@ class Registers {
       (1 << Registers::x28) | (1 << Registers::x29) | (1 << Registers::x30);
 
   static const SetType NonAllocatableMask =
-      (1 << Registers::x28) |  // PseudoStackPointer.
+      (1 << Registers::x20) |  // PseudoStackPointer.
       (1 << Registers::ip0) |  // First scratch register.
       (1 << Registers::ip1) |  // Second scratch register.
       (1 << Registers::tls) | (1 << Registers::lr) | (1 << Registers::sp) |
@@ -303,23 +299,23 @@ class Bitset128 {
     return *this;
   }
 
-  uint32_t size() const {
-    return mozilla::CountPopulation64(hi) + mozilla::CountPopulation64(lo);
-  }
+  uint32_t size() const { return std::popcount(hi) + std::popcount(lo); }
 
   uint32_t countTrailingZeroes() const {
     if (lo) {
-      return mozilla::CountTrailingZeroes64(lo);
+      return std::countr_zero(lo);
     }
-    return mozilla::CountTrailingZeroes64(hi) + 64;
+    return std::countr_zero(hi) + 64;
   }
 
   uint32_t countLeadingZeroes() const {
     if (hi) {
-      return mozilla::CountLeadingZeroes64(hi);
+      return std::countl_zero(hi);
     }
-    return mozilla::CountLeadingZeroes64(lo) + 64;
+    return std::countl_zero(lo) + 64;
   }
+
+  uint32_t bitWidth() const { return 128 - countLeadingZeroes(); }
 };
 
 class FloatRegisters {
@@ -521,14 +517,12 @@ class FloatRegisters {
   };
 
   static constexpr Encoding encoding(Code c) {
-    // assert() not available in constexpr function.
-    // assert(c < Total);
+    MOZ_ASSERT(c < Total);
     return Encoding(c & 31);
   }
 
   static constexpr Kind kind(Code c) {
-    // assert() not available in constexpr function.
-    // assert(c < Total && ((c >> 5) & 3) < NumTypes);
+    MOZ_ASSERT(c < Total && ((c >> 5) & 3) < NumTypes);
     return Kind((c >> 5) & 3);
   }
 
@@ -567,22 +561,21 @@ struct FloatRegister {
   using SetType = Codes::SetType;
 
   static uint32_t SetSize(SetType x) {
-    static_assert(sizeof(SetType) == 16, "SetType must be 128 bits");
     x |= x >> FloatRegisters::TotalPhys;
     x |= x >> FloatRegisters::TotalPhys;
     x &= FloatRegisters::AllPhysMask;
     MOZ_ASSERT(x.high() == 0);
     MOZ_ASSERT((x.low() >> 32) == 0);
-    return mozilla::CountPopulation32(x.low());
+    return std::popcount(x.low());
   }
 
   static uint32_t FirstBit(SetType x) {
-    static_assert(sizeof(SetType) == 16, "SetType");
+    MOZ_ASSERT(x);
     return x.countTrailingZeroes();
   }
   static uint32_t LastBit(SetType x) {
-    static_assert(sizeof(SetType) == 16, "SetType");
-    return 127 - x.countLeadingZeroes();
+    MOZ_ASSERT(x);
+    return x.bitWidth() - 1;
   }
 
   static constexpr size_t SizeOfSimd128 = 16;
@@ -599,7 +592,7 @@ struct FloatRegister {
  public:
   constexpr FloatRegister(Encoding encoding, Kind kind)
       : encoding_(encoding), kind_(kind), invalid_(false) {
-    // assert(uint32_t(encoding) < Codes::TotalPhys);
+    MOZ_ASSERT(uint32_t(encoding) < Codes::TotalPhys);
   }
 
   constexpr FloatRegister()
@@ -650,7 +643,7 @@ struct FloatRegister {
   }
 
   constexpr Code code() const {
-    // assert(!invalid_);
+    MOZ_ASSERT(!invalid_);
     return Codes::fromParts(encoding_, kind_, invalid_);
   }
 
@@ -664,12 +657,7 @@ struct FloatRegister {
     MOZ_ASSERT(!invalid_);
     return !!((SetType(1) << code()) & FloatRegisters::VolatileMask);
   }
-  constexpr bool operator!=(FloatRegister other) const {
-    return code() != other.code();
-  }
-  constexpr bool operator==(FloatRegister other) const {
-    return code() == other.code();
-  }
+  constexpr bool operator==(const FloatRegister&) const = default;
 
   bool aliases(FloatRegister other) const {
     return other.encoding_ == encoding_;
@@ -746,15 +734,49 @@ FloatRegister::LiveAsIndexableSet<RegTypeName::Any>(SetType set) {
   return set;
 }
 
-// ARM/D32 has double registers that cannot be treated as float32.
-// Luckily, ARMv8 doesn't have the same misfortune.
-inline bool hasUnaliasedDouble() { return false; }
+class ARM64Flags final {
+  // List of enabled CPU features. Initialized once |Init()|.
+  static inline vixl::CPUFeatures features{};
+
+  // List of disabled CPU features. Must be set before calling |Init()|.
+  static inline vixl::CPUFeatures disabledFeatures{};
+
+ public:
+  ARM64Flags() = delete;
+
+  // ARM64Flags::Init is called from the JitContext constructor to read the
+  // hardware flags. This method must only be called exactly once.
+  static void Init();
+
+  static bool IsInitialized() { return features != vixl::CPUFeatures::None(); }
+
+  static vixl::CPUFeatures GetCPUFeatures() {
+    MOZ_ASSERT(IsInitialized());
+    return features;
+  }
+
+  // Disable CPU features for testing. Can be called repeatedly to disable
+  // additional features. Must be called before |Init()|.
+  static void DisableCPUFeatures(vixl::CPUFeatures features) {
+    MOZ_ASSERT(!IsInitialized());
+    disabledFeatures.Combine(features);
+  }
+
+  static uint32_t GetFlags() {
+    MOZ_ASSERT(IsInitialized());
+
+    // TODO: vixl::CPUFeatures supports more than 32 values, so it can't be used
+    // directly for GetFlags.
+    return 0;
+  }
+};
 
 // ARM prior to ARMv8 also has doubles that alias multiple floats.
 // Again, ARMv8 is in the clear.
 inline bool hasMultiAlias() { return false; }
 
-uint32_t GetARM64Flags();
+// Retrieve the ARM64 hardware flags as a bitmask. They must have been set.
+inline uint32_t GetARM64Flags() { return ARM64Flags::GetFlags(); }
 
 bool CanFlushICacheFromBackgroundThreads();
 

@@ -4,41 +4,29 @@
 
 package org.mozilla.fenix.home.setup.store
 
-import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
-import mozilla.components.lib.state.MiddlewareContext
+import kotlinx.coroutines.test.runTest
 import mozilla.components.lib.state.Store
-import mozilla.components.support.test.rule.MainCoroutineRule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Rule
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.mockito.junit.MockitoJUnitRunner
 import org.mozilla.fenix.components.appstate.AppAction
 import org.mozilla.fenix.components.appstate.AppState
 import org.mozilla.fenix.components.appstate.setup.checklist.ChecklistItem
 
-@RunWith(MockitoJUnitRunner::class)
 class SetupChecklistPreferencesMiddlewareTest {
 
-    @get:Rule
-    val mainCoroutineTestRule = MainCoroutineRule()
-
-    private val context: MiddlewareContext<AppState, AppAction> = mockk(relaxed = true)
-
-    // tests for invoke action
     @Test
-    fun `GIVEN init action WHEN invoked the repository is initialised`() {
+    fun `GIVEN init action WHEN invoked the repository is initialised`() = runTest {
         val repository = FakeRepository()
-        val middleware = SetupChecklistPreferencesMiddleware(repository)
+        val middleware = SetupChecklistPreferencesMiddleware(repository, this)
 
         val store: Store<AppState, AppAction> = mockk(relaxed = true)
-        every { context.store } returns store
-        middleware.invoke(context, {}, AppAction.SetupChecklistAction.Init)
+        middleware.invoke(store, {}, AppAction.SetupChecklistAction.Init)
+        testScheduler.advanceUntilIdle()
 
         assertTrue(repository.initInvoked)
     }
@@ -50,7 +38,7 @@ class SetupChecklistPreferencesMiddlewareTest {
             val middleware = SetupChecklistPreferencesMiddleware(repository)
             val task = buildTask(type = it)
             middleware.invoke(
-                context,
+                mockk(),
                 {},
                 AppAction.SetupChecklistAction.ChecklistItemClicked(task),
             )
@@ -59,12 +47,10 @@ class SetupChecklistPreferencesMiddlewareTest {
                 ChecklistItem.Task.Type.SELECT_THEME,
                 ChecklistItem.Task.Type.CHANGE_TOOLBAR_PLACEMENT,
                 ChecklistItem.Task.Type.EXPLORE_EXTENSION,
-                -> assertTrue(repository.setPreferenceInvoked)
+                ChecklistItem.Task.Type.INSTALL_SEARCH_WIDGET -> assertTrue(repository.setPreferenceInvoked)
 
                 ChecklistItem.Task.Type.SET_AS_DEFAULT,
-                ChecklistItem.Task.Type.SIGN_IN,
-                ChecklistItem.Task.Type.INSTALL_SEARCH_WIDGET,
-                -> assertFalse(repository.setPreferenceInvoked)
+                ChecklistItem.Task.Type.SIGN_IN -> assertFalse(repository.setPreferenceInvoked)
             }
         }
     }
@@ -74,7 +60,7 @@ class SetupChecklistPreferencesMiddlewareTest {
         val repository = FakeRepository()
         val middleware = SetupChecklistPreferencesMiddleware(repository)
         middleware.invoke(
-            context,
+            mockk(),
             {},
             AppAction.SetupChecklistAction.ChecklistItemClicked(buildGroup()),
         )
@@ -83,10 +69,11 @@ class SetupChecklistPreferencesMiddlewareTest {
 
     @Test
     fun `GIVEN SetToDefault preference WHEN mapping to store action THEN returns SET_AS_DEFAULT task type`() {
-        val preferenceUpdate = SetupChecklistRepository.SetupChecklistPreferenceUpdate(
-            preference = SetupChecklistPreference.SetToDefault,
-            value = true,
-        )
+        val preferenceUpdate =
+            SetupChecklistRepository.SetupChecklistPreferenceUpdate(
+                preference = SetupChecklistPreference.SetToDefault,
+                value = true,
+            )
         val result = mapRepoUpdateToStoreAction(preferenceUpdate)
 
         assertEquals(
@@ -101,10 +88,11 @@ class SetupChecklistPreferencesMiddlewareTest {
     // tests for mapRepoUpdateToStoreAction
     @Test
     fun `GIVEN SignIn preference WHEN mapping to store action THEN returns SIGN_IN task type`() {
-        val preferenceUpdate = SetupChecklistRepository.SetupChecklistPreferenceUpdate(
-            SetupChecklistPreference.SignIn,
-            true,
-        )
+        val preferenceUpdate =
+            SetupChecklistRepository.SetupChecklistPreferenceUpdate(
+                SetupChecklistPreference.SignIn,
+                true,
+            )
         val result = mapRepoUpdateToStoreAction(preferenceUpdate)
 
         assertEquals(
@@ -118,10 +106,11 @@ class SetupChecklistPreferencesMiddlewareTest {
 
     @Test
     fun `GIVEN ThemeComplete preference WHEN mapping to store action THEN returns SELECT_THEME task type`() {
-        val preferenceUpdate = SetupChecklistRepository.SetupChecklistPreferenceUpdate(
-            SetupChecklistPreference.ThemeComplete,
-            true,
-        )
+        val preferenceUpdate =
+            SetupChecklistRepository.SetupChecklistPreferenceUpdate(
+                SetupChecklistPreference.ThemeComplete,
+                true,
+            )
         val result = mapRepoUpdateToStoreAction(preferenceUpdate)
 
         assertEquals(
@@ -135,10 +124,11 @@ class SetupChecklistPreferencesMiddlewareTest {
 
     @Test
     fun `GIVEN ToolbarComplete preference WHEN mapping to store action THEN returns CHANGE_TOOLBAR_PLACEMENT task type`() {
-        val preferenceUpdate = SetupChecklistRepository.SetupChecklistPreferenceUpdate(
-            SetupChecklistPreference.ToolbarComplete,
-            true,
-        )
+        val preferenceUpdate =
+            SetupChecklistRepository.SetupChecklistPreferenceUpdate(
+                SetupChecklistPreference.ToolbarComplete,
+                true,
+            )
         val result = mapRepoUpdateToStoreAction(preferenceUpdate)
 
         assertEquals(
@@ -152,10 +142,11 @@ class SetupChecklistPreferencesMiddlewareTest {
 
     @Test
     fun `GIVEN ExtensionsComplete preference WHEN mapping to store action THEN returns EXPLORE_EXTENSION task type`() {
-        val preferenceUpdate = SetupChecklistRepository.SetupChecklistPreferenceUpdate(
-            SetupChecklistPreference.ExtensionsComplete,
-            true,
-        )
+        val preferenceUpdate =
+            SetupChecklistRepository.SetupChecklistPreferenceUpdate(
+                SetupChecklistPreference.ExtensionsComplete,
+                true,
+            )
         val result = mapRepoUpdateToStoreAction(preferenceUpdate)
 
         assertEquals(
@@ -169,10 +160,11 @@ class SetupChecklistPreferencesMiddlewareTest {
 
     @Test
     fun `GIVEN InstallSearchWidget preference WHEN mapping to store action THEN returns INSTALL_SEARCH_WIDGET task type`() {
-        val preferenceUpdate = SetupChecklistRepository.SetupChecklistPreferenceUpdate(
-            SetupChecklistPreference.InstallSearchWidget,
-            true,
-        )
+        val preferenceUpdate =
+            SetupChecklistRepository.SetupChecklistPreferenceUpdate(
+                SetupChecklistPreference.InstallSearchWidget,
+                true,
+            )
         val result = mapRepoUpdateToStoreAction(preferenceUpdate)
 
         assertEquals(
@@ -186,10 +178,11 @@ class SetupChecklistPreferencesMiddlewareTest {
 
     @Test
     fun `GIVEN ShowSetupChecklist preference WHEN mapping to store action THEN returns the close action`() {
-        val preferenceUpdate = SetupChecklistRepository.SetupChecklistPreferenceUpdate(
-            SetupChecklistPreference.ShowSetupChecklist,
-            true,
-        )
+        val preferenceUpdate =
+            SetupChecklistRepository.SetupChecklistPreferenceUpdate(
+                SetupChecklistPreference.ShowSetupChecklist,
+                true,
+            )
         val result = mapRepoUpdateToStoreAction(preferenceUpdate)
 
         assertEquals(
@@ -198,18 +191,20 @@ class SetupChecklistPreferencesMiddlewareTest {
         )
     }
 
-    private fun buildGroup() = ChecklistItem.Group(
-        title = 0,
-        tasks = emptyList(),
-        isExpanded = false,
-    )
+    private fun buildGroup() =
+        ChecklistItem.Group(
+            title = 0,
+            tasks = emptyList(),
+            isExpanded = false,
+        )
 
-    private fun buildTask(type: ChecklistItem.Task.Type) = ChecklistItem.Task(
-        type = type,
-        title = 0,
-        icon = 0,
-        isCompleted = false,
-    )
+    private fun buildTask(type: ChecklistItem.Task.Type) =
+        ChecklistItem.Task(
+            type = type,
+            title = 0,
+            icon = 0,
+            isCompleted = false,
+        )
 }
 
 private class FakeRepository : SetupChecklistRepository {
@@ -231,13 +226,14 @@ private class FakeRepository : SetupChecklistRepository {
         get() = preferenceUpdates
 }
 
-private val preferenceUpdates = flowOf(
-    SetupChecklistRepository.SetupChecklistPreferenceUpdate(
-        SetupChecklistPreference.SetToDefault,
-        true,
-    ),
-    SetupChecklistRepository.SetupChecklistPreferenceUpdate(
-        SetupChecklistPreference.ThemeComplete,
-        false,
-    ),
-)
+private val preferenceUpdates =
+    flowOf(
+        SetupChecklistRepository.SetupChecklistPreferenceUpdate(
+            SetupChecklistPreference.SetToDefault,
+            true,
+        ),
+        SetupChecklistRepository.SetupChecklistPreferenceUpdate(
+            SetupChecklistPreference.ThemeComplete,
+            false,
+        ),
+    )

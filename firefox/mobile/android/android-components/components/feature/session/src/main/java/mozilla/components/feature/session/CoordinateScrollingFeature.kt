@@ -10,7 +10,9 @@ import com.google.android.material.appbar.AppBarLayout.LayoutParams.SCROLL_FLAG_
 import com.google.android.material.appbar.AppBarLayout.LayoutParams.SCROLL_FLAG_EXIT_UNTIL_COLLAPSED
 import com.google.android.material.appbar.AppBarLayout.LayoutParams.SCROLL_FLAG_SCROLL
 import com.google.android.material.appbar.AppBarLayout.LayoutParams.SCROLL_FLAG_SNAP
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -22,8 +24,8 @@ import mozilla.components.lib.state.ext.flowScoped
 import mozilla.components.support.base.feature.LifecycleAwareFeature
 
 /**
- * Feature implementation for connecting an [EngineView] with any View that you want to coordinate scrolling
- * behavior with.
+ * Feature implementation for connecting an [EngineView] with any View that you want to coordinate scrolling behavior
+ * with.
  *
  * A use case could be collapsing a toolbar every time that the user scrolls.
  */
@@ -32,19 +34,20 @@ class CoordinateScrollingFeature(
     private val engineView: EngineView,
     private val view: View,
     private val scrollFlags: Int = DEFAULT_SCROLL_FLAGS,
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
 ) : LifecycleAwareFeature {
     private var scope: CoroutineScope? = null
 
-    /**
-     * Start feature: Starts adding scrolling behavior for the indicated view.
-     */
+    /** Start feature: Starts adding scrolling behavior for the indicated view. */
     override fun start() {
-        scope = store.flowScoped { flow ->
-            flow.mapNotNull { state -> state.selectedTab }
-                .map { tab -> tab.content.loading }
-                .distinctUntilChanged()
-                .collect { onLoadingStateChanged() }
-        }
+        scope =
+            store.flowScoped(dispatcher = mainDispatcher) { flow ->
+                flow
+                    .mapNotNull { state -> state.selectedTab }
+                    .map { tab -> tab.content.loading }
+                    .distinctUntilChanged()
+                    .collect { onLoadingStateChanged() }
+            }
     }
 
     override fun stop() {
@@ -64,9 +67,7 @@ class CoordinateScrollingFeature(
     }
 
     companion object {
-        const val DEFAULT_SCROLL_FLAGS = SCROLL_FLAG_SCROLL or
-            SCROLL_FLAG_ENTER_ALWAYS or
-            SCROLL_FLAG_SNAP or
-            SCROLL_FLAG_EXIT_UNTIL_COLLAPSED
+        const val DEFAULT_SCROLL_FLAGS =
+            SCROLL_FLAG_SCROLL or SCROLL_FLAG_ENTER_ALWAYS or SCROLL_FLAG_SNAP or SCROLL_FLAG_EXIT_UNTIL_COLLAPSED
     }
 }

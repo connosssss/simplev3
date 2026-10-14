@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,7 +19,8 @@ class WebIdentityParent final : public PWebIdentityParent {
   virtual void ActorDestroy(ActorDestroyReason aWhy) override;
 
   CanonicalBrowsingContext* MaybeBrowsingContext() {
-    WindowGlobalParent* manager = static_cast<WindowGlobalParent*>(Manager());
+    WindowGlobalParent* manager =
+        mozilla::ipc::ActorCast<WindowGlobalParent>(Manager());
     if (!manager) {
       return nullptr;
     }
@@ -88,10 +87,10 @@ using GetIdentityAssertionPromise =
     MozPromise<std::tuple<IdentityAssertionResponse, IdentityProviderAccount>,
                nsresult, true>;
 using GetTokenPromise =
-    MozPromise<std::tuple<nsCString, nsCString>, nsresult, true>;
-using GetAccountPromise =
-    MozPromise<std::tuple<IdentityProviderAPIConfig, IdentityProviderAccount>,
-               nsresult, true>;
+    MozPromise<std::tuple<nsCString, nsCString, const bool>, nsresult, true>;
+using GetAccountPromise = MozPromise<
+    std::tuple<IdentityProviderAPIConfig, IdentityProviderAccount, const bool>,
+    nsresult, true>;
 using GetMetadataPromise =
     MozPromise<IdentityProviderClientMetadata, nsresult, true>;
 
@@ -217,6 +216,8 @@ RefPtr<GetAccountListPromise> FetchAccountList(
 //    aProvider: the provider to get account lists from
 //    aManifest: the provider's internal manifest
 //    aAccount: the account to request
+//    aIsAutoSelected: whether the account was auto-selected during the user
+//    account selection process
 //  Return value:
 //    promise that resolves to a Tuple of the passed account and the fetched
 //    token. Will reject when there are network or other errors.
@@ -228,7 +229,7 @@ RefPtr<GetTokenPromise> FetchToken(
     nsIPrincipal* aPrincipal, WebIdentityParent* aRelyingParty,
     const IdentityProviderRequestOptions& aProvider,
     const IdentityProviderAPIConfig& aManifest,
-    const IdentityProviderAccount& aAccount);
+    const IdentityProviderAccount& aAccount, const bool aIsAutoSelected);
 
 // Show the user a dialog to select what identity provider they would like
 // to try to log in with.
@@ -296,7 +297,7 @@ RefPtr<MozPromise<bool, nsresult, true>> DisconnectInMainProcess(
 
 RefPtr<GetTokenPromise> AuthorizationPopupForToken(
     nsIURI* aContinueURI, WebIdentityParent* aRelyingParty,
-    const IdentityProviderAccount& aAccount);
+    const IdentityProviderAccount& aAccount, const bool isAutoSelected);
 
 }  // namespace identity
 

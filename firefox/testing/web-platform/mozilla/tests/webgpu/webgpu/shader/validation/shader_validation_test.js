@@ -8,7 +8,9 @@ UniqueFeaturesOrLimitsGPUTest } from
 const kEnables = {
   f16: 'shader-f16',
   subgroups: 'subgroups',
-  clip_distances: 'clip-distances'
+  clip_distances: 'clip-distances',
+  chromium_experimental_primitive_id: 'chromium-experimental-primitive-id',
+  atomic_vec2u_min_max: 'atomic-vec2u-min-max'
 };
 
 /**
@@ -357,6 +359,8 @@ export class UniqueFeaturesAndLimitsShaderValidationTest extends UniqueFeaturesO
 
 
 
+
+
   {
     const phonies = [];
 
@@ -371,9 +375,13 @@ export class UniqueFeaturesAndLimitsShaderValidationTest extends UniqueFeaturesO
     }
 
     const code =
-    args.code +
+    args.code + (
+    args.addWorkgroupSize !== false ?
     `
-@compute @workgroup_size(1)
+@compute @workgroup_size(1)` :
+    `
+@compute`) +
+    `
 fn main() {
   ${phonies.join('\n')}
 }`;

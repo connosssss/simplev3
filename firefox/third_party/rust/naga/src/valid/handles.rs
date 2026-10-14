@@ -1,5 +1,6 @@
 //! Implementation of `Validator::validate_module_handles`.
 
+use alloc::boxed::Box;
 use core::{convert::TryInto, hash::Hash};
 
 use super::{TypeError, ValidationError};
@@ -30,7 +31,9 @@ impl super::Validator {
     /// Errors returned by this method are intentionally sparse, for simplicity of implementation.
     /// It is expected that only buggy frontends or fuzzers should ever emit IR that fails this
     /// validation pass.
-    pub(super) fn validate_module_handles(module: &crate::Module) -> Result<(), ValidationError> {
+    pub(super) fn validate_module_handles(
+        module: &crate::Module,
+    ) -> Result<(), Box<ValidationError>> {
         let &crate::Module {
             ref constants,
             ref overrides,
@@ -160,6 +163,7 @@ impl super::Validator {
                 binding: _,
                 ty,
                 init,
+                memory_decorations: _,
             } = global_variable;
             validate_type(ty)?;
             if let Some(init_expr) = init {
@@ -233,6 +237,21 @@ impl super::Validator {
                     validate_const_expr(size)?;
                 }
             }
+            if let Some(task_payload) = entry_point.task_payload {
+                Self::validate_global_variable_handle(task_payload, global_variables)?;
+            }
+            if let Some(ref mesh_info) = entry_point.mesh_info {
+                Self::validate_global_variable_handle(mesh_info.output_variable, global_variables)?;
+                validate_type(mesh_info.vertex_output_type)?;
+                validate_type(mesh_info.primitive_output_type)?;
+                for ov in mesh_info
+                    .max_vertices_override
+                    .iter()
+                    .chain(mesh_info.max_primitives_override.iter())
+                {
+                    validate_const_expr(*ov)?;
+                }
+            }
         }
 
         for (function_handle, function) in functions.iter() {
@@ -296,14 +315,14 @@ impl super::Validator {
                     _ => {
                         // TODO: internal error ? We should never get here.
                         // If entering there, it's probably that we forgot to adjust a handle in the compact phase.
-                        return Err(ValidationError::Type {
+                        return Err(Box::new(ValidationError::Type {
                             handle: ty,
                             name: struct_type
                                 .name
                                 .as_ref()
                                 .map_or_else(|| "Unknown".to_string(), |name| name.to_string()),
                             source: TypeError::InvalidData(ty),
-                        });
+                        }));
                     }
                 }
                 for (&function, _) in doc_comments_for_functions.iter() {
@@ -379,6 +398,7 @@ impl super::Validator {
             crate::TypeInner::Scalar { .. }
             | crate::TypeInner::Vector { .. }
             | crate::TypeInner::Matrix { .. }
+            | crate::TypeInner::CooperativeMatrix { .. }
             | crate::TypeInner::ValuePointer { .. }
             | crate::TypeInner::Atomic { .. }
             | crate::TypeInner::Image { .. }
@@ -647,6 +667,12 @@ impl super::Validator {
             } => {
                 handle.check_dep(query)?;
             }
+            crate::Expression::CooperativeLoad { ref data, .. } => {
+                handle.check_dep(data.pointer)?.check_dep(data.stride)?;
+            }
+            crate::Expression::CooperativeMultiplyAdd { a, b, c } => {
+                handle.check_dep(a)?.check_dep(b)?.check_dep(c)?;
+            }
         }
         Ok(())
     }
@@ -798,6 +824,7 @@ impl super::Validator {
                     }
                     crate::RayQueryFunction::ConfirmIntersection => {}
                     crate::RayQueryFunction::Terminate => {}
+                    crate::RayQueryFunction::Begin => {}
                 }
                 Ok(())
             }
@@ -835,6 +862,33 @@ impl super::Validator {
                 validate_expr(result)?;
                 Ok(())
             }
+            crate::Statement::CooperativeStore { target, ref data } => {
+                validate_expr(target)?;
+                validate_expr(data.pointer)?;
+                validate_expr(data.stride)?;
+                Ok(())
+            }
+            crate::Statement::RayPipelineFunction(fun) => match fun {
+                crate::RayPipelineFunction::TraceRay {
+                    acceleration_structure,
+                    descriptor,
+                    payload,
+                } => {
+                    validate_expr(acceleration_structure)?;
+                    validate_expr(descriptor)?;
+                    validate_expr(payload)?;
+                    Ok(())
+                }
+            },
+            crate::Statement::DebugPrintf {
+                format: _,
+                ref arguments,
+            } => {
+                for &arg in arguments {
+                    validate_expr(arg)?;
+                }
+                Ok(())
+            }
             crate::Statement::Break
             | crate::Statement::Continue
             | crate::Statement::Kill
@@ -844,21 +898,27 @@ impl super::Validator {
     }
 }
 
-impl From<BadHandle> for ValidationError {
+impl From<BadHandle> for Box<ValidationError> {
     fn from(source: BadHandle) -> Self {
-        Self::InvalidHandle(source.into())
+        Box::new(ValidationError::InvalidHandle(source.into()))
     }
 }
 
-impl From<FwdDepError> for ValidationError {
+impl From<FwdDepError> for Box<ValidationError> {
     fn from(source: FwdDepError) -> Self {
-        Self::InvalidHandle(source.into())
+        Box::new(ValidationError::InvalidHandle(source.into()))
     }
 }
 
-impl From<BadRangeError> for ValidationError {
+impl From<BadRangeError> for Box<ValidationError> {
     fn from(source: BadRangeError) -> Self {
-        Self::InvalidHandle(source.into())
+        Box::new(ValidationError::InvalidHandle(source.into()))
+    }
+}
+
+impl From<InvalidHandleError> for Box<ValidationError> {
+    fn from(source: InvalidHandleError) -> Self {
+        Box::new(ValidationError::InvalidHandle(source))
     }
 }
 

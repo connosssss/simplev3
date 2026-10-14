@@ -6,10 +6,8 @@
 #define frontend_DecoratorEmitter_h
 
 #include "mozilla/Attributes.h"
-#include "mozilla/Maybe.h"
 
 #include "frontend/ParseNode.h"
-
 #include "js/AllocPolicy.h"
 #include "js/Vector.h"
 

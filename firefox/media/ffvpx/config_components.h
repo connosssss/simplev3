@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,6 +12,12 @@
 #undef CONFIG_VP8_VAAPI_HWACCEL
 #undef CONFIG_VP9_VAAPI_HWACCEL
 #undef CONFIG_AV1_VAAPI_HWACCEL
+#endif
+
+#ifdef CONFIG_VULKAN
+#undef CONFIG_VULKAN
+#undef CONFIG_VP9_VULKAN_HWACCEL
+#undef CONFIG_AV1_VULKAN_HWACCEL
 #endif
 
 #if defined(MOZ_FFVPX_AUDIOONLY)

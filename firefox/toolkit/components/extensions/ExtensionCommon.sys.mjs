@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -51,7 +49,6 @@ var {
   DefaultMap,
   DefaultWeakMap,
   ExtensionError,
-  filterStack,
   getInnerWindowID,
   getUniqueId,
 } = ExtensionUtils;
@@ -75,9 +72,7 @@ function runSafeSyncWithoutClone(f, ...args) {
     dump(
       `Extension error: ${e} ${e?.fileName} ${
         e?.lineNumber
-      }\n[[Exception stack\n${
-        e?.stack ? filterStack(e) : undefined
-      }Current stack\n${filterStack(Error())}]]\n`
+      }\n[[Exception stack\n${e?.stack}Current stack\n${Error().stack}]]\n`
     );
     Cu.reportError(e);
   }
@@ -659,9 +654,7 @@ export class BaseContext {
       } catch (e) {
         Cu.reportError(e);
         dump(
-          `runSafe failure: cloning into ${
-            this.cloneScope
-          }: ${e}\n\n${filterStack(Error())}`
+          `runSafe failure: cloning into ${this.cloneScope}: ${e}\n\n${Error().stack}`
         );
       }
 
@@ -708,7 +701,7 @@ export class BaseContext {
     fileName,
     lineNumber,
     columnNumber,
-    flags = Ci.nsIScriptError.errorFlag,
+    flags = /** @type {number} */ (Ci.nsIScriptError.errorFlag),
     innerWindowID = this.innerWindowID,
   }) {
     if (innerWindowID) {
@@ -830,7 +823,7 @@ export class BaseContext {
    *        The optional caller frame which triggered this callback, to be used
    *        in error reporting.
    * @param {Function} callback The callback to call.
-   * @returns {*} The return value of callback.
+   * @returns {any} The return value of callback.
    */
   withLastError(error, caller, callback) {
     this.lastError = this.normalizeError(error);
@@ -1005,7 +998,7 @@ export class SchemaAPIInterface {
    *
    * @abstract
    * @param {Array} _args The parameters for the function.
-   * @returns {*} The return value of the invoked function.
+   * @returns {any} The return value of the invoked function.
    */
   callFunction(_args) {
     throw new Error("Not implemented");
@@ -1041,7 +1034,7 @@ export class SchemaAPIInterface {
    * Retrieves the value of this as a property.
    *
    * @abstract
-   * @returns {*} The value of the property.
+   * @returns {any} The value of the property.
    */
   getProperty() {
     throw new Error("Not implemented");
@@ -1318,7 +1311,7 @@ class CanOfAPIs {
    *
    * @param {string} path
    *        The "."-separated path to find.
-   * @returns {*}
+   * @returns {any}
    */
   findAPIPath(path) {
     if (this.apiPaths.has(path)) {
@@ -1445,7 +1438,7 @@ class SchemaAPIManager extends EventEmitter {
    *     "addon" - An addon process.
    *     "content" - A content process.
    *     "devtools" - A devtools process.
-   * @param {import("Schemas.sys.mjs").SchemaInject} [schema]
+   * @param {import("./Schemas.sys.mjs").SchemaInject} [schema]
    */
   constructor(processType, schema) {
     super();
@@ -1588,7 +1581,7 @@ class SchemaAPIManager extends EventEmitter {
    * @param {string} entry
    *        The name of the top-level manifest entry.
    *
-   * @returns {*}
+   * @returns {any}
    */
   emitManifestEntry(extension, entry) {
     let apiName = this.manifestKeys.get(entry);
@@ -1706,7 +1699,11 @@ class SchemaAPIManager extends EventEmitter {
 
     this.initGlobal();
 
-    Services.scriptloader.loadSubScript(module.url, this.global);
+    Services.scriptloader.loadSubScriptWithOptions(module.url, {
+      target: this.global,
+      // Usually chrome: URLs, except with experiment_apis.
+      allowUnsafeURL: true,
+    });
 
     module.loaded = true;
 
@@ -1834,6 +1831,7 @@ class SchemaAPIManager extends EventEmitter {
     );
 
     Object.assign(global, {
+      global, // This must be first, see bug 1977694.
       AppConstants,
       Cc,
       ChromeWorker,
@@ -1859,7 +1857,6 @@ class SchemaAPIManager extends EventEmitter {
       WebExtensionPolicy,
       XPCOMUtils,
       extensions: this,
-      global,
     });
 
     ChromeUtils.defineLazyGetter(global, "console", getConsole);
@@ -2209,11 +2206,7 @@ LocaleData.prototype = {
   },
 
   get acceptLanguages() {
-    let result = Services.prefs.getComplexValue(
-      "intl.accept_languages",
-      Ci.nsIPrefLocalizedString
-    ).data;
-    return result.split(/\s*,\s*/g);
+    return Services.locale.acceptLanguages.split(/\s*,\s*/g);
   },
 
   get uiLocale() {
@@ -2253,7 +2246,7 @@ LocaleData.prototype = {
  * content process).
  */
 class EventManager {
-  /*
+  /**
    * A persistent event must provide module and name.  Additionally the
    * module must implement primeListeners in the ExtensionAPI class.
    *
@@ -2270,20 +2263,23 @@ class EventManager {
    *        Parameters that control this EventManager.
    * @param {BaseContext} params.context
    *        An object representing the extension instance using this event.
-   * @param {string} params.module
+   * @param {string} [params.module]
    *        The API module name, required for persistent events.
-   * @param {string} params.event
+   * @param {string} [params.event]
    *        The API event name, required for persistent events.
-   * @param {ExtensionAPI} params.extensionApi
+   * @param {ExtensionAPI} [params.extensionApi]
    *        The API intance.  If the API uses the ExtensionAPIPersistent class, some simplification is
    *        possible by passing the api (self or this) and the internal register function will be used.
    * @param {string} [params.name]
    *        A name used only for debugging.  If not provided, name is built from module and event.
-   * @param {functon} params.register
+   * @param {Function} params.register
    *        A function called whenever a new listener is added.
    * @param {boolean} [params.inputHandling=false]
    *        If true, the "handling user input" flag is set while handlers
    *        for this event are executing.
+   * @param {boolean} [params.resetIdleOnEvent=true]
+   *        If false, firing the event won't reset the event page's idle timer.
+   *        Ignored for non background contexts (except bug 1905504).
    */
   constructor(params) {
     let {
@@ -2308,7 +2304,7 @@ class EventManager {
       this.context.envType === "addon_parent" &&
       this.context.isBackgroundContext;
 
-    // TODO(Bug 1844041): ideally we should restrict resetIdleOnEvent to
+    // TODO(Bug 1905504): ideally we should restrict resetIdleOnEvent to
     // EventManager instances that belongs to the event page, but along
     // with that we should consider if calling sendMessage from an event
     // page should also reset idle timer, and so in the shorter term
@@ -2371,7 +2367,7 @@ class EventManager {
     this.remove = new Map();
   }
 
-  /*
+  /**
    * Information about listeners to persistent events is associated with
    * the extension to which they belong.  Any extension thas has such
    * listeners has a property called `persistentListeners` that is a
@@ -2852,6 +2848,7 @@ class EventManager {
     if (this.canPersistEvents) {
       // Once a background is started, listenerPromises is set to null. At
       // that point, we stop recording startup data.
+      // @ts-ignore this.context is a ProxyContextParent when canPersistEvents is true
       recordStartupData = !!this.context.listenerPromises;
 
       let key = uneval(args);
@@ -3083,6 +3080,38 @@ function updateAllowedOrigins(policy, origins, isAdd) {
   policy.allowedOrigins = new MatchPatternSet(Array.from(patternMap.values()));
 }
 
+var GuardSets = {
+  _inits: null,
+  _defaults: [],
+
+  init(inits) {
+    this._inits = inits ?? Services.cpmm.sharedData.get("extensions/guards");
+    let def = this._inits?.get("*");
+    this._defaults = def ? [new ExtensionGuardSet(def)] : [];
+  },
+
+  /**
+   * Update enterprise guards cache and apply to all active extension.
+   */
+  updateAll(inits) {
+    this.init(inits);
+    WebExtensionPolicy.getActiveExtensions().forEach(p => this.updateFor(p));
+  },
+
+  /**
+   * Apply the current enterprise guards to a single policy.
+   *
+   * @param {WebExtensionPolicy} policy
+   */
+  updateFor(policy) {
+    if (this._inits === null) {
+      this.init();
+    }
+    let init = this._inits?.get(policy.id);
+    policy.guardSets = init ? [new ExtensionGuardSet(init)] : this._defaults;
+  },
+};
+
 export var ExtensionCommon = {
   BaseContext,
   CanOfAPIs,
@@ -3090,6 +3119,7 @@ export var ExtensionCommon = {
   ExtensionAPI,
   ExtensionAPIPersistent,
   EventEmitter,
+  GuardSets,
   LocalAPIImplementation,
   LocaleData,
   NoCloneSpreadArgs,

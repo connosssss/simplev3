@@ -13,9 +13,9 @@ import org.junit.Test
 import org.mozilla.experiments.nimbus.NimbusInterface
 import org.mozilla.experiments.nimbus.internal.NimbusException
 import org.mozilla.fenix.ext.components
+import org.mozilla.fenix.helpers.FenixTestRule
 import org.mozilla.fenix.helpers.HomeActivityIntentTestRule
 import org.mozilla.fenix.helpers.TestHelper
-import org.mozilla.fenix.helpers.TestSetup
 import org.mozilla.fenix.messaging.CustomAttributeProvider
 
 /**
@@ -25,16 +25,16 @@ import org.mozilla.fenix.messaging.CustomAttributeProvider
  * - as much of the custom targeting and trigger attributes are recorded as possible.
  * - we can run the Rust JEXL evaluator.
  */
-class NimbusMessagingTriggerTest : TestSetup() {
+class NimbusMessagingTriggerTest {
     private lateinit var feature: Messaging
     private lateinit var nimbus: NimbusInterface
 
-    @get:Rule
-    val activityTestRule = HomeActivityIntentTestRule.withDefaultSettingsOverrides(skipOnboarding = true)
+    @get:Rule(order = 0) val fenixTestRule: FenixTestRule = FenixTestRule()
+
+    @get:Rule val activityTestRule = HomeActivityIntentTestRule.withDefaultSettingsOverrides()
 
     @Before
-    override fun setUp() {
-        super.setUp()
+    fun setUp() {
         nimbus = TestHelper.appContext.components.nimbus.sdk
         feature = FxNimbusMessaging.features.messaging.value()
     }
@@ -62,12 +62,13 @@ class NimbusMessagingTriggerTest : TestSetup() {
     fun testBadTriggersAreDetected() {
         val jexl = nimbus.createMessageHelper()
 
-        val triggers = mapOf(
-            "Syntax error" to "|'syntax error'|",
-            "Invalid identifier" to "invalid_identifier",
-            "Invalid transform" to "'string'|invalid_transform",
-            "Invalid interval" to "'string'|eventLastSeen('Invalid')",
-        )
+        val triggers =
+            mapOf(
+                "Syntax error" to "|'syntax error'|",
+                "Invalid identifier" to "invalid_identifier",
+                "Invalid transform" to "'string'|invalid_transform",
+                "Invalid interval" to "'string'|eventLastSeen('Invalid')",
+            )
 
         triggers.forEach { (key, expr) ->
             try {

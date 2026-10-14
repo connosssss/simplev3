@@ -4,6 +4,7 @@
 
 package org.mozilla.fenix.ui.robots
 
+import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.matcher.ViewMatchers.withContentDescription
 import androidx.test.uiautomator.UiSelector
@@ -14,18 +15,19 @@ import org.mozilla.fenix.helpers.MatcherHelper.itemWithResId
 import org.mozilla.fenix.helpers.TestHelper.packageName
 import org.mozilla.fenix.helpers.click
 
-/**
- * Implementation of Robot Pattern for the experiments sub menu.
- */
+/** Implementation of Robot Pattern for the experiments sub menu. */
 class SettingsSubMenuExperimentsRobot {
 
     class Transition {
 
-        fun goBackToHomeScreen(interact: HomeScreenRobot.() -> Unit): HomeScreenRobot.Transition {
+        fun goBackToHomeScreen(
+            composeTestRule: ComposeTestRule,
+            interact: HomeScreenRobot.() -> Unit,
+        ): HomeScreenRobot.Transition {
             goBackButton().click()
 
-            HomeScreenRobot().interact()
-            return HomeScreenRobot.Transition()
+            HomeScreenRobot(composeTestRule).interact()
+            return HomeScreenRobot.Transition(composeTestRule)
         }
 
         fun goBack(interact: SettingsRobot.() -> Unit): SettingsRobot.Transition {
@@ -67,5 +69,7 @@ class SettingsSubMenuExperimentsRobot {
         assertUIObjectExists(checkIcon(), exists = false)
     }
 }
+
 private fun goBackButton() = onView(withContentDescription(R.string.action_bar_up_description))
+
 private fun checkIcon() = itemWithResId("$packageName:id/selected_icon")

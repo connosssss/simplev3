@@ -2,14 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// This file is loaded into the browser window scope.
-/* eslint-env mozilla/browser-window */
-
 ChromeUtils.defineESModuleGetters(this, {
   BrowserUsageTelemetry: "resource:///modules/BrowserUsageTelemetry.sys.mjs",
   GroupsPanel: "moz-src:///browser/components/tabbrowser/GroupsList.sys.mjs",
   NimbusFeatures: "resource://nimbus/ExperimentAPI.sys.mjs",
   TabsPanel: "moz-src:///browser/components/tabbrowser/TabsList.sys.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
 });
 
 var gTabsPanel = {
@@ -59,7 +57,7 @@ var gTabsPanel = {
     this.hiddenAudioTabsPopup = new TabsPanel({
       view: this.allTabsView,
       containerNode: this.hiddenAudioTabs,
-      filterFn: tab => tab.soundPlaying,
+      filterFn: tab => tab.soundPlaying || tab.muted,
       onlyHiddenTabs: true,
     });
     this.allTabsPanel = new TabsPanel({
@@ -89,24 +87,38 @@ var gTabsPanel = {
         !containersEnabled;
 
       const hasHiddenTabs = this.hasHiddenTabsExcludingFxView();
-      document.getElementById("allTabsMenu-hiddenTabsButton").hidden =
-        !hasHiddenTabs;
-      document.getElementById("allTabsMenu-hiddenTabsSeparator").hidden =
-        !hasHiddenTabs;
-
-      let closeDuplicateEnabled = Services.prefs.getBoolPref(
-        "browser.tabs.context.close-duplicate.enabled"
+      const hiddenTabsButton = document.getElementById(
+        "allTabsMenu-hiddenTabsButton"
       );
+      const hiddenTabsSeparator = document.getElementById(
+        "allTabsMenu-hiddenTabsSeparator"
+      );
+      hiddenTabsButton.hidden = !hasHiddenTabs;
+
+      // Hidden tabs normally sit at the bottom of the list, but are bumped to
+      // the top if any of them are playing audio.
+      const hasHiddenAudioTabs = this.hiddenAudioTabs.hasChildNodes();
+      this.hiddenAudioTabs.hidden = !hasHiddenAudioTabs;
+      hiddenTabsSeparator.hidden = !hasHiddenAudioTabs;
+      if (hasHiddenAudioTabs) {
+        this.allTabsViewTabs.prepend(
+          hiddenTabsButton,
+          this.hiddenAudioTabs,
+          hiddenTabsSeparator
+        );
+      } else {
+        this.allTabsViewTabs.append(
+          hiddenTabsButton,
+          this.hiddenAudioTabs,
+          hiddenTabsSeparator
+        );
+      }
+
       let closeDuplicateTabsItem = document.getElementById(
         "allTabsMenu-closeDuplicateTabs"
       );
-      closeDuplicateTabsItem.hidden = !closeDuplicateEnabled;
-      closeDuplicateTabsItem.disabled =
-        !closeDuplicateEnabled || !gBrowser.getAllDuplicateTabsToClose().length;
-
-      let syncedTabs = document.getElementById("allTabsMenu-syncedTabs");
-      syncedTabs.hidden =
-        !PlacesUIUtils.shouldShowTabsFromOtherComputersMenuitem();
+      closeDuplicateTabsItem.hidden =
+        !gBrowser.getAllDuplicateTabsToClose().length;
     });
 
     this.allTabsView.addEventListener("ViewShown", () =>
@@ -117,12 +129,16 @@ var gTabsPanel = {
 
     this.allTabsView.addEventListener("command", event => {
       let { target } = event;
-      let { PanelUI } = target.ownerGlobal;
+      let { PanelUI } = target.documentGlobal;
       switch (target.id) {
         case "allTabsMenu-searchTabs":
+          Glean.browserUiInteraction.listAllTabsAction.search_tabs.add(1);
           this.searchTabs();
           break;
         case "allTabsMenu-closeDuplicateTabs":
+          Glean.browserUiInteraction.listAllTabsAction.close_all_duplicates.add(
+            1
+          );
           gBrowser.removeAllDuplicateTabs();
           break;
         case "allTabsMenu-containerTabsButton":
@@ -131,8 +147,8 @@ var gTabsPanel = {
         case "allTabsMenu-hiddenTabsButton":
           PanelUI.showSubView(this.kElements.hiddenTabsView, target);
           break;
-        case "allTabsMenu-syncedTabs":
-          SidebarController.show("viewTabsSidebar");
+        case "allTabsMenu-viewAllTabs":
+          FirefoxViewHandler.openTab("opentabs");
           break;
         case "allTabsMenu-groupsViewShowMore":
           PanelUI.showSubView(this.kElements.groupsSubView, target);
@@ -162,6 +178,7 @@ var gTabsPanel = {
         menuitem.classList.add("identity-color-" + identity.color);
 
         menuitem.setAttribute("command", "Browser:NewUserContextTab");
+        menuitem.setAttribute("data-container-entrypoint", "all_tabs_menu");
 
         frag.appendChild(menuitem);
         elements.push(menuitem);
@@ -245,7 +262,7 @@ var gTabsPanel = {
   },
 
   searchTabs() {
-    gURLBar.search(UrlbarTokenizer.RESTRICT.OPENPAGE, {
+    gURLBar.search(UrlbarShared.RESTRICT_TOKENS.OPENPAGE, {
       searchModeEntry: "tabmenu",
     });
   },

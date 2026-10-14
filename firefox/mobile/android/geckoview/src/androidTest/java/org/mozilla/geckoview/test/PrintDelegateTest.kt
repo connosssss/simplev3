@@ -1,6 +1,5 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 4; indent-tabs-mode: nil; -*-
- * Any copyright is dedicated to the Public Domain.
-   http://creativecommons.org/publicdomain/zero/1.0/ */
+/* Any copyright is dedicated to the Public Domain.
+http://creativecommons.org/publicdomain/zero/1.0/ */
 
 package org.mozilla.geckoview.test
 
@@ -18,6 +17,7 @@ import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlin.math.roundToInt
 import org.hamcrest.CoreMatchers.containsString
 import org.junit.After
 import org.junit.Assert.assertTrue
@@ -36,7 +36,6 @@ import org.mozilla.geckoview.GeckoView.ActivityContextDelegate
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.AssertCalled
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.NullDelegate
-import kotlin.math.roundToInt
 
 @RunWith(AndroidJUnit4::class)
 @LargeTest
@@ -49,8 +48,7 @@ class PrintDelegateTest : BaseSessionTest() {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val uiAutomation = instrumentation.getUiAutomation(FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
 
-    @get:Rule
-    override val rules: RuleChain = RuleChain.outerRule(activityRule).around(sessionRule)
+    @get:Rule override val rules: RuleChain = RuleChain.outerRule(activityRule).around(sessionRule)
 
     @Before
     fun setup() {
@@ -80,12 +78,14 @@ class PrintDelegateTest : BaseSessionTest() {
     fun printDelegateTest() {
         activityRule.scenario.onActivity {
             var delegateCalled = 0
-            sessionRule.delegateUntilTestEnd(object : PrintDelegate {
-                @AssertCalled(count = 1)
-                override fun onPrint(session: GeckoSession) {
-                    delegateCalled++
+            sessionRule.delegateUntilTestEnd(
+                object : PrintDelegate {
+                    @AssertCalled(count = 1)
+                    override fun onPrint(session: GeckoSession) {
+                        delegateCalled++
+                    }
                 }
-            })
+            )
             mainSession.loadTestPath(COLOR_ORANGE_BACKGROUND_HTML_PATH)
             mainSession.waitForPageStop()
             mainSession.printPageContent()
@@ -109,16 +109,18 @@ class PrintDelegateTest : BaseSessionTest() {
         val pixelResult = GeckoResult<Int>()
         // Listening for Android Print Activity
         uiAutomation.setOnAccessibilityEventListener { event ->
-            if (event.packageName == "com.android.printspooler" &&
-                event.eventType == TYPE_VIEW_SCROLLED
-            ) {
+            if (event.packageName == "com.android.printspooler" && event.eventType == TYPE_VIEW_SCROLLED) {
                 uiAutomation.setOnAccessibilityEventListener {}
                 // Delaying the screenshot to give time for preview to load
-                Handler(Looper.getMainLooper()).postDelayed({
-                    val bitmap = uiAutomation.takeScreenshot()
-                    val scaled = bitmap.scale(scaledWidth, scaledHeight, filter = false)
-                    pixelResult.complete(scaled[scaledWidth / 2, scaledHeight / 2])
-                }, 1500)
+                Handler(Looper.getMainLooper())
+                    .postDelayed(
+                        {
+                            val bitmap = uiAutomation.takeScreenshot()
+                            val scaled = bitmap.scale(scaledWidth, scaledHeight, filter = false)
+                            pixelResult.complete(scaled[scaledWidth / 2, scaledHeight / 2])
+                        },
+                        1500,
+                    )
             }
         }
         return pixelResult
@@ -133,9 +135,9 @@ class PrintDelegateTest : BaseSessionTest() {
             mainSession.waitForPageStop()
             // Setting to the default delegate (test rules changed it)
             mainSession.printDelegate = activity.view.printDelegate
+            val centerPixel = printCenterPixelColor()
             mainSession.printPageContent()
             val orange = rgb(255, 113, 57)
-            val centerPixel = printCenterPixelColor()
             assertTrue(
                 "Android print opened and rendered.",
                 sessionRule.waitForResult(centerPixel) == orange,
@@ -150,9 +152,9 @@ class PrintDelegateTest : BaseSessionTest() {
             mainSession.loadTestPath(FT_FONT_HTML_PATH)
             mainSession.waitForPageStop()
             mainSession.printDelegate = activity.view.printDelegate
+            val centerPixel = printCenterPixelColor()
             mainSession.printPageContent()
             val orange = rgb(255, 113, 57)
-            val centerPixel = printCenterPixelColor()
             assertTrue(
                 "Android print opened and rendered.",
                 sessionRule.waitForResult(centerPixel) == orange,
@@ -169,9 +171,9 @@ class PrintDelegateTest : BaseSessionTest() {
             mainSession.waitForPageStop()
             // Setting to the default delegate (test rules changed it)
             mainSession.printDelegate = activity.view.printDelegate
+            val centerPixel = printCenterPixelColor()
             val result = mainSession.didPrintPageContent()
             val orange = rgb(255, 113, 57)
-            val centerPixel = printCenterPixelColor()
             assertTrue(
                 "Android print opened and rendered.",
                 sessionRule.waitForResult(centerPixel) == orange,
@@ -191,14 +193,21 @@ class PrintDelegateTest : BaseSessionTest() {
             mainSession.loadTestPath(PRINT_CONTENT_CHANGE)
             mainSession.waitForPageStop()
             mainSession.printDelegate = null
-            val result = mainSession.didPrintPageContent().accept {
-                assertTrue("Should not be able to print.", false)
-            }.exceptionally(
-                GeckoResult.OnExceptionListener<Throwable> { error: Throwable ->
-                    assertTrue("Should receive a missing print delegate exception.", (error as GeckoPrintException).code == GeckoPrintException.ERROR_NO_PRINT_DELEGATE)
-                    fromException(error)
-                },
-            )
+            val result =
+                mainSession
+                    .didPrintPageContent()
+                    .accept {
+                        assertTrue("Should not be able to print.", false)
+                    }
+                    .exceptionally(
+                        GeckoResult.OnExceptionListener<Throwable> { error: Throwable ->
+                            assertTrue(
+                                "Should receive a missing print delegate exception.",
+                                (error as GeckoPrintException).code == GeckoPrintException.ERROR_NO_PRINT_DELEGATE,
+                            )
+                            fromException(error)
+                        }
+                    )
             try {
                 sessionRule.waitForResult(result)
             } catch (e: Exception) {
@@ -216,8 +225,8 @@ class PrintDelegateTest : BaseSessionTest() {
             mainSession.waitForPageStop()
             // Setting to the default delegate (test rules changed it)
             mainSession.printDelegate = activity.view.printDelegate
-            mainSession.evaluateJS("window.print();")
             val centerPixel = printCenterPixelColor()
+            mainSession.evaluateJS("window.print();")
             val orange = rgb(255, 113, 57)
             assertTrue(
                 "Android print opened and rendered.",
@@ -235,8 +244,8 @@ class PrintDelegateTest : BaseSessionTest() {
             mainSession.waitForPageStop()
             // Setting to the default delegate (test rules changed it)
             mainSession.printDelegate = activity.view.printDelegate
-            mainSession.evaluateJS("window.print()")
             val centerPixel = printCenterPixelColor()
+            mainSession.evaluateJS("window.print()")
             val orange = rgb(255, 113, 57)
             assertTrue(
                 "Android print opened and rendered.",
@@ -267,8 +276,8 @@ class PrintDelegateTest : BaseSessionTest() {
             mainSession.waitForPageStop()
             // Setting to the default delegate (test rules changed it)
             mainSession.printDelegate = activity.view.printDelegate
-            mainSession.evaluateJS("document.getElementById('print-button').click();")
             val centerPixel = printCenterPixelColor()
+            mainSession.evaluateJS("document.getElementById('print-button').click();")
             val orange = rgb(255, 113, 57)
             assertTrue(
                 "Android print opened and rendered static page.",
@@ -288,11 +297,16 @@ class PrintDelegateTest : BaseSessionTest() {
             // Setting to the default delegate (test rules changed it)
             mainSession.printDelegate = activity.view.printDelegate
             // iframe window.print button
-            mainSession.evaluateJS("document.getElementById('iframe').contentDocument.getElementById('print-button').click();")
             val centerPixelIframe = printCenterPixelColor()
+            mainSession.evaluateJS(
+                "document.getElementById('iframe').contentDocument.getElementById('print-button').click();"
+            )
             val orange = rgb(255, 113, 57)
             sessionRule.waitForResult(centerPixelIframe).let { it ->
-                assertTrue("The iframe should not print green. (Printed containing page instead of iframe.)", it != Color.GREEN)
+                assertTrue(
+                    "The iframe should not print green. (Printed containing page instead of iframe.)",
+                    it != Color.GREEN,
+                )
                 assertTrue("Printed the iframe correctly.", it == orange)
             }
         }
@@ -309,9 +323,12 @@ class PrintDelegateTest : BaseSessionTest() {
             // Setting to the default delegate (test rules changed it)
             mainSession.printDelegate = activity.view.printDelegate
             // Main page window.print button
-            mainSession.evaluateJS("document.getElementById('print-button-page').click();")
             val centerPixelContent = printCenterPixelColor()
-            assertTrue("Printed the main content correctly.", sessionRule.waitForResult(centerPixelContent) == Color.GREEN)
+            mainSession.evaluateJS("document.getElementById('print-button-page').click();")
+            assertTrue(
+                "Printed the main content correctly.",
+                sessionRule.waitForResult(centerPixelContent) == Color.GREEN,
+            )
         }
     }
 
@@ -324,8 +341,8 @@ class PrintDelegateTest : BaseSessionTest() {
             mainSession.waitForPageStop()
             // Setting to the default delegate (test rules changed it)
             mainSession.printDelegate = activity.view.printDelegate
-            mainSession.printPageContent()
             val centerPixel = printCenterPixelColor()
+            mainSession.printPageContent()
             val orange = rgb(255, 113, 57)
             assertTrue(
                 "Android print opened and rendered.",
@@ -344,8 +361,8 @@ class PrintDelegateTest : BaseSessionTest() {
             // Setting to the default delegate (test rules changed it)
             mainSession.printDelegate = activity.view.printDelegate
             mainSession.setFocused(false)
-            mainSession.printPageContent()
             val centerPixel = printCenterPixelColor()
+            mainSession.printPageContent()
             val orange = rgb(255, 113, 57)
             assertTrue(
                 "Android print opened and rendered.",

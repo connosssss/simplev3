@@ -45,21 +45,14 @@ function waitForDocLoadComplete(aBrowser = gBrowser) {
 
 function setupMockAlertsService(expectedObj) {
   const alertsService = {
-    showAlertNotification: (
-      image,
-      title,
-      body,
-      clickable,
-      cookie,
-      clickCallback
-    ) => {
+    showAlert: (alert, clickCallback) => {
       // We need to invoke the event handler ourselves.
       clickCallback(null, "alertshow", null);
 
       // check the expectations, if passed in
       if (expectedObj) {
-        expectedObj.title && Assert.equal(title, expectedObj.title);
-        expectedObj.body && Assert.equal(body, expectedObj.body);
+        expectedObj.title && Assert.equal(alert.title, expectedObj.title);
+        expectedObj.body && Assert.equal(alert.text, expectedObj.body);
       }
 
       // We are invoking the event handler ourselves directly.
@@ -68,7 +61,7 @@ function setupMockAlertsService(expectedObj) {
     },
   };
   const { AccountsGlue } = ChromeUtils.importESModule(
-    "resource:///modules/AccountsGlue.sys.mjs"
+    "moz-src:///browser/components/AccountsGlue.sys.mjs"
   );
   const wrappedService = { wrappedJSObject: alertsService };
   AccountsGlue.observe(

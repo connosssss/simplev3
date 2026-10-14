@@ -1,54 +1,49 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsGlobalWindowOuter_h___
-#define nsGlobalWindowOuter_h___
+#ifndef nsGlobalWindowOuter_h_
+#define nsGlobalWindowOuter_h_
 
+#include "nsHashKeys.h"
+#include "nsInterfaceHashtable.h"
 #include "nsNodeInfoManager.h"
 #include "nsPIDOMWindow.h"
-
-#include "nsTHashtable.h"
-#include "nsHashKeys.h"
 #include "nsRefPtrHashtable.h"
-#include "nsInterfaceHashtable.h"
+#include "nsTHashtable.h"
 
 // Local Includes
 // Helper Classes
 #include "nsCOMPtr.h"
-#include "nsWeakReference.h"
-#include "nsTHashMap.h"
 #include "nsCycleCollectionParticipant.h"
+#include "nsTHashMap.h"
+#include "nsWeakReference.h"
 
 // Interfaces Needed
-#include "nsIBrowserDOMWindow.h"
-#include "nsIInterfaceRequestor.h"
-#include "nsIScriptGlobalObject.h"
-#include "nsIScriptObjectPrincipal.h"
+#include "Units.h"
+#include "X11UndefineNone.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/EventListenerManager.h"
-#include "nsIPrincipal.h"
-#include "nsSize.h"
 #include "mozilla/FlushType.h"
-#include "prclist.h"
 #include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/ChromeMessageBroadcaster.h"
+#include "mozilla/dom/EventTarget.h"
+#include "mozilla/dom/ImageBitmapSource.h"
 #include "mozilla/dom/PopupBlocker.h"
 #include "mozilla/dom/StorageEvent.h"
 #include "mozilla/dom/StorageEventBinding.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/LinkedList.h"
-#include "nsWrapperCacheInlines.h"
-#include "mozilla/dom/EventTarget.h"
 #include "mozilla/dom/WindowBinding.h"
-#include "Units.h"
-#include "nsComponentManagerUtils.h"
 #include "nsCheapSets.h"
-#include "mozilla/dom/ImageBitmapSource.h"
-#include "mozilla/UniquePtr.h"
-#include "mozilla/dom/BrowsingContext.h"
-#include "X11UndefineNone.h"
+#include "nsComponentManagerUtils.h"
+#include "nsIBrowserDOMWindow.h"
+#include "nsIInterfaceRequestor.h"
+#include "nsIPrincipal.h"
+#include "nsIScriptGlobalObject.h"
+#include "nsIScriptObjectPrincipal.h"
+#include "nsSize.h"
+#include "nsWrapperCacheInlines.h"
+#include "prclist.h"
 
 class nsDocShell;
 class nsIArray;
@@ -252,20 +247,16 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   mozilla::dom::ChromeMessageBroadcaster* GetGroupMessageManager(
       const nsAString& aGroup);
 
+  MOZ_CAN_RUN_SCRIPT
   nsresult OpenJS(const nsACString& aUrl, const nsAString& aName,
                   const nsAString& aOptions,
                   mozilla::dom::BrowsingContext** _retval);
 
-  virtual mozilla::EventListenerManager* GetExistingListenerManager()
-      const override;
-
-  virtual mozilla::EventListenerManager* GetOrCreateListenerManager() override;
-
+  mozilla::EventListenerManager* GetExistingListenerManager() const override;
+  mozilla::EventListenerManager* GetOrCreateListenerManager() override;
   bool ComputeDefaultWantsUntrusted(mozilla::ErrorResult& aRv) final;
 
-  virtual nsPIDOMWindowOuter* GetOwnerGlobalForBindingsInternal() override;
-
-  virtual nsIGlobalObject* GetOwnerGlobal() const override;
+  nsIGlobalObject* GetRelevantGlobal() const override;
 
   EventTarget* GetTargetForEventTargetChain() override;
 
@@ -287,19 +278,14 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
       mozilla::dom::EventTarget* aChromeEventHandler) override;
 
   // Outer windows only.
-  virtual void SetInitialPrincipal(
-      nsIPrincipal* aNewWindowPrincipal, nsIContentSecurityPolicy* aCSP,
-      const mozilla::Maybe<nsILoadInfo::CrossOriginEmbedderPolicy>& aCoep)
-      override;
-
-  virtual already_AddRefed<nsISupports> SaveWindowState() override;
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual nsresult RestoreWindowState(
-      nsISupports* aState) override;
+  MOZ_CAN_RUN_SCRIPT virtual void SetInitialPrincipal(
+      nsIPrincipal* aNewWindowPrincipal) override;
 
   virtual bool IsSuspended() const override;
   virtual bool IsFrozen() const override;
 
-  virtual nsresult FireDelayedDOMEvents(bool aIncludeSubWindows) override;
+  MOZ_CAN_RUN_SCRIPT virtual nsresult FireDelayedDOMEvents(
+      bool aIncludeSubWindows) override;
 
   // Outer windows only.
   bool WouldReuseInnerWindow(Document* aNewDocument);
@@ -309,7 +295,7 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   // aState is only non-null if we are restoring from the bfcache.
   // aForceReuseInnerWindow is only true if we are being triggered via XSLT.
   // aActor is only non-null if the new document is about:blank.
-  virtual nsresult SetNewDocument(
+  MOZ_CAN_RUN_SCRIPT nsresult SetNewDocument(
       Document* aDocument, nsISupports* aState, bool aForceReuseInnerWindow,
       mozilla::dom::WindowGlobalChild* aActor = nullptr) override;
 
@@ -317,7 +303,7 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   static void PrepareForProcessChange(JSObject* aProxy);
 
   // Outer windows only.
-  void DispatchDOMWindowCreated();
+  MOZ_CAN_RUN_SCRIPT void DispatchDOMWindowCreated();
 
   // Outer windows only.
   virtual void EnsureSizeAndPositionUpToDate() override;
@@ -331,10 +317,10 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
 
   // Outer windows only.
   virtual bool CanClose() override;
-  virtual void ForceClose() override;
+  MOZ_CAN_RUN_SCRIPT void ForceClose() override;
 
   // Outer windows only.
-  virtual bool DispatchCustomEvent(
+  MOZ_CAN_RUN_SCRIPT bool DispatchCustomEvent(
       const nsAString& aEventName,
       mozilla::ChromeOnlyDispatch aChromeOnlyDispatch) override;
 
@@ -342,10 +328,10 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   friend class FullscreenTransitionTask;
 
   // Outer windows only.
-  nsresult SetFullscreenInternal(FullscreenReason aReason,
-                                 bool aIsFullscreen) final;
-  void FullscreenWillChange(bool aIsFullscreen) final;
-  void FinishFullscreenChange(bool aIsFullscreen) final;
+  MOZ_CAN_RUN_SCRIPT nsresult SetFullscreenInternal(FullscreenReason aReason,
+                                                    bool aIsFullscreen) final;
+  MOZ_CAN_RUN_SCRIPT void FullscreenWillChange(bool aIsFullscreen) final;
+  MOZ_CAN_RUN_SCRIPT void FinishFullscreenChange(bool aIsFullscreen) final;
   void ForceFullScreenInWidget() final;
   void MacFullscreenMenubarOverlapChanged(
       mozilla::DesktopCoord aOverlapAmount) final;
@@ -453,8 +439,9 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   bool IsCleanedUp() const { return mCleanedUp; }
 
   virtual void FirePopupBlockedEvent(
-      Document* aDoc, nsIURI* aPopupURI, const nsAString& aPopupWindowName,
+      nsIURI* aPopupURI, const nsAString& aPopupWindowName,
       const nsAString& aPopupWindowFeatures) override;
+  virtual void FireRedirectBlockedEvent(nsIURI* aRedirectURI) override;
 
   void AddSizeOfIncludingThis(nsWindowSizes& aWindowSizes) const;
 
@@ -501,7 +488,7 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   }
 #define WINDOW_ONLY_EVENT EVENT
 #define TOUCH_EVENT EVENT
-#include "mozilla/EventNameList.h"
+#include "mozilla/EventNameList.inc"
 #undef TOUCH_EVENT
 #undef WINDOW_ONLY_EVENT
 #undef BEFOREUNLOAD_EVENT
@@ -516,8 +503,8 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   mozilla::dom::Location* GetLocation() override;
   void GetStatusOuter(nsAString& aStatus);
   void SetStatusOuter(const nsAString& aStatus);
-  void CloseOuter(bool aTrustedCaller);
-  nsresult Close() override;
+  MOZ_CAN_RUN_SCRIPT void CloseOuter(bool aTrustedCaller);
+  MOZ_CAN_RUN_SCRIPT nsresult Close() override;
   bool GetClosedOuter();
   bool Closed() override;
   void StopOuter(mozilla::ErrorResult& aError);
@@ -553,9 +540,11 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   nsPIDOMWindowOuter* GetInProcessScriptableParentOrNull() override;
   mozilla::dom::Element* GetFrameElement(nsIPrincipal& aSubjectPrincipal);
   mozilla::dom::Element* GetFrameElement() override;
+  MOZ_CAN_RUN_SCRIPT
   mozilla::dom::Nullable<mozilla::dom::WindowProxyHolder> OpenOuter(
       const nsAString& aUrl, const nsAString& aName, const nsAString& aOptions,
       mozilla::ErrorResult& aError);
+  MOZ_CAN_RUN_SCRIPT
   nsresult Open(const nsACString& aUrl, const nsAString& aName,
                 const nsAString& aOptions, nsDocShellLoadState* aLoadState,
                 bool aForceNoOpener,
@@ -602,6 +591,9 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   void ResizeByOuter(int32_t aWidthDif, int32_t aHeightDif,
                      mozilla::dom::CallerType aCallerType,
                      mozilla::ErrorResult& aError);
+  void MoveResizeOuter(int32_t aX, int32_t aY, int32_t aWidth, int32_t aHeight,
+                       mozilla::dom::CallerType aCallerType,
+                       mozilla::ErrorResult& aError);
   double GetScrollXOuter();
   double GetScrollYOuter();
 
@@ -614,17 +606,20 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   float GetMozInnerScreenYOuter(mozilla::dom::CallerType aCallerType);
   bool GetFullscreenOuter();
   bool GetFullScreen() override;
-  void SetFullscreenOuter(bool aFullscreen, mozilla::ErrorResult& aError);
-  nsresult SetFullScreen(bool aFullscreen) override;
+  MOZ_CAN_RUN_SCRIPT void SetFullscreenOuter(bool aFullscreen,
+                                             mozilla::ErrorResult& aError);
+  MOZ_CAN_RUN_SCRIPT nsresult SetFullScreen(bool aFullscreen) override;
   bool FindOuter(const nsAString& aString, bool aCaseSensitive, bool aBackwards,
                  bool aWrapAround, bool aWholeWord, bool aSearchInFrames,
                  bool aShowDialog, mozilla::ErrorResult& aError);
 
+  MOZ_CAN_RUN_SCRIPT
   mozilla::dom::Nullable<mozilla::dom::WindowProxyHolder> OpenDialogOuter(
       JSContext* aCx, const nsAString& aUrl, const nsAString& aName,
       const nsAString& aOptions,
       const mozilla::dom::Sequence<JS::Value>& aExtraArgument,
       mozilla::ErrorResult& aError);
+  MOZ_CAN_RUN_SCRIPT
   nsresult OpenDialog(const nsACString& aUrl, const nsAString& aName,
                       const nsAString& aOptions, nsIArray* aArguments,
                       mozilla::dom::BrowsingContext** _retval) override;
@@ -649,16 +644,14 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   virtual bool IsInSyncOperation() override;
 
  public:
-  double GetInnerWidthOuter(mozilla::ErrorResult& aError);
-
- protected:
-  nsresult GetInnerWidth(double* aInnerWidth) override;
+  MOZ_CAN_RUN_SCRIPT double GetInnerWidthOuter(
+      mozilla::dom::CallerType aCallerType, mozilla::ErrorResult& aError);
 
  public:
-  double GetInnerHeightOuter(mozilla::ErrorResult& aError);
+  MOZ_CAN_RUN_SCRIPT double GetInnerHeightOuter(
+      mozilla::dom::CallerType aCallerType, mozilla::ErrorResult& aError);
 
  protected:
-  nsresult GetInnerHeight(double* aInnerHeight) override;
   int32_t GetScreenXOuter(mozilla::dom::CallerType aCallerType,
                           mozilla::ErrorResult& aError);
   int32_t GetScreenYOuter(mozilla::dom::CallerType aCallerType,
@@ -688,6 +681,7 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   // Window Control Functions
 
   // Outer windows only.
+  MOZ_CAN_RUN_SCRIPT
   virtual nsresult OpenNoNavigate(
       const nsACString& aUrl, const nsAString& aName, const nsAString& aOptions,
       mozilla::dom::BrowsingContext** _retval) override;
@@ -747,6 +741,7 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
    *
    * Outer windows only.
    */
+  MOZ_CAN_RUN_SCRIPT
   nsresult OpenInternal(const nsACString& aUrl, const nsAString& aName,
                         const nsAString& aOptions, bool aDialog,
                         bool aCalledNoScript, bool aDoJSFixups, bool aNavigate,
@@ -761,9 +756,6 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
  public:
   mozilla::dom::PopupBlocker::PopupControlState RevisePopupAbuseLevel(
       mozilla::dom::PopupBlocker::PopupControlState aState);
-  void FireAbuseEvents(const nsACString& aPopupURL,
-                       const nsAString& aPopupWindowName,
-                       const nsAString& aPopupWindowFeatures);
 
   void FlushPendingNotifications(mozilla::FlushType aType);
 
@@ -789,7 +781,8 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
 
   // Outer windows only.
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
-  bool CanMoveResizeWindows(mozilla::dom::CallerType aCallerType);
+  bool CanMoveResizeWindows(mozilla::dom::CallerType aCallerType, bool aIsMove,
+                            mozilla::ErrorResult& aError);
 
   // If aDoFlush is true, we'll flush our own layout; otherwise we'll try to
   // just flush our parent and only flush ourselves if we think we need to.
@@ -799,7 +792,8 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   int32_t GetScrollBoundaryOuter(mozilla::Side aSide);
 
   // Outer windows only.
-  nsresult GetInnerSize(mozilla::CSSSize& aSize);
+  MOZ_CAN_RUN_SCRIPT nsresult
+  GetInnerSize(mozilla::CSSSize& aSize, mozilla::dom::CallerType aCallerType);
   mozilla::CSSIntSize GetOuterSize(mozilla::dom::CallerType aCallerType,
                                    mozilla::ErrorResult& aError);
   nsRect GetInnerScreenRect();
@@ -847,7 +841,7 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
 
  protected:
   // Helper for getComputedStyle and getDefaultComputedStyle
-  already_AddRefed<nsICSSDeclaration> GetComputedStyleHelperOuter(
+  already_AddRefed<nsDOMCSSDeclaration> GetComputedStyleHelperOuter(
       mozilla::dom::Element& aElt, const nsAString& aPseudoElt,
       bool aDefaultStylesOnly, mozilla::ErrorResult& aRv);
 
@@ -977,12 +971,12 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
   }
 
   // Dispatch a runnable related to the global.
-  nsresult Dispatch(already_AddRefed<nsIRunnable>&&) const final;
+  nsresult Dispatch(already_AddRefed<nsIRunnable>) const final;
   nsISerialEventTarget* SerialEventTarget() const final;
 
  protected:
-  nsresult ProcessWidgetFullscreenRequest(FullscreenReason aReason,
-                                          bool aFullscreen);
+  MOZ_CAN_RUN_SCRIPT nsresult
+  ProcessWidgetFullscreenRequest(FullscreenReason aReason, bool aFullscreen);
 
   // Indicates whether browser window should be in fullscreen mode and the
   // reason, e.g. browser fullscreen mode or DOM fullscreen API, which should
@@ -1140,4 +1134,4 @@ inline void nsGlobalWindowOuter::MaybeClearInnerWindow(
   }
 }
 
-#endif /* nsGlobalWindowOuter_h___ */
+#endif /* nsGlobalWindowOuter_h_ */

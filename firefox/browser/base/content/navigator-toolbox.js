@@ -1,9 +1,11 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-env mozilla/browser-window */
+ChromeUtils.defineESModuleGetters(this, {
+  AIWindowUI:
+    "moz-src:///browser/components/aiwindow/ui/modules/AIWindowUI.sys.mjs",
+});
 
 document.addEventListener(
   "DOMContentLoaded",
@@ -44,6 +46,7 @@ document.addEventListener(
       let element = event.target.closest(`
         #firefox-view-button,
         .content-analysis-indicator,
+        .private-browsing-indicator-button,
         #bookmarks-toolbar-button,
         #PlacesToolbar,
         #import-button,
@@ -95,6 +98,18 @@ document.addEventListener(
         default:
           if (element.classList.contains("content-analysis-indicator")) {
             ContentAnalysis.showPanel(element, PanelUI);
+          } else if (
+            element.classList.contains("private-browsing-indicator-button")
+          ) {
+            let panel = document.getElementById("private-browsing-info-panel");
+            if (panel.state == "open") {
+              panel.hidePopup();
+            } else if (panel.state == "closed") {
+              panel.openPopup(element, {
+                position: "bottomright topright",
+                triggerEvent: event,
+              });
+            }
           } else {
             throw new Error(`Missing case for #${element.id}`);
           }
@@ -102,6 +117,15 @@ document.addEventListener(
     }
     navigatorToolbox.addEventListener("command", onCommand);
     widgetOverflow.addEventListener("command", onCommand);
+
+    // The private browsing info panel's learn-more link opens a SUMO tab but
+    // doesn't close its container, so dismiss the panel when it's clicked.
+    let pbInfoPanel = document.getElementById("private-browsing-info-panel");
+    pbInfoPanel?.addEventListener("click", event => {
+      if (event.target.closest("a[is='moz-support-link']")) {
+        pbInfoPanel.hidePopup();
+      }
+    });
 
     function onMouseDown(event) {
       let element = event.target.closest(`
@@ -185,7 +209,6 @@ document.addEventListener(
         #back-button,
         #forward-button,
         #reload-button ,
-        #urlbar-go-button,
         #reader-mode-button,
         #picture-in-picture-button,
         #urlbar-zoom-button,
@@ -194,10 +217,13 @@ document.addEventListener(
         #home-button,
         #PlacesToolbar,
         #BMB_bookmarksPopup,
+        #trust-icon-container,
         #tracking-protection-icon-container,
         #identity-icon-box,
         #identity-permission-box,
-        #translations-button
+        #translations-button,
+        #split-view-button,
+        #smartwindow-ask-button
         `);
       if (!element) {
         return;
@@ -214,10 +240,6 @@ document.addEventListener(
         case "forward-button":
         case "reload-button":
           checkForMiddleClick(element, event);
-          break;
-
-        case "urlbar-go-button":
-          gURLBar.handleCommand(event);
           break;
 
         case "reader-mode-button":
@@ -264,11 +286,19 @@ document.addEventListener(
           BookmarksEventHandler.onClick(event, element.parentNode._placesView);
           break;
 
+        case "trust-icon-container":
+          gTrustPanelHandler.handleProtectionsButtonEvent(event);
+          break;
+
         case "tracking-protection-icon-container":
           gProtectionsHandler.handleProtectionsButtonEvent(event);
           break;
 
         case "identity-icon-box":
+          if (UrlbarPrefs.get("trustPanel.featureGate")) {
+            gTrustPanelHandler.handleProtectionsButtonEvent(event);
+            break;
+          }
           gIdentityHandler.handleIdentityButtonEvent(event);
           PageProxyClickHandler(event);
           break;
@@ -282,13 +312,27 @@ document.addEventListener(
           FullPageTranslationsPanel.open(event);
           break;
 
+        case "split-view-button":
+          if (isLeftClick) {
+            gBrowser.openSplitViewMenu(element);
+          }
+          break;
+
+        case "smartwindow-ask-button":
+          if (isLeftClick) {
+            AIWindowUI.toggleSidebar(window);
+          }
+          break;
+
         default:
           throw new Error(`Missing case for #${element.id}`);
       }
     }
     navigatorToolbox.addEventListener("click", onClick);
     widgetOverflow.addEventListener("click", onClick);
-    document.getElementById("sidebar-main").addEventListener("click", onClick);
+    document
+      .getElementById("sidebar-container")
+      .addEventListener("click", onClick);
 
     function onKeyPress(event) {
       const isLikeLeftClick = event.key === "Enter" || event.key === " ";
@@ -301,6 +345,7 @@ document.addEventListener(
         #personal-toolbar-empty-description,
         #home-button,
         #tracking-protection-icon-container,
+        #trust-icon-container,
         #identity-icon-box,
         #identity-permission-box,
         #translations-button,
@@ -309,7 +354,10 @@ document.addEventListener(
         #downloads-button,
         #fxa-toolbar-menu-button,
         #unified-extensions-button,
-        #library-button
+        #library-button,
+        #ipprotection-button,
+        #split-view-button,
+        #smartwindow-ask-button
       `);
       if (!element) {
         return;
@@ -359,6 +407,10 @@ document.addEventListener(
           gProtectionsHandler.handleProtectionsButtonEvent(event);
           break;
 
+        case "trust-icon-container":
+          gTrustPanelHandler.handleProtectionsButtonEvent(event);
+          break;
+
         case "identity-icon-box":
           gIdentityHandler.handleIdentityButtonEvent(event);
           break;
@@ -393,6 +445,22 @@ document.addEventListener(
 
         case "library-button":
           PanelUI.showSubView("appMenu-libraryView", element, event);
+          break;
+
+        case "ipprotection-button":
+          PanelUI.showSubView("PanelUI-ipprotection", element, event);
+          break;
+
+        case "split-view-button":
+          if (isLikeLeftClick) {
+            gBrowser.openSplitViewMenu(element);
+          }
+          break;
+
+        case "smartwindow-ask-button":
+          if (isLikeLeftClick) {
+            AIWindowUI.toggleSidebar(window);
+          }
           break;
 
         default:
@@ -487,6 +555,11 @@ document.addEventListener(
 
     document
       .getElementById("identity-box")
+      .addEventListener("dragstart", event => {
+        gIdentityHandler.onDragStart(event);
+      });
+    document
+      .getElementById("trust-icon-container")
       .addEventListener("dragstart", event => {
         gIdentityHandler.onDragStart(event);
       });

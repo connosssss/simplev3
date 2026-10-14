@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -9,37 +7,80 @@
 
 #include "mozilla/intl/NumberPart.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
-#include "builtin/SelfHostingDefines.h"
 #include "gc/Barrier.h"
 #include "js/Class.h"
 #include "vm/NativeObject.h"
+#include "vm/StringType.h"
 
 namespace mozilla::intl {
 class RelativeTimeFormat;
 }
 
-namespace js {
+namespace js::intl {
+
+struct RelativeTimeFormatOptions;
 
 class RelativeTimeFormatObject : public NativeObject {
  public:
   static const JSClass class_;
   static const JSClass& protoClass_;
 
-  static constexpr uint32_t INTERNALS_SLOT = 0;
-  static constexpr uint32_t URELATIVE_TIME_FORMAT_SLOT = 1;
-  static constexpr uint32_t SLOT_COUNT = 2;
-
-  static_assert(INTERNALS_SLOT == INTL_INTERNALS_OBJECT_SLOT,
-                "INTERNALS_SLOT must match self-hosting define for internals "
-                "object slot");
+  JS_DEFINE_TYPED_SLOT(0, LOCALE, Object, String, Undefined);
+  JS_DEFINE_TYPED_SLOT(1, NUMBERING_SYSTEM, String, Undefined);
+  JS_DEFINE_TYPED_SLOT(2, OPTIONS, Int32, Undefined);
+  JS_DEFINE_TYPED_SLOT(3, URELATIVE_TIME_FORMAT_SLOT, Private, Undefined);
+  static constexpr uint32_t SLOT_COUNT = 4;
 
   // Estimated memory use for URelativeDateTimeFormatter (see IcuMemoryUsage).
   static constexpr size_t EstimatedMemoryUse = 8188;
 
+  bool isLocaleResolved() const { return getFixedSlotTyped(LOCALE).isString(); }
+
+  JSObject* getRequestedLocales() const {
+    const auto& slot = getFixedSlotTyped(LOCALE);
+    if (slot.isUndefined()) {
+      return nullptr;
+    }
+    return &slot.toObject();
+  }
+
+  void setRequestedLocales(JSObject* requestedLocales) {
+    setFixedSlotTyped(LOCALE, ObjectValue(*requestedLocales));
+  }
+
+  JSLinearString* getLocale() const {
+    const auto& slot = getFixedSlotTyped(LOCALE);
+    if (slot.isUndefined()) {
+      return nullptr;
+    }
+    return &slot.toString()->asLinear();
+  }
+
+  void setLocale(JSLinearString* locale) {
+    setFixedSlotTyped(LOCALE, StringValue(locale));
+  }
+
+  JSLinearString* getNumberingSystem() const {
+    const auto& slot = getFixedSlotTyped(NUMBERING_SYSTEM);
+    if (slot.isUndefined()) {
+      return nullptr;
+    }
+    return &slot.toString()->asLinear();
+  }
+
+  void setNumberingSystem(JSLinearString* numberingSystem) {
+    setFixedSlotTyped(NUMBERING_SYSTEM, StringValue(numberingSystem));
+  }
+
+  RelativeTimeFormatOptions getOptions() const;
+
+  void setOptions(const RelativeTimeFormatOptions& options);
+
   mozilla::intl::RelativeTimeFormat* getRelativeTimeFormatter() const {
-    const auto& slot = getFixedSlot(URELATIVE_TIME_FORMAT_SLOT);
+    const auto& slot = getFixedSlotTyped(URELATIVE_TIME_FORMAT_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
@@ -47,7 +88,7 @@ class RelativeTimeFormatObject : public NativeObject {
   }
 
   void setRelativeTimeFormatter(mozilla::intl::RelativeTimeFormat* rtf) {
-    setFixedSlot(URELATIVE_TIME_FORMAT_SLOT, PrivateValue(rtf));
+    setFixedSlotTyped(URELATIVE_TIME_FORMAT_SLOT, PrivateValue(rtf));
   }
 
  private:
@@ -57,31 +98,13 @@ class RelativeTimeFormatObject : public NativeObject {
   static void finalize(JS::GCContext* gcx, JSObject* obj);
 };
 
-/**
- * Returns a relative time as a string formatted according to the effective
- * locale and the formatting options of the given RelativeTimeFormat.
- *
- * |t| should be a number representing a number to be formatted.
- * |unit| should be "second", "minute", "hour", "day", "week", "month",
- *                  "quarter", or "year".
- * |numeric| should be "always" or "auto".
- *
- * Usage: formatted = intl_FormatRelativeTime(relativeTimeFormat, t,
- *                                            unit, numeric, formatToParts)
- */
-[[nodiscard]] extern bool intl_FormatRelativeTime(JSContext* cx, unsigned argc,
-                                                  JS::Value* vp);
-
-namespace intl {
-
-using FieldType = js::ImmutableTenuredPtr<PropertyName*> JSAtomState::*;
+enum class NumberFormatUnit;
 
 [[nodiscard]] bool FormattedRelativeTimeToParts(
-    JSContext* cx, HandleString str,
-    const mozilla::intl::NumberPartVector& parts, FieldType relativeTimeUnit,
-    MutableHandleValue result);
+    JSContext* cx, Handle<JSString*> str,
+    const mozilla::intl::NumberPartVector& parts,
+    NumberFormatUnit numberFormatUnit, MutableHandle<JS::Value> result);
 
-}  // namespace intl
-}  // namespace js
+}  // namespace js::intl
 
 #endif /* builtin_intl_RelativeTimeFormat_h */

@@ -14,12 +14,10 @@ import org.mozilla.focus.ext.components
 import org.mozilla.focus.session.IntentProcessor
 import org.mozilla.focus.utils.SupportUtils
 
-/**
- * This activity receives VIEW intents and either forwards them to MainActivity or CustomTabActivity.
- */
+/** This activity receives VIEW intents and either forwards them to MainActivity or CustomTabActivity. */
 class IntentReceiverActivity : Activity() {
     private val intentProcessor by lazy {
-        IntentProcessor(this, components.tabsUseCases, components.customTabsUseCases)
+        IntentProcessor(this, components.tabsUseCases, components.customTabsUseCases, components.searchUseCases)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,7 +30,7 @@ class IntentReceiverActivity : Activity() {
             return
         }
 
-        val result = intentProcessor.handleIntent(this, intent, savedInstanceState)
+        val result = intentProcessor.handleIntent(intent, savedInstanceState)
         if (result is IntentProcessor.Result.CustomTab) {
             dispatchCustomTabsIntent(result.id)
         } else {

@@ -1,30 +1,31 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "LauncherProcessWin.h"
 
-#include <string.h>
-
-#include "mozilla/Attributes.h"
 #include "mozilla/CmdLineAndEnvUtils.h"
 #include "mozilla/DebugOnly.h"
-#include "mozilla/DynamicallyLinkedFunctionPtr.h"
 #include "mozilla/glue/Debug.h"
 #include "mozilla/GeckoArgs.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/NativeNt.h"
 #include "mozilla/SafeMode.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/Vector.h"
 #include "mozilla/WindowsConsole.h"
+#include "mozilla/WindowsProcessMitigations.h"
 #include "mozilla/WindowsVersion.h"
 #include "mozilla/WinHeaderOnlyUtils.h"
 #include "nsWindowsHelpers.h"
+#include "mozilla/mscom/ProcessRuntime.h"
 
 #include <windows.h>
 #include <processthreadsapi.h>
+#include <shlwapi.h>
+#include <appmodel.h>
+#include <wrl.h>
+#include <wrl/wrappers/corewrappers.h>
 
 #include "DllBlocklistInit.h"
 #include "ErrorHandler.h"
@@ -39,6 +40,11 @@
 
 #if defined(MOZ_SANDBOX)
 #  include "mozilla/sandboxing/SandboxInitialization.h"
+#endif
+
+#ifndef __MINGW32__
+#  include <windows.applicationmodel.h>
+#  include <windows.applicationmodel.activation.h>
 #endif
 
 namespace mozilla {
@@ -111,16 +117,108 @@ static nsReturnRef<HANDLE> CreateJobAndAssignProcess(HANDLE aProcess) {
   return job.out();
 }
 
-#if !defined( \
-    PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_PREFER_SYSTEM32_ALWAYS_ON)
-#  define PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_PREFER_SYSTEM32_ALWAYS_ON \
-    (0x00000001ULL << 60)
-#endif  // !defined(PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_PREFER_SYSTEM32_ALWAYS_ON)
+enum class VCRuntimeDLLDir : bool {
+  Application,
+  System,
+};
 
-#if !defined(PROCESS_CREATION_MITIGATION_POLICY_CONTROL_FLOW_GUARD_ALWAYS_OFF)
-#  define PROCESS_CREATION_MITIGATION_POLICY_CONTROL_FLOW_GUARD_ALWAYS_OFF \
-    (0x00000002ULL << 40)
-#endif  // !defined(PROCESS_CREATION_MITIGATION_POLICY_CONTROL_FLOW_GUARD_ALWAYS_OFF)
+/* Returns true and sets aOutVersion to Nothing() if msvcp140.dll does not
+ * exist in aDir. Returns true and sets aOutVersion to Some(version) if the
+ * file exists and we successfully extract the version info. Returns false on
+ * failure paths that prevent us from reaching any conclusion.
+ */
+static bool GetMSVCP140VersionInfo(VCRuntimeDLLDir aDir,
+                                   mozilla::Maybe<uint64_t>& aOutVersion) {
+  wchar_t dllPath[MAX_PATH];
+  if (aDir == VCRuntimeDLLDir::Application) {
+    DWORD size = ::GetModuleFileNameW(nullptr, dllPath, MAX_PATH);
+    if (!size ||
+        (size == MAX_PATH && ::GetLastError() == ERROR_INSUFFICIENT_BUFFER) ||
+        !::PathRemoveFileSpecW(dllPath)) {
+      return false;
+    }
+  } else {
+    MOZ_ASSERT(aDir == VCRuntimeDLLDir::System);
+    UINT size = ::GetSystemDirectoryW(dllPath, MAX_PATH);
+    if (!size || size >= MAX_PATH) {
+      return false;
+    }
+  }
+
+  if (!::PathAppendW(dllPath, L"msvcp140.dll")) {
+    return false;
+  }
+  HMODULE crt =
+      ::LoadLibraryExW(dllPath, nullptr, LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+  if (!crt) {
+    if (::GetLastError() != ERROR_FILE_NOT_FOUND) {
+      return false;
+    }
+    aOutVersion.reset();
+    return true;
+  }
+
+  mozilla::nt::PEHeaders headers{crt};
+  uint64_t outVersion;
+  bool result = headers.GetVersionInfo(outVersion);
+  if (result) {
+    aOutVersion.emplace(outVersion);
+  }
+
+  ::FreeLibrary(crt);
+  return result;
+}
+
+/**
+ * Choose whether we want to favor loading DLLs from the system directory over
+ * the application directory. This choice automatically propagates to all child
+ * processes. In particular, it determines whether child processes will load
+ * Visual C++ runtime DLLs from the system or the application directory at
+ * startup.
+ *
+ * Whenever possible, we want all processes to favor loading DLLs from the
+ * system directory. But if old Visual C++ runtime DLLs are installed
+ * system-wide, then we must favor loading from the application directory
+ * instead to ensure compatibility, at least during startup. So in this case we
+ * only apply the delayed variant of the mitigation and only in sandboxed
+ * processes, which is the best compromise (see SandboxBroker::LaunchApp).
+ *
+ * This function is called from the launcher process *and* the browser process.
+ * This is because if the launcher process is disabled, we still want the
+ * browser process to go through this code so that it enforces the correct
+ * choice for itself and for child processes.
+ */
+static void EnablePreferLoadFromSystem32IfCompatible() {
+  // We may already have the mitigation if we are the browser process and we
+  // inherited it from the launcher process.
+  if (!mozilla::IsPreferLoadFromSystem32Available() ||
+      mozilla::IsPreferLoadFromSystem32Enabled()) {
+    return;
+  }
+
+  mozilla::Maybe<uint64_t> systemDirVersion;
+  if (!GetMSVCP140VersionInfo(VCRuntimeDLLDir::System, systemDirVersion)) {
+    return;
+  }
+
+  bool isCompatible = false;
+  if (systemDirVersion.isNothing()) {
+    // No system-wide runtime DLLs: we won't run into a conflict
+    isCompatible = true;
+  } else {
+    mozilla::Maybe<uint64_t> appDirVersion;
+    if (GetMSVCP140VersionInfo(VCRuntimeDLLDir::Application, appDirVersion) &&
+        appDirVersion.isSome() && *systemDirVersion >= *appDirVersion) {
+      // The system-wide runtime DLLs are at least as recent as ours
+      isCompatible = true;
+    }
+  }
+
+  if (isCompatible) {
+    mozilla::DebugOnly<bool> setOk = mozilla::EnablePreferLoadFromSystem32();
+    MOZ_ASSERT(setOk);
+  }
+}
 
 /**
  * Any mitigation policies that should be set on the browser process should go
@@ -128,10 +226,11 @@ static nsReturnRef<HANDLE> CreateJobAndAssignProcess(HANDLE aProcess) {
  */
 static void SetMitigationPolicies(mozilla::ProcThreadAttributes& aAttrs,
                                   const bool aIsSafeMode) {
-  if (mozilla::IsWin10AnniversaryUpdateOrLater()) {
-    aAttrs.AddMitigationPolicy(
-        PROCESS_CREATION_MITIGATION_POLICY_IMAGE_LOAD_PREFER_SYSTEM32_ALWAYS_ON);
-  }
+  // Note: Do *not* handle IMAGE_LOAD_PREFER_SYSTEM32_ALWAYS_ON here. For this
+  //       mitigation we rely on EnablePreferLoadFromSystem32IfCompatible().
+  //       The launcher process or the browser process will choose whether we
+  //       want to apply the mitigation or not, and child processes will
+  //       automatically inherit that choice.
 
 #if defined(_M_ARM64)
   // Disable CFG on older versions of ARM64 Windows to avoid a crash in COM.
@@ -266,16 +365,71 @@ static mozilla::Maybe<bool> RunAsLauncherProcess(int& argc, wchar_t** argv) {
 
 namespace mozilla {
 
-Maybe<int> LauncherMain(int& argc, wchar_t* argv[],
-                        const StaticXREAppData& aAppData) {
-  EnsureBrowserCommandlineSafe(argc, argv);
+#ifndef __MINGW32__
+/**
+ * Find the kind of app activation that started this packaged app.
+ * If there are problems getting this information, defaults to
+ * ActivationKind_Launch.
+ */
+static ABI::Windows::ApplicationModel::Activation::ActivationKind
+getPackagedAppActivationKind() {
+  using namespace ABI::Windows::ApplicationModel;
+  using namespace ABI::Windows::ApplicationModel::Activation;
+  using namespace ABI::Windows::Foundation;
+  using namespace Microsoft::WRL;
+  using namespace Microsoft::WRL::Wrappers;
 
-  SetLauncherErrorAppData(aAppData);
-
-  if (CheckArg(argc, argv, "log-launcher-error", nullptr,
-               mozilla::CheckArgFlag::RemoveArg) == ARG_FOUND) {
-    SetLauncherErrorForceEventLog();
+  ActivationKind result = ActivationKind_Launch;
+  mozilla::mscom::ProcessRuntime mscom(
+      mozilla::mscom::ProcessRuntime::ProcessCategory::Launcher);
+  if (mscom) {
+    // We have a COM apartment to work in
+    ComPtr<IAppInstanceStatics> appInstanceStatics;
+    HRESULT hr = GetActivationFactory(
+        HStringReference(RuntimeClass_Windows_ApplicationModel_AppInstance)
+            .Get(),
+        appInstanceStatics.GetAddressOf());
+    if (SUCCEEDED(hr) && appInstanceStatics) {
+      ComPtr<IActivatedEventArgs> activatedEventArgs;
+      hr = appInstanceStatics->GetActivatedEventArgs(
+          activatedEventArgs.GetAddressOf());
+      if (SUCCEEDED(hr) && activatedEventArgs) {
+        ActivationKind kind;
+        hr = activatedEventArgs->get_Kind(&kind);
+        if (SUCCEEDED(hr)) {
+          result = kind;
+        }
+      }
+    }
   }
+  return result;
+}
+#endif
+
+/**
+ * For MSIX-packaged apps, we can ask the OS directly for the app's launch
+ * method. This is good, because older versions of Windows 10 don't
+ * support passing launch args as part of the launch-on-login command in
+ * the manifest.
+ */
+static bool IsPackagedAppAutostarted() {
+#ifndef __MINGW32__
+  UINT32 length = 0;
+
+  LONG rc = GetCurrentPackageFullName(&length, NULL);
+  if (rc == ERROR_INSUFFICIENT_BUFFER) {
+    // There is a package name, so this is a packaged app. Check
+    // to see if it was a startup task.
+    using namespace ABI::Windows::ApplicationModel::Activation;
+    ActivationKind kind = getPackagedAppActivationKind();
+    return kind == ActivationKind_StartupTask;
+  }
+#endif
+  return false;
+}
+
+Maybe<int> LauncherMain(int& argc, wchar_t* argv[]) {
+  EnsureBrowserCommandlineSafe(argc, argv);
 
   // return fast when we're a child process.
   // (The remainder of this function has some side effects that are
@@ -285,6 +439,12 @@ Maybe<int> LauncherMain(int& argc, wchar_t* argv[],
     // A child process should not instantiate LauncherRegistryInfo.
     return Nothing();
   }
+  const bool hasAutostartArg =
+      mozilla::CheckArg(argc, argv, "os-autostart", nullptr,
+                        mozilla::CheckArgFlag::None) == mozilla::ARG_FOUND;
+
+  // Called from the launcher process *and* the browser process.
+  EnablePreferLoadFromSystem32IfCompatible();
 
 #if defined(MOZ_LAUNCHER_PROCESS)
   LauncherRegistryInfo regInfo;
@@ -309,28 +469,15 @@ Maybe<int> LauncherMain(int& argc, wchar_t* argv[],
     return Nothing();
   }
 
-  // Make sure that the launcher process itself has image load policies set
-  if (IsWin10AnniversaryUpdateOrLater()) {
-    static const StaticDynamicallyLinkedFunctionPtr<
-        decltype(&SetProcessMitigationPolicy)>
-        pSetProcessMitigationPolicy(L"kernel32.dll",
-                                    "SetProcessMitigationPolicy");
-    if (pSetProcessMitigationPolicy) {
-      PROCESS_MITIGATION_IMAGE_LOAD_POLICY imgLoadPol = {};
-      imgLoadPol.PreferSystem32Images = 1;
-
-      DebugOnly<BOOL> setOk = pSetProcessMitigationPolicy(
-          ProcessImageLoadPolicy, &imgLoadPol, sizeof(imgLoadPol));
-      MOZ_ASSERT(setOk);
-    }
-  }
-
 #if defined(MOZ_SANDBOX)
   // Ensure the relevant mitigations are enforced.
   mozilla::sandboxing::ApplyParentProcessMitigations();
 #endif
 
   mozilla::UseParentConsole();
+
+  const bool packagedAppAutostartedWithoutArg =
+      hasAutostartArg ? false : IsPackagedAppAutostarted();
 
   if (!SetArgv0ToFullBinaryPath(argv)) {
     HandleLauncherError(LAUNCHER_ERROR_GENERIC());
@@ -401,9 +548,17 @@ Maybe<int> LauncherMain(int& argc, wchar_t* argv[],
     return Nothing();
   }
 #endif  // defined(MOZ_LAUNCHER_PROCESS)
-
+  mozilla::Vector<const wchar_t*, 1> extraArgs;
+  if (packagedAppAutostartedWithoutArg) {
+    // This append won't fail, but the compiler enforces nodiscard.
+    if (!extraArgs.append(L"-os-autostart")) {
+      HandleLauncherError(LAUNCHER_ERROR_GENERIC());
+      return Nothing();
+    }
+  }
   // Now proceed with setting up the parameters for process creation
-  UniquePtr<wchar_t[]> cmdLine(MakeCommandLine(argc, argv));
+  UniquePtr<wchar_t[]> cmdLine(
+      MakeCommandLine(argc, argv, extraArgs.length(), extraArgs.begin()));
   if (!cmdLine) {
     HandleLauncherError(LAUNCHER_ERROR_GENERIC());
     return Nothing();

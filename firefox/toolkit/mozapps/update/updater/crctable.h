@@ -9,7 +9,14 @@
   from code by Rob Warnock, in Section 51 of the
   comp.compression FAQ.
 */
-unsigned int BZ2_crc32Table[256] = {
+#ifndef TOOLKIT_MOZAPPS_UPDATE_UPDATER_CRCTABLE_H_
+#define TOOLKIT_MOZAPPS_UPDATE_UPDATER_CRCTABLE_H_
+
+#ifdef __cplusplus
+constexpr unsigned int BZ2_crc32Table[256] = {
+#else
+static const unsigned int BZ2_crc32Table[256] = {
+#endif
 
     /*-- Ugly, innit? --*/
 
@@ -69,3 +76,5 @@ unsigned int BZ2_crc32Table[256] = {
 /*-------------------------------------------------------------*/
 /*--- end                                        crctable.h ---*/
 /*-------------------------------------------------------------*/
+
+#endif  // TOOLKIT_MOZAPPS_UPDATE_UPDATER_CRCTABLE_H_

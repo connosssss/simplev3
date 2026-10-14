@@ -8,6 +8,7 @@ package org.mozilla.fenix.ui.robots
 
 import android.content.Context
 import android.util.Log
+import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.action.ViewActions.click
 import androidx.test.espresso.assertion.ViewAssertions.matches
@@ -32,9 +33,7 @@ import org.mozilla.fenix.helpers.TestHelper.mDevice
 import org.mozilla.fenix.helpers.click
 import org.mozilla.fenix.helpers.ext.waitNotNull
 
-/**
- * Implementation of Robot Pattern for the Privacy Settings > logins and passwords sub menu
- */
+/** Implementation of Robot Pattern for the Privacy Settings > logins and passwords sub menu */
 class SettingsSubMenuLoginsAndPasswordRobot {
 
     fun verifyDefaultView() {
@@ -68,15 +67,19 @@ class SettingsSubMenuLoginsAndPasswordRobot {
     }
 
     fun verifyDefaultValueAutofillLogins(context: Context) {
-        Log.i(TAG, "verifyDefaultValueAutofillLogins: Trying to verify that the Autofill in Firefox option is displayed")
+        Log.i(
+            TAG,
+            "verifyDefaultValueAutofillLogins: Trying to verify that the Autofill in Firefox option is displayed",
+        )
         onView(
-            withText(
-                context.getString(
-                    R.string.preferences_passwords_autofill2,
-                    context.getString(R.string.app_name),
-                ),
-            ),
-        ).check(matches(withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE)))
+                withText(
+                    context.getString(
+                        R.string.preferences_passwords_autofill2,
+                        context.getString(R.string.app_name),
+                    )
+                )
+            )
+            .check(matches(withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE)))
         Log.i(TAG, "verifyDefaultValueAutofillLogins: Verified that the Autofill in Firefox option is displayed")
     }
 
@@ -87,7 +90,10 @@ class SettingsSubMenuLoginsAndPasswordRobot {
     }
 
     fun verifyAutofillInFirefoxToggle(enabled: Boolean) {
-        Log.i(TAG, "verifyAutofillInFirefoxToggle: Trying to verify that the Autofill in Firefox toggle is enabled: $enabled")
+        Log.i(
+            TAG,
+            "verifyAutofillInFirefoxToggle: Trying to verify that the Autofill in Firefox toggle is enabled: $enabled",
+        )
         autofillInFirefoxOption()
             .check(
                 matches(
@@ -99,14 +105,18 @@ class SettingsSubMenuLoginsAndPasswordRobot {
                             } else {
                                 isNotChecked()
                             },
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
         Log.i(TAG, "verifyAutofillInFirefoxToggle: Verified that the Autofill in Firefox toggle is enabled: $enabled")
     }
+
     fun verifyAutofillLoginsInOtherAppsToggle(enabled: Boolean) {
-        Log.i(TAG, "verifyAutofillLoginsInOtherAppsToggle: Trying to verify that the \"Autofill in other apps\" toggle is enabled: $enabled")
+        Log.i(
+            TAG,
+            "verifyAutofillLoginsInOtherAppsToggle: Trying to verify that the \"Autofill in other apps\" toggle is enabled: $enabled",
+        )
         autofillInOtherAppsOption()
             .check(
                 matches(
@@ -118,11 +128,14 @@ class SettingsSubMenuLoginsAndPasswordRobot {
                             } else {
                                 isNotChecked()
                             },
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
-        Log.i(TAG, "verifyAutofillLoginsInOtherAppsToggle: Verified that the \"Autofill in other apps\" toggle is enabled: $enabled")
+        Log.i(
+            TAG,
+            "verifyAutofillLoginsInOtherAppsToggle: Verified that the \"Autofill in other apps\" toggle is enabled: $enabled",
+        )
     }
 
     class Transition {
@@ -136,34 +149,45 @@ class SettingsSubMenuLoginsAndPasswordRobot {
             return SettingsRobot.Transition()
         }
 
-        fun openSavedLogins(interact: SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot.() -> Unit): SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot.Transition {
+        fun openSavedLogins(
+            composeTestRule: ComposeTestRule,
+            interact: SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot.() -> Unit,
+        ): SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot.Transition {
             Log.i(TAG, "openSavedLogins: Trying to click the \"Saved logins\" button")
             savedLoginsButton().click()
             Log.i(TAG, "openSavedLogins: Clicked the \"Saved logins\" button")
 
-            SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot().interact()
-            return SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot.Transition()
+            SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot(composeTestRule).interact()
+            return SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot.Transition(composeTestRule)
         }
 
-        fun openLoginExceptions(interact: SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot.() -> Unit): SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot.Transition {
+        fun openLoginExceptions(
+            composeTestRule: ComposeTestRule,
+            interact: SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot.() -> Unit,
+        ): SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot.Transition {
             Log.i(TAG, "openLoginExceptions: Trying to click the \"Exceptions\" button")
             loginExceptionsButton().click()
             Log.i(TAG, "openLoginExceptions: Clicked the \"Exceptions\" button")
 
-            SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot().interact()
-            return SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot.Transition()
+            SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot(composeTestRule).interact()
+            return SettingsSubMenuLoginsAndPasswordsSavedLoginsRobot.Transition(composeTestRule)
         }
 
-        fun openSyncLogins(interact: SettingsTurnOnSyncRobot.() -> Unit): SettingsTurnOnSyncRobot.Transition {
+        fun openSyncLogins(
+            composeTestRule: ComposeTestRule,
+            interact: SettingsSignInToSyncRobot.() -> Unit,
+        ): SettingsSignInToSyncRobot.Transition {
             Log.i(TAG, "openSyncLogins: Trying to click the \"Sync logins across devices\" button")
             syncLoginsButton().click()
             Log.i(TAG, "openSyncLogins: Clicked the \"Sync logins across devices\" button")
 
-            SettingsTurnOnSyncRobot().interact()
-            return SettingsTurnOnSyncRobot.Transition()
+            SettingsSignInToSyncRobot().interact()
+            return SettingsSignInToSyncRobot.Transition(composeTestRule)
         }
 
-        fun openSaveLoginsAndPasswordsOptions(interact: SettingsSubMenuLoginsAndPasswordOptionsToSaveRobot.() -> Unit): SettingsSubMenuLoginsAndPasswordOptionsToSaveRobot.Transition {
+        fun openSaveLoginsAndPasswordsOptions(
+            interact: SettingsSubMenuLoginsAndPasswordOptionsToSaveRobot.() -> Unit
+        ): SettingsSubMenuLoginsAndPasswordOptionsToSaveRobot.Transition {
             Log.i(TAG, "openSaveLoginsAndPasswordsOptions: Trying to click the \"Save logins and passwords\" button")
             saveLoginsAndPasswordButton().click()
             Log.i(TAG, "openSaveLoginsAndPasswordsOptions: Clicked the \"Save logins and passwords\" button")
@@ -174,7 +198,9 @@ class SettingsSubMenuLoginsAndPasswordRobot {
     }
 }
 
-fun settingsSubMenuLoginsAndPassword(interact: SettingsSubMenuLoginsAndPasswordRobot.() -> Unit): SettingsSubMenuLoginsAndPasswordRobot.Transition {
+fun settingsSubMenuLoginsAndPassword(
+    interact: SettingsSubMenuLoginsAndPasswordRobot.() -> Unit
+): SettingsSubMenuLoginsAndPasswordRobot.Transition {
     SettingsSubMenuLoginsAndPasswordRobot().interact()
     return SettingsSubMenuLoginsAndPasswordRobot.Transition()
 }
@@ -187,8 +213,7 @@ private fun syncLoginsButton() = onView(withText("Sync passwords across devices"
 
 private fun loginExceptionsButton() = onView(withText("Exceptions"))
 
-private fun goBackButton() =
-    onView(allOf(ViewMatchers.withContentDescription("Navigate up")))
+private fun goBackButton() = onView(allOf(ViewMatchers.withContentDescription("Navigate up")))
 
 private fun autofillInFirefoxOption() = onView(withText("Autofill in $appName"))
 

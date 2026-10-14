@@ -1,26 +1,22 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_workers_runtimeservice_h__
-#define mozilla_dom_workers_runtimeservice_h__
+#ifndef mozilla_dom_workers_runtimeservice_h_
+#define mozilla_dom_workers_runtimeservice_h_
 
-#include "mozilla/dom/WorkerCommon.h"
-
-#include "nsIObserver.h"
-
-#include "js/ContextOptions.h"
 #include "MainThreadUtils.h"
-#include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/dom/SafeRefPtr.h"
-#include "mozilla/dom/workerinternals/JSSettings.h"
-#include "mozilla/Atomics.h"
+#include "js/ContextOptions.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/SafeRefPtr.h"
+#include "mozilla/dom/WorkerCommon.h"
+#include "mozilla/dom/workerinternals/JSSettings.h"
 #include "nsClassHashtable.h"
 #include "nsHashKeys.h"
+#include "nsIObserver.h"
 #include "nsTArray.h"
 
 class nsPIDOMWindowInner;
@@ -49,12 +45,14 @@ class RuntimeService final : public nsIObserver {
       return mActiveServiceWorkers.Length();
     }
 
+    // There are no active or queued workers under the domain.
     bool HasNoWorkers() const {
-      return ActiveWorkerCount() == 0 && ActiveServiceWorkerCount() == 0;
+      return ActiveWorkerCount() == 0 && ActiveServiceWorkerCount() == 0 &&
+             mQueuedWorkers.IsEmpty();
     }
   };
 
-  mozilla::Mutex mMutex;
+  mutable mozilla::Mutex mMutex;
 
   // Protected by mMutex.
   nsClassHashtable<nsCStringHashKey, WorkerDomainInfo> mDomainMap
@@ -77,12 +75,13 @@ class RuntimeService final : public nsIObserver {
   };
 
  private:
-  NavigatorProperties mNavigatorProperties;
+  NavigatorProperties mNavigatorProperties MOZ_GUARDED_BY(mMutex);
 
   // True when the observer service holds a reference to this object.
   bool mObserved;
   bool mShuttingDown;
   bool mNavigatorPropertiesLoaded;
+  bool mCleanedUp{false};
 
  public:
   NS_DECL_ISUPPORTS
@@ -95,6 +94,13 @@ class RuntimeService final : public nsIObserver {
   bool RegisterWorker(WorkerPrivate& aWorkerPrivate);
 
   void UnregisterWorker(WorkerPrivate& aWorkerPrivate);
+
+  // Try to schedule the first queued worker for aDomain. aParent is the
+  // current worker when called on a worker thread, or nullptr when called on
+  // the main thread. The first queued worker is scheduled only when it belongs
+  // on the current thread; otherwise a retry is dispatched to the right thread.
+  void MaybeScheduleQueuedWorker(const nsACString& aDomain,
+                                 WorkerPrivate* aParent);
 
   void CancelWorkersForWindow(const nsPIDOMWindowInner& aWindow);
 
@@ -115,7 +121,11 @@ class RuntimeService final : public nsIObserver {
   void PropagateStorageAccessPermissionGranted(
       const nsPIDOMWindowInner& aWindow);
 
-  const NavigatorProperties& GetNavigatorProperties() const {
+  void UpdateTimezoneOverrideForWorkers(const nsPIDOMWindowInner& aWindow,
+                                        const nsAString& aTimezone);
+
+  NavigatorProperties GetNavigatorProperties() const {
+    MutexAutoLock lock(mMutex);
     return mNavigatorProperties;
   }
 
@@ -167,9 +177,12 @@ class RuntimeService final : public nsIObserver {
 
   void MemoryPressureAllWorkers();
 
-  uint32_t ClampedHardwareConcurrency(bool aShouldResistFingerprinting) const;
+  uint32_t ClampedHardwareConcurrency(bool aRFPHardcoded,
+                                      bool aRFPTiered) const;
 
-  void CrashIfHanging();
+  // Returns a description of the still running workers if worker shutdown
+  // started and has not completed, Nothing() otherwise.
+  Maybe<nsCString> GetHangingWorkersInfo();
 
   bool IsShuttingDown() const { return mShuttingDown; }
 
@@ -177,6 +190,9 @@ class RuntimeService final : public nsIObserver {
 
   void UpdateWorkersPlaybackState(const nsPIDOMWindowInner& aWindow,
                                   bool aIsPlayingAudio);
+
+  void UpdateWorkersLanguageOverride(const nsPIDOMWindowInner& aWindow,
+                                     const nsCString& aLanguageOverride);
 
  private:
   RuntimeService();
@@ -203,4 +219,4 @@ class RuntimeService final : public nsIObserver {
 }  // namespace workerinternals
 }  // namespace mozilla::dom
 
-#endif /* mozilla_dom_workers_runtimeservice_h__ */
+#endif /* mozilla_dom_workers_runtimeservice_h_ */

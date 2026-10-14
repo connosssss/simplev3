@@ -46,7 +46,6 @@ const API_PROXY_PREFS = [
 ];
 
 let extensionControlledContentIds = {
-  "privacy.containers": "browserContainersExtensionContent",
   webNotificationsDisabled: "browserNotificationsPermissionExtensionContent",
   "services.passwordSavingEnabled": "passwordManagerExtensionContent",
   "proxy.settings": "proxyExtensionContent",
@@ -195,7 +194,9 @@ async function showControllingExtension(settingName, addon) {
   setControllingExtensionDescription(description, addon, settingName);
 
   if (elements.button) {
-    elements.button.hidden = false;
+    elements.button.hidden = !(
+      addon.permissions & AddonManager.PERM_CAN_DISABLE
+    );
   }
 
   // Show the controlling extension row and hide the old label.
@@ -272,6 +273,7 @@ function makeDisableControllingExtension(type, settingName) {
 /**
  *  Initialize listeners though the Management API to update the UI
  *  when an extension is controlling a pref.
+ *
  * @param {string} type
  * @param {string} prefId The unique id of the setting
  * @param {HTMLElement} controlledElement

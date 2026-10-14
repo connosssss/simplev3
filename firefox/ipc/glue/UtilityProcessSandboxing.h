@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -31,9 +29,18 @@ enum SandboxingKind : uint64_t {
   WINDOWS_UTILS,
   WINDOWS_FILE_DIALOG,
 #endif
+#if defined(NIGHTLY_BUILD) && !defined(MOZ_NO_SMART_CARDS)
+  PKCS11_MODULE,
+#endif  // NIGHTLY_BUILD && !MOZ_NO_SMART_CARDS
 
+#ifndef ANDROID
+  HW_INFERENCE,
+#endif  // !ANDROID
+
+  // Add new kinds directly above this one: the gtests, and the
+  // MOZ_DISABLE_CONTENT_SANDBOX "utility:N" syntax, refer to the pre-existing
+  // ones by index.
   COUNT,
-
 };
 
 bool IsUtilitySandboxEnabled(const char* envVar, SandboxingKind aKind);

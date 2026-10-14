@@ -15,7 +15,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=678671
 <div id="content"></div>
 <script type="application/javascript">
 
-/** Test for Bug 678671 **/
+/** Test for Bug 678671 */
 
 /**
  * Test 'ex' and 'ch' units in every place we possible can to make
@@ -27,6 +27,9 @@ var cs = getComputedStyle(content, "");
 
 for (var prop in gCSSProperties) {
   var info = gCSSProperties[prop];
+  if ("subproperties" in info && info.subproperties.length == 0) {
+    continue;
+  }
   function test_val(v) {
     content.style.setProperty(prop, v, "");
     isnot(get_computed_value(cs, prop), "",

@@ -36,8 +36,8 @@ const COMMENT_PARSING_HEURISTIC_BYPASS_CHAR =
  * A generator function that lexes a CSS source string, yielding the
  * CSS tokens.  Comment tokens are dropped.
  *
- * @param {String} CSS source string
- * @yield {CSSToken} The next CSSToken that is lexed
+ * @param {string} string - CSS source string
+ * @yields {CSSToken} The next CSSToken that is lexed
  * @see CSSToken for details about the returned tokens
  */
 function* cssTokenizer(string) {
@@ -69,8 +69,8 @@ function* cssTokenizer(string) {
  * once, rather than lazily yielding a token stream.  Use
  * |cssTokenizer| or |getCSSLexer| instead.
  *
- * @param{String} string The input string.
- * @return {Array} An array of tokens (@see CSSToken) that have
+ * @param {string} string The input string.
+ * @returns {CSSToken[]} An array of tokens (@see CSSToken) that have
  *        line and column information.
  */
 function cssTokenizerWithLineColumn(string) {
@@ -116,9 +116,9 @@ function cssTokenizerWithLineColumn(string) {
  * string and inserts backslashes so that the resulting text can
  * itself be put inside a comment.
  *
- * @param {String} inputString
+ * @param {string} inputString
  *                 input string
- * @return {String} the escaped result
+ * @returns {string} the escaped result
  */
 function escapeCSSComment(inputString) {
   const result = inputString.replace(/\/(\\*)\*/g, "/\\$1*");
@@ -130,14 +130,35 @@ function escapeCSSComment(inputString) {
  * was done by escapeCSSComment.  That is, given input like "/\*
  * comment *\/", it will strip the backslashes.
  *
- * @param {String} inputString
+ * @param {string} inputString
  *                 input string
- * @return {String} the un-escaped result
+ * @returns {string} the un-escaped result
  */
 function unescapeCSSComment(inputString) {
   const result = inputString.replace(/\/\\(\\*)\*/g, "/$1*");
   return result.replace(/\*\\(\\*)\//g, "*$1/");
 }
+
+/**
+ * Parsed CSS declaration
+ *
+ * @typedef {object} ParsedDeclaration
+ * @property {string} name - The name of the declaration
+ * @property {string} value - The (authored) value of the declaration (i.e. not the computed value)
+ * @property {string} priority - "important" if the declaration ends with `!important`,
+ *           empty string otherwise.
+ * @property {string} terminator - String to use to terminate the declaration, usually ""
+ *           to mean no additional termination is needed.
+ * @property {number[]} offsets - Holds the offsets of the start and end of the declaration
+ *           text, in a form suitable for use with String.substring.
+ * @property {number[]} colonOffsets - Holds the start and end locations of the colon (":")
+ *           that separates the property name from the value.
+ * @property {number[]} [commentOffsets] - If the declaration appears in a comment, holds the
+ *           offsets of the start and end of the enclosing comment.
+ * @property {boolean} [isCustomProperty] - Is this a CSS custom property (aka CSS variable)
+ *           declaration. Only set when the declaration is a custom property so we save
+ *           some cycles for non custom property declaration when sending them to the client.
+ */
 
 /**
  * A helper function for @see parseDeclarations that handles parsing
@@ -148,14 +169,13 @@ function unescapeCSSComment(inputString) {
  * @param {Function} isCssPropertyKnown
  *        A function to check if the CSS property is known. This is either an
  *        internal server function or from the CssPropertiesFront.
- * @param {String} commentText The text of the comment, without the
+ * @param {string} commentText The text of the comment, without the
  *                             delimiters.
- * @param {Number} startOffset The offset of the comment opener
+ * @param {number} startOffset The offset of the comment opener
  *                             in the original text.
- * @param {Number} endOffset The offset of the comment closer
+ * @param {number} endOffset The offset of the comment closer
  *                           in the original text.
- * @return {array} Array of declarations of the same form as returned
- *                 by parseDeclarations.
+ * @returns {ParsedDeclaration[]} Array of parsed declarations.
  */
 function parseCommentDeclarations(
   isCssPropertyKnown,
@@ -239,8 +259,7 @@ function parseCommentDeclarations(
  * A helper function for parseDeclarationsInternal that creates a new
  * empty declaration.
  *
- * @return {object} an empty declaration of the form returned by
- *                  parseDeclarations
+ * @returns {ParsedDeclaration} an empty declaration that matches what is returned by parseDeclarations
  */
 function getEmptyDeclaration() {
   return {
@@ -255,6 +274,8 @@ function getEmptyDeclaration() {
 
 /**
  * Like trim, but only trims CSS-allowed whitespace.
+ *
+ * @param {string} str - The string to trim
  */
 function cssTrim(str) {
   const match = /^[ \t\r\n\f]*(.*?)[ \t\r\n\f]*$/.exec(str);
@@ -274,16 +295,23 @@ function cssTrim(str) {
  *
  * @param {Function} isCssPropertyKnown
  *        Function to check if the CSS property is known.
- * @param {Boolean} inComment
+ * @param {string} inputString
+ *        An input string of CSS
+ * @param {boolean} parseComments
+ *        If true, try to parse the contents of comments as well.
+ *        A comment will only be parsed if it occurs outside of
+ *        the body of some other declaration.
+ * @param {boolean} inComment
  *        If true, assume that this call is parsing some text
  *        which came from a comment in another declaration.
  *        In this case some heuristics are used to avoid parsing
  *        text which isn't obviously a series of declarations.
- * @param {Boolean} commentOverride
+ * @param {boolean} commentOverride
  *        This only makes sense when inComment=true.
  *        When true, assume that the comment was generated by
  *        rewriteDeclarations, and skip the usual name-checking
  *        heuristic.
+ * @returns {ParsedDeclaration[]} Array of parsed declarations.
  */
 // eslint-disable-next-line complexity
 function parseDeclarationsInternal(
@@ -310,12 +338,15 @@ function parseDeclarationsInternal(
   // of blocks.
   let currentBlocks = [];
 
-  // This tracks the "!important" parsing state.  The states are:
-  // 0 - haven't seen anything
-  // 1 - have seen "!", looking for "important" next (possibly after
-  //     whitespace).
-  // 2 - have seen "!important"
-  let importantState = 0;
+  // Tracking the "!important" parsing state
+  // - haven't seen anything
+  const IMPORTANT_STATE_NONE = Symbol();
+  // - have seen "!", looking for "important" next (possibly after whitespace).
+  const IMPORTANT_STATE_SAW_EXCLAMATION = Symbol();
+  // - have seen "!important"
+  const IMPORTANT_STATE_COMPLETE = Symbol();
+  // Initial state
+  let importantState = IMPORTANT_STATE_NONE;
   // This is true if we saw whitespace or comments between the "!" and
   // the "important".
   let importantWS = false;
@@ -329,7 +360,7 @@ function parseDeclarationsInternal(
   const resetStateForNextDeclaration = () => {
     current = "";
     currentBlocks = [];
-    importantState = 0;
+    importantState = IMPORTANT_STATE_NONE;
     importantWS = false;
     declarations.push(getEmptyDeclaration());
     lastProp = declarations.at(-1);
@@ -351,14 +382,25 @@ function parseDeclarationsInternal(
     } else if (
       lastProp.name &&
       !current &&
-      !importantState &&
+      importantState == IMPORTANT_STATE_NONE &&
       !lastProp.priority &&
       lastProp.colonOffsets[1]
     ) {
       // Whitespace appearing after the ":" is attributed to it.
       lastProp.colonOffsets[1] = token.endOffset;
-    } else if (importantState === 1) {
+    } else if (importantState === IMPORTANT_STATE_SAW_EXCLAMATION) {
       importantWS = true;
+    }
+
+    if (
+      token.tokenType === "Ident" &&
+      token.text[0] == "-" &&
+      token.text[1] == "-" &&
+      token.text.length > 2
+    ) {
+      if (!lastProp.name) {
+        lastProp.isCustomProperty = true;
+      }
     }
 
     if (
@@ -367,7 +409,9 @@ function parseDeclarationsInternal(
       // and there's an opening curly bracket
       token.tokenType === "CurlyBracketBlock" &&
       // and we're not inside a function or an attribute
-      !currentBlocks.length
+      !currentBlocks.length &&
+      // and we're not assigning to a custom property (`foo: { a: b; c: d }` is valid)
+      !lastProp.isCustomProperty
     ) {
       // Assume we're encountering a nested rule.
 
@@ -403,14 +447,18 @@ function parseDeclarationsInternal(
       continue;
     } else if (
       token.tokenType === "CloseParenthesis" ||
-      token.tokenType === "CloseSquareBracket"
+      token.tokenType === "CloseSquareBracket" ||
+      // Handling closing curly bracket for custom property declaration (`foo: { a: b; c: d }` is valid)
+      (lastProp.isCustomProperty && token.tokenType === "CloseCurlyBracket")
     ) {
       // Closing the last block that was opened.
       currentBlocks.pop();
       current += token.text;
     } else if (
       token.tokenType === "ParenthesisBlock" ||
-      token.tokenType === "SquareBracketBlock"
+      token.tokenType === "SquareBracketBlock" ||
+      // Handling curly bracket for custom property declaration (`foo: { a: b; c: d }` is valid)
+      (lastProp.isCustomProperty && token.tokenType === "CurlyBracketBlock")
     ) {
       // Opening a new block.
       currentBlocks.push(token.text);
@@ -421,7 +469,7 @@ function parseDeclarationsInternal(
       current += token.text;
     } else if (token.tokenType === "Colon") {
       // Either way, a "!important" we've seen is no longer valid now.
-      importantState = 0;
+      importantState = IMPORTANT_STATE_NONE;
       importantWS = false;
       if (!lastProp.name) {
         // Set the current declaration name if there's no name yet
@@ -455,9 +503,9 @@ function parseDeclarationsInternal(
         currentBlocks = [];
         break;
       }
-      if (importantState === 2) {
+      if (importantState === IMPORTANT_STATE_COMPLETE) {
         lastProp.priority = "important";
-      } else if (importantState === 1) {
+      } else if (importantState === IMPORTANT_STATE_SAW_EXCLAMATION) {
         current += "!";
         if (importantWS) {
           current += " ";
@@ -466,24 +514,33 @@ function parseDeclarationsInternal(
       lastProp.value = cssTrim(current);
       resetStateForNextDeclaration();
     } else if (token.tokenType === "Ident") {
-      if (token.text === "important" && importantState === 1) {
-        importantState = 2;
+      if (
+        token.text.toLowerCase() === "important" &&
+        importantState === IMPORTANT_STATE_SAW_EXCLAMATION
+      ) {
+        importantState = IMPORTANT_STATE_COMPLETE;
       } else {
-        if (importantState > 0) {
+        if (importantState !== IMPORTANT_STATE_NONE) {
           current += "!";
           if (importantWS) {
             current += " ";
           }
-          if (importantState === 2) {
+          if (importantState === IMPORTANT_STATE_COMPLETE) {
             current += "important ";
           }
-          importantState = 0;
+          importantState = IMPORTANT_STATE_NONE;
           importantWS = false;
         }
         current += token.text;
       }
-    } else if (token.tokenType === "Delim" && token.text === "!") {
-      importantState = 1;
+    } else if (
+      token.tokenType === "Delim" &&
+      token.text === "!" &&
+      // !important inside parenthesis, curly or square brackets shouldn't impact the
+      // priority of the declaration
+      !currentBlocks.length
+    ) {
+      importantState = IMPORTANT_STATE_SAW_EXCLAMATION;
     } else if (token.tokenType === "WhiteSpace") {
       if (current !== "") {
         current = current.trimEnd() + " ";
@@ -508,15 +565,15 @@ function parseDeclarationsInternal(
         current = current.trimEnd() + " ";
       }
     } else {
-      if (importantState > 0) {
+      if (importantState !== IMPORTANT_STATE_NONE) {
         current += "!";
         if (importantWS) {
           current += " ";
         }
-        if (importantState === 2) {
+        if (importantState === IMPORTANT_STATE_COMPLETE) {
           current += "important ";
         }
-        importantState = 0;
+        importantState = IMPORTANT_STATE_NONE;
         importantWS = false;
       }
       current += inputString.substring(token.startOffset, token.endOffset);
@@ -524,7 +581,7 @@ function parseDeclarationsInternal(
   }
 
   // Handle whatever trailing properties or values might still be there
-  if (current) {
+  if (current || importantState !== IMPORTANT_STATE_NONE) {
     // If nested rule doesn't have closing bracket
     if (isInNested && nestingLevel > 0) {
       // We need to remove the previous (nested) pending declaration
@@ -537,9 +594,9 @@ function parseDeclarationsInternal(
       }
     } else {
       // Trailing value found, i.e. value without an ending ;
-      if (importantState === 2) {
+      if (importantState === IMPORTANT_STATE_COMPLETE) {
         lastProp.priority = "important";
-      } else if (importantState === 1) {
+      } else if (importantState === IMPORTANT_STATE_SAW_EXCLAMATION) {
         current += "!";
       }
       lastProp.value = cssTrim(current);
@@ -562,11 +619,33 @@ function parseDeclarationsInternal(
 
 /**
  * Returns an array of CSS declarations given a string.
- * For example, parseDeclarations(isCssPropertyKnown, "width: 1px; height: 1px")
+ * For example, `parseDeclarations(isCssPropertyKnown, "--h: 1px; width: 1px !important; height: var(--h);")`
  * would return:
- * [{name:"width", value: "1px"}, {name: "height", "value": "1px"}]
+ * [{
+ *   name: "--h",
+ *   value: "1px",
+ *   priority: "",
+ *   terminator: "",
+ *   offsets: [0,9],
+ *   colonOffsets: [3,5],
+ *   isCustomProperty: true
+ * }, {
+ *   name: "width",
+ *   value: "1px",
+ *   priority: "important",
+ *   terminator: "",
+ *   offsets: [10,32],
+ *   colonOffsets: [15,17]
+ * }, {
+ *   name: "height",
+ *   value: "var(--h)",
+ *   priority: "",
+ *   terminator: "",
+ *   offsets: [33,50],
+ *   colonOffsets: [39,41],
+ * }]
  *
- * The input string is assumed to only contain declarations so { and }
+ * The input string is assumed to only contain declarations so `{` and `}`
  * characters will be treated as part of either the property or value,
  * depending where it's found.
  *
@@ -574,28 +653,13 @@ function parseDeclarationsInternal(
  *        A function to check if the CSS property is known. This is either an
  *        internal server function or from the CssPropertiesFront.
  *        that are supported by the server.
- * @param {String} inputString
+ * @param {string} inputString
  *        An input string of CSS
- * @param {Boolean} parseComments
+ * @param {boolean} parseComments
  *        If true, try to parse the contents of comments as well.
  *        A comment will only be parsed if it occurs outside of
  *        the body of some other declaration.
- * @return {Array} an array of objects with the following signature:
- *         [{"name": string, "value": string, "priority": string,
- *           "terminator": string,
- *           "offsets": [start, end], "colonOffsets": [start, end]},
- *          ...]
- *         Here, "offsets" holds the offsets of the start and end
- *         of the declaration text, in a form suitable for use with
- *         String.substring.
- *         "terminator" is a string to use to terminate the declaration,
- *         usually "" to mean no additional termination is needed.
- *         "colonOffsets" holds the start and end locations of the
- *         ":" that separates the property name from the value.
- *         If the declaration appears in a comment, then there will
- *         be an additional {"commentOffsets": [start, end] property
- *         on the object, which will hold the offsets of the start
- *         and end of the enclosing comment.
+ * @returns {ParsedDeclaration[]} Array of parsed declarations.
  */
 function parseDeclarations(
   isCssPropertyKnown,
@@ -612,8 +676,19 @@ function parseDeclarations(
 }
 
 /**
- * Like @see parseDeclarations, but removes properties that do not
- * have a name.
+ * Like @see parseDeclarations, but removes properties that do not have a name.
+ *
+ * @param {Function} isCssPropertyKnown
+ *        A function to check if the CSS property is known. This is either an
+ *        internal server function or from the CssPropertiesFront.
+ *        that are supported by the server.
+ * @param {string} inputString
+ *        An input string of CSS
+ * @param {boolean} parseComments
+ *        If true, try to parse the contents of comments as well.
+ *        A comment will only be parsed if it occurs outside of
+ *        the body of some other declaration.
+ * @returns {ParsedDeclaration[]} Array of parsed declarations.
  */
 function parseNamedDeclarations(
   isCssPropertyKnown,
@@ -640,9 +715,9 @@ function parseNamedDeclarations(
  * (2) SELECTOR_ELEMENT
  * (3) SELECTOR_PSEUDO_CLASS
  *
- * @param {String} value
+ * @param {string} value
  *        The CSS selector text.
- * @return {Array} an array of objects with the following signature:
+ * @returns {Array} an array of objects with the following signature:
  *         [{ "value": string, "type": integer }, ...]
  */
 // eslint-disable-next-line complexity
@@ -742,9 +817,9 @@ function parsePseudoClassesAndAttributes(value) {
  *        A function to check if the CSS property is known. This is either an
  *        internal server function or from the CssPropertiesFront.
  *        that are supported by the server.
- * @param {String} value
+ * @param {string} value
  *        The value from the text editor.
- * @return {Object} an object with 'value' and 'priority' properties.
+ * @returns {object} an object with 'value' and 'priority' properties.
  */
 function parseSingleValue(isCssPropertyKnown, value) {
   const declaration = parseDeclarations(
@@ -760,9 +835,9 @@ function parseSingleValue(isCssPropertyKnown, value) {
 /**
  * Convert an angle value to degree.
  *
- * @param {Number} angleValue The angle value.
+ * @param {number} angleValue The angle value.
  * @param {CSS_ANGLEUNIT} angleUnit The angleValue's angle unit.
- * @return {Number} An angle value in degree.
+ * @returns {number} An angle value in degree.
  */
 function getAngleValueInDegrees(angleValue, angleUnit) {
   switch (angleUnit) {

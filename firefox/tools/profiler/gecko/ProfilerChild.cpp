@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -91,20 +89,37 @@ void ProfilerChild::ProcessChunkManagerUpdate(
 }
 
 /* static */ void ProfilerChild::ProcessPendingUpdate() {
-  auto lockedUpdate = sPendingChunkManagerUpdate.Lock();
-  if (!lockedUpdate->mProfilerChild || lockedUpdate->mUpdate.IsNotUpdate()) {
-    return;
+  // sPendingChunkManagerUpdate must not be held while dispatching or while
+  // processing the update: Dispatch() takes the target thread's event queue
+  // mutex, and ProcessChunkManagerUpdate() can resolve an await-next-update
+  // request, which sends an IPC reply and takes the IPC channel lock. Both of
+  // those locks can be held while a profiler marker is recorded (which takes
+  // the profiler buffer lock), and that buffer lock is held when the chunk
+  // manager update callback takes sPendingChunkManagerUpdate. Holding it across
+  // either operation would close that cycle and deadlock.
+  nsCOMPtr<nsIThread> thread;
+  {
+    auto lockedUpdate = sPendingChunkManagerUpdate.Lock();
+    if (!lockedUpdate->mProfilerChild || lockedUpdate->mUpdate.IsNotUpdate()) {
+      return;
+    }
+    thread = lockedUpdate->mProfilerChild->mThread;
   }
-  lockedUpdate->mProfilerChild->mThread->Dispatch(NS_NewRunnableFunction(
+  thread->Dispatch(NS_NewRunnableFunction(
       "ProfilerChild::ProcessPendingUpdate", []() mutable {
-        auto lockedUpdate = sPendingChunkManagerUpdate.Lock();
-        if (!lockedUpdate->mProfilerChild ||
-            lockedUpdate->mUpdate.IsNotUpdate()) {
-          return;
+        RefPtr<ProfilerChild> profilerChild;
+        ProfileBufferControlledChunkManager::Update update;
+        {
+          auto lockedUpdate = sPendingChunkManagerUpdate.Lock();
+          if (!lockedUpdate->mProfilerChild ||
+              lockedUpdate->mUpdate.IsNotUpdate()) {
+            return;
+          }
+          profilerChild = lockedUpdate->mProfilerChild;
+          update = std::move(lockedUpdate->mUpdate);
+          lockedUpdate->mUpdate.Clear();
         }
-        lockedUpdate->mProfilerChild->ProcessChunkManagerUpdate(
-            std::move(lockedUpdate->mUpdate));
-        lockedUpdate->mUpdate.Clear();
+        profilerChild->ProcessChunkManagerUpdate(std::move(update));
       }));
 }
 
@@ -246,9 +261,7 @@ mozilla::ipc::IPCResult ProfilerChild::RecvWaitOnePeriodicSampling(
                 "nsProfiler::WaitOnePeriodicSampling result on main thread",
                 [resolve = std::move(resolve), aSamplingState]() {
                   (*resolve)(aSamplingState ==
-                                 SamplingState::SamplingCompleted ||
-                             aSamplingState ==
-                                 SamplingState::NoStackSamplingCompleted);
+                             SamplingState::SamplingCompleted);
                 }));
           })) {
     // Callback was not added (e.g., profiler is not running) and will never be
@@ -335,13 +348,14 @@ void ProfilerChild::GatherProfileThreadFunction(
 
   auto writer =
       MakeUnique<SpliceableChunkedJSONWriter>(parameters->failureLatchSource);
-  if (!profiler_get_profile_json(
-          *writer,
-          /* aSinceTime */ 0,
-          /* aIsShuttingDown */ false,
-          progressLogger.CreateSubLoggerFromTo(
-              1_pc, "profiler_get_profile_json started", 99_pc,
-              "profiler_get_profile_json done"))) {
+  auto rv =
+      profiler_get_profile_json(*writer,
+                                /* aSinceTime */ 0,
+                                /* aIsShuttingDown */ false,
+                                progressLogger.CreateSubLoggerFromTo(
+                                    1_pc, "profiler_get_profile_json started",
+                                    99_pc, "profiler_get_profile_json done"));
+  if (rv.isErr()) {
     // Failed to get a profile, reset the writer pointer, so that we'll send a
     // failure message.
     writer.reset();
@@ -355,7 +369,7 @@ void ProfilerChild::GatherProfileThreadFunction(
                // that it doesn't get marked as 100% done when this off-thread
                // function ends.
                progressLogger = std::move(progressLogger),
-               writer = std::move(writer)]() mutable {
+               writer = std::move(writer), rv = std::move(rv)]() mutable {
                 // We are now on the ProfilerChild thread, about to send the
                 // completed profile. Any incoming progress request will now be
                 // handled after this task ends, so updating the progress is now
@@ -395,7 +409,7 @@ void ProfilerChild::GatherProfileThreadFunction(
                           len);
                       if (parameters->profilerChild->AllocShmem(
                               message.Length() + 1, &shmem)) {
-                        strcpy(shmem.get<char>(), message.Data());
+                        strcpy(shmem.get<char>(), message.get());
                       }
                     }
                   } else {
@@ -406,7 +420,7 @@ void ProfilerChild::GatherProfileThreadFunction(
                         size_t(UINT32_MAX));
                     if (parameters->profilerChild->AllocShmem(
                             message.Length() + 1, &shmem)) {
-                      strcpy(shmem.get<char>(), message.Data());
+                      strcpy(shmem.get<char>(), message.get());
                     }
                   }
                   writer = nullptr;
@@ -420,15 +434,14 @@ void ProfilerChild::GatherProfileThreadFunction(
                       failure ? ", failure: " : "", failure ? failure : "");
                   if (parameters->profilerChild->AllocShmem(
                           message.Length() + 1, &shmem)) {
-                    strcpy(shmem.get<char>(), message.Data());
+                    strcpy(shmem.get<char>(), message.get());
                   }
                 }
 
-                SharedLibraryInfo sharedLibraryInfo =
-                    SharedLibraryInfo::GetInfoForSelf();
+                Maybe<ProfileGenerationAdditionalInformation> additionalInfo =
+                    rv.isOk() ? Some(rv.unwrap()) : Nothing();
                 parameters->resolver(IPCProfileAndAdditionalInformation{
-                    shmem, Some(ProfileGenerationAdditionalInformation{
-                               std::move(sharedLibraryInfo)})});
+                    std::move(shmem), std::move(additionalInfo)});
                 // Let's join the gather profile thread now since it's done.
                 // Note that this gets called inside the ProfilerChild thread
                 // and not inside the gather profile thread itself.
@@ -501,6 +514,13 @@ void ProfilerChild::JoinGatherProfileThread() {
 
 void ProfilerChild::ActorDestroy(ActorDestroyReason aActorDestroyReason) {
   mDestroyed = true;
+  if (mAwaitNextChunkManagerUpdateResolver) {
+    // The reply can't be sent anymore (IPC rejects the parent's request);
+    // consuming the resolver just avoids the dropped-resolver warning.
+    std::move(mAwaitNextChunkManagerUpdateResolver)(
+        ProfilerParent::MakeFinalUpdate());
+    mAwaitNextChunkManagerUpdateResolver = nullptr;
+  }
   // Join the profile gathering thread in case it's not exited yet to prevent
   // any leaks during shutdown.
   JoinGatherProfileThread();
@@ -509,6 +529,11 @@ void ProfilerChild::ActorDestroy(ActorDestroyReason aActorDestroyReason) {
 void ProfilerChild::Destroy() {
   ClearPendingUpdate();
   if (!mDestroyed) {
+    // Resolve the parent's pending update request while the channel is open;
+    // Close() would drop the reply. Not ResetChunkManager(), which would
+    // dereference mChunkManager during shutdown.
+    ProcessChunkManagerUpdate(
+        ProfileBufferControlledChunkManager::Update(nullptr));
     Close();
   }
 }

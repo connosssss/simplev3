@@ -7,6 +7,10 @@
 
 "use strict";
 
+ChromeUtils.defineESModuleGetters(this, {
+  SearchUIUtils: "moz-src:///browser/components/search/SearchUIUtils.sys.mjs",
+});
+
 const TEST_PROVIDER_INFO = [
   {
     telemetryId: "example",
@@ -47,6 +51,22 @@ add_setup(async function () {
   let oldCanRecord = Services.telemetry.canRecordExtended;
   Services.telemetry.canRecordExtended = true;
 
+  // Used by test_source_errorpage to drive a search through
+  // SearchUIUtils.loadSearch, as the search CTA on the network error page
+  // does, and land on a page the TEST_PROVIDER_INFO above recognizes as a SERP.
+  await SearchTestUtils.installSearchExtension(
+    {
+      name: "Example",
+      search_url:
+        getRootDirectory(gTestPath).replace(
+          "chrome://mochitests/content",
+          "https://example.org"
+        ) + "searchTelemetryAd_searchbox_with_content.html",
+      search_url_get_params: "s={searchTerms}&abc=ff",
+    },
+    { setAsDefault: true }
+  );
+
   registerCleanupFunction(async () => {
     SearchSERPTelemetry.overrideSearchTelemetryForTests();
     Services.telemetry.canRecordExtended = oldCanRecord;
@@ -77,16 +97,6 @@ add_task(async function test_source_opened_in_new_tab_via_middle_click() {
 
   assertSERPTelemetry([
     {
-      impression: {
-        provider: "example",
-        tagged: "true",
-        partner_code: "ff",
-        source: "unknown",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
-      },
       engagements: [
         {
           action: SearchSERPTelemetryUtils.ACTIONS.CLICKED,
@@ -104,14 +114,9 @@ add_task(async function test_source_opened_in_new_tab_via_middle_click() {
     },
     {
       impression: {
-        provider: "example",
         tagged: "false",
         partner_code: "",
         source: "opened_in_new_tab",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
       },
       adImpressions: [
         {
@@ -153,16 +158,6 @@ add_task(async function test_source_opened_in_new_tab_via_target_blank() {
 
   assertSERPTelemetry([
     {
-      impression: {
-        provider: "example",
-        tagged: "true",
-        partner_code: "ff",
-        source: "unknown",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
-      },
       engagements: [
         {
           action: SearchSERPTelemetryUtils.ACTIONS.CLICKED,
@@ -180,14 +175,9 @@ add_task(async function test_source_opened_in_new_tab_via_target_blank() {
     },
     {
       impression: {
-        provider: "example",
         tagged: "false",
         partner_code: "",
         source: "opened_in_new_tab",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
       },
       adImpressions: [
         {
@@ -243,16 +233,6 @@ add_task(async function test_source_opened_in_new_tab_via_context_menu() {
 
   assertSERPTelemetry([
     {
-      impression: {
-        provider: "example",
-        tagged: "true",
-        partner_code: "ff",
-        source: "unknown",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
-      },
       engagements: [
         {
           action: SearchSERPTelemetryUtils.ACTIONS.CLICKED,
@@ -270,14 +250,9 @@ add_task(async function test_source_opened_in_new_tab_via_context_menu() {
     },
     {
       impression: {
-        provider: "example",
         tagged: "false",
         partner_code: "",
         source: "opened_in_new_tab",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
       },
       adImpressions: [
         {
@@ -312,16 +287,6 @@ add_task(
 
     assertSERPTelemetry([
       {
-        impression: {
-          provider: "example",
-          tagged: "true",
-          partner_code: "ff",
-          source: "unknown",
-          is_shopping_page: "false",
-          is_private: "false",
-          shopping_tab_displayed: "false",
-          is_signed_in: "false",
-        },
         engagements: [
           {
             action: SearchSERPTelemetryUtils.ACTIONS.CLICKED,
@@ -340,14 +305,9 @@ add_task(
       },
       {
         impression: {
-          provider: "example",
           tagged: "false",
           partner_code: "",
           source: "follow_on_from_refine_on_SERP",
-          is_shopping_page: "false",
-          is_private: "false",
-          shopping_tab_displayed: "false",
-          is_signed_in: "false",
         },
         adImpressions: [
           {
@@ -383,16 +343,6 @@ add_task(
 
     assertSERPTelemetry([
       {
-        impression: {
-          provider: "example",
-          tagged: "true",
-          partner_code: "ff",
-          source: "unknown",
-          is_shopping_page: "false",
-          is_private: "false",
-          shopping_tab_displayed: "false",
-          is_signed_in: "false",
-        },
         engagements: [
           {
             action: SearchSERPTelemetryUtils.ACTIONS.CLICKED,
@@ -411,14 +361,7 @@ add_task(
       },
       {
         impression: {
-          provider: "example",
-          tagged: "true",
-          partner_code: "ff",
           source: "follow_on_from_refine_on_SERP",
-          is_shopping_page: "false",
-          is_private: "false",
-          shopping_tab_displayed: "false",
-          is_signed_in: "false",
         },
         adImpressions: [
           {
@@ -463,16 +406,6 @@ add_task(async function test_refinement_button_vs_opened_in_new_tab() {
 
   assertSERPTelemetry([
     {
-      impression: {
-        provider: "example",
-        tagged: "true",
-        partner_code: "ff",
-        source: "unknown",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
-      },
       engagements: [
         {
           action: SearchSERPTelemetryUtils.ACTIONS.CLICKED,
@@ -490,14 +423,7 @@ add_task(async function test_refinement_button_vs_opened_in_new_tab() {
     },
     {
       impression: {
-        provider: "example",
-        tagged: "true",
-        partner_code: "ff",
         source: "follow_on_from_refine_on_SERP",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
       },
       adImpressions: [
         {
@@ -512,4 +438,40 @@ add_task(async function test_refinement_button_vs_opened_in_new_tab() {
 
   BrowserTestUtils.removeTab(tab1);
   BrowserTestUtils.removeTab(tab2);
+});
+
+// The network error page's search CTA calls SearchUIUtils.loadSearch with
+// sapSource "errorpage" (see NetErrorParent.performSearchCTASearch). Drive
+// that same entry point directly rather than rendering the error page, since
+// the CTA UI itself is covered by browser_aboutNetError_searchCTA.js.
+add_task(async function test_source_errorpage() {
+  resetTelemetry();
+  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser);
+  let pageLoadPromise = BrowserTestUtils.browserLoaded(tab.linkedBrowser);
+  await SearchUIUtils.loadSearch({
+    window,
+    searchText: "test",
+    triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+    sapSource: "errorpage",
+  });
+  await pageLoadPromise;
+  await waitForPageWithAdImpressions();
+
+  assertSERPTelemetry([
+    {
+      impression: {
+        source: "errorpage",
+      },
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.REFINED_SEARCH_BUTTONS,
+          ads_loaded: "1",
+          ads_visible: "1",
+          ads_hidden: "0",
+        },
+      ],
+    },
+  ]);
+
+  BrowserTestUtils.removeTab(tab);
 });

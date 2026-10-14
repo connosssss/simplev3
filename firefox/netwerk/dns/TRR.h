@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,16 +5,15 @@
 #ifndef mozilla_net_TRR_h
 #define mozilla_net_TRR_h
 
+#include "DNSPacket.h"
 #include "mozilla/net/DNSByTypeRecord.h"
-#include "mozilla/Assertions.h"
 #include "nsClassHashtable.h"
 #include "nsIChannel.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIStreamListener.h"
+#include "nsITRRSkipReason.h"
 #include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
-#include "DNSPacket.h"
-#include "nsITRRSkipReason.h"
 
 class AHostResolver;
 class nsHostRecord;
@@ -27,12 +24,16 @@ namespace net {
 class TRRService;
 class TRRServiceChannel;
 
-class TRR : public Runnable, public nsITimerCallback, public nsIStreamListener {
+class TRR : public Runnable,
+            public nsITimerCallback,
+            public nsIStreamListener,
+            public nsIRunnablePriority {
  public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIREQUESTOBSERVER
   NS_DECL_NSISTREAMLISTENER
   NS_DECL_NSITIMERCALLBACK
+  NS_DECL_NSIRUNNABLEPRIORITY
 
   // Number of "steps" we follow CNAME chains
   static const unsigned int kCnameChaseMax = 64;
@@ -46,7 +47,7 @@ class TRR : public Runnable, public nsITimerCallback, public nsIStreamListener {
   // to verify a domain
   explicit TRR(AHostResolver* aResolver, nsACString& aHost, enum TrrType aType,
                const nsACString& aOriginSuffix, bool aPB,
-               bool aUseFreshConnection);
+               bool aUseFreshConnection, nsIEventTarget* aTarget);
 
   NS_IMETHOD Run() override;
   void Cancel(nsresult aStatus);
@@ -68,6 +69,7 @@ class TRR : public Runnable, public nsITimerCallback, public nsIStreamListener {
   RequestPurpose Purpose() { return mPurpose; }
   void SetPurpose(RequestPurpose aPurpose) { mPurpose = aPurpose; }
   TRRSkippedReason SkipReason() const { return mTRRSkippedReason; }
+  nsIEventTarget* Target() const { return mTarget; }
 
  protected:
   virtual ~TRR() = default;
@@ -106,6 +108,8 @@ class TRR : public Runnable, public nsITimerCallback, public nsIStreamListener {
 
   void StoreIPHintAsDNSRecord(const struct SVCB& aSVCBRecord);
 
+  static already_AddRefed<nsIEventTarget> DefaultTarget();
+
   nsCOMPtr<nsIChannel> mChannel;
   enum TrrType mType { TRRTYPE_A };
   UniquePtr<DNSPacket> mPacket;
@@ -124,6 +128,12 @@ class TRR : public Runnable, public nsITimerCallback, public nsIStreamListener {
   nsCString mCname;
   uint32_t mCnameLoop = kCnameChaseMax;  // loop detection counter
 
+  // True when this TRR was dispatched to follow an HTTPS AliasMode TargetName.
+  // If the target has no HTTPS record of its own, we synthesize an AliasMode
+  // record for it (RFC 9460) instead of failing, so the connection is routed
+  // to the target.
+  bool mHTTPSAliasFollow = false;
+
   uint32_t mTTL = UINT32_MAX;
   TypeRecordResultType mResult = mozilla::AsVariant(Nothing());
 
@@ -139,6 +149,10 @@ class TRR : public Runnable, public nsITimerCallback, public nsIStreamListener {
 
   // If true, we set LOAD_FRESH_CONNECTION on our channel's load flags.
   bool mUseFreshConnection = false;
+
+  // The thread this request runs on. Chosen at construction so it can be read
+  // from any thread without locking.
+  const nsCOMPtr<nsIEventTarget> mTarget;
 };
 
 }  // namespace net

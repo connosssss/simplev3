@@ -1,9 +1,8 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { RemotePageChild } from "resource://gre/actors/RemotePageChild.sys.mjs";
+import { RemotePageChild } from "moz-src:///toolkit/actors/RemotePageChild.sys.mjs";
 
 const lazy = {};
 
@@ -17,9 +16,11 @@ export class AboutPrivateBrowsingChild extends RemotePageChild {
     super.actorCreated();
     let window = this.contentWindow;
 
-    Cu.exportFunction(this.PrivateBrowsingRecordClick.bind(this), window, {
-      defineAs: "PrivateBrowsingRecordClick",
-    });
+    Cu.exportFunction(
+      this.PrivateBrowsingIsEnrolledInExperiment.bind(this),
+      window,
+      { defineAs: "PrivateBrowsingIsEnrolledInExperiment" }
+    );
     Cu.exportFunction(
       this.PrivateBrowsingShouldHideDefault.bind(this),
       window,
@@ -32,19 +33,28 @@ export class AboutPrivateBrowsingChild extends RemotePageChild {
       window,
       { defineAs: "PrivateBrowsingPromoExposureTelemetry" }
     );
-    Cu.exportFunction(this.FeltPrivacyExposureTelemetry.bind(this), window, {
-      defineAs: "FeltPrivacyExposureTelemetry",
+    Cu.exportFunction(this.PrivateBrowsingRedesignEnabled.bind(this), window, {
+      defineAs: "PrivateBrowsingRedesignEnabled",
     });
+    Cu.exportFunction(this.PrivateBrowsingRedesignExposure.bind(this), window, {
+      defineAs: "PrivateBrowsingRedesignExposure",
+    });
+    Cu.exportFunction(
+      this.PrivateBrowsingRecordRedesignClick.bind(this),
+      window,
+      { defineAs: "PrivateBrowsingRecordRedesignClick" }
+    );
+    Cu.exportFunction(
+      this.PrivateBrowsingRecordIntroAnimation.bind(this),
+      window,
+      { defineAs: "PrivateBrowsingRecordIntroAnimation" }
+    );
   }
 
-  PrivateBrowsingRecordClick(source) {
-    const metadata = lazy.NimbusFeatures.pbNewtab.getEnrollmentMetadata(
+  PrivateBrowsingIsEnrolledInExperiment() {
+    return !!lazy.NimbusFeatures.pbNewtab.getEnrollmentMetadata(
       lazy.EnrollmentType.EXPERIMENT
     );
-    if (metadata) {
-      Glean.aboutprivatebrowsing["click" + source].record();
-    }
-    return !!metadata;
   }
 
   PrivateBrowsingShouldHideDefault() {
@@ -56,7 +66,26 @@ export class AboutPrivateBrowsingChild extends RemotePageChild {
     lazy.NimbusFeatures.pbNewtab.recordExposureEvent({ once: false });
   }
 
-  FeltPrivacyExposureTelemetry() {
-    lazy.NimbusFeatures.feltPrivacy.recordExposureEvent({ once: true });
+  PrivateBrowsingRecordRedesignClick(source) {
+    Glean.aboutprivatebrowsing["click" + source].record();
+  }
+
+  PrivateBrowsingRecordIntroAnimation() {
+    Glean.aboutprivatebrowsing.introAnimationPlayed.record();
+  }
+
+  // Without this the redesign experiment records enrollment but never records
+  // who actually saw the treatment.
+  PrivateBrowsingRedesignExposure() {
+    lazy.NimbusFeatures.privateWindowRedesign.recordExposureEvent({
+      once: true,
+    });
+  }
+
+  PrivateBrowsingRedesignEnabled() {
+    return Services.prefs.getBoolPref(
+      "browser.privateWindowRedesign.enabled",
+      false
+    );
   }
 }

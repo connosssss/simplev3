@@ -1,12 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsExceptionHandler.h"
 
-using mozilla::UniqueFileHandle;
+#if defined(XP_WIN)
+#  include <processthreadsapi.h>  // for GetCurrentThreadId()
+#elif defined(XP_LINUX)
+#  include <sys/syscall.h>  // For SYS_gettid
+#  include <unistd.h>       // For syscall()
+#elif defined(XP_DARWIN)
+#  include <mach/mach.h>  // For mach_thread_self()
+#endif
 
 namespace CrashReporter {
 
@@ -17,6 +22,12 @@ void AnnotateTexturesSize(size_t size) {}
 void AnnotatePendingIPC(size_t aNumOfPendingIPC, uint32_t aTopPendingIPCCount,
                         const char* aTopPendingIPCName,
                         uint32_t aTopPendingIPCType) {}
+
+nsresult OOPInit(nsIFile* aXREDirectory, bool force /*=false*/) {
+  return nsresult::NS_ERROR_NOT_AVAILABLE;
+}
+
+void OOPDeinit() {}
 
 nsresult SetExceptionHandler(nsIFile* aXREDirectory, bool force /*=false*/) {
   return NS_ERROR_NOT_IMPLEMENTED;
@@ -30,12 +41,13 @@ nsresult SetMinidumpPath(const nsAString& aPath) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
-nsresult SetupExtraData(nsIFile* aAppDataDirectory,
-                        const nsACString& aBuildID) {
+nsresult SetupExtraData(nsIFile* aAppDataDirectory, nsIFile* aXreDirectory) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 nsresult UnsetExceptionHandler() { return NS_ERROR_NOT_IMPLEMENTED; }
+
+uint32_t GetCrashHelperPid() { return 0; }
 
 const bool* RegisterAnnotationBool(Annotation aKey, const bool* aData) {
   return nullptr;
@@ -118,13 +130,11 @@ nsresult AppendAppNotesToCrashReport(const nsACString& data) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
+nsresult RecordPlatformAnnotations() { return NS_ERROR_NOT_IMPLEMENTED; }
+
+nsresult RecordXPCOMPlatformAnnotations() { return NS_ERROR_NOT_IMPLEMENTED; }
+
 bool GetAnnotation(const nsACString& key, nsACString& data) { return false; }
-
-nsresult RegisterAppMemory(void* ptr, size_t length) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-nsresult UnregisterAppMemory(void* ptr) { return NS_ERROR_NOT_IMPLEMENTED; }
 
 void SetIncludeContextHeap(bool aValue) {}
 
@@ -205,9 +215,10 @@ void SetNotificationPipeForChild(FileHandle breakpadFd,
                                  FileHandle crashHelperFd) {}
 #endif  // defined(MOZ_WIDGET_ANDROID)
 
-CrashPipeType GetChildNotificationPipe() { return nullptr; }
-
-UniqueFileHandle RegisterChildIPCChannel() { return UniqueFileHandle(); }
+bool RegisterChildIPCChannel(mozilla::geckoargs::ChildProcessArgs& aArgs,
+                             GeckoChildID aID) {
+  return false;
+}
 
 #if defined(MOZ_WIDGET_ANDROID)
 void SetCrashHelperPipes(FileHandle breakpadFd, FileHandle crashHelperFd) {}
@@ -215,17 +226,20 @@ void SetCrashHelperPipes(FileHandle breakpadFd, FileHandle crashHelperFd) {}
 
 bool GetLastRunCrashID(nsAString& id) { return false; }
 
-bool SetRemoteExceptionHandler(CrashPipeType aCrashPipe,
-                               UniqueFileHandle aCrashHelperPipe) {
+#if defined(XP_WIN)
+bool ChildProcessProxyRendezvous(GeckoChildID aID, DWORD aPid, HANDLE aHandle) {
   return false;
 }
+#endif  // defined(XP_WIN)
 
-bool TakeMinidumpForChild(ProcessId childPid, nsIFile** dump,
+bool SetRemoteExceptionHandler(int& aArgc, char** aArgv) { return false; }
+
+bool TakeMinidumpForChild(GeckoChildID aChildId, nsIFile** aDump,
                           AnnotationTable& aAnnotations) {
   return false;
 }
 
-bool FinalizeOrphanedMinidump(ProcessId aChildPid, GeckoProcessType aType,
+bool FinalizeOrphanedMinidump(GeckoChildID aChildId, GeckoProcessType aType,
                               nsString* aDumpId) {
   return false;
 }
@@ -236,12 +250,29 @@ DWORD WINAPI WerNotifyProc(LPVOID aParameter) { return 0; }
 
 #endif  // defined(XP_WIN)
 
-ThreadId CurrentThreadId() { return -1; }
+ThreadId CurrentThreadId() {
+#if defined(XP_WIN)
+  return ::GetCurrentThreadId();
+#elif defined(XP_LINUX)
+  // This matches Breakpad behavior, it doesn't need to be this way once we
+  // drop Breakpad and switch minidump generation fully to minidump-writer.
+  auto tid = syscall(SYS_gettid);
+
+  if (tid != -1) {
+    return tid;
+  }
+
+  return getpid();
+#elif defined(XP_DARWIN)
+  return mach_thread_self();
+#else
+  return -1;  // Just a dummy value on unsupported platforms.
+#endif
+}
 
 bool TakeMinidump(nsIFile** aResult, bool aMoveToPending) { return false; }
 
-bool CreateMinidumpsAndPair(ProcessHandle aTargetPid,
-                            ThreadId aTargetBlamedThread,
+bool CreateMinidumpsAndPair(GeckoChildID aId, ThreadId aTargetBlamedThread,
                             const nsACString& aIncomingPairName,
                             AnnotationTable& aTargetAnnotations,
                             nsIFile** aTargetDumpOut) {

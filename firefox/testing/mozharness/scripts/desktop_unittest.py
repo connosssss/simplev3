@@ -18,14 +18,13 @@ from datetime import datetime, timedelta
 here = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(1, os.path.dirname(here))
 
-import threading
 
 from mozfile import load_source
 from mozharness.base.errors import BaseErrorList
 from mozharness.base.log import INFO, WARNING
 from mozharness.base.script import PreScriptAction
 from mozharness.base.vcs.vcsbase import MercurialScript
-from mozharness.mozilla.automation import TBPL_EXCEPTION, TBPL_RETRY
+from mozharness.mozilla.automation import TBPL_RETRY
 from mozharness.mozilla.mozbase import MozbaseMixin
 from mozharness.mozilla.structuredlog import StructuredOutputParser
 from mozharness.mozilla.testing.codecoverage import (
@@ -35,6 +34,7 @@ from mozharness.mozilla.testing.codecoverage import (
 from mozharness.mozilla.testing.errors import HarnessErrorList
 from mozharness.mozilla.testing.testbase import TestingMixin, testing_config_options
 from mozharness.mozilla.testing.unittest import DesktopUnittestOutputParser
+from mozharness.mozilla.testing.video_test_recorder import VideoTestRecorder
 
 SUITE_CATEGORIES = [
     "gtest",
@@ -195,6 +195,14 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
                 },
             ],
             [
+                ["--timeout-factor"],
+                {
+                    "action": "store",
+                    "dest": "timeout_factor",
+                    "help": "Multiplier for test timeout values",
+                },
+            ],
+            [
                 ["--filter"],
                 {
                     "action": "store",
@@ -232,6 +240,15 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
                     "dest": "filter_set",
                     "default": "",
                     "help": "Use a predefined filter.",
+                },
+            ],
+            [
+                ["--combine-suites"],
+                {
+                    "action": "store_true",
+                    "dest": "combine_suites",
+                    "default": False,
+                    "help": "Combine test suites into one gtest invocation.",
                 },
             ],
             [
@@ -405,13 +422,14 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
     def __init__(self, require_config_file=True):
         # abs_dirs defined already in BaseScript but is here to make pylint happy
         self.abs_dirs = None
-        super(DesktopUnittest, self).__init__(
+        super().__init__(
             config_options=self.config_options,
             all_actions=[
                 "clobber",
                 "download-and-extract",
                 "create-virtualenv",
                 "start-pulseaudio",
+                "unlock-keyring",
                 "install",
                 "stage-files",
                 "run-tests",
@@ -466,7 +484,7 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
 
     # helper methods {{{2
     def _pre_config_lock(self, rw_config):
-        super(DesktopUnittest, self)._pre_config_lock(rw_config)
+        super()._pre_config_lock(rw_config)
         c = self.config
         if not c.get("run_all_suites"):
             return  # configs are valid
@@ -484,7 +502,7 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
     def query_abs_dirs(self):
         if self.abs_dirs:
             return self.abs_dirs
-        abs_dirs = super(DesktopUnittest, self).query_abs_dirs()
+        abs_dirs = super().query_abs_dirs()
 
         c = self.config
         dirs = {}
@@ -676,7 +694,7 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
             abs_app_dir = self.query_abs_app_dir()
             abs_res_dir = self.query_abs_res_dir()
 
-            raw_log_file, error_summary_file = self.get_indexed_logs(
+            raw_log_file, error_summary_file, test_summary_file = self.get_indexed_logs(
                 dirs["abs_blob_upload_dir"], suite
             )
 
@@ -688,6 +706,7 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
                 "abs_res_dir": abs_res_dir,
                 "raw_log_file": raw_log_file,
                 "error_summary_file": error_summary_file,
+                "test_summary_file": test_summary_file,
                 "gtest_dir": os.path.join(dirs["abs_test_install_dir"], "gtest"),
             }
 
@@ -717,12 +736,10 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
                 c.get("install_extension", [])
             ):
                 fetches_dir = os.environ.get("MOZ_FETCHES_DIR", '""')
-                base_cmd.extend(
-                    [
-                        f"--install-extension={os.path.join(fetches_dir, e)}"
-                        for e in c["install_extension"]
-                    ]
-                )
+                base_cmd.extend([
+                    f"--install-extension={os.path.join(fetches_dir, e)}"
+                    for e in c["install_extension"]
+                ])
 
             # do not add --disable fission if we don't have --disable-e10s
             if c["disable_fission"] and suite_category not in [
@@ -739,6 +756,9 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
 
             if c["restartAfterFailure"]:
                 base_cmd.append("--restart-after-failure")
+
+            if c.get("restartBetweenTests"):
+                base_cmd.append("--restart-between-tests")
 
             # Ignore chunking if we have user specified test paths
             if not (self.verify_enabled or self.per_test_coverage):
@@ -766,17 +786,18 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
                         else:
                             self.warning(
                                 "--tag does not currently work with the "
-                                "'{suite_category}' suite."
+                                f"'{suite_category}' suite."
                             )
                 elif c.get("total_chunks") and c.get("this_chunk"):
-                    base_cmd.extend(
-                        [
-                            "--total-chunks",
-                            c["total_chunks"],
-                            "--this-chunk",
-                            c["this_chunk"],
-                        ]
-                    )
+                    base_cmd.extend([
+                        "--total-chunks",
+                        c["total_chunks"],
+                        "--this-chunk",
+                        c["this_chunk"],
+                    ])
+
+                if c.get("timeout_factor"):
+                    base_cmd.extend(["--timeout-factor", c["timeout_factor"]])
 
             if c["no_random"]:
                 if suite_category == "mochitest":
@@ -816,7 +837,16 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
                     base_cmd.append("--filter-set={}".format(c["filter_set"]))
                 else:
                     self.warning(
-                        "--filter-set does not currently work with suites other then "
+                        "--filter-set does not currently work with suites other than "
+                        "gtest."
+                    )
+
+            if c["combine_suites"]:
+                if suite_category == "gtest":
+                    base_cmd.append("--combine-suites")
+                else:
+                    self.warning(
+                        "--combine-suites does not currently work with suites other than "
                         "gtest."
                     )
 
@@ -869,10 +899,6 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
                     option = option % str_format_values
                     if not option.endswith("None"):
                         base_cmd.append(option)
-                if self.structured_output(
-                    suite_category, self._query_try_flavor(suite_category, suite)
-                ):
-                    base_cmd.append("--log-raw=-")
                 return base_cmd
             else:
                 self.warning(
@@ -938,6 +964,10 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
                 ("mochitest-browser-a11y.*", "browser-a11y"),
                 ("mochitest-browser-media.*", "browser-media"),
                 ("mochitest-browser-translations.*", "browser-translations"),
+                (
+                    "mochitest-browser-chrome-ml-models.*",
+                    "browser-chrome-ml-models",
+                ),
                 ("mochitest-devtools-chrome.*", "devtools-chrome"),
                 ("chrome", "chrome"),
             ],
@@ -978,35 +1008,6 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
     # preflight_install is in TestingMixin.
     # install is in TestingMixin.
 
-    @PreScriptAction("download-and-extract")
-    def _pre_download_and_extract(self, action):
-        """Abort if --artifact try syntax is used with compiled-code tests"""
-        dir = self.query_abs_dirs()["abs_blob_upload_dir"]
-        self.mkdir_p(dir)
-
-        if not self.try_message_has_flag("artifact"):
-            return
-        self.info("Artifact build requested in try syntax.")
-        rejected = []
-        compiled_code_suites = [
-            "cppunit",
-            "gtest",
-            "jittest",
-        ]
-        for category in SUITE_CATEGORIES:
-            suites = self._query_specified_suites(category) or []
-            for suite in suites:
-                if any([suite.startswith(c) for c in compiled_code_suites]):
-                    rejected.append(suite)
-                    break
-        if rejected:
-            self.record_status(TBPL_EXCEPTION)
-            self.fatal(
-                "There are specified suites that are incompatible with "
-                "--artifact try syntax flag: {}".format(", ".join(rejected)),
-                exit_code=self.return_code,
-            )
-
     def download_and_extract(self):
         """
         download and extract test zip / download installer
@@ -1024,24 +1025,39 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
                 for cat in SUITE_CATEGORIES
                 if self._query_specified_suites(cat) is not None
             ]
-        super(DesktopUnittest, self).download_and_extract(
+        super().download_and_extract(
             extract_dirs=extract_dirs, suite_categories=target_categories
         )
+
+    def unlock_keyring(self):
+        if os.environ.get("NEED_GNOME_KEYRING") == "true":
+            self.log("replacing and unlocking gnome-keyring-daemon")
+            import subprocess
+
+            subprocess.run(
+                [
+                    "gnome-keyring-daemon",
+                    "-r",
+                    "-d",
+                    "--unlock",
+                    "--components=secrets",
+                ],
+                check=True,
+                input=b"\n",
+            )
 
     def start_pulseaudio(self):
         command = []
         # Implies that underlying system is Linux.
         if os.environ.get("NEED_PULSEAUDIO") == "true":
-            command.extend(
-                [
-                    "pulseaudio",
-                    "--daemonize",
-                    "--log-level=4",
-                    "--log-time=1",
-                    "-vvvvv",
-                    "--exit-idle-time=-1",
-                ]
-            )
+            command.extend([
+                "pulseaudio",
+                "--daemonize",
+                "--log-level=4",
+                "--log-time=1",
+                "-vvvvv",
+                "--exit-idle-time=-1",
+            ])
 
             # Only run the initialization for Debian.
             # Ubuntu appears to have an alternate method of starting pulseaudio.
@@ -1295,84 +1311,6 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
         executed_too_many_tests = False
         xpcshell_selftests = 0
 
-        def do_gnome_video_recording(suite_name, upload_dir, ev):
-            import os
-            import subprocess
-
-            import dbus
-
-            target_file = os.path.join(
-                upload_dir,
-                f"video_{suite_name}.webm",
-            )
-
-            tmp_file = os.path.join(
-                upload_dir,
-                f"video_{suite_name}_tmp.webm",
-            )
-
-            self.info(f"Recording suite {suite_name} to {target_file}")
-
-            session_bus = dbus.SessionBus()
-            session_bus.call_blocking(
-                "org.gnome.Shell.Screencast",
-                "/org/gnome/Shell/Screencast",
-                "org.gnome.Shell.Screencast",
-                "Screencast",
-                signature="sa{sv}",
-                args=[
-                    tmp_file,
-                    {"draw-cursor": True, "framerate": 35},
-                ],
-            )
-
-            ev.wait()
-
-            # Use ffmpeg to add duration headers in the screen recording.
-            try:
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-i",
-                        tmp_file,
-                        "-vcodec",
-                        "copy",
-                        "-acodec",
-                        "copy",
-                        target_file,
-                    ],
-                    check=True,
-                )
-                # If subprocess.run did not raise CalledProcessError, remove
-                # the temporary file.
-                os.remove(tmp_file)
-            except subprocess.CalledProcessError as e:
-                self.error(
-                    f"Error occurred while running ffmpeg: {e.stderr} ({e.returncode})"
-                )
-                # If subprocess.run failed, rename the temporary file to the
-                # expected target file name.
-                os.rename(tmp_file, target_file)
-
-        def do_macos_video_recording(suite_name, upload_dir, ev):
-            import os
-            import subprocess
-
-            target_file = os.path.join(
-                upload_dir,
-                f"video_{suite_name}.mov",
-            )
-            self.info(f"Recording suite {suite_name} to {target_file}")
-
-            process = subprocess.Popen(
-                ["/usr/sbin/screencapture", "-v", "-k", target_file],
-                stdin=subprocess.PIPE,
-            )
-            ev.wait()
-            process.stdin.write(b"p")
-            process.stdin.flush()
-            process.wait()
-
         if suites:
             self.info("#### Running %s suites" % suite_category)
             for suite in suites:
@@ -1413,10 +1351,7 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
                 if self.mochitest_flavor:
                     replace_dict.update({"mochitest_flavor": flavor})
 
-                try_options, try_tests = self.try_args(flavor)
-
                 suite_name = suite_category + "-" + suite
-                tbpl_status, log_level = None, None
                 error_list = BaseErrorList + HarnessErrorList
                 parser = self.get_test_output_parser(
                     suite_category,
@@ -1492,70 +1427,52 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
                     abs_base_cmd = self._query_abs_base_cmd(suite_category, suite)
                     cmd = abs_base_cmd[:]
                     cmd.extend(
-                        self.query_options(
-                            options_list, try_options, str_format_values=replace_dict
-                        )
+                        self.query_options(options_list, str_format_values=replace_dict)
                     )
                     cmd.extend(
                         self.query_tests_args(
-                            tests_list, try_tests, str_format_values=replace_dict
+                            tests_list, str_format_values=replace_dict
                         )
                     )
 
                     final_cmd = copy.copy(cmd)
                     final_cmd.extend(per_test_args)
 
-                    # Bug 1714406: In test-verify of xpcshell tests on Windows, repeated
-                    # self-tests can trigger https://bugs.python.org/issue37380,
-                    # for python < 3.7; avoid by running xpcshell self-tests only once
-                    # per test-verify run.
-                    if (
-                        (self.verify_enabled or self.per_test_coverage)
-                        and sys.platform.startswith("win")
-                        and sys.version_info < (3, 7)
-                        and "--self-test" in final_cmd
-                    ):
-                        xpcshell_selftests += 1
-                        if xpcshell_selftests > 1:
+                    # Run xpcshell self-tests only once per test-verify run or only in chunk 1.
+                    if "--self-test" in final_cmd:
+                        should_remove_selftest = False
+
+                        # Remove self-test for test-verify runs after the first one
+                        if self.verify_enabled or self.per_test_coverage:
+                            xpcshell_selftests += 1
+                            if xpcshell_selftests > 1:
+                                should_remove_selftest = True
+
+                        # Remove self-test for chunked runs when not in chunk 1
+                        if (
+                            self.config.get("this_chunk")
+                            and int(self.config["this_chunk"]) != 1
+                        ):
+                            should_remove_selftest = True
+
+                        if should_remove_selftest:
                             final_cmd.remove("--self-test")
 
                     final_env = copy.copy(env)
 
-                    finish_video = threading.Event()
-                    video_recording_thread = None
-                    if os.getenv("MOZ_RECORD_TEST"):
-                        video_recording_target = None
-                        if sys.platform == "linux":
-                            video_recording_target = do_gnome_video_recording
-                        elif sys.platform == "darwin":
-                            video_recording_target = do_macos_video_recording
-
-                        if video_recording_target:
-                            video_recording_thread = threading.Thread(
-                                target=video_recording_target,
-                                args=(
-                                    suite,
-                                    env["MOZ_UPLOAD_DIR"],
-                                    finish_video,
-                                ),
-                            )
-                            self.info(f"Starting recording thread {suite}")
-                            video_recording_thread.start()
-                        else:
-                            self.warning(
-                                "Screen recording not implemented for this platform"
-                            )
-
                     if self.per_test_coverage:
                         self.set_coverage_env(final_env)
 
-                    return_code = self.run_command(
-                        final_cmd,
-                        cwd=dirs["abs_work_dir"],
-                        output_timeout=cmd_timeout,
-                        output_parser=parser,
-                        env=final_env,
-                    )
+                    with VideoTestRecorder(suite, self):
+                        return_code = self.run_command(
+                            final_cmd,
+                            cwd=dirs["abs_work_dir"],
+                            output_timeout=cmd_timeout,
+                            output_parser=parser,
+                            env=final_env,
+                        )
+
+                    self.append_test_summary(dirs["abs_blob_upload_dir"])
 
                     if self.per_test_coverage:
                         self.add_per_test_coverage_report(
@@ -1571,12 +1488,6 @@ class DesktopUnittest(TestingMixin, MercurialScript, MozbaseMixin, CodeCoverageM
                     # 2) if num_errors is 0 then we look in the subclassed 'parser'
                     #    findings for harness/suite errors <- DesktopUnittestOutputParser
                     # 3) checking to see if the return code is in success_codes
-
-                    if video_recording_thread:
-                        self.info(f"Stopping recording thread {suite}")
-                        finish_video.set()
-                        video_recording_thread.join()
-                        self.info(f"Stopped recording thread {suite}")
 
                     success_codes = None
                     tbpl_status, log_level, summary = parser.evaluate_parser(

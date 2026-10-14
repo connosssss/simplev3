@@ -5,47 +5,31 @@
 package mozilla.components.lib.auth
 
 import android.content.Context
-import android.os.Build
 import androidx.biometric.BiometricManager
 
-/**
- * Utility class for BiometricPromptAuth
- */
-
+/** Utility class for BiometricPromptAuth */
 fun Context.canUseBiometricFeature(): Boolean {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        val manager = BiometricManager.from(this)
-        return BiometricUtils.canUseFeature(manager)
-    } else {
-        false
-    }
+    val manager = BiometricManager.from(this)
+    return BiometricUtils.canUseFeature(manager)
 }
 
 internal object BiometricUtils {
 
-    /**
-     * Checks if the appropriate SDK version and hardware capabilities are met to use the feature.
-     */
+    /** Checks if the appropriate SDK version and hardware capabilities are met to use the feature. */
     internal fun canUseFeature(manager: BiometricManager): Boolean {
         return isHardwareAvailable(manager) && isEnrolled(manager)
     }
 
-    /**
-     * Checks if the hardware requirements are met for using the [BiometricManager].
-     */
+    /** Checks if the hardware requirements are met for using the [BiometricManager]. */
     internal fun isHardwareAvailable(biometricManager: BiometricManager): Boolean {
-        val status =
-            biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK)
+        val status = biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK)
         return status != BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE &&
             status != BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE
     }
 
-    /**
-     * Checks if the user can use the [BiometricManager] and is therefore enrolled.
-     */
+    /** Checks if the user can use the [BiometricManager] and is therefore enrolled. */
     internal fun isEnrolled(biometricManager: BiometricManager): Boolean {
-        val status =
-            biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK)
+        val status = biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK)
         return status == BiometricManager.BIOMETRIC_SUCCESS
     }
 }

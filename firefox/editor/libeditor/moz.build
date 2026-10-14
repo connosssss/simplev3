@@ -1,17 +1,18 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 MOCHITEST_MANIFESTS += [
     "tests/browserscope/mochitest.toml",
+    "tests/edit-context/mochitest.toml",
     "tests/mochitest.toml",
 ]
 
 MOCHITEST_CHROME_MANIFESTS += ["tests/chrome.toml"]
 
 BROWSER_CHROME_MANIFESTS += ["tests/browser.toml"]
+
+TEST_DIRS += ["gtest"]
 
 EXPORTS.mozilla += [
     "EditAction.h",
@@ -46,6 +47,7 @@ UNIFIED_SOURCES += [
     "EditorCommands.cpp",
     "EditorController.cpp",
     "EditorEventListener.cpp",
+    "EditorLineBreak.cpp",
     "EditorUtils.cpp",
     "EditTransactionBase.cpp",
     "HTMLAbsPositionEditor.cpp",
@@ -60,6 +62,7 @@ UNIFIED_SOURCES += [
     "HTMLEditorEventListener.cpp",
     "HTMLEditorInsertLineBreakHandler.cpp",
     "HTMLEditorInsertParagraphHandler.cpp",
+    "HTMLEditorMutationObserver.cpp",
     "HTMLEditorObjectResizer.cpp",
     "HTMLEditorState.cpp",
     "HTMLEditSubActionHandler.cpp",
@@ -72,6 +75,7 @@ UNIFIED_SOURCES += [
     "InternetCiter.cpp",
     "JoinNodesTransaction.cpp",
     "MoveNodeTransaction.cpp",
+    "MoveSiblingsTransaction.cpp",
     "PendingStyles.cpp",
     "PlaceholderTransaction.cpp",
     "ReplaceTextTransaction.cpp",
@@ -101,3 +105,42 @@ FINAL_LIBRARY = "xul"
 
 with Files("tests/*1151186*"):
     BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
+
+LICENSED_UNDER += ["chromium"]
+LICENSED_UNDER["chromium"].paths = [
+    "EditorEventListener.cpp",
+]
+
+SOURCE_HEADERS += [
+    "AutoClonedRangeArray.h",
+    "AutoSelectionRestorer.h",
+    "ChangeAttributeTransaction.h",
+    "ChangeStyleTransaction.h",
+    "CompositionTransaction.h",
+    "CSSEditUtils.h",
+    "DeleteContentTransactionBase.h",
+    "DeleteMultipleRangesTransaction.h",
+    "DeleteNodeTransaction.h",
+    "DeleteRangeTransaction.h",
+    "DeleteTextTransaction.h",
+    "EditAggregateTransaction.h",
+    "EditorDOMAPIWrapper.h",
+    "EditorEventListener.h",
+    "EditorLineBreak.h",
+    "EditorUtils.h",
+    "HTMLEditHelpers.h",
+    "HTMLEditorEventListener.h",
+    "HTMLEditorInlines.h",
+    "HTMLEditorNestedClasses.h",
+    "HTMLEditUtils.h",
+    "InsertNodeTransaction.h",
+    "InsertTextTransaction.h",
+    "InternetCiter.h",
+    "JoinNodesTransaction.h",
+    "MoveNodeTransaction.h",
+    "PlaceholderTransaction.h",
+    "ReplaceTextTransaction.h",
+    "SplitNodeTransaction.h",
+    "WhiteSpaceVisibilityKeeper.h",
+    "WSRunScanner.h",
+]

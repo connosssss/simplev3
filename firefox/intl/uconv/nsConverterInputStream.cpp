@@ -1,4 +1,3 @@
-/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +7,6 @@
 #include "nsReadLine.h"
 #include "nsStreamUtils.h"
 
-#include <algorithm>
 #include <tuple>
 
 using namespace mozilla;
@@ -21,6 +19,14 @@ NS_IMPL_ISUPPORTS(nsConverterInputStream, nsIConverterInputStream,
 NS_IMETHODIMP
 nsConverterInputStream::Init(nsIInputStream* aStream, const char* aCharset,
                              int32_t aBufferSize, char16_t aReplacementChar) {
+  mInput = nullptr;
+  mByteData.Clear();
+  mUnicharData.Clear();
+  mLastErrorCode = NS_OK;
+  mLeftOverBytes = 0;
+  mUnicharDataOffset = 0;
+  mUnicharDataLength = 0;
+
   nsAutoCString label;
   if (!aCharset) {
     label.AssignLiteral("UTF-8");

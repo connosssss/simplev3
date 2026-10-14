@@ -24,7 +24,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D255286
     data_sensitivity:
       - interaction
-    expires: 154
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -41,7 +41,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D214470
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -58,7 +58,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D255286
     data_sensitivity:
       - interaction
-    expires: 154
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -75,7 +75,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D255286
     data_sensitivity:
       - interaction
-    expires: 154
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -92,7 +92,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D214470
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -109,7 +109,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D217782
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -126,7 +126,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D217782
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -143,7 +143,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D214470
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -161,7 +161,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D255286
     data_sensitivity:
       - interaction
-    expires: 154
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -181,7 +181,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D214470
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -207,7 +207,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D237127
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -216,26 +216,6 @@ genai.chatbot:
       provider:
         type: string
         description: Removed provider id.
-
-  experiment_checkbox_click:
-    type: event
-    description: >
-      Chatbot experiment checkbox was clicked to enable/disable.
-    bugs:
-      - https://bugzilla.mozilla.org/show_bug.cgi?id=1895813
-    data_reviews:
-      - https://phabricator.services.mozilla.com/D214470
-    data_sensitivity:
-      - interaction
-    expires: 147
-    notification_emails:
-      - elee@mozilla.com
-    send_in_pings:
-      - events
-    extra_keys:
-      enabled:
-        type: boolean
-        description: New/current state is enabled.
 
   keyboard_shortcut:
     type: event
@@ -247,7 +227,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D226205
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -270,30 +250,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D223938
     data_sensitivity:
       - interaction
-    expires: 147
-    notification_emails:
-      - elee@mozilla.com
-    send_in_pings:
-      - events
-    extra_keys:
-      provider:
-        type: string
-        description: Which provider was last selected.
-      step:
-        type: quantity
-        description: Onboarding screen number.
-
-  onboarding_continue:
-    type: event
-    description: >
-      Chatbot onboarding continued from provider choice.
-    bugs:
-      - https://bugzilla.mozilla.org/show_bug.cgi?id=1911104
-    data_reviews:
-      - https://phabricator.services.mozilla.com/D223938
-    data_sensitivity:
-      - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -316,7 +273,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D223938
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -339,7 +296,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D223938
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -362,7 +319,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D223938
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -371,29 +328,6 @@ genai.chatbot:
       provider:
         type: string
         description: Current provider id.
-      step:
-        type: quantity
-        description: Onboarding screen number.
-
-  onboarding_provider_learn:
-    type: event
-    description: >
-      Chatbot onboarding opened provider learn more link.
-    bugs:
-      - https://bugzilla.mozilla.org/show_bug.cgi?id=1911104
-    data_reviews:
-      - https://phabricator.services.mozilla.com/D223938
-    data_sensitivity:
-      - interaction
-    expires: 147
-    notification_emails:
-      - elee@mozilla.com
-    send_in_pings:
-      - events
-    extra_keys:
-      provider:
-        type: string
-        description: Which provider.
       step:
         type: quantity
         description: Onboarding screen number.
@@ -408,7 +342,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D223938
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -431,7 +365,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D223938
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -447,40 +381,20 @@ genai.chatbot:
         type: string
         description: Which terms link.
 
-  onboarding_text_highlight_displayed:
-    type: event
-    description: >
-      Chatbot onboarding impression for text highlight screen.
-    bugs:
-      - https://bugzilla.mozilla.org/show_bug.cgi?id=1911104
-    data_reviews:
-      - https://phabricator.services.mozilla.com/D223938
-    data_sensitivity:
-      - interaction
-    expires: 147
-    notification_emails:
-      - elee@mozilla.com
-    send_in_pings:
-      - events
-    extra_keys:
-      provider:
-        type: string
-        description: Which provider was last selected.
-      step:
-        type: quantity
-        description: Onboarding screen number.
-
   prompt_click:
     type: event
     description: >
       Chatbot prompt requested.
     bugs:
       - https://bugzilla.mozilla.org/show_bug.cgi?id=1974185
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2044112
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=1972935
     data_reviews:
       - https://phabricator.services.mozilla.com/D255286
+      - https://phabricator.services.mozilla.com/D309646
     data_sensitivity:
       - interaction
-    expires: 154
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -495,12 +409,12 @@ genai.chatbot:
       provider:
         type: string
         description: Selected provider id.
-      reader_mode:
-        type: boolean
-        description: Whether reader mode text was used.
       selection:
         type: quantity
-        description: Page content length.
+        description: Selected text length.
+      smart_window:
+        type: boolean
+        description: Whether the prompt was sent from Smart Window.
       source:
         type: string
         description: Entrypoint for the request, e.g., callout, footer, page.
@@ -515,7 +429,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D214470
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -531,26 +445,6 @@ genai.chatbot:
         type: string
         description: Which UI surface.
 
-  shortcuts_checkbox_click:
-    type: event
-    description: >
-      Chatbot shortcuts checkbox was clicked to enable/disable.
-    bugs:
-      - https://bugzilla.mozilla.org/show_bug.cgi?id=1910005
-    data_reviews:
-      - https://phabricator.services.mozilla.com/D217782
-    data_sensitivity:
-      - interaction
-    expires: 147
-    notification_emails:
-      - elee@mozilla.com
-    send_in_pings:
-      - events
-    extra_keys:
-      enabled:
-        type: boolean
-        description: New/current state is enabled.
-
   shortcuts_displayed:
     type: event
     description: >
@@ -561,7 +455,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D217782
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -589,7 +483,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D225895
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -615,7 +509,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D223938
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -635,7 +529,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D217782
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -661,7 +555,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D223938
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -681,7 +575,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D223938
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -704,7 +598,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D223938
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -724,7 +618,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D223938
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -747,7 +641,7 @@ genai.chatbot:
       - https://phabricator.services.mozilla.com/D214470
     data_sensitivity:
       - interaction
-    expires: 147
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -772,11 +666,12 @@ genai.chatbot:
       Chatbot page summarization was requested.
     bugs:
       - https://bugzilla.mozilla.org/show_bug.cgi?id=1974185
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=1972935
     data_reviews:
       - https://phabricator.services.mozilla.com/D255286
     data_sensitivity:
       - interaction
-    expires: 154
+    expires: 166
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -785,12 +680,6 @@ genai.chatbot:
       provider:
         type: string
         description: Selected provider id.
-      reader_mode:
-        type: boolean
-        description: Whether reader mode text was used.
-      selection:
-        type: quantity
-        description: Page content length.
       source:
         type: string
         description: Entrypoint for the request, e.g., callout, footer, page.
@@ -809,7 +698,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D251779
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -826,7 +715,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D243790
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -843,7 +732,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D251779
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -860,7 +749,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D251779
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -878,7 +767,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D249104
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -898,7 +787,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D243790
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -921,7 +810,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D243790
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -947,7 +836,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D243790
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -991,7 +880,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D243790
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -1016,6 +905,43 @@ genai.linkpreview:
         type: quantity
         description: Milliseconds to generate full result
 
+  smoke_test:
+    type: event
+    description: >
+      This tests whether SmolLM2-360M is producing the correct output when set in greedy mode,
+      which is done to produce deterministic results.  This fires at most once per build ID per install.
+    bugs:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2047026
+    data_reviews:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2047026
+    data_sensitivity:
+      - technical
+    expires: 170
+    notification_emails:
+      - firefox-ai-and-ml@mozilla.com
+    send_in_pings:
+      - events
+    extra_keys:
+      flow_id:
+        type: string
+        description: >
+          Joins to sibling firefox.ai.runtime.engine_run and
+          run_inference_success_flow events for the same inference.
+      output_hash:
+        type: string
+        description: >
+          SHA-256 of the greedy output. Analysts bucket users whose output
+          drifted the same way by grouping on this hash.
+      matches_pinned:
+        type: boolean
+        description: Whether output_hash equalled the pinned reference.
+      model_id:
+        type: string
+        description: Model identifier used by the smoke test run.
+      model_revision:
+        type: string
+        description: Model revision used by the smoke test run.
+
   key_points_toggle:
     type: event
     description: >
@@ -1026,7 +952,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D249851
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -1046,7 +972,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D249855
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -1071,7 +997,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D251779
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -1094,7 +1020,7 @@ genai.linkpreview:
       - https://phabricator.services.mozilla.com/D243790
     data_sensitivity:
       - interaction
-    expires: 150
+    expires: 162
     notification_emails:
       - elee@mozilla.com
     send_in_pings:
@@ -1109,3 +1035,59 @@ genai.linkpreview:
       tab:
         type: string
         description: The type of tab where the event occurred. Potential values home, newtab
+
+selection_menu:
+  displayed:
+    type: event
+    description: >
+      The text selection actions menu was shown for a selection. This is the
+      denominator for the menu's action clicks.
+    bugs:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2069144
+    data_reviews:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2069144
+    data_sensitivity:
+      - interaction
+    expires: never
+    notification_emails:
+      - scunnane@mozilla.com
+      - fx-search-telemetry@mozilla.com
+    send_in_pings:
+      - events
+    extra_keys:
+      delay:
+        type: quantity
+        description: Milliseconds from mousedown to showing.
+      selection:
+        type: quantity
+        description: Selected text length.
+      smart_window:
+        type: boolean
+        description: Whether the menu was shown in Smart Window.
+
+  action_click:
+    type: event
+    description: >
+      An action in the text selection actions menu was clicked.
+    bugs:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2069144
+    data_reviews:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2069144
+    data_sensitivity:
+      - interaction
+    expires: never
+    notification_emails:
+      - scunnane@mozilla.com
+      - fx-search-telemetry@mozilla.com
+    send_in_pings:
+      - events
+    extra_keys:
+      action:
+        type: string
+        description: Which action was clicked, e.g., ai, search, copy.
+      selection:
+        type: quantity
+        description: Selected text length.
+      smart_window:
+        type: boolean
+        description: Whether the menu was shown in Smart Window.

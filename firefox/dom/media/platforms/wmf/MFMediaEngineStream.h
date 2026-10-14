@@ -15,7 +15,6 @@
 #include "PlatformDecoderModule.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Mutex.h"
-#include "mozilla/SPSCQueue.h"
 
 namespace mozilla {
 
@@ -42,7 +41,7 @@ class MFMediaEngineStream
   virtual nsCString GetCodecName() const = 0;
 
   HRESULT RuntimeClassInitialize(uint64_t aStreamId, const TrackInfo& aInfo,
-                                 bool aIsEncrytpedCustomInit,
+                                 bool aIsEncryptedCustomInit,
                                  MFMediaSource* aParentSource);
 
   // Called by MFMediaSource.
@@ -77,7 +76,7 @@ class MFMediaEngineStream
 
   void NotifyEndOfStream() {
     Microsoft::WRL::ComPtr<MFMediaEngineStream> self = this;
-    Unused << mTaskQueue->Dispatch(NS_NewRunnableFunction(
+    (void)mTaskQueue->Dispatch(NS_NewRunnableFunction(
         "MFMediaEngineStream::NotifyEndOfStream",
         [self]() { self->NotifyEndOfStreamInternal(); }));
   }
@@ -121,6 +120,10 @@ class MFMediaEngineStream
   void ReplySampleRequestIfPossible();
   bool ShouldServeSamples() const;
 
+  // Return a strong reference to the parent source, thread-safe.
+  Microsoft::WRL::ComPtr<MFMediaSource> GetParentSource() const;
+  void SetParentSource(MFMediaSource* aParentSource);
+
   void NotifyNewData(MediaRawData* aSample);
   void NotifyEndOfStreamInternal();
 
@@ -146,8 +149,12 @@ class MFMediaEngineStream
 
   // IMFMediaEventQueue is thread-safe.
   Microsoft::WRL::ComPtr<IMFMediaEventQueue> mMediaEventQueue;
-  Microsoft::WRL::ComPtr<IMFStreamDescriptor> mStreamDescriptor;
-  Microsoft::WRL::ComPtr<MFMediaSource> mParentSource;
+  Mutex mDescriptorMutex{"MFMediaEngineStream::mDescriptorMutex"};
+  Microsoft::WRL::ComPtr<IMFStreamDescriptor> mStreamDescriptor
+      MOZ_GUARDED_BY(mDescriptorMutex);
+  mutable Mutex mParentSourceMutex{"MFMediaEngineStream::mParentSourceMutex"};
+  Microsoft::WRL::ComPtr<MFMediaSource> mParentSource
+      MOZ_GUARDED_BY(mParentSourceMutex);
 
   // This an unique ID retrieved from the IMFStreamDescriptor.
   DWORD mStreamDescriptorId = 0;
@@ -191,7 +198,7 @@ class MFMediaEngineStream
   bool mReceivedEOS;
 
   // https://github.com/w3c/encrypted-media/issues/251#issuecomment-819783073
-  bool mIsEncrytpedCustomInit;
+  bool mIsEncryptedCustomInit;
 };
 
 /**

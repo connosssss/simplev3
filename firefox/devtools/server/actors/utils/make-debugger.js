@@ -63,10 +63,7 @@ module.exports = function makeDebugger({
   const dbg = new Debugger();
   EventEmitter.decorate(dbg);
 
-  // By default, we disable asm.js and WASM debugging because of performance reason.
-  // Enabling asm.js debugging (allowUnobservedAsmJS=false) will make asm.js fallback to JS compiler
-  // and be debugging as a regular JS script.
-  dbg.allowUnobservedAsmJS = true;
+  // By default, we disable WASM debugging because of performance reason.
   // Enabling WASM debugging (allowUnobservedWasm=false) will make the engine compile WASM scripts
   // into different machine code with debugging instructions. This significantly increase the memory usage of it.
   dbg.allowUnobservedWasm = true;
@@ -95,8 +92,8 @@ module.exports = function makeDebugger({
     dbg.addDebuggees();
     dbg.onNewGlobalObject = onNewGlobalObject;
   };
-  dbg.findDebuggees = function () {
-    return findDebuggees(dbg);
+  dbg.findDebuggees = function (includeAllSameProcessGlobals) {
+    return findDebuggees(dbg, includeAllSameProcessGlobals);
   };
 
   return dbg;

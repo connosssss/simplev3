@@ -11,18 +11,26 @@
 #include "audio/audio_state.h"
 
 #include <algorithm>
-#include <memory>
+#include <cstddef>
+#include <cstdint>
 #include <utility>
 #include <vector>
 
 #include "api/audio/audio_device.h"
+#include "api/audio/audio_device_defines.h"
+#include "api/audio/audio_processing.h"
+#include "api/make_ref_counted.h"
+#include "api/scoped_refptr.h"
 #include "api/sequence_checker.h"
 #include "api/task_queue/task_queue_base.h"
 #include "api/units/time_delta.h"
-#include "audio/audio_receive_stream.h"
 #include "audio/audio_send_stream.h"
+#include "call/audio_receive_stream.h"
+#include "call/audio_sender.h"
+#include "call/audio_state.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
+#include "rtc_base/task_utils/repeating_task.h"
 
 namespace webrtc {
 namespace internal {
@@ -37,7 +45,7 @@ AudioState::AudioState(const AudioState::Config& config)
 }
 
 AudioState::~AudioState() {
-  RTC_DCHECK_RUN_ON(&thread_checker_);
+  RTC_DCHECK_RUN_ON(&worker_thread_checker_);
   RTC_DCHECK(receiving_streams_.empty());
   RTC_DCHECK(sending_streams_.empty());
   RTC_DCHECK(!null_audio_poller_.Running());
@@ -53,7 +61,7 @@ AudioTransport* AudioState::audio_transport() {
 
 void AudioState::SetPlayout(bool enabled) {
   RTC_LOG(LS_INFO) << "SetPlayout(" << enabled << ")";
-  RTC_DCHECK_RUN_ON(&thread_checker_);
+  RTC_DCHECK_RUN_ON(&worker_thread_checker_);
   auto* adm = config_.audio_device_module.get();
   if (enabled) {
     if (!receiving_streams_.empty()) {
@@ -71,9 +79,8 @@ void AudioState::SetPlayout(bool enabled) {
   UpdateNullAudioPollerState();
 }
 
-void AudioState::AddReceivingStream(
-    webrtc::AudioReceiveStreamInterface* stream) {
-  RTC_DCHECK_RUN_ON(&thread_checker_);
+void AudioState::AddReceivingStream(AudioReceiveStreamInterface* stream) {
+  RTC_DCHECK_RUN_ON(&worker_thread_checker_);
   RTC_DCHECK_EQ(0, receiving_streams_.count(stream));
   receiving_streams_.insert(stream);
   if (!config_.audio_mixer->AddSource(stream->source())) {
@@ -86,17 +93,16 @@ void AudioState::AddReceivingStream(
     if (!adm->Playing()) {
       if (adm->InitPlayout() == 0) {
         adm->StartPlayout();
+      } else {
+        RTC_DLOG_F(LS_ERROR) << "Failed to initialize playout.";
       }
-    } else {
-      RTC_DLOG_F(LS_ERROR) << "Failed to initialize playout.";
     }
   }
   UpdateNullAudioPollerState();
 }
 
-void AudioState::RemoveReceivingStream(
-    webrtc::AudioReceiveStreamInterface* stream) {
-  RTC_DCHECK_RUN_ON(&thread_checker_);
+void AudioState::RemoveReceivingStream(AudioReceiveStreamInterface* stream) {
+  RTC_DCHECK_RUN_ON(&worker_thread_checker_);
   auto count = receiving_streams_.erase(stream);
   RTC_DCHECK_EQ(1, count);
   config_.audio_mixer->RemoveSource(stream->source());
@@ -108,7 +114,7 @@ void AudioState::RemoveReceivingStream(
 
 void AudioState::SetRecording(bool enabled) {
   RTC_LOG(LS_INFO) << "SetRecording(" << enabled << ")";
-  RTC_DCHECK_RUN_ON(&thread_checker_);
+  RTC_DCHECK_RUN_ON(&worker_thread_checker_);
   auto* adm = config_.audio_device_module.get();
   if (enabled) {
     if (!sending_streams_.empty()) {
@@ -128,7 +134,7 @@ void AudioState::SetRecording(bool enabled) {
 void AudioState::AddSendingStream(webrtc::AudioSendStream* stream,
                                   int sample_rate_hz,
                                   size_t num_channels) {
-  RTC_DCHECK_RUN_ON(&thread_checker_);
+  RTC_DCHECK_RUN_ON(&worker_thread_checker_);
   auto& properties = sending_streams_[stream];
   properties.sample_rate_hz = sample_rate_hz;
   properties.num_channels = num_channels;
@@ -140,15 +146,15 @@ void AudioState::AddSendingStream(webrtc::AudioSendStream* stream,
     if (!adm->Recording()) {
       if (adm->InitRecording() == 0) {
         adm->StartRecording();
+      } else {
+        RTC_DLOG_F(LS_ERROR) << "Failed to initialize recording.";
       }
-    } else {
-      RTC_DLOG_F(LS_ERROR) << "Failed to initialize recording.";
     }
   }
 }
 
 void AudioState::RemoveSendingStream(webrtc::AudioSendStream* stream) {
-  RTC_DCHECK_RUN_ON(&thread_checker_);
+  RTC_DCHECK_RUN_ON(&worker_thread_checker_);
   auto count = sending_streams_.erase(stream);
   RTC_DCHECK_EQ(1, count);
   UpdateAudioTransportWithSendingStreams();
@@ -158,12 +164,12 @@ void AudioState::RemoveSendingStream(webrtc::AudioSendStream* stream) {
 }
 
 void AudioState::SetStereoChannelSwapping(bool enable) {
-  RTC_DCHECK(thread_checker_.IsCurrent());
+  RTC_DCHECK_RUN_ON(&worker_thread_checker_);
   audio_transport_.SetStereoChannelSwapping(enable);
 }
 
 void AudioState::UpdateAudioTransportWithSendingStreams() {
-  RTC_DCHECK(thread_checker_.IsCurrent());
+  RTC_DCHECK_RUN_ON(&worker_thread_checker_);
   std::vector<AudioSender*> audio_senders;
   int max_sample_rate_hz = 8000;
   size_t max_num_channels = 1;
@@ -210,8 +216,7 @@ void AudioState::UpdateNullAudioPollerState() {
 }
 }  // namespace internal
 
-rtc::scoped_refptr<AudioState> AudioState::Create(
-    const AudioState::Config& config) {
-  return rtc::make_ref_counted<internal::AudioState>(config);
+scoped_refptr<AudioState> AudioState::Create(const AudioState::Config& config) {
+  return make_ref_counted<internal::AudioState>(config);
 }
 }  // namespace webrtc

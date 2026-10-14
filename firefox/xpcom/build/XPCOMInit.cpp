@@ -1,119 +1,89 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ThreadEventTarget.h"
 #include "XPCOMModule.h"
-
 #include "base/basictypes.h"
-
+#include "mozJSModuleLoader.h"
 #include "mozilla/AbstractThread.h"
 #include "mozilla/AppShutdown.h"
 #include "mozilla/Assertions.h"
-#include "mozilla/Atomics.h"
 #include "mozilla/DebugOnly.h"
-#include "mozilla/Poison.h"
 #include "mozilla/SharedThreadPool.h"
 #include "mozilla/TaskController.h"
-#include "mozilla/Unused.h"
-#include "mozilla/XPCOM.h"
-#include "mozJSModuleLoader.h"
 #include "nsXULAppAPI.h"
 
 #ifndef ANDROID
 #  include "nsTerminator.h"
 #endif
 
-#include "nsXPCOMPrivate.h"
-#include "nsXPCOMCIDInternal.h"
-
-#include "mozilla/dom/JSExecutionManager.h"
-#include "mozilla/dom/SharedScriptCache.h"
-#include "mozilla/SharedStyleSheetCache.h"
-#include "mozilla/layers/ImageBridgeChild.h"
-#include "mozilla/layers/CompositorBridgeParent.h"
-
-#include "prlink.h"
-
-#include "nsCycleCollector.h"
-#include "nsObserverService.h"
-
-#include "nsDebugImpl.h"
-#include "nsSystemInfo.h"
-
-#include "nsComponentManager.h"
-#include "nsCategoryManagerUtils.h"
-#include "nsIServiceManager.h"
-
-#include "nsThreadManager.h"
-#include "nsThreadPool.h"
-
-#include "nsTimerImpl.h"
-#include "TimerThread.h"
-
-#include "nsThread.h"
-#include "nsVersionComparatorImpl.h"
-
-#include "nsIFile.h"
-#include "nsLocalFile.h"
-#include "nsDirectoryService.h"
-#include "nsDirectoryServiceDefs.h"
-#include "nsCategoryManager.h"
-#include "nsMultiplexInputStream.h"
-
-#include "nsAtomTable.h"
-#include "nsISupportsImpl.h"
-#include "nsLanguageAtomService.h"
-
-#include "nsSystemInfo.h"
-#include "nsMemoryReporterManager.h"
-#include "nss.h"
-#include "nsNSSComponent.h"
-
 #include <locale.h>
-#include "mozilla/Services.h"
-#include "mozilla/Omnijar.h"
-#include "mozilla/ScriptPreloader.h"
-#include "mozilla/Telemetry.h"
-#include "mozilla/BackgroundHangMonitor.h"
 
-#include "mozilla/PoisonIOInterposer.h"
-#include "mozilla/LateWriteChecks.h"
-
-#include "mozilla/scache/StartupCache.h"
-
+#include "TimerThread.h"
 #include "base/at_exit.h"
 #include "base/command_line.h"
 #include "base/message_loop.h"
-
-#include "mozilla/ipc/IOThread.h"
 #include "mozilla/AvailableMemoryTracker.h"
+#include "mozilla/BackgroundHangMonitor.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/CountingAllocatorBase.h"
+#include "mozilla/LateWriteChecks.h"
+#include "mozilla/Omnijar.h"
+#include "mozilla/PoisonIOInterposer.h"
+#include "mozilla/ScriptPreloader.h"
+#include "mozilla/Services.h"
+#include "mozilla/SharedStyleSheetCache.h"
+#include "mozilla/Telemetry.h"
+#include "mozilla/dom/JSExecutionManager.h"
+#include "mozilla/dom/SharedScriptCache.h"
+#include "mozilla/ipc/IOThread.h"
+#include "mozilla/layers/CompositorBridgeParent.h"
+#include "mozilla/layers/ImageBridgeChild.h"
+#include "mozilla/scache/StartupCache.h"
+#include "nsAtomTable.h"
+#include "nsCategoryManager.h"
+#include "nsCategoryManagerUtils.h"
+#include "nsComponentManager.h"
+#include "nsCycleCollector.h"
+#include "nsDebugImpl.h"
+#include "nsDirectoryService.h"
+#include "nsDirectoryServiceDefs.h"
+#include "nsIFile.h"
+#include "nsIServiceManager.h"
+#include "nsISupportsImpl.h"
+#include "nsLanguageAtomService.h"
+#include "nsLocalFile.h"
+#include "nsMemoryReporterManager.h"
+#include "nsMultiplexInputStream.h"
+#include "nsObserverService.h"
+#include "nsSystemInfo.h"
+#include "nsThread.h"
+#include "nsThreadManager.h"
+#include "nsThreadPool.h"
+#include "nsTimerImpl.h"
+#include "nsVersionComparatorImpl.h"
+#include "nsXPCOMCIDInternal.h"
+#include "nsXPCOMPrivate.h"
+#include "nss.h"
+#include "prlink.h"
+#include "ssl.h"
 #ifdef MOZ_PHC
 #  include "mozilla/PHCManager.h"
 #endif
-#include "mozilla/UniquePtr.h"
-#include "mozilla/ServoStyleConsts.h"
-
-#include "mozilla/ipc/GeckoChildProcessHost.h"
-
-#include "ogg/ogg.h"
-
 #include "GeckoProfiler.h"
 #include "ProfilerControl.h"
-
-#include "jsapi.h"
-#include "js/Initialization.h"
-#include "js/Prefs.h"
-#include "mozilla/StaticPrefs_javascript.h"
 #include "XPCSelfHostedShmem.h"
-
 #include "gfxPlatform.h"
-
+#include "js/Initialization.h"
+#include "jsapi.h"
 #include "mozilla/GeckoTrace.h"
+#include "mozilla/ServoStyleConsts.h"
+#include "mozilla/ipc/GeckoChildProcessHost.h"
+#include "ogg/ogg.h"
+#ifdef XP_MACOSX
+#  include "mozilla/MacAutoreleasePool.h"
+#endif
 
 using base::AtExitManager;
 using mozilla::ipc::IOThreadParent;
@@ -127,18 +97,9 @@ namespace {
 static AtExitManager* sExitManager;
 static MessageLoop* sMessageLoop;
 static bool sCommandLineWasInitialized;
-static IOThreadParent* sIOThread;
 static mozilla::BackgroundHangMonitor* sMainHangMonitor;
 
 } /* anonymous namespace */
-
-// Registry Factory creation function defined in nsRegistry.cpp
-// We hook into this function locally to create and register the registry
-// Since noone outside xpcom needs to know about this and nsRegistry.cpp
-// does not have a local include file, we are putting this definition
-// here rather than in nsIRegistry.h
-extern nsresult NS_RegistryGetFactory(nsIFactory** aFactory);
-extern nsresult NS_CategoryManagerGetFactory(nsIFactory**);
 
 #ifdef XP_WIN
 extern nsresult CreateAnonTempFileRemover();
@@ -227,30 +188,6 @@ class OggReporter final : public nsIMemoryReporter,
 
 NS_IMPL_ISUPPORTS(OggReporter, nsIMemoryReporter)
 
-static bool sInitializedJS = false;
-
-static void InitializeJS() {
-#if defined(ENABLE_WASM_SIMD) && \
-    (defined(JS_CODEGEN_X64) || defined(JS_CODEGEN_X86))
-  // Update static engine preferences, such as AVX, before
-  // `JS_InitWithFailureDiagnostic` is called.
-  JS::SetAVXEnabled(mozilla::StaticPrefs::javascript_options_wasm_simd_avx());
-#endif
-
-  if (XRE_IsParentProcess() &&
-      mozilla::StaticPrefs::javascript_options_main_process_disable_jit()) {
-    JS::DisableJitBackend();
-  }
-
-  // Set all JS::Prefs.
-  SET_JS_PREFS_FROM_BROWSER_PREFS;
-
-  const char* jsInitFailureReason = JS_InitWithFailureDiagnostic();
-  if (jsInitFailureReason) {
-    MOZ_CRASH_UNSAFE(jsInitFailureReason);
-  }
-}
-
 #define XPCOM_INIT_FATAL(message, res) \
   if (XRE_IsParentProcess()) {         \
     return res;                        \
@@ -262,6 +199,13 @@ EXPORT_XPCOM_API(nsresult)
 NS_InitXPCOM(nsIServiceManager** aResult, nsIFile* aBinDirectory,
              nsIDirectoryServiceProvider* aAppFileLocationProvider,
              bool aInitJSContext) {
+#ifdef XP_MACOSX
+  // Some of the work done here calls into macOS APIs that need an Obj-C
+  // autorelease pool in place. For example, nsComponentManagerImpl::Init
+  // will call a lot of macOS APIs as part of initializing nsLookAndFeel.
+  mozilla::MacAutoreleasePool pool;
+#endif
+
   static bool sInitialized = false;
   if (sInitialized) {
     XPCOM_INIT_FATAL("!sInitialized", NS_ERROR_FAILURE)
@@ -314,13 +258,6 @@ NS_InitXPCOM(nsIServiceManager** aResult, nsIFile* aBinDirectory,
     messageLoop->set_thread_name("Gecko_Child");
     messageLoop->set_hang_timeouts(128, 8192);
   }
-
-  // Start the IPC I/O thread in the parent process. We'll have already started
-  // the IPC I/O thread if we're in a content process.
-  if (XRE_IsParentProcess()) {
-    sIOThread = new IOThreadParent();
-  }
-  MOZ_ASSERT(mozilla::ipc::IOThread::Get(), "An IOThread has been started");
 
   // Establish the main thread here.
   rv = nsThreadManager::get().Init();
@@ -450,10 +387,6 @@ NS_InitXPCOM(nsIServiceManager** aResult, nsIFile* aBinDirectory,
       OggReporter::CountingMalloc, OggReporter::CountingCalloc,
       OggReporter::CountingRealloc, OggReporter::CountingFree);
 
-  // Initialize the JS engine.
-  InitializeJS();
-  sInitializedJS = true;
-
   rv = nsComponentManagerImpl::gComponentManager->Init();
   if (NS_FAILED(rv)) {
     NS_RELEASE(nsComponentManagerImpl::gComponentManager);
@@ -472,7 +405,7 @@ NS_InitXPCOM(nsIServiceManager** aResult, nsIFile* aBinDirectory,
 
 #ifdef MOZ_MEMORY
   // We did set up our main thread earlier and can read prefs now.
-  mozilla::TaskController::SetupIdleMemoryCleanup();
+  mozilla::TaskController::SetupMemoryCleanup();
 #endif
 
   // After autoreg, but before we actually instantiate any components,
@@ -494,8 +427,8 @@ NS_InitXPCOM(nsIServiceManager** aResult, nsIFile* aBinDirectory,
 #endif
 
   // The memory reporter manager is up and running -- register our reporters.
-  RegisterStrongMemoryReporter(new ICUReporter());
-  RegisterStrongMemoryReporter(new OggReporter());
+  RegisterStrongMemoryReporter(mozilla::MakeAndAddRef<ICUReporter>());
+  RegisterStrongMemoryReporter(mozilla::MakeAndAddRef<OggReporter>());
   xpc::SelfHostedShmem::GetSingleton().InitMemoryReporter();
 
   mozilla::gecko_trace::Init();
@@ -630,7 +563,7 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
 
     // We want the service manager to be the subject of notifications
     nsCOMPtr<nsIServiceManager> mgr;
-    Unused << NS_GetServiceManager(getter_AddRefs(mgr));
+    (void)NS_GetServiceManager(getter_AddRefs(mgr));
     MOZ_DIAGNOSTIC_ASSERT(mgr != nullptr, "Service manager not present!");
     mozilla::AppShutdown::AdvanceShutdownPhase(
         mozilla::ShutdownPhase::XPCOMShutdown, nullptr, do_QueryInterface(mgr));
@@ -752,12 +685,6 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
     NS_WARNING("Component Manager was never created ...");
   }
 
-  if (sInitializedJS) {
-    // Shut down the JS engine.
-    JS_ShutDown();
-    sInitializedJS = false;
-  }
-
   mozilla::ScriptPreloader::DeleteCacheDataSingleton();
 
   mozilla::dom::SharedScriptCache::DeleteSingleton();
@@ -770,7 +697,7 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
   // down, any remaining objects that could be holding NSS resources (should)
   // have been released, so we can safely shut down NSS.
   if (NSS_IsInitialized()) {
-    nsNSSComponent::DoClearSSLExternalAndInternalSessionCache();
+    SSL_ClearSessionCache();
     if (NSS_Shutdown() != SECSuccess) {
       // If you're seeing this crash and/or warning, some NSS resources are
       // still in use (see bugs 1417680 and 1230312). Set the environment
@@ -819,8 +746,7 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
 
   NS_IF_RELEASE(gDebug);
 
-  delete sIOThread;
-  sIOThread = nullptr;
+  mozilla::ipc::IOThread::Shutdown();
 
   delete sMessageLoop;
   sMessageLoop = nullptr;

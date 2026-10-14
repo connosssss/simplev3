@@ -1,4 +1,4 @@
-// Copyright 2017 The Chromium Authors. All rights reserved.
+// Copyright 2017 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -6,8 +6,10 @@
 
 #include <windows.h>
 
+#include "base/containers/heap_array.h"
+#include "base/logging.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/ref_counted.h"
-#include "base/win/windows_version.h"
 
 namespace sandbox {
 namespace {
@@ -34,7 +36,9 @@ struct _HEAP_32 {
   DWORD SegmentSignature;
   DWORD SegmentFlags;
   LIST_ENTRY SegmentListEntry;
-  struct _HEAP_32* Heap;
+  // `Heap` is not a raw_ptr<...>, because reinterpret_cast of uninitialized
+  // memory to raw_ptr can cause ref-counting mismatch.
+  RAW_PTR_EXCLUSION struct _HEAP_32* Heap;
   char Unknown0[0x24];
   // Offset 0x40
   DWORD Flags;
@@ -49,7 +53,9 @@ struct _HEAP_64 {
   DWORD SegmentSignature;
   DWORD SegmentFlags;
   LIST_ENTRY SegmentListEntry;
-  struct _HEAP_64* Heap;
+  // `Heap` is not a raw_ptr<...>, because reinterpret_cast of uninitialized
+  // memory to raw_ptr can cause ref-counting mismatch.
+  RAW_PTR_EXCLUSION struct _HEAP_64* Heap;
   char Unknown0[0x40];
   // Offset 0x70
   DWORD Flags;
@@ -92,19 +98,15 @@ bool HeapFlags(HANDLE handle, DWORD* flags) {
 }
 
 HANDLE FindCsrPortHeap() {
-  if (base::win::GetVersion() < base::win::Version::WIN10) {
-    // This functionality has not been verified on versions before Win10.
+  DWORD number_of_heaps = ::GetProcessHeaps(0, nullptr);
+  auto all_heaps = base::HeapArray<HANDLE>::Uninit(number_of_heaps);
+  if (::GetProcessHeaps(number_of_heaps, all_heaps.data()) != number_of_heaps) {
     return nullptr;
   }
-  DWORD number_of_heaps = ::GetProcessHeaps(0, nullptr);
-  std::unique_ptr<HANDLE[]> all_heaps(new HANDLE[number_of_heaps]);
-  if (::GetProcessHeaps(number_of_heaps, all_heaps.get()) != number_of_heaps)
-    return nullptr;
 
   // Search for the CSR port heap handle, identified purely based on flags.
   HANDLE csr_port_heap = nullptr;
-  for (size_t i = 0; i < number_of_heaps; ++i) {
-    HANDLE handle = all_heaps[i];
+  for (HANDLE handle : all_heaps) {
     DWORD flags = 0;
     if (!HeapFlags(handle, &flags)) {
       DLOG(ERROR) << "Unable to get flags for this heap";

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,8 +11,12 @@ interface nsIGfxInfoDebug : nsISupports
 {
   void spoofVendorID(in AString aVendorID);
   void spoofDeviceID(in AString aDeviceID);
-
   void spoofDriverVersion(in AString aDriverVersion);
+
+  void spoofVendorID2(in AString aVendorID);
+  void spoofDeviceID2(in AString aDeviceID);
+  void spoofDriverVendor2(in AString aDriverVendor);
+  void spoofDriverVersion2(in AString aDriverVersion);
 
   void spoofOSVersion(in unsigned long aVersion);
 

@@ -3,12 +3,10 @@ use core::{fmt, num::NonZeroU32};
 
 use crate::{
     binding_model,
-    hub::Hub,
-    id::{BindGroupLayoutId, PipelineLayoutId},
     ray_tracing::BlasCompactReadyPendingClosure,
     resource::{
         Buffer, BufferAccessError, BufferAccessResult, BufferMapOperation, Labeled,
-        ResourceErrorIdent,
+        RawResourceAccess, ResourceErrorIdent,
     },
     snatch::SnatchGuard,
     Label, DOWNLEVEL_ERROR_MESSAGE,
@@ -19,15 +17,15 @@ use smallvec::SmallVec;
 use thiserror::Error;
 use wgt::{
     error::{ErrorType, WebGpuError},
-    BufferAddress, DeviceLostReason, TextureFormat,
+    BufferAddress, DeviceLostReason, MapMode, TextureFormat,
 };
 
 pub(crate) mod bgl;
-pub mod global;
 mod life;
 pub mod queue;
 pub mod ray_tracing;
 pub mod resource;
+pub(crate) mod surface_config;
 #[cfg(any(feature = "trace", feature = "replay"))]
 pub mod trace;
 pub use {life::WaitIdleError, resource::Device};
@@ -37,21 +35,10 @@ pub const SHADER_STAGE_COUNT: usize = hal::MAX_CONCURRENT_SHADER_STAGES;
 // value is enough for a 16k texture with float4 format.
 pub(crate) const ZERO_BUFFER_SIZE: BufferAddress = 512 << 10;
 
-// If a submission is not completed within this time, we go off into UB land.
-// See https://github.com/gfx-rs/wgpu/issues/4589. 60s to reduce the chances of this.
-const CLEANUP_WAIT_MS: u32 = 60000;
-
 pub(crate) const ENTRYPOINT_FAILURE_ERROR: &str = "The given EntryPoint is Invalid";
 
 pub type DeviceDescriptor<'a> = wgt::DeviceDescriptor<Label<'a>>;
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum HostMap {
-    Read,
-    Write,
-}
+pub type QueueDescriptor<'a> = wgt::QueueDescriptor<Label<'a>>;
 
 #[derive(Clone, Debug, Hash, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
@@ -67,8 +54,23 @@ impl<T: PartialEq> Eq for AttachmentData<T> {}
 pub(crate) struct RenderPassContext {
     pub attachments: AttachmentData<TextureFormat>,
     pub sample_count: u32,
-    pub multiview: Option<NonZeroU32>,
+    pub multiview_mask: Option<NonZeroU32>,
 }
+
+impl Default for RenderPassContext {
+    fn default() -> Self {
+        Self {
+            attachments: AttachmentData {
+                colors: ArrayVec::new(),
+                resolves: ArrayVec::new(),
+                depth_stencil: None,
+            },
+            sample_count: Default::default(),
+            multiview_mask: Default::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Error)]
 #[non_exhaustive]
 pub enum RenderPassCompatibilityError {
@@ -150,10 +152,10 @@ impl RenderPassContext {
                 res: res.error_ident(),
             });
         }
-        if self.multiview != other.multiview {
+        if self.multiview_mask != other.multiview_mask {
             return Err(RenderPassCompatibilityError::IncompatibleMultiview {
-                expected: self.multiview,
-                actual: other.multiview,
+                expected: self.multiview_mask,
+                actual: other.multiview_mask,
                 res: res.error_ident(),
             });
         }
@@ -163,6 +165,7 @@ impl RenderPassContext {
 
 pub type BufferMapPendingClosure = (BufferMapOperation, BufferAccessResult);
 
+#[must_use]
 #[derive(Default)]
 pub struct UserClosures {
     pub mappings: Vec<BufferMapPendingClosure>,
@@ -172,7 +175,7 @@ pub struct UserClosures {
 }
 
 impl UserClosures {
-    fn extend(&mut self, other: Self) {
+    pub(crate) fn extend(&mut self, other: Self) {
         self.mappings.extend(other.mappings);
         self.blas_compact_ready.extend(other.blas_compact_ready);
         self.submissions.extend(other.submissions);
@@ -180,7 +183,7 @@ impl UserClosures {
             .extend(other.device_lost_invocations);
     }
 
-    fn fire(self) {
+    pub(crate) fn fire(self) {
         // Note: this logic is specifically moved out of `handle_mapping()` in order to
         // have nothing locked by the time we execute users callback code.
 
@@ -220,7 +223,7 @@ pub(crate) fn map_buffer(
     buffer: &Buffer,
     offset: BufferAddress,
     size: BufferAddress,
-    kind: HostMap,
+    kind: MapMode,
     snatch_guard: &SnatchGuard,
 ) -> Result<hal::BufferMapping, BufferAccessError> {
     let raw_device = buffer.device.raw();
@@ -231,7 +234,7 @@ pub(crate) fn map_buffer(
             .map_err(|e| buffer.device.handle_hal_error(e))?
     };
 
-    if !mapping.is_coherent && kind == HostMap::Read {
+    if !mapping.is_coherent && kind == MapMode::Read {
         #[allow(clippy::single_range_in_vec_init)]
         unsafe {
             raw_device.invalidate_mapped_ranges(raw_buffer, &[offset..offset + size]);
@@ -258,7 +261,7 @@ pub(crate) fn map_buffer(
 
     // We can't call flush_mapped_ranges in this case, so we can't drain the uninitialized ranges either
     if !mapping.is_coherent
-        && kind == HostMap::Read
+        && kind == MapMode::Read
         && !buffer.usage.contains(wgt::BufferUsages::MAP_WRITE)
     {
         for uninitialized in buffer
@@ -286,7 +289,7 @@ pub(crate) fn map_buffer(
 
             // NOTE: This is only possible when MAPPABLE_PRIMARY_BUFFERS is enabled.
             if !mapping.is_coherent
-                && kind == HostMap::Read
+                && kind == MapMode::Read
                 && buffer.usage.contains(wgt::BufferUsages::MAP_WRITE)
             {
                 unsafe { raw_device.flush_mapped_ranges(raw_buffer, &[uninitialized]) };
@@ -385,142 +388,5 @@ impl WebGpuError for MissingDownlevelFlags {
     }
 }
 
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ImplicitPipelineContext {
-    pub root_id: PipelineLayoutId,
-    pub group_ids: ArrayVec<BindGroupLayoutId, { hal::MAX_BIND_GROUPS }>,
-}
-
-pub struct ImplicitPipelineIds<'a> {
-    pub root_id: PipelineLayoutId,
-    pub group_ids: &'a [BindGroupLayoutId],
-}
-
-impl ImplicitPipelineIds<'_> {
-    fn prepare(self, hub: &Hub) -> ImplicitPipelineContext {
-        ImplicitPipelineContext {
-            root_id: hub.pipeline_layouts.prepare(Some(self.root_id)).id(),
-            group_ids: self
-                .group_ids
-                .iter()
-                .map(|id_in| hub.bind_group_layouts.prepare(Some(*id_in)).id())
-                .collect(),
-        }
-    }
-}
-
-/// Create a validator with the given validation flags.
-pub fn create_validator(
-    features: wgt::Features,
-    downlevel: wgt::DownlevelFlags,
-    flags: naga::valid::ValidationFlags,
-) -> naga::valid::Validator {
-    use naga::valid::Capabilities as Caps;
-    let mut caps = Caps::empty();
-    caps.set(
-        Caps::PUSH_CONSTANT,
-        features.contains(wgt::Features::PUSH_CONSTANTS),
-    );
-    caps.set(Caps::FLOAT64, features.contains(wgt::Features::SHADER_F64));
-    caps.set(
-        Caps::SHADER_FLOAT16,
-        features.contains(wgt::Features::SHADER_F16),
-    );
-    caps.set(
-        Caps::PRIMITIVE_INDEX,
-        features.contains(wgt::Features::SHADER_PRIMITIVE_INDEX),
-    );
-    caps.set(
-        Caps::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
-        features
-            .contains(wgt::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING),
-    );
-    caps.set(
-        Caps::STORAGE_TEXTURE_ARRAY_NON_UNIFORM_INDEXING,
-        features.contains(wgt::Features::STORAGE_TEXTURE_ARRAY_NON_UNIFORM_INDEXING),
-    );
-    caps.set(
-        Caps::UNIFORM_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
-        features.contains(wgt::Features::UNIFORM_BUFFER_BINDING_ARRAYS),
-    );
-    // TODO: This needs a proper wgpu feature
-    caps.set(
-        Caps::SAMPLER_NON_UNIFORM_INDEXING,
-        features
-            .contains(wgt::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING),
-    );
-    caps.set(
-        Caps::STORAGE_TEXTURE_16BIT_NORM_FORMATS,
-        features.contains(wgt::Features::TEXTURE_FORMAT_16BIT_NORM),
-    );
-    caps.set(Caps::MULTIVIEW, features.contains(wgt::Features::MULTIVIEW));
-    caps.set(
-        Caps::EARLY_DEPTH_TEST,
-        features.contains(wgt::Features::SHADER_EARLY_DEPTH_TEST),
-    );
-    caps.set(
-        Caps::SHADER_INT64,
-        features.contains(wgt::Features::SHADER_INT64),
-    );
-    caps.set(
-        Caps::SHADER_INT64_ATOMIC_MIN_MAX,
-        features.intersects(
-            wgt::Features::SHADER_INT64_ATOMIC_MIN_MAX | wgt::Features::SHADER_INT64_ATOMIC_ALL_OPS,
-        ),
-    );
-    caps.set(
-        Caps::SHADER_INT64_ATOMIC_ALL_OPS,
-        features.contains(wgt::Features::SHADER_INT64_ATOMIC_ALL_OPS),
-    );
-    caps.set(
-        Caps::TEXTURE_ATOMIC,
-        features.contains(wgt::Features::TEXTURE_ATOMIC),
-    );
-    caps.set(
-        Caps::TEXTURE_INT64_ATOMIC,
-        features.contains(wgt::Features::TEXTURE_INT64_ATOMIC),
-    );
-    caps.set(
-        Caps::SHADER_FLOAT32_ATOMIC,
-        features.contains(wgt::Features::SHADER_FLOAT32_ATOMIC),
-    );
-    caps.set(
-        Caps::MULTISAMPLED_SHADING,
-        downlevel.contains(wgt::DownlevelFlags::MULTISAMPLED_SHADING),
-    );
-    caps.set(
-        Caps::DUAL_SOURCE_BLENDING,
-        features.contains(wgt::Features::DUAL_SOURCE_BLENDING),
-    );
-    caps.set(
-        Caps::CLIP_DISTANCE,
-        features.contains(wgt::Features::CLIP_DISTANCES),
-    );
-    caps.set(
-        Caps::CUBE_ARRAY_TEXTURES,
-        downlevel.contains(wgt::DownlevelFlags::CUBE_ARRAY_TEXTURES),
-    );
-    caps.set(
-        Caps::SUBGROUP,
-        features.intersects(wgt::Features::SUBGROUP | wgt::Features::SUBGROUP_VERTEX),
-    );
-    caps.set(
-        Caps::SUBGROUP_BARRIER,
-        features.intersects(wgt::Features::SUBGROUP_BARRIER),
-    );
-    caps.set(
-        Caps::RAY_QUERY,
-        features.intersects(wgt::Features::EXPERIMENTAL_RAY_QUERY),
-    );
-    caps.set(
-        Caps::SUBGROUP_VERTEX_STAGE,
-        features.contains(wgt::Features::SUBGROUP_VERTEX),
-    );
-    caps.set(
-        Caps::RAY_HIT_VERTEX_POSITION,
-        features.intersects(wgt::Features::EXPERIMENTAL_RAY_HIT_VERTEX_RETURN),
-    );
-
-    naga::valid::Validator::new(flags, caps)
-}
+pub use wgpu_naga_bridge::create_validator;
+pub use wgpu_naga_bridge::features_to_naga_capabilities;

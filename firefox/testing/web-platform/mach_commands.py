@@ -8,7 +8,11 @@ import os
 import sys
 
 from mach.decorators import Command
-from mach_commands_base import WebPlatformTestsRunner, create_parser_wpt
+from mach_commands_base import (
+    WebPlatformTestsRunner,
+    create_parser_wpt,
+    setup_environment,
+)
 from mozbuild.base import MachCommandConditions as conditions
 from mozbuild.base import MozbuildObject
 
@@ -20,10 +24,10 @@ class WebPlatformTestsRunnerSetup(MozbuildObject):
     default_log_type = "mach"
 
     def __init__(self, *args, **kwargs):
-        super(WebPlatformTestsRunnerSetup, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self._here = os.path.join(self.topsrcdir, "testing", "web-platform")
         kwargs["tests_root"] = os.path.join(self._here, "tests")
-        sys.path.insert(0, kwargs["tests_root"])
+        setup_environment(kwargs["tests_root"])
         build_path = os.path.join(self.topobjdir, "build")
         if build_path not in sys.path:
             sys.path.append(build_path)
@@ -89,7 +93,7 @@ class WebPlatformTestsRunnerSetup(MozbuildObject):
             kwargs["certutil_binary"] = self.get_binary_path("certutil")
 
         if kwargs["install_fonts"] is None:
-            kwargs["install_fonts"] = True
+            kwargs["install_fonts"] = False
 
         if kwargs["preload_browser"] is None:
             kwargs["preload_browser"] = False
@@ -103,7 +107,8 @@ class WebPlatformTestsRunnerSetup(MozbuildObject):
         if kwargs["symbols_path"] is None:
             kwargs["symbols_path"] = os.path.join(self.distdir, "crashreporter-symbols")
 
-        kwargs["gmp_path"] = os.pathsep.join(
+        # Allow the user to override using the fake plugins using MOZ_GMP_PATH.
+        kwargs["gmp_path"] = os.environ.get("MOZ_GMP_PATH") or os.pathsep.join(
             os.path.join(self.distdir, "bin", p, "1.0")
             for p in ("gmp-fake", "gmp-fakeopenh264")
         )
@@ -144,7 +149,7 @@ class WebPlatformTestsRunnerSetup(MozbuildObject):
             )
 
         if kwargs["install_fonts"] is None:
-            kwargs["install_fonts"] = True
+            kwargs["install_fonts"] = False
 
         if not kwargs["device_serial"]:
             kwargs["device_serial"] = ["emulator-5554"]
@@ -343,10 +348,7 @@ class WebPlatformTestsTestPathsRunner(MozbuildObject):
     """Update web platform tests."""
 
     def run(self, **kwargs):
-        sys.path.insert(
-            0,
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "tests", "tools")),
-        )
+        setup_environment()
         import logging
 
         import manifestupdate
@@ -372,15 +374,11 @@ class WebPlatformTestsTestPathsRunner(MozbuildObject):
         )
         results = {}
         for url_base, paths in test_paths.items():
-            if "manifest_path" not in paths:
-                paths["manifest_path"] = os.path.join(
-                    paths["metadata_path"], "MANIFEST.json"
-                )
             results.update(
                 testpaths.get_paths(
-                    path=paths["manifest_path"],
+                    path=paths.manifest_path,
                     src_root=src_root,
-                    tests_root=paths["tests_path"],
+                    tests_root=paths.tests_path,
                     update=kwargs["update"],
                     rebuild=kwargs["rebuild"],
                     url_base=url_base,
@@ -417,10 +415,8 @@ def create_parser_metadata_merge():
 
 
 def create_parser_serve():
-    sys.path.insert(
-        0, os.path.abspath(os.path.join(os.path.dirname(__file__), "tests", "tools"))
-    )
-    import serve
+    setup_environment()
+    from tools import serve
 
     return serve.serve.get_parser()
 
@@ -516,19 +512,21 @@ def run_web_platform_tests(command_context, **params):
     wpt_setup._virtualenv_name = command_context._virtualenv_name
     wpt_runner = WebPlatformTestsRunner(wpt_setup)
 
-    logger = wpt_runner.setup_logging(**params)
-    # wptrunner already handles setting any log parameter from
-    # mach test to the logger, so it's OK to remove that argument now
-    if "log" in params:
-        del params["log"]
+    with wpt_runner.logging_manager(**params) as logger:
+        # wptrunner already handles setting any log parameter from
+        # mach test to the logger, so it's OK to remove that argument now
+        if "log" in params:
+            del params["log"]
 
-    if (
-        conditions.is_android(command_context)
-        and params["product"] != "firefox_android"
-    ):
-        logger.warning("Must specify --product=firefox_android in Android environment.")
+        if (
+            conditions.is_android(command_context)
+            and params["product"] != "firefox_android"
+        ):
+            logger.warning(
+                "Must specify --product=firefox_android in Android environment."
+            )
 
-    return wpt_runner.run(logger, **params)
+        return wpt_runner.run(logger, **params)
 
 
 @Command(
@@ -577,12 +575,12 @@ def update_wpt(command_context, **params):
 def wpt_manifest_update(command_context, **params):
     wpt_setup = command_context._spawn(WebPlatformTestsRunnerSetup)
     wpt_runner = WebPlatformTestsRunner(wpt_setup)
-    logger = wpt_runner.setup_logging(**params)
-    logger.warning(
-        "The wpt manifest is now automatically updated, "
-        "so running this command is usually unnecessary"
-    )
-    return 0 if wpt_runner.update_manifest(logger, **params) else 1
+    with wpt_runner.logging_manager(**params) as logger:
+        logger.warning(
+            "The wpt manifest is now automatically updated, "
+            "so running this command is usually unnecessary"
+        )
+        return 0 if wpt_runner.update_manifest(logger, **params) else 1
 
 
 @Command(

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -43,12 +41,15 @@ class TaggedProto {
   }
   JSObject* raw() const { return proto; }
 
-  bool operator==(const TaggedProto& other) const {
-    return proto == other.proto;
+  // Relaxed atomic load and store operations on a TaggedProto.
+  TaggedProto atomicGet() const {
+    return TaggedProto(__atomic_load_n(&proto, __ATOMIC_RELAXED));
   }
-  bool operator!=(const TaggedProto& other) const {
-    return proto != other.proto;
+  void atomicSet(const TaggedProto& other) {
+    __atomic_store_n(&proto, other.proto, __ATOMIC_RELAXED);
   }
+
+  bool operator==(const TaggedProto& other) const = default;
 
   HashNumber hashCode() const;
 
@@ -117,6 +118,16 @@ struct InternalBarrierMethods<TaggedProto> {
     AssertTaggedProtoIsNotGray(proto);
   }
 #endif
+};
+
+template <>
+struct AtomicMethods<TaggedProto> {
+  static TaggedProto atomicGet(TaggedProto const* vp) {
+    return vp->atomicGet();
+  }
+  static void atomicSet(TaggedProto* vp, const TaggedProto& v) {
+    vp->atomicSet(v);
+  }
 };
 
 template <class Wrapper>

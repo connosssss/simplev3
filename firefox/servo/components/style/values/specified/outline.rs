@@ -4,6 +4,7 @@
 
 //! Specified values for outline properties
 
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::values::specified::BorderStyle;
 use cssparser::Parser;
@@ -24,6 +25,7 @@ use style_traits::ParseError;
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(C, u8)]
 /// <https://drafts.csswg.org/css-ui/#propdef-outline-style>
@@ -52,14 +54,10 @@ impl OutlineStyle {
 }
 
 impl Parse for OutlineStyle {
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<OutlineStyle, ParseError<'i>> {
+    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<OutlineStyle, ParseError> {
         if let Ok(border_style) = input.try_parse(BorderStyle::parse) {
             if let BorderStyle::Hidden = border_style {
-                return Err(input
-                    .new_custom_error(SelectorParseErrorKind::UnexpectedIdent("hidden".into())));
+                return Err(ParseError::custom(SelectorParseErrorKind::UnexpectedIdent));
             }
 
             return Ok(OutlineStyle::BorderStyle(border_style));

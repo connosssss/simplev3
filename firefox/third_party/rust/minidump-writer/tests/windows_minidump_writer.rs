@@ -1,17 +1,20 @@
 #![cfg(all(target_os = "windows", target_arch = "x86_64"))]
 
-use minidump::{
-    CrashReason, Minidump, MinidumpBreakpadInfo, MinidumpMemoryList, MinidumpSystemInfo,
-    MinidumpThreadList,
+use {
+    common::start_child_and_return,
+    minidump::{
+        CrashReason, Minidump, MinidumpBreakpadInfo, MinidumpMemoryList, MinidumpSystemInfo,
+        MinidumpThreadList,
+    },
+    minidump_writer::minidump_writer::MinidumpWriter,
 };
-use minidump_writer::minidump_writer::MinidumpWriter;
+
 mod common;
-use common::start_child_and_return;
 
 const EXCEPTION_ILLEGAL_INSTRUCTION: i32 = -1073741795;
 const STATUS_INVALID_PARAMETER: i32 = -1073741811;
 #[link(name = "kernel32")]
-extern "system" {
+unsafe extern "system" {
     fn GetCurrentThreadId() -> u32;
 }
 
@@ -164,11 +167,15 @@ fn dump_external_process() {
 
     // SAFETY: We keep the process we are dumping alive until the minidump is written
     // and the test process keep the pointers it sent us alive until it is killed
-    MinidumpWriter::dump_crash_context(crash_context, None, tmpfile.as_file_mut())
+    MinidumpWriter::dump_crash_context(&crash_context, None, tmpfile.as_file_mut())
         .expect("failed to write minidump");
 
     child.kill().expect("failed to kill child");
+    // Reap child
+    child.wait().expect("Failed to wait for child");
 
+    // Clean up the zombie child.
+    child.wait().expect("failed to wait child");
     let md = Minidump::read_path(tmpfile.path()).expect("failed to read minidump");
 
     let _: MinidumpThreadList = md.get_stream().expect("Couldn't find MinidumpThreadList");

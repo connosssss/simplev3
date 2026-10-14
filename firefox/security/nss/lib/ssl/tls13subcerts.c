@@ -4,6 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nssrenam.h" /* for CERT_DecodeDERCertificate */
 #include "nss.h"
 #include "pk11func.h"
 #include "secder.h"
@@ -286,24 +287,26 @@ tls13_AppendCredentialSignature(sslBuffer *buf, sslDelegatedCredential *dc)
 
 /* Hashes the message used to sign/verify the DC. */
 static SECStatus
-tls13_HashCredentialSignatureMessage(SSL3Hashes *hash,
-                                     SSLSignatureScheme scheme,
-                                     const CERTCertificate *cert,
-                                     const sslBuffer *dcBuf)
+tls13_HashCredentialAndSignOrVerifyMessage(SECKEYPrivateKey *privKey,
+                                           SECKEYPublicKey *pubKey,
+                                           SSLSignatureScheme scheme,
+                                           sslSignOrVerify direction,
+                                           const CERTCertificate *cert,
+                                           const sslBuffer *dcBuf,
+                                           SECItem *signature, void *pwArg)
 {
     SECStatus rv;
-    PK11Context *ctx = NULL;
-    unsigned int hashLen;
+    tlsSignOrVerifyContext ctx;
 
-    /* Set up hash context. */
-    hash->hashAlg = ssl_SignatureSchemeToHashType(scheme);
-    ctx = PK11_CreateDigestContext(ssl3_HashTypeToOID(hash->hashAlg));
-    if (!ctx) {
+    /* Set up sign and hash context. */
+    ctx = tls_CreateSignOrVerifyContext(privKey, pubKey, scheme, direction,
+                                        signature, pwArg);
+    if (!ctx.u.ptr) {
         PORT_SetError(SEC_ERROR_NO_MEMORY);
         goto loser;
     }
 
-    static const PRUint8 kCtxStrPadding[64] = {
+    const PRUint8 kCtxStrPadding[64] = {
         0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
         0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
         0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
@@ -314,55 +317,48 @@ tls13_HashCredentialSignatureMessage(SSL3Hashes *hash,
         0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20
     };
 
-    static const PRUint8 kCtxStr[] = "TLS, server delegated credentials";
+    const PRUint8 kCtxStr[] = "TLS, server delegated credentials";
 
     /* Hash the message signed by the peer. */
-    rv = SECSuccess;
-    rv |= PK11_DigestBegin(ctx);
-    rv |= PK11_DigestOp(ctx, kCtxStrPadding, sizeof kCtxStrPadding);
-    rv |= PK11_DigestOp(ctx, kCtxStr, 1 /* 0-byte */ + strlen((const char *)kCtxStr));
-    rv |= PK11_DigestOp(ctx, cert->derCert.data, cert->derCert.len);
-    rv |= PK11_DigestOp(ctx, dcBuf->buf, dcBuf->len);
-    rv |= PK11_DigestFinal(ctx, hash->u.raw, &hashLen, sizeof hash->u.raw);
-    if (rv != SECSuccess) {
-        PORT_SetError(SSL_ERROR_SHA_DIGEST_FAILURE);
+    rv = tls_SignOrVerifyUpdate(ctx, kCtxStrPadding, sizeof kCtxStrPadding);
+    if (rv != SECSuccess)
         goto loser;
-    }
+    /* sizeof kCtxStr includes the null terminator, which serves as the 0x00
+     * separator specified in RFC 9345 section 4. */
+    rv = tls_SignOrVerifyUpdate(ctx, kCtxStr, sizeof kCtxStr);
+    if (rv != SECSuccess)
+        goto loser;
+    rv = tls_SignOrVerifyUpdate(ctx, cert->derCert.data, cert->derCert.len);
+    if (rv != SECSuccess)
+        goto loser;
+    rv = tls_SignOrVerifyUpdate(ctx, dcBuf->buf, dcBuf->len);
+    if (rv != SECSuccess)
+        goto loser;
+    rv = tls_SignOrVerifyEnd(ctx, signature);
+    if (rv != SECSuccess)
+        goto loser;
 
-    hash->len = hashLen;
-    if (ctx) {
-        PK11_DestroyContext(ctx, PR_TRUE);
-    }
     return SECSuccess;
 
 loser:
-    if (ctx) {
-        PK11_DestroyContext(ctx, PR_TRUE);
-    }
+    tls_DestroySignOrVerifyContext(&ctx);
     return SECFailure;
 }
 
 /* Verifies the DC signature. */
 static SECStatus
-tls13_VerifyCredentialSignature(sslSocket *ss, sslDelegatedCredential *dc)
+tls13_VerifyCredentialSignature(sslSocket *ss, CERTCertificate *cert,
+                                sslDelegatedCredential *dc)
 {
     SECStatus rv = SECSuccess;
-    SSL3Hashes hash;
     sslBuffer dcBuf = SSL_BUFFER_EMPTY;
-    CERTCertificate *cert = ss->sec.peerCert;
     SECKEYPublicKey *pubKey = NULL;
+    void *pwArg = ss->pkcs11PinArg;
 
     /* Serialize the DC parameters. */
     rv = tls13_AppendCredentialParams(&dcBuf, dc);
     if (rv != SECSuccess) {
-        goto loser; /* Error set by caller. */
-    }
-
-    /* Hash the message that was signed by the delegator. */
-    rv = tls13_HashCredentialSignatureMessage(&hash, dc->alg, cert, &dcBuf);
-    if (rv != SECSuccess) {
-        FATAL_ERROR(ss, PORT_GetError(), internal_error);
-        goto loser;
+        goto loser; /* Error set by tls13_AppendCredentialParams. */
     }
 
     pubKey = SECKEY_ExtractPublicKey(&cert->subjectPublicKeyInfo);
@@ -371,9 +367,10 @@ tls13_VerifyCredentialSignature(sslSocket *ss, sslDelegatedCredential *dc)
         goto loser;
     }
 
-    /* Verify the signature of the message. */
-    rv = ssl_VerifySignedHashesWithPubKey(ss, pubKey, dc->alg,
-                                          &hash, &dc->signature);
+    /* Verify the signature of the delegatormessage. */
+    rv = tls13_HashCredentialAndSignOrVerifyMessage(NULL, pubKey, dc->alg,
+                                                    sig_verify, cert, &dcBuf,
+                                                    &dc->signature, pwArg);
     if (rv != SECSuccess) {
         FATAL_ERROR(ss, SSL_ERROR_DC_BAD_SIGNATURE, illegal_parameter);
         goto loser;
@@ -397,13 +394,12 @@ loser:
 
 /* Checks that the peer's end-entity certificate has the correct key usage. */
 static SECStatus
-tls13_CheckCertDelegationUsage(sslSocket *ss)
+tls13_CheckCertDelegationUsage(sslSocket *ss, const CERTCertificate *cert)
 {
     int i;
     PRBool found;
     CERTCertExtension *ext;
     SECItem delegUsageOid = { siBuffer, NULL, 0 };
-    const CERTCertificate *cert = ss->sec.peerCert;
 
     /* 1.3.6.1.4.1.44363.44, as defined in draft-ietf-tls-subcerts. */
     static unsigned char kDelegationUsageOid[] = {
@@ -425,11 +421,13 @@ tls13_CheckCertDelegationUsage(sslSocket *ss)
      * it to negotiate delegated credentials.
      */
     found = PR_FALSE;
-    for (i = 0; cert->extensions[i] != NULL; i++) {
-        ext = cert->extensions[i];
-        if (SECITEM_CompareItem(&ext->id, &delegUsageOid) == SECEqual) {
-            found = PR_TRUE;
-            break;
+    if (cert->extensions) {
+        for (i = 0; cert->extensions[i] != NULL; i++) {
+            ext = cert->extensions[i];
+            if (SECITEM_CompareItem(&ext->id, &delegUsageOid) == SECEqual) {
+                found = PR_TRUE;
+                break;
+            }
         }
     }
 
@@ -445,10 +443,10 @@ tls13_CheckCertDelegationUsage(sslSocket *ss)
 }
 
 static SECStatus
-tls13_CheckCredentialExpiration(sslSocket *ss, sslDelegatedCredential *dc)
+tls13_CheckCredentialExpiration(sslSocket *ss, const CERTCertificate *cert,
+                                sslDelegatedCredential *dc)
 {
     SECStatus rv;
-    CERTCertificate *cert = ss->sec.peerCert;
     /* 7 days in microseconds */
     static const PRTime kMaxDcValidity = ((PRTime)7 * 24 * 60 * 60 * PR_USEC_PER_SEC);
     PRTime start, now, end; /* microseconds */
@@ -491,12 +489,27 @@ tls13_VerifyDelegatedCredential(sslSocket *ss,
     SECStatus rv;
     PRTime start;
     PRExplodedTime end;
-    CERTCertificate *cert = ss->sec.peerCert;
+    CERTCertificate *cert;
     char endStr[256];
+
+    /* The handshake keeps the peer's end-entity certificate as DER.  Decode it
+     * for the duration of this check: the delegated credential rules are
+     * expressed in terms of the certificate's validity period, extensions, and
+     * key usage.  Nothing is added to any certificate database. */
+    if (!ss->sec.peerCertDER.data) {
+        FATAL_ERROR(ss, SSL_ERROR_NO_CERTIFICATE, internal_error);
+        return SECFailure;
+    }
+    cert = CERT_DecodeDERCertificate(&ss->sec.peerCertDER, PR_FALSE, NULL);
+    if (!cert) {
+        FATAL_ERROR(ss, PORT_GetError(), internal_error);
+        return SECFailure;
+    }
 
     rv = DER_DecodeTimeChoice(&start, &cert->validity.notBefore);
     if (rv != SECSuccess) {
         FATAL_ERROR(ss, PORT_GetError(), internal_error);
+        CERT_DestroyCertificate(cert);
         return SECFailure;
     }
 
@@ -511,9 +524,10 @@ tls13_VerifyDelegatedCredential(sslSocket *ss,
     }
 
     rv = SECSuccess;
-    rv |= tls13_VerifyCredentialSignature(ss, dc);
-    rv |= tls13_CheckCertDelegationUsage(ss);
-    rv |= tls13_CheckCredentialExpiration(ss, dc);
+    rv |= tls13_VerifyCredentialSignature(ss, cert, dc);
+    rv |= tls13_CheckCertDelegationUsage(ss, cert);
+    rv |= tls13_CheckCredentialExpiration(ss, cert, dc);
+    CERT_DestroyCertificate(cert);
     return rv;
 }
 
@@ -656,7 +670,32 @@ tls13_MakeDcSpki(const SECKEYPublicKey *dcPub, SSLSignatureScheme dcCertVerifyAl
             }
             return SECKEY_CreateSubjectPublicKeyInfo(dcPub);
         }
-
+        case mldsaKey:
+            switch (dcPub->u.mldsa.paramSet) {
+                case SEC_OID_ML_DSA_44:
+                    if (ssl_sig_mldsa44 != dcCertVerifyAlg) {
+                        PORT_SetError(SSL_ERROR_INCORRECT_SIGNATURE_ALGORITHM);
+                        return NULL;
+                    }
+                    break;
+                case SEC_OID_ML_DSA_65:
+                    if (ssl_sig_mldsa65 != dcCertVerifyAlg) {
+                        PORT_SetError(SSL_ERROR_INCORRECT_SIGNATURE_ALGORITHM);
+                        return NULL;
+                    }
+                    break;
+                case SEC_OID_ML_DSA_87:
+                    if (ssl_sig_mldsa87 != dcCertVerifyAlg) {
+                        PORT_SetError(SSL_ERROR_INCORRECT_SIGNATURE_ALGORITHM);
+                        return NULL;
+                    }
+                    break;
+                default:
+                    PORT_SetError(SSL_ERROR_INCORRECT_SIGNATURE_ALGORITHM);
+                    return NULL;
+                    break;
+            }
+            return SECKEY_CreateSubjectPublicKeyInfo(dcPub);
         default:
             break;
     }
@@ -688,9 +727,9 @@ SSLExp_DelegateCredential(const CERTCertificate *cert,
                           SECItem *out)
 {
     SECStatus rv;
-    SSL3Hashes hash;
     CERTSubjectPublicKeyInfo *spki = NULL;
     SECKEYPrivateKey *tmpPriv = NULL;
+    void *pwArg = certPriv->wincx;
     sslDelegatedCredential *dc = NULL;
     sslBuffer dcBuf = SSL_BUFFER_EMPTY;
 
@@ -754,20 +793,16 @@ SSLExp_DelegateCredential(const CERTCertificate *cert,
         goto loser;
     }
 
-    /* Hash signature message. */
-    rv = tls13_HashCredentialSignatureMessage(&hash, dc->alg, cert, &dcBuf);
-    if (rv != SECSuccess) {
-        goto loser;
-    }
-
     /* Sign the hash with the delegation key.
      *
      * The PK11 API discards const qualifiers, so we have to make a copy of
-     * |certPriv| and pass the copy to |ssl3_SignHashesWithPrivKey|.
+     * |certPriv| and pass the copy to
+     * |tls13_HashCredentialAndSignOrVerifyMessage|.
      */
     tmpPriv = SECKEY_CopyPrivateKey(certPriv);
-    rv = ssl3_SignHashesWithPrivKey(&hash, tmpPriv, dc->alg,
-                                    PR_TRUE /* isTls */, &dc->signature);
+    rv = tls13_HashCredentialAndSignOrVerifyMessage(tmpPriv, NULL, dc->alg,
+                                                    sig_sign, cert, &dcBuf,
+                                                    &dc->signature, pwArg);
     if (rv != SECSuccess) {
         goto loser;
     }

@@ -1,9 +1,10 @@
-// Copyright (c) 2006-2010 The Chromium Authors. All rights reserved.
+// Copyright 2006-2010 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #include "sandbox/win/src/filesystem_dispatcher.h"
 
+#include <ntstatus.h>
 #include <stdint.h>
 
 #include "sandbox/win/src/crosscall_client.h"
@@ -16,6 +17,7 @@
 #include "sandbox/win/src/policy_params.h"
 #include "sandbox/win/src/sandbox.h"
 #include "sandbox/win/src/sandbox_nt_util.h"
+#include "sandbox/win/src/win_utils.h"
 
 namespace sandbox {
 
@@ -81,6 +83,28 @@ bool FilesystemDispatcher::SetupService(InterceptionManager* manager,
   }
 }
 
+bool ValidateFileOptions(uint32_t options) {
+  // Validate file options passed to NtCreateFile or NtOpenFile. Blocks use of
+  // rare options. This includes blocking calls with special information in
+  // NtCreateFile()'s ea_buffer (FILE_CONTAINS_EXTENDED_CREATE_INFORMATION).
+  const uint32_t kFileValidOptionFlags =
+      FILE_VALID_OPTION_FLAGS & ~FILE_OPEN_BY_FILE_ID;
+  return (options & kFileValidOptionFlags) == options;
+}
+
+void RestrictDirectoryAccess(uint32_t options, uint32_t* access) {
+  if (options & FILE_NON_DIRECTORY_FILE) {
+    return;
+  }
+
+  static constexpr uint32_t kAllowedDirReadFlags =
+      FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES |
+      FILE_READ_EA | READ_CONTROL | SYNCHRONIZE | GENERIC_READ |
+      GENERIC_EXECUTE;
+
+  *access &= kAllowedDirReadFlags;
+}
+
 bool FilesystemDispatcher::NtCreateFile(IPCInfo* ipc,
                                         std::wstring* name,
                                         uint32_t attributes,
@@ -89,26 +113,27 @@ bool FilesystemDispatcher::NtCreateFile(IPCInfo* ipc,
                                         uint32_t share_access,
                                         uint32_t create_disposition,
                                         uint32_t create_options) {
-  if (!PreProcessName(name)) {
+  if (!ValidateFileOptions(create_options) || ContainsNulCharacter(*name)) {
     ipc->return_info.nt_status = STATUS_ACCESS_DENIED;
     return true;
   }
 
-  const wchar_t* filename = name->c_str();
+  // Only allow read only open for directories.
+  if (create_options & FILE_DIRECTORY_FILE) {
+    // Reject any flags that can only create or overwrite.
+    if (create_disposition != FILE_OPEN && create_disposition != FILE_OPEN_IF) {
+      ipc->return_info.nt_status = STATUS_ACCESS_DENIED;
+      return true;
+    }
 
-  uint32_t broker = BROKER_TRUE;
-  CountedParameterSet<OpenFile> params;
-  params[OpenFile::NAME] = ParamPickerMake(filename);
-  params[OpenFile::ACCESS] = ParamPickerMake(desired_access);
-  params[OpenFile::DISPOSITION] = ParamPickerMake(create_disposition);
-  params[OpenFile::OPTIONS] = ParamPickerMake(create_options);
-  params[OpenFile::BROKER] = ParamPickerMake(broker);
+    // Force to open only.
+    create_disposition = FILE_OPEN;
+  }
 
-  // To evaluate the policy we need to call back to the policy object. We
-  // are just middlemen in the operation since is the FileSystemPolicy which
-  // knows what to do.
-  EvalResult result =
-      policy_base_->EvalPolicy(IpcTag::NTCREATEFILE, params.GetBase());
+  RestrictDirectoryAccess(create_options, &desired_access);
+
+  EvalResult result = EvalPolicy(IpcTag::NTCREATEFILE, *name, desired_access,
+                                 create_disposition == FILE_OPEN);
   HANDLE handle;
   ULONG_PTR io_information = 0;
   NTSTATUS nt_status;
@@ -132,27 +157,15 @@ bool FilesystemDispatcher::NtOpenFile(IPCInfo* ipc,
                                       uint32_t desired_access,
                                       uint32_t share_access,
                                       uint32_t open_options) {
-  if (!PreProcessName(name)) {
+  if (!ValidateFileOptions(open_options) || ContainsNulCharacter(*name)) {
     ipc->return_info.nt_status = STATUS_ACCESS_DENIED;
     return true;
   }
 
-  const wchar_t* filename = name->c_str();
+  RestrictDirectoryAccess(open_options, &desired_access);
 
-  uint32_t broker = BROKER_TRUE;
-  uint32_t create_disposition = FILE_OPEN;
-  CountedParameterSet<OpenFile> params;
-  params[OpenFile::NAME] = ParamPickerMake(filename);
-  params[OpenFile::ACCESS] = ParamPickerMake(desired_access);
-  params[OpenFile::DISPOSITION] = ParamPickerMake(create_disposition);
-  params[OpenFile::OPTIONS] = ParamPickerMake(open_options);
-  params[OpenFile::BROKER] = ParamPickerMake(broker);
-
-  // To evaluate the policy we need to call back to the policy object. We
-  // are just middlemen in the operation since is the FileSystemPolicy which
-  // knows what to do.
   EvalResult result =
-      policy_base_->EvalPolicy(IpcTag::NTOPENFILE, params.GetBase());
+      EvalPolicy(IpcTag::NTOPENFILE, *name, desired_access, true);
   HANDLE handle;
   ULONG_PTR io_information = 0;
   NTSTATUS nt_status;
@@ -176,22 +189,12 @@ bool FilesystemDispatcher::NtQueryAttributesFile(IPCInfo* ipc,
   if (sizeof(FILE_BASIC_INFORMATION) != info->Size())
     return false;
 
-  if (!PreProcessName(name)) {
+  if (ContainsNulCharacter(*name)) {
     ipc->return_info.nt_status = STATUS_ACCESS_DENIED;
     return true;
   }
 
-  uint32_t broker = BROKER_TRUE;
-  const wchar_t* filename = name->c_str();
-  CountedParameterSet<FileName> params;
-  params[FileName::NAME] = ParamPickerMake(filename);
-  params[FileName::BROKER] = ParamPickerMake(broker);
-
-  // To evaluate the policy we need to call back to the policy object. We
-  // are just middlemen in the operation since is the FileSystemPolicy which
-  // knows what to do.
-  EvalResult result =
-      policy_base_->EvalPolicy(IpcTag::NTQUERYATTRIBUTESFILE, params.GetBase());
+  EvalResult result = EvalPolicy(IpcTag::NTQUERYATTRIBUTESFILE, *name);
 
   FILE_BASIC_INFORMATION* information =
       reinterpret_cast<FILE_BASIC_INFORMATION*>(info->Buffer());
@@ -215,22 +218,12 @@ bool FilesystemDispatcher::NtQueryFullAttributesFile(IPCInfo* ipc,
   if (sizeof(FILE_NETWORK_OPEN_INFORMATION) != info->Size())
     return false;
 
-  if (!PreProcessName(name)) {
+  if (ContainsNulCharacter(*name)) {
     ipc->return_info.nt_status = STATUS_ACCESS_DENIED;
     return true;
   }
 
-  uint32_t broker = BROKER_TRUE;
-  const wchar_t* filename = name->c_str();
-  CountedParameterSet<FileName> params;
-  params[FileName::NAME] = ParamPickerMake(filename);
-  params[FileName::BROKER] = ParamPickerMake(broker);
-
-  // To evaluate the policy we need to call back to the policy object. We
-  // are just middlemen in the operation since is the FileSystemPolicy which
-  // knows what to do.
-  EvalResult result = policy_base_->EvalPolicy(
-      IpcTag::NTQUERYFULLATTRIBUTESFILE, params.GetBase());
+  EvalResult result = EvalPolicy(IpcTag::NTQUERYFULLATTRIBUTESFILE, *name);
 
   FILE_NETWORK_OPEN_INFORMATION* information =
       reinterpret_cast<FILE_NETWORK_OPEN_INFORMATION*>(info->Buffer());
@@ -267,22 +260,12 @@ bool FilesystemDispatcher::NtSetInformationFile(IPCInfo* ipc,
   std::wstring name;
   name.assign(rename_info->FileName,
               rename_info->FileNameLength / sizeof(rename_info->FileName[0]));
-  if (!PreProcessName(&name)) {
+  if (ContainsNulCharacter(name)) {
     ipc->return_info.nt_status = STATUS_ACCESS_DENIED;
     return true;
   }
 
-  uint32_t broker = BROKER_TRUE;
-  const wchar_t* filename = name.c_str();
-  CountedParameterSet<FileName> params;
-  params[FileName::NAME] = ParamPickerMake(filename);
-  params[FileName::BROKER] = ParamPickerMake(broker);
-
-  // To evaluate the policy we need to call back to the policy object. We
-  // are just middlemen in the operation since is the FileSystemPolicy which
-  // knows what to do.
-  EvalResult result =
-      policy_base_->EvalPolicy(IpcTag::NTSETINFO_RENAME, params.GetBase());
+  EvalResult result = EvalPolicy(IpcTag::NTSETINFO_RENAME, name);
 
   IO_STATUS_BLOCK* io_status =
       reinterpret_cast<IO_STATUS_BLOCK*>(status->Buffer());
@@ -297,6 +280,18 @@ bool FilesystemDispatcher::NtSetInformationFile(IPCInfo* ipc,
   // Return operation status on the IPC.
   ipc->return_info.nt_status = nt_status;
   return true;
+}
+
+EvalResult FilesystemDispatcher::EvalPolicy(IpcTag ipc_tag,
+                                            std::wstring_view name,
+                                            uint32_t desired_access,
+                                            bool open_only) {
+  CountedParameterSet<OpenFile> params;
+  params[OpenFile::NAME] = ParamPickerMake(name);
+  params[OpenFile::ACCESS] = ParamPickerMake(desired_access);
+  uint32_t open_only_int = open_only;
+  params[OpenFile::OPENONLY] = ParamPickerMake(open_only_int);
+  return policy_base_->EvalPolicy(ipc_tag, params.GetBase());
 }
 
 }  // namespace sandbox

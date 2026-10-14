@@ -4,113 +4,117 @@
 
 package org.mozilla.fenix.ui
 
+import androidx.compose.ui.test.junit4.v2.AndroidComposeTestRule as AndroidComposeTestRuleV2
+import androidx.test.espresso.Espresso.closeSoftKeyboard
 import org.junit.Rule
 import org.junit.Test
+import org.mozilla.fenix.customannotations.Converted
 import org.mozilla.fenix.customannotations.SmokeTest
+import org.mozilla.fenix.helpers.FenixTestRule
 import org.mozilla.fenix.helpers.HomeActivityIntentTestRule
 import org.mozilla.fenix.helpers.MatcherHelper.itemWithResId
 import org.mozilla.fenix.helpers.MatcherHelper.itemWithResIdContainingText
-import org.mozilla.fenix.helpers.TestAssetHelper
+import org.mozilla.fenix.helpers.TestAssetHelper.addressFormAsset
 import org.mozilla.fenix.helpers.TestHelper.exitMenu
 import org.mozilla.fenix.helpers.TestHelper.packageName
-import org.mozilla.fenix.helpers.TestSetup
+import org.mozilla.fenix.helpers.TestHelper.waitForAppWindowToBeUpdated
 import org.mozilla.fenix.helpers.perf.DetectMemoryLeaksRule
+import org.mozilla.fenix.ui.efficiency.data.AddressDetails
 import org.mozilla.fenix.ui.robots.autofillScreen
 import org.mozilla.fenix.ui.robots.clickPageObject
 import org.mozilla.fenix.ui.robots.homeScreen
 import org.mozilla.fenix.ui.robots.navigationToolbar
 
-class AddressAutofillTest : TestSetup() {
-    object FirstAddressAutofillDetails {
-        var navigateToAutofillSettings = true
-        var isAddressAutofillEnabled = true
-        var userHasSavedAddress = false
-        var name = "Mozilla Fenix Firefox"
-        var streetAddress = "Harrison Street"
-        var city = "San Francisco"
-        var state = "Alaska"
-        var zipCode = "94105"
-        var country = "United States"
-        var phoneNumber = "555-5555"
-        var emailAddress = "foo@bar.com"
-    }
+class AddressAutofillTest {
+    private val firstAddress =
+        AddressDetails(
+            name = "Mozilla Fenix Firefox",
+            streetAddress = "Harrison Street",
+            city = "San Francisco",
+            state = "Alaska",
+            zipCode = "94105",
+            country = "United States",
+            phoneNumber = "555-5555",
+            emailAddress = "foo@bar.com",
+        )
 
-    object SecondAddressAutofillDetails {
-        var navigateToAutofillSettings = false
-        var name = "Android Test Name"
-        var streetAddress = "Fort Street"
-        var city = "San Jose"
-        var state = "Arizona"
-        var zipCode = "95141"
-        var country = "United States"
-        var phoneNumber = "777-7777"
-        var emailAddress = "fuu@bar.org"
-    }
+    private val secondAddress =
+        AddressDetails(
+            name = "Android Test Name",
+            streetAddress = "Fort Street",
+            city = "Alberta",
+            state = "Alberta",
+            zipCode = "95141",
+            country = "Canada",
+            phoneNumber = "777-7777",
+            emailAddress = "fuu@bar.org",
+        )
 
-    @get:Rule
-    val activityIntentTestRule = HomeActivityIntentTestRule.withDefaultSettingsOverrides()
+    @get:Rule(order = 0) val fenixTestRule: FenixTestRule = FenixTestRule()
 
-    @get:Rule
-    val memoryLeaksRule = DetectMemoryLeaksRule()
+    private val mockWebServer
+        get() = fenixTestRule.mockWebServer
 
-    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1836845
+    @get:Rule(order = 1)
+    val composeTestRule =
+        AndroidComposeTestRuleV2(HomeActivityIntentTestRule.withDefaultSettingsOverrides()) { it.activity }
+
+    @get:Rule(order = 2) val memoryLeaksRule = DetectMemoryLeaksRule(composeTestRule = { composeTestRule })
+
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/3205329
+    @Converted(
+        replacedBy = ["org.mozilla.fenix.ui.efficiency.tests.AddressAutofillTest#verifyAddressAutofillTest"],
+        bug = 2057958,
+        since = "2026-07",
+    )
     @SmokeTest
     @Test
     fun verifyAddressAutofillTest() {
-        val addressFormPage =
-            TestAssetHelper.getAddressFormAsset(mockWebServer)
+        val addressFormPage = mockWebServer.addressFormAsset
 
-        autofillScreen {
-            fillAndSaveAddress(
-                navigateToAutofillSettings = FirstAddressAutofillDetails.navigateToAutofillSettings,
-                isAddressAutofillEnabled = FirstAddressAutofillDetails.isAddressAutofillEnabled,
-                userHasSavedAddress = FirstAddressAutofillDetails.userHasSavedAddress,
-                name = FirstAddressAutofillDetails.name,
-                streetAddress = FirstAddressAutofillDetails.streetAddress,
-                city = FirstAddressAutofillDetails.city,
-                state = FirstAddressAutofillDetails.state,
-                zipCode = FirstAddressAutofillDetails.zipCode,
-                country = FirstAddressAutofillDetails.country,
-                phoneNumber = FirstAddressAutofillDetails.phoneNumber,
-                emailAddress = FirstAddressAutofillDetails.emailAddress,
-            )
-        }.goBack {
-        }.goBack {
-        }
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(addressFormPage.url) {
-            clickPageObject(itemWithResId("streetAddress"))
-            clickSelectAddressButton()
-            clickPageObject(
-                itemWithResIdContainingText(
-                    "$packageName:id/address_name",
-                    "Harrison Street",
-                ),
-            )
-            verifyAutofilledAddress("Harrison Street")
-        }
+        autofillScreen(composeTestRule) {
+                fillAndSaveAddress(
+                    composeTestRule,
+                    address = firstAddress,
+                    navigateToAutofillSettings = true,
+                )
+            }
+            .goBack {}
+            .goBack(composeTestRule) {}
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(addressFormPage.url) {
+                clickPageObject(composeTestRule, itemWithResId("streetAddress"))
+                clickSelectAddressButton()
+                clickPageObject(
+                    composeTestRule,
+                    itemWithResIdContainingText(
+                        "$packageName:id/address_name",
+                        "Harrison Street",
+                    ),
+                )
+                waitForAppWindowToBeUpdated()
+                verifyAutofilledAddress("Harrison Street")
+            }
     }
 
-    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1836856
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/3205332
+    @Converted(
+        replacedBy = ["org.mozilla.fenix.ui.efficiency.tests.AddressAutofillTest#deleteSavedAddressTest"],
+        bug = 2060174,
+        since = "2026-08",
+    )
     @SmokeTest
     @Test
     fun deleteSavedAddressTest() {
-        autofillScreen {
+        autofillScreen(composeTestRule) {
             fillAndSaveAddress(
-                navigateToAutofillSettings = FirstAddressAutofillDetails.navigateToAutofillSettings,
-                isAddressAutofillEnabled = FirstAddressAutofillDetails.isAddressAutofillEnabled,
-                userHasSavedAddress = FirstAddressAutofillDetails.userHasSavedAddress,
-                name = FirstAddressAutofillDetails.name,
-                streetAddress = FirstAddressAutofillDetails.streetAddress,
-                city = FirstAddressAutofillDetails.city,
-                state = FirstAddressAutofillDetails.state,
-                zipCode = FirstAddressAutofillDetails.zipCode,
-                country = FirstAddressAutofillDetails.country,
-                phoneNumber = FirstAddressAutofillDetails.phoneNumber,
-                emailAddress = FirstAddressAutofillDetails.emailAddress,
+                composeTestRule,
+                address = firstAddress,
+                navigateToAutofillSettings = true,
             )
+
             clickManageAddressesButton()
-            clickSavedAddress("Mozilla")
+            clickSavedAddress(composeTestRule, firstAddress.name)
             clickDeleteAddressButton()
             clickCancelDeleteAddressButton()
             clickDeleteAddressButton()
@@ -119,305 +123,235 @@ class AddressAutofillTest : TestSetup() {
         }
     }
 
-    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1836840
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/3205316
     @Test
     fun verifyAddAddressViewTest() {
-        homeScreen {
-        }.openThreeDotMenu {
-        }.openSettings {
-        }.openAutofillSubMenu {
-            clickAddAddressButton()
-            verifyAddAddressView()
-        }.goBackToAutofillSettings {
-            verifyAutofillToolbarTitle()
-        }
+        homeScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openAutofillSubMenu(composeTestRule) {
+                clickAddAddressButton()
+                verifyAddAddressView()
+            }
+            .goBackToAutofillSettings(composeTestRule) {
+                verifyAutofillToolbarTitle()
+            }
     }
 
-    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1836841
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/3205321
     @Test
     fun verifyEditAddressViewTest() {
-        autofillScreen {
+        autofillScreen(composeTestRule) {
             fillAndSaveAddress(
-                navigateToAutofillSettings = FirstAddressAutofillDetails.navigateToAutofillSettings,
-                isAddressAutofillEnabled = FirstAddressAutofillDetails.isAddressAutofillEnabled,
-                userHasSavedAddress = FirstAddressAutofillDetails.userHasSavedAddress,
-                name = FirstAddressAutofillDetails.name,
-                streetAddress = FirstAddressAutofillDetails.streetAddress,
-                city = FirstAddressAutofillDetails.city,
-                state = FirstAddressAutofillDetails.state,
-                zipCode = FirstAddressAutofillDetails.zipCode,
-                country = FirstAddressAutofillDetails.country,
-                phoneNumber = FirstAddressAutofillDetails.phoneNumber,
-                emailAddress = FirstAddressAutofillDetails.emailAddress,
+                composeTestRule,
+                address = firstAddress,
+                navigateToAutofillSettings = true,
             )
             clickManageAddressesButton()
-            clickSavedAddress("Mozilla")
+            clickSavedAddress(composeTestRule, firstAddress.name)
+            waitForAppWindowToBeUpdated()
             verifyEditAddressView()
         }
     }
 
-    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1836839
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/3205318
     @Test
     fun verifyAddressAutofillToggleTest() {
-        val addressFormPage =
-            TestAssetHelper.getAddressFormAsset(mockWebServer)
+        val addressFormPage = mockWebServer.addressFormAsset
 
-        autofillScreen {
+        autofillScreen(composeTestRule) {
             fillAndSaveAddress(
-                navigateToAutofillSettings = FirstAddressAutofillDetails.navigateToAutofillSettings,
-                isAddressAutofillEnabled = FirstAddressAutofillDetails.isAddressAutofillEnabled,
-                userHasSavedAddress = FirstAddressAutofillDetails.userHasSavedAddress,
-                name = FirstAddressAutofillDetails.name,
-                streetAddress = FirstAddressAutofillDetails.streetAddress,
-                city = FirstAddressAutofillDetails.city,
-                state = FirstAddressAutofillDetails.state,
-                zipCode = FirstAddressAutofillDetails.zipCode,
-                country = FirstAddressAutofillDetails.country,
-                phoneNumber = FirstAddressAutofillDetails.phoneNumber,
-                emailAddress = FirstAddressAutofillDetails.emailAddress,
+                composeTestRule,
+                address = firstAddress,
+                navigateToAutofillSettings = true,
             )
         }
 
         exitMenu()
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(addressFormPage.url) {
-            clickPageObject(itemWithResId("streetAddress"))
-            verifySelectAddressButtonExists(true)
-        }.openThreeDotMenu {
-        }.openSettings {
-        }.openAutofillSubMenu {
-            clickSaveAndAutofillAddressesOption()
-            verifyAddressAutofillSection(false, true)
-        }
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(addressFormPage.url) {
+                clickAddressFormFieldAndVerifyAutofillSuggestionExists()
+                closeSoftKeyboard()
+                waitForAppWindowToBeUpdated()
+            }
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openAutofillSubMenu(composeTestRule) {
+                clickSaveAndAutofillAddressesOption()
+                verifyAddressAutofillSection(false, true)
+            }
 
         exitMenu()
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(addressFormPage.url) {
-            clickPageObject(itemWithResId("streetAddress"))
-            verifySelectAddressButtonExists(false)
-        }
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(addressFormPage.url) {
+                clickPageObject(composeTestRule, itemWithResId("streetAddress"))
+                verifySelectAddressButtonExists(false)
+            }
     }
 
-    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1836847
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/3205330
     @Test
     fun verifyManageAddressesPromptOptionTest() {
-        val addressFormPage =
-            TestAssetHelper.getAddressFormAsset(mockWebServer)
+        val addressFormPage = mockWebServer.addressFormAsset
 
-        autofillScreen {
+        autofillScreen(composeTestRule) {
             fillAndSaveAddress(
-                navigateToAutofillSettings = FirstAddressAutofillDetails.navigateToAutofillSettings,
-                isAddressAutofillEnabled = FirstAddressAutofillDetails.isAddressAutofillEnabled,
-                userHasSavedAddress = FirstAddressAutofillDetails.userHasSavedAddress,
-                name = FirstAddressAutofillDetails.name,
-                streetAddress = FirstAddressAutofillDetails.streetAddress,
-                city = FirstAddressAutofillDetails.city,
-                state = FirstAddressAutofillDetails.state,
-                zipCode = FirstAddressAutofillDetails.zipCode,
-                country = FirstAddressAutofillDetails.country,
-                phoneNumber = FirstAddressAutofillDetails.phoneNumber,
-                emailAddress = FirstAddressAutofillDetails.emailAddress,
+                composeTestRule,
+                address = firstAddress,
+                navigateToAutofillSettings = true,
             )
         }
 
         exitMenu()
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(addressFormPage.url) {
-            clickPageObject(itemWithResId("streetAddress"))
-            clickSelectAddressButton()
-        }.clickManageAddressButton {
-            verifyAutofillToolbarTitle()
-        }.goBackToBrowser {
-            verifySaveLoginPromptIsNotDisplayed()
-        }
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(addressFormPage.url) {
+                clickPageObject(composeTestRule, itemWithResId("streetAddress"))
+                clickSelectAddressButton()
+            }
+            .clickManageAddressButton {
+                verifyAutofillToolbarTitle()
+            }
+            .goBackToBrowser(composeTestRule) {
+                verifySaveLoginPromptIsNotDisplayed()
+            }
     }
 
-    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1836849
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/3205319
     @Test
     fun verifyMultipleAddressesSelectionTest() {
-        val addressFormPage =
-            TestAssetHelper.getAddressFormAsset(mockWebServer)
+        val addressFormPage = mockWebServer.addressFormAsset
 
-        autofillScreen {
+        autofillScreen(composeTestRule) {
             fillAndSaveAddress(
-                navigateToAutofillSettings = FirstAddressAutofillDetails.navigateToAutofillSettings,
-                isAddressAutofillEnabled = FirstAddressAutofillDetails.isAddressAutofillEnabled,
-                userHasSavedAddress = FirstAddressAutofillDetails.userHasSavedAddress,
-                name = FirstAddressAutofillDetails.name,
-                streetAddress = FirstAddressAutofillDetails.streetAddress,
-                city = FirstAddressAutofillDetails.city,
-                state = FirstAddressAutofillDetails.state,
-                zipCode = FirstAddressAutofillDetails.zipCode,
-                country = FirstAddressAutofillDetails.country,
-                phoneNumber = FirstAddressAutofillDetails.phoneNumber,
-                emailAddress = FirstAddressAutofillDetails.emailAddress,
+                composeTestRule,
+                address = firstAddress,
+                navigateToAutofillSettings = true,
             )
             clickManageAddressesButton()
             clickAddAddressButton()
             fillAndSaveAddress(
-                navigateToAutofillSettings = SecondAddressAutofillDetails.navigateToAutofillSettings,
-                name = SecondAddressAutofillDetails.name,
-                streetAddress = SecondAddressAutofillDetails.streetAddress,
-                city = SecondAddressAutofillDetails.city,
-                state = SecondAddressAutofillDetails.state,
-                zipCode = SecondAddressAutofillDetails.zipCode,
-                country = SecondAddressAutofillDetails.country,
-                phoneNumber = SecondAddressAutofillDetails.phoneNumber,
-                emailAddress = SecondAddressAutofillDetails.emailAddress,
+                composeTestRule,
+                address = secondAddress,
+                navigateToAutofillSettings = false,
             )
             verifyManageAddressesToolbarTitle()
         }
 
         exitMenu()
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(addressFormPage.url) {
-            clickPageObject(itemWithResId("streetAddress"))
-            clickSelectAddressButton()
-            clickPageObject(
-                itemWithResIdContainingText(
-                    "$packageName:id/address_name",
-                    "Harrison Street",
-                ),
-            )
-            verifyAutofilledAddress("Harrison Street")
-            clearAddressForm()
-            clickPageObject(itemWithResId("streetAddress"))
-            clickSelectAddressButton()
-            clickPageObject(
-                itemWithResIdContainingText(
-                    "$packageName:id/address_name",
-                    "Fort Street",
-                ),
-            )
-            verifyAutofilledAddress("Fort Street")
-        }
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(addressFormPage.url) {
+                clickPageObject(composeTestRule, itemWithResId("streetAddress"))
+                clickSelectAddressButton()
+                clickPageObject(
+                    composeTestRule,
+                    itemWithResIdContainingText(
+                        "$packageName:id/address_name",
+                        "Harrison Street",
+                    ),
+                )
+                verifyAutofilledAddress("Harrison Street")
+                clearAddressForm()
+                clickPageObject(composeTestRule, itemWithResId("streetAddress"))
+                clickSelectAddressButton()
+                clickPageObject(
+                    composeTestRule,
+                    itemWithResIdContainingText(
+                        "$packageName:id/address_name",
+                        "Fort Street",
+                    ),
+                )
+                verifyAutofilledAddress("Fort Street")
+            }
     }
 
-    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1836850
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/3205322
     @Test
     fun verifySavedAddressCanBeEditedTest() {
-        autofillScreen {
+        autofillScreen(composeTestRule) {
             fillAndSaveAddress(
-                navigateToAutofillSettings = FirstAddressAutofillDetails.navigateToAutofillSettings,
-                isAddressAutofillEnabled = FirstAddressAutofillDetails.isAddressAutofillEnabled,
-                userHasSavedAddress = FirstAddressAutofillDetails.userHasSavedAddress,
-                name = FirstAddressAutofillDetails.name,
-                streetAddress = FirstAddressAutofillDetails.streetAddress,
-                city = FirstAddressAutofillDetails.city,
-                state = FirstAddressAutofillDetails.state,
-                zipCode = FirstAddressAutofillDetails.zipCode,
-                country = FirstAddressAutofillDetails.country,
-                phoneNumber = FirstAddressAutofillDetails.phoneNumber,
-                emailAddress = FirstAddressAutofillDetails.emailAddress,
+                composeTestRule,
+                address = firstAddress,
+                navigateToAutofillSettings = true,
             )
             clickManageAddressesButton()
-            clickSavedAddress("Mozilla")
+            clickSavedAddress(composeTestRule, firstAddress.name)
             fillAndSaveAddress(
-                navigateToAutofillSettings = SecondAddressAutofillDetails.navigateToAutofillSettings,
-                name = SecondAddressAutofillDetails.name,
-                streetAddress = SecondAddressAutofillDetails.streetAddress,
-                city = SecondAddressAutofillDetails.city,
-                state = SecondAddressAutofillDetails.state,
-                zipCode = SecondAddressAutofillDetails.zipCode,
-                country = SecondAddressAutofillDetails.country,
-                phoneNumber = SecondAddressAutofillDetails.phoneNumber,
-                emailAddress = SecondAddressAutofillDetails.emailAddress,
+                composeTestRule,
+                address = secondAddress,
+                navigateToAutofillSettings = false,
             )
             verifyManageAddressesToolbarTitle()
         }
     }
 
-    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1836848
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/3205320
     @Test
     fun verifyStateFieldUpdatesInAccordanceWithCountryFieldTest() {
-        homeScreen {
-        }.openThreeDotMenu {
-        }.openSettings {
-        }.openAutofillSubMenu {
-            verifyAddressAutofillSection(true, false)
-            clickAddAddressButton()
-            verifyCountryOption("United States")
-            verifyStateOption("Alabama")
-            verifyCountryOptions("Canada", "United States")
-            clickCountryOption("Canada")
-            verifyStateOption("Alberta")
-        }
+        homeScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openAutofillSubMenu(composeTestRule) {
+                verifyAddressAutofillSection(true, false)
+                clickAddAddressButton()
+                waitForAddressFormReady()
+                clickCountryOption("United States")
+                verifyCountryOption("United States")
+                verifyStateOption("Alabama")
+                clickCountryOption("Canada")
+                verifyStateOption("Alberta")
+            }
     }
 
-    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1836858
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/3205331
     @Test
     fun verifyFormFieldCanBeFilledManuallyTest() {
-        val addressFormPage =
-            TestAssetHelper.getAddressFormAsset(mockWebServer)
+        val addressFormPage = mockWebServer.addressFormAsset
 
-        autofillScreen {
+        autofillScreen(composeTestRule) {
             fillAndSaveAddress(
-                navigateToAutofillSettings = FirstAddressAutofillDetails.navigateToAutofillSettings,
-                isAddressAutofillEnabled = FirstAddressAutofillDetails.isAddressAutofillEnabled,
-                userHasSavedAddress = FirstAddressAutofillDetails.userHasSavedAddress,
-                name = FirstAddressAutofillDetails.name,
-                streetAddress = FirstAddressAutofillDetails.streetAddress,
-                city = FirstAddressAutofillDetails.city,
-                state = FirstAddressAutofillDetails.state,
-                zipCode = FirstAddressAutofillDetails.zipCode,
-                country = FirstAddressAutofillDetails.country,
-                phoneNumber = FirstAddressAutofillDetails.phoneNumber,
-                emailAddress = FirstAddressAutofillDetails.emailAddress,
+                composeTestRule,
+                address = firstAddress,
+                navigateToAutofillSettings = true,
             )
         }
 
         exitMenu()
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(addressFormPage.url) {
-            clickPageObject(itemWithResId("streetAddress"))
-            clickSelectAddressButton()
-            clickPageObject(
-                itemWithResIdContainingText(
-                    "$packageName:id/address_name",
-                    "Harrison Street",
-                ),
-            )
-            verifyAutofilledAddress("Harrison Street")
-            setTextForApartmentTextBox("Ap. 07")
-            verifyManuallyFilledAddress("Ap. 07")
-        }
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(addressFormPage.url) {
+                clickPageObject(composeTestRule, itemWithResId("streetAddress"))
+                clickSelectAddressButton()
+                clickPageObject(
+                    composeTestRule,
+                    itemWithResIdContainingText(
+                        "$packageName:id/address_name",
+                        "Harrison Street",
+                    ),
+                )
+                verifyAutofilledAddress("Harrison Street")
+                setTextForApartmentTextBox("Ap. 07")
+                verifyManuallyFilledAddress("Ap. 07")
+            }
     }
 
-    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1836838
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/3205317
     @Test
     fun verifyAutofillAddressSectionTest() {
-        autofillScreen {
+        autofillScreen(composeTestRule) {
             fillAndSaveAddress(
-                navigateToAutofillSettings = FirstAddressAutofillDetails.navigateToAutofillSettings,
-                isAddressAutofillEnabled = FirstAddressAutofillDetails.isAddressAutofillEnabled,
-                userHasSavedAddress = FirstAddressAutofillDetails.userHasSavedAddress,
-                name = FirstAddressAutofillDetails.name,
-                streetAddress = FirstAddressAutofillDetails.streetAddress,
-                city = FirstAddressAutofillDetails.city,
-                state = FirstAddressAutofillDetails.state,
-                zipCode = FirstAddressAutofillDetails.zipCode,
-                country = FirstAddressAutofillDetails.country,
-                phoneNumber = FirstAddressAutofillDetails.phoneNumber,
-                emailAddress = FirstAddressAutofillDetails.emailAddress,
+                composeTestRule,
+                address = firstAddress,
+                navigateToAutofillSettings = true,
             )
             verifyAddressAutofillSection(true, true)
             clickManageAddressesButton()
             verifyManageAddressesSection(
-                "Mozilla",
-                "Fenix",
-                "Firefox",
-                "Harrison Street",
-                "San Francisco",
-                "Alaska",
-                "94105",
-                "US",
-                "555-5555",
-                "foo@bar.com",
+                firstAddress.name,
+                "Harrison Street, San Francisco, AK, US, 94105, 555-5555, foo@bar.com",
             )
         }
     }

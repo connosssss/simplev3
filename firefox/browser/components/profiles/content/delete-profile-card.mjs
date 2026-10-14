@@ -2,10 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-env mozilla/remote-page */
-
 import { MozLitElement } from "chrome://global/content/lit-utils.mjs";
 import { html } from "chrome://global/content/vendor/lit.all.mjs";
+
 // eslint-disable-next-line import/no-unassigned-import
 import "chrome://global/content/elements/moz-button.mjs";
 // eslint-disable-next-line import/no-unassigned-import
@@ -28,7 +27,6 @@ export class DeleteProfileCard extends MozLitElement {
 
   connectedCallback() {
     super.connectedCallback();
-
     this.init();
   }
 
@@ -52,6 +50,22 @@ export class DeleteProfileCard extends MozLitElement {
     );
 
     this.initialized = true;
+    this.setFavicon();
+  }
+
+  setFavicon() {
+    const favicon = document.getElementById("favicon");
+
+    if (this.data.profile.hasCustomAvatar) {
+      favicon.href = this.data.profile.avatarURLs.url16;
+      return;
+    }
+
+    const faviconBlob = new Blob([this.data.profile.faviconSVGText], {
+      type: "image/svg+xml",
+    });
+    const faviconObjURL = URL.createObjectURL(faviconBlob);
+    favicon.href = faviconObjURL;
   }
 
   updated() {
@@ -64,13 +78,6 @@ export class DeleteProfileCard extends MozLitElement {
     let { themeFg, themeBg } = this.data.profile;
     this.headerAvatar.style.fill = themeBg;
     this.headerAvatar.style.stroke = themeFg;
-
-    this.setFavicon();
-  }
-
-  setFavicon() {
-    let favicon = document.getElementById("favicon");
-    favicon.href = this.data.profile.avatarURLs.url16;
   }
 
   cancelDelete() {
@@ -98,15 +105,13 @@ export class DeleteProfileCard extends MozLitElement {
         ><div id="delete-profile-card">
           <img
             id="header-avatar"
-            width="80"
-            height="80"
             data-l10n-id=${this.data.profile.avatarL10nId}
             src=${this.data.profile.avatarURLs.url80}
           />
           <div id="profile-content">
             <div>
               <h1
-                data-l10n-id="delete-profile-header"
+                data-l10n-id="delete-profile-header-2"
                 data-l10n-args=${JSON.stringify({
                   profilename: this.data.profile.name,
                 })}
@@ -145,12 +150,14 @@ export class DeleteProfileCard extends MozLitElement {
             <moz-button-group>
               <moz-button
                 id="cancel-delete"
+                size="large"
                 @click=${this.cancelDelete}
                 data-l10n-id="delete-profile-cancel"
               ></moz-button>
               <moz-button
                 type="destructive"
                 id="confirm-delete"
+                size="large"
                 @click=${this.confirmDelete}
                 data-l10n-id="delete-profile-confirm"
               ></moz-button>

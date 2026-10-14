@@ -1,49 +1,10 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "AudioContext.h"
 
-#include "blink/PeriodicWave.h"
-
-#include "mozilla/ErrorResult.h"
-#include "mozilla/NotNull.h"
-#include "mozilla/OwningNonNull.h"
-#include "mozilla/RefPtr.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/StaticPrefs_media.h"
-
-#include "mozilla/dom/AnalyserNode.h"
-#include "mozilla/dom/AnalyserNodeBinding.h"
-#include "mozilla/dom/AudioBufferSourceNodeBinding.h"
-#include "mozilla/dom/AudioContextBinding.h"
-#include "mozilla/dom/AudioWorklet.h"
-#include "mozilla/dom/BaseAudioContextBinding.h"
-#include "mozilla/dom/BiquadFilterNodeBinding.h"
-#include "mozilla/dom/BrowsingContext.h"
-#include "mozilla/dom/CanonicalBrowsingContext.h"
-#include "mozilla/dom/ChannelMergerNodeBinding.h"
-#include "mozilla/dom/ChannelSplitterNodeBinding.h"
-#include "mozilla/dom/ContentChild.h"
-#include "mozilla/dom/ConvolverNodeBinding.h"
-#include "mozilla/dom/DelayNodeBinding.h"
-#include "mozilla/dom/DynamicsCompressorNodeBinding.h"
-#include "mozilla/dom/GainNodeBinding.h"
-#include "mozilla/dom/IIRFilterNodeBinding.h"
-#include "mozilla/dom/HTMLMediaElement.h"
-#include "mozilla/dom/MediaElementAudioSourceNodeBinding.h"
-#include "mozilla/dom/MediaStreamAudioSourceNodeBinding.h"
-#include "mozilla/dom/MediaStreamTrackAudioSourceNodeBinding.h"
-#include "mozilla/dom/OfflineAudioContextBinding.h"
-#include "mozilla/dom/OscillatorNodeBinding.h"
-#include "mozilla/dom/PannerNodeBinding.h"
-#include "mozilla/dom/PeriodicWaveBinding.h"
-#include "mozilla/dom/Performance.h"
-#include "mozilla/dom/Promise.h"
-#include "mozilla/dom/StereoPannerNodeBinding.h"
-#include "mozilla/dom/WaveShaperNodeBinding.h"
+#include <memory>
 
 #include "AudioBuffer.h"
 #include "AudioBufferSourceNode.h"
@@ -63,31 +24,73 @@
 #include "DynamicsCompressorNode.h"
 #include "GainNode.h"
 #include "IIRFilterNode.h"
-#include "js/ArrayBuffer.h"  // JS::StealArrayBufferContents
 #include "MediaElementAudioSourceNode.h"
 #include "MediaStreamAudioDestinationNode.h"
 #include "MediaStreamAudioSourceNode.h"
-#include "MediaTrackGraph.h"
 #include "MediaStreamTrackAudioSourceNode.h"
-#include "nsContentUtils.h"
-#include "nsIScriptError.h"
-#include "nsNetCID.h"
-#include "nsNetUtil.h"
-#include "nsPIDOMWindow.h"
-#include "nsPrintfCString.h"
-#include "nsRFPService.h"
+#include "MediaTrackGraph.h"
 #include "OscillatorNode.h"
 #include "PannerNode.h"
 #include "PeriodicWave.h"
 #include "ScriptProcessorNode.h"
 #include "StereoPannerNode.h"
-#include "WaveShaperNode.h"
 #include "Tracing.h"
+#include "WaveShaperNode.h"
+#include "blink/PeriodicWave.h"
+#include "js/ArrayBuffer.h"  // JS::StealArrayBufferContents
+#include "mozilla/ErrorResult.h"
+#include "mozilla/OwningNonNull.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/StaticPrefs_media.h"
+#include "mozilla/dom/AnalyserNode.h"
+#include "mozilla/dom/AnalyserNodeBinding.h"
+#include "mozilla/dom/AudioBufferSourceNodeBinding.h"
+#include "mozilla/dom/AudioContextBinding.h"
+#include "mozilla/dom/AudioWorklet.h"
+#include "mozilla/dom/BaseAudioContextBinding.h"
+#include "mozilla/dom/BiquadFilterNodeBinding.h"
+#include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/CanonicalBrowsingContext.h"
+#include "mozilla/dom/ChannelMergerNodeBinding.h"
+#include "mozilla/dom/ChannelSplitterNodeBinding.h"
+#include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/ConvolverNodeBinding.h"
+#include "mozilla/dom/DelayNodeBinding.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/DynamicsCompressorNodeBinding.h"
+#include "mozilla/dom/GainNodeBinding.h"
+#include "mozilla/dom/HTMLMediaElement.h"
+#include "mozilla/dom/IIRFilterNodeBinding.h"
+#include "mozilla/dom/MediaControlUtils.h"
+#include "mozilla/dom/MediaElementAudioSourceNodeBinding.h"
+#include "mozilla/dom/MediaStreamAudioSourceNodeBinding.h"
+#include "mozilla/dom/MediaStreamTrackAudioSourceNodeBinding.h"
+#include "mozilla/dom/OfflineAudioContextBinding.h"
+#include "mozilla/dom/OscillatorNodeBinding.h"
+#include "mozilla/dom/PannerNodeBinding.h"
+#include "mozilla/dom/Performance.h"
+#include "mozilla/dom/PeriodicWaveBinding.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/StereoPannerNodeBinding.h"
+#include "mozilla/dom/WaveShaperNodeBinding.h"
+#include "nsContentUtils.h"
+#include "nsGlobalWindowInner.h"
+#include "nsIScriptError.h"
+#include "nsNetCID.h"
+#include "nsNetUtil.h"
+#include "nsPIDOMWindow.h"
+#include "nsPIDOMWindowInlines.h"
+#include "nsPrintfCString.h"
+#include "nsRFPService.h"
 
 extern mozilla::LazyLogModule gAutoplayPermissionLog;
 
 #define AUTOPLAY_LOG(msg, ...) \
-  MOZ_LOG(gAutoplayPermissionLog, LogLevel::Debug, (msg, ##__VA_ARGS__))
+  MOZ_LOG_FMT(gAutoplayPermissionLog, LogLevel::Debug, msg, ##__VA_ARGS__)
+
+#define MEDIA_CONTROL_LOG(msg, ...) \
+  MOZ_LOG_FMT(gMediaControlLog, LogLevel::Debug, msg, ##__VA_ARGS__)
 
 namespace mozilla::dom {
 
@@ -176,7 +179,8 @@ AudioContext::AudioContext(nsPIDOMWindowInner* aWindow, bool aIsOffline,
       mTracksAreSuspended(!aIsOffline),
       mWasAllowedToStart(true),
       mSuspendedByContent(false),
-      mSuspendedByChrome(nsGlobalWindowInner::Cast(aWindow)->IsSuspended()) {
+      mSuspendedByChrome(nsGlobalWindowInner::Cast(aWindow)->IsSuspended()),
+      mSuspendedByMediaControl(false) {
   bool mute = aWindow->AddAudioContext(this);
 
   // Note: AudioDestinationNode needs an AudioContext that must already be
@@ -190,7 +194,7 @@ AudioContext::AudioContext(nsPIDOMWindowInner* aWindow, bool aIsOffline,
   // AudioContext.resume() or AudioScheduledSourceNode.start().
   if (!allowedToStart) {
     MOZ_ASSERT(!mIsOffline);
-    AUTOPLAY_LOG("AudioContext %p is not allowed to start", this);
+    AUTOPLAY_LOG("AudioContext {} is not allowed to start", fmt::ptr(this));
     ReportBlocked();
   } else if (!mIsOffline) {
     ResumeInternal();
@@ -212,13 +216,13 @@ void AudioContext::StartBlockedAudioContextIfAllowed() {
   }
 
   const bool isAllowedToPlay = media::AutoplayPolicy::IsAllowedToPlay(*this);
-  AUTOPLAY_LOG("Trying to start AudioContext %p, IsAllowedToPlay=%d", this,
-               isAllowedToPlay);
+  AUTOPLAY_LOG("Trying to start AudioContext {}, IsAllowedToPlay={}",
+               fmt::ptr(this), isAllowedToPlay);
 
   // Only start the AudioContext if this resume() call was initiated by content,
   // not if it was a result of the AudioContext starting after having been
   // blocked because of the auto-play policy.
-  if (isAllowedToPlay && !mSuspendedByContent) {
+  if (isAllowedToPlay && !mSuspendedByContent && !mSuspendedByMediaControl) {
     ResumeInternal();
   } else {
     ReportBlocked();
@@ -285,6 +289,7 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
                          ? aOptions.mSampleRate.Value()
                          : MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE;
 
+  WEB_AUDIO_API_LOG("AudioContext sampleRate={}", sampleRate);
   RefPtr<AudioContext> object =
       new AudioContext(window, false, 2, 0, sampleRate);
 
@@ -319,6 +324,9 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
     return nullptr;
   }
 
+  WEB_AUDIO_API_LOG(
+      "OfflineAudioContext numberOfChannels={} length={} sampleRate={}",
+      aNumberOfChannels, aLength, aSampleRate);
   if (aNumberOfChannels == 0 ||
       aNumberOfChannels > WebAudioUtils::MaxChannelCount) {
     aRv.ThrowNotSupportedError(
@@ -677,8 +685,8 @@ already_AddRefed<Promise> AudioContext::DecodeAudioData(
   if (aSuccessCallback.WasPassed()) {
     successCallback = &aSuccessCallback.Value();
   }
-  UniquePtr<WebAudioDecodeJob> job(
-      new WebAudioDecodeJob(this, promise, successCallback, failureCallback));
+  auto job = std::make_unique<WebAudioDecodeJob>(this, promise, successCallback,
+                                                 failureCallback);
   AsyncDecodeWebAudio(contentType.get(), data, length, *job);
   // Transfer the ownership to mDecodeJobs
   mDecodeJobs.AppendElement(std::move(job));
@@ -757,13 +765,6 @@ double AudioContext::CurrentTime() {
       rawTime, GetRandomTimelineSeed(), mRTPCallerType);
 }
 
-nsISerialEventTarget* AudioContext::GetMainThread() const {
-  if (nsIGlobalObject* global = GetOwnerGlobal()) {
-    return global->SerialEventTarget();
-  }
-  return GetCurrentSerialEventTarget();
-}
-
 void AudioContext::DisconnectFromOwner() {
   mIsDisconnecting = true;
   MaybeClearPageAwakeRequest();
@@ -817,14 +818,13 @@ class OnStateChangeTask final : public Runnable {
   explicit OnStateChangeTask(AudioContext* aAudioContext)
       : Runnable("dom::OnStateChangeTask"), mAudioContext(aAudioContext) {}
 
-  NS_IMETHODIMP
-  Run() override {
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHODIMP Run() override {
     nsGlobalWindowInner* win = mAudioContext->GetOwnerWindow();
     if (!win) {
       return NS_ERROR_FAILURE;
     }
 
-    Document* doc = win->GetExtantDoc();
+    const RefPtr<Document> doc = win->GetExtantDoc();
     if (!doc) {
       return NS_ERROR_FAILURE;
     }
@@ -834,10 +834,10 @@ class OnStateChangeTask final : public Runnable {
   }
 
  private:
-  RefPtr<AudioContext> mAudioContext;
+  MOZ_KNOWN_LIVE const RefPtr<AudioContext> mAudioContext;
 };
 
-void AudioContext::Dispatch(already_AddRefed<nsIRunnable>&& aRunnable) {
+void AudioContext::Dispatch(already_AddRefed<nsIRunnable> aRunnable) {
   MOZ_ASSERT(NS_IsMainThread());
   // It can happen that this runnable took a long time to reach the main thread,
   // and the global is not valid anymore.
@@ -928,7 +928,7 @@ void AudioContext::SetPageAwakeRequest(bool aShouldSet) {
   }
   if (XRE_IsContentProcess()) {
     ContentChild* contentChild = ContentChild::GetSingleton();
-    Unused << contentChild->SendAddOrRemovePageAwakeRequest(bc, aShouldSet);
+    (void)contentChild->SendAddOrRemovePageAwakeRequest(bc, aShouldSet);
     return;
   }
   if (aShouldSet) {
@@ -986,6 +986,12 @@ already_AddRefed<Promise> AudioContext::Suspend(ErrorResult& aRv) {
   }
 
   mSuspendedByContent = true;
+  if (mSuspendedByMediaControl) {
+    MEDIA_CONTROL_LOG(
+        "AudioContext {} page suspend() takes over an interruption suspend",
+        fmt::ptr(this));
+    mSuspendedByMediaControl = false;
+  }
   mPromiseGripArray.AppendElement(promise);
   SuspendInternal(promise, AudioContextOperationFlags::SendStateChange);
   return promise.forget();
@@ -1000,6 +1006,44 @@ void AudioContext::SuspendFromChrome() {
   SuspendInternal(nullptr, Preferences::GetBool("dom.audiocontext.testing")
                                ? AudioContextOperationFlags::SendStateChange
                                : AudioContextOperationFlags::None);
+}
+
+void AudioContext::SuspendFromMediaControl() {
+  // Offline contexts never register a media-control listener, so this should
+  // not be reachable for them.
+  MOZ_DIAGNOSTIC_ASSERT(!mIsOffline);
+  if (mIsShutDown || mCloseCalled) {
+    return;
+  }
+  MEDIA_CONTROL_LOG("AudioContext {} SuspendFromMediaControl", fmt::ptr(this));
+  // Track this as an interruption-owned suspend. The shared "stay suspended"
+  // reads (ResumeInternal's guard and the autoplay implicit-start guard) test
+  // this flag too, so a media-control suspend sticks without overloading
+  // mSuspendedByContent, which now means "the page called suspend()" only.
+  mSuspendedByMediaControl = true;
+  SuspendInternal(nullptr, AudioContextOperationFlags::SendStateChange);
+}
+
+void AudioContext::ResumeFromMediaControl() {
+  // Offline contexts never register a media-control listener, so this should
+  // not be reachable for them.
+  MOZ_DIAGNOSTIC_ASSERT(!mIsOffline);
+  if (mIsShutDown || mCloseCalled) {
+    return;
+  }
+  // Only auto-resume a suspend that the interruption itself started. If the
+  // page called suspend() (or resume()) while interrupted, it has taken over
+  // the suspended state (mSuspendedByContent) and we must leave it alone; even
+  // if we proceed, ResumeInternal's guard keeps it suspended.
+  if (!mSuspendedByMediaControl) {
+    MEDIA_CONTROL_LOG(
+        "AudioContext {} ResumeFromMediaControl skipped: page owns the suspend",
+        fmt::ptr(this));
+    return;
+  }
+  MEDIA_CONTROL_LOG("AudioContext {} ResumeFromMediaControl", fmt::ptr(this));
+  mSuspendedByMediaControl = false;
+  ResumeInternal();
 }
 
 void AudioContext::SuspendInternal(void* aPromise,
@@ -1020,13 +1064,20 @@ void AudioContext::SuspendInternal(void* aPromise,
   auto promise = Graph()->ApplyAudioContextOperation(
       DestinationTrack(), std::move(tracks), AudioContextOperation::Suspend);
   if ((aFlags & AudioContextOperationFlags::SendStateChange)) {
-    promise->Then(
-        GetMainThread(), "AudioContext::OnStateChanged",
-        [self = RefPtr<AudioContext>(this),
-         aPromise](AudioContextState aNewState) {
-          self->OnStateChanged(aPromise, aNewState);
-        },
-        [] { MOZ_CRASH("Unexpected rejection"); });
+    promise
+        // The graph requires us to handle the promise on a tail-dispatchable
+        // thread, but tail-dispatched tasks are not interleaved with
+        // microtask checkpoints or stable state (bug 2072929), so relay as a
+        // regular task to make JS behave as expected in the event callback.
+        ->Map(AbstractThread::MainThread(),
+              "AudioContext::OnStateChanged tail-dispatch",
+              [](AudioContextState aValue) { return aValue; })
+        ->Then(
+            GetMainThreadSerialEventTarget(), "AudioContext::OnStateChanged",
+            [self = RefPtr(this), aPromise](AudioContextState aNewState) {
+              self->OnStateChanged(aPromise, aNewState);
+            },
+            [] { MOZ_CRASH("Unexpected rejection"); });
   }
 }
 
@@ -1061,12 +1112,16 @@ already_AddRefed<Promise> AudioContext::Resume(ErrorResult& aRv) {
     return promise.forget();
   }
 
+  // A page resume() clears only the page's own suspend.
   mSuspendedByContent = false;
   mPendingResumePromises.AppendElement(promise);
 
+  // IsAllowedToPlay() is false while the platform has interrupted the tab's
+  // audio, so a resume() requested during the interruption is not started here;
+  // its promise stays parked above and is settled when the interruption ends.
   const bool isAllowedToPlay = media::AutoplayPolicy::IsAllowedToPlay(*this);
-  AUTOPLAY_LOG("Trying to resume AudioContext %p, IsAllowedToPlay=%d", this,
-               isAllowedToPlay);
+  AUTOPLAY_LOG("Trying to resume AudioContext {}, IsAllowedToPlay={}",
+               fmt::ptr(this), isAllowedToPlay);
   if (isAllowedToPlay) {
     ResumeInternal();
   } else {
@@ -1078,10 +1133,11 @@ already_AddRefed<Promise> AudioContext::Resume(ErrorResult& aRv) {
 
 void AudioContext::ResumeInternal() {
   MOZ_ASSERT(!mIsOffline);
-  AUTOPLAY_LOG("Allow to resume AudioContext %p", this);
+  AUTOPLAY_LOG("Allow to resume AudioContext {}", fmt::ptr(this));
   mWasAllowedToStart = true;
 
-  if (mSuspendedByChrome || mSuspendedByContent || mCloseCalled) {
+  if (mSuspendedByChrome || mSuspendedByContent || mSuspendedByMediaControl ||
+      mCloseCalled) {
     MOZ_ASSERT(mTracksAreSuspended);
     return;
   }
@@ -1102,9 +1158,16 @@ void AudioContext::ResumeInternal() {
   Graph()
       ->ApplyAudioContextOperation(DestinationTrack(), std::move(tracks),
                                    AudioContextOperation::Resume)
+      // The graph requires us to handle the promise on a tail-dispatchable
+      // thread, but tail-dispatched tasks are not interleaved with
+      // microtask checkpoints or stable state (bug 2072929), so relay as a
+      // regular task to make JS behave as expected in the event callback.
+      ->Map(AbstractThread::MainThread(),
+            "AudioContext::OnStateChanged tail-dispatch",
+            [](AudioContextState aValue) { return aValue; })
       ->Then(
-          GetMainThread(), "AudioContext::OnStateChanged",
-          [self = RefPtr<AudioContext>(this)](AudioContextState aNewState) {
+          GetMainThreadSerialEventTarget(), "AudioContext::OnStateChanged",
+          [self = RefPtr(this)](AudioContextState aNewState) {
             self->OnStateChanged(nullptr, aNewState);
           },
           [] {});  // Promise may be rejected after graph shutdown.
@@ -1120,19 +1183,20 @@ void AudioContext::ReportBlocked() {
   }
 
   RefPtr<nsIRunnable> r = NS_NewRunnableFunction(
-      "AudioContext::AutoplayBlocked", [self = RefPtr{this}]() {
+      "AudioContext::AutoplayBlocked",
+      [self = RefPtr{this}]() MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA {
         nsGlobalWindowInner* win = self->GetOwnerWindow();
         if (!win) {
           return;
         }
 
-        Document* doc = win->GetExtantDoc();
+        const RefPtr<Document> doc = win->GetExtantDoc();
         if (!doc) {
           return;
         }
 
-        AUTOPLAY_LOG("Dispatch `blocked` event for AudioContext %p",
-                     self.get());
+        AUTOPLAY_LOG("Dispatch `blocked` event for AudioContext {}",
+                     fmt::ptr(self.get()));
         nsContentUtils::DispatchTrustedEvent(doc, self, u"blocked"_ns,
                                              CanBubble::eNo, Cancelable::eNo);
       });
@@ -1159,6 +1223,14 @@ already_AddRefed<Promise> AudioContext::Close(ErrorResult& aRv) {
         "Can't close an AudioContext twice");
     return promise.forget();
   }
+
+  // A resume() deferred while interrupted can never reach the running state
+  // once the context is closing, so settle those promises now instead of
+  // leaving them pending until the global goes away.
+  for (const auto& p : mPendingResumePromises) {
+    p->MaybeRejectWithInvalidStateError("Closed before resume completed");
+  }
+  mPendingResumePromises.Clear();
 
   mPromiseGripArray.AppendElement(promise);
 
@@ -1189,13 +1261,20 @@ void AudioContext::CloseInternal(void* aPromise,
     auto promise = Graph()->ApplyAudioContextOperation(
         ds, std::move(tracks), AudioContextOperation::Close);
     if ((aFlags & AudioContextOperationFlags::SendStateChange)) {
-      promise->Then(
-          GetMainThread(), "AudioContext::OnStateChanged",
-          [self = RefPtr<AudioContext>(this),
-           aPromise](AudioContextState aNewState) {
-            self->OnStateChanged(aPromise, aNewState);
-          },
-          [] {});  // Promise may be rejected after graph shutdown.
+      promise
+          // The graph requires us to handle the promise on a tail-dispatchable
+          // thread, but tail-dispatched tasks are not interleaved with
+          // microtask checkpoints or stable state (bug 2072929), so relay as a
+          // regular task to make JS behave as expected in the event callback.
+          ->Map(AbstractThread::MainThread(),
+                "AudioContext::OnStateChanged tail-dispatch",
+                [](AudioContextState aValue) { return aValue; })
+          ->Then(
+              GetMainThreadSerialEventTarget(), "AudioContext::OnStateChanged",
+              [self = RefPtr(this), aPromise](AudioContextState aNewState) {
+                self->OnStateChanged(aPromise, aNewState);
+              },
+              [] {});  // Promise may be rejected after graph shutdown.
     }
   }
   mCloseCalled = true;
@@ -1256,8 +1335,8 @@ void AudioContext::Unmute() const {
 void AudioContext::SetParamMapForWorkletName(
     const nsAString& aName, AudioParamDescriptorMap* aParamMap) {
   MOZ_ASSERT(!mWorkletParamDescriptors.Contains(aName));
-  Unused << mWorkletParamDescriptors.InsertOrUpdate(
-      aName, std::move(*aParamMap), fallible);
+  (void)mWorkletParamDescriptors.InsertOrUpdate(aName, std::move(*aParamMap),
+                                                fallible);
 }
 
 size_t AudioContext::SizeOfIncludingThis(
@@ -1312,7 +1391,7 @@ void AudioContext::ReportToConsole(uint32_t aErrorFlags,
   MOZ_ASSERT(aMsg);
   Document* doc = GetOwnerWindow() ? GetOwnerWindow()->GetExtantDoc() : nullptr;
   nsContentUtils::ReportToConsole(aErrorFlags, "Media"_ns, doc,
-                                  nsContentUtils::eDOM_PROPERTIES, aMsg);
+                                  PropertiesFile::DOM_PROPERTIES, aMsg);
 }
 
 BasicWaveFormCache::BasicWaveFormCache(uint32_t aSampleRate)

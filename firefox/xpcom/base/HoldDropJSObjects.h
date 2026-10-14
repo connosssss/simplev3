@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +6,7 @@
 #define mozilla_HoldDropJSObjects_h
 
 #include <type_traits>
+
 #include "nsCycleCollectionNoteChild.h"
 
 class nsISupports;
@@ -115,38 +114,38 @@ struct HoldDropJSObjectsWithKeyHelper<T, true> {
 **/
 template <class T>
 void HoldJSObjects(T* aHolder) {
-  static_assert(!std::is_base_of<nsCycleCollectionParticipant, T>::value,
+  static_assert(!std::is_base_of_v<nsCycleCollectionParticipant, T>,
                 "Don't call this on the CC participant but on the object that "
                 "it's for (in an Unlink implementation it's usually stored in "
                 "a variable named 'tmp').");
   static_assert(
-      !std::is_base_of<JSHolderBase, T>::value,
+      !std::is_base_of_v<JSHolderBase, T>,
       "Use HoldJSObjectsWithKey for classes derived from JSHolderBase.");
   HoldDropJSObjectsHelper<T>::Hold(aHolder);
 }
 
 template <class T>
 void DropJSObjects(T* aHolder) {
-  static_assert(!std::is_base_of<nsCycleCollectionParticipant, T>::value,
+  static_assert(!std::is_base_of_v<nsCycleCollectionParticipant, T>,
                 "Don't call this on the CC participant but on the object that "
                 "it's for (in an Unlink implementation it's usually stored in "
                 "a variable named 'tmp').");
   static_assert(
-      !std::is_base_of<JSHolderBase, T>::value,
+      !std::is_base_of_v<JSHolderBase, T>,
       "Use HoldJSObjectsWithKey for classes derived from JSHolderBase.");
   HoldDropJSObjectsHelper<T>::Drop(aHolder);
 }
 
 template <class T>
 void HoldJSObjectsWithKey(T* aHolder) {
-  static_assert(!std::is_base_of<nsWrapperCache, T>::value,
+  static_assert(!std::is_base_of_v<nsWrapperCache, T>,
                 "Use HoldJSObjects for classes derived from nsWrapperCache.");
   HoldDropJSObjectsWithKeyHelper<T>::Hold(aHolder);
 }
 
 template <class T>
 void DropJSObjectsWithKey(T* aHolder) {
-  static_assert(!std::is_base_of<nsWrapperCache, T>::value,
+  static_assert(!std::is_base_of_v<nsWrapperCache, T>,
                 "Use HoldJSObjects for classes derived from nsWrapperCache.");
   HoldDropJSObjectsWithKeyHelper<T>::Drop(aHolder);
 }

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,34 +8,29 @@
 
 #include <tuple>
 
+#include "Units.h"
 #include "gfx2DGlue.h"
-#include "mozilla/ArrayUtils.h"
+#include "gfxContext.h"
+#include "gfxGradientCache.h"
+#include "gfxUtils.h"
 #include "mozilla/ComputedStyle.h"
-#include "mozilla/DebugOnly.h"
-#include "mozilla/gfx/2D.h"
-#include "mozilla/gfx/Helpers.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/ProfilerLabels.h"
-
-#include "nsLayoutUtils.h"
-#include "nsStyleConsts.h"
-#include "nsPresContext.h"
-#include "nsPoint.h"
-#include "nsRect.h"
-#include "nsCSSColorUtils.h"
-#include "gfxContext.h"
-#include "nsStyleStructInlines.h"
-#include "nsCSSProps.h"
-#include "gfxUtils.h"
-#include "gfxGradientCache.h"
-
+#include "mozilla/StaticPrefs_layout.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/Helpers.h"
 #include "mozilla/layers/StackingContextHelper.h"
 #include "mozilla/layers/WebRenderLayerManager.h"
-#include "mozilla/webrender/WebRenderTypes.h"
 #include "mozilla/webrender/WebRenderAPI.h"
-#include "Units.h"
-
-#include "mozilla/StaticPrefs_layout.h"
+#include "mozilla/webrender/WebRenderTypes.h"
+#include "nsCSSColorUtils.h"
+#include "nsCSSProps.h"
+#include "nsLayoutUtils.h"
+#include "nsPoint.h"
+#include "nsPresContext.h"
+#include "nsRect.h"
+#include "nsStyleConsts.h"
+#include "nsStyleStructInlines.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -1371,8 +1364,8 @@ void nsCSSGradientRenderer::BuildWebRenderDisplayItems(
     aBuilder.PushLinearGradient(
         mozilla::wr::ToLayoutRect(gradientBounds),
         mozilla::wr::ToLayoutRect(clipBounds), aIsBackfaceVisible,
-        mozilla::wr::ToLayoutPoint(lineStart),
-        mozilla::wr::ToLayoutPoint(lineEnd), stops, extendMode,
+        mozilla::wr::ToLayoutVector2D(lineStart),
+        mozilla::wr::ToLayoutVector2D(lineEnd), stops, extendMode,
         mozilla::wr::ToLayoutSize(firstTileBounds.Size()),
         mozilla::wr::ToLayoutSize(tileSpacing));
   } else if (mGradient->IsRadial()) {
@@ -1382,7 +1375,7 @@ void nsCSSGradientRenderer::BuildWebRenderDisplayItems(
     aBuilder.PushRadialGradient(
         mozilla::wr::ToLayoutRect(gradientBounds),
         mozilla::wr::ToLayoutRect(clipBounds), aIsBackfaceVisible,
-        mozilla::wr::ToLayoutPoint(lineStart),
+        mozilla::wr::ToLayoutVector2D(lineStart),
         mozilla::wr::ToLayoutSize(gradientRadius), stops, extendMode,
         mozilla::wr::ToLayoutSize(firstTileBounds.Size()),
         mozilla::wr::ToLayoutSize(tileSpacing));
@@ -1391,7 +1384,7 @@ void nsCSSGradientRenderer::BuildWebRenderDisplayItems(
     aBuilder.PushConicGradient(
         mozilla::wr::ToLayoutRect(gradientBounds),
         mozilla::wr::ToLayoutRect(clipBounds), aIsBackfaceVisible,
-        mozilla::wr::ToLayoutPoint(gradientCenter), gradientAngle, stops,
+        mozilla::wr::ToLayoutVector2D(gradientCenter), gradientAngle, stops,
         extendMode, mozilla::wr::ToLayoutSize(firstTileBounds.Size()),
         mozilla::wr::ToLayoutSize(tileSpacing));
   }

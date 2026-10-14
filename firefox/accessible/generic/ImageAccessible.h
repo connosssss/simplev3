@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_a11y_ImageAccessible_h__
-#define mozilla_a11y_ImageAccessible_h__
+#ifndef mozilla_a11y_ImageAccessible_h_
+#define mozilla_a11y_ImageAccessible_h_
 
 #include "BaseAccessibles.h"
 #include "imgINotificationObserver.h"
@@ -34,7 +33,9 @@ class ImageAccessible : public LinkableAccessible,
   // ActionAccessible
   virtual uint8_t ActionCount() const override;
   virtual void ActionNameAt(uint8_t aIndex, nsAString& aName) override;
-  virtual bool DoAction(uint8_t aIndex) const override;
+  // XXX Use MOZ_CAN_RUN_SCRIPT_BOUNDARY for now due to bug 1543294.
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual bool DoAction(
+      uint8_t aIndex) const override;
 
   // ImageAccessible
   LayoutDeviceIntPoint Position(uint32_t aCoordType);
@@ -55,7 +56,7 @@ class ImageAccessible : public LinkableAccessible,
   virtual ENameValueFlag NativeName(nsString& aName) const override;
 
   virtual void DOMAttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                                   int32_t aModType,
+                                   AttrModType aModType,
                                    const nsAttrValue* aOldValue,
                                    uint64_t aOldState) override;
 

@@ -10,20 +10,29 @@
 
 #include "modules/rtp_rtcp/source/receive_statistics_impl.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
+#include "absl/functional/any_invocable.h"
+#include "api/units/data_rate.h"
 #include "api/units/time_delta.h"
+#include "api/units/timestamp.h"
+#include "modules/rtp_rtcp/include/receive_statistics.h"
 #include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "modules/rtp_rtcp/source/rtcp_packet/report_block.h"
 #include "modules/rtp_rtcp/source/rtp_packet_received.h"
 #include "modules/rtp_rtcp/source/rtp_rtcp_config.h"
+#include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/time_utils.h"
 #include "system_wrappers/include/clock.h"
+#include "system_wrappers/include/ntp_time.h"
 
 namespace webrtc {
 namespace {
@@ -346,9 +355,9 @@ std::unique_ptr<ReceiveStatistics> ReceiveStatistics::CreateThreadCompatible(
 
 ReceiveStatisticsImpl::ReceiveStatisticsImpl(
     Clock* clock,
-    std::function<std::unique_ptr<StreamStatisticianImplInterface>(
+    absl::AnyInvocable<std::unique_ptr<StreamStatisticianImplInterface>(
         uint32_t ssrc,
-        Clock* clock)> stream_statistician_factory)
+        Clock* clock) const> stream_statistician_factory)
     : clock_(clock),
       stream_statistician_factory_(std::move(stream_statistician_factory)),
       last_returned_ssrc_idx_(0) {}

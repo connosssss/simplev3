@@ -2,8 +2,6 @@
 // http://creativecommons.org/publicdomain/zero/1.0/
 //
 
-/* eslint-env serviceworker */
-
 onnotificationclick = (e) => {
   const {
     notification: {
@@ -12,6 +10,7 @@ onnotificationclick = (e) => {
       body,
       tag,
       icon,
+      navigate,
       requireInteraction,
       silent,
       data,
@@ -36,6 +35,7 @@ onnotificationclick = (e) => {
           body,
           tag,
           icon,
+          navigate,
           requireInteraction,
           silent,
           data,

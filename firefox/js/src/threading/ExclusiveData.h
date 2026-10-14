@@ -1,13 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef threading_ExclusiveData_h
 #define threading_ExclusiveData_h
 
-#include "mozilla/Maybe.h"
 #include "mozilla/OperatorNewExtensions.h"
 
 #include <utility>
@@ -87,9 +84,6 @@ class ExclusiveData {
   mutable Mutex lock_ MOZ_UNANNOTATED;
   mutable T value_;
 
-  ExclusiveData(const ExclusiveData&) = delete;
-  ExclusiveData& operator=(const ExclusiveData&) = delete;
-
   void acquire() const { lock_.lock(); }
   void release() const { lock_.unlock(); }
 
@@ -115,6 +109,9 @@ class ExclusiveData {
     return *this;
   }
 
+  ExclusiveData(const ExclusiveData&) = delete;
+  ExclusiveData& operator=(const ExclusiveData&) = delete;
+
   /**
    * An RAII class that provides exclusive access to a `ExclusiveData<T>`'s
    * protected inner `T` value.
@@ -127,10 +124,6 @@ class ExclusiveData {
    protected:
     const ExclusiveData* parent_;
     explicit Guard(std::nullptr_t) : parent_(nullptr) {}
-
-   private:
-    Guard(const Guard&) = delete;
-    Guard& operator=(const Guard&) = delete;
 
    public:
     explicit Guard(const ExclusiveData& parent) : parent_(&parent) {
@@ -147,6 +140,9 @@ class ExclusiveData {
       new (this) Guard(std::move(rhs));
       return *this;
     }
+
+    Guard(const Guard&) = delete;
+    Guard& operator=(const Guard&) = delete;
 
     T& get() const {
       MOZ_ASSERT(parent_);

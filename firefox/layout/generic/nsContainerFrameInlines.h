@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsContainerFrameInlines_h___
-#define nsContainerFrameInlines_h___
+#ifndef nsContainerFrameInlines_h_
+#define nsContainerFrameInlines_h_
 
 #include "nsContainerFrame.h"
 
@@ -52,8 +50,7 @@ void nsContainerFrame::DoInlineIntrinsicISize(ISizeData* aData,
         // clamp negative calc() to 0
         std::max(stylePadding->mPadding.Get(startSide).Resolve(0), 0) +
         styleBorder->GetComputedBorderWidth(startSide) +
-        GetMargin(styleMargin->GetMargin(startSide,
-                                         anchorResolutionParams.mPosition));
+        GetMargin(styleMargin->GetMargin(startSide, anchorResolutionParams));
     if (MOZ_LIKELY(sliceBreak)) {
       aData->mCurrentLine += startPBM;
     } else {
@@ -65,8 +62,7 @@ void nsContainerFrame::DoInlineIntrinsicISize(ISizeData* aData,
       // clamp negative calc() to 0
       std::max(stylePadding->mPadding.Get(endSide).Resolve(0), 0) +
       styleBorder->GetComputedBorderWidth(endSide) +
-      GetMargin(
-          styleMargin->GetMargin(endSide, anchorResolutionParams.mPosition));
+      GetMargin(styleMargin->GetMargin(endSide, anchorResolutionParams));
   if (MOZ_UNLIKELY(!sliceBreak)) {
     clonePBM += endPBM;
     aData->mCurrentLine += clonePBM;
@@ -106,4 +102,4 @@ void nsContainerFrame::DoInlineIntrinsicISize(ISizeData* aData,
   }
 }
 
-#endif  // nsContainerFrameInlines_h___
+#endif  // nsContainerFrameInlines_h_

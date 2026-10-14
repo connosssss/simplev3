@@ -11,6 +11,8 @@ import mozpack.path as mozpath
 from mach.decorators import Command, CommandArgument, SubCommand
 from mozpack.files import FileFinder
 
+from mozbuild.frontend import reviewers
+
 TOPSRCDIR = os.path.abspath(os.path.join(__file__, "../../../../../"))
 
 
@@ -282,7 +284,9 @@ def _get_files_info(command_context, paths, rev=None):
 
     # Normalize to relative from topsrcdir.
     relpaths = []
-    finder = FileFinder(command_context.topsrcdir)
+    finder = FileFinder(
+        command_context.topsrcdir, find_dotfiles=True, ignore=[".hg", ".git"]
+    )
     for path in paths:
         for p, _ in finder.find(path):
             a = mozpath.abspath(p)
@@ -341,3 +345,172 @@ def file_info_schedules(command_context, paths):
         schedules |= set(m["SCHEDULES"].components)
 
     print(", ".join(schedules))
+
+
+@SubCommand(
+    "file-info",
+    "reviewers",
+    "Suggest reviewers for the files listed.",
+)
+@CommandArgument("-r", "--rev", help="Version control revision to look up info from")
+@CommandArgument(
+    "--format",
+    choices={"json", "plain"},
+    default="plain",
+    help="Output format",
+    dest="fmt",
+)
+@CommandArgument(
+    "--offline",
+    action="store_true",
+    help="Use the cached herald rules without checking for updates",
+)
+@CommandArgument("paths", nargs="+", help="Paths whose reviewers to suggest")
+def file_info_reviewers(command_context, paths, rev=None, fmt=None, offline=False):
+    """Suggest reviewers for a set of files.
+
+    The reviewer groups of the modules owning the files, according to the
+    in-tree mots database, are suggested first, followed by the reviewers that
+    Phabricator's Herald rules would automatically add for the files (from the
+    reviewer-selector tool's herald_rules.json). When neither has anything to
+    say, this falls back to the individuals and groups that reviewed recent
+    patches touching the files, parsed from "r=" trailers in the version control
+    history.
+    """
+    try:
+        files_info = _get_files_info(command_context, paths, rev=rev)
+    except InvalidPathException as e:
+        print(e)
+        return 1
+
+    relpaths = sorted(files_info.keys())
+    if not relpaths:
+        print("(no matching files)", file=sys.stderr)
+        return 1
+
+    rules_data = reviewers.load_herald_rules(offline=offline)
+
+    herald_groups, herald_individuals = {}, {}
+    if rules_data:
+        herald_groups, herald_individuals = reviewers.herald_reviewers_for_files(
+            rules_data, relpaths
+        )
+    else:
+        print(
+            "(herald rules unavailable; skipping Herald suggestions)",
+            file=sys.stderr,
+        )
+
+    mots_config = reviewers.load_mots_config(command_context.topsrcdir)
+    mots_groups = (
+        reviewers.mots_groups_for_files(mots_config, relpaths) if mots_config else {}
+    )
+
+    # Parsing the version control history only to find a reviewer that Herald or
+    # mots already gave us is wasteful, and on a rarely-touched file the walk is
+    # slow (the VCS has to traverse all of history to find the commit limit). So
+    # fall back to it only when the other sources came up empty.
+    have_herald = herald_groups or herald_individuals
+    recent_individuals, recent_groups = [], []
+    if not have_herald and not mots_groups:
+        recent_individuals, recent_groups = reviewers.recent_reviewers_for_files(
+            command_context,
+            relpaths,
+            known_groups=reviewers.known_review_groups(rules_data, mots_config),
+        )
+
+    if fmt == "json":
+        data = {"files": relpaths}
+        if mots_groups:
+            data["mots_groups"] = [
+                {"name": group, "modules": modules}
+                for group, modules in mots_groups.items()
+            ]
+        if have_herald:
+            data["herald_groups"] = reviewers.reviewers_to_json(herald_groups)
+            data["herald_individuals"] = reviewers.reviewers_to_json(herald_individuals)
+        if not have_herald and not mots_groups:
+            data["recent_groups"] = [
+                {"name": name, "count": count} for name, count in recent_groups
+            ]
+            data["recent_individuals"] = [
+                {"name": name, "count": count} for name, count in recent_individuals
+            ]
+        json.dump(data, sys.stdout, indent=2)
+        print()
+        return
+
+    separator = ""
+    if mots_groups:
+        print("Module reviewer groups (from mots.yaml):")
+        for group, modules in mots_groups.items():
+            print(f"  #{group} ({', '.join(modules)})")
+        separator = "\n"
+
+    if have_herald:
+        print(f"{separator}Herald reviewers (automatically added):")
+        for group, blocking in sorted(herald_groups.items()):
+            print(f"  #{group}{' (blocking)' if blocking else ''}")
+        for name, blocking in sorted(herald_individuals.items()):
+            print(f"  {name}{' (blocking)' if blocking else ''}")
+    else:
+        print(f"{separator}No Herald reviewers matched.")
+
+    if have_herald or mots_groups:
+        return
+
+    print("\nRecent reviewers (from version control history):")
+    if recent_individuals or recent_groups:
+        for name, count in recent_groups:
+            print(f"  #{name} ({count})")
+        for name, count in recent_individuals:
+            print(f"  {name} ({count})")
+    else:
+        print("  (none)")
+
+
+@SubCommand(
+    "file-info",
+    "reviewer-groups",
+    "List the known reviewer groups.",
+)
+@CommandArgument(
+    "--format",
+    choices={"json", "plain"},
+    default="plain",
+    help="Output format",
+    dest="fmt",
+)
+@CommandArgument(
+    "--offline",
+    action="store_true",
+    help="Use the cached herald rules without checking for updates",
+)
+def file_info_reviewer_groups(command_context, fmt=None, offline=False):
+    """List the known reviewer groups.
+
+    These are the groups referenced by Phabricator's Herald rules, as scraped
+    into herald_rules.json by the reviewer-selector tool, together with the
+    review groups declared by modules in the in-tree mots database. The list
+    is the source of truth for valid group names when choosing a reviewer
+    (e.g. "#firefox-build-system-reviewers").
+    """
+    rules_data = reviewers.load_herald_rules(offline=offline)
+    if not rules_data:
+        print("(herald rules unavailable)", file=sys.stderr)
+
+    mots_config = reviewers.load_mots_config(command_context.topsrcdir)
+    if not rules_data and not mots_config:
+        return 1
+
+    groups = set((rules_data or {}).get("groups", {}).keys())
+    groups |= reviewers.mots_review_groups(mots_config)
+    groups = sorted(groups)
+
+    if fmt == "json":
+        json.dump(groups, sys.stdout, indent=2)
+        print()
+        return
+
+    for group in groups:
+        print(group)

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -88,7 +86,7 @@ RefPtr<UtilityProcessChild> UtilityProcessChild::Get() {
 
 bool UtilityProcessChild::Init(mozilla::ipc::UntypedEndpoint&& aEndpoint,
                                const nsCString& aParentBuildID,
-                               uint64_t aSandboxingKind) {
+                               SandboxingKind aSandboxingKind) {
   MOZ_ASSERT(NS_IsMainThread());
 
   // Initialize the thread manager before starting IPC. Otherwise, messages
@@ -119,7 +117,7 @@ bool UtilityProcessChild::Init(mozilla::ipc::UntypedEndpoint&& aEndpoint,
     return false;
   }
 
-  mSandbox = (SandboxingKind)aSandboxingKind;
+  mSandbox = aSandboxingKind;
 
   // At the moment, only ORB uses JSContext in the
   // Utility Process and ORB uses GENERIC_UTILITY
@@ -227,11 +225,25 @@ mozilla::ipc::IPCResult UtilityProcessChild::RecvRequestMemoryReport(
   mozilla::dom::MemoryReportRequestClient::Start(
       aGeneration, aAnonymize, aMinimizeMemoryUsage, aDMDFile, processName,
       [&](const MemoryReport& aReport) {
-        Unused << GetSingleton()->SendAddMemoryReport(aReport);
+        (void)GetSingleton()->SendAddMemoryReport(aReport);
       },
       aResolver);
   return IPC_OK();
 }
+
+#if defined(NIGHTLY_BUILD) && !defined(MOZ_NO_SMART_CARDS)
+IPCResult UtilityProcessChild::RecvStartPKCS11ModuleService(
+    Endpoint<PPKCS11ModuleChild>&& aEndpoint, nsCString&& aProfilePath) {
+  auto child = MakeRefPtr<psm::PKCS11ModuleChild>();
+  if (!child ||
+      NS_FAILED(child->Start(std::move(aEndpoint), std::move(aProfilePath)))) {
+    return IPC_FAIL(this, "Failed to create and start PKCS11ModuleChild");
+  }
+
+  mPKCS11ModuleInstance = std::move(child);
+  return IPC_OK();
+}
+#endif  // NIGHTLY_BUILD && !MOZ_NO_SMART_CARDS
 
 #if defined(MOZ_SANDBOX) && defined(MOZ_DEBUG) && defined(ENABLE_TESTS)
 mozilla::ipc::IPCResult UtilityProcessChild::RecvInitSandboxTesting(
@@ -265,20 +277,19 @@ mozilla::ipc::IPCResult UtilityProcessChild::RecvTestTelemetryProbes() {
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult
-UtilityProcessChild::RecvStartUtilityAudioDecoderService(
-    Endpoint<PUtilityAudioDecoderParent>&& aEndpoint,
+mozilla::ipc::IPCResult UtilityProcessChild::RecvStartUtilityMediaService(
+    Endpoint<PUtilityMediaServiceParent>&& aEndpoint,
     nsTArray<gfx::GfxVarUpdate>&& aUpdates) {
   PROFILER_MARKER_UNTYPED(
-      "UtilityProcessChild::RecvStartUtilityAudioDecoderService", MEDIA,
+      "UtilityProcessChild::RecvStartUtilityMediaService", MEDIA,
       MarkerOptions(MarkerTiming::IntervalUntilNowFrom(mChildStartTime)));
-  mUtilityAudioDecoderInstance =
-      new UtilityAudioDecoderParent(std::move(aUpdates));
-  if (!mUtilityAudioDecoderInstance) {
-    return IPC_FAIL(this, "Failed to create UtilityAudioDecoderParent");
+  mUtilityMediaServiceInstance =
+      new UtilityMediaServiceParent(std::move(aUpdates));
+  if (!mUtilityMediaServiceInstance) {
+    return IPC_FAIL(this, "Failed to create UtilityMediaServiceParent");
   }
 
-  mUtilityAudioDecoderInstance->Start(std::move(aEndpoint));
+  mUtilityMediaServiceInstance->Start(std::move(aEndpoint));
   return IPC_OK();
 }
 
@@ -295,6 +306,18 @@ mozilla::ipc::IPCResult UtilityProcessChild::RecvStartJSOracleService(
   mJSOracleInstance->Start(std::move(aEndpoint));
   return IPC_OK();
 }
+
+#ifndef ANDROID
+already_AddRefed<hwinference::PHWInferenceChild>
+UtilityProcessChild::AllocPHWInferenceChild() {
+  PROFILER_MARKER_UNTYPED(
+      "UtilityProcessChild::AllocPHWInferenceChild", OTHER,
+      MarkerOptions(MarkerTiming::IntervalUntilNowFrom(mChildStartTime)));
+
+  mHWInferenceInstance = MakeRefPtr<hwinference::HWInferenceChild>();
+  return do_AddRef(mHWInferenceInstance);
+}
+#endif  // !ANDROID
 
 #if defined(XP_WIN)
 mozilla::ipc::IPCResult UtilityProcessChild::RecvStartWindowsUtilsService(
@@ -353,6 +376,43 @@ UtilityProcessChild::RecvUnblockUntrustedModulesThread() {
 }
 #endif  // defined(XP_WIN)
 
+mozilla::ipc::IPCResult UtilityProcessChild::RecvShutdown() {
+  // Send the last bits of Glean data over to the main process. Doing this in
+  // ActorDestroy would be too late: our channel is already gone by then.
+  glean::FlushFOGData(
+      [](ByteBuf&& aBuf) { glean::SendFOGData(std::move(aBuf)); });
+
+  if (mProfilerController) {
+    ProfileAndAdditionalInformation shutdownProfileAndAdditionalInformation =
+        mProfilerController->GrabShutdownProfileAndShutdown();
+    mProfilerController = nullptr;
+
+    if (const size_t len = shutdownProfileAndAdditionalInformation.SizeOf();
+        len >= size_t(IPC::Channel::kMaximumMessageSize)) {
+      shutdownProfileAndAdditionalInformation.mProfile = nsPrintfCString(
+          "*Profile from pid %u bigger (%zu) than IPC max (%zu)",
+          unsigned(profiler_current_process_id().ToNumber()), len,
+          size_t(IPC::Channel::kMaximumMessageSize));
+      shutdownProfileAndAdditionalInformation.mAdditionalInformation.reset();
+    }
+
+    // Send the shutdown profile to the parent process through our own
+    // message channel, which we know will survive for long enough.
+    (void)SendShutdownProfile(
+        std::move(shutdownProfileAndAdditionalInformation));
+  }
+
+  // Now tell the parent to actually destroy our channel, which will end our
+  // process. This is expected to be the last event the parent will ever
+  // process for this UtilityProcessChild.
+  //
+  // Note that we deliberately don't call Close() ourselves here: that would
+  // immediately trigger ActorDestroy(), which exits the process, potentially
+  // killing it before the messages we sent above have been delivered.
+  (void)SendFinishShutdown();
+  return IPC_OK();
+}
+
 void UtilityProcessChild::ActorDestroy(ActorDestroyReason aWhy) {
 #if defined(XP_LINUX) && defined(MOZ_SANDBOX)
   DestroySandboxProfiler();
@@ -363,30 +423,38 @@ void UtilityProcessChild::ActorDestroy(ActorDestroyReason aWhy) {
     ipc::ProcessChild::QuickExit();
   }
 
-  // Send the last bits of Glean data over to the main process.
-  glean::FlushFOGData(
-      [](ByteBuf&& aBuf) { glean::SendFOGData(std::move(aBuf)); });
-
 #ifndef NS_FREE_PERMANENT_DATA
   ProcessChild::QuickExit();
 #else
 
+  // RecvShutdown normally did this already, but it doesn't run if the parent
+  // could not ask us to shut down gracefully.
   if (mProfilerController) {
     mProfilerController->Shutdown();
     mProfilerController = nullptr;
   }
 
   uint32_t timeout = 0;
-  if (mUtilityAudioDecoderInstance) {
-    mUtilityAudioDecoderInstance = nullptr;
+  if (mUtilityMediaServiceInstance) {
+    mUtilityMediaServiceInstance = nullptr;
     timeout = 10 * 1000;
   }
 
   mJSOracleInstance = nullptr;
 
+#  ifndef ANDROID
+  // A managed actor holds its manager; keeping it alive here would keep this
+  // process' toplevel alive too.
+  mHWInferenceInstance = nullptr;
+#  endif  // !ANDROID
+
 #  ifdef XP_WIN
   mWindowsUtilsInstance = nullptr;
 #  endif
+
+#  if defined(NIGHTLY_BUILD) && !defined(MOZ_NO_SMART_CARDS)
+  mPKCS11ModuleInstance = nullptr;
+#  endif  // NIGHTLY_BUILD && !MOZ_NO_SMART_CARDS
 
   // Wait until all RemoteMediaManagerParent have closed.
   // It is still possible some may not have clean up yet, and we might hit

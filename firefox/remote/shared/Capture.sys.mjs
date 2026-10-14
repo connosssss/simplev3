@@ -2,18 +2,33 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
+
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  Log: "chrome://remote/content/shared/Log.sys.mjs",
+  error: "chrome://remote/content/shared/webdriver/Errors.sys.mjs",
 });
 
-ChromeUtils.defineLazyGetter(lazy, "logger", () => lazy.Log.get());
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "canvasMaxArea",
+  "gfx.canvas.max-area"
+);
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "canvasMaxSize",
+  "gfx.canvas.max-size"
+);
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "compositorReadback",
+  "remote.screenshot.use_readback",
+  false
+);
 
 const CONTEXT_2D = "2d";
 const BG_COLOUR = "rgb(255,255,255)";
-const MAX_CANVAS_DIMENSION = 32767;
-const MAX_CANVAS_AREA = 472907776;
 const XHTML_NS = "http://www.w3.org/1999/xhtml";
 
 /**
@@ -50,13 +65,22 @@ capture.Format = {
  * @param {number=} options.flags
  *     Optional integer representing flags to pass to drawWindow; these
  *     are defined on CanvasRenderingContext2D.
+ * @param {number=} options.maxHeight
+ *     Maximum height of the resulting canvas in pixels.
+ * @param {number=} options.maxWidth
+ *     Maximum width of the resulting canvas in pixels.
  * @param {number=} options.dX
  *     Horizontal offset between the browser window and content area. Defaults to 0.
  * @param {number=} options.dY
  *     Vertical offset between the browser window and content area. Defaults to 0.
  * @param {boolean=} options.readback
  *     If true, read back a snapshot of the pixel data currently in the
- *     compositor/window. Defaults to false.
+ *     compositor/window. Defaults to false, unless the
+ *     `remote.screenshot.use_readback` preference is set.
+ * @param {boolean=} options.drawView
+ *     If true, the rectangle is relative to the visible viewport rather than to
+ *     the page, and view level rendering such as the root scrollbars is
+ *     included. Ignored when reading back. Defaults to false.
  *
  * @returns {HTMLCanvasElement}
  *     The canvas on which the selection from the window's framebuffer
@@ -69,84 +93,116 @@ capture.canvas = async function (
   top,
   width,
   height,
-  { canvas = null, flags = null, dX = 0, dY = 0, readback = false } = {}
+  {
+    canvas = null,
+    flags = null,
+    maxHeight = null,
+    maxWidth = null,
+    dX = 0,
+    dY = 0,
+    readback = false,
+    drawView = false,
+  } = {}
 ) {
+  if (lazy.compositorReadback && !readback) {
+    // Readback can only return the content area composited on screen, and its
+    // coordinates are relative to the chrome window rather than the document,
+    // so any requested region degrades to the whole content area.
+    const browser = browsingContext.top.embedderElement;
+    if (browser) {
+      readback = true;
+      ({ left, top, width, height } = browser.getBoundingClientRect());
+    }
+  }
+
   // FIXME(bug 1761032): This looks a bit sketchy, overrideDPPX doesn't
   // influence rendering...
-  const scale = browsingContext.overrideDPPX || win.devicePixelRatio;
+  const devicePixelRatio = browsingContext.overrideDPPX || win.devicePixelRatio;
+  let scale = devicePixelRatio;
 
-  let canvasHeight = height * scale;
-  let canvasWidth = width * scale;
+  if (maxWidth !== null) {
+    scale = Math.min(scale, maxWidth / width);
+  }
+  if (maxHeight !== null) {
+    scale = Math.min(scale, maxHeight / height);
+  }
 
-  // Cap the screenshot size for width and height at 2^16 pixels,
-  // which is the maximum allowed canvas size. Higher dimensions will
-  // trigger exceptions in Gecko.
-  if (canvasWidth > MAX_CANVAS_DIMENSION) {
-    lazy.logger.warn(
-      "Limiting screen capture width to maximum allowed " +
-        MAX_CANVAS_DIMENSION +
-        " pixels"
+  const isDownscaled = scale < devicePixelRatio;
+  const canvasHeight = isDownscaled
+    ? Math.max(1, Math.round(height * scale))
+    : height * scale;
+  const canvasWidth = isDownscaled
+    ? Math.max(1, Math.round(width * scale))
+    : width * scale;
+  const canvasArea = canvasWidth * canvasHeight;
+
+  if (canvasWidth > lazy.canvasMaxSize) {
+    throw new lazy.error.UnsupportedOperationError(
+      `${canvasWidth} exceeds the maximum allowed screenshot width of ${lazy.canvasMaxSize} pixels`
     );
-    width = Math.floor(MAX_CANVAS_DIMENSION / scale);
-    canvasWidth = width * scale;
   }
 
-  if (canvasHeight > MAX_CANVAS_DIMENSION) {
-    lazy.logger.warn(
-      "Limiting screen capture height to maximum allowed " +
-        MAX_CANVAS_DIMENSION +
-        " pixels"
+  if (canvasHeight > lazy.canvasMaxSize) {
+    throw new lazy.error.UnsupportedOperationError(
+      `${canvasHeight} exceeds the maximum allowed screenshot height of ${lazy.canvasMaxSize} pixels`
     );
-    height = Math.floor(MAX_CANVAS_DIMENSION / scale);
-    canvasHeight = height * scale;
   }
 
-  // If the area is larger, reduce the height to keep the full width.
-  if (canvasWidth * canvasHeight > MAX_CANVAS_AREA) {
-    lazy.logger.warn(
-      "Limiting screen capture area to maximum allowed " +
-        MAX_CANVAS_AREA +
-        " pixels"
+  if (canvasArea > lazy.canvasMaxArea) {
+    throw new lazy.error.UnsupportedOperationError(
+      `${canvasArea} exceeds the maximum allowed screenshot area of ${lazy.canvasMaxArea} square pixels`
     );
-    height = Math.floor(MAX_CANVAS_AREA / (canvasWidth * scale));
-    canvasHeight = height * scale;
   }
 
-  if (canvas === null) {
-    canvas = win.document.createElementNS(XHTML_NS, "canvas");
-    canvas.width = canvasWidth;
-    canvas.height = canvasHeight;
-  }
-
-  const ctx = canvas.getContext(CONTEXT_2D);
-
-  if (readback) {
-    if (flags === null) {
-      flags =
-        ctx.DRAWWINDOW_DRAW_CARET |
-        ctx.DRAWWINDOW_DRAW_VIEW |
-        ctx.DRAWWINDOW_USE_WIDGET_LAYERS;
+  try {
+    if (canvas === null) {
+      canvas = win.document.createElementNS(XHTML_NS, "canvas");
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
     }
 
-    // drawWindow doesn't take scaling into account.
-    ctx.scale(scale, scale);
-    ctx.drawWindow(win, left + dX, top + dY, width, height, BG_COLOUR, flags);
-  } else {
-    let rect = new DOMRect(left, top, width, height);
-    let snapshot = await browsingContext.currentWindowGlobal.drawSnapshot(
-      rect,
-      scale,
-      BG_COLOUR
+    const ctx = canvas.getContext(CONTEXT_2D);
+
+    if (readback) {
+      if (flags === null) {
+        flags =
+          ctx.DRAWWINDOW_DRAW_CARET |
+          ctx.DRAWWINDOW_DRAW_VIEW |
+          ctx.DRAWWINDOW_USE_WIDGET_LAYERS;
+      }
+
+      // drawWindow doesn't take scaling into account.
+      if (isDownscaled) {
+        ctx.scale(canvasWidth / width, canvasHeight / height);
+      } else {
+        ctx.scale(scale, scale);
+      }
+      ctx.drawWindow(win, left + dX, top + dY, width, height, BG_COLOUR, flags);
+    } else {
+      let rect = new DOMRect(left, top, width, height);
+      let snapshot = await browsingContext.currentWindowGlobal.drawSnapshot(
+        rect,
+        scale,
+        BG_COLOUR,
+        { drawView }
+      );
+
+      if (isDownscaled) {
+        ctx.drawImage(snapshot, 0, 0, canvasWidth, canvasHeight);
+      } else {
+        ctx.drawImage(snapshot, 0, 0);
+      }
+
+      // Bug 1574935 - Huge dimensions can trigger an OOM because multiple copies
+      // of the bitmap will exist in memory. Force the removal of the snapshot
+      // because it is no longer needed.
+      snapshot.close();
+    }
+  } catch (error) {
+    throw new lazy.error.UnknownError(
+      `Unable to capture screenshot: ${error.message}`
     );
-
-    ctx.drawImage(snapshot, 0, 0);
-
-    // Bug 1574935 - Huge dimensions can trigger an OOM because multiple copies
-    // of the bitmap will exist in memory. Force the removal of the snapshot
-    // because it is no longer needed.
-    snapshot.close();
   }
-
   return canvas;
 };
 

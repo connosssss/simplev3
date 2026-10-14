@@ -37,8 +37,9 @@ div[name="page-loading"] > .buttons > button {
 }
 
 .loading-block {
-  background-color: var(--in-content-button-background);
-  border-radius: 4px;
+  background-color: var(--button-background-color);
+  color: var(--button-text-color);
+  border-radius: var(--border-radius-small);
   opacity: 0.4;
   margin-block-start: 16px;
 }
@@ -53,14 +54,6 @@ div[name="page-loading"] > .buttons > button {
 
 .buttons {
   margin-block-start: 16px;
-}
-
-.deemphasized-text {
-  font-size: 0.84em;
-
-  &:not(a) {
-    color: var(--text-color-deemphasized);
-  }
 }
 
 fieldset {
@@ -106,6 +99,7 @@ label:not([hidden]) {
   fill: currentColor;
   height: 16px;
   width: 16px;
+  margin-inline-end: var(--space-small);
 }
 
 .migrator-description {
@@ -135,12 +129,28 @@ panel {
 }
 
 panel-item::part(button) {
-  min-height: 40px;
+  padding-block: var(--space-medium);
 }
 
 panel-item[type="file"]::part(button) {
   background-size: 20px;
   background-position: 6px center;
+}
+
+@media (forced-colors) {
+  panel-item:not(.selected)::part(button):hover {
+    fill: SelectedItemText;
+    color: SelectedItem;
+  }
+
+  panel-item.selected::part(button) {
+    border-block: 1px solid ButtonText;
+  }
+}
+
+panel-item.selected {
+  background-color: var(--button-background-color-active);
+  color: var(--button-text-color-active);
 }
 
 panel-item[type="file"]:-moz-locale-dir(rtl)::part(button),
@@ -203,7 +213,7 @@ details[open] .expand-collapse-icon {
   -moz-context-properties: fill;
   fill: currentColor;
   justify-self: end;
-  margin-inline-end: 8px;
+  margin-inline-end: calc(var(--space-small) + 8px);
 }
 
 details:not([open]) summary {
@@ -263,6 +273,8 @@ summary {
  * rotating masked element.
  */
 .progress-icon-parent {
+  /* stylelint rule disabled to support workaround for Bug 1671784 */
+  /* stylelint-disable-next-line stylelint-plugin-mozilla/use-design-tokens */
   border-radius: 0.01px;
   overflow: hidden;
   display: flex;
@@ -324,7 +336,7 @@ summary {
 .error-icon {
   content: url("chrome://global/skin/icons/error.svg");
   -moz-context-properties: fill;
-  fill: var(--in-content-danger-button-background);
+  fill: var(--icon-color-critical);
   margin-block: 0;
   margin-inline: 0 8px;
   width: 16px;
@@ -403,13 +415,26 @@ div[name="page-selection"][show-import-all] .resource-selection-details {
   margin-block: 16px 0;
 }
 
+.resource-selection-details > summary:focus-visible {
+  outline: none;
+}
+
+/**
+ * :has() is needed to check the summary child for focus,
+ * before adding the outline to the details container
+ */
+/* stylelint-disable-next-line stylelint-plugin-mozilla/no-has-selector */
+.resource-selection-details:has(> summary:focus-visible) {
+  outline: 1px auto;
+}
+
 :host([hide-option-expander-subtitle]) .selected-data {
   display: none;
 }
 
 p.migration-wizard-subheader {
   font-size: var(--embedded-wizard-subheader-font-size, 0.85em);
-  font-weight: var(--embedded-wizard-subheader-font-weight, 400);
+  font-weight: var(--embedded-wizard-subheader-font-weight, normal);
   margin-block: var(--embedded-wizard-subheader-margin-block, 0 28px);
   line-height: 1.2em;
 

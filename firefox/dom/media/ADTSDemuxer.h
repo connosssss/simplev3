@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,11 +5,10 @@
 #ifndef ADTS_DEMUXER_H_
 #define ADTS_DEMUXER_H_
 
-#include "mozilla/Attributes.h"
-#include "mozilla/Maybe.h"
+#include "Adts.h"
 #include "MediaDataDemuxer.h"
 #include "MediaResource.h"
-#include "Adts.h"
+#include "mozilla/CumulativeAverage.h"
 
 namespace mozilla {
 
@@ -116,14 +113,11 @@ class ADTSTrackDemuxer : public MediaTrackDemuxer,
   // Current byte offset in the source stream.
   uint64_t mOffset;
 
-  // Total parsed frames.
-  uint64_t mNumParsedFrames;
-
   // Current frame index.
   int64_t mFrameIndex;
 
-  // Sum of parsed frames' lengths in bytes.
-  uint64_t mTotalFrameLen;
+  // Running average of parsed frame lengths in bytes.
+  mozilla::CumulativeAverage<double> mMeanFrameLen;
 
   // Samples per frame metric derived from frame headers or 0 if none available.
   uint32_t mSamplesPerFrame;

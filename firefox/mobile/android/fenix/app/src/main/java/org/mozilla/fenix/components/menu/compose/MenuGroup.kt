@@ -8,7 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -16,10 +16,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
+import mozilla.components.ui.icons.R as iconsR
 import org.mozilla.fenix.R
 import org.mozilla.fenix.theme.FirefoxTheme
-
-private val ROUNDED_CORNER_SHAPE = RoundedCornerShape(28.dp)
 
 /**
  * A menu group container.
@@ -29,8 +28,7 @@ private val ROUNDED_CORNER_SHAPE = RoundedCornerShape(28.dp)
 @Composable
 internal fun MenuGroup(content: @Composable () -> Unit) {
     Column(
-        modifier = Modifier
-            .clip(shape = ROUNDED_CORNER_SHAPE),
+        modifier = Modifier.clip(shape = MaterialTheme.shapes.extraLarge),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         content()
@@ -42,19 +40,19 @@ internal fun MenuGroup(content: @Composable () -> Unit) {
 private fun MenuGroupPreview() {
     FirefoxTheme {
         Column(
-            modifier = Modifier
-                .background(color = FirefoxTheme.colors.layer1)
-                .padding(16.dp),
+            modifier =
+                Modifier.background(color = MaterialTheme.colorScheme.surface)
+                    .padding(all = FirefoxTheme.layout.space.static200)
         ) {
             MenuGroup {
                 MenuItem(
                     label = stringResource(id = R.string.browser_menu_add_to_homescreen),
-                    beforeIconPainter = painterResource(id = R.drawable.mozac_ic_plus_24),
+                    beforeIconPainter = painterResource(id = iconsR.drawable.mozac_ic_plus_24),
                 )
 
                 MenuItem(
                     label = stringResource(id = R.string.browser_menu_add_to_homescreen),
-                    beforeIconPainter = painterResource(id = R.drawable.mozac_ic_plus_24),
+                    beforeIconPainter = painterResource(id = iconsR.drawable.mozac_ic_plus_24),
                 )
             }
         }

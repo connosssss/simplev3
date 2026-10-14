@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,6 +5,7 @@
 #ifndef mozilla_dom_MIDIPlatformRunnables_h
 #define mozilla_dom_MIDIPlatformRunnables_h
 
+#include "mozilla/dom/MIDIPortParent.h"
 #include "mozilla/dom/MIDITypes.h"
 
 namespace mozilla::dom {
@@ -14,7 +13,6 @@ namespace mozilla::dom {
 enum class MIDIPortConnectionState : uint8_t;
 enum class MIDIPortDeviceState : uint8_t;
 
-class MIDIPortParent;
 class MIDIMessage;
 class MIDIPortInfo;
 

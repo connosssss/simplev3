@@ -10,6 +10,7 @@
 
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
+#![allow(unknown_lints, mismatched_lifetime_syntaxes)]
 
 // re-export the xpcom_macros macro
 pub use xpcom_macros::xpcom;
@@ -37,6 +38,10 @@ pub mod interfaces;
 
 // XPCOM component getters.
 pub mod components;
+
+// XPConnect wrappers.
+mod xpc;
+pub use xpc::*;
 
 // Implementation details of the xpcom_macros crate.
 #[doc(hidden)]

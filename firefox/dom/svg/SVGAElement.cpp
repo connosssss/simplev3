@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +5,9 @@
 #include "mozilla/dom/SVGAElement.h"
 
 #include "mozilla/EventDispatcher.h"
+#include "mozilla/FocusModel.h"
 #include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/dom/SVGAElementBinding.h"
-#include "mozilla/FocusModel.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
 #include "nsGkAtoms.h"
@@ -45,11 +43,12 @@ NS_IMPL_RELEASE_INHERITED(SVGAElement, SVGAElementBase)
 //----------------------------------------------------------------------
 // Implementation
 
-SVGAElement::SVGAElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
+SVGAElement::SVGAElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo)
     : SVGAElementBase(std::move(aNodeInfo)), Link(this) {}
 
 already_AddRefed<DOMSVGAnimatedString> SVGAElement::Href() {
-  return mStringAttributes[HREF].IsExplicitlySet()
+  return mStringAttributes[HREF].IsExplicitlySet() ||
+                 !mStringAttributes[XLINK_HREF].IsExplicitlySet()
              ? mStringAttributes[HREF].ToDOMAnimatedString(this)
              : mStringAttributes[XLINK_HREF].ToDOMAnimatedString(this);
 }
@@ -127,17 +126,6 @@ void SVGAElement::SetType(const nsAString& aType, mozilla::ErrorResult& rv) {
   SetAttr(nsGkAtoms::type, aType, rv);
 }
 
-void SVGAElement::GetText(nsAString& aText, mozilla::ErrorResult& rv) const {
-  if (NS_WARN_IF(
-          !nsContentUtils::GetNodeTextContent(this, true, aText, fallible))) {
-    rv.Throw(NS_ERROR_OUT_OF_MEMORY);
-  }
-}
-
-void SVGAElement::SetText(const nsAString& aText, mozilla::ErrorResult& rv) {
-  rv = nsContentUtils::SetNodeTextContent(this, aText, false);
-}
-
 //----------------------------------------------------------------------
 // nsIContent methods
 
@@ -157,34 +145,13 @@ void SVGAElement::UnbindFromTree(UnbindContext& aContext) {
 
 int32_t SVGAElement::TabIndexDefault() { return 0; }
 
-Focusable SVGAElement::IsFocusableWithoutStyle(IsFocusableFlags) {
+Focusable SVGAElement::IsFocusableWithoutStyle(IsFocusableFlags aFlags) {
   Focusable result;
   if (IsSVGFocusable(&result.mFocusable, &result.mTabIndex)) {
     return result;
   }
 
-  if (!OwnerDoc()->LinkHandlingEnabled()) {
-    return {};
-  }
-
-  // Links that are in an editable region should never be focusable, even if
-  // they are in a contenteditable="false" region.
-  if (nsContentUtils::IsNodeInEditableRegion(this)) {
-    return {};
-  }
-
-  if (GetTabIndexAttrValue().isNothing()) {
-    // check whether we're actually a link
-    if (!IsLink()) {
-      // Not tabbable or focusable without href (bug 17605), unless
-      // forced to be via presence of nonnegative tabindex attribute
-      return {};
-    }
-  }
-  if (!FocusModel::IsTabFocusable(TabFocusableType::Links)) {
-    result.mTabIndex = -1;
-  }
-  return result;
+  return Link::IsLinkFocusableWithoutStyle(aFlags);
 }
 
 bool SVGAElement::HasHref() const {
@@ -229,6 +196,20 @@ void SVGAElement::GetLinkTargetImpl(nsAString& aTarget) {
       ownerDoc->GetBaseTarget(aTarget);
     }
   }
+}
+
+bool SVGAElement::ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
+                                 const nsAString& aValue,
+                                 nsIPrincipal* aMaybeScriptedPrincipal,
+                                 nsAttrValue& aResult) {
+  if (aNamespaceID == kNameSpaceID_None) {
+    if (aAttribute == nsGkAtoms::referrerpolicy) {
+      return ParseReferrerAttribute(aValue, aResult);
+    }
+  }
+
+  return SVGAElementBase::ParseAttribute(aNamespaceID, aAttribute, aValue,
+                                         aMaybeScriptedPrincipal, aResult);
 }
 
 void SVGAElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,

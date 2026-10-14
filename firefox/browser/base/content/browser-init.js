@@ -1,5 +1,4 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,1035 +7,6 @@ var delayedStartupPromise = new Promise(resolve => {
   _resolveDelayedStartup = resolve;
 });
 
-var TabStacks = {
-  STACK_KEY: "tab-stack",
-  COLLAPSED_KEY: "tab-stack.collapsed",
-
-  init() {
-    if (this._initialized) {
-      return;
-    }
-    this._initialized = true;
-    this.SessionStore = ChromeUtils.importESModule(
-      "resource:///modules/sessionstore/SessionStore.sys.mjs"
-    ).SessionStore;
-    this._lastSelectedTabs = new Map();
-
-    this._onTabOpen = event => {
-      let sourceTab = event.target.openerTab;
-      if (sourceTab) {
-        this.addToSourceStack(event.target, sourceTab);
-      }
-      this.refresh();
-    };
-    this._onTabClose = () => this.refresh();
-    this._onTabSelect = event => {
-      let stackId = this.stackId(event.target);
-      if (stackId) {
-        this._lastSelectedTabs.set(stackId, event.target);
-      }
-      if (this._isDraggingTab || this._mouseDownOnTab) {
-        return;
-      }
-      this.expandStack(event.target);
-      this.refresh();
-    };
-    this._onTabAttrModified = () => {
-      if (this._isDraggingTab || this._mouseDownOnTab) {
-        return;
-      }
-      this.renderStackBars();
-    };
-    // Main tab-bar drags keep a stack together; the stack bar can pull out one tab.
-    this._onTabMove = () => this.refresh();
-    this._onPopupShowing = event => {
-      if (event.target == this.menu) {
-        this.updateMenu();
-      }
-    };
-
-    this._onTabMouseDown = event => {
-
-      if (event.button !== 0) {
-        return;
-      }
-
-      let tab = event.target.closest("tab, .tabbrowser-tab");
-      if (tab) {
-        this._mouseDownOnTab = true;
-      }
-    };
-
-    this._onTabMouseUp = () => {
-      if (this._mouseDownOnTab) {
-        this._mouseDownOnTab = false;
-        this.expandStack(gBrowser.selectedTab);
-        this.refresh();
-      }
-    };
-
-    this._onDragStart = event => {
-      this._mouseDownOnTab = false;
-      let target = event.target;
-      let tab = target?.closest?.("tab, .tabbrowser-tab");
-      let stackTab = target?.closest?.(".tab-stack-tab");
-
-      if (this._draggedStackTab || tab || stackTab) {
-        this._isDraggingTab = true;
-      }
-
-      if (tab && !stackTab) {
-        this._draggedExternalTab = tab;
-      }
-    };
-
-    this._onDragEnd = () => {
-      this._isDraggingTab = false;
-      this._mouseDownOnTab = false;
-      this._draggedStackTab = null;
-      this._draggedExternalTab = null;
-      this._draggedButton = null;
-      this._clearTabStripDropIndicator();
-
-      let row = document.querySelector(".tab-stack-bar-row");
-      if (row) {
-        for (let child of row.children) {
-          child.removeAttribute("stack-drop-before");
-          child.removeAttribute("stack-drop-after");
-          child.removeAttribute("stack-dragging");
-        }
-      }
-
-      this.refresh();
-    };
-
-    this._onTabStripDragOver = event => {
-      if (!this.isTabDrag(event)) {
-        return;
-      }
-
-      let draggedTab = this.getDraggedTab(event);
-      let targetTab = event.target.closest("tab, .tabbrowser-tab");
-      if (draggedTab) {
-        if (
-          !this._draggedStackTab &&
-          !this.stackId(draggedTab) &&
-          !(targetTab && this.stackId(targetTab))
-        ) {
-          return;
-        }
-      } 
-      else if (!this._draggedStackTab) {
-        return;
-      }
-
-
-      event.preventDefault();
-      event.stopPropagation();
-      event.dataTransfer.dropEffect = "move";
-      this._updateTabStripDropIndicator(event);
-    };
-
-    this._onTabStripDragLeave = event => {
-      if (event.relatedTarget && !gBrowser.tabContainer.contains(event.relatedTarget)) {
-        this._clearTabStripDropIndicator();
-      }
-    };
-
-    this._onTabStripDrop = event => {
-      if (!this.isTabDrag(event)) {
-        return;
-      }
-
-      let draggedTab = this.getDraggedTab(event);
-      let targetTab = event.target.closest("tab, .tabbrowser-tab");
-      if (!targetTab) {
-        targetTab = gBrowser.visibleTabs.at(-1);
-      }
-      if (
-        !draggedTab ||
-        (!this._draggedStackTab &&
-          !this.stackId(draggedTab) &&
-          !(targetTab && this.stackId(targetTab)))
-      ) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      this._clearTabStripDropIndicator();
-
-      let isVertical = gBrowser.tabContainer.getAttribute("orient") == "vertical";
-      let dropBefore = false;
-
-      if (targetTab && targetTab !== draggedTab) {
-        let tabRect = targetTab.getBoundingClientRect();
-        dropBefore = isVertical
-          ? event.clientY < tabRect.top + tabRect.height / 2
-          : event.clientX < tabRect.left + tabRect.width / 2;
-      }
-
-      if (!this._draggedStackTab && this.stackId(draggedTab)) {
-        this.moveStack(draggedTab, targetTab, dropBefore);
-      } else {
-        this.setStack(draggedTab, "");
-        this.SessionStore.deleteCustomTabValue(draggedTab, this.COLLAPSED_KEY);
-
-        if (targetTab && targetTab !== draggedTab) {
-          let targetTabs = this.stackTabs(targetTab);
-          targetTab = targetTabs.length
-            ? targetTabs[dropBefore ? 0 : targetTabs.length - 1]
-            : targetTab;
-          if (dropBefore) {
-            gBrowser.moveTabBefore(draggedTab, targetTab);
-          }
-          else {
-            gBrowser.moveTabAfter(draggedTab, targetTab);
-          }
-        }
-      }
-
-      this._draggedStackTab = null;
-      this._draggedExternalTab = null;
-      this._draggedButton = null;
-      this._isDraggingTab = false;
-      this._mouseDownOnTab = false;
-      this.refresh();
-    };
-    gBrowser.tabContainer.addEventListener("TabOpen", this._onTabOpen);
-    gBrowser.tabContainer.addEventListener("TabClose", this._onTabClose);
-    gBrowser.tabContainer.addEventListener("TabSelect", this._onTabSelect);
-    gBrowser.tabContainer.addEventListener("TabMove", this._onTabMove);
-    gBrowser.tabContainer.addEventListener(
-      "TabAttrModified",
-      this._onTabAttrModified
-    );
-    gBrowser.tabContainer.addEventListener(
-      "mousedown",
-      this._onTabMouseDown,
-      true
-    );
-    gBrowser.tabContainer.addEventListener(
-      "dragover",
-      this._onTabStripDragOver,
-      true
-    );
-    gBrowser.tabContainer.addEventListener(
-      "dragleave",
-      this._onTabStripDragLeave,
-      true
-    );
-    gBrowser.tabContainer.addEventListener(
-      "drop",
-      this._onTabStripDrop,
-      true
-    );
-    window.addEventListener("mouseup", this._onTabMouseUp, true);
-    window.addEventListener("dragstart", this._onDragStart, true);
-    window.addEventListener("dragend", this._onDragEnd, true);
-    this.menu = document.getElementById("tabContextMenu");
-    this.menu.addEventListener("popupshowing", this._onPopupShowing);
-    this.refresh();
-  },
-
-  uninit() {
-    if (!this._initialized) {
-      return;
-    }
-    gBrowser.tabContainer.removeEventListener("TabOpen", this._onTabOpen);
-    gBrowser.tabContainer.removeEventListener("TabClose", this._onTabClose);
-    gBrowser.tabContainer.removeEventListener("TabSelect", this._onTabSelect);
-    gBrowser.tabContainer.removeEventListener("TabMove", this._onTabMove);
-    gBrowser.tabContainer.removeEventListener(
-      "TabAttrModified",
-      this._onTabAttrModified
-    );
-    gBrowser.tabContainer.removeEventListener(
-      "mousedown",
-      this._onTabMouseDown,
-      true
-    );
-    gBrowser.tabContainer.removeEventListener(
-      "dragover",
-      this._onTabStripDragOver,
-      true
-    );
-    gBrowser.tabContainer.removeEventListener(
-      "dragleave",
-      this._onTabStripDragLeave,
-      true
-    );
-    gBrowser.tabContainer.removeEventListener(
-      "drop",
-      this._onTabStripDrop,
-      true
-    );
-    window.removeEventListener("mouseup", this._onTabMouseUp, true);
-    window.removeEventListener("dragstart", this._onDragStart, true);
-    window.removeEventListener("dragend", this._onDragEnd, true);
-    this.menu.removeEventListener("popupshowing", this._onPopupShowing);
-    this._initialized = false;
-  },
-
-  _clearTabStripDropIndicator() {
-    let ind = gBrowser.tabContainer._tabDropIndicator;
-    if (ind) {
-      ind.hidden = true;
-    }
-  },
-
-  _updateTabStripDropIndicator(event) {
-    let ind = gBrowser.tabContainer._tabDropIndicator;
-
-    if (!ind) {
-      return;
-    }
-
-    let arrowScrollbox = gBrowser.tabContainer.arrowScrollbox;
-
-    if (!arrowScrollbox) {
-      return;
-    }
-
-    let isVertical = gBrowser.tabContainer.getAttribute("orient") == "vertical";
-    let rect = arrowScrollbox.getBoundingClientRect();
-    let targetTab = event.target.closest("tab, .tabbrowser-tab");
-    let newMargin = 0;
-
-    if (targetTab) {
-      let tabRect = targetTab.getBoundingClientRect();
-
-      if (isVertical) {
-        let dropBefore = event.clientY < tabRect.top + tabRect.height / 2;
-        newMargin = (dropBefore ? tabRect.top : tabRect.bottom) - rect.top;
-      } 
-      else {
-        let dropBefore = event.clientX < tabRect.left + tabRect.width / 2;
-        newMargin = (dropBefore ? tabRect.left : tabRect.right) - rect.left;
-      }
-
-    } 
-    
-    else {
-      let lastTab = gBrowser.visibleTabs.at(-1);
-      if (lastTab) {
-        let lastRect = lastTab.getBoundingClientRect();
-        newMargin = isVertical
-          ? lastRect.bottom - rect.top
-          : lastRect.right - rect.left;
-      }
-    }
-
-    ind.hidden = false;
-    ind.style.transform = isVertical ? "translateY(" + Math.round(newMargin) + "px)" : "translateX(" + Math.round(newMargin) + "px)";
-  },
-
-  activeStackTabs() {
-    let selectedStack = this.stackTabs(gBrowser.selectedTab);
-    if (selectedStack.length >= 2 && !this.isCollapsed(selectedStack[0])) {
-      return selectedStack;
-    }
-    return [];
-  },
-
-  isTabDrag(event) {
-    if (this._draggedStackTab || this._draggedExternalTab) {
-      return true;
-    }
-
-    let dt = event?.dataTransfer;
-    if (!dt) {
-      return false;
-    }
-
-    const TAB_DROP_TYPE = "application/x-moz-tabbrowser-tab";
-    if (dt.types) {
-
-      if (
-        typeof dt.types.includes === "function" &&
-        dt.types.includes(TAB_DROP_TYPE)
-      ) {
-        return true;
-      }
-
-      if (
-        typeof dt.types.contains === "function" &&
-        dt.types.contains(TAB_DROP_TYPE)
-      ) {
-        return true;
-      }
-
-    }
-
-
-    try {
-      if (dt.mozItemCount > 0) {
-        let types = dt.mozTypesAt(0);
-        if (
-          types &&
-          (types.contains?.(TAB_DROP_TYPE) || types.includes?.(TAB_DROP_TYPE))
-        ) {
-          return true;
-        }
-      }
-    } 
-    catch (e) {}
-    return false;
-  },
-
-  getDraggedTab(event) {
-    if (this._draggedStackTab) {
-      return this._draggedStackTab;
-    }
-
-    if (this._draggedExternalTab) {
-      return this._draggedExternalTab;
-    }
-
-    let dt = event?.dataTransfer;
-    if (!dt) {
-      return null;
-    }
-
-    const TAB_DROP_TYPE = "application/x-moz-tabbrowser-tab";
-    try {
-      let tab = dt.mozGetDataAt(TAB_DROP_TYPE, 0);
-      if (tab) {
-        return tab;
-      }
-    } 
-    catch (e) {}
-
-    try {
-      if (dt.mozItemCount > 0) {
-        let tab = dt.mozGetDataAt(TAB_DROP_TYPE, 0);
-        if (tab) {
-          return tab;
-        }
-      }
-    } 
-    catch (e) {}
-    return null;
-  },
-
-  tabs() {
-    return [...gBrowser.tabs].filter(tab => !tab.closing);
-  },
-
-  stackId(tab) {
-    return this.SessionStore.getCustomTabValue(tab, this.STACK_KEY);
-  },
-
-  setStack(tab, stackId) {
-    
-    if (stackId) {
-      this.SessionStore.setCustomTabValue(tab, this.STACK_KEY, stackId);
-    } 
-    
-    else {
-      this.SessionStore.deleteCustomTabValue(tab, this.STACK_KEY);
-    }
-  },
-
-  addToSourceStack(tab, sourceTab) {
-    let sourceStackId = this.stackId(sourceTab);
-    if (!sourceStackId || this.stackId(tab) || tab.pinned || tab == sourceTab) {
-      return;
-    }
-
-    let lastInStack = this.stackTabs(sourceTab).at(-1);
-    if (!lastInStack) {
-      return;
-    }
-    this.setStack(tab, sourceStackId);
-    gBrowser.moveTabAfter(tab, lastInStack);
-
-    if (!tab.hasAttribute("fadein")) {
-      let observer = new MutationObserver(() => {
-        if (tab.hasAttribute("fadein")) {
-          observer.disconnect();
-          this.refresh();
-        }
-      });
-      observer.observe(tab, { attributes: true, attributeFilter: ["fadein"] });
-    }
-  },
-
-  openTabInActiveStack() {
-    if (!this.activeStackTabs().length) {
-      return;
-    }
-
-    openTrustedLinkIn(BROWSER_NEW_TAB_URL, "tab", {
-      relatedToCurrent: true,
-      inBackground: false,
-    });
-  },
-
-  stackTabs(tab) {
-    let stackId = this.stackId(tab);
-    return stackId
-      ? this.tabs().filter(candidate => this.stackId(candidate) == stackId)
-      : [];
-  },
-
-  currentStackTab(stack) {
-    return (
-      stack.find(tab => tab.selected) ||
-      stack.find(tab => tab == this._lastSelectedTabs.get(this.stackId(tab))) ||
-      stack[0]
-    );
-  },
-
-  isParent(tab) {
-    let stack = this.stackTabs(tab);
-    if (stack.length < 2) return false;
-    return tab === this.currentStackTab(stack);
-  },
-
-  isChild(tab) {
-    let stack = this.stackTabs(tab);
-    if (stack.length < 2) return false;
-    return tab !== this.currentStackTab(stack);
-  },
-
-  stack(tab, parent) {
-    if (
-      !tab ||
-      !parent ||
-      tab == parent ||
-      tab.pinned ||
-      parent.pinned
-    ) {
-      return;
-    }
-
-    let tabStackId = this.stackId(tab);
-    let parentStackId = this.stackId(parent);
-
-    if (tabStackId && tabStackId == parentStackId) {
-      return;
-    }
-
-    let movingTabs = this.stackTabs(tab);
-
-    if (!movingTabs.length) {
-      movingTabs = [tab];
-    }
-    let targetTabs = this.stackTabs(parent);
-
-    if (!targetTabs.length) {
-      targetTabs = [parent];
-    }
-
-    let stackId = parentStackId || Services.uuid.generateUUID().toString();
-
-
-    for (let stackTab of targetTabs) {
-      this.setStack(stackTab, stackId);
-    }
-
-    for (let movingTab of movingTabs) {
-      this.setStack(movingTab, stackId);
-    }
-
-
-    gBrowser.moveTabsAfter(movingTabs, targetTabs.at(-1));
-    this.refresh();
-  },
-
-  unstack(tab) {
-    if (!this.isChild(tab)) {
-      return;
-    }
-    this.setStack(tab, "");
-    this.SessionStore.deleteCustomTabValue(tab, this.COLLAPSED_KEY);
-    this.refresh();
-  },
-
-  isCollapsed(tab) {
-    return (
-      this.SessionStore.getCustomTabValue(tab, this.COLLAPSED_KEY) == "true"
-    );
-  },
-
-  toggle(tab) {
-    let stack = this.stackTabs(tab);
-
-    if (!this.isParent(tab)) {
-      return;
-    }
-
-
-    let collapsed = !this.isCollapsed(tab);
-
-    if (collapsed && stack.includes(gBrowser.selectedTab) && tab != gBrowser.selectedTab) {
-      gBrowser.selectedTab = tab;
-    }
-
-    for (let stackTab of stack) {
-      if (collapsed) {
-        this.SessionStore.setCustomTabValue(stackTab, this.COLLAPSED_KEY, "true");
-      } 
-      else {
-        this.SessionStore.deleteCustomTabValue(stackTab, this.COLLAPSED_KEY);
-      }
-    }
-    this.refresh();
-  },
-
-  expandStack(tab) {
-    let stack = this.stackTabs(tab);
-    if (stack.length && this.isCollapsed(stack[0])) {
-      for (let stackTab of stack) {
-        this.SessionStore.deleteCustomTabValue(stackTab, this.COLLAPSED_KEY);
-      }
-    }
-  },
-
-  /**
-   * Move a tab within its stack to a new position relative to a target tab.
-   * @param {MozTabbrowserTab} tab - The tab to move.
-   * @param {MozTabbrowserTab} targetTab - The tab to position relative to.
-   * @param {boolean} before - If true, place before targetTab; otherwise after.
-   */
-  moveInStack(tab, targetTab, before = false) {
-    if (!tab || !targetTab || tab === targetTab) {
-      return;
-    }
-    let tabStackId = this.stackId(tab);
-    let targetStackId = this.stackId(targetTab);
-    if (!tabStackId || tabStackId !== targetStackId) {
-      return;
-    }
-    if (before) {
-      gBrowser.moveTabBefore(tab, targetTab);
-    } else {
-      gBrowser.moveTabAfter(tab, targetTab);
-    }
-    this.refresh();
-  },
-
-  moveStack(tab, targetTab, before = false) {
-    let movingTabs = this.stackTabs(tab);
-    if (!movingTabs.length || !targetTab || movingTabs.includes(targetTab)) {
-      return;
-    }
-
-    let targetTabs = this.stackTabs(targetTab);
-    targetTab = targetTabs.length ? targetTabs[before ? 0 : targetTabs.length - 1] : targetTab;
-
-    if (before) {
-      gBrowser.moveTabsBefore(movingTabs, targetTab);
-    } else {
-      gBrowser.moveTabsAfter(movingTabs, targetTab);
-    }
-  },
-
-  updateMenu() {
-    let tab = TabContextMenu.contextTab;
-    let parent = gBrowser.selectedTab;
-    let tabStackId = tab && this.stackId(tab);
-    let parentStackId = parent && this.stackId(parent);
-
-    let canStack =
-      tab &&
-      parent &&
-      !TabContextMenu.multiselected &&
-      tab != parent &&
-      !tab.pinned &&
-      !parent.pinned &&
-      (!tabStackId || tabStackId != parentStackId);
-
-
-    let stack = document.getElementById("context_StackUnderActive");
-    let unstack = document.getElementById("context_Unstack");
-    let toggle = document.getElementById("context_ToggleStack");
-    let separator = document.getElementById("context_StackSeparator");
-
-    stack.hidden = !canStack;
-    unstack.hidden = !this.isChild(tab) || TabContextMenu.multiselected;
-    toggle.hidden = !this.isParent(tab);
-    toggle.label = this.isCollapsed(tab)
-      ? "Expand Tab Stack"
-      : "Collapse Tab Stack";
-    separator.hidden = stack.hidden && unstack.hidden && toggle.hidden;
-  },
-
-  createStackBarTab(tab) {
-    let button = document.createXULElement("toolbarbutton");
-    button.className = "toolbarbutton-1 tabbrowser-tab tab-stack-tab";
-    button.setAttribute("context", "tabContextMenu");
-    button.setAttribute("role", "tab");
-    button.setAttribute("label", tab.label);
-    button.setAttribute("tooltiptext", tab.label);
-    button.setAttribute("fadein", "");
-    button.setAttribute("aria-selected", tab.selected);
-    button.toggleAttribute("selected", tab.selected);
-    button.toggleAttribute(
-      "visuallyselected",
-      tab.hasAttribute("visuallyselected")
-    );
-    button.tab = tab;
-    button.setAttribute("draggable", "true");
-
-    let tabStack = tab.querySelector(".tab-stack").cloneNode(true);
-    tabStack.querySelector(".tab-stack-count")?.remove();
-    button.append(tabStack);
-    button.addEventListener("mousedown", event => event.stopPropagation());
-    button.addEventListener("dblclick", event => {
-      event.preventDefault();
-      event.stopPropagation();
-    });
-
-    button.addEventListener("click", event => {
-      event.stopPropagation();
-
-      if (event.target.closest(".tab-close-button")) {
-        button._closeRequested = true;
-        gBrowser.removeTab(tab);
-      }
-    });
-
-    button.addEventListener("command", event => {
-      event.stopPropagation();
-      if (!button._closeRequested && !tab.closing) {
-        gBrowser.selectedTab = tab;
-      }
-    });
-
-    // reordering within the stack bar or dragging from regular tab bar
-    button.addEventListener("dragstart", event => {
-      event.stopPropagation();
-      this._draggedStackTab = tab;
-      this._draggedButton = button;
-      this._isDraggingTab = true;
-      button.toggleAttribute("stack-dragging", true);
-      event.dataTransfer.effectAllowed = "move";
-      event.dataTransfer.setData("text/x-tab-stack-drag", "true");
-      try {
-        event.dataTransfer.mozSetDataAt(
-          "application/x-moz-tabbrowser-tab",
-          tab,
-          0
-        );
-        event.dataTransfer.mozSetDataAt(
-          "text/x-moz-text-internal",
-          tab.linkedBrowser?.currentURI?.spec || "",
-          0
-        );
-      } 
-      catch (e) {}
-    });
-
-    button.addEventListener("dragover", event => {
-      if (!this.isTabDrag(event)) {
-        return;
-      }
-      let draggedTab = this.getDraggedTab(event);
-      if (draggedTab) {
-        if ( draggedTab === tab || draggedTab.pinned || draggedTab.closing) {
-          return;
-        }
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      event.dataTransfer.dropEffect = "move";
-      this._isDraggingTab = true;
-
-      let rect = button.getBoundingClientRect();
-      let midX = rect.left + rect.width / 2;
-      let dropBefore = event.clientX < midX;
-
-      let row = button.closest(".tab-stack-bar-row");
-      if (row) {
-        for (let child of row.children) {
-          child.removeAttribute("stack-drop-before");
-          child.removeAttribute("stack-drop-after");
-        }
-      }
-
-      button.toggleAttribute("stack-drop-before", dropBefore);
-      button.toggleAttribute("stack-drop-after", !dropBefore);
-    });
-
-    button.addEventListener("dragleave", event => {
-      event.stopPropagation();
-      button.removeAttribute("stack-drop-before");
-      button.removeAttribute("stack-drop-after");
-    });
-
-    button.addEventListener("drop", event => {
-      let draggedTab = this.getDraggedTab(event);
-      if ( !draggedTab || draggedTab === tab || draggedTab.pinned || draggedTab.closing ) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-
-      let rect = button.getBoundingClientRect();
-      let midX = rect.left + rect.width / 2;
-      let dropBefore = event.clientX < midX;
-
-      button.removeAttribute("stack-drop-before");
-      button.removeAttribute("stack-drop-after");
-
-      if (this.stackId(draggedTab) === this.stackId(tab)) {
-        this.moveInStack(draggedTab, tab, dropBefore);
-      } 
-      else {
-        let targetStackId = this.stackId(tab);
-        let movingTabs = this.stackTabs(draggedTab);
-        if (!movingTabs.length) {
-          movingTabs = [draggedTab];
-        }
-
-        for (let movingTab of movingTabs) {
-          this.setStack(movingTab, targetStackId);
-        }
-
-        if (dropBefore) {
-          gBrowser.moveTabsBefore(movingTabs, tab);
-        } 
-        else {
-          gBrowser.moveTabsAfter(movingTabs, tab);
-        }
-
-        this.refresh();
-      }
-
-      this._draggedStackTab = null;
-      this._draggedExternalTab = null;
-      this._draggedButton = null;
-      this._isDraggingTab = false;
-      this._mouseDownOnTab = false;
-    });
-
-    button.addEventListener("dragend", event => {
-      event.stopPropagation();
-      button.removeAttribute("stack-dragging");
-      // clear remaining indicators if any
-      let row = button.closest(".tab-stack-bar-row");
-      if (row) {
-        for (let child of row.children) {
-          child.removeAttribute("stack-drop-before");
-          child.removeAttribute("stack-drop-after");
-          child.removeAttribute("stack-dragging");
-        }
-      }
-      this._draggedStackTab = null;
-      this._draggedExternalTab = null;
-      this._draggedButton = null;
-      this._isDraggingTab = false;
-      this._mouseDownOnTab = false;
-      this.refresh();
-    });
-
-    return button;
-  },
-
-  createStackBarNewTabButton() {
-    let button = document.createXULElement("toolbarbutton");
-    button.className = "toolbarbutton-1 tab-stack-newtab-button";
-    document.l10n.setAttributes(button, "tabs-toolbar-new-tab");
-    button.addEventListener("click", event => {
-      if (event.button !== 0) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      this.openTabInActiveStack();
-    });
-    return button;
-  },
-
-  _setupStackBarRowDnd(row) {
-    row.addEventListener("dragover", event => {
-      if (event.target.closest(".tab-stack-tab, .tab-stack-newtab-button")) {
-        return;
-      }
-      if (!this.isTabDrag(event)) {
-        return;
-      }
-
-      let draggedTab = this.getDraggedTab(event);
-      if (draggedTab) {
-        if (draggedTab.pinned || draggedTab.closing) {
-          return;
-        }
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      event.dataTransfer.dropEffect = "move";
-      this._isDraggingTab = true;
-
-      let tabs = row.querySelectorAll(".tab-stack-tab");
-      for (let child of tabs) {
-        child.removeAttribute("stack-drop-before");
-        child.removeAttribute("stack-drop-after");
-      }
-
-      if (tabs.length) {
-        tabs[tabs.length - 1].toggleAttribute("stack-drop-after", true);
-      }
-    });
-
-    row.addEventListener("dragleave", event => {
-      if (event.target.closest(".tab-stack-tab, .tab-stack-newtab-button")) {
-        return;
-      }
-      let related = event.relatedTarget;
-
-      if (!row.contains(related)) {
-        for (let child of row.querySelectorAll(".tab-stack-tab")) {
-          child.removeAttribute("stack-drop-before");
-          child.removeAttribute("stack-drop-after");
-        }
-      }
-    });
-
-    row.addEventListener("drop", event => {
-      if (event.target.closest(".tab-stack-tab, .tab-stack-newtab-button")) {
-        return;
-      }
-
-      let draggedTab = this.getDraggedTab(event);
-      if (!draggedTab || draggedTab.pinned || draggedTab.closing) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-
-      for (let child of row.querySelectorAll(".tab-stack-tab")) {
-        child.removeAttribute("stack-drop-before");
-        child.removeAttribute("stack-drop-after");
-      }
-
-      let activeStack = this.activeStackTabs();
-      if (!activeStack.length) {
-        return;
-      }
-
-      let targetStackId = this.stackId(activeStack[0]);
-      let lastTab = activeStack.at(-1);
-
-      if (this.stackId(draggedTab) === targetStackId) {
-        if (draggedTab !== lastTab) {
-          this.moveInStack(draggedTab, lastTab, false);
-        }
-      } 
-      else {
-        let movingTabs = this.stackTabs(draggedTab);
-        if (!movingTabs.length) {
-          movingTabs = [draggedTab];
-        }
-        for (let movingTab of movingTabs) {
-          this.setStack(movingTab, targetStackId);
-        }
-        gBrowser.moveTabsAfter(movingTabs, lastTab);
-        this.refresh();
-      }
-
-      this._draggedStackTab = null;
-      this._draggedExternalTab = null;
-      this._draggedButton = null;
-      this._isDraggingTab = false;
-      this._mouseDownOnTab = false;
-    });
-  },
-
-  renderStackBars() {
-    let bar = document.getElementById("tab-stack-bars");
-    let container = document.getElementById("tab-stack-bars-container");
-
-    if (!bar || !container) {
-      return;
-    }
-
-    let stack =
-      gBrowser.tabContainer.getAttribute("orient") == "horizontal"
-        ? this.activeStackTabs()
-        : [];
-    if (stack.length < 2 || this.isCollapsed(stack[0])) {
-      stack = [];
-    }
-
-    bar.hidden = !stack.length;
-    if (!stack.length) {
-      container.replaceChildren();
-      return;
-    }
-
-    let row = document.createXULElement("hbox");
-
-    row.className = "tab-stack-bar-row";
-    row.setAttribute("role", "tablist");
-    row.append(
-      ...stack.map(tab => this.createStackBarTab(tab)),
-      this.createStackBarNewTabButton()
-    );
-    this._setupStackBarRowDnd(row);
-    
-    container.replaceChildren(row);
-  },
-
-  refresh() {
-    let stacks = new Map();
-
-    for (let tab of this.tabs()) {
-      tab.toggleAttribute("stack-child", false);
-      tab.toggleAttribute("stack-hidden", false);
-      tab.toggleAttribute("stack-current", false);
-      tab.toggleAttribute("stack-collapsed", false);
-      tab.style.setProperty("--stack-depth", 0);
-      delete tab.dataset.stackTabCount;
-      let existingBadge = tab.querySelector(".tab-stack-count");
-      if (existingBadge) existingBadge.remove();
-
-      let stackId = this.stackId(tab);
-
-      if (stackId) {
-        if (!stacks.has(stackId)) {
-          stacks.set(stackId, []);
-        }
-
-        stacks.get(stackId).push(tab);
-      }
-    }
-
-    for (let stack of stacks.values()) {
-      if (stack.length < 2) {
-        this.setStack(stack[0], "");
-        this.SessionStore.deleteCustomTabValue(stack[0], this.COLLAPSED_KEY);
-        continue;
-      }
-
-      let collapsed = this.isCollapsed(stack[0]);
-      let currentTab = this.currentStackTab(stack);
-      for (let tab of stack) {
-        let isCurrent = tab === currentTab;
-        tab.toggleAttribute("stack-child", !isCurrent);
-        tab.toggleAttribute("stack-hidden", !isCurrent && collapsed);
-        tab.toggleAttribute("stack-current", isCurrent);
-        tab.toggleAttribute("stack-collapsed", isCurrent && collapsed);
-        tab.style.setProperty("--stack-depth", isCurrent ? 0 : 1);
-        if (isCurrent) {
-          tab.dataset.stackTabCount = stack.length;
-          let closeBtn = tab.querySelector(".tab-close-button");
-          if (closeBtn) {
-            let badge = document.createElement("span");
-            badge.className = "tab-stack-count";
-            badge.textContent = stack.length;
-            closeBtn.parentNode.insertBefore(badge, closeBtn);
-          }
-        }
-      }
-
-    }
-    this.renderStackBars();
-  },
-};
-
 var gBrowserInit = {
   delayedStartupFinished: false,
   domContentLoaded: false,
@@ -1044,6 +14,50 @@ var gBrowserInit = {
   _tabToAdopt: undefined,
   _firstContentWindowPaintDeferred: Promise.withResolvers(),
   idleTasksFinished: Promise.withResolvers(),
+  _reducedProtectionPrefObserver: null,
+
+  /**
+   * Handles considerations when the enabled state of the Translations feature
+   * changes during runtime, such as being blocked or re-enabled in the AI Settings.
+   */
+  _translationsEnabledStateObserver: {
+    observe(_subject, topic, data) {
+      if (topic !== "translations:enabled-state-changed") {
+        console.warn(`received unexpected topic: ${topic}`);
+        return;
+      }
+
+      // Ensures that the Application Menu correctly includes or omits the translate-page menu item.
+      XULBrowserWindow._updateElementsForContentType();
+
+      if (data === "enabled") {
+        // When the feature is re-enabled, ensure that actor instances exist for all tabs.
+        // This loop is synchronous, but should be lightweight to instantiate only the actor objects.
+        // Any expensive work is scheduled asynchronously to the event loop by the actor itself after construction.
+        for (const tab of gBrowser.tabs) {
+          try {
+            const windowGlobal =
+              tab.linkedBrowser?.browsingContext?.currentWindowGlobal;
+
+            if (
+              !windowGlobal ||
+              windowGlobal.isClosed ||
+              !windowGlobal.isCurrentGlobal
+            ) {
+              // This tab's windowGlobal is not relevant to create a Translations actor.
+              continue;
+            }
+
+            // Ensure that a Translations actor instance is (re)created for each open tab that is allowed to have one.
+            windowGlobal.getActor("Translations");
+          } catch {
+            // Not every tab is allowed to have a Translations actor, which is okay.
+            // See ActorManagerParent for the official allow list of URLs.
+          }
+        }
+      }
+    },
+  },
 
   _setupFirstContentWindowPaintPromise() {
     let lastTransactionId = window.windowUtils.lastTransactionId;
@@ -1098,6 +112,10 @@ var gBrowserInit = {
   onBeforeInitialXULLayout() {
     this._setupFirstContentWindowPaintPromise();
 
+    if (!window.toolbar.visible) {
+      document.documentElement.setAttribute("popup-window", true);
+    }
+
     updateBookmarkToolbarVisibility();
 
     // Set a sane starting width/height for all resolutions on new profiles.
@@ -1118,42 +136,81 @@ var gBrowserInit = {
         document.documentElement.setAttribute("sizemode", "maximized");
       }
     }
-    if (!Services.appinfo.nativeMenubar) {
+    {
       const toolbarMenubar = document.getElementById("toolbar-menubar");
-      // set a default value
-      if (!toolbarMenubar.hasAttribute("autohide")) {
-        toolbarMenubar.setAttribute("autohide", true);
+      const nativeMenubar = Services.appinfo.nativeMenubar;
+      toolbarMenubar.collapsed = nativeMenubar;
+      if (nativeMenubar) {
+        toolbarMenubar.removeAttribute("autohide");
+      } else {
+        document.l10n.setAttributes(
+          toolbarMenubar,
+          "toolbar-context-menu-menu-bar-cmd"
+        );
+        toolbarMenubar.setAttribute("data-l10n-attrs", "toolbarname");
       }
-      document.l10n.setAttributes(
-        toolbarMenubar,
-        "toolbar-context-menu-menu-bar-cmd"
-      );
-      toolbarMenubar.setAttribute("data-l10n-attrs", "toolbarname");
     }
-    // If opening a Taskbar Tab window, add an attribute to the top-level element
+    // If opening a Taskbar Tab or AI window, add an attribute to the top-level element
     // to inform window styling.
-    if (window.arguments && window.arguments[1]) {
+    if (window.arguments?.[1] instanceof Ci.nsIPropertyBag2) {
       let extraOptions = window.arguments[1];
-      if (
-        extraOptions instanceof Ci.nsIWritablePropertyBag2 &&
-        extraOptions.hasKey("taskbartab")
-      ) {
+      if (extraOptions.hasKey("taskbartab")) {
+        let taskbarTabId = extraOptions.getPropertyAsAString("taskbartab");
+        let taskbarTabClass = extraOptions.get("taskbartabclass");
+        if (taskbarTabClass) {
+          window.document.documentElement.setAttribute(
+            "windowclass",
+            taskbarTabClass
+          );
+        }
         window.document.documentElement.setAttribute(
           "taskbartab",
-          extraOptions.getPropertyAsAString("taskbartab")
+          taskbarTabId
         );
+        window.document.documentElement.id = "taskbartab-" + taskbarTabId;
+      }
+      if (extraOptions.hasKey("ai-window")) {
+        document.documentElement.setAttribute("ai-window", true);
+      }
+      if (extraOptions.hasKey("aiwindow-immersive-view")) {
+        document.documentElement.setAttribute("aiwindow-immersive-view", true);
+      }
+      if (extraOptions.hasKey("chromeless-window")) {
+        document.documentElement.setAttribute("chromeless-window", true);
+      }
+      if (extraOptions.hasKey("web-extension-popup-window")) {
+        document.documentElement.setAttribute(
+          "web-extension-popup-window",
+          true
+        );
+      }
+      if (extraOptions.hasKey("aswebauth")) {
+        document.documentElement.setAttribute("aswebauth", true);
+      }
+    }
+
+    let tabToAdopt = this.getTabToAdopt();
+    if (tabToAdopt?.hasAttribute?.("mini-window")) {
+      document.documentElement.setAttribute("mini-window", "true");
+      if (tabToAdopt.hasAttribute("cropped-mini-window")) {
+        document.documentElement.setAttribute("cropped-mini-window", "true");
       }
     }
 
     // Run menubar initialization first, to avoid CustomTitlebar code picking
     // up mutations from it and causing a reflow.
-    AutoHideMenubar.init();
+    BrowserUtils.callModulesFromCategory(
+      {
+        categoryName:
+          "browser-window-before-initial-xul-layout-document-preparation",
+        jsGlobal: globalThis,
+      },
+      window
+    );
+
     // Update the customtitlebar attribute so the window can be sized
     // correctly.
     window.TabBarVisibility.update();
-    CustomTitlebar.init();
-
-    new LightweightThemeConsumer(document);
 
     if (
       Services.prefs.getBoolPref(
@@ -1164,9 +221,17 @@ var gBrowserInit = {
       document.documentElement.setAttribute("icon", "main-window");
     }
 
-    // Call this after we set attributes that might change toolbars' computed
-    // text color.
-    ToolbarIconColor.init(window);
+    // The following modules would be initialized:
+    // CustomTitlebar, LightweightThemeConsumer, and ToolbarIconColor.
+    // ToolbarIconColor.init should be called after we set the attributes, since
+    // it might change the toolbars' computed text color.
+    BrowserUtils.callModulesFromCategory(
+      {
+        categoryName: "browser-window-before-initial-xul-layout",
+        jsGlobal: globalThis,
+      },
+      window
+    );
   },
 
   onDOMContentLoaded() {
@@ -1179,17 +244,26 @@ var gBrowserInit = {
       window
     );
 
-    gBrowser = new window.Tabbrowser();
-    gBrowser.init();
-
+    // This adds gBrowser to the global scope.
     BrowserUtils.callModulesFromCategory(
-      { categoryName: "browser-window-domcontentloaded" },
+      {
+        categoryName: "browser-window-domcontentloaded-tabbrowser",
+        jsGlobal: globalThis,
+      },
       window
     );
+    gURLBar.addGBrowserListeners();
+    if (Services.prefs.getBoolPref("browser.search.widget.new", false)) {
+      document.getElementById("searchbar-new")?.addGBrowserListeners();
+    }
 
-    FirefoxViewHandler.init();
-
-    gURLBar.initPlaceHolder();
+    BrowserUtils.callModulesFromCategory(
+      {
+        categoryName: "browser-window-domcontentloaded",
+        jsGlobal: globalThis,
+      },
+      window
+    );
 
     // Hack to ensure that the various initial pages favicon is loaded
     // instantaneously, to avoid flickering and improve perceived performance.
@@ -1208,8 +282,6 @@ var gBrowserInit = {
 
     updatePrintCommands(gPrintEnabled);
 
-    gUnifiedExtensions.init();
-
     // Setting the focus will cause a style flush, it's preferable to call anything
     // that will modify the DOM from within this function before this call.
     this._setInitialFocus();
@@ -1219,7 +291,10 @@ var gBrowserInit = {
 
   onLoad() {
     gBrowser.addEventListener("DOMUpdateBlockedPopups", e =>
-      PopupBlockerObserver.handleEvent(e)
+      PopupAndRedirectBlockerObserver.handleEvent(e)
+    );
+    gBrowser.addEventListener("DOMUpdateBlockedRedirect", e =>
+      PopupAndRedirectBlockerObserver.handleEvent(e)
     );
     gBrowser.addEventListener(
       "TranslationsParent:LanguageState",
@@ -1229,16 +304,12 @@ var gBrowserInit = {
       "TranslationsParent:OfferTranslation",
       FullPageTranslationsPanel
     );
+    gBrowser.tabContainer.addEventListener("TabSelect", () => {
+      FullPageTranslationsPanel.onLocationChange(gBrowser.selectedBrowser);
+    });
     gBrowser.addTabsProgressListener(FullPageTranslationsPanel);
 
     window.addEventListener("AppCommand", HandleAppCommandEvent, true);
-
-    // These routines add message listeners. They must run before
-    // loading the frame script to ensure that we don't miss any
-    // message sent between when the frame script is loaded and when
-    // the listener is registered.
-    CaptivePortalWatcher.init();
-    ZoomUI.init(window);
 
     if (!gMultiProcessBrowser) {
       // There is a Content:Click message manually sent from content.
@@ -1252,11 +323,15 @@ var gBrowserInit = {
     gBrowser.addProgressListener(window.XULBrowserWindow);
     gBrowser.addTabsProgressListener(window.TabsProgressListener);
 
-    SidebarController.init();
-
-    // We do this in onload because we want to ensure the button's state
-    // doesn't flicker as the window is being shown.
-    DownloadsButton.init();
+    // TODO bug 2038578: audit these consumers and move any that don't need
+    // to run before SessionStore's per-window init to 'browser-window-load'.
+    BrowserUtils.callModulesFromCategory(
+      {
+        categoryName: "browser-window-load-before-sessionstore-init",
+        jsGlobal: globalThis,
+      },
+      window
+    );
 
     // Certain kinds of automigration rely on this notification to complete
     // their tasks BEFORE the browser window is shown. SessionStore uses it to
@@ -1266,22 +341,17 @@ var gBrowserInit = {
 
     if (
       !window.toolbar.visible ||
-      window.document.documentElement.hasAttribute("taskbartab")
+      window.document.documentElement.hasAttribute("taskbartab") ||
+      window.document.documentElement.hasAttribute("cropped-mini-window")
     ) {
       // adjust browser UI for popups
       gURLBar.readOnly = true;
     }
 
-    // Misc. inits.
-    gUIDensity.init();
-    Win10TabletModeUpdater.init();
-    CombinedStopReload.ensureInitialized();
-    gPrivateBrowsingUI.init();
-    TaskbarTabsChrome.init(window);
-    BrowserPageActions.init();
-    if (gToolbarKeyNavEnabled) {
-      ToolbarKeyboardNavigator.init();
-    }
+    BrowserUtils.callModulesFromCategory(
+      { categoryName: "browser-window-load", jsGlobal: globalThis },
+      window
+    );
 
     // Update UI if browser is under remote control.
     gRemoteControl.updateVisualCue();
@@ -1302,16 +372,30 @@ var gBrowserInit = {
       gURLBar.removeAttribute("focused");
 
       let swapBrowsers = () => {
-        if (gBrowser.isTabGroupLabel(tabToAdopt)) {
+        if (Tabbrowser.isTabGroupLabel(tabToAdopt)) {
           // TODO bug 1967937: Merge this case with the tab group case below.
           gBrowser.adoptTabGroup(tabToAdopt.group, { elementIndex: 0 });
           gBrowser.removeTab(gBrowser.selectedTab);
-        } else if (gBrowser.isTabGroup(tabToAdopt)) {
+        } else if (Tabbrowser.isTabGroup(tabToAdopt)) {
           // Via gBrowser.replaceGroupWithWindow
           let tempBlankTab = gBrowser.selectedTab;
           gBrowser.adoptTabGroup(tabToAdopt, { tabIndex: 0, selectTab: true });
           gBrowser.removeTab(tempBlankTab);
           Glean.tabgroup.groupInteractions.move_window.add(1);
+        } else if (Tabbrowser.isSplitViewWrapper(tabToAdopt)) {
+          let tempBlankTab = gBrowser.selectedTab;
+          let splitview = gBrowser.adoptSplitView(tabToAdopt, {
+            elementIndex: 0,
+            selectTab: true,
+          });
+          // If tabs are multiselected, add the newly adopted splitview back into the selection
+          if (gBrowser.selectedTabs.length > 1) {
+            gBrowser.addRangeToMultiSelectedTabs(
+              splitview.tabs[0],
+              splitview.tabs[splitview.tabs.length - 1]
+            );
+          }
+          gBrowser.removeTab(tempBlankTab);
         } else {
           if (tabToAdopt.group) {
             Glean.tabgroup.tabInteractions.remove_new_window.add();
@@ -1323,7 +407,7 @@ var gBrowserInit = {
         this._clearTabToAdopt();
       };
       if (
-        gBrowser.isTab(tabToAdopt) &&
+        Tabbrowser.isTab(tabToAdopt) &&
         !tabToAdopt.linkedBrowser.isRemoteBrowser
       ) {
         swapBrowsers();
@@ -1341,6 +425,7 @@ var gBrowserInit = {
 
     if (!PrivateBrowsingUtils.enabled) {
       document.getElementById("Tools:PrivateBrowsing").hidden = true;
+      document.getElementById("menu_newPrivateWindow").hidden = true;
       // Setting disabled doesn't disable the shortcut, so we just remove
       // the keybinding.
       document.getElementById("key_privatebrowsing").remove();
@@ -1356,6 +441,12 @@ var gBrowserInit = {
       )?.removeAttribute("key");
     }
 
+    if (window.browsingContext.isDocumentPiP) {
+      for (const cmd of ["Browser:AddBookmarkAs", "Browser:Reload"]) {
+        document.getElementById(cmd).setAttribute("disabled", "true");
+      }
+    }
+
     this._loadHandled = true;
   },
 
@@ -1365,10 +456,9 @@ var gBrowserInit = {
   },
 
   _delayedStartup() {
-    let { TelemetryTimestamps } = ChromeUtils.importESModule(
-      "resource://gre/modules/TelemetryTimestamps.sys.mjs"
+    Glean.browserTimings.startupTimeline.delayedStartupStarted.set(
+      Services.telemetry.msSinceProcessStart()
     );
-    TelemetryTimestamps.add("delayedStartupStarted");
 
     this._cancelDelayedStartup();
 
@@ -1418,30 +508,22 @@ var gBrowserInit = {
     Services.obs.addObserver(gXPInstallObserver, "addon-install-confirmation");
     Services.obs.addObserver(gKeywordURIFixup, "keyword-uri-fixup");
     Services.obs.addObserver(gLocaleChangeObserver, "intl:app-locales-changed");
-
-    BrowserOffline.init();
-    CanvasPermissionPromptHelper.init();
-    WebAuthnPromptHelper.init();
+    TranslationsParent.ensurePrefObservers();
+    Services.obs.addObserver(
+      this._translationsEnabledStateObserver,
+      "translations:enabled-state-changed"
+    );
 
     BrowserUtils.callModulesFromCategory(
       {
         categoryName: "browser-window-delayed-startup",
         profilerMarker: "delayed-startup-task",
+        jsGlobal: globalThis,
       },
       window
     );
 
-    // Initialize the full zoom setting.
-    // We do this before the session restore service gets initialized so we can
-    // apply full zoom settings to tabs restored by the session restore service.
-    FullZoom.init();
-    PanelUI.init(shouldSuppressPopupNotifications);
-
     UpdateUrlbarSearchSplitterState();
-
-    BookmarkingUI.init();
-    gURLBar.delayedStartupInit();
-    gProtectionsHandler.init();
 
     let safeMode = document.getElementById("helpSafeMode");
     if (Services.appinfo.inSafeMode) {
@@ -1477,37 +559,15 @@ var gBrowserInit = {
 
     initBackForwardButtonTooltip(
       "back-button-tooltip-description",
-      "navbar-tooltip-back-2",
+      "navbar-tooltip-back-3",
       "goBackKb"
     );
 
     initBackForwardButtonTooltip(
       "forward-button-tooltip-description",
-      "navbar-tooltip-forward-2",
+      "navbar-tooltip-forward-3",
       "goForwardKb"
     );
-
-    PlacesToolbarHelper.init();
-
-    ctrlTab.readPref();
-    Services.prefs.addObserver(ctrlTab.prefName, ctrlTab);
-
-    const updateToolbarOpacity = () => {
-      const val = Services.prefs.getIntPref("simple.theme.transparent-toolbar.opacity", 55);
-      document.documentElement.style.setProperty("--simple-toolbar-opacity", val + "%");
-      document.documentElement.style.setProperty("--toolbar-opacity", val + "%");
-      document.documentElement.style.setProperty("--simple-urlbar-opacity", Math.min(100, val + 15) + "%");
-      document.documentElement.style.setProperty("--urlbar-opacity", Math.min(100, val + 15) + "%");
-    };
-
-    
-    updateToolbarOpacity();
-    Services.prefs.addObserver("simple.theme.transparent-toolbar.opacity", updateToolbarOpacity);
-
-    // The object handling the downloads indicator is initialized here in the
-    // delayed startup function, but the actual indicator element is not loaded
-    // unless there are downloads to be displayed.
-    DownloadsButton.initializeIndicator();
 
     if (AppConstants.platform != "macosx") {
       updateEditUIVisibility();
@@ -1515,18 +575,6 @@ var gBrowserInit = {
       placesContext.addEventListener("popupshowing", updateEditUIVisibility);
       placesContext.addEventListener("popuphiding", updateEditUIVisibility);
     }
-
-    FullScreen.init();
-
-    if (AppConstants.MOZ_DATA_REPORTING) {
-      gDataNotificationInfoBar.init();
-    }
-
-    if (!AppConstants.MOZILLA_OFFICIAL) {
-      DevelopmentHelpers.init();
-    }
-
-    gExtensionsNotifications.init();
 
     let wasMinimized = window.windowState == window.STATE_MINIMIZED;
     window.addEventListener("sizemodechange", () => {
@@ -1541,6 +589,22 @@ var gBrowserInit = {
     window.addEventListener("mouseout", MousePosTracker);
     window.addEventListener("dragover", MousePosTracker);
 
+    // aHTMLTooltip is used for both the browser UI and in-process <browser>s.
+    // Set an attribute for in-process pages such as about:preferences, so we
+    // can adjust the tooltip style (e.g. follow content's preferred color
+    // scheme) for that case. We only do this for tabbrowser <browser>s, since
+    // other in-process <browser>s (e.g. the sidebar) follow the chrome's style.
+    let htmlTooltip = document.getElementById("aHTMLTooltip");
+    htmlTooltip.addEventListener("popupshowing", () => {
+      let browser =
+        htmlTooltip.triggerNode?.documentGlobal.browsingContext.top
+          .embedderElement;
+      htmlTooltip.toggleAttribute(
+        "contenttooltip",
+        browser?.getTabBrowser() == gBrowser
+      );
+    });
+
     gNavToolbox.addEventListener("customizationstarting", CustomizationHandler);
     gNavToolbox.addEventListener("aftercustomization", CustomizationHandler);
 
@@ -1550,12 +614,13 @@ var gBrowserInit = {
         return;
       }
 
-      // Enable the Restore Last Session command if needed
-      gRestoreLastSessionObserver.init();
-
-      SidebarController.startDelayedLoad();
-
-      PanicButtonNotifier.init();
+      BrowserUtils.callModulesFromCategory(
+        {
+          categoryName: "browser-window-sessionstore-initialized",
+          jsGlobal: globalThis,
+        },
+        window
+      );
     });
 
     if (BrowserHandler.kiosk) {
@@ -1570,6 +635,9 @@ var gBrowserInit = {
         document
           .getElementById("toolbar-menubar")
           .removeAttribute("toolbarname");
+      }
+      if (!Services.policies.isAllowed("profileImport")) {
+        document.documentElement.setAttribute("disableprofileimport", "true");
       }
       if (!Services.policies.isAllowed("filepickers")) {
         let savePageCommand = document.getElementById("Browser:SavePage");
@@ -1645,6 +713,7 @@ var gBrowserInit = {
             PlacesToolbarHelper.populateManagedBookmarks(event.currentTarget)
           );
           managedBookmarksPopup.setAttribute("placespopup", "true");
+          managedBookmarksPopup.toggleAttribute("nonnative", true);
           managedBookmarksPopup.setAttribute("is", "places-popup");
           managedBookmarksPopup.classList.add("toolbar-menupopup");
           managedBookmarksButton.appendChild(managedBookmarksPopup);
@@ -1668,20 +737,19 @@ var gBrowserInit = {
       }
     }
 
-    CaptivePortalWatcher.delayedStartup();
-
     SessionStore.promiseAllWindowsRestored.then(() => {
       this._schedulePerWindowIdleTasks();
       document.documentElement.setAttribute("sessionrestored", "true");
-      TabStacks.refresh();
     });
 
-    TabStacks.init();
+    Referrals.maybeLockPref();
 
     this.delayedStartupFinished = true;
     _resolveDelayedStartup();
     Services.obs.notifyObservers(window, "browser-delayed-startup-finished");
-    TelemetryTimestamps.add("delayedStartupFinished");
+    Glean.browserTimings.startupTimeline.delayedStartupFinished.set(
+      Services.telemetry.msSinceProcessStart()
+    );
     // We've announced that delayed startup has finished. Do not add code past this point.
   },
 
@@ -1769,7 +837,7 @@ var gBrowserInit = {
               window.arguments[8] ||
               Services.scriptSecurityManager.getSystemPrincipal(),
             allowInheritPrincipal: window.arguments[9],
-            csp: window.arguments[10],
+            policyContainer: window.arguments[10],
             fromExternal: true,
           });
         } catch (e) {}
@@ -1783,7 +851,7 @@ var gBrowserInit = {
         //                 [7]: originStoragePrincipal (nsIPrincipal)
         //                 [8]: triggeringPrincipal (nsIPrincipal)
         //                 [9]: allowInheritPrincipal (bool)
-        //                 [10]: csp (nsIContentSecurityPolicy)
+        //                 [10]: policyContainer (nsIPolicyContainer)
         //                 [11]: nsOpenWindowInfo
         let userContextId =
           window.arguments[5] != undefined
@@ -1791,6 +859,7 @@ var gBrowserInit = {
             : Ci.nsIScriptSecurityManager.DEFAULT_USER_CONTEXT_ID;
 
         let hasValidUserGestureActivation = undefined;
+        let textDirectiveUserActivation = undefined;
         let fromExternal = undefined;
         let globalHistoryOptions = undefined;
         let triggeringRemoteType = undefined;
@@ -1809,6 +878,11 @@ var gBrowserInit = {
               "hasValidUserGestureActivation"
             );
           }
+          if (extraOptions.hasKey("textDirectiveUserActivation")) {
+            textDirectiveUserActivation = extraOptions.getPropertyAsBool(
+              "textDirectiveUserActivation"
+            );
+          }
           if (extraOptions.hasKey("fromExternal")) {
             fromExternal = extraOptions.getPropertyAsBool("fromExternal");
           }
@@ -1823,6 +897,10 @@ var gBrowserInit = {
                 extraOptions.getPropertyAsUint64(
                   "triggeringSponsoredURLVisitTimeMS"
                 );
+            }
+            if (extraOptions.hasKey("triggeringSource")) {
+              globalHistoryOptions.triggeringSource =
+                extraOptions.getPropertyAsACString("triggeringSource");
             }
           }
           if (extraOptions.hasKey("triggeringRemoteType")) {
@@ -1854,10 +932,11 @@ var gBrowserInit = {
             // TODO fix allowInheritPrincipal to default to false.
             // Default to true unless explicitly set to false because of bug 1475201.
             allowInheritPrincipal: window.arguments[9] !== false,
-            csp: window.arguments[10],
+            policyContainer: window.arguments[10],
             forceAboutBlankViewerInCurrent: !!window.arguments[6],
             forceAllowDataURI,
             hasValidUserGestureActivation,
+            textDirectiveUserActivation,
             fromExternal,
             globalHistoryOptions,
             triggeringRemoteType,
@@ -1871,11 +950,9 @@ var gBrowserInit = {
       } else {
         // Note: loadOneOrMoreURIs *must not* be called if window.arguments.length >= 3.
         // Such callers expect that window.arguments[0] is handled as a single URI.
-        loadOneOrMoreURIs(
-          uriToLoad,
-          Services.scriptSecurityManager.getSystemPrincipal(),
-          null
-        );
+        loadOneOrMoreURIs(uriToLoad, {
+          newWindowLoad: true,
+        });
       }
     });
   },
@@ -1896,87 +973,25 @@ var gBrowserInit = {
       return;
     }
 
-    function scheduleIdleTask(func, options) {
-      requestIdleCallback(function idleTaskRunner() {
-        if (!window.closed) {
-          func();
-        }
-      }, options);
-    }
-
-    scheduleIdleTask(() => {
-      // Initialize the Sync UI
-      gSync.init();
-    });
-
-    scheduleIdleTask(() => {
-      // Read prefers-reduced-motion setting
-      let reduceMotionQuery = window.matchMedia(
-        "(prefers-reduced-motion: reduce)"
-      );
-      function readSetting() {
-        gReduceMotionSetting = reduceMotionQuery.matches;
-      }
-      reduceMotionQuery.addListener(readSetting);
-      readSetting();
-    });
-
-    scheduleIdleTask(() => {
-      // setup simple gestures support
-      gGestureSupport.init(true);
-
-      // setup history swipe animation
-      gHistorySwipeAnimation.init();
-    });
-
-    scheduleIdleTask(() => {
-      gBrowserThumbnails.init();
-    });
-
-    scheduleIdleTask(
-      () => {
-        // Initialize the download manager some time after the app starts so that
-        // auto-resume downloads begin (such as after crashing or quitting with
-        // active downloads) and speeds up the first-load of the download manager UI.
-        // If the user manually opens the download manager before the timeout, the
-        // downloads will start right away, and initializing again won't hurt.
-        try {
-          DownloadsCommon.initializeAllDataLinks();
-          ChromeUtils.importESModule(
-            "resource:///modules/DownloadsTaskbar.sys.mjs"
-          ).DownloadsTaskbar.registerIndicator(window);
-          if (AppConstants.platform == "macosx") {
-            ChromeUtils.importESModule(
-              "resource:///modules/DownloadsMacFinderProgress.sys.mjs"
-            ).DownloadsMacFinderProgress.register();
-          }
-        } catch (ex) {
-          console.error(ex);
-        }
+    BrowserUtils.callModulesFromCategory(
+      {
+        categoryName: "browser-window-idle-tasks",
+        profilerMarker: "perWindowIdleTask",
+        idleDispatch: true,
+        jsGlobal: globalThis,
       },
-      { timeout: 10000 }
+      window
     );
 
-    if (Win7Features) {
-      scheduleIdleTask(() => Win7Features.onOpenWindow());
-    }
-
-    scheduleIdleTask(async () => {
-      NewTabPagePreloading.maybeCreatePreloadedBrowser(window);
-    });
-
-    scheduleIdleTask(() => {
-      gGfxUtils.init();
-    });
-
-    scheduleIdleTask(async () => {
-      await gProfiles.init();
-    });
-
-    // This should always go last, since the idle tasks (except for the ones with
-    // timeouts) should execute in order. Note that this observer notification is
-    // not guaranteed to fire, since the window could close before we get here.
-    scheduleIdleTask(() => {
+    // This should always go last, since the idle tasks above execute in order.
+    // Dispatch it on the same idle queue as the consumers above (via
+    // ChromeUtils.idleDispatch) so it runs after them. Note that this observer
+    // notification is not guaranteed to fire, since the window could close
+    // before we get here.
+    ChromeUtils.idleDispatch(() => {
+      if (window.closed) {
+        return;
+      }
       this.idleTasksFinished.resolve();
       Services.obs.notifyObservers(
         window,
@@ -2043,11 +1058,10 @@ var gBrowserInit = {
   },
 
   onUnload() {
-    gUIDensity.uninit();
-
-    CustomTitlebar.uninit();
-
-    ToolbarIconColor.uninit(window);
+    BrowserUtils.callModulesFromCategory(
+      { categoryName: "browser-window-unload-begin", jsGlobal: globalThis },
+      window
+    );
 
     // In certain scenarios it's possible for unload to be fired before onload,
     // (e.g. if the window is being closed after browser.js loads but before the
@@ -2056,63 +1070,33 @@ var gBrowserInit = {
       return;
     }
 
-    // First clean up services initialized in gBrowserInit.onLoad (or those whose
-    // uninit methods don't depend on the services having been initialized).
-
-    CombinedStopReload.uninit();
-
-    gGestureSupport.init(false);
-
-    gHistorySwipeAnimation.uninit();
-
-    FullScreen.uninit();
-
-    gSync.uninit();
-
-    gExtensionsNotifications.uninit();
-    gUnifiedExtensions.uninit();
-
     try {
       gBrowser.removeProgressListener(window.XULBrowserWindow);
       gBrowser.removeTabsProgressListener(window.TabsProgressListener);
     } catch (ex) {}
-
-    PlacesToolbarHelper.uninit();
-
-    BookmarkingUI.uninit();
-
-    Win10TabletModeUpdater.uninit();
-
-    CaptivePortalWatcher.uninit();
-
-    SidebarController.uninit();
-
-    DownloadsButton.uninit();
-
-    if (gToolbarKeyNavEnabled) {
-      ToolbarKeyboardNavigator.uninit();
-    }
 
     // Bug 1952900 to allow switching to unload category without leaking
     ChromeUtils.importESModule(
       "moz-src:///browser/components/genai/LinkPreview.sys.mjs"
     ).LinkPreview.teardown(window);
 
-    FirefoxViewHandler.uninit();
+    BrowserUtils.callModulesFromCategory(
+      { categoryName: "browser-window-unload", jsGlobal: globalThis },
+      window
+    );
 
     // Now either cancel delayedStartup, or clean up the services initialized from
     // it.
     if (this._boundDelayedStartup) {
       this._cancelDelayedStartup();
     } else {
-      if (Win7Features) {
-        Win7Features.onCloseWindow();
-      }
-      Services.prefs.removeObserver(ctrlTab.prefName, ctrlTab);
-      ctrlTab.uninit();
-      gBrowserThumbnails.uninit();
-      gProtectionsHandler.uninit();
-      FullZoom.destroy();
+      BrowserUtils.callModulesFromCategory(
+        {
+          categoryName: "browser-window-unload-delayed-startup",
+          jsGlobal: globalThis,
+        },
+        window
+      );
 
       Services.obs.removeObserver(gIdentityHandler, "perm-changed");
       Services.obs.removeObserver(gRemoteControl, "devtools-socket");
@@ -2155,24 +1139,26 @@ var gBrowserInit = {
         gLocaleChangeObserver,
         "intl:app-locales-changed"
       );
-
-      BrowserOffline.uninit();
-      CanvasPermissionPromptHelper.uninit();
-      WebAuthnPromptHelper.uninit();
-      PanelUI.uninit();
+      Services.obs.removeObserver(
+        this._translationsEnabledStateObserver,
+        "translations:enabled-state-changed"
+      );
     }
 
-    TabStacks.uninit();
-
-    // Final window teardown, do this last.
-    gBrowser.destroy();
+    BrowserUtils.callModulesFromCategory(
+      {
+        categoryName: "browser-window-unload-tabbrowser",
+        jsGlobal: globalThis,
+      },
+      window
+    );
     window.XULBrowserWindow = null;
     window.docShell.treeOwner
       .QueryInterface(Ci.nsIInterfaceRequestor)
       .getInterface(Ci.nsIAppWindow).XULBrowserWindow = null;
 
     BrowserUtils.callModulesFromCategory(
-      { categoryName: "browser-window-unload" },
+      { categoryName: "browser-window-final-unload", jsGlobal: globalThis },
       window
     );
   },

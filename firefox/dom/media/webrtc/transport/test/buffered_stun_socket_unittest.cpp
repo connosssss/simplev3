@@ -1,23 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // Original author: ekr@rtfm.com
 
-extern "C" {
+#include "dummysocket.h"
 #include "nr_api.h"
 #include "nr_socket.h"
 #include "nr_socket_buffered_stun.h"
-#include "transport_addr.h"
-}
-
-#include "stun_msg.h"
-
-#include "dummysocket.h"
-
 #include "nr_socket_prsock.h"
+#include "stun_msg.h"
+#include "transport_addr.h"
 
 #define GTEST_HAS_RTTI 0
 #include "gtest/gtest.h"
@@ -48,8 +41,8 @@ class BufferedStunSocketTest : public MtransportTest {
     ASSERT_EQ(0, r);
     dummy_ = std::move(dummy);  // Now owned by test_socket_.
 
-    r = nr_str_port_to_transport_addr((char*)"192.0.2.133", 3333, IPPROTO_TCP,
-                                      &remote_addr_);
+    r = nr_str_port_to_transport_addr((char*)"192.0.2.133", nullptr, 3333,
+                                      IPPROTO_TCP, &remote_addr_);
     ASSERT_EQ(0, r);
 
     r = nr_socket_connect(test_socket_, &remote_addr_);
@@ -150,8 +143,8 @@ TEST_F(BufferedStunSocketTest, TestSendToReject) {
 TEST_F(BufferedStunSocketTest, TestSendToWrongAddr) {
   nr_transport_addr addr;
 
-  int r = nr_str_port_to_transport_addr((char*)"192.0.2.134", 3333, IPPROTO_TCP,
-                                        &addr);
+  int r = nr_str_port_to_transport_addr((char*)"192.0.2.134", nullptr, 3333,
+                                        IPPROTO_TCP, &addr);
   ASSERT_EQ(0, r);
 
   r = nr_socket_sendto(test_socket_, kStunMessage, kStunMessageLen, 0, &addr);

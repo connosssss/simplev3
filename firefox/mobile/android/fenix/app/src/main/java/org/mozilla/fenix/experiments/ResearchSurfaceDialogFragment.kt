@@ -4,38 +4,28 @@
 
 package org.mozilla.fenix.experiments
 
-import android.annotation.SuppressLint
 import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.view.LayoutInflater
-import android.view.View
 import android.view.ViewGroup
-import androidx.compose.ui.platform.ComposeView
 import androidx.fragment.app.DialogFragment
+import androidx.fragment.compose.content
 import androidx.navigation.fragment.navArgs
 import org.mozilla.fenix.R
 import org.mozilla.fenix.experiments.view.ResearchSurfaceSurvey
 import org.mozilla.fenix.theme.FirefoxTheme
 
-/**
- * Dialog displaying the fullscreen research surface message.
- */
-
+/** Dialog displaying the fullscreen research surface message. */
 class ResearchSurfaceDialogFragment : DialogFragment() {
     private val args by navArgs<ResearchSurfaceDialogFragmentArgs>()
     private lateinit var bundleArgs: Bundle
 
-    /**
-     * A callback to trigger the 'Take Survey' button of the dialog.
-     */
+    /** A callback to trigger the 'Take Survey' button of the dialog. */
     var onAccept: () -> Unit = {}
 
-    /**
-     * A callback to trigger the 'No Thanks' button of the dialog.
-     */
+    /** A callback to trigger the 'No Thanks' button of the dialog. */
     var onDismiss: () -> Unit = {}
 
-    @SuppressLint("SourceLockedOrientationActivity")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setStyle(STYLE_NO_TITLE, R.style.ResearchSurfaceDialogStyle)
@@ -52,37 +42,32 @@ class ResearchSurfaceDialogFragment : DialogFragment() {
         inflater: LayoutInflater,
         container: ViewGroup?,
         savedInstanceState: Bundle?,
-    ): View = ComposeView(requireContext()).apply {
-        val messageText = bundleArgs.getString(KEY_MESSAGE_TEXT)
-            ?: getString(R.string.nimbus_survey_message_text)
-        val acceptButtonText = bundleArgs.getString(KEY_ACCEPT_BUTTON_TEXT)
-            ?: getString(R.string.preferences_take_survey)
-        val dismissButtonText = bundleArgs.getString(KEY_DISMISS_BUTTON_TEXT)
-            ?: getString(R.string.preferences_not_take_survey)
+    ) = content {
+        val messageText = bundleArgs.getString(KEY_MESSAGE_TEXT) ?: getString(R.string.nimbus_survey_message_text)
+        val acceptButtonText =
+            bundleArgs.getString(KEY_ACCEPT_BUTTON_TEXT) ?: getString(R.string.preferences_take_survey)
+        val dismissButtonText =
+            bundleArgs.getString(KEY_DISMISS_BUTTON_TEXT) ?: getString(R.string.preferences_not_take_survey)
 
-        setContent {
-            FirefoxTheme {
-                ResearchSurfaceSurvey(
-                    messageText = messageText,
-                    onAcceptButtonText = acceptButtonText,
-                    onDismissButtonText = dismissButtonText,
-                    onDismiss = {
-                        onDismiss()
-                        dismiss()
-                    },
-                    onAccept = {
-                        onAccept()
-                        dismiss()
-                    },
-                )
-            }
+        FirefoxTheme {
+            ResearchSurfaceSurvey(
+                messageText = messageText,
+                onAcceptButtonText = acceptButtonText,
+                onDismissButtonText = dismissButtonText,
+                onDismiss = {
+                    onDismiss()
+                    dismiss()
+                },
+                onAccept = {
+                    onAccept()
+                    dismiss()
+                },
+            )
         }
     }
 
     companion object {
-        /**
-         * A builder method for creating a [ResearchSurfaceDialogFragment]
-         */
+        /** A builder method for creating a [ResearchSurfaceDialogFragment] */
         fun newInstance(
             keyMessageText: String?,
             keyAcceptButtonText: String?,

@@ -1,4 +1,3 @@
-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
  http://creativecommons.org/publicdomain/zero/1.0/ */
 
@@ -98,6 +97,7 @@ const TEST_DATA_FIX_EXPERIMENTAL_SUPPORTED = [
 ];
 
 add_task(async function () {
+  await setMockCompatibilityDataset();
   await pushPref(
     "devtools.inspector.compatibility.target-browsers",
     JSON.stringify(TARGET_BROWSERS)

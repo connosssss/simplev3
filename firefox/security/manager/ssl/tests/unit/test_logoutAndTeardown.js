@@ -1,4 +1,3 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // Any copyright is dedicated to the Public Domain.
 // http://creativecommons.org/publicdomain/zero/1.0/
 
@@ -10,20 +9,6 @@
 // Get a profile directory and ensure PSM initializes NSS.
 do_get_profile();
 Cc["@mozilla.org/psm;1"].getService(Ci.nsISupports);
-
-function getTestServerCertificate() {
-  const certDB = Cc["@mozilla.org/security/x509certdb;1"].getService(
-    Ci.nsIX509CertDB
-  );
-  const certFile = do_get_file("test_certDB_import/encrypted_with_aes.p12");
-  certDB.importPKCS12File(certFile, "password");
-  for (const cert of certDB.getCerts()) {
-    if (cert.commonName == "John Doe") {
-      return cert;
-    }
-  }
-  return null;
-}
 
 class InputStreamCallback {
   constructor(output) {
@@ -179,7 +164,12 @@ function startClient(port) {
 
 add_task(async function () {
   Services.prefs.setCharPref("network.dns.localDomains", hostname);
-  let cert = getTestServerCertificate();
+  const certDB = Cc["@mozilla.org/security/x509certdb;1"].getService(
+    Ci.nsIX509CertDB
+  );
+  const certFile = do_get_file("test_certDB_import/encrypted_with_aes.p12");
+  certDB.importPKCS12File(certFile, "password");
+  let cert = await findCertByCommonName("John Doe");
 
   let server = getStartedServer(cert);
   storeCertOverride(server.port, cert);

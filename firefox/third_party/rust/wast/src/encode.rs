@@ -38,7 +38,7 @@ impl Encode for str {
 
 impl Encode for usize {
     fn encode(&self, e: &mut Vec<u8>) {
-        assert!(*self <= u32::max_value() as usize);
+        assert!(*self <= u32::MAX as usize);
         (*self as u32).encode(e)
     }
 }
@@ -51,25 +51,29 @@ impl Encode for u8 {
 
 impl Encode for u32 {
     fn encode(&self, e: &mut Vec<u8>) {
-        leb128::write::unsigned(e, (*self).into()).unwrap();
+        let (value, pos) = leb128fmt::encode_u32(*self).unwrap();
+        e.extend_from_slice(&value[..pos]);
     }
 }
 
 impl Encode for i32 {
     fn encode(&self, e: &mut Vec<u8>) {
-        leb128::write::signed(e, (*self).into()).unwrap();
+        let (value, pos) = leb128fmt::encode_s32(*self).unwrap();
+        e.extend_from_slice(&value[..pos]);
     }
 }
 
 impl Encode for u64 {
     fn encode(&self, e: &mut Vec<u8>) {
-        leb128::write::unsigned(e, *self).unwrap();
+        let (value, pos) = leb128fmt::encode_u64(*self).unwrap();
+        e.extend_from_slice(&value[..pos]);
     }
 }
 
 impl Encode for i64 {
     fn encode(&self, e: &mut Vec<u8>) {
-        leb128::write::signed(e, *self).unwrap();
+        let (value, pos) = leb128fmt::encode_s64(*self).unwrap();
+        e.extend_from_slice(&value[..pos]);
     }
 }
 

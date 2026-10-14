@@ -10,11 +10,11 @@ from io import StringIO
 
 from buildconfig import topsrcdir
 from mozpack import path as mozpath
+from mozshellutil import quote as shell_quote
 from mozunit import MockedOpen, main
 
 from common import ConfigureTestSandbox, ensure_exe_extension, fake_short_path
 from mozbuild.configure import ConfigureError, ConfigureSandbox
-from mozbuild.shellutil import quote as shell_quote
 
 
 class TestChecksConfigure(unittest.TestCase):
@@ -535,8 +535,7 @@ class TestChecksConfigure(unittest.TestCase):
                 """
             DEBUG: a: Looking for known-a
             ERROR: Paths provided to find_program must be a list of strings, not %r
-        """
-                % mozpath.dirname(self.OTHER_A)
+        """ % mozpath.dirname(self.OTHER_A)
             ),
         )
 
@@ -593,7 +592,7 @@ class TestChecksConfigure(unittest.TestCase):
         javac = mozpath.abspath("/usr/bin/javac")
         paths = {java: None, javac: None}
         expected_error_message = (
-            "ERROR: Could not locate Java at /mozbuild/jdk/jdk-17.0.15+6/bin, "
+            "ERROR: Could not locate Java at /mozbuild/jdk/jdk-17.0.20.1+1/bin, "
             "please run ./mach bootstrap --no-system-changes\n"
         )
 
@@ -622,7 +621,7 @@ class TestChecksConfigure(unittest.TestCase):
             args=["--with-java-bin-path=%s" % mozpath.dirname(alt_java)],
         )
         self.assertEqual(status, 0)
-        self.assertEqual(config, {"JAVA": alt_java, "MOZ_JAVA_CODE_COVERAGE": False})
+        self.assertEqual(config, {"JAVA": alt_java})
         self.assertEqual(
             out,
             textwrap.dedent(
@@ -642,7 +641,7 @@ class TestChecksConfigure(unittest.TestCase):
             args=["--with-java-bin-path=%s" % mozpath.dirname(alt_java)],
         )
         self.assertEqual(status, 0)
-        self.assertEqual(config, {"JAVA": alt_java, "MOZ_JAVA_CODE_COVERAGE": False})
+        self.assertEqual(config, {"JAVA": alt_java})
         self.assertEqual(
             out,
             textwrap.dedent(
@@ -653,23 +652,11 @@ class TestChecksConfigure(unittest.TestCase):
             ),
         )
 
-        # --enable-java-coverage should set MOZ_JAVA_CODE_COVERAGE.
-        alt_java_home = mozpath.dirname(mozpath.dirname(java))
-        config, out, status = run_configure_java(
-            paths,
-            mock_java_home=alt_java_home,
-            mock_path=mozpath.dirname(java),
-            args=["--enable-java-coverage"],
-        )
-        self.assertEqual(status, 1)
-        self.assertEqual(config, {})
-
         # Any missing tool is fatal when these checks run.
         paths = {}
         config, out, status = run_configure_java(
             mock_fs_paths={},
             mock_path=mozpath.dirname(java),
-            args=["--enable-java-coverage"],
         )
         self.assertEqual(status, 1)
         self.assertEqual(config, {})
@@ -1144,9 +1131,10 @@ class TestChecksConfigure(unittest.TestCase):
                 },
             )
 
-        with MockedOpen(
-            {"default-key": "default-id default-key\n", "key": "fake-id fake-key\n"}
-        ):
+        with MockedOpen({
+            "default-key": "default-id default-key\n",
+            "key": "fake-id fake-key\n",
+        }):
             config, output, status = self.get_result(
                 "id_and_secret_keyfile('Bing API', default='default-key')",
                 args=["--with-bing-api-keyfile=key"],

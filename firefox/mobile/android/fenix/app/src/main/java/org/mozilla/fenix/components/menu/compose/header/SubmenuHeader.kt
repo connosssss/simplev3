@@ -13,88 +13,96 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.tooling.preview.PreviewLightDark
+import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
-import org.mozilla.fenix.R
+import mozilla.components.compose.base.button.IconButton
+import mozilla.components.compose.base.theme.PreviewThemeProvider
+import mozilla.components.compose.base.theme.Theme
+import mozilla.components.support.ktx.kotlin.tryGetHostFromUrl
+import mozilla.components.ui.icons.R as iconsR
 import org.mozilla.fenix.theme.FirefoxTheme
-import org.mozilla.fenix.theme.Theme
 
 @Composable
 internal fun SubmenuHeader(
-    header: String,
+    title: String,
+    url: String,
     backButtonContentDescription: String? = null,
     onClick: () -> Unit,
 ) {
     Row(
-        modifier = Modifier
-            .padding(start = 4.dp, end = 16.dp)
-            .defaultMinSize(minHeight = 56.dp)
-            .verticalScroll(rememberScrollState()),
+        modifier =
+            Modifier.padding(start = 4.dp, end = 16.dp)
+                .defaultMinSize(minHeight = 56.dp)
+                .verticalScroll(rememberScrollState()),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(
-            onClick = { onClick() },
-            modifier = Modifier.semantics {
-                backButtonContentDescription?.also { this.contentDescription = it }
-            },
-        ) {
-            Icon(
-                painter = painterResource(id = R.drawable.mozac_ic_back_24),
-                contentDescription = null,
-                tint = FirefoxTheme.colors.iconPrimary,
-            )
-        }
+        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
+            IconButton(
+                onClick = { onClick() },
+                contentDescription = backButtonContentDescription,
+            ) {
+                Icon(
+                    painter = painterResource(id = iconsR.drawable.mozac_ic_back_24),
+                    contentDescription = null,
+                )
+            }
 
-        Spacer(modifier = Modifier.width(4.dp))
+            Spacer(modifier = Modifier.width(4.dp))
 
-        Text(
-            text = header,
-            modifier = Modifier
-                .weight(1f)
-                .semantics { heading() },
-            color = FirefoxTheme.colors.textSecondary,
-            style = FirefoxTheme.typography.headline7,
-        )
-    }
-}
-
-@PreviewLightDark
-@Composable
-private fun SubmenuHeaderPreview() {
-    FirefoxTheme {
-        Column(
-            modifier = Modifier
-                .background(color = FirefoxTheme.colors.layer3),
-        ) {
-            SubmenuHeader(
-                header = "sub-menu header",
-                onClick = {},
-            )
+            Column {
+                Text(
+                    text = title.ifEmpty { url.tryGetHostFromUrl() },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.semantics { heading() },
+                    style = FirefoxTheme.typography.headline7,
+                )
+                if (title.isNotEmpty()) {
+                    Text(
+                        text = url.tryGetHostFromUrl(),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = FirefoxTheme.typography.body2,
+                    )
+                }
+            }
         }
     }
 }
 
 @Preview
 @Composable
-private fun SubmenuMenuHeaderPrivatePreview() {
-    FirefoxTheme(theme = Theme.Private) {
-        Column(
-            modifier = Modifier
-                .background(color = FirefoxTheme.colors.layer3),
-        ) {
+private fun SubmenuHeaderPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
+        Column(modifier = Modifier.background(color = MaterialTheme.colorScheme.surface)) {
             SubmenuHeader(
-                header = "sub-menu header",
+                title = "sub-menu title",
+                url = "https://www.mozilla.com",
+                onClick = {},
+            )
+            HorizontalDivider()
+            SubmenuHeader(
+                title = "",
+                url = "https://www.mozilla.com",
+                onClick = {},
+            )
+            HorizontalDivider()
+            SubmenuHeader(
+                title = "Extra long long long long long long long long long long title",
+                url = "https://www.mozilla.com",
                 onClick = {},
             )
         }

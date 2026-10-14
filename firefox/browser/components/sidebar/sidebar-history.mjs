@@ -18,9 +18,17 @@ import { SidebarPage } from "./sidebar-page.mjs";
 ChromeUtils.defineESModuleGetters(lazy, {
   HistoryController: "resource:///modules/HistoryController.sys.mjs",
   Sanitizer: "resource:///modules/Sanitizer.sys.mjs",
+  SidebarTreeView:
+    "moz-src:///browser/components/sidebar/SidebarTreeView.sys.mjs",
+  OpenInTabsUtils:
+    "moz-src:///browser/components/tabbrowser/OpenInTabsUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  PlacesUIUtils: "moz-src:///browser/components/places/PlacesUIUtils.sys.mjs",
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
 
 const NEVER_REMEMBER_HISTORY_PREF = "browser.privatebrowsing.autostart";
+const SORT_OPTION_PREF = "sidebar.history.sortOption";
 const DAYS_EXPANDED_INITIALLY = 2;
 
 export class SidebarHistory extends SidebarPage {
@@ -37,12 +45,17 @@ export class SidebarHistory extends SidebarPage {
     this.handlePopupEvent = this.handlePopupEvent.bind(this);
     this.controller = new lazy.HistoryController(this, {
       component: "sidebar",
+      sortOption: Services.prefs.getStringPref(SORT_OPTION_PREF, "date"),
     });
-    this.selectedLists = new Set();
+    this.treeView = new lazy.SidebarTreeView(this);
   }
 
   connectedCallback() {
     super.connectedCallback();
+    PlacesObservers.addListener(
+      ["page-removed", "history-cleared"],
+      this.#placesRemovedObserver
+    );
     const { document: doc } = this.topWindow;
     this._menu = doc.getElementById("sidebar-history-menu");
     this._menuSortByDate = doc.getElementById("sidebar-history-sort-by-date");
@@ -53,10 +66,11 @@ export class SidebarHistory extends SidebarPage {
     this._menuSortByLastVisited = doc.getElementById(
       "sidebar-history-sort-by-last-visited"
     );
+    this._menuSortByMostVisited = doc.getElementById(
+      "sidebar-history-sort-by-most-visited"
+    );
     this._menu.addEventListener("command", this);
     this._menu.addEventListener("popuphidden", this.handlePopupEvent);
-    this.addEventListener("update-selection", this);
-    this.addEventListener("clear-selection", this);
     this._contextMenu.addEventListener("popupshowing", this);
     this.addContextMenuListeners();
     this.addSidebarFocusedListeners();
@@ -65,10 +79,12 @@ export class SidebarHistory extends SidebarPage {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    PlacesObservers.removeListener(
+      ["page-removed", "history-cleared"],
+      this.#placesRemovedObserver
+    );
     this._menu.removeEventListener("command", this);
     this._menu.removeEventListener("popuphidden", this.handlePopupEvent);
-    this.removeEventListener("update-selection", this);
-    this.removeEventListener("clear-selection", this);
     this._contextMenu.removeEventListener("popupshowing", this);
     this.removeContextMenuListeners();
     this.removeSidebarFocusedListeners();
@@ -76,13 +92,6 @@ export class SidebarHistory extends SidebarPage {
 
   handleEvent(e) {
     switch (e.type) {
-      case "update-selection":
-        this.selectedLists.add(e.originalTarget);
-        break;
-      case "clear-selection":
-        this.selectedLists.delete(e.originalTarget);
-        this.#clearSelection();
-        break;
       case "popupshowing":
         this.updateContextMenu();
         break;
@@ -91,8 +100,12 @@ export class SidebarHistory extends SidebarPage {
     }
   }
 
+  #placesRemovedObserver = () => {
+    this.treeView.resetSelection();
+  };
+
   get isMultipleRowsSelected() {
-    return !!this.selectedLists.size;
+    return this.treeView.getSelectedTabItems().length > 1;
   }
 
   /**
@@ -100,51 +113,168 @@ export class SidebarHistory extends SidebarPage {
    */
   updateContextMenu() {
     for (const child of this._contextMenu.children) {
+      let shouldHide = false;
       const isMultiSelectCommand = child.classList.contains(
         "sidebar-history-multiselect-command"
       );
-      if (this.isMultipleRowsSelected) {
-        child.hidden = !isMultiSelectCommand;
-      } else {
-        child.hidden = isMultiSelectCommand;
+      const isPrivateWindowMenuItem =
+        child.id === "sidebar-history-context-open-in-private-window";
+      if (this.isMultipleRowsSelected !== isMultiSelectCommand) {
+        shouldHide = true;
       }
+      if (isPrivateWindowMenuItem && !lazy.PrivateBrowsingUtils.enabled) {
+        shouldHide = true;
+      }
+      if (lazy.PlacesUIUtils.shouldHideOpenMenuItem(child)) {
+        shouldHide = true;
+      }
+      child.hidden = shouldHide;
     }
   }
 
   handleContextMenuEvent(e) {
-    this.triggerNode = this.findTriggerNode(e, "sidebar-tab-row");
+    this.triggerNode =
+      this.findTriggerNode(e, "sidebar-tab-row") ||
+      this.findTriggerNode(e, "moz-input-search");
     if (!this.triggerNode) {
       e.preventDefault();
+      return;
+    }
+    // If the right-clicked row is not already part of the selection, move
+    // the selection and anchor to it so the context menu operates on the
+    // correct item.
+    if (this.triggerNode.localName === "sidebar-tab-row") {
+      const row = this.triggerNode;
+      const list = row.getRootNode().host;
+      if (!list.isTabItemSelected(row)) {
+        this.treeView.resetSelection();
+        this.treeView.selectRowInList(list, row.guid);
+        list.dispatchEvent(
+          new CustomEvent("set-anchor", {
+            bubbles: true,
+            composed: true,
+            detail: { guid: row.guid },
+          })
+        );
+      }
     }
   }
 
-  handleCommandEvent(e) {
+  async handleCommandEvent(e) {
+    let label;
     switch (e.target.id) {
       case "sidebar-history-sort-by-date":
-        this.controller.onChangeSortOption(e, "date");
+        this.#changeSortOption(e, "date");
         break;
       case "sidebar-history-sort-by-site":
-        this.controller.onChangeSortOption(e, "site");
+        this.#changeSortOption(e, "site");
         break;
       case "sidebar-history-sort-by-date-and-site":
-        this.controller.onChangeSortOption(e, "datesite");
+        this.#changeSortOption(e, "datesite");
         break;
       case "sidebar-history-sort-by-last-visited":
-        this.controller.onChangeSortOption(e, "lastvisited");
+        this.#changeSortOption(e, "lastvisited");
         break;
-      case "sidebar-history-clear":
-        lazy.Sanitizer.showUI(this.topWindow);
+      case "sidebar-history-sort-by-most-visited":
+        this.#changeSortOption(e, "mostvisited");
+        break;
+      case "sidebar-history-clear": {
+        const button = await lazy.Sanitizer.showUI(this.topWindow);
+        const outcome = button === "accept" ? "confirmed" : "cancelled";
+        Glean.browserUiInteraction.sidebarHistory[
+          `clear_history_${outcome}`
+        ].add(1);
+        break;
+      }
+      case "sidebar-history-context-open-all-in-tabs":
+        this.#openAllInTabs(e);
         break;
       case "sidebar-history-context-delete-page":
         this.controller.deleteFromHistory().catch(console.error);
+        label = "delete_from_history";
         break;
       case "sidebar-history-context-delete-pages":
-        this.controller.deleteMultipleFromHistory().catch(console.error);
+        this.#deleteMultipleFromHistory().catch(console.error);
+        label = "delete_from_history";
+        break;
+      case "sidebar-history-context-open-in-tab":
+        super.handleCommandEvent(e);
+        label = "open_in_new_tab";
+        break;
+      case "sidebar-history-context-open-in-window":
+        super.handleCommandEvent(e);
+        label = "open_in_new_window";
+        break;
+      case "sidebar-history-context-open-in-private-window":
+        super.handleCommandEvent(e);
+        label = "open_in_private_window";
+        break;
+      case "sidebar-history-context-forget-site": {
+        const button = await this.forgetAboutThisSite();
+        const outcome = button === "accept" ? "confirmed" : "cancelled";
+        Glean.browserUiInteraction.sidebarHistory[
+          `clear_all_website_data_${outcome}`
+        ].add(1);
+        break;
+      }
+      case "sidebar-history-context-bookmark-page": {
+        const guid = await super.handleCommandEvent(e);
+        const outcome = guid ? "confirmed" : "cancelled";
+        Glean.browserUiInteraction.sidebarHistory[
+          `bookmark_tab_${outcome}`
+        ].add(1);
+        break;
+      }
+      case "sidebar-history-context-copy-link":
+        super.handleCommandEvent(e);
+        label = "copy_link";
         break;
       default:
         super.handleCommandEvent(e);
         break;
     }
+    if (label) {
+      Glean.browserUiInteraction.sidebarHistory[label].add(1);
+    }
+  }
+
+  #changeSortOption(e, sortOption) {
+    this.treeView.resetSelection();
+    Services.prefs.setStringPref(SORT_OPTION_PREF, sortOption);
+    this.controller.onChangeSortOption(e, sortOption);
+    const sortTypeMap = {
+      date: "date",
+      site: "site",
+      datesite: "date_and_site",
+      lastvisited: "last_visited",
+      mostvisited: "most_visited",
+    };
+    Glean.browserUiInteraction.sidebarSortHistory.record({
+      sort_type: sortTypeMap[sortOption],
+    });
+  }
+
+  #openAllInTabs(e) {
+    const urls = this.treeView.getSelectedTabItems().map(item => item.url);
+    if (!lazy.OpenInTabsUtils.confirmOpenInTabs(urls.length, this.topWindow)) {
+      return;
+    }
+    const tabset = [];
+    for (const uri of urls) {
+      // The only reason to know if a url is bookmarked is for calling
+      // markPageAsFollowedBookmark, that will annotate the visit with TRANSITION_BOOKMARK.
+      // But the new frecency doesn't need that info, it can derive it iself,
+      // so we can just pass isBookmark: false and lose nothing
+      tabset.push({ uri, isBookmark: false });
+    }
+    lazy.PlacesUIUtils.openTabset(tabset, e, this.topWindow);
+  }
+
+  #deleteMultipleFromHistory() {
+    const pageGuids = this.treeView
+      .getSelectedTabItems()
+      .map(item => item.pageGuid);
+    return lazy.PlacesUtils.history.remove(pageGuids);
   }
 
   // We should let moz-button handle this, see bug 1875374.
@@ -158,13 +288,43 @@ export class SidebarHistory extends SidebarPage {
     this.searchTextbox?.focus();
   }
 
+  handleNavigateToLink(e) {
+    navigateToLink(e, e.originalTarget.url, { forceNewTab: false });
+    Glean.sidebar.link.history.add(1);
+    this.treeView.resetSelection();
+    this.treeView.selectRowInList(e.currentTarget, e.originalTarget.guid);
+  }
+
   onPrimaryAction(e) {
-    if (this.isMultipleRowsSelected) {
-      // Avoid opening multiple links at once.
+    const { originalEvent } = e.detail;
+    const list = e.currentTarget;
+    const row = e.originalTarget;
+    if (originalEvent.shiftKey) {
+      list.dispatchEvent(
+        new CustomEvent("shift-select", {
+          bubbles: true,
+          composed: true,
+          detail: { row },
+        })
+      );
       return;
     }
-    navigateToLink(e);
-    this.#clearSelection();
+    const anchorEvent = new CustomEvent("set-anchor", {
+      bubbles: true,
+      composed: true,
+      detail: { guid: row.guid },
+    });
+    if (
+      (originalEvent.type === "click" &&
+        originalEvent.getModifierState("Accel")) ||
+      (originalEvent.type === "keydown" && originalEvent.code === "Space")
+    ) {
+      list.toggleRowSelection(row.guid);
+      list.dispatchEvent(anchorEvent);
+      return;
+    }
+    list.dispatchEvent(anchorEvent);
+    this.handleNavigateToLink(e);
   }
 
   onSecondaryAction(e) {
@@ -172,111 +332,27 @@ export class SidebarHistory extends SidebarPage {
     this.controller.deleteFromHistory().catch(console.error);
   }
 
-  handleCardKeydown(e) {
-    if (e.originalTarget != e.target.summaryEl) {
-      return;
-    }
-    let nextSibling = e.target.nextElementSibling;
-    let prevSibling = e.target.previousElementSibling;
-    let focusedRow = null;
-    switch (e.code) {
-      case "Tab":
-        if (prevSibling.localName == "moz-card") {
-          e.preventDefault();
-        }
-        break;
-      case "ArrowUp":
-        if (!prevSibling || prevSibling.localName !== "moz-card") {
-          const { classList, parentElement: dateCard } = e.target;
-          if (classList.contains("nested-card")) {
-            // Going up from the first site card. Focus the date header.
-            dateCard.summaryEl.focus();
-          }
-          break;
-        }
-        if (prevSibling.expanded) {
-          let innerElement = prevSibling.contentSlotEl.assignedElements()[0];
-          if (innerElement.classList.contains("nested-card")) {
-            // Going up from a date header. Focus the last site card from the
-            // date card above this one.
-            const prevSite = prevSibling.lastElementChild;
-            if (prevSite.expanded) {
-              const prevTabList = prevSite.contentSlotEl.assignedElements()[0];
-              focusedRow = prevTabList.rowEls[prevTabList.rowEls.length - 1];
-              focusedRow.focus();
-            } else {
-              prevSite.summaryEl.focus();
-            }
-          } else {
-            // Not sorted by Date & Site, innerElement is a SidebarTabList.
-            focusedRow = innerElement.rowEls[innerElement.rowEls.length - 1];
-            focusedRow.focus();
-          }
-        } else {
-          prevSibling.summaryEl.focus();
-        }
-        break;
-      case "ArrowDown":
-        if (e.target.expanded) {
-          let innerElement = e.target.contentSlotEl.assignedElements()[0];
-          if (innerElement.classList.contains("nested-card")) {
-            // Going down from a date header. Focus the first site card.
-            innerElement.summaryEl.focus();
-          } else {
-            // Not sorted by Date & Site, innerElement is a SidebarTabList.
-            focusedRow = innerElement.rowEls[0];
-            focusedRow.focus();
-          }
-        } else if (nextSibling && nextSibling.localName == "moz-card") {
-          nextSibling.summaryEl.focus();
-        } else if (e.target.classList.contains("last-card")) {
-          // Going down from the last site card. Focus the next date header.
-          const dateCard = e.target.parentElement;
-          const nextDate = dateCard.nextElementSibling;
-          nextDate?.summaryEl.focus();
-        }
-        break;
-      case "ArrowLeft":
-        e.target.expanded = false;
-        break;
-      case "ArrowRight":
-        e.target.expanded = true;
-        break;
-    }
-    this.#updateSelection(e, focusedRow);
+  onMiddleClickAction(e) {
+    this.handleNavigateToLink(e);
   }
 
-  /**
-   * When a row is focused while the shift key is held down, add it to the
-   * selection. If shift key was not held down, clear the selection.
-   *
-   * @param {KeyboardEvent} event
-   * @param {Element} rowEl
-   */
-  #updateSelection(event, rowEl) {
-    if (event.code !== "ArrowUp" && event.code !== "ArrowDown") {
-      return;
-    }
-    if (!event.shiftKey) {
-      this.#clearSelection();
-      return;
-    }
-    if (rowEl != null) {
-      const listForRow = rowEl.getRootNode().host;
-      listForRow.selectedGuids.add(rowEl.guid);
-      listForRow.requestVirtualListUpdate();
-      this.selectedLists.add(listForRow);
-    }
-  }
+  onKeyDown(e) {
+    if (e.code === "Delete" || e.code === "Backspace") {
+      const row = e
+        .composedPath()
+        .find(el => el.localName === "sidebar-tab-row");
+      if (!row) {
+        return;
+      }
 
-  /**
-   * Clear the selection from all lists.
-   */
-  #clearSelection() {
-    for (const list of this.selectedLists) {
-      list.clearSelection();
+      e.preventDefault();
+      if (this.isMultipleRowsSelected) {
+        this.#deleteMultipleFromHistory().catch(console.error);
+        return;
+      }
+      this.triggerNode = e.composedTarget;
+      this.controller.deleteFromHistory().catch(console.error);
     }
-    this.selectedLists.clear();
   }
 
   /**
@@ -294,22 +370,39 @@ export class SidebarHistory extends SidebarPage {
     return this.#emptyMessageTemplate();
   }
 
+  get #hasAccordionCards() {
+    return (
+      !this.controller.searchResults &&
+      !this.controller.isHistoryPending &&
+      !this.controller.isHistoryEmpty &&
+      ["date", "site", "datesite"].includes(this.controller.sortOption)
+    );
+  }
+
   #historyCardsTemplate() {
     const { historyVisits } = this.controller;
     switch (this.controller.sortOption) {
       case "date":
         return historyVisits.map(({ l10nId, items }, i) =>
-          this.#dateCardTemplate(l10nId, i, items)
+          this.#dateCardTemplate(l10nId, i, items, {
+            setSize: historyVisits.length,
+          })
         );
       case "site":
         return historyVisits.map(({ domain, items }, i) =>
-          this.#siteCardTemplate(domain, i, items)
+          this.#siteCardTemplate(domain, i, items, {
+            setSize: historyVisits.length,
+          })
         );
       case "datesite":
         return historyVisits.map(({ l10nId, items }, i) =>
-          this.#dateCardTemplate(l10nId, i, items, true)
+          this.#dateCardTemplate(l10nId, i, items, {
+            isDateSite: true,
+            setSize: historyVisits.length,
+          })
         );
       case "lastvisited":
+      case "mostvisited":
         return historyVisits.map(
           ({ items }) =>
             html`<moz-card>
@@ -321,30 +414,33 @@ export class SidebarHistory extends SidebarPage {
     }
   }
 
-  #dateCardTemplate(l10nId, index, items, isDateSite = false) {
-    const tabIndex = index > 0 ? "-1" : undefined;
+  #dateCardTemplate(l10nId, index, items, { isDateSite = false, setSize }) {
     return html` <moz-card
       type="accordion"
       class="date-card"
+      treeItem
+      aria-level="1"
+      aria-posinset=${index + 1}
+      aria-setsize=${setSize}
       ?expanded=${index < DAYS_EXPANDED_INITIALLY}
       data-l10n-id=${l10nId}
       data-l10n-args=${JSON.stringify({
         date: isDateSite ? items[0][1][0].time : items[0].time,
       })}
-      @keydown=${this.handleCardKeydown}
-      tabindex=${ifDefined(tabIndex)}
+      @keydown=${this.keydownHandler}
+      @toggle=${this.#onCardToggle}
     >
       ${isDateSite
-        ? items.map(([domain, visits], i) =>
-            this.#siteCardTemplate(
-              domain,
-              i,
-              visits,
-              true,
-              i == items.length - 1
-            )
-          )
-        : this.#tabListTemplate(this.getTabItems(items))}
+        ? html`<div role="group">
+            ${items.map(([domain, visits], i) =>
+              this.#siteCardTemplate(domain, i, visits, {
+                isDateSite: true,
+                isLastCard: i == items.length - 1,
+                setSize: items.length,
+              })
+            )}
+          </div>`
+        : this.#tabListTemplate(this.getTabItems(items), { treeLevel: 2 })}
     </moz-card>`;
   }
 
@@ -352,10 +448,8 @@ export class SidebarHistory extends SidebarPage {
     domain,
     index,
     items,
-    isDateSite = false,
-    isLastCard = false
+    { isDateSite = false, isLastCard = false, setSize }
   ) {
-    let tabIndex = index > 0 || isDateSite ? "-1" : undefined;
     return html` <moz-card
       class=${classMap({
         "last-card": isLastCard,
@@ -363,42 +457,67 @@ export class SidebarHistory extends SidebarPage {
         "site-card": true,
       })}
       type="accordion"
+      treeItem
+      aria-level=${isDateSite ? 2 : 1}
+      aria-posinset=${index + 1}
+      aria-setsize=${setSize}
       ?expanded=${!isDateSite}
       heading=${domain}
-      @keydown=${this.handleCardKeydown}
-      tabindex=${ifDefined(tabIndex)}
+      @keydown=${this.keydownHandler}
+      @toggle=${this.#onCardToggle}
       data-l10n-id=${domain ? nothing : "sidebar-history-site-localhost"}
       data-l10n-attrs=${domain ? nothing : "heading"}
     >
-      ${this.#tabListTemplate(this.getTabItems(items))}
+      ${this.#tabListTemplate(this.getTabItems(items), {
+        treeLevel: isDateSite ? 3 : 2,
+      })}
     </moz-card>`;
   }
 
+  #onCardToggle() {
+    this.dispatchEvent(new CustomEvent("folder-toggle"));
+  }
+
   #emptyMessageTemplate() {
+    const nova = Services.prefs.getBoolPref("browser.nova.enabled", false);
     let descriptionHeader;
     let descriptionLabels;
     let descriptionLink;
+
     if (Services.prefs.getBoolPref(NEVER_REMEMBER_HISTORY_PREF, false)) {
       // History pref set to never remember history
-      descriptionHeader = "firefoxview-dont-remember-history-empty-header-2";
+      descriptionHeader = nova
+        ? "firefoxview-dont-remember-history-empty-header-3"
+        : "firefoxview-dont-remember-history-empty-header-2";
       descriptionLabels = [
-        "firefoxview-dont-remember-history-empty-description-one",
+        nova
+          ? "firefoxview-dont-remember-history-empty-description-2"
+          : "firefoxview-dont-remember-history-empty-description-one",
       ];
+
       descriptionLink = {
         url: "about:preferences#privacy",
         name: "history-settings-url-two",
       };
     } else {
-      descriptionHeader = "firefoxview-history-empty-header";
-      descriptionLabels = [
-        "firefoxview-history-empty-description",
-        "firefoxview-history-empty-description-two",
-      ];
+      descriptionHeader = nova
+        ? "firefoxview-history-empty-header-2"
+        : "firefoxview-history-empty-header";
+      descriptionLabels = nova
+        ? ["firefoxview-history-empty-description-2"]
+        : [
+            "firefoxview-history-empty-description",
+            "firefoxview-history-empty-description-two",
+          ];
       descriptionLink = {
         url: "about:preferences#privacy",
         name: "history-settings-url",
       };
     }
+    let asset = nova
+      ? "chrome://browser/skin/sidebar/kit-page-history.svg"
+      : "chrome://browser/content/firefoxview/history-empty.svg";
+
     return html`
       <fxview-empty-state
         headerLabel=${descriptionHeader}
@@ -406,7 +525,7 @@ export class SidebarHistory extends SidebarPage {
         .descriptionLink=${descriptionLink}
         class="empty-state history"
         isSelectedTab
-        mainImageUrl="chrome://browser/content/firefoxview/history-empty.svg"
+        mainImageUrl=${asset}
         openLinkInParentWindow
       >
       </fxview-empty-state>
@@ -434,15 +553,17 @@ export class SidebarHistory extends SidebarPage {
         )}
         ${this.#tabListTemplate(
           this.getTabItems(this.controller.searchResults),
-          this.controller.searchQuery
+          { searchQuery: this.controller.searchQuery }
         )}
       </div>
     </moz-card>`;
   }
 
-  #tabListTemplate(tabItems, searchQuery) {
+  #tabListTemplate(tabItems, { searchQuery, treeLevel = 1 } = {}) {
     return html`<sidebar-tab-list
       .handleFocusElementToCard=${this.handleFocusElementToCard}
+      inTree
+      .level=${treeLevel}
       maxTabsLength="-1"
       .searchQuery=${searchQuery}
       secondaryActionClass="delete-button"
@@ -450,12 +571,16 @@ export class SidebarHistory extends SidebarPage {
       .tabItems=${tabItems}
       @fxview-tab-list-primary-action=${this.onPrimaryAction}
       @fxview-tab-list-secondary-action=${this.onSecondaryAction}
+      @fxview-tab-list-middleclick-action=${this.onMiddleClickAction}
+      @keydown=${this.onKeyDown}
     >
     </sidebar-tab-list>`;
   }
 
   onSearchQuery(e) {
     this.controller.onSearchQuery(e);
+    Glean.browserUiInteraction.sidebarHistory.search.add(1);
+    this.treeView.resetActiveNode();
   }
 
   getTabItems(items) {
@@ -475,21 +600,25 @@ export class SidebarHistory extends SidebarPage {
   }
 
   willUpdate() {
-    this._menuSortByDate.setAttribute(
+    this._menuSortByDate.toggleAttribute(
       "checked",
       this.controller.sortOption == "date"
     );
-    this._menuSortBySite.setAttribute(
+    this._menuSortBySite.toggleAttribute(
       "checked",
       this.controller.sortOption == "site"
     );
-    this._menuSortByDateSite.setAttribute(
+    this._menuSortByDateSite.toggleAttribute(
       "checked",
       this.controller.sortOption == "datesite"
     );
-    this._menuSortByLastVisited.setAttribute(
+    this._menuSortByLastVisited.toggleAttribute(
       "checked",
       this.controller.sortOption == "lastvisited"
+    );
+    this._menuSortByMostVisited.toggleAttribute(
+      "checked",
+      this.controller.sortOption == "mostvisited"
     );
   }
 
@@ -506,26 +635,32 @@ export class SidebarHistory extends SidebarPage {
           data-l10n-attrs="heading"
           view="viewHistorySidebar"
         >
+          <div class="options-container">
+            <moz-input-search
+              data-l10n-id="firefoxview-search-text-box-history"
+              data-l10n-attrs="placeholder"
+              @MozInputSearch:search=${this.onSearchQuery}
+            ></moz-input-search>
+            <moz-button
+              class="menu-button"
+              @click=${this.openMenu}
+              data-l10n-id="sidebar-options-menu-button"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              view=${this.view}
+              type="icon ghost"
+              iconsrc="chrome://global/skin/icons/more.svg"
+            >
+            </moz-button>
+          </div>
         </sidebar-panel-header>
-        <div class="options-container">
-          <moz-input-search
-            data-l10n-id="firefoxview-search-text-box-history"
-            data-l10n-attrs="placeholder"
-            @MozInputSearch:search=${this.onSearchQuery}
-          ></moz-input-search>
-          <moz-button
-            class="menu-button"
-            @click=${this.openMenu}
-            data-l10n-id="sidebar-options-menu-button"
-            aria-haspopup="menu"
-            aria-expanded="false"
-            view=${this.view}
-            type="icon ghost"
-            iconsrc="chrome://global/skin/icons/more.svg"
-          >
-          </moz-button>
+        <div
+          class="sidebar-panel-scrollable-content"
+          role=${ifDefined(this.#hasAccordionCards ? "tree" : undefined)}
+          tabindex="-1"
+        >
+          ${this.cardsTemplate}
         </div>
-        ${this.cardsTemplate}
       </div>
     `;
   }

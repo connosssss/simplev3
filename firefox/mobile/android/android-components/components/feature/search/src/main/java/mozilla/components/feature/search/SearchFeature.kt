@@ -4,7 +4,9 @@
 
 package mozilla.components.feature.search
 
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.map
@@ -18,32 +20,33 @@ import mozilla.components.support.base.feature.LifecycleAwareFeature
 import mozilla.components.support.utils.ext.toNullablePair
 
 /**
- * Lifecycle aware feature that forwards [SearchRequest]s from the [store] to [performSearch], and
- * then consumes them.
+ * Lifecycle aware feature that forwards [SearchRequest]s from the [store] to [performSearch], and then consumes them.
  *
- * NOTE: that this only consumes SearchRequests, and will not hook up the [store] to a source of
- * SearchRequests. See [mozilla.components.concept.engine.selection.SelectionActionDelegate] for use
- * in generating SearchRequests.
+ * NOTE: that this only consumes SearchRequests, and will not hook up the [store] to a source of SearchRequests. See
+ * [mozilla.components.concept.engine.selection.SelectionActionDelegate] for use in generating SearchRequests.
  */
 class SearchFeature(
     private val store: BrowserStore,
     private val tabId: String? = null,
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
     private val performSearch: (SearchRequest, tabId: String) -> Unit,
 ) : LifecycleAwareFeature {
 
     private var scope: CoroutineScope? = null
 
     override fun start() {
-        scope = store.flowScoped { flow ->
-            flow.map { state -> state.findTabOrCustomTabOrSelectedTab(tabId) }
-                .distinctUntilChangedBy { it?.content?.searchRequest }
-                // Do nothing if searchRequest or sessionId is null
-                .mapNotNull { tab -> Pair(tab?.content?.searchRequest, tab?.id).toNullablePair() }
-                .collect { (searchRequest, sessionId) ->
-                    performSearch(searchRequest, sessionId)
-                    store.dispatch(ContentAction.ConsumeSearchRequestAction(sessionId))
-                }
-        }
+        scope =
+            store.flowScoped(dispatcher = mainDispatcher) { flow ->
+                flow
+                    .map { state -> state.findTabOrCustomTabOrSelectedTab(tabId) }
+                    .distinctUntilChangedBy { it?.content?.searchRequest }
+                    // Do nothing if searchRequest or sessionId is null
+                    .mapNotNull { tab -> Pair(tab?.content?.searchRequest, tab?.id).toNullablePair() }
+                    .collect { (searchRequest, sessionId) ->
+                        performSearch(searchRequest, sessionId)
+                        store.dispatch(ContentAction.ConsumeSearchRequestAction(sessionId))
+                    }
+            }
     }
 
     override fun stop() {

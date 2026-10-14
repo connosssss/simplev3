@@ -100,15 +100,16 @@ function unwrapDebuggeeValue(value) {
 /**
  * Create a grip for the given debuggee value. If the value is an object or a long string,
  * it will create an actor and add it to the pool
+ *
  * @param {ThreadActor} threadActor 
  *        The related Thread Actor.
  * @param {any} value
  *        The debuggee value.
  * @param {Pool} pool
  *        The pool where the created actor will be added to.
- * @param {Number} [depth]
+ * @param {number} [depth]
  *        The current depth within the chain of nested object actor being previewed.
- * @param {Object} [objectActorAttributes]
+ * @param {object} [objectActorAttributes]
  *        An optional object whose properties will be assigned to the ObjectActor if one
  *        is created.
  */
@@ -183,8 +184,8 @@ function createValueGrip(threadActor, value, pool, depth = 0, objectActorAttribu
 /**
  * Returns a grip for the passed BigInt
  *
- * @param {BigInt} value
- * @returns {Object}
+ * @param {bigint} value
+ * @returns {object}
  */
 function createBigIntValueGrip(value) {
   return {
@@ -376,12 +377,15 @@ function getPropNamesFromObject(obj, rawObj) {
 }
 
 /**
- * Returns an array of private properties of an object
+ * Returns an array of Debugger.PrivateName wrappers for an object's private
+ * properties. Each wrapper exposes the field's `description` (e.g. "#x") and
+ * can be passed to Debugger.Object.getOwnPropertyDescriptor; the underlying
+ * private name symbol is never exposed.
  *
  * @param obj
  * @returns {Array}
  */
-function getSafePrivatePropertiesSymbols(obj) {
+function getSafePrivateProperties(obj) {
   try {
     return obj.getOwnPrivateProperties();
   } catch (ex) {
@@ -534,7 +538,7 @@ module.exports = {
   getPropsForEvent,
   getPropNamesFromObject,
   getSafeOwnPropertySymbols,
-  getSafePrivatePropertiesSymbols,
+  getSafePrivateProperties,
   getModifiersForEvent,
   isObjectOrFunction,
   createStringGrip,

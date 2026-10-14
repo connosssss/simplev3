@@ -4,26 +4,24 @@
 
 package org.mozilla.fenix.tabstray.browser
 
-import mozilla.components.browser.state.state.TabSessionState
+import org.mozilla.fenix.tabstray.data.TabsTrayItem
 
-/**
- * Contract for how all user interactions with the Inactive Tabs feature are to be handled.
- */
+/** Contract for how all user interactions with the Inactive Tabs feature are to be handled. */
 interface InactiveTabsController {
 
     /**
      * Opens the provided inactive tab.
      *
-     * @param tab [TabSessionState] that was clicked.
+     * @param tab [TabsTrayItem.Tab] that was clicked.
      */
-    fun handleInactiveTabClicked(tab: TabSessionState)
+    fun handleInactiveTabClicked(tab: TabsTrayItem.Tab)
 
     /**
      * Closes the provided inactive tab.
      *
-     * @param tab [TabSessionState] that was clicked.
+     * @param tab [TabsTrayItem.Tab] that was clicked.
      */
-    fun handleCloseInactiveTabClicked(tab: TabSessionState)
+    fun handleCloseInactiveTabClicked(tab: TabsTrayItem.Tab)
 
     /**
      * Expands or collapses the inactive tabs section.
@@ -32,18 +30,12 @@ interface InactiveTabsController {
      */
     fun handleInactiveTabsHeaderClicked(expanded: Boolean)
 
-    /**
-     * Dismisses the inactive tabs auto-close dialog.
-     */
+    /** Dismisses the inactive tabs auto-close dialog. */
     fun handleInactiveTabsAutoCloseDialogDismiss()
 
-    /**
-     * Enables the inactive tabs auto-close feature with a default time period.
-     */
+    /** Enables the inactive tabs auto-close feature with a default time period. */
     fun handleEnableInactiveTabsAutoCloseClicked()
 
-    /**
-     * Deletes all inactive tabs.
-     */
+    /** Deletes all inactive tabs. */
     fun handleDeleteAllInactiveTabsClicked()
 }

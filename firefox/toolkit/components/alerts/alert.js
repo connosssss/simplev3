@@ -17,7 +17,7 @@ const WINDOW_SHADOW_SPREAD = AppConstants.platform == "win" ? 10 : 0;
 
 var gOrigin = 0; // Default value: alert from bottom right.
 var gReplacedWindow = null;
-var gAlertListener = null;
+var gAlertCallbacks = null;
 var gAlertTextClickable = false;
 var gAlertCookie = "";
 var gIsActive = false;
@@ -26,7 +26,7 @@ var gRequireInteraction = false;
 
 function prefillAlertInfo() {
   // unwrap all the args....
-  // arguments[0] --> the image src url
+  // arguments[0] --> the alert icon image
   // arguments[1] --> the alert title
   // arguments[2] --> the alert text
   // arguments[3] --> is the text clickable?
@@ -87,7 +87,7 @@ function prefillAlertInfo() {
     }
     // fall through
     case 11:
-      gAlertListener = window.arguments[10];
+      gAlertCallbacks = window.arguments[10];
     // fall through
     case 10:
       gReplacedWindow = window.arguments[9];
@@ -137,14 +137,6 @@ function prefillAlertInfo() {
         if (bodyText.length > BODY_TEXT_LIMIT) {
           bodyTextLabel.setAttribute("tooltiptext", bodyText);
 
-          let ellipsis = "\u2026";
-          try {
-            ellipsis = Services.prefs.getComplexValue(
-              "intl.ellipsis",
-              Ci.nsIPrefLocalizedString
-            ).data;
-          } catch (e) {}
-
           // Copied from nsContextMenu.js' formatSearchContextItem().
           // If the JS character after our truncation point is a trail surrogate,
           // include it in the truncated string to avoid splitting a surrogate pair.
@@ -154,7 +146,8 @@ function prefillAlertInfo() {
             truncLength++;
           }
 
-          bodyText = bodyText.substring(0, truncLength) + ellipsis;
+          bodyText =
+            bodyText.substring(0, truncLength) + Services.locale.ellipsis;
         }
         bodyTextLabel.textContent = bodyText;
       }
@@ -166,10 +159,29 @@ function prefillAlertInfo() {
     // fall through
     case 1:
       if (window.arguments[0]) {
+        const imgContainer = window.arguments[0];
+
+        // Convert the imgIContainer to a data URL and display it.
+        const imgTools = Cc["@mozilla.org/image/tools;1"].getService(
+          Ci.imgITools
+        );
+        const imageStream = imgTools.encodeImage(imgContainer, "image/png");
+
+        const binaryStream = Cc[
+          "@mozilla.org/binaryinputstream;1"
+        ].createInstance(Ci.nsIBinaryInputStream);
+        binaryStream.setInputStream(imageStream);
+        const available = binaryStream.available();
+
+        const buffer = new ArrayBuffer(available);
+        binaryStream.readArrayBuffer(available, buffer);
+        let array = new Uint8Array(buffer);
+
         document.getElementById("alertBox").setAttribute("hasImage", true);
+
         document
           .getElementById("alertImage")
-          .setAttribute("src", window.arguments[0]);
+          .setAttribute("src", "data:image/png;base64," + array.toBase64());
       }
     // fall through
     case 0:
@@ -246,8 +258,8 @@ function onAlertLoad() {
   let ev = new CustomEvent("AlertActive", { bubbles: true, cancelable: true });
   document.documentElement.dispatchEvent(ev);
 
-  if (gAlertListener) {
-    gAlertListener.observe(null, "alertshow", gAlertCookie);
+  if (gAlertCallbacks) {
+    gAlertCallbacks.onAlertShow();
   }
 }
 
@@ -341,14 +353,14 @@ function onAlertBeforeUnload() {
     }
   }
 
-  if (gAlertListener) {
-    gAlertListener.observe(null, "alertfinished", gAlertCookie);
+  if (gAlertCallbacks) {
+    gAlertCallbacks.onAlertFinished();
   }
 }
 
 function onAlertClick() {
-  if (gAlertListener && gAlertTextClickable) {
-    gAlertListener.observe(null, "alertclickcallback", gAlertCookie);
+  if (gAlertCallbacks && gAlertTextClickable) {
+    gAlertCallbacks.onAlertClick();
   }
 
   let alertBox = document.getElementById("alertBox");
@@ -369,7 +381,7 @@ function doNotDisturb() {
 }
 
 function disableForOrigin() {
-  gAlertListener.observe(null, "alertdisablecallback", gAlertCookie);
+  gAlertCallbacks.onAlertDisable();
   onAlertClose();
 }
 
@@ -386,7 +398,7 @@ function onAlertSettingsClick(event) {
 }
 
 function openSettings() {
-  gAlertListener.observe(null, "alertsettingscallback", gAlertCookie);
+  gAlertCallbacks.onAlertSettings();
   onAlertClose();
 }
 

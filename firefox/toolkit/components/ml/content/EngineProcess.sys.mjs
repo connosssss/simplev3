@@ -2,10 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// @ts-nocheck - TODO - Remove this to type check this file.
+
 /**
  * @typedef {import("../actors/MLEngineParent.sys.mjs").MLEngineParent} MLEngineParent
  * @typedef {import("../content/Utils.sys.mjs").ProgressAndStatusCallbackParams} ProgressAndStatusCallbackParams
  */
+
+const lazy = {};
+
+ChromeUtils.defineESModuleGetters(
+  lazy,
+  {
+    TextGenerationEngine:
+      "moz-src:///toolkit/components/ml/textgeneration/TextGenerationEngine.sys.mjs",
+  },
+  { global: "contextual" }
+);
 
 /**
  * @constant
@@ -16,18 +29,23 @@
 export const DEFAULT_ENGINE_ID = "default-engine";
 
 /**
- * @constant
- * @type {Array<string>}
- * @description Supported backends.
+ * Supported backends.
  */
-export const BACKENDS = ["onnx", "wllama", "onnx-native"];
+export const BACKENDS = Object.freeze({
+  onnx: "onnx",
+  onnxNative: "onnx-native",
+  llamaCpp: "llama.cpp",
+  bestOnnx: "best-onnx",
+  openai: "openai",
+  staticEmbeddings: "static-embeddings",
+});
 
 /**
  * @constant
  * @type {Array<string>}
  * @description Backends using WASM.
  */
-export const WASM_BACKENDS = ["onnx", "wllama"];
+export const WASM_BACKENDS = [BACKENDS.onnx];
 
 /**
  * @constant
@@ -50,7 +68,7 @@ export const FILE_REGEX =
 
 /**
  * @constant
- * @type {{ [key: string]: string }}
+ * @type {{ [key: string]: { modelId: string, dtype: string } }}
  * @description Supported tasks with their default model identifiers.
  */
 export const DEFAULT_MODELS = Object.freeze({
@@ -129,11 +147,7 @@ export const DEFAULT_MODELS = Object.freeze({
  * The only exception is web extension, as the engine id is dynamically created with the extension id.
  */
 export const FEATURES = {
-  // see toolkit/components/formautofill/MLAutofill.sys.mjs
-  "autofill-classification": {
-    engineId: "autofill-ml",
-  },
-  // see toolkit/components/pdfjs/content/PdfjsParent.sys.mjs
+  // see toolkit/components/pdfjs/content/PdfJsParent.sys.mjs
   "pdfjs-alt-text": {
     engineId: "pdfjs",
     fluentId: "mlmodel-pdfjs",
@@ -161,14 +175,99 @@ export const FEATURES = {
     engineId: "smart-tab-topic-engine",
     fluentId: "mlmodel-smart-tab-topic-engine",
   },
+  // Smart Window auto tab grouping: a separate topic-model slot so its naming
+  // model can be updated independently of the shared smart-tab-topic model.
+  // see browser/components/aiwindow/ui/modules/AutoTabGroupingSuggestions.sys.mjs
+  "smart-window-tab-topic": {
+    engineId: "smart-window-tab-topic-engine",
+    fluentId: "mlmodel-smart-tab-topic-engine",
+  },
+  // see toolkit/components/formautofill/shared/FormAutofillML.sys.mjs
+  "formfill-classification": {
+    engineId: "formfill-classification-engine",
+    fluentId: "mlmodel-formfill-engine",
+  },
+  // Triple-encoder Approach 3: the field-type classifier is split into a stock
+  // feature-extraction encoder (produces per-field pooled embeddings) and a
+  // small ONNX fusion "head" (windowed embeddings -> field-type logits).
+  // Both engines are driven from
+  // toolkit/components/formautofill/shared/FormAutofillML.sys.mjs
+  "formfill-encoder": {
+    engineId: "formfill-encoder-engine",
+    fluentId: "mlmodel-formfill-engine",
+  },
+  "formfill-head": {
+    engineId: "formfill-head-engine",
+    fluentId: "mlmodel-formfill-engine",
+  },
   // see toolkit/components/ml/content/nlp/EmbeddingsGenerator.sys.mjs
   "simple-text-embedder": {
     engineId: "simple-text-embedder-engine",
   },
   // see browser/components/genai/LinkPreviewModel.sys.mjs
   "link-preview": {
-    engineId: "wllamapreview",
+    engineId: "link-preview",
     fluentId: "mlmodel-link-preview",
+  },
+  // see browser/components/aiwindow/models/IntentClassifier.sys.mjs
+  "smart-intent": {
+    engineId: "smart-intent",
+  },
+  "smart-intent-en-fr": {
+    engineId: "smart-intent-en-fr",
+  },
+  chat: {
+    engineId: "smart-openai",
+  },
+  "smart-form-fill": {
+    engineId: "smart-openai",
+  },
+  "title-generation": {
+    engineId: "title-generation-engine",
+  },
+  "tab-group-naming": {
+    engineId: "smart-openai",
+  },
+  "conversation-suggestions-sidebar-starter": {
+    engineId: "smart-openai",
+  },
+  "conversation-suggestions-followup": {
+    engineId: "smart-openai",
+  },
+  "resume-activity-conversation-starter": {
+    engineId: "smart-openai",
+  },
+  "memories-initial-generation-system": {
+    engineId: "smart-openai-memories-generation",
+  },
+  "memories-message-classification-system": {
+    engineId: "smart-openai-memories-usage",
+  },
+  "llm-telemetry": {
+    engineId: "llm-telemetry-engine",
+  },
+  //agents
+  "agent-monitor": {
+    engineId: "agent-monitor-engine",
+  },
+  // see browser/components/aiwindow/models/search/SearchAgent.sys.mjs
+  "search-answer-generation": {
+    engineId: "smart-openai",
+  },
+  // Exa /answers service.
+  // see browser/components/aiwindow/models/search/SearchWorkflow.sys.mjs
+  "search-answers": {
+    engineId: "smart-openai",
+  },
+  aitab: {
+    engineId: "aitab-engine",
+  },
+  // see dom/media/webspeech/recognition/SpeechRecognition.cpp
+  "speech-recognition": {
+    engineId: "parakeet-gguf",
+    fluentId: "mlmodel-speech-recognition",
+    fileDisplayInfoModule:
+      "resource://gre/modules/SpeechRecognitionModelDisplayInfo.sys.mjs",
   },
 };
 
@@ -228,72 +327,74 @@ export const ModelHub = {
 };
 
 /**
- * Enum for execution priority.
- *
- * Defines the priority of the task:
- *
- * - "High" is absolutely needed for Firefox.
- * - "Normal" is the default priority.
- * - "Low" is for 3rd party calls.
+ * Enum for execution priority of a task.
  *
  * @readonly
  * @enum {string}
  */
 export const ExecutionPriority = {
+  // The task is absolutely needed for Firefox.
   HIGH: "HIGH",
+  // The default priority.
   NORMAL: "NORMAL",
+  // 3rd party calls.
   LOW: "LOW",
 };
 
 /**
- * Enum for model quantization levels.
- *
- * Defines the quantization level of the task:
- *
- * - 'fp32': Full precision 32-bit floating point (`''`)
- * - 'fp16': Half precision 16-bit floating point (`'_fp16'`)
- * - 'q8': Quantized 8-bit (`'_quantized'`)
- * - 'int8': Integer 8-bit quantization (`'_int8'`)
- * - 'uint8': Unsigned integer 8-bit quantization (`'_uint8'`)
- * - 'q4': Quantized 4-bit (`'_q4'`)
- * - 'bnb4': Binary/Boolean 4-bit quantization (`'_bnb4'`)
- * - 'q4f16': 16-bit floating point model with 4-bit block weight quantization (`'_q4f16'`)
+ * Enum for model quantization levels. Not all models support all values.
  *
  * @readonly
  * @enum {string}
  */
 export const QuantizationLevel = {
+  // Full precision 32-bit floating point (`''`)
   FP32: "fp32",
+  // Half precision 16-bit floating point (`'_fp16'`)
   FP16: "fp16",
+  // Floating point 8 with the exponential taking 5 bits, and the mantissa taking 2.
+  // This format can express a wide dynamic range of float values because of the
+  // extra bits in the exponential, but with the trade off of lower precision of stored
+  // values because of the small mantissa. The max finite values are ±57,344.
+  FP8_E5M2: "fp8_e5m2",
+  // Floating point 8 with the exponential taking 4 bits, and the mantissa taking 3.
+  // This format is best for values without a wide dynamic range. The higher bits
+  // in the mantissa retains more precision The max finite values are ±448.
+  FP8_E4M3: "fp8_e4m3",
+  // Quantized 8-bit (`'_quantized'`)
   Q8: "q8",
+  // Integer 8-bit quantization (`'_int8'`)
   INT8: "int8",
+  // Unsigned integer 8-bit quantization (`'_uint8'`)
   UINT8: "uint8",
+  // Quantized 4-bit (`'_q4'`)
   Q4: "q4",
+  // Binary/Boolean 4-bit quantization (`'_bnb4'`)
   BNB4: "bnb4",
+  // 16-bit floating point model with 4-bit block weight quantization (`'_q4f16'`)
   Q4F16: "q4f16",
 };
 
 /**
  * Enum for KV cache quantization levels.
  *
- * - 'q8_0': Quantized 8-bit with optimized storage (`'_q8_0'`) (block-based)
- * - 'q4_0': Quantized 4-bit version 0 (`'_q4_0'`) (block-based)
- * - 'q4_1': Quantized 4-bit version 1 (`'_q4_1'`) (block-based)
- * - 'q5_1': Quantized 5-bit version 1 (`'_q5_1'`) (block-based)
- * - 'q5_0': Quantized 5-bit version 0 (`'_q5_0'`) (block-based)
- * - 'f16':  Half-precision (16-bit floating point) (`'_f16'`)
- * - 'f32':  Full precision  (32-bit floating point) (`'_f32'`)
- *
  * @readonly
  * @enum {string}
  */
 export const KVCacheQuantizationLevel = {
+  // Quantized 8-bit with optimized storage (`'_q8_0'`) (block-based)
   Q8_0: "q8_0",
+  // Quantized 4-bit version 0 (`'_q4_0'`) (block-based)
   Q4_0: "q4_0",
+  // Quantized 4-bit version 1 (`'_q4_1'`) (block-based)
   Q4_1: "q4_1",
+  // Quantized 5-bit version 1 (`'_q5_1'`) (block-based)
   Q5_1: "q5_1",
+  // Quantized 5-bit version 0 (`'_q5_0'`) (block-based)
   Q5_0: "q5_0",
+  // Half-precision (16-bit floating point) (`'_f16'`)
   F16: "f16",
+  // Full precision  (32-bit floating point) (`'_f32'`)
   F32: "f32",
 };
 
@@ -334,7 +435,9 @@ export const LogLevel = {
 export const AllowedBoolean = [false, true];
 
 /**
- * @typedef {import("../../translations/actors/TranslationsEngineParent.sys.mjs").TranslationsEngineParent} TranslationsEngineParent
+ * @import { TranslationsEngineParent } from "../../translations/actors/TranslationsEngineParent.sys.mjs"
+ * @import { StaticEmbeddingsOptions } from "./backends/StaticEmbeddingsPipeline.d.ts"
+ * @import { PURPOSES, SERVICE_TYPES } from "../../../../browser/components/aiwindow/models/Utils.sys.mjs"
  */
 
 const PIPELINE_TEST_NAMES = ["moz-echo", "test-echo"];
@@ -421,6 +524,13 @@ export class PipelineOptions {
    * @type {?string}
    */
   modelRevision = null;
+
+  /**
+   * The flowId is used to track a flow of events for telemetry.
+   *
+   * @type {?string}
+   */
+  flowId = null;
 
   /**
    * The identifier for the tokenizer associated with the model, used for pre-processing inputs.
@@ -514,14 +624,14 @@ export class PipelineOptions {
    *
    * @type {?number}
    */
-  numBatch = 1024;
+  numBatch = 2048;
 
   /**
    * Token batch size
    *
    * @type {?number}
    */
-  numUbatch = 1024;
+  numUbatch = 512;
 
   /**
    * Whether to use flash attention
@@ -564,6 +674,58 @@ export class PipelineOptions {
    * @type {?string}
    */
   backend = null;
+
+  /**
+   * The base URL to use for openai API requests.
+   *
+   * @type {?string}
+   */
+  baseURL = null;
+
+  /**
+   * The API key to use for openai API requests.
+   *
+   * @type {?string}
+   */
+  apiKey = null;
+
+  /**
+   * The options for the engine when using static embeddings.
+   *
+   * @type {?StaticEmbeddingsOptions}
+   */
+  staticEmbeddingsOptions = null;
+
+  /**
+   * The service type for an OpenAIPipeline.
+   *
+   * @type {SERVICE_TYPES[keyof SERVICE_TYPES] | null}
+   */
+  serviceType = null;
+
+  /**
+   * The purpose of the request, used for telemetry tracking.
+   *
+   * @type {PURPOSES[keyof PURPOSES] | null}
+   */
+  purpose = null;
+
+  /**
+   * This option allows for extra headers to be passed to
+   * OpenAI-API-compatable endpoints
+   *
+   * @type {?Record<string, string>}
+   */
+  extraHeaders = null;
+
+  /**
+   * How many times an OpenAI-API-compatable backend retries a failed request
+   * before giving up. Null leaves the library default in place; set 0 when the
+   * caller does its own retrying.
+   *
+   * @type {?number}
+   */
+  maxRetries = null;
 
   /**
    * Create a PipelineOptions instance.
@@ -654,7 +816,7 @@ export class PipelineOptions {
   #validateId(field, value) {
     // Define a regular expression to match the optional organization and required name
     // `organization/` part is optional, and both parts should follow the taskName pattern.
-    const validPattern = /^(?:[a-zA-Z0-9_\-\.]+\/)?[a-zA-Z0-9_\-\.]+$/;
+    const validPattern = /^(?:[a-zA-Z0-9_\-\.\:]+\/)?[a-zA-Z0-9_\-\.\:]+$/;
 
     // Check if the value matches the pattern
     if (!validPattern.test(value)) {
@@ -747,6 +909,7 @@ export class PipelineOptions {
       "timeoutMS",
       "modelId",
       "modelRevision",
+      "flowId",
       "tokenizerId",
       "tokenizerRevision",
       "processorId",
@@ -768,6 +931,13 @@ export class PipelineOptions {
       "numThreadsDecoding",
       "modelFile",
       "backend",
+      "baseURL",
+      "apiKey",
+      "staticEmbeddingsOptions",
+      "serviceType",
+      "purpose",
+      "extraHeaders",
+      "maxRetries",
     ];
 
     if (options instanceof PipelineOptions) {
@@ -784,20 +954,24 @@ export class PipelineOptions {
       }
       // Validating featureId
       if (key === "featureId") {
-        if (FEATURES.hasOwnProperty(options[key])) {
+        const featureId = options[key];
+        if (FEATURES.hasOwnProperty(featureId)) {
           // if featureId is set and engineId is not set, we set it
           if (
             options.engineId == null ||
             options.engineId === DEFAULT_ENGINE_ID
           ) {
-            options.engineId = FEATURES[options[key]].engineId;
+            options.engineId = FEATURES[featureId].engineId;
             this.engineId = options.engineId;
           }
-        } else {
+        } else if (
+          // Allow tests to define a feature id.
+          featureId != "test-feature"
+        ) {
           // we want an explicit list of features.
           throw new PipelineOptionsValidationError(
             key,
-            options[key],
+            featureId,
             `Should be one of ${Object.keys(FEATURES).join(", ")}`
           );
         }
@@ -852,11 +1026,16 @@ export class PipelineOptions {
         this.#validateIntegerRange(key, options[key], 1, 10000000);
       }
 
-      if (key === "backend" && !BACKENDS.includes(options[key])) {
+      if (
+        key === "backend" &&
+        !Object.values(BACKENDS).includes(options[key]) &&
+        // Allow tests to define a test backend.
+        options[key] != "test-backend"
+      ) {
         throw new PipelineOptionsValidationError(
           key,
           options[key],
-          `Should be one of ${BACKENDS.join(", ")}`
+          `Should be one of ${Object.values(BACKENDS).join(", ")}`
         );
       }
 
@@ -880,6 +1059,7 @@ export class PipelineOptions {
       timeoutMS: this.timeoutMS,
       modelId: this.modelId,
       modelRevision: this.modelRevision,
+      flowId: this.flowId,
       tokenizerId: this.tokenizerId,
       tokenizerRevision: this.tokenizerRevision,
       processorId: this.processorId,
@@ -901,6 +1081,13 @@ export class PipelineOptions {
       numThreadsDecoding: this.numThreadsDecoding,
       modelFile: this.modelFile,
       backend: this.backend,
+      baseURL: this.baseURL,
+      apiKey: this.apiKey,
+      staticEmbeddingsOptions: this.staticEmbeddingsOptions,
+      serviceType: this.serviceType,
+      purpose: this.purpose,
+      extraHeaders: this.extraHeaders,
+      maxRetries: this.maxRetries,
     };
   }
 
@@ -919,7 +1106,22 @@ export class PipelineOptions {
   }
 
   /**
-   * Checks if this PipelineOptions instance is equal to another.
+   * Per-request metadata fields that must not influence engine reuse.
+   * Callers differing only in these values should share one engine.
+   */
+  static #nonIdentityKeys = new Set([
+    "engineId",
+    "featureId",
+    "flowId",
+    "logLevel",
+    "timeoutMS",
+    "serviceType",
+    "purpose",
+  ]);
+
+  /**
+   * Checks if this PipelineOptions is equivalent to another for engine-reuse
+   * purposes. Fields in #nonIdentityKeys are intentionally ignored.
    *
    * @param {PipelineOptions} other - The other PipelineOptions instance to compare with.
    * @returns {boolean} True if the instances are equal, false otherwise.
@@ -930,6 +1132,7 @@ export class PipelineOptions {
     }
     const options = this.getOptions();
     const otherOptions = other.getOptions();
+    const skip = PipelineOptions.#nonIdentityKeys;
 
     const isEqual = (val1, val2) => {
       if (val1 === val2) {
@@ -949,9 +1152,38 @@ export class PipelineOptions {
       return keys1.every(key => isEqual(val1[key], val2[key]));
     };
 
-    return Object.keys(options).every(key =>
-      isEqual(options[key], otherOptions[key])
-    );
+    return Object.keys(options).every(key => {
+      if (skip.has(key)) {
+        return true;
+      }
+      if (key === "backend") {
+        return PipelineOptions.#backendsCompatible(
+          options.backend,
+          otherOptions.backend
+        );
+      }
+      return isEqual(options[key], otherOptions[key]);
+    });
+  }
+
+  /**
+   * Whether two backend identifiers should be considered equivalent for
+   * engine reuse. "best-onnx" is a sentinel that resolves at engine-creation
+   * time to either "onnx" or "onnx-native"; a cached engine using either
+   * concrete backend should still satisfy a new "best-onnx" request.
+   */
+  static #backendsCompatible(a, b) {
+    if (a === b) {
+      return true;
+    }
+    const isOnnxConcrete = v => v === "onnx" || v === "onnx-native";
+    if (a === "best-onnx" && isOnnxConcrete(b)) {
+      return true;
+    }
+    if (b === "best-onnx" && isOnnxConcrete(a)) {
+      return true;
+    }
+    return false;
   }
 }
 
@@ -960,6 +1192,13 @@ export class PipelineOptions {
  * Translations engine and the MLEngine component.
  */
 export class EngineProcess {
+  /**
+   * The cached native ONNX runtime availability request.
+   *
+   * @type {Promise<boolean> | null}
+   */
+  static #nativeOnnxRuntimeAvailabilityPromise = null;
+
   /**
    * Get a reference to all running "inference" processes.
    *
@@ -1001,6 +1240,69 @@ export class EngineProcess {
   }
 
   /**
+   * Resolves to true if the native ONNX runtime is available, otherwise false.
+   *
+   * @returns {Promise<boolean>}
+   */
+  static requestIsNativeOnnxRuntimeAvailable() {
+    if (!Services.prefs.getBoolPref("browser.ml.enable")) {
+      return Promise.resolve(false);
+    }
+
+    if (!EngineProcess.#nativeOnnxRuntimeAvailabilityPromise) {
+      EngineProcess.#nativeOnnxRuntimeAvailabilityPromise =
+        EngineProcess.#requestNativeOnnxRuntimeAvailability();
+    }
+
+    const availabilityPromise =
+      EngineProcess.#nativeOnnxRuntimeAvailabilityPromise;
+    return availabilityPromise.catch(() => {
+      if (
+        EngineProcess.#nativeOnnxRuntimeAvailabilityPromise ===
+        availabilityPromise
+      ) {
+        // We weren't able to determine the availability definitively,
+        // so we shouldn't block future retry attempts.
+        EngineProcess.#nativeOnnxRuntimeAvailabilityPromise = null;
+      }
+
+      return false;
+    });
+  }
+
+  /**
+   * Clears the cached native ONNX runtime availability for tests.
+   */
+  static resetNativeOnnxRuntimeAvailabilityForTests() {
+    if (!Cu.isInAutomation) {
+      throw new Error("This function is only available in automation.");
+    }
+    EngineProcess.#nativeOnnxRuntimeAvailabilityPromise = null;
+  }
+
+  /**
+   * Requests native ONNX runtime availability from the inference process.
+   *
+   * @returns {Promise<boolean>}
+   */
+  static async #requestNativeOnnxRuntimeAvailability() {
+    const keepAlive =
+      await ChromeUtils.ensureHeadlessContentProcess("inference");
+
+    if (!keepAlive?.domProcess?.canSend) {
+      keepAlive?.invalidateKeepAlive();
+      throw new Error("Could not start the MLEngine inference process.");
+    }
+
+    try {
+      const actor = keepAlive.domProcess.getActor("MLEngine");
+      return await actor.requestIsNativeOnnxRuntimeAvailable();
+    } finally {
+      keepAlive.invalidateKeepAlive();
+    }
+  }
+
+  /**
    * @returns {Promise<JSProcessActorParent>}
    */
   static async #getEngineActor({ actorName }) {
@@ -1013,7 +1315,18 @@ export class EngineProcess {
     }
 
     try {
+      // The inference engine starts system-principal ChromeWorker instances
+      // within the content process, so needs to be marked as having loaded that
+      // principal. Remove this when we stop using system workers for inference.
+      keepAlive.domProcess.aboutToLoadOrigin(
+        Services.scriptSecurityManager.getSystemPrincipal()
+      );
+
       const actor = keepAlive.domProcess.getActor(actorName);
+
+      // keep track of the childID for the inference process, so we can observe its shutdowns.
+      actor.childID = keepAlive.domProcess.childID;
+
       if (actor && !actor.processKeepAlive) {
         ChromeUtils.addProfilerMarker(
           "EngineProcess",
@@ -1075,19 +1388,39 @@ export class EngineProcess {
 /**
  * Creates a new `MLEngine` instance with the provided options.
  *
+ * @template {EngineFeatureIds} FeatureID
+ *
  * @param {object} options - Configuration options for the ML engine.
- * @param {?function(ProgressAndStatusCallbackParams):void} notificationsCallback A function to call to indicate notifications.
+ * @param {?function(ProgressAndStatusCallbackParams):void} [notificationsCallback] - A function to call to indicate notifications.
+ * @param {?AbortSignal} [abortSignal] - AbortSignal to cancel the download.
+ * @returns {Promise<MLEngine<FeatureID>>}
  */
-export async function createEngine(options, notificationsCallback = null) {
+export async function createEngine(
+  options,
+  notificationsCallback = null,
+  abortSignal
+) {
   try {
     const pipelineOptions = new PipelineOptions(options);
+    if (lazy.TextGenerationEngine.shouldRoute(pipelineOptions)) {
+      return lazy.TextGenerationEngine.create(
+        pipelineOptions,
+        notificationsCallback,
+        abortSignal
+      );
+    }
     const engineParent = await EngineProcess.getMLEngineParent();
-    return engineParent.getEngine(pipelineOptions, notificationsCallback);
+    return engineParent.getEngine({
+      pipelineOptions,
+      notificationsCallback,
+      abortSignal,
+    });
   } catch (e) {
     Glean.firefoxAiRuntime.engineCreationFailure.record({
       engineId: options.engineId || "",
       modelId: options.modelId || "",
       featureId: options.featureId || "",
+      flow_id: options.flowId || "",
       taskName: options.taskName || "",
       error: e.constructor.name || "",
     });

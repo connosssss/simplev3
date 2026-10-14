@@ -1,22 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsTHashKeys_h__
-#define nsTHashKeys_h__
-
-#include "nsID.h"
-#include "nsISupports.h"
-#include "nsCOMPtr.h"
-#include "PLDHashTable.h"
-#include <new>
-
-#include "nsString.h"
-#include "nsCRTGlue.h"
-#include "nsUnicharUtils.h"
-#include "nsPointerHashKeys.h"
+#ifndef nsTHashKeys_h_
+#define nsTHashKeys_h_
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -25,7 +12,14 @@
 #include <type_traits>
 #include <utility>
 
+#include "PLDHashTable.h"
 #include "mozilla/HashFunctions.h"
+#include "nsCOMPtr.h"
+#include "nsID.h"
+#include "nsISupports.h"
+#include "nsPointerHashKeys.h"
+#include "nsString.h"
+#include "nsUnicharUtils.h"
 
 namespace mozilla {
 
@@ -47,18 +41,22 @@ inline uint32_t HashString(const nsACString& aStr) {
  *
  * Lightweight keytypes provided here:
  * nsStringHashKey
+ * nsTStringCaseInsensitiveHashKey
  * nsCStringHashKey
+ * nsIntegralHashKey
  * nsUint32HashKey
  * nsUint64HashKey
  * nsFloatHashKey
  * IntPtrHashKey
- * nsPtrHashKey
- * nsVoidPtrHashKey
+ * nsPtrHashKey (by nsPointerHashKeys.h)
+ * nsVoidPtrHashKey (by nsPointerHashKeys.h)
  * nsISupportsHashKey
+ * nsRefPtrHashKey
+ * nsFuncPtrHashKey
  * nsIDHashKey
+ * nsIDPointerHashKey
  * nsDepCharHashKey
  * nsCharPtrHashKey
- * nsUnicharPtrHashKey
  * nsGenericHashKey
  */
 
@@ -526,7 +524,7 @@ class nsDepCharHashKey : public PLDHashEntryHdr {
 
   static const char* KeyToPointer(const char* aKey) { return aKey; }
   static PLDHashNumber HashKey(const char* aKey) {
-    return mozilla::HashString(aKey);
+    return mozilla::HashString(aKey, strlen(aKey));
   }
   enum { ALLOW_MEMMOVE = true };
 
@@ -567,7 +565,7 @@ class nsCharPtrHashKey : public PLDHashEntryHdr {
 
   static KeyTypePointer KeyToPointer(KeyType aKey) { return aKey; }
   static PLDHashNumber HashKey(KeyTypePointer aKey) {
-    return mozilla::HashString(aKey);
+    return mozilla::HashString(aKey, strlen(aKey));
   }
 
   size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const {
@@ -583,52 +581,6 @@ class nsCharPtrHashKey : public PLDHashEntryHdr {
 inline void ImplCycleCollectionTraverse(
     nsCycleCollectionTraversalCallback& aCallback,
     const nsCharPtrHashKey& aField, const char* aName, uint32_t aFlags = 0) {}
-
-/**
- * hashkey wrapper for const char16_t*; at construction, this class duplicates
- * a string pointed to by the pointer so that it doesn't matter whether or not
- * the string lives longer than the hash table.
- */
-class nsUnicharPtrHashKey : public PLDHashEntryHdr {
- public:
-  typedef const char16_t* KeyType;
-  typedef const char16_t* KeyTypePointer;
-
-  explicit nsUnicharPtrHashKey(const char16_t* aKey) : mKey(NS_xstrdup(aKey)) {}
-  nsUnicharPtrHashKey(const nsUnicharPtrHashKey& aToCopy) = delete;
-  nsUnicharPtrHashKey(nsUnicharPtrHashKey&& aOther)
-      : PLDHashEntryHdr(std::move(aOther)), mKey(aOther.mKey) {
-    aOther.mKey = nullptr;
-  }
-
-  ~nsUnicharPtrHashKey() {
-    if (mKey) {
-      free(const_cast<char16_t*>(mKey));
-    }
-  }
-
-  const char16_t* GetKey() const { return mKey; }
-  bool KeyEquals(KeyTypePointer aKey) const { return !NS_strcmp(mKey, aKey); }
-
-  static KeyTypePointer KeyToPointer(KeyType aKey) { return aKey; }
-  static PLDHashNumber HashKey(KeyTypePointer aKey) {
-    return mozilla::HashString(aKey);
-  }
-
-  size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const {
-    return aMallocSizeOf(mKey);
-  }
-
-  enum { ALLOW_MEMMOVE = true };
-
- private:
-  const char16_t* mKey;
-};
-
-inline void ImplCycleCollectionTraverse(
-    nsCycleCollectionTraversalCallback& aCallback,
-    const nsUnicharPtrHashKey& aField, const char* aName, uint32_t aFlags = 0) {
-}
 
 namespace mozilla {
 
@@ -678,4 +630,4 @@ class NoMemMoveKey : public Key {
   enum { ALLOW_MEMMOVE = false };
 };
 
-#endif  // nsTHashKeys_h__
+#endif  // nsTHashKeys_h_

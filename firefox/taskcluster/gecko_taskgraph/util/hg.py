@@ -3,11 +3,12 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 
+import functools
+import json
 import logging
 import subprocess
 
 import requests
-from mozbuild.util import memoize
 from redo import retry
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ def find_hg_revision_push_info(repository, revision):
     }
 
 
-@memoize
+@functools.cache
 def get_push_data(repository, project, push_id_start, push_id_end):
     url = PUSHLOG_PUSHES_TMPL.format(
         repository=repository,
@@ -93,7 +94,7 @@ def get_push_data(repository, project, push_id_start, push_id_end):
     return None
 
 
-@memoize
+@functools.cache
 def get_json_pushchangedfiles(repository, revision):
     url = "{}/json-pushchangedfiles/{}".format(repository.rstrip("/"), revision)
     logger.debug("Querying version control for metadata: %s", url)
@@ -106,24 +107,14 @@ def get_json_pushchangedfiles(repository, revision):
     return retry(get_pushchangedfiles, attempts=10, sleeptime=10)
 
 
-def get_hg_revision_branch(root, revision):
-    """Given the parameters for a revision, find the hg_branch (aka
-    relbranch) of the revision."""
-    return get_hg_revision_info(root, revision, "branch")
-
-
-def get_hg_revision_info(root, revision, info):
-    return subprocess.check_output(
-        [
-            "hg",
-            "identify",
-            "-T",
-            f"{{{info}}}",
-            "--rev",
-            revision,
-        ],
-        cwd=root,
-        universal_newlines=True,
+def get_hg_revision_metadata(root, revision):
+    """Return a dict with the description ("desc"), branch (aka relbranch)
+    and extras of the given revision, using a single hg invocation."""
+    return json.loads(
+        subprocess.check_output(
+            ["hg", "log", "-r", revision, "-T", "{dict(desc, branch, extras)|json}"],
+            cwd=root,
+        )
     )
 
 

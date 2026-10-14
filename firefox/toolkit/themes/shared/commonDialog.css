@@ -30,7 +30,7 @@
     }
 
     #infoTitle {
-      font-weight: bold;
+      font-weight: var(--font-weight-bold);
     }
   }
 
@@ -63,8 +63,8 @@
 
   #infoIcon {
     display: block;
-    max-width: 48px;
-    max-height: 48px;
+    max-width: var(--icon-size-xxlarge);
+    max-height: var(--icon-size-xxlarge);
     margin: 3px auto 0;
   }
 }

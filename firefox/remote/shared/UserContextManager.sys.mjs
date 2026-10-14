@@ -6,11 +6,13 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   ContextualIdentityService:
-    "resource://gre/modules/ContextualIdentityService.sys.mjs",
+    "moz-src:///toolkit/components/contextualidentity/ContextualIdentityService.sys.mjs",
+  EventEmitter: "resource://gre/modules/EventEmitter.sys.mjs",
 
   ContextualIdentityListener:
     "chrome://remote/content/shared/listeners/ContextualIdentityListener.sys.mjs",
   generateUUID: "chrome://remote/content/shared/UUID.sys.mjs",
+  NavigableManager: "chrome://remote/content/shared/NavigableManager.sys.mjs",
   TabManager: "chrome://remote/content/shared/TabManager.sys.mjs",
 });
 
@@ -23,12 +25,23 @@ const DEFAULT_INTERNAL_ID = 0;
  *
  * This class is exported for test purposes. Otherwise the UserContextManager
  * singleton should be used.
+ *
+ * @fires UserContextManagerClass#"user-context-created"
+ *      - {string} userContextId
+ *            The UUID of the user context which was just created.
+ * @fires UserContextManagerClass#"user-context-deleted"
+ *      - {string} userContextId
+ *            The UUID of the user context which was just deleted.
+ *      - {number} internalId
+ *            The internal platform id of the user context.
  */
 export class UserContextManagerClass {
   #contextualIdentityListener;
   #userContextIds;
 
   constructor() {
+    lazy.EventEmitter.decorate(this);
+
     // Map from internal ids (numbers) from the ContextualIdentityService to
     // opaque UUIDs (string).
     this.#userContextIds = new Map();
@@ -69,26 +82,41 @@ export class UserContextManagerClass {
   /**
    * Creates a new user context.
    *
-   * @param {string} prefix
-   *     The prefix to use for the name of the user context.
+   * @param {object} options
+   * @param {string=} options.color
+   *     The color to use for the container, from the list of container colors
+   *     supported by ContextualIdentityService. No color is set by default.
+   * @param {string=} options.icon
+   *     The icon to use for the container, from the list of container icons
+   *     supported by ContextualIdentityService. No icon is set by default.
+   * @param {string=} options.name
+   *     The name to use for the user context. When provided options.prefix will
+   *     be ignored. Defaults to null.
+   * @param {string=} options.prefix
+   *     A prefix to use for the name of the user context. Defaults to "remote".
    *
    * @returns {string}
    *     The user context id of the new user context.
    */
-  createContext(prefix = "remote") {
-    // Prepare the opaque id and name beforehand.
-    const userContextId = lazy.generateUUID();
-    const name = `${prefix}-${userContextId}`;
+  createContext(options = {}) {
+    const { color, icon, name = null, prefix = "remote" } = options;
+
+    // Use provided name if valid or generate a unique name.
+    // Note that several containers can use the same name.
+    const isValidName = typeof name == "string" && name.trim();
+    const userContextName = isValidName
+      ? name
+      : `${prefix}-${lazy.generateUUID()}`;
 
     // Create the user context.
-    const identity = lazy.ContextualIdentityService.create(name);
-    const internalId = identity.userContextId;
+    const identity = lazy.ContextualIdentityService.create(
+      userContextName,
+      icon,
+      color
+    );
 
     // An id has been set already by the contextual-identity-created observer.
-    // Override it with `userContextId` to match the container name.
-    this.#userContextIds.set(internalId, userContextId);
-
-    return userContextId;
+    return this.#userContextIds.get(identity.userContextId);
   }
 
   /**
@@ -133,6 +161,24 @@ export class UserContextManagerClass {
   }
 
   /**
+   * Retrieve the user context id corresponding to the provided navigable id.
+   *
+   * @param {number} navigableId
+   *     The navigable id.
+   *
+   * @returns {string|null}
+   *     The corresponding user context id or null if the user context does not
+   *     exist.
+   */
+  getIdByNavigableId(navigableId) {
+    const context = lazy.NavigableManager.getBrowsingContextById(navigableId);
+    if (context) {
+      return this.getIdByBrowsingContext(context);
+    }
+    return null;
+  }
+
+  /**
    * Retrieve the internal id corresponding to the provided user
    * context id.
    *
@@ -163,19 +209,13 @@ export class UserContextManagerClass {
    *     The array of tabs.
    */
   getTabsForUserContext(internalId) {
-    const tabs = [];
-
-    for (const tab of lazy.TabManager.tabs) {
-      if (
+    return lazy.TabManager.allTabs.filter(tab => {
+      return (
         (tab.hasAttribute("usercontextid") &&
           parseInt(tab.getAttribute("usercontextid"), 10) == internalId) ||
         (!tab.hasAttribute("usercontextid") && internalId === 0)
-      ) {
-        tabs.push(tab);
-      }
-    }
-
-    return tabs;
+      );
+    });
   }
 
   /**
@@ -186,6 +226,27 @@ export class UserContextManagerClass {
    */
   getUserContextIds() {
     return Array.from(this.#userContextIds.values());
+  }
+
+  /**
+   * Retrieve the user context ids for containers matching the provided name.
+   *
+   * @param {string} name
+   *     The expected name for the container.
+   *
+   * @returns {Array<string>}
+   *     The array of user context ids with the expected name, can be empty.
+   */
+  getUserContextIdsByName(name) {
+    const userContextIds = [];
+    for (const [internalId, id] of this.#userContextIds) {
+      const identity =
+        lazy.ContextualIdentityService.getPublicIdentityFromId(internalId);
+      if (identity?.name === name) {
+        userContextIds.push(id);
+      }
+    }
+    return userContextIds;
   }
 
   /**
@@ -232,13 +293,16 @@ export class UserContextManagerClass {
   };
 
   #onIdentityDeleted = (eventName, data) => {
-    this.#userContextIds.delete(data.identity.userContextId);
+    const internalId = data.identity.userContextId;
+    const userContextId = this.#userContextIds.get(internalId);
+    this.#userContextIds.delete(internalId);
+    this.emit("user-context-deleted", { userContextId, internalId });
   };
 
   #registerIdentity(identity) {
-    // Note: the id for identities created via UserContextManagerClass.createContext
-    // are overridden in createContext.
-    this.#userContextIds.set(identity.userContextId, lazy.generateUUID());
+    const userContextId = lazy.generateUUID();
+    this.#userContextIds.set(identity.userContextId, userContextId);
+    this.emit("user-context-created", { userContextId });
   }
 }
 

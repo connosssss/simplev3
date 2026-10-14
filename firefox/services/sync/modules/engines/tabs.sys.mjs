@@ -15,13 +15,13 @@ import {
 } from "resource://services-sync/constants.sys.mjs";
 import { CommonUtils } from "resource://services-common/utils.sys.mjs";
 import { Async } from "resource://services-common/async.sys.mjs";
+import { Observers } from "resource://services-common/observers.sys.mjs";
+import { Collection } from "resource://services-sync/record.sys.mjs";
 import {
   SyncRecord,
   SyncTelemetry,
 } from "resource://services-sync/telemetry.sys.mjs";
 import { BridgedEngine } from "resource://services-sync/bridged_engine.sys.mjs";
-
-const FAR_FUTURE = 4102405200000; // 2100/01/01
 
 const lazy = {};
 
@@ -30,8 +30,18 @@ ChromeUtils.defineESModuleGetters(lazy, {
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   ReaderMode: "moz-src:///toolkit/components/reader/ReaderMode.sys.mjs",
   getTabsStore: "resource://services-sync/TabsStore.sys.mjs",
+  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
   RemoteTabRecord:
     "moz-src:///toolkit/components/uniffi-bindgen-gecko-js/components/generated/RustTabs.sys.mjs",
+  LocalTabsInfo:
+    "moz-src:///toolkit/components/uniffi-bindgen-gecko-js/components/generated/RustTabs.sys.mjs",
+  TabGroup:
+    "moz-src:///toolkit/components/uniffi-bindgen-gecko-js/components/generated/RustTabs.sys.mjs",
+  Window:
+    "moz-src:///toolkit/components/uniffi-bindgen-gecko-js/components/generated/RustTabs.sys.mjs",
+  WindowType:
+    "moz-src:///toolkit/components/uniffi-bindgen-gecko-js/components/generated/RustTabs.sys.mjs",
+  setupLoggerForTarget: "resource://gre/modules/AppServicesTracing.sys.mjs",
 });
 
 XPCOMUtils.defineLazyPreferenceGetter(
@@ -61,7 +71,7 @@ TabEngine.prototype = {
   _trackerObj: TabTracker,
   syncPriority: 3,
 
-  async prepareTheBridge(isQuickWrite) {
+  async prepareTheBridge() {
     let clientsEngine = this.service.clientsEngine;
     // Tell the bridged engine about clients.
     // This is the same shape as ClientData in app-services.
@@ -72,14 +82,10 @@ TabEngine.prototype = {
     };
 
     // We shouldn't upload tabs past what the server will accept
-    let tabs = await this.getTabsWithinPayloadSize();
-    await this._rustStore.setLocalTabs(
-      tabs.map(tab => {
-        // rust wants lastUsed in MS but the provider gives it in seconds
-        tab.lastUsed = tab.lastUsed * 1000;
-        return new lazy.RemoteTabRecord(tab);
-      })
-    );
+    const maxPayloadSize = this.service.getMaxRecordPayloadSize();
+    let tabsInfo = await TabProvider.getLocalTabsInfo(maxPayloadSize);
+
+    await this._rustStore.setLocalTabsInfo(tabsInfo);
 
     for (let remoteClient of clientsEngine.remoteClients) {
       let id = remoteClient.id;
@@ -103,20 +109,14 @@ TabEngine.prototype = {
       device_type: clientsEngine.localType,
     };
 
-    // Quick write needs to adjust the lastSync so we can POST to the server
-    // see quickWrite() for details
-    if (isQuickWrite) {
-      await this.setLastSync(FAR_FUTURE);
-      await this._bridge.prepareForSync(JSON.stringify(clientData));
-      return;
-    }
-
-    // Just incase we crashed while the lastSync timestamp was FAR_FUTURE, we
-    // reset it to zero
+    // Recover from an older pre-154-ish build that crashed with lastSync set to
+    // FAR_FUTURE: reset it so incoming tabs are downloaded again. Can be removed once
+    // ESRs don't cover that.
+    const FAR_FUTURE = 4102405200000; // 2100/01/01, used by old versions.
     if ((await this.getLastSync()) === FAR_FUTURE) {
-      await this._bridge.setLastSync(0);
+      await this._bridge.resetLastSync();
     }
-    await this._bridge.prepareForSync(JSON.stringify(clientData));
+    await this._bridge.setClients(JSON.stringify(clientData));
   },
 
   async _syncStartup() {
@@ -127,6 +127,9 @@ TabEngine.prototype = {
   async initialize() {
     await SyncEngine.prototype.initialize.call(this);
 
+    lazy.setupLoggerForTarget("tabs", "Sync.Engine.Tabs");
+    // highlights problems with simple logs - we get everyone's sql-support
+    lazy.setupLoggerForTarget("sql_support", "Sync.Engine.Tabs");
     this._rustStore = await lazy.getTabsStore();
     this._bridge = await this._rustStore.bridgedEngine();
 
@@ -186,13 +189,6 @@ TabEngine.prototype = {
     }
   },
 
-  async getTabsWithinPayloadSize() {
-    const maxPayloadSize = this.service.getMaxRecordPayloadSize();
-    // See bug 535326 comment 8 for an explanation of the estimation
-    const maxSerializedSize = (maxPayloadSize / 4) * 3 - 1500;
-    return TabProvider.getAllTabsWithEstimatedMax(true, maxSerializedSize);
-  },
-
   // Support for "quick writes"
   _engineLock: Utils.lock,
   _engineLocked: false,
@@ -242,18 +238,7 @@ TabEngine.prototype = {
     }
     try {
       return await this._engineLock("tabs.js: quickWrite", async () => {
-        // We want to restore the lastSync timestamp when complete so next sync
-        // takes tabs written by other devices since our last real sync.
-        // And for this POST we don't want the protections offered by
-        // X-If-Unmodified-Since - we want the POST to work even if the remote
-        // has moved on and we will catch back up next full sync.
-        const origLastSync = await this.getLastSync();
-        try {
-          return this._doQuickWrite();
-        } finally {
-          // set the lastSync to it's original value for regular sync
-          await this.setLastSync(origLastSync);
-        }
+        return this._doQuickWrite();
       })();
     } catch (ex) {
       if (!Utils.isLockException(ex)) {
@@ -279,30 +264,43 @@ TabEngine.prototype = {
     try {
       Async.checkAppReady();
       // We need to prep the bridge before we try to POST since it grabs
-      // the most recent local client id and properly sets a lastSync
-      // which is needed for a proper POST request
-      await this.prepareTheBridge(true);
+      // the most recent local client id.
+      await this.prepareTheBridge();
       this._tracker.clearChangedIDs();
       this._tracker.resetScore();
 
       Async.checkAppReady();
-      // now just the "upload" part of a sync,
-      // which for a rust engine is  not obvious.
+      // now just the "upload" part of a sync, which for a rust engine is not obvious.
       // We need to do is ask the rust engine for the changes. Although
       // this is kinda abusing the bridged-engine interface, we know the tabs
-      // implementation of it works ok
-      let outgoing = await this._bridge.apply();
+      // implementation of it works ok.
+      // This is an upload-only path with no incoming records, so the server
+      // timestamp passed to apply() is immaterial - pass 0.
+      let outgoing = await this._bridge.apply(0);
       // We know we always have exactly 1 record.
       let mine = outgoing[0];
-      this._log.trace("outgoing bso", mine);
       // `this._recordObj` is a `BridgedRecord`, which isn't exported.
       let record = this._recordObj.fromOutgoingBso(this.name, JSON.parse(mine));
-      let changeset = {};
-      changeset[record.id] = { synced: false, record };
-      this._modified.replace(changeset);
+      this._log.trace(`outgoing bso with length ${record.cleartext?.length}`);
 
       Async.checkAppReady();
-      await this._uploadOutgoing();
+      // This is a single, device-exclusive record we want to force onto the
+      // server, so we POST it directly and unconditionally: no
+      // X-If-Unmodified-Since precondition, no local state update.
+      await record.encrypt(
+        this.service.collectionKeys.keyForCollection(this.name)
+      );
+      let coll = new Collection(this.engineURL, this._recordObj, this.service);
+      let resp = await coll.postSingleRawRecord(record);
+      if (!resp.success) {
+        this._log.warn(`quick-write POST failed: ${resp.status}`);
+        throw resp;
+      }
+      Observers.notify(
+        "weave:engine:sync:uploaded",
+        { sent: 1, failed: 0, failedReasons: null },
+        this.name
+      );
       telemetryRecord.onEngineStop(name, null);
       return true;
     } catch (ex) {
@@ -334,29 +332,10 @@ TabEngine.prototype = {
 Object.setPrototypeOf(TabEngine.prototype, BridgedEngine.prototype);
 
 export const TabProvider = {
-  getWindowEnumerator() {
-    return Services.wm.getEnumerator("navigator:browser");
-  },
-
-  shouldSkipWindow(win) {
-    return win.closed || lazy.PrivateBrowsingUtils.isWindowPrivate(win);
-  },
-
-  getAllBrowserTabs() {
-    let tabs = [];
-    for (let win of this.getWindowEnumerator()) {
-      if (this.shouldSkipWindow(win)) {
-        continue;
-      }
-      // Get all the tabs from the browser
-      for (let tab of win.gBrowser.tabs) {
-        tabs.push(tab);
-      }
-    }
-
-    return tabs.sort(function (a, b) {
-      return b.lastAccessed - a.lastAccessed;
-    });
+  // Get ordered non-private windows - can be overridden in tests
+  // Windows are ordered from most recently used to least recently used
+  getOrderedNonPrivateWindows() {
+    return lazy.BrowserWindowTracker.getOrderedWindows({ private: false });
   },
 
   // This function creates tabs records up to a specified amount of bytes
@@ -368,15 +347,33 @@ export const TabProvider = {
     let iconPromises = [];
     let runningByteLength = 0;
     let encoder = new TextEncoder();
+    let referencedWindowIds = new Set();
+    let referencedGroupIds = new Set();
 
-    // Fetch all the tabs the user has open
-    let winTabs = this.getAllBrowserTabs();
+    // Get ordered windows once - order determines the index we report (lower index = more recent)
+    let orderedWindows = this.getOrderedNonPrivateWindows();
 
-    for (let tab of winTabs) {
+    // Build a map of window -> windowId and collect all tabs
+    let windowIdMap = new Map();
+    let allWinTabs = [];
+    for (let [winIndex, win] of orderedWindows.entries()) {
+      let windowId = `window-${winIndex}`;
+      windowIdMap.set(win, windowId);
+
+      for (let tabIndex = 0; tabIndex < win.gBrowser.tabs.length; tabIndex++) {
+        let tab = win.gBrowser.tabs[tabIndex];
+        allWinTabs.push({ tab, windowId, windowIndex: winIndex, tabIndex });
+      }
+    }
+
+    // Sort by last accessed to prioritize recently used tabs
+    allWinTabs.sort((a, b) => b.tab.lastAccessed - a.tab.lastAccessed);
+
+    for (let { tab, windowId, tabIndex } of allWinTabs) {
       // We don't want to process any more tabs than we can sync
       if (runningByteLength >= bytesMax) {
         log.warn(
-          `Can't fit all tabs in sync payload: have ${winTabs.length},
+          `Can't fit all tabs in sync payload: have ${allWinTabs.length},
               but can only fit ${tabRecords.length}.`
         );
         break;
@@ -411,13 +408,26 @@ export const TabProvider = {
         continue;
       }
 
+      let tabGroupId = tab.group?.id || "";
+
       let thisTab = new lazy.RemoteTabRecord({
         title: tab.linkedBrowser.contentTitle || "",
         urlHistory: [url],
         icon: "",
-        lastUsed: Math.floor((tab.lastAccessed || 0) / 1000),
+        lastUsed: tab.lastAccessed || 0,
+        inactive: false, // desktop doesn't have "inactive" tabs.
+        windowId,
+        index: tabIndex,
+        tabGroupId,
+        pinned: tab.pinned,
       });
       tabRecords.push(thisTab);
+
+      // Track which windows and groups are referenced
+      referencedWindowIds.add(windowId);
+      if (tabGroupId) {
+        referencedGroupIds.add(tabGroupId);
+      }
 
       // we don't want to wait for each favicon to resolve to get the bytes
       // so we estimate a conservative 100 chars for the favicon and json overhead
@@ -441,7 +451,83 @@ export const TabProvider = {
     }
 
     await Promise.allSettled(iconPromises);
-    return tabRecords;
+    return {
+      tabs: tabRecords,
+      referencedWindowIds,
+      referencedGroupIds,
+      orderedWindows, // Return windows so we only collect them once
+    };
+  },
+
+  _collectReferencedTabGroups(referencedGroupIds, orderedWindows) {
+    let tabGroups = new Map();
+    for (let win of orderedWindows) {
+      if (!win.gBrowser.tabGroups) {
+        continue;
+      }
+      for (let group of win.gBrowser.tabGroups) {
+        if (referencedGroupIds.has(group.id)) {
+          tabGroups.set(
+            group.id,
+            new lazy.TabGroup({
+              id: group.id,
+              name: group.label,
+              color: group.color,
+              collapsed: group.collapsed,
+            })
+          );
+        }
+      }
+    }
+    return tabGroups;
+  },
+
+  _collectReferencedWindows(referencedWindowIds, orderedWindows) {
+    let windows = new Map();
+    // because we've generated the IDs based on the index we don't need to look
+    // inside the array, just know it's length
+    for (let winIndex = 0; winIndex < orderedWindows.length; winIndex++) {
+      let windowId = `window-${winIndex}`;
+      if (referencedWindowIds.has(windowId)) {
+        windows.set(
+          windowId,
+          new lazy.Window({
+            id: windowId,
+            // We don't have a "lastUsed" available for windows.
+            lastUsed: 0,
+            index: winIndex + 1,
+            windowType: lazy.WindowType.NORMAL,
+          })
+        );
+      }
+    }
+    return windows;
+  },
+
+  // This function returns the LocalTabsInfo used by the Rust engine.
+  async getLocalTabsInfo(maxPayloadSize) {
+    // See bug 535326 comment 8 for an explanation of the estimation
+    const maxSerializedSize = (maxPayloadSize / 4) * 3 - 1500;
+    let { tabs, referencedWindowIds, referencedGroupIds, orderedWindows } =
+      await this.getAllTabsWithEstimatedMax(true, maxSerializedSize);
+
+    // Collect metadata for windows and groups that have tabs being synced.
+    // This will almost always be all windows and groups, but we might as well
+    // avoid including groups or windows if we ended up not including tabs in them.
+    let tabGroups = this._collectReferencedTabGroups(
+      referencedGroupIds,
+      orderedWindows
+    );
+    let windows = this._collectReferencedWindows(
+      referencedWindowIds,
+      orderedWindows
+    );
+
+    return new lazy.LocalTabsInfo({
+      tabs,
+      tabGroups,
+      windows,
+    });
   },
 };
 
@@ -506,7 +592,7 @@ TabTracker.prototype = {
 
   async observe(subject, topic) {
     switch (topic) {
-      case "domwindowopened":
+      case "domwindowopened": {
         let onLoad = () => {
           subject.removeEventListener("load", onLoad);
           // Only register after the window is done loading to avoid unloads.
@@ -516,6 +602,7 @@ TabTracker.prototype = {
         // Add tab listeners now that a window has opened.
         subject.addEventListener("load", onLoad);
         break;
+      }
     }
   },
 
@@ -540,7 +627,7 @@ TabTracker.prototype = {
          */
         this.callScheduleSync(SCORE_INCREMENT_SMALL);
         break;
-      case "TabClose":
+      case "TabClose": {
         // If event target has `linkedBrowser`, the event target can be assumed <tab> element.
         // Else, event target is assumed <browser> element, use the target as it is.
         const tab = event.target.linkedBrowser || event.target;
@@ -552,6 +639,7 @@ TabTracker.prototype = {
         }
         this.callScheduleSync(SCORE_INCREMENT_SMALL);
         break;
+      }
     }
   },
 

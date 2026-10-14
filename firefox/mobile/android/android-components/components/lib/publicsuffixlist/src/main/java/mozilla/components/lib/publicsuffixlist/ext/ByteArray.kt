@@ -14,7 +14,7 @@ private const val BITMASK = 0xff.toByte()
  * This algorithm is based on OkHttp's PublicSuffixDatabase class:
  * https://github.com/square/okhttp/blob/master/okhttp/src/main/java/okhttp3/internal/publicsuffix/PublicSuffixDatabase.java
  */
-@Suppress("ComplexMethod", "NestedBlockDepth")
+@Suppress("NestedBlockDepth", "CognitiveComplexMethod")
 internal fun ByteArray.binarySearch(labels: List<ByteArray>, labelIndex: Int): String? {
     var low = 0
     var high = size
@@ -34,18 +34,18 @@ internal fun ByteArray.binarySearch(labels: List<ByteArray>, labelIndex: Int): S
 
         var expectDot = false
         while (true) {
-            val byte0 = if (expectDot) {
-                expectDot = false
-                '.'.code.toByte()
-            } else {
-                labels[currentLabelIndex][currentLabelByteIndex] and BITMASK
-            }
+            val byte0 =
+                if (expectDot) {
+                    expectDot = false
+                    '.'.code.toByte()
+                } else {
+                    labels[currentLabelIndex][currentLabelByteIndex] and BITMASK
+                }
 
             val byte1 = this[start + publicSuffixByteIndex] and BITMASK
 
             // Compare the bytes. Note that the file stores UTF-8 encoded bytes, so we must compare the
             // unsigned bytes.
-            @Suppress("EXPERIMENTAL_API_USAGE")
             compareResult = (byte0.toUByte() - byte1.toUByte()).toInt()
             if (compareResult != 0) {
                 break
@@ -98,9 +98,7 @@ internal fun ByteArray.binarySearch(labels: List<ByteArray>, labelIndex: Int): S
     return match
 }
 
-/**
- * Search for a '\n' that marks the start of a value. Don't go back past the start of the array.
- */
+/** Search for a '\n' that marks the start of a value. Don't go back past the start of the array. */
 private fun ByteArray.findStartOfLineFromIndex(start: Int): Int {
     var index = start
     while (index > -1 && this[index] != '\n'.code.toByte()) {
@@ -110,9 +108,7 @@ private fun ByteArray.findStartOfLineFromIndex(start: Int): Int {
     return index
 }
 
-/**
- * Search for a '\n' that marks the end of a value.
- */
+/** Search for a '\n' that marks the end of a value. */
 private fun ByteArray.findEndOfLineFromIndex(start: Int): Int {
     var end = 1
     while (this[start + end] != '\n'.code.toByte()) {

@@ -29,6 +29,9 @@ pub enum ProcessReaderError {
     #[error("Note not found")]
     NoteNotFound,
     #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[error("SONAME not found")]
+    SoNameNotFound,
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[error("waitpid() failed when attaching to the process")]
     WaitPidError,
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -58,6 +61,8 @@ pub enum ReadError {
     #[cfg(target_os = "windows")]
     #[error("ReadProcessMemory failed")]
     ReadProcessMemoryError,
+    #[error("The requested read is too large")]
+    TooLarge,
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]

@@ -1,9 +1,8 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -284,11 +283,11 @@ int main(int argc, char** argv) {
       if (!get_mar_file_info(argv[2], &hasSignatureBlock, &numSignatures,
                              &hasAdditionalBlock, NULL, &numAdditionalBlocks)) {
         if (hasSignatureBlock) {
-          printf("Signature block found with %d signature%s\n", numSignatures,
-                 numSignatures != 1 ? "s" : "");
+          printf("Signature block found with %" PRIu32 " signature%s\n",
+                 numSignatures, numSignatures != 1 ? "s" : "");
         }
         if (hasAdditionalBlock) {
-          printf("%d additional block%s found:\n", numAdditionalBlocks,
+          printf("%" PRIu32 " additional block%s found:\n", numAdditionalBlocks,
                  numAdditionalBlocks != 1 ? "s" : "");
         }
 

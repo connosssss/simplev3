@@ -21,9 +21,7 @@ interface WebPushHandler {
      */
     fun onPushMessage(scope: String, message: ByteArray?)
 
-    /**
-     * Invoked when a subscription has now changed/expired.
-     */
+    /** Invoked when a subscription has now changed/expired. */
     fun onSubscriptionChanged(scope: String) = Unit
 }
 
@@ -33,12 +31,12 @@ interface WebPushHandler {
  * [0]: https://developer.mozilla.org/en-US/docs/Web/API/PushSubscription
  *
  * @param scope The subscription identifier which usually represents the website's URI.
- * @param endpoint The Web Push endpoint for this subscription.
- * This is the URL of a web service which implements the Web Push protocol.
+ * @param endpoint The Web Push endpoint for this subscription. This is the URL of a web service which implements the
+ *   Web Push protocol.
  * @param appServerKey A public key a server will use to send messages to client apps via a push server.
  * @param publicKey The public key generated, to be provided to the app server for message encryption.
- * @param authSecret A secret key generated, to be provided to the app server for use in encrypting
- * and authenticating messages sent to the endpoint.
+ * @param authSecret A secret key generated, to be provided to the app server for use in encrypting and authenticating
+ *   messages sent to the endpoint.
  */
 data class WebPushSubscription(
     val scope: String,
@@ -47,7 +45,7 @@ data class WebPushSubscription(
     val publicKey: ByteArray,
     val authSecret: ByteArray,
 ) {
-    @Suppress("BracesOnIfStatements", "ComplexMethod")
+    @Suppress("BracesOnIfStatements")
     override fun equals(other: Any?): Boolean {
         // auto-generated
         if (this === other) return true
@@ -60,7 +58,9 @@ data class WebPushSubscription(
         if (appServerKey != null) {
             if (other.appServerKey == null) return false
             if (!appServerKey.contentEquals(other.appServerKey)) return false
-        } else if (other.appServerKey != null) return false
+        } else if (other.appServerKey != null) {
+            return false
+        }
         if (!publicKey.contentEquals(other.publicKey)) return false
         if (!authSecret.contentEquals(other.authSecret)) return false
 

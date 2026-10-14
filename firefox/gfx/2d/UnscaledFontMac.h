@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -58,19 +56,17 @@ class UnscaledFontMac final : public UnscaledFont {
 
   already_AddRefed<ScaledFont> CreateScaledFont(
       Float aGlyphSize, const uint8_t* aInstanceData,
-      uint32_t aInstanceDataLength, const FontVariation* aVariations,
+      uint32_t aInstanceDataLength, const wr::FontVariation* aVariations,
       uint32_t aNumVariations) override;
 
   already_AddRefed<ScaledFont> CreateScaledFontFromWRFont(
       Float aGlyphSize, const wr::FontInstanceOptions* aOptions,
       const wr::FontInstancePlatformOptions* aPlatformOptions,
-      const FontVariation* aVariations, uint32_t aNumVariations) override;
+      const wr::FontVariation* aVariations, uint32_t aNumVariations) override;
 
-  static CGFontRef CreateCGFontWithVariations(CGFontRef aFont,
-                                              CFArrayRef& aCGAxesCache,
-                                              CFArrayRef& aCTAxesCache,
-                                              uint32_t aVariationCount,
-                                              const FontVariation* aVariations);
+  static CGFontRef CreateCGFontWithVariations(
+      CGFontRef aFont, CFArrayRef& aCGAxesCache, CFArrayRef& aCTAxesCache,
+      uint32_t aVariationCount, const wr::FontVariation* aVariations);
 
   // Generate a font descriptor to send to WebRender. The descriptor consists
   // of a string that concatenates the PostScript name of the font and the path

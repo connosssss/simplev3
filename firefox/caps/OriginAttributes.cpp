@@ -1,14 +1,14 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 sw=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/OriginAttributes.h"
+
 #include "mozilla/Assertions.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/BlobURLProtocolHandler.h"
 #include "mozilla/dom/quota/QuotaManager.h"
+#include "nsCharSeparatedTokenizer.h"
 #include "nsIEffectiveTLDService.h"
 #include "nsIURI.h"
 #include "nsNetCID.h"
@@ -22,8 +22,8 @@ static const char kSanitizedChar = '+';
 namespace mozilla {
 
 static void MakeTopLevelInfo(const nsACString& aScheme, const nsACString& aHost,
-                             int32_t aPort, bool aForeignByAncestorContext,
-                             bool aUseSite, nsAString& aTopLevelInfo) {
+                             bool aForeignByAncestorContext, bool aUseSite,
+                             nsAString& aTopLevelInfo) {
   if (!aUseSite) {
     aTopLevelInfo.Assign(NS_ConvertUTF8toUTF16(aHost));
     return;
@@ -37,10 +37,6 @@ static void MakeTopLevelInfo(const nsACString& aScheme, const nsACString& aHost,
   site.Append(aScheme);
   site.Append(",");
   site.Append(aHost);
-  if (aPort != -1) {
-    site.Append(",");
-    site.AppendInt(aPort);
-  }
   if (aForeignByAncestorContext) {
     site.Append(",f");
   }
@@ -49,18 +45,11 @@ static void MakeTopLevelInfo(const nsACString& aScheme, const nsACString& aHost,
   aTopLevelInfo.Assign(NS_ConvertUTF8toUTF16(site));
 }
 
-static void MakeTopLevelInfo(const nsACString& aScheme, const nsACString& aHost,
-                             bool aForeignByAncestorContext, bool aUseSite,
-                             nsAString& aTopLevelInfo) {
-  MakeTopLevelInfo(aScheme, aHost, -1, aForeignByAncestorContext, aUseSite,
-                   aTopLevelInfo);
-}
-
 static void PopulateTopLevelInfoFromURI(const bool aIsTopLevelDocument,
                                         nsIURI* aURI,
                                         bool aForeignByAncestorContext,
                                         bool aIsFirstPartyEnabled, bool aForced,
-                                        bool aUseSite, bool aIgnorePort,
+                                        bool aUseSite,
                                         nsString OriginAttributes::* aTarget,
                                         OriginAttributes& aOriginAttributes) {
   nsresult rv;
@@ -91,6 +80,16 @@ static void PopulateTopLevelInfoFromURI(const bool aIsTopLevelDocument,
   } while (nestedURI && !scheme.EqualsLiteral("about") &&
            NS_SUCCEEDED(nestedURI->GetInnerURI(getter_AddRefs(uri))));
 
+  // Use the creator origin's URI if we're passed a blob URI.
+  if (scheme.EqualsLiteral("blob")) {
+    nsCOMPtr<nsIPrincipal> blobPrincipal;
+    NS_ENSURE_TRUE_VOID(dom::BlobURLProtocolHandler::GetBlobURLPrincipal(
+        uri, aOriginAttributes, getter_AddRefs(blobPrincipal)));
+    uri = blobPrincipal->GetURI();
+    NS_ENSURE_TRUE_VOID(uri);
+    NS_ENSURE_SUCCESS_VOID(uri->GetScheme(scheme));
+  }
+
   if (scheme.EqualsLiteral("about")) {
     MakeTopLevelInfo(scheme, nsLiteralCString(ABOUT_URI_FIRST_PARTY_DOMAIN),
                      aForeignByAncestorContext, aUseSite, topLevelInfo);
@@ -119,14 +118,6 @@ static void PopulateTopLevelInfoFromURI(const bool aIsTopLevelDocument,
     return;
   }
 
-  nsCOMPtr<nsIPrincipal> blobPrincipal;
-  if (dom::BlobURLProtocolHandler::GetBlobURLPrincipal(
-          uri, getter_AddRefs(blobPrincipal))) {
-    MOZ_ASSERT(blobPrincipal);
-    topLevelInfo = blobPrincipal->OriginAttributesRef().*aTarget;
-    return;
-  }
-
   nsCOMPtr<nsIEffectiveTLDService> tldService =
       do_GetService(NS_EFFECTIVETLDSERVICE_CONTRACTID);
   MOZ_ASSERT(tldService);
@@ -143,14 +134,6 @@ static void PopulateTopLevelInfoFromURI(const bool aIsTopLevelDocument,
   // Saving before rv is overwritten.
   bool isIpAddress = (rv == NS_ERROR_HOST_IS_IP_ADDRESS);
   bool isInsufficientDomainLevels = (rv == NS_ERROR_INSUFFICIENT_DOMAIN_LEVELS);
-
-  int32_t port;
-  if (aIgnorePort) {
-    port = -1;
-  } else {
-    rv = uri->GetPort(&port);
-    NS_ENSURE_SUCCESS_VOID(rv);
-  }
 
   nsAutoCString host;
   rv = uri->GetHost(host);
@@ -171,14 +154,13 @@ static void PopulateTopLevelInfoFromURI(const bool aIsTopLevelDocument,
     } else {
       ipAddr = host;
     }
-
-    MakeTopLevelInfo(scheme, ipAddr, port, aForeignByAncestorContext, aUseSite,
+    MakeTopLevelInfo(scheme, ipAddr, aForeignByAncestorContext, aUseSite,
                      topLevelInfo);
     return;
   }
 
   if (aUseSite) {
-    MakeTopLevelInfo(scheme, host, port, aForeignByAncestorContext, aUseSite,
+    MakeTopLevelInfo(scheme, host, aForeignByAncestorContext, aUseSite,
                      topLevelInfo);
     return;
   }
@@ -187,7 +169,7 @@ static void PopulateTopLevelInfoFromURI(const bool aIsTopLevelDocument,
     nsAutoCString publicSuffix;
     rv = tldService->GetPublicSuffix(uri, publicSuffix);
     if (NS_SUCCEEDED(rv)) {
-      MakeTopLevelInfo(scheme, publicSuffix, port, aForeignByAncestorContext,
+      MakeTopLevelInfo(scheme, publicSuffix, aForeignByAncestorContext,
                        aUseSite, topLevelInfo);
       return;
     }
@@ -198,7 +180,7 @@ void OriginAttributes::SetFirstPartyDomain(const bool aIsTopLevelDocument,
                                            nsIURI* aURI, bool aForced) {
   PopulateTopLevelInfoFromURI(
       aIsTopLevelDocument, aURI, false, IsFirstPartyEnabled(), aForced,
-      StaticPrefs::privacy_firstparty_isolate_use_site(), false,
+      StaticPrefs::privacy_firstparty_isolate_use_site(),
       &OriginAttributes::mFirstPartyDomain, *this);
 }
 
@@ -224,7 +206,6 @@ void OriginAttributes::SetPartitionKey(nsIURI* aURI,
       false /* aIsTopLevelDocument */, aURI, aForeignByAncestorContext,
       IsFirstPartyEnabled(), true /* aForced */,
       StaticPrefs::privacy_dynamic_firstparty_use_site(),
-      !StaticPrefs::privacy_dynamic_firstparty_use_site_include_port(),
       &OriginAttributes::mPartitionKey, *this);
 }
 
@@ -236,6 +217,7 @@ void OriginAttributes::SetPartitionKey(const nsAString& aOther) {
   mPartitionKey = aOther;
 }
 
+// Keep field order in sync with OriginAttributes::Hash().
 void OriginAttributes::CreateSuffix(nsACString& aStr) const {
   URLParams params;
   nsAutoCString value;
@@ -283,6 +265,14 @@ void OriginAttributes::CreateSuffix(nsACString& aStr) const {
   aStr.Truncate();
 
   params.Serialize(value, true);
+  // URLParams percent-encodes every character that isn't in its unreserved set.
+  // The asterisk is in the unreserved set and is serialized verbatim.
+  // Since a hostname may now contain an asterisk (bug 1815926) and the
+  // asterisk is illegal in file names on
+  // Windows, percent-encode it explicitly. URLParams::Parse decodes it back in
+  // PopulateFromSuffix.
+  value.ReplaceSubstring("*"_ns, "%2A"_ns);
+
   if (!value.IsEmpty()) {
     aStr.AppendLiteral("^");
     aStr.Append(value);
@@ -343,6 +333,11 @@ bool OriginAttributes::PopulateFromSuffix(const nsACString& aStr) {
   return URLParams::Parse(
       Substring(aStr, 1, aStr.Length() - 1), true,
       [this](const nsACString& aName, const nsACString& aValue) {
+        if (aName.EqualsLiteral("disableJit")) {
+          // Ignore the added jit status
+          return true;
+        }
+
         if (aName.EqualsLiteral("inBrowser")) {
           if (!aValue.EqualsLiteral("1")) {
             return false;
@@ -408,7 +403,7 @@ bool OriginAttributes::PopulateFromOrigin(const nsACString& aOrigin,
   int32_t pos = origin.RFindChar('^');
 
   if (pos == kNotFound) {
-    aOriginNoSuffix = origin;
+    aOriginNoSuffix = std::move(origin);
     return true;
   }
 

@@ -1,7 +1,8 @@
 [DEFAULT]
-skip-if = [
-  "http3",
-  "http2",
+# The http2 and http3 variants upgrade every load to https, which these tests
+# cannot work with.
+run-if = [
+  "!http2 && !http3",
 ]
 
 ["test_bad_cert.html"]
@@ -56,7 +57,9 @@ support-files = [
   "file_upgrade_insecure.html",
   "file_upgrade_insecure_server.sjs",
 ]
-skip-if = ["true"] # Bug 1727101, Bug 1727925
+skip-if = [
+  "true", # Bug 1727101, Bug 1727925
+]
 
 ["test_slow_non_standard_port.html"]
 support-files = ["file_slow_non_standard_port.sjs"]

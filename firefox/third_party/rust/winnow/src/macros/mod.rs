@@ -1,12 +1,13 @@
 mod dispatch;
 mod seq;
+mod unordered_seq;
 
 #[cfg(test)]
 macro_rules! assert_parse(
-  ($left: expr, $right: expr) => {
-     let res: $crate::error::ModalResult<_, $crate::error::InputError<_>> = $left;
-     snapbox::assert_data_eq!(snapbox::data::ToDebug::to_debug(&res), $right);
-  };
+    ($left: expr, $right: expr) => {
+        let res: $crate::error::ModalResult<_, $crate::error::InputError<_>> = $left;
+        snapbox::assert_data_eq!(snapbox::data::ToDebug::to_debug(&res), $right);
+    };
 );
 
 macro_rules! impl_partial_eq {
@@ -15,7 +16,7 @@ macro_rules! impl_partial_eq {
         impl<'a> PartialEq<$rhs> for $lhs {
             #[inline]
             fn eq(&self, other: &$rhs) -> bool {
-                let l = self.as_ref();
+                let l = self;
                 let r: &Self = other.as_ref();
                 PartialEq::eq(l, r)
             }
@@ -37,7 +38,7 @@ macro_rules! impl_partial_ord {
         impl<'a> PartialOrd<$rhs> for $lhs {
             #[inline]
             fn partial_cmp(&self, other: &$rhs) -> Option<Ordering> {
-                let l = self.as_ref();
+                let l = self;
                 let r: &Self = other.as_ref();
                 PartialOrd::partial_cmp(l, r)
             }
@@ -53,5 +54,5 @@ macro_rules! impl_partial_ord {
     };
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ascii"))]
 mod tests;

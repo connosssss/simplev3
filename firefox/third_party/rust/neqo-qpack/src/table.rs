@@ -9,11 +9,11 @@ use std::{
     fmt::{self, Display, Formatter},
 };
 
-use neqo_common::qtrace;
+use neqo_common::{qtrace, to_u64};
 
 use crate::{
-    static_table::{StaticTableEntry, HEADER_STATIC_TABLE},
     Error, Res,
+    static_table::{HEADER_STATIC_TABLE, StaticTableEntry},
 };
 
 pub const ADDITIONAL_TABLE_ENTRY_SIZE: usize = 32;
@@ -39,11 +39,11 @@ impl DynamicTableEntry {
         self.refs == 0 && self.base < first_not_acked
     }
 
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         self.name.len() + self.value.len() + ADDITIONAL_TABLE_ENTRY_SIZE
     }
 
-    pub fn add_ref(&mut self) {
+    pub const fn add_ref(&mut self) {
         self.refs += 1;
     }
 
@@ -134,10 +134,7 @@ impl HeaderTable {
     /// `HeaderLookup` if the index does not exist in the static table.
     pub fn get_static(index: u64) -> Res<&'static StaticTableEntry> {
         let inx = usize::try_from(index).or(Err(Error::HeaderLookup))?;
-        if inx > HEADER_STATIC_TABLE.len() {
-            return Err(Error::HeaderLookup);
-        }
-        Ok(&HEADER_STATIC_TABLE[inx])
+        HEADER_STATIC_TABLE.get(inx).ok_or(Error::HeaderLookup)
     }
 
     fn get_dynamic_with_abs_index(&mut self, index: u64) -> Res<&mut DynamicTableEntry> {
@@ -147,18 +144,12 @@ impl HeaderTable {
         }
         let inx = self.base - index - 1;
         let inx = usize::try_from(inx).or(Err(Error::HeaderLookup))?;
-        if inx >= self.dynamic.len() {
-            return Err(Error::HeaderLookup);
-        }
-        Ok(&mut self.dynamic[inx])
+        self.dynamic.get_mut(inx).ok_or(Error::HeaderLookup)
     }
 
     fn get_dynamic_with_relative_index(&self, index: u64) -> Res<&DynamicTableEntry> {
         let inx = usize::try_from(index).or(Err(Error::HeaderLookup))?;
-        if inx >= self.dynamic.len() {
-            return Err(Error::HeaderLookup);
-        }
-        Ok(&self.dynamic[inx])
+        self.dynamic.get(inx).ok_or(Error::HeaderLookup)
     }
 
     /// Get a entry in the  dynamic table.
@@ -168,12 +159,17 @@ impl HeaderTable {
     /// `HeaderLookup` if entry does not exist.
     pub fn get_dynamic(&self, index: u64, base: u64, post: bool) -> Res<&DynamicTableEntry> {
         let inx = if post {
-            if self.base < (base + index + 1) {
+            if self.base
+                < base
+                    .checked_add(index)
+                    .and_then(|s| s.checked_add(1))
+                    .ok_or(Error::IntegerOverflow)?
+            {
                 return Err(Error::HeaderLookup);
             }
             self.base - (base + index + 1)
         } else {
-            if (self.base + index) < base {
+            if self.base.checked_add(index).ok_or(Error::IntegerOverflow)? < base {
                 return Err(Error::HeaderLookup);
             }
             (self.base + index) - base
@@ -198,11 +194,16 @@ impl HeaderTable {
             .add_ref();
     }
 
-    /// Look for a header pair.
-    /// The function returns `LookupResult`: `index`, `static_table` (if it is a static table entry)
-    /// and `value_matches` (if the header value matches as well not only header name)
-    pub fn lookup(&mut self, name: &[u8], value: &[u8], can_block: bool) -> Option<LookupResult> {
-        qtrace!("[{self}] lookup name:{name:?} value {value:?} can_block={can_block}",);
+    /// Look for a header pair in the static table only.
+    ///
+    /// Unlike [`Self::lookup`], this does not consult the dynamic table, so it borrows
+    /// nothing and can never return a dynamic entry (which would need a reference to be
+    /// held against eviction). The encoder uses this when it must not create a new
+    /// dynamic-table reference for the stream.
+    ///
+    /// The function returns `LookupResult`: `index`, `static_table` (always `true` here)
+    /// and `value_matches` (if the header value matches as well, not only the header name).
+    pub fn static_lookup(name: &[u8], value: &[u8]) -> Option<LookupResult> {
         let mut name_match = None;
         for iter in HEADER_STATIC_TABLE {
             if iter.name() == name {
@@ -214,17 +215,30 @@ impl HeaderTable {
                     });
                 }
 
-                if name_match.is_none() {
-                    name_match = Some(LookupResult {
-                        index: iter.index(),
-                        static_table: true,
-                        value_matches: false,
-                    });
-                }
+                name_match.get_or_insert_with(|| LookupResult {
+                    index: iter.index(),
+                    static_table: true,
+                    value_matches: false,
+                });
             }
         }
+        name_match
+    }
 
-        for iter in &mut self.dynamic {
+    /// Look for a header pair in the static and dynamic tables.
+    /// The function returns `LookupResult`: `index`, `static_table` (if it is a static table entry)
+    /// and `value_matches` (if the header value matches as well not only header name)
+    pub fn lookup(&self, name: &[u8], value: &[u8], can_block: bool) -> Option<LookupResult> {
+        qtrace!("[{self}] lookup name:{name:?} value {value:?} can_block={can_block}");
+        // A static value match wins outright; otherwise a static name-only match is kept
+        // as a fallback that a dynamic name-only match must not displace.
+        let static_match = Self::static_lookup(name, value);
+        if static_match.as_ref().is_some_and(|r| r.value_matches) {
+            return static_match;
+        }
+
+        let mut name_match = static_match;
+        for iter in &self.dynamic {
             if !can_block && iter.index() >= self.acked_inserts_cnt {
                 continue;
             }
@@ -237,13 +251,11 @@ impl HeaderTable {
                     });
                 }
 
-                if name_match.is_none() {
-                    name_match = Some(LookupResult {
-                        index: iter.index(),
-                        static_table: false,
-                        value_matches: false,
-                    });
-                }
+                name_match.get_or_insert_with(|| LookupResult {
+                    index: iter.index(),
+                    static_table: false,
+                    value_matches: false,
+                });
             }
         }
         name_match
@@ -254,14 +266,15 @@ impl HeaderTable {
             "[{self}] reduce table to {reduce}, currently used:{}",
             self.used,
         );
-        while (!self.dynamic.is_empty()) && self.used > reduce {
-            if let Some(e) = self.dynamic.back() {
-                if !e.can_reduce(self.acked_inserts_cnt) {
-                    return false;
-                }
-                self.used -= u64::try_from(e.size()).expect("usize fits in u64");
-                self.dynamic.pop_back();
+        while let Some(e) = self.dynamic.back() {
+            if self.used <= reduce {
+                break;
             }
+            if !e.can_reduce(self.acked_inserts_cnt) {
+                return false;
+            }
+            self.used -= to_u64(e.size());
+            self.dynamic.pop_back();
         }
         true
     }
@@ -275,11 +288,11 @@ impl HeaderTable {
             .map(DynamicTableEntry::size)
             .sum();
 
-        self.used - u64::try_from(evictable_size).expect("usize fits in u64") <= reduce
+        self.used - to_u64(evictable_size) <= reduce
     }
 
     pub fn insert_possible(&self, size: usize) -> bool {
-        let size = u64::try_from(size).expect("usize fits in u64");
+        let size = to_u64(size);
         size <= self.capacity && self.can_evict_to(self.capacity - size)
     }
 
@@ -297,14 +310,13 @@ impl HeaderTable {
             base: self.base,
             refs: 0,
         };
-        if u64::try_from(entry.size()).map_err(|_| Error::Internal)? > self.capacity
-            || !self
-                .evict_to(self.capacity - u64::try_from(entry.size()).map_err(|_| Error::Internal)?)
+        if to_u64(entry.size()) > self.capacity
+            || !self.evict_to(self.capacity - to_u64(entry.size()))
         {
             return Err(Error::DynamicTableFull);
         }
         self.base += 1;
-        self.used += u64::try_from(entry.size()).map_err(|_| Error::Internal)?;
+        self.used += to_u64(entry.size());
         let index = entry.index();
         self.dynamic.push_front(entry);
         Ok(index)
@@ -369,10 +381,14 @@ impl HeaderTable {
     /// `IncrementAck` if ack is greater than actual number of inserts.
     pub fn increment_acked(&mut self, increment: u64) -> Res<()> {
         qtrace!("[{self}] increment acked by {increment}");
-        self.acked_inserts_cnt += increment;
-        if self.base < self.acked_inserts_cnt {
+        let acked = self
+            .acked_inserts_cnt
+            .checked_add(increment)
+            .ok_or(Error::IncrementAck)?;
+        if self.base < acked {
             return Err(Error::IncrementAck);
         }
+        self.acked_inserts_cnt = acked;
         Ok(())
     }
 
@@ -383,6 +399,7 @@ impl HeaderTable {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -425,10 +442,43 @@ mod tests {
 
             table.increment_acked(1).unwrap();
 
-            let first_entry_size = table.get_dynamic_with_abs_index(0).unwrap().size() as u64;
+            let first_entry_size = to_u64(table.get_dynamic_with_abs_index(0).unwrap().size());
 
             assert!(table.can_evict_to(first_entry_size));
             assert!(!table.can_evict_to(0));
+        }
+    }
+
+    /// A peer can send an `Insert Count Increment` on the decoder stream with an
+    /// increment large enough to overflow the running acknowledged-inserts count.
+    /// The increment is range-checked against `base`, but only after the add, so
+    /// the overflow has to be caught explicitly.
+    #[test]
+    fn increment_acked_overflow_is_rejected() {
+        let mut table = HeaderTable::new(true);
+        table.set_capacity(10000).unwrap();
+        table.insert(b"header1", b"42").unwrap();
+        table.insert(b"header2", b"42").unwrap();
+
+        // Acknowledge both inserts legitimately so acked_inserts_cnt > 0.
+        table.increment_acked(2).unwrap();
+
+        // A malicious increment that would push the count past u64::MAX must be
+        // reported as an error, not overflow.
+        assert_eq!(table.increment_acked(u64::MAX), Err(Error::IncrementAck));
+    }
+
+    #[test]
+    fn get_dynamic_max_index_returns_error_not_panic() {
+        let mut table = HeaderTable::new(false);
+        table.set_capacity(10_000).unwrap();
+        table.insert(b"name", b"value").unwrap();
+
+        for post in [true, false] {
+            assert_eq!(
+                table.get_dynamic(u64::MAX, u64::MAX, post).unwrap_err(),
+                Error::IntegerOverflow
+            );
         }
     }
 }

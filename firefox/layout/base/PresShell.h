@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,13 +10,13 @@
 #include <stdio.h>  // for FILE definition
 
 #include "DepthOrderedFrameList.h"
-#include "FrameMetrics.h"
 #include "LayoutConstants.h"
+#include "TouchManager.h"
+#include "Units.h"
+#include "Visibility.h"
 #include "mozilla/ArenaObjectID.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/dom/DocumentBinding.h"
 #include "mozilla/FlushType.h"
-#include "mozilla/layers/FocusTarget.h"
 #include "mozilla/Logging.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/PresShellForwards.h"
@@ -26,10 +24,12 @@
 #include "mozilla/StaticPtr.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
-#include "nsColor.h"
+#include "mozilla/dom/DocumentBinding.h"
+#include "mozilla/layers/FocusTarget.h"
 #include "nsCOMArray.h"
-#include "nsCoord.h"
 #include "nsCSSFrameConstructor.h"
+#include "nsColor.h"
+#include "nsCoord.h"
 #include "nsDOMNavigationTiming.h"
 #include "nsFrameState.h"
 #include "nsIContent.h"
@@ -45,9 +45,6 @@
 #include "nsTHashSet.h"
 #include "nsThreadUtils.h"
 #include "nsWeakReference.h"
-#include "TouchManager.h"
-#include "Units.h"
-#include "Visibility.h"
 
 #ifdef ACCESSIBILITY
 #  include "nsAccessibilityService.h"
@@ -72,12 +69,10 @@ class nsITimer;
 class nsPageSequenceFrame;
 class nsPIDOMWindowOuter;
 class nsPresShellEventCB;
-class nsRange;
 class nsRefreshDriver;
 class nsRegion;
 class nsTextFrame;
-class nsView;
-class nsViewManager;
+class nsSubDocumentFrame;
 class nsWindowSizes;
 class WeakFrame;
 class ZoomConstraintsClient;
@@ -90,17 +85,25 @@ class ReflowCountMgr;
 
 namespace mozilla {
 class AccessibleCaretEventHub;
+struct AnchorPosAnchorInfo;
 class FallbackRenderer;
 class GeckoMVMContext;
 class nsDisplayList;
 class nsDisplayListBuilder;
 class OverflowChangedTracker;
+class PresShellWidgetListener;
 class ProfileChunkedBuffer;
+class ScopedNameRef;
 class ScrollContainerFrame;
 class StyleSheet;
+struct StyleAtom;
 
 struct AutoConnectedAncestorTracker;
 struct PointerInfo;
+
+// Cache used for storing top layer indices of anchor lists, grouped by name.
+using AnchorPosAnchorTopLayerIndexCache =
+    nsTHashMap<const nsAtom*, nsTArray<size_t>>;
 
 #ifdef ACCESSIBILITY
 namespace a11y {
@@ -113,6 +116,7 @@ class BrowserParent;
 class Element;
 class Event;
 class HTMLSlotElement;
+class Range;
 class Selection;
 class PerformanceMainThread;
 }  // namespace dom
@@ -124,6 +128,8 @@ class SourceSurface;
 namespace layers {
 class LayerManager;
 struct LayersId;
+struct KeyboardScrollAction;
+enum class ScrollOffsetUpdateType : uint8_t;
 }  // namespace layers
 
 namespace layout {
@@ -160,6 +166,7 @@ class PresShell final : public nsStubDocumentObserver,
   typedef gfx::SourceSurface SourceSurface;
   typedef layers::FocusTarget FocusTarget;
   typedef layers::FrameMetrics FrameMetrics;
+  typedef layers::ScrollOffsetUpdateType ScrollOffsetUpdateType;
   typedef layers::LayerManager LayerManager;
 
   // A set type for tracking visible frames, for use by the visibility code in
@@ -205,8 +212,6 @@ class PresShell final : public nsStubDocumentObserver,
     return sCapturingContentInfo.mPreventDrag && sCapturingContentInfo.mContent;
   }
 
-  static void ClearMouseCaptureOnView(nsView* aView);
-
   // Clear the capture content if it exists in this process.
   static void ClearMouseCapture();
 
@@ -244,7 +249,7 @@ class PresShell final : public nsStubDocumentObserver,
     return mLastOverWindowPointerLocation;
   }
 
-  MOZ_CAN_RUN_SCRIPT void Init(nsPresContext*, nsViewManager*);
+  MOZ_CAN_RUN_SCRIPT void Init(nsPresContext*);
 
   /**
    * All callers are responsible for calling |Destroy| after calling
@@ -307,7 +312,15 @@ class PresShell final : public nsStubDocumentObserver,
 
   nsPresContext* GetPresContext() const { return mPresContext; }
 
-  nsViewManager* GetViewManager() const { return mViewManager; }
+  /**
+   * Return the corresponding in-process root PresShell which is associated with
+   * the root nsPresContext of mPresContext.
+   */
+  PresShell* GetRootPresShell() const;
+
+  PresShellWidgetListener* GetWidgetListener() const {
+    return mWidgetListener.get();
+  }
 
   nsRefreshDriver* GetRefreshDriver() const;
 
@@ -354,24 +367,29 @@ class PresShell final : public nsStubDocumentObserver,
   MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult Initialize();
 
   /**
-   * Schedule a reflow for the frame model into a new width and height.  The
-   * coordinates for aWidth and aHeight must be in standard nscoord's.
-   *
-   * Returns whether layout might have changed.
+   * Schedule a reflow for the frame model into a new size, in app units.
    */
   MOZ_CAN_RUN_SCRIPT void ResizeReflow(
-      nscoord aWidth, nscoord aHeight,
-      ResizeReflowOptions = ResizeReflowOptions::NoOption);
+      const nsSize&, ResizeReflowOptions = ResizeReflowOptions::NoOption);
   MOZ_CAN_RUN_SCRIPT bool ResizeReflowIgnoreOverride(
-      nscoord aWidth, nscoord aHeight,
-      ResizeReflowOptions = ResizeReflowOptions::NoOption);
+      const nsSize&, ResizeReflowOptions = ResizeReflowOptions::NoOption);
   MOZ_CAN_RUN_SCRIPT void ForceResizeReflowWithCurrentDimensions();
+  MOZ_CAN_RUN_SCRIPT void FlushDelayedResize();
+  nsSize MaybePendingLayoutViewportSize() const;
+  bool ShouldDelayResize() const;
+  // FIXME: MOZ_CAN_RUN_SCRIPT_BOUNDARY because the aDelay parameter forces us
+  // to effectively not run script.
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void SetLayoutViewportSize(const nsSize&,
+                                                         bool aDelay);
 
   /** Schedule a resize event if applicable. */
   enum class ResizeEventKind : uint8_t { Regular, Visual };
   void ScheduleResizeEventIfNeeded(ResizeEventKind = ResizeEventKind::Regular);
 
-  void PostScrollEvent(mozilla::Runnable*);
+  // Returns the current scroll event generation, which must be kept around by
+  // the caller to prevent duplicate scroll event entries.
+  [[nodiscard]] uint32_t PostScrollEvent(mozilla::Runnable*);
+  uint32_t GetScrollEventGeneration() const { return mScrollEventGeneration; }
 
   /**
    * Returns true if the document hosted by this presShell is in a devtools
@@ -393,12 +411,15 @@ class PresShell final : public nsStubDocumentObserver,
    * This is what ResizeReflowIgnoreOverride does when not shrink-wrapping (that
    * is, when ResizeReflowOptions::BSizeLimit is not specified).
    */
-  bool SimpleResizeReflow(nscoord aWidth, nscoord aHeight);
+  bool SimpleResizeReflow(const nsSize&);
 
   bool CanHandleUserInputEvents(WidgetGUIEvent* aGUIEvent);
 
   void ScrollFrameIntoVisualViewport(Maybe<nsPoint>& aDestination,
                                      const nsRect& aPositionFixedRect,
+                                     const nsIFrame* aPositionFixedFrame,
+                                     AxisScrollParams aVertical,
+                                     AxisScrollParams aHorizontal,
                                      ScrollFlags aScrollFlags);
 
  public:
@@ -447,6 +468,21 @@ class PresShell final : public nsStubDocumentObserver,
    */
   nsIFrame* GetRootFrame() const { return mFrameConstructor->GetRootFrame(); }
 
+  // Return the closest root widget (widget owned by a root frame).
+  nsIWidget* GetRootWidget() const;
+
+  // Return the closest widget (including popups, if our document is inside a
+  // popup).
+  nsIWidget* GetNearestWidget() const;
+
+  // Return the widget that we're painting into, if we're responsible to paint
+  // into a widget.
+  nsIWidget* GetOwnWidget() const;
+
+  // Get the current frame of our embedder, if it's in our same process.
+  nsSubDocumentFrame* GetInProcessEmbedderFrame() const;
+  void SetInProcessEmbedderFrame(nsSubDocumentFrame*);
+
   /**
    * Get root scroll container frame from the frame constructor.
    */
@@ -482,6 +518,39 @@ class PresShell final : public nsStubDocumentObserver,
    */
   ScrollContainerFrame* GetScrollContainerFrameToScroll(
       layers::ScrollDirections aDirections);
+
+  /**
+   * Perform a main-thread keyboard scroll for aAction, searching for the scroll
+   * container to scroll starting from the current focused content or DOM
+   * selection.
+   */
+  void ScrollByKeyboard(const layers::KeyboardScrollAction& aAction);
+
+  /**
+   * Perform a main-thread keyboard scroll for aAction, searching for the scroll
+   * container to scroll starting from aStartFrame and walking outward toward
+   * aAction's direction. Used by the cross-process keyboard scroll handoff,
+   * which seeds the search from this document's frame for the embedded
+   * subframe.
+   */
+  void ScrollByKeyboard(const layers::KeyboardScrollAction& aAction,
+                        nsIFrame* aStartFrame);
+
+  /**
+   * Like GetScrollContainerFrameToScroll, but for keyboard scrolling. It
+   * returns the nearest scroll container from the current focused content or
+   * DOM selection that can still scroll toward aAction's direction.
+   * If none can in this process and we are a subframe embedded in another
+   * process, keyboard scrolling is handed off to the embedder document and
+   * nullptr is returned.
+   *
+   * @return the scroll container frame to scroll, or nullptr if there is
+   *         nothing to scroll locally (scrolling may have been handed off to
+   *         the embedder process).
+   *
+   */
+  ScrollContainerFrame* FindScrollContainerFrameForKeyboardScrollOrHandoff(
+      nsIFrame* aStartFrame, const layers::KeyboardScrollAction& aAction);
 
   /**
    * Returns the page sequence frame associated with the frame hierarchy.
@@ -595,8 +664,8 @@ class PresShell final : public nsStubDocumentObserver,
    * @param aRect Relative to aTargetFrame. If none, the bounding box of
    * aTargetFrame will be used. The rect edges will be respected even if the
    * rect is empty.
-   * @param aVertical see ScrollContentIntoView and ScrollAxis
-   * @param aHorizontal see ScrollContentIntoView and ScrollAxis
+   * @param aVertical see ScrollContentIntoView and AxisScrollParams
+   * @param aHorizontal see ScrollContentIntoView and AxisScrollParams
    * @param aScrollFlags if ScrollFirstAncestorOnly is set, only the
    * nearest scrollable ancestor is scrolled, otherwise all
    * scrollable ancestors may be scrolled if necessary
@@ -615,7 +684,8 @@ class PresShell final : public nsStubDocumentObserver,
   MOZ_CAN_RUN_SCRIPT
   bool ScrollFrameIntoView(nsIFrame* aTargetFrame,
                            const Maybe<nsRect>& aKnownRectRelativeToTarget,
-                           ScrollAxis aVertical, ScrollAxis aHorizontal,
+                           AxisScrollParams aVertical,
+                           AxisScrollParams aHorizontal,
                            ScrollFlags aScrollFlags);
 
   /**
@@ -630,20 +700,27 @@ class PresShell final : public nsStubDocumentObserver,
   already_AddRefed<AccessibleCaretEventHub> GetAccessibleCaretEventHub() const;
 
   /**
-   * Get the caret, if it exists. AddRefs it.
+   * Get the active caret, if it exists. This will return the
+   * drag & drop caret if a D&D operation is ongoing. AddRefs it.
    */
-  already_AddRefed<nsCaret> GetCaret() const;
+  already_AddRefed<nsCaret> GetActiveCaret() const;
 
   /**
-   * Set the current caret to a new caret. To undo this, call RestoreCaret.
+   * Get the original caret this PresShell was created with.
    */
-  void SetCaret(nsCaret* aNewCaret);
+  already_AddRefed<nsCaret> GetOriginalCaret() const;
+
+  /**
+   * Set the active caret to a new caret. To undo this, call
+   * RestoreOriginalCaret.
+   */
+  void SetActiveCaret(nsCaret* aNewCaret);
 
   /**
    * Restore the caret to the original caret that this pres shell was created
    * with.
    */
-  void RestoreCaret();
+  void RestoreOriginalCaret();
 
   dom::Selection* GetCurrentSelection(SelectionType aSelectionType);
 
@@ -701,9 +778,16 @@ class PresShell final : public nsStubDocumentObserver,
   nsIFrame* GetCurrentEventFrame();
 
   /**
-   * Gets the current target event frame from the PresShell
+   * Gets the explicit event target content of the current event target frame
    */
-  already_AddRefed<nsIContent> GetEventTargetContent(WidgetEvent* aEvent);
+  nsIContent* GetExplicitEventTargetContent(const WidgetEvent* = nullptr);
+
+  /**
+   * Gets the event target content from the current event target frame. If the
+   * event target should be an element node, this returns an inclusive ancestor
+   * element of the explicit event target content.
+   */
+  nsIContent* GetEventTargetContent(const WidgetEvent* = nullptr);
 
   /**
    * Get and set the history state for the current document
@@ -734,25 +818,55 @@ class PresShell final : public nsStubDocumentObserver,
    */
   MOZ_CAN_RUN_SCRIPT void ReconstructFrames();
 
-  /**
-   * See if reflow verification is enabled. To enable reflow verification add
-   * "verifyreflow:1" to your MOZ_LOG environment variable (any non-zero
-   * debug level will work). Or, call SetVerifyReflowEnable with true.
-   */
-  static bool GetVerifyReflowEnable();
-
-  /**
-   * Set the verify-reflow enable flag.
-   */
-  static void SetVerifyReflowEnable(bool aEnabled);
-
   nsIFrame* GetAbsoluteContainingBlock(nsIFrame* aFrame);
 
   // https://drafts.csswg.org/css-anchor-position-1/#target
-  nsIFrame* GetAnchorPosAnchor(const nsAtom* aName,
-                               const nsIFrame* aPositionedFrame) const;
-  void AddAnchorPosAnchor(const nsAtom* aName, nsIFrame* aFrame);
-  void RemoveAnchorPosAnchor(const nsAtom* aName, nsIFrame* aFrame);
+  nsIFrame* GetAnchorPosAnchor(
+      const ScopedNameRef& aName, const nsIFrame* aPositionedFrame,
+      uint32_t aPositionedFrameTreeDepth,
+      AnchorPosAnchorTopLayerIndexCache* aTopLayerIndexCache = nullptr) const;
+  void CollectAnchorNames(const nsIFrame* aPositionedFrame,
+                          nsTArray<nsString>& aResult);
+  void AddAnchorPosAnchor(Span<const StyleAtom> aNames, nsIFrame* aFrame);
+  void RemoveAnchorPosAnchor(Span<const StyleAtom> aNames, nsIFrame* aFrame);
+  enum class AnchorPosUpdateResult {
+    NotApplicable,
+    Flushed,
+    NeedReflow,
+  };
+  AnchorPosUpdateResult UpdateAnchorPosLayout();
+
+  inline void AddAnchorPosPositioned(nsIFrame* aFrame) {
+    if (!mAnchorPosPositioned.Contains(aFrame)) {
+      MarkHasSeenAnchorPos();
+      mAnchorPosPositioned.AppendElement(aFrame);
+    }
+  }
+
+  inline void RemoveAnchorPosPositioned(nsIFrame* aFrame) {
+#ifdef ACCESSIBILITY
+    if (nsAccessibilityService* accService = GetAccService()) {
+      accService->NotifyAnchorPositionedRemoved(this, aFrame);
+    }
+#endif
+    mAnchorPosPositioned.RemoveElement(aFrame);
+  }
+
+  const nsTArray<nsIFrame*>& GetAnchorPosPositioned() const {
+    return mAnchorPosPositioned;
+  }
+
+  bool HasSeenAnchorPos() const { return mHasSeenAnchorPos; }
+
+  void MarkHasSeenAnchorPos() {
+    if (mHasSeenAnchorPos) {
+      return;
+    }
+    mHasSeenAnchorPos = true;
+    if (auto* rootPS = GetRootPresShell()) {
+      rootPS->mHasSeenAnchorPos = true;
+    }
+  }
 
 #ifdef MOZ_REFLOW_PERF
   void DumpReflows();
@@ -933,14 +1047,7 @@ class PresShell final : public nsStubDocumentObserver,
    * widget, otherwise the PresContext default background color. This color is
    * only visible if the contents of the view as a whole are translucent.
    */
-  nscolor ComputeBackstopColor(nsView* aDisplayRoot);
-
-  void ObserveNativeAnonMutationsForPrint(bool aObserve) {
-    mObservesMutationsForPrint = aObserve;
-  }
-  bool ObservesNativeAnonMutationsForPrint() {
-    return mObservesMutationsForPrint;
-  }
+  nscolor ComputeBackstopColor(nsIFrame* aDisplayRoot);
 
   void ActivenessMaybeChanged();
   bool IsActive() const { return mIsActive; }
@@ -1044,12 +1151,9 @@ class PresShell final : public nsStubDocumentObserver,
   nsresult HandleEvent(nsIFrame* aFrame, WidgetGUIEvent* aEvent,
                        bool aDontRetargetEvents, nsEventStatus* aEventStatus);
   bool ShouldIgnoreInvalidation();
-  /**
-   * Notify that we called Paint with PaintFlags::PaintComposite.
-   * Fires on the presshell for the painted widget.
-   * This is issued at a time when it's safe to modify widget geometry.
-   */
-  MOZ_CAN_RUN_SCRIPT void DidPaintWindow();
+  // Notify that we called PaintWindow() from widget.
+  MOZ_CAN_RUN_SCRIPT
+  void DidPaintWindow();
 
   bool IsVisible() const;
   bool IsUnderHiddenEmbedderElement() const {
@@ -1058,9 +1162,6 @@ class PresShell final : public nsStubDocumentObserver,
   void SetIsUnderHiddenEmbedderElement(bool aUnderHiddenEmbedderElement) {
     mUnderHiddenEmbedderElement = aUnderHiddenEmbedderElement;
   }
-
-  MOZ_CAN_RUN_SCRIPT void DispatchSynthMouseOrPointerMove(
-      WidgetMouseEvent* aMouseOrPointerMoveEvent);
 
   /* Temporarily ignore the Displayport for better paint performance. We
    * trigger a repaint once suppression is disabled. Without that
@@ -1099,10 +1200,6 @@ class PresShell final : public nsStubDocumentObserver,
 
   bool FontSizeInflationForceEnabled() const {
     return mFontSizeInflationForceEnabled;
-  }
-
-  bool FontSizeInflationDisabledInMasterProcess() const {
-    return mFontSizeInflationDisabledInMasterProcess;
   }
 
   bool FontSizeInflationEnabled() const { return mFontSizeInflationEnabled; }
@@ -1208,7 +1305,7 @@ class PresShell final : public nsStubDocumentObserver,
   // updates.
   struct VisualScrollUpdate {
     nsPoint mVisualScrollOffset;
-    FrameMetrics::ScrollOffsetUpdateType mUpdateType;
+    ScrollOffsetUpdateType mUpdateType;
     bool mAcknowledged = false;
   };
 
@@ -1230,8 +1327,7 @@ class PresShell final : public nsStubDocumentObserver,
   //     need to be used.
   // Please request APZ review if adding a new call site.
   void ScrollToVisual(const nsPoint& aVisualViewportOffset,
-                      FrameMetrics::ScrollOffsetUpdateType aUpdateType,
-                      ScrollMode aMode);
+                      ScrollOffsetUpdateType aUpdateType, ScrollMode aMode);
   void AcknowledgePendingVisualScrollUpdate();
   void ClearPendingVisualScrollUpdate();
   const Maybe<VisualScrollUpdate>& GetPendingVisualScrollUpdate() const {
@@ -1240,6 +1336,10 @@ class PresShell final : public nsStubDocumentObserver,
 
   nsPoint GetLayoutViewportOffset() const;
   nsSize GetLayoutViewportSize() const;
+
+  // Returns the size used for window.inner{Height,Width}. Unlike the above
+  // layout viewport size, this size includes the scrollbar gutters.
+  nsSize GetInnerSize() const;
 
   /**
    * Documents belonging to an invisible DocShell must not be painted ever.
@@ -1254,7 +1354,10 @@ class PresShell final : public nsStubDocumentObserver,
     return mNeedLayoutFlush || mNeedStyleFlush;
   }
 
-  void SyncWindowProperties(bool aSync);
+  void MOZ_CAN_RUN_SCRIPT PaintSynchronously();
+  // Ensures the top-level window has the right size constraints /
+  // color-scheme / etc.
+  void SyncWindowPropertiesIfNeeded();
   struct WindowSizeConstraints {
     nsSize mMinSize;
     nsSize mMaxSize;
@@ -1286,6 +1389,15 @@ class PresShell final : public nsStubDocumentObserver,
       ControllerScrollFlags aFlags) override;
   using nsISelectionController::ScrollSelectionIntoView;
   NS_IMETHOD RepaintSelection(RawSelectionType aRawSelectionType) override;
+
+  /**
+   * Repaint highlight pseudo-element selections (::selection, ::target-text,
+   * ::highlight). These pseudos have their styles resolved lazily during
+   * painting, so style changes don't automatically generate repaint hints for
+   * them.
+   */
+  void RepaintPseudoElementStyledSelections();
+
   void SelectionWillTakeFocus() override;
   void SelectionWillLoseFocus() override;
 
@@ -1331,14 +1443,15 @@ class PresShell final : public nsStubDocumentObserver,
    * SyncPaintFallback from the widget paint event.
    */
   MOZ_CAN_RUN_SCRIPT
-  void PaintAndRequestComposite(nsView* aView, PaintFlags aFlags);
+  void PaintAndRequestComposite(nsIFrame* aFrame, WindowRenderer* aRenderer,
+                                PaintFlags aFlags);
 
   /**
    * Does an immediate paint+composite using the FallbackRenderer (which must
    * be the current WindowRenderer for the root frame's widget).
    */
   MOZ_CAN_RUN_SCRIPT
-  void SyncPaintFallback(nsView* aView);
+  void SyncPaintFallback(nsIFrame* aFrame, WindowRenderer* aRenderer);
 
   /**
    * Notify that we're going to call Paint with PaintFlags::PaintLayers
@@ -1385,6 +1498,8 @@ class PresShell final : public nsStubDocumentObserver,
   MOZ_CAN_RUN_SCRIPT NS_IMETHOD LineMove(bool aForward, bool aExtend) override;
   MOZ_CAN_RUN_SCRIPT NS_IMETHOD IntraLineMove(bool aForward,
                                               bool aExtend) override;
+  MOZ_CAN_RUN_SCRIPT NS_IMETHOD ParagraphMove(bool aForward,
+                                              bool aExtend) override;
   MOZ_CAN_RUN_SCRIPT NS_IMETHOD PageMove(bool aForward, bool aExtend) override;
   NS_IMETHOD ScrollPage(bool aForward) override;
   NS_IMETHOD ScrollLine(bool aForward) override;
@@ -1427,10 +1542,15 @@ class PresShell final : public nsStubDocumentObserver,
    *   >= FlushType::Style.  This also returns true if a throttled
    *   animation flush is required.
    */
-  bool NeedFlush(FlushType aType) const {
+  bool NeedFlush(FlushType aType, bool aFlushAnimations) const {
     MOZ_ASSERT(aType >= FlushType::Style);
-    return mNeedStyleFlush || mNeedThrottledAnimationFlush ||
+    return mNeedStyleFlush ||
+           (mNeedThrottledAnimationFlush && aFlushAnimations) ||
            (mNeedLayoutFlush && aType >= FlushType::InterruptibleLayout);
+  }
+
+  bool NeedFlush(const ChangesToFlush& aFlush) const {
+    return NeedFlush(aFlush.mFlushType, aFlush.mFlushAnimations);
   }
 
   /**
@@ -1459,7 +1579,7 @@ class PresShell final : public nsStubDocumentObserver,
    */
   MOZ_CAN_RUN_SCRIPT
   void FlushPendingNotifications(FlushType aType) {
-    if (!NeedFlush(aType)) {
+    if (!NeedFlush(aType, /* aFlushAnimations = */ true)) {
       return;
     }
 
@@ -1468,7 +1588,7 @@ class PresShell final : public nsStubDocumentObserver,
 
   MOZ_CAN_RUN_SCRIPT
   void FlushPendingNotifications(ChangesToFlush aType) {
-    if (!NeedFlush(aType.mFlushType)) {
+    if (!NeedFlush(aType)) {
       return;
     }
 
@@ -1481,10 +1601,11 @@ class PresShell final : public nsStubDocumentObserver,
    * long as the ancestor chain between them doesn't cross a reflow root.
    *
    * The bit to add should be NS_FRAME_IS_DIRTY, NS_FRAME_HAS_DIRTY_CHILDREN
-   * or nsFrameState(0); passing 0 means that dirty bits won't be set on the
-   * frame or its ancestors/descendants, but that intrinsic widths will still
-   * be marked dirty.  Passing aIntrinsicDirty = eResize and aBitToAdd = 0
-   * would result in no work being done, so don't do that.
+   * or NS_FRAME_STATE_NONE; passing NS_FRAME_STATE_NONE means that dirty bits
+   * won't be set on the frame or its ancestors/descendants, but that intrinsic
+   * widths will still be marked dirty.  Passing aIntrinsicDirty = eResize and
+   * aBitToAdd = NS_FRAME_STATE_NONE would result in no work being done, so
+   * don't do that.
    */
   void FrameNeedsReflow(
       nsIFrame* aFrame, IntrinsicDirty aIntrinsicDirty, nsFrameState aBitToAdd,
@@ -1493,7 +1614,10 @@ class PresShell final : public nsStubDocumentObserver,
   /**
    * Calls FrameNeedsReflow on all fixed position children of the root frame.
    */
-  void MarkFixedFramesForReflow(IntrinsicDirty aIntrinsicDirty);
+  void MarkFixedFramesForReflow();
+  // Marks a positioned frame for reflow, assuming that size or position of the
+  // frame might change.
+  void MarkPositionedFrameForReflow(nsIFrame*);
 
   /**
    * Similar to above MarkFixedFramesForReflow, but for sticky position children
@@ -1527,11 +1651,8 @@ class PresShell final : public nsStubDocumentObserver,
   void SetVisualViewportSize(nscoord aWidth, nscoord aHeight);
   void ResetVisualViewportSize();
   bool IsVisualViewportSizeSet() { return mVisualViewportSizeSet; }
-  nsSize GetVisualViewportSize() {
-    NS_ASSERTION(mVisualViewportSizeSet,
-                 "asking for visual viewport size when its not set?");
-    return mVisualViewportSize;
-  }
+  void SetNeedsWindowPropertiesSync();
+  nsSize GetVisualViewportSize() const;
 
   nsPoint GetVisualViewportOffsetRelativeToLayoutViewport() const;
 
@@ -1546,6 +1667,10 @@ class PresShell final : public nsStubDocumentObserver,
   // Returns the visual viewport size during the dynamic toolbar is being
   // shown/hidden.
   nsSize GetVisualViewportSizeUpdatedByDynamicToolbar() const;
+
+  // Returns the fixed viewport size accounted for
+  // a fully shown or fully hidden dynamic toolbar
+  nsSize GetFixedViewportSize() const;
 
   // Trigger refreshing the MobileViewportManager's size metrics.
   void RefreshViewportSize();
@@ -1601,7 +1726,7 @@ class PresShell final : public nsStubDocumentObserver,
    */
   MOZ_CAN_RUN_SCRIPT
   nsresult GoToAnchor(const nsAString& aAnchorName,
-                      const nsRange* aFirstTextDirective, bool aScroll,
+                      const dom::Range* aFirstTextDirective, bool aScroll,
                       ScrollFlags aAdditionalScrollFlags = ScrollFlags::None);
 
   /**
@@ -1642,9 +1767,9 @@ class PresShell final : public nsStubDocumentObserver,
    * @param aContent  The content object of which primary frame should be
    *                  scrolled into view.
    * @param aVertical How to align the frame vertically and when to do so.
-   *                  This is a ScrollAxis of Where and When.
+   *                  This is a AxisScrollParams of Where and When.
    * @param aHorizontal How to align the frame horizontally and when to do so.
-   *                  This is a ScrollAxis of Where and When.
+   *                  This is a AxisScrollParams of Where and When.
    * @param aScrollFlags  If ScrollFlags::ScrollFirstAncestorOnly is set,
    *                      only the nearest scrollable ancestor is scrolled,
    *                      otherwise all scrollable ancestors may be scrolled
@@ -1674,8 +1799,9 @@ class PresShell final : public nsStubDocumentObserver,
    *                      axis, rather than to physical directions.
    */
   MOZ_CAN_RUN_SCRIPT
-  nsresult ScrollContentIntoView(nsIContent* aContent, ScrollAxis aVertical,
-                                 ScrollAxis aHorizontal,
+  nsresult ScrollContentIntoView(nsIContent* aContent,
+                                 AxisScrollParams aVertical,
+                                 AxisScrollParams aHorizontal,
                                  ScrollFlags aScrollFlags);
 
   /**
@@ -1760,6 +1886,18 @@ class PresShell final : public nsStubDocumentObserver,
    */
   bool IsForcingLayoutForHiddenContent(const nsIFrame*) const;
 
+  void IncrementContentVisibilityHiddenCount() {
+    ++mContentVisibilityHiddenCount;
+  }
+  void DecrementContentVisibilityHiddenCount() {
+    MOZ_ASSERT(mContentVisibilityHiddenCount > 0,
+               "Increment/decrement calls should be balanced");
+    --mContentVisibilityHiddenCount;
+  }
+  bool HasContentVisibilityHiddenFrames() const {
+    return mContentVisibilityHiddenCount > 0;
+  }
+
   void RegisterContentVisibilityAutoFrame(nsIFrame* aFrame) {
     mContentVisibilityAutoFrames.Insert(aFrame);
   }
@@ -1808,14 +1946,37 @@ class PresShell final : public nsStubDocumentObserver,
    */
   static Modifiers GetCurrentModifiers() { return sCurrentModifiers; }
 
+  /**
+   * Inserts mLazyAnchorPosAnchorChanges into mAnchorPosAnchors. Because the
+   * anchor lookup uses tree-ordered sorting, we're implicitly assuming
+   * that when AddAnchorPosAnchor and RemoveAnchorPosAnchor are called,
+   * the frame tree structure is valid globally.
+   *
+   * This assumption does not always hold - e.g. when the initial construction
+   * frame tree is deferred: the frame tree can may be in an indeterminate state
+   * where a frame has a parent but the parent does not have that frame as its
+   * child. Therefore, the defer tree position comparison may be deferred to a
+   * point where we know the frame tree is stable.
+   */
+  void MergeAnchorPosAnchorChanges();
+
+  void CleanupFullscreenState();
+
+  void MaybeExitKeyboardLockedFullscreen(WidgetKeyboardEvent* aKeyboardEvent,
+                                         Document* aFullscreenRoot);
+
  private:
   ~PresShell();
+
+  void AddAnchorPosAnchorImpl(const nsAtom* aName, nsIFrame* aFrame,
+                              bool aForMerge);
 
   void SetIsActive(bool aIsActive);
   bool ComputeActiveness() const;
 
   MOZ_CAN_RUN_SCRIPT
-  void PaintInternal(nsView* aViewToPaint, PaintInternalFlags aFlags);
+  void PaintInternal(nsIFrame* aFrame, WindowRenderer* aRenderer,
+                     PaintInternalFlags aFlags);
 
   // Refresh observer management.
   void ScheduleFlush();
@@ -1894,9 +2055,8 @@ class PresShell final : public nsStubDocumentObserver,
   void CancelPostedReflowCallbacks();
   void FlushPendingScrollAnchorAdjustments();
 
-  void SetPendingVisualScrollUpdate(
-      const nsPoint& aVisualViewportOffset,
-      FrameMetrics::ScrollOffsetUpdateType aUpdateType);
+  void SetPendingVisualScrollUpdate(const nsPoint& aVisualViewportOffset,
+                                    ScrollOffsetUpdateType aUpdateType);
 
 #ifdef MOZ_REFLOW_PERF
   UniquePtr<ReflowCountMgr> mReflowCountMgr;
@@ -1907,8 +2067,8 @@ class PresShell final : public nsStubDocumentObserver,
   // This data is stored as a content property (nsGkAtoms::scrolling) on
   // mContentToScrollTo when we have a pending ScrollIntoView.
   struct ScrollIntoViewData {
-    ScrollAxis mContentScrollVAxis;
-    ScrollAxis mContentScrollHAxis;
+    AxisScrollParams mContentScrollVAxis;
+    AxisScrollParams mContentScrollHAxis;
     ScrollFlags mContentToScrollToFlags;
   };
 
@@ -1989,6 +2149,7 @@ class PresShell final : public nsStubDocumentObserver,
     RenderingState mOldState;
   };
   void SetRenderingState(const RenderingState& aState);
+  void RemoveAnchorPosAnchor(const nsAtom* aName, nsIFrame* aFrame);
 
   friend class ::nsPresShellEventCB;
 
@@ -1997,11 +2158,11 @@ class PresShell final : public nsStubDocumentObserver,
   // given a display list, clip the items within the list to
   // the range
   nsRect ClipListToRange(nsDisplayListBuilder* aBuilder, nsDisplayList* aList,
-                         nsRange* aRange);
+                         dom::Range* aRange);
 
   // create a RangePaintInfo for the range aRange containing the
   // display list needed to paint the range to a surface
-  UniquePtr<RangePaintInfo> CreateRangePaintInfo(nsRange* aRange,
+  UniquePtr<RangePaintInfo> CreateRangePaintInfo(dom::Range* aRange,
                                                  nsRect& aSurfaceRect,
                                                  bool aForPrimarySelection);
 
@@ -2022,9 +2183,6 @@ class PresShell final : public nsStubDocumentObserver,
       dom::Selection* aSelection, const Maybe<CSSIntRegion>& aRegion,
       nsRect aArea, const LayoutDeviceIntPoint aPoint,
       LayoutDeviceIntRect* aScreenRect, RenderImageFlags aFlags);
-
-  // Hide a view if it is a popup
-  void HideViewIfPopup(nsView* aView);
 
   // Utility method to restore the root scrollframe state
   void RestoreRootScrollPosition();
@@ -2124,13 +2282,6 @@ class PresShell final : public nsStubDocumentObserver,
   void UpdateImageLockingState();
 
   already_AddRefed<PresShell> GetParentPresShellForEventHandling();
-
-  /**
-   * Return a frame for a view which is the closest ancestor view which has
-   * a frame.  I.e., if the closest ancestor view does not have a frame,
-   * this returns a frame for the next closest ancestor view.
-   */
-  [[nodiscard]] nsIFrame* GetClosestAncestorFrameForAncestorView() const;
 
   /**
    * EventHandler is implementation of PresShell::HandleEvent().
@@ -2369,11 +2520,10 @@ class PresShell final : public nsStubDocumentObserver,
      *
      * @param aGUIEvent                 The handling event.
      * @return                          true if this actually flushes pending
-     *                                  layout and that has caused changing the
      *                                  layout.
      */
-    MOZ_CAN_RUN_SCRIPT
-    bool MaybeFlushPendingNotifications(WidgetGUIEvent* aGUIEvent);
+    MOZ_CAN_RUN_SCRIPT bool MaybeFlushPendingNotifications(
+        WidgetGUIEvent* aGUIEvent);
 
     /**
      * GetFrameToHandleNonTouchEvent() returns a frame to handle the event.
@@ -2725,31 +2875,6 @@ class PresShell final : public nsStubDocumentObserver,
         nsIContent* aCapturingContent, bool* aIsCapturingContentIgnored);
 
     /**
-     * ComputeRootFrameToHandleEventWithCapturingContent() returns root frame
-     * to handle event for the capturing content, or aRootFrameToHandleEvent
-     * if it should be ignored.
-     *
-     * @param aRootFrameToHandleEvent           Candidate root frame to handle
-     *                                          the event.
-     * @param aCapturingContent                 Capturing content.  nullptr is
-     *                                          not allowed.
-     * @param aIsCapturingContentIgnored        [out] true if aCapturingContent
-     *                                          is not nullptr but it should be
-     *                                          ignored to handle the event.
-     * @param aIsCaptureRetargeted              [out] true if aCapturingContent
-     *                                          is not nullptr but it's
-     *                                          retargeted.
-     * @return                                  A popup frame if there is a
-     *                                          popup and we should handle the
-     *                                          event in it.  Otherwise,
-     *                                          aRootFrameToHandleEvent.
-     *                                          I.e., never returns nullptr.
-     */
-    nsIFrame* ComputeRootFrameToHandleEventWithCapturingContent(
-        nsIFrame* aRootFrameToHandleEvent, nsIContent* aCapturingContent,
-        bool* aIsCapturingContentIgnored, bool* aIsCaptureRetargeted);
-
-    /**
      * HandleEventWithPointerCapturingContentWithoutItsFrame() handles
      * aGUIEvent with aPointerCapturingContent when it does not have primary
      * frame.
@@ -3097,8 +3222,6 @@ class PresShell final : public nsStubDocumentObserver,
     static StaticRefPtr<dom::Element> sLastKeyDownEventTargetElement;
   };
 
-  PresShell* GetRootPresShell() const;
-
   bool IsTransparentContainerElement() const;
   ColorScheme DefaultBackgroundColorScheme() const;
   nscolor GetDefaultBackgroundColorToDraw() const;
@@ -3112,11 +3235,11 @@ class PresShell final : public nsStubDocumentObserver,
 
   void ClearApproximatelyVisibleFramesList(
       const Maybe<OnNonvisible>& aNonvisibleAction = Nothing());
-  static void ClearApproximateFrameVisibilityVisited(nsView* aView,
-                                                     bool aClear);
+  void ClearApproximateFrameVisibilityVisited();
   static void MarkFramesInListApproximatelyVisible(const nsDisplayList& aList);
   void MarkFramesInSubtreeApproximatelyVisible(nsIFrame* aFrame,
                                                const nsRect& aRect,
+                                               const nsRect& aPreserve3DRect,
                                                bool aRemoveOnly = false);
 
   void DecApproximateVisibleCount(
@@ -3131,15 +3254,14 @@ class PresShell final : public nsStubDocumentObserver,
   VisibleFrames mApproximatelyVisibleFrames;
 
 #ifdef DEBUG
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY bool VerifyIncrementalReflow();
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY void DoVerifyReflow();
   void VerifyHasDirtyRootAncestor(nsIFrame* aFrame);
-
-  bool mInVerifyReflow = false;
   // The reflow root under which we're currently reflowing.  Null when
   // not in reflow.
   nsIFrame* mCurrentReflowRoot = nullptr;
 #endif  // #ifdef DEBUG
+
+  bool ShouldShowFullscreenKeyboardLockWarning(
+      const WidgetKeyboardEvent& aKeyboardEvent);
 
  private:
   // IMPORTANT: The ownership implicit in the following member variables
@@ -3154,7 +3276,8 @@ class PresShell final : public nsStubDocumentObserver,
   MOZ_KNOWN_LIVE RefPtr<Document> const mDocument;
   MOZ_KNOWN_LIVE RefPtr<nsPresContext> const mPresContext;
   UniquePtr<nsCSSFrameConstructor> mFrameConstructor;
-  nsViewManager* mViewManager;  // [WEAK] docViewer owns it so I don't have to
+  // The object responsible for listening to widget events.
+  UniquePtr<PresShellWidgetListener> mWidgetListener;
   RefPtr<nsFrameSelection> mSelection;
   // The frame selection that last took focus on this shell, which we need to
   // hide if we focus another selection. May or may not be the same as
@@ -3194,7 +3317,21 @@ class PresShell final : public nsStubDocumentObserver,
   // A hash table of heap allocated weak frames.
   nsTHashSet<WeakFrame*> mWeakFrames;
 
-  nsTHashMap<RefPtr<const nsAtom>, nsTArray<nsIFrame*>> mAnchorPosAnchors;
+  struct AnchorPosAnchorChange {
+    RefPtr<const nsAtom> mName;
+    nsIFrame* mFrame;
+  };
+  // Holds deferred anchor changes. These changes should be deferred when
+  // the frame tree is under construction and the tree position of an anchor
+  // cannot be determined.
+  nsTArray<AnchorPosAnchorChange> mLazyAnchorPosAnchorChanges;
+
+  // Note: Does not store implicit anchors, since many elements can be
+  // potential implicit anchors (e.g. pseudo-elements' implicit anchor
+  // is its originating element).
+  nsTHashMap<RefPtr<const nsAtom>, nsTArray<AnchorPosAnchorInfo>>
+      mAnchorPosAnchors;
+  nsTArray<nsIFrame*> mAnchorPosPositioned;
 
   // Reflow roots that need to be reflowed.
   DepthOrderedFrameList mDirtyRoots;
@@ -3250,6 +3387,10 @@ class PresShell final : public nsStubDocumentObserver,
   // Pending list of scroll/scrollend/etc events.
   nsTArray<RefPtr<Runnable>> mPendingScrollEvents;
 
+  // An always-non-zero generation number for scroll events. This lets callers
+  // know whether they've dispatched a scroll event this frame already.
+  uint32_t mScrollEventGeneration = 1;
+
   nsTHashSet<nsIContent*> mHiddenContentInForcedLayout;
 
   nsTHashSet<nsIFrame*> mContentVisibilityAutoFrames;
@@ -3282,6 +3423,9 @@ class PresShell final : public nsStubDocumentObserver,
   // Only populated on root content documents.
   nsSize mVisualViewportSize;
 
+  // Layout viewport size that we still haven't committed to the layout tree.
+  Maybe<nsSize> mPendingLayoutViewportSize;
+
   using Arena = nsPresArena<8192, ArenaObjectID, eArenaObjectID_COUNT>;
   Arena mFrameArena;
 
@@ -3307,6 +3451,9 @@ class PresShell final : public nsStubDocumentObserver,
   // The focus sequence number of the last processed input event
   uint64_t mAPZFocusSequenceNumber;
 
+  // The nsSubDocumentFrame* that is embedding us.
+  WeakFrame mEmbedderFrame;
+
   nscoord mLastAnchorScrollPositionY = 0;
 
   // Most recent canvas background color.
@@ -3321,6 +3468,9 @@ class PresShell final : public nsStubDocumentObserver,
   uint32_t mFontSizeInflationEmPerLine;
   uint32_t mFontSizeInflationMinTwips;
   uint32_t mFontSizeInflationLineThreshold;
+
+  // How many frames in the frame tree have 'content-visibility: hidden'.
+  uint32_t mContentVisibilityHiddenCount = 0;
 
   // Can be multiple of nsISelectionDisplay::DISPLAY_*.
   int16_t mSelectionFlags;
@@ -3345,6 +3495,9 @@ class PresShell final : public nsStubDocumentObserver,
   // True if a style flush might not be a no-op
   bool mNeedStyleFlush : 1;
 
+  // Whether we need to sync window properties.
+  bool mNeedsWindowPropertiesSync : 1 = false;
+
   // True if there are throttled animations that would be processed when
   // performing a flush with mFlushAnimations == true.
   bool mNeedThrottledAnimationFlush : 1;
@@ -3354,6 +3507,7 @@ class PresShell final : public nsStubDocumentObserver,
   bool mDidInitialize : 1;
   bool mIsDestroying : 1;
   bool mIsReflowing : 1;
+  bool mIsPainting : 1 = false;
   bool mIsObservingDocument : 1;
 
   // Whether we shouldn't ever get to FlushPendingNotifications. This flag is
@@ -3379,7 +3533,6 @@ class PresShell final : public nsStubDocumentObserver,
   bool mIsActive : 1;
   bool mFrozen : 1;
   bool mIsFirstPaint : 1;
-  bool mObservesMutationsForPrint : 1;
 
   // Whether the most recent interruptible reflow was actually interrupted:
   bool mWasLastReflowInterrupted : 1;
@@ -3388,7 +3541,6 @@ class PresShell final : public nsStubDocumentObserver,
   bool mVisualViewportResizeEventPending : 1;
 
   bool mFontSizeInflationForceEnabled : 1;
-  bool mFontSizeInflationDisabledInMasterProcess : 1;
   bool mFontSizeInflationEnabled : 1;
 
   // If a document belongs to an invisible DocShell, this flag must be set
@@ -3442,9 +3594,28 @@ class PresShell final : public nsStubDocumentObserver,
   bool mProcessingReflowCommands : 1;
   bool mPendingDidDoReflow : 1;
 
+  // Whether CSS anchor positioning has ever been seen in this presshell.
+  // Additionally this will also be set to true on a root presshell if anchor
+  // positioning has ever been seen in any descendant presshell.
+  bool mHasSeenAnchorPos : 1;
+
+  // Whether we have already shown a warning about how to exit fullscreen for
+  // the current Escape key down long-press.
+  bool mHasShownFullscreenWarningForCurrentEscapeKeyLongPress : 1;
+
   // The last TimeStamp when the keyup event did not exit fullscreen because it
   // was consumed.
   TimeStamp mLastConsumedEscapeKeyUpForFullscreen;
+
+  // The TimeStamp of the first repeating Escape key keydown event that might
+  // a long-press for exiting fullscreen.
+  TimeStamp mFirstUnmatchedEscapeKeyDownForFullscreen;
+
+  // When the fullscreen keyboard lock is enabled, we want three Escape key
+  // presses within a given interval to trigger a warning about how to exit
+  // fullscreen.
+  uint8_t mEscapeKeyDownCountForFullscreenKeyboardLockWarning;
+  TimeStamp mLastEscapeKeyDownTimeForFullscreenKeyboardLockWarning;
 
   // The `SelectionNodeCache` is tightly coupled with the PresShell.
   // It should only be possible to create a cache from within a PresShell.
@@ -3454,20 +3625,15 @@ class PresShell final : public nsStubDocumentObserver,
   dom::SelectionNodeCache* mSelectionNodeCache{nullptr};
 
   struct CapturingContentInfo final {
-    CapturingContentInfo()
-        : mRemoteTarget(nullptr),
-          mAllowed(false),
-          mPointerLock(false),
-          mRetargetToElement(false),
-          mPreventDrag(false) {}
+    constexpr CapturingContentInfo() = default;
 
     // capture should only be allowed during a mousedown event
     StaticRefPtr<nsIContent> mContent;
-    dom::BrowserParent* mRemoteTarget;
-    bool mAllowed;
-    bool mPointerLock;
-    bool mRetargetToElement;
-    bool mPreventDrag;
+    dom::BrowserParent* mRemoteTarget = nullptr;
+    bool mAllowed = false;
+    bool mPointerLock = false;
+    bool mRetargetToElement = false;
+    bool mPreventDrag = false;
   };
   static CapturingContentInfo sCapturingContentInfo;
 

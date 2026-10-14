@@ -11,8 +11,6 @@ export const AppConstants: Readonly<{
   // defines: https://wiki.mozilla.org/Platform/Channel-specific_build_defines
   NIGHTLY_BUILD: boolean;
 
-  ENABLE_EXPLICIT_RESOURCE_MANAGEMENT: boolean;
-
   RELEASE_OR_BETA: boolean;
 
   EARLY_BETA_OR_EARLIER: boolean;
@@ -104,8 +102,6 @@ export const AppConstants: Readonly<{
 
   MOZ_GECKOVIEW_HISTORY: boolean;
 
-  MOZ_GECKO_PROFILER: boolean;
-
   DLL_PREFIX: string;
   DLL_SUFFIX: ".dll" | ".so";
 
@@ -122,7 +118,7 @@ export const AppConstants: Readonly<{
   MOZ_BUILD_APP: "browser";
   MOZ_MACBUNDLE_ID: "org.mozilla.firefox";
   MOZ_MACBUNDLE_NAME: "Firefox.app";
-  MOZ_UPDATE_CHANNEL: "nightly" | "beta" | "release" | "esr" | "default" | "unofficial";
+  MOZ_UPDATE_CHANNEL: "nightly" | "beta" | "aurora" | "release" | "esr" | "default" | "unofficial";
   MOZ_WIDGET_TOOLKIT: "android" | "cocoa" | "gtk" | "windows" | "uikit";
 
   DEBUG_JS_MODULES: string;
@@ -154,7 +150,7 @@ export const AppConstants: Readonly<{
   ENABLE_WEBDRIVER: boolean;
 
   // #ifdef !MOZ_THUNDERBIRD
-  REMOTE_SETTINGS_SERVER_URL: "https://firefox.settings.services.mozilla.com/v1";
+  REMOTE_SETTINGS_SERVER_URLS: string[];
 
   // #ifdef !MOZ_THUNDERBIRD
   REMOTE_SETTINGS_VERIFY_SIGNATURE: boolean;
@@ -174,12 +170,6 @@ export const AppConstants: Readonly<{
 
   // #ifdef MOZ_GECKOVIEW
   MOZ_GECKOVIEW: boolean;
-
-  // #ifdef MOZ_WIDGET_ANDROID
-  MOZ_ANDROID_CONTENT_SERVICE_ISOLATED_PROCESS: boolean;
-
-  // Returns true for CN region build when distibution id set as 'MozillaOnline'
-  isChinaRepack(): boolean;
 }>;
 
 type Platform = "linux" | "win" | "macosx" | "ios" | "android" | "other";

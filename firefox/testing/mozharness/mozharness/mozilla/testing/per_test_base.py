@@ -17,7 +17,7 @@ class SingleTestMixin:
     """Utility functions for per-test testing like test verification and per-test coverage."""
 
     def __init__(self, **kwargs):
-        super(SingleTestMixin, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self.suites = {}
         self.tests_downloaded = False
@@ -27,6 +27,8 @@ class SingleTestMixin:
         # Use self._map_test_path_to_source(test_machine_path, source_path) to add a mapping.
         self.test_src_path = {}
         self.per_test_log_index = 1
+        # Path of the testsummary log for the harness run currently being set up.
+        self.test_summary_file = None
 
     def _map_test_path_to_source(self, test_machine_path, source_path):
         test_machine_path = test_machine_path.replace(os.sep, posixpath.sep)
@@ -38,7 +40,7 @@ class SingleTestMixin:
             return True
         return False
 
-    def _find_misc_tests(self, dirs, changed_files, gpu=False):
+    def _find_misc_tests(self, dirs, changed_files, mozinfo, gpu=False):
         manifests = [
             (
                 os.path.join(dirs["abs_mochitest_dir"], "tests", "mochitest.toml"),
@@ -63,7 +65,6 @@ class SingleTestMixin:
                 "xpcshell",
             ),
         ]
-        is_fission = "fission.autostart=true" in self.config.get("extra_prefs", [])
         tests_by_path = {}
         all_disabled = []
         #  HACK: import here so we don't need import for rest of class
@@ -189,7 +190,7 @@ class SingleTestMixin:
                 )
                 continue
 
-            if is_fission and (
+            if mozinfo.info["fission"] and (
                 (entry[0] == "mochitest-a11y") or (entry[0] == "mochitest-chrome")
             ):
                 self.info(
@@ -342,19 +343,68 @@ class SingleTestMixin:
 
         dirs = self.query_abs_dirs()
         mozinfo.find_and_update_from_json(dirs["abs_test_install_dir"])
-        e10s = self.config.get("e10s", False)
-        mozinfo.update({"e10s": e10s})
-        is_fission = "fission.autostart=true" in self.config.get("extra_prefs", [])
-        mozinfo.update({"fission": is_fission})
-        headless = self.config.get("headless", False)
-        mozinfo.update({"headless": headless})
         if mozinfo.info["buildapp"] == "mobile/android":
             # extra android mozinfo normally comes from device queries, but this
             # code may run before the device is ready, so rely on configuration
-            mozinfo.update(
-                {"android_version": str(self.config.get("android_version", 24))}
-            )
+            from mozinfo.platforminfo import android_api_to_os_version
+
+            mozinfo.update({
+                "android_version": str(self.config.get("android_version", 34))
+            })
+            mozinfo.update({
+                "os_version": android_api_to_os_version(
+                    self.config.get("android_version", 34)
+                )
+            })
             mozinfo.update({"is_emulator": self.config.get("is_emulator", True)})
+
+        # variants
+        mozinfo.update({"e10s": self.config.get("e10s", True)})
+        mozinfo.update({
+            "fission": "fission.autostart=false"
+            not in self.config.get("extra_prefs", [])
+        })
+        mozinfo.update({"headless": self.config.get("headless", False)})
+        mozinfo.update({"a11y_checks": self.config.get("a11y_checks", False)})
+        mozinfo.update({
+            "socketprocess_e10s": "media.peerconnection.mtransport_process=true"
+            in self.config.get("extra_prefs", [])
+        })
+        mozinfo.update({
+            "socketprocess_networking": "network.http.network_access_on_socket_process.enabled=true"
+            in self.config.get("extra_prefs", [])
+        })
+        mozinfo.update({
+            "swgl": "gfx.webrender.software=true" in self.config.get("extra_prefs", [])
+        })
+        mozinfo.update({
+            "wmfme": "media-engine-compatible" in self.config.get("test_tags", [])
+        })
+        mozinfo.update({
+            "emewmf": "media.wmf.media-engine.enabled=2"
+            in self.config.get("extra_prefs", [])
+        })
+        mozinfo.update({"mda_gpu": "media-gpu" in self.config.get("test_tags", [])})
+        mozinfo.update({
+            "nogpu": "layers.gpu-process.enabled=false"
+            in self.config.get("extra_prefs", [])
+        })
+        mozinfo.update({"msix": "msix" in self.config.get("variant", "")})
+        mozinfo.update({
+            "vertical_tab": "vertical-tabs" in self.config.get("test_tags", [])
+        })
+        mozinfo.update({
+            "inc_origin_init": "inc-origin-init" in self.config.get("test_tags", [])
+        })
+        mozinfo.update({
+            "privateBrowsing": "privatebrowsing" in self.config.get("test_tags", [])
+        })
+        mozinfo.update({"sessionHistoryInParent": True})
+        mozinfo.update({"http2": self.config.get("useHttp2Server", False)})
+        mozinfo.update({"http3": self.config.get("useHttp3Server", False)})
+        mozinfo.update({"xorigin": self.config.get("enable_xorigin_tests", False)})
+        mozinfo.update({"condprof": self.config.get("conditioned_profile", False)})
+
         mozinfo.update({"verify": True})
         self.info("Per-test run using mozinfo: %s" % str(mozinfo.info))
 
@@ -398,9 +448,9 @@ class SingleTestMixin:
         if self.config.get("per_test_category") == "web-platform":
             self._find_wpt_tests(dirs, changed_files)
         elif self.config.get("gpu_required", False) is not False:
-            self._find_misc_tests(dirs, changed_files, gpu=True)
+            self._find_misc_tests(dirs, changed_files, mozinfo, gpu=True)
         else:
-            self._find_misc_tests(dirs, changed_files)
+            self._find_misc_tests(dirs, changed_files, mozinfo)
 
         # per test mode run specific tests from any given test suite
         # _find_*_tests organizes tests to run into suites so we can
@@ -415,26 +465,35 @@ class SingleTestMixin:
             self.tests_downloaded = True
             return
 
-        files_per_chunk = total_tests / float(self.config.get("total_chunks", 1))
-        files_per_chunk = int(math.ceil(files_per_chunk))
+        self.suites = self._chunk_suites(
+            int(self.config.get("total_chunks", 1)),
+            int(self.config.get("this_chunk", 1)),
+        )
+        self.tests_downloaded = True
 
-        chunk_number = int(self.config.get("this_chunk", 1))
+    def _chunk_suites(self, total_chunks, this_chunk):
+        """Return the share of self.suites that this chunk should run.
+
+        The suites are sorted because they are built by iterating a set of
+        paths, whose order varies between processes: every chunk has to slice
+        the same list for the chunks to together cover each test once.
+        """
+        total_tests = sum(len(tests) for tests in self.suites.values())
+        files_per_chunk = int(math.ceil(total_tests / float(total_chunks)))
+
         suites = {}
-        start = (chunk_number - 1) * files_per_chunk
-        end = chunk_number * files_per_chunk
+        start = (this_chunk - 1) * files_per_chunk
+        end = this_chunk * files_per_chunk
         current = -1
-        for suite in self.suites:
-            for test in self.suites[suite]:
+        for suite in sorted(self.suites):
+            for test in sorted(self.suites[suite]):
                 current += 1
                 if current >= start and current < end:
-                    if suite not in suites:
-                        suites[suite] = []
-                    suites[suite].append(test)
+                    suites.setdefault(suite, []).append(test)
             if current >= end:
                 break
 
-        self.suites = suites
-        self.tests_downloaded = True
+        return suites
 
     def query_args(self, suite):
         """
@@ -502,13 +561,12 @@ class SingleTestMixin:
                     if key in all_suites.keys()
                 )
                 self.info("Per-test suites: %s" % suites)
-            else:
-                # Until test zips are downloaded, manifests are not available,
-                # so it is not possible to determine which suites are active/
-                # required for per-test mode; assume all suites from supported
-                # suite categories are required.
-                if category in ["mochitest", "xpcshell", "reftest"]:
-                    suites = all_suites
+            # Until test zips are downloaded, manifests are not available,
+            # so it is not possible to determine which suites are active/
+            # required for per-test mode; assume all suites from supported
+            # suite categories are required.
+            elif category in ["mochitest", "xpcshell", "reftest"]:
+                suites = all_suites
         return suites
 
     def log_per_test_status(self, test_name, tbpl_status, log_level):
@@ -537,8 +595,8 @@ class SingleTestMixin:
 
     def get_indexed_logs(self, dir, test_suite):
         """
-        Per-test tasks need distinct file names for the raw and errorsummary logs
-        on each run.
+        Per-test tasks need distinct file names for the raw, errorsummary and
+        testsummary logs on each run.
         """
         index = ""
         if self.verify_enabled or self.per_test_coverage:
@@ -548,4 +606,30 @@ class SingleTestMixin:
         error_summary_file = os.path.join(
             dir, "%s%s_errorsummary.log" % (test_suite, index)
         )
-        return raw_log_file, error_summary_file
+        test_summary_file = os.path.join(
+            dir, "%s%s_testsummary.jsonl" % (test_suite, index)
+        )
+        self.test_summary_file = test_summary_file
+        return raw_log_file, error_summary_file, test_summary_file
+
+    def append_test_summary(self, dir):
+        """
+        Append the last harness run's testsummary log to the task's summary.jsonl.
+
+        Each harness invocation truncates the file it was given, so the per-run
+        logs are concatenated into a single fixed-name artifact. Suites that do
+        not pass --log-testsummary produce no file, in which case this is a no-op.
+        """
+        part = self.test_summary_file
+        self.test_summary_file = None
+        if not part or not os.path.exists(part):
+            return
+        with open(part, encoding="utf-8") as fh:
+            contents = fh.read()
+        os.remove(part)
+        if not contents:
+            return
+        if not contents.endswith("\n"):
+            contents += "\n"
+        with open(os.path.join(dir, "summary.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(contents)

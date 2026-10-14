@@ -1,4 +1,4 @@
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+// Copyright 2012 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -22,19 +22,32 @@ enum {
   // DIR_PROGRAM_FILES6432     1               1                  1
   // 1 - C:\Program Files   2 - C:\Program Files (x86)
   DIR_PROGRAM_FILES,      // See table above.
+#if !defined(MOZ_SANDBOX)
   DIR_PROGRAM_FILESX86,   // See table above.
   DIR_PROGRAM_FILES6432,  // See table above.
+#endif  // !defined(MOZ_SANDBOX)
 
   DIR_IE_INTERNET_CACHE,       // Temporary Internet Files directory.
   DIR_COMMON_START_MENU,       // Usually "C:\ProgramData\Microsoft\Windows\
                                // Start Menu\Programs"
   DIR_START_MENU,              // Usually "C:\Users\<user>\AppData\Roaming\
                                // Microsoft\Windows\Start Menu\Programs"
-  DIR_APP_DATA,                // Application Data directory under the user
-                               // profile.
-  DIR_LOCAL_APP_DATA,          // "Local Settings\Application Data" directory
-                               // under the user profile.
-  DIR_COMMON_APP_DATA,         // Usually "C:\ProgramData".
+  DIR_COMMON_STARTUP,          // Usually "C:\ProgramData\Microsoft\Windows\
+                               // Start Menu\Programs\Startup"
+  DIR_USER_STARTUP,            // Usually "C:\Users\<user>\AppData\Roaming\
+                               // Microsoft\Windows\Start Menu\Programs\Startup"
+  DIR_ROAMING_APP_DATA,        // Roaming Application Data directory under the
+                               // user profile.
+                               // Usually "C:\Users\<user>\AppData\Roaming".
+                               // Data for specific applications is stored in
+                               // subdirectories.
+  DIR_LOCAL_APP_DATA,          // Local Application Data directory under the
+                               // user profile.
+                               // Usually "C:\Users\<user>\AppData\Local".
+                               // Data for specific applications is stored in
+                               // subdirectories.
+  DIR_COMMON_APP_DATA,         // Usually "C:\ProgramData". Data for specific
+                               // applications is stored in subdirectories.
   DIR_APP_SHORTCUTS,           // Where tiles on the start screen are stored,
                                // only for Windows 8. Maps to "Local\AppData\
                                // Microsoft\Windows\Application Shortcuts\".
@@ -44,7 +57,11 @@ enum {
   DIR_TASKBAR_PINS,            // Directory for the shortcuts pinned to taskbar.
   DIR_IMPLICIT_APP_SHORTCUTS,  // The implicit user pinned shortcut directory.
   DIR_WINDOWS_FONTS,           // Usually C:\Windows\Fonts.
-
+  DIR_SYSTEM_TEMP,             // %SystemRoot%\SystemTemp or %ProgramFiles%;
+                               // only for admin processes.
+#if !defined(MOZ_SANDBOX)
+  DIR_ONE_DRIVE,               // The synced personal OneDrive directory.
+#endif  // !defined(MOZ_SANDBOX)
   PATH_WIN_END
 };
 

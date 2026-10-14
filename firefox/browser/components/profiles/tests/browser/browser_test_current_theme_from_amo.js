@@ -3,6 +3,8 @@
 
 "use strict";
 
+const DEFAULT_THEME_ID = "default-theme@mozilla.org";
+
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   AddonManager: "resource://gre/modules/AddonManager.sys.mjs",
@@ -63,8 +65,8 @@ add_task(async function test_currentThemeFromAMOExistsOnEditPage() {
 
         Assert.equal(
           editProfileCard.themes.length,
-          11,
-          "Should have 11 themes with the currennt theme from AMO"
+          12,
+          "Should have 12 themes with the current theme from AMO"
         );
 
         Assert.equal(
@@ -78,4 +80,9 @@ add_task(async function test_currentThemeFromAMOExistsOnEditPage() {
 
   const blueThemeAddon = await AddonManager.getAddonByID(BLUE_THEME_ID);
   await blueThemeAddon.uninstall();
+
+  await TestUtils.waitForCondition(
+    () =>
+      SelectableProfileService.currentProfile.theme.themeId === DEFAULT_THEME_ID
+  );
 });

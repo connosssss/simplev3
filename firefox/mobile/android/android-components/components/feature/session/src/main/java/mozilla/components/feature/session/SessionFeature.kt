@@ -4,6 +4,8 @@
 
 package mozilla.components.feature.session
 
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import mozilla.components.browser.state.selector.findTabOrCustomTabOrSelectedTab
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.engine.EngineView
@@ -11,21 +13,18 @@ import mozilla.components.feature.session.engine.EngineViewPresenter
 import mozilla.components.support.base.feature.LifecycleAwareFeature
 import mozilla.components.support.base.feature.UserInteractionHandler
 
-/**
- * Feature implementation for connecting the engine module with the session module.
- */
+/** Feature implementation for connecting the engine module with the session module. */
 class SessionFeature(
     private val store: BrowserStore,
     private val goBackUseCase: SessionUseCases.GoBackUseCase,
     private val goForwardUseCase: SessionUseCases.GoForwardUseCase,
     private val engineView: EngineView,
     private val tabId: String? = null,
+    mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
 ) : LifecycleAwareFeature, UserInteractionHandler {
-    internal val presenter = EngineViewPresenter(store, engineView, tabId)
+    internal val presenter = EngineViewPresenter(store, engineView, tabId, mainDispatcher)
 
-    /**
-     * Start feature: App is in the foreground.
-     */
+    /** Start feature: App is in the foreground. */
     override fun start() {
         presenter.start()
     }
@@ -42,7 +41,18 @@ class SessionFeature(
             engineView.clearSelection()
             return true
         } else if (tab?.content?.canGoBack == true) {
-            goBackUseCase(tab.id)
+            val engineSession = tab.engineState.engineSession
+            if (engineSession != null) {
+                engineSession.processBackPressed(
+                    onResult = { handled ->
+                        if (!handled) {
+                            goBackUseCase(tab.id)
+                        }
+                    }
+                )
+            } else {
+                goBackUseCase(tab.id)
+            }
             return true
         }
 
@@ -65,16 +75,14 @@ class SessionFeature(
         return false
     }
 
-    /**
-     * Stop feature: App is in the background.
-     */
+    /** Stop feature: App is in the background. */
     override fun stop() {
         presenter.stop()
     }
 
     /**
-     * Stops the feature from rendering sessions on the [EngineView] (until explicitly started again)
-     * and releases an already rendering session from the [EngineView].
+     * Stops the feature from rendering sessions on the [EngineView] (until explicitly started again) and releases an
+     * already rendering session from the [EngineView].
      */
     fun release() {
         // Once we fully migrated to BrowserStore we may be able to get rid of the need for cleanup().

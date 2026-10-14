@@ -3,6 +3,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import os
+import sys
 import textwrap
 import traceback
 import unittest
@@ -11,7 +12,7 @@ import mozpack.path as mozpath
 from mozunit import MockedOpen, main
 
 from mozbuild.configure import ConfigureError
-from mozbuild.configure.lint import LintSandbox
+from mozbuild.configure.lint import LintSandbox, find_unreferenced_configs
 
 test_data_path = mozpath.abspath(mozpath.dirname(__file__))
 test_data_path = mozpath.join(test_data_path, "data")
@@ -44,11 +45,12 @@ class TestLint(unittest.TestCase):
         sandbox = LintSandbox(env, ["configure"] + options)
 
         sandbox.run(mozpath.join(test_data_path, "moz.configure"))
+        return sandbox
 
     def moz_configure(self, source):
-        return MockedOpen(
-            {os.path.join(test_data_path, "moz.configure"): textwrap.dedent(source)}
-        )
+        return MockedOpen({
+            os.path.join(test_data_path, "moz.configure"): textwrap.dedent(source)
+        })
 
     def assertRaisesFromLine(self, exc_type, line):
         return AssertRaisesFromLine(
@@ -340,7 +342,7 @@ class TestLint(unittest.TestCase):
                 self.lint_test()
         self.assertEqual(
             str(e.exception),
-            "--disable-foo should be used instead of " "--enable-foo with default=True",
+            "--disable-foo should be used instead of --enable-foo with default=True",
         )
 
     def test_default_disable(self):
@@ -360,8 +362,7 @@ class TestLint(unittest.TestCase):
                 self.lint_test()
         self.assertEqual(
             str(e.exception),
-            "--enable-foo should be used instead of "
-            "--disable-foo with default=False",
+            "--enable-foo should be used instead of --disable-foo with default=False",
         )
 
     def test_default_with(self):
@@ -381,7 +382,7 @@ class TestLint(unittest.TestCase):
                 self.lint_test()
         self.assertEqual(
             str(e.exception),
-            "--without-foo should be used instead of " "--with-foo with default=True",
+            "--without-foo should be used instead of --with-foo with default=True",
         )
 
     def test_default_without(self):
@@ -401,7 +402,7 @@ class TestLint(unittest.TestCase):
                 self.lint_test()
         self.assertEqual(
             str(e.exception),
-            "--with-foo should be used instead of " "--without-foo with default=False",
+            "--with-foo should be used instead of --without-foo with default=False",
         )
 
     def test_default_func(self):
@@ -426,8 +427,7 @@ class TestLint(unittest.TestCase):
                 self.lint_test()
         self.assertEqual(
             str(e.exception),
-            '`help` should contain "{Enable|Disable}" because of '
-            "non-constant default",
+            '`help` should contain "{Enable|Disable}" because of non-constant default',
         )
 
     def test_dual_help(self):
@@ -543,9 +543,10 @@ class TestLint(unittest.TestCase):
 
         self.assertEqual(str(e.exception), "global name 'unknown' is not defined")
 
-        # Ideally, this would raise on line 4, where `unknown` is used, but
-        # python disassembly doesn't give use the information.
-        with self.assertRaisesFromLine(NameError, 2) as e:
+        # The correct line here is 4, where `unknown` is used, but python
+        # disassembly before python 3.13 didn't give us the information.
+        line = 4 if sys.version_info >= (3, 13) else 2
+        with self.assertRaisesFromLine(NameError, line) as e:
             with self.moz_configure(
                 """
                 @template
@@ -578,6 +579,208 @@ class TestLint(unittest.TestCase):
                 self.lint_test()
 
         self.assertEqual(str(e.exception), "builtin 'list' doesn't need to be imported")
+
+    def test_set_configs(self):
+        with self.moz_configure(
+            """
+            @template
+            def foo_config(name):
+                set_config(name, True)
+
+            foo_config("FOO")
+            set_config("BAR", True)
+        """
+        ):
+            sandbox = self.lint_test()
+
+        self.assertEqual(
+            sandbox.set_configs,
+            {"BAR": (mozpath.join(test_data_path, "moz.configure"), 7)},
+        )
+
+    def test_unreferenced_depends(self):
+        with self.moz_configure(
+            """
+            option("--foo", help="Foo")
+
+            @depends("--foo")
+            def unused(foo):
+                return foo
+
+            @depends("--foo")
+            def check(foo):
+                if foo:
+                    log.info("foo")
+
+            @depends("--foo")
+            def dependency(foo):
+                return foo
+
+            @depends(dependency)
+            def configured(dependency):
+                return dependency
+
+            set_config("FOO", configured)
+
+            @depends("--foo")
+            def condition(foo):
+                return foo
+
+            set_define("BAR", True, when=condition)
+
+            @depends("--foo")
+            def default_baz(foo):
+                return bool(foo)
+
+            option("--baz", default=default_baz, help="Baz")
+
+            @depends("--baz")
+            def baz(value):
+                return value
+
+            set_config("BAZ", baz)
+
+            @template
+            def tmpl():
+                @depends("--foo")
+                def inner(foo):
+                    return foo
+
+                return inner
+
+            from_template = tmpl()
+        """
+        ):
+            sandbox = self.lint_test()
+
+        self.assertEqual(
+            sandbox.unreferenced_depends(),
+            {("unused", mozpath.join(test_data_path, "moz.configure"), 5)},
+        )
+
+    def test_unreferenced_depends_checking(self):
+        with self.moz_configure(
+            """
+            option("--foo", help="Foo")
+
+            @template
+            def checking(what):
+                def decorator(func):
+                    def wrapped(*args, **kwargs):
+                        ret = func(*args, **kwargs)
+                        log.info(ret)
+                        return ret
+
+                    return wrapped
+
+                return decorator
+
+            @depends("--foo")
+            @checking("for foo")
+            def checked(foo):
+                return foo
+
+            @depends("--foo")
+            def unchecked(foo):
+                return foo
+        """
+        ):
+            sandbox = self.lint_test()
+
+        self.assertEqual(
+            sandbox.unreferenced_depends(),
+            {("unchecked", mozpath.join(test_data_path, "moz.configure"), 22)},
+        )
+
+    def test_unreferenced_depends_if_and_lambda(self):
+        with self.moz_configure(
+            """
+            option("--foo", help="Foo")
+
+            @template
+            def depends_tmpl(eval_args_fn, *args):
+                def decorator(func):
+                    @depends(*args)
+                    def wrapper(*args):
+                        if eval_args_fn(args):
+                            return func(*args)
+
+                    return wrapper
+
+                return decorator
+
+            @template
+            def depends_if(*args):
+                return depends_tmpl(any, *args)
+
+            @depends_if("--foo")
+            def unused_if(foo):
+                return foo
+
+            @depends_if("--foo")
+            def used_if(foo):
+                return foo
+
+            set_config("FOO", used_if)
+
+            unused_lambda = depends("--foo")(lambda foo: foo)
+            used_lambda = depends("--foo")(lambda foo: foo)
+            set_config("BAR", used_lambda)
+        """
+        ):
+            sandbox = self.lint_test()
+
+        path = mozpath.join(test_data_path, "moz.configure")
+        self.assertEqual(
+            sandbox.unreferenced_depends(),
+            {("unused_if", path, 21), ("unused_lambda", path, 30)},
+        )
+
+    def test_find_unreferenced_configs(self):
+        with MockedOpen({
+            mozpath.join(test_data_path, "moz.build"): 'CONFIG["IN_MOZ_BUILD"]',
+            mozpath.join(test_data_path, "rules.mk"): "$(IN_MAKE)",
+            mozpath.join(test_data_path, "components.conf"): (
+                'buildconfig.substs["IN_COMPONENTS"]'
+            ),
+            mozpath.join(test_data_path, "script"): "IN_SCRIPT",
+            mozpath.join(test_data_path, "foo.cpp"): "IN_CPP",
+            mozpath.join(test_data_path, "moz.configure"): "IN_CONFIGURE",
+            mozpath.join(test_data_path, "bar.py"): "IN_PYTHON_SUFFIX",
+            mozpath.join(test_data_path, "baz.py"): "  # IN_COMMENT",
+            mozpath.join(test_data_path, "config.h.in"): (
+                "#ifdef IN_DEFINE\n#define FOO @IN_SUBST@\n"
+            ),
+        }):
+            self.assertEqual(
+                find_unreferenced_configs(
+                    (
+                        "IN_MOZ_BUILD",
+                        "IN_MAKE",
+                        "IN_COMPONENTS",
+                        "IN_SCRIPT",
+                        "IN_CPP",
+                        "IN_CONFIGURE",
+                        "IN_PYTHON",
+                        "IN_COMMENT",
+                        "IN_DEFINE",
+                        "IN_SUBST",
+                    ),
+                    test_data_path,
+                    [
+                        "moz.build",
+                        "rules.mk",
+                        "components.conf",
+                        "script",
+                        "foo.cpp",
+                        "moz.configure",
+                        "bar.py",
+                        "baz.py",
+                        "config.h.in",
+                    ],
+                ),
+                ["IN_COMMENT", "IN_CONFIGURE", "IN_CPP", "IN_DEFINE", "IN_PYTHON"],
+            )
 
 
 if __name__ == "__main__":

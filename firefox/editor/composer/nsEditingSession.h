@@ -1,16 +1,17 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsEditingSession_h__
-#define nsEditingSession_h__
+#ifndef nsEditingSession_h_
+#define nsEditingSession_h_
 
 #include "nsCOMPtr.h"               // for nsCOMPtr
 #include "nsISupportsImpl.h"        // for NS_DECL_ISUPPORTS
 #include "nsIWeakReferenceUtils.h"  // for nsWeakPtr
 #include "nsWeakReference.h"        // for nsSupportsWeakReference, etc
 #include "nscore.h"                 // for nsresult
+
+#include "nsPIDOMWindow.h"
 
 #ifndef __gen_nsIWebProgressListener_h__
 #  include "nsIWebProgressListener.h"
@@ -60,12 +61,6 @@ class nsEditingSession final : public nsIEditingSession,
    */
   nsresult DetachFromWindow(nsPIDOMWindowOuter* aWindow);
 
-  /**
-   * Undos DetachFromWindow(), reattaches this editing session/editor
-   * to the window.
-   */
-  nsresult ReattachToWindow(nsPIDOMWindowOuter* aWindow);
-
  protected:
   virtual ~nsEditingSession();
 
@@ -73,10 +68,11 @@ class nsEditingSession final : public nsIEditingSession,
 
   nsresult SetupEditorCommandController(
       ControllerCreatorFn aControllerCreatorFn, mozIDOMWindowProxy* aWindow,
-      nsISupports* aContext, uint32_t* aControllerId);
+      nsISupportsWeakReference* aContext, uint32_t* aControllerId);
 
   nsresult SetContextOnControllerById(nsIControllers* aControllers,
-                                      nsISupports* aContext, uint32_t aID);
+                                      nsISupportsWeakReference* aContext,
+                                      uint32_t aID);
 
   /**
    *  Set the editor on the controller(s) for this window
@@ -91,6 +87,7 @@ class nsEditingSession final : public nsIEditingSession,
 
   nsresult PrepareForEditing(nsPIDOMWindowOuter* aWindow);
 
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY
   static void TimerCallback(nsITimer* aTimer, void* aClosure);
   nsCOMPtr<nsITimer> mLoadBlankDocTimer;
 
@@ -165,4 +162,4 @@ class nsEditingSession final : public nsIEditingSession,
   nsWeakPtr mExistingEditor;
 };
 
-#endif  // nsEditingSession_h__
+#endif  // nsEditingSession_h_

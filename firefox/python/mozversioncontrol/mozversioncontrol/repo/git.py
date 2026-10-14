@@ -2,6 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this,
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import annotations
+
 import os
 import platform
 import re
@@ -14,7 +16,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 from mach.util import (
     to_optional_path,
@@ -56,7 +58,7 @@ class GitRepository(Repository):
     """An implementation of `Repository` for Git repositories."""
 
     def __init__(self, path: Path, git="git"):
-        super(GitRepository, self).__init__(path, tool=git)
+        super().__init__(path, tool=git)
 
     @property
     def name(self):
@@ -64,13 +66,27 @@ class GitRepository(Repository):
 
     @property
     def head_ref(self):
+        return self.branch or "HEAD"
+
+    @property
+    def head_rev(self):
         return self._run("rev-parse", "HEAD").strip()
 
     def is_cinnabar_repo(self) -> bool:
         """Return `True` if the repo is a git-cinnabar clone."""
-        output = self._run("for-each-ref")
 
-        return "refs/cinnabar" in output
+        try:
+            # First revision of the canonical Firefox repository
+            self._run(
+                "cat-file",
+                "-e",
+                "2ca566cd74d5d0863ba7ef0529a4f88b2823eb43^{commit}",
+                stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError:
+            output = self._run("for-each-ref")
+            return "refs/cinnabar" in output
+        return False
 
     def get_mozilla_upstream_remotes(self) -> Iterator[str]:
         """Return the Mozilla-official upstream remotes for this repo."""
@@ -106,7 +122,11 @@ class GitRepository(Repository):
             )
 
         for line in remotes:
-            name, url, action = line.split()
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+
+            name, url, action, *_ = parts
 
             # Only consider fetch sources.
             if action != "(fetch)":
@@ -132,7 +152,7 @@ class GitRepository(Repository):
         ).splitlines()
         if refs:
             return refs[-1][1:]  # boundary starts with a prefix `-`
-        return self.head_ref
+        return self.head_rev
 
     def base_ref_as_hg(self):
         base_ref = self.base_ref
@@ -172,6 +192,32 @@ class GitRepository(Repository):
         if not email:
             return None
         return email.strip()
+
+    def get_user_name(self):
+        name = self._run("config", "user.name", return_codes=[0, 1])
+        if not name:
+            return None
+        return name.strip()
+
+    def get_remote_url(self, remote=None, push=False):
+        if not remote:
+            keys = [f"branch.{self.branch}.remote"]
+            if push:
+                keys[0:0] = [f"branch.{self.branch}.pushRemote", "remote.pushDefault"]
+
+            for key in keys:
+                if remote := self._run("config", key, return_codes=[0, 1]):
+                    break
+            else:
+                return None
+
+            remote = remote.strip()
+
+        cmd = ["remote", "get-url", remote]
+        if push:
+            cmd.append("--push")
+        url = self._run(*cmd, return_codes=[0, 2, 128], stderr=subprocess.DEVNULL)
+        return url.strip() if url else None
 
     def get_changed_files(self, diff_filter="ADM", mode="unstaged", rev=None):
         assert all(f.lower() in self._valid_diff_filter for f in diff_filter)
@@ -219,9 +265,7 @@ class GitRepository(Repository):
         if force:
             cmd.append("-f")
 
-        cmd.extend(paths)
-
-        self._run(*cmd)
+        self._run_batched(*cmd, paths=paths)
 
     def forget_add_remove_files(self, *paths: Union[str, Path]):
         if not paths:
@@ -229,7 +273,7 @@ class GitRepository(Repository):
 
         paths = [str(path) for path in paths]
 
-        self._run("reset", *paths)
+        self._run_batched("reset", paths=paths)
 
     def get_tracked_files_finder(self, path=None):
         files = [p for p in self._run("ls-files", "-z").split("\0") if p]
@@ -253,7 +297,7 @@ class GitRepository(Repository):
         if pattern.startswith("^"):
             magics += ["top"]
             pattern = pattern[1:]
-        return ":({0}){1}".format(",".join(magics), pattern)
+        return ":({}){}".format(",".join(magics), pattern)
 
     def diff_stream(self, rev=None, extensions=(), exclude_file=None, context=8):
         commit_range = "HEAD"  # All uncommitted changes.
@@ -265,11 +309,12 @@ class GitRepository(Repository):
         # git-diff doesn't support an 'exclude-from-files' param, but
         # allow to add individual exclude pattern since v1.9, see
         # https://git-scm.com/docs/gitglossary#gitglossary-aiddefpathspecapathspec
-        with open(exclude_file) as exclude_pattern_file:
-            for pattern in exclude_pattern_file.readlines():
-                pattern = self._translate_exclude_expr(pattern.rstrip())
-                if pattern is not None:
-                    args.append(pattern)
+        if exclude_file is not None:
+            with open(exclude_file) as exclude_pattern_file:
+                for pattern in exclude_pattern_file.readlines():
+                    translated = self._translate_exclude_expr(pattern.rstrip())
+                    if translated is not None:
+                        args.append(translated)
         return self._pipefrom(*args)
 
     def working_directory_clean(self, untracked=False, ignored=False):
@@ -298,12 +343,49 @@ class GitRepository(Repository):
     def update(self, ref):
         self._run("checkout", ref)
 
-    def push_to_try(
+    def push(
         self,
-        message: str,
-        changed_files: dict[str, str] = {},
-        allow_log_capture: bool = False,
+        remote: Optional[str] = None,
+        ref: Optional[str] = None,
+        dest_branch: Optional[str] = None,
+        force: bool = False,
+        env: Optional[dict] = None,
     ):
+        if ref and not remote:
+            raise ValueError("Cannot specify ref without specifying remote")
+        if dest_branch and not ref:
+            raise ValueError("Cannot specify dest_branch without specifying ref")
+
+        args = []
+        if remote and remote.startswith("hg::"):
+            # Ensure git-cinnabar adds the `extra.git_commit` metadata to the Mercurial
+            # commit.
+            args.extend(["-c", "cinnabar.experiments=git_commit"])
+        args.append("push")
+        if force:
+            args.append("--force")
+        if remote:
+            args.append(remote)
+        if ref:
+            if dest_branch:
+                args.append(f"{ref}:refs/heads/{dest_branch}")
+            else:
+                args.append(ref)
+
+        runargs = {
+            "env": env,
+            "stdout": None,  # stream push output
+        }
+        self._run(*args, **runargs)
+
+    def _resolve_try_branch(self):
+        if not self.branch:
+            raise ValueError(
+                "Cannot push to try from a detached HEAD; checkout a branch first."
+            )
+        return self.branch
+
+    def _push_to_hg_try(self, message, changed_files, remote, allow_log_capture):
         if not self.has_git_cinnabar:
             raise MissingVCSExtension("cinnabar")
 
@@ -316,7 +398,7 @@ class GitRepository(Repository):
                 # is, and figures on its own, but that request takes a long time on try.
                 "cinnabar.data=never",
                 "push",
-                "hg::ssh://hg.mozilla.org/try",
+                f"hg::{remote}",
                 f"+{head}:refs/heads/branches/default/tip",
             )
             if allow_log_capture:
@@ -332,6 +414,16 @@ class GitRepository(Repository):
                 )
             else:
                 subprocess.check_call(cmd, cwd=self.path)
+
+    def add_note(
+        self,
+        note: str,
+        content: str,
+        commit: Optional[str] = None,
+    ):
+        if not note.startswith("refs/notes/"):
+            note = f"refs/notes/{note}"
+        self._run("notes", "--ref", note, "add", "-f", "-m", content, commit or "HEAD")
 
     def set_config(self, name, value):
         self._run("config", name, value)
@@ -363,7 +455,15 @@ class GitRepository(Repository):
     def get_commit_patches(self, nodes: list[str]) -> list[bytes]:
         """Return the contents of the patch `node` in the VCS' standard format."""
         return [
-            self._run("format-patch", node, "-1", "--always", "--stdout", encoding=None)
+            self._run(
+                "format-patch",
+                node,
+                "-1",
+                "--always",
+                "--stdout",
+                "--no-base",  # In case the user has format.useAutoBase true
+                encoding=None,
+            )
             for node in nodes
         ]
 
@@ -379,7 +479,25 @@ class GitRepository(Repository):
         `changed_files` may contain a dict of file paths and their contents,
         see `stage_changes`.
         """
-        current_head = self.head_ref
+        try_head, cleanup = self.prepare_try_push(commit_message, changed_files)
+        yield try_head
+        cleanup()
+
+    def prepare_try_push(
+        self, commit_message: str, changed_files: Optional[dict[str, str]] = None
+    ) -> tuple[Optional[str], Callable]:
+        """Create a temporary try commit as a context manager.
+
+        Create a new commit using `commit_message` as the commit message. The commit
+        may be empty, for example when only including try syntax.
+
+        `changed_files` may contain a dict of file paths and their contents,
+        see `stage_changes`.
+
+        This function returns a tuple of the ref of the new head and a function
+        that can be called to remove the head from the local repository.
+        """
+        current_head = self.head_rev
 
         def data(content):
             return f"data {len(content)}\n{content}"
@@ -394,24 +512,22 @@ class GitRepository(Repository):
         # adding or modifying the files from `changed_files`.
         # fast-import will output the sha1 for that temporary commit on stdout
         # (via `get-mark`).
-        fast_import = "\n".join(
-            [
-                f"commit refs/machtry/{branch}",
-                "mark :1",
-                f"author {author}",
-                f"committer {committer}",
-                data(commit_message),
-                f"from {current_head}",
-                "\n".join(
-                    f"M 100644 inline {path}\n{data(content)}"
-                    for path, content in (changed_files or {}).items()
-                ),
-                f"reset refs/machtry/{branch}",
-                "from 0000000000000000000000000000000000000000",
-                "get-mark :1",
-                "",
-            ]
-        )
+        fast_import = "\n".join([
+            f"commit refs/machtry/{branch}",
+            "mark :1",
+            f"author {author}",
+            f"committer {committer}",
+            data(commit_message),
+            f"from {current_head}",
+            "\n".join(
+                f"M 100644 inline {path}\n{data(content)}"
+                for path, content in (changed_files or {}).items()
+            ),
+            f"reset refs/machtry/{branch}",
+            "from 0000000000000000000000000000000000000000",
+            "get-mark :1",
+            "",
+        ])
 
         cmd = (str(self._tool), "fast-import", "--quiet")
         stdout = subprocess.check_output(
@@ -424,24 +540,28 @@ class GitRepository(Repository):
         )
 
         try_head = stdout.decode("ascii").strip()
-        yield try_head
 
-        # Keep trace of the temporary push in the reflog, as if we did actually commit.
-        # This does update HEAD for a small window of time.
-        # If we raced with something else that changed the HEAD after we created our
-        # commit, update-ref will fail and print an error message. Only the update in
-        # the reflog would be lost in this case.
-        self._run("update-ref", "-m", "mach try: push", "HEAD", try_head, current_head)
-        # Likewise, if we raced with something else that updated the HEAD between our
-        # two update-ref, update-ref will fail and print an error message.
-        self._run(
-            "update-ref",
-            "-m",
-            "mach try: restore",
-            "HEAD",
-            current_head,
-            try_head,
-        )
+        def cleanup():
+            # Keep trace of the temporary push in the reflog, as if we did actually commit.
+            # This does update HEAD for a small window of time.
+            # If we raced with something else that changed the HEAD after we created our
+            # commit, update-ref will fail and print an error message. Only the update in
+            # the reflog would be lost in this case.
+            self._run(
+                "update-ref", "-m", "mach try: push", "HEAD", try_head, current_head
+            )
+            # Likewise, if we raced with something else that updated the HEAD between our
+            # two update-ref, update-ref will fail and print an error message.
+            self._run(
+                "update-ref",
+                "-m",
+                "mach try: restore",
+                "HEAD",
+                current_head,
+                try_head,
+            )
+
+        return try_head, cleanup
 
     def get_last_modified_time_for_file(self, path: Path):
         """Return last modified in VCS time for the specified file."""
@@ -450,28 +570,25 @@ class GitRepository(Repository):
         return datetime.strptime(out.strip(), "%Y-%m-%d %H:%M:%S %z")
 
     def get_config_key_value(self, key: str):
-        try:
-            value = subprocess.check_output(
-                [self._tool, "config", "--get", key],
-                stderr=subprocess.DEVNULL,
-                text=True,
-            ).strip()
-            return value or None
-        except subprocess.CalledProcessError:
-            return None
+        value = self._run(
+            "config", "--get", key, stderr=subprocess.DEVNULL, return_codes=[0, 1]
+        ).strip()
+        return value or None
 
     def set_config_key_value(self, key: str, value: str):
         """
         Set a git config value in the given repo and print
         logging output indicating what was done.
         """
-        subprocess.check_call(
-            [self._tool, "config", key, value],
-            cwd=str(self.path),
-        )
+        self._run("config", key, value)
         print(f'Set git config: "{key} = {value}"')
 
-    def configure(self, state_dir: Path, update_only: bool = False):
+    def configure(
+        self,
+        state_dir: Path,
+        update_only: bool = False,
+        no_system_changes: bool = False,
+    ):
         """Run the Git configuration steps."""
         if not update_only:
             print("Configuring git...")
@@ -498,10 +615,25 @@ class GitRepository(Repository):
                         "full compatibility and performance."
                     )
 
+                if not self.get_user_email():
+                    print("\nGit requires an email address to identify your commits.")
+                    email = input("Enter your email address: ").strip()
+                    if email:
+                        self.set_config_key_value("user.email", email)
+
+                if not self.get_user_name():
+                    print("\nGit requires a name to identify your commits.")
+                    name = input("Enter your name: ").strip()
+                    if name:
+                        self.set_config_key_value("user.name", name)
+
             system = platform.system()
 
             # https://git-scm.com/docs/git-config#Documentation/git-config.txt-coreuntrackedCache
             self.set_config_key_value(key="core.untrackedCache", value="true")
+            # https://git-scm.com/docs/git-config#Documentation/git-config.txt-checkoutworkers
+            if not self._run("config", "--get", "checkout.workers", return_codes=[1]):
+                self.set_config_key_value(key="checkout.workers", value="0")
 
             # https://git-scm.com/docs/git-config#Documentation/git-config.txt-corefsmonitor
             if system == "Windows":
@@ -513,7 +645,7 @@ class GitRepository(Repository):
             elif system == "Darwin":
                 # On macOS (Darwin) we enable the built-in fsmonitor which is superior to Watchman.
                 self.set_config_key_value(key="core.fsmonitor", value="true")
-            elif system == "Linux":
+            elif system == "Linux" and not no_system_changes:
                 # On Linux the built-in fsmonitor isn’t available, so we unset it and attempt to set up
                 # Watchman to achieve similar fsmonitor-style speedups.
                 subprocess.run(
@@ -631,6 +763,7 @@ class GitRepository(Repository):
                 "watchman is not installed. Please install `watchman` and "
                 "re-run `./mach vcs-setup` to enable faster git commands."
             )
+            return
 
         print("Ensuring watchman is properly configured...")
 
@@ -668,3 +801,41 @@ class GitRepository(Repository):
             print(f"Copying {watchman_sample} to {watchman_config}")
             subprocess.check_call(copy_cmd, cwd=str(self.path))
         self.set_config_key_value(key="core.fsmonitor", value=str(watchman_config))
+
+    def get_patches_after_ref(self, base_ref) -> str:
+        """
+        Retrieve git format-patch style patches of all commits that occurred
+        after `base_ref`.
+        """
+        return self._run(
+            "format-patch", f"{base_ref}..HEAD", "--stdout", f"--base={base_ref}"
+        )
+
+    def get_patch_for_uncommitted_changes(
+        self, message: str = "[PATCH] Uncommitted changes", date: datetime = None
+    ) -> str:
+        """
+        Generate a git format-patch style patch of all uncommitted changes in
+        the working directory.
+        """
+        diff = self._run("diff", "--no-color", "HEAD")
+        if not diff.strip():
+            return ""
+
+        if not date:
+            date = datetime.now()
+
+        name = self.get_user_name()
+        email = self.get_user_email()
+        formatted_date = date.strftime("%a %b %d %H:%M:%S %Y %z")
+
+        patch = [
+            "From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001",
+            f"From: {name} <{email}>",
+            f"Date: {formatted_date}",
+            f"Subject: {message}",
+            "\n---\n",
+            diff,
+        ]
+
+        return "\n".join(patch)

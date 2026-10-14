@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -11,10 +10,20 @@
 #include "gfxFontEntry.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/UnscaledFontFreeType.h"
-#include "nsTHashMap.h"
 #include "nsHashKeys.h"
+#include "nsTHashMap.h"
+
+#ifdef MOZ_FONTATIONS
+#  include "mozilla/gfx/fontations_glue_generated.h"
+#endif
 
 class gfxFT2FontBase;
+
+namespace mozilla {
+namespace gfx {
+class FTUserFontData;
+}
+}  // namespace mozilla
 
 class gfxFT2FontEntryBase : public gfxFontEntry {
  public:
@@ -25,6 +34,11 @@ class gfxFT2FontEntryBase : public gfxFontEntry {
   static bool FaceHasTable(mozilla::gfx::SharedFTFace*, uint32_t aTableTag);
   static nsresult CopyFaceTable(mozilla::gfx::SharedFTFace*, uint32_t aTableTag,
                                 nsTArray<uint8_t>&);
+
+  virtual mozilla::gfx::FTUserFontData* GetUserFontData() = 0;
+
+  size_t ComputedSizeOfExcludingThis(
+      mozilla::MallocSizeOf aMallocSizeOf) override;
 
  private:
   enum { kNumCmapCacheSlots = 256 };
@@ -47,6 +61,12 @@ class gfxFT2FontBase : public gfxFont {
       const gfxFontStyle* aFontStyle, int aLoadFlags, bool aEmbolden);
 
   uint32_t GetGlyph(uint32_t aCharCode) {
+    using namespace mozilla::gfx;
+#ifdef MOZ_FONTATIONS
+    if (const SkrifaFontRef* font = mFontEntry->GetSkrifaFont()) {
+      return skrifa_font_map_char_to_glyph(font, aCharCode);
+    }
+#endif
     auto* entry = static_cast<gfxFT2FontEntryBase*>(mFontEntry.get());
     return entry->GetGlyph(aCharCode, this);
   }
@@ -70,6 +90,7 @@ class gfxFT2FontBase : public gfxFont {
                              const nsTArray<gfxFontVariation>& aVariations,
                              FT_Face aFTFace);
 
+  // Callers must always pair lock and unlock, regardless of return value.
   FT_Face LockFTFace() const;
   void UnlockFTFace() const;
 
@@ -85,12 +106,12 @@ class gfxFT2FontBase : public gfxFont {
  protected:
   ~gfxFT2FontBase() override;
   void InitMetrics();
-  const Metrics& GetHorizontalMetrics() const override { return mMetrics; }
+  void InitExtraMetrics(gfxFloat aEmHeight, gfxFloat aLineHeight);
+
   FT_Vector GetEmboldenStrength(FT_Face aFace) const;
 
   RefPtr<mozilla::gfx::SharedFTFace> mFTFace;
 
-  Metrics mMetrics;
   int mFTLoadFlags;
   bool mEmbolden;
   gfxFloat mFTSize;
@@ -142,8 +163,8 @@ class gfxFT2FontBase : public gfxFont {
     uint16_t mHeight;
   };
 
-  const GlyphMetrics& GetCachedGlyphMetrics(
-      uint16_t aGID, mozilla::gfx::IntRect* aBounds = nullptr);
+  GlyphMetrics GetCachedGlyphMetrics(uint16_t aGID,
+                                     mozilla::gfx::IntRect* aBounds = nullptr);
 
   mozilla::UniquePtr<nsTHashMap<nsUint32HashKey, GlyphMetrics>> mGlyphMetrics
       MOZ_GUARDED_BY(mLock);

@@ -9,11 +9,9 @@ config = {
     ######## LINUX GENERIC CONFIG KEYS/VAlUES
     # if you are updating this with custom 64 bit keys/values please add them
     # below under the '64 bit specific' code block otherwise, update in this
-    # code block and also make sure this is synced with
-    # releng_base_linux_32_builds.py
+    # code block.
     # note: overridden by MOZHARNESS_ACTIONS in TaskCluster tasks
     "default_actions": [
-        "clobber",
         "build",
     ],
     "secret_files": [
@@ -50,12 +48,9 @@ config = {
         "LC_ALL": "C",
         "PATH": "/usr/local/bin:/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/sbin",
     },
-    "mozconfig_variant": "nightly",
     #########################################################################
     #########################################################################
     ###### 64 bit specific ######
     "platform": "linux64",
-    "stage_platform": "linux64",
-    "mozconfig_platform": "linux64",
     #########################################################################
 }

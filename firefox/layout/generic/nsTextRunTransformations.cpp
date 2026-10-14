@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,11 +14,12 @@
 #include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/StaticPrefs_mathml.h"
 #include "mozilla/TextEditor.h"
+#include "mozilla/Utf16.h"
 #include "mozilla/gfx/2D.h"
-#include "nsGkAtoms.h"
 #include "nsLineBreaker.h"
 #include "nsSpecialCasingData.h"
 #include "nsStyleConsts.h"
+#include "nsStyleUtil.h"
 #include "nsTextFrameUtils.h"
 #include "nsUnicharUtils.h"
 #include "nsUnicodeProperties.h"
@@ -148,7 +147,7 @@ void MergeCharactersInTextRun(gfxTextRun* aDest, gfxTextRun* aSrc,
                               const bool* aDeletedChars) {
   MOZ_ASSERT(!aDest->TrailingGlyphRun(), "unexpected glyphRuns in aDest!");
   uint32_t offset = 0;
-  AutoTArray<gfxTextRun::DetailedGlyph, 2> glyphs;
+  AutoTArray<gfxTextRun::DetailedGlyph, 4> glyphs;
   const gfxTextRun::CompressedGlyph continuationGlyph =
       gfxTextRun::CompressedGlyph::MakeComplex(false, false);
   const gfxTextRun::CompressedGlyph* srcGlyphs = aSrc->GetCharacterGlyphs();
@@ -178,8 +177,8 @@ void MergeCharactersInTextRun(gfxTextRun* aDest, gfxTextRun* aSrc,
           anyMissing = true;
           glyphs.Clear();
         }
-        if (g.GetGlyphCount() > 0) {
-          glyphs.AppendElements(aSrc->GetDetailedGlyphs(k), g.GetGlyphCount());
+        if (uint32_t count = g.GetGlyphCount()) {
+          glyphs.AppendElements(aSrc->GetDetailedGlyphs(k, count), count);
         }
       }
 
@@ -206,6 +205,21 @@ void MergeCharactersInTextRun(gfxTextRun* aDest, gfxTextRun* aSrc,
           // Otherwise set up complex glyph record and store detailed glyphs.
           mergedGlyph.SetComplex(mergedGlyph.IsClusterStart(),
                                  mergedGlyph.IsLigatureGroupStart());
+          // If the original character decomposed to multiple base glyphs,
+          // like German es-zet being uppercased to "SS", or presentation-form
+          // ligatures like U+FB01 being uppercased to "FI", then any letter-
+          // spacing needs to be applied between these components. But most
+          // multi-character mappings generate a base glyph and diacritic(s),
+          // in which case internal letter-spacing should NOT be applied.
+          // We distinguish the cases here by checking if all the component
+          // glyphs have non-zero advance; if so, set the letter-spacing flag.
+          if (glyphs.Length() > 1 &&
+              std::all_of(glyphs.cbegin(), glyphs.cend(),
+                          [](const gfxTextRun::DetailedGlyph& g) -> bool {
+                            return g.mAdvance > 0;
+                          })) {
+            mergedGlyph.SetApplyLetterSpacingBetweenDetailedGlyphs();
+          }
           destGlyphs[offset] = mergedGlyph;
           aDest->SetDetailedGlyphs(offset, glyphs.Length(), glyphs.Elements());
           if (anyMissing) {
@@ -261,40 +275,32 @@ static LanguageSpecificCasingBehavior GetCasingFor(const nsAtom* aLang) {
   if (!aLang) {
     return eLSCB_None;
   }
-  if (aLang == nsGkAtoms::tr || aLang == nsGkAtoms::az ||
-      aLang == nsGkAtoms::ba || aLang == nsGkAtoms::crh ||
-      aLang == nsGkAtoms::tt) {
+  if (nsStyleUtil::MatchesLanguagePrefix(aLang, u"tr") ||
+      nsStyleUtil::MatchesLanguagePrefix(aLang, u"az") ||
+      nsStyleUtil::MatchesLanguagePrefix(aLang, u"ba") ||
+      nsStyleUtil::MatchesLanguagePrefix(aLang, u"crh") ||
+      nsStyleUtil::MatchesLanguagePrefix(aLang, u"tt")) {
     return eLSCB_Turkish;
   }
-  if (aLang == nsGkAtoms::nl) {
+  if (nsStyleUtil::MatchesLanguagePrefix(aLang, u"nl")) {
     return eLSCB_Dutch;
   }
-  if (aLang == nsGkAtoms::el) {
+  if (nsStyleUtil::MatchesLanguagePrefix(aLang, u"el")) {
     return eLSCB_Greek;
   }
-  if (aLang == nsGkAtoms::ga) {
+  if (nsStyleUtil::MatchesLanguagePrefix(aLang, u"ga")) {
     return eLSCB_Irish;
   }
-  if (aLang == nsGkAtoms::lt) {
+  if (nsStyleUtil::MatchesLanguagePrefix(aLang, u"lt")) {
     return eLSCB_Lithuanian;
   }
-
-  // Is there a region subtag we should ignore?
-  nsAtomString langStr(const_cast<nsAtom*>(aLang));
-  int index = langStr.FindChar('-');
-  if (index > 0) {
-    langStr.Truncate(index);
-    RefPtr<nsAtom> truncatedLang = NS_Atomize(langStr);
-    return GetCasingFor(truncatedLang);
-  }
-
   return eLSCB_None;
 }
 
 bool nsCaseTransformTextRunFactory::TransformString(
     const nsAString& aString, nsString& aConvertedString,
     const Maybe<StyleTextTransform>& aGlobalTransform, char16_t aMaskChar,
-    bool aCaseTransformsOnly, const nsAtom* aLanguage,
+    bool aCaseTransformsOnly, bool aUseCapitalEsZet, const nsAtom* aLanguage,
     nsTArray<bool>& aCharsToMergeArray, nsTArray<bool>& aDeletedCharsArray,
     const nsTransformedTextRun* aTextRun, uint32_t aOffsetInTextRun,
     nsTArray<uint8_t>* aCanBreakBeforeArray,
@@ -373,17 +379,17 @@ bool nsCaseTransformTextRunFactory::TransformString(
     const unicode::MultiCharMapping* mcm;
     bool inhibitBreakBefore = false;  // have we just deleted preceding hyphen?
 
-    if (i < length - 1 && NS_IS_SURROGATE_PAIR(ch, str[i + 1])) {
-      ch = SURROGATE_TO_UCS4(ch, str[i + 1]);
+    if (i < length - 1 && mozilla::IsSurrogatePair(ch, str[i + 1])) {
+      ch = mozilla::SurrogateToUCS4(ch, str[i + 1]);
     }
     const uint32_t originalCh = ch;
 
     // Skip case transform if we're masking current character.
     if (!maskPassword) {
-      switch ((style & StyleTextTransform::CASE_TRANSFORMS)._0) {
-        case StyleTextTransform::NONE._0:
+      switch (Servo_TextTransform_Case(style)) {
+        case StyleTextTransformCase::None:
           break;
-        case StyleTextTransform::LOWERCASE._0:
+        case StyleTextTransformCase::Lowercase:
           if (languageSpecificCasing == eLSCB_Turkish) {
             if (ch == 'I') {
               ch = LATIN_SMALL_LETTER_DOTLESS_I;
@@ -548,7 +554,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
           ch = ToLowerCase(ch);
           break;
 
-        case StyleTextTransform::UPPERCASE._0:
+        case StyleTextTransformCase::Uppercase:
           if (languageSpecificCasing == eLSCB_Turkish && ch == 'i') {
             ch = LATIN_CAPITAL_LETTER_I_WITH_DOT_ABOVE;
             break;
@@ -662,9 +668,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
           // Updated mapping for German eszett, not currently reflected in the
           // Unicode data files. This is behind a pref, as it may not work well
           // with many (esp. older) fonts.
-          if (ch == 0x00DF &&
-              StaticPrefs::
-                  layout_css_text_transform_uppercase_eszett_enabled()) {
+          if (ch == 0x00DF && aUseCapitalEsZet) {
             ch = 0x1E9E;
             break;
           }
@@ -684,7 +688,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
           ch = ToUpperCase(ch);
           break;
 
-        case StyleTextTransform::CAPITALIZE._0: {
+        case StyleTextTransformCase::Capitalize: {
           if (capitalizeDutchIJ && ch == 'j') {
             ch = 'J';
             capitalizeDutchIJ = false;
@@ -749,7 +753,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
           break;
         }
 
-        case StyleTextTransform::MATH_AUTO._0:
+        case StyleTextTransformCase::MathAuto:
           // text-transform: math-auto is used for automatic italicization of
           // single-char <mi> elements. However, some legacy cases (italic style
           // fallback and <mi> with leading/trailing whitespace) are still
@@ -851,7 +855,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
                 : aTextRun->CanBreakBefore(aOffsetInTextRun));
       }
 
-      if (IS_IN_BMP(ch)) {
+      if (mozilla::IsInBMP(ch)) {
         aConvertedString.Append(maskPassword ? mask : ch);
       } else {
         if (maskPassword) {
@@ -859,12 +863,12 @@ bool nsCaseTransformTextRunFactory::TransformString(
           // TODO: We should show a password mask for a surrogate pair later.
           aConvertedString.Append(mask);
         } else {
-          aConvertedString.Append(H_SURROGATE(ch));
-          aConvertedString.Append(L_SURROGATE(ch));
+          aConvertedString.Append(mozilla::HighSurrogate(ch));
+          aConvertedString.Append(mozilla::LowSurrogate(ch));
         }
         ++extraChars;
       }
-      if (!IS_IN_BMP(originalCh)) {
+      if (!mozilla::IsInBMP(originalCh)) {
         // Skip the trailing surrogate.
         ++aOffsetInTextRun;
         ++i;
@@ -906,8 +910,9 @@ void nsCaseTransformTextRunFactory::RebuildTextRun(
       mAllUppercase ? Some(StyleTextTransform::UPPERCASE) : Nothing();
   bool mergeNeeded = TransformString(
       aTextRun->mString, convertedString, globalTransform, mMaskChar,
-      /* aCaseTransformsOnly = */ false, nullptr, charsToMergeArray,
-      deletedCharsArray, aTextRun, 0, &canBreakBeforeArray, &styleArray);
+      /* aCaseTransformsOnly = */ false, mUseCapitalEsZet, nullptr,
+      charsToMergeArray, deletedCharsArray, aTextRun, 0, &canBreakBeforeArray,
+      &styleArray);
 
   gfx::ShapedTextFlags flags;
   gfxTextRunFactory::Parameters innerParams =

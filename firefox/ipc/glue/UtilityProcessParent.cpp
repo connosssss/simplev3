@@ -1,9 +1,8 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "mozilla/ipc/UtilityProcessParent.h"
+#include "mozilla/GeckoTrace.h"
 #include "mozilla/ipc/UtilityProcessManager.h"
 
 #if defined(XP_WIN)
@@ -37,17 +36,20 @@ bool UtilityProcessParent::SendRequestMemoryReport(
     const bool& aMinimizeMemoryUsage, const Maybe<FileDescriptor>& aDMDFile) {
   mMemoryReportRequest = MakeUnique<MemoryReportRequestHost>(aGeneration);
 
-  PUtilityProcessParent::SendRequestMemoryReport(
-      aGeneration, aAnonymize, aMinimizeMemoryUsage, aDMDFile,
-      [self = RefPtr{this}](const uint32_t& aGeneration2) {
-        if (self->mMemoryReportRequest) {
-          self->mMemoryReportRequest->Finish(aGeneration2);
-          self->mMemoryReportRequest = nullptr;
-        }
-      },
-      [self = RefPtr{this}](mozilla::ipc::ResponseRejectReason) {
-        self->mMemoryReportRequest = nullptr;
-      });
+  RefPtr<UtilityProcessParent> self(this);
+  PUtilityProcessParent::SendRequestMemoryReport(aGeneration, aAnonymize,
+                                                 aMinimizeMemoryUsage, aDMDFile)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [self](uint32_t aGeneration2) {
+            if (self->mMemoryReportRequest) {
+              self->mMemoryReportRequest->Finish(aGeneration2);
+              self->mMemoryReportRequest = nullptr;
+            }
+          },
+          [self](mozilla::ipc::ResponseRejectReason) {
+            self->mMemoryReportRequest = nullptr;
+          });
 
   return true;
 }
@@ -65,12 +67,18 @@ mozilla::ipc::IPCResult UtilityProcessParent::RecvFOGData(ByteBuf&& aBuf) {
   return IPC_OK();
 }
 
+mozilla::ipc::IPCResult UtilityProcessParent::RecvGeckoTraceExport(
+    ByteBuf&& aBuf) {
+  recv_gecko_trace_export(aBuf.mData, aBuf.mLen);
+  return IPC_OK();
+}
+
 #if defined(XP_WIN)
 mozilla::ipc::IPCResult UtilityProcessParent::RecvGetModulesTrust(
-    ModulePaths&& aModPaths, bool aRunAtNormalPriority,
+    ModuleIdentifiers&& aModIdents, bool aRunAtNormalPriority,
     GetModulesTrustResolver&& aResolver) {
   RefPtr<DllServices> dllSvc(DllServices::Get());
-  dllSvc->GetModulesTrust(std::move(aModPaths), aRunAtNormalPriority)
+  dllSvc->GetModulesTrust(std::move(aModIdents), aRunAtNormalPriority)
       ->Then(
           GetMainThreadSerialEventTarget(), __func__,
           [aResolver](ModulesMapResult&& aResult) {
@@ -129,8 +137,20 @@ mozilla::ipc::IPCResult UtilityProcessParent::RecvInitCompleted() {
   return IPC_OK();
 }
 
+mozilla::ipc::IPCResult UtilityProcessParent::RecvShutdownProfile(
+    mozilla::ProfileAndAdditionalInformation&&
+        aProfileAndAdditionalInformation) {
+  profiler_received_exit_profile(std::move(aProfileAndAdditionalInformation));
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult UtilityProcessParent::RecvFinishShutdown() {
+  Close();
+  return IPC_OK();
+}
+
 void UtilityProcessParent::ActorDestroy(ActorDestroyReason aWhy) {
-  RefPtr<nsHashPropertyBag> props = new nsHashPropertyBag();
+  RefPtr props = MakeRefPtr<nsHashPropertyBag>();
 
   if (aWhy == AbnormalShutdown) {
     nsAutoString dumpID;
@@ -162,8 +182,7 @@ void UtilityProcessParent::ActorDestroy(ActorDestroyReason aWhy) {
     if (!dumpID.IsEmpty()) {
       props->SetPropertyAsAString(u"dumpID"_ns, dumpID);
     }
-
-    MaybeTerminateProcess();
+    MaybeTerminateProcess(dumpID);
   }
 
   nsAutoString pid;

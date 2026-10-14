@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,8 +7,10 @@
 #ifndef mozilla_ReentrancyGuard_h
 #define mozilla_ReentrancyGuard_h
 
-#include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
+#ifdef DEBUG
+#  include "mozilla/Assertions.h"
+#endif
 
 namespace mozilla {
 
@@ -34,13 +34,14 @@ class MOZ_RAII ReentrancyGuard {
     mEntered = true;
 #endif
   }
-  ~ReentrancyGuard() {
 #ifdef DEBUG
-    mEntered = false;
+  ~ReentrancyGuard() { mEntered = false; }
+#else
+  // FIXME: It would be better to mark this variable as [[maybe_unused]] but
+  // this is currently not supported by the sixgill plugin.
+  ~ReentrancyGuard() {}  // NOLINT(modernize-use-equals-default)
 #endif
-  }
 
- private:
   ReentrancyGuard(const ReentrancyGuard&) = delete;
   void operator=(const ReentrancyGuard&) = delete;
 };

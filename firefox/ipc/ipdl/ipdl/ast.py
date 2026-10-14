@@ -4,7 +4,6 @@
 
 from .util import hash_str
 
-
 NOT_NESTED = 1
 INSIDE_SYNC_NESTED = 2
 INSIDE_CPOW_NESTED = 3
@@ -16,7 +15,7 @@ NESTED_ATTR_MAP = {
 }
 
 # Each element of this list is the IPDL source representation of a priority.
-priorityList = ["normal", "input", "vsync", "mediumhigh", "control"]
+priorityList = ["normal", "input", "vsync", "mediumhigh", "control", "low"]
 
 priorityAttrMap = {src: idx for idx, src in enumerate(priorityList)}
 
@@ -224,7 +223,7 @@ class UsingStmt(Node):
         Node.__init__(self, loc)
         assert isinstance(cxxTypeSpec, QualifiedId)
         assert cxxHeader is None or isinstance(cxxHeader, str)
-        assert kind is None or kind == "class" or kind == "struct"
+        assert kind is None or kind in {"class", "struct"}
         self.type = cxxTypeSpec
         self.header = cxxHeader
         self.kind = kind
@@ -404,19 +403,17 @@ class Param(Node):
 
 
 class TypeSpec(Node):
-    def __init__(self, loc, spec):
+    def __init__(self, loc, spec, nullable, modifiers=[]):
         Node.__init__(self, loc)
         assert isinstance(spec, str)
         self.spec = spec  # str
-        self.array = False  # bool
-        self.maybe = False  # bool
-        self.nullable = False  # bool
-        self.uniqueptr = False  # bool
+        self.nullable = nullable  # bool
+        self.modifiers = modifiers  # [str]
+
+    def withModifier(self, modifier):
+        return TypeSpec(self.loc, self.spec, self.nullable, self.modifiers + [modifier])
 
     def basename(self):
-        return self.spec
-
-    def __str__(self):
         return self.spec
 
 

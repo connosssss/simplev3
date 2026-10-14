@@ -10,7 +10,7 @@ const backgroundTaskDefaultAgent = ChromeUtils.importESModule(
 function createMockDefaultAgent(mockData) {
   const sentPings = [];
   return {
-    SecondsSinceLastAppRun: () => mockData.secondsSinceAppRun,
+    secondsSinceLastAppRun: () => mockData.secondsSinceAppRun,
     getDefaultBrowser: () => mockData.defaultBrowser,
     getReplacePreviousDefaultBrowser: () => mockData.previousDefaultBrowser,
     getDefaultPdfHandler: () => mockData.defaultPdfHandler,
@@ -20,7 +20,8 @@ function createMockDefaultAgent(mockData) {
       defaultPdfHandler,
       shown,
       action,
-      daysSinceLastAppLaunch
+      daysSinceLastAppLaunch,
+      isTaskbarPinned
     ) => {
       sentPings.push({
         defaultBrowser,
@@ -29,6 +30,7 @@ function createMockDefaultAgent(mockData) {
         shown,
         action,
         daysSinceLastAppLaunch,
+        isTaskbarPinned,
       });
     },
     getSentPings: () => sentPings,
@@ -55,4 +57,20 @@ add_task(async function testDoTask() {
   Assert.equal(sentPings[0].shown, "not-shown");
   Assert.equal(sentPings[0].action, "no-action");
   Assert.equal(sentPings[0].daysSinceLastAppLaunch, 7);
+  Assert.equal(sentPings[0].isTaskbarPinned, "Error");
+});
+
+add_task(async function testDoTaskAppNotRunRecently() {
+  const mockData = {
+    secondsSinceAppRun: 91 * 24 * 60 * 60,
+    defaultBrowser: "browser 1",
+    previousDefaultBrowser: "browser 2",
+    defaultPdfHandler: "pdf handler 1",
+  };
+  const mockDefaultAgent = createMockDefaultAgent(mockData);
+  await Assert.rejects(
+    backgroundTaskDefaultAgent.doTask(mockDefaultAgent, false),
+    /App hasn't run recently/
+  );
+  Assert.equal(0, mockDefaultAgent.getSentPings().length);
 });

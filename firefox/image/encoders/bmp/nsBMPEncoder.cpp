@@ -1,17 +1,17 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsCRT.h"
+#include "nsBMPEncoder.h"
+
+#include "BMPHeaders.h"
+#include "mozilla/CheckedInt.h"
 #include "mozilla/EndianUtils.h"
 #include "mozilla/UniquePtrExtensions.h"
-#include "nsBMPEncoder.h"
-#include "nsString.h"
+#include "nsCRT.h"
 #include "nsStreamUtils.h"
+#include "nsString.h"
 #include "nsTArray.h"
-#include "mozilla/CheckedInt.h"
-#include "BMPHeaders.h"
 
 using namespace mozilla;
 using namespace mozilla::image;
@@ -23,7 +23,7 @@ NS_IMPL_ISUPPORTS(nsBMPEncoder, imgIEncoder, nsIInputStream,
 nsBMPEncoder::nsBMPEncoder()
     : mBMPInfoHeader{},
       mImageBufferStart(nullptr),
-      mImageBufferCurr(0),
+      mImageBufferCurr(nullptr),
       mImageBufferSize(0),
       mImageBufferReadPoint(0),
       mFinished(false),
@@ -43,6 +43,13 @@ nsBMPEncoder::~nsBMPEncoder() {
   }
 }
 
+NS_IMETHODIMP
+nsBMPEncoder::SetColorSpaceInfo(imgIEncoder::CICPColourPrimaries,
+                                imgIEncoder::CICPTransferCharacteristics,
+                                imgIEncoder::CICPMatrixCoefficients, bool) {
+  return NS_OK;
+}
+
 // nsBMPEncoder::InitFromData
 //
 // One output option is supported: bpp=<bpp_value>
@@ -52,7 +59,8 @@ nsBMPEncoder::InitFromData(const uint8_t* aData,
                            uint32_t aLength,  // (unused, req'd by JS)
                            uint32_t aWidth, uint32_t aHeight, uint32_t aStride,
                            uint32_t aInputFormat,
-                           const nsAString& aOutputOptions) {
+                           const nsAString& aOutputOptions,
+                           const nsACString& aRandomizationKey) {
   // validate input format
   if (aInputFormat != INPUT_FORMAT_RGB && aInputFormat != INPUT_FORMAT_RGBA &&
       aInputFormat != INPUT_FORMAT_HOSTARGB) {

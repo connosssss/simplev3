@@ -3,6 +3,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
+const { ProfilerTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/ProfilerTestUtils.sys.mjs"
+);
+
+add_setup(ProfilerTestUtils.assertProfilerInactive);
+
 /**
  * Run through a series of basic recording actions for the perf actor.
  */
@@ -18,7 +24,7 @@ add_task(async function () {
   is(await front.isActive(), false, "The profiler is not active yet.");
 
   // Getting the active Browser ID to assert in the "profiler-started" event.
-  const win = Services.wm.getMostRecentWindow("navigator:browser");
+  const win = Services.wm.getMostRecentBrowserWindow();
   const activeTabID = win.gBrowser.selectedBrowser.browsingContext.browserId;
 
   front.once(

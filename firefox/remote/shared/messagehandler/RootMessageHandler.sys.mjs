@@ -8,12 +8,16 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   NavigationManager: "chrome://remote/content/shared/NavigationManager.sys.mjs",
+  registerWebDriverWorkerListenerActor:
+    "chrome://remote/content/shared/js-process-actors/WebDriverWorkerListenerActor.sys.mjs",
   RootTransport:
     "chrome://remote/content/shared/messagehandler/transports/RootTransport.sys.mjs",
   SessionData:
     "chrome://remote/content/shared/messagehandler/sessiondata/SessionData.sys.mjs",
   SessionDataMethod:
     "chrome://remote/content/shared/messagehandler/sessiondata/SessionData.sys.mjs",
+  unregisterWebDriverWorkerListenerActor:
+    "chrome://remote/content/shared/js-process-actors/WebDriverWorkerListenerActor.sys.mjs",
   WindowGlobalMessageHandler:
     "chrome://remote/content/shared/messagehandler/WindowGlobalMessageHandler.sys.mjs",
 });
@@ -49,7 +53,7 @@ export class RootMessageHandler extends MessageHandler {
 
   /**
    * The ROOT MessageHandler is unique for a given MessageHandler network
-   * (ie for a given sessionId). Reuse the type as context id here.
+   * (ie for a given internalSessionId). Reuse the type as context id here.
    */
   static getIdFromContext() {
     return RootMessageHandler.type;
@@ -58,18 +62,22 @@ export class RootMessageHandler extends MessageHandler {
   /**
    * Create a new RootMessageHandler instance.
    *
-   * @param {string} sessionId
-   *     ID of the session the handler is used for.
+   * @param {string} internalSessionId
+   *     ID of the MessageHandler network the handler is part of.
    */
-  constructor(sessionId) {
-    super(sessionId, null);
+  constructor(internalSessionId) {
+    super(internalSessionId, null);
 
     this.#rootTransport = new lazy.RootTransport(this);
     this.#sessionData = new lazy.SessionData(this);
     this.#navigationManager = new lazy.NavigationManager();
     this.#navigationManager.startMonitoring();
 
-    // Map with inner window ids as keys, and sets of realm ids, assosiated with
+    // Register js process actors to monitor worker creation and destruction in
+    // all processes.
+    lazy.registerWebDriverWorkerListenerActor();
+
+    // Map with inner window ids as keys, and sets of realm ids, associated with
     // this window as values.
     this.#realms = new Map();
     // In the general case, we don't get notified that realms got destroyed,
@@ -95,6 +103,8 @@ export class RootMessageHandler extends MessageHandler {
     this.#sessionData.destroy();
     this.#navigationManager.destroy();
 
+    lazy.unregisterWebDriverWorkerListenerActor();
+
     Services.obs.removeObserver(this, "window-global-destroyed");
     this.#realms = null;
 
@@ -114,7 +124,7 @@ export class RootMessageHandler extends MessageHandler {
     return this.updateSessionData([sessionData]);
   }
 
-  emitEvent(name, eventPayload, contextInfo) {
+  emitEvent(name, eventPayload, relatedContexts) {
     // Intercept realm created and destroyed events to update internal map.
     if (name === "realm-created") {
       this.#onRealmCreated(eventPayload);
@@ -127,7 +137,7 @@ export class RootMessageHandler extends MessageHandler {
       );
     }
 
-    super.emitEvent(name, eventPayload, contextInfo);
+    super.emitEvent(name, eventPayload, relatedContexts);
   }
 
   /**
@@ -143,7 +153,7 @@ export class RootMessageHandler extends MessageHandler {
     this.emit("message-handler-protocol-event", {
       name,
       data,
-      sessionId: this.sessionId,
+      internalSessionId: this.internalSessionId,
     });
   }
 
@@ -214,11 +224,11 @@ export class RootMessageHandler extends MessageHandler {
     }
 
     realms.forEach(realm => {
-      this.#realms.get(innerWindowId).delete(realm);
+      realms.delete(realm.realm);
 
       this.emitEvent("realm-destroyed", {
         context,
-        realm,
+        realm: realm.realm,
       });
     });
 
@@ -232,6 +242,8 @@ export class RootMessageHandler extends MessageHandler {
       this.#realms.set(innerWindowId, new Set());
     }
 
-    this.#realms.get(innerWindowId).add(realmInfo.realm);
+    this.#realms
+      .get(innerWindowId)
+      .add({ realm: realmInfo.realm, sandbox: realmInfo.sandbox });
   };
 }

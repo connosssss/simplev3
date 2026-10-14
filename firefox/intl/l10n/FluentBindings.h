@@ -5,6 +5,9 @@
 #ifndef mozilla_intl_l10n_FluentBindings_h
 #define mozilla_intl_l10n_FluentBindings_h
 
+#include "nsTArray.h"
+#include "nsTString.h"
+
 #include "mozilla/intl/fluent_ffi_generated.h"
 
 #include "mozilla/RefPtr.h"
@@ -21,14 +24,18 @@ struct RefPtrTraits<intl::ffi::FluentResource> {
   }
 };
 
+}  // namespace mozilla
+
+namespace std {
+
 template <>
-class DefaultDelete<intl::ffi::FluentBundleRc> {
+struct default_delete<mozilla::intl::ffi::FluentBundleRc> {
  public:
-  void operator()(intl::ffi::FluentBundleRc* aPtr) const {
+  void operator()(mozilla::intl::ffi::FluentBundleRc* aPtr) const {
     fluent_bundle_destroy(aPtr);
   }
 };
 
-}  // namespace mozilla
+}  // namespace std
 
 #endif

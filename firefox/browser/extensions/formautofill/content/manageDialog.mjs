@@ -2,10 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const EDIT_ADDRESS_URL = "chrome://formautofill/content/editAddress.xhtml";
-const EDIT_CREDIT_CARD_URL =
-  "chrome://formautofill/content/editCreditCard.xhtml";
-
 const { AppConstants } = ChromeUtils.importESModule(
   "resource://gre/modules/AppConstants.sys.mjs"
 );
@@ -18,10 +14,12 @@ const { AutofillTelemetry } = ChromeUtils.importESModule(
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
+  AutofillDataTypes: "resource://gre/modules/shared/AutofillDataTypes.sys.mjs",
   CreditCard: "resource://gre/modules/CreditCard.sys.mjs",
   FormAutofillUtils: "resource://gre/modules/shared/FormAutofillUtils.sys.mjs",
-  OSKeyStore: "resource://gre/modules/OSKeyStore.sys.mjs",
   formAutofillStorage: "resource://autofill/FormAutofillStorage.sys.mjs",
+  FormAutofillPreferences:
+    "resource://autofill/FormAutofillPreferences.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "log", () =>
@@ -177,7 +175,7 @@ class ManageRecords {
     this._elements.records.dispatchEvent(new CustomEvent("RecordsRemoved"));
 
     for (let i = 0; i < options.length; i++) {
-      AutofillTelemetry.recordManageEvent(this.telemetryType, "delete");
+      AutofillTelemetry.recordManageEvent(this.dataType, "delete");
     }
   }
 
@@ -305,7 +303,7 @@ class ManageRecords {
 }
 
 export class ManageAddresses extends ManageRecords {
-  telemetryType = AutofillTelemetry.ADDRESS;
+  dataType = lazy.AutofillDataTypes.ADDRESS;
 
   constructor(elements) {
     super("addresses", elements);
@@ -313,7 +311,7 @@ export class ManageAddresses extends ManageRecords {
       "search-l10n-ids",
       lazy.FormAutofillUtils.EDIT_ADDRESS_L10N_IDS.join(",")
     );
-    AutofillTelemetry.recordManageEvent(this.telemetryType, "show");
+    AutofillTelemetry.recordManageEvent(this.dataType, "show");
   }
 
   static getAddressL10nStrings() {
@@ -337,13 +335,10 @@ export class ManageAddresses extends ManageRecords {
    * @param  {object} address [optional]
    */
   openEditDialog(address) {
-    this.prefWin.gSubDialog.open(EDIT_ADDRESS_URL, undefined, {
-      record: address,
-      // Don't validate in preferences since it's fine for fields to be missing
-      // for autofill purposes. For PaymentRequest addresses get more validation.
-      noValidate: true,
-      l10nStrings: ManageAddresses.getAddressL10nStrings(),
-    });
+    return lazy.FormAutofillPreferences.openEditAddressDialog(
+      address,
+      this.prefWin
+    );
   }
 
   getLabelInfo(address) {
@@ -352,7 +347,7 @@ export class ManageAddresses extends ManageRecords {
 }
 
 export class ManageCreditCards extends ManageRecords {
-  telemetryType = AutofillTelemetry.CREDIT_CARD;
+  dataType = lazy.AutofillDataTypes.CREDIT_CARD;
 
   constructor(elements) {
     super("creditCards", elements);
@@ -362,7 +357,7 @@ export class ManageCreditCards extends ManageRecords {
     );
 
     this._isDecrypted = false;
-    AutofillTelemetry.recordManageEvent(this.telemetryType, "show");
+    AutofillTelemetry.recordManageEvent(this.dataType, "show");
   }
 
   /**
@@ -371,69 +366,9 @@ export class ManageCreditCards extends ManageRecords {
    * @param  {object} creditCard [optional]
    */
   async openEditDialog(creditCard) {
-    // Ask for reauth if user is trying to edit an existing credit card.
-    if (creditCard) {
-      const promptMessage = lazy.FormAutofillUtils.reauthOSPromptMessage(
-        "autofill-edit-payment-method-os-prompt-macos",
-        "autofill-edit-payment-method-os-prompt-windows",
-        "autofill-edit-payment-method-os-prompt-other"
-      );
-      let verified;
-      let result;
-      try {
-        verified = await lazy.FormAutofillUtils.verifyUserOSAuth(
-          FormAutofill.AUTOFILL_CREDITCARDS_OS_AUTH_LOCKED_PREF,
-          promptMessage
-        );
-        result = verified ? "success" : "fail_user_canceled";
-      } catch (ex) {
-        result = "fail_error";
-        throw ex;
-      } finally {
-        Glean.formautofill.promptShownOsReauth.record({
-          trigger: "edit",
-          result,
-        });
-      }
-      if (!verified) {
-        return;
-      }
-    }
-
-    let decryptedCCNumObj = {};
-    let errorResult = 0;
-    if (creditCard && creditCard["cc-number-encrypted"]) {
-      try {
-        decryptedCCNumObj["cc-number"] = await lazy.OSKeyStore.decrypt(
-          creditCard["cc-number-encrypted"]
-        );
-      } catch (ex) {
-        errorResult = ex.result;
-        if (ex.result == Cr.NS_ERROR_ABORT) {
-          // User shouldn't be ask to reauth here, but it could happen.
-          // Return here and skip opening the dialog.
-          return;
-        }
-        // We've got ourselves a real error.
-        // Recover from encryption error so the user gets a chance to re-enter
-        // unencrypted credit card number.
-        decryptedCCNumObj["cc-number"] = "";
-        console.error(ex);
-      } finally {
-        Glean.creditcard.osKeystoreDecrypt.record({
-          isDecryptSuccess: errorResult === 0,
-          errorResult,
-          trigger: "edit",
-        });
-      }
-    }
-    let decryptedCreditCard = Object.assign({}, creditCard, decryptedCCNumObj);
-    this.prefWin.gSubDialog.open(
-      EDIT_CREDIT_CARD_URL,
-      { features: "resizable=no" },
-      {
-        record: decryptedCreditCard,
-      }
+    return lazy.FormAutofillPreferences.openEditCreditCardDialog(
+      creditCard,
+      this.prefWin
     );
   }
 
@@ -455,13 +390,45 @@ export class ManageCreditCards extends ManageRecords {
     const typeName = typeL10nId
       ? await document.l10n.formatValue(typeL10nId)
       : (type ?? ""); // Unknown card type
-    return lazy.CreditCard.getLabelInfo({
+    const labelInfo = lazy.CreditCard.getLabelInfo({
       name: creditCard["cc-name"],
       number: creditCard["cc-number"],
       month: creditCard["cc-exp-month"],
       year: creditCard["cc-exp-year"],
       type: typeName,
     });
+
+    if (!FormAutofill.isAutofillCreditCardCVVEnabled || !creditCard["cc-csc"]) {
+      return labelInfo;
+    }
+    return this.#withSecurityCodeLabel(labelInfo);
+  }
+
+  /**
+   * Wrap a credit card label so that it notes a security code is saved for the
+   * card. The wrapping string takes the label as an argument, so the label has
+   * to be formatted here rather than by the element it ends up on.
+   *
+   * @param {object} labelInfo
+   *        The pair returned by CreditCard.getLabelInfo().
+   * @param {string} labelInfo.id
+   *        Fluent id of the label to wrap.
+   * @param {object} labelInfo.args
+   *        Fluent arguments for that label.
+   * @returns {Promise<object>} An { id, args } pair for the wrapping string.
+   */
+  async #withSecurityCodeLabel({ id, args }) {
+    const [message] = await document.l10n.formatMessages([{ id, args }]);
+    const ariaLabel = message?.attributes?.find(
+      attribute => attribute.name == "aria-label"
+    )?.value;
+    return {
+      id: "credit-card-label-with-security-code",
+      args: {
+        label: message?.value ?? "",
+        ariaLabel: ariaLabel ?? message?.value ?? "",
+      },
+    };
   }
 
   async renderRecordElements(records) {

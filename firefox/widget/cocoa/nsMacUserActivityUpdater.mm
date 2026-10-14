@@ -6,9 +6,9 @@
 
 #include "nsMacUserActivityUpdater.h"
 
+#include "gfxPlatform.h"
 #include "nsCocoaUtils.h"
 #include "nsIBaseWindow.h"
-#include "gfxPlatform.h"
 
 NS_IMPL_ISUPPORTS(nsMacUserActivityUpdater, nsIMacUserActivityUpdater)
 
@@ -52,8 +52,7 @@ nsMacUserActivityUpdater::UpdateLocation(const nsAString& aPageUrl,
 }
 
 BaseWindow* nsMacUserActivityUpdater::GetCocoaWindow(nsIBaseWindow* aWindow) {
-  nsCOMPtr<nsIWidget> widget = nullptr;
-  aWindow->GetMainWidget(getter_AddRefs(widget));
+  nsCOMPtr<nsIWidget> widget = aWindow->GetMainWidget();
   if (!widget) {
     return nil;
   }

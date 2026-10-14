@@ -1,9 +1,10 @@
-// Copyright 2014 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #include "sandbox/linux/services/syscall_wrappers.h"
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <setjmp.h>
@@ -12,13 +13,17 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include <cerrno>
 #include <cstring>
 
+#include "base/check.h"
 #include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "build/build_config.h"
 #include "sandbox/linux/system_headers/capability.h"
 #include "sandbox/linux/system_headers/linux_signal.h"
+#include "sandbox/linux/system_headers/linux_stat.h"
 #include "sandbox/linux/system_headers/linux_syscalls.h"
 
 namespace sandbox {
@@ -146,119 +151,77 @@ int sys_sigprocmask(int how, const sigset_t* set, std::nullptr_t oldset) {
   // In some toolchain (in particular Android and PNaCl toolchain),
   // sigset_t is 32 bits, but the Linux ABI uses more.
   LinuxSigSet linux_value;
-  std::memset(&linux_value, 0, sizeof(LinuxSigSet));
-  std::memcpy(&linux_value, set, std::min(sizeof(sigset_t),
-                                          sizeof(LinuxSigSet)));
+  UNSAFE_TODO(std::memset(&linux_value, 0, sizeof(LinuxSigSet)));
+  UNSAFE_TODO(std::memcpy(&linux_value, set,
+                          std::min(sizeof(sigset_t), sizeof(LinuxSigSet))));
 
   return syscall(__NR_rt_sigprocmask, how, &linux_value, nullptr,
                  sizeof(linux_value));
 }
 
-// When this is built with PNaCl toolchain, we should always use sys_sigaction
-// below, because sigaction() provided by the toolchain is incompatible with
-// Linux's ABI.
-#if !defined(OS_NACL_NONSFI)
 int sys_sigaction(int signum,
                   const struct sigaction* act,
                   struct sigaction* oldact) {
   return sigaction(signum, act, oldact);
 }
+
+int sys_stat(const char* path, struct kernel_stat* stat_buf) {
+  int res;
+#if !defined(__NR_stat)
+  res = syscall(__NR_newfstatat, AT_FDCWD, path, stat_buf, 0);
 #else
-#if defined(ARCH_CPU_X86_FAMILY)
-
-// On x86_64, sa_restorer is required. We specify it on x86 as well in order to
-// support kernels with VDSO disabled.
-#if !defined(SA_RESTORER)
-#define SA_RESTORER 0x04000000
+  res = syscall(__NR_stat, path, stat_buf);
 #endif
-
-// XSTR(__NR_foo) expands to a string literal containing the value value of
-// __NR_foo.
-#define STR(x) #x
-#define XSTR(x) STR(x)
-
-// rt_sigreturn is a special system call that interacts with the user land
-// stack. Thus, here prologue must not be created, which implies syscall()
-// does not work properly, too. Note that rt_sigreturn does not return.
-// TODO(rickyz): These assembly functions may still break stack unwinding on
-// nonsfi NaCl builds.
-#if defined(ARCH_CPU_X86_64)
-
-extern "C" {
-  void sys_rt_sigreturn();
+  if (res == 0)
+    MSAN_UNPOISON(stat_buf, sizeof(*stat_buf));
+  return res;
 }
 
-asm(
-    ".text\n"
-    "sys_rt_sigreturn:\n"
-    "mov $" XSTR(__NR_rt_sigreturn) ", %eax\n"
-    "syscall\n");
-
-#elif defined(ARCH_CPU_X86)
-extern "C" {
-  void sys_sigreturn();
-  void sys_rt_sigreturn();
+int sys_lstat(const char* path, struct kernel_stat* stat_buf) {
+  int res;
+#if !defined(__NR_lstat)
+  res = syscall(__NR_newfstatat, AT_FDCWD, path, stat_buf, AT_SYMLINK_NOFOLLOW);
+#else
+  res = syscall(__NR_lstat, path, stat_buf);
+#endif
+  if (res == 0)
+    MSAN_UNPOISON(stat_buf, sizeof(*stat_buf));
+  return res;
 }
 
-asm(
-    ".text\n"
-    "sys_rt_sigreturn:\n"
-    "mov $" XSTR(__NR_rt_sigreturn) ", %eax\n"
-    "int $0x80\n"
-
-    "sys_sigreturn:\n"
-    "pop %eax\n"
-    "mov $" XSTR(__NR_sigreturn) ", %eax\n"
-    "int $0x80\n");
-#else
-#error "Unsupported architecture."
+int sys_fstatat64(int dirfd,
+                  const char* pathname,
+                  struct kernel_stat64* stat_buf,
+                  int flags) {
+#if defined(__NR_fstatat64)
+  int res = syscall(__NR_fstatat64, dirfd, pathname, stat_buf, flags);
+  if (res == 0)
+    MSAN_UNPOISON(stat_buf, sizeof(*stat_buf));
+  return res;
+#else  // defined(__NR_fstatat64)
+  // We should not reach here on 64-bit systems, as the *stat*64() are only
+  // necessary on 32-bit.
+  RAW_CHECK(false);
+  return -ENOSYS;
 #endif
-
-#undef STR
-#undef XSTR
-
-#endif
-
-int sys_sigaction(int signum,
-                  const struct sigaction* act,
-                  struct sigaction* oldact) {
-  LinuxSigAction linux_act = {};
-  if (act) {
-    linux_act.kernel_handler = act->sa_handler;
-    std::memcpy(&linux_act.sa_mask, &act->sa_mask,
-                std::min(sizeof(linux_act.sa_mask), sizeof(act->sa_mask)));
-    linux_act.sa_flags = act->sa_flags;
-
-#if defined(ARCH_CPU_X86_FAMILY)
-    if (!(linux_act.sa_flags & SA_RESTORER)) {
-      linux_act.sa_flags |= SA_RESTORER;
-#if defined(ARCH_CPU_X86_64)
-      linux_act.sa_restorer = sys_rt_sigreturn;
-#elif defined(ARCH_CPU_X86)
-      linux_act.sa_restorer =
-          linux_act.sa_flags & SA_SIGINFO ? sys_rt_sigreturn : sys_sigreturn;
-#else
-#error "Unsupported architecture."
-#endif
-    }
-#endif
-  }
-
-  LinuxSigAction linux_oldact = {};
-  int result = syscall(__NR_rt_sigaction, signum, act ? &linux_act : nullptr,
-                       oldact ? &linux_oldact : nullptr,
-                       sizeof(LinuxSigSet));
-
-  if (result == 0 && oldact) {
-    oldact->sa_handler = linux_oldact.kernel_handler;
-    sigemptyset(&oldact->sa_mask);
-    std::memcpy(&oldact->sa_mask, &linux_oldact.sa_mask,
-                std::min(sizeof(linux_act.sa_mask), sizeof(act->sa_mask)));
-    oldact->sa_flags = linux_oldact.sa_flags;
-  }
-  return result;
 }
 
-#endif  // defined(MEMORY_SANITIZER)
+int landlock_create_ruleset(const struct landlock_ruleset_attr* const attr,
+                            const size_t size,
+                            const uint32_t flags) {
+  return syscall(__NR_landlock_create_ruleset, attr, size, flags);
+}
+
+int landlock_add_rule(const int ruleset_fd,
+                      const int rule_type,
+                      const void* const rule_attr,
+                      const uint32_t flags) {
+  return syscall(__NR_landlock_add_rule, ruleset_fd, rule_type, rule_attr,
+                 flags);
+}
+
+int landlock_restrict_self(const int ruleset_fd, const uint32_t flags) {
+  return syscall(__NR_landlock_restrict_self, ruleset_fd, flags);
+}
 
 }  // namespace sandbox

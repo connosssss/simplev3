@@ -46,7 +46,7 @@ if (custom instanceof UniffiSkipJsTypeCheck) {
     FfiConverterTypeHandle.checkType(custom);
 }
 const result = UniFFIScaffolding.callSync(
-    198, // uniffi_uniffi_bindings_tests_external_types_fn_func_roundtrip_ext_custom_type
+    378, // uniffi_uniffi_bindings_tests_external_types_fn_func_roundtrip_ext_custom_type
     FfiConverterTypeHandle.lower(custom),
 )
 return handleRustResult(
@@ -58,8 +58,8 @@ return handleRustResult(
 
 /**
  * roundtripExtEnum
- * @param {EnumWithData} en
- * @returns {EnumWithData}
+ * @param {EnumWithData[keyof EnumWithData]} en
+ * @returns {EnumWithData[keyof EnumWithData]}
  */
 export function roundtripExtEnum(
     en) {
@@ -70,7 +70,7 @@ if (en instanceof UniffiSkipJsTypeCheck) {
     FfiConverterTypeEnumWithData.checkType(en);
 }
 const result = UniFFIScaffolding.callSync(
-    199, // uniffi_uniffi_bindings_tests_external_types_fn_func_roundtrip_ext_enum
+    379, // uniffi_uniffi_bindings_tests_external_types_fn_func_roundtrip_ext_enum
     FfiConverterTypeEnumWithData.lower(en),
 )
 return handleRustResult(
@@ -94,7 +94,7 @@ if (int instanceof UniffiSkipJsTypeCheck) {
     FfiConverterTypeTestInterface.checkType(int);
 }
 const result = UniFFIScaffolding.callSync(
-    200, // uniffi_uniffi_bindings_tests_external_types_fn_func_roundtrip_ext_interface
+    380, // uniffi_uniffi_bindings_tests_external_types_fn_func_roundtrip_ext_interface
     FfiConverterTypeTestInterface.lower(int),
 )
 return handleRustResult(
@@ -118,7 +118,7 @@ if (rec instanceof UniffiSkipJsTypeCheck) {
     FfiConverterTypeSimpleRec.checkType(rec);
 }
 const result = UniFFIScaffolding.callSync(
-    201, // uniffi_uniffi_bindings_tests_external_types_fn_func_roundtrip_ext_record
+    381, // uniffi_uniffi_bindings_tests_external_types_fn_func_roundtrip_ext_record
     FfiConverterTypeSimpleRec.lower(rec),
 )
 return handleRustResult(
@@ -127,6 +127,9 @@ return handleRustResult(
     null,
 )
 }
+
+
+
 
 
 import {
@@ -155,8 +158,6 @@ import {
 
 // Export the FFIConverter object to make external types work.
 export { FfiConverterTypeSimpleRec };
-
-
 // Wrapper to skip type checking for function arguments
 //
 // This is only defined and used on test fixtures.  The goal is to skip the JS type checking so that

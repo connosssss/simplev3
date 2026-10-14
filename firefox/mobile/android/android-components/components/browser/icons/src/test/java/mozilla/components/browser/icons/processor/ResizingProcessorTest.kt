@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.res.Resources
 import android.graphics.Bitmap
 import android.util.DisplayMetrics
+import kotlin.test.assertNotNull
 import mozilla.components.browser.icons.Icon
 import mozilla.components.browser.icons.IconRequest
 import mozilla.components.support.images.DesiredSize
@@ -16,7 +17,6 @@ import mozilla.components.support.test.eq
 import mozilla.components.support.test.mock
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
@@ -79,6 +79,17 @@ class ResizingProcessorTest {
 
         assertNotEquals(icon.bitmap, resized?.bitmap)
         assertNull(resized)
+    }
+
+    @Test
+    fun `process returns initial icon if bitmap is recycled`() {
+        val bitmap = mockBitmap(128).apply { doReturn(true).`when`(this).isRecycled }
+        val icon = Icon(bitmap, source = Icon.Source.INLINE)
+        val resized = process(icon = icon)
+
+        assertEquals(icon.bitmap, resized?.bitmap)
+
+        verify(processor, never()).resize(any(), anyInt())
     }
 
     @Test

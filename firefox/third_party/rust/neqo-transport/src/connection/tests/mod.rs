@@ -7,6 +7,7 @@
 use std::{
     cell::RefCell,
     cmp::min,
+    convert::identity,
     mem,
     net::SocketAddr,
     rc::Rc,
@@ -14,24 +15,24 @@ use std::{
 };
 
 use enum_map::EnumMap;
-use neqo_common::{event::Provider as _, qdebug, qtrace, Datagram, Decoder, Role};
-use neqo_crypto::{random, AllowZeroRtt, AuthenticationStatus, ResumptionToken};
-use test_fixture::{fixture_init, new_neqo_qlog, now, DEFAULT_ADDR};
+use neqo_common::{Datagram, Decoder, Role, event::Provider as _, qdebug, qtrace};
+use nss::{AllowZeroRtt, AuthenticationStatus, ResumptionToken, random};
+use test_fixture::{DEFAULT_ADDR, fixture_init, new_neqo_qlog, now};
 
-use super::{test_internal, CloseReason, Connection, ConnectionId, Output, State};
+use super::{CloseReason, Connection, ConnectionId, Output, State, test_internal};
 use crate::{
+    ConnectionIdDecoder, ConnectionIdGenerator, ConnectionParameters, EmptyConnectionIdGenerator,
+    Error, MIN_INITIAL_PACKET_SIZE, StreamId, StreamType, Version,
     addr_valid::{AddressValidation, ValidateAddress},
     cc::CWND_INITIAL_PKTS,
     cid::ConnectionIdRef,
     events::ConnectionEvent,
     frame::FrameType,
-    packet::PacketBuilder,
+    packet,
     pmtud::Pmtud,
     recovery::ACK_ONLY_SIZE_LIMIT,
-    stats::{FrameStats, Stats, MAX_PTO_COUNTS},
+    stats::{FrameStats, Stats},
     tparams::TransportParameterId::*,
-    ConnectionIdDecoder, ConnectionIdGenerator, ConnectionParameters, EmptyConnectionIdGenerator,
-    Error, StreamId, StreamType, Version, MIN_INITIAL_PACKET_SIZE,
 };
 
 // All the tests.
@@ -45,8 +46,10 @@ mod idle;
 mod keys;
 mod migration;
 mod null;
+mod pmtud;
 mod priority;
 mod recovery;
+mod reset_stream_at;
 mod resumption;
 mod stream;
 mod vn;
@@ -100,9 +103,9 @@ impl ConnectionIdGenerator for CountingConnectionIdGenerator {
 // test_fixture because they produce different - and incompatible - types.
 //
 // These are a direct copy of those functions.
-pub fn new_client(params: ConnectionParameters) -> Connection {
+fn new_client_with_qlog(params: ConnectionParameters) -> (Connection, test_fixture::SharedVec) {
     fixture_init();
-    let (log, _contents) = new_neqo_qlog();
+    let (log, contents) = new_neqo_qlog();
     let mut client = Connection::new_client(
         test_fixture::DEFAULT_SERVER_NAME,
         test_fixture::DEFAULT_ALPN,
@@ -114,7 +117,11 @@ pub fn new_client(params: ConnectionParameters) -> Connection {
     )
     .expect("create a default client");
     client.set_qlog(log);
-    client
+    (client, contents)
+}
+
+pub fn new_client(params: ConnectionParameters) -> Connection {
+    new_client_with_qlog(params).0
 }
 
 pub fn default_client() -> Connection {
@@ -181,19 +188,22 @@ pub fn rttvar_after_n_updates(n: usize, rtt: Duration) -> Duration {
 struct PingWriter {}
 
 impl test_internal::FrameWriter for PingWriter {
-    fn write_frames(&mut self, builder: &mut PacketBuilder) {
+    fn write_frames(&mut self, builder: &mut packet::Builder<&mut Vec<u8>>) {
         builder.encode_varint(FrameType::Ping);
     }
 }
 
 /// Drive the handshake between the client and server.
-fn handshake_with_modifier(
+fn handshake_with_modifier<F>(
     client: &mut Connection,
     server: &mut Connection,
     now: Instant,
     rtt: Duration,
-    modifier: fn(Datagram) -> Option<Datagram>,
-) -> Instant {
+    mut modifier: F,
+) -> Instant
+where
+    F: FnMut(Datagram) -> Option<Datagram>,
+{
     let mut a = client;
     let mut b = server;
     let mut now = now;
@@ -227,9 +237,11 @@ fn handshake_with_modifier(
             a.test_frame_writer = None;
             did_ping[a.role()] = true;
         }
-        input = output.and_then(modifier);
+        input = output.and_then(&mut modifier);
         qtrace!("handshake: t += {:?}", rtt / 2);
         now += rtt / 2;
+        #[allow(clippy::allow_attributes, // TODO: Switch to expect once MSRV>=1.99.
+                clippy::mut_mut, reason = "Correct here.")]
         mem::swap(&mut a, &mut b);
     }
     if let Some(d) = input {
@@ -258,20 +270,23 @@ fn connect_fail(
     assert_error(server, &CloseReason::Transport(server_error));
 }
 
-fn connect_with_rtt_and_modifier(
+fn connect_with_rtt_and_modifier<F>(
     client: &mut Connection,
     server: &mut Connection,
     now: Instant,
     rtt: Duration,
-    modifier: fn(Datagram) -> Option<Datagram>,
-) -> Instant {
+    mut modifier: F,
+) -> Instant
+where
+    F: FnMut(Datagram) -> Datagram,
+{
     fn check_rtt(stats: &Stats, rtt: Duration) {
         assert_eq!(stats.rtt, rtt);
         // Validate that rttvar has been computed correctly based on the number of RTT updates.
         let n = stats.frame_rx.ack + usize::from(stats.rtt_init_guess);
         assert_eq!(stats.rttvar, rttvar_after_n_updates(n, rtt));
     }
-    let now = handshake_with_modifier(client, server, now, rtt, modifier);
+    let now = handshake_with_modifier(client, server, now, rtt, move |d| Some(modifier(d)));
     assert_eq!(*client.state(), State::Confirmed);
     assert_eq!(*server.state(), State::Confirmed);
 
@@ -286,7 +301,7 @@ fn connect_with_rtt(
     now: Instant,
     rtt: Duration,
 ) -> Instant {
-    connect_with_rtt_and_modifier(client, server, now, rtt, Some)
+    connect_with_rtt_and_modifier(client, server, now, rtt, identity)
 }
 
 fn connect(client: &mut Connection, server: &mut Connection) {
@@ -299,6 +314,16 @@ fn assert_error(c: &Connection, expected: &CloseReason) {
             assert_eq!(*error, *expected, "{c} error mismatch");
         }
         _ => panic!("bad state {:?}", c.state()),
+    }
+}
+
+/// Pump datagrams between two peers until neither has anything more to send.
+fn exchange(a: &mut Connection, b: &mut Connection) {
+    let mut d = a.process_output(now()).dgram();
+    while let Some(dgram) = d {
+        let r = b.process(Some(dgram), now()).dgram();
+        mem::swap(a, b);
+        d = r;
     }
 }
 
@@ -329,18 +354,21 @@ fn assert_idle(client: &mut Connection, server: &mut Connection, rtt: Duration, 
     // Client started its idle period half an RTT before now.
     assert_eq!(
         client.process_output(now),
-        Output::Callback(idle_timeout - rtt / 2)
+        Output::Callback(idle_timeout.checked_sub(rtt / 2).unwrap())
     );
     assert_eq!(server.process_output(now), Output::Callback(idle_timeout));
 }
 
 /// Connect with an RTT and then force both peers to be idle.
-fn connect_rtt_idle_with_modifier(
+fn connect_rtt_idle_with_modifier<F>(
     client: &mut Connection,
     server: &mut Connection,
     rtt: Duration,
-    modifier: fn(Datagram) -> Option<Datagram>,
-) -> Instant {
+    modifier: F,
+) -> Instant
+where
+    F: FnMut(Datagram) -> Datagram,
+{
     let now = connect_with_rtt_and_modifier(client, server, now(), rtt, modifier);
     assert_idle(client, server, rtt, now);
     // Drain events from both as well.
@@ -351,19 +379,19 @@ fn connect_rtt_idle_with_modifier(
 }
 
 fn connect_rtt_idle(client: &mut Connection, server: &mut Connection, rtt: Duration) -> Instant {
-    connect_rtt_idle_with_modifier(client, server, rtt, Some)
+    connect_rtt_idle_with_modifier(client, server, rtt, identity)
 }
 
 fn connect_force_idle_with_modifier(
     client: &mut Connection,
     server: &mut Connection,
-    modifier: fn(Datagram) -> Option<Datagram>,
+    modifier: fn(Datagram) -> Datagram,
 ) {
     connect_rtt_idle_with_modifier(client, server, Duration::new(0, 0), modifier);
 }
 
 fn connect_force_idle(client: &mut Connection, server: &mut Connection) {
-    connect_force_idle_with_modifier(client, server, Some);
+    connect_force_idle_with_modifier(client, server, identity);
 }
 
 fn fill_stream(c: &mut Connection, stream: StreamId) {
@@ -504,7 +532,7 @@ fn induce_persistent_congestion(
     qtrace!("[{client}] induce_persistent_congestion");
     now += AT_LEAST_PTO;
 
-    let mut pto_counts = [0; MAX_PTO_COUNTS];
+    let mut pto_counts = [0; Stats::MAX_PTO_COUNTS];
     assert_eq!(client.stats.borrow().pto_counts, pto_counts);
 
     qtrace!("[{client}] first PTO");
@@ -585,7 +613,7 @@ fn send_something_paced_with_modifier(
     sender: &mut Connection,
     mut now: Instant,
     allow_pacing: bool,
-    modifier: fn(Datagram) -> Option<Datagram>,
+    modifier: impl Fn(Datagram) -> Datagram,
 ) -> (Datagram, Instant) {
     let stream_id = sender.stream_create(StreamType::UniDi).unwrap();
     assert!(sender.stream_send(stream_id, DEFAULT_STREAM_DATA).is_ok());
@@ -603,7 +631,7 @@ fn send_something_paced_with_modifier(
         Output::Datagram(d) => d,
         Output::None => panic!("send_something: got Output::None"),
     };
-    (modifier(dgram).unwrap(), now)
+    (modifier(dgram), now)
 }
 
 fn send_something_paced(
@@ -611,13 +639,13 @@ fn send_something_paced(
     now: Instant,
     allow_pacing: bool,
 ) -> (Datagram, Instant) {
-    send_something_paced_with_modifier(sender, now, allow_pacing, Some)
+    send_something_paced_with_modifier(sender, now, allow_pacing, identity)
 }
 
 fn send_something_with_modifier(
     sender: &mut Connection,
     now: Instant,
-    modifier: fn(Datagram) -> Option<Datagram>,
+    modifier: impl Fn(Datagram) -> Datagram,
 ) -> Datagram {
     send_something_paced_with_modifier(sender, now, false, modifier).0
 }
@@ -625,7 +653,7 @@ fn send_something_with_modifier(
 /// Send something on a stream from `sender` to `receiver`.
 /// Return the resulting datagram.
 fn send_something(sender: &mut Connection, now: Instant) -> Datagram {
-    send_something_with_modifier(sender, now, Some)
+    send_something_with_modifier(sender, now, identity)
 }
 
 /// Send something, but add a little something extra into the output.
@@ -634,7 +662,7 @@ where
     W: test_internal::FrameWriter + 'static,
 {
     sender.test_frame_writer = Some(Box::new(writer));
-    let res = send_something_with_modifier(sender, now, Some);
+    let res = send_something_with_modifier(sender, now, identity);
     sender.test_frame_writer = None;
     res
 }
@@ -645,7 +673,7 @@ fn send_with_modifier_and_receive(
     sender: &mut Connection,
     receiver: &mut Connection,
     now: Instant,
-    modifier: fn(Datagram) -> Option<Datagram>,
+    modifier: impl Fn(Datagram) -> Datagram,
 ) -> Option<Datagram> {
     let dgram = send_something_with_modifier(sender, now, modifier);
     receiver.process(Some(dgram), now).dgram()
@@ -658,7 +686,7 @@ fn send_and_receive(
     receiver: &mut Connection,
     now: Instant,
 ) -> Option<Datagram> {
-    send_with_modifier_and_receive(sender, receiver, now, Some)
+    send_with_modifier_and_receive(sender, receiver, now, identity)
 }
 
 fn get_tokens(client: &mut Connection) -> Vec<ResumptionToken> {
@@ -709,8 +737,8 @@ fn create_client() {
     assert!(matches!(client.state(), State::Init));
     let stats = client.stats();
     assert_default_stats(&stats);
-    assert_eq!(stats.rtt, crate::rtt::INITIAL_RTT);
-    assert_eq!(stats.rttvar, crate::rtt::INITIAL_RTT / 2);
+    assert_eq!(stats.rtt, crate::DEFAULT_INITIAL_RTT);
+    assert_eq!(stats.rttvar, crate::DEFAULT_INITIAL_RTT / 2);
 }
 
 #[test]
@@ -740,4 +768,37 @@ fn tp_disable_migration() {
         let disable_migration = client.tps.borrow_mut().local().get_empty(DisableMigration);
         assert_eq!(disable, disable_migration);
     }
+}
+
+#[test]
+fn server_receives_new_token() {
+    struct NewTokenWriter {}
+
+    impl test_internal::FrameWriter for NewTokenWriter {
+        fn write_frames(&mut self, builder: &mut packet::Builder<&mut Vec<u8>>) {
+            builder.encode_varint(FrameType::NewToken);
+            builder.encode_vvec(&[0; 4]);
+        }
+    }
+
+    let mut client = default_client();
+    let mut server = default_server();
+    connect_force_idle(&mut client, &mut server);
+    assert_eq!(client.state(), &State::Confirmed);
+    assert_eq!(server.state(), &State::Confirmed);
+
+    let spoofed = client
+        .test_write_frames(NewTokenWriter {}, now())
+        .dgram()
+        .unwrap();
+
+    // Now deliver the packet with the spoofed NEW_TOKEN frame.
+    server.process_input(spoofed, now());
+    assert!(matches!(
+        server.state(),
+        State::Closing {
+            error: CloseReason::Transport(Error::ProtocolViolation),
+            ..
+        }
+    ));
 }

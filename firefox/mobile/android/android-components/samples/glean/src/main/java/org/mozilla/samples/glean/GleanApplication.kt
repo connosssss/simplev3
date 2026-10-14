@@ -7,13 +7,11 @@ package org.mozilla.samples.glean
 import android.app.Application
 import android.content.Context
 import androidx.core.content.edit
-import androidx.core.net.toUri
 import mozilla.components.lib.fetch.httpurlconnection.HttpURLConnectionClient
 import mozilla.components.service.glean.net.ConceptFetchHttpUploader
 import mozilla.components.service.nimbus.Nimbus
 import mozilla.components.service.nimbus.NimbusApi
 import mozilla.components.service.nimbus.NimbusAppInfo
-import mozilla.components.service.nimbus.NimbusServerSettings
 import mozilla.components.support.base.log.Log
 import mozilla.components.support.base.log.sink.AndroidLogSink
 import mozilla.components.support.rusthttp.RustHttpConfig
@@ -59,9 +57,9 @@ class GleanApplication : Application() {
             buildInfo = GleanBuildInfo.buildInfo,
         )
 
-        /** Begin Nimbus component specific code. Note: this is not relevant to Glean */
+        // Begin Nimbus component specific code. Note: this is not relevant to Glean
         initNimbus(isFirstRun)
-        /** End Nimbus specific code. */
+        // End Nimbus specific code.
 
         Test.timespan.start()
 
@@ -74,41 +72,43 @@ class GleanApplication : Application() {
     }
 
     /**
-     * Initialize the Nimbus experiments library. This is only relevant to the Nimbus library, aside
-     * from recording the experiment in Glean.
+     * Initialize the Nimbus experiments library. This is only relevant to the Nimbus library, aside from recording the
+     * experiment in Glean.
      */
     private fun initNimbus(isFirstRun: Boolean) {
         RustLog.enable()
         RustHttpConfig.setClient(lazy { HttpURLConnectionClient() })
-        val url = getString(R.string.nimbus_default_endpoint).toUri()
-        val appInfo = NimbusAppInfo(
-            appName = "samples-glean",
-            channel = "samples",
-        )
-        nimbus = Nimbus(
-            context = this,
-            appInfo = appInfo,
-            server = NimbusServerSettings(url),
-            recordedContext = null,
-        ).also { nimbus ->
-            if (isFirstRun) {
-                // This file is bundled with the app, but derived from the server at build time.
-                // We'll use it now, on first run.
-                nimbus.setExperimentsLocally(R.raw.initial_experiments)
-            }
-            // Apply the experiments downloaded on last run, but on first run, it will
-            // use the contents of `R.raw.initial_experiments`.
-            nimbus.applyPendingExperiments()
+        val appInfo =
+            NimbusAppInfo(
+                appName = "samples-glean",
+                channel = "samples",
+            )
+        nimbus =
+            Nimbus(
+                    context = this,
+                    appInfo = appInfo,
+                    server = null,
+                    recordedContext = null,
+                )
+                .also { nimbus ->
+                    if (isFirstRun) {
+                        // This file is bundled with the app, but derived from the server at build time.
+                        // We'll use it now, on first run.
+                        nimbus.applyLocalExperiments(R.raw.initial_experiments)
+                    } else {
+                        // Apply the experiments downloaded on last run.
+                        nimbus.applyPendingExperiments()
+                    }
 
-            // In a real application, we might want to fetchExperiments() here.
-            //
-            // We won't do that in this app because:
-            //   * the server's experiments will overwrite the current ones
-            //   * it's not clear that the server will have a `test-color` experiment
-            //     by the time you run this
-            //   * an update experiments button is in `MainActivity`
-            //
-            // nimbus.fetchExperiments()
-        }
+                    // In a real application, we might want to fetchExperiments() here.
+                    //
+                    // We won't do that in this app because:
+                    //   * the server's experiments will overwrite the current ones
+                    //   * it's not clear that the server will have a `test-color` experiment
+                    //     by the time you run this
+                    //   * an update experiments button is in `MainActivity`
+                    //
+                    // nimbus.fetchExperiments()
+                }
     }
 }

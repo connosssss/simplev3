@@ -1,11 +1,10 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=2 et lcs=trail\:.,tab\:>~ :
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "QuotaVFS.h"
 
+#include "mozilla/dom/quota/AssertionsImpl.h"
 #include "mozilla/dom/quota/PersistenceType.h"
 #include "mozilla/dom/quota/QuotaManager.h"
 #include "mozilla/dom/quota/QuotaObject.h"
@@ -163,11 +162,12 @@ int QuotaTruncate(sqlite3_file* pFile, sqlite_int64 size) {
   rc = p->pReal->pMethods->xTruncate(p->pReal, size);
   if (p->quotaObject) {
     if (rc == SQLITE_OK) {
-#ifdef DEBUG
+#if defined(NIGHTLY_BUILD) || defined(DEBUG)
       // Make sure xTruncate set the size exactly as we calculated above.
       sqlite_int64 newSize;
-      MOZ_ASSERT(QuotaFileSize(pFile, &newSize) == SQLITE_OK);
-      MOZ_ASSERT(newSize == size);
+      if (QuotaFileSize(pFile, &newSize) == SQLITE_OK) {
+        ReportUsageDriftIfAny(size, newSize, "QuotaVFS.truncate"_ns);
+      }
 #endif
     } else {
       NS_WARNING(

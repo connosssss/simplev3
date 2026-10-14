@@ -27,6 +27,19 @@ POLICIES_CONTENT_ON = """{
   }
 }"""
 
+POLICIES_CONTENT_DIRECT = """{
+  "policies": {
+    "Certificates": {
+      "Install": ["%(cert)s"]
+    },
+    "Proxy": {
+      "Mode": "none",
+      "Locked": true
+    }
+  }
+}"""
+
+
 POLICIES_CONTENT_OFF = """{
   "policies": {
     "Proxy": {
@@ -76,6 +89,7 @@ class MitmproxyDesktop(Mitmproxy):
            location, and turns on the the browser proxy settings
         """
         LOG.info("Installing mitmproxy CA certificate into Firefox")
+        self.wait_for_ca_cert(DEFAULT_CERT_PATH)
 
         # browser_path is the exe, we want the folder
         self.policies_dir = os.path.dirname(browser_path)
@@ -92,15 +106,13 @@ class MitmproxyDesktop(Mitmproxy):
             self.cert_path = self.cert_path.replace("\\", "\\\\")
 
         if not os.path.exists(self.policies_dir):
-            LOG.info("creating folder: %s" % self.policies_dir)
+            LOG.info(f"creating folder: {self.policies_dir}")
             os.makedirs(self.policies_dir)
         else:
-            LOG.info("folder already exists: %s" % self.policies_dir)
+            LOG.info(f"folder already exists: {self.policies_dir}")
 
         self.write_policies_json(
-            self.policies_dir,
-            policies_content=POLICIES_CONTENT_ON
-            % {"cert": self.cert_path, "host": self.host, "port": self.port},
+            self.policies_dir, policies_content=self._policies_content()
         )
 
         # cannot continue if failed to add CA cert to Firefox, need to check
@@ -111,16 +123,25 @@ class MitmproxyDesktop(Mitmproxy):
             self.stop_mitmproxy_playback()
             sys.exit()
 
+    def _policies_content(self):
+        if self.playback_mode == "direct":
+            return POLICIES_CONTENT_DIRECT % {"cert": self.cert_path}
+        return POLICIES_CONTENT_ON % {
+            "cert": self.cert_path,
+            "host": self.host,
+            "port": self.port,
+        }
+
     def write_policies_json(self, location, policies_content):
         policies_file = os.path.join(location, "policies.json")
-        LOG.info("writing: %s" % policies_file)
+        LOG.info(f"writing: {policies_file}")
 
         with open(policies_file, "w") as fd:
             fd.write(policies_content)
 
     def read_policies_json(self, location):
         policies_file = os.path.join(location, "policies.json")
-        LOG.info("reading: %s" % policies_file)
+        LOG.info(f"reading: {policies_file}")
 
         with open(policies_file) as fd:
             return fd.read()
@@ -132,21 +153,18 @@ class MitmproxyDesktop(Mitmproxy):
             contents = self.read_policies_json(self.policies_dir)
             LOG.info("Firefox policies file contents:")
             LOG.info(contents)
-            if (
-                POLICIES_CONTENT_ON
-                % {"cert": self.cert_path, "host": self.host, "port": self.port}
-            ) in contents:
+            if self._policies_content() in contents:
                 LOG.info("Verified mitmproxy CA certificate is installed in Firefox")
             else:
                 return False
         except Exception as e:
-            LOG.info("failed to read Firefox policies file, exeption: %s" % e)
+            LOG.info(f"failed to read Firefox policies file, exeption: {e}")
             return False
         return True
 
     def stop(self):
         LOG.info("MitmproxyDesktop stop!!")
-        super(MitmproxyDesktop, self).stop()
+        super().stop()
         self.turn_off_browser_proxy()
 
     def turn_off_browser_proxy(self):

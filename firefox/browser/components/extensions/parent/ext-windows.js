@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,6 +11,8 @@ ChromeUtils.defineESModuleGetters(this, {
 
 var { ExtensionError, promiseObserved } = ExtensionUtils;
 
+// Note: params from extensions are in CSS pixels, not desktop pixels.
+// This method clamps values as needed, still in CSS pixels.
 function sanitizePositionParams(params, window = null, positionOffset = 0) {
   if (params.left === null && params.top === null) {
     return;
@@ -45,37 +45,36 @@ function sanitizePositionParams(params, window = null, positionOffset = 0) {
   const screenManager = Cc["@mozilla.org/gfx/screenmanager;1"].getService(
     Ci.nsIScreenManager
   );
+  // screenForRect and GetAvailRectDisplayPix expect desktop pixels, so we need
+  // to map to desktop pixels (and back to CSS pixels later).
+  const cssToDesktopScale = window
+    ? window.devicePixelRatio / window.desktopToDeviceScale
+    : 1;
+  const desktopLeft = params.left * cssToDesktopScale;
+  const desktopTop = params.top * cssToDesktopScale;
+  const desktopWidth = width * cssToDesktopScale;
+  const desktopHeight = height * cssToDesktopScale;
   const screen = screenManager.screenForRect(
-    params.left,
-    params.top,
-    width,
-    height
+    desktopLeft,
+    desktopTop,
+    desktopWidth,
+    desktopHeight
   );
-  const availDeviceLeft = {};
-  const availDeviceTop = {};
-  const availDeviceWidth = {};
-  const availDeviceHeight = {};
-  screen.GetAvailRect(
-    availDeviceLeft,
-    availDeviceTop,
-    availDeviceWidth,
-    availDeviceHeight
-  );
-  const slopX = window?.screenEdgeSlopX || 0;
-  const slopY = window?.screenEdgeSlopY || 0;
-  const factor = screen.defaultCSSScaleFactor;
-  const availLeft = Math.floor(availDeviceLeft.value / factor) - slopX;
-  const availTop = Math.floor(availDeviceTop.value / factor) - slopY;
-  const availWidth = Math.floor(availDeviceWidth.value / factor) + slopX;
-  const availHeight = Math.floor(availDeviceHeight.value / factor) + slopY;
-  params.left = Math.min(
-    availLeft + availWidth - width,
-    Math.max(availLeft, params.left)
-  );
-  params.top = Math.min(
-    availTop + availHeight - height,
-    Math.max(availTop, params.top)
-  );
+  const availLeft = {};
+  const availTop = {};
+  const availWidth = {};
+  const availHeight = {};
+  screen.GetAvailRectDisplayPix(availLeft, availTop, availWidth, availHeight);
+  const slopX = (window?.screenEdgeSlopX || 0) * cssToDesktopScale;
+  const slopY = (window?.screenEdgeSlopY || 0) * cssToDesktopScale;
+  const minLeft = availLeft.value - slopX;
+  const minTop = availTop.value - slopY;
+  const maxLeft = availLeft.value + availWidth.value - desktopWidth;
+  const maxTop = availTop.value + availHeight.value - desktopHeight;
+  const clampedLeft = Math.min(maxLeft, Math.max(minLeft, desktopLeft));
+  const clampedTop = Math.min(maxTop, Math.max(minTop, desktopTop));
+  params.left = Math.round(clampedLeft / cssToDesktopScale);
+  params.top = Math.round(clampedTop / cssToDesktopScale);
 }
 
 this.windows = class extends ExtensionAPIPersistent {
@@ -119,7 +118,15 @@ this.windows = class extends ExtensionAPIPersistent {
           let windowId = Window.WINDOW_ID_NONE;
           let window = Services.focus.activeWindow;
           if (window && extension.canAccessWindow(window)) {
-            windowId = windowTracker.getId(window);
+            if (window.document.readyState !== "complete") {
+              // isBrowserWindow() is not reliable when the window is loading.
+              // Wait a little bit until it is ready.
+              window.addEventListener("load", listener, { once: true });
+              return;
+            }
+            if (windowTracker.isBrowserWindow(window)) {
+              windowId = windowTracker.getId(window);
+            }
           }
           if (windowId !== lastOnFocusChangedWindowId) {
             fire.async(windowId);
@@ -273,7 +280,7 @@ this.windows = class extends ExtensionAPIPersistent {
             }
 
             let tab = tabTracker.getTab(createData.tabId);
-            if (!context.canAccessWindow(tab.ownerGlobal)) {
+            if (!context.canAccessWindow(tab.documentGlobal)) {
               throw new ExtensionError(`Invalid tab ID: ${createData.tabId}`);
             }
             // Private browsing tabs can only be moved to private browsing
@@ -301,7 +308,11 @@ this.windows = class extends ExtensionAPIPersistent {
               );
             }
 
-            args.appendElement(tab);
+            // If the tab is part of a split view, move the whole split view
+            // instead of just that single tab.
+            const tabToAdopt = tab.splitview ?? tab;
+            // For tab adoption logic, see getTabToAdopt() in browser-init.js.
+            args.appendElement(tabToAdopt);
           } else if (createData.url !== null) {
             if (Array.isArray(createData.url)) {
               let array = Cc["@mozilla.org/array;1"].createInstance(
@@ -324,7 +335,7 @@ this.windows = class extends ExtensionAPIPersistent {
             } else {
               let url = context.uri.resolve(createData.url);
               args.appendElement(mkstr(url));
-              isOnlyMozExtensionUrl = url.startsWith("moz-extension://");
+              isOnlyMozExtensionUrl = ExtensionUtils.isExtensionUrl(url);
               if (!context.checkLoadURL(url, { dontReportErrors: true })) {
                 if (isOnlyMozExtensionUrl) {
                   // For backwards-compatibility (also in tabs APIs), we allow
@@ -343,7 +354,7 @@ this.windows = class extends ExtensionAPIPersistent {
                 ? "about:privatebrowsing"
                 : HomePage.get().split("|", 1)[0];
             args.appendElement(mkstr(url));
-            isOnlyMozExtensionUrl = url.startsWith("moz-extension://");
+            isOnlyMozExtensionUrl = ExtensionUtils.isExtensionUrl(url);
 
             if (!context.checkLoadURL(url, { dontReportErrors: true })) {
               // The extension principal cannot directly load about:-URLs,
@@ -354,7 +365,18 @@ this.windows = class extends ExtensionAPIPersistent {
             }
           }
 
-          args.appendElement(null); // extraOptions
+          // All types other than "normal" create "popup"-type windows.
+          const isPopup =
+            createData.type !== null && createData.type != "normal";
+
+          let extraOptions = null;
+          if (isPopup) {
+            extraOptions = Cc[
+              "@mozilla.org/hash-property-bag;1"
+            ].createInstance(Ci.nsIWritablePropertyBag2);
+            extraOptions.setPropertyAsBool("web-extension-popup-window", true);
+          }
+          args.appendElement(extraOptions); // extraOptions
           args.appendElement(null); // referrerInfo
           args.appendElement(null); // postData
           args.appendElement(null); // allowThirdPartyFixup
@@ -388,16 +410,19 @@ this.windows = class extends ExtensionAPIPersistent {
 
           let features = ["chrome"];
 
-          if (createData.type === null || createData.type == "normal") {
+          if (!isPopup) {
             features.push("dialog=no", "all");
           } else {
-            // All other types create "popup"-type windows by default.
             features.push(
               "dialog",
               "resizable",
               "minimizable",
               "titlebar",
-              "close"
+              "close",
+              // Ensures new windows appear in the user's current view
+              // instead of restoring a persisted fullscreen sizemode and
+              // taking a Space of their own.
+              "suppressinitialfullscreen"
             );
             if (createData.left === null && createData.top === null) {
               features.push("centerscreen");

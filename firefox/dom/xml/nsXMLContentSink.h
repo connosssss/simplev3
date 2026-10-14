@@ -1,24 +1,21 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsXMLContentSink_h__
-#define nsXMLContentSink_h__
+#ifndef nsXMLContentSink_h_
+#define nsXMLContentSink_h_
 
 #include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin
-#include "mozilla/Attributes.h"
-#include "nsContentSink.h"
-#include "nsIXMLContentSink.h"
-#include "nsIExpatSink.h"
-#include "nsIDocumentTransformer.h"
-#include "nsTArray.h"
+#include "mozilla/Span.h"
+#include "mozilla/dom/FromParser.h"
 #include "nsCOMPtr.h"
 #include "nsCRT.h"
+#include "nsContentSink.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsIDTD.h"
-#include "mozilla/dom/FromParser.h"
+#include "nsIDocumentTransformer.h"
+#include "nsIExpatSink.h"
+#include "nsIXMLContentSink.h"
+#include "nsTArray.h"
 
 class nsIURI;
 class nsIContent;
@@ -26,6 +23,7 @@ class nsIParser;
 class nsTextNode;
 
 namespace mozilla::dom {
+class Element;
 class NodeInfo;
 class ProcessingInstruction;
 }  // namespace mozilla::dom
@@ -41,11 +39,6 @@ class nsXMLContentSink : public nsContentSink,
                          public nsITransformObserver,
                          public nsIExpatSink {
  public:
-  struct StackNode {
-    nsCOMPtr<nsIContent> mContent;
-    uint32_t mNumFlushed;
-  };
-
   nsXMLContentSink();
 
   nsresult Init(mozilla::dom::Document* aDoc, nsIURI* aURL,
@@ -60,8 +53,9 @@ class nsXMLContentSink : public nsContentSink,
 
   // nsIContentSink
   NS_IMETHOD WillParse(void) override;
-  NS_IMETHOD WillBuildModel(nsDTDMode aDTDMode) override;
-  NS_IMETHOD DidBuildModel(bool aTerminated) override;
+  NS_IMETHOD WillBuildModel() override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHOD
+  DidBuildModel(bool aTerminated) override;
   NS_IMETHOD WillInterrupt(void) override;
   void WillResume() override;
   NS_IMETHOD SetParser(nsParserBase* aParser) override;
@@ -80,11 +74,12 @@ class nsXMLContentSink : public nsContentSink,
   }
 
   // nsITransformObserver
-  nsresult OnDocumentCreated(mozilla::dom::Document* aSourceDocument,
-                             mozilla::dom::Document* aResultDocument) override;
-  nsresult OnTransformDone(mozilla::dom::Document* aSourceDocument,
-                           nsresult aResult,
-                           mozilla::dom::Document* aResultDocument) override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult
+  OnDocumentCreated(mozilla::dom::Document* aSourceDocument,
+                    mozilla::dom::Document* aResultDocument) override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult
+  OnTransformDone(mozilla::dom::Document* aSourceDocument, nsresult aResult,
+                  mozilla::dom::Document* aResultDocument) override;
 
   // nsICSSLoaderObserver
   NS_IMETHOD StyleSheetLoaded(mozilla::StyleSheet* aSheet, bool aWasDeferred,
@@ -107,7 +102,7 @@ class nsXMLContentSink : public nsContentSink,
 
   virtual nsresult AddAttributes(const char16_t** aNode,
                                  mozilla::dom::Element* aElement);
-  nsresult AddText(const char16_t* aString, int32_t aLength);
+  nsresult AddText(mozilla::Span<const char16_t> aText);
 
   virtual bool OnOpenContainer(const char16_t** aAtts, uint32_t aAttsCount,
                                int32_t aNameSpaceID, nsAtom* aTagName,
@@ -119,7 +114,6 @@ class nsXMLContentSink : public nsContentSink,
   //  return TRUE if this call set the root element
   virtual bool SetDocElement(int32_t aNameSpaceID, nsAtom* aTagName,
                              nsIContent* aContent);
-  virtual bool NotifyForDocElement() { return true; }
   virtual nsresult CreateElement(const char16_t** aAtts, uint32_t aAttsCount,
                                  mozilla::dom::NodeInfo* aNodeInfo,
                                  uint32_t aLineNumber, uint32_t aColumnNumber,
@@ -128,30 +122,19 @@ class nsXMLContentSink : public nsContentSink,
 
   // aParent is allowed to be null here if this is the root content
   // being closed
-  virtual nsresult CloseElement(nsIContent* aContent);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual nsresult CloseElement(
+      nsIContent* aContent);
 
   virtual nsresult FlushText(bool aReleaseTextNode = true);
 
   nsresult AddContentAsLeaf(nsIContent* aContent);
 
   nsIContent* GetCurrentContent();
-  StackNode* GetCurrentStackNode();
-  nsresult PushContent(nsIContent* aContent);
+  void PushContent(nsIContent* aContent);
   void PopContent();
-  bool HaveNotifiedForCurrentContent() const;
-
-  nsresult FlushTags() override;
-
-  void UpdateChildCounts() override;
-
-  void DidAddContent() {
-    if (!mXSLTProcessor && IsTimeToNotify()) {
-      FlushTags();
-    }
-  }
 
   // nsContentSink override
-  virtual nsresult ProcessStyleLinkFromHeader(
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual nsresult ProcessStyleLinkFromHeader(
       const nsAString& aHref, bool aAlternate, const nsAString& aTitle,
       const nsAString& aIntegrity, const nsAString& aType,
       const nsAString& aMedia, const nsAString& aReferrerPolicy,
@@ -175,11 +158,10 @@ class nsXMLContentSink : public nsContentSink,
 
   nsresult MaybePrettyPrint();
 
-  bool IsMonolithicContainer(mozilla::dom::NodeInfo* aNodeInfo);
-
   nsresult HandleStartElement(const char16_t* aName, const char16_t** aAtts,
                               uint32_t aAttsCount, uint32_t aLineNumber,
-                              uint32_t aColumnNumber, bool aInterruptable);
+                              uint32_t aColumnNumber,
+                              mozilla::dom::FromParser aFromParser);
   nsresult HandleEndElement(const char16_t* aName, bool aInterruptable);
   nsresult HandleCharacterData(const char16_t* aData, uint32_t aLength,
                                bool aInterruptable);
@@ -187,25 +169,29 @@ class nsXMLContentSink : public nsContentSink,
   nsCOMPtr<nsIContent> mDocElement;
   nsCOMPtr<nsIContent> mCurrentHead;  // When set, we're in an XHTML <haed>
 
-  XMLContentSinkState mState;
+  XMLContentSinkState mState = eXMLContentSinkState_InProlog;
 
-  // The length of the valid data in mText.
-  int32_t mTextLength;
-
-  int32_t mNotifyLevel;
   RefPtr<nsTextNode> mLastTextNode;
 
-  uint8_t mPrettyPrintXML : 1;
-  uint8_t mPrettyPrintHasSpecialRoot : 1;
-  uint8_t mPrettyPrintHasFactoredElements : 1;
-  uint8_t mPrettyPrinting : 1;  // True if we called PrettyPrint() and it
-                                // decided we should in fact prettyprint.
-  // True to call prevent script execution in the fragment mode.
-  uint8_t mPreventScriptExecution : 1;
+  // True while FlushText runs. A DOM notification in FlushText can run script
+  // that stops the parser, and then DidBuildModel calls FlushText again.
+  bool mFlushingText = false;
 
-  nsTArray<StackNode> mContentStack;
+  bool mPrettyPrintXML : 1 = true;
+  bool mPrettyPrintHasSpecialRoot : 1 = false;
+  bool mPrettyPrintHasFactoredElements : 1 = false;
+  // True if we called PrettyPrint() and it
+  // decided we should in fact prettyprint.
+  bool mPrettyPrinting : 1 = false;
+  // True to call prevent script execution in the fragment mode.
+  bool mPreventScriptExecution : 1 = false;
+  // XSLT is disabled
+  bool mXSLTIsDisabled : 1 = false;
+
+  nsTArray<nsCOMPtr<nsIContent>> mContentStack;
 
   nsCOMPtr<nsIDocumentTransformer> mXSLTProcessor;
+  RefPtr<mozilla::dom::Document> mXSLTResultDocument;
 
   // Holds the children in the prolog until the root element is added, after
   // which they're inserted in the document. However, if we're doing an XSLT
@@ -214,9 +200,8 @@ class nsXMLContentSink : public nsContentSink,
   // discard the children.
   nsTArray<nsCOMPtr<nsIContent>> mDocumentChildren;
 
-  static const int NS_ACCUMULATION_BUFFER_SIZE = 4096;
   // Our currently accumulated text that we have not flushed to a textnode yet.
-  char16_t mText[NS_ACCUMULATION_BUFFER_SIZE];
+  AutoTArray<char16_t, 4096> mText;
 };
 
-#endif  // nsXMLContentSink_h__
+#endif  // nsXMLContentSink_h_

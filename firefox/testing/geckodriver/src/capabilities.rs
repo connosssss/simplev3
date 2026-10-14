@@ -5,14 +5,14 @@
 use crate::command::LogOptions;
 use crate::logging::Level;
 use crate::marionette::MarionetteSettings;
-use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use mozdevice::AndroidStorageInput;
 use mozprofile::preferences::Pref;
 use mozprofile::profile::Profile;
-use mozrunner::firefox_args::{get_arg_value, parse_args, Arg};
+use mozrunner::firefox_args::{Arg, get_arg_value, parse_args};
 use mozrunner::runner::platform::firefox_default_path;
-use mozversion::{firefox_binary_version, firefox_version, Version};
+use mozversion::{Version, firefox_binary_version, firefox_version};
 use regex::bytes::Regex;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -27,6 +27,18 @@ use std::str::{self, FromStr};
 use thiserror::Error;
 use webdriver::capabilities::{BrowserCapabilities, Capabilities};
 use webdriver::error::{ErrorStatus, WebDriverError, WebDriverResult};
+
+/// Firefox for Android packages (release, beta, nightly) plus the debug variant
+const FENIX_FAMILY_PACKAGES: &[&str] = &[
+    "org.mozilla.fenix",
+    "org.mozilla.fenix.debug",
+    "org.mozilla.firefox",
+    "org.mozilla.firefox_beta",
+];
+
+fn is_fenix_family(package: &str) -> bool {
+    FENIX_FAMILY_PACKAGES.contains(&package)
+}
 
 #[derive(Clone, Debug, Error)]
 enum VersionError {
@@ -285,7 +297,7 @@ impl BrowserCapabilities for FirefoxCapabilities<'_> {
                                         return Err(WebDriverError::new(
                                             ErrorStatus::InvalidArgument,
                                             format!("Invalid log field {}", x),
-                                        ))
+                                        ));
                                     }
                                 }
                             }
@@ -310,7 +322,7 @@ impl BrowserCapabilities for FirefoxCapabilities<'_> {
                             return Err(WebDriverError::new(
                                 ErrorStatus::InvalidArgument,
                                 format!("Invalid moz:firefoxOptions field {}", x),
-                            ))
+                            ));
                         }
                     }
                 }
@@ -336,7 +348,7 @@ impl BrowserCapabilities for FirefoxCapabilities<'_> {
                 return Err(WebDriverError::new(
                     ErrorStatus::InvalidArgument,
                     format!("Unrecognised option {}", name),
-                ))
+                ));
             }
         }
         Ok(())
@@ -458,9 +470,11 @@ impl FirefoxOptions {
                     ));
                 }
                 // See bug 1757720
-                warn!("Firefox was configured to use a named profile (`-P <name>`). \
+                warn!(
+                    "Firefox was configured to use a named profile (`-P <name>`). \
                        Support for named profiles will be removed in a future geckodriver release. \
-                       Please instead use the `--profile <path>` Firefox argument to start with an existing profile");
+                       Please instead use the `--profile <path>` Firefox argument to start with an existing profile"
+                );
                 rv.profile = ProfileType::Named;
             }
 
@@ -475,6 +489,7 @@ impl FirefoxOptions {
                         Arg::Marionette
                             | Arg::RemoteAllowHosts
                             | Arg::RemoteAllowOrigins
+                            | Arg::RemoteAllowSystemAccess
                             | Arg::RemoteDebuggingPort
                     )
                 })
@@ -484,6 +499,24 @@ impl FirefoxOptions {
                     format!("Argument {} can't be set via capabilities", arg),
                 ));
             };
+        }
+
+        if let Some(env) = rv.env.as_ref() {
+            // Block environment variables that should not be set via session capabilities.
+            let forbidden = env
+                .iter()
+                .filter(|(name, _value)| name == "MOZ_REMOTE_ALLOW_SYSTEM_ACCESS")
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<&str>>();
+            if !forbidden.is_empty() {
+                return Err(WebDriverError::new(
+                    ErrorStatus::InvalidArgument,
+                    format!(
+                        "Environment variables {} can't be set via capabilities",
+                        forbidden.join(", ")
+                    ),
+                ));
+            }
         }
 
         let has_web_socket_url = matched
@@ -710,11 +743,7 @@ impl FirefoxOptions {
                 }
                 None => {
                     match package.as_str() {
-                        "org.mozilla.firefox"
-                        | "org.mozilla.firefox_beta"
-                        | "org.mozilla.fenix"
-                        | "org.mozilla.fenix.debug"
-                        | "org.mozilla.reference.browser" => {
+                        p if is_fenix_family(p) || p == "org.mozilla.reference.browser" => {
                             Some("org.mozilla.fenix.IntentReceiverActivity".to_string())
                         }
                         "org.mozilla.focus"
@@ -743,7 +772,7 @@ impl FirefoxOptions {
                 None => None,
             };
 
-            android.intent_arguments = match options.get("androidIntentArguments") {
+            let intent_arguments = match options.get("androidIntentArguments") {
                 Some(json) => {
                     let args_array = json.as_array().ok_or_else(|| {
                         WebDriverError::new(
@@ -751,7 +780,7 @@ impl FirefoxOptions {
                             "androidIntentArguments is not an array",
                         )
                     })?;
-                    let args = args_array
+                    args_array
                         .iter()
                         .map(|x| x.as_str().map(|x| x.to_owned()))
                         .collect::<Option<Vec<String>>>()
@@ -760,27 +789,73 @@ impl FirefoxOptions {
                                 ErrorStatus::InvalidArgument,
                                 "androidIntentArguments entries are not all strings",
                             )
-                        })?;
-
-                    Some(args)
+                        })?
                 }
-                None => {
-                    // All GeckoView based applications support this view,
-                    // and allow to open a blank page in a Gecko window.
-                    Some(vec![
-                        "-a".to_string(),
-                        "android.intent.action.VIEW".to_string(),
-                        "-d".to_string(),
-                        "about:blank".to_string(),
-                    ])
-                }
+                None => Vec::new(),
             };
+
+            android.intent_arguments = Some(merge_default_intent_arguments(
+                intent_arguments,
+                package.as_str(),
+            ));
 
             Ok(Some(android))
         } else {
             Ok(None)
         }
     }
+}
+
+/// Combines client-supplied Android intent arguments with the defaults required
+/// to launch a GeckoView based application into a blank Gecko window.
+///
+/// A default is only added when the client did not already provide the
+/// corresponding flag, so explicit client values are never overridden:
+/// - `-a` (action) and `-d` (data URI) are single-use per intent.
+/// - `--ez automationtest` (Fenix-family only, bug 2064609) may appear multiple
+///   times, so it is matched by its key name.
+///
+/// See: https://developer.android.com/tools/adb#IntentSpec
+///
+/// Defaults are placed before the client arguments, which keeps the client's
+/// own ordering intact and matches the argument order used when no client
+/// arguments are supplied.
+fn merge_default_intent_arguments(client_args: Vec<String>, package: &str) -> Vec<String> {
+    let mut has_action: bool = false;
+    let mut has_data: bool = false;
+    let mut has_automationtest: bool = false;
+    let mut prev: Option<&str> = None;
+
+    for arg in &client_args {
+        match arg.as_str() {
+            "-a" => has_action = true,
+            "-d" => has_data = true,
+            "automationtest" if prev == Some("--ez") => has_automationtest = true,
+            _ => {}
+        }
+        prev = Some(arg.as_str());
+    }
+
+    let mut args = Vec::new();
+
+    if !has_action {
+        args.extend(["-a".to_string(), "android.intent.action.VIEW".to_string()]);
+    }
+
+    if !has_data {
+        args.extend(["-d".to_string(), "about:blank".to_string()]);
+    }
+
+    if is_fenix_family(package) && !has_automationtest {
+        args.extend([
+            "--ez".to_string(),
+            "automationtest".to_string(),
+            "true".to_string(),
+        ]);
+    }
+
+    args.extend(client_args);
+    args
 }
 
 fn pref_from_json(value: &Value) -> WebDriverResult<Pref> {
@@ -800,51 +875,74 @@ fn unzip_buffer(buf: &[u8], dest_dir: &Path) -> WebDriverResult<()> {
     let mut zip = zip::ZipArchive::new(reader)
         .map_err(|_| WebDriverError::new(ErrorStatus::UnknownError, "Failed to unzip profile"))?;
 
-    for i in 0..zip.len() {
-        let mut file = zip.by_index(i).map_err(|_| {
-            WebDriverError::new(
-                ErrorStatus::UnknownError,
-                "Processing profile zip file failed",
-            )
-        })?;
-        let unzip_path = {
-            let name = file.name();
-            let is_dir = name.ends_with('/');
-            let rel_path = Path::new(name);
+    let mut extracted_files: Vec<PathBuf> = Vec::new();
+    let mut created_dirs: Vec<PathBuf> = Vec::new();
+
+    let result = (|| {
+        for i in 0..zip.len() {
+            let mut file = zip.by_index(i).map_err(|_| {
+                WebDriverError::new(
+                    ErrorStatus::UnknownError,
+                    "Processing profile zip file failed",
+                )
+            })?;
+
+            if file.is_symlink() {
+                return Err(WebDriverError::new(
+                    ErrorStatus::UnknownError,
+                    format!("Zip entry '{}' is a symbolic link", file.name()),
+                ));
+            }
+
+            let rel_path = file.enclosed_name().ok_or_else(|| {
+                WebDriverError::new(
+                    ErrorStatus::UnknownError,
+                    format!(
+                        "Zip entry '{}' has an invalid or traversal path",
+                        file.name()
+                    ),
+                )
+            })?;
+
+            let is_dir = file.is_dir();
             let dest_path = dest_dir.join(rel_path);
 
-            {
-                let create_dir = if is_dir {
-                    Some(dest_path.as_path())
-                } else {
-                    dest_path.parent()
-                };
-                if let Some(dir) = create_dir {
-                    if !dir.exists() {
-                        debug!("Creating profile directory tree {}", dir.to_string_lossy());
-                        fs::create_dir_all(dir)?;
-                    }
-                }
-            }
-
-            if is_dir {
-                None
+            let create_dir = if is_dir {
+                Some(dest_path.as_path())
             } else {
-                Some(dest_path)
-            }
-        };
+                dest_path.parent()
+            };
 
-        if let Some(unzip_path) = unzip_path {
-            debug!("Extracting profile to {}", unzip_path.to_string_lossy());
-            let dest = fs::File::create(unzip_path)?;
-            if file.size() > 0 {
-                let mut writer = BufWriter::new(dest);
-                io::copy(&mut file, &mut writer)?;
+            if let Some(dir) = create_dir
+                && !dir.exists()
+            {
+                fs::create_dir_all(dir)?;
+                created_dirs.push(dir.to_path_buf());
             }
+
+            if !is_dir {
+                let dest = fs::File::create(&dest_path)?;
+                if file.size() > 0 {
+                    let mut writer = BufWriter::new(dest);
+                    io::copy(&mut file, &mut writer)?;
+                }
+                extracted_files.push(dest_path);
+            }
+        }
+
+        Ok(())
+    })();
+
+    if result.is_err() {
+        for file in &extracted_files {
+            let _ = fs::remove_file(file);
+        }
+        for dir in created_dirs.iter().rev() {
+            let _ = fs::remove_dir(dir);
         }
     }
 
-    Ok(())
+    result
 }
 
 #[cfg(test)]
@@ -853,18 +951,10 @@ mod tests {
 
     use self::mozprofile::preferences::Pref;
     use super::*;
+    use crate::test::build_zip;
     use serde_json::{json, Map, Value};
-    use std::fs::File;
-    use std::io::Read;
     use url::{Host, Url};
     use webdriver::capabilities::Capabilities;
-
-    fn example_profile() -> Value {
-        let mut profile_data = Vec::with_capacity(1024);
-        let mut profile = File::open("src/tests/profile.zip").unwrap();
-        profile.read_to_end(&mut profile_data).unwrap();
-        Value::String(BASE64_STANDARD.encode(&profile_data))
-    }
 
     fn make_options(
         firefox_opts: Capabilities,
@@ -932,6 +1022,7 @@ mod tests {
             "--marionette",
             "--remote-allow-hosts",
             "--remote-allow-origins",
+            "--remote-allow-system-access",
             "--remote-debugging-port",
         ];
 
@@ -1159,12 +1250,13 @@ mod tests {
             firefox_opts.insert("androidPackage".into(), json!(package));
 
             let opts = make_options(firefox_opts, None).expect("valid firefox options");
-            assert!(opts
-                .android
-                .unwrap()
-                .activity
-                .unwrap()
-                .contains("IntentReceiverActivity"));
+            assert!(
+                opts.android
+                    .unwrap()
+                    .activity
+                    .unwrap()
+                    .contains("IntentReceiverActivity")
+            );
         }
     }
 
@@ -1257,20 +1349,25 @@ mod tests {
             firefox_opts.insert("androidPackage".into(), json!(package));
 
             let opts = make_options(firefox_opts, None).expect("valid firefox options");
-            assert_eq!(
-                opts.android.unwrap().intent_arguments,
-                Some(vec![
-                    "-a".to_string(),
-                    "android.intent.action.VIEW".to_string(),
-                    "-d".to_string(),
-                    "about:blank".to_string(),
-                ])
-            );
+            let mut expected = vec![
+                "-a".to_string(),
+                "android.intent.action.VIEW".to_string(),
+                "-d".to_string(),
+                "about:blank".to_string(),
+            ];
+            if is_fenix_family(package) {
+                expected.extend([
+                    "--ez".to_string(),
+                    "automationtest".to_string(),
+                    "true".to_string(),
+                ]);
+            }
+            assert_eq!(opts.android.unwrap().intent_arguments, Some(expected));
         }
     }
 
     #[test]
-    fn fx_options_android_intent_arguments_override() {
+    fn fx_options_android_intent_arguments_appends_defaults() {
         let mut firefox_opts = Capabilities::new();
         firefox_opts.insert("androidPackage".into(), json!("foo.bar"));
         firefox_opts.insert("androidIntentArguments".into(), json!(["lorem", "ipsum"]));
@@ -1278,7 +1375,87 @@ mod tests {
         let opts = make_options(firefox_opts, None).expect("valid firefox options");
         assert_eq!(
             opts.android.unwrap().intent_arguments,
-            Some(vec!["lorem".to_string(), "ipsum".to_string()])
+            Some(vec![
+                "-a".to_string(),
+                "android.intent.action.VIEW".to_string(),
+                "-d".to_string(),
+                "about:blank".to_string(),
+                "lorem".to_string(),
+                "ipsum".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn fx_options_android_intent_arguments_appends_automationtest_for_fenix() {
+        let mut firefox_opts = Capabilities::new();
+        firefox_opts.insert("androidPackage".into(), json!("org.mozilla.fenix"));
+        firefox_opts.insert(
+            "androidIntentArguments".into(),
+            json!(["--ez", "somekey", "true"]),
+        );
+
+        let opts = make_options(firefox_opts, None).expect("valid firefox options");
+        assert_eq!(
+            opts.android.unwrap().intent_arguments,
+            Some(vec![
+                "-a".to_string(),
+                "android.intent.action.VIEW".to_string(),
+                "-d".to_string(),
+                "about:blank".to_string(),
+                "--ez".to_string(),
+                "automationtest".to_string(),
+                "true".to_string(),
+                "--ez".to_string(),
+                "somekey".to_string(),
+                "true".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn fx_options_android_intent_arguments_does_not_override_action_and_data() {
+        let mut firefox_opts = Capabilities::new();
+        firefox_opts.insert("androidPackage".into(), json!("foo.bar"));
+        firefox_opts.insert(
+            "androidIntentArguments".into(),
+            json!(["-a", "android.intent.action.MAIN", "-d", "https://example.com/"]),
+        );
+
+        let opts = make_options(firefox_opts, None).expect("valid firefox options");
+        assert_eq!(
+            opts.android.unwrap().intent_arguments,
+            Some(vec![
+                "-a".to_string(),
+                "android.intent.action.MAIN".to_string(),
+                "-d".to_string(),
+                "https://example.com/".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn fx_options_android_intent_arguments_does_not_override_automationtest() {
+        let mut firefox_opts = Capabilities::new();
+        firefox_opts.insert("androidPackage".into(), json!("org.mozilla.fenix"));
+        firefox_opts.insert(
+            "androidIntentArguments".into(),
+            json!(["--ez", "automationtest", "false"]),
+        );
+
+        let opts = make_options(firefox_opts, None)
+            .expect("valid firefox options");
+        assert_eq!(
+            opts.android.unwrap().intent_arguments,
+            Some(vec![
+                "-a".to_string(),
+                "android.intent.action.VIEW".to_string(),
+                "-d".to_string(),
+                "about:blank".to_string(),
+                "--ez".to_string(),
+                "automationtest".to_string(),
+                "false".to_string(),
+            ])
         );
     }
 
@@ -1344,8 +1521,28 @@ mod tests {
     }
 
     #[test]
+    fn fx_options_env_blocked() {
+        let mut env: Map<String, Value> = Map::new();
+        env.insert(
+            "MOZ_REMOTE_ALLOW_SYSTEM_ACCESS".into(),
+            Value::String("1".into()),
+        );
+
+        let mut firefox_opts = Capabilities::new();
+        firefox_opts.insert("env".into(), env.into());
+
+        make_options(firefox_opts, None).expect_err("invalid firefox options");
+    }
+
+    #[test]
     fn test_profile() {
-        let encoded_profile = example_profile();
+        let profile_data = build_zip(&[
+            (
+                "user.js",
+                b"user_pref(\"startup.homepage_welcome_url\", \"foo\");\n",
+            ),
+        ]);
+        let encoded_profile = Value::String(BASE64_STANDARD.encode(&profile_data));
         let mut firefox_opts = Capabilities::new();
         firefox_opts.insert("profile".into(), encoded_profile);
 
@@ -1360,7 +1557,7 @@ mod tests {
 
         assert_eq!(
             prefs.get("startup.homepage_welcome_url"),
-            Some(&Pref::new("data:text/html,PASS"))
+            Some(&Pref::new("foo"))
         );
     }
 
@@ -1407,5 +1604,75 @@ mod tests {
         firefox_opts.insert("profile".into(), json!("foo"));
 
         make_options(firefox_opts, None).expect_err("Invalid args");
+    }
+
+    #[test]
+    fn unzip_valid_profile() {
+        let zip_data = build_zip(&[(
+            "user.js", b"user_pref(\"foo\", \"bar\");\n",
+        )]);
+
+        let dest = tempfile::tempdir().unwrap();
+        let dest_path = dest.path().join("profile");
+
+        unzip_buffer(&zip_data, &dest_path).expect("valid zip extraction");
+
+        let content = fs::read_to_string(dest_path.join("user.js")).unwrap();
+        assert!(content.contains("foo"));
+    }
+
+    #[test]
+    fn unzip_rejects_path_traversal() {
+        let zip_data = build_zip(&[
+            ("user.js", b"user_pref(\"foo\", \"bar\");\n"),
+            ("../escape.txt", b"path traversal succeeded"),
+            ("sub/../../escape_via_sub.txt", b"traversal via subdirectory"),
+        ]);
+
+        let dest = tempfile::tempdir().unwrap();
+        let dest_path = dest.path().join("profile");
+        fs::create_dir(&dest_path).unwrap();
+
+        unzip_buffer(&zip_data, &dest_path)
+            .expect_err("ZIP with path traversal entries should be rejected");
+
+        for name in &["../escape.txt", "sub/../../escape_via_sub.txt"] {
+            let escaped_file = dest_path.join(name);
+            assert!(
+                !escaped_file.exists(),
+                "ZIP entry '{}' escaped the profile directory",
+                name
+            );
+        }
+
+        assert_eq!(
+            dest_path.read_dir().unwrap().count(),
+            0,
+            "No files should be extracted from a rejected ZIP"
+        );
+    }
+
+    #[test]
+    fn unzip_rejects_symlink() {
+        let opts = zip::write::SimpleFileOptions::default();
+        let mut buf = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(&mut buf);
+
+        writer.add_symlink("link", "/etc/foo", opts).unwrap();
+        writer.finish().unwrap();
+        let zip_data = buf.into_inner();
+
+        let dest = tempfile::tempdir().unwrap();
+        let dest_path = dest.path().join("profile");
+        fs::create_dir(&dest_path).unwrap();
+
+        unzip_buffer(&zip_data, &dest_path)
+            .expect_err("ZIP with symlink entries should be rejected");
+
+        assert_eq!(
+            dest_path.read_dir().unwrap().count(),
+            0,
+            "No files should be extracted from a rejected ZIP"
+        );
     }
 }

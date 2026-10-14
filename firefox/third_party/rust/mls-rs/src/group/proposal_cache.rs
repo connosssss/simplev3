@@ -145,6 +145,17 @@ impl ProposalCache {
         Ok(())
     }
 
+    #[cfg(all(
+        feature = "by_ref_proposal",
+        feature = "custom_proposal",
+        feature = "self_remove_proposal"
+    ))]
+    pub(crate) fn has_own_self_remove(&self) -> bool {
+        self.own_proposals
+            .values()
+            .any(|p| matches!(p.proposal, Proposal::SelfRemove(_)))
+    }
+
     pub fn prepare_commit(
         &self,
         sender: Sender,
@@ -674,7 +685,6 @@ mod tests {
         crypto::{self, test_utils::test_cipher_suite_provider},
         extension::test_utils::TestExtension,
         group::{
-            message_processor::path_update_required,
             proposal_filter::proposer_can_propose,
             test_utils::{get_test_group_context, random_bytes, test_group, TEST_GROUP},
         },
@@ -810,7 +820,7 @@ mod tests {
         let (sender_leaf, sender_leaf_secret, _) =
             get_basic_test_node_sig_key(cipher_suite, "alice").await;
 
-        let sender = LeafIndex(0);
+        let sender = LeafIndex::unchecked(0);
 
         let (mut tree, _) = TreeKemPublic::derive(
             sender_leaf,
@@ -835,7 +845,7 @@ mod tests {
 
         let extensions = Proposal::GroupContextExtensions(ExtensionList::new());
 
-        let proposals = vec![add, remove, extensions];
+        let proposals = [add, remove, extensions];
 
         let test_node = get_basic_test_node(cipher_suite, "charlie").await;
 
@@ -885,7 +895,7 @@ mod tests {
             public_tree: expected_tree,
             group_context: get_test_group_context(1, cipher_suite).await,
             external_init_index: None,
-            indexes_of_added_kpkgs: vec![LeafIndex(1)],
+            indexes_of_added_kpkgs: vec![LeafIndex::unchecked(1)],
             unused_proposals: vec![],
             applied_proposals: bundle,
         };
@@ -1071,7 +1081,9 @@ mod tests {
             .await
             .unwrap();
 
-        expected_effects.indexes_of_added_kpkgs.push(LeafIndex(3));
+        expected_effects
+            .indexes_of_added_kpkgs
+            .push(LeafIndex::unchecked(3));
 
         assert_matches(expected_effects, provisional_state);
     }
@@ -1121,7 +1133,7 @@ mod tests {
         } = test_proposals(TEST_PROTOCOL_VERSION, TEST_CIPHER_SUITE).await;
 
         let update = Proposal::Update(make_update_proposal("foo").await);
-        let update_proposal_ref = make_proposal_ref(&update, LeafIndex(1)).await;
+        let update_proposal_ref = make_proposal_ref(&update, LeafIndex::unchecked(1)).await;
         let mut cache = test_proposal_cache_setup(test_proposals).await;
 
         cache.insert(update_proposal_ref.clone(), update, Sender::Member(1));
@@ -1237,11 +1249,12 @@ mod tests {
         assert!(cache.is_empty());
 
         let test_proposal = Proposal::Remove(RemoveProposal {
-            to_remove: LeafIndex(test_sender()),
+            to_remove: LeafIndex::unchecked(test_sender()),
         });
 
         let proposer = test_sender();
-        let test_proposal_ref = make_proposal_ref(&test_proposal, LeafIndex(proposer)).await;
+        let test_proposal_ref =
+            make_proposal_ref(&test_proposal, LeafIndex::unchecked(proposer)).await;
         cache.insert(test_proposal_ref, test_proposal, Sender::Member(proposer));
 
         assert!(!cache.is_empty())
@@ -1726,185 +1739,6 @@ mod tests {
         );
     }
 
-    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
-    async fn test_path_update_required_empty() {
-        let cache = make_proposal_cache();
-        let cipher_suite_provider = test_cipher_suite_provider(TEST_CIPHER_SUITE);
-
-        let mut tree = TreeKemPublic::new();
-        add_member(&mut tree, "alice").await;
-        add_member(&mut tree, "bob").await;
-
-        let effects = cache
-            .prepare_commit_default(
-                Sender::Member(test_sender()),
-                vec![],
-                &get_test_group_context(1, TEST_CIPHER_SUITE).await,
-                &BasicIdentityProvider,
-                &cipher_suite_provider,
-                &tree,
-                None,
-                &AlwaysFoundPskStorage,
-                pass_through_rules(),
-            )
-            .await
-            .unwrap();
-
-        assert!(path_update_required(&effects.applied_proposals))
-    }
-
-    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
-    async fn test_path_update_required_updates() {
-        let mut cache = make_proposal_cache();
-        let update = Proposal::Update(make_update_proposal("bar").await);
-        let cipher_suite_provider = test_cipher_suite_provider(TEST_CIPHER_SUITE);
-
-        cache.insert(
-            make_proposal_ref(&update, LeafIndex(2)).await,
-            update,
-            Sender::Member(2),
-        );
-
-        let mut tree = TreeKemPublic::new();
-        add_member(&mut tree, "alice").await;
-        add_member(&mut tree, "bob").await;
-        add_member(&mut tree, "carol").await;
-
-        let effects = cache
-            .prepare_commit_default(
-                Sender::Member(test_sender()),
-                Vec::new(),
-                &get_test_group_context(1, TEST_CIPHER_SUITE).await,
-                &BasicIdentityProvider,
-                &cipher_suite_provider,
-                &tree,
-                None,
-                &AlwaysFoundPskStorage,
-                pass_through_rules(),
-            )
-            .await
-            .unwrap();
-
-        assert!(path_update_required(&effects.applied_proposals))
-    }
-
-    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
-    async fn test_path_update_required_removes() {
-        let cache = make_proposal_cache();
-        let cipher_suite_provider = test_cipher_suite_provider(TEST_CIPHER_SUITE);
-
-        let (alice_leaf, alice_secret, _) =
-            get_basic_test_node_sig_key(TEST_CIPHER_SUITE, "alice").await;
-        let alice = 0;
-
-        let (mut tree, _) = TreeKemPublic::derive(
-            alice_leaf,
-            alice_secret,
-            &BasicIdentityProvider,
-            &Default::default(),
-        )
-        .await
-        .unwrap();
-
-        let bob_node = get_basic_test_node(TEST_CIPHER_SUITE, "bob").await;
-
-        let bob = tree
-            .add_leaves(
-                vec![bob_node],
-                &BasicIdentityProvider,
-                &cipher_suite_provider,
-            )
-            .await
-            .unwrap()[0];
-
-        let remove = Proposal::Remove(RemoveProposal { to_remove: bob });
-
-        let effects = cache
-            .prepare_commit_default(
-                Sender::Member(alice),
-                vec![remove],
-                &get_test_group_context(1, TEST_CIPHER_SUITE).await,
-                &BasicIdentityProvider,
-                &cipher_suite_provider,
-                &tree,
-                None,
-                &AlwaysFoundPskStorage,
-                pass_through_rules(),
-            )
-            .await
-            .unwrap();
-
-        assert!(path_update_required(&effects.applied_proposals))
-    }
-
-    #[cfg(feature = "psk")]
-    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
-    async fn test_path_update_not_required() {
-        let (alice, tree) = new_tree("alice").await;
-        let cipher_suite_provider = test_cipher_suite_provider(TEST_CIPHER_SUITE);
-        let cache = make_proposal_cache();
-
-        let psk = Proposal::Psk(PreSharedKeyProposal {
-            psk: PreSharedKeyID::new(
-                JustPreSharedKeyID::External(ExternalPskId::new(vec![])),
-                &test_cipher_suite_provider(TEST_CIPHER_SUITE),
-            )
-            .unwrap(),
-        });
-
-        let add = Proposal::Add(Box::new(AddProposal {
-            key_package: test_key_package(TEST_PROTOCOL_VERSION, TEST_CIPHER_SUITE, "bob").await,
-        }));
-
-        let effects = cache
-            .prepare_commit_default(
-                Sender::Member(*alice),
-                vec![psk, add],
-                &get_test_group_context(1, TEST_CIPHER_SUITE).await,
-                &BasicIdentityProvider,
-                &cipher_suite_provider,
-                &tree,
-                None,
-                &AlwaysFoundPskStorage,
-                pass_through_rules(),
-            )
-            .await
-            .unwrap();
-
-        assert!(!path_update_required(&effects.applied_proposals))
-    }
-
-    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
-    async fn path_update_is_not_required_for_re_init() {
-        let cipher_suite_provider = test_cipher_suite_provider(TEST_CIPHER_SUITE);
-        let (alice, tree) = new_tree("alice").await;
-        let cache = make_proposal_cache();
-
-        let reinit = Proposal::ReInit(ReInitProposal {
-            group_id: vec![],
-            version: TEST_PROTOCOL_VERSION,
-            cipher_suite: TEST_CIPHER_SUITE,
-            extensions: Default::default(),
-        });
-
-        let effects = cache
-            .prepare_commit_default(
-                Sender::Member(*alice),
-                vec![reinit],
-                &get_test_group_context(1, TEST_CIPHER_SUITE).await,
-                &BasicIdentityProvider,
-                &cipher_suite_provider,
-                &tree,
-                None,
-                &AlwaysFoundPskStorage,
-                pass_through_rules(),
-            )
-            .await
-            .unwrap();
-
-        assert!(!path_update_required(&effects.applied_proposals))
-    }
-
     #[derive(Debug)]
     struct CommitSender<'a, C, F, P, CSP> {
         cipher_suite_provider: CSP,
@@ -2224,7 +2058,7 @@ mod tests {
             test_cipher_suite_provider(TEST_CIPHER_SUITE),
         )
         .receive([Proposal::Remove(RemoveProposal {
-            to_remove: LeafIndex(10),
+            to_remove: LeafIndex::unchecked(10),
         })])
         .await;
 
@@ -2237,7 +2071,7 @@ mod tests {
 
         let res = CommitSender::new(&tree, alice, test_cipher_suite_provider(TEST_CIPHER_SUITE))
             .with_additional([Proposal::Remove(RemoveProposal {
-                to_remove: LeafIndex(10),
+                to_remove: LeafIndex::unchecked(10),
             })])
             .send()
             .await;
@@ -2250,7 +2084,7 @@ mod tests {
         let (alice, tree) = new_tree("alice").await;
 
         let proposal = Proposal::Remove(RemoveProposal {
-            to_remove: LeafIndex(10),
+            to_remove: LeafIndex::unchecked(10),
         });
 
         let proposal_info = make_proposal_info(&proposal, alice).await;
@@ -3031,7 +2865,7 @@ mod tests {
                 properties,
                 signing_identity,
                 &signature_key,
-                Lifetime::years(1).unwrap(),
+                Lifetime::years(1, None).unwrap(),
             )
             .await
             .unwrap();
@@ -3600,7 +3434,7 @@ mod tests {
 
         generator
             .generate(
-                Lifetime::years(1).unwrap(),
+                Lifetime::years(1, None).unwrap(),
                 Capabilities {
                     credentials: vec![42.into()],
                     ..Default::default()
@@ -4060,7 +3894,7 @@ mod tests {
             .send()
             .await;
 
-        assert_matches!(res, Err(MlsError::InvalidProposalTypeForSender { .. }))
+        assert_matches!(res, Err(MlsError::InvalidProposalTypeForSender))
     }
 
     #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]

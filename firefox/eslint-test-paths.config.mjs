@@ -34,14 +34,13 @@ const mochitestTestPaths = [
 ];
 
 const xpcshellTestPaths = [
-  "**/test*/unit*/**/",
+  "**/test*/unit*/",
   "**/test*/*/unit*/",
-  "**/test*/xpcshell/**/",
+  "**/test*/xpcshell/",
 ];
 
-// NOTE: Before adding to the list below, please see the note at the top
+// DO NOT add more items to this list. Please see the note at the top
 // of the file.
-
 const extraXpcshellTestPaths = [
   "devtools/client/shared/remote-debugging/adb/xpcshell/",
   "devtools/platform/tests/xpcshell/",
@@ -71,62 +70,14 @@ const extraXpcshellTestPaths = [
   "widget/headless/tests/",
 ];
 
-// NOTE: Before adding to the list below, please see the note at the top
+// DO NOT add more items to this list. Please see the note at the top
 // of the file.
-
 const extraBrowserTestPaths = [
   "dom/ipc/tests/",
   "toolkit/components/thumbnails/test/",
   "toolkit/xre/test/",
-  "browser/base/content/test/about/",
-  "browser/base/content/test/alerts/",
-  "browser/base/content/test/backforward/",
-  "browser/base/content/test/caps/",
-  "browser/base/content/test/captivePortal/",
-  "browser/base/content/test/contentTheme/",
-  "browser/base/content/test/contextMenu/",
-  "browser/base/content/test/favicons/",
-  "browser/base/content/test/forms/",
-  "browser/base/content/test/fullscreen/",
-  "browser/base/content/test/general/",
-  "browser/base/content/test/gesture/",
-  "browser/base/content/test/historySwipeAnimation/",
-  "browser/base/content/test/keyboard/",
-  "browser/base/content/test/linkHandling/",
-  "browser/base/content/test/menubar/",
-  "browser/base/content/test/metaTags/",
-  "browser/base/content/test/notificationbox/",
-  "browser/base/content/test/outOfProcess/",
-  "browser/base/content/test/pageActions/",
-  "browser/base/content/test/pageStyle/",
-  "browser/base/content/test/pageinfo/",
-  "browser/base/content/test/performance/",
-  "browser/base/content/test/permissions/",
-  "browser/base/content/test/plugins/",
-  "browser/base/content/test/popupNotifications/",
-  "browser/base/content/test/popups/",
-  "browser/base/content/test/privateBrowsing/",
-  "browser/base/content/test/profiles/",
-  "browser/base/content/test/protectionsUI/",
-  "browser/base/content/test/referrer/",
-  "browser/base/content/test/sanitize/",
-  "browser/base/content/test/scroll-to-text-fragment/",
-  "browser/base/content/test/sidebar/",
-  "browser/base/content/test/siteIdentity/",
-  "browser/base/content/test/startup/",
-  "browser/base/content/test/static/",
-  "browser/base/content/test/sync/",
-  "browser/base/content/test/tabPrompts/",
-  "browser/base/content/test/tabcrashed/",
-  "browser/base/content/test/tabdialogs/",
-  "browser/base/content/test/touch/",
-  "browser/base/content/test/utilityOverlay/",
-  "browser/base/content/test/webextensions/",
-  "browser/base/content/test/webrtc/",
-  "browser/base/content/test/zoom/",
   "browser/components/customizableui/test/",
   "browser/components/preferences/tests/",
-  "browser/components/safebrowsing/content/test/",
   "browser/components/sessionstore/test/",
   "browser/components/shell/test/",
   "browser/components/touchbar/tests/",
@@ -221,9 +172,8 @@ const extraBrowserTestPaths = [
   "uriloader/exthandler/tests/mochitest/",
 ];
 
-// NOTE: Before adding to the list below, please see the note at the top
+// DO NOT add more items to this list. Please see the note at the top
 // of the file.
-
 const extraChromeTestPaths = [
   "devtools/shared/security/tests/chrome/",
   "devtools/shared/webconsole/test/chrome/",
@@ -270,9 +220,8 @@ const extraChromeTestPaths = [
   "xpfe/appshell/test/",
 ];
 
-// NOTE: Before adding to the list below, please see the note at the top
+// DO NOT add more items to this list. Please see the note at the top
 // of the file.
-
 const extraMochitestTestPaths = [
   "dom/ipc/tests/",
   "toolkit/xre/test/",

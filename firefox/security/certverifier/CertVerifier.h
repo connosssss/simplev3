@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -67,7 +65,6 @@ enum class CRLiteMode {
   Disabled = 0,
   TelemetryOnly = 1,
   Enforce = 2,
-  ConfirmRevocations = 3,
 };
 
 enum class VerifyUsage {
@@ -79,8 +76,6 @@ enum class VerifyUsage {
   EmailRecipient = 6,
   EmailCA = 7,
 };
-
-enum class NetscapeStepUpPolicy : uint32_t;
 
 // Describes the source of the associated issuer.
 enum class IssuerSource {
@@ -263,12 +258,12 @@ class CertVerifier {
                mozilla::TimeDuration ocspTimeoutSoft,
                mozilla::TimeDuration ocspTimeoutHard,
                uint32_t certShortLifetimeInDays,
-               NetscapeStepUpPolicy netscapeStepUpPolicy,
                CertificateTransparencyConfig&& ctConfig, CRLiteMode crliteMode,
                const nsTArray<EnterpriseCert>& thirdPartyCerts);
   ~CertVerifier();
 
   void ClearOCSPCache() { mOCSPCache.Clear(); }
+  void ClearPrivateBrowsingOCSPCache() { mOCSPCache.ClearPrivateBrowsing(); }
   void ClearTrustCache() { trust_cache_clear(mTrustCache.get()); }
 
   const OcspDownloadConfig mOCSPDownloadConfig;
@@ -276,7 +271,6 @@ class CertVerifier {
   const mozilla::TimeDuration mOCSPTimeoutSoft;
   const mozilla::TimeDuration mOCSPTimeoutHard;
   const uint32_t mCertShortLifetimeInDays;
-  const NetscapeStepUpPolicy mNetscapeStepUpPolicy;
   const CertificateTransparencyConfig mCTConfig;
   const CRLiteMode mCRLiteMode;
 

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -27,74 +25,20 @@ class CodeGeneratorRiscv64 : public CodeGeneratorShared {
   CodeGeneratorRiscv64(MIRGenerator* gen, LIRGraph* graph, MacroAssembler* masm,
                        const wasm::CodeMetadata* wasmCodeMeta);
 
-  NonAssertingLabel deoptLabel_;
-
-  Operand ToOperand(const LAllocation& a);
-  Operand ToOperand(const LAllocation* a);
-  Operand ToOperand(const LDefinition* def);
-
-#ifdef JS_PUNBOX64
-  Operand ToOperandOrRegister64(const LInt64Allocation& input);
-#else
-  Register64 ToOperandOrRegister64(const LInt64Allocation& input);
-#endif
-
   MoveOperand toMoveOperand(LAllocation a) const;
 
-  template <typename T1, typename T2>
-  void bailoutCmp32(Assembler::Condition c, T1 lhs, T2 rhs,
-                    LSnapshot* snapshot) {
-    Label bail;
-    masm.branch32(c, lhs, rhs, &bail);
-    bailoutFrom(&bail, snapshot);
-  }
-  template <typename T1, typename T2>
-  void bailoutTest32(Assembler::Condition c, T1 lhs, T2 rhs,
-                     LSnapshot* snapshot) {
-    Label bail;
-    masm.branchTest32(c, lhs, rhs, &bail);
-    bailoutFrom(&bail, snapshot);
-  }
-  template <typename T1, typename T2>
-  void bailoutCmpPtr(Assembler::Condition c, T1 lhs, T2 rhs,
-                     LSnapshot* snapshot) {
-    Label bail;
-    masm.branchPtr(c, lhs, rhs, &bail);
-    bailoutFrom(&bail, snapshot);
-  }
-  void bailoutTestPtr(Assembler::Condition c, Register lhs, Register rhs,
-                      LSnapshot* snapshot) {
-    // TODO(riscv64) Didn't use branchTestPtr due to '-Wundefined-inline'.
-    MOZ_ASSERT(c == Assembler::Zero || c == Assembler::NonZero ||
-               c == Assembler::Signed || c == Assembler::NotSigned);
-    Label bail;
-    if (lhs == rhs) {
-      masm.ma_b(lhs, rhs, &bail, c);
-    } else {
-      ScratchRegisterScope scratch(masm);
-      masm.and_(scratch, lhs, rhs);
-      masm.ma_b(scratch, scratch, &bail, c);
-    }
-    bailoutFrom(&bail, snapshot);
-  }
   void bailoutIfFalseBool(Register reg, LSnapshot* snapshot) {
     Label bail;
-    ScratchRegisterScope scratch(masm);
-    masm.ma_and(scratch, reg, Imm32(0xFF));
-    masm.ma_b(scratch, scratch, &bail, Assembler::Zero);
+    UseScratchRegisterScope temps(&masm);
+    Register scratch = temps.Acquire();
+    masm.zext_b(scratch, reg);
+    masm.ma_b(scratch, scratch, &bail, Assembler::Zero, LongJump);
     bailoutFrom(&bail, snapshot);
   }
-
-  void bailoutFrom(Label* label, LSnapshot* snapshot);
-  void bailout(LSnapshot* snapshot);
 
   bool generateOutOfLineCode();
 
-  template <typename T>
-  void branchToBlock(Register lhs, T rhs, MBasicBlock* mir,
-                     Assembler::Condition cond) {
-    masm.ma_b(lhs, rhs, skipTrivialBlocks(mir)->lir()->label(), cond);
-  }
+  enum FloatFormat { SingleFloat, DoubleFloat };
   void branchToBlock(FloatFormat fmt, FloatRegister lhs, FloatRegister rhs,
                      MBasicBlock* mir, Assembler::DoubleCondition cond);
 
@@ -113,11 +57,6 @@ class CodeGeneratorRiscv64 : public CodeGeneratorShared {
 
   void emitTableSwitchDispatch(MTableSwitch* mir, Register index,
                                Register base);
-
-  template <typename T>
-  void emitWasmLoad(T* ins);
-  template <typename T>
-  void emitWasmStore(T* ins);
 
   void generateInvalidateEpilogue();
 

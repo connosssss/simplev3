@@ -48,6 +48,13 @@ const loginBackupPath = PathUtils.join(
   "logins-backup.json"
 );
 
+// logins-backup.json is a resilience feature of the JSON storage backend. The
+// Rust store (logins.db) has no equivalent, so these tests do not apply to it.
+const isRustBackend = Services.prefs.getBoolPref(
+  "signon.storage.rust.enabled",
+  false
+);
+
 async function waitForBackupUpdate() {
   return new Promise(resolve => {
     Services.obs.addObserver(function observer(_subject, _topic, _data) {
@@ -70,6 +77,17 @@ async function loginBackupDeleted() {
     async () => !(await IOUtils.exists(loginBackupPath))
   );
 }
+
+// Every test below is skipped under the Rust backend. This task keeps the file
+// reporting at least one result so the harness does not fail it as empty.
+add_task(async function report_result_under_rust_backend() {
+  if (isRustBackend) {
+    Assert.ok(
+      true,
+      "logins-backup.json is a JSON-storage-only feature; skipping under the Rust backend"
+    );
+  }
+});
 
 // If a fxa key is stored as a login, test that logins backup is updated to only store
 // the fxa key when the last user facing login is deleted.
@@ -94,7 +112,7 @@ add_task(
 
     storageUpdatePromise = TestUtils.topicObserved("password-storage-updated");
     info("Removing all user facing logins");
-    Services.logins.removeAllUserFacingLogins();
+    await Services.logins.removeAllUserFacingLoginsAsync();
     await storageUpdatePromise;
     info("Writes to storage are complete after removeAllUserFacingLogins call");
     await waitForBackupUpdate();
@@ -106,10 +124,10 @@ add_task(
     // Clean up.
     // Since there is a fxa key left, we need to call removeAllLogins() or removeLogin(fxaKey)
     // to remove the fxa key. Otherwise the test will fail in verify mode when trying to add login1
-    Services.logins.removeAllLogins();
+    await Services.logins.removeAllLoginsAsync();
     await IOUtils.remove(loginStorePath);
   }
-);
+).skip(isRustBackend);
 
 // Test that logins backup is deleted when Services.logins.removeAllUserFacingLogins() is called.
 add_task(async function test_deleteLoginsBackup_removeAllUserFacingLogins() {
@@ -137,7 +155,7 @@ add_task(async function test_deleteLoginsBackup_removeAllUserFacingLogins() {
 
   storageUpdatePromise = TestUtils.topicObserved("password-storage-updated");
   info("Removing all user facing logins");
-  Services.logins.removeAllUserFacingLogins();
+  await Services.logins.removeAllUserFacingLoginsAsync();
 
   await storageUpdatePromise;
   info(
@@ -150,7 +168,7 @@ add_task(async function test_deleteLoginsBackup_removeAllUserFacingLogins() {
 
   // Clean up.
   await IOUtils.remove(loginStorePath);
-});
+}).skip(isRustBackend);
 
 // 1. Test that logins backup is deleted when Services.logins.removeAllLogins() is called
 // 2. If a FxA key is stored as a login, test that logins backup is deleted when
@@ -180,7 +198,7 @@ add_task(async function test_deleteLoginsBackup_removeAllLogins() {
 
   storageUpdatePromise = TestUtils.topicObserved("password-storage-updated");
   info("Removing all logins");
-  Services.logins.removeAllLogins();
+  await Services.logins.removeAllLoginsAsync();
 
   await storageUpdatePromise;
   info("Writes to storage are complete when removeAllLogins() is called");
@@ -203,7 +221,7 @@ add_task(async function test_deleteLoginsBackup_removeAllLogins() {
 
   storageUpdatePromise = TestUtils.topicObserved("password-storage-updated");
   info("Removing all logins, including FxA key");
-  Services.logins.removeAllLogins();
+  await Services.logins.removeAllLoginsAsync();
   await storageUpdatePromise;
   info("Writes to storage are complete after the last removeAllLogins call");
   await loginBackupDeleted();
@@ -213,7 +231,7 @@ add_task(async function test_deleteLoginsBackup_removeAllLogins() {
 
   // Clean up.
   await IOUtils.remove(loginStorePath);
-});
+}).skip(isRustBackend);
 
 // 1. Test that logins backup is deleted when the last saved login is removed using
 //    Services.logins.removeLogin() when no fxa key is saved.
@@ -236,14 +254,14 @@ add_task(async function test_deleteLoginsBackup_removeLogin() {
 
   storageUpdatePromise = TestUtils.topicObserved("password-storage-updated");
   info("Removing one login");
-  Services.logins.removeLogin(login1);
+  await Services.logins.removeLoginAsync(login1);
   await storageUpdatePromise;
   info("Writes to storage are complete after one removeLogin call");
   await loginBackupExists();
 
   storageUpdatePromise = TestUtils.topicObserved("password-storage-updated");
   info("Removing the last login");
-  Services.logins.removeLogin(login2);
+  await Services.logins.removeLoginAsync(login2);
   await storageUpdatePromise;
   info("Writes to storage are complete after the last removeLogin call");
   await loginBackupDeleted();
@@ -266,7 +284,7 @@ add_task(async function test_deleteLoginsBackup_removeLogin() {
 
   storageUpdatePromise = TestUtils.topicObserved("password-storage-updated");
   let backupUpdate = waitForBackupUpdate();
-  Services.logins.removeLogin(login1);
+  await Services.logins.removeLoginAsync(login1);
   await storageUpdatePromise;
   info("Writes to storage are complete after one removeLogin call");
   await backupUpdate;
@@ -277,6 +295,6 @@ add_task(async function test_deleteLoginsBackup_removeLogin() {
   // Clean up.
   // Since there is a fxa key left, we need to call removeAllLogins() or removeLogin(fxaKey)
   // to remove the fxa key. Otherwise the test will fail in verify mode when trying to add login1
-  Services.logins.removeAllLogins();
+  await Services.logins.removeAllLoginsAsync();
   await IOUtils.remove(loginStorePath);
-});
+}).skip(isRustBackend);

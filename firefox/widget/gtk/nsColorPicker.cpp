@@ -1,15 +1,17 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <gtk/gtk.h>
 
+#include <utility>
+
 #ifdef MOZ_X11
 #  include "X11UndefineNone.h"
 #endif
 
-#include "mozilla/Maybe.h"
+#include "WidgetUtils.h"
+#include "gfxPlatform.h"
 #include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "mozilla/dom/HTMLInputElement.h"
@@ -17,9 +19,7 @@
 #include "nsColorPicker.h"
 #include "nsGtkUtils.h"
 #include "nsIWidget.h"
-#include "WidgetUtils.h"
 #include "nsPIDOMWindow.h"
-#include "gfxPlatform.h"
 
 using mozilla::dom::HTMLInputElement;
 
@@ -208,6 +208,12 @@ void nsColorPicker::OnDestroy(GtkWidget* color_chooser, gpointer user_data) {
 }
 
 void nsColorPicker::Done(GtkWidget* color_chooser, gint response) {
+  // A null callback means a re-entrant call; the outer one owns the teardown.
+  nsCOMPtr<nsIColorPickerShownCallback> callback = std::move(mCallback);
+  if (!callback) {
+    return;
+  }
+
   switch (response) {
     case GTK_RESPONSE_OK:
     case GTK_RESPONSE_ACCEPT:
@@ -234,10 +240,8 @@ void nsColorPicker::Done(GtkWidget* color_chooser, gint response) {
                                        this);
 
   gtk_widget_destroy(color_chooser);
-  if (mCallback) {
-    mCallback->Done(mColor);
-    mCallback = nullptr;
-  }
+
+  callback->Done(mColor);
 
   NS_RELEASE_THIS();
 }

@@ -1,15 +1,14 @@
-/* -*- Mode: c++; c-basic-offset: 2; indent-tabs-mode: nil; tab-width: 4; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SharedSurfaceDMABUF.h"
 
-#include "gfxPlatform.h"
 #include "GLContextEGL.h"
 #include "MozFramebuffer.h"
-#include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor, etc
+#include "gfxPlatform.h"
 #include "mozilla/gfx/gfxVars.h"
+#include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor, etc
 #include "mozilla/widget/DMABufDevice.h"
 
 namespace mozilla::gl {
@@ -24,11 +23,11 @@ UniquePtr<SharedSurface_DMABUF> SharedSurface_DMABUF::Create(
       DMABUF_SCANOUT | DMABUF_TEXTURE | DMABUF_USE_MODIFIERS | DMABUF_ALPHA);
   surface = DMABufSurfaceRGBA::CreateDMABufSurface(desc.gl, desc.size.width,
                                                    desc.size.height, flags);
-  if (!surface || !surface->CreateTexture(desc.gl)) {
+  if (!surface || !surface->CreateTextures(desc.gl)) {
     return nullptr;
   }
   const auto tex = surface->GetTexture();
-  fb = MozFramebuffer::CreateForBacking(desc.gl, desc.size, 0, false,
+  fb = MozFramebuffer::CreateForBacking(desc.gl, desc.size, 0, false, false,
                                         LOCAL_GL_TEXTURE_2D, tex);
   if (!fb) return nullptr;
 
@@ -97,7 +96,7 @@ bool SurfaceFactory_DMABUF::CanCreateSurface(GLContext& gl) {
         "SurfaceFactory_DMABUF::CanCreateSurface() failed to import surface."));
     return false;
   }
-  if (!importedSurface->CreateTexture(&gl)) {
+  if (!importedSurface->CreateTextures(&gl)) {
     LOGDMABUF(
         ("SurfaceFactory_DMABUF::CanCreateSurface() failed to create texture "
          "over surface."));

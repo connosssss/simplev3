@@ -1,18 +1,12 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "WebGLContext.h"
-
 #include "GLContext.h"
 #include "GLScreenBuffer.h"
-#include "mozilla/Maybe.h"
-#include "mozilla/Preferences.h"
 #include "MozFramebuffer.h"
-#include "nsString.h"
 #include "WebGLBuffer.h"
-#include "WebGLContextUtils.h"
+#include "WebGLContext.h"
 #include "WebGLFormats.h"
 #include "WebGLFramebuffer.h"
 #include "WebGLProgram.h"
@@ -20,6 +14,9 @@
 #include "WebGLShader.h"
 #include "WebGLTexture.h"
 #include "WebGLVertexArray.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/Preferences.h"
+#include "nsString.h"
 
 namespace mozilla {
 
@@ -138,7 +135,9 @@ Maybe<double> WebGLContext::GetParameter(const GLenum pname) {
         if (Has64BitTimestamps()) {
           gl->fGetInteger64v(pname, (GLint64*)&val);
         } else {
-          gl->fGetIntegerv(pname, (GLint*)&val);
+          GLint val32 = 0;
+          gl->fGetIntegerv(pname, &val32);
+          val = val32;
         }
         // TODO: JS doesn't support 64-bit integers. Be lossy and
         // cast to double (53 bits)
@@ -164,6 +163,22 @@ Maybe<double> WebGLContext::GetParameter(const GLenum pname) {
       GLint i = 0;
       gl->fGetIntegerv(pname, &i);
       return Some(i);
+    }
+  }
+
+  if (IsExtensionEnabled(WebGLExtensionID::EXT_clip_control)) {
+    if (pname == LOCAL_GL_CLIP_ORIGIN || pname == LOCAL_GL_CLIP_DEPTH_MODE) {
+      GLint value = 0;
+      gl->fGetIntegerv(pname, &value);
+      return Some(value);
+    }
+  }
+
+  if (IsExtensionEnabled(WebGLExtensionID::EXT_polygon_offset_clamp)) {
+    if (pname == LOCAL_GL_POLYGON_OFFSET_CLAMP_EXT) {
+      GLfloat f = 0.f;
+      gl->fGetFloatv(pname, &f);
+      return Some(f);
     }
   }
 

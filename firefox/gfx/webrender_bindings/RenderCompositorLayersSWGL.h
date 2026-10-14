@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -60,16 +58,16 @@ class RenderCompositorLayersSWGL : public RenderCompositor {
 
   void CompositorBeginFrame() override {}
   void CompositorEndFrame() override;
-  void Bind(wr::NativeTileId aId, wr::DeviceIntPoint* aOffset, uint32_t* aFboId,
-            wr::DeviceIntRect aDirtyRect,
+  void Bind(wr::NativeTileId aId, wr::DeviceIntPoint* aOffset,
+            uint64_t* aSurfaceHandle, wr::DeviceIntRect aDirtyRect,
             wr::DeviceIntRect aValidRect) override;
   void Unbind() override;
   bool MapTile(wr::NativeTileId aId, wr::DeviceIntRect aDirtyRect,
                wr::DeviceIntRect aValidRect, void** aData,
                int32_t* aStride) override;
   void UnmapTile() override;
-  void CreateSurface(wr::NativeSurfaceId aId, wr::DeviceIntPoint aVirtualOffset,
-                     wr::DeviceIntSize aTileSize, bool aIsOpaque) override;
+  void CreateSurface(wr::NativeSurfaceId aId, wr::DeviceIntSize aTileSize,
+                     bool aIsOpaque) override;
   void CreateExternalSurface(wr::NativeSurfaceId aId, bool aIsOpaque) override;
   void DestroySurface(NativeSurfaceId aId) override;
   void CreateTile(wr::NativeSurfaceId, int32_t aX, int32_t aY) override;
@@ -82,7 +80,6 @@ class RenderCompositorLayersSWGL : public RenderCompositor {
                   wr::ImageRendering aImageRendering,
                   wr::DeviceIntRect aRoundedClipRect,
                   wr::ClipRadius aClipRadius) override;
-  void EnableNativeCompositor(bool aEnable) override {}
   void DeInit() override {}
 
   void MaybeRequestAllowFrameRecording(bool aWillRecord) override;
@@ -126,7 +123,7 @@ class RenderCompositorLayersSWGL : public RenderCompositor {
    public:
     explicit Surface(wr::DeviceIntSize aTileSize, bool aIsOpaque)
         : mTileSize(aTileSize), mIsOpaque(aIsOpaque) {}
-    virtual ~Surface() {}
+    virtual ~Surface() = default;
 
     gfx::IntSize TileSize() {
       return gfx::IntSize(mTileSize.width, mTileSize.height);

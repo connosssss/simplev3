@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- *
+/*
  * Copyright 2016 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,6 +29,8 @@
 
 namespace js {
 namespace wasm {
+
+struct StackMap;
 
 // Container for a piece of out-of-line code, the slow path that supports an
 // operation.
@@ -156,10 +156,6 @@ struct FunctionCall {
     MOZ_ASSERT_IF(abiKind == ABIKind::System,
                   restoreState == RestoreState::None ||
                       restoreState == RestoreState::PinnedRegs);
-    // Our uses of the wasm ABI either preserves everything or nothing.
-    MOZ_ASSERT_IF(abiKind == ABIKind::Wasm,
-                  restoreState == RestoreState::None ||
-                      restoreState == RestoreState::All);
     if (abiKind == ABIKind::System) {
       // Builtin calls use the system hardFP setting on ARM32.
 #if defined(JS_CODEGEN_ARM)
@@ -192,6 +188,8 @@ enum class PreBarrierKind {
 };
 
 enum class PostBarrierKind {
+  // No post barrier.
+  None,
   // Add a store buffer entry if the new value requires it, but do not attempt
   // to remove a pre-existing entry.
   Imprecise,
@@ -308,6 +306,9 @@ struct BaseCompiler final {
   // emitted at the end of compilation.
   Vector<OutOfLineCode*, 8, SystemAllocPolicy> outOfLine_;
 
+  // The stack maps for this compilation.
+  StackMaps* stackMaps_;
+
   // Stack map state.  This keeps track of live pointer slots and allows precise
   // stack maps to be generated at safe points.
   StackMapGenerator stackMapGenerator_;
@@ -390,7 +391,8 @@ struct BaseCompiler final {
   inline bool isMem64(uint32_t memoryIndex) const;
   inline bool hugeMemoryEnabled(uint32_t memoryIndex) const;
   inline uint32_t instanceOffsetOfMemoryBase(uint32_t memoryIndex) const;
-  inline uint32_t instanceOffsetOfBoundsCheckLimit(uint32_t memoryIndex) const;
+  inline uint32_t instanceOffsetOfBoundsCheckLimit(uint32_t memoryIndex,
+                                                   unsigned byteSize) const;
 
   // The casts are used by some of the ScratchRegister implementations.
   operator MacroAssembler&() const { return masm; }
@@ -450,7 +452,7 @@ struct BaseCompiler final {
   inline bool isAvailablePtr(RegPtr r);
   inline bool isAvailableF32(RegF32 r);
   inline bool isAvailableF64(RegF64 r);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline bool isAvailableV128(RegV128 r);
 #endif
 
@@ -461,7 +463,7 @@ struct BaseCompiler final {
   [[nodiscard]] inline RegPtr needPtr();
   [[nodiscard]] inline RegF32 needF32();
   [[nodiscard]] inline RegF64 needF64();
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   [[nodiscard]] inline RegV128 needV128();
 #endif
 
@@ -472,7 +474,7 @@ struct BaseCompiler final {
   inline void needPtr(RegPtr specific);
   inline void needF32(RegF32 specific);
   inline void needF64(RegF64 specific);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline void needV128(RegV128 specific);
 #endif
 
@@ -499,7 +501,7 @@ struct BaseCompiler final {
   inline void freePtr(RegPtr r);
   inline void freeF32(RegF32 r);
   inline void freeF64(RegF64 r);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline void freeV128(RegV128 r);
 #endif
 
@@ -513,7 +515,7 @@ struct BaseCompiler final {
   inline void maybeFree(RegF64 r);
   inline void maybeFree(RegRef r);
   inline void maybeFree(RegPtr r);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline void maybeFree(RegV128 r);
 #endif
 
@@ -574,7 +576,7 @@ struct BaseCompiler final {
   inline void loadMemF32(const Stk& src, RegF32 dest);
   inline void loadLocalF32(const Stk& src, RegF32 dest);
   inline void loadRegisterF32(const Stk& src, RegF32 dest);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline void loadConstV128(const Stk& src, RegV128 dest);
   inline void loadMemV128(const Stk& src, RegV128 dest);
   inline void loadLocalV128(const Stk& src, RegV128 dest);
@@ -594,7 +596,7 @@ struct BaseCompiler final {
 #endif
   inline void loadF64(const Stk& src, RegF64 dest);
   inline void loadF32(const Stk& src, RegF32 dest);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline void loadV128(const Stk& src, RegV128 dest);
 #endif
   inline void loadRef(const Stk& src, RegRef dest);
@@ -644,6 +646,9 @@ struct BaseCompiler final {
   // Count the number of memory references on the value stack.
   inline size_t countMemRefsOnStk();
 
+  // Check if there are any live registers on the value stack.
+  inline bool hasLiveRegsOnStk();
+
   // Print the stack to stderr.
   void showStack(const char* who) const;
 #endif
@@ -660,7 +665,7 @@ struct BaseCompiler final {
   inline void pushPtr(RegPtr r);
   inline void pushF64(RegF64 r);
   inline void pushF32(RegF32 r);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline void pushV128(RegV128 r);
 #endif
 
@@ -678,7 +683,7 @@ struct BaseCompiler final {
   inline void pushPtr(intptr_t v);
   inline void pushF64(double v);
   inline void pushF32(float v);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline void pushV128(V128 v);
 #endif
   inline void pushConstRef(intptr_t v);
@@ -691,7 +696,7 @@ struct BaseCompiler final {
   inline void pushLocalRef(uint32_t slot);
   inline void pushLocalF64(uint32_t slot);
   inline void pushLocalF32(uint32_t slot);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline void pushLocalV128(uint32_t slot);
 #endif
 
@@ -713,7 +718,7 @@ struct BaseCompiler final {
   [[nodiscard]] inline RegI32 popI32();
   inline RegI32 popI32(RegI32 specific);
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   // Call only from other popV128() variants.  v must be the stack top.  May pop
   // the CPU stack.
   inline void popV128(const Stk& v, RegV128 dest);
@@ -781,7 +786,7 @@ struct BaseCompiler final {
   inline void pop2xI64(RegI64* r0, RegI64* r1);
   inline void pop2xF32(RegF32* r0, RegF32* r1);
   inline void pop2xF64(RegF64* r0, RegF64* r1);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline void pop2xV128(RegV128* r0, RegV128* r1);
 #endif
   inline void pop2xRef(RegRef* r0, RegRef* r1);
@@ -933,30 +938,47 @@ struct BaseCompiler final {
   //
   // Stack maps
 
+  // Fails compilation if the frame has grown past MaxFrameSize.  This must be
+  // checked before creating each stackmap, since a larger frame would overflow
+  // StackMapHeader::numMappedWords.
+  [[nodiscard]] bool checkStackHeight();
+
   // Various methods for creating a stackmap.  Stackmaps are indexed by the
   // lowest address of the instruction immediately *after* the instruction of
   // interest.  In practice that means either: the return point of a call, the
   // instruction immediately after a trap instruction (the "resume"
   // instruction), or the instruction immediately following a no-op (when
   // debugging is enabled).
+  //
+  // The `Maybe<Trap>` argument indicates the reason for creating the map.
+  // `Nothing` means the map is for a call; `Some(t)` means it is for a trap of
+  // kind `t`.  See further comments on StackMapGenerator::createStackMap.
 
   // Create a vanilla stackmap.
-  [[nodiscard]] bool createStackMap(const char* who);
+  [[nodiscard]] bool createStackMap(Maybe<Trap> reason);
 
   // Create a stackmap as vanilla, but for a custom assembler offset.
-  [[nodiscard]] bool createStackMap(const char* who,
+  [[nodiscard]] bool createStackMap(Maybe<Trap> reason,
                                     CodeOffset assemblerOffset);
 
   // Create a stack map as vanilla, and note the presence of a ref-typed
   // DebugFrame on the stack.
   [[nodiscard]] bool createStackMap(
-      const char* who, HasDebugFrameWithLiveRefs debugFrameWithLiveRefs);
+      Maybe<Trap> reason, HasDebugFrameWithLiveRefs debugFrameWithLiveRefs);
 
-  // The most general stackmap construction.
+  // Create a stackmap for the instruction described by `insnRange`, and note
+  // the presence of a ref-typed DebugFrame on the stack.  The stackmap will be
+  // keyed to `insnRange.resumeOffset()`.  Prefer this method over the above 3,
+  // which are regarded as "legacy" and should be phased out.
   [[nodiscard]] bool createStackMap(
-      const char* who, const ExitStubMapVector& extras,
-      uint32_t assemblerOffset,
+      Maybe<Trap> reason, FaultingCodeRange insnRange,
       HasDebugFrameWithLiveRefs debugFrameWithLiveRefs);
+
+  // When compiling for debugging, creates a stack map for a non-resuming trap
+  // instruction of kind `t1`, and, if specified, `t2`.  When not compiling for
+  // debugging, no stackmap is generated.
+  [[nodiscard]] bool createDebugOnlyStackMapForNonResumingTrap(
+      StackMap** result, Trap t1, Trap t2 = Trap::Limit);
 
   ////////////////////////////////////////////////////////////
   //
@@ -1047,19 +1069,21 @@ struct BaseCompiler final {
   bool callRef(const Stk& calleeRef, const FunctionCall& call,
                mozilla::Maybe<size_t> callRefIndex, CodeOffset* fastCallOffset,
                CodeOffset* slowCallOffset);
-  void returnCallRef(const Stk& calleeRef, const FunctionCall& call,
+  bool returnCallRef(const Stk& calleeRef, const FunctionCall& call,
                      const FuncType& funcType);
   CodeOffset builtinCall(SymbolicAddress builtin, const FunctionCall& call);
-  CodeOffset builtinInstanceMethodCall(const SymbolicAddressSignature& builtin,
-                                       const ABIArg& instanceArg,
-                                       const FunctionCall& call);
+  void builtinInstanceMethodCall(const SymbolicAddressSignature& builtin,
+                                 const ABIArg& instanceArg,
+                                 const FunctionCall& call,
+                                 CodeOffset* callStackMapKey,
+                                 CodeOffset* trapStackMapKey);
 
   // Helpers to pick up the returned value from the return register.
   inline RegI32 captureReturnedI32();
   inline RegI64 captureReturnedI64();
   inline RegF32 captureReturnedF32(const FunctionCall& call);
   inline RegF64 captureReturnedF64(const FunctionCall& call);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline RegV128 captureReturnedV128(const FunctionCall& call);
 #endif
   inline RegRef captureReturnedRef();
@@ -1074,7 +1098,7 @@ struct BaseCompiler final {
   inline void movePtr(RegPtr src, RegPtr dest);
   inline void moveF64(RegF64 src, RegF64 dest);
   inline void moveF32(RegF32 src, RegF32 dest);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline void moveV128(RegV128 src, RegV128 dest);
 #endif
 
@@ -1127,10 +1151,6 @@ struct BaseCompiler final {
 
   // Emit a table switch, `theTable` is the jump table.
   void tableSwitch(Label* theTable, RegI32 switchValue, Label* dispatchCode);
-
-  // Compare i64 and set an i32 boolean result according to the condition.
-  inline void cmp64Set(Assembler::Condition cond, RegI64 lhs, RegI64 rhs,
-                       RegI32 dest);
 
   // Round floating to integer.
   [[nodiscard]] inline bool supportsRoundInstruction(RoundingMode mode);
@@ -1210,7 +1230,20 @@ struct BaseCompiler final {
   //
   // Global variable access.
 
-  Address addressOfGlobalVar(const GlobalDesc& global, RegPtr tmp);
+  // The address of a global variable, together with the scratch register it is
+  // based on when it needs one. Construct it as a temporary or local that
+  // outlives the access.
+  class GlobalVarAddress {
+    Maybe<ScratchPtr> tmp_;
+    Address address_;
+
+    Address init(BaseCompiler& bc, const GlobalDesc& global);
+
+   public:
+    GlobalVarAddress(BaseCompiler& bc, const GlobalDesc& global)
+        : address_(init(bc, global)) {}
+    operator Address() const { return address_; }
+  };
 
   //////////////////////////////////////////////////////////////////////
   //
@@ -1237,17 +1270,17 @@ struct BaseCompiler final {
 
   void branchAddNoOverflow(uint64_t offset, RegI32 ptr, Label* ok);
   void branchTestLowZero(RegI32 ptr, Imm32 mask, Label* ok);
-  void boundsCheck4GBOrLargerAccess(uint32_t memoryIndex, RegPtr instance,
-                                    RegI32 ptr, Label* ok);
-  void boundsCheckBelow4GBAccess(uint32_t memoryIndex, RegPtr instance,
-                                 RegI32 ptr, Label* ok);
+  void boundsCheck4GBOrLargerAccess(uint32_t memoryIndex, unsigned byteSize,
+                                    RegPtr instance, RegI32 ptr, Label* ok);
+  void boundsCheckBelow4GBAccess(uint32_t memoryIndex, unsigned byteSize,
+                                 RegPtr instance, RegI32 ptr, Label* ok);
 
   void branchAddNoOverflow(uint64_t offset, RegI64 ptr, Label* ok);
   void branchTestLowZero(RegI64 ptr, Imm32 mask, Label* ok);
-  void boundsCheck4GBOrLargerAccess(uint32_t memoryIndex, RegPtr instance,
-                                    RegI64 ptr, Label* ok);
-  void boundsCheckBelow4GBAccess(uint32_t memoryIndex, RegPtr instance,
-                                 RegI64 ptr, Label* ok);
+  void boundsCheck4GBOrLargerAccess(uint32_t memoryIndex, unsigned byteSize,
+                                    RegPtr instance, RegI64 ptr, Label* ok);
+  void boundsCheckBelow4GBAccess(uint32_t memoryIndex, unsigned byteSize,
+                                 RegPtr instance, RegI64 ptr, Label* ok);
 
   // Some consumers depend on the returned Address not incorporating instance,
   // as instance may be the scratch register.
@@ -1264,9 +1297,9 @@ struct BaseCompiler final {
 
   // ptr and dest may be the same iff dest is I32.
   // This may destroy ptr even if ptr and dest are not the same.
-  void executeLoad(MemoryAccessDesc* access, AccessCheck* check,
-                   RegPtr instance, RegPtr memoryBase, RegI32 ptr, AnyReg dest,
-                   RegI32 temp);
+  void executeLoad(MemoryAccessDesc* access, RegPtr instance, RegPtr memoryBase,
+                   RegI32 ptr, AnyReg dest, RegI32 temp,
+                   ZeroExtendIndex zeroExtend);
   void load(MemoryAccessDesc* access, AccessCheck* check, RegPtr instance,
             RegPtr memoryBase, RegI32 ptr, AnyReg dest, RegI32 temp);
   void load(MemoryAccessDesc* access, AccessCheck* check, RegPtr instance,
@@ -1279,9 +1312,9 @@ struct BaseCompiler final {
 
   // ptr and src must not be the same register.
   // This may destroy ptr and src.
-  void executeStore(MemoryAccessDesc* access, AccessCheck* check,
-                    RegPtr instance, RegPtr memoryBase, RegI32 ptr, AnyReg src,
-                    RegI32 temp);
+  void executeStore(MemoryAccessDesc* access, RegPtr instance,
+                    RegPtr memoryBase, RegI32 ptr, AnyReg src, RegI32 temp,
+                    ZeroExtendIndex zeroExtend);
   void store(MemoryAccessDesc* access, AccessCheck* check, RegPtr instance,
              RegPtr memoryBase, RegI32 ptr, AnyReg src, RegI32 temp);
   void store(MemoryAccessDesc* access, AccessCheck* check, RegPtr instance,
@@ -1363,7 +1396,11 @@ struct BaseCompiler final {
   inline TrapSiteDesc trapSiteDesc() const;
 
   // Generate a trap instruction for the current bytecodeOffset.
-  inline void trap(Trap t) const;
+  inline FaultingCodeRange trap(Trap t);
+
+  // Generate a trap instruction for given location and stack map.
+  inline FaultingCodeRange trap(Trap t, const TrapSiteDesc& trapSite,
+                                StackMap* stackMap);
 
   // Abstracted helper for throwing, used for throw, rethrow, and rethrowing
   // at the end of a series of catch blocks (if none matched the exception).
@@ -1412,7 +1449,7 @@ struct BaseCompiler final {
   //   register is preserved by this function.
   // - `value` is the value that was stored in the field. This register is
   //   preserved by this function.
-  // - `temp` is clobbered by this function.
+  // - `temp` is consumed by this function.
   [[nodiscard]] bool emitPostBarrierWholeCell(RegRef object, RegRef value,
                                               RegPtr temp);
 
@@ -1744,6 +1781,8 @@ struct BaseCompiler final {
   [[nodiscard]] bool emitTableGrow();
   [[nodiscard]] bool emitTableSet();
   [[nodiscard]] bool emitTableSize();
+  [[nodiscard]] bool emitI64AddSub128(bool isAdd);
+  [[nodiscard]] bool emitI64MulWide(bool isSigned);
 
   void emitTableBoundsCheck(uint32_t tableIndex, RegI32 address,
                             RegPtr instance);
@@ -1783,13 +1822,21 @@ struct BaseCompiler final {
   // null pointer dereferences/accesses.
   struct NoNullCheck {
     static void emitNullCheck(BaseCompiler* bc, RegRef rp) {}
-    static void emitTrapSite(BaseCompiler* bc, FaultingCodeOffset fco,
-                             TrapMachineInsn tmi) {}
+    static void emitTrapSite(BaseCompiler* bc, FaultingCodeRange fcr,
+                             TrapMachineInsn tmi, StackMap* debugOnlyStackMap) {
+      MOZ_ASSERT(!debugOnlyStackMap);
+    }
+    static StackMap* createDebugOnlyStackMapForNonResumingTrap(BaseCompiler* bc,
+                                                               Trap kind) {
+      return nullptr;
+    }
   };
   struct SignalNullCheck {
     static void emitNullCheck(BaseCompiler* bc, RegRef rp);
-    static void emitTrapSite(BaseCompiler* bc, FaultingCodeOffset fco,
-                             TrapMachineInsn tmi);
+    static void emitTrapSite(BaseCompiler* bc, FaultingCodeRange fcr,
+                             TrapMachineInsn tmi, StackMap* debugOnlyStackMap);
+    static StackMap* createDebugOnlyStackMapForNonResumingTrap(BaseCompiler* bc,
+                                                               Trap kind);
   };
 
   // Load a pointer to the AllocSite for current bytecode offset
@@ -1846,9 +1893,10 @@ struct BaseCompiler final {
 
   [[nodiscard]] bool emitGcArraySet(RegRef object, RegPtr data, RegI32 index,
                                     const ArrayType& array, AnyReg value,
-                                    PreBarrierKind preBarrierKind);
+                                    PreBarrierKind preBarrierKind,
+                                    PostBarrierKind postBarrierKind);
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   void emitVectorAndNot();
 #  ifdef ENABLE_WASM_RELAXED_SIMD
   void emitDotI8x16I7x16AddS();

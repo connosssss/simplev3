@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32,7 +30,7 @@ std::ostream& operator<<(std::ostream& o, std::optional<T> const& s) {
   }
   return o << "std::nullopt";
 }
-std::ostream& operator<<(std::ostream& o, std::nullopt_t const& s) {
+std::ostream& operator<<(std::ostream& o, std::nullopt_t const& /*s*/) {
   return o << "std::nullopt";
 }
 }  // namespace std
@@ -80,9 +78,7 @@ struct MockSleep {
     sum += val;
   }
 
-  bool operator==(MockSleep const& that) const {
-    return calls == that.calls && sum == that.sum;
-  }
+  bool operator==(MockSleep const& that) const = default;
 };
 std::ostream& operator<<(std::ostream& o, MockSleep const& s) {
   return o << "MockSleep { count: " << s.calls << ", sum: " << s.sum << " }";

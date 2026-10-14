@@ -4,13 +4,13 @@
 
 //! Geometry in flow-relative space.
 
+use crate::derives::*;
 use crate::properties::style_structs;
 use euclid::default::{Point2D, Rect, SideOffsets2D, Size2D};
 use euclid::num::Zero;
 use std::cmp::{max, min};
 use std::fmt::{self, Debug, Error, Formatter};
 use std::ops::{Add, Sub};
-use unicode_bidi as bidi;
 
 pub enum BlockFlowDirection {
     TopToBottom,
@@ -41,6 +41,7 @@ pub enum InlineBaseDirection {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum WritingModeProperty {
@@ -113,7 +114,7 @@ bitflags!(
         const WRITING_MODE_HORIZONTAL_TB = 0;
         /// * writing-mode: vertical_rl;
         const WRITING_MODE_VERTICAL_RL = WritingMode::VERTICAL.bits();
-        /// * writing-mode: vertcail-lr;
+        /// * writing-mode: vertical-lr;
         const WRITING_MODE_VERTICAL_LR = WritingMode::VERTICAL.bits() |
                                          WritingMode::VERTICAL_LR.bits() |
                                          WritingMode::LINE_INVERTED.bits();
@@ -134,8 +135,8 @@ impl WritingMode {
 
         let mut flags = WritingMode::empty();
 
-        let direction = inheritedbox_style.clone_direction();
-        let writing_mode = inheritedbox_style.clone_writing_mode();
+        let direction = *inheritedbox_style.get_direction();
+        let writing_mode = *inheritedbox_style.get_writing_mode();
 
         match direction {
             Direction::Ltr => {},
@@ -186,7 +187,7 @@ impl WritingMode {
             // vertical-lr values of writing-mode.
             match writing_mode {
                 WritingModeProperty::VerticalRl | WritingModeProperty::VerticalLr => {
-                    match inheritedbox_style.clone_text_orientation() {
+                    match *inheritedbox_style.get_text_orientation() {
                         TextOrientation::Mixed => {},
                         TextOrientation::Upright => {
                             flags.insert(WritingMode::UPRIGHT);
@@ -220,6 +221,11 @@ impl WritingMode {
     #[inline]
     pub fn is_vertical(&self) -> bool {
         self.intersects(WritingMode::VERTICAL)
+    }
+
+    #[inline]
+    pub fn is_vertical_rl(&self) -> bool {
+        self.is_vertical() && !self.is_vertical_lr()
     }
 
     #[inline]
@@ -307,6 +313,25 @@ impl WritingMode {
         }
     }
 
+    /// Given a physical side, flips the start on that axis, and returns the corresponding
+    /// physical side.
+    #[inline]
+    pub fn flipped_start_side(&self, side: PhysicalSide) -> PhysicalSide {
+        let bs = self.block_start_physical_side();
+        if side == bs {
+            return self.inline_start_physical_side();
+        }
+        let be = self.block_end_physical_side();
+        if side == be {
+            return self.inline_end_physical_side();
+        }
+        if side == self.inline_start_physical_side() {
+            return bs;
+        }
+        debug_assert_eq!(side, self.inline_end_physical_side());
+        be
+    }
+
     #[inline]
     pub fn start_start_physical_corner(&self) -> PhysicalCorner {
         PhysicalCorner::from_sides(
@@ -358,18 +383,6 @@ impl WritingMode {
     }
 
     #[inline]
-    /// The default bidirectional embedding level for this writing mode.
-    ///
-    /// Returns bidi level 0 if the mode is LTR, or 1 otherwise.
-    pub fn to_bidi_level(&self) -> bidi::Level {
-        if self.is_bidi_ltr() {
-            bidi::Level::ltr()
-        } else {
-            bidi::Level::rtl()
-        }
-    }
-
-    #[inline]
     /// Is the text layout vertical?
     pub fn is_text_vertical(&self) -> bool {
         self.is_vertical() && !self.is_sideways()
@@ -409,13 +422,11 @@ impl fmt::Display for WritingMode {
 /// (in addition to taking it as a parameter to methods) and check it.
 /// In non-debug builds, make this storage zero-size and the checks no-ops.
 #[cfg(not(debug_assertions))]
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[cfg_attr(feature = "servo", derive(Serialize))]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
 struct DebugWritingMode;
 
 #[cfg(debug_assertions)]
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[cfg_attr(feature = "servo", derive(Serialize))]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
 struct DebugWritingMode {
     mode: WritingMode,
 }
@@ -464,17 +475,8 @@ impl Debug for DebugWritingMode {
     }
 }
 
-// Used to specify the logical direction.
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "servo", derive(Serialize))]
-pub enum Direction {
-    Inline,
-    Block,
-}
-
 /// A 2D size in flow-relative dimensions
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[cfg_attr(feature = "servo", derive(Serialize))]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
 pub struct LogicalSize<T> {
     pub inline: T, // inline-size, a.k.a. logical width, a.k.a. measure
     pub block: T,  // block-size, a.k.a. logical height, a.k.a. extent
@@ -507,8 +509,8 @@ impl<T> LogicalSize<T> {
     #[inline]
     pub fn new(mode: WritingMode, inline: T, block: T) -> LogicalSize<T> {
         LogicalSize {
-            inline: inline,
-            block: block,
+            inline,
+            block,
             debug_writing_mode: DebugWritingMode::new(mode),
         }
     }
@@ -616,8 +618,7 @@ impl<T: Sub<T, Output = T>> Sub for LogicalSize<T> {
 }
 
 /// A 2D point in flow-relative dimensions
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[cfg_attr(feature = "servo", derive(Serialize))]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
 pub struct LogicalPoint<T> {
     /// inline-axis coordinate
     pub i: T,
@@ -652,8 +653,8 @@ impl<T: Copy> LogicalPoint<T> {
     #[inline]
     pub fn new(mode: WritingMode, i: T, b: T) -> LogicalPoint<T> {
         LogicalPoint {
-            i: i,
-            b: b,
+            i,
+            b,
             debug_writing_mode: DebugWritingMode::new(mode),
         }
     }
@@ -702,12 +703,10 @@ impl<T: Copy + Sub<T, Output = T>> LogicalPoint<T> {
             } else {
                 container_size.width - self.b
             }
+        } else if mode.is_bidi_ltr() {
+            self.i
         } else {
-            if mode.is_bidi_ltr() {
-                self.i
-            } else {
-                container_size.width - self.i
-            }
+            container_size.width - self.i
         }
     }
 
@@ -854,8 +853,7 @@ impl<T: Copy + Sub<T, Output = T>> Sub<LogicalSize<T>> for LogicalPoint<T> {
 /// Represents the four sides of the margins, borders, or padding of a CSS box,
 /// or a combination of those.
 /// A positive "margin" can be added to a rectangle to obtain a bigger rectangle.
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[cfg_attr(feature = "servo", derive(Serialize))]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
 pub struct LogicalMargin<T> {
     pub block_start: T,
     pub inline_end: T,
@@ -994,12 +992,10 @@ impl<T: Clone> LogicalMargin<T> {
             } else {
                 self.block_start.clone()
             }
+        } else if mode.is_bidi_ltr() {
+            self.inline_end.clone()
         } else {
-            if mode.is_bidi_ltr() {
-                self.inline_end.clone()
-            } else {
-                self.inline_start.clone()
-            }
+            self.inline_start.clone()
         }
     }
 
@@ -1012,12 +1008,10 @@ impl<T: Clone> LogicalMargin<T> {
             } else {
                 self.block_start = right
             }
+        } else if mode.is_bidi_ltr() {
+            self.inline_end = right
         } else {
-            if mode.is_bidi_ltr() {
-                self.inline_end = right
-            } else {
-                self.inline_start = right
-            }
+            self.inline_start = right
         }
     }
 
@@ -1058,12 +1052,10 @@ impl<T: Clone> LogicalMargin<T> {
             } else {
                 self.block_end.clone()
             }
+        } else if mode.is_bidi_ltr() {
+            self.inline_start.clone()
         } else {
-            if mode.is_bidi_ltr() {
-                self.inline_start.clone()
-            } else {
-                self.inline_end.clone()
-            }
+            self.inline_end.clone()
         }
     }
 
@@ -1076,12 +1068,10 @@ impl<T: Clone> LogicalMargin<T> {
             } else {
                 self.block_end = left
             }
+        } else if mode.is_bidi_ltr() {
+            self.inline_start = left
         } else {
-            if mode.is_bidi_ltr() {
-                self.inline_start = left
-            } else {
-                self.inline_end = left
-            }
+            self.inline_end = left
         }
     }
 
@@ -1135,10 +1125,10 @@ impl<T: Clone> LogicalMargin<T> {
 impl<T: PartialEq + Zero> LogicalMargin<T> {
     #[inline]
     pub fn is_zero(&self) -> bool {
-        self.block_start == Zero::zero() &&
-            self.inline_end == Zero::zero() &&
-            self.block_end == Zero::zero() &&
-            self.inline_start == Zero::zero()
+        self.block_start == Zero::zero()
+            && self.inline_end == Zero::zero()
+            && self.block_end == Zero::zero()
+            && self.inline_start == Zero::zero()
     }
 }
 
@@ -1154,10 +1144,10 @@ impl<T: Copy + Add<T, Output = T>> LogicalMargin<T> {
     }
 
     #[inline]
-    pub fn start_end(&self, direction: Direction) -> T {
-        match direction {
-            Direction::Inline => self.inline_start + self.inline_end,
-            Direction::Block => self.block_start + self.block_end,
+    pub fn start_end(&self, axis: LogicalAxis) -> T {
+        match axis {
+            LogicalAxis::Inline => self.inline_start + self.inline_end,
+            LogicalAxis::Block => self.block_start + self.block_end,
         }
     }
 
@@ -1217,8 +1207,7 @@ impl<T: Sub<T, Output = T>> Sub for LogicalMargin<T> {
 }
 
 /// A rectangle in flow-relative dimensions
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[cfg_attr(feature = "servo", derive(Serialize))]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
 pub struct LogicalRect<T> {
     pub start: LogicalPoint<T>,
     pub size: LogicalSize<T>,
@@ -1277,8 +1266,8 @@ impl<T: Copy> LogicalRect<T> {
         start.debug_writing_mode.check(mode);
         size.debug_writing_mode.check(mode);
         LogicalRect {
-            start: start,
-            size: size,
+            start,
+            size,
             debug_writing_mode: DebugWritingMode::new(mode),
         }
     }
@@ -1399,8 +1388,8 @@ impl<T: Copy + Add<T, Output = T> + Sub<T, Output = T>> LogicalRect<T> {
 
     pub fn translate(&self, offset: &LogicalPoint<T>) -> LogicalRect<T> {
         LogicalRect {
-            start: self.start +
-                LogicalSize {
+            start: self.start
+                + LogicalSize {
                     inline: offset.i,
                     block: offset.b,
                     debug_writing_mode: offset.debug_writing_mode,
@@ -1568,10 +1557,10 @@ impl LogicalSide {
         ];
 
         debug_assert!(
-            WritingMode::VERTICAL.bits() == 0x01 &&
-                WritingMode::INLINE_REVERSED.bits() == 0x02 &&
-                WritingMode::VERTICAL_LR.bits() == 0x04 &&
-                WritingMode::LINE_INVERTED.bits() == 0x08
+            WritingMode::VERTICAL.bits() == 0x01
+                && WritingMode::INLINE_REVERSED.bits() == 0x02
+                && WritingMode::VERTICAL_LR.bits() == 0x04
+                && WritingMode::LINE_INVERTED.bits() == 0x08
         );
         let index = (wm.bits() & 0xF) as usize;
         INLINE_MAPPING[index][edge]
@@ -1621,8 +1610,24 @@ pub enum PhysicalSide {
 }
 
 impl PhysicalSide {
-    fn orthogonal_to(self, other: Self) -> bool {
+    /// Returns whether one physical side is parallel to another.
+    pub fn parallel_to(self, other: Self) -> bool {
+        !self.orthogonal_to(other)
+    }
+
+    /// Returns whether one physical side is orthogonal to another.
+    pub fn orthogonal_to(self, other: Self) -> bool {
         matches!(self, Self::Top | Self::Bottom) != matches!(other, Self::Top | Self::Bottom)
+    }
+
+    /// Returns the opposite side.
+    pub fn opposite_side(self) -> Self {
+        match self {
+            Self::Top => Self::Bottom,
+            Self::Right => Self::Left,
+            Self::Bottom => Self::Top,
+            Self::Left => Self::Right,
+        }
     }
 }
 

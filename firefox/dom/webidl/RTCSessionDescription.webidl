@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -30,10 +29,7 @@ dictionary RTCLocalSessionDescriptionInit {
 interface RTCSessionDescription {
   [Throws]
   constructor(RTCSessionDescriptionInit descriptionInitDict);
-
-  // These should be readonly, but writing causes deprecation warnings for a bit
-  attribute RTCSdpType type;
-  attribute DOMString sdp;
-
+  readonly attribute RTCSdpType type;
+  readonly attribute DOMString sdp;
   [Default] object toJSON();
 };

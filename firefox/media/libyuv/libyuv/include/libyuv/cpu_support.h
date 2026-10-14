@@ -28,13 +28,24 @@ extern "C" {
 
 // MemorySanitizer does not support assembly code yet. http://crbug.com/344505
 #if defined(__has_feature)
-#if __has_feature(memory_sanitizer) && !defined(LIBYUV_DISABLE_NEON)
+#if __has_feature(memory_sanitizer)
+#if !defined(LIBYUV_MSAN)
+#define LIBYUV_MSAN 1
+#endif
+#if !defined(LIBYUV_DISABLE_NEON)
 #define LIBYUV_DISABLE_NEON
 #endif
-#if __has_feature(memory_sanitizer) && !defined(LIBYUV_DISABLE_X86)
-#define LIBYUV_DISABLE_X86
+#if !defined(LIBYUV_DISABLE_SME)
+#define LIBYUV_DISABLE_SME
 #endif
+#if !defined(LIBYUV_DISABLE_SVE)
+#define LIBYUV_DISABLE_SVE
 #endif
+#if !defined(LIBYUV_ENABLE_ROWWIN)
+#define LIBYUV_ENABLE_ROWWIN
+#endif
+#endif  // __has_feature(memory_sanitizer)
+#endif  // defined(__has_feature)
 
 // clang >= 3.5.0 required for Arm64.
 #if defined(__clang__) && defined(__aarch64__) && !defined(LIBYUV_DISABLE_NEON)
@@ -76,10 +87,14 @@ extern "C" {
 #define VISUALC_HAS_AVX2 1
 #endif  // VisualStudio >= 2012
 
-// Clang 19 required for SME due to needing __arm_tpidr2_save from compiler-rt,
+#if defined(LIBYUV_ENABLE_SME)
+#undef LIBYUV_DISABLE_SME
+#endif
+
+// Clang 18+ required for SME due to needing __arm_tpidr2_save from compiler-rt,
 // only enabled on Linux and Android (both define __linux__) for now.
 #if !defined(LIBYUV_DISABLE_SME) && defined(__aarch64__) && \
-    defined(__linux__) && defined(__clang__) && (__clang_major__ >= 19)
+    defined(__linux__) && defined(__clang__) && (__clang_major__ >= 18)
 #define CLANG_HAS_SME 1
 #endif
 

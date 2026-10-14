@@ -7,7 +7,7 @@ use crate::client_builder::{recreate_config, BaseConfig, ClientBuilder, MakeConf
 use crate::client_config::ClientConfig;
 use crate::group::framing::MlsMessage;
 
-use crate::group::{cipher_suite_provider, validate_group_info_joiner, GroupInfo};
+use crate::group::{cipher_suite_provider, validate_group_info_joiner, GroupBuilder, GroupInfo};
 use crate::group::{
     framing::MlsMessagePayload, snapshot::Snapshot, ExportedTree, Group, NewMemberInfo,
 };
@@ -20,6 +20,7 @@ use crate::group::{
 use crate::identity::SigningIdentity;
 use crate::key_package::{KeyPackageGeneration, KeyPackageGenerator};
 use crate::protocol_version::ProtocolVersion;
+use crate::time::MlsTime;
 use crate::tree_kem::node::NodeIndex;
 use alloc::vec::Vec;
 use mls_rs_codec::MlsDecode;
@@ -37,7 +38,6 @@ use alloc::boxed::Box;
 
 #[derive(Debug)]
 #[cfg_attr(feature = "std", derive(thiserror::Error))]
-#[cfg_attr(all(feature = "ffi", not(test)), safer_ffi_gen::enum_to_error_code)]
 #[non_exhaustive]
 pub enum MlsError {
     #[cfg_attr(feature = "std", error(transparent))]
@@ -58,6 +58,8 @@ pub enum MlsError {
     ExtensionError(AnyError),
     #[cfg_attr(feature = "std", error("Cipher suite does not match"))]
     CipherSuiteMismatch,
+    #[cfg_attr(feature = "std", error("Initial epoch must be 1"))]
+    InitialEpochNotOne,
     #[cfg_attr(feature = "std", error("Invalid commit, missing required path"))]
     CommitMissingPath,
     #[cfg_attr(feature = "std", error("plaintext message for incorrect epoch"))]
@@ -191,8 +193,19 @@ pub enum MlsError {
     TimeOverflow,
     #[cfg_attr(feature = "std", error("invalid leaf_node_source"))]
     InvalidLeafNodeSource,
-    #[cfg_attr(feature = "std", error("key package has expired or is not valid yet"))]
-    InvalidLifetime,
+    #[cfg_attr(
+        feature = "std",
+        error("current time ({}) is not within key package lifetime ({} to {})",
+              timestamp.seconds_since_epoch(),
+              not_before.seconds_since_epoch(),
+              not_after.seconds_since_epoch(),
+        )
+    )]
+    InvalidLifetime {
+        not_before: MlsTime,
+        not_after: MlsTime,
+        timestamp: MlsTime,
+    },
     #[cfg_attr(feature = "std", error("required extension not found"))]
     RequiredExtensionNotFound(ExtensionType),
     #[cfg_attr(feature = "std", error("required proposal not found"))]
@@ -340,6 +353,12 @@ pub enum MlsError {
     InvalidWelcomeMessage,
     #[cfg_attr(feature = "std", error("Exporter deleted"))]
     ExporterDeleted,
+    #[cfg_attr(feature = "std", error("Self-remove already proposed"))]
+    SelfRemoveAlreadyProposed,
+    #[cfg_attr(feature = "std", error("Default value listed"))]
+    DefaultValueListed,
+    #[cfg_attr(feature = "std", error("not a subgroup"))]
+    NotASubgroup,
 }
 
 impl IntoAnyError for MlsError {
@@ -371,7 +390,6 @@ impl From<ExtensionError> for MlsError {
 /// and underlying identities used to join groups and generate key packages.
 /// Applications may decide to create one or many clients depending on their
 /// specific needs.
-#[cfg_attr(all(feature = "ffi", not(test)), safer_ffi_gen::ffi_type(opaque))]
 #[derive(Clone, Debug)]
 pub struct Client<C> {
     pub(crate) config: C,
@@ -388,7 +406,6 @@ impl Client<()> {
     }
 }
 
-#[cfg_attr(all(feature = "ffi", not(test)), safer_ffi_gen::safer_ffi_gen)]
 impl<C> Client<C>
 where
     C: ClientConfig + Clone,
@@ -407,13 +424,13 @@ where
         }
     }
 
-    #[cfg_attr(all(feature = "ffi", not(test)), safer_ffi_gen::safer_ffi_gen_ignore)]
-    pub fn to_builder(&self) -> ClientBuilder<MakeConfig<C>> {
+    pub fn to_builder(&self, timestamp: Option<MlsTime>) -> ClientBuilder<MakeConfig<C>> {
         ClientBuilder::from_config(recreate_config(
             self.config.clone(),
             self.signer.clone(),
             self.signing_identity.clone(),
             self.version,
+            timestamp,
         ))
     }
 
@@ -435,9 +452,10 @@ where
         &self,
         key_package_extensions: ExtensionList,
         leaf_node_extensions: ExtensionList,
+        timestamp: Option<MlsTime>,
     ) -> Result<MlsMessage, MlsError> {
         Ok(self
-            .generate_key_package(key_package_extensions, leaf_node_extensions)
+            .generate_key_package(key_package_extensions, leaf_node_extensions, timestamp)
             .await?
             .key_package_message())
     }
@@ -447,6 +465,7 @@ where
         &self,
         key_package_extensions: ExtensionList,
         leaf_node_extensions: ExtensionList,
+        timestamp: Option<MlsTime>,
     ) -> Result<KeyPackageGeneration, MlsError> {
         let (signing_identity, cipher_suite) = self.signing_identity()?;
 
@@ -465,12 +484,17 @@ where
 
         let key_pkg_gen = key_package_generator
             .generate(
-                self.config.lifetime(),
+                self.config.lifetime(timestamp),
                 self.config.capabilities(),
                 key_package_extensions,
                 leaf_node_extensions,
             )
             .await?;
+
+        key_pkg_gen
+            .key_package
+            .leaf_node
+            .validate_no_default_values_listed()?;
 
         let (id, key_package_data) = key_pkg_gen.to_storage()?;
 
@@ -483,11 +507,24 @@ where
         Ok(key_pkg_gen)
     }
 
+    /// Create a [`GroupBuilder`] pre-filled with this client's cipher suite,
+    /// signing identity, and signer. Use the builder's `with_*` methods to
+    /// customize the group before calling [`GroupBuilder::build`].
+    pub fn group_builder(&self) -> Result<GroupBuilder<C>, MlsError> {
+        let (signing_identity, cipher_suite) = self.signing_identity()?;
+
+        Ok(GroupBuilder::new(
+            self.config.clone(),
+            cipher_suite,
+            signing_identity.clone(),
+            self.signer()?.clone(),
+        ))
+    }
+
     /// Create a group with a specific group_id.
     ///
-    /// This function behaves the same way as
-    /// [create_group](Client::create_group) except that it
-    /// specifies a specific unique group identifier to be used.
+    /// This is a convenience wrapper around [`group_builder`](Client::group_builder).
+    /// For more control over group parameters, use the builder directly.
     ///
     /// # Warning
     ///
@@ -500,46 +537,44 @@ where
         group_id: Vec<u8>,
         group_context_extensions: ExtensionList,
         leaf_node_extensions: ExtensionList,
+        timestamp: Option<MlsTime>,
     ) -> Result<Group<C>, MlsError> {
-        let (signing_identity, cipher_suite) = self.signing_identity()?;
+        let mut builder = self
+            .group_builder()?
+            .with_group_id(group_id)
+            .with_group_context_extensions(group_context_extensions)
+            .with_leaf_node_extensions(leaf_node_extensions);
 
-        Group::new(
-            self.config.clone(),
-            Some(group_id),
-            cipher_suite,
-            self.version,
-            signing_identity.clone(),
-            group_context_extensions,
-            leaf_node_extensions,
-            self.signer()?.clone(),
-        )
-        .await
+        if let Some(time) = timestamp {
+            builder = builder.with_now_time(time)
+        }
+
+        builder.build().await
     }
 
-    /// Create a MLS group.
+    /// Create an MLS group with a random group ID.
     ///
-    /// The `cipher_suite` provided must be supported by the
-    /// [CipherSuiteProvider](crate::CipherSuiteProvider)
-    /// that was used to build the client.
+    /// This is a convenience wrapper around [`group_builder`](Client::group_builder).
+    /// For more control over group parameters, use the builder directly.
+    ///
+    /// The cipher suite used is the one configured on this client.
     #[cfg_attr(not(mls_build_async), maybe_async::must_be_sync)]
     pub async fn create_group(
         &self,
         group_context_extensions: ExtensionList,
         leaf_node_extensions: ExtensionList,
+        timestamp: Option<MlsTime>,
     ) -> Result<Group<C>, MlsError> {
-        let (signing_identity, cipher_suite) = self.signing_identity()?;
+        let mut builder = self
+            .group_builder()?
+            .with_group_context_extensions(group_context_extensions)
+            .with_leaf_node_extensions(leaf_node_extensions);
 
-        Group::new(
-            self.config.clone(),
-            None,
-            cipher_suite,
-            self.version,
-            signing_identity.clone(),
-            group_context_extensions,
-            leaf_node_extensions,
-            self.signer()?.clone(),
-        )
-        .await
+        if let Some(time) = timestamp {
+            builder = builder.with_now_time(time)
+        }
+
+        builder.build().await
     }
 
     /// Join a MLS group via a welcome message created by a
@@ -556,12 +591,14 @@ where
         &self,
         tree_data: Option<ExportedTree<'_>>,
         welcome_message: &MlsMessage,
+        maybe_time: Option<MlsTime>,
     ) -> Result<(Group<C>, NewMemberInfo), MlsError> {
         Group::join(
             welcome_message,
             tree_data,
             self.config.clone(),
             self.signer()?.clone(),
+            maybe_time,
         )
         .await
     }
@@ -678,7 +715,7 @@ where
             .map_err(|e| MlsError::GroupStorageError(e.into_any_error()))?
             .ok_or(MlsError::GroupNotFound)?;
 
-        let snapshot = Snapshot::mls_decode(&mut &*snapshot)?;
+        let snapshot = Snapshot::mls_decode(&mut &**snapshot)?;
 
         Group::from_snapshot(self.config.clone(), snapshot).await
     }
@@ -702,7 +739,7 @@ where
             .map_err(|e| MlsError::GroupStorageError(e.into_any_error()))?
             .ok_or(MlsError::GroupNotFound)?;
 
-        let mut snapshot = Snapshot::mls_decode(&mut &*snapshot)?;
+        let mut snapshot = Snapshot::mls_decode(&mut &**snapshot)?;
         snapshot.state.public_tree.nodes = tree_data.0.into_owned();
 
         Group::from_snapshot(self.config.clone(), snapshot).await
@@ -722,10 +759,14 @@ where
         authenticated_data: Vec<u8>,
         key_package_extensions: ExtensionList,
         leaf_node_extensions: ExtensionList,
+        timestamp: Option<MlsTime>,
     ) -> Result<MlsMessage, MlsError> {
         let protocol_version = group_info.version;
 
-        if !self.config.version_supported(protocol_version) && protocol_version == self.version {
+        let protocol_version_ok =
+            self.config.version_supported(protocol_version) && protocol_version == self.version;
+
+        if !protocol_version_ok {
             return Err(MlsError::UnsupportedProtocolVersion(protocol_version));
         }
 
@@ -747,11 +788,12 @@ where
             tree_data,
             &self.config.identity_provider(),
             &cipher_suite_provider,
+            timestamp,
         )
         .await?;
 
         let key_package = self
-            .generate_key_package(key_package_extensions, leaf_node_extensions)
+            .generate_key_package(key_package_extensions, leaf_node_extensions, timestamp)
             .await?
             .key_package;
 
@@ -788,7 +830,6 @@ where
         self.signer.as_ref().ok_or(MlsError::SignerNotFound)
     }
 
-    #[cfg_attr(all(feature = "ffi", not(test)), safer_ffi_gen::safer_ffi_gen_ignore)]
     pub fn signing_identity(&self) -> Result<(&SigningIdentity, CipherSuite), MlsError> {
         self.signing_identity
             .as_ref()
@@ -797,26 +838,22 @@ where
     }
 
     /// The [KeyPackageStorage] that this client was configured to use.
-    #[cfg_attr(all(feature = "ffi", not(test)), safer_ffi_gen::safer_ffi_gen_ignore)]
     pub fn key_package_store(&self) -> <C as ClientConfig>::KeyPackageRepository {
         self.config.key_package_repo()
     }
 
     /// The [PreSharedKeyStorage](crate::PreSharedKeyStorage) that
     /// this client was configured to use.
-    #[cfg_attr(all(feature = "ffi", not(test)), safer_ffi_gen::safer_ffi_gen_ignore)]
     pub fn secret_store(&self) -> <C as ClientConfig>::PskStore {
         self.config.secret_store()
     }
 
     /// The [GroupStateStorage] that this client was configured to use.
-    #[cfg_attr(all(feature = "ffi", not(test)), safer_ffi_gen::safer_ffi_gen_ignore)]
     pub fn group_state_storage(&self) -> <C as ClientConfig>::GroupStateStorage {
         self.config.group_state_storage()
     }
 
     /// The [IdentityProvider](crate::IdentityProvider) that this client was configured to use.
-    #[cfg_attr(all(feature = "ffi", not(test)), safer_ffi_gen::safer_ffi_gen_ignore)]
     pub fn identity_provider(&self) -> <C as ClientConfig>::IdentityProvider {
         self.config.identity_provider()
     }
@@ -873,7 +910,7 @@ pub(crate) mod test_utils {
         config(&mut client.config);
 
         let key_package = client
-            .generate_key_package_message(key_package_extensions, leaf_node_extensions)
+            .generate_key_package_message(key_package_extensions, leaf_node_extensions, None)
             .await
             .unwrap();
 
@@ -923,7 +960,7 @@ mod tests {
 
             // TODO: Tests around extensions
             let key_package = client
-                .generate_key_package_message(Default::default(), Default::default())
+                .generate_key_package_message(Default::default(), Default::default(), None)
                 .await
                 .unwrap();
 
@@ -943,7 +980,7 @@ mod tests {
             let capabilities = key_package.leaf_node.ungreased_capabilities();
             assert_eq!(capabilities, client.config.capabilities());
 
-            let client_lifetime = client.config.lifetime();
+            let client_lifetime = client.config.lifetime(None);
             assert_matches!(key_package.leaf_node.leaf_node_source, LeafNodeSource::KeyPackage(lifetime) if (lifetime.not_after - lifetime.not_before) == (client_lifetime.not_after - client_lifetime.not_before));
         }
     }
@@ -966,6 +1003,7 @@ mod tests {
                 vec![],
                 Default::default(),
                 Default::default(),
+                None,
             )
             .await
             .unwrap();
@@ -1103,6 +1141,33 @@ mod tests {
     }
 
     #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
+    async fn external_commit_path_leaf_node_is_readable_from_the_message() {
+        let mut alice_group = test_group(TEST_PROTOCOL_VERSION, TEST_CIPHER_SUITE).await;
+
+        alice_group.commit(vec![]).await.unwrap();
+        alice_group.apply_pending_commit().await.unwrap();
+
+        let group_info_msg = alice_group
+            .group_info_message_allowing_ext_commit(true)
+            .await
+            .unwrap();
+
+        assert!(group_info_msg.commit_path_leaf_node().is_none());
+
+        let (bob_identity, secret_key) = get_test_signing_identity(TEST_CIPHER_SUITE, b"bob").await;
+
+        let bob = TestClientBuilder::new_for_test()
+            .signing_identity(bob_identity.clone(), secret_key, TEST_CIPHER_SUITE)
+            .build();
+
+        let (_, external_commit) = bob.commit_external(group_info_msg).await.unwrap();
+
+        let leaf_node = external_commit.commit_path_leaf_node().unwrap();
+
+        assert_eq!(leaf_node.signing_identity, bob_identity);
+    }
+
+    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
     async fn creating_an_external_commit_requires_a_group_info_message() {
         let (alice_identity, secret_key) =
             get_test_signing_identity(TEST_CIPHER_SUITE, b"alice").await;
@@ -1112,7 +1177,7 @@ mod tests {
             .build();
 
         let msg = alice
-            .generate_key_package_message(Default::default(), Default::default())
+            .generate_key_package_message(Default::default(), Default::default(), None)
             .await
             .unwrap();
         let res = alice.commit_external(msg).await.map(|_| ());
@@ -1157,7 +1222,7 @@ mod tests {
         let alice = TestClientBuilder::new_for_test()
             .extension_type(33.into())
             .build();
-        let bob = alice.to_builder().extension_type(34.into()).build();
+        let bob = alice.to_builder(None).extension_type(34.into()).build();
         assert_eq!(bob.config.supported_extensions(), [33, 34].map(Into::into));
     }
 
@@ -1225,5 +1290,33 @@ mod tests {
 
         let res = bob.validate_group_info(&group_info, &other_signer).await;
         assert_matches!(res, Err(MlsError::InvalidSignature));
+    }
+
+    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
+
+    async fn cannot_list_default_extensions_in_capabilities() {
+        let res = TestClientBuilder::new_for_test()
+            .with_random_signing_identity("client", TEST_CIPHER_SUITE)
+            .await
+            .extension_type(ExtensionType::APPLICATION_ID)
+            .build()
+            .generate_key_package(Default::default(), Default::default(), Default::default())
+            .await;
+
+        assert_matches!(res, Err(MlsError::DefaultValueListed));
+    }
+
+    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
+
+    async fn cannot_list_default_proposals_in_capabilities() {
+        let res = TestClientBuilder::new_for_test()
+            .with_random_signing_identity("client", TEST_CIPHER_SUITE)
+            .await
+            .custom_proposal_type(ProposalType::ADD)
+            .build()
+            .generate_key_package(Default::default(), Default::default(), Default::default())
+            .await;
+
+        assert_matches!(res, Err(MlsError::DefaultValueListed));
     }
 }

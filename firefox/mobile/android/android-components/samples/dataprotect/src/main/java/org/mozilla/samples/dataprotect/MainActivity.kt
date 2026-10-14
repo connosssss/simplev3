@@ -6,13 +6,14 @@ package org.mozilla.samples.dataprotect
 
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import mozilla.components.lib.dataprotect.SecureAbove22Preferences
+import mozilla.components.support.ktx.android.view.setupPersistentInsets
 
 class MainActivity : AppCompatActivity() {
-    @Suppress("MagicNumber")
-    private val itemKeys: List<String> = List(5) { "protected item ${it + 1}" }
+    @Suppress("MagicNumber") private val itemKeys: List<String> = List(5) { "protected item ${it + 1}" }
 
     private lateinit var listView: RecyclerView
     private lateinit var listAdapter: ProtectedDataAdapter
@@ -20,6 +21,8 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        WindowCompat.enableEdgeToEdge(window)
+        window.setupPersistentInsets()
 
         val prefs = SecureAbove22Preferences(this, "secret-data-storage")
 

@@ -1,19 +1,17 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /*
  * This file contains common code that is loaded before each test file(s).
- * See https://developer.mozilla.org/en-US/docs/Mozilla/QA/Writing_xpcshell-based_unit_tests
+ * See https://firefox-source-docs.mozilla.org/testing/xpcshell/index.html
  * for more information.
  */
 
 /* defined by the harness */
 /* globals _HEAD_FILES, _HEAD_JS_PATH, _JSDEBUGGER_PORT, _JSCOV_DIR,
     _MOZINFO_JS_PATH, _TEST_FILE, _TEST_NAME, _TEST_CWD, _TESTING_MODULES_DIR:true,
-    _PREFS_FILE */
+    _PREFS_FILE, _EXPECTED */
 
 /* defined by XPCShellImpl.cpp */
 /* globals load, sendCommand, changeTestShellDir */
@@ -29,6 +27,12 @@
 /* globals run_test */
 
 var _quit = false;
+// Thrown by the harness to unwind the stack after it has already logged a
+// failure. Because this symbol is unique, catch sites can compare against it
+// to recognize a harness-initiated unwind and tell it apart from any exception
+// thrown by the test itself, which is a genuine, unreported failure that must
+// still be reported.
+const _abortMarker = Symbol("xpcshell abort after reported failure");
 var _passed = true;
 var _tests_pending = 0;
 var _cleanupFunctions = [];
@@ -41,6 +45,7 @@ var _XPCSHELL_PROCESS;
 // Register the testing-common resource protocol early, to have access to its
 // modules.
 let _Services = Services;
+let _Cc = Cc;
 _register_modules_protocol_handler();
 
 let { AppConstants: _AppConstants } = ChromeUtils.importESModule(
@@ -49,6 +54,15 @@ let { AppConstants: _AppConstants } = ChromeUtils.importESModule(
 
 let { PromiseTestUtils: _PromiseTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/PromiseTestUtils.sys.mjs"
+);
+
+let {
+  uploadProfileArtifact: _uploadProfileArtifact,
+  installProfilerDumpAndQuit: _installProfilerDumpAndQuit,
+  setProfilerDumpTestName: _setProfilerDumpTestName,
+  shouldSaveFailureProfile: _shouldSaveFailureProfile,
+} = ChromeUtils.importESModule(
+  "resource://testing-common/TestProfilerArtifact.sys.mjs"
 );
 
 let { NetUtil: _NetUtil } = ChromeUtils.importESModule(
@@ -93,6 +107,34 @@ var { StructuredLogger: _LoggerClass } = ChromeUtils.importESModule(
   "resource://testing-common/StructuredLog.sys.mjs"
 );
 var _testLogger = new _LoggerClass("xpcshell/head.js", _dumpLog, [_add_params]);
+
+// When Gecko hits a fatal test-only condition during a profiled run, report it
+// as a failure and save a profile before exiting, instead of crashing and
+// losing the profile. A condition fired late in shutdown runs this callback
+// after xpcshell has set every binding of the test global to undefined, so
+// _Services/_testLogger/_TEST_NAME may all be gone and this throws;
+// TestProfilerArtifact handles that with the test name cached eagerly via
+// _setProfilerDumpTestName (see _execute_test) and a logger of its own.
+_installProfilerDumpAndQuit(reason => {
+  if (_Services.startup.shuttingDown) {
+    // No test is running anymore, so report a top-level error rather than a
+    // per-test status; uploadProfileArtifact then logs where the profile went.
+    _testLogger.error(`${_TEST_NAME} | ${reason}`);
+    return {
+      testName: _TEST_NAME,
+      logger: _testLogger,
+      testRunning: false,
+    };
+  }
+  _testLogger.testStatus(_TEST_NAME, "fatal condition", "FAIL", "PASS", reason);
+  return {
+    testName: _TEST_NAME,
+    logger: _testLogger,
+    // Deferred until after the profile is saved and its location logged, so the
+    // upload message precedes test_end and dashboards find the profile.
+    endTest: () => _testLogger.testEnd(_TEST_NAME, "FAIL", "PASS", reason),
+  };
+});
 
 // Disable automatic network detection, so tests work correctly when
 // not connected to a network.
@@ -264,7 +306,7 @@ void Cc["@mozilla.org/widget/transferable;1"].createInstance();
  * This behaviour would cause random failures and slowdown tests execution,
  * for example by running database vacuum or cleanups for each test.
  *
- * @note Idle service is overridden by default.  If a test requires it, it will
+ * Note: Idle service is overridden by default.  If a test requires it, it will
  *       have to call do_get_idle() function at least once before use.
  */
 var _fakeIdleService = {
@@ -335,6 +377,7 @@ var _fakeIdleService = {
 
 /**
  * Restores the idle service factory if needed and returns the service's handle.
+ *
  * @return A handle to the idle service.
  */
 function do_get_idle() {
@@ -397,9 +440,6 @@ function _setupDevToolsServer(breakpointFiles, callback) {
   // for debugging-the-debugging, let an env var cause log spew.
   if (_Services.env.get("DEVTOOLS_DEBUGGER_LOG")) {
     _Services.prefs.setBoolPref("devtools.debugger.log", true);
-  }
-  if (_Services.env.get("DEVTOOLS_DEBUGGER_LOG_VERBOSE")) {
-    _Services.prefs.setBoolPref("devtools.debugger.log.verbose", true);
   }
 
   let require;
@@ -516,7 +556,22 @@ function _initDebugging(port) {
   info("Debugger connected, starting test execution");
 }
 
+function _do_upload_profile() {
+  let done = false;
+  _uploadProfileArtifact(_TEST_NAME, _testLogger).finally(() => (done = true));
+  _Services.tm.spinEventLoopUntil(
+    "Test(xpcshell/head.js:_save_profile)",
+    () => done
+  );
+}
+
+// eslint-disable-next-line complexity
 function _execute_test() {
+  // _TEST_NAME is injected after the head files load, so cache it now (it is
+  // unavailable when the profiler-dump-and-quit handler is installed above) for
+  // a fatal condition that fires once the test global has been torn down.
+  _setProfilerDumpTestName(_TEST_NAME);
+
   if (typeof _TEST_CWD != "undefined") {
     try {
       changeTestShellDir(_TEST_CWD);
@@ -563,15 +618,7 @@ function _execute_test() {
 
   _PromiseTestUtils.init();
 
-  let coverageCollector = null;
-  if (typeof _JSCOV_DIR === "string") {
-    let _CoverageCollector = ChromeUtils.importESModule(
-      "resource://testing-common/CoverageUtils.sys.mjs"
-    ).CoverageCollector;
-    coverageCollector = new _CoverageCollector(_JSCOV_DIR);
-  }
-
-  let startTime = Cu.now();
+  let startTime = ChromeUtils.now();
 
   // _HEAD_FILES is dynamically defined by <runxpcshelltests.py>.
   _load_files(_HEAD_FILES);
@@ -592,6 +639,27 @@ function _execute_test() {
     PerTestCoverageUtils.beforeTestSync();
   }
 
+  // If we reach the test's timeout, the profiler writes a profile from its
+  // sampler thread and then exits the process, so a test that blocks its main
+  // thread (e.g. a long synchronous run that never returns to the event loop)
+  // still leaves a profile. Unlike a main-thread nsITimer this fires regardless
+  // of what the main thread is doing. The harness picks the output path (in
+  // MOZ_TEST_TIMEOUT_PROFILE_PATH); its own kill is only a safety net at 150%
+  // of the timeout, so exiting here as soon as the profile is on disk lets a
+  // timed-out test end promptly instead of idling until that kill. The harness
+  // recognizes the self-exit and reports the written file.
+  let scheduledProfileDump = false;
+  let timeoutProfilePath = _Services.env.get("MOZ_TEST_TIMEOUT_PROFILE_PATH");
+  if (timeoutProfilePath && _Services.profiler.IsActive()) {
+    let delaySeconds = parseInt(_Services.env.get("MOZ_TEST_TIMEOUT_INTERVAL"));
+    _Services.profiler.scheduleDumpToFile(
+      delaySeconds,
+      timeoutProfilePath,
+      /* aExitAfterDump */ true
+    );
+    scheduledProfileDump = true;
+  }
+
   try {
     do_test_pending("MAIN run_test");
     // Check if run_test() is defined. If defined, run it.
@@ -607,22 +675,14 @@ function _execute_test() {
     _do_main();
     _PromiseTestUtils.assertNoUncaughtRejections();
 
-    if (coverageCollector != null) {
-      coverageCollector.recordTestCoverage(_TEST_FILE[0]);
-    }
-
     if (runningInParent) {
       PerTestCoverageUtils.afterTestSync();
     }
   } catch (e) {
     _passed = false;
-    // do_check failures are already logged and set _quit to true and throw
-    // NS_ERROR_ABORT. If both of those are true it is likely this exception
-    // has already been logged so there is no need to log it again. It's
-    // possible that this will mask an NS_ERROR_ABORT that happens after a
-    // do_check failure though.
-
-    if (!_quit || e.result != Cr.NS_ERROR_ABORT) {
+    // A failure the harness already reported unwinds through here as
+    // _abortMarker; don't log it a second time.
+    if (e !== _abortMarker) {
       let extra = {};
       if (e.fileName) {
         extra.source_file = e.fileName;
@@ -637,10 +697,6 @@ function _execute_test() {
         extra.stack = _format_stack(e.stack);
       }
       _testLogger.error(message, extra);
-    }
-  } finally {
-    if (coverageCollector != null) {
-      coverageCollector.finalize();
     }
   }
 
@@ -664,7 +720,7 @@ function _execute_test() {
   };
 
   let complete = !_cleanupFunctions.length;
-  let cleanupStartTime = complete ? 0 : Cu.now();
+  let cleanupStartTime = complete ? 0 : ChromeUtils.now();
   (async () => {
     for (let func of _cleanupFunctions.reverse()) {
       try {
@@ -732,9 +788,30 @@ function _execute_test() {
     _PromiseTestUtils.ensureDOMPromiseRejectionsProcessed();
     _PromiseTestUtils.assertNoUncaughtRejections();
     _PromiseTestUtils.assertNoMoreExpectedRejections();
+  } catch (e) {
+    // A late uncaught rejection reported here has already set _passed and
+    // thrown _abortMarker; swallow it like the run_test catch above so we
+    // still reach the profile-upload path below. Re-throw anything unexpected.
+    if (e !== _abortMarker) {
+      throw e;
+    }
   } finally {
     // It's important to terminate the module to avoid crashes on shutdown.
     _PromiseTestUtils.uninit();
+  }
+
+  if (scheduledProfileDump) {
+    _Services.profiler.cancelScheduledDump();
+  }
+
+  if (!_passed && runningInParent && _shouldSaveFailureProfile()) {
+    if (_EXPECTED != "pass") {
+      _testLogger.error(
+        "Not uploading the profile as the test is expected to fail."
+      );
+    } else {
+      _do_upload_profile();
+    }
   }
 
   // Skip the normal shutdown path for optimized builds that don't do leak checking.
@@ -758,7 +835,7 @@ function _execute_test() {
 function _load_files(aFiles) {
   function load_file(element) {
     try {
-      let startTime = Cu.now();
+      let startTime = ChromeUtils.now();
       load(element);
       ChromeUtils.addProfilerMarker(
         "load_file",
@@ -789,7 +866,8 @@ function _wrap_with_quotes_if_necessary(val) {
  * Prints a message to the output log.
  */
 function info(msg, data) {
-  ChromeUtils.addProfilerMarker("INFO", { category: "Test" }, msg);
+  // String() to force addProfilerMarker's text-marker path.
+  ChromeUtils.addProfilerMarker("INFO", { category: "Test" }, String(msg));
   msg = _wrap_with_quotes_if_necessary(msg);
   data = data ? data : null;
   _testLogger.info(msg, data);
@@ -818,12 +896,9 @@ function executeSoon(callback, aName) {
       try {
         callback();
       } catch (e) {
-        // do_check failures are already logged and set _quit to true and throw
-        // NS_ERROR_ABORT. If both of those are true it is likely this exception
-        // has already been logged so there is no need to log it again. It's
-        // possible that this will mask an NS_ERROR_ABORT that happens after a
-        // do_check failure though.
-        if (!_quit || e.result != Cr.NS_ERROR_ABORT) {
+        // A failure the harness already reported unwinds through here as
+        // _abortMarker; don't log it a second time.
+        if (e !== _abortMarker) {
           let stack = e.stack ? _format_stack(e.stack) : null;
           _testLogger.testStatus(
             _TEST_NAME,
@@ -833,6 +908,7 @@ function executeSoon(callback, aName) {
             _exception_message(e),
             stack
           );
+          _passed = false;
           _do_quit();
         }
       } finally {
@@ -877,7 +953,7 @@ function _abort_failed_test() {
   // Called to abort the test run after all failures are logged.
   _passed = false;
   _do_quit();
-  throw Components.Exception("", Cr.NS_ERROR_ABORT);
+  throw _abortMarker;
 }
 
 function _format_stack(stack) {
@@ -930,7 +1006,7 @@ function do_report_unexpected_exception(ex, text) {
     stack: _format_stack(ex?.stack),
   });
   _do_quit();
-  throw Components.Exception("", Cr.NS_ERROR_ABORT);
+  throw _abortMarker;
 }
 
 function do_note_exception(ex, text) {
@@ -943,14 +1019,17 @@ function do_note_exception(ex, text) {
 
 function do_report_result(passed, text, stack, todo) {
   // Match names like head.js, head_foo.js, and foo_head.js, but not
-  // test_headache.js
+  // test_headache.js. Stack may be a pre-formatted string (e.g., for uncaught
+  // Promise rejections, where the original frame is stringified eagerly because
+  // the context may be gone by the time the rejection is reported); in that
+  // case stack.filename is undefined and the loop is skipped.
   while (/(\/head(_.+)?|head)\.js$/.test(stack.filename) && stack.caller) {
     stack = stack.caller;
   }
 
-  let name = _gRunningTest ? _gRunningTest.name : stack.name;
+  let name = _gRunningTest ? _gRunningTest.name : (stack.name ?? "");
   let message;
-  if (name) {
+  if (name && stack.lineNumber) {
     message = "[" + name + " : " + stack.lineNumber + "] " + text;
   } else {
     message = text;
@@ -1350,6 +1429,31 @@ function do_get_profile(notifyProfileAfterChange = false) {
         "profile-after-change",
         "xpcshell-do-get-profile"
       );
+
+      // The "profile-after-change" dispatch above does not reach services that
+      // listen for the message via nsICategoryManager. These services register
+      // their observer via `components.conf`. The message for these services
+      // gets dispatched separately. So we have to do the same in testing.
+
+      // TODO: Bug 1995259: Not all tests / services expect this behavior yet,
+      // use an allow-list to determine which services to initialize on
+      // synthetic PAC.
+      let filterServices = new Set([
+        "@mozilla.org/profile-after-change-gate;1",
+      ]);
+
+      for (let entry of Services.catMan.enumerateCategory(
+        "profile-after-change"
+      )) {
+        if (!filterServices.has(entry.value)) {
+          continue;
+        }
+        try {
+          Cc[entry.value]
+            ?.getService(Ci.nsIObserver)
+            ?.observe(null, "profile-after-change", "");
+        } catch (e) {}
+      }
     }
   }
 
@@ -1511,6 +1615,7 @@ function do_send_remote_message(name, data) {
 
 /**
  * Schedules and awaits a precise GC, and forces CC, `maxCount` number of times.
+ *
  * @param maxCount
  *        How many times GC and CC should be scheduled.
  */
@@ -1766,7 +1871,7 @@ function run_next_test() {
         } else {
           _gTaskRunning = true;
         }
-        let startTime = Cu.now();
+        let startTime = ChromeUtils.now();
         (async () => _gRunningTest())().then(
           result => {
             _gTaskRunning = _gSetupRunning = false;
@@ -1789,15 +1894,20 @@ function run_next_test() {
               _gRunningTest.name || undefined
             );
             _setTaskPrefs(initialPrefsValues);
+            // A failure the harness already reported rejects this task with
+            // _abortMarker; don't report it again as an unexpected exception.
+            if (ex === _abortMarker) {
+              return;
+            }
             try {
               // Note `ex` at this point could be undefined, for example as
               // result of a bare call to reject().
               do_report_unexpected_exception(ex);
             } catch (error) {
-              // The above throws NS_ERROR_ABORT and we don't want this to show
+              // The above throws _abortMarker and we don't want this to show
               // up as an unhandled rejection later. If any other exception
               // happened, something went wrong, so we abort.
-              if (error.result != Cr.NS_ERROR_ABORT) {
+              if (error !== _abortMarker) {
                 let extra = {};
                 if (error.fileName) {
                   extra.source_file = error.fileName;
@@ -1812,14 +1922,14 @@ function run_next_test() {
                 }
                 _testLogger.error(_exception_message(error), extra);
                 _do_quit();
-                throw Components.Exception("", Cr.NS_ERROR_ABORT);
+                throw _abortMarker;
               }
             }
           }
         );
       } else {
         // Exceptions do not kill asynchronous tests, so they'll time out.
-        let startTime = Cu.now();
+        let startTime = ChromeUtils.now();
         try {
           _gRunningTest();
         } catch (e) {
@@ -1883,7 +1993,7 @@ try {
   // We only need to run this in the parent process.
   // We only want to run this for local developer builds (which should have a "default" update channel).
   if (runningInParent && _AppConstants.MOZ_UPDATE_CHANNEL == "default") {
-    let startTime = Cu.now();
+    let startTime = ChromeUtils.now();
     let { TelemetryController: _TelemetryController } =
       ChromeUtils.importESModule(
         "resource://gre/modules/TelemetryController.sys.mjs"
@@ -1931,3 +2041,9 @@ Object.defineProperty(this, "mozinfo", {
     return _mozinfo;
   },
 });
+
+/* import-globals-from ../modules/Mochia.js */
+Services.scriptloader.loadSubScript(
+  "resource://testing-common/Mochia.js",
+  this
+);

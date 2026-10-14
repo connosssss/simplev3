@@ -1,53 +1,59 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "AnimationHelper.h"
+
 #include "CompositorAnimationStorage.h"
+#include "NonCustomCSSPropertyId.h"  // for eCSSProperty_offset_path, etc
 #include "base/process_util.h"
-#include "gfx2DGlue.h"                 // for ThebesRect
-#include "gfxLineSegment.h"            // for gfxLineSegment
-#include "gfxPoint.h"                  // for gfxPoint
-#include "gfxQuad.h"                   // for gfxQuad
-#include "gfxRect.h"                   // for gfxRect
-#include "gfxUtils.h"                  // for gfxUtils::TransformToQuad
-#include "mozilla/ServoStyleConsts.h"  // for StyleComputedTimingFunction
-#include "mozilla/dom/AnimationEffectBinding.h"  // for dom::FillMode
-#include "mozilla/dom/KeyframeEffectBinding.h"   // for dom::IterationComposite
-#include "mozilla/dom/KeyframeEffect.h"  // for dom::KeyFrameEffectReadOnly
-#include "mozilla/dom/Nullable.h"        // for dom::Nullable
-#include "mozilla/layers/APZSampler.h"   // for APZSampler
-#include "mozilla/AnimatedPropertyID.h"
+#include "gfx2DGlue.h"       // for ThebesRect
+#include "gfxLineSegment.h"  // for gfxLineSegment
+#include "gfxPoint.h"        // for gfxPoint
+#include "gfxQuad.h"         // for gfxQuad
+#include "gfxRect.h"         // for gfxRect
+#include "gfxUtils.h"        // for gfxUtils::TransformToQuad
+#include "mozilla/CSSPropertyId.h"
 #include "mozilla/LayerAnimationInfo.h"   // for GetCSSPropertiesFor()
 #include "mozilla/Maybe.h"                // for Maybe<>
 #include "mozilla/MotionPathUtils.h"      // for ResolveMotionPath()
+#include "mozilla/ServoStyleConsts.h"     // for StyleComputedTimingFunction
 #include "mozilla/StyleAnimationValue.h"  // for StyleAnimationValue, etc
-#include "nsCSSPropertyID.h"              // for eCSSProperty_offset_path, etc
-#include "nsDisplayList.h"                // for nsDisplayTransform, etc
+#include "mozilla/dom/AnimationEffectBinding.h"  // for dom::FillMode
+#include "mozilla/dom/KeyframeEffect.h"  // for dom::KeyFrameEffectReadOnly
+#include "mozilla/dom/KeyframeEffectBinding.h"  // for dom::IterationComposite
+#include "mozilla/dom/Nullable.h"               // for dom::Nullable
+#include "mozilla/layers/APZSampler.h"          // for APZSampler
+#include "nsDisplayList.h"                      // for nsDisplayTransform, etc
+#include "nsStyleTransformMatrix.h"
 
 namespace mozilla::layers {
 
-static dom::Nullable<TimeDuration> CalculateElapsedTimeForScrollTimeline(
+static Maybe<double> GetScrollProgress(
     const Maybe<APZSampler::ScrollOffsetAndRange> aScrollMeta,
-    const ScrollTimelineOptions& aOptions, const StickyTimeDuration& aEndTime,
-    const TimeDuration& aStartTime, float aPlaybackRate) {
+    const ScrollTimelineOptions& aOptions) {
   // We return Nothing If the associated APZ controller is not available
   // (because it may be destroyed but this animation is still alive).
   if (!aScrollMeta) {
     // This may happen after we reload a page. There may be a race condition
     // because the animation is still alive but the APZ is destroyed. In this
     // case, this animation is invalid, so we return nullptr.
-    return nullptr;
+    return Nothing{};
   }
 
   const bool isHorizontal =
       aOptions.axis() == layers::ScrollDirection::eHorizontal;
   double range =
       isHorizontal ? aScrollMeta->mRange.width : aScrollMeta->mRange.height;
+  // The APZ sampler may give us a zero range (e.g. if the user resizes the
+  // element).
+  if (range == 0.0) {
+    // If the range is zero, we cannot calculate the progress, so just return
+    // nullptr.
+    return Nothing{};
+  }
   MOZ_ASSERT(
-      range > 0,
+      range > 0.0,
       "We don't expect to get a zero or negative range on the compositor");
 
   // The offset may be negative if the writing mode is from right to left.
@@ -56,8 +62,23 @@ static dom::Nullable<TimeDuration> CalculateElapsedTimeForScrollTimeline(
       std::abs(isHorizontal ? aScrollMeta->mOffset.x : aScrollMeta->mOffset.y);
   double progress = position / range;
   // Just in case to avoid getting a progress more than 100%, for overscrolling.
-  progress = std::min(progress, 1.0);
-  auto timelineTime = TimeDuration(aEndTime.MultDouble(progress));
+  return Some(std::min(progress, 1.0));
+}
+
+static dom::Nullable<TimeDuration> CalculateElapsedTimeForScrollTimeline(
+    const Maybe<APZSampler::ScrollOffsetAndRange> aScrollMeta,
+    const ScrollTimelineOptions& aOptions, const TimeDuration& aStartTime,
+    float aPlaybackRate) {
+  const auto progress = GetScrollProgress(aScrollMeta, aOptions);
+  if (!progress) {
+    return nullptr;
+  }
+  // The timeline time is independent of the animation attachment range; the
+  // range is accounted for by |aStartTime| (auto-aligned on the main thread)
+  // and by the range-scaled normalized timing. This matches
+  // ScrollTimeline::GetCurrentTimeAsDuration().
+  const auto timelineTime = TimeDuration::FromMilliseconds(
+      *progress * PROGRESS_TIMELINE_DURATION_MILLISEC);
   return dom::Animation::CurrentTimeFromTimelineTime(timelineTime, aStartTime,
                                                      aPlaybackRate);
 }
@@ -79,7 +100,7 @@ static dom::Nullable<TimeDuration> CalculateElapsedTime(
         aAPZSampler->GetCurrentScrollOffsetAndRange(
             aLayersId, aAnimation.mScrollTimelineOptions.value().source(),
             aProofOfMapLock),
-        aAnimation.mScrollTimelineOptions.value(), aAnimation.mTiming.EndTime(),
+        aAnimation.mScrollTimelineOptions.value(),
         aAnimation.mStartTime.refOr(aAnimation.mHoldTime),
         aAnimation.mPlaybackRate);
   }
@@ -176,14 +197,39 @@ static AnimationHelper::SampleResult SampleAnimationForProperty(
         aAPZSampler, aLayersId, aProofOfMapLock, animation, aPreviousFrameTime,
         aCurrentFrameTime, aPreviousValue);
 
-    const auto progressTimelinePosition =
-        animation.mScrollTimelineOptions
-            ? dom::Animation::AtProgressTimelineBoundary(
-                  TimeDuration::FromMilliseconds(
-                      PROGRESS_TIMELINE_DURATION_MILLISEC),
-                  elapsedDuration, animation.mStartTime.refOr(TimeDuration()),
-                  animation.mPlaybackRate)
-            : dom::Animation::ProgressTimelinePosition::NotBoundary;
+    const auto progressTimelinePosition = [&]() {
+      if (!animation.mScrollTimelineOptions) {
+        return dom::Animation::ProgressTimelinePosition::NotBoundary;
+      }
+
+      MOZ_ASSERT(aAPZSampler,
+                 "We don't send scroll animations to the compositor if APZ is "
+                 "disabled");
+
+      const auto progress = GetScrollProgress(
+          aAPZSampler->GetCurrentScrollOffsetAndRange(
+              aLayersId, animation.mScrollTimelineOptions.value().source(),
+              aProofOfMapLock),
+          animation.mScrollTimelineOptions.value());
+
+      if (!progress) {
+        return dom::Animation::ProgressTimelinePosition::NotBoundary;
+      }
+
+      // The minimum and maximum timeline times are the animation attachment
+      // range endpoints, matching Animation::AtTimelineBoundary().
+      const auto minTimelineTime = TimeDuration::FromMilliseconds(
+          animation.mScrollTimelineOptions->rangeStart() *
+          PROGRESS_TIMELINE_DURATION_MILLISEC);
+      const auto maxTimelineTime = TimeDuration::FromMilliseconds(
+          animation.mScrollTimelineOptions->rangeEnd() *
+          PROGRESS_TIMELINE_DURATION_MILLISEC);
+
+      return dom::Animation::AtTimelineBoundary(
+          TimeDuration::FromMilliseconds(*progress *
+                                         PROGRESS_TIMELINE_DURATION_MILLISEC),
+          minTimelineTime, maxTimelineTime);
+    }();
 
     ComputedTiming computedTiming = dom::AnimationEffect::GetComputedTimingAt(
         elapsedDuration, animation.mTiming, animation.mPlaybackRate,
@@ -239,8 +285,12 @@ static AnimationHelper::SampleResult SampleAnimationForProperty(
 #endif
     }
 
-    uint32_t segmentIndex = 0;
     size_t segmentSize = animation.mSegments.Length();
+    if (segmentSize == 0) {
+      return AnimationHelper::SampleResult();
+    }
+
+    uint32_t segmentIndex = 0;
     PropertyAnimation::SegmentData* segment = animation.mSegments.Elements();
     while (segment->mEndPortion < computedTiming.mProgress.Value() &&
            segmentIndex < segmentSize - 1) {
@@ -367,8 +417,9 @@ AnimationHelper::SampleResult AnimationHelper::SampleAnimationForEachNode(
     }
 
     if (!result.IsSampled()) {
-      if (result.mReason == SampleResult::Reason::ScrollToDelayPhase) {
-        MOZ_ASSERT(currValue && currValue == group.mBaseStyle);
+      if (result.mReason == SampleResult::Reason::ScrollToDelayPhase &&
+          currValue) {
+        MOZ_ASSERT(currValue == group.mBaseStyle);
         baseStyleOfDelayAnimations.AppendElement(std::move(currValue));
       }
       continue;
@@ -452,7 +503,7 @@ AnimationStorageData AnimationHelper::ExtractAnimations(
   AnimationStorageData storageData;
   storageData.mLayersId = aLayersId;
 
-  nsCSSPropertyID prevID = eCSSProperty_UNKNOWN;
+  NonCustomCSSPropertyId prevId = eCSSProperty_UNKNOWN;
   PropertyAnimationGroup* currData = nullptr;
   DebugOnly<const layers::Animatable*> currBaseStyle = nullptr;
 
@@ -460,7 +511,7 @@ AnimationStorageData AnimationHelper::ExtractAnimations(
     // Animations with same property are grouped together, so we can just
     // check if the current property is the same as the previous one for
     // knowing this is a new group.
-    if (prevID != animation.property()) {
+    if (prevId != animation.property()) {
       // Got a different group, we should create a different array.
       currData = storageData.mAnimation.AppendElement();
       currData->mProperty = animation.property();
@@ -470,7 +521,7 @@ AnimationStorageData AnimationHelper::ExtractAnimations(
         storageData.mTransformData = animation.transformData();
       }
 
-      prevID = animation.property();
+      prevId = animation.property();
 
       // Reset the debug pointer.
       currBaseStyle = nullptr;
@@ -585,7 +636,7 @@ AnimationStorageData AnimationHelper::ExtractAnimations(
   if (!storageData.mAnimation.IsEmpty()) {
     nsCSSPropertyIDSet seenProperties;
     for (const auto& group : storageData.mAnimation) {
-      nsCSSPropertyID id = group.mProperty;
+      NonCustomCSSPropertyId id = group.mProperty;
 
       MOZ_ASSERT(!seenProperties.HasProperty(id), "Should be a new property");
       seenProperties.AddProperty(id);
@@ -651,9 +702,9 @@ gfx::Matrix4x4 AnimationHelper::ServoAnimationValueToMatrix4x4(
 
   for (const auto& value : aValues) {
     MOZ_ASSERT(value);
-    AnimatedPropertyID property(eCSSProperty_UNKNOWN);
+    CSSPropertyId property(eCSSProperty_UNKNOWN);
     Servo_AnimationValue_GetPropertyId(value, &property);
-    switch (property.mID) {
+    switch (property.mId) {
       case eCSSProperty_transform:
         MOZ_ASSERT(!transform);
         transform = Servo_AnimationValue_GetTransform(value);

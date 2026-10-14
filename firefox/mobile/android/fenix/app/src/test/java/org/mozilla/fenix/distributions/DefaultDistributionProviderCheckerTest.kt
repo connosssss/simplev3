@@ -14,7 +14,9 @@ import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
 import androidx.core.net.toUri
+import kotlinx.coroutines.runBlocking
 import mozilla.components.support.test.robolectric.testContext
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -26,8 +28,13 @@ import org.robolectric.Shadows.shadowOf
 class DefaultDistributionProviderCheckerTest {
     private val subject = DefaultDistributionProviderChecker(testContext)
 
+    @After
+    fun tearDown() {
+        TestContentProvider.shouldThrowOnQuery = false
+    }
+
     @Test
-    fun `WHEN a content provider exists THEN the provider name is returned`() {
+    fun `WHEN a content provider exists THEN the provider name is returned`() = runBlocking {
         createFakeContentProviderForAdjust(
             otherAppsPackageName = "some.package",
             providerName = "myProvider",
@@ -39,14 +46,14 @@ class DefaultDistributionProviderCheckerTest {
     }
 
     @Test
-    fun `WHEN a content provider does not exists THEN null is returned`() {
+    fun `WHEN a content provider does not exists THEN null is returned`() = runBlocking {
         val provider = subject.queryProvider()
 
         assertEquals(null, provider)
     }
 
     @Test
-    fun `WHEN a content provider exists but does not have the data THEN null is returned`() {
+    fun `WHEN a content provider exists but does not have the data THEN null is returned`() = runBlocking {
         createFakeContentProviderForAdjust(
             otherAppsPackageName = "some.package",
             columns = listOf(),
@@ -58,14 +65,38 @@ class DefaultDistributionProviderCheckerTest {
     }
 
     @Test
-    fun `WHEN a content provider exists but does not have the correct package_name THEN null is returned`() {
+    fun `WHEN a content provider exists but does not have the correct package_name THEN null is returned`() =
+        runBlocking {
+            createFakeContentProviderForAdjust(
+                otherAppsPackageName = "some.package",
+                providerName = "myProvider",
+                columns = listOf(Pair("com.test", Pair("encrypted_data", "{\"provider\": \"provider\"}"))),
+            )
+
+            val provider = subject.queryProvider()
+
+            assertEquals(null, provider)
+        }
+
+    @Test
+    fun `WHEN the encrypted_data column is not json THEN null is returned`() = runBlocking {
+        createFakeContentProviderForAdjust(
+            otherAppsPackageName = "some.package",
+            columns = listOf(Pair("org.mozilla.fenix.debug", Pair("encrypted_data", "not json"))),
+        )
+
+        val provider = subject.queryProvider()
+
+        assertEquals(null, provider)
+    }
+
+    @Test
+    fun `WHEN the content provider throws an exception THEN null is returned without crashing`() = runBlocking {
         createFakeContentProviderForAdjust(
             otherAppsPackageName = "some.package",
             providerName = "myProvider",
-            columns = listOf(
-                Pair("com.test", Pair("encrypted_data", "{\"provider\": \"provider\"}")),
-            ),
         )
+        TestContentProvider.shouldThrowOnQuery = true
 
         val provider = subject.queryProvider()
 
@@ -73,26 +104,10 @@ class DefaultDistributionProviderCheckerTest {
     }
 
     @Test
-    fun `WHEN the encrypted_data column is not json THEN null is returned`() {
+    fun `WHEN the encrypted_data column does not have a provider string THEN null is returned`() = runBlocking {
         createFakeContentProviderForAdjust(
             otherAppsPackageName = "some.package",
-            columns = listOf(
-                Pair("org.mozilla.fenix.debug", Pair("encrypted_data", "not json")),
-            ),
-        )
-
-        val provider = subject.queryProvider()
-
-        assertEquals(null, provider)
-    }
-
-    @Test
-    fun `WHEN the encrypted_data column does not have a provider string THEN null is returned`() {
-        createFakeContentProviderForAdjust(
-            otherAppsPackageName = "some.package",
-            columns = listOf(
-                Pair("org.mozilla.fenix.debug", Pair("encrypted_data", "{\"test\": \"test\"}")),
-            ),
+            columns = listOf(Pair("org.mozilla.fenix.debug", Pair("encrypted_data", "{\"test\": \"test\"}"))),
         )
 
         val provider = subject.queryProvider()
@@ -104,33 +119,34 @@ class DefaultDistributionProviderCheckerTest {
     private fun createFakeContentProviderForAdjust(
         otherAppsPackageName: String,
         providerName: String = "provider",
-        columns: List<Pair<String, Pair<String, String>>> = listOf(
-            Pair("org.mozilla.fenix.debug", Pair("encrypted_data", "{\"provider\": \"$providerName\"}")),
-        ),
+        columns: List<Pair<String, Pair<String, String>>> =
+            listOf(Pair("org.mozilla.fenix.debug", Pair("encrypted_data", "{\"provider\": \"$providerName\"}"))),
     ) {
         val shadowPackageManager = shadowOf(testContext.packageManager)
 
         // Register a fake app with a fake content provider
-        val providerInfo = ProviderInfo().apply {
-            authority = otherAppsPackageName
-            name = TestContentProvider::class.qualifiedName
-            this.packageName = otherAppsPackageName
-            applicationInfo = ApplicationInfo().apply {
+        val providerInfo =
+            ProviderInfo().apply {
+                authority = otherAppsPackageName
+                name = TestContentProvider::class.qualifiedName
                 this.packageName = otherAppsPackageName
-                flags = ApplicationInfo.FLAG_INSTALLED
+                applicationInfo =
+                    ApplicationInfo().apply {
+                        this.packageName = otherAppsPackageName
+                        flags = ApplicationInfo.FLAG_INSTALLED
+                    }
             }
-        }
         shadowPackageManager.addOrUpdateProvider(providerInfo)
 
         // Insert test data into a fake content provider
-        val contentProvider = Robolectric.buildContentProvider(TestContentProvider::class.java)
-            .create(providerInfo)
-            .get()
+        val contentProvider =
+            Robolectric.buildContentProvider(TestContentProvider::class.java).create(providerInfo).get()
         val uri = "content://$otherAppsPackageName/trackers".toUri()
         columns.forEach {
-            val values = ContentValues().apply {
-                put(it.second.first, it.second.second)
-            }
+            val values =
+                ContentValues().apply {
+                    put(it.second.first, it.second.second)
+                }
             contentProvider.insert(uri, values, it.first)
         }
 
@@ -143,6 +159,10 @@ class DefaultDistributionProviderCheckerTest {
 
     class TestContentProvider : ContentProvider() {
         private val database = mutableListOf<Pair<String, ContentValues>>()
+
+        companion object {
+            var shouldThrowOnQuery = false
+        }
 
         override fun onCreate(): Boolean = true
 
@@ -162,6 +182,10 @@ class DefaultDistributionProviderCheckerTest {
             selectionArgs: Array<String>?,
             sortOrder: String?,
         ): Cursor {
+            if (shouldThrowOnQuery) {
+                throw IllegalStateException("Simulated third-party provider failure")
+            }
+
             val cursor = MatrixCursor(projection ?: emptyArray())
 
             val selectionKey = if (selection == "package_name=?") "package_name" else null

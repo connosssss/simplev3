@@ -1,11 +1,17 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 /* eslint-disable mozilla/no-arbitrary-setTimeout */
 "use strict";
 
 add_task(async function testWindowCreate() {
   let extension = ExtensionTestUtils.loadExtension({
+    manifest: {
+      description: JSON.stringify({
+        isWayland: Services.appinfo.isWayland,
+      }),
+    },
     async background() {
+      const { isWayland } = JSON.parse(
+        browser.runtime.getManifest().description
+      );
       let _checkWindowPromise;
       browser.test.onMessage.addListener((msg, arg) => {
         if (msg == "checked-window") {
@@ -21,7 +27,12 @@ add_task(async function testWindowCreate() {
         });
       };
 
-      const KEYS = ["left", "top", "width", "height"];
+      // TODO bug 1989539: Wayland has no request to position a toplevel, so
+      // the window stays wherever the compositor put it. Its size is honoured,
+      // and still checked.
+      const KEYS = isWayland
+        ? ["width", "height"]
+        : ["left", "top", "width", "height"];
       function checkGeom(expected, actual) {
         for (let key of KEYS) {
           browser.test.assertEq(
@@ -83,7 +94,7 @@ add_task(async function testWindowCreate() {
       }
 
       try {
-        let geom = { left: 100, top: 100, width: 500, height: 300 };
+        let geom = { left: 100, top: 100, width: 550, height: 300 };
 
         let window = await browser.windows.create(geom);
         windowId = window.id;
@@ -106,9 +117,14 @@ add_task(async function testWindowCreate() {
 
         let platformInfo = await browser.runtime.getPlatformInfo();
         if (platformInfo.os != "linux") {
+          // An off-screen position is clamped to the screen's available area,
+          // which excludes space reserved for a menu bar or a dock. The clamp
+          // also allows screenEdgeSlop past that origin, but that is 0 outside
+          // GTK, so the available origin is the exact expected position here.
+          let { availLeft, availTop } = await getWindowSize();
           geom = { left: -50, top: -50, width: 800, height: 600 };
           await browser.windows.update(windowId, geom);
-          await checkWindow({ ...geom, left: 0, top: 0 });
+          await checkWindow({ ...geom, left: availLeft, top: availTop });
         }
 
         await browser.windows.remove(windowId);
@@ -132,6 +148,8 @@ add_task(async function testWindowCreate() {
     extension.sendMessage("checked-window", {
       top: latestWindow.screenY,
       left: latestWindow.screenX,
+      availTop: latestWindow.screen.availTop,
+      availLeft: latestWindow.screen.availLeft,
       innerWidth: latestWindow.innerWidth,
       innerHeight: latestWindow.innerHeight,
       outerWidth: latestWindow.outerWidth,

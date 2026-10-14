@@ -1,4 +1,3 @@
-/* vim: set ts=2 sw=2 sts=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,7 +8,6 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   DeferredTask: "resource://gre/modules/DeferredTask.sys.mjs",
-  LayoutUtils: "resource://gre/modules/LayoutUtils.sys.mjs",
 });
 
 const kStateActive = 0x00000001; // ElementState::ACTIVE
@@ -62,14 +60,13 @@ Object.defineProperty(SelectContentHelper, "open", {
 
 SelectContentHelper.prototype = {
   init() {
-    let win = this.element.ownerGlobal;
+    let win = this.element.documentGlobal;
     win.addEventListener("pagehide", this, { mozSystemGroup: true });
     this.element.addEventListener("blur", this, { mozSystemGroup: true });
     this.element.addEventListener("transitionend", this, {
       mozSystemGroup: true,
     });
-    let MutationObserver = this.element.ownerGlobal.MutationObserver;
-    this.mut = new MutationObserver(() => {
+    this.mut = new win.MutationObserver(() => {
       // Something changed the <select> while it was open, so
       // we'll poke a DeferredTask to update the parent sometime
       // in the very near future.
@@ -91,7 +88,7 @@ SelectContentHelper.prototype = {
 
   uninit() {
     this.element.openInParentProcess = false;
-    let win = this.element.ownerGlobal;
+    let win = this.element.documentGlobal;
     win.removeEventListener("pagehide", this, { mozSystemGroup: true });
     this.element.removeEventListener("blur", this, { mozSystemGroup: true });
     this.element.removeEventListener("transitionend", this, {
@@ -111,14 +108,14 @@ SelectContentHelper.prototype = {
     let rect = this._getBoundingContentRect();
     let computedStyles = getComputedStyles(this.element);
     let options = this._buildOptionList();
-    let defaultStyles = this.element.ownerGlobal.getDefaultComputedStyle(
+    let defaultStyles = this.element.documentGlobal.getDefaultComputedStyle(
       this.element
     );
     this.actor.sendAsyncMessage("Forms:ShowDropDown", {
       isOpenedViaTouch: this.isOpenedViaTouch,
       options,
       rect,
-      custom: !this.element.nodePrincipal.isSystemPrincipal,
+      custom: this._allowCustomStyling(computedStyles),
       selectedIndex: this.element.selectedIndex,
       isDarkBackground: ChromeUtils.isDarkBackground(this.element),
       style: supportedStyles(computedStyles, SUPPORTED_SELECT_PROPERTIES),
@@ -149,7 +146,8 @@ SelectContentHelper.prototype = {
   },
 
   _getBoundingContentRect() {
-    return lazy.LayoutUtils.getElementBoundingScreenRect(this.element);
+    let win = this.element.documentGlobal;
+    return win.windowUtils.getElementBoundingScreenRect(this.element);
   },
 
   _buildOptionList() {
@@ -157,8 +155,31 @@ SelectContentHelper.prototype = {
       throw new Error("pseudo styles must be set up");
     }
     let uniqueStyles = [];
-    let options = buildOptionListForChildren(this.element, uniqueStyles);
+    let options = buildOptionList(this.element, null, uniqueStyles);
     return { options, uniqueStyles };
+  },
+
+  _allowCustomStyling(styles) {
+    if (this.element.nodePrincipal.isSystemPrincipal) {
+      // We assume that our UI integrates reasonably with the OS, so we don't
+      // need custom styling.
+      return false;
+    }
+    if (styles.backgroundImage !== "none") {
+      // Disable custom styling if the select uses background-image. We can't
+      // reasonably support arbitrary background-images (because it'd require
+      // doing image loads on the parent for images specified by content, which
+      // is a no-go). Plus, isDarkBackground() and such don't deal particularly
+      // well with it.
+      return false;
+    }
+    if (styles.color === "rgba(0, 0, 0, 0)") {
+      // If the select text color is transparent, we also can't reasonably
+      // support custom styling. Some pages use this combined with overlaying
+      // text in other ways to customize the button, see bug 2067761.
+      return false;
+    }
+    return true;
   },
 
   _update() {
@@ -169,12 +190,12 @@ SelectContentHelper.prototype = {
     // have :focus, though it is here for belt-and-suspenders.
     this._setupPseudoClassStyles();
     let computedStyles = getComputedStyles(this.element);
-    let defaultStyles = this.element.ownerGlobal.getDefaultComputedStyle(
+    let defaultStyles = this.element.documentGlobal.getDefaultComputedStyle(
       this.element
     );
     this.actor.sendAsyncMessage("Forms:UpdateDropDown", {
       options: this._buildOptionList(),
-      custom: !this.element.nodePrincipal.isSystemPrincipal,
+      custom: this._allowCustomStyling(computedStyles),
       selectedIndex: this.element.selectedIndex,
       isDarkBackground: ChromeUtils.isDarkBackground(this.element),
       style: supportedStyles(computedStyles, SUPPORTED_SELECT_PROPERTIES),
@@ -209,12 +230,10 @@ SelectContentHelper.prototype = {
           return;
         }
 
-        let win = this.element.ownerGlobal;
-
         // Running arbitrary script below (dispatching events for example) can
         // close us, but we should still send events consistently.
         let element = this.element;
-
+        let win = element.documentGlobal;
         let selectedOption = element.item(element.selectedIndex);
 
         // For ordering of events, we're using non-e10s as our guide here,
@@ -266,7 +285,7 @@ SelectContentHelper.prototype = {
         break;
 
       case "Forms:MouseUp": {
-        let win = this.element.ownerGlobal;
+        let win = this.element.documentGlobal;
         if (message.data.onAnchor) {
           this.dispatchMouseEvent(win, this.element, "mouseup");
         }
@@ -329,7 +348,7 @@ SelectContentHelper.prototype = {
 };
 
 function getComputedStyles(element) {
-  return element.ownerGlobal.getComputedStyle(element);
+  return element.documentGlobal.getComputedStyle(element);
 }
 
 function supportedStyles(cs, supportedProps) {
@@ -367,25 +386,24 @@ function uniqueStylesIndex(cs, uniqueStyles) {
   return uniqueStyles.length - 1;
 }
 
-function buildOptionListForChildren(node, uniqueStyles) {
+// Maps the select's list items, as computed by
+// HTMLSelectElement::GetListItems, onto the option info the parent process
+// needs. `group` selects an optgroup's members, or the top-level items when
+// null.
+function buildOptionList(select, group, uniqueStyles) {
   let result = [];
 
   let lastWasHR = false;
-  for (let child of node.children) {
-    let className = ChromeUtils.getClassName(child);
-    let isOption = className == "HTMLOptionElement";
+  for (let item of select.getListItems(group)) {
+    let className = ChromeUtils.getClassName(item);
     let isOptGroup = className == "HTMLOptGroupElement";
-    let isHR = className == "HTMLHRElement";
-    if (!isOption && !isOptGroup && !isHR) {
-      continue;
-    }
-    if (child.hidden) {
+    if (item.hidden) {
       continue;
     }
 
-    let cs = getComputedStyles(child);
+    let cs = getComputedStyles(item);
 
-    if (isHR) {
+    if (className == "HTMLHRElement") {
       // https://html.spec.whatwg.org/#the-select-element-2
       // "Each sequence of one or more child hr element siblings may be rendered as a single separator."
       if (lastWasHR) {
@@ -393,12 +411,13 @@ function buildOptionListForChildren(node, uniqueStyles) {
       }
 
       let info = {
-        index: child.index,
+        index: item.index,
         display: cs.display,
-        isHR,
+        isHR: true,
       };
 
-      const defaultHRStyle = node.ownerGlobal.getDefaultComputedStyle(child);
+      const defaultHRStyle =
+        select.documentGlobal.getDefaultComputedStyle(item);
       if (cs.color != defaultHRStyle.color) {
         info.color = cs.color;
       }
@@ -410,29 +429,18 @@ function buildOptionListForChildren(node, uniqueStyles) {
     }
     lastWasHR = false;
 
-    // The option code-path should match HTMLOptionElement::GetRenderedLabel.
-    let textContent = isOptGroup
-      ? child.getAttribute("label")
-      : child.label || child.text;
-    if (textContent == null) {
-      textContent = "";
-    }
-
-    let info = {
-      index: child.index,
+    result.push({
+      index: item.index,
       isOptGroup,
-      textContent,
-      disabled: child.disabled,
+      textContent: isOptGroup ? item.label : item.renderedLabel,
+      disabled: item.disabled,
       display: cs.display,
-      tooltip: child.title,
-      children: isOptGroup
-        ? buildOptionListForChildren(child, uniqueStyles)
-        : [],
+      tooltip: item.title,
+      children: isOptGroup ? buildOptionList(select, item, uniqueStyles) : [],
       // Most options have the same style. In order to reduce the size of the
       // IPC message, coalesce them in uniqueStyles.
       styleIndex: uniqueStylesIndex(cs, uniqueStyles),
-    };
-    result.push(info);
+    });
   }
   return result;
 }

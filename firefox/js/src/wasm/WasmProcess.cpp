@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- *
+/*
  * Copyright 2017 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +16,8 @@
 
 #include "wasm/WasmProcess.h"
 
-#include "mozilla/Attributes.h"
+#include "mozilla/BinarySearch.h"
+#include "mozilla/ScopeExit.h"
 
 #include "gc/Memory.h"
 #include "threading/ExclusiveData.h"
@@ -27,14 +26,13 @@
 #include "wasm/WasmBuiltinModule.h"
 #include "wasm/WasmBuiltins.h"
 #include "wasm/WasmCode.h"
+#include "wasm/WasmComponent.h"
 #include "wasm/WasmInstance.h"
 #include "wasm/WasmModuleTypes.h"
 #include "wasm/WasmStaticTypeDefs.h"
 
 using namespace js;
 using namespace wasm;
-
-mozilla::Atomic<bool> wasm::CodeExists(false);
 
 // Per-process map from values of program-counter (pc) to CodeBlocks.
 //
@@ -44,12 +42,157 @@ mozilla::Atomic<bool> wasm::CodeExists(false);
 // any JSContext/JS::Compartment/etc lying around, we have to use a process-wide
 // map instead.
 
-// This field is only atomic to handle buggy scenarios where we crash during
-// startup or shutdown and thus racily perform wasm::LookupCodeBlock() from
-// the crashing thread.
+mozilla::Atomic<ThreadSafeCodeBlockMap*> wasm::sThreadSafeCodeBlockMap(nullptr);
 
-static mozilla::Atomic<ThreadSafeCodeBlockMap*> sThreadSafeCodeBlockMap(
-    nullptr);
+struct ThreadSafeCodeBlockMap::CodeBlockPC {
+  const void* pc;
+  explicit CodeBlockPC(const void* pc) : pc(pc) {}
+  int operator()(const CodeBlock* cb) const {
+    if (cb->containsCodePC(pc)) {
+      return 0;
+    }
+    if (pc < cb->base()) {
+      return -1;
+    }
+    return 1;
+  }
+};
+
+ThreadSafeCodeBlockMap::ThreadSafeCodeBlockMap()
+    : mutatorsMutex_(mutexid::WasmCodeBlockMap),
+      mutableCodeBlocks_(&segments1_),
+      readonlyCodeBlocks_(&segments2_),
+      numActiveLookups_(0),
+      empty_(true) {}
+
+ThreadSafeCodeBlockMap::~ThreadSafeCodeBlockMap() {
+  MOZ_RELEASE_ASSERT(numActiveLookups_ == 0);
+  segments1_.clearAndFree();
+  segments2_.clearAndFree();
+}
+
+void ThreadSafeCodeBlockMap::swapAndWait() {
+  // Both vectors are consistent for lookup at this point although their
+  // contents are different: there is no way for the looked up PC to be
+  // in the code segment that is getting registered, because the code
+  // segment is not even fully created yet.
+
+  // If a lookup happens before this instruction, then the
+  // soon-to-become-former read-only pointer is used during the lookup,
+  // which is valid.
+
+  mutableCodeBlocks_ = const_cast<RawCodeBlockVector*>(
+      readonlyCodeBlocks_.exchange(mutableCodeBlocks_));
+
+  // If a lookup happens after this instruction, then the updated vector
+  // is used, which is valid:
+  // - in case of insertion, it means the new vector contains more data,
+  // but it's fine since the code segment is getting registered and thus
+  // isn't even fully created yet, so the code can't be running.
+  // - in case of removal, it means the new vector contains one less
+  // entry, but it's fine since unregistering means the code segment
+  // isn't used by any live instance anymore, thus PC can't be in the
+  // to-be-removed code segment's range.
+
+  // A lookup could have happened on any of the two vectors. Wait for
+  // observers to be done using any vector before mutating.
+
+  while (numActiveLookups_ > 0) {
+  }
+}
+
+bool ThreadSafeCodeBlockMap::insert(const CodeBlock* cs) {
+  LockGuard<Mutex> lock(mutatorsMutex_);
+
+  size_t index;
+  MOZ_ALWAYS_FALSE(BinarySearchIf(*mutableCodeBlocks_, 0,
+                                  mutableCodeBlocks_->length(),
+                                  CodeBlockPC(cs->base()), &index));
+
+  if (!mutableCodeBlocks_->insert(mutableCodeBlocks_->begin() + index, cs)) {
+    return false;
+  }
+
+  // Set empty_ first to ensure it's seen before readonlyCodeBlocks_.
+  empty_ = false;
+
+  swapAndWait();
+
+#ifdef DEBUG
+  size_t otherIndex;
+  MOZ_ALWAYS_FALSE(BinarySearchIf(*mutableCodeBlocks_, 0,
+                                  mutableCodeBlocks_->length(),
+                                  CodeBlockPC(cs->base()), &otherIndex));
+  MOZ_ASSERT(index == otherIndex);
+#endif
+
+  // Although we could simply revert the insertion in the read-only
+  // vector, it is simpler to just crash and given that each CodeBlock
+  // consumes multiple pages, it is unlikely this insert() would OOM in
+  // practice
+  AutoEnterOOMUnsafeRegion oom;
+  if (!mutableCodeBlocks_->insert(mutableCodeBlocks_->begin() + index, cs)) {
+    oom.crash("when inserting a CodeBlock in the process-wide map");
+  }
+
+  return true;
+}
+
+void ThreadSafeCodeBlockMap::remove(const CodeBlock* cs) {
+  LockGuard<Mutex> lock(mutatorsMutex_);
+
+  size_t index;
+  MOZ_ALWAYS_TRUE(BinarySearchIf(*mutableCodeBlocks_, 0,
+                                 mutableCodeBlocks_->length(),
+                                 CodeBlockPC(cs->base()), &index));
+
+  mutableCodeBlocks_->erase(mutableCodeBlocks_->begin() + index);
+
+  swapAndWait();
+
+#ifdef DEBUG
+  size_t otherIndex;
+  MOZ_ALWAYS_TRUE(BinarySearchIf(*mutableCodeBlocks_, 0,
+                                 mutableCodeBlocks_->length(),
+                                 CodeBlockPC(cs->base()), &otherIndex));
+  MOZ_ASSERT(index == otherIndex);
+#endif
+
+  mutableCodeBlocks_->erase(mutableCodeBlocks_->begin() + index);
+
+  // Now that readonlyCodeBlocks_ is updated, we can update empty_.
+  empty_ = mutableCodeBlocks_->empty();
+}
+
+const CodeBlock* ThreadSafeCodeBlockMap::lookup(
+    const void* pc, const CodeRange** codeRange /* = nullptr */) {
+  auto decObserver = mozilla::MakeScopeExit([&] {
+    MOZ_ASSERT(numActiveLookups_ > 0);
+    numActiveLookups_--;
+  });
+  numActiveLookups_++;
+
+  const RawCodeBlockVector* readonly = readonlyCodeBlocks_;
+
+  size_t index;
+  if (!BinarySearchIf(*readonly, 0, readonly->length(), CodeBlockPC(pc),
+                      &index)) {
+    if (codeRange) {
+      *codeRange = nullptr;
+    }
+    return nullptr;
+  }
+
+  // It is fine returning a raw CodeBlock*, because we assume we are
+  // looking up a live PC in code which is on the stack, keeping the
+  // CodeBlock alive.
+
+  const CodeBlock* result = (*readonly)[index];
+  if (codeRange) {
+    *codeRange = result->lookupRange(pc);
+  }
+  return result;
+}
 
 bool wasm::RegisterCodeBlock(const CodeBlock* cs) {
   if (cs->length() == 0) {
@@ -59,11 +202,7 @@ bool wasm::RegisterCodeBlock(const CodeBlock* cs) {
   // This function cannot race with startup/shutdown.
   ThreadSafeCodeBlockMap* map = sThreadSafeCodeBlockMap;
   MOZ_RELEASE_ASSERT(map);
-  bool result = map->insert(cs);
-  if (result) {
-    CodeExists = true;
-  }
-  return result;
+  return map->insert(cs);
 }
 
 void wasm::UnregisterCodeBlock(const CodeBlock* cs) {
@@ -74,10 +213,7 @@ void wasm::UnregisterCodeBlock(const CodeBlock* cs) {
   // This function cannot race with startup/shutdown.
   ThreadSafeCodeBlockMap* map = sThreadSafeCodeBlockMap;
   MOZ_RELEASE_ASSERT(map);
-  size_t newCount = map->remove(cs);
-  if (newCount == 0) {
-    CodeExists = false;
-  }
+  map->remove(cs);
 }
 
 const CodeBlock* wasm::LookupCodeBlock(
@@ -108,6 +244,15 @@ bool wasm::InCompiledCode(void* pc) {
 }
 
 #ifdef WASM_SUPPORTS_HUGE_MEMORY
+#  if defined(__riscv)
+// On riscv64, Sv39 is not enough for huge memory, so we require at least Sv48.
+static const size_t MinAddressBitsForHugeMemory = 47;
+#  elif defined(__loongarch__) && (__loongarch_grlen == 64)
+// On loong64 silicon, there are two addressing modes observed: 40b VA on
+// Loongson 3B6000M/2K3000, and 48b VA on various other models.  Only enable
+// huge memory on the latter.
+static const size_t MinAddressBitsForHugeMemory = 47;
+#  else
 /*
  * Some 64 bit systems greatly limit the range of available virtual memory. We
  * require about 6GiB for each wasm huge memory, which can exhaust the address
@@ -119,6 +264,7 @@ bool wasm::InCompiledCode(void* pc) {
  * for error in detecting the address space limit.
  */
 static const size_t MinAddressBitsForHugeMemory = 38;
+#  endif
 
 /*
  * In addition to the above, some systems impose an independent limit on the
@@ -130,9 +276,9 @@ static const size_t MinVirtualMemoryLimitForHugeMemory =
 
 static bool sHugeMemoryEnabled32 = false;
 
-bool wasm::IsHugeMemoryEnabled(wasm::AddressType t) {
-  if (t == AddressType::I64) {
-    // No support for huge memory with 64-bit memories
+bool wasm::IsHugeMemoryEnabled(wasm::AddressType t, wasm::PageSize sz) {
+  if (t == AddressType::I64 || sz != wasm::PageSize::Standard) {
+    // No support for huge memory with 64-bit memories or custom page sizes.
     return false;
   }
   return sHugeMemoryEnabled32;
@@ -159,16 +305,27 @@ void ConfigureHugeMemory() {
 #endif
 }
 
+#ifdef ENABLE_WASM_JSPI
+const TagType* wasm::sJSPromiseTagType = nullptr;
+#endif
 const TagType* wasm::sWrappedJSValueTagType = nullptr;
 
-static bool InitTagForJSValue() {
+static bool InitStaticTagTypes() {
   MutableTagType type = js_new<TagType>();
-  if (!type || !type->initialize(StaticTypeDefs::jsTag)) {
+  if (!type || !type->initialize(StaticTypeDefs::jsExceptionTag)) {
     return false;
   }
-  MOZ_ASSERT(WrappedJSValueTagType_ValueOffset == type->argOffsets()[0]);
-
+  MOZ_ASSERT(WrappedJSValueTagType_ValueOffset ==
+             type->exceptionArgOffsets()[0]);
   type.forget(&sWrappedJSValueTagType);
+
+#ifdef ENABLE_WASM_JSPI
+  type = js_new<TagType>();
+  if (!type || !type->initialize(StaticTypeDefs::jsPromiseTag)) {
+    return false;
+  }
+  type.forget(&sJSPromiseTagType);
+#endif
 
   return true;
 }
@@ -201,7 +358,7 @@ bool wasm::Init() {
 
   sThreadSafeCodeBlockMap = map;
 
-  if (!InitTagForJSValue()) {
+  if (!InitStaticTagTypes()) {
     oomUnsafe.crash("js::wasm::Init");
   }
 
@@ -219,6 +376,16 @@ void wasm::ShutDown() {
   BuiltinModuleFuncs::destroy();
   StaticTypeDefs::destroy();
   PurgeCanonicalTypes();
+#ifdef ENABLE_WASM_COMPONENTS
+  PurgeComponentCanonicalTypes();
+#endif
+
+#ifdef ENABLE_WASM_JSPI
+  if (sJSPromiseTagType) {
+    sJSPromiseTagType->Release();
+    sJSPromiseTagType = nullptr;
+  }
+#endif
 
   if (sWrappedJSValueTagType) {
     sWrappedJSValueTagType->Release();

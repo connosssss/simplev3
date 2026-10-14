@@ -88,13 +88,14 @@ void EncoderTest::InitializeConfig(TestMode mode) {
   int usage = AOM_USAGE_GOOD_QUALITY;
   switch (mode) {
     case kOnePassGood:
-    case kTwoPassGood: break;
+    case kTwoPassGood:
+    case kLowComplexityDecode: break;
     case kRealTime: usage = AOM_USAGE_REALTIME; break;
     case kAllIntra: usage = AOM_USAGE_ALL_INTRA; break;
     default: ASSERT_TRUE(false) << "Unexpected mode " << mode;
   }
   mode_ = mode;
-  passes_ = (mode == kTwoPassGood) ? 2 : 1;
+  passes_ = (mode == kTwoPassGood || mode == kLowComplexityDecode) ? 2 : 1;
 
   const aom_codec_err_t res = codec_->DefaultEncoderConfig(&cfg_, usage);
   ASSERT_EQ(AOM_CODEC_OK, res);
@@ -124,8 +125,6 @@ static bool compare_plane(const uint8_t *const buf1, int stride1,
   return true;
 }
 
-// The function should return "true" most of the time, therefore no early
-// break-out is implemented within the match checking process.
 static bool compare_img(const aom_image_t *img1, const aom_image_t *img2,
                         int *const mismatch_row, int *const mismatch_col,
                         int *const mismatch_plane, int *const mismatch_pix1,
@@ -195,7 +194,7 @@ void EncoderTest::RunLoop(VideoSource *video) {
     ASSERT_NO_FATAL_FAILURE(video->Begin());
     encoder->InitEncoder(video);
 
-    if (mode_ == kRealTime) {
+    if (mode_ == kRealTime && cfg_.g_lag_in_frames == 0) {
       encoder->Control(AOME_SET_ENABLEAUTOALTREF, 0);
     }
 

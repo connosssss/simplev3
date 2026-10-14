@@ -8,25 +8,26 @@
 #![deny(missing_docs)]
 
 use crate::applicable_declarations::ApplicableDeclarationBlock;
-use crate::context::SharedStyleContext;
 #[cfg(feature = "gecko")]
 use crate::context::UpdateAnimationsTasks;
-use crate::data::ElementData;
-use crate::media_queries::Device;
+use crate::context::{SharedStyleContext, TreeCountingCaches};
+use crate::data::{ElementData, ElementDataMut, ElementDataRef};
+use crate::device::Device;
 use crate::properties::{AnimationDeclarations, ComputedValues, PropertyDeclarationBlock};
-use crate::selector_parser::{AttrValue, Lang, PseudoElement, SelectorImpl};
+use crate::selector_map::PrecomputedHashMap;
+use crate::selector_parser::{AttrValue, Lang, PseudoElement, RestyleDamage, SelectorImpl};
 use crate::shared_lock::{Locked, SharedRwLock};
 use crate::stylesheets::scope_rule::ImplicitScopeRoot;
 use crate::stylist::CascadeData;
-use crate::values::computed::Display;
 use crate::values::AtomIdent;
-use crate::{LocalName, WeakAtom};
-use atomic_refcell::{AtomicRef, AtomicRefMut};
+use crate::values::computed::{Display, TreeCountingResult};
+use crate::{LocalName, Namespace, WeakAtom};
 use dom::ElementState;
 use selectors::matching::{ElementSelectorFlags, QuirksMode, VisitedHandlingMode};
 use selectors::sink::Push;
 use selectors::{Element as SelectorsElement, OpaqueElement};
 use servo_arc::{Arc, ArcBorrow};
+use smallvec::SmallVec;
 use std::fmt;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -85,6 +86,19 @@ where
 pub struct DomDescendants<N> {
     previous: Option<N>,
     scope: N,
+}
+
+impl<N> DomDescendants<N>
+where
+    N: TNode,
+{
+    /// Returns the next element ignoring all of our subtree.
+    #[inline]
+    pub fn next_skipping_children(&mut self) -> Option<N> {
+        let prev = self.previous.take()?;
+        self.previous = prev.next_in_preorder_skipping_children(self.scope);
+        self.previous
+    }
 }
 
 impl<N> Iterator for DomDescendants<N>
@@ -189,7 +203,15 @@ pub trait TNode: Sized + Copy + Clone + Debug + NodeInfo + PartialEq {
         if let Some(c) = self.first_child() {
             return Some(c);
         }
+        self.next_in_preorder_skipping_children(scoped_to)
+    }
 
+    /// Returns the next node in tree order, skipping the children of the current node.
+    ///
+    /// This is useful when we know that a subtree cannot contain matches, allowing us
+    /// to skip entire subtrees during traversal.
+    #[inline]
+    fn next_in_preorder_skipping_children(&self, scoped_to: Self) -> Option<Self> {
         let mut current = *self;
         loop {
             if current == scoped_to {
@@ -330,7 +352,7 @@ where
     stringify(f, n)?;
     if let Some(e) = n.as_element() {
         for kid in e.traversal_children() {
-            writeln!(f, "")?;
+            writeln!(f)?;
             fmt_subtree(f, stringify, kid, indent + 1)?;
         }
     }
@@ -385,7 +407,15 @@ pub trait TShadowRoot: Sized + Copy + Clone + Debug + PartialEq {
 
 /// The element trait, the main abstraction the style crate acts over.
 pub trait TElement:
-    Eq + PartialEq + Debug + Hash + Sized + Copy + Clone + SelectorsElement<Impl = SelectorImpl>
+    Eq
+    + PartialEq
+    + Debug
+    + Hash
+    + Sized
+    + Copy
+    + Clone
+    + SelectorsElement<Impl = SelectorImpl>
+    + ElementContext
 {
     /// The concrete node type.
     type ConcreteNode: TNode<ConcreteElement = Self>;
@@ -434,21 +464,6 @@ pub trait TElement:
         self.parent_element()
     }
 
-    /// The ::before pseudo-element of this element, if it exists.
-    fn before_pseudo_element(&self) -> Option<Self> {
-        None
-    }
-
-    /// The ::after pseudo-element of this element, if it exists.
-    fn after_pseudo_element(&self) -> Option<Self> {
-        None
-    }
-
-    /// The ::marker pseudo-element of this element, if it exists.
-    fn marker_pseudo_element(&self) -> Option<Self> {
-        None
-    }
-
     /// Execute `f` for each anonymous content child (apart from ::before and
     /// ::after) whose originating element is `self`.
     fn each_anonymous_content_child<F>(&self, _f: F)
@@ -471,20 +486,21 @@ pub trait TElement:
         false
     }
 
+    /// Return whether this element is an HTML <video> or <audio> element.
+    fn is_html_media_element(&self) -> bool {
+        false
+    }
+
     /// Return the list of slotted nodes of this node.
     fn slotted_nodes(&self) -> &[Self::ConcreteNode] {
         &[]
     }
 
     /// Get this element's style attribute.
-    fn style_attribute(&self) -> Option<ArcBorrow<Locked<PropertyDeclarationBlock>>>;
-
-    /// Unset the style attribute's dirty bit.
-    /// Servo doesn't need to manage ditry bit for style attribute.
-    fn unset_dirty_style_attribute(&self) {}
+    fn style_attribute(&self) -> Option<ArcBorrow<'_, Locked<PropertyDeclarationBlock>>>;
 
     /// Get this element's SMIL override declarations.
-    fn smil_override(&self) -> Option<ArcBorrow<Locked<PropertyDeclarationBlock>>> {
+    fn smil_override(&self) -> Option<ArcBorrow<'_, Locked<PropertyDeclarationBlock>>> {
         None
     }
 
@@ -651,7 +667,9 @@ pub trait TElement:
     /// animation-only dirty descendants bit, and the lazy frame construction
     /// descendants bit.
     unsafe fn clear_descendant_bits(&self) {
-        self.unset_dirty_descendants();
+        unsafe {
+            self.unset_dirty_descendants();
+        }
     }
 
     /// Returns true if this element is a visited link.
@@ -669,8 +687,6 @@ pub trait TElement:
     ///
     /// Note that we still need to compute the pseudo-elements before-hand,
     /// given otherwise we don't know if we need to create an element or not.
-    ///
-    /// Servo doesn't have to deal with this.
     fn implemented_pseudo_element(&self) -> Option<PseudoElement> {
         None
     }
@@ -687,7 +703,7 @@ pub trait TElement:
     ///
     /// Unsafe because it can race to allocate and leak if not used with
     /// exclusive access to the element.
-    unsafe fn ensure_data(&self) -> AtomicRefMut<ElementData>;
+    unsafe fn ensure_data(&self) -> ElementDataMut<'_>;
 
     /// Clears the element data reference, if any.
     ///
@@ -698,10 +714,10 @@ pub trait TElement:
     fn has_data(&self) -> bool;
 
     /// Immutably borrows the ElementData.
-    fn borrow_data(&self) -> Option<AtomicRef<ElementData>>;
+    fn borrow_data(&self) -> Option<ElementDataRef<'_>>;
 
     /// Mutably borrows the ElementData.
-    fn mutate_data(&self) -> Option<AtomicRefMut<ElementData>>;
+    fn mutate_data(&self) -> Option<ElementDataMut<'_>>;
 
     /// Whether we should skip any root- or item-based display property
     /// blockification on this element.  (This function exists so that Gecko
@@ -750,8 +766,13 @@ pub trait TElement:
             Some(d) => d,
             None => return false,
         };
-        return data.hint.has_animation_hint();
+        data.hint.has_animation_hint()
     }
+
+    /// Called when a highlight pseudo-element (::selection, ::highlight,
+    /// ::target-text) style is invalidated. These pseudos need explicit repaint
+    /// triggering since their styles are resolved lazily during painting.
+    fn note_highlight_pseudo_style_invalidated(&self) {}
 
     /// The shadow root this element is a host of.
     fn shadow_root(&self) -> Option<<Self::ConcreteNode as TNode>::ConcreteShadowRoot>;
@@ -759,19 +780,18 @@ pub trait TElement:
     /// The shadow root which roots the subtree this element is contained in.
     fn containing_shadow(&self) -> Option<<Self::ConcreteNode as TNode>::ConcreteShadowRoot>;
 
-    /// Return the element which we can use to look up rules in the selector
-    /// maps.
-    ///
-    /// This is always the element itself, except in the case where we are an
-    /// element-backed pseudo-element, in which case we return the originating
-    /// element.
-    fn rule_hash_target(&self) -> Self {
-        if self.is_pseudo_element() {
-            self.pseudo_element_originating_element()
+    /// If this element is not a pseudo-element, return self. Otherwise,
+    /// return the ultimate originating element [1]. This is the element
+    /// used to look up rules in the selector maps.
+    /// [1]: https://drafts.csswg.org/selectors-4/#ultimate-originating-element
+    fn ultimate_originating_element(&self) -> Self {
+        let mut cur = *self;
+        while cur.is_pseudo_element() {
+            cur = cur
+                .pseudo_element_originating_element()
                 .expect("Trying to collect rules for a detached pseudo-element")
-        } else {
-            *self
         }
+        cur
     }
 
     /// Executes the callback for each applicable style rule data which isn't
@@ -791,7 +811,7 @@ pub trait TElement:
     {
         use crate::rule_collector::containing_shadow_ignoring_svg_use;
 
-        let target = self.rule_hash_target();
+        let target = self.ultimate_originating_element();
         let matches_user_and_content_rules = target.matches_user_and_content_rules();
         let mut doc_rules_apply = matches_user_and_content_rules;
 
@@ -804,49 +824,49 @@ pub trait TElement:
             }
         }
 
-        if let Some(shadow) = target.shadow_root() {
-            if let Some(data) = shadow.style_data() {
-                f(data, shadow.host());
-            }
+        if let Some(shadow) = target.shadow_root()
+            && let Some(data) = shadow.style_data()
+        {
+            f(data, shadow.host());
         }
 
         let mut current = target.assigned_slot();
         while let Some(slot) = current {
             // Slots can only have assigned nodes when in a shadow tree.
             let shadow = slot.containing_shadow().unwrap();
-            if let Some(data) = shadow.style_data() {
-                if data.any_slotted_rule() {
-                    f(data, shadow.host());
-                }
+            if let Some(data) = shadow.style_data()
+                && data.any_slotted_rule()
+            {
+                f(data, shadow.host());
             }
             current = slot.assigned_slot();
         }
 
-        if target.has_part_attr() {
-            if let Some(mut inner_shadow) = target.containing_shadow() {
-                loop {
-                    let inner_shadow_host = inner_shadow.host();
-                    match inner_shadow_host.containing_shadow() {
-                        Some(shadow) => {
-                            if let Some(data) = shadow.style_data() {
-                                if data.any_part_rule() {
-                                    f(data, shadow.host())
-                                }
-                            }
-                            // TODO: Could be more granular.
-                            if !inner_shadow_host.exports_any_part() {
-                                break;
-                            }
-                            inner_shadow = shadow;
-                        },
-                        None => {
-                            // TODO(emilio): Should probably distinguish with
-                            // MatchesDocumentRules::{No,Yes,IfPart} or something so that we could
-                            // skip some work.
-                            doc_rules_apply = matches_user_and_content_rules;
+        if target.has_part_attr()
+            && let Some(mut inner_shadow) = target.containing_shadow()
+        {
+            loop {
+                let inner_shadow_host = inner_shadow.host();
+                match inner_shadow_host.containing_shadow() {
+                    Some(shadow) => {
+                        if let Some(data) = shadow.style_data()
+                            && data.any_part_rule()
+                        {
+                            f(data, shadow.host())
+                        }
+                        // TODO: Could be more granular.
+                        if !inner_shadow_host.exports_any_part() {
                             break;
-                        },
-                    }
+                        }
+                        inner_shadow = shadow;
+                    },
+                    None => {
+                        // TODO(emilio): Should probably distinguish with
+                        // MatchesDocumentRules::{No,Yes,IfPart} or something so that we could
+                        // skip some work.
+                        doc_rules_apply = matches_user_and_content_rules;
+                        break;
+                    },
                 }
             }
         }
@@ -882,27 +902,30 @@ pub trait TElement:
 
     /// Generate the proper applicable declarations due to presentational hints,
     /// and insert them into `hints`.
-    fn synthesize_presentational_hints_for_legacy_attributes<V>(
+    fn synthesize_presentational_hints_for_legacy_attributes<'a, V>(
         &self,
         visited_handling: VisitedHandlingMode,
         hints: &mut V,
     ) where
-        V: Push<ApplicableDeclarationBlock>;
+        V: Push<ApplicableDeclarationBlock<'a>>,
+        Self: 'a;
 
     /// Generate the proper applicable declarations due to view transition dynamic rules, and
     /// insert them into `rules`.
     /// https://drafts.csswg.org/css-view-transitions-1/#document-dynamic-view-transition-style-sheet
-    fn synthesize_view_transition_dynamic_rules<V>(&self, _rules: &mut V)
+    fn synthesize_view_transition_dynamic_rules<'a, V>(&self, _rules: &mut V)
     where
-        V: Push<ApplicableDeclarationBlock>
-    {}
+        V: Push<ApplicableDeclarationBlock<'a>>,
+        Self: 'a,
+    {
+    }
 
     /// Returns element's local name.
     fn local_name(&self) -> &<SelectorImpl as selectors::parser::SelectorImpl>::BorrowedLocalName;
 
     /// Returns element's namespace.
     fn namespace(&self)
-        -> &<SelectorImpl as selectors::parser::SelectorImpl>::BorrowedNamespaceUrl;
+    -> &<SelectorImpl as selectors::parser::SelectorImpl>::BorrowedNamespaceUrl;
 
     /// Returns the size of the element to be used in container size queries.
     /// This will usually be the size of the content area of the primary box,
@@ -924,6 +947,146 @@ pub trait TElement:
         _sheet_index: usize,
     ) -> Option<ImplicitScopeRoot> {
         None
+    }
+
+    /// Compute the damage incurred by the change from the `_old` to `_new`.
+    fn compute_layout_damage(_old: &ComputedValues, _new: &ComputedValues) -> RestyleDamage {
+        Default::default()
+    }
+
+    /// Return the value of the given custom attribute if it exists.
+    fn get_attr(&self, attr: &LocalName, namespace: &Namespace) -> Option<String>;
+
+    /// Traverse the siblings of the element, returning the element's sibling-index()
+    /// and sibling-count(). Also populates `caches` with the sibling-index() and
+    /// sibling-count() values for all siblings of this element.
+    fn get_tree_counting_result(&self, caches: &mut TreeCountingCaches) -> TreeCountingResult {
+        let Some(parent) = self.as_node().parent_node() else {
+            return TreeCountingResult::default();
+        };
+
+        let mut curr = parent.first_child();
+        let mut index = 0u32;
+        let mut count = 0u32;
+        while let Some(node) = curr {
+            if let Some(element) = node.as_element() {
+                count += 1;
+                if *self == element {
+                    index = count;
+                }
+                caches.sibling_index.insert(element.opaque(), count);
+            }
+            curr = node.next_sibling();
+        }
+        caches.sibling_count.insert(parent.opaque(), count);
+
+        TreeCountingResult::new(index, count)
+    }
+}
+
+/// Provides element-level context needed during style computation.
+pub trait ElementContext {
+    /// Opaque handle to the element.
+    fn opaque_element(&self) -> Option<OpaqueElement>;
+
+    /// Opaque handle to the element's parent node.
+    fn opaque_parent(&self) -> Option<OpaqueNode>;
+
+    /// Return the value of the given custom attribute if it exists.
+    fn get_attr(&self, attr: &LocalName, namespace: &Namespace) -> Option<String>;
+
+    /// Traverse the siblings of the element, returning the element's sibling-index()
+    /// and sibling-count(). Also populates `caches` with the sibling-index() and
+    /// sibling-count() values for all siblings of this element.
+    fn get_tree_counting_result(&self, caches: &mut TreeCountingCaches) -> TreeCountingResult;
+}
+
+impl<T: TElement> ElementContext for T {
+    fn opaque_element(&self) -> Option<OpaqueElement> {
+        Some(self.opaque())
+    }
+
+    fn opaque_parent(&self) -> Option<OpaqueNode> {
+        self.as_node().parent_node().map(|n| n.opaque())
+    }
+
+    fn get_attr(&self, attr: &LocalName, namespace: &Namespace) -> Option<String> {
+        TElement::get_attr(self, attr, namespace)
+    }
+
+    fn get_tree_counting_result(&self, caches: &mut TreeCountingCaches) -> TreeCountingResult {
+        TElement::get_tree_counting_result(self, caches)
+    }
+}
+
+/// A set of the attributes used to compute a style that uses `attr()`
+pub type AttributeReferences = Option<Box<PrecomputedHashMap<LocalName, SmallVec<[Namespace; 1]>>>>;
+
+/// A data structure to keep track of the names queried from an element.
+pub struct AttributeTracker<'a> {
+    /// The element that queries for attributes.
+    pub context: &'a dyn ElementContext,
+    /// The set of attributes we have queried.
+    pub references: AttributeReferences,
+}
+
+impl<'a> AttributeTracker<'a> {
+    /// Construct a new attribute tracker trivially.
+    pub fn new(context: &'a dyn ElementContext) -> Self {
+        Self {
+            context,
+            references: None,
+        }
+    }
+
+    /// Construct a new dummy attribute tracker
+    pub fn new_dummy() -> Self {
+        Self {
+            context: &DummyElementContext {},
+            references: None,
+        }
+    }
+
+    /// Extract the queried references and consume self
+    pub fn finalize(self) -> AttributeReferences {
+        self.references
+    }
+
+    /// Query the value and save the name of the attribtue.
+    pub fn query(&mut self, name: &LocalName, namespace: &Namespace) -> Option<String> {
+        // We need to save namespaces in case we are thinking of sharing this element's
+        // style with another.
+        // i.e if elment a has ns1::attr="blue"
+        // and element b has ns2::attr="blue"
+        // a and b can only share style if ns1 and ns2 resolve to the same namespace.
+        self.references
+            .get_or_insert_default()
+            .entry_ref(name)
+            .or_default()
+            .push(namespace.clone());
+        self.context.get_attr(name, namespace)
+    }
+}
+
+/// A dummy ElementContext that returns default values to any query.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DummyElementContext;
+
+impl ElementContext for DummyElementContext {
+    fn get_attr(&self, _attr: &LocalName, _namespace: &Namespace) -> Option<String> {
+        None
+    }
+
+    fn opaque_element(&self) -> Option<OpaqueElement> {
+        None
+    }
+
+    fn opaque_parent(&self) -> Option<OpaqueNode> {
+        None
+    }
+
+    fn get_tree_counting_result(&self, _: &mut TreeCountingCaches) -> TreeCountingResult {
+        TreeCountingResult::default()
     }
 }
 

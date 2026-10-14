@@ -1,4 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,7 +12,8 @@ var { XPCOMUtils } = ChromeUtils.importESModule(
 );
 ChromeUtils.defineESModuleGetters(this, {
   BookmarkJSONUtils: "resource://gre/modules/BookmarkJSONUtils.sys.mjs",
-  MigrationUtils: "resource:///modules/MigrationUtils.sys.mjs",
+  MigrationUtils:
+    "moz-src:///browser/components/migration/MigrationUtils.sys.mjs",
   PlacesBackups: "resource://gre/modules/PlacesBackups.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   DownloadUtils: "resource://gre/modules/DownloadUtils.sys.mjs",
@@ -451,7 +451,7 @@ var PlacesOrganizer = {
     // has changed; otherwise we would have returned earlier.
 
     let input = PlacesSearchBox.searchFilter;
-    input.value = "";
+    input.clear();
     input.editor?.clearUndoRedo();
     this._setSearchScopeForNode(node);
     this.updateDetailsPane();
@@ -889,7 +889,7 @@ var PlacesSearchBox = {
   /**
    * The Search text field
    *
-   * @see {@link https://searchfox.org/mozilla-central/source/toolkit/content/widgets/moz-input-search}
+   * @see {@link https://searchfox.org/firefox-main/source/toolkit/content/widgets/moz-input-search}
    * @returns {HTMLInputElement}
    */
   get searchFilter() {
@@ -1345,7 +1345,7 @@ var ViewMenu = {
       splitter = null;
     }
 
-    const isChecked = element.getAttribute("checked") == "true";
+    const isChecked = element.hasAttribute("checked");
     column.hidden = !isChecked;
     if (splitter) {
       splitter.hidden = !isChecked;

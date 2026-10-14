@@ -11,15 +11,16 @@ import androidx.core.net.toUri
 import androidx.test.platform.app.InstrumentationRegistry
 import org.mozilla.fenix.BuildConfig.DEEP_LINK_SCHEME
 
-class DeepLinkRobot {
+class DeepLinkRobot(private val composeTestRule: ComposeTestRule) {
     private fun openDeepLink(url: String) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val intent = Intent().apply {
-            action = Intent.ACTION_VIEW
-            data = "$DEEP_LINK_SCHEME://$url".toUri()
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            addCategory(Intent.CATEGORY_BROWSABLE)
-        }
+        val intent =
+            Intent().apply {
+                action = Intent.ACTION_VIEW
+                data = "$DEEP_LINK_SCHEME://$url".toUri()
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                addCategory(Intent.CATEGORY_BROWSABLE)
+            }
         try {
             context.startActivity(intent)
         } catch (ex: ActivityNotFoundException) {
@@ -29,29 +30,29 @@ class DeepLinkRobot {
     }
 
     fun openURL(url: String, interact: BrowserRobot.() -> Unit): BrowserRobot.Transition {
-        val deepLink = "open".toUri()
-            .buildUpon()
-            .appendQueryParameter("url", url)
-            .build()
-            .toString()
+        val deepLink = "open".toUri().buildUpon().appendQueryParameter("url", url).build().toString()
         openDeepLink(deepLink)
-        return browserScreen(interact)
+        return browserScreen(composeTestRule, interact)
     }
 
     fun openHomeScreen(interact: HomeScreenRobot.() -> Unit) =
-        openDeepLink("home").run { homeScreen(interact) }
+        openDeepLink("home").run { homeScreen(composeTestRule, interact) }
 
     fun openBookmarks(composeTestRule: ComposeTestRule, interact: BookmarksRobot.() -> Unit) =
         openDeepLink("urls_bookmarks").run { composeBookmarksMenu(composeTestRule, interact) }
 
     fun openHistory(interact: HistoryRobot.() -> Unit) =
-        openDeepLink("urls_history").run { historyMenu(interact) }
+        openDeepLink("urls_history").run { historyMenu(composeTestRule, interact) }
 
     fun openCollections(interact: HomeScreenRobot.() -> Unit) =
-        openDeepLink("home_collections").run { homeScreen(interact) }
+        openDeepLink("home_collections").run { homeScreen(composeTestRule, interact) }
 
-    fun openSettings(interact: SettingsRobot.() -> Unit) =
-        openDeepLink("settings").run { settings(interact) }
+    fun openSettings(interact: SettingsRobot.() -> Unit) = openDeepLink("settings").run { settings(interact) }
+
+    fun openSettingsAIControls(interact: SettingsSubMenuAIControlsRobot.() -> Unit) =
+        openDeepLink("settings_ai_controls").run {
+            settingsSubMenuAIControls(interact)
+        }
 
     fun openSettingsPrivacy(interact: SettingsRobot.() -> Unit) =
         openDeepLink("settings_privacy").run { settings(interact) }
@@ -77,5 +78,4 @@ class DeepLinkRobot {
         openDeepLink("make_default_browser").run { systemSettings(interact) }
 }
 
-private fun settings(interact: SettingsRobot.() -> Unit) =
-    SettingsRobot().interact().run { SettingsRobot.Transition() }
+private fun settings(interact: SettingsRobot.() -> Unit) = SettingsRobot().interact().run { SettingsRobot.Transition() }

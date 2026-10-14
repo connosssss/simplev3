@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef PreloaderBase_h__
-#define PreloaderBase_h__
+#ifndef PreloaderBase_h_
+#define PreloaderBase_h_
 
 #include "mozilla/Maybe.h"
 #include "mozilla/PreloadHashKey.h"
@@ -78,6 +78,10 @@ class PreloaderBase : public SupportsWeakPtr, public nsISupports {
   // Whether this preloader has been used for a regular/actual load or not.
   bool IsUsed() const { return mIsUsed; }
 
+  // Whether NotifyStop() has already been called, i.e. the load/error events
+  // have been (or are about to be) dispatched to the associated nodes.
+  bool HasStopped() const { return mOnStopStatus.isSome(); }
+
   // Removes itself from the document's preloads hashtable
   void RemoveSelf(dom::Document* aDocument);
 
@@ -109,7 +113,7 @@ class PreloaderBase : public SupportsWeakPtr, public nsISupports {
         : mFlags(aFlags), mURI(aURI) {}
 
     uint32_t Flags() const { return mFlags; }
-    nsCString Spec() const;
+    already_AddRefed<nsIURI> URINoFragment() const;
     nsCString Fragment() const;
 
    private:
@@ -192,4 +196,4 @@ class PreloaderBase : public SupportsWeakPtr, public nsISupports {
 
 }  // namespace mozilla
 
-#endif  // !PreloaderBase_h__
+#endif  // !PreloaderBase_h_

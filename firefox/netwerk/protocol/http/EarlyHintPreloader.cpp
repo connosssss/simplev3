@@ -10,19 +10,20 @@
 #include "HttpChannelParent.h"
 #include "MainThreadUtils.h"
 #include "NeckoCommon.h"
+#include "ParentChannelListener.h"
 #include "gfxPlatform.h"
 #include "mozilla/CORSMode.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/dom/nsCSPContext.h"
-#include "mozilla/dom/nsMixedContentBlocker.h"
-#include "mozilla/dom/ReferrerInfo.h"
-#include "mozilla/glean/NetwerkProtocolHttpMetrics.h"
-#include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/LoadInfo.h"
 #include "mozilla/Logging.h"
+#include "mozilla/StaticPrefs_network.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/ReferrerInfo.h"
+#include "mozilla/dom/nsCSPContext.h"
+#include "mozilla/dom/nsMixedContentBlocker.h"
+#include "mozilla/glean/NetwerkProtocolHttpMetrics.h"
+#include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/net/EarlyHintRegistrar.h"
 #include "mozilla/net/NeckoChannelParams.h"
-#include "mozilla/StaticPrefs_network.h"
 #include "nsAttrValue.h"
 #include "nsCOMPtr.h"
 #include "nsContentPolicyUtils.h"
@@ -41,11 +42,9 @@
 #include "nsIReferrerInfo.h"
 #include "nsITimer.h"
 #include "nsIURI.h"
+#include "nsInterfaceRequestorAgg.h"
 #include "nsNetUtil.h"
 #include "nsQueryObject.h"
-#include "ParentChannelListener.h"
-#include "nsIChannel.h"
-#include "nsInterfaceRequestorAgg.h"
 
 //
 // To enable logging (see mozilla/Logging.h for full details):
@@ -144,9 +143,7 @@ Maybe<PreloadHashKey> EarlyHintPreloader::GenerateHashKey(
         aURI, aCorsMode, JS::loader::ScriptKind::eClassic));
   }
   if (aAs == ASDestination::DESTINATION_STYLE) {
-    return Some(PreloadHashKey::CreateAsStyle(
-        aURI, aPrincipal, aCorsMode,
-        css::SheetParsingMode::eAuthorSheetFeatures));
+    return Some(PreloadHashKey::CreateAsStyle(aURI, aPrincipal, aCorsMode));
   }
   if (aAs == ASDestination::DESTINATION_FETCH && aCorsMode != CORS_NONE) {
     return Some(PreloadHashKey::CreateAsFetch(aURI, aCorsMode));
@@ -363,7 +360,11 @@ void EarlyHintPreloader::MaybeCreateAndInsertPreload(
     ipc::CSPInfo cspInfo;
     rv = CSPToCSPInfo(csp, &cspInfo);
     NS_ENSURE_SUCCESS_VOID(rv);
-    clientInfo.SetCspInfo(cspInfo);
+
+    ipc::PolicyContainerArgs policyContainerArgs;
+    policyContainerArgs.csp() = Some(cspInfo);
+
+    clientInfo.SetPolicyContainerArgs(policyContainerArgs);
 
     // This ClientInfo is then set on the new loadInfo.
     // It can now be used to test the resource against the policy
@@ -435,11 +436,6 @@ nsresult EarlyHintPreloader::OpenChannel(
 
   PriorizeAsPreload();
 
-  if (nsCOMPtr<nsIRaceCacheWithNetwork> rcwn = do_QueryInterface(httpChannel)) {
-    // Since this is an early hint, we should consult the cache first.
-    rcwn->SetAllowRacing(false);
-  }
-
   rv = mChannel->AsyncOpen(mParentListener);
   if (NS_FAILED(rv)) {
     mParentListener = nullptr;
@@ -463,11 +459,11 @@ nsresult EarlyHintPreloader::OpenChannel(
 
 void EarlyHintPreloader::PriorizeAsPreload() {
   nsLoadFlags loadFlags = nsIRequest::LOAD_NORMAL;
-  Unused << mChannel->GetLoadFlags(&loadFlags);
-  Unused << mChannel->SetLoadFlags(loadFlags | nsIRequest::LOAD_BACKGROUND);
+  (void)mChannel->GetLoadFlags(&loadFlags);
+  (void)mChannel->SetLoadFlags(loadFlags | nsIRequest::LOAD_BACKGROUND);
 
   if (nsCOMPtr<nsIClassOfService> cos = do_QueryInterface(mChannel)) {
-    Unused << cos->AddClassFlags(nsIClassOfService::Unblocked);
+    (void)cos->AddClassFlags(nsIClassOfService::Unblocked);
   }
 }
 
@@ -639,11 +635,11 @@ EarlyHintPreloader::OnStartRequest(nsIRequest* aRequest) {
   MOZ_DIAGNOSTIC_ASSERT(mChannel);
 
   nsresult status = NS_OK;
-  Unused << aRequest->GetStatus(&status);
+  (void)aRequest->GetStatus(&status);
 
-  if (mParent) {
+  if (nsCOMPtr<nsIParentChannel> parent = mParent) {
     SetParentChannel();
-    mParent->OnStartRequest(aRequest);
+    parent->OnStartRequest(aRequest);
     InvokeStreamListenerFunctions();
   } else {
     // Don't suspend the chanel when the channel got cancelled with

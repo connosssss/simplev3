@@ -1,11 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "AbortSignal.h"
 
+#include "mozilla/RefPtr.h"
 #include "mozilla/dom/AbortSignalBinding.h"
 #include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/Event.h"
@@ -14,9 +13,10 @@
 #include "mozilla/dom/TimeoutManager.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "mozilla/dom/WorkerPrivate.h"
-#include "mozilla/RefPtr.h"
 #include "nsCycleCollectionParticipant.h"
+#include "nsGlobalWindowInner.h"
 #include "nsPIDOMWindow.h"
+#include "nsTHashSet.h"
 
 namespace mozilla::dom {
 
@@ -38,6 +38,11 @@ void AbortSignalImpl::GetReason(JSContext* aCx,
   }
   MaybeAssignAbortError(aCx);
   aReason.set(mReason);
+  if (NS_WARN_IF(!JS_WrapValue(aCx, aReason))) {
+    aReason.setUndefined();
+    // TODO(Bug 2026137) - AbortSignalImpl::GetReason should be made fallible
+    JS_ClearPendingException(aCx);
+  }
 }
 
 JS::Value AbortSignalImpl::RawReason() const { return mReason.get(); }
@@ -75,7 +80,7 @@ void AbortSignalImpl::RunAbortSteps() {
   // https://dom.spec.whatwg.org/#abortsignal-remove could be invoked in an
   // earlier algorithm to remove a later algorithm, so |mFollowers| must be a
   // |nsTObserverArray| to defend against mutation.
-  for (RefPtr<AbortFollower>& follower : mFollowers.ForwardRange()) {
+  for (RefPtr<AbortFollower> follower : mFollowers.ForwardRange()) {
     MOZ_ASSERT(follower->mFollowingSignal == this);
     follower->RunAbortAlgorithm();
   }
@@ -97,6 +102,7 @@ void AbortSignalImpl::Traverse(AbortSignalImpl* aSignal,
 void AbortSignalImpl::Unlink(AbortSignalImpl* aSignal) {
   aSignal->mReason.setUndefined();
   aSignal->UnlinkFollowers();
+  aSignal->DetachWeakPtr();
 }
 
 void AbortSignalImpl::MaybeAssignAbortError(JSContext* aCx) {
@@ -197,7 +203,7 @@ class AbortSignalTimeoutHandler final : public TimeoutHandler {
   AbortSignalTimeoutHandler(JSContext* aCx, AbortSignal* aSignal)
       : TimeoutHandler(aCx), mSignal(aSignal) {}
 
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_CLASS(AbortSignalTimeoutHandler)
 
   // https://dom.spec.whatwg.org/#dom-abortsignal-timeout
@@ -344,11 +350,22 @@ already_AddRefed<AbortSignal> AbortSignal::Any(
   // Step 3. Set resultSignal's dependent to true
   resultSignal->mDependent = true;
 
+  // A single signal has no duplicate source signals. With multiple signals,
+  // their source lists may overlap, so deduplicate before adding either side
+  // of the dependency. Avoid a hash table for the common single-signal case.
+  nsTHashSet<AbortSignal*> seenSourceSignals;
+  auto makeDependentOn = [&](AbortSignal* aSourceSignal) {
+    if (aSignals.Length() == 1 ||
+        seenSourceSignals.EnsureInserted(aSourceSignal)) {
+      resultSignal->MakeDependentOn(aSourceSignal);
+    }
+  };
+
   // Step 4. For each signal of signals
   for (const auto& signal : aSignals) {
     if (!signal->Dependent()) {
       // Step 4.1. If signal is not dependent, make resultSignal dependent on it
-      resultSignal->MakeDependentOn(signal);
+      makeDependentOn(signal);
     } else {
       // Step 4.2. Otherwise, make resultSignal dependent on its source signals
       for (const auto& sourceSignal : signal->mSourceSignals) {
@@ -359,7 +376,7 @@ already_AddRefed<AbortSignal> AbortSignal::Any(
           continue;
         }
         MOZ_ASSERT(!sourceSignal->Aborted() && !sourceSignal->Dependent());
-        resultSignal->MakeDependentOn(sourceSignal);
+        makeDependentOn(sourceSignal);
       }
     }
   }
@@ -371,14 +388,9 @@ already_AddRefed<AbortSignal> AbortSignal::Any(
 void AbortSignal::MakeDependentOn(AbortSignal* aSignal) {
   MOZ_ASSERT(mDependent);
   MOZ_ASSERT(aSignal);
-  // append only if not already contained in list
-  // https://infra.spec.whatwg.org/#set-append
-  if (!mSourceSignals.Contains(aSignal)) {
-    mSourceSignals.AppendElement(aSignal);
-  }
-  if (!aSignal->mDependentSignals.Contains(this)) {
-    aSignal->mDependentSignals.AppendElement(this);
-  }
+  // Any() has already removed duplicate source signals.
+  mSourceSignals.AppendElement(aSignal);
+  aSignal->mDependentSignals.AppendElement(this);
 }
 
 // https://dom.spec.whatwg.org/#dom-abortsignal-throwifaborted

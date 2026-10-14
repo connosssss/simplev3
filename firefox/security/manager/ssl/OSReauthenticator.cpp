@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,20 +6,21 @@
 #include "OSReauthenticator.h"
 
 #include "OSKeyStore.h"
-#include "nsNetCID.h"
-#include "mozilla/dom/Promise.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/ipc/IPCTypes.h"
 #include "nsComponentManagerUtils.h"
 #include "nsIBaseWindow.h"
 #include "nsIDocShell.h"
 #include "nsISupportsUtils.h"
 #include "nsIWidget.h"
+#include "nsNetCID.h"
 #include "nsPIDOMWindow.h"
+#include "nsPIDOMWindowInlines.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
-#include "mozilla/ipc/IPCTypes.h"
 
 NS_IMPL_ISUPPORTS(OSReauthenticator, nsIOSReauthenticator)
 
@@ -43,11 +43,12 @@ using mozilla::dom::Promise;
 #  include <ntsecapi.h>
 #  include <wincred.h>
 #  include <windows.h>
+
 #  include "nsIWindowsRegKey.h"  // Must be included after <windows.h> for HKEY definition
 #  define SECURITY_WIN32
+#  include <lm.h>
 #  include <security.h>
 #  include <shlwapi.h>
-#  include <lm.h>
 #  undef ACCESS_READ  // nsWindowsRegKey defines its own ACCESS_READ
 struct HandleCloser {
   typedef HANDLE pointer;
@@ -84,8 +85,7 @@ constexpr int64_t Int32Modulo = 2147483648;
 std::unique_ptr<char[]> GetTokenInfo(ScopedHANDLE& token) {
   DWORD length = 0;
   // https://docs.microsoft.com/en-us/windows/desktop/api/securitybaseapi/nf-securitybaseapi-gettokeninformation
-  mozilla::Unused << GetTokenInformation(token.get(), TokenUser, nullptr, 0,
-                                         &length);
+  (void)GetTokenInformation(token.get(), TokenUser, nullptr, 0, &length);
   if (!length || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
     MOZ_LOG(gCredentialManagerSecretLog, LogLevel::Debug,
             ("Unable to obtain current token info."));

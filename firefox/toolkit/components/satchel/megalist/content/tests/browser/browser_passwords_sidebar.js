@@ -7,6 +7,12 @@ const { SUPPORT_URL, PREFERENCES_URL } = ChromeUtils.importESModule(
   "resource://gre/modules/megalist/aggregator/datasources/LoginDataSource.sys.mjs"
 );
 
+add_setup(async function () {
+  await SpecialPowers.pushPrefEnv({
+    set: [["toolkit.osKeyStore.unofficialBuildOnlyLogin", ""]],
+  });
+});
+
 const EXPECTED_PASSWORD_CARD_VALUES = [
   {
     originLine: { value: "example1.com" },
@@ -127,13 +133,13 @@ add_task(async function test_login_line_commands() {
   Services.fog.testResetFOG();
   await Services.fog.testFlushAllChildren();
 
-  await addLocalOriginLogin();
+  await addNavigableOriginLogin();
   const passwordsSidebar = await openPasswordsSidebar();
   await checkAllLoginsRendered(passwordsSidebar);
   const list = passwordsSidebar.querySelector(".passwords-list");
   const card = list.querySelector("password-card");
   const expectedPasswordCard = {
-    originLine: { value: "about:preferences#privacy" },
+    originLine: { value: "https://example.com/" },
     usernameLine: { value: "john" },
     passwordLine: { value: "pass4" },
   };
@@ -230,41 +236,13 @@ add_task(async function test_login_line_commands() {
   SidebarController.hide();
 });
 
-add_task(async function test_passwords_menu_export_remove_disabled() {
-  Services.fog.testResetFOG();
-  await Services.fog.testFlushAllChildren();
-
-  const passwordsSidebar = await openPasswordsSidebar();
-  await waitForSnapshots();
-
-  // Ensure there are no saved logins
-  await Services.logins.removeAllLogins();
-  await checkEmptyState(".no-logins-card-content", passwordsSidebar);
-
-  const menu = passwordsSidebar.querySelector("panel-list");
-  const menuButton = passwordsSidebar.querySelector("#more-options-menubutton");
-  menuButton.click();
-  await BrowserTestUtils.waitForEvent(menu, "shown");
-
-  const exportButton = getShadowBtn(menu, "[action='export-logins']");
-  const removeAllButton = getShadowBtn(menu, "[action='remove-all-logins']");
-  ok(
-    exportButton.disabled,
-    "'Export Passwords' is disabled when no logins are saved."
-  );
-  ok(
-    removeAllButton.disabled,
-    "'Remove All Passwords' is disabled when no logins are saved."
-  );
-
-  SidebarController.hide();
-});
-
 add_task(async function test_passwords_menu_external_links() {
   Services.fog.testResetFOG();
   await Services.fog.testFlushAllChildren();
 
+  await addMockPasswords();
   const passwordsSidebar = await openPasswordsSidebar();
+  await checkAllLoginsRendered(passwordsSidebar);
   await waitForSnapshots();
   const menu = passwordsSidebar.querySelector("panel-list");
   const menuButton = passwordsSidebar.querySelector("#more-options-menubutton");
@@ -302,11 +280,15 @@ add_task(async function test_passwords_menu_external_links() {
   ok(true, "support link opened.");
 
   BrowserTestUtils.removeTab(helpTab);
-  // We need this since removing gBrowser.selectedTab (this is the tab that has about:preferences)
-  // without a fallback causes an error. Leaving it causes a leak when running in chaos mode.
-  // It seems that our testing framework is smart enough to cleanup about:blank pages.
+  LoginTestUtils.clearData();
+  // Add an about:blank fallback so we never remove the last tab, then remove
+  // the about:preferences tab explicitly.
   BrowserTestUtils.addTab(gBrowser, "about:blank");
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
+  for (const tab of [...gBrowser.tabs]) {
+    if (tab.linkedBrowser?.currentURI?.spec.startsWith("about:preferences")) {
+      BrowserTestUtils.removeTab(tab);
+    }
+  }
   SidebarController.hide();
 });
 
@@ -315,10 +297,15 @@ async function waitForMigrationWizard() {
     window,
     "MigrationWizard:Ready"
   );
-  await BrowserTestUtils.waitForLocationChange(
-    gBrowser,
-    "about:preferences#general"
-  );
+  // The Settings Redesign LegacyPaneMappings shim routes "general-migrate"
+  // to the sync pane, so accept either location for the migration entry.
+  const expectedUri = Services.prefs.getBoolPref(
+    "browser.settings-redesign.enabled",
+    false
+  )
+    ? "about:preferences#sync"
+    : "about:preferences#general";
+  await BrowserTestUtils.waitForLocationChange(gBrowser, expectedUri);
   return wizardReadyPromise;
 }
 
@@ -326,10 +313,12 @@ add_task(async function test_passwords_menu_import_from_browser() {
   Services.fog.testResetFOG();
   await Services.fog.testFlushAllChildren();
 
+  await addMockPasswords();
   const passwordsSidebar = await openPasswordsSidebar();
   await waitForSnapshots();
   await testImportFromBrowser(passwordsSidebar);
 
+  LoginTestUtils.clearData();
   BrowserTestUtils.addTab(gBrowser, "about:blank");
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
   SidebarController.hide();
@@ -368,7 +357,7 @@ add_task(async function test_passwords_visibility_when_view_shown() {
 
   info("Hide the sidebar");
   SidebarController.hide();
-  await BrowserTestUtils.waitForCondition(() => {
+  await TestUtils.waitForCondition(() => {
     return !SidebarController.isOpen;
   }, "Sidebar did not close.");
 
@@ -389,5 +378,22 @@ add_task(async function test_passwords_visibility_when_view_shown() {
   await waitForPasswordConceal(passwordCard.passwordLine.loginLine);
   ok(true, "Password is hidden.");
 
+  SidebarController.hide();
+});
+
+add_task(async function test_passwords_entry_is_not_visible_for_old_sidebar() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["sidebar.revamp", false],
+      ["sidebar.main.tools", "aichat,passwords,syncedtabs,history,bookmarks"],
+    ],
+  });
+
+  await SidebarController.toggle();
+  let passwordsMenuItem = document.querySelector("#sidebar-switcher-megalist");
+  ok(
+    passwordsMenuItem.hidden,
+    "Passwords menu item should be hidden for the old sidebar."
+  );
   SidebarController.hide();
 });

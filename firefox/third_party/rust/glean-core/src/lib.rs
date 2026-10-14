@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #![allow(clippy::doc_overindented_list_items)]
+#![allow(clippy::large_const_arrays)] // `UNIFFI_META_CONST_UDL_GLEAN`
 #![allow(clippy::significant_drop_in_scrutinee)]
 #![allow(clippy::uninlined_format_args)]
 #![deny(rustdoc::broken_intra_doc_links)]
@@ -18,12 +19,13 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fmt;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
+use std::{fmt, fs};
 
+use chrono::{DateTime, Utc};
 use crossbeam_channel::unbounded;
 use log::LevelFilter;
 use malloc_size_of_derive::MallocSizeOf;
@@ -35,9 +37,12 @@ use metrics::RemoteSettingsConfig;
 mod common_metric_data;
 mod core;
 mod core_metrics;
-mod coverage;
 mod database;
 mod debug;
+#[cfg(feature = "benchmark")]
+#[doc(hidden)]
+pub mod dispatcher;
+#[cfg(not(feature = "benchmark"))]
 mod dispatcher;
 mod error;
 mod error_recording;
@@ -49,8 +54,11 @@ mod internal_pings;
 pub mod metrics;
 pub mod ping;
 mod scheduler;
+pub(crate) mod session;
 pub mod storage;
 mod system;
+#[doc(hidden)]
+pub mod thread;
 pub mod traits;
 pub mod upload;
 mod util;
@@ -58,12 +66,15 @@ mod util;
 #[cfg(all(not(target_os = "android"), not(target_os = "ios")))]
 mod fd_logger;
 
-pub use crate::common_metric_data::{CommonMetricData, DynamicLabelType, Lifetime};
+pub use crate::common_metric_data::{CommonMetricData, Lifetime, MetricLabel};
 pub use crate::core::Glean;
 pub use crate::core_metrics::{AttributionMetrics, ClientInfoMetrics, DistributionMetrics};
+use crate::database::StoredSubmittedPingHandler;
+use crate::dispatcher::is_test_mode;
 pub use crate::error::{Error, ErrorKind, Result};
 pub use crate::error_recording::{test_get_num_recorded_errors, ErrorType};
 pub use crate::histogram::HistogramType;
+use crate::internal_metrics::DataDirectoryInfoObject;
 pub use crate::metrics::labeled::{
     AllowLabeled, LabeledBoolean, LabeledCounter, LabeledCustomDistribution,
     LabeledMemoryDistribution, LabeledMetric, LabeledMetricData, LabeledQuantity, LabeledString,
@@ -75,8 +86,10 @@ pub use crate::metrics::{
     LocalCustomDistribution, LocalMemoryDistribution, LocalTimingDistribution,
     MemoryDistributionMetric, MemoryUnit, NumeratorMetric, ObjectMetric, PingType, QuantityMetric,
     Rate, RateMetric, RecordedEvent, RecordedExperiment, StringListMetric, StringMetric,
-    TextMetric, TimeUnit, TimerId, TimespanMetric, TimingDistributionMetric, UrlMetric, UuidMetric,
+    TestGetValue, TextMetric, TimeUnit, TimerId, TimespanMetric, TimingDistributionMetric,
+    UrlMetric, UuidMetric,
 };
+pub use crate::session::{SessionManager, SessionMetadata, SessionMode};
 pub use crate::upload::{PingRequest, PingUploadTask, UploadResult, UploadTaskAction};
 
 const GLEAN_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -106,6 +119,8 @@ static PRE_INIT_PING_ENABLED: Mutex<Vec<(metrics::PingType, bool)>> = Mutex::new
 /// Keep track of attribution and distribution supplied before Glean is initialized.
 static PRE_INIT_ATTRIBUTION: Mutex<Option<AttributionMetrics>> = Mutex::new(None);
 static PRE_INIT_DISTRIBUTION: Mutex<Option<DistributionMetrics>> = Mutex::new(None);
+static PRE_INIT_ATTRIBUTION_CLEARED: AtomicBool = AtomicBool::new(false);
+static PRE_INIT_DISTRIBUTION_CLEARED: AtomicBool = AtomicBool::new(false);
 
 /// Global singleton of the handles of the glean.init threads.
 /// For joining. For tests.
@@ -158,6 +173,21 @@ pub struct InternalConfiguration {
     pub ping_lifetime_threshold: u64,
     /// After what time to auto-flush. 0 disables it.
     pub ping_lifetime_max_time: u64,
+    /// Maximum number of pending pings on disk. Overrides the default when set.
+    pub max_pending_pings_count: Option<u64>,
+    /// Maximum size in bytes of the pending pings directory. Overrides the default when set.
+    pub max_pending_pings_directory_size: Option<u64>,
+    /// Session management mode. Default: `Auto`.
+    pub session_mode: session::SessionMode,
+    /// The fraction of sessions to sample (0.0–1.0). Default: `1.0` (all sessions).
+    pub session_sample_rate: f64,
+    /// Inactivity timeout in milliseconds for AUTO mode before a new session starts.
+    /// Default: 1 800 000 ms (30 minutes).
+    pub session_inactivity_timeout_ms: u64,
+    /// The number of "events" pings to accelerate each session, plus one.
+    pub events_ping_acceleration_factor: Option<u32>,
+    /// Whether to store submitted pings. Default: false
+    pub enable_store_submitted_pings: bool,
 }
 
 /// How to specify the rate at which pings may be uploaded before they are throttled.
@@ -185,6 +215,12 @@ fn launch_with_glean_mut(callback: impl FnOnce(&mut Glean) + Send + 'static) {
 /// This will panic if called before Glean is initialized.
 fn block_on_dispatcher() {
     dispatcher::block_on_queue()
+}
+
+/// Returns a timestamp corresponding to "now" with millisecond precision, awake time only.
+pub fn get_awake_timestamp_ms() -> u64 {
+    const NANOS_PER_MILLI: u64 = 1_000_000;
+    zeitstempel::now_awake() / NANOS_PER_MILLI
 }
 
 /// Returns a timestamp corresponding to "now" with millisecond precision.
@@ -383,185 +419,220 @@ fn initialize_inner(
         return;
     }
 
-    let init_handle = std::thread::Builder::new()
-        .name("glean.init".into())
-        .spawn(move || {
-            let upload_enabled = cfg.upload_enabled;
-            let trim_data_to_registered_pings = cfg.trim_data_to_registered_pings;
+    let init_handle = thread::spawn("glean.init", move || {
+        let upload_enabled = cfg.upload_enabled;
+        let trim_data_to_registered_pings = cfg.trim_data_to_registered_pings;
 
-            // Set the internal logging level.
-            if let Some(level) = cfg.log_level {
-                log::set_max_level(level)
-            }
+        // Set the internal logging level.
+        if let Some(level) = cfg.log_level {
+            log::set_max_level(level)
+        }
 
-            let glean = match Glean::new(cfg) {
-                Ok(glean) => glean,
-                Err(err) => {
-                    log::error!("Failed to initialize Glean: {}", err);
-                    return;
-                }
-            };
-            if core::setup_glean(glean).is_err() {
+        let data_path_str = cfg.data_path.clone();
+        let data_path = Path::new(&data_path_str);
+        let internal_pings_enabled = cfg.enable_internal_pings;
+        let dir_info = if !is_test_mode() && internal_pings_enabled {
+            collect_directory_info(Path::new(&data_path))
+        } else {
+            None
+        };
+
+        let glean = match Glean::new(cfg) {
+            Ok(glean) => glean,
+            Err(err) => {
+                log::error!("Failed to initialize Glean: {}", err);
                 return;
             }
+        };
+        if core::setup_glean(glean).is_err() {
+            return;
+        }
 
-            log::info!("Glean initialized");
+        log::info!("Glean initialized");
 
-            setup_state(State {
-                client_info,
-                callbacks,
-            });
+        core::with_glean(|glean| {
+            glean.health_metrics.init_count.add_sync(glean, 1);
+        });
 
-            let mut is_first_run = false;
-            let mut dirty_flag = false;
-            let mut pings_submitted = false;
-            core::with_glean_mut(|glean| {
-                // The debug view tag might have been set before initialize,
-                // get the cached value and set it.
-                let debug_tag = PRE_INIT_DEBUG_VIEW_TAG.lock().unwrap();
-                if !debug_tag.is_empty() {
-                    glean.set_debug_view_tag(&debug_tag);
-                }
+        setup_state(State {
+            client_info,
+            callbacks,
+        });
 
-                // The log pings debug option might have been set before initialize,
-                // get the cached value and set it.
-                let log_pigs = PRE_INIT_LOG_PINGS.load(Ordering::SeqCst);
-                if log_pigs {
-                    glean.set_log_pings(log_pigs);
-                }
+        let mut is_first_run = false;
+        let mut dirty_flag = false;
+        let mut pings_submitted = false;
+        core::with_glean_mut(|glean| {
+            // The debug view tag might have been set before initialize,
+            // get the cached value and set it.
+            let debug_tag = PRE_INIT_DEBUG_VIEW_TAG.lock().unwrap();
+            if !debug_tag.is_empty() {
+                glean.set_debug_view_tag(&debug_tag);
+            }
 
-                // The source tags might have been set before initialize,
-                // get the cached value and set them.
-                let source_tags = PRE_INIT_SOURCE_TAGS.lock().unwrap();
-                if !source_tags.is_empty() {
-                    glean.set_source_tags(source_tags.to_vec());
-                }
+            // The log pings debug option might have been set before initialize,
+            // get the cached value and set it.
+            let log_pigs = PRE_INIT_LOG_PINGS.load(Ordering::SeqCst);
+            if log_pigs {
+                glean.set_log_pings(log_pigs);
+            }
 
-                // Get the current value of the dirty flag so we know whether to
-                // send a dirty startup baseline ping below.  Immediately set it to
-                // `false` so that dirty startup pings won't be sent if Glean
-                // initialization does not complete successfully.
-                dirty_flag = glean.is_dirty_flag_set();
-                glean.set_dirty_flag(false);
+            // The source tags might have been set before initialize,
+            // get the cached value and set them.
+            let source_tags = PRE_INIT_SOURCE_TAGS.lock().unwrap();
+            if !source_tags.is_empty() {
+                glean.set_source_tags(source_tags.to_vec());
+            }
 
-                // Perform registration of pings that were attempted to be
-                // registered before init.
-                let pings = PRE_INIT_PING_REGISTRATION.lock().unwrap();
-                for ping in pings.iter() {
-                    glean.register_ping_type(ping);
-                }
-                let pings = PRE_INIT_PING_ENABLED.lock().unwrap();
-                for (ping, enabled) in pings.iter() {
-                    glean.set_ping_enabled(ping, *enabled);
-                }
+            // Get the current value of the dirty flag so we know whether to
+            // send a dirty startup baseline ping below.  Immediately set it to
+            // `false` so that dirty startup pings won't be sent if Glean
+            // initialization does not complete successfully.
+            dirty_flag = glean.is_dirty_flag_set();
+            glean.set_dirty_flag(false);
 
-                // The attribution and distribution might have been set before initialize,
-                // take the cached values and set them.
-                if let Some(attribution) = PRE_INIT_ATTRIBUTION.lock().unwrap().take() {
-                    glean.update_attribution(attribution);
-                }
-                if let Some(distribution) = PRE_INIT_DISTRIBUTION.lock().unwrap().take() {
-                    glean.update_distribution(distribution);
-                }
+            // Session crash recovery: if the dirty flag was set, the previous
+            // run ended abnormally. Emit a synthetic session_end for any
+            // persisted session.
+            if dirty_flag {
+                glean.recover_session_on_dirty_flag();
+            }
 
-                // If this is the first time ever the Glean SDK runs, make sure to set
-                // some initial core metrics in case we need to generate early pings.
-                // The next times we start, we would have them around already.
-                is_first_run = glean.is_first_run();
-                if is_first_run {
-                    let state = global_state().lock().unwrap();
-                    initialize_core_metrics(glean, &state.client_info);
-                }
+            // Perform registration of pings that were attempted to be
+            // registered before init.
+            let pings = PRE_INIT_PING_REGISTRATION.lock().unwrap();
+            for ping in pings.iter() {
+                glean.register_ping_type(ping);
+            }
+            let pings = PRE_INIT_PING_ENABLED.lock().unwrap();
+            for (ping, enabled) in pings.iter() {
+                glean.set_ping_enabled(ping, *enabled);
+            }
 
-                // Deal with any pending events so we can start recording new ones
-                pings_submitted = glean.on_ready_to_submit_pings(trim_data_to_registered_pings);
-            });
+            // The attribution and distribution might have been cleared or set before initialize,
+            // clear if necessary, and then take the cached values and set them.
+            let clear_attribution = PRE_INIT_ATTRIBUTION_CLEARED.load(Ordering::SeqCst);
+            if clear_attribution {
+                glean.clear_attribution();
+            }
+            let clear_distribution = PRE_INIT_DISTRIBUTION_CLEARED.load(Ordering::SeqCst);
+            if clear_distribution {
+                glean.clear_distribution();
+            }
+            if let Some(attribution) = PRE_INIT_ATTRIBUTION.lock().unwrap().take() {
+                glean.update_attribution(attribution);
+            }
+            if let Some(distribution) = PRE_INIT_DISTRIBUTION.lock().unwrap().take() {
+                glean.update_distribution(distribution);
+            }
 
-            {
+            // If this is the first time ever the Glean SDK runs, make sure to set
+            // some initial core metrics in case we need to generate early pings.
+            // The next times we start, we would have them around already.
+            is_first_run = glean.is_first_run();
+            if is_first_run {
                 let state = global_state().lock().unwrap();
-                // We need to kick off upload in these cases:
-                // 1. Pings were submitted through Glean and it is ready to upload those pings;
-                // 2. Upload is disabled, to upload a possible deletion-request ping.
-                if pings_submitted || !upload_enabled {
+                initialize_core_metrics(glean, &state.client_info);
+            }
+
+            // Deal with any pending events so we can start recording new ones
+            pings_submitted = glean.on_ready_to_submit_pings(trim_data_to_registered_pings);
+        });
+
+        {
+            let state = global_state().lock().unwrap();
+            // We need to kick off upload in these cases:
+            // 1. Pings were submitted through Glean and it is ready to upload those pings;
+            // 2. Upload is disabled, to upload a possible deletion-request ping.
+            if pings_submitted || !upload_enabled {
+                if let Err(e) = state.callbacks.trigger_upload() {
+                    log::error!("Triggering upload failed. Error: {}", e);
+                }
+            }
+        }
+
+        core::with_glean(|glean| {
+            // Start the MPS if its handled within Rust.
+            glean.start_metrics_ping_scheduler();
+        });
+
+        // The metrics ping scheduler might _synchronously_ submit a ping
+        // so that it runs before we clear application-lifetime metrics further below.
+        // For that it needs access to the `Glean` object.
+        // Thus we need to unlock that by leaving the context above,
+        // then re-lock it afterwards.
+        // That's safe because user-visible functions will be queued and thus not execute until
+        // we unblock later anyway.
+        {
+            let state = global_state().lock().unwrap();
+
+            // Set up information and scheduling for Glean owned pings. Ideally, the "metrics"
+            // ping startup check should be performed before any other ping, since it relies
+            // on being dispatched to the API context before any other metric.
+            if state.callbacks.start_metrics_ping_scheduler() {
+                if let Err(e) = state.callbacks.trigger_upload() {
+                    log::error!("Triggering upload failed. Error: {}", e);
+                }
+            }
+        }
+
+        core::with_glean_mut(|glean| {
+            let state = global_state().lock().unwrap();
+
+            // Check if the "dirty flag" is set. That means the product was probably
+            // force-closed. If that's the case, submit a 'baseline' ping with the
+            // reason "dirty_startup". We only do that from the second run.
+            if !is_first_run && dirty_flag {
+                // The `submit_ping_by_name_sync` function cannot be used, otherwise
+                // startup will cause a dead-lock, since that function requests a
+                // write lock on the `glean` object.
+                // Note that unwrapping below is safe: the function will return an
+                // `Ok` value for a known ping.
+                if glean.submit_ping_by_name("baseline", Some("dirty_startup")) {
                     if let Err(e) = state.callbacks.trigger_upload() {
                         log::error!("Triggering upload failed. Error: {}", e);
                     }
                 }
             }
 
-            core::with_glean(|glean| {
-                // Start the MPS if its handled within Rust.
-                glean.start_metrics_ping_scheduler();
-            });
-
-            // The metrics ping scheduler might _synchronously_ submit a ping
-            // so that it runs before we clear application-lifetime metrics further below.
-            // For that it needs access to the `Glean` object.
-            // Thus we need to unlock that by leaving the context above,
-            // then re-lock it afterwards.
-            // That's safe because user-visible functions will be queued and thus not execute until
-            // we unblock later anyway.
-            {
-                let state = global_state().lock().unwrap();
-
-                // Set up information and scheduling for Glean owned pings. Ideally, the "metrics"
-                // ping startup check should be performed before any other ping, since it relies
-                // on being dispatched to the API context before any other metric.
-                if state.callbacks.start_metrics_ping_scheduler() {
-                    if let Err(e) = state.callbacks.trigger_upload() {
-                        log::error!("Triggering upload failed. Error: {}", e);
-                    }
-                }
+            // From the second time we run, after all startup pings are generated,
+            // make sure to clear `lifetime: application` metrics and set them again.
+            // Any new value will be sent in newly generated pings after startup.
+            if !is_first_run {
+                glean.clear_application_lifetime_metrics();
+                initialize_core_metrics(glean, &state.client_info);
             }
+        });
 
-            core::with_glean_mut(|glean| {
-                let state = global_state().lock().unwrap();
-
-                // Check if the "dirty flag" is set. That means the product was probably
-                // force-closed. If that's the case, submit a 'baseline' ping with the
-                // reason "dirty_startup". We only do that from the second run.
-                if !is_first_run && dirty_flag {
-                    // The `submit_ping_by_name_sync` function cannot be used, otherwise
-                    // startup will cause a dead-lock, since that function requests a
-                    // write lock on the `glean` object.
-                    // Note that unwrapping below is safe: the function will return an
-                    // `Ok` value for a known ping.
-                    if glean.submit_ping_by_name("baseline", Some("dirty_startup")) {
-                        if let Err(e) = state.callbacks.trigger_upload() {
-                            log::error!("Triggering upload failed. Error: {}", e);
-                        }
-                    }
-                }
-
-                // From the second time we run, after all startup pings are generated,
-                // make sure to clear `lifetime: application` metrics and set them again.
-                // Any new value will be sent in newly generated pings after startup.
-                if !is_first_run {
-                    glean.clear_application_lifetime_metrics();
-                    initialize_core_metrics(glean, &state.client_info);
-                }
-            });
-
-            // Signal Dispatcher that init is complete
-            // bug 1839433: It is important that this happens after any init tasks
-            // that shutdown() depends on. At time of writing that's only setting up
-            // the global Glean, but it is probably best to flush the preinit queue
-            // as late as possible in the glean.init thread.
-            match dispatcher::flush_init() {
-                Ok(task_count) if task_count > 0 => {
-                    core::with_glean(|glean| {
-                        glean_metrics::error::preinit_tasks_overflow
-                            .add_sync(glean, task_count as i32);
-                    });
-                }
-                Ok(_) => {}
-                Err(err) => log::error!("Unable to flush the preinit queue: {}", err),
+        // Signal Dispatcher that init is complete
+        // bug 1839433: It is important that this happens after any init tasks
+        // that shutdown() depends on. At time of writing that's only setting up
+        // the global Glean, but it is probably best to flush the preinit queue
+        // as late as possible in the glean.init thread.
+        match dispatcher::flush_init() {
+            Ok(task_count) if task_count > 0 => {
+                core::with_glean(|glean| {
+                    glean_metrics::error::preinit_tasks_overflow.add_sync(glean, task_count as i32);
+                });
             }
+            Ok(_) => {}
+            Err(err) => log::error!("Unable to flush the preinit queue: {}", err),
+        }
+
+        if !is_test_mode() && internal_pings_enabled {
+            // Now that Glean is initialized, we can capture the directory info from the pre_init phase and send it in
+            // a health ping with reason "pre_init".
+            record_dir_info_and_submit_health_ping(dir_info, "pre_init");
 
             let state = global_state().lock().unwrap();
-            state.callbacks.initialize_finished();
-        })
-        .expect("Failed to spawn Glean's init thread");
+            if let Err(e) = state.callbacks.trigger_upload() {
+                log::error!("Triggering upload failed. Error: {}", e);
+            }
+        }
+        let state = global_state().lock().unwrap();
+        state.callbacks.initialize_finished();
+    })
+    .expect("Failed to spawn Glean's init thread");
 
     // For test purposes, store the glean init thread's JoinHandle.
     INIT_HANDLES.lock().unwrap().push(init_handle);
@@ -575,6 +646,14 @@ fn initialize_inner(
     if dispatcher::global::is_test_mode() {
         join_init();
     }
+}
+
+/// Return the heap usage of the `Glean` object and all descendant heap-allocated structures.
+///
+/// Value is in bytes.
+pub fn alloc_size(ops: &mut malloc_size_of::MallocSizeOfOps) -> usize {
+    use malloc_size_of::MallocSizeOf;
+    core::with_opt_glean(|glean| glean.size_of(ops)).unwrap_or(0)
 }
 
 /// TEST ONLY FUNCTION
@@ -597,18 +676,16 @@ fn uploader_shutdown() {
     let timer_id = core::with_glean(|glean| glean.additional_metrics.shutdown_wait.start_sync());
     let (tx, rx) = unbounded();
 
-    let handle = thread::Builder::new()
-        .name("glean.shutdown".to_string())
-        .spawn(move || {
-            let state = global_state().lock().unwrap();
-            if let Err(e) = state.callbacks.shutdown() {
-                log::error!("Shutdown callback failed: {e:?}");
-            }
+    let handle = thread::spawn("glean.shutdown", move || {
+        let state = global_state().lock().unwrap();
+        if let Err(e) = state.callbacks.shutdown() {
+            log::error!("Shutdown callback failed: {e:?}");
+        }
 
-            // Best-effort sending. The other side might have timed out already.
-            let _ = tx.send(()).ok();
-        })
-        .expect("Unable to spawn thread to wait on shutdown");
+        // Best-effort sending. The other side might have timed out already.
+        let _ = tx.send(()).ok();
+    })
+    .expect("Unable to spawn thread to wait on shutdown");
 
     // TODO: 30 seconds? What's a good default here? Should this be configurable?
     // Reasoning:
@@ -619,7 +696,7 @@ fn uploader_shutdown() {
     //   * We don't know how long uploads take until we get data from bug 1814592.
     let result = rx.recv_timeout(Duration::from_secs(30));
 
-    let stop_time = time::precise_time_ns();
+    let stop_time = zeitstempel::now_awake();
     core::with_glean(|glean| {
         glean
             .additional_metrics
@@ -695,7 +772,7 @@ pub fn shutdown() {
     let blocked = dispatcher::block_on_queue_timeout(Duration::from_secs(10));
 
     // Always record the dispatcher wait, regardless of the timeout.
-    let stop_time = time::precise_time_ns();
+    let stop_time = zeitstempel::now_awake();
     core::with_glean(|glean| {
         glean
             .additional_metrics
@@ -716,10 +793,22 @@ pub fn shutdown() {
     uploader_shutdown();
 
     // Be sure to call this _after_ draining the dispatcher
-    core::with_glean(|glean| {
+    core::with_glean_mut(|glean| {
         if let Err(e) = glean.persist_ping_lifetime_data() {
-            log::error!("Can't persist ping lifetime data: {:?}", e);
+            log::info!("Can't persist ping lifetime data: {:?}", e);
         }
+
+        #[cfg(feature = "sqlite")]
+        if let Some(database) = &glean.data_store {
+            if let Err(e) = database.cleanup_submitted_pings(None) {
+                log::info!("Could not clean up submitted_pings table: {:?}", e);
+            }
+            if let Err(e) = database.run_maintenance(false) {
+                log::info!("Can't run database maintenance on shutdown: {:?}", e);
+            }
+        }
+
+        glean.close_db();
     });
 }
 
@@ -766,7 +855,7 @@ fn initialize_core_metrics(glean: &Glean, client_info: &ClientInfoMetrics) {
     }
 }
 
-/// Checks if [`initialize`] was ever called.
+/// Checks if [`glean_initialize`] was ever called.
 ///
 /// # Returns
 ///
@@ -884,6 +973,103 @@ pub fn glean_set_collection_enabled(enabled: bool) {
     glean_set_upload_enabled(enabled)
 }
 
+/// Sets whether Glean should store submitted pings or not.
+pub fn glean_set_store_submitted_pings_enabled(enabled: bool) {
+    if !was_initialize_called() {
+        return;
+    }
+
+    launch_with_glean_mut(move |glean| {
+        glean.store_submitted_pings_enabled = enabled;
+    });
+}
+
+/// A submitted ping that has been stored by Glean.
+#[derive(Clone)]
+pub struct SubmittedPing {
+    /// The document ID (unique identifier)
+    pub document_id: String,
+    /// The ping's name
+    pub ping: String,
+    /// RFC3339 datetime string
+    pub submitted_date: String,
+    /// Optional RFC3339 datetime string
+    pub uploaded_date: Option<String>,
+    /// Whether the upload failed unrecoverably or not
+    pub upload_failed: Option<String>,
+    /// The ping's payload
+    pub payload: Option<JsonValue>,
+}
+
+impl SubmittedPing {
+    /// Returns the submitted date as a UTC DateTime.
+    pub fn submitted_date(&self) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(&self.submitted_date)
+            .map(|d| d.to_utc())
+            .unwrap()
+    }
+
+    /// Returns the uploaded date as an optional UTC DateTime.
+    pub fn uploaded_date(&self) -> Option<DateTime<Utc>> {
+        self.uploaded_date.as_ref().map(|uploaded_date| {
+            DateTime::parse_from_rfc3339(uploaded_date)
+                .map(|d| d.to_utc())
+                .unwrap()
+        })
+    }
+
+    /// Returns the upload failed date as an optional UTC DateTime.
+    pub fn upload_failed(&self) -> Option<DateTime<Utc>> {
+        self.upload_failed.as_ref().map(|upload_failed| {
+            DateTime::parse_from_rfc3339(upload_failed)
+                .map(|d| d.to_utc())
+                .unwrap()
+        })
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl From<database::sqlite::SubmittedPing> for SubmittedPing {
+    fn from(value: database::sqlite::SubmittedPing) -> Self {
+        SubmittedPing {
+            document_id: value.document_id.clone(),
+            ping: value.ping.clone(),
+            submitted_date: value.submitted_date.0.to_rfc3339(),
+            uploaded_date: value.uploaded_date.as_ref().map(|d| d.0.to_rfc3339()),
+            upload_failed: value.upload_failed.as_ref().map(|d| d.0.to_rfc3339()),
+            payload: value.payload(),
+        }
+    }
+}
+
+/// Blocks and awaits the Glean Dispatcher before returning a Vec containing the stored pings.
+pub fn glean_get_all_stored_submitted_pings() -> Vec<SubmittedPing> {
+    block_on_dispatcher();
+    core::with_glean(|glean| glean.storage().get_all_submitted_pings())
+}
+
+/// Blocks and awaits the Glean Dispatcher before returning a Vec containing the stored pings with the supplied name.
+///
+/// # Arguments
+///
+/// * `ping` - The name of the pings that should be returned.
+pub fn glean_get_stored_submitted_pings_by_name(ping: String) -> Vec<SubmittedPing> {
+    block_on_dispatcher();
+    core::with_glean(|glean| glean.storage().get_submitted_pings_by_name(&ping))
+}
+
+/// Clears the stored submitted pings.
+pub fn glean_clear_stored_submitted_pings() {
+    launch_with_glean(|glean| {
+        if let Err(e) = glean
+            .storage()
+            .cleanup_submitted_pings(Some(chrono::Utc::now()))
+        {
+            log::warn!("Unable to clear stored submitted pings: {:?}", e);
+        }
+    });
+}
+
 /// Enable or disable a ping.
 ///
 /// Disabling a ping causes all data for that ping to be removed from storage
@@ -899,7 +1085,7 @@ pub fn set_ping_enabled(ping: &PingType, enabled: bool) {
     }
 }
 
-/// Register a new [`PingType`](PingType).
+/// Register a new [`PingType`].
 pub(crate) fn register_ping_type(ping: &PingType) {
     // If this happens after Glean.initialize is called (and returns),
     // we dispatch ping registration on the thread pool.
@@ -1156,6 +1342,33 @@ pub fn glean_handle_client_inactive() {
     })
 }
 
+/// Starts a session manually.
+///
+/// Only has effect in `SessionMode::Manual`. Calling this in `Auto` or
+/// `Lifecycle` mode is a no-op to prevent corrupting automatic session state.
+pub fn glean_session_start() {
+    launch_with_glean_mut(|glean| {
+        if glean.session_manager.mode == session::SessionMode::Manual {
+            glean.session_start();
+        }
+    });
+}
+
+/// Ends a session manually.
+///
+/// Only has effect in `SessionMode::Manual`. Calling this in `Auto` or
+/// `Lifecycle` mode is a no-op to prevent corrupting automatic session state.
+///
+/// `reason` is an optional application-provided string attached to the
+/// `glean.session_end` boundary event for downstream analysis.
+pub fn glean_session_end(reason: Option<String>) {
+    launch_with_glean_mut(move |glean| {
+        if glean.session_manager.mode == session::SessionMode::Manual {
+            glean.session_end(reason.as_deref());
+        }
+    });
+}
+
 /// Collect and submit a ping for eventual upload by name.
 pub fn glean_submit_ping_by_name(ping_name: String, reason: Option<String>) {
     dispatcher::launch(|| {
@@ -1240,7 +1453,7 @@ pub fn glean_test_destroy_glean(clear_stores: bool, data_path: Option<String>) {
                 if clear_stores {
                     glean.test_clear_all_stores()
                 }
-                glean.destroy_db()
+                glean.close_db()
             });
         }
 
@@ -1272,6 +1485,17 @@ pub fn glean_set_dirty_flag(new_value: bool) {
     core::with_glean(|glean| glean.set_dirty_flag(new_value))
 }
 
+/// Clears the core attribution data.
+/// Does not clear glean.attribution.ext (if present).
+pub fn glean_clear_attribution() {
+    if was_initialize_called() && core::global_glean().is_some() {
+        core::with_glean(|glean| glean.clear_attribution());
+    } else {
+        PRE_INIT_ATTRIBUTION_CLEARED.store(true, Ordering::SeqCst);
+        _ = PRE_INIT_ATTRIBUTION.lock().unwrap().take()
+    }
+}
+
 /// Updates attribution fields with new values.
 /// AttributionMetrics fields with `None` values will not overwrite older values.
 pub fn glean_update_attribution(attribution: AttributionMetrics) {
@@ -1293,6 +1517,17 @@ pub fn glean_update_attribution(attribution: AttributionMetrics) {
 pub fn glean_test_get_attribution() -> AttributionMetrics {
     join_init();
     core::with_glean(|glean| glean.test_get_attribution())
+}
+
+/// Clears the core distribution data.
+/// Does not clear glean.distribution.ext (if present).
+pub fn glean_clear_distribution() {
+    if was_initialize_called() && core::global_glean().is_some() {
+        core::with_glean(|glean| glean.clear_distribution());
+    } else {
+        PRE_INIT_DISTRIBUTION_CLEARED.store(true, Ordering::SeqCst);
+        _ = PRE_INIT_DISTRIBUTION.lock().unwrap().take()
+    }
 }
 
 /// Updates distribution fields with new values.
@@ -1355,36 +1590,196 @@ pub fn glean_enable_logging_to_fd(fd: u64) {
     }
 }
 
+/// Collects information about the data directories used by FOG.
+fn collect_directory_info(path: &Path) -> Option<serde_json::Value> {
+    // List of child directories to check
+    let subdirs = ["db", "events", "pending_pings"];
+    let mut directories_info: crate::internal_metrics::DataDirectoryInfoObject =
+        DataDirectoryInfoObject::with_capacity(subdirs.len());
+
+    for subdir in subdirs.iter() {
+        let dir_path = path.join(subdir);
+
+        // Initialize a DataDirectoryInfoObjectItem for each directory
+        let mut directory_info = crate::internal_metrics::DataDirectoryInfoObjectItem {
+            dir_name: Some(subdir.to_string()),
+            dir_exists: None,
+            dir_created: None,
+            dir_modified: None,
+            file_count: None,
+            files: Vec::new(),
+            error_message: None,
+        };
+
+        // Check if the directory exists
+        if dir_path.is_dir() {
+            directory_info.dir_exists = Some(true);
+
+            // Get directory metadata
+            match fs::metadata(&dir_path) {
+                Ok(metadata) => {
+                    if let Ok(created) = metadata.created() {
+                        directory_info.dir_created = Some(
+                            created
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or(Duration::ZERO)
+                                .as_secs() as i64,
+                        );
+                    }
+                    if let Ok(modified) = metadata.modified() {
+                        directory_info.dir_modified = Some(
+                            modified
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or(Duration::ZERO)
+                                .as_secs() as i64,
+                        );
+                    }
+                }
+                Err(error) => {
+                    let msg = format!("Unable to get metadata: {}", error.kind());
+                    directory_info.error_message = Some(msg.clone());
+                    log::warn!("{}", msg);
+                    continue;
+                }
+            }
+
+            // Read the directory's contents
+            let mut file_count = 0;
+            let entries = match fs::read_dir(&dir_path) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    let msg = format!("Unable to read subdir: {}", error.kind());
+                    directory_info.error_message = Some(msg.clone());
+                    log::warn!("{}", msg);
+                    continue;
+                }
+            };
+            for entry in entries {
+                directory_info.files.push(
+                    crate::internal_metrics::DataDirectoryInfoObjectItemItemFilesItem {
+                        file_name: None,
+                        file_created: None,
+                        file_modified: None,
+                        file_size: None,
+                        error_message: None,
+                    },
+                );
+                // Safely get and unwrap the file_info we just pushed so we can populate it
+                let file_info = directory_info.files.last_mut().unwrap();
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        let msg = format!("Unable to read file: {}", error.kind());
+                        file_info.error_message = Some(msg.clone());
+                        log::warn!("{}", msg);
+                        continue;
+                    }
+                };
+                let file_name = match entry.file_name().into_string() {
+                    Ok(file_name) => file_name,
+                    _ => {
+                        let msg = "Unable to convert file name to string".to_string();
+                        file_info.error_message = Some(msg.clone());
+                        log::warn!("{}", msg);
+                        continue;
+                    }
+                };
+                let metadata = match entry.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        let msg = format!("Unable to read file metadata: {}", error.kind());
+                        file_info.file_name = Some(file_name);
+                        file_info.error_message = Some(msg.clone());
+                        log::warn!("{}", msg);
+                        continue;
+                    }
+                };
+
+                // Check if the entry is a file
+                if metadata.is_file() {
+                    file_count += 1;
+
+                    // Collect file details
+                    file_info.file_name = Some(file_name);
+                    file_info.file_created = Some(
+                        metadata
+                            .created()
+                            .unwrap_or(UNIX_EPOCH)
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or(Duration::ZERO)
+                            .as_secs() as i64,
+                    );
+                    file_info.file_modified = Some(
+                        metadata
+                            .modified()
+                            .unwrap_or(UNIX_EPOCH)
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or(Duration::ZERO)
+                            .as_secs() as i64,
+                    );
+                    file_info.file_size = Some(metadata.len() as i64);
+                } else {
+                    let msg = format!("Skipping non-file entry: {}", file_name.clone());
+                    file_info.file_name = Some(file_name);
+                    file_info.error_message = Some(msg.clone());
+                    log::warn!("{}", msg);
+                }
+            }
+
+            directory_info.file_count = Some(file_count as i64);
+        } else {
+            directory_info.dir_exists = Some(false);
+        }
+
+        // Add the directory info to the final collection
+        directories_info.push(directory_info);
+    }
+
+    if let Ok(directories_info_json) = serde_json::to_value(directories_info) {
+        Some(directories_info_json)
+    } else {
+        log::error!("Failed to serialize data directory info");
+        None
+    }
+}
+
+fn record_dir_info_and_submit_health_ping(dir_info: Option<serde_json::Value>, reason: &str) {
+    core::with_glean(|glean| {
+        glean
+            .health_metrics
+            .data_directory_info
+            .set_sync(glean, dir_info.unwrap_or(serde_json::json!({})));
+        glean.internal_pings.health.submit_sync(glean, Some(reason));
+    });
+}
+
 /// Unused function. Not used on Android or iOS.
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub fn glean_enable_logging_to_fd(_fd: u64) {
     // intentionally left empty
 }
 
-#[allow(missing_docs)]
-// uniffi-generated code should not be checked.
-#[allow(clippy::all)]
-mod ffi {
-    use super::*;
-    uniffi::include_scaffolding!("glean");
+// UNIFFI - START
 
-    type CowString = Cow<'static, str>;
+uniffi::include_scaffolding!("glean");
 
-    uniffi::custom_type!(CowString, String, {
-        remote,
-        lower: |s| s.into_owned(),
-        try_lift: |s| Ok(Cow::from(s))
-    });
+type CowString = Cow<'static, str>;
 
-    type JsonValue = serde_json::Value;
+uniffi::custom_type!(CowString, String, {
+    remote,
+    lower: |s| s.into_owned(),
+    try_lift: |s| Ok(Cow::from(s))
+});
 
-    uniffi::custom_type!(JsonValue, String, {
-        remote,
-        lower: |s| serde_json::to_string(&s).unwrap(),
-        try_lift: |s| Ok(serde_json::from_str(&s)?)
-    });
-}
-pub use ffi::*;
+type JsonValue = serde_json::Value;
+
+uniffi::custom_type!(JsonValue, String, {
+    remote,
+    lower: |s| serde_json::to_string(&s).unwrap(),
+    try_lift: |s| Ok(serde_json::from_str(&s)?)
+});
+
+// UNIFFI - END
 
 // Split unit tests to a separate file, to reduce the file of this one.
 #[cfg(test)]

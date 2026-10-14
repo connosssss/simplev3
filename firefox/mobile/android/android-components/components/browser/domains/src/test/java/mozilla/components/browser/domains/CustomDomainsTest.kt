@@ -6,7 +6,6 @@ package mozilla.components.browser.domains
 
 import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import mozilla.components.support.test.robolectric.testContext
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -18,13 +17,9 @@ class CustomDomainsTest {
 
     @Before
     fun setUp() {
-        testContext.getSharedPreferences("custom_autocomplete", Context.MODE_PRIVATE)
-            .edit()
-            .clear()
-            .apply()
+        testContext.getSharedPreferences("custom_autocomplete", Context.MODE_PRIVATE).edit().clear().apply()
     }
 
-    @ExperimentalCoroutinesApi
     @Test
     fun customListIsEmptyByDefault() {
         val domains = CustomDomains.load(testContext)

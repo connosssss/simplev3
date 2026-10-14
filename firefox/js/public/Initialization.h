@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -197,7 +196,7 @@ extern JS_PUBLIC_API void JS_ShutDown(void);
  */
 extern JS_PUBLIC_API void JS_FrontendOnlyShutDown(void);
 
-#if defined(ENABLE_WASM_SIMD) && \
+#if defined(ENABLE_JIT_SIMD) && \
     (defined(JS_CODEGEN_X64) || defined(JS_CODEGEN_X86))
 namespace JS {
 // Enable support for AVX instructions in the JIT/Wasm backend on x86/x64

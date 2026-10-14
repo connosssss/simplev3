@@ -4,7 +4,10 @@
 
 package mozilla.components.feature.toolbar
 
+import junit.framework.TestCase.assertTrue
+import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.toolbar.Toolbar
+import mozilla.components.concept.toolbar.fake.FakeToolbar
 import mozilla.components.support.test.mock
 import org.junit.Test
 import org.mockito.Mockito.verify
@@ -13,23 +16,24 @@ class ToolbarFeatureTest {
 
     @Test
     fun `when app is backgrounded, toolbar onStop method is called`() {
-        val toolbar: Toolbar = mock()
-        val toolbarFeature = ToolbarFeature(toolbar, store = mock(), loadUrlUseCase = mock())
+        var onStopCalled = false
+        val toolbar: Toolbar = FakeToolbar(onStopListener = { onStopCalled = true })
+        val toolbarFeature = ToolbarFeature(toolbar, store = BrowserStore(), loadUrlUseCase = mock())
 
         toolbarFeature.stop()
-
-        verify(toolbar).onStop()
+        assertTrue(onStopCalled)
     }
 
     @Test
     fun `GIVEN ToolbarFeature, WHEN start() is called THEN it should call controller#start()`() {
         val mockedController: ToolbarBehaviorController = mock()
-        val feature = ToolbarFeature(mock(), mock(), mock()).apply {
-            controller = mockedController
-            // mock other dependencies to limit real code running and error-ing.
-            presenter = mock()
-            interactor = mock()
-        }
+        val feature =
+            ToolbarFeature(mock(), BrowserStore(), mock()).apply {
+                controller = mockedController
+                // mock other dependencies to limit real code running and error-ing.
+                presenter = mock()
+                interactor = mock()
+            }
 
         feature.start()
 
@@ -39,11 +43,12 @@ class ToolbarFeatureTest {
     @Test
     fun `GIVEN ToolbarFeature, WHEN start() is called THEN it should call presenter#start()`() {
         val mockedPresenter: ToolbarPresenter = mock()
-        val feature = ToolbarFeature(mock(), mock(), mock()).apply {
-            controller = mock()
-            presenter = mockedPresenter
-            interactor = mock()
-        }
+        val feature =
+            ToolbarFeature(mock(), BrowserStore(), mock()).apply {
+                controller = mock()
+                presenter = mockedPresenter
+                interactor = mock()
+            }
 
         feature.start()
 
@@ -53,11 +58,12 @@ class ToolbarFeatureTest {
     @Test
     fun `GIVEN ToolbarFeature, WHEN start() is called THEN it should call interactor#start()`() {
         val mockedInteractor: ToolbarInteractor = mock()
-        val feature = ToolbarFeature(mock(), mock(), mock()).apply {
-            controller = mock()
-            presenter = mock()
-            interactor = mockedInteractor
-        }
+        val feature =
+            ToolbarFeature(mock(), BrowserStore(), mock()).apply {
+                controller = mock()
+                presenter = mock()
+                interactor = mockedInteractor
+            }
 
         feature.start()
 
@@ -67,9 +73,10 @@ class ToolbarFeatureTest {
     @Test
     fun `GIVEN ToolbarFeature, WHEN stop() is called THEN it should call controller#stop()`() {
         val mockedController: ToolbarBehaviorController = mock()
-        val feature = ToolbarFeature(mock(), mock(), mock()).apply {
-            controller = mockedController
-        }
+        val feature =
+            ToolbarFeature(mock(), BrowserStore(), mock()).apply {
+                controller = mockedController
+            }
 
         feature.stop()
 
@@ -79,9 +86,10 @@ class ToolbarFeatureTest {
     @Test
     fun `GIVEN ToolbarFeature, WHEN stop() is called THEN it should call presenter#stop()`() {
         val mockedPresenter: ToolbarPresenter = mock()
-        val feature = ToolbarFeature(mock(), mock(), mock()).apply {
-            presenter = mockedPresenter
-        }
+        val feature =
+            ToolbarFeature(mock(), BrowserStore(), mock()).apply {
+                presenter = mockedPresenter
+            }
 
         feature.stop()
 
@@ -91,7 +99,7 @@ class ToolbarFeatureTest {
     @Test
     fun `GIVEN ToolbarFeature, WHEN onBackPressed() is called THEN it should call toolbar#onBackPressed()`() {
         val toolbar: Toolbar = mock()
-        val feature = ToolbarFeature(toolbar, store = mock(), loadUrlUseCase = mock())
+        val feature = ToolbarFeature(toolbar, store = BrowserStore(), loadUrlUseCase = mock())
 
         feature.onBackPressed()
 

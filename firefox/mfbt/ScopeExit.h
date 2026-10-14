@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -109,16 +107,16 @@ class MOZ_STACK_CLASS ScopeExit {
 
   void release() { mExecuteOnDestruction = false; }
 
- private:
   explicit ScopeExit(const ScopeExit&) = delete;
   ScopeExit& operator=(const ScopeExit&) = delete;
   ScopeExit& operator=(ScopeExit&&) = delete;
 };
 
 template <typename ExitFunction>
+  requires(std::is_rvalue_reference_v<ExitFunction &&>)
 [[nodiscard]] ScopeExit<ExitFunction> MakeScopeExit(
     ExitFunction&& exitFunction) {
-  return ScopeExit<ExitFunction>(std::move(exitFunction));
+  return ScopeExit<ExitFunction>(std::forward<ExitFunction>(exitFunction));
 }
 
 } /* namespace mozilla */

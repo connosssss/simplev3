@@ -4,7 +4,6 @@
 
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
-import { SearchWidgetTracker } from "resource:///modules/SearchWidgetTracker.sys.mjs";
 
 const lazy = {};
 
@@ -12,9 +11,11 @@ ChromeUtils.defineESModuleGetters(lazy, {
   AddonManager: "resource://gre/modules/AddonManager.sys.mjs",
   AddonManagerPrivate: "resource://gre/modules/AddonManager.sys.mjs",
   BrowserUsageTelemetry: "resource:///modules/BrowserUsageTelemetry.sys.mjs",
-  CustomizableWidgets: "resource:///modules/CustomizableWidgets.sys.mjs",
+  CustomizableWidgets:
+    "moz-src:///browser/components/customizableui/CustomizableWidgets.sys.mjs",
   HomePage: "resource:///modules/HomePage.sys.mjs",
-  PanelMultiView: "resource:///modules/PanelMultiView.sys.mjs",
+  PanelMultiView:
+    "moz-src:///browser/components/customizableui/PanelMultiView.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   ShortcutUtils: "resource://gre/modules/ShortcutUtils.sys.mjs",
 });
@@ -41,6 +42,7 @@ const kPrefCustomizationDebug = "browser.uiCustomization.debug";
 const kPrefDrawInTitlebar = "browser.tabs.inTitlebar";
 const kPrefUIDensity = "browser.uidensity";
 const kPrefAutoTouchMode = "browser.touchmode.auto";
+const kPrefNovaEnabled = "browser.nova.enabled";
 const kPrefAutoHideDownloadsButton = "browser.download.autohideButton";
 const kPrefProtonToolbarVersion = "browser.proton.toolbar.version";
 const kPrefHomeButtonUsed = "browser.engagement.home-button.has-used";
@@ -66,7 +68,7 @@ const kSubviewEvents = ["ViewShowing", "ViewHiding"];
  * The current version. We can use this to auto-add new default widgets as necessary.
  * (would be const but isn't because of testing purposes)
  */
-var kVersion = 23;
+var kVersion = 28;
 
 /**
  * Buttons removed from built-ins by version they were removed. kVersion must be
@@ -181,7 +183,9 @@ var gUIStateBeforeReset = {
   drawInTitlebar: null,
   currentTheme: null,
   uiDensity: null,
+  uiDensityHadUserValue: null,
   autoTouchMode: null,
+  autoTouchModeHadUserValue: null,
   sidebarPositionStart: null,
 };
 
@@ -231,6 +235,9 @@ XPCOMUtils.defineLazyPreferenceGetter(
           : undefined // Adds to the end of navbar if position_start is false.
       );
     }
+    // Ensure CUI knows to not restore this button if the user later removes it
+    let prefId = "browser.toolbarbuttons.introduced.sidebar-button";
+    Services.prefs.setBoolPref(prefId, true);
   }
 );
 
@@ -259,6 +266,28 @@ XPCOMUtils.defineLazyPreferenceGetter(
   "verticalPlacementsPref",
   kPrefCustomizationNavBarWhenVerticalTabs,
   ""
+);
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "ippEnabled",
+  "browser.ipProtection.enabled",
+  false,
+  (_pref, _oldVal, newVal) => {
+    if (!newVal) {
+      return;
+    }
+    let navbarPlacements = gAreas
+      .get(CustomizableUI.AREA_NAVBAR)
+      .get("defaultPlacements");
+
+    // If IPP wasn't available when the navbar area was registered,
+    // we need to add the buttons default placement now.
+    if (navbarPlacements && !navbarPlacements.includes("ipprotection-button")) {
+      let index = navbarPlacements.indexOf("fxa-toolbar-menu-button");
+      navbarPlacements.splice(index, 0, "ipprotection-button");
+    }
+  }
 );
 
 ChromeUtils.defineLazyGetter(lazy, "log", () => {
@@ -290,6 +319,8 @@ var CustomizableUIInternal = {
    */
   initialize() {
     lazy.log.debug("Initializing");
+
+    this._setAutoTouchModeDefault();
 
     lazy.AddonManagerPrivate.databaseReady.then(async () => {
       lazy.AddonManager.addAddonListener(this);
@@ -340,6 +371,7 @@ var CustomizableUIInternal = {
       "spring",
       "downloads-button",
       AppConstants.MOZ_DEV_EDITION ? "developer-button" : null,
+      lazy.ippEnabled ? "ipprotection-button" : null,
       "fxa-toolbar-menu-button",
       lazy.resetPBMToolbarButtonEnabled ? "reset-pbm-toolbar-button" : null,
     ].filter(name => name);
@@ -351,8 +383,9 @@ var CustomizableUIInternal = {
         overflowable: true,
         defaultPlacements: navbarPlacements,
         verticalTabsDefaultPlacements: [
-          "firefox-view-button",
           "alltabs-button",
+          "smartwindow-group-tabs-button",
+          "ai-window-toggle",
         ],
         defaultCollapsed: false,
       },
@@ -376,10 +409,12 @@ var CustomizableUIInternal = {
       {
         type: CustomizableUI.TYPE_TOOLBAR,
         defaultPlacements: [
-          "firefox-view-button",
           "tabbrowser-tabs",
           "new-tab-button",
+          "spring",
           "alltabs-button",
+          "smartwindow-group-tabs-button",
+          "ai-window-toggle",
         ],
         verticalTabsDefaultPlacements: [],
         defaultCollapsed: null,
@@ -415,13 +450,24 @@ var CustomizableUIInternal = {
 
     this.initializeForTabsOrientation(CustomizableUI.verticalTabsEnabled);
 
-    SearchWidgetTracker.init();
-
     Services.obs.addObserver(this, "browser-set-toolbar-visibility");
 
     Services.prefs.addObserver(kPrefSidebarVerticalTabsEnabled, this);
     Services.prefs.addObserver(kPrefSidebarRevampEnabled, this);
     Services.prefs.addObserver(kPrefSidebarPositionStartEnabled, this);
+  },
+
+  // Sets the default for browser.touchmode.auto (whether the UI density
+  // auto-switches to touch in tablet mode) based on whether nova is enabled.
+  // The pref is sticky so that a user value is preserved even when it matches
+  // the default this derives at startup.
+  _setAutoTouchModeDefault() {
+    Services.prefs
+      .getDefaultBranch("")
+      .setBoolPref(
+        kPrefAutoTouchMode,
+        !Services.prefs.getBoolPref(kPrefNovaEnabled, false)
+      );
   },
 
   /**
@@ -587,14 +633,6 @@ var CustomizableUIInternal = {
 
       if (!AppConstants.MOZ_DEV_EDITION) {
         defaultPlacements.splice(-1, 0, "developer-button");
-      }
-
-      let showCharacterEncoding = Services.prefs.getComplexValue(
-        "browser.menu.showCharacterEncoding",
-        Ci.nsIPrefLocalizedString
-      ).data;
-      if (showCharacterEncoding == "true") {
-        defaultPlacements.push("characterencoding-button");
       }
 
       savedPanelPlacements = savedPanelPlacements.filter(
@@ -788,18 +826,6 @@ var CustomizableUIInternal = {
       ];
     }
 
-    // Add the PBM reset button as the right most button item
-    if (currentVersion < 20) {
-      let navbarPlacements = gSavedState.placements[CustomizableUI.AREA_NAVBAR];
-      // Place the button as the first item to the left of the hamburger menu
-      if (
-        navbarPlacements &&
-        !navbarPlacements.includes("reset-pbm-toolbar-button")
-      ) {
-        navbarPlacements.push("reset-pbm-toolbar-button");
-      }
-    }
-
     if (currentVersion < 21) {
       // If the vertical-spacer has not yet been added, ensure its to the left of the urlbar initially
       let navbarPlacements = gSavedState.placements[CustomizableUI.AREA_NAVBAR];
@@ -833,6 +859,190 @@ var CustomizableUIInternal = {
       let buttonIndex = navbarPlacements.indexOf("save-to-pocket-button");
       if (buttonIndex != -1) {
         navbarPlacements.splice(buttonIndex, 1);
+      }
+    }
+
+    // Add the PBM reset button as the right most button item
+    if (currentVersion < 24) {
+      let navbarPlacements = gSavedState.placements[CustomizableUI.AREA_NAVBAR];
+      // Place the button as the first item to the left of the hamburger menu
+      if (
+        navbarPlacements &&
+        !navbarPlacements.includes("reset-pbm-toolbar-button")
+      ) {
+        navbarPlacements.push("reset-pbm-toolbar-button");
+      }
+    }
+
+    // Remove firefox view button for new profiles and users who have barely
+    // interacted with it (<=2 recorded clicks).
+    if (currentVersion < 25) {
+      let firefoxViewArea = CustomizableUI.verticalTabsEnabled
+        ? gSavedState.placements[CustomizableUI.AREA_NAVBAR]
+        : gSavedState.placements[CustomizableUI.AREA_TABSTRIP];
+      let defaultIndex = CustomizableUI.verticalTabsEnabled
+        ? firefoxViewArea?.indexOf("alltabs-button") - 1
+        : 0;
+      if (firefoxViewArea?.[defaultIndex] === "firefox-view-button") {
+        let shouldKeepFirefoxView = false;
+        try {
+          let { count } = JSON.parse(
+            Services.prefs.getStringPref("browser.firefox-view.button-clicks")
+          );
+          shouldKeepFirefoxView = count > 2;
+        } catch (e) {
+          console.error(e);
+        }
+        if (!shouldKeepFirefoxView) {
+          firefoxViewArea.splice(defaultIndex, 1);
+        }
+      }
+    }
+
+    // Add the flexible space that replaced the post-tabs titlebar-spacer to the
+    // left of the alltabs-button. Only the horizontal tab strip layout is
+    // touched, to match the defaults (a fresh vertical-tabs profile doesn't get
+    // this space). For users currently in vertical tabs, that layout lives in
+    // the horizontal snapshot rather than the live tabstrip placements.
+    if (currentVersion < 26) {
+      let insertBeforeAllTabs = placements => {
+        if (!placements) {
+          return placements;
+        }
+        let alltabsIndex = placements.indexOf("alltabs-button");
+        if (
+          alltabsIndex > 0 &&
+          !placements[alltabsIndex - 1].startsWith(kSpecialWidgetPfx + "spring")
+        ) {
+          placements.splice(alltabsIndex, 0, "spring");
+        }
+        return placements;
+      };
+
+      insertBeforeAllTabs(gSavedState.placements[CustomizableUI.AREA_TABSTRIP]);
+
+      let horizontalSnapshot =
+        CustomizableUIInternal.getSavedHorizontalSnapshotState();
+      if (horizontalSnapshot.length) {
+        CustomizableUIInternal.saveHorizontalTabStripState(
+          insertBeforeAllTabs(horizontalSnapshot)
+        );
+      }
+    }
+
+    // The Organize Tabs button reached the defaults after these profiles were
+    // saved, so instead of landing in its default slot it was appended after
+    // the Smart Window switcher, or into the hidden tab strip when tabs are
+    // vertical. Put it back beside the switcher.
+    if (currentVersion < 27) {
+      const organizeTabs = "smartwindow-group-tabs-button";
+      const switcher = "ai-window-toggle";
+      const areaPlacements = area => {
+        const placements = gSavedState.placements[area];
+        return Array.isArray(placements) ? placements : [];
+      };
+      const tabstrip = areaPlacements(CustomizableUI.AREA_TABSTRIP);
+      const navbar = areaPlacements(CustomizableUI.AREA_NAVBAR);
+
+      const placeBeforeSwitcher = (placements, reserveSlot) => {
+        const switcherIndex = placements.indexOf(switcher);
+        if (switcherIndex == -1) {
+          return;
+        }
+        let appendedIndex = switcherIndex + 1;
+        if (placements[appendedIndex] == "sidebar-button") {
+          appendedIndex++;
+        }
+        const buttonIndex = placements.indexOf(organizeTabs);
+        if (buttonIndex == appendedIndex) {
+          placements.splice(buttonIndex, 1);
+          placements.splice(switcherIndex, 0, organizeTabs);
+        } else if (buttonIndex == -1 && reserveSlot) {
+          placements.splice(switcherIndex, 0, organizeTabs);
+        }
+      };
+
+      if (
+        CustomizableUI.verticalTabsEnabled &&
+        tabstrip.includes(organizeTabs) &&
+        !navbar.includes(organizeTabs) &&
+        navbar.includes(switcher)
+      ) {
+        tabstrip.splice(tabstrip.indexOf(organizeTabs), 1);
+        navbar.splice(navbar.indexOf(switcher), 0, organizeTabs);
+      }
+      const neverCreated =
+        !gSeenWidgets.has(organizeTabs) &&
+        !Object.values(gSavedState.placements).some(
+          placements =>
+            Array.isArray(placements) && placements.includes(organizeTabs)
+        );
+      placeBeforeSwitcher(tabstrip, neverCreated);
+      placeBeforeSwitcher(navbar, neverCreated);
+
+      // A snapshot taken before the button existed lacks it for that reason,
+      // not because the user removed it, so go by where the button is now.
+      const isPlaced =
+        tabstrip.includes(organizeTabs) || navbar.includes(organizeTabs);
+
+      const horizontalSnapshot =
+        CustomizableUIInternal.getSavedHorizontalSnapshotState();
+      if (horizontalSnapshot.length) {
+        placeBeforeSwitcher(horizontalSnapshot, isPlaced);
+        CustomizableUIInternal.saveHorizontalTabStripState(horizontalSnapshot);
+      }
+
+      const verticalSnapshot =
+        CustomizableUIInternal.getSavedVerticalSnapshotState();
+      if (verticalSnapshot.length) {
+        placeBeforeSwitcher(verticalSnapshot, isPlaced);
+        CustomizableUIInternal.saveNavBarWhenVerticalTabsState(
+          verticalSnapshot
+        );
+      }
+    }
+
+    // The version 26 migration above anchored the flexible space to the
+    // alltabs-button, so profiles that had removed that button kept no space
+    // at all between the tab strip and the window controls. Put one back at
+    // the end of the tab strip for them.
+    if (currentVersion < 28) {
+      let restoreFlexibleSpace = placements => {
+        // The live tab strip placements are empty while tabs are vertical, and
+        // a corrupt saved state can hold anything.
+        if (!Array.isArray(placements) || !placements.length) {
+          return;
+        }
+        // Version 26 had its anchor when there is an alltabs-button, so a
+        // space missing here is one the user removed on purpose.
+        if (placements.includes("alltabs-button")) {
+          return;
+        }
+        // Any flexible space left after the tabs already does this job,
+        // wherever in the strip the user put it.
+        let afterTabs = placements.slice(
+          placements.indexOf("tabbrowser-tabs") + 1
+        );
+        if (
+          !afterTabs.some(id =>
+            CustomizableUIInternal.matchingSpecials(id, "spring")
+          )
+        ) {
+          placements.push("spring");
+        }
+      };
+
+      restoreFlexibleSpace(
+        gSavedState.placements[CustomizableUI.AREA_TABSTRIP]
+      );
+
+      // Users currently in vertical tabs keep their horizontal layout in the
+      // snapshot rather than in the live tab strip placements.
+      let horizontalSnapshot =
+        CustomizableUIInternal.getSavedHorizontalSnapshotState();
+      if (horizontalSnapshot.length) {
+        restoreFlexibleSpace(horizontalSnapshot);
+        CustomizableUIInternal.saveHorizontalTabStripState(horizontalSnapshot);
       }
     }
   },
@@ -1409,8 +1619,9 @@ var CustomizableUIInternal = {
           }
         } else if (
           provider == CustomizableUI.PROVIDER_XUL &&
+          !this.isWidgetRemovable(node) &&
           node.parentNode != container &&
-          !this.isWidgetRemovable(node)
+          !aAreaNode.overflowable?.isInOverflowList(node)
         ) {
           placementsToRemove.add(id);
           continue;
@@ -1512,7 +1723,7 @@ var CustomizableUIInternal = {
   addPanelCloseListeners(aPanel) {
     aPanel.addEventListener("click", this, { mozSystemGroup: true });
     aPanel.addEventListener("keypress", this, { mozSystemGroup: true });
-    let win = aPanel.ownerGlobal;
+    let win = aPanel.documentGlobal;
     if (!gPanelsForWindow.has(win)) {
       gPanelsForWindow.set(win, new Set());
     }
@@ -1526,7 +1737,7 @@ var CustomizableUIInternal = {
   removePanelCloseListeners(aPanel) {
     aPanel.removeEventListener("click", this, { mozSystemGroup: true });
     aPanel.removeEventListener("keypress", this, { mozSystemGroup: true });
-    let win = aPanel.ownerGlobal;
+    let win = aPanel.documentGlobal;
     let panels = gPanelsForWindow.get(win);
     if (panels) {
       panels.delete(this._getPanelForNode(aPanel));
@@ -1727,7 +1938,7 @@ var CustomizableUIInternal = {
       gPalette.get(aWidgetId)?.hideInNonPrivateBrowsing ?? false;
 
     for (let areaNode of areaNodes) {
-      let window = areaNode.ownerGlobal;
+      let window = areaNode.documentGlobal;
       if (
         !showInPrivateBrowsing &&
         lazy.PrivateBrowsingUtils.isWindowPrivate(window)
@@ -1807,7 +2018,7 @@ var CustomizableUIInternal = {
   registerBuildArea(aAreaId, aAreaNode) {
     // We ensure that the window is registered to have its customization data
     // cleaned up when unloading.
-    let window = aAreaNode.ownerGlobal;
+    let window = aAreaNode.documentGlobal;
     if (window.closed) {
       return;
     }
@@ -2065,7 +2276,7 @@ var CustomizableUIInternal = {
    *   moved.
    */
   insertNodeInWindow(aWidgetId, aAreaNode, isNew) {
-    let window = aAreaNode.ownerGlobal;
+    let window = aAreaNode.documentGlobal;
     let showInPrivateBrowsing = gPalette.has(aWidgetId)
       ? gPalette.get(aWidgetId).showInPrivateBrowsing
       : true;
@@ -2575,9 +2786,7 @@ var CustomizableUIInternal = {
       node.setAttribute("id", aWidget.id);
       node.setAttribute("widget-id", aWidget.id);
       node.setAttribute("widget-type", aWidget.type);
-      if (aWidget.disabled) {
-        node.setAttribute("disabled", true);
-      }
+      node.toggleAttribute("disabled", !!aWidget.disabled);
       node.setAttribute("removable", aWidget.removable);
       node.setAttribute("overflows", aWidget.overflows);
       if (aWidget.tabSpecific) {
@@ -2762,7 +2971,7 @@ var CustomizableUIInternal = {
   /**
    * @see CustomizableUI.addShortcut
    * @param {Element} aShortcutNode
-   * @param {Element|null} aTargetNode
+   * @param {Element} [aTargetNode]
    */
   addShortcut(aShortcutNode, aTargetNode = aShortcutNode) {
     // Detect if we've already been here before.
@@ -2770,9 +2979,9 @@ var CustomizableUIInternal = {
       return;
     }
 
-    // Use ownerGlobal.document to ensure we get the right doc even for
+    // Use documentGlobal.document to ensure we get the right doc even for
     // elements in template tags.
-    let { document } = aShortcutNode.ownerGlobal;
+    let { document } = aShortcutNode.documentGlobal;
     let shortcutId = aShortcutNode.getAttribute("key");
     let shortcut;
     if (shortcutId) {
@@ -2836,7 +3045,7 @@ var CustomizableUIInternal = {
    *   show.
    */
   showWidgetView(aWidget, aNode, aEvent) {
-    let ownerWindow = aNode.ownerGlobal;
+    let ownerWindow = aNode.documentGlobal;
     let area = this.getPlacementOfWidget(aNode.id).area;
     let areaType = CustomizableUI.getAreaType(area);
     let anchor = aNode;
@@ -2988,8 +3197,8 @@ var CustomizableUIInternal = {
         // Find containing browser or iframe element in the parent doc.
         return target.defaultView.docShell.chromeEventHandler;
       }
-      // Skip any parent shadow roots
-      return target.parentNode?.host?.parentNode || target.parentNode;
+      // Iterate up through any shadow roots
+      return target.parentNode?.host || target.parentNode;
     }
 
     // While keeping track of that, we go from the original target back up,
@@ -3015,12 +3224,12 @@ var CustomizableUIInternal = {
 
       // Break out of the loop immediately for disabled items, as we need to
       // keep the menu open in that case.
-      if (target.getAttribute("disabled") == "true") {
+      if (target.hasAttribute("disabled")) {
         return true;
       }
 
       let tagName = target.localName;
-      if (tagName == "input" || tagName == "searchbar") {
+      if (tagName == "input" || target.closest("#search-container")) {
         return true;
       }
       if (tagName == "toolbaritem" || tagName == "toolbarbutton") {
@@ -3031,6 +3240,9 @@ var CustomizableUIInternal = {
       if (tagName == "menuitem") {
         // If we're in a nested menu we don't need to close this panel.
         return true;
+      }
+      if (tagName == "moz-button") {
+        return false;
       }
     }
 
@@ -3083,6 +3295,14 @@ var CustomizableUIInternal = {
     // of the real ones, so looking for the 'stoooop, don't close me' attributes
     // is more involved.
     let target = aEvent.originalTarget;
+
+    if (!target.isConnected) {
+      // If the item that the event dispatched on is no longer part of the DOM,
+      // let's ignore it. This is particularly useful for items that remove
+      // themselves, like dismissable `moz-message-bar` elements.
+      return;
+    }
+
     while (target.parentNode && target.localName != "panel") {
       if (
         target.getAttribute("closemenu") == "none" ||
@@ -3112,7 +3332,7 @@ var CustomizableUIInternal = {
    * @returns {Array<WidgetGroupWrapper|XULWidgetGroupWrapper>}
    */
   getUnusedWidgets(aWindowPalette) {
-    let window = aWindowPalette.ownerGlobal;
+    let window = aWindowPalette.documentGlobal;
     let isWindowPrivate = lazy.PrivateBrowsingUtils.isWindowPrivate(window);
     // We use a Set because there can be overlap between the widgets in
     // gPalette and the items in the palette, especially after the first
@@ -3926,14 +4146,14 @@ var CustomizableUIInternal = {
   /**
    * @see CustomizableUI.createWidget
    * @param {CustomizableUICreateWidgetProperties} aProperties
+   * @param {string} [aSource]
+   *   One of the CustomizableUI.SOURCE_* constants; defaults to
+   *   CustomizableUI.SOURCE_EXTERNAL.
    * @returns {string}
    *   The ID of the created widget.
    */
-  createWidget(aProperties) {
-    let widget = this.normalizeWidget(
-      aProperties,
-      CustomizableUI.SOURCE_EXTERNAL
-    );
+  createWidget(aProperties, aSource = CustomizableUI.SOURCE_EXTERNAL) {
+    let widget = this.normalizeWidget(aProperties, aSource);
     // XXXunf This should probably throw.
     if (!widget) {
       lazy.log.error("unable to normalize widget");
@@ -4035,11 +4255,17 @@ var CustomizableUIInternal = {
         // area here.
         let canBeAutoAdded = autoAdd && !gSeenWidgets.has(widget.id);
         if (!widget.currentArea && (!widget.removable || canBeAutoAdded)) {
-          if (widget.defaultArea) {
-            if (this.isAreaLazy(widget.defaultArea)) {
-              gFuturePlacements.get(widget.defaultArea).add(widget.id);
+          // The CustomizableUI.AREA_TABSTRIP is hidden while tabs are vertical, so a widget that
+          // defaults into it would be auto-added somewhere the user can't see.
+          let defaultArea =
+            (CustomizableUI.verticalTabsEnabled &&
+              widget.defaultAreaVerticalTabs) ||
+            widget.defaultArea;
+          if (defaultArea) {
+            if (this.isAreaLazy(defaultArea)) {
+              gFuturePlacements.get(defaultArea).add(widget.id);
             } else {
-              this.addWidgetToArea(widget.id, widget.defaultArea);
+              this.addWidgetToArea(widget.id, defaultArea);
             }
           }
         }
@@ -4149,6 +4375,7 @@ var CustomizableUIInternal = {
       removable: true,
       overflows: true,
       defaultArea: null,
+      defaultAreaVerticalTabs: null,
       shortcutId: null,
       tabSpecific: false,
       locationSpecific: false,
@@ -4229,6 +4456,14 @@ var CustomizableUIInternal = {
           "valid defaultArea as well."
       );
       return null;
+    }
+
+    if (
+      aData.defaultAreaVerticalTabs &&
+      (aSource == CustomizableUI.SOURCE_BUILTIN ||
+        gAreas.has(aData.defaultAreaVerticalTabs))
+    ) {
+      widget.defaultAreaVerticalTabs = aData.defaultAreaVerticalTabs;
     }
 
     if ("type" in aData && gSupportedWidgetTypes.has(aData.type)) {
@@ -4422,7 +4657,7 @@ var CustomizableUIInternal = {
     }
 
     for (let node of buildAreaNodes) {
-      if (node.ownerGlobal == aWindow) {
+      if (node.documentGlobal == aWindow) {
         return this.getCustomizationTarget(node) || node;
       }
     }
@@ -4473,8 +4708,20 @@ var CustomizableUIInternal = {
         kPrefCustomizationState
       );
       gUIStateBeforeReset.uiDensity = Services.prefs.getIntPref(kPrefUIDensity);
+      // browser.uidensity is sticky, so an explicit value equal to the default
+      // (normal density) still counts as a user value. Remember whether one was
+      // set so undoReset can faithfully restore the automatic (no user value)
+      // state rather than pinning the density to normal.
+      gUIStateBeforeReset.uiDensityHadUserValue =
+        Services.prefs.prefHasUserValue(kPrefUIDensity);
       gUIStateBeforeReset.autoTouchMode =
         Services.prefs.getBoolPref(kPrefAutoTouchMode);
+      // browser.touchmode.auto is sticky, so an explicit value equal to the
+      // default still counts as a user value. Remember whether one was set so
+      // undoReset can faithfully restore the no-user-value state rather than
+      // pinning it with an explicit default-valued user pref.
+      gUIStateBeforeReset.autoTouchModeHadUserValue =
+        Services.prefs.prefHasUserValue(kPrefAutoTouchMode);
       gUIStateBeforeReset.currentTheme = gSelectedTheme;
       gUIStateBeforeReset.autoHideDownloadsButton = Services.prefs.getBoolPref(
         kPrefAutoHideDownloadsButton
@@ -4546,7 +4793,7 @@ var CustomizableUIInternal = {
         let area = gAreas.get(areaId);
         if (area.get("type") == CustomizableUI.TYPE_TOOLBAR) {
           let defaultCollapsed = area.get("defaultCollapsed");
-          let win = areaNode.ownerGlobal;
+          let win = areaNode.documentGlobal;
           if (defaultCollapsed !== null) {
             win.setToolbarVisibility(
               areaNode,
@@ -4580,7 +4827,9 @@ var CustomizableUIInternal = {
       drawInTitlebar,
       currentTheme,
       uiDensity,
+      uiDensityHadUserValue,
       autoTouchMode,
+      autoTouchModeHadUserValue,
       autoHideDownloadsButton,
       sidebarPositionStart,
     } = gUIStateBeforeReset;
@@ -4592,8 +4841,16 @@ var CustomizableUIInternal = {
 
     Services.prefs.setCharPref(kPrefCustomizationState, uiCustomizationState);
     Services.prefs.setIntPref(kPrefDrawInTitlebar, drawInTitlebar);
-    Services.prefs.setIntPref(kPrefUIDensity, uiDensity);
-    Services.prefs.setBoolPref(kPrefAutoTouchMode, autoTouchMode);
+    if (uiDensityHadUserValue) {
+      Services.prefs.setIntPref(kPrefUIDensity, uiDensity);
+    } else {
+      Services.prefs.clearUserPref(kPrefUIDensity);
+    }
+    if (autoTouchModeHadUserValue) {
+      Services.prefs.setBoolPref(kPrefAutoTouchMode, autoTouchMode);
+    } else {
+      Services.prefs.clearUserPref(kPrefAutoTouchMode);
+    }
     Services.prefs.setBoolPref(
       kPrefAutoHideDownloadsButton,
       autoHideDownloadsButton
@@ -4755,7 +5012,7 @@ var CustomizableUIInternal = {
     if (!areaNodes) {
       return false;
     }
-    let container = [...areaNodes].filter(n => n.ownerGlobal == aWindow);
+    let container = [...areaNodes].filter(n => n.documentGlobal == aWindow);
     if (!container.length) {
       return false;
     }
@@ -4876,7 +5133,7 @@ var CustomizableUIInternal = {
               container.getAttribute("type") == "menubar"
                 ? "autohide"
                 : "collapsed";
-            collapsed = container.getAttribute(attribute) == "true";
+            collapsed = container.hasAttribute(attribute);
             nondefaultState = collapsed != defaultCollapsed;
           }
           if (defaultCollapsed !== null && nondefaultState) {
@@ -4970,7 +5227,7 @@ var CustomizableUIInternal = {
       let hidingAttribute =
         toolbar.getAttribute("type") == "menubar" ? "autohide" : "collapsed";
 
-      if (toolbar.getAttribute(hidingAttribute) == "true") {
+      if (toolbar.hasAttribute(hidingAttribute)) {
         collapsedToolbars.add(toolbarId);
       }
     }
@@ -5128,6 +5385,12 @@ var CustomizableUIInternal = {
           null,
           true
         );
+        continue;
+      }
+      // Remove all springs located in the tabs toolbar when vertical tabs are enabled
+      // there's one by default but the user could add as many as they want
+      if (this.isSpecialWidget(widgetId) && widgetId.includes("spring")) {
+        this.removeWidgetFromArea(widgetId);
         continue;
       }
       // if this is a extension, those are handled in a toolbarvisibilitychange handler in browser-addons.js
@@ -5313,6 +5576,12 @@ var CustomizableUIInternal = {
           );
           continue;
         }
+        // Remove all springs located in the tabs toolbar when vertical tabs are enabled
+        // there's one by default but the user could add as many as they want
+        if (this.isSpecialWidget(id) && id.includes("spring")) {
+          this.removeWidgetFromArea(id);
+          continue;
+        }
         // We add the tab strip placements later in the case they have a custom position
         if (
           tabstripPlacements.includes(id) &&
@@ -5458,6 +5727,7 @@ export var CustomizableUI = {
   /**
    * An iteratable property of windows managed by CustomizableUI.
    * Note that this can *only* be used as an iterator. ie:
+   *
    *     for (let window of CustomizableUI.windows) { ... }
    */
   windows: {
@@ -6114,6 +6384,11 @@ export var CustomizableUI = {
    *   The default area to add the widget to. If not supplied, this widget will
    *   be placed in the palette by default. A valid default area is required if
    *   the widget is not removable.
+   * @property {string} [defaultAreaVerticalTabs]
+   *   The default area to add the widget to while tabs are vertical, taking
+   *   precedence over defaultArea. Widgets that default into AREA_TABSTRIP
+   *   need this, as that area is hidden while tabs are vertical. If not
+   *   supplied, defaultArea is used regardless of tab orientation.
    * @property {string} [shortcutId]
    *   The id of an element that has a shortcut for this widget. This is only
    *   used to display the shortcut as part of the tooltip for builtin widgets
@@ -6141,11 +6416,14 @@ export var CustomizableUI = {
    *
    * @param {CustomizableUICreateWidgetProperties} aProperties
    *   The properties for the widget to be created.
+   * @param {string} [aSource]
+   *   One of the CustomizableUI.SOURCE_* constants; defaults to
+   *   CustomizableUI.SOURCE_EXTERNAL.
    * @returns {WidgetGroupWrapper|XULWidgetGroupWrapper}
    */
-  createWidget(aProperties) {
+  createWidget(aProperties, aSource) {
     return CustomizableUIInternal.wrapWidget(
-      CustomizableUIInternal.createWidget(aProperties)
+      CustomizableUIInternal.createWidget(aProperties, aSource)
     );
   },
   /**
@@ -6611,9 +6889,9 @@ export var CustomizableUI = {
    *
    * @param {Element} aShortcutNode
    *   The XUL node where the shortcut will be derived from;
-   * @param {Element|null} aTargetNode
-   *   The XUL node on which the `shortcut` attribute will be set. If NULL, the
-   *   shortcut will be set on aShortcutNode.
+   * @param {Element} [aTargetNode]
+   *   The XUL node on which the `shortcut` attribute will be set. If missing,
+   *   the shortcut will be set on aShortcutNode.
    */
   addShortcut(aShortcutNode, aTargetNode) {
     return CustomizableUIInternal.addShortcut(aShortcutNode, aTargetNode);
@@ -6818,9 +7096,9 @@ export var CustomizableUI = {
       "style",
     ];
 
-    // Use ownerGlobal.document to ensure we get the right doc even for
+    // Use documentGlobal.document to ensure we get the right doc even for
     // elements in template tags.
-    let doc = aSubview.ownerGlobal.document;
+    let doc = aSubview.documentGlobal.document;
     let fragment = doc.createDocumentFragment();
     for (let menuChild of aMenuItems) {
       if (menuChild.hidden) {
@@ -6845,7 +7123,7 @@ export var CustomizableUI = {
         let item = menuChild;
         if (!item.hasAttribute("onclick")) {
           subviewItem.addEventListener("click", event => {
-            let newEvent = new doc.ownerGlobal.PointerEvent("click", event);
+            let newEvent = new doc.documentGlobal.PointerEvent("click", event);
 
             // Telemetry should only pay attention to the original event.
             lazy.BrowserUsageTelemetry.ignoreEvent(newEvent);
@@ -6881,7 +7159,7 @@ export var CustomizableUI = {
       }
       for (let attr of attrs) {
         let attrVal = menuChild.getAttribute(attr);
-        if (attrVal) {
+        if (attrVal !== null) {
           subviewItem.setAttribute(attr, attrVal);
         }
       }
@@ -7097,11 +7375,15 @@ function WidgetGroupWrapper(aWidget) {
     if (!buildAreas) {
       return [];
     }
-    return Array.from(buildAreas, node => this.forWindow(node.ownerGlobal));
+    return Array.from(buildAreas, node => this.forWindow(node.documentGlobal));
   });
 
   this.__defineGetter__("areaType", function () {
-    let areaProps = gAreas.get(aWidget.currentArea);
+    let { currentArea } = aWidget;
+    if (!currentArea) {
+      return null;
+    }
+    let areaProps = gAreas.get(currentArea);
     return areaProps && areaProps.get("type");
   });
 
@@ -7159,6 +7441,11 @@ function WidgetSingleWrapper(aWidget, aNode) {
   });
 
   this.__defineGetter__("overflowed", function () {
+    // A widget that isn't built in this window (e.g. showInPrivateBrowsing:false
+    // in a private window) can't be overflowed.
+    if (!aNode) {
+      return false;
+    }
     return aNode.getAttribute("overflowedItem") == "true";
   });
 
@@ -7256,7 +7543,7 @@ function XULWidgetSingleWrapper(aWidgetId, aNode, aDocument) {
         return aNode;
       }
       // ... or the toolbox
-      let toolbox = aNode.ownerGlobal.gNavToolbox;
+      let toolbox = aNode.documentGlobal.gNavToolbox;
       if (toolbox && toolbox.palette && aNode.parentNode == toolbox.palette) {
         return aNode;
       }
@@ -7318,11 +7605,11 @@ function XULWidgetSingleWrapper(aWidgetId, aNode, aDocument) {
  * There are two panels that toolbar items can be overflowed to:
  *
  * 1. The default items overflow panel
- *   This is where built-in default toolbar items will go to.
+ *    This is where built-in default toolbar items will go to.
  * 2. The Unified Extensions panel
- *   This is where browser_action toolbar buttons created by extensions will
- *   go to if the Unified Extensions UI is enabled - otherwise, those items will
- *   go to the default items overflow panel.
+ *    This is where browser_action toolbar buttons created by extensions will
+ *    go to if the Unified Extensions UI is enabled - otherwise, those items will
+ *    go to the default items overflow panel.
  *
  * Finally, OverflowableToolbar manages the showing of the default items
  * overflow panel when the associated anchor is clicked or dragged over. The
@@ -7490,7 +7777,7 @@ class OverflowableToolbar {
     );
     this.#defaultList._customizationTarget = this.#defaultList;
 
-    let window = this.#toolbar.ownerGlobal;
+    let window = this.#toolbar.documentGlobal;
 
     if (window.gBrowserInit.delayedStartupFinished) {
       this.init();
@@ -7548,7 +7835,7 @@ class OverflowableToolbar {
 
     this.#disable();
 
-    let window = this.#toolbar.ownerGlobal;
+    let window = this.#toolbar.documentGlobal;
     window.removeEventListener("resize", this);
     window.gNavToolbox.removeEventListener("customizationstarting", this);
     window.gNavToolbox.removeEventListener("aftercustomization", this);
@@ -7759,7 +8046,7 @@ class OverflowableToolbar {
       return;
     }
 
-    let win = this.#target.ownerGlobal;
+    let win = this.#target.documentGlobal;
     let checkOverflowHandle = this.#checkOverflowHandle;
     let webExtButtonID = this.#toolbar.getAttribute(
       "addon-webext-overflowbutton"
@@ -7869,7 +8156,7 @@ class OverflowableToolbar {
       return sum;
     }
 
-    let win = this.#target.ownerGlobal;
+    let win = this.#target.documentGlobal;
     let totalAvailWidth;
     let targetWidth;
     let targetChildrenWidth;
@@ -7898,8 +8185,13 @@ class OverflowableToolbar {
 
     // If the target has min-width: 0, their children might actually overflow
     // it, so check for both cases explicitly.
-    let targetContentWidth = Math.max(targetWidth, targetChildrenWidth);
-    let isOverflowing = Math.floor(targetContentWidth) > totalAvailWidth;
+    // We don't care about <1px differences, so ceil the avail width and floor
+    // the content width to deal with it.
+    let targetContentWidth = Math.floor(
+      Math.max(targetWidth, targetChildrenWidth)
+    );
+    totalAvailWidth = Math.ceil(totalAvailWidth);
+    let isOverflowing = targetContentWidth > totalAvailWidth;
     return { isOverflowing, targetContentWidth, totalAvailWidth };
   }
 
@@ -7925,7 +8217,7 @@ class OverflowableToolbar {
       `Attempting to move ${shouldMoveAllItems ? "all" : "some"} items back`
     );
     let placements = gPlacements.get(this.#toolbar.id);
-    let win = this.#target.ownerGlobal;
+    let win = this.#target.documentGlobal;
     let doc = this.#target.ownerDocument;
     let checkOverflowHandle = this.#checkOverflowHandle;
 
@@ -8041,7 +8333,7 @@ class OverflowableToolbar {
       return;
     }
 
-    let win = this.#target.ownerGlobal;
+    let win = this.#target.documentGlobal;
     if (win.document.documentElement.hasAttribute("inDOMFullscreen")) {
       // Toolbars are hidden and cannot be made visible in DOM fullscreen mode
       // so there's nothing to do here.
@@ -8097,7 +8389,7 @@ class OverflowableToolbar {
     const OVERFLOW_PANEL_HIDE_DELAY_MS = 500;
 
     this.show().then(() => {
-      let window = this.#toolbar.ownerGlobal;
+      let window = this.#toolbar.documentGlobal;
       if (this.#hideTimeoutId) {
         window.clearTimeout(this.#hideTimeoutId);
       }
@@ -8127,7 +8419,7 @@ class OverflowableToolbar {
             `overflowable toolbar with id: ${this.#toolbar.id}`
         );
       }
-      let win = this.#toolbar.ownerGlobal;
+      let win = this.#toolbar.documentGlobal;
       let { panel } = win.gUnifiedExtensions;
       this.#webExtListRef = panel.querySelector(`#${targetID}`);
     }
@@ -8320,7 +8612,7 @@ class OverflowableToolbar {
     // this window has finished painting and starting up.
     if (
       aTopic == "browser-delayed-startup-finished" &&
-      aSubject == this.#toolbar.ownerGlobal
+      aSubject == this.#toolbar.documentGlobal
     ) {
       Services.obs.removeObserver(this, "browser-delayed-startup-finished");
       this.init();

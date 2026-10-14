@@ -8,11 +8,11 @@ import org.mozilla.fenix.components.metrics.Event
 import org.mozilla.fenix.components.metrics.MetricController
 import org.mozilla.fenix.components.metrics.MetricServiceType
 
-/**
- * A class to facilitate inspection of MetricController interactions for unit tests.
- */
+/** A class to facilitate inspection of MetricController interactions for unit tests. */
 class FakeMetricController : MetricController {
     val startedServiceTypes: MutableList<MetricServiceType> = emptyList<MetricServiceType>().toMutableList()
+
+    val trackedEvents: MutableList<Event> = mutableListOf()
 
     override fun start(type: MetricServiceType) {
         startedServiceTypes.add(type)
@@ -23,6 +23,6 @@ class FakeMetricController : MetricController {
     }
 
     override fun track(event: Event) {
-        // no-op
+        trackedEvents.add(event)
     }
 }

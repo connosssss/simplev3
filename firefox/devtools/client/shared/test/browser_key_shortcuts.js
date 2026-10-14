@@ -6,9 +6,7 @@
 var isOSX = Services.appinfo.OS === "Darwin";
 
 add_task(async function () {
-  const shortcuts = new KeyShortcuts({
-    window,
-  });
+  const shortcuts = new KeyShortcuts(window);
 
   await testSimple(shortcuts);
   await testNonLetterCharacter(shortcuts);
@@ -382,10 +380,7 @@ async function testTarget() {
   document.documentElement.appendChild(target);
   target.focus();
 
-  const shortcuts = new KeyShortcuts({
-    window,
-    target,
-  });
+  const shortcuts = new KeyShortcuts(target);
   const onKey = once(shortcuts, "0", event => {
     is(event.key, "0");
     is(event.target, target);
@@ -419,7 +414,7 @@ function testNullShortcut(shortcuts) {
   const shortcut = KeyShortcuts.parseElectronKey(null);
   ok(!shortcut, "Passing a null object should return a null object");
 
-  const stringified = KeyShortcuts.stringify(shortcut);
+  const stringified = KeyShortcuts.stringifyShortcut(shortcut);
   is(stringified, "", "A null object should be stringified as an empty string");
 
   shortcuts.on(null, function () {});

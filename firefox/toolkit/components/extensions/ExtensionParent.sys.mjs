@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,6 +20,7 @@ const lazy = XPCOMUtils.declareLazy({
   DevToolsShim: "chrome://devtools-startup/content/DevToolsShim.sys.mjs",
   ExtensionActivityLog: "resource://gre/modules/ExtensionActivityLog.sys.mjs",
   ExtensionData: "resource://gre/modules/Extension.sys.mjs",
+  ExtensionDocumentId: "resource://gre/modules/ExtensionDocumentId.sys.mjs",
   GeckoViewConnection: "resource://gre/modules/GeckoViewWebExtension.sys.mjs",
   MessageManagerProxy: "resource://gre/modules/MessageManagerProxy.sys.mjs",
   NativeApp: "resource://gre/modules/NativeMessaging.sys.mjs",
@@ -45,14 +44,8 @@ const DUMMY_PAGE_URI = Services.io.newURI(
 var { BaseContext, CanOfAPIs, SchemaAPIManager, SpreadArgs, redefineGetter } =
   ExtensionCommon;
 
-var {
-  DefaultMap,
-  DefaultWeakMap,
-  ExtensionError,
-  promiseDocumentLoaded,
-  promiseEvent,
-  promiseObserved,
-} = ExtensionUtils;
+var { DefaultMap, DefaultWeakMap, ExtensionError, promiseObserved } =
+  ExtensionUtils;
 
 const ERROR_NO_RECEIVERS =
   "Could not establish connection. Receiving end does not exist.";
@@ -68,19 +61,6 @@ schemaURLs.add("chrome://extensions/content/schemas/experiments.json");
 
 let GlobalManager;
 let ParentAPIManager;
-
-function verifyActorForContext(actor, context) {
-  if (JSWindowActorParent.isInstance(actor)) {
-    let target = actor.browsingContext.top.embedderElement;
-    if (context.parentMessageManager !== target.messageManager) {
-      throw new Error("Got message on unexpected message manager");
-    }
-  } else if (JSProcessActorParent.isInstance(actor)) {
-    if (actor.manager.remoteType !== context.extension.remoteType) {
-      throw new Error("Got message from unexpected process");
-    }
-  }
-}
 
 // This object loads the ext-*.js scripts that define the extension API.
 let apiManager = new (class extends SchemaAPIManager {
@@ -246,17 +226,43 @@ const ProxyMessenger = {
   /** @type {Map<number, Promise>} */
   portPromises: new Map(),
 
+  // Known endpoints of each open port.
+  /**
+   * portId -> source actor.
+   *
+   * @type {Map<number, object>}
+   */
+  portSources: new Map(),
+  /**
+   * portId -> known receiver actors.
+   *
+   * @type {Map<number, Set<object>>}
+   */
+  portReceivers: new Map(),
+
   init() {
     this.conduit = new lazy.BroadcastConduit(ProxyMessenger, {
       id: "ProxyMessenger",
+      reportOnOpened: "portId",
       reportOnClosed: "portId",
       recv: ["PortConnect", "PortMessage", "NativeMessage", "RuntimeMessage"],
       cast: ["PortConnect", "PortMessage", "PortDisconnect", "RuntimeMessage"],
     });
   },
 
+  recvConduitOpened({ portId, source, actor, extensionId }) {
+    if (source) {
+      if (this.portSources.has(portId)) {
+        throw new Error(`Duplicate port source for ${extensionId}`);
+      }
+      this.portSources.set(portId, actor);
+    } else if (!this.portReceivers.get(portId)?.has(actor)) {
+      throw new Error(`Unknown port receiver for ${extensionId}`);
+    }
+  },
+
   openNative(nativeApp, sender) {
-    let context = ParentAPIManager.getContextById(sender.childId);
+    let context = ParentAPIManager.getContext(sender.childId, sender.actor);
     if (context.extension.hasPermission("geckoViewAddons")) {
       return new lazy.GeckoViewConnection(
         this.getSender(context.extension, sender),
@@ -308,6 +314,12 @@ const ProxyMessenger = {
         sender.frameId = source.frameId;
       }
 
+      if (currentWindowContext?.innerWindowId) {
+        sender.documentId = lazy.ExtensionDocumentId.getDocumentId(
+          currentWindowContext.innerWindowId
+        );
+      }
+
       let principal = currentWindowContext.documentPrincipal;
       // We intend the serialization of null principals *and* file scheme to be
       // "null".
@@ -342,14 +354,25 @@ const ProxyMessenger = {
 
     arg.sender = this.getSender(extension, sender);
     arg.topBC = arg.tabId && this.getTopBrowsingContextId(arg.tabId);
+
+    if (arg.documentId) {
+      let innerWindowId =
+        lazy.ExtensionDocumentId.getInnerWindowIdForDocumentId(arg.documentId);
+      if (!innerWindowId) {
+        throw new ExtensionError(ERROR_NO_RECEIVERS);
+      }
+      arg.innerWindowId = innerWindowId;
+      return "frame";
+    }
+
     return arg.tabId ? "tab" : "messenger";
   },
 
   async recvRuntimeMessage(arg, { sender }) {
-    arg.firstResponse = true;
     let kind = await this.normalizeArgs(arg, sender);
     arg.query = true;
-    let result = await this.conduit.castRuntimeMessage(kind, arg);
+    let { promises } = this.conduit.castRuntimeMessage(kind, arg);
+    let result = await raceResponses(promises);
     if (!result) {
       // "throw new ExtensionError" cannot be used because then the stack of the
       // sendMessage call would not be added to the error object generated by
@@ -360,6 +383,12 @@ const ProxyMessenger = {
   },
 
   async recvPortConnect(arg, { sender }) {
+    // openConduit(source=true) precedes queryPortConnect and sets portSources.
+    if (this.portSources.get(arg.portId) !== sender.actor) {
+      Cu.reportError(`Unexpected port source for ${sender.extensionId}`);
+      throw new ExtensionError(ERROR_NO_RECEIVERS);
+    }
+
     if (arg.native) {
       /** @type {ParentPort} */
       let port = this.openNative(arg.name, sender).onConnect(arg.portId, this);
@@ -377,11 +406,16 @@ const ProxyMessenger = {
     try {
       let kind = await this.normalizeArgs(arg, sender);
       arg.query = true;
-      let all = await this.conduit.castPortConnect(kind, arg);
+      let { targets, promises } = this.conduit.castPortConnect(kind, arg);
+      // Holds actors from which we accept recvConduitOpened for this portId,
+      // before castPortConnect settles. No await between cast and assignment,
+      // or a target's recvConduitOpened could arrive first and be rejected.
+      this.portReceivers.set(arg.portId, new Set(targets.map(t => t.actor)));
+      let all = await Promise.allSettled(promises);
       resolve();
 
       // If there are no active onConnect listeners.
-      if (!all.some(x => x.value)) {
+      if (!all.some(x => x.status === "fulfilled" && x.value)) {
         throw new ExtensionError(ERROR_NO_RECEIVERS);
       }
     } catch (err) {
@@ -390,6 +424,7 @@ const ProxyMessenger = {
       throw err;
     } finally {
       this.portPromises.delete(arg.portId);
+      this.portReceivers.delete(arg.portId);
     }
   },
 
@@ -406,6 +441,10 @@ const ProxyMessenger = {
   },
 
   async recvConduitClosed(sender) {
+    if (sender.source) {
+      this.portSources.delete(sender.portId);
+    }
+
     let app = this.ports.get(sender.portId);
     if (this.ports.delete(sender.portId) && sender.native) {
       this.untrackNativeAppPort(app);
@@ -433,34 +472,61 @@ const ProxyMessenger = {
   },
 
   trackNativeAppPort(port) {
-    if (!port?.native) {
-      return;
-    }
-
-    try {
-      let context = ParentAPIManager.getContextById(port.senderChildId);
+    if (port?.native) {
+      // The childId was verified against its actor in openNative().
+      let context = ParentAPIManager.getContextUnchecked(port.senderChildId);
       context?.trackNativeAppPort(port);
-    } catch {
-      // getContextById will throw if the context has been destroyed
-      // in the meantime.
     }
   },
 
   untrackNativeAppPort(port) {
-    if (!port?.native) {
-      return;
-    }
-
-    try {
-      let context = ParentAPIManager.getContextById(port.senderChildId);
+    if (port?.native) {
+      let context = ParentAPIManager.getContextUnchecked(port.senderChildId);
       context?.untrackNativeAppPort(port);
-    } catch {
-      // getContextById will throw if the context has been destroyed
-      // in the meantime.
     }
   },
 };
 ProxyMessenger.init();
+
+/**
+ * Custom Promise.race() function that ignores certain resolutions and errors,
+ * used to resolve a runtime.sendMessage query with its first explicit response
+ * across all onMessage listeners.
+ *
+ * @typedef {{response?: boolean, received?: boolean, value?: any}} Response
+ *
+ * @param {Promise<Response>[]} promises
+ * @returns {Promise<Response?>}
+ */
+function raceResponses(promises) {
+  return new Promise((resolve, reject) => {
+    let result;
+    promises.map(p =>
+      p
+        .then(value => {
+          if (value.response) {
+            // We have an explicit response, resolve immediately.
+            resolve(value);
+          } else if (value.received) {
+            // Message was received, but no response.
+            // Resolve with this only if there is no other explicit response.
+            result = value;
+          }
+        })
+        .catch(err => {
+          // Forward errors that are exposed to extension, but ignore
+          // internal errors such as actor destruction and DataCloneError.
+          if (err instanceof ExtensionError || err?.mozWebExtLocation) {
+            reject(err);
+          } else {
+            Cu.reportError(err);
+          }
+        })
+    );
+    // Ensure resolving when there are no responses.
+    Promise.allSettled(promises).then(() => resolve(result));
+  });
+}
 
 // Responsible for loading extension APIs into the right globals.
 GlobalManager = {
@@ -469,7 +535,11 @@ GlobalManager = {
   extensionMap: new Map(),
   initialized: false,
 
-  /** @type {WeakMap<XULBrowserElement, object>} Extension Context init data. */
+  /**
+   * Extension Context init data.
+   *
+   * @type {WeakMap<MozBrowser, object>}
+   */
   frameData: new WeakMap(),
 
   init(extension) {
@@ -506,19 +576,21 @@ GlobalManager = {
  * parent side of a proxied API.
  */
 class ProxyContextParent extends BaseContext {
-  constructor(envType, extension, params, browsingContext, principal) {
+  constructor(envType, extension, params, actor, principal) {
     super(envType, extension);
 
     this.childId = params.childId;
     this.uri = Services.io.newURI(params.url);
-    this.browsingContext = browsingContext;
+    // The actor is tied to the WindowGlobal or DOMProcess.
+    this.actor = actor;
+    this.browsingContext = actor.browsingContext ?? null;
 
     this.incognito = params.incognito;
 
     this.listenerPromises = new Set();
 
     // browsingContext is null when subclassed by BackgroundWorkerContextParent.
-    const xulBrowser = browsingContext?.top.embedderElement;
+    const xulBrowser = this.browsingContext?.top.embedderElement;
     // This message manager is used by ParentAPIManager to send messages and to
     // close the ProxyContext if the underlying message manager closes. This
     // message manager object may change when `xulBrowser` swaps docshells, e.g.
@@ -750,11 +822,11 @@ class ContentScriptContextParent extends ProxyContextParent {}
  * ExtensionChild.sys.mjs.
  */
 class ExtensionPageContextParent extends ProxyContextParent {
-  constructor(envType, extension, params, browsingContext) {
-    super(envType, extension, params, browsingContext, extension.principal);
+  constructor(envType, extension, params, actor) {
+    super(envType, extension, params, actor, extension.principal);
 
     this.viewType = params.viewType;
-    this.isTopContext = browsingContext.top === browsingContext;
+    this.isTopContext = this.browsingContext.top === this.browsingContext;
 
     this.extension.views.add(this);
 
@@ -763,7 +835,7 @@ class ExtensionPageContextParent extends ProxyContextParent {
 
   // The window that contains this context. This may change due to moving tabs.
   get appWindow() {
-    let win = this.xulBrowser.ownerGlobal;
+    let win = this.xulBrowser.documentGlobal;
     return win.browsingContext.topChromeWindow;
   }
 
@@ -776,16 +848,18 @@ class ExtensionPageContextParent extends ProxyContextParent {
 
   get tabId() {
     let { tabTracker } = apiManager.global;
-    let data = tabTracker.getBrowserData(this.xulBrowser);
-    if (data.tabId >= 0) {
-      return data.tabId;
+    const xulBrowser = this.xulBrowser;
+    const tab = xulBrowser && tabTracker.getTabForBrowser(xulBrowser);
+    if (tab) {
+      return tabTracker.getId(tab);
     }
     return undefined;
   }
 
   toExtensionContext() {
     const { tabTracker } = apiManager.global;
-    const { tabId, windowId } = tabTracker.getBrowserDataForContext(this);
+    const xulBrowser = this.xulBrowser;
+    const browserData = xulBrowser && tabTracker.getBrowserData(xulBrowser);
     const windowContext = this.browsingContext?.currentWindowContext;
     return {
       // NOTE: the contextId property in the final set of properties returned to
@@ -797,7 +871,9 @@ class ExtensionPageContextParent extends ProxyContextParent {
       // contextType property (which should be one of the values part of the
       // runtime.ContextType enum).
       contextType: this.contextType,
-      // TODO(Bug 1891478): add documentId.
+      documentId: windowContext?.innerWindowId
+        ? lazy.ExtensionDocumentId.getDocumentId(windowContext.innerWindowId)
+        : undefined,
       // TODO(Bug 1890739): consider switching this to use webExposedOriginSerialization when available
       // Using nsIPrincipal.originNoSuffix to avoid including the
       // private browsing (or contextual identity ones)
@@ -805,8 +881,8 @@ class ExtensionPageContextParent extends ProxyContextParent {
       documentUrl: windowContext?.documentURI.spec,
       incognito: this.incognito,
       frameId: this.frameId,
-      tabId,
-      windowId,
+      tabId: browserData ? browserData.tabId : -1,
+      windowId: browserData ? browserData.windowId : -1,
       // TODO: File followup to also add a Firefox-only userContextId?
     };
   }
@@ -862,8 +938,8 @@ class DevToolsExtensionPageContextParent extends ExtensionPageContextParent {
     if (!this._onNavigatedListeners) {
       this._onNavigatedListeners = new Set();
 
-      await this.devToolsToolbox.resourceCommand.watchResources(
-        [this.devToolsToolbox.resourceCommand.TYPES.DOCUMENT_EVENT],
+      await this.devToolsToolbox.commands.resourceCommand.watchResources(
+        [this.devToolsToolbox.commands.resourceCommand.TYPES.DOCUMENT_EVENT],
         {
           onAvailable: this._onResourceAvailable,
           ignoreExistingResources: true,
@@ -916,8 +992,8 @@ class DevToolsExtensionPageContextParent extends ExtensionPageContextParent {
     }
 
     if (this._onNavigatedListeners) {
-      this.devToolsToolbox.resourceCommand.unwatchResources(
-        [this.devToolsToolbox.resourceCommand.TYPES.DOCUMENT_EVENT],
+      this.devToolsToolbox.commands.resourceCommand.unwatchResources(
+        [this.devToolsToolbox.commands.resourceCommand.TYPES.DOCUMENT_EVENT],
         { onAvailable: this._onResourceAvailable }
       );
     }
@@ -954,11 +1030,12 @@ class DevToolsExtensionPageContextParent extends ExtensionPageContextParent {
  * worker script.
  */
 class BackgroundWorkerContextParent extends ProxyContextParent {
-  constructor(envType, extension, params) {
+  constructor(envType, extension, params, actor) {
     // TODO: split out from ProxyContextParent a base class that
     // doesn't expect a browsingContext and one for contexts that are
     // expected to have a browsingContext associated.
-    super(envType, extension, params, null, extension.principal);
+    // ProxyContextParent still reads actor.browsingContext.
+    super(envType, extension, params, actor, extension.principal);
 
     this.viewType = params.viewType;
     this.workerDescriptorId = params.workerDescriptorId;
@@ -1073,14 +1150,19 @@ ParentAPIManager = {
             envType,
             extension,
             data,
-            actor.browsingContext
+            actor
           );
+          // TODO: make WindowContext a first-class member of BaseContext and
+          // use it here. For now, just set innerWindowID (already declared on
+          // BaseContext). This is used by notifyBackgroundScriptSuspendIgnored
+          // in ext-backgroundPage.js
+          context.innerWindowID = actor.manager.innerWindowId;
         } else if (envType == "devtools_parent") {
           context = new DevToolsExtensionPageContextParent(
             envType,
             extension,
             data,
-            actor.browsingContext
+            actor
           );
         }
       } else if (JSProcessActorParent.isInstance(actor)) {
@@ -1100,7 +1182,12 @@ ParentAPIManager = {
             `Unexpected viewType ${data.viewType} on an extension process actor`
           );
         }
-        context = new BackgroundWorkerContextParent(envType, extension, data);
+        context = new BackgroundWorkerContextParent(
+          envType,
+          extension,
+          data,
+          actor
+        );
       } else {
         // Unreacheable: JSWindowActorParent and JSProcessActorParent are the
         // only actors.
@@ -1114,7 +1201,7 @@ ParentAPIManager = {
         envType,
         extension,
         data,
-        actor.browsingContext,
+        actor,
         principal
       );
     } else {
@@ -1124,8 +1211,7 @@ ParentAPIManager = {
   },
 
   recvContextLoaded(data, { actor }) {
-    let context = this.getContextById(data.childId);
-    verifyActorForContext(actor, context);
+    let context = this.getContext(data.childId, actor);
     const { extension } = context;
     extension.emit("extension-proxy-context-load:completed", context);
   },
@@ -1167,7 +1253,7 @@ ParentAPIManager = {
       );
     }
 
-    let start = Cu.now();
+    let start = ChromeUtils.now();
     try {
       return callable();
     } finally {
@@ -1180,10 +1266,8 @@ ParentAPIManager = {
   },
 
   async recvAPICall(data, { actor }) {
-    let context = this.getContextById(data.childId);
+    let context = this.getContext(data.childId, actor);
     let target = actor.browsingContext?.top.embedderElement;
-
-    verifyActorForContext(actor, context);
 
     let reply = result => {
       if (target && !context.parentMessageManager) {
@@ -1259,15 +1343,13 @@ ParentAPIManager = {
   },
 
   async recvAddListener(data, { actor }) {
-    let context = this.getContextById(data.childId);
-
-    verifyActorForContext(actor, context);
+    let context = this.getContext(data.childId, actor);
 
     let { childId, alreadyLogged = false } = data;
     let handlingUserInput = false;
 
     let listener = async (...listenerArgs) => {
-      let startTime = Cu.now();
+      let startTime = ChromeUtils.now();
       // Extract urgentSend flag to avoid deserializing args holder later.
       let urgentSend = false;
       if (listenerArgs[0] && data.path.startsWith("webRequest.")) {
@@ -1339,8 +1421,8 @@ ParentAPIManager = {
     }
   },
 
-  async recvRemoveListener(data) {
-    let context = this.getContextById(data.childId);
+  async recvRemoveListener(data, { actor }) {
+    let context = this.getContext(data.childId, actor);
     let listener = context.listenerProxies.get(data.listenerId);
 
     let handler = await context.apiCan.asyncFindAPIPath(data.path);
@@ -1358,12 +1440,17 @@ ParentAPIManager = {
     }
   },
 
-  getContextById(childId) {
+  getContext(childId, actor) {
     let context = this.proxyContexts.get(childId);
-    if (!context) {
+    if (!context || context.actor !== actor) {
       throw new Error("WebExtension context not found!");
     }
     return context;
+  },
+
+  // Only use when checking the actor is not needed.
+  getContextUnchecked(childId) {
+    return this.proxyContexts.get(childId);
   },
 };
 
@@ -1437,20 +1524,53 @@ class HiddenXULWindow {
     }
 
     windowlessBrowser.browsingContext.useGlobalHistory = false;
+
+    const loadPromise = this.#promiseWindowlessBrowserReady(windowlessBrowser);
     webNav.loadURI(DUMMY_PAGE_URI, {
       triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
     });
+    await loadPromise;
 
-    await promiseObserved(
-      "chrome-document-global-created",
-      win => win.document == webNav.document
-    );
-    await promiseDocumentLoaded(windowlessBrowser.document);
     if (this.unloaded) {
       windowlessBrowser.close();
       return;
     }
     this._windowlessBrowser = windowlessBrowser;
+  }
+
+  #promiseWindowlessBrowserReady(windowlessBrowser) {
+    const webProgress = windowlessBrowser
+      .QueryInterface(Ci.nsIInterfaceRequestor)
+      .getInterface(Ci.nsIWebProgress);
+    return new Promise(resolve => {
+      const { shutdownSignal } = ExtensionParent;
+      const listener = {
+        QueryInterface: ChromeUtils.generateQI([
+          "nsIWebProgressListener",
+          "nsISupportsWeakReference",
+        ]),
+        onStateChange(webProgress, request, stateFlags) {
+          if (stateFlags & Ci.nsIWebProgressListener.STATE_STOP) {
+            unregisterAndResolve();
+          }
+        },
+      };
+
+      function unregisterAndResolve() {
+        webProgress.removeProgressListener(listener);
+        shutdownSignal.removeEventListener("abort", unregisterAndResolve);
+        resolve();
+      }
+
+      webProgress.addProgressListener(
+        listener,
+        Ci.nsIWebProgress.NOTIFY_STATE_DOCUMENT
+      );
+      shutdownSignal.addEventListener("abort", unregisterAndResolve);
+      if (shutdownSignal.aborted) {
+        unregisterAndResolve();
+      }
+    });
   }
 
   /**
@@ -1460,7 +1580,7 @@ class HiddenXULWindow {
    *        An object that contains the xul attributes to set of the newly
    *        created browser XUL element.
    *
-   * @returns {Promise<XULBrowserElement>}
+   * @returns {Promise<MozBrowser>}
    *          A Promise which resolves to the newly created browser XUL element.
    */
   async createBrowserElement(xulAttributes) {
@@ -1469,6 +1589,10 @@ class HiddenXULWindow {
     }
 
     await this.waitInitialized;
+
+    if (Services.startup.shuttingDown) {
+      throw new Error("Cannot create hidden browser past shutdown");
+    }
 
     const chromeDoc = this.chromeDocument;
 
@@ -1486,9 +1610,12 @@ class HiddenXULWindow {
 
     let awaitFrameLoader;
 
-    if (browser.getAttribute("remote") === "true") {
-      awaitFrameLoader = promiseEvent(browser, "XULFrameLoaderCreated");
+    if (browser.hasAttribute("remote")) {
+      awaitFrameLoader = this.#promiseXULFrameLoaderCreated(browser);
     }
+
+    // Prevent initial about:blank load before navigating to extension URI
+    browser.setAttribute("nodefaultsrc", "true");
 
     chromeDoc.documentElement.appendChild(browser);
 
@@ -1497,11 +1624,34 @@ class HiddenXULWindow {
     browser.getBoundingClientRect();
     await awaitFrameLoader;
 
+    if (Services.startup.shuttingDown) {
+      browser.remove();
+      // We already checked shuttingDown above; if we reach this point, then
+      // shutdown somehow started while awaiting XULFrameLoaderCreated.
+      throw new Error("Aborted hidden browser creation at shutdown");
+    }
+
     // FIXME(emilio): This unconditionally active frame seems rather
     // unfortunate, but matches previous behavior.
     browser.docShellIsActive = true;
 
     return browser;
+  }
+
+  #promiseXULFrameLoaderCreated(browser) {
+    return new Promise(resolve => {
+      const { shutdownSignal } = ExtensionParent;
+      function handleDone() {
+        browser.removeEventListener("XULFrameLoaderCreated", handleDone);
+        shutdownSignal.removeEventListener("abort", handleDone);
+        resolve();
+      }
+      browser.addEventListener("XULFrameLoaderCreated", handleDone);
+      shutdownSignal.addEventListener("abort", handleDone);
+      if (shutdownSignal.aborted) {
+        handleDone();
+      }
+    });
   }
 }
 
@@ -1620,8 +1770,10 @@ class HiddenExtensionPage {
   }
 }
 
-/** @typedef {import("resource://devtools/server/actors/descriptors/webextension.js")
-              .WebExtensionDescriptorActor} WebExtensionDescriptorActor */
+/**
+ * @typedef {import("resource://devtools/server/actors/descriptors/webextension.js")
+ *         .WebExtensionDescriptorActor} WebExtensionDescriptorActor
+ */
 
 /**
  * This object provides utility functions needed by the devtools actors to
@@ -1633,9 +1785,9 @@ const DebugUtils = {
   // which are used to connect the webextension patent actor to the extension process.
   hiddenXULWindow: null,
 
-  /** @type {Map<string, Promise<XULBrowserElement> & { browser: XULBrowserElement }>} */
+  /** @type {Map<string, Promise<MozBrowser> & { browser: MozBrowser }>} */
   debugBrowserPromises: new Map(),
-  /** @type {WeakMap<Promise<XULBrowserElement>, Set<WebExtensionDescriptorActor>>} */
+  /** @type {WeakMap<Promise<MozBrowser>, Set<WebExtensionDescriptorActor>>} */
   debugActors: new DefaultWeakMap(() => new Set()),
 
   _extensionUpdatedWatcher: null,
@@ -1787,7 +1939,7 @@ const DebugUtils = {
    * @param {WebExtensionDescriptorActor} webExtensionParentActor
    *        The devtools actor that is retrieving the browser element.
    *
-   * @returns {Promise<XULBrowserElement>}
+   * @returns {Promise<MozBrowser>}
    *          A promise which resolves to the configured browser XUL element.
    */
   async getExtensionProcessBrowser(webExtensionParentActor) {
@@ -1871,14 +2023,17 @@ const DebugUtils = {
  * was received by the message manager. The promise is rejected if the message
  * manager was closed before a message was received.
  *
+ * Accepts an AbortSignal to allow early unregistration of the listeners.
+ *
  * @param {MessageListenerManager} messageManager
  *        The message manager on which to listen for messages.
  * @param {string} messageName
  *        The message to listen for.
+ * @param {AbortSignal} abortSignal
  * @returns {Promise<*>}
  */
-function promiseMessageFromChild(messageManager, messageName) {
-  return new Promise((resolve, reject) => {
+function promiseMessageFromChild(messageManager, messageName, abortSignal) {
+  const promise = new Promise((resolve, reject) => {
     let unregister;
     function listener(message) {
       unregister();
@@ -1896,21 +2051,93 @@ function promiseMessageFromChild(messageManager, messageName) {
     }
     unregister = () => {
       Services.obs.removeObserver(observer, "message-manager-close");
+      abortSignal.removeEventListener("abort", unregister);
       messageManager.removeMessageListener(messageName, listener);
+      messageManager = null;
     };
     messageManager.addMessageListener(messageName, listener);
     Services.obs.addObserver(observer, "message-manager-close");
+    abortSignal.addEventListener("abort", unregister);
   });
+  return promise;
+}
+
+/**
+ * Returns a Promise which rejects if the load in the browser is aborted.
+ * Accepts an AbortSignal to allow early unregistration of the listeners.
+ *
+ * @param {MozBrowser} browser
+ * @param {AbortSignal} abortSignal
+ * @returns {Promise<void>} A promise that never resolves, but only rejects.
+ */
+function promiseBrowserStopped(browser, abortSignal) {
+  const { promise, reject } = Promise.withResolvers();
+  let unregister;
+  let listener = {
+    QueryInterface: ChromeUtils.generateQI([
+      "nsIWebProgressListener",
+      "nsISupportsWeakReference",
+    ]),
+
+    onStateChange(webProgress, request, stateFlags, status) {
+      if (
+        webProgress.isTopLevel &&
+        stateFlags & Ci.nsIWebProgressListener.STATE_STOP &&
+        !Components.isSuccessCode(status) &&
+        // Ignore state change triggered by navigating away from about:blank.
+        status !== Cr.NS_BINDING_ABORTED
+      ) {
+        unregister();
+        // Known failures (and test coverage):
+        // - NS_ERROR_ILLEGAL_DURING_SHUTDOWN (test_ext_background_early_quit.js)
+        // - NS_ERROR_FILE_NOT_FOUND (test_ext_background_file_invalid.js)
+        reject(
+          new Error(
+            `Browser load failed: ${ChromeUtils.getXPCOMErrorName(status)}`
+          )
+        );
+      }
+    },
+  };
+
+  unregister = () => {
+    // browser.removeProgressListener throws if browser.webProgress is null.
+    if (browser?.webProgress) {
+      browser.removeProgressListener(listener);
+    }
+    abortSignal.removeEventListener("abort", unregister);
+    listener = null;
+    browser = null;
+  };
+  browser.addProgressListener(listener, Ci.nsIWebProgress.NOTIFY_STATE_WINDOW);
+  abortSignal.addEventListener("abort", unregister);
+  return promise;
 }
 
 // This should be called before browser.loadURI is invoked.
 async function promiseBackgroundViewLoaded(browser) {
-  let { childId } = await promiseMessageFromChild(
+  const abortController = new AbortController();
+  const messagePromise = promiseMessageFromChild(
     browser.messageManager,
-    "Extension:BackgroundViewLoaded"
+    "Extension:BackgroundViewLoaded",
+    abortController.signal
   );
+  const stopPromise = promiseBrowserStopped(browser, abortController.signal);
+
+  let childId;
+  try {
+    // stopPromise only rejects, so a non-rejection is from messagePromise.
+    let message = await Promise.race([messagePromise, stopPromise]);
+    childId = message.childId;
+  } finally {
+    abortController.abort();
+  }
+
   if (childId) {
-    return ParentAPIManager.getContextById(childId);
+    let context = ParentAPIManager.getContextUnchecked(childId);
+    if (context && context.xulBrowser === browser) {
+      return context;
+    }
   }
 }
 
@@ -2074,15 +2301,16 @@ let IconDetails = {
 
       if (themeIcons) {
         themeIcons.forEach(({ size, light, dark }) => {
-          let lightURL = baseURI.resolve(light);
-          let darkURL = baseURI.resolve(dark);
+          // light and dark are reversed. theme_icons specifies
+          // the color of the icon instead of the toolbar color
+          const lightURL = baseURI.resolve(dark);
+          const darkURL = baseURI.resolve(light);
 
           this._checkURL(lightURL, extension);
           this._checkURL(darkURL, extension);
 
-          let defaultURL = result[size] || result[19]; // always fallback to default first
           result[size] = {
-            default: defaultURL || darkURL, // Fallback to the dark url if no default is specified.
+            default: lightURL, // TODO bug 2008737: Remove default property.
             light: lightURL,
             dark: darkURL,
           };
@@ -2365,6 +2593,18 @@ ExtensionParent._resetStartupPromises = () => {
 };
 ExtensionParent._resetStartupPromises();
 
+ChromeUtils.defineLazyGetter(ExtensionParent, "shutdownSignal", () => {
+  const abortControllerForShutdownSignal = new AbortController();
+  if (Services.startup.shuttingDown) {
+    abortControllerForShutdownSignal.abort();
+  } else {
+    promiseObserved("quit-application").then(() => {
+      abortControllerForShutdownSignal.abort();
+    });
+  }
+  return abortControllerForShutdownSignal.signal;
+});
+
 ChromeUtils.defineLazyGetter(ExtensionParent, "PlatformInfo", () => {
   return Object.freeze({
     os: (function () {
@@ -2382,6 +2622,8 @@ ChromeUtils.defineLazyGetter(ExtensionParent, "PlatformInfo", () => {
         arch = "x86-32";
       } else if (arch == "x86_64") {
         arch = "x86-64";
+      } else if (arch == "aarch64") {
+        arch = "arm64";
       }
       return arch;
     })(),
@@ -2389,9 +2631,9 @@ ChromeUtils.defineLazyGetter(ExtensionParent, "PlatformInfo", () => {
 });
 
 // Register WPTMessages actor when running under WPT.
-if (ExtensionCommon.isInWPT && AppConstants.NIGHTLY_BUILD) {
-  const { WPTMessagesParent } = ChromeUtils.importESModule(
-    "resource://gre/modules/WPTMessagesParent.sys.mjs"
+if (ExtensionCommon.isInWPT) {
+  const { WPTEventsParent } = ChromeUtils.importESModule(
+    "resource://gre/modules/WPTEventsParent.sys.mjs"
   );
-  WPTMessagesParent.init(apiManager);
+  WPTEventsParent.init(apiManager);
 }

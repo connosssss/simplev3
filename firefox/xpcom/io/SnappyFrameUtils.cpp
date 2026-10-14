@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,6 +5,7 @@
 #include "mozilla/SnappyFrameUtils.h"
 
 #include "crc32c.h"
+#include "mozilla/CheckedInt.h"
 #include "mozilla/EndianUtils.h"
 #include "nsDebug.h"
 #include "snappy/snappy.h"
@@ -198,6 +197,11 @@ nsresult SnappyFrameUtils::ParseCompressedData(char* aDest, size_t aDestLength,
   *aBytesReadOut = 0;
   size_t offset = 0;
 
+  // A CompressedData chunk must contain at least the masked CRC.
+  if (NS_WARN_IF(aDataLength < kCRCLength)) {
+    return NS_ERROR_CORRUPTED_CONTENT;
+  }
+
   uint32_t readCrc = LittleEndian::readUint32(aData + offset);
   offset += kCRCLength;
 
@@ -231,10 +235,13 @@ nsresult SnappyFrameUtils::ParseCompressedData(char* aDest, size_t aDestLength,
 
 // static
 size_t SnappyFrameUtils::MaxCompressedBufferLength(size_t aSourceLength) {
-  size_t neededLength = kHeaderLength;
+  CheckedInt<size_t> neededLength = kHeaderLength;
   neededLength += kCRCLength;
   neededLength += snappy::MaxCompressedLength(aSourceLength);
-  return neededLength;
+  if (!neededLength.isValid()) {
+    return SIZE_MAX;
+  }
+  return neededLength.value();
 }
 
 }  // namespace detail

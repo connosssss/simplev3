@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +6,10 @@
 #ifndef mozilla_image_ImageOps_h
 #define mozilla_image_ImageOps_h
 
+#include "ImageMetadata.h"
+#include "Units.h"
 #include "nsCOMPtr.h"
 #include "nsRect.h"
-#include "ImageMetadata.h"
 
 class gfxDrawable;
 class imgIContainer;
@@ -26,6 +26,7 @@ namespace image {
 class Image;
 struct Orientation;
 class SourceBuffer;
+enum class DecoderType : uint8_t;
 
 class ImageOps {
  public:
@@ -58,14 +59,14 @@ class ImageOps {
    * @param aClip            The rectangle to clip the image against.
    * @param aSVGViewportSize The specific viewort size of aImage. Unless aImage
    *                         is a vector image without intrinsic size, this
-   *                         argument should be pass as Nothing().
+   *                         argument should be passed as Nothing().
    */
   static already_AddRefed<Image> Clip(
       Image* aImage, nsIntRect aClip,
-      const Maybe<nsSize>& aSVGViewportSize = Nothing());
+      const Maybe<CSSSize>& aSVGViewportSize = Nothing());
   static already_AddRefed<imgIContainer> Clip(
       imgIContainer* aImage, nsIntRect aClip,
-      const Maybe<nsSize>& aSVGViewportSize = Nothing());
+      const Maybe<CSSSize>& aSVGViewportSize = Nothing());
 
   /**
    * Creates a version of an existing image which is rotated and/or flipped to
@@ -153,6 +154,11 @@ class ImageOps {
   static already_AddRefed<gfx::SourceSurface> DecodeToSurface(
       ImageBuffer* aBuffer, const nsACString& aMimeType, uint32_t aFlags,
       const Maybe<gfx::IntSize>& aSize = Nothing());
+
+  /* Same as above but with a SourceBuffer + DecoderType */
+  static already_AddRefed<gfx::SourceSurface> DecodeToSurface(
+      SourceBuffer* aSourceBuffer, image::DecoderType aDecoderType,
+      uint32_t aFlags, const Maybe<gfx::IntSize>& aSize = Nothing());
 
  private:
   class ImageBufferImpl;

@@ -1,25 +1,24 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/dom/DOMIntersectionObserver.h"
 #include "mozilla/dom/HTMLIFrameElement.h"
-#include "mozilla/dom/ContentChild.h"
-#include "mozilla/dom/Document.h"
-#include "mozilla/dom/HTMLIFrameElementBinding.h"
-#include "mozilla/dom/FeaturePolicy.h"
-#include "mozilla/dom/TrustedTypeUtils.h"
-#include "mozilla/dom/TrustedTypesConstants.h"
+
 #include "mozilla/MappedDeclarationsBuilder.h"
 #include "mozilla/NullPrincipal.h"
 #include "mozilla/StaticPrefs_dom.h"
-#include "nsSubDocumentFrame.h"
-#include "nsError.h"
+#include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/DOMIntersectionObserver.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/HTMLIFrameElementBinding.h"
+#include "mozilla/dom/PermissionsPolicy.h"
+#include "mozilla/dom/TrustedTypeUtils.h"
+#include "mozilla/dom/TrustedTypesConstants.h"
 #include "nsContentUtils.h"
-#include "nsSandboxFlags.h"
+#include "nsError.h"
 #include "nsNetUtil.h"
+#include "nsSandboxFlags.h"
+#include "nsSubDocumentFrame.h"
 
 NS_IMPL_NS_NEW_HTML_ELEMENT_CHECK_PARSER(IFrame)
 
@@ -29,13 +28,13 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(HTMLIFrameElement)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(HTMLIFrameElement,
                                                   nsGenericHTMLFrameElement)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFeaturePolicy)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPermissionsPolicy)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSandbox)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(HTMLIFrameElement,
                                                 nsGenericHTMLFrameElement)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mFeaturePolicy)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mPermissionsPolicy)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSandbox)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
@@ -49,19 +48,18 @@ NS_INTERFACE_MAP_END_INHERITING(nsGenericHTMLFrameElement)
 const DOMTokenListSupportedToken HTMLIFrameElement::sSupportedSandboxTokens[] =
     {
 #define SANDBOX_KEYWORD(string, atom, flags) string,
-#include "IframeSandboxKeywordList.h"
+#include "IframeSandboxKeywordList.inc"
 #undef SANDBOX_KEYWORD
         nullptr};
 
 HTMLIFrameElement::HTMLIFrameElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
-    FromParser aFromParser)
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo, FromParser aFromParser)
     : nsGenericHTMLFrameElement(std::move(aNodeInfo), aFromParser) {
-  // We always need a featurePolicy, even if not exposed.
-  mFeaturePolicy = new mozilla::dom::FeaturePolicy(this);
-  nsCOMPtr<nsIPrincipal> origin = GetFeaturePolicyDefaultOrigin();
+  // We always need a permissionsPolicy, even if not exposed.
+  mPermissionsPolicy = new mozilla::dom::PermissionsPolicy(this);
+  nsCOMPtr<nsIPrincipal> origin = GetPermissionsPolicyDefaultOrigin();
   MOZ_ASSERT(origin);
-  mFeaturePolicy->SetDefaultOrigin(origin);
+  mPermissionsPolicy->SetDefaultOrigin(origin);
 }
 
 HTMLIFrameElement::~HTMLIFrameElement() = default;
@@ -69,7 +67,9 @@ HTMLIFrameElement::~HTMLIFrameElement() = default;
 NS_IMPL_ELEMENT_CLONE(HTMLIFrameElement)
 
 void HTMLIFrameElement::BindToBrowsingContext(BrowsingContext*) {
-  RefreshFeaturePolicy(true /* parse the feature policy attribute */);
+  RefreshPermissionsPolicy(true /* parse the permissions policy attribute */);
+  RefreshEmbedderReferrerPolicy(
+      ReferrerPolicyFromAttr(GetParsedAttr(nsGkAtoms::referrerpolicy)));
 }
 
 bool HTMLIFrameElement::ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
@@ -133,8 +133,8 @@ void HTMLIFrameElement::MapAttributesIntoRule(
   nsGenericHTMLElement::MapCommonAttributesInto(aBuilder);
 }
 
-NS_IMETHODIMP_(bool)
-HTMLIFrameElement::IsAttributeMapped(const nsAtom* aAttribute) const {
+bool HTMLIFrameElement::IsNoNamespaceAttrMapped(
+    const nsAtom* aAttribute) const {
   static const MappedAttributeEntry attributes[] = {
       {nsGkAtoms::width},
       {nsGkAtoms::height},
@@ -169,7 +169,7 @@ void HTMLIFrameElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
         SetLazyLoading();
       } else if (aOldValue &&
                  Loading(aOldValue->GetEnumValue()) == Loading::Lazy) {
-        StopLazyLoading();
+        StopLazyLoading(TriggerLoad::Yes);
       }
     }
 
@@ -191,9 +191,18 @@ void HTMLIFrameElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
 
     if (aName == nsGkAtoms::allow || aName == nsGkAtoms::src ||
         aName == nsGkAtoms::srcdoc || aName == nsGkAtoms::sandbox) {
-      RefreshFeaturePolicy(true /* parse the feature policy attribute */);
+      RefreshPermissionsPolicy(
+          true /* parse the permissions policy attribute */);
     } else if (aName == nsGkAtoms::allowfullscreen) {
-      RefreshFeaturePolicy(false /* parse the feature policy attribute */);
+      RefreshPermissionsPolicy(
+          false /* parse the permissions policy attribute */);
+    }
+  }
+
+  if (aName == nsGkAtoms::referrerpolicy) {
+    const auto newValue = ReferrerPolicyFromAttr(aValue);
+    if (newValue != ReferrerPolicyFromAttr(aOldValue)) {
+      RefreshEmbedderReferrerPolicy(newValue);
     }
   }
 
@@ -235,11 +244,11 @@ JSObject* HTMLIFrameElement::WrapNode(JSContext* aCx,
   return HTMLIFrameElement_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-mozilla::dom::FeaturePolicy* HTMLIFrameElement::FeaturePolicy() const {
-  return mFeaturePolicy;
+mozilla::dom::PermissionsPolicy* HTMLIFrameElement::PermissionsPolicy() const {
+  return mPermissionsPolicy;
 }
 
-void HTMLIFrameElement::MaybeStoreCrossOriginFeaturePolicy() {
+void HTMLIFrameElement::MaybeStoreCrossOriginPermissionsPolicy() {
   if (!mFrameLoader) {
     return;
   }
@@ -257,13 +266,13 @@ void HTMLIFrameElement::MaybeStoreCrossOriginFeaturePolicy() {
   }
 
   if (ContentChild* cc = ContentChild::GetSingleton()) {
-    Unused << cc->SendSetContainerFeaturePolicy(
-        browsingContext, Some(mFeaturePolicy->ToFeaturePolicyInfo()));
+    (void)cc->SendSetContainerPermissionsPolicy(
+        browsingContext, Some(mPermissionsPolicy->ToPermissionsPolicyInfo()));
   }
 }
 
 already_AddRefed<nsIPrincipal>
-HTMLIFrameElement::GetFeaturePolicyDefaultOrigin() const {
+HTMLIFrameElement::GetPermissionsPolicyDefaultOrigin() const {
   nsCOMPtr<nsIPrincipal> principal;
 
   if (HasAttr(nsGkAtoms::srcdoc)) {
@@ -284,31 +293,42 @@ HTMLIFrameElement::GetFeaturePolicyDefaultOrigin() const {
   return principal.forget();
 }
 
-void HTMLIFrameElement::RefreshFeaturePolicy(bool aParseAllowAttribute) {
+void HTMLIFrameElement::RefreshPermissionsPolicy(bool aParseAllowAttribute) {
   if (aParseAllowAttribute) {
-    mFeaturePolicy->ResetDeclaredPolicy();
+    mPermissionsPolicy->ResetDeclaredPolicy();
 
     // The origin can change if 'src' and 'srcdoc' attributes change.
-    nsCOMPtr<nsIPrincipal> origin = GetFeaturePolicyDefaultOrigin();
+    nsCOMPtr<nsIPrincipal> origin = GetPermissionsPolicyDefaultOrigin();
     MOZ_ASSERT(origin);
-    mFeaturePolicy->SetDefaultOrigin(origin);
+    mPermissionsPolicy->SetDefaultOrigin(origin);
 
     nsAutoString allow;
     GetAttr(nsGkAtoms::allow, allow);
 
     if (!allow.IsEmpty()) {
-      // Set or reset the FeaturePolicy directives.
-      mFeaturePolicy->SetDeclaredPolicy(OwnerDoc(), allow, NodePrincipal(),
-                                        origin);
+      // Set or reset the PermissionsPolicy directives.
+      mPermissionsPolicy->SetDeclaredAttributePolicy(OwnerDoc(), allow,
+                                                     NodePrincipal(), origin);
     }
   }
 
   if (AllowFullscreen()) {
-    mFeaturePolicy->MaybeSetAllowedPolicy(u"fullscreen"_ns);
+    mPermissionsPolicy->MaybeSetAllowedPolicy(u"fullscreen"_ns);
   }
 
-  mFeaturePolicy->InheritPolicy(OwnerDoc()->FeaturePolicy());
-  MaybeStoreCrossOriginFeaturePolicy();
+  mPermissionsPolicy->InheritPolicy(OwnerDoc()->PermissionsPolicy());
+  MaybeStoreCrossOriginPermissionsPolicy();
+}
+
+void HTMLIFrameElement::RefreshEmbedderReferrerPolicy(ReferrerPolicy aPolicy) {
+  auto* browsingContext = GetExtantBrowsingContext();
+  if (!browsingContext || !browsingContext->IsContentSubframe()) {
+    return;
+  }
+
+  if (ContentChild* cc = ContentChild::GetSingleton()) {
+    (void)cc->SendSetReferrerPolicyForEmbedderFrame(browsingContext, aPolicy);
+  }
 }
 
 void HTMLIFrameElement::UpdateLazyLoadState() {
@@ -319,71 +339,55 @@ void HTMLIFrameElement::UpdateLazyLoadState() {
 
 nsresult HTMLIFrameElement::BindToTree(BindContext& aContext,
                                        nsINode& aParent) {
-  // Update lazy load state on bind to tree again if lazy loading, as the
-  // loading attribute could be set before others.
   if (mLazyLoading) {
+    LazyLoadingElementBindToTree(aContext);
+    // Update lazy load state on bind to tree if lazy loading, as the
+    // loading attribute could be set before others.
     UpdateLazyLoadState();
   }
-
   return nsGenericHTMLFrameElement::BindToTree(aContext, aParent);
 }
 
-void HTMLIFrameElement::SetLazyLoading() {
+void HTMLIFrameElement::UnbindFromTree(UnbindContext& aContext) {
   if (mLazyLoading) {
-    return;
+    LazyLoadingElementUnbindFromTree(aContext);
   }
-
-  // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#will-lazy-load-element-steps
-  // "If scripting is disabled for element, then return false."
-  Document* doc = OwnerDoc();
-  if (!doc->IsScriptEnabled() || doc->IsStaticDocument()) {
-    return;
-  }
-
-  doc->EnsureLazyLoadObserver().Observe(*this);
-  mLazyLoading = true;
-
-  UpdateLazyLoadState();
-}
-
-void HTMLIFrameElement::StopLazyLoading() {
-  CancelLazyLoading(false /* aClearLazyLoadState */);
-
-  LoadSrc();
-
-  mLazyLoadState.Clear();
-  if (nsSubDocumentFrame* ourFrame = do_QueryFrame(GetPrimaryFrame())) {
-    ourFrame->ResetFrameLoader(nsSubDocumentFrame::RetainPaintData::No);
-  }
+  nsGenericHTMLFrameElement::UnbindFromTree(aContext);
 }
 
 void HTMLIFrameElement::NodeInfoChanged(Document* aOldDoc) {
-  nsGenericHTMLElement::NodeInfoChanged(aOldDoc);
-
-  if (mLazyLoading) {
-    aOldDoc->GetLazyLoadObserver()->Unobserve(*this);
-    mLazyLoading = false;
-  }
-
+  nsGenericHTMLFrameElement::NodeInfoChanged(aOldDoc);
+  // We might be moving from a document with lazyload disabled to one with
+  // lazyload enabled.
+  StopLazyLoading(TriggerLoad::No);
   if (LoadingState() == Loading::Lazy) {
     SetLazyLoading();
   }
 }
 
-void HTMLIFrameElement::CancelLazyLoading(bool aClearLazyLoadState) {
-  if (!mLazyLoading) {
+void HTMLIFrameElement::SetLazyLoading() {
+  if (mLazyLoading || !MaybeStartLazyLoading()) {
     return;
   }
 
-  Document* doc = OwnerDoc();
-  if (auto* obs = doc->GetLazyLoadObserver()) {
-    obs->Unobserve(*this);
+  mLazyLoading = true;
+  UpdateLazyLoadState();
+}
+
+void HTMLIFrameElement::StopLazyLoading(TriggerLoad aTriggerLoad) {
+  if (!mLazyLoading) {
+    return;
   }
-
+  Element::StopLazyLoading();
   mLazyLoading = false;
-
-  if (aClearLazyLoadState) {
-    mLazyLoadState.Clear();
+  if (aTriggerLoad == TriggerLoad::Yes) {
+    LoadSrc();
+  }
+  mLazyLoadState.Clear();
+  if (aTriggerLoad == TriggerLoad::Yes) {
+    if (nsSubDocumentFrame* ourFrame = do_QueryFrame(GetPrimaryFrame())) {
+      ourFrame->ResetFrameLoader(nsSubDocumentFrame::RetainPaintData::No);
+    }
   }
 }
 

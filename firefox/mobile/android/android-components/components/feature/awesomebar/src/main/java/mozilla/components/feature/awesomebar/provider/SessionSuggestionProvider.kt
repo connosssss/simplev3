@@ -4,34 +4,32 @@
 
 package mozilla.components.feature.awesomebar.provider
 
-import android.content.res.Resources
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import androidx.annotation.VisibleForTesting
 import androidx.core.net.toUri
+import java.util.UUID
 import mozilla.components.browser.icons.BrowserIcons
 import mozilla.components.browser.icons.IconRequest
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.state.TabSessionState
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.awesomebar.AwesomeBar
-import mozilla.components.feature.awesomebar.R
 import mozilla.components.feature.awesomebar.facts.emitOpenTabSuggestionClickedFact
 import mozilla.components.feature.tabs.TabsUseCases
-import java.util.UUID
 
 /**
  * A [AwesomeBar.SuggestionProvider] implementation that provides suggestions based on the sessions in the
  * [SessionManager] (Open tabs).
  */
 class SessionSuggestionProvider(
-    private val resources: Resources,
     private val store: BrowserStore,
     private val selectTabUseCase: TabsUseCases.SelectTabUseCase,
     private val icons: BrowserIcons? = null,
     private val indicatorIcon: Drawable? = null,
     private val excludeSelectedSession: Boolean = false,
     private val suggestionsHeader: String? = null,
+    private val switchToTabDescription: String,
     @get:VisibleForTesting val resultsUriFilter: ((Uri) -> Boolean)? = null,
 ) : AwesomeBar.SuggestionProvider {
     override val id: String = UUID.randomUUID().toString()
@@ -53,29 +51,31 @@ class SessionSuggestionProvider(
         val suggestions = mutableListOf<AwesomeBar.Suggestion>()
         val searchWords = searchText.split(" ")
 
-        distinctTabs.filter { item ->
-            !item.content.private &&
-                searchWords.all { item.contains(it) } &&
-                resultsUriFilter?.invoke(item.content.url.toUri()) != false &&
-                shouldIncludeSelectedTab(state, item)
-        }.forEach { item ->
-            val iconRequest = icons?.loadIcon(IconRequest(url = item.content.url, waitOnNetworkLoad = false))
-            suggestions.add(
-                AwesomeBar.Suggestion(
-                    provider = this,
-                    id = item.id,
-                    title = item.content.title.ifBlank { item.content.url },
-                    description = resources.getString(R.string.switch_to_tab_description),
-                    flags = setOf(AwesomeBar.Suggestion.Flag.OPEN_TAB),
-                    icon = iconRequest?.await()?.bitmap,
-                    indicatorIcon = indicatorIcon,
-                    onSuggestionClicked = {
-                        selectTabUseCase(item.id)
-                        emitOpenTabSuggestionClickedFact()
-                    },
-                ),
-            )
-        }
+        distinctTabs
+            .filter { item ->
+                !item.content.private &&
+                    searchWords.all { item.contains(it) } &&
+                    resultsUriFilter?.invoke(item.content.url.toUri()) != false &&
+                    shouldIncludeSelectedTab(state, item)
+            }
+            .forEach { item ->
+                val iconRequest = icons?.loadIcon(IconRequest(url = item.content.url, waitOnNetworkLoad = false))
+                suggestions.add(
+                    AwesomeBar.Suggestion(
+                        provider = this,
+                        id = item.id,
+                        title = item.content.title.ifBlank { item.content.url },
+                        description = switchToTabDescription,
+                        flags = setOf(AwesomeBar.Suggestion.Flag.OPEN_TAB),
+                        icon = iconRequest?.await()?.bitmap,
+                        indicatorIcon = indicatorIcon,
+                        onSuggestionClicked = {
+                            selectTabUseCase(item.id)
+                            emitOpenTabSuggestionClickedFact()
+                        },
+                    )
+                )
+            }
 
         return suggestions
     }

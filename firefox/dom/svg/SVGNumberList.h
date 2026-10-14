@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,12 @@
 #ifndef DOM_SVG_SVGNUMBERLIST_H_
 #define DOM_SVG_SVGNUMBERLIST_H_
 
+#include "SVGElement.h"
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
 #include "nsIContent.h"
 #include "nsINode.h"
 #include "nsIWeakReferenceUtils.h"
-#include "SVGElement.h"
 #include "nsTArray.h"
 
 namespace mozilla {
@@ -35,6 +33,7 @@ class SVGNumberList {
   friend class dom::DOMSVGNumber;
   friend class dom::DOMSVGNumberList;
   friend class SVGAnimatedNumberList;
+  using const_iterator = FallibleTArray<float>::const_iterator;
 
  public:
   SVGNumberList() = default;
@@ -43,7 +42,7 @@ class SVGNumberList {
   SVGNumberList& operator=(const SVGNumberList& aOther) {
     mNumbers.ClearAndRetainStorage();
     // Best-effort, really.
-    Unused << mNumbers.AppendElements(aOther.mNumbers, fallible);
+    (void)mNumbers.AppendElements(aOther.mNumbers, fallible);
     return *this;
   }
 
@@ -61,12 +60,8 @@ class SVGNumberList {
 
   const float& operator[](uint32_t aIndex) const { return mNumbers[aIndex]; }
 
-  [[nodiscard]] FallibleTArray<float>::const_iterator begin() const {
-    return mNumbers.begin();
-  }
-  [[nodiscard]] FallibleTArray<float>::const_iterator end() const {
-    return mNumbers.end();
-  }
+  [[nodiscard]] const_iterator begin() const { return mNumbers.begin(); }
+  [[nodiscard]] const_iterator end() const { return mNumbers.end(); }
 
   bool operator==(const SVGNumberList& rhs) const {
     return mNumbers == rhs.mNumbers;
@@ -94,6 +89,10 @@ class SVGNumberList {
   void SwapWith(SVGNumberList& aRhs) { mNumbers.SwapElements(aRhs.mNumbers); }
 
   float& operator[](uint32_t aIndex) { return mNumbers[aIndex]; }
+  [[nodiscard]] FallibleTArray<float>::iterator begin() {
+    return mNumbers.begin();
+  }
+  [[nodiscard]] FallibleTArray<float>::iterator end() { return mNumbers.end(); }
 
   /**
    * This may fail (return false) on OOM if the internal capacity is being
@@ -151,7 +150,7 @@ class SVGNumberList {
  */
 class SVGNumberListAndInfo : public SVGNumberList {
  public:
-  SVGNumberListAndInfo() : mElement(nullptr) {}
+  SVGNumberListAndInfo() = default;
 
   explicit SVGNumberListAndInfo(dom::SVGElement* aElement)
       : mElement(do_GetWeakReference(static_cast<nsINode*>(aElement))) {}
@@ -179,25 +178,18 @@ class SVGNumberListAndInfo : public SVGNumberList {
    * SVGNumberListAndInfo objects. Note that callers should also call
    * SetInfo() when using this method!
    */
-  nsresult CopyFrom(const SVGNumberList& rhs) {
-    return SVGNumberList::CopyFrom(rhs);
-  }
-  const float& operator[](uint32_t aIndex) const {
-    return SVGNumberList::operator[](aIndex);
-  }
-  float& operator[](uint32_t aIndex) {
-    return SVGNumberList::operator[](aIndex);
-  }
-  bool SetLength(uint32_t aNumberOfItems) {
-    return SVGNumberList::SetLength(aNumberOfItems);
-  }
+  using SVGNumberList::CopyFrom;
+  using SVGNumberList::operator[];
+  using SVGNumberList::begin;
+  using SVGNumberList::end;
+  using SVGNumberList::SetLength;
 
  private:
   // We must keep a weak reference to our element because we may belong to a
   // cached baseVal SMILValue. See the comments starting at:
   // https://bugzilla.mozilla.org/show_bug.cgi?id=515116#c15
   // See also https://bugzilla.mozilla.org/show_bug.cgi?id=653497
-  nsWeakPtr mElement;
+  nsWeakPtr mElement{nullptr};
 };
 
 }  // namespace mozilla

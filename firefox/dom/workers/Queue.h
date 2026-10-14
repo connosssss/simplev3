@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -44,6 +42,16 @@ struct StorageWithTArray {
 
     aEntry = aStorage.PopLastElement();
     return true;
+  }
+
+  template <typename Pred>
+  static bool AnyElement(const StorageType& aStorage, Pred&& aPred) {
+    for (const T& entry : aStorage) {
+      if (aPred(entry)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static void Clear(StorageType& aStorage) { aStorage.Clear(); }
@@ -106,6 +114,10 @@ class Queue : public LockingPolicy {
  public:
   Queue() : mFront(&mStorage1), mBack(&mStorage2) {}
 
+  // Queue is not copyable.
+  Queue(const Queue&) = delete;
+  Queue& operator=(const Queue&) = delete;
+
   bool IsEmpty() {
     AutoLock lock(*this);
     return StoragePolicy::IsEmpty(*mFront) && StoragePolicy::IsEmpty(*mBack);
@@ -128,6 +140,15 @@ class Queue : public LockingPolicy {
     return StoragePolicy::Pop(*mFront, aEntry);
   }
 
+  // Return true if any queued element satisfies aPred. Order-independent, so it
+  // scans both internal storages without disturbing them.
+  template <typename Pred>
+  bool AnyElement(Pred&& aPred) {
+    AutoLock lock(*this);
+    return StoragePolicy::AnyElement(*mFront, aPred) ||
+           StoragePolicy::AnyElement(*mBack, aPred);
+  }
+
   void Clear() {
     AutoLock lock(*this);
     StoragePolicy::Clear(*mFront);
@@ -139,11 +160,6 @@ class Queue : public LockingPolicy {
 
   // XXX Do we need this?
   void Unlock() { LockingPolicy::Unlock(); }
-
- private:
-  // Queue is not copyable.
-  Queue(const Queue&);
-  Queue& operator=(const Queue&);
 };
 
 }  // namespace mozilla::dom::workerinternals

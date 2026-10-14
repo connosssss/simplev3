@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,8 +6,10 @@
 
 #include <utility>
 
-#include "nsDebug.h"
-
+#include "RemoteWorkerControllerParent.h"
+#include "RemoteWorkerManager.h"
+#include "RemoteWorkerNonLifeCycleOpControllerParent.h"
+#include "RemoteWorkerParent.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Maybe.h"
@@ -18,13 +18,9 @@
 #include "mozilla/dom/FetchEventOpProxyParent.h"
 #include "mozilla/dom/MessagePortParent.h"
 #include "mozilla/dom/RemoteWorkerTypes.h"
-#include "mozilla/dom/ServiceWorkerCloneData.h"
 #include "mozilla/dom/ServiceWorkerShutdownState.h"
 #include "mozilla/ipc/BackgroundParent.h"
-#include "RemoteWorkerControllerParent.h"
-#include "RemoteWorkerManager.h"
-#include "RemoteWorkerNonLifeCycleOpControllerParent.h"
-#include "RemoteWorkerParent.h"
+#include "nsDebug.h"
 
 namespace mozilla {
 
@@ -69,6 +65,7 @@ RemoteWorkerController::~RemoteWorkerController() {
 
 void RemoteWorkerController::SetWorkerActor(RemoteWorkerParent* aActor) {
   AssertIsOnBackgroundThread();
+  MOZ_ASSERT(!IsTerminated());
   MOZ_ASSERT(!mActor);
   MOZ_ASSERT(aActor);
 
@@ -177,7 +174,7 @@ void RemoteWorkerController::CancelAllPendingOps() {
 
 void RemoteWorkerController::Shutdown() {
   AssertIsOnBackgroundThread();
-  Unused << NS_WARN_IF(mIsServiceWorker && !mPendingOps.IsEmpty());
+  (void)NS_WARN_IF(mIsServiceWorker && !mPendingOps.IsEmpty());
 
   if (mState == eTerminated) {
     MOZ_ASSERT(mPendingOps.IsEmpty());
@@ -206,7 +203,7 @@ void RemoteWorkerController::Shutdown() {
   if (mIsServiceWorker) {
     mActor->MaybeSendDelete();
   } else {
-    Unused << mActor->SendExecOp(SharedWorkerTerminateOpArgs());
+    (void)mActor->SendExecOp(SharedWorkerTerminateOpArgs());
   }
 
   mActor = nullptr;
@@ -291,6 +288,21 @@ void RemoteWorkerController::Thaw() {
   MaybeStartSharedWorkerOp(PendingSharedWorkerOp::eThaw);
 }
 
+void RemoteWorkerController::SetLocaleOverride(
+    const nsACString& aLanguageOverride, const nsTArray<nsString>& aLanguages) {
+  AssertIsOnBackgroundThread();
+
+  MaybeStartSharedWorkerOp(aLanguageOverride, aLanguages);
+}
+
+void RemoteWorkerController::UpdateTimezoneOverride(
+    const nsAString& aTimezoneOverride) {
+  AssertIsOnBackgroundThread();
+
+  MaybeStartSharedWorkerOp(PendingSharedWorkerOp::eUpdateTimezoneOverride,
+                           aTimezoneOverride);
+}
+
 RefPtr<ServiceWorkerOpPromise> RemoteWorkerController::ExecServiceWorkerOp(
     ServiceWorkerOpArgs&& aArgs) {
   AssertIsOnBackgroundThread();
@@ -334,6 +346,10 @@ RefPtr<GenericPromise> RemoteWorkerController::SetServiceWorkerSkipWaitingFlag()
   AssertIsOnBackgroundThread();
   MOZ_ASSERT(mObserver);
 
+  if (!mIsServiceWorker) {
+    return GenericPromise::CreateAndResolve(false, __func__);
+  }
+
   RefPtr<GenericPromise::Private> promise =
       new GenericPromise::Private(__func__);
 
@@ -358,6 +374,21 @@ RemoteWorkerController::PendingSharedWorkerOp::PendingSharedWorkerOp(
     const MessagePortIdentifier& aPortIdentifier)
     : mType(ePortIdentifier), mPortIdentifier(aPortIdentifier) {
   AssertIsOnBackgroundThread();
+}
+
+RemoteWorkerController::PendingSharedWorkerOp::PendingSharedWorkerOp(
+    const nsACString& aLanguageOverride, const nsTArray<nsString>& aLanguages)
+    : mType(eSetLocaleOverride),
+      mLanguageOverride(aLanguageOverride),
+      mLanguages(aLanguages) {
+  AssertIsOnBackgroundThread();
+}
+
+RemoteWorkerController::PendingSharedWorkerOp::PendingSharedWorkerOp(
+    Type aType, const nsAString& aTimezoneOverride)
+    : mType(aType), mTimezoneOverride(aTimezoneOverride) {
+  AssertIsOnBackgroundThread();
+  MOZ_ASSERT(aType == eUpdateTimezoneOverride);
 }
 
 RemoteWorkerController::PendingSharedWorkerOp::~PendingSharedWorkerOp() {
@@ -386,16 +417,16 @@ bool RemoteWorkerController::PendingSharedWorkerOp::MaybeStart(
       aOwner->Shutdown();
       break;
     case eSuspend:
-      Unused << aOwner->mActor->SendExecOp(SharedWorkerSuspendOpArgs());
+      (void)aOwner->mActor->SendExecOp(SharedWorkerSuspendOpArgs());
       break;
     case eResume:
-      Unused << aOwner->mActor->SendExecOp(SharedWorkerResumeOpArgs());
+      (void)aOwner->mActor->SendExecOp(SharedWorkerResumeOpArgs());
       break;
     case eFreeze:
-      Unused << aOwner->mActor->SendExecOp(SharedWorkerFreezeOpArgs());
+      (void)aOwner->mActor->SendExecOp(SharedWorkerFreezeOpArgs());
       break;
     case eThaw:
-      Unused << aOwner->mActor->SendExecOp(SharedWorkerThawOpArgs());
+      (void)aOwner->mActor->SendExecOp(SharedWorkerThawOpArgs());
       break;
     case ePortIdentifier:
       // mNonLifeCycleOpController can be nullptr if the Worker is in "Killing."
@@ -409,16 +440,24 @@ bool RemoteWorkerController::PendingSharedWorkerOp::MaybeStart(
       if (!aOwner->mNonLifeCycleOpController->CanSend()) {
         return false;
       }
-      Unused << aOwner->mNonLifeCycleOpController->SendExecOp(
+      (void)aOwner->mNonLifeCycleOpController->SendExecOp(
           SharedWorkerPortIdentifierOpArgs(mPortIdentifier));
       break;
     case eAddWindowID:
-      Unused << aOwner->mActor->SendExecOp(
+      (void)aOwner->mActor->SendExecOp(
           SharedWorkerAddWindowIDOpArgs(mWindowID));
       break;
     case eRemoveWindowID:
-      Unused << aOwner->mActor->SendExecOp(
+      (void)aOwner->mActor->SendExecOp(
           SharedWorkerRemoveWindowIDOpArgs(mWindowID));
+      break;
+    case eSetLocaleOverride:
+      (void)aOwner->mActor->SendExecOp(
+          SharedWorkerSetLocaleOverrideOpArgs(mLanguageOverride, mLanguages));
+      break;
+    case eUpdateTimezoneOverride:
+      (void)aOwner->mActor->SendExecOp(
+          SharedWorkerUpdateTimezoneOverrideOpArgs(mTimezoneOverride));
       break;
     default:
       MOZ_CRASH("Unknown op.");
@@ -566,14 +605,18 @@ RemoteWorkerController::PendingSWFetchEventOp::PendingSWFetchEventOp(
   IPCInternalRequest& req = mArgs.common().internalRequest();
   if (req.body().isSome() &&
       req.body().ref().type() == BodyStreamVariant::TParentToParentStream) {
-    nsCOMPtr<nsIInputStream> stream;
     auto streamLength = req.bodySize();
     const auto& uuid = req.body().ref().get_ParentToParentStream().uuid();
 
     auto storage = RemoteLazyInputStreamStorage::Get().unwrapOr(nullptr);
     MOZ_DIAGNOSTIC_ASSERT(storage);
-    storage->GetStream(uuid, 0, streamLength, getter_AddRefs(mBodyStream));
-    storage->ForgetStream(uuid);
+    if (req.hasStreamBody()) {
+      // Transfer the streaming body instead of retaining a clone for replay.
+      mBodyStream = storage->ForgetStream(uuid);
+    } else {
+      storage->GetStream(uuid, 0, streamLength, getter_AddRefs(mBodyStream));
+      storage->ForgetStream(uuid);
+    }
 
     MOZ_DIAGNOSTIC_ASSERT(mBodyStream);
 
@@ -597,6 +640,15 @@ bool RemoteWorkerController::PendingSWFetchEventOp::MaybeStart(
     mPromise = nullptr;
     // Because the worker has transitioned to terminated, this operation is moot
     // and so we should return true because there's no need to queue it.
+    return true;
+  }
+
+  // If the streaming body could not be taken from storage the worker would
+  // see a request whose body is missing.
+  if (NS_WARN_IF(mArgs.common().internalRequest().hasStreamBody() &&
+                 !mBodyStream)) {
+    mPromise->Reject(NS_ERROR_FAILURE, __func__);
+    mPromise = nullptr;
     return true;
   }
 

@@ -1,5 +1,4 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 20; indent-tabs-mode: nil; -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -37,14 +36,24 @@ public final class SessionPdfFileSaver {
         .queryBundle("GeckoView:PDFSave", null)
         .map(
             response -> {
-              geckoResult.completeFrom(
+              final GeckoResult<WebResponse> pdfResponse =
                   SessionPdfFileSaver.createResponse(
                       mSession,
                       response.getString("url"),
                       response.getString("filename"),
                       response.getString("originalUrl"),
                       true,
-                      false));
+                      false);
+              if (pdfResponse == null) {
+                geckoResult.completeExceptionally(
+                    new IllegalStateException("Could not get a PDF response."));
+              } else {
+                geckoResult.completeFrom(pdfResponse);
+              }
+              return null;
+            },
+            exception -> {
+              geckoResult.completeExceptionally(exception);
               return null;
             });
     return geckoResult;

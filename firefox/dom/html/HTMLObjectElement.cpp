@@ -1,21 +1,21 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/dom/HTMLObjectElement.h"
+
 #include "mozilla/dom/BindContext.h"
 #include "mozilla/dom/Document.h"
-#include "mozilla/dom/HTMLObjectElement.h"
-#include "mozilla/dom/HTMLObjectElementBinding.h"
 #include "mozilla/dom/ElementInlines.h"
+#include "mozilla/dom/HTMLObjectElementBinding.h"
 #include "mozilla/dom/WindowProxyHolder.h"
 #include "nsAttrValueInlines.h"
-#include "nsGkAtoms.h"
+#include "nsContentUtils.h"
 #include "nsError.h"
+#include "nsGkAtoms.h"
 #include "nsIContentInlines.h"
 #include "nsIWidget.h"
-#include "nsContentUtils.h"
+#include "nsPIDOMWindowInlines.h"
 #ifdef XP_MACOSX
 #  include "mozilla/EventDispatcher.h"
 #  include "mozilla/dom/Event.h"
@@ -25,8 +25,7 @@
 namespace mozilla::dom {
 
 HTMLObjectElement::HTMLObjectElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
-    FromParser aFromParser)
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo, FromParser aFromParser)
     : nsGenericHTMLFormControlElement(std::move(aNodeInfo),
                                       FormControlType::Object),
       mIsDoneAddingChildren(!aFromParser) {
@@ -102,7 +101,7 @@ void HTMLObjectElement::AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
   AfterMaybeChangeAttr(aNamespaceID, aName, aNotify);
 
   if (aName == nsGkAtoms::data) {
-    RefreshFeaturePolicy();
+    RefreshPermissionsPolicy();
   }
 
   return nsGenericHTMLFormControlElement::AfterSetAttr(
@@ -221,8 +220,8 @@ void HTMLObjectElement::MapAttributesIntoRule(
   MapCommonAttributesInto(aBuilder);
 }
 
-NS_IMETHODIMP_(bool)
-HTMLObjectElement::IsAttributeMapped(const nsAtom* aAttribute) const {
+bool HTMLObjectElement::IsNoNamespaceAttrMapped(
+    const nsAtom* aAttribute) const {
   static const MappedAttributeEntry* const map[] = {
       sCommonAttributeMap,
       sImageMarginSizeAttributeMap,

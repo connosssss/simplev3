@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,15 +6,14 @@
 #define mozilla_ServoElementSnapshot_h
 
 #include "AttrArray.h"
+#include "MainThreadUtils.h"
 #include "mozilla/TypedEnumBits.h"
 #include "mozilla/dom/BorrowedAttrInfo.h"
 #include "mozilla/dom/RustTypes.h"
+#include "nsAtom.h"
 #include "nsAttrName.h"
 #include "nsAttrValue.h"
 #include "nsChangeHint.h"
-#include "nsGkAtoms.h"
-#include "nsAtom.h"
-#include "MainThreadUtils.h"
 
 namespace mozilla {
 namespace dom {

@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <stdlib.h>
-#include <stdio.h>
+#include <iterator>
 #include "nsUpdateDriver.h"
 
 #include "nsDebug.h"
@@ -24,7 +22,6 @@
 #include "nsIXULAppInfo.h"
 #include "mozilla/Preferences.h"
 #include "nsPrintfCString.h"
-#include "mozilla/DebugOnly.h"
 #include "mozilla/ErrorNames.h"
 #include "mozilla/Printf.h"
 #include "mozilla/UniquePtr.h"
@@ -111,7 +108,7 @@ static nsresult GetInstallDirPath(nsIFile* appDir, nsACString& installDirPath) {
   NS_ENSURE_SUCCESS(rv, rv);
   rv = parentDir2->GetNativePath(installDirPath);
   NS_ENSURE_SUCCESS(rv, rv);
-#elif XP_WIN
+#elif defined(XP_WIN)
   nsAutoString installDirPathW;
   rv = appDir->GetPath(installDirPathW);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -138,9 +135,48 @@ static bool GetFile(nsIFile* dir, const nsACString& name,
     return false;
   }
 
-  result = file;
+  result = std::move(file);
   return true;
 }
+
+#if defined(XP_WIN) && defined(MOZ_PUSH_NOTIFICATION_HELPER)
+/**
+ * Signal the push notification helpers to stop.
+ *
+ * @param installationDir The installation directory containing the helper.
+ */
+static void SignalPushNotificationHelperStop(nsIFile* installationDir) {
+  nsCOMPtr<nsIFile> helper;
+  if (!GetFile(installationDir, "notification-helper.exe"_ns, helper)) {
+    return;
+  }
+
+  bool exists{false};
+  if (NS_FAILED(helper->Exists(&exists)) || !exists) {
+    LOG(("SignalPushNotificationHelperStop - the helper is not installed"));
+    return;
+  }
+
+  nsAutoString helperPath;
+  if (NS_FAILED(helper->GetPath(helperPath))) {
+    return;
+  }
+
+  wchar_t* argv[]{helperPath.get(), const_cast<wchar_t*>(L"--stop")};
+  HANDLE rawProcess{nullptr};
+  if (!WinLaunchChild(helperPath.get(), std::size(argv), argv, nullptr,
+                      &rawProcess)) {
+    LOG(("SignalPushNotificationHelperStop - failed to launch the helper"));
+    return;
+  }
+  nsAutoHandle process{rawProcess};
+
+  constexpr DWORD kStopTimeoutMs{5000};
+  if (WaitForSingleObject(process, kStopTimeoutMs) != WAIT_OBJECT_0) {
+    LOG(("SignalPushNotificationHelperStop - --stop did not return in time"));
+  }
+}
+#endif
 
 static bool GetStatusFile(nsIFile* dir, nsCOMPtr<nsIFile>& result) {
   return GetFile(dir, "update.status"_ns, result);
@@ -255,12 +291,14 @@ static bool IsOlderVersion(nsIFile* versionFile, const char* appVersion) {
   }
 
   char buf[32];
-  const int32_t n = PR_Read(fd, buf, sizeof(buf));
+  const int32_t n = PR_Read(fd, buf, sizeof(buf) - 1);
   PR_Close(fd);
 
-  if (n < 0) {
+  if (n <= 0) {
     return false;
   }
+
+  buf[n] = '\0';
 
   // Trim off the trailing newline
   if (buf[n - 1] == '\n') {
@@ -606,6 +644,11 @@ static void ApplyUpdate(nsIFile* greDir, nsIFile* updateDir, nsIFile* appDir,
     exit(execResult);
   }
 #elif defined(XP_WIN)
+#  ifdef MOZ_PUSH_NOTIFICATION_HELPER
+  if (restart) {
+    SignalPushNotificationHelperStop(greDir);
+  }
+#  endif
   if (isStaged) {
     // Launch the updater to replace the installation with the staged updated.
     if (!WinLaunchChild(updaterPathW.get(), argc, argv)) {
@@ -809,12 +852,12 @@ nsUpdateProcessor::ProcessUpdate() {
 
   // Copy the parameters to the StagedUpdateInfo structure shared with the
   // worker thread.
-  mInfo.mGREDir = greDir;
-  mInfo.mAppDir = appDir;
-  mInfo.mUpdateRoot = updRoot;
+  mInfo.mGREDir = std::move(greDir);
+  mInfo.mAppDir = std::move(appDir);
+  mInfo.mUpdateRoot = std::move(updRoot);
   mInfo.mArgc = 0;
   mInfo.mArgv = nullptr;
-  mInfo.mAppVersion = appVersion;
+  mInfo.mAppVersion = std::move(appVersion);
 
   MOZ_ASSERT(NS_IsMainThread(), "not main thread");
   nsCOMPtr<nsIRunnable> r =
@@ -880,6 +923,15 @@ void nsUpdateProcessor::StartStagedUpdate() {
   // successors will be responsible for shutting down the worker thread.
   onExitStopThread.release();
 #endif
+}
+
+nsUpdateProcessor::StagedUpdateInfo::StagedUpdateInfo()
+    : mArgc(0), mArgv(nullptr) {}
+nsUpdateProcessor::StagedUpdateInfo::~StagedUpdateInfo() {
+  for (int i = 0; i < mArgc; ++i) {
+    delete[] mArgv[i];
+  }
+  delete[] mArgv;
 }
 
 void nsUpdateProcessor::ShutdownWorkerThread() {

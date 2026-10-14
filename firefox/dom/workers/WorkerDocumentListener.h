@@ -1,26 +1,23 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_WorkerDocumentListener_h__
-#define mozilla_dom_WorkerDocumentListener_h__
+#ifndef mozilla_dom_WorkerDocumentListener_h_
+#define mozilla_dom_WorkerDocumentListener_h_
 
 #include "mozilla/Mutex.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/dom/WorkerRef.h"
 #include "nsISupportsImpl.h"
 
 namespace mozilla::dom {
-class ThreadSafeWorkerRef;
 class WorkerPrivate;
-class WeakWorkerRef;
 
 class WorkerDocumentListener final {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(WorkerDocumentListener)
 
  public:
-  WorkerDocumentListener();
+  WorkerDocumentListener() = default;
 
   void OnVisible(bool aVisible);
   void SetListening(uint64_t aWindowID, bool aListen);
@@ -29,12 +26,13 @@ class WorkerDocumentListener final {
   static RefPtr<WorkerDocumentListener> Create(WorkerPrivate* aWorkerPrivate);
 
  private:
-  ~WorkerDocumentListener();
+  ~WorkerDocumentListener() = default;
 
-  Mutex mMutex MOZ_UNANNOTATED;  // protects mWorkerRef
+  Mutex mMutex MOZ_UNANNOTATED{
+      "mozilla::dom::WorkerDocumentListener::mMutex"};  // protects mWorkerRef
   RefPtr<ThreadSafeWorkerRef> mWorkerRef;
 };
 
 }  // namespace mozilla::dom
 
-#endif /* mozilla_dom_WorkerDocumentListener_h__ */
+#endif /* mozilla_dom_WorkerDocumentListener_h_ */

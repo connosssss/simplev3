@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,8 +7,8 @@
 
 #include "js/TypeDecls.h"
 #include "mozilla/AlreadyAddRefed.h"
-#include "mozilla/Assertions.h"
 #include "mozilla/RefPtr.h"
+#include "nsAtom.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsISupports.h"
@@ -25,11 +23,11 @@ class ReportBody;
 
 class Report final : public nsISupports, public nsWrapperCache {
  public:
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Report)
 
-  Report(nsIGlobalObject* aGlobal, const nsAString& aType,
-         const nsAString& aURL, ReportBody* aBody);
+  Report(nsIGlobalObject* aGlobal, nsAtom* aType, const nsACString& aURL,
+         ReportBody* aBody);
 
   already_AddRefed<Report> Clone();
 
@@ -38,9 +36,10 @@ class Report final : public nsISupports, public nsWrapperCache {
 
   nsIGlobalObject* GetParentObject() const { return mGlobal; }
 
-  void GetType(nsAString& aType) const;
+  nsAtom* Type() const;
 
-  void GetUrl(nsAString& aURL) const;
+  void GetType(nsACString& aType) const;
+  void GetUrl(nsACString& aURL) const;
 
   ReportBody* GetBody() const;
 
@@ -49,8 +48,8 @@ class Report final : public nsISupports, public nsWrapperCache {
 
   nsCOMPtr<nsIGlobalObject> mGlobal;
 
-  const nsString mType;
-  const nsString mURL;
+  const RefPtr<nsAtom> mType;
+  nsCString mURL;
   RefPtr<ReportBody> mBody;
 };
 

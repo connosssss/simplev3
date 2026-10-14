@@ -1,6 +1,11 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
+const FirefoxViewTestUtils = ChromeUtils.importESModule(
+  "resource://testing-common/FirefoxViewTestUtils.sys.mjs"
+);
+FirefoxViewTestUtils.init(this);
+
 /**
  * Opens the context menu on a tab and waits for it to be shown.
  *
@@ -14,7 +19,7 @@ async function openTabMenuFor(tab) {
   EventUtils.synthesizeMouseAtCenter(
     tab,
     { type: "contextmenu" },
-    tab.ownerGlobal
+    tab.documentGlobal
   );
   await tabMenuShown;
 
@@ -38,21 +43,19 @@ async function addBrowserTabs(numberOfTabs) {
 add_setup(async function () {
   // This is helpful to avoid some weird race conditions in the test, specifically
   // the assertion that !this.blankTab in AsyncTabSwitcher when adding a new tab.
-  await promiseTabLoadEvent(
-    gBrowser.selectedTab,
-    "http://mochi.test:8888/#originalTab"
-  );
+  await BrowserTestUtils.loadURIString({
+    browser: gBrowser.selectedTab.linkedBrowser,
+    uriString: "http://mochi.test:8888/#originalTab",
+  });
   let originalTab = gBrowser.selectedTab;
+  FirefoxViewTestUtils.enableFirefoxViewButton(window);
   // switch to Firefox View tab to initialize it
   FirefoxViewHandler.openTab();
   // switch back to the original tab since tests expect this
   await BrowserTestUtils.switchTab(gBrowser, originalTab);
 
   await SpecialPowers.pushPrefEnv({
-    set: [
-      ["test.wait300msAfterTabSwitch", true],
-      ["browser.tabs.unloadTabInContextMenu", true],
-    ],
+    set: [["browser.tabs.unloadTabInContextMenu", true]],
   });
 });
 

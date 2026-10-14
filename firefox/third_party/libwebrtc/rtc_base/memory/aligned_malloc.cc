@@ -10,15 +10,15 @@
 
 #include "rtc_base/memory/aligned_malloc.h"
 
-#include <stdlib.h>  // for free, malloc
-#include <string.h>  // for memcpy
+#include <cstdlib>
+#include <cstring>
 
 #include "rtc_base/checks.h"
 
 #ifdef _WIN32
 #include <windows.h>
 #else
-#include <stdint.h>
+#include <cstdint>
 #endif
 
 // Reference on memory alignment:
@@ -41,21 +41,21 @@ bool ValidAlignment(size_t alignment) {
 
 void* GetRightAlign(const void* pointer, size_t alignment) {
   if (!pointer) {
-    return NULL;
+    return nullptr;
   }
   if (!ValidAlignment(alignment)) {
-    return NULL;
+    return nullptr;
   }
   uintptr_t start_pos = reinterpret_cast<uintptr_t>(pointer);
   return reinterpret_cast<void*>(GetRightAlign(start_pos, alignment));
 }
 
-void* AlignedMalloc(size_t size, size_t alignment) {
+void* AlignedMallocOrNull(size_t size, size_t alignment) {
   if (size == 0) {
-    return NULL;
+    return nullptr;
   }
   if (!ValidAlignment(alignment)) {
-    return NULL;
+    return nullptr;
   }
 
   // The memory is aligned towards the lowest address that so only
@@ -63,7 +63,9 @@ void* AlignedMalloc(size_t size, size_t alignment) {
   // A pointer to the start of the memory must be stored so that it can be
   // retreived for deletion, ergo the sizeof(uintptr_t).
   void* memory_pointer = malloc(size + sizeof(uintptr_t) + alignment - 1);
-  RTC_CHECK(memory_pointer) << "Couldn't allocate memory in AlignedMalloc";
+  if (memory_pointer == nullptr) {
+    return nullptr;
+  }
 
   // Aligning after the sizeof(uintptr_t) bytes will leave room for the header
   // in the same memory block.
@@ -82,8 +84,23 @@ void* AlignedMalloc(size_t size, size_t alignment) {
   return aligned_pointer;
 }
 
+void* AlignedMalloc(size_t size, size_t alignment) {
+  // Do these checks first so the same checks in AlignedMallocOrNull
+  // don't trip the RTC_CHECK below.
+  if (size == 0) {
+    return nullptr;
+  }
+  if (!ValidAlignment(alignment)) {
+    return nullptr;
+  }
+
+  void* aligned_pointer = AlignedMallocOrNull(size, alignment);
+  RTC_CHECK(aligned_pointer) << "Couldn't allocate memory in AlignedMalloc";
+  return aligned_pointer;
+}
+
 void AlignedFree(void* mem_block) {
-  if (mem_block == NULL) {
+  if (mem_block == nullptr) {
     return;
   }
   uintptr_t aligned_pos = reinterpret_cast<uintptr_t>(mem_block);

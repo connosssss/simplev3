@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-// vim:cindent:ts=2:et:sw=2:
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,13 +9,15 @@
 
 #include "FixedTableLayoutStrategy.h"
 
+#include <algorithm>
+
+#include "WritingModes.h"
+#include "mozilla/ReflowInput.h"
 #include "nsLayoutUtils.h"
 #include "nsStyleConsts.h"
-#include "nsTableFrame.h"
-#include "nsTableColFrame.h"
 #include "nsTableCellFrame.h"
-#include "WritingModes.h"
-#include <algorithm>
+#include "nsTableColFrame.h"
+#include "nsTableFrame.h"
 
 using namespace mozilla;
 
@@ -69,7 +69,7 @@ nscoord FixedTableLayoutStrategy::GetMinISize(gfxContext* aRenderingContext) {
     }
     nscoord spacing = mTableFrame->GetColSpacing(col);
     auto styleISize = colFrame->StylePosition()->ISize(
-        wm, colFrame->StyleDisplay()->mPosition);
+        wm, AnchorPosResolutionParams::From(colFrame));
     if (styleISize->ConvertsToLength()) {
       result += styleISize->ToLength();
     } else if (styleISize->ConvertsToPercentage()) {
@@ -83,7 +83,7 @@ nscoord FixedTableLayoutStrategy::GetMinISize(gfxContext* aRenderingContext) {
           cellMap->GetCellInfoAt(0, col, &originates, &colSpan);
       if (cellFrame) {
         styleISize = cellFrame->StylePosition()->ISize(
-            wm, cellFrame->StyleDisplay()->mPosition);
+            wm, AnchorPosResolutionParams::From(cellFrame));
         if (styleISize->ConvertsToLength() || styleISize->IsMinContent() ||
             styleISize->IsMaxContent()) {
           nscoord cellISize = nsLayoutUtils::IntrinsicForContainer(
@@ -199,7 +199,7 @@ void FixedTableLayoutStrategy::ComputeColumnISizes(
     oldColISizes.AppendElement(colFrame->GetFinalISize());
     colFrame->ResetPrefPercent();
     auto styleISize = colFrame->StylePosition()->ISize(
-        wm, colFrame->StyleDisplay()->mPosition);
+        wm, AnchorPosResolutionParams::From(colFrame));
     nscoord colISize;
     if (styleISize->ConvertsToLength()) {
       colISize = styleISize->ToLength();
@@ -219,7 +219,7 @@ void FixedTableLayoutStrategy::ComputeColumnISizes(
       if (cellFrame) {
         const nsStylePosition* cellStylePos = cellFrame->StylePosition();
         styleISize =
-            cellStylePos->ISize(wm, cellFrame->StyleDisplay()->mPosition);
+            cellStylePos->ISize(wm, AnchorPosResolutionParams::From(cellFrame));
         if (styleISize->ConvertsToLength() || styleISize->IsMaxContent() ||
             styleISize->IsMinContent()) {
           // XXX This should use real percentage padding
@@ -235,7 +235,7 @@ void FixedTableLayoutStrategy::ComputeColumnISizes(
           float pct = styleISize->ToPercentage();
           colISize = NSToCoordFloor(pct * float(tableISize));
 
-          if (cellStylePos->mBoxSizing == StyleBoxSizing::Content) {
+          if (cellStylePos->mBoxSizing == StyleBoxSizing::ContentBox) {
             nsIFrame::IntrinsicSizeOffsetData offsets =
                 cellFrame->IntrinsicISizeOffsets();
             colISize += offsets.padding + offsets.border;

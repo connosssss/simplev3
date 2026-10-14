@@ -1,6 +1,8 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
+/* global TextGenerator */
+
 /// <reference path="../../../../../toolkit/components/translations/tests/browser/shared-head.js" />
 
 // Load the shared-head file first.
@@ -13,7 +15,7 @@ Services.scriptloader.loadSubScript(
  * @type {import("../../actors/MLEngineParent.sys.mjs")}
  */
 const { MLEngineParent, MLEngine } = ChromeUtils.importESModule(
-  "resource://gre/actors/MLEngineParent.sys.mjs"
+  "moz-src:///toolkit/components/ml/actors/MLEngineParent.sys.mjs"
 );
 
 const { ModelHub, TestIndexedDBCache } = ChromeUtils.importESModule(
@@ -24,9 +26,16 @@ const { getInferenceProcessInfo } = ChromeUtils.importESModule(
   "chrome://global/content/ml/Utils.sys.mjs"
 );
 
+const { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
+
 const MS_PER_SEC = 1000;
 const IndexedDBCache = TestIndexedDBCache;
 
+/**
+ * @type {import("../../../ml/content/EngineProcess.sys.mjs")}
+ */
 const {
   createEngine,
   PipelineOptions,
@@ -46,8 +55,7 @@ Services.scriptloader.loadSubScript(
 );
 
 /**
- * Sets up the stage for a test
- *
+ * Mock out remote settings and set some default preferences for the testing environment.
  */
 async function setup({
   disabled = false,
@@ -61,6 +69,8 @@ async function setup({
     backend,
   });
 
+  Services.fog.testResetFOG();
+
   await SpecialPowers.pushPrefEnv({
     set: [
       // Enabled by default.
@@ -70,6 +80,7 @@ async function setup({
       ["browser.ml.checkForMemory", false],
       ["browser.ml.queueWaitTimeout", 2],
       ["javascript.options.wasm_lazy_tiering", true],
+      ...hwInferencePrefs(),
       ...prefs,
     ],
   });
@@ -89,16 +100,28 @@ async function setup({
   };
 }
 
+function setupNativeOnnxRuntimeAvailabilityTest() {
+  EngineProcess.resetNativeOnnxRuntimeAvailabilityForTests();
+  registerCleanupFunction(() => {
+    EngineProcess.resetNativeOnnxRuntimeAvailabilityForTests();
+  });
+}
+
 function getDefaultWasmRecords(backend) {
+  // A requested backend that isn't itself a wasm runtime (e.g. "best-onnx" or
+  // "onnx-native") can still fall back to the wasm onnx backend at engine
+  // creation time -- on platforms without the native onnxruntime, "best-onnx"
+  // resolves to "onnx". WASM_FILENAME only knows the real wasm backends, so
+  // map anything else to DEFAULT_BACKEND and register the concrete wasm record
+  // that fallback would request.
+  const wasmBackend =
+    backend && MLEngineParent.WASM_FILENAME[backend]
+      ? backend
+      : MLEngineParent.DEFAULT_BACKEND;
   return [
     {
-      name: MLEngineParent.WASM_FILENAME[
-        backend || MLEngineParent.DEFAULT_BACKEND
-      ],
-      version:
-        MLEngineParent.WASM_MAJOR_VERSION[
-          backend || MLEngineParent.DEFAULT_BACKEND
-        ] + ".0",
+      name: MLEngineParent.WASM_FILENAME[wasmBackend],
+      version: MLEngineParent.WASM_MAJOR_VERSION[wasmBackend] + ".0",
     },
   ];
 }
@@ -220,10 +243,11 @@ const MODEL_RUN_LATENCY = "model-run-latency";
 const TOTAL_MEMORY_USAGE = "total-memory-usage";
 const COLD_START_PREFIX = "cold-start-";
 const PEAK_MEMORY_USAGE = "peak-memory-usage";
-const ITERATIONS = 10;
+const ITERATIONS = 4;
 const WHEN = "when";
 const MEMORY = "memory";
 const E2E_INIT_LATENCY = "e2e-init-latency";
+const E2E_RUN_LATENCY = "e2e-run-latency";
 const FIRST_TOKEN_LATENCY = "1st-token-latency";
 const DECODING_LATENCY = "decoding-latency";
 // Token speeds are apppropriate for comparing the speed of the same model.
@@ -300,15 +324,21 @@ function fetchMLMetric(metrics, name, key) {
 }
 
 function fetchLatencyMetrics(metrics, isFirstRun) {
+  let timestamps = [];
+  if (Array.isArray(metrics?.runTimestamps)) {
+    timestamps = metrics.runTimestamps;
+  } else if (Array.isArray(metrics)) {
+    timestamps = metrics;
+  }
   const pipelineLatency =
-    fetchMLMetric(metrics, PIPELINE_READY_END, WHEN) -
-    fetchMLMetric(metrics, PIPELINE_READY_START, WHEN);
+    fetchMLMetric(timestamps, PIPELINE_READY_END, WHEN) -
+    fetchMLMetric(timestamps, PIPELINE_READY_START, WHEN);
   const initLatency =
-    fetchMLMetric(metrics, INIT_END, WHEN) -
-    fetchMLMetric(metrics, INIT_START, WHEN);
+    fetchMLMetric(timestamps, INIT_END, WHEN) -
+    fetchMLMetric(timestamps, INIT_START, WHEN);
   const runLatency =
-    fetchMLMetric(metrics, RUN_END, WHEN) -
-    fetchMLMetric(metrics, RUN_START, WHEN);
+    fetchMLMetric(timestamps, RUN_END, WHEN) -
+    fetchMLMetric(timestamps, RUN_START, WHEN);
   return {
     [`${isFirstRun ? COLD_START_PREFIX : ""}${PIPELINE_READY_LATENCY}`]:
       pipelineLatency,
@@ -349,10 +379,16 @@ async function initializeEngine(pipelineOptions, prefs = null) {
   });
   info("Get the engine process");
   const startTime = performance.now();
-  const mlEngineParent = await EngineProcess.getMLEngineParent();
-  const engine = await mlEngineParent.getEngine(
-    new PipelineOptions(pipelineOptions)
-  );
+  let engine;
+  try {
+    engine = await createEngine(new PipelineOptions(pipelineOptions));
+  } catch (error) {
+    // A failed init would otherwise leak the engine process and the pushed
+    // prefs into the file's remaining runs.
+    await EngineProcess.destroyMLEngine();
+    await cleanup();
+    throw error;
+  }
   const e2eInitTime = performance.now() - startTime;
 
   info("Get Pipeline Options");
@@ -387,6 +423,7 @@ async function perfSetup({ disabled = false, prefs = [], backend } = {}) {
     ["browser.ml.modelCacheTimeout", 1000],
     ["browser.ml.checkForMemory", false],
     ["javascript.options.wasm_lazy_tiering", true],
+    ...hwInferencePrefs(),
     ...prefs,
   ];
 
@@ -483,11 +520,41 @@ async function perfSetup({ disabled = false, prefs = [], backend } = {}) {
   };
 }
 
+// The CI tasks in taskcluster/kinds/perftest/*.yml (e.g. linux.yml) set
+// MOZ_ML_LLAMA_HWINFERENCE=1 to run the llama.cpp tests in the HWInference
+// process; setup() maps it to the browser.ml.llama.hwInference pref.
+const LLAMA_HW_INFERENCE_ENV = "MOZ_ML_LLAMA_HWINFERENCE";
+const LLAMA_HW_INFERENCE_PREF = "browser.ml.llama.hwInference";
+
+function usesHWInferenceProcess() {
+  return (
+    Services.env.get(LLAMA_HW_INFERENCE_ENV) === "1" ||
+    Services.prefs.getBoolPref(LLAMA_HW_INFERENCE_PREF, false)
+  );
+}
+
+function hwInferencePrefs() {
+  return Services.env.get(LLAMA_HW_INFERENCE_ENV) === "1"
+    ? [[LLAMA_HW_INFERENCE_PREF, true]]
+    : [];
+}
+
+/**
+ * Perfherder name suffix for the HWInference process, kept short because
+ * perfherder caps subtest names at 80 characters. Empty in the inference
+ * content process so its existing series stay continuous.
+ */
+function hwInferenceSuffix() {
+  return usesHWInferenceProcess() ? "_hwinf" : "";
+}
+
 /**
  * Returns the current total physical memory usage in MiB for the inference process
  */
 async function getTotalMemoryUsage() {
-  const procInfo = await getInferenceProcessInfo();
+  const procInfo = await getInferenceProcessInfo(
+    usesHWInferenceProcess() ? "hwInference" : "inference"
+  );
   return Math.round(procInfo.memory / ONE_MIB);
 }
 
@@ -520,6 +587,8 @@ async function runInference({
   let metrics = {};
   let timeToFirstToken;
   let startTime;
+  let runStartTime;
+  let runEndTime;
   let numGeneratedCharacters = 0;
   let numGeneratedTokens = 0;
   let numPromptCharacters = 0;
@@ -535,6 +604,7 @@ async function runInference({
     let currentTokenLen = 0;
     let currentCharLen = 0;
     startTime = performance.now();
+    runStartTime = startTime;
     const generator = engine.runWithGenerator(request);
 
     do {
@@ -562,8 +632,18 @@ async function runInference({
 
   try {
     const res = await run();
-    const decodingTime = performance.now() - startTime;
-    metrics = fetchMetrics(res.metrics || [], isFirstRun);
+    runEndTime = performance.now();
+    const decodingTime = runEndTime - startTime;
+    if (!numGeneratedTokens && res.metrics?.outputTokens) {
+      numGeneratedTokens = res.metrics.outputTokens;
+    }
+    if (!numPromptTokens && res.metrics?.inputTokens) {
+      numPromptTokens = res.metrics.inputTokens;
+    }
+    if (!numPromptCharacters && res.metrics?.inputCharacters) {
+      numPromptCharacters = res.metrics.inputCharacters;
+    }
+    metrics = fetchMetrics(res.metrics?.runTimestamps || [], isFirstRun);
     metrics[`${isFirstRun ? COLD_START_PREFIX : ""}${TOTAL_MEMORY_USAGE}`] =
       await getTotalMemoryUsage();
 
@@ -573,6 +653,8 @@ async function runInference({
       timeToFirstToken;
     metrics[`${isFirstRun ? COLD_START_PREFIX : ""}${DECODING_LATENCY}`] =
       decodingTime;
+    metrics[`${isFirstRun ? COLD_START_PREFIX : ""}${E2E_RUN_LATENCY}`] =
+      runEndTime - runStartTime;
     metrics[
       `${isFirstRun ? COLD_START_PREFIX : ""}${DECODING_CHARACTERS_SPEED}`
     ] = numGeneratedCharacters / (decodingTime / MS_PER_SEC);
@@ -603,7 +685,9 @@ class PeakMemoryTracker {
   }
 
   async collectPeakMemory() {
-    const procInfo = await getInferenceProcessInfo();
+    const procInfo = await getInferenceProcessInfo(
+      usesHWInferenceProcess() ? "hwInference" : "inference"
+    );
     if (procInfo.memory && procInfo.memory > this._memory) {
       this._memory = procInfo.memory;
     }
@@ -632,11 +716,126 @@ class PeakMemoryTracker {
   }
 }
 /**
+ * Tags used in per-backend metric names, decoupled from the backend
+ * identifiers so perfherder series survive a backend rename.
+ *
+ * @type {Record<string, string>}
+ */
+const BACKEND_TAGS = {
+  "onnx-native": "NATIVE",
+  onnx: "WASM",
+};
+
+/**
+ * Resolves which ONNX backends a perf test should measure. The
+ * MOZ_ML_BACKENDS environment variable (comma separated, set per CI task in
+ * taskcluster/kinds/perftest/*.yml) overrides everything, including
+ * test-provided candidates; without it, this returns the most preferred
+ * candidate that can run here.
+ *
+ * @param {object} [opts]
+ * @param {string[]} [opts.candidates] - Backends to consider, most preferred
+ *   first. Defaults to the full ONNX matrix.
+ * @returns {Promise<string[]>} Concrete backends to measure, never empty.
+ */
+async function resolveBackendMatrix({
+  candidates = ["onnx-native", "onnx"],
+} = {}) {
+  const override = Services.env.get("MOZ_ML_BACKENDS");
+  if (override) {
+    const requested = override
+      .split(",")
+      .map(s => s.trim())
+      .filter(Boolean);
+    info(`Backend matrix pinned by MOZ_ML_BACKENDS: ${requested.join(", ")}`);
+    return requested;
+  }
+
+  const nativeAvailable =
+    await EngineProcess.requestIsNativeOnnxRuntimeAvailable();
+
+  const matrix = candidates
+    .filter(backend => backend !== "onnx-native" || nativeAvailable)
+    .slice(0, 1);
+
+  info(
+    `Backend matrix: ${matrix.join(", ")} ` +
+      `(native onnxruntime ${nativeAvailable ? "available" : "unavailable"})`
+  );
+
+  if (!matrix.length) {
+    throw new Error(
+      `No backend to measure: none of [${candidates.join(", ")}] can run here`
+    );
+  }
+
+  return matrix;
+}
+
+/**
+ * Runs a performance test on every applicable ONNX backend, tagging metric
+ * names per backend (e.g. "SMART-TAB-TOPIC-model-run-latency-NATIVE") so each
+ * is its own perfherder series. The tag is appended after the metric name so
+ * the names declared in perfMetadata stay substrings of the reported names.
+ * The tag is applied even when a single backend runs, keeping series names
+ * platform-independent.
+ *
+ * @param {object} config - See runMLPerfTestOnBackend, plus:
+ * @param {string[]} [config.backends] - Backend candidates for runs where
+ *   MOZ_ML_BACKENDS is not set. Pass an explicit list for tests whose backend
+ *   is not negotiable (e.g. llama.cpp).
+ */
+async function runMLPerfTest({ backends, ...config }) {
+  await runMLPerfTestForEachBackend({
+    name: config.name,
+    backends,
+    run: ({ backend, tag }) =>
+      runMLPerfTestOnBackend({
+        ...config,
+        tag,
+        options: { ...config.options, backend },
+      }),
+  });
+}
+
+/**
+ * Runs `run` once per applicable ONNX backend, for tests that own their
+ * engine creation and metric naming: they pass `backend` into the options
+ * they build and append `tag` to their metric names. A backend that cannot
+ * run fails the test.
+ *
+ * @param {object} config
+ * @param {string} config.name - Feature name, used for logging.
+ * @param {string[]} [config.backends] - Backend candidates for runs where
+ *   MOZ_ML_BACKENDS is not set, most preferred first. Defaults to the full
+ *   ONNX matrix.
+ * @param {function({backend: string, tag: string}): Promise} config.run -
+ *   Runs and reports the measurements for one backend.
+ */
+async function runMLPerfTestForEachBackend({ name, backends, run }) {
+  const matrix = await resolveBackendMatrix(
+    backends ? { candidates: backends } : {}
+  );
+
+  for (const backend of matrix) {
+    const tag = BACKEND_TAGS[backend] ?? backend.toUpperCase();
+    info(`Running ${name} on backend ${backend}`);
+    await run({ backend, tag });
+  }
+
+  Assert.ok(
+    true,
+    `${name} measured every backend in the matrix (${matrix.join(", ")})`
+  );
+}
+
+/**
  * Runs a performance test for the given name, options, and arguments and
  * reports the results for perfherder.
  */
-async function perfTest({
+async function runMLPerfTestOnBackend({
   name,
+  tag,
   options,
   request,
   iterations = ITERATIONS,
@@ -647,32 +846,34 @@ async function perfTest({
 }) {
   info(`is request null | ${request === null || request === undefined}`);
   name = name.toUpperCase();
+  const taggedMetric = metric => `${name}-${metric}-${tag}`;
 
   let METRICS;
 
   // When tracking peak memory we only do this because we're
   // stressing the system with 500ms callbacks so other netrics are impacted
   if (trackPeakMemory) {
-    METRICS = [`${name}-${PEAK_MEMORY_USAGE}`];
+    METRICS = [PEAK_MEMORY_USAGE];
   } else {
     METRICS = [
-      `${name}-${PIPELINE_READY_LATENCY}`,
-      `${name}-${INITIALIZATION_LATENCY}`,
-      `${name}-${MODEL_RUN_LATENCY}`,
-      `${name}-${TOTAL_MEMORY_USAGE}`,
-      `${name}-${E2E_INIT_LATENCY}`,
-      `${name}-${FIRST_TOKEN_LATENCY}`,
-      `${name}-${DECODING_LATENCY}`,
-      `${name}-${DECODING_CHARACTERS_SPEED}`,
-      `${name}-${DECODING_TOKEN_SPEED}`,
-      `${name}-${PROMPT_CHARACTERS_SPEED}`,
-      `${name}-${PROMPT_TOKEN_SPEED}`,
+      PIPELINE_READY_LATENCY,
+      INITIALIZATION_LATENCY,
+      MODEL_RUN_LATENCY,
+      TOTAL_MEMORY_USAGE,
+      E2E_RUN_LATENCY,
+      E2E_INIT_LATENCY,
+      FIRST_TOKEN_LATENCY,
+      DECODING_LATENCY,
+      DECODING_CHARACTERS_SPEED,
+      DECODING_TOKEN_SPEED,
+      PROMPT_CHARACTERS_SPEED,
+      PROMPT_TOKEN_SPEED,
       ...(addColdStart
         ? [
-            `${name}-${COLD_START_PREFIX}${PIPELINE_READY_LATENCY}`,
-            `${name}-${COLD_START_PREFIX}${INITIALIZATION_LATENCY}`,
-            `${name}-${COLD_START_PREFIX}${MODEL_RUN_LATENCY}`,
-            `${name}-${COLD_START_PREFIX}${TOTAL_MEMORY_USAGE}`,
+            `${COLD_START_PREFIX}${PIPELINE_READY_LATENCY}`,
+            `${COLD_START_PREFIX}${INITIALIZATION_LATENCY}`,
+            `${COLD_START_PREFIX}${MODEL_RUN_LATENCY}`,
+            `${COLD_START_PREFIX}${TOTAL_MEMORY_USAGE}`,
           ]
         : []),
     ];
@@ -680,7 +881,7 @@ async function perfTest({
 
   const journal = {};
   for (let metric of METRICS) {
-    journal[metric] = [];
+    journal[taggedMetric(metric)] = [];
   }
 
   const pipelineOptions = new PipelineOptions(options);
@@ -700,17 +901,17 @@ async function perfTest({
       browserPrefs,
     });
     if (trackPeakMemory) {
-      journal[`${name}-${PEAK_MEMORY_USAGE}`].push(tracker.stop());
+      journal[taggedMetric(PEAK_MEMORY_USAGE)].push(tracker.stop());
     } else {
       for (let [metricName, metricVal] of Object.entries(metrics)) {
         if (!Number.isFinite(metricVal) || metricVal < 0) {
           metricVal = 0;
         }
         // Add the metric if it wasn't there
-        if (journal[`${name}-${metricName}`] === undefined) {
-          journal[`${name}-${metricName}`] = [];
+        if (journal[taggedMetric(metricName)] === undefined) {
+          journal[taggedMetric(metricName)] = [];
         }
-        journal[`${name}-${metricName}`].push(metricVal);
+        journal[taggedMetric(metricName)].push(metricVal);
       }
     }
   }
@@ -720,7 +921,638 @@ async function perfTest({
 
 /**
  * Measures floating point value within epsilon tolerance
+ *
+ * @param {number[]} a
+ * @param {number[]} b
+ * @param {number} [epsilon]
+ * @returns {boolean}
  */
-function isEqualWithTolerance(A, B, epsilon = 0.000001) {
-  return Math.abs(Math.abs(A) - Math.abs(B)) < epsilon;
+function isEqualWithTolerance(a, b, epsilon = 0.000001) {
+  return Math.abs(Math.abs(a) - Math.abs(b)) < epsilon;
+}
+
+/**
+ * Asserts whether two float arrays are equal within epsilon tolerance.
+ *
+ * @param {number[] | ArrayBufferLike} a
+ * @param {number[] | ArrayBufferLike} b
+ * @param {string} message
+ * @param {number} [epsilon]
+ */
+function assertFloatArraysMatch(a, b, message, epsilon) {
+  const raise = () => {
+    // When logging errors, spread into a new array so that the logging is nice for
+    // ArrayBufferLike values. This makes it easy to see how arrays differ
+    console.log("a:", [...a]);
+    console.log("b:", [...b]);
+    throw new Error(message);
+  };
+  if (a.length !== b.length) {
+    raise();
+  }
+  for (let i = 0; i < a.length; i++) {
+    if (!isEqualWithTolerance(a[i], b[i], epsilon)) {
+      raise();
+    }
+  }
+  ok(true, message);
+}
+
+// Mock OpenAI Chat Completions server for mochitests
+// Serves: http://localhost:11434/v1/chat/completions
+
+function readRequestBody(request) {
+  // Read the POST body as UTF-8 text
+  const stream = request.bodyInputStream;
+  const available = stream.available();
+  return NetUtil.readInputStreamToString(stream, available, {
+    charset: "UTF-8",
+  });
+}
+
+/**
+ * @param {object} [options]
+ * @param {string} [options.echo] - Text echoed back on the non-streaming path.
+ * @param {Function|null} [options.onRequest] - Called with each raw request.
+ * @param {boolean} [options.holdStreamOpenAfterFinish] - When true, the
+ *   streaming tool-call turn stops talking after finish_reason and never closes
+ *   the connection, so the client is the only thing that can end the turn.
+ */
+function startMockOpenAI({
+  echo = "This gets echoed.",
+  onRequest = null,
+  holdStreamOpenAfterFinish = false,
+} = {}) {
+  const server = new HttpServer();
+
+  // Tracked so a test using holdStreamOpenAfterFinish can still stop the server.
+  const heldResponses = [];
+
+  server.registerPathHandler("/v1/chat/completions", (request, response) => {
+    info("[openai] GET /v1/chat/completions");
+
+    // Call the onRequest callback if provided to allow test inspection
+    if (onRequest) {
+      onRequest(request);
+    }
+
+    let bodyText = "";
+    if (request.method === "POST") {
+      try {
+        bodyText = readRequestBody(request);
+      } catch (_) {}
+    }
+    info("[openai] bodyText: " + bodyText);
+
+    let body;
+    try {
+      body = JSON.parse(bodyText || "{}");
+    } catch (_) {
+      body = {};
+    }
+
+    const wantsStream = !!body.stream;
+    const tools = Array.isArray(body.tools) ? body.tools : [];
+    const askedForTools = tools.length;
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const hasToolResult = messages.some(m => m && m.role === "tool");
+
+    // ---- SSE helpers (for streaming mode) ----
+    function startSSE() {
+      response.setStatusLine(request.httpVersion, 200, "OK");
+      response.setHeader(
+        "Content-Type",
+        "text/event-stream; charset=utf-8",
+        false
+      );
+      response.setHeader("Cache-Control", "no-cache", false);
+      response.setHeader("Access-Control-Allow-Origin", "*", false);
+      response.processAsync();
+    }
+    function sendSSE(obj) {
+      const line = `data: ${JSON.stringify(obj)}\n\n`;
+      response.write(line);
+    }
+    function endSSE() {
+      response.write("data: [DONE]\n\n");
+      response.finish();
+    }
+
+    // ===========================
+    // STREAMING BRANCHES (SSE)
+    // ===========================
+    if (wantsStream && askedForTools && !hasToolResult) {
+      info("[openai] Streaming tool call, without tool results");
+      // First turn: stream partial tool_calls, then finish with "tool_calls"
+      startSSE();
+
+      // Partial 1: name/args prefix
+      sendSSE({
+        id: "chatcmpl-mock-tools-stream-1",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "qwen3:0.6b",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              content: "",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "search_", arguments: '{ "type": "ne' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+
+      // Partial 2: complete name/args
+      sendSSE({
+        id: "chatcmpl-mock-tools-stream-2",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "qwen3:0.6b",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              content: "",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "open_tabs", arguments: 'ws" }' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+
+      // Signal the turn ends with tool calls
+      sendSSE({
+        id: "chatcmpl-mock-tools-stream-3",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "qwen3:0.6b",
+        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+      });
+
+      if (holdStreamOpenAfterFinish) {
+        heldResponses.push(response);
+        return;
+      }
+
+      // Usage arrives after finish_reason, like the real endpoint.
+      sendSSE({
+        id: "chatcmpl-mock-tools-stream-usage",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "qwen3:0.6b",
+        choices: [],
+        usage: {
+          prompt_tokens: 9839,
+          completion_tokens: 12,
+          total_tokens: 9851,
+          prompt_tokens_details: { cached_tokens: 9800 },
+        },
+      });
+
+      endSSE();
+      return;
+    }
+
+    if (wantsStream && askedForTools && hasToolResult) {
+      // Second turn (after tool result): stream normal assistant text
+      info("[openai] Streaming tool call, with results");
+
+      startSSE();
+
+      sendSSE({
+        id: "chatcmpl-mock-tools-stream-4",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "qwen3:0.6b",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "Here are the tabs " },
+            finish_reason: null,
+          },
+        ],
+      });
+
+      sendSSE({
+        id: "chatcmpl-mock-tools-stream-5",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "qwen3:0.6b",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "I found for you." },
+            finish_reason: "stop",
+          },
+        ],
+      });
+
+      endSSE();
+      return;
+    }
+
+    // Simple streaming (no tools)
+    if (wantsStream && !askedForTools) {
+      info("[openai] Simple streaming (no tools)");
+      startSSE();
+
+      // Send at least 3 chunks
+      sendSSE({
+        id: "chatcmpl-mock-stream-1",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "qwen3:0.6b",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "Hello, " },
+            finish_reason: null,
+          },
+        ],
+      });
+
+      sendSSE({
+        id: "chatcmpl-mock-stream-2",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "qwen3:0.6b",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "this is " },
+            finish_reason: null,
+          },
+        ],
+      });
+
+      sendSSE({
+        id: "chatcmpl-mock-stream-3",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "qwen3:0.6b",
+        choices: [
+          {
+            index: 0,
+            delta: { content: echo },
+            finish_reason: null,
+          },
+        ],
+      });
+
+      // Final chunk with finish_reason
+      sendSSE({
+        id: "chatcmpl-mock-stream-4",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "qwen3:0.6b",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "" },
+            finish_reason: "stop",
+          },
+        ],
+      });
+
+      endSSE();
+      return;
+    }
+
+    // ===========================
+    // NON-STREAMING BRANCHES
+    // ===========================
+    if (wantsStream) {
+      throw new Error("Unhandled streaming case.");
+    }
+
+    // First turn w/ tools: return tool_calls message (finish_reason: tool_calls)
+    if (askedForTools && !hasToolResult) {
+      info("[openai] Non-streaming tool call without results");
+      const payload = {
+        id: "chatcmpl-mock-tools-1",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "qwen3:0.6b",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: {
+                    name: "search_open_tabs",
+                    arguments: JSON.stringify({ type: "news" }),
+                  },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        echo,
+      };
+
+      response.setStatusLine(request.httpVersion, 200, "OK");
+      response.setHeader(
+        "Content-Type",
+        "application/json; charset=utf-8",
+        false
+      );
+      response.setHeader("Access-Control-Allow-Origin", "*", false);
+      response.write(JSON.stringify(payload));
+      info("[openai] Sending back payload: " + JSON.stringify(payload));
+      return;
+    }
+
+    // Second turn w/ tools (after tool result): normal assistant message
+    if (askedForTools && hasToolResult) {
+      info("[openai] Non-streaming tool call with results");
+      const payload = {
+        id: "chatcmpl-mock-tools-2",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "qwen3:0.6b",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Here are the tabs I found for you.",
+            },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        echo,
+      };
+
+      response.setStatusLine(request.httpVersion, 200, "OK");
+      response.setHeader(
+        "Content-Type",
+        "application/json; charset=utf-8",
+        false
+      );
+      response.setHeader("Access-Control-Allow-Origin", "*", false);
+      response.write(JSON.stringify(payload));
+      info("[openai] Sending back payload: " + JSON.stringify(payload));
+      return;
+    }
+
+    info("[openai] Non-streaming call");
+
+    const payload = {
+      id: "chatcmpl-mock-1",
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model: "qwen3:0.6b",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: "This is a mock summary for testing end-to-end flow.",
+          },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      echo,
+    };
+
+    info("[openai] Sending back payload: " + JSON.stringify(payload));
+    response.setStatusLine(request.httpVersion, 200, "OK");
+    response.setHeader(
+      "Content-Type",
+      "application/json; charset=utf-8",
+      false
+    );
+    response.setHeader("Access-Control-Allow-Origin", "*", false);
+    response.write(JSON.stringify(payload));
+  });
+
+  function releaseHeldStreams() {
+    while (heldResponses.length) {
+      try {
+        heldResponses.pop().finish();
+      } catch (_) {
+        // Already closed, because the client aborted the request.
+      }
+    }
+  }
+
+  // -1 tells it to pick an ephemeral port
+  server.start(-1);
+  const port = server.identity.primaryPort;
+  return { server, port, releaseHeldStreams };
+}
+
+function stopMockOpenAI(server) {
+  return new Promise(resolve => server.stop(resolve));
+}
+
+/**
+ * Generates a numpy encoded float16 array to be used for generating static embeddings
+ * test data.
+ *
+ * @param {number} vocabSize
+ * @param {number} dimensions
+ * @returns {{ numbers: Float16Array, encoding: Uint8Array }}
+ */
+function generateFloat16Numpy(vocabSize, dimensions) {
+  const numbers = new Float16Array(vocabSize * dimensions);
+  // Build the data:
+  // [0.1, 0.2, 0.3, ..., 0.1 * vocabSize * dimensions]
+  for (let i = 0; i < vocabSize; i++) {
+    for (let j = 0; j < dimensions; j++) {
+      const index = i * dimensions + j;
+      numbers[index] = index / 10;
+    }
+  }
+  const magic = new Uint8Array([0x93, 78, 85, 77, 80, 89]); // \x93NUMPY
+  const version = new Uint8Array([1, 0]); // Version 1.0
+  let header = `{'descr': '<f2', 'fortran_order': False, 'shape': (${vocabSize},${dimensions}), }`;
+
+  // Pad header to 16-byte alignment
+  const preLength = magic.length + version.length + 2; // +2 for header length field
+  let padding = 16 - ((preLength + header.length + 1) % 16);
+  if (padding === 16) {
+    padding = 0;
+  }
+  header += " ".repeat(padding) + "\n";
+
+  const headerBytes = new TextEncoder().encode(header);
+
+  const headerLen = new Uint8Array(2);
+  new DataView(headerLen.buffer).setUint16(0, headerBytes.length, true);
+
+  const encoding = new Uint8Array(
+    preLength + headerBytes.length + numbers.byteLength
+  );
+
+  // Write everything out.
+  let offset = 0;
+  encoding.set(magic, offset);
+  offset += magic.length;
+  encoding.set(version, offset);
+  offset += version.length;
+  encoding.set(headerLen, offset);
+  offset += 2;
+  encoding.set(headerBytes, offset);
+  offset += headerBytes.length;
+  encoding.set(new Uint8Array(numbers.buffer), offset);
+
+  return { numbers, encoding };
+}
+
+// Marks a utility process crash as expected for the debug leak checker,
+// which otherwise fails on the dead process's incomplete bloat log.
+function noteIntentionalUtilityCrash(pid) {
+  Cc["@mozilla.org/utility-process-test;1"]
+    .createInstance(Ci.nsIUtilityProcessTest)
+    .noteIntentionalCrash(pid);
+}
+
+/**
+ * Checks that a process exists.
+ *
+ * @param {string} remoteType
+ */
+async function checkForRemoteType(remoteType) {
+  let procinfo3 = await ChromeUtils.requestProcInfo();
+  for (const child of procinfo3.children) {
+    if (child.type === remoteType) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Bound off the namespace rather than destructuring MLTestUtils, which some
+// tests in this directory declare themselves.
+const { runOnBothInferenceProcesses } = ChromeUtils.importESModule(
+  "resource://testing-common/MLTestUtils.sys.mjs"
+).MLTestUtils;
+
+// top-k only filters; the final dist sampler selects a token.
+const TINYSTORIES_GREEDY_SAMPLERS = [
+  { type: "top-k", topK: 1 },
+  { type: "dist" },
+];
+
+const TINYSTORIES_STORYTELLER_PROMPT = [
+  { role: "system", content: "You are a friendly storyteller." },
+  { role: "user", content: "Once upon a time there was a small mouse who" },
+];
+
+const TINYSTORIES_CONTEXT_SIZE = 512;
+// Chaos mode confines the utility process to CPU 0, where every ggml barrier
+// costs a scheduler slice: 74 ms per token with two threads, 2 s with the
+// default pool. One thread there, the default pool everywhere else.
+const TINYSTORIES_CHAOS_THREADS = parseInt(
+  Services.env.get("MOZ_CHAOSMODE"),
+  16
+)
+  ? { numThreads: 1 }
+  : {};
+const TINYSTORIES_ENGINE_OPTIONS = {
+  backend: "llama.cpp",
+  taskName: "text-generation",
+  modelId: "Mozilla/test-llama",
+  modelFile: "TinyStories-656K.Q8_0.gguf",
+  modelRevision: "main",
+  numContext: 256,
+  ...TINYSTORIES_CHAOS_THREADS,
+};
+
+async function createTinyStoriesGenerator(options = {}) {
+  const modelFile = await File.createFromFileName(
+    getTestFilePath("data/Mozilla/test-llama/main/TinyStories-656K.Q8_0.gguf")
+  );
+  return TextGenerator.create(modelFile, {
+    contextSize: TINYSTORIES_CONTEXT_SIZE,
+    ...TINYSTORIES_CHAOS_THREADS,
+    ...options,
+  });
+}
+
+async function collectGeneratedText(generator) {
+  let text = "";
+  for await (const chunk of generator) {
+    text += chunk.text;
+  }
+  return text;
+}
+
+function mockModelHubModel(
+  sandbox,
+  { id, model, filePath, headers = {}, error }
+) {
+  const { Progress } = ChromeUtils.importESModule(
+    "chrome://global/content/ml/Utils.sys.mjs"
+  );
+  return sandbox
+    .stub(ModelHub.prototype, "getModelDataAsFile")
+    .callsFake(async function ({ progressCallback }) {
+      const statusInfo = {
+        metadata: { model },
+        ok: true,
+        id,
+      };
+      progressCallback(
+        new Progress.ProgressAndStatusCallbackParams({
+          ...statusInfo,
+          type: Progress.ProgressType.DOWNLOAD,
+          statusText: Progress.ProgressStatusText.INITIATE,
+        })
+      );
+      progressCallback(
+        new Progress.ProgressAndStatusCallbackParams({
+          ...statusInfo,
+          type: Progress.ProgressType.DOWNLOAD,
+          statusText: Progress.ProgressStatusText.IN_PROGRESS,
+          progress: 25,
+          totalLoaded: 256,
+          currentLoaded: 256,
+          total: 1024,
+          units: "bytes",
+        })
+      );
+      progressCallback(
+        new Progress.ProgressAndStatusCallbackParams({
+          ...statusInfo,
+          type: Progress.ProgressType.DOWNLOAD,
+          statusText: Progress.ProgressStatusText.DONE,
+          progress: 100,
+          totalLoaded: 1024,
+          currentLoaded: 768,
+          total: 1024,
+          units: "bytes",
+        })
+      );
+      if (error) {
+        throw error;
+      }
+      return [filePath, headers];
+    });
 }

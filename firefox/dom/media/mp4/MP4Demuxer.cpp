@@ -1,15 +1,15 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <algorithm>
-#include <limits>
-#include <stdint.h>
-
 #include "MP4Demuxer.h"
 
+#include <stdint.h>
+
+#include <algorithm>
+#include <memory>
+
+#include "AOMDecoder.h"
 #include "AnnexB.h"
 #include "BufferStream.h"
 #include "H264.h"
@@ -18,19 +18,16 @@
 #include "MP4Metadata.h"
 #include "MoofParser.h"
 #include "ResourceStream.h"
+#include "SampleIterator.h"
 #include "TimeUnits.h"
 #include "VPXDecoder.h"
 #include "mozilla/Span.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "nsPrintfCString.h"
-#include "SampleIterator.h"
 
-extern mozilla::LazyLogModule gMediaDemuxerLog;
-mozilla::LogModule* GetDemuxerLog() { return gMediaDemuxerLog; }
-
-#define LOG(arg, ...)                                                 \
-  DDMOZ_LOG(gMediaDemuxerLog, mozilla::LogLevel::Debug, "::%s: " arg, \
-            __func__, ##__VA_ARGS__)
+#define LOG(arg, ...)                                                     \
+  DDMOZ_LOG_FMT(gMediaDemuxerLog, mozilla::LogLevel::Debug, "::{}: " arg, \
+                __func__, ##__VA_ARGS__)
 
 namespace mozilla {
 
@@ -65,7 +62,7 @@ class MP4TrackDemuxer : public MediaTrackDemuxer,
   void NotifyDataArrived();
 
  private:
-  already_AddRefed<MediaRawData> GetNextSample();
+  Result<already_AddRefed<MediaRawData>, MediaResult> GetNextSample();
   void EnsureUpToDateIndex();
   void SetNextKeyFrameTime();
   RefPtr<MediaResource> mResource;
@@ -77,7 +74,7 @@ class MP4TrackDemuxer : public MediaTrackDemuxer,
   // Queued samples extracted by the demuxer, but not yet returned.
   RefPtr<MediaRawData> mQueuedSample;
   bool mNeedReIndex;
-  enum CodecType { kH264, kVP9, kAAC, kHEVC, kOther } mType = kOther;
+  enum CodecType { kH264, kVP9, kAV1, kAAC, kHEVC, kOther } mType = kOther;
 };
 
 MP4Demuxer::MP4Demuxer(MediaResource* aResource)
@@ -189,7 +186,7 @@ RefPtr<MP4Demuxer::InitPromise> MP4Demuxer::Init() {
         }
         continue;
       }
-      LOG("Created audio track demuxer for info (%s)",
+      LOG("Created audio track demuxer for info ({})",
           info.Ref()->ToString().get());
       RefPtr<MP4TrackDemuxer> demuxer =
           new MP4TrackDemuxer(mResource, std::move(info.Ref()),
@@ -229,7 +226,7 @@ RefPtr<MP4Demuxer::InitPromise> MP4Demuxer::Init() {
         }
         continue;
       }
-      LOG("Created video track demuxer for info (%s)",
+      LOG("Created video track demuxer for info ({})",
           info.Ref()->ToString().get());
       RefPtr<MP4TrackDemuxer> demuxer =
           new MP4TrackDemuxer(mResource, std::move(info.Ref()),
@@ -308,7 +305,7 @@ void MP4Demuxer::NotifyDataRemoved() {
 UniquePtr<EncryptionInfo> MP4Demuxer::GetCrypto() {
   UniquePtr<EncryptionInfo> crypto;
   if (!mCryptoInitData.IsEmpty()) {
-    crypto.reset(new EncryptionInfo{});
+    crypto = std::make_unique<EncryptionInfo>();
     crypto->AddInitData(u"cenc"_ns, mCryptoInitData);
   }
   return crypto;
@@ -343,6 +340,8 @@ MP4TrackDemuxer::MP4TrackDemuxer(MediaResource* aResource,
     }
   } else if (videoInfo && VPXDecoder::IsVP9(mInfo->mMimeType)) {
     mType = kVP9;
+  } else if (videoInfo && AOMDecoder::IsAV1(mInfo->mMimeType)) {
+    mType = kAV1;
   } else if (audioInfo && MP4Decoder::IsAAC(mInfo->mMimeType)) {
     mType = kAAC;
   } else if (videoInfo && MP4Decoder::IsHEVC(mInfo->mMimeType)) {
@@ -381,13 +380,33 @@ RefPtr<MP4TrackDemuxer::SeekPromise> MP4TrackDemuxer::Seek(
 
   mIterator->Seek(seekTime);
 
+#ifdef MOZ_APPLEMEDIA
+  bool hasSeenValidSamples = false, seekingFromFirstSyncSample = false;
+#endif
   // Check what time we actually seeked to.
   do {
-    RefPtr<MediaRawData> sample = GetNextSample();
-    if (!sample) {
-      return SeekPromise::CreateAndReject(NS_ERROR_DOM_MEDIA_END_OF_STREAM,
-                                          __func__);
+    auto next = GetNextSample();
+    if (next.isErr()) {
+      auto error = next.unwrapErr();
+#ifdef MOZ_APPLEMEDIA
+      // On macOS VideoToolbox can return a bad data error if a non-IDR I-frame
+      // (H.264) or a CRA frame (HEVC) is the first sample fed after seeking.
+      // GetNextSample() strips those from being keyframes, so if we reached EOS
+      // without finding one we retry from the first sync sample in the stss,
+      // which is always an IDR.
+      if ((mType == kH264 || mType == kHEVC) &&
+          error == NS_ERROR_DOM_MEDIA_END_OF_STREAM && hasSeenValidSamples &&
+          !seekingFromFirstSyncSample) {
+        LOG("Can not find a key frame from the closet sync sample, try again "
+            "from the first sync sample");
+        seekingFromFirstSyncSample = true;
+        mIterator->Seek(seekTime, SampleIterator::SyncSampleMode::First);
+        continue;
+      }
+#endif
+      return SeekPromise::CreateAndReject(error, __func__);
     }
+    RefPtr<MediaRawData> sample = next.unwrap();
     if (!sample->Size()) {
       // This sample can't be decoded, continue searching.
       continue;
@@ -397,6 +416,9 @@ RefPtr<MP4TrackDemuxer::SeekPromise> MP4TrackDemuxer::Seek(
       mQueuedSample = sample;
       seekTime = mQueuedSample->mTime;
     }
+#ifdef MOZ_APPLEMEDIA
+    hasSeenValidSamples = true;
+#endif
   } while (!mQueuedSample);
 
   SetNextKeyFrameTime();
@@ -404,11 +426,14 @@ RefPtr<MP4TrackDemuxer::SeekPromise> MP4TrackDemuxer::Seek(
   return SeekPromise::CreateAndResolve(seekTime, __func__);
 }
 
-already_AddRefed<MediaRawData> MP4TrackDemuxer::GetNextSample() {
-  RefPtr<MediaRawData> sample = mIterator->GetNext();
-  if (!sample) {
-    return nullptr;
+Result<already_AddRefed<MediaRawData>, MediaResult>
+MP4TrackDemuxer::GetNextSample() {
+  auto next = mIterator->GetNext();
+  if (next.isErr()) {
+    return next;
   }
+  RefPtr<MediaRawData> sample = next.unwrap();
+
   if (mInfo->GetAsVideoInfo()) {
     sample->mExtraData = mInfo->GetAsVideoInfo()->mExtraData;
     if (mType == kH264 && !sample->mCrypto.IsEncrypted()) {
@@ -417,8 +442,14 @@ already_AddRefed<MediaRawData> MP4TrackDemuxer::GetNextSample() {
         case H264::FrameType::I_FRAME_IDR:
         case H264::FrameType::I_FRAME_OTHER:
         case H264::FrameType::OTHER: {
-          bool keyframe = type == H264::FrameType::I_FRAME_OTHER ||
-                          type == H264::FrameType::I_FRAME_IDR;
+          bool keyframe = type == H264::FrameType::I_FRAME_IDR;
+#ifndef MOZ_APPLEMEDIA
+          // The Apple VideoToolbox H.264 decoder could return a bad data error
+          // if a non-IDR I-frame is provided as the first sample to the decoder
+          // after seeking. Therefore, only IDR frames should be marked as key
+          // frames.
+          keyframe = keyframe || type == H264::FrameType::I_FRAME_OTHER;
+#endif
           if (sample->mKeyframe != keyframe) {
             NS_WARNING(nsPrintfCString("Frame incorrectly marked as %skeyframe "
                                        "@ pts:%" PRId64 " dur:%" PRId64
@@ -445,10 +476,40 @@ already_AddRefed<MediaRawData> MP4TrackDemuxer::GetNextSample() {
           // TODO: make demuxer errors non-fatal.
           break;
       }
+    } else if (mType == kHEVC && !sample->mCrypto.IsEncrypted()) {
+#ifdef MOZ_APPLEMEDIA
+      // VideoToolbox can return a bad data error if a CRA frame is the first
+      // sample after a seek. Only IDR_W_RADL/IDR_N_LP are safe starting points.
+      auto isIDR = H265::IsKeyFrame(sample);
+      bool keyframe = isIDR.isOk() && isIDR.unwrap();
+      if (sample->mKeyframe != keyframe) {
+        NS_WARNING(nsPrintfCString(
+                       "HEVC frame incorrectly marked as %skeyframe "
+                       "@ pts:%" PRId64 " dur:%" PRId64 " dts:%" PRId64,
+                       keyframe ? "" : "non-", sample->mTime.ToMicroseconds(),
+                       sample->mDuration.ToMicroseconds(),
+                       sample->mTimecode.ToMicroseconds())
+                       .get());
+        sample->mKeyframe = keyframe;
+      }
+#endif
     } else if (mType == kVP9 && !sample->mCrypto.IsEncrypted()) {
       bool keyframe = VPXDecoder::IsKeyframe(
           Span<const uint8_t>(sample->Data(), sample->Size()),
           VPXDecoder::Codec::VP9);
+      if (sample->mKeyframe != keyframe) {
+        NS_WARNING(nsPrintfCString(
+                       "Frame incorrectly marked as %skeyframe "
+                       "@ pts:%" PRId64 " dur:%" PRId64 " dts:%" PRId64,
+                       keyframe ? "" : "non-", sample->mTime.ToMicroseconds(),
+                       sample->mDuration.ToMicroseconds(),
+                       sample->mTimecode.ToMicroseconds())
+                       .get());
+        sample->mKeyframe = keyframe;
+      }
+    } else if (mType == kAV1 && !sample->mCrypto.IsEncrypted()) {
+      bool keyframe = AOMDecoder::IsKeyframe(
+          Span<const uint8_t>(sample->Data(), sample->Size()));
       if (sample->mKeyframe != keyframe) {
         NS_WARNING(nsPrintfCString(
                        "Frame incorrectly marked as %skeyframe "
@@ -486,7 +547,8 @@ already_AddRefed<MediaRawData> MP4TrackDemuxer::GetNextSample() {
         totalMediaDurationIncludingTrimming.IsPositive()) {
       // Seek backward a bit.
       mIterator->Seek(sample->mTime - sample->mDuration);
-      RefPtr<MediaRawData> previousSample = mIterator->GetNext();
+      RefPtr<MediaRawData> previousSample =
+          mIterator->GetNext().unwrapOr(nullptr);
       if (previousSample) {
         TimeInterval fullPacketDuration{previousSample->mTime,
                                         previousSample->GetEndTime()};
@@ -496,11 +558,11 @@ already_AddRefed<MediaRawData> MP4TrackDemuxer::GetNextSample() {
       // Seek back so we're back at the original location -- there's no packet
       // left anyway.
       mIterator->Seek(sample->mTime);
-      RefPtr<MediaRawData> dummy = mIterator->GetNext();
+      RefPtr<MediaRawData> dummy = mIterator->GetNext().unwrapOr(nullptr);
     }
   }
 
-  if (MOZ_LOG_TEST(GetDemuxerLog(), LogLevel::Verbose)) {
+  if (MOZ_LOG_TEST(gMediaDemuxerLog, LogLevel::Verbose)) {
     bool isAudio = mInfo->GetAsAudioInfo();
     TimeUnit originalStart = TimeUnit::Invalid();
     TimeUnit originalEnd = TimeUnit::Invalid();
@@ -508,8 +570,8 @@ already_AddRefed<MediaRawData> MP4TrackDemuxer::GetNextSample() {
       originalStart = sample->mOriginalPresentationWindow->mStart;
       originalEnd = sample->mOriginalPresentationWindow->mEnd;
     }
-    LOG("%s packet demuxed (track id: %d): [%s,%s], duration: %s (original "
-        "time: [%s,%s])",
+    LOG("{} packet demuxed (track id: {}): [{},{}], duration: {} (original "
+        "time: [{},{}])",
         isAudio ? "Audio" : "Video", mInfo->mTrackId,
         sample->mTime.ToString().get(), sample->GetEndTime().ToString().get(),
         sample->mDuration.ToString().get(), originalStart.ToString().get(),
@@ -534,19 +596,24 @@ RefPtr<MP4TrackDemuxer::SamplesPromise> MP4TrackDemuxer::GetSamples(
     MOZ_ASSERT(!mQueuedSample);
     aNumSamples--;
   }
-  RefPtr<MediaRawData> sample;
-  while (aNumSamples && (sample = GetNextSample())) {
+  while (aNumSamples) {
+    auto next = GetNextSample();
+    if (next.isErr()) {
+      nsresult rv = next.inspectErr().Code();
+      if ((rv != NS_ERROR_DOM_MEDIA_END_OF_STREAM &&
+           rv != NS_ERROR_DOM_MEDIA_WAITING_FOR_DATA) ||
+          samples->GetSamples().IsEmpty()) {
+        return SamplesPromise::CreateAndReject(next.unwrapErr(), __func__);
+      }
+      break;
+    }
+    RefPtr<MediaRawData> sample = next.unwrap();
     if (!sample->Size()) {
       continue;
     }
     MOZ_DIAGNOSTIC_ASSERT(sample->HasValidTime());
     samples->AppendSample(std::move(sample));
     aNumSamples--;
-  }
-
-  if (samples->GetSamples().IsEmpty()) {
-    return SamplesPromise::CreateAndReject(NS_ERROR_DOM_MEDIA_END_OF_STREAM,
-                                           __func__);
   }
 
   if (mNextKeyframeTime.isNothing() ||
@@ -586,22 +653,26 @@ MP4TrackDemuxer::SkipToNextRandomAccessPoint(const TimeUnit& aTimeThreshold) {
   mQueuedSample = nullptr;
   // Loop until we reach the next keyframe after the threshold.
   uint32_t parsed = 0;
-  bool found = false;
-  RefPtr<MediaRawData> sample;
-  while (!found && (sample = GetNextSample())) {
+  Maybe<SkipFailureHolder> failure;
+  while (true) {
+    auto next = GetNextSample();
+    if (next.isErr()) {
+      failure.emplace(next.unwrapErr(), parsed);
+      break;
+    }
+    RefPtr<MediaRawData> sample = next.unwrap();
     parsed++;
     MOZ_DIAGNOSTIC_ASSERT(sample->HasValidTime());
     if (sample->mKeyframe && sample->mTime >= aTimeThreshold) {
-      found = true;
       mQueuedSample = sample;
+      break;
     }
   }
   SetNextKeyFrameTime();
-  if (found) {
-    return SkipAccessPointPromise::CreateAndResolve(parsed, __func__);
+  if (failure.isSome()) {
+    return SkipAccessPointPromise::CreateAndReject(failure.extract(), __func__);
   }
-  SkipFailureHolder failure(NS_ERROR_DOM_MEDIA_END_OF_STREAM, parsed);
-  return SkipAccessPointPromise::CreateAndReject(std::move(failure), __func__);
+  return SkipAccessPointPromise::CreateAndResolve(parsed, __func__);
 }
 
 TimeIntervals MP4TrackDemuxer::GetBuffered() {

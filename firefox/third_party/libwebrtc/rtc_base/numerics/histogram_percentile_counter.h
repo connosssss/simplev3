@@ -29,7 +29,6 @@ class HistogramPercentileCounter {
   ~HistogramPercentileCounter();
   void Add(uint32_t value);
   void Add(uint32_t value, size_t count);
-  void Add(const HistogramPercentileCounter& other);
   // Argument should be from 0 to 1.
   std::optional<uint32_t> GetPercentile(float fraction);
 
@@ -42,9 +41,4 @@ class HistogramPercentileCounter {
 };
 }  //  namespace webrtc
 
-// Re-export symbols from the webrtc namespace for backwards compatibility.
-// TODO(bugs.webrtc.org/4222596): Remove once all references are updated.
-namespace rtc {
-using ::webrtc::HistogramPercentileCounter;
-}  // namespace rtc
 #endif  // RTC_BASE_NUMERICS_HISTOGRAM_PERCENTILE_COUNTER_H_

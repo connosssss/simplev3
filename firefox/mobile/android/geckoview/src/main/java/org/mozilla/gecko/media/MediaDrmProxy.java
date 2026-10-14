@@ -4,10 +4,7 @@
 
 package org.mozilla.gecko.media;
 
-import android.annotation.SuppressLint;
 import android.media.MediaCrypto;
-import android.media.MediaDrm;
-import android.os.Build;
 import android.util.Log;
 import java.util.ArrayList;
 import java.util.UUID;
@@ -17,18 +14,6 @@ import org.mozilla.gecko.mozglue.JNIObject;
 public final class MediaDrmProxy {
   private static final String LOGTAG = "GeckoMediaDrmProxy";
   private static final boolean DEBUG = false;
-  private static final UUID WIDEVINE_SCHEME_UUID =
-      new UUID(0xedef8ba979d64aceL, 0xa3c827dcd51d21edL);
-
-  private static final String WIDEVINE_KEY_SYSTEM = "com.widevine.alpha";
-  @WrapForJNI private static final String AAC = "audio/mp4a-latm";
-  @WrapForJNI private static final String AVC = "video/avc";
-  @WrapForJNI private static final String AV1 = "video/av01";
-  @WrapForJNI private static final String VORBIS = "audio/vorbis";
-  @WrapForJNI private static final String VP8 = "video/x-vnd.on2.vp8";
-  @WrapForJNI private static final String VP9 = "video/x-vnd.on2.vp9";
-  @WrapForJNI private static final String OPUS = "audio/opus";
-  @WrapForJNI private static final String FLAC = "audio/flac";
 
   public static final ArrayList<MediaDrmProxy> sProxyList = new ArrayList<MediaDrmProxy>();
 
@@ -36,44 +21,6 @@ public final class MediaDrmProxy {
   private boolean mDestroyed;
   private GeckoMediaDrm mImpl;
   private String mDrmStubId;
-
-  private static boolean isSystemSupported() {
-    // Support versions >= Marshmallow
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-      if (DEBUG)
-        Log.d(LOGTAG, "System Not supported !!, current SDK version is " + Build.VERSION.SDK_INT);
-      return false;
-    }
-    return true;
-  }
-
-  @SuppressLint("NewApi")
-  @WrapForJNI
-  public static boolean isSchemeSupported(final String keySystem) {
-    if (!isSystemSupported()) {
-      return false;
-    }
-    if (keySystem.equals(WIDEVINE_KEY_SYSTEM)) {
-      return MediaDrm.isCryptoSchemeSupported(WIDEVINE_SCHEME_UUID)
-          && MediaCrypto.isCryptoSchemeSupported(WIDEVINE_SCHEME_UUID);
-    }
-    if (DEBUG) Log.d(LOGTAG, "isSchemeSupported key sytem = " + keySystem);
-    return false;
-  }
-
-  @SuppressLint("NewApi")
-  @WrapForJNI
-  public static boolean IsCryptoSchemeSupported(final String keySystem, final String container) {
-    if (!isSystemSupported()) {
-      return false;
-    }
-    if (keySystem.equals(WIDEVINE_KEY_SYSTEM)) {
-      return MediaDrm.isCryptoSchemeSupported(WIDEVINE_SCHEME_UUID, container);
-    }
-    if (DEBUG)
-      Log.d(LOGTAG, "cannot decrypt key sytem = " + keySystem + ", container = " + container);
-    return false;
-  }
 
   // Interface for callback to native.
   public interface Callbacks {
@@ -260,6 +207,16 @@ public final class MediaDrmProxy {
       return true;
     } catch (final RuntimeException e) {
       return false;
+    }
+  }
+
+  @WrapForJNI
+  public void setOriginID(final String originID) {
+    if (DEBUG) Log.d(LOGTAG, "setOriginID");
+    try {
+      mImpl.setOriginID(originID);
+    } catch (final RuntimeException e) {
+      Log.w(LOGTAG, "setOriginID failed", e);
     }
   }
 

@@ -18,38 +18,36 @@ const TEST_URI = `
 `;
 
 add_task(async function () {
-  // Enable the pref for @import supports()
-  await pushPref("layout.css.import-supports.enabled", true);
-
   await addTab(
     "https://example.com/document-builder.sjs?html=" +
       encodeURIComponent(TEST_URI)
   );
   const { inspector, view } = await openRuleView();
   await selectNode("h1", inspector);
-  const expectedRules = [
-    { selector: "element", ancestorRulesData: null },
+
+  checkRuleViewContent(view, [
+    { selector: "element", selectorEditable: false, ancestorRulesData: null },
     {
       // Checking that we don't show @import for rules from imported stylesheet with no conditions
-      selector: `h1, [test-hint="imported-no-layer--no-rule-layer"]`,
+      selector: `h1, ~~[test-hint="imported-no-layer--no-rule-layer"]~~`,
       ancestorRulesData: null,
     },
     {
-      selector: `h1, [test-hint="imported-conditional"]`,
+      selector: `h1, ~~[test-hint="imported-conditional"]~~`,
       ancestorRulesData: [
         "@import supports(display: flex) screen and (width > 10px) {",
       ],
     },
     {
-      selector: `h1, [test-hint="imported-conditional"]`,
+      selector: `h1, ~~[test-hint="imported-conditional"]~~`,
       ancestorRulesData: ["@import supports(display: flex) {"],
     },
     {
-      selector: `h1, [test-hint="imported-conditional"]`,
+      selector: `h1, ~~[test-hint="imported-conditional"]~~`,
       ancestorRulesData: ["@import screen and (width > 10px) {"],
     },
     {
-      selector: `h1, [test-hint="imported-named-layer--no-rule-layer"]`,
+      selector: `h1, ~~[test-hint="imported-named-layer--no-rule-layer"]~~`,
       ancestorRulesData: [
         "@import supports(display: flex) screen and (width > 10px) {",
         "  @layer importedLayerTwo {",
@@ -57,7 +55,7 @@ add_task(async function () {
       ],
     },
     {
-      selector: `h1, [test-hint="imported-named-layer--named-layer"]`,
+      selector: `h1, ~~[test-hint="imported-named-layer--named-layer"]~~`,
       ancestorRulesData: [
         "@import supports(display: flex) screen and (width > 10px) {",
         "  @layer importedLayerTwo {",
@@ -66,7 +64,7 @@ add_task(async function () {
       ],
     },
     {
-      selector: `h1, [test-hint="imported-nested-named-layer--named-layer"]`,
+      selector: `h1, ~~[test-hint="imported-nested-named-layer--named-layer"]~~`,
       ancestorRulesData: [
         "@import supports(display: flex) screen and (width > 10px) {",
         "  @layer importedLayerTwo {",
@@ -75,7 +73,7 @@ add_task(async function () {
       ],
     },
     {
-      selector: `h1, [test-hint="imported-named-layer--no-rule-layer"]`,
+      selector: `h1, ~~[test-hint="imported-named-layer--no-rule-layer"]~~`,
       ancestorRulesData: [
         "@import (height > 42px) {",
         "  @layer importedLayer {",
@@ -83,7 +81,7 @@ add_task(async function () {
       ],
     },
     {
-      selector: `h1, [test-hint="imported-named-layer--named-layer"]`,
+      selector: `h1, ~~[test-hint="imported-named-layer--named-layer"]~~`,
       ancestorRulesData: [
         "@import (height > 42px) {",
         "  @layer importedLayer {",
@@ -92,7 +90,7 @@ add_task(async function () {
       ],
     },
     {
-      selector: `h1, [test-hint="imported-nested-named-layer--named-layer"]`,
+      selector: `h1, ~~[test-hint="imported-nested-named-layer--named-layer"]~~`,
       ancestorRulesData: [
         "@import (height > 42px) {",
         "  @layer importedLayer {",
@@ -100,36 +98,5 @@ add_task(async function () {
         "      @layer in-imported-nested-stylesheet {",
       ],
     },
-  ];
-
-  const rulesInView = Array.from(view.element.children);
-  is(
-    rulesInView.length,
-    expectedRules.length,
-    "All expected rules are displayed"
-  );
-
-  for (let i = 0; i < expectedRules.length; i++) {
-    const expectedRule = expectedRules[i];
-    info(`Checking rule #${i}: ${expectedRule.selector}`);
-
-    const selector = rulesInView[i].querySelector(
-      ".ruleview-selectors-container"
-    ).innerText;
-    is(selector, expectedRule.selector, `Expected selector for ${selector}`);
-
-    if (expectedRule.ancestorRulesData == null) {
-      is(
-        getRuleViewAncestorRulesDataElementByIndex(view, i),
-        null,
-        `No ancestor rules data displayed for ${selector}`
-      );
-    } else {
-      is(
-        getRuleViewAncestorRulesDataTextByIndex(view, i),
-        expectedRule.ancestorRulesData.join("\n"),
-        `Expected ancestor rules data displayed for ${selector}`
-      );
-    }
-  }
+  ]);
 });

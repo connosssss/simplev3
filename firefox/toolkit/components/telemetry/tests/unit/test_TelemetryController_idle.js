@@ -11,6 +11,10 @@ var gHttpServer = null;
 
 add_task(async function test_setup() {
   do_get_profile();
+  // Make sure TelemetryEnvironment initialization doesn't wait for
+  // browser-delayed-startup-finished indefinitely as part of waiting
+  // for Intl initialization promise to be resolved.
+  fakeIntlReady();
 
   // Make sure we don't generate unexpected pings due to pref changes.
   await setEmptyPrefWatchlist();
@@ -46,14 +50,14 @@ add_task(async function testSendPendingOnIdleDaily() {
   );
 
   let gatherPromise = Promise.withResolvers();
-  Services.obs.addObserver(gatherPromise.resolve, "gather-telemetry");
+  Services.obs.addObserver(gatherPromise.resolve, "idle-daily");
 
-  // Check that we are correctly receiving the gather-telemetry notification.
+  // Check that we are correctly receiving the idle-daily notification.
   TelemetrySession.observe(null, "idle-daily", null);
-  await gatherPromise.promise;
-  Assert.ok(true, "Received gather-telemetry notification.");
+  await gatherPromise.resolve;
+  Assert.ok(true, "Received idle-daily notification.");
 
-  Services.obs.removeObserver(gatherPromise.resolve, "gather-telemetry");
+  Services.obs.removeObserver(gatherPromise.resolve, "idle-daily");
 
   // Check that the pending ping is correctly received.
   let { TelemetrySendImpl } = ChromeUtils.importESModule(

@@ -20,6 +20,7 @@
         'cmsdigest.c',
         'cmsencdata.c',
         'cmsencode.c',
+        'cmsauthenvdata.c',
         'cmsenvdata.c',
         'cmsmessage.c',
         'cmspubkey.c',
@@ -29,7 +30,6 @@
         'cmssiginfo.c',
         'cmsudf.c',
         'cmsutil.c',
-        'smimemessage.c',
         'smimeutil.c',
         'smimever.c'
       ],

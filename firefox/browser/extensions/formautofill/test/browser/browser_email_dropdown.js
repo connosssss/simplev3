@@ -2,41 +2,48 @@
 
 const PAGE_URL =
   "https://example.org/browser/browser/extensions/formautofill/test/fixtures/autocomplete_multiple_emails_checkout.html";
+const SINGLE_EMAIL_PAGE_URL =
+  "https://example.org/browser/browser/extensions/formautofill/test/fixtures/autocomplete_single_email.html";
 
-// This testcase is to ensure that if a field gets recoginised by both
-// login manager and formautofill providers, that if an address is saved,
-// that the formautofill popup gets priority over the login manager.
+/**
+ * These tests ensure that when a field (like email) is recognized by both
+ * Login Manager and Form Autofill, the priority is handled correctly.
+ * Since the fixture contains password fields, Login Manager is
+ * prioritized over Form Autofill for the email field.
+ */
 
-add_task(async function test_email_field_is_address_dropdown() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["signon.rememberSignons", true]],
-  });
-  // If an address is saved, show the formautofill dropdown.
-  await setStorage(TEST_ADDRESS_1);
-  await BrowserTestUtils.withNewTab(
-    { gBrowser, url: PAGE_URL },
-    async function (browser) {
-      const focusInput = "#email";
-      // We need to initialize and identify fields on a field that doesn't trigger
-      // a login autocomplete on focus, otherwise the popup could appear too early.
-      await focusAndWaitForFieldsIdentified(browser, "#given-name");
-      await openPopupOn(browser, focusInput);
-      const item = getDisplayedPopupItems(browser)[2];
+add_task(
+  async function test_email_field_shows_login_priority_with_saved_address() {
+    await SpecialPowers.pushPrefEnv({
+      set: [["signon.rememberSignons", true]],
+    });
 
-      is(
-        item.getAttribute("ac-value"),
-        "Manage addresses",
-        "Address popup should show a valid email suggestion"
-      );
+    // Even if an address is saved, the Login Manager takes priority because
+    // the fixture contains password fields.
+    await setStorage(TEST_ADDRESS_1);
 
-      await closePopup(browser);
-    }
-  );
-});
+    await BrowserTestUtils.withNewTab(
+      { gBrowser, url: PAGE_URL },
+      async function (browser) {
+        const focusInput = "#email";
+        await focusAndWaitForFieldsIdentified(browser, "#given-name");
+        await openPopupOn(browser, focusInput);
+        const item = getDisplayedPopupItems(browser)[0];
+
+        is(
+          getACItemValue(item),
+          "Manage Passwords",
+          "Login Manager should have priority over Form Autofill when password fields are present"
+        );
+
+        await closePopup(browser);
+      }
+    );
+  }
+);
 
 add_task(
   async function test_email_field_shows_login_dropdown_when_no_saved_address() {
-    // However, if no addresses are saved, show the login manager.
     await removeAllRecords();
     await BrowserTestUtils.withNewTab(
       { gBrowser, url: PAGE_URL },
@@ -47,9 +54,9 @@ add_task(
         const item = getDisplayedPopupItems(browser)[0];
 
         is(
-          item.getAttribute("ac-value"),
+          getACItemValue(item),
           "Manage Passwords",
-          "Login Manager should be shown"
+          "Login Manager should be shown when no addresses are saved"
         );
 
         await closePopup(browser);
@@ -57,3 +64,111 @@ add_task(
     );
   }
 );
+
+add_task(async function test_email_field_shows_login_priority_onfocus() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["signon.rememberSignons", true]],
+  });
+  await setStorage(TEST_ADDRESS_1);
+
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: PAGE_URL },
+    async function (browser) {
+      await SpecialPowers.spawn(browser, [], () => {
+        content.document.getElementById("email").focus();
+      });
+      await runAndWaitForAutocompletePopupOpen(browser, () => {});
+
+      const item = getDisplayedPopupItems(browser)[0];
+
+      is(
+        getACItemValue(item),
+        "Manage Passwords",
+        "Login Manager should have priority on focus due to password fields"
+      );
+
+      await closePopup(browser);
+    }
+  );
+});
+
+add_task(
+  async function test_email_field_shows_login_dropdown_when_no_saved_address_onfocus() {
+    await removeAllRecords();
+    await BrowserTestUtils.withNewTab(
+      { gBrowser, url: PAGE_URL },
+      async function (browser) {
+        await SpecialPowers.spawn(browser, [], () => {
+          content.document.getElementById("email").focus();
+        });
+        await runAndWaitForAutocompletePopupOpen(browser, () => {});
+        const item = getDisplayedPopupItems(browser)[0];
+
+        is(
+          getACItemValue(item),
+          "Manage Passwords",
+          "Login Manager should be the result on focus"
+        );
+
+        await closePopup(browser);
+      }
+    );
+  }
+);
+
+add_task(async function test_single_email_field_now_shows_address_autofill() {
+  await removeAllRecords();
+  await setStorage(TEST_ADDRESS_1);
+
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: SINGLE_EMAIL_PAGE_URL },
+    async function (browser) {
+      const focusInput = "#email";
+      await openPopupOn(browser, focusInput);
+
+      const items = getDisplayedPopupItems(browser);
+
+      is(
+        getACItemValue(items[0]),
+        TEST_ADDRESS_1.email,
+        "The first result should be the saved email address"
+      );
+
+      is(
+        getACItemValue(items[1]),
+        "Manage addresses",
+        "The second result should be the Manage addresses footer"
+      );
+
+      await closePopup(browser);
+    }
+  );
+});
+
+add_task(async function test_single_email_field_shows_each_email_once() {
+  await removeAllRecords();
+  // These three addresses store the same email, so a form that only asks for
+  // an email cannot tell them apart.
+  await setStorage(TEST_ADDRESS_1, TEST_ADDRESS_4, TEST_ADDRESS_CA_1);
+
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: SINGLE_EMAIL_PAGE_URL },
+    async function (browser) {
+      await openPopupOn(browser, "#email");
+
+      const values = getDisplayedPopupItems(browser).map(item =>
+        getACItemValue(item)
+      );
+
+      Assert.deepEqual(
+        values,
+        [TEST_ADDRESS_1.email, "Manage addresses"],
+        "The shared email address is only suggested once"
+      );
+
+      await closePopup(browser);
+    }
+  );
+
+  await removeAllRecords();
+});

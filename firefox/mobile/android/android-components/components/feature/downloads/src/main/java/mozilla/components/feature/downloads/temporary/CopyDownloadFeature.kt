@@ -22,7 +22,6 @@ import mozilla.components.concept.fetch.Client
 import mozilla.components.lib.state.ext.flowScoped
 import mozilla.components.support.base.feature.LifecycleAwareFeature
 import mozilla.components.support.ktx.android.content.copyImage
-import java.util.concurrent.TimeUnit
 
 /**
  * [LifecycleAwareFeature] implementation for copying online resources.
@@ -30,21 +29,21 @@ import java.util.concurrent.TimeUnit
  * This will intercept only [ShareResourceAction] [BrowserAction]s.
  *
  * Following which it will transparently
- *  - download internet resources while respecting the private mode related to cookies handling
- *  - temporarily cache the downloaded resources
- *  - copy the resource to the device clipboard.
+ * - download internet resources while respecting the private mode related to cookies handling
+ * - temporarily cache the downloaded resources
+ * - copy the resource to the device clipboard.
  *
  * with a 1 second timeout to ensure a smooth UX.
  *
  * To finish the process in this small timeframe the feature is recommended to be used only for images.
  *
- *  @property context Android context used for various platform interactions.
- *  @property store a reference to the application's [BrowserStore].
- *  @property tabId ID of the tab session, or null if the selected session should be used.
- *  @property onCopyConfirmation The confirmation action of copying an image.
- *  @param httpClient Client used for downloading internet resources.
- *  @param ioDispatcher Coroutine dispatcher used for IO operations like
- *  downloading and the cleanup of old cached files. Defaults to IO.
+ * @property context Android context used for various platform interactions.
+ * @property store a reference to the application's [BrowserStore].
+ * @property tabId ID of the tab session, or null if the selected session should be used.
+ * @property onCopyConfirmation The confirmation action of copying an image.
+ * @param httpClient Client used for downloading internet resources.
+ * @param ioDispatcher Coroutine dispatcher used for IO operations like downloading and the cleanup of old cached files.
+ *   Defaults to IO.
  */
 class CopyDownloadFeature(
     private val context: Context,
@@ -52,32 +51,31 @@ class CopyDownloadFeature(
     private val tabId: String?,
     private val onCopyConfirmation: () -> Unit,
     httpClient: Client,
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
     ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-) : TemporaryDownloadFeature(
-    context = context,
-    httpClient = httpClient,
-    ioDispatcher = ioDispatcher,
-) {
-
-    /**
-     * At most time to allow for the file to be downloaded.
-     */
-    private val operationTimeoutMs by lazy { TimeUnit.MINUTES.toMinutes(1) }
+) :
+    TemporaryDownloadFeature(
+        context = context,
+        httpClient = httpClient,
+        ioDispatcher = ioDispatcher,
+    ) {
 
     override fun start() {
-        scope = store.flowScoped { flow ->
-            flow.mapNotNull { state -> state.findTabOrCustomTabOrSelectedTab(tabId) }
-                .distinctUntilChangedBy { it.content.copy }
-                .collect { state ->
-                    state.content.copy?.let { copyState ->
-                        logger.debug("Starting the copying process")
-                        startCopy(copyState)
+        scope =
+            store.flowScoped(dispatcher = mainDispatcher) { flow ->
+                flow
+                    .mapNotNull { state -> state.findTabOrCustomTabOrSelectedTab(tabId) }
+                    .distinctUntilChangedBy { it.content.copy }
+                    .collect { state ->
+                        state.content.copy?.let { copyState ->
+                            logger.debug("Starting the copying process")
+                            startCopy(copyState)
 
-                        // This is a fire and forget action, not something that we want lingering the tab state.
-                        store.dispatch(CopyInternetResourceAction.ConsumeCopyAction(state.id))
+                            // This is a fire and forget action, not something that we want lingering the tab state.
+                            store.dispatch(CopyInternetResourceAction.ConsumeCopyAction(state.id))
+                        }
                     }
-                }
-        }
+            }
     }
 
     @VisibleForTesting

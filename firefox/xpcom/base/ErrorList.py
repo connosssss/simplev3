@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 import json
-from collections import OrderedDict
 
 
 class Mod:
@@ -21,7 +20,7 @@ class Mod:
         Mod.active = None
 
 
-modules = OrderedDict()
+modules = {}
 
 # To add error code to your module, you need to do the following:
 #
@@ -91,6 +90,8 @@ modules["ERRORRESULT"] = Mod(43)
 modules["WIN32"] = Mod(44)
 modules["WDBA"] = Mod(45)
 modules["DOM_QM"] = Mod(46)
+modules["CLIPBOARD"] = Mod(47)
+modules["DOM_SERIAL"] = Mod(48)
 
 # NS_ERROR_MODULE_GENERAL should be used by modules that do not
 # care if return code values overlap. Callers of methods that
@@ -121,7 +122,7 @@ def SUCCESS(code):
 # Errors is an ordered dictionary, so that we can recover the order in which
 # they were defined. This is important for determining which name is the
 # canonical name for an error code.
-errors = OrderedDict()
+errors = {}
 
 # Standard "it worked" return value
 errors["NS_OK"] = 0
@@ -345,6 +346,10 @@ with modules["NETWORK"]:
     errors["NS_ERROR_NET_HTTP3_PROTOCOL_ERROR"] = FAILURE(84)
     # A timeout error code that can be used to cancel requests.
     errors["NS_ERROR_NET_TIMEOUT_EXTERNAL"] = FAILURE(85)
+    # An HTTP/2 or HTTP/3 session was closed without a clean shutdown (e.g. no
+    # GOAWAY) and no response bytes were received for the stream, so it is
+    # safe to retry on a new connection.
+    errors["NS_ERROR_NET_UNCLEAN_SHUTDOWN"] = FAILURE(101)
     # An error related to HTTPS-only mode
     errors["NS_ERROR_HTTPS_ONLY"] = FAILURE(86)
     # A WebSocket connection is failed.
@@ -356,9 +361,6 @@ with modules["NETWORK"]:
     errors["NS_ERROR_BAD_HSTS_CERT"] = FAILURE(89)
     # Error parsing the status line of an HTTP response
     errors["NS_ERROR_PARSING_HTTP_STATUS_LINE"] = FAILURE(90)
-    # The user refused to navigate to a potentially unsafe URL with
-    # embedded credentials/superfluos authentication.
-    errors["NS_ERROR_SUPERFLUOS_AUTH"] = FAILURE(91)
     # The user attempted basic HTTP authentication while
     # the basic_http_auth pref is disabled
     errors["NS_ERROR_BASIC_HTTP_AUTH_DISABLED"] = FAILURE(92)
@@ -366,6 +368,18 @@ with modules["NETWORK"]:
     # Used to indicate cases where we need to fall back from HTTP/2
     # to HTTP/1.1.
     errors["NS_ERROR_HTTP2_FALLBACK_TO_HTTP1"] = FAILURE(94)
+    # The connection was blocked by the OS itself because this app lacks the
+    # platform-level local-network permission (e.g. Android 16+'s Local
+    # Network Protection, gated on ACCESS_LOCAL_NETWORK/NEARBY_DEVICES).
+    # Distinct from NS_ERROR_LOCAL_NETWORK_ACCESS_DENIED, which is Firefox's
+    # own site-permission decision made after a successful connect -- this
+    # error means the connect itself never had a chance to succeed, so it
+    # must not be routed through that (unrelated) content-permission flow.
+    errors["NS_ERROR_OS_LOCAL_NETWORK_ACCESS_DENIED"] = FAILURE(95)
+    # The request body can only be sent once, so the request cannot be
+    # retried, resubmitted with credentials, or carried on a connection that
+    # would need its length up front.
+    errors["NS_ERROR_NET_BODY_NOT_REPLAYABLE"] = FAILURE(96)
 
     # XXX really need to better rationalize these error codes.  are consumers of
     # necko really expected to know how to discern the meaning of these??
@@ -386,6 +400,12 @@ with modules["NETWORK"]:
     # The request occurred in docshell that lacks a treeowner, so it is
     # probably in the process of being torn down.
     errors["NS_ERROR_DOCSHELL_DYING"] = FAILURE(78)
+    # A document channel opened in the parent process to make a process
+    # selection decision was canceled because the parent channel was never
+    # linked up with a channel in the selected content process (which instead
+    # opened its own independent channel, e.g. for about: documents). This is an
+    # expected outcome rather than a real load failure.
+    errors["NS_ERROR_DOCUMENT_LOAD_LISTENER_NO_PARENT_CHANNEL"] = FAILURE(79)
 
     # DNS specific error codes:
 
@@ -577,7 +597,6 @@ with modules["NETWORK"]:
 with modules["PLUGINS"]:
     errors["NS_ERROR_PLUGINS_PLUGINSNOTCHANGED"] = FAILURE(1000)
     errors["NS_ERROR_PLUGIN_DISABLED"] = FAILURE(1001)
-    errors["NS_ERROR_PLUGIN_BLOCKLISTED"] = FAILURE(1002)
     errors["NS_ERROR_PLUGIN_TIME_RANGE_NOT_SUPPORTED"] = FAILURE(1003)
     errors["NS_ERROR_PLUGIN_CLICKTOPLAY"] = FAILURE(1004)
 
@@ -815,6 +834,11 @@ with modules["EDITOR"]:
     # non-collapsed range crosses editing host boundaries.
     errors["NS_ERROR_EDITOR_NO_EDITABLE_RANGE"] = FAILURE(4)
 
+    # An error code that indicates that there is no deletable selection ranges
+    # even though there are some editable ranges.  E.g., if each editable range
+    # is in a replaced element or a void element.
+    errors["NS_ERROR_EDITOR_NO_DELETABLE_RANGE"] = FAILURE(5)
+
     errors["NS_SUCCESS_EDITOR_ELEMENT_NOT_FOUND"] = SUCCESS(1)
     errors["NS_SUCCESS_EDITOR_FOUND_TARGET"] = SUCCESS(2)
 
@@ -955,6 +979,8 @@ with modules["URILOADER"]:
     errors["NS_ERROR_CRYPTOMINING_URI"] = FAILURE(42)
     errors["NS_ERROR_SOCIALTRACKING_URI"] = FAILURE(43)
     errors["NS_ERROR_EMAILTRACKING_URI"] = FAILURE(44)
+    errors["NS_ERROR_RESTRICTED_CONTENT"] = FAILURE(45)
+    errors["NS_ERROR_HARMFULADDON_URI"] = FAILURE(46)
     # Used when "Save Link As..." doesn't see the headers quickly enough to
     # choose a filename.  See nsContextMenu.js.
     errors["NS_ERROR_SAVE_LINK_AS_TIMEOUT"] = FAILURE(32)
@@ -962,8 +988,7 @@ with modules["URILOADER"]:
     # doesn't need to be reparsed from the original source.
     errors["NS_ERROR_PARSED_DATA_CACHED"] = FAILURE(33)
 
-    # When browser.tabs.documentchannel.parent-controlled pref and SHIP
-    # are enabled and a load gets cancelled due to another one
+    # When SHIP is enabled and a load gets cancelled due to another one
     # starting, the error is NS_BINDING_CANCELLED_OLD_LOAD.
     errors["NS_BINDING_CANCELLED_OLD_LOAD"] = FAILURE(39)
 
@@ -1087,6 +1112,7 @@ with modules["DOM_INDEXEDDB"]:
     errors["NS_ERROR_DOM_INDEXEDDB_READ_ONLY_ERR"] = FAILURE(9)
     errors["NS_ERROR_DOM_INDEXEDDB_QUOTA_ERR"] = FAILURE(11)
     errors["NS_ERROR_DOM_INDEXEDDB_VERSION_ERR"] = FAILURE(12)
+    errors["NS_ERROR_DOM_INDEXEDDB_NOT_READABLE_ERR"] = FAILURE(13)
     errors["NS_ERROR_DOM_INDEXEDDB_KEY_ERR"] = FAILURE(1002)
     errors["NS_ERROR_DOM_INDEXEDDB_RENAME_OBJECT_STORE_ERR"] = FAILURE(1003)
     errors["NS_ERROR_DOM_INDEXEDDB_RENAME_INDEX_ERR"] = FAILURE(1004)
@@ -1184,6 +1210,7 @@ with modules["DOM_MEDIA"]:
     errors["NS_ERROR_DOM_MEDIA_CDM_NO_SESSION_ERR"] = FAILURE(50)
     errors["NS_ERROR_DOM_MEDIA_CDM_SESSION_OPERATION_ERR"] = FAILURE(51)
     errors["NS_ERROR_DOM_MEDIA_CDM_HDCP_NOT_SUPPORT"] = FAILURE(52)
+    errors["NS_ERROR_DOM_MEDIA_CDM_NOT_FOUND_ERR"] = FAILURE(53)
 
     # Internal platform-related errors
     errors["NS_ERROR_DOM_MEDIA_CUBEB_INITIALIZATION_ERR"] = FAILURE(101)
@@ -1193,6 +1220,7 @@ with modules["DOM_MEDIA"]:
     errors["NS_ERROR_DOM_MEDIA_RANGE_ERR"] = FAILURE(105)
     errors["NS_ERROR_DOM_MEDIA_TYPE_ERR"] = FAILURE(106)
     errors["NS_ERROR_DOM_MEDIA_MEDIA_ENGINE_INITIALIZATION_ERR"] = FAILURE(107)
+    errors["NS_ERROR_DOM_MEDIA_DROPPED_BY_ENCODER_ERR"] = FAILURE(108)
 
 # =======================================================================
 # 42: NS_ERROR_MODULE_URL_CLASSIFIER
@@ -1250,6 +1278,19 @@ with modules["DOM_QM"]:
     errors["NS_ERROR_DOM_QM_CLIENT_INIT_ORIGIN_UNINITIALIZED"] = FAILURE(1)
 
 # =======================================================================
+# 47: NS_ERROR_MODULE_CLIPBOARD
+# =======================================================================
+with modules["CLIPBOARD"]:
+    errors["NS_ERROR_CLIPBOARD_TOO_BIG"] = FAILURE(1)
+
+# =======================================================================
+# 48: NS_ERROR_MODULE_DOM_SERIAL
+# =======================================================================
+with modules["DOM_SERIAL"]:
+    # Web Serial receive errors, surfaced on the readable stream.
+    errors["NS_ERROR_DOM_SERIAL_PARITY_ERROR"] = FAILURE(1)
+
+# =======================================================================
 # 51: NS_ERROR_MODULE_GENERAL
 # =======================================================================
 with modules["GENERAL"]:
@@ -1290,23 +1331,27 @@ with modules["GENERAL"]:
 def import_extra_errors(infile):
     """Import extra error definitions from a json file.
 
+    The new errors are added to the global `error` object, and also returned independently.
+
     Example json file (to add module):
     ```
     {
-      "MAILNEWS": {
-        "description": "Extra error codes for comm/mail",
-        "code": 16,
-        "members": {
-          "NS_MSG_ERROR_MBOX_MALFORMED": {
-            "severity": "FAILURE",
-            "code": 36,
-            "description": "Mbox message doesn't start with 'From ' separator line."
-          },
+        "MAILNEWS": {
+            "description": "Extra error codes for comm/mail",
+            "code": 16,
+            "members": {
+                "NS_MSG_ERROR_MBOX_MALFORMED": {
+                    "severity": "FAILURE",
+                    "code": 36,
+                    "description": "Mbox message doesn't start with 'From ' separator line.",
+                },
+            },
         }
-      }
     }
     ```
     """
+
+    new_errors = []
 
     with open(infile) as f:
         data = json.load(f)
@@ -1339,6 +1384,13 @@ def import_extra_errors(infile):
                         raise ValueError(
                             f"Invalid severity value ({severity}) in {infile}"
                         )
+
+                    new_errors.append({
+                        "name": name,
+                        "description": details["description"],
+                    })
+
+    return new_errors
 
 
 # ============================================================================
@@ -1377,9 +1429,7 @@ enum class nsresult : uint32_t
 {}
 }};
 
-""".format(
-            ",\n".join(items)
-        )
+""".format(",\n".join(items))
     )
 
     items = []
@@ -1393,9 +1443,7 @@ const nsresult
 ;
 
 #endif // ErrorList_h__
-""".format(
-            ",\n".join(items)
-        )
+""".format(",\n".join(items))
     )
 
 
@@ -1507,3 +1555,25 @@ def error_list_json(output, *extra_errors):
 
     json.dump(errors, output, indent=2)
     output.write("\n")
+
+
+def extra_xpc_msg(output, *extra_errors):
+    """
+    Generates `extra_xpc_msg.h`, which is used by XPCException.cpp to generate
+    the `Cr` object used by JavaScript code.
+
+    This file contains only the extra codes included in the files referred to by
+    `extra_errors`, as the common error codes are already defined in
+    `js/xpconnect/src/xpc.msg`.
+    """
+
+    output.write("/* THIS FILE IS GENERATED BY ErrorList.py - DO NOT EDIT */\n")
+
+    new_errors = []
+
+    for infile in extra_errors:
+        new_imported = import_extra_errors(infile)
+        new_errors = new_imported + new_errors
+
+    for error in new_errors:
+        output.write(f'XPC_MSG_DEF({error["name"]}, "{error["description"]}")\n')

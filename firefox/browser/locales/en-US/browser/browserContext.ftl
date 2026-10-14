@@ -12,74 +12,74 @@ navbar-tooltip-instruction =
 
 # Variables
 #   $shortcut (String) - A keyboard shortcut for the Go Back command.
-main-context-menu-back-2 =
+main-context-menu-back-3 =
     .tooltiptext = Go back one page ({ $shortcut })
     .aria-label = Back
-    .accesskey = B
 
 # This menuitem is only visible on macOS
 main-context-menu-back-mac =
     .label = Back
     .accesskey = B
 
-navbar-tooltip-back-2 =
-    .value = { main-context-menu-back-2.tooltiptext }
+# Variables
+#   $shortcut (String) - A keyboard shortcut for the Go Back command.
+navbar-tooltip-back-3 =
+    .value = Go back one page ({ $shortcut })
 
-toolbar-button-back-2 =
-    .label = { main-context-menu-back-2.aria-label }
+toolbar-button-back-3 =
+    .label = Back
 
 ## Forward
 
 # Variables
 #   $shortcut (String) - A keyboard shortcut for the Go Forward command.
-main-context-menu-forward-2 =
+main-context-menu-forward-3 =
     .tooltiptext = Go forward one page ({ $shortcut })
     .aria-label = Forward
-    .accesskey = F
 
 # This menuitem is only visible on macOS
 main-context-menu-forward-mac =
     .label = Forward
     .accesskey = F
 
-navbar-tooltip-forward-2 =
-    .value = { main-context-menu-forward-2.tooltiptext }
+# Variables
+#   $shortcut (String) - A keyboard shortcut for the Go Forward command.
+navbar-tooltip-forward-3 =
+    .value = Go forward one page ({ $shortcut })
 
-toolbar-button-forward-2 =
-    .label = { main-context-menu-forward-2.aria-label }
+toolbar-button-forward-3 =
+    .label = Forward
 
 ## Reload
 
-main-context-menu-reload =
+main-context-menu-reload-2 =
     .aria-label = Reload
-    .accesskey = R
 
 # This menuitem is only visible on macOS
 main-context-menu-reload-mac =
     .label = Reload
     .accesskey = R
 
-toolbar-button-reload =
-    .label = { main-context-menu-reload.aria-label }
+toolbar-button-reload-2 =
+    .label = Reload
 
 ## Stop
 
-main-context-menu-stop =
+main-context-menu-stop-2 =
     .aria-label = Stop
-    .accesskey = S
 
 # This menuitem is only visible on macOS
 main-context-menu-stop-mac =
     .label = Stop
     .accesskey = S
 
-toolbar-button-stop =
-    .label = { main-context-menu-stop.aria-label }
+toolbar-button-stop-2 =
+    .label = Stop
 
 ## Stop-Reload Button
 
-toolbar-button-stop-reload =
-    .title = { main-context-menu-reload.aria-label }
+toolbar-button-stop-reload-2 =
+    .title = Reload
 
 ## Account toolbar Button
 
@@ -95,9 +95,8 @@ main-context-menu-page-save =
 
 ## Simple menu items
 
-main-context-menu-bookmark-page =
+main-context-menu-bookmark-page-2 =
     .aria-label = Bookmark Page…
-    .accesskey = m
     .tooltiptext = Bookmark page
 
 # This menuitem is only visible on macOS
@@ -116,21 +115,18 @@ main-context-menu-edit-bookmark-mac =
 
 # Variables
 #   $shortcut (String) - A keyboard shortcut for the add bookmark command.
-main-context-menu-bookmark-page-with-shortcut =
+main-context-menu-bookmark-page-with-shortcut-2 =
     .aria-label = Bookmark Page…
-    .accesskey = m
     .tooltiptext = Bookmark page ({ $shortcut })
 
-main-context-menu-edit-bookmark =
+main-context-menu-edit-bookmark-2 =
     .aria-label = Edit Bookmark…
-    .accesskey = m
     .tooltiptext = Edit bookmark
 
 # Variables
 #   $shortcut (String) - A keyboard shortcut for the edit bookmark command.
-main-context-menu-edit-bookmark-with-shortcut =
+main-context-menu-edit-bookmark-with-shortcut-2 =
     .aria-label = Edit Bookmark…
-    .accesskey = m
     .tooltiptext = Edit bookmark ({ $shortcut })
 
 main-context-menu-open-link =
@@ -140,6 +136,10 @@ main-context-menu-open-link =
 main-context-menu-open-link-new-tab =
     .label = Open Link in New Tab
     .accesskey = T
+
+main-context-menu-open-link-split-view =
+    .label = Open Link in Split View
+    .accesskey = M
 
 main-context-menu-open-link-container-tab =
     .label = Open Link in New Container Tab
@@ -181,7 +181,7 @@ main-context-menu-copy-phone =
 
 main-context-menu-preview-link =
     .label = Preview Link
-    .accesskey = r
+    .accesskey = J
 
 # "Copy Clean Link" means that Firefox will remove things from the link you
 # copied, like items that identify you for advertising purposes, and other items
@@ -316,6 +316,12 @@ main-context-menu-image-desc =
     .label = View Description
     .accesskey = D
 
+# Variables
+#   $engine (String) - Name of the search engine that will perform the search.
+main-context-menu-visual-search-2 =
+    .label = Search Image with { $engine }
+    .accesskey = e
+
 main-context-menu-video-save-as =
     .label = Save Video As…
     .accesskey = v
@@ -336,9 +342,30 @@ main-context-menu-audio-email =
     .label = Email Audio…
     .accesskey = a
 
-main-context-menu-send-to-device =
-    .label = Send Page to Device
+main-context-menu-send-to-device-2 =
+    .label = Send to Device
     .accesskey = n
+
+main-context-menu-send-to-mobile-2 =
+    .label = Send to Mobile
+    .accesskey = n
+
+## Displayed within the send tab submenu to prompt users to sign in, enable sync, pair a device, or troubleshoot device issues.
+
+main-context-menu-send-to-mobile-sign-in = Sign in to Send Tabs
+main-context-menu-send-to-mobile-enable-sync2 = Enable sync to send a tab
+main-context-menu-send-to-mobile-connect-phone2 = Connect your phone
+main-context-menu-send-to-mobile-device-missing2 = Don’t See Your Device?
+main-context-menu-send-to-mobile-sign-in-from-link = Sign in to Send a Link
+main-context-menu-send-to-mobile-sign-in-from-page = Sign in to Send a Page
+main-context-menu-send-to-mobile-enable-sync3 = Turn on Sync to Send Tabs
+main-context-menu-send-to-mobile-enable-sync-from-link = Turn on Sync to Send a Link
+main-context-menu-send-to-mobile-enable-sync-from-page = Turn on Sync to Send a Page
+main-context-menu-send-to-mobile-connect-phone3 = Connect a Device to Send Tabs
+main-context-menu-send-to-mobile-connect-phone-from-link = Connect a Device to Send a Link
+main-context-menu-send-to-mobile-connect-phone-from-page = Connect a Device to Send a Page
+
+##
 
 # Displayed when there are saved passwords and the user clicks inside a username or password field
 main-context-menu-use-saved-password =
@@ -357,16 +384,16 @@ main-context-menu-manage-passwords =
     .label = Manage Passwords
     .accesskey = M
 
-main-context-menu-keyword =
-    .label = Add a Keyword for this Search…
-    .accesskey = K
-
 main-context-menu-add-engine =
     .label = Add Search Engine
     .accesskey = S
 
 main-context-menu-link-send-to-device =
     .label = Send Link to Device
+    .accesskey = n
+
+main-context-menu-link-send-to-mobile =
+    .label = Send Link to Mobile
     .accesskey = n
 
 main-context-menu-frame =
@@ -437,8 +464,11 @@ main-context-menu-inspect =
     .label = Inspect
     .accesskey = Q
 
-main-context-menu-inspect-a11y-properties =
+# This item only shows for DevTools users, so its access key may be the same
+# as another item's, such as "Copy Image".
+main-context-menu-inspect-a11y-properties2 =
     .label = Inspect Accessibility Properties
+    .accesskey = y
 
 main-context-menu-eme-learn-more =
     .label = Learn more about DRM…
@@ -453,3 +483,18 @@ main-context-menu-open-link-in-container-tab =
 main-context-menu-reveal-password =
     .label = Reveal Password
     .accesskey = v
+
+# The label of a badge shown in menu items to call out new features.
+main-context-menu-new-feature-badge = New
+
+main-context-menu-pdfjs-copy-page =
+    .label = Copy page
+
+main-context-menu-pdfjs-cut-page =
+    .label = Cut page
+
+main-context-menu-pdfjs-delete-page =
+    .label = Delete page
+
+main-context-menu-pdfjs-save-page =
+    .label = Save selection as…

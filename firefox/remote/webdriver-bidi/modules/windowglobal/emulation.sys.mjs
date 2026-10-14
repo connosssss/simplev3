@@ -17,6 +17,10 @@ class EmulationModule extends WindowGlobalBiDiModule {
 
   _applySessionData() {}
 
+  _flushMediaFeatures() {
+    this.messageHandler.window.windowUtils.flushLayoutWithoutThrottledAnimations();
+  }
+
   /**
    * Set the geolocation override to the navigable.
    *
@@ -39,6 +43,44 @@ class EmulationModule extends WindowGlobalBiDiModule {
         timestamp: Date.now(),
       });
     }
+  }
+
+  /**
+   * Set the locale override to the sandboxes,
+   * which belongs to this navigable.
+   *
+   * @param {object} params
+   * @param {(string|null)} params.locale
+   *     Locale string which have to override
+   *     the return result of JavaScript Intl APIs.
+   *     Null value resets the override.
+   */
+  async _setLocaleOverrideToSandboxes(params) {
+    const { locale } = params;
+    this.messageHandler.realms.forEach(realm => {
+      if (realm.isSandbox) {
+        Cu.setSandboxLocaleOverride(realm.globalObject, locale);
+      }
+    });
+  }
+
+  /**
+   * Set the timezone override to the sandboxes,
+   * which belongs to this navigable.
+   *
+   * @param {object} params
+   * @param {(string|null)} params.locale
+   *     Timezone string which has to override
+   *     the return result of JavaScript Intl/Date APIs.
+   *     Null value resets the override.
+   */
+  async _setTimezoneOverrideToSandboxes(params) {
+    const { timezone } = params;
+    this.messageHandler.realms.forEach(realm => {
+      if (realm.isSandbox) {
+        Cu.setSandboxTimezoneOverride(realm.globalObject, timezone);
+      }
+    });
   }
 }
 

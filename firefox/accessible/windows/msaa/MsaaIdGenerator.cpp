@@ -1,16 +1,12 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "MsaaIdGenerator.h"
 
+#include "MsaaAccessible.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/DebugOnly.h"
-#include "mozilla/Unused.h"
-#include "MsaaAccessible.h"
 #include "nsAccessibilityService.h"
 
 namespace mozilla {
@@ -40,6 +36,12 @@ void MsaaIdGenerator::ReleasePendingIDs() {
   mReleaseIDTimer = nullptr;
 }
 
+void MsaaIdGenerator::ReleasePendingIdsCallback(nsITimer* aTimer,
+                                                void* aClosure) {
+  MsaaIdGenerator* gen = (MsaaIdGenerator*)aClosure;
+  gen->ReleasePendingIDs();
+}
+
 bool MsaaIdGenerator::ReleaseID(uint32_t aID) {
   MOZ_ASSERT(aID != MsaaAccessible::kNoID);
   // Releasing an id means it can be reused. Reusing ids too quickly can
@@ -57,16 +59,15 @@ bool MsaaIdGenerator::ReleaseID(uint32_t aID) {
   }
   const uint32_t kReleaseDelay = 1000;
   mIDsToRelease.AppendElement(aID);
-  if (mReleaseIDTimer) {
-    mReleaseIDTimer->SetDelay(kReleaseDelay);
-  } else {
-    NS_NewTimerWithCallback(
-        getter_AddRefs(mReleaseIDTimer),
-        // mReleaseIDTimer is cancelled on shutdown and this is a static
-        // instance, so capturing this here is safe.
-        [this](nsITimer* aTimer) { ReleasePendingIDs(); }, kReleaseDelay,
-        nsITimer::TYPE_ONE_SHOT, "a11y::MsaaIdGenerator::ReleaseIDDelayed");
+  if (!mReleaseIDTimer) {
+    mReleaseIDTimer = NS_NewTimer();
   }
+  // mReleaseIDTimer is cancelled on shutdown and this is a static instance,
+  // so capturing this here is safe.
+  mReleaseIDTimer->InitWithNamedFuncCallback(
+      ReleasePendingIdsCallback, this, kReleaseDelay, nsITimer::TYPE_ONE_SHOT,
+      "a11y::MsaaIdGenerator::ReleaseIDDelayed"_ns);
+
   return true;
 }
 

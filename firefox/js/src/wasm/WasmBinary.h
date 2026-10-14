@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- *
+/*
  * Copyright 2021 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,12 +18,10 @@
 #define wasm_binary_h
 
 #include "mozilla/DebugOnly.h"
-#include "mozilla/Maybe.h"
 
 #include <type_traits>
 
 #include "js/WasmFeatures.h"
-
 #include "wasm/WasmBinaryTypes.h"
 #include "wasm/WasmCompile.h"
 #include "wasm/WasmCompileArgs.h"
@@ -70,8 +66,8 @@ class Opcode {
   }
   MOZ_IMPLICIT Opcode(GcOp op)
       : bits_((uint32_t(op) << 8) | uint32_t(Op::GcPrefix)) {
-    static_assert(size_t(SimdOp::Limit) <= 0xFFFFFF, "fits");
-    MOZ_ASSERT(size_t(op) < size_t(SimdOp::Limit));
+    static_assert(size_t(GcOp::Limit) <= 0xFFFFFF, "fits");
+    MOZ_ASSERT(size_t(op) < size_t(GcOp::Limit));
   }
 
   bool isOp() const { return bits_ < uint32_t(Op::FirstPrefix); }
@@ -108,8 +104,7 @@ class Opcode {
 
   uint32_t bits() const { return bits_; }
 
-  bool operator==(const Opcode& that) const { return bits_ == that.bits_; }
-  bool operator!=(const Opcode& that) const { return bits_ != that.bits_; }
+  bool operator==(const Opcode& that) const = default;
 };
 
 // The Encoder class appends bytes to the Bytes object it is given during
@@ -427,6 +422,7 @@ class Decoder {
   bool fail(size_t errorOffset, const char* msg);
 
   UniqueChars* error() { return error_; }
+  UniqueCharsVector* warnings() { return warnings_; }
 
   void clearError() {
     if (error_) {
@@ -461,6 +457,23 @@ class Decoder {
     return true;
   }
 
+  [[nodiscard]] bool peekLiteral(const char* lit) {
+    size_t nBytes = strlen(lit);
+    const uint8_t* actualBytes;
+    if (!peekBytes(nBytes, &actualBytes)) {
+      return false;
+    }
+    return memcmp(lit, actualBytes, nBytes) == 0;
+  }
+
+  [[nodiscard]] bool readLiteral(const char* lit) {
+    bool match = peekLiteral(lit);
+    if (match) {
+      cur_ += strlen(lit);
+    }
+    return match;
+  }
+
   // Fixed-size encoding operations simply copy the literal bytes (without
   // attempting to align).
 
@@ -468,7 +481,7 @@ class Decoder {
   [[nodiscard]] bool readFixedU32(uint32_t* u) { return read<uint32_t>(u); }
   [[nodiscard]] bool readFixedF32(float* f) { return read<float>(f); }
   [[nodiscard]] bool readFixedF64(double* d) { return read<double>(d); }
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   [[nodiscard]] bool readFixedV128(V128* d) {
     for (unsigned i = 0; i < 16; i++) {
       if (!read<uint8_t>(d->bytes + i)) {
@@ -478,6 +491,17 @@ class Decoder {
     return true;
   }
 #endif
+
+  // Utility for the common case where a single byte is used as a boolean value
+  // (0 = false, 1 = true, all other values invalid).
+  [[nodiscard]] bool readBool(bool* b) {
+    uint8_t byte;
+    if (!readFixedU8(&byte) || byte > 1) {
+      return false;
+    }
+    *b = (byte != 0);
+    return true;
+  }
 
   // Variable-length encodings that all use LEB128.
 
@@ -526,7 +550,7 @@ class Decoder {
   [[nodiscard]] bool readI64Const(int64_t* i64);
   [[nodiscard]] bool readF32Const(float* f32);
   [[nodiscard]] bool readF64Const(double* f64);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   [[nodiscard]] bool readV128Const(V128* value);
 #endif
   [[nodiscard]] bool readRefNull(const TypeContext& types,
@@ -534,15 +558,52 @@ class Decoder {
 
   // See writeBytes comment.
 
-  [[nodiscard]] bool readBytes(uint32_t numBytes,
+  [[nodiscard]] bool peekBytes(uint32_t numBytes,
                                const uint8_t** bytes = nullptr) {
     if (bytes) {
       *bytes = cur_;
     }
-    if (bytesRemain() < numBytes) {
+    return bytesRemain() >= numBytes;
+  }
+
+  [[nodiscard]] bool readBytes(uint32_t numBytes,
+                               const uint8_t** bytes = nullptr) {
+    bool result = peekBytes(numBytes, bytes);
+    if (result) {
+      cur_ += numBytes;
+    }
+    return result;
+  }
+
+  [[nodiscard]] bool readBytesSpan(uint32_t numBytes, BytecodeSpan* bytes,
+                                   size_t* offset = nullptr) {
+    size_t offset_ = currentOffset();
+    const uint8_t* data;
+    if (!readBytes(numBytes, &data)) {
       return false;
     }
-    cur_ += numBytes;
+    *bytes = BytecodeSpan(data, numBytes);
+    if (offset) {
+      *offset = offset_;
+    }
+    return true;
+  }
+
+  bool readUTF8Bytes(uint32_t numBytes, UTF8Bytes* bytes) {
+    const uint8_t* rawBytes;
+    if (!readBytes(numBytes, &rawBytes)) {
+      return false;
+    }
+
+    if (!IsUtf8(AsChars(mozilla::Span(rawBytes, numBytes)))) {
+      return false;
+    }
+
+    if (!bytes->resizeUninitialized(numBytes)) {
+      return false;
+    }
+    memcpy(bytes->begin(), rawBytes, numBytes);
+
     return true;
   }
 
@@ -577,13 +638,6 @@ class Decoder {
   void skipAndFinishCustomSection(const BytecodeRange& range);
 
   [[nodiscard]] bool skipCustomSection(CodeMetadata* codeMeta);
-
-  // The Name section has its own optional subsections.
-
-  [[nodiscard]] bool startNameSubsection(NameType nameType,
-                                         mozilla::Maybe<uint32_t>* endOffset);
-  [[nodiscard]] bool finishNameSubsection(uint32_t endOffset);
-  [[nodiscard]] bool skipNameSubsection();
 
   // The infallible "unchecked" decoding functions can be used when we are
   // sure that the bytes are well-formed (by construction or due to previous
@@ -648,6 +702,10 @@ inline ValType Decoder::uncheckedReadValType(const TypeContext& types) {
     case uint8_t(TypeCode::NullExternRef):
     case uint8_t(TypeCode::ExnRef):
     case uint8_t(TypeCode::NullExnRef):
+#ifdef ENABLE_WASM_JSPI
+    case uint8_t(TypeCode::ContRef):
+    case uint8_t(TypeCode::NullContRef):
+#endif
       return RefType::fromTypeCode(TypeCode(code), true);
     case uint8_t(TypeCode::Ref):
     case uint8_t(TypeCode::NullableRef): {
@@ -680,7 +738,7 @@ inline bool Decoder::readPackedType(const TypeContext& types,
   }
   switch (code) {
     case uint8_t(TypeCode::V128): {
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
       if (!features.simd) {
         return fail("v128 not enabled");
       }
@@ -700,6 +758,16 @@ inline bool Decoder::readPackedType(const TypeContext& types,
       *type = RefType::fromTypeCode(TypeCode(code), true);
       return true;
     }
+#ifdef ENABLE_WASM_JSPI
+    case uint8_t(TypeCode::ContRef):
+    case uint8_t(TypeCode::NullContRef): {
+      if (!features.stackSwitching) {
+        return fail("stack switching not enabled");
+      }
+      *type = RefType::fromTypeCode(TypeCode(code), true);
+      return true;
+    }
+#endif  // ENABLE_WASM_JSPI
     case uint8_t(TypeCode::Ref):
     case uint8_t(TypeCode::NullableRef): {
       bool nullable = code == uint8_t(TypeCode::NullableRef);
@@ -767,6 +835,16 @@ inline bool Decoder::readHeapType(const TypeContext& types,
         *type = RefType::fromTypeCode(TypeCode(code), nullable);
         return true;
       }
+#ifdef ENABLE_WASM_JSPI
+      case uint8_t(TypeCode::ContRef):
+      case uint8_t(TypeCode::NullContRef): {
+        if (!features.stackSwitching) {
+          return fail("stack switching not enabled");
+        }
+        *type = RefType::fromTypeCode(TypeCode(code), nullable);
+        return true;
+      }
+#endif  // ENABLE_WASM_JSPI
       case uint8_t(TypeCode::AnyRef):
       case uint8_t(TypeCode::I31Ref):
       case uint8_t(TypeCode::EqRef):
@@ -870,7 +948,7 @@ inline bool Decoder::readF64Const(double* f64) {
   return true;
 }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 inline bool Decoder::readV128Const(V128* value) {
   if (!readFixedV128(value)) {
     return fail("unable to read V128 constant");

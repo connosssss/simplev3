@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,10 +7,14 @@
 var { ExtensionParent } = ChromeUtils.importESModule(
   "resource://gre/modules/ExtensionParent.sys.mjs"
 );
-
 var { ExtensionError } = ExtensionUtils;
 
 var { IconDetails } = ExtensionParent;
+
+ChromeUtils.defineESModuleGetters(this, {
+  SidebarManager:
+    "moz-src:///browser/components/sidebar/SidebarManager.sys.mjs",
+});
 
 // WeakMap[Extension -> SidebarAction]
 let sidebarActionMap = new WeakMap();
@@ -50,11 +52,10 @@ this.sidebarAction = class extends ExtensionAPI {
     this.globals = Object.create(this.defaults);
 
     this.tabContext = new TabContext(target => {
-      let window = target.ownerGlobal;
-      if (target === window) {
+      if (ChromeUtils.getClassName(target) == "Window") {
         return this.globals;
       }
-      return this.tabContext.get(window);
+      return this.tabContext.get(target.documentGlobal);
     });
 
     // We need to ensure our elements are available before session restore.
@@ -70,11 +71,21 @@ this.sidebarAction = class extends ExtensionAPI {
     this.build();
   }
 
+  /**
+   * Called by any extension when any of the following happens:
+   * - An extension has an update including whether it is a sidebar
+   * - An extension is disabled or removed
+   * - On browser shutdown
+   *
+   * @param {boolean} isAppShutdown
+   *        Whether this is called during app shutdown
+   */
   onShutdown(isAppShutdown) {
-    sidebarActionMap.delete(this.extension);
-
+    if (!sidebarActionMap.delete(this.extension)) {
+      // sidebar_action not specified for this extension.
+      return;
+    }
     this.tabContext.shutdown();
-
     // Don't remove everything on app shutdown so session restore can handle
     // restoring open sidebars.
     if (isAppShutdown) {
@@ -83,6 +94,9 @@ this.sidebarAction = class extends ExtensionAPI {
 
     for (let window of windowTracker.browserWindows()) {
       let { SidebarController } = window;
+      // Note: sidebar preferences such as sidebar.installed.extensions are kept to remember users preferences
+      // and should be remembered between browser/extension restarts, when the extension is disabled and re-enabled,
+      // and across updates (including updates that drop sidebar_action). We should only forget about these on uninstall.
       SidebarController.removeExtension(this.id);
     }
     windowTracker.removeOpenListener(this.windowOpenListener);
@@ -90,6 +104,15 @@ this.sidebarAction = class extends ExtensionAPI {
 
   static onUninstall(id) {
     const sidebarId = `${makeWidgetId(id)}-sidebar-action`;
+
+    let installedExtensions = Services.prefs
+      .getStringPref("sidebar.installed.extensions", "")
+      .split(",");
+    const index = installedExtensions.indexOf(id);
+    if (index != -1) {
+      SidebarManager.cleanupPrefs(id);
+    }
+
     for (let window of windowTracker.browserWindows()) {
       let { SidebarController } = window;
       if (SidebarController.lastOpenedId === sidebarId) {
@@ -101,7 +124,7 @@ this.sidebarAction = class extends ExtensionAPI {
   build() {
     // eslint-disable-next-line mozilla/balanced-listeners
     this.tabContext.on("tab-select", (evt, tab) => {
-      this.updateWindow(tab.ownerGlobal);
+      this.updateWindow(tab.documentGlobal);
     });
 
     let install = this.extension.startupReason === "ADDON_INSTALL";
@@ -124,7 +147,7 @@ this.sidebarAction = class extends ExtensionAPI {
     this.panel = details.panel;
     let { SidebarController, devicePixelRatio } = window;
     SidebarController.registerExtension(this.id, {
-      ...this.getMenuIcon(details, devicePixelRatio),
+      iconUrl: this.getMenuIcon(details, devicePixelRatio),
       menuId: this.menuId,
       title: details.title,
       extensionId: this.extension.id,
@@ -145,20 +168,12 @@ this.sidebarAction = class extends ExtensionAPI {
    *   Extension icons.
    * @param {number} scale
    *   Scaling factor of the icon's size.
-   * @returns {{ icon: string; iconUrl: string }}
+   * @returns {string}
    */
   getMenuIcon({ icon }, scale) {
-    let getIcon = size =>
-      IconDetails.escapeUrl(
-        IconDetails.getPreferredIcon(icon, this.extension, size).icon
-      );
-
-    const iconUrl = getIcon(16 * scale);
-    // TODO Bug 1898257 - Only return iconUrl here, remove usages of icon.
-    return {
-      icon: `image-set(url("${getIcon(16)}"), url("${getIcon(32)}") 2x)`,
-      iconUrl,
-    };
+    return IconDetails.escapeUrl(
+      IconDetails.getPreferredIcon(icon, this.extension, 16 * scale).icon
+    );
   }
 
   /**
@@ -185,7 +200,7 @@ this.sidebarAction = class extends ExtensionAPI {
     SidebarController.setExtensionAttributes(
       this.id,
       {
-        ...this.getMenuIcon(tabData, devicePixelRatio),
+        iconUrl: this.getMenuIcon(tabData, devicePixelRatio),
         label: title,
       },
       urlChanged
@@ -217,9 +232,10 @@ this.sidebarAction = class extends ExtensionAPI {
    */
   updateOnChange(target) {
     if (target) {
-      let window = target.ownerGlobal;
-      if (target === window || target.selected) {
-        this.updateWindow(window);
+      if (ChromeUtils.getClassName(target) == "Window") {
+        this.updateWindow(target);
+      } else if (target.selected) {
+        this.updateWindow(target.documentGlobal);
       }
     } else {
       for (let window of windowTracker.browserWindows()) {
@@ -253,7 +269,7 @@ this.sidebarAction = class extends ExtensionAPI {
     let target = null;
     if (tabId != null) {
       target = tabTracker.getTab(tabId);
-      if (!this.extension.canAccessWindow(target.ownerGlobal)) {
+      if (!this.extension.canAccessWindow(target.documentGlobal)) {
         throw new ExtensionError(`Invalid tab ID: ${tabId}`);
       }
     } else if (windowId != null) {

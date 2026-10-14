@@ -1,15 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef CodeAddressService_h__
-#define CodeAddressService_h__
+#ifndef CodeAddressService_h_
+#define CodeAddressService_h_
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+
 #include "mozilla/AllocPolicy.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/HashFunctions.h"
@@ -92,7 +91,7 @@ class CodeAddressService
     uint32_t mInUse : 1;  // is the entry used?
 
     Entry()
-        : mPc(0),
+        : mPc(nullptr),
           mFunction(nullptr),
           mLibrary(nullptr),
           mLOffset(0),
@@ -217,8 +216,8 @@ class CodeAddressService
 
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const {
     size_t n = aMallocSizeOf(this);
-    for (uint32_t i = 0; i < kNumEntries; i++) {
-      n += mEntries[i].SizeOfExcludingThis(aMallocSizeOf);
+    for (auto& entry : mEntries) {
+      n += entry.SizeOfExcludingThis(aMallocSizeOf);
     }
 
     n += mLibraryStrings.shallowSizeOfExcludingThis(aMallocSizeOf);
@@ -233,8 +232,8 @@ class CodeAddressService
 
   size_t CacheCount() const {
     size_t n = 0;
-    for (size_t i = 0; i < kNumEntries; i++) {
-      if (mEntries[i].mInUse) {
+    for (const auto& entry : mEntries) {
+      if (entry.mInUse) {
         n++;
       }
     }
@@ -247,4 +246,4 @@ class CodeAddressService
 
 }  // namespace mozilla
 
-#endif  // CodeAddressService_h__
+#endif  // CodeAddressService_h_

@@ -231,6 +231,12 @@ class Message extends Component {
       "https://bugzilla.mozilla.org/enter_bug.cgi?product=DevTools&component=Console";
     const timestampEl = this.renderTimestamp();
 
+    console.error(
+      "Unable to render a console message",
+      this.state.error,
+      this.state.error.stack
+    );
+
     return dom.div(
       {
         className: "message error message-did-catch",
@@ -256,7 +262,11 @@ class Message extends Component {
                 onClick: () =>
                   navigator.clipboard.writeText(
                     JSON.stringify(
-                      this.props.message,
+                      {
+                        message: this.props.message,
+                        error: this.state.error.message,
+                        stack: this.state.error.stack,
+                      },
                       function (key, value) {
                         if (key === "targetFront") {
                           return null;
@@ -425,14 +435,19 @@ class Message extends Component {
 
     let learnMore;
     if (exceptionDocURL) {
+      const isMdnUrl = exceptionDocURL.startsWith(
+        "https://developer.mozilla.org"
+      );
       learnMore = dom.a(
         {
-          className: "learn-more-link webconsole-learn-more-link",
+          className: `webconsole-learn-more-link${
+            isMdnUrl ? " learn-more-link mdn-link" : ""
+          }`,
           href: exceptionDocURL,
           title: exceptionDocURL.split("?")[0],
           onClick: this.onLearnMoreClick,
         },
-        `[${l10n.getStr("webConsoleMoreInfoLabel")}]`
+        l10n.getStr("webConsoleMoreInfoLabel")
       );
     }
 
@@ -470,6 +485,7 @@ class Message extends Component {
           dom.span(
             { className: "message-body devtools-monospace" },
             ...bodyElements,
+            learnMore ? " " : null,
             learnMore
           ),
           repeat ? " " : null,

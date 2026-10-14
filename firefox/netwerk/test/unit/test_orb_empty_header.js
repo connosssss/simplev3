@@ -4,10 +4,13 @@
 
 "use strict";
 
+const { NodeHTTPServer } = ChromeUtils.importESModule(
+  "resource://testing-common/NodeServer.sys.mjs"
+);
+
 /* import-globals-from head_cache.js */
 /* import-globals-from head_cookies.js */
 /* import-globals-from head_channels.js */
-/* import-globals-from head_servers.js */
 
 function makeChan(uri) {
   var principal =
@@ -66,7 +69,7 @@ async function test_empty_header(server, doSniff) {
   let req = await new Promise(resolve => {
     chan.asyncOpen(new ChannelListener(resolve, null, CL_EXPECT_FAILURE));
   });
-  equal(req.status, Cr.NS_BINDING_ABORTED);
+  equal(req.status, Cr.NS_ERROR_DOM_NETWORK_ERR);
   equal(req.QueryInterface(Ci.nsIHttpChannel).responseStatus, 500);
 
   req.visitResponseHeaders({

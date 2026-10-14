@@ -1,14 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef mozilla_dom_serviceworkerprivate_h
 #define mozilla_dom_serviceworkerprivate_h
-
-#include <functional>
-#include <type_traits>
 
 #include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
@@ -22,6 +17,7 @@
 #include "mozilla/dom/RemoteWorkerTypes.h"
 #include "mozilla/dom/ServiceWorkerLifetimeExtension.h"
 #include "mozilla/dom/ServiceWorkerOpArgs.h"
+#include "mozilla/dom/ServiceWorkerOpPromise.h"
 #include "nsCOMPtr.h"
 #include "nsISupportsImpl.h"
 #include "nsTArray.h"
@@ -48,7 +44,6 @@ namespace dom {
 
 class PostMessageSource;
 class RemoteWorkerControllerChild;
-class ServiceWorkerCloneData;
 class ServiceWorkerInfo;
 class ServiceWorkerPrivate;
 class ServiceWorkerRegistrationInfo;
@@ -94,7 +89,7 @@ class ServiceWorkerPrivate final : public RemoteWorkerObserver {
   Maybe<ClientInfo> GetClientInfo() { return mClientInfo; }
 
   nsresult SendMessageEvent(
-      RefPtr<ServiceWorkerCloneData>&& aData,
+      ipc::StructuredCloneData* aData,
       const ServiceWorkerLifetimeExtension& aLifetimeExtension,
       const PostMessageSource& aSource);
 
@@ -113,19 +108,17 @@ class ServiceWorkerPrivate final : public RemoteWorkerObserver {
       const net::CookieStruct& aCookie, bool aCookieDeleted,
       RefPtr<ServiceWorkerRegistrationInfo> aRegistration);
 
-  nsresult SendPushEvent(const nsAString& aMessageId,
-                         const Maybe<nsTArray<uint8_t>>& aData,
-                         RefPtr<ServiceWorkerRegistrationInfo> aRegistration);
+  RefPtr<PushHandledPromise> SendPushEvent(
+      const nsAString& aMessageId, const Maybe<nsTArray<uint8_t>>& aData,
+      RefPtr<ServiceWorkerRegistrationInfo> aRegistration);
 
   nsresult SendPushSubscriptionChangeEvent(
       const RefPtr<nsIPushSubscription>& aOldSubscription);
 
-  nsresult SendNotificationClickEvent(const nsAString& aScope,
-                                      const IPCNotification& aNotification,
+  nsresult SendNotificationClickEvent(const IPCNotification& aNotification,
                                       const nsAString& aAction);
 
-  nsresult SendNotificationCloseEvent(const nsAString& aScope,
-                                      const IPCNotification& aNotification);
+  nsresult SendNotificationCloseEvent(const IPCNotification& aNotification);
 
   nsresult SendFetchEvent(nsCOMPtr<nsIInterceptedChannel> aChannel,
                           nsILoadGroup* aLoadGroup, const nsAString& aClientId,
@@ -253,7 +246,7 @@ class ServiceWorkerPrivate final : public RemoteWorkerObserver {
       RefPtr<ServiceWorkerRegistrationInfo>&& aRegistration,
       ServiceWorkerCookieChangeEventOpArgs&& aArgs);
 
-  nsresult SendPushEventInternal(
+  RefPtr<PushHandledPromise> SendPushEventInternal(
       RefPtr<ServiceWorkerRegistrationInfo>&& aRegistration,
       ServiceWorkerPushEventOpArgs&& aArgs);
 
@@ -274,11 +267,9 @@ class ServiceWorkerPrivate final : public RemoteWorkerObserver {
   RefPtr<GenericNonExclusivePromise> ShutdownInternal(
       uint32_t aShutdownStateId);
 
-  nsresult ExecServiceWorkerOp(
+  RefPtr<ServiceWorkerOpPromise> ExecServiceWorkerOp(
       ServiceWorkerOpArgs&& aArgs,
-      const ServiceWorkerLifetimeExtension& aLifetimeExtension,
-      std::function<void(ServiceWorkerOpResult&&)>&& aSuccessCallback,
-      std::function<void()>&& aFailureCallback = [] {});
+      const ServiceWorkerLifetimeExtension& aLifetimeExtension);
 
   class PendingFunctionalEvent {
    public:
@@ -314,10 +305,16 @@ class ServiceWorkerPrivate final : public RemoteWorkerObserver {
                      RefPtr<ServiceWorkerRegistrationInfo>&& aRegistration,
                      ServiceWorkerPushEventOpArgs&& aArgs);
 
+    // Rejects the promise if the event is dropped without being sent
+    ~PendingPushEvent();
+
     nsresult Send() override;
+
+    RefPtr<PushHandledPromise> Promise();
 
    private:
     ServiceWorkerPushEventOpArgs mArgs;
+    MozPromiseHolder<PushHandledPromise> mPromiseHolder;
   };
 
   class PendingFetchEvent final : public PendingFunctionalEvent {

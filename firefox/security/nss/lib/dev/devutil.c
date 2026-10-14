@@ -10,6 +10,10 @@
 #include "ckhelper.h"
 #endif /* CKHELPER_H */
 
+#include "pk11pub.h"
+#include "dev3hack.h"
+#include "secerr.h"
+
 NSS_IMPLEMENT nssCryptokiObject *
 nssCryptokiObject_Create(
     NSSToken *t,
@@ -46,6 +50,7 @@ nssCryptokiObject_Create(
     object->token = nssToken_AddRef(t);
     isTokenObject = (CK_BBOOL *)cert_template[0].pValue;
     object->isTokenObject = *isTokenObject;
+    object->trustType = CKM_INVALID_MECHANISM;
     nss_ZFreeIf(cert_template[0].pValue);
     NSS_CK_ATTRIBUTE_TO_UTF8(&cert_template[1], object->label);
     return object;
@@ -87,41 +92,9 @@ nssCryptokiObject_Equal(
     return (o1->token == o2->token && o1->handle == o2->handle);
 }
 
-NSS_IMPLEMENT PRUint32
-nssPKCS11String_Length(CK_CHAR *pkcs11Str, PRUint32 bufLen)
-{
-    PRInt32 i;
-    for (i = bufLen - 1; i >= 0;) {
-        if (pkcs11Str[i] != ' ' && pkcs11Str[i] != '\0')
-            break;
-        --i;
-    }
-    return (PRUint32)(i + 1);
-}
-
 /*
  * Slot arrays
  */
-
-NSS_IMPLEMENT NSSSlot **
-nssSlotArray_Clone(
-    NSSSlot **slots)
-{
-    NSSSlot **rvSlots = NULL;
-    NSSSlot **sp = slots;
-    PRUint32 count = 0;
-    while (sp && *sp)
-        count++;
-    if (count > 0) {
-        rvSlots = nss_ZNEWARRAY(NULL, NSSSlot *, count + 1);
-        if (rvSlots) {
-            for (sp = slots, count = 0; *sp; sp++) {
-                rvSlots[count++] = nssSlot_AddRef(*sp);
-            }
-        }
-    }
-    return rvSlots;
-}
 
 NSS_IMPLEMENT void
 nssSlotArray_Destroy(
@@ -134,13 +107,6 @@ nssSlotArray_Destroy(
         }
         nss_ZFreeIf(slots);
     }
-}
-
-NSS_IMPLEMENT void
-NSSSlotArray_Destroy(
-    NSSSlot **slots)
-{
-    nssSlotArray_Destroy(slots);
 }
 
 NSS_IMPLEMENT void
@@ -187,7 +153,7 @@ enum {
 
 struct nssTokenObjectCacheStr {
     NSSToken *token;
-    PZLock *lock;
+    PRLock *lock;
     PRBool loggedIn;
     PRBool doObjectType[3];
     PRBool searchedObjectType[3];
@@ -206,7 +172,7 @@ nssTokenObjectCache_Create(
     if (!rvCache) {
         goto loser;
     }
-    rvCache->lock = PZ_NewLock(nssILockOther); /* XXX */
+    rvCache->lock = PR_NewLock(); /* XXX */
     if (!rvCache->lock) {
         goto loser;
     }
@@ -247,9 +213,9 @@ nssTokenObjectCache_Clear(
     nssTokenObjectCache *cache)
 {
     if (cache) {
-        PZ_Lock(cache->lock);
+        PR_Lock(cache->lock);
         clear_cache(cache);
-        PZ_Unlock(cache->lock);
+        PR_Unlock(cache->lock);
     }
 }
 
@@ -260,7 +226,7 @@ nssTokenObjectCache_Destroy(
     if (cache) {
         clear_cache(cache);
         if (cache->lock) {
-            PZ_DestroyLock(cache->lock);
+            PR_DestroyLock(cache->lock);
         }
         nss_ZFreeIf(cache);
     }
@@ -272,12 +238,13 @@ nssTokenObjectCache_HaveObjectClass(
     CK_OBJECT_CLASS objclass)
 {
     PRBool haveIt;
-    PZ_Lock(cache->lock);
+    PR_Lock(cache->lock);
     switch (objclass) {
         case CKO_CERTIFICATE:
             haveIt = cache->doObjectType[cachedCerts];
             break;
         case CKO_NSS_TRUST:
+        case CKO_TRUST:
             haveIt = cache->doObjectType[cachedTrust];
             break;
         case CKO_NSS_CRL:
@@ -286,7 +253,7 @@ nssTokenObjectCache_HaveObjectClass(
         default:
             haveIt = PR_FALSE;
     }
-    PZ_Unlock(cache->lock);
+    PR_Unlock(cache->lock);
     return haveIt;
 }
 
@@ -355,10 +322,6 @@ create_object(
         goto loser;
     }
     rvCachedObject->arena = arena;
-    /* The cache is tied to the token, and therefore the objects
-     * in it should not hold references to the token.
-     */
-    (void)nssToken_Destroy(object->token);
     rvCachedObject->object = object;
     rvCachedObject->attributes = nss_ZNEWARRAY(arena, CK_ATTRIBUTE, numTypes);
     if (!rvCachedObject->attributes) {
@@ -380,6 +343,12 @@ create_object(
     *status = PR_SUCCESS;
     nssSlot_Destroy(slot);
 
+    /* The cache is tied to the token, and therefore the objects in it should
+     * not hold references to the token. Drop the object's token reference
+     * only after success so that on failure the caller can still safely
+     * destroy the object (and its token reference) exactly once.
+     */
+    (void)nssToken_Destroy(object->token);
     return rvCachedObject;
 loser:
     *status = PR_FAILURE;
@@ -476,20 +445,41 @@ create_trust(
     nssCryptokiObject *object,
     PRStatus *status)
 {
-    static const CK_ATTRIBUTE_TYPE trustAttr[] = {
+    static const CK_ATTRIBUTE_TYPE nssTrustAttr[] = {
         CKA_CLASS,
         CKA_TOKEN,
         CKA_LABEL,
-        CKA_CERT_SHA1_HASH,
-        CKA_CERT_MD5_HASH,
+        CKA_NSS_CERT_SHA1_HASH,
+        CKA_NSS_CERT_MD5_HASH,
         CKA_ISSUER,
         CKA_SUBJECT,
-        CKA_TRUST_SERVER_AUTH,
-        CKA_TRUST_CLIENT_AUTH,
-        CKA_TRUST_EMAIL_PROTECTION,
-        CKA_TRUST_CODE_SIGNING
+        CKA_NSS_TRUST_SERVER_AUTH,
+        CKA_NSS_TRUST_CLIENT_AUTH,
+        CKA_NSS_TRUST_EMAIL_PROTECTION,
+        CKA_NSS_TRUST_CODE_SIGNING
     };
-    static const PRUint32 numTrustAttr = sizeof(trustAttr) / sizeof(trustAttr[0]);
+    static const CK_ATTRIBUTE_TYPE pkcsTrustAttr[] = {
+        CKA_CLASS,
+        CKA_TOKEN,
+        CKA_LABEL,
+        CKA_HASH_OF_CERTIFICATE,
+        CKA_NAME_HASH_ALGORITHM,
+        CKA_ISSUER,
+        CKA_SUBJECT,
+        CKA_PKCS_TRUST_SERVER_AUTH,
+        CKA_PKCS_TRUST_CLIENT_AUTH,
+        CKA_PKCS_TRUST_EMAIL_PROTECTION,
+        CKA_PKCS_TRUST_CODE_SIGNING
+    };
+    static const PRUint32 numNSSTrustAttr = PR_ARRAY_SIZE(nssTrustAttr);
+    static const PRUint32 numPKCSTrustAttr = PR_ARRAY_SIZE(pkcsTrustAttr);
+    const CK_ATTRIBUTE_TYPE *trustAttr;
+    PRUint32 numTrustAttr;
+
+    trustAttr = (object->trustType == CKO_TRUST) ? pkcsTrustAttr
+                                                 : nssTrustAttr;
+    numTrustAttr = (object->trustType == CKO_TRUST) ? numPKCSTrustAttr
+                                                    : numNSSTrustAttr;
     return create_object(object, trustAttr, numTrustAttr, status);
 }
 
@@ -713,6 +703,7 @@ nssTokenObjectCache_FindObjectsByTemplate(
             objectType = cachedCerts;
             break;
         case CKO_NSS_TRUST:
+        case CKO_TRUST:
             objectType = cachedTrust;
             break;
         case CKO_NSS_CRL:
@@ -721,7 +712,7 @@ nssTokenObjectCache_FindObjectsByTemplate(
         default:
             goto finish;
     }
-    PZ_Lock(cache->lock);
+    PR_Lock(cache->lock);
     if (cache->doObjectType[objectType]) {
         status = get_token_objects_for_cache(cache, objectType, objclass);
         if (status == PR_SUCCESS) {
@@ -729,7 +720,7 @@ nssTokenObjectCache_FindObjectsByTemplate(
                                               otemplate, otlen, maximumOpt);
         }
     }
-    PZ_Unlock(cache->lock);
+    PR_Unlock(cache->lock);
 finish:
     if (statusOpt) {
         *statusOpt = status;
@@ -775,12 +766,13 @@ nssTokenObjectCache_GetObjectAttributes(
     if (!token_is_present(cache)) {
         return PR_FAILURE;
     }
-    PZ_Lock(cache->lock);
+    PR_Lock(cache->lock);
     switch (objclass) {
         case CKO_CERTIFICATE:
             objectType = cachedCerts;
             break;
         case CKO_NSS_TRUST:
+        case CKO_TRUST:
             objectType = cachedTrust;
             break;
         case CKO_NSS_CRL:
@@ -838,13 +830,13 @@ nssTokenObjectCache_GetObjectAttributes(
             atemplate[i].ulValueLen = (CK_ULONG)-1;
         }
     }
-    PZ_Unlock(cache->lock);
+    PR_Unlock(cache->lock);
     if (mark) {
         nssArena_Unmark(arena, mark);
     }
     return PR_SUCCESS;
 loser:
-    PZ_Unlock(cache->lock);
+    PR_Unlock(cache->lock);
     if (mark) {
         nssArena_Release(arena, mark);
     }
@@ -868,23 +860,25 @@ nssTokenObjectCache_ImportObject(
     if (!token_is_present(cache)) {
         return PR_SUCCESS; /* cache not active, ignored */
     }
-    PZ_Lock(cache->lock);
+    PR_Lock(cache->lock);
     switch (objclass) {
         case CKO_CERTIFICATE:
             objectType = cachedCerts;
             break;
         case CKO_NSS_TRUST:
+        case CKO_TRUST:
             objectType = cachedTrust;
+            object->trustType = objclass;
             break;
         case CKO_NSS_CRL:
             objectType = cachedCRLs;
             break;
         default:
-            PZ_Unlock(cache->lock);
+            PR_Unlock(cache->lock);
             return PR_SUCCESS; /* don't need to import it here */
     }
     if (!cache_available_for_object_type(cache, objectType)) {
-        PZ_Unlock(cache->lock);
+        PR_Unlock(cache->lock);
         return PR_SUCCESS; /* cache not active, ignored */
     }
     count = 0;
@@ -920,7 +914,7 @@ nssTokenObjectCache_ImportObject(
     } else {
         status = PR_FAILURE;
     }
-    PZ_Unlock(cache->lock);
+    PR_Unlock(cache->lock);
     return status;
 }
 
@@ -934,7 +928,7 @@ nssTokenObjectCache_RemoveObject(
     if (!token_is_present(cache)) {
         return;
     }
-    PZ_Lock(cache->lock);
+    PR_Lock(cache->lock);
     for (oType = 0; oType < 3; oType++) {
         if (!cache_available_for_object_type(cache, oType) ||
             !cache->objects[oType]) {
@@ -962,39 +956,70 @@ nssTokenObjectCache_RemoveObject(
         nss_ZFreeIf(cache->objects[oType]); /* no entries remaining */
         cache->objects[oType] = NULL;
     }
-    PZ_Unlock(cache->lock);
+    PR_Unlock(cache->lock);
 }
 
-/* These two hash algorithms are presently sufficient.
-** They are used for fingerprints of certs which are stored as the
+/* We need a general hash to support CKO_TRUST
+** Replace the algorithm specific version used for
 ** CKA_CERT_SHA1_HASH and CKA_CERT_MD5_HASH attributes.
-** We don't need to add SHAxxx to these now.
+** CKA_HASH_OF_CERTIFICATE uses the mechanism specified
+** in CKA_NAME_HASH_ALGORITHM, with can be passed to this
+** function.
 */
 /* XXX of course this doesn't belong here */
 NSS_IMPLEMENT NSSAlgorithmAndParameters *
-NSSAlgorithmAndParameters_CreateSHA1Digest(
-    NSSArena *arenaOpt)
+NSSAlgorithmAndParameters_CreateDigest(
+    NSSArena *arenaOpt, CK_MECHANISM_TYPE hashMech)
 {
     NSSAlgorithmAndParameters *rvAP = NULL;
     rvAP = nss_ZNEW(arenaOpt, NSSAlgorithmAndParameters);
     if (rvAP) {
-        rvAP->mechanism.mechanism = CKM_SHA_1;
+        rvAP->mechanism.mechanism = hashMech;
         rvAP->mechanism.pParameter = NULL;
         rvAP->mechanism.ulParameterLen = 0;
     }
     return rvAP;
 }
 
-NSS_IMPLEMENT NSSAlgorithmAndParameters *
-NSSAlgorithmAndParameters_CreateMD5Digest(
-    NSSArena *arenaOpt)
+/*
+ * we need a DigestBuf for both create and verify trust objects.
+ * So put it here for now. We don't have any Stan based crypto operations
+ * yet.
+ */
+NSS_IMPLEMENT PRStatus
+NSSAlgorithm_DigestBuf(CK_MECHANISM_TYPE type, NSSItem *input, NSSItem *output)
 {
-    NSSAlgorithmAndParameters *rvAP = NULL;
-    rvAP = nss_ZNEW(arenaOpt, NSSAlgorithmAndParameters);
-    if (rvAP) {
-        rvAP->mechanism.mechanism = CKM_MD5;
-        rvAP->mechanism.pParameter = NULL;
-        rvAP->mechanism.ulParameterLen = 0;
+    PRStatus ret = PR_FAILURE;
+    NSSAlgorithmAndParameters *ap = NULL;
+    PK11SlotInfo *internal = NULL;
+    NSSToken *token = NULL;
+    NSSItem *dummy = NULL;
+
+    internal = PK11_GetInternalSlot();
+    if (!internal) {
+        goto done;
     }
-    return rvAP;
+    token = PK11Slot_GetNSSToken(internal);
+    if (!token) {
+        goto done;
+    }
+    ap = NSSAlgorithmAndParameters_CreateDigest(NULL, type);
+    if (!token) {
+        goto done;
+    }
+
+    dummy = nssToken_Digest(token, NULL, ap, input, output, NULL);
+    if (dummy) {
+        ret = PR_SUCCESS;
+    }
+
+done:
+    nss_ZFreeIf(ap);
+    if (token) {
+        (void)nssToken_Destroy(token);
+    }
+    if (internal) {
+        PK11_FreeSlot(internal);
+    }
+    return ret;
 }

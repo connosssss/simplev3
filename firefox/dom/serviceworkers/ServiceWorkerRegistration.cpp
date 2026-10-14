@@ -1,28 +1,26 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ServiceWorkerRegistration.h"
 
-#include "mozilla/dom/DOMMozPromiseRequestHolder.h"
+#include "ServiceWorkerRegistrationChild.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/dom/CookieStoreManager.h"
+#include "mozilla/dom/DOMMozPromiseRequestHolder.h"
 #include "mozilla/dom/NavigationPreloadManager.h"
 #include "mozilla/dom/NavigationPreloadManagerBinding.h"
 #include "mozilla/dom/Notification.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/PushManager.h"
-#include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "mozilla/dom/ServiceWorker.h"
 #include "mozilla/dom/ServiceWorkerUtils.h"
 #include "mozilla/dom/WorkerPrivate.h"
-#include "mozilla/ipc/PBackgroundChild.h"
 #include "mozilla/ipc/BackgroundChild.h"
-#include "mozilla/ScopeExit.h"
+#include "mozilla/ipc/PBackgroundChild.h"
+#include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsPIDOMWindow.h"
-#include "ServiceWorkerRegistrationChild.h"
 
 using mozilla::ipc::ResponseRejectReason;
 
@@ -53,6 +51,12 @@ ServiceWorkerRegistration::ServiceWorkerRegistration(
       mShutdown(false),
       mScheduledUpdateFoundId(kInvalidUpdateFoundId),
       mDispatchedUpdateFoundId(kInvalidUpdateFoundId) {
+  if (NS_WARN_IF(!::mozilla::ipc::BackgroundChild::ValidatePrincipalInfo(
+          aDescriptor.PrincipalInfo(), {}))) {
+    Shutdown();
+    return;
+  }
+
   ::mozilla::ipc::PBackgroundChild* parentActor =
       ::mozilla::ipc::BackgroundChild::GetOrCreateForCurrentThread();
   if (NS_WARN_IF(!parentActor)) {
@@ -392,7 +396,7 @@ already_AddRefed<PushManager> ServiceWorkerRegistration::GetPushManager(
     }
 
     GlobalObject global(aCx, globalObject->GetGlobalJSObject());
-    mPushManager = PushManager::Constructor(
+    mPushManager = PushManager::Create(
         global, NS_ConvertUTF8toUTF16(mDescriptor.Scope()), aRv);
     if (aRv.Failed()) {
       return nullptr;

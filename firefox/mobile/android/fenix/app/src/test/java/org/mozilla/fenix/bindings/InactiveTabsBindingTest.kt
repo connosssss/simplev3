@@ -4,56 +4,42 @@
 
 package org.mozilla.fenix.bindings
 
-import mozilla.components.browser.state.state.createTab
-import mozilla.components.support.test.ext.joinBlocking
-import mozilla.components.support.test.rule.MainCoroutineRule
-import mozilla.components.support.test.rule.runTestOnMain
-import org.junit.Rule
+import io.mockk.spyk
+import io.mockk.verify
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.runTest
 import org.junit.Test
-import org.mockito.Mockito.spy
-import org.mockito.Mockito.verify
 import org.mozilla.fenix.components.AppStore
 import org.mozilla.fenix.components.appstate.AppAction
 import org.mozilla.fenix.components.appstate.AppState
 import org.mozilla.fenix.tabstray.InactiveTabsBinding
-import org.mozilla.fenix.tabstray.TabsTrayAction
-import org.mozilla.fenix.tabstray.TabsTrayState
-import org.mozilla.fenix.tabstray.TabsTrayStore
+import org.mozilla.fenix.tabstray.redux.action.TabsTrayAction
+import org.mozilla.fenix.tabstray.redux.state.TabsTrayState
+import org.mozilla.fenix.tabstray.redux.store.TabsTrayStore
 
 class InactiveTabsBindingTest {
 
-    @get:Rule
-    val coroutineRule = MainCoroutineRule()
-
+    private val testDispatcher = StandardTestDispatcher()
     lateinit var tabsTrayStore: TabsTrayStore
     lateinit var appStore: AppStore
 
-    private val tabId1 = "1"
-    private val tab1 = createTab(url = tabId1, id = tabId1)
-
     @Test
-    fun `WHEN inactiveTabsExpanded changes THEN tabs tray action dispatched with update`() = runTestOnMain {
-        appStore = AppStore(
-            AppState(
-                inactiveTabsExpanded = false,
-            ),
-        )
-        tabsTrayStore = spy(
-            TabsTrayStore(
-                TabsTrayState(
-                    inactiveTabs = listOf(tab1),
-                    inactiveTabsExpanded = false,
-                ),
-            ),
-        )
+    fun `WHEN inactiveTabsExpanded changes THEN tabs tray action dispatched with update`() =
+        runTest(testDispatcher) {
+            appStore = AppStore(AppState(inactiveTabsExpanded = false))
+            tabsTrayStore =
+                spyk(TabsTrayStore(TabsTrayState(inactiveTabs = TabsTrayState.InactiveTabsState(isExpanded = false))))
 
-        val binding = InactiveTabsBinding(
-            appStore = appStore,
-            tabsTrayStore = tabsTrayStore,
-        )
-        binding.start()
-        appStore.dispatch(AppAction.UpdateInactiveExpanded(true)).joinBlocking()
+            val binding =
+                InactiveTabsBinding(
+                    appStore = appStore,
+                    tabsTrayStore = tabsTrayStore,
+                    mainDispatcher = testDispatcher,
+                )
+            binding.start()
+            appStore.dispatch(AppAction.UpdateInactiveExpanded(true))
+            testDispatcher.scheduler.advanceUntilIdle()
 
-        verify(tabsTrayStore).dispatch(TabsTrayAction.UpdateInactiveExpanded(true))
-    }
+            verify { tabsTrayStore.dispatch(TabsTrayAction.UpdateInactiveExpanded(true)) }
+        }
 }

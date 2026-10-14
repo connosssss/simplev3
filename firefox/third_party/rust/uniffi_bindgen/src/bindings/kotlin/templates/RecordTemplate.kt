@@ -1,28 +1,37 @@
 {%- let rec = ci.get_record_definition(name).unwrap() %}
 
 {%- if rec.has_fields() %}
-{%- call kt::docstring(rec, 0) %}
+{%- call kt::docstring(rec, 0) %}{% endcall %}
 data class {{ type_name }} (
     {%- for field in rec.fields() %}
-    {%- call kt::docstring(field, 4) %}
-    {% if config.generate_immutable_records() %}val{% else %}var{% endif %} {{ field.name()|var_name }}: {{ field|type_name(ci) -}}
-    {%- match field.default_value() %}
-        {%- when Some(literal) %} = {{ literal|render_literal(field, ci) }}
-        {%- else %}
-    {%- endmatch -%}
+    {%- call kt::docstring(field, 4) %}{% endcall %}
+    {% if config.is_record_immutable(name) %}val{% else %}var{% endif %} {{ field.name()|var_name }}: {{ field|type_name(ci) -}}
+    {%- if let Some(default) = field.default_value() %} = {{ default|render_default(field, ci) }} {% endif %}
     {% if !loop.last %}, {% endif %}
     {%- endfor %}
-) {% if contains_object_references %}: Disposable {% endif %}{
+    {%- let uniffi_trait_methods = rec.uniffi_trait_methods() %}
+    {%- let comparable = uniffi_trait_methods.ord_cmp.is_some() %}
+)
+{%- if comparable && contains_object_references %}: Disposable, Comparable<{{ type_name }}>
+{%- elif contains_object_references  %}: Disposable
+{%- elif comparable  %}: Comparable<{{ type_name }}>
+{% endif -%}
+{
+    {% for meth in rec.methods() -%}
+    {%- call kt::func_decl("", meth, 4) %}{% endcall %}
+    {% endfor %}
+
+    {% call kt::uniffi_trait_impls(uniffi_trait_methods) %}{% endcall %}
     {% if contains_object_references %}
     @Suppress("UNNECESSARY_SAFE_CALL") // codegen is much simpler if we unconditionally emit safe calls here
     override fun destroy() {
-        {% call kt::destroy_fields(rec) %}
+        {% call kt::destroy_fields(rec) %}{% endcall %}
     }
     {% endif %}
     companion object
 }
 {%- else -%}
-{%- call kt::docstring(rec, 0) %}
+{%- call kt::docstring(rec, 0) %}{% endcall %}
 class {{ type_name }} {
     override fun equals(other: Any?): Boolean {
         return other is {{ type_name }}

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,9 +9,9 @@
 #include "mozilla/Maybe.h"
 #include "mozilla/RangeBoundary.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/dom/Range.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsINode.h"
-#include "nsRange.h"
 #include "nsTArray.h"
 
 class nsIContent;
@@ -41,6 +39,12 @@ class ContentIteratorBase {
    */
   [[nodiscard]] virtual nsresult Init(nsINode* aRoot);
 
+  /**
+   * If you want to use `const AbstractRange*`, you can use an overload which
+   * takes RawRangeBoundary instances or InitWithoutValidatingPoints().
+   * If your range is dynamic, i.e., an dom::Range, you can use
+   * InitWithoutValidatingPoints() which skips comparing the boundary points.
+   */
   [[nodiscard]] virtual nsresult Init(dom::AbstractRange* aRange);
   [[nodiscard]] virtual nsresult Init(nsINode* aStartContainer,
                                       uint32_t aStartOffset,
@@ -82,20 +86,20 @@ class ContentIteratorBase {
   [[nodiscard]] nsresult InitInternal(const RawRangeBoundary& aStart,
                                       const RawRangeBoundary& aEnd);
 
-  // Recursively get the deepest first/last child of aRoot.  This will return
-  // aRoot itself if it has no children.
-  static nsINode* GetDeepFirstChild(nsINode* aRoot);
-  // If aAllowCrossShadowBoundary is true, it'll continue with the shadow tree
-  // when it reaches to a shadow host.
-  static nsIContent* GetDeepFirstChild(
-      nsIContent* aRoot,
-      dom::AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary);
-  static nsINode* GetDeepLastChild(nsINode* aRoot);
-  // If aAllowCrossShadowBoundary is true, it'll continue with the shadow tree
-  // when it reaches to a shadow host.
-  static nsIContent* GetDeepLastChild(
-      nsIContent* aRoot,
-      dom::AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary);
+  // Recursively get the deepest first/last child of the node.  This will return
+  // the node itself if it has no children.
+  template <TreeKind>
+  static nsINode* GetDeepFirstInclusiveDescendant(nsINode*);
+  // If TreeKind::FlatForSelection, it'll continue with the shadow tree when it
+  // reaches to a shadow host.
+  template <TreeKind>
+  static nsIContent* GetDeepFirstInclusiveDescendant(nsIContent*);
+  template <TreeKind>
+  static nsINode* GetDeepLastInclusiveDescendant(nsINode*);
+  // If TreeKind::FlatForSelection, it'll continue with the shadow tree when it
+  // reaches to a shadow host.
+  template <TreeKind>
+  static nsIContent* GetDeepLastInclusiveDescendant(nsIContent*);
 
   struct AncestorInfo {
     nsIContent* mAncestor = nullptr;
@@ -117,17 +121,16 @@ class ContentIteratorBase {
   //
   // If aAllowCrossShadowBoundary is true, it'll continue with the shadow host
   // when it reaches to a shadow root.
+  template <TreeKind>
   static nsIContent* GetNextSibling(
       nsINode* aNode,
-      dom::AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary =
-          dom::AllowRangeCrossShadowBoundary::No,
       nsTArray<AncestorInfo>* aInclusiveAncestorsOfEndContainer = nullptr);
-  static nsIContent* GetPrevSibling(
-      nsINode* aNode,
-      dom::AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary =
-          dom::AllowRangeCrossShadowBoundary::No);
+  template <TreeKind>
+  static nsIContent* GetPrevSibling(nsINode* aNode);
 
+  template <TreeKind>
   nsINode* NextNode(nsINode* aNode);
+  template <TreeKind>
   nsINode* PrevNode(nsINode* aNode);
 
   void SetEmpty();
@@ -251,9 +254,13 @@ class ContentSubtreeIterator final : public SafeContentIteratorBase {
   /**
    * Not supported.
    */
-  [[nodiscard]] virtual nsresult Init(nsINode* aRoot) override;
+  [[nodiscard]] nsresult Init(nsINode* aRoot) override;
 
-  [[nodiscard]] virtual nsresult Init(dom::AbstractRange* aRange) override;
+  /**
+   * If you need to use const AbstractRange, use an overload which take
+   * RawRangeBoundary instances.
+   */
+  [[nodiscard]] nsresult Init(dom::AbstractRange* aRange) override;
 
   /**
    * Initialize the iterator with aRange that does correct things
@@ -275,16 +282,26 @@ class ContentSubtreeIterator final : public SafeContentIteratorBase {
    *
    * Examples of what nodes will be returned can be found
    * at test_content_iterator_subtree_shadow_tree.html.
+   *
+   * FIXME: This doesn't have a overload of this method which takes
+   * `const RawRangeBoundary`s. That allows the callers to make this with
+   * `const AbstractRange*`. So, it and its non-validation version (for
+   * `const Range*` should be here.
    */
   [[nodiscard]] nsresult InitWithAllowCrossShadowBoundary(
       dom::AbstractRange* aRange);
-  [[nodiscard]] virtual nsresult Init(nsINode* aStartContainer,
-                                      uint32_t aStartOffset,
-                                      nsINode* aEndContainer,
-                                      uint32_t aEndOffset) override;
-  [[nodiscard]] virtual nsresult Init(
-      const RawRangeBoundary& aStartBoundary,
-      const RawRangeBoundary& aEndBoundary) override;
+
+  [[nodiscard]] nsresult Init(nsINode* aStartContainer, uint32_t aStartOffset,
+                              nsINode* aEndContainer,
+                              uint32_t aEndOffset) override;
+  [[nodiscard]] nsresult Init(const RawRangeBoundary& aStartBoundary,
+                              const RawRangeBoundary& aEndBoundary) override;
+  [[nodiscard]] nsresult InitWithoutValidatingPoints(
+      const RawRangeBoundary& aStart, const RawRangeBoundary& aEnd) override {
+    // We need to create a dom::Range from aStart and aEnd.  Therefore,
+    // anyway dom::Range will validate them.
+    return Init(aStart, aEnd);
+  }
 
   void Next() override;
   void Prev() override;
@@ -352,6 +369,43 @@ class ContentSubtreeIterator final : public SafeContentIteratorBase {
       dom::AllowRangeCrossShadowBoundary::No;
 };
 
+// The Subtree Content Iterator only returns subtrees that are
+// completely within a given range. It doesn't return a CharacterData
+// node that contains either the start or end point of the range.,
+// nor does it return element nodes when nothing in the element is selected.
+// We need an iterator that will also include these start/end points
+// so that our methods/algorithms aren't cluttered with special
+// case code that tries to include these points while iterating.
+//
+// The RangeSubtreeIterator class mimics the ContentSubtreeIterator
+// methods we need, so should the Content Iterator support the
+// start/end points in the future, we can switchover relatively
+// easy.
+class MOZ_STACK_CLASS RangeSubtreeIterator {
+ private:
+  enum RangeSubtreeIterState { eDone = 0, eUseStart, eUseIterator, eUseEnd };
+
+  Maybe<ContentSubtreeIterator> mSubtreeIter;
+  RangeSubtreeIterState mIterState;
+
+  nsCOMPtr<nsINode> mStart;
+  nsCOMPtr<nsINode> mEnd;
+
+ public:
+  RangeSubtreeIterator() : mIterState(eDone) {}
+  ~RangeSubtreeIterator() = default;
+
+  [[nodiscard]] nsresult Init(dom::AbstractRange* aRange,
+                              dom::AllowRangeCrossShadowBoundary =
+                                  dom::AllowRangeCrossShadowBoundary::No);
+  already_AddRefed<nsINode> GetCurrentNode();
+  void First();
+  void Last();
+  void Next();
+  void Prev();
+
+  bool IsDone() { return mIterState == eDone; }
+};
 }  // namespace mozilla
 
 #endif  // #ifndef mozilla_ContentIterator_h

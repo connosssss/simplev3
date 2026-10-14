@@ -103,6 +103,7 @@ config = {
                 "--certificate-path=tests/certs",
                 "--quiet",
                 "--log-errorsummary=%(error_summary_file)s",
+                "--log-testsummary=%(test_summary_file)s",
                 "--screenshot-on-fail",
                 "--cleanup-crashes",
                 "--marionette-startup-timeout=180",
@@ -129,6 +130,7 @@ config = {
                 "--self-test",
                 "--symbols-path=%(symbols_path)s",
                 "--log-errorsummary=%(error_summary_file)s",
+                "--log-testsummary=%(test_summary_file)s",
                 "--utility-path=tests/bin",
                 "--manifest=tests/xpcshell/tests/xpcshell.toml",
             ],
@@ -148,12 +150,13 @@ config = {
     },
     # local mochi suites
     "all_mochitest_suites": {
-        "mochitest-plain": ["--chunk-by-dir=4"],
+        "mochitest-plain": [],
         "mochitest-plain-gpu": ["--subsuite=gpu"],
         "mochitest-media": ["--subsuite=media"],
-        "mochitest-chrome": ["--flavor=chrome", "--chunk-by-dir=4", "--disable-e10s"],
+        "mochitest-speech-recognition": ["--subsuite=speech-recognition"],
+        "mochitest-chrome": ["--flavor=chrome", "--disable-e10s"],
         "mochitest-chrome-gpu": ["--flavor=chrome", "--subsuite=gpu", "--disable-e10s"],
-        "mochitest-browser-chrome": ["--flavor=browser", "--chunk-by-runtime"],
+        "mochitest-browser-chrome": ["--flavor=browser"],
         "mochitest-browser-screenshots": [
             "--flavor=browser",
             "--subsuite=screenshots",
@@ -167,13 +170,16 @@ config = {
         "mochitest-devtools-chrome": [
             "--flavor=browser",
             "--subsuite=devtools",
-            "--chunk-by-runtime",
         ],
         "mochitest-browser-a11y": ["--flavor=browser", "--subsuite=a11y"],
         "mochitest-browser-media": ["--flavor=browser", "--subsuite=media-bc"],
         "mochitest-browser-translations": [
             "--flavor=browser",
             "--subsuite=translations",
+        ],
+        "mochitest-browser-chrome-ml-models": [
+            "--flavor=browser",
+            "--subsuite=ml-models",
         ],
         "mochitest-a11y": ["--flavor=a11y", "--disable-e10s"],
         "mochitest-remote": ["--flavor=browser", "--subsuite=remote"],
@@ -245,7 +251,8 @@ config = {
                     if REQUIRE_GPU and (platform.uname().version == "10.0.19045")
                     else (
                         "--platform=win11-hw"
-                        if REQUIRE_GPU and (platform.uname().version == "10.0.22621")
+                        if REQUIRE_GPU
+                        and platform.uname().version in ("10.0.26100", "10.0.26200")
                         else "--platform=win7"
                     )
                 ),
@@ -480,9 +487,6 @@ config = {
     "vcs_output_timeout": 1000,
     "minidump_save_path": "%(abs_work_dir)s/../minidumps",
     "unstructured_flavors": {
-        "xpcshell": [],
-        "gtest": [],
-        "cppunittest": [],
         "jittest": [],
     },
     "nodejs_path": NODEJS_PATH,

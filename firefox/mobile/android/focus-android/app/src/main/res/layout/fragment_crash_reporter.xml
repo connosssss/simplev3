@@ -9,7 +9,8 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/photonGrey10">
+    android:background="@color/photonGrey10"
+    tools:ignore="Overdraw">
 
     <View
         android:id="@+id/background"
@@ -81,5 +82,6 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintWidth_percent="0.8" />
+        app:layout_constraintWidth_percent="0.8"
+        tools:targetApi="p" />
 </androidx.constraintlayout.widget.ConstraintLayout>

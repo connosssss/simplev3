@@ -67,12 +67,40 @@ export function formatSourceForList(
     value,
     title: source.shortName,
     subtitle,
-    icon: hasTabOpened
-      ? "tab result-item-icon"
-      : `result-item-icon ${getSourceClassnames(source, isBlackBoxed)}`,
+    iconClassName: "result-item-icon",
+    icon: hasTabOpened ? "tab" : getSourceClassnames(source, isBlackBoxed),
     id: source.id,
     url: source.url,
     source,
+  };
+}
+
+export function formatAtRuleContent(atRule) {
+  return `@${atRule.type} ${
+    atRule.conditionText ||
+    atRule.propertyName ||
+    atRule.positionTryName ||
+    atRule.layerName
+  }`;
+}
+
+export function formatAtRule(atRule) {
+  const value = formatAtRuleContent(atRule);
+  return {
+    id: `${atRule.type}:${atRule.line}:${atRule.column}`,
+    title: value,
+    subtitle: `${atRule.line}:${atRule.column}`,
+    value,
+    location: {
+      start: {
+        column: atRule.column,
+        line: atRule.line,
+      },
+      end: {
+        column: atRule.column,
+        line: atRule.line,
+      },
+    },
   };
 }
 

@@ -6,9 +6,7 @@ package org.mozilla.fenix.distributions
 
 import org.mozilla.fenix.utils.Settings
 
-/**
- * Interface for retrieving the distribution ID associated with the current installation.
- */
+/** Interface for retrieving the distribution ID associated with the current installation. */
 interface DistributionSettings {
     /**
      * Returns the distribution ID used to identify the app's distribution source (e.g., preinstall partner).
@@ -23,17 +21,21 @@ interface DistributionSettings {
      * @param id A non-null string representing the distribution ID to store.
      */
     fun saveDistributionId(id: String)
+
+    /**
+     * Sets the marketing telemetry preferences to true. This is required for skipping the marketing data sharing
+     * consent screen before starting Adjust.
+     */
+    fun setMarketingTelemetryPreferences()
 }
 
 /**
- * Default implementation of [DistributionSettings] that retrieves the distribution ID
- * from the provided [Settings] instance.
+ * Default implementation of [DistributionSettings] that retrieves the distribution ID from the provided [Settings]
+ * instance.
  *
  * @param settings The [Settings] object used to persist and retrieve the distribution ID.
  */
-class DefaultDistributionSettings(
-    private val settings: Settings,
-) : DistributionSettings {
+class DefaultDistributionSettings(private val settings: Settings) : DistributionSettings {
     /**
      * Returns the stored distribution ID from [settings].
      *
@@ -48,5 +50,10 @@ class DefaultDistributionSettings(
      */
     override fun saveDistributionId(id: String) {
         settings.distributionId = id
+    }
+
+    override fun setMarketingTelemetryPreferences() {
+        settings.isMarketingTelemetryEnabled = true
+        settings.hasMadeMarketingTelemetrySelection = true
     }
 }

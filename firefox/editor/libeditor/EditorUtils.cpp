@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,6 +12,7 @@
 #include "mozilla/ComputedStyle.h"  // for ComputedStyle
 #include "mozilla/IntegerRange.h"   // for IntegerRange
 #include "mozilla/dom/Document.h"   // for dom::Document
+#include "mozilla/dom/Range.h"      // for Range
 #include "mozilla/dom/Selection.h"  // for dom::Selection
 #include "mozilla/dom/Text.h"       // for dom::Text
 
@@ -24,7 +24,6 @@
 #include "nsIContent.h"               // for nsIContent
 #include "nsINode.h"                  // for nsINode
 #include "nsITransferable.h"          // for nsITransferable
-#include "nsRange.h"                  // for nsRange
 #include "nsStyleConsts.h"            // for StyleWhiteSpace
 #include "nsStyleStruct.h"            // for nsStyleText, etc
 
@@ -190,6 +189,10 @@ EditorUtils::CreateTransferableForPlainText(const Document& aDocument) {
   NS_WARNING_ASSERTION(
       NS_SUCCEEDED(rvIgnored),
       "nsITransferable::AddDataFlavor(kMozTextInternal) failed, but ignored");
+  rvIgnored = transferable->AddDataFlavor(kURLDataMime);
+  NS_WARNING_ASSERTION(
+      NS_SUCCEEDED(rvIgnored),
+      "nsITransferable::AddDataFlavor(kURLDataMime) failed, but ignored");
   return transferable;
 }
 
@@ -201,11 +204,18 @@ NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool, IsCharCollapsibleASCIISpace);
 
 template <typename PT, typename CT>
 bool EditorDOMPointBase<PT, CT>::IsCharCollapsibleASCIISpace() const {
+  // \n can be not collapsible even when it's not treated as a preformatted line
+  // break.  Therefore, we need to check whether the white-spaces are
+  // collapsible or not first.
+  if (EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>())) {
+    return false;
+  }
+  // Then, only \n may be preformatted.  So, we need to check the case
+  // separately.
   if (IsCharNewLine()) {
     return !EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
   }
-  return IsCharASCIISpace() &&
-         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+  return IsCharASCIISpace();
 }
 
 NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool, IsCharCollapsibleNBSP);
@@ -223,11 +233,18 @@ NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool,
 
 template <typename PT, typename CT>
 bool EditorDOMPointBase<PT, CT>::IsCharCollapsibleASCIISpaceOrNBSP() const {
+  // \n can be not collapsible even when it's not treated as a preformatted line
+  // break.  Therefore, we need to check whether the white-spaces are
+  // collapsible or not first.
+  if (EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>())) {
+    return false;
+  }
+  // Then, only \n may be preformatted.  So, we need to check the case
+  // separately.
   if (IsCharNewLine()) {
     return !EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
   }
-  return IsCharASCIISpaceOrNBSP() &&
-         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+  return IsCharASCIISpaceOrNBSP();
 }
 
 NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(
@@ -235,11 +252,18 @@ NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(
 
 template <typename PT, typename CT>
 bool EditorDOMPointBase<PT, CT>::IsPreviousCharCollapsibleASCIISpace() const {
+  // \n can be not collapsible even when it's not treated as a preformatted line
+  // break.  Therefore, we need to check whether the white-spaces are
+  // collapsible or not first.
+  if (EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>())) {
+    return false;
+  }
+  // Then, only \n may be preformatted.  So, we need to check the case
+  // separately.
   if (IsPreviousCharNewLine()) {
     return !EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
   }
-  return IsPreviousCharASCIISpace() &&
-         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+  return IsPreviousCharASCIISpace();
 }
 
 NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool,
@@ -257,11 +281,18 @@ NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(
 template <typename PT, typename CT>
 bool EditorDOMPointBase<PT, CT>::IsPreviousCharCollapsibleASCIISpaceOrNBSP()
     const {
+  // \n can be not collapsible even when it's not treated as a preformatted line
+  // break.  Therefore, we need to check whether the white-spaces are
+  // collapsible or not first.
+  if (EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>())) {
+    return false;
+  }
+  // Then, only \n may be preformatted.  So, we need to check the case
+  // separately.
   if (IsPreviousCharNewLine()) {
     return !EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
   }
-  return IsPreviousCharASCIISpaceOrNBSP() &&
-         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+  return IsPreviousCharASCIISpaceOrNBSP();
 }
 
 NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool,
@@ -269,11 +300,18 @@ NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool,
 
 template <typename PT, typename CT>
 bool EditorDOMPointBase<PT, CT>::IsNextCharCollapsibleASCIISpace() const {
+  // \n can be not collapsible even when it's not treated as a preformatted line
+  // break.  Therefore, we need to check whether the white-spaces are
+  // collapsible or not first.
+  if (EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>())) {
+    return false;
+  }
+  // Then, only \n may be preformatted.  So, we need to check the case
+  // separately.
   if (IsNextCharNewLine()) {
     return !EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
   }
-  return IsNextCharASCIISpace() &&
-         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+  return IsNextCharASCIISpace();
 }
 
 NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool, IsNextCharCollapsibleNBSP);
@@ -289,11 +327,18 @@ NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(
 
 template <typename PT, typename CT>
 bool EditorDOMPointBase<PT, CT>::IsNextCharCollapsibleASCIISpaceOrNBSP() const {
+  // \n can be not collapsible even when it's not treated as a preformatted line
+  // break.  Therefore, we need to check whether the white-spaces are
+  // collapsible or not first.
+  if (EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>())) {
+    return false;
+  }
+  // Then, only \n may be preformatted.  So, we need to check the case
+  // separately.
   if (IsNextCharNewLine()) {
     return !EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
   }
-  return IsNextCharASCIISpaceOrNBSP() &&
-         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+  return IsNextCharASCIISpaceOrNBSP();
 }
 
 NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool, IsCharPreformattedNewLine);

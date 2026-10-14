@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -35,7 +34,9 @@ class DcompSurfaceTexture final : public TextureData {
   ~DcompSurfaceTexture();
 
   bool Serialize(SurfaceDescriptor& aOutDescriptor) override;
-  void GetSubDescriptor(RemoteDecoderVideoSubDescriptor* aOutDesc) override;
+  RemoteDecoderVideoType GetRemoteDecoderVideoType() override {
+    return RemoteDecoderVideoType::DcompSurface;
+  }
   void FillInfo(TextureData::Info& aInfo) const {
     aInfo.size = mSize;
     aInfo.supportsMoz2D = false;
@@ -118,8 +119,12 @@ class DcompSurfaceHandleHost : public TextureHost {
     return true;
   }
 
+  SurfaceDescriptor GetSurfaceDescriptor() override;
+
  protected:
   ~DcompSurfaceHandleHost();
+
+  const SurfaceDescriptorDcompSurface mDescriptor;
 
   // Handle will be closed automatically when `UniqueFileHandle` gets destroyed.
   const mozilla::UniqueFileHandle mHandle;

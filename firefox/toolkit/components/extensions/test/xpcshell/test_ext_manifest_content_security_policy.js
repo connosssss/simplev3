@@ -1,8 +1,6 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-Services.prefs.setBoolPref("extensions.manifestV3.enabled", true);
+AddonTestUtils.init(this);
 
 add_task(async function test_manifest_csp() {
   let normalized = await ExtensionTestUtils.normalizeManifest({
@@ -48,12 +46,12 @@ add_task(async function test_manifest_csp() {
   });
   ExtensionTestUtils.failOnSchemaWarnings(true);
 
+  Assert.deepEqual(normalized.errors, [], "Should have no warnings");
+
   Assert.deepEqual(
-    normalized.errors,
-    [
-      `Error processing content_security_policy: Expected string instead of {"extension_pages":"script-src 'self'; object-src 'none'"}`,
-    ],
-    "Should have the expected warning"
+    normalized.error,
+    `Error processing content_security_policy: Expected string instead of {"extension_pages":"script-src 'self'; object-src 'none'"}`,
+    "Should have the expected error"
   );
 });
 
@@ -65,12 +63,12 @@ add_task(async function test_manifest_csp_v3() {
   });
   ExtensionTestUtils.failOnSchemaWarnings(true);
 
+  Assert.deepEqual(normalized.errors, [], "Should have no warnings");
+
   Assert.deepEqual(
-    normalized.errors,
-    [
-      `Error processing content_security_policy: Expected object instead of "script-src 'self'; object-src 'none'"`,
-    ],
-    "Should have the expected warning"
+    normalized.error,
+    `Error processing content_security_policy: Expected object instead of "script-src 'self'; object-src 'none'"`,
+    "Should have the expected error"
   );
 
   normalized = await ExtensionTestUtils.normalizeManifest({
@@ -111,4 +109,168 @@ add_task(async function test_manifest_csp_v3() {
     ],
     "Should have the expected warning for extension_pages CSP"
   );
+
+  let extension = ExtensionTestUtils.loadExtension({
+    manifest: {
+      manifest_version: 3,
+      content_security_policy: {
+        extension_pages: "script-src 'self' http://localhost:8080;",
+      },
+    },
+    temporarilyInstalled: true,
+  });
+
+  ExtensionTestUtils.failOnSchemaWarnings(false);
+  await extension.startup();
+  ExtensionTestUtils.failOnSchemaWarnings(true);
+
+  Assert.deepEqual(
+    extension.extension.warnings,
+    "Reading manifest: Warning processing content_security_policy.extension_pages: Warning processing content_security_policy.extension_pages: " +
+      "Using localhost in the Content Security Policy is invalid, and is only permitted during development with temporarily loaded add-ons",
+    "Expected manifest warnings"
+  );
+
+  await extension.unload();
+
+  extension = ExtensionTestUtils.loadExtension({
+    manifest: {
+      manifest_version: 3,
+      content_security_policy: {
+        extension_pages: "script-src 'self' http://localhost:8080;",
+      },
+    },
+    temporarilyInstalled: false,
+  });
+
+  let { messages } = await promiseConsoleOutput(async () => {
+    ExtensionTestUtils.failOnSchemaWarnings(false);
+    await extension.startup();
+    ExtensionTestUtils.failOnSchemaWarnings(true);
+  });
+
+  AddonTestUtils.checkMessages(messages, {
+    expected: [
+      {
+        message:
+          /Reading manifest: Error processing content_security_policy.extension_pages: Using localhost in the Content Security Policy is invalid, and is only permitted during development with temporarily loaded add-ons/,
+      },
+    ],
+  });
+
+  await extension.unload();
+});
+
+async function testForValidSandboxCSP({ manifest_version, csp }) {
+  const manifest = {
+    manifest_version,
+    sandbox: {
+      pages: ["sandbox.html"],
+    },
+  };
+  if (manifest_version < 3) {
+    manifest.sandbox.content_security_policy = csp;
+  } else {
+    manifest.content_security_policy = { sandbox: csp };
+  }
+  ExtensionTestUtils.failOnSchemaWarnings(false);
+  const normalized = await ExtensionTestUtils.normalizeManifest(manifest);
+  ExtensionTestUtils.failOnSchemaWarnings(true);
+
+  equal(normalized.error, undefined, "Should not have an error");
+  equal(normalized.errors.length, 0, "Should not have warnings");
+  equal(
+    manifest_version < 3
+      ? normalized.value.sandbox.content_security_policy
+      : normalized.value.content_security_policy.sandbox,
+    csp,
+    "Should have the expected policy string"
+  );
+}
+
+add_task(async function test_valid_sandbox_csp_mv2() {
+  await testForValidSandboxCSP({
+    manifest_version: 2,
+    csp: "sandbox allow-scripts; script-src 'self' 'unsafe-eval' 'unsafe-inline';",
+  });
+});
+add_task(async function test_valid_sandbox_csp_mv3() {
+  await testForValidSandboxCSP({
+    manifest_version: 3,
+    csp: "sandbox allow-scripts; script-src 'self' 'unsafe-eval' 'unsafe-inline';",
+  });
+});
+
+async function testForInvalidSandboxCSP({
+  manifest_version,
+  csp,
+  expectedError,
+}) {
+  const manifest = {
+    manifest_version,
+    sandbox: {
+      pages: ["sandbox.html"],
+    },
+  };
+  if (manifest_version < 3) {
+    manifest.sandbox.content_security_policy = csp;
+  } else {
+    manifest.content_security_policy = { sandbox: csp };
+  }
+  ExtensionTestUtils.failOnSchemaWarnings(false);
+  const normalized = await ExtensionTestUtils.normalizeManifest(manifest);
+  ExtensionTestUtils.failOnSchemaWarnings(true);
+
+  equal(normalized.errors.length, 0, "Should not have warnings");
+  equal(normalized.error, expectedError, "Should have the expected error");
+  equal(normalized.value, undefined, "Manifest parsing should have failed");
+}
+
+add_task(async function test_empty_sandbox_csp_mv2() {
+  await testForInvalidSandboxCSP({
+    manifest_version: 2,
+    csp: "",
+    expectedError:
+      "Error processing sandbox.content_security_policy: Error: Policy is missing a required ‘sandbox’ directive",
+  });
+});
+add_task(async function test_empty_sandbox_csp_mv3() {
+  await testForInvalidSandboxCSP({
+    manifest_version: 3,
+    csp: "",
+    expectedError:
+      "Error processing content_security_policy.sandbox: Error: Policy is missing a required ‘sandbox’ directive",
+  });
+});
+add_task(async function test_missing_sandbox_csp_mv2() {
+  await testForInvalidSandboxCSP({
+    manifest_version: 2,
+    csp: "script-src 'self'; object-src 'none'",
+    expectedError:
+      "Error processing sandbox.content_security_policy: Error: Policy is missing a required ‘sandbox’ directive",
+  });
+});
+add_task(async function test_missing_sandbox_csp_mv3() {
+  await testForInvalidSandboxCSP({
+    manifest_version: 3,
+    csp: "script-src 'self'; object-src 'none'",
+    expectedError:
+      "Error processing content_security_policy.sandbox: Error: Policy is missing a required ‘sandbox’ directive",
+  });
+});
+add_task(async function test_disallowed_allow_same_origin_mv2() {
+  await testForInvalidSandboxCSP({
+    manifest_version: 2,
+    csp: "sandbox allow-same-origin;",
+    expectedError:
+      "Error processing sandbox.content_security_policy: Error: ‘sandbox’ directive contains a forbidden 'allow-same-origin' keyword",
+  });
+});
+add_task(async function test_disallowed_allow_same_origin_mv3() {
+  await testForInvalidSandboxCSP({
+    manifest_version: 3,
+    csp: "sandbox allow-same-origin;",
+    expectedError:
+      "Error processing content_security_policy.sandbox: Error: ‘sandbox’ directive contains a forbidden 'allow-same-origin' keyword",
+  });
 });

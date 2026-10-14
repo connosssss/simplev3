@@ -66,12 +66,6 @@ function testBoundsWithOffset(browser, iframeDocAcc, id, domElmBounds, offset) {
   return boundsAreEquivalent;
 }
 
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
-
 addAccessibleTask(
   `<div id='${ELEM_ID}'>hello world</div>`,
   async function (browser, iframeDocAcc) {
@@ -201,7 +195,7 @@ addAccessibleTask(
     await reordered;
     const iframe = findAccessibleChildByID(docAcc, "iframe");
     // We don't currently fire an event when a DocAccessible is re-bound to a new OuterDoc.
-    await BrowserTestUtils.waitForCondition(() => iframe.firstChild);
+    await TestUtils.waitForCondition(() => iframe.firstChild);
     iframeDoc = iframe.firstChild;
     ok(iframeDoc, "Got the iframe document after re-creation");
     const newX = {};

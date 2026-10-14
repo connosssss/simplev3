@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -113,7 +111,7 @@ static bool CollectJitStackScripts(JSContext* cx,
           // or IonScript don't need to be patched but they do need to be
           // invalidated and recompiled. See also CollectInterpreterStackScripts
           // for C++ interpreter frames.
-          if (!entries.append(DebugModeOSREntry(script))) {
+          if (!entries.emplaceBack(script)) {
             return false;
           }
         } else {
@@ -121,7 +119,7 @@ static bool CollectJitStackScripts(JSContext* cx,
           uint8_t* retAddr = frame.resumePCinCurrentFrame();
           const RetAddrEntry& retAddrEntry =
               script->baselineScript()->retAddrEntryFromReturnAddress(retAddr);
-          if (!entries.append(DebugModeOSREntry(script, retAddrEntry))) {
+          if (!entries.emplaceBack(script, retAddrEntry)) {
             return false;
           }
         }
@@ -136,7 +134,7 @@ static bool CollectJitStackScripts(JSContext* cx,
         InlineFrameIterator inlineIter(cx, &frame);
         while (true) {
           if (obs.shouldRecompileOrInvalidate(inlineIter.script())) {
-            if (!entries.append(DebugModeOSREntry(inlineIter.script()))) {
+            if (!entries.emplaceBack(inlineIter.script())) {
               return false;
             }
           }
@@ -165,7 +163,7 @@ static bool CollectInterpreterStackScripts(
   for (InterpreterFrameIterator iter(act); !iter.done(); ++iter) {
     JSScript* script = iter.frame()->script();
     if (obs.shouldRecompileOrInvalidate(script)) {
-      if (!entries.append(DebugModeOSREntry(iter.frame()->script()))) {
+      if (!entries.emplaceBack(iter.frame()->script())) {
         return false;
       }
     }
@@ -182,6 +180,8 @@ static const char* RetAddrEntryKindToString(RetAddrEntry::Kind kind) {
       return "callVM";
     case RetAddrEntry::Kind::StackCheck:
       return "stack check";
+    case RetAddrEntry::Kind::ResumeStackCheck:
+      return "resume stack check";
     case RetAddrEntry::Kind::InterruptCheck:
       return "interrupt check";
     case RetAddrEntry::Kind::DebugTrap:
@@ -351,6 +351,10 @@ static void PatchBaselineFramesForDebugMode(
                                    pc);
             break;
           }
+          case RetAddrEntry::Kind::ResumeStackCheck:
+            // The generator-resume prologue's overrecursion check can't run
+            // script, so it can't trigger debug mode OSR.
+            MOZ_CRASH("Unexpected ResumeStackCheck");
           case RetAddrEntry::Kind::NonOpCallVM:
           case RetAddrEntry::Kind::Invalid:
             // These cannot trigger BaselineDebugModeOSR.
@@ -435,7 +439,6 @@ bool js::jit::RecompileBaselineScriptForDebugMode(
 
   // Don't destroy the old baseline script yet, since if we fail any of the
   // recompiles we need to rollback all the old baseline scripts.
-  MOZ_ASSERT(script->baselineScript()->hasDebugInstrumentation() == observing);
   return true;
 }
 
@@ -520,9 +523,8 @@ bool jit::RecompileOnStackBaselineScriptsForDebugMode(
       return false;
     }
   } else {
-    using ZoneRange = DebugAPI::ExecutionObservableSet::ZoneRange;
-    for (ZoneRange r = obs.zones()->all(); !r.empty(); r.popFront()) {
-      if (!InvalidateScriptsInZone(cx, r.front(), entries)) {
+    for (auto iter = obs.zones()->iter(); !iter.done(); iter.next()) {
+      if (!InvalidateScriptsInZone(cx, iter.get(), entries)) {
         return false;
       }
     }

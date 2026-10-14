@@ -1,10 +1,6 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { Preferences } = ChromeUtils.importESModule(
-  "resource://gre/modules/Preferences.sys.mjs"
-);
-
 const Paths = SessionFile.Paths;
 const PREF_UPGRADE = "browser.sessionstore.upgradeBackup.latestBuildID";
 const PREF_MAX_UPGRADE_BACKUPS =
@@ -37,10 +33,6 @@ async function getUpgradeBackups() {
 }
 
 add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-
   // Wait until initialization is complete
   await SessionStore.promiseInitialized;
 });
@@ -67,7 +59,10 @@ add_task(async function test_upgrade_backup() {
     "upgrade backup file has been created"
   );
 
-  let data = await IOUtils.readJSON(Paths.upgradeBackup, { decompress: true });
+  let data = await IOUtils.readJSON(
+    Paths.upgradeBackup,
+    sessionStoreReadOptions()
+  );
   Assert.deepEqual(
     test.contents,
     data,
@@ -82,13 +77,16 @@ add_task(async function test_upgrade_backup() {
     compress: true,
   });
   await SessionFile.write(""); // Next call to write() shouldn't trigger the backup
-  data = await IOUtils.readJSON(Paths.upgradeBackup, { decompress: true });
+  data = await IOUtils.readJSON(Paths.upgradeBackup, sessionStoreReadOptions());
   Assert.deepEqual(test.contents, data, "upgrade backup hasn't changed");
 });
 
 add_task(async function test_upgrade_backup_removal() {
   let test = prepareTest();
-  let maxUpgradeBackups = Preferences.get(PREF_MAX_UPGRADE_BACKUPS, 3);
+  let maxUpgradeBackups = Services.prefs.getIntPref(
+    PREF_MAX_UPGRADE_BACKUPS,
+    3
+  );
   info("Let's see if we remove backups if there are too many");
   await SessionFile.wipe();
   await IOUtils.writeJSON(Paths.clean, test.contents, {

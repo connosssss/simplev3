@@ -15,13 +15,14 @@ import android.webkit.WebViewClient
 import android.webkit.WebViewDatabase
 import androidx.core.net.toUri
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import java.lang.reflect.Modifier
+import kotlin.test.assertNotNull
 import kotlinx.coroutines.test.runTest
 import mozilla.components.browser.engine.system.matcher.UrlMatcher
-import mozilla.components.browser.errorpages.ErrorType
 import mozilla.components.concept.engine.DefaultSettings
 import mozilla.components.concept.engine.Engine.BrowsingData
 import mozilla.components.concept.engine.EngineSession
+import mozilla.components.concept.engine.request.ErrorType
 import mozilla.components.concept.engine.request.RequestInterceptor
 import mozilla.components.support.test.any
 import mozilla.components.support.test.eq
@@ -30,16 +31,17 @@ import mozilla.components.support.test.robolectric.testContext
 import mozilla.components.support.test.whenever
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.ArgumentMatchers.any as mockitoAny
 import org.mockito.ArgumentMatchers.anyBoolean
 import org.mockito.ArgumentMatchers.anyString
 import org.mockito.Mockito
+import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.doThrow
 import org.mockito.Mockito.never
@@ -47,13 +49,8 @@ import org.mockito.Mockito.spy
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.robolectric.Shadows.shadowOf
-import org.robolectric.annotation.LooperMode
-import java.lang.reflect.Modifier
-import org.mockito.ArgumentMatchers.any as mockitoAny
 
-@Suppress("DEPRECATION") // Suppress deprecation for LooperMode.Mode.LEGACY
 @RunWith(AndroidJUnit4::class)
-@LooperMode(LooperMode.Mode.LEGACY)
 class SystemEngineSessionTest {
 
     @Test
@@ -65,8 +62,10 @@ class SystemEngineSessionTest {
         var observedProgress = 0
         engineSession.register(
             object : EngineSession.Observer {
-                override fun onProgress(progress: Int) { observedProgress = progress }
-            },
+                override fun onProgress(progress: Int) {
+                    observedProgress = progress
+                }
+            }
         )
 
         engineSession.webView.webChromeClient!!.onProgressChanged(null, 100)
@@ -79,14 +78,15 @@ class SystemEngineSessionTest {
         var loadHeaders: Map<String, String>? = null
 
         val engineSession = spy(SystemEngineSession(testContext))
-        val webView = spy(
-            object : WebView(testContext) {
-                override fun loadUrl(url: String, additionalHttpHeaders: MutableMap<String, String>) {
-                    loadedUrl = url
-                    loadHeaders = additionalHttpHeaders
+        val webView =
+            spy(
+                object : WebView(testContext) {
+                    override fun loadUrl(url: String, additionalHttpHeaders: MutableMap<String, String>) {
+                        loadedUrl = url
+                        loadHeaders = additionalHttpHeaders
+                    }
                 }
-            },
-        )
+            )
         val settings = mock<WebSettings>()
         whenever(webView.settings).thenReturn(settings)
 
@@ -101,16 +101,16 @@ class SystemEngineSessionTest {
         assertEquals("http://mozilla.org", loadedUrl)
 
         assertNotNull(loadHeaders)
-        assertEquals(1, loadHeaders!!.size)
-        assertTrue(loadHeaders!!.containsKey("X-Requested-With"))
-        assertEquals("", loadHeaders!!["X-Requested-With"])
+        assertEquals(1, loadHeaders.size)
+        assertTrue(loadHeaders.containsKey("X-Requested-With"))
+        assertEquals("", loadHeaders["X-Requested-With"])
 
         val extraHeaders = mapOf("X-Extra-Header" to "true")
         engineSession.loadUrl("http://mozilla.org", additionalHeaders = extraHeaders)
         assertNotNull(loadHeaders)
-        assertEquals(2, loadHeaders!!.size)
-        assertTrue(loadHeaders!!.containsKey("X-Extra-Header"))
-        assertEquals("true", loadHeaders!!["X-Extra-Header"])
+        assertEquals(2, loadHeaders.size)
+        assertTrue(loadHeaders.containsKey("X-Extra-Header"))
+        assertEquals("true", loadHeaders["X-Extra-Header"])
     }
 
     @Test
@@ -125,7 +125,7 @@ class SystemEngineSessionTest {
                 override fun onLoadUrl() {
                     onLoadUrlTriggered = true
                 }
-            },
+            }
         )
         engineSession.webView = webView
 
@@ -168,7 +168,7 @@ class SystemEngineSessionTest {
                 override fun onLoadData() {
                     onLoadDataTriggered = true
                 }
-            },
+            }
         )
         engineSession.webView = webView
 
@@ -253,7 +253,7 @@ class SystemEngineSessionTest {
                 override fun onNavigateForward() {
                     observedOnNavigateForward = true
                 }
-            },
+            }
         )
         engineSession.webView = webView
 
@@ -275,7 +275,7 @@ class SystemEngineSessionTest {
                 override fun onNavigateForward() {
                     observedOnNavigateForward = true
                 }
-            },
+            }
         )
         engineSession.webView = webView
 
@@ -306,16 +306,17 @@ class SystemEngineSessionTest {
         var onGotoHistoryIndexTriggered = false
         val engineSession = spy(SystemEngineSession(testContext))
         val settings = mock<WebSettings>()
-        val webView = mock<WebView> {
-            whenever(this.settings).thenReturn(settings)
-            whenever(copyBackForwardList()).thenReturn(mock())
-        }
+        val webView =
+            mock<WebView> {
+                whenever(this.settings).thenReturn(settings)
+                whenever(copyBackForwardList()).thenReturn(mock())
+            }
         engineSession.register(
             object : EngineSession.Observer {
                 override fun onGotoHistoryIndex() {
                     onGotoHistoryIndexTriggered = true
                 }
-            },
+            }
         )
         engineSession.webView = webView
 
@@ -332,7 +333,7 @@ class SystemEngineSessionTest {
         try {
             engineSession.restoreState(mock())
             fail("Expected IllegalArgumentException")
-        } catch (e: IllegalArgumentException) {
+        } catch (_: IllegalArgumentException) {
             // Expected
         }
         assertFalse(engineSession.restoreState(SystemEngineSessionState(Bundle())))
@@ -352,7 +353,6 @@ class SystemEngineSessionTest {
         verify(webView).restoreState(bundle)
     }
 
-    @ExperimentalCoroutinesApi
     @Test
     fun enableTrackingProtection() = runTest {
         SystemEngineView.urlMatcher = UrlMatcher(arrayOf(""))
@@ -372,7 +372,7 @@ class SystemEngineSessionTest {
                 override fun onTrackerBlockingEnabledChange(enabled: Boolean) {
                     enabledObserved = enabled
                 }
-            },
+            }
         )
 
         assertNull(engineSession.trackingProtectionPolicy)
@@ -382,7 +382,7 @@ class SystemEngineSessionTest {
             engineSession.trackingProtectionPolicy,
         )
         assertNotNull(enabledObserved)
-        assertTrue(enabledObserved as Boolean)
+        assertTrue(enabledObserved)
     }
 
     @Test
@@ -394,7 +394,7 @@ class SystemEngineSessionTest {
                 override fun onTrackerBlockingEnabledChange(enabled: Boolean) {
                     enabledObserved = enabled
                 }
-            },
+            }
         )
 
         engineSession.trackingProtectionPolicy = EngineSession.TrackingProtectionPolicy.strict()
@@ -402,7 +402,7 @@ class SystemEngineSessionTest {
         engineSession.disableTrackingProtection()
         assertNull(engineSession.trackingProtectionPolicy)
         assertNotNull(enabledObserved)
-        assertFalse(enabledObserved as Boolean)
+        assertFalse(enabledObserved)
     }
 
     @Test
@@ -466,10 +466,12 @@ class SystemEngineSessionTest {
 
         assertFalse(engineSession.settings.allowUniversalAccessFromFileURLs)
         engineSession.settings.allowUniversalAccessFromFileURLs = true
+        @Suppress("DEPRECATION")
         verify(webViewSettings).allowUniversalAccessFromFileURLs = true
 
         assertFalse(engineSession.settings.allowFileAccessFromFileURLs)
         engineSession.settings.allowFileAccessFromFileURLs = true
+        @Suppress("DEPRECATION")
         verify(webViewSettings).allowFileAccessFromFileURLs = true
 
         assertTrue(engineSession.settings.verticalScrollBarEnabled)
@@ -491,8 +493,7 @@ class SystemEngineSessionTest {
         assertFalse(engineSession.settings.webFontsEnabled)
 
         assertNull(engineSession.settings.trackingProtectionPolicy)
-        engineSession.settings.trackingProtectionPolicy =
-            EngineSession.TrackingProtectionPolicy.strict()
+        engineSession.settings.trackingProtectionPolicy = EngineSession.TrackingProtectionPolicy.strict()
         verify(engineSession).updateTrackingProtection(EngineSession.TrackingProtectionPolicy.strict())
 
         engineSession.settings.trackingProtectionPolicy = null
@@ -500,8 +501,11 @@ class SystemEngineSessionTest {
 
         verify(webViewSettings).cacheMode = WebSettings.LOAD_NO_CACHE
         verify(webViewSettings).setGeolocationEnabled(false)
+        @Suppress("DEPRECATION")
         verify(webViewSettings).databaseEnabled = false
+        @Suppress("DEPRECATION")
         verify(webViewSettings).savePassword = false
+        @Suppress("DEPRECATION")
         verify(webViewSettings).saveFormData = false
         verify(webViewSettings).builtInZoomControls = true
         verify(webViewSettings).displayZoomControls = false
@@ -509,19 +513,20 @@ class SystemEngineSessionTest {
 
     @Test
     fun withProvidedDefaultSettings() {
-        val defaultSettings = DefaultSettings(
-            javascriptEnabled = false,
-            domStorageEnabled = false,
-            webFontsEnabled = false,
-            trackingProtectionPolicy = EngineSession.TrackingProtectionPolicy.strict(),
-            userAgentString = "userAgent",
-            mediaPlaybackRequiresUserGesture = false,
-            javaScriptCanOpenWindowsAutomatically = true,
-            displayZoomControls = true,
-            loadWithOverviewMode = true,
-            useWideViewPort = true,
-            supportMultipleWindows = true,
-        )
+        val defaultSettings =
+            DefaultSettings(
+                javascriptEnabled = false,
+                domStorageEnabled = false,
+                webFontsEnabled = false,
+                trackingProtectionPolicy = EngineSession.TrackingProtectionPolicy.strict(),
+                userAgentString = "userAgent",
+                mediaPlaybackRequiresUserGesture = false,
+                javaScriptCanOpenWindowsAutomatically = true,
+                displayZoomControls = true,
+                loadWithOverviewMode = true,
+                useWideViewPort = true,
+                supportMultipleWindows = true,
+            )
         val engineSession = spy(SystemEngineSession(testContext, defaultSettings))
 
         val webView = mock<WebView>()
@@ -568,21 +573,22 @@ class SystemEngineSessionTest {
     fun settingInterceptorToProvideAlternativeContent() {
         var interceptorCalledWithUri: String? = null
 
-        val interceptor = object : RequestInterceptor {
-            override fun onLoadRequest(
-                engineSession: EngineSession,
-                uri: String,
-                lastUri: String?,
-                hasUserGesture: Boolean,
-                isSameDomain: Boolean,
-                isRedirect: Boolean,
-                isDirectNavigation: Boolean,
-                isSubframeRequest: Boolean,
-            ): RequestInterceptor.InterceptionResponse? {
-                interceptorCalledWithUri = uri
-                return RequestInterceptor.InterceptionResponse.Content("<h1>Hello World</h1>")
+        val interceptor =
+            object : RequestInterceptor {
+                override fun onLoadRequest(
+                    engineSession: EngineSession,
+                    uri: String,
+                    lastUri: String?,
+                    hasUserGesture: Boolean,
+                    isSameDomain: Boolean,
+                    isRedirect: Boolean,
+                    isDirectNavigation: Boolean,
+                    isSubframeRequest: Boolean,
+                ): RequestInterceptor.InterceptionResponse {
+                    interceptorCalledWithUri = uri
+                    return RequestInterceptor.InterceptionResponse.Content("<h1>Hello World</h1>")
+                }
             }
-        }
 
         val defaultSettings = DefaultSettings(requestInterceptor = interceptor)
 
@@ -594,16 +600,17 @@ class SystemEngineSessionTest {
         val request: WebResourceRequest = mock()
         doReturn("sample:about".toUri()).`when`(request).url
 
-        val response = engineSession.webView.webViewClient.shouldInterceptRequest(
-            engineSession.webView,
-            request,
-        )
+        val response =
+            engineSession.webView.webViewClient.shouldInterceptRequest(
+                engineSession.webView,
+                request,
+            )
 
         assertEquals("sample:about", interceptorCalledWithUri)
 
         assertNotNull(response)
 
-        assertEquals("<h1>Hello World</h1>", response!!.data.bufferedReader().use { it.readText() })
+        assertEquals("<h1>Hello World</h1>", response.data.bufferedReader().use { it.readText() })
         assertEquals("text/html", response.mimeType)
         assertEquals("UTF-8", response.encoding)
     }
@@ -645,20 +652,21 @@ class SystemEngineSessionTest {
         doReturn(true).`when`(request).hasGesture()
         doReturn("sample:about".toUri()).`when`(request).url
 
-        val interceptor = object : RequestInterceptor {
-            override fun onLoadRequest(
-                engineSession: EngineSession,
-                uri: String,
-                lastUri: String?,
-                hasUserGesture: Boolean,
-                isSameDomain: Boolean,
-                isRedirect: Boolean,
-                isDirectNavigation: Boolean,
-                isSubframeRequest: Boolean,
-            ): RequestInterceptor.InterceptionResponse? {
-                return RequestInterceptor.InterceptionResponse.Content("<h1>Hello World</h1>")
+        val interceptor =
+            object : RequestInterceptor {
+                override fun onLoadRequest(
+                    engineSession: EngineSession,
+                    uri: String,
+                    lastUri: String?,
+                    hasUserGesture: Boolean,
+                    isSameDomain: Boolean,
+                    isRedirect: Boolean,
+                    isDirectNavigation: Boolean,
+                    isSubframeRequest: Boolean,
+                ): RequestInterceptor.InterceptionResponse {
+                    return RequestInterceptor.InterceptionResponse.Content("<h1>Hello World</h1>")
+                }
             }
-        }
 
         val defaultSettings = DefaultSettings(requestInterceptor = interceptor)
 
@@ -682,21 +690,22 @@ class SystemEngineSessionTest {
     fun settingInterceptorToProvideAlternativeUrl() {
         var interceptorCalledWithUri: String? = null
 
-        val interceptor = object : RequestInterceptor {
-            override fun onLoadRequest(
-                engineSession: EngineSession,
-                uri: String,
-                lastUri: String?,
-                hasUserGesture: Boolean,
-                isSameDomain: Boolean,
-                isRedirect: Boolean,
-                isDirectNavigation: Boolean,
-                isSubframeRequest: Boolean,
-            ): RequestInterceptor.InterceptionResponse? {
-                interceptorCalledWithUri = uri
-                return RequestInterceptor.InterceptionResponse.Url("https://mozilla.org")
+        val interceptor =
+            object : RequestInterceptor {
+                override fun onLoadRequest(
+                    engineSession: EngineSession,
+                    uri: String,
+                    lastUri: String?,
+                    hasUserGesture: Boolean,
+                    isSameDomain: Boolean,
+                    isRedirect: Boolean,
+                    isDirectNavigation: Boolean,
+                    isSubframeRequest: Boolean,
+                ): RequestInterceptor.InterceptionResponse {
+                    interceptorCalledWithUri = uri
+                    return RequestInterceptor.InterceptionResponse.Url("https://mozilla.org")
+                }
             }
-        }
 
         val defaultSettings = DefaultSettings(requestInterceptor = interceptor)
 
@@ -708,10 +717,19 @@ class SystemEngineSessionTest {
         val request: WebResourceRequest = mock()
         doReturn("sample:about".toUri()).`when`(request).url
 
-        val response = engineSession.webView.webViewClient.shouldInterceptRequest(
-            engineSession.webView,
-            request,
-        )
+        doAnswer { invocation ->
+                val runnable = invocation.arguments[0] as Runnable
+                runnable.run()
+                true
+            }
+            .`when`(engineSession.webView)
+            .post(mockitoAny(Runnable::class.java))
+
+        val response =
+            engineSession.webView.webViewClient.shouldInterceptRequest(
+                engineSession.webView,
+                request,
+            )
 
         assertNull(response)
         assertEquals("sample:about", interceptorCalledWithUri)
@@ -730,10 +748,11 @@ class SystemEngineSessionTest {
         val request: WebResourceRequest = mock()
         doReturn("sample:about".toUri()).`when`(request).url
 
-        val response = engineSession.webView.webViewClient.shouldInterceptRequest(
-            engineSession.webView,
-            request,
-        )
+        val response =
+            engineSession.webView.webViewClient.shouldInterceptRequest(
+                engineSession.webView,
+                request,
+            )
 
         assertNull(response)
     }
@@ -742,21 +761,22 @@ class SystemEngineSessionTest {
     fun onLoadRequestWithInterceptorThatDoesNotIntercept() {
         var interceptorCalledWithUri: String? = null
 
-        val interceptor = object : RequestInterceptor {
-            override fun onLoadRequest(
-                engineSession: EngineSession,
-                uri: String,
-                lastUri: String?,
-                hasUserGesture: Boolean,
-                isSameDomain: Boolean,
-                isRedirect: Boolean,
-                isDirectNavigation: Boolean,
-                isSubframeRequest: Boolean,
-            ): RequestInterceptor.InterceptionResponse? {
-                interceptorCalledWithUri = uri
-                return null
+        val interceptor =
+            object : RequestInterceptor {
+                override fun onLoadRequest(
+                    engineSession: EngineSession,
+                    uri: String,
+                    lastUri: String?,
+                    hasUserGesture: Boolean,
+                    isSameDomain: Boolean,
+                    isRedirect: Boolean,
+                    isDirectNavigation: Boolean,
+                    isSubframeRequest: Boolean,
+                ): RequestInterceptor.InterceptionResponse? {
+                    interceptorCalledWithUri = uri
+                    return null
+                }
             }
-        }
 
         val defaultSettings = DefaultSettings(requestInterceptor = interceptor)
 
@@ -768,10 +788,11 @@ class SystemEngineSessionTest {
         val request: WebResourceRequest = mock()
         doReturn("sample:about".toUri()).`when`(request).url
 
-        val response = engineSession.webView.webViewClient.shouldInterceptRequest(
-            engineSession.webView,
-            request,
-        )
+        val response =
+            engineSession.webView.webViewClient.shouldInterceptRequest(
+                engineSession.webView,
+                request,
+            )
 
         assertEquals("sample:about", interceptorCalledWithUri)
         assertNull(response)
@@ -839,7 +860,7 @@ class SystemEngineSessionTest {
                 override fun onDesktopModeChange(enabled: Boolean) {
                     desktopMode = enabled
                 }
-            },
+            }
         )
 
         engineSession.webView = webView
@@ -854,7 +875,7 @@ class SystemEngineSessionTest {
         engineSession.toggleDesktopMode(true)
         verify(webView, never()).reload()
 
-        engineSession.toggleDesktopMode(true, true)
+        engineSession.toggleDesktopMode(enable = true, reload = true)
         verify(webView).reload()
     }
 
@@ -874,7 +895,7 @@ class SystemEngineSessionTest {
                 override fun onDesktopModeChange(enabled: Boolean) {
                     desktopMode = enabled
                 }
-            },
+            }
         )
 
         engineSession.webView = webView
@@ -903,7 +924,7 @@ class SystemEngineSessionTest {
                 override fun onDesktopModeChange(enabled: Boolean) {
                     desktopMode = enabled
                 }
-            },
+            }
         )
 
         engineSession.webView = webView
@@ -937,7 +958,7 @@ class SystemEngineSessionTest {
                 override fun onDesktopModeChange(enabled: Boolean) {
                     desktopMode = enabled
                 }
-            },
+            }
         )
 
         engineSession.webView = webView
@@ -967,7 +988,7 @@ class SystemEngineSessionTest {
                 override fun onDesktopModeChange(enabled: Boolean) {
                     desktopMode = enabled
                 }
-            },
+            }
         )
 
         engineSession.webView = webView
@@ -1006,7 +1027,7 @@ class SystemEngineSessionTest {
                 override fun onFind(text: String) {
                     findObserved = text
                 }
-            },
+            }
         )
         engineSession.findAll("mozilla")
         verify(webView).findAllAsync("mozilla")
@@ -1169,7 +1190,7 @@ class SystemEngineSessionTest {
             onError = {
                 onErrorCalled = true
                 assertSame(it, exception)
-            },
+            }
         )
         assertTrue(onErrorCalled)
     }
@@ -1231,7 +1252,7 @@ class SystemEngineSessionTest {
                 override fun onNavigateBack() {
                     observedOnNavigateBack = true
                 }
-            },
+            }
         )
 
         engineSession.goBack()

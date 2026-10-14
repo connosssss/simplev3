@@ -1,13 +1,10 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "TextRange-inl.h"
-
-#include "LocalAccessible-inl.h"
 #include "HyperTextAccessible-inl.h"
+#include "LocalAccessible-inl.h"
+#include "TextRange-inl.h"
 #include "mozilla/IntegerRange.h"
 #include "mozilla/dom/Selection.h"
 #include "nsAccUtils.h"
@@ -254,7 +251,7 @@ static nsIContent* GetElementAsContentOf(nsINode* aNode) {
   return aNode->GetParentElement();
 }
 
-bool TextRange::AssignDOMRange(nsRange* aRange, bool* aReversed) const {
+bool TextRange::AssignDOMRange(dom::Range* aRange, bool* aReversed) const {
   MOZ_ASSERT(mRoot->IsLocal(), "Not supported for RemoteAccessible");
   bool reversed = EndPoint() < StartPoint();
   if (aReversed) {
@@ -310,7 +307,7 @@ void TextRange::TextRangesFromSelection(dom::Selection* aSelection,
   const uint32_t rangeCount = aSelection->RangeCount();
   for (const uint32_t idx : IntegerRange(rangeCount)) {
     MOZ_ASSERT(aSelection->RangeCount() == rangeCount);
-    const nsRange* DOMRange = aSelection->GetRangeAt(idx);
+    const dom::Range* DOMRange = aSelection->GetRangeAt(idx);
     MOZ_ASSERT(DOMRange);
     HyperTextAccessible* startContainer =
         nsAccUtils::GetTextContainer(DOMRange->GetStartContainer());

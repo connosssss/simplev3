@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,6 +6,7 @@
 #define mozilla_image_Orientation_h
 
 #include <stdint.h>
+
 #include "mozilla/gfx/Rect.h"
 
 namespace mozilla {
@@ -64,14 +64,7 @@ struct Orientation {
     return (rotation == Angle::D90) || (rotation == Angle::D270);
   }
 
-  bool operator==(const Orientation& aOther) const {
-    return rotation == aOther.rotation && flip == aOther.flip &&
-           flipFirst == aOther.flipFirst;
-  }
-
-  bool operator!=(const Orientation& aOther) const {
-    return !(*this == aOther);
-  }
+  bool operator==(const Orientation& aOther) const = default;
 
   OrientedIntSize ToOriented(const UnorientedIntSize& aSize) const {
     if (SwapsWidthAndHeight()) {

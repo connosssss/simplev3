@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -123,13 +121,7 @@ class BaseProfilerProcessId {
   }
 
   [[nodiscard]] constexpr bool operator==(
-      const BaseProfilerProcessId& aOther) const {
-    return mProcessId == aOther.mProcessId;
-  }
-  [[nodiscard]] constexpr bool operator!=(
-      const BaseProfilerProcessId& aOther) const {
-    return mProcessId != aOther.mProcessId;
-  }
+      const BaseProfilerProcessId& aOther) const = default;
 
  private:
   static constexpr NumberType scUnspecified = 0;
@@ -182,13 +174,7 @@ class BaseProfilerThreadId {
   }
 
   [[nodiscard]] constexpr bool operator==(
-      const BaseProfilerThreadId& aOther) const {
-    return mThreadId == aOther.mThreadId;
-  }
-  [[nodiscard]] constexpr bool operator!=(
-      const BaseProfilerThreadId& aOther) const {
-    return mThreadId != aOther.mThreadId;
-  }
+      const BaseProfilerThreadId& aOther) const = default;
 
  private:
   static constexpr NumberType scUnspecified = 0;

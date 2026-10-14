@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,12 +7,14 @@
 #ifndef js_ArrayBuffer_h
 #define js_ArrayBuffer_h
 
+#include "mozilla/Span.h"
 #include "mozilla/UniquePtr.h"
 
 #include <stddef.h>  // size_t
 #include <stdint.h>  // uint32_t
 
 #include "jstypes.h"  // JS_PUBLIC_API
+
 #include "js/TypeDecls.h"
 #include "js/Utility.h"
 
@@ -30,6 +31,20 @@ class JS_PUBLIC_API AutoRequireNoGC;
  * Create a new ArrayBuffer with the given byte length.
  */
 extern JS_PUBLIC_API JSObject* NewArrayBuffer(JSContext* cx, size_t nbytes);
+
+/**
+ * Create a new ArrayBuffer and copy in the given contents.
+ *
+ * Care must be taken that the data in |source| remains valid for the duration
+ * of this call.  In particular, passing existing typed array or ArrayBuffer
+ * data is generally unsafe: if a GC occurs while creating the ArrayBuffer
+ * within this function, it could move those contents to a different location
+ * before the data can be copied.
+ *
+ * Return nullptr and set an exception on OOM or if the size is too large.
+ */
+extern JS_PUBLIC_API JSObject* NewArrayBuffer(
+    JSContext* cx, mozilla::Span<const uint8_t> source);
 
 /**
  * Create a new ArrayBuffer with the given |contents|, which may be null only
@@ -124,7 +139,7 @@ extern JS_PUBLIC_API JSObject* NewArrayBufferWithContents(
  * |JS::NewArrayBufferWithContents| passing in |maybeArrayBuffer|'s internal
  * data pointer and length, in a manner safe against |maybeArrayBuffer|'s data
  * being moved around by the GC.  In particular, the new ArrayBuffer will not
- * behave like one created for WASM or asm.js, so it *can* be detached.
+ * behave like one created for WASM, so it *can* be detached.
  */
 extern JS_PUBLIC_API JSObject* CopyArrayBuffer(
     JSContext* cx, JS::Handle<JSObject*> maybeArrayBuffer);
@@ -324,8 +339,7 @@ extern JS_PUBLIC_API uint8_t* GetArrayBufferData(JSObject* obj,
  * the ArrayBuffer's original attached memory.
  *
  * This function throws only if it is provided a non-ArrayBuffer object or if
- * the provided ArrayBuffer is a WASM-backed ArrayBuffer or an ArrayBuffer used
- * in asm.js code.
+ * the provided ArrayBuffer is a WASM-backed ArrayBuffer.
  */
 extern JS_PUBLIC_API bool DetachArrayBuffer(JSContext* cx,
                                             Handle<JSObject*> obj);

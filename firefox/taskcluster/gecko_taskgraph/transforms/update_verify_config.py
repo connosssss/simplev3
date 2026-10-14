@@ -7,12 +7,12 @@ Transform the beetmover task into an actual task description.
 
 from urllib.parse import urlsplit
 
+from mozilla_taskgraph.util.attributes import release_level
+from mozilla_taskgraph.worker_types import get_release_config
 from taskgraph.transforms.base import TransformSequence
 from taskgraph.util.schema import resolve_keyed_by
 
 from gecko_taskgraph.transforms.task import get_branch_repo, get_branch_rev
-from gecko_taskgraph.util.attributes import release_level
-from gecko_taskgraph.util.scriptworker import get_release_config
 
 transforms = TransformSequence()
 
@@ -27,8 +27,8 @@ INCLUDE_VERSION_REGEXES = {
     "nonbeta": r"'^\d+\.\d+(\.\d+)?$'",
     # Same as nonbeta, except for the esr suffix
     "esr": r"'^\d+\.\d+(\.\d+)?esr$'",
-    # Previous esr versions, for update testing before we update users to esr140
-    "esr140-next": r"'^(52|60|68|78|91|102|115|128)+\.\d+(\.\d+)?esr$'",
+    # Previous esr versions, for update testing before we update users to esr153
+    "esr153-next": r"'^(52|60|68|78|91|102|115|128|140)+\.\d+(\.\d+)?esr$'",
 }
 
 MAR_CHANNEL_ID_OVERRIDE_REGEXES = {
@@ -80,7 +80,7 @@ def add_command(config, tasks):
 
         command = [
             "python",
-            "testing/mozharness/scripts/release/update-verify-config-creator.py",
+            "python/mozrelease/mozrelease/update_verify_config_creator.py",
             "--product",
             task["extra"]["product"],
             "--stage-product",
@@ -112,7 +112,7 @@ def add_command(config, tasks):
         command.extend(["--repo-path", repo_path])
 
         if release_config.get("partial_versions"):
-            for partial in release_config["partial_versions"]:
+            for partial in release_config["partial_versions"].split(","):
                 command.extend(["--partial-version", partial.split("build")[0]])
 
         for arg in optional_args:
@@ -129,7 +129,9 @@ def add_command(config, tasks):
                 platform=task["attributes"]["build_platform"],
                 **{
                     "release-type": config.params["release_type"],
-                    "release-level": release_level(config.params["project"]),
+                    "release-level": release_level(
+                        config.graph_config["release-branches"], config.params
+                    ),
                 },
             )
             # ignore things that resolved to null
@@ -143,11 +145,16 @@ def add_command(config, tasks):
             command.append(f"--{arg}")
             command.append(task["extra"][arg])
 
-        task["run"].update(
-            {
-                "using": "mach",
-                "mach": " ".join(command),
-            }
-        )
+        task["run"].update({
+            "using": "mach",
+            "clone-with": "hg",
+            "mach": " ".join(command),
+        })
+
+        if task.get("index"):
+            task["index"].setdefault(
+                "job-name",
+                f"update-verify-config-{task['name']}-{task['extra']['channel']}",
+            )
 
         yield task

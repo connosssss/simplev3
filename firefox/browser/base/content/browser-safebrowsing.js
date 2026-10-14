@@ -2,9 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// This file is loaded into the browser window scope.
-/* eslint-env mozilla/browser-window */
-
 var gSafeBrowsing = {
   setReportPhishingMenu() {
     // In order to detect whether or not we're at the phishing warning
@@ -89,7 +86,7 @@ var gSafeBrowsing = {
         docURI.spec.startsWith("about:blocked?e=deceptiveBlocked")
       ) {
         let actor = global.getActor("BlockedSite");
-        actor.sendQuery("DeceptiveBlockedDetails").then(data => {
+        actor.sendQuery("DeceptiveBlockedDetails").then(async data => {
           let reportUrl = gSafeBrowsing.getReportURL(
             "PhishMistake",
             data.blockedInfo
@@ -97,16 +94,14 @@ var gSafeBrowsing = {
           if (reportUrl) {
             openTrustedLinkIn(reportUrl, "tab");
           } else {
-            let bundle = Services.strings.createBundle(
-              "chrome://browser/locale/safebrowsing/safebrowsing.properties"
-            );
-            Services.prompt.alert(
-              window,
-              bundle.GetStringFromName("errorReportFalseDeceptiveTitle"),
-              bundle.formatStringFromName("errorReportFalseDeceptiveMessage", [
-                data.blockedInfo.provider,
-              ])
-            );
+            let l10n = new Localization([
+              "browser/safebrowsing/blockedSite.ftl",
+            ]);
+            let [title, message] = await l10n.formatValues([
+              "safeb-report-false-deceptive-error-title",
+              "safeb-report-false-deceptive-error-message",
+            ]);
+            Services.prompt.alert(window, title, message);
           }
         });
       }

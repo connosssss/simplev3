@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,11 +22,10 @@ enum class StackCaptureOptions {
 
 }
 
-#include "BaseProfileJSONWriter.h"
-#include "BaseProfilingCategory.h"
+#include "mozilla/BaseProfileJSONWriter.h"
+#include "mozilla/BaseProfilingCategory.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/ProfileChunkedBuffer.h"
-#include "mozilla/BaseProfilerState.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/Variant.h"
@@ -650,12 +647,12 @@ class MarkerOptions {
   // Options can be read by their name (without "Marker"), e.g.: `o.ThreadId()`.
   // Add "Ref" for a non-const reference, e.g.: `o.ThreadIdRef() = ...;`
 #define FUNCTIONS_ON_MEMBER(NAME)                      \
-  MarkerOptions& Set(Marker##NAME&& a##NAME)& {        \
+  MarkerOptions& Set(Marker##NAME&& a##NAME) & {       \
     m##NAME = std::move(a##NAME);                      \
     return *this;                                      \
   }                                                    \
                                                        \
-  MarkerOptions&& Set(Marker##NAME&& a##NAME)&& {      \
+  MarkerOptions&& Set(Marker##NAME&& a##NAME) && {     \
     m##NAME = std::move(a##NAME);                      \
     return std::move(*this);                           \
   }                                                    \
@@ -695,23 +692,66 @@ class JSONWriter;
 
 // This class collects all the information necessary to stream the JSON schema
 // that informs the front-end how to display a type of markers.
-// It will be created and populated in `MarkerTypeDisplay()` functions in each
-// marker type definition, see Add/Set functions.
+// It is created and populated by `BaseMarkerType::MarkerTypeDisplay()` from
+// the static members of each marker type definition, and by Rust marker types
+// through the Add/Set functions.
 class MarkerSchema {
  public:
   // This is used to describe a C++ type that is expected to be specified to
   // the marker and used in PayloadField. This type is the expected input type
   // to the marker data.
   enum class InputType {
+    Undefined,
     Uint64,
     Uint32,
     Uint8,
+    Int64,
+    Int32,
+    Int8,
+    Double,
     Boolean,
     CString,
     String,
     TimeStamp,
-    TimeDuration
+    TimeDuration,
+    Flow,
   };
+
+  template <typename T>
+  static constexpr InputType getDefaultInputTypeForType() {
+    using CleanT = std::remove_cv_t<std::remove_pointer_t<T>>;
+
+    if constexpr (std::is_same_v<CleanT, bool>) {
+      return InputType::Boolean;
+    } else if constexpr (std::is_same_v<CleanT, double>) {
+      return InputType::Double;
+    } else if constexpr (std::is_unsigned_v<CleanT> && sizeof(CleanT) == 4) {
+      return InputType::Uint32;
+    } else if constexpr (std::is_unsigned_v<CleanT> && sizeof(CleanT) == 8) {
+      return InputType::Uint64;
+    } else if constexpr (std::is_unsigned_v<CleanT> && sizeof(CleanT) == 1) {
+      return InputType::Uint8;
+    } else if constexpr (std::is_signed_v<CleanT> &&
+                         std::is_integral_v<CleanT> && sizeof(CleanT) == 4) {
+      return InputType::Int32;
+    } else if constexpr (std::is_signed_v<CleanT> &&
+                         std::is_integral_v<CleanT> && sizeof(CleanT) == 8) {
+      return InputType::Int64;
+    } else if constexpr (std::is_signed_v<CleanT> &&
+                         std::is_integral_v<CleanT> && sizeof(CleanT) == 1) {
+      return InputType::Int8;
+    } else if constexpr (std::is_same_v<CleanT, TimeStamp>) {
+      return InputType::TimeStamp;
+    } else if constexpr (std::is_same_v<CleanT, TimeDuration>) {
+      return InputType::TimeDuration;
+    } else if constexpr (std::is_same_v<CleanT, ProfilerString8View>) {
+      return InputType::CString;
+    } else if constexpr (std::is_same_v<CleanT, Flow>) {
+      return InputType::Flow;
+    } else {
+      static_assert(sizeof(T) == 0, "Unsupported type");
+    }
+  }
 
   enum class Location : unsigned {
     MarkerChart,
@@ -752,24 +792,35 @@ class MarkerSchema {
     String,
 
     // Show a string from a UniqueStringArray given an index in the profile.
-    // e.g. 1, given string table ["hello", "world"] will show "world"
+    // e.g. 1, given string table ["hello", "world"] will show "world".
+    // URLs are sanitized, because the front-end scrubs the whole string table,
+    // so unlike `String` this format is safe for strings that may contain one.
+    // Nothing else is sanitized: file paths, host names and other PII are kept
+    // as-is.
     UniqueString,
 
     // ----------------------------------------------------
     // Numeric types
 
-    // For time data that represents a duration of time.
-    // e.g. "Label: 5s, 5ms, 5μs"
+    // For time data that represents a duration of time in ms.
+    // Pick closest unit.
+    // e.g.
+    // Value | Label
+    // ------+------
+    // 5000  | "5s"
+    // 5     | "5ms"
+    // 0.005 | "5μs"
     Duration,
-    // Data that happened at a specific time, relative to the start of the
+    // Data that happened at a specific time in ms, relative to the start of the
     // profile. e.g. "Label: 15.5s, 20.5ms, 30.5μs"
     Time,
     // The following are alternatives to display a time only in a specific unit
-    // of time.
-    Seconds,       // "Label: 5s"
-    Milliseconds,  // "Label: 5ms"
-    Microseconds,  // "Label: 5μs"
-    Nanoseconds,   // "Label: 5ns"
+    // of time (even if it is not the closest).
+    // Value unit cannot be in ms for μs and ns.
+    Seconds,       // Value in ms: 500, Label: "0.5s"
+    Milliseconds,  // Value in ms: 5000, Label: "5000ms"
+    Microseconds,  // Value in μs: 5, Label: "5μs"
+    Nanoseconds,   // Value in ns: 5, Label: "5ns"
     // e.g. "Label: 5.55mb, 5 bytes, 312.5kb"
     Bytes,
     // This should be a value between 0 and 1.
@@ -783,6 +834,16 @@ class MarkerSchema {
     // Do not use it for time information.
     // "Label: 52.23, 0.0054, 123,456.78"
     Decimal,
+    // The hexadecimal should be used for integers that are more meaningful in
+    // base 16, like bit flags.
+    // Like all the integer formats, values are carried as JS numbers on the
+    // frontend side, so anything above Number.MAX_SAFE_INTEGER (2^53-1) cannot
+    // be represented exactly.
+    // To display a 64-bit value such as an address, the recommendation is
+    // therefore to convert it to a hexadecimal string in StreamJSONMarkerData
+    // and use the String format.
+    // "Label: 0x1f, 0xdeadbeef"
+    Hexadecimal,
 
     // A flow is a u64 identifier that's unique across processes. All of
     // the markers with same flow id before a terminating flow id will be
@@ -793,6 +854,25 @@ class MarkerSchema {
     // a marker with a field of this type.
     TerminatingFlow
   };
+
+  template <typename T>
+  static constexpr Format getDefaultFormatForType() {
+    using CleanT = std::remove_cv_t<T>;
+
+    if constexpr (std::is_integral_v<CleanT> || std::is_same_v<CleanT, bool>) {
+      return Format::Integer;
+    } else if constexpr (std::is_same_v<CleanT, double>) {
+      return Format::Decimal;
+    } else if constexpr (std::is_same_v<CleanT, TimeStamp>) {
+      return Format::Time;
+    } else if constexpr (std::is_same_v<CleanT, TimeDuration>) {
+      return Format::Duration;
+    } else if constexpr (std::is_same_v<CleanT, ProfilerString8View>) {
+      return Format::SanitizedString;
+    } else {
+      static_assert(sizeof(T) == 0, "Unsupported type");
+    }
+  }
 
   // This represents groups of markers which MarkerTypes can expose to indicate
   // what group they belong to (multiple groups are allowed combined in bitwise
@@ -808,23 +888,29 @@ class MarkerSchema {
   };
 
   // Flags which describe additional information for a PayloadField.
-  enum class PayloadFlags : uint32_t { None = 0, Searchable = 1 };
+  enum class PayloadFlags : uint32_t {
+    None = 0,
+    Hidden = 1 << 0,
+  };
 
   // This is one field of payload to be used for additional marker data.
   struct PayloadField {
     // Key identifying the marker.
-    const char* Key;
+    // Must be set.
+    const char* Key = nullptr;
     // Input type, this represents the data type specified.
-    InputType InputTy;
+    // Must be set.
+    InputType InputTy = InputType::Undefined;
     // Label, additional description.
+    // Optional.
     const char* Label = nullptr;
     // Format as written to the JSON.
+    // Optional.
     Format Fmt = Format::String;
     // Optional PayloadFlags.
     PayloadFlags Flags = PayloadFlags::None;
   };
 
-  enum class Searchable { NotSearchable, Searchable };
   enum class GraphType { Line, Bar, FilledLine };
   enum class GraphColor {
     Blue,
@@ -837,6 +923,17 @@ class MarkerSchema {
     Red,
     Teal,
     Yellow
+  };
+
+  // This describes a timeline track graph built from one payload field.
+  struct GraphField {
+    // Key of the payload field to graph.
+    // Must be set.
+    const char* Key = nullptr;
+    GraphType Type = GraphType::Line;
+    // When left as `Nothing`, the front-end uses its default track color.
+    // Optional.
+    Maybe<GraphColor> Color;
   };
 
   // Marker schema, with a non-empty list of locations where markers should be
@@ -891,46 +988,35 @@ class MarkerSchema {
     return *this;
   }
 
+  MarkerSchema& SetColorField(std::string aKey) {
+    mColorField = std::move(aKey);
+    return *this;
+  }
+
   // Each data element that is streamed by `StreamJSONMarkerData()` can be
   // displayed as indicated by using one of the `Add...` function below.
   // Each `Add...` will add a line in the full marker description. Parameters:
   // - `aKey`: Element property name as streamed by `StreamJSONMarkerData()`.
   // - `aLabel`: Optional prefix. Defaults to the key name.
   // - `aFormat`: How to format the data element value, see `Format` above.
-  // - `aSearchable`: Optional, indicates if the value is used in searches,
-  //   defaults to false.
+  // - `aPayloadFlags`: Optional, indicates additinal flags to serialize inside
+  // the marker schema object. Defaults to `PayloadFlags::None`.
 
-  MarkerSchema& AddKeyFormat(std::string aKey, Format aFormat) {
+  MarkerSchema& AddKeyFormat(std::string aKey, Format aFormat,
+                             PayloadFlags aPayloadFlags = PayloadFlags::None) {
     mData.emplace_back(mozilla::VariantType<DynamicData>{},
                        DynamicData{std::move(aKey), mozilla::Nothing{}, aFormat,
-                                   mozilla::Nothing{}});
+                                   aPayloadFlags});
     return *this;
   }
 
-  MarkerSchema& AddKeyLabelFormat(std::string aKey, std::string aLabel,
-                                  Format aFormat) {
+  MarkerSchema& AddKeyLabelFormat(
+      std::string aKey, std::string aLabel, Format aFormat,
+      PayloadFlags aPayloadFlags = PayloadFlags::None) {
     mData.emplace_back(
         mozilla::VariantType<DynamicData>{},
         DynamicData{std::move(aKey), mozilla::Some(std::move(aLabel)), aFormat,
-                    mozilla::Nothing{}});
-    return *this;
-  }
-
-  MarkerSchema& AddKeyFormatSearchable(std::string aKey, Format aFormat,
-                                       Searchable aSearchable) {
-    mData.emplace_back(mozilla::VariantType<DynamicData>{},
-                       DynamicData{std::move(aKey), mozilla::Nothing{}, aFormat,
-                                   mozilla::Some(aSearchable)});
-    return *this;
-  }
-
-  MarkerSchema& AddKeyLabelFormatSearchable(std::string aKey,
-                                            std::string aLabel, Format aFormat,
-                                            Searchable aSearchable) {
-    mData.emplace_back(
-        mozilla::VariantType<DynamicData>{},
-        DynamicData{std::move(aKey), mozilla::Some(std::move(aLabel)), aFormat,
-                    mozilla::Some(aSearchable)});
+                    aPayloadFlags});
     return *this;
   }
 
@@ -972,13 +1058,14 @@ class MarkerSchema {
   std::string mTooltipLabel;
   std::string mTableLabel;
   bool mIsStackBased = false;
+  std::string mColorField;
   // Main display, made of zero or more rows of key+label+format or label+value.
  private:
   struct DynamicData {
     std::string mKey;
     mozilla::Maybe<std::string> mLabel;
     Format mFormat;
-    mozilla::Maybe<Searchable> mSearchable;
+    PayloadFlags mPayloadFlags;
   };
   struct StaticData {
     std::string mLabel;
@@ -997,48 +1084,187 @@ class MarkerSchema {
   std::vector<GraphData> mGraphs;
 };
 
+// Check if T::PayloadFields exists and if it is not empty
+template <typename T, typename = void>
+struct MarkerHasPayloadFields : std::false_type {};
+template <typename T>
+struct MarkerHasPayloadFields<
+    T, std::void_t<decltype(T::PayloadFields),
+                   decltype(std::size(T::PayloadFields))>> : std::true_type {};
+
 namespace detail {
 // GCC doesn't allow this to live inside the class.
-template <typename PayloadType>
-static void StreamPayload(baseprofiler::SpliceableJSONWriter& aWriter,
-                          const Span<const char> aKey,
-                          const PayloadType& aPayload) {
-  aWriter.StringProperty(aKey, aPayload);
-}
-
-template <typename PayloadType>
-inline void StreamPayload(baseprofiler::SpliceableJSONWriter& aWriter,
-                          const Span<const char> aKey,
-                          const Maybe<PayloadType>& aPayload) {
-  if (aPayload.isSome()) {
-    StreamPayload(aWriter, aKey, *aPayload);
-  } else {
-    aWriter.NullProperty(aKey);
+// Class template so that partial specializations (e.g. for ProfilerString16View
+// in ProfilerMarkers.h) are found at instantiation time regardless of where
+// StreamJSONMarkerDataImpl is defined.
+template <typename PayloadType, MarkerSchema::Format aFormat>
+struct StreamPayloadHelper {
+  static void Stream(baseprofiler::SpliceableJSONWriter& aWriter,
+                     const Span<const char> aKey, const PayloadType& aPayload) {
+    using CleanT = std::remove_cv_t<PayloadType>;
+    if constexpr (std::is_integral_v<CleanT>) {
+      aWriter.IntProperty(aKey, aPayload);
+    } else if constexpr (std::is_same_v<CleanT, double>) {
+      aWriter.DoubleProperty(aKey, aPayload);
+    } else if constexpr (aFormat == MarkerSchema::Format::UniqueString) {
+      aWriter.UniqueStringProperty(aKey, aPayload);
+    } else {
+      aWriter.StringProperty(aKey, aPayload);
+    }
   }
-}
+};
 
-template <>
-inline void StreamPayload<bool>(baseprofiler::SpliceableJSONWriter& aWriter,
-                                const Span<const char> aKey,
-                                const bool& aPayload) {
-  aWriter.BoolProperty(aKey, aPayload);
-}
+template <typename PayloadType, MarkerSchema::Format aFormat>
+struct StreamPayloadHelper<Maybe<PayloadType>, aFormat> {
+  static void Stream(baseprofiler::SpliceableJSONWriter& aWriter,
+                     const Span<const char> aKey,
+                     const Maybe<PayloadType>& aPayload) {
+    if (aPayload.isSome()) {
+      StreamPayloadHelper<PayloadType, aFormat>::Stream(aWriter, aKey,
+                                                        *aPayload);
+    } else {
+      aWriter.NullProperty(aKey);
+    }
+  }
+};
 
-template <>
-inline void StreamPayload<ProfilerString8View>(
-    baseprofiler::SpliceableJSONWriter& aWriter, const Span<const char> aKey,
-    const ProfilerString8View& aPayload) {
-  aWriter.StringProperty(aKey, aPayload);
-}
+template <MarkerSchema::Format aFormat>
+struct StreamPayloadHelper<bool, aFormat> {
+  static void Stream(baseprofiler::SpliceableJSONWriter& aWriter,
+                     const Span<const char> aKey, const bool& aPayload) {
+    aWriter.BoolProperty(aKey, aPayload);
+  }
+};
 
+template <MarkerSchema::Format aFormat>
+struct StreamPayloadHelper<Flow, aFormat> {
+  static void Stream(baseprofiler::SpliceableJSONWriter& aWriter,
+                     const Span<const char> aKey, const Flow& aPayload) {
+    aWriter.FlowProperty(aKey, aPayload);
+  }
+};
+
+template <MarkerSchema::Format aFormat>
+struct StreamPayloadHelper<TimeDuration, aFormat> {
+  static void Stream(baseprofiler::SpliceableJSONWriter& aWriter,
+                     const Span<const char> aKey,
+                     const TimeDuration& aDuration) {
+    using MS = MarkerSchema;
+    static_assert(aFormat == MS::Format::Milliseconds ||
+                      aFormat == MS::Format::Duration ||
+                      aFormat == MS::Format::Seconds ||
+                      aFormat == MS::Format::Microseconds ||
+                      aFormat == MS::Format::Nanoseconds,
+                  "Wrong MarkerSchema::Format for TimeDuration");
+    if constexpr (aFormat == MS::Format::Microseconds) {
+      aWriter.DoubleProperty(aKey, aDuration.ToMicroseconds());
+    } else if constexpr (aFormat == MS::Format::Nanoseconds) {
+      aWriter.DoubleProperty(aKey, aDuration.ToMicroseconds() * 1000.0);
+    } else {
+      aWriter.DoubleProperty(aKey, aDuration.ToMilliseconds());
+    }
+  }
+};
+
+template <MarkerSchema::Format aFormat>
+struct StreamPayloadHelper<TimeStamp, aFormat> {
+  static void Stream(baseprofiler::SpliceableJSONWriter& aWriter,
+                     const Span<const char> aKey, const TimeStamp& aTimeStamp) {
+    static_assert(aFormat == MarkerSchema::Format::Time,
+                  "Wrong MarkerSchema::Format for TimeStamp");
+    aWriter.TimeProperty(aKey, aTimeStamp);
+  }
+};
+
+template <MarkerSchema::InputType IT>
+struct InputTypeToCpp;
 template <>
-inline void StreamPayload<Flow>(baseprofiler::SpliceableJSONWriter& aWriter,
-                                const Span<const char> aKey,
-                                const Flow& aPayload) {
-  aWriter.FlowProperty(aKey, aPayload);
-}
+struct InputTypeToCpp<MarkerSchema::InputType::Uint64> {
+  using Type = uint64_t;
+};
+template <>
+struct InputTypeToCpp<MarkerSchema::InputType::Uint32> {
+  using Type = uint32_t;
+};
+template <>
+struct InputTypeToCpp<MarkerSchema::InputType::Uint8> {
+  using Type = uint8_t;
+};
+template <>
+struct InputTypeToCpp<MarkerSchema::InputType::Int64> {
+  using Type = int64_t;
+};
+template <>
+struct InputTypeToCpp<MarkerSchema::InputType::Int32> {
+  using Type = int32_t;
+};
+template <>
+struct InputTypeToCpp<MarkerSchema::InputType::Int8> {
+  using Type = int8_t;
+};
+template <>
+struct InputTypeToCpp<MarkerSchema::InputType::Double> {
+  using Type = double;
+};
+template <>
+struct InputTypeToCpp<MarkerSchema::InputType::Boolean> {
+  using Type = bool;
+};
+template <>
+struct InputTypeToCpp<MarkerSchema::InputType::CString> {
+  using Type = ProfilerString8View;
+};
+template <>
+struct InputTypeToCpp<MarkerSchema::InputType::String> {
+  using Type = ProfilerString16View;
+};
+template <>
+struct InputTypeToCpp<MarkerSchema::InputType::TimeStamp> {
+  using Type = TimeStamp;
+};
+template <>
+struct InputTypeToCpp<MarkerSchema::InputType::TimeDuration> {
+  using Type = TimeDuration;
+};
+template <>
+struct InputTypeToCpp<MarkerSchema::InputType::Flow> {
+  using Type = Flow;
+};
+
+template <typename T, size_t... Is>
+auto PayloadFieldsTupleHelper(std::index_sequence<Is...>) -> std::tuple<
+    typename InputTypeToCpp<T::PayloadFields[Is].InputTy>::Type...>;
+
+// A marker type with no (or empty) `PayloadFields` has no payload arguments.
+template <typename T, bool = MarkerHasPayloadFields<T>::value>
+struct PayloadFieldsTupleImpl {
+  using Type = std::tuple<>;
+};
+template <typename T>
+struct PayloadFieldsTupleImpl<T, true> {
+  using Type = decltype(PayloadFieldsTupleHelper<T>(
+      std::make_index_sequence<std::size(T::PayloadFields)>{}));
+};
+
+template <typename T>
+using PayloadFieldsTuple = typename PayloadFieldsTupleImpl<T>::Type;
 
 }  // namespace detail
+
+// Check if T::Locations exists.
+template <typename T, typename = void>
+struct MarkerHasLocations : std::false_type {};
+template <typename T>
+struct MarkerHasLocations<T, std::void_t<decltype(T::Locations)>>
+    : std::true_type {};
+
+// Check if T::TranslateMarkerInputToSchema exists
+template <typename T, typename = void>
+struct MarkerHasTranslator : std::false_type {};
+template <typename T>
+struct MarkerHasTranslator<
+    T, std::void_t<decltype(T::TranslateMarkerInputToSchema)>>
+    : std::true_type {};
 
 // This helper class is used by MarkerTypes that want to support the general
 // MarkerType object schema. When using this the markers will also transmit
@@ -1053,58 +1279,103 @@ struct BaseMarkerType {
   static constexpr const char* ChartLabel = nullptr;
   static constexpr const char* TableLabel = nullptr;
   static constexpr const char* TooltipLabel = nullptr;
+  static constexpr const char* ColorField = nullptr;
 
   // Setting this property to true is a promise that the the marker will nest
   // properly.  i.e. it can't have a partially overlapping time range with any
   // other stack based markers on the same thread.
   static constexpr bool IsStackBased = false;
 
-  // This indicates whether this marker type wants the names passed to the
-  // individual marker calls stores along with the marker.
-  static constexpr bool StoreName = false;
+  // Whether the name passed to each individual marker call is emitted as an
+  // extra `MarkerName` field on the ETW event; the profiler's own storage
+  // always records it. Only set this when callers pass a distinct name per
+  // marker and that distinction matters when analyzing ETW traces, as the
+  // string is then copied into every ETW event.
+  static constexpr bool ETWStoreName = false;
 
+  // Defines how ETW filters this marker at runtime.
   static constexpr MarkerSchema::ETWMarkerGroup Group =
       MarkerSchema::ETWMarkerGroup::Generic;
 
+  static constexpr MarkerSchema::PayloadField PayloadFields[0] = {};
+
+  static constexpr MarkerSchema::GraphField GraphFields[0] = {};
+
+  // A marker type either declares a non-empty `Locations` array or sets
+  // `UseSpecialFrontendLocation` to true (for types with special frontend
+  // handling); the two are mutually exclusive.
+  static constexpr bool UseSpecialFrontendLocation = false;
+
   static MarkerSchema MarkerTypeDisplay() {
     using MS = MarkerSchema;
-    MS schema{T::Locations, std::size(T::Locations)};
-    if (T::AllLabels) {
-      schema.SetAllLabels(T::AllLabels);
+    if constexpr (std::extent_v<decltype(T::PayloadFields)>) {
+      static_assert(
+          CheckPayloadFields(T::PayloadFields),
+          "PayloadField requires a non-null Key and an InputTy other than "
+          "Undefined");
     }
-    if (T::ChartLabel) {
-      schema.SetChartLabel(T::ChartLabel);
+    if constexpr (std::extent_v<decltype(T::GraphFields)>) {
+      static_assert(CheckGraphFields(T::GraphFields),
+                    "GraphField requires a non-null Key");
     }
-    if (T::TableLabel) {
-      schema.SetTableLabel(T::TableLabel);
-    }
-    if (T::TooltipLabel) {
-      schema.SetTooltipLabel(T::TooltipLabel);
-    }
-    if (T::IsStackBased) {
-      schema.SetIsStackBased();
-    }
-    for (const MS::PayloadField field : T::PayloadFields) {
-      if (field.Label) {
-        if (uint32_t(field.Flags) & uint32_t(MS::PayloadFlags::Searchable)) {
-          schema.AddKeyLabelFormatSearchable(field.Key, field.Label, field.Fmt,
-                                             MS::Searchable::Searchable);
+    if constexpr (T::UseSpecialFrontendLocation) {
+      static_assert(!MarkerHasLocations<T>::value,
+                    "Set either Locations or UseSpecialFrontendLocation, not "
+                    "both");
+      // The frontend hardcodes how to display these markers, so no display
+      // property belongs in the schema. PayloadFields is still allowed, as it
+      // also drives payload serialization and ETW.
+      static_assert(!T::AllLabels && !T::ChartLabel && !T::TableLabel &&
+                        !T::TooltipLabel && !T::ColorField &&
+                        !T::IsStackBased && !T::Description &&
+                        !std::extent_v<decltype(T::GraphFields)>,
+                    "UseSpecialFrontendLocation ignores the display schema, so "
+                    "do not set AllLabels, ChartLabel, TableLabel, "
+                    "TooltipLabel, ColorField, IsStackBased, Description or "
+                    "GraphFields");
+      return MS{MS::SpecialFrontendLocation{}};
+    } else {
+      static_assert(MarkerHasLocations<T>::value,
+                    "Declare Locations or set UseSpecialFrontendLocation");
+      MS schema{T::Locations, std::size(T::Locations)};
+      if constexpr (T::AllLabels) {
+        schema.SetAllLabels(T::AllLabels);
+      }
+      if constexpr (T::ChartLabel) {
+        schema.SetChartLabel(T::ChartLabel);
+      }
+      if constexpr (T::TableLabel) {
+        schema.SetTableLabel(T::TableLabel);
+      }
+      if constexpr (T::TooltipLabel) {
+        schema.SetTooltipLabel(T::TooltipLabel);
+      }
+      if constexpr (T::IsStackBased) {
+        schema.SetIsStackBased();
+      }
+      if constexpr (T::ColorField) {
+        schema.SetColorField(T::ColorField);
+      }
+      for (const MS::PayloadField& field : T::PayloadFields) {
+        if (field.Label) {
+          schema.AddKeyLabelFormat(field.Key, field.Label, field.Fmt,
+                                   field.Flags);
         } else {
-          schema.AddKeyLabelFormat(field.Key, field.Label, field.Fmt);
-        }
-      } else {
-        if (uint32_t(field.Flags) & uint32_t(MS::PayloadFlags::Searchable)) {
-          schema.AddKeyFormatSearchable(field.Key, field.Fmt,
-                                        MS::Searchable::Searchable);
-        } else {
-          schema.AddKeyFormat(field.Key, field.Fmt);
+          schema.AddKeyFormat(field.Key, field.Fmt, field.Flags);
         }
       }
+      for (const MS::GraphField& graph : T::GraphFields) {
+        if (graph.Color) {
+          schema.AddChartColor(graph.Key, graph.Type, *graph.Color);
+        } else {
+          schema.AddChart(graph.Key, graph.Type);
+        }
+      }
+      if constexpr (T::Description) {
+        schema.AddStaticLabelValue("Description", T::Description);
+      }
+      return schema;
     }
-    if (T::Description) {
-      schema.AddStaticLabelValue("Description", T::Description);
-    }
-    return schema;
   }
 
   static constexpr Span<const char> MarkerTypeName() {
@@ -1116,14 +1387,50 @@ struct BaseMarkerType {
   // allows the child to do any special data conversion it needs to do.
   // Optionally the child can opt not to use this at all and write the data
   // out itself.
+  template <typename... PayloadArguments, std::size_t... Is>
+  static void StreamJSONMarkerDataImplHelper(
+      baseprofiler::SpliceableJSONWriter& aWriter, std::index_sequence<Is...>,
+      const PayloadArguments&... aPayloadArguments) {
+    (detail::StreamPayloadHelper<std::remove_cv_t<PayloadArguments>,
+                                 T::PayloadFields[Is].Fmt>::
+         Stream(aWriter, MakeStringSpan(T::PayloadFields[Is].Key),
+                aPayloadArguments),
+     ...);
+  }
+
   template <typename... PayloadArguments>
   static void StreamJSONMarkerDataImpl(
       baseprofiler::SpliceableJSONWriter& aWriter,
       const PayloadArguments&... aPayloadArguments) {
-    size_t i = 0;
-    (detail::StreamPayload(aWriter, MakeStringSpan(T::PayloadFields[i++].Key),
-                           aPayloadArguments),
-     ...);
+    StreamJSONMarkerDataImplHelper(
+        aWriter, std::index_sequence_for<PayloadArguments...>{},
+        aPayloadArguments...);
+  }
+
+ private:
+  template <std::size_t N>
+  static constexpr bool CheckPayloadFields(
+      const MarkerSchema::PayloadField (&aPayloadFields)[N]) {
+    for (const auto& field : aPayloadFields) {
+      if (field.Key == nullptr) {
+        return false;
+      }
+      if (field.InputTy == MarkerSchema::InputType::Undefined) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  template <std::size_t N>
+  static constexpr bool CheckGraphFields(
+      const MarkerSchema::GraphField (&aGraphFields)[N]) {
+    for (const auto& field : aGraphFields) {
+      if (field.Key == nullptr) {
+        return false;
+      }
+    }
+    return true;
   }
 };
 }  // namespace mozilla

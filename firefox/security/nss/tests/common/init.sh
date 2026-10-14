@@ -168,17 +168,35 @@ if [ -z "${INIT_SOURCED}" -o "${INIT_SOURCED}" != "TRUE" ]; then
         esac
     }
 
+    # Returns 0 if no core file has appeared since the last scan, 1 otherwise.
+    #
+    # Called often enough that walking ${HOSTDIR} dominates runtime in suites
+    # with many files, so the walk is rate-limited to one every
+    # NSS_CORE_SCAN_INTERVAL seconds. Pass "force" to scan regardless, for
+    # checkpoints that have to be exact.
     detect_core()
     {
-        [ ! -f $CORELIST_FILE ] && touch $CORELIST_FILE
-        mv $CORELIST_FILE ${CORELIST_FILE}.old
-        coreStr=`find $HOSTDIR -type f -name '*core*'`
-        res=0
-        if [ -n "$coreStr" ]; then
-            sum $coreStr > $CORELIST_FILE
-            res=`cat $CORELIST_FILE ${CORELIST_FILE}.old | sort | uniq -u | wc -l`
+        [ "${NSS_DETECT_CORE}" = "1" ] || return 0
+        if [ "$1" != "force" -a -n "${_core_scanned_at}" ]; then
+            [ $(( SECONDS - _core_scanned_at )) -ge ${NSS_CORE_SCAN_INTERVAL} ] || return 0
         fi
-        return $res
+        _core_scanned_at=${SECONDS}
+
+        local cores seen=
+        cores=`find ${HOSTDIR} -type f -name '*core*'`
+        if [ -z "${cores}" ]; then
+            [ -f "${CORELIST_FILE}" ] && rm -f ${CORELIST_FILE}
+            return 0
+        fi
+
+        # Checksum rather than just list the paths, so that a core overwritten
+        # in place is still reported.
+        cores=`sum ${cores}`
+        [ -f "${CORELIST_FILE}" ] && seen=`cat ${CORELIST_FILE}`
+        [ "${cores}" = "${seen}" ] && return 0
+
+        echo "${cores}" > ${CORELIST_FILE}
+        return 1
     }
 
 #html functions to give the resultfiles a consistant look
@@ -225,16 +243,23 @@ if [ -z "${INIT_SOURCED}" -o "${INIT_SOURCED}" != "TRUE" ]; then
         html "<TR><TD>#${MSG_ID}: $1 ${HTML_UNKNOWN}"
         echo "${SCRIPTNAME}: #${MSG_ID}: $* - UNKNOWN"
     }
+    # Returns 1, so that callers skip their own result line.
+    html_report_core()
+    {
+        increase_msg_id
+        html "<TR><TD>#${MSG_ID}: $* ${HTML_FAILED_CORE}"
+        echo "${SCRIPTNAME}: #${MSG_ID}: $* - Core file is detected - FAILED"
+        return 1
+    }
     html_detect_core()
     {
-        detect_core
-        if [ $? -ne 0 ]; then
-            increase_msg_id
-            html "<TR><TD>#${MSG_ID}: $* ${HTML_FAILED_CORE}"
-            echo "${SCRIPTNAME}: #${MSG_ID}: $* - Core file is detected - FAILED"
-            return 1
-        fi
-        return 0
+        detect_core || html_report_core "$@"
+    }
+    # As html_detect_core, but ignores the scan rate limit. Use where a core
+    # has to be attributed to this exact point rather than a later test.
+    html_detect_core_force()
+    {
+        detect_core force || html_report_core "$@"
     }
     html_head()
     {
@@ -342,6 +367,10 @@ if [ -z "${INIT_SOURCED}" -o "${INIT_SOURCED}" != "TRUE" ]; then
       policy="$1"
       outdir="$2"
       OUTFILE="${outdir}/pkcs11.txt"
+      if [ -z "${ROOTCERTSFILE}" ]; then
+        ROOTCERTSFILE=`ls -1 ${DIST}/${OBJDIR}/lib/*nssckbi.* | head -1`
+        ROOTCERTSFILE=`native_path "${ROOTCERTSFILE}"`
+      fi
       cat > "$OUTFILE" << ++EOF++
 library=
 name=NSS Internal PKCS #11 Module
@@ -350,7 +379,7 @@ NSS=Flags=internal,critical trustOrder=75 cipherOrder=100 slotParams=(1={slotFla
 ++EOF++
       echo "config=${policy}" >> "$OUTFILE"
       echo "" >> "$OUTFILE"
-      echo "library=${DIST}/${OBJDIR}/lib/libnssckbi.so" >> "$OUTFILE"
+      echo "library=${ROOTCERTSFILE}" >> "$OUTFILE"
       cat >> "$OUTFILE" << ++EOF++
 name=RootCerts
 NSS=trustOrder=100
@@ -375,6 +404,51 @@ NSS=trustOrder=100
         return 1; # fail case for bash
     }
 
+    # safe_kill terminates a background server process and waits for it to exit.
+    #
+    # Usage: safe_kill <pid> <job_pid>
+    #   pid     - the process ID to terminate (written by the server to its PID
+    #             file; used by taskkill on Windows, kill on Unix)
+    #   job_pid - the bash job PID ($!) used for wait on Windows, where the
+    #             shell may assign a different PID than the native process
+    #
+    # On Windows, bash's built-in kill triggers MSYS2 signal emulation, which
+    # can intermittently propagate SIGTERM back to the shell or return the
+    # killed process's exit code, causing spurious exit code 143 failures.
+    # taskkill terminates the process directly via the Windows API instead.
+    safe_kill() {
+        local pid=$1
+        local job_pid=$2
+
+        if [ "${OS_ARCH}" = "WINNT" ]; then
+            echo "taskkill /F /PID ${pid}"
+            MSYS2_ARG_CONV_EXCL="*" taskkill /F /PID ${pid} || true
+            wait ${job_pid} || true
+        else
+            echo "${KILL} -USR1 ${pid}"
+            ${KILL} -USR1 ${pid} || true
+            local ret=0; wait ${pid} || ret=$?
+            [ $ret -eq 0 ]
+        fi
+    }
+
+    # native_path converts a path to the native Windows format (with forward
+    # slashes) for tools like certutil that are native Windows binaries and
+    # cannot open MSYS/Cygwin Unix-style paths.
+    native_path() {
+        if [ "${OS_ARCH}" = "WINNT" ]; then
+            if [ $# -eq 0 ]; then
+                pwd -W
+            else
+                cygpath -m "$1"
+            fi
+        elif [ $# -eq 0 ]; then
+            pwd
+        else
+            echo "$1"
+        fi
+    }
+
 #directory name init
     SCRIPTNAME=init.sh
 
@@ -387,6 +461,9 @@ NSS=trustOrder=100
     common=${QADIR}/common
     COMMON=${TEST_COMMON-$common}
     export COMMON
+
+    TSAN_SUPPRESSIONS_FILE=${COMMON}/tsan_suppressions.txt
+    export TSAN_OPTIONS="suppressions=${TSAN_SUPPRESSIONS_FILE}"
 
     DIST=${DIST-${MOZILLA_ROOT}/dist}
     TESTDIR=${TESTDIR-${MOZILLA_ROOT}/tests_results/security}
@@ -425,27 +502,9 @@ NSS=trustOrder=100
 
     BINDIR="${DIST}/${OBJDIR}/bin"
 
-    # Pathnames constructed from ${TESTDIR} are passed to NSS tools
-    # such as certutil, which don't understand Cygwin pathnames.
-    # So we need to convert ${TESTDIR} to a Windows pathname (with
-    # regular slashes).
-    if [ "${OS_ARCH}" = "WINNT" -a "$OS_NAME" = "CYGWIN_NT" ]; then
-        TESTDIR=`cygpath -m ${TESTDIR}`
-        QADIR=`cygpath -m ${QADIR}`
-    fi
-
-    # Same problem with MSYS/Mingw, except we need to start over with pwd -W
-    if [ "${OS_ARCH}" = "WINNT" -a "$OS_NAME" = "MINGW32_NT" ]; then
-                mingw_mozilla_root=`(cd ../../..; pwd -W)`
-                MINGW_MOZILLA_ROOT=${MINGW_MOZILLA_ROOT-$mingw_mozilla_root}
-                TESTDIR=${MINGW_TESTDIR-${MINGW_MOZILLA_ROOT}/tests_results/security}
-    fi
-
-    # Same problem with MSYS/Mingw, except we need to start over with pwd -W
-    if [ "${OS_ARCH}" = "WINNT" -a "$OS_NAME" = "MINGW32_NT" ]; then
-                mingw_mozilla_root=`(cd ../../..; pwd -W)`
-                MINGW_MOZILLA_ROOT=${MINGW_MOZILLA_ROOT-$mingw_mozilla_root}
-                TESTDIR=${MINGW_TESTDIR-${MINGW_MOZILLA_ROOT}/tests_results/security}
+    if [ "${OS_ARCH}" = "WINNT" ]; then
+        TESTDIR=$(native_path "${TESTDIR}")
+        QADIR=$(native_path "${QADIR}")
     fi
     echo testdir is $TESTDIR
 
@@ -566,6 +625,10 @@ NSS=trustOrder=100
         HOSTDIR=${TESTDIR}/${HOST}'.'$version
 
         mkdir -p ${HOSTDIR}
+
+        # Stable path to the most recent run, so that callers do not have to
+        # sort the numbered directories themselves.
+        ln -sfn ${HOST}'.'$version ${TESTDIR}/latest 2>/dev/null
     fi
 
 #result and log file and filename init,
@@ -796,9 +859,16 @@ NSS=trustOrder=100
     fi
     #################################################
 
+    # Only scan for core files where we enable them; elsewhere detect_core()
+    # can never find anything. Override to force it either way.
     if [ "${OS_ARCH}" != "WINNT" -a "${OS_ARCH}" != "Android" ]; then
         ulimit -c unlimited
+        NSS_DETECT_CORE=${NSS_DETECT_CORE:-1}
+    else
+        NSS_DETECT_CORE=${NSS_DETECT_CORE:-0}
     fi
+    NSS_CORE_SCAN_INTERVAL=${NSS_CORE_SCAN_INTERVAL:-2}
+    _core_scanned_at=      # empty until the first scan, which is never skipped
 
     SCRIPTNAME=$0
     INIT_SOURCED=TRUE   #whatever one does - NEVER export this one please

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,12 @@
 #ifndef mozilla_MotionPathUtils_h
 #define mozilla_MotionPathUtils_h
 
+#include "Units.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/ServoStyleConsts.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/Point.h"
 #include "mozilla/gfx/Rect.h"
-#include "mozilla/Maybe.h"
-#include "mozilla/ServoStyleConsts.h"
-#include "Units.h"
 
 class nsIFrame;
 
@@ -71,7 +69,7 @@ struct OffsetPathData {
   };
 
   static OffsetPathData None() { return OffsetPathData(); }
-  static OffsetPathData Shape(already_AddRefed<gfx::Path>&& aGfxPath,
+  static OffsetPathData Shape(already_AddRefed<gfx::Path> aGfxPath,
                               nsPoint&& aCurrentPosition, bool aIsClosedPath) {
     return OffsetPathData(std::move(aGfxPath), std::move(aCurrentPosition),
                           aIsClosedPath);
@@ -140,11 +138,13 @@ struct OffsetPathData {
         break;
     }
   }
+  OffsetPathData& operator=(const OffsetPathData&) = delete;
+  OffsetPathData& operator=(OffsetPathData&&) = delete;
 
  private:
   OffsetPathData() : mType(Type::None) {}
-  OffsetPathData(already_AddRefed<gfx::Path>&& aPath,
-                 nsPoint&& aCurrentPosition, bool aIsClosed)
+  OffsetPathData(already_AddRefed<gfx::Path> aPath, nsPoint&& aCurrentPosition,
+                 bool aIsClosed)
       : mType(Type::Shape),
         mShape{std::move(aPath), std::move(aCurrentPosition), aIsClosed} {}
   OffsetPathData(const StyleRayFunction* aRay, nsRect&& aCoordBox,
@@ -157,8 +157,6 @@ struct OffsetPathData {
                  const CSSCoord& aContainReferenceLength)
       : mType(Type::Ray),
         mRay{aRay, aCoordBox, aPosition, aContainReferenceLength} {}
-  OffsetPathData& operator=(const OffsetPathData&) = delete;
-  OffsetPathData& operator=(OffsetPathData&&) = delete;
 };
 
 // MotionPathUtils is a namespace class containing utility functions related to

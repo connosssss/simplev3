@@ -54,6 +54,9 @@
     },
     "selectedWindow": {
       "type": "integer"
+    },
+    "maxSplitViewId": {
+      "type": "integer"
     }
   },
   "required": ["version", "windows"],
@@ -147,6 +150,12 @@
         "selected": {
           "type": "integer"
         },
+        "splitViews": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/splitview"
+          }
+        },
         "title": {
           "type": "string"
         },
@@ -159,20 +168,41 @@
         "_closedTabs": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/tab"
+            "$ref": "#/definitions/closedTab"
           }
         },
         "_lastClosedTabGroupCount": {
           "type": "integer"
         },
+        "args": {
+          "$comment": "Introduced Firefox 156, bug 2066315",
+          "description": "Arguments to supply to nsIWindowWatcher.openWindow in order to restore a window's previous state",
+          "type": "object",
+          "properties": {
+            "web-extension-popup-window": {
+              "description": "Popup window opened by WebExtensions",
+              "type": "boolean"
+            },
+            "chromeless-window": {
+              "description": "Window with minimal chrome UI",
+              "type": "boolean"
+            }
+          }
+        },
         "chromeFlags": {
+          "$comment": "Introduced Firefox 99, bug 1728800",
           "type": "integer"
         },
         "height": {
           "type": "integer"
         },
         "hidden": {
+          "$comment": "Removed Firefox 156, bug 2065228",
+          "deprecated": true,
           "type": "string"
+        },
+        "isAIWindow": {
+          "type": "boolean"
         },
         "isPopup": {
           "type": "boolean"
@@ -242,6 +272,18 @@
       "required": ["closedAt", "closedId"],
       "additionalProperties": false
     },
+    "splitview": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "numberOfTabs": {
+          "type": "integer"
+        }
+      },
+      "required": ["id", "numberOfTabs"]
+    },
     "tab": {
       "type": "object",
       "properties": {
@@ -283,6 +325,9 @@
           "additionalProperties": {
             "type": "object"
           }
+        },
+        "canonicalUrl": {
+          "type": "string"
         }
       },
       "required": [
@@ -431,6 +476,18 @@
           "items": {
             "$ref": "#/definitions/entry"
           }
+        },
+        "policyContainer": {
+          "type": "string"
+        },
+        "transient": {
+          "type": "boolean"
+        },
+        "navigationKey": {
+          "type": "string"
+        },
+        "navigationId": {
+          "type": "string"
         }
       },
       "additionalProperties": false,

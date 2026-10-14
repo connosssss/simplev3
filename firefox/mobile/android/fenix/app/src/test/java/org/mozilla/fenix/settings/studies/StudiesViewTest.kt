@@ -5,8 +5,8 @@
 package org.mozilla.fenix.settings.studies
 
 import android.widget.TextView
-import androidx.appcompat.widget.SwitchCompat
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.materialswitch.MaterialSwitch
 import io.mockk.MockKAnnotations
 import io.mockk.every
 import io.mockk.impl.annotations.RelaxedMockK
@@ -15,12 +15,12 @@ import io.mockk.mockk
 import io.mockk.runs
 import io.mockk.spyk
 import io.mockk.verify
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runTest
 import mozilla.components.service.nimbus.NimbusApi
 import mozilla.components.support.test.robolectric.testContext
-import mozilla.components.support.test.rule.MainCoroutineRule
-import mozilla.components.support.test.rule.runTestOnMain
 import org.junit.Before
-import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.experiments.nimbus.internal.EnrolledExperiment
@@ -31,65 +31,63 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class StudiesViewTest {
 
-    @RelaxedMockK
-    private lateinit var experiments: NimbusApi
+    @RelaxedMockK private lateinit var experiments: NimbusApi
 
-    @RelaxedMockK
-    private lateinit var binding: SettingsStudiesBinding
+    @RelaxedMockK private lateinit var binding: SettingsStudiesBinding
 
-    @RelaxedMockK
-    private lateinit var interactor: StudiesInteractor
+    @RelaxedMockK private lateinit var interactor: StudiesInteractor
 
-    @RelaxedMockK
-    private lateinit var settings: Settings
+    @RelaxedMockK private lateinit var settings: Settings
 
     private lateinit var view: StudiesView
-
-    @get:Rule
-    val coroutinesTestRule = MainCoroutineRule()
-    private val testCoroutineScope = coroutinesTestRule.scope
+    private val testDispatcher = StandardTestDispatcher()
+    private val testScope = TestScope(testDispatcher)
 
     @Before
     fun setup() {
         MockKAnnotations.init(this)
-        view = spyk(
-            StudiesView(
-                testCoroutineScope,
-                testContext,
-                binding,
-                interactor,
-                settings,
-                experiments,
-                isAttached = { true },
-            ),
-        )
+        view =
+            spyk(
+                StudiesView(
+                    testScope,
+                    testContext,
+                    binding,
+                    interactor,
+                    settings,
+                    experiments,
+                    testDispatcher,
+                    isAttached = { true },
+                )
+            )
     }
 
     @Test
-    fun `WHEN calling bind THEN bind all the related information`() = runTestOnMain {
-        val studiesTitle = mockk<TextView>(relaxed = true)
-        val studiesSwitch = mockk<SwitchCompat>(relaxed = true)
-        val studiesList = mockk<RecyclerView>(relaxed = true)
+    fun `WHEN calling bind THEN bind all the related information`() =
+        runTest(testDispatcher) {
+            val studiesTitle = mockk<TextView>(relaxed = true)
+            val studiesSwitch = mockk<MaterialSwitch>(relaxed = true)
+            val studiesList = mockk<RecyclerView>(relaxed = true)
 
-        every { settings.isExperimentationEnabled } returns true
-        every { view.provideStudiesTitle() } returns studiesTitle
-        every { view.provideStudiesSwitch() } returns studiesSwitch
-        every { view.provideStudiesList() } returns studiesList
-        every { view.bindDescription() } just runs
-        every { view.getSwitchTitle() } returns "Title"
+            every { settings.isExperimentationEnabled } returns true
+            every { view.provideStudiesTitle() } returns studiesTitle
+            every { view.provideStudiesSwitch() } returns studiesSwitch
+            every { view.provideStudiesList() } returns studiesList
+            every { view.bindDescription() } just runs
+            every { view.getSwitchTitle() } returns "Title"
 
-        view.bind()
+            view.bind()
+            testDispatcher.scheduler.advanceUntilIdle()
 
-        verify {
-            studiesTitle.text = "Title"
-            studiesSwitch.isChecked = true
-            view.bindDescription()
-            studiesList.adapter = any()
+            verify {
+                studiesTitle.text = "Title"
+                studiesSwitch.isChecked = true
+                view.bindDescription()
+                studiesList.adapter = any()
+            }
         }
-    }
 
     @Test
-    fun `WHEN calling onRemoveButtonClicked THEN delegate to the interactor`() = runTestOnMain {
+    fun `WHEN calling onRemoveButtonClicked THEN delegate to the interactor`() {
         val experiment = mockk<EnrolledExperiment>()
         val adapter = mockk<StudiesAdapter>(relaxed = true)
 

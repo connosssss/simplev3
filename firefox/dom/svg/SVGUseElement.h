@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,23 +5,23 @@
 #ifndef DOM_SVG_SVGUSEELEMENT_H_
 #define DOM_SVG_SVGUSEELEMENT_H_
 
+#include "SVGAnimatedLength.h"
+#include "SVGAnimatedString.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/dom/FromParser.h"
 #include "mozilla/dom/IDTracker.h"
 #include "mozilla/dom/SVGGraphicsElement.h"
-#include "mozilla/RefPtr.h"
 #include "nsCOMPtr.h"
 #include "nsStubMutationObserver.h"
-#include "SVGAnimatedLength.h"
-#include "SVGAnimatedString.h"
 #include "nsTArray.h"
 
 class nsIContent;
 
-nsresult NS_NewSVGSVGElement(
-    nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
-    mozilla::dom::FromParser aFromParser);
+nsresult NS_NewSVGSVGElement(nsIContent** aResult,
+                             already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo,
+                             mozilla::dom::FromParser aFromParser);
 nsresult NS_NewSVGUseElement(
-    nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+    nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
 
 namespace mozilla {
 class Encoding;
@@ -41,8 +39,8 @@ class SVGUseElement final : public SVGUseElementBase,
  protected:
   friend nsresult(::NS_NewSVGUseElement(
       nsIContent** aResult,
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
-  explicit SVGUseElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+      already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo));
+  explicit SVGUseElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
   virtual ~SVGUseElement();
   JSObject* WrapNode(JSContext* cx, JS::Handle<JSObject*> aGivenProto) override;
 
@@ -69,9 +67,9 @@ class SVGUseElement final : public SVGUseElementBase,
 
   // nsIContent interface
   nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
-  NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
+  bool IsNoNamespaceAttrMapped(const nsAtom* aAttribute) const override;
 
-  static nsCSSPropertyID GetCSSPropertyIdForAttrEnum(uint8_t aAttrEnum);
+  static NonCustomCSSPropertyId GetCSSPropertyIdForAttrEnum(uint8_t aAttrEnum);
 
   // WebIDL
   already_AddRefed<DOMSVGAnimatedString> Href();
@@ -87,7 +85,7 @@ class SVGUseElement final : public SVGUseElementBase,
 
   // Updates the internal shadow tree to be an up-to-date clone of the
   // referenced element.
-  void UpdateShadowTree();
+  MOZ_CAN_RUN_SCRIPT void UpdateShadowTree();
 
   // Shared code between AfterSetAttr and SVGUseFrame::AttributeChanged.
   //
@@ -155,21 +153,21 @@ class SVGUseElement final : public SVGUseElementBase,
    */
   bool OurWidthAndHeightAreUsed() const;
   void SyncWidthOrHeight(nsAtom* aName);
-  void LookupHref();
+  MOZ_CAN_RUN_SCRIPT void LookupHref();
   void TriggerReclone();
   void UnlinkSource();
 
-  enum { ATTR_X, ATTR_Y, ATTR_WIDTH, ATTR_HEIGHT };
-  SVGAnimatedLength mLengthAttributes[4];
-  static LengthInfo sLengthInfo[4];
+  RefPtr<SVGUseElement> mOriginal;  // if we've been cloned, our "real" copy
+  ElementTracker mReferencedElementTracker;
+  RefPtr<URLExtraData> mContentURLData;  // URL data for its anonymous content
 
   enum { HREF, XLINK_HREF };
   SVGAnimatedString mStringAttributes[2];
   static StringInfo sStringInfo[2];
 
-  RefPtr<SVGUseElement> mOriginal;  // if we've been cloned, our "real" copy
-  ElementTracker mReferencedElementTracker;
-  RefPtr<URLExtraData> mContentURLData;  // URL data for its anonymous content
+  enum { ATTR_X, ATTR_Y, ATTR_WIDTH, ATTR_HEIGHT };
+  SVGAnimatedLength mLengthAttributes[4];
+  static LengthInfo sLengthInfo[4];
 };
 
 }  // namespace dom

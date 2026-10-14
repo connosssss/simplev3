@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/AsyncEventDispatcher.h"
+
 #include "mozilla/BasicEvents.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/dom/DocumentInlines.h"
@@ -51,7 +50,7 @@ AsyncEventDispatcher::Run() {
   if (mEventMessage != eUnidentifiedEvent) {
     MOZ_ASSERT(mComposed == Composed::eDefault);
     return nsContentUtils::DispatchTrustedEvent<WidgetEvent>(
-        node->OwnerDoc(), mTarget, mEventMessage, mCanBubble, Cancelable::eNo,
+        mTarget, mEventMessage, mCanBubble, Cancelable::eNo,
         nullptr /* aDefaultAction */, mOnlyChromeDispatch);
   }
   // MOZ_KnownLives because this instance shouldn't be touched while running.

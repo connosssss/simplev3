@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,6 +8,7 @@
 
 #include "mozilla/ContentIterator.h"
 #include "mozilla/dom/AbstractRange.h"
+#include "mozilla/dom/Range.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/mozalloc.h"
 #include "nsAtom.h"
@@ -21,7 +21,6 @@
 #include "nsINode.h"
 #include "nsISupports.h"
 #include "nsISupportsUtils.h"
-#include "nsRange.h"
 
 namespace mozilla {
 
@@ -35,7 +34,7 @@ FilteredContentIterator::FilteredContentIterator(
       mIsOutOfRange(false),
       mDirection(eDirNotSet) {}
 
-FilteredContentIterator::~FilteredContentIterator() {}
+FilteredContentIterator::~FilteredContentIterator() = default;
 
 NS_IMPL_CYCLE_COLLECTION(FilteredContentIterator, mPostIterator, mPreIterator,
                          mRange)
@@ -46,7 +45,7 @@ nsresult FilteredContentIterator::Init(nsINode* aRoot) {
   mDirection = eForward;
   mCurrentIterator = &mPreIterator;
 
-  mRange = nsRange::Create(aRoot);
+  mRange = dom::Range::Create(aRoot);
   mRange->SelectNode(*aRoot, IgnoreErrors());
 
   nsresult rv = mPreIterator.Init(mRange);
@@ -63,7 +62,7 @@ nsresult FilteredContentIterator::Init(const AbstractRange* aAbstractRange) {
     return NS_ERROR_INVALID_ARG;
   }
 
-  mRange = nsRange::Create(aAbstractRange, IgnoreErrors());
+  mRange = dom::Range::Create(aAbstractRange, IgnoreErrors());
   if (NS_WARN_IF(!mRange)) {
     return NS_ERROR_FAILURE;
   }
@@ -80,8 +79,8 @@ nsresult FilteredContentIterator::Init(nsINode* aStartContainer,
 
 nsresult FilteredContentIterator::Init(const RawRangeBoundary& aStartBoundary,
                                        const RawRangeBoundary& aEndBoundary) {
-  RefPtr<nsRange> range =
-      nsRange::Create(aStartBoundary, aEndBoundary, IgnoreErrors());
+  RefPtr<dom::Range> range =
+      dom::Range::Create(aStartBoundary, aEndBoundary, IgnoreErrors());
   if (NS_WARN_IF(!range) || NS_WARN_IF(!range->IsPositioned())) {
     return NS_ERROR_INVALID_ARG;
   }
@@ -203,19 +202,22 @@ static bool ContentIsInTraversalRange(nsIContent* aContent, bool aIsPreMode,
       parentContent, aIsPreMode ? aContent->GetPreviousSibling() : aContent);
 
   const Maybe<int32_t> startRes =
-      nsContentUtils::ComparePoints(aStartBoundary, compPoint);
+      nsContentUtils::ComparePoints<TreeKind::ShadowIncludingDOM>(
+          aStartBoundary, compPoint);
   if (NS_WARN_IF(!startRes)) {
     return false;
   }
   const Maybe<int32_t> endRes =
-      nsContentUtils::ComparePoints(aEndBoundary, compPoint);
+      nsContentUtils::ComparePoints<TreeKind::ShadowIncludingDOM>(aEndBoundary,
+                                                                  compPoint);
   if (NS_WARN_IF(!endRes)) {
     return false;
   }
   return *startRes <= 0 && *endRes >= 0;
 }
 
-static bool ContentIsInTraversalRange(nsRange* aRange, nsIContent* aNextContent,
+static bool ContentIsInTraversalRange(dom::Range* aRange,
+                                      nsIContent* aNextContent,
                                       bool aIsPreMode) {
   // XXXbz we have a caller below (in AdvanceNode) who passes null for
   // aNextContent!
@@ -280,7 +282,7 @@ void FilteredContentIterator::CheckAdvNode(nsINode* aNode, bool& aDidSkip,
 
   if (aNode && mFilter) {
     nsCOMPtr<nsINode> currentNode = aNode;
-    while (1) {
+    while (true) {
       if (mFilter->Skip(aNode)) {
         aDidSkip = true;
         // Get the next/prev node and then
@@ -295,7 +297,7 @@ void FilteredContentIterator::CheckAdvNode(nsINode* aNode, bool& aDidSkip,
       } else {
         if (aNode != currentNode) {
           nsCOMPtr<nsIContent> content(do_QueryInterface(aNode));
-          Unused << mCurrentIterator->PositionAt(content);
+          (void)mCurrentIterator->PositionAt(content);
         }
         return;  // found something
       }

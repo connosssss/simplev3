@@ -1,18 +1,22 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/JSActorService.h"
-#include "mozilla/dom/ChromeUtilsBinding.h"
+
+#include "mozilla/ArrayAlgorithm.h"
+#include "mozilla/Logging.h"
+#include "mozilla/Services.h"
+#include "mozilla/StaticPtr.h"
 #include "mozilla/dom/BrowserChild.h"
 #include "mozilla/dom/BrowserParent.h"
-#include "mozilla/dom/EventListenerBinding.h"
+#include "mozilla/dom/ChromeUtilsBinding.h"
+#include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/Event.h"
-#include "mozilla/dom/EventTargetBinding.h"
+#include "mozilla/dom/EventListenerBinding.h"
 #include "mozilla/dom/EventTarget.h"
+#include "mozilla/dom/EventTargetBinding.h"
 #include "mozilla/dom/InProcessChild.h"
 #include "mozilla/dom/InProcessParent.h"
 #include "mozilla/dom/JSActorManager.h"
@@ -24,15 +28,11 @@
 #include "mozilla/dom/JSWindowActorProtocol.h"
 #include "mozilla/dom/MessageManagerBinding.h"
 #include "mozilla/dom/PContent.h"
-#include "mozilla/dom/ContentChild.h"
-#include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/WindowGlobalChild.h"
 #include "mozilla/dom/WindowGlobalParent.h"
-#include "mozilla/ArrayAlgorithm.h"
-#include "mozilla/Services.h"
-#include "mozilla/StaticPtr.h"
-#include "mozilla/Logging.h"
 #include "nsIObserverService.h"
+
+mozilla::LazyLogModule gJSActorServiceLog("JSActorService");
 
 namespace mozilla::dom {
 namespace {
@@ -53,6 +53,18 @@ already_AddRefed<JSActorService> JSActorService::GetSingleton() {
 
   RefPtr<JSActorService> service = gJSActorService.get();
   return service.forget();
+}
+
+template <typename ActorOptionsT>
+static void LogActorRegistration(const char* aActorType,
+                                 const nsACString& aName,
+                                 const ActorOptionsT& aOptions) {
+  MOZ_LOG_FMT(gJSActorServiceLog, mozilla::LogLevel::Info,
+              "registered {} '{}': {{{}{}{} }}\n", aActorType,
+              PromiseFlatCString(aName).get(),
+              aOptions.mParent.WasPassed() ? " parent," : "",
+              aOptions.mChild.WasPassed() ? " child," : "",
+              aOptions.mRemoteTypes.WasPassed() ? " remoteTypes," : "");
 }
 
 void JSActorService::RegisterWindowActor(const nsACString& aName,
@@ -99,13 +111,15 @@ void JSActorService::RegisterWindowActor(const nsACString& aName,
   AutoTArray<JSWindowActorInfo, 1> windowInfos{proto->ToIPC()};
   nsTArray<JSProcessActorInfo> contentInfos{};
   for (auto* cp : ContentParent::AllProcesses(ContentParent::eLive)) {
-    Unused << cp->SendInitJSActorInfos(contentInfos, windowInfos);
+    (void)cp->SendInitJSActorInfos(contentInfos, windowInfos);
   }
 
   // Register event listeners for any existing chrome targets.
   for (EventTarget* target : mChromeEventTargets) {
     proto->RegisterListenersFor(target);
   }
+
+  LogActorRegistration("JSWindowActor", aName, aOptions);
 
   // Add observers to the protocol.
   proto->AddObservers();
@@ -135,7 +149,7 @@ void JSActorService::UnregisterWindowActor(const nsACString& aName) {
     if (XRE_IsParentProcess()) {
       for (auto* cp : ContentParent::AllProcesses(ContentParent::eAll)) {
         if (cp->CanSend()) {
-          Unused << cp->SendUnregisterJSWindowActor(name);
+          (void)cp->SendUnregisterJSWindowActor(name);
         }
         for (const auto& bp : cp->ManagedPBrowserParent()) {
           for (const auto& wgp : bp->ManagedPWindowGlobalParent()) {
@@ -275,8 +289,10 @@ void JSActorService::RegisterProcessActor(const nsACString& aName,
   AutoTArray<JSProcessActorInfo, 1> contentInfos{proto->ToIPC()};
   nsTArray<JSWindowActorInfo> windowInfos{};
   for (auto* cp : ContentParent::AllProcesses(ContentParent::eLive)) {
-    Unused << cp->SendInitJSActorInfos(contentInfos, windowInfos);
+    (void)cp->SendInitJSActorInfos(contentInfos, windowInfos);
   }
+
+  LogActorRegistration("JSProcessActor", aName, aOptions);
 
   // Add observers to the protocol.
   proto->AddObservers();
@@ -301,12 +317,18 @@ void JSActorService::UnregisterProcessActor(const nsACString& aName) {
     if (XRE_IsParentProcess()) {
       for (auto* cp : ContentParent::AllProcesses(ContentParent::eAll)) {
         if (cp->CanSend()) {
-          Unused << cp->SendUnregisterJSProcessActor(name);
+          (void)cp->SendUnregisterJSProcessActor(name);
         }
         managers.AppendElement(cp);
       }
-      managers.AppendElement(InProcessChild::Singleton());
-      managers.AppendElement(InProcessParent::Singleton());
+      InProcessChild* ipChild = InProcessChild::Singleton();
+      if (ipChild) {
+        managers.AppendElement(ipChild);
+      }
+      InProcessParent* ipParent = InProcessParent::Singleton();
+      if (ipParent) {
+        managers.AppendElement(ipParent);
+      }
     } else {
       managers.AppendElement(ContentChild::GetSingleton());
     }
@@ -335,6 +357,45 @@ JSActorService::GetJSProcessActorProtocol(const nsACString& aName) {
 already_AddRefed<JSWindowActorProtocol>
 JSActorService::GetJSWindowActorProtocol(const nsACString& aName) {
   return mWindowActorDescriptors.Get(aName);
+}
+
+void JSActorProtocol::LogMatch(const RemoteType& aRemoteType) {
+  if (!MOZ_LOG_TEST(gJSActorServiceLog, LogLevel::Info)) {
+    return;
+  }
+
+  nsCString remoteTypeKind(aRemoteType.StringifyKind());
+  if (mLoggedRemoteTypes.Contains(remoteTypeKind)) {
+    return;
+  }
+
+  mLoggedRemoteTypes.AppendElement(remoteTypeKind);
+  MOZ_LOG_FMT(gJSActorServiceLog, LogLevel::Info,
+              "JSActor '{}' matched remoteType '{}'", mName.get(),
+              remoteTypeKind.get());
+}
+
+bool JSActorProtocol::RemoteTypeMatches(const RemoteType& aRemoteType) {
+  if (StaticPrefs::dom_jsipc_check_safeForUntrustedWebProcess() &&
+      !mSafeForUntrustedWebProcess &&
+      (aRemoteType.IsWeb() || aRemoteType.IsFile())) {
+    return false;
+  }
+
+  if (mRemoteTypes.IsEmpty()) {
+    return true;
+  }
+
+  // TODO: Consider using a more advanced matcher which is aware of the
+  // structure of RemoteType. See bug 2006165.
+  nsCString remoteTypeKind(aRemoteType.StringifyKind());
+
+  for (auto& remoteType : mRemoteTypes) {
+    if (StringBeginsWith(remoteTypeKind, remoteType)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace mozilla::dom

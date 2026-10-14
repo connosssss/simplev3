@@ -12,7 +12,8 @@ import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 import {
   UrlbarProvider,
   UrlbarUtils,
-} from "resource:///modules/UrlbarUtils.sys.mjs";
+} from "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs";
+import { UrlbarShared } from "chrome://browser/content/urlbar/UrlbarShared.mjs";
 
 const lazy = {};
 
@@ -21,11 +22,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
   DefaultBrowserCheck:
     "moz-src:///browser/components/DefaultBrowserCheck.sys.mjs",
   LaterRun: "resource:///modules/LaterRun.sys.mjs",
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
   SearchStaticData:
     "moz-src:///toolkit/components/search/SearchStaticData.sys.mjs",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
-  UrlbarProviderTopSites: "resource:///modules/UrlbarProviderTopSites.sys.mjs",
-  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
+  UrlbarPrefs: "moz-src:///browser/components/urlbar/UrlbarPrefs.sys.mjs",
+  UrlbarProviderTopSites:
+    "moz-src:///browser/components/urlbar/UrlbarProviderTopSites.sys.mjs",
+  UrlbarResult: "chrome://browser/content/urlbar/UrlbarResult.mjs",
   setTimeout: "resource://gre/modules/Timer.sys.mjs",
 });
 
@@ -35,13 +38,6 @@ XPCOMUtils.defineLazyPreferenceGetter(
   "browser.newtabpage.activity-stream.asrouter.userprefs.cfr.features",
   true
 );
-
-// The possible tips to show.
-const TIPS = {
-  NONE: "",
-  ONBOARD: "searchTip_onboard",
-  REDIRECT: "searchTip_redirect",
-};
 
 ChromeUtils.defineLazyGetter(lazy, "SUPPORTED_ENGINES", () => {
   // Converts a list of Google domains to a pipe separated string of escaped TLDs.
@@ -84,15 +80,34 @@ const LAST_UPDATE_THRESHOLD_HOURS = 24;
 /**
  * A provider that sometimes returns a tip result when the user visits the
  * newtab page or their default search engine's homepage.
+ *
+ * This class supports only one instance.
  */
-class ProviderSearchTips extends UrlbarProvider {
+export class UrlbarProviderSearchTips extends UrlbarProvider {
+  /** @type {?UrlbarProviderSearchTips} */
+  static #instance = null;
+
+  /**
+   * Whether and what kind of tip we've shown in the current engagement.
+   *
+   * @type {Values<typeof UrlbarShared.SEARCH_TIP_TYPE>}
+   */
+  showedTipTypeInCurrentEngagement = UrlbarShared.SEARCH_TIP_TYPE.NONE;
+
+  /** @type {Values<typeof UrlbarShared.SEARCH_TIP_TYPE>} */
+  currentTip = UrlbarShared.SEARCH_TIP_TYPE.NONE;
+
   constructor() {
     super();
+    if (UrlbarProviderSearchTips.#instance) {
+      throw new Error("Can only have one instance of UrlbarProviderSearchTips");
+    }
+    UrlbarProviderSearchTips.#instance = this;
 
     // Whether we should disable tips for the current browser session, for
     // example because a tip was already shown.
     this.disableTipsForCurrentSession = true;
-    for (let tip of Object.values(TIPS)) {
+    for (let tip of Object.values(UrlbarShared.SEARCH_TIP_TYPE)) {
       if (
         tip &&
         lazy.UrlbarPrefs.get(`tipShownCount.${tip}`) < MAX_SHOWN_COUNT
@@ -102,42 +117,20 @@ class ProviderSearchTips extends UrlbarProvider {
       }
     }
 
-    // Whether and what kind of tip we've shown in the current engagement.
-    this.showedTipTypeInCurrentEngagement = TIPS.NONE;
-
     // Used to track browser windows we've seen.
     this._seenWindows = new WeakSet();
   }
 
-  /**
-   * Enum of the types of search tips.
-   *
-   * @returns {{ NONE: string; ONBOARD: string; REDIRECT: string; }}
-   */
-  get TIP_TYPE() {
-    return TIPS;
-  }
-
-  get PRIORITY() {
+  static get PRIORITY() {
     // Search tips are prioritized over the Places and top sites providers.
     return lazy.UrlbarProviderTopSites.PRIORITY + 1;
   }
 
   /**
-   * Unique name for the provider, used by the context to filter on providers.
-   * Not using a unique name will cause the newest registration to win.
-   *
-   * @returns {string}
-   */
-  get name() {
-    return "UrlbarProviderSearchTips";
-  }
-
-  /**
-   * @returns {Values<typeof UrlbarUtils.PROVIDER_TYPE>}
+   * @returns {Values<typeof UrlbarShared.PROVIDER_TYPE>}
    */
   get type() {
-    return UrlbarUtils.PROVIDER_TYPE.PROFILE;
+    return UrlbarShared.PROVIDER_TYPE.PROFILE;
   }
 
   /**
@@ -155,62 +148,58 @@ class ProviderSearchTips extends UrlbarProvider {
    * @returns {number} The provider's priority for the given query.
    */
   getPriority() {
-    return this.PRIORITY;
+    return UrlbarProviderSearchTips.PRIORITY;
   }
 
   /**
-   * Starts querying. Extended classes should return a Promise resolved when the
-   * provider is done searching AND returning results.
+   * Starts querying.
    *
-   * @param {UrlbarQueryContext} queryContext The query context object
-   * @param {Function} addCallback Callback invoked by the provider to add a new
-   *        result. A UrlbarResult should be passed to it.
-   * @returns {Promise}
+   * @param {UrlbarQueryContext} queryContext
+   * @param {(provider: UrlbarProvider, result: UrlbarResult) => void} addCallback
+   *   Callback invoked by the provider to add a new result.
+   * @param {UrlbarParentController} controller The controller instance.
    */
-  async startQuery(queryContext, addCallback) {
+  async startQuery(queryContext, addCallback, controller) {
     let instance = this.queryInstance;
 
     let tip = this.currentTip;
     this.showedTipTypeInCurrentEngagement = this.currentTip;
-    this.currentTip = TIPS.NONE;
+    this.currentTip = UrlbarShared.SEARCH_TIP_TYPE.NONE;
 
-    let defaultEngine = await Services.search.getDefault();
-    let icon = await defaultEngine.getIconURL();
+    let defaultEngine = await lazy.SearchService.getDefault();
+    let icon = await UrlbarUtils.getEngineIconUrl(defaultEngine, controller);
     if (instance != this.queryInstance) {
       return;
     }
 
-    let result = new lazy.UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.TIP,
-      UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-      {
-        type: tip,
-        buttons: [{ l10n: { id: "urlbar-search-tips-confirm" } }],
-        icon,
-      }
-    );
-
+    let result;
     switch (tip) {
-      case TIPS.ONBOARD:
-        result.heuristic = true;
-        result.payload.titleL10n = {
-          id: "urlbar-search-tips-onboard",
-          args: {
-            engineName: defaultEngine.name,
+      case UrlbarShared.SEARCH_TIP_TYPE.ONBOARD:
+        result = this.#makeResult({
+          tip,
+          icon,
+          titleL10n: {
+            id: "urlbar-search-tips-onboard",
+            args: {
+              engineName: defaultEngine.name,
+            },
           },
-        };
+          heuristic: true,
+        });
         break;
-      case TIPS.REDIRECT:
-        result.heuristic = false;
-        result.payload.titleL10n = {
-          id: "urlbar-search-tips-redirect-2",
-          args: {
-            engineName: defaultEngine.name,
+      case UrlbarShared.SEARCH_TIP_TYPE.REDIRECT:
+        result = this.#makeResult({
+          tip,
+          icon,
+          titleL10n: {
+            id: "urlbar-search-tips-redirect-2",
+            args: {
+              engineName: defaultEngine.name,
+            },
           },
-        };
+        });
         break;
     }
-
     addCallback(this, result);
   }
 
@@ -238,16 +227,44 @@ class ProviderSearchTips extends UrlbarProvider {
     );
   }
 
+  /**
+   * @param {UrlbarQueryContext} queryContext
+   * @param {UrlbarParentController} controller
+   * @param {object} details
+   */
   onEngagement(queryContext, controller, details) {
     this.#pickResult(details.result, controller.browserWindow);
   }
 
   onSearchSessionEnd() {
-    this.showedTipTypeInCurrentEngagement = TIPS.NONE;
+    this.showedTipTypeInCurrentEngagement = UrlbarShared.SEARCH_TIP_TYPE.NONE;
   }
 
   /**
    * Called from `onLocationChange` in browser.js.
+   *
+   * @param {window} window
+   *  The browser window where the location change happened.
+   * @param {nsIURI} uri
+   *  The URI being navigated to.
+   * @param {nsIWebProgress} webProgress
+   *   The progress object, which can have event listeners added to it.
+   * @param {number} flags
+   *   Load flags. See nsIWebProgressListener.idl for possible values.
+   */
+  static async onLocationChange(window, uri, webProgress, flags) {
+    if (UrlbarProviderSearchTips.#instance) {
+      UrlbarProviderSearchTips.#instance.onLocationChange(
+        window,
+        uri,
+        webProgress,
+        flags
+      );
+    }
+  }
+
+  /**
+   * Called by the static function with the same name.
    *
    * @param {window} window
    *  The browser window where the location change happened.
@@ -297,7 +314,9 @@ class ProviderSearchTips extends UrlbarProvider {
     // blurred. Since we open the view to show the redirect tip without focusing
     // the input, the view won't close in that case. We need to close it
     // manually.
-    if (this.showedTipTypeInCurrentEngagement != TIPS.NONE) {
+    if (
+      this.showedTipTypeInCurrentEngagement != UrlbarShared.SEARCH_TIP_TYPE.NONE
+    ) {
       window.gURLBar.view.close();
     }
 
@@ -341,9 +360,9 @@ class ProviderSearchTips extends UrlbarProvider {
     let isSearchHomepage = !isNewtab && (await isDefaultEngineHomepage(urlStr));
 
     if (isNewtab) {
-      tip = TIPS.ONBOARD;
+      tip = UrlbarShared.SEARCH_TIP_TYPE.ONBOARD;
     } else if (isSearchHomepage) {
-      tip = TIPS.REDIRECT;
+      tip = UrlbarShared.SEARCH_TIP_TYPE.REDIRECT;
     } else {
       // No tip.
       return;
@@ -397,8 +416,24 @@ class ProviderSearchTips extends UrlbarProvider {
 
       this.currentTip = tip;
 
-      window.gURLBar.search("", { focus: tip == TIPS.ONBOARD });
+      window.gURLBar.search("", {
+        focus: tip == UrlbarShared.SEARCH_TIP_TYPE.ONBOARD,
+      });
     }, SHOW_TIP_DELAY_MS);
+  }
+
+  #makeResult({ tip, icon, titleL10n, heuristic = false }) {
+    return new lazy.UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.TIP,
+      source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+      heuristic,
+      payload: {
+        type: tip,
+        buttons: [{ l10n: { id: "urlbar-search-tips-confirm" } }],
+        icon,
+        titleL10n,
+      },
+    });
   }
 }
 
@@ -473,7 +508,7 @@ async function isBrowserShowingNotification(window) {
  * @returns {Promise<boolean>}
  */
 async function isDefaultEngineHomepage(urlStr) {
-  let defaultEngine = await Services.search.getDefault();
+  let defaultEngine = await lazy.SearchService.getDefault();
   if (!defaultEngine) {
     return false;
   }
@@ -497,5 +532,3 @@ async function isDefaultEngineHomepage(urlStr) {
 
   return homepageMatches.domainPath.test(urlStr);
 }
-
-export var UrlbarProviderSearchTips = new ProviderSearchTips();

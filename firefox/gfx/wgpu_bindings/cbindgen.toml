@@ -30,6 +30,8 @@ using WGPUOption_BindGroupLayoutId = uint64_t;
 using WGPUOption_SamplerId = uint64_t;
 using WGPUOption_SurfaceId = uint64_t;
 using WGPUOption_TextureViewId = uint64_t;
+using WGPUOption_ExternalTextureSourceId = uint64_t;
+using WGPUOption_ExternalTextureId = uint64_t;
 using WGPUOption_QuerySetId = uint64_t;
 using WGPUOption_DeviceId = uint64_t;
 
@@ -39,9 +41,14 @@ using WGPUBindGroupLayoutId = uint64_t;
 using WGPUBufferId = uint64_t;
 using WGPUCommandBufferId = uint64_t;
 using WGPUCommandEncoderId = uint64_t;
+using WGPURenderPassEncoderId = uint64_t;
+using WGPUComputePassEncoderId = uint64_t;
+using WGPURenderBundleEncoderId = uint64_t;
 using WGPUComputePipelineId = uint64_t;
 using WGPUDeviceId = uint64_t;
 using WGPUFeaturesWebGPU = uint64_t;
+using WGPUBufferUsagesWebGPU = uint32_t;
+using WGPUShaderStagesWebGPU = uint32_t;
 using WGPUPipelineLayoutId = uint64_t;
 using WGPUQuerySetId = uint64_t;
 using WGPUQueueId = uint64_t;
@@ -53,6 +60,8 @@ using WGPUStagingBufferId = uint64_t;
 using WGPUSurfaceId = uint64_t;
 using WGPUTextureId = uint64_t;
 using WGPUTextureViewId = uint64_t;
+using WGPUExternalTextureId = uint64_t;
+using WGPUExternalTextureSourceId = uint64_t;
 """
 include_version = true
 braces = "SameLine"
@@ -73,14 +82,14 @@ exclude = [
 	"Option_SamplerId",
 	"Option_SurfaceId",
 	"Option_TextureViewId",
+	"Option_ExternalTextureSourceId",
+	"Option_ExternalTextureId",
 	"Option_BufferSize",
 	"Option_NonZeroU32",
 	"Option_NonZeroU8",
-	"ANativeWindow_setBuffersGeometry",
 	"Option_QuerySetId",
 	"Option_DeviceId",
 ]
-include = ["BufferUsages"]
 
 [export.rename]
 "nsString" = "nsString"
@@ -88,20 +97,24 @@ include = ["BufferUsages"]
 "nsAString" = "nsAString"
 "nsACString" = "nsACString"
 "nsStringRepr" = "nsString"
-"BufferDescriptor______nsACString" = "WGPUBufferDescriptor"
-"CommandBufferDescriptor______nsACString" = "WGPUCommandBufferDescriptor"
-"CommandEncoderDescriptor______nsACString" = "WGPUCommandEncoderDescriptor"
-"RenderBundleDescriptor______nsACString" = "WGPURenderBundleDescriptor"
-"TextureDescriptor______nsACString__FfiSlice_TextureFormat" = "WGPUTextureDescriptor"
-"SamplerDescriptor______nsACString" = "WGPUSamplerDescriptor"
+"ExternalTextureDescriptor______nsACString" = "WGPUExternalTextureDescriptor"
 "AdapterInformation_nsString" = "WGPUAdapterInformation"
-"QuerySetDescriptor______nsACString" = "WGPUQuerySetDescriptor"
 
 [parse]
 parse_deps = true
-include = ["wgpu-core", "wgpu-types", "wgpu-hal"]
+include = [
+	"naga-types",
+	"wgpu-core-remote",
+	"wgpu-core-remote-types",
+	"wgpu-types",
+]
 
-extra_bindings = ["wgpu-core", "wgpu-types", "wgpu-hal"]
+extra_bindings = [
+	"naga-types",
+	"wgpu-core-remote",
+	"wgpu-core-remote-types",
+	"wgpu-types",
+]
 
 [fn]
 prefix = "WGPU_INLINE"
@@ -115,7 +128,6 @@ derive_eq = true
 [enum]
 prefix_with_name = true
 derive_helper_methods = true
-add_sentinel = true
 
 [macro_expansion]
 bitflags = true
@@ -124,4 +136,3 @@ bitflags = true
 "target_os = windows" = "XP_WIN"
 "target_os = macos" = "XP_MACOSX"
 "target_os = android" = "ANDROID"
-"feature = id32" = "WGPU_FEATURE_ID32"

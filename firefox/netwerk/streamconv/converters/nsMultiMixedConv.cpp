@@ -1,29 +1,26 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsMultiMixedConv.h"
-#include "nsIHttpChannel.h"
-#include "nsIThreadRetargetableStreamListener.h"
-#include "nsNetCID.h"
-#include "nsMimeTypes.h"
-#include "nsIStringStream.h"
-#include "nsCRT.h"
-#include "nsIHttpChannelInternal.h"
-#include "nsURLHelper.h"
-#include "nsIStreamConverterService.h"
-#include <algorithm>
-#include "nsContentSecurityManager.h"
-#include "nsHttp.h"
-#include "nsNetUtil.h"
-#include "nsIURI.h"
-#include "nsHttpHeaderArray.h"
+
 #include "mozilla/AutoRestore.h"
 #include "mozilla/Components.h"
 #include "mozilla/Tokenizer.h"
+#include "nsCRT.h"
 #include "nsComponentManagerUtils.h"
-#include "mozilla/StaticPrefs_network.h"
+#include "nsContentSecurityManager.h"
+#include "nsHttp.h"
+#include "nsHttpHeaderArray.h"
+#include "nsIHttpChannel.h"
+#include "nsIStreamConverterService.h"
+#include "nsIStringStream.h"
+#include "nsIThreadRetargetableStreamListener.h"
+#include "nsIURI.h"
+#include "nsMimeTypes.h"
+#include "nsNetCID.h"
+#include "nsNetUtil.h"
+#include "nsURLHelper.h"
 
 using namespace mozilla;
 
@@ -47,13 +44,15 @@ void nsPartChannel::InitializeByteRange(int64_t aStart, int64_t aEnd) {
 }
 
 nsresult nsPartChannel::SendOnStartRequest(nsISupports* aContext) {
-  return mListener->OnStartRequest(this);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  return listener->OnStartRequest(this);
 }
 
 nsresult nsPartChannel::SendOnDataAvailable(nsISupports* aContext,
                                             nsIInputStream* aStream,
                                             uint64_t aOffset, uint32_t aLen) {
-  return mListener->OnDataAvailable(this, aStream, aOffset, aLen);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  return listener->OnDataAvailable(this, aStream, aOffset, aLen);
 }
 
 nsresult nsPartChannel::SendOnStopRequest(nsISupports* aContext,
@@ -265,6 +264,18 @@ nsPartChannel::SetLoadInfo(nsILoadInfo* aLoadInfo) {
 }
 
 NS_IMETHODIMP
+nsPartChannel::GetParentProcessChannelHandle(
+    mozilla::dom::ParentProcessChannelHandle** aValue) {
+  return mMultipartChannel->GetParentProcessChannelHandle(aValue);
+}
+
+NS_IMETHODIMP
+nsPartChannel::SetParentProcessChannelHandle(
+    mozilla::dom::ParentProcessChannelHandle* aValue) {
+  return mMultipartChannel->SetParentProcessChannelHandle(aValue);
+}
+
+NS_IMETHODIMP
 nsPartChannel::GetNotificationCallbacks(nsIInterfaceRequestor** aCallbacks) {
   return mMultipartChannel->GetNotificationCallbacks(aCallbacks);
 }
@@ -472,13 +483,13 @@ nsMultiMixedConv::OnStartRequest(nsIRequest* request) {
     nsCString csp;
     rv = httpChannel->GetResponseHeader("content-security-policy"_ns, csp);
     if (NS_SUCCEEDED(rv)) {
-      mRootContentSecurityPolicy = csp;
+      mRootContentSecurityPolicy = std::move(csp);
     }
     nsCString contentDisposition;
     rv = httpChannel->GetResponseHeader("content-disposition"_ns,
                                         contentDisposition);
     if (NS_SUCCEEDED(rv)) {
-      mRootContentDisposition = contentDisposition;
+      mRootContentDisposition = std::move(contentDisposition);
     }
   } else {
     // try asking the channel directly
@@ -502,7 +513,7 @@ nsMultiMixedConv::OnStartRequest(nsIRequest* request) {
     return NS_ERROR_CORRUPTED_CONTENT;
   }
   p.SkipWhites();
-  Unused << p.ReadUntil(Token::Char(';'), mBoundary);
+  (void)p.ReadUntil(Token::Char(';'), mBoundary);
   mBoundary.Trim(
       " \"");  // ignoring potential quoted string formatting violations
   if (mBoundary.IsEmpty()) {
@@ -515,8 +526,6 @@ nsMultiMixedConv::OnStartRequest(nsIRequest* request) {
       "content-length", mTokenizer.CASE_INSENSITIVE, false);
   mHeaderTokens[HEADER_CONTENT_DISPOSITION] = mTokenizer.AddCustomToken(
       "content-disposition", mTokenizer.CASE_INSENSITIVE, false);
-  mHeaderTokens[HEADER_SET_COOKIE] = mTokenizer.AddCustomToken(
-      "set-cookie", mTokenizer.CASE_INSENSITIVE, false);
   mHeaderTokens[HEADER_CONTENT_RANGE] = mTokenizer.AddCustomToken(
       "content-range", mTokenizer.CASE_INSENSITIVE, false);
   mHeaderTokens[HEADER_RANGE] =
@@ -598,8 +607,9 @@ nsMultiMixedConv::OnStopRequest(nsIRequest* request, nsresult aStatus) {
     // the middle of sending data. if we were, mPartChannel,
     // above, would have been non-null.
 
-    (void)mFinalListener->OnStartRequest(request);
-    (void)mFinalListener->OnStopRequest(request, aStatus);
+    nsCOMPtr<nsIStreamListener> finalListener = mFinalListener;
+    (void)finalListener->OnStartRequest(request);
+    (void)finalListener->OnStopRequest(request, aStatus);
   }
 
   nsCOMPtr<nsIMultiPartChannelListener> multiListener =
@@ -997,20 +1007,6 @@ nsresult nsMultiMixedConv::ProcessHeader() {
       mContentDisposition = mResponseHeaderValue;
       mContentDisposition.CompressWhitespace();
       break;
-    case HEADER_SET_COOKIE: {
-      nsCOMPtr<nsIHttpChannelInternal> httpInternal =
-          do_QueryInterface(mChannel);
-      mResponseHeaderValue.CompressWhitespace();
-      if (!StaticPrefs::network_cookie_prevent_set_cookie_from_multipart() &&
-          httpInternal) {
-        AutoTArray<nsCString, 1> cookieHeaderArray;
-        cookieHeaderArray.AppendElement(mResponseHeaderValue);
-        DebugOnly<nsresult> rv =
-            httpInternal->SetCookieHeaders(cookieHeaderArray);
-        MOZ_ASSERT(NS_SUCCEEDED(rv));
-      }
-      break;
-    }
     case HEADER_RANGE:
     case HEADER_CONTENT_RANGE: {
       if (!p.CheckWord("bytes") || !p.CheckWhite()) {
@@ -1021,6 +1017,12 @@ nsresult nsMultiMixedConv::ProcessHeader() {
         mByteRangeStart = mByteRangeEnd = 0;
       } else if (!p.ReadInteger(&mByteRangeStart) || !p.CheckChar('-') ||
                  !p.ReadInteger(&mByteRangeEnd)) {
+        return NS_ERROR_CORRUPTED_CONTENT;
+      }
+      // RFC 7233 Section 4.2: "A Content-Range field value is invalid if
+      // it contains a byte-range-resp that has a last-byte-pos value less
+      // than its first-byte-pos value."
+      if (mByteRangeStart > mByteRangeEnd) {
         return NS_ERROR_CORRUPTED_CONTENT;
       }
       mIsByteRangeRequest = true;

@@ -36,34 +36,14 @@ tasks:
         symbol: I(ub18-pkg)
         definition: debian-packages
         parent: ubuntu1804-raw
-    ubuntu1804-i386-raw:
-        symbol: I(ub18-32-raw)
-        definition: debian-raw
-        args:
-            BASE_IMAGE: i386/ubuntu:bionic
-    ubuntu1804-i386-packages:
-        symbol: I(ub18-32-pkg)
-        definition: debian-packages
-        parent: ubuntu1804-i386-raw
     ubuntu1804-base:
         symbol: I(ub18-base)
         parent: ubuntu1804-raw
         packages:
+            - ub18-coreutils
             - ub18-mercurial
             - ub18-python-zstandard
             - ub18-python-psutil
-    ubuntu1804-test-base:
-        symbol: I(ub18-test-base)
-        parent: ubuntu1804-base
-        packages:
-            - ub18-libc6
-            - ub18-pygobject
-            - ub18-pyatspi
-            - ub18-python-dbus
-            - ub18-32-libc6
-    ubuntu1804-test:
-        symbol: I(ub18-test)
-        parent: ubuntu1804-test-base
     ubuntu1804-build-python:
         symbol: I(ub18-build-python)
         parent: ubuntu1804-base
@@ -73,10 +53,6 @@ tasks:
         parent: ubuntu2204-arm64-base
         definition: build-python
         arch: arm64
-    ubuntu1804-build-python-wheels:
-        symbol: I(ub18-build-python-wheels)
-        parent: ubuntu1804-base
-        definition: build-python-wheels
     ubuntu2204-build-python-wheels:
         symbol: I(ub22-build-python-wheels)
         parent: ubuntu2204-base
@@ -85,11 +61,6 @@ tasks:
         symbol: I(ub24-build-python-wheels)
         parent: ubuntu2404-base
         definition: build-python-wheels
-    ubuntu2404-arm64-build-python-wheels:
-        symbol: I(ub24-arm64-python-wheels)
-        parent: ubuntu2404-arm64-base
-        definition: build-python-wheels
-        arch: arm64
     # Neither the ubuntu2004-*raw nor the ubuntu2004-*packages images can have
     # packages dependencies.
     ubuntu2004-raw:
@@ -117,12 +88,14 @@ tasks:
         symbol: I(ub24-raw)
         definition: debian-raw
         args:
-            BASE_IMAGE: ubuntu:noble
+            BASE_IMAGE: ubuntu:noble-20250714
+            SNAPSHOT: 20250716T072533Z
     ubuntu2404-arm64-raw:
         symbol: I(ub24-a64-raw)
         definition: debian-raw
         args:
-            BASE_IMAGE: ubuntu:noble
+            BASE_IMAGE: ubuntu:noble-20250714
+            SNAPSHOT: 20250716T072533Z
         arch: arm64
     ubuntu2004-packages:
         symbol: I(ub20-pkg)
@@ -218,6 +191,20 @@ tasks:
         symbol: I(deb8-32-pkg)
         definition: debian-packages
         parent: debian8-i386-raw
+    # Neither the debian10-*raw nor the debian10-*packages images can have
+    # packages dependencies.
+    debian10-arm64-raw:
+        symbol: I(deb10-arm64-raw)
+        definition: debian-raw
+        args:
+            BASE_IMAGE: debian:buster-20230612
+            DIST: buster
+        arch: arm64
+    debian10-arm64-packages:
+        symbol: I(deb10-arm64-pkg)
+        definition: debian-packages
+        parent: debian10-arm64-raw
+        arch: arm64
     custom-v8:
         symbol: I(custom-v8)
         parent: debian12-base
@@ -236,7 +223,7 @@ tasks:
             - deb12-valgrind
     lint:
         symbol: I(lnt)
-        parent: debian12-base
+        parent: debian13-base
     # Neither the debian12-raw nor the debian12-packages images can have
     # packages dependencies.
     debian12-raw:
@@ -283,27 +270,145 @@ tasks:
         definition: rpm-repackage
         packages:
             - deb12-mercurial
+    # Neither the debian13-raw nor the debian13-packages images can have
+    # packages dependencies.
+    debian13-raw:
+        symbol: I(deb13-raw)
+        definition: debian-raw
+        args:
+            BASE_IMAGE: debian:trixie-20251117
+            DIST: trixie
+            SNAPSHOT: '20251124T083047Z'
+    debian13-packages:
+        symbol: I(deb13-pkg)
+        definition: debian-packages
+        parent: debian13-raw
+    debian13-base:
+        symbol: I(deb13-base)
+        definition: debian-base
+        parent: debian13-raw
+    debian13-amd64-build:
+        symbol: I(deb13)
+        parent: debian13-base
+        definition: debian-build
+    debian13-repackage:
+        symbol: I(deb13-rpk)
+        parent: debian13-base
+        definition: debian-repackage
+    debian13-flatpak:
+        symbol: I(deb13-flatpak)
+        parent: debian13-base
+        definition: debian-flatpak
+    deb13-toolchain-build:
+        symbol: I(deb13-toolchain)
+        parent: debian13-base
+        definition: toolchain-build
+        args:
+            CLANG_VER: '19'
+    debian13-rpm-repackage:
+        symbol: I(deb13-rpm-rpk)
+        parent: debian13-base
+        definition: rpm-repackage
+    debian12-arm64-raw:
+        symbol: I(deb12-a64-raw)
+        definition: debian-raw
+        args:
+            BASE_IMAGE: debian:bookworm-20230612
+            DIST: bookworm
+            SNAPSHOT: '20230611T210420Z'
+        arch: arm64
+    debian12-arm64-base:
+        symbol: I(deb12-a64-base)
+        definition: debian-base
+        parent: debian12-arm64-raw
+        packages:
+            - deb12-mercurial
+            - deb12-python-zstandard
+        arch: arm64
+    debian12-arm64-flatpak:
+        symbol: I(deb12-a64-flatpak)
+        parent: debian12-arm64-base
+        definition: debian-flatpak
+        arch: arm64
+    debian13-arm64-raw:
+        symbol: I(deb13-a64-raw)
+        definition: debian-raw
+        args:
+            BASE_IMAGE: debian:trixie-20251117
+            DIST: trixie
+            SNAPSHOT: '20251124T083047Z'
+        arch: arm64
+    debian13-arm64-base:
+        symbol: I(deb13-a64-base)
+        definition: debian-base
+        parent: debian13-arm64-raw
+        arch: arm64
+    fedora41-raw:
+        symbol: I(f41-raw)
+        definition: fedora-raw
+        args:
+            BASE_IMAGE: fedora:41
+    fedora41-base:
+        symbol: I(f41-base)
+        definition: fedora41-base
+        parent: fedora41-raw
+    fedora41-arm64-raw:
+        symbol: I(f41-a64-raw)
+        definition: fedora-raw
+        args:
+            BASE_IMAGE: fedora:41
+        arch: arm64
+    fedora41-arm64-base:
+        symbol: I(f41-a64-base)
+        definition: fedora41-base
+        parent: fedora41-arm64-raw
+        arch: arm64
+    opensuse-leap-raw:
+        symbol: I(leap-raw)
+        definition: opensuse-leap-raw
+        args:
+            BASE_IMAGE: opensuse/leap:15.6
+    opensuse-leap-base:
+        symbol: I(leap-base)
+        definition: opensuse-leap-base
+        parent: opensuse-leap-raw
+    opensuse-leap-arm64-raw:
+        symbol: I(leap-a64-raw)
+        definition: opensuse-leap-raw
+        args:
+            BASE_IMAGE: opensuse/leap:15.6
+        arch: arm64
+    opensuse-leap-arm64-base:
+        symbol: I(leap-a64-base)
+        definition: opensuse-leap-base
+        parent: opensuse-leap-arm64-raw
+        arch: arm64
     android-build:
         symbol: I(agb)
         parent: debian12-base
-    fetch:
-        symbol: I(fetch)
-        parent: debian12-raw
         packages:
             - deb12-python-zstandard
+    fetch:
+        symbol: I(fetch)
+        parent: debian13-raw
     fetch-more:
         symbol: I(fetch-more)
         parent: fetch
     static-analysis-build:
         symbol: I(static-analysis-build)
-        parent: debian12-base
+        parent: debian13-base
     gdb-test:
         symbol: I(gdb)
-        parent: debian12-amd64-build
+        parent: debian13-amd64-build
     index-task:
         symbol: I(idx)
     funsize-update-generator:
         symbol: I(pg)
+        parent: debian12-base
+    partials-zuc:
+        symbol: I(pz)
+        parent: debian13-base
+        definition: partials-zucchini
     update-verify:
         symbol: I(uv)
         parent: debian12-base
@@ -320,12 +425,12 @@ tasks:
     periodic-updates:
         symbol: I(file)
         parent: debian12-base
+    bhr-aggregate:
+        symbol: I(bhr)
+        parent: debian13-base
     webrender:
         symbol: I(webrender)
         parent: debian12-base
-    condprof:
-        symbol: I(condprof)
-        parent: ubuntu1804-test
     sentry:
         symbol: I(sentry)
         parent: debian12-base

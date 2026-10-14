@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,9 +6,6 @@
 #define mozilla_layout_RemoteLayerTreeOwner_h
 
 #include "base/process.h"
-
-#include "mozilla/Attributes.h"
-
 #include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/layers/CompositorOptions.h"
 #include "mozilla/layers/LayersTypes.h"
@@ -48,7 +43,7 @@ class RemoteLayerTreeOwner final {
   bool Initialize(dom::BrowserParent* aBrowserParent);
   void Destroy();
 
-  void EnsureLayersConnected(CompositorOptions* aCompositorOptions);
+  void EnsureLayersConnected(Maybe<CompositorOptions>& aCompositorOptions);
   bool AttachWindowRenderer();
   void OwnerContentChanged();
 
@@ -64,7 +59,7 @@ class RemoteLayerTreeOwner final {
  private:
   // The process id of the remote frame. This is used by the compositor to
   // do security checks on incoming layer transactions.
-  base::ProcessId mTabProcessId;
+  base::ProcessId mTabProcessId = 0;
   // The layers id of the remote frame.
   LayersId mLayersId;
   // The compositor options for this layers id. This is only meaningful if

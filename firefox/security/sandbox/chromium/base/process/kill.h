@@ -1,4 +1,4 @@
-// Copyright (c) 2013 The Chromium Authors. All rights reserved.
+// Copyright 2013 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -8,6 +8,7 @@
 #ifndef BASE_PROCESS_KILL_H_
 #define BASE_PROCESS_KILL_H_
 
+#include "base/base_export.h"
 #include "base/files/file_path.h"
 #include "base/process/process.h"
 #include "base/process/process_handle.h"
@@ -18,7 +19,7 @@ namespace base {
 
 class ProcessFilter;
 
-#if defined(OS_WIN)
+#if BUILDFLAG(IS_WIN)
 namespace win {
 
 // See definition in sandbox/win/src/sandbox_types.h
@@ -41,37 +42,49 @@ const DWORD kProcessKilledExitCode = 1;
 
 }  // namespace win
 
-#endif  // OS_WIN
+#endif  // BUILDFLAG(IS_WIN)
 
-// Return status values from GetTerminationStatus.  Don't use these as
-// exit code arguments to KillProcess*(), use platform/application
-// specific values instead.
-enum TerminationStatus {
-  // clang-format off
-  TERMINATION_STATUS_NORMAL_TERMINATION,   // zero exit status
-  TERMINATION_STATUS_ABNORMAL_TERMINATION, // non-zero exit status
-  TERMINATION_STATUS_PROCESS_WAS_KILLED,   // e.g. SIGKILL or task manager kill
-  TERMINATION_STATUS_PROCESS_CRASHED,      // e.g. Segmentation fault
-  TERMINATION_STATUS_STILL_RUNNING,        // child hasn't exited yet
-#if defined(OS_CHROMEOS)
-  // Used for the case when oom-killer kills a process on ChromeOS.
-  TERMINATION_STATUS_PROCESS_WAS_KILLED_BY_OOM,
+// Return status values from GetTerminationStatus. Don't use these as exit code
+// arguments to KillProcess*(), use platform/application specific values
+// instead.
+//
+// Used for metrics. Keep in sync with the "TerminationStatus" histogram enum.
+// Do not repurpose previously used indexes.
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base
+// GENERATED_JAVA_PREFIX_TO_STRIP: TERMINATION_STATUS_
+enum TerminationStatus : int {
+  // Zero exit status.
+  TERMINATION_STATUS_NORMAL_TERMINATION = 0,
+  // Other abnormal termination reason.
+  TERMINATION_STATUS_ABNORMAL_TERMINATION = 1,
+  // E.g. SIGKILL or task manager kill.
+  TERMINATION_STATUS_PROCESS_WAS_KILLED = 2,
+  // E.g. Segmentation fault.
+  TERMINATION_STATUS_PROCESS_CRASHED = 3,
+  // Child hasn't exited yet.
+  TERMINATION_STATUS_STILL_RUNNING = 4,
+#if BUILDFLAG(IS_CHROMEOS)
+  // OOM-killer killed the process on ChromeOS.
+  TERMINATION_STATUS_PROCESS_WAS_KILLED_BY_OOM = 5,
 #endif
-#if defined(OS_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
   // On Android processes are spawned from the system Zygote and we do not get
-  // the termination status.  We can't know if the termination was a crash or an
+  // the termination status. We can't know if the termination was a crash or an
   // oom kill for sure, but we can use status of the strong process bindings as
   // a hint.
-  TERMINATION_STATUS_OOM_PROTECTED,        // child was protected from oom kill
+  TERMINATION_STATUS_OOM_PROTECTED = 6,
 #endif
-  TERMINATION_STATUS_LAUNCH_FAILED,        // child process never launched
-  TERMINATION_STATUS_OOM,                  // Process died due to oom
-#if defined(OS_WIN)
+  // Child process never launched.
+  TERMINATION_STATUS_LAUNCH_FAILED = 7,
+  // Out of memory.
+  TERMINATION_STATUS_OOM = 8,
+#if BUILDFLAG(IS_WIN)
   // On Windows, the OS terminated process due to code integrity failure.
-  TERMINATION_STATUS_INTEGRITY_FAILURE,
+  TERMINATION_STATUS_INTEGRITY_FAILURE = 9,
 #endif
-  TERMINATION_STATUS_MAX_ENUM
-  // clang-format on
+  // The process was proactively terminated by the browser to reclaim memory.
+  TERMINATION_STATUS_EVICTED_FOR_MEMORY = 10,
+  TERMINATION_STATUS_MAX_ENUM = 11,
 };
 
 // Attempts to kill all the processes on the current machine that were launched
@@ -83,12 +96,6 @@ BASE_EXPORT bool KillProcesses(const FilePath::StringType& executable_name,
                                int exit_code,
                                const ProcessFilter* filter);
 
-#if defined(OS_POSIX)
-// Attempts to kill the process group identified by |process_group_id|. Returns
-// true on success.
-BASE_EXPORT bool KillProcessGroup(ProcessHandle process_group_id);
-#endif  // defined(OS_POSIX)
-
 // Get the termination status of the process by interpreting the
 // circumstances of the child process' death. |exit_code| is set to
 // the status returned by waitpid() on POSIX, and from GetExitCodeProcess() on
@@ -99,7 +106,7 @@ BASE_EXPORT bool KillProcessGroup(ProcessHandle process_group_id);
 BASE_EXPORT TerminationStatus GetTerminationStatus(ProcessHandle handle,
                                                    int* exit_code);
 
-#if defined(OS_POSIX)
+#if BUILDFLAG(IS_POSIX)
 // Send a kill signal to the process and then wait for the process to exit
 // and get the termination status.
 //
@@ -115,27 +122,27 @@ BASE_EXPORT TerminationStatus GetTerminationStatus(ProcessHandle handle,
 // GetTerminationStatus as the child will be reaped when WaitForExitCode
 // returns, and this information will be lost.
 //
-BASE_EXPORT TerminationStatus GetKnownDeadTerminationStatus(
-    ProcessHandle handle, int* exit_code);
+BASE_EXPORT TerminationStatus
+GetKnownDeadTerminationStatus(ProcessHandle handle, int* exit_code);
 
-#if defined(OS_LINUX)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 // Spawns a thread to wait asynchronously for the child |process| to exit
 // and then reaps it.
 BASE_EXPORT void EnsureProcessGetsReaped(Process process);
-#endif  // defined(OS_LINUX)
-#endif  // defined(OS_POSIX)
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(IS_POSIX)
 
 // Registers |process| to be asynchronously monitored for termination, forcibly
 // terminated if necessary, and reaped on exit. The caller should have signalled
 // |process| to exit before calling this API. The API will allow a couple of
 // seconds grace period before forcibly terminating |process|.
-// TODO(https://crbug.com/806451): The Mac implementation currently blocks the
+// TODO(crbug.com/41367359): The Mac implementation currently blocks the
 // calling thread for up to two seconds.
 BASE_EXPORT void EnsureProcessTerminated(Process process);
 
-// These are only sparingly used, and not needed on Fuchsia. They could be
-// implemented if necessary.
-#if !defined(OS_FUCHSIA)
+// These are only sparingly used, and not needed on Fuchsia or iOS. They could
+// be implemented if necessary.
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_IOS)
 // Wait for all the processes based on the named executable to exit.  If filter
 // is non-null, then only processes selected by the filter are waited on.
 // Returns after all processes have exited or wait_milliseconds have expired.
@@ -155,7 +162,13 @@ BASE_EXPORT bool CleanupProcesses(const FilePath::StringType& executable_name,
                                   base::TimeDelta wait,
                                   int exit_code,
                                   const ProcessFilter* filter);
-#endif  // !defined(OS_FUCHSIA)
+#endif  // !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_IOS)
+
+#if BUILDFLAG(IS_MAC) || (BUILDFLAG(IS_IOS) && TARGET_OS_SIMULATOR)
+// This is common code used by kill_ios.cc when building with iOS simulator it
+// does not need to be exported.
+void WaitForChildToDie(pid_t child, int timeout_seconds);
+#endif  // BUILDFLAG(IS_MAC) || (BUILDFLAG(IS_IOS) && TARGET_OS_SIMULATOR)
 
 }  // namespace base
 

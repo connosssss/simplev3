@@ -1,5 +1,3 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 4; indent-tabs-mode: nil; -*-
- * vim: ts=4 sw=4 expandtab:
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,7 +15,6 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import org.mozilla.gecko.annotation.ReflectionTarget;
-import org.mozilla.gecko.annotation.RobocopTarget;
 import org.mozilla.gecko.annotation.WrapForJNI;
 import org.mozilla.gecko.mozglue.JNIObject;
 import org.mozilla.gecko.util.BundleEventListener;
@@ -27,7 +24,6 @@ import org.mozilla.gecko.util.ThreadUtils;
 import org.mozilla.geckoview.BuildConfig;
 import org.mozilla.geckoview.GeckoResult;
 
-@RobocopTarget
 public final class EventDispatcher extends JNIObject {
   private static final String LOGTAG = "GeckoEventDispatcher";
 
@@ -124,7 +120,7 @@ public final class EventDispatcher extends JNIObject {
   @Override // JNIObject
   protected native void disposeNative();
 
-  @WrapForJNI(stubName = "Shutdown", dispatchTo = "gecko")
+  @WrapForJNI(stubName = "Shutdown")
   protected native void shutdownNative();
 
   @WrapForJNI private static final int DETACHED = 0;
@@ -220,17 +216,30 @@ public final class EventDispatcher extends JNIObject {
     dispatch(type, message, /* callback */ null);
   }
 
-  private abstract class CallbackResult<T> extends GeckoResult<T> implements EventCallback {
+  private static class CallbackResult<T> extends GeckoResult<T> implements EventCallback {
+    private final String mType;
+
+    CallbackResult(final String type) {
+      mType = type;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void sendSuccess(final Object response) {
+      complete((T) response);
+    }
+
     @Override
     public void sendError(final Object response) {
-      completeExceptionally(new QueryException(response));
+      completeExceptionally(new QueryException(mType, response));
     }
   }
 
-  public class QueryException extends Exception {
+  public static class QueryException extends Exception {
     public final Object data;
 
-    public QueryException(final Object data) {
+    public QueryException(final String type, final Object data) {
+      super("Failed on message type: " + type);
       this.data = data;
     }
   }
@@ -330,15 +339,7 @@ public final class EventDispatcher extends JNIObject {
   }
 
   private <T> GeckoResult<T> query(final String type, final GeckoBundle message) {
-    final CallbackResult<T> result =
-        new CallbackResult<T>() {
-          @Override
-          @SuppressWarnings("unchecked") // Not a lot we can do about this :(
-          public void sendSuccess(final Object response) {
-            complete((T) response);
-          }
-        };
-
+    final CallbackResult<T> result = new CallbackResult<>(type);
     dispatch(type, message, result);
     return result;
   }

@@ -12,14 +12,13 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.fenix.benchmark.utils.TARGET_PACKAGE
+import org.mozilla.fenix.benchmark.utils.startupOnlyJourney
 
 /**
  * This test class generates a basic startup baseline profile for the target package.
  *
  * Refer to the [baseline profile documentation](https://d.android.com/topic/performance/baselineprofiles)
  * for more information.
- *
- * Make sure `autosignReleaseWithDebugKey=true` is present in local.properties.
  *
  * Generate the baseline profile using this gradle task:
  * ```
@@ -49,8 +48,9 @@ class StartupOnlyBaselineProfileGenerator {
     fun generateBaselineProfile() {
         rule.collect(
             packageName = TARGET_PACKAGE,
+            maxIterations = baselineProfileMaxIterations(),
         ) {
-            startActivityAndWait()
+            startupOnlyJourney()
         }
     }
 }

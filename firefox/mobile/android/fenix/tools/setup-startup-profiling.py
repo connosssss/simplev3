@@ -23,7 +23,7 @@ PRODUCTS = [PROD_FENIX, PROD_GVE]
 GV_CONFIG = b"""env:
   MOZ_PROFILER_STARTUP: 1
   MOZ_PROFILER_STARTUP_INTERVAL: 5
-  MOZ_PROFILER_STARTUP_FEATURES: js,stackwalk,screenshots,ipcmessages,java,cpu,memory
+  MOZ_PROFILER_STARTUP_FEATURES: js,stackwalk,screenshots,ipcmessages,java,memory
   MOZ_PROFILER_STARTUP_FILTERS: GeckoMain,Compositor,Renderer,IPDL Background
 """
 
@@ -73,8 +73,11 @@ def push(id, filename):
             f.write(GV_CONFIG)
 
         print(f"Pushing {filename} to device.")
-        run(["adb", "push", config.name, os.path.join(PATH_PREFIX, filename)])
-        run(["adb", "shell", "am", "set-debug-app", "--persistent", id])
+        run(
+            ["adb", "push", config.name, os.path.join(PATH_PREFIX, filename)],
+            check=True,
+        )
+        run(["adb", "shell", "am", "set-debug-app", "--persistent", id], check=True)
         print(
             "\nStartup profiling enabled on all future start ups, possibly even after reinstall."
         )
@@ -90,8 +93,8 @@ def push(id, filename):
 
 def remove(filename):
     print(f"Removing {filename} from device.")
-    run(["adb", "shell", "rm", PATH_PREFIX + "/" + filename])
-    run(["adb", "shell", "am", "clear-debug-app"])
+    run(["adb", "shell", "rm", PATH_PREFIX + "/" + filename], check=True)
+    run(["adb", "shell", "am", "clear-debug-app"], check=True)
 
 
 def convert_channel_to_id(product, channel):

@@ -88,19 +88,22 @@ def get_binary(path, app_name):
     return binary
 
 
-def install(src, dest):
+def install(src, dest, verify=True):
     """Install a zip, exe, tar.gz, tar.bz2, tar.xz or dmg file, and return the path of
     the installation folder.
 
     :param src: Path to the install file
     :param dest: Path to install to (to ensure we do not overwrite any existent
                  files the folder should not exist yet)
+    :param verify: Whether to verify the checksum of a dmg file when attaching it.
+                   Only affects dmg files on macOS; other formats verify
+                   integrity as part of extraction.
     """
     if not is_installer(src):
         msg = f"{src} is not a valid installer file"
         if "://" in src:
             try:
-                return _install_url(src, dest)
+                return _install_url(src, dest, verify=verify)
             except Exception:
                 exc, val, tb = sys.exc_info()
                 error = InvalidSource(f"{msg} ({val})")
@@ -121,12 +124,12 @@ def install(src, dest):
         if src.lower().endswith(".msix"):
             # MSIX packages _are_ ZIP files, so we need to look for them first.
             install_dir = _install_msix(src)
-        elif zipfile.is_zipfile(src) or tarfile.is_tarfile(src):
-            install_dir = mozfile.extract(src, dest)[0]
         elif src.lower().endswith(".dmg"):
-            install_dir = _install_dmg(src, dest)
+            install_dir = _install_dmg(src, dest, verify=verify)
         elif src.lower().endswith(".exe"):
             install_dir = _install_exe(src, dest)
+        elif zipfile.is_zipfile(src) or tarfile.is_tarfile(src):
+            install_dir = mozfile.extract(src, dest)[0]
         else:
             raise InvalidSource(f"{src} is not a valid installer file")
 
@@ -265,13 +268,16 @@ def uninstall(install_folder):
     mozfile.remove(install_folder)
 
 
-def _install_url(url, dest):
+def _install_url(url, dest, verify=True):
     """Saves a url to a temporary file, and passes that through to the
     install function.
 
     :param url: Url to the install file
     :param dest: Path to install to (to ensure we do not overwrite any existent
                  files the folder should not exist yet)
+    :param verify: Whether to verify the checksum of a dmg file when attaching it.
+                   Only affects dmg files on macOS; other formats verify
+                   integrity as part of extraction.
     """
     r = requests.get(url, stream=True)
     name = tempfile.mkstemp()[1]
@@ -279,59 +285,108 @@ def _install_url(url, dest):
         with open(name, "w+b") as fh:
             for chunk in r.iter_content(chunk_size=16 * 1024):
                 fh.write(chunk)
-        result = install(name, dest)
+        result = install(name, dest, verify=verify)
     finally:
         mozfile.remove(name)
     return result
 
 
-def _install_dmg(src, dest):
+def _install_dmg(src, dest_app, verify=True):
     """Extract a dmg file into the destination folder and return the
     application folder.
 
     src -- DMG image which has to be extracted
     dest -- the path to extract to
+    verify -- whether to verify the checksum of the image when attaching it
 
     """
     if mozinfo.isLinux:
-        return _install_dmg_cross(src, dest)
+        return _install_dmg_cross(src, dest_app)
 
-    appDir = None
+    def _detach_with_retry(volume, retries=4, delay=0.25):
+        for i in range(retries):
+            try:
+                subprocess.check_call(f'hdiutil detach "{volume}" -quiet', shell=True)
+                return
+            except subprocess.CalledProcessError as e:
+                # 16 == EBUSY
+                if e.returncode != 16 or i == retries - 1:
+                    raise
+                time.sleep(delay)
+
+        # Final fallback (CI-safe)
+        subprocess.check_call(f'hdiutil detach "{volume}" -force -quiet', shell=True)
+
+    app_dir = None
     try:
-        # According to the Apple doc, the hdiutil output is stable and is based on the tab
-        # separators
-        # Therefor, $3 should give us the mounted path
-        appDir = (
-            subprocess.check_output(
-                'hdiutil attach -nobrowse -noautoopen "%s"'
-                "|grep /Volumes/"
-                "|awk 'BEGIN{FS=\"\t\"} {print $3}'" % str(src),
-                shell=True,
+        macos_major = int(str(mozinfo.os_version).split(".")[0])
+        if macos_major >= 27:
+            # Use diskutil instead of hdiutil on macOS 27+. On macOS 27,
+            # `hdiutil attach` is deprecated and prints deprecation warnings
+            # on stderr. Use thew newer `diskutil` command instead.
+            output = subprocess.check_output(
+                [
+                    "diskutil",
+                    "image",
+                    "attach",
+                    "--plist",
+                    "--readOnly",
+                    "--nobrowse",
+                    src,
+                ],
+                stderr=subprocess.STDOUT,
             )
-            .strip()
-            .decode("ascii")
-        )
+            entities = plistlib.loads(output)["system-entities"]
+            app_dir = next(
+                (e["mount-point"] for e in entities if "mount-point" in e), None
+            )
+            if not app_dir:
+                raise InstallError(f"No mounted volume found for {src}")
+        else:
+            # `hdiutil attach` is now deprecated (macOS 27+). Limit its use
+            # to older macOS versions. According to the Apple docs, the hdiutil
+            # output is stable and is based on the tab separators. Therefore,
+            # $3 should give us the mounted path.
+            verify_flag = "" if verify else " -noverify"
+            app_dir = (
+                subprocess
+                .check_output(
+                    f'hdiutil attach -noautoopen -nobrowse -readonly{verify_flag} "{src}"'
+                    "| grep /Volumes/ | awk 'BEGIN{FS=\"\t\"} {print $3}'",
+                    shell=True,
+                    stderr=subprocess.STDOUT,
+                )
+                .strip()
+                .decode("utf-8")
+            )
 
-        for appFile in os.listdir(appDir):
-            if appFile.endswith(".app"):
-                appName = appFile
+        app_name = None
+        for entry in os.listdir(app_dir):
+            if entry.endswith(".app"):
+                app_name = entry
                 break
 
-        mounted_path = os.path.join(appDir, appName)
+        if not app_name:
+            raise InstallError(f"No .app bundle found in {src}")
 
-        dest = os.path.join(dest, appName)
+        src_app = os.path.join(app_dir, app_name)
+        dest_app = os.path.join(dest_app, app_name)
 
         # copytree() would fail if dest already exists.
-        if os.path.exists(dest):
-            raise InstallError('App bundle "%s" already exists.' % dest)
+        if os.path.exists(dest_app):
+            raise InstallError(f"App bundle already exists: {dest_app}")
 
-        shutil.copytree(mounted_path, dest, False)
+        shutil.copytree(src_app, dest_app, False)
 
     finally:
-        if appDir:
-            subprocess.check_call('hdiutil detach "%s" -quiet' % appDir, shell=True)
+        if app_dir:
+            try:
+                _detach_with_retry(app_dir)
+            except Exception as e:
+                # Log, but do not override the original exception
+                print(f"Warning: failed to detach {app_dir}: {e}")
 
-    return dest
+    return dest_app
 
 
 def _install_dmg_cross(src, dest):
@@ -426,7 +481,8 @@ def _get_msix_install_location(pkg):
                             # line. (Not in this comment, due to linting.)
                             location = None
                             for line in (
-                                subprocess.check_output(cmd)
+                                subprocess
+                                .check_output(cmd)
                                 .decode("utf-8")
                                 .splitlines()
                             ):
@@ -463,13 +519,20 @@ def install_cli(argv=sys.argv[1:]):
         "--destination",
         dest="dest",
         default=os.getcwd(),
-        help="Directory to install application into. " '[default: "%default"]',
+        help='Directory to install application into. [default: "%default"]',
     )
     parser.add_option(
         "--app",
         dest="app",
         default="firefox",
         help="Application being installed. [default: %default]",
+    )
+    parser.add_option(
+        "--no-verify",
+        dest="verify",
+        action="store_false",
+        default=True,
+        help="Skip checksum verification when attaching a dmg file.",
     )
 
     (options, args) = parser.parse_args(argv)
@@ -482,7 +545,7 @@ def install_cli(argv=sys.argv[1:]):
     if os.path.isdir(src):
         binary = get_binary(src, app_name=options.app)
     else:
-        install_path = install(src, options.dest)
+        install_path = install(src, options.dest, verify=options.verify)
         binary = get_binary(install_path, app_name=options.app)
 
     print(binary)

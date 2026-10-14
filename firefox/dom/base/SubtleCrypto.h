@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,11 +5,11 @@
 #ifndef mozilla_dom_SubtleCrypto_h
 #define mozilla_dom_SubtleCrypto_h
 
-#include "nsCycleCollectionParticipant.h"
-#include "nsWrapperCache.h"
-#include "nsIGlobalObject.h"
-#include "mozilla/dom/CryptoKey.h"
 #include "js/TypeDecls.h"
+#include "mozilla/dom/CryptoKey.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsIGlobalObject.h"
+#include "nsWrapperCache.h"
 
 namespace mozilla::dom {
 
@@ -24,7 +22,7 @@ class SubtleCrypto final : public nsISupports, public nsWrapperCache {
   ~SubtleCrypto() = default;
 
  public:
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(SubtleCrypto)
 
  public:
@@ -32,8 +30,8 @@ class SubtleCrypto final : public nsISupports, public nsWrapperCache {
 
   nsIGlobalObject* GetParentObject() const { return mParent; }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapObject(JSContext* aCx,
+                       JS::Handle<JSObject*> aGivenProto) override;
 
   already_AddRefed<Promise> Encrypt(JSContext* cx,
                                     const ObjectOrString& algorithm,
@@ -90,6 +88,26 @@ class SubtleCrypto final : public nsISupports, public nsWrapperCache {
                                        CryptoKey& baseKey,
                                        const Nullable<uint32_t>& length,
                                        ErrorResult& aRv);
+
+  already_AddRefed<Promise> EncapsulateBits(
+      JSContext* cx, const ObjectOrString& encapsulationAlgorithm,
+      CryptoKey& encapsulationKey, ErrorResult& aRv);
+
+  already_AddRefed<Promise> EncapsulateKey(
+      JSContext* cx, const ObjectOrString& encapsulationAlgorithm,
+      CryptoKey& encapsulationKey, const ObjectOrString& sharedKeyAlgorithm,
+      bool extractable, const Sequence<nsString>& keyUsages, ErrorResult& aRv);
+
+  already_AddRefed<Promise> DecapsulateBits(
+      JSContext* cx, const ObjectOrString& decapsulationAlgorithm,
+      CryptoKey& decapsulationKey, const CryptoOperationData& ciphertext,
+      ErrorResult& aRv);
+
+  already_AddRefed<Promise> DecapsulateKey(
+      JSContext* cx, const ObjectOrString& decapsulationAlgorithm,
+      CryptoKey& decapsulationKey, const CryptoOperationData& ciphertext,
+      const ObjectOrString& sharedKeyAlgorithm, bool extractable,
+      const Sequence<nsString>& keyUsages, ErrorResult& aRv);
 
   already_AddRefed<Promise> WrapKey(JSContext* cx, const nsAString& format,
                                     CryptoKey& key, CryptoKey& wrappingKey,

@@ -7,17 +7,16 @@ const { PermissionTestUtils } = ChromeUtils.importESModule(
 const ORIGIN_URI = Services.io.newURI("https://example.com");
 const PERMISSION_NAME = "desktop-notification";
 const PROMPT_ALLOW_BUTTON = -1;
-const PROMPT_NOT_NOW_BUTTON = 0;
-const PROMPT_NEVER_BUTTON = 1;
+const PROMPT_NEVER_BUTTON = 0;
 const TEST_URL =
   "https://example.com/browser/dom/notification/test/browser/notification.html";
 
 /**
  * Clicks the specified web-notifications prompt button.
  *
- * @param {Number} aButtonIndex Number indicating which button to click.
+ * @param {number} aButtonIndex Number indicating which button to click.
  *                              See the constants in this file.
- * @note modified from toolkit/components/passwordmgr/test/browser/head.js
+ * Note: modified from toolkit/components/passwordmgr/test/browser/head.js
  */
 function clickDoorhangerButton(aButtonIndex, browser) {
   let popup = PopupNotifications.getNotification("web-notifications", browser);
@@ -28,13 +27,10 @@ function clickDoorhangerButton(aButtonIndex, browser) {
 
   if (aButtonIndex == PROMPT_ALLOW_BUTTON) {
     ok(true, "Triggering main action (allow the permission)");
-    notification.button.doCommand();
-  } else if (aButtonIndex == PROMPT_NEVER_BUTTON) {
-    ok(true, "Triggering secondary action (deny the permission permanently)");
-    notification.menupopup.querySelector("menuitem").doCommand();
+    notification.button.click();
   } else {
-    ok(true, "Triggering secondary action (deny the permission temporarily)");
-    notification.secondaryButton.doCommand();
+    ok(true, "Triggering secondary action (deny the permission permanently)");
+    notification.secondaryButton.click();
   }
 }
 
@@ -44,7 +40,7 @@ function clickDoorhangerButton(aButtonIndex, browser) {
  * and verifies that the expected permission is set.
  *
  * @param {Function} task Task function to run to interact with the prompt.
- * @param {String} permission Expected permission value.
+ * @param {string} permission Expected permission value.
  * @return {Promise} resolving when the task function is done and the tab
  *                   closes.
  */
@@ -108,15 +104,8 @@ add_setup(async function () {
     "dom.webnotifications.requireuserinteraction",
     false
   );
-  Services.prefs.setBoolPref(
-    "permissions.desktop-notification.notNow.enabled",
-    true
-  );
-  SimpleTest.registerCleanupFunction(() => {
+  registerCleanupFunction(() => {
     Services.prefs.clearUserPref("dom.webnotifications.requireuserinteraction");
-    Services.prefs.clearUserPref(
-      "permissions.desktop-notification.notNow.enabled"
-    );
 
     clearPermission(ORIGIN_URI, PERMISSION_NAME, false /* private origin */);
     clearPermission(ORIGIN_URI, PERMISSION_NAME, true /* private origin */);
@@ -137,24 +126,6 @@ add_task(async function test_requestPermission_granted() {
   is(
     PermissionTestUtils.testPermission(ORIGIN_URI, PERMISSION_NAME),
     Services.perms.ALLOW_ACTION,
-    "Check permission in perm. manager"
-  );
-});
-
-add_task(async function test_requestPermission_denied_temporarily() {
-  await tabWithRequest(async function (linkedBrowser) {
-    await BrowserTestUtils.waitForEvent(PopupNotifications.panel, "popupshown");
-    clickDoorhangerButton(PROMPT_NOT_NOW_BUTTON, linkedBrowser);
-  }, "default");
-
-  ok(
-    !PopupNotifications.getNotification("web-notifications"),
-    "Should remove the doorhanger notification icon if denied"
-  );
-
-  is(
-    PermissionTestUtils.testPermission(ORIGIN_URI, PERMISSION_NAME),
-    Services.perms.UNKNOWN_ACTION,
     "Check permission in perm. manager"
   );
 });

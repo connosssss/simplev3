@@ -57,7 +57,13 @@ class AgainParser(BaseTryParser):
 
 
 def run(
-    index=0, purge=False, list_configs=False, list_tasks=0, message="{msg}", **pushargs
+    metrics,
+    index=0,
+    purge=False,
+    list_configs=False,
+    list_tasks=0,
+    message="{msg}",
+    **pushargs,
 ):
     if index == "list":
         list_configs = True
@@ -76,18 +82,15 @@ def run(
         print(f"error: history file not found: {history_path}")
         return 1
 
+    metrics.mach_try.task_config_generation_duration.start()
     with open(history_path) as fh:
         history = fh.readlines()
 
     if list_configs or list_tasks > 0:
         for i, data in enumerate(history):
             msg, config = json.loads(data)
-            version = config.get("version", "1")
             settings = {}
-            if version == 1:
-                tasks = config["tasks"]
-                settings = config
-            elif version == 2:
+            if config["version"] == 2:
                 try_config = config.get("parameters", {}).get("try_task_config", {})
                 tasks = try_config.get("tasks")
             else:
@@ -140,7 +143,12 @@ def run(
 
         return
 
+    metrics.mach_try.task_config_generation_duration.stop()
     msg, try_task_config = json.loads(history[index])
     return push_to_try(
-        "again", message.format(msg=msg), try_task_config=try_task_config, **pushargs
+        "again",
+        message.format(msg=msg),
+        metrics,
+        try_task_config=try_task_config,
+        **pushargs,
     )

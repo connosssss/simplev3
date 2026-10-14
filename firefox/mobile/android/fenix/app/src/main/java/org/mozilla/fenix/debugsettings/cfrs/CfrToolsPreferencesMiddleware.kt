@@ -9,7 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
+import mozilla.components.lib.state.Store
 
 /**
  * [Middleware] that reacts to various [CfrToolsAction]s and updates any corresponding preferences.
@@ -22,9 +22,8 @@ class CfrToolsPreferencesMiddleware(
     private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Main),
 ) : Middleware<CfrToolsState, CfrToolsAction> {
 
-    @Suppress("LongMethod")
     override fun invoke(
-        context: MiddlewareContext<CfrToolsState, CfrToolsAction>,
+        store: Store<CfrToolsState, CfrToolsAction>,
         next: (CfrToolsAction) -> Unit,
         action: CfrToolsAction,
     ) {
@@ -33,44 +32,35 @@ class CfrToolsPreferencesMiddleware(
         when (action) {
             is CfrToolsAction.Init -> {
                 coroutineScope.launch {
-                    cfrPreferencesRepository.cfrPreferenceUpdates
-                        .collect { cfrPreferenceUpdate ->
-                            val updateAction = mapRepoUpdateToStoreAction(cfrPreferenceUpdate)
-                            context.store.dispatch(updateAction)
-                        }
+                    cfrPreferencesRepository.cfrPreferenceUpdates.collect { cfrPreferenceUpdate ->
+                        val updateAction = mapRepoUpdateToStoreAction(cfrPreferenceUpdate)
+                        store.dispatch(updateAction)
+                    }
                 }
                 cfrPreferencesRepository.init()
-            }
-            is CfrToolsAction.HomepageSearchBarShownToggled -> {
-                cfrPreferencesRepository.updateCfrPreference(
-                    CfrPreferencesRepository.CfrPreferenceUpdate(
-                        preferenceType = CfrPreferencesRepository.CfrPreference.HomepageSearchBar,
-                        value = context.state.homepageSearchBarShown,
-                    ),
-                )
             }
             is CfrToolsAction.TabAutoCloseBannerShownToggled -> {
                 cfrPreferencesRepository.updateCfrPreference(
                     CfrPreferencesRepository.CfrPreferenceUpdate(
                         preferenceType = CfrPreferencesRepository.CfrPreference.TabAutoCloseBanner,
-                        value = context.state.tabAutoCloseBannerShown,
-                    ),
+                        value = store.state.tabAutoCloseBannerShown,
+                    )
                 )
             }
             is CfrToolsAction.InactiveTabsShownToggled -> {
                 cfrPreferencesRepository.updateCfrPreference(
                     CfrPreferencesRepository.CfrPreferenceUpdate(
                         preferenceType = CfrPreferencesRepository.CfrPreference.InactiveTabs,
-                        value = context.state.inactiveTabsShown,
-                    ),
+                        value = store.state.inactiveTabsShown,
+                    )
                 )
             }
             is CfrToolsAction.OpenInAppShownToggled -> {
                 cfrPreferencesRepository.updateCfrPreference(
                     CfrPreferencesRepository.CfrPreferenceUpdate(
                         preferenceType = CfrPreferencesRepository.CfrPreference.OpenInApp,
-                        value = context.state.openInAppShown,
-                    ),
+                        value = store.state.openInAppShown,
+                    )
                 )
             }
             is CfrToolsAction.PwaShownToggled -> {
@@ -86,11 +76,9 @@ class CfrToolsPreferencesMiddleware(
 
     @VisibleForTesting
     internal fun mapRepoUpdateToStoreAction(
-        cfrPreferenceUpdate: CfrPreferencesRepository.CfrPreferenceUpdate,
+        cfrPreferenceUpdate: CfrPreferencesRepository.CfrPreferenceUpdate
     ): CfrToolsAction {
         return when (cfrPreferenceUpdate.preferenceType) {
-            CfrPreferencesRepository.CfrPreference.HomepageSearchBar ->
-                CfrToolsAction.HomepageSearchbarCfrLoaded(newValue = !cfrPreferenceUpdate.value)
             CfrPreferencesRepository.CfrPreference.TabAutoCloseBanner ->
                 CfrToolsAction.TabAutoCloseBannerCfrLoaded(newValue = !cfrPreferenceUpdate.value)
             CfrPreferencesRepository.CfrPreference.InactiveTabs ->

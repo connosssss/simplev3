@@ -32,6 +32,11 @@ async function waitForPanelOpen(message = "waiting for preview panel to open") {
 }
 
 add_task(async function test_default_telemetry() {
+  //set value to browser.ml.linkPreview.onboardingTimes to avoid  changed-pref test error
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.ml.linkPreview.onboardingTimes", ""]],
+  });
+
   // Open a window to initialize metrics in case previous test file reset
   await BrowserTestUtils.closeWindow(
     await BrowserTestUtils.openNewBrowserWindow()
@@ -44,8 +49,8 @@ add_task(async function test_default_telemetry() {
   );
   Assert.equal(
     Glean.genaiLinkpreview.enabled.testGetValue(),
-    false,
-    "Got default enabled for testing"
+    true,
+    "Got default disabled for testing"
   );
   Assert.equal(
     Glean.genaiLinkpreview.keyPoints.testGetValue(),
@@ -54,7 +59,7 @@ add_task(async function test_default_telemetry() {
   );
   Assert.equal(
     Glean.genaiLinkpreview.shortcut.testGetValue(),
-    "shift,shift_alt,long_press",
+    "shift_alt,long_press",
     "Got default shortcut for testing"
   );
 });
@@ -74,9 +79,6 @@ add_task(async function test_link_preview_ai_consent_continue_ui_interaction() {
     ],
   });
 
-  let events = Glean.genaiLinkpreview.cardAiConsent.testGetValue();
-  Assert.equal(events.length, 1, "One deny opt-in event recorded");
-
   const generateStub = sinon.stub(LinkPreviewModel, "generateTextAI");
 
   const READABLE_PAGE_URL =
@@ -88,6 +90,21 @@ add_task(async function test_link_preview_ai_consent_continue_ui_interaction() {
   const panel = await waitForPanelOpen();
   const card = panel.querySelector("link-preview-card");
   ok(card, "card created for link preview");
+
+  if (!LinkPreview.canRunOnDevice) {
+    await card.updateComplete;
+    ok(
+      !card.shadowRoot.querySelector("model-optin"),
+      "no opt-in prompt rendered without a backend"
+    );
+    panel.remove();
+    generateStub.restore();
+    LinkPreview.keyboardComboActive = false;
+    return;
+  }
+
+  let events = Glean.genaiLinkpreview.cardAiConsent.testGetValue();
+  Assert.equal(events.length, 1, "One deny opt-in event recorded");
 
   const modelOptinElement = await TestUtils.waitForCondition(() => {
     if (card.shadowRoot) {
@@ -141,9 +158,6 @@ add_task(async function test_link_preview_ai_consent_cancel_ui_interaction() {
     ],
   });
 
-  let events = Glean.genaiLinkpreview.cardAiConsent.testGetValue();
-  Assert.equal(events.length, 1, "One deny opt-in event recorded");
-
   const generateStub = sinon.stub(LinkPreviewModel, "generateTextAI");
 
   const READABLE_PAGE_URL =
@@ -155,6 +169,21 @@ add_task(async function test_link_preview_ai_consent_cancel_ui_interaction() {
   const panel = await waitForPanelOpen();
   const card = panel.querySelector("link-preview-card");
   ok(card, "card created for link preview");
+
+  if (!LinkPreview.canRunOnDevice) {
+    await card.updateComplete;
+    ok(
+      !card.shadowRoot.querySelector("model-optin"),
+      "no opt-in prompt rendered without a backend"
+    );
+    panel.remove();
+    generateStub.restore();
+    LinkPreview.keyboardComboActive = false;
+    return;
+  }
+
+  let events = Glean.genaiLinkpreview.cardAiConsent.testGetValue();
+  Assert.equal(events.length, 1, "One deny opt-in event recorded");
 
   const modelOptinElement = await TestUtils.waitForCondition(() => {
     if (card.shadowRoot) {
@@ -210,9 +239,6 @@ add_task(async function test_toggle_expand_collapse_telemetry() {
     ],
   });
 
-  let events = Glean.genaiLinkpreview.keyPointsToggle.testGetValue();
-  Assert.equal(events.length, 1, "One keyPointsToggle event recorded");
-
   const generateStub = sinon.stub(LinkPreviewModel, "generateTextAI");
 
   const READABLE_PAGE_URL =
@@ -224,6 +250,21 @@ add_task(async function test_toggle_expand_collapse_telemetry() {
   const panel = await waitForPanelOpen();
   const card = panel.querySelector("link-preview-card");
   ok(card, "Card created for link preview");
+
+  if (!LinkPreview.canRunOnDevice) {
+    await card.updateComplete;
+    ok(
+      !card.shadowRoot.querySelector(".keypoints-header"),
+      "no key points header to toggle without a backend"
+    );
+    panel.remove();
+    generateStub.restore();
+    LinkPreview.keyboardComboActive = false;
+    return;
+  }
+
+  let events = Glean.genaiLinkpreview.keyPointsToggle.testGetValue();
+  Assert.equal(events.length, 1, "One keyPointsToggle event recorded");
 
   is(card.collapsed, false, "Card should start expanded");
 
@@ -284,9 +325,6 @@ add_task(
       ],
     });
 
-    let events = Glean.genaiLinkpreview.cardAiConsent.testGetValue();
-    Assert.equal(events.length, 1, "One deny opt-in event recorded");
-
     const generateStub = sinon.stub(LinkPreviewModel, "generateTextAI");
 
     const READABLE_PAGE_URL =
@@ -298,6 +336,21 @@ add_task(
     const panel = await waitForPanelOpen();
     const card = panel.querySelector("link-preview-card");
     ok(card, "card created for link preview");
+
+    if (!LinkPreview.canRunOnDevice) {
+      await card.updateComplete;
+      ok(
+        !card.shadowRoot.querySelector("model-optin"),
+        "no opt-in prompt rendered without a backend"
+      );
+      panel.remove();
+      generateStub.restore();
+      LinkPreview.keyboardComboActive = false;
+      return;
+    }
+
+    let events = Glean.genaiLinkpreview.cardAiConsent.testGetValue();
+    Assert.equal(events.length, 1, "One deny opt-in event recorded");
 
     const modelOptinElement = await TestUtils.waitForCondition(() => {
       if (card.shadowRoot) {
@@ -340,208 +393,6 @@ add_task(
     LinkPreview.keyboardComboActive = false;
   }
 );
-
-/**
- * Tests that telemetry is recorded when the onboarding close button is clicked.
- */
-add_task(async function test_onboarding_close_button_telemetry() {
-  Services.fog.testResetFOG();
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["browser.ml.linkPreview.enabled", true],
-      ["browser.ml.linkPreview.onboardingTimes", ""],
-    ],
-  });
-
-  Assert.equal(
-    Glean.genaiLinkpreview.onboardingCard.testGetValue(),
-    null,
-    "No onboardingCard events initially"
-  );
-
-  XULBrowserWindow.setOverLink(TEST_LINK_URL_EN);
-
-  const panel = await waitForPanelOpen("wait for onboarding panel");
-  ok(panel, "Panel created for onboarding");
-
-  const onboarding_card = panel.querySelector("link-preview-card-onboarding");
-  ok(onboarding_card, "onboarding element is present");
-
-  const closeButton = onboarding_card.shadowRoot.querySelector(
-    "#onboarding-close-button"
-  );
-  closeButton.click();
-
-  const events = Glean.genaiLinkpreview.onboardingCard.testGetValue();
-  Assert.equal(events.length, 2, "Two onboardingCard event recorded");
-  Assert.equal(events[0].extra.action, "view", "View action recorded");
-  Assert.equal(events[1].extra.action, "close", "Closed action recorded");
-
-  // Cleanup
-  panel.remove();
-});
-
-/**
- * Tests that telemetry is recorded when the onboarding try it now button is clicked.
- */
-add_task(async function test_try_it_now_button_telemetry() {
-  Services.fog.testResetFOG();
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["browser.ml.linkPreview.enabled", true],
-      ["browser.ml.linkPreview.onboardingTimes", ""],
-    ],
-  });
-
-  Assert.equal(
-    Glean.genaiLinkpreview.onboardingCard.testGetValue(),
-    null,
-    "No onboardingCard events initially"
-  );
-
-  clearOverlink();
-  XULBrowserWindow.setOverLink(TEST_LINK_URL_EN);
-
-  const panel = await waitForPanelOpen("wait for onboarding panel");
-  ok(panel, "Panel created for onboarding");
-
-  const onboarding_card = panel.querySelector("link-preview-card-onboarding");
-  ok(onboarding_card, "onboarding element is present");
-
-  let events = Glean.genaiLinkpreview.onboardingCard.testGetValue();
-  Assert.equal(events.length, 1, "One onboardingCard events recorded");
-  Assert.equal(events[0].extra.action, "view", "view action recorded");
-  const tryItNowButton = onboarding_card.shadowRoot.querySelector(
-    "moz-button[data-l10n-id='link-preview-onboarding-button']"
-  );
-  tryItNowButton.click();
-
-  events = Glean.genaiLinkpreview.onboardingCard.testGetValue();
-  Assert.equal(events.length, 2, "Two onboardingCard events recorded");
-  Assert.equal(
-    events[1].extra.action,
-    "try_it_now",
-    "try_it_now action recorded"
-  );
-
-  events = Glean.genaiLinkpreview.start.testGetValue();
-  Assert.equal(events.length, 1, "One genaiLinkpreview card events recorded");
-  Assert.equal(
-    events[0].extra.source,
-    "onboarding",
-    "Source should be onboarding"
-  );
-  // Cleanup
-  panel.remove();
-});
-
-/**
- * Tests that telemetry is recorded with the correct type when onboarding is triggered by long press.
- */
-add_task(async function test_onboarding_long_press_type_telemetry() {
-  Services.fog.testResetFOG();
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["browser.ml.linkPreview.enabled", true],
-      ["browser.ml.linkPreview.onboardingTimes", ""],
-      ["browser.ml.linkPreview.longPress", true],
-    ],
-  });
-
-  Assert.equal(
-    Glean.genaiLinkpreview.onboardingCard.testGetValue(),
-    null,
-    "No onboardingCard events initially"
-  );
-
-  XULBrowserWindow.setOverLink(TEST_LINK_URL_EN);
-
-  const panel = await waitForPanelOpen("wait for onboarding panel");
-  ok(panel, "Panel created for onboarding");
-
-  const onboarding_card = panel.querySelector("link-preview-card-onboarding");
-  ok(onboarding_card, "onboarding element is present");
-
-  let events = Glean.genaiLinkpreview.onboardingCard.testGetValue();
-  Assert.equal(events.length, 1, "One onboardingCard event recorded");
-  Assert.equal(events[0].extra.action, "view", "View action recorded");
-  Assert.equal(
-    events[0].extra.type,
-    "longPress",
-    "longPress type recorded for view"
-  );
-
-  const closeButton = onboarding_card.shadowRoot.querySelector(
-    "#onboarding-close-button"
-  );
-  ok(closeButton, "close button is present");
-  closeButton.click();
-
-  events = Glean.genaiLinkpreview.onboardingCard.testGetValue();
-  Assert.equal(events.length, 2, "Two onboardingCard events recorded");
-  Assert.equal(events[1].extra.action, "close", "Close action recorded");
-  Assert.equal(
-    events[1].extra.type,
-    "longPress",
-    "longPress type recorded for close"
-  );
-
-  panel.remove();
-});
-
-/**
- * Tests that telemetry is recorded with the correct type (shift) when longPress is disabled.
- */
-add_task(async function test_onboarding_shift_type_telemetry() {
-  Services.fog.testResetFOG();
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["browser.ml.linkPreview.enabled", true],
-      ["browser.ml.linkPreview.onboardingTimes", ""],
-      ["browser.ml.linkPreview.longPress", false],
-    ],
-  });
-
-  Assert.equal(
-    Glean.genaiLinkpreview.onboardingCard.testGetValue(),
-    null,
-    "No onboardingCard events initially"
-  );
-
-  XULBrowserWindow.setOverLink(TEST_LINK_URL_EN);
-
-  const panel = await waitForPanelOpen("wait for onboarding panel");
-  ok(panel, "Panel created for onboarding");
-
-  const onboarding_card = panel.querySelector("link-preview-card-onboarding");
-  ok(onboarding_card, "onboarding element is present");
-
-  let events = Glean.genaiLinkpreview.onboardingCard.testGetValue();
-  Assert.equal(events.length, 1, "One onboardingCard event recorded");
-  Assert.equal(events[0].extra.action, "view", "View action recorded");
-  Assert.equal(
-    events[0].extra.type,
-    "shiftKey",
-    "shiftKey type recorded for view"
-  );
-
-  const closeButton = onboarding_card.shadowRoot.querySelector(
-    "#onboarding-close-button"
-  );
-  ok(closeButton, "close button is present");
-  closeButton.click();
-
-  events = Glean.genaiLinkpreview.onboardingCard.testGetValue();
-  Assert.equal(events.length, 2, "Two onboardingCard events recorded");
-  Assert.equal(events[1].extra.action, "close", "Close action recorded");
-  Assert.equal(
-    events[1].extra.type,
-    "shiftKey",
-    "shiftKey type recorded for close"
-  );
-
-  panel.remove();
-});
 
 /**
  * Tests that the pref_changed telemetry event is recorded correctly for various preferences.

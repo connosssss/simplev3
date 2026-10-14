@@ -1,38 +1,36 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "PageThumbProtocolHandler.h"
 
+#include "LoadInfo.h"
+#include "SimpleChannel.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Components.h"
-#include "mozilla/ipc/URIParams.h"
-#include "mozilla/ipc/URIUtils.h"
-#include "mozilla/net/NeckoChild.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/ResultExtensions.h"
 #include "mozilla/Try.h"
-
-#include "LoadInfo.h"
+#include "mozilla/ipc/URIParams.h"
+#include "mozilla/ipc/URIUtils.h"
+#include "mozilla/net/NeckoChild.h"
+#include "mozilla/net/NeckoParent.h"
 #include "nsContentUtils.h"
-#include "nsServiceManagerUtils.h"
+#include "nsICancelable.h"
+#include "nsIChannel.h"
 #include "nsIFile.h"
 #include "nsIFileChannel.h"
 #include "nsIFileStreams.h"
-#include "nsIMIMEService.h"
-#include "nsIURL.h"
-#include "nsIChannel.h"
-#include "nsIPageThumbsStorageService.h"
-#include "nsIInputStreamPump.h"
-#include "nsIStreamListener.h"
 #include "nsIInputStream.h"
+#include "nsIInputStreamPump.h"
+#include "nsIMIMEService.h"
+#include "nsIPageThumbsStorageService.h"
+#include "nsIStreamListener.h"
+#include "nsIURL.h"
 #include "nsNetUtil.h"
+#include "nsServiceManagerUtils.h"
 #include "nsURLHelper.h"
 #include "prio.h"
-#include "SimpleChannel.h"
-#include "nsICancelable.h"
 
 #ifdef MOZ_PLACES
 #  include "nsIPlacesPreviewsHelperService.h"
@@ -75,7 +73,7 @@ PageThumbProtocolHandler::PageThumbProtocolHandler()
     : SubstitutingProtocolHandler(PAGE_THUMB_SCHEME) {}
 
 RefPtr<RemoteStreamPromise> PageThumbProtocolHandler::NewStream(
-    nsIURI* aChildURI, bool* aTerminateSender) {
+    nsIURI* aChildURI, nsILoadInfo* aLoadInfo, bool* aTerminateSender) {
   MOZ_ASSERT(!IsNeckoChild());
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -94,6 +92,11 @@ RefPtr<RemoteStreamPromise> PageThumbProtocolHandler::NewStream(
   if (NS_FAILED(aChildURI->SchemeIs(PAGE_THUMB_SCHEME, &isPageThumbScheme)) ||
       !isPageThumbScheme) {
     return RemoteStreamPromise::CreateAndReject(NS_ERROR_UNKNOWN_PROTOCOL,
+                                                __func__);
+  }
+
+  if (!nsContentUtils::IsImageType(aLoadInfo->GetExternalContentPolicyType())) {
+    return RemoteStreamPromise::CreateAndReject(NS_ERROR_CONTENT_BLOCKED,
                                                 __func__);
   }
 
@@ -119,89 +122,8 @@ RefPtr<RemoteStreamPromise> PageThumbProtocolHandler::NewStream(
     return RemoteStreamPromise::CreateAndReject(rv, __func__);
   }
 
-  nsAutoCString resolvedScheme;
-  rv = net_ExtractURLScheme(resolvedSpec, resolvedScheme);
-  if (NS_FAILED(rv) || !resolvedScheme.EqualsLiteral("file")) {
-    return RemoteStreamPromise::CreateAndReject(NS_ERROR_UNEXPECTED, __func__);
-  }
-
-  nsCOMPtr<nsIIOService> ioService = do_GetIOService(&rv);
-  if (NS_FAILED(rv)) {
-    return RemoteStreamPromise::CreateAndReject(rv, __func__);
-  }
-
-  nsCOMPtr<nsIURI> resolvedURI;
-  rv = ioService->NewURI(resolvedSpec, nullptr, nullptr,
-                         getter_AddRefs(resolvedURI));
-  if (NS_FAILED(rv)) {
-    return RemoteStreamPromise::CreateAndReject(rv, __func__);
-  }
-
-  // We use the system principal to get a file channel for the request,
-  // but only after we've checked (above) that the child URI is of
-  // moz-page-thumb scheme and that the URI host matches PAGE_THUMB_HOST.
-  nsCOMPtr<nsIChannel> channel;
-  rv = NS_NewChannel(getter_AddRefs(channel), resolvedURI,
-                     nsContentUtils::GetSystemPrincipal(),
-                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
-                     nsIContentPolicy::TYPE_OTHER);
-  if (NS_FAILED(rv)) {
-    return RemoteStreamPromise::CreateAndReject(rv, __func__);
-  }
-
-  auto promiseHolder = MakeUnique<MozPromiseHolder<RemoteStreamPromise>>();
-  RefPtr<RemoteStreamPromise> promise = promiseHolder->Ensure(__func__);
-
-  nsCOMPtr<nsIMIMEService> mime = do_GetService("@mozilla.org/mime;1", &rv);
-  if (NS_FAILED(rv)) {
-    return RemoteStreamPromise::CreateAndReject(rv, __func__);
-  }
-
-  nsAutoCString contentType;
-  rv = mime->GetTypeFromURI(aChildURI, contentType);
-  if (NS_FAILED(rv)) {
-    return RemoteStreamPromise::CreateAndReject(rv, __func__);
-  }
-
-  rv = NS_DispatchBackgroundTask(
-      NS_NewRunnableFunction(
-          "PageThumbProtocolHandler::NewStream",
-          [contentType, channel, holder = std::move(promiseHolder)]() {
-            nsresult rv;
-
-            nsCOMPtr<nsIFileChannel> fileChannel =
-                do_QueryInterface(channel, &rv);
-            if (NS_FAILED(rv)) {
-              holder->Reject(rv, __func__);
-              return;
-            }
-
-            nsCOMPtr<nsIFile> requestedFile;
-            rv = fileChannel->GetFile(getter_AddRefs(requestedFile));
-            if (NS_FAILED(rv)) {
-              holder->Reject(rv, __func__);
-              return;
-            }
-
-            nsCOMPtr<nsIInputStream> inputStream;
-            rv = NS_NewLocalFileInputStream(getter_AddRefs(inputStream),
-                                            requestedFile, PR_RDONLY, -1);
-            if (NS_FAILED(rv)) {
-              holder->Reject(rv, __func__);
-              return;
-            }
-
-            RemoteStreamInfo info(inputStream, contentType, -1);
-
-            holder->Resolve(std::move(info), __func__);
-          }),
-      NS_DISPATCH_EVENT_MAY_BLOCK);
-
-  if (NS_FAILED(rv)) {
-    return RemoteStreamPromise::CreateAndReject(rv, __func__);
-  }
-
-  return promise;
+  return mozilla::net::NeckoParent::CreateRemoteStreamForResolvedURI(
+      aChildURI, resolvedSpec, ""_ns);
 }
 
 bool PageThumbProtocolHandler::ResolveSpecialCases(const nsACString& aHost,
@@ -249,6 +171,10 @@ bool PageThumbProtocolHandler::ResolveSpecialCases(const nsACString& aHost,
 nsresult PageThumbProtocolHandler::SubstituteChannel(nsIURI* aURI,
                                                      nsILoadInfo* aLoadInfo,
                                                      nsIChannel** aRetVal) {
+  if (!nsContentUtils::IsImageType(aLoadInfo->GetExternalContentPolicyType())) {
+    return NS_ERROR_CONTENT_BLOCKED;
+  }
+
   // Check if URI resolves to a file URI.
   nsAutoCString resolvedSpec;
   MOZ_TRY(ResolveURI(aURI, resolvedSpec));

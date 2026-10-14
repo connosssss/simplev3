@@ -4,7 +4,6 @@
 package org.mozilla.focus.activity
 
 import androidx.test.internal.runner.junit4.AndroidJUnit4ClassRunner
-import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -12,73 +11,71 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.focus.activity.robots.homeScreen
 import org.mozilla.focus.helpers.FeatureSettingsHelper
+import org.mozilla.focus.helpers.FocusTestRule
 import org.mozilla.focus.helpers.MainActivityFirstrunTestRule
-import org.mozilla.focus.helpers.MockWebServerHelper
 import org.mozilla.focus.helpers.TestAssetHelper.getGenericTabAsset
 import org.mozilla.focus.helpers.TestHelper.waitingTimeShort
-import org.mozilla.focus.helpers.TestSetup
 import org.mozilla.focus.testAnnotations.SmokeTest
 
 // These tests check the advanced settings options
 @RunWith(AndroidJUnit4ClassRunner::class)
-class SettingsAdvancedTest : TestSetup() {
-    private lateinit var webServer: MockWebServer
+class SettingsAdvancedTest {
 
     private val featureSettingsHelper = FeatureSettingsHelper()
 
-    @get:Rule
-    val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
+    @get:Rule(order = 0) val focusTestRule: FocusTestRule = FocusTestRule()
+
+    private val webServerRule
+        get() = focusTestRule.mockWebServerRule
+
+    @get:Rule val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
 
     @Before
-    override fun setUp() {
-        super.setUp()
-        webServer = MockWebServer().apply {
-            dispatcher = MockWebServerHelper.AndroidAssetDispatcher()
-            start()
-        }
+    fun setUp() {
         featureSettingsHelper.setCfrForTrackingProtectionEnabled(false)
         featureSettingsHelper.setSearchWidgetDialogEnabled(false)
     }
 
     @After
     fun tearDown() {
-        webServer.shutdown()
         featureSettingsHelper.resetAllFeatureFlags()
     }
 
     @SmokeTest
     @Test
     fun openLinksInAppsTest() {
-        val tab3Url = getGenericTabAsset(webServer, 3).url
-        val youtubeLink = "https://www.youtube.com/c/MozillaChannel/videos"
+        val tab3Url = webServerRule.server.getGenericTabAsset(3).url
 
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openAdvancedSettingsMenu {
-            verifyOpenLinksInAppsSwitchState(false)
-            clickOpenLinksInAppsSwitch()
-            verifyOpenLinksInAppsSwitchState(true)
-        }.goBackToSettings {
-        }.goBackToHomeScreen {
-        }.loadPage(tab3Url) {
-            progressBar.waitUntilGone(waitingTimeShort)
-            clickLinkMatchingText("Mozilla Youtube link")
-            verifyOpenLinksInAppsPrompt(true, youtubeLink)
-            clickOpenLinksInAppsCancelButton()
-        }.clearBrowsingData {
-        }.openMainMenu {
-        }.openSettings {
-        }.openAdvancedSettingsMenu {
-            verifyOpenLinksInAppsSwitchState(true)
-            clickOpenLinksInAppsSwitch()
-            verifyOpenLinksInAppsSwitchState(false)
-        }.goBackToSettings {
-        }.goBackToHomeScreen {
-        }.loadPage(tab3Url) {
-            progressBar.waitUntilGone(waitingTimeShort)
-            clickLinkMatchingText("Mozilla Youtube link")
-            verifyOpenLinksInAppsPrompt(false, youtubeLink)
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openAdvancedSettingsMenu {
+                verifyOpenLinksInAppsSwitchState(false)
+                clickOpenLinksInAppsSwitch()
+                verifyOpenLinksInAppsSwitchState(true)
+            }
+            .goBackToSettings {}
+            .goBackToHomeScreen {}
+            .loadPage(tab3Url) {
+                progressBar.waitUntilGone(waitingTimeShort)
+                clickLinkMatchingText("Mozilla Youtube link")
+                verifyOpenLinksInAppsPrompt(true)
+                clickOpenLinksInAppsCancelButton()
+            }
+            .clearBrowsingData {}
+            .openMainMenu {}
+            .openSettings {}
+            .openAdvancedSettingsMenu {
+                verifyOpenLinksInAppsSwitchState(true)
+                clickOpenLinksInAppsSwitch()
+                verifyOpenLinksInAppsSwitchState(false)
+            }
+            .goBackToSettings {}
+            .goBackToHomeScreen {}
+            .loadPage(tab3Url) {
+                progressBar.waitUntilGone(waitingTimeShort)
+                clickLinkMatchingText("Mozilla Youtube link")
+                verifyOpenLinksInAppsPrompt(false)
+            }
     }
 }

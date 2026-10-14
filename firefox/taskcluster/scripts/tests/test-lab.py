@@ -13,6 +13,8 @@
 
 # Flank: https://flank.github.io/flank/
 
+from __future__ import annotations
+
 import argparse
 import logging
 import os
@@ -90,13 +92,20 @@ def setup_environment():
         sys.exit(1)
 
     run_command(["gcloud", "config", "set", "project", project_id])
-    run_command(
-        ["gcloud", "auth", "activate-service-account", "--key-file", credentials_file]
-    )
+    run_command([
+        "gcloud",
+        "auth",
+        "activate-service-account",
+        "--key-file",
+        credentials_file,
+    ])
 
 
 def execute_tests(
-    flank_config: str, apk_app: Path, apk_test: Optional[Path] = None
+    flank_config: str,
+    apk_app: Path,
+    apk_test: Optional[Path] = None,
+    baseline_profile_max_iterations: Optional[str] = None,
 ) -> int:
     """Run UI tests on Firebase Test Lab using Flank.
 
@@ -131,12 +140,16 @@ def execute_tests(
     geckoRev = os.environ.get("GECKO_HEAD_REV")
 
     if matrixLabel is not None and geckoRev is not None:
-        flank_command.extend(
-            [
-                "--client-details",
-                f"matrixLabel={urlparse(matrixLabel).path.rpartition('/')[-1]},geckoRev={geckoRev}",
-            ]
-        )
+        flank_command.extend([
+            "--client-details",
+            f"matrixLabel={urlparse(matrixLabel).path.rpartition('/')[-1]},geckoRev={geckoRev}",
+        ])
+
+    if "baseline-profile" in flank_config and baseline_profile_max_iterations:
+        flank_command.extend([
+            "--environment-variables",
+            f"baselineProfileMaxIterations={baseline_profile_max_iterations}",
+        ])
 
     # Add androidTest APK if provided (optional) as robo test or instrumentation test
     if apk_test:
@@ -148,20 +161,26 @@ def execute_tests(
     return exit_code
 
 
-def process_results(flank_config: str, test_type: str = "instrumentation") -> None:
+def process_results(
+    flank_config: str, test_type: str = "instrumentation", artifact_type: str = None
+) -> None:
     """Process and parse test results.
 
     Args:
         flank_config: The YML configuration for Flank to use e.g, automation/taskcluster/androidTest/flank-<config>.yml
+        test_type: The type of test executed: 'instrumentation' or 'robo'
+        artifact_type: The type of the artifacts to copy after the test run
     """
 
     parse_junit_results_artifact = os.path.join(SCRIPT_DIR, "parse-junit-results.py")
-    copy_robo_crash_artifacts_script = os.path.join(
-        SCRIPT_DIR, "copy-artifacts-from-ftl.py"
+    copy_artifacts_script = os.path.join(SCRIPT_DIR, "copy-artifacts-from-ftl.py")
+    generate_flaky_report_script = os.path.join(
+        SCRIPT_DIR, "generate-flaky-report-from-ftl.py"
     )
 
     os.chmod(parse_junit_results_artifact, 0o755)
-    os.chmod(copy_robo_crash_artifacts_script, 0o755)
+    os.chmod(copy_artifacts_script, 0o755)
+    os.chmod(generate_flaky_report_script, 0o755)
 
     # Process the results differently based on the test type: instrumentation or robo
     #
@@ -172,9 +191,18 @@ def process_results(flank_config: str, test_type: str = "instrumentation") -> No
             [parse_junit_results_artifact, "--results", Worker.RESULTS_DIR.value],
             "flank.log",
         )
+        # Generate flaky test report if flaky tests exist
+        run_command(
+            [generate_flaky_report_script, "--results", Worker.RESULTS_DIR.value],
+            "flank.log",
+        )
+
+        # Copy artifacts if specified
+        if artifact_type:
+            run_command([copy_artifacts_script, artifact_type])
 
     if test_type == "robo":
-        run_command([copy_robo_crash_artifacts_script, "crash_log"])
+        run_command([copy_artifacts_script, "crash_log"])
 
 
 def main():
@@ -195,6 +223,16 @@ def main():
         help="Absolute path to a Android APK androidTest package",
         default=None,
     )
+    parser.add_argument(
+        "--artifact_type",
+        help="Type of artifact to copy after running the tests",
+        default=None,
+    )
+    parser.add_argument(
+        "--baseline-profile-max-iterations",
+        help="Maximum iterations for baseline profile generation",
+        default=None,
+    )
     args = parser.parse_args()
 
     setup_environment()
@@ -205,11 +243,16 @@ def main():
         flank_config=args.flank_config,
         apk_app=Path(args.apk_app).resolve(),
         apk_test=apk_test_path,
+        baseline_profile_max_iterations=args.baseline_profile_max_iterations,
     )
 
     # Determine the instrumentation type to process the results differently
     instrumentation_type = "instrumentation" if args.apk_test else "robo"
-    process_results(flank_config=args.flank_config, test_type=instrumentation_type)
+    process_results(
+        flank_config=args.flank_config,
+        test_type=instrumentation_type,
+        artifact_type=args.artifact_type,
+    )
 
     sys.exit(exit_code)
 

@@ -1,16 +1,15 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsDragServiceProxy.h"
-#include "mozilla/dom/Document.h"
+
 #include "mozilla/dom/BrowserChild.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/net/CookieJarSettings.h"
-#include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
+#include "mozilla/widget/WidgetLogging.h"
 #include "nsContentUtils.h"
 
 using mozilla::CSSIntRegion;
@@ -24,12 +23,9 @@ using mozilla::gfx::SourceSurface;
 using mozilla::gfx::SurfaceFormat;
 using mozilla::ipc::Shmem;
 
-extern mozilla::LazyLogModule sWidgetDragServiceLog;
-#define __DRAGSERVICE_LOG__(logLevel, ...) \
-  MOZ_LOG(sWidgetDragServiceLog, logLevel, __VA_ARGS__)
-#define LOGD(...) __DRAGSERVICE_LOG__(mozilla::LogLevel::Debug, (__VA_ARGS__))
-#define LOGI(...) __DRAGSERVICE_LOG__(mozilla::LogLevel::Info, (__VA_ARGS__))
-#define LOGE(...) __DRAGSERVICE_LOG__(mozilla::LogLevel::Error, (__VA_ARGS__))
+#define LOGD DRAGSERVICE_LOGD
+#define LOGI DRAGSERVICE_LOGI
+#define LOGE DRAGSERVICE_LOGE
 
 nsDragServiceProxy::nsDragServiceProxy() {
   LOGD("[%p] %s", this, __FUNCTION__);
@@ -48,15 +44,15 @@ nsDragSessionProxy::~nsDragSessionProxy() {
 }
 
 already_AddRefed<nsIDragSession> nsDragServiceProxy::CreateDragSession() {
-  RefPtr<nsIDragSession> session = new nsDragSessionProxy();
+  auto session = mozilla::MakeRefPtr<nsDragSessionProxy>();
   return session.forget();
 }
 
 nsresult nsDragSessionProxy::InvokeDragSession(
     nsIWidget* aWidget, nsINode* aDOMNode, nsIPrincipal* aPrincipal,
-    nsIContentSecurityPolicy* aCsp, nsICookieJarSettings* aCookieJarSettings,
-    nsIArray* aTransferableArray, uint32_t aActionType,
-    nsContentPolicyType aContentPolicyType) {
+    nsIPolicyContainer* aPolicyContainer,
+    nsICookieJarSettings* aCookieJarSettings, nsIArray* aTransferableArray,
+    uint32_t aActionType, nsContentPolicyType aContentPolicyType) {
   BrowserChild* sourceBrowser = aWidget->GetOwningBrowserChild();
   LOGI("[%p] %s | aWidget: %p | sourceBrowser: %p | sourceSession: %p", this,
        __FUNCTION__, aWidget, sourceBrowser,
@@ -69,7 +65,7 @@ nsresult nsDragSessionProxy::InvokeDragSession(
       sourceBrowser->GetWeakReference(getter_AddRefs(mSourceBrowser)));
   sourceBrowser->SetDragSession(this);
   nsresult rv = nsBaseDragSession::InvokeDragSession(
-      aWidget, aDOMNode, aPrincipal, aCsp, aCookieJarSettings,
+      aWidget, aDOMNode, aPrincipal, aPolicyContainer, aCookieJarSettings,
       aTransferableArray, aActionType, aContentPolicyType);
   return rv;
 }
@@ -87,13 +83,14 @@ nsresult nsDragSessionProxy::InvokeDragSessionImpl(
       aArrayTransferables, transferables, false, nullptr);
 
   nsCOMPtr<nsIPrincipal> principal;
+  // XXX: Can this use mTriggeringPrincipal instead?
   if (mSourceNode) {
     principal = mSourceNode->NodePrincipal();
   }
 
-  nsCOMPtr<nsIContentSecurityPolicy> csp;
+  nsCOMPtr<nsIPolicyContainer> policyContainer;
   if (mSourceDocument) {
-    csp = mSourceDocument->GetCsp();
+    policyContainer = mSourceDocument->GetPolicyContainer();
     // XXX why do we need this here? Shouldn't they be set properly in
     // nsBaseDragService already?
     mSourceWindowContext = mSourceDocument->GetWindowContext();
@@ -120,28 +117,27 @@ nsresult nsDragSessionProxy::InvokeDragSessionImpl(
         int32_t stride;
         auto surfaceData =
             nsContentUtils::GetSurfaceData(*dataSurface, &length, &stride);
-        if (surfaceData.isNothing()) {
-          NS_WARNING("Failed to create shared memory for drag session.");
-          return NS_ERROR_FAILURE;
+        if (surfaceData) {
+          LOGI("[%p] %s | sending PBrowser::InvokeDragSession with image data",
+               this, __FUNCTION__);
+          (void)child->SendInvokeDragSession(
+              std::move(transferables), aActionType, std::move(surfaceData),
+              stride, dataSurface->GetFormat(), dragRect, principal,
+              policyContainer, csArgs, mSourceWindowContext,
+              mSourceTopWindowContext);
+          return NS_OK;
         }
-
-        LOGI("[%p] %s | sending PBrowser::InvokeDragSession with image data",
-             this, __FUNCTION__);
-        mozilla::Unused << child->SendInvokeDragSession(
-            std::move(transferables), aActionType, std::move(surfaceData),
-            stride, dataSurface->GetFormat(), dragRect, principal, csp, csArgs,
-            mSourceWindowContext, mSourceTopWindowContext);
-        return NS_OK;
+        NS_WARNING("Failed to create shared memory for drag session.");
       }
     }
   }
 
   LOGI("[%p] %s | sending PBrowser::InvokeDragSession without image data", this,
        __FUNCTION__);
-  mozilla::Unused << child->SendInvokeDragSession(
+  (void)child->SendInvokeDragSession(
       std::move(transferables), aActionType, Nothing(), 0,
-      static_cast<SurfaceFormat>(0), dragRect, principal, csp, csArgs,
-      mSourceWindowContext, mSourceTopWindowContext);
+      static_cast<SurfaceFormat>(0), dragRect, principal, policyContainer,
+      csArgs, mSourceWindowContext, mSourceTopWindowContext);
   return NS_OK;
 }
 

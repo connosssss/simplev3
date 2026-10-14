@@ -1,12 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /*
- * A variant-like class abstracting operations on a Parser with a given
- * ParseHandler but unspecified character type.
+ * SpiderMonkey's Parser has two character types: `char16_t` and
+ * `mozilla::Utf8Unit`. EitherParser uses a variant to abstract over the two
+ * Parser with those character types, allowing ModuleBuilder to operate on
+ * either Parser type without needing to know which one it is.
  */
 
 #ifndef frontend_EitherParser_h
@@ -14,9 +14,6 @@
 
 #include "mozilla/Utf8.h"
 #include "mozilla/Variant.h"
-
-#include <type_traits>
-#include <utility>
 
 #include "frontend/Parser.h"
 #include "js/ColumnNumber.h"  // JS::LimitedColumnNumberOneOrigin
@@ -49,7 +46,7 @@ class EitherParser final {
 
   ParserAtomsTable& parserAtoms() {
     auto& base = parser.match(
-        [](auto* parser) -> frontend::ParserSharedBase& { return *parser; });
+        [](auto* parser) -> frontend::ParserBase& { return *parser; });
     return base.parserAtoms();
   }
 };

@@ -4,7 +4,174 @@ title: Changelog
 permalink: /changelog/
 ---
 
-# 142.0 (In Development)
+# 160.0 (In Development)
+* **ui-richtext**
+    * 🆕 Added `StreamingParser`, which parses a markdown document as it arrives in chunks, reparsing only the part of it that can still change. [Bug 2059255](https://bugzilla.mozilla.org/show_bug.cgi?id=2059255)
+* **browser-engine-gecko**
+    * Download filenames from `onExternalResponse` are now validated by Gecko with the same rules as desktop, so `GeckoEngineSession` no longer applies the `String.sanitizeFileName` helper from **support-ktx** to them. [Bug 1822968](https://bugzilla.mozilla.org/show_bug.cgi?id=1822968)
+
+# 159.0
+* **feature-readerview**
+    * 🆕 Added `ReaderViewFeature.colorSchemeOverride`, which forces reader view to be displayed with a given `ColorScheme` without overwriting the one the user configured. [Bug 2069110](https://bugzilla.mozilla.org/show_bug.cgi?id=2069110)
+* **concept-engine**, **browser-engine-gecko**, **browser-engine-system**, **browser-state**, **feature-app-links**
+    * ⚠️ **Breaking change**: `EngineSession.Observer.onLaunchIntentRequest` and `AppIntentState` take a `sourceUrl`, the URL of the page the launch was requested from, or null when the launch was not requested from a page. [Bug 2068801](https://bugzilla.mozilla.org/show_bug.cgi?id=2068801)
+
+# 158.0
+* **feature-accounts-push**
+    * 🆕 Added a `SendTabUseCases.SendToDeviceUseCase` overload that takes a list of devices, sending every tab to every device. [Bug 2056922](https://bugzilla.mozilla.org/show_bug.cgi?id=2056922)
+* **service-pocket**
+    * ⚠️ **Breaking change**: Removed `useMerinoClient` from `ContentRecommendationsRequestConfig`. The content recommendations are always fetched with the Merino client. [Bug 2069992](https://bugzilla.mozilla.org/show_bug.cgi?id=2069992)
+* **support-base**
+    * 🆕 Added `PowerManagerInfoProvider.isPowerSaveMode`, which reports whether the device is in power save (battery saver) mode. [Bug 2068693](https://bugzilla.mozilla.org/show_bug.cgi?id=2068693)
+
+# 157.0
+
+# 156.0
+* **browser-domains**
+    * ⚠️ **Breaking change**: Removed the deprecated `DomainAutoCompleteProvider` class. Use `ShippedDomainsProvider` or `CustomDomainsProvider` instead.
+* **browser-state**
+    * ⚠️ **Breaking change**: Removed `TabPartition` and `TabGroup` from `BrowserState`.
+* **feature-accounts**
+    * 🆕 Added `FxaCapability.PAIRING_V2`, which advertises `capabilities.pairingVersion` in the `fxaccounts:fxa_status` WebChannel response and enables the `fxaccounts:pair_oauth_start` WebChannel command.
+* **support-ktx**
+    * 🆕 Added `File.toSampledBitmap` and `InputStream.toSampledBitmap`, which subsample as they decode so an image is never allocated at full resolution. [Bug 2061502](https://bugzilla.mozilla.org/show_bug.cgi?id=2061502)
+    * ⚠️ **Breaking change**: `String.base64ToBitmap` now takes the target width and height, in pixels, and subsamples to suit. [Bug 2061502](https://bugzilla.mozilla.org/show_bug.cgi?id=2061502)
+* **feature-addons**, **feature-prompts**
+    * Add-on and identity credential icons are now decoded at the size they are displayed at. [Bug 2061502](https://bugzilla.mozilla.org/show_bug.cgi?id=2061502)
+* **compose-base**
+    * 🆕 Added `Modifier.debouncedToggleable`to prevent rapid successive toggles from calling `onValueChange`. [Bug 2064179](https://bugzilla.mozilla.org/show_bug.cgi?id=2064179)
+    * 🆕 `Modifier.debouncedClickable` now accepts a `Role` for accessibility services. [Bug 2064181](https://bugzilla.mozilla.org/show_bug.cgi?id=2064181)
+
+# 155.0
+* **feature-search**
+    * ⚠️ **Breaking change**: Removed the `readJson` parameter from `SerpTelemetryRepository`, along with the `search/search_telemetry_v2.json` asset it read. The `search-telemetry-v2` records now come exclusively from Remote Settings, which serves the dump packaged with application-services. [Bug 2063025](https://bugzilla.mozilla.org/show_bug.cgi?id=2063025)
+
+# 154.0
+* **browser-icons**
+    * ⚠️ **Breaking change**: Removed the `useMerinoManifest` parameter from `BrowserIcons`. The Merino manifest is now always used as the icon source. Removed `TippyTopIconPreparer` and the `IconRequest.Resource.Type.TIPPY_TOP` resource type. [Bug 2047476](https://bugzilla.mozilla.org/show_bug.cgi?id=2047476)
+* **support-base**
+    * 🆕 Added `Action.NEXT` and `Action.PREVIOUS` to the `Fact`.
+* **feature-media**
+    * 🆕 The media notification now emits `Action.NEXT` and `Action.PREVIOUS` facts when the next/previous track buttons are tapped.
+* **compose-base**
+    * 🆕 Added a version of `FloatingActionButton` that accepts a custom icon composable. [Bug 2050581](https://bugzilla.mozilla.org/show_bug.cgi?id=2050581)
+* **browser-engine-gecko**
+    * Fixed the autocomplete selection prompts (login, credit card, and address) not being dismissed when the associated input field loses focus. [Bug 2040184](https://bugzilla.mozilla.org/show_bug.cgi?id=2040184)
+* **feature-webcompat-reporter**
+    * 🆕 Added `sendGleanBrokenSiteReport` which sends a broken site report using Glean. [Bug 2054543](https://bugzilla.mozilla.org/show_bug.cgi?id=2054543)).
+* **concept-engine**, **browser-engine-gecko**, **browser-engine-system**, **browser-state**, **support-test-fakes**
+    * ⚠️ **Breaking change**: Removed the cookie banner handling feature. Removed the `mozilla.components.concept.engine.cookiehandling` package (`CookieBannersStorage`) and `GeckoCookieBannersStorage`, `EngineSession.CookieBannerHandlingMode`, `EngineSession.CookieBannerHandlingStatus`, `EngineSession.Observer.onCookieBannerChange`, `EngineSession.hasCookieBannerRuleForSession`, the `Settings.cookieBannerHandling*` settings, the `cookieBanner*` parameters of `TrackingProtectionPolicy.toContentBlockingSetting`, `CookieBannerAction` and `SessionState.cookieBanner` (also removed from `SessionState.createCopy`). [Bug 2058143](https://bugzilla.mozilla.org/show_bug.cgi?id=2058143)
+
+# 153.0
+* **support-utils**
+  * 🆕 Added `DiskLruCacheStore` to provide shared `DiskLruCache` read, write, remove, and clear helpers for disk-backed components.
+  * 🆕 Added `CacheDirectoryMigration` to help migrating the cache directory used by `DiskLruCache`.
+* **concept-sync**, **service-firefox-accounts**
+    * ⚠️ **Breaking change**: Removed `OAuthAccount.beginOAuthFlow`, `OAuthAccount.beginPairingFlow`, `OAuthAccount.completeOAuthFlow` and the `AuthFlowUrl` type. Sign-in is now driven entirely through the state machine via `FxaAccountManager.beginAuthentication` / `finishAuthentication`.
+
+# 152.0
+* **browser-engine-gecko**
+    * 🆕 New `getTrackingProtectionEventsByDateRange`, `sumAllTrackingProtectionEvents` and `getEarliestTrackingProtectionDate` APIs to query the tracking protection database from Gecko. [Bug 2031989](https://bugzilla.mozilla.org/show_bug.cgi?id=2031989)
+* **feature-session**
+    * 🆕 New `FetchTrackingEventsUseCase`, `FetchTotalTrackersBlockedUseCase` and `FetchEarliestTrackingDateUseCase` usecases to query for tracking protection related dertails from the current engine. [Bug 2031989](https://bugzilla.mozilla.org/show_bug.cgi?id=2031989)
+
+# 151.0
+* **browser-engine-gecko**
+  * 🆕 New Engine Settings API - `useContentBlockingDatabase` that allows controlling whether the content blocking database is enabled. [Bug 2030082](https://bugzilla.mozilla.org/show_bug.cgi?id=2030082)
+
+# 150.0
+* **browser-engine-gecko**
+  * 🆕 The content blocking log will now inform also of blocked cross-site cookies. [Bug 2020898](https://bugzilla.mozilla.org/show_bug.cgi?id=2020898)
+* **support-utils**
+  * The `Browsers().isDefaultBrowser()` method has been removed in favor of a more performant version available as a `Browsers.isDefaultBrowser()` static method. [Bug 2008662](https://bugzilla.mozilla.org/show_bug.cgi?id=2008662)
+
+* **service-firefox-accounts**
+  * ⚠️ **Breaking change**: Removed `currentDeviceId` and `sessionToken` from `mozilla.components.service.fxa.store.Account`.
+  * Added the `FxaAccountManager.connectedAccount` method, which will return an `OAuthAccount` only if the user is in the `Connected` state.
+
+* **support-test**
+    * ⚠️ **Breaking change**: Removed `MainCoroutineRule`. Inject Main Dispatcher if you need to override it in tests. [Bug 1984347](https://bugzilla.mozilla.org/show_bug.cgi?id=1984347)
+
+# 149.0
+* **lib-state**
+  * ⚠️ **Breaking change**: Removed the composableStore API from `ComposeExtensions.kt` in favor of the newer one from `StoreProvider.kt`. [Bug 2017822](https://bugzilla.mozilla.org/show_bug.cgi?id=2017822)
+* **feature-search**
+  * `RegionMiddleware` will not anymore handle `BrowserStore`'s `InitAction`. If you need the region set when the application starts ensure either of `UpdateDistribution` or `RefreshSearchEnginesAction` is dispatched. [Bug 2012962](https://bugzilla.mozilla.org/show_bug.cgi?id=2012962)
+
+* **browser-engine-gecko**
+  * 🆕 New Settings API `DownloadDelegate` that used for `getSuggestedFilename` inside `GeckoEngineSession`.[Bug 2014471](https://bugzilla.mozilla.org/show_bug.cgi?id=2014471)
+* **browser-engine-gecko** and **concept-engine**
+  * 🆕 New Engine Settings API `firefoxRelay` that can be see to different modes with `FirefoxRelayMode`.
+  * Updated GeckoEngine and BrowserPreferencesRuntime to accommodate registering and unregistering multiple browser preferences at a time for observation. [Bug 2006095](https://bugzilla.mozilla.org/show_bug.cgi?id=2006095)
+  * Added `processBackPressed` API to `EngineSession` to handle back navigation events to dismiss some HTML elements such as &lt;dialog&gt;. [Bug 1966467](https://bugzilla.mozilla.org/show_bug.cgi?id=1966467)
+
+* **concept-storage**
+  * Introduced `Login.hint` for context on the login origin that an embedder can use to determine how to handle it.
+
+* **lib-state**
+  * ⚠️ **Breaking change**: Removed flowScoped with the default `coroutineScope` set to `MainScope()`. Always provide your own `CoroutineDispatcher`.
+
+# 148.0
+* **support-utils**
+  * `keyboardAsState` available to use in Jetpack Compose code to know when the IME is shown or hidden. This works more reliably on older Android versions than the frameworks `isImeVisible` API. [Bug 1988730](https://bugzilla.mozilla.org/show_bug.cgi?id=1988730).
+* **browser-engine-gecko** and **concept-engine**
+  * Add optional link text support to HitResult.UNKNOWN to allow getting the text associated with a link in response to a long click
+* **feature-contextmenu**
+  * 🆕 New: "Copy link text" context menu candidate to allow for the ability to copy link text [Bug 1809303](https://bugzilla.mozilla.org/show_bug.cgi?id=1809303)
+* **lib-state**
+  * ⚠️ **Breaking change**: Removed `MiddlewareContext`. You can now pass in a `Store` directly when invoking a `Middleware`. [Bug 2005443](https://bugzilla.mozilla.org/show_bug.cgi?id=2005443).
+* **lib-crash**
+  * 🆕 New `CrashReporter.registerDeferredInitializer()` allows registering a lazy initializer for CrashReporter that is evaluated only when `requireInstance` is accessed, avoiding immediate initialization of dependencies [Bug 2005839](https://bugzilla.mozilla.org/show_bug.cgi?id=2005839)
+
+# 147.0
+* **browser-state**:
+  * ⚠️ **Breaking change**: New `Unknown` third state for the `SecurityStatus` of the connection used in a tab. The `secure` property has been migrated to `isSecure`. [Bug 2000617](https://bugzilla.mozilla.org/show_bug.cgi?id=2000617).
+* **lib-state**
+    * ⚠️ **Breaking change**: Removed thread marshalling from Stores [Bug 1980348](https://bugzilla.mozilla.org/show_bug.cgi?id=1980348).
+        * `Store.dispatch` is now invoked on the calling thread.
+        * `Store.dispatch` no longer spawns a new `Job` (it now returns `Unit`).
+    * ⚠️ **Breaking change**: Removed UIStore [Bug 1980350](https://bugzilla.mozilla.org/show_bug.cgi?id=1980350)
+* **ui-widgets**
+  * 🆕 New `EngineViewScrollingDataBehavior` meant to only be used to animate a bottom toolbar/banner in sync with the current webpage [Bug 1991654](https://bugzilla.mozilla.org/show_bug.cgi?id=1991654).
+* **concept-engine** and **browser-engine-gecko**
+  * 🆕 New `verticalScrollPosition` and `verticalScrollDelta` APIs exposing the current scroll position and delta of the webpage [Bug 1990215](https://bugzilla.mozilla.org/show_bug.cgi?id=1990215).
+* **lib-state**
+  * 🆕 New `fragmentStore`, `activityStore`, `composableStore` and `navBackStackStore` APIs available to build a new Store and persist its State in a ViewModel ensuring that it survives Activity recreations. These APIs supersede the existing ones and avoid the possibility of memory leaks. [Bug 1996676](https://bugzilla.mozilla.org/show_bug.cgi?id=1996676).
+  * ⚠️ **Breaking change**: The `lazyStore` API was removed in favor of the new `fragmentStore`, `activityStore` and `composableStore` APIs. [Bug 1996676](https://bugzilla.mozilla.org/show_bug.cgi?id=1996676).
+
+# 146.0
+
+# 145.0
+* **support-ktx**
+  * 🚒 Bug fixed [Bug 1979064](https://bugzilla.mozilla.org/show_bug.cgi?id=1979064). Added back the API checks for `Window.setupPersistentInsets` and `ImeInsetsSynchronizer.setup` as on Android <13 the insets framework is not reliable.
+* **support-appservices**
+  * ⚠️ **Breaking change**: Updated the `AppServicesInitializer.init` to take in a configuration object instead of individual components.
+* **feature-framebusting**
+  * 🆕 New `GeckoSession.PromptDelegate.RedirectPrompt` prompt that is displayed when a third-party redirect is blocked. [Bug 1988107](https://bugzilla.mozilla.org/show_bug.cgi?id=1988107)
+* **feature-sitepermissions**
+  * 🚒 Bug fixed [Bug 1986429](https://bugzilla.mozilla.org/show_bug.cgi?id=1986429). Ensure that when accepting website notification permission, the user is prompted for system-level notification opt-in, if the system permission was not enabled.
+
+# 144.0
+* **feature-customtabs**
+  * 🚒 Bug fixed [Bug 1983103](https://bugzilla.mozilla.org/show_bug.cgi?id=1983103). Fixed issues with system status bars not being correctly themed for custom tabs and PWAs when used on devices with edge-to-edge enabled.
+* **support-ktx**
+  * 🆕 New `Window.setSystemBarsBackground()` allows to still theme the status bar, navigation bar and other insets background in landscape mode even when edge-to-edge is enabled and Android doesn't theme these anymore. [Bug 1981861](https://bugzilla.mozilla.org/show_bug.cgi?id=1981861)
+* **feature-sitepermissions**
+  * 🆕 New `SitePermissionsLearnMoreUrlProvider` interface that allows customizing whether to show "learn more" links in permission prompts and what URl to link to. [Bug 1985629](https://bugzilla.mozilla.org/show_bug.cgi?id=1985629)
+
+# 143.0
+* **feature-downloads**:
+  * `AbstractFetchDownloadService.onDestroy` will now cancel all non-completed downloads. [Bug 1977393](https://bugzilla.mozilla.org/show_bug.cgi?id=1977393)
+* **concept-engine** and **browser-engine-gecko**
+  * Added methods to get and set multiple browser preferences. [Bug 1974800](https://bugzilla.mozilla.org/show_bug.cgi?id=1974800)
+  * 🌟️ Added a mechanism to observe browser preferences changing. Use `registerPrefObserverDelegate` to register the delegate on the engine and `registerPrefForObservation` to register a specific pref for observation. Alternatively, use `BrowserPrefObserverFeature` which handles registration and broadcasts the events using an `ObserverRegistery`.
+  * Added new LNA content permissions - `ContentLocalDeviceAccess` and `ContentLocalNetworkAccess` and map to respective `GeckoSession.PermissionDelegate` permission. [Bug 1971500](https://bugzilla.mozilla.org/show_bug.cgi?id=1971500)
+  * Added `localDeviceAccess` and `localNetworkAccess` to `SitePermissions`
+* **feature-sitepermissions**
+    * Added two new columns - `local_device_access` and `local_network_access` to `site_permissions` db table
+    * Migrated `SitePermissionsDatabase` to version 9
+
+# 142.0
 * **feature-tabs**:
   * Updated `LastTabFeature` to not close the current tab when there's no history. [Bug 1813413](https://bugzilla.mozilla.org/show_bug.cgi?id=1813413).
 * **feature-downloads**:
@@ -12,10 +179,16 @@ permalink: /changelog/
 * **concept-engine** and **browser-engine-gecko**
   * 🌟️ Added `TrackingProtectionPolicy.bounceTrackingProtectionMode` it allows configuring the Bounce Tracking Protection feature, disabled by default. [Bug 1963445](https://bugzilla.mozilla.org/show_bug.cgi?id=1963445)
   * ⚠️ Options to get, set, and clear browser preferences now require opt in for additional safety.
+  * 🌟️ Added `TrackingProtectionPolicy.allowListBaselineTrackingProtection` and `TrackingProtectionPolicy.allowListConvenienceTrackingProtection`.  Url-classifier(tracking-protection, tracking-annotation, etc) exception entries are categorized into baseline and convenience. The new member variables specify whether exception entries from the corresponding categories are applied. [Bug 1970632](https://bugzilla.mozilla.org/show_bug.cgi?id=1970632)
 * **browser-state**
   * Removed `ContentState.isProductUrl` and related internal changes.
+* **support-ktx**
+  * Remove API level check for `setupPersistentInsets` and add a new option to consume insets; the default is the same current behaviour. [Bug 1977270](https://bugzilla.mozilla.org/show_bug.cgi?id=1977270) and [Bug 1976746](https://bugzilla.mozilla.org/show_bug.cgi?id=1976746).
+  * Remove API level check for `ImeInsetsSynchronizer`. [Bug 1977270](https://bugzilla.mozilla.org/show_bug.cgi?id=1977270)
 * **All components**
   * ⚠️ Introduced `@ExperimentalAndroidComponentsApi` to indicate an API requires special care. Opt in via `@OptIn(ExperimentalAndroidComponentsApi::class)`.
+* **service-firefox-accounts**
+  * Renamed `withConstellation` to `withConstellationIfExists` to signify the block execution is dependant on the account being authenticated first. [Bug 1794207](https://bugzilla.mozilla.org/show_bug.cgi?id=1794207)
 
 # 141.0
 =======

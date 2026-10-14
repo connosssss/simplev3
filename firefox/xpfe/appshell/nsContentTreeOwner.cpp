@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 3; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=2 sw=2 et tw=80:
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -67,6 +65,7 @@ NS_INTERFACE_MAP_BEGIN(nsContentTreeOwner)
   NS_INTERFACE_MAP_ENTRY(nsIWebBrowserChrome)
   NS_INTERFACE_MAP_ENTRY(nsIInterfaceRequestor)
   NS_INTERFACE_MAP_ENTRY(nsIWindowProvider)
+  NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
 NS_INTERFACE_MAP_END
 
 //*****************************************************************************
@@ -193,100 +192,6 @@ NS_IMETHODIMP nsContentTreeOwner::SizeShellTo(nsIDocShellTreeItem* aShellItem,
 }
 
 NS_IMETHODIMP
-nsContentTreeOwner::SetPersistence(bool aPersistPosition, bool aPersistSize,
-                                   bool aPersistSizeMode) {
-  NS_ENSURE_STATE(mAppWindow);
-  nsCOMPtr<dom::Element> docShellElement = mAppWindow->GetWindowDOMElement();
-  if (!docShellElement) return NS_ERROR_FAILURE;
-
-  nsAutoString persistString;
-  docShellElement->GetAttr(nsGkAtoms::persist, persistString);
-
-  bool saveString = false;
-  int32_t index;
-
-  // Set X
-  index = persistString.Find(u"screenX");
-  if (!aPersistPosition && index >= 0) {
-    persistString.Cut(index, 7);
-    saveString = true;
-  } else if (aPersistPosition && index < 0) {
-    persistString.AppendLiteral(" screenX");
-    saveString = true;
-  }
-  // Set Y
-  index = persistString.Find(u"screenY");
-  if (!aPersistPosition && index >= 0) {
-    persistString.Cut(index, 7);
-    saveString = true;
-  } else if (aPersistPosition && index < 0) {
-    persistString.AppendLiteral(" screenY");
-    saveString = true;
-  }
-  // Set CX
-  index = persistString.Find(u"width");
-  if (!aPersistSize && index >= 0) {
-    persistString.Cut(index, 5);
-    saveString = true;
-  } else if (aPersistSize && index < 0) {
-    persistString.AppendLiteral(" width");
-    saveString = true;
-  }
-  // Set CY
-  index = persistString.Find(u"height");
-  if (!aPersistSize && index >= 0) {
-    persistString.Cut(index, 6);
-    saveString = true;
-  } else if (aPersistSize && index < 0) {
-    persistString.AppendLiteral(" height");
-    saveString = true;
-  }
-  // Set SizeMode
-  index = persistString.Find(u"sizemode");
-  if (!aPersistSizeMode && (index >= 0)) {
-    persistString.Cut(index, 8);
-    saveString = true;
-  } else if (aPersistSizeMode && (index < 0)) {
-    persistString.AppendLiteral(" sizemode");
-    saveString = true;
-  }
-
-  ErrorResult rv;
-  if (saveString) {
-    docShellElement->SetAttribute(u"persist"_ns, persistString, rv);
-  }
-
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsContentTreeOwner::GetPersistence(bool* aPersistPosition, bool* aPersistSize,
-                                   bool* aPersistSizeMode) {
-  NS_ENSURE_STATE(mAppWindow);
-  nsCOMPtr<dom::Element> docShellElement = mAppWindow->GetWindowDOMElement();
-  if (!docShellElement) return NS_ERROR_FAILURE;
-
-  nsAutoString persistString;
-  docShellElement->GetAttr(nsGkAtoms::persist, persistString);
-
-  // data structure doesn't quite match the question, but it's close enough
-  // for what we want (since this method is never actually called...)
-  if (aPersistPosition) {
-    *aPersistPosition = persistString.Find(u"screenX") >= 0 ||
-                        persistString.Find(u"screenY") >= 0;
-  }
-  if (aPersistSize) {
-    *aPersistSize =
-        persistString.Find(u"width") >= 0 || persistString.Find(u"height") >= 0;
-  }
-  if (aPersistSizeMode) {
-    *aPersistSizeMode = persistString.Find(u"sizemode") >= 0;
-  }
-
-  return NS_OK;
-}
-
-NS_IMETHODIMP
 nsContentTreeOwner::GetHasPrimaryContent(bool* aResult) {
   NS_ENSURE_STATE(mAppWindow);
   return mAppWindow->GetHasPrimaryContent(aResult);
@@ -309,11 +214,6 @@ NS_IMETHODIMP nsContentTreeOwner::SetLinkStatus(const nsAString& aStatusText) {
   return NS_OK;
 }
 
-NS_IMETHODIMP nsContentTreeOwner::SetChromeFlags(uint32_t aChromeFlags) {
-  NS_ENSURE_STATE(mAppWindow);
-  return mAppWindow->SetChromeFlags(aChromeFlags);
-}
-
 NS_IMETHODIMP nsContentTreeOwner::GetChromeFlags(uint32_t* aChromeFlags) {
   NS_ENSURE_STATE(mAppWindow);
   return mAppWindow->GetChromeFlags(aChromeFlags);
@@ -333,16 +233,6 @@ NS_IMETHODIMP nsContentTreeOwner::IsWindowModal(bool* _retval) {
 //*****************************************************************************
 // nsContentTreeOwner::nsIBaseWindow
 //*****************************************************************************
-
-NS_IMETHODIMP nsContentTreeOwner::InitWindow(nsIWidget* parentWidget, int32_t x,
-                                             int32_t y, int32_t cx,
-                                             int32_t cy) {
-  // Ignore wigdet parents for now.  Don't think those are a vaild thing to
-  // call.
-  NS_ENSURE_SUCCESS(SetPositionAndSize(x, y, cx, cy, 0), NS_ERROR_FAILURE);
-
-  return NS_OK;
-}
 
 NS_IMETHODIMP nsContentTreeOwner::Destroy() {
   NS_ENSURE_STATE(mAppWindow);
@@ -422,11 +312,6 @@ nsContentTreeOwner::GetDimensions(DimensionKind aDimensionKind, int32_t* aX,
     return NS_ERROR_NOT_IMPLEMENTED;
   }
   return GetPrimaryContentSize(aCX, aCY);
-}
-
-NS_IMETHODIMP nsContentTreeOwner::Repaint(bool aForce) {
-  NS_ENSURE_STATE(mAppWindow);
-  return mAppWindow->Repaint(aForce);
 }
 
 NS_IMETHODIMP nsContentTreeOwner::GetParentWidget(nsIWidget** aParentWidget) {
@@ -611,7 +496,7 @@ nsContentTreeOwner::Blur() {
 
     // got it!(?)
     if (foundUs) {
-      appWindow = nextAppWindow;
+      appWindow = std::move(nextAppWindow);
       break;
     }
 

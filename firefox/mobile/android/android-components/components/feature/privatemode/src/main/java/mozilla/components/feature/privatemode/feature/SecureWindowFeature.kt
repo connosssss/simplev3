@@ -6,7 +6,9 @@ package mozilla.components.feature.privatemode.feature
 
 import android.view.Window
 import android.view.WindowManager.LayoutParams.FLAG_SECURE
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -21,8 +23,8 @@ import mozilla.components.support.base.feature.LifecycleAwareFeature
  * Prevents screenshots and screen recordings in private tabs.
  *
  * @param isSecure Returns true if the session should have [FLAG_SECURE] set.
- * @param clearFlagOnStop Used to keep [FLAG_SECURE] enabled or not when calling [stop].
- * Can be overriden to customize when the secure flag is set.
+ * @param clearFlagOnStop Used to keep [FLAG_SECURE] enabled or not when calling [stop]. Can be overriden to customize
+ *   when the secure flag is set.
  */
 class SecureWindowFeature(
     private val window: Window,
@@ -30,23 +32,26 @@ class SecureWindowFeature(
     private val customTabId: String? = null,
     private val isSecure: (SessionState) -> Boolean = { it.content.private },
     private val clearFlagOnStop: Boolean = true,
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
 ) : LifecycleAwareFeature {
 
     private var scope: CoroutineScope? = null
 
     override fun start() {
-        scope = store.flowScoped { flow ->
-            flow.mapNotNull { state -> state.findCustomTabOrSelectedTab(customTabId) }
-                .map { isSecure(it) }
-                .distinctUntilChanged()
-                .collect { isSecure ->
-                    if (isSecure) {
-                        window.addFlags(FLAG_SECURE)
-                    } else {
-                        window.clearFlags(FLAG_SECURE)
+        scope =
+            store.flowScoped(dispatcher = mainDispatcher) { flow ->
+                flow
+                    .mapNotNull { state -> state.findCustomTabOrSelectedTab(customTabId) }
+                    .map { isSecure(it) }
+                    .distinctUntilChanged()
+                    .collect { isSecure ->
+                        if (isSecure) {
+                            window.addFlags(FLAG_SECURE)
+                        } else {
+                            window.clearFlags(FLAG_SECURE)
+                        }
                     }
-                }
-        }
+            }
     }
 
     override fun stop() {

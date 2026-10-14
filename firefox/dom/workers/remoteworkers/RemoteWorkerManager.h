@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -40,15 +38,16 @@ class RemoteWorkerManager final {
   void Launch(RemoteWorkerController* aController,
               const RemoteWorkerData& aData, base::ProcessId aProcessId);
 
-  static bool MatchRemoteType(const nsACString& processRemoteType,
-                              const nsACString& workerRemoteType);
+  static bool MatchRemoteType(const RemoteType& processRemoteType,
+                              const RemoteType& workerRemoteType);
 
   /**
    * Get the child process RemoteType where a RemoteWorker should be
    * launched.
    */
-  static Result<nsCString, nsresult> GetRemoteType(
-      const nsCOMPtr<nsIPrincipal>& aPrincipal, WorkerKind aWorkerKind);
+  static Result<RemoteType, nsresult> GetRemoteType(
+      const nsCOMPtr<nsIPrincipal>& aPrincipal, WorkerKind aWorkerKind,
+      const RemoteType& aCurrentRemoteType);
 
   static bool HasExtensionPrincipal(const RemoteWorkerData& aData);
 
@@ -69,7 +68,7 @@ class RemoteWorkerManager final {
 
   void LaunchInternal(RemoteWorkerController* aController,
                       RemoteWorkerServiceParent* aTargetActor,
-                      UniqueThreadsafeContentParentKeepAlive aKeepAlive,
+                      UniqueThreadsafeContentParentKeepAlive&& aKeepAlive,
                       const RemoteWorkerData& aData);
 
   using LaunchProcessPromise =
@@ -94,7 +93,7 @@ class RemoteWorkerManager final {
   // doesn't need to worry about proxy-releasing the ContentParent if it isn't
   // moved out of the parameter.
   template <typename Callback>
-  void ForEachActor(Callback&& aCallback, const nsACString& aRemoteType,
+  void ForEachActor(Callback&& aCallback, const RemoteType& aRemoteType,
                     Maybe<base::ProcessId> aProcessId = Nothing()) const;
 
   // The list of existing RemoteWorkerServiceParent actors for child processes.

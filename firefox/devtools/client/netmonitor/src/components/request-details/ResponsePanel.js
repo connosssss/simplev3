@@ -7,6 +7,12 @@ const {
   Component,
   createFactory,
 } = require("resource://devtools/client/shared/vendor/react.mjs");
+const {
+  connect,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
+const {
+  getDisplayedMessages,
+} = require("resource://devtools/client/netmonitor/src/selectors/index.js");
 const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.mjs");
 const {
@@ -15,7 +21,9 @@ const {
 const {
   decodeUnicodeBase64,
   fetchNetworkUpdatePacket,
+  isJsonlResponse,
   parseJSON,
+  parseJSONL,
 } = require("resource://devtools/client/netmonitor/src/utils/request-utils.js");
 const {
   getCORSErrorURL,
@@ -66,14 +74,17 @@ loader.lazyGetter(this, "MODE", function () {
 
 const { div, input, label, span, h2 } = dom;
 const JSON_SCOPE_NAME = L10N.getStr("jsonScopeName");
+const JSONL_SCOPE_NAME = L10N.getStr("jsonlScopeName");
 const JSON_FILTER_TEXT = L10N.getStr("jsonFilterText");
 const RESPONSE_PAYLOAD = L10N.getStr("responsePayload");
 const RAW_RESPONSE_PAYLOAD = L10N.getStr("netmonitor.response.raw");
 const HTML_RESPONSE = L10N.getStr("netmonitor.response.html");
 const RESPONSE_EMPTY_TEXT = L10N.getStr("responseEmptyText");
+const RESPONSE_REDIRECT_EMPTY_TEXT = L10N.getStr("responseRedirectEmptyText");
 const RESPONSE_TRUNCATED = L10N.getStr("responseTruncated");
 
 const JSON_VIEW_MIME_TYPE = "application/vnd.mozilla.json.view";
+const JSONLINES_VIEW_MIME_TYPE = "application/vnd.mozilla.jsonlines.view";
 
 /**
  * Response panel component
@@ -89,6 +100,7 @@ class ResponsePanel extends Component {
       showMessagesView: PropTypes.bool,
       defaultRawResponse: PropTypes.bool,
       setDefaultRawResponse: PropTypes.func,
+      messages: PropTypes.array,
     };
   }
 
@@ -143,12 +155,14 @@ class ResponsePanel extends Component {
    * Update only if:
    * 1) The rendered object has changed
    * 2) The user selected another search result target.
-   * 3) Internal state changes
+   * 3) The messages sent changes
+   * 4) Internal state changes
    */
   shouldComponentUpdate(nextProps, nextState) {
     return (
       this.state !== nextState ||
       this.props.request !== nextProps.request ||
+      this.props.messages !== nextProps.messages ||
       nextProps.targetSearchResult !== null
     );
   }
@@ -163,17 +177,22 @@ class ResponsePanel extends Component {
    * as text/plain instead.
    */
   handleJSONResponse(mimeType, response) {
-    const limit = Services.prefs.getIntPref(
-      "devtools.netmonitor.responseBodyLimit"
-    );
     const { request } = this.props;
 
     // Check if the response has been truncated, in which case no parse should
     // be attempted.
-    if (limit > 0 && limit <= request.responseContent.content.size) {
+    //
+    // Note that this logic isn't specific to JSON at all and is the generic handling
+    // of truncated requests!
+    if (request.truncated) {
       const result = {};
       result.error = RESPONSE_TRUNCATED;
       return result;
+    }
+
+    if (isJsonlResponse(mimeType, request.url)) {
+      const { json } = parseJSONL(response);
+      return json ? { json, isJsonl: true } : {};
     }
 
     const { json, error, jsonpCallback, strippedChars } = parseJSON(response);
@@ -261,7 +280,7 @@ class ResponsePanel extends Component {
    * Pick correct component, componentprops, and other needed data to render
    * the given response
    *
-   * @returns {Object} shape:
+   * @returns {object} shape:
    *  {component}: React component used to render response
    *  {Object} componetProps: Props passed to component
    *  {Error} error: JSON parsing error
@@ -278,11 +297,17 @@ class ResponsePanel extends Component {
     let { encoding, mimeType, text } = responseContent.content;
     const { filterText, rawResponsePayloadDisplayed } = this.state;
 
-    // Decode response if it's coming from JSONView.
-    if (mimeType?.includes(JSON_VIEW_MIME_TYPE) && encoding === "base64") {
+    // Decode response if it's coming from JSONView, or if it is a JSON Lines
+    // body, which the backend base64 encodes since it isn't a text type.
+    if (
+      encoding === "base64" &&
+      (mimeType?.includes(JSON_VIEW_MIME_TYPE) ||
+        mimeType?.includes(JSONLINES_VIEW_MIME_TYPE) ||
+        isJsonlResponse(mimeType, url))
+    ) {
       text = decodeUnicodeBase64(text);
     }
-    const { json, jsonpCallback, error, strippedChars } =
+    const { json, jsonpCallback, error, isJsonl, strippedChars } =
       this.handleJSONResponse(mimeType, text) || {};
 
     let component;
@@ -292,7 +317,9 @@ class ResponsePanel extends Component {
     let hasFormattedDisplay = false;
 
     if (json) {
-      if (jsonpCallback) {
+      if (isJsonl) {
+        responsePayloadLabel = JSONL_SCOPE_NAME;
+      } else if (jsonpCallback) {
         responsePayloadLabel = L10N.getFormatStr(
           "jsonpScopeName",
           jsonpCallback
@@ -319,6 +346,7 @@ class ResponsePanel extends Component {
         defaultSelectFirstNode: false,
         mode: MODE.LONG,
         useBaseTreeViewExpand: true,
+        url,
       };
       hasFormattedDisplay = true;
     } else if (Filters.html(this.props.request)) {
@@ -332,8 +360,10 @@ class ResponsePanel extends Component {
       component = SourcePreview;
       componentProps = {
         text,
-        mode: json ? "application/json" : mimeType.replace(/;.+/, ""),
+        mimeType:
+          json && !isJsonl ? "application/json" : mimeType.replace(/;.+/, ""),
         targetSearchResult,
+        url,
       };
     }
     return {
@@ -344,6 +374,7 @@ class ResponsePanel extends Component {
       json,
       responsePayloadLabel,
       xssiStrippedCharsInfoBox,
+      url,
     };
   }
 
@@ -417,8 +448,8 @@ class ResponsePanel extends Component {
   }
 
   render() {
-    const { connector, showMessagesView, request } = this.props;
-    const { blockedReason, responseContent, url } = request;
+    const { connector, showMessagesView, request, messages } = this.props;
+    const { blockedReason, responseContent, url, isRedirect } = request;
     const { filterText, rawResponsePayloadDisplayed } = this.state;
 
     // Display CORS blocked Reason info box
@@ -426,7 +457,16 @@ class ResponsePanel extends Component {
       this.renderCORSBlockedReason(blockedReason);
 
     if (showMessagesView) {
-      return MessagesView({ connector });
+      // Render with the messages view only
+      // - If there are valid messages to view
+      // - If there is nothing to render (this will show the empty content message)
+      //
+      // Note: If there are no messages but we have content for the response
+      // (this can happen when the messages are not formatted properly), we should
+      // fallback to showing the raw response content.
+      if (messages.length || !responseContent?.content.text) {
+        return MessagesView({ connector });
+      }
     }
 
     if (
@@ -437,7 +477,17 @@ class ResponsePanel extends Component {
       return div(
         { className: "panel-container" },
         CORSBlockedReasonDetails,
-        div({ className: "empty-notice" }, RESPONSE_EMPTY_TEXT)
+        // Response body limit configuration may lead to completely empty response body
+        // often because of encoded response which would cut the whole encoded chunk.
+        request.truncated &&
+          div(
+            { className: "response-error-header", title: RESPONSE_TRUNCATED },
+            RESPONSE_TRUNCATED
+          ),
+        div(
+          { className: "empty-notice" },
+          isRedirect ? RESPONSE_REDIRECT_EMPTY_TEXT : RESPONSE_EMPTY_TEXT
+        )
       );
     }
 
@@ -502,4 +552,7 @@ class ResponsePanel extends Component {
   }
 }
 
-module.exports = ResponsePanel;
+module.exports = connect((state, props) => ({
+  // The messages are only needed for websockets or server sent events
+  messages: props.showMessagesView ? getDisplayedMessages(state) : null,
+}))(ResponsePanel);

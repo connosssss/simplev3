@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,10 +8,10 @@
 #import <Cocoa/Cocoa.h>
 
 #include "InputData.h"
-#include "nsRect.h"
-#include "imgIContainer.h"
-#include "nsTArray.h"
 #include "Units.h"
+#include "imgIContainer.h"
+#include "nsRect.h"
+#include "nsTArray.h"
 
 // This must be the last include:
 #include "nsObjCExceptions.h"
@@ -37,6 +36,8 @@ extern NSString* const kUrlsWithTitlesPboardType;
 extern NSString* const kMozWildcardPboardType;
 extern NSString* const kMozCustomTypesPboardType;
 extern NSString* const kMozFileUrlsPboardType;
+extern NSString* const kWebCustomFormatPboardTypePrefix;
+extern NSString* const kWebCustomFormatMapPboardType;
 
 @interface UTIHelper : NSObject
 + (NSString*)stringFromPboardType:(NSString*)aType;
@@ -88,12 +89,12 @@ class nsAutoreleasePool {
 
 @interface NSApplication (Undocumented)
 
-// Present in all versions of OS X from (at least) 10.2.8 through 10.5.
+// Present in all versions of macOS from (at least) 10.2.8 through 10.5.
 - (BOOL)_isRunningModal;
 - (BOOL)_isRunningAppModal;
 
 // Send an event to the current Cocoa app-modal session.  Present in all
-// versions of OS X from (at least) 10.2.8 through 10.5.
+// versions of macOS from (at least) 10.2.8 through 10.5.
 - (void)_modalSession:(NSModalSession)aSession sendEvent:(NSEvent*)theEvent;
 
 @end
@@ -242,16 +243,13 @@ class nsCocoaUtils {
   // Hides the Menu bar and the Dock. Multiple hide/show requests can be nested.
   static void HideOSChromeOnScreen(bool aShouldHide);
 
-  static nsIWidget* GetHiddenWindowWidget();
+  static already_AddRefed<nsIWidget> GetHiddenWindowWidget();
 
   /**
    * Should the application restore its state because it was launched by the OS
    * at login?
    */
   static BOOL ShouldRestoreStateDueToLaunchAtLogin();
-
-  static void PrepareForNativeAppModalDialog();
-  static void CleanUpAfterNativeAppModalDialog();
 
   // 3 utility functions to go from a frame of imgIContainer to CGImage and then
   // to NSImage Convert imgIContainer -> CGImageRef, caller owns result
@@ -370,7 +368,7 @@ class nsCocoaUtils {
   /**
    * Makes a cocoa event from a widget keyboard event.
    */
-  static NSEvent* MakeNewCococaEventFromWidgetEvent(
+  static NSEvent* MakeNewCocoaEventFromWidgetEvent(
       const mozilla::WidgetKeyboardEvent& aKeyEvent, NSInteger aWindowNumber,
       NSGraphicsContext* aContext);
 
@@ -424,7 +422,7 @@ class nsCocoaUtils {
    * to native modifier flags of macOS.
    */
   static NSEventModifierFlags ConvertWidgetModifiersToMacModifierFlags(
-      nsIWidget::Modifiers aNativeModifiers);
+      nsIWidget::NativeModifiers aNativeModifiers);
 
   /**
    * Get the mouse button, which depends on the event's type and buttonNumber.
@@ -446,16 +444,11 @@ class nsCocoaUtils {
   static mozilla::TimeStamp GetEventTimeStamp(NSTimeInterval aEventTime);
 
   /**
-   * Check whether double clicking on the titlebar should cause the window to
-   * zoom (maximize).
+   * Run the action that the "Double-click a window's title bar to" system
+   * setting asks for on aWindow. Called when a double click lands in one of
+   * our own draggable regions, which stand in for the titlebar that we hide.
    */
-  static bool ShouldZoomOnTitlebarDoubleClick();
-
-  /**
-   * Check whether double clicking on the titlebar should cause the window to
-   * minimize.
-   */
-  static bool ShouldMinimizeOnTitlebarDoubleClick();
+  static void PerformTitlebarDoubleClickAction(NSWindow* aWindow);
 
   /**
    * Get the current video capture permission status.
@@ -504,7 +497,7 @@ class nsCocoaUtils {
       mozilla::Modifiers aModifiers);
 
   /**
-   * Return true if aAvailableType is a vaild NSPasteboard type.
+   * Return true if aAvailableType is a valid NSPasteboard type.
    */
   static bool IsValidPasteboardType(NSString* aAvailableType,
                                     bool aAllowFileURL);
@@ -521,6 +514,11 @@ class nsCocoaUtils {
   static void SetTransferDataForTypeFromPasteboardItem(
       nsITransferable* aTransferable, const nsCString& aFlavor,
       NSPasteboardItem* aItem);
+
+  /**
+   * Converts a POPUPPOSITION value to the closest corresponding NSRectEdge.
+   */
+  static NSRectEdge PopupPositionToNSRectEdge(int8_t aPosition);
 
  private:
   /**

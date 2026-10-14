@@ -1,6 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -29,6 +26,7 @@ static int testRegExpFuzz(const uint8_t* buf, size_t size) {
   auto gcGuard = mozilla::MakeScopeExit([&] {
     JS::PrepareForFullGC(gCx);
     JS::NonIncrementalGC(gCx, JS::GCOptions::Normal, JS::GCReason::API);
+    gCx->clearPendingException();
   });
 
   const uint32_t HEADER_LEN = 2;
@@ -61,12 +59,10 @@ static int testRegExpFuzz(const uint8_t* buf, size_t size) {
   Rooted<JSAtom*> pattern(gCx,
                           AtomizeUTF8Chars(gCx, patternChars, patternLength));
   if (!pattern) {
-    ReportOutOfMemory(gCx);
     return 0;
   }
   Rooted<JSAtom*> input(gCx, AtomizeUTF8Chars(gCx, inputChars, inputLength));
   if (!input) {
-    ReportOutOfMemory(gCx);
     return 0;
   }
 

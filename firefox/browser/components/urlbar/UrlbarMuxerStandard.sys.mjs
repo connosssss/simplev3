@@ -9,46 +9,60 @@
 import {
   UrlbarMuxer,
   UrlbarUtils,
-} from "resource:///modules/UrlbarUtils.sys.mjs";
+} from "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs";
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  QuickSuggest: "resource:///modules/QuickSuggest.sys.mjs",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
-  UrlbarProviderOpenTabs: "resource:///modules/UrlbarProviderOpenTabs.sys.mjs",
+  QuickSuggest: "moz-src:///browser/components/urlbar/QuickSuggest.sys.mjs",
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
+  UrlbarPrefs: "moz-src:///browser/components/urlbar/UrlbarPrefs.sys.mjs",
   UrlbarProviderQuickSuggest:
-    "resource:///modules/UrlbarProviderQuickSuggest.sys.mjs",
-  UrlbarProviderTabToSearch:
-    "resource:///modules/UrlbarProviderTabToSearch.sys.mjs",
-  UrlbarSearchUtils: "resource:///modules/UrlbarSearchUtils.sys.mjs",
+    "moz-src:///browser/components/urlbar/UrlbarProviderQuickSuggest.sys.mjs",
+  UrlbarSearchUtils:
+    "moz-src:///browser/components/urlbar/UrlbarSearchUtils.sys.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "logger", () =>
-  UrlbarUtils.getLogger({ prefix: "MuxerUnifiedComplete" })
+  lazy.UrlbarShared.getLogger({ prefix: "MuxerUnifiedComplete" })
 );
 
-const MS_PER_DAY = 1000 * 60 * 60 * 24;
+const SEMANTIC_HISTORY_PROVIDER_NAME = "UrlbarProviderSemanticHistorySearch";
 
 /**
- * Constructs the map key by joining the url with the userContextId if
- * 'browser.urlbar.switchTabs.searchAllContainers' is set to true.
- * Otherwise, just the url is used.
+ * Constructs the map key by joining the url with the userContextId.
  *
  * @param   {UrlbarResult} result The result object.
  * @returns {string} map key
  */
 function makeMapKeyForTabResult(result) {
+  let userContextId =
+    result.type == lazy.UrlbarShared.RESULT_TYPE.TAB_SWITCH
+      ? result.payload.userContext?.id
+      : undefined;
   return UrlbarUtils.tupleString(
     result.payload.url,
-    lazy.UrlbarPrefs.get("switchTabs.searchAllContainers") &&
-      result.type == UrlbarUtils.RESULT_TYPE.TAB_SWITCH &&
-      lazy.UrlbarProviderOpenTabs.isNonPrivateUserContextId(
-        result.payload.userContextId
-      )
-      ? result.payload.userContextId
+    lazy.UrlbarShared.isNonPrivateUserContextId(userContextId)
+      ? userContextId
       : undefined
   );
+}
+
+/**
+ * Returns the scheme- and www-insensitive key used to dedupe a URL across
+ * prefix variants (http vs https, www vs non-www).
+ *
+ * @param {string} url The URL to strip.
+ * @returns {string} The stripped URL.
+ */
+function stripUrlForDedupe(url) {
+  return lazy.UrlbarShared.stripPrefixAndTrim(url, {
+    stripHttp: true,
+    stripHttps: true,
+    stripWww: true,
+    trimEmptyQuery: true,
+  })[0];
 }
 
 /**
@@ -99,6 +113,11 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
       // The total span of results that have been added so far.
       usedResultSpan: 0,
       strippedUrlToTopPrefixAndTitle: new Map(),
+      // Dedupe keys for every page a non-semantic provider returned, so that
+      // semantic-history results that dupe them can be suppressed. URL results
+      // are keyed by stripped URL (prefix-insensitive); switch-to-tab results
+      // by their exact URL, matching how open tabs are keyed.
+      nonSemanticDupeKeys: new Set(),
       baseAndTitleToTopRef: new Map(),
       urlToTabResultType: new Map(),
       addedRemoteTabUrls: new Set(),
@@ -117,18 +136,8 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
       // When you add state, update _copyState() as necessary.
     };
 
-    // Show Top Sites above trending results.
-    let showSearchSuggestionsFirst =
-      context.searchString ||
-      (!lazy.UrlbarPrefs.get("suggest.trending") &&
-        !lazy.UrlbarPrefs.get("suggest.recentsearches"));
-
-    // Determine the result groups to use for this sort.  In search mode with
-    // an engine, show search suggestions first.
-    let rootGroup =
-      context.searchMode?.engineName || !showSearchSuggestionsFirst
-        ? lazy.UrlbarPrefs.makeResultGroups({ showSearchSuggestionsFirst })
-        : lazy.UrlbarPrefs.resultGroups;
+    // Determine the result groups to use for this sort.
+    let rootGroup = lazy.UrlbarPrefs.getResultGroups({ context });
     lazy.logger.debug("Root groups", rootGroup);
 
     // We must do a first pass over the result to reorder some groups.
@@ -137,7 +146,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     // This maps groups to { sortingField, start, length } objects.
     let indicesToSort = new Map();
     for (let i = 0; i < unsortedResults.length; ++i) {
-      let group = UrlbarUtils.getResultGroup(unsortedResults[i]);
+      let group = lazy.UrlbarShared.getResultGroup(unsortedResults[i]);
       let groupObj = this.#getGroupAsObject(rootGroup, group);
       let sortingField = groupObj?.orderBy;
       if (sortingField) {
@@ -157,10 +166,29 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
       unsortedResults.splice(start, length, ...toSort);
     }
 
+    // Pre-scan: collect keys for every page a non-semantic provider returned,
+    // keyed by stripped URL (prefix-insensitive) for URL results and by exact
+    // URL for switch-to-tab results. Semantic-history results that dupe these
+    // are suppressed in `_updateStatePreAdd` and `_canAddResult`. This must run
+    // before the first pass so the keys are complete when those checks run.
+    for (let result of unsortedResults) {
+      if (
+        result.providerName == SEMANTIC_HISTORY_PROVIDER_NAME ||
+        !result.payload.url
+      ) {
+        continue;
+      }
+      if (result.type == lazy.UrlbarShared.RESULT_TYPE.URL) {
+        state.nonSemanticDupeKeys.add(stripUrlForDedupe(result.payload.url));
+      } else if (result.type == lazy.UrlbarShared.RESULT_TYPE.TAB_SWITCH) {
+        state.nonSemanticDupeKeys.add(result.payload.url);
+      }
+    }
+
     // Do the first pass over all results to build some state.
     for (let result of unsortedResults) {
       // Add each result to the appropriate `resultsByGroup` map.
-      let group = UrlbarUtils.getResultGroup(result);
+      let group = lazy.UrlbarShared.getResultGroup(result);
       let resultsByGroup =
         result.hasSuggestedIndex && result.isSuggestedIndexRelativeToGroup
           ? state.suggestedIndexResultsByGroup
@@ -216,7 +244,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
 
     // Add global suggestedIndex results.
     let globalSuggestedIndexResults = state.resultsByGroup.get(
-      UrlbarUtils.RESULT_GROUP.SUGGESTED_INDEX
+      lazy.UrlbarShared.RESULT_GROUP.SUGGESTED_INDEX
     );
     if (globalSuggestedIndexResults) {
       this._addSuggestedIndexResults(
@@ -237,7 +265,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
    * Search for group in rootGroup and return it.
    *
    * @param {object} rootGroup Root group definition.
-   * @param {UrlbarUtils.RESULT_GROUP} group The group to search for.
+   * @param {Values<typeof lazy.UrlbarShared.RESULT_GROUP>} group The group to search for.
    * @returns {object|null} Group object from the root group. The
    *   SUGGESTED_INDEX group is not included in the rootGroup, so this
    *   will return null for it.
@@ -276,6 +304,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
       strippedUrlToTopPrefixAndTitle: new Map(
         state.strippedUrlToTopPrefixAndTitle
       ),
+      nonSemanticDupeKeys: new Set(state.nonSemanticDupeKeys),
       baseAndTitleToTopRef: new Map(state.baseAndTitleToTopRef),
       urlToTabResultType: new Map(state.urlToTabResultType),
       addedRemoteTabUrls: new Set(state.addedRemoteTabUrls),
@@ -347,7 +376,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
           if (this._canAddResult(result, state)) {
             suggestedIndexResults ??= [];
             suggestedIndexResults.push(result);
-            const spanSize = UrlbarUtils.getSpanForResult(result);
+            const spanSize = lazy.UrlbarShared.getSpanForResult(result);
             span += spanSize;
             if (spanSize) {
               resultCount++;
@@ -661,7 +690,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
    * Adds results to a group using the results from its `RESULT_GROUP` in
    * `state.resultsByGroup`.
    *
-   * @param {UrlbarUtils.RESULT_GROUP} groupConst
+   * @param {Values<typeof lazy.UrlbarShared.RESULT_GROUP>} groupConst
    *   The group's `RESULT_GROUP`.
    * @param {object} limits
    *   An object defining the group's limits as described in `_fillGroup`.
@@ -690,7 +719,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     // count here in that case. Other values of maxHistoricalSearchSuggestions
     // are ignored and we use the flex defined on the form history group.
     if (
-      groupConst == UrlbarUtils.RESULT_GROUP.FORM_HISTORY &&
+      groupConst == lazy.UrlbarShared.RESULT_GROUP.FORM_HISTORY &&
       !lazy.UrlbarPrefs.get("maxHistoricalSearchSuggestions")
     ) {
       // Create a new `limits` object so we don't modify the caller's.
@@ -727,6 +756,38 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
   }
 
   /**
+   * Returns whether a result is a semantic-history result that dupes a page
+   * already contributed by a non-semantic provider, and so should be
+   * suppressed. URL results are matched prefix-insensitively (stripped);
+   * switch-to-tab results are matched on their exact URL, the same way open
+   * tabs are keyed.
+   *
+   * @param {UrlbarResult} result
+   *   The result.
+   * @param {object} state
+   *   Global state that we use to make decisions during this sort.
+   * @returns {boolean}
+   *   True if the result is a suppressed semantic-history dupe.
+   */
+  #isSuppressedSemanticDupe(result, state) {
+    if (
+      result.providerName != SEMANTIC_HISTORY_PROVIDER_NAME ||
+      !result.payload.url
+    ) {
+      return false;
+    }
+    if (result.type == lazy.UrlbarShared.RESULT_TYPE.URL) {
+      return state.nonSemanticDupeKeys.has(
+        stripUrlForDedupe(result.payload.url)
+      );
+    }
+    if (result.type == lazy.UrlbarShared.RESULT_TYPE.TAB_SWITCH) {
+      return state.nonSemanticDupeKeys.has(result.payload.url);
+    }
+    return false;
+  }
+
+  /**
    * Returns whether a result can be added to its group given the current sort
    * state.
    *
@@ -741,10 +802,22 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
   // error or increase the complexity threshold.
   // eslint-disable-next-line complexity
   _canAddResult(result, state) {
+    if (state.context.excludeSponsoredResults && result.payload.isSponsored) {
+      return false;
+    }
+
     // Typically the first visible Suggest result is always added.
     if (result.providerName == lazy.UrlbarProviderQuickSuggest.name) {
       if (result.isHiddenExposure) {
         // Always allow hidden exposure Suggest results.
+        return true;
+      }
+      if (
+        result.payload.suggestionObject?.suggestionType == "important_dates"
+      ) {
+        // Always allow important date results since they are considered
+        // utility suggestions rather than typical suggestions.
+        // We assume that there will be at most one.
         return true;
       }
 
@@ -767,12 +840,20 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
           trimSlash: true,
         };
         result.payload.dupedHeuristic =
-          UrlbarUtils.stripPrefixAndTrim(heuristicUrl, opts)[0] ==
-          UrlbarUtils.stripPrefixAndTrim(result.payload.url, opts)[0];
+          lazy.UrlbarShared.stripPrefixAndTrim(heuristicUrl, opts)[0] ==
+          lazy.UrlbarShared.stripPrefixAndTrim(result.payload.url, opts)[0];
         return !result.payload.dupedHeuristic;
       }
 
       return true;
+    }
+
+    // Discard semantic-history results that dupe a non-semantic result for the
+    // same page. The non-semantic result is preferred, so the surviving result
+    // is never mislabeled as semantic. Semantic results with no non-semantic
+    // counterpart are left untouched.
+    if (this.#isSuppressedSemanticDupe(result, state)) {
+      return false;
     }
 
     // We expect UrlbarProviderPlaces sent us the highest-ranked www. and non-www
@@ -789,10 +870,10 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     //    2b. If the heuristic is a non-www origin, discard the www origin.
     if (
       !result.heuristic &&
-      result.type == UrlbarUtils.RESULT_TYPE.URL &&
+      result.type == lazy.UrlbarShared.RESULT_TYPE.URL &&
       result.payload.url
     ) {
-      let [strippedUrl, prefix] = UrlbarUtils.stripPrefixAndTrim(
+      let [strippedUrl, prefix] = lazy.UrlbarShared.stripPrefixAndTrim(
         result.payload.url,
         {
           stripHttp: true,
@@ -834,17 +915,18 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
       return false;
     }
 
-    // HeuristicFallback may add non-heuristic results in some cases, but those
-    // should be retained only if the heuristic result comes from it.
+    // UrlbarProviderHeuristicFallback may add non-heuristic results in some cases,
+    // but those should be retained only if the heuristic result comes from it.
     if (
       !result.heuristic &&
-      result.providerName == "HeuristicFallback" &&
-      state.context.heuristicResult?.providerName != "HeuristicFallback"
+      result.providerName == "UrlbarProviderHeuristicFallback" &&
+      state.context.heuristicResult?.providerName !=
+        "UrlbarProviderHeuristicFallback"
     ) {
       return false;
     }
 
-    if (result.providerName == lazy.UrlbarProviderTabToSearch.name) {
+    if (result.providerName == "UrlbarProviderTabToSearch") {
       // Discard the result if a tab-to-search result was added already.
       if (!state.canAddTabToSearch) {
         return false;
@@ -854,7 +936,9 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
       // tab-to-search result, the tab-to-search provider determined that the
       // typed string is similar to an engine domain. We can let the
       // tab-to-search result through.
-      if (state.context.heuristicResult?.type == UrlbarUtils.RESULT_TYPE.URL) {
+      if (
+        state.context.heuristicResult?.type == lazy.UrlbarShared.RESULT_TYPE.URL
+      ) {
         // Discard the result if the heuristic result is not autofill and we are
         // not making an exception for a fuzzy match.
         if (
@@ -867,7 +951,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
         let autofillHostname = new URL(
           state.context.heuristicResult.payload.url
         ).hostname;
-        let [autofillDomain] = UrlbarUtils.stripPrefixAndTrim(
+        let [autofillDomain] = lazy.UrlbarShared.stripPrefixAndTrim(
           autofillHostname,
           {
             stripWww: true,
@@ -882,7 +966,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
 
         // `searchUrlDomainWithoutSuffix` is the engine's domain with the public
         // suffix already stripped, for example "www.mozilla.".
-        let [engineDomain] = UrlbarUtils.stripPrefixAndTrim(
+        let [engineDomain] = lazy.UrlbarShared.stripPrefixAndTrim(
           result.payload.searchUrlDomainWithoutSuffix,
           {
             stripWww: true,
@@ -897,7 +981,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
 
     // Discard "Search in a Private Window" if appropriate.
     if (
-      result.type == UrlbarUtils.RESULT_TYPE.SEARCH &&
+      result.type == lazy.UrlbarShared.RESULT_TYPE.SEARCH &&
       result.payload.inPrivateWindow &&
       !state.canShowPrivateSearch
     ) {
@@ -909,7 +993,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     // they do not visually disapear as the suggestion is completed and
     // becomes the same url as the heuristic result.
     if (
-      result.type == UrlbarUtils.RESULT_TYPE.SEARCH &&
+      result.type == lazy.UrlbarShared.RESULT_TYPE.SEARCH &&
       result.payload.lowerCaseSuggestion &&
       !result.isRichSuggestion
     ) {
@@ -921,7 +1005,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
 
     // Discard tail suggestions if appropriate.
     if (
-      result.type == UrlbarUtils.RESULT_TYPE.SEARCH &&
+      result.type == lazy.UrlbarShared.RESULT_TYPE.SEARCH &&
       result.payload.tail &&
       !result.isRichSuggestion &&
       !state.canShowTailSuggestions
@@ -931,19 +1015,19 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
 
     // Discard remote tab results that dupes another remote tab or a
     // switch-to-tab result.
-    if (result.type == UrlbarUtils.RESULT_TYPE.REMOTE_TAB) {
+    if (result.type == lazy.UrlbarShared.RESULT_TYPE.REMOTE_TAB) {
       if (state.addedRemoteTabUrls.has(result.payload.url)) {
         return false;
       }
       let maybeDupeType = state.urlToTabResultType.get(result.payload.url);
-      if (maybeDupeType == UrlbarUtils.RESULT_TYPE.TAB_SWITCH) {
+      if (maybeDupeType == lazy.UrlbarShared.RESULT_TYPE.TAB_SWITCH) {
         return false;
       }
     }
 
     // Discard switch-to-tab results that dupes another switch-to-tab result.
     if (
-      result.type == UrlbarUtils.RESULT_TYPE.TAB_SWITCH &&
+      result.type == lazy.UrlbarShared.RESULT_TYPE.TAB_SWITCH &&
       state.addedSwitchTabUrls.has(makeMapKeyForTabResult(result))
     ) {
       return false;
@@ -952,7 +1036,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     // Discard history results that dupe either remote or switch-to-tab results.
     if (
       !result.heuristic &&
-      result.type == UrlbarUtils.RESULT_TYPE.URL &&
+      result.type == lazy.UrlbarShared.RESULT_TYPE.URL &&
       result.payload.url &&
       state.urlToTabResultType.has(result.payload.url)
     ) {
@@ -962,13 +1046,15 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     // Discard SERPs from browser history that dupe either the heuristic or
     // previously added suggestions.
     if (
-      result.source == UrlbarUtils.RESULT_SOURCE.HISTORY &&
-      result.type == UrlbarUtils.RESULT_TYPE.URL &&
+      result.source == lazy.UrlbarShared.RESULT_SOURCE.HISTORY &&
+      result.type == lazy.UrlbarShared.RESULT_TYPE.URL &&
       // If there's no suggestions, we're not going to have anything to match
       // against, so avoid processing the url.
       state.suggestions.size
     ) {
-      let submission = Services.search.parseSubmissionURL(result.payload.url);
+      let submission = lazy.SearchService.parseSubmissionURL(
+        result.payload.url
+      );
       if (submission) {
         let resultQuery = submission.terms.trim().toLocaleLowerCase();
         if (state.suggestions.has(resultQuery)) {
@@ -992,9 +1078,15 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     }
 
     // When in an engine search mode, discard URL results whose hostnames don't
-    // include the root domain of the search mode engine.
-    if (state.context.searchMode?.engineName && result.payload.url) {
-      let engine = Services.search.getEngineByName(
+    // include the root domain of the search mode engine. A heuristic URL is
+    // kept when navigation is enabled in search mode.
+    if (
+      state.context.searchMode?.engineName &&
+      result.payload.url &&
+      state.context.restrictInSearchMode() &&
+      !(result.heuristic && state.context.navigationInSearchModeEnabled)
+    ) {
+      let engine = lazy.SearchService.getEngineByName(
         state.context.searchMode.engineName
       );
       if (engine) {
@@ -1015,7 +1107,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     if (
       state.quickSuggestResult &&
       !result.heuristic &&
-      result.type == UrlbarUtils.RESULT_TYPE.URL &&
+      result.type == lazy.UrlbarShared.RESULT_TYPE.URL &&
       lazy.QuickSuggest.isUrlEquivalentToResultUrl(
         result.payload.url,
         state.quickSuggestResult
@@ -1028,8 +1120,8 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     // presence of a partner's URL search param to detect these. The param is
     // defined in the pref below, which is also used for the newtab page.
     if (
-      result.source == UrlbarUtils.RESULT_SOURCE.HISTORY &&
-      result.type == UrlbarUtils.RESULT_TYPE.URL
+      result.source == lazy.UrlbarShared.RESULT_SOURCE.HISTORY &&
+      result.type == lazy.UrlbarShared.RESULT_TYPE.URL
     ) {
       let param = Services.prefs.getCharPref(
         "browser.newtabpage.activity-stream.hideTopSitesWithSearchParam"
@@ -1060,7 +1152,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     // format that starts with "= ". If our UnitConversion can provide the
     // result, we discard the suggestion of Google in order to deduplicate.
     if (
-      result.type == UrlbarUtils.RESULT_TYPE.SEARCH &&
+      result.type == lazy.UrlbarShared.RESULT_TYPE.SEARCH &&
       result.payload.engine == "Google" &&
       result.payload.suggestion?.startsWith("= ") &&
       state.hasUnitConversionResult
@@ -1082,20 +1174,15 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     // Dedupe history results with different ref.
     if (
       lazy.UrlbarPrefs.get("deduplication.enabled") &&
-      result.source == UrlbarUtils.RESULT_SOURCE.HISTORY &&
-      result.type == UrlbarUtils.RESULT_TYPE.URL &&
-      !result.heuristic &&
-      result.payload.lastVisit
+      result.source == lazy.UrlbarShared.RESULT_SOURCE.HISTORY &&
+      result.type == lazy.UrlbarShared.RESULT_TYPE.URL &&
+      !result.heuristic
     ) {
       let { base, ref } = UrlbarUtils.extractRefFromUrl(result.payload.url);
       let baseAndTitle = `${base} ${result.payload.title}`;
       let topRef = state.baseAndTitleToTopRef.get(baseAndTitle);
 
-      let msSinceLastVisit = Date.now() - result.payload.lastVisit;
-      let daysSinceLastVisit = msSinceLastVisit / MS_PER_DAY;
-      let thresholdDays = lazy.UrlbarPrefs.get("deduplication.thresholdDays");
-
-      if (daysSinceLastVisit >= thresholdDays && ref != topRef) {
+      if (topRef !== undefined && ref != topRef) {
         return false;
       }
     }
@@ -1127,7 +1214,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     if (result.heuristic && this._canAddResult(result, state)) {
       state.maxHeuristicResultSpan = Math.max(
         state.maxHeuristicResultSpan,
-        UrlbarUtils.getSpanForResult(result)
+        lazy.UrlbarShared.getSpanForResult(result)
       );
     }
 
@@ -1140,8 +1227,8 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
       !result.isSuggestedIndexRelativeToGroup &&
       this._canAddResult(result, state)
     ) {
-      let span = UrlbarUtils.getSpanForResult(result);
-      if (result.providerName == lazy.UrlbarProviderTabToSearch.name) {
+      let span = lazy.UrlbarShared.getSpanForResult(result);
+      if (result.providerName == "UrlbarProviderTabToSearch") {
         state.maxTabToSearchResultSpan = Math.max(
           state.maxTabToSearchResultSpan,
           span
@@ -1151,14 +1238,21 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
       }
     }
 
+    // A semantic-history result that dupes a non-semantic result is suppressed
+    // in `_canAddResult`, so it must not participate in the dedup-state blocks
+    // below, or it could become the recorded winner and evict the non-semantic
+    // result we want to keep.
+    let isSemanticDupe = this.#isSuppressedSemanticDupe(result, state);
+
     // Save some state we'll use later to dedupe URL results.
     if (
-      (result.type == UrlbarUtils.RESULT_TYPE.URL ||
-        result.type == UrlbarUtils.RESULT_TYPE.KEYWORD) &&
+      !isSemanticDupe &&
+      (result.type == lazy.UrlbarShared.RESULT_TYPE.URL ||
+        result.type == lazy.UrlbarShared.RESULT_TYPE.KEYWORD) &&
       result.payload.url &&
       (!result.heuristic || !lazy.UrlbarPrefs.get("experimental.hideHeuristic"))
     ) {
-      let [strippedUrl, prefix] = UrlbarUtils.stripPrefixAndTrim(
+      let [strippedUrl, prefix] = lazy.UrlbarShared.stripPrefixAndTrim(
         result.payload.url,
         {
           stripHttp: true,
@@ -1194,8 +1288,9 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     // Even though we are considering tab results and URL results of all sources
     // here to find the top ref, we will only dedupe URL results with history source.
     if (
-      result.type == UrlbarUtils.RESULT_TYPE.URL ||
-      result.type == UrlbarUtils.RESULT_TYPE.TAB_SWITCH
+      !isSemanticDupe &&
+      (result.type == lazy.UrlbarShared.RESULT_TYPE.URL ||
+        result.type == lazy.UrlbarShared.RESULT_TYPE.TAB_SWITCH)
     ) {
       let { base, ref } = UrlbarUtils.extractRefFromUrl(result.payload.url);
 
@@ -1215,8 +1310,8 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     // Save some state we'll use later to dedupe results from open/remote tabs.
     if (
       result.payload.url &&
-      (result.type == UrlbarUtils.RESULT_TYPE.TAB_SWITCH ||
-        (result.type == UrlbarUtils.RESULT_TYPE.REMOTE_TAB &&
+      (result.type == lazy.UrlbarShared.RESULT_TYPE.TAB_SWITCH ||
+        (result.type == lazy.UrlbarShared.RESULT_TYPE.REMOTE_TAB &&
           !state.urlToTabResultType.has(makeMapKeyForTabResult(result))))
     ) {
       // url => result type
@@ -1224,23 +1319,27 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     }
 
     // If we find results other than the heuristic, "Search in Private
-    // Window," or tail suggestions, then we should hide tail suggestions
-    // since they're a last resort.
+    // Window," tail suggestions, or AI chat results, then we should hide
+    // tail suggestions since they're a last resort.
     if (
       state.canShowTailSuggestions &&
       !result.heuristic &&
-      (result.type != UrlbarUtils.RESULT_TYPE.SEARCH ||
+      result.type != lazy.UrlbarShared.RESULT_TYPE.AI_CHAT &&
+      (result.type != lazy.UrlbarShared.RESULT_TYPE.SEARCH ||
         (!result.payload.inPrivateWindow && !result.payload.tail))
     ) {
       state.canShowTailSuggestions = false;
     }
 
-    if (result.providerName == lazy.UrlbarProviderQuickSuggest.name) {
+    if (
+      result.providerName == lazy.UrlbarProviderQuickSuggest.name &&
+      result.payload.suggestionObject?.suggestionType != "important_dates"
+    ) {
       state.quickSuggestResult ??= result;
     }
 
-    state.hasUnitConversionResult =
-      state.hasUnitConversionResult || result.providerName == "UnitConversion";
+    state.hasUnitConversionResult ||=
+      result.providerName == "UrlbarProviderUnitConversion";
 
     // Keep track of result urls to dedupe results with the same url embedded
     // in its query string
@@ -1269,7 +1368,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     if (result.heuristic) {
       state.context.heuristicResult = result;
       if (
-        result.type == UrlbarUtils.RESULT_TYPE.SEARCH &&
+        result.type == lazy.UrlbarShared.RESULT_TYPE.SEARCH &&
         result.payload.query &&
         !lazy.UrlbarPrefs.get("experimental.hideHeuristic")
       ) {
@@ -1284,9 +1383,9 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
     // are other results and all of them are searches.  It should not be shown
     // if the user typed an alias because that's an explicit engine choice.
     if (
-      !Services.search.separatePrivateDefaultUrlbarResultEnabled ||
+      !lazy.SearchService.separatePrivateDefaultUrlbarResultEnabled ||
       (state.canShowPrivateSearch &&
-        (result.type != UrlbarUtils.RESULT_TYPE.SEARCH ||
+        (result.type != lazy.UrlbarShared.RESULT_TYPE.SEARCH ||
           result.payload.providesSearchMode ||
           (result.heuristic && result.payload.keyword)))
     ) {
@@ -1295,7 +1394,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
 
     // Update suggestions.
     if (
-      result.type == UrlbarUtils.RESULT_TYPE.SEARCH &&
+      result.type == lazy.UrlbarShared.RESULT_TYPE.SEARCH &&
       result.payload.lowerCaseSuggestion
     ) {
       let suggestion = result.payload.lowerCaseSuggestion.trim();
@@ -1306,19 +1405,19 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
 
     // Avoid multiple tab-to-search results.
     // TODO (Bug 1670185): figure out better strategies to manage this case.
-    if (result.providerName == lazy.UrlbarProviderTabToSearch.name) {
+    if (result.providerName == "UrlbarProviderTabToSearch") {
       state.canAddTabToSearch = false;
     }
 
     // Sync will send us duplicate remote tabs if multiple copies of a tab are
     // open on a synced client. Keep track of which remote tabs we've added to
     // dedupe these.
-    if (result.type == UrlbarUtils.RESULT_TYPE.REMOTE_TAB) {
+    if (result.type == lazy.UrlbarShared.RESULT_TYPE.REMOTE_TAB) {
       state.addedRemoteTabUrls.add(result.payload.url);
     }
 
     // Keep track of which switch tabs we've added to dedupe switch tabs.
-    if (result.type == UrlbarUtils.RESULT_TYPE.TAB_SWITCH) {
+    if (result.type == lazy.UrlbarShared.RESULT_TYPE.TAB_SWITCH) {
       state.addedSwitchTabUrls.add(makeMapKeyForTabResult(result));
     }
   }
@@ -1378,16 +1477,31 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
       }
 
       if (a.providerName === b.providerName) {
+        if (a.providerName === lazy.UrlbarProviderQuickSuggest.name) {
+          // The important dates suggestion should be before the other suggestion.
+          let aIsDate =
+            a.payload.suggestionObject?.suggestionType === "important_dates";
+          let bIsDate =
+            b.payload.suggestionObject?.suggestionType === "important_dates";
+          return Number(aIsDate) - Number(bIsDate);
+        }
+
         return 0;
       }
 
       // If same suggestedIndex, change the displaying order along to following
       // provider priority.
-      // TabToSearch > QuickSuggest > Other providers
-      if (a.providerName === lazy.UrlbarProviderTabToSearch.name) {
+      // GlobalActions == TabToSearch (legacy) > QuickSuggest > Other providers
+      if (
+        a.providerName === "UrlbarProviderTabToSearch" ||
+        a.providerName === "UrlbarProviderGlobalActions"
+      ) {
         return 1;
       }
-      if (b.providerName === lazy.UrlbarProviderTabToSearch.name) {
+      if (
+        b.providerName === "UrlbarProviderTabToSearch" ||
+        b.providerName === "UrlbarProviderGlobalActions"
+      ) {
         return -1;
       }
       if (a.providerName === lazy.UrlbarProviderQuickSuggest.name) {
@@ -1461,7 +1575,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
    *   otherwise.
    */
   #updateUsedLimits(result, limits, usedLimits, state) {
-    let span = UrlbarUtils.getSpanForResult(result);
+    let span = lazy.UrlbarShared.getSpanForResult(result);
     let newUsedSpan = usedLimits.availableSpan + span;
     if (limits.availableSpan < newUsedSpan) {
       // Adding the result would exceed the available span.
@@ -1482,7 +1596,7 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
   /**
    * Checks exposure eligibility and visibility for the given result.
    * If the result passes the exposure check, we set `result.exposureTelemetry`
-   * to the appropriate `UrlbarUtils.EXPOSURE_TELEMETRY` value.
+   * to the appropriate `UrlbarShared.EXPOSURE_TELEMETRY` value.
    *
    * @param {UrlbarResult} result
    *   The result.
@@ -1490,11 +1604,12 @@ class MuxerUnifiedComplete extends UrlbarMuxer {
   #setExposureTelemetryProperty(result) {
     const exposureResults = lazy.UrlbarPrefs.get("exposureResults");
     if (exposureResults.size) {
-      const telemetryType = UrlbarUtils.searchEngagementTelemetryType(result);
+      const telemetryType =
+        lazy.UrlbarShared.searchEngagementTelemetryType(result);
       if (exposureResults.has(telemetryType)) {
         result.exposureTelemetry = lazy.UrlbarPrefs.get("showExposureResults")
-          ? UrlbarUtils.EXPOSURE_TELEMETRY.SHOWN
-          : UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN;
+          ? lazy.UrlbarShared.EXPOSURE_TELEMETRY.SHOWN
+          : lazy.UrlbarShared.EXPOSURE_TELEMETRY.HIDDEN;
       }
     }
   }

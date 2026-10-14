@@ -12,13 +12,16 @@ import mozilla.components.browser.state.store.BrowserStore
 import org.mozilla.fenix.components.AppStore
 import org.mozilla.fenix.components.appstate.AppAction
 
-/**
- * [LifecycleObserver] to dispatch app lifecycle actions to the [AppStore] and [BrowserStore].
- */
+/** [LifecycleObserver] to dispatch app lifecycle actions to the [AppStore] and [BrowserStore]. */
 class StoreLifecycleObserver(
     private val appStore: AppStore,
     private val browserStore: BrowserStore,
 ) : DefaultLifecycleObserver {
+    override fun onStart(owner: LifecycleOwner) {
+        super.onStart(owner)
+        appStore.dispatch(AppAction.AppLifecycleAction.StartAction)
+    }
+
     override fun onPause(owner: LifecycleOwner) {
         super.onPause(owner)
         appStore.dispatch(AppAction.AppLifecycleAction.PauseAction)

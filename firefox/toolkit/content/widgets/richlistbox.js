@@ -729,7 +729,7 @@
         // select items according to their attributes
         var children = this.itemChildren;
         for (let i = 0; i < children.length; ++i) {
-          if (children[i].getAttribute("selected") == "true") {
+          if (children[i].hasAttribute("selected")) {
             this.selectedItems.append(children[i]);
           }
         }
@@ -778,7 +778,7 @@
             : this.getPreviousItem(newItem, 1) || this.getNextItem(newItem, 1);
       }
       if (newItem) {
-        let hadFocus = this.currentItem.contains(document.activeElement);
+        let hadFocus = this.currentItem?.contains(document.activeElement);
         this.ensureIndexIsVisible(this.getIndexOfItem(newItem));
         if (aIsSelectingRange) {
           this.selectItemRange(null, newItem);
@@ -817,11 +817,7 @@
       }
 
       var style = document.defaultView.getComputedStyle(aItem);
-      return (
-        style.display != "none" &&
-        style.visibility == "visible" &&
-        style.MozUserInput != "none"
-      );
+      return style.display != "none" && style.visibility == "visible";
     }
 
     _selectTimeoutHandler(aMe) {
@@ -988,16 +984,12 @@
      * nsIDOMXULSelectControlItemElement
      */
     set selected(val) {
-      if (val) {
-        this.setAttribute("selected", "true");
-      } else {
-        this.removeAttribute("selected");
-      }
+      this.toggleAttribute("selected", val);
       this._updateInnerControlsForSelection(val);
     }
 
     get selected() {
-      return this.getAttribute("selected") == "true";
+      return this.hasAttribute("selected");
     }
     /**
      * nsIDOMXULSelectControlItemElement

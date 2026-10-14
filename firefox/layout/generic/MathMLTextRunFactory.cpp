@@ -1,22 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "MathMLTextRunFactory.h"
 
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/BinarySearch.h"
 #include "mozilla/ComputedStyle.h"
 #include "mozilla/ComputedStyleInlines.h"
 #include "mozilla/StaticPrefs_mathml.h"
+#include "mozilla/Utf16.h"
 #include "mozilla/intl/UnicodeScriptCodes.h"
-
+#include "nsDeviceContext.h"
+#include "nsFontMetrics.h"
 #include "nsStyleConsts.h"
 #include "nsTextFrameUtils.h"
-#include "nsFontMetrics.h"
-#include "nsDeviceContext.h"
 
 using namespace mozilla;
 
@@ -450,9 +447,9 @@ void MathMLTextRunFactory::RebuildTextRun(
       bool foundDTLS = false;
       // We respect ssty settings explicitly set by the user
       for (uint32_t i = 0; i < font.fontFeatureSettings.Length(); i++) {
-        if (font.fontFeatureSettings[i].mTag == TT_SSTY) {
+        if (font.fontFeatureSettings[i].tag == TT_SSTY) {
           foundSSTY = true;
-        } else if (font.fontFeatureSettings[i].mTag == TT_DTLS) {
+        } else if (font.fontFeatureSettings[i].tag == TT_DTLS) {
           foundDTLS = true;
         }
       }
@@ -492,8 +489,8 @@ void MathMLTextRunFactory::RebuildTextRun(
         }
         if (sstyLevel) {
           gfxFontFeature settingSSTY;
-          settingSSTY.mTag = TT_SSTY;
-          settingSSTY.mValue = sstyLevel;
+          settingSSTY.tag = TT_SSTY;
+          settingSSTY.value = sstyLevel;
           font.fontFeatureSettings.AppendElement(settingSSTY);
         }
       }
@@ -509,8 +506,8 @@ void MathMLTextRunFactory::RebuildTextRun(
       */
       if ((mFlags & MATH_FONT_FEATURE_DTLS) && !foundDTLS) {
         gfxFontFeature settingDTLS;
-        settingDTLS.mTag = TT_DTLS;
-        settingDTLS.mValue = 1;
+        settingDTLS.tag = TT_DTLS;
+        settingDTLS.value = 1;
         font.fontFeatureSettings.AppendElement(settingDTLS);
       }
     }
@@ -533,8 +530,8 @@ void MathMLTextRunFactory::RebuildTextRun(
     }
 
     uint32_t ch = str[i];
-    if (i < length - 1 && NS_IS_SURROGATE_PAIR(ch, str[i + 1])) {
-      ch = SURROGATE_TO_UCS4(ch, str[i + 1]);
+    if (i < length - 1 && mozilla::IsSurrogatePair(ch, str[i + 1])) {
+      ch = mozilla::SurrogateToUCS4(ch, str[i + 1]);
     }
     uint32_t ch2 = MathVariant(ch, mathVar);
 
@@ -574,13 +571,13 @@ void MathMLTextRunFactory::RebuildTextRun(
     styleArray.AppendElement(styles[i]);
     canBreakBeforeArray.AppendElement(aTextRun->CanBreakLineBefore(i));
 
-    if (IS_IN_BMP(ch2)) {
+    if (mozilla::IsInBMP(ch2)) {
       convertedString.Append(ch2);
     } else {
-      convertedString.Append(H_SURROGATE(ch2));
-      convertedString.Append(L_SURROGATE(ch2));
+      convertedString.Append(mozilla::HighSurrogate(ch2));
+      convertedString.Append(mozilla::LowSurrogate(ch2));
       ++extraChars;
-      if (!IS_IN_BMP(ch)) {
+      if (!mozilla::IsInBMP(ch)) {
         deletedCharsArray.AppendElement(
             true);  // not exactly deleted, but
                     // the trailing surrogate is skipped

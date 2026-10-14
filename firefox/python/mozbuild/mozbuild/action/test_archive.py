@@ -17,7 +17,7 @@ import time
 import buildconfig
 import mozpack.path as mozpath
 from manifestparser import TestManifest
-from mozpack.archive import create_tar_gz_from_files
+from mozpack.archive import create_tar_gz_from_files, create_tar_zst_from_files
 from mozpack.copier import FileRegistry
 from mozpack.files import ExistingFile, FileFinder
 from mozpack.manifests import InstallManifest
@@ -36,6 +36,7 @@ TEST_HARNESS_BINS = [
     "GenerateOCSPResponse",
     "OCSPStaplingServer",
     "SanctionsTestServer",
+    "ZeroRttAcceptServer",
     "SmokeDMD",
     "certutil",
     "crashinject",
@@ -52,7 +53,9 @@ TEST_HARNESS_BINS = [
     "plugin-container",
 ]
 
-TEST_HARNESS_DLLS = ["crashinjectdll", "mozglue", "xul", "nss3", "gkcodecs", "lgpllibs"]
+TEST_HARNESS_DLLS = ["crashinjectdll", "mozglue", "msvcp*", "vcruntime*"]
+
+TRAIN_HOP_DLLS = ["xul", "nss3", "nssutil3", "gkcodecs", "lgpllibs", "mozinference"]
 
 GMP_TEST_PLUGIN_DIRS = ["gmp-fake/**", "gmp-fakeopenh264/**"]
 
@@ -96,6 +99,7 @@ ARCHIVE_FILES = {
                 "jittest/**",  # To make the ignore checker happy
                 "perftests/**",
                 "fuzztest/**",
+                "trainhop/**",
             ],
         },
         {"source": buildconfig.topobjdir, "base": "_tests", "pattern": "modules/**"},
@@ -188,16 +192,10 @@ ARCHIVE_FILES = {
             "source": buildconfig.topobjdir,
             "base": "dist/bin",
             "patterns": [
-                "%s%s" % (f, buildconfig.substs["BIN_SUFFIX"])
-                for f in TEST_HARNESS_BINS
+                f"{f}{buildconfig.substs['BIN_SUFFIX']}" for f in TEST_HARNESS_BINS
             ]
             + [
-                "%s%s%s"
-                % (
-                    buildconfig.substs["DLL_PREFIX"],
-                    f,
-                    buildconfig.substs["DLL_SUFFIX"],
-                )
+                f"{buildconfig.substs['DLL_PREFIX']}{f}{buildconfig.substs['DLL_SUFFIX']}"
                 for f in TEST_HARNESS_DLLS
             ],
             "dest": "bin",
@@ -225,6 +223,12 @@ ARCHIVE_FILES = {
             "base": "build/pgo/certs",
             "pattern": "**",
             "dest": "certs",
+        },
+        # Harness used by testing/mozharness/scripts/devtools_compat.py.
+        {
+            "source": buildconfig.topobjdir,
+            "base": "_tests/testing",
+            "pattern": "devtools_compat/**",
         },
     ],
     "cppunittest": [
@@ -312,6 +316,11 @@ ARCHIVE_FILES = {
         {
             "source": buildconfig.topsrcdir,
             "base": "",
+            "pattern": "testing/performance/common/performance-artifact-schema.json",
+        },
+        {
+            "source": buildconfig.topsrcdir,
+            "base": "",
             "pattern": "third_party/python/_venv/**",
         },
         {
@@ -348,6 +357,11 @@ ARCHIVE_FILES = {
             "source": buildconfig.topsrcdir,
             "base": "testing/mozbase/mozsystemmonitor",
             "pattern": "mozsystemmonitor/**",
+        },
+        {
+            "source": buildconfig.topsrcdir,
+            "base": "third_party/python/pyyaml/lib",
+            "pattern": "yaml/**",
         },
         {
             "source": buildconfig.topsrcdir,
@@ -441,23 +455,20 @@ ARCHIVE_FILES = {
         {"source": buildconfig.topsrcdir, "pattern": "build/mach_initialize.py"},
         {
             "source": buildconfig.topsrcdir,
-            "pattern": "python/sites/build.txt",
-        },
-        {
-            "source": buildconfig.topsrcdir,
-            "pattern": "python/sites/common.txt",
-        },
-        {
-            "source": buildconfig.topsrcdir,
-            "pattern": "python/sites/mach.txt",
-        },
-        {"source": buildconfig.topsrcdir, "pattern": "mach/**"},
-        {
-            "source": buildconfig.topsrcdir,
             "pattern": "testing/web-platform/tests/tools/third_party/certifi/**",
         },
         {"source": buildconfig.topsrcdir, "pattern": "testing/mozharness/**"},
         {"source": buildconfig.topsrcdir, "pattern": "browser/config/**"},
+        # Certificates for the HTTP/2 server used by the mobile-startup tests.
+        {
+            "source": buildconfig.topsrcdir,
+            "pattern": "testing/raptor/browsertime/utils/http2-cert.pem",
+        },
+        {
+            "source": buildconfig.topsrcdir,
+            "pattern": "testing/raptor/browsertime/utils/http2-cert.key",
+        },
+        {"source": buildconfig.topsrcdir, "pattern": "netwerk/test/unit/http2-ca.pem"},
         {
             "source": buildconfig.topobjdir,
             "base": "_tests/modules",
@@ -616,7 +627,7 @@ ARCHIVE_FILES = {
         {
             "source": buildconfig.topobjdir,
             "base": "dist/bin",
-            "pattern": "http3server%s" % buildconfig.substs["BIN_SUFFIX"],
+            "pattern": f"http3server{buildconfig.substs['BIN_SUFFIX']}",
             "dest": "xpcshell/http3server",
         },
         {
@@ -683,16 +694,28 @@ ARCHIVE_FILES = {
             "dest": "jit-test",
         },
     ],
+    "trainhop": [
+        {
+            "source": buildconfig.topobjdir,
+            "base": "dist/bin",
+            "patterns": [
+                f"{f}{buildconfig.substs['BIN_SUFFIX']}" for f in TEST_HARNESS_BINS
+            ]
+            + [
+                f"{buildconfig.substs['DLL_PREFIX']}{f}{buildconfig.substs['DLL_SUFFIX']}"
+                for f in TRAIN_HOP_DLLS
+            ],
+            "dest": "bin",
+        },
+    ],
 }
 
 if buildconfig.substs.get("MOZ_CODE_COVERAGE"):
-    ARCHIVE_FILES["common"].append(
-        {
-            "source": buildconfig.topsrcdir,
-            "base": "python/mozbuild/",
-            "patterns": ["mozpack/**", "mozbuild/codecoverage/**"],
-        }
-    )
+    ARCHIVE_FILES["common"].append({
+        "source": buildconfig.topsrcdir,
+        "base": "python/mozbuild/",
+        "patterns": ["mozpack/**", "mozbuild/codecoverage/**"],
+    })
 
 
 if (
@@ -744,8 +767,8 @@ for k, v in ARCHIVE_FILES.items():
         itertools.chain(*(e.get("ignore", []) for e in ARCHIVE_FILES["common"]))
     )
 
-    if not any(p.startswith("%s/" % k) for p in ignores):
-        raise Exception('"common" ignore list probably should contain %s' % k)
+    if not any(p.startswith(f"{k}/") for p in ignores):
+        raise Exception(f'"common" ignore list probably should contain {k}')
 
 
 def find_generated_harness_files():
@@ -822,9 +845,8 @@ def find_files(archive):
         finder = FileFinder(os.path.join(source, base), **common_kwargs)
 
         for pattern in patterns:
-            for p, f in finder.find(pattern):
-                if dest:
-                    p = mozpath.join(dest, p)
+            for raw_p, f in finder.find(pattern):
+                p = mozpath.join(dest, raw_p) if dest else raw_p
                 yield p, f
 
 
@@ -835,22 +857,22 @@ def find_manifest_dirs(topsrcdir, manifests):
     """
     dirs = set()
 
-    for p in manifests:
-        p = os.path.join(topsrcdir, p)
+    for manifest_path in manifests:
+        abs_manifest_path = os.path.join(topsrcdir, manifest_path)
 
-        if p.endswith(".ini") or p.endswith(".toml"):
+        if abs_manifest_path.endswith(".ini") or abs_manifest_path.endswith(".toml"):
             test_manifest = TestManifest()
-            test_manifest.read(p)
+            test_manifest.read(abs_manifest_path)
             dirs |= set([os.path.dirname(m) for m in test_manifest.manifests()])
 
-        elif p.endswith(".list"):
+        elif abs_manifest_path.endswith(".list"):
             m = ReftestManifest()
-            m.load(p)
+            m.load(abs_manifest_path)
             dirs |= m.dirs
 
         else:
             raise Exception(
-                f'"{os.path.splitext(p)[1]}" is not a supported manifest format.'
+                f'"{os.path.splitext(abs_manifest_path)[1]}" is not a supported manifest format.'
             )
 
     dirs = {mozpath.normpath(d[len(topsrcdir) :]).lstrip("/") for d in dirs}
@@ -880,8 +902,8 @@ def main(argv):
     args = parser.parse_args(argv)
 
     out_file = args.outputfile
-    if not out_file.endswith((".tar.gz", ".zip")):
-        raise Exception("expected tar.gz or zip output file")
+    if not out_file.endswith((".tar.gz", ".tar.zst", ".zip")):
+        raise Exception("expected tar.gz, tar.zst or zip output file")
 
     file_count = 0
     t_start = time.monotonic()
@@ -896,6 +918,10 @@ def main(argv):
             files = dict(res)
             create_tar_gz_from_files(fh, files, compresslevel=5)
             file_count = len(files)
+        elif out_file.endswith(".tar.zst"):
+            files = dict(res)
+            create_tar_zst_from_files(fh, files, compresslevel=5, threads=-1)
+            file_count = len(files)
         elif out_file.endswith(".zip"):
             with JarWriter(fileobj=fh, compress_level=5) as writer:
                 for p, f in res:
@@ -904,14 +930,13 @@ def main(argv):
                     )
                     file_count += 1
         else:
-            raise Exception("unhandled file extension: %s" % out_file)
+            raise Exception(f"unhandled file extension: {out_file}")
 
     duration = time.monotonic() - t_start
     zip_size = os.path.getsize(args.outputfile)
     basename = os.path.basename(args.outputfile)
     print(
-        "Wrote %d files in %d bytes to %s in %.2fs"
-        % (file_count, zip_size, basename, duration)
+        f"Wrote {file_count} files in {zip_size} bytes to {basename} in {duration:.2f}s"
     )
 
 

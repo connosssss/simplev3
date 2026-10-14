@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,17 +14,17 @@
 #ifndef mozilla_image_DownscalingFilter_h
 #define mozilla_image_DownscalingFilter_h
 
-#include <algorithm>
-#include <ctime>
 #include <stdint.h>
 
-#include "mozilla/Maybe.h"
-#include "mozilla/UniquePtr.h"
-#include "mozilla/gfx/2D.h"
-
-#include "mozilla/gfx/ConvolutionFilter.h"
+#include <algorithm>
+#include <ctime>
 
 #include "SurfacePipe.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/UniquePtr.h"
+#include "mozilla/fallible.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/ConvolutionFilter.h"
 
 namespace mozilla {
 namespace image {
@@ -65,7 +63,7 @@ class DownscalingFilter final : public SurfaceFilter {
         mRowsInWindow(0),
         mInputRow(0),
         mOutputRow(0),
-        mHasAlpha(true) {}
+        mFormat(gfx::SurfaceFormat::UNKNOWN) {}
 
   ~DownscalingFilter() { ReleaseWindow(); }
 
@@ -98,7 +96,7 @@ class DownscalingFilter final : public SurfaceFilter {
     mScale =
         gfx::MatrixScalesDouble(double(mInputSize.width) / outputSize.width,
                                 double(mInputSize.height) / outputSize.height);
-    mHasAlpha = aConfig.mFormat == gfx::SurfaceFormat::OS_RGBA;
+    mFormat = aConfig.mFormat;
 
     ReleaseWindow();
 
@@ -193,7 +191,7 @@ class DownscalingFilter final : public SurfaceFilter {
       MOZ_RELEASE_ASSERT(mRowsInWindow < mWindowCapacity,
                          "Need more rows than capacity!");
       mXFilter.ConvolveHorizontally(aInputRow, mWindow[mRowsInWindow++],
-                                    mHasAlpha);
+                                    mFormat);
     }
 
     MOZ_ASSERT(mOutputRow < mNext.InputSize().height,
@@ -241,7 +239,7 @@ class DownscalingFilter final : public SurfaceFilter {
                                                         uint32_t aLength) {
       mYFilter.ConvolveVertically(mWindow.get(),
                                   reinterpret_cast<uint8_t*>(aRow), mOutputRow,
-                                  mXFilter.NumValues(), mHasAlpha);
+                                  mXFilter.NumValues(), mFormat);
     });
 
     mOutputRow++;
@@ -303,7 +301,7 @@ class DownscalingFilter final : public SurfaceFilter {
   int32_t mInputRow;      /// The current row we're reading. (0-indexed)
   int32_t mOutputRow;     /// The current row we're writing. (0-indexed)
 
-  bool mHasAlpha;  /// If true, the image has transparency.
+  gfx::SurfaceFormat mFormat;  /// The image format
 };
 
 }  // namespace image

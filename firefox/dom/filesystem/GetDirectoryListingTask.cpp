@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -102,7 +100,7 @@ void GetDirectoryListingTaskChild::SetSuccessRequestResult(
   MOZ_ASSERT(aValue.type() ==
              FileSystemResponseValue::TFileSystemDirectoryListingResponse);
 
-  FileSystemDirectoryListingResponse r = aValue;
+  const FileSystemDirectoryListingResponse& r = aValue;
   for (uint32_t i = 0; i < r.data().Length(); ++i) {
     const FileSystemDirectoryListingResponseData& data = r.data()[i];
 
@@ -250,13 +248,13 @@ FileSystemResponseValue GetDirectoryListingTaskParent::GetSuccessRequestResult(
         continue;
       }
 
-      fileData.blob() = ipcBlob;
-      inputs.AppendElement(fileData);
+      fileData.blob() = std::move(ipcBlob);
+      inputs.AppendElement(std::move(fileData));
     } else {
       MOZ_ASSERT(mTargetData[i].mType == FileOrDirectoryPath::eDirectoryPath);
       FileSystemDirectoryListingResponseDirectory directoryData;
       directoryData.directoryRealPath() = mTargetData[i].mPath;
-      inputs.AppendElement(directoryData);
+      inputs.AppendElement(std::move(directoryData));
     }
   }
 

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -10,29 +8,36 @@
 #include "mozilla/BloomFilter.h"
 #include "mozilla/HashTable.h"
 #include "mozilla/LinkedList.h"
+#include "mozilla/Span.h"
+
+#include "jit/ICState.h"
 #include "jit/JitOptions.h"
 #include "vm/BytecodeLocation.h"
 #include "vm/JSScript.h"
 
 namespace js::jit {
 
+class ICFallbackStub;
+class ICScript;
+
 /*
  *
  * [SMDOC] JitHintsMap
  *
- * The Jit hints map is an in process cache used to collect Baseline and Ion
- * JIT hints to try and skip as much of the warmup as possible and jump
- * straight into those tiers.  Whenever a script enters one of these tiers
- * a hint is recorded in this cache using the script's filename+sourceStart
- * value, and if we ever encounter this script again later, e.g. during a
- * navigation, then we try to eagerly compile it into baseline and ion
- * based on its previous execution history.
+ * The Jit hints map is an in process cache used to collect Baseline
+ * Interpreter, Baseline, and Ion JIT hints to try and skip as much of the
+ * warmup as possible and jump straight into those tiers. A hint is recorded
+ * using the script's filename+sourceStart value, and if we ever encounter this
+ * script again later, e.g. during a navigation, then we try to eagerly compile
+ * it based on its previous execution history.
  */
 
 class JitHintsMap {
   // ScriptKey is a hash on the filename+sourceStart.
   using ScriptKey = HashNumber;
   ScriptKey getScriptKey(JSScript* script) const;
+
+  static constexpr uint32_t ICModeHintMaxEntries = 128;
 
   /* Ion Hints
    * -------------------------------------------------------------------------
@@ -51,8 +56,14 @@ class JitHintsMap {
    * Each IonHint object also contains a list of bytecode offsets for locations
    * of monomorphic inline calls that is used as a hint for future compilations.
    *
+   * Each IonHint also stores a bitmap of IC sites that reached Megamorphic
+   * mode, allowing those ICs to skip directly to Megamorphic on the next
+   * compilation.
+   *
    */
   class IonHint : public mozilla::LinkedListElement<IonHint> {
+    friend class JitHintsMap;
+
     ScriptKey key_ = 0;
 
     // We use a value of 0 to indicate that the script has not entered Ion
@@ -64,10 +75,20 @@ class JitHintsMap {
     // a state of monomorphic inline.
     Vector<uint32_t, 0, SystemAllocPolicy> monomorphicInlineOffsets;
 
-   public:
-    explicit IonHint(ScriptKey key) { key_ = key; }
+    // Bitmap of IC sites that reached Megamorphic mode, one bit per IC.
+    static_assert(ICModeHintMaxEntries % 32 == 0);
+    uint32_t icModeHints_[ICModeHintMaxEntries / 32];
+    uint32_t numICModeHints_ = 0;
 
-    void initThreshold(uint32_t threshold) { threshold_ = threshold; }
+    void resetICHints() {
+      memset(icModeHints_, 0, sizeof(icModeHints_));
+      numICModeHints_ = 0;
+    }
+
+   public:
+    explicit IonHint(ScriptKey key) : key_(key) { resetICHints(); }
+
+    void setThreshold(uint32_t threshold) { threshold_ = threshold; }
 
     uint32_t threshold() { return threshold_; }
 
@@ -82,7 +103,7 @@ class JitHintsMap {
       return monomorphicInlineOffsets.length() < MonomorphicInlineMaxEntries;
     }
 
-    bool hasMonomorphicInlineOffset(uint32_t offset) {
+    bool hasMonomorphicInlineOffset(uint32_t offset) const {
       for (uint32_t iterOffset : monomorphicInlineOffsets) {
         if (iterOffset == offset) {
           return true;
@@ -100,6 +121,19 @@ class JitHintsMap {
       return monomorphicInlineOffsets.append(newOffset);
     }
 
+    bool hasICModeHints() const { return numICModeHints_ > 0; }
+    uint32_t numICModeHints() const { return numICModeHints_; }
+
+    bool isMegamorphicHint(uint32_t index) const {
+      MOZ_ASSERT(index < numICModeHints_);
+      return (icModeHints_[index / 32] >> (index % 32)) & 1;
+    }
+
+    void setMegamorphicHint(uint32_t index) {
+      MOZ_ASSERT(index < ICModeHintMaxEntries);
+      icModeHints_[index / 32] |= 1u << (index % 32);
+    }
+
     ScriptKey key() {
       MOZ_ASSERT(key_ != 0, "Should have valid key.");
       return key_;
@@ -111,7 +145,7 @@ class JitHintsMap {
               js::SystemAllocPolicy>;
   using IonHintPriorityQueue = mozilla::LinkedList<IonHint>;
 
-  static constexpr uint32_t InvalidationThresholdIncrement = 500;
+  static constexpr uint32_t InvalidationThresholdIncrement = 200;
   static constexpr uint32_t IonHintMaxEntries = 5000;
   static constexpr uint32_t MonomorphicInlineMaxEntries = 16;
 
@@ -120,6 +154,23 @@ class JitHintsMap {
 
   ScriptToHintMap ionHintMap_;
   IonHintPriorityQueue ionHintQueue_;
+
+  /* Baseline Interpreter Hints
+   * --------------------------------------------------------------------------
+   * The Baseline Interpreter hints use the same design as the Baseline hints,
+   * with a larger Bloom filter because more scripts enter this tier.
+   */
+  static constexpr uint32_t BaselineInterpreterCacheSize = 18;
+  static constexpr uint32_t BaselineInterpreterMaxEntries = 17124;
+  static_assert(BaselineInterpreterCacheSize == 18 &&
+                    BaselineInterpreterMaxEntries == 17124,
+                "Baseline Interpreter hint limits should be recalculated for "
+                "the given cache size.");
+  mozilla::BitBloomFilter<BaselineInterpreterCacheSize, ScriptKey>
+      baselineInterpreterHintMap_;
+  uint32_t baselineInterpreterEntryCount_ = 0;
+  void addBaselineInterpreterHint(ScriptKey key);
+  void incrementBaselineInterpreterEntryCount();
 
   /* Baseline Hints
    * --------------------------------------------------------------------------
@@ -160,11 +211,18 @@ class JitHintsMap {
   void setEagerBaselineHint(JSScript* script);
   bool mightHaveEagerBaselineHint(JSScript* script) const;
 
+  void setEagerBaselineInterpreterHint(JSScript* script);
+  bool mightHaveEagerBaselineInterpreterHint(JSScript* script) const;
+
   bool recordIonCompilation(JSScript* script);
   bool getIonThresholdHint(JSScript* script, uint32_t& thresholdOut);
 
   bool addMonomorphicInlineLocation(JSScript* script, BytecodeLocation loc);
-  bool hasMonomorphicInlineHintAtOffset(JSScript* script, uint32_t offset);
+  mozilla::Span<const uint32_t> getMonomorphicInlineOffsets(
+      JSScript* script) const;
+
+  bool shouldTransitionMegamorphic(JSScript* script, ICScript* icScript,
+                                   ICFallbackStub* stub);
 
   void recordInvalidation(JSScript* script);
 };

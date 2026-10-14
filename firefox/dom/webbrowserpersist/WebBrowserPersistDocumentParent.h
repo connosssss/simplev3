@@ -1,13 +1,11 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef WebBrowserPersistDocumentParent_h__
-#define WebBrowserPersistDocumentParent_h__
+#ifndef WebBrowserPersistDocumentParent_h_
+#define WebBrowserPersistDocumentParent_h_
 
-#include "mozilla/Maybe.h"
 #include "mozilla/PWebBrowserPersistDocumentParent.h"
 #include "nsCOMPtr.h"
 #include "nsIWebBrowserPersistDocument.h"
@@ -42,11 +40,18 @@ class WebBrowserPersistDocumentParent final
   // is still in the START state (or is unconstructed).
   void SetOnReady(nsIWebBrowserPersistDocumentReceiver* aOnReady);
 
+  // True while the actor is in the START state and no callback has
+  // been attached to it yet.  Used to validate the sub-document actors
+  // that the child sends over PWebBrowserPersistResources, which are
+  // required to be freshly constructed.
+  bool IsUnclaimedStartState() const { return !mOnReady && !mReflection; }
+
   using Attrs = WebBrowserPersistDocumentAttrs;
 
   // IPDL methods:
-  mozilla::ipc::IPCResult RecvAttributes(const Attrs& aAttrs,
-                                         const Maybe<IPCStream>& aPostStream);
+  mozilla::ipc::IPCResult RecvAttributes(Attrs&& aAttrs,
+                                         NotNull<nsIPrincipal*> aPrincipal,
+                                         nsIInputStream* aPostStream);
   mozilla::ipc::IPCResult RecvInitFailure(const nsresult& aFailure);
 
   PWebBrowserPersistResourcesParent* AllocPWebBrowserPersistResourcesParent();
@@ -72,4 +77,4 @@ class WebBrowserPersistDocumentParent final
 
 }  // namespace mozilla
 
-#endif  // WebBrowserPersistDocumentParent_h__
+#endif  // WebBrowserPersistDocumentParent_h_

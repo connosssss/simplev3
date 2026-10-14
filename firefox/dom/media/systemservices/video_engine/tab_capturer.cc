@@ -14,23 +14,22 @@
 #include "modules/desktop_capture/desktop_capture_options.h"
 #include "modules/desktop_capture/desktop_frame.h"
 #include "mozilla/Logging.h"
+#include "mozilla/SpinEventLoopUntil.h"
+#include "mozilla/TaskQueue.h"
 #include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/ImageBitmap.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/PromiseNativeHandler.h"
 #include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/gfx/2D.h"
-#include "mozilla/SpinEventLoopUntil.h"
-#include "mozilla/TaskQueue.h"
 #include "nsThreadUtils.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 
 mozilla::LazyLogModule gTabShareLog("TabShare");
-#define LOG_FUNC_IMPL(level) \
-  MOZ_LOG(                   \
-      gTabShareLog, level,   \
-      ("TabCapturerWebrtc %p: %s id=%" PRIu64, this, __func__, mBrowserId))
+#define LOG_FUNC_IMPL(level)                                         \
+  MOZ_LOG_FMT(gTabShareLog, level, "TabCapturerWebrtc {}: {} id={}", \
+              fmt::ptr(this), __func__, mBrowserId)
 #define LOG_FUNC() LOG_FUNC_IMPL(LogLevel::Debug)
 #define LOG_FUNCV() LOG_FUNC_IMPL(LogLevel::Verbose)
 
@@ -126,8 +125,8 @@ TabCapturerWebrtc::~TabCapturerWebrtc() {
 
 bool TabCapturerWebrtc::GetSourceList(
     webrtc::DesktopCapturer::SourceList* aSources) {
-  MOZ_LOG(gTabShareLog, LogLevel::Debug,
-          ("TabShare: GetSourceList, result %zu", aSources->size()));
+  MOZ_LOG_FMT(gTabShareLog, LogLevel::Debug,
+              "TabShare: GetSourceList, result {}", aSources->size());
   // XXX UI
   return true;
 }
@@ -316,8 +315,8 @@ auto TabCapturerWebrtc::CaptureFrameNow() -> RefPtr<CapturePromise> {
 
   // XXX This would be more efficient if we used CrossProcessPaint directly and
   // returned a surface.
-  RefPtr<Promise> promise =
-      wgp->DrawSnapshot(nullptr, 1.0, "white"_ns, false, IgnoreErrors());
+  RefPtr<Promise> promise = wgp->DrawSnapshot(
+      nullptr, 1.0, "white"_ns, DrawSnapshotOptions(), IgnoreErrors());
   if (!promise) {
     return CapturePromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }

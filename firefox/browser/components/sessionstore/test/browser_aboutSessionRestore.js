@@ -18,7 +18,7 @@ add_task(async function () {
   // Prepare a blank tab.
   let tab = BrowserTestUtils.addTab(gBrowser, "about:blank");
   let browser = tab.linkedBrowser;
-  await promiseBrowserLoaded(browser);
+  await BrowserTestUtils.browserLoaded(browser, { wantLoad: "about:blank" });
 
   // Fake a post-crash tab.
   ss.setTabState(tab, JSON.stringify(TAB_STATE));
@@ -28,7 +28,7 @@ add_task(async function () {
 
   let tabsToggle = browser.contentDocument.getElementById("tabsToggle");
   tabsToggle.click();
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => browser.contentWindow.gTreeInitialized
   );
   let tree = browser.contentDocument.getElementById("tabList");

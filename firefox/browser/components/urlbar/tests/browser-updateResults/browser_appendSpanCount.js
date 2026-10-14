@@ -19,9 +19,10 @@ add_task(async function viewUpdateAppendHidden() {
   // We'll use this test provider to test specific results.  We assume that
   // history and bookmarks have been cleared (by init() above).
   let provider = new DelayingTestProvider();
-  UrlbarProvidersManager.registerProvider(provider);
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  providersManager.registerProvider(provider);
   registerCleanupFunction(() => {
-    UrlbarProvidersManager.unregisterProvider(provider);
+    providersManager.unregisterProvider(provider);
   });
 
   // We do two searches below without closing the panel.  Use "firefox cach" as
@@ -41,16 +42,16 @@ add_task(async function viewUpdateAppendHidden() {
   // suggestions.
   provider.results = queryStrings.map(
     suggestion =>
-      new UrlbarResult(
-        UrlbarUtils.RESULT_TYPE.SEARCH,
-        UrlbarUtils.RESULT_SOURCE.SEARCH,
-        {
+      new UrlbarResult({
+        type: UrlbarShared.RESULT_TYPE.SEARCH,
+        source: UrlbarShared.RESULT_SOURCE.SEARCH,
+        payload: {
           query: queries[0],
           suggestion,
           lowerCaseSuggestion: suggestion.toLocaleLowerCase(),
-          engine: Services.search.defaultEngine.name,
-        }
-      )
+          engine: SearchService.defaultEngine.name,
+        },
+      })
   );
   provider.finishQueryPromise = Promise.resolve();
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
@@ -62,10 +63,10 @@ add_task(async function viewUpdateAppendHidden() {
   let tipResult = await UrlbarTestUtils.getDetailsOfResultAt(window, 1);
   Assert.equal(
     tipResult.type,
-    UrlbarUtils.RESULT_TYPE.TIP,
+    UrlbarShared.RESULT_TYPE.TIP,
     "Result at index 1 is a tip"
   );
-  let tipResultSpan = UrlbarUtils.getSpanForResult(
+  let tipResultSpan = UrlbarShared.getSpanForResult(
     tipResult.element.row.result
   );
   Assert.greater(tipResultSpan, 1, "Sanity check: Tip has large result span");
@@ -81,15 +82,14 @@ add_task(async function viewUpdateAppendHidden() {
   // results, so the view will append the history results as new rows.
   provider.results = queryStrings.map(title => {
     let url = "http://example.com/" + title;
-    return new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.URL,
-      UrlbarUtils.RESULT_SOURCE.HISTORY,
-      {
+    return new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.URL,
+      source: UrlbarShared.RESULT_SOURCE.HISTORY,
+      payload: {
         title,
         url,
-        displayUrl: "http://example.com/" + title,
-      }
-    );
+      },
+    });
   });
 
   // Don't allow the search to finish until we check the updated rows.  We'll
@@ -144,7 +144,7 @@ add_task(async function viewUpdateAppendHidden() {
     let row = rows[i];
     Assert.equal(
       row.result.type,
-      UrlbarUtils.RESULT_TYPE.SEARCH,
+      UrlbarShared.RESULT_TYPE.SEARCH,
       `Result at index ${i} is a search result`
     );
     Assert.ok(
@@ -162,7 +162,7 @@ add_task(async function viewUpdateAppendHidden() {
     let row = rows[i];
     Assert.equal(
       row.result.type,
-      UrlbarUtils.RESULT_TYPE.URL,
+      UrlbarShared.RESULT_TYPE.URL,
       `Result at index ${i} is a URL result`
     );
     Assert.ok(
@@ -185,5 +185,5 @@ add_task(async function viewUpdateAppendHidden() {
   // We unregister the provider above in a cleanup function so we don't
   // accidentally interfere with later tests, but do it here too in case we add
   // more tasks to this test.  It's harmless to call more than once.
-  UrlbarProvidersManager.unregisterProvider(provider);
+  providersManager.unregisterProvider(provider);
 });

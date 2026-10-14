@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,7 +9,7 @@
 #include "mozilla/dom/CSSFontFaceRule.h"
 #include "mozilla/dom/InspectorUtilsBinding.h"
 #include "mozilla/dom/NonRefcountedDOMObject.h"
-#include "nsRange.h"
+#include "mozilla/dom/Range.h"
 
 class gfxFontEntry;
 class gfxFontGroup;
@@ -32,7 +30,7 @@ class InspectorFontFace final : public NonRefcountedDOMObject {
   gfxFontEntry* GetFontEntry() const { return mFontEntry; }
   void AddMatchType(FontMatchType aMatchType) { mMatchType |= aMatchType; }
 
-  void AddRange(nsRange* aRange);
+  void AddRange(Range* aRange);
   size_t RangeCount() const { return mRanges.Length(); }
 
   // Web IDL
@@ -57,7 +55,7 @@ class InspectorFontFace final : public NonRefcountedDOMObject {
                              ErrorResult& aRV);
   void GetFeatures(nsTArray<InspectorFontFeature>& aResult, ErrorResult& aRV);
 
-  void GetRanges(nsTArray<RefPtr<nsRange>>& aResult);
+  void GetRanges(nsTArray<RefPtr<Range>>& aResult);
 
   bool WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto,
                   JS::MutableHandle<JSObject*> aReflector) {
@@ -70,7 +68,7 @@ class InspectorFontFace final : public NonRefcountedDOMObject {
   RefPtr<CSSFontFaceRule> mRule;
   FontMatchType mMatchType;
 
-  nsTArray<RefPtr<nsRange>> mRanges;
+  nsTArray<RefPtr<Range>> mRanges;
 };
 
 }  // namespace mozilla::dom

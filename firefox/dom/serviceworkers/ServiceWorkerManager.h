@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +6,9 @@
 #define mozilla_dom_workers_serviceworkermanager_h
 
 #include <cstdint>
+
 #include "ErrorList.h"
+#include "ServiceWorkerDescriptor.h"
 #include "ServiceWorkerShutdownState.h"
 #include "js/ErrorReport.h"
 #include "mozilla/AlreadyAddRefed.h"
@@ -20,6 +20,7 @@
 #include "mozilla/dom/ClientHandle.h"
 #include "mozilla/dom/ClientOpPromise.h"
 #include "mozilla/dom/ServiceWorkerLifetimeExtension.h"
+#include "mozilla/dom/ServiceWorkerOpPromise.h"
 #include "mozilla/dom/ServiceWorkerRegistrationBinding.h"
 #include "mozilla/dom/ServiceWorkerRegistrationInfo.h"
 #include "mozilla/dom/ServiceWorkerUtils.h"
@@ -34,6 +35,7 @@
 #include "nsTArray.h"
 
 class nsIConsoleReportCollector;
+class nsIServiceWorkerUnregisterCallback;
 
 namespace mozilla {
 
@@ -175,7 +177,7 @@ class ServiceWorkerManager final : public nsIServiceWorkerManager,
 
   RefPtr<ServiceWorkerRegistrationPromise> Register(
       const ClientInfo& aClientInfo, const nsACString& aScopeURL,
-      const nsACString& aScriptURL,
+      const WorkerType& aType, const nsACString& aScriptURL,
       ServiceWorkerUpdateViaCache aUpdateViaCache);
 
   RefPtr<ServiceWorkerRegistrationPromise> GetRegistration(
@@ -192,8 +194,8 @@ class ServiceWorkerManager final : public nsIServiceWorkerManager,
       const nsACString& aScope) const;
 
   already_AddRefed<ServiceWorkerRegistrationInfo> CreateNewRegistration(
-      const nsCString& aScope, nsIPrincipal* aPrincipal,
-      ServiceWorkerUpdateViaCache aUpdateViaCache,
+      const nsCString& aScope, const WorkerType& aType,
+      nsIPrincipal* aPrincipal, ServiceWorkerUpdateViaCache aUpdateViaCache,
       IPCNavigationPreloadState aNavigationPreloadState =
           IPCNavigationPreloadState(false, "true"_ns));
 
@@ -268,9 +270,9 @@ class ServiceWorkerManager final : public nsIServiceWorkerManager,
                                  const net::CookieStruct& aCookie,
                                  bool aCookieDeleted);
 
-  nsresult SendPushEvent(const nsACString& aOriginAttributes,
-                         const nsACString& aScope, const nsAString& aMessageId,
-                         const Maybe<nsTArray<uint8_t>>& aData);
+  RefPtr<PushHandledPromise> SendPushEvent(
+      const nsACString& aOriginAttributes, const nsACString& aScope,
+      const nsAString& aMessageId, const Maybe<nsTArray<uint8_t>>& aData);
 
   void WorkerIsIdle(ServiceWorkerInfo* aWorker);
 
@@ -442,7 +444,8 @@ class ServiceWorkerManager final : public nsIServiceWorkerManager,
   // Used by remove() and removeAll() when clearing history.
   // MUST ONLY BE CALLED FROM UnregisterIfMatchesHost!
   void ForceUnregister(RegistrationDataPerPrincipal* aRegistrationData,
-                       ServiceWorkerRegistrationInfo* aRegistration);
+                       ServiceWorkerRegistrationInfo* aRegistration,
+                       nsIServiceWorkerUnregisterCallback* aCallback = nullptr);
 
   // An "orphaned" registration is one that is unregistered and not controlling
   // clients. The ServiceWorkerManager must know about all orphaned

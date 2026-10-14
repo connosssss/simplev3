@@ -13,16 +13,19 @@
 
 #sidebar-panel-header {
   justify-content: space-between;
+  /* Use the same font size as set in browser/components/sidebar/sidebar-panel-header.css */
+  font-size: 15px;
   padding-inline: var(--space-large);
   padding-block-start: var(--space-large);
 
   > h4 {
     margin-block: var(--space-large);
-    font-weight: var(--font-weight-bold);
-    font-size: 15px;
+    font-weight: var(--font-weight-heading);
+    @media -moz-pref("sidebar.visibility", "hide-launcher") {
+      display: none;
+    }
   }
 
-  /* stylelint-disable-next-line media-query-no-invalid */
   @media not -moz-pref("sidebar.revamp") {
     display: none;
   }
@@ -77,19 +80,17 @@
 
 #viewButton {
   appearance: none;
-  border-radius: 4px;
+  border-radius: var(--border-radius-small);
   padding: 2px 4px;
   color: inherit;
 }
 
 #viewButton:hover {
-  /* Matches --toolbarbutton-hover-background: */
-  background-color: color-mix(in srgb, currentColor 17%, transparent);
+  background-color: var(--toolbarbutton-background-color-hover);
 }
 
 #viewButton[open] {
-  /* Matches --toolbarbutton-active-background: */
-  background-color: color-mix(in srgb, currentColor 30%, transparent);
+  background-color: var(--toolbarbutton-background-color-active);
 }
 
 #viewButton:focus-visible {
@@ -146,7 +147,7 @@
   #viewButton {
     margin: 0;
     margin-inline-start: 4px;
-    border-radius: 2px;
+    border-radius: var(--border-radius-xsmall);
   }
 }
 

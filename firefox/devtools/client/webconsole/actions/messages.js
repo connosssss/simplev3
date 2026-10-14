@@ -123,7 +123,7 @@ function messageGetMatchingElements(message) {
       const selectedTargetFront = message?.targetFront;
 
       const response = await commands.scriptCommand.execute(
-        `document.querySelectorAll('${message.cssSelectors}')`,
+        `document.querySelectorAll('${CSS.escape(message.cssSelectors)}')`,
         {
           selectedTargetFront,
           innerWindowID: message.innerWindowID,
@@ -148,12 +148,10 @@ function messageRemove(id) {
   };
 }
 
-function networkMessageUpdates(packets, idGenerator = null) {
-  if (idGenerator == null) {
-    idGenerator = defaultIdGenerator;
-  }
-
-  const messages = packets.map(packet => prepareMessage(packet, idGenerator));
+function networkMessageUpdates(packets) {
+  const messages = packets.map(packet =>
+    prepareMessage(packet, defaultIdGenerator)
+  );
 
   return {
     type: NETWORK_MESSAGES_UPDATE,

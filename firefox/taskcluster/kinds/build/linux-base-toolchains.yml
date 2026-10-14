@@ -7,14 +7,9 @@
 # linux.yml would make using task-defaults there significantly less useful.
 ---
 task-defaults:
-    worker-type: b-linux-gcp
+    worker-type: b-linux-docker-amd
     run:
-        extra-config:
-            extra_mozconfig_content:
-                # Builds on automation don't normally build geckodriver,
-                # but to ensure we also successfully build geckodriver with
-                # the MSRV, force it to be built.
-                - ac_add_options --enable-geckodriver
+        clone-with: hg
 
 linux64-base-toolchains/opt:
     description: "Linux64 base toolchains Opt"
@@ -30,6 +25,8 @@ linux64-base-toolchains/opt:
         env:
             PERFHERDER_EXTRA_OPTIONS: base-toolchains
             FORCE_GCC: '1'
+    mozconfig:
+        variant: nightly-base-toolchains
     run:
         using: mozharness
         actions: [get-secrets, build]
@@ -53,7 +50,7 @@ linux64-base-toolchains/opt:
             - linux64-node-12
             - linux64-pkgconf
             - sysroot-x86_64-linux-gnu
-            - sysroot-wasm32-wasi-clang-8.0
+            - sysroot-wasm32-wasi-clang-base
 
 linux64-base-toolchains/debug:
     description: "Linux64 base toolchains Debug"
@@ -70,6 +67,8 @@ linux64-base-toolchains/debug:
         env:
             PERFHERDER_EXTRA_OPTIONS: base-toolchains
             FORCE_GCC: '1'
+    mozconfig:
+        variant: debug-base-toolchains
     run:
         using: mozharness
         actions: [get-secrets, build]
@@ -79,7 +78,6 @@ linux64-base-toolchains/debug:
         script: "mozharness/scripts/fx_desktop_build.py"
         secrets: true
         custom-build-variant-cfg: debug
-        mozconfig-variant: debug
         tooltool-downloads: public
     use-sccache: true
     fetches:
@@ -95,7 +93,7 @@ linux64-base-toolchains/debug:
             - linux64-node-12
             - linux64-pkgconf
             - sysroot-x86_64-linux-gnu
-            - sysroot-wasm32-wasi-clang-8.0
+            - sysroot-wasm32-wasi-clang-base
 
 linux64-base-toolchains-clang/opt:
     description: "Linux64 base toolchains clang Opt"
@@ -111,6 +109,8 @@ linux64-base-toolchains-clang/opt:
         env:
             PERFHERDER_EXTRA_OPTIONS: base-toolchains-clang
             DISABLE_CLANG_PLUGIN: '1'
+    mozconfig:
+        variant: nightly-base-toolchains
     run:
         using: mozharness
         actions: [get-secrets, build]
@@ -133,7 +133,7 @@ linux64-base-toolchains-clang/opt:
             - linux64-pkgconf
             - linux64-sccache
             - sysroot-x86_64-linux-gnu
-            - sysroot-wasm32-wasi-clang-8.0
+            - sysroot-wasm32-wasi-clang-base
 
 linux64-base-toolchains-clang/debug:
     description: "Linux64 base toolchains clang Debug"
@@ -150,6 +150,8 @@ linux64-base-toolchains-clang/debug:
         env:
             PERFHERDER_EXTRA_OPTIONS: base-toolchains-clang
             DISABLE_CLANG_PLUGIN: '1'
+    mozconfig:
+        variant: debug-base-toolchains
     run:
         using: mozharness
         actions: [get-secrets, build]
@@ -159,7 +161,6 @@ linux64-base-toolchains-clang/debug:
         script: "mozharness/scripts/fx_desktop_build.py"
         secrets: true
         custom-build-variant-cfg: debug
-        mozconfig-variant: debug
         tooltool-downloads: public
     use-sccache: true
     fetches:
@@ -174,4 +175,4 @@ linux64-base-toolchains-clang/debug:
             - linux64-pkgconf
             - linux64-sccache
             - sysroot-x86_64-linux-gnu
-            - sysroot-wasm32-wasi-clang-8.0
+            - sysroot-wasm32-wasi-clang-base

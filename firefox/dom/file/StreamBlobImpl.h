@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,17 +7,13 @@
 
 #include "BaseBlobImpl.h"
 #include "nsCOMPtr.h"
-#include "nsIMemoryReporter.h"
 #include "nsICloneableInputStream.h"
 
 namespace mozilla::dom {
 
-class StreamBlobImpl final : public BaseBlobImpl, public nsIMemoryReporter {
-  MOZ_DEFINE_MALLOC_SIZE_OF(MallocSizeOf)
-
+class StreamBlobImpl final : public BaseBlobImpl {
  public:
-  NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_NSIMEMORYREPORTER
+  NS_INLINE_DECL_REFCOUNTING_INHERITED(StreamBlobImpl, BaseBlobImpl)
 
   // Blob constructor.
   static already_AddRefed<StreamBlobImpl> Create(
@@ -78,6 +72,9 @@ class StreamBlobImpl final : public BaseBlobImpl, public nsIMemoryReporter {
                  const nsAString& aBlobImplType);
 
   ~StreamBlobImpl() override;
+
+  nsresult CollectReports(nsIHandleReportCallback* aHandleReport,
+                          nsISupports* aData, bool aAnonymize) override;
 
   void MaybeRegisterMemoryReporter();
 

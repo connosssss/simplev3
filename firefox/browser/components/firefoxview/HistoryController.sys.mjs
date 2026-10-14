@@ -11,17 +11,6 @@ ChromeUtils.defineESModuleGetters(lazy, {
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
 });
 
-let XPCOMUtils = ChromeUtils.importESModule(
-  "resource://gre/modules/XPCOMUtils.sys.mjs"
-).XPCOMUtils;
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  lazy,
-  "maxRowsPref",
-  "browser.firefox-view.max-history-rows",
-  -1
-);
-
 const HISTORY_MAP_L10N_IDS = {
   sidebar: {
     "history-date-today": "sidebar-history-date-today",
@@ -67,13 +56,30 @@ export class HistoryController {
   #todaysDate;
   #yesterdaysDate;
 
-  constructor(host, options) {
+  /**
+   * Construct a new HistoryController.
+   *
+   * @param {ReactiveControllerHost} host
+   *   The component that this controller is connected to.
+   * @param {object} [options]
+   * @param {string} [options.sortOption]
+   * @param {number} [options.searchResultsLimit]
+   * @param {string} [options.component]
+   */
+  constructor(
+    host,
+    {
+      sortOption = "date",
+      searchResultsLimit = 300,
+      component = "firefoxview",
+    } = {}
+  ) {
     this.placesQuery = new lazy.PlacesQuery();
     this.searchQuery = "";
-    this.sortOption = "date";
-    this.searchResultsLimit = options?.searchResultsLimit || 300;
-    this.component = HISTORY_MAP_L10N_IDS?.[options?.component]
-      ? options?.component
+    this.sortOption = sortOption;
+    this.searchResultsLimit = searchResultsLimit;
+    this.component = HISTORY_MAP_L10N_IDS[component]
+      ? component
       : "firefoxview";
     this.historyCache = {
       entries: null,
@@ -95,13 +101,6 @@ export class HistoryController {
 
   deleteFromHistory() {
     return lazy.PlacesUtils.history.remove(this.host.triggerNode.url);
-  }
-
-  deleteMultipleFromHistory() {
-    const pageGuids = [...this.host.selectedLists].flatMap(
-      ({ selectedGuids }) => [...selectedGuids]
-    );
-    return lazy.PlacesUtils.history.remove(pageGuids);
   }
 
   onSearchQuery(e) {
@@ -162,18 +161,15 @@ export class HistoryController {
     }
     for (const { items } of entries) {
       for (const item of items) {
-        switch (sortOption) {
-          case "datesite": {
-            // item is a [ domain, visit[] ] entry.
-            const [, visits] = item;
-            for (const visit of visits) {
-              this.#normalizeVisit(visit);
-            }
-            break;
+        if (sortOption === "datesite" && !searchQuery) {
+          // item is a [ domain, visit[] ] entry.
+          const [, visits] = item;
+          for (const visit of visits) {
+            this.#normalizeVisit(visit);
           }
-          default:
-            // item is a single visit.
-            this.#normalizeVisit(item);
+        } else {
+          // item is a single visit.
+          this.#normalizeVisit(item);
         }
       }
     }
@@ -189,6 +185,19 @@ export class HistoryController {
    */
   #normalizeVisit(visit) {
     visit.time = visit.date.getTime();
+    // Visits are cached and can be normalized more than once, so derive `guid`
+    // from the page guid captured on the first pass rather than from the
+    // (already time-suffixed) `guid`, which would otherwise keep growing.
+    visit.pageGuid ??= visit.guid;
+    // A row identifies a page, and for the date sorts a page per day, since
+    // that is how the query groups visits. Keying on the visit time instead
+    // would change a row's identity every time the page is visited again.
+    visit.guid =
+      this.sortOption === "date" || this.sortOption === "datesite"
+        ? `${visit.pageGuid}|${this.placesQuery.getStartOfDayTimestamp(
+            visit.date
+          )}`
+        : visit.pageGuid;
     visit.title = visit.title || visit.url;
     visit.icon = `page-icon:${visit.url}`;
     visit.primaryL10nId = "fxviewtabrow-tabs-list-tab";
@@ -235,6 +244,7 @@ export class HistoryController {
         this.#setTodaysDate();
         return this.#getVisitsForDateSite(historyMap);
       case "lastvisited":
+      case "mostvisited":
         return this.#getVisitsForLastVisited(historyMap);
       default:
         return [];
@@ -513,7 +523,7 @@ export class HistoryController {
   async #fetchHistory() {
     return this.placesQuery.getHistory({
       daysOld: 60,
-      limit: lazy.maxRowsPref,
+      limit: -1,
       sortBy: this.sortOption,
     });
   }

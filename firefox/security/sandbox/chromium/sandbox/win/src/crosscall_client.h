@@ -1,13 +1,18 @@
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+// Copyright 2012 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef SANDBOX_SRC_CROSSCALL_CLIENT_H_
-#define SANDBOX_SRC_CROSSCALL_CLIENT_H_
+#ifndef SANDBOX_WIN_SRC_CROSSCALL_CLIENT_H_
+#define SANDBOX_WIN_SRC_CROSSCALL_CLIENT_H_
 
 #include <stddef.h>
 #include <stdint.h>
 
+#include <string_view>
+
+#include "base/compiler_specific.h"
+#include "base/memory/raw_ptr_exclusion.h"
+#include "base/memory/raw_ref.h"
 #include "sandbox/win/src/crosscall_params.h"
 #include "sandbox/win/src/sandbox.h"
 
@@ -41,7 +46,11 @@
 // return codes indicate that the IPC transport failed to deliver it.
 namespace sandbox {
 
-enum class IpcTag;
+enum class IpcTag : uint32_t;
+
+// this is the assumed channel size. This can be overridden in a given
+// IPC implementation.
+const uint32_t kIPCChannelSize = 1024;
 
 // The copy helper uses templates to deduce the appropriate copy function to
 // copy the input parameters in the buffer that is going to be send across the
@@ -53,10 +62,10 @@ enum class IpcTag;
 template <typename T>
 class CopyHelper {
  public:
-  CopyHelper(const T& t) : t_(t) {}
+  explicit CopyHelper(const T& t) : t_(t) {}
 
   // Returns the pointer to the start of the input.
-  const void* GetStart() const { return &t_; }
+  const void* GetStart() const { return &*t_; }
 
   // Update the stored value with the value in the buffer. This is not
   // supported for this type.
@@ -78,7 +87,7 @@ class CopyHelper {
   }
 
  private:
-  const T& t_;
+  const raw_ref<const T> t_;
 };
 
 // This copy helper template specialization if for the void pointer
@@ -86,7 +95,7 @@ class CopyHelper {
 template <>
 class CopyHelper<void*> {
  public:
-  CopyHelper(void* t) : t_(t) {}
+  explicit CopyHelper(void* t) : t_(t) {}
 
   // Returns the pointer to the start of the input.
   const void* GetStart() const { return &t_; }
@@ -108,18 +117,19 @@ class CopyHelper<void*> {
   ArgType GetType() { return VOIDPTR_TYPE; }
 
  private:
-  const void* t_;
+  // Not a raw_ptr<> as this might be a Win32 type such as LPVOID or HANDLE.
+  RAW_PTR_EXCLUSION const void* t_;
 };
 
 // This copy helper template specialization catches the cases where the
-// parameter is a pointer to a string.
+// parameter is a wstring_view object.
 template <>
-class CopyHelper<const wchar_t*> {
+class CopyHelper<std::wstring_view> {
  public:
-  CopyHelper(const wchar_t* t) : t_(t) {}
+  explicit CopyHelper(std::wstring_view t) : t_(t) {}
 
   // Returns the pointer to the start of the string.
-  const void* GetStart() const { return t_; }
+  const void* GetStart() const { return t_.data(); }
 
   // Update the stored value with the value in the buffer. This is not
   // supported for this type.
@@ -128,15 +138,9 @@ class CopyHelper<const wchar_t*> {
     return true;
   }
 
-  // Returns the size of the string in bytes. We define a nullptr string to
-  // be of zero length.
+  // Returns the size of the string in bytes.
   uint32_t GetSize() const {
-    __try {
-      return (!t_) ? 0
-                   : static_cast<uint32_t>(StringLength(t_) * sizeof(t_[0]));
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-      return UINT32_MAX;
-    }
+    return static_cast<uint32_t>(t_.size() * sizeof(wchar_t));
   }
 
   // Returns true if the current type is used as an In or InOut parameter.
@@ -145,56 +149,7 @@ class CopyHelper<const wchar_t*> {
   ArgType GetType() { return WCHAR_TYPE; }
 
  private:
-  // We provide our not very optimized version of wcslen(), since we don't
-  // want to risk having the linker use the version in the CRT since the CRT
-  // might not be present when we do an early IPC call.
-  static size_t CDECL StringLength(const wchar_t* wcs) {
-    const wchar_t* eos = wcs;
-    while (*eos++)
-      ;
-    return static_cast<size_t>(eos - wcs - 1);
-  }
-
-  const wchar_t* t_;
-};
-
-// Specialization for non-const strings. We just reuse the implementation of the
-// const string specialization.
-template <>
-class CopyHelper<wchar_t*> : public CopyHelper<const wchar_t*> {
- public:
-  typedef CopyHelper<const wchar_t*> Base;
-  CopyHelper(wchar_t* t) : Base(t) {}
-
-  const void* GetStart() const { return Base::GetStart(); }
-
-  bool Update(void* buffer) { return Base::Update(buffer); }
-
-  uint32_t GetSize() const { return Base::GetSize(); }
-
-  bool IsInOut() { return Base::IsInOut(); }
-
-  ArgType GetType() { return Base::GetType(); }
-};
-
-// Specialization for wchar_t arrays strings. We just reuse the implementation
-// of the const string specialization.
-template <size_t n>
-class CopyHelper<const wchar_t[n]> : public CopyHelper<const wchar_t*> {
- public:
-  typedef const wchar_t array[n];
-  typedef CopyHelper<const wchar_t*> Base;
-  CopyHelper(array t) : Base(t) {}
-
-  const void* GetStart() const { return Base::GetStart(); }
-
-  bool Update(void* buffer) { return Base::Update(buffer); }
-
-  uint32_t GetSize() const { return Base::GetSize(); }
-
-  bool IsInOut() { return Base::IsInOut(); }
-
-  ArgType GetType() { return Base::GetType(); }
+  std::wstring_view t_;
 };
 
 // Generic encapsulation class containing a pointer to a buffer and the
@@ -207,37 +162,11 @@ class InOutCountedBuffer : public CountedBuffer {
 };
 
 // This copy helper template specialization catches the cases where the
-// parameter is a an input buffer.
-template <>
-class CopyHelper<CountedBuffer> {
- public:
-  CopyHelper(const CountedBuffer t) : t_(t) {}
-
-  // Returns the pointer to the start of the string.
-  const void* GetStart() const { return t_.Buffer(); }
-
-  // Update not required so just return true;
-  bool Update(void* buffer) { return true; }
-
-  // Returns the size of the string in bytes. We define a nullptr string to
-  // be of zero length.
-  uint32_t GetSize() const { return t_.Size(); }
-
-  // Returns true if the current type is used as an In or InOut parameter.
-  bool IsInOut() { return false; }
-
-  ArgType GetType() { return INPTR_TYPE; }
-
- private:
-  const CountedBuffer t_;
-};
-
-// This copy helper template specialization catches the cases where the
 // parameter is a an input/output buffer.
 template <>
 class CopyHelper<InOutCountedBuffer> {
  public:
-  CopyHelper(const InOutCountedBuffer t) : t_(t) {}
+  explicit CopyHelper(const InOutCountedBuffer t) : t_(t) {}
 
   // Returns the pointer to the start of the string.
   const void* GetStart() const { return t_.Buffer(); }
@@ -505,4 +434,4 @@ ResultCode CrossCall(IPCProvider& ipc_provider,
 }
 }  // namespace sandbox
 
-#endif  // SANDBOX_SRC_CROSSCALL_CLIENT_H__
+#endif  // SANDBOX_WIN_SRC_CROSSCALL_CLIENT_H_

@@ -11,14 +11,15 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use uniffi_bindgen::pipeline::initial;
+use uniffi_bindgen::{pipeline::initial, GlobalConfig};
 use uniffi_pipeline::PrintOptions;
 
-mod config_supplier;
+mod bindgen_paths;
+pub mod filters;
 pub mod pipeline;
 
-use config_supplier::GeckoJsCrateConfigSupplier;
-use pipeline::{gecko_js_pipeline, GeckoPipeline};
+use bindgen_paths::gecko_js_bindgen_paths;
+use pipeline::{gecko_js_pipeline, nodes::*, GeckoPipeline};
 use uniffi_pipeline::Node;
 
 #[derive(Debug, Parser)]
@@ -81,21 +82,38 @@ struct PipelineArgs {
 }
 
 /// Configuration for a single Component
-#[derive(Clone, Debug, Deserialize, Serialize, Node)]
+#[derive(Clone, Default, Debug, Deserialize, Serialize, Node)]
 pub struct Config {
     #[serde(default)]
-    pub async_wrappers: IndexMap<String, ConcrrencyMode>,
+    pub async_wrappers: IndexMap<String, ConcurrencyMode>,
     #[serde(default)]
     custom_types: IndexMap<String, CustomTypeConfig>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, Node, PartialEq, Eq)]
+/// Callable sync/async configuration, from `config.toml.`
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, Node, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
-pub enum ConcrrencyMode {
-    /// Function will remain synchronous, running on the main thread
+pub enum ConcurrencyMode {
+    /// Sync function that will remain synchronous, running on the main thread.
     Sync,
-    /// Function will be wrapped in an async wrapper
+    /// Async function will remain asynchronous.
+    Async,
+    /// Rust sync call that's wrapped to be async.
+    /// The C++ code schedules the call in a worker thread and returns the result to JS via a
+    /// promise.
+    ///
+    /// Used to adapt blocking Rust sync functions to be async.
+    /// This way they don't block the JS main thread.
+    ///
+    /// Only valid for Rust calls, not callback interfaces or trait interfaces with foreign support.
     AsyncWrapped,
+    /// JS sync callback method that's adapted to be "fire-and-forget".
+    /// The C++ code schedules the call, then immediately returns void.
+    ///
+    /// Used to adapt JS sync methods that we don't want to wait for (e.g. logging calls).
+    ///
+    /// Only valid for callback interface methods.
+    FireAndForget,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Node)]
@@ -138,14 +156,14 @@ fn run_generate(
     args: GenerateArgs,
 ) -> Result<()> {
     let root = pipeline.execute(root)?;
-    render(&args.cpp_path, root.cpp_scaffolding)?;
-    for module in root.modules.values() {
-        let dir = if module.fixture {
+    render(&args.cpp_path, CppScaffolding { root: &root })?;
+    for namespace in root.namespaces() {
+        let dir = if namespace.is_fixture() {
             &args.fixture_js_dir
         } else {
             &args.js_dir
         };
-        render(&dir.join(&module.js_filename), module)?;
+        render(&dir.join(&namespace.js_filename()), namespace)?;
     }
     for entry in fs::read_dir(&args.docs_path)? {
         let path = entry?.path();
@@ -177,18 +195,25 @@ fn root_and_pipeline(
     library_path: Utf8PathBuf,
     fixtures_library_path: Utf8PathBuf,
 ) -> Result<(initial::Root, GeckoPipeline)> {
-    let config_supplier = GeckoJsCrateConfigSupplier::new()?;
-    let root = initial::Root::from_library(&config_supplier, &library_path, None)?;
+    let bindgen_paths = gecko_js_bindgen_paths()?;
+    let config = GlobalConfig::default();
+    let root = initial::Root::from_library(&bindgen_paths, &config, &library_path, None)?;
     let fixtures_root =
-        initial::Root::from_library(&config_supplier, &fixtures_library_path, None)?;
+        initial::Root::from_library(&bindgen_paths, &config, &fixtures_library_path, None)?;
     let root = initial::Root {
-        modules: root
-            .modules
+        namespaces: root
+            .namespaces
             .into_iter()
-            .chain(fixtures_root.modules)
+            .chain(fixtures_root.namespaces)
             .collect(),
         cdylib: None,
     };
     let pipeline = gecko_js_pipeline(toml::from_str(include_str!("../config.toml"))?);
     Ok((root, pipeline))
+}
+
+#[derive(Debug, Clone, Template)]
+#[template(path = "cpp/UniFFIScaffolding.cpp", escape = "none")]
+struct CppScaffolding<'a> {
+    root: &'a pipeline::Root,
 }

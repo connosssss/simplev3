@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -55,40 +53,37 @@ namespace TelemetryIPCAccumulator = mozilla::TelemetryIPCAccumulator;
 
 namespace geckoprofiler::markers {
 
-struct EventMarker {
-  static constexpr mozilla::Span<const char> MarkerTypeName() {
-    return mozilla::MakeStringSpan("TEvent");
-  }
+struct EventMarker : public mozilla::BaseMarkerType<EventMarker> {
+  static constexpr const char* Name = "TEvent";
+  // "Event" and "ChildEvent" only differ by their name.
+  static constexpr bool ETWStoreName = true;
+  using MS = mozilla::MarkerSchema;
+  static constexpr MS::Location Locations[] = {
+      MS::Location::MarkerChart,
+      MS::Location::MarkerTable,
+  };
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"cat", MS::InputType::CString, "Category", MS::Format::UniqueString},
+      {"met", MS::InputType::CString, "Method", MS::Format::UniqueString},
+      {"obj", MS::InputType::CString, "Object", MS::Format::UniqueString},
+      {"val", MS::InputType::CString, "Value", MS::Format::String},
+  };
+  static constexpr const char* TooltipLabel =
+      "{marker.data.cat}.{marker.data.met}#{marker.data.obj} "
+      "{marker.data.val}";
+  static constexpr const char* TableLabel =
+      "{marker.data.cat}.{marker.data.met}#"
+      "{marker.data.obj} {marker.data.val}";
   static void StreamJSONMarkerData(
       mozilla::baseprofiler::SpliceableJSONWriter& aWriter,
-      const nsCString& aCategory, const nsCString& aMethod,
-      const nsCString& aObject, const Maybe<nsCString>& aValue) {
-    aWriter.UniqueStringProperty("cat", aCategory);
-    aWriter.UniqueStringProperty("met", aMethod);
-    aWriter.UniqueStringProperty("obj", aObject);
+      const mozilla::ProfilerString8View& aCategory,
+      const mozilla::ProfilerString8View& aMethod,
+      const mozilla::ProfilerString8View& aObject,
+      const Maybe<nsCString>& aValue) {
+    StreamJSONMarkerDataImpl(aWriter, aCategory, aMethod, aObject);
     if (aValue.isSome()) {
       aWriter.StringProperty("val", aValue.value());
     }
-  }
-  using MS = mozilla::MarkerSchema;
-  static MS MarkerTypeDisplay() {
-    MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
-    schema.AddKeyLabelFormatSearchable("cat", "Category",
-                                       MS::Format::UniqueString,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable(
-        "met", "Method", MS::Format::UniqueString, MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable(
-        "obj", "Object", MS::Format::UniqueString, MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("val", "Value", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.SetTooltipLabel(
-        "{marker.data.cat}.{marker.data.met}#{marker.data.obj} "
-        "{marker.data.val}");
-    schema.SetTableLabel(
-        "{marker.name} - {marker.data.cat}.{marker.data.met}#"
-        "{marker.data.obj} {marker.data.val}");
-    return schema;
   }
 };
 
@@ -329,7 +324,7 @@ bool gTelemetryEventCanRecordExtended;
 MOZ_RUNINIT nsTHashMap<nsCStringHashKey, EventKey> gEventNameIDMap(kEventCount);
 
 // The CategoryName set.
-MOZ_RUNINIT nsTHashSet<nsCString> gCategoryNames;
+constinit nsTHashSet<nsCString> gCategoryNames;
 
 // The main event storage. Events are inserted here, keyed by process id and
 // in recording order.
@@ -338,7 +333,7 @@ typedef nsTArray<EventRecord> EventRecordArray;
 typedef nsClassHashtable<ProcessIDHashKey, EventRecordArray>
     EventRecordsMapType;
 
-MOZ_RUNINIT EventRecordsMapType gEventRecords;
+constinit EventRecordsMapType gEventRecords;
 
 // The details on dynamic events that are recorded from addons are registered
 // here.
@@ -474,10 +469,6 @@ RecordEventResult RecordEvent(const StaticMutexAutoLock& lock,
   if (!CanRecordEvent(lock, eventKey, processType)) {
     return RecordEventResult::CannotRecord;
   }
-
-  // Count the number of times this event has been recorded.
-  TelemetryScalar::SummarizeEvent(UniqueEventName(category, method, object),
-                                  processType);
 
   EventRecordArray* eventRecords = GetEventRecordsForProcess(lock, processType);
   eventRecords->AppendElement(EventRecord(timestamp, eventKey, value, extra));

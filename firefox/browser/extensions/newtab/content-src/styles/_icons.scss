@@ -19,16 +19,6 @@
     margin-inline-end: var(--space-xsmall);
   }
 
-  &.icon-button-style {
-    fill: var(--newtab-text-secondary-color);
-    border: 0;
-
-    &:focus,
-    &:hover {
-      fill: var(--newtab-text-primary-color);
-    }
-  }
-
   // icon images
   &.icon-bookmark-added {
     background-image: url('chrome://browser/skin/bookmark.svg');
@@ -131,7 +121,7 @@
   }
 
   &.icon-trending {
-    background-image: url('chrome://browser/skin/trending.svg');
+    background-image: url('chrome://browser/skin/lightning-bolt.svg');
     transform: translateY(2px); // trending bolt is visually top heavy
   }
 
@@ -228,14 +218,6 @@
 
   &.icon-arrow {
     background-image: url('chrome://global/skin/icons/arrow-right-12.svg');
-  }
-
-  &.icon-thumbs-up {
-    background-image: url('chrome://global/skin/icons/thumbs-up-20.svg');
-  }
-
-  &.icon-thumbs-down {
-    background-image: url('chrome://global/skin/icons/thumbs-down-20.svg');
   }
 
   &.icon-device-phone {

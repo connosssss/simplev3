@@ -68,9 +68,11 @@ pub enum LookupError {
     FOGMetricMapLookupFailed,
     FOGSubmetricMapWasUninit,
     FOGSubmetricMapLockWasPoisoned,
+    FOGSubmetricMapLockWouldBlock,
     FOGSubmetricLookupFailed,
     JOGMetricMapWasUninit,
     JOGMetricMapLockWasPoisoned,
+    JOGMetricMapLockWouldBlock,
     JOGMetricMapLookupFailed,
     ReverseSubmetricLookupFailed,
     LookupUnlabledBySubId,
@@ -84,25 +86,29 @@ pub enum LookupError {
 impl Display for LookupError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LookupError::FOGMetricMapWasUninit => write!(f, "FOGMetricMapWasUninit"),
-            LookupError::FOGMetricMapLookupFailed => write!(f, "FOGMetricMapLookupFailed"),
-            LookupError::FOGSubmetricMapWasUninit => write!(f, "FOGSubmetricMapWasUninit"),
-            LookupError::FOGSubmetricMapLockWasPoisoned => {
+            Self::FOGMetricMapWasUninit => write!(f, "FOGMetricMapWasUninit"),
+            Self::FOGMetricMapLookupFailed => write!(f, "FOGMetricMapLookupFailed"),
+            Self::FOGSubmetricMapWasUninit => write!(f, "FOGSubmetricMapWasUninit"),
+            Self::FOGSubmetricMapLockWasPoisoned => {
                 write!(f, "FOGSubmetricMapLockWasPoisoned")
             }
-            LookupError::FOGSubmetricLookupFailed => write!(f, "FOGSubmetricLookupFailed"),
-            LookupError::JOGMetricMapWasUninit => write!(f, "JOGMetricMapWasUninit"),
-            LookupError::JOGMetricMapLockWasPoisoned => write!(f, "JOGMetricMapLockWasPoisoned"),
-            LookupError::JOGMetricMapLookupFailed => write!(f, "JOGMetricMapLookupFailed"),
-            LookupError::ReverseSubmetricLookupFailed => write!(f, "ReverseSubmetricLookupFailed"),
-            LookupError::LookupUnlabledBySubId => write!(f, "LookupUnlabledBySubId"),
-            LookupError::SubmetricIdIsDynamic => write!(f, "SubmetricIdIsDynamic"),
-            LookupError::LabeledBaseMetricIsNotDynamic => {
+            Self::FOGSubmetricMapLockWouldBlock => {
+                write!(f, "FOGSubmetricMapLockWouldBlock")
+            }
+            Self::FOGSubmetricLookupFailed => write!(f, "FOGSubmetricLookupFailed"),
+            Self::JOGMetricMapWasUninit => write!(f, "JOGMetricMapWasUninit"),
+            Self::JOGMetricMapLockWasPoisoned => write!(f, "JOGMetricMapLockWasPoisoned"),
+            Self::JOGMetricMapLockWouldBlock => write!(f, "JOGMetricMapLockWouldBlock"),
+            Self::JOGMetricMapLookupFailed => write!(f, "JOGMetricMapLookupFailed"),
+            Self::ReverseSubmetricLookupFailed => write!(f, "ReverseSubmetricLookupFailed"),
+            Self::LookupUnlabledBySubId => write!(f, "LookupUnlabledBySubId"),
+            Self::SubmetricIdIsDynamic => write!(f, "SubmetricIdIsDynamic"),
+            Self::LabeledBaseMetricIsNotDynamic => {
                 write!(f, "LabeledBaseMetricIsNotDynamic")
             }
-            LookupError::SubMetricLookupFailed => write!(f, "SubMetricLookupFailed"),
-            LookupError::FOGMetricIdLookupFailed => write!(f, "FOGMetricIdLookupFailed"),
-            LookupError::NoBaseMetricForThisLabeledType => {
+            Self::SubMetricLookupFailed => write!(f, "SubMetricLookupFailed"),
+            Self::FOGMetricIdLookupFailed => write!(f, "FOGMetricIdLookupFailed"),
+            Self::NoBaseMetricForThisLabeledType => {
                 write!(f, "NoBaseMetricForThisLabeledType")
             }
         }
@@ -112,6 +118,26 @@ impl Display for LookupError {
 impl Error for LookupError {}
 
 pub type LookupResult<T> = std::result::Result<T, LookupError>;
+
+/// Acquire a metric-map read lock without ever blocking.
+///
+/// These maps are read only on the profiler marker streaming path (see
+/// `stream_identifiers_by_id`), which runs while the profiler holds its buffer
+/// lock. Metric recording takes these same map locks and then emits its own
+/// profiler markers, which take the buffer lock; blocking here to wait on the
+/// map lock therefore deadlocks against the profiler buffer lock. On contention
+/// we fail the lookup so the caller falls back to a less descriptive marker
+/// rather than hanging.
+pub(crate) fn try_read_metadata_map<T>(
+    map: &std::sync::RwLock<T>,
+    poisoned: LookupError,
+    would_block: LookupError,
+) -> LookupResult<std::sync::RwLockReadGuard<'_, T>> {
+    map.try_read().map_err(|e| match e {
+        std::sync::TryLockError::Poisoned(_) => poisoned,
+        std::sync::TryLockError::WouldBlock => would_block,
+    })
+}
 
 /// Define a structured way to refer to metric metadata, using owned types.
 #[derive(Debug)]
@@ -124,11 +150,11 @@ pub struct MetricMetadata {
 impl MetricMetadata {
     /// Construct a metric identifier from a triple of (category, name, option
     /// (label)) string references, and make copies of each.
-    pub fn from_triple(t: (&str, &str, Option<&str>)) -> MetricMetadata {
+    pub fn from_triple(t: (&str, &str, Option<String>)) -> MetricMetadata {
         MetricMetadata {
             category: t.0.to_owned(),
             name: t.1.to_owned(),
-            label: t.2.map(str::to_string),
+            label: t.2,
         }
     }
 
@@ -180,7 +206,6 @@ pub trait MetricNamer {
 
 /// Helper function for defining the metric namer for metric types, with two
 /// distinct overrides for common patterns of metric types.
-#[macro_export]
 macro_rules! define_metric_namer {
     // Define a metric namer for metric types that have parent and child
     // metrics, where the child contains some metadata.
@@ -312,7 +337,6 @@ pub trait BaseMetric {
 /// Given the type of a metric, the name of a FOG metric map for said metric,
 /// an id, look up the metric from the map by id and return the metadata
 /// (if found)
-#[macro_export]
 macro_rules! metadata_from_static_map {
     ($metric_type:ident, $metric_map:ident, $metric_id:ident) => {{
         let static_map =
@@ -330,24 +354,46 @@ macro_rules! metadata_from_static_map {
 
 /// Given the name of a JOG metric map, and an id, look up the metric metadata
 /// from the map by id, and return it (if found)
-#[macro_export]
 macro_rules! metadata_from_dynamic_map {
     ($metric_map:ident, $metric_id:ident) => {{
         // Find the dynamic map (given as part of the macro), and try to read
         // from it. We don't need to force it, as if it hasn't been
         // initialized, we won't have a metric in there to read anyway!
-        let dynamic_map =
+        let dynamic_map = crate::private::metric_getter::try_read_metadata_map(
             once_cell::sync::Lazy::get(&crate::factory::__jog_metric_maps::$metric_map)
-                .ok_or(crate::private::LookupError::JOGMetricMapWasUninit)?
-                .read()
-                .or(Err(
-                    crate::private::LookupError::JOGMetricMapLockWasPoisoned,
-                ))?;
+                .ok_or(crate::private::LookupError::JOGMetricMapWasUninit)?,
+            crate::private::LookupError::JOGMetricMapLockWasPoisoned,
+            crate::private::LookupError::JOGMetricMapLockWouldBlock,
+        )?;
         let metric: &Self = dynamic_map
             .get(&$metric_id)
             .ok_or(crate::private::LookupError::JOGMetricMapLookupFailed)?;
         Ok((metric.get_metadata(), None))
     }};
+}
+
+/// Define a `fn get_base_metric_metadata_by_id` for a given metric type and map.
+/// If you have a BaseMetricId, we always get the metadata the same way:
+/// from the JOG maps if dynamice, from the compiled maps if static.
+///
+/// The only exception is for IPC where submetrics have the BaseMetricId of their parent.
+/// In that case, don't use this macro.
+///
+/// (Though this fn could be written without macros, it is part of the trait
+/// MetricMetadataGetterImpl which has parts that need macros.)
+macro_rules! define_get_base_metric_metadata_by_id {
+    ($metric_type:ident, $metric_map:ident) => {
+        fn get_base_metric_metadata_by_id(
+            id: crate::private::BaseMetricId,
+        ) -> crate::private::LookupResult<(crate::private::MetricMetadata, Option<String>)> {
+            use crate::private::metric_getter::MetricNamer;
+            if id.is_dynamic() {
+                metadata_from_dynamic_map!($metric_map, id)
+            } else {
+                metadata_from_static_map!($metric_type, $metric_map, id)
+            }
+        }
+    };
 }
 
 /// Define how to look up the metadata for a given metric, given a metric id.
@@ -369,22 +415,11 @@ macro_rules! metadata_from_dynamic_map {
 ///   should look like `define_metric_metadata_getter!
 ///   (AnotherMetric, LabeledAnotherMetric, ANOTHER_MAP,
 ///   LABELED_ANOTHER_MAP)
-#[macro_export]
 macro_rules! define_metric_metadata_getter {
     // Metric getter for metrics that cannot be labeled
     ($metric_type:ident, $metric_map:ident) => {
         impl crate::private::MetricMetadataGetterImpl for $metric_type {
-            fn get_base_metric_metadata_by_id(
-                id: crate::private::BaseMetricId,
-            ) -> crate::private::LookupResult<(crate::private::MetricMetadata, Option<String>)>
-            {
-                use crate::private::metric_getter::MetricNamer;
-                if id.is_dynamic() {
-                    crate::metadata_from_dynamic_map!($metric_map, id)
-                } else {
-                    crate::metadata_from_static_map!($metric_type, $metric_map, id)
-                }
-            }
+            define_get_base_metric_metadata_by_id!($metric_type, $metric_map);
 
             fn get_sub_metric_metadata_by_id(
                 _id: crate::private::SubMetricId,
@@ -398,19 +433,9 @@ macro_rules! define_metric_metadata_getter {
 
     // Metric getter for metrics that can be labeled, but appear as the same
     // type (e.g. "StringMetric")
-    ($metric_type:ident, $metric_map:ident, $labeled_map:ident) => {
+    ($metric_type:ident, $metric_map:ident, $_labeled_map:ident) => {
         impl crate::private::MetricMetadataGetterImpl for $metric_type {
-            fn get_base_metric_metadata_by_id(
-                id: crate::private::BaseMetricId,
-            ) -> crate::private::LookupResult<(crate::private::MetricMetadata, Option<String>)>
-            {
-                use crate::private::metric_getter::MetricNamer;
-                if id.is_dynamic() {
-                    crate::metadata_from_dynamic_map!($metric_map, id)
-                } else {
-                    crate::metadata_from_static_map!($metric_type, $metric_map, id)
-                }
-            }
+            define_get_base_metric_metadata_by_id!($metric_type, $metric_map);
 
             fn get_sub_metric_metadata_by_id(
                 id: crate::private::SubMetricId,
@@ -424,14 +449,14 @@ macro_rules! define_metric_metadata_getter {
                     return Err(crate::private::LookupError::SubmetricIdIsDynamic);
                 }
                 // Re-use the $metric_map name to find the sub-metric map
-                let submetric_map = once_cell::sync::Lazy::get(
-                    &crate::metrics::__glean_metric_maps::submetric_maps::$metric_map,
-                )
-                .ok_or(crate::private::LookupError::FOGSubmetricMapWasUninit)?
-                .read()
-                .or(Err(
+                let submetric_map = crate::private::metric_getter::try_read_metadata_map(
+                    once_cell::sync::Lazy::get(
+                        &crate::metrics::__glean_metric_maps::submetric_maps::$metric_map,
+                    )
+                    .ok_or(crate::private::LookupError::FOGSubmetricMapWasUninit)?,
                     crate::private::LookupError::FOGSubmetricMapLockWasPoisoned,
-                ))?;
+                    crate::private::LookupError::FOGSubmetricMapLockWouldBlock,
+                )?;
 
                 let metric = submetric_map
                     .get(&id)
@@ -442,23 +467,48 @@ macro_rules! define_metric_metadata_getter {
         }
     };
 
+    // Metric getter specifically for CounterMetric and its friends.
+    // Doesn't strictly need to be a macro, but let's keep like with like, hm?
+    (CounterMetric, $submetric_type: ident, $metric_map:ident, $labeled_map:ident) => {
+        impl crate::private::MetricMetadataGetterImpl for CounterMetric {
+            define_get_base_metric_metadata_by_id!(CounterMetric, $metric_map);
+
+            fn get_sub_metric_metadata_by_id(
+                id: crate::private::SubMetricId,
+            ) -> crate::private::LookupResult<(crate::private::MetricMetadata, Option<String>)>
+            {
+                use crate::private::metric_getter::MetricNamer;
+                use crate::private::DualLabeledCounterSubMetric;
+                // We should have a non-dynamic ID here, as dynamic
+                // metrics always have base metric IDs, but we should
+                // check anyway
+                if id.is_dynamic() {
+                    return Err(crate::private::LookupError::SubmetricIdIsDynamic);
+                }
+                // Since this CounterMetric is a submetric, there are two possibilities:
+                // Possibility 1: LabeledCounter
+                get_submetric!(CounterMetric, $submetric_type, $metric_map, id).or_else(|_| {
+                    // Possibility 2: DualLabeledCounter
+                    get_submetric!(
+                        CounterMetric,
+                        DualLabeledCounterSubMetric,
+                        DUAL_COUNTER_MAP,
+                        id
+                    )
+                })
+            }
+        }
+
+        define_submetric_metadata_getter!($submetric_type, $metric_map, $labeled_map);
+    };
+
     // Metric getter for metrics that can be labeled, but appear as a
     // DIFFERENT type when they are labeled
     ($metric_type:ident, $submetric_type: ident, $metric_map:ident, $labeled_map:ident) => {
         // Define `MetricMetadataGetter` for the base type, with awareness of the
         // other type (i.e. Counter is aware of LabeledCounter).
         impl crate::private::MetricMetadataGetterImpl for $metric_type {
-            fn get_base_metric_metadata_by_id(
-                id: crate::private::BaseMetricId,
-            ) -> crate::private::LookupResult<(crate::private::MetricMetadata, Option<String>)>
-            {
-                use crate::private::metric_getter::MetricNamer;
-                if id.is_dynamic() {
-                    crate::metadata_from_dynamic_map!($metric_map, id)
-                } else {
-                    crate::metadata_from_static_map!($metric_type, $metric_map, id)
-                }
-            }
+            define_get_base_metric_metadata_by_id!($metric_type, $metric_map);
 
             fn get_sub_metric_metadata_by_id(
                 id: crate::private::SubMetricId,
@@ -471,39 +521,55 @@ macro_rules! define_metric_metadata_getter {
                 if id.is_dynamic() {
                     return Err(crate::private::LookupError::SubmetricIdIsDynamic);
                 }
-                // Re-use the $metric_map name to find the sub-metric map
-                let submetric_map = once_cell::sync::Lazy::get(
-                    &crate::metrics::__glean_metric_maps::submetric_maps::$metric_map,
-                )
-                .ok_or(crate::private::LookupError::FOGSubmetricMapWasUninit)?
-                .read()
-                .or(Err(
-                    crate::private::LookupError::FOGSubmetricMapLockWasPoisoned,
-                ))?;
-
-                let submetric: &$submetric_type = submetric_map
-                    .get(&id)
-                    .map(|arcm: &std::sync::Arc<$submetric_type>| arcm.as_ref())
-                    .ok_or(crate::private::LookupError::FOGSubmetricLookupFailed)?;
-
-                match submetric.get_base_metric() {
-                    BaseMetricResult::BaseMetric(metric) => Ok((metric.get_metadata(), None)),
-                    BaseMetricResult::BaseMetricWithLabel(metric, label) => {
-                        Ok((metric.get_metadata(), Some(label.to_string())))
-                    }
-                    BaseMetricResult::IndexLabelPair(id, label) => {
-                        match $metric_type::get_base_metric_metadata_by_id(id) {
-                            Ok((metadata, _)) => Ok((metadata, Some(label.to_string()))),
-                            e => e,
-                        }
-                    }
-                    BaseMetricResult::None => {
-                        Err(crate::private::LookupError::NoBaseMetricForThisLabeledType)
-                    }
-                }
+                get_submetric!($metric_type, $submetric_type, $metric_map, id)
             }
         }
 
+        define_submetric_metadata_getter!($submetric_type, $metric_map, $labeled_map);
+    };
+}
+
+/// Logic for getting a submetric's metadata when that submetric impls BaseMetric.
+macro_rules! get_submetric {
+    ($metric_type:ident, $submetric_type: ident, $metric_map:ident, $id:ident) => {
+        (|| {
+            // Re-use the $metric_map name to find the sub-metric map
+            let submetric_map = crate::private::metric_getter::try_read_metadata_map(
+                once_cell::sync::Lazy::get(
+                    &crate::metrics::__glean_metric_maps::submetric_maps::$metric_map,
+                )
+                .ok_or(crate::private::LookupError::FOGSubmetricMapWasUninit)?,
+                crate::private::LookupError::FOGSubmetricMapLockWasPoisoned,
+                crate::private::LookupError::FOGSubmetricMapLockWouldBlock,
+            )?;
+
+            let submetric: &$submetric_type = submetric_map
+                .get(&$id)
+                .map(|arcm: &std::sync::Arc<$submetric_type>| arcm.as_ref())
+                .ok_or(crate::private::LookupError::FOGSubmetricLookupFailed)?;
+
+            match submetric.get_base_metric() {
+                BaseMetricResult::BaseMetric(metric) => Ok((metric.get_metadata(), None)),
+                BaseMetricResult::BaseMetricWithLabel(metric, label) => {
+                    Ok((metric.get_metadata(), Some(label.to_string())))
+                }
+                BaseMetricResult::IndexLabelPair(id, label) => {
+                    match $metric_type::get_base_metric_metadata_by_id(id) {
+                        Ok((metadata, _)) => Ok((metadata, Some(label.to_string()))),
+                        e => e,
+                    }
+                }
+                BaseMetricResult::None => {
+                    Err(crate::private::LookupError::NoBaseMetricForThisLabeledType)
+                }
+            }
+        })()
+    };
+}
+
+/// Define a MetricMetadataGetterImpl for a submetric type (e.g. LabeledBooleanMetric).
+macro_rules! define_submetric_metadata_getter {
+    ($submetric_type: ident, $metric_map:ident, $labeled_map:ident) => {
         impl crate::private::MetricMetadataGetterImpl for $submetric_type {
             fn get_base_metric_metadata_by_id(
                 id: crate::private::BaseMetricId,
@@ -525,13 +591,12 @@ macro_rules! define_metric_metadata_getter {
                 // remains held until `dynamic_map` is dropped at the end of this function.
                 // Nothing called from this function is allowed grab a write lock on the dynamic
                 // map, or there will be a deadlock!
-                let dynamic_map =
+                let dynamic_map = crate::private::metric_getter::try_read_metadata_map(
                     once_cell::sync::Lazy::get(&crate::factory::__jog_metric_maps::$labeled_map)
-                        .ok_or(crate::private::LookupError::JOGMetricMapWasUninit)?
-                        .read()
-                        .or(Err(
-                            crate::private::LookupError::JOGMetricMapLockWasPoisoned,
-                        ))?;
+                        .ok_or(crate::private::LookupError::JOGMetricMapWasUninit)?,
+                    crate::private::LookupError::JOGMetricMapLockWasPoisoned,
+                    crate::private::LookupError::JOGMetricMapLockWouldBlock,
+                )?;
                 let labeled = dynamic_map
                     .get(&id)
                     .ok_or(crate::private::LookupError::JOGMetricMapLookupFailed)?;
@@ -543,12 +608,11 @@ macro_rules! define_metric_metadata_getter {
                     // Warning: We acquire the read lock for LABELED_METRICS_TO_IDS
                     // here, and the lock remains held until `map` is dropped at the end of
                     // this scope.
-                    let map =
-                        crate::metrics::__glean_metric_maps::submetric_maps::LABELED_METRICS_TO_IDS
-                            .read()
-                            .or(Err(
-                                crate::private::LookupError::FOGSubmetricMapLockWasPoisoned,
-                            ))?;
+                    let map = crate::private::metric_getter::try_read_metadata_map(
+                        &crate::metrics::__glean_metric_maps::submetric_maps::LABELED_METRICS_TO_IDS,
+                        crate::private::LookupError::FOGSubmetricMapLockWasPoisoned,
+                        crate::private::LookupError::FOGSubmetricMapLockWouldBlock,
+                    )?;
 
                     // Iterate over the keys of the hash table to find the ID, and extract the
                     // corresponding label.
@@ -580,14 +644,14 @@ macro_rules! define_metric_metadata_getter {
                 }
 
                 // Re-use the $metric_map name to find the sub-metric map
-                let submetric_map = once_cell::sync::Lazy::get(
-                    &crate::metrics::__glean_metric_maps::submetric_maps::$metric_map,
-                )
-                .ok_or(crate::private::LookupError::FOGSubmetricMapWasUninit)?
-                .read()
-                .or(Err(
+                let submetric_map = crate::private::metric_getter::try_read_metadata_map(
+                    once_cell::sync::Lazy::get(
+                        &crate::metrics::__glean_metric_maps::submetric_maps::$metric_map,
+                    )
+                    .ok_or(crate::private::LookupError::FOGSubmetricMapWasUninit)?,
                     crate::private::LookupError::FOGSubmetricMapLockWasPoisoned,
-                ))?;
+                    crate::private::LookupError::FOGSubmetricMapLockWouldBlock,
+                )?;
 
                 let submetric = submetric_map
                     .get(&id)
@@ -778,9 +842,13 @@ impl SubMetricId {
     /// underlying metric id, and label. Note that this essentially performs
     /// the reverse of `private::submetric_id_for`.
     pub(crate) fn lookup_metric_id_and_label(&self) -> Option<(BaseMetricId, String)> {
-        let map = crate::metrics::__glean_metric_maps::submetric_maps::LABELED_METRICS_TO_IDS
-            .read()
-            .expect("read lock of submetric ids was poisoned");
+        // Non-blocking: this runs on the profiler marker streaming path, which
+        // must never block on a metric-map lock (see `try_read_metadata_map`).
+        let Ok(map) =
+            crate::metrics::__glean_metric_maps::submetric_maps::LABELED_METRICS_TO_IDS.try_read()
+        else {
+            return None;
+        };
         map.iter()
             .find(|(_, &value)| value == *self)
             .map(|(key, _)| key.clone())

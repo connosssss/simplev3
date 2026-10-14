@@ -13,8 +13,9 @@ use uniffi_bindgen::bindings::{generate_swift_bindings, SwiftBindingsOptions};
 struct Cli {
     #[command(flatten)]
     kinds: Kinds,
-    /// Library path to generate bindings for
-    library_path: Utf8PathBuf,
+    #[clap(name = "PATH_TO_LIBRARY_OR_UDL")]
+    /// UDL File / path to generate bindings for
+    source: Utf8PathBuf,
     /// Directory to generate files in
     out_dir: Utf8PathBuf,
     /// Generate a XCFramework-compatible modulemap
@@ -36,6 +37,9 @@ struct Cli {
     /// What frameworks to link against when generating the modulemap file.
     #[arg(long)]
     link_frameworks: Vec<String>,
+    /// Path to a global config file.
+    #[arg(long, short)]
+    config: Option<Utf8PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -65,13 +69,14 @@ impl From<Cli> for SwiftBindingsOptions {
             generate_swift_sources: cli.kinds.swift_sources,
             generate_headers: cli.kinds.headers,
             generate_modulemap: cli.kinds.modulemap,
-            library_path: cli.library_path,
+            source: cli.source,
             out_dir: cli.out_dir,
             xcframework: cli.xcframework,
             module_name: cli.module_name,
             modulemap_filename: cli.modulemap_filename,
             metadata_no_deps: cli.metadata_no_deps,
             link_frameworks: cli.link_frameworks,
+            config: cli.config,
         }
     }
 }

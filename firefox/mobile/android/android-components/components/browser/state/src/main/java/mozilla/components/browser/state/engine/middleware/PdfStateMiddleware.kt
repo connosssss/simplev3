@@ -12,21 +12,18 @@ import mozilla.components.browser.state.action.ContentAction
 import mozilla.components.browser.state.selector.findTabOrCustomTabOrSelectedTab
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
+import mozilla.components.lib.state.Store
 
 private const val PAGE_FULLY_LOADED_PROGRESS = 100
 
 /**
- * Middleware that checks if the current page is a PDF and dispatches [ContentAction.EnteredPdfViewer]
- * with the result.
+ * Middleware that checks if the current page is a PDF and dispatches [ContentAction.EnteredPdfViewer] with the result.
  *
  * @param scope [CoroutineScope] used for long running tasks.
  */
-internal class PdfStateMiddleware(
-    private val scope: CoroutineScope,
-) : Middleware<BrowserState, BrowserAction> {
+internal class PdfStateMiddleware(private val scope: CoroutineScope) : Middleware<BrowserState, BrowserAction> {
     override fun invoke(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         next: (BrowserAction) -> Unit,
         action: BrowserAction,
     ) {
@@ -34,11 +31,11 @@ internal class PdfStateMiddleware(
 
         if (action is ContentAction.UpdateProgressAction && action.progress == PAGE_FULLY_LOADED_PROGRESS) {
             scope.launch {
-                val newPdfRenderingStatus = isRenderingPdf(action.sessionId, context.state)
-                val previousRenderingStatus = previousPdfRenderingStatus(action.sessionId, context.state)
+                val newPdfRenderingStatus = isRenderingPdf(action.sessionId, store.state)
+                val previousRenderingStatus = previousPdfRenderingStatus(action.sessionId, store.state)
 
                 if (newPdfRenderingStatus != previousRenderingStatus) {
-                    dispatchPdfStatusUpdate(action.sessionId, newPdfRenderingStatus, context)
+                    dispatchPdfStatusUpdate(action.sessionId, newPdfRenderingStatus, store)
                 }
             }
         }
@@ -47,13 +44,14 @@ internal class PdfStateMiddleware(
     private fun dispatchPdfStatusUpdate(
         sessionId: String,
         isPdf: Boolean,
-        context: MiddlewareContext<BrowserState, BrowserAction>,
-    ) = context.store.dispatch(
-        when (isPdf) {
-            true -> ContentAction.EnteredPdfViewer(sessionId)
-            false -> ContentAction.ExitedPdfViewer(sessionId)
-        },
-    )
+        store: Store<BrowserState, BrowserAction>,
+    ) =
+        store.dispatch(
+            when (isPdf) {
+                true -> ContentAction.EnteredPdfViewer(sessionId)
+                false -> ContentAction.ExitedPdfViewer(sessionId)
+            }
+        )
 
     private fun previousPdfRenderingStatus(sessionId: String, state: BrowserState): Boolean {
         return state.findTabOrCustomTabOrSelectedTab(sessionId)?.content?.isPdf ?: false

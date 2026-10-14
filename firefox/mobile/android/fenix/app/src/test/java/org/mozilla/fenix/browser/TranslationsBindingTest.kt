@@ -6,12 +6,19 @@ package org.mozilla.fenix.browser
 
 import androidx.navigation.NavController
 import androidx.navigation.NavDestination
-import androidx.test.ext.junit.runners.AndroidJUnit4
-import io.mockk.mockkStatic
+import io.mockk.every
+import io.mockk.just
+import io.mockk.mockk
+import io.mockk.runs
+import io.mockk.spyk
+import io.mockk.verify
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.runTest
 import mozilla.components.browser.state.action.TranslationsAction
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.state.ReaderState
 import mozilla.components.browser.state.state.TranslationsBrowserState
+import mozilla.components.browser.state.state.TranslationsState
 import mozilla.components.browser.state.state.createTab
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.engine.translate.DetectedLanguages
@@ -21,363 +28,562 @@ import mozilla.components.concept.engine.translate.TranslationError
 import mozilla.components.concept.engine.translate.TranslationOperation
 import mozilla.components.concept.engine.translate.TranslationPair
 import mozilla.components.concept.engine.translate.TranslationSupport
-import mozilla.components.support.test.ext.joinBlocking
-import mozilla.components.support.test.mock
-import mozilla.components.support.test.rule.MainCoroutineRule
-import org.junit.Rule
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.mockito.Mockito.atLeast
-import org.mockito.Mockito.doReturn
-import org.mockito.Mockito.never
-import org.mockito.Mockito.spy
-import org.mockito.Mockito.verify
 import org.mozilla.fenix.R
 import org.mozilla.fenix.browser.store.BrowserScreenAction.PageTranslationStatusUpdated
 import org.mozilla.fenix.browser.store.BrowserScreenStore
 import org.mozilla.fenix.components.AppStore
 import org.mozilla.fenix.components.appstate.AppAction.SnackbarAction
-import org.mozilla.fenix.ext.nav
+import org.mozilla.fenix.components.appstate.AppState
+import org.mozilla.fenix.components.appstate.snackbar.SnackbarState.None
+import org.mozilla.fenix.components.appstate.snackbar.SnackbarState.TranslationInProgress
 
-@RunWith(AndroidJUnit4::class)
 class TranslationsBindingTest {
-    @get:Rule
-    val coroutineRule = MainCoroutineRule()
+    private val testDispatcher = StandardTestDispatcher()
 
     lateinit var browserStore: BrowserStore
-    val browserScreenStore: BrowserScreenStore = mock()
-    val appStore: AppStore = mock()
+    val browserScreenStore: BrowserScreenStore = mockk()
+    val appState: AppState = mockk(relaxed = true)
+    val appStore: AppStore =
+        mockk(relaxed = true) {
+            every { state } returns appState
+        }
 
     private val tabId = "1"
     private val tab = createTab(url = tabId, id = tabId)
-    private val onTranslationsActionUpdated: (PageTranslationStatus) -> Unit = spy()
-
-    private val onShowTranslationsDialog: () -> Unit = spy()
-
-    @Test
-    fun `GIVEN translationState WHEN translation status isTranslated THEN inform about translation changes`() {
-        val englishLanguage = Language("en", "English")
-        val spanishLanguage = Language("es", "Spanish")
-        val expectedTranslationStatus = PageTranslationStatus(
-            isTranslationPossible = true,
-            isTranslated = true,
-            isTranslateProcessing = true,
-            fromSelectedLanguage = englishLanguage,
-            toSelectedLanguage = spanishLanguage,
-        )
-
-        browserStore = BrowserStore(
-            BrowserState(
-                tabs = listOf(tab),
-                selectedTabId = tabId,
-                translationEngine = TranslationsBrowserState(isEngineSupported = true),
-            ),
-        )
-
-        val binding = TranslationsBinding(
-            browserStore = browserStore,
-            browserScreenStore = browserScreenStore,
-            appStore = appStore,
-            onTranslationStatusUpdate = onTranslationsActionUpdated,
-            onShowTranslationsDialog = {},
-        )
-        binding.start()
-
-        val detectedLanguages = DetectedLanguages(
-            documentLangTag = englishLanguage.code,
-            supportedDocumentLang = true,
-            userPreferredLangTag = spanishLanguage.code,
-        )
-
-        val translationEngineState = TranslationEngineState(
-            detectedLanguages = detectedLanguages,
-            error = null,
-            isEngineReady = true,
-            hasVisibleChange = true,
-            requestedTranslationPair = TranslationPair(
-                fromLanguage = englishLanguage.code,
-                toLanguage = spanishLanguage.code,
-            ),
-        )
-
-        val supportLanguages = TranslationSupport(
-            fromLanguages = listOf(englishLanguage),
-            toLanguages = listOf(spanishLanguage),
-        )
-
-        browserStore.dispatch(
-            TranslationsAction.SetSupportedLanguagesAction(
-                supportedLanguages = supportLanguages,
-            ),
-        ).joinBlocking()
-
-        browserStore.dispatch(
-            TranslationsAction.TranslateStateChangeAction(
-                tabId = tabId,
-                translationEngineState = translationEngineState,
-            ),
-        ).joinBlocking()
-
-        browserStore.dispatch(
-            TranslationsAction.TranslateAction(
-                tabId = tab.id,
-                fromLanguage = englishLanguage.code,
-                toLanguage = spanishLanguage.code,
-                options = null,
-            ),
-        ).joinBlocking()
-
-        verify(onTranslationsActionUpdated).invoke(expectedTranslationStatus)
-        verify(browserScreenStore).dispatch(
-            PageTranslationStatusUpdated(expectedTranslationStatus),
-        )
+    private val onTranslationsActionUpdatedCalls = mutableListOf<PageTranslationStatus>()
+    private val onTranslationsActionUpdated: (PageTranslationStatus) -> Unit = {
+        onTranslationsActionUpdatedCalls.add(it)
     }
 
-    @Test
-    fun `GIVEN translationState WHEN translation status isExpectedTranslate THEN inform about translation changes`() {
-        val expectedTranslationStatus = PageTranslationStatus(
-            isTranslationPossible = true,
-            isTranslated = false,
-            isTranslateProcessing = false,
-        )
-        browserStore = BrowserStore(
-            BrowserState(
-                tabs = listOf(tab),
-                selectedTabId = tabId,
-                translationEngine = TranslationsBrowserState(isEngineSupported = true),
-            ),
-        )
-
-        val binding = TranslationsBinding(
-            browserStore = browserStore,
-            browserScreenStore = browserScreenStore,
-            appStore = appStore,
-            onTranslationStatusUpdate = onTranslationsActionUpdated,
-            onShowTranslationsDialog = {},
-        )
-        binding.start()
-
-        browserStore.dispatch(
-            TranslationsAction.TranslateExpectedAction(
-                tabId = tabId,
-            ),
-        ).joinBlocking()
-
-        verify(onTranslationsActionUpdated).invoke(expectedTranslationStatus)
-        verify(browserScreenStore).dispatch(
-            PageTranslationStatusUpdated(expectedTranslationStatus),
-        )
-        verify(appStore, atLeast(1)).dispatch(SnackbarAction.SnackbarDismissed)
-    }
+    private var onShowTranslationsDialogCount = 0
+    private val onShowTranslationsDialog: () -> Unit = { onShowTranslationsDialogCount++ }
 
     @Test
-    fun `GIVEN translationState WHEN translation status is not isExpectedTranslate or isTranslated THEN inform about translation changes`() {
-        val expectedTranslationStatus = PageTranslationStatus(
-            isTranslationPossible = false,
-            isTranslated = false,
-            isTranslateProcessing = false,
-        )
-        browserStore = BrowserStore(
-            BrowserState(
-                tabs = listOf(tab),
-                selectedTabId = tabId,
-            ),
-        )
+    fun `GIVEN translationState WHEN translation status isTranslated THEN inform about translation changes`() =
+        runTest {
+            every { browserScreenStore.dispatch(any()) } just runs
+            every { appStore.dispatch(any()) } just runs
 
-        val binding = TranslationsBinding(
-            browserStore = browserStore,
-            browserScreenStore = browserScreenStore,
-            appStore = appStore,
-            onTranslationStatusUpdate = onTranslationsActionUpdated,
-            onShowTranslationsDialog = {},
-        )
-        binding.start()
+            val englishLanguage = Language("en", "English")
+            val spanishLanguage = Language("es", "Spanish")
+            val expectedTranslationStatus =
+                PageTranslationStatus(
+                    isTranslationPossible = true,
+                    isTranslated = true,
+                    isTranslateProcessing = true,
+                    fromSelectedLanguage = englishLanguage,
+                    toSelectedLanguage = spanishLanguage,
+                )
 
-        verify(onTranslationsActionUpdated).invoke(expectedTranslationStatus)
-        verify(browserScreenStore).dispatch(
-            PageTranslationStatusUpdated(expectedTranslationStatus),
-        )
-        verify(appStore).dispatch(SnackbarAction.SnackbarDismissed)
-    }
+            browserStore =
+                BrowserStore(
+                    BrowserState(
+                        tabs = listOf(tab),
+                        selectedTabId = tabId,
+                        translationEngine = TranslationsBrowserState(isEngineSupported = true),
+                    )
+                )
 
-    @Test
-    fun `GIVEN translationState WHEN translation state isOfferTranslate is true THEN offer to translate the current page`() {
-        browserStore = BrowserStore(
-            BrowserState(
-                tabs = listOf(tab),
-                selectedTabId = tabId,
-                translationEngine = TranslationsBrowserState(isEngineSupported = true),
-            ),
-        )
+            val binding =
+                TranslationsBinding(
+                    browserStore = browserStore,
+                    browserScreenStore = browserScreenStore,
+                    appStore = appStore,
+                    onTranslationStatusUpdate = onTranslationsActionUpdated,
+                    onShowTranslationsDialog = {},
+                    mainDispatcher = testDispatcher,
+                )
+            binding.start()
+            testDispatcher.scheduler.advanceUntilIdle()
 
-        val binding = TranslationsBinding(
-            browserStore = browserStore,
-            onTranslationStatusUpdate = onTranslationsActionUpdated,
-            onShowTranslationsDialog = onShowTranslationsDialog,
-        )
-        binding.start()
+            val detectedLanguages =
+                DetectedLanguages(
+                    documentLangTag = englishLanguage.code,
+                    supportedDocumentLang = true,
+                    userPreferredLangTag = spanishLanguage.code,
+                )
 
-        browserStore.dispatch(
-            TranslationsAction.TranslateOfferAction(
-                tabId = tab.id,
-                isOfferTranslate = true,
-            ),
-        ).joinBlocking()
+            val translationEngineState =
+                TranslationEngineState(
+                    detectedLanguages = detectedLanguages,
+                    error = null,
+                    isEngineReady = true,
+                    hasVisibleChange = true,
+                    requestedTranslationPair =
+                        TranslationPair(
+                            fromLanguage = englishLanguage.code,
+                            toLanguage = spanishLanguage.code,
+                        ),
+                )
 
-        verify(onShowTranslationsDialog).invoke()
-    }
+            val supportLanguages =
+                TranslationSupport(
+                    fromLanguages = listOf(englishLanguage),
+                    toLanguages = listOf(spanishLanguage),
+                )
 
-    @Test
-    fun `GIVEN store dependencies set WHEN translation state isOfferTranslate is true THEN offer to translate the current page`() {
-        val currentDestination: NavDestination = mock {
-            doReturn(R.id.browserFragment).`when`(this).id
+            browserStore.dispatch(TranslationsAction.SetSupportedLanguagesAction(supportedLanguages = supportLanguages))
+
+            browserStore.dispatch(
+                TranslationsAction.TranslateStateChangeAction(
+                    tabId = tabId,
+                    translationEngineState = translationEngineState,
+                )
+            )
+
+            browserStore.dispatch(
+                TranslationsAction.TranslateAction(
+                    tabId = tab.id,
+                    fromLanguage = englishLanguage.code,
+                    toLanguage = spanishLanguage.code,
+                    options = null,
+                )
+            )
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            assertTrue(expectedTranslationStatus in onTranslationsActionUpdatedCalls)
+            verify {
+                browserScreenStore.dispatch(PageTranslationStatusUpdated(expectedTranslationStatus))
+            }
         }
-        val navController: NavController = mock {
-            doReturn(currentDestination).`when`(this).currentDestination
+
+    @Test
+    fun `GIVEN isTranslationsEnabled is false WHEN translation status isTranslated THEN inform translation is not possible`() =
+        runTest {
+            every { browserScreenStore.dispatch(any()) } just runs
+            every { appStore.dispatch(any()) } just runs
+
+            val expectedTranslationStatus =
+                PageTranslationStatus(
+                    isTranslationPossible = false,
+                    isTranslated = false,
+                    isTranslateProcessing = false,
+                )
+
+            // Set to an isTranslated state
+            browserStore =
+                BrowserStore(
+                    BrowserState(
+                        tabs = listOf(tab.copy(translationsState = TranslationsState(isTranslated = true))),
+                        selectedTabId = tabId,
+                        translationEngine =
+                            TranslationsBrowserState(
+                                isEngineSupported = true,
+                                isTranslationsEnabled = false,
+                            ),
+                    )
+                )
+
+            val binding =
+                TranslationsBinding(
+                    browserStore = browserStore,
+                    browserScreenStore = browserScreenStore,
+                    appStore = appStore,
+                    onTranslationStatusUpdate = onTranslationsActionUpdated,
+                    onShowTranslationsDialog = {},
+                    mainDispatcher = testDispatcher,
+                )
+            binding.start()
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            assertTrue(expectedTranslationStatus in onTranslationsActionUpdatedCalls)
+            verify {
+                browserScreenStore.dispatch(PageTranslationStatusUpdated(expectedTranslationStatus))
+            }
         }
-        val expectedNavigation = BrowserFragmentDirections.actionBrowserFragmentToTranslationsDialogFragment()
-        browserStore = BrowserStore(
-            BrowserState(
-                tabs = listOf(tab),
-                selectedTabId = tabId,
-                translationEngine = TranslationsBrowserState(isEngineSupported = true),
-            ),
-        )
 
-        val binding = spy(
-            TranslationsBinding(
-                browserStore = browserStore,
-                browserScreenStore = browserScreenStore,
-                appStore = appStore,
-                navController = navController,
-                onTranslationStatusUpdate = onTranslationsActionUpdated,
-                onShowTranslationsDialog = onShowTranslationsDialog,
-            ),
-        )
-        binding.start()
+    @Test
+    fun `GIVEN translationState WHEN translation status isExpectedTranslate THEN inform about translation changes`() =
+        runTest {
+            every { browserScreenStore.dispatch(any()) } just runs
+            every { appStore.dispatch(any()) } just runs
 
-        mockkStatic(NavController::nav) {
+            val expectedTranslationStatus =
+                PageTranslationStatus(
+                    isTranslationPossible = true,
+                    isTranslated = false,
+                    isTranslateProcessing = false,
+                )
+            browserStore =
+                BrowserStore(
+                    BrowserState(
+                        tabs = listOf(tab),
+                        selectedTabId = tabId,
+                        translationEngine = TranslationsBrowserState(isEngineSupported = true),
+                    )
+                )
+            val appState: AppState = mockk()
+            every { appState.snackbarState } returns None(TranslationInProgress(""))
+            every { appStore.state } returns appState
+            every { appStore.dispatch(any()) } just runs
+            every { browserScreenStore.dispatch(any()) } just runs
+
+            val binding =
+                TranslationsBinding(
+                    browserStore = browserStore,
+                    browserScreenStore = browserScreenStore,
+                    appStore = appStore,
+                    onTranslationStatusUpdate = onTranslationsActionUpdated,
+                    onShowTranslationsDialog = {},
+                    mainDispatcher = testDispatcher,
+                )
+            binding.start()
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            browserStore.dispatch(TranslationsAction.TranslateExpectedAction(tabId = tabId))
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            assertTrue(expectedTranslationStatus in onTranslationsActionUpdatedCalls)
+            verify {
+                browserScreenStore.dispatch(PageTranslationStatusUpdated(expectedTranslationStatus))
+            }
+            verify(atLeast = 1) { appStore.dispatch(SnackbarAction.SnackbarDismissed) }
+        }
+
+    @Test
+    fun `GIVEN isTranslationsEnabled is false WHEN translation status isExpectedTranslate THEN inform translation is not possible`() =
+        runTest {
+            every { browserScreenStore.dispatch(any()) } just runs
+            every { appStore.dispatch(any()) } just runs
+
+            val expectedTranslationStatus =
+                PageTranslationStatus(
+                    isTranslationPossible = false,
+                    isTranslated = false,
+                    isTranslateProcessing = false,
+                )
+
+            browserStore =
+                BrowserStore(
+                    BrowserState(
+                        tabs = listOf(tab),
+                        selectedTabId = tabId,
+                        translationEngine =
+                            TranslationsBrowserState(
+                                isEngineSupported = true,
+                                isTranslationsEnabled = false,
+                            ),
+                    )
+                )
+
+            val binding =
+                TranslationsBinding(
+                    browserStore = browserStore,
+                    browserScreenStore = browserScreenStore,
+                    appStore = appStore,
+                    onTranslationStatusUpdate = onTranslationsActionUpdated,
+                    onShowTranslationsDialog = {},
+                    mainDispatcher = testDispatcher,
+                )
+            binding.start()
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            // isExpectedTranslate signals the engine thinks the user may want to translate
+            browserStore.dispatch(TranslationsAction.TranslateExpectedAction(tabId = tabId))
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            assertTrue(expectedTranslationStatus in onTranslationsActionUpdatedCalls)
+            verify {
+                browserScreenStore.dispatch(PageTranslationStatusUpdated(expectedTranslationStatus))
+            }
+        }
+
+    @Test
+    fun `GIVEN translationState WHEN translation status is not isExpectedTranslate or isTranslated THEN inform about translation changes`() =
+        runTest {
+            every { browserScreenStore.dispatch(any()) } just runs
+            every { appStore.dispatch(any()) } just runs
+
+            val expectedTranslationStatus =
+                PageTranslationStatus(
+                    isTranslationPossible = false,
+                    isTranslated = false,
+                    isTranslateProcessing = false,
+                )
+            browserStore =
+                BrowserStore(
+                    BrowserState(
+                        tabs = listOf(tab),
+                        selectedTabId = tabId,
+                    )
+                )
+            val appState: AppState = mockk()
+            every { appState.snackbarState } returns None(TranslationInProgress(""))
+            every { appStore.state } returns appState
+            every { appStore.dispatch(any()) } just runs
+            every { browserScreenStore.dispatch(any()) } just runs
+
+            val binding =
+                TranslationsBinding(
+                    browserStore = browserStore,
+                    browserScreenStore = browserScreenStore,
+                    appStore = appStore,
+                    onTranslationStatusUpdate = onTranslationsActionUpdated,
+                    onShowTranslationsDialog = {},
+                    mainDispatcher = testDispatcher,
+                )
+            binding.start()
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            assertTrue(expectedTranslationStatus in onTranslationsActionUpdatedCalls)
+            verify {
+                browserScreenStore.dispatch(PageTranslationStatusUpdated(expectedTranslationStatus))
+            }
+            verify { appStore.dispatch(SnackbarAction.SnackbarDismissed) }
+        }
+
+    @Test
+    fun `GIVEN translationState WHEN translation state isOfferTranslate is true THEN offer to translate the current page`() =
+        runTest {
+            browserStore =
+                BrowserStore(
+                    BrowserState(
+                        tabs = listOf(tab),
+                        selectedTabId = tabId,
+                        translationEngine = TranslationsBrowserState(isEngineSupported = true),
+                    )
+                )
+
+            val binding =
+                TranslationsBinding(
+                    browserStore = browserStore,
+                    onTranslationStatusUpdate = onTranslationsActionUpdated,
+                    onShowTranslationsDialog = onShowTranslationsDialog,
+                    mainDispatcher = testDispatcher,
+                )
+            binding.start()
+            testDispatcher.scheduler.advanceUntilIdle()
+
             browserStore.dispatch(
                 TranslationsAction.TranslateOfferAction(
                     tabId = tab.id,
                     isOfferTranslate = true,
-                ),
-            ).joinBlocking()
+                )
+            )
+            testDispatcher.scheduler.advanceUntilIdle()
 
-            verify(onShowTranslationsDialog, never()).invoke()
-            verify(binding).recordTranslationStartTelemetry()
-            verify(appStore, atLeast(1)).dispatch(SnackbarAction.SnackbarDismissed)
-            verify(navController).navigate(expectedNavigation)
+            assertEquals(1, onShowTranslationsDialogCount)
         }
-    }
 
     @Test
-    fun `GIVEN translationState WHEN readerState is active THEN inform about translation changes`() {
-        val expectedTranslationStatus = PageTranslationStatus(
-            isTranslationPossible = false,
-            isTranslated = false,
-            isTranslateProcessing = false,
-        )
-        val tabReaderStateActive = createTab(
-            "https://www.firefox.com",
-            id = "test-tab",
-            readerState = ReaderState(active = true),
-        )
-        browserStore = BrowserStore(
-            BrowserState(
-                tabs = listOf(tabReaderStateActive),
-                selectedTabId = tabReaderStateActive.id,
-            ),
-        )
+    fun `GIVEN store dependencies set WHEN translation state isOfferTranslate is true THEN offer to translate the current page`() =
+        runTest {
+            every { browserScreenStore.dispatch(any()) } just runs
+            every { appStore.dispatch(any()) } just runs
 
-        val binding = TranslationsBinding(
-            browserStore = browserStore,
-            browserScreenStore = browserScreenStore,
-            appStore = appStore,
-            onTranslationStatusUpdate = onTranslationsActionUpdated,
-            onShowTranslationsDialog = onShowTranslationsDialog,
-        )
-        binding.start()
+            val currentDestination: NavDestination = mockk()
+            every { currentDestination.id } returns R.id.browserFragment
+            val navController: NavController = mockk(relaxUnitFun = true)
+            every { navController.currentDestination } returns currentDestination
+            every { navController.navigate(any<Int>()) } just runs
+            val expectedNavigation = BrowserFragmentDirections.actionBrowserFragmentToTranslationsDialogFragment()
+            browserStore =
+                BrowserStore(
+                    BrowserState(
+                        tabs = listOf(tab),
+                        selectedTabId = tabId,
+                        translationEngine = TranslationsBrowserState(isEngineSupported = true),
+                    )
+                )
 
-        verify(onTranslationsActionUpdated).invoke(expectedTranslationStatus)
-    }
+            val binding =
+                spyk(
+                    TranslationsBinding(
+                        browserStore = browserStore,
+                        browserScreenStore = browserScreenStore,
+                        appStore = appStore,
+                        navController = navController,
+                        onTranslationStatusUpdate = onTranslationsActionUpdated,
+                        onShowTranslationsDialog = onShowTranslationsDialog,
+                        mainDispatcher = testDispatcher,
+                    )
+                )
+            binding.start()
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            browserStore.dispatch(
+                TranslationsAction.TranslateOfferAction(
+                    tabId = tab.id,
+                    isOfferTranslate = true,
+                )
+            )
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            assertEquals(0, onShowTranslationsDialogCount)
+            verify { binding.recordTranslationStartTelemetry() }
+            verify(atLeast = 1) { appStore.dispatch(SnackbarAction.SnackbarDismissed) }
+            verify { navController.navigate(expectedNavigation) }
+        }
 
     @Test
-    fun `GIVEN translationState WHEN translation state isOfferTranslate is false THEN don't offer to translate the current page`() {
-        browserStore = BrowserStore(
-            BrowserState(
-                tabs = listOf(tab),
-                selectedTabId = tabId,
-                translationEngine = TranslationsBrowserState(isEngineSupported = true),
-            ),
-        )
+    fun `GIVEN translationState WHEN readerState is active THEN inform about translation changes`() = runTest {
+        every { browserScreenStore.dispatch(any()) } just runs
+        every { appStore.dispatch(any()) } just runs
 
-        val binding = spy(
+        val expectedTranslationStatus =
+            PageTranslationStatus(
+                isTranslationPossible = false,
+                isTranslated = false,
+                isTranslateProcessing = false,
+            )
+        val tabReaderStateActive =
+            createTab(
+                "https://www.firefox.com",
+                id = "test-tab",
+                readerState = ReaderState(active = true),
+            )
+        browserStore =
+            BrowserStore(
+                BrowserState(
+                    tabs = listOf(tabReaderStateActive),
+                    selectedTabId = tabReaderStateActive.id,
+                )
+            )
+
+        val binding =
             TranslationsBinding(
                 browserStore = browserStore,
+                browserScreenStore = browserScreenStore,
+                appStore = appStore,
                 onTranslationStatusUpdate = onTranslationsActionUpdated,
                 onShowTranslationsDialog = onShowTranslationsDialog,
-            ),
-        )
+                mainDispatcher = testDispatcher,
+            )
         binding.start()
+        testDispatcher.scheduler.advanceUntilIdle()
 
-        browserStore.dispatch(
-            TranslationsAction.TranslateOfferAction(
-                tabId = tab.id,
-                isOfferTranslate = false,
-            ),
-        ).joinBlocking()
-
-        verify(onShowTranslationsDialog, never()).invoke()
-        verify(binding, never()).recordTranslationStartTelemetry()
-        verify(appStore, never()).dispatch(SnackbarAction.SnackbarDismissed)
+        assertTrue(expectedTranslationStatus in onTranslationsActionUpdatedCalls)
     }
 
     @Test
-    fun `GIVEN translationState WHEN translation state has an error THEN don't offer to translate the current page`() {
-        browserStore = BrowserStore(
-            BrowserState(
-                tabs = listOf(tab),
-                selectedTabId = tabId,
-                translationEngine = TranslationsBrowserState(
-                    isEngineSupported = true,
-                ),
-            ),
-        )
+    fun `GIVEN translationState WHEN translation state isOfferTranslate is false THEN don't offer to translate the current page`() =
+        runTest {
+            every { appStore.dispatch(any()) } just runs
 
-        val binding = spy(
-            TranslationsBinding(
-                browserStore = browserStore,
-                onTranslationStatusUpdate = onTranslationsActionUpdated,
-                onShowTranslationsDialog = onShowTranslationsDialog,
-            ),
-        )
-        binding.start()
+            browserStore =
+                BrowserStore(
+                    BrowserState(
+                        tabs = listOf(tab),
+                        selectedTabId = tabId,
+                        translationEngine = TranslationsBrowserState(isEngineSupported = true),
+                    )
+                )
 
-        browserStore.dispatch(
-            TranslationsAction.TranslateExpectedAction(
-                tabId = tabId,
-            ),
-        ).joinBlocking()
+            val binding =
+                spyk(
+                    TranslationsBinding(
+                        browserStore = browserStore,
+                        onTranslationStatusUpdate = onTranslationsActionUpdated,
+                        onShowTranslationsDialog = onShowTranslationsDialog,
+                        mainDispatcher = testDispatcher,
+                    )
+                )
+            binding.start()
+            testDispatcher.scheduler.advanceUntilIdle()
 
-        browserStore.dispatch(
-            TranslationsAction.TranslateOfferAction(
-                tabId = tab.id,
-                isOfferTranslate = false,
-            ),
-        ).joinBlocking()
+            browserStore.dispatch(
+                TranslationsAction.TranslateOfferAction(
+                    tabId = tab.id,
+                    isOfferTranslate = false,
+                )
+            )
+            testDispatcher.scheduler.advanceUntilIdle()
 
-        browserStore.dispatch(
-            TranslationsAction.TranslateExceptionAction(
-                tabId,
-                TranslationOperation.TRANSLATE,
-                TranslationError.CouldNotTranslateError(null),
-            ),
-        ).joinBlocking()
+            assertEquals(0, onShowTranslationsDialogCount)
+            verify(exactly = 0) { binding.recordTranslationStartTelemetry() }
+            verify(exactly = 0) { appStore.dispatch(SnackbarAction.SnackbarDismissed) }
+        }
 
-        verify(onShowTranslationsDialog).invoke()
-        verify(binding, never()).recordTranslationStartTelemetry()
-        verify(onShowTranslationsDialog).invoke()
-        verify(appStore, never()).dispatch(SnackbarAction.SnackbarDismissed)
-    }
+    @Test
+    fun `GIVEN isTranslationsEnabled is false WHEN isOfferTranslate is true THEN don't offer to translate the current page`() =
+        runTest {
+            browserStore =
+                BrowserStore(
+                    BrowserState(
+                        tabs = listOf(tab),
+                        selectedTabId = tabId,
+                        translationEngine =
+                            TranslationsBrowserState(
+                                isEngineSupported = true,
+                                isTranslationsEnabled = false,
+                            ),
+                    )
+                )
+
+            val binding =
+                spyk(
+                    TranslationsBinding(
+                        browserStore = browserStore,
+                        onTranslationStatusUpdate = onTranslationsActionUpdated,
+                        onShowTranslationsDialog = onShowTranslationsDialog,
+                        mainDispatcher = testDispatcher,
+                    )
+                )
+            binding.start()
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            // isOfferTranslate signals the engine wants to show the bottom sheet
+            browserStore.dispatch(
+                TranslationsAction.TranslateOfferAction(
+                    tabId = tab.id,
+                    isOfferTranslate = true,
+                )
+            )
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            assertEquals(0, onShowTranslationsDialogCount)
+            verify(exactly = 0) { binding.recordTranslationStartTelemetry() }
+        }
+
+    @Test
+    fun `GIVEN translationState WHEN translation state has an error THEN don't offer to translate the current page`() =
+        runTest {
+            every { appStore.dispatch(any()) } just runs
+
+            browserStore =
+                BrowserStore(
+                    BrowserState(
+                        tabs = listOf(tab),
+                        selectedTabId = tabId,
+                        translationEngine = TranslationsBrowserState(isEngineSupported = true),
+                    )
+                )
+
+            val binding =
+                spyk(
+                    TranslationsBinding(
+                        browserStore = browserStore,
+                        onTranslationStatusUpdate = onTranslationsActionUpdated,
+                        onShowTranslationsDialog = onShowTranslationsDialog,
+                        mainDispatcher = testDispatcher,
+                    )
+                )
+            binding.start()
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            browserStore.dispatch(TranslationsAction.TranslateExpectedAction(tabId = tabId))
+
+            browserStore.dispatch(
+                TranslationsAction.TranslateOfferAction(
+                    tabId = tab.id,
+                    isOfferTranslate = false,
+                )
+            )
+
+            browserStore.dispatch(
+                TranslationsAction.TranslateExceptionAction(
+                    tabId,
+                    TranslationOperation.TRANSLATE,
+                    TranslationError.CouldNotTranslateError(null),
+                )
+            )
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            assertEquals(1, onShowTranslationsDialogCount)
+            verify(exactly = 0) { binding.recordTranslationStartTelemetry() }
+            verify(exactly = 0) { appStore.dispatch(SnackbarAction.SnackbarDismissed) }
+        }
 }

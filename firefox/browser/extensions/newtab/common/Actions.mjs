@@ -37,8 +37,13 @@ for (const type of [
   "BLOCK_SECTION",
   "BLOCK_URL",
   "BOOKMARK_URL",
+  "BROWSER_LINK_OPEN_INTENT",
+  "CARD_SECTIONS_ORDER",
   "CARD_SECTION_IMPRESSION",
+  "CAROUSEL_NAVIGATE",
+  "CAROUSEL_TOGGLE_AUTOPLAY",
   "CLEAR_PREF",
+  "CLICK_SECTION_LEARN_MORE",
   "COPY_DOWNLOAD_LINK",
   "DELETE_BOOKMARK_BY_ID",
   "DELETE_HISTORY_URL",
@@ -46,7 +51,6 @@ for (const type of [
   "DIALOG_CLOSE",
   "DIALOG_OPEN",
   "DISABLE_SEARCH",
-  "DISCOVERY_STREAM_COLLECTION_DISMISSIBLE_TOGGLE",
   "DISCOVERY_STREAM_CONFIG_CHANGE",
   "DISCOVERY_STREAM_CONFIG_RESET",
   "DISCOVERY_STREAM_CONFIG_RESET_DEFAULTS",
@@ -57,6 +61,7 @@ for (const type of [
   "DISCOVERY_STREAM_DEV_EXPIRE_CACHE",
   "DISCOVERY_STREAM_DEV_IDLE_DAILY",
   "DISCOVERY_STREAM_DEV_IMPRESSIONS",
+  "DISCOVERY_STREAM_DEV_REFRESH_CACHE",
   "DISCOVERY_STREAM_DEV_SHOW_PLACEHOLDER",
   "DISCOVERY_STREAM_DEV_SYNC_RS",
   "DISCOVERY_STREAM_DEV_SYSTEM_TICK",
@@ -68,35 +73,30 @@ for (const type of [
   "DISCOVERY_STREAM_LAYOUT_UPDATE",
   "DISCOVERY_STREAM_LINK_BLOCKED",
   "DISCOVERY_STREAM_LOADED_CONTENT",
-  "DISCOVERY_STREAM_PERSONALIZATION_INIT",
-  "DISCOVERY_STREAM_PERSONALIZATION_LAST_UPDATED",
-  "DISCOVERY_STREAM_PERSONALIZATION_OVERRIDE",
-  "DISCOVERY_STREAM_PERSONALIZATION_RESET",
-  "DISCOVERY_STREAM_PERSONALIZATION_TOGGLE",
-  "DISCOVERY_STREAM_PERSONALIZATION_UPDATED",
-  "DISCOVERY_STREAM_POCKET_STATE_INIT",
-  "DISCOVERY_STREAM_POCKET_STATE_SET",
   "DISCOVERY_STREAM_PREFS_SETUP",
-  "DISCOVERY_STREAM_RECENT_SAVES",
   "DISCOVERY_STREAM_RETRY_FEED",
   "DISCOVERY_STREAM_SPOCS_CAPS",
   "DISCOVERY_STREAM_SPOCS_ENDPOINT",
+  "DISCOVERY_STREAM_SPOCS_ONDEMAND_LOAD",
+  "DISCOVERY_STREAM_SPOCS_ONDEMAND_RESET",
+  "DISCOVERY_STREAM_SPOCS_ONDEMAND_UPDATE",
   "DISCOVERY_STREAM_SPOCS_PLACEMENTS",
   "DISCOVERY_STREAM_SPOCS_UPDATE",
   "DISCOVERY_STREAM_SPOC_BLOCKED",
   "DISCOVERY_STREAM_SPOC_IMPRESSION",
+  "DISCOVERY_STREAM_SPOC_PLACEHOLDER_DURATION",
   "DISCOVERY_STREAM_TOPICS_LOADING",
   "DISCOVERY_STREAM_USER_EVENT",
   "DOWNLOAD_CHANGED",
-  "FAKESPOT_CTA_CLICK",
-  "FAKESPOT_DISMISS",
-  "FAKE_FOCUS_SEARCH",
+  "DWELL_LINK_OPENED",
   "FILL_SEARCH_TERM",
   "FOLLOW_SECTION",
-  "HANDOFF_SEARCH_TO_AWESOMEBAR",
   "HIDE_PERSONALIZE",
-  "HIDE_PRIVACY_INFO",
   "HIDE_TOAST_MESSAGE",
+  "INFERRED_PERSONALIZATION_CLEAR_INTEREST_VECTOR",
+  "INFERRED_PERSONALIZATION_DEBUG_FEATURES_REQUEST",
+  "INFERRED_PERSONALIZATION_DEBUG_FEATURES_UPDATE",
+  "INFERRED_PERSONALIZATION_DEBUG_OVERRIDES_SET",
   "INFERRED_PERSONALIZATION_MODEL_UPDATE",
   "INFERRED_PERSONALIZATION_REFRESH",
   "INFERRED_PERSONALIZATION_RESET",
@@ -111,21 +111,23 @@ for (const type of [
   "MESSAGE_NOTIFY_VISIBILITY",
   "MESSAGE_SET",
   "MESSAGE_TOGGLE_VISIBILITY",
+  "MULTIPLE_PREFS_CHANGED",
   "NEW_TAB_INIT",
   "NEW_TAB_INITIAL_STATE",
   "NEW_TAB_LOAD",
   "NEW_TAB_REHYDRATED",
+  "NEW_TAB_SCROLL",
   "NEW_TAB_STATE_REQUEST",
   "NEW_TAB_STATE_REQUEST_STARTUPCACHE",
   "NEW_TAB_STATE_REQUEST_WITHOUT_STARTUPCACHE",
   "NEW_TAB_UNLOAD",
-  "OPEN_ABOUT_FAKESPOT",
+  "OPEN_ABOUT_ADDONS_THEMES",
   "OPEN_DOWNLOAD_FILE",
   "OPEN_LINK",
   "OPEN_NEW_WINDOW",
   "OPEN_PRIVATE_WINDOW",
   "OPEN_WEBEXT_SETTINGS",
-  "PARTNER_LINK_ATTRIBUTION",
+  "PICTURE_OF_THE_DAY_UPDATE",
   "PLACES_BOOKMARKS_REMOVED",
   "PLACES_BOOKMARK_ADDED",
   "PLACES_HISTORY_CLEARED",
@@ -133,15 +135,16 @@ for (const type of [
   "PLACES_LINKS_DELETED",
   "PLACES_LINK_BLOCKED",
   "POCKET_CTA",
-  "POCKET_LOGGED_IN",
-  "POCKET_THUMBS_DOWN",
-  "POCKET_THUMBS_UP",
   "POCKET_WAITING_FOR_SPOC",
   "PREFS_INITIAL_VALUES",
   "PREF_CHANGED",
   "PREVIEW_REQUEST",
   "PREVIEW_REQUEST_CANCEL",
   "PREVIEW_RESPONSE",
+  "PROMO_CARD_CLICK",
+  "PROMO_CARD_DISMISS",
+  "PROMO_CARD_IMPRESSION",
+  "REFRESH_EXTERNAL_COMPONENTS",
   "REMOVE_DOWNLOAD_FILE",
   "REPORT_AD_OPEN",
   "REPORT_AD_SUBMIT",
@@ -151,6 +154,7 @@ for (const type of [
   "RICH_ICON_MISSING",
   "SAVE_SESSION_PERF_DATA",
   "SCREENSHOT_UPDATED",
+  "SECTIONS_LAYOUT_UPDATE",
   "SECTION_DEREGISTER",
   "SECTION_DISABLE",
   "SECTION_ENABLE",
@@ -162,6 +166,7 @@ for (const type of [
   "SECTION_UPDATE_CARD",
   "SETTINGS_CLOSE",
   "SETTINGS_OPEN",
+  "SET_MULTIPLE_PREFS",
   "SET_PREF",
   "SHOW_DOWNLOAD_FILE",
   "SHOW_FIREFOX_ACCOUNTS",
@@ -171,11 +176,13 @@ for (const type of [
   "SHOW_TOAST_MESSAGE",
   "SKIPPED_SIGNIN",
   "SOV_UPDATED",
+  "SPACES_USER_EVENT",
   "SUBMIT_EMAIL",
   "SUBMIT_SIGNIN",
   "SYSTEM_TICK",
   "TELEMETRY_IMPRESSION_STATS",
   "TELEMETRY_USER_EVENT",
+  "TOPIC_NAVIGATION_CLICK",
   "TOPIC_SELECTION_IMPRESSION",
   "TOPIC_SELECTION_MAYBE_LATER",
   "TOPIC_SELECTION_SPOTLIGHT_CLOSE",
@@ -197,16 +204,15 @@ for (const type of [
   "TOP_SITES_UPDATED",
   "TOTAL_BOOKMARKS_REQUEST",
   "TOTAL_BOOKMARKS_RESPONSE",
-  "TRENDING_SEARCH_IMPRESSION",
-  "TRENDING_SEARCH_SUGGESTION_OPEN",
-  "TRENDING_SEARCH_TOGGLE_COLLAPSE",
-  "TRENDING_SEARCH_UPDATE",
   "UNBLOCK_SECTION",
   "UNFOLLOW_SECTION",
   "UNINIT",
   "UPDATE_PINNED_SEARCH_SHORTCUTS",
   "UPDATE_SEARCH_SHORTCUTS",
   "WALLPAPERS_CATEGORY_SET",
+  "WALLPAPERS_CUSTOM_APPLY",
+  "WALLPAPERS_CUSTOM_LIBRARY_REQUEST",
+  "WALLPAPERS_CUSTOM_LIBRARY_SET",
   "WALLPAPERS_CUSTOM_SET",
   "WALLPAPERS_FEATURE_HIGHLIGHT_COUNTER_INCREMENT",
   "WALLPAPERS_FEATURE_HIGHLIGHT_CTA_CLICKED",
@@ -216,18 +222,69 @@ for (const type of [
   "WALLPAPER_CATEGORY_CLICK",
   "WALLPAPER_CLICK",
   "WALLPAPER_REMOVE_UPLOAD",
+  "WALLPAPER_SAVED_ADDED",
+  "WALLPAPER_SAVED_APPLIED",
+  "WALLPAPER_SAVED_REMOVED",
   "WALLPAPER_UPLOAD",
+  "WALLPAPER_UPLOAD_RESULT",
+  "WEATHER_DETECT_LOCATION",
   "WEATHER_IMPRESSION",
   "WEATHER_LOAD_ERROR",
   "WEATHER_LOCATION_DATA_UPDATE",
   "WEATHER_LOCATION_SEARCH_UPDATE",
   "WEATHER_LOCATION_SUGGESTIONS_UPDATE",
   "WEATHER_OPEN_PROVIDER_URL",
+  "WEATHER_OPT_IN_PROMPT_SELECTION",
   "WEATHER_QUERY_UPDATE",
   "WEATHER_SEARCH_ACTIVE",
   "WEATHER_UPDATE",
+  "WEATHER_USER_OPT_IN_LOCATION",
   "WEBEXT_CLICK",
   "WEBEXT_DISMISS",
+  "WEB_NOTIFICATIONS_ADDED",
+  "WEB_NOTIFICATIONS_CLICK",
+  "WEB_NOTIFICATIONS_DISMISS",
+  "WEB_NOTIFICATIONS_DISMISS_ALL",
+  "WEB_NOTIFICATIONS_ERROR",
+  "WEB_NOTIFICATIONS_REMOVED",
+  "WEB_NOTIFICATIONS_REQUEST",
+  "WEB_NOTIFICATIONS_UPDATED",
+  "WIDGETS_CONTAINER_ACTION",
+  "WIDGETS_ENABLED",
+  "WIDGETS_ERROR",
+  "WIDGETS_HIDE_ALL",
+  "WIDGETS_IMPRESSION",
+  "WIDGETS_LISTS_CHANGE_SELECTED",
+  "WIDGETS_LISTS_SET",
+  "WIDGETS_LISTS_SET_SELECTED",
+  "WIDGETS_LISTS_UPDATE",
+  "WIDGETS_LISTS_USER_EVENT",
+  "WIDGETS_LISTS_USER_IMPRESSION",
+  "WIDGETS_OPT_IN",
+  "WIDGETS_PICTURE_SET_WALLPAPER",
+  "WIDGETS_PRIVACY_CTA",
+  "WIDGETS_PRIVACY_MARK_CELEBRATED",
+  "WIDGETS_PRIVACY_UPDATE",
+  "WIDGETS_PRIVACY_VISIBLE",
+  "WIDGETS_RECENT_SEARCHES_OPEN_LINK",
+  "WIDGETS_RECENT_SEARCHES_REMOVE_SEARCH",
+  "WIDGETS_RECENT_SEARCHES_UPDATE",
+  "WIDGETS_STOCKS_SEARCH_CLEAR",
+  "WIDGETS_STOCKS_SEARCH_REQUEST",
+  "WIDGETS_STOCKS_SEARCH_RESPONSE",
+  "WIDGETS_STOCKS_SEARCH_STARTED",
+  "WIDGETS_STOCKS_UPDATE",
+  "WIDGETS_STOCKS_WATCHLIST_UPDATE",
+  "WIDGETS_TIMER_END",
+  "WIDGETS_TIMER_PAUSE",
+  "WIDGETS_TIMER_PLAY",
+  "WIDGETS_TIMER_RESET",
+  "WIDGETS_TIMER_SET",
+  "WIDGETS_TIMER_SET_DURATION",
+  "WIDGETS_TIMER_SET_TYPE",
+  "WIDGETS_TIMER_USER_EVENT",
+  "WIDGETS_TIMER_USER_IMPRESSION",
+  "WIDGETS_USER_EVENT",
 ]) {
   actionTypes[type] = type;
 }
@@ -259,9 +316,8 @@ function _RouteMessage(action, options) {
  * AlsoToMain - Creates a message that will be dispatched locally and also sent to the Main process.
  *
  * @param  {object} action Any redux action (required)
- * @param  {object} options
- * @param  {bool}   skipLocal Used by OnlyToMain to skip the main reducer
- * @param  {string} fromTarget The id of the content port from which the action originated. (optional)
+ * @param  {string} [fromTarget] The id of the content port from which the action originated.
+ * @param  {boolean} [skipLocal] Used by OnlyToMain to skip the main reducer
  * @return {object} An action with added .meta properties
  */
 function AlsoToMain(action, fromTarget, skipLocal) {
@@ -277,8 +333,7 @@ function AlsoToMain(action, fromTarget, skipLocal) {
  * OnlyToMain - Creates a message that will be sent to the Main process and skip the local reducer.
  *
  * @param  {object} action Any redux action (required)
- * @param  {object} options
- * @param  {string} fromTarget The id of the content port from which the action originated. (optional)
+ * @param  {string} [fromTarget] The id of the content port from which the action originated.
  * @return {object} An action with added .meta properties
  */
 function OnlyToMain(action, fromTarget) {
@@ -289,12 +344,14 @@ function OnlyToMain(action, fromTarget) {
  * BroadcastToContent - Creates a message that will be dispatched to main and sent to ALL content processes.
  *
  * @param  {object} action Any redux action (required)
+ * @param  {object} options (optional)
  * @return {object} An action with added .meta properties
  */
-function BroadcastToContent(action) {
+function BroadcastToContent(action, options) {
   return _RouteMessage(action, {
     from: MAIN_MESSAGE_TYPE,
     to: CONTENT_MESSAGE_TYPE,
+    ...options,
   });
 }
 
@@ -304,7 +361,7 @@ function BroadcastToContent(action) {
  *
  * @param  {object} action Any redux action (required)
  * @param  {string} target The id of a content port
- * @param  {bool} skipMain Used by OnlyToOneContent to skip the main process
+ * @param  {boolean} [skipMain] Used by OnlyToOneContent to skip the main process
  * @return {object} An action with added .meta properties
  */
 function AlsoToOneContent(action, target, skipMain) {
@@ -378,7 +435,7 @@ function DiscoveryStreamUserEvent(data) {
  * ImpressionStats - A telemetry ping indicating an impression stats.
  *
  * @param  {object} data Fields to include in the ping
- * @param  {int} importContext (For testing) Override the import context for testing.
+ * @param  {number} importContext (For testing) Override the import context for testing.
  * #return {object} An action. For UI code, a AlsoToMain action.
  */
 function ImpressionStats(data, importContext = globalImportContext) {
@@ -393,7 +450,7 @@ function ImpressionStats(data, importContext = globalImportContext) {
  * DiscoveryStreamImpressionStats - A telemetry ping indicating an impression stats in Discovery Stream.
  *
  * @param  {object} data Fields to include in the ping
- * @param  {int} importContext (For testing) Override the import context for testing.
+ * @param  {number} importContext (For testing) Override the import context for testing.
  * #return {object} An action. For UI code, a AlsoToMain action.
  */
 function DiscoveryStreamImpressionStats(
@@ -411,7 +468,7 @@ function DiscoveryStreamImpressionStats(
  * DiscoveryStreamLoadedContent - A telemetry ping indicating a content gets loaded in Discovery Stream.
  *
  * @param  {object} data Fields to include in the ping
- * @param  {int} importContext (For testing) Override the import context for testing.
+ * @param  {number} importContext (For testing) Override the import context for testing.
  * #return {object} An action. For UI code, a AlsoToMain action.
  */
 function DiscoveryStreamLoadedContent(
@@ -432,6 +489,15 @@ function SetPref(prefName, value, importContext = globalImportContext) {
   };
   return importContext === UI_CODE ? AlsoToMain(action) : action;
 }
+
+// Routed to main, which applies all values and echoes one MULTIPLE_PREFS_CHANGED.
+const SetMultiplePrefs = (values, importContext = globalImportContext) => {
+  const action = {
+    type: actionTypes.SET_MULTIPLE_PREFS,
+    data: { values },
+  };
+  return importContext === UI_CODE ? AlsoToMain(action) : action;
+};
 
 function WebExtEvent(type, data, importContext = globalImportContext) {
   if (!data || !data.source) {
@@ -454,6 +520,7 @@ export const actionCreators = {
   OnlyToMain,
   AlsoToPreloaded,
   SetPref,
+  SetMultiplePrefs,
   WebExtEvent,
   DiscoveryStreamImpressionStats,
   DiscoveryStreamLoadedContent,

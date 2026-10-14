@@ -1,14 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "WebTransportDatagramDuplexStream.h"
+
+#include <memory>
+
 #include "mozilla/dom/AutoEntryScript.h"
-#include "mozilla/dom/Promise.h"
 #include "mozilla/dom/Promise-inl.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/WebTransport.h"
+#include "mozilla/dom/WebTransportDatagramsWritable.h"
 #include "mozilla/dom/WebTransportLog.h"
+#include "mozilla/dom/WebTransportSendGroup.h"
 
 namespace mozilla::dom {
 
@@ -122,11 +126,61 @@ void WebTransportDatagramDuplexStream::SetOutgoingHighWaterMark(
   mOutgoingHighWaterMark = aWaterMark;
 }
 
+already_AddRefed<WebTransportDatagramsWritable>
+WebTransportDatagramDuplexStream::CreateWritable(
+    const WebTransportSendOptions& aOptions, ErrorResult& aRv) {
+  LOG(("WebTransportDatagramDuplexStream::CreateWritable() called"));
+  // https://w3c.github.io/webtransport/#dom-webtransportdatagramduplexstream-createwritable
+
+  // Step 1: Let transport be WebTransport object associated with this.
+  if (!mWebTransport) {
+    aRv.ThrowInvalidStateError("WebTransport is not available");
+    return nullptr;
+  }
+
+  // Step 2: If transport.[[State]] is "closed" or "failed", throw an
+  // InvalidStateError.
+  auto state = mWebTransport->mState;
+  if (state == WebTransport::WebTransportState::CLOSED ||
+      state == WebTransport::WebTransportState::FAILED) {
+    aRv.ThrowInvalidStateError("WebTransport closed or failed");
+    return nullptr;
+  }
+
+  // Step 3: Let sendGroup be options["sendGroup"]
+
+  // Step 4: If sendGroup is not null, and sendGroup.[[Transport]] is not
+  // transport, throw an InvalidStateError.
+  if (aOptions.mSendGroup &&
+      aOptions.mSendGroup->GetTransport() != mWebTransport) {
+    aRv.ThrowInvalidStateError(
+        "sendGroup does not belong to the same WebTransport");
+    return nullptr;
+  }
+
+  // Step 5: Let sendOrder be options["sendOrder"].
+  int64_t sendOrder = aOptions.mSendOrder;
+
+  // Step 6: Let writableStream be the result of creating a
+  // WebTransportDatagramsWritable with transport, sendGroup, and sendOrder.
+  AutoEntryScript aes(mGlobal, "WebTransportCreateWritable");
+  JSContext* cx = aes.cx();
+  RefPtr<WebTransportDatagramsWritable> writableStream =
+      WebTransportDatagramsWritable::Create(
+          cx, mGlobal, mWebTransport, this, mOutgoingHighWaterMark,
+          aOptions.mSendGroup, sendOrder, aRv);
+  if (aRv.Failed()) {
+    return nullptr;
+  }
+
+  return writableStream.forget();
+}
+
 void WebTransportDatagramDuplexStream::NewDatagramReceived(
     nsTArray<uint8_t>&& aData, const mozilla::TimeStamp& aTimeStamp) {
   LOG(("received Datagram, size = %zu", aData.Length()));
-  mIncomingDatagramsQueue.Push(UniquePtr<DatagramEntry>(
-      new DatagramEntry(std::move(aData), aTimeStamp)));
+  mIncomingDatagramsQueue.Push(
+      std::make_unique<DatagramEntry>(std::move(aData), aTimeStamp));
   mIncomingAlgorithms->NotifyDatagramAvailable();
 }
 
@@ -250,7 +304,7 @@ void IncomingDatagramStreamAlgorithms::NotifyDatagramAvailable() {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(OutgoingDatagramStreamAlgorithms,
                                    UnderlyingSinkAlgorithmsWrapper, mDatagrams,
-                                   mWaitConnectPromise)
+                                   mSendGroup, mWaitConnectPromise)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(OutgoingDatagramStreamAlgorithms)
 NS_INTERFACE_MAP_END_INHERITING(UnderlyingSinkAlgorithmsWrapper)
@@ -279,7 +333,7 @@ already_AddRefed<Promise> OutgoingDatagramStreamAlgorithms::WriteCallbackImpl(
   // (mDatagrams is transport.[[Datagrams]])
 
   nsTArray<uint8_t> data;
-  Unused << AppendTypedArrayDataTo(arrayBuffer, data);
+  (void)AppendTypedArrayDataTo(arrayBuffer, data);
 
   // Step 4: If datagrams.[[OutgoingMaxDatagramSize]] is less than data’s
   // [[ByteLength]], return a promise resolved with undefined.
@@ -298,8 +352,9 @@ already_AddRefed<Promise> OutgoingDatagramStreamAlgorithms::WriteCallbackImpl(
     // The OutgoingDatagramsQueue lives there, and steps 6-9 generally are
     // implemented there
     LOG(("Sending Datagram, size = %zu", data.Length()));
+    uint64_t sendGroupId = mSendGroup ? mSendGroup->GetGroupId() : 0;
     mChild->SendOutgoingDatagram(
-        std::move(data), now,
+        std::move(data), now, sendGroupId, mSendOrder,
         [promise](nsresult&&) {
           // XXX result
           LOG(("Datagram was sent"));
@@ -318,7 +373,7 @@ already_AddRefed<Promise> OutgoingDatagramStreamAlgorithms::WriteCallbackImpl(
     // We should be guaranteed that we don't get called again until the
     // promise is resolved.
     MOZ_ASSERT(mWaitConnect == nullptr);
-    mWaitConnect.reset(new DatagramEntry(std::move(data), now));
+    mWaitConnect = std::make_unique<DatagramEntry>(std::move(data), now);
     mWaitConnectPromise = promise;
   }
 
@@ -331,9 +386,13 @@ void OutgoingDatagramStreamAlgorithms::SetChild(WebTransportChild* aChild) {
   LOG(("Setting child in datagrams"));
   mChild = aChild;
   if (mWaitConnect) {
-    LOG(("Sending queued datagram"));
+    uint64_t sendGroupId = mSendGroup ? mSendGroup->GetGroupId() : 0;
+    LOG(("Sending queued datagram sendGroup = %" PRIu64
+         ", sendOrder = %" PRId64,
+         sendGroupId, mSendOrder));
     mChild->SendOutgoingDatagram(
-        mWaitConnect->mBuffer, mWaitConnect->mTimeStamp,
+        mWaitConnect->mBuffer, mWaitConnect->mTimeStamp, sendGroupId,
+        mSendOrder,
         [promise = mWaitConnectPromise](nsresult&&) {
           LOG_VERBOSE(("Early Datagram was sent"));
           promise->MaybeResolveWithUndefined();

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,73 +9,69 @@
 
 // Interface headers
 #include "imgLoader.h"
-#include "nsIClassOfService.h"
-#include "nsIConsoleService.h"
-#include "nsIDocShell.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/dom/BindContext.h"
 #include "mozilla/dom/Document.h"
+#include "nsError.h"
+#include "nsIAppShell.h"
+#include "nsIAsyncVerifyRedirectCallback.h"
+#include "nsIClassOfService.h"
+#include "nsIConsoleService.h"
+#include "nsIDocShell.h"
 #include "nsIExternalProtocolHandler.h"
-#include "nsIPermissionManager.h"
 #include "nsIHttpChannel.h"
 #include "nsINestedURI.h"
-#include "nsScriptSecurityManager.h"
-#include "nsIURILoader.h"
+#include "nsIPermissionManager.h"
 #include "nsIScriptChannel.h"
-#include "nsIAsyncVerifyRedirectCallback.h"
-#include "nsIAppShell.h"
 #include "nsIScriptError.h"
+#include "nsIURILoader.h"
+#include "nsScriptSecurityManager.h"
 #include "nsSubDocumentFrame.h"
-
-#include "nsError.h"
 
 // Util headers
 #include "mozilla/Logging.h"
-
+#include "mozilla/Preferences.h"
 #include "nsContentPolicyUtils.h"
 #include "nsContentUtils.h"
 #include "nsDocShellLoadState.h"
 #include "nsGkAtoms.h"
-#include "nsThreadUtils.h"
-#include "nsNetUtil.h"
 #include "nsMimeTypes.h"
-#include "nsStyleUtil.h"
-#include "mozilla/Preferences.h"
+#include "nsNetUtil.h"
 #include "nsQueryObject.h"
+#include "nsStyleUtil.h"
+#include "nsThreadUtils.h"
 
 // Concrete classes
-#include "nsFrameLoader.h"
-
-#include "nsObjectLoadingContent.h"
-
-#include "nsWidgetsCID.h"
+#include "ReferrerInfo.h"
+#include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/BasicEvents.h"
 #include "mozilla/Components.h"
-#include "mozilla/LoadInfo.h"
-#include "mozilla/dom/BindingUtils.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/dom/Event.h"
-#include "mozilla/dom/ScriptSettings.h"
-#include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/IMEStateManager.h"
-#include "mozilla/widget/IMEData.h"
-#include "mozilla/dom/ContentChild.h"
-#include "mozilla/dom/HTMLEmbedElement.h"
-#include "mozilla/dom/HTMLObjectElementBinding.h"
-#include "mozilla/dom/HTMLObjectElement.h"
-#include "mozilla/dom/UserActivation.h"
-#include "mozilla/dom/nsCSPContext.h"
-#include "mozilla/net/DocumentChannel.h"
-#include "mozilla/net/UrlClassifierFeatureFactory.h"
+#include "mozilla/LoadInfo.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/ProfilerLabels.h"
-#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/dom/BindingUtils.h"
+#include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/Event.h"
+#include "mozilla/dom/HTMLEmbedElement.h"
+#include "mozilla/dom/HTMLObjectElement.h"
+#include "mozilla/dom/HTMLObjectElementBinding.h"
+#include "mozilla/dom/PolicyContainer.h"
+#include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/dom/UserActivation.h"
+#include "mozilla/dom/nsCSPContext.h"
+#include "mozilla/net/ChannelClassifierUtils.h"
+#include "mozilla/net/DocumentChannel.h"
+#include "mozilla/widget/IMEData.h"
 #include "nsChannelClassifier.h"
 #include "nsFocusManager.h"
-#include "ReferrerInfo.h"
+#include "nsFrameLoader.h"
 #include "nsIEffectiveTLDService.h"
+#include "nsObjectLoadingContent.h"
+#include "nsWidgetsCID.h"
 
 #ifdef XP_WIN
 // Thanks so much, Microsoft! :(
@@ -214,8 +208,8 @@ already_AddRefed<nsIDocShell> nsObjectLoadingContent::SetupDocShell(
   }
 
   if (!docShell) {
-    mFrameLoader->Destroy();
-    mFrameLoader = nullptr;
+    RefPtr<nsFrameLoader> loader = std::move(mFrameLoader);
+    loader->Destroy();
     return nullptr;
   }
 
@@ -233,7 +227,6 @@ nsObjectLoadingContent::nsObjectLoadingContent()
     : mType(ObjectType::Loading),
       mChannelLoaded(false),
       mNetworkCreated(true),
-      mContentBlockingEnabled(false),
       mIsStopping(false),
       mIsLoading(false),
       mScriptRequested(false),
@@ -298,7 +291,8 @@ nsObjectLoadingContent::OnStartRequest(nsIRequest* aRequest) {
           NS_GetFinalChannelURI(mChannel, getter_AddRefs(mURI)));
     }
 
-    return mFinalListener->OnStartRequest(aRequest);
+    nsCOMPtr<nsIStreamListener> listener = mFinalListener;
+    return listener->OnStartRequest(aRequest);
   }
 
   // Otherwise we should be state loading, and call LoadObject with the channel
@@ -324,12 +318,10 @@ nsObjectLoadingContent::OnStartRequest(nsIRequest* aRequest) {
               u" since it was found on an internal Firefox blocklist.");
       console->LogStringMessage(message.get());
     }
-    mContentBlockingEnabled = true;
     return NS_ERROR_FAILURE;
   }
 
-  if (UrlClassifierFeatureFactory::IsClassifierBlockingErrorCode(status)) {
-    mContentBlockingEnabled = true;
+  if (ChannelClassifierUtils::IsClassifierBlockingErrorCode(status)) {
     return NS_ERROR_FAILURE;
   }
 
@@ -355,7 +347,7 @@ nsObjectLoadingContent::OnStopRequest(nsIRequest* aRequest,
   // fingerprinting, cryptomining, etc.).
   // We make a note of this object node by including it in a dedicated
   // array of blocked tracking nodes under its parent document.
-  if (UrlClassifierFeatureFactory::IsClassifierBlockingErrorCode(aStatusCode)) {
+  if (ChannelClassifierUtils::IsClassifierBlockingErrorCode(aStatusCode)) {
     nsCOMPtr<nsIContent> thisNode =
         do_QueryInterface(static_cast<nsIObjectLoadingContent*>(this));
     if (thisNode && thisNode->IsInComposedDoc()) {
@@ -425,7 +417,7 @@ class ObjectInterfaceRequestorShim final : public nsIInterfaceRequestor,
                                            public nsIChannelEventSink,
                                            public nsIStreamListener {
  public:
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(ObjectInterfaceRequestorShim,
                                            nsIInterfaceRequestor)
   NS_DECL_NSIINTERFACEREQUESTOR
@@ -591,7 +583,8 @@ void nsObjectLoadingContent::MaybeRewriteYoutubeEmbed(nsIURI* aURI,
   if (NS_FAILED(rv)) {
     return;
   }
-  AutoTArray<nsString, 2> params = {utf16OldURI, utf16URI};
+  AutoTArray<nsString, 2> params = {std::move(utf16OldURI),
+                                    std::move(utf16URI)};
   const char* msgName;
   // If there's no query to rewrite, just notify in the developer console
   // that we're changing the embed.
@@ -601,7 +594,7 @@ void nsObjectLoadingContent::MaybeRewriteYoutubeEmbed(nsIURI* aURI,
     msgName = "RewriteYouTubeEmbedPathParams";
   }
   nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "Plugins"_ns,
-                                  doc, nsContentUtils::eDOM_PROPERTIES, msgName,
+                                  doc, PropertiesFile::DOM_PROPERTIES, msgName,
                                   params);
 }
 
@@ -701,7 +694,6 @@ nsObjectLoadingContent::UpdateObjectParameters() {
 
   nsresult rv;
   nsAutoCString newMime;
-  nsAutoString typeAttr;
   nsCOMPtr<nsIURI> newURI;
   nsCOMPtr<nsIURI> newBaseURI;
   ObjectType newType;
@@ -729,7 +721,6 @@ nsObjectLoadingContent::UpdateObjectParameters() {
       el->HasNonEmptyAttr(nsGkAtoms::classid)) {
     // We don't support class ID plugin references, so we should always treat
     // having class Ids as attributes as invalid, and fallback accordingly.
-    newMime.Truncate();
     stateInvalid = true;
   }
 
@@ -757,16 +748,6 @@ nsObjectLoadingContent::UpdateObjectParameters() {
   // If we failed to build a valid URI, use the document's base URI
   if (!newBaseURI) {
     newBaseURI = docBaseURI;
-  }
-
-  nsAutoString rawTypeAttr;
-  el->GetAttr(nsGkAtoms::type, rawTypeAttr);
-  if (!rawTypeAttr.IsEmpty()) {
-    typeAttr = rawTypeAttr;
-    nsAutoString params;
-    nsAutoString mime;
-    nsContentUtils::SplitMimeType(rawTypeAttr, mime, params);
-    CopyUTF16toUTF8(mime, newMime);
   }
 
   ///
@@ -800,6 +781,41 @@ nsObjectLoadingContent::UpdateObjectParameters() {
 
     if (NS_FAILED(rv)) {
       stateInvalid = true;
+    }
+  }
+
+  ///
+  /// type
+  ///
+  nsAutoString rawTypeAttr;
+  el->GetAttr(nsGkAtoms::type, rawTypeAttr);
+  // YouTube embeds might be using type="application/x-shockwave-flash"
+  // which needs to be allowed, but must not override the text/html MIME set
+  // above.
+  if (!mRewrittenYoutubeEmbed && !rawTypeAttr.IsEmpty()) {
+    nsAutoString params;
+    nsAutoString mime;
+    nsContentUtils::SplitMimeType(rawTypeAttr, mime, params);
+
+    if (!StaticPrefs::dom_object_embed_type_hint_enabled()) {
+      NS_ConvertUTF16toUTF8 mimeUTF8(mime);
+      if (imgLoader::SupportImageWithMimeType(mimeUTF8)) {
+        // Normally the type attribute should not be used as a hint, but for
+        // images it does seem to happen in Chrome and Safari. Images generally
+        // don't lead to code execution and we don't use
+        // AcceptedMimeTypes::IMAGES_AND_DOCUMENTS above.
+        newMime = mimeUTF8;
+      } else if (GetTypeOfContent(mimeUTF8) != ObjectType::Document) {
+        LOG(
+            ("OBJLC [%p]: MIME '%s' from type attribute is not supported, "
+             "forcing fallback.",
+             this, mimeUTF8.get()));
+        stateInvalid = true;
+      }
+
+      // Don't use the type attribute as a Content-Type hint in other cases.
+    } else {
+      CopyUTF16toUTF8(mime, newMime);
     }
   }
 
@@ -1202,13 +1218,6 @@ nsresult nsObjectLoadingContent::LoadObject(bool aNotify, bool aForceLoad,
     mType = type;
   }
 
-  // Items resolved as Image/Document are not candidates for content blocking,
-  // as well as invalid plugins (they will not have the mContentType set).
-  if (mType == ObjectType::Fallback && ShouldBlockContent()) {
-    LOG(("OBJLC [%p]: Enable content blocking", this));
-    mType = ObjectType::Loading;
-  }
-
   // Sanity check: We shouldn't have any loaded resources, pending events, or
   // a final listener at this point
   if (mFrameLoader || mFinalListener) {
@@ -1261,8 +1270,8 @@ nsresult nsObjectLoadingContent::LoadObject(bool aNotify, bool aForceLoad,
       nsCOMPtr<nsIURILoader> uriLoader(components::URILoader::Service());
       if (NS_WARN_IF(!uriLoader)) {
         MOZ_ASSERT_UNREACHABLE("Failed to get uriLoader service");
-        mFrameLoader->Destroy();
-        mFrameLoader = nullptr;
+        RefPtr<nsFrameLoader> loader = std::move(mFrameLoader);
+        loader->Destroy();
         break;
       }
 
@@ -1384,11 +1393,17 @@ nsresult nsObjectLoadingContent::CloseChannel() {
 
 bool nsObjectLoadingContent::IsAboutBlankLoadOntoInitialAboutBlank(
     nsIURI* aURI, bool aInheritPrincipal, nsIPrincipal* aPrincipalToInherit) {
-  return NS_IsAboutBlank(aURI) && aInheritPrincipal &&
-         (!mFrameLoader || !mFrameLoader->GetExistingDocShell() ||
-          mFrameLoader->GetExistingDocShell()
-              ->IsAboutBlankLoadOntoInitialAboutBlank(aURI, aInheritPrincipal,
-                                                      aPrincipalToInherit));
+  if (!NS_IsAboutBlankAllowQueryAndFragment(aURI) || !aInheritPrincipal) {
+    return false;
+  }
+
+  if (!mFrameLoader || !mFrameLoader->GetExistingDocShell()) {
+    return false;
+  }
+
+  RefPtr<nsDocShellLoadState> dummyLoadState = new nsDocShellLoadState(mURI);
+  return mFrameLoader->GetExistingDocShell()->ShouldDoInitialAboutBlankSyncLoad(
+      aURI, dummyLoadState, aPrincipalToInherit);
 }
 
 nsresult nsObjectLoadingContent::OpenChannel() {
@@ -1402,6 +1417,17 @@ nsresult nsObjectLoadingContent::OpenChannel() {
   // E.g. mms://
   if (!mURI || !CanHandleURI(mURI)) {
     return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  // The channel's own security check happens in the parent process, which for
+  // a document load is only reached after the nsDocShellLoadState has already
+  // crossed IPC. Check here as well so that a load which content is not
+  // allowed to trigger never gets that far.
+  rv = nsContentUtils::GetSecurityManager()->CheckLoadURIWithPrincipal(
+      el->NodePrincipal(), mURI, nsIScriptSecurityManager::STANDARD,
+      doc->InnerWindowID());
+  if (NS_FAILED(rv)) {
+    return rv;
   }
 
   nsCOMPtr<nsILoadGroup> group = doc->GetDocumentLoadGroup();
@@ -1432,17 +1458,19 @@ nsresult nsObjectLoadingContent::OpenChannel() {
                           nsIRequest::LOAD_HTML_OBJECT_DATA;
   uint32_t sandboxFlags = doc->GetSandboxFlags();
 
-  // For object loads we store the CSP that potentially needs to
+  // For object loads we store the policyContainer that potentially needs to
   // be inherited, e.g. in case we are loading an opaque origin
   // like a data: URI. The actual inheritance check happens within
-  // Document::InitCSP(). Please create an actual copy of the CSP
-  // (do not share the same reference) otherwise a Meta CSP of an
-  // opaque origin will incorrectly be propagated to the embedding
-  // document.
-  RefPtr<nsCSPContext> cspToInherit;
-  if (nsCOMPtr<nsIContentSecurityPolicy> csp = doc->GetCsp()) {
-    cspToInherit = new nsCSPContext();
-    cspToInherit->InitFromOther(static_cast<nsCSPContext*>(csp.get()));
+  // Document::InitPolicyContainer(). Please create an actual copy of the
+  // policyContainer (do not share the same reference) otherwise modifications
+  // done (such as the meta CSP of the new doc) in an opaque origin will
+  // incorrectly be propagated to the embedding document.
+  RefPtr<PolicyContainer> policyContainerToInherit;
+  if (nsCOMPtr<nsIPolicyContainer> policyContainer =
+          doc->GetPolicyContainer()) {
+    policyContainerToInherit = new PolicyContainer();
+    policyContainerToInherit->InitFromOther(
+        PolicyContainer::Cast(policyContainer.get()));
   }
 
   // --- Create LoadInfo
@@ -1460,15 +1488,15 @@ nsresult nsObjectLoadingContent::OpenChannel() {
     loadInfo->SetPrincipalToInherit(el->NodePrincipal());
   }
 
-  // For object loads we store the CSP that potentially needs to
+  // For object loads we store the policyContainer that potentially needs to
   // be inherited, e.g. in case we are loading an opaque origin
   // like a data: URI. The actual inheritance check happens within
-  // Document::InitCSP(). Please create an actual copy of the CSP
-  // (do not share the same reference) otherwise a Meta CSP of an
-  // opaque origin will incorrectly be propagated to the embedding
-  // document.
-  if (cspToInherit) {
-    loadInfo->SetCSPToInherit(cspToInherit);
+  // Document::InitPolicyContainer(). Please create an actual copy of the
+  // policyContainer (do not share the same reference) otherwise modifications
+  // done (such as the meta CSP of the new doc) in an opaque origin will
+  // incorrectly be propagated to the embedding document.
+  if (policyContainerToInherit) {
+    loadInfo->SetPolicyContainerToInherit(policyContainerToInherit);
   }
 
   if (DocumentChannel::CanUseDocumentChannel(mURI) &&
@@ -1478,8 +1506,8 @@ nsresult nsObjectLoadingContent::OpenChannel() {
     RefPtr<nsDocShellLoadState> loadState = new nsDocShellLoadState(mURI);
     loadState->SetPrincipalToInherit(el->NodePrincipal());
     loadState->SetTriggeringPrincipal(loadInfo->TriggeringPrincipal());
-    if (cspToInherit) {
-      loadState->SetCsp(cspToInherit);
+    if (policyContainerToInherit) {
+      loadState->SetPolicyContainer(policyContainerToInherit);
     }
     loadState->SetTriggeringSandboxFlags(sandboxFlags);
 
@@ -1541,7 +1569,7 @@ nsresult nsObjectLoadingContent::OpenChannel() {
   rv = chan->AsyncOpen(shim);
   NS_ENSURE_SUCCESS(rv, rv);
   LOG(("OBJLC [%p]: Channel opened", this));
-  mChannel = chan;
+  mChannel = std::move(chan);
   return NS_OK;
 }
 
@@ -1550,11 +1578,6 @@ uint32_t nsObjectLoadingContent::GetCapabilities() const {
 }
 
 void nsObjectLoadingContent::Destroy() {
-  if (mFrameLoader) {
-    mFrameLoader->Destroy();
-    mFrameLoader = nullptr;
-  }
-
   // Reset state so that if the element is re-appended to tree again (e.g.
   // adopting to another document), it will reload resource again.
   UnloadObject();
@@ -1564,7 +1587,7 @@ void nsObjectLoadingContent::Destroy() {
 void nsObjectLoadingContent::Traverse(nsObjectLoadingContent* tmp,
                                       nsCycleCollectionTraversalCallback& cb) {
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFrameLoader);
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFeaturePolicy);
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPermissionsPolicy);
 }
 
 /* static */
@@ -1573,13 +1596,13 @@ void nsObjectLoadingContent::Unlink(nsObjectLoadingContent* tmp) {
     tmp->mFrameLoader->Destroy();
   }
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mFrameLoader);
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mFeaturePolicy);
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mPermissionsPolicy);
 }
 
 void nsObjectLoadingContent::UnloadObject(bool aResetState) {
   if (mFrameLoader) {
-    mFrameLoader->Destroy();
-    mFrameLoader = nullptr;
+    RefPtr<nsFrameLoader> loader = std::move(mFrameLoader);
+    loader->Destroy();
   }
 
   if (aResetState) {
@@ -1677,21 +1700,28 @@ void nsObjectLoadingContent::TriggerInnerFallbackLoads() {
   }
   // Do a depth-first traverse of node tree with the current element as root,
   // looking for non-<param> elements.  If we find some then we have an HTML
-  // fallback for this element.
+  // fallback for this element
+  AutoTArray<RefPtr<nsIContent>, 4> targets;
   for (nsIContent* child = el->GetFirstChild(); child;) {
     // <object> and <embed> elements in the fallback need to StartObjectLoad.
     // Their children should be ignored since they are part of those element's
     // fallback.
-    if (auto* embed = HTMLEmbedElement::FromNode(child)) {
-      embed->StartObjectLoad(true, true);
-      // Skip the children
-      child = child->GetNextNonChildNode(el);
-    } else if (auto* object = HTMLObjectElement::FromNode(child)) {
-      object->StartObjectLoad(true, true);
-      // Skip the children
+    if (child->IsAnyOfHTMLElements(nsGkAtoms::embed, nsGkAtoms::object)) {
+      targets.AppendElement(child);
       child = child->GetNextNonChildNode(el);
     } else {
       child = child->GetNextNode(el);
+    }
+  }
+
+  for (RefPtr<nsIContent>& target : targets) {
+    if (!target->IsInclusiveDescendantOf(el)) {
+      continue;
+    }
+    if (auto* embed = HTMLEmbedElement::FromNode(target)) {
+      embed->StartObjectLoad(true, true);
+    } else if (auto* object = HTMLObjectElement::FromNode(target)) {
+      object->StartObjectLoad(true, true);
     }
   }
 }
@@ -1736,19 +1766,15 @@ nsObjectLoadingContent::UpgradeLoadToDocument(
   }
 
   // At this point we know that we have a browsing context, so it's time to make
-  // sure that that browsing context gets the correct container feature policy.
-  // This is needed for `DocumentLoadListener::MaybeTriggerProcessSwitch` to be
-  // able to start loading the document with the correct container feature
-  // policy in the load info.
-  RefreshFeaturePolicy();
+  // sure that that browsing context gets the correct container permissions
+  // policy. This is needed for
+  // `DocumentLoadListener::MaybeTriggerProcessSwitch` to be able to start
+  // loading the document with the correct container permissions policy in the
+  // load info.
+  RefreshPermissionsPolicy();
 
   bc.forget(aBrowsingContext);
   return NS_OK;
-}
-
-bool nsObjectLoadingContent::ShouldBlockContent() {
-  return mContentBlockingEnabled && mURI && IsFlashMIME(mContentType) &&
-         StaticPrefs::browser_safebrowsing_blockedURIs_enabled();
 }
 
 Document* nsObjectLoadingContent::GetContentDocument(
@@ -1838,7 +1864,7 @@ void nsObjectLoadingContent::SubdocumentImageLoadComplete(nsresult aResult) {
   NotifyStateChanged(oldType, true);
 }
 
-void nsObjectLoadingContent::MaybeStoreCrossOriginFeaturePolicy() {
+void nsObjectLoadingContent::MaybeStoreCrossOriginPermissionsPolicy() {
   MOZ_DIAGNOSTIC_ASSERT(mFrameLoader);
   if (!mFrameLoader) {
     return;
@@ -1862,13 +1888,13 @@ void nsObjectLoadingContent::MaybeStoreCrossOriginFeaturePolicy() {
   }
 
   if (ContentChild* cc = ContentChild::GetSingleton()) {
-    Unused << cc->SendSetContainerFeaturePolicy(
-        browsingContext, Some(mFeaturePolicy->ToFeaturePolicyInfo()));
+    (void)cc->SendSetContainerPermissionsPolicy(
+        browsingContext, Some(mPermissionsPolicy->ToPermissionsPolicyInfo()));
   }
 }
 
 /* static */ already_AddRefed<nsIPrincipal>
-nsObjectLoadingContent::GetFeaturePolicyDefaultOrigin(nsINode* aNode) {
+nsObjectLoadingContent::GetPermissionsPolicyDefaultOrigin(nsINode* aNode) {
   auto* el = nsGenericHTMLElement::FromNode(aNode);
   nsCOMPtr<nsIURI> nodeURI;
   // Different elements keep this in various locations
@@ -1890,20 +1916,22 @@ nsObjectLoadingContent::GetFeaturePolicyDefaultOrigin(nsINode* aNode) {
   return principal.forget();
 }
 
-void nsObjectLoadingContent::RefreshFeaturePolicy() {
+void nsObjectLoadingContent::RefreshPermissionsPolicy() {
   if (mType != ObjectType::Document) {
     return;
   }
 
-  if (!mFeaturePolicy) {
-    mFeaturePolicy = MakeAndAddRef<FeaturePolicy>(AsElement());
+  if (!mPermissionsPolicy) {
+    mPermissionsPolicy = MakeAndAddRef<PermissionsPolicy>(AsElement());
   }
 
   // The origin can change if 'src' or 'data' attributes change.
-  nsCOMPtr<nsIPrincipal> origin = GetFeaturePolicyDefaultOrigin(AsElement());
+  nsCOMPtr<nsIPrincipal> origin =
+      GetPermissionsPolicyDefaultOrigin(AsElement());
   MOZ_ASSERT(origin);
-  mFeaturePolicy->SetDefaultOrigin(origin);
+  mPermissionsPolicy->SetDefaultOrigin(origin);
 
-  mFeaturePolicy->InheritPolicy(AsElement()->OwnerDoc()->FeaturePolicy());
-  MaybeStoreCrossOriginFeaturePolicy();
+  mPermissionsPolicy->InheritPolicy(
+      AsElement()->OwnerDoc()->PermissionsPolicy());
+  MaybeStoreCrossOriginPermissionsPolicy();
 }

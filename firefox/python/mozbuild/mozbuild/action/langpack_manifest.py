@@ -64,13 +64,13 @@ def get_build_date():
 ###
 def get_dt_from_hg(path):
     with mozversioncontrol.get_repository_object(path=path) as repo:
-        phase = repo._run("log", "-r", ".", "-T" "{phase}")
+        phase = repo._run("log", "-r", ".", "-T{phase}")
         if phase.strip() != "public":
             return get_build_date()
         repo_url = repo._run("paths", "default")
         repo_url = repo_url.strip().replace("ssh://", "https://")
         repo_url = repo_url.replace("hg://", "https://")
-        cs = repo._run("log", "-r", ".", "-T" "{node}")
+        cs = repo._run("log", "-r", ".", "-T{node}")
 
     url = pushlog_api_url.format(repo_url, cs)
     session = requests.Session()
@@ -354,15 +354,13 @@ def parse_chrome_manifest(path, base_path, chrome_entries):
             entry_path = os.path.join(
                 os.path.relpath(os.path.dirname(path), base_path), entry.relpath
             )
-            chrome_entries.append(
-                {
-                    "type": "locale",
-                    "alias": entry.name,
-                    "locale": entry.id,
-                    "platforms": convert_entry_flags_to_platform_codes(entry.flags),
-                    "path": mozpath.normsep(entry_path),
-                }
-            )
+            chrome_entries.append({
+                "type": "locale",
+                "alias": entry.name,
+                "locale": entry.id,
+                "platforms": convert_entry_flags_to_platform_codes(entry.flags),
+                "path": mozpath.normsep(entry_path),
+            })
         else:
             raise Exception(f"Unknown type {entry.name}")
 
@@ -393,7 +391,7 @@ def get_version_maybe_buildid(app_version):
 
     buildid = os.environ.get("MOZ_BUILD_DATE")
     if buildid and len(buildid) != 14:
-        print("Ignoring invalid MOZ_BUILD_DATE: %s" % buildid, file=sys.stderr)
+        print(f"Ignoring invalid MOZ_BUILD_DATE: {buildid}", file=sys.stderr)
         buildid = None
 
     if buildid:
@@ -525,7 +523,14 @@ def create_webmanifest(
                 assert entry["alias"] not in cr
                 cr[entry["alias"]] = entry["path"]
         else:
-            raise Exception("Unknown type {0}".format(entry["type"]))
+            raise Exception("Unknown type {}".format(entry["type"]))
+
+    # The entries arrive in staging traversal order, which is not stable across
+    # platforms, so sort them to keep the manifest byte reproducible.
+    cr = {
+        alias: dict(sorted(paths.items())) if isinstance(paths, dict) else paths
+        for alias, paths in sorted(cr.items())
+    }
 
     for loc in locales:
         manifest["languages"][loc] = {

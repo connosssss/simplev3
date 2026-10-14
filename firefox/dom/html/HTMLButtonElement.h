@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,9 +20,8 @@ class HTMLButtonElement final : public nsGenericHTMLFormControlElementWithState,
  public:
   using ConstraintValidation::GetValidationMessage;
 
-  explicit HTMLButtonElement(
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
-      FromParser aFromParser = NOT_FROM_PARSER);
+  explicit HTMLButtonElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo,
+                             FromParser aFromParser = NOT_FROM_PARSER);
 
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(
       HTMLButtonElement, nsGenericHTMLFormControlElementWithState)
@@ -54,9 +51,9 @@ class HTMLButtonElement final : public nsGenericHTMLFormControlElementWithState,
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   nsresult PostHandleEvent(EventChainPostVisitor& aVisitor) override;
   void LegacyPreActivationBehavior(EventChainVisitor& aVisitor) override;
-  MOZ_CAN_RUN_SCRIPT
-  void ActivationBehavior(EventChainPostVisitor& aVisitor) override;
-  void LegacyCanceledActivationBehavior(
+  MOZ_CAN_RUN_SCRIPT void ActivationBehavior(
+      EventChainPostVisitor& aVisitor) override;
+  MOZ_CAN_RUN_SCRIPT void LegacyCanceledActivationBehavior(
       EventChainPostVisitor& aVisitor) override;
 
   // nsINode
@@ -136,8 +133,9 @@ class HTMLButtonElement final : public nsGenericHTMLFormControlElementWithState,
   void SetCustomValidity(const nsAString& aError);
 
   // Command & CommandFor
-  Element* GetCommandForElement() const;
-  void SetCommandForElement(Element*);
+  Element* GetCommandForElementForBindings() const;
+  Element* GetCommandForElementInternal() const;
+  void SetCommandForElementForBindings(Element*);
   void GetCommand(nsAString& aCommand) const;
   Element::Command GetCommand() const;
   void SetCommand(const nsAString& aValue) {
@@ -148,7 +146,10 @@ class HTMLButtonElement final : public nsGenericHTMLFormControlElementWithState,
   virtual ~HTMLButtonElement();
 
   bool InAutoState() const;
-  const nsAttrValue::EnumTableEntry* ResolveAutoState() const;
+  // aParent overrides the parent node used to decide whether this button is a
+  // select's button; when null the current parent node is used.
+  const nsAttrValue::EnumTableEntry* ResolveAutoState(
+      const nsINode* aParent = nullptr) const;
 
   bool mDisabledChanged : 1;
   bool mInInternalActivate : 1;

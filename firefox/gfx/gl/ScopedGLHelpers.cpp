@@ -1,12 +1,15 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/UniquePtr.h"
+#include "ScopedGLHelpers.h"
 
 #include "GLContext.h"
-#include "ScopedGLHelpers.h"
+#include "GLContextEGL.h"
+
+#ifdef MOZ_WIDGET_ANDROID
+#  include "mozilla/layers/AndroidHardwareBuffer.h"
+#endif
 
 namespace mozilla {
 namespace gl {
@@ -111,6 +114,30 @@ ScopedRenderbuffer::ScopedRenderbuffer(GLContext* aGL) : mGL(aGL), mRB(0) {
 
 ScopedRenderbuffer::~ScopedRenderbuffer() {
   mGL->fDeleteRenderbuffers(1, &mRB);
+}
+
+/* ScopedEGLImageForAndroidHardwareBuffer
+ * **************************************************************/
+
+ScopedEGLImageForAndroidHardwareBuffer::ScopedEGLImageForAndroidHardwareBuffer(
+    GLContextEGL* aGL, layers::AndroidHardwareBuffer* aHardwareBuffer)
+    : mGL(aGL), mImage(EGL_NO_IMAGE) {
+#ifdef MOZ_WIDGET_ANDROID
+  const EGLClientBuffer clientBuffer =
+      mGL->mEgl->mLib->fGetNativeClientBufferANDROID(
+          aHardwareBuffer->GetNativeBuffer());
+  if (clientBuffer) {
+    mImage = mGL->mEgl->fCreateImage(
+        EGL_NO_CONTEXT, LOCAL_EGL_NATIVE_BUFFER_ANDROID, clientBuffer, nullptr);
+  }
+#endif
+}
+
+ScopedEGLImageForAndroidHardwareBuffer::
+    ~ScopedEGLImageForAndroidHardwareBuffer() {
+  if (mImage) {
+    mGL->mEgl->fDestroyImage(mImage);
+  }
 }
 
 /* ScopedBindTexture **********************************************************/
@@ -485,6 +512,18 @@ ScopedBindPBO::~ScopedBindPBO() {
 
   mGL->fBindBuffer(mTarget, mPBO);
 }
+
+// ScopedBindProgram
+
+ScopedBindProgram::ScopedBindProgram(GLContext* aGL)
+    : mGL(aGL), mOld(mGL->GetIntAs<GLuint>(LOCAL_GL_CURRENT_PROGRAM)) {}
+
+ScopedBindProgram::ScopedBindProgram(GLContext* aGL, GLuint aNewProg)
+    : ScopedBindProgram(aGL) {
+  mGL->fUseProgram(aNewProg);
+}
+
+ScopedBindProgram::~ScopedBindProgram() { mGL->fUseProgram(mOld); }
 
 } /* namespace gl */
 } /* namespace mozilla */

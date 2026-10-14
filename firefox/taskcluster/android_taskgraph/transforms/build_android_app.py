@@ -6,13 +6,14 @@ Apply some defaults and minor modifications to the jobs defined in the
 build-apk and build-bundle kinds.
 """
 
-
 from taskgraph.transforms.base import TransformSequence
 from taskgraph.util import path
 
 from android_taskgraph.build_config import get_variant
 
 transforms = TransformSequence()
+
+SBOM_BUILD_TYPES = ("nightly", "beta", "release")
 
 
 @transforms.add
@@ -21,11 +22,13 @@ def add_common_config(config, tasks):
         fetches = task.setdefault("fetches", {})
         fetches["toolchain"] = [
             "android-sdk-linux",
+            "linux64-embedded-uniffi-bindgen",
+            "linux64-nimbus-fml",
             "android-gradle-dependencies",
             "linux64-jdk",
         ]
         fetches["build-fat-aar"] = [
-            "target.maven.tar.xz",
+            "target.maven.zip",
             {"artifact": "mozconfig", "extract": False},
         ]
 
@@ -37,7 +40,7 @@ def add_common_config(config, tasks):
         treeherder["kind"] = "build"
         treeherder["tier"] = 1
 
-        task["worker-type"] = "b-linux-amd"
+        task["worker-type"] = "b-linux-docker-amd"
 
         worker = task.setdefault("worker", {})
         worker["docker-image"] = {}
@@ -80,30 +83,27 @@ def add_shippable_secrets(config, tasks):
             task.pop("include-shippable-secrets", False)
             and config.params["level"] == "3"
         ):
-            secrets.extend(
-                [
-                    {
-                        "key": key,
-                        "name": _get_secret_index(task["name"]),
-                        "path": target_file,
-                    }
-                    for key, target_file in _get_secrets_keys_and_target_files(task)
-                ]
-            )
+            secrets.extend([
+                {
+                    "key": key,
+                    "name": _get_secret_index(task["name"]),
+                    "path": target_file,
+                }
+                for key, target_file in _get_secrets_keys_and_target_files(task)
+            ])
         else:
-            dummy_secrets.extend(
-                [
-                    {
-                        "content": fake_value,
-                        "path": target_file,
-                    }
-                    for fake_value, target_file in (
-                        ("faketoken", ".adjust_token"),
-                        ("faketoken", ".mls_token"),
-                        ("https://fake@sentry.prod.mozaws.net/368", ".sentry_token"),
-                    )
-                ]
-            )
+            dummy_secrets.extend([
+                {
+                    "content": fake_value,
+                    "path": target_file,
+                }
+                for fake_value, target_file in (
+                    ("faketoken", ".adjust_token"),
+                    ("faketoken", ".mls_token"),
+                    ("https://fake@sentry.prod.mozaws.net/368", ".sentry_token"),
+                    ("0", ".gps_integrity_token"),
+                )
+            ])
 
         yield task
 
@@ -114,20 +114,18 @@ def _get_secrets_keys_and_target_files(task):
         ("sentry_dsn", ".sentry_token"),
         ("mls", ".mls_token"),
         ("nimbus_url", ".nimbus"),
+        ("gps_integrity_token", ".gps_integrity_token"),
     ]
 
     if task["name"].startswith("fenix-"):
         gradle_build_type = task["run"]["gradle-build-type"]
-        secrets.extend(
-            [
-                (
-                    "firebase",
-                    f"app/src/{gradle_build_type}/res/values/firebase.xml",
-                ),
-                ("wallpaper_url", ".wallpaper_url"),
-                ("pocket_consumer_key", ".pocket_consumer_key"),
-            ]
-        )
+        secrets.extend([
+            (
+                "firebase",
+                f"app/src/{gradle_build_type}/res/values/firebase.xml",
+            ),
+            ("wallpaper_url", ".wallpaper_url"),
+        ])
 
     return secrets
 
@@ -172,8 +170,61 @@ def build_gradle_command(config, tasks):
         if task["run"].pop("track-apk-size", False):
             gradle_command.append(f"apkSize{variant_name}")
 
+        if task["run"].pop("track-build-times", False):
+            series = task["name"]
+            if package_command != "assemble":
+                series = f"{series}-{package_command}"
+            gradle_command.append(f"-PbuildMetricsPerfherderOptions={series}")
+
         task["run"]["gradlew"] = gradle_command
 
+        yield task
+
+
+@transforms.add
+def add_sbom(config, tasks):
+    """Describe what the shipping Fenix APKs package in an SBOM.
+
+    The build-bundle tasks package the same variant, so one document per
+    channel is enough.
+    """
+    for task in tasks:
+        run = task["run"]
+        if (
+            config.kind != "build-apk"
+            or run.get("gradle-build") != "fenix"
+            or run.get("gradle-build-type") not in SBOM_BUILD_TYPES
+            # A test build ships nothing.
+            or run.get("test-build-type")
+            # Nor does one built on the non-shippable GeckoView, like nobp.
+            or not config.kind_dependencies_tasks[
+                task["dependencies"]["build-fat-aar"]
+            ].attributes.get("shippable")
+        ):
+            yield task
+            continue
+
+        variant = run["gradle-build-name"]
+        run["gradlew"].append(
+            f":app:writeRuntimeDependencies{variant[0].upper()}{variant[1:]}"
+        )
+        sbom = "/builds/worker/workspace/obj-build/sbom.json"
+        run.setdefault("post-gradlew", []).append([
+            "/builds/worker/checkouts/gecko/mach",
+            "sbom",
+            "--product-name",
+            "Fenix",
+            "--gradle-runtime-dependencies",
+            "/builds/worker/workspace/obj-build/gradle/build/mobile/android/fenix/"
+            f"app/sbom/{variant}-runtime-dependencies.json",
+            "-o",
+            sbom,
+        ])
+        task.setdefault("worker", {}).setdefault("artifacts", []).append({
+            "type": "file",
+            "name": "public/build/sbom.json",
+            "path": sbom,
+        })
         yield task
 
 
@@ -219,13 +270,11 @@ def add_disable_optimization(config, tasks):
 def add_nightly_version(config, tasks):
     for task in tasks:
         if task.pop("include-nightly-version", False):
-            task["run"]["gradlew"].extend(
-                [
-                    # We only set the `official` flag here. The actual version name will be determined
-                    # by Gradle (depending on the Gecko/A-C version being used)
-                    "-Pofficial"
-                ]
-            )
+            task["run"]["gradlew"].extend([
+                # We only set the `official` flag here. The actual version name will be determined
+                # by Gradle (depending on the Gecko/A-C version being used)
+                "-Pofficial"
+            ])
         yield task
 
 
@@ -233,9 +282,10 @@ def add_nightly_version(config, tasks):
 def add_release_version(config, tasks):
     for task in tasks:
         if task.pop("include-release-version", False):
-            task["run"]["gradlew"].extend(
-                ["-PversionName={}".format(config.params["version"]), "-Pofficial"]
-            )
+            task["run"]["gradlew"].extend([
+                "-PversionName={}".format(config.params["version"]),
+                "-Pofficial",
+            ])
         yield task
 
 
@@ -259,40 +309,51 @@ def add_artifacts(config, tasks):
         if "apk-artifact-template" in task:
             artifact_template = task.pop("apk-artifact-template")
 
+            # Fenix has no product flavor, so APK paths don't include it.
+            if gradle_build == "fenix":
+                apk_path = gradle_build_type
+            else:
+                apk_path = f"{gradle_build}/{gradle_build_type}"
+
             for apk in variant_config["apks"]:
                 apk_name = artifact_template["name"].format(
                     gradle_build=gradle_build, **apk
                 )
-                artifacts.append(
-                    {
-                        "type": artifact_template["type"],
-                        "name": apk_name,
-                        "path": artifact_template["path"].format(
-                            gradle_build_type=gradle_build_type,
-                            gradle_build=gradle_build,
-                            source_project_name=source_project_name,
-                            **apk,
-                        ),
-                    }
-                )
+                artifacts.append({
+                    "type": artifact_template["type"],
+                    "name": apk_name,
+                    "path": artifact_template["path"].format(
+                        gradle_build_type=gradle_build_type,
+                        gradle_build=gradle_build,
+                        apk_path=apk_path,
+                        source_project_name=source_project_name,
+                        **apk,
+                    ),
+                })
                 apks[apk["abi"]] = {
                     "name": apk_name,
                 }
         elif "aab-artifact-template" in task:
             variant_name = variant_config["name"]
             artifact_template = task.pop("aab-artifact-template")
-            artifacts.append(
-                {
-                    "type": artifact_template["type"],
-                    "name": artifact_template["name"],
-                    "path": artifact_template["path"].format(
-                        gradle_build_type=gradle_build_type,
-                        gradle_build=gradle_build,
-                        source_project_name=source_project_name,
-                        variant_name=variant_name,
-                    ),
-                }
-            )
+
+            # Fenix has no product flavor, so AAB filenames don't include it.
+            if gradle_build == "fenix":
+                aab_filename = f"app-{gradle_build_type}.aab"
+            else:
+                aab_filename = f"app-{gradle_build}-{gradle_build_type}.aab"
+
+            artifacts.append({
+                "type": artifact_template["type"],
+                "name": artifact_template["name"],
+                "path": artifact_template["path"].format(
+                    gradle_build_type=gradle_build_type,
+                    gradle_build=gradle_build,
+                    source_project_name=source_project_name,
+                    variant_name=variant_name,
+                    aab_filename=aab_filename,
+                ),
+            })
             task["attributes"]["aab"] = artifact_template["name"]
 
         yield task

@@ -4,11 +4,10 @@
 
 package org.mozilla.fenix.settings.logins.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -18,17 +17,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.tooling.preview.PreviewLightDark
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
 import mozilla.components.compose.base.button.IconButton
 import mozilla.components.compose.base.text.Text
 import mozilla.components.compose.base.text.value
 import mozilla.components.compose.base.textfield.TextField
-import mozilla.components.compose.base.theme.AcornTheme
-import mozilla.components.ui.icons.R
+import mozilla.components.compose.base.theme.PreviewThemeProvider
+import mozilla.components.compose.base.theme.Theme
+import mozilla.components.ui.icons.R as iconsR
+import org.mozilla.fenix.theme.FirefoxTheme
 
 /**
  * An eye trailing icon for a [TextField] that contains a password.
+ *
  * @param isPasswordVisible true when the password is revealed.
  * @param contentDescription the content description.
  * @param onTrailingIconClick invoked when pressing the eye icon
@@ -44,47 +47,44 @@ fun EyePasswordIconButton(
         contentDescription = contentDescription?.value,
     ) {
         Icon(
-            painter = if (!isPasswordVisible) {
-                painterResource(id = R.drawable.mozac_ic_eye_24)
-            } else {
-                painterResource(id = R.drawable.mozac_ic_eye_slash_24)
-            },
+            painter =
+                if (!isPasswordVisible) {
+                    painterResource(id = iconsR.drawable.mozac_ic_eye_24)
+                } else {
+                    painterResource(id = iconsR.drawable.mozac_ic_eye_slash_24)
+                },
             contentDescription = null,
-            tint = AcornTheme.colors.textPrimary,
         )
     }
 }
 
-@PreviewLightDark
+@Preview
 @Composable
-private fun EyePasswordIconButtonPreview() {
+private fun EyePasswordIconButtonPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
     var isPasswordVisible by remember { mutableStateOf(false) }
 
-    AcornTheme {
-        Column(
-            modifier = Modifier
-                .background(color = AcornTheme.colors.layer1)
-                .padding(8.dp),
-        ) {
+    FirefoxTheme(theme) {
+        Surface {
             TextField(
                 value = "password",
                 onValueChange = {},
                 isEnabled = true,
                 placeholder = "",
                 errorText = "",
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(8.dp),
                 label = "",
-                trailingIcons = {
+                trailingIcon = {
                     EyePasswordIconButton(
                         isPasswordVisible = isPasswordVisible,
                         onTrailingIconClick = { isPasswordVisible = !isPasswordVisible },
                     )
                 },
-                visualTransformation = if (isPasswordVisible) {
-                    VisualTransformation.None
-                } else {
-                    PasswordVisualTransformation()
-                },
+                visualTransformation =
+                    if (isPasswordVisible) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
             )
         }
     }

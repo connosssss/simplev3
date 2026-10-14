@@ -1,10 +1,10 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VideoFrameContainer.h"
+
+#include "mozilla/Logging.h"
 
 #ifdef MOZ_WIDGET_ANDROID
 #  include "GLImages.h"  // for SurfaceTextureImage
@@ -15,6 +15,8 @@
 #include "mozilla/gfx/gfxVars.h"
 
 using namespace mozilla::layers;
+
+mozilla::LazyLogModule gVideoFrameContainer("VideoFrameContainer");
 
 namespace mozilla {
 #define NS_DispatchToMainThread(...) CompileError_UseAbstractMainThreadInstead
@@ -64,16 +66,11 @@ void VideoFrameContainer::UpdatePrincipalHandleForFrameIDLocked(
 
 #ifdef MOZ_WIDGET_ANDROID
 static void NotifySetCurrent(Image* aImage) {
-  if (aImage == nullptr) {
-    return;
+  if (aImage) {
+    MOZ_LOG_FMT(gVideoFrameContainer, LogLevel::Debug,
+                "NotifySetCurrent, serial={}", aImage->GetSerial());
+    aImage->OnSetCurrent();
   }
-
-  SurfaceTextureImage* image = aImage->AsSurfaceTextureImage();
-  if (image == nullptr) {
-    return;
-  }
-
-  image->OnSetCurrent();
 }
 #endif
 
@@ -81,6 +78,11 @@ void VideoFrameContainer::SetCurrentFrame(
     const gfx::IntSize& aIntrinsicSize, Image* aImage,
     const TimeStamp& aTargetTime, const media::TimeUnit& aProcessingDuration,
     const media::TimeUnit& aMediaTime) {
+  MOZ_LOG_FMT(
+      gVideoFrameContainer, LogLevel::Debug,
+      "SetCurrentFrame, processing duration={}us,pts={}",
+      aProcessingDuration.IsValid() ? aProcessingDuration.ToMicroseconds() : -1,
+      aMediaTime.ToString());
 #ifdef MOZ_WIDGET_ANDROID
   NotifySetCurrent(aImage);
 #endif
@@ -96,11 +98,13 @@ void VideoFrameContainer::SetCurrentFrame(
 void VideoFrameContainer::SetCurrentFrames(
     const gfx::IntSize& aIntrinsicSize,
     const nsTArray<ImageContainer::NonOwningImage>& aImages) {
+  MOZ_LOG_FMT(gVideoFrameContainer, LogLevel::Debug,
+              "SetCurrentFrames ({} images)", aImages.Length());
 #ifdef MOZ_WIDGET_ANDROID
   // When there are multiple frames, only the last one is effective
   // (see bug 1299068 comment 4). Here I just count on VideoSink and VideoOutput
   // to send one frame at a time and warn if not.
-  Unused << NS_WARN_IF(aImages.Length() > 1);
+  (void)NS_WARN_IF(aImages.Length() > 1);
   for (auto& image : aImages) {
     NotifySetCurrent(image.mImage);
   }
@@ -118,17 +122,51 @@ static bool Is8BitImage(const ImageContainer::NonOwningImage& aFrame) {
 void VideoFrameContainer::SetCurrentFramesLocked(
     const gfx::IntSize& aIntrinsicSize,
     const nsTArray<ImageContainer::NonOwningImage>& aImages) {
+  MOZ_LOG_FMT(gVideoFrameContainer, LogLevel::Debug,
+              "SetCurrentFramesLocked ({} images", aImages.Length());
   mMutex.AssertCurrentThreadOwns();
 
   MOZ_ASSERT(!SupportsOnly8BitImage() ||
                  std::all_of(aImages.begin(), aImages.end(), Is8BitImage),
              "Images should be 8-bit");
 
+  Maybe<gfx::IntSize> newIntrinsicSize;
   if (auto size = Some(aIntrinsicSize); size != mIntrinsicSize) {
     mIntrinsicSize = size;
+    newIntrinsicSize = size;
+  }
+
+  // Unlike intrinsic size, for a realtime (e.g. WebRTC) source rotation has
+  // no independent out-of-band source: it can only come from an image.
+  // (Playback differs -- there, rotation comes from container metadata via
+  // VideoInfo, independently of any image.) An empty image set here (e.g. a
+  // track pausing) carries no rotation information of its own, so it must
+  // not be treated as "rotation is now 0" -- that would force a spurious
+  // reflow/resize on the video element for frames simply stopping, not for
+  // an actual orientation change.
+  Maybe<VideoRotation> newRotation;
+  if (!aImages.IsEmpty()) {
+    Maybe<VideoRotation> rotation = aImages[0].mRotation;
+    // Compare effective rotation values, and not the raw Maybes directly --
+    // Nothing() and Some(kDegree_0) are equivalent, so switching between
+    // them should not count as a change.
+    if (rotation.valueOr(VideoRotation::kDegree_0) !=
+        mRotation.valueOr(VideoRotation::kDegree_0)) {
+      newRotation = Some(rotation.valueOr(VideoRotation::kDegree_0));
+    }
+    mRotation = rotation;
+  }
+
+  if (newIntrinsicSize || newRotation) {
     mMainThread->Dispatch(NS_NewRunnableFunction(
-        "IntrinsicSizeChanged", [this, self = RefPtr(this), size]() {
-          mMainThreadState.mNewIntrinsicSize = size;
+        "IntrinsicSizeOrRotationChanged",
+        [this, self = RefPtr(this), newIntrinsicSize, newRotation]() {
+          if (newIntrinsicSize) {
+            mMainThreadState.mNewIntrinsicSize = newIntrinsicSize;
+          }
+          if (newRotation) {
+            mMainThreadState.mNewRotation = newRotation;
+          }
         }));
   }
 
@@ -163,7 +201,8 @@ void VideoFrameContainer::SetCurrentFramesLocked(
     mImageContainer->SetCurrentImages(aImages);
   }
   gfx::IntSize newFrameSize = mImageContainer->GetCurrentSize();
-  bool imageSizeChanged = (oldFrameSize != newFrameSize);
+  bool imageSizeChanged =
+      (oldFrameSize != newFrameSize) || newRotation.isSome();
 
   if (principalHandle != PRINCIPAL_HANDLE_NONE || imageSizeChanged) {
     RefPtr<VideoFrameContainer> self = this;
@@ -182,6 +221,7 @@ void VideoFrameContainer::SetCurrentFramesLocked(
 void VideoFrameContainer::ClearFutureFrames(TimeStamp aNow) {
   MutexAutoLock lock(mMutex);
 
+  MOZ_LOG_FMT(gVideoFrameContainer, LogLevel::Debug, "ClearFutureFrame");
   // See comment in SetCurrentFrame for the reasoning behind
   // using a kungFuDeathGrip here.
   AutoTArray<ImageContainer::OwningImage, 10> kungFuDeathGrip;
@@ -200,7 +240,7 @@ void VideoFrameContainer::ClearFutureFrames(TimeStamp aNow) {
     currentFrame.AppendElement(ImageContainer::NonOwningImage(
         img->mImage, img->mTimeStamp, img->mFrameID, img->mProducerID,
         img->mProcessingDuration, img->mMediaTime, img->mWebrtcCaptureTime,
-        img->mWebrtcReceiveTime, img->mRtpTimestamp));
+        img->mWebrtcReceiveTime, img->mRtpTimestamp, img->mRotation));
     mImageContainer->SetCurrentImages(currentFrame);
   }
 }
@@ -239,10 +279,13 @@ void VideoFrameContainer::InvalidateWithFlags(uint32_t aFlags) {
   mMainThreadState.mImageSizeChanged = false;
 
   auto newIntrinsicSize = std::move(mMainThreadState.mNewIntrinsicSize);
+  auto newRotation = std::move(mMainThreadState.mNewRotation);
 
   MediaDecoderOwner::ForceInvalidate forceInvalidate{
       (aFlags & INVALIDATE_FORCE) != 0};
-  mOwner->Invalidate(imageSizeChanged, newIntrinsicSize, forceInvalidate);
+
+  mOwner->Invalidate(imageSizeChanged, newIntrinsicSize, newRotation,
+                     forceInvalidate);
 }
 
 }  // namespace mozilla

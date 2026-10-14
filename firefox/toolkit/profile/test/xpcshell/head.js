@@ -18,29 +18,30 @@ const NS_ERROR_START_PROFILE_MANAGER = 0x805800c9;
 
 const UPDATE_CHANNEL = AppConstants.MOZ_UPDATE_CHANNEL;
 
+// XPCShell uses its own directory service provider but the profile service
+// queries XREDirProvider directly so make sure the two are in sync.
+let xreDirProvider = Cc["@mozilla.org/xre/directory-provider;1"]
+  .getService(Ci.nsIDirectoryServiceProvider)
+  .QueryInterface(Ci.nsIXREDirProvider);
+
+function updateDirSvc(property) {
+  let file = xreDirProvider.getFile(property, {});
+  console.log(property, file.path);
+  Services.dirsvc.set(property, file.clone());
+  return file.clone();
+}
+
+let gProfilesRoot = updateDirSvc("DefProfRt");
+let gProfilesTemp = updateDirSvc("DefProfLRt");
+let gDataHome = updateDirSvc("UAppData");
+let gDataHomeLocal = gProfilesTemp.clone();
+
+if (!gProfilesRoot.equals(gDataHome)) {
+  gDataHomeLocal = gProfilesTemp.parent;
+}
+
 let gProfD = do_get_profile();
 Services.fog.initializeFOG();
-let gDataHome = gProfD.clone();
-gDataHome.append("data");
-gDataHome.createUnique(Ci.nsIFile.DIRECTORY_TYPE, 0o755);
-let gDataHomeLocal = gProfD.clone();
-gDataHomeLocal.append("local");
-gDataHomeLocal.createUnique(Ci.nsIFile.DIRECTORY_TYPE, 0o755);
-
-let xreDirProvider = Cc["@mozilla.org/xre/directory-provider;1"].getService(
-  Ci.nsIXREDirProvider
-);
-xreDirProvider.setUserDataDirectory(gDataHome, false);
-xreDirProvider.setUserDataDirectory(gDataHomeLocal, true);
-Services.dirsvc.set("UAppData", gDataHome);
-let gProfilesRoot = gDataHome.clone();
-let gProfilesTemp = gDataHomeLocal.clone();
-if (!AppConstants.XP_UNIX || AppConstants.platform == "macosx") {
-  gProfilesRoot.append("Profiles");
-  gProfilesTemp.append("Profiles");
-}
-Services.dirsvc.set("DefProfRt", gProfilesRoot);
-Services.dirsvc.set("DefProfLRt", gProfilesTemp);
 
 let gIsDefaultApp = false;
 
@@ -104,12 +105,14 @@ const BACKGROUNDTASKS_PROFILE_DATA = (() => {
       {
         name: "Profile1",
         path: "Path1",
+        isRelative: true,
         storeID: null,
         default: false,
       },
       {
         name: "Profile3",
         path: "Path3",
+        isRelative: true,
         storeID: null,
         default: false,
       },
@@ -274,7 +277,8 @@ function writeProfilesIni(profileData) {
     let section = `Profile${i}`;
 
     ini.setString(section, "Name", profile.name);
-    ini.setString(section, "IsRelative", 1);
+    let isRelative = profile.isRelative ?? true;
+    ini.setString(section, "IsRelative", isRelative ? "1" : "0");
     ini.setString(section, "Path", profile.path);
     if ("storeID" in profile) {
       ini.setString(section, "StoreID", profile.storeID);
@@ -364,15 +368,11 @@ function readProfilesIni() {
       if (isRelative === null) {
         break;
       }
-      Assert.equal(
-        isRelative,
-        "1",
-        "Paths should always be relative in these tests."
-      );
 
       let profile = {
         name: safeGet(ini, section, "Name"),
         path: safeGet(ini, section, "Path"),
+        isRelative: isRelative == "1",
         // TODO: currently, if there's a StoreID key but no value, this gets
         // translated into JS as an empty string, while if there's no StoreID
         // in the file at all, then it gets translated into JS as null.
@@ -657,5 +657,21 @@ function checkStartupReason(expected = undefined) {
   Assert.equal(
     Glean.startup.profileSelectionReason.testGetValue("baseline"),
     expected
+  );
+  Assert.equal(
+    Glean.startup.profileSelectionReason.testGetValue("new-profile"),
+    expected
+  );
+}
+
+async function checkProfileSource(profile, expectedSource) {
+  let timesFile = profile.rootDir.clone();
+  timesFile.append("times.json");
+  let times = await IOUtils.readJSON(timesFile.path);
+
+  Assert.equal(
+    times.source,
+    expectedSource,
+    "Profile source should be correct"
   );
 }

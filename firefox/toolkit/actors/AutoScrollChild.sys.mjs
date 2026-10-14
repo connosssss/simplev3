@@ -1,4 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +7,15 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   BrowserUtils: "resource://gre/modules/BrowserUtils.sys.mjs",
 });
+
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "autoscrollSpeedMultiplier",
+  "general.autoscroll.speed_multiplier",
+  100
+);
 
 export class AutoScrollChild extends JSWindowActorChild {
   constructor() {
@@ -33,7 +41,7 @@ export class AutoScrollChild extends JSWindowActorChild {
       "middlemouse.scrollbarPosition"
     );
     let node = event.originalTarget;
-    let content = node.ownerGlobal;
+    let content = node.documentGlobal;
 
     // If the node is in editable document or content, we don't want to start
     // autoscroll.
@@ -46,20 +54,29 @@ export class AutoScrollChild extends JSWindowActorChild {
       if (element.isContentEditable) {
         return true;
       }
+
+      // Or if we're pasting into an input field of sorts.
+      if (
+        content.HTMLInputElement.isInstance(node) ||
+        content.HTMLTextAreaElement.isInstance(node)
+      ) {
+        return true;
+      }
+
+      // Gotta check also the internal nodes.
+      let containingHost = node.getRootNode().host;
+      if (
+        containingHost &&
+        (content.HTMLInputElement.isInstance(containingHost) ||
+          content.HTMLTextAreaElement.isInstance(containingHost))
+      ) {
+        return true;
+      }
     }
 
     // Don't start if we're on a link.
     let [href] = lazy.BrowserUtils.hrefAndLinkNodeForClickEvent(event);
     if (href) {
-      return true;
-    }
-
-    // Or if we're pasting into an input field of sorts.
-    let closestInput = mmPaste && node.closest("input,textarea");
-    if (
-      content.HTMLInputElement.isInstance(closestInput) ||
-      content.HTMLTextAreaElement.isInstance(closestInput)
-    ) {
       return true;
     }
 
@@ -77,7 +94,11 @@ export class AutoScrollChild extends JSWindowActorChild {
   }
 
   isScrollableElement(aNode) {
-    let content = aNode.ownerGlobal;
+    if (aNode == aNode.ownerDocument?.scrollingElement) {
+      // We'll consider the window as scrollable instead.
+      return false;
+    }
+    let content = aNode.documentGlobal;
     if (content.HTMLElement.isInstance(aNode)) {
       return !content.HTMLSelectElement.isInstance(aNode) || aNode.multiple;
     }
@@ -103,10 +124,12 @@ export class AutoScrollChild extends JSWindowActorChild {
       return null;
     }
 
-    let global = node.ownerGlobal;
+    let global = node.documentGlobal;
 
-    // this is a list of overflow property values that allow scrolling
-    const scrollingAllowed = ["scroll", "auto"];
+    // This is a list of overflow property values that don't allow scrolling.
+    // Note that some elements (like <select multiple> or <textarea>) are
+    // scrollable even if they don't have scrollable overflow values.
+    const scrollingDisallowed = ["hidden", "clip"];
 
     let cs = global.getComputedStyle(node);
     let overflowx = cs.getPropertyValue("overflow-x");
@@ -115,16 +138,13 @@ export class AutoScrollChild extends JSWindowActorChild {
     // scroll for multiline ones directly without checking for a
     // overflow property
     let scrollVert =
-      node.scrollTopMax &&
-      (global.HTMLSelectElement.isInstance(node) ||
-        scrollingAllowed.includes(overflowy));
+      node.scrollTopMax && !scrollingDisallowed.includes(overflowy);
 
     // do not allow horizontal scrolling for select elements, it leads
     // to visual artifacts and is not the expected behavior anyway
     if (
-      !global.HTMLSelectElement.isInstance(node) &&
       node.scrollLeftMin != node.scrollLeftMax &&
-      scrollingAllowed.includes(overflowx)
+      !scrollingDisallowed.includes(overflowx)
     ) {
       return scrollVert ? "NSEW" : "EW";
     }
@@ -153,15 +173,15 @@ export class AutoScrollChild extends JSWindowActorChild {
     }
 
     if (!this._scrollable) {
-      let direction = this.computeWindowScrollDirection(aNode.ownerGlobal);
+      let direction = this.computeWindowScrollDirection(aNode.documentGlobal);
       if (direction) {
         this._scrolldir = direction;
-        this._scrollable = aNode.ownerGlobal;
-      } else if (aNode.ownerGlobal.frameElement) {
+        this._scrollable = aNode.documentGlobal;
+      } else if (aNode.documentGlobal.frameElement) {
         // Note, in case of out of process iframes frameElement is null, and
         // a caller is supposed to communicate to iframe's parent on its own to
         // support cross process scrolling.
-        this.findNearestScrollableElement(aNode.ownerGlobal.frameElement);
+        this.findNearestScrollableElement(aNode.documentGlobal.frameElement);
       }
     }
   }
@@ -177,7 +197,7 @@ export class AutoScrollChild extends JSWindowActorChild {
       return;
     }
 
-    let content = event.originalTarget.ownerGlobal;
+    let content = event.originalTarget.documentGlobal;
 
     // In some configurations like Print Preview, content.performance
     // (which we use below) is null. Autoscrolling is broken in Print
@@ -199,18 +219,38 @@ export class AutoScrollChild extends JSWindowActorChild {
       // No view ID - leave this._scrollId as null. Receiving side will check.
     }
     let presShellId = domUtils.getPresShellId();
-    let { autoscrollEnabled, usingApz } = await this.sendQuery(
-      "Autoscroll:Start",
-      {
-        scrolldir: this._scrolldir,
-        screenXDevPx: event.screenX * content.devicePixelRatio,
-        screenYDevPx: event.screenY * content.devicePixelRatio,
-        scrollId: this._scrollId,
-        presShellId,
-        browsingContext: this.browsingContext,
-      }
-    );
+
+    // APZ notifies us of a rejection over a different channel than the reply
+    // below, so the two are not ordered. Observe before asking, otherwise a
+    // rejection that wins the race is dropped and nothing scrolls at all.
+    // And before beginning observation, we have to initialize the coordinates.
+    this._startX = event.screenX;
+    this._startY = event.screenY;
+    this._screenX = event.screenX;
+    this._screenY = event.screenY;
+    this._scrollErrorX = 0;
+    this._scrollErrorY = 0;
+    this._autoscrollHandledByApz = true;
+    Services.obs.addObserver(this.observer, "autoscroll-rejected-by-apz");
+
+    let autoscrollEnabled, usingApz;
+    try {
+      ({ autoscrollEnabled, usingApz } = await this.sendQuery(
+        "Autoscroll:Start",
+        {
+          scrolldir: this._scrolldir,
+          screenXDevPx: event.screenX * content.devicePixelRatio,
+          screenYDevPx: event.screenY * content.devicePixelRatio,
+          scrollId: this._scrollId,
+          presShellId,
+        }
+      ));
+    } catch {
+      // The actor was destroyed before the reply arrived.
+      autoscrollEnabled = false;
+    }
     if (!autoscrollEnabled) {
+      this.stopObservingApzRejection();
       this._scrollable = null;
       return;
     }
@@ -225,27 +265,24 @@ export class AutoScrollChild extends JSWindowActorChild {
     });
     this.document.addEventListener("pagehide", this, true);
 
-    this._startX = event.screenX;
-    this._startY = event.screenY;
-    this._screenX = event.screenX;
-    this._screenY = event.screenY;
-    this._scrollErrorX = 0;
-    this._scrollErrorY = 0;
-    this._autoscrollHandledByApz = usingApz;
-
     if (!usingApz) {
-      // If the browser didn't hand the autoscroll off to APZ,
-      // scroll here in the main thread.
+      // The browser didn't hand the autoscroll off to APZ, so scroll here in
+      // the main thread.
+      this.stopObservingApzRejection();
       this.startMainThreadScroll();
-    } else {
-      // Even if the browser did hand the autoscroll to APZ,
-      // APZ might reject it in which case it will notify us
-      // and we need to take over.
-      Services.obs.addObserver(this.observer, "autoscroll-rejected-by-apz");
     }
 
     if (Cu.isInAutomation) {
       Services.obs.notifyObservers(content, "autoscroll-start");
+    }
+  }
+
+  // Removes the "autoscroll-rejected-by-apz" observer if it is still
+  // registered. Safe to call more than once.
+  stopObservingApzRejection() {
+    if (this._autoscrollHandledByApz) {
+      this._autoscrollHandledByApz = false;
+      Services.obs.removeObserver(this.observer, "autoscroll-rejected-by-apz");
     }
   }
 
@@ -269,17 +306,17 @@ export class AutoScrollChild extends JSWindowActorChild {
         mozSystemGroup: true,
       });
       this.document.removeEventListener("pagehide", this, true);
-      if (this._autoscrollHandledByApz) {
-        Services.obs.removeObserver(
-          this.observer,
-          "autoscroll-rejected-by-apz"
-        );
-      }
+      this.stopObservingApzRejection();
     }
   }
 
   accelerate(curr, start) {
-    const speed = 12;
+    // `speed` is the divisor in `val` below, so a higher multiplier must make
+    // `speed` smaller to produce a faster autoscroll. The multiplier is a
+    // percentage (100 = default). Clamp to avoid a zero divisor.
+    const baseSpeed = 12;
+    const multiplier = Math.max(1, lazy.autoscrollSpeedMultiplier);
+    const speed = Math.max(1, (baseSpeed * 100) / multiplier);
     var val = (curr - start) / speed;
 
     if (val > 1) {
@@ -335,7 +372,11 @@ export class AutoScrollChild extends JSWindowActorChild {
       behavior: "instant",
     });
 
-    this._scrollable.ownerGlobal.requestAnimationFrame(this.autoscrollLoop);
+    let win =
+      this._scrollable instanceof Ci.nsIDOMWindow
+        ? this._scrollable
+        : this._scrollable.documentGlobal;
+    win.requestAnimationFrame(this.autoscrollLoop);
   }
 
   canStartAutoScrollWith(event) {
@@ -424,9 +465,8 @@ export class AutoScrollChild extends JSWindowActorChild {
   rejectedByApz(data) {
     // The caller passes in the scroll id via 'data'.
     if (data == this._scrollId) {
-      this._autoscrollHandledByApz = false;
+      this.stopObservingApzRejection();
       this.startMainThreadScroll();
-      Services.obs.removeObserver(this.observer, "autoscroll-rejected-by-apz");
     }
   }
 }

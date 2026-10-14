@@ -20,7 +20,7 @@ support_class = "browsertime_pageload.py"
 ## Keep this test list in alphabetical order
 
 [allrecipes]
-playback_version = "11.0.0"
+playback_version = "12.2.1"
 test_url = "https://www.allrecipes.com/"
 playback_pageset_manifest = "mitm8-android-gve-{subtest}.manifest"
 
@@ -31,7 +31,7 @@ test_url = "https://www.amazon.com"
 test_url = "https://www.amazon.com/s/ref=nb_sb_noss_2/139-6317191-5622045?url=search-alias%3Daps&field-keywords=mobile+phone"
 
 [bild-de]
-playback_version = "11.0.0"
+playback_version = "12.2.1"
 playback_pageset_manifest = "mitm8-android-fenix-{subtest}.manifest"
 test_url = "https://www.bild.de/sport/american-football/nfl/super-bowl-rekordquote-fuer-die-nfl-87139668.bild.html"
 
@@ -62,14 +62,6 @@ test_url = "https://m.ebay-kleinanzeigen.de/s-anzeigen/auf-zeit-wg-berlin/zimmer
 [espn]
 test_url = "http://www.espn.com/nba/story/_/page/allstarweekend25788027/the-comparison-lebron-james-michael-jordan-their-own-words"
 
-[facebook]
-login = true
-playback_pageset_manifest = "mitm6-g5-fenix-{subtest}.manifest"
-test_url = "https://m.facebook.com"
-
-[facebook-cristiano]
-test_url = "https://m.facebook.com/Cristiano"
-
 [google]
 login = true
 playback_pageset_manifest = "mitm6-g5-fenix-{subtest}.manifest"
@@ -87,7 +79,7 @@ test_url = "https://www.google.com/search?q=restaurants+near+me"
 test_url = "https://m.imdb.com/"
 
 [instagram]
-playback_version = "11.0.0"
+playback_version = "12.2.1"
 login = true
 playback_pageset_manifest = "mitm8-android-gve-{subtest}.manifest"
 test_url = "https://www.instagram.com"
@@ -97,11 +89,6 @@ test_url = "https://support.microsoft.com/en-us"
 
 [reddit]
 test_url = "https://www.reddit.com"
-
-[sina]
-playback_version = "11.0.0"
-playback_pageset_manifest = "mitm8-android-fenix-{subtest}.manifest"
-test_url = "https://www.sina.com.cn/"
 
 [stackoverflow]
 test_url = "https://stackoverflow.com/"

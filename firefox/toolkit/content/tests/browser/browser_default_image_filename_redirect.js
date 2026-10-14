@@ -6,14 +6,8 @@
  * doggy.png in file picker dialog.
  */
 
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
-
 let MockFilePicker = SpecialPowers.MockFilePicker;
-MockFilePicker.init(window.browsingContext);
+MockFilePicker.init();
 add_task(async function () {
   // This URL will redirect to doggy.png.
   const URL_FIREBIRD =

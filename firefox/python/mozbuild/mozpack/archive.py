@@ -18,7 +18,7 @@ DEFAULT_MTIME = 1451606400
 # which changes the output of tar creation compared to earlier versions.
 # As this code is used to generate tar files that are meant to be deterministic
 # across versions of python (specifically, it's used as part of computing the hash
-# of docker images, which needs to be identical between CI (which uses python 3.8),
+# of docker images, which needs to be identical between CI (which uses python 3.10),
 # and developer environments (using arbitrary versions of python, at this point,
 # most probably more recent than 3.9)).
 # What we do is subblass TarInfo so that if used on python >= 3.9, it reproduces the
@@ -79,7 +79,7 @@ def create_tar_from_files(fp, files):
             # would be a glaring security hole if the archive were
             # uncompressed as root.
             if ti.mode & (stat.S_ISUID | stat.S_ISGID):
-                raise ValueError("cannot add file with setuid or setgid set: " "%s" % f)
+                raise ValueError("cannot add file with setuid or setgid set: %s" % f)
 
             # Set uid, gid, username, and group as deterministic values.
             ti.uid = 0
@@ -116,6 +116,22 @@ def create_tar_gz_from_files(fp, files, filename=None, compresslevel=9):
     )
     with gf:
         create_tar_from_files(gf, files)
+
+
+def create_tar_zst_from_files(fp, files, filename=None, compresslevel=9, threads=1):
+    """Create a tar.zst file deterministically from files.
+
+    This is a glorified wrapper around ``create_tar_from_files`` that
+    adds zstandard compression.
+
+    The passed file handle should be opened for writing in binary mode.
+    When the function returns, all data has been written to the handle.
+    """
+    import zstandard
+
+    cctx = zstandard.ZstdCompressor(level=compresslevel, threads=threads)
+    with cctx.stream_writer(writer=fp) as compressor:
+        create_tar_from_files(compressor, files)
 
 
 class _BZ2Proxy:

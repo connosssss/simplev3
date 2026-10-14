@@ -7,7 +7,7 @@ package org.mozilla.fenix.onboarding.store
 import mozilla.components.lib.state.Action
 import mozilla.components.lib.state.Middleware
 import mozilla.components.lib.state.State
-import mozilla.components.lib.state.UiStore
+import mozilla.components.lib.state.Store
 
 /**
  * Represents the state of privacy preferences.
@@ -20,13 +20,9 @@ data class PrivacyPreferencesState(
     val usageDataEnabled: Boolean = true,
 ) : State
 
-/**
- * [Action] implementation related to [PrivacyPreferencesState].
- */
+/** [Action] implementation related to [PrivacyPreferencesState]. */
 sealed class PrivacyPreferencesAction : Action {
-    /**
-     * Dispatched when the store is initialized.
-     */
+    /** Dispatched when the store is initialized. */
     data object Init : PrivacyPreferencesAction()
 
     /**
@@ -43,20 +39,14 @@ sealed class PrivacyPreferencesAction : Action {
      */
     data class UsageDataPreferenceUpdatedTo(val enabled: Boolean) : PrivacyPreferencesAction()
 
-    /**
-     * [PrivacyPreferencesAction] indicates the crash reporting option "learn more" link was used.
-     */
+    /** [PrivacyPreferencesAction] indicates the crash reporting option "learn more" link was used. */
     data object CrashReportingLearnMore : PrivacyPreferencesAction()
 
-    /**
-     * [PrivacyPreferencesAction] indicates the usage data option "learn more" link was used.
-     */
+    /** [PrivacyPreferencesAction] indicates the usage data option "learn more" link was used. */
     data object UsageDataUserLearnMore : PrivacyPreferencesAction()
 }
 
-/**
- * Reducer for [PrivacyPreferencesStore].
- */
+/** Reducer for [PrivacyPreferencesStore]. */
 internal object PrivacyPreferencesReducer {
     fun reduce(
         state: PrivacyPreferencesState,
@@ -65,30 +55,29 @@ internal object PrivacyPreferencesReducer {
         return when (action) {
             is PrivacyPreferencesAction.Init,
             is PrivacyPreferencesAction.CrashReportingLearnMore,
-            is PrivacyPreferencesAction.UsageDataUserLearnMore,
-            -> state
+            is PrivacyPreferencesAction.UsageDataUserLearnMore -> state
 
             is PrivacyPreferencesAction.CrashReportingPreferenceUpdatedTo ->
                 state.copy(crashReportingEnabled = action.enabled)
 
-            is PrivacyPreferencesAction.UsageDataPreferenceUpdatedTo ->
-                state.copy(usageDataEnabled = action.enabled)
+            is PrivacyPreferencesAction.UsageDataPreferenceUpdatedTo -> state.copy(usageDataEnabled = action.enabled)
         }
     }
 }
 
 /**
- * A [UiStore] that holds the [PrivacyPreferencesState] for the privacy preferences and reduces
+ * A [Store] that holds the [PrivacyPreferencesState] for the privacy preferences and reduces
  * [PrivacyPreferencesAction]s dispatched to the store.
  */
 class PrivacyPreferencesStore(
     initialState: PrivacyPreferencesState = PrivacyPreferencesState(),
     middlewares: List<Middleware<PrivacyPreferencesState, PrivacyPreferencesAction>> = emptyList(),
-) : UiStore<PrivacyPreferencesState, PrivacyPreferencesAction>(
-    initialState,
-    PrivacyPreferencesReducer::reduce,
-    middlewares,
-) {
+) :
+    Store<PrivacyPreferencesState, PrivacyPreferencesAction>(
+        initialState,
+        PrivacyPreferencesReducer::reduce,
+        middlewares,
+    ) {
     init {
         dispatch(PrivacyPreferencesAction.Init)
     }

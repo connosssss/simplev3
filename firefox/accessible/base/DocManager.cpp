@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,9 +7,9 @@
 #include "ApplicationAccessible.h"
 #include "DocAccessible-inl.h"
 #include "DocAccessibleParent.h"
-#include "nsAccessibilityService.h"
 #include "Platform.h"
 #include "RootAccessibleWrap.h"
+#include "nsAccessibilityService.h"
 
 #ifdef A11Y_LOG
 #  include "Logging.h"
@@ -21,15 +19,22 @@
 #include "mozilla/Components.h"
 #include "mozilla/EventListenerManager.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/StaticPrefs_accessibility.h"
+#include "mozilla/a11y/DocAccessibleChild.h"
+#include "mozilla/a11y/PdfStructTreeBuilder.h"
 #include "mozilla/dom/Event.h"  // for Event
 #include "nsContentUtils.h"
+#include "nsCoreUtils.h"
 #include "nsDocShellLoadTypes.h"
 #include "nsIChannel.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIWebNavigation.h"
 #include "nsIWebProgress.h"
-#include "nsCoreUtils.h"
 #include "xpcAccessibleDocument.h"
+
+#if defined(ANDROID)
+#  include "mozilla/Monitor.h"
+#endif
 
 using namespace mozilla;
 using namespace mozilla::a11y;
@@ -112,6 +117,25 @@ void DocManager::NotifyOfDocumentShutdown(DocAccessible* aDocument,
 
   RemoveFromXPCDocumentCache(aDocument);
   mDocAccessibleCache.Remove(aDOMDocument);
+
+  if (aDocument->IsPrintDoc()) {
+    // A print doc is shutting down. If it is the last print doc, the
+    // accessibility service is no longer needed for PDF output, so remove the
+    // ePdfOutput consumer. If ePdfOutput is the only remaining consumer, this
+    // will shut down the accessibility service completely.
+    bool anyPrintDocsRemain = false;
+    for (const auto& entry : mDocAccessibleCache) {
+      DocAccessible* doc = entry.GetWeak();
+      if (doc->IsPrintDoc()) {
+        anyPrintDocsRemain = true;
+        break;
+      }
+    }
+    if (!anyPrintDocsRemain) {
+      MaybeShutdownAccService(nsAccessibilityService::ePdfOutput,
+                              /* aAsync */ true);
+    }
+  }
 }
 
 void DocManager::RemoveFromRemoteXPCDocumentCache(DocAccessibleParent* aDoc) {
@@ -172,6 +196,62 @@ bool DocManager::IsProcessingRefreshDriverNotification() const {
 }
 #endif
 
+/* static */
+void DocManager::NotifyOfPrintDocument(dom::Document* aDoc) {
+  if (!StaticPrefs::accessibility_tagged_pdf_output_enabled()) {
+    return;
+  }
+  // Bring up the accessibility service if it isn't already running. Use the
+  // ePdfOutput consumer flag so that, if there is no other consumer, the
+  // service stays in PDF-only mode and doesn't create accessibles for
+  // unrelated documents. PDF output uses doc-specific cache domains rather
+  // than gCacheDomains, so there's no need to pass a specific domain set.
+  nsAccessibilityService* serv =
+      GetOrCreateAccService(nsAccessibilityService::ePdfOutput);
+  if (!serv) {
+    return;
+  }
+  if (GetExistingDocAccessible(aDoc)) {
+    MOZ_ASSERT_UNREACHABLE("Print DocAccessible shouldn't already exist!");
+    return;
+  }
+  // Normally, we don't create DocAccessibles for static documents. Print
+  // documents are static clones, so we force creation here.
+  DocAccessible* topDocAcc =
+      serv->CreateDocOrRootAccessible(aDoc, /* aAllowStatic */ true);
+  if (!topDocAcc) {
+    return;
+  }
+  // The accessibility refresh driver won't run for this document. We don't
+  // need it anyway; we just need the initial update.
+  topDocAcc->DoInitialUpdate();
+  // Build accessibility trees for any in-process iframes embedded in this
+  // document being printed. These will be static clones as well. OOP iframes
+  // are requested from the parent process by PdfStructTreeBuilder.
+  AutoTArray<RefPtr<dom::Document>, 8> descendants;
+  aDoc->CollectDescendantDocuments(
+      descendants, dom::Document::IncludeSubResources::No,
+      [](const dom::Document* aDescDoc) { return true; });
+  for (dom::Document* descDoc : descendants) {
+    if (DocAccessible* descDocAcc =
+            serv->CreateDocOrRootAccessible(descDoc, /* aAllowStatic */ true)) {
+      descDocAcc->DoInitialUpdate();
+    }
+  }
+  if (DocAccessibleChild* ipcDoc = topDocAcc->IPCDoc()) {
+    // We already told the parent process that this is a print document when we
+    // constructed the PDocAccessible in DoInitialUpdate. However, this alone
+    // isn't sufficient. The parent process also needs to know when the initial
+    // tree has been sent, which might be split over several IPDL calls. We use
+    // PDocAccessible::Printing for this purpose.
+    ipcDoc->SendPrinting();
+  } else if (XRE_IsParentProcess()) {
+    if (dom::WindowContext* wc = aDoc->GetWindowContext()) {
+      PdfStructTreeBuilder::Init(wc);
+    }
+  }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // DocManager protected
 
@@ -195,6 +275,18 @@ void DocManager::Shutdown() {
   }
 
   ClearDocCache();
+  // Even though remote documents aren't strictly managed by this DocManager
+  // instance, destroy them now because they might depend on platform specific
+  // state which is about to be torn down by PlatformShutdown. Iterate the array
+  // backwards because destroying the document removes it from this array.
+  if (sRemoteDocuments) {
+#if defined(ANDROID)
+    MonitorAutoLock mal(nsAccessibilityService::GetAndroidMonitor());
+#endif
+    for (size_t i = sRemoteDocuments->Length(); i-- > 0;) {
+      (*sRemoteDocuments)[i]->Destroy();
+    }
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -429,22 +521,52 @@ void DocManager::RemoveListeners(Document* aDocument) {
                                  TrustedEventsAtCapture());
 }
 
-DocAccessible* DocManager::CreateDocOrRootAccessible(Document* aDocument) {
-  // Ignore hidden documents, resource documents, static clone
-  // (printing) documents and documents without a docshell.
-  if (!nsCoreUtils::IsDocumentVisibleConsideringInProcessAncestors(aDocument) ||
-      aDocument->IsResourceDoc() || aDocument->IsStaticDocument() ||
-      !aDocument->IsActive()) {
+DocAccessible* DocManager::CreateDocOrRootAccessible(Document* aDocument,
+                                                     bool aAllowStatic) {
+  // In PDF-only mode, the service exists purely to build the accessibility
+  // tree for a document being printed. Only the print path
+  // (NotifyOfPrintDocument) passes aAllowStatic=true; everything else
+  // (DOM load notifications, GetDocAccessible, etc.) defaults to false.
+  // Suppress those other cases here so unrelated documents loaded while a
+  // tagged PDF is being generated don't get DocAccessibles.
+  if (!aAllowStatic && nsAccessibilityService::IsOnlyForPdfOutput()) {
     return nullptr;
+  }
+
+  // Ignore hidden documents, resource documents, static clone
+  // (printing) documents, documents without a docshell, and documents that
+  // are no longer current for their WindowGlobal (e.g. the initial about:blank
+  // after its WindowGlobal has been reused for a new document).
+  if (!nsCoreUtils::IsDocumentVisibleConsideringInProcessAncestors(aDocument) ||
+      aDocument->IsResourceDoc() ||
+      (!aAllowStatic && aDocument->IsStaticDocument()) ||
+      !aDocument->IsActive() || !aDocument->IsCurrentActiveDocument()) {
+    return nullptr;
+  }
+
+  // Don't create a DocAccessible for the transient about:blank that bootstraps
+  // a printing BrowsingContext. It will be replaced by a static clone (filtered
+  // above).
+  if (!aAllowStatic && aDocument->IsUncommittedInitialDocument()) {
+    dom::BrowsingContext* bc = aDocument->GetBrowsingContext();
+    if (bc && bc->Top()->GetIsPrinting()) {
+      return nullptr;
+    }
+  }
+
+  if (IPCAccessibilityActive()) {
+    nsIContent* ownerContent = aDocument->GetEmbedderElement();
+    if (ownerContent && ownerContent->IsXULElement()) {
+      // Don't create accessibles for embedded XUL documents in content process,
+      // since they are not used and we don't want to waste resources on them.
+      // We can get here when a XUL document is loaded in a <browser>, <editor>
+      // or <xul:iframe> in content process, which happens in tests.
+      return nullptr;
+    }
   }
 
   nsIDocShell* docShell = aDocument->GetDocShell();
   if (!docShell || docShell->IsInvisible()) {
-    return nullptr;
-  }
-
-  nsIWidget* widget = nsContentUtils::WidgetForDocument(aDocument);
-  if (!widget || widget->GetWindowType() == widget::WindowType::Invisible) {
     return nullptr;
   }
 
@@ -456,6 +578,12 @@ DocAccessible* DocManager::CreateDocOrRootAccessible(Document* aDocument) {
     return nullptr;
   }
 
+  nsIWidget* widget = presShell->GetRootWidget();
+  if (!aAllowStatic &&
+      (!widget || widget->GetWindowType() == widget::WindowType::Invisible)) {
+    return nullptr;
+  }
+
   bool isRootDoc = nsCoreUtils::IsRootDocument(aDocument);
 
   DocAccessible* parentDocAcc = nullptr;
@@ -463,9 +591,16 @@ DocAccessible* DocManager::CreateDocOrRootAccessible(Document* aDocument) {
     // XXXaaronl: ideally we would traverse the presshell chain. Since there's
     // no easy way to do that, we cheat and use the document hierarchy.
     parentDocAcc = GetDocAccessible(aDocument->GetInProcessParentDocument());
-    // We should always get parentDocAcc except sometimes for background
-    // extension pages, where the parent has an invisible DocShell but the child
-    // does not. See bug 1888649.
+    // We should always get parentDocAcc except:
+    // 1. Sometimes for background extension pages, where the parent has an
+    // invisible DocShell but the child does not. See bug 1888649. In this case,
+    // we should return null.
+    // 2. When this is a printing document and the accessibility service is in
+    // PDF output only mode. In this case, we should still return the document,
+    // just without a parent.
+    const bool shouldAllowNoParent =
+        aAllowStatic && XRE_IsParentProcess() &&
+        nsAccessibilityService::IsOnlyForPdfOutput();
     NS_ASSERTION(
         parentDocAcc ||
             (BasePrincipal::Cast(aDocument->GetPrincipal())->AddonPolicy() &&
@@ -473,9 +608,12 @@ DocAccessible* DocManager::CreateDocOrRootAccessible(Document* aDocument) {
              aDocument->GetInProcessParentDocument()->GetDocShell() &&
              aDocument->GetInProcessParentDocument()
                  ->GetDocShell()
-                 ->IsInvisible()),
+                 ->IsInvisible()) ||
+            shouldAllowNoParent,
         "Can't create an accessible for the document!");
-    if (!parentDocAcc) return nullptr;
+    if (!parentDocAcc && !shouldAllowNoParent) {
+      return nullptr;
+    }
   }
 
   // We only create root accessibles for the true root, otherwise create a
@@ -506,7 +644,7 @@ DocAccessible* DocManager::CreateDocOrRootAccessible(Document* aDocument) {
     docAcc->FireDelayedEvent(nsIAccessibleEvent::EVENT_REORDER,
                              ApplicationAcc());
 
-  } else {
+  } else if (parentDocAcc) {
     parentDocAcc->BindChildDocument(docAcc);
   }
 
@@ -563,12 +701,14 @@ void DocManager::RemoteDocAdded(DocAccessibleParent* aDoc) {
   MOZ_ASSERT(!sRemoteDocuments->Contains(aDoc),
              "How did we already have the doc!");
   sRemoteDocuments->AppendElement(aDoc);
-  ProxyCreated(aDoc);
-  // Fire a reorder event on the OuterDocAccessible.
-  if (LocalAccessible* outerDoc = aDoc->OuterDocOfRemoteBrowser()) {
-    MOZ_ASSERT(outerDoc->Document());
-    RefPtr<AccReorderEvent> reorder = new AccReorderEvent(outerDoc);
-    outerDoc->Document()->FireDelayedEvent(reorder);
+  if (!aDoc->IsPrintDoc()) {
+    ProxyCreated(aDoc);
+    // Fire a reorder event on the OuterDocAccessible.
+    if (LocalAccessible* outerDoc = aDoc->OuterDocOfRemoteBrowser()) {
+      MOZ_ASSERT(outerDoc->Document());
+      auto reorder = MakeRefPtr<AccReorderEvent>(outerDoc);
+      outerDoc->Document()->FireDelayedEvent(reorder);
+    }
   }
 }
 

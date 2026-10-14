@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,12 +13,13 @@ namespace layers {
 class APZCTreeManager;
 class APZUpdater;
 
-class APZCTreeManagerParent : public PAPZCTreeManagerParent {
+class APZCTreeManagerParent final : public PAPZCTreeManagerParent {
  public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(APZCTreeManagerParent, final);
+
   APZCTreeManagerParent(LayersId aLayersId,
                         RefPtr<APZCTreeManager> aAPZCTreeManager,
                         RefPtr<APZUpdater> mAPZUpdater);
-  virtual ~APZCTreeManagerParent();
 
   LayersId GetLayersId() const { return mLayersId; }
 
@@ -30,8 +29,6 @@ class APZCTreeManagerParent : public PAPZCTreeManagerParent {
    */
   void ChildAdopted(RefPtr<APZCTreeManager> aAPZCTreeManager,
                     RefPtr<APZUpdater> aAPZUpdater);
-
-  mozilla::ipc::IPCResult RecvSetKeyboardMap(const KeyboardMap& aKeyboardMap);
 
   mozilla::ipc::IPCResult RecvZoomToRect(const ScrollableLayerGuid& aGuid,
                                          const ZoomTarget& aZoomTarget,
@@ -47,27 +44,20 @@ class APZCTreeManagerParent : public PAPZCTreeManagerParent {
       const ScrollableLayerGuid& aGuid,
       const Maybe<ZoomConstraints>& aConstraints);
 
-  mozilla::ipc::IPCResult RecvSetDPI(const float& aDpiValue);
-
   mozilla::ipc::IPCResult RecvSetAllowedTouchBehavior(
       const uint64_t& aInputBlockId, nsTArray<TouchBehaviorFlags>&& aValues);
-
-  mozilla::ipc::IPCResult RecvSetBrowserGestureResponse(
-      const uint64_t& aInputBlockId, const BrowserGestureResponse& aResponse);
 
   mozilla::ipc::IPCResult RecvStartScrollbarDrag(
       const ScrollableLayerGuid& aGuid, const AsyncDragMetrics& aDragMetrics);
 
-  mozilla::ipc::IPCResult RecvStartAutoscroll(
-      const ScrollableLayerGuid& aGuid, const ScreenPoint& aAnchorLocation);
+  mozilla::ipc::IPCResult RecvNotifyApzAwareListenerAdded(
+      const ScrollableLayerGuid& aGuid);
 
-  mozilla::ipc::IPCResult RecvStopAutoscroll(const ScrollableLayerGuid& aGuid);
-
-  mozilla::ipc::IPCResult RecvSetLongTapEnabled(const bool& aTapGestureEnabled);
-
-  void ActorDestroy(ActorDestroyReason aWhy) override {}
+  void ActorDestroy(ActorDestroyReason aWhy) override;
 
  private:
+  virtual ~APZCTreeManagerParent();
+
   bool IsGuidValid(const ScrollableLayerGuid& aGuid);
 
   LayersId mLayersId;

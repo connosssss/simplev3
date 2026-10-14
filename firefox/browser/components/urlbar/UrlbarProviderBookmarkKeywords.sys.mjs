@@ -9,33 +9,26 @@
 import {
   UrlbarProvider,
   UrlbarUtils,
-} from "resource:///modules/UrlbarUtils.sys.mjs";
+} from "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs";
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   KeywordUtils: "resource://gre/modules/KeywordUtils.sys.mjs",
-  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  UrlbarResult: "chrome://browser/content/urlbar/UrlbarResult.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
 });
 
 /**
  * Class used to create the provider.
  */
-class ProviderBookmarkKeywords extends UrlbarProvider {
+export class UrlbarProviderBookmarkKeywords extends UrlbarProvider {
   /**
-   * Returns the name of this provider.
-   *
-   * @returns {string} the name of this provider.
-   */
-  get name() {
-    return "BookmarkKeywords";
-  }
-
-  /**
-   * @returns {Values<typeof UrlbarUtils.PROVIDER_TYPE>}
+   * @returns {Values<typeof lazy.UrlbarShared.PROVIDER_TYPE>}
    */
   get type() {
-    return UrlbarUtils.PROVIDER_TYPE.HEURISTIC;
+    return lazy.UrlbarShared.PROVIDER_TYPE.HEURISTIC;
   }
 
   /**
@@ -48,8 +41,9 @@ class ProviderBookmarkKeywords extends UrlbarProvider {
   async isActive(queryContext) {
     return (
       (!queryContext.restrictSource ||
-        queryContext.restrictSource == UrlbarUtils.RESULT_SOURCE.BOOKMARKS) &&
-      !queryContext.searchMode &&
+        queryContext.restrictSource ==
+          lazy.UrlbarShared.RESULT_SOURCE.BOOKMARKS) &&
+      !queryContext.restrictInSearchMode() &&
       !!queryContext.tokens.length
     );
   }
@@ -57,9 +51,9 @@ class ProviderBookmarkKeywords extends UrlbarProvider {
   /**
    * Starts querying.
    *
-   * @param {object} queryContext The query context object
-   * @param {Function} addCallback Callback invoked by the provider to add a new
-   *        result.
+   * @param {UrlbarQueryContext} queryContext
+   * @param {(provider: UrlbarProvider, result: UrlbarResult) => void} addCallback
+   *   Callback invoked by the provider to add a new result.
    */
   async startQuery(queryContext, addCallback) {
     let keyword = queryContext.tokens[0]?.value;
@@ -91,24 +85,29 @@ class ProviderBookmarkKeywords extends UrlbarProvider {
         ]
       );
     } else {
-      title = UrlbarUtils.prepareUrlForDisplay(url);
+      title = lazy.UrlbarShared.prepareUrlForDisplay(url);
     }
 
-    let result = new lazy.UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.KEYWORD,
-      UrlbarUtils.RESULT_SOURCE.BOOKMARKS,
-      ...lazy.UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, {
-        title: [title, UrlbarUtils.HIGHLIGHT.TYPED],
-        url: [url, UrlbarUtils.HIGHLIGHT.TYPED],
-        keyword: [keyword, UrlbarUtils.HIGHLIGHT.TYPED],
+    let bookmark = await lazy.PlacesUtils.bookmarks.fetch({ url: entry.url });
+    let result = new lazy.UrlbarResult({
+      type: lazy.UrlbarShared.RESULT_TYPE.KEYWORD,
+      source: lazy.UrlbarShared.RESULT_SOURCE.BOOKMARKS,
+      heuristic: true,
+      payload: {
+        title,
+        url,
+        keyword,
         input: queryContext.searchString,
         postData,
-        icon: UrlbarUtils.getIconForUrl(entry.url),
-      })
-    );
-    result.heuristic = true;
+        icon: lazy.UrlbarShared.getIconForUrl(entry.url),
+        bookmarkDateMs: bookmark ? bookmark.dateAdded.getTime() : undefined,
+      },
+      highlights: {
+        title: lazy.UrlbarShared.HIGHLIGHT.TYPED,
+        url: lazy.UrlbarShared.HIGHLIGHT.TYPED,
+        keyword: lazy.UrlbarShared.HIGHLIGHT.TYPED,
+      },
+    });
     addCallback(this, result);
   }
 }
-
-export var UrlbarProviderBookmarkKeywords = new ProviderBookmarkKeywords();

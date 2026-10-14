@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=2 et lcs=trail\:.,tab\:>~ :
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -11,7 +9,7 @@
  * common case in which Firefox just won't shutdown.
  *
  * We spawn a thread during quit-application. If any of the shutdown
- * steps takes more than n milliseconds (63000 by default), kill the
+ * steps takes more than n milliseconds (70000 by default), kill the
  * process as fast as possible, without any cleanup.
  */
 
@@ -21,6 +19,7 @@
 #include "prthread.h"
 #include "prmon.h"
 #include "prio.h"
+#include "prenv.h"
 
 #include "nsString.h"
 #include "nsDirectoryServiceUtils.h"
@@ -38,15 +37,13 @@
 #endif
 
 #include "mozilla/AppShutdown.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/IntentionalCrash.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/MemoryChecking.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/SpinEventLoopUntil.h"
-#include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
 
 #include "mozilla/dom/workerinternals/RuntimeService.h"
 
@@ -58,7 +55,7 @@
 
 // Additional number of milliseconds to wait until we decide to exit
 // forcefully.
-#define ADDITIONAL_WAIT_BEFORE_CRASH_MS 3000
+#define ADDITIONAL_WAIT_BEFORE_CRASH_MS 10000
 
 #define HEARTBEAT_INTERVAL_MS 100
 
@@ -148,26 +145,75 @@ PRThread* CreateSystemThread(void (*start)(void* arg), void* arg) {
 // extracted from gHeartbeat must be considered rounded up.
 Atomic<uint32_t> gHeartbeat(0);
 
-struct Options {
-  /**
-   * How many ticks before we should crash the process.
-   */
-  uint32_t crashAfterTicks;
-};
+/**
+ * How many ticks before we should crash the process.
+ */
+Atomic<uint32_t> gCrashAfterTicks(0);
+
+/**
+ * Whether a test shortened the deadline to crash us on purpose.
+ */
+Atomic<bool, Relaxed> gCrashRequestedByTest(false);
+
+/**
+ * Save a profile of this process before we crash on a shutdown hang, so a
+ * profiled run keeps the data leading up to the hang. We gather it here on the
+ * watchdog thread rather than dispatching to the (blocked) main thread:
+ * profiler_save_profile_to_file only needs the profiler state lock, and the
+ * sampled main-thread stack it captures shows what is blocking shutdown.
+ */
+void MaybeSaveShutdownHangProfile() {
+  if (!profiler_is_active() || gCrashRequestedByTest) {
+    return;
+  }
+
+  // An explicit --profiler run names a shutdown profile file via
+  // MOZ_PROFILER_SHUTDOWN and expects the profile there; honor it first, as the
+  // test harnesses do, since the normal shutdown-time save never runs once we
+  // crash here. It is emptied in child processes, so only the parent uses it.
+  if (const char* shutdownFile = PR_GetEnv("MOZ_PROFILER_SHUTDOWN");
+      shutdownFile && *shutdownFile) {
+    profiler_save_profile_to_file(shutdownFile);
+    printf_stderr("RunWatchdog: saved a profile of the shutdown hang to %s\n",
+                  shutdownFile);
+    return;
+  }
+
+  // Otherwise, in CI, anything written to MOZ_UPLOAD_DIR is uploaded as an
+  // artifact. Name it after the pid, since the parent and content processes
+  // each run their own terminator. Report it as a TEST-UNEXPECTED-FAIL line so
+  // it surfaces in Treeherder's failure summary (the main thread is blocked, so
+  // we can't route this through the test harness's structured log), naming the
+  // artifact in the "profile uploaded in <file>" form the dashboards recognize.
+  const char* uploadDir = PR_GetEnv("MOZ_UPLOAD_DIR");
+  if (!uploadDir || !*uploadDir) {
+    return;
+  }
+
+#if defined(XP_WIN)
+  uint32_t pid = GetCurrentProcessId();
+#else
+  uint32_t pid = getpid();
+#endif
+  nsAutoCString filename;
+  filename.AppendPrintf("profile_shutdown_hang_%u.json", pid);
+
+  nsAutoCString path(uploadDir);
+  path.AppendLiteral("/");
+  path.Append(filename);
+
+  profiler_save_profile_to_file(path.get());
+  printf_stderr(
+      "TEST-UNEXPECTED-FAIL | shutdown hang | profile uploaded in %s\n",
+      filename.get());
+}
 
 /**
  * Entry point for the watchdog thread
  */
-void RunWatchdog(void* arg) {
+void RunWatchdog(void*) {
   NS_SetCurrentThreadName("Shutdown Hang Terminator");
 
-  // Let's copy and deallocate options, that's one less leak to worry
-  // about.
-  UniquePtr<Options> options((Options*)arg);
-  uint32_t crashAfterTicks = options->crashAfterTicks;
-  options = nullptr;
-
-  const uint32_t timeToLive = crashAfterTicks;
   while (true) {
     //
     // We do not want to sleep for the entire duration,
@@ -185,12 +231,14 @@ void RunWatchdog(void* arg) {
     usleep(HEARTBEAT_INTERVAL_MS * 1000 /* usec */);
 #endif
 
-    if (gHeartbeat++ < timeToLive) {
+    if (gHeartbeat++ < gCrashAfterTicks) {
       continue;
     }
 
     // Arrived here we know we will crash in a way or another.
-    NoteIntentionalCrash(XRE_GetProcessTypeString());
+
+    // Gather our diagnosis before anything that can end the process: the
+    // scheduled-dump wait below exits on completion and never returns.
 
     // Until we have general log output for crash annotations in treeherder
     // (bug 1728721) we manually spit out our nested event loop stack.
@@ -214,20 +262,36 @@ void RunWatchdog(void* arg) {
       }
     }
 
-    if (lastPhase == mozilla::ShutdownPhase::NotInShutdown) {
-      // This is not something we expect to ever happen, but still.
-      CrashReporter::SetMinidumpAnalysisAllThreads();
-      MOZ_CRASH("Shutdown hanging before starting any known phase.");
+    printf_stderr("RunWatchdog: Shutdown hanging at step %s.\n",
+                  mozilla::AppShutdown::GetShutdownPhaseName(lastPhase));
+
+    // Collect running workers, if worker shutdown started and is incomplete.
+    mozilla::Maybe<nsCString> workersMsg;
+    if (mozilla::dom::workerinternals::RuntimeService* runtimeService =
+            mozilla::dom::workerinternals::RuntimeService::GetService()) {
+      workersMsg = runtimeService->GetHangingWorkersInfo();
+    }
+    if (workersMsg) {
+      printf_stderr("RunWatchdog: %s\n", workersMsg->get());
     }
 
-    // First check if worker shutdown started and is incomplete, in case
-    // report running workers.
-    mozilla::dom::workerinternals::RuntimeService* runtimeService =
-        mozilla::dom::workerinternals::RuntimeService::GetService();
-    if (runtimeService) {
-      // CrashIfHanging will check if we actually ever asked for worker
-      // shutdown, so calling it before is a no-op.
-      runtimeService->CrashIfHanging();
+    // If the sampler thread is mid-write on a scheduled profile dump, let it
+    // finish (and, since it exits the process on completion, we never reach the
+    // crash below) rather than crashing over a half-written profile.
+    profiler_wait_for_scheduled_dump();
+
+    NoteIntentionalCrash(XRE_GetProcessTypeString());
+
+    CollectShutdownHangAnnotations();
+
+    MaybeSaveShutdownHangProfile();
+
+    MOZ_ASSERT(lastPhase != mozilla::ShutdownPhase::NotInShutdown);
+
+    if (workersMsg) {
+      CrashReporter::SetMinidumpAnalysisAllThreads();
+      // This string will be leaked.
+      MOZ_CRASH_UNSAFE(strdup(workersMsg->get()));
     }
 
     // Otherwise just report our shutdown phase.
@@ -239,7 +303,7 @@ void RunWatchdog(void* arg) {
         mozilla::AppShutdown::GetShutdownPhaseName(lastPhase));
 
     CrashReporter::SetMinidumpAnalysisAllThreads();
-    MOZ_CRASH_UNSAFE(strdup(msg.BeginReading()));
+    MOZ_CRASH_UNSAFE(strdup(msg.get()));
   }
 }
 
@@ -297,18 +361,28 @@ void nsTerminator::StartWatchdog() {
   int32_t crashAfterMS =
       Preferences::GetInt("toolkit.asyncshutdown.crash_timeout",
                           FALLBACK_ASYNCSHUTDOWN_CRASH_AFTER_MS);
+
+  int32_t additionalWaitBeforeCrashMs =
+      Preferences::GetInt("toolkit.asyncshutdown.crash_timeout_additional_wait",
+                          ADDITIONAL_WAIT_BEFORE_CRASH_MS);
+
   // Ignore negative values
   if (crashAfterMS <= 0) {
     crashAfterMS = FALLBACK_ASYNCSHUTDOWN_CRASH_AFTER_MS;
   }
 
+  // Keep the same guarantee as before, so that crashAfterTicks > 0
+  if (additionalWaitBeforeCrashMs <= 0) {
+    additionalWaitBeforeCrashMs = ADDITIONAL_WAIT_BEFORE_CRASH_MS;
+  }
+
   // Add a little padding, to ensure that we do not crash before
   // AsyncShutdown.
-  if (crashAfterMS > INT32_MAX - ADDITIONAL_WAIT_BEFORE_CRASH_MS) {
+  if (crashAfterMS > INT32_MAX - additionalWaitBeforeCrashMs) {
     // Defend against overflow
     crashAfterMS = INT32_MAX;
   } else {
-    crashAfterMS += ADDITIONAL_WAIT_BEFORE_CRASH_MS;
+    crashAfterMS += additionalWaitBeforeCrashMs;
   }
 
 #ifdef MOZ_VALGRIND
@@ -330,13 +404,11 @@ void nsTerminator::StartWatchdog() {
   }
 #endif
 
-  UniquePtr<Options> options(new Options());
-  // crashAfterTicks is guaranteed to be > 0 as
-  // crashAfterMS >= ADDITIONAL_WAIT_BEFORE_CRASH_MS >> HEARTBEAT_INTERVAL_MS
-  options->crashAfterTicks = crashAfterMS / HEARTBEAT_INTERVAL_MS;
+  // Guarantee that gCrashAfterTicks is non-zero
+  gCrashAfterTicks = std::max(1, crashAfterMS / HEARTBEAT_INTERVAL_MS);
 
   DebugOnly<PRThread*> watchdogThread =
-      CreateSystemThread(RunWatchdog, options.release());
+      CreateSystemThread(RunWatchdog, nullptr);
   MOZ_ASSERT(watchdogThread);
 }
 
@@ -404,5 +476,13 @@ nsTerminator::GetTicksForShutdownPhases(JSContext* aCx,
   }
 
   return NS_OK;
-}  // namespace mozilla
+}
+
+NS_IMETHODIMP
+nsTerminator::SetTicksBeforeCrash(uint32_t aTicks) {
+  gCrashRequestedByTest = true;
+  gCrashAfterTicks = aTicks;
+  return NS_OK;
+}
+
 }  // namespace mozilla

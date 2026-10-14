@@ -1,25 +1,24 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ScrollbarActivity.h"
-#include "nsIScrollbarMediator.h"
-#include "nsIContent.h"
-#include "nsIFrame.h"
-#include "nsContentUtils.h"
-#include "nsITimer.h"
-#include "nsQueryFrame.h"
+
 #include "PresShell.h"
-#include "nsLayoutUtils.h"
-#include "nsScrollbarFrame.h"
-#include "nsRefreshDriver.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/dom/Event.h"
-#include "mozilla/dom/Document.h"
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/ScrollContainerFrame.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/Event.h"
+#include "nsContentUtils.h"
+#include "nsIContent.h"
+#include "nsIFrame.h"
+#include "nsIScrollbarMediator.h"
+#include "nsITimer.h"
+#include "nsLayoutUtils.h"
+#include "nsQueryFrame.h"
+#include "nsRefreshDriver.h"
+#include "nsScrollbarFrame.h"
 
 namespace mozilla::layout {
 
@@ -37,6 +36,7 @@ void ScrollbarActivity::Destroy() {
 }
 
 void ScrollbarActivity::ActivityOccurred() {
+  nsAutoScriptBlocker scriptBlocker;
   ActivityStarted();
   ActivityStopped();
 }
@@ -158,10 +158,11 @@ void ScrollbarActivity::StartFadeTimer() {
         activity->BeginFade();
       },
       this, LookAndFeel::GetInt(LookAndFeel::IntID::ScrollbarFadeBeginDelay),
-      nsITimer::TYPE_ONE_SHOT, "ScrollbarActivity::FadeBeginTimerFired");
+      nsITimer::TYPE_ONE_SHOT, "ScrollbarActivity::FadeBeginTimerFired"_ns);
 }
 
 void ScrollbarActivity::BeginFade() {
+  nsAutoScriptBlocker scriptBlocker;
   MOZ_ASSERT(!IsActive());
   mScrollbarEffectivelyVisible = false;
   SetScrollbarActive(GetHorizontalScrollbar(), false);

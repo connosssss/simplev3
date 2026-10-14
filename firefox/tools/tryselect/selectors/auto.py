@@ -27,6 +27,7 @@ class AutoParser(BaseTryParser):
         "env",
         "chemspill-prio",
         "disable-pgo",
+        "pushdate",
         "worker-overrides",
     ]
     arguments = [
@@ -76,9 +77,11 @@ class AutoParser(BaseTryParser):
 
 
 def run(
+    metrics,
     message="{msg}",
     stage_changes=False,
     dry_run=False,
+    write_task_config=False,
     closed_tree=False,
     strategy=None,
     tasks_regex=None,
@@ -87,6 +90,7 @@ def run(
     push_to_vcs=False,
     **ignored,
 ):
+    metrics.mach_try.task_config_generation_duration.start()
     msg = message.format(msg="Tasks automatically selected.")
 
     params = TRY_AUTO_PARAMETERS.copy()
@@ -105,12 +109,15 @@ def run(
         "version": 2,
         "parameters": params,
     }
+    metrics.mach_try.task_config_generation_duration.stop()
     return push_to_try(
         "auto",
         msg,
+        metrics,
         try_task_config=task_config,
         stage_changes=stage_changes,
         dry_run=dry_run,
+        write_task_config=write_task_config,
         closed_tree=closed_tree,
         push_to_vcs=push_to_vcs,
     )

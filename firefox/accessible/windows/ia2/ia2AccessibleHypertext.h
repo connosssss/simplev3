@@ -1,21 +1,17 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:expandtab:shiftwidth=2:tabstop=2:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _ACCESSIBLE_HYPERTEXT_H
-#define _ACCESSIBLE_HYPERTEXT_H
+#ifndef ACCESSIBLE_HYPERTEXT_H
+#define ACCESSIBLE_HYPERTEXT_H
 
-#include "nsISupports.h"
-
-#include "ia2AccessibleEditableText.h"
-#include "ia2AccessibleText.h"
-#include "ia2AccessibleTextSelectionContainer.h"
 #include "AccessibleHypertext2.h"
 #include "IUnknownImpl.h"
 #include "MsaaAccessible.h"
+#include "ia2AccessibleEditableText.h"
+#include "ia2AccessibleText.h"
+#include "ia2AccessibleTextSelectionContainer.h"
+#include "nsISupports.h"
 
 namespace mozilla {
 namespace a11y {

@@ -51,7 +51,7 @@ add_task(async function setup_test_preference() {
   });
 });
 
-add_task(async function unblock_icon_should_disapear_after_resume_tab() {
+add_task(async function unblock_icon_should_disappear_after_resume_tab() {
   info("- open new background tab -");
   let tab = BrowserTestUtils.addTab(window.gBrowser, PAGE);
   await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
@@ -70,7 +70,7 @@ add_task(async function unblock_icon_should_disapear_after_resume_tab() {
   await waitForTabBlockEvent(tab, false);
 
   info("- mute tab -");
-  tab.linkedBrowser.mute();
+  tab.linkedBrowser.browsingContext.mediaController.mute();
   ok(tab.linkedBrowser.audioMuted, "Audio should be muted now");
 
   info("- try to start audio in background tab -");

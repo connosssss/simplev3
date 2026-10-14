@@ -1,17 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "LayerTreeOwnerTracker.h"
 
+#include <functional>
+
 #include "mozilla/StaticPtr.h"              // for StaticAutoPtr
 #include "mozilla/gfx/GPUChild.h"           // for GPUChild
 #include "mozilla/gfx/GPUProcessManager.h"  // for GPUProcessManager
-
-#include <functional>
-#include <utility>  // for std::make_pair
 
 namespace mozilla {
 namespace layers {
@@ -35,15 +32,26 @@ void LayerTreeOwnerTracker::Map(LayersId aLayersId,
   MutexAutoLock lock(mLayerIdsLock);
 
   // Add the mapping to the list
-  mLayerIds[aLayersId] = aProcessId;
+  const auto i = mLayerIds.insert({aLayersId, aProcessId});
+  MOZ_ASSERT(i.second, "Mapping already used layers ID!");
+  (void)i;
 }
 
 void LayerTreeOwnerTracker::Unmap(LayersId aLayersId,
                                   base::ProcessId aProcessId) {
   MutexAutoLock lock(mLayerIdsLock);
 
-  MOZ_ASSERT(mLayerIds[aLayersId] == aProcessId);
-  mLayerIds.erase(aLayersId);
+  auto i = mLayerIds.find(aLayersId);
+  if (i == mLayerIds.end()) {
+    return;
+  }
+
+  if (NS_WARN_IF(i->second != aProcessId)) {
+    MOZ_ASSERT_UNREACHABLE("Unmapping layers ID for another process!");
+    return;
+  }
+
+  mLayerIds.erase(i);
 }
 
 bool LayerTreeOwnerTracker::IsMapped(LayersId aLayersId,

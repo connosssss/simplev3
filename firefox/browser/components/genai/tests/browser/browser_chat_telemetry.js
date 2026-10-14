@@ -2,10 +2,13 @@
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 const { GenAI } = ChromeUtils.importESModule(
-  "resource:///modules/GenAI.sys.mjs"
+  "moz-src:///browser/components/genai/GenAI.sys.mjs"
 );
 
-registerCleanupFunction(() => {
+// Schedule reset to the initial sidebar state after the test.
+SidebarTestUtils.restoreStateAtCleanup(window);
+
+registerCleanupFunction(async () => {
   Services.prefs.clearUserPref("sidebar.old-sidebar.has-used");
 });
 
@@ -30,9 +33,9 @@ add_task(async function test_default_telemetry() {
     "Default menu shown for test"
   );
   Assert.equal(
-    Glean.genaiChatbot.page.testGetValue() ?? false,
-    false,
-    "Default no page feature for test"
+    Glean.genaiChatbot.page.testGetValue() ?? true,
+    true,
+    "Default page feature for test"
   );
   Assert.equal(
     Glean.genaiChatbot.provider.testGetValue() ?? "none",
@@ -56,7 +59,7 @@ add_task(async function test_default_telemetry() {
   );
 
   Services.fog.testResetFOG();
-  SidebarController.show("viewGenaiChatSidebar");
+  await SidebarController.show("viewGenaiChatSidebar");
   await TestUtils.waitForCondition(
     () => Glean.genaiChatbot.sidebarToggle.testGetValue(),
     "Sidebar toggle recorded before hiding"
@@ -75,11 +78,6 @@ add_task(async function test_default_telemetry() {
   Assert.equal(events[1].extra.reason, "unload", "Page unloaded");
   Assert.equal(events[1].extra.version, sidebarVersion, "Correct version");
 
-  Assert.equal(
-    Glean.genaiChatbot.experimentCheckboxClick.testGetValue(),
-    null,
-    "No experiment events"
-  );
   Assert.equal(
     Glean.genaiChatbot.providerChange.testGetValue(),
     null,
@@ -146,17 +144,13 @@ add_task(async function test_summarize_telemetry() {
     ],
   });
 
-  await GenAI.summarizeCurrentPage(window, "test_entry");
+  await BrowserTestUtils.withNewTab("https://example.com", () =>
+    GenAI.summarizeCurrentPage(window, "test_entry")
+  );
 
   let events = Glean.genaiChatbot.summarizePage.testGetValue();
   Assert.equal(events.length, 1, "One summarize event");
   Assert.equal(events[0].extra.provider, "localhost", "Correct provider");
-  Assert.equal(
-    events[0].extra.reader_mode,
-    "false",
-    "Reader mode is false for about:blank"
-  );
-  Assert.equal(events[0].extra.selection, "0", "Has selection length");
   Assert.equal(events[0].extra.source, "test_entry", "Correct source");
 
   events = Glean.genaiChatbot.promptClick.testGetValue();
@@ -164,13 +158,10 @@ add_task(async function test_summarize_telemetry() {
   Assert.equal(events[0].extra.content_type, "page", "Has content type");
   Assert.equal(events[0].extra.prompt, "summarize", "Has prompt");
   Assert.equal(events[0].extra.provider, "localhost", "Correct provider");
-  Assert.equal(
-    events[0].extra.reader_mode,
-    "false",
-    "Reader mode is false for about:blank"
-  );
-  Assert.equal(events[0].extra.selection, "0", "Has selection length");
+  Assert.equal(events[0].extra.selection, "0", "No selection for page");
+  Assert.equal(events[0].extra.smart_window, "false", "Not smart window");
   Assert.equal(events[0].extra.source, "test_entry", "Correct source");
 
+  SidebarController.hide({ dismissPanel: true });
   await SpecialPowers.popPrefEnv();
 });

@@ -3,22 +3,17 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Instruments.h"
+
 #include "mozilla/Attributes.h"
 
 #ifdef __APPLE__
 
-#  include <dlfcn.h>
 #  include <CoreFoundation/CoreFoundation.h>
+#  include <dlfcn.h>
 #  include <unistd.h>
 
-// There are now 2 paths to the DTPerformanceSession framework. We try to load
-// the one contained in /Applications/Xcode.app first, falling back to the one
-// contained in /Library/Developer/4.0/Instruments.
 #  define DTPerformanceLibraryPath                                   \
     "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/" \
-    "DTPerformanceSession.framework/Versions/Current/DTPerformanceSession"
-#  define OldDTPerformanceLibraryPath                \
-    "/Library/Developer/4.0/Instruments/Frameworks/" \
     "DTPerformanceSession.framework/Versions/Current/DTPerformanceSession"
 
 extern "C" {
@@ -83,16 +78,10 @@ DTPERFORMANCE_SYMBOLS
 #  undef SYMBOL
 
 void* LoadDTPerformanceLibraries(bool dontLoad) {
-  int flags = RTLD_LAZY | RTLD_LOCAL | RTLD_NODELETE;
-  if (dontLoad) {
-    flags |= RTLD_NOLOAD;
-  }
+  const int flags =
+      RTLD_LAZY | RTLD_LOCAL | RTLD_NODELETE | (dontLoad ? RTLD_NOLOAD : 0);
 
-  void* DTPerformanceLibrary = dlopen(DTPerformanceLibraryPath, flags);
-  if (!DTPerformanceLibrary) {
-    DTPerformanceLibrary = dlopen(OldDTPerformanceLibraryPath, flags);
-  }
-  return DTPerformanceLibrary;
+  return dlopen(DTPerformanceLibraryPath, flags);
 }
 
 bool LoadDTPerformanceLibrary() {

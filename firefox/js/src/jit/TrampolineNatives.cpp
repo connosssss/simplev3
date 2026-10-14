@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -90,11 +88,14 @@ uint32_t JitRuntime::generateArraySortTrampoline(MacroAssembler& masm,
       -int32_t(FrameSize) + ArraySortData::offsetOfDescriptor();
   constexpr int32_t ComparatorThisOffset =
       -int32_t(FrameSize) + ArraySortData::offsetOfComparatorThis();
+  constexpr int32_t ComparatorArgsOffset =
+      -int32_t(FrameSize) + ArraySortData::offsetOfComparatorArgs();
 
 #ifdef JS_USE_LINK_REGISTER
-  masm.pushReturnAddress();
-#endif
+  masm.pushRegs(LinkRegister, FramePointer);
+#else
   masm.push(FramePointer);
+#endif
   masm.moveStackPtrTo(FramePointer);
 
   AllocatableGeneralRegisterSet regs(GeneralRegisterSet::All());
@@ -184,9 +185,53 @@ uint32_t JitRuntime::generateArraySortTrampoline(MacroAssembler& masm,
     masm.branch32(Assembler::BelowOrEqual, temp0,
                   Imm32(ArraySortData::ComparatorActualArgs), &noUnderflow);
     {
-      Label rectifier;
-      bindLabelToOffset(&rectifier, argumentsRectifierOffset_);
-      masm.call(&rectifier);
+      // If the comparator expects more than two arguments, we must
+      // push additional undefined values.
+      if (JitStackValueAlignment > 1) {
+        static_assert(!(ArraySortData::ComparatorActualArgs & 1));
+        static_assert(sizeof(JitFrameLayout) % JitStackAlignment == 0,
+                      "JitFrameLayout doesn't affect stack alignment");
+        MOZ_ASSERT(JitStackValueAlignment == 2);
+        // We're currently aligned so that we'll be aligned to JitStackAlignment
+        // after pushing PushedByCall bytes. Before we do the call, we will be
+        // pushing nargs arguments, `this`, a callee token, and a descriptor.
+        // This is (nargs + 1) * sizeof(Value) + 2 * sizeof(uintptr_t) bytes.
+        // We want to push a multiple of JitStackAlignment bytes, which may
+        // necessitate 8 bytes of padding, depending on the parity of nargs.
+
+        bool evenNargsNeedsAlignment =
+            (sizeof(Value) + 2 * sizeof(uintptr_t)) % JitStackAlignment != 0;
+        Assembler::Condition cond =
+            evenNargsNeedsAlignment ? Assembler::NonZero : Assembler::Zero;
+
+        Label aligned;
+        masm.branchTest32(cond, temp0, Imm32(1), &aligned);
+        masm.subFromStackPtr(Imm32(sizeof(Value)));
+        masm.bind(&aligned);
+      }
+
+      // Push `undefined` arguments.
+      Label loop;
+      masm.bind(&loop);
+      masm.pushValue(UndefinedValue());
+      masm.sub32(Imm32(1), temp0);
+      masm.branch32(Assembler::GreaterThan, temp0,
+                    Imm32(ArraySortData::ComparatorActualArgs), &loop);
+
+      // Copy the existing arguments, this, callee, and descriptor, then call.
+      masm.pushValue(
+          Address(FramePointer, ComparatorArgsOffset + int32_t(sizeof(Value))));
+      masm.pushValue(Address(FramePointer, ComparatorArgsOffset));
+      masm.pushValue(Address(FramePointer, ComparatorThisOffset));
+      masm.push(Address(FramePointer, ComparatorOffset));
+      masm.push(Address(FramePointer, DescriptorOffset));
+      masm.callJit(temp1);
+
+      // Restore the expected stack pointer.
+      masm.computeEffectiveAddress(Address(FramePointer, -int32_t(FrameSize)),
+                                   temp0);
+      masm.moveToStackPtr(temp0);
+
       masm.jump(&restoreRealm);
     }
     masm.bind(&noUnderflow);
@@ -227,7 +272,7 @@ uint32_t JitRuntime::generateArraySortTrampoline(MacroAssembler& masm,
                 Imm32(int32_t(ArraySortResult::Failure)), masm.failureLabel());
   masm.freeStack(ExitFrameLayout::SizeWithFooter());
   masm.branch32(Assembler::Equal, ReturnReg,
-                Imm32(int32_t(ArraySortResult::CallJSSameRealmNoRectifier)),
+                Imm32(int32_t(ArraySortResult::CallJSSameRealmNoUnderflow)),
                 &jitCallFast);
   masm.branch32(Assembler::Equal, ReturnReg,
                 Imm32(int32_t(ArraySortResult::CallJS)), &jitCallSlow);
@@ -268,12 +313,14 @@ bool jit::CallTrampolineNativeJitCode(JSContext* cx, TrampolineNative native,
     return false;
   }
 
+  MOZ_ASSERT(!TooManyActualArguments(args.length()));
+
   MOZ_ASSERT(!args.isConstructing());
   CalleeToken calleeToken = CalleeToToken(&args.callee().as<JSFunction>(),
                                           /* constructing = */ false);
 
-  Value* maxArgv = args.array() - 1;  // -1 to include |this|
-  size_t maxArgc = args.length() + 1;
+  Value* maxArgv = args.array();
+  size_t maxArgc = args.length();
 
   Rooted<Value> result(cx, Int32Value(args.length()));
 
@@ -293,8 +340,7 @@ bool jit::CallTrampolineNativeJitCode(JSContext* cx, TrampolineNative native,
   // Release temporary buffer used for OSR into Ion.
   cx->runtime()->jitRuntime()->freeIonOsrTempData();
 
-  if (result.isMagic()) {
-    MOZ_ASSERT(result.isMagic(JS_ION_ERROR));
+  if (result.isMagic(JS_ION_ERROR)) {
     return false;
   }
 

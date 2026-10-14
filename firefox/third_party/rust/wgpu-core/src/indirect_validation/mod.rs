@@ -3,6 +3,7 @@ use crate::{
     pipeline::{CreateComputePipelineError, CreateShaderModuleError},
 };
 use alloc::boxed::Box;
+use scopeguard::{guard, ScopeGuard};
 use thiserror::Error;
 
 mod dispatch;
@@ -33,23 +34,35 @@ impl IndirectValidation {
         device: &dyn hal::DynDevice,
         required_limits: &wgt::Limits,
         required_features: &wgt::Features,
+        instance_flags: wgt::InstanceFlags,
         backend: wgt::Backend,
     ) -> Result<Self, DeviceError> {
-        let dispatch = match Dispatch::new(device, required_limits) {
+        let dispatch = match Dispatch::new(device, instance_flags, required_limits) {
             Ok(dispatch) => dispatch,
             Err(e) => {
                 log::error!("indirect-validation error: {e:?}");
                 return Err(DeviceError::Lost);
             }
         };
-        let draw = match Draw::new(device, required_features, backend) {
+        let dispatch = guard(dispatch, |dispatch| dispatch.dispose(device));
+
+        let draw = match Draw::new(
+            device,
+            required_features,
+            instance_flags,
+            backend,
+            required_limits,
+        ) {
             Ok(draw) => draw,
             Err(e) => {
                 log::error!("indirect-draw-validation error: {e:?}");
                 return Err(DeviceError::Lost);
             }
         };
-        Ok(Self { dispatch, draw })
+        Ok(Self {
+            dispatch: ScopeGuard::into_inner(dispatch),
+            draw,
+        })
     }
 
     pub(crate) fn dispose(self, device: &dyn hal::DynDevice) {
@@ -67,6 +80,10 @@ pub(crate) struct BindGroups {
 }
 
 impl BindGroups {
+    /// Creates the bind groups for indirect validation shaders to read from `buffer`.
+    ///
+    /// `buffer_size` is the user-requested size of the buffer.
+    ///
     /// `Ok(None)` will only be returned if `buffer_size` is `0`.
     pub(crate) fn new(
         indirect_validation: &IndirectValidation,
@@ -79,12 +96,14 @@ impl BindGroups {
             &device.limits,
             buffer_size,
             buffer,
+            device.instance_flags,
         )?;
         let draw = indirect_validation.draw.create_src_bind_group(
             device.raw(),
             &device.adapter.limits(),
             buffer_size,
             buffer,
+            device.instance_flags,
         )?;
 
         match (dispatch, draw) {

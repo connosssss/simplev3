@@ -1,24 +1,22 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "WebRenderUserData.h"
 
+#include "WebRenderCanvasRenderer.h"
 #include "mozilla/image/WebRenderImageProvider.h"
 #include "mozilla/layers/AnimationHelper.h"
 #include "mozilla/layers/CompositorBridgeChild.h"
 #include "mozilla/layers/ImageClient.h"
-#include "mozilla/layers/WebRenderBridgeChild.h"
-#include "mozilla/layers/RenderRootStateManager.h"
-#include "mozilla/layers/WebRenderMessages.h"
 #include "mozilla/layers/IpcResourceUpdateQueue.h"
+#include "mozilla/layers/RenderRootStateManager.h"
 #include "mozilla/layers/SharedSurfacesChild.h"
+#include "mozilla/layers/WebRenderBridgeChild.h"
+#include "mozilla/layers/WebRenderMessages.h"
 #include "mozilla/webgpu/WebGPUChild.h"
 #include "nsDisplayListInvalidation.h"
 #include "nsIFrame.h"
-#include "WebRenderCanvasRenderer.h"
 
 using namespace mozilla::image;
 
@@ -290,7 +288,15 @@ bool WebRenderImageProviderData::Invalidate(ImageProviderId aProviderId) const {
 
 WebRenderFallbackData::WebRenderFallbackData(RenderRootStateManager* aManager,
                                              nsDisplayItem* aItem)
-    : WebRenderUserData(aManager, aItem), mOpacity(1.0f), mInvalid(false) {}
+    : WebRenderFallbackData(aManager, aItem->GetPerFrameKey(), aItem->Frame()) {
+}
+
+WebRenderFallbackData::WebRenderFallbackData(RenderRootStateManager* aManager,
+                                             uint32_t aDisplayItemKey,
+                                             nsIFrame* aFrame)
+    : WebRenderUserData(aManager, aDisplayItemKey, aFrame),
+      mOpacity(1.0f),
+      mInvalid(false) {}
 
 WebRenderFallbackData::~WebRenderFallbackData() { ClearImageKey(); }
 
@@ -341,12 +347,23 @@ WebRenderImageData* WebRenderFallbackData::PaintIntoImage() {
 
 WebRenderAPZAnimationData::WebRenderAPZAnimationData(
     RenderRootStateManager* aManager, nsDisplayItem* aItem)
-    : WebRenderUserData(aManager, aItem),
+    : WebRenderAPZAnimationData(aManager, aItem->GetPerFrameKey(),
+                                aItem->Frame()) {}
+
+WebRenderAPZAnimationData::WebRenderAPZAnimationData(
+    RenderRootStateManager* aManager, uint32_t aDisplayItemKey,
+    nsIFrame* aFrame)
+    : WebRenderUserData(aManager, aDisplayItemKey, aFrame),
       mAnimationId(AnimationHelper::GetNextCompositorAnimationsId()) {}
 
 WebRenderAnimationData::WebRenderAnimationData(RenderRootStateManager* aManager,
                                                nsDisplayItem* aItem)
     : WebRenderUserData(aManager, aItem) {}
+
+WebRenderAnimationData::WebRenderAnimationData(RenderRootStateManager* aManager,
+                                               uint32_t aDisplayItemKey,
+                                               nsIFrame* aFrame)
+    : WebRenderUserData(aManager, aDisplayItemKey, aFrame) {}
 
 WebRenderAnimationData::~WebRenderAnimationData() {
   // It may be the case that nsDisplayItem that created this WebRenderUserData
@@ -362,6 +379,11 @@ WebRenderAnimationData::~WebRenderAnimationData() {
 WebRenderCanvasData::WebRenderCanvasData(RenderRootStateManager* aManager,
                                          nsDisplayItem* aItem)
     : WebRenderUserData(aManager, aItem) {}
+
+WebRenderCanvasData::WebRenderCanvasData(RenderRootStateManager* aManager,
+                                         uint32_t aDisplayItemKey,
+                                         nsIFrame* aFrame)
+    : WebRenderUserData(aManager, aDisplayItemKey, aFrame) {}
 
 WebRenderCanvasData::~WebRenderCanvasData() {
   if (mCanvasRenderer) {
@@ -413,6 +435,17 @@ void DestroyWebRenderUserDataTable(WebRenderUserDataTable* aTable) {
     value->RemoveFromTable();
   }
   delete aTable;
+}
+
+WebRenderMaskData::WebRenderMaskData(RenderRootStateManager* aManager,
+                                     nsDisplayItem* aItem)
+    : WebRenderMaskData(aManager, aItem->GetPerFrameKey(), aItem->Frame()) {}
+WebRenderMaskData::WebRenderMaskData(RenderRootStateManager* aManager,
+                                     uint32_t aDisplayItemKey, nsIFrame* aFrame)
+    : WebRenderUserData(aManager, aDisplayItemKey, aFrame),
+      mMaskStyle(nsStyleImageLayers::LayerType::Mask),
+      mShouldHandleOpacity(false) {
+  MOZ_COUNT_CTOR(WebRenderMaskData);
 }
 
 }  // namespace layers

@@ -4,16 +4,14 @@
 
 package mozilla.components.browser.state.store
 
-import kotlinx.coroutines.test.runTest
 import mozilla.components.browser.state.action.BrowserAction
 import mozilla.components.browser.state.action.InitAction
 import mozilla.components.browser.state.action.RestoreCompleteAction
 import mozilla.components.browser.state.action.TabListAction
+import mozilla.components.browser.state.reducer.BrowserStateReducer
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.state.createTab
 import mozilla.components.lib.state.Middleware
-import mozilla.components.support.test.ext.joinBlocking
-import mozilla.components.support.test.libstate.ext.waitUntilIdle
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -31,38 +29,39 @@ class BrowserStoreTest {
 
     @Test(expected = IllegalArgumentException::class)
     fun `Initial state is validated and rejected if selected tab does not exist`() {
-        val initialState = BrowserState(
-            tabs = listOf(createTab("https://www.mozilla.org")),
-            selectedTabId = "invalid",
-        )
+        val initialState =
+            BrowserState(
+                tabs = listOf(createTab("https://www.mozilla.org")),
+                selectedTabId = "invalid",
+            )
         BrowserStore(initialState)
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `Initial state is validated and rejected if it contains duplicate tabs`() {
-        val tabs = listOf(
-            createTab(id = "1", url = "https://www.mozilla.org"),
-            createTab(id = "2", url = "https://www.getpocket.com"),
-            createTab(id = "1", url = "https://www.mozilla.org"),
-        )
+        val tabs =
+            listOf(
+                createTab(id = "1", url = "https://www.mozilla.org"),
+                createTab(id = "2", url = "https://www.getpocket.com"),
+                createTab(id = "1", url = "https://www.mozilla.org"),
+            )
         val initialState = BrowserState(tabs)
         BrowserStore(initialState)
     }
 
     @Test
-    fun `Adding a tab`() = runTest {
-        val store = BrowserStore()
+    fun `Adding a tab`() {
+        val initialState = BrowserState()
 
-        assertEquals(0, store.state.tabs.size)
-        assertNull(store.state.selectedTabId)
+        assertEquals(0, initialState.tabs.size)
+        assertNull(initialState.selectedTabId)
 
         val tab = createTab(url = "https://www.mozilla.org")
 
-        store.dispatch(TabListAction.AddTabAction(tab))
-            .join()
+        val finalState = BrowserStateReducer.reduce(initialState, TabListAction.AddTabAction(tab))
 
-        assertEquals(1, store.state.tabs.size)
-        assertEquals(tab.id, store.state.selectedTabId)
+        assertEquals(1, finalState.tabs.size)
+        assertEquals(tab.id, finalState.selectedTabId)
     }
 
     @Test
@@ -76,20 +75,19 @@ class BrowserStoreTest {
             next(action)
         }
 
-        val store = BrowserStore(middleware = listOf(testMiddleware))
-        store.waitUntilIdle()
+        BrowserStore(middleware = listOf(testMiddleware))
         assertTrue(initActionObserved)
     }
 
     @Test
     fun `RestoreCompleteAction updates state`() {
-        val store = BrowserStore()
-        assertFalse(store.state.restoreComplete)
+        val initialState = BrowserState()
+        assertFalse(initialState.restoreComplete)
 
-        store.dispatch(RestoreCompleteAction).joinBlocking()
-        assertTrue(store.state.restoreComplete)
+        val finalState = BrowserStateReducer.reduce(initialState, RestoreCompleteAction)
+        assertTrue(finalState.restoreComplete)
 
-        store.dispatch(RestoreCompleteAction).joinBlocking()
-        assertTrue(store.state.restoreComplete)
+        val finalState2 = BrowserStateReducer.reduce(finalState, RestoreCompleteAction)
+        assertTrue(finalState2.restoreComplete)
     }
 }

@@ -1,4 +1,3 @@
-/* -*- Mode: c++; c-basic-offset: 2; indent-tabs-mode: nil; tab-width: 4; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,18 +9,19 @@
 #include "GLContext.h"
 #include "GLReadTexImageHelper.h"
 #include "GLScreenBuffer.h"
-#include "nsThreadUtils.h"
 #include "ScopedGLHelpers.h"
-#include "SharedSurfaceGL.h"
 #include "SharedSurfaceEGL.h"
-#include "mozilla/gfx/gfxVars.h"
+#include "SharedSurfaceGL.h"
+#include "VRManagerChild.h"
+#include "mozilla/StaticPrefs_webgl.h"
+#include "mozilla/gfx/CanvasRenderThread.h"
 #include "mozilla/gfx/Logging.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/TextureClientSharedSurface.h"
 #include "mozilla/layers/TextureForwarder.h"
-#include "mozilla/StaticPrefs_webgl.h"
-#include "mozilla/Unused.h"
-#include "VRManagerChild.h"
+#include "mozilla/layers/TextureHost.h"
+#include "nsThreadUtils.h"
 
 #ifdef XP_WIN
 #  include "SharedSurfaceANGLE.h"
@@ -33,8 +33,8 @@
 #endif
 
 #ifdef MOZ_WIDGET_GTK
-#  include "gfxPlatformGtk.h"
 #  include "SharedSurfaceDMABUF.h"
+#  include "gfxPlatformGtk.h"
 #  include "mozilla/widget/DMABufDevice.h"
 #endif
 
@@ -52,7 +52,23 @@ SharedSurface::SharedSurface(const SharedSurfaceDesc& desc,
                              UniquePtr<MozFramebuffer> fb)
     : mDesc(desc), mFb(std::move(fb)) {}
 
-SharedSurface::~SharedSurface() = default;
+SharedSurface::~SharedSurface() {
+  MOZ_ASSERT_IF(mTextureHost,
+                gfx::CanvasRenderThread::IsInCanvasRenderThread());
+}
+
+RefPtr<layers::TextureHost> SharedSurface::GetTextureHost() {
+  return mTextureHost;
+}
+
+void SharedSurface::SetTextureHost(layers::TextureHost* aTextureHost) {
+  MOZ_ASSERT(aTextureHost);
+  MOZ_ASSERT(!mTextureHost);
+
+  mTextureHost = aTextureHost;
+}
+
+void SharedSurface::ClearTextureHost() { mTextureHost = nullptr; }
 
 void SharedSurface::LockProd() {
   MOZ_ASSERT(!mIsLocked);
@@ -110,10 +126,12 @@ UniquePtr<SurfaceFactory> SurfaceFactory::Create(
 
     case layers::TextureType::AndroidNativeWindow:
 #ifdef MOZ_WIDGET_ANDROID
-      return MakeUnique<SurfaceFactory_SurfaceTexture>(gl);
-#else
-      break;
+      MOZ_ASSERT(!gfx::gfxVars::UseWebRenderANGLE());
+      if (!gfx::gfxVars::UseWebRenderANGLE()) {
+        return MakeUnique<SurfaceFactory_SurfaceTexture>(gl);
+      }
 #endif
+      break;
 
     case layers::TextureType::AndroidHardwareBuffer:
 #ifdef MOZ_WIDGET_ANDROID
@@ -130,6 +148,7 @@ UniquePtr<SurfaceFactory> SurfaceFactory::Create(
       // in the process that will consume them.
       if ((XRE_IsParentProcess() && !gfx::gfxVars::GPUProcessEnabled()) ||
           XRE_IsGPUProcess()) {
+        MOZ_ASSERT(!gfx::gfxVars::UseWebRenderANGLE());
         return SurfaceFactory_EGLImage::Create(gl);
       }
 #endif
@@ -141,7 +160,7 @@ UniquePtr<SurfaceFactory> SurfaceFactory::Create(
   }
 
   // Silence a warning.
-  Unused << gl;
+  (void)gl;
 
   return nullptr;
 }

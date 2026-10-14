@@ -15,25 +15,21 @@ import androidx.core.graphics.drawable.toDrawable
 import androidx.preference.Preference
 import androidx.preference.PreferenceViewHolder
 import androidx.recyclerview.widget.RecyclerView
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import mozilla.components.browser.state.search.SearchEngine
 import mozilla.components.browser.state.state.searchEngines
 import mozilla.components.browser.state.state.selectedOrDefaultSearchEngine
 import org.mozilla.focus.R
 import org.mozilla.focus.ext.components
-import kotlin.coroutines.CoroutineContext
 
-abstract class SearchEngineListPreference @JvmOverloads constructor(
+/** Abstract base class for a preference that displays a list of available search engines. */
+abstract class SearchEngineListPreference
+@JvmOverloads
+constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0,
-) : Preference(context, attrs, defStyleAttr), CoroutineScope {
+) : Preference(context, attrs, defStyleAttr) {
 
-    private val job = Job()
-    override val coroutineContext: CoroutineContext
-        get() = job + Dispatchers.Main
     protected var searchEngines: List<SearchEngine> = emptyList()
     protected var searchEngineGroup: RadioGroup? = null
 
@@ -53,13 +49,9 @@ abstract class SearchEngineListPreference @JvmOverloads constructor(
         refreshSearchEngineViews(context)
     }
 
-    override fun onDetached() {
-        job.cancel()
-        super.onDetached()
-    }
-
     protected abstract fun updateDefaultItem(defaultButton: CompoundButton)
 
+    /** Updates the list of search engines from the application store and refreshes the UI. */
     fun refetchSearchEngines() {
         searchEngines = context.components.store.state.search.searchEngines
         refreshSearchEngineViews(this@SearchEngineListPreference.context)
@@ -73,16 +65,16 @@ abstract class SearchEngineListPreference @JvmOverloads constructor(
             return
         }
 
-        val defaultSearchEngine =
-            context.components.store.state.search.selectedOrDefaultSearchEngine?.id
+        val defaultSearchEngine = context.components.store.state.search.selectedOrDefaultSearchEngine?.id
 
         searchEngineGroup!!.removeAllViews()
 
         val layoutInflater = LayoutInflater.from(context)
-        val layoutParams = RecyclerView.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-        )
+        val layoutParams =
+            RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
 
         for (i in searchEngines.indices) {
             val engine = searchEngines[i]

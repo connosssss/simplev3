@@ -4,6 +4,8 @@
 
 import React, { Component } from "devtools/client/shared/vendor/react";
 import {
+  br,
+  button,
   div,
   input,
   li,
@@ -18,7 +20,10 @@ const {
   REPS: { Rep },
   MODE,
 } = Reps;
-import { translateNodeFrontToGrip } from "devtools/client/inspector/shared/utils";
+import {
+  getSelectorFromGrip,
+  translateNodeFrontToGrip,
+} from "devtools/client/inspector/shared/utils";
 
 import {
   deleteDOMMutationBreakpoint,
@@ -28,7 +33,7 @@ import {
 import actions from "../../actions/index";
 import { connect } from "devtools/client/shared/vendor/react-redux";
 
-import { CloseButton } from "../shared/Button/index";
+import CloseButton from "devtools/client/shared/components/CloseButton";
 
 const localizationTerms = {
   subtree: L10N.getStr("domMutationTypes.subtree"),
@@ -69,6 +74,12 @@ class DOMMutationBreakpointsContents extends Component {
       deleteBreakpoint,
     } = this.props;
     const { enabled, id: breakpointId, nodeFront, mutationType } = breakpoint;
+    const grip = translateNodeFrontToGrip(nodeFront);
+    const checkboxLabel = L10N.getFormatStr(
+      "domMutation.toggle.label",
+      getSelectorFromGrip(grip),
+      localizationTerms[mutationType] || mutationType
+    );
 
     return li(
       {
@@ -78,6 +89,7 @@ class DOMMutationBreakpointsContents extends Component {
         type: "checkbox",
         checked: enabled,
         onChange: () => this.handleBreakpoint(breakpointId, !enabled),
+        "aria-label": checkboxLabel,
       }),
       div(
         {
@@ -88,7 +100,7 @@ class DOMMutationBreakpointsContents extends Component {
             className: "dom-mutation-label",
           },
           Rep({
-            object: translateNodeFrontToGrip(nodeFront),
+            object: grip,
             mode: MODE.TINY,
             onDOMNodeClick: () => openElementInInspector(nodeFront),
             onInspectIconClick: () => openElementInInspector(nodeFront),
@@ -105,27 +117,26 @@ class DOMMutationBreakpointsContents extends Component {
       ),
       React.createElement(CloseButton, {
         handleClick: () => deleteBreakpoint(nodeFront, mutationType),
+        tooltip: L10N.getStr("domMutation.remove.tooltip"),
       })
     );
   }
 
-  /* eslint-disable react/no-danger */
   renderEmpty() {
     const { openInspector } = this.props;
-    const text = L10N.getFormatStr(
-      "noDomMutationBreakpoints",
-      `<a>${L10N.getStr("inspectorTool")}</a>`
-    );
     return div(
       {
         className: "dom-mutation-empty",
       },
-      div({
-        onClick: () => openInspector(),
-        dangerouslySetInnerHTML: {
-          __html: text,
+      L10N.getStr("noDomMutationBreakpoints.notice"),
+      br(),
+      button(
+        {
+          className: "devtools-button devtools-button-standalone",
+          onClick: () => openInspector(),
         },
-      })
+        L10N.getStr("noDomMutationBreakpoints.openInspectorButton")
+      )
     );
   }
 

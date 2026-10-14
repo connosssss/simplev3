@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -56,6 +54,12 @@ bool TryEmitter::emitTry() {
   // finally block the stack depth upon the try entry. The interpreter
   // uses this depth to properly unwind the stack and the scope chain.
   depth_ = bce_->bytecodeSection().stackDepth();
+
+  if (controlInfo_ && hasFinally()) {
+    // A non-local exit through the try-block jumps to the finally-block, which
+    // expects the stack at the try note's depth.
+    controlInfo_->setNonLocalExitStackDepth(depth_);
+  }
 
   tryOpOffset_ = bce_->bytecodeSection().offset();
   if (!bce_->emit1(JSOp::Try)) {

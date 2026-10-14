@@ -1,17 +1,16 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_MiscEvents_h__
-#define mozilla_MiscEvents_h__
+#ifndef mozilla_MiscEvents_h_
+#define mozilla_MiscEvents_h_
 
 #include <stdint.h>
 
 #include "mozilla/BasicEvents.h"
 #include "mozilla/Maybe.h"
-#include "nsCOMPtr.h"
 #include "nsAtom.h"
+#include "nsCOMPtr.h"
 #include "nsGkAtoms.h"
 #include "nsITransferable.h"
 #include "nsString.h"
@@ -27,19 +26,22 @@ class PBrowserChild;
  * mozilla::WidgetContentCommandEvent
  ******************************************************************************/
 
-class WidgetContentCommandEvent : public WidgetGUIEvent {
+class WidgetContentCommandEvent final : public WidgetGUIEvent {
  public:
-  virtual WidgetContentCommandEvent* AsContentCommandEvent() override {
-    return this;
-  }
+  NS_DEFINE_AS_EVENT_OVERRIDE(Widget, ContentCommandEvent);
 
-  WidgetContentCommandEvent(bool aIsTrusted, EventMessage aMessage,
-                            nsIWidget* aWidget, bool aOnlyEnabledCheck = false)
+  WidgetContentCommandEvent(
+      bool aIsTrusted, EventMessage aMessage, nsIWidget* aWidget,
+      OnlyEnabledCheck aOnlyEnabledCheck = OnlyEnabledCheck::No)
       : WidgetGUIEvent(aIsTrusted, aMessage, aWidget,
                        eContentCommandEventClass),
         mOnlyEnabledCheck(aOnlyEnabledCheck),
         mSucceeded(false),
         mIsEnabled(false) {}
+
+  NS_DEFINE_VIRTUAL_DESTRUCTOR_CHECKING_CLASS_VALUE(WidgetContentCommandEvent,
+                                                    eContentCommandEventClass,
+                                                    eGUIEventClass)
 
   virtual WidgetEvent* Duplicate() const override {
     // This event isn't an internal event of any DOM event.
@@ -47,6 +49,48 @@ class WidgetContentCommandEvent : public WidgetGUIEvent {
                  "WidgetQueryContentEvent needs to support Duplicate()");
     MOZ_CRASH("WidgetQueryContentEvent doesn't support Duplicate()");
     return nullptr;
+  }
+
+  [[nodiscard]] bool ShouldCheckEnabledOnly() const {
+    return mOnlyEnabledCheck == OnlyEnabledCheck::Yes;
+  }
+
+  /**
+   * Return true if this event is dispatched by valid dispatcher. Some events
+   * which are related to text editing must be dispatched by
+   * TextEventDispatcher. So, if such events are dispatched by nsIWidget
+   * directly, this returns false.
+   */
+  [[nodiscard]] bool DispatchedByValidDispatcher() const {
+    // If this event is dispatched in another process, TextEventDispatcher in
+    // this process does not need to get involved.
+    if (mFlags.CameFromAnotherProcess()) {
+      return true;
+    }
+    if (ShouldBeDispatchedByTextEventDispatcher()) {
+      // The commands which related to text editing must be dispatched by
+      // TextEventDispatcher.
+      return mDispatchedByTextEventDispatcher;
+    }
+    // The other events can be dispatched by widget directly.
+    return true;
+  }
+
+  [[nodiscard]] bool ShouldBeDispatchedByTextEventDispatcher() const {
+    switch (mMessage) {
+      case eContentCommandCut:
+      case eContentCommandCopy:
+      case eContentCommandPaste:
+      case eContentCommandDelete:
+      case eContentCommandUndo:
+      case eContentCommandRedo:
+      case eContentCommandInsertText:
+      case eContentCommandReplaceText:
+      case eContentCommandPasteTransferable:
+        return true;
+      default:
+        return false;
+    }
   }
 
   // eContentCommandInsertText and eContentCommandReplaceText
@@ -70,19 +114,23 @@ class WidgetContentCommandEvent : public WidgetGUIEvent {
 
   // eContentCommandReplaceText
   struct Selection {
+    [[nodiscard]] bool ShouldPreventSetSelection() const {
+      return mPreventSetSelection == PreventSetSelection::Yes;
+    }
+
     // Replacement source string. If not matched, failed
     nsString mReplaceSrcString;  // [in]
     // Start offset of selection
     uint32_t mOffset = 0;  // [in]
-    // false if selection is end of replaced string
-    bool mPreventSetSelection = false;  // [in]
+    // "No" if selection is end of replaced string
+    PreventSetSelection mPreventSetSelection = PreventSetSelection::No;  // [in]
   } mSelection;
 
-  // If set to true, the event checks whether the command is enabled in the
+  // If set to "Yes", the event checks whether the command is enabled in the
   // process or not without executing the command.  I.e., if it's in the parent
   // process when a remote process has focus, mIsEnabled may be different from
   // the latest state of the command in the remote process.
-  bool mOnlyEnabledCheck;  // [in]
+  OnlyEnabledCheck mOnlyEnabledCheck;  // [in]
 
   bool mSucceeded;  // [out]
 
@@ -90,9 +138,12 @@ class WidgetContentCommandEvent : public WidgetGUIEvent {
   // synchronously in the process.  If it's in the parent process when a remote
   // process has focus, this returns the command state in the parent process
   // which may be different from the remote process.
-  // XXX When mOnlyEnabledCheck is set to true, this may be always set to true
+  // XXX When mOnlyEnabledCheck is set to Yes, this may be always set to true
   // even when the command is disabled in the parent process.
   bool mIsEnabled;  // [out]
+
+  // true if TextEventDispatcher dispatches this event.
+  bool mDispatchedByTextEventDispatcher = false;
 
   void AssignContentCommandEventData(const WidgetContentCommandEvent& aEvent,
                                      bool aCopyTargets) {
@@ -116,9 +167,9 @@ class WidgetContentCommandEvent : public WidgetGUIEvent {
  * XXX Should be |WidgetChromeCommandEvent|?
  ******************************************************************************/
 
-class WidgetCommandEvent : public WidgetGUIEvent {
+class WidgetCommandEvent final : public WidgetGUIEvent {
  public:
-  virtual WidgetCommandEvent* AsCommandEvent() override { return this; }
+  NS_DEFINE_AS_EVENT_OVERRIDE(Widget, CommandEvent);
 
  protected:
   WidgetCommandEvent(bool aIsTrusted, nsAtom* aEventType, nsAtom* aCommand,
@@ -145,6 +196,10 @@ class WidgetCommandEvent : public WidgetGUIEvent {
   WidgetCommandEvent()
       : WidgetCommandEvent(false, nullptr, nullptr, nullptr, nullptr) {}
 
+  NS_DEFINE_VIRTUAL_DESTRUCTOR_CHECKING_CLASS_VALUE(WidgetCommandEvent,
+                                                    eCommandEventClass,
+                                                    eGUIEventClass)
+
   virtual WidgetEvent* Duplicate() const override {
     MOZ_ASSERT(mClass == eCommandEventClass,
                "Duplicate() must be overridden by sub class");
@@ -169,4 +224,4 @@ class WidgetCommandEvent : public WidgetGUIEvent {
 
 }  // namespace mozilla
 
-#endif  // mozilla_MiscEvents_h__
+#endif  // mozilla_MiscEvents_h_

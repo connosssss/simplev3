@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-*/
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,24 +5,26 @@
 #ifndef MOZILLA_MEDIATRACKGRAPHIMPL_H_
 #define MOZILLA_MEDIATRACKGRAPHIMPL_H_
 
-#include "MediaTrackGraph.h"
+#include <atomic>
 
 #include "AudioMixer.h"
-#include "GraphDriver.h"
 #include "DeviceInputTrack.h"
+#include "GraphDriver.h"
+#include "MediaEventSource.h"
+#include "MediaTrackGraph.h"
+#include "mozilla/AbstractThread.h"
 #include "mozilla/Atomics.h"
-#include "mozilla/Maybe.h"
 #include "mozilla/Monitor.h"
+#include "mozilla/TargetShutdownTaskSet.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/WeakPtr.h"
-#include "nsClassHashtable.h"
+#include "nsIDirectTaskDispatcher.h"
 #include "nsIMemoryReporter.h"
 #include "nsINamed.h"
 #include "nsIRunnable.h"
+#include "nsISerialEventTarget.h"
 #include "nsIThreadInternal.h"
 #include "nsITimer.h"
-#include "AsyncLogger.h"
 
 namespace mozilla {
 
@@ -32,6 +33,7 @@ class ShutdownBlocker;
 }
 
 class AudioContextOperationControlMessage;
+class CubebDeviceEnumerator;
 template <typename T>
 class LinkedList;
 class GraphRunner;
@@ -90,11 +92,6 @@ class ControlMessage : public MediaTrack::ControlMessageInterface {
   MediaTrack* const mTrack;
 };
 
-class MessageBlock {
- public:
-  nsTArray<UniquePtr<MediaTrack::ControlMessageInterface>> mMessages;
-};
-
 /**
  * The implementation of a media track graph. This class is private to this
  * file. It's not in the anonymous namespace because MediaTrack needs to
@@ -106,6 +103,8 @@ class MessageBlock {
  */
 class MediaTrackGraphImpl : public MediaTrackGraph,
                             public GraphInterface,
+                            public AbstractThread,
+                            public nsIDirectTaskDispatcher,
                             public nsIMemoryReporter,
                             public nsIObserver,
                             public nsIThreadObserver,
@@ -113,8 +112,10 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
                             public nsINamed {
  public:
   using ControlMessageInterface = MediaTrack::ControlMessageInterface;
+  using ControlMessageWrapper = MediaTrack::ControlMessageWrapper;
 
   NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_NSIDIRECTTASKDISPATCHER
   NS_DECL_NSIMEMORYREPORTER
   NS_DECL_NSIOBSERVER
   NS_DECL_NSITHREADOBSERVER
@@ -131,12 +132,12 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    */
   explicit MediaTrackGraphImpl(uint64_t aWindowID, TrackRate aSampleRate,
                                CubebUtils::AudioDeviceID aOutputDeviceID,
-                               nsISerialEventTarget* aMainThread);
+                               AbstractThread* aMainThread);
 
   static MediaTrackGraphImpl* GetInstance(
       GraphDriverType aGraphDriverRequested, uint64_t aWindowID,
       TrackRate aSampleRate, CubebUtils::AudioDeviceID aPrimaryOutputDeviceID,
-      nsISerialEventTarget* aMainThread);
+      AbstractThread* aMainThread);
   static MediaTrackGraphImpl* GetInstanceIfExists(
       uint64_t aWindowID, TrackRate aSampleRate,
       CubebUtils::AudioDeviceID aPrimaryOutputDeviceID);
@@ -237,7 +238,7 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * Dispatches a runnable from any thread to the correct main thread for this
    * MediaTrackGraph.
    */
-  void Dispatch(already_AddRefed<nsIRunnable>&& aRunnable);
+  void DispatchToMainThread(already_AddRefed<nsIRunnable> aRunnable);
 
   /**
    * Make this MediaTrackGraph enter forced-shutdown state. This state
@@ -292,14 +293,13 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * OneIterationImpl is called directly. Mixed audio output from the graph is
    * passed into aMixerReceiver, if it is non-null.
    */
-  IterationResult OneIteration(GraphTime aStateTime, GraphTime aIterationEnd,
+  IterationResult OneIteration(GraphTime aStateTime,
                                MixerCallbackReceiver* aMixerReceiver) override;
 
   /**
    * Returns true if this MediaTrackGraph should keep running
    */
   IterationResult OneIterationImpl(GraphTime aStateTime,
-                                   GraphTime aIterationEnd,
                                    MixerCallbackReceiver* aMixerReceiver);
 
   /**
@@ -309,10 +309,6 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * messages.
    */
   void SignalMainThreadCleanup();
-
-  /* This is the end of the current iteration, that is, the current time of the
-   * graph. */
-  GraphTime IterationEnd() const;
 
   /**
    * Ensure there is an event posted to the main thread to run RunInStableState.
@@ -359,14 +355,11 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    */
   void UpdateGraph(GraphTime aEndBlockingDecisions);
 
-  void SwapMessageQueues() MOZ_REQUIRES(mMonitor) {
+  void SwapMessageQueues() {
+    MonitorAutoLock lock(mMonitor);
     MOZ_ASSERT(OnGraphThreadOrNotRunning());
-    mMonitor.AssertCurrentThreadOwns();
     MOZ_ASSERT(mFrontMessageQueue.IsEmpty());
     mFrontMessageQueue.SwapElements(mBackMessageQueue);
-    if (!mFrontMessageQueue.IsEmpty()) {
-      EnsureNextIteration();
-    }
   }
   /**
    * Do all the processing and play the audio and video, from
@@ -380,12 +373,12 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * Schedules |aMessage| to run after processing, at a time when graph state
    * can be changed.  Graph thread.
    */
-  void RunMessageAfterProcessing(UniquePtr<ControlMessageInterface> aMessage);
+  void RunMessageAfterProcessing(already_AddRefed<nsIRunnable> aMessage);
 
   /* From the main thread, ask the MTG to resolve the returned promise when
    * the device specified has started.
    * A null aDeviceID indicates the default audio output device.
-   * The promise is rejected with NS_ERROR_INVALID_ARG if aSink does not
+   * The promise is rejected with NS_ERROR_INVALID_ARG if aDeviceID does not
    * correspond to any output devices used by the graph, or
    * NS_ERROR_NOT_AVAILABLE if outputs to the device are removed or
    * NS_ERROR_ILLEGAL_DURING_SHUTDOWN if the graph is force shut down
@@ -431,12 +424,12 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * Returns smallest value of t such that t is a multiple of
    * WEBAUDIO_BLOCK_SIZE and t >= aTime.
    */
-  static GraphTime RoundUpToEndOfAudioBlock(GraphTime aTime);
+  static MediaTime RoundUpToEndOfAudioBlock(MediaTime aTime);
   /**
    * Returns smallest value of t such that t is a multiple of
    * WEBAUDIO_BLOCK_SIZE and t > aTime.
    */
-  static GraphTime RoundUpToNextAudioBlock(GraphTime aTime);
+  static MediaTime RoundUpToNextAudioBlock(MediaTime aTime);
   /**
    * Produce data for all tracks >= aTrackIndex for the current time interval.
    * Advances block by block, each iteration producing data for all tracks
@@ -459,7 +452,7 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
   TrackTime GraphTimeToTrackTimeWithBlocking(const MediaTrack* aTrack,
                                              GraphTime aTime) const;
 
- private:
+ protected:
   /**
    * Set mOutputDeviceForAEC to indicate the audio output to be passed as the
    * reverse stream for audio echo cancellation.  Graph thread.
@@ -530,10 +523,9 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * Returns true when there are no active tracks.
    */
   bool IsEmpty() const {
-    MOZ_ASSERT(
-        OnGraphThreadOrNotRunning() ||
-        (NS_IsMainThread() &&
-         LifecycleStateRef() >= LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP));
+    MOZ_ASSERT(OnGraphThreadOrNotRunning() ||
+               (NS_IsMainThread() &&
+                LifecycleState() >= LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP));
     return mTracks.IsEmpty() && mSuspendedTracks.IsEmpty() && mPortCount == 0;
   }
 
@@ -562,7 +554,7 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
     mTrackOrderDirty = true;
   }
 
- private:
+ protected:
   // Get the current maximum channel count required for a device.
   // aDevice is an element of mOutputDevices.  Graph thread only.
   struct OutputDeviceEntry;
@@ -582,6 +574,39 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
     AssertOnGraphThread();
     return mOutputDeviceForAEC != PrimaryOutputDeviceID();
   }
+  /* Return whether the audio output device used for the aec reverse stream
+   * corresponds to the primary output device, explicitly or implicitly.
+   * Implicitly meaning when the primary output device is the system default
+   * output device, and the output device used for the aec reverse stream is
+   * explicit and matches the current system default output device. */
+  bool OutputForAECIsPrimary() {
+    AssertOnGraphThread();
+    if (mOutputDeviceForAEC == PrimaryOutputDeviceID()) {
+      // Output device for AEC is explicitly the primary output device, which is
+      // used for the duplex stream of the graph driver.
+      return true;
+    }
+    // The output device for AEC is still considered primary if the primary
+    // output device is set to follow the system default output device, and the
+    // output device for AEC is explicitly the current system default output
+    // device.
+    return PrimaryOutputDeviceID() == DEFAULT_OUTPUT_DEVICE &&
+           mOutputDeviceForAEC == mDefaultOutputDeviceID;
+  }
+  CubebUtils::AudioDeviceID DefaultOutputDeviceID() const {
+    return mDefaultOutputDeviceID.load(std::memory_order_relaxed);
+  }
+  /**
+   * Update whether the enumerator is set up for default output device tracking,
+   * based on presence of input devices.
+   * Marked virtual for unittests. Main thread only.
+   */
+  virtual void UpdateEnumeratorDefaultDeviceTracking();
+  /**
+   * Update the tracked default output device from the enumerator.
+   * Main thread only.
+   */
+  void UpdateDefaultDevice();
   /**
    * The audio input channel count for a MediaTrackGraph is the max of all the
    * channel counts requested by the listeners. The max channel count is
@@ -658,6 +683,23 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    */
   void InterruptJS();
 
+  // AbstractThread decls
+  [[nodiscard]] nsresult Dispatch(
+      already_AddRefed<nsIRunnable> aEvent,
+      DispatchReason aReason = NormalDispatch) override;
+  bool IsCurrentThreadIn() const override;
+  TaskDispatcher& TailDispatcher() override;
+  NS_IMETHOD RegisterShutdownTask(nsITargetShutdownTask* aTask) override;
+  NS_IMETHOD UnregisterShutdownTask(nsITargetShutdownTask* aTask) override;
+  NS_IMETHOD_(FeatureFlags) GetFeatures() override;
+
+ protected:
+  [[nodiscard]] nsresult QueueMessageForTailDispatch(
+      already_AddRefed<nsIRunnable> aEvent);
+  [[nodiscard]] nsresult TailDispatchMessage(
+      already_AddRefed<nsIRunnable> aEvent);
+
+ public:
   class TrackSet {
    public:
     class iterator {
@@ -722,8 +764,11 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    *
    * When this becomes zero, the graph is marked as forbidden to add more
    * tracks to. It will be shut down shortly after.
+   *
+   * This is atomic to allow off-main-thread assertions during dispatch.
+   * All writes are on main thread.
    */
-  size_t mMainThreadTrackCount = 0;
+  Atomic<size_t> mMainThreadTrackCount{0};
 
   /**
    * Main-thread view of the number of ports in this graph, to catch bugs.
@@ -731,8 +776,11 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * When this becomes zero, and mMainThreadTrackCount is 0, the graph is
    * marked as forbidden to add more control messages to. It will be shut down
    * shortly after.
+   *
+   * This is atomic to allow off-main-thread assertions during dispatch.
+   * All writes are on main thread.
    */
-  size_t mMainThreadPortCount = 0;
+  Atomic<size_t> mMainThreadPortCount{0};
 
   /**
    * Graphs own owning references to their driver, until shutdown. When a driver
@@ -844,21 +892,31 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * as an atomic unit.
    */
   /*
+   * Queue of direct messages added by the currently processed group task.
+   * Processed by the MTG thread at the end of an iteration.
+   * Accessed on graph thread only.
+   */
+  nsTArray<nsCOMPtr<nsIRunnable>> mDirectMessages;
+  /*
    * Message queue processed by the MTG thread during an iteration.
    * Accessed on graph thread only.
    */
-  nsTArray<MessageBlock> mFrontMessageQueue;
+  nsTArray<nsCOMPtr<nsIRunnable>> mFrontMessageQueue;
   /*
-   * Message queue in which the main thread appends messages.
+   * Message queue in which non-graph threads append messages.
    * Access guarded by mMonitor.
    */
-  nsTArray<MessageBlock> mBackMessageQueue MOZ_GUARDED_BY(mMonitor);
+  nsTArray<nsCOMPtr<nsIRunnable>> mBackMessageQueue MOZ_GUARDED_BY(mMonitor);
 
-  /* True if there will messages to process if we swap the message queues. */
+  /* True if there will be messages to process if we swap the message queues. */
   bool MessagesQueued() const MOZ_REQUIRES(mMonitor) {
     mMonitor.AssertCurrentThreadOwns();
     return !mBackMessageQueue.IsEmpty();
   }
+
+  /* Tasks to run at shutdown. */
+  TargetShutdownTaskSet mShutdownTasks MOZ_GUARDED_BY(mMonitor);
+
   /**
    * This enum specifies where this graph is in its lifecycle. This is used
    * to control shutdown.
@@ -910,18 +968,7 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * the end of an iteration.  All other transitions occur on the main thread.
    */
   LifecycleState mLifecycleState MOZ_GUARDED_BY(mMonitor);
-  LifecycleState& LifecycleStateRef() MOZ_NO_THREAD_SAFETY_ANALYSIS {
-#if DEBUG
-    if (mGraphDriverRunning) {
-      mMonitor.AssertCurrentThreadOwns();
-    } else {
-      MOZ_ASSERT(NS_IsMainThread());
-    }
-#endif
-    return mLifecycleState;
-  }
-  const LifecycleState& LifecycleStateRef() const
-      MOZ_NO_THREAD_SAFETY_ANALYSIS {
+  LifecycleState LifecycleState() const MOZ_NO_THREAD_SAFETY_ANALYSIS {
 #if DEBUG
     if (mGraphDriverRunning) {
       mMonitor.AssertCurrentThreadOwns();
@@ -978,7 +1025,7 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * immediately because we want all messages between stable states to be
    * processed as an atomic batch.
    */
-  nsTArray<UniquePtr<ControlMessageInterface>> mCurrentTaskMessageQueue;
+  nsTArray<nsCOMPtr<nsIRunnable>> mCurrentTaskMessageQueue;
   /**
    * True from when RunInStableState sets mLifecycleState to LIFECYCLE_RUNNING,
    * until RunInStableState has determined that mLifecycleState is >
@@ -995,13 +1042,13 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * True when processing real-time audio/video.  False when processing
    * non-realtime audio.
    */
-  bool mRealtime;
+  bool mRealtime = false;
   /**
    * True when a change has happened which requires us to recompute the track
    * blocking order.
    */
   bool mTrackOrderDirty;
-  const RefPtr<nsISerialEventTarget> mMainThread;
+  const RefPtr<AbstractThread> mMainThread;
 
   // used to limit graph shutdown time
   // Only accessed on the main thread.
@@ -1010,7 +1057,6 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
  protected:
   virtual ~MediaTrackGraphImpl();
 
- private:
   MOZ_DEFINE_MALLOC_SIZE_OF(MallocSizeOf)
 
   // Set a new native iput device when the current native input device is close.
@@ -1121,14 +1167,12 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
   const float mGlobalVolume;
 
 #ifdef DEBUG
- protected:
   /**
    * Used to assert when AppendMessage() runs control messages synchronously.
    */
   bool mCanRunMessagesSynchronously;
 #endif
 
- private:
   /**
    * The graph's main-thread observable graph time.
    * Updated by the stable state runnable after each iteration.
@@ -1161,17 +1205,36 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    */
   DeviceInputTrackManager mDeviceInputTrackManagerMainThread;
 
- private:
+  /**
+   * An enumerator for tracking the system default output device. Set only while
+   * an input track is present in the graph, as the system default output device
+   * is used for AEC decisions. Main thread only.
+   */
+  RefPtr<CubebDeviceEnumerator> mEnumeratorMainThread;
+
+ protected:
   /**
    * Manage the native or non-native input device in graph. Graph thread only.
    */
   DeviceInputTrackManager mDeviceInputTrackManagerGraphThread;
+  MediaEventListener mOutputDevicesChangedListener;
+  /**
+   * The system's current default device. When PrimaryOutputDeviceID() is
+   * nullptr, this is what it maps to. There will be a delay between a user
+   * changing their default device, to this device ID being up to date.
+   */
+  std::atomic<CubebUtils::AudioDeviceID> mDefaultOutputDeviceID = {nullptr};
   /**
    * The mixer that the graph mixes into during an iteration. This is here
    * rather than on the stack so that its buffer is not allocated each
    * iteration. Graph thread only.
    */
   AudioMixer mMixer;
+  /**
+   * The task dispatcher that facilitates tail dispatch. Set during iterations.
+   * Graph thread only.
+   */
+  Maybe<TaskDispatcher&> mTaskDispatcher;
 };
 
 }  // namespace mozilla

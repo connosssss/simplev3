@@ -8,10 +8,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import mozilla.components.compose.base.theme.AcornTheme
 
 /**
  * [LazyRow] wrapper over [content] configuring it to be shown inside of [CustomPlacementPopup].
@@ -19,14 +19,8 @@ import mozilla.components.compose.base.theme.AcornTheme
  * @param content Composable items to be shown as horizontal content in a [CustomPlacementPopup].
  */
 @Composable
-inline fun CustomPlacementPopup.CustomPlacementPopupHorizontalContent(
-    crossinline content: LazyListScope.() -> Unit,
-) {
-    LazyRow(
-        modifier = Modifier
-            .background(AcornTheme.colors.layer2)
-            .height(48.dp),
-    ) {
+inline fun CustomPlacementPopup.CustomPlacementPopupHorizontalContent(crossinline content: LazyListScope.() -> Unit) {
+    LazyRow(modifier = Modifier.background(MaterialTheme.colorScheme.surfaceBright).height(48.dp)) {
         content()
     }
 }

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -161,7 +159,7 @@ JS_FOR_EACH_PUBLIC_TAGGED_GC_POINTER_TYPE(JS_DECLARE_IS_HEAP_CONSTRUCTIBLE_TYPE)
 // be used with Heap<>.
 
 namespace gc {
-struct Cell;
+class Cell;
 } /* namespace gc */
 
 // Important: Return a reference so passing a Rooted<T>, etc. to
@@ -223,13 +221,10 @@ JS_PUBLIC_API void HeapScriptWriteBarriers(JSScript** objp, JSScript* prev,
  */
 template <typename T, typename Enable = void>
 struct SafelyInitialized {
-  static T create() {
+  static constexpr T create() {
     // This function wants to presume that |T()| -- which value-initializes a
     // |T| per C++11 [expr.type.conv]p2 -- will produce a safely-initialized,
     // safely-usable T that it can return.
-
-#if defined(XP_WIN) || defined(XP_DARWIN) || \
-    (defined(XP_UNIX) && !defined(__clang__))
 
     // That presumption holds for pointers, where value initialization produces
     // a null pointer.
@@ -245,8 +240,6 @@ struct SafelyInitialized {
 
     static_assert(IsPointer || IsNonTriviallyDefaultConstructibleClassOrUnion,
                   "T() must evaluate to a safely-initialized T");
-
-#endif
 
     return T();
   }
@@ -706,9 +699,8 @@ class MOZ_STACK_CLASS MutableHandle
   inline MOZ_IMPLICIT MutableHandle(RootedField<T, N>* root);
   inline MOZ_IMPLICIT MutableHandle(PersistentRooted<T>* root);
 
- private:
   // Disallow nullptr for overloading purposes.
-  MutableHandle(decltype(nullptr)) = delete;
+  MutableHandle(std::nullptr_t) = delete;
 
  public:
   MutableHandle(const MutableHandle<T>&) = default;
@@ -1100,6 +1092,10 @@ class JS_PUBLIC_API AutoGCRooter {
     *stackTop = down;
   }
 
+  /* No copy or assignment semantics. */
+  AutoGCRooter(AutoGCRooter& ida) = delete;
+  void operator=(AutoGCRooter& ida) = delete;
+
   void trace(JSTracer* trc);
 
  private:
@@ -1114,9 +1110,6 @@ class JS_PUBLIC_API AutoGCRooter {
    */
   Kind kind_;
 
-  /* No copy or assignment semantics. */
-  AutoGCRooter(AutoGCRooter& ida) = delete;
-  void operator=(AutoGCRooter& ida) = delete;
 } JS_HAZ_ROOTED_BASE;
 
 /**
@@ -1164,7 +1157,7 @@ template <typename T>
 class MOZ_RAII Rooted : public detail::RootedTraits<T>::StackBase,
                         public js::RootedOperations<T, Rooted<T>> {
   // Intentionally store a pointer into the stack.
-#if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 12)
+#if !defined(__clang__) && defined(__GNUC__) && __GNUC__ >= 12
 #  pragma GCC diagnostic push
 #  pragma GCC diagnostic ignored "-Wdangling-pointer"
 #endif
@@ -1173,7 +1166,7 @@ class MOZ_RAII Rooted : public detail::RootedTraits<T>::StackBase,
     this->prev = *this->stack;
     *this->stack = this;
   }
-#if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 12)
+#if !defined(__clang__) && defined(__GNUC__) && __GNUC__ >= 12
 #  pragma GCC diagnostic pop
 #endif
 
@@ -1232,6 +1225,8 @@ class MOZ_RAII Rooted : public detail::RootedTraits<T>::StackBase,
     *this->stack = this->prev;
   }
 
+  Rooted(const Rooted&) = delete;
+
   /*
    * This method is public for Rooted so that Codegen.py can use a Rooted
    * interchangeably with a MutableHandleValue.
@@ -1254,10 +1249,10 @@ class MOZ_RAII Rooted : public detail::RootedTraits<T>::StackBase,
   T* address() { return &ptr; }
   const T* address() const { return &ptr; }
 
+  static constexpr size_t offsetOfPtr() { return offsetof(Rooted, ptr); }
+
  private:
   T ptr;
-
-  Rooted(const Rooted&) = delete;
 } JS_HAZ_ROOTED;
 
 namespace detail {
@@ -1308,9 +1303,6 @@ class RootedTuple {
  public:
   template <typename RootingContext>
   explicit RootedTuple(const RootingContext& cx) : fields(cx) {}
-  template <typename RootingContext>
-  explicit RootedTuple(const RootingContext& cx, const Fs&... fs)
-      : fields(cx, fs...) {}
 };
 
 // Reference to a field in a RootedTuple. This is a drop-in replacement for an
@@ -1338,8 +1330,10 @@ class RootedTuple {
 template <typename T, size_t N /* = SIZE_MAX */>
 class MOZ_RAII RootedField : public js::RootedOperations<T, RootedField<T, N>> {
   T* ptr;
-  friend class Handle<T>;
-  friend class MutableHandle<T>;
+  template <typename U>
+  friend class Handle;
+  template <typename U>
+  friend class MutableHandle;
 
 #ifdef DEBUG
   bool* inUseFlag = nullptr;
@@ -1358,6 +1352,7 @@ class MOZ_RAII RootedField : public js::RootedOperations<T, RootedField<T, N>> {
       static_assert(std::is_same_v<T, std::tuple_element_t<N, Tuple>>);
       ptr = &std::get<N>(rootedTuple.fields.get());
     }
+    *ptr = SafelyInitialized<T>::create();
 #ifdef DEBUG
     size_t index = N;
     if constexpr (N == SIZE_MAX) {
@@ -1379,6 +1374,9 @@ class MOZ_RAII RootedField : public js::RootedOperations<T, RootedField<T, N>> {
   }
 #endif
 
+  RootedField() = delete;
+  RootedField(const RootedField& other) = delete;
+
   T& get() { return *ptr; }
   const T& get() const { return *ptr; }
   void set(const T& value) {
@@ -1395,10 +1393,6 @@ class MOZ_RAII RootedField : public js::RootedOperations<T, RootedField<T, N>> {
   DECLARE_POINTER_ASSIGN_OPS(WrapperT, T);
   // DECLARE_NONPOINTER_ACCESSOR_METHODS(*ptr);
   // DECLARE_NONPOINTER_MUTABLE_ACCESSOR_METHODS(*ptr);
-
- private:
-  RootedField() = delete;
-  RootedField(const RootedField& other) = delete;
 };
 
 namespace detail {
@@ -1598,7 +1592,7 @@ class PersistentRooted : public detail::RootedTraits<T>::PersistentBase,
  public:
   using ElementType = T;
 
-  PersistentRooted() : ptr(SafelyInitialized<T>::create()) {}
+  constexpr PersistentRooted() : ptr(SafelyInitialized<T>::create()) {}
 
   template <
       typename RootHolder,
@@ -1712,7 +1706,7 @@ class MutableWrappedPtrOperations<UniquePtr<T, D>, Container>
   UniquePtr<T, D>& uniquePtr() { return static_cast<Container*>(this)->get(); }
 
  public:
-  [[nodiscard]] typename UniquePtr<T, D>::Pointer release() {
+  [[nodiscard]] typename UniquePtr<T, D>::pointer release() {
     return uniquePtr().release();
   }
   void reset(T* ptr = T()) { uniquePtr().reset(ptr); }

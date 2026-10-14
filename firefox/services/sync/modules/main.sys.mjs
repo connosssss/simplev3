@@ -4,7 +4,14 @@
 
 export { lazy as Weave };
 
-const lazy = {};
+const lazy = {
+  get perDeviceEngineChoices() {
+    return Services.prefs.getBoolPref(
+      "services.sync.perDeviceEngineChoices",
+      false
+    );
+  },
+};
 
 // We want these to be lazily loaded, which helps performance and also tests
 // to not have these loaded before they are ready.
@@ -17,7 +24,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 ChromeUtils.defineLazyGetter(lazy, "Crypto", () => {
   let { WeaveCrypto } = ChromeUtils.importESModule(
-    "resource://services-crypto/WeaveCrypto.sys.mjs"
+    "moz-src:///services/crypto/modules/WeaveCrypto.sys.mjs"
   );
   return new WeaveCrypto();
 });

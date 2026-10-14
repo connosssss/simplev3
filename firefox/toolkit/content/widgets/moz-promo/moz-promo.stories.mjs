@@ -4,6 +4,8 @@
 
 import { html, ifDefined } from "../vendor/lit.all.mjs";
 import "./moz-promo.mjs";
+import "../moz-button/moz-button.mjs";
+import "../moz-support-link/moz-support-link.mjs";
 
 const fluentStrings = [
   "moz-promo-message",
@@ -33,12 +35,20 @@ export default {
         disable: true,
       },
     },
-    width: {
-      control: { type: "number" },
+    imageWidth: {
+      options: ["small", "large"],
+      control: { type: "radio" },
     },
     imageAlignment: {
       options: ["start", "end", "center"],
       control: { type: "select" },
+    },
+    imageDisplay: {
+      options: ["cover", "padded"],
+      control: { type: "radio" },
+    },
+    dismissable: {
+      control: { type: "boolean" },
     },
   },
   parameters: {
@@ -51,7 +61,7 @@ moz-promo-message-heading =
   .message = Information about a new feature to check out
 moz-promo-message-heading-long =
   .heading = A longer version of the heading to check for text wrapping, neat!
-  .message = A much longer message to check text wrapping within the promotional element. A much longer message to check text wrapping within the promotional element.  
+  .message = A much longer message to check text wrapping within the promotional element. A much longer message to check text wrapping within the promotional element.
     `,
   },
 };
@@ -61,11 +71,15 @@ const Template = ({
   heading,
   message,
   l10nId,
-  width,
   imageSrc,
   imageAlignment,
+  imageWidth,
+  imageDisplay,
+  hasActionButton,
+  hasSupportLink,
+  dismissable,
 }) => html`
-  <div style="width: ${width}px">
+  <div style="width: 500px">
     <moz-promo
       type=${type}
       heading=${ifDefined(heading)}
@@ -73,15 +87,27 @@ const Template = ({
       data-l10n-id=${ifDefined(l10nId)}
       imageSrc=${ifDefined(imageSrc)}
       imageAlignment=${ifDefined(imageAlignment)}
-    ></moz-promo>
+      imageWidth=${ifDefined(imageWidth)}
+      imageDisplay=${ifDefined(imageDisplay)}
+      ?dismissable=${dismissable}
+    >
+      ${hasActionButton
+        ? html` <moz-button slot="actions">Actions button</moz-button>`
+        : ""}
+      ${hasSupportLink
+        ? html` <a is="moz-support-link" slot="support-link" href="#"></a>`
+        : ""}
+    </moz-promo>
   </div>
 `;
 
 export const Default = Template.bind({});
 Default.args = {
-  width: 600,
   type: "default",
   l10nId: "moz-promo-message",
+  hasActionButton: false,
+  hasSupportLink: false,
+  dismissable: false,
 };
 
 export const Vibrant = Template.bind({});
@@ -99,14 +125,33 @@ WithHeading.args = {
 export const WithWrappedMessage = Template.bind({});
 WithWrappedMessage.args = {
   ...Vibrant.args,
-  width: 400,
+  l10nId: "moz-promo-message-heading-long",
+};
+
+export const WithPaddedImage = Template.bind({});
+WithPaddedImage.args = {
+  ...Default.args,
+  imageSrc: "chrome://global/skin/illustrations/kit-happy.svg",
+  imageAlignment: "start",
+  imageSize: "large",
+  imageDisplay: "padded",
+  l10nId: "moz-promo-message-heading-long",
+};
+
+export const WithLargeImage = Template.bind({});
+WithLargeImage.args = {
+  ...Default.args,
+  imageSrc: "chrome://global/skin/illustrations/kit-happy.svg",
+  imageAlignment: "start",
+  imageWidth: "large",
+  imageDisplay: "cover",
   l10nId: "moz-promo-message-heading-long",
 };
 
 export const ImageAtStart = Template.bind({});
 ImageAtStart.args = {
   ...Default.args,
-  imageSrc: "chrome://global/skin/illustrations/about-license.svg",
+  imageSrc: "chrome://global/skin/illustrations/kit-happy.svg",
   imageAlignment: "start",
 };
 
@@ -119,16 +164,44 @@ ImageAtEnd.args = {
 export const ImageAtCenter = Template.bind({});
 ImageAtCenter.args = {
   ...ImageAtStart.args,
+  imageSrc: "chrome://global/skin/illustrations/kit-happy.svg",
   imageAlignment: "center",
 };
 
-export const SquareImage = Template.bind({});
-SquareImage.args = {
-  ...ImageAtStart.args,
+export const SlottedAction = Template.bind({});
+SlottedAction.args = {
+  ...Default.args,
+  hasActionButton: true,
 };
 
-export const RectangleImage = Template.bind({});
-RectangleImage.args = {
-  ...ImageAtStart.args,
-  imageSrc: "chrome://global/content/aboutconfig/background.svg",
+export const SlottedSupportLink = Template.bind({});
+SlottedSupportLink.args = {
+  ...Default.args,
+  hasSupportLink: true,
+};
+
+export const Dismissable = Template.bind({});
+Dismissable.args = {
+  ...WithHeading.args,
+  dismissable: true,
+};
+
+export const DismissableOverCoverImage = Template.bind({});
+DismissableOverCoverImage.args = {
+  ...WithLargeImage.args,
+  dismissable: true,
+  imageAlignment: "end",
+};
+
+// A padded end-aligned image is inset from the edge, so the close button gets
+// its own space rather than sitting on the illustration.
+export const DismissableWithPaddedEndImage = Template.bind({});
+DismissableWithPaddedEndImage.args = {
+  ...Default.args,
+  imageSrc: "chrome://global/skin/illustrations/kit-happy.svg",
+  imageAlignment: "end",
+  imageWidth: "large",
+  imageDisplay: "padded",
+  l10nId: "moz-promo-message-heading-long",
+  dismissable: true,
 };

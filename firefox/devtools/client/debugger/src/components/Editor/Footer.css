@@ -59,7 +59,7 @@
   fill: var(--theme-selection-color);
 }
 
-.source-footer .blackboxed .img.blackBox {
+.source-footer .blackboxed .dbg-img.dbg-img-blackBox {
   background-color: #806414;
 }
 
@@ -67,11 +67,16 @@
   opacity: 0.6;
 }
 
+.source-footer .commands button.prettyPrint.pretty span {
+  fill: var(--theme-icon-checked-color);
+  stroke: var(--theme-icon-checked-color);
+}
+
 .devtools-button.debugger-source-map-button {
   display: inline-flex;
   align-items: center;
   margin: 0;
-  --menuitem-icon-image: url("chrome://devtools/content/debugger/images/sourcemap.svg");
+  --menuitem-icon-image: url("chrome://devtools/content/shared/components/images/sourcemap.svg");
 
   &.not-mapped {
     --icon-color: var(--theme-icon-dimmed-color);
@@ -92,7 +97,7 @@
   }
 
   &.loading {
-    --menuitem-icon-image: url("chrome://devtools/content/debugger/images/loader.svg");
+    --menuitem-icon-image: url("chrome://devtools/content/shared/components/images/loader.svg");
   }
 
   &::before {
@@ -121,4 +126,5 @@
 .source-footer .cursor-position {
   padding: 5px;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }

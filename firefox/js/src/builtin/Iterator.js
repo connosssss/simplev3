@@ -220,7 +220,6 @@ function WrapForValidIteratorReturn() {
   return callContentFunction(returnMethod, iterator);
 }
 
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
 /**
  * Explicit Resource Management Proposal
  * 27.1.2.1 %IteratorPrototype% [ @@dispose ] ( )
@@ -241,7 +240,6 @@ function IteratorDispose() {
 
   // Step 4. Return NormalCompletion(empty). (implicit)
 }
-#endif
 
 /**
  * %IteratorHelperPrototype%.next ( )
@@ -505,7 +503,6 @@ function* IteratorFilterGenerator(iterator, nextMethod, predicate) {
  * Iterator.prototype.take ( limit )
  *
  * https://tc39.es/ecma262/#sec-iterator.prototype.take
- * ES2026 draft rev d14670224281909f5bb552e8ebe4a8e958646c16
  */
 function IteratorTake(limit) {
   // Step 1.
@@ -527,8 +524,21 @@ function IteratorTake(limit) {
     throw e;
   }
 
-  // Steps 6-8.
+  // Steps 6-7.
+  if (
+    Number_isNaN(numLimit) ||
+    (Number_isFinite(numLimit) && numLimit > (2 ** 53) - 1)
+  ) {
+    try {
+      IteratorClose(iterator);
+    } catch {}
+    ThrowRangeError(JSMSG_LIMIT_TOO_LARGE);
+  }
+
+  // Step 8.
   var integerLimit = std_Math_trunc(numLimit);
+
+  // Step 9.
   if (!(integerLimit >= 0)) {
     try {
       IteratorClose(iterator);
@@ -536,10 +546,10 @@ function IteratorTake(limit) {
     ThrowRangeError(JSMSG_NEGATIVE_LIMIT);
   }
 
-  // Step 9. (Inlined call to GetIteratorDirect.)
+  // Step 10. (Inlined call to GetIteratorDirect.)
   var nextMethod = iterator.next;
 
-  // Steps 10-12.
+  // Steps 11-13.
   var result = NewIteratorHelper();
   var generator = IteratorTakeGenerator(iterator, nextMethod, integerLimit);
   UnsafeSetReservedSlot(
@@ -553,7 +563,7 @@ function IteratorTake(limit) {
     iterator
   );
 
-  // Step 13.
+  // Step 14.
   return result;
 }
 
@@ -563,27 +573,26 @@ function IteratorTake(limit) {
  * Abstract closure definition.
  *
  * https://tc39.es/ecma262/#sec-iterator.prototype.take
- * ES2026 draft rev d14670224281909f5bb552e8ebe4a8e958646c16
  */
 function* IteratorTakeGenerator(iterator, nextMethod, remaining) {
-  // Step 8.a. (Implicit)
+  // Step 11.a. (Implicit)
 
-  // Step 8.b.i. (Reordered before for-of loop entry)
+  // Steps 11.b.i and 11.b.i.1. (Reordered before for-of loop entry)
   if (remaining === 0) {
     IteratorClose(iterator);
     return;
   }
 
-  // Step 8.b.
+  // Step 11.b.
   for (var value of allowContentIterWithNext(iterator, nextMethod)) {
-    // Steps 8.b.iii-iv. (Implicit through for-of loop)
+    // Steps 11.b.iii-iv. (Implicit through for-of loop)
 
-    // Step 8.b.v.
+    // Step 11.b.v.
     yield value;
 
-    // Step 8.b.vi. (Implicit through for-of loop)
+    // Step 11.b.vi. (Implicit through for-of loop)
 
-    // Steps 8.b.i-ii. (Reordered)
+    // Steps 11.b.ii, 11.b.i, and 11.b.i.1. (Reordered)
     if (--remaining === 0) {
       // |break| implicitly calls IteratorClose.
       break;
@@ -595,7 +604,6 @@ function* IteratorTakeGenerator(iterator, nextMethod, remaining) {
  * Iterator.prototype.drop ( limit )
  *
  * https://tc39.es/ecma262/#sec-iterator.prototype.drop
- * ES2026 draft rev d14670224281909f5bb552e8ebe4a8e958646c16
  */
 function IteratorDrop(limit) {
   // Step 1.
@@ -617,8 +625,21 @@ function IteratorDrop(limit) {
     throw e;
   }
 
-  // Steps 6-8.
+  // Steps 6-7.
+  if (
+    Number_isNaN(numLimit) ||
+    (Number_isFinite(numLimit) && numLimit > (2 ** 53) - 1)
+  ) {
+    try {
+      IteratorClose(iterator);
+    } catch {}
+    ThrowRangeError(JSMSG_LIMIT_TOO_LARGE);
+  }
+
+  // Step 8.
   var integerLimit = std_Math_trunc(numLimit);
+
+  // Step 9.
   if (!(integerLimit >= 0)) {
     try {
       IteratorClose(iterator);
@@ -626,10 +647,10 @@ function IteratorDrop(limit) {
     ThrowRangeError(JSMSG_NEGATIVE_LIMIT);
   }
 
-  // Step 9. (Inlined call to GetIteratorDirect.)
+  // Step 10. (Inlined call to GetIteratorDirect.)
   var nextMethod = iterator.next;
 
-  // Steps 10-12.
+  // Steps 11-13.
   var result = NewIteratorHelper();
   var generator = IteratorDropGenerator(iterator, nextMethod, integerLimit);
   UnsafeSetReservedSlot(
@@ -643,7 +664,7 @@ function IteratorDrop(limit) {
     iterator
   );
 
-  // Step 13.
+  // Step 14.
   return result;
 }
 
@@ -653,22 +674,21 @@ function IteratorDrop(limit) {
  * Abstract closure definition.
  *
  * https://tc39.es/ecma262/#sec-iterator.prototype.drop
- * ES2026 draft rev d14670224281909f5bb552e8ebe4a8e958646c16
  */
 function* IteratorDropGenerator(iterator, nextMethod, remaining) {
-  // Step 10.a. (Implicit)
+  // Step 11.a. (Implicit)
 
-  // Steps 10.b-c.
+  // Steps 11.b-c.
   for (var value of allowContentIterWithNext(iterator, nextMethod)) {
-    // Step 10.b.i.
+    // Step 11.b.i.
     if (remaining-- <= 0) {
-      // Steps 10.b.ii-iii. (Implicit through for-of loop)
-      // Steps 10.c.i-ii. (Implicit through for-of loop)
+      // Steps 11.b.ii-iii. (Implicit through for-of loop)
+      // Steps 11.c.i-ii. (Implicit through for-of loop)
 
-      // Step 10.c.iii.
+      // Step 11.c.iii.
       yield value;
 
-      // Step 10.c.iv. (Implicit through for-of loop)
+      // Step 11.c.iv. (Implicit through for-of loop)
     }
   }
 }
@@ -1014,7 +1034,6 @@ function IteratorFind(predicate) {
   }
 }
 
-#ifdef NIGHTLY_BUILD
 /**
  * Iterator.concat ( ...items )
  *
@@ -1096,8 +1115,161 @@ function* IteratorConcatGenerator(iterables) {
  *
  * https://tc39.es/proposal-joint-iteration/#sec-iterator.zip
  */
-function IteratorZip(predicate) {
-  return false;
+function IteratorZip(iterables, options = undefined) {
+  // Step 1.
+  if (!IsObject(iterables)) {
+    ThrowTypeError(JSMSG_OBJECT_REQUIRED, iterables === null ? "null" : typeof iterables);
+  }
+
+  // Steps 2-7.
+  if (options !== undefined) {
+    // Step 2. (Inlined GetOptionsObject)
+    if (!IsObject(options)) {
+      ThrowTypeError(
+        JSMSG_OBJECT_REQUIRED_ARG, "options", "Iterator.zip", ToSource(options)
+      );
+    }
+
+    // Step 3.
+    var mode = options.mode;
+
+    // Step 4.
+    if (mode === undefined) {
+      mode = "shortest";
+    }
+
+    // Step 5.
+    if (mode !== "shortest" && mode !== "longest" && mode !== "strict") {
+      if (typeof mode !== "string") {
+        ThrowTypeError(
+          JSMSG_ITERATOR_ZIP_INVALID_OPTION_TYPE,
+          "mode",
+          mode === null ? "null" : typeof mode
+        );
+      }
+      ThrowTypeError(
+        JSMSG_ITERATOR_ZIP_INVALID_OPTION_VALUE, "mode", ToSource(mode)
+      );
+    }
+
+    // Step 6.
+    var paddingOption = undefined;
+
+    // Step 7.
+    if (mode === "longest") {
+      // Step 7.a.
+      paddingOption = options.padding;
+
+      // Step 7.b.
+      if (paddingOption !== undefined && !IsObject(paddingOption)) {
+        ThrowTypeError(
+          JSMSG_ITERATOR_ZIP_INVALID_OPTION_TYPE,
+          "padding",
+          paddingOption === null ? "null" : typeof paddingOption
+        );
+      }
+    }
+  } else {
+    // Step 4.
+    var mode = "shortest";
+  }
+
+  // Step 8.
+  var iters = [];
+  var nextMethods = [];
+
+  // Steps 10-12.
+  try {
+    var closedIterators = false;
+    for (var iter of allowContentIter(iterables)) {
+      // Step 12.a. (Implicit)
+
+      // Step 12.c.i.
+      try {
+        iter = GetIteratorFlattenable(iter, /* rejectStrings= */ true);
+        var nextMethod = iter.next;
+      } catch (e) {
+        // Step 12.c.ii.
+        closedIterators = true;
+        IteratorCloseAllForException(iters);
+        throw e;
+      }
+
+      // Step 12.c.iii.
+      DefineDataProperty(iters, iters.length, iter);
+      DefineDataProperty(nextMethods, nextMethods.length, nextMethod);
+    }
+  } catch (e) {
+    // Step 12.b.
+    if (!closedIterators) {
+      IteratorCloseAllForException(iters);
+    }
+    throw e;
+  }
+
+  // Step 14.
+  if (mode === "longest") {
+    // Step 9. (Reordered)
+    var padding = [];
+
+    // Step 13. (Reordered)
+    var iterCount = iters.length;
+
+    // Steps 14.b.
+    if (paddingOption !== undefined) {
+      // Steps 14.b.i-v.
+      try {
+        // Take care to not execute IteratorStepValue when |iterCount| is zero.
+        if (iterCount > 0) {
+          for (var paddingValue of allowContentIter(paddingOption)) {
+            DefineDataProperty(padding, padding.length, paddingValue);
+
+            // |break| statement to perform IteratorClose.
+            if (padding.length === iterCount) {
+              break;
+            }
+          }
+        } else {
+          // Empty array destructuring performs GetIterator + IteratorClose.
+          // eslint-disable-next-line no-empty-pattern
+          var [] = allowContentIter(paddingOption);
+        }
+      } catch (e) {
+        // Steps 14.b.ii, 14.b.iv.1.b, 14.b.v.2.
+        IteratorCloseAllForException(iters);
+        throw e;
+      }
+    }
+
+    // Steps 14.a.i and 14.b.iv.2.
+    //
+    // Fill with |undefined| up to |iterCount|.
+    for (var i = padding.length; i < iterCount; i++) {
+      DefineDataProperty(padding, i, undefined);
+    }
+  }
+
+  // Steps 15-16.
+  var result = NewIteratorHelper();
+  var generator = IteratorZipGenerator(iters, nextMethods, mode, padding);
+  var closeIterator = {
+    return() {
+      IteratorCloseAllForReturn(iters);
+      return {};
+    }
+  };
+  UnsafeSetReservedSlot(
+    result,
+    ITERATOR_HELPER_GENERATOR_SLOT,
+    generator
+  );
+  UnsafeSetReservedSlot(
+    result,
+    ITERATOR_HELPER_UNDERLYING_ITERATOR_SLOT,
+    closeIterator
+  );
+
+  return result;
 }
 
 /**
@@ -1105,20 +1277,428 @@ function IteratorZip(predicate) {
  *
  * https://tc39.es/proposal-joint-iteration/#sec-iterator.zipkeyed
  */
-function IteratorZipKeyed(predicate) {
-  return false;
+function IteratorZipKeyed(iterables, options = undefined) {
+  // Step 1.
+  if (!IsObject(iterables)) {
+    ThrowTypeError(JSMSG_OBJECT_REQUIRED, iterables === null ? "null" : typeof iterables);
+  }
+
+  // Steps 2-7.
+  if (options !== undefined) {
+    // Step 2. (Inlined GetOptionsObject)
+    if (!IsObject(options)) {
+      ThrowTypeError(
+        JSMSG_OBJECT_REQUIRED_ARG, "options", "Iterator.zipKeyed", ToSource(options)
+      );
+    }
+
+    // Step 3.
+    var mode = options.mode;
+
+    // Step 4.
+    if (mode === undefined) {
+      mode = "shortest";
+    }
+
+    // Step 5.
+    if (mode !== "shortest" && mode !== "longest" && mode !== "strict") {
+      if (typeof mode !== "string") {
+        ThrowTypeError(
+          JSMSG_ITERATOR_ZIP_INVALID_OPTION_TYPE,
+          "mode",
+          mode === null ? "null" : typeof mode
+        );
+      }
+      ThrowTypeError(
+        JSMSG_ITERATOR_ZIP_INVALID_OPTION_VALUE, "mode", ToSource(mode)
+      );
+    }
+
+    // Step 6.
+    var paddingOption = undefined;
+
+    // Step 7.
+    if (mode === "longest") {
+      // Step 7.a.
+      paddingOption = options.padding;
+
+      // Step 7.b.
+      if (paddingOption !== undefined && !IsObject(paddingOption)) {
+        ThrowTypeError(
+          JSMSG_ITERATOR_ZIP_INVALID_OPTION_TYPE,
+          "padding",
+          paddingOption === null ? "null" : typeof paddingOption
+        );
+      }
+    }
+  } else {
+    // Step 4.
+    var mode = "shortest";
+  }
+
+  // Step 8.
+  var iters = [];
+  var nextMethods = [];
+
+  // Step 10.
+  var allKeys = std_Reflect_ownKeys(iterables);
+
+  // Step 11.
+  var keys = [];
+
+  // Step 12.
+  try {
+    for (var i = 0; i < allKeys.length; i++) {
+      var key = allKeys[i];
+
+      // Step 12.a.
+      var desc = ObjectGetOwnPropertyDescriptor(iterables, key);
+
+      // Step 12.c.
+      if (desc && desc.enumerable) {
+        // Step 12.c.i.
+        var value = iterables[key];
+
+        // Step 12.c.iii.
+        if (value !== undefined) {
+          // Step 12.c.iii.1.
+          DefineDataProperty(keys, keys.length, key);
+
+          // Step 12.c.iii.2.
+          var iter = GetIteratorFlattenable(value, /* rejectStrings= */ true);
+          var nextMethod = iter.next;
+
+          // Step 12.c.iii.4.
+          DefineDataProperty(iters, iters.length, iter);
+          DefineDataProperty(nextMethods, nextMethods.length, nextMethod);
+        }
+      }
+    }
+  } catch (e) {
+    // Steps 12.b, 12.c.ii, and 12.c.iii.3.
+    IteratorCloseAllForException(iters);
+    throw e;
+  }
+
+  // Step 14.
+  if (mode === "longest") {
+    // Step 9. (Reordered)
+    var padding = [];
+
+    // Steps 14.a-b.
+    if (paddingOption === undefined) {
+      // Step 13. (Reordered)
+      var iterCount = iters.length;
+
+      // Step 14.1.i.
+      for (var i = 0; i < iterCount; i++) {
+        DefineDataProperty(padding, i, undefined);
+      }
+    } else {
+      try {
+        // Step 14.b.i.
+        for (var i = 0; i < keys.length; i++) {
+          DefineDataProperty(padding, i, paddingOption[keys[i]]);
+        }
+      } catch (e) {
+        // Step 14.b.i.2.
+        IteratorCloseAllForException(iters);
+        throw e;
+      }
+    }
+  }
+
+  // Steps 15-16.
+  var result = NewIteratorHelper();
+  var generator = IteratorZipGenerator(iters, nextMethods, mode, padding, keys);
+  var closeIterator = {
+    return() {
+      IteratorCloseAllForReturn(iters);
+      return {};
+    }
+  };
+  UnsafeSetReservedSlot(
+    result,
+    ITERATOR_HELPER_GENERATOR_SLOT,
+    generator
+  );
+  UnsafeSetReservedSlot(
+    result,
+    ITERATOR_HELPER_UNDERLYING_ITERATOR_SLOT,
+    closeIterator
+  );
+
+  return result;
 }
 
+/**
+ * IteratorZip ( iters, mode, padding, finishResults )
+ *
+ * https://tc39.es/proposal-joint-iteration/#sec-IteratorZip
+ */
+function* IteratorZipGenerator(iters, nextMethods, mode, padding, keys) {
+  assert(
+    iters.length === nextMethods.length,
+    "iters and nextMethods have the same number of entries"
+  );
+  assert(
+    mode === "shortest" || mode === "longest" || mode === "strict",
+    "invalid mode"
+  );
+  assert(
+    mode !== "longest" || (IsArray(padding) && padding.length === iters.length),
+    "iters and padding have the same number of entries"
+  );
+  assert(
+    keys === undefined || (IsArray(keys) && keys.length === iters.length),
+    "keys is undefined or an array with iters.length entries"
+  );
+
+  // Step 1.
+  var iterCount = iters.length;
+
+  // Step 2.
+  //
+  // Our implementation reuses |iters| instead of using another list. This
+  // counter is the number of non-null entries in |iters|.
+  var openIterCount = iterCount;
+
+  // Step 3.a.
+  if (iterCount === 0) {
+    return;
+  }
+
+  // Step 3.b.
+  while (true) {
+    // Step 3.b.i.
+    var results = [];
+
+    // Step 3.b.ii.
+    assert(openIterCount > 0, "at least one open iterator");
+
+    // Step 3.b.iii.
+    for (var i = 0; i < iterCount; i++) {
+      // Step 3.b.iii.1.
+      var iter = iters[i];
+      var nextMethod = nextMethods[i];
+
+      // Steps 3.b.iii.2-3.
+      var result;
+      if (iter === null) {
+        // Step 3.b.iii.2.a.
+        assert(mode === "longest", "padding only applied when mode is longest");
+
+        // Step 3.b.iii.2.b.
+        result = padding[i];
+      } else {
+        // Steps 3.b.iii.3.a-c.
+        try {
+          // Step 3.b.iii.3.a.
+          var iterResult = callContentFunction(nextMethod, iter);
+          if (!IsObject(iterResult)) {
+            ThrowTypeError(JSMSG_ITER_METHOD_RETURNED_PRIMITIVE, "next");
+          }
+          var done = !!iterResult.done;
+          if (!done) {
+            result = iterResult.value;
+          }
+        } catch (e) {
+          // Step 3.b.iii.3.b.i.
+          iters[i] = null;
+
+          // Step 3.b.iii.3.b.ii.
+          IteratorCloseAllForException(iters);
+          throw e;
+        }
+
+        // Step 3.b.iii.3.d.
+        if (done) {
+          // Step 3.b.iii.3.d.i.
+          //
+          // Set to null to mark the iterator as closed.
+          iters[i] = null;
+
+          // Step 3.b.iii.3.d.ii.
+          if (mode === "shortest") {
+            // Step 3.b.iii.3.d.ii.i.
+            IteratorCloseAllForReturn(iters);
+            return;
+          }
+
+          // Step 3.b.iii.3.d.iii.
+          if (mode === "strict") {
+            // Step 3.b.iii.3.d.iii.i.
+            if (i !== 0) {
+              IteratorCloseAllForException(iters);
+              ThrowTypeError(JSMSG_ITERATOR_ZIP_STRICT_OPEN_ITERATOR);
+            }
+
+            // Step 3.b.iii.3.d.iii.ii.
+            for (var k = 1; k < iterCount; k++) {
+              // Step 3.b.iii.3.d.iii.ii.i.
+              assert(iters[k] !== null, "unexpected closed iterator");
+
+              // Steps 3.b.iii.3.d.iii.ii.ii-iv.
+              var done;
+              try {
+                // Step 3.b.iii.3.d.iii.ii.ii.
+                var iterResult = callContentFunction(nextMethods[k], iters[k]);
+                if (!IsObject(iterResult)) {
+                  ThrowTypeError(JSMSG_ITER_METHOD_RETURNED_PRIMITIVE, "next");
+                }
+                done = !!iterResult.done;
+              } catch (e) {
+                // // Step 3.b.iii.3.d.iii.ii.iii.i.
+                iters[k] = null;
+
+                // Step 3.b.iii.3.d.iii.ii.iii.ii.
+                IteratorCloseAllForException(iters);
+                throw e;
+              }
+
+              // Steps 3.b.iii.3.d.iii.ii.v-vi.
+              if (done) {
+                // Steps 3.b.iii.3.d.iii.ii.v.i.
+                iters[k] = null;
+              } else {
+                // Steps 3.b.iii.3.d.iii.ii.vi.i.
+                IteratorCloseAllForException(iters);
+                ThrowTypeError(JSMSG_ITERATOR_ZIP_STRICT_OPEN_ITERATOR);
+              }
+            }
+
+            // Step 3.b.iii.3.d.iii.iii.
+            return;
+          }
+
+          // Step 3.b.iii.3.d.iii.iv.i.
+          assert(mode === "longest", "unexpected mode");
+
+          // Step 3.b.iii.3.d.iii.iv.ii.
+          assert(openIterCount > 0, "at least one open iterator");
+          if (--openIterCount === 0) {
+            return;
+          }
+
+          // Step 3.b.iii.3.d.iii.iv.iii.
+          iters[i] = null;
+
+          // Step 3.b.iii.3.d.iii.iv.iv.
+          result = padding[i];
+        }
+      }
+
+      // Step 3.b.iii.4.
+      DefineDataProperty(results, results.length, result);
+    }
+
+    // Step 3.b.iv.
+    if (keys) {
+      // Iterator.zipKeyed, step 15.a.
+      var obj = std_Object_create(null);
+
+      // Iterator.zipKeyed, step 15.b.
+      for (var i = 0; i < keys.length; i++) {
+        DefineDataProperty(obj, keys[i], results[i]);
+      }
+
+      // Iterator.zipKeyed, step 15.c.
+      results = obj;
+    }
+
+    // Steps 3.b.v-vi.
+    var returnCompletion = true;
+    try {
+      // Step 3.b.v.
+      yield results;
+
+      returnCompletion = false;
+    } finally {
+      // Step 3.b.vi.
+      //
+      // IteratorHelper iterators can't continue execution with a Throw
+      // completion, so this must be a Return completion.
+      if (returnCompletion) {
+        IteratorCloseAllForReturn(iters);
+      }
+    }
+  }
+}
 
 /**
+ * IteratorCloseAll ( iters, completion )
+ *
+ * When |completion| is a Return completion.
+ *
+ * https://tc39.es/proposal-joint-iteration/#sec-closeall
+ */
+function IteratorCloseAllForReturn(iters) {
+  assert(IsArray(iters), "iters is an array");
+
+  var exception;
+  var hasException = false;
+
+  // Step 1.
+  for (var i = iters.length - 1; i >= 0; i--) {
+    var iter = iters[i];
+    assert(IsObject(iter) || iter === null, "iter is an object or null");
+
+    if (IsObject(iter)) {
+      try {
+        IteratorClose(iter);
+      } catch (e) {
+        // Store the first exception and then ignore any later exceptions.
+        if (!hasException) {
+          hasException = true;
+          exception = e;
+        }
+      }
+    }
+  }
+
+  // Step 2.
+  if (hasException) {
+    throw exception;
+  }
+}
+
+/**
+ * IteratorCloseAll ( iters, completion )
+ *
+ * When |completion| is a Throw completion.
+ *
+ * https://tc39.es/proposal-joint-iteration/#sec-closeall
+ */
+function IteratorCloseAllForException(iters) {
+  assert(IsArray(iters), "iters is an array");
+
+  // Step 1.
+  for (var i = iters.length - 1; i >= 0; i--) {
+    var iter = iters[i];
+    assert(IsObject(iter) || iter === null, "iter is an object or null");
+
+    if (IsObject(iter)) {
+      try {
+        IteratorClose(iter);
+      } catch {
+        // Ignore any inner exceptions.
+      }
+    }
+  }
+
+  // Step 2. (Performed in caller)
+}
+
+#ifdef NIGHTLY_BUILD
+/**
  * CreateNumericRangeIterator (start, end, optionOrStep, type)
- * Step 18 
- * 
+ * Step 18
+ *
  * https://tc39.es/proposal-iterator.range/#sec-create-numeric-range-iterator
  */
 function IteratorRangeNext() {
   var obj = this;
-  // Step 18. Let closure be a new Abstract Closure with no parameters 
+  // Step 18. Let closure be a new Abstract Closure with no parameters
   // that captures start, end, step, inclusiveEnd, zero, one and performs the following steps when called:
 
   if (!IsObject(obj) || (obj = GuardToIteratorRange(obj)) === null) {
@@ -1168,7 +1748,7 @@ function IteratorRangeNext() {
 
   // Step 18.i.iv: If ifIncrease is true, then
   if (ifIncrease) {
-    // Step 18.i.iv.1: If inclusiveEnd is true, then 
+    // Step 18.i.iv.1: If inclusiveEnd is true, then
     if (inclusiveEnd) {
       // Step 18.i.iv.1.a: If currentYieldingValue > end, return undefined.
       if (currentYieldingValue > end) {
@@ -1213,7 +1793,7 @@ function IteratorRangeNext() {
 
 /**
  * CreateNumericRangeIterator (start, end, optionOrStep, type)
- * 
+ *
  * https://tc39.es/proposal-iterator.range/#sec-create-numeric-range-iterator
  */
 function CreateNumericRangeIterator(start, end, optionOrStep, isNumberRange) {
@@ -1276,7 +1856,7 @@ function CreateNumericRangeIterator(start, end, optionOrStep, isNumberRange) {
     step = optionOrStep.step;
 
     // Step 8.b. Set inclusiveEnd to ToBoolean(? Get(optionOrStep, "inclusive")).
-    inclusiveEnd = ToBoolean(optionOrStep.inclusiveEnd);
+    inclusiveEnd = TO_BOOLEAN(optionOrStep.inclusiveEnd);
   }
   // Step 9: Else if type is NUMBER-RANGE and optionOrStep is a Number, then
   else if (isNumberRange && typeof optionOrStep === 'number') {
@@ -1362,4 +1942,416 @@ function IteratorRange(start, end, optionOrStep) {
   ThrowTypeError(JSMSG_ITERATOR_RANGE_INVALID_START);
 
 }
+
 #endif
+
+/**
+ *  Iterator.prototype.chunks ( chunkSize )
+ *
+ *  https://tc39.es/proposal-iterator-chunking/#sec-iterator.prototype.chunks
+ */
+function IteratorChunks(chunkSize) {
+  // Step 1. Let O be the this value.
+  var iterator = this;
+
+  // Step 2. If O is not an Object, throw a TypeError exception.
+  if (!IsObject(iterator)) {
+    ThrowTypeError(JSMSG_OBJECT_REQUIRED, iterator === null ? "null" : typeof iterator);
+  }
+
+  // Step 3. Let iterated be the Iterator Record
+  //  { [[Iterator]]: O, [[NextMethod]]: undefined, [[Done]]: false }.
+
+  // Step 4. If chunkSize is not an integral Number, then
+  if (!Number_isInteger(chunkSize)) {
+    // Step 4.a. Let error be ThrowCompletion(a newly created TypeError object).
+    // Step 4.b. Return ? IteratorClose(iterated, error).
+    try {
+      IteratorClose(iterator);
+    } catch {}
+    ThrowTypeError(JSMSG_CHUNK_SIZE_NOT_INTEGER);
+  }
+
+  // Step 5. If chunkSize is not in the inclusive interval from 1𝔽 to
+  // 𝔽(2**32 - 1), then
+  if (chunkSize < 1 || chunkSize > (2 ** 32) - 1) {
+    // Step 5.a. Let error be ThrowCompletion(a newly created RangeError object).
+    // Step 5.b. Return ? IteratorClose(iterated, error).
+    try {
+      IteratorClose(iterator);
+    } catch {}
+    ThrowRangeError(JSMSG_INVALID_CHUNKSIZE);
+  }
+
+  // Step 6. Set iterated to ? GetIteratorDirect(O).
+  var nextMethod = iterator.next;
+
+  // Step 7. Let closure be a new Abstract Closure with ...
+  // (Handled in IteratorChunksGenerator.)
+
+  // Step 8. Let result be CreateIteratorFromClosure(
+  //   closure, "Iterator Helper", %IteratorHelperPrototype%,
+  //   « [[UnderlyingIterators]] »
+  // ).
+  var result = NewIteratorHelper();
+  var generator = IteratorChunksGenerator(iterator, nextMethod, chunkSize);
+
+  // Step 9. Set result.[[UnderlyingIterators]] to « iterated ».
+  UnsafeSetReservedSlot(
+    result,
+    ITERATOR_HELPER_GENERATOR_SLOT,
+    generator
+  );
+  UnsafeSetReservedSlot(
+    result,
+    ITERATOR_HELPER_UNDERLYING_ITERATOR_SLOT,
+    iterator
+  );
+
+  // Step 10. Return result.
+  return result;
+}
+
+/**
+ *  Iterator.prototype.chunks ( chunkSize )
+ *
+ *  Abstract closure definition.
+ *
+ *  https://tc39.es/proposal-iterator-chunking/#sec-iterator.prototype.chunks
+ */
+function* IteratorChunksGenerator(iterator, nextMethod, chunkSize) {
+  // Step 6. Let closure be a new Abstract Closure
+  //         with no parameters that captures iterated and
+  //         chunkSize and performs the following steps when called:
+  // Step 6.a. Let buffer be a new empty List.
+  // This is an optimization that performs the equivalent of CreateArrayFromList
+  // at the same time as constructing the buffer.
+  // All the operations done on buffer are not affected by prototype pollution,
+  // and thus directly using an array here is safe.
+  // All the operations done on the buffer are not observable,
+  // and thus reordering the operation here is safe.
+  var buffer = [];
+
+  // Step 6.b. Repeat,
+  // Step 6.b.i. Let value be ? IteratorStepValue(iterated).
+  for (var value of allowContentIterWithNext(iterator, nextMethod)) {
+    // Step 6.b.iii. Append value to buffer.
+    // (Reordered)
+    // NOTE: The OOM case is automatically handled by the for-of loop.
+    DefineDataProperty(buffer, buffer.length, value);
+
+    // Step 6.b.iv. If the number of elements in buffer is ℝ(chunkSize), then
+    if (buffer.length === chunkSize) {
+      // Step 6.b.iv.1. Let completion be
+      //                Completion(Yield(CreateArrayFromList(buffer))).
+      yield buffer;
+
+      // Step 6.b.iv.3. Set buffer to a new empty List.
+      // This is an optimization that performs the equivalent of
+      // CreateArrayFromList at the same time as constructing the buffer.
+      buffer = [];
+    }
+  }
+
+  // Step 6.b.ii. If value is done, then
+  // Step 6.b.ii.1. If buffer is not empty, then
+  if (buffer.length) {
+    // Step 6.b.ii.1.a. Perform Completion(Yield(CreateArrayFromList(buffer))).
+    // Iterator helper doesn't have throw methods, and only "normal" or "return"
+    // completion can appear here.
+    // Given that this is the last step inside the function, there's no
+    // difference between handling and ignoring the completion.
+    yield buffer;
+  }
+
+  // Step 6.b.ii.2. Return ReturnCompletion(undefined).
+  // (implicit)
+}
+
+/**
+ *  Iterator.prototype.windows ( windowSize, undersized )
+ *
+ *  https://tc39.es/proposal-iterator-chunking/#sec-iterator.prototype.windows
+ */
+function IteratorWindows(windowSize, undersized = undefined) {
+  // Step 1. Let O be the this value.
+  var iterator = this;
+
+  // Step 2. If O is not an Object, throw a TypeError exception.
+  if (!IsObject(iterator)) {
+    ThrowTypeError(JSMSG_OBJECT_REQUIRED, iterator === null ? "null" : typeof iterator);
+  }
+
+  // Step 3. Let iterated be the Iterator Record
+  //         { [[Iterator]]: O, [[NextMethod]]: undefined, [[Done]]: false }.
+
+  // Step 4. If windowSize is not an integral Number, then
+  if (!Number_isInteger(windowSize)) {
+    // Step 4.a. Let error be ThrowCompletion(a newly created TypeError object).
+    // Step 4.b. Return ? IteratorClose(iterated, error).
+    try {
+      IteratorClose(iterator);
+    } catch {}
+    ThrowTypeError(JSMSG_WINDOW_SIZE_NOT_INTEGER);
+  }
+
+  // Step 5. If windowSize is not in the inclusive interval from 1𝔽 to
+  //         𝔽(2**32 - 1), then
+  if (windowSize < 1 || windowSize > (2 ** 32) - 1) {
+    // Step 5.a. Let error be ThrowCompletion(a newly created RangeError object).
+    // Step 5.b. Return ? IteratorClose(iterated, error).
+    try {
+      IteratorClose(iterator);
+    } catch {}
+    ThrowRangeError(JSMSG_INVALID_WINDOWSIZE);
+  }
+
+  // Step 6. If undersized is undefined, set undersized to "only-full".
+  if (undersized === undefined) {
+    undersized = "only-full";
+  }
+
+  // Step 7. If undersized is not "only-full" or "allow-partial", then
+  if (undersized !== "only-full" && undersized !== "allow-partial") {
+    // Step 7.a. Let error be ThrowCompletion(a newly created TypeError object).
+    // Step 7.b. Return ? IteratorClose(iterated, error).
+    try {
+      IteratorClose(iterator);
+    } catch {}
+    ThrowTypeError(
+      JSMSG_INVALID_UNDERSIZED_OPTION_VALUE, "undersized", ToSource(undersized)
+    );
+  }
+
+  // Step 8. Set iterated to ? GetIteratorDirect(O).
+  var nextMethod = iterator.next;
+
+  // Step 9. Let closure be a new Abstract Closure with ...
+  // (Handled in IteratorWindowsGenerator.)
+
+  // Step 10. Let result be CreateIteratorFromClosure(
+  //         closure, "Iterator Helper", %IteratorHelperPrototype%,
+  //         « [[UnderlyingIterators]] »).
+  var result = NewIteratorHelper();
+  var generator = IteratorWindowsGenerator(iterator, nextMethod, windowSize, undersized);
+
+  // Step 11. Set result.[[UnderlyingIterators]] to « iterated ».
+  UnsafeSetReservedSlot(
+    result,
+    ITERATOR_HELPER_GENERATOR_SLOT,
+    generator
+  );
+  UnsafeSetReservedSlot(
+    result,
+    ITERATOR_HELPER_UNDERLYING_ITERATOR_SLOT,
+    iterator
+  );
+
+  // Step 12. Return result.
+  return result;
+}
+
+/**
+ *  Iterator.prototype.windows ( windowSize, undersized )
+ *
+ *  Abstract closure definition.
+ *
+ *  https://tc39.es/proposal-iterator-chunking/#sec-iterator.prototype.windows
+ */
+function* IteratorWindowsGenerator(iterator, nextMethod, windowSize, undersized) {
+  // Step 8. Let closure be a new Abstract Closure with no parameters that captures
+  //         iterated, windowSize, and undersized
+  //         and performs the following steps when called:
+
+  // Step 8.a. Let buffer be a new empty List.
+  var buffer = new_List();
+
+  // Step 8.b. Repeat,
+  // Step 8.b.i. Let value be ? IteratorStepValue(iterated).
+  for (var value of allowContentIterWithNext(iterator, nextMethod)) {
+    // Step 8.b.iii. If the number of elements in buffer is ℝ(windowSize), then
+    if (buffer.length === windowSize) {
+      // Step 8.b.iii.1. Remove the first element from buffer.
+      callFunction(std_Array_shift, buffer);
+    }
+
+    // Step 8.b.iv. Append value to buffer.
+    DefineDataProperty(buffer, buffer.length, value);
+
+    // Step 8.b.v. If the number of elements in buffer is ℝ(windowSize), then
+    if (buffer.length === windowSize) {
+      // Step 8.b.v.1. Let completion be Completion(Yield(CreateArrayFromList(buffer))).
+      // Step 8.b.v.2. IfAbruptCloseIterator(completion, iterated).
+      // NOTE: The abrupt return completion case is automatically handled by the for-of loop.
+      yield callFunction(std_Array_slice, buffer);
+    }
+  }
+
+  // Step 8.b.ii. If value is done, then
+  // Step 8.b.ii.1. If undersized is "allow-partial", buffer is not empty,
+  //                and the number of elements in buffer < ℝ(windowSize), then
+  if (undersized === "allow-partial" && buffer.length && buffer.length < windowSize) {
+    // Step 8.b.ii.1.a. Perform Completion(Yield(CreateArrayFromList(buffer))).
+    // Iterator helper doesn't have throw methods, and only "normal" or "return"
+    // completion can appear here.
+    // Given that this is the last step inside the function, there's no
+    // difference between handling and ignoring the completion.
+    yield callFunction(std_Array_slice, buffer);
+  }
+  // Step 8.b.ii.2. Return ReturnCompletion(undefined).
+  // (implicit)
+}
+
+/**
+ *  Iterator.prototype.join ( separator )
+ *
+ *  https://tc39.es/proposal-iterator-join/#sec-iterator.prototype.join
+ */
+function IteratorJoin(separator) {
+  // Step 1. Let O be the this value.
+  var O = this;
+
+  // Step 2. If O is not an Object, throw a TypeError exception.
+  if (!IsObject(O)) {
+    ThrowTypeError(JSMSG_OBJECT_REQUIRED, O === null ? "null" : typeof O);
+  }
+
+  // Step 3. Let iterated be the Iterator Record
+  //         { [[Iterator]]: O, [[NextMethod]]: undefined, [[Done]]: false }.
+
+  // Step 4. If separator is undefined, then
+  var sep;
+  if (separator === undefined) {
+    // Step 4.a. Let sep be ",".
+    sep = ",";
+  } else {
+    // Step 5. Else,
+    // Step 5.a. Let sep be Completion(ToString(separator)).
+    // Step 5.b. IfAbruptCloseIterator(sep, iterated).
+    try {
+      sep = ToString(separator);
+    } catch (e) {
+      try {
+        IteratorClose(O);
+      } catch {}
+      throw e;
+    }
+  }
+
+  // Step 6. Set iterated to ? GetIteratorDirect(O).
+  // (Inlined call to GetIteratorDirect.)
+  var nextMethod = O.next;
+
+  // Step 7. Let R be the empty String.
+  var R = "";
+
+  // Step 8. Let first be true.
+  var first = true;
+
+  // Step 9. Repeat,
+  // Step 9.a. Let value be ? IteratorStepValue(iterated).
+  for (var value of allowContentIterWithNext(O, nextMethod)) {
+    // Step 9.c. If first is true, then
+    if (first) {
+      // Step 9.c.i. Set first to false.
+      first = false;
+    } else {
+      // Step 9.d. Else,
+      // Step 9.d.i. Set R to the string-concatenation of R and sep.
+      R += sep;
+    }
+
+    // Step 9.e. If value is neither undefined nor null, then
+    if (value !== undefined && value !== null) {
+      // Step 9.e.i. Let S be Completion(ToString(value)).
+      // Step 9.e.ii. IfAbruptCloseIterator(S, iterated).
+      // Step 9.e.iii. Set R to the string-concatenation of R and S.
+      R += ToString(value);
+    }
+  }
+
+  // Step 9.b. If value is done, return R.
+  return R;
+}
+
+/**
+ *  Iterator.prototype.includes ( searchElement [ , skippedElements ] )
+ *
+ *  https://tc39.es/proposal-iterator-includes
+ */
+function IteratorIncludes(searchElement, skippedElements = undefined) {
+  // Step 1. Let O be the this value.
+  var O = this;
+
+  // Step 2. If O is not an Object, throw a TypeError exception.
+  if (!IsObject(O)) {
+    ThrowTypeError(JSMSG_OBJECT_REQUIRED, O === null ? "null" : typeof O);
+  }
+
+  // Step 3. Let iterated be the Iterator Record
+  //         { [[Iterator]]: O, [[NextMethod]]: undefined, [[Done]]: false }.
+
+  // Step 4. If skippedElements is undefined, then
+  // Step 4.a. Let toSkip be 0.
+  var toSkip = 0;
+  // Step 5. Else, (skippedElements is not undefined)
+  if (skippedElements !== undefined) {
+    // Step 5.a. If skippedElements is not one of +∞𝔽, -∞𝔽, or an integral Number, then
+    if (!(Number_isInteger(skippedElements) ||
+          (typeof skippedElements === "number" &&
+           !Number_isFinite(skippedElements) &&
+           !Number_isNaN(skippedElements)))) {
+      // Step 5.a.i-ii. Let error be ThrowCompletion(...). Return ? IteratorClose(iterated, error).
+      try {
+        IteratorClose(O);
+      } catch {}
+      ThrowTypeError(JSMSG_INVALID_SKIP_COUNT);
+    }
+    // Step 5.b. Let toSkip be the extended mathematical value of skippedElements.
+    toSkip = skippedElements;
+  }
+
+  // Step 6. If toSkip < 0, then
+  // Step 6.a. Let error be ThrowCompletion(a newly created RangeError object).
+  // Step 6.b. Return ? IteratorClose(iterated, error).
+  if (toSkip < 0) {
+    try {
+      IteratorClose(O);
+    } catch {}
+    ThrowRangeError(JSMSG_NEGATIVE_LIMIT);
+  }
+
+  // Step 7. If toSkip is finite and toSkip > 𝔽(2**53 - 1), then
+  // Step 7.a. Let error be ThrowCompletion(a newly created RangeError object).
+  // Step 7.b. Return ? IteratorClose(iterated, error).
+  if (Number_isFinite(toSkip) && toSkip > (2 ** 53) - 1) {
+    try {
+      IteratorClose(O);
+    } catch {}
+    ThrowRangeError(JSMSG_SKIP_COUNT_TOO_LARGE);
+  }
+
+  // Step 8. Let skipped be 0.
+  var skipped = 0;
+
+  // Step 9. Set iterated to ? GetIteratorDirect(O).
+  // (Inlined call to GetIteratorDirect.)
+  var nextMethod = O.next;
+
+  // Step 10. Repeat,
+  // Step 10.a. Let value be ? IteratorStepValue(iterated).
+  for (var value of allowContentIterWithNext(O, nextMethod)) {
+    // Step 10.c. If skipped < toSkip, then
+    if (skipped < toSkip) {
+      // Step 10.c.i. Set skipped to skipped + 1.
+      skipped++;
+    // Step 10.d. Else if SameValueZero(value, searchElement) is true, then
+    } else if (value === searchElement || (Number_isNaN(value) && Number_isNaN(searchElement))) {
+      // Step 10.d.i. Return ? IteratorClose(iterated, NormalCompletion(true)).
+      return true;
+    }
+  }
+
+  // Step 10.b. If value is done, return false.
+  return false;
+}

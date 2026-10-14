@@ -111,7 +111,7 @@ function saveBrowser(aBrowser, aSkipPrompt, aBrowsingContext = null) {
   // PDF.js has its own way to handle saving PDFs since it may need to
   // generate a new PDF to save modified form data.
   if (aBrowser.contentPrincipal.spec == "resource://pdf.js/web/viewer.html") {
-    aBrowser.sendMessageToActor("PDFJS:Save", {}, "Pdfjs");
+    aBrowser.sendMessageToActor("PDFJS:Save", {}, "PdfJs");
     return;
   }
   let stack = Components.stack.caller;
@@ -348,9 +348,18 @@ function internalSave(
     let relatedURI =
       aOriginalURL || aReferrerInfo?.originalReferrer || sourceURI;
 
-    promiseTargetFile(fpParams, aSkipPrompt, relatedURI)
+    promiseTargetFile(
+      fpParams,
+      aSkipPrompt,
+      relatedURI,
+      aOriginalURL || sourceURI
+    )
       .then(aDialogAccepted => {
         if (!aDialogAccepted) {
+          // Close the persist document to tear down the IPC actor
+          // that otherwise prevents the content window from being
+          // destroyed until GC runs.
+          aDocument?.close();
           aSaveCompleteCallback?.();
           return;
         }
@@ -415,6 +424,13 @@ function internalSave(
 
     // Start the actual save process
     internalPersist(persistArgs);
+
+    // If the document isn't used for saving content, close it now to
+    // tear down the IPC actor that otherwise prevents the content
+    // window from being destroyed until GC runs.
+    if (!useSaveDocument) {
+      aDocument?.close();
+    }
   }
 }
 
@@ -475,6 +491,25 @@ function internalPersist(persistArgs) {
   // Find the URI associated with the target file
   var targetFileURL = makeFileURI(persistArgs.targetFile);
 
+  // The local directory into which to save the files associated with a
+  // document, or null when only a single file is written.
+  var filesFolder = null;
+  if (
+    persistArgs.sourceDocument &&
+    persistArgs.targetContentType != "text/plain"
+  ) {
+    filesFolder = persistArgs.targetFile.clone();
+
+    var nameWithoutExtension = getFileBaseName(filesFolder.leafName);
+    // Given the minimal benefits, the "_files" suffix is intentionally not
+    // localized. Localizing it introduces complexity in handling OS filename
+    // length limits (e.g. bug 1959738) and risks breaking the folder-linking
+    // feature if an unsupported suffix is used.
+    var filesFolderLeafName = nameWithoutExtension + "_files";
+
+    filesFolder.leafName = filesFolderLeafName;
+  }
+
   // Create download and initiate it (below)
   var tr = Cc["@mozilla.org/transfer;1"].createInstance(Ci.nsITransfer);
   tr.init(
@@ -488,7 +523,9 @@ function internalPersist(persistArgs) {
     persist,
     persistArgs.isPrivate,
     Ci.nsITransfer.DOWNLOAD_ACCEPTABLE,
-    persistArgs.sourceReferrerInfo
+    persistArgs.sourceReferrerInfo,
+    false /* aOpenDownloadsListOnStart */,
+    filesFolder
   );
   persist.progressListener = new DownloadListener(window, tr);
   const { saveCompleteCallback } = persistArgs;
@@ -501,20 +538,6 @@ function internalPersist(persistArgs) {
 
   if (persistArgs.sourceDocument) {
     // Saving a Document, not a URI:
-    var filesFolder = null;
-    if (persistArgs.targetContentType != "text/plain") {
-      // Create the local directory into which to save associated files.
-      filesFolder = persistArgs.targetFile.clone();
-
-      var nameWithoutExtension = getFileBaseName(filesFolder.leafName);
-      var filesFolderLeafName =
-        ContentAreaUtils.stringBundle.formatStringFromName("filesFolder", [
-          nameWithoutExtension,
-        ]);
-
-      filesFolder.leafName = filesFolderLeafName;
-    }
-
     var encodingFlags = 0;
     if (persistArgs.targetContentType == "text/plain") {
       encodingFlags |= nsIWBP.ENCODE_FLAGS_FORMATTED;
@@ -522,6 +545,9 @@ function internalPersist(persistArgs) {
       encodingFlags |= nsIWBP.ENCODE_FLAGS_NOFRAMES_CONTENT;
     } else {
       encodingFlags |= nsIWBP.ENCODE_FLAGS_ENCODE_BASIC_ENTITIES;
+      // Don't wrap markup when saving document:
+      // https://bugzilla.mozilla.org/show_bug.cgi?id=2025300
+      encodingFlags |= nsIWBP.ENCODE_FLAGS_DISALLOW_LINE_BREAKING;
     }
 
     const kWrapColumn = 80;
@@ -553,6 +579,7 @@ function internalPersist(persistArgs) {
  * Structure for holding info about automatically supplied parameters for
  * internalSave(...). This allows parameters to be supplied so the user does not
  * need to be prompted for file info.
+ *
  * @param aFileAutoChosen This is an nsIFile object that has been
  *        pre-determined as the filename for the target to save to
  * @param aUriAutoChosen  This is the nsIURI object for the target
@@ -565,6 +592,7 @@ function AutoChosen(aFileAutoChosen, aUriAutoChosen) {
 /**
  * Structure for holding info about a URL and the target filename it should be
  * saved to. This structure is populated by initFileInfo(...).
+ *
  * @param aSuggestedFileName This is used by initFileInfo(...) when it
  *        cannot 'discover' the filename from the url
  * @param aFileName The target filename
@@ -590,6 +618,7 @@ function FileInfo(
  * Determine what the 'default' filename string is, its file extension and the
  * filename without the extension. This filename is used when prompting the user
  * for confirmation in the file picker dialog.
+ *
  * @param aFI A FileInfo structure into which we'll put the results of this method.
  * @param aURL The String representation of the URL of the document being saved
  * @param aURLCharset The charset of aURL.
@@ -656,6 +685,7 @@ function initFileInfo(
 /**
  * Given the Filepicker Parameters (aFpP), show the file picker dialog,
  * prompting the user to confirm (or change) the fileName.
+ *
  * @param aFpP
  *        A structure (see definition in internalSave(...) method)
  *        containing all the data used within this method.
@@ -670,15 +700,51 @@ function initFileInfo(
  *        An nsIURI associated with the download. The last used
  *        directory of the picker is retrieved from/stored in the
  *        Content Pref Service using this URI.
- * @return Promise
- * @resolve a boolean. When true, it indicates that the file picker dialog
- *          is accepted.
+ * @param aSourceURI
+ *        The source URI, used to prefer its parent directory for local files.
+ * @returns {Promise<boolean>}
+ *   Resolves to a boolean. When true, it indicates that the file picker dialog is
+ *   accepted.
  */
 function promiseTargetFile(
   aFpP,
   /* optional */ aSkipPrompt,
-  /* optional */ aRelatedURI
+  /* optional */ aRelatedURI,
+  /* optional */ aSourceURI
 ) {
+  /**
+   * Returns an existing parent directory for a local source outside the system
+   * temporary directory.
+   *
+   * @param {string|nsIURI|URL} aURI
+   *        The source URI.
+   * @returns {Promise<nsIFile|null>}
+   *   The source directory, or null.
+   */
+  async function getLocalSourceDirectory(aURI) {
+    try {
+      let uri = typeof aURI == "string" ? makeURI(aURI) : aURI;
+      if (URL.isInstance(uri)) {
+        uri = uri.URI;
+      }
+      if (!uri.schemeIs("file")) {
+        return null;
+      }
+      const dir = uri.QueryInterface(Ci.nsIFileURL).file.parent;
+      if (!(await IOUtils.exists(dir.path))) {
+        return null;
+      }
+      // Normalize both paths before checking whether the source is under TmpD.
+      const realDir = dir.clone();
+      realDir.normalize();
+      const tmpDir = Services.dirsvc.get("TmpD", Ci.nsIFile);
+      tmpDir.normalize();
+      return realDir.equals(tmpDir) || tmpDir.contains(realDir) ? null : dir;
+    } catch {
+      return null;
+    }
+  }
+
   return (async function () {
     let downloadLastDir = new DownloadLastDir(window);
     let prefBranch = Services.prefs.getBranch("browser.download.");
@@ -701,9 +767,12 @@ function promiseTargetFile(
     }
 
     // We must prompt for the file name explicitly.
-    // If we must prompt because we were asked to...
-    let file = null;
-    if (!useDownloadDir) {
+    // When the source is a local file, default to its own directory so it's
+    // easy to save it "in place": DownloadLastDir shares a single last-used
+    // directory across all file: URLs, which is rarely the right one.
+    let file = await getLocalSourceDirectory(aSourceURI);
+    // Otherwise, if we must prompt because we were asked to...
+    if (!file && !useDownloadDir) {
       file = await downloadLastDir.getFileAsync(aRelatedURI);
     }
     if (file && (await IOUtils.exists(file.path))) {
@@ -761,7 +830,9 @@ function promiseTargetFile(
 
     aFpP.saveAsType = fp.filterIndex;
     aFpP.file = fp.file;
-    aFpP.file.leafName = validateFileName(aFpP.file.leafName);
+    if (AppConstants.platform != "linux") {
+      aFpP.file.leafName = validateFileName(aFpP.file.leafName);
+    }
 
     return true;
   })();
@@ -832,6 +903,7 @@ function DownloadURL(aURL, aFileName, aInitiatingDocument) {
     let accepted = await promiseTargetFile(
       filepickerParams,
       true,
+      fileInfo.uri,
       fileInfo.uri
     );
     if (!accepted) {
@@ -1180,7 +1252,8 @@ function getCharsetforSave(aDocument) {
 
 /**
  * Open a URL from chrome, determining if we can handle it internally or need to
- *  launch an external application to handle it.
+ * launch an external application to handle it.
+ *
  * @param aURL The URL to be opened
  *
  * WARNING: Please note that openURL() does not perform any content security checks!!!

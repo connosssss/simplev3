@@ -11,7 +11,6 @@
 #include <stddef.h>
 #include <sstream>
 #include <string>
-#include <unordered_map>
 
 OPENTELEMETRY_BEGIN_NAMESPACE
 namespace sdk
@@ -19,8 +18,8 @@ namespace sdk
 namespace resource
 {
 
-const char *OTEL_RESOURCE_ATTRIBUTES = "OTEL_RESOURCE_ATTRIBUTES";
-const char *OTEL_SERVICE_NAME        = "OTEL_SERVICE_NAME";
+constexpr const char *kOtelResourceAttributes = "OTEL_RESOURCE_ATTRIBUTES";
+constexpr const char *kOtelServiceName        = "OTEL_SERVICE_NAME";
 
 Resource ResourceDetector::Create(const ResourceAttributes &attributes,
                                   const std::string &schema_url)
@@ -33,9 +32,9 @@ Resource OTELResourceDetector::Detect() noexcept
   std::string attributes_str, service_name;
 
   bool attributes_exists = opentelemetry::sdk::common::GetStringEnvironmentVariable(
-      OTEL_RESOURCE_ATTRIBUTES, attributes_str);
+      kOtelResourceAttributes, attributes_str);
   bool service_name_exists =
-      opentelemetry::sdk::common::GetStringEnvironmentVariable(OTEL_SERVICE_NAME, service_name);
+      opentelemetry::sdk::common::GetStringEnvironmentVariable(kOtelServiceName, service_name);
 
   if (!attributes_exists && !service_name_exists)
   {

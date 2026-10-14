@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,32 +15,48 @@
 #  include <windns.h>
 #endif  // DNSQUERY_AVAILABLE
 
-#include "mozilla/ClearOnShutdown.h"
-#include "mozilla/net/DNS.h"
-#include "NativeDNSResolverOverrideParent.h"
-#include "prnetdb.h"
-#include "nsIOService.h"
-#include "nsHostResolver.h"
-#include "nsError.h"
-#include "mozilla/net/DNS.h"
 #include <algorithm>
-#include "prerror.h"
 
+#include "NativeDNSResolverOverrideParent.h"
+#include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Logging.h"
+#include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPrefs_network.h"
+#include "mozilla/net/DNS.h"
 #include "mozilla/net/DNSPacket.h"
+#include "nsError.h"
+#include "nsHostResolver.h"
 #include "nsIDNSService.h"
 #include "nsINetworkLinkService.h"
+#include "nsIOService.h"
+#include "prerror.h"
+#include "prnetdb.h"
 
 namespace mozilla::net {
 
+static StaticMutex gOverrideServiceMutex;
 static StaticRefPtr<NativeDNSResolverOverride> gOverrideService;
+static Atomic<bool, Relaxed> gOverrideServiceUsed{false};
 
 LazyLogModule gGetAddrInfoLog("GetAddrInfo");
 #define LOG(msg, ...) \
   MOZ_LOG(gGetAddrInfoLog, LogLevel::Debug, ("[DNS]: " msg, ##__VA_ARGS__))
 #define LOG_WARNING(msg, ...) \
   MOZ_LOG(gGetAddrInfoLog, LogLevel::Warning, ("[DNS]: " msg, ##__VA_ARGS__))
+
+static already_AddRefed<NativeDNSResolverOverride> GetOverrideSingleton() {
+  StaticMutexAutoLock lock(gOverrideServiceMutex);
+  if (!gOverrideService) {
+    gOverrideService = new NativeDNSResolverOverride();
+    gOverrideServiceUsed = true;
+    RunOnShutdown([] {
+      gOverrideServiceUsed = false;
+      StaticMutexAutoLock lock(gOverrideServiceMutex);
+      gOverrideService = nullptr;
+    });
+  }
+  return do_AddRef(gOverrideService);
+}
 
 #ifdef DNSQUERY_AVAILABLE
 
@@ -71,12 +85,12 @@ static MOZ_ALWAYS_INLINE nsresult _CallDnsQuery_A_Windows(
 
   auto callDnsQuery_A = [&](uint16_t reqFamily) {
     PDNS_RECORDA dnsData = nullptr;
-    DNS_STATUS status = DnsQuery_A(aHost.BeginReading(), reqFamily, aFlags,
-                                   nullptr, &dnsData, nullptr);
+    DNS_STATUS status = DnsQuery_A(PromiseFlatCString(aHost).get(), reqFamily,
+                                   aFlags, nullptr, &dnsData, nullptr);
     if (status == DNS_INFO_NO_RECORDS || status == DNS_ERROR_RCODE_NAME_ERROR ||
         !dnsData) {
       LOG("No DNS records found for %s. status=%lX. reqFamily = %X\n",
-          aHost.BeginReading(), status, reqFamily);
+          PromiseFlatCString(aHost).get(), status, reqFamily);
       return NS_ERROR_FAILURE;
     } else if (status != NOERROR) {
       LOG_WARNING("DnsQuery_A failed with status %lX.\n", status);
@@ -148,7 +162,7 @@ static MOZ_ALWAYS_INLINE nsresult _GetTTLData_Windows(const nsACString& aHost,
           ttl = std::min<unsigned int>(ttl, curRecord->dwTtl);
         } else {
           LOG("Received unexpected record type %u in response for %s.\n",
-              curRecord->wType, aHost.BeginReading());
+              curRecord->wType, PromiseFlatCString(aHost).get());
         }
       });
 
@@ -170,8 +184,9 @@ _DNSQuery_A_SingleLabel(const nsACString& aCanonHost, uint16_t aAddressFamily,
                        DNS_QUERY_ACCEPT_TRUNCATED_RESPONSE);
   nsTArray<NetAddr> addresses;
 
+  nsPromiseFlatCString canonHost(aCanonHost);
   _CallDnsQuery_A_Windows(
-      aCanonHost, aAddressFamily, flags, [&](PDNS_RECORDA curRecord) {
+      canonHost, aAddressFamily, flags, [&](PDNS_RECORDA curRecord) {
         MOZ_DIAGNOSTIC_ASSERT(curRecord->wType == DNS_TYPE_A ||
                               curRecord->wType == DNS_TYPE_AAAA);
         if (setCanonName) {
@@ -183,13 +198,12 @@ _DNSQuery_A_SingleLabel(const nsACString& aCanonHost, uint16_t aAddressFamily,
         addresses.AppendElement(addr);
       });
 
-  LOG("Query for: %s has %zu results", aCanonHost.BeginReading(),
-      addresses.Length());
+  LOG("Query for: %s has %zu results", canonHost.get(), addresses.Length());
   if (addresses.IsEmpty()) {
     return NS_ERROR_UNKNOWN_HOST;
   }
   RefPtr<AddrInfo> ai(new AddrInfo(
-      aCanonHost, canonName, DNSResolverType::Native, 0, std::move(addresses)));
+      canonHost, canonName, DNSResolverType::Native, 0, std::move(addresses)));
   ai.forget(aAddrInfo);
 
   return NS_OK;
@@ -252,16 +266,17 @@ _GetAddrInfo_Portable(const nsACString& aCanonHost, uint16_t aAddressFamily,
       // This is a single label name resolve without a dot.
       // We use DNSQuery_A for these.
       LOG("Resolving %s using DnsQuery_A (computername: %s)\n",
-          aCanonHost.BeginReading(), sDNSComputerName);
+          PromiseFlatCString(aCanonHost).get(), sDNSComputerName);
       return _DNSQuery_A_SingleLabel(aCanonHost, aAddressFamily, aFlags,
                                      aAddrInfo);
     }
   }
 #endif
 
-  LOG("Resolving %s using PR_GetAddrInfoByName", aCanonHost.BeginReading());
-  PRAddrInfo* prai =
-      PR_GetAddrInfoByName(aCanonHost.BeginReading(), aAddressFamily, prFlags);
+  LOG("Resolving %s using PR_GetAddrInfoByName",
+      PromiseFlatCString(aCanonHost).get());
+  PRAddrInfo* prai = PR_GetAddrInfoByName(PromiseFlatCString(aCanonHost).get(),
+                                          aAddressFamily, prFlags);
 
   if (!prai) {
     LOG("PR_GetAddrInfoByName returned null PR_GetError:%d PR_GetOSErrpr:%d",
@@ -318,7 +333,11 @@ nsresult GetAddrInfoShutdown() {
 
 bool FindAddrOverride(const nsACString& aHost, uint16_t aAddressFamily,
                       nsIDNSService::DNSFlags aFlags, AddrInfo** aAddrInfo) {
-  RefPtr<NativeDNSResolverOverride> overrideService = gOverrideService;
+  if (!gOverrideServiceUsed) {
+    return false;
+  }
+
+  RefPtr<NativeDNSResolverOverride> overrideService = GetOverrideSingleton();
   if (!overrideService) {
     return false;
   }
@@ -373,7 +392,7 @@ nsresult GetAddrInfo(const nsACString& aHost, uint16_t aAddressFamily,
 #endif
 
   // If there is an override for this host, then we synthetize a result.
-  if (gOverrideService &&
+  if (gOverrideServiceUsed &&
       FindAddrOverride(aHost, aAddressFamily, aFlags, aAddrInfo)) {
     LOG("Returning IP address from NativeDNSResolverOverride");
     return (*aAddrInfo)->Addresses().Length() ? NS_OK : NS_ERROR_UNKNOWN_HOST;
@@ -428,9 +447,13 @@ nsresult GetAddrInfo(const nsACString& aHost, uint16_t aAddressFamily,
 }
 
 bool FindHTTPSRecordOverride(const nsACString& aHost,
-                             TypeRecordResultType& aResult) {
-  LOG("FindHTTPSRecordOverride aHost=%s", nsCString(aHost).get());
-  RefPtr<NativeDNSResolverOverride> overrideService = gOverrideService;
+                             TypeRecordResultType& aResult,
+                             HTTPSAliasTarget& aAlias) {
+  LOG("FindHTTPSRecordOverride aHost=%s", PromiseFlatCString(aHost).get());
+  if (!gOverrideServiceUsed) {
+    return false;
+  }
+  RefPtr<NativeDNSResolverOverride> overrideService = GetOverrideSingleton();
   if (!overrideService) {
     return false;
   }
@@ -438,9 +461,14 @@ bool FindHTTPSRecordOverride(const nsACString& aHost,
   AutoReadLock lock(overrideService->mLock);
   auto overrides = overrideService->mHTTPSRecordOverrides.Lookup(aHost);
   if (!overrides) {
+    // No override entry for this host. Return false so the caller falls back to
+    // a real platform lookup, mirroring FindAddrOverride / the A/AAAA path.
     return false;
   }
 
+  // From here on the host has an override entry, so it is authoritative: we
+  // always return true and never fall through to a real lookup, even if the
+  // override yields no usable record (aResult/aAlias carry the outcome).
   DNSPacket packet;
   nsAutoCString host(aHost);
 
@@ -455,17 +483,25 @@ bool FindHTTPSRecordOverride(const nsACString& aHost,
         return overrides->Length();
       });
   if (NS_FAILED(rv)) {
-    return false;
+    return true;
   }
 
   uint32_t ttl = 0;
-  rv = ParseHTTPSRecord(host, packet, aResult, ttl);
+  rv = ParseHTTPSRecord(host, packet, aResult, ttl, aAlias);
+  if (NS_FAILED(rv)) {
+    // ParseHTTPSRecord may leave partial data (e.g. a valid record parsed
+    // before a malformed one) or a stale alias behind. Don't let the caller
+    // treat that as a successful resolution.
+    aResult = AsVariant(Nothing());
+    aAlias = HTTPSAliasTarget{};
+  }
 
-  return NS_SUCCEEDED(rv);
+  return true;
 }
 
 nsresult ParseHTTPSRecord(nsCString& aHost, DNSPacket& aDNSPacket,
-                          TypeRecordResultType& aResult, uint32_t& aTTL) {
+                          TypeRecordResultType& aResult, uint32_t& aTTL,
+                          HTTPSAliasTarget& aAlias) {
   nsAutoCString cname;
   nsresult rv;
 
@@ -479,10 +515,23 @@ nsresult ParseHTTPSRecord(nsCString& aHost, DNSPacket& aDNSPacket,
     rv = aDNSPacket.Decode(aHost, TRRTYPE_HTTPSSVC, cname, true, resp, aResult,
                            additionalRecords, aTTL);
     if (NS_FAILED(rv)) {
+      // If we were following a target whose records are not present in this
+      // response, surface it so the caller can re-query it.
+      if (rv == NS_ERROR_UNKNOWN_HOST && !aAlias.mName.IsEmpty()) {
+        return NS_OK;
+      }
+      // For any other hard error, clear the alias a previous iteration may have
+      // set so the caller doesn't follow a stale target and mask the error.
+      aAlias = HTTPSAliasTarget{};
       LOG("Decode failed %x", static_cast<uint32_t>(rv));
       return rv;
     }
     if (!cname.IsEmpty() && aResult.is<Nothing>()) {
+      // AliasMode/CNAME target. Its records may be chained within this same
+      // response; otherwise the caller re-queries aAlias.mName.
+      aAlias.mFromAliasMode =
+          aAlias.mFromAliasMode || aDNSPacket.CnameIsHTTPSAlias();
+      aAlias.mName = cname;
       aHost = cname;
       cname.Truncate();
       continue;
@@ -490,23 +539,91 @@ nsresult ParseHTTPSRecord(nsCString& aHost, DNSPacket& aDNSPacket,
   }
 
   if (aResult.is<Nothing>()) {
+    if (!aAlias.mName.IsEmpty()) {
+      // We resolved to an alias but its target wasn't in this response.
+      return NS_OK;
+    }
     LOG("Result is nothing");
     // The call succeeded, but no HTTPS records were found.
     return NS_ERROR_UNKNOWN_HOST;
   }
 
+  // The records were found within this response, so there is no external alias
+  // target left to follow.
+  aAlias = HTTPSAliasTarget{};
   return NS_OK;
 }
 
 nsresult ResolveHTTPSRecord(const nsACString& aHost,
                             nsIDNSService::DNSFlags aFlags,
                             TypeRecordResultType& aResult, uint32_t& aTTL) {
-  if (gOverrideService) {
-    return FindHTTPSRecordOverride(aHost, aResult) ? NS_OK
-                                                   : NS_ERROR_UNKNOWN_HOST;
+  nsAutoCString host(aHost);
+  // The last AliasMode (SvcPriority 0) TargetName we followed, if any.
+  nsAutoCString aliasTarget;
+
+  // Follow HTTPS AliasMode (SvcPriority 0) targets across separate lookups.
+  // Recursive resolvers do not chase the alias for us, so we re-query the
+  // TargetName until we get a ServiceMode RRSet or run out of aliases.
+  constexpr uint32_t kMaxHTTPSAliasChain = 8;
+  for (uint32_t i = 0; i < kMaxHTTPSAliasChain; i++) {
+    aResult = AsVariant(Nothing());
+    HTTPSAliasTarget alias;
+    nsresult rv;
+    if (gOverrideServiceUsed && FindHTTPSRecordOverride(host, aResult, alias)) {
+      // The host has an override entry; treat it as authoritative.
+      rv = NS_OK;
+    } else {
+      rv = ResolveHTTPSRecordImpl(host, aFlags, aResult, aTTL, alias);
+    }
+
+    if (NS_FAILED(rv) && rv != NS_ERROR_UNKNOWN_HOST) {
+      // A hard error (e.g. a malformed response). Don't mask it by following a
+      // stale alias target that a previous iteration may have left behind, and
+      // make sure we don't surface a partial result.
+      aResult = AsVariant(Nothing());
+      return rv;
+    }
+
+    if (!aResult.is<Nothing>()) {
+      return NS_OK;
+    }
+
+    // Only chase the target when an HTTPS AliasMode record led us here, either
+    // in this response or earlier in the chain. A plain CNAME is resolved by
+    // the recursive resolver, so the absence of an HTTPS record for its target
+    // is definitive.
+    if (!alias.mName.IsEmpty() &&
+        !alias.mName.Equals(host, nsCaseInsensitiveCStringComparator) &&
+        (alias.mFromAliasMode || !aliasTarget.IsEmpty())) {
+      LOG("ResolveHTTPSRecord following alias %s => %s", host.get(),
+          alias.mName.get());
+      aliasTarget = alias.mName;
+      host = std::move(alias.mName);
+      continue;
+    }
+
+    // No ServiceMode HTTPS record was found for this name.
+    if (!aliasTarget.IsEmpty()) {
+      // RFC 9460: an HTTPS AliasMode record must be followed to its TargetName
+      // even when the target has no HTTPS record of its own. Return the alias
+      // record so the connection is routed to the target; Happy Eyeballs then
+      // issues A/AAAA/HTTPS queries for it.
+      LOG("ResolveHTTPSRecord returning AliasMode record for %s",
+          aliasTarget.get());
+      SVCB alias;
+      alias.mSvcFieldPriority = 0;
+      alias.mSvcDomainName = aliasTarget;
+      CopyableTArray<SVCB> records;
+      records.AppendElement(std::move(alias));
+      aResult = AsVariant(std::move(records));
+      return NS_OK;
+    }
+
+    return NS_ERROR_UNKNOWN_HOST;
   }
 
-  return ResolveHTTPSRecordImpl(aHost, aFlags, aResult, aTTL);
+  LOG("ResolveHTTPSRecord alias chain too long");
+  return NS_ERROR_UNKNOWN_HOST;
 }
 
 nsresult CreateAndResolveMockHTTPSRecord(const nsACString& aHost,
@@ -565,7 +682,8 @@ nsresult CreateAndResolveMockHTTPSRecord(const nsACString& aHost,
     return rv;
   }
 
-  return ParseHTTPSRecord(host, packet, aResult, aTTL);
+  HTTPSAliasTarget alias;
+  return ParseHTTPSRecord(host, packet, aResult, aTTL, alias);
 }
 
 // static
@@ -574,14 +692,7 @@ NativeDNSResolverOverride::GetSingleton() {
   if (nsIOService::UseSocketProcess() && XRE_IsParentProcess()) {
     return NativeDNSResolverOverrideParent::GetSingleton();
   }
-
-  if (gOverrideService) {
-    return do_AddRef(gOverrideService);
-  }
-
-  gOverrideService = new NativeDNSResolverOverride();
-  ClearOnShutdown(&gOverrideService);
-  return do_AddRef(gOverrideService);
+  return GetOverrideSingleton();
 }
 
 NS_IMPL_ISUPPORTS(NativeDNSResolverOverride, nsINativeDNSResolverOverride)
@@ -656,7 +767,8 @@ NS_IMETHODIMP NativeDNSResolverOverride::ClearOverrides() {
 // Otherwise this is implemented in PlatformDNSWin/Linux/etc
 nsresult ResolveHTTPSRecordImpl(const nsACString& aHost,
                                 nsIDNSService::DNSFlags aFlags,
-                                TypeRecordResultType& aResult, uint32_t& aTTL) {
+                                TypeRecordResultType& aResult, uint32_t& aTTL,
+                                HTTPSAliasTarget& aAlias) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 

@@ -47,8 +47,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
     for (gso_enabled, gro_enabled, recvmmsg_enabled) in permutations {
         let mut group = c.benchmark_group(format!(
-            "gso_{}_gro_{}_recvmmsg_{}",
-            gso_enabled, gro_enabled, recvmmsg_enabled
+            "gso_{gso_enabled}_gro_{gro_enabled}_recvmmsg_{recvmmsg_enabled}"
         ));
         group.throughput(criterion::Throughput::Bytes(TOTAL_BYTES as u64));
 
@@ -87,7 +86,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     send_socket.writable().await.unwrap();
                     send_socket
                         .try_io(Interest::WRITABLE, || {
-                            send_state.send((&send_socket).into(), &transmit)
+                            send_state.try_send((&send_socket).into(), &transmit)
                         })
                         .unwrap();
                     sent += transmit.contents.len();

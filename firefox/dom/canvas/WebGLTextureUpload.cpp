@@ -1,40 +1,36 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "WebGLTextureUpload.h"
-#include "WebGLTexture.h"
 
 #include <algorithm>
-#include <limits>
+#include <bit>
 
 #include "CanvasUtils.h"
 #include "ClientWebGLContext.h"
 #include "GLBlitHelper.h"
 #include "GLContext.h"
-#include "mozilla/Casting.h"
-#include "mozilla/gfx/2D.h"
-#include "mozilla/gfx/Logging.h"
-#include "mozilla/dom/HTMLCanvasElement.h"
-#include "mozilla/dom/HTMLVideoElement.h"
-#include "mozilla/dom/ImageBitmap.h"
-#include "mozilla/dom/ImageData.h"
-#include "mozilla/dom/OffscreenCanvas.h"
-#include "mozilla/layers/SharedSurfacesChild.h"
-#include "mozilla/MathAlgorithms.h"
-#include "mozilla/ScopeExit.h"
-#include "mozilla/StaticPrefs_webgl.h"
-#include "mozilla/Unused.h"
-#include "nsLayoutUtils.h"
 #include "ScopedGLHelpers.h"
 #include "TexUnpackBlob.h"
 #include "WebGLBuffer.h"
 #include "WebGLContext.h"
 #include "WebGLFormats.h"
-#include "WebGLContextUtils.h"
 #include "WebGLFramebuffer.h"
 #include "WebGLTexelConversions.h"
+#include "WebGLTexture.h"
+#include "mozilla/MathAlgorithms.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/StaticPrefs_webgl.h"
+#include "mozilla/dom/HTMLCanvasElement.h"
+#include "mozilla/dom/HTMLVideoElement.h"
+#include "mozilla/dom/ImageBitmap.h"
+#include "mozilla/dom/ImageData.h"
+#include "mozilla/dom/OffscreenCanvas.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/Logging.h"
+#include "mozilla/layers/SharedSurfacesChild.h"
+#include "nsLayoutUtils.h"
 
 namespace mozilla {
 namespace webgl {
@@ -89,42 +85,6 @@ Maybe<TexUnpackBlobDesc> FromImageBitmap(const GLenum target, Maybe<uvec3> size,
                                 surf,
                                 {},
                                 false});
-}
-
-static layers::SurfaceDescriptor Flatten(const layers::SurfaceDescriptor& sd) {
-  const auto sdType = sd.type();
-  if (sdType != layers::SurfaceDescriptor::TSurfaceDescriptorGPUVideo) {
-    return sd;
-  }
-  const auto& sdv = sd.get_SurfaceDescriptorGPUVideo();
-  const auto& sdvType = sdv.type();
-  if (sdvType !=
-      layers::SurfaceDescriptorGPUVideo::TSurfaceDescriptorRemoteDecoder) {
-    return sd;
-  }
-
-  const auto& sdrd = sdv.get_SurfaceDescriptorRemoteDecoder();
-  const auto& subdesc = sdrd.subdesc();
-  const auto& subdescType = subdesc.type();
-  switch (subdescType) {
-    case layers::RemoteDecoderVideoSubDescriptor::T__None:
-    case layers::RemoteDecoderVideoSubDescriptor::Tnull_t:
-      return sd;
-
-    case layers::RemoteDecoderVideoSubDescriptor::TSurfaceDescriptorD3D10:
-      return subdesc.get_SurfaceDescriptorD3D10();
-    case layers::RemoteDecoderVideoSubDescriptor::TSurfaceDescriptorDXGIYCbCr:
-      return subdesc.get_SurfaceDescriptorDXGIYCbCr();
-    case layers::RemoteDecoderVideoSubDescriptor::TSurfaceDescriptorDMABuf:
-      return subdesc.get_SurfaceDescriptorDMABuf();
-    case layers::RemoteDecoderVideoSubDescriptor::
-        TSurfaceDescriptorMacIOSurface:
-      return subdesc.get_SurfaceDescriptorMacIOSurface();
-    case layers::RemoteDecoderVideoSubDescriptor::
-        TSurfaceDescriptorDcompSurface:
-      return subdesc.get_SurfaceDescriptorDcompSurface();
-  }
-  MOZ_CRASH("unreachable");
 }
 
 Maybe<webgl::TexUnpackBlobDesc> FromOffscreenCanvas(
@@ -190,9 +150,6 @@ Maybe<webgl::TexUnpackBlobDesc> FromSurfaceFromElementResult(
     elemSize = *uvec2::FromSize(layersImage->GetSize());
 
     sd = layersImage->GetDesc();
-    if (sd) {
-      sd = Some(Flatten(*sd));
-    }
     if (!sd) {
       NS_WARNING("No SurfaceDescriptor for layers::Image!");
     }
@@ -202,7 +159,7 @@ Maybe<webgl::TexUnpackBlobDesc> FromSurfaceFromElementResult(
   if (!sd && sfer.GetSourceSurface()) {
     const auto surf = sfer.GetSourceSurface();
     elemSize = *uvec2::FromSize(surf->GetSize());
-    if (surf->GetType() == gfx::SurfaceType::RECORDING) {
+    if (surf->GetType() == gfx::SurfaceType::CANVAS_RECORDING) {
       // If we find a recording surface, then try to create a descriptor for it
       // to avoid transferring data for it. The underlying Canvas2D commands
       // have most likely not been processed yet, so trying to access the data
@@ -212,7 +169,7 @@ Maybe<webgl::TexUnpackBlobDesc> FromSurfaceFromElementResult(
       // source surface will be converted to data for transferring later.
       layers::SurfaceDescriptor desc;
       if (surf->GetSurfaceDescriptor(desc)) {
-        sd = Some(desc);
+        sd.emplace(std::move(desc));
         sourceSurf = surf;
       }
     }
@@ -392,7 +349,7 @@ bool WebGLTexture::ValidateTexImageSpecification(
     bool requirePOT = (!mContext->IsWebGL2() && level != 0);
 
     if (requirePOT) {
-      if (!IsPowerOfTwo(size.x) || !IsPowerOfTwo(size.y)) {
+      if (!std::has_single_bit(size.x) || !std::has_single_bit(size.y)) {
         mContext->ErrorInvalidValue(
             "For level > 0, width and height must be"
             " powers of two.");
@@ -526,51 +483,108 @@ static bool DoChannelsMatchForCopyTexImage(const webgl::FormatInfo* srcFormat,
   }
 }
 
-static bool EnsureImageDataInitializedForUpload(
-    WebGLTexture* tex, TexImageTarget target, uint32_t level,
-    const uvec3& offset, const uvec3& size, webgl::ImageInfo* imageInfo,
-    bool* const out_expectsInit = nullptr) {
-  if (out_expectsInit) {
-    *out_expectsInit = false;
+// Tracker for uninitialized image memory uploads. For partial image uploads
+// this is used to zero slice memory and mark it as initialized. For full image
+// uploads this is used to mark slice memory as initialized after a successful
+// upload.
+class UploadInitMemTracker {
+ private:
+  const detail::IntegerRange<uint32_t> sliceRange;
+  const webgl::ImageInfo* imageInfo;
+
+  enum class UploadMem {
+    // Memory is initialized, no action needed.
+    Initialized,
+    // Uninitialized and writing a partial image, needs to be zeroed to prevent
+    // reading uninitialized memory.
+    NeedsPartial,
+    // Uninitialized and writing a full image, all memory should be overwritten
+    // therefore zeroing unnecessary if successful.
+    NeedsFull,
+  } uploadInitState;
+
+  UploadMem UploadInitState(const uvec3& size) {
+    if (!imageInfo->mUninitializedSlices) {
+      return UploadMem::Initialized;
+    } else if (size.x == imageInfo->mWidth && size.y == imageInfo->mHeight) {
+      auto& isSliceUninit = *imageInfo->mUninitializedSlices;
+      for (const auto i : sliceRange) {
+        if (isSliceUninit[i]) {
+          return UploadMem::NeedsFull;
+        }
+      }
+      return UploadMem::Initialized;
+    } else {
+      return UploadMem::NeedsPartial;
+    }
   }
-  if (!imageInfo->mUninitializedSlices) return true;
 
-  if (size.x == imageInfo->mWidth && size.y == imageInfo->mHeight) {
-    bool expectsInit = false;
+ public:
+  UploadInitMemTracker(const uvec3& offset, const uvec3& size,
+                       webgl::ImageInfo* imageInfo)
+      : sliceRange(IntegerRange(offset.z, offset.z + size.z)),
+        imageInfo(imageInfo),
+        uploadInitState(UploadInitState(size)) {}
+
+  // Zero-initializes the target image and clears the uninitialized slices.
+  bool EnsureImageDataZeroedBeforePartialUpload(WebGLTexture* tex,
+                                                TexImageTarget target,
+                                                uint32_t level) {
+    if (uploadInitState != UploadMem::NeedsPartial) {
+      return true;
+    }
+
+    WebGLContext* webgl = tex->mContext;
+    webgl->GenerateWarning(
+        "Texture has not been initialized prior to a"
+        " partial upload, forcing the browser to clear it."
+        " This may be slow.");
+
+    if (!tex->EnsureImageDataInitialized(target, level)) {
+      MOZ_ASSERT(false, "Unexpected failure to init image data.");
+      return false;
+    }
+
+    uploadInitState = UploadMem::Initialized;
+
+    return true;
+  }
+
+  // True when awaiting confirmation that a full upload was successful to clear
+  // the associated uninitialized slice tracking.
+  bool ExpectsFullUpload() { return uploadInitState == UploadMem::NeedsFull; }
+
+  // Marks slices associated to a full upload as initialized, clearing
+  // uninitialized slices if all slices are initialized.
+  void ClearSliceUninitAfterFullUpload() {
+    if (uploadInitState != UploadMem::NeedsFull) {
+      return;
+    }
+
+    uploadInitState = UploadMem::Initialized;
+
+    if (!imageInfo->mUninitializedSlices) return;
+
+    // Mark upload associated slices as initialized.
+    bool sliceWasInitialized = false;
     auto& isSliceUninit = *imageInfo->mUninitializedSlices;
-    for (const auto z : IntegerRange(offset.z, offset.z + size.z)) {
-      if (!isSliceUninit[z]) continue;
-      expectsInit = true;
-      isSliceUninit[z] = false;
-    }
-    if (out_expectsInit) {
-      *out_expectsInit = expectsInit;
+    for (const auto i : sliceRange) {
+      sliceWasInitialized |= isSliceUninit[i];
+      isSliceUninit[i] = false;
     }
 
-    if (!expectsInit) return true;
+    if (!sliceWasInitialized) return;
 
+    // Clear uninitialized slices if they're all initialized.
     bool hasUninitialized = false;
-    for (const auto z : IntegerRange(imageInfo->mDepth)) {
-      hasUninitialized |= isSliceUninit[z];
+    for (const auto isUninit : isSliceUninit) {
+      hasUninitialized |= isUninit;
     }
     if (!hasUninitialized) {
       imageInfo->mUninitializedSlices.reset();
     }
-    return true;
   }
-
-  WebGLContext* webgl = tex->mContext;
-  webgl->GenerateWarning(
-      "Texture has not been initialized prior to a"
-      " partial upload, forcing the browser to clear it."
-      " This may be slow.");
-  if (!tex->EnsureImageDataInitialized(target, level)) {
-    MOZ_ASSERT(false, "Unexpected failure to init image data.");
-    return false;
-  }
-
-  return true;
-}
+};
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -751,7 +765,7 @@ static bool ValidateCompressedTexImageRestrictions(
       break;
 
     case webgl::CompressionFamily::PVRTC:
-      if (!IsPowerOfTwo(size.x) || !IsPowerOfTwo(size.y)) {
+      if (!std::has_single_bit(size.x) || !std::has_single_bit(size.y)) {
         webgl->ErrorInvalidValue("%s requires power-of-two width and height.",
                                  format->name);
         return false;
@@ -921,8 +935,8 @@ void WebGLTexture::TexStorage(TexTarget target, uint32_t levels,
     const nsPrintfCString call(
         "DoTexStorage(0x%04x, %i, 0x%04x, %i,%i,%i) -> 0x%04x", target.get(),
         levels, sizedFormat, size.x, size.y, size.z, error);
-    gfxCriticalError() << "Unexpected error from driver: "
-                       << call.BeginReading();
+    gfxCriticalError() << "Unexpected error from driver: " << call.get();
+    Truncate();
     return;
   }
 
@@ -1073,6 +1087,7 @@ void WebGLTexture::TexImage(uint32_t level, GLenum respecFormat,
 
   Maybe<webgl::ImageInfo> newImageInfo;
   bool isRespec = false;
+  Maybe<UploadInitMemTracker> uploadInitTracker;
   if (respecFormat) {
     // It's tempting to do allocation first, and TexSubImage second, but this is
     // generally slower.
@@ -1090,8 +1105,10 @@ void WebGLTexture::TexImage(uint32_t level, GLenum respecFormat,
       mContext->ErrorInvalidValue("`source` cannot be null.");
       return;
     }
-    if (!EnsureImageDataInitializedForUpload(this, imageTarget, level, offset,
-                                             size, imageInfo)) {
+
+    uploadInitTracker.emplace(offset, size, imageInfo);
+    if (!uploadInitTracker->EnsureImageDataZeroedBeforePartialUpload(
+            this, imageTarget, level)) {
       return;
     }
   }
@@ -1124,10 +1141,14 @@ void WebGLTexture::TexImage(uint32_t level, GLenum respecFormat,
         "Unexpected error %s during upload. (dui: %x/%x/%x)", enumStr.c_str(),
         driverUnpackInfo->internalFormat, driverUnpackInfo->unpackFormat,
         driverUnpackInfo->unpackType);
-    mContext->ErrorInvalidOperation("%s", dui.BeginReading());
-    gfxCriticalError() << mContext->FuncName() << ": " << dui.BeginReading();
+    mContext->ErrorInvalidOperation("%s", dui.get());
+    gfxCriticalError() << mContext->FuncName() << ": " << dui.get();
+    Truncate();
     return;
   }
+
+  uploadInitTracker.apply(
+      [](auto& uit) { uit.ClearSliceUninitAfterFullUpload(); });
 
   ////////////////////////////////////
   // Update our specification data?
@@ -1295,9 +1316,11 @@ void WebGLTexture::CompressedTexImage(bool sub, GLenum imageTarget,
   ////////////////////////////////////
   // Do the thing!
 
+  Maybe<UploadInitMemTracker> uploadInitTracker;
   if (sub) {
-    if (!EnsureImageDataInitializedForUpload(this, imageTarget, level, offset,
-                                             size, imageInfo)) {
+    uploadInitTracker.emplace(UploadInitMemTracker(offset, size, imageInfo));
+    if (!uploadInitTracker->EnsureImageDataZeroedBeforePartialUpload(
+            this, imageTarget, level)) {
       return;
     }
   }
@@ -1341,9 +1364,13 @@ void WebGLTexture::CompressedTexImage(bool sub, GLenum imageTarget,
           size.z, formatEnum, imageSize, ptr);
     }
     gfxCriticalError() << "Unexpected error " << gfx::hexa(error)
-                       << " from driver: " << call.BeginReading();
+                       << " from driver: " << call.get();
+    Truncate();
     return;
   }
+
+  uploadInitTracker.apply(
+      [](auto& uit) { uit.ClearSliceUninitAfterFullUpload(); });
 
   ////////////////////////////////////
   // Update our specification data?
@@ -1813,8 +1840,7 @@ static bool DoCopyTexOrSubImage(WebGLContext* webgl, bool isSubImage,
   }
 
   webgl->GenerateError(error, "Unexpected error from driver.");
-  gfxCriticalError() << "Unexpected error from driver: "
-                     << errorText.BeginReading();
+  gfxCriticalError() << "Unexpected error from driver: " << errorText.get();
   return false;
 }
 
@@ -1882,12 +1908,16 @@ void WebGLTexture::CopyTexImage(GLenum imageTarget, uint32_t level,
 
   const bool isSubImage = !respecFormat;
   bool expectsInit = true;
+  Maybe<UploadInitMemTracker> uploadInitTracker;
+
   if (isSubImage) {
-    if (!EnsureImageDataInitializedForUpload(this, imageTarget, level,
-                                             dstOffset, size, imageInfo,
-                                             &expectsInit)) {
+    uploadInitTracker.emplace(UploadInitMemTracker(dstOffset, size, imageInfo));
+    if (!uploadInitTracker->EnsureImageDataZeroedBeforePartialUpload(
+            this, imageTarget, level)) {
       return;
     }
+
+    expectsInit = uploadInitTracker->ExpectsFullUpload();
   }
 
   if (!DoCopyTexOrSubImage(mContext, isSubImage, expectsInit, this, imageTarget,
@@ -1902,6 +1932,9 @@ void WebGLTexture::CopyTexImage(GLenum imageTarget, uint32_t level,
 
   ////////////////////////////////////
   // Update our specification data?
+
+  uploadInitTracker.apply(
+      [](auto& uit) { uit.ClearSliceUninitAfterFullUpload(); });
 
   if (respecFormat) {
     constexpr auto uninitializedSlices = std::nullopt;

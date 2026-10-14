@@ -5,19 +5,18 @@
 package org.mozilla.fenix.onboarding.store
 
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
+import mozilla.components.lib.state.Store
 
 /**
  * [Middleware] that reacts to various [PrivacyPreferencesAction]s and updates any corresponding preferences.
  *
  * @param repository [PrivacyPreferencesRepository] used to access the privacy preferences.
  */
-class PrivacyPreferencesMiddleware(
-    private val repository: PrivacyPreferencesRepository,
-) : Middleware<PrivacyPreferencesState, PrivacyPreferencesAction> {
+class PrivacyPreferencesMiddleware(private val repository: PrivacyPreferencesRepository) :
+    Middleware<PrivacyPreferencesState, PrivacyPreferencesAction> {
 
     override fun invoke(
-        context: MiddlewareContext<PrivacyPreferencesState, PrivacyPreferencesAction>,
+        store: Store<PrivacyPreferencesState, PrivacyPreferencesAction>,
         next: (PrivacyPreferencesAction) -> Unit,
         action: PrivacyPreferencesAction,
     ) {
@@ -41,8 +40,7 @@ class PrivacyPreferencesMiddleware(
             // no-ops
             is PrivacyPreferencesAction.Init,
             is PrivacyPreferencesAction.CrashReportingLearnMore,
-            is PrivacyPreferencesAction.UsageDataUserLearnMore,
-            -> {}
+            is PrivacyPreferencesAction.UsageDataUserLearnMore -> {}
         }
     }
 }

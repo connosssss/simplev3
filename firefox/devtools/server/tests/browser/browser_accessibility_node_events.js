@@ -37,7 +37,7 @@ add_task(async function () {
     childCount: 1,
     domNodeType: 1,
     indexInParent: 1,
-    states: ["focusable", "opaque", "enabled", "sensitive"],
+    states: ["focusable", "selectable text", "opaque", "enabled", "sensitive"],
     actions: ["Press"],
     attributes: {
       "margin-top": "0px",
@@ -48,6 +48,7 @@ add_task(async function () {
       tag: "button",
       "margin-right": "0px",
       id: "button",
+      formatting: "block",
       "margin-bottom": "0px",
     },
   });
@@ -82,7 +83,7 @@ add_task(async function () {
   );
 
   info("State change event");
-  const expectedStates = ["unavailable", "opaque"];
+  const expectedStates = ["unavailable", "selectable text", "opaque"];
   await emitA11yEvent(
     accessibleFront,
     "states-change",
@@ -107,6 +108,7 @@ add_task(async function () {
           display: "inline-block",
           "explicit-name": "true",
           id: "button",
+          formatting: "block",
           live: "polite",
           "margin-bottom": "0px",
           "margin-left": "0px",

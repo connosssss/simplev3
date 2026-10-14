@@ -9,7 +9,7 @@ const TEST_ROOT = getRootDirectory(gTestPath).replace(
 );
 
 var MockFilePicker = SpecialPowers.MockFilePicker;
-MockFilePicker.init(window.browsingContext);
+MockFilePicker.init();
 
 /*
  * Popular websites implement image optimization as serving files with
@@ -17,12 +17,6 @@ MockFilePicker.init(window.browsingContext);
  * we should actually save them with a .webp extension as that is what
  * they are.
  */
-
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
 
 /**
  * Test the above with the "save image as" context menu.

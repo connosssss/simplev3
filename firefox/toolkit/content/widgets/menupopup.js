@@ -10,6 +10,11 @@
   const { AppConstants } = ChromeUtils.importESModule(
     "resource://gre/modules/AppConstants.sys.mjs"
   );
+  const lazy = {};
+  ChromeUtils.defineESModuleGetters(lazy, {
+    assignAutoAccessKeys: "chrome://global/content/elements/auto-accesskey.mjs",
+    checkAccessKeys: "chrome://global/content/elements/accesskey-check.mjs",
+  });
 
   // For the non-native context menu styling, we need to know if we need a
   // gutter for checkboxes or icons. On linux any checkbox / radio / icon
@@ -17,10 +22,10 @@
   // need selected to deal with the menulists (like `<select>`).
   const ITEM_NEEDS_GUTTER_SELECTOR = (() => {
     if (AppConstants.platform == "macosx") {
-      return "[checked=true], [selected=true]";
+      return "[checked], [selected]";
     }
     if (AppConstants.platform == "win") {
-      return "[checked=true]";
+      return "[checked]";
     }
     return "[type=checkbox], [type=radio]";
   })();
@@ -30,19 +35,35 @@
   document.addEventListener(
     "popupshowing",
     function (e) {
-      if (
-        e.target.nodeName == "menupopup" &&
-        e.target.getAttribute("needsgutter") != "always"
-      ) {
-        e.target.toggleAttribute(
+      let menupopup = e.target;
+      if (menupopup.nodeName != "menupopup") {
+        return;
+      }
+      if (menupopup.getAttribute("needsgutter") != "always") {
+        menupopup.toggleAttribute(
           "needsgutter",
-          !!e.target.querySelector(GUTTER_SELECTOR)
+          !!menupopup.querySelector(GUTTER_SELECTOR)
         );
       }
+      lazy.assignAutoAccessKeys(menupopup);
     },
     // we use a system bubbling event listener to ensure we run *after* the
     // "normal" popupshowing listeners, so (visibility) changes they make to
-    // their items take effect first, before we check for checkable menuitems.
+    // their items take effect first, before we check for checkable menuitems,
+    // and items they add get their accesskeys.
+    { mozSystemGroup: true }
+  );
+
+  document.addEventListener(
+    "popupshown",
+    function (e) {
+      if (
+        e.target.nodeName == "menupopup" &&
+        e.target.ownerDocument == document
+      ) {
+        lazy.checkAccessKeys(e.target);
+      }
+    },
     { mozSystemGroup: true }
   );
 
@@ -232,7 +253,7 @@
             let scrollAmount = event.screenY <= popupRect.top ? -1 : 1;
             this.scrollBox.scrollByIndex(scrollAmount, true);
 
-            let win = this.ownerGlobal;
+            let win = this.documentGlobal;
             this._scrollTimer = win.setInterval(() => {
               this.scrollBox.scrollByIndex(scrollAmount, true);
             }, this.AUTOSCROLL_INTERVAL);
@@ -254,7 +275,7 @@
 
     _clearScrollTimer() {
       if (this._scrollTimer) {
-        this.ownerGlobal.clearInterval(this._scrollTimer);
+        this.documentGlobal.clearInterval(this._scrollTimer);
         this._scrollTimer = 0;
       }
     }

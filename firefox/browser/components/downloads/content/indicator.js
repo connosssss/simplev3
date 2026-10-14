@@ -1,9 +1,6 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
-/* eslint-env mozilla/browser-window */
 
 /**
  * Handles the indicator that displays the progress of ongoing downloads, which
@@ -338,6 +335,7 @@ const DownloadsIndicatorView = {
 
   /**
    * Check if the panel containing aNode is open.
+   *
    * @param aNode
    *        the node whose panel we're interested in.
    */
@@ -384,7 +382,7 @@ const DownloadsIndicatorView = {
       return;
     }
 
-    if (anchor.ownerGlobal.matchMedia("(prefers-reduced-motion)").matches) {
+    if (anchor.documentGlobal.matchMedia("(prefers-reduced-motion)").matches) {
       // User has prefers-reduced-motion enabled, so we shouldn't show the animation.
       return;
     }
@@ -398,14 +396,16 @@ const DownloadsIndicatorView = {
 
     this._currentNotificationType = aType;
 
-    const onNotificationAnimEnd = event => {
-      if (
-        event.animationName !== "downloadsButtonNotification" &&
-        event.animationName !== "downloadsButtonFinishedNotification"
-      ) {
+    let finalized = false;
+    let fallbackTimer = 0;
+
+    const finalize = () => {
+      if (finalized) {
         return;
       }
+      finalized = true;
       anchor.removeEventListener("animationend", onNotificationAnimEnd);
+      anchor.documentGlobal.clearTimeout(fallbackTimer);
 
       requestAnimationFrame(() => {
         anchor.removeAttribute("notification");
@@ -421,7 +421,25 @@ const DownloadsIndicatorView = {
         });
       });
     };
+
+    const onNotificationAnimEnd = event => {
+      if (
+        event.animationName !== "downloadsButtonNotification" &&
+        event.animationName !== "downloadsButtonFinishedNotification"
+      ) {
+        return;
+      }
+      finalize();
+    };
     anchor.addEventListener("animationend", onNotificationAnimEnd);
+
+    // Fallback in case "animationend" never fires and leaves the button stuck.
+    // When changed, also update the animation duration in indicator.css.
+    let durationMs = aType == "finish" ? 2150 : 700;
+    fallbackTimer = anchor.documentGlobal.setTimeout(
+      finalize,
+      durationMs + 250
+    );
   },
 
   // Callback functions from DownloadsIndicatorData

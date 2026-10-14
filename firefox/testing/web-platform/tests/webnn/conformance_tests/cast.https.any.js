@@ -20,6 +20,7 @@ const getCastPrecisionTolerance = (graphResources) => {
     int32: 0,
     uint32: 0,
     int64: 0,
+    uint64: 0,
     int8: 0,
     uint8: 0
   };
@@ -879,6 +880,35 @@ const castTests = [
     }
   },
   {
+    'name': 'cast uint32 4D tensor to uint64',
+    'graph': {
+      'inputs': {
+        'castInput': {
+          'data': [
+            34, 83, 113, 31, 62, 80,  8,   40, 104, 42, 6,  91,
+            93, 21, 40,  21, 51, 110, 115, 12, 122, 68, 57, 72
+          ],
+          'descriptor': {shape: [2, 2, 2, 3], dataType: 'uint32'}
+        }
+      },
+      'operators': [{
+        'name': 'cast',
+        'arguments': [{'input': 'castInput'}, {'type': 'uint64'}],
+        'outputs': 'castOutput'
+      }],
+      'expectedOutputs': {
+        'castOutput': {
+          'data': [
+            '34',  '83',  '113', '31', '62',  '80', '8',  '40',
+            '104', '42',  '6',   '91', '93',  '21', '40', '21',
+            '51',  '110', '115', '12', '122', '68', '57', '72'
+          ],
+          'descriptor': {shape: [2, 2, 2, 3], dataType: 'uint64'}
+        }
+      }
+    }
+  },
+  {
     'name': 'cast uint32 4D tensor to int8',
     'graph': {
       'inputs': {
@@ -1492,11 +1522,5 @@ const castTests = [
   }
 ];
 
-if (navigator.ml) {
-  castTests.forEach((test) => {
-    webnn_conformance_test(
-        buildAndExecuteGraph, getCastPrecisionTolerance, test);
-  });
-} else {
-  test(() => assert_implements(navigator.ml, 'missing navigator.ml'));
-}
+webnn_conformance_test(
+    castTests, buildAndExecuteGraph, getCastPrecisionTolerance);

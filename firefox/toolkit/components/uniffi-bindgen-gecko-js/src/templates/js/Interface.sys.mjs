@@ -20,7 +20,7 @@ export class {{ int.js_class_name }} extends {{ int.interface_base_class.name }}
     {%- for cons in int.constructors %}
     {%- let callable = cons.callable %}
     {{ cons.js_docstring|indent(4) }}
-    static {% if cons.callable.is_js_async %}async {% endif %}{{ cons.name }}({% filter indent(8) %}{% include "js/CallableArgs.sys.mjs" %}{% endfilter %}) {
+    static {% if cons.callable.is_js_async %}async {% endif %}{{ callable.name }}({% filter indent(8) %}{% include "js/CallableArgs.sys.mjs" %}{% endfilter %}) {
        {% filter indent(8) %}{% include "js/CallableBody.sys.mjs" %}{% endfilter %}
     }
     {%- endfor %}
@@ -29,7 +29,7 @@ export class {{ int.js_class_name }} extends {{ int.interface_base_class.name }}
     {%- let callable = meth.callable %}
 
     {{ meth.js_docstring|indent(4) }}
-    {% if meth.callable.is_js_async %}async {% endif %}{{ meth.name }}({% filter indent(8) %}{% include "js/CallableArgs.sys.mjs" %}{% endfilter %}) {
+    {% if meth.callable.is_js_async %}async {% endif %}{{ callable.name }}({% filter indent(8) %}{% include "js/CallableArgs.sys.mjs" %}{% endfilter %}) {
        {% filter indent(8) %}{% include "js/CallableBody.sys.mjs" %}{% endfilter %}
     }
     {%- endfor %}
@@ -39,7 +39,7 @@ export class {{ int.js_class_name }} extends {{ int.interface_base_class.name }}
 {% match int.vtable -%}
 {% when None -%}
 // Export the FFIConverter object to make external types work.
-export class {{ int.self_type.ffi_converter }} extends FfiConverter {
+export class {{ int.self_type.ffi_converter() }} extends FfiConverter {
     static lift(value) {
         const opts = {};
         opts[constructUniffiObject] = value;
@@ -60,11 +60,11 @@ export class {{ int.self_type.ffi_converter }} extends FfiConverter {
     }
 
     static read(dataStream) {
-        return this.lift(dataStream.readPointer({{ int.object_id }}));
+        return this.lift(dataStream.readPointer({{ int.pointer_id }}));
     }
 
     static write(dataStream, value) {
-        dataStream.writePointer({{ int.object_id }}, this.lower(value));
+        dataStream.writePointer({{ int.pointer_id }}, this.lower(value));
     }
 
     static computeSize(value) {
@@ -76,23 +76,34 @@ export class {{ int.self_type.ffi_converter }} extends FfiConverter {
 // for callback interfaces.
 //
 // Export the FFIConverter object to make external types work.
-export class {{ int.self_type.ffi_converter }} extends FfiConverter {
-    // lift works like a regular interface
-    static lift(value) {
-        const opts = {};
-        opts[constructUniffiObject] = value;
-        return new {{ int.js_class_name }}(opts);
-    }
-
-    // lower treats value like a callback interface
-    static lower(value) {
-        if (!(value instanceof {{ int.interface_base_class.name }})) {
-            throw new UniFFITypeError("expected '{{ int.interface_base_class.name }}' subclass");
+export class {{ int.self_type.ffi_converter() }} extends FfiConverter {
+    static lift(handle) {
+        if (handle instanceof UniFFIPointer) {
+          // Rust handle.  Construct an object from it
+          const opts = {};
+          opts[constructUniffiObject] = handle;
+          return new {{ int.js_class_name }}(opts);
+        } else {
+          // JS handle.  Get the JS object from the callback handler
+          return {{ vtable.js_handler_var() }}.takeCallbackObj(handle)
         }
-        return {{ vtable.js_handler_var }}.storeCallbackObj(value)
     }
 
-    // lowerReceiver is used when calling methods on an interface we got from Rust, 
+    static lower(value) {
+        const ptr = value[uniffiObjectPtr];
+        if (ptr instanceof UniFFIPointer) {
+          // Rust-implemented interface, return the ptr.  The C++ code will clone it.
+          return ptr;
+        } else {
+          // JS-implemented interface, store the object in the handle map and return the handle
+          if (!(value instanceof {{ int.interface_base_class.name }})) {
+              throw new UniFFITypeError("expected '{{ int.interface_base_class.name }}' subclass");
+          }
+          return {{ vtable.js_handler_var() }}.storeCallbackObj(value)
+        }
+    }
+
+    // lowerReceiver is used when calling methods on an interface we got from Rust,
     // it treats value like a regular interface.
     static lowerReceiver(value) {
         const ptr = value[uniffiObjectPtr];
@@ -103,11 +114,16 @@ export class {{ int.self_type.ffi_converter }} extends FfiConverter {
     }
 
     static read(dataStream) {
-        return this.lift(dataStream.readPointer({{ int.object_id }}));
+        return this.lift(dataStream.readHandleOrPointer({{ int.pointer_id }}))
     }
 
     static write(dataStream, value) {
-        dataStream.writePointer({{ int.object_id }}, this.lower(value));
+        if (value[uniffiObjectPtr] instanceof UniFFIPointer) {
+          // Rust-implemented interface, return the ptr.
+          dataStream.writePointer({{ int.pointer_id }}, this.lower(value));
+        } else {
+          dataStream.writeInt64(this.lower(value))
+        }
     }
 
     static computeSize(value) {

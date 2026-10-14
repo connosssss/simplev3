@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32,8 +30,8 @@ void* get_proc_address_from_glcontext(void* glcontext_ptr,
 
 bool gecko_profiler_thread_is_being_profiled();
 
-// IMPORTANT: Keep this synchronized with enumerate_interners in
-// gfx/wr/webrender_api
+// IMPORTANT: Keep this synchronized with enumerate_interning_report_fields in
+// gfx/wr/webrender/src/intern.rs
 #define WEBRENDER_FOR_EACH_INTERNER(macro, comma_like_delim) \
   macro(clip) comma_like_delim macro(prim)                   \
   comma_like_delim macro(normal_border)                      \

@@ -5,8 +5,7 @@
 
 "use strict";
 
-const ORIGINAL_CHUNK_RESULTS_DELAY =
-  UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS;
+const ORIGINAL_CHUNK_RESULTS_DELAY = ProvidersManager.chunkResultsDelayMs;
 
 add_setup(async function setup() {
   await SpecialPowers.pushPrefEnv({
@@ -22,11 +21,10 @@ add_setup(async function setup() {
     },
     { setAsDefault: true }
   );
-  await Services.search.moveEngine(suggestionsEngine, 0);
+  await SearchService.moveEngine(suggestionsEngine, 0);
 
   registerCleanupFunction(async () => {
-    UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS =
-      ORIGINAL_CHUNK_RESULTS_DELAY;
+    ProvidersManager.chunkResultsDelayMs = ORIGINAL_CHUNK_RESULTS_DELAY;
     UrlbarPrefs.clear("delay");
   });
 
@@ -43,7 +41,7 @@ add_setup(async function setup() {
 
 add_task(async function test_url_type() {
   const testCases = [];
-  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+  // eslint-disable-next-line sdl/no-insecure-url
   for (let protocol of ["http://", "https://"]) {
     for (let trimURLs of [true, false]) {
       testCases.push({ testURL: protocol + "example.com/123", trimURLs });
@@ -68,7 +66,7 @@ add_task(async function test_url_type() {
     info("Find target result");
     let targetRowIndex = await findTargetRowIndex(
       result =>
-        result.type == UrlbarUtils.RESULT_TYPE.URL && result.url == testURL
+        result.type == UrlbarShared.RESULT_TYPE.URL && result.url == testURL
     );
 
     info("Select a visit suggestion");
@@ -77,7 +75,7 @@ add_task(async function test_url_type() {
 
     info("Change the delay time to avoid updating results");
     const DELAY = 10000;
-    UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS = DELAY;
+    ProvidersManager.chunkResultsDelayMs = DELAY;
     UrlbarPrefs.set("delay", DELAY);
 
     info("Edit text on the URL bar");
@@ -89,7 +87,7 @@ add_task(async function test_url_type() {
     Assert.ok(gURLBar.valueIsTyped);
     Assert.equal(UrlbarTestUtils.getSelectedRowIndex(window), targetRowIndex);
     let selectedResult = UrlbarTestUtils.getSelectedRow(window).result;
-    Assert.equal(selectedResult.type, UrlbarUtils.RESULT_TYPE.URL);
+    Assert.equal(selectedResult.type, UrlbarShared.RESULT_TYPE.URL);
 
     info("Enter before updating");
     let loadingURL = testURL.substring(0, testURL.length - 1);
@@ -104,8 +102,7 @@ add_task(async function test_url_type() {
 
     info("Clean up");
     await PlacesUtils.history.clear();
-    UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS =
-      ORIGINAL_CHUNK_RESULTS_DELAY;
+    ProvidersManager.chunkResultsDelayMs = ORIGINAL_CHUNK_RESULTS_DELAY;
     UrlbarPrefs.clear("delay");
     await SpecialPowers.popPrefEnv();
   }
@@ -123,7 +120,7 @@ add_task(async function test_search_type() {
   info("Find target result");
   let targetRowIndex = await findTargetRowIndex(
     result =>
-      result.type == UrlbarUtils.RESULT_TYPE.SEARCH &&
+      result.type == UrlbarShared.RESULT_TYPE.SEARCH &&
       result.url == "http://mochi.test:8888/?terms=123foo"
   );
 
@@ -133,7 +130,7 @@ add_task(async function test_search_type() {
 
   info("Change the delay time to avoid updating results");
   const DELAY = 10000;
-  UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS = DELAY;
+  ProvidersManager.chunkResultsDelayMs = DELAY;
   UrlbarPrefs.set("delay", DELAY);
 
   info("Edit text on the URL bar");
@@ -145,7 +142,7 @@ add_task(async function test_search_type() {
   Assert.ok(gURLBar.valueIsTyped);
   Assert.equal(UrlbarTestUtils.getSelectedRowIndex(window), targetRowIndex);
   let selectedResult = UrlbarTestUtils.getSelectedRow(window).result;
-  Assert.equal(selectedResult.type, UrlbarUtils.RESULT_TYPE.SEARCH);
+  Assert.equal(selectedResult.type, UrlbarShared.RESULT_TYPE.SEARCH);
 
   info("Enter before updating");
   let loadingURL = "http://mochi.test:8888/?terms=123fo";
@@ -160,7 +157,7 @@ add_task(async function test_search_type() {
 
   info("Clean up");
   await PlacesUtils.history.clear();
-  UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS = ORIGINAL_CHUNK_RESULTS_DELAY;
+  ProvidersManager.chunkResultsDelayMs = ORIGINAL_CHUNK_RESULTS_DELAY;
   UrlbarPrefs.clear("delay");
 });
 
@@ -181,7 +178,7 @@ add_task(async function test_keyword_type() {
   info("Find target result");
   let targetRowIndex = await findTargetRowIndex(
     result =>
-      result.type == UrlbarUtils.RESULT_TYPE.KEYWORD &&
+      result.type == UrlbarShared.RESULT_TYPE.KEYWORD &&
       result.url == "https://example.com/?q=123"
   );
 
@@ -191,7 +188,7 @@ add_task(async function test_keyword_type() {
 
   info("Change the delay time to avoid updating results");
   const DELAY = 10000;
-  UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS = DELAY;
+  ProvidersManager.chunkResultsDelayMs = DELAY;
   UrlbarPrefs.set("delay", DELAY);
 
   info("Edit text on the URL bar");
@@ -203,7 +200,7 @@ add_task(async function test_keyword_type() {
   Assert.ok(gURLBar.valueIsTyped);
   Assert.equal(UrlbarTestUtils.getSelectedRowIndex(window), targetRowIndex);
   let selectedResult = UrlbarTestUtils.getSelectedRow(window).result;
-  Assert.equal(selectedResult.type, UrlbarUtils.RESULT_TYPE.KEYWORD);
+  Assert.equal(selectedResult.type, UrlbarShared.RESULT_TYPE.KEYWORD);
 
   info("Enter before updating");
   let loadingURL = "https://example.com/?q=12";
@@ -219,7 +216,7 @@ add_task(async function test_keyword_type() {
   info("Clean up");
   await PlacesUtils.history.clear();
   await PlacesUtils.keywords.remove("keyword");
-  UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS = ORIGINAL_CHUNK_RESULTS_DELAY;
+  ProvidersManager.chunkResultsDelayMs = ORIGINAL_CHUNK_RESULTS_DELAY;
   UrlbarPrefs.clear("delay");
 });
 
@@ -238,7 +235,7 @@ add_task(async function test_dynamic_type() {
 
   info("Find target result");
   let targetRowIndex = await findTargetRowIndex(
-    result => result.type == UrlbarUtils.RESULT_TYPE.DYNAMIC
+    result => result.type == UrlbarShared.RESULT_TYPE.DYNAMIC
   );
 
   info("Select a dynamic suggestion");
@@ -247,7 +244,7 @@ add_task(async function test_dynamic_type() {
 
   info("Change the delay time to avoid updating results");
   const DELAY = 10000;
-  UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS = DELAY;
+  ProvidersManager.chunkResultsDelayMs = DELAY;
   UrlbarPrefs.set("delay", DELAY);
 
   info("Edit text on the URL bar");
@@ -259,7 +256,7 @@ add_task(async function test_dynamic_type() {
   Assert.ok(gURLBar.valueIsTyped);
   Assert.equal(UrlbarTestUtils.getSelectedRowIndex(window), targetRowIndex);
   let selectedResult = UrlbarTestUtils.getSelectedRow(window).result;
-  Assert.equal(selectedResult.type, UrlbarUtils.RESULT_TYPE.DYNAMIC);
+  Assert.equal(selectedResult.type, UrlbarShared.RESULT_TYPE.DYNAMIC);
 
   info("Enter before updating");
   // TODO: We need to show the dynamic result with different word here.
@@ -276,7 +273,7 @@ add_task(async function test_dynamic_type() {
   info("Clean up");
   await PlacesUtils.history.clear();
   await SpecialPowers.popPrefEnv();
-  UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS = ORIGINAL_CHUNK_RESULTS_DELAY;
+  ProvidersManager.chunkResultsDelayMs = ORIGINAL_CHUNK_RESULTS_DELAY;
   UrlbarPrefs.clear("delay");
 });
 
@@ -313,7 +310,7 @@ add_task(async function test_omnibox_type() {
 
   info("Find target result");
   let targetRowIndex = await findTargetRowIndex(
-    result => result.type == UrlbarUtils.RESULT_TYPE.OMNIBOX
+    result => result.type == UrlbarShared.RESULT_TYPE.OMNIBOX
   );
 
   info("Select an omnibox suggestion");
@@ -322,7 +319,7 @@ add_task(async function test_omnibox_type() {
 
   info("Change the delay time to avoid updating results");
   const DELAY = 10000;
-  UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS = DELAY;
+  ProvidersManager.chunkResultsDelayMs = DELAY;
   UrlbarPrefs.set("delay", DELAY);
 
   info("Edit text on the URL bar");
@@ -334,7 +331,7 @@ add_task(async function test_omnibox_type() {
   Assert.ok(gURLBar.valueIsTyped);
   Assert.equal(UrlbarTestUtils.getSelectedRowIndex(window), targetRowIndex);
   let selectedResult = UrlbarTestUtils.getSelectedRow(window).result;
-  Assert.equal(selectedResult.type, UrlbarUtils.RESULT_TYPE.OMNIBOX);
+  Assert.equal(selectedResult.type, UrlbarShared.RESULT_TYPE.OMNIBOX);
   Assert.ok(selectedResult.heuristic);
 
   info("Enter before updating");
@@ -352,41 +349,44 @@ add_task(async function test_omnibox_type() {
   info("Clean up");
   await PlacesUtils.history.clear();
   await extension.unload();
-  UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS = ORIGINAL_CHUNK_RESULTS_DELAY;
+  ProvidersManager.chunkResultsDelayMs = ORIGINAL_CHUNK_RESULTS_DELAY;
   UrlbarPrefs.clear("delay");
 });
 
 add_task(async function test_heuristic() {
   const testCases = [
     {
-      testResult: new UrlbarResult(
-        UrlbarUtils.RESULT_TYPE.URL,
-        UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-        { url: "https://example.com/123" }
-      ),
+      testResult: new UrlbarResult({
+        type: UrlbarShared.RESULT_TYPE.URL,
+        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+        heuristic: true,
+        payload: { url: "https://example.com/123" },
+      }),
       loadingURL: "https://example.com/123",
       displayedValue: "https://example.com/123",
     },
     {
-      testResult: new UrlbarResult(
-        UrlbarUtils.RESULT_TYPE.URL,
-        UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
-        { url: "http://example.com/123" }
-      ),
-      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+      testResult: new UrlbarResult({
+        type: UrlbarShared.RESULT_TYPE.URL,
+        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+        heuristic: true,
+        // eslint-disable-next-line sdl/no-insecure-url
+        payload: { url: "http://example.com/123" },
+      }),
+      // eslint-disable-next-line sdl/no-insecure-url
       loadingURL: "http://example.com/123",
       displayedValue: "example.com/123",
     },
     {
-      testResult: new UrlbarResult(
-        UrlbarUtils.RESULT_TYPE.SEARCH,
-        UrlbarUtils.RESULT_SOURCE.SEARCH,
-        {
-          engine: Services.search.defaultEngine.name,
+      testResult: new UrlbarResult({
+        type: UrlbarShared.RESULT_TYPE.SEARCH,
+        source: UrlbarShared.RESULT_SOURCE.SEARCH,
+        heuristic: true,
+        payload: {
+          engine: SearchService.defaultEngine.name,
           query: "heuristic_search",
-        }
-      ),
+        },
+      }),
       loadingURL: "https://example.com/?q=heuristic_search",
       displayedValue: "heuristic_search",
     },
@@ -394,13 +394,13 @@ add_task(async function test_heuristic() {
 
   for (const { testResult, loadingURL, displayedValue } of testCases) {
     info("Setup: " + JSON.stringify(testResult));
-    testResult.heuristic = true;
     let provider = new UrlbarTestUtils.TestProvider({
       results: [testResult],
       name: "TestProviderHeuristic",
       priority: Infinity,
     });
-    UrlbarProvidersManager.registerProvider(provider);
+    let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+    providersManager.registerProvider(provider);
 
     info("Show results");
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
@@ -416,7 +416,7 @@ add_task(async function test_heuristic() {
 
     info("Change the delay time to avoid updating results");
     const DELAY = 10000;
-    UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS = DELAY;
+    ProvidersManager.chunkResultsDelayMs = DELAY;
     UrlbarPrefs.set("delay", DELAY);
 
     info("Edit text on the URL bar");
@@ -428,14 +428,14 @@ add_task(async function test_heuristic() {
     Assert.ok(gURLBar.valueIsTyped);
     Assert.equal(UrlbarTestUtils.getSelectedRowIndex(window), targetRowIndex);
     let selectedResult = UrlbarTestUtils.getSelectedRow(window).result;
-    Assert.equal(selectedResult, testResult);
+    Assert.equal(selectedResult.id, testResult.id, "Selected result");
     Assert.equal(
       window.gURLBar.value,
       displayedValue.substring(0, displayedValue.length - 1)
     );
 
     info("Enter before updating");
-    let spy = sinon.spy(UrlbarUtils, "getHeuristicResultFor");
+    let spy = sinon.spy(gURLBar.controller, "resolveFallbackNavigation");
     let onLoad = BrowserTestUtils.browserLoaded(
       gBrowser.selectedBrowser,
       false,
@@ -444,13 +444,12 @@ add_task(async function test_heuristic() {
     EventUtils.synthesizeKey("KEY_Enter");
     await onLoad;
     Assert.equal(gBrowser.currentURI.spec, loadingURL);
+    Assert.ok(!spy.called, "resolveFallbackNavigation should not be called");
     spy.restore();
-    Assert.ok(!spy.called, "getHeuristicResultFor should not be called");
 
     info("Clean up");
-    UrlbarProvidersManager.unregisterProvider(provider);
-    UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS =
-      ORIGINAL_CHUNK_RESULTS_DELAY;
+    providersManager.unregisterProvider(provider);
+    ProvidersManager.chunkResultsDelayMs = ORIGINAL_CHUNK_RESULTS_DELAY;
     UrlbarPrefs.clear("delay");
   }
 });

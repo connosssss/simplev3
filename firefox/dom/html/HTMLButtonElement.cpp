@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,30 +5,31 @@
 #include "mozilla/dom/HTMLButtonElement.h"
 
 #include "HTMLFormSubmissionConstants.h"
-#include "mozilla/dom/CommandEvent.h"
-#include "mozilla/dom/FormData.h"
-#include "mozilla/dom/HTMLButtonElementBinding.h"
-#include "nsAttrValueInlines.h"
-#include "nsIContentInlines.h"
-#include "nsGkAtoms.h"
-#include "nsPresContext.h"
-#include "nsIFormControl.h"
-#include "nsIFrame.h"
-#include "mozilla/dom/Document.h"
+#include "mozAutoDocUpdate.h"
 #include "mozilla/ContentEvents.h"
-#include "mozilla/FocusModel.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/EventStateManager.h"
+#include "mozilla/FocusModel.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/PresShell.h"
-#include "mozilla/TextEvents.h"
-#include "nsUnicharUtils.h"
-#include "nsLayoutUtils.h"
 #include "mozilla/PresState.h"
+#include "mozilla/TextEvents.h"
+#include "mozilla/dom/CommandEvent.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/FormData.h"
+#include "mozilla/dom/HTMLButtonElementBinding.h"
+#include "mozilla/dom/HTMLFormElement.h"
+#include "nsAttrValueInlines.h"
+#include "nsAttrValueOrString.h"
 #include "nsError.h"
 #include "nsFocusManager.h"
-#include "mozilla/dom/HTMLFormElement.h"
-#include "mozAutoDocUpdate.h"
+#include "nsGkAtoms.h"
+#include "nsIContentInlines.h"
+#include "nsIFormControl.h"
+#include "nsIFrame.h"
+#include "nsLayoutUtils.h"
+#include "nsPresContext.h"
+#include "nsUnicharUtils.h"
 
 #define NS_IN_SUBMIT_CLICK (1 << 0)
 #define NS_OUTER_ACTIVATE_EVENT (1 << 1)
@@ -76,8 +75,7 @@ static constexpr const nsAttrValue::EnumTableEntry* kButtonSubmitType =
 
 // Construction, destruction
 HTMLButtonElement::HTMLButtonElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
-    FromParser aFromParser)
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo, FromParser aFromParser)
     : nsGenericHTMLFormControlElementWithState(
           std::move(aNodeInfo), aFromParser,
           FormControlType(kButtonSubmitType->value)),
@@ -139,13 +137,17 @@ bool HTMLButtonElement::InAutoState() const {
 }
 
 // https://html.spec.whatwg.org/multipage/#the-button-element%3Aconcept-submit-button
-const nsAttrValue::EnumTableEntry* HTMLButtonElement::ResolveAutoState() const {
+const nsAttrValue::EnumTableEntry* HTMLButtonElement::ResolveAutoState(
+    const nsINode* aParent) const {
   // A button element is said to be a submit button if any of the following are
-  // true: the type attribute is in the Auto state and both the command and
-  // commandfor content attributes are not present; or
-  // the type attribute is in the Submit Button state.
-  if (StaticPrefs::dom_element_commandfor_enabled() &&
-      (HasAttr(nsGkAtoms::commandfor) || HasAttr(nsGkAtoms::command))) {
+  // true: the type attribute is in the Auto state, both the command and
+  // commandfor content attributes are not present, and the parent node is not a
+  // select element; or the type attribute is in the Submit Button state.
+  if (HasAttr(nsGkAtoms::commandfor) || HasAttr(nsGkAtoms::command)) {
+    return kButtonButtonType;
+  }
+  const nsINode* parent = aParent ? aParent : GetParentNode();
+  if (parent && parent->IsHTMLElement(nsGkAtoms::select)) {
     return kButtonButtonType;
   }
   return kButtonSubmitType;
@@ -185,15 +187,12 @@ bool HTMLButtonElement::ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
     if (aAttribute == nsGkAtoms::formenctype) {
       return aResult.ParseEnumValue(aValue, kFormEnctypeTable, false);
     }
-
-    if (StaticPrefs::dom_element_commandfor_enabled()) {
-      if (aAttribute == nsGkAtoms::command) {
-        return aResult.ParseEnumValue(aValue, kButtonCommandTable, false);
-      }
-      if (aAttribute == nsGkAtoms::commandfor) {
-        aResult.ParseAtom(aValue);
-        return true;
-      }
+    if (aAttribute == nsGkAtoms::command) {
+      return aResult.ParseEnumValue(aValue, kButtonCommandTable, false);
+    }
+    if (aAttribute == nsGkAtoms::commandfor) {
+      aResult.ParseAtom(aValue);
+      return true;
     }
   }
 
@@ -291,7 +290,7 @@ nsresult HTMLButtonElement::PostHandleEvent(EventChainPostVisitor& aVisitor) {
   return rv;
 }
 
-void EndSubmitClick(EventChainVisitor& aVisitor) {
+MOZ_CAN_RUN_SCRIPT void EndSubmitClick(EventChainVisitor& aVisitor) {
   if ((aVisitor.mItemFlags & NS_IN_SUBMIT_CLICK)) {
     nsCOMPtr<nsIContent> content(do_QueryInterface(aVisitor.mItemData));
     RefPtr<HTMLFormElement> form = HTMLFormElement::FromNodeOrNull(content);
@@ -312,12 +311,12 @@ void EndSubmitClick(EventChainVisitor& aVisitor) {
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#the-button-element:activation-behaviour
 void HTMLButtonElement::ActivationBehavior(EventChainPostVisitor& aVisitor) {
+  auto endSubmit = MakeScopeExit(
+      [&]() MOZ_CAN_RUN_SCRIPT_BOUNDARY { EndSubmitClick(aVisitor); });
+
   if (!aVisitor.mPresContext) {
-    // Should check whether EndSubmitClick is needed here.
     return;
   }
-
-  auto endSubmit = MakeScopeExit([&] { EndSubmitClick(aVisitor); });
 
   // 1. If element is disabled, then return.
   if (IsDisabled()) {
@@ -353,7 +352,7 @@ void HTMLButtonElement::ActivationBehavior(EventChainPostVisitor& aVisitor) {
 
   // 4. Let target be the result of running element's get the
   // commandfor-associated element.
-  RefPtr<Element> target = GetCommandForElement();
+  RefPtr<Element> target = GetCommandForElementInternal();
 
   // 5. If target is not null:
   if (target) {
@@ -381,12 +380,11 @@ void HTMLButtonElement::ActivationBehavior(EventChainPostVisitor& aVisitor) {
     // 5.5. Let continue be the result of firing an event named command at
     // target, using CommandEvent, with its command attribute initialized to
     // command, its source attribute initialized to element, and its cancelable
-    // and composed attributes initialized to true.
+    // attribute initialized to true.
     CommandEventInit init;
     GetCommand(init.mCommand);
     init.mSource = this;
     init.mCancelable = true;
-    init.mComposed = true;
     RefPtr<Event> event = CommandEvent::Constructor(this, u"command"_ns, init);
     event->SetTrusted(true);
     event->SetTarget(target);
@@ -404,9 +402,11 @@ void HTMLButtonElement::ActivationBehavior(EventChainPostVisitor& aVisitor) {
     target->HandleCommandInternal(this, command, IgnoreErrors());
 
   } else {
+    nsCOMPtr<Element> eventTarget =
+        do_QueryInterface(aVisitor.mEvent->mOriginalTarget);
     // 6. Otherwise, run the popover target attribute activation behavior given
     // element and event's target.
-    HandlePopoverTargetAction();
+    HandlePopoverTargetAction(eventTarget);
   }
 }
 
@@ -420,6 +420,12 @@ void HTMLButtonElement::LegacyCanceledActivationBehavior(
 
 nsresult HTMLButtonElement::BindToTree(BindContext& aContext,
                                        nsINode& aParent) {
+  // Whether this button is a submit button depends on whether its parent is a
+  // select element, so recompute the resolved type before form association.
+  // Use aParent because the parser can bind before the parent link is set.
+  if (InAutoState()) {
+    mType = FormControlType(ResolveAutoState(&aParent)->value);
+  }
   nsresult rv =
       nsGenericHTMLFormControlElementWithState::BindToTree(aContext, aParent);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -432,6 +438,11 @@ nsresult HTMLButtonElement::BindToTree(BindContext& aContext,
 
 void HTMLButtonElement::UnbindFromTree(UnbindContext& aContext) {
   nsGenericHTMLFormControlElementWithState::UnbindFromTree(aContext);
+
+  // The parent may no longer be a select, so recompute the resolved type.
+  if (InAutoState()) {
+    mType = FormControlType(ResolveAutoState()->value);
+  }
 
   UpdateBarredFromConstraintValidation();
   UpdateValidityElementStates(false);
@@ -504,8 +515,7 @@ void HTMLButtonElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
 
     // If the command/commandfor attributes are added and Type is auto, it may
     // need to be recalculated:
-    if (StaticPrefs::dom_element_commandfor_enabled() &&
-        (aName == nsGkAtoms::command || aName == nsGkAtoms::commandfor)) {
+    if (aName == nsGkAtoms::command || aName == nsGkAtoms::commandfor) {
       if (InAutoState()) {
         mType = FormControlType(ResolveAutoState()->value);
       }
@@ -574,8 +584,9 @@ void HTMLButtonElement::GetCommand(nsAString& aCommand) const {
   }
   if (command == Command::Custom) {
     const nsAttrValue* attr = GetParsedAttr(nsGkAtoms::command);
-    MOZ_ASSERT(attr->Type() == nsAttrValue::eString);
-    aCommand.Assign(attr->GetStringValue());
+    MOZ_ASSERT(attr->Type() == nsAttrValue::eString ||
+               attr->Type() == nsAttrValue::eAtom);
+    aCommand.Assign(nsAttrValueOrString(attr).String());
     MOZ_ASSERT(
         aCommand.Length() >= 2,
         "Custom commands start with '--' so must be atleast 2 chars long!");
@@ -601,21 +612,22 @@ Element::Command HTMLButtonElement::GetCommand() const {
       }
       return command;
     }
-    if (StringBeginsWith(attr->GetStringValue(), u"--"_ns)) {
+    if (StringBeginsWith(nsAttrValueOrString(attr).String(), u"--"_ns)) {
       return Command::Custom;
     }
   }
   return Command::Invalid;
 }
 
-Element* HTMLButtonElement::GetCommandForElement() const {
-  if (StaticPrefs::dom_element_commandfor_enabled()) {
-    return GetAttrAssociatedElement(nsGkAtoms::commandfor);
-  }
-  return nullptr;
+Element* HTMLButtonElement::GetCommandForElementForBindings() const {
+  return GetAttrAssociatedElementForBindings(nsGkAtoms::commandfor);
 }
 
-void HTMLButtonElement::SetCommandForElement(Element* aElement) {
+Element* HTMLButtonElement::GetCommandForElementInternal() const {
+  return GetAttrAssociatedElementInternal(nsGkAtoms::commandfor);
+}
+
+void HTMLButtonElement::SetCommandForElementForBindings(Element* aElement) {
   ExplicitlySetAttrElement(nsGkAtoms::commandfor, aElement);
 }
 
@@ -625,3 +637,5 @@ JSObject* HTMLButtonElement::WrapNode(JSContext* aCx,
 }
 
 }  // namespace mozilla::dom
+#undef NS_IN_SUBMIT_CLICK
+#undef NS_OUTER_ACTIVATE_EVENT

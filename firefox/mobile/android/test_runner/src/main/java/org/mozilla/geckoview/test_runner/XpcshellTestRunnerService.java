@@ -10,6 +10,7 @@ import android.os.IBinder;
 import android.util.Log;
 import androidx.annotation.Nullable;
 import java.util.HashMap;
+import java.util.Objects;
 import org.mozilla.geckoview.ContentBlocking;
 import org.mozilla.geckoview.GeckoResult;
 import org.mozilla.geckoview.GeckoRuntime;
@@ -72,7 +73,7 @@ public class XpcshellTestRunnerService extends Service {
             .updateUrl("http://mochi.test:8888/safebrowsing4-dummy/update")
             .build();
 
-    final GeckoRuntimeSettings runtimeSettings =
+    final GeckoRuntimeSettings.Builder runtimeSettingsBuilder =
         new GeckoRuntimeSettings.Builder()
             .arguments(new String[] {"-xpcshell"})
             .extras(extras)
@@ -82,9 +83,11 @@ public class XpcshellTestRunnerService extends Service {
                     .safeBrowsingProviders(google, googleLegacy)
                     .build())
             .lowMemoryDetection(false) // Avoid unpredictability in tests
-            .build();
+            .appZygoteProcessEnabled(
+                Objects.equals(
+                    System.getenv("MOZ_ANDROID_CONTENT_SERVICE_ISOLATED_WITH_ZYGOTE"), "1"));
 
-    sRuntime = GeckoRuntime.create(this, runtimeSettings);
+    sRuntime = GeckoRuntime.create(this, runtimeSettingsBuilder.build());
 
     webExtensionController()
         .setDebuggerDelegate(

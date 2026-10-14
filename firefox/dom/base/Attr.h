@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,11 +10,11 @@
 #define mozilla_dom_Attr_h
 
 #include "mozilla/Attributes.h"
+#include "nsCOMPtr.h"
+#include "nsCycleCollectionParticipant.h"
 #include "nsDOMAttributeMap.h"
 #include "nsINode.h"
 #include "nsString.h"
-#include "nsCOMPtr.h"
-#include "nsCycleCollectionParticipant.h"
 #include "nsStubMutationObserver.h"
 
 namespace mozilla {
@@ -31,7 +29,9 @@ class Attr final : public nsINode {
   virtual ~Attr() = default;
 
  public:
-  Attr(nsDOMAttributeMap* aAttrMap, already_AddRefed<dom::NodeInfo>&& aNodeInfo,
+  static constexpr bool kHasWeakReferenceTearoff = true;
+
+  Attr(nsDOMAttributeMap* aAttrMap, already_AddRefed<dom::NodeInfo> aNodeInfo,
        const nsAString& aValue);
 
   NS_DECL_ISUPPORTS_INHERITED
@@ -49,12 +49,15 @@ class Attr final : public nsINode {
                                       OOMReporter& aError) override;
   virtual void SetTextContentInternal(const nsAString& aTextContent,
                                       nsIPrincipal* aSubjectPrincipal,
-                                      ErrorResult& aError) override;
+                                      ErrorResult& aError,
+                                      MutationEffectOnScript) override;
   MOZ_CAN_RUN_SCRIPT void SetNodeValue(const nsAString& aNodeValue,
                                        mozilla::ErrorResult& aError) override;
   virtual void GetNodeValueInternal(nsAString& aNodeValue) override;
-  virtual void SetNodeValueInternal(const nsAString& aNodeValue,
-                                    ErrorResult& aError) override;
+  virtual void SetNodeValueInternal(
+      const nsAString& aNodeValue, ErrorResult& aError,
+      MutationEffectOnScript aMutationEffectOnScript =
+          MutationEffectOnScript::DropTrustWorthiness) override;
 
   void GetEventTargetParent(EventChainPreVisitor& aVisitor) override;
 
@@ -65,12 +68,6 @@ class Attr final : public nsINode {
   void SetMap(nsDOMAttributeMap* aMap);
 
   Element* GetElement() const;
-
-  /**
-   * Called when our ownerElement is moved into a new document.
-   * Updates the nodeinfo of this node.
-   */
-  nsresult SetOwnerDocument(Document* aDocument);
 
   // nsINode interface
   nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;

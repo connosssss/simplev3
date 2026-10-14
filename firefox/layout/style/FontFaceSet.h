@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,10 @@
 #ifndef mozilla_dom_FontFaceSet_h
 #define mozilla_dom_FontFaceSet_h
 
+#include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/dom/FontFace.h"
 #include "mozilla/dom/FontFaceSetBinding.h"
 #include "mozilla/dom/FontFaceSetImpl.h"
-#include "mozilla/DOMEventTargetHelper.h"
-#include "nsICSSLoaderObserver.h"
-#include "nsIDOMEventListener.h"
 
 class nsFontFaceLoader;
 class nsIPrincipal;
@@ -95,17 +91,10 @@ class FontFaceSet final : public DOMEventTargetHelper {
    */
   uint32_t SizeIncludingNonAuthorOrigins();
 
-  void MaybeResolve();
-
-  void DispatchLoadingFinishedEvent(
-      const nsAString& aType, nsTArray<OwningNonNull<FontFace>>&& aFontFaces);
+  MOZ_CAN_RUN_SCRIPT void MaybeResolve();
 
   void DispatchLoadingEventAndReplaceReadyPromise();
   void DispatchCheckLoadingFinishedAfterDelay();
-
-  // Whether mReady is pending, or would be when created.
-  bool ReadyPromiseIsPending() const;
-
   void InsertRuleFontFace(FontFace* aFontFace, StyleOrigin aOrigin);
 
  private:

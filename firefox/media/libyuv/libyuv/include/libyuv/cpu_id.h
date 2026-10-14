@@ -11,6 +11,8 @@
 #ifndef INCLUDE_LIBYUV_CPU_ID_H_
 #define INCLUDE_LIBYUV_CPU_ID_H_
 
+#include <stdint.h>
+
 #include "libyuv/basic_types.h"
 
 #ifdef __cplusplus
@@ -29,6 +31,8 @@ static const int kCpuHasNeonI8MM = 0x400;
 static const int kCpuHasSVE = 0x800;
 static const int kCpuHasSVE2 = 0x1000;
 static const int kCpuHasSME = 0x2000;
+static const int kCpuHasSME2 = 0x4000;
+static const int kCpuHasSVEF32MM = 0x8000;
 
 // These flags are only valid on RISCV processors.
 static const int kCpuHasRISCV = 0x4;
@@ -58,15 +62,16 @@ static const int kCpuHasAVX10_2 = 0x2000000;
 static const int kCpuHasAVXVNNI = 0x4000000;
 static const int kCpuHasAVXVNNIINT8 = 0x8000000;
 static const int kCpuHasAMXINT8 = 0x10000000;
-
-// These flags are only valid on MIPS processors.
-static const int kCpuHasMIPS = 0x10;
-static const int kCpuHasMSA = 0x100;
+static const int kCpuHasAVX512BMM = 0x20000000;
 
 // These flags are only valid on LOONGARCH processors.
 static const int kCpuHasLOONGARCH = 0x20;
 static const int kCpuHasLSX = 0x100;
 static const int kCpuHasLASX = 0x200;
+
+// These flags are only valid on WASM processors.
+static const int kCpuHasWASM = 0x40;
+static const int kCpuHasWASMSIMD = 0x100;
 
 // Optional init function. TestCpuFlag does an auto-init.
 // Returns cpu_info flags.
@@ -89,8 +94,6 @@ static __inline int TestCpuFlag(int test_flag) {
 // Internal function for parsing /proc/cpuinfo.
 LIBYUV_API
 int ArmCpuCaps(const char* cpuinfo_name);
-LIBYUV_API
-int MipsCpuCaps(const char* cpuinfo_name);
 LIBYUV_API
 int RiscvCpuCaps(const char* cpuinfo_name);
 

@@ -132,6 +132,22 @@ endif
 # Master "Core Components" macros for Hardware features               #
 #######################################################################
 
+# Test toolchain for endianness and set LITTLE_ENDIAN variable accordingly.
+# Must come after $(OS_TARGET).mk, which is where CC is finalized.
+ifndef LITTLE_ENDIAN
+    ifeq (1,$(CC_IS_GCC))
+        ENDIANNESS := $(shell echo | $(CC) -dM -E - 2>/dev/null | grep __BYTE_ORDER__)
+        ifeq ($(findstring __ORDER_LITTLE_ENDIAN__,$(ENDIANNESS)),__ORDER_LITTLE_ENDIAN__)
+            LITTLE_ENDIAN := 1
+        else
+            LITTLE_ENDIAN := 0
+        endif
+    else
+        # MSVC can't be probed this way; all its targets are little-endian.
+        LITTLE_ENDIAN := 1
+    endif
+endif
+
 ifndef NSS_DISABLE_SSE3
     NSS_DISABLE_SSE3 = 0
     ifndef CC_IS_CLANG
@@ -148,7 +164,6 @@ ifndef NSS_DISABLE_AVX2
     ifneq ($(CPU_ARCH),x86_64)
         # Disable AVX2 entirely on non-Intel platforms
         NSS_DISABLE_AVX2 = 1
-        $(warning CPU_ARCH is not x86_64, disabling -mavx2)
     else
         # Clang reports its version as an older gcc, but it's OK
         ifndef CC_IS_CLANG
@@ -181,6 +196,10 @@ endif
 
 ifdef NSS_DISABLE_DBM
 DEFINES += -DNSS_DISABLE_DBM
+endif
+
+ifdef NSS_DISABLE_DSA
+DEFINES += -DNSS_DISABLE_DSA
 endif
 
 ifdef NSS_DISABLE_AVX2
@@ -259,3 +278,22 @@ DEFINES += -DNO_NSPR_10_SUPPORT
 
 # Hide old, deprecated, TLS cipher suite names when building NSS
 DEFINES += -DSSL_DISABLE_DEPRECATED_CIPHER_SUITE_NAMES
+
+
+# By default the PKCS5_PBKD2_PARAMS(structure) version is determined based on the
+# cryptokiVersion of the token, PKCS5_PBKD2_PARAMS2 structure is used for version
+# 2.40 or later, PKCS5_PBKD2_PARAMS structure is used otherwise.
+# This define allows to force the use of PKCS5_PBKD2_PARAMS2 structure only.
+ifdef NSS_USE_PKCS5_PBKD2_PARAMS2_ONLY
+DEFINES += -DNSS_USE_PKCS5_PBKD2_PARAMS2_ONLY
+endif
+
+# By default the PKCS5_PBKD2_PARAMS(structure) version is auto-detected based on
+# the difference between the two structures,by default this limits
+# the password length to 8192 bytes.
+# Using this define, only PKCS5_PBKD2_PARAMS2 structure is expected, this can cause
+# segmentation fault if PKCS5_PBKD2_PARAMS structure is provided!).
+# Additional the password length is not limited with this option.
+ifdef SOFTOKEN_USE_PKCS5_PBKD2_PARAMS2_ONLY
+DEFINES += -DSOFTOKEN_USE_PKCS5_PBKD2_PARAMS2_ONLY
+endif

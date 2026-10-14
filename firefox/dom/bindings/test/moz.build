@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -67,3 +65,27 @@ if CONFIG["CC_TYPE"] == "clang-cl":
     CXXFLAGS += ["-Od"]
 else:
     CXXFLAGS += ["-O0"]
+
+SOURCE_HEADERS += [
+    "TestBindingHeader.h",
+    "TestCImplementedInterface.h",
+    "TestFunctions.h",
+    "TestInterfaceAsyncIterableDouble.h",
+    "TestInterfaceAsyncIterableDoubleUnion.h",
+    "TestInterfaceAsyncIterableSingle.h",
+    "TestInterfaceAsyncIterableSingleWithArgs.h",
+    "TestInterfaceIterableDouble.h",
+    "TestInterfaceIterableDoubleUnion.h",
+    "TestInterfaceIterableSingle.h",
+    "TestInterfaceLength.h",
+    "TestInterfaceMaplike.h",
+    "TestInterfaceMaplikeJSObject.h",
+    "TestInterfaceMaplikeObject.h",
+    "TestInterfaceObservableArray.h",
+    "TestInterfaceObservableArrayBase.h",
+    "TestInterfaceSetlike.h",
+    "TestInterfaceSetlikeNode.h",
+    "TestReflectedHTMLAttribute.h",
+    "TestTrialInterface.h",
+    "WrapperCachedNonISupportsTestInterface.h",
+]

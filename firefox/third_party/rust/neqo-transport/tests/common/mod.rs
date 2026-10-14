@@ -8,20 +8,20 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use neqo_common::{event::Provider as _, IpTosDscp};
-use neqo_crypto::{AllowZeroRtt, AuthenticationStatus, ResumptionToken};
+use neqo_common::{Dscp, event::Provider as _};
 use neqo_transport::{
-    server::{ConnectionRef, Server, ValidateAddress},
     Connection, ConnectionEvent, ConnectionParameters, State, Stats,
+    server::{ConnectionRef, Server},
 };
-use test_fixture::{default_client, now, CountingConnectionIdGenerator};
+use nss::{AllowZeroRtt, ResumptionToken};
+use test_fixture::{CountingConnectionIdGenerator, default_client, handshake_with_server, now};
 
 /// # Panics
 ///
 /// When the count of received packets doesn't match the count of received packets with the
 /// (default) DSCP.
 pub fn assert_dscp(stats: &Stats) {
-    assert_eq!(stats.dscp_rx[IpTosDscp::Cs0], stats.packets_rx);
+    assert_eq!(stats.dscp_rx[Dscp::Cs0], stats.packets_rx);
 }
 
 /// Create a server.  This is different than the one in the fixture, which is a single connection.
@@ -60,36 +60,7 @@ pub fn connected_server(server: &Server) -> ConnectionRef {
 
 /// Connect.  This returns a reference to the server connection.
 pub fn connect(client: &mut Connection, server: &mut Server) -> ConnectionRef {
-    server.set_validation(ValidateAddress::Never);
-
-    assert_eq!(*client.state(), State::Init);
-    let out = client.process_output(now()); // ClientHello
-    let out2 = client.process_output(now()); // ClientHello
-    assert!(out.as_dgram_ref().is_some() && out2.as_dgram_ref().is_some());
-    _ = server.process(out.dgram(), now()); // ACK
-    let out = server.process(out2.dgram(), now()); // ServerHello...
-    assert!(out.as_dgram_ref().is_some());
-
-    // Ingest the server Certificate.
-    let out = client.process(out.dgram(), now());
-    assert!(out.as_dgram_ref().is_some()); // This should just be an ACK.
-    let out = server.process(out.dgram(), now());
-    let out = client.process(out.dgram(), now());
-    let out = server.process(out.dgram(), now());
-    assert!(out.as_dgram_ref().is_none()); // So the server should have nothing to say.
-
-    // Now mark the server as authenticated.
-    client.authenticated(AuthenticationStatus::Ok, now());
-    let out = client.process_output(now());
-    assert!(out.as_dgram_ref().is_some());
-    assert_eq!(*client.state(), State::Connected);
-    let out = server.process(out.dgram(), now());
-    assert!(out.as_dgram_ref().is_some()); // ACK + HANDSHAKE_DONE + NST
-
-    // Have the client process the HANDSHAKE_DONE.
-    let out = client.process(out.dgram(), now());
-    assert!(out.as_dgram_ref().is_none());
-    assert_eq!(*client.state(), State::Confirmed);
+    handshake_with_server(client, server);
     assert_dscp(&client.stats());
     connected_server(server)
 }

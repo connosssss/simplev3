@@ -9,24 +9,24 @@ import android.content.Context
 import android.os.Looper.getMainLooper
 import android.view.View
 import android.view.WindowManager
-import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RelativeLayout
 import android.widget.TextView
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
 import mozilla.components.support.base.android.Padding
 import mozilla.components.support.test.any
-import mozilla.components.support.test.mock
 import mozilla.components.support.test.robolectric.testContext
-import mozilla.components.support.test.rule.MainCoroutineRule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
-import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mockito.doAnswer
@@ -38,14 +38,9 @@ import org.mockito.Mockito.`when`
 import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.shadows.ShadowLooper
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class ViewTest {
-
-    @get:Rule
-    val coroutinesTestRule = MainCoroutineRule()
 
     @Test
     fun `showKeyboard should request focus`() {
@@ -56,19 +51,6 @@ class ViewTest {
         ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
 
         assertTrue(view.hasFocus())
-    }
-
-    @Test
-    fun `hideKeyboard should hide soft keyboard`() {
-        val view = mock<View>()
-        val context = mock<Context>()
-        val imm = mock<InputMethodManager>()
-        `when`(view.context).thenReturn(context)
-        `when`(context.getSystemService(InputMethodManager::class.java)).thenReturn(imm)
-
-        view.hideKeyboard()
-
-        verify(imm).hideSoftInputFromWindow(view.windowToken, 0)
     }
 
     @Test
@@ -92,11 +74,13 @@ class ViewTest {
     fun `getRectWithViewLocation should transform getLocationInWindow method values`() {
         val view = spy(View(testContext))
         doAnswer { invocation ->
-            val locationInWindow = (invocation.getArgument(0) as IntArray)
-            locationInWindow[0] = 100
-            locationInWindow[1] = 200
-            locationInWindow
-        }.`when`(view).getLocationInWindow(any())
+                val locationInWindow = (invocation.getArgument(0) as IntArray)
+                locationInWindow[0] = 100
+                locationInWindow[1] = 200
+                locationInWindow
+            }
+            .`when`(view)
+            .getLocationInWindow(any())
 
         `when`(view.width).thenReturn(150)
         `when`(view.height).thenReturn(250)
@@ -141,7 +125,7 @@ class ViewTest {
     }
 
     @Test
-    fun `can dispatch coroutines to view scope`() {
+    fun `can dispatch coroutines to view scope`() = runTest {
         val activity = Robolectric.buildActivity(Activity::class.java).create().get()
         val view = View(testContext)
         activity.windowManager.addView(view, WindowManager.LayoutParams(100, 100))
@@ -149,15 +133,13 @@ class ViewTest {
 
         assertTrue(view.isAttachedToWindow)
 
-        val latch = CountDownLatch(1)
         var coroutineExecuted = false
 
         view.toScope().launch {
             coroutineExecuted = true
-            latch.countDown()
         }
 
-        latch.await(10, TimeUnit.SECONDS)
+        shadowOf(getMainLooper()).idle()
 
         assertTrue(coroutineExecuted)
     }
@@ -204,17 +186,27 @@ class ViewTest {
         val rootFound = root.findViewInHierarchy { it is LinearLayout }
 
         assertNotNull(rootFound)
-        assertTrue(rootFound is LinearLayout)
+        assertIs<LinearLayout>(rootFound)
 
         val layoutFound = root.findViewInHierarchy { it is RelativeLayout }
 
         assertNotNull(layoutFound)
-        assertTrue(layoutFound is RelativeLayout)
+        assertIs<RelativeLayout>(layoutFound)
 
         val testViewFound = root.findViewInHierarchy { it is TestView }
 
         assertNotNull(testViewFound)
-        assertTrue(testViewFound is TestView)
+        assertIs<TestView>(testViewFound)
+    }
+
+    @Test
+    fun `pixelSizeFor returns the same as getDimensionPixelSize`() {
+        val view = View(testContext)
+
+        assertEquals(
+            view.resources.getDimensionPixelSize(android.R.dimen.app_icon_size),
+            view.pixelSizeFor(android.R.dimen.app_icon_size),
+        )
     }
 
     private class TestView(context: Context) : View(context)

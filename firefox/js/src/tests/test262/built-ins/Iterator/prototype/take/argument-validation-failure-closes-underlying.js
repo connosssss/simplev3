@@ -1,12 +1,11 @@
-// |reftest| shell-option(--enable-iterator-helpers) skip-if(!this.hasOwnProperty('Iterator')||!xulRuntime.shell) -- iterator-helpers is not enabled unconditionally, requires shell-options
 // Copyright (C) 2024 Kevin Gibbons. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
-esid: sec-iteratorprototype.take
+esid: sec-iterator.prototype.take
 description: >
   Underlying iterator is closed when argument validation fails
 info: |
-  %Iterator.prototype%.take ( limit )
+  Iterator.prototype.take ( limit )
 
 features: [iterator-helpers]
 flags: []
@@ -32,6 +31,12 @@ assert.sameValue(closed, true);
 closed = false;
 assert.throws(RangeError, function() {
   closable.take(NaN);
+});
+assert.sameValue(closed, true);
+
+closed = false;
+assert.throws(RangeError, function() {
+  closable.take(Number.MAX_SAFE_INTEGER + 1);
 });
 assert.sameValue(closed, true);
 

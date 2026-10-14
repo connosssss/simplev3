@@ -4,7 +4,6 @@
 #ifndef intl_components_DisplayNames_h_
 #define intl_components_DisplayNames_h_
 
-#include <string>
 #include <string_view>
 #include "unicode/udat.h"
 #include "unicode/udatpg.h"
@@ -322,7 +321,7 @@ class DisplayNames final {
   Result<Ok, DisplayNamesError> GetLanguage(
       B& aBuffer, Span<const char> aLanguage,
       Fallback aFallback = Fallback::None) const {
-    static_assert(std::is_same<typename B::CharType, char16_t>::value);
+    static_assert(std::is_same_v<typename B::CharType, char16_t>);
     mozilla::intl::Locale tag;
     if (LocaleParser::TryParseBaseName(aLanguage, tag).isErr()) {
       return Err(DisplayNamesError::InvalidOption);
@@ -384,7 +383,7 @@ class DisplayNames final {
   Result<Ok, DisplayNamesError> GetRegion(
       B& aBuffer, Span<const char> aCode,
       Fallback aFallback = Fallback::None) const {
-    static_assert(std::is_same<typename B::CharType, char16_t>::value);
+    static_assert(std::is_same_v<typename B::CharType, char16_t>);
 
     if (!IsStructurallyValidRegionTag(aCode)) {
       return Err(DisplayNamesError::InvalidOption);
@@ -447,7 +446,7 @@ class DisplayNames final {
   Result<Ok, DisplayNamesError> GetCurrency(
       B& aBuffer, Span<const char> aCurrency,
       Fallback aFallback = Fallback::None) const {
-    static_assert(std::is_same<typename B::CharType, char16_t>::value);
+    static_assert(std::is_same_v<typename B::CharType, char16_t>);
     if (aCurrency.size() != 3) {
       return Err(DisplayNamesError::InvalidOption);
     }
@@ -526,7 +525,7 @@ class DisplayNames final {
   Result<Ok, DisplayNamesError> GetScript(
       B& aBuffer, Span<const char> aScript,
       Fallback aFallback = Fallback::None) const {
-    static_assert(std::is_same<typename B::CharType, char16_t>::value);
+    static_assert(std::is_same_v<typename B::CharType, char16_t>);
 
     if (!IsStructurallyValidScriptTag(aScript)) {
       return Err(DisplayNamesError::InvalidOption);
@@ -848,7 +847,29 @@ class DisplayNames final {
   Result<Ok, DisplayNamesError> GetDayPeriod(
       B& aBuffer, DayPeriod aDayPeriod, Span<const char> aCalendar,
       Fallback aFallback = Fallback::None) {
-    UDateFormatSymbolType symbolType = UDAT_AM_PMS;
+    UDateFormatSymbolType symbolType;
+    switch (mOptions.style) {
+      case DisplayNames::Style::Long:
+#ifndef U_HIDE_DRAFT_API
+        symbolType = UDAT_AM_PMS_WIDE;
+#else
+        symbolType = UDAT_AM_PMS;
+#endif
+        break;
+
+      case DisplayNames::Style::Abbreviated:
+      case DisplayNames::Style::Short:
+        symbolType = UDAT_AM_PMS;
+        break;
+
+      case DisplayNames::Style::Narrow:
+#ifndef U_HIDE_DRAFT_API
+        symbolType = UDAT_AM_PMS_NARROW;
+#else
+        symbolType = UDAT_AM_PMS;
+#endif
+        break;
+    }
 
     static constexpr int32_t indices[] = {UCAL_AM, UCAL_PM};
 

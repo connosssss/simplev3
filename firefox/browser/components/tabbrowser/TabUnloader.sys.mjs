@@ -1,4 +1,3 @@
-/* -*- mode: js; indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,9 +8,9 @@
  * accounts for when the tab was last used, how many resources the tab uses,
  * and whether the tab is likely to affect the user if it is closed.
  */
-const lazy = {};
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
-ChromeUtils.defineESModuleGetters(lazy, {
+const lazy = XPCOMUtils.declareLazy({
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   webrtcUI: "resource:///modules/webrtcUI.sys.mjs",
 });
@@ -29,11 +28,6 @@ const NEVER_DISCARD = 100000;
 const kMinInactiveDurationInMs = Services.prefs.getIntPref(
   "browser.tabs.min_inactive_duration_before_unload"
 );
-
-const PREF_AUTO_HIBERNATE_ENABLED = "simple.tabs.hibernate.enabled";
-const PREF_AUTO_HIBERNATE_TIMEOUT_MINUTES =
-  "simple.tabs.hibernate.timeout_minutes";
-const AUTO_HIBERNATE_INTERVAL_MS = 60 * 1000;
 
 let criteriaTypes = [
   ["isNonDiscardable", NEVER_DISCARD],
@@ -168,69 +162,10 @@ export var TabUnloader = {
    * Initialize low-memory detection and tab auto-unloading.
    */
   init() {
-    if (this._initialized) {
-      return;
-    }
-    this._initialized = true;
-
     const watcher = Cc["@mozilla.org/xpcom/memory-watcher;1"].getService(
       Ci.nsIAvailableMemoryWatcherBase
     );
     watcher.registerTabUnloader(this);
-
-    Services.prefs.addObserver(PREF_AUTO_HIBERNATE_ENABLED, this);
-    Services.prefs.addObserver(PREF_AUTO_HIBERNATE_TIMEOUT_MINUTES, this);
-    this._updateAutoHibernateTimer();
-  },
-
-  observe(subject, topic) {
-    if (topic == "nsPref:changed") {
-      this._updateAutoHibernateTimer();
-    }
-  },
-
-  _updateAutoHibernateTimer() {
-    if (!Services.prefs.getBoolPref(PREF_AUTO_HIBERNATE_ENABLED, false)) {
-      this._autoHibernateTimer?.cancel();
-      this._autoHibernateTimer = null;
-      return;
-    }
-
-    if (!this._autoHibernateTimer) {
-      this._autoHibernateTimer = Cc["@mozilla.org/timer;1"].createInstance(
-        Ci.nsITimer
-      );
-      this._autoHibernateTimer.initWithCallback(
-        () => this._hibernateInactiveTabs(),
-        AUTO_HIBERNATE_INTERVAL_MS,
-        Ci.nsITimer.TYPE_REPEATING_SLACK
-      );
-    }
-
-    this._hibernateInactiveTabs();
-  },
-
-  async _hibernateInactiveTabs() {
-    if (this._isUnloading) {
-      return;
-    }
-
-    this._isUnloading = true;
-    try {
-      const timeoutMinutes = Math.max(
-        1,
-        Services.prefs.getIntPref(PREF_AUTO_HIBERNATE_TIMEOUT_MINUTES, 30)
-      );
-      await this.unloadTabsInactiveFor(timeoutMinutes * 60 * 1000);
-    }
-
-    catch (error) {
-      console.error("Unable to hibernate inactive tabs", error);
-    }
-
-    finally {
-      this._isUnloading = false;
-    }
   },
 
   isDiscardable(tab) {
@@ -381,40 +316,19 @@ export var TabUnloader = {
 
   /**
    * Select and discard one tab.
+   *
    * @returns true if a tab was unloaded, otherwise false.
    */
   async unloadLeastRecentlyUsedTab(
     minInactiveDuration = kMinInactiveDurationInMs
   ) {
-    return (
-      (await this._unloadTabs(minInactiveDuration, 1)) > 0
-    );
-  },
-
-  
-  async unloadTabsInactiveFor(
-    minInactiveDuration = kMinInactiveDurationInMs,
-    tabMethods = DefaultTabUnloaderMethods
-  ) {
-    return this._unloadTabs(minInactiveDuration, Infinity, tabMethods);
-  },
-
-  async _unloadTabs(
-    minInactiveDuration,
-    maximumTabs,
-    tabMethods = DefaultTabUnloaderMethods
-  ) {
-    const sortedTabs = await this.getSortedTabs(
-      minInactiveDuration,
-      tabMethods
-    );
-    let unloadedTabs = 0;
+    const sortedTabs = await this.getSortedTabs(minInactiveDuration);
 
     for (let tabInfo of sortedTabs) {
       if (!this.isDiscardable(tabInfo)) {
         // Since |sortedTabs| is sorted, once we see an undiscardable tab
         // no need to continue the loop.
-        break;
+        return false;
       }
 
       const remoteType = tabInfo.tab?.linkedBrowser?.remoteType;
@@ -424,13 +338,10 @@ export var TabUnloader = {
           `TabUnloader discarded <${remoteType}>`
         );
         tabInfo.tab.updateLastUnloadedByTabUnloader();
-        unloadedTabs++;
-        if (unloadedTabs == maximumTabs) {
-          break;
-        }
+        return true;
       }
     }
-    return unloadedTabs;
+    return false;
   },
 
   QueryInterface: ChromeUtils.generateQI([
@@ -439,8 +350,9 @@ export var TabUnloader = {
   ]),
 };
 
-/** Determine the base weight of the tab without accounting for
- *  resource use
+/**
+ * Determine the base weight of the tab without accounting for resource use.
+ *
  * @param tab tab to use
  * @returns the tab's base weight
  */

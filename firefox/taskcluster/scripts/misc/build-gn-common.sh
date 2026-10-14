@@ -5,9 +5,9 @@ set -e -v
 cd $MOZ_FETCHES_DIR/gn
 
 if test -n "$MAC_CROSS"; then
-    python3 build/gen.py --platform darwin --no-last-commit-position
+    python3 build/gen.py --platform darwin --no-last-commit-position --allow-warnings
 else
-    python3 build/gen.py --no-last-commit-position
+    python3 build/gen.py --no-last-commit-position --allow-warnings
 fi
 
 cat > out/last_commit_position.h <<EOF
@@ -20,7 +20,7 @@ cat > out/last_commit_position.h <<EOF
 #endif  // OUT_LAST_COMMIT_POSITION_H_
 EOF
 
-ninja -C out -v
+ninja -C out -v gn$exe_suffix
 
 STAGE=gn
 mkdir -p $UPLOAD_DIR $STAGE

@@ -30,36 +30,32 @@ class TestClientActivity(FOGTestCase):
         # Let's check we get both.
         expected_pings = ["baseline", "usage-reporting"]
 
+        self.marionette.set_pref("telemetry.glean.internal.maxPingsPerMinute", 60)
+
         # Restarting the browser could send multiple "baseline" pings
         # (e.g. there could be some pending, or some triggered near shutdown.)
-        # So only accept the "baseline" ping sent near startup.
-        # We identify this ping as the one that has seen an "events" ping being sent,
-        # since one of those is submitted during startup due to events being present.
+        # We happen to know the first one this session is seq = 1, so look for that.
         def is_startup_baseline_ping(ping):
             return (
                 ping["request_url"]["doc_type"] == "baseline"
-                and ping["payload"]["metrics"]
-                .get("labeled_counter", {})
-                .get("glean.validation.pings_submitted", {})
-                .get("events")
-                == 1
+                and ping["payload"]["ping_info"]["seq"] == 1
             )
 
         [ping0, ping1] = self.wait_for_pings(
             self.restart_browser,
-            lambda ping: is_startup_baseline_ping(ping)
-            or ping["request_url"]["doc_type"] == "usage-reporting",
+            lambda ping: (
+                is_startup_baseline_ping(ping)
+                or ping["request_url"]["doc_type"] == "usage-reporting"
+            ),
             2,
             ping_server=self.fog_ping_server,
         )
 
         # First test that restarting the browser sends a "active" ping
-        received_pings = sorted(
-            [
-                ping0["request_url"]["doc_type"],
-                ping1["request_url"]["doc_type"],
-            ]
-        )
+        received_pings = sorted([
+            ping0["request_url"]["doc_type"],
+            ping1["request_url"]["doc_type"],
+        ])
         self.assertEqual(expected_pings, received_pings)
         if ping0["request_url"]["doc_type"] == "baseline":
             self.assertEqual("active", ping0["payload"]["ping_info"]["reason"])
@@ -94,24 +90,20 @@ class TestClientActivity(FOGTestCase):
             ping_server=self.fog_ping_server,
         )
 
-        received_pings = sorted(
-            [
-                ping2["request_url"]["doc_type"],
-                ping3["request_url"]["doc_type"],
-            ]
-        )
+        received_pings = sorted([
+            ping2["request_url"]["doc_type"],
+            ping3["request_url"]["doc_type"],
+        ])
         self.assertEqual(expected_pings, received_pings)
         if ping2["request_url"]["doc_type"] == "baseline":
             self.assertEqual("active", ping2["payload"]["ping_info"]["reason"])
         if ping3["request_url"]["doc_type"] == "baseline":
             self.assertEqual("active", ping3["payload"]["ping_info"]["reason"])
 
-        received_pings = sorted(
-            [
-                ping4["request_url"]["doc_type"],
-                ping5["request_url"]["doc_type"],
-            ]
-        )
+        received_pings = sorted([
+            ping4["request_url"]["doc_type"],
+            ping5["request_url"]["doc_type"],
+        ])
         self.assertEqual(expected_pings, received_pings)
         if ping4["request_url"]["doc_type"] == "baseline":
             self.assertEqual("inactive", ping4["payload"]["ping_info"]["reason"])

@@ -11,6 +11,7 @@ import android.widget.ImageView
 import android.widget.TextView
 import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlin.math.roundToInt
 import mozilla.components.concept.engine.EngineView
 import mozilla.components.concept.toolbar.ScrollableToolbar
 import mozilla.components.support.test.fakes.engine.FakeEngineView
@@ -53,9 +54,8 @@ class EngineViewClippingBehaviorTest {
 
         assertEquals(0f, engineParentView.translationY)
 
-        buildEngineViewClipping2Behavior(
-            bottomToolbarHeight = TOOLBAR_HEIGHT.toInt(),
-        ).applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
+        buildEngineViewClipping2Behavior(bottomToolbarHeight = TOOLBAR_HEIGHT.toInt())
+            .applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
 
         // We want to position the engine view popup content
         // right above the bottom toolbar when the toolbar
@@ -77,9 +77,8 @@ class EngineViewClippingBehaviorTest {
 
         assertEquals(0f, engineParentView.translationY)
 
-        buildEngineViewClipping2Behavior(
-            bottomToolbarHeight = TOOLBAR_HEIGHT.toInt(),
-        ).applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
+        buildEngineViewClipping2Behavior(bottomToolbarHeight = TOOLBAR_HEIGHT.toInt())
+            .applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
 
         // We want to position the engine view popup content
         // right above the bottom toolbar when the toolbar
@@ -102,9 +101,8 @@ class EngineViewClippingBehaviorTest {
 
         assertEquals(0f, engineParentView.translationY)
 
-        buildEngineViewClipping2Behavior(
-            topToolbarHeight = TOOLBAR_HEIGHT.toInt(),
-        ).applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
+        buildEngineViewClipping2Behavior(topToolbarHeight = TOOLBAR_HEIGHT.toInt())
+            .applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
 
         verify(engineView).setVerticalClipping(Y_UP_TRANSITION.toInt())
 
@@ -126,12 +124,13 @@ class EngineViewClippingBehaviorTest {
         doReturn(Y_DOWN_TRANSITION).`when`(toolbarContainerView).translationY
 
         buildEngineViewClipping2Behavior(
-            topToolbarHeight = TOOLBAR_HEIGHT.toInt(),
-            bottomToolbarHeight = TOOLBAR_HEIGHT.toInt(),
-        ).run {
-            applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
-            applyUpdatesDependentViewChanged(coordinatorLayout, toolbarContainerView)
-        }
+                topToolbarHeight = TOOLBAR_HEIGHT.toInt(),
+                bottomToolbarHeight = TOOLBAR_HEIGHT.toInt(),
+            )
+            .run {
+                applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
+                applyUpdatesDependentViewChanged(coordinatorLayout, toolbarContainerView)
+            }
 
         val doubleClipping = Y_UP_TRANSITION - Y_DOWN_TRANSITION
         verify(engineView).setVerticalClipping(doubleClipping.toInt())
@@ -146,12 +145,13 @@ class EngineViewClippingBehaviorTest {
         doReturn(Y_DOWN_TRANSITION).`when`(toolbarContainerView).translationY
 
         buildEngineViewClipping2Behavior(
-            topToolbarHeight = TOOLBAR_HEIGHT.toInt(),
-            bottomToolbarHeight = TOOLBAR_HEIGHT.toInt(),
-        ).run {
-            applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
-            applyUpdatesDependentViewChanged(coordinatorLayout, toolbarContainerView)
-        }
+                topToolbarHeight = TOOLBAR_HEIGHT.toInt(),
+                bottomToolbarHeight = TOOLBAR_HEIGHT.toInt(),
+            )
+            .run {
+                applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
+                applyUpdatesDependentViewChanged(coordinatorLayout, toolbarContainerView)
+            }
 
         // The top of the parent should be positioned right below the toolbar,
         // so when we are given the new Y position of the top of the toolbar,
@@ -172,12 +172,13 @@ class EngineViewClippingBehaviorTest {
         doReturn(largeYUpTransition).`when`(toolbar).translationY
 
         buildEngineViewClipping2Behavior(
-            topToolbarHeight = largeTopToolbarHeight,
-            bottomToolbarHeight = TOOLBAR_HEIGHT.toInt(),
-        ).run {
-            this.recentBottomToolbarTranslation = Y_DOWN_TRANSITION
-            applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
-        }
+                topToolbarHeight = largeTopToolbarHeight,
+                bottomToolbarHeight = TOOLBAR_HEIGHT.toInt(),
+            )
+            .run {
+                this.recentBottomToolbarTranslation = Y_DOWN_TRANSITION
+                applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
+            }
 
         val doubleClipping = largeYUpTransition - Y_DOWN_TRANSITION
         verify(engineView).setVerticalClipping(doubleClipping.toInt())
@@ -195,12 +196,13 @@ class EngineViewClippingBehaviorTest {
         doReturn(largeYBottomTransition).`when`(toolbarContainerView).translationY
 
         buildEngineViewClipping2Behavior(
-            topToolbarHeight = TOOLBAR_HEIGHT.toInt(),
-            bottomToolbarHeight = largeBottomToolbarTop,
-        ).run {
-            this.recentTopToolbarTranslation = Y_UP_TRANSITION
-            applyUpdatesDependentViewChanged(coordinatorLayout, toolbarContainerView)
-        }
+                topToolbarHeight = TOOLBAR_HEIGHT.toInt(),
+                bottomToolbarHeight = largeBottomToolbarTop,
+            )
+            .run {
+                this.recentTopToolbarTranslation = Y_UP_TRANSITION
+                applyUpdatesDependentViewChanged(coordinatorLayout, toolbarContainerView)
+            }
 
         val doubleClipping = Y_UP_TRANSITION - largeYBottomTransition
         verify(engineView).setVerticalClipping(doubleClipping.toInt())
@@ -220,12 +222,13 @@ class EngineViewClippingBehaviorTest {
         val bottomToolbarHeight = 10
 
         buildEngineViewClipping2Behavior(
-            topToolbarHeight = topToolbarHeight,
-            bottomToolbarHeight = bottomToolbarHeight,
-        ).run {
-            applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
-            applyUpdatesDependentViewChanged(coordinatorLayout, toolbarContainerView)
-        }
+                topToolbarHeight = topToolbarHeight,
+                bottomToolbarHeight = bottomToolbarHeight,
+            )
+            .run {
+                applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
+                applyUpdatesDependentViewChanged(coordinatorLayout, toolbarContainerView)
+            }
 
         // after just the top toolbar has moved
         verify(engineView).setVerticalClipping(-topToolbarHeight)
@@ -234,6 +237,24 @@ class EngineViewClippingBehaviorTest {
         // after the bottom toolbar has moved also
         verify(engineView).setVerticalClipping(-topToolbarHeight - bottomToolbarHeight)
         assertEquals(0f, engineParentView.translationY)
+    }
+
+    @Test
+    fun `GIVEN a top toolbar almost fully hidden THEN configure the engine view with a fully hidden toolbar`() {
+        doReturn(TOOLBAR_PARENT_HEIGHT).`when`(coordinatorLayout).height
+        doReturn(TOOLBAR_TOP_WHEN_POSITIONED_AT_TOP).`when`(toolbar).top
+        doReturn(TOOLBAR_TOP_WHEN_POSITIONED_AT_BOTTOM).`when`(toolbarContainerView).top
+        doReturn(-(TOOLBAR_HEIGHT + 1)).`when`(toolbar).translationY
+
+        buildEngineViewClipping2Behavior(
+                topToolbarHeight = TOOLBAR_HEIGHT.toInt(),
+                bottomToolbarHeight = 0,
+            )
+            .run {
+                applyUpdatesDependentViewChanged(coordinatorLayout, toolbar)
+            }
+
+        verify(engineView).setVerticalClipping(-TOOLBAR_HEIGHT.roundToInt())
     }
 
     @Test
@@ -269,21 +290,25 @@ class EngineViewClippingBehaviorTest {
         bottomToolbarHeight: Int = 0,
     ): EngineViewClippingBehavior {
         return EngineViewClippingBehavior(
-            context = mock(),
-            attrs = null,
-            engineViewParent = engineParentView,
-            topToolbarHeight = topToolbarHeight,
-            bottomToolbarHeight = bottomToolbarHeight,
-        ).apply {
-            engineView = this@EngineViewClippingBehaviorTest.engineView
-        }
+                context = mock(),
+                attrs = null,
+                engineViewParent = engineParentView,
+                topToolbarHeight = topToolbarHeight,
+                bottomToolbarHeight = bottomToolbarHeight,
+            )
+            .apply {
+                engineView = this@EngineViewClippingBehaviorTest.engineView
+            }
     }
 }
 
 private class TestToolbar(context: Context) : TextView(context), ScrollableToolbar {
     override fun enableScrolling() {}
+
     override fun disableScrolling() {}
+
     override fun expand() {}
+
     override fun collapse() {}
 }
 

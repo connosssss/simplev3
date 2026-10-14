@@ -11,6 +11,7 @@
 #include "pc/simulcast_sdp_serializer.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <map>
 #include <optional>
 #include <string>
@@ -19,6 +20,7 @@
 
 #include "absl/algorithm/container.h"
 #include "absl/strings/string_view.h"
+#include "api/payload_type.h"
 #include "api/rtc_error.h"
 #include "api/rtp_parameters.h"
 #include "media/base/codec.h"
@@ -33,11 +35,11 @@
 #include "rtc_base/string_to_number.h"
 #include "rtc_base/strings/string_builder.h"
 
-using cricket::RidDescription;
-using cricket::RidDirection;
-using cricket::SimulcastDescription;
-using cricket::SimulcastLayer;
-using cricket::SimulcastLayerList;
+using ::webrtc::RidDescription;
+using ::webrtc::RidDirection;
+using ::webrtc::SimulcastDescription;
+using ::webrtc::SimulcastLayer;
+using ::webrtc::SimulcastLayerList;
 
 namespace webrtc {
 
@@ -110,23 +112,28 @@ StringBuilder& operator<<(StringBuilder& builder,
 // sc-id        = [sc-id-paused] rid-id
 // rid-id       = 1*(alpha-numeric / "-" / "_") ; see: I-D.ietf-mmusic-rid
 RTCErrorOr<SimulcastLayerList> ParseSimulcastLayerList(const std::string& str) {
-  std::vector<absl::string_view> tokens =
-      rtc::split(str, kDelimiterSemicolonChar);
+  std::vector<absl::string_view> tokens = split(str, kDelimiterSemicolonChar);
   if (tokens.empty()) {
     return ParseError("Layer list cannot be empty.");
   }
 
   SimulcastLayerList result;
+  size_t total_rids = 0;
   for (const absl::string_view& token : tokens) {
     if (token.empty()) {
       return ParseError("Simulcast alternative layer list is empty.");
     }
 
     std::vector<absl::string_view> rid_tokens =
-        rtc::split(token, kDelimiterCommaChar);
+        split(token, kDelimiterCommaChar);
 
     if (rid_tokens.empty()) {
       return ParseError("Simulcast alternative layer list is malformed.");
+    }
+
+    total_rids += rid_tokens.size();
+    if (total_rids > kMaxSimulcastRids) {
+      return ParseError("Simulcast description contains too many RIDs.");
     }
 
     std::vector<SimulcastLayer> layers;
@@ -146,9 +153,9 @@ RTCErrorOr<SimulcastLayerList> ParseSimulcastLayerList(const std::string& str) {
   return std::move(result);
 }
 
-webrtc::RTCError ParseRidPayloadList(const std::string& payload_list,
-                                     RidDescription* rid_description,
-                                     std::vector<int>* rid_payload_types) {
+RTCError ParseRidPayloadList(const std::string& payload_list,
+                             RidDescription* rid_description,
+                             std::vector<int>* rid_payload_types) {
   RTC_DCHECK(rid_description);
   RTC_DCHECK(rid_payload_types);
   // Check that the description doesn't have any payload types or restrictions.
@@ -167,7 +174,7 @@ webrtc::RTCError ParseRidPayloadList(const std::string& payload_list,
 
   // Tokenize the ',' delimited list
   std::vector<std::string> string_payloads;
-  rtc::tokenize(payload_list, kDelimiterCommaChar, &string_payloads);
+  tokenize(payload_list, kDelimiterCommaChar, &string_payloads);
   if (string_payloads.empty()) {
     return ParseError("Payload list must have at least one value.");
   }
@@ -191,7 +198,7 @@ webrtc::RTCError ParseRidPayloadList(const std::string& payload_list,
 }  // namespace
 
 std::string SimulcastSdpSerializer::SerializeSimulcastDescription(
-    const cricket::SimulcastDescription& simulcast) const {
+    const SimulcastDescription& simulcast) const {
   StringBuilder sb;
   std::string delimiter;
 
@@ -223,7 +230,7 @@ RTCErrorOr<SimulcastDescription>
 SimulcastSdpSerializer::DeserializeSimulcastDescription(
     absl::string_view string) const {
   std::vector<std::string> tokens;
-  rtc::tokenize(std::string(string), kDelimiterSpaceChar, &tokens);
+  tokenize(std::string(string), kDelimiterSpaceChar, &tokens);
 
   if (tokens.size() != 2 && tokens.size() != 4) {
     return ParseError("Must have one or two <direction, streams> pairs.");
@@ -291,11 +298,11 @@ std::string SimulcastSdpSerializer::SerializeRidDescription(
   // looking up codecs from the media description, as opposed to trusting the
   // `rid_descriptions.codecs[i].id` directly as these are typically wrong.
   std::vector<int> payload_types;
-  for (const cricket::Codec& codec : rid_description.codecs) {
+  for (const Codec& codec : rid_description.codecs) {
     RtpCodec rtp_codec = codec.ToCodecParameters();
     const auto it = std::find_if(
         media_desc.codecs().begin(), media_desc.codecs().end(),
-        [&rtp_codec](const cricket::Codec& m_section_codec) {
+        [&rtp_codec](const Codec& m_section_codec) {
           return IsSameRtpCodecIgnoringLevel(m_section_codec, rtp_codec);
         });
     // The desired codec from setParameters() may not have been negotiated, e.g.
@@ -303,7 +310,7 @@ std::string SimulcastSdpSerializer::SerializeRidDescription(
     if (it == media_desc.codecs().end()) {
       break;
     }
-    if (it->id == cricket::Codec::kIdNotSet) {
+    if (it->id == PayloadType::NotSet()) {
       RTC_DCHECK_NOTREACHED();
       break;
     }
@@ -356,7 +363,7 @@ RTCErrorOr<RidDescription> SimulcastSdpSerializer::DeserializeRidDescription(
     const MediaContentDescription& media_desc,
     absl::string_view string) const {
   std::vector<std::string> tokens;
-  rtc::tokenize(std::string(string), kDelimiterSpaceChar, &tokens);
+  tokenize(std::string(string), kDelimiterSpaceChar, &tokens);
 
   if (tokens.size() < 2) {
     return ParseError("RID Description must contain <RID> <direction>.");
@@ -383,7 +390,7 @@ RTCErrorOr<RidDescription> SimulcastSdpSerializer::DeserializeRidDescription(
   // If there is a third argument it is a payload list and/or restriction list.
   if (tokens.size() == 3) {
     std::vector<std::string> restrictions;
-    rtc::tokenize(tokens[2], kDelimiterSemicolonChar, &restrictions);
+    tokenize(tokens[2], kDelimiterSemicolonChar, &restrictions);
 
     // Check for malformed restriction list, such as ';' or ';;;' etc.
     if (restrictions.empty()) {
@@ -393,7 +400,7 @@ RTCErrorOr<RidDescription> SimulcastSdpSerializer::DeserializeRidDescription(
     // Parse the restrictions. The payload indicator (pt) can only appear first.
     for (const std::string& restriction : restrictions) {
       std::vector<std::string> parts;
-      rtc::tokenize(restriction, kDelimiterEqualChar, &parts);
+      tokenize(restriction, kDelimiterEqualChar, &parts);
       if (parts.empty() || parts.size() > 2) {
         return ParseError("Invalid format for restriction: " + restriction);
       }
@@ -429,7 +436,7 @@ RTCErrorOr<RidDescription> SimulcastSdpSerializer::DeserializeRidDescription(
   for (const int& payload_type : rid_payload_types) {
     const auto it =
         std::find_if(media_desc.codecs().begin(), media_desc.codecs().end(),
-                     [&payload_type](const cricket::Codec& m_section_codec) {
+                     [&payload_type](const Codec& m_section_codec) {
                        return m_section_codec.id == payload_type;
                      });
     if (it == media_desc.codecs().end()) {

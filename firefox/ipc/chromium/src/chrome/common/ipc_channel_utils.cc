@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30,7 +28,7 @@ void AddIPCProfilerMarker(const Message& aMessage, int32_t aOtherPid,
     }
 
     // The current timestamp must be given to the `IPCMarker` payload.
-    [[maybe_unused]] const mozilla::TimeStamp now = mozilla::TimeStamp::Now();
+    const mozilla::TimeStamp now = mozilla::TimeStamp::Now();
     bool isThreadBeingProfiled =
         profiler_thread_is_being_profiled_for_markers();
     PROFILER_MARKER(

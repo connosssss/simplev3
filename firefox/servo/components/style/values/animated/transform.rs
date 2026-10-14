@@ -8,20 +8,21 @@
 
 use super::animate_multiplicative_factor;
 use super::{Animate, Procedure, ToAnimatedZero};
+use crate::Zero;
+use crate::derives::*;
+use crate::values::CSSFloat;
+use crate::values::computed::Angle;
 use crate::values::computed::transform::Rotate as ComputedRotate;
 use crate::values::computed::transform::Scale as ComputedScale;
 use crate::values::computed::transform::Transform as ComputedTransform;
 use crate::values::computed::transform::TransformOperation as ComputedTransformOperation;
 use crate::values::computed::transform::Translate as ComputedTranslate;
 use crate::values::computed::transform::{DirectionVector, Matrix, Matrix3D};
-use crate::values::computed::Angle;
 use crate::values::computed::{Length, LengthPercentage};
 use crate::values::computed::{Number, Percentage};
 use crate::values::distance::{ComputeSquaredDistance, SquaredDistance};
 use crate::values::generics::transform::{self, Transform, TransformOperation};
 use crate::values::generics::transform::{Rotate, Scale, Translate};
-use crate::values::CSSFloat;
-use crate::Zero;
 use std::cmp;
 use std::ops::Add;
 
@@ -29,8 +30,7 @@ use std::ops::Add;
 // Animations for Matrix/Matrix3D.
 // ------------------------------------
 /// A 2d matrix for interpolation.
-#[derive(Clone, ComputeSquaredDistance, Copy, Debug)]
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
+#[derive(Clone, ComputeSquaredDistance, Copy, Debug, MallocSizeOf)]
 #[allow(missing_docs)]
 // FIXME: We use custom derive for ComputeSquaredDistance. However, If possible, we should convert
 // the InnerMatrix2D into types with physical meaning. This custom derive computes the squared
@@ -55,13 +55,11 @@ impl Animate for InnerMatrix2D {
 }
 
 /// A 2d translation function.
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
-#[derive(Animate, Clone, ComputeSquaredDistance, Copy, Debug)]
+#[derive(Animate, Clone, ComputeSquaredDistance, Copy, Debug, MallocSizeOf)]
 pub struct Translate2D(f32, f32);
 
 /// A 2d scale function.
-#[derive(Clone, ComputeSquaredDistance, Copy, Debug)]
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
+#[derive(Clone, ComputeSquaredDistance, Copy, Debug, MallocSizeOf)]
 pub struct Scale2D(f32, f32);
 
 impl Animate for Scale2D {
@@ -74,8 +72,7 @@ impl Animate for Scale2D {
 }
 
 /// A decomposed 2d matrix.
-#[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
+#[derive(Clone, Copy, Debug, MallocSizeOf)]
 pub struct MatrixDecomposed2D {
     /// The translation function.
     pub translate: Translate2D,
@@ -139,10 +136,10 @@ impl ComputeSquaredDistance for MatrixDecomposed2D {
         const RAD_PER_DEG: f64 = std::f64::consts::PI / 180.0;
         let angle1 = self.angle as f64 * RAD_PER_DEG;
         let angle2 = other.angle as f64 * RAD_PER_DEG;
-        Ok(self.translate.compute_squared_distance(&other.translate)? +
-            self.scale.compute_squared_distance(&other.scale)? +
-            angle1.compute_squared_distance(&angle2)? +
-            self.matrix.compute_squared_distance(&other.matrix)?)
+        Ok(self.translate.compute_squared_distance(&other.translate)?
+            + self.scale.compute_squared_distance(&other.scale)?
+            + angle1.compute_squared_distance(&angle2)?
+            + self.matrix.compute_squared_distance(&other.matrix)?)
     }
 }
 
@@ -206,9 +203,9 @@ impl From<Matrix3D> for MatrixDecomposed2D {
         // Convert into degrees because our rotation functions expect it.
         angle = angle.to_degrees();
         MatrixDecomposed2D {
-            translate: translate,
-            scale: scale,
-            angle: angle,
+            translate,
+            scale,
+            angle,
             matrix: m,
         }
     }
@@ -252,18 +249,6 @@ impl From<MatrixDecomposed2D> for Matrix3D {
 }
 
 impl Animate for Matrix {
-    #[cfg(feature = "servo")]
-    fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
-        let this = Matrix3D::from(*self);
-        let other = Matrix3D::from(*other);
-        let this = MatrixDecomposed2D::from(this);
-        let other = MatrixDecomposed2D::from(other);
-        Matrix3D::from(this.animate(&other, procedure)?).into_2d()
-    }
-
-    #[cfg(feature = "gecko")]
-    // Gecko doesn't exactly follow the spec here; we use a different procedure
-    // to match it
     fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
         let this = Matrix3D::from(*self);
         let other = Matrix3D::from(*other);
@@ -274,13 +259,11 @@ impl Animate for Matrix {
 }
 
 /// A 3d translation.
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
-#[derive(Animate, Clone, ComputeSquaredDistance, Copy, Debug)]
+#[derive(Animate, Clone, ComputeSquaredDistance, Copy, Debug, MallocSizeOf)]
 pub struct Translate3D(pub f32, pub f32, pub f32);
 
 /// A 3d scale function.
-#[derive(Clone, ComputeSquaredDistance, Copy, Debug)]
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
+#[derive(Clone, ComputeSquaredDistance, Copy, Debug, MallocSizeOf)]
 pub struct Scale3D(pub f32, pub f32, pub f32);
 
 impl Scale3D {
@@ -303,8 +286,7 @@ impl Animate for Scale3D {
 }
 
 /// A 3d skew function.
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
-#[derive(Animate, Clone, Copy, Debug)]
+#[derive(Animate, Clone, Copy, Debug, MallocSizeOf)]
 pub struct Skew(f32, f32, f32);
 
 impl ComputeSquaredDistance for Skew {
@@ -312,15 +294,14 @@ impl ComputeSquaredDistance for Skew {
     // ComputeSquaredDistance manually.
     #[inline]
     fn compute_squared_distance(&self, other: &Self) -> Result<SquaredDistance, ()> {
-        Ok(self.0.atan().compute_squared_distance(&other.0.atan())? +
-            self.1.atan().compute_squared_distance(&other.1.atan())? +
-            self.2.atan().compute_squared_distance(&other.2.atan())?)
+        Ok(self.0.atan().compute_squared_distance(&other.0.atan())?
+            + self.1.atan().compute_squared_distance(&other.1.atan())?
+            + self.2.atan().compute_squared_distance(&other.2.atan())?)
     }
 }
 
 /// A 3d perspective transformation.
-#[derive(Clone, ComputeSquaredDistance, Copy, Debug)]
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
+#[derive(Clone, ComputeSquaredDistance, Copy, Debug, MallocSizeOf)]
 pub struct Perspective(pub f32, pub f32, pub f32, pub f32);
 
 impl Animate for Perspective {
@@ -335,8 +316,7 @@ impl Animate for Perspective {
 }
 
 /// A quaternion used to represent a rotation.
-#[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
+#[derive(Clone, Copy, Debug, MallocSizeOf)]
 pub struct Quaternion(f64, f64, f64, f64);
 
 impl Quaternion {
@@ -355,8 +335,8 @@ impl Quaternion {
         let half_angle = angle
             .abs()
             .rem_euclid(std::f64::consts::TAU)
-            .copysign(angle) /
-            2.;
+            .copysign(angle)
+            / 2.;
 
         // Reference:
         // https://en.wikipedia.org/wiki/Quaternions_and_spatial_rotation
@@ -412,9 +392,9 @@ impl Animate for Quaternion {
         debug_assert!(
             // Doule EPSILON since both this_weight and other_weght have calculation errors
             // which are approximately equal to EPSILON.
-            (this_weight + other_weight - 1.0f64).abs() <= f64::EPSILON * 2.0 ||
-                other_weight == 1.0f64 ||
-                other_weight == 0.0f64,
+            (this_weight + other_weight - 1.0f64).abs() <= f64::EPSILON * 2.0
+                || other_weight == 1.0f64
+                || other_weight == 0.0f64,
             "animate should only be used for interpolating or accumulating transforms"
         );
 
@@ -498,8 +478,7 @@ impl ComputeSquaredDistance for Quaternion {
 }
 
 /// A decomposed 3d matrix.
-#[derive(Animate, Clone, ComputeSquaredDistance, Copy, Debug)]
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
+#[derive(Animate, Clone, ComputeSquaredDistance, Copy, Debug, MallocSizeOf)]
 pub struct MatrixDecomposed3D {
     /// A translation function.
     pub translate: Translate3D,
@@ -725,128 +704,125 @@ fn decompose_3d_matrix(mut matrix: Matrix3D) -> Result<MatrixDecomposed3D, ()> {
     })
 }
 
-/**
- * The relevant section of the transitions specification:
- * https://drafts.csswg.org/web-animations-1/#animation-types
- * http://dev.w3.org/csswg/css3-transitions/#animation-of-property-types-
- * defers all of the details to the 2-D and 3-D transforms specifications.
- * For the 2-D transforms specification (all that's relevant for us, right
- * now), the relevant section is:
- * https://drafts.csswg.org/css-transforms-1/#interpolation-of-transforms
- * This, in turn, refers to the unmatrix program in Graphics Gems,
- * available from http://graphicsgems.org/ , and in
- * particular as the file GraphicsGems/gemsii/unmatrix.c
- * in http://graphicsgems.org/AllGems.tar.gz
- *
- * The unmatrix reference is for general 3-D transform matrices (any of the
- * 16 components can have any value).
- *
- * For CSS 2-D transforms, we have a 2-D matrix with the bottom row constant:
- *
- * [ A C E ]
- * [ B D F ]
- * [ 0 0 1 ]
- *
- * For that case, I believe the algorithm in unmatrix reduces to:
- *
- *  (1) If A * D - B * C == 0, the matrix is singular.  Fail.
- *
- *  (2) Set translation components (Tx and Ty) to the translation parts of
- *      the matrix (E and F) and then ignore them for the rest of the time.
- *      (For us, E and F each actually consist of three constants:  a
- *      length, a multiplier for the width, and a multiplier for the
- *      height.  This actually requires its own decomposition, but I'll
- *      keep that separate.)
- *
- *  (3) Let the X scale (Sx) be sqrt(A^2 + B^2).  Then divide both A and B
- *      by it.
- *
- *  (4) Let the XY shear (K) be A * C + B * D.  From C, subtract A times
- *      the XY shear.  From D, subtract B times the XY shear.
- *
- *  (5) Let the Y scale (Sy) be sqrt(C^2 + D^2).  Divide C, D, and the XY
- *      shear (K) by it.
- *
- *  (6) At this point, A * D - B * C is either 1 or -1.  If it is -1,
- *      negate the XY shear (K), the X scale (Sx), and A, B, C, and D.
- *      (Alternatively, we could negate the XY shear (K) and the Y scale
- *      (Sy).)
- *
- *  (7) Let the rotation be R = atan2(B, A).
- *
- * Then the resulting decomposed transformation is:
- *
- *   translate(Tx, Ty) rotate(R) skewX(atan(K)) scale(Sx, Sy)
- *
- * An interesting result of this is that all of the simple transform
- * functions (i.e., all functions other than matrix()), in isolation,
- * decompose back to themselves except for:
- *   'skewY(φ)', which is 'matrix(1, tan(φ), 0, 1, 0, 0)', which decomposes
- *   to 'rotate(φ) skewX(φ) scale(sec(φ), cos(φ))' since (ignoring the
- *   alternate sign possibilities that would get fixed in step 6):
- *     In step 3, the X scale factor is sqrt(1+tan²(φ)) = sqrt(sec²(φ)) =
- * sec(φ). Thus, after step 3, A = 1/sec(φ) = cos(φ) and B = tan(φ) / sec(φ) =
- * sin(φ). In step 4, the XY shear is sin(φ). Thus, after step 4, C =
- * -cos(φ)sin(φ) and D = 1 - sin²(φ) = cos²(φ). Thus, in step 5, the Y scale is
- * sqrt(cos²(φ)(sin²(φ) + cos²(φ)) = cos(φ). Thus, after step 5, C = -sin(φ), D
- * = cos(φ), and the XY shear is tan(φ). Thus, in step 6, A * D - B * C =
- * cos²(φ) + sin²(φ) = 1. In step 7, the rotation is thus φ.
- *
- *   skew(θ, φ), which is matrix(1, tan(φ), tan(θ), 1, 0, 0), which decomposes
- *   to 'rotate(φ) skewX(θ + φ) scale(sec(φ), cos(φ))' since (ignoring
- *   the alternate sign possibilities that would get fixed in step 6):
- *     In step 3, the X scale factor is sqrt(1+tan²(φ)) = sqrt(sec²(φ)) =
- * sec(φ). Thus, after step 3, A = 1/sec(φ) = cos(φ) and B = tan(φ) / sec(φ) =
- * sin(φ). In step 4, the XY shear is cos(φ)tan(θ) + sin(φ). Thus, after step 4,
- *     C = tan(θ) - cos(φ)(cos(φ)tan(θ) + sin(φ)) = tan(θ)sin²(φ) - cos(φ)sin(φ)
- *     D = 1 - sin(φ)(cos(φ)tan(θ) + sin(φ)) = cos²(φ) - sin(φ)cos(φ)tan(θ)
- *     Thus, in step 5, the Y scale is sqrt(C² + D²) =
- *     sqrt(tan²(θ)(sin⁴(φ) + sin²(φ)cos²(φ)) -
- *          2 tan(θ)(sin³(φ)cos(φ) + sin(φ)cos³(φ)) +
- *          (sin²(φ)cos²(φ) + cos⁴(φ))) =
- *     sqrt(tan²(θ)sin²(φ) - 2 tan(θ)sin(φ)cos(φ) + cos²(φ)) =
- *     cos(φ) - tan(θ)sin(φ) (taking the negative of the obvious solution so
- *     we avoid flipping in step 6).
- *     After step 5, C = -sin(φ) and D = cos(φ), and the XY shear is
- *     (cos(φ)tan(θ) + sin(φ)) / (cos(φ) - tan(θ)sin(φ)) =
- *     (dividing both numerator and denominator by cos(φ))
- *     (tan(θ) + tan(φ)) / (1 - tan(θ)tan(φ)) = tan(θ + φ).
- *     (See http://en.wikipedia.org/wiki/List_of_trigonometric_identities .)
- *     Thus, in step 6, A * D - B * C = cos²(φ) + sin²(φ) = 1.
- *     In step 7, the rotation is thus φ.
- *
- *     To check this result, we can multiply things back together:
- *
- *     [ cos(φ) -sin(φ) ] [ 1 tan(θ + φ) ] [ sec(φ)    0   ]
- *     [ sin(φ)  cos(φ) ] [ 0      1     ] [   0    cos(φ) ]
- *
- *     [ cos(φ)      cos(φ)tan(θ + φ) - sin(φ) ] [ sec(φ)    0   ]
- *     [ sin(φ)      sin(φ)tan(θ + φ) + cos(φ) ] [   0    cos(φ) ]
- *
- *     but since tan(θ + φ) = (tan(θ) + tan(φ)) / (1 - tan(θ)tan(φ)),
- *     cos(φ)tan(θ + φ) - sin(φ)
- *      = cos(φ)(tan(θ) + tan(φ)) - sin(φ) + sin(φ)tan(θ)tan(φ)
- *      = cos(φ)tan(θ) + sin(φ) - sin(φ) + sin(φ)tan(θ)tan(φ)
- *      = cos(φ)tan(θ) + sin(φ)tan(θ)tan(φ)
- *      = tan(θ) (cos(φ) + sin(φ)tan(φ))
- *      = tan(θ) sec(φ) (cos²(φ) + sin²(φ))
- *      = tan(θ) sec(φ)
- *     and
- *     sin(φ)tan(θ + φ) + cos(φ)
- *      = sin(φ)(tan(θ) + tan(φ)) + cos(φ) - cos(φ)tan(θ)tan(φ)
- *      = tan(θ) (sin(φ) - sin(φ)) + sin(φ)tan(φ) + cos(φ)
- *      = sec(φ) (sin²(φ) + cos²(φ))
- *      = sec(φ)
- *     so the above is:
- *     [ cos(φ)  tan(θ) sec(φ) ] [ sec(φ)    0   ]
- *     [ sin(φ)     sec(φ)     ] [   0    cos(φ) ]
- *
- *     [    1   tan(θ) ]
- *     [ tan(φ)    1   ]
- */
-
-/// Decompose a 2D matrix for Gecko. This implements the above decomposition algorithm.
-#[cfg(feature = "gecko")]
+/// Decompose a 2D matrix.
+///
+/// The relevant section of the transitions specification:
+/// https://drafts.csswg.org/web-animations-1/#animation-types
+/// http://dev.w3.org/csswg/css3-transitions/#animation-of-property-types-
+/// defers all of the details to the 2-D and 3-D transforms specifications.
+/// For the 2-D transforms specification (all that's relevant for us, right
+/// now), the relevant section is:
+/// https://drafts.csswg.org/css-transforms-1/#interpolation-of-transforms
+/// This, in turn, refers to the unmatrix program in Graphics Gems,
+/// available from http://graphicsgems.org/ , and in
+/// particular as the file GraphicsGems/gemsii/unmatrix.c
+/// in http://graphicsgems.org/AllGems.tar.gz
+///
+/// The unmatrix reference is for general 3-D transform matrices (any of the
+/// 16 components can have any value).
+///
+/// For CSS 2-D transforms, we have a 2-D matrix with the bottom row constant:
+///
+/// [ A C E ]
+/// [ B D F ]
+/// [ 0 0 1 ]
+///
+/// For that case, I believe the algorithm in unmatrix reduces to:
+///
+///  (1) If A * D - B * C == 0, the matrix is singular.  Fail.
+///
+///  (2) Set translation components (Tx and Ty) to the translation parts of
+///      the matrix (E and F) and then ignore them for the rest of the time.
+///      (For us, E and F each actually consist of three constants:  a
+///      length, a multiplier for the width, and a multiplier for the
+///      height.  This actually requires its own decomposition, but I'll
+///      keep that separate.)
+///
+///  (3) Let the X scale (Sx) be sqrt(A^2 + B^2).  Then divide both A and B
+///      by it.
+///
+///  (4) Let the XY shear (K) be A * C + B * D.  From C, subtract A times
+///      the XY shear.  From D, subtract B times the XY shear.
+///
+///  (5) Let the Y scale (Sy) be sqrt(C^2 + D^2).  Divide C, D, and the XY
+///      shear (K) by it.
+///
+///  (6) At this point, A * D - B * C is either 1 or -1.  If it is -1,
+///      negate the XY shear (K), the X scale (Sx), and A, B, C, and D.
+///      (Alternatively, we could negate the XY shear (K) and the Y scale
+///      (Sy).)
+///
+///  (7) Let the rotation be R = atan2(B, A).
+///
+/// Then the resulting decomposed transformation is:
+///
+///   translate(Tx, Ty) rotate(R) skewX(atan(K)) scale(Sx, Sy)
+///
+/// An interesting result of this is that all of the simple transform
+/// functions (i.e., all functions other than matrix()), in isolation,
+/// decompose back to themselves except for:
+///   'skewY(φ)', which is 'matrix(1, tan(φ), 0, 1, 0, 0)', which decomposes
+///   to 'rotate(φ) skewX(φ) scale(sec(φ), cos(φ))' since (ignoring the
+///   alternate sign possibilities that would get fixed in step 6):
+///     In step 3, the X scale factor is sqrt(1+tan²(φ)) = sqrt(sec²(φ)) =
+/// sec(φ). Thus, after step 3, A = 1/sec(φ) = cos(φ) and B = tan(φ) / sec(φ) =
+/// sin(φ). In step 4, the XY shear is sin(φ). Thus, after step 4, C =
+/// -cos(φ)sin(φ) and D = 1 - sin²(φ) = cos²(φ). Thus, in step 5, the Y scale is
+/// sqrt(cos²(φ)(sin²(φ) + cos²(φ)) = cos(φ). Thus, after step 5, C = -sin(φ), D
+/// = cos(φ), and the XY shear is tan(φ). Thus, in step 6, A * D - B * C =
+/// cos²(φ) + sin²(φ) = 1. In step 7, the rotation is thus φ.
+///
+///   skew(θ, φ), which is matrix(1, tan(φ), tan(θ), 1, 0, 0), which decomposes
+///   to 'rotate(φ) skewX(θ + φ) scale(sec(φ), cos(φ))' since (ignoring
+///   the alternate sign possibilities that would get fixed in step 6):
+///     In step 3, the X scale factor is sqrt(1+tan²(φ)) = sqrt(sec²(φ)) =
+/// sec(φ). Thus, after step 3, A = 1/sec(φ) = cos(φ) and B = tan(φ) / sec(φ) =
+/// sin(φ). In step 4, the XY shear is cos(φ)tan(θ) + sin(φ). Thus, after step 4,
+///     C = tan(θ) - cos(φ)(cos(φ)tan(θ) + sin(φ)) = tan(θ)sin²(φ) - cos(φ)sin(φ)
+///     D = 1 - sin(φ)(cos(φ)tan(θ) + sin(φ)) = cos²(φ) - sin(φ)cos(φ)tan(θ)
+///     Thus, in step 5, the Y scale is sqrt(C² + D²) =
+///     sqrt(tan²(θ)(sin⁴(φ) + sin²(φ)cos²(φ)) -
+///          2 tan(θ)(sin³(φ)cos(φ) + sin(φ)cos³(φ)) +
+///          (sin²(φ)cos²(φ) + cos⁴(φ))) =
+///     sqrt(tan²(θ)sin²(φ) - 2 tan(θ)sin(φ)cos(φ) + cos²(φ)) =
+///     cos(φ) - tan(θ)sin(φ) (taking the negative of the obvious solution so
+///     we avoid flipping in step 6).
+///     After step 5, C = -sin(φ) and D = cos(φ), and the XY shear is
+///     (cos(φ)tan(θ) + sin(φ)) / (cos(φ) - tan(θ)sin(φ)) =
+///     (dividing both numerator and denominator by cos(φ))
+///     (tan(θ) + tan(φ)) / (1 - tan(θ)tan(φ)) = tan(θ + φ).
+///     (See http://en.wikipedia.org/wiki/List_of_trigonometric_identities .)
+///     Thus, in step 6, A * D - B * C = cos²(φ) + sin²(φ) = 1.
+///     In step 7, the rotation is thus φ.
+///
+///     To check this result, we can multiply things back together:
+///
+///     [ cos(φ) -sin(φ) ] [ 1 tan(θ + φ) ] [ sec(φ)    0   ]
+///     [ sin(φ)  cos(φ) ] [ 0      1     ] [   0    cos(φ) ]
+///
+///     [ cos(φ)      cos(φ)tan(θ + φ) - sin(φ) ] [ sec(φ)    0   ]
+///     [ sin(φ)      sin(φ)tan(θ + φ) + cos(φ) ] [   0    cos(φ) ]
+///
+///     but since tan(θ + φ) = (tan(θ) + tan(φ)) / (1 - tan(θ)tan(φ)),
+///     cos(φ)tan(θ + φ) - sin(φ)
+///      = cos(φ)(tan(θ) + tan(φ)) - sin(φ) + sin(φ)tan(θ)tan(φ)
+///      = cos(φ)tan(θ) + sin(φ) - sin(φ) + sin(φ)tan(θ)tan(φ)
+///      = cos(φ)tan(θ) + sin(φ)tan(θ)tan(φ)
+///      = tan(θ) (cos(φ) + sin(φ)tan(φ))
+///      = tan(θ) sec(φ) (cos²(φ) + sin²(φ))
+///      = tan(θ) sec(φ)
+///     and
+///     sin(φ)tan(θ + φ) + cos(φ)
+///      = sin(φ)(tan(θ) + tan(φ)) + cos(φ) - cos(φ)tan(θ)tan(φ)
+///      = tan(θ) (sin(φ) - sin(φ)) + sin(φ)tan(φ) + cos(φ)
+///      = sec(φ) (sin²(φ) + cos²(φ))
+///      = sec(φ)
+///     so the above is:
+///     [ cos(φ)  tan(θ) sec(φ) ] [ sec(φ)    0   ]
+///     [ sin(φ)     sec(φ)     ] [   0    cos(φ) ]
+///
+///     [    1   tan(θ) ]
+///     [ tan(φ)    1   ]
 fn decompose_2d_matrix(matrix: &Matrix3D) -> Result<MatrixDecomposed3D, ()> {
     // The index is column-major, so the equivalent transform matrix is:
     // | m11 m21  0 m41 |  =>  | m11 m21 | and translate(m41, m42)
@@ -899,28 +875,6 @@ fn decompose_2d_matrix(matrix: &Matrix3D) -> Result<MatrixDecomposed3D, ()> {
 }
 
 impl Animate for Matrix3D {
-    #[cfg(feature = "servo")]
-    fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
-        if self.is_3d() || other.is_3d() {
-            let decomposed_from = decompose_3d_matrix(*self);
-            let decomposed_to = decompose_3d_matrix(*other);
-            match (decomposed_from, decomposed_to) {
-                (Ok(this), Ok(other)) => Ok(Matrix3D::from(this.animate(&other, procedure)?)),
-                // Matrices can be undecomposable due to couple reasons, e.g.,
-                // non-invertible matrices. In this case, we should report Err
-                // here, and let the caller do the fallback procedure.
-                _ => Err(()),
-            }
-        } else {
-            let this = MatrixDecomposed2D::from(*self);
-            let other = MatrixDecomposed2D::from(*other);
-            Ok(Matrix3D::from(this.animate(&other, procedure)?))
-        }
-    }
-
-    #[cfg(feature = "gecko")]
-    // Gecko doesn't exactly follow the spec here; we use a different procedure
-    // to match it
     fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
         let (from, to) = if self.is_3d() || other.is_3d() {
             (decompose_3d_matrix(*self)?, decompose_3d_matrix(*other)?)
@@ -936,21 +890,6 @@ impl Animate for Matrix3D {
 
 impl ComputeSquaredDistance for Matrix3D {
     #[inline]
-    #[cfg(feature = "servo")]
-    fn compute_squared_distance(&self, other: &Self) -> Result<SquaredDistance, ()> {
-        if self.is_3d() || other.is_3d() {
-            let from = decompose_3d_matrix(*self)?;
-            let to = decompose_3d_matrix(*other)?;
-            from.compute_squared_distance(&to)
-        } else {
-            let from = MatrixDecomposed2D::from(*self);
-            let to = MatrixDecomposed2D::from(*other);
-            from.compute_squared_distance(&to)
-        }
-    }
-
-    #[inline]
-    #[cfg(feature = "gecko")]
     fn compute_squared_distance(&self, other: &Self) -> Result<SquaredDistance, ()> {
         let (from, to) = if self.is_3d() || other.is_3d() {
             (decompose_3d_matrix(*self)?, decompose_3d_matrix(*other)?)
@@ -969,17 +908,17 @@ fn is_matched_operation(
     second: &ComputedTransformOperation,
 ) -> bool {
     match (first, second) {
-        (&TransformOperation::Matrix(..), &TransformOperation::Matrix(..)) |
-        (&TransformOperation::Matrix3D(..), &TransformOperation::Matrix3D(..)) |
-        (&TransformOperation::Skew(..), &TransformOperation::Skew(..)) |
-        (&TransformOperation::SkewX(..), &TransformOperation::SkewX(..)) |
-        (&TransformOperation::SkewY(..), &TransformOperation::SkewY(..)) |
-        (&TransformOperation::Rotate(..), &TransformOperation::Rotate(..)) |
-        (&TransformOperation::Rotate3D(..), &TransformOperation::Rotate3D(..)) |
-        (&TransformOperation::RotateX(..), &TransformOperation::RotateX(..)) |
-        (&TransformOperation::RotateY(..), &TransformOperation::RotateY(..)) |
-        (&TransformOperation::RotateZ(..), &TransformOperation::RotateZ(..)) |
-        (&TransformOperation::Perspective(..), &TransformOperation::Perspective(..)) => true,
+        (&TransformOperation::Matrix(..), &TransformOperation::Matrix(..))
+        | (&TransformOperation::Matrix3D(..), &TransformOperation::Matrix3D(..))
+        | (&TransformOperation::Skew(..), &TransformOperation::Skew(..))
+        | (&TransformOperation::SkewX(..), &TransformOperation::SkewX(..))
+        | (&TransformOperation::SkewY(..), &TransformOperation::SkewY(..))
+        | (&TransformOperation::Rotate(..), &TransformOperation::Rotate(..))
+        | (&TransformOperation::Rotate3D(..), &TransformOperation::Rotate3D(..))
+        | (&TransformOperation::RotateX(..), &TransformOperation::RotateX(..))
+        | (&TransformOperation::RotateY(..), &TransformOperation::RotateY(..))
+        | (&TransformOperation::RotateZ(..), &TransformOperation::RotateZ(..))
+        | (&TransformOperation::Perspective(..), &TransformOperation::Perspective(..)) => true,
         // Match functions that have the same primitive transform function
         (a, b) if a.is_translate() && b.is_translate() => true,
         (a, b) if a.is_scale() && b.is_scale() => true,
@@ -1049,8 +988,8 @@ impl Animate for ComputedTransform {
                             let identity = transform.to_animated_zero().unwrap();
 
                             match transform {
-                                TransformOperation::AccumulateMatrix { .. } |
-                                TransformOperation::InterpolateMatrix { .. } => {
+                                TransformOperation::AccumulateMatrix { .. }
+                                | TransformOperation::InterpolateMatrix { .. } => {
                                     let (from, to) = if fill_right {
                                         (transform, &identity)
                                     } else {
@@ -1058,8 +997,8 @@ impl Animate for ComputedTransform {
                                     };
 
                                     TransformOperation::animate_mismatched_transforms(
-                                        &[from.clone()],
-                                        &[to.clone()],
+                                        std::slice::from_ref(from),
+                                        std::slice::from_ref(to),
                                         procedure,
                                     )
                                 },
@@ -1108,75 +1047,66 @@ impl ComputeSquaredDistance for ComputedTransform {
 impl Animate for ComputedTransformOperation {
     fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
         match (self, other) {
-            (&TransformOperation::Matrix3D(ref this), &TransformOperation::Matrix3D(ref other)) => {
-                Ok(TransformOperation::Matrix3D(
-                    this.animate(other, procedure)?,
-                ))
-            },
-            (&TransformOperation::Matrix(ref this), &TransformOperation::Matrix(ref other)) => {
+            (TransformOperation::Matrix3D(this), TransformOperation::Matrix3D(other)) => Ok(
+                TransformOperation::Matrix3D(this.animate(other, procedure)?),
+            ),
+            (TransformOperation::Matrix(this), TransformOperation::Matrix(other)) => {
                 Ok(TransformOperation::Matrix(this.animate(other, procedure)?))
             },
-            (
-                &TransformOperation::Skew(ref fx, ref fy),
-                &TransformOperation::Skew(ref tx, ref ty),
-            ) => Ok(TransformOperation::Skew(
-                fx.animate(tx, procedure)?,
-                fy.animate(ty, procedure)?,
-            )),
-            (&TransformOperation::SkewX(ref f), &TransformOperation::SkewX(ref t)) => {
+            (TransformOperation::Skew(fx, fy), TransformOperation::Skew(tx, ty)) => Ok(
+                TransformOperation::Skew(fx.animate(tx, procedure)?, fy.animate(ty, procedure)?),
+            ),
+            (TransformOperation::SkewX(f), TransformOperation::SkewX(t)) => {
                 Ok(TransformOperation::SkewX(f.animate(t, procedure)?))
             },
-            (&TransformOperation::SkewY(ref f), &TransformOperation::SkewY(ref t)) => {
+            (TransformOperation::SkewY(f), TransformOperation::SkewY(t)) => {
                 Ok(TransformOperation::SkewY(f.animate(t, procedure)?))
             },
             (
-                &TransformOperation::Translate3D(ref fx, ref fy, ref fz),
-                &TransformOperation::Translate3D(ref tx, ref ty, ref tz),
+                TransformOperation::Translate3D(fx, fy, fz),
+                TransformOperation::Translate3D(tx, ty, tz),
             ) => Ok(TransformOperation::Translate3D(
                 fx.animate(tx, procedure)?,
                 fy.animate(ty, procedure)?,
                 fz.animate(tz, procedure)?,
             )),
-            (
-                &TransformOperation::Translate(ref fx, ref fy),
-                &TransformOperation::Translate(ref tx, ref ty),
-            ) => Ok(TransformOperation::Translate(
-                fx.animate(tx, procedure)?,
-                fy.animate(ty, procedure)?,
-            )),
-            (&TransformOperation::TranslateX(ref f), &TransformOperation::TranslateX(ref t)) => {
+            (TransformOperation::Translate(fx, fy), TransformOperation::Translate(tx, ty)) => {
+                Ok(TransformOperation::Translate(
+                    fx.animate(tx, procedure)?,
+                    fy.animate(ty, procedure)?,
+                ))
+            },
+            (TransformOperation::TranslateX(f), TransformOperation::TranslateX(t)) => {
                 Ok(TransformOperation::TranslateX(f.animate(t, procedure)?))
             },
-            (&TransformOperation::TranslateY(ref f), &TransformOperation::TranslateY(ref t)) => {
+            (TransformOperation::TranslateY(f), TransformOperation::TranslateY(t)) => {
                 Ok(TransformOperation::TranslateY(f.animate(t, procedure)?))
             },
-            (&TransformOperation::TranslateZ(ref f), &TransformOperation::TranslateZ(ref t)) => {
+            (TransformOperation::TranslateZ(f), TransformOperation::TranslateZ(t)) => {
                 Ok(TransformOperation::TranslateZ(f.animate(t, procedure)?))
             },
-            (
-                &TransformOperation::Scale3D(ref fx, ref fy, ref fz),
-                &TransformOperation::Scale3D(ref tx, ref ty, ref tz),
-            ) => Ok(TransformOperation::Scale3D(
-                animate_multiplicative_factor(*fx, *tx, procedure)?,
-                animate_multiplicative_factor(*fy, *ty, procedure)?,
-                animate_multiplicative_factor(*fz, *tz, procedure)?,
-            )),
-            (&TransformOperation::ScaleX(ref f), &TransformOperation::ScaleX(ref t)) => Ok(
+            (TransformOperation::Scale3D(fx, fy, fz), TransformOperation::Scale3D(tx, ty, tz)) => {
+                Ok(TransformOperation::Scale3D(
+                    animate_multiplicative_factor(*fx, *tx, procedure)?,
+                    animate_multiplicative_factor(*fy, *ty, procedure)?,
+                    animate_multiplicative_factor(*fz, *tz, procedure)?,
+                ))
+            },
+            (TransformOperation::ScaleX(f), TransformOperation::ScaleX(t)) => Ok(
                 TransformOperation::ScaleX(animate_multiplicative_factor(*f, *t, procedure)?),
             ),
-            (&TransformOperation::ScaleY(ref f), &TransformOperation::ScaleY(ref t)) => Ok(
+            (TransformOperation::ScaleY(f), TransformOperation::ScaleY(t)) => Ok(
                 TransformOperation::ScaleY(animate_multiplicative_factor(*f, *t, procedure)?),
             ),
-            (&TransformOperation::ScaleZ(ref f), &TransformOperation::ScaleZ(ref t)) => Ok(
+            (TransformOperation::ScaleZ(f), TransformOperation::ScaleZ(t)) => Ok(
                 TransformOperation::ScaleZ(animate_multiplicative_factor(*f, *t, procedure)?),
             ),
-            (
-                &TransformOperation::Scale(ref fx, ref fy),
-                &TransformOperation::Scale(ref tx, ref ty),
-            ) => Ok(TransformOperation::Scale(
-                animate_multiplicative_factor(*fx, *tx, procedure)?,
-                animate_multiplicative_factor(*fy, *ty, procedure)?,
-            )),
+            (TransformOperation::Scale(fx, fy), TransformOperation::Scale(tx, ty)) => {
+                Ok(TransformOperation::Scale(
+                    animate_multiplicative_factor(*fx, *tx, procedure)?,
+                    animate_multiplicative_factor(*fy, *ty, procedure)?,
+                ))
+            },
             (
                 &TransformOperation::Rotate3D(fx, fy, fz, fa),
                 &TransformOperation::Rotate3D(tx, ty, tz, ta),
@@ -1204,10 +1134,7 @@ impl Animate for ComputedTransformOperation {
             (&TransformOperation::RotateZ(fa), &TransformOperation::Rotate(ta)) => {
                 Ok(TransformOperation::Rotate(fa.animate(&ta, procedure)?))
             },
-            (
-                &TransformOperation::Perspective(ref fd),
-                &TransformOperation::Perspective(ref td),
-            ) => {
+            (TransformOperation::Perspective(fd), TransformOperation::Perspective(td)) => {
                 use crate::values::computed::CSSPixelLength;
                 use crate::values::generics::transform::create_perspective_matrix;
 
@@ -1292,7 +1219,7 @@ impl ComputedTransformOperation {
             Procedure::Accumulate { count } => Self::AccumulateMatrix {
                 from_list,
                 to_list,
-                count: cmp::min(count, i32::max_value() as u64) as i32,
+                count: cmp::min(count, i32::MAX as u64) as i32,
             },
         })
     }
@@ -1305,25 +1232,24 @@ impl ComputedTransformOperation {
 impl ComputeSquaredDistance for ComputedTransformOperation {
     fn compute_squared_distance(&self, other: &Self) -> Result<SquaredDistance, ()> {
         match (self, other) {
-            (&TransformOperation::Matrix3D(ref this), &TransformOperation::Matrix3D(ref other)) => {
+            (TransformOperation::Matrix3D(this), TransformOperation::Matrix3D(other)) => {
                 this.compute_squared_distance(other)
             },
-            (&TransformOperation::Matrix(ref this), &TransformOperation::Matrix(ref other)) => {
+            (TransformOperation::Matrix(this), TransformOperation::Matrix(other)) => {
                 let this: Matrix3D = (*this).into();
                 let other: Matrix3D = (*other).into();
                 this.compute_squared_distance(&other)
             },
-            (
-                &TransformOperation::Skew(ref fx, ref fy),
-                &TransformOperation::Skew(ref tx, ref ty),
-            ) => Ok(fx.compute_squared_distance(&tx)? + fy.compute_squared_distance(&ty)?),
-            (&TransformOperation::SkewX(ref f), &TransformOperation::SkewX(ref t)) |
-            (&TransformOperation::SkewY(ref f), &TransformOperation::SkewY(ref t)) => {
-                f.compute_squared_distance(&t)
+            (TransformOperation::Skew(fx, fy), TransformOperation::Skew(tx, ty)) => {
+                Ok(fx.compute_squared_distance(tx)? + fy.compute_squared_distance(ty)?)
+            },
+            (&TransformOperation::SkewX(ref f), &TransformOperation::SkewX(ref t))
+            | (&TransformOperation::SkewY(ref f), &TransformOperation::SkewY(ref t)) => {
+                f.compute_squared_distance(t)
             },
             (
-                &TransformOperation::Translate3D(ref fx, ref fy, ref fz),
-                &TransformOperation::Translate3D(ref tx, ref ty, ref tz),
+                TransformOperation::Translate3D(fx, fy, fz),
+                TransformOperation::Translate3D(tx, ty, tz),
             ) => {
                 // For translate, We don't want to require doing layout in order
                 // to calculate the result, so drop the percentage part.
@@ -1337,35 +1263,31 @@ impl ComputeSquaredDistance for ComputedTransformOperation {
                 let tx = tx.resolve(basis).px();
                 let ty = ty.resolve(basis).px();
 
-                Ok(fx.compute_squared_distance(&tx)? +
-                    fy.compute_squared_distance(&ty)? +
-                    fz.compute_squared_distance(&tz)?)
+                Ok(fx.compute_squared_distance(&tx)?
+                    + fy.compute_squared_distance(&ty)?
+                    + fz.compute_squared_distance(tz)?)
             },
-            (
-                &TransformOperation::Scale3D(ref fx, ref fy, ref fz),
-                &TransformOperation::Scale3D(ref tx, ref ty, ref tz),
-            ) => Ok(fx.compute_squared_distance(&tx)? +
-                fy.compute_squared_distance(&ty)? +
-                fz.compute_squared_distance(&tz)?),
+            (TransformOperation::Scale3D(fx, fy, fz), TransformOperation::Scale3D(tx, ty, tz)) => {
+                Ok(fx.compute_squared_distance(tx)?
+                    + fy.compute_squared_distance(ty)?
+                    + fz.compute_squared_distance(tz)?)
+            },
             (
                 &TransformOperation::Rotate3D(fx, fy, fz, fa),
                 &TransformOperation::Rotate3D(tx, ty, tz, ta),
             ) => Rotate::Rotate3D(fx, fy, fz, fa)
                 .compute_squared_distance(&Rotate::Rotate3D(tx, ty, tz, ta)),
-            (&TransformOperation::RotateX(fa), &TransformOperation::RotateX(ta)) |
-            (&TransformOperation::RotateY(fa), &TransformOperation::RotateY(ta)) |
-            (&TransformOperation::RotateZ(fa), &TransformOperation::RotateZ(ta)) |
-            (&TransformOperation::Rotate(fa), &TransformOperation::Rotate(ta)) => {
+            (&TransformOperation::RotateX(fa), &TransformOperation::RotateX(ta))
+            | (&TransformOperation::RotateY(fa), &TransformOperation::RotateY(ta))
+            | (&TransformOperation::RotateZ(fa), &TransformOperation::RotateZ(ta))
+            | (&TransformOperation::Rotate(fa), &TransformOperation::Rotate(ta)) => {
                 fa.compute_squared_distance(&ta)
             },
-            (
-                &TransformOperation::Perspective(ref fd),
-                &TransformOperation::Perspective(ref td),
-            ) => fd
+            (TransformOperation::Perspective(fd), TransformOperation::Perspective(td)) => fd
                 .infinity_or(|l| l.px())
                 .compute_squared_distance(&td.infinity_or(|l| l.px())),
-            (&TransformOperation::Perspective(ref p), &TransformOperation::Matrix3D(ref m)) |
-            (&TransformOperation::Matrix3D(ref m), &TransformOperation::Perspective(ref p)) => {
+            (&TransformOperation::Perspective(ref p), &TransformOperation::Matrix3D(ref m))
+            | (&TransformOperation::Matrix3D(ref m), &TransformOperation::Perspective(ref p)) => {
                 // FIXME(emilio): Is this right? Why interpolating this with
                 // Perspective but not with anything else?
                 let mut p_matrix = Matrix3D::identity();
@@ -1373,7 +1295,7 @@ impl ComputeSquaredDistance for ComputedTransformOperation {
                 if p >= 0. {
                     p_matrix.m34 = -1. / p.max(1.);
                 }
-                p_matrix.compute_squared_distance(&m)
+                p_matrix.compute_squared_distance(m)
             },
             // Gecko cross-interpolates amongst all translate and all scale
             // functions (See ToPrimitive in layout/style/StyleAnimationValue.cpp)
@@ -1439,7 +1361,7 @@ impl Animate for ComputedRotate {
                     Angle::zero().animate(&ta, procedure)?,
                 ))
             },
-            (&Rotate::Rotate3D(_, ..), _) | (_, &Rotate::Rotate3D(_, ..)) => {
+            (&Rotate::Rotate3D(..), _) | (_, &Rotate::Rotate3D(..)) => {
                 // https://drafts.csswg.org/css-transforms-2/#interpolation-of-transform-functions
 
                 let (from, to) = (self.resolve(), other.resolve());
@@ -1509,12 +1431,13 @@ impl Animate for ComputedRotate {
                     Quaternion::animate(&fq, &tq, procedure)?
                 };
 
-                debug_assert!(rq.3 <= 1.0 && rq.3 >= -1.0, "Invalid cosine value");
                 let (x, y, z, angle) = transform::get_normalized_vector_and_angle(
                     rq.0 as f32,
                     rq.1 as f32,
                     rq.2 as f32,
-                    rq.3.acos() as f32 * 2.0,
+                    // Due to floating point precision issues, the quaternion may contain values
+                    // slightly larger out of the [-1.0, 1.0] range - Clamp to avoid NaN.
+                    rq.3.clamp(-1.0, 1.0).acos() as f32 * 2.0,
                 );
 
                 Ok(Rotate::Rotate3D(x, y, z, Angle::from_radians(angle)))
@@ -1534,11 +1457,11 @@ impl ComputeSquaredDistance for ComputedRotate {
         use euclid::approxeq::ApproxEq;
         match (self, other) {
             (&Rotate::None, &Rotate::None) => Ok(SquaredDistance::from_sqrt(0.)),
-            (&Rotate::Rotate3D(_, _, _, a), &Rotate::None) |
-            (&Rotate::None, &Rotate::Rotate3D(_, _, _, a)) => {
+            (&Rotate::Rotate3D(_, _, _, a), &Rotate::None)
+            | (&Rotate::None, &Rotate::Rotate3D(_, _, _, a)) => {
                 a.compute_squared_distance(&Angle::zero())
             },
-            (&Rotate::Rotate3D(_, ..), _) | (_, &Rotate::Rotate3D(_, ..)) => {
+            (&Rotate::Rotate3D(..), _) | (_, &Rotate::Rotate3D(..)) => {
                 let (from, to) = (self.resolve(), other.resolve());
                 let (mut fx, mut fy, mut fz, angle1) =
                     transform::get_normalized_vector_and_angle(from.0, from.1, from.2, from.3);
@@ -1585,7 +1508,7 @@ impl ComputedTranslate {
                 LengthPercentage::zero(),
                 Length::zero(),
             ),
-            Translate::Translate(ref tx, ref ty, ref tz) => (tx.clone(), ty.clone(), tz.clone()),
+            Translate::Translate(ref tx, ref ty, ref tz) => (tx.clone(), ty.clone(), *tz),
         }
     }
 }
@@ -1595,7 +1518,7 @@ impl Animate for ComputedTranslate {
     fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
         match (self, other) {
             (&Translate::None, &Translate::None) => Ok(Translate::None),
-            (&Translate::Translate(_, ..), _) | (_, &Translate::Translate(_, ..)) => {
+            (&Translate::Translate(..), _) | (_, &Translate::Translate(..)) => {
                 let (from, to) = (self.resolve(), other.resolve());
                 Ok(Translate::Translate(
                     from.0.animate(&to.0, procedure)?,
@@ -1611,9 +1534,9 @@ impl ComputeSquaredDistance for ComputedTranslate {
     #[inline]
     fn compute_squared_distance(&self, other: &Self) -> Result<SquaredDistance, ()> {
         let (from, to) = (self.resolve(), other.resolve());
-        Ok(from.0.compute_squared_distance(&to.0)? +
-            from.1.compute_squared_distance(&to.1)? +
-            from.2.compute_squared_distance(&to.2)?)
+        Ok(from.0.compute_squared_distance(&to.0)?
+            + from.1.compute_squared_distance(&to.1)?
+            + from.2.compute_squared_distance(&to.2)?)
     }
 }
 
@@ -1636,7 +1559,7 @@ impl Animate for ComputedScale {
     fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
         match (self, other) {
             (&Scale::None, &Scale::None) => Ok(Scale::None),
-            (&Scale::Scale(_, ..), _) | (_, &Scale::Scale(_, ..)) => {
+            (&Scale::Scale(..), _) | (_, &Scale::Scale(..)) => {
                 let (from, to) = (self.resolve(), other.resolve());
                 // For transform lists, we add by appending to the list of
                 // transform functions. However, ComputedScale cannot be
@@ -1660,8 +1583,8 @@ impl ComputeSquaredDistance for ComputedScale {
     #[inline]
     fn compute_squared_distance(&self, other: &Self) -> Result<SquaredDistance, ()> {
         let (from, to) = (self.resolve(), other.resolve());
-        Ok(from.0.compute_squared_distance(&to.0)? +
-            from.1.compute_squared_distance(&to.1)? +
-            from.2.compute_squared_distance(&to.2)?)
+        Ok(from.0.compute_squared_distance(&to.0)?
+            + from.1.compute_squared_distance(&to.1)?
+            + from.2.compute_squared_distance(&to.2)?)
     }
 }

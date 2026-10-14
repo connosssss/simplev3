@@ -7,7 +7,9 @@
 
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
+#include <stack>
 #include <unordered_map>
 #include <vector>
 
@@ -19,49 +21,62 @@ namespace v8 {
 namespace internal {
 
 // V8::Zone ~= LifoAlloc
-class Zone {
+class MOZ_STACK_CLASS Zone {
  public:
-  Zone(js::LifoAlloc& alloc) : lifoAlloc_(alloc) {}
+  Zone(js::LifoAlloc* alloc, const char* name = "") : allocScope_(alloc) {}
 
   template <typename T, typename... Args>
   T* New(Args&&... args) {
-    js::LifoAlloc::AutoFallibleScope fallible(&lifoAlloc_);
+    js::LifoAlloc::AutoFallibleScope fallible(&inner());
     js::AutoEnterOOMUnsafeRegion oomUnsafe;
-    void* memory = lifoAlloc_.alloc(sizeof(T));
+    void* memory = inner().alloc(sizeof(T));
     if (!memory) {
-      oomUnsafe.crash("Irregexp Zone::New");
+      oomUnsafe.crash(sizeof(T), "Irregexp Zone::New");
     }
     return new (memory) T(std::forward<Args>(args)...);
   }
 
   // Allocates uninitialized memory for 'length' number of T instances.
   template <typename T>
-  T* NewArray(size_t length) {
-    js::LifoAlloc::AutoFallibleScope fallible(&lifoAlloc_);
+  T* AllocateArray(size_t length) {
+    js::LifoAlloc::AutoFallibleScope fallible(&inner());
     js::AutoEnterOOMUnsafeRegion oomUnsafe;
-    size_t numBytes = length * sizeof(T);
-    if (MOZ_UNLIKELY(numBytes > INT_MAX)) {
-      oomUnsafe.crash("Irregexp Zone::New");
+    size_t numBytes;
+    if (!mozilla::SafeMul(length, sizeof(T), &numBytes) ||
+        numBytes > INT32_MAX) {
+      oomUnsafe.crash("Irregexp Zone::AllocateArray");
     }
-    void* memory = lifoAlloc_.alloc(length * sizeof(T));
+    void* memory = inner().alloc(numBytes);
     if (MOZ_UNLIKELY(!memory)) {
-      oomUnsafe.crash("Irregexp Zone::New");
+      oomUnsafe.crash(numBytes, "Irregexp Zone::AllocateArray");
     }
     return static_cast<T*>(memory);
   }
 
-  void DeleteAll() { lifoAlloc_.freeAll(); }
+  // Allocates a copy of 'v' in this zone and returns a view over it.
+  template <typename T>
+  base::Vector<T> CloneVector(base::Vector<const T> v) {
+    size_t length = v.size();
+    if (length == 0) {
+      return {};
+    }
+    T* new_array = AllocateArray<T>(length);
+    std::uninitialized_copy(v.begin(), v.end(), new_array);
+    return base::Vector<T>(new_array, length);
+  }
+
+  void DeleteAll() { inner().freeAll(); }
 
   // Returns true if the total memory allocated exceeds a threshold.
   static const size_t kExcessLimit = 256 * 1024 * 1024;
-  bool excess_allocation() const {
-    return lifoAlloc_.computedSizeOfExcludingThis() > kExcessLimit;
+  bool excess_allocation() {
+    return inner().computedSizeOfExcludingThis() > kExcessLimit;
   }
 
-  js::LifoAlloc& inner() { return lifoAlloc_; }
+  js::LifoAlloc& inner() { return allocScope_.alloc(); }
 
  private:
-  js::LifoAlloc& lifoAlloc_;
+  js::LifoAllocScope allocScope_;
 };
 
 // Superclass for classes allocated in a Zone.
@@ -99,7 +114,7 @@ class ZoneList final : public ZoneObject {
   // Construct a new ZoneList with the given capacity; the length is
   // always zero. The capacity must be non-negative.
   ZoneList(int capacity, Zone* zone) : capacity_(capacity) {
-    data_ = (capacity_ > 0) ? zone->NewArray<T>(capacity_) : nullptr;
+    data_ = (capacity_ > 0) ? zone->AllocateArray<T>(capacity_) : nullptr;
   }
   // Construct a new ZoneList by copying the elements of the given ZoneList.
   ZoneList(const ZoneList<T>& other, Zone* zone)
@@ -229,9 +244,13 @@ class ZoneList final : public ZoneObject {
   template <typename CompareFunction>
   void StableSort(CompareFunction cmp, size_t start, size_t length) {
     js::AutoEnterOOMUnsafeRegion oomUnsafe;
-    T* scratch = static_cast<T*>(js_malloc(length * sizeof(T)));
-    if (!scratch) {
+    size_t numBytes;
+    if (!mozilla::SafeMul(length, sizeof(T), &numBytes)) {
       oomUnsafe.crash("Irregexp stable sort scratch space");
+    }
+    T* scratch = static_cast<T*>(js_malloc(numBytes));
+    if (!scratch) {
+      oomUnsafe.crash(numBytes, "Irregexp stable sort scratch space");
     }
     auto comparator = [cmp](const T& a, const T& b, bool* lessOrEqual) {
       *lessOrEqual = cmp(&a, &b) <= 0;
@@ -268,7 +287,7 @@ class ZoneList final : public ZoneObject {
   void Resize(int new_capacity, Zone* zone) {
     MOZ_ASSERT(length_ <= new_capacity);
     static_assert(std::is_trivially_copyable<T>::value);
-    T* new_data = zone->NewArray<T>(new_capacity);
+    T* new_data = zone->AllocateArray<T>(new_capacity);
     if (length_ > 0) {
       memcpy(new_data, data_, length_ * sizeof(T));
     }
@@ -304,15 +323,10 @@ class ZoneAllocator {
   template <typename U>
   friend class ZoneAllocator;
 
-  T* allocate(size_t n) { return zone_->NewArray<T>(n); }
+  T* allocate(size_t n) { return zone_->AllocateArray<T>(n); }
   void deallocate(T* p, size_t) {}  // noop for zones
 
-  bool operator==(ZoneAllocator const& other) const {
-    return zone_ == other.zone_;
-  }
-  bool operator!=(ZoneAllocator const& other) const {
-    return zone_ != other.zone_;
-  }
+  bool operator==(ZoneAllocator const& other) const = default;
 
   using Policy = js::LifoAllocPolicy<js::Fallible>;
   Policy policy() const {
@@ -341,6 +355,11 @@ class ZoneVector : public std::vector<T, ZoneAllocator<T>> {
   ZoneVector(size_t size, Zone* zone)
       : std::vector<T, ZoneAllocator<T>>(size, T(), ZoneAllocator<T>(zone)) {}
 
+  // Constructs a new vector and fills it with {size} elements, each
+  // having the value {def}.
+  ZoneVector(size_t size, T def, Zone* zone)
+      : std::vector<T, ZoneAllocator<T>>(size, def, ZoneAllocator<T>(zone)) {}
+
   // Constructs a new vector and fills it with the contents of the range
   // [first, last).
   template <class Iter>
@@ -357,6 +376,16 @@ class ZoneLinkedList : public std::list<T, ZoneAllocator<T>> {
   // Constructs an empty list.
   explicit ZoneLinkedList(Zone* zone)
       : std::list<T, ZoneAllocator<T>>(ZoneAllocator<T>(zone)) {}
+};
+
+// A wrapper subclass for std::stack to make it easy to construct one
+// that uses a zone allocator.
+template <typename T>
+class ZoneStack : public std::stack<T, ZoneVector<T>> {
+ public:
+  // Constructs an empty stack.
+  explicit ZoneStack(Zone* zone)
+      : std::stack<T, ZoneVector<T>>(ZoneVector<T>(zone)) {}
 };
 
 // A wrapper subclass for std::set to make it easy to construct one that uses

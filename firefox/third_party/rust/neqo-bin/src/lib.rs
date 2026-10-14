@@ -4,18 +4,24 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 use std::{
-    fmt::{self, Display},
+    fs::OpenOptions,
+    io::Write as _,
     net::{SocketAddr, ToSocketAddrs as _},
-    path::PathBuf,
-    time::Duration,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
-use clap::Parser;
+use clap::{Parser, builder::TypedValueParser as _};
+use neqo_common::{qerror, qinfo};
 use neqo_transport::{
-    tparams::PreferredAddress, CongestionControlAlgorithm, ConnectionParameters, StreamType,
-    Version,
+    CongestionControl, ConnectionParameters, DEFAULT_INITIAL_RTT, SlowStart, Stats, StreamType,
+    Version, tparams::PreferredAddress,
 };
+use strum::VariantNames as _;
+use thiserror::Error;
 
 pub mod client;
 mod send_data;
@@ -27,7 +33,7 @@ pub mod udp;
 /// See `network.buffer.cache.size` pref <https://searchfox.org/mozilla-central/rev/f6e3b81aac49e602f06c204f9278da30993cdc8a/modules/libpref/init/all.js#3212>
 const STREAM_IO_BUFFER_SIZE: usize = 32 * 1024;
 
-#[derive(Debug, Parser)]
+#[derive(Clone, Debug, Parser)]
 pub struct SharedArgs {
     #[command(flatten)]
     verbose: Option<clap_verbosity_flag::Verbosity>,
@@ -62,6 +68,14 @@ pub struct SharedArgs {
 
     #[command(flatten)]
     quic_parameters: QuicParameters,
+
+    /// Log connection stats as JSON when a connection closes.
+    #[arg(name = "stats", long)]
+    stats: bool,
+
+    /// Append connection stats to this file as JSON, one record per line. Implies `--stats`.
+    #[arg(name = "stats-file", long)]
+    stats_file: Option<PathBuf>,
 }
 
 #[cfg(any(test, feature = "bench"))]
@@ -77,11 +91,25 @@ impl Default for SharedArgs {
             ciphers: vec![],
             qns_test: None,
             quic_parameters: QuicParameters::default(),
+            stats: false,
+            stats_file: None,
         }
     }
 }
 
-#[derive(Debug, Parser)]
+impl SharedArgs {
+    #[must_use]
+    pub fn get_alpn(&self) -> &str {
+        &self.alpn
+    }
+
+    /// Whether to report connection stats; `--stats-file` implies `--stats`.
+    const fn stats_enabled(&self) -> bool {
+        self.stats || self.stats_file.is_some()
+    }
+}
+
+#[derive(Clone, Debug, Parser)]
 pub struct QuicParameters {
     #[arg(
         short = 'Q',
@@ -109,9 +137,21 @@ pub struct QuicParameters {
     /// The idle timeout for connections, in seconds.
     pub idle_timeout: u64,
 
-    #[arg(long = "cc", default_value = "cubic")]
-    /// The congestion controller to use.
-    pub congestion_control: CongestionControlAlgorithm,
+    #[arg(long = "init_rtt", default_value_t = DEFAULT_INITIAL_RTT.as_millis() as u64)]
+    /// The initial round-trip time, in milliseconds.
+    pub initial_rtt_ms: u64,
+
+    #[arg(long = "cc", default_value = "cubic",
+        value_parser = clap::builder::PossibleValuesParser::new(CongestionControl::VARIANTS)
+            .map(|s| s.parse::<CongestionControl>().unwrap()))]
+    /// The congestion control algorithm to use.
+    pub congestion_control: CongestionControl,
+
+    #[arg(long = "ss", default_value = "classic",
+        value_parser = clap::builder::PossibleValuesParser::new(SlowStart::VARIANTS)
+            .map(|s| s.parse::<SlowStart>().unwrap()))]
+    /// The slow start algorithm to use.
+    pub slow_start: SlowStart,
 
     #[arg(long = "no-pacing")]
     /// Whether to disable pacing.
@@ -142,7 +182,10 @@ impl Default for QuicParameters {
             max_streams_bidi: 16,
             max_streams_uni: 16,
             idle_timeout: 30,
-            congestion_control: CongestionControlAlgorithm::Cubic,
+            initial_rtt_ms: u64::try_from(DEFAULT_INITIAL_RTT.as_millis())
+                .expect("this value will always be less than u64::MAX"),
+            congestion_control: CongestionControl::Cubic,
+            slow_start: SlowStart::Classic,
             no_pacing: false,
             no_pmtud: false,
             preferred_address_v4: None,
@@ -218,7 +261,9 @@ impl QuicParameters {
             .max_streams(StreamType::BiDi, self.max_streams_bidi)
             .max_streams(StreamType::UniDi, self.max_streams_uni)
             .idle_timeout(Duration::from_secs(self.idle_timeout))
-            .cc_algorithm(self.congestion_control)
+            .initial_rtt(Duration::from_millis(self.initial_rtt_ms))
+            .congestion_control(self.congestion_control)
+            .slow_start(self.slow_start)
             .pacing(!self.no_pacing)
             .pmtud(!self.no_pmtud)
             .sni_slicing(!self.no_sni_slicing);
@@ -252,44 +297,79 @@ fn from_str(s: &str) -> Result<Version, Error> {
     Version::try_from(v).map_err(|_| Error::Argument("unknown version"))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
+    #[error("Error: {0}")]
     Argument(&'static str),
 }
 
-impl Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Error: {self:?}")?;
-        Ok(())
+/// Wrapper for [`Instant::now()`] to manage the `disallowed_methods` override.
+fn now() -> Instant {
+    #![expect(clippy::disallowed_methods, reason = "This program uses the time")]
+    Instant::now()
+}
+
+/// Report `stats` as JSON: a line appended to `path`, or indented into the log.
+pub(crate) fn report_stats(stats: &Stats, path: Option<&Path>) {
+    let json = if path.is_some() {
+        serde_json::to_string(stats)
+    } else {
+        serde_json::to_string_pretty(stats)
+    };
+    let mut json = match json {
+        Ok(json) => json,
+        Err(e) => {
+            qerror!("Failed to serialize stats: {e}");
+            return;
+        }
+    };
+    let Some(path) = path else {
+        qinfo!("{json}");
+        return;
+    };
+    json.push('\n'); // Append the record in one write.
+    if let Err(e) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(json.as_bytes()))
+    {
+        qerror!("Failed to report stats to {}: {e}", path.display());
     }
 }
 
-impl std::error::Error for Error {}
-
+/// A directory that deletes itself.
 #[cfg(test)]
-mod tests {
-    use std::{fs, path::PathBuf, str::FromStr as _, time::SystemTime};
+pub(crate) mod temp_dir {
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+        time::SystemTime,
+    };
 
-    use crate::{client, server};
-
-    struct TempDir {
+    pub struct TempDir {
         path: PathBuf,
     }
 
     impl TempDir {
-        fn new() -> Self {
+        pub fn new() -> Self {
+            // The name has to be unique per instance and process.
+            static SEQ: AtomicUsize = AtomicUsize::new(0);
             let dir = std::env::temp_dir().join(format!(
-                "neqo-bin-test-{}",
+                "neqo-bin-test-{}-{}-{}",
+                std::process::id(),
                 SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap()
-                    .as_secs()
+                    .as_millis(),
+                SEQ.fetch_add(1, Ordering::Relaxed)
             ));
             fs::create_dir_all(&dir).unwrap();
             Self { path: dir }
         }
 
-        fn path(&self) -> PathBuf {
+        pub fn path(&self) -> PathBuf {
             self.path.clone()
         }
     }
@@ -301,20 +381,29 @@ mod tests {
             }
         }
     }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use std::fs;
+
+    use crate::{Stats, client, report_stats, server, temp_dir::TempDir};
 
     #[tokio::test]
+    #[cfg_attr(target_os = "netbsd", ignore = "FIXME: Test fails on NetBSD.")]
     async fn write_qlog_file() {
-        neqo_crypto::init_db(PathBuf::from_str("../test-fixture/db").unwrap()).unwrap();
+        test_fixture::fixture_init();
 
         let temp_dir = TempDir::new();
 
-        let mut client_args = client::Args::new(&[1], false);
+        let mut client_args = client::Args::new(None, 1, 0, 1);
         client_args.set_qlog_dir(temp_dir.path());
         let mut server_args = server::Args::default();
         server_args.set_qlog_dir(temp_dir.path());
 
         let client = client::client(client_args);
-        let server = Box::pin(server::server(server_args));
+        let (server, _local_addrs) = server::run(server_args).unwrap();
         tokio::select! {
             _ = client => {}
             res = server  => panic!("expect server not to terminate: {res:?}"),
@@ -332,5 +421,29 @@ mod tests {
             assert!(metadata.is_file(), "expect a file, found something else");
             assert!(metadata.len() > 0, "expect file not be empty");
         }
+    }
+
+    #[test]
+    fn report_stats_appends_json_lines() {
+        let dir = TempDir::new();
+        let path = dir.path().join("stats.json");
+
+        report_stats(&Stats::default(), Some(&path));
+        let first = fs::read_to_string(&path).unwrap();
+        report_stats(&Stats::default(), Some(&path));
+        let second = fs::read_to_string(&path).unwrap();
+
+        assert!(second.starts_with(&first), "must append, not truncate");
+        let lines: Vec<_> = second.lines().collect();
+        assert_eq!(lines.len(), 2, "one record per call");
+        for line in lines {
+            serde_json::from_str::<serde_json::Value>(line).expect("each line is a JSON record");
+        }
+    }
+
+    #[test]
+    fn report_stats_to_unwritable_path_is_not_fatal() {
+        let dir = TempDir::new();
+        report_stats(&Stats::default(), Some(&dir.path()));
     }
 }

@@ -1,17 +1,14 @@
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 "use strict";
 
-const isAndroid = AppConstants.platform == "android";
-
 XPCOMUtils.defineLazyServiceGetter(
   this,
   "peuService",
   "@mozilla.org/partitioning/exception-list-service;1",
-  "nsIPartitioningExceptionListService"
+  Ci.nsIPartitioningExceptionListService
 );
 
 const TEST_REDIRECT_TOP_PAGE =
@@ -29,11 +26,7 @@ const EXCEPTION_LIST_PREF_NAME = "privacy.restrict3rdpartystorage.skip_list";
 
 async function cleanup() {
   Services.prefs.clearUserPref(EXCEPTION_LIST_PREF_NAME);
-  await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
-      resolve()
-    );
-  });
+  await clearSiteTestData();
 }
 
 add_setup(async function () {
@@ -42,11 +35,11 @@ add_setup(async function () {
     set: [
       [
         "network.cookie.cookieBehavior",
-        Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN,
+        Ci.nsICookieService.BEHAVIOR_PARTITION_FOREIGN,
       ],
       [
         "network.cookie.cookieBehavior.pbmode",
-        Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN,
+        Ci.nsICookieService.BEHAVIOR_PARTITION_FOREIGN,
       ],
       ["privacy.restrict3rdpartystorage.heuristic.redirect", false],
       ["privacy.trackingprotection.enabled", false],
@@ -88,8 +81,8 @@ function executeContentScript(browser, callback, options = {}) {
             once: true,
           });
 
-          content.document.body.appendChild(ifr);
           ifr.src = obj.page;
+          content.document.body.appendChild(ifr);
         } else {
           // first-party
           let runnableStr = `(() => {return (${obj.callback});})();`;
@@ -196,8 +189,8 @@ async function runTestRedirectHeuristic(disableHeuristics) {
         false,
       ],
       ["privacy.restrict3rdpartystorage.heuristic.window_open", false],
-      ["privacy.restrict3rdpartystorage.heuristic.recently_visited", isAndroid],
-      ["privacy.restrict3rdpartystorage.heuristic.navigation", !isAndroid],
+      ["privacy.restrict3rdpartystorage.heuristic.recently_visited", false],
+      ["privacy.restrict3rdpartystorage.heuristic.navigation", true],
       ["privacy.restrict3rdpartystorage.heuristic.redirect", false],
       ["privacy.antitracking.enableWebcompat", !disableHeuristics],
     ],
@@ -294,8 +287,8 @@ async function runTestRedirectHeuristicWithoutInteraction() {
 
   await SpecialPowers.pushPrefEnv({
     set: [
-      ["privacy.restrict3rdpartystorage.heuristic.recently_visited", isAndroid],
-      ["privacy.restrict3rdpartystorage.heuristic.navigation", !isAndroid],
+      ["privacy.restrict3rdpartystorage.heuristic.recently_visited", false],
+      ["privacy.restrict3rdpartystorage.heuristic.navigation", true],
       ["privacy.antitracking.enableWebcompat", true],
     ],
   });
@@ -368,17 +361,10 @@ async function runTestRedirectHeuristicWithoutInteraction() {
     TEST_TOP_PAGE
   );
 
-  // This heuristic doesn't work in Android because
-  // it doesn't have the session history in the parent
-  // process (yet).
-  info(
-    `third-party page should ${
-      isAndroid ? "" : "not "
-    }be able to access first-party data`
-  );
+  info(`third-party page should not be able to access first-party data`);
   await checkData(browser, {
     firstParty: "firstParty",
-    thirdParty: isAndroid ? "heuristicFirstParty" : "",
+    thirdParty: "",
   });
 
   info("Removing the tab");

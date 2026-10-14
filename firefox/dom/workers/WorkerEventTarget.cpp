@@ -1,13 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "WorkerEventTarget.h"
+
 #include "WorkerPrivate.h"
 #include "WorkerRunnable.h"
-
 #include "mozilla/Logging.h"
 #include "mozilla/dom/ReferrerInfo.h"
 
@@ -92,7 +90,8 @@ class WrappedDebuggerRunnable final : public WorkerDebuggerRunnable {
  public:
   WrappedDebuggerRunnable(WorkerPrivate* aWorkerPrivate,
                           nsCOMPtr<nsIRunnable>&& aInner)
-      : WorkerDebuggerRunnable("WrappedDebuggerRunnable"),
+      : WorkerDebuggerRunnable("WrappedDebuggerRunnable",
+                               /* aIsIPCMessage */ true),
         mInner(std::move(aInner)) {}
 
   virtual bool PreDispatch(WorkerPrivate* aWorkerPrivate) override {
@@ -149,16 +148,18 @@ void WorkerEventTarget::ForgetWorkerPrivate(WorkerPrivate* aWorkerPrivate) {
 }
 
 NS_IMETHODIMP
-WorkerEventTarget::DispatchFromScript(nsIRunnable* aRunnable, uint32_t aFlags) {
+WorkerEventTarget::DispatchFromScript(nsIRunnable* aRunnable,
+                                      DispatchFlags aFlags) {
   LOGV(("WorkerEventTarget::DispatchFromScript [%p] aRunnable: %p", this,
         aRunnable));
-  nsCOMPtr<nsIRunnable> runnable(aRunnable);
-  return Dispatch(runnable.forget(), aFlags);
+  return Dispatch(do_AddRef(aRunnable), aFlags);
 }
 
 NS_IMETHODIMP
 WorkerEventTarget::Dispatch(already_AddRefed<nsIRunnable> aRunnable,
-                            uint32_t aFlags) {
+                            DispatchFlags aFlags) {
+  // NOTE: This dispatch implementation does not leak even if
+  // `NS_DISPATCH_FALLIBLE` is not set.
   nsCOMPtr<nsIRunnable> runnable(aRunnable);
   LOGV(
       ("WorkerEventTarget::Dispatch [%p] aRunnable: %p", this, runnable.get()));
@@ -235,6 +236,13 @@ WorkerEventTarget::RegisterShutdownTask(nsITargetShutdownTask* aTask) {
     return NS_ERROR_UNEXPECTED;
   }
 
+  // The debugger-only target backs the RemoteWorkerDebugger's MessageChannel.
+  // Track its shutdown tasks separately so they don't keep the worker
+  // ineligible for CC (bug 1944240); they still run on worker shutdown.
+  if (mBehavior == Behavior::DebuggerOnly) {
+    return mWorkerPrivate->RegisterDebuggerShutdownTask(aTask);
+  }
+
   return mWorkerPrivate->RegisterShutdownTask(aTask);
 }
 
@@ -248,7 +256,15 @@ WorkerEventTarget::UnregisterShutdownTask(nsITargetShutdownTask* aTask) {
     return NS_ERROR_UNEXPECTED;
   }
 
+  if (mBehavior == Behavior::DebuggerOnly) {
+    return mWorkerPrivate->UnregisterDebuggerShutdownTask(aTask);
+  }
+
   return mWorkerPrivate->UnregisterShutdownTask(aTask);
+}
+
+nsIEventTarget::FeatureFlags WorkerEventTarget::GetFeatures() {
+  return SUPPORTS_SHUTDOWN_TASK_DISPATCH | SUPPORTS_SHUTDOWN_TASKS;
 }
 
 NS_IMETHODIMP_(bool)

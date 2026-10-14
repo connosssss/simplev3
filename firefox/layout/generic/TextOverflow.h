@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,13 +5,13 @@
 #ifndef TextOverflow_h_
 #define TextOverflow_h_
 
-#include "nsDisplayList.h"
-#include "nsTHashSet.h"
-#include "mozilla/Attributes.h"
+#include <algorithm>
+
 #include "mozilla/Likely.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WritingModes.h"
-#include <algorithm>
+#include "nsDisplayList.h"
+#include "nsTHashSet.h"
 
 class nsBlockFrame;
 class nsLineBox;
@@ -49,14 +47,13 @@ class TextOverflow final {
    * Allocate an object for text-overflow processing. (Factory function.)
    * @return nullptr if no processing is necessary.  The caller owns the object.
    */
-  static Maybe<TextOverflow> WillProcessLines(nsDisplayListBuilder* aBuilder,
-                                              nsBlockFrame*);
+  static UniquePtr<TextOverflow> WillProcessLines(
+      nsDisplayListBuilder* aBuilder, nsBlockFrame*);
 
   /**
    * This is a factory-constructed non-reassignable class, so we delete nearly
    * all constructors and reassignment operators.  We only provide a
-   * move-constructor, because that's required for Maybe<TextOverflow> to work
-   * (and that's what our factory method returns).
+   * move-constructor for potential use with data structures that require it.
    */
   TextOverflow(TextOverflow&&) = default;
 
@@ -157,12 +154,7 @@ class TextOverflow final {
   };
 
   LogicalRect GetLogicalScrollableOverflowRectRelativeToBlock(
-      nsIFrame* aFrame) const {
-    return LogicalRect(
-        mBlockWM,
-        aFrame->ScrollableOverflowRect() + aFrame->GetOffsetTo(mBlock),
-        mBlockSize);
-  }
+      nsIFrame* aFrame) const;
 
   /**
    * Examines frames on the line to determine whether we should draw a left
@@ -258,17 +250,16 @@ class TextOverflow final {
                      bool aCreateIEnd, const LogicalRect& aInsideMarkersArea,
                      const LogicalRect& aContentArea, uint32_t aLineNumber);
 
+  gfxTextRun* GetEllipsisTextRun();
+
   LogicalRect mContentArea;
   nsDisplayListBuilder* mBuilder;
-  nsIFrame* mBlock;
+  nsBlockFrame* mBlock;
   ScrollContainerFrame* mScrollContainerFrame;
   nsDisplayList mMarkerList;
   nsSize mBlockSize;
   WritingMode mBlockWM;
   bool mCanHaveInlineAxisScrollbar;
-  // When we're in a -webkit-line-clamp context, we should ignore inline-end
-  // text-overflow markers. See nsBlockFrame::IsInLineClampContext.
-  const bool mInLineClampContext;
   bool mAdjustForPixelSnapping;
 
   class Marker {
@@ -276,43 +267,71 @@ class TextOverflow final {
     void Init(const StyleTextOverflowSide& aStyle) {
       mInitialized = false;
       mISize = 0;
-      mStyle = &aStyle;
+      mTextOverflowStyle = &aStyle;
       mIntrinsicISize = 0;
       mHasOverflow = false;
-      mHasBlockEllipsis = false;
+      mBlockEllipsis = nullptr;
       mActive = false;
       mEdgeAligned = false;
+    }
+
+    bool IsIStartSuppressed() { return mTextOverflowStyle->IsClip(); }
+    bool IsIEndSuppressed() {
+      if (mBlockEllipsis) {
+        // if mBlockEllipsis is no-ellipis or otherwise invalid, it should be
+        // suppressed.
+        return !HasBlockEllipsis();
+      }
+      return IsIStartSuppressed();
     }
 
     /**
      * Setup the marker string and calculate its size, if not done already.
      */
     void SetupString(nsIFrame* aFrame);
-
-    bool IsSuppressed(bool aInLineClampContext) const {
-      if (aInLineClampContext) {
-        return !mHasBlockEllipsis;
-      }
-      return mStyle->IsClip();
-    }
-    bool IsNeeded() const { return mHasOverflow || mHasBlockEllipsis; }
+    bool IsNeeded() const { return mHasOverflow || HasBlockEllipsis(); }
     void Reset() {
       mHasOverflow = false;
-      mHasBlockEllipsis = false;
+      mBlockEllipsis = nullptr;
       mEdgeAligned = false;
+    }
+
+    bool HasBlockEllipsis() const {
+      if (!mBlockEllipsis || mBlockEllipsis->IsNoEllipsis()) {
+        return false;
+      }
+      return !mBlockEllipsis->IsString() ||
+             !mBlockEllipsis->AsString().AsAtom()->IsEmpty();
+    }
+
+    bool IsEllipsis() const {
+      if (mBlockEllipsis) {
+        return mBlockEllipsis->IsEllipsis();
+      }
+      return mTextOverflowStyle->IsEllipsis();
+    }
+
+    const StyleAtomString* String() const {
+      if (mBlockEllipsis) {
+        return mBlockEllipsis->IsString() ? &mBlockEllipsis->AsString()
+                                          : nullptr;
+      }
+      return mTextOverflowStyle->IsString() ? &mTextOverflowStyle->AsString()
+                                            : nullptr;
     }
 
     // The current width of the marker, the range is [0 .. mIntrinsicISize].
     nscoord mISize;
     // The intrinsic width of the marker.
     nscoord mIntrinsicISize;
-    // The text-overflow style for this side.  Ignored if we're rendering a
+    // The text-overflow style for this side. Ignored if we're rendering a
     // block ellipsis.
-    const StyleTextOverflowSide* mStyle;
+    const StyleTextOverflowSide* mTextOverflowStyle;
     // True if there is visible overflowing inline content on this side.
     bool mHasOverflow;
-    // True if this side has a block ellipsis (from -webkit-line-clamp).
-    bool mHasBlockEllipsis;
+    // The block ellipsis style for this side. Null when we're rendering a
+    // text-overflow.
+    const StyleBlockEllipsis* mBlockEllipsis = nullptr;
     // True if mISize and mIntrinsicISize have been setup from style.
     bool mInitialized;
     // True if the style is not text-overflow:clip on this side and the marker
@@ -325,6 +344,8 @@ class TextOverflow final {
 
   Marker mIStart;  // the inline start marker
   Marker mIEnd;    // the inline end marker
+
+  RefPtr<gfxTextRun> mEllipsisTextRun;
 };
 
 }  // namespace css

@@ -1,18 +1,19 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_widget_WinUtils_h__
-#define mozilla_widget_WinUtils_h__
+#ifndef mozilla_widget_WinUtils_h_
+#define mozilla_widget_WinUtils_h_
 
-#include "nscore.h"
-#include <windows.h>
+#include <dwmapi.h>
 #include <shobjidl.h>
 #include <uxtheme.h>
-#include <dwmapi.h>
-#include <unordered_map>
+#include <windows.h>
+
+#include <cinttypes>
 #include <utility>
+
+#include "nscore.h"
 
 // Undo the windows.h damage
 #undef GetMessage
@@ -21,28 +22,58 @@
 #undef GetBinaryType
 #undef RemoveDirectory
 
-#include "nsString.h"
-#include "nsRegion.h"
-#include "nsRect.h"
-
-#include "nsIRunnable.h"
 #include "nsICryptoHash.h"
+#include "nsIRunnable.h"
+#include "nsRect.h"
+#include "nsRegion.h"
+#include "nsString.h"
 #ifdef MOZ_PLACES
 #  include "nsIFaviconService.h"
 #endif
-#include "nsIDownloader.h"
-#include "nsIURI.h"
-#include "nsIWidget.h"
-#include "nsWindowsHelpers.h"
-
-#include "mozilla/Attributes.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/LazyIdleThread.h"
+#include "mozilla/Printf.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/Vector.h"
 #include "mozilla/WindowsDpiAwareness.h"
 #include "mozilla/WindowsProcessMitigations.h"
 #include "mozilla/gfx/2D.h"
+#include "nsIDownloader.h"
+#include "nsIURI.h"
+#include "nsIWidget.h"
+#include "nsWindowsHelpers.h"
+
+#ifdef DEBUG
+#  define NS_ENSURE_HRESULT(hres, ret)                    \
+    do {                                                  \
+      HRESULT result = hres;                              \
+      if (MOZ_UNLIKELY(FAILED(result))) {                 \
+        mozilla::SmprintfPointer msg = mozilla::Smprintf( \
+            "NS_ENSURE_HRESULT(%s, %s) failed with "      \
+            "result 0x%" PRIX32,                          \
+            #hres, #ret, static_cast<uint32_t>(result));  \
+        NS_WARNING(msg.get());                            \
+        return ret;                                       \
+      }                                                   \
+    } while (false)
+#  define NS_ENSURE_HRESULT_VOID(hres)                    \
+    do {                                                  \
+      HRESULT result = hres;                              \
+      if (MOZ_UNLIKELY(FAILED(result))) {                 \
+        mozilla::SmprintfPointer msg = mozilla::Smprintf( \
+            "NS_ENSURE_HRESULT(%s) failed with "          \
+            "result 0x%" PRIX32,                          \
+            #hres, static_cast<uint32_t>(result));        \
+        NS_WARNING(msg.get());                            \
+        return;                                           \
+      }                                                   \
+    } while (false)
+#else
+#  define NS_ENSURE_HRESULT(hres, ret) \
+    if (MOZ_UNLIKELY(FAILED(hres))) return ret
+#  define NS_ENSURE_HRESULT_VOID(hres) \
+    if (MOZ_UNLIKELY(FAILED(hres))) return
+#endif
 
 /**
  * NS_INLINE_DECL_IUNKNOWN_REFCOUNTING should be used for defining and
@@ -86,6 +117,7 @@
   NS_DECL_OWNINGTHREAD                              \
  public:
 
+class nsIReferrerInfo;
 class nsWindow;
 struct KeyPair;
 
@@ -161,7 +193,7 @@ namespace widget {
 
 #ifdef MOZ_PLACES
 class myDownloadObserver final : public nsIDownloadObserver {
-  ~myDownloadObserver() {}
+  ~myDownloadObserver() = default;
 
  public:
   NS_DECL_ISUPPORTS
@@ -217,7 +249,6 @@ class WinUtils {
    */
   static double SystemScaleFactor();
 
-  static bool IsPerMonitorDPIAware();
   /**
    * Get the DPI of the given monitor if it's per-monitor DPI aware, otherwise
    * return the system DPI.
@@ -272,8 +303,8 @@ class WinUtils {
    * Logging helpers that dump output to prlog module 'Widget', console, and
    * OutputDebugString. Note these output in both debug and release builds.
    */
-  static void Log(const char* fmt, ...);
-  static void LogW(const wchar_t* fmt, ...);
+  static void Log(const char* fmt, ...) MOZ_FORMAT_PRINTF(1, 2);
+  static void LogW(const wchar_t* fmt, ...) MOZ_FORMAT_WPRINTF(1, 2);
 
   /**
    * PeekMessage() and GetMessage() are wrapper methods for PeekMessageW(),
@@ -337,6 +368,17 @@ class WinUtils {
    * No AddRef is performed. May not be used off of the main thread.
    */
   static nsWindow* GetNSWindowPtr(HWND aWnd);
+
+  /**
+   * QueryCloaked() performs a live DWM query of whether Windows currently
+   * considers aWnd cloaked: a window with the WS_VISIBLE attribute that is not
+   * actually displayed (e.g. because it lives on another virtual desktop). A
+   * failed query is treated as not cloaked.
+   *
+   * This is the ground-truth syscall. nsWindow caches its own cloaked state
+   * (updated from cloak events) and exposes it via nsWindow::IsCloaked().
+   */
+  static bool QueryCloaked(HWND aWnd);
 
   /**
    * IsOurProcessWindow() returns TRUE if aWnd belongs our process.
@@ -431,7 +473,8 @@ class WinUtils {
    * nsIWidget::SynthethizeNative*Event().
    */
   static void SetupKeyModifiersSequence(nsTArray<KeyPair>* aArray,
-                                        uint32_t aModifiers, UINT aMessage);
+                                        nsIWidget::NativeModifiers aModifiers,
+                                        UINT aMessage);
 
   /**
    * Does device have touch support
@@ -489,7 +532,7 @@ class WinUtils {
   static nsresult WriteBitmap(nsIFile* aFile, imgIContainer* aImage);
 
   /**
-   * Wrapper for PathCanonicalize().
+   * Wrapper for PathCchCanonicalize().
    * Upon success, the resulting output string length is <= MAX_PATH.
    * @param  aPath [in,out] The path to transform.
    * @return true on success, false on failure.
@@ -542,7 +585,7 @@ class WinUtils {
       nsAString& aPath,
       PathTransformFlags aFlags = PathTransformFlags::Default);
 
-  static const size_t kMaxWhitelistedItems = 3;
+  static const size_t kMaxWhitelistedItems = 4;
   using WhitelistVec =
       Vector<std::pair<nsString, nsDependentString>, kMaxWhitelistedItems>;
 
@@ -569,6 +612,30 @@ class WinUtils {
   static void GetClipboardFormatAsString(UINT aFormat, nsAString& aOutput);
 
   static nsresult GetProcessImageName(DWORD aProcessId, nsAString& aName);
+
+  static void InvalidateWindowPreviews();
+
+  /**
+   * MozPromise that resolves to true if zone was successfully written,
+   * false if the zone was not written due to a policy, and rejects on errors.
+   */
+  using WriteFileZonePromise = MozPromise<bool, nsresult, true>;
+
+  /**
+   * Updates the ZoneId of aSaveFilePath to reflect the source URL and
+   * referrer, if Windows policy permits.
+   * The actual file operation will be performed async.
+   * Requests to set ZoneId to be more privileged than ZONE_INTERNET are
+   * ignored and the returned promise will resolve to false.
+   * The returned promise is rejected on error.
+   */
+  static RefPtr<WriteFileZonePromise> MaybeWriteFileZoneId(
+      nsIFile* aSaveFile, nsIURI* aSourceURI, nsIReferrerInfo* aReferrerInfo,
+      bool aShouldStoreUrls);
+
+  static Result<bool, nsresult> MaybeWriteFileZoneIdSync(
+      nsIFile* aSaveFile, nsIURI* aSourceURI, nsIReferrerInfo* aReferrerInfo,
+      bool aShouldStoreUrls);
 
  private:
   static WhitelistVec BuildWhitelist();
@@ -618,7 +685,7 @@ class AsyncDeleteAllFaviconsFromDisk : public nsIRunnable {
   explicit AsyncDeleteAllFaviconsFromDisk(bool aIgnoreRecent = false);
 
  private:
-  virtual ~AsyncDeleteAllFaviconsFromDisk();
+  virtual ~AsyncDeleteAllFaviconsFromDisk() = default;
 
   int32_t mIcoNoDeleteSeconds;
   bool mIgnoreRecent;
@@ -679,4 +746,4 @@ class ScopedRtlShimWindow {
 }  // namespace widget
 }  // namespace mozilla
 
-#endif  // mozilla_widget_WinUtils_h__
+#endif  // mozilla_widget_WinUtils_h_

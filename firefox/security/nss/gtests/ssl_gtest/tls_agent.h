@@ -52,6 +52,7 @@ class TlsCipherSpec;
 struct TlsRecord;
 
 const extern std::vector<SSLNamedGroup> kAllDHEGroups;
+const extern std::vector<SSLNamedGroup> kNonPQDHEGroups;
 const extern std::vector<SSLNamedGroup> kECDHEGroups;
 const extern std::vector<SSLNamedGroup> kFFDHEGroups;
 const extern std::vector<SSLNamedGroup> kFasterDHEGroups;
@@ -86,9 +87,15 @@ class TlsAgent : public PollTarget {
   static const std::string kServerEcdhEcdsa;
   static const std::string kServerEcdhRsa;
   static const std::string kServerDsa;
+  static const std::string kServerMlDsa44;
+  static const std::string kServerMlDsa65;
+  static const std::string kServerMlDsa87;
   static const std::string kDelegatorEcdsa256;    // draft-ietf-tls-subcerts
   static const std::string kDelegatorRsae2048;    // draft-ietf-tls-subcerts
   static const std::string kDelegatorRsaPss2048;  // draft-ietf-tls-subcerts
+  static const std::string kDelegatorMlDsa44;     // draft-ietf-tls-subcerts
+  static const std::string kDelegatorMlDsa65;     // draft-ietf-tls-subcerts
+  static const std::string kDelegatorMlDsa87;     // draft-ietf-tls-subcerts
 
   TlsAgent(const std::string& name, Role role, SSLProtocolVariant variant);
   virtual ~TlsAgent();

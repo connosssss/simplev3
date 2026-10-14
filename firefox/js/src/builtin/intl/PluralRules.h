@@ -1,34 +1,35 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef builtin_intl_PluralRules_h
 #define builtin_intl_PluralRules_h
 
-#include "builtin/SelfHostingDefines.h"
+#include <stddef.h>
+#include <stdint.h>
+
 #include "js/Class.h"
+#include "js/TypeDecls.h"
+#include "js/Value.h"
 #include "vm/NativeObject.h"
 
 namespace mozilla::intl {
 class PluralRules;
 }
 
-namespace js {
+namespace js::intl {
+
+struct PluralRulesOptions;
 
 class PluralRulesObject : public NativeObject {
  public:
   static const JSClass class_;
   static const JSClass& protoClass_;
 
-  static constexpr uint32_t INTERNALS_SLOT = 0;
-  static constexpr uint32_t PLURAL_RULES_SLOT = 1;
-  static constexpr uint32_t SLOT_COUNT = 2;
-
-  static_assert(INTERNALS_SLOT == INTL_INTERNALS_OBJECT_SLOT,
-                "INTERNALS_SLOT must match self-hosting define for internals "
-                "object slot");
+  JS_DEFINE_TYPED_SLOT(0, LOCALE_SLOT, Object, String, Undefined);
+  JS_DEFINE_TYPED_SLOT(1, OPTIONS_SLOT, Double, Undefined);
+  JS_DEFINE_TYPED_SLOT(2, PLURAL_RULES_SLOT, Private, Undefined);
+  static constexpr uint32_t SLOT_COUNT = 3;
 
   // Estimated memory use for UPluralRules (see IcuMemoryUsage).
   // Includes usage for UNumberFormat and UNumberRangeFormatter since our
@@ -36,8 +37,40 @@ class PluralRulesObject : public NativeObject {
   // object.
   static constexpr size_t UPluralRulesEstimatedMemoryUse = 5736;
 
+  bool isLocaleResolved() const {
+    return getFixedSlotTyped(LOCALE_SLOT).isString();
+  }
+
+  JSObject* getRequestedLocales() const {
+    const auto& slot = getFixedSlotTyped(LOCALE_SLOT);
+    if (slot.isUndefined()) {
+      return nullptr;
+    }
+    return &slot.toObject();
+  }
+
+  void setRequestedLocales(JSObject* requestedLocales) {
+    setFixedSlotTyped(LOCALE_SLOT, JS::ObjectValue(*requestedLocales));
+  }
+
+  JSLinearString* getLocale() const {
+    const auto& slot = getFixedSlotTyped(LOCALE_SLOT);
+    if (slot.isUndefined()) {
+      return nullptr;
+    }
+    return &slot.toString()->asLinear();
+  }
+
+  void setLocale(JSLinearString* locale) {
+    setFixedSlotTyped(LOCALE_SLOT, JS::StringValue(locale));
+  }
+
+  PluralRulesOptions getOptions() const;
+
+  void setOptions(const PluralRulesOptions& options);
+
   mozilla::intl::PluralRules* getPluralRules() const {
-    const auto& slot = getFixedSlot(PLURAL_RULES_SLOT);
+    const auto& slot = getFixedSlotTyped(PLURAL_RULES_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
@@ -45,7 +78,7 @@ class PluralRulesObject : public NativeObject {
   }
 
   void setPluralRules(mozilla::intl::PluralRules* pluralRules) {
-    setFixedSlot(PLURAL_RULES_SLOT, PrivateValue(pluralRules));
+    setFixedSlotTyped(PLURAL_RULES_SLOT, PrivateValue(pluralRules));
   }
 
  private:
@@ -55,44 +88,6 @@ class PluralRulesObject : public NativeObject {
   static void finalize(JS::GCContext* gcx, JSObject* obj);
 };
 
-/**
- * Returns a plural rule for the number x according to the effective
- * locale and the formatting options of the given PluralRules.
- *
- * A plural rule is a grammatical category that expresses count distinctions
- * (such as "one", "two", "few" etc.).
- *
- * Usage: rule = intl_SelectPluralRule(pluralRules, x)
- */
-[[nodiscard]] extern bool intl_SelectPluralRule(JSContext* cx, unsigned argc,
-                                                JS::Value* vp);
-
-/**
- * Returns a plural rule for the number range «x - y» according to the effective
- * locale and the formatting options of the given PluralRules.
- *
- * A plural rule is a grammatical category that expresses count distinctions
- * (such as "one", "two", "few" etc.).
- *
- * Usage: rule = intl_SelectPluralRuleRange(pluralRules, x, y)
- */
-[[nodiscard]] extern bool intl_SelectPluralRuleRange(JSContext* cx,
-                                                     unsigned argc,
-                                                     JS::Value* vp);
-
-/**
- * Returns an array of plural rules categories for a given pluralRules object.
- *
- * Usage: categories = intl_GetPluralCategories(pluralRules)
- *
- * Example:
- *
- * pluralRules = new Intl.PluralRules('pl', {type: 'cardinal'});
- * intl_getPluralCategories(pluralRules); // ['one', 'few', 'many', 'other']
- */
-[[nodiscard]] extern bool intl_GetPluralCategories(JSContext* cx, unsigned argc,
-                                                   JS::Value* vp);
-
-}  // namespace js
+}  // namespace js::intl
 
 #endif /* builtin_intl_PluralRules_h */

@@ -12,6 +12,10 @@ if [ -z "${CLEANUP}" -o "${CLEANUP}" = "${SCRIPTNAME}" ]; then
         BUILD_OPT=1;
     fi
 
+    # Last chance to spot a core dumped since the previous rate-limited scan,
+    # and it has to happen before the counts below are taken.
+    html_detect_core_force "end of test core detection"
+
     echo
     echo "SUMMARY:"
     echo "========"
@@ -41,28 +45,77 @@ if [ -z "${CLEANUP}" -o "${CLEANUP}" = "${SCRIPTNAME}" ]; then
     echo "NSS_DISABLE_ARM_NEON=${NSS_DISABLE_ARM_NEON}"
     echo "NSS_DISABLE_SSSE3=${NSS_DISABLE_SSSE3}"
     echo
-    echo "Tests summary:"
+    printf "${COLOR_BOLD}Tests summary:${COLOR_RESET}\n"
     echo "--------------"
-    LINES_CNT=$(cat ${RESULTS} | grep ">Passed<" | wc -l | sed s/\ *//)
-    echo "Passed:             ${LINES_CNT}"
-    FAILED_CNT=$(cat ${RESULTS} | grep ">Failed<" | wc -l | sed s/\ *//)
+    PASSED_CNT=$(grep -c ">Passed<" ${RESULTS} 2>/dev/null | sed s/\ *//)
+    echo "Passed:             ${PASSED_CNT}"
+    FAILED_CNT=$(grep -c ">Failed<" ${RESULTS} 2>/dev/null | sed s/\ *//)
     echo "Failed:             ${FAILED_CNT}"
-    CORE_CNT=$(cat ${RESULTS} | grep ">Failed Core<" | wc -l | sed s/\ *//)
+    CORE_CNT=$(grep -c ">Failed Core<" ${RESULTS} 2>/dev/null | sed s/\ *//)
     echo "Failed with core:   ${CORE_CNT}"
-    ASAN_CNT=$(cat $LOGFILE | grep "SUMMARY: AddressSanitizer" | wc -l | sed s/\ *//)
+    ASAN_CNT=$(grep -c "SUMMARY: AddressSanitizer" $LOGFILE 2>/dev/null | sed s/\ *//)
     echo "ASan failures:      ${ASAN_CNT}"
-    LINES_CNT=$(cat ${RESULTS} | grep ">Unknown<" | wc -l | sed s/\ *//)
-    echo "Unknown status:     ${LINES_CNT}"
-    if [ ${LINES_CNT} -gt 0 ]; then
-        echo "TinderboxPrint:Unknown: ${LINES_CNT}"
+    UBSAN_CNT=$(grep -c "runtime error:" $LOGFILE 2>/dev/null | sed s/\ *//)
+    echo "UBSan failures:     ${UBSAN_CNT}"
+    UNKNOWN_CNT=$(grep -c ">Unknown<" ${RESULTS} 2>/dev/null | sed s/\ *//)
+    echo "Unknown status:     ${UNKNOWN_CNT}"
+    if [ ${UNKNOWN_CNT} -gt 0 ]; then
+        echo "TinderboxPrint:Unknown: ${UNKNOWN_CNT}"
     fi
     echo
+
+    # List which tests failed, if any.
+    if [ -s "${FAILED_TESTS_FILE}" ]; then
+        printf "${COLOR_RED}${COLOR_BOLD}Failed tests:${COLOR_RESET}\n"
+        while IFS= read -r ft; do
+            printf "  ${COLOR_RED}- ${ft}${COLOR_RESET}\n"
+        done < "${FAILED_TESTS_FILE}"
+        echo
+    fi
 
     html "END_OF_TEST<BR>"
     html "</BODY></HTML>"
     rm -f ${TEMPFILES} 2>/dev/null
+
     if [ ${FAILED_CNT} -gt 0 ] || [ ${ASAN_CNT} -gt 0 ] ||
-       ([ ${CORE_CNT} -gt 0 ] && [ -n "${BUILD_OPT}" ] && [ ${BUILD_OPT} -eq 1 ]); then
+       [ ${UBSAN_CNT} -gt 0 ] || [ ${CORE_CNT} -gt 0 ]; then
+        RUN_STATUS=fail
+    else
+        RUN_STATUS=pass
+    fi
+
+    # Machine-readable summary, so that callers do not have to scrape
+    # output.log or results.html.
+    {
+        echo "{"
+        echo "  \"status\": \"${RUN_STATUS}\","
+        echo "  \"host\": \"${HOST}\","
+        echo "  \"objdir\": \"${OBJDIR}\","
+        echo "  \"nss_tests\": \"${NSS_TESTS}\","
+        echo "  \"nss_cycles\": \"${NSS_CYCLES}\","
+        echo "  \"passed\": ${PASSED_CNT:-0},"
+        echo "  \"failed\": ${FAILED_CNT:-0},"
+        echo "  \"failed_with_core\": ${CORE_CNT:-0},"
+        echo "  \"asan_failures\": ${ASAN_CNT:-0},"
+        echo "  \"ubsan_failures\": ${UBSAN_CNT:-0},"
+        echo "  \"unknown\": ${UNKNOWN_CNT:-0},"
+        echo -n "  \"failed_tests\": ["
+        if [ -s "${FAILED_TESTS_FILE}" ]; then
+            sep=""
+            while IFS= read -r ft; do
+                # Escape backslashes and double quotes for JSON.
+                ft=$(printf '%s' "$ft" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+                printf '%s\n    "%s"' "$sep" "$ft"
+                sep=","
+            done < "${FAILED_TESTS_FILE}"
+            echo ""
+            echo -n "  "
+        fi
+        echo "]"
+        echo "}"
+    } > ${HOSTDIR}/summary.json
+
+    if [ "${RUN_STATUS}" = "fail" ]; then
         exit 1
     fi
 

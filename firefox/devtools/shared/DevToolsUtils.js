@@ -28,6 +28,17 @@ if (!isWorker) {
     },
     { global: "contextual" }
   );
+
+  const { XPCOMUtils } = ChromeUtils.importESModule(
+    "resource://gre/modules/XPCOMUtils.sys.mjs",
+    { global: "contextual" }
+  );
+  XPCOMUtils.defineLazyPreferenceGetter(
+    lazy,
+    "executeSoonDelay",
+    "devtools.testing.executeSoonDelay",
+    0
+  );
 }
 
 // Native getters which are considered to be side effect free.
@@ -58,25 +69,47 @@ for (const key of Object.keys(ThreadSafeDevToolsUtils)) {
 }
 
 /**
+ * Encapsulate a function that should be dispatched to the main thread via
+ * executeSoon/... in various debugging / diagnosis wrappers.
+ *
+ * @param {Function} fn
+ *     The function to encapsulate.
+ * @returns {Function}
+ *     The wrapped function to execute.
+ */
+function getMainThreadExecutor(fn, debugLabel) {
+  let executor;
+  // Only enable async stack reporting when DEBUG_JS_MODULES is set
+  // (customized local builds) to avoid a performance penalty.
+  if (AppConstants.DEBUG_JS_MODULES || flags.testing) {
+    const stack = getStack();
+    executor = () => {
+      callFunctionWithAsyncStack(fn, stack, debugLabel);
+    };
+  } else {
+    executor = fn;
+  }
+
+  // This should never be called in worker code paths, and executeSoonDelay will
+  // not be defined there.
+  if (lazy.executeSoonDelay) {
+    return () => setTimeout(executor, lazy.executeSoonDelay);
+  }
+
+  return executor;
+}
+
+/**
  * Waits for the next tick in the event loop to execute a callback.
  */
 exports.executeSoon = function (fn) {
   if (isWorker) {
     setImmediate(fn);
   } else {
-    let executor;
-    // Only enable async stack reporting when DEBUG_JS_MODULES is set
-    // (customized local builds) to avoid a performance penalty.
-    if (AppConstants.DEBUG_JS_MODULES || flags.testing) {
-      const stack = getStack();
-      executor = () => {
-        callFunctionWithAsyncStack(fn, stack, "DevToolsUtils.executeSoon");
-      };
-    } else {
-      executor = fn;
-    }
     Services.tm.dispatchToMainThread({
-      run: exports.makeInfallible(executor),
+      run: exports.makeInfallible(
+        getMainThreadExecutor(fn, "DevToolsUtils.executeSoon")
+      ),
     });
   }
 };
@@ -89,23 +122,10 @@ exports.executeSoonWithMicroTask = function (fn) {
   if (isWorker) {
     setImmediate(fn);
   } else {
-    let executor;
-    // Only enable async stack reporting when DEBUG_JS_MODULES is set
-    // (customized local builds) to avoid a performance penalty.
-    if (AppConstants.DEBUG_JS_MODULES || flags.testing) {
-      const stack = getStack();
-      executor = () => {
-        callFunctionWithAsyncStack(
-          fn,
-          stack,
-          "DevToolsUtils.executeSoonWithMicroTask"
-        );
-      };
-    } else {
-      executor = fn;
-    }
     Services.tm.dispatchToMainThreadWithMicroTask({
-      run: exports.makeInfallible(executor),
+      run: exports.makeInfallible(
+        getMainThreadExecutor(fn, "DevToolsUtils.executeSoonWithMicroTask")
+      ),
     });
   }
 };
@@ -170,9 +190,9 @@ exports.defineLazyPrototypeGetter = function (object, key, callback) {
  *
  * @param {Debugger.Object} object
  *        The Debugger.Object to get the value from.
- * @param {String} key
+ * @param {string} key
  *        The key to look for.
- * @param {Boolean} invokeUnsafeGetter (defaults to false).
+ * @param {boolean} invokeUnsafeGetter (defaults to false).
  *        Optional boolean to indicate if the function should execute unsafe getter
  *        in order to retrieve its result's properties.
  *        ⚠️ This should be set to true *ONLY* on user action as it may cause side-effects
@@ -334,9 +354,9 @@ exports.hasSafeGetter = function (desc) {
  *
  * @param {Debugger.Object} object
  *        The Debugger.Object to check on.
- * @param {String} key
+ * @param {string} key
  *        The key to look for.
- * @param {Boolean} invokeUnsafeGetter (defaults to false).
+ * @param {boolean} invokeUnsafeGetter (defaults to false).
  *        Optional boolean to indicate if the function should execute unsafe getter
  *        in order to retrieve its result's properties.
  * @return Boolean
@@ -423,18 +443,6 @@ exports.isSafeJSObject = function (obj) {
 exports.dumpn = function (str) {
   if (flags.wantLogging) {
     dump("DBG-SERVER: " + str + "\n");
-  }
-};
-
-/**
- * Dump verbose - This is a verbose logger for low-level tracing, that is typically
- * used to provide information about the remote debugging protocol's transport
- * mechanisms. The logging can be enabled by changing the preferences
- * "devtools.debugger.log" and "devtools.debugger.log.verbose" to true.
- */
-exports.dumpv = function (msg) {
-  if (flags.wantVerbose) {
-    exports.dumpn(msg);
   }
 };
 
@@ -727,8 +735,8 @@ function mainThreadFetch(
 /**
  * Opens a channel for given URL. Tries a bit harder than NetUtil.newChannel.
  *
- * @param {String} url - The URL to open a channel for.
- * @param {Object} options - The options object passed to @method fetch.
+ * @param {string} url - The URL to open a channel for.
+ * @param {object} options - The options object passed to @method fetch.
  * @return {nsIChannel} - The newly created channel. Throws on failure.
  */
 function newChannelForURL(url, { policy, window, principal }) {
@@ -807,7 +815,7 @@ if (this.isWorker) {
 /**
  * Open the file at the given path for reading.
  *
- * @param {String} filePath
+ * @param {string} filePath
  *
  * @returns Promise<nsIInputStream>
  */
@@ -835,13 +843,13 @@ exports.openFileStream = function (filePath) {
  *        The parent window to use to display the filepicker.
  * @param {UInt8Array} dataArray
  *        The data to write to the file.
- * @param {String} fileName
+ * @param {string} fileName
  *        The suggested filename.
  * @param {Array} filters
  *        An array of object of the following shape:
  *          - pattern: A pattern for accepted files (example: "*.js")
  *          - label: The label that will be displayed in the save file dialog.
- * @return {String|null}
+ * @return {string | null}
  *        The path to the local saved file, if saved.
  */
 exports.saveAs = async function (
@@ -878,7 +886,7 @@ exports.saveAs = async function (
  * @param {nsIWindow} parentWindow
  *        Optional parent window. If null the parent window of the file picker
  *        will be the window of the attached input element.
- * @param {String} suggestedFilename
+ * @param {string} suggestedFilename
  *        The suggested filename.
  * @param {Array} filters
  *        An array of object of the following shape:
@@ -944,7 +952,6 @@ function errorOnFlag(exports, name) {
 
 errorOnFlag(exports, "testing");
 errorOnFlag(exports, "wantLogging");
-errorOnFlag(exports, "wantVerbose");
 
 // Calls the property with the given `name` on the given `object`, where
 // `name` is a string, and `object` a Debugger.Object instance.
@@ -1010,7 +1017,7 @@ exports.makeDebuggeeIterator = makeDebuggeeIterator;
  * window embedding the DevTools frame.
  */
 function getTopWindow(win) {
-  return win.windowRoot ? win.windowRoot.ownerGlobal : win.top;
+  return win.windowRoot ? win.windowRoot.window : win.top;
 }
 
 exports.getTopWindow = getTopWindow;
@@ -1018,11 +1025,11 @@ exports.getTopWindow = getTopWindow;
 /**
  * Check whether two objects are identical by performing
  * a deep equality check on their properties and values.
- * See toolkit/modules/ObjectUtils.jsm for implementation.
+ * See toolkit/modules/ObjectUtils.sys.mjs for implementation.
  *
- * @param {Object} a
- * @param {Object} b
- * @return {Boolean}
+ * @param {object} a
+ * @param {object} b
+ * @return {boolean}
  */
 exports.deepEqual = (a, b) => {
   return lazy.ObjectUtils.deepEqual(a, b);

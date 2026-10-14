@@ -1,12 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "DataTransferItem.h"
-#include "DataTransferItemList.h"
 
+#include "DataTransferItemList.h"
+#include "imgIContainer.h"
+#include "imgITools.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/ContentEvents.h"
@@ -18,18 +18,16 @@
 #include "mozilla/dom/FileSystem.h"
 #include "mozilla/dom/FileSystemDirectoryEntry.h"
 #include "mozilla/dom/FileSystemFileEntry.h"
-#include "imgIContainer.h"
-#include "imgITools.h"
 #include "nsComponentManagerUtils.h"
+#include "nsContentUtils.h"
 #include "nsGlobalWindowInner.h"
 #include "nsIClipboard.h"
 #include "nsIFile.h"
 #include "nsIInputStream.h"
-#include "nsISupportsPrimitives.h"
 #include "nsIScriptObjectPrincipal.h"
+#include "nsISupportsPrimitives.h"
 #include "nsNetUtil.h"
 #include "nsQueryObject.h"
-#include "nsContentUtils.h"
 #include "nsThreadUtils.h"
 #include "nsVariant.h"
 
@@ -94,8 +92,8 @@ void DataTransferItem::SetData(nsIVariant* aData) {
     MOZ_ASSERT(!mType.EqualsASCII(kNativeImageMime));
 
     mKind = KIND_STRING;
-    for (uint32_t i = 0; i < std::size(kFileMimeNameMap); ++i) {
-      if (mType.EqualsASCII(kFileMimeNameMap[i].mMimeName)) {
+    for (const auto& entry : kFileMimeNameMap) {
+      if (mType.EqualsASCII(entry.mMimeName)) {
         mKind = KIND_FILE;
         break;
       }
@@ -165,7 +163,8 @@ void DataTransferItem::FillInExternalData() {
     trans->Init(nullptr);
     trans->AddDataFlavor(format);
 
-    if (mDataTransfer->GetEventMessage() == ePaste) {
+    if (mDataTransfer->GetEventMessage() == ePaste ||
+        mDataTransfer->GetEventMessage() == ePasteNoFormatting) {
       MOZ_ASSERT(mIndex == 0, "index in clipboard must be 0");
 
       if (mDataTransfer->ClipboardType().isNothing()) {
@@ -406,9 +405,9 @@ already_AddRefed<FileSystemEntry> DataTransferItem::GetAsEntry(
 already_AddRefed<File> DataTransferItem::CreateFileFromInputStream(
     nsIInputStream* aStream) {
   const char* key = nullptr;
-  for (uint32_t i = 0; i < std::size(kFileMimeNameMap); ++i) {
-    if (mType.EqualsASCII(kFileMimeNameMap[i].mMimeName)) {
-      key = kFileMimeNameMap[i].mFileName;
+  for (const auto& enrty : kFileMimeNameMap) {
+    if (mType.EqualsASCII(enrty.mMimeName)) {
+      key = enrty.mFileName;
       break;
     }
   }
@@ -425,7 +424,7 @@ already_AddRefed<File> DataTransferItem::CreateFileFromInputStream(
     const nsAString& aContentType) {
   nsAutoString fileName;
   nsresult rv = nsContentUtils::GetLocalizedString(
-      nsContentUtils::eDOM_PROPERTIES, aFileNameKey, fileName);
+      PropertiesFile::DOM_PROPERTIES, aFileNameKey, fileName);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return nullptr;
   }
@@ -545,10 +544,12 @@ already_AddRefed<nsIVariant> DataTransferItem::Data(nsIPrincipal* aPrincipal,
     return nullptr;
   }
 
-  bool checkItemPrincipal = mDataTransfer->IsCrossDomainSubFrameDrop() ||
-                            (mDataTransfer->GetEventMessage() != eDrop &&
-                             mDataTransfer->GetEventMessage() != ePaste &&
-                             mDataTransfer->GetEventMessage() != eEditorInput);
+  bool checkItemPrincipal =
+      mDataTransfer->IsCrossDomainSubFrameDrop() ||
+      (mDataTransfer->GetEventMessage() != eDrop &&
+       mDataTransfer->GetEventMessage() != ePaste &&
+       mDataTransfer->GetEventMessage() != ePasteNoFormatting &&
+       mDataTransfer->GetEventMessage() != eEditorInput);
 
   // Check if the caller is allowed to access the drag data. Callers with
   // chrome privileges can always read the data. During the
@@ -574,7 +575,7 @@ already_AddRefed<nsIVariant> DataTransferItem::Data(nsIPrincipal* aPrincipal,
   if (NS_SUCCEEDED(rv) && data) {
     nsCOMPtr<EventTarget> pt = do_QueryInterface(data);
     if (pt) {
-      nsIGlobalObject* go = pt->GetOwnerGlobal();
+      nsIGlobalObject* go = pt->GetRelevantGlobal();
       if (NS_WARN_IF(!go)) {
         return nullptr;
       }

@@ -1,17 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef vm_ArgumentsObject_h
 #define vm_ArgumentsObject_h
 
-#include "mozilla/MemoryReporting.h"
-
+#include "ds/BitArray.h"
 #include "gc/Barrier.h"
 #include "gc/GCArray.h"
-#include "util/BitArray.h"
 #include "vm/NativeObject.h"
 
 namespace js {
@@ -33,21 +29,24 @@ class RareArgumentsData {
   // ArgumentsObject::isElementDeleted comment.
   size_t deletedBits_[1];
 
+  using BitArray = ExternalBitArray<size_t>;
+  using ConstBitArray = ExternalBitArray<const size_t>;
+
   RareArgumentsData() = default;
-  RareArgumentsData(const RareArgumentsData&) = delete;
-  void operator=(const RareArgumentsData&) = delete;
 
  public:
+  RareArgumentsData(const RareArgumentsData&) = delete;
+  void operator=(const RareArgumentsData&) = delete;
   static RareArgumentsData* create(JSContext* cx, ArgumentsObject* obj);
   static size_t bytesRequired(size_t numActuals);
 
   bool isElementDeleted(size_t len, size_t i) const {
     MOZ_ASSERT(i < len);
-    return IsBitArrayElementSet(deletedBits_, len, i);
+    return ConstBitArray(deletedBits_, len).get(i);
   }
   void markElementDeleted(size_t len, size_t i) {
     MOZ_ASSERT(i < len);
-    SetBitArrayElement(deletedBits_, len, i);
+    BitArray(deletedBits_, len).set(i);
   }
 };
 
@@ -96,7 +95,7 @@ struct ArgumentsData {
 static const unsigned ARGS_LENGTH_MAX = 500 * 1000;
 
 // Maximum number of arguments supported in jitcode. This bounds the
-// maximum number of arguments that can be supplied to a spread call
+// maximum number of arguments that can be supplied to a call, spread call,
 // or Function.prototype.apply without entering the VM. We limit the
 // number of parameters we can handle to a number that does not risk
 // us allocating too much stack, notably on Windows where there is a
@@ -156,10 +155,10 @@ static_assert(JIT_ARGS_LENGTH_MAX <= ARGS_LENGTH_MAX,
  */
 class ArgumentsObject : public NativeObject {
  public:
-  static const uint32_t INITIAL_LENGTH_SLOT = 0;
-  static const uint32_t DATA_SLOT = 1;
-  static const uint32_t MAYBE_CALL_SLOT = 2;
-  static const uint32_t CALLEE_SLOT = 3;
+  JS_DEFINE_TYPED_SLOT(0, INITIAL_LENGTH_SLOT, Int32);
+  JS_DEFINE_TYPED_SLOT(1, DATA_SLOT, Private);
+  JS_DEFINE_TYPED_SLOT(2, MAYBE_CALL_SLOT, Object, Undefined);
+  JS_DEFINE_TYPED_SLOT(3, CALLEE_SLOT, Object);
 
   static const uint32_t LENGTH_OVERRIDDEN_BIT = 0x1;
   static const uint32_t ITERATOR_OVERRIDDEN_BIT = 0x2;
@@ -188,7 +187,7 @@ class ArgumentsObject : public NativeObject {
 
   ArgumentsData* data() const {
     return reinterpret_cast<ArgumentsData*>(
-        getFixedSlot(DATA_SLOT).toPrivate());
+        getFixedSlotTyped(DATA_SLOT).toPrivate());
   }
 
   RareArgumentsData* maybeRareData() const { return data()->rareData; }
@@ -209,7 +208,7 @@ class ArgumentsObject : public NativeObject {
 
  public:
   static const uint32_t RESERVED_SLOTS = 4;
-  static const gc::AllocKind FINALIZE_KIND = gc::AllocKind::OBJECT4_BACKGROUND;
+  static const gc::AllocKind FINALIZE_KIND = gc::AllocKind::OBJECT4;
 
   /* Create an arguments object for a frame that is expecting them. */
   static ArgumentsObject* createExpected(JSContext* cx, AbstractFramePtr frame);
@@ -269,14 +268,15 @@ class ArgumentsObject : public NativeObject {
    * current value of arguments.length!
    */
   uint32_t initialLength() const {
-    uint32_t argc = uint32_t(getFixedSlot(INITIAL_LENGTH_SLOT).toInt32()) >>
-                    PACKED_BITS_COUNT;
+    uint32_t argc =
+        uint32_t(getFixedSlotTyped(INITIAL_LENGTH_SLOT).toInt32()) >>
+        PACKED_BITS_COUNT;
     MOZ_ASSERT(argc <= ARGS_LENGTH_MAX);
     return argc;
   }
 
   bool hasFlags(uint32_t flags) const {
-    const Value& v = getFixedSlot(INITIAL_LENGTH_SLOT);
+    const Value& v = getFixedSlotTyped(INITIAL_LENGTH_SLOT);
     return v.toInt32() & flags;
   }
 
@@ -284,9 +284,9 @@ class ArgumentsObject : public NativeObject {
   bool hasOverriddenLength() const { return hasFlags(LENGTH_OVERRIDDEN_BIT); }
 
   void markLengthOverridden() {
-    uint32_t v =
-        getFixedSlot(INITIAL_LENGTH_SLOT).toInt32() | LENGTH_OVERRIDDEN_BIT;
-    setFixedSlot(INITIAL_LENGTH_SLOT, Int32Value(v));
+    uint32_t v = getFixedSlotTyped(INITIAL_LENGTH_SLOT).toInt32() |
+                 LENGTH_OVERRIDDEN_BIT;
+    setFixedSlotTyped(INITIAL_LENGTH_SLOT, Int32Value(v));
   }
 
   // Create the default "length" property and set LENGTH_OVERRIDDEN_BIT.
@@ -298,9 +298,9 @@ class ArgumentsObject : public NativeObject {
   }
 
   void markIteratorOverridden() {
-    uint32_t v =
-        getFixedSlot(INITIAL_LENGTH_SLOT).toInt32() | ITERATOR_OVERRIDDEN_BIT;
-    setFixedSlot(INITIAL_LENGTH_SLOT, Int32Value(v));
+    uint32_t v = getFixedSlotTyped(INITIAL_LENGTH_SLOT).toInt32() |
+                 ITERATOR_OVERRIDDEN_BIT;
+    setFixedSlotTyped(INITIAL_LENGTH_SLOT, Int32Value(v));
   }
 
   // Create the default @@iterator property and set ITERATOR_OVERRIDDEN_BIT.
@@ -315,9 +315,9 @@ class ArgumentsObject : public NativeObject {
   bool hasOverriddenElement() const { return hasFlags(ELEMENT_OVERRIDDEN_BIT); }
 
   void markElementOverridden() {
-    uint32_t v =
-        getFixedSlot(INITIAL_LENGTH_SLOT).toInt32() | ELEMENT_OVERRIDDEN_BIT;
-    setFixedSlot(INITIAL_LENGTH_SLOT, Int32Value(v));
+    uint32_t v = getFixedSlotTyped(INITIAL_LENGTH_SLOT).toInt32() |
+                 ELEMENT_OVERRIDDEN_BIT;
+    setFixedSlotTyped(INITIAL_LENGTH_SLOT, Int32Value(v));
   }
 
  private:
@@ -386,13 +386,14 @@ class ArgumentsObject : public NativeObject {
   const Value& arg(unsigned i) const {
     MOZ_ASSERT(i < data()->numArgs());
     const Value& v = data()->args[i];
-    MOZ_ASSERT(!v.isMagic());
+    MOZ_RELEASE_ASSERT(!v.isMagic());
     return v;
   }
 
   void setArg(unsigned i, const Value& v) {
     MOZ_ASSERT(i < data()->numArgs());
-    MOZ_ASSERT(!data()->args[i].isMagic());
+    MOZ_RELEASE_ASSERT(!data()->args[i].isMagic());
+    MOZ_RELEASE_ASSERT(!v.isMagic());
     data()->args.setElement(this, i, v);
   }
 
@@ -410,9 +411,9 @@ class ArgumentsObject : public NativeObject {
   bool anyArgIsForwarded() const { return hasFlags(FORWARDED_ARGUMENTS_BIT); }
 
   void markArgumentForwarded() {
-    uint32_t v =
-        getFixedSlot(INITIAL_LENGTH_SLOT).toInt32() | FORWARDED_ARGUMENTS_BIT;
-    setFixedSlot(INITIAL_LENGTH_SLOT, Int32Value(v));
+    uint32_t v = getFixedSlotTyped(INITIAL_LENGTH_SLOT).toInt32() |
+                 FORWARDED_ARGUMENTS_BIT;
+    setFixedSlotTyped(INITIAL_LENGTH_SLOT, Int32Value(v));
   }
 
   /*
@@ -438,26 +439,17 @@ class ArgumentsObject : public NativeObject {
    * Measures things hanging off this ArgumentsObject that are counted by the
    * |miscSize| argument in JSObject::sizeOfExcludingThis().
    */
-  size_t sizeOfMisc(mozilla::MallocSizeOf mallocSizeOf) const {
-    if (!data()) {  // Template arguments objects have no data.
-      return 0;
-    }
-    return mallocSizeOf(data()) + mallocSizeOf(maybeRareData());
-  }
-  size_t sizeOfData() const {
-    return ArgumentsData::bytesRequired(data()->numArgs()) +
-           (maybeRareData() ? RareArgumentsData::bytesRequired(initialLength())
-                            : 0);
-  }
-
-  static void finalize(JS::GCContext* gcx, JSObject* obj);
+  size_t sizeOfMisc() const;
+  size_t sizeOfData() const;
   static void trace(JSTracer* trc, JSObject* obj);
   static size_t objectMoved(JSObject* dst, JSObject* src);
 
   /* For jit use: */
-  static size_t getDataSlotOffset() { return getFixedSlotOffset(DATA_SLOT); }
+  static size_t getDataSlotOffset() {
+    return getFixedSlotOffsetTyped(DATA_SLOT);
+  }
   static size_t getInitialLengthSlotOffset() {
-    return getFixedSlotOffset(INITIAL_LENGTH_SLOT);
+    return getFixedSlotOffsetTyped(INITIAL_LENGTH_SLOT);
   }
 
   static Value MagicEnvSlotValue(uint32_t slot) {
@@ -495,20 +487,18 @@ class MappedArgumentsObject : public ArgumentsObject {
  public:
   static const JSClass class_;
 
-  JSFunction& callee() const {
-    return getFixedSlot(CALLEE_SLOT).toObject().as<JSFunction>();
-  }
+  JSFunction& callee() const;
 
   bool hasOverriddenCallee() const { return hasFlags(CALLEE_OVERRIDDEN_BIT); }
 
   void markCalleeOverridden() {
-    uint32_t v =
-        getFixedSlot(INITIAL_LENGTH_SLOT).toInt32() | CALLEE_OVERRIDDEN_BIT;
-    setFixedSlot(INITIAL_LENGTH_SLOT, Int32Value(v));
+    uint32_t v = getFixedSlotTyped(INITIAL_LENGTH_SLOT).toInt32() |
+                 CALLEE_OVERRIDDEN_BIT;
+    setFixedSlotTyped(INITIAL_LENGTH_SLOT, Int32Value(v));
   }
 
   static size_t getCalleeSlotOffset() {
-    return getFixedSlotOffset(CALLEE_SLOT);
+    return getFixedSlotOffsetTyped(CALLEE_SLOT);
   }
 
   // Create the default "callee" property and set CALLEE_OVERRIDDEN_BIT.

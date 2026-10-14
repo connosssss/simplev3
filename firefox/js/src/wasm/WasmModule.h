@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- *
+/*
  * Copyright 2015 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,9 +17,8 @@
 #ifndef wasm_module_h
 #define wasm_module_h
 
-#include "js/WasmModule.h"
 #include "js/BuildId.h"
-
+#include "js/WasmModule.h"
 #include "wasm/WasmCode.h"
 #include "wasm/WasmException.h"
 #include "wasm/WasmJS.h"
@@ -67,7 +64,7 @@ struct ImportValues {
   WasmGlobalObjectVector globalObjs;
   ValVector globalValues;
 
-  ImportValues() {}
+  ImportValues() = default;
 
   void trace(JSTracer* trc) {
     funcs.trace(trc);
@@ -144,22 +141,13 @@ class Module : public JS::WasmModule {
   class PartialTier2CompileTaskImpl;
 
   Module(const ModuleMetadata& moduleMeta, const Code& code,
-         bool loggingDeserialized = false)
-      : moduleMeta_(&moduleMeta),
-        code_(&code),
-        loggingDeserialized_(loggingDeserialized),
-        testingTier2Active_(false) {
-    initGCMallocBytesExcludingCode();
-  }
+         bool loggingDeserialized = false);
   ~Module() override;
 
   const Code& code() const { return *code_; }
   const ModuleMetadata& moduleMeta() const { return *moduleMeta_; }
   const CodeMetadata& codeMeta() const { return code_->codeMeta(); }
   const CodeTailMetadata& codeTailMeta() const { return code_->codeTailMeta(); }
-  const CodeMetadataForAsmJS* codeMetaForAsmJS() const {
-    return code_->codeMetaForAsmJS();
-  }
   const BytecodeSource& debugBytecode() const {
     return codeTailMeta().debugBytecode.source();
   }
@@ -167,9 +155,9 @@ class Module : public JS::WasmModule {
 
   // Instantiate this module with the given imports:
 
-  bool instantiate(JSContext* cx, ImportValues& imports,
-                   HandleObject instanceProto,
-                   MutableHandle<WasmInstanceObject*> instanceObj) const;
+  [[nodiscard]] bool instantiate(
+      JSContext* cx, ImportValues& imports, HandleObject instanceProto,
+      MutableHandle<WasmInstanceObject*> instanceObj) const;
 
   // Tier-2 compilation may be initiated after the Module is constructed at
   // most once. When tier-2 compilation completes, ModuleGenerator calls
@@ -194,13 +182,11 @@ class Module : public JS::WasmModule {
   // JS API and JS::WasmModule implementation:
 
   JSObject* createObject(JSContext* cx) const override;
-  JSObject* createObjectForAsmJS(JSContext* cx) const override;
 
   // about:memory reporting:
 
   void addSizeOfMisc(mozilla::MallocSizeOf mallocSizeOf,
                      CodeMetadata::SeenSet* seenCodeMeta,
-                     CodeMetadataForAsmJS::SeenSet* seenCodeMetaForAsmJS,
                      Code::SeenSet* seenCode, size_t* code, size_t* data) const;
 
   // GC malloc memory tracking:
@@ -216,9 +202,6 @@ class Module : public JS::WasmModule {
 
   WASM_DECLARE_FRIEND_SERIALIZE(Module);
 };
-
-using MutableModule = RefPtr<Module>;
-using SharedModule = RefPtr<const Module>;
 
 // JS API implementations:
 

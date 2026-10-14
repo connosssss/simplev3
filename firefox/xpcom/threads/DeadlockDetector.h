@@ -1,19 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #ifndef mozilla_DeadlockDetector_h
 #define mozilla_DeadlockDetector_h
 
-#include "mozilla/Attributes.h"
-
 #include <stdlib.h>
-
-#include "prlock.h"
 
 #include "nsClassHashtable.h"
 #include "nsTArray.h"
+#include "prlock.h"
 
 namespace mozilla {
 
@@ -86,7 +81,7 @@ class DeadlockDetector {
           ,
           mExternalRefs(),
           mResource(aResource) {}
-    ~OrderingEntry() {}
+    ~OrderingEntry() = default;
 
     size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
       size_t n = aMallocSizeOf(this);
@@ -146,6 +141,9 @@ class DeadlockDetector {
 
     return n;
   }
+
+  DeadlockDetector(const DeadlockDetector& aDD) = delete;
+  DeadlockDetector& operator=(const DeadlockDetector& aDD) = delete;
 
   /**
    * Add
@@ -344,10 +342,6 @@ class DeadlockDetector {
    * detector.
    */
   PRLock* mLock;
-
- private:
-  DeadlockDetector(const DeadlockDetector& aDD) = delete;
-  DeadlockDetector& operator=(const DeadlockDetector& aDD) = delete;
 };
 
 template <typename T>

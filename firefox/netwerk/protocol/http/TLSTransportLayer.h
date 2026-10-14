@@ -2,14 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef TLSTransportLayer_h__
-#define TLSTransportLayer_h__
+#ifndef TLSTransportLayer_h_
+#define TLSTransportLayer_h_
 
-#include "nsSocketTransportService2.h"
-#include "nsIInterfaceRequestor.h"
-#include "nsISocketTransport.h"
 #include "nsIAsyncInputStream.h"
 #include "nsIAsyncOutputStream.h"
+#include "nsIInterfaceRequestor.h"
+#include "nsISocketTransport.h"
+#include "nsSocketTransportService2.h"
 #include "prio.h"
 
 namespace mozilla::net {
@@ -129,6 +129,8 @@ class TLSTransportLayer final : public nsISocketTransport,
 
   nsISocketTransport* Transport() { return mSocketTransport; }
 
+  void MaybeWakeWaiter(int32_t aPollResult, int16_t aOutFlags, bool aInput);
+
   int32_t OutputInternal(const char* aBuf, int32_t aAmount);
   int32_t InputInternal(char* aBuf, int32_t aAmount);
 
@@ -149,10 +151,15 @@ class TLSTransportLayer final : public nsISocketTransport,
   InputStreamWrapper mSocketInWrapper;
   OutputStreamWrapper mSocketOutWrapper;
   nsCOMPtr<nsITLSSocketControl> mTLSSocketControl;
+  // Whether the last PR_Poll reached this layer's Poll(). See MaybeWakeWaiter.
+  bool mPollCalled{false};
+
   nsCOMPtr<nsIInputStreamCallback> mInputCallback;
   nsCOMPtr<nsIOutputStreamCallback> mOutputCallback;
   PRFileDesc* mFD{nullptr};
   nsCOMPtr<nsIInputStreamCallback> mOwner;
+  nsresult mOutputStatus{NS_OK};
+  nsresult mInputStatus{NS_OK};
 };
 
 }  // namespace mozilla::net

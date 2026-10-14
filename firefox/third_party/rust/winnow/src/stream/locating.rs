@@ -1,4 +1,3 @@
-use crate::error::Needed;
 use crate::stream::AsBStr;
 use crate::stream::AsBytes;
 use crate::stream::Checkpoint;
@@ -6,6 +5,7 @@ use crate::stream::Compare;
 use crate::stream::CompareResult;
 use crate::stream::FindSlice;
 use crate::stream::Location;
+use crate::stream::Needed;
 use crate::stream::Offset;
 #[cfg(feature = "unstable-recover")]
 #[cfg(feature = "std")]
@@ -25,7 +25,7 @@ use crate::stream::UpdateSlice;
 /// byte offsets to line numbers.
 ///
 /// See [`Parser::span`][crate::Parser::span] and [`Parser::with_span`][crate::Parser::with_span] for more details
-#[derive(Copy, Clone, Default, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[doc(alias = "LocatingSliceSpan")]
 #[doc(alias = "Located")]
 pub struct LocatingSlice<I> {
@@ -81,7 +81,13 @@ impl<I> AsRef<I> for LocatingSlice<I> {
     }
 }
 
-impl<I> crate::lib::std::ops::Deref for LocatingSlice<I> {
+impl<I: core::fmt::Debug> core::fmt::Debug for LocatingSlice<I> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.input.fmt(f)
+    }
+}
+
+impl<I> core::ops::Deref for LocatingSlice<I> {
     type Target = I;
 
     #[inline(always)]
@@ -90,8 +96,8 @@ impl<I> crate::lib::std::ops::Deref for LocatingSlice<I> {
     }
 }
 
-impl<I: crate::lib::std::fmt::Display> crate::lib::std::fmt::Display for LocatingSlice<I> {
-    fn fmt(&self, f: &mut crate::lib::std::fmt::Formatter<'_>) -> crate::lib::std::fmt::Result {
+impl<I: core::fmt::Display> core::fmt::Display for LocatingSlice<I> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.input.fmt(f)
     }
 }
@@ -172,9 +178,8 @@ impl<I: Stream> Stream for LocatingSlice<I> {
         self.input.reset(&checkpoint.inner);
     }
 
-    #[inline(always)]
-    fn raw(&self) -> &dyn crate::lib::std::fmt::Debug {
-        self.input.raw()
+    fn trace(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.input.trace(f)
     }
 }
 
@@ -298,7 +303,7 @@ where
     I: FindSlice<T>,
 {
     #[inline(always)]
-    fn find_slice(&self, substr: T) -> Option<crate::lib::std::ops::Range<usize>> {
+    fn find_slice(&self, substr: T) -> Option<core::ops::Range<usize>> {
         self.input.find_slice(substr)
     }
 }

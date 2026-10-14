@@ -44,15 +44,16 @@ private fun findUrlMatchingText(url: String, text: String): String? {
         return url
     }
 
-    val uri = try {
-        url.toUri()
-    } catch (e: MalformedURLException) {
-        null
-    }
+    val uri =
+        try {
+            url.toUri()
+        } catch (e: MalformedURLException) {
+            null
+        }
 
     var urlSansProtocol = uri?.host
     urlSansProtocol += uri?.port?.orEmpty() + uri?.path
-    urlSansProtocol?.let {
+    urlSansProtocol.let {
         if (it.startsWith(text) || it.noCommonSubdomains().startsWith(text)) {
             return url
         }

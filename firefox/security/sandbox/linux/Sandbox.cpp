@@ -1,26 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Sandbox.h"
 
-#include "LinuxSched.h"
-#include "SandboxBrokerClient.h"
-#include "SandboxChrootProto.h"
-#include "SandboxFilter.h"
-#include "SandboxInternal.h"
-#include "SandboxOpenedFiles.h"
-#include "SandboxReporterClient.h"
-
-#include "SandboxProfilerChild.h"
-#include "SandboxLogging.h"
-
 #include <dirent.h>
-#ifdef NIGHTLY_BUILD
-#  include "dlfcn.h"
-#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/futex.h>
@@ -28,26 +12,34 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/ptrace.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <unistd.h>
+#ifdef NIGHTLY_BUILD
+#  include <dlfcn.h>
+#endif
 
+#include "LinuxSched.h"
+#include "SandboxBrokerClient.h"
+#include "SandboxChrootProto.h"
+#include "SandboxFilter.h"
+#include "SandboxInternal.h"
+#include "SandboxLogging.h"
+#include "SandboxOpenedFiles.h"
+#include "SandboxProfilerChild.h"
+#include "SandboxReporterClient.h"
+#include "base/posix/eintr_wrapper.h"
 #include "mozilla/Array.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/Range.h"
 #include "mozilla/SandboxInfo.h"
 #include "mozilla/StackWalk.h"
-#include "mozilla/Span.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
 #include "mozilla/ipc/UtilityProcessSandboxing.h"
 #include "prenv.h"
-#include "base/posix/eintr_wrapper.h"
 #include "sandbox/linux/bpf_dsl/bpf_dsl.h"
 #include "sandbox/linux/bpf_dsl/codegen.h"
 #include "sandbox/linux/bpf_dsl/dump_bpf.h"
@@ -189,7 +181,7 @@ static void InstallSigSysHandler(void) {
   struct sigaction act;
 
   // Ensure that the Chromium handler is installed.
-  Unused << sandbox::Trap::Registry();
+  (void)sandbox::Trap::Registry();
 
   // If the signal handling state isn't as expected, crash now instead
   // of crashing later (and more confusingly) when SIGSYS happens.
@@ -484,7 +476,7 @@ static void BroadcastSetThreadSandbox(const sock_fprog* aFilter) {
     MOZ_CRASH("handler for the signal was changed to another");
   }
   gSeccompTsyncBroadcastSignum = 0;
-  Unused << closedir(taskdp);
+  (void)closedir(taskdp);
   // And now, deprivilege the main thread:
   SetThreadSandbox();
   gSetSandboxFilter = nullptr;
@@ -607,7 +599,7 @@ static void SandboxLateInit() {
   // This will create:
   //  - pointers to uprofiler to make use of the profiler
   //  - a SandboxProfiler
-  //  - a MPSCQueue
+  //  - a BoundedMPSCQueue
   //  - a std::thread
   //
   // So that later usage of uprofiler under SIGSYS context can:
@@ -648,7 +640,7 @@ static void SetCurrentProcessSandbox(
     // currently the case for all callers.  (An intentionally leaked
     // heap allocation would also work.)
     return sandbox::bpf_dsl::Trap(
-        [](const sandbox::arch_seccomp_data&, void* aux) -> intptr_t {
+        [](const arch_seccomp_data&, void* aux) -> intptr_t {
           auto error = reinterpret_cast<const char*>(aux);
           SANDBOX_LOG("Panic: %s", error);
           MOZ_CRASH("Sandbox Panic");
@@ -815,7 +807,7 @@ void SetSocketProcessSandbox(SocketProcessSandboxParams&& aParams) {
 
   // FIXME(bug 1513773): merge this with the ones for content and RDD?
   static SandboxBrokerClient* sBroker;
-  MOZ_ASSERT(!sBroker); // This should only ever be called once.
+  MOZ_ASSERT(!sBroker);  // This should only ever be called once.
   if (aParams.mBroker) {
     sBroker = new SandboxBrokerClient(aParams.mBroker.release());
   }
@@ -844,6 +836,9 @@ void SetUtilitySandbox(int aBroker, ipc::SandboxingKind aKind) {
   UniquePtr<sandbox::bpf_dsl::Policy> policy;
   switch (aKind) {
     case ipc::SandboxingKind::GENERIC_UTILITY:
+#ifndef ANDROID
+    case ipc::SandboxingKind::HW_INFERENCE:
+#endif  // !ANDROID
       policy = GetUtilitySandboxPolicy(sBroker);
       break;
 

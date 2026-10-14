@@ -1185,7 +1185,7 @@ static int64_t rd_pick_intra4x4block(VP9_COMP *cpi, MACROBLOCK *x, int row,
                  num_4x4_blocks_wide * 4 * sizeof(uint16_t));
         }
       }
-    next_highbd : {}
+    next_highbd: {}
     }
     if (best_rd >= rd_thresh || x->skip_encode) return best_rd;
 
@@ -1284,7 +1284,7 @@ static int64_t rd_pick_intra4x4block(VP9_COMP *cpi, MACROBLOCK *x, int row,
         memcpy(best_dst + idy * 8, dst_init + idy * dst_stride,
                num_4x4_blocks_wide * 4);
     }
-  next : {}
+  next: {}
   }
 
   if (best_rd >= rd_thresh || x->skip_encode) return best_rd;
@@ -3610,7 +3610,8 @@ void vp9_rd_pick_inter_mode_sb(VP9_COMP *cpi, TileDataEnc *tile_data,
 
   if (sf->adaptive_mode_search) {
     if (cm->show_frame && !cpi->rc.is_src_frame_alt_ref &&
-        cpi->rc.frames_since_golden >= 3)
+        cpi->rc.frames_since_golden >= 3 &&
+        x->pred_mv_sad[LAST_FRAME] < INT_MAX)
       if (x->pred_mv_sad[GOLDEN_FRAME] > (x->pred_mv_sad[LAST_FRAME] << 1))
         mode_skip_mask[GOLDEN_FRAME] |= INTER_ALL;
   }
@@ -3621,7 +3622,7 @@ void vp9_rd_pick_inter_mode_sb(VP9_COMP *cpi, TileDataEnc *tile_data,
   }
 
   mode_skip_mask[INTRA_FRAME] |=
-      (uint16_t) ~(sf->intra_y_mode_mask[max_txsize_lookup[bsize]]);
+      (uint16_t)~(sf->intra_y_mode_mask[max_txsize_lookup[bsize]]);
 
   for (i = 0; i <= LAST_NEW_MV_INDEX; ++i) mode_threshold[i] = 0;
 

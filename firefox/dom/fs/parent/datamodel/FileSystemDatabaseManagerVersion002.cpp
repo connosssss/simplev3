@@ -1,10 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "FileSystemDatabaseManagerVersion002.h"
+
+#include <limits>
 
 #include "ErrorList.h"
 #include "FileSystemContentTypeGuess.h"
@@ -16,7 +16,6 @@
 #include "ResultStatement.h"
 #include "StartedTransaction.h"
 #include "mozStorageHelper.h"
-#include "mozilla/CheckedInt.h"
 #include "mozilla/dom/FileSystemDataManager.h"
 #include "mozilla/dom/FileSystemHandle.h"
 #include "mozilla/dom/FileSystemLog.h"
@@ -43,7 +42,7 @@ Result<FileId, QMResult> GetFileId002(const FileSystemConnection& aConnection,
   QM_TRY(QM_TO_RESULT(stmt.BindEntryIdByName("entryId"_ns, aEntryId)));
   QM_TRY_UNWRAP(bool moreResults, stmt.ExecuteStep());
 
-  if (!moreResults) {
+  if (!moreResults || stmt.IsNullByColumn(/* Column */ 0u)) {
     return Err(QMResult(NS_ERROR_DOM_NOT_FOUND_ERR));
   }
 
@@ -95,7 +94,11 @@ nsresult RehashFile(const FileSystemConnection& aConnection,
                                        : insertNewFileAndTypeQuery;
 
   const nsLiteralCString updateFileMappingsQuery =
-      "UPDATE FileIds SET handle = :newId WHERE handle = :handle ;"_ns;
+      "UPDATE FileIds SET handle = :newId "
+      "FROM MainFiles WHERE MainFiles.handle = :handle "
+      "AND FileIds.fileId = MainFiles.fileId "
+      "AND FileIds.handle = :handle "
+      ";"_ns;
 
   const nsLiteralCString updateMainFilesQuery =
       "UPDATE MainFiles SET handle = :newId WHERE handle = :handle ;"_ns;
@@ -204,14 +207,14 @@ nsresult RehashDirectory(const FileSystemConnection& aConnection,
 
   const nsLiteralCString updateFileMappingsQuery =
       "UPDATE FileIds "
-      "SET handle = CASE WHEN replacement.isMain IS NULL THEN NULL "
-      "ELSE replacement.hash END "
+      "SET handle = replacement.hash "
       "FROM ( SELECT ParentChildHash.handle AS handle, "
       "ParentChildHash.hash AS hash, "
-      "MainFiles.handle AS isMain "
-      "FROM ParentChildHash LEFT JOIN MainFiles "
+      "MainFiles.fileId AS mainFileId "
+      "FROM ParentChildHash INNER JOIN MainFiles "
       "ON ParentChildHash.handle = MainFiles.handle ) AS replacement "
       "WHERE FileIds.handle = replacement.handle "
+      "AND FileIds.fileId = replacement.mainFileId "
       ";"_ns;
 
   const nsLiteralCString updateMainFilesQuery =
@@ -363,7 +366,7 @@ Result<FileId, QMResult> GetNextFreeFileId(
 
     auto Increase = [](IdBuffer& aIn) {
       for (int i = 0; i < bufferSize; ++i) {
-        if (1u + aIn[i] != 0u) {
+        if (aIn[i] < std::numeric_limits<IntegerType>::max()) {
           ++aIn[i];
           return;
         }
@@ -666,6 +669,7 @@ Result<FileId, QMResult> FileSystemDatabaseManagerVersion002::EnsureFileId(
                     })));
 
   if (maybeMainFileId) {
+    MOZ_ASSERT(!maybeMainFileId->IsEmpty());
     return *maybeMainFileId;
   }
 
@@ -781,6 +785,8 @@ nsresult FileSystemDatabaseManagerVersion002::MergeFileId(
 
   QM_TRY(MOZ_TO_RESULT(stmt.Execute()));
 
+  QM_SCOPED_CONTEXT("FileSystemMergeFileId::CommitFailed"_ns);
+
   if (!maybeOldFileId) {
     // We successfully added a new main file and there is nothing to clean up.
     QM_TRY(MOZ_TO_RESULT(transaction.Commit()));
@@ -817,7 +823,14 @@ nsresult FileSystemDatabaseManagerVersion002::RemoveFileId(
 
   QM_TRY(MOZ_TO_RESULT(stmt.BindEntryIdByName("fileId"_ns, aFileId.Value())));
 
-  return stmt.Execute();
+  QM_TRY(MOZ_TO_RESULT(stmt.Execute()));
+
+  if (const RefPtr<FileSystemCipherKeyManager> cipherKeyManager =
+          mDataManager->MaybeCipherKeyManager()) {
+    cipherKeyManager->Remove(aFileId.Value());
+  }
+
+  return NS_OK;
 }
 
 /**

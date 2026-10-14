@@ -40,6 +40,7 @@ const char __nss_util_version[] = "Version: NSS " NSSUTIL_VERSION _DEBUG_STRING;
 #define AES NISTALGS, 1
 #define SHAXXX NISTALGS, 2
 #define DSA2 NISTALGS, 3
+#define KEMS NISTALGS, 4
 
 /**
  ** The Netscape OID space is allocated by Terry Hayes.  If you need
@@ -255,6 +256,7 @@ CONST_OID pkcs9SDSICertificate[] = { PKCS9_CERT_TYPES, 2 };
 CONST_OID pkcs9X509CRL[] = { PKCS9_CRL_TYPES, 1 };
 
 /* RFC2630 (CMS) OIDs */
+CONST_OID cmsAuthEnvelopedData[] = { PKCS9_SMIME_IDS, 1, 23 };
 CONST_OID cmsESDH[] = { PKCS9_SMIME_ALGS, 5 };
 CONST_OID cms3DESwrap[] = { PKCS9_SMIME_ALGS, 6 };
 CONST_OID cmsRC2wrap[] = { PKCS9_SMIME_ALGS, 7 };
@@ -641,11 +643,27 @@ CONST_OID curve25519[] = { 0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01 
         locations.
 */
 
-CONST_OID ed25519PublicKey[] = { 0x2B, 0x65, 0x70 };
-CONST_OID ed25519Signature[] = { 0x2B, 0x65, 0x70 };
-
 /*https://www.rfc-editor.org/rfc/rfc8410#section-3*/
+/* 1.3.101.112 */
+CONST_OID ed25519[] = { 0x2B, 0x65, 0x70 };
+/* 1.3.101.110 */
 CONST_OID x25519PublicKey[] = { 0x2b, 0x65, 0x6e };
+
+/*
+ * ML-DSA OIDs
+ * https://csrc.nist.gov/projects/computer-security-objects-register/algorithm-registration
+ */
+CONST_OID mlDsa44[] = { DSA2, 17 };
+CONST_OID mlDsa65[] = { DSA2, 18 };
+CONST_OID mlDsa87[] = { DSA2, 19 };
+
+/*
+ * ML-KEM
+ * https://csrc.nist.gov/projects/computer-security-objects-register/algorithm-registration
+ */
+CONST_OID mlKem512[] = { KEMS, 1 };
+CONST_OID mlKem768[] = { KEMS, 2 };
+CONST_OID mlKem1024[] = { KEMS, 3 };
 
 #define OI(x)                                  \
     {                                          \
@@ -654,8 +672,7 @@ CONST_OID x25519PublicKey[] = { 0x2b, 0x65, 0x6e };
 #ifndef SECOID_NO_STRINGS
 #define OD(oid, tag, desc, mech, ext) \
     {                                 \
-        OI(oid)                       \
-        , tag, desc, mech, ext        \
+        OI(oid), tag, desc, mech, ext \
     }
 #define ODE(tag, desc, mech, ext)                   \
     {                                               \
@@ -664,8 +681,7 @@ CONST_OID x25519PublicKey[] = { 0x2b, 0x65, 0x6e };
 #else
 #define OD(oid, tag, desc, mech, ext) \
     {                                 \
-        OI(oid)                       \
-        , tag, 0, mech, ext           \
+        OI(oid), tag, 0, mech, ext    \
     }
 #define ODE(tag, desc, mech, ext)                \
     {                                            \
@@ -1285,11 +1301,11 @@ const static SECOidData oids[SEC_OID_TOTAL] = {
        INVALID_CERT_EXTENSION),
 
     OD(aes128_KEY_WRAP, SEC_OID_AES_128_KEY_WRAP,
-       "AES-128 Key Wrap", CKM_NSS_AES_KEY_WRAP, INVALID_CERT_EXTENSION),
+       "AES-128 Key Wrap", CKM_AES_KEY_WRAP, INVALID_CERT_EXTENSION),
     OD(aes192_KEY_WRAP, SEC_OID_AES_192_KEY_WRAP,
-       "AES-192 Key Wrap", CKM_NSS_AES_KEY_WRAP, INVALID_CERT_EXTENSION),
+       "AES-192 Key Wrap", CKM_AES_KEY_WRAP, INVALID_CERT_EXTENSION),
     OD(aes256_KEY_WRAP, SEC_OID_AES_256_KEY_WRAP,
-       "AES-256 Key Wrap", CKM_NSS_AES_KEY_WRAP, INVALID_CERT_EXTENSION),
+       "AES-256 Key Wrap", CKM_AES_KEY_WRAP, INVALID_CERT_EXTENSION),
 
     /* Elliptic Curve Cryptography (ECC) OIDs */
     OD(ansix962ECPublicKey, SEC_OID_ANSIX962_EC_PUBLIC_KEY,
@@ -1789,7 +1805,7 @@ const static SECOidData oids[SEC_OID_TOTAL] = {
     ODE(SEC_OID_APPLY_SSL_POLICY,
         "Apply SSL policy (pseudo-OID)", CKM_INVALID_MECHANISM, INVALID_CERT_EXTENSION),
     ODE(SEC_OID_CHACHA20_POLY1305,
-        "ChaCha20-Poly1305", CKM_NSS_CHACHA20_POLY1305, INVALID_CERT_EXTENSION),
+        "ChaCha20-Poly1305", CKM_CHACHA20_POLY1305, INVALID_CERT_EXTENSION),
 
     ODE(SEC_OID_TLS_ECDHE_PSK,
         "TLS ECHDE-PSK key exchange", CKM_INVALID_MECHANISM, INVALID_CERT_EXTENSION),
@@ -1854,41 +1870,44 @@ const static SECOidData oids[SEC_OID_TOTAL] = {
     ODE(SEC_OID_XYBER768D00,
         "X25519+Kyber768 key exchange", CKM_INVALID_MECHANISM, INVALID_CERT_EXTENSION),
 
-    OD(ed25519Signature, SEC_OID_ED25519_SIGNATURE, "X9.62 EDDSA signature", CKM_EDDSA,
-       INVALID_CERT_EXTENSION),
+    /* SEC_OID_ED25519_PUBLIC_KEY and SEC_OID_ED25519_SIGNATURE have the same
+     * values, so we should only have one entry in the table, We can't
+     * shift the values of the other entries, so just leav a dead spot here */
+    ODE(SEC_OID_RESERVED_OLD_EDSIG, "Reserved", CKM_INVALID_MECHANISM,
+        INVALID_CERT_EXTENSION),
 
-    OD(ed25519PublicKey, SEC_OID_ED25519_PUBLIC_KEY,
-       "X9.62 elliptic edwards curve public key", CKM_EC_EDWARDS_KEY_PAIR_GEN, INVALID_CERT_EXTENSION),
+    OD(ed25519, SEC_OID_ED25519,
+       "Elliptic Edwards Curve 25519", CKM_EDDSA, INVALID_CERT_EXTENSION),
 
     OD(dhSinglePassstdDHsha1kdfscheme, SEC_OID_DHSINGLEPASS_STDDH_SHA1KDF_SCHEME,
-       "Eliptic Curve Diffie-Hellman Single Pass Standard with SHA1 KDF", CKM_ECDH1_DERIVE,
+       "Elliptic Curve Diffie-Hellman Single Pass Standard with SHA1 KDF", CKM_ECDH1_DERIVE,
        INVALID_CERT_EXTENSION),
     OD(dhSinglePassstdDHsha224kdfscheme, SEC_OID_DHSINGLEPASS_STDDH_SHA224KDF_SCHEME,
-       "Eliptic Curve Diffie-Hellman Single Pass Standard with SHA224 KDF", CKM_ECDH1_DERIVE,
+       "Elliptic Curve Diffie-Hellman Single Pass Standard with SHA224 KDF", CKM_ECDH1_DERIVE,
        INVALID_CERT_EXTENSION),
     OD(dhSinglePassstdDHsha256kdfscheme, SEC_OID_DHSINGLEPASS_STDDH_SHA256KDF_SCHEME,
-       "Eliptic Curve Diffie-Hellman Single Pass Standard with SHA256 KDF", CKM_ECDH1_DERIVE,
+       "Elliptic Curve Diffie-Hellman Single Pass Standard with SHA256 KDF", CKM_ECDH1_DERIVE,
        INVALID_CERT_EXTENSION),
     OD(dhSinglePassstdDHsha384kdfscheme, SEC_OID_DHSINGLEPASS_STDDH_SHA384KDF_SCHEME,
-       "Eliptic Curve Diffie-Hellman Single Pass Standard with SHA384 KDF", CKM_ECDH1_DERIVE,
+       "Elliptic Curve Diffie-Hellman Single Pass Standard with SHA384 KDF", CKM_ECDH1_DERIVE,
        INVALID_CERT_EXTENSION),
     OD(dhSinglePassstdDHsha512kdfscheme, SEC_OID_DHSINGLEPASS_STDDH_SHA512KDF_SCHEME,
-       "Eliptic Curve Diffie-Hellman Single Pass Standard with SHA512 KDF", CKM_ECDH1_DERIVE,
+       "Elliptic Curve Diffie-Hellman Single Pass Standard with SHA512 KDF", CKM_ECDH1_DERIVE,
        INVALID_CERT_EXTENSION),
     OD(dhSinglePasscofactorDHsha1kdfscheme, SEC_OID_DHSINGLEPASS_COFACTORDH_SHA1KDF_SCHEME,
-       "Eliptic Curve Diffie-Hellman Single Pass Cofactor with SHA1 KDF", CKM_ECDH1_COFACTOR_DERIVE,
+       "Elliptic Curve Diffie-Hellman Single Pass Cofactor with SHA1 KDF", CKM_ECDH1_COFACTOR_DERIVE,
        INVALID_CERT_EXTENSION),
     OD(dhSinglePasscofactorDHsha224kdfscheme, SEC_OID_DHSINGLEPASS_COFACTORDH_SHA224KDF_SCHEME,
-       "Eliptic Curve Diffie-Hellman Single Pass Cofactor with SHA224 KDF", CKM_ECDH1_COFACTOR_DERIVE,
+       "Elliptic Curve Diffie-Hellman Single Pass Cofactor with SHA224 KDF", CKM_ECDH1_COFACTOR_DERIVE,
        INVALID_CERT_EXTENSION),
     OD(dhSinglePasscofactorDHsha256kdfscheme, SEC_OID_DHSINGLEPASS_COFACTORDH_SHA256KDF_SCHEME,
-       "Eliptic Curve Diffie-Hellman Single Pass Cofactor with SHA256 KDF", CKM_ECDH1_COFACTOR_DERIVE,
+       "Elliptic Curve Diffie-Hellman Single Pass Cofactor with SHA256 KDF", CKM_ECDH1_COFACTOR_DERIVE,
        INVALID_CERT_EXTENSION),
     OD(dhSinglePasscofactorDHsha384kdfscheme, SEC_OID_DHSINGLEPASS_COFACTORDH_SHA384KDF_SCHEME,
-       "Eliptic Curve Diffie-Hellman Single Pass Cofactor with SHA384 KDF", CKM_ECDH1_COFACTOR_DERIVE,
+       "Elliptic Curve Diffie-Hellman Single Pass Cofactor with SHA384 KDF", CKM_ECDH1_COFACTOR_DERIVE,
        INVALID_CERT_EXTENSION),
     OD(dhSinglePasscofactorDHsha512kdfscheme, SEC_OID_DHSINGLEPASS_COFACTORDH_SHA512KDF_SCHEME,
-       "Eliptic Curve Diffie-Hellman Single Pass Cofactor with SHA512 KDF", CKM_ECDH1_COFACTOR_DERIVE,
+       "Elliptic Curve Diffie-Hellman Single Pass Cofactor with SHA512 KDF", CKM_ECDH1_COFACTOR_DERIVE,
        INVALID_CERT_EXTENSION),
     ODE(SEC_OID_RC2_64_CBC, "RC2-64-CBC", CKM_RC2_CBC, INVALID_CERT_EXTENSION),
     ODE(SEC_OID_RC2_128_CBC, "RC2-128-CBC", CKM_RC2_CBC, INVALID_CERT_EXTENSION),
@@ -1897,9 +1916,24 @@ const static SECOidData oids[SEC_OID_TOTAL] = {
        "X25519 key exchange", CKM_EC_MONTGOMERY_KEY_PAIR_GEN, INVALID_CERT_EXTENSION),
 
     ODE(SEC_OID_MLKEM768X25519,
-        "ML-KEM-768+X25519 key exchange", CKM_INVALID_MECHANISM, INVALID_CERT_EXTENSION),
+        "X25519+ML-KEM-768 Hybrid key exchange", CKM_INVALID_MECHANISM, INVALID_CERT_EXTENSION),
     ODE(SEC_OID_TLS_REQUIRE_EMS,
         "TLS Require EMS", CKM_INVALID_MECHANISM, INVALID_CERT_EXTENSION),
+
+    OD(mlDsa44, SEC_OID_ML_DSA_44, "ML-DSA-44", CKM_ML_DSA, INVALID_CERT_EXTENSION),
+    OD(mlDsa65, SEC_OID_ML_DSA_65, "ML-DSA-65", CKM_ML_DSA, INVALID_CERT_EXTENSION),
+    OD(mlDsa87, SEC_OID_ML_DSA_87, "ML-DSA-87", CKM_ML_DSA, INVALID_CERT_EXTENSION),
+    ODE(SEC_OID_SECP256R1MLKEM768,
+        "SECP256R1+ML-KEM-768 Hybrid key exchange", CKM_INVALID_MECHANISM, INVALID_CERT_EXTENSION),
+    ODE(SEC_OID_SECP384R1MLKEM1024,
+        "SECP384R1+ML-KEM-1024 Hybrid key exchange", CKM_INVALID_MECHANISM, INVALID_CERT_EXTENSION),
+    OD(mlKem512, SEC_OID_ML_KEM_512, "ML-KEM-512", CKM_ML_KEM, INVALID_CERT_EXTENSION),
+    OD(mlKem768, SEC_OID_ML_KEM_768, "ML-KEM-768", CKM_ML_KEM, INVALID_CERT_EXTENSION),
+    OD(mlKem1024, SEC_OID_ML_KEM_1024, "ML-KEM-1024", CKM_ML_KEM, INVALID_CERT_EXTENSION),
+
+    OD(cmsAuthEnvelopedData, SEC_OID_CMS_AUTH_ENVELOPED_DATA,
+       "CMS AuthEnvelopedData",
+       CKM_INVALID_MECHANISM, INVALID_CERT_EXTENSION),
 
 };
 
@@ -2246,6 +2280,12 @@ SECOID_Init(void)
      * algs when it initializes */
     (void)NSS_SetAlgorithmPolicyAll(0, NSS_USE_ALG_IN_SMIME);
 
+    /* ML-KEM-1024 is off by default in TLS key exchange; applications must
+     * opt in with
+     *   NSS_SetAlgorithmPolicy(SEC_OID_ML_KEM_1024, NSS_USE_ALG_IN_SSL_KX, 0);
+     * before it is offered in the supported_groups extension. */
+    (void)NSS_SetAlgorithmPolicy(SEC_OID_ML_KEM_1024, 0, NSS_USE_ALG_IN_SSL_KX);
+
     return (SECSuccess);
 }
 
@@ -2315,6 +2355,12 @@ SECOID_FindOIDByTag(SECOidTag tagnum)
         return (SECOidData *)secoid_FindDynamicByTag(tagnum);
     }
 
+    /* handle old apps using the old ed sig number.
+     * Make sure the still find the correct oid */
+    if (tagnum == SEC_OID_RESERVED_OLD_EDSIG) {
+        tagnum = SEC_OID_ED25519;
+    }
+
     PORT_Assert((unsigned int)tagnum < SEC_OID_TOTAL);
     return (SECOidData *)(&oids[tagnum]);
 }
@@ -2335,6 +2381,35 @@ SECOID_FindOIDTagDescription(SECOidTag tagnum)
 {
     const SECOidData *oidData = SECOID_FindOIDByTag(tagnum);
     return oidData ? oidData->desc : 0;
+}
+
+/*
+ * find an oidtag from a descriptive string. Our tools
+ * have implemented this several times, so it's time to make
+ * it available to everyone.
+ */
+SECOidTag
+SECOID_FindOIDTagFromDescripton(const char *cipherString, size_t len,
+                                PRBool isCipher)
+{
+    SECOidTag tag;
+    SECOidData *oid;
+
+    if (len == (size_t)-1) {
+        len = PORT_Strlen(cipherString);
+    }
+    /* future enhancement: accept dotted oid spec? */
+    for (tag = 1; (oid = SECOID_FindOIDByTag(tag)) != NULL; tag++) {
+        /* only interested in oids that we actually understand */
+        if (isCipher && oid->mechanism == CKM_INVALID_MECHANISM) {
+            continue;
+        }
+        if (PORT_Strncasecmp(oid->desc, cipherString, len) != 0) {
+            continue;
+        }
+        return tag;
+    }
+    return SEC_OID_UNKNOWN;
 }
 
 /* return the total tags, including dymamic tags. NOTE: there is

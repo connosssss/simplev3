@@ -5,14 +5,18 @@ use hal::{
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
-use glam::{Affine3A, Mat4, Vec3};
+use glam::{Affine3A, Vec3};
 use std::{
     borrow::{Borrow, Cow},
     iter, ptr,
     time::Instant,
 };
 use wgpu_types::Dx12BackendOptions;
-use winit::window::WindowButtons;
+use winit::{
+    application::ApplicationHandler,
+    event_loop::{ActiveEventLoop, ControlFlow},
+    window::{Window, WindowButtons},
+};
 
 const DESIRED_MAX_LATENCY: u32 = 2;
 
@@ -181,7 +185,7 @@ struct ExecutionContext<A: hal::Api> {
 
 impl<A: hal::Api> ExecutionContext<A> {
     unsafe fn wait_and_clear(&mut self, device: &A::Device) {
-        device.wait(&self.fence, self.fence_value, !0).unwrap();
+        device.wait(&self.fence, self.fence_value, None).unwrap();
         self.encoder.reset_all(self.used_cmd_bufs.drain(..));
         for view in self.used_views.drain(..) {
             device.destroy_texture_view(view);
@@ -235,6 +239,9 @@ impl<A: hal::Api> Example<A> {
             log::info!("using index buffer")
         }
 
+        // The Instance can be initialized with the DisplayHandle from the EventLoop as well
+        let raw_display_handle = window.display_handle()?;
+
         let instance_desc = hal::InstanceDescriptor {
             name: "example",
             flags: wgpu_types::InstanceFlags::default(),
@@ -242,18 +249,20 @@ impl<A: hal::Api> Example<A> {
             backend_options: wgpu_types::BackendOptions {
                 dx12: Dx12BackendOptions {
                     shader_compiler: wgpu_types::Dx12Compiler::default_dynamic_dxc(),
+                    ..Default::default()
                 },
                 ..Default::default()
             },
+            telemetry: None,
+            display: Some(raw_display_handle),
         };
         let instance = unsafe { A::Instance::init(&instance_desc)? };
         let surface = {
             let raw_window_handle = window.window_handle()?.as_raw();
-            let raw_display_handle = window.display_handle()?.as_raw();
 
             unsafe {
                 instance
-                    .create_surface(raw_display_handle, raw_window_handle)
+                    .create_surface(raw_display_handle.as_raw(), raw_window_handle)
                     .unwrap()
             }
         };
@@ -269,7 +278,7 @@ impl<A: hal::Api> Example<A> {
         };
         let surface_caps = unsafe { adapter.surface_capabilities(&surface) }
             .expect("Surface doesn't support presentation");
-        log::info!("Surface caps: {:#?}", surface_caps);
+        log::info!("Surface caps: {surface_caps:#?}");
 
         let hal::OpenDevice { device, queue } = unsafe {
             adapter
@@ -285,11 +294,12 @@ impl<A: hal::Api> Example<A> {
         dbg!(&surface_caps.formats);
         let surface_format = if surface_caps
             .formats
-            .contains(&wgpu_types::TextureFormat::Rgba8Unorm)
+            .iter()
+            .any(|fc| fc.format == wgpu_types::TextureFormat::Rgba8Unorm)
         {
             wgpu_types::TextureFormat::Rgba8Unorm
         } else {
-            *surface_caps.formats.first().unwrap()
+            surface_caps.formats.first().unwrap().format
         };
         let surface_config = hal::SurfaceConfiguration {
             maximum_frame_latency: DESIRED_MAX_LATENCY
@@ -298,6 +308,7 @@ impl<A: hal::Api> Example<A> {
             present_mode: wgpu_types::PresentMode::Fifo,
             composite_alpha_mode: wgpu_types::CompositeAlphaMode::Opaque,
             format: surface_format,
+            color_space: wgpu_types::SurfaceColorSpace::Srgb,
             extent: wgpu_types::Extent3d {
                 width: window_size.0,
                 height: window_size.1,
@@ -385,8 +396,8 @@ impl<A: hal::Api> Example<A> {
         let pipeline_layout_desc = hal::PipelineLayoutDescriptor {
             label: None,
             flags: hal::PipelineLayoutFlags::empty(),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         };
         let pipeline_layout = unsafe {
             device
@@ -418,7 +429,7 @@ impl<A: hal::Api> Example<A> {
         let indices_size_in_bytes = indices.len() * 4;
 
         let vertices_buffer = unsafe {
-            let vertices_buffer = device
+            let (vertices_buffer, _) = device
                 .create_buffer(&hal::BufferDescriptor {
                     label: Some("vertices buffer"),
                     size: vertices_size_in_bytes as u64,
@@ -444,7 +455,7 @@ impl<A: hal::Api> Example<A> {
 
         let indices_buffer = if index_buffer {
             unsafe {
-                let indices_buffer = device
+                let (indices_buffer, _) = device
                     .create_buffer(&hal::BufferDescriptor {
                         label: Some("indices buffer"),
                         size: indices_size_in_bytes as u64,
@@ -493,30 +504,11 @@ impl<A: hal::Api> Example<A> {
         }];
         let blas_entries = hal::AccelerationStructureEntries::Triangles(blas_triangles);
 
-        let mut tlas_entries =
-            hal::AccelerationStructureEntries::Instances(hal::AccelerationStructureInstances {
-                buffer: None,
-                count: 3,
-                offset: 0,
-            });
-
         let blas_sizes = unsafe {
             device.get_acceleration_structure_build_sizes(
                 &hal::GetAccelerationStructureBuildSizesDescriptor {
                     entries: &blas_entries,
                     flags: hal::AccelerationStructureBuildFlags::PREFER_FAST_TRACE,
-                },
-            )
-        };
-
-        let tlas_flags = hal::AccelerationStructureBuildFlags::PREFER_FAST_TRACE
-            | hal::AccelerationStructureBuildFlags::ALLOW_UPDATE;
-
-        let tlas_sizes = unsafe {
-            device.get_acceleration_structure_build_sizes(
-                &hal::GetAccelerationStructureBuildSizesDescriptor {
-                    entries: &tlas_entries,
-                    flags: tlas_flags,
                 },
             )
         };
@@ -531,6 +523,91 @@ impl<A: hal::Api> Example<A> {
         }
         .unwrap();
 
+        let instances = [
+            AccelerationStructureInstance::new(
+                &Affine3A::from_translation(Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+                0,
+                0xff,
+                0,
+                0,
+                unsafe { device.get_acceleration_structure_device_address(&blas) },
+            ),
+            AccelerationStructureInstance::new(
+                &Affine3A::from_translation(Vec3 {
+                    x: -1.0,
+                    y: -1.0,
+                    z: -2.0,
+                }),
+                0,
+                0xff,
+                0,
+                0,
+                unsafe { device.get_acceleration_structure_device_address(&blas) },
+            ),
+            AccelerationStructureInstance::new(
+                &Affine3A::from_translation(Vec3 {
+                    x: 1.0,
+                    y: -1.0,
+                    z: -2.0,
+                }),
+                0,
+                0xff,
+                0,
+                0,
+                unsafe { device.get_acceleration_structure_device_address(&blas) },
+            ),
+        ];
+
+        let instances_buffer_size = instances.len() * size_of::<AccelerationStructureInstance>();
+
+        let instances_buffer = unsafe {
+            let (instances_buffer, _) = device
+                .create_buffer(&hal::BufferDescriptor {
+                    label: Some("instances_buffer"),
+                    size: instances_buffer_size as u64,
+                    usage: wgpu_types::BufferUses::MAP_WRITE
+                        | wgpu_types::BufferUses::TOP_LEVEL_ACCELERATION_STRUCTURE_INPUT,
+                    memory_flags: hal::MemoryFlags::TRANSIENT | hal::MemoryFlags::PREFER_COHERENT,
+                })
+                .unwrap();
+
+            let mapping = device
+                .map_buffer(&instances_buffer, 0..instances_buffer_size as u64)
+                .unwrap();
+            ptr::copy_nonoverlapping(
+                instances.as_ptr() as *const u8,
+                mapping.ptr.as_ptr(),
+                instances_buffer_size,
+            );
+            device.unmap_buffer(&instances_buffer);
+            assert!(mapping.is_coherent);
+
+            instances_buffer
+        };
+
+        let mut tlas_entries =
+            hal::AccelerationStructureEntries::Instances(hal::AccelerationStructureInstances {
+                buffer: Some(&instances_buffer),
+                count: 3,
+                offset: 0,
+            });
+
+        let tlas_flags = hal::AccelerationStructureBuildFlags::PREFER_FAST_TRACE
+            | hal::AccelerationStructureBuildFlags::ALLOW_UPDATE;
+
+        let tlas_sizes = unsafe {
+            device.get_acceleration_structure_build_sizes(
+                &hal::GetAccelerationStructureBuildSizesDescriptor {
+                    entries: &tlas_entries,
+                    flags: tlas_flags,
+                },
+            )
+        };
+
         let tlas = unsafe {
             device.create_acceleration_structure(&hal::AccelerationStructureDescriptor {
                 label: Some("tlas"),
@@ -542,8 +619,14 @@ impl<A: hal::Api> Example<A> {
         .unwrap();
 
         let uniforms = {
-            let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 2.5), Vec3::ZERO, Vec3::Y);
-            let proj = Mat4::perspective_rh(59.0_f32.to_radians(), 1.0, 0.001, 1000.0);
+            let view =
+                glam::camera::rh::view::look_at_mat4(Vec3::new(0.0, 0.0, 2.5), Vec3::ZERO, Vec3::Y);
+            let proj = glam::camera::rh::proj::directx::perspective(
+                59.0_f32.to_radians(),
+                1.0,
+                0.001,
+                1000.0,
+            );
 
             Uniforms {
                 view_inverse: view.inverse(),
@@ -554,7 +637,7 @@ impl<A: hal::Api> Example<A> {
         let uniforms_size = size_of::<Uniforms>();
 
         let uniform_buffer = unsafe {
-            let uniform_buffer = device
+            let (uniform_buffer, _) = device
                 .create_buffer(&hal::BufferDescriptor {
                     label: Some("uniform buffer"),
                     size: uniforms_size as u64,
@@ -599,14 +682,18 @@ impl<A: hal::Api> Example<A> {
             dimension: wgpu_types::TextureViewDimension::D2,
             usage: wgpu_types::TextureUses::STORAGE_READ_WRITE | wgpu_types::TextureUses::COPY_SRC,
             range: wgpu_types::ImageSubresourceRange::default(),
+            swizzle: wgpu_types::TextureComponentSwizzle::default(),
         };
         let texture_view = unsafe { device.create_texture_view(&texture, &view_desc).unwrap() };
 
         let bind_group = {
-            let buffer_binding = hal::BufferBinding {
-                buffer: &uniform_buffer,
-                offset: 0,
-                size: None,
+            let buffer_binding = unsafe {
+                // SAFETY: The size matches the buffer allocation.
+                hal::BufferBinding::new_unchecked(
+                    &uniform_buffer,
+                    0,
+                    wgpu_types::BufferSize::new_unchecked(uniforms_size as u64),
+                )
             };
             let texture_binding = hal::TextureBinding {
                 view: &texture_view,
@@ -619,6 +706,7 @@ impl<A: hal::Api> Example<A> {
                 samplers: &[],
                 textures: &[texture_binding],
                 acceleration_structures: &[&tlas],
+                external_textures: &[],
                 entries: &[
                     hal::BindGroupEntry {
                         binding: 0,
@@ -640,7 +728,7 @@ impl<A: hal::Api> Example<A> {
             unsafe { device.create_bind_group(&group_desc).unwrap() }
         };
 
-        let scratch_buffer = unsafe {
+        let (scratch_buffer, _) = unsafe {
             device
                 .create_buffer(&hal::BufferDescriptor {
                     label: Some("scratch buffer"),
@@ -653,74 +741,7 @@ impl<A: hal::Api> Example<A> {
                 .unwrap()
         };
 
-        let instances = [
-            AccelerationStructureInstance::new(
-                &Affine3A::from_translation(Vec3 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                }),
-                0,
-                0xff,
-                0,
-                0,
-                unsafe { device.get_acceleration_structure_device_address(&blas) },
-            ),
-            AccelerationStructureInstance::new(
-                &Affine3A::from_translation(Vec3 {
-                    x: -1.0,
-                    y: -1.0,
-                    z: -2.0,
-                }),
-                0,
-                0xff,
-                0,
-                0,
-                unsafe { device.get_acceleration_structure_device_address(&blas) },
-            ),
-            AccelerationStructureInstance::new(
-                &Affine3A::from_translation(Vec3 {
-                    x: 1.0,
-                    y: -1.0,
-                    z: -2.0,
-                }),
-                0,
-                0xff,
-                0,
-                0,
-                unsafe { device.get_acceleration_structure_device_address(&blas) },
-            ),
-        ];
-
-        let instances_buffer_size = instances.len() * size_of::<AccelerationStructureInstance>();
-
-        let instances_buffer = unsafe {
-            let instances_buffer = device
-                .create_buffer(&hal::BufferDescriptor {
-                    label: Some("instances_buffer"),
-                    size: instances_buffer_size as u64,
-                    usage: wgpu_types::BufferUses::MAP_WRITE
-                        | wgpu_types::BufferUses::TOP_LEVEL_ACCELERATION_STRUCTURE_INPUT,
-                    memory_flags: hal::MemoryFlags::TRANSIENT | hal::MemoryFlags::PREFER_COHERENT,
-                })
-                .unwrap();
-
-            let mapping = device
-                .map_buffer(&instances_buffer, 0..instances_buffer_size as u64)
-                .unwrap();
-            ptr::copy_nonoverlapping(
-                instances.as_ptr() as *const u8,
-                mapping.ptr.as_ptr(),
-                instances_buffer_size,
-            );
-            device.unmap_buffer(&instances_buffer);
-            assert!(mapping.is_coherent);
-
-            instances_buffer
-        };
-
         if let hal::AccelerationStructureEntries::Instances(ref mut i) = tlas_entries {
-            i.buffer = Some(&instances_buffer);
             assert!(
                 instances.len() <= i.count as usize,
                 "Tlas allocation to small"
@@ -799,6 +820,7 @@ impl<A: hal::Api> Example<A> {
                     from: wgpu_types::TextureUses::UNINITIALIZED,
                     to: wgpu_types::TextureUses::STORAGE_READ_WRITE,
                 },
+                queue_family_ownership_transfer: None,
             };
 
             cmd_encoder.transition_textures(iter::once(texture_barrier));
@@ -811,7 +833,7 @@ impl<A: hal::Api> Example<A> {
             queue
                 .submit(&[&init_cmd], &[], (&mut fence, init_fence_value))
                 .unwrap();
-            device.wait(&fence, init_fence_value, !0).unwrap();
+            device.wait(&fence, init_fence_value, None).unwrap();
             cmd_encoder.reset_all(iter::once(init_cmd));
             fence
         };
@@ -862,7 +884,6 @@ impl<A: hal::Api> Example<A> {
             self.surface
                 .acquire_texture(None, &ctx.fence)
                 .unwrap()
-                .unwrap()
                 .texture
         };
 
@@ -873,6 +894,7 @@ impl<A: hal::Api> Example<A> {
                 from: wgpu_types::TextureUses::UNINITIALIZED,
                 to: wgpu_types::TextureUses::COPY_DST,
             },
+            queue_family_ownership_transfer: None,
         };
 
         let instances_buffer_size =
@@ -956,6 +978,7 @@ impl<A: hal::Api> Example<A> {
             dimension: wgpu_types::TextureViewDimension::D2,
             usage: wgpu_types::TextureUses::COPY_DST,
             range: wgpu_types::ImageSubresourceRange::default(),
+            swizzle: wgpu_types::TextureComponentSwizzle::default(),
         };
         let surface_tex_view = unsafe {
             self.device
@@ -970,7 +993,7 @@ impl<A: hal::Api> Example<A> {
             ctx.encoder.set_compute_pipeline(&self.pipeline);
             ctx.encoder
                 .set_bind_group(&self.pipeline_layout, 0, &self.bind_group, &[]);
-            ctx.encoder.dispatch([512 / 8, 512 / 8, 1]);
+            ctx.encoder.dispatch_workgroups([512 / 8, 512 / 8, 1]);
         }
 
         ctx.frames_recorded += 1;
@@ -982,6 +1005,7 @@ impl<A: hal::Api> Example<A> {
                 from: wgpu_types::TextureUses::COPY_DST,
                 to: wgpu_types::TextureUses::PRESENT,
             },
+            queue_family_ownership_transfer: None,
         };
         let target_barrier2 = hal::TextureBarrier {
             texture: &self.texture,
@@ -990,6 +1014,7 @@ impl<A: hal::Api> Example<A> {
                 from: wgpu_types::TextureUses::STORAGE_READ_WRITE,
                 to: wgpu_types::TextureUses::COPY_SRC,
             },
+            queue_family_ownership_transfer: None,
         };
         let target_barrier3 = hal::TextureBarrier {
             texture: &self.texture,
@@ -998,6 +1023,7 @@ impl<A: hal::Api> Example<A> {
                 from: wgpu_types::TextureUses::COPY_SRC,
                 to: wgpu_types::TextureUses::STORAGE_READ_WRITE,
             },
+            queue_family_ownership_transfer: None,
         };
         unsafe {
             ctx.encoder.end_compute_pass();
@@ -1134,57 +1160,79 @@ cfg_if::cfg_if! {
     }
 }
 
+struct App {
+    example: Option<Example<Api>>,
+    window: Option<Window>,
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let window = event_loop
+            .create_window(
+                Window::default_attributes()
+                    .with_title("hal-ray-traced-triangle")
+                    .with_inner_size(winit::dpi::PhysicalSize {
+                        width: 512,
+                        height: 512,
+                    })
+                    .with_resizable(false)
+                    .with_enabled_buttons(WindowButtons::CLOSE),
+            )
+            .unwrap();
+        let example = Example::<Api>::init(&window).expect("Selected backend is not supported");
+        self.window = Some(window);
+        self.example = Some(example);
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.example.take().unwrap().exit();
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: winit::event::WindowEvent,
+    ) {
+        event_loop.set_control_flow(ControlFlow::Poll);
+
+        match event {
+            winit::event::WindowEvent::CloseRequested => {
+                event_loop.exit();
+            }
+            winit::event::WindowEvent::KeyboardInput { event, .. }
+                if event.physical_key
+                    == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape) =>
+            {
+                event_loop.exit();
+            }
+            winit::event::WindowEvent::RedrawRequested => {
+                let ex = self.example.as_mut().unwrap();
+                ex.render();
+            }
+            _ => {
+                self.example.as_mut().unwrap().update(event);
+            }
+        }
+    }
+}
+
 fn main() {
     env_logger::init();
 
     let event_loop = winit::event_loop::EventLoop::new().unwrap();
-    let window = winit::window::WindowBuilder::new()
-        .with_title("hal-ray-traced-triangle")
-        .with_inner_size(winit::dpi::PhysicalSize {
-            width: 512,
-            height: 512,
-        })
-        .with_resizable(false)
-        .with_enabled_buttons(WindowButtons::CLOSE)
-        .build(&event_loop)
-        .unwrap();
-
-    let example_result = Example::<Api>::init(&window);
-    let mut example = Some(example_result.expect("Selected backend is not supported"));
-
-    event_loop
-        .run(move |event, target| {
-            let _ = &window; // force ownership by the closure
-            target.set_control_flow(winit::event_loop::ControlFlow::Poll);
-            match event {
-                winit::event::Event::WindowEvent { event, .. } => match event {
-                    winit::event::WindowEvent::CloseRequested => {
-                        target.exit();
-                    }
-                    winit::event::WindowEvent::KeyboardInput { event, .. }
-                        if event.physical_key
-                            == winit::keyboard::PhysicalKey::Code(
-                                winit::keyboard::KeyCode::Escape,
-                            ) =>
-                    {
-                        target.exit();
-                    }
-                    winit::event::WindowEvent::RedrawRequested => {
-                        let ex = example.as_mut().unwrap();
-                        ex.render();
-                    }
-                    _ => {
-                        example.as_mut().unwrap().update(event);
-                    }
-                },
-                winit::event::Event::LoopExiting => {
-                    example.take().unwrap().exit();
-                }
-                winit::event::Event::AboutToWait => {
-                    window.request_redraw();
-                }
-                _ => {}
-            }
-        })
-        .unwrap();
+    let mut app = App {
+        example: None,
+        window: None,
+    };
+    event_loop.run_app(&mut app).unwrap();
 }

@@ -11,17 +11,20 @@ fun fileItem(
     filePath: String = "path1",
     description: String = "1 MB • mozilla.org",
     displayedShortUrl: String = "mozilla.org",
+    directoryPath: String = "downloads",
     contentType: String? = "image/png",
     status: FileItem.Status = FileItem.Status.Completed,
     timeCategory: TimeCategory = TimeCategory.LAST_30_DAYS,
-) = FileItem(
-    id = id,
-    url = url,
-    fileName = fileName,
-    filePath = filePath,
-    description = description,
-    displayedShortUrl = displayedShortUrl,
-    contentType = contentType,
-    status = status,
-    timeCategory = timeCategory,
-)
+) =
+    FileItem(
+        id = id,
+        url = url,
+        fileName = fileName,
+        filePath = filePath,
+        description = description,
+        displayedShortUrl = displayedShortUrl,
+        directoryPath = directoryPath,
+        contentType = contentType,
+        status = status,
+        timeCategory = timeCategory,
+    )

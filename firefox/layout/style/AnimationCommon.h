@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,12 +6,12 @@
 #define mozilla_css_AnimationCommon_h
 
 #include "mozilla/AnimationCollection.h"
-#include "mozilla/LinkedList.h"
-#include "mozilla/dom/Animation.h"
-#include "mozilla/dom/BaseKeyframeTypesBinding.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/LinkedList.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/TimingParams.h"
+#include "mozilla/dom/Animation.h"
+#include "mozilla/dom/BaseKeyframeTypesBinding.h"
 #include "mozilla/dom/Nullable.h"
 #include "nsContentUtils.h"
 #include "nsDOMMutationObserver.h"  // For nsAutoAnimationMutationBatch
@@ -138,9 +136,12 @@ class OwningElementRef final {
 
     enum SortingIndex : uint8_t {
       NotPseudo,
+      Backdrop,
       Marker,
       Before,
       After,
+      Checkmark,
+      PickerIcon,
       ViewTransition,
       ViewTransitionGroup,
       ViewTransitionImagePair,
@@ -153,21 +154,27 @@ class OwningElementRef final {
       switch (aPseudoRequest.mType) {
         case PseudoStyleType::NotPseudo:
           return SortingIndex::NotPseudo;
-        case PseudoStyleType::marker:
+        case PseudoStyleType::Backdrop:
+          return SortingIndex::Backdrop;
+        case PseudoStyleType::Marker:
           return SortingIndex::Marker;
-        case PseudoStyleType::before:
+        case PseudoStyleType::Before:
           return SortingIndex::Before;
-        case PseudoStyleType::after:
+        case PseudoStyleType::After:
           return SortingIndex::After;
-        case PseudoStyleType::viewTransition:
+        case PseudoStyleType::Checkmark:
+          return SortingIndex::Checkmark;
+        case PseudoStyleType::PickerIcon:
+          return SortingIndex::PickerIcon;
+        case PseudoStyleType::ViewTransition:
           return SortingIndex::ViewTransition;
-        case PseudoStyleType::viewTransitionGroup:
+        case PseudoStyleType::ViewTransitionGroup:
           return SortingIndex::ViewTransitionGroup;
-        case PseudoStyleType::viewTransitionImagePair:
+        case PseudoStyleType::ViewTransitionImagePair:
           return SortingIndex::ViewTransitionImagePair;
-        case PseudoStyleType::viewTransitionOld:
+        case PseudoStyleType::ViewTransitionOld:
           return SortingIndex::ViewTransitionOld;
-        case PseudoStyleType::viewTransitionNew:
+        case PseudoStyleType::ViewTransitionNew:
           return SortingIndex::ViewTransitionNew;
         default:
           MOZ_ASSERT_UNREACHABLE("Unexpected pseudo type");

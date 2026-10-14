@@ -1,11 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/GamepadManager.h"
 
+#include "VRManagerChild.h"
+#include "mozilla/ClearOnShutdown.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/Services.h"
+#include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/Gamepad.h"
 #include "mozilla/dom/GamepadAxisMoveEvent.h"
 #include "mozilla/dom/GamepadButtonEvent.h"
@@ -13,24 +19,14 @@
 #include "mozilla/dom/GamepadEventChannelChild.h"
 #include "mozilla/dom/GamepadMonitoring.h"
 #include "mozilla/dom/Promise.h"
-
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/PBackgroundChild.h"
-#include "mozilla/ClearOnShutdown.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/StaticPrefs_dom.h"
-#include "mozilla/StaticPtr.h"
-
 #include "nsContentUtils.h"
 #include "nsGlobalWindowInner.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
+#include "nsPIDOMWindowInlines.h"
 #include "nsThreadUtils.h"
-#include "VRManagerChild.h"
-#include "mozilla/Services.h"
-#include "mozilla/Unused.h"
-
-#include <cstddef>
 
 using namespace mozilla::ipc;
 
@@ -192,16 +188,16 @@ already_AddRefed<Gamepad> GamepadManager::GetGamepad(
 
 void GamepadManager::AddGamepad(GamepadHandle aHandle, const nsAString& aId,
                                 GamepadMappingType aMapping, GamepadHand aHand,
-                                uint32_t aDisplayID, uint32_t aNumButtons,
-                                uint32_t aNumAxes, uint32_t aNumHaptics,
+                                uint32_t aNumButtons, uint32_t aNumAxes,
+                                uint32_t aNumHaptics,
                                 uint32_t aNumLightIndicator,
                                 uint32_t aNumTouchEvents) {
   // TODO: bug 852258: get initial button/axis state
   RefPtr<Gamepad> newGamepad =
       new Gamepad(nullptr, aId,
                   0,  // index is set by global window
-                  aHandle, aMapping, aHand, aDisplayID, aNumButtons, aNumAxes,
-                  aNumHaptics, aNumLightIndicator, aNumTouchEvents);
+                  aHandle, aMapping, aHand, aNumButtons, aNumAxes, aNumHaptics,
+                  aNumLightIndicator, aNumTouchEvents);
 
   // We store the gamepad related to its index given by the parent process,
   // and no duplicate index is allowed.
@@ -400,6 +396,39 @@ bool GamepadManager::AxisMoveIsFirstIntent(nsGlobalWindowInner* aWindow,
   return true;
 }
 
+bool GamepadManager::EventContainsUserGesture(
+    Gamepad* aGamepad, const GamepadChangeEvent& aEvent) {
+  const GamepadChangeEventBody& body = aEvent.body();
+  switch (body.type()) {
+    case GamepadChangeEventBody::TGamepadButtonInformation: {
+      const GamepadButtonInformation& a = body.get_GamepadButtonInformation();
+      // Note: unlike the spec text, this treats an uninitialized button's
+      // default `false` state the same as an explicitly-observed `false`
+      // state, so a gamepad that connects with a button already held down
+      // will count that button's very first `true` report as a gesture
+      // (the spec says it SHOULD NOT, to avoid a pre-held button being
+      // misread as an intentional press). Chrome doesn't implement that
+      // exclusion either: GamepadComparisons::HasUserActivation() in
+      // gamepad_comparisons.cc is a per-poll threshold check on button
+      // value with no per-button history at all, so it's arguably more
+      // permissive than this. No spec issue tracks the unenforced clause.
+      GamepadButton* button = aGamepad->GetButton(a.button());
+      return button && !button->Pressed() && a.pressed();
+    }
+    case GamepadChangeEventBody::TGamepadAxisInformation: {
+      const GamepadAxisInformation& a = body.get_GamepadAxisInformation();
+      double oldValue = 0.0;
+      return aGamepad->GetAxis(a.axis(), &oldValue) &&
+             abs(oldValue) < AXIS_FIRST_INTENT_THRESHOLD_VALUE &&
+             abs(a.value()) >= AXIS_FIRST_INTENT_THRESHOLD_VALUE;
+    }
+    default:
+      // The spec's "contains a gamepad user gesture" is defined only in
+      // terms of buttons and axes.
+      return false;
+  }
+}
+
 bool GamepadManager::MaybeWindowHasSeenGamepad(nsGlobalWindowInner* aWindow,
                                                GamepadHandle aHandle) {
   if (!WindowHasSeenGamepad(aWindow, aHandle)) {
@@ -448,20 +477,31 @@ void GamepadManager::Update(const GamepadChangeEvent& aEvent) {
 
   const GamepadHandle handle = aEvent.handle();
 
-  GamepadChangeEventBody body = aEvent.body();
+  const GamepadChangeEventBody& body = aEvent.body();
 
   if (body.type() == GamepadChangeEventBody::TGamepadAdded) {
     const GamepadAdded& a = body.get_GamepadAdded();
     AddGamepad(handle, a.id(), static_cast<GamepadMappingType>(a.mapping()),
-               static_cast<GamepadHand>(a.hand()), a.display_id(),
-               a.num_buttons(), a.num_axes(), a.num_haptics(), a.num_lights(),
-               a.num_touches());
+               static_cast<GamepadHand>(a.hand()), a.num_buttons(),
+               a.num_axes(), a.num_haptics(), a.num_lights(), a.num_touches());
     return;
   }
   if (body.type() == GamepadChangeEventBody::TGamepadRemoved) {
     RemoveGamepad(handle);
     return;
   }
+
+  // https://w3c.github.io/gamepad/#dfn-gamepad-user-gesture
+  // This is a property of the incoming hardware event against the
+  // canonical gamepad's state, not of any particular window's view of it,
+  // so compute it once, before SetGamepadByEvent() below overwrites that
+  // state. (Each per-window clone is either seeded from this same
+  // canonical state on first use, or already reflects the pre-event state
+  // from its own prior updates, so re-deriving this per-window would
+  // either see already-updated data or be redundant.)
+  RefPtr<Gamepad> canonicalGamepad = GetGamepad(handle);
+  bool containsUserGesture =
+      canonicalGamepad && EventContainsUserGesture(canonicalGamepad, aEvent);
 
   if (!SetGamepadByEvent(aEvent)) {
     return;
@@ -479,7 +519,7 @@ void GamepadManager::Update(const GamepadChangeEvent& aEvent) {
       continue;
     }
 
-    SetGamepadByEvent(aEvent, listeners[i]);
+    SetGamepadByEvent(aEvent, listeners[i], containsUserGesture);
     MaybeConvertToNonstandardGamepadEvent(aEvent, listeners[i]);
   }
 }
@@ -516,7 +556,8 @@ void GamepadManager::MaybeConvertToNonstandardGamepadEvent(
 }
 
 bool GamepadManager::SetGamepadByEvent(const GamepadChangeEvent& aEvent,
-                                       nsGlobalWindowInner* aWindow) {
+                                       nsGlobalWindowInner* aWindow,
+                                       bool aContainsUserGesture) {
   bool ret = false;
   bool firstTime = false;
 
@@ -579,6 +620,32 @@ bool GamepadManager::SetGamepadByEvent(const GamepadChangeEvent& aEvent,
         break;
     }
     ret = true;
+  }
+
+  // https://html.spec.whatwg.org/multipage/interaction.html#activation-notification
+  // Proposed as a new step of the "update gamepad state" algorithm by
+  // https://github.com/w3c/gamepad/pull/230 (closes
+  // https://github.com/w3c/gamepad/issues/124); not yet merged into the
+  // published spec as of this writing. Run before the [[hasGamepadGesture]]
+  // exposure/connection-event step below. Unlike that one-time latch, this
+  // runs on every occurrence, matching how other activation-triggering
+  // input events behave.
+  //
+  // https://html.spec.whatwg.org/multipage/interaction.html#fully-active-descendant-of-a-top-level-traversable-with-user-attention
+  //   "A top-level traversable has user attention when its system
+  //   visibility state is 'visible', and it either has system focus or
+  //   user agent widgets directly related to it can receive keyboard
+  //   input channeled from the operating system."
+  // The caller already excludes background tabs, but that's only the
+  // visibility half of "user attention": a foreground tab in a window the
+  // OS hasn't focused would still pass it. GetIsActiveBrowserWindow()
+  // covers the focus half, same as the pairing in nsDeviceSensors.cpp and
+  // MediaDevices.cpp.
+  if (aWindow && aContainsUserGesture &&
+      aWindow->GetBrowsingContext()->Top()->GetIsActiveBrowserWindow()) {
+    if (Document* doc = aWindow->GetExtantDoc()) {
+      doc->NotifyUserGestureActivation();
+    }
   }
 
   if (aWindow && firstTime) {
@@ -677,12 +744,12 @@ already_AddRefed<Promise> GamepadManager::RequestAllGamepads(
         nsTArray<RefPtr<Gamepad>> gamepads;
 
         for (const auto& addedGamepad : aAddedGamepads) {
-          RefPtr<Gamepad> gamepad = new Gamepad(
-              nullptr, addedGamepad.id(), 0, GamepadHandle(),
-              addedGamepad.mapping(), addedGamepad.hand(),
-              addedGamepad.display_id(), addedGamepad.num_buttons(),
-              addedGamepad.num_axes(), addedGamepad.num_haptics(),
-              addedGamepad.num_lights(), addedGamepad.num_touches());
+          RefPtr<Gamepad> gamepad =
+              new Gamepad(nullptr, addedGamepad.id(), 0, GamepadHandle(),
+                          addedGamepad.mapping(), addedGamepad.hand(),
+                          addedGamepad.num_buttons(), addedGamepad.num_axes(),
+                          addedGamepad.num_haptics(), addedGamepad.num_lights(),
+                          addedGamepad.num_touches());
           gamepads.AppendElement(gamepad);
         }
         promise->MaybeResolve(gamepads);

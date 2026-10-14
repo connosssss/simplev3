@@ -33,8 +33,23 @@ import { DataArrayGenerator } from '../../../util/texture/data_generation.js';
 import { kBytesPerRowAlignment, dataBytesForCopyOrFail } from '../../../util/texture/layout.js';
 import { TexelView } from '../../../util/texture/texel_view.js';
 import { findFailedPixels } from '../../../util/texture/texture_ok.js';
+import { reifyExtent3D } from '../../../util/unions.js';
 
 const dataGenerator = new DataArrayGenerator();
+
+// If a texture could be textureBindingViewDimension: 'cube' then set it to 'cube'
+function applyTextureBindingViewDimensionForTest(descriptor) {
+  const size = reifyExtent3D(descriptor.size);
+  if (
+  descriptor.textureBindingViewDimension === undefined &&
+  descriptor.dimension === '2d' &&
+  size.width === size.height &&
+  size.depthOrArrayLayers === 6)
+  {
+    descriptor.textureBindingViewDimension = 'cube';
+  }
+  return descriptor;
+}
 
 class F extends AllFeaturesMaxLimitsGPUTest {
   getInitialDataPerMipLevel(
@@ -79,7 +94,8 @@ class F extends AllFeaturesMaxLimitsGPUTest {
 
 
   srcCopyLevel,
-  dstCopyLevel)
+  dstCopyLevel,
+  requestedMipLevelCount)
   {
     this.skipIfTextureFormatNotSupported(srcFormat, dstFormat);
     this.skipIfCopyTextureToTextureNotSupportedForFormat(srcFormat, dstFormat);
@@ -92,24 +108,24 @@ class F extends AllFeaturesMaxLimitsGPUTest {
     isCompressedTextureFormat(dstFormat) && this.isCompatibility ?
     GPUTextureUsage.TEXTURE_BINDING :
     0;
-    const mipLevelCount = dimension === '1d' ? 1 : 4;
+    const mipLevelCount = requestedMipLevelCount ?? (dimension === '1d' ? 1 : 4);
 
     // Create srcTexture and dstTexture
-    const srcTextureDesc = {
+    const srcTextureDesc = applyTextureBindingViewDimensionForTest({
       dimension,
       size: srcTextureSize,
       format: srcFormat,
       usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
       mipLevelCount
-    };
+    });
     const srcTexture = this.createTextureTracked(srcTextureDesc);
-    const dstTextureDesc = {
+    const dstTextureDesc = applyTextureBindingViewDimensionForTest({
       dimension,
       size: dstTextureSize,
       format: dstFormat,
       usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST | extraTextureUsageFlags,
       mipLevelCount
-    };
+    });
     const dstTexture = this.createTextureTracked(dstTextureDesc);
 
     // Fill the whole subresource of srcTexture at srcCopyLevel with initialSrcData.
@@ -210,7 +226,7 @@ class F extends AllFeaturesMaxLimitsGPUTest {
     align(dstBlocksPerRow * bytesPerBlock, 4);
 
     if (isCompressedTextureFormat(dstTexture.format) && this.isCompatibility) {
-      assert(textureFormatsAreViewCompatible(this.device, srcFormat, dstFormat));
+      assert(textureFormatsAreViewCompatible(this.device.features, srcFormat, dstFormat));
       // compare by rendering. We need the expected texture to match
       // the dstTexture so we'll create a texture where we supply
       // all of the data in JavaScript.
@@ -957,6 +973,68 @@ fn((t) => {
   );
 });
 
+g.test('color_textures,compressed,unaligned,non_array').
+desc(
+  `
+  Validate the correctness of copyTextureToTexture for block-compressed textures whose mip level 0
+  size is NOT a multiple of the texel block size, using the 'texture-compression-unaligned' feature.
+
+  This mirrors color_textures,compressed,non_array but creates textures with an unaligned mip level 0
+  (so the top mip level itself has partial edge blocks) and copies at mip level 0. As with non-zero
+  mip levels, the copy is validated and performed against the physical (rounded-up) size, so the copy
+  accesses the texture blocks at the edge which are not fully inside the texture.
+
+  Tests for all pairs of valid source/destination formats, with the partial edge block in the width,
+  height, or both dimensions.
+  `
+).
+params((u) =>
+u.
+combine('srcFormat', kCompressedTextureFormats).
+combine('dstFormat', kCompressedTextureFormats).
+filter(({ srcFormat, dstFormat }) => {
+  const srcBaseFormat = getBaseFormatForTextureFormat(srcFormat);
+  const dstBaseFormat = getBaseFormatForTextureFormat(dstFormat);
+  return (
+    srcFormat === dstFormat ||
+    srcBaseFormat !== undefined &&
+    dstBaseFormat !== undefined &&
+    srcBaseFormat === dstBaseFormat);
+
+}).
+beginSubcases()
+// Which dimension(s) of mip level 0 have a partial edge block.
+.combine('partialEdge', ['width', 'height', 'both']).
+combine('copyBoxOffsets', kCopyBoxOffsetsForWholeDepth)
+).
+fn((t) => {
+  const { partialEdge, srcFormat, dstFormat, copyBoxOffsets } = t.params;
+  t.skipIfDeviceDoesNotHaveFeature('texture-compression-unaligned');
+  t.skipIfCopyTextureToTextureNotSupportedForFormat(srcFormat, dstFormat);
+
+  // The source and destination formats share the same base format, so they have the same texel
+  // block size.
+  const { blockWidth, blockHeight } = getBlockInfoForColorTextureFormat(srcFormat);
+
+  // Mip level 0 size: a few full blocks plus a one-texel partial edge block in the selected
+  // dimension(s). An unaligned mip level 0 is only valid with 'texture-compression-unaligned'.
+  const width = partialEdge === 'height' ? 4 * blockWidth : 3 * blockWidth + 1;
+  const height = partialEdge === 'width' ? 4 * blockHeight : 3 * blockHeight + 1;
+  const size = { width, height, depthOrArrayLayers: 1 };
+
+  t.doCopyTextureToTextureTest(
+    '2d',
+    size,
+    size,
+    srcFormat,
+    dstFormat,
+    copyBoxOffsets,
+    0, // srcCopyLevel: the top (and only) mip level.
+    0, // dstCopyLevel
+    1 // mipLevelCount: a single, unaligned mip level.
+  );
+});
+
 g.test('color_textures,non_compressed,array').
 desc(
   `
@@ -998,9 +1076,13 @@ combine('textureSize', [
 {
   srcTextureSize: { width: 31, height: 32, depthOrArrayLayers: 33 },
   dstTextureSize: { width: 31, height: 32, depthOrArrayLayers: 33 }
+},
+// Maybe used with textureBindingViewDimension: 'cube'
+{
+  srcTextureSize: { width: 32, height: 32, depthOrArrayLayers: 6 },
+  dstTextureSize: { width: 32, height: 32, depthOrArrayLayers: 6 }
 }]
 ).
-
 combine('copyBoxOffsets', kCopyBoxOffsetsFor2DArrayTextures).
 combine('srcCopyLevel', [0, 3]).
 combine('dstCopyLevel', [0, 3])

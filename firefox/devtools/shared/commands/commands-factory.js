@@ -7,9 +7,6 @@
 const {
   createCommandsDictionary,
 } = require("resource://devtools/shared/commands/index.js");
-const { DevToolsLoader } = ChromeUtils.importESModule(
-  "resource://devtools/shared/loader/Loader.sys.mjs"
-);
 loader.lazyRequireGetter(
   this,
   "DevToolsServer",
@@ -36,12 +33,12 @@ exports.CommandsFactory = {
    * Create commands for a given local tab.
    *
    * @param {Tab} tab: A local Firefox tab, running in this process.
-   * @param {Object} options
+   * @param {object} options
    * @param {DevToolsClient} options.client: An optional DevToolsClient. If none is passed,
    *        a new one will be created.
    * @param {DevToolsClient} options.isWebExtension: An optional boolean to flag commands
    *        that are created for the WebExtension codebase.
-   * @returns {Object} Commands
+   * @returns {object} Commands
    */
   async forTab(tab, { client, isWebExtension } = {}) {
     if (!client) {
@@ -69,16 +66,25 @@ exports.CommandsFactory = {
   /**
    * Create commands for the main process.
    *
-   * @param {Object} options
+   * @param {object} options
    * @param {DevToolsClient} options.client: An optional DevToolsClient. If none is passed,
    *        a new one will be created.
-   * @param {Boolean} enableWindowGlobalThreadActors: An optional boolean for on test.
-   * @returns {Object} Commands
+   * @param {boolean} enableWindowGlobalThreadActors: An optional boolean for on test.
+   * @returns {object} Commands
    */
   async forMainProcess({
     client,
     enableWindowGlobalThreadActors = false,
   } = {}) {
+    if (
+      (!client || client.isLocalClient) &&
+      !Services.prefs.getBoolPref("devtools.chrome.enabled")
+    ) {
+      throw new Error(
+        "Unable to instantiate a parent process command without devtools.chrome.enabled pref set to true"
+      );
+    }
+
     if (!client) {
       client = await createLocalClient();
     }
@@ -97,11 +103,11 @@ exports.CommandsFactory = {
    * Note that it can also be used for local tab, but isLocalTab attribute
    * on commands.descriptorFront will be false.
    *
-   * @param {Number} browserId: Identify which tab we should create commands for.
-   * @param {Object} options
+   * @param {number} browserId: Identify which tab we should create commands for.
+   * @param {object} options
    * @param {DevToolsClient} options.client: An optional DevToolsClient. If none is passed,
    *        a new one will be created.
-   * @returns {Object} Commands
+   * @returns {object} Commands
    */
   async forRemoteTab(browserId, { client } = {}) {
     if (!client) {
@@ -116,13 +122,13 @@ exports.CommandsFactory = {
   /**
    * Create commands for a given main process worker.
    *
-   * @param {String} id: WorkerDebugger's id, which is a unique ID computed by the platform code.
+   * @param {string} id: WorkerDebugger's id, which is a unique ID computed by the platform code.
    *        These ids are exposed via WorkerDescriptor's id attributes.
    *        WorkerDescriptors can be retrieved via MainFront.listAllWorkers()/listWorkers().
-   * @param {Object} options
+   * @param {object} options
    * @param {DevToolsClient} options.client: An optional DevToolsClient. If none is passed,
    *        a new one will be created.
-   * @returns {Object} Commands
+   * @returns {object} Commands
    */
   async forWorker(id, { client } = {}) {
     if (!client) {
@@ -137,11 +143,11 @@ exports.CommandsFactory = {
   /**
    * Create commands for a Web Extension.
    *
-   * @param {String} id The Web Extension ID to debug.
-   * @param {Object} options
+   * @param {string} id The Web Extension ID to debug.
+   * @param {object} options
    * @param {DevToolsClient} options.client: An optional DevToolsClient. If none is passed,
    *        a new one will be created.
-   * @returns {Object} Commands
+   * @returns {object} Commands
    */
   async forAddon(id, { client } = {}) {
     if (!client) {
@@ -165,14 +171,19 @@ exports.CommandsFactory = {
    * the one shared with the rest of Firefox frontend codebase.
    */
   async spawnClientToDebugSystemPrincipal() {
-    // The Browser console ends up using the debugger in autocomplete.
-    // Because the debugger can't be running in the same compartment than its debuggee,
-    // we have to load the server in a dedicated Loader, flagged with
-    // `freshCompartment`, which will force it to be loaded in another compartment.
-    const customLoader = new DevToolsLoader({
-      freshCompartment: true,
-    });
-    const { DevToolsServer: customDevToolsServer } = customLoader.require(
+    // The DevToolsServer has to be loaded in a special compartment/loader
+    // to be able to debug chrome JS running in the shared system principal compartment.
+    const {
+      useDistinctSystemPrincipalLoader,
+      releaseDistinctSystemPrincipalLoader,
+    } = ChromeUtils.importESModule(
+      "resource://devtools/shared/loader/DistinctSystemPrincipalLoader.sys.mjs",
+      { global: "shared" }
+    );
+    const requester = {};
+    const loader = useDistinctSystemPrincipalLoader(requester);
+
+    const { DevToolsServer: customDevToolsServer } = loader.require(
       "resource://devtools/server/devtools-server.js"
     );
 
@@ -188,6 +199,10 @@ exports.CommandsFactory = {
 
     const client = new DevToolsClient(customDevToolsServer.connectPipe());
     await client.connect();
+
+    client.once("closed", () => {
+      releaseDistinctSystemPrincipalLoader(requester);
+    });
 
     return client;
   },

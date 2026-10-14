@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -19,9 +17,6 @@ with Files("tests/browser/browser_contentpermissionprompt.js"):
 with Files("tests/unit/test_distribution.js"):
     BUG_COMPONENT = ("Firefox", "Distributions")
 
-with Files("safebrowsing/**"):
-    BUG_COMPONENT = ("Toolkit", "Safe Browsing")
-
 with Files("controlcenter/**"):
     BUG_COMPONENT = ("Firefox", "General")
 
@@ -30,12 +25,16 @@ DIRS += [
     "about",
     "aboutlogins",
     "aboutwelcome",
+    "aiwindow",
     "asrouter",
     "attribution",
     "backup",
     "contentanalysis",
     "contextualidentity",
+    "controlcenter",
+    "miniwindow",
     "customizableui",
+    "customkeys",
     "downloads",
     "enterprisepolicies",
     "extensions",
@@ -44,26 +43,34 @@ DIRS += [
     "ipprotection",
     "messagepreview",
     "migration",
+    "mozcachedohttp",
+    "multilineeditor",
     "newtab",
     "originattributes",
     "pagedata",
+    "passwordmgr",
     "permissions",
+    "pictureinpicture",
     "places",
-    "pocket",
     "preferences",
     "privatebrowsing",
     "prompts",
     "protections",
     "protocolhandler",
+    "qrcode",
+    "referrals",
+    "remotecontrol",
     "reportbrokensite",
     "resistfingerprinting",
     "screenshots",
     "search",
     "sessionstore",
+    "sharing",
     "shell",
     "sidebar",
     "syncedtabs",
     "tabbrowser",
+    "tabnotes",
     "tabunloader",
     "taskbartabs",
     "textrecognition",
@@ -71,6 +78,7 @@ DIRS += [
     "translations",
     "uitour",
     "urlbar",
+    "webrtc",
 ]
 
 DIRS += ["build"]
@@ -79,9 +87,12 @@ if CONFIG["MOZ_SELECTABLE_PROFILES"]:
     DIRS += ["profiles"]
 
 if CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
-    DIRS += ["touchbar"]
+    DIRS += ["defaultlaunchonlogin", "touchbar"]
 elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
-    DIRS += ["installerprefs"]
+    DIRS += [
+        "defaultlaunchonlogin",
+        "installerprefs",
+    ]
 
 XPIDL_SOURCES += [
     "nsIBrowserHandler.idl",
@@ -93,11 +104,14 @@ XPCOM_MANIFESTS += [
     "components.conf",
 ]
 
+if CONFIG["MOZ_DEFAULT_BROWSER_AGENT"] and CONFIG["OS_ARCH"] == "WINNT":
+    DEFINES["MOZ_DEFAULT_BROWSER_AGENT"] = CONFIG["MOZ_DEFAULT_BROWSER_AGENT"]
+
 EXTRA_PP_COMPONENTS += [
     "BrowserComponents.manifest",
 ]
 
-EXTRA_JS_MODULES += [
+MOZ_SRC_FILES += [
     "AccountsGlue.sys.mjs",
     "BrowserContentHandler.sys.mjs",
     "BrowserGlue.sys.mjs",
@@ -108,16 +122,16 @@ MOZ_SRC_FILES += [
     "DefaultBrowserCheck.sys.mjs",
     "DesktopActorRegistry.sys.mjs",
     "ProfileDataUpgrader.sys.mjs",
+    "ReinstallCheck.sys.mjs",
     "StartupTelemetry.sys.mjs",
 ]
 
 if CONFIG["MOZ_DEBUG"] or CONFIG["MOZ_DEV_EDITION"] or CONFIG["NIGHTLY_BUILD"]:
-    EXTRA_JS_MODULES += [
+    MOZ_SRC_FILES += [
         "StartupRecorder.sys.mjs",
     ]
 
 BROWSER_CHROME_MANIFESTS += [
-    "safebrowsing/content/test/browser.toml",
     "tests/browser/browser.toml",
     "tests/browser/eval/browser.toml",
 ]

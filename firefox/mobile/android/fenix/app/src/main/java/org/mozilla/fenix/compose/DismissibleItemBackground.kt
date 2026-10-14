@@ -4,7 +4,6 @@
 
 package org.mozilla.fenix.compose
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -15,14 +14,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.tooling.preview.PreviewLightDark
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
-import org.mozilla.fenix.R
+import mozilla.components.compose.base.theme.PreviewThemeProvider
+import mozilla.components.compose.base.theme.Theme
+import mozilla.components.ui.icons.R as iconsR
 import org.mozilla.fenix.theme.FirefoxTheme
 
 /**
@@ -43,23 +47,23 @@ fun DismissibleItemBackground(
     if (isSwipeActive) {
         Card(
             modifier = modifier.fillMaxSize(),
-            colors = CardDefaults.cardColors(containerColor = FirefoxTheme.colors.layer3),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
             shape = shape,
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
                 Icon(
-                    painter = painterResource(R.drawable.ic_delete),
+                    painter = painterResource(iconsR.drawable.mozac_ic_delete_24),
                     contentDescription = null,
-                    modifier = Modifier
-                        .padding(horizontal = 32.dp)
-                        .align(
-                            if (isSwipingToStart) {
-                                Alignment.CenterEnd
-                            } else {
-                                Alignment.CenterStart
-                            },
-                        ),
-                    tint = FirefoxTheme.colors.iconCritical,
+                    modifier =
+                        Modifier.padding(horizontal = FirefoxTheme.layout.space.static400)
+                            .align(
+                                if (isSwipingToStart) {
+                                    Alignment.CenterEnd
+                                } else {
+                                    Alignment.CenterStart
+                                }
+                            ),
+                    tint = MaterialTheme.colorScheme.error,
                 )
             }
         }
@@ -67,12 +71,9 @@ fun DismissibleItemBackground(
 }
 
 @Composable
-@PreviewLightDark
-private fun DismissedTabBackgroundPreview() {
-    FirefoxTheme {
-        Column(
-            modifier = Modifier.background(color = FirefoxTheme.colors.layer1),
-        ) {
+private fun DismissibleItemBackgroundPreviewContent() {
+    Surface {
+        Column {
             Box(modifier = Modifier.height(56.dp)) {
                 DismissibleItemBackground(
                     isSwipeActive = true,
@@ -86,7 +87,11 @@ private fun DismissedTabBackgroundPreview() {
                 DismissibleItemBackground(
                     isSwipeActive = true,
                     isSwipingToStart = false,
-                    shape = RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp),
+                    shape =
+                        RoundedCornerShape(
+                            bottomStart = FirefoxTheme.layout.space.static100,
+                            bottomEnd = FirefoxTheme.layout.space.static100,
+                        ),
                 )
             }
 
@@ -100,5 +105,13 @@ private fun DismissedTabBackgroundPreview() {
                 )
             }
         }
+    }
+}
+
+@Preview
+@Composable
+private fun DismissedTabBackgroundPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
+        DismissibleItemBackgroundPreviewContent()
     }
 }

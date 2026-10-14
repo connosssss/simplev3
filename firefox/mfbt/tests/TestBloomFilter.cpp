@@ -1,15 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/Assertions.h"
-#include "mozilla/BloomFilter.h"
-#include "mozilla/UniquePtr.h"
-
 #include <stddef.h>
 #include <stdint.h>
+
+#include "mozilla/Assertions.h"
+#include "mozilla/BloomFilter.h"
+#include "mozilla/HashFunctions.h"
+#include "mozilla/UniquePtr.h"
 
 using mozilla::BitBloomFilter;
 using mozilla::CountingBloomFilter;
@@ -25,8 +24,7 @@ class FilterChecker {
 };
 
 void testBitBloomFilter() {
-  const mozilla::UniquePtr filter =
-      mozilla::MakeUnique<BitBloomFilter<12, FilterChecker>>();
+  const auto filter = mozilla::MakeUnique<BitBloomFilter<12, FilterChecker>>();
   MOZ_RELEASE_ASSERT(filter);
 
   FilterChecker one(1);
@@ -52,8 +50,29 @@ void testBitBloomFilter() {
   MOZ_RELEASE_ASSERT(!filter->mightContain(&two), "clear() failed to work");
 }
 
+void testLargeBitBloomFilter() {
+  using Filter = BitBloomFilter<18, FilterChecker>;
+  static_assert(sizeof(Filter) == 32 * 1024);
+
+  const auto filter = mozilla::MakeUnique<Filter>();
+  MOZ_RELEASE_ASSERT(filter);
+
+  constexpr uint32_t EntryCount = 17124;
+  for (uint32_t i = 0; i < EntryCount; i++) {
+    filter->add(mozilla::HashGeneric(i));
+  }
+  for (uint32_t i = 0; i < EntryCount; i++) {
+    MOZ_RELEASE_ASSERT(filter->mightContain(mozilla::HashGeneric(i)));
+  }
+
+  filter->clear();
+  for (uint32_t i = 0; i < EntryCount; i++) {
+    MOZ_RELEASE_ASSERT(!filter->mightContain(mozilla::HashGeneric(i)));
+  }
+}
+
 void testCountingBloomFilter() {
-  const mozilla::UniquePtr filter =
+  const auto filter =
       mozilla::MakeUnique<CountingBloomFilter<12, FilterChecker>>();
   MOZ_RELEASE_ASSERT(filter);
 
@@ -136,6 +155,7 @@ void testCountingBloomFilter() {
 
 int main() {
   testBitBloomFilter();
+  testLargeBitBloomFilter();
   testCountingBloomFilter();
 
   return 0;

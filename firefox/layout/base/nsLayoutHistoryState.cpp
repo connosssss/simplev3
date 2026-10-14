@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,26 +7,25 @@
  * is not
  */
 
-#include "nsILayoutHistoryState.h"
-#include "nsWeakReference.h"
 #include "mozilla/PresState.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/UniquePtr.h"
+#include "nsILayoutHistoryState.h"
 #include "nsTHashMap.h"
+#include "nsWeakReference.h"
 
 using namespace mozilla;
 
 class nsLayoutHistoryState final : public nsILayoutHistoryState,
                                    public nsSupportsWeakReference {
  public:
-  nsLayoutHistoryState() : mScrollPositionOnly(false) {}
+  nsLayoutHistoryState() = default;
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSILAYOUTHISTORYSTATE
 
  private:
   ~nsLayoutHistoryState() = default;
-  bool mScrollPositionOnly;
+  bool mScrollPositionOnly = false;
 
   nsTHashMap<nsCString, UniquePtr<PresState>> mStates;
 };
@@ -116,6 +113,21 @@ void nsLayoutHistoryState::RemoveState(const nsCString& aKey) {
   mStates.Remove(aKey);
 }
 
+UniquePtr<PresState> nsLayoutHistoryState::TakeState(const nsCString& aKey) {
+  UniquePtr<PresState> state;
+  if (auto entry = mStates.Extract(aKey)) {
+    state = std::move(*entry);
+  }
+
+  if (state && mScrollPositionOnly) {
+    // Ensure any state that shouldn't be restored is removed
+    state->contentData() = void_t();
+    state->disabledSet() = false;
+  }
+
+  return state;
+}
+
 bool nsLayoutHistoryState::HasStates() { return mStates.Count() != 0; }
 
 void nsLayoutHistoryState::SetScrollPositionOnly(const bool aFlag) {
@@ -151,9 +163,9 @@ namespace mozilla {
 UniquePtr<PresState> NewPresState() {
   return MakeUnique<PresState>(
       /* contentData */ mozilla::void_t(),
-      /* scrollState */ nsPoint(0, 0),
-      /* allowScrollOriginDowngrade */ true,
+      /* scrollState */ nsPoint(),
       /* resolution */ 1.0,
+      /* allowScrollOriginDowngrade */ true,
       /* disabledSet */ false,
       /* disabled */ false,
       /* droppedDown */ false);

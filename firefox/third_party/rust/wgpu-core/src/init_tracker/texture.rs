@@ -1,9 +1,8 @@
 use super::{InitTracker, MemoryInitKind};
-use crate::resource::Texture;
-use alloc::{sync::Arc, vec::Vec};
+use crate::resource::{Texture, TextureView};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use arrayvec::ArrayVec;
 use core::ops::Range;
-use wgt::TextureSelector;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TextureInitRange {
@@ -15,23 +14,30 @@ pub(crate) struct TextureInitRange {
 // Returns true if a copy operation doesn't fully cover the texture init
 // tracking granularity. I.e. if this function returns true for a pending copy
 // operation, the target texture needs to be ensured to be initialized first!
-pub(crate) fn has_copy_partial_init_tracker_coverage(
+pub(crate) fn has_copy_partial_init_tracker_coverage<T>(
     copy_size: &wgt::Extent3d,
-    mip_level: u32,
-    desc: &wgt::TextureDescriptor<(), Vec<wgt::TextureFormat>>,
+    copy_info: &wgt::TexelCopyTextureInfo<T>,
+    desc: &wgt::TextureDescriptor<String, Vec<wgt::TextureFormat>>,
 ) -> bool {
-    let target_size = desc.mip_level_size(mip_level).unwrap();
+    let target_size = desc.mip_level_size(copy_info.mip_level).unwrap();
     copy_size.width != target_size.width
         || copy_size.height != target_size.height
         || (desc.dimension == wgt::TextureDimension::D3
             && copy_size.depth_or_array_layers != target_size.depth_or_array_layers)
+        || copy_info.aspect != wgt::TextureAspect::All
 }
 
-impl From<TextureSelector> for TextureInitRange {
-    fn from(selector: TextureSelector) -> Self {
+impl From<&'_ TextureView> for TextureInitRange {
+    fn from(view: &'_ TextureView) -> Self {
+        // TextureInitRange is always array layers, never depth slices.
+        let layer_range = if view.parent.desc.dimension == wgt::TextureDimension::D3 {
+            0..1
+        } else {
+            view.selector.layers.clone()
+        };
         TextureInitRange {
-            mip_range: selector.mips,
-            layer_range: selector.layers,
+            mip_range: view.selector.mips.clone(),
+            layer_range,
         }
     }
 }

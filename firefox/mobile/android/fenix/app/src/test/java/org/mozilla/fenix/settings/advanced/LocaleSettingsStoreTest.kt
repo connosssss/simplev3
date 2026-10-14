@@ -4,11 +4,11 @@
 
 package org.mozilla.fenix.settings.advanced
 
+import java.util.Locale
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
-import java.util.Locale
 
 class LocaleSettingsStoreTest {
 
@@ -18,26 +18,26 @@ class LocaleSettingsStoreTest {
 
     @Before
     fun setup() {
-        val localeList = listOf(
-            Locale.Builder().setLanguage("fr").build(), // default
-            otherLocale,
-            selectedLocale,
-        )
+        val localeList =
+            listOf(
+                Locale.Builder().setLanguage("fr").build(), // default
+                otherLocale,
+                selectedLocale,
+            )
 
-        localeSettingsStore =
-            LocaleSettingsStore(LocaleSettingsState(localeList, localeList, selectedLocale))
+        localeSettingsStore = LocaleSettingsStore(LocaleSettingsState(localeList, localeList, selectedLocale))
     }
 
     @Test
     fun `change selected locale`() = runTest {
-        localeSettingsStore.dispatch(LocaleSettingsAction.Select(otherLocale)).join()
+        localeSettingsStore.dispatch(LocaleSettingsAction.Select(otherLocale))
 
         assertEquals(otherLocale, localeSettingsStore.state.selectedLocale)
     }
 
     @Test
     fun `change selected list by search query`() = runTest {
-        localeSettingsStore.dispatch(LocaleSettingsAction.Search("Eng")).join()
+        localeSettingsStore.dispatch(LocaleSettingsAction.Search("Eng"))
 
         assertEquals(2, localeSettingsStore.state.searchedLocaleList.size)
         assertEquals(selectedLocale, localeSettingsStore.state.searchedLocaleList[1])
@@ -45,11 +45,11 @@ class LocaleSettingsStoreTest {
 
     @Test
     fun `GIVEN search list is amended WHEN locale selected THEN reset search list`() = runTest {
-        localeSettingsStore.dispatch(LocaleSettingsAction.Search("Eng")).join()
+        localeSettingsStore.dispatch(LocaleSettingsAction.Search("Eng"))
         assertEquals(2, localeSettingsStore.state.searchedLocaleList.size)
 
-        localeSettingsStore.dispatch(LocaleSettingsAction.Search("fr")).join()
-        localeSettingsStore.dispatch(LocaleSettingsAction.Select(otherLocale)).join()
+        localeSettingsStore.dispatch(LocaleSettingsAction.Search("fr"))
+        localeSettingsStore.dispatch(LocaleSettingsAction.Select(otherLocale))
 
         assertEquals(localeSettingsStore.state.localeList.size, localeSettingsStore.state.searchedLocaleList.size)
     }

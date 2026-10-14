@@ -2,8 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/// <reference path="./moz-input-folder.tagmap.d.ts" />
+
 import { html, classMap, styleMap } from "../vendor/lit.all.mjs";
-import MozInputText from "chrome://global/content/elements/moz-input-text.mjs";
+import { MozInputText } from "chrome://global/content/elements/moz-input-text.mjs";
 
 window.MozXULElement?.insertFTLIfNeeded("toolkit/global/mozInputFolder.ftl");
 
@@ -23,9 +25,10 @@ window.MozXULElement?.insertFTLIfNeeded("toolkit/global/mozInputFolder.ftl");
  * @property {string} displayValue - The value of the input control if it's different from the component value.
  * @property {string} dialogTitle - Text to display as a file picker dialog title.
  * @property {object} folder - The file object that represents the selected folder.
+ * @property {string} title - The title attribute, mapped onto the inner input.
  */
 
-export default class MozInputFolder extends MozInputText {
+export class MozInputFolder extends MozInputText {
   #folder;
 
   static properties = {
@@ -81,9 +84,24 @@ export default class MozInputFolder extends MozInputText {
   }
 
   async getFolderFromPath(path) {
+    if (
+      Cu.isInAutomation &&
+      Services.appinfo.OS === "WINNT" &&
+      path?.includes("/")
+    ) {
+      console.error(
+        `moz-input-folder: path contains forward slashes: "${path}"`,
+        new Error().stack
+      );
+    }
+
     let folder = null;
     try {
-      folder = await IOUtils.getDirectory(path);
+      // nsIFile.initWithPath() accepts both forward and backward slashes and
+      // normalizes to platform-native format (backslashes on Windows).
+      const file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+      file.initWithPath(path);
+      folder = await IOUtils.getDirectory(file.path);
     } catch (e) {
       //Not a valid path
       console.error(
@@ -116,7 +134,7 @@ export default class MozInputFolder extends MozInputText {
     folderPicker.init(window.browsingContext, this.dialogTitle, mode);
     folderPicker.appendFilters(Ci.nsIFilePicker.filterAll);
 
-    if (this.#folder) {
+    if (this.#folder && (await IOUtils.exists(this.#folder.path))) {
       folderPicker.displayDirectory = this.#folder;
     }
 
@@ -165,9 +183,11 @@ export default class MozInputFolder extends MozInputText {
         <moz-button
           id="choose-folder-button"
           data-l10n-id="choose-folder-button"
+          data-l10n-attrs="accesskey"
           ?disabled=${this.disabled || this.parentDisabled}
           @click=${this.openFolderPicker}
         ></moz-button>
+        <slot name="actions"></slot>
       </div>
     `;
   }

@@ -1,4 +1,4 @@
-# Preferences
+# New Tab preferences
 
 ## Preference branch
 
@@ -105,16 +105,13 @@ Not intended for user configuration, but is programmatically updated. Used for t
 - Default:
   ```json
   {
-    "api_key_pref": "extensions.pocket.oAuthConsumerKey",
     "collapsible": true,
     "enabled": true,
-    "personalized": true,
   }
   ```
   - `api_key_pref` (string): The name of a variable containing the key for the Pocket API.
   - `collapsible` (boolean): Controls whether the sections in new tab can be collapsed.
   - `enabled` (boolean): Controls whether DS is turned on and is programmatically set based on a user's locale. DS enablement is a logical `AND` of this and the value of `browser.newtabpage.activity-stream.discoverystream.enabled`.
-  - `personalized` (boolean): When this is `true` personalized content based on browsing history will be displayed.
   - `unused_key` (string): This is not set by default and is unused by this codebase. It's a standardized way to differentiate configurations to prevent experiment participants from being unenrolled.
 
 ### `browser.newtabpage.activity-stream.discoverystream.enabled`
@@ -125,18 +122,10 @@ Not intended for user configuration, but is programmatically updated. Used for t
 
 When this is set to `true` the Discovery Stream experience will show up if `enabled` is also `true` on `browser.newtabpage.activity-stream.discoverystream.config`. Otherwise the old Activity Stream experience will be shown.
 
-### `browser.newtabpage.activity-stream.discoverystream.endpointSpocsClear`
-
-- Type: `string (URL)`
-- Default: `https://spocs.getpocket.com/user`
-- Pref Type: AS
-
-Endpoint for when a user opts-out of sponsored content to delete the corresponding data from the ad server.
-
 ### `browser.newtabpage.activity-stream.discoverystream.endpoints`
 
 - Type: `string (URLs, CSV)`
-- Default: `https://getpocket.cdn.mozilla.net/,https://spocs.getpocket.com/`
+- Default: `https://getpocket.cdn.mozilla.net/,https://firefox-api-proxy.cdn.mozilla.net/,https://merino.services.mozilla.com/,https://ads.mozilla.org/`
 - Pref Type: AS
 
 A list of endpoints that are allowed to be used by Discovery Stream for remote content (eg: story metadata) and configuration (eg: remote layout definitions for experimentation).
@@ -149,14 +138,6 @@ A list of endpoints that are allowed to be used by Discovery Stream for remote c
 
 If this is `false` the default hardcoded layout is used, and if it's `true` then an alternate hardcoded layout (that currently simulates the older AS experience) is used.
 
-### `browser.newtabpage.activity-stream.discoverystream.rec.impressions`
-
-- Type: `string (JSON)`
-- Default: `{}`
-- Pref Type: AS
-
-Programmatically generated hash table where the keys are recommendation IDs and the values are timestamps representing the first impression.
-
 ### `browser.newtabpage.activity-stream.discoverystream.spoc.impressions`
 
 - Type: `string (JSON)`
@@ -165,21 +146,23 @@ Programmatically generated hash table where the keys are recommendation IDs and 
 
 Programmatically generated hash table where the keys are sponsored content IDs and the values are arrays of timestamps for every impression.
 
-### `browser.newtabpage.activity-stream.discoverystream.locale-list-config`
+### `browser.newtabpage.activity-stream.discoverystream.stories-region-locale-config`
 
-- Type: `string (CSV, locales)`
-- Default: `null`
+- Type: `string (JSON, [region, localePatterns] entries)`
+- Default: `STORIES_REGION_LOCALE_DEFAULT` in `ActivityStream.sys.mjs`
 - Pref Type: Firefox
 
-A comma separated list of locales that by default have stories enabled in newtab. It overrides what might be in region-stories-config. So if I set this to "en-US,en-CA,en-GB", all users with a English browser would see newtab stories, even if their region was not in region-stories-config list.
+The region / locale pairs that get stories, for example `[["US",["en-*"]],["FR",["fr"]]]`. Entries are OR-ed. A locale pattern ending in `*` prefix-matches, and the region `*` matches any region, so a global English feed is `[["*",["en-*"]]]`. Exceptions to a `*` entry go in region-stories-block.
 
 ### `browser.newtabpage.activity-stream.discoverystream.region-stories-config`
 
 - Type: `string (CSV, regions)`
-- Default: `US,DE,CA,GB,IE,CH,AT,BE`
+- Default: unset
 - Pref Type: Firefox
 
-A comma separated list of geos that by default have stories enabled in newtab. It matches the client's geo with that list, then looks for a matching locale.
+Legacy, being replaced by stories-region-locale-config. Read only so that launched experiments setting `regionStoriesConfig` keep working; do not set it in new recipes.
+
+A comma separated list of geos that have stories enabled in newtab. It matches the client's geo with that list, then looks for a matching locale in `LEGACY_REGION_STORIES_LOCALES`.
 
 ### `browser.newtabpage.activity-stream.discoverystream.region-spocs-config`
 
@@ -212,46 +195,6 @@ If this is `true` newtabs with stories enabled see 1 row. It is set programmatic
 - Pref Type: Firefox
 
 Override to specify endpoint for SPOCs. Will take precedence over remote and hardcoded layout SPOC endpoints.
-
-### `browser.newtabpage.activity-stream.discoverystream.personalization.version`
-
-- Type: `integer`
-- Default: `1`
-- Pref Type: Firefox
-
-This controls what version of personalization we should use to score newtab stories.
-
-### `browser.newtabpage.activity-stream.discoverystream.personalization.modelKeys`
-
-- Type: `string (CSV)`
-- Default: `nb_model_arts_and_entertainment, nb_model_autos_and_vehicles, nb_model_beauty_and_fitness, nb_model_blogging_resources_and_services, nb_model_books_and_literature, nb_model_business_and_industrial, nb_model_computers_and_electronics, nb_model_finance, nb_model_food_and_drink, nb_model_games, nb_model_health, nb_model_hobbies_and_leisure, nb_model_home_and_garden, nb_model_internet_and_telecom, nb_model_jobs_and_education, nb_model_law_and_government, nb_model_online_communities, nb_model_people_and_society, nb_model_pets_and_animals, nb_model_real_estate, nb_model_reference, nb_model_science, nb_model_shopping, nb_model_sports, nb_model_travel`
-- Pref Type: Firefox
-
-This is a configuration for personalization version 2. It is a list of topics the algorithm uses to score stories by.
-
-### `browser.newtabpage.activity-stream.discoverystream.recs.personalized`
-
-- Type: `boolean`
-- Default: false
-- Pref Type: Firefox
-
-This controls if newtab story personalization includes regular stories or not. See spocs.personalized for sponsored content.
-
-### `browser.newtabpage.activity-stream.discoverystream.spocs.personalized`
-
-- Type: `boolean`
-- Default: true
-- Pref Type: Firefox
-
-This controls if newtab story personalization includes sponsored content or not. See recs.personalized for regular stories.
-
-### `browser.newtabpage.activity-stream.discoverystream.isCollectionDismissible`
-
-- Type: `boolean`
-- Default: true
-- Pref Type: Firefox
-
-This controls if newtab story collections are dismissible or not.
 
 ### `browser.newtabpage.activity-stream.feeds.section.topstories`
 

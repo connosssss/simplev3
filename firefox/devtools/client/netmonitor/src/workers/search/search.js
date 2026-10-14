@@ -3,6 +3,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 /* eslint-disable no-unused-vars */
 
+/* import-globals-from ../../utils/build-query.js */
+
 "use strict";
 
 /**
@@ -120,6 +122,7 @@ function searchInResource(resource, query, modifiers) {
 
 /**
  * Concatenates all results
+ *
  * @param results
  * @returns {*[]}
  */
@@ -145,6 +148,7 @@ function find(query, modifiers, source) {
 
 /**
  * Find query matches in arrays, objects and strings.
+ *
  * @param resource
  * @param query
  * @param modifiers
@@ -197,6 +201,7 @@ function searchInProperties(query, modifiers, obj, data) {
 
 /**
  * Get type of resource - deals with arrays as well.
+ *
  * @param resource
  * @returns {*}
  */
@@ -206,6 +211,7 @@ function getType(resource) {
 
 /**
  * Function returns the value of a key, included nested keys.
+ *
  * @param path
  * @param obj
  * @returns {*}
@@ -217,6 +223,7 @@ function getValue(path, obj) {
 
 /**
  * Search text for specific string and return all matches found
+ *
  * @param query
  * @param modifiers
  * @param text
@@ -233,7 +240,7 @@ function searchInText(query, modifiers, text, data) {
     const { caseSensitive } = modifiers;
     const flags = caseSensitive ? "g" : "gi";
     const regexQuery = RegExp(
-      caseSensitive ? query : query.toLowerCase(),
+      RegExp.escape(caseSensitive ? query : query.toLowerCase()),
       flags
     );
     const lineMatches = [];
@@ -268,6 +275,7 @@ function searchInText(query, modifiers, text, data) {
 /**
  * Search for query in array.
  * Iterates through each array item and handles item based on type.
+ *
  * @param query
  * @param modifiers
  * @param arr
@@ -290,6 +298,7 @@ function searchInArray(query, modifiers, arr, data) {
 /**
  * Return query match and up to 50 characters on left and right.
  * (50) + [matched query] + (50)
+ *
  * @param value
  * @param query
  * @param startIndex
@@ -308,6 +317,7 @@ function getTruncatedValue(value, query, startIndex) {
 
 /**
  * Iterates through object, including nested objects, returns all
+ *
  * @param query
  * @param modifiers
  * @param obj
@@ -353,4 +363,31 @@ function searchInObject(query, modifiers, obj, data) {
   }
 
   return matches;
+}
+
+function getMatches(query, text, options) {
+  if (!query || !text || !options) {
+    return [];
+  }
+  const regexQuery = buildQuery(query, options, {
+    isGlobal: true,
+  });
+  const matchedLocations = [];
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    let singleMatch;
+    const line = lines[i];
+    while ((singleMatch = regexQuery.exec(line)) !== null) {
+      matchedLocations.push({
+        line: i,
+        ch: singleMatch.index,
+        match: singleMatch[0],
+      });
+
+      if (singleMatch[0] === "") {
+        regexQuery.lastIndex++;
+      }
+    }
+  }
+  return matchedLocations;
 }

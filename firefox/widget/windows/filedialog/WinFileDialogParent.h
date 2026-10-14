@@ -1,13 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef widget_windows_filedialog_WinFileDialogParent_h__
-#define widget_windows_filedialog_WinFileDialogParent_h__
+#ifndef widget_windows_filedialog_WinFileDialogParent_h_
+#define widget_windows_filedialog_WinFileDialogParent_h_
 
-#include "mozilla/Assertions.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/ProcInfo.h"
@@ -43,10 +40,11 @@ class WinFileDialogParent final : private PWinFileDialogParent {
 
   [[nodiscard]] RefPtr<ShowFileDialogPromise> ShowFileDialogImpl(
       HWND parent, const FileDialogType& type,
-      mozilla::Span<Command const> commands);
+      mozilla::Span<Command const> commands, bool aNeedsInputProtection);
 
   [[nodiscard]] RefPtr<ShowFolderDialogPromise> ShowFolderDialogImpl(
-      HWND parent, mozilla::Span<Command const> commands);
+      HWND parent, mozilla::Span<Command const> commands,
+      bool aNeedsInputProtection);
 
  private:
   ~WinFileDialogParent();
@@ -100,4 +98,4 @@ class ProcessProxy {
 
 }  // namespace mozilla::widget::filedialog
 
-#endif  // widget_windows_filedialog_WinFileDialogParent_h__
+#endif  // widget_windows_filedialog_WinFileDialogParent_h_

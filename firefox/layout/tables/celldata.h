@@ -1,16 +1,18 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#ifndef CellData_h__
-#define CellData_h__
+#ifndef CellData_h_
+#define CellData_h_
 
+#include <stdint.h>
+
+#include <algorithm>
+
+#include "mozilla/WritingModes.h"
+#include "mozilla/gfx/Types.h"
+#include "nsCoord.h"
 #include "nsISupports.h"
 #include "nsITableCellLayout.h"  // for MAX_COLSPAN / MAX_ROWSPAN
-#include "nsCoord.h"
-#include "mozilla/gfx/Types.h"
-#include "mozilla/WritingModes.h"
-#include <stdint.h>
 
 class nsTableCellFrame;
 class nsCellMap;
@@ -163,7 +165,7 @@ class BCData {
  public:
   BCData();
 
-  ~BCData();
+  ~BCData() = default;
 
   nscoord GetIStartEdge(BCBorderOwner& aOwner, bool& aStart) const;
 
@@ -292,6 +294,10 @@ inline uint32_t CellData::GetRowSpanOffset() const {
 }
 
 inline void CellData::SetRowSpanOffset(uint32_t aSpan) {
+  MOZ_ASSERT(aSpan > 0, "a zero-sized span is nonsensical");
+  MOZ_ASSERT(aSpan <= MAX_ROWSPAN, "span shouldn't exceed what we can handle");
+  aSpan = std::min(aSpan, static_cast<uint32_t>(MAX_ROWSPAN));
+
   mBits &= ~ROW_SPAN_OFFSET;
   mBits |= (aSpan << ROW_SPAN_SHIFT);
   mBits |= SPAN;
@@ -310,6 +316,10 @@ inline uint32_t CellData::GetColSpanOffset() const {
 }
 
 inline void CellData::SetColSpanOffset(uint32_t aSpan) {
+  MOZ_ASSERT(aSpan > 0, "a zero-sized span is nonsensical");
+  MOZ_ASSERT(aSpan <= MAX_COLSPAN, "span shouldn't exceed what we can handle");
+  aSpan = std::min(aSpan, static_cast<uint32_t>(MAX_COLSPAN));
+
   mBits &= ~COL_SPAN_OFFSET;
   mBits |= (aSpan << COL_SPAN_SHIFT);
 
@@ -339,8 +349,6 @@ inline BCData::BCData() {
   mCornerSide = static_cast<uint8_t>(mozilla::LogicalSide::BStart);
   mCornerBevel = false;
 }
-
-inline BCData::~BCData() = default;
 
 inline nscoord BCData::GetIStartEdge(BCBorderOwner& aOwner,
                                      bool& aStart) const {

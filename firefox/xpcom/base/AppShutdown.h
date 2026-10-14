@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,10 +5,9 @@
 #ifndef AppShutdown_h
 #define AppShutdown_h
 
-#include <type_traits>
+#include "ShutdownPhase.h"
 #include "nsCOMPtr.h"
 #include "nsISupports.h"
-#include "ShutdownPhase.h"
 
 namespace mozilla {
 
@@ -157,6 +154,17 @@ class AppShutdown {
       ShutdownPhase aPhase, bool doNotify, const char16_t* aNotificationData,
       const nsCOMPtr<nsISupports>& aNotificationSubject);
 };
+
+/**
+ * Refresh the shutdown-hang crash annotations just before a deliberate crash.
+ * Runs on the terminator watchdog thread as well as the main thread, so
+ * collectors must not block: acquire locks only with try-lock semantics and
+ * skip the annotation on contention. Blocking here would keep the watchdog
+ * from reaching its crash.
+ *
+ * Defined in nsAppStartup.cpp.
+ */
+void CollectShutdownHangAnnotations();
 
 }  // namespace mozilla
 

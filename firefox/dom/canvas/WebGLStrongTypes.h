@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +6,9 @@
 #define WEBGL_STRONG_TYPES_H_
 
 #include <algorithm>
+#include <array>
 
 #include "GLDefs.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 
@@ -244,7 +243,7 @@ STRONG_GLENUM_VALUE(NONE), STRONG_GLENUM_VALUE(TEXTURE_2D),
 
         STRONG_GLENUM_BEGIN(TexWrap) STRONG_GLENUM_VALUE(REPEAT),
     STRONG_GLENUM_VALUE(CLAMP_TO_EDGE), STRONG_GLENUM_VALUE(MIRRORED_REPEAT),
-    STRONG_GLENUM_END(TexWrap)
+    STRONG_GLENUM_VALUE(MIRROR_CLAMP_TO_EDGE_EXT) STRONG_GLENUM_END(TexWrap)
 
         STRONG_GLENUM_BEGIN(TexCompareMode) STRONG_GLENUM_VALUE(NONE),
     STRONG_GLENUM_VALUE(COMPARE_REF_TO_TEXTURE),

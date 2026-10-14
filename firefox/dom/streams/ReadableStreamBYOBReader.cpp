@@ -1,24 +1,20 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/dom/ReadableStreamBYOBReader.h"
-
 #include "ReadIntoRequest.h"
+#include "ReadableByteStreamControllerAbstract.h"
+#include "ReadableStreamAbstract.h"
+#include "ReadableStreamBYOBReaderAbstract.h"
+#include "ReadableStreamGenericReaderAbstract.h"
 #include "js/ArrayBuffer.h"
 #include "js/experimental/TypedData.h"
-#include "mozilla/dom/ReadableStreamBYOBReader.h"
-#include "mozilla/dom/ReadableStream.h"
 #include "mozilla/dom/ReadableStreamBYOBReaderBinding.h"
-#include "mozilla/dom/ReadableStreamGenericReader.h"
 #include "mozilla/dom/RootedDictionary.h"
 #include "nsCOMPtr.h"
 #include "nsISupportsImpl.h"
 
 // Temporary Includes
-#include "mozilla/dom/ReadableByteStreamController.h"
 #include "mozilla/dom/ReadableStreamBYOBRequest.h"
 
 namespace mozilla::dom {
@@ -114,7 +110,7 @@ struct Read_ReadIntoRequest final : public ReadIntoRequest {
     result.mValue = aChunk;
     result.mDone.Construct(false);
 
-    mPromise->MaybeResolve(result);
+    mPromise->MaybeSafeResolve(result);
   }
 
   void CloseSteps(JSContext* aCx, JS::Handle<JS::Value> aChunk,
@@ -138,7 +134,7 @@ struct Read_ReadIntoRequest final : public ReadIntoRequest {
     }
     result.mDone.Construct(true);
 
-    mPromise->MaybeResolve(result);
+    mPromise->MaybeSafeResolve(result);
   }
 
   void ErrorSteps(JSContext* aCx, JS::Handle<JS::Value> e,
@@ -188,7 +184,11 @@ void ReadableStreamBYOBReaderRead(JSContext* aCx,
   // Step 4. If stream.[[state]] is "errored", perform readIntoRequest’s error
   // steps given stream.[[storedError]].
   if (stream->State() == ReadableStream::ReaderState::Errored) {
-    JS::Rooted<JS::Value> error(aCx, stream->StoredError());
+    JS::Rooted<JS::Value> error(aCx);
+    stream->GetStoredError(aCx, &error, aRv);
+    if (aRv.Failed()) {
+      return;
+    }
 
     aReadIntoRequest->ErrorSteps(aCx, error, aRv);
     return;
@@ -335,10 +335,7 @@ void ReadableStreamBYOBReaderRelease(JSContext* aCx,
                                      ReadableStreamBYOBReader* aReader,
                                      ErrorResult& aRv) {
   // Step 1. Perform ! ReadableStreamReaderGenericRelease(reader).
-  ReadableStreamReaderGenericRelease(aReader, aRv);
-  if (aRv.Failed()) {
-    return;
-  }
+  ReadableStreamReaderGenericRelease(aReader);
 
   // Step 2. Let e be a new TypeError exception.
   ErrorResult rv;

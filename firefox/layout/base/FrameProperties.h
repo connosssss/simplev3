@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +5,7 @@
 #ifndef FRAMEPROPERTIES_H_
 #define FRAMEPROPERTIES_H_
 
-#include "mozilla/DebugOnly.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Unused.h"
 #include "nsTArray.h"
 #include "nsThreadUtils.h"
 
@@ -137,6 +133,11 @@ class FrameProperties {
     MOZ_ASSERT(mProperties.Length() == 0, "forgot to delete properties");
   }
 
+  // Prevent copying of FrameProperties; we should always return/pass around
+  // references to it, not copies!
+  FrameProperties(const FrameProperties&) = delete;
+  FrameProperties& operator=(const FrameProperties&) = delete;
+
   /**
    * Return true if we have no properties, otherwise return false.
    */
@@ -222,11 +223,11 @@ class FrameProperties {
   /**
    * Remove and destroy a property value. This requires a linear search through
    * the properties of the frame. If the frame has no such property, nothing
-   * happens.
+   * happens and false is returned.
    */
   template <typename T>
-  void Remove(Descriptor<T> aProperty, const nsIFrame* aFrame) {
-    RemoveInternal(aProperty, aFrame);
+  bool Remove(Descriptor<T> aProperty, const nsIFrame* aFrame) {
+    return RemoveInternal(aProperty, aFrame);
   }
 
   /**
@@ -268,11 +269,6 @@ class FrameProperties {
   }
 
  private:
-  // Prevent copying of FrameProperties; we should always return/pass around
-  // references to it, not copies!
-  FrameProperties(const FrameProperties&) = delete;
-  FrameProperties& operator=(const FrameProperties&) = delete;
-
   inline void SetInternal(UntypedDescriptor aProperty, uint64_t aValue,
                           const nsIFrame* aFrame);
 
@@ -283,7 +279,8 @@ class FrameProperties {
 
   inline uint64_t TakeInternal(UntypedDescriptor aProperty, bool* aFoundResult);
 
-  inline void RemoveInternal(UntypedDescriptor aProperty,
+  // Returns whether the property was removed.
+  inline bool RemoveInternal(UntypedDescriptor aProperty,
                              const nsIFrame* aFrame);
 
   template <typename T>
@@ -418,16 +415,18 @@ inline uint64_t FrameProperties::TakeInternal(UntypedDescriptor aProperty,
   return result;
 }
 
-inline void FrameProperties::RemoveInternal(UntypedDescriptor aProperty,
+inline bool FrameProperties::RemoveInternal(UntypedDescriptor aProperty,
                                             const nsIFrame* aFrame) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aProperty, "Null property?");
 
   auto index = mProperties.IndexOf(aProperty, 0, PropertyComparator());
-  if (index != nsTArray<PropertyValue>::NoIndex) {
-    mProperties.Elements()[index].DestroyValueFor(aFrame);
-    mProperties.RemoveElementAtUnsafe(index);
+  if (index == nsTArray<PropertyValue>::NoIndex) {
+    return false;
   }
+  mProperties.Elements()[index].DestroyValueFor(aFrame);
+  mProperties.RemoveElementAtUnsafe(index);
+  return true;
 }
 
 }  // namespace mozilla

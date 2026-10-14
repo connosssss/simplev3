@@ -10,14 +10,23 @@ ChromeUtils.defineESModuleGetters(lazy, {
   AboutWelcomeTelemetry:
     "resource:///modules/aboutwelcome/AboutWelcomeTelemetry.sys.mjs",
   AddonManager: "resource://gre/modules/AddonManager.sys.mjs",
-  AWScreenUtils: "resource:///modules/aboutwelcome/AWScreenUtils.sys.mjs",
+  ASRouterScreenUtils:
+    "resource:///modules/asrouter/ASRouterScreenUtils.sys.mjs",
+  BackupService: "moz-src:///browser/components/backup/BackupService.sys.mjs",
   BrowserUtils: "resource://gre/modules/BrowserUtils.sys.mjs",
   BuiltInThemes: "resource:///modules/BuiltInThemes.sys.mjs",
+  EnrollmentType: "resource://nimbus/ExperimentAPI.sys.mjs",
+  ExperimentAPI: "resource://nimbus/ExperimentAPI.sys.mjs",
   FxAccounts: "resource://gre/modules/FxAccounts.sys.mjs",
-  LangPackMatcher: "resource://gre/modules/LangPackMatcher.sys.mjs",
-  ShellService: "resource:///modules/ShellService.sys.mjs",
+  LangPackMatcher: "moz-src:///intl/locale/LangPackMatcher.sys.mjs",
+  MessagingSystemAllowlists:
+    "resource://messaging-system/lib/MessagingSystemAllowlists.sys.mjs",
+  NimbusFeatures: "resource://nimbus/ExperimentAPI.sys.mjs",
+  ShellService: "moz-src:///browser/components/shell/ShellService.sys.mjs",
   SpecialMessageActions:
     "resource://messaging-system/lib/SpecialMessageActions.sys.mjs",
+  setTimeout: "resource://gre/modules/Timer.sys.mjs",
+  clearTimeout: "resource://gre/modules/Timer.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "log", () => {
@@ -36,6 +45,11 @@ ChromeUtils.defineLazyGetter(
 const DID_SEE_ABOUT_WELCOME_PREF = "trailhead.firstrun.didSeeAboutWelcome";
 const DID_HANDLE_CAMAPAIGN_ACTION_PREF =
   "trailhead.firstrun.didHandleCampaignAction";
+const CHECK_DEFAULT_BROWSER_PREF = "browser.shell.checkDefaultBrowser";
+const SET_DEFAULT_CAMPAIGN_ACTIONS = ["SET_DEFAULT_BROWSER", "PIN_AND_DEFAULT"];
+const EXPERIMENTS_GATE_PREF = "browser.aboutwelcome.experimentsGate.enabled";
+const EXPERIMENTS_GATE_MAX_MS_PREF =
+  "browser.aboutwelcome.experimentsGate.maxDisplayMs";
 const AWTerminate = {
   WINDOW_CLOSED: "welcome-window-closed",
   TAB_CLOSED: "welcome-tab-closed",
@@ -48,6 +62,89 @@ const LIGHT_WEIGHT_THEMES = {
   LIGHT: "firefox-compact-light@mozilla.org",
   ALPENGLOW: "firefox-alpenglow@mozilla.org",
 };
+
+let nimbusReadyPromise = null;
+
+// Only gate about:welcome on Nimbus being ready when:
+// - the experiments gate pref is enabled
+// - about:welcome has never been seen
+// - the user is eligible for the TOU preonboarding modal
+function shouldGateNimbusForAboutWelcome() {
+  if (!Services.prefs.getBoolPref(EXPERIMENTS_GATE_PREF, false)) {
+    return false;
+  }
+  // If Nimbus experiments are globally disabled, there is nothing to wait for.
+  if (!lazy.ExperimentAPI.enabled) {
+    return false;
+  }
+  if (Services.prefs.getBoolPref(DID_SEE_ABOUT_WELCOME_PREF, false)) {
+    return false;
+  }
+  // If all conditions pass, enable gating.
+  // Note: We don't check shouldShowTOU() here because this function is called
+  // both from the preonboarding modal where TOU is already showing and from
+  // about:welcome where we want to gate if user hasn't seen it yet.
+  return true;
+}
+
+/**
+ * Wait for Nimbus (and its Remote Settings recipes) to be ready for
+ * about:welcome, with a safety timeout.
+ *
+ * @returns {Promise<"ready"|"timeout"|"error"|"skipped">}
+ */
+async function waitForNimbusForAboutWelcome() {
+  if (!shouldGateNimbusForAboutWelcome()) {
+    lazy.log.debug("AboutWelcomeParent: skipping Nimbus wait (gate disabled)");
+    return "skipped";
+  }
+
+  if (nimbusReadyPromise) {
+    lazy.log.debug(
+      "AboutWelcomeParent: Nimbus wait already in progress, reusing promise"
+    );
+    return nimbusReadyPromise;
+  }
+
+  const maxMs = Services.prefs.getIntPref(EXPERIMENTS_GATE_MAX_MS_PREF, 8000);
+  lazy.log.debug(`AboutWelcomeParent: waiting for Nimbus (maxMs=${maxMs})`);
+
+  nimbusReadyPromise = (async () => {
+    let timeoutId;
+    try {
+      const timeoutPromise = new Promise(resolve => {
+        timeoutId = lazy.setTimeout(() => resolve("timeout"), maxMs);
+      });
+
+      const initPromise = (async () => {
+        try {
+          await lazy.ExperimentAPI.init();
+          lazy.log.debug(
+            "AboutWelcomeParent: ExperimentAPI.init() resolved, waiting for RS loader"
+          );
+          await lazy.ExperimentAPI._rsLoader.finishedUpdating();
+          return "ready";
+        } catch (e) {
+          lazy.log.error(
+            "AboutWelcomeParent: Nimbus init failed for about:welcome",
+            e
+          );
+          return "error";
+        }
+      })();
+
+      const result = await Promise.race([initPromise, timeoutPromise]);
+      lazy.log.debug(`AboutWelcomeParent: Nimbus wait result: ${result}`);
+      return result;
+    } finally {
+      if (timeoutId) {
+        lazy.clearTimeout(timeoutId);
+      }
+    }
+  })();
+
+  return nimbusReadyPromise;
+}
 
 class AboutWelcomeObserver {
   constructor() {
@@ -103,6 +200,12 @@ export class AboutWelcomeParent extends JSWindowActorParent {
   constructor() {
     super();
     this.startAboutWelcomeObserver();
+    // Warm the Remote Settings-backed SET_PREF allowlist cache as early as
+    // possible, since about:welcome can dispatch SET_PREF actions (via
+    // SpecialMessageActions) without ever going through ASRouter's own init
+    // sequence. This isn't awaited, so it only shrinks the window for a
+    // possible race condition.
+    lazy.MessagingSystemAllowlists.ensureInit();
   }
 
   startAboutWelcomeObserver() {
@@ -119,7 +222,7 @@ export class AboutWelcomeParent extends JSWindowActorParent {
   }
 
   static isDefaultBrowser() {
-    return lazy.ShellService.isDefaultBrowser();
+    return lazy.ShellService.isDefaultBrowserAsync();
   }
 
   didDestroy() {
@@ -234,7 +337,7 @@ export class AboutWelcomeParent extends JSWindowActorParent {
         // Only need to set default if we're supposed to check and not default.
         return (
           Services.prefs.getBoolPref("browser.shell.checkDefaultBrowser") &&
-          !AboutWelcomeParent.isDefaultBrowser()
+          !(await AboutWelcomeParent.isDefaultBrowser())
         );
       case "AWPage:WAIT_FOR_MIGRATION_CLOSE":
         // Support multiples types of migration: 1) content modal 2) old
@@ -253,11 +356,13 @@ export class AboutWelcomeParent extends JSWindowActorParent {
       case "AWPage:GET_APP_AND_SYSTEM_LOCALE_INFO":
         return lazy.LangPackMatcher.getAppAndSystemLocaleInfo();
       case "AWPage:EVALUATE_SCREEN_TARGETING":
-        return lazy.AWScreenUtils.evaluateTargetingAndRemoveScreens(data);
+        return lazy.ASRouterScreenUtils.evaluateTargetingAndRemoveScreens(data);
       case "AWPage:ADD_SCREEN_IMPRESSION":
-        return lazy.AWScreenUtils.addScreenImpression(data);
+        return lazy.ASRouterScreenUtils.addScreenImpression(data);
+      case "AWPage:IMPRESSION_ACTION":
+        return lazy.ASRouterScreenUtils.handleImpressionAction(data, browser);
       case "AWPage:EVALUATE_ATTRIBUTE_TARGETING":
-        return lazy.AWScreenUtils.evaluateScreenTargeting(data);
+        return lazy.ASRouterScreenUtils.evaluateScreenTargeting(data);
       case "AWPage:NEGOTIATE_LANGPACK":
         return lazy.LangPackMatcher.negotiateLangPackForLanguageMismatch(data);
       case "AWPage:ENSURE_LANG_PACK_INSTALLED":
@@ -271,7 +376,7 @@ export class AboutWelcomeParent extends JSWindowActorParent {
         if (
           !Services.prefs.getBoolPref(DID_HANDLE_CAMAPAIGN_ACTION_PREF, false)
         ) {
-          return lazy.AWScreenUtils.getUnhandledCampaignAction();
+          return lazy.ASRouterScreenUtils.getUnhandledCampaignAction();
         }
         break;
       }
@@ -279,6 +384,12 @@ export class AboutWelcomeParent extends JSWindowActorParent {
         if (
           !Services.prefs.getBoolPref(DID_HANDLE_CAMAPAIGN_ACTION_PREF, false)
         ) {
+          if (
+            SET_DEFAULT_CAMPAIGN_ACTIONS.includes(data) &&
+            !Services.prefs.getBoolPref(CHECK_DEFAULT_BROWSER_PREF, true)
+          ) {
+            break;
+          }
           lazy.SpecialMessageActions.handleAction({ type: data }, browser);
           try {
             Services.prefs.setBoolPref(DID_HANDLE_CAMAPAIGN_ACTION_PREF, true);
@@ -288,6 +399,28 @@ export class AboutWelcomeParent extends JSWindowActorParent {
           return true;
         }
         break;
+      }
+      case "AWPage:BACKUP_FIND_WELL_KNOWN": {
+        // Ask the BackupService to probe default locations.
+        let bs;
+        try {
+          bs = lazy.BackupService.get();
+        } catch {
+          bs = lazy.BackupService.init();
+        }
+        return bs.findBackupsInWellKnownLocations(data);
+      }
+      case "AWPage:WAIT_FOR_NIMBUS": {
+        return waitForNimbusForAboutWelcome();
+      }
+      case "AWPage:GET_ABOUTWELCOME_FEATURE_CONFIG": {
+        return {
+          experimentMetadata:
+            lazy.NimbusFeatures.aboutwelcome.getEnrollmentMetadata(
+              lazy.EnrollmentType.EXPERIMENT
+            ) ?? {},
+          featureConfig: lazy.NimbusFeatures.aboutwelcome.getAllVariables(),
+        };
       }
       default:
         lazy.log.debug(`Unexpected event ${type} was not handled.`);
@@ -312,4 +445,8 @@ export class AboutWelcomeParent extends JSWindowActorParent {
     lazy.log.warn(`Not handling ${name} because the browser doesn't exist.`);
     return null;
   }
+}
+
+export function resetNimbusReadyPromiseForTesting() {
+  nimbusReadyPromise = null;
 }

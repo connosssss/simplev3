@@ -47,8 +47,9 @@
  */
 
 #include <map>
-#include "prlock.h"
+
 #include "mozilla/Assertions.h"
+#include "prlock.h"
 
 /*
  * Wrapper has its own autolock class because the instances are declared
@@ -89,7 +90,7 @@ class Wrapper {
   LockNSPR handleMapMutex;
 
  public:
-  Wrapper() {}
+  Wrapper() = default;
 
   typename T::Ptr wrap(typename T::Handle handle) {
     AutoLockNSPR lock(handleMapMutex);

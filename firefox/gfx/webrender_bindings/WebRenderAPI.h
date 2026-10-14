@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,30 +5,30 @@
 #ifndef MOZILLA_LAYERS_WEBRENDERAPI_H
 #define MOZILLA_LAYERS_WEBRENDERAPI_H
 
-#include <queue>
 #include <stdint.h>
-#include <vector>
-#include <unordered_map>
-#include <unordered_set>
 
+#include <queue>
+#include <unordered_map>
+#include <vector>
+
+#include "GLTypes.h"
+#include "Units.h"
 #include "mozilla/AlreadyAddRefed.h"
-#include "mozilla/gfx/CompositorHitTestInfo.h"
-#include "mozilla/layers/AsyncImagePipelineOp.h"
-#include "mozilla/layers/IpcResourceUpdateQueue.h"
-#include "mozilla/layers/RemoteTextureMap.h"
-#include "mozilla/layers/ScrollableLayerGuid.h"
-#include "mozilla/layers/SyncObject.h"
-#include "mozilla/layers/CompositionRecorder.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/Range.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/VsyncDispatcher.h"
-#include "mozilla/webrender/webrender_ffi.h"
+#include "mozilla/gfx/CompositorHitTestInfo.h"
+#include "mozilla/layers/AsyncImagePipelineOp.h"
+#include "mozilla/layers/CompositionRecorder.h"
+#include "mozilla/layers/IpcResourceUpdateQueue.h"
+#include "mozilla/layers/RemoteTextureMap.h"
+#include "mozilla/layers/ScrollableLayerGuid.h"
+#include "mozilla/layers/SyncObject.h"
 #include "mozilla/webrender/WebRenderTypes.h"
+#include "mozilla/webrender/webrender_ffi.h"
 #include "nsString.h"
-#include "GLTypes.h"
-#include "Units.h"
 
 class gfxContext;
 
@@ -52,7 +50,6 @@ class CompositorWidget;
 
 namespace layers {
 class CompositorBridgeParent;
-class DisplayItemCache;
 class WebRenderBridgeParent;
 class RenderRootStateManager;
 class StackingContextHelper;
@@ -78,6 +75,21 @@ struct Line {
   wr::LineOrientation orientation;
   wr::ColorF color;
   wr::LineStyle style;
+};
+
+struct WebRenderCapabilities {
+  layers::WebRenderBackend mBackendType = layers::WebRenderBackend::HARDWARE;
+  layers::WebRenderCompositor mCompositorType =
+      layers::WebRenderCompositor::DRAW;
+  int32_t mMaxTextureSize = 0;
+  bool mUseANGLE = false;
+  bool mUseDComp = false;
+  bool mUseLayerCompositor = false;
+  bool mUseTripleBuffering = false;
+  bool mSupportsExternalBufferTextures = false;
+#ifdef XP_DARWIN
+  wr::ImageBufferKind mIOSurfaceImageKind = wr::ImageBufferKind::Texture2D;
+#endif
 };
 
 /// A handler that can be bundled into a transaction and notified at specific
@@ -124,13 +136,18 @@ class TransactionBuilder final {
 
   void RemovePipeline(PipelineId aPipelineId);
 
-  void SetDisplayList(Epoch aEpoch, wr::WrPipelineId pipeline_id,
+  // aIdNamespace is the namespace whose resources the display list is allowed
+  // to reference. It must be supplied by the compositor-side owner of the
+  // pipeline.
+  void SetDisplayList(Epoch aEpoch, wr::IdNamespace aIdNamespace,
+                      wr::WrPipelineId pipeline_id,
                       wr::BuiltDisplayListDescriptor dl_descriptor,
                       wr::Vec<uint8_t>& dl_items_data,
-                      wr::Vec<uint8_t>& dl_cache_data,
-                      wr::Vec<uint8_t>& dl_spatial_tree);
+                      wr::Vec<uint8_t>& dl_spatial_tree,
+                      wr::Vec<uint8_t>& dl_interner_delta);
 
-  void ClearDisplayList(Epoch aEpoch, wr::WrPipelineId aPipeline);
+  void ClearDisplayList(Epoch aEpoch, wr::IdNamespace aIdNamespace,
+                        wr::WrPipelineId aPipeline);
 
   void GenerateFrame(const VsyncId& aVsyncId, bool aPresent, bool aTracked,
                      wr::RenderReasons aReasons);
@@ -217,7 +234,7 @@ class TransactionBuilder final {
   Transaction* Take();
 
   bool UseSceneBuilderThread() const { return mUseSceneBuilderThread; }
-  layers::WebRenderBackend GetBackendType() { return mApiBackend; }
+  const WebRenderCapabilities& GetCapabilities() const { return mCapabilities; }
   Transaction* Raw() const { return mTxn; }
 
   const RefPtr<layers::RemoteTextureTxnScheduler> mRemoteTextureTxnScheduler;
@@ -226,7 +243,7 @@ class TransactionBuilder final {
  protected:
   Transaction* mTxn;
   bool mUseSceneBuilderThread;
-  layers::WebRenderBackend mApiBackend;
+  WebRenderCapabilities mCapabilities;
   bool mOwnsData;
 };
 
@@ -255,12 +272,12 @@ class WebRenderAPI final {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(WebRenderAPI);
 
  public:
-  /// This can be called on the compositor thread only.
-  static already_AddRefed<WebRenderAPI> Create(
-      layers::CompositorBridgeParent* aBridge,
-      RefPtr<widget::CompositorWidget>&& aWidget,
-      const wr::WrWindowId& aWindowId, LayoutDeviceIntSize aSize,
-      layers::WindowKind aWindowKind, nsACString& aError);
+  using CreatePromise = MozPromise<RefPtr<WebRenderAPI>, nsCString, true>;
+  // Dispatches a task to the Renderer thread to create the WebRenderAPI.
+  static RefPtr<CreatePromise> Create(
+      RefPtr<layers::CompositorBridgeParent> aBridge,
+      RefPtr<widget::CompositorWidget> aWidget, const wr::WrWindowId& aWindowId,
+      LayoutDeviceIntSize aSize, layers::WindowKind aWindowKind);
 
   already_AddRefed<WebRenderAPI> Clone();
 
@@ -280,10 +297,9 @@ class WebRenderAPI final {
 
   void Readback(const TimeStamp& aStartTime, gfx::IntSize aSize,
                 const gfx::SurfaceFormat& aFormat,
-                const Range<uint8_t>& aBuffer, bool* aNeedsYFlip);
+                const mozilla::Range<uint8_t>& aBuffer, bool* aNeedsYFlip);
 
   void ClearAllCaches();
-  void EnableNativeCompositor(bool aEnable);
   void SetBatchingLookback(uint32_t aCount);
   void SetBool(wr::BoolParameter, bool value);
   void SetInt(wr::IntParameter, int32_t value);
@@ -302,21 +318,12 @@ class WebRenderAPI final {
   void AccumulateMemoryReport(wr::MemoryReport*);
 
   wr::WrIdNamespace GetNamespace();
-  layers::WebRenderBackend GetBackendType() { return mBackend; }
-  layers::WebRenderCompositor GetCompositorType() { return mCompositor; }
-  uint32_t GetMaxTextureSize() const { return mMaxTextureSize; }
-  bool GetUseANGLE() const { return mUseANGLE; }
-  bool GetUseDComp() const { return mUseDComp; }
-  bool GetUseLayerCompositor() const { return mUseLayerCompositor; }
-  bool GetUseTripleBuffering() const { return mUseTripleBuffering; }
-  bool SupportsExternalBufferTextures() const {
-    return mSupportsExternalBufferTextures;
-  }
+  const WebRenderCapabilities& GetCapabilities() const { return mCapabilities; }
   layers::SyncHandle GetSyncHandle() const { return mSyncHandle; }
 
   void Capture();
 
-  void StartCaptureSequence(const nsACString& aPath, uint32_t aFlags);
+  void StartCaptureSequence(uint32_t aFlags);
   void StopCaptureSequence();
 
   void BeginRecording(const TimeStamp& aRecordingStart,
@@ -327,6 +334,16 @@ class WebRenderAPI final {
 
   RefPtr<EndRecordingPromise> EndRecording();
 
+#ifdef MOZ_WIDGET_ANDROID
+  using ScreenPixelsPromise = MozPromise<Ok, nsresult, true>;
+  // Queues a task to the render thread to capture screen pixels for the next
+  // rendered frame. Returns a promise that resolves once the pixels are
+  // captured.
+  RefPtr<ScreenPixelsPromise> RequestScreenPixels(
+      gfx::IntRect aSourceRect,
+      RefPtr<layers::AndroidHardwareBuffer> aHardwareBuffer);
+#endif
+
   layers::RemoteTextureInfoList* GetPendingRemoteTextureInfoList();
   layers::AsyncImagePipelineOps* GetPendingAsyncImagePipelineOps(
       TransactionBuilder& aTxn);
@@ -336,22 +353,20 @@ class WebRenderAPI final {
 
   wr::WebRenderAPI* GetRootAPI();
 
+  bool CheckAndClearDidRasterize();
+
  protected:
   WebRenderAPI(wr::DocumentHandle* aHandle, wr::WindowId aId,
-               layers::WebRenderBackend aBackend,
-               layers::WebRenderCompositor aCompositor,
-               uint32_t aMaxTextureSize, bool aUseANGLE, bool aUseDComp,
-               bool aUseLayerCompositor, bool aUseTripleBuffering,
-               bool aSupportsExternalBufferTextures,
+               WebRenderCapabilities aCapabilities,
                layers::SyncHandle aSyncHandle,
                wr::WebRenderAPI* aRootApi = nullptr,
                wr::WebRenderAPI* aRootDocumentApi = nullptr);
 
   ~WebRenderAPI();
-  // Should be used only for shutdown handling
-  void WaitFlushed();
 
-  void UpdateDebugFlags(uint32_t aFlags);
+  void WaitUntilPresentationFlushed();
+
+  void UpdateDebugFlags(uint64_t aFlags);
   bool CheckIsRemoteTextureReady(layers::RemoteTextureInfoList* aList,
                                  const TimeStamp& aTimeStamp);
   void WaitRemoteTextureReady(layers::RemoteTextureInfoList* aList);
@@ -479,14 +494,7 @@ class WebRenderAPI final {
 
   wr::DocumentHandle* mDocHandle;
   wr::WindowId mId;
-  layers::WebRenderBackend mBackend;
-  layers::WebRenderCompositor mCompositor;
-  int32_t mMaxTextureSize;
-  bool mUseANGLE;
-  bool mUseDComp;
-  bool mUseLayerCompositor;
-  bool mUseTripleBuffering;
-  bool mSupportsExternalBufferTextures;
+  const WebRenderCapabilities mCapabilities;
   bool mCaptureSequence;
   layers::SyncHandle mSyncHandle;
   bool mRendererDestroyed;
@@ -570,10 +578,6 @@ struct MOZ_STACK_CLASS StackingContextParams : public WrStackingContextParams {
   // coordinates are transformed/snapped to invalidate less when transforms
   // change frequently.
   bool mAnimated = false;
-  // Whether items should be rasterized in a local space that is (mostly)
-  // invariant to transforms, i.e. disabling subpixel AA and screen space pixel
-  // snapping on text runs that would only make sense in screen space.
-  bool mRasterizeLocally = false;
 };
 
 /// This is a simple C++ wrapper around WrState defined in the rust bindings.
@@ -595,7 +599,15 @@ class DisplayListBuilder final {
              const Maybe<usize>& aEnd);
   void DumpSerializedDisplayList();
 
-  void Begin(layers::DisplayItemCache* aCache = nullptr);
+  /// aAppUnitsPerDevPixel is the grid this display list's coordinates are
+  /// authored on (nsPresContext::AppUnitsPerDevPixel). WebRender normalizes
+  /// items by their accumulated external scroll offset in whole app units on
+  /// that grid, which is exact; doing it in floats lets positions drift with
+  /// the scroll offset and churn interning and invalidation (bug 2059570). It
+  /// is taken per display list because it changes with device scale and full
+  /// zoom, and differs between chrome and content within one WebRender
+  /// document.
+  void Begin(int32_t aAppUnitsPerDevPixel);
   void End(wr::BuiltDisplayList& aOutDisplayList);
   void End(layers::DisplayListData& aOutTransaction);
 
@@ -604,34 +616,49 @@ class DisplayListBuilder final {
       const wr::RasterSpace& aRasterSpace);
   void PopStackingContext(bool aIsReferenceFrame);
 
-  wr::WrClipChainId DefineClipChain(const nsTArray<wr::WrClipId>& aClips,
-                                    bool aParentWithCurrentChain = false);
+  wr::WrClipChainId DefineClipChain(Span<const wr::WrClipId> aClips,
+                                    const Maybe<wr::WrClipChainId>& aParent);
 
   wr::WrClipId DefineImageMaskClip(const wr::ImageMask& aMask,
                                    const nsTArray<wr::LayoutPoint>&,
                                    wr::FillRule);
+  // aAntiAliased keeps the clip at its exact position instead of snapping it
+  // to the device pixel grid. It is meant for clips defined in the same space
+  // as anti-aliased primitives, such as SVG user space.
   wr::WrClipId DefineRoundedRectClip(Maybe<wr::WrSpatialId> aSpace,
-                                     const wr::ComplexClipRegion& aComplex);
+                                     const wr::ComplexClipRegion& aComplex,
+                                     bool aAntiAliased = false);
   wr::WrClipId DefineRectClip(Maybe<wr::WrSpatialId> aSpace,
-                              wr::LayoutRect aClipRect);
+                              wr::LayoutRect aClipRect,
+                              bool aAntiAliased = false);
 
-  wr::WrSpatialId DefineStickyFrame(
-      const wr::LayoutRect& aContentRect, const float* aTopMargin,
-      const float* aRightMargin, const float* aBottomMargin,
-      const float* aLeftMargin, const StickyOffsetBounds& aVerticalBounds,
-      const StickyOffsetBounds& aHorizontalBounds,
-      const wr::LayoutVector2D& aAppliedOffset, wr::SpatialTreeItemKey aKey,
-      const WrAnimationProperty* aAnimation);
+  wr::WrSpatialId DefineStickyFrame(const ActiveScrolledRoot* aStickyAsr,
+                                    Maybe<wr::WrSpatialId> aParentSpatialId,
+                                    const wr::LayoutRect& aContentRect,
+                                    const float* aTopMargin,
+                                    const float* aRightMargin,
+                                    const float* aBottomMargin,
+                                    const float* aLeftMargin,
+                                    const StickyOffsetBounds& aVerticalBounds,
+                                    const StickyOffsetBounds& aHorizontalBounds,
+                                    const wr::LayoutVector2D& aAppliedOffset,
+                                    const WrAnimationProperty* aAnimation);
 
-  Maybe<wr::WrSpatialId> GetScrollIdForDefinedScrollLayer(
-      layers::ScrollableLayerGuid::ViewID aViewId) const;
+  Maybe<wr::WrSpatialId> GetSpatialIdForDefinedLayer(
+      const ActiveScrolledRoot* aASR) const;
+
+  // The external scroll offset WebRender adds to items pushed into the current
+  // space, moving them from the pre-scrolled coordinates they are authored in
+  // to the scroll-invariant ones they are snapped in.
+  wr::LayoutVector2D CurrentAccumulatedScrollOffset();
+
   wr::WrSpatialId DefineScrollLayer(
+      const ActiveScrolledRoot* aAsr,
       const layers::ScrollableLayerGuid::ViewID& aViewId,
       const Maybe<wr::WrSpatialId>& aParent, const wr::LayoutRect& aContentRect,
       const wr::LayoutRect& aClipRect, const wr::LayoutVector2D& aScrollOffset,
       wr::APZScrollGeneration aScrollOffsetGeneration,
-      wr::HasScrollLinkedEffect aHasScrollLinkedEffect,
-      wr::SpatialTreeItemKey aKey);
+      wr::HasScrollLinkedEffect aHasScrollLinkedEffect);
 
   void PushRect(const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
                 bool aIsBackfaceVisible, bool aForceAntiAliasing,
@@ -640,15 +667,19 @@ class DisplayListBuilder final {
                              const wr::LayoutRect& aClip,
                              bool aIsBackfaceVisible, const wr::ColorF& aColor,
                              const WrAnimationProperty* aAnimation);
+  // Fills an ellipse inscribed in aBounds.
+  void PushEllipse(const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
+                   bool aIsBackfaceVisible, const wr::ColorF& aColor);
+  // Fills a rectangle with the given elliptical corner radii (the same for
+  // all four corners). The radii must not exceed half the size of aBounds.
   void PushRoundedRect(const wr::LayoutRect& aBounds,
                        const wr::LayoutRect& aClip, bool aIsBackfaceVisible,
-                       const wr::ColorF& aColor);
+                       const wr::LayoutSize& aRadii, const wr::ColorF& aColor);
   void PushHitTest(const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
                    bool aIsBackfaceVisible,
                    const layers::ScrollableLayerGuid::ViewID& aScrollId,
                    const gfx::CompositorHitTestInfo& aHitInfo,
                    SideBits aSideBits);
-  void PushClearRect(const wr::LayoutRect& aBounds);
 
   void PushBackdropFilter(const wr::LayoutRect& aBounds,
                           const wr::ComplexClipRegion& aRegion,
@@ -658,25 +689,24 @@ class DisplayListBuilder final {
 
   void PushLinearGradient(const wr::LayoutRect& aBounds,
                           const wr::LayoutRect& aClip, bool aIsBackfaceVisible,
-                          const wr::LayoutPoint& aStartPoint,
-                          const wr::LayoutPoint& aEndPoint,
+                          const wr::LayoutVector2D& aStartPoint,
+                          const wr::LayoutVector2D& aEndPoint,
                           const nsTArray<wr::GradientStop>& aStops,
                           wr::ExtendMode aExtendMode,
                           const wr::LayoutSize aTileSize,
-                          const wr::LayoutSize aTileSpacing);
+                          const wr::LayoutSize aTileSpacing,
+                          bool aForceAntiAliasing = false);
 
-  void PushRadialGradient(const wr::LayoutRect& aBounds,
-                          const wr::LayoutRect& aClip, bool aIsBackfaceVisible,
-                          const wr::LayoutPoint& aCenter,
-                          const wr::LayoutSize& aRadius,
-                          const nsTArray<wr::GradientStop>& aStops,
-                          wr::ExtendMode aExtendMode,
-                          const wr::LayoutSize aTileSize,
-                          const wr::LayoutSize aTileSpacing);
+  void PushRadialGradient(
+      const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
+      bool aIsBackfaceVisible, const wr::LayoutVector2D& aCenter,
+      const wr::LayoutSize& aRadius, const nsTArray<wr::GradientStop>& aStops,
+      wr::ExtendMode aExtendMode, const wr::LayoutSize aTileSize,
+      const wr::LayoutSize aTileSpacing, bool aForceAntiAliasing = false);
 
   void PushConicGradient(const wr::LayoutRect& aBounds,
                          const wr::LayoutRect& aClip, bool aIsBackfaceVisible,
-                         const wr::LayoutPoint& aCenter, const float aAngle,
+                         const wr::LayoutVector2D& aCenter, const float aAngle,
                          const nsTArray<wr::GradientStop>& aStops,
                          wr::ExtendMode aExtendMode,
                          const wr::LayoutSize aTileSize,
@@ -688,7 +718,8 @@ class DisplayListBuilder final {
                  bool aPremultipliedAlpha = true,
                  const wr::ColorF& aColor = wr::ColorF{1.0f, 1.0f, 1.0f, 1.0f},
                  bool aPreferCompositorSurface = false,
-                 bool aSupportsExternalCompositing = false);
+                 bool aSupportsExternalCompositing = false,
+                 bool aRasterizedForRect = false);
 
   void PushRepeatingImage(
       const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
@@ -730,6 +761,14 @@ class DisplayListBuilder final {
                      bool aPreferCompositorSurface = false,
                      bool aSupportsExternalCompositing = false);
 
+  void PushP210Image(const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
+                     bool aIsBackfaceVisible, wr::ImageKey aImageChannel0,
+                     wr::ImageKey aImageChannel1, wr::WrColorDepth aColorDepth,
+                     wr::WrYuvColorSpace aColorSpace,
+                     wr::WrColorRange aColorRange, wr::ImageRendering aFilter,
+                     bool aPreferCompositorSurface = false,
+                     bool aSupportsExternalCompositing = false);
+
   void PushYCbCrInterleavedImage(
       const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
       bool aIsBackfaceVisible, wr::ImageKey aImageChannel0,
@@ -743,11 +782,14 @@ class DisplayListBuilder final {
 
   // XXX WrBorderSides are passed with Range.
   // It is just to bypass compiler bug. See Bug 1357734.
-  void PushBorder(const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
-                  bool aIsBackfaceVisible, const wr::LayoutSideOffsets& aWidths,
-                  const Range<const wr::BorderSide>& aSides,
-                  const wr::BorderRadius& aRadius,
-                  wr::AntialiasBorder = wr::AntialiasBorder::Yes);
+  void PushBorder(
+      const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
+      bool aIsBackfaceVisible, const wr::LayoutSideOffsets& aWidths,
+      const mozilla::Range<const wr::BorderSide>& aSides,
+      const wr::BorderRadius& aRadius,
+      const wr::LayoutSideOffsets& aInset = EmptyLayoutSideOffsets(),
+      wr::AntialiasBorder = wr::AntialiasBorder::Yes,
+      bool aForceAntiAliasing = false);
 
   void PushBorderImage(const wr::LayoutRect& aBounds,
                        const wr::LayoutRect& aClip, bool aIsBackfaceVisible,
@@ -758,27 +800,27 @@ class DisplayListBuilder final {
                           const wr::LayoutSideOffsets& aWidths,
                           const int32_t aWidth, const int32_t aHeight,
                           bool aFill, const wr::DeviceIntSideOffsets& aSlice,
-                          const wr::LayoutPoint& aStartPoint,
-                          const wr::LayoutPoint& aEndPoint,
+                          const wr::LayoutVector2D& aStartPoint,
+                          const wr::LayoutVector2D& aEndPoint,
                           const nsTArray<wr::GradientStop>& aStops,
                           wr::ExtendMode aExtendMode);
 
   void PushBorderRadialGradient(
       const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
       bool aIsBackfaceVisible, const wr::LayoutSideOffsets& aWidths, bool aFill,
-      const wr::LayoutPoint& aCenter, const wr::LayoutSize& aRadius,
+      const wr::LayoutVector2D& aCenter, const wr::LayoutSize& aRadius,
       const nsTArray<wr::GradientStop>& aStops, wr::ExtendMode aExtendMode);
 
   void PushBorderConicGradient(
       const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
       bool aIsBackfaceVisible, const wr::LayoutSideOffsets& aWidths, bool aFill,
-      const wr::LayoutPoint& aCenter, const float aAngle,
+      const wr::LayoutVector2D& aCenter, const float aAngle,
       const nsTArray<wr::GradientStop>& aStops, wr::ExtendMode aExtendMode);
 
   void PushText(const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
                 bool aIsBackfaceVisible, const wr::ColorF& aColor,
                 wr::FontInstanceKey aFontKey,
-                Range<const wr::GlyphInstance> aGlyphBuffer,
+                mozilla::Range<const wr::GlyphInstance> aGlyphBuffer,
                 const wr::GlyphOptions* aGlyphOptions = nullptr);
 
   void PushLine(const wr::LayoutRect& aClip, bool aIsBackfaceVisible,
@@ -796,37 +838,19 @@ class DisplayListBuilder final {
                      const wr::ColorF& aColor, const float& aBlurRadius,
                      const float& aSpreadRadius,
                      const wr::BorderRadius& aBorderRadius,
+                     const wr::BorderRadius& aShadowRadius,
                      const wr::BoxShadowClipMode& aClipMode);
 
   void PushDebug(uint32_t aVal);
 
-  /**
-   * Notifies the DisplayListBuilder that it can group together WR display items
-   * that are pushed until |CancelGroup()| or |FinishGroup()| call.
-   */
-  void StartGroup(nsPaintedDisplayItem* aItem);
-
-  /**
-   * Cancels grouping of the display items and discards all the display items
-   * pushed between the |StartGroup()| and |CancelGroup()| calls.
-   */
-  void CancelGroup(const bool aDiscard = false);
-
-  /**
-   * Finishes the display item group. The group is stored in WebRender backend,
-   * and can be reused with |ReuseItem()|, if the Gecko display item is reused.
-   */
-  void FinishGroup();
-
-  /**
-   * Try to reuse the previously created WebRender display items for the given
-   * Gecko display item |aItem|.
-   * Returns true if the items were reused, otherwise returns false.
-   */
-  bool ReuseItem(nsPaintedDisplayItem* aItem);
-
   uint64_t CurrentClipChainId() const {
     return mCurrentSpaceAndClipChain.clip_chain;
+  }
+
+  Maybe<wr::WrClipChainId> CurrentClipChainIdIfNotRoot() const {
+    return mCurrentSpaceAndClipChain.clip_chain != wr::ROOT_CLIP_CHAIN
+               ? Some(mCurrentSpaceAndClipChain.clip_chain)
+               : Nothing();
   }
 
   const wr::WrSpaceAndClipChain& CurrentSpaceAndClipChain() const {
@@ -853,10 +877,6 @@ class DisplayListBuilder final {
   // Try to avoid using this when possible.
   wr::WrState* Raw() { return mWrState; }
 
-  void SetClipChainLeaf(const Maybe<wr::LayoutRect>& aClipRect) {
-    mClipChainLeaf = aClipRect;
-  }
-
   // Used for opacity flattening. When we flatten away an opacity item,
   // we push the opacity value onto the builder.
   // Descendant items should pull the inherited opacity during
@@ -873,8 +893,6 @@ class DisplayListBuilder final {
   void SetInheritedClipChain(const DisplayItemClipChain* aClipChain) {
     mInheritedClipChain = aClipChain;
   }
-
-  layers::DisplayItemCache* GetDisplayItemCache() { return mDisplayItemCache; }
 
   // A chain of RAII objects, each holding a (ASR, ViewID, SideBits) tuple of
   // data. The topmost object is pointed to by the mActiveFixedPosTracker
@@ -899,36 +917,14 @@ class DisplayListBuilder final {
   };
 
  protected:
-  wr::LayoutRect MergeClipLeaf(const wr::LayoutRect& aClip) {
-    if (mClipChainLeaf) {
-      return wr::IntersectLayoutRect(*mClipChainLeaf, aClip);
-    }
-    return aClip;
-  }
-
-  // See the implementation of PushShadow for details on these methods.
-  void SuspendClipLeafMerging();
-  void ResumeClipLeafMerging();
-
   wr::WrState* mWrState;
 
-  // Track each scroll id that we encountered. We use this structure to
-  // ensure that we don't define a particular scroll layer multiple times,
-  // as that results in undefined behaviour in WR.
-  std::unordered_map<layers::ScrollableLayerGuid::ViewID, wr::WrSpatialId>
-      mScrollIds;
+  // Track spatial ids that we've created corresponding to ActiveScrolledRoot
+  // objects. Used for both scroll and sticky ASRs
+  std::unordered_map<const ActiveScrolledRoot*, wr::WrSpatialId>
+      mASRToSpatialIdMap;
 
   wr::WrSpaceAndClipChain mCurrentSpaceAndClipChain;
-
-  // Contains the current leaf of the clip chain to be merged with the
-  // display item's clip rect when pushing an item. May be set to Nothing() if
-  // there is no clip rect to merge with.
-  Maybe<wr::LayoutRect> mClipChainLeaf;
-
-  // Versions of the above that are on hold while SuspendClipLeafMerging is on
-  // (see the implementation of PushShadow for details).
-  Maybe<wr::WrSpaceAndClipChain> mSuspendedSpaceAndClipChain;
-  Maybe<wr::LayoutRect> mSuspendedClipChainLeaf;
 
   RefPtr<layout::TextDrawTarget> mCachedTextDT;
   mozilla::UniquePtr<gfxContext> mCachedContext;
@@ -938,8 +934,6 @@ class DisplayListBuilder final {
   wr::PipelineId mPipelineId;
   layers::WebRenderBackend mBackend;
 
-  layers::DisplayItemCache* mDisplayItemCache;
-  Maybe<uint16_t> mCurrentCacheSlot;
   float mInheritedOpacity = 1.0f;
   const DisplayItemClipChain* mInheritedClipChain = nullptr;
 
@@ -974,9 +968,9 @@ class MOZ_RAII SpaceAndClipChainHelper final {
     mBuilder.mCurrentSpaceAndClipChain = mOldSpaceAndClipChain;
   }
 
- private:
   SpaceAndClipChainHelper(const SpaceAndClipChainHelper&) = delete;
 
+ private:
   DisplayListBuilder& mBuilder;
   wr::WrSpaceAndClipChain mOldSpaceAndClipChain;
 };

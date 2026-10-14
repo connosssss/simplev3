@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,6 +6,9 @@
 #define mozilla_net_WebTransportProxy_h
 
 #include <functional>
+
+#include "mozilla/Mutex.h"
+#include "mozilla/dom/PWebTransport.h"
 #include "nsIChannelEventSink.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIRedirectResultListener.h"
@@ -88,7 +90,7 @@
  * Http3WebTransportSession if the closing of the session is initiated on the
  * main thread. OnStartRequest and OnStopRequest will be called on the main
  * thread. The session negotiation can have 2 outcomes:
- * - If both calls, i.e. OnStartRequest an OnStopRequest, indicate that the
+ * - If both calls, i.e. OnStartRequest and OnStopRequest, indicate that the
  * request has succeeded and mState is NEGOTIATING_SUCCEEDED, the
  * mListener->OnSessionReady will be called during OnStopRequest.
  * - Otherwise, mListener->OnSessionClosed will be called, the state transferred
@@ -117,6 +119,8 @@
 
 namespace mozilla::net {
 
+class WebTransportEventService;
+
 class WebTransportStreamCallbackWrapper;
 
 class WebTransportSessionProxy final
@@ -141,6 +145,9 @@ class WebTransportSessionProxy final
   NS_DECL_NSIINTERFACEREQUESTOR
 
   WebTransportSessionProxy();
+
+  bool CloseSessionAndGetStats(uint32_t aStatus, const nsACString& aReason,
+                               mozilla::dom::WebTransportStatsData& aStats);
 
  private:
   ~WebTransportSessionProxy();
@@ -168,21 +175,31 @@ class WebTransportSessionProxy final
   void DoCreateStream(WebTransportStreamCallbackWrapper* aCallback,
                       WebTransportSessionBase* aSession, bool aBidi);
   void SendDatagramInternal(const RefPtr<WebTransportSessionBase>& aSession,
-                            nsTArray<uint8_t>&& aData, uint64_t aTrackingId);
+                            nsTArray<uint8_t>&& aData, uint64_t aTrackingId,
+                            uint64_t aSendGroupId, int64_t aSendOrder);
   void NotifyDatagramReceived(nsTArray<uint8_t>&& aData);
   void GetMaxDatagramSizeInternal(
       const RefPtr<WebTransportSessionBase>& aSession);
   void OnMaxDatagramSizeInternal(uint64_t aSize);
+  void GetStatsInternal(const RefPtr<WebTransportSessionBase>& aSession);
+  void OnStatsAvailableInternal(
+      const Maybe<mozilla::dom::WebTransportStatsData>& aStats);
   void OnOutgoingDatagramOutComeInternal(
       uint64_t aId, WebTransportSessionEventListener::DatagramOutcome aOutCome);
+  void OnStopSendingInternal(uint64_t aStreamId, nsresult aError);
+  void OnResetReceivedInternal(uint64_t aStreamId, nsresult aError);
 
   nsCOMPtr<nsIChannel> mChannel;
+  uint64_t mHttpChannelID = 0;
   nsCOMPtr<nsIChannel> mRedirectChannel;
+  RefPtr<WebTransportEventService> mService;
   nsCOMPtr<WebTransportSessionEventListener> mListener MOZ_GUARDED_BY(mMutex);
   RefPtr<WebTransportSessionBase> mWebTransportSession MOZ_GUARDED_BY(mMutex);
   uint64_t mSessionId MOZ_GUARDED_BY(mMutex) = UINT64_MAX;
   uint32_t mCloseStatus MOZ_GUARDED_BY(mMutex) = 0;
   nsCString mReason MOZ_GUARDED_BY(mMutex);
+  nsCString mProtocol MOZ_GUARDED_BY(mMutex);
+  nsTArray<nsString> mOfferedProtocols MOZ_GUARDED_BY(mMutex);
   bool mCleanly MOZ_GUARDED_BY(mMutex) = false;
   bool mStopRequestCalled MOZ_GUARDED_BY(mMutex) = false;
   // This is used to store events happened before OnSessionReady.
@@ -191,9 +208,14 @@ class WebTransportSessionProxy final
   nsTArray<std::function<void(nsresult)>> mPendingCreateStreamEvents
       MOZ_GUARDED_BY(mMutex);
   nsCOMPtr<nsIEventTarget> mTarget MOZ_GUARDED_BY(mMutex);
-  nsTArray<RefPtr<nsIWebTransportHash>> mServerCertHashes;
-  bool mDedicatedConnection;  // for WebTranport
+  nsTArray<RefPtr<nsIWebTransportHash>> mServerCertHashes
+      MOZ_GUARDED_BY(mMutex);
+  bool mDedicatedConnection = false;  // for WebTranport
   nsIWebTransport::HTTPVersion mHTTPVersion = nsIWebTransport::HTTPVersion::h3;
+
+  // Cached stats for when connection is closed (spec requirement)
+  bool mHasCachedStats MOZ_GUARDED_BY(mMutex) = false;
+  mozilla::dom::WebTransportStatsData mCachedStats MOZ_GUARDED_BY(mMutex);
 };
 
 }  // namespace mozilla::net

@@ -172,6 +172,9 @@ private-browsing-description2 =
     there. We’ve made this change to keep your private browsing private.
     <label data-l10n-name="private-browsing-learn-more">Learn how to manage extension settings</label>
 
+aboutaddons-sidebar =
+    .heading = Add-ons
+
 addon-category-discover = Recommendations
 addon-category-discover-title =
     .title = Recommendations
@@ -199,6 +202,7 @@ addon-category-recent-updates-title =
 addon-category-sitepermission = Site Permissions
 addon-category-sitepermission-title =
     .title = Site Permissions
+
 # String displayed in about:addons in the Site Permissions section
 # Variables:
 #  $host (string) - DNS host name for which the webextension enables permissions
@@ -206,8 +210,8 @@ addon-sitepermission-host = Site Permissions for { $host }
 
 ## These are global warnings
 
-extensions-warning-safe-mode2 =
-    .message = All add-ons have been disabled by safe mode.
+extensions-warning-safe-mode3 =
+    .message = All add-ons have been disabled by Troubleshoot Mode.
 extensions-warning-check-compatibility2 =
     .message = Add-on compatibility checking is disabled. You may have incompatible add-ons.
 extensions-warning-check-compatibility-button = Enable
@@ -334,15 +338,10 @@ discopane-notice-recommendations2 =
         extensions you’ve installed, profile preferences, and usage statistics.
 discopane-notice-learn-more = Learn more
 
-# Notice for the colorway theme removal
-colorway-removal-notice-message =
-    .heading = Your colorway theme(s) were removed.
-    .message =
-        { -brand-product-name } updated its colorways collection. We removed
-        the old version(s) from your “Saved Themes” list. Get new versions on
-        the add-ons site.
-colorway-removal-notice-learn-more = Learn more
-colorway-removal-notice-button = Get updated colorways themes
+# Notice to make user aware that themes are not applied in forced colors mode.
+# This notice is only visible on Windows.
+forced-colors-theme-notice =
+    .message = Your Windows contrast settings are overriding { -brand-short-name } themes. Turn off these settings to use themes in { -brand-short-name }.
 
 privacy-policy = Privacy Policy
 
@@ -509,10 +508,15 @@ recent-updates-heading = Recent Updates
 release-notes-loading = Loading…
 release-notes-error = Sorry, but there was an error loading the release notes.
 
+addon-permissions-heading = Permissions
 addon-permissions-empty2 = This extension doesn’t require any permissions.
-addon-permissions-required = Required permissions for core functionality:
-addon-permissions-optional = Optional permissions for added functionality:
+addon-permissions-required-label = Required:
+addon-permissions-optional-label = Optional:
 addon-permissions-learnmore = Learn more about permissions
+# Shown above the permissions list when one or more permissions for this
+# extension are controlled by an enterprise policy and cannot be changed by
+# the user.
+addon-permissions-managed-by-policy = Some permissions are managed by your organization.
 
 recommended-extensions-heading = Recommended Extensions
 recommended-themes-heading = Recommended Themes
@@ -568,14 +572,14 @@ details-notification-hard-blocked-other =
     .message = This add-on is blocked for violating Mozilla’s policies and has been disabled.
 details-notification-blocked-link2 = See Details
 
-details-notification-soft-blocked-extension-disabled =
-    .message = This extension is restricted for violating Mozilla’s policies and has been disabled. You can enable it, but this may be risky.
-details-notification-soft-blocked-extension-enabled =
-    .message = This extension violates Mozilla’s policies. Using it may be risky.
-details-notification-soft-blocked-other-disabled =
-    .message = This add-on is restricted for violating Mozilla’s policies and has been disabled. You can enable it, but this may be risky.
-details-notification-soft-blocked-other-enabled =
-    .message = This add-on violates Mozilla’s policies. Using it may be risky.
+details-notification-soft-blocked-extension-disabled2 =
+    .message = This extension is restricted and has been disabled. You can enable it, but this may be risky.
+details-notification-soft-blocked-extension-enabled2 =
+    .message = This extension is restricted. Using it may be risky.
+details-notification-soft-blocked-other-disabled2 =
+    .message = This add-on is restricted and has been disabled. You can enable it, but this may be risky.
+details-notification-soft-blocked-other-enabled2 =
+    .message = This add-on is restricted. Using it may be risky.
 details-notification-softblocked-link2 = See Details
 
 details-notification-gmp-pending2 =
@@ -595,8 +599,10 @@ plugins-widevine-description = This plugin enables playback of encrypted media i
 ## Headings for the Permissions tab in `about:addons` when the data collection
 ## feature is enabled.
 
-addon-permissions-required-data-collection = Required data collection:
-addon-permissions-optional-data-collection = Optional data collection:
+addon-permissions-data-collection-heading = Data Collection
+addon-permissions-data-collection-empty = The developer says this extension doesn’t require data collection.
+addon-data-collection-provided = Info provided by the extension developer
+addon-data-collection-learnmore = Learn more about data collection
 
 # Name of the Permissions tab in `about:addons` when the data collection feature is enabled.
 permissions-data-addon-button = Permissions and data
@@ -613,6 +619,9 @@ mlmodel-link-preview = { -brand-short-name } uses this to generate key points wh
 mlmodel-pdfjs = { -brand-short-name } uses this to create alt text for images you add to PDFs
 mlmodel-smart-tab-topic-engine = { -brand-short-name } uses this to suggest names for your tab groups
 mlmodel-smart-tab-embedding-engine = { -brand-short-name } uses this to suggest tabs for your tab groups
+
+mlmodel-formfill-engine = { -brand-short-name } uses this to help fill in address forms
+mlmodel-speech-recognition = { -brand-short-name } uses this for on-device speech recognition
 
 # AI Model will be downloaded on the users device and used locally
 addon-category-mlmodel = On-device AI
@@ -635,3 +644,93 @@ mlmodel-addon-detail-used-by-label = Used by
 mlmodel-addon-detail-model-card = Model card
 # This is a label for the Model Card link to Hugging face
 mlmodel-addon-detail-model-card-link-label = View on Hugging Face
+
+## Promo footer shown in the about:addons recommendations view when
+## Project Nova styles are enabled.
+## The heading refers to the user choosing a Firefox theme or extension to
+## install. In the message, "tools" refers to Firefox extensions and
+## "styles" refers to Firefox themes.
+
+find-more-addons-promo =
+  .heading = Shape { -brand-product-name } your way
+  .message = Add tools and styles to fit your needs and taste.
+
+find-more-addons-promo-open-amo-button = Explore extensions and themes
+
+## Promo footer shown in the about:addons extensions list view when
+## Project Nova styles are enabled.
+## In the message, "tools" refers to Firefox extensions.
+
+find-more-extensions-promo =
+  .heading = Find your next favorite extension
+  .message = Customize { -brand-product-name } with tools for focus, privacy, shopping, and more.
+
+find-more-extensions-promo-open-amo-button = Explore extensions
+
+## Promo footer shown in the about:addons themes list view when
+## Project Nova styles are enabled.
+## "Find more fresh looks" refers to the user looking for more Firefox themes.
+
+find-more-themes-promo =
+  .heading = Find more fresh looks
+  .message = Choose a style that makes { -brand-product-name } feel like yours.
+
+find-more-themes-promo-open-amo-button = Explore themes
+
+## Promo shown in about:addons extensions list view when no extension is yet installed
+## and Project Nova is enabled.
+
+list-empty-get-extensions-promo =
+  .heading = A few extensions go a long way
+  .message = We’ve got recommendations to help you improve focus, privacy and more.
+
+list-empty-get-extensions-promo-button = Find your first extension
+
+## Themes Mode segmented control shown at the top of the about:addons themes list view
+## when Project Nova is enabled.
+
+themes-mode-light =
+  .label = Light
+
+themes-mode-dark =
+  .label = Dark
+
+# "Device" refers to the mode that makes the Firefox active theme's selected color scheme
+# update based on the color scheme mode currently chosen by the operating system.
+themes-mode-device =
+  .label = Device
+
+# Accessible name for the group of light/dark/device buttons.
+themes-mode =
+  .aria-label = Appearance
+
+# Heading for the in-product themes picker section in about:addons
+aboutaddons-themes-picker-heading =
+    .heading = { -brand-product-name } themes
+
+# Show more / show less button at the bottom of the themes picker
+aboutaddons-themes-picker-see-more = Show more
+aboutaddons-themes-picker-see-less = Show less
+
+## Enable/disable/install buttons on each theme card inside the theme picker.
+
+aboutaddons-themes-picker-enable-button =
+    .label = Enable
+
+aboutaddons-themes-picker-disable-button =
+    .label = Disable
+
+aboutaddons-themes-picker-install-button =
+    .label = Install
+
+# Shown when a Nova theme fails to be downloaded, installed, enabled, or
+# disabled (e.g. no network access to reach the AMO-hosted theme, or a
+# local install/disk failure).
+aboutaddons-themes-picker-error-message =
+    .message = Couldn’t update your theme. Check your connection and try again.
+
+# Checkbox shown inside the enabled default theme's addon-card, on Linux
+# only, to opt-in/opt-out matching the GTK/system theme colors instead of
+# the built-in default theme colors.
+aboutaddons-linux-theme-colors-checkbox-label =
+    .label = Use Linux system theme

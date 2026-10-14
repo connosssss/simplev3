@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,29 +8,28 @@
  * and stdio.h/stdlib.h.
  */
 
-#ifndef TestHarness_h__
-#define TestHarness_h__
+#ifndef TestHarness_h_
+#define TestHarness_h_
 
-#include "mozilla/ArrayUtils.h"
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "mozilla/AppShutdown.h"
 #include "mozilla/Attributes.h"
-
-#include "prenv.h"
-#include "nsComponentManagerUtils.h"
-#include "nsServiceManagerUtils.h"
-#include "nsCOMPtr.h"
-#include "nsString.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "nsAppDirectoryServiceDefs.h"
+#include "nsCOMPtr.h"
+#include "nsComponentManagerUtils.h"
 #include "nsDirectoryServiceDefs.h"
 #include "nsDirectoryServiceUtils.h"
-#include "mozilla/IntegerPrintfMacros.h"
 #include "nsIDirectoryService.h"
 #include "nsIFile.h"
 #include "nsIObserverService.h"
+#include "nsServiceManagerUtils.h"
+#include "nsString.h"
 #include "nsXULAppAPI.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdarg.h>
-#include "mozilla/AppShutdown.h"
+#include "prenv.h"
 
 static uint32_t gFailCount = 0;
 
@@ -265,4 +263,4 @@ ScopedXPCOM::AddRef() { return 2; }
 NS_IMETHODIMP_(MozExternalRefCountType)
 ScopedXPCOM::Release() { return 1; }
 
-#endif  // TestHarness_h__
+#endif  // TestHarness_h_

@@ -15,8 +15,12 @@
 
 #if defined(ANDROID)
 
-  // Editing PDFs is not supported on mobile
+// Enabled for testing signatures bug 2061833 will turn it on for release when ready
+#ifdef NIGHTLY_BUILD
+  pref("pdfjs.annotationEditorMode", 0);
+#else
   pref("pdfjs.annotationEditorMode", -1);
+#endif
 
   pref("pdfjs.capCanvasAreaFactor", 100);
 
@@ -24,13 +28,30 @@
 
   pref("pdfjs.enableUpdatedAddImage", true);
   pref("pdfjs.enableSignatureEditor", true);
-
-  #if defined(EARLY_BETA_OR_EARLIER)
-    pref("pdfjs.enableHighlightFloatingButton", true);
-  #else
-    pref("pdfjs.enableHighlightFloatingButton", false);
-  #endif
+  pref("pdfjs.enableComment", true);
+  pref("pdfjs.enableHighlightFloatingButton", true);
 
   pref("pdfjs.enableAltTextForEnglish", false);
+  pref("pdfjs.enableAltText", true);
+  pref("pdfjs.enableAltTextModelDownload", false);
+  pref("pdfjs.enableGuessAltText", false);
 
+  pref("pdfjs.enableHWA", true);
+
+  pref("pdfjs.enableSplitMerge", true);
+  pref("pdfjs.enableMerge", true);
+
+#endif
+
+pref("pdfjs.enableOptimizedPartialRendering", true);
+
+// Off by default until the UX is exercised in Enterprise. Flip via
+// `about:config`, a profile pref, or the `enableSignatureVerification`
+// variable of the `pdfjs` Nimbus feature. The viewer also short-circuits its
+// own toolbar button when this is false (web/app_options.js).
+pref("pdfjs.enableSignatureVerification", false);
+
+#ifdef MOZ_THUNDERBIRD
+  // Work-around until bug 2070962 is resolved.
+  pref("pdfjs.enableSelectionRendering", false);
 #endif

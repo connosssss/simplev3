@@ -1,12 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "WebSocketEventService.h"
 #include "WebSocketEventListenerParent.h"
-#include "mozilla/Unused.h"
+
+#include "WebSocketEventService.h"
 #include "WebSocketFrame.h"
 
 namespace mozilla {
@@ -35,7 +33,7 @@ WebSocketEventListenerParent::~WebSocketEventListenerParent() {
 mozilla::ipc::IPCResult WebSocketEventListenerParent::RecvClose() {
   if (mService) {
     UnregisterListener();
-    Unused << Send__delete__(this);
+    (void)Send__delete__(this);
   }
 
   return IPC_OK();
@@ -57,7 +55,7 @@ NS_IMETHODIMP
 WebSocketEventListenerParent::WebSocketCreated(uint32_t aWebSocketSerialID,
                                                const nsAString& aURI,
                                                const nsACString& aProtocols) {
-  Unused << SendWebSocketCreated(aWebSocketSerialID, aURI, aProtocols);
+  (void)SendWebSocketCreated(aWebSocketSerialID, aURI, aProtocols);
   return NS_OK;
 }
 
@@ -67,16 +65,18 @@ WebSocketEventListenerParent::WebSocketOpened(uint32_t aWebSocketSerialID,
                                               const nsACString& aProtocols,
                                               const nsACString& aExtensions,
                                               uint64_t aHttpChannelId) {
-  Unused << SendWebSocketOpened(aWebSocketSerialID, aEffectiveURI, aProtocols,
-                                aExtensions, aHttpChannelId);
+  (void)SendWebSocketOpened(aWebSocketSerialID, aEffectiveURI, aProtocols,
+                            aExtensions, aHttpChannelId);
   return NS_OK;
 }
 
 NS_IMETHODIMP
 WebSocketEventListenerParent::WebSocketClosed(uint32_t aWebSocketSerialID,
+                                              uint64_t aHttpChannelId,
                                               bool aWasClean, uint16_t aCode,
                                               const nsAString& aReason) {
-  Unused << SendWebSocketClosed(aWebSocketSerialID, aWasClean, aCode, aReason);
+  (void)SendWebSocketClosed(aWebSocketSerialID, aHttpChannelId, aWasClean,
+                            aCode, aReason);
   return NS_OK;
 }
 
@@ -84,32 +84,33 @@ NS_IMETHODIMP
 WebSocketEventListenerParent::WebSocketMessageAvailable(
     uint32_t aWebSocketSerialID, const nsACString& aData,
     uint16_t aMessageType) {
-  Unused << SendWebSocketMessageAvailable(aWebSocketSerialID, aData,
-                                          aMessageType);
+  (void)SendWebSocketMessageAvailable(aWebSocketSerialID, aData, aMessageType);
   return NS_OK;
 }
 
 NS_IMETHODIMP
 WebSocketEventListenerParent::FrameReceived(uint32_t aWebSocketSerialID,
+                                            uint64_t aHttpChannelId,
                                             nsIWebSocketFrame* aFrame) {
   if (!aFrame) {
     return NS_ERROR_FAILURE;
   }
 
   WebSocketFrame* frame = static_cast<WebSocketFrame*>(aFrame);
-  Unused << SendFrameReceived(aWebSocketSerialID, frame->Data());
+  (void)SendFrameReceived(aWebSocketSerialID, aHttpChannelId, frame->Data());
   return NS_OK;
 }
 
 NS_IMETHODIMP
 WebSocketEventListenerParent::FrameSent(uint32_t aWebSocketSerialID,
+                                        uint64_t aHttpChannelId,
                                         nsIWebSocketFrame* aFrame) {
   if (!aFrame) {
     return NS_ERROR_FAILURE;
   }
 
   WebSocketFrame* frame = static_cast<WebSocketFrame*>(aFrame);
-  Unused << SendFrameSent(aWebSocketSerialID, frame->Data());
+  (void)SendFrameSent(aWebSocketSerialID, aHttpChannelId, frame->Data());
   return NS_OK;
 }
 

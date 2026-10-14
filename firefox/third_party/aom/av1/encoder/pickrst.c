@@ -848,25 +848,27 @@ static SgrprojInfo search_selfguided_restoration(
                           flt0, flt1, flt_stride, exqd, &err, error_info);
       get_best_error(&besterr, err, exqd, bestxqd, &bestep, ep);
     }
-    // evaluate left and right ep of winner in seed ep
-    int bestep_ref = bestep;
-    for (ep = bestep_ref - 1; ep < bestep_ref + 2; ep += 2) {
-      if (ep < SGRPROJ_EP_GRP1_START_IDX || ep > SGRPROJ_EP_GRP1_END_IDX)
-        continue;
-      int64_t err;
-      compute_sgrproj_err(dat8, width, height, dat_stride, src8, src_stride,
-                          use_highbitdepth, bit_depth, pu_width, pu_height, ep,
-                          flt0, flt1, flt_stride, exqd, &err, error_info);
-      get_best_error(&besterr, err, exqd, bestxqd, &bestep, ep);
-    }
-    // evaluate last two group
-    for (idx = 0; idx < SGRPROJ_EP_GRP2_3_SEARCH_COUNT; idx++) {
-      ep = sgproj_ep_grp2_3[idx][bestep];
-      int64_t err;
-      compute_sgrproj_err(dat8, width, height, dat_stride, src8, src_stride,
-                          use_highbitdepth, bit_depth, pu_width, pu_height, ep,
-                          flt0, flt1, flt_stride, exqd, &err, error_info);
-      get_best_error(&besterr, err, exqd, bestxqd, &bestep, ep);
+    if (enable_sgr_ep_pruning < 2) {
+      // evaluate left and right ep of winner in seed ep
+      int bestep_ref = bestep;
+      for (ep = bestep_ref - 1; ep < bestep_ref + 2; ep += 2) {
+        if (ep < SGRPROJ_EP_GRP1_START_IDX || ep > SGRPROJ_EP_GRP1_END_IDX)
+          continue;
+        int64_t err;
+        compute_sgrproj_err(dat8, width, height, dat_stride, src8, src_stride,
+                            use_highbitdepth, bit_depth, pu_width, pu_height,
+                            ep, flt0, flt1, flt_stride, exqd, &err, error_info);
+        get_best_error(&besterr, err, exqd, bestxqd, &bestep, ep);
+      }
+      // evaluate last two group
+      for (idx = 0; idx < SGRPROJ_EP_GRP2_3_SEARCH_COUNT; idx++) {
+        ep = sgproj_ep_grp2_3[idx][bestep];
+        int64_t err;
+        compute_sgrproj_err(dat8, width, height, dat_stride, src8, src_stride,
+                            use_highbitdepth, bit_depth, pu_width, pu_height,
+                            ep, flt0, flt1, flt_stride, exqd, &err, error_info);
+        get_best_error(&besterr, err, exqd, bestxqd, &bestep, ep);
+      }
     }
   }
 
@@ -1162,36 +1164,41 @@ static int linsolve_wiener(int n, int64_t *A, int stride, int64_t *b,
     //   c / 256 * A[k * stride + j] / cd * 256
     // and
     //   c / 256 * b[k] / cd * 256
-    // within Gaussian elimination can cause a signed integer overflow. Rework
-    // the multiplies so that larger scaling is used without significantly
-    // impacting the overall precision.
+    // within Gaussian elimination can cause a signed integer overflow.
     //
     // Precision guidance:
     //   scale_threshold: Pick as high as possible.
-    // For max_abs_akj >= scale_threshold scenario:
-    //   scaler_A: Pick as low as possible. Needed for A[(i + 1) * stride + j].
-    //   scaler_c: Pick as low as possible while maintaining scaler_c >=
-    //     (1 << 7). Needed for A[(i + 1) * stride + j] and b[i + 1].
+    // For max_abs_akj >= scale_threshold scenario, use double-precision
+    // floating-point numbers.
     int64_t max_abs_akj = 0;
     for (int j = 0; j < n; j++) {
       const int64_t abs_akj = llabs(A[k * stride + j]);
       if (abs_akj > max_abs_akj) max_abs_akj = abs_akj;
     }
     const int scale_threshold = 1 << 22;
-    const int scaler_A = max_abs_akj < scale_threshold ? 1 : (1 << 6);
-    const int scaler_c = max_abs_akj < scale_threshold ? 1 : (1 << 7);
-    const int scaler = scaler_c * scaler_A;
 
     // Forward elimination (convert A to row-echelon form)
-    for (int i = k; i < n - 1; i++) {
-      if (A[k * stride + k] == 0) return 0;
-      const int64_t c = A[(i + 1) * stride + k] / scaler_c;
-      const int64_t cd = A[k * stride + k];
-      for (int j = 0; j < n; j++) {
-        A[(i + 1) * stride + j] -=
-            A[k * stride + j] / scaler_A * c / cd * scaler;
+    if (max_abs_akj < scale_threshold) {
+      for (int i = k; i < n - 1; i++) {
+        if (A[k * stride + k] == 0) return 0;
+        const int64_t c = A[(i + 1) * stride + k];
+        const int64_t cd = A[k * stride + k];
+        for (int j = 0; j < n; j++) {
+          A[(i + 1) * stride + j] -= A[k * stride + j] * c / cd;
+        }
+        b[i + 1] -= c * b[k] / cd;
       }
-      b[i + 1] -= c * b[k] / cd * scaler_c;
+    } else {
+      // Use floating-point arithmetic.
+      for (int i = k; i < n - 1; i++) {
+        if (A[k * stride + k] == 0) return 0;
+        const double c = A[(i + 1) * stride + k];
+        const double cd = A[k * stride + k];
+        for (int j = 0; j < n; j++) {
+          A[(i + 1) * stride + j] -= (int64_t)(A[k * stride + j] * c / cd);
+        }
+        b[i + 1] -= (int64_t)(c * b[k] / cd);
+      }
     }
   }
   // Back-substitution

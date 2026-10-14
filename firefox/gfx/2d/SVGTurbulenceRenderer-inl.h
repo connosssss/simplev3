@@ -1,8 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#ifndef GFX_2D_SVGTURBULENCERENDERER_INL_H_
+#define GFX_2D_SVGTURBULENCERENDERER_INL_H_
 
 #include "2D.h"
 #include "Filters.h"
@@ -118,16 +119,16 @@ void SVGTurbulenceRenderer<Type, Stitch, f32x4_t, i32x4_t,
   RandomNumberSource rand(aSeed);
 
   float gradient[4][sBSize][2];
-  for (int32_t k = 0; k < 4; k++) {
-    for (int32_t i = 0; i < sBSize; i++) {
+  for (auto& g_k : gradient) {
+    for (auto& g_k_i : g_k) {
       float a, b;
       do {
         a = float((rand.Next() % (sBSize + sBSize)) - sBSize) / sBSize;
         b = float((rand.Next() % (sBSize + sBSize)) - sBSize) / sBSize;
       } while (a == 0 && b == 0);
       float s = sqrt(a * a + b * b);
-      gradient[k][i][0] = a / s;
-      gradient[k][i][1] = b / s;
+      g_k_i[0] = a / s;
+      g_k_i[1] = b / s;
     }
   }
 
@@ -360,3 +361,5 @@ SVGTurbulenceRenderer<Type, Stitch, f32x4_t, i32x4_t, u8x16_t>::Render(
 
 }  // namespace gfx
 }  // namespace mozilla
+
+#endif  // GFX_2D_SVGTURBULENCERENDERER_INL_H_

@@ -4,7 +4,7 @@
 
 ### Localization for Developer Tools tooltips.
 
-learn-more = <span data-l10n-name="link">Learn more</span>
+devtools-tooltip-learn-more = Learn more
 
 ## In the Rule View when a CSS property cannot be successfully applied we display
 ## an icon. When this icon is hovered this message is displayed to explain why
@@ -24,6 +24,14 @@ inactive-css-not-multicol-container = <strong>{ $property }</strong> has no effe
 inactive-css-column-span = <strong>{ $property }</strong> has no spanning effect on this element since it is not within a multi-column container.
 
 inactive-css-not-grid-or-flex-item = <strong>{ $property }</strong> has no effect on this element since it’s not a grid or flex item.
+
+inactive-css-not-grid-or-flex-or-absolutely-positioned-item = <strong>{ $property }</strong> has no effect on this element since it’s not a grid or flex item, nor an absolutely positioned element.
+
+inactive-css-not-grid-or-absolutely-positioned-item = <strong>{ $property }</strong> has no effect on this element since it’s not a grid item nor an absolutely positioned element.
+
+inactive-css-not-absolutely-positioned-item = <strong>{ $property }</strong> has no effect on this element since it’s not an absolutely positioned element.
+
+inactive-css-no-default-anchor = <strong>{ $property }</strong> has no effect on this element since it doesn’t have a default anchor element.
 
 inactive-css-not-grid-item = <strong>{ $property }</strong> has no effect on this element since it’s not a grid item.
 
@@ -48,6 +56,10 @@ inactive-css-not-display-block-on-floated-2 = The <strong>display</strong> value
 inactive-css-only-non-grid-or-flex-item = <strong>{ $property }</strong> has no effect because it cannot be used on grid or flex items.
 
 inactive-css-not-block = <strong>{ $property }</strong> has no effect on this element because it only applies to block-level elements.
+
+inactive-css-not-block-container = <strong>{ $property }</strong> has no effect on this element because it only applies to block container elements.
+
+inactive-css-not-block-flex-grid-container = <strong>{ $property }</strong> has no effect on this element because it only applies to block, flex, and grid container elements.
 
 inactive-css-not-floated = <strong>{ $property }</strong> has no effect because it only applies to floated elements.
 
@@ -83,6 +95,8 @@ inactive-css-highlight-pseudo-elements-not-supported = <strong>{ $property }</st
 
 inactive-css-cue-pseudo-element-not-supported = <strong>{ $property }</strong> is not supported on ::cue pseudo-elements.
 
+inactive-css-at-position-try-not-supported = <strong>{ $property }</strong> is not supported in <strong>@position-try</strong> rules.
+
 # Variables:
 #   $lineCount (integer) - The number of lines the element has.
 inactive-css-text-wrap-balance-lines-exceeded =
@@ -95,74 +109,90 @@ inactive-css-text-wrap-balance-fragmented = <strong>{ $property }</strong> has n
 
 inactive-css-no-width-height = <strong>{ $property }</strong> has no effect on this element since its width and height cannot be set.
 
+inactive-css-no-principal-box = <strong>{ $property }</strong> has no effect on this element since it does not create a principal box.
+
 ## In the Rule View when a CSS property cannot be successfully applied we display
 ## an icon. When this icon is hovered this message is displayed to explain how
 ## the problem can be solved. CSS properties and values in <strong> tags should
 ## not be translated.
 
-inactive-css-not-grid-or-flex-container-fix = Try adding <strong>display:grid</strong> or <strong>display:flex</strong>. { learn-more }
+inactive-css-not-grid-or-flex-container-fix-1 = Try adding <strong>display:grid</strong> or <strong>display:flex</strong>.
 
-inactive-css-not-grid-or-flex-or-block-container-fix = Try adding <strong>display:grid</strong>, <strong>display:flex</strong> or <strong>display:block</strong>. { learn-more }
+inactive-css-not-grid-or-flex-or-block-container-fix-1 = Try adding <strong>display:grid</strong>, <strong>display:flex</strong> or <strong>display:block</strong>.
 
-inactive-css-not-grid-or-flex-container-or-multicol-container-fix = Try adding either <strong>display:grid</strong>, <strong>display:flex</strong>, or <strong>columns:2</strong>. { learn-more }
+inactive-css-not-grid-or-flex-container-or-multicol-container-fix-1 = Try adding either <strong>display:grid</strong>, <strong>display:flex</strong>, or <strong>columns:2</strong>.
 
-inactive-css-not-multicol-container-fix = Try adding either <strong>column-count</strong> or <strong>column-width</strong>. { learn-more }
+inactive-css-not-multicol-container-fix-1 = Try adding either <strong>column-count</strong> or <strong>column-width</strong>.
 
-inactive-css-column-span-fix = Try adding <strong>column-count</strong> or <strong>column-width</strong> to one of its ancestor elements. { learn-more }
+inactive-css-column-span-fix-1 = Try adding <strong>column-count</strong> or <strong>column-width</strong> to one of its ancestor elements.
 
-inactive-css-not-grid-or-flex-item-fix-3 = Try adding <strong>display:grid</strong>, <strong>display:flex</strong>, <strong>display:inline-grid</strong>, or <strong>display:inline-flex</strong> to the element’s parent. { learn-more }
+inactive-css-not-grid-or-flex-or-absolutely-positioned-item-fix-1 = Try adding <strong>position:absolute</strong> to the element, or <strong>display:grid</strong>, <strong>display:flex</strong>, <strong>display:inline-grid</strong>, or <strong>display:inline-flex</strong> to the element’s parent.
 
-inactive-css-not-grid-item-fix-2 =Try adding <strong>display:grid</strong> or <strong>display:inline-grid</strong> to the element’s parent. { learn-more }
+inactive-css-not-grid-or-absolutely-positioned-item-fix-1 = Try adding <strong>position:absolute</strong> to the element, or <strong>display:grid</strong> or <strong>display:inline-grid</strong> to the element’s parent.
 
-inactive-css-not-grid-container-fix = Try adding <strong>display:grid</strong> or <strong>display:inline-grid</strong>. { learn-more }
+inactive-css-not-absolutely-positioned-item-fix-1 = Try adding <strong>position:absolute</strong> to the element.
 
-inactive-css-not-flex-item-fix-2 = Try adding <strong>display:flex</strong> or <strong>display:inline-flex</strong> to the element’s parent. { learn-more }
+inactive-css-no-default-anchor-fix-1 = Try adding <strong>position-anchor</strong> with a valid anchor name.
 
-inactive-css-not-flex-container-fix = Try adding <strong>display:flex</strong> or <strong>display:inline-flex</strong>. { learn-more }
+inactive-css-not-grid-or-flex-item-fix-4 = Try adding <strong>display:grid</strong>, <strong>display:flex</strong>, <strong>display:inline-grid</strong>, or <strong>display:inline-flex</strong> to the element’s parent.
 
-inactive-css-not-inline-or-tablecell-fix = Try adding <strong>display:inline</strong> or <strong>display:table-cell</strong>. { learn-more }
+inactive-css-not-grid-item-fix-3 =Try adding <strong>display:grid</strong> or <strong>display:inline-grid</strong> to the element’s parent.
 
-inactive-css-non-replaced-inline-or-table-row-or-row-group-fix = Try adding <strong>display:inline-block</strong> or <strong>display:block</strong>. { learn-more }
+inactive-css-not-grid-container-fix-1 = Try adding <strong>display:grid</strong> or <strong>display:inline-grid</strong>.
 
-inactive-css-non-replaced-inline-or-table-column-or-column-group-fix = Try adding <strong>display:inline-block</strong>. { learn-more }
+inactive-css-not-flex-item-fix-3 = Try adding <strong>display:flex</strong> or <strong>display:inline-flex</strong> to the element’s parent.
 
-inactive-css-not-display-block-on-floated-fix = Try removing <strong>float</strong> or adding <strong>display:block</strong>. { learn-more }
+inactive-css-not-flex-container-fix-1 = Try adding <strong>display:flex</strong> or <strong>display:inline-flex</strong>.
 
-inactive-css-only-non-grid-or-flex-item-fix = Try changing the value of <strong>display</strong> of the element’s container to something else than <strong>flex</strong>, <strong>grid</strong>, <strong>inline-flex</strong>, or <strong>inline-grid</strong>, or removing <strong>float</strong>. { learn-more }
+inactive-css-not-inline-or-tablecell-fix-1 = Try adding <strong>display:inline</strong> or <strong>display:table-cell</strong>.
 
-inactive-css-not-block-fix = Try adding properties like <strong>display:block</strong> or <strong>float:left</strong>. { learn-more }
+inactive-css-non-replaced-inline-or-table-row-or-row-group-fix-1 = Try adding <strong>display:inline-block</strong> or <strong>display:block</strong>.
 
-inactive-css-not-floated-fix = Try adding the <strong>float</strong> property with a value other than <strong>none</strong>. { learn-more }
+inactive-css-non-replaced-inline-or-table-column-or-column-group-fix-1 = Try adding <strong>display:inline-block</strong>.
 
-inactive-css-position-property-on-unpositioned-box-fix = Try setting its <strong>position</strong> property to something other than <strong>static</strong>. { learn-more }
+inactive-css-not-display-block-on-floated-fix-1 = Try removing <strong>float</strong> or adding <strong>display:block</strong>.
 
-inactive-css-only-replaced-elements-fix = Ensure you are adding the property to a replaced element. { learn-more }
+inactive-css-only-non-grid-or-flex-item-fix-1 = Try changing the value of <strong>display</strong> of the element’s container to something else than <strong>flex</strong>, <strong>grid</strong>, <strong>inline-flex</strong>, or <strong>inline-grid</strong>, or removing <strong>float</strong>.
 
-inactive-text-overflow-when-no-overflow-fix = Try adding <strong>overflow:hidden</strong>. { learn-more }
+inactive-css-not-block-fix-1 = Try adding properties like <strong>display:block</strong> or <strong>float:left</strong>.
 
-inactive-css-no-size-containment-fix = Try setting its <strong>display</strong> property to something else than <strong>none</strong>, <strong>contents</strong>, <strong>table</strong>, or <strong>inline-table</strong> and make sure it’s not within a table or ruby segment. { learn-more }
+inactive-css-not-block-container-fix-1 = Try adding <strong>display:block</strong>, <strong>display:inline-block</strong> or <strong>display:flow-root</strong>.
 
-inactive-css-not-for-internal-table-elements-fix = Try setting its <strong>display</strong> property to something else than <strong>table-cell</strong>, <strong>table-column</strong>, <strong>table-row</strong>, <strong>table-column-group</strong>, <strong>table-row-group</strong>, or <strong>table-footer-group</strong>. { learn-more }
+inactive-css-not-block-flex-grid-container-fix-1 = Try adding <strong>display:block</strong>, <strong>display:inline-block</strong>, <strong>display:flex</strong>, <strong>display:inline-flex</strong>, <strong>display:grid</strong>, <strong>display:inline-grid</strong> or <strong>display:flow-root</strong>.
 
-inactive-css-not-for-internal-table-elements-except-table-cells-fix = Try setting its <strong>display</strong> property to something else than <strong>table-column</strong>, <strong>table-row</strong>, <strong>table-column-group</strong>, <strong>table-row-group</strong>, or <strong>table-footer-group</strong>. { learn-more }
+inactive-css-not-floated-fix-1 = Try adding the <strong>float</strong> property with a value other than <strong>none</strong>.
 
-inactive-css-not-table-fix = Try adding <strong>display:table</strong> or <strong>display:inline-table</strong>. { learn-more }
+inactive-css-position-property-on-unpositioned-box-fix-1 = Try setting its <strong>position</strong> property to something other than <strong>static</strong>.
 
-inactive-css-collapsed-table-borders-fix = Try adding <strong>border-collapse:separate</strong>. { learn-more }
+inactive-css-only-replaced-elements-fix-1 = Ensure you are adding the property to a replaced element.
 
-inactive-css-not-table-cell-fix = Try adding <strong>display:table-cell</strong>. { learn-more }
+inactive-text-overflow-when-no-overflow-fix-1 = Try adding <strong>overflow:hidden</strong>.
 
-inactive-scroll-padding-when-not-scroll-container-fix = Try adding <strong>overflow:auto</strong>, <strong>overflow:scroll</strong>, or <strong>overflow:hidden</strong>. { learn-more }
+inactive-css-no-size-containment-fix-1 = Try setting its <strong>display</strong> property to something else than <strong>none</strong>, <strong>contents</strong>, <strong>table</strong>, or <strong>inline-table</strong> and make sure it’s not within a table or ruby segment.
 
-inactive-css-border-image-fix = On the parent table element, remove the property or change the value of <strong>border-collapse</strong> to a value other than <strong>collapse</strong>. { learn-more }
+inactive-css-not-for-internal-table-elements-fix-1 = Try setting its <strong>display</strong> property to something else than <strong>table-cell</strong>, <strong>table-column</strong>, <strong>table-row</strong>, <strong>table-column-group</strong>, <strong>table-row-group</strong>, or <strong>table-footer-group</strong>.
 
-inactive-css-resize-fix = Try setting <strong>overflow</strong> to a value other than <strong>visible</strong> or targeting a replaced element supporting it. { learn-more }
+inactive-css-not-for-internal-table-elements-except-table-cells-fix-1 = Try setting its <strong>display</strong> property to something else than <strong>table-column</strong>, <strong>table-row</strong>, <strong>table-column-group</strong>, <strong>table-row-group</strong>, or <strong>table-footer-group</strong>.
 
-inactive-css-ruby-element-fix = Try changing the <strong>font-size</strong> of the ruby text. { learn-more }
+inactive-css-not-table-fix-1 = Try adding <strong>display:table</strong> or <strong>display:inline-table</strong>.
 
-inactive-css-text-wrap-balance-lines-exceeded-fix = Try to reduce the number of lines. { learn-more }
+inactive-css-collapsed-table-borders-fix-1 = Try adding <strong>border-collapse:separate</strong>.
 
-inactive-css-text-wrap-balance-fragmented-fix = Avoid splitting the element’s content e.g. by removing the columns or by using <strong>page-break-inside:avoid</strong>. { learn-more }
+inactive-css-not-table-cell-fix-1 = Try adding <strong>display:table-cell</strong>.
+
+inactive-scroll-padding-when-not-scroll-container-fix-1 = Try adding <strong>overflow:auto</strong>, <strong>overflow:scroll</strong>, or <strong>overflow:hidden</strong>.
+
+inactive-css-border-image-fix-1 = On the parent table element, remove the property or change the value of <strong>border-collapse</strong> to a value other than <strong>collapse</strong>.
+
+inactive-css-resize-fix-1 = Try setting <strong>overflow</strong> to a value other than <strong>visible</strong> or targeting a replaced element supporting it.
+
+inactive-css-ruby-element-fix-1 = Try changing the <strong>font-size</strong> of the ruby text.
+
+inactive-css-text-wrap-balance-lines-exceeded-fix-1 = Try to reduce the number of lines.
+
+inactive-css-text-wrap-balance-fragmented-fix-1 = Avoid splitting the element’s content e.g. by removing the columns or by using <strong>page-break-inside:avoid</strong>.
+
+inactive-css-no-principal-box-fix-1 = Try adding a <strong>display</strong> value that creates a principal box, such as <strong>block</strong>, <strong>inline-block</strong>, <strong>flex</strong>, or <strong>grid</strong>.
 
 ## In the Rule View when a CSS property may have compatibility issues with other browsers
 ## we display an icon. When this icon is hovered this message is displayed to explain why
@@ -185,11 +215,20 @@ css-compatibility-experimental-message = <strong>{ $property }</strong> is an ex
 
 css-compatibility-experimental-supported-message = <strong>{ $property }</strong> is an experimental property.
 
-css-compatibility-learn-more-message = <span data-l10n-name="link">Learn more</span> about <strong>{ $rootProperty }</strong>
-
 ## In the Rule View when a rule selector can causes issues, we display an icon.
 ## When this icon is hovered one or more of those messages are displayed to explain what
 ## the issue are.
 
 # :has() should not be translated
 css-selector-warning-unconstrained-has = This selector uses unconstrained <strong>:has()</strong>, which can be slow
+
+# :scope should not be translated
+css-selector-warning-sibling-combinator-after-scope = Sibling selectors after <strong>:scope</strong> will never match anything
+
+## In the Rule View we display a tooltip when a @container condition is hovered.
+## We want to show a specific message if the condition doesn't match a container for the
+## currently selected element
+## Variables:
+##   $name (string) - The condition name.
+
+css-selector-container-query-condition-no-container = No container ‘{ $name }’ found

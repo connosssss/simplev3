@@ -56,7 +56,11 @@ const RELOAD_CONDITION_PREF_PREFIX = "devtools.responsive.reloadConditions.";
 const RELOAD_NOTIFICATION_PREF =
   "devtools.responsive.reloadNotification.enabled";
 const USE_DYNAMIC_TOOLBAR_PREF = "devtools.responsive.dynamicToolbar.enabled";
-const DYNAMIC_TOOLBAR_MAX_HEIGHT = 40; // px
+const DYNAMIC_TOOLBAR_PREF_ON_TOP_PREF =
+  "devtools.responsive.dynamicToolbar.onTop";
+const DYNAMIC_TOOLBAR_MAX_HEIGHT = 50; // px
+const DYNAMIC_TOOLBAR_SNAP_ANIMATION_DURATION_MS = 120; // ms
+const RESPONSIVE_MODE_CLS = "responsive-mode";
 
 function debug(_msg) {
   // console.log(`RDM manager: ${_msg}`);
@@ -68,7 +72,7 @@ function debug(_msg) {
  * the tab upon opening responsive design.  This object acts a helper to
  * integrate the tool into the surrounding browser UI as needed.
  */
-class ResponsiveUI {
+class ResponsiveUI extends EventEmitter {
   /**
    * @param {ResponsiveUIManager} manager
    *        The ResponsiveUIManager instance.
@@ -78,6 +82,7 @@ class ResponsiveUI {
    *        The specific browser <tab> element this responsive instance is for.
    */
   constructor(manager, window, tab) {
+    super();
     this.manager = manager;
     // The main browser chrome window (that holds many tabs).
     this.browserWindow = window;
@@ -90,6 +95,8 @@ class ResponsiveUI {
     this.destroyed = false;
     // The iframe containing the RDM UI.
     this.rdmFrame = null;
+    // The div containing resizers and the dynamic toolbar.
+    this.screenBox = null;
 
     // Bind callbacks for resizers.
     this.onResizeDrag = this.onResizeDrag.bind(this);
@@ -97,7 +104,6 @@ class ResponsiveUI {
     this.onResizeStop = this.onResizeStop.bind(this);
 
     this.onTargetAvailable = this.onTargetAvailable.bind(this);
-    this.onContentScrolled = this.onContentScrolled.bind(this);
 
     this.networkFront = null;
     // Promise resolved when the UI init has completed.
@@ -106,8 +112,21 @@ class ResponsiveUI {
     this.resolveInited = resolve;
 
     this.dynamicToolbar = null;
-    EventEmitter.decorate(this);
+    this.browserBottomCover = null;
+    this.dynamicToolbarEnabled = Services.prefs.getBoolPref(
+      USE_DYNAMIC_TOOLBAR_PREF,
+      false
+    );
+    this.dynamicToolbarOnTop = Services.prefs.getBoolPref(
+      DYNAMIC_TOOLBAR_PREF_ON_TOP_PREF,
+      false
+    );
+    this.currentDynamicToolbarHeight = 0;
+    this.dynamicToolbarSnapAnimation = null;
+    this.mouseScreenYWhilePressed = null;
   }
+
+  #reloadNotificationMessageElement;
 
   get toolWindow() {
     return this.rdmFrame.contentWindow;
@@ -141,9 +160,14 @@ class ResponsiveUI {
     // strange intermediate states.
     this.hideBrowserUI();
 
-    // Watch for tab close and window close so we can clean up RDM synchronously
+    // To clean up RDM synchronously, watch for:
+    // - tab close
+    // - tab discarded
+    // - window close
+    this.tab.addEventListener("TabBrowserDiscarded", this);
     this.tab.addEventListener("TabClose", this);
     this.browserWindow.addEventListener("unload", this);
+
     this.rdmFrame.contentWindow.addEventListener("message", this);
 
     this.tab.linkedBrowser.enterResponsiveMode();
@@ -178,23 +202,38 @@ class ResponsiveUI {
     rdmFrame.src = "chrome://devtools/content/responsive/toolbar.xhtml";
     rdmFrame.classList.add("rdm-toolbar");
 
+    this.screenBox = doc.createElement("div");
+    this.screenBox.classList.add("rdm-screen-box");
+
     // Create dynamic toolbar
     this.dynamicToolbar = doc.createElement("div");
     this.dynamicToolbar.classList.add("rdm-dynamic-toolbar", "dynamic-toolbar");
-    this.dynamicToolbar.style.visibility = "hidden";
+    this.dynamicToolbar.classList.toggle(
+      "dynamic-toolbar-enabled",
+      this.dynamicToolbarEnabled
+    );
+    this.dynamicToolbar.classList.toggle(
+      "dynamic-toolbar-on-top",
+      this.dynamicToolbarOnTop
+    );
 
-    if (Services.prefs.getBoolPref(USE_DYNAMIC_TOOLBAR_PREF)) {
-      this.dynamicToolbar.style.visibility = "visible";
-      this.dynamicToolbar.style.height = DYNAMIC_TOOLBAR_MAX_HEIGHT + "px";
-      InspectorUtils.setDynamicToolbarMaxHeight(
-        this.tab.linkedBrowser.browsingContext,
-        DYNAMIC_TOOLBAR_MAX_HEIGHT
-      );
-      InspectorUtils.setVerticalClipping(
-        this.tab.linkedBrowser.browsingContext,
-        -DYNAMIC_TOOLBAR_MAX_HEIGHT
-      );
-    }
+    const dynamicToolbarInner = doc.createElement("div");
+    dynamicToolbarInner.classList.add("rdm-dynamic-toolbar-inner");
+    this.dynamicToolbar.append(dynamicToolbarInner);
+
+    // Create .rdm-browser-bottom-cover which which will cover up any bits of the
+    // browser that stick out of the screen box when pushed down by the dynamic
+    // toolbar (when the toolbar is on the top).
+    // We'd prefer to clip off the bottom using e.g. overflow:clip, but we
+    // don't have an ancestor element in the DOM that can act as the clip.
+    //
+    // Ideally we wouldn't need to move the browser at all when the dynamic
+    // toolbar moves. This is tracked in bug 1921331.
+    // But in the meantime, this "move the browser" implementation matches how
+    // the top toolbar works in Firefox for Android. This includes visual glitches
+    // such as fixed-to-the-bottom elements that wiggle during scrolling.
+    this.browserBottomCover = doc.createElement("div");
+    this.browserBottomCover.classList.add("rdm-browser-bottom-cover");
 
     // Create resizer handlers
     const resizeHandle = doc.createElement("div");
@@ -218,22 +257,56 @@ class ResponsiveUI {
     );
     this.browserStackEl =
       this.browserContainerEl.querySelector(".browserStack");
+    this.browserSidebarContainerEl = this.browserContainerEl.closest(
+      ".browserSidebarContainer"
+    );
 
-    this.browserContainerEl.classList.add("responsive-mode");
+    this.browserContainerEl.classList.add(RESPONSIVE_MODE_CLS);
+    this.browserSidebarContainerEl.classList.add(RESPONSIVE_MODE_CLS);
 
-    // Prepend the RDM iframe inside of the current tab's browser container.
-    this.browserContainerEl.prepend(rdmFrame);
+    this.browserContainerEl.style.setProperty(
+      "--rdm-dynamic-toolbar-max-height",
+      DYNAMIC_TOOLBAR_MAX_HEIGHT + "px"
+    );
 
-    this.browserStackEl.append(
+    // In split view, notifications are placed inside the browser container. If there are
+    // some notifications displayed, we want the RDM toolbar to be placed after them
+    const notificationBox = this.browserContainerEl.querySelector(
+      ".notificationbox-stack"
+    );
+    if (notificationBox) {
+      notificationBox.after(rdmFrame);
+    } else {
+      // Otherwise, prepend the RDM iframe inside of the current tab's browser container.
+      this.browserContainerEl.prepend(rdmFrame);
+    }
+
+    // Put .rdm-screen-box inside the browser stack, as a sibling to the browser.
+    this.browserStackEl.append(this.screenBox);
+
+    this.screenBox.append(
       this.dynamicToolbar,
+      this.browserBottomCover,
       resizeHandle,
       resizeHandleX,
       resizeHandleY
     );
 
+    if (this.dynamicToolbarEnabled) {
+      this.dynamicToolbar.style.height = DYNAMIC_TOOLBAR_MAX_HEIGHT + "px";
+      InspectorUtils.setDynamicToolbarMaxHeight(
+        this.tab.linkedBrowser.browsingContext,
+        DYNAMIC_TOOLBAR_MAX_HEIGHT
+      );
+      this.setCurrentDynamicToolbarHeight(DYNAMIC_TOOLBAR_MAX_HEIGHT);
+      this.tab.linkedBrowser.addEventListener("mousedown", this);
+      this.tab.linkedBrowser.addEventListener("mousemove", this);
+      this.tab.linkedBrowser.addEventListener("mouseup", this);
+    }
+
     // Wait for the frame script to be loaded.
     message.wait(rdmFrame.contentWindow, "script-init").then(async () => {
-      // Notify the frame window that the Resposnive UI manager has begun initializing.
+      // Notify the frame window that the Responsive UI manager has begun initializing.
       // At this point, we can render our React content inside the frame.
       message.post(rdmFrame.contentWindow, "init");
       // Wait for the tools to be rendered above the content. The frame script will
@@ -256,23 +329,6 @@ class ResponsiveUI {
 
     this.resizeHandleY = resizeHandleY;
     this.resizeHandleY.addEventListener("mousedown", this.onResizeStart);
-
-    this.resizeToolbarObserver = new this.browserWindow.ResizeObserver(
-      entries => {
-        for (const entry of entries) {
-          // If the toolbar needs extra space for the UA input, then set a class
-          // that will accomodate its height. We should also make sure to keep
-          // the width value we're toggling against in sync with the media-query
-          // in devtools/client/responsive/index.css
-          this.rdmFrame.classList.toggle(
-            "accomodate-ua",
-            entry.contentBoxSize[0].inlineSize <= 800
-          );
-        }
-      }
-    );
-
-    this.resizeToolbarObserver.observe(this.browserStackEl);
   }
 
   /**
@@ -293,11 +349,11 @@ class ResponsiveUI {
     // If our tab is about to be closed, there's not enough time to exit
     // gracefully, but that shouldn't be a problem since the tab will go away.
     // So, skip any waiting when we're about to close the tab.
-    const isTabDestroyed =
-      !this.tab.linkedBrowser || this.responsiveFront?.isDestroyed();
+    const isTabDestroyed = !this.tab.linkedBrowser;
     const isWindowClosing = options?.reason === "unload" || isTabDestroyed;
     const isTabContentDestroying =
-      isWindowClosing || options?.reason === "TabClose";
+      isWindowClosing ||
+      ["TabBrowserDiscarded", "TabClose"].includes(options?.reason);
 
     // Ensure init has finished before starting destroy
     if (!isTabContentDestroying) {
@@ -317,31 +373,55 @@ class ResponsiveUI {
       await this.updateNetworkThrottling();
     }
 
+    this.tab.removeEventListener("TabBrowserDiscarded", this);
     this.tab.removeEventListener("TabClose", this);
     this.browserWindow.removeEventListener("unload", this);
-    this.tab.linkedBrowser.leaveResponsiveMode();
+
+    // Browsing context might be gone already (eg when discarding).
+    // leaveResponsiveMode only updates linkedBrowser.browsingContext, so it can
+    // be skipped in this case.
+    if (this.tab.linkedBrowser.browsingContext) {
+      this.tab.linkedBrowser.leaveResponsiveMode();
+    }
 
     this.browserWindow.removeEventListener("FullZoomChange", this);
-    this.rdmFrame.contentWindow.removeEventListener("message", this);
 
-    // Remove observers on the stack.
-    this.resizeToolbarObserver.unobserve(this.browserStackEl);
+    this.tab.linkedBrowser.removeEventListener("mousedown", this);
+    this.tab.linkedBrowser.removeEventListener("mousemove", this);
+    this.tab.linkedBrowser.removeEventListener("mouseup", this);
+
+    // When discarding, the content document may already have been destroyed.
+    this.rdmFrame.contentWindow?.removeEventListener("message", this);
 
     // Cleanup the frame content before disconnecting the frame element.
-    this.rdmFrame.contentWindow.destroy();
+    this.rdmFrame.contentWindow?.destroy();
 
     this.rdmFrame.remove();
+    this.screenBox.remove();
 
-    // Clean up resize handlers
-    this.resizeHandle.remove();
-    this.resizeHandleX.remove();
-    this.resizeHandleY.remove();
-    this.dynamicToolbar.remove();
-
-    this.browserContainerEl.classList.remove("responsive-mode");
+    this.browserContainerEl.classList.remove(RESPONSIVE_MODE_CLS);
+    this.browserSidebarContainerEl.classList.remove(RESPONSIVE_MODE_CLS);
     this.browserStackEl.style.removeProperty("--rdm-width");
     this.browserStackEl.style.removeProperty("--rdm-height");
     this.browserStackEl.style.removeProperty("--rdm-zoom");
+
+    // Remove any .style.top remnants (set by setCurrentDynamicToolbarHeight).
+    this.tab.linkedBrowser.style.removeProperty("top");
+
+    // Reset any dynamic toolbar related settings on the browser.
+    InspectorUtils.setVerticalClipping(
+      this.tab.linkedBrowser.browsingContext,
+      0
+    );
+    InspectorUtils.setDynamicToolbarMaxHeight(
+      this.tab.linkedBrowser.browsingContext,
+      0
+    );
+
+    if (this.#reloadNotificationMessageElement) {
+      this.#reloadNotificationMessageElement.close();
+      this.#reloadNotificationMessageElement = null;
+    }
 
     // Ensure the tab is reloaded if required when exiting RDM so that no emulated
     // settings are left in a customized state.
@@ -356,7 +436,7 @@ class ResponsiveUI {
         this.reloadOnChange("touchSimulation") && !reloadNeeded;
       await this.updateTouchSimulation(null, reloadOnTouchSimulationChange);
       if (reloadNeeded) {
-        await this.reloadBrowser();
+        await this.reloadSelectedTab();
       }
 
       // Unwatch targets & resources as the last step. If we are not waching for
@@ -381,16 +461,17 @@ class ResponsiveUI {
 
     // Destroy local state
     this.browserContainerEl = null;
+    this.browserSidebarContainerEl = null;
     this.browserStackEl = null;
     this.browserWindow = null;
     this.tab = null;
     this.initialized = null;
     this.rdmFrame = null;
+    this.screenBox = null;
     this.resizeHandle = null;
     this.resizeHandleX = null;
     this.resizeHandleY = null;
     this.dynamicToolbar = null;
-    this.resizeToolbarObserver = null;
 
     // Destroying the commands will close the devtools client used to speak with responsive emulation actor.
     // The actor handles clearing any overrides itself, so it's not necessary to clear
@@ -399,7 +480,7 @@ class ResponsiveUI {
     if (!isTabContentDestroying) {
       await commandsDestroyed;
     }
-    this.commands = this.responsiveFront = null;
+    this.commands = null;
     this.destroyed = true;
 
     return true;
@@ -429,12 +510,16 @@ class ResponsiveUI {
   /**
    * Show one-time notification about reloads for responsive emulation.
    */
-  showReloadNotification() {
+  async showReloadNotification() {
     if (Services.prefs.getBoolPref(RELOAD_NOTIFICATION_PREF, false)) {
-      showNotification(this.browserWindow, this.tab, {
-        msg: l10n.getFormatStr("responsive.reloadNotification.description2"),
-      });
       Services.prefs.setBoolPref(RELOAD_NOTIFICATION_PREF, false);
+      this.#reloadNotificationMessageElement = await showNotification(
+        this.browserWindow,
+        this.tab,
+        {
+          msg: l10n.getFormatStr("responsive.reloadNotification.description2"),
+        }
+      );
     }
   }
 
@@ -461,17 +546,24 @@ class ResponsiveUI {
       case "message":
         this.handleMessage(event);
         break;
-      case "FullZoomChange":
+      case "FullZoomChange": {
         // Get the current device size and update to that size, which
         // will pick up changes to the zoom.
         const { width, height } = this.getViewportSize();
         this.updateViewportSize(width, height);
         break;
+      }
+      case "TabBrowserDiscarded":
       case "TabClose":
       case "unload":
         this.manager.closeIfNeeded(browserWindow, tab, {
           reason: event.type,
         });
+        break;
+      case "mousedown":
+      case "mousemove":
+      case "mouseup":
+        this.handleBrowserMouseEvent(event);
         break;
     }
   }
@@ -518,6 +610,60 @@ class ResponsiveUI {
       case "update-device-modal":
         this.onUpdateDeviceModal(event);
         break;
+      case "narrow-media-query-change":
+        this.onToolbarDocumentNarrowMediaQueryChange(event);
+        break;
+    }
+  }
+
+  handleBrowserMouseEvent(evt) {
+    // We only listen to mouse events in order to simulate dynamic toolbar movement.
+    if (!this.dynamicToolbarEnabled) {
+      return;
+    }
+
+    // Ignore all but real mouse event coming from physical mouse. This matches
+    // what touch-simulator.js does inside the content process.
+    if (
+      evt.button ||
+      evt.inputSource != evt.MOZ_SOURCE_MOUSE ||
+      evt.isSynthesized
+    ) {
+      return;
+    }
+
+    switch (evt.type) {
+      case "mousedown":
+        this.mouseScreenYWhilePressed = evt.screenY;
+        this.interruptDynamicToolbarSnapAnimation();
+        break;
+
+      case "mousemove": {
+        if (this.mouseScreenYWhilePressed === null) {
+          return;
+        }
+
+        const deltaY = evt.screenY - this.mouseScreenYWhilePressed;
+        this.mouseScreenYWhilePressed = evt.screenY;
+        this.setCurrentDynamicToolbarHeight(
+          this.currentDynamicToolbarHeight + deltaY
+        );
+        break;
+      }
+
+      case "mouseup": {
+        if (this.mouseScreenYWhilePressed === null) {
+          return;
+        }
+
+        const deltaY = evt.screenY - this.mouseScreenYWhilePressed;
+        this.mouseScreenYWhilePressed = null;
+        this.setCurrentDynamicToolbarHeight(
+          this.currentDynamicToolbarHeight + deltaY
+        );
+        this.startDynamicToolbarSnapAnimation();
+        break;
+      }
     }
   }
 
@@ -542,7 +688,7 @@ class ResponsiveUI {
     await this.updateTouchSimulation(touch, reloadOnTouchSimulationChange);
 
     if (reloadNeeded) {
-      this.reloadBrowser();
+      this.reloadSelectedTab();
     }
 
     // Used by tests
@@ -583,7 +729,7 @@ class ResponsiveUI {
       (await this.updateUserAgent(userAgent)) &&
       this.reloadOnChange("userAgent");
     if (reloadNeeded) {
-      this.reloadBrowser();
+      this.reloadSelectedTab();
     }
     this.emit("user-agent-changed");
   }
@@ -607,7 +753,7 @@ class ResponsiveUI {
         this.reloadOnChange("touchSimulation") && !reloadNeeded;
       await this.updateTouchSimulation(null, reloadOnTouchSimulationChange);
       if (reloadNeeded) {
-        this.reloadBrowser();
+        this.reloadSelectedTab();
       }
     }
 
@@ -718,8 +864,8 @@ class ResponsiveUI {
   }
 
   async onRotateViewport(event) {
-    const { orientationType: type, angle, isViewportRotated } = event.data;
-    await this.updateScreenOrientation(type, angle, isViewportRotated);
+    const { orientationType: type, angle } = event.data;
+    await this.updateScreenOrientation(type, angle);
   }
 
   async onScreenshot() {
@@ -757,6 +903,17 @@ class ResponsiveUI {
     this.rdmFrame.classList.toggle("device-modal-opened", event.data.isOpen);
   }
 
+  onToolbarDocumentNarrowMediaQueryChange(event) {
+    // If the toolbar needs extra space for the UA input, then set a class
+    // that will accomodate its height. We should also make sure to keep
+    // the width value we're toggling against in sync with the media-query
+    // in devtools/client/responsive/index.css
+    this.browserContainerEl.classList.toggle(
+      "accomodate-ua",
+      event.data.isNarrowLayout
+    );
+  }
+
   async hasDeviceState() {
     const deviceState = await asyncStorage.getItem(
       "devtools.responsive.deviceState"
@@ -789,7 +946,7 @@ class ResponsiveUI {
   /**
    * Restores the previous actor state.
    *
-   * @param {Boolean} isTargetSwitching
+   * @param {boolean} isTargetSwitching
    */
   async restoreActorState(isTargetSwitching) {
     // It's possible the target will switch to a page loaded in the
@@ -863,14 +1020,14 @@ class ResponsiveUI {
         this.reloadOnChange("userAgent");
     }
     if (reloadNeeded) {
-      await this.reloadBrowser();
+      await this.reloadSelectedTab();
     }
   }
 
   /**
    * Set or clear the emulated device pixel ratio.
    *
-   * @param {Number|null} dppx: The ratio to simulate. Set to null to disable the
+   * @param {number | null} dppx: The ratio to simulate. Set to null to disable the
    *                      simulation and roll back to the original ratio
    */
   async updateDPPX(dppx = null) {
@@ -913,9 +1070,9 @@ class ResponsiveUI {
   /**
    * Set or clear the emulated user agent.
    *
-   * @param {String|null} userAgent: The user agent to set on the page. Set to null to revert
+   * @param {string | null} userAgent: The user agent to set on the page. Set to null to revert
    *                      the user agent to its original value
-   * @return {Boolean} Whether a reload is needed to apply the change.
+   * @return {boolean} Whether a reload is needed to apply the change.
    */
   async updateUserAgent(userAgent) {
     const getConfigurationCustomUserAgent = () =>
@@ -950,31 +1107,22 @@ class ResponsiveUI {
   /**
    * Sets the screen orientation values of the simulated device.
    *
-   * @param {String} type
+   * @param {string} type
    *        The orientation type to update the current device screen to.
-   * @param {Number} angle
+   * @param {number} angle
    *        The rotation angle to update the current device screen to.
-   * @param {Boolean} isViewportRotated
-   *        Whether or not the reason for updating the screen orientation is a result
-   *        of actually rotating the device via the RDM toolbar. If true, then an
-   *        "orientationchange" event is simulated. Otherwise, the screen orientation is
-   *        updated because of changing devices, opening RDM, or the page has been
-   *        reloaded/navigated to, so we should not be simulating "orientationchange".
    */
-  async updateScreenOrientation(type, angle, isViewportRotated = false) {
-    await this.commands.targetConfigurationCommand.simulateScreenOrientationChange(
-      {
-        type,
-        angle,
-        isViewportRotated,
-      }
-    );
+  async updateScreenOrientation(type, angle) {
+    // We need to call the method on the parent process
+    await this.commands.targetConfigurationCommand.updateConfiguration({
+      rdmPaneOrientation: { type, angle },
+    });
   }
 
   /**
    * Sets whether or not maximum touch points are supported for the simulated device.
    *
-   * @param {Boolean} touchSimulationEnabled
+   * @param {boolean} touchSimulationEnabled
    *        Whether or not touch is enabled for the simulated device.
    */
   async updateMaxTouchPointsEnabled(touchSimulationEnabled) {
@@ -986,7 +1134,7 @@ class ResponsiveUI {
   /**
    * Sets whether or not the RDM UI should be left-aligned.
    *
-   * @param {Boolean} leftAlignmentEnabled
+   * @param {boolean} leftAlignmentEnabled
    *        Whether or not the UI is left-aligned.
    */
   updateUIAlignment(leftAlignmentEnabled) {
@@ -999,9 +1147,9 @@ class ResponsiveUI {
   /**
    * Sets the browser element to be the given width and height.
    *
-   * @param {Number} width
+   * @param {number} width
    *        The viewport's width.
-   * @param {Number} height
+   * @param {number} height
    *        The viewport's height.
    */
   updateViewportSize(width, height) {
@@ -1090,18 +1238,93 @@ class ResponsiveUI {
     return Math.min(Math.max(value, min), max);
   }
 
-  onContentScrolled(deltaY) {
-    const currentHeight = parseInt(this.dynamicToolbar.style.height, 10);
-    const newHeight = this.clamp(
-      0,
-      DYNAMIC_TOOLBAR_MAX_HEIGHT,
-      currentHeight + deltaY
-    );
-    this.dynamicToolbar.style.height = newHeight + "px";
+  setCurrentDynamicToolbarHeight(unclampedHeight) {
+    const height = this.clamp(0, DYNAMIC_TOOLBAR_MAX_HEIGHT, unclampedHeight);
+    this.currentDynamicToolbarHeight = height;
+    this.dynamicToolbar.style.height = height + "px";
+    if (this.dynamicToolbarOnTop) {
+      this.tab.linkedBrowser.style.top = height + "px";
+      this.browserBottomCover.style.height = height + "px";
+    }
+    const offset = height - DYNAMIC_TOOLBAR_MAX_HEIGHT;
     InspectorUtils.setVerticalClipping(
       this.tab.linkedBrowser.browsingContext,
-      -newHeight
+      offset
     );
+  }
+
+  /**
+   * Make the dynamic toolbar snap to either fully-visible or fully-hidden, with
+   * a short animation. This animation can be interrupted with a call to
+   * interruptDynamicToolbarSnapAnimation() when a new scroll gesture starts.
+   *
+   * We use requestAnimationFrame here instead of CSS transitions so that
+   * setCurrentDynamicToolbarHeight can call setVerticalClipping in sync with
+   * the toolbar height change on each animation frame.
+   */
+  startDynamicToolbarSnapAnimation() {
+    if (
+      this.currentDynamicToolbarHeight == 0 ||
+      this.currentDynamicToolbarHeight == DYNAMIC_TOOLBAR_MAX_HEIGHT
+    ) {
+      return;
+    }
+
+    const destHeight =
+      this.currentDynamicToolbarHeight <= DYNAMIC_TOOLBAR_MAX_HEIGHT / 2
+        ? 0
+        : DYNAMIC_TOOLBAR_MAX_HEIGHT;
+    const startTimestamp = this.browserWindow.performance.now();
+    const endTimestamp =
+      startTimestamp + DYNAMIC_TOOLBAR_SNAP_ANIMATION_DURATION_MS;
+    const startHeight = this.currentDynamicToolbarHeight;
+    const endHeight = destHeight;
+    const rafHandle = this.browserWindow.requestAnimationFrame(() =>
+      this.updateDynamicToolbarSnapAnimation()
+    );
+    this.dynamicToolbarSnapAnimation = {
+      startTimestamp,
+      endTimestamp,
+      startHeight,
+      endHeight,
+      rafHandle,
+    };
+  }
+
+  updateDynamicToolbarSnapAnimation() {
+    if (this.dynamicToolbarSnapAnimation === null) {
+      return;
+    }
+
+    const { startTimestamp, endTimestamp, startHeight, endHeight } =
+      this.dynamicToolbarSnapAnimation;
+    const currentTimestamp = this.browserWindow.performance.now();
+    let t =
+      (currentTimestamp - startTimestamp) / (endTimestamp - startTimestamp);
+    t = this.clamp(0, 1, t);
+    const k = t * t * (2 - t); // smooth (similar to ease-in-out)
+    const h = k * endHeight + (1 - k) * startHeight; // lerp
+    this.setCurrentDynamicToolbarHeight(h);
+
+    if (currentTimestamp < endTimestamp) {
+      this.dynamicToolbarSnapAnimation.rafHandle =
+        this.browserWindow.requestAnimationFrame(() =>
+          this.updateDynamicToolbarSnapAnimation()
+        );
+    } else {
+      this.dynamicToolbarSnapAnimation = null;
+    }
+  }
+
+  interruptDynamicToolbarSnapAnimation() {
+    if (this.dynamicToolbarSnapAnimation === null) {
+      return;
+    }
+
+    this.browserWindow.cancelAnimationFrame(
+      this.dynamicToolbarSnapAnimation.rafHandle
+    );
+    this.dynamicToolbarSnapAnimation = null;
   }
 
   async onTargetAvailable({ targetFront, isTargetSwitching }) {
@@ -1110,20 +1333,15 @@ class ResponsiveUI {
     }
 
     if (targetFront.isTopLevel) {
-      this.responsiveFront = await targetFront.getFront("responsive");
-
-      if (this.destroying) {
-        return;
-      }
-
       await this.restoreActorState(isTargetSwitching);
       this.emitForTests("responsive-ui-target-switch-done");
     }
-
-    if (Services.prefs.getBoolPref(USE_DYNAMIC_TOOLBAR_PREF)) {
-      targetFront.on("contentScrolled", this.onContentScrolled);
-    }
   }
+
+  async setElementPickerState(state, pickerType) {
+    this.commands.responsiveCommand.setElementPickerState(state, pickerType);
+  }
+
   // This just needed to setup watching for network resources,
   // to support network throttling.
   onNetworkResourceAvailable() {}
@@ -1131,7 +1349,7 @@ class ResponsiveUI {
   /**
    * Reload the current tab.
    */
-  async reloadBrowser() {
+  async reloadSelectedTab() {
     await this.commands.targetCommand.reloadTopLevelTarget();
   }
 }

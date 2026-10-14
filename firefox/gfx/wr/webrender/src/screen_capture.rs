@@ -8,9 +8,8 @@ use std::collections::HashMap;
 
 use api::{ImageFormat, ImageBufferKind};
 use api::units::*;
-use gleam::gl::GlType;
 
-use crate::device::{Device, PBO, DrawTarget, ReadTarget, Texture, TextureFilter};
+use crate::device::{Device, TransferBuffer, DrawTarget, ReadTarget, Texture, TextureFilter};
 use crate::internal_types::RenderTargetInfo;
 use crate::renderer::Renderer;
 use crate::util::round_up_to_multiple;
@@ -28,12 +27,13 @@ pub struct RecordedFrameHandle(usize);
 /// An asynchronously captured screenshot bound to a PBO which has not yet been mapped for copying.
 struct AsyncScreenshot {
     /// The PBO that will contain the screenshot data.
-    pbo: PBO,
+    pbo: TransferBuffer,
     /// The size of the screenshot.
     screenshot_size: DeviceIntSize,
     /// The stride of the data in the PBO.
     buffer_stride: usize,
-    /// Thge image format of the screenshot.
+    /// Thge image format of the screenshot, i.e. the format the pixels were read
+    /// back in. This may differ from the format the caller ultimately wants.
     image_format: ImageFormat,
 }
 
@@ -56,7 +56,7 @@ pub(in crate) struct AsyncScreenshotGrabber {
     /// The textures used to scale screenshots.
     scaling_textures: Vec<Texture>,
     /// PBOs available to be used for screenshot readback.
-    available_pbos: Vec<PBO>,
+    available_pbos: Vec<TransferBuffer>,
     /// PBOs containing screenshots that are awaiting readback.
     awaiting_readback: HashMap<AsyncScreenshotHandle, AsyncScreenshot>,
     /// The handle for the net PBO that will be inserted into `in_use_pbos`.
@@ -93,11 +93,11 @@ impl AsyncScreenshotGrabber {
         }
 
         for pbo in self.available_pbos {
-            device.delete_pbo(pbo);
+            device.delete_transfer_buffer(pbo);
         }
 
         for (_, async_screenshot) in self.awaiting_readback {
-            device.delete_pbo(async_screenshot.pbo);
+            device.delete_transfer_buffer(async_screenshot.pbo);
         }
     }
 
@@ -144,7 +144,7 @@ impl AsyncScreenshotGrabber {
         let read_size = match self.mode {
             AsyncScreenshotGrabberMode::ProfilerScreenshots => {
                 let stride = (screenshot_size.width * image_format.bytes_per_pixel()) as usize;
-                let rounded = round_up_to_multiple(stride, device.required_pbo_stride().num_bytes(image_format));
+                let rounded = round_up_to_multiple(stride, device.required_transfer_stride().num_bytes(image_format));
                 let optimal_width = rounded as i32 / image_format.bytes_per_pixel();
 
                 DeviceIntSize::new(
@@ -161,14 +161,14 @@ impl AsyncScreenshotGrabber {
             let mut reusable_pbo = None;
             while let Some(pbo) = self.available_pbos.pop() {
                 if pbo.get_reserved_size() != required_size {
-                    device.delete_pbo(pbo);
+                    device.delete_transfer_buffer(pbo);
                 } else {
                     reusable_pbo = Some(pbo);
                     break;
                 }
             };
 
-            reusable_pbo.unwrap_or_else(|| device.create_pbo_with_size(required_size))
+            reusable_pbo.unwrap_or_else(|| device.create_transfer_buffer_with_size(required_size))
         };
         assert_eq!(pbo.get_reserved_size(), required_size);
 
@@ -191,7 +191,7 @@ impl AsyncScreenshotGrabber {
             AsyncScreenshotGrabberMode::CompositionRecorder => ReadTarget::Default,
         };
 
-        device.read_pixels_into_pbo(
+        device.read_pixels_into_transfer_buffer(
             read_target,
             DeviceIntRect::from_size(read_size),
             image_format,
@@ -267,7 +267,18 @@ impl AsyncScreenshotGrabber {
         }
         assert_eq!(self.scaling_textures[level].get_dimensions(), texture_size);
 
-        let (read_target, read_target_rect) = if read_target_rect.width() > 2 * dest_size.width {
+        // Stop recursing once the next level's scaling texture would exceed the
+        // device's texture size limit; the device would otherwise clamp it and
+        // fail the assertion above. This level then scales down by more than a
+        // factor of two in a single (lower-quality) blit.
+        let max_texture_size = device.max_texture_size();
+        let next_texture_size = dest_size * 2;
+        let next_level_fits = next_texture_size.width <= max_texture_size
+            && next_texture_size.height <= max_texture_size;
+
+        let (read_target, read_target_rect) = if read_target_rect.width() > 2 * dest_size.width
+            && next_level_fits
+        {
             self.scale_screenshot(
                 device,
                 read_target,
@@ -320,6 +331,7 @@ impl AsyncScreenshotGrabber {
         handle: AsyncScreenshotHandle,
         dst_buffer: &mut [u8],
         dst_stride: usize,
+        dest_format: Option<ImageFormat>,
     ) -> bool {
         let AsyncScreenshot {
             pbo,
@@ -331,20 +343,40 @@ impl AsyncScreenshotGrabber {
             None => return false,
         };
 
-        let gl_type = device.gl().get_type();
+        // Swap the red and blue channels while copying when the caller wants the
+        // opposite of the format we read back. RGBA8 <-> BGRA8 is the only
+        // conversion supported.
+        let swap_rb = dest_format.is_some_and(|dest| {
+            (image_format == ImageFormat::RGBA8 && dest == ImageFormat::BGRA8)
+                || (image_format == ImageFormat::BGRA8 && dest == ImageFormat::RGBA8)
+        });
 
-        let success = if let Some(bound_pbo) = device.map_pbo_for_readback(&pbo) {
+        let readback_rows_top_down = device.get_capabilities().readback_rows_top_down;
+
+        let success = if let Some(bound_pbo) = device.map_transfer_buffer(&pbo) {
             let src_buffer = &bound_pbo.data;
             let src_stride = buffer_stride;
             let src_width =
                 screenshot_size.width as usize * image_format.bytes_per_pixel() as usize;
 
             for (src_slice, dst_slice) in self
-                .iter_src_buffer_chunked(gl_type, src_buffer, src_stride)
+                .iter_src_buffer_chunked(readback_rows_top_down, src_buffer, src_stride)
                 .zip(dst_buffer.chunks_mut(dst_stride))
                 .take(screenshot_size.height as usize)
             {
-                dst_slice[.. src_width].copy_from_slice(&src_slice[.. src_width]);
+                if swap_rb {
+                    for (src_px, dst_px) in src_slice[.. src_width]
+                        .chunks_exact(4)
+                        .zip(dst_slice[.. src_width].chunks_exact_mut(4))
+                    {
+                        dst_px[0] = src_px[2];
+                        dst_px[1] = src_px[1];
+                        dst_px[2] = src_px[0];
+                        dst_px[3] = src_px[3];
+                    }
+                } else {
+                    dst_slice[.. src_width].copy_from_slice(&src_slice[.. src_width]);
+                }
             }
 
             true
@@ -354,7 +386,7 @@ impl AsyncScreenshotGrabber {
 
         match self.mode {
             AsyncScreenshotGrabberMode::ProfilerScreenshots => self.available_pbos.push(pbo),
-            AsyncScreenshotGrabberMode::CompositionRecorder => device.delete_pbo(pbo),
+            AsyncScreenshotGrabberMode::CompositionRecorder => device.delete_transfer_buffer(pbo),
         }
 
         success
@@ -362,22 +394,21 @@ impl AsyncScreenshotGrabber {
 
     fn iter_src_buffer_chunked<'a>(
         &self,
-        gl_type: GlType,
+        readback_rows_top_down: bool,
         src_buffer: &'a [u8],
         src_stride: usize,
     ) -> Box<dyn Iterator<Item = &'a [u8]> + 'a> {
         use AsyncScreenshotGrabberMode::*;
 
-        let is_angle = cfg!(windows) && gl_type == GlType::Gles;
-
-        if self.mode == CompositionRecorder && !is_angle {
-            // This is a non-ANGLE configuration. in this case, the recorded frames were captured
-            // upside down, so we have to flip them right side up.
+        if self.mode == CompositionRecorder && !readback_rows_top_down {
+            // The recorded frames were read back bottom row first, so we have
+            // to flip them right side up.
             Box::new(src_buffer.chunks(src_stride).rev())
         } else {
-            // This is either an ANGLE configuration in the `CompositionRecorder` mode or a
-            // non-ANGLE configuration in the `ProfilerScreenshots` mode. In either case, the
-            // captured frames are right-side up.
+            // Either the readback delivered the top row first in the
+            // `CompositionRecorder` mode, or we are in the `ProfilerScreenshots`
+            // mode where the scaling blit already flipped the frame. In either
+            // case, the captured frames are right-side up.
             Box::new(src_buffer.chunks(src_stride))
         }
     }
@@ -425,6 +456,7 @@ impl Renderer {
                 AsyncScreenshotHandle(handle.0),
                 dst_buffer,
                 dst_stride,
+                None,
             )
         } else {
             false
@@ -446,6 +478,10 @@ impl Renderer {
     /// `map_and_recycle_screenshot`.
     ///
     /// The returned size is the size of the screenshot.
+    ///
+    /// Requesting `BGRA8` requires `supports_bgra_readback()`. When that is
+    /// false the caller must request `RGBA8` instead and have
+    /// `map_and_recycle_screenshot` swap the channels into the desired format.
     pub fn get_screenshot_async(
         &mut self,
         window_rect: DeviceIntRect,
@@ -471,6 +507,7 @@ impl Renderer {
         handle: AsyncScreenshotHandle,
         dst_buffer: &mut [u8],
         dst_stride: usize,
+        dest_format: ImageFormat,
     ) -> bool {
         if let Some(async_screenshots) = self.async_screenshots.as_mut() {
             async_screenshots.map_and_recycle_screenshot(
@@ -478,10 +515,18 @@ impl Renderer {
                 handle,
                 dst_buffer,
                 dst_stride,
+                Some(dest_format),
             )
         } else {
             false
         }
+    }
+
+    /// Whether functions that read back from the framebuffer (such as
+    /// `read_pixels_into` and `get_screenshot_async`) support BGRA. If false,
+    /// RGBA should be used instead and the caller must swap the channels itself.
+    pub fn supports_bgra_readback(&self) -> bool {
+        self.device.get_capabilities().supports_bgra_read
     }
 
     /// Release the screenshot grabbing structures that the profiler was using.

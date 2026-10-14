@@ -1,10 +1,8 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "builtin/MapObject-inl.h"
+#include "builtin/MapObject.h"
 
 #include "jsapi.h"
 
@@ -24,6 +22,7 @@
 #include "vm/SelfHosting.h"
 #include "vm/SymbolType.h"
 
+#include "builtin/MapObject-inl.h"
 #include "builtin/OrderedHashTableObject-inl.h"
 #include "gc/GCContext-inl.h"
 #include "gc/Marking-inl.h"
@@ -37,7 +36,7 @@ using mozilla::NumberEqualsInt32;
 
 /*** HashableValue **********************************************************/
 
-static PreBarriered<Value> NormalizeDoubleValue(double d) {
+static Value NormalizeDoubleValue(double d) {
   int32_t i;
   if (NumberEqualsInt32(d, &i)) {
     // Normalize int32_t-valued doubles to int32_t for faster hashing and
@@ -46,8 +45,9 @@ static PreBarriered<Value> NormalizeDoubleValue(double d) {
     return Int32Value(i);
   }
 
-  // Normalize the sign bit of a NaN.
-  return JS::CanonicalizedDoubleValue(d);
+  // JS::Value can store NaN values with the sign bit set. Use JS::DoubleValue
+  // to ensure the canonical NaN is used.
+  return DoubleValue(d);
 }
 
 bool HashableValue::setValue(JSContext* cx, const Value& v) {
@@ -128,16 +128,7 @@ bool HashableValue::equals(const HashableValue& other) const {
 namespace {} /* anonymous namespace */
 
 static const JSClassOps MapIteratorObjectClassOps = {
-    nullptr,                      // addProperty
-    nullptr,                      // delProperty
-    nullptr,                      // enumerate
-    nullptr,                      // newEnumerate
-    nullptr,                      // resolve
-    nullptr,                      // mayResolve
-    MapIteratorObject::finalize,  // finalize
-    nullptr,                      // call
-    nullptr,                      // construct
-    nullptr,                      // trace
+    .finalize = MapIteratorObject::finalize,
 };
 
 static const ClassExtension MapIteratorObjectClassExtension = {
@@ -175,7 +166,7 @@ bool GlobalObject::initMapIteratorProto(JSContext* cx,
       !DefineToStringTag(cx, proto, cx->names().Map_Iterator_)) {
     return false;
   }
-  if (!JSObject::setHasFuseProperty(cx, proto)) {
+  if (!JSObject::setHasRealmFuseProperty(cx, proto)) {
     return false;
   }
   global->initBuiltinProto(ProtoKind::MapIteratorProto, proto);
@@ -184,14 +175,15 @@ bool GlobalObject::initMapIteratorProto(JSContext* cx,
 
 template <typename TableObject>
 static inline bool HasRegisteredNurseryIterators(TableObject* t) {
-  Value v = t->getReservedSlot(TableObject::RegisteredNurseryIteratorsSlot);
+  Value v =
+      t->getReservedSlotTyped(TableObject::REGISTERED_NURSERY_ITERATORS_SLOT);
   return v.toBoolean();
 }
 
 template <typename TableObject>
 static inline void SetRegisteredNurseryIterators(TableObject* t, bool b) {
-  t->setReservedSlot(TableObject::RegisteredNurseryIteratorsSlot,
-                     JS::BooleanValue(b));
+  t->setReservedSlotTyped(TableObject::REGISTERED_NURSERY_ITERATORS_SLOT,
+                          JS::BooleanValue(b));
 }
 
 MapIteratorObject* MapIteratorObject::create(JSContext* cx,
@@ -329,16 +321,7 @@ static_assert(sizeof(MapObject::Table::Entry) ==
               sizeof(MapObject::PreBarrieredTable::Entry));
 
 const JSClassOps MapObject::classOps_ = {
-    nullptr,   // addProperty
-    nullptr,   // delProperty
-    nullptr,   // enumerate
-    nullptr,   // newEnumerate
-    nullptr,   // resolve
-    nullptr,   // mayResolve
-    finalize,  // finalize
-    nullptr,   // call
-    nullptr,   // construct
-    trace,     // trace
+    .trace = trace,
 };
 
 const ClassSpec MapObject::classSpec_ = {
@@ -359,9 +342,8 @@ const ClassExtension MapObject::classExtension_ = {
 const JSClass MapObject::class_ = {
     "Map",
     JSCLASS_DELAY_METADATA_BUILDER |
-        JSCLASS_HAS_RESERVED_SLOTS(MapObject::SlotCount) |
-        JSCLASS_HAS_CACHED_PROTO(JSProto_Map) | JSCLASS_BACKGROUND_FINALIZE |
-        JSCLASS_SKIP_NURSERY_FINALIZE,
+        JSCLASS_HAS_RESERVED_SLOTS(MapObject::SLOT_COUNT) |
+        JSCLASS_HAS_CACHED_PROTO(JSProto_Map),
     &MapObject::classOps_, &MapObject::classSpec_, &MapObject::classExtension_};
 
 const JSClass MapObject::protoClass_ = {
@@ -372,7 +354,7 @@ const JSClass MapObject::protoClass_ = {
 };
 
 const JSPropertySpec MapObject::properties[] = {
-    JS_PSG("size", size, 0),
+    JS_INLINABLE_PSG("size", size, 0, MapSize),
     JS_STRING_SYM_PS(toStringTag, "Map", JSPROP_READONLY),
     JS_PS_END,
 };
@@ -386,10 +368,8 @@ const JSFunctionSpec MapObject::methods[] = {
     JS_FN("values", values, 0, 0),
     JS_FN("clear", clear, 0, 0),
     JS_SELF_HOSTED_FN("forEach", "MapForEach", 2, 0),
-#ifdef NIGHTLY_BUILD
     JS_FN("getOrInsert", getOrInsert, 2, 0),
     JS_SELF_HOSTED_FN("getOrInsertComputed", "MapGetOrInsertComputed", 2, 0),
-#endif
     JS_FN("entries", entries, 0, 0),
     // @@iterator is re-defined in finishInit so that it has the
     // same identity as |entries|.
@@ -425,7 +405,7 @@ const JSFunctionSpec MapObject::staticMethods[] = {
     return false;
   }
 
-  return JSObject::setHasFuseProperty(cx, nativeProto);
+  return JSObject::setHasRealmFuseProperty(cx, nativeProto);
 }
 
 void MapObject::trace(JSTracer* trc, JSObject* obj) {
@@ -437,7 +417,7 @@ using NurseryKeysVector = GCVector<Value, 4, SystemAllocPolicy>;
 
 template <typename TableObject>
 static NurseryKeysVector* GetNurseryKeys(TableObject* t) {
-  Value value = t->getReservedSlot(TableObject::NurseryKeysSlot);
+  Value value = t->getReservedSlotTyped(TableObject::NURSERY_KEYS_SLOT);
   return reinterpret_cast<NurseryKeysVector*>(value.toPrivate());
 }
 
@@ -449,7 +429,7 @@ static NurseryKeysVector* AllocNurseryKeys(TableObject* t) {
     return nullptr;
   }
 
-  t->setReservedSlot(TableObject::NurseryKeysSlot, PrivateValue(keys));
+  t->setReservedSlotTyped(TableObject::NURSERY_KEYS_SLOT, PrivateValue(keys));
   return keys;
 }
 
@@ -458,7 +438,8 @@ static void DeleteNurseryKeys(TableObject* t) {
   auto keys = GetNurseryKeys(t);
   MOZ_ASSERT(keys);
   js_delete(keys);
-  t->setReservedSlot(TableObject::NurseryKeysSlot, PrivateValue(nullptr));
+  t->setReservedSlotTyped(TableObject::NURSERY_KEYS_SLOT,
+                          PrivateValue(nullptr));
 }
 
 // A generic store buffer entry that traces all nursery keys for an ordered hash
@@ -572,7 +553,6 @@ bool MapObject::setWithHashableKey(JSContext* cx, const HashableValue& key,
   return true;
 }
 
-#ifdef NIGHTLY_BUILD
 bool MapObject::getOrInsert(JSContext* cx, const Value& key, const Value& val,
                             MutableHandleValue rval) {
   HashableValue k;
@@ -603,24 +583,24 @@ bool MapObject::getOrInsert(JSContext* cx, const Value& key, const Value& val,
   }
   return true;
 }
-#endif  // #ifdef NIGHTLY_BUILD
 
 MapObject* MapObject::createWithProto(JSContext* cx, HandleObject proto,
                                       NewObjectKind newKind) {
   MOZ_ASSERT(proto);
 
-  gc::AllocKind allocKind = gc::GetGCObjectKind(SlotCount);
+  gc::AllocKind allocKind = gc::GetGCObjectKind(SLOT_COUNT);
 
   AutoSetNewObjectMetadata metadata(cx);
-  auto* mapObj =
-      NewObjectWithGivenProtoAndKinds<MapObject>(cx, proto, allocKind, newKind);
+  auto* mapObj = NewObjectWithGivenProto<MapObject>(
+      cx, proto, {.newKind = newKind, .allocKind = allocKind});
   if (!mapObj) {
     return nullptr;
   }
 
   UnbarrieredTable(mapObj).initSlots();
-  mapObj->initReservedSlot(NurseryKeysSlot, PrivateValue(nullptr));
-  mapObj->initReservedSlot(RegisteredNurseryIteratorsSlot, BooleanValue(false));
+  mapObj->initReservedSlotTyped(NURSERY_KEYS_SLOT, PrivateValue(nullptr));
+  mapObj->initReservedSlotTyped(REGISTERED_NURSERY_ITERATORS_SLOT,
+                                BooleanValue(false));
   return mapObj;
 }
 
@@ -638,8 +618,8 @@ MapObject* MapObject::create(JSContext* cx,
   }
 
   gc::AllocKind allocKind = templateObj->asTenured().getAllocKind();
-  MOZ_ASSERT(gc::GetGCKindSlots(allocKind) >= SlotCount);
-  MOZ_ASSERT(gc::IsBackgroundFinalized(allocKind));
+  MOZ_ASSERT(gc::GetGCKindSlots(allocKind) >= SLOT_COUNT);
+  MOZ_ASSERT(!gc::IsFinalizedKind(allocKind));
 
   AutoSetNewObjectMetadata metadata(cx);
   Rooted<SharedShape*> shape(cx, templateObj->sharedShape());
@@ -650,8 +630,9 @@ MapObject* MapObject::create(JSContext* cx,
   }
 
   UnbarrieredTable(mapObj).initSlots();
-  mapObj->initReservedSlot(NurseryKeysSlot, PrivateValue(nullptr));
-  mapObj->initReservedSlot(RegisteredNurseryIteratorsSlot, BooleanValue(false));
+  mapObj->initReservedSlotTyped(NURSERY_KEYS_SLOT, PrivateValue(nullptr));
+  mapObj->initReservedSlotTyped(REGISTERED_NURSERY_ITERATORS_SLOT,
+                                BooleanValue(false));
   return mapObj;
 }
 
@@ -676,36 +657,15 @@ MapObject* GlobalObject::getOrCreateMapTemplateObject(JSContext* cx) {
   return mapObj;
 }
 
-size_t MapObject::sizeOfData(mozilla::MallocSizeOf mallocSizeOf) {
-  size_t size = 0;
-  size += Table(this).sizeOfExcludingObject(mallocSizeOf);
-  if (NurseryKeysVector* nurseryKeys = GetNurseryKeys(this)) {
-    size += nurseryKeys->sizeOfIncludingThis(mallocSizeOf);
-  }
-  return size;
+size_t MapObject::sizeOfBufferData() {
+  return Table(this).sizeOfExcludingObject();
 }
 
-void MapObject::finalize(JS::GCContext* gcx, JSObject* obj) {
-  MapObject* mapObj = &obj->as<MapObject>();
-  MOZ_ASSERT(!IsInsideNursery(mapObj));
-  MOZ_ASSERT(!UnbarrieredTable(mapObj).hasNurseryIterators());
-
-#ifdef DEBUG
-  // If we're finalizing a tenured map then it cannot contain nursery things,
-  // because we evicted the nursery at the start of collection and writing a
-  // nursery thing into the table would require it to be live, which means it
-  // would have been marked.
-  UnbarrieredTable(mapObj).forEachEntryUpTo(1000, [](auto& entry) {
-    Value key = entry.key;
-    MOZ_ASSERT_IF(key.isGCThing(), !IsInsideNursery(key.toGCThing()));
-    Value value = entry.value;
-    MOZ_ASSERT_IF(value.isGCThing(), !IsInsideNursery(value.toGCThing()));
-  });
-#endif
-
-  // Finalized tenured maps do not contain nursery GC things, so do not require
-  // post barriers. Pre barriers are not required for finalization.
-  UnbarrieredTable(mapObj).destroy(gcx);
+size_t MapObject::sizeOfMallocData(mozilla::MallocSizeOf mallocSizeOf) {
+  if (NurseryKeysVector* nurseryKeys = GetNurseryKeys(this)) {
+    return nurseryKeys->sizeOfIncludingThis(mallocSizeOf);
+  }
+  return 0;
 }
 
 size_t MapObject::objectMoved(JSObject* obj, JSObject* old) {
@@ -727,7 +687,7 @@ void MapObject::clearNurseryIteratorsBeforeMinorGC() {
 
 /* static */
 MapObject* MapObject::sweepAfterMinorGC(JS::GCContext* gcx, MapObject* mapobj) {
-  Nursery& nursery = gcx->runtime()->gc.nursery();
+  Nursery& nursery = gcx->gcRuntime()->nursery();
   bool wasInCollectedRegion = nursery.inCollectedRegion(mapobj);
   if (wasInCollectedRegion && !IsForwarded(mapobj)) {
     // This MapObject is dead.
@@ -764,6 +724,10 @@ bool MapObject::tryOptimizeCtorWithIterable(JSContext* cx,
     ArrayObject* array = &iterable->as<ArrayObject>();
     uint32_t len = array->getDenseInitializedLength();
 
+    if (!Table(this).ensureCapacity(cx, len)) {
+      return false;
+    }
+
     for (uint32_t index = 0; index < len; index++) {
       Value element = array->getDenseElement(index);
       MOZ_ASSERT(IsPackedArray(&element.toObject()));
@@ -780,6 +744,10 @@ bool MapObject::tryOptimizeCtorWithIterable(JSContext* cx,
       }
     }
 
+    // If there were many duplicate keys, we may have over-allocated.
+    // In that case, resize now.
+    Table(this).maybeShrink(cx);
+
     *optimized = true;
     return true;
   }
@@ -787,6 +755,9 @@ bool MapObject::tryOptimizeCtorWithIterable(JSContext* cx,
   // Fast path for `new Map(map)`.
   if (IsMapObjectWithDefaultIterator(iterable, cx)) {
     auto* iterableMap = &iterable->as<MapObject>();
+    if (!Table(this).ensureCapacity(cx, Table(iterableMap).count())) {
+      return false;
+    }
     auto addEntry = [cx, this](auto& entry) {
       return setWithHashableKey(cx, entry.key, entry.value);
     };
@@ -949,7 +920,6 @@ bool MapObject::set(JSContext* cx, unsigned argc, Value* vp) {
   return CallNonGenericMethod<MapObject::is, MapObject::set_impl>(cx, args);
 }
 
-#ifdef NIGHTLY_BUILD
 bool MapObject::getOrInsert_impl(JSContext* cx, const CallArgs& args) {
   auto* mapObj = &args.thisv().toObject().as<MapObject>();
   return mapObj->getOrInsert(cx, args.get(0), args.get(1), args.rval());
@@ -961,7 +931,6 @@ bool MapObject::getOrInsert(JSContext* cx, unsigned argc, Value* vp) {
   return CallNonGenericMethod<MapObject::is, MapObject::getOrInsert_impl>(cx,
                                                                           args);
 }
-#endif  // #ifdef NIGHTLY_BUILD
 
 bool MapObject::delete_(JSContext* cx, const Value& key, bool* rval) {
   HashableValue k;
@@ -1073,16 +1042,7 @@ void MapObject::clear(JSContext* cx) {
 /*** SetIterator ************************************************************/
 
 static const JSClassOps SetIteratorObjectClassOps = {
-    nullptr,                      // addProperty
-    nullptr,                      // delProperty
-    nullptr,                      // enumerate
-    nullptr,                      // newEnumerate
-    nullptr,                      // resolve
-    nullptr,                      // mayResolve
-    SetIteratorObject::finalize,  // finalize
-    nullptr,                      // call
-    nullptr,                      // construct
-    nullptr,                      // trace
+    .finalize = SetIteratorObject::finalize,
 };
 
 static const ClassExtension SetIteratorObjectClassExtension = {
@@ -1120,7 +1080,7 @@ bool GlobalObject::initSetIteratorProto(JSContext* cx,
       !DefineToStringTag(cx, proto, cx->names().Set_Iterator_)) {
     return false;
   }
-  if (!JSObject::setHasFuseProperty(cx, proto)) {
+  if (!JSObject::setHasRealmFuseProperty(cx, proto)) {
     return false;
   }
   global->initBuiltinProto(ProtoKind::SetIteratorProto, proto);
@@ -1230,16 +1190,7 @@ JSObject* SetIteratorObject::createResult(JSContext* cx) {
 /*** Set ********************************************************************/
 
 const JSClassOps SetObject::classOps_ = {
-    nullptr,   // addProperty
-    nullptr,   // delProperty
-    nullptr,   // enumerate
-    nullptr,   // newEnumerate
-    nullptr,   // resolve
-    nullptr,   // mayResolve
-    finalize,  // finalize
-    nullptr,   // call
-    nullptr,   // construct
-    trace,     // trace
+    .trace = trace,
 };
 
 const ClassSpec SetObject::classSpec_ = {
@@ -1260,9 +1211,8 @@ const ClassExtension SetObject::classExtension_ = {
 const JSClass SetObject::class_ = {
     "Set",
     JSCLASS_DELAY_METADATA_BUILDER |
-        JSCLASS_HAS_RESERVED_SLOTS(SetObject::SlotCount) |
-        JSCLASS_HAS_CACHED_PROTO(JSProto_Set) | JSCLASS_BACKGROUND_FINALIZE |
-        JSCLASS_SKIP_NURSERY_FINALIZE,
+        JSCLASS_HAS_RESERVED_SLOTS(SetObject::SLOT_COUNT) |
+        JSCLASS_HAS_CACHED_PROTO(JSProto_Set),
     &SetObject::classOps_, &SetObject::classSpec_, &SetObject::classExtension_};
 
 const JSClass SetObject::protoClass_ = {
@@ -1273,7 +1223,7 @@ const JSClass SetObject::protoClass_ = {
 };
 
 const JSPropertySpec SetObject::properties[] = {
-    JS_PSG("size", size, 0),
+    JS_INLINABLE_PSG("size", size, 0, SetSize),
     JS_STRING_SYM_PS(toStringTag, "Set", JSPROP_READONLY),
     JS_PS_END,
 };
@@ -1331,7 +1281,7 @@ const JSPropertySpec SetObject::staticProperties[] = {
     return false;
   }
 
-  return JSObject::setHasFuseProperty(cx, nativeProto);
+  return JSObject::setHasRealmFuseProperty(cx, nativeProto);
 }
 
 bool SetObject::keys(JS::MutableHandle<GCVector<JS::Value>> keys) {
@@ -1360,18 +1310,19 @@ SetObject* SetObject::createWithProto(JSContext* cx, HandleObject proto,
                                       NewObjectKind newKind) {
   MOZ_ASSERT(proto);
 
-  gc::AllocKind allocKind = gc::GetGCObjectKind(SlotCount);
+  gc::AllocKind allocKind = gc::GetGCObjectKind(SLOT_COUNT);
 
   AutoSetNewObjectMetadata metadata(cx);
-  auto* setObj =
-      NewObjectWithGivenProtoAndKinds<SetObject>(cx, proto, allocKind, newKind);
+  auto* setObj = NewObjectWithGivenProto<SetObject>(
+      cx, proto, {.newKind = newKind, .allocKind = allocKind});
   if (!setObj) {
     return nullptr;
   }
 
   UnbarrieredTable(setObj).initSlots();
-  setObj->initReservedSlot(NurseryKeysSlot, PrivateValue(nullptr));
-  setObj->initReservedSlot(RegisteredNurseryIteratorsSlot, BooleanValue(false));
+  setObj->initReservedSlotTyped(NURSERY_KEYS_SLOT, PrivateValue(nullptr));
+  setObj->initReservedSlotTyped(REGISTERED_NURSERY_ITERATORS_SLOT,
+                                BooleanValue(false));
   return setObj;
 }
 
@@ -1389,8 +1340,8 @@ SetObject* SetObject::create(JSContext* cx,
   }
 
   gc::AllocKind allocKind = templateObj->asTenured().getAllocKind();
-  MOZ_ASSERT(gc::GetGCKindSlots(allocKind) >= SlotCount);
-  MOZ_ASSERT(gc::IsBackgroundFinalized(allocKind));
+  MOZ_ASSERT(gc::GetGCKindSlots(allocKind) >= SLOT_COUNT);
+  MOZ_ASSERT(!gc::IsFinalizedKind(allocKind));
 
   AutoSetNewObjectMetadata metadata(cx);
   Rooted<SharedShape*> shape(cx, templateObj->sharedShape());
@@ -1401,8 +1352,9 @@ SetObject* SetObject::create(JSContext* cx,
   }
 
   UnbarrieredTable(setObj).initSlots();
-  setObj->initReservedSlot(NurseryKeysSlot, PrivateValue(nullptr));
-  setObj->initReservedSlot(RegisteredNurseryIteratorsSlot, BooleanValue(false));
+  setObj->initReservedSlotTyped(NURSERY_KEYS_SLOT, PrivateValue(nullptr));
+  setObj->initReservedSlotTyped(REGISTERED_NURSERY_ITERATORS_SLOT,
+                                BooleanValue(false));
   return setObj;
 }
 
@@ -1432,34 +1384,15 @@ void SetObject::trace(JSTracer* trc, JSObject* obj) {
   Table(setobj).trace(trc);
 }
 
-size_t SetObject::sizeOfData(mozilla::MallocSizeOf mallocSizeOf) {
-  size_t size = 0;
-  size += Table(this).sizeOfExcludingObject(mallocSizeOf);
-  if (NurseryKeysVector* nurseryKeys = GetNurseryKeys(this)) {
-    size += nurseryKeys->sizeOfIncludingThis(mallocSizeOf);
-  }
-  return size;
+size_t SetObject::sizeOfBufferData() {
+  return Table(this).sizeOfExcludingObject();
 }
 
-void SetObject::finalize(JS::GCContext* gcx, JSObject* obj) {
-  SetObject* setObj = &obj->as<SetObject>();
-  MOZ_ASSERT(!IsInsideNursery(setObj));
-  MOZ_ASSERT(!UnbarrieredTable(setObj).hasNurseryIterators());
-
-#ifdef DEBUG
-  // If we're finalizing a tenured set then it cannot contain nursery things,
-  // because we evicted the nursery at the start of collection and writing a
-  // nursery thing into the set would require it to be live, which means it
-  // would have been marked.
-  UnbarrieredTable(setObj).forEachEntryUpTo(1000, [](auto& entry) {
-    Value key = entry;
-    MOZ_ASSERT_IF(key.isGCThing(), !IsInsideNursery(key.toGCThing()));
-  });
-#endif
-
-  // Finalized tenured sets do not contain nursery GC things, so do not require
-  // post barriers. Pre barriers are not required for finalization.
-  UnbarrieredTable(setObj).destroy(gcx);
+size_t SetObject::sizeOfMallocData(mozilla::MallocSizeOf mallocSizeOf) {
+  if (NurseryKeysVector* nurseryKeys = GetNurseryKeys(this)) {
+    return nurseryKeys->sizeOfIncludingThis(mallocSizeOf);
+  }
+  return 0;
 }
 
 size_t SetObject::objectMoved(JSObject* obj, JSObject* old) {
@@ -1481,7 +1414,7 @@ void SetObject::clearNurseryIteratorsBeforeMinorGC() {
 
 /* static */
 SetObject* SetObject::sweepAfterMinorGC(JS::GCContext* gcx, SetObject* setobj) {
-  Nursery& nursery = gcx->runtime()->gc.nursery();
+  Nursery& nursery = gcx->gcRuntime()->nursery();
   bool wasInCollectedRegion = nursery.inCollectedRegion(setobj);
   if (wasInCollectedRegion && !IsForwarded(setobj)) {
     // This SetObject is dead.
@@ -1533,8 +1466,8 @@ bool SetObject::tryOptimizeCtorWithIterable(JSContext* cx,
   // Fast path for `new Set(set)`.
   if (IsSetObjectWithDefaultIterator(iterable, cx)) {
     auto* iterableSet = &iterable->as<SetObject>();
-    if (!IsSetObjectWithDefaultIterator(iterableSet, cx)) {
-      return true;
+    if (!Table(this).ensureCapacity(cx, Table(iterableSet).count())) {
+      return false;
     }
     auto addEntry = [cx, this](auto& entry) {
       return addHashableValue(cx, entry);
@@ -1882,7 +1815,6 @@ JS_PUBLIC_API bool JS::MapHas(JSContext* cx, HandleObject obj, HandleValue key,
   return enter.unwrapped()->has(cx, wrappedKey, rval);
 }
 
-#ifdef NIGHTLY_BUILD
 JS_PUBLIC_API bool JS::MapGetOrInsert(JSContext* cx, HandleObject obj,
                                       HandleValue key, HandleValue val,
                                       MutableHandleValue rval) {
@@ -1905,7 +1837,6 @@ JS_PUBLIC_API bool JS::MapGetOrInsert(JSContext* cx, HandleObject obj,
   }
   return JS_WrapValue(cx, rval);
 }
-#endif  // #ifdef NIGHTLY_BUILD
 
 JS_PUBLIC_API bool JS::MapDelete(JSContext* cx, HandleObject obj,
                                  HandleValue key, bool* rval) {
@@ -2082,4 +2013,56 @@ JS_PUBLIC_API bool JS::SetEntries(JSContext* cx, HandleObject obj,
 JS_PUBLIC_API bool JS::SetForEach(JSContext* cx, HandleObject obj,
                                   HandleValue callbackFn, HandleValue thisVal) {
   return forEach("SetForEach", cx, obj, callbackFn, thisVal);
+}
+
+JS_PUBLIC_API bool js::GetSetObjectKeys(
+    JSContext* cx, JS::HandleObject obj,
+    JS::MutableHandle<JS::GCVector<JS::Value>> keys) {
+  CHECK_THREAD(cx);
+  cx->check(obj);
+
+  if (obj->is<SetObject>()) {
+    return obj->as<SetObject>().keys(keys);
+  }
+
+  {
+    AutoEnterTableRealm<SetObject> enter(cx, obj);
+    if (!enter.unwrapped()->keys(keys)) {
+      return false;
+    }
+  }
+
+  for (uint32_t i = 0; i < keys.length(); i++) {
+    if (!JS_WrapValue(cx, keys[i])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+JS_PUBLIC_API bool js::GetMapObjectKeysAndValuesInterleaved(
+    JSContext* cx, JS::HandleObject obj,
+    JS::MutableHandle<JS::GCVector<JS::Value>> entries) {
+  CHECK_THREAD(cx);
+  cx->check(obj);
+
+  if (obj->is<MapObject>()) {
+    return obj->as<MapObject>().getKeysAndValuesInterleaved(entries);
+  }
+
+  {
+    AutoEnterTableRealm<MapObject> enter(cx, obj);
+    if (!enter.unwrapped()->getKeysAndValuesInterleaved(entries)) {
+      return false;
+    }
+  }
+
+  for (uint32_t i = 0; i < entries.length(); i++) {
+    if (!JS_WrapValue(cx, entries[i])) {
+      return false;
+    }
+  }
+
+  return true;
 }

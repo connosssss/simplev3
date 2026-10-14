@@ -12,17 +12,26 @@ kind-dependencies:
 transforms:
     - gecko_taskgraph.transforms.build:transforms
     - gecko_taskgraph.transforms.release_deps:transforms
+    - taskgraph.transforms.task_context
     - gecko_taskgraph.transforms.release_generate_checksums:transforms
     - gecko_taskgraph.transforms.job:transforms
     - gecko_taskgraph.transforms.task:transforms
 
 task-defaults:
+    run-on-repo-type: [hg]
     name: generate-checksums
     description: generates checksums
+    task-context:
+        from-custom:
+            - release-level
+        substitution-fields:
+            - run.stage-product
+            - run.bucket-name
     run-on-projects: []  # to make sure this never runs as part of CI
     shipping-phase: promote
-    worker-type: b-linux-gcp
+    worker-type: b-linux
     worker:
+        docker-image: {in-tree: debian13-amd64-build}
         max-run-time: 1200
         artifacts:
             - name: public/build/SHA256SUMMARY
@@ -38,13 +47,13 @@ task-defaults:
               path: /builds/worker/SHA512SUMS
               type: file
     run:
-        using: mozharness
-        config: []  # See extra-config below
-        actions: [create-virtualenv, collect-individual-checksums, create-big-checksums, create-summary]
-        options:
-            - "version={version}"
-            - "build-number={build_number}"
-        script: "mozharness/scripts/release/generate-checksums.py"
+        clone-with: hg
+        sparse-profile: mach
+        output-dir: /builds/worker
+        bucket-name:
+            by-release-level:
+                production: "moz-fx-productdelivery-pr-38b5-productdelivery"
+                staging: "moz-fx-productdelivery-no-7d6a-productdelivery"
     treeherder:
         symbol: Rel(GenChcks)
         kind: test
@@ -57,14 +66,7 @@ tasks:
             build_platform: firefox-release
             build_type: opt
         run:
-            extra-config:
-                by-release-level:
-                    production:
-                        stage_product: "firefox"
-                        bucket_name: "moz-fx-productdelivery-pr-38b5-productdelivery"
-                    staging:
-                        stage_product: "firefox"
-                        bucket_name: "moz-fx-productdelivery-no-7d6a-productdelivery"
+            stage-product: firefox
         treeherder:
             platform: firefox-release/opt
 
@@ -74,13 +76,6 @@ tasks:
             build_platform: devedition-release
             build_type: opt
         run:
-            extra-config:
-                by-release-level:
-                    production:
-                        stage_product: "devedition"
-                        bucket_name: "moz-fx-productdelivery-pr-38b5-productdelivery"
-                    staging:
-                        stage_product: "devedition"
-                        bucket_name: "moz-fx-productdelivery-no-7d6a-productdelivery"
+            stage-product: devedition
         treeherder:
             platform: devedition-release/opt

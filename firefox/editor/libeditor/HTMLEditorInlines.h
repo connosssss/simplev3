@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,16 +14,14 @@
 #include "ErrorList.h"  // for nsresult
 
 #include "mozilla/AlreadyAddRefed.h"
-#include "mozilla/Debug.h"
-#include "mozilla/Likely.h"
 #include "mozilla/RefPtr.h"
 
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/Range.h"
 
 #include "nsAtom.h"
 #include "nsGkAtoms.h"
 #include "nsIContent.h"
-#include "nsRange.h"
 #include "nsString.h"
 
 #include <ostream>
@@ -62,6 +59,13 @@ Result<MoveNodeResult, nsresult> HTMLEditor::MoveNodeToEndWithTransaction(
                                  EditorDOMPoint::AtEndOf(aNewContainer));
 }
 
+Result<MoveNodeResult, nsresult> HTMLEditor::MoveSiblingsToEndWithTransaction(
+    nsIContent& aFirstContentToMove, nsIContent& aLastContentToMove,
+    nsINode& aNewContainer) {
+  return MoveSiblingsWithTransaction(aFirstContentToMove, aLastContentToMove,
+                                     EditorDOMPoint::AtEndOf(aNewContainer));
+}
+
 Element* HTMLEditor::GetTableCellElementAt(
     Element& aTableElement, const CellIndexes& aCellIndexes) const {
   return GetTableCellElementAt(aTableElement, aCellIndexes.mRow,
@@ -76,10 +80,10 @@ HTMLEditor::GetSelectedRangeItemForTopLevelEditSubAction() const {
   return do_AddRef(mSelectedRangeForTopLevelEditSubAction);
 }
 
-already_AddRefed<nsRange> HTMLEditor::GetChangedRangeForTopLevelEditSubAction()
-    const {
+already_AddRefed<dom::Range>
+HTMLEditor::GetChangedRangeForTopLevelEditSubAction() const {
   if (!mChangedRangeForTopLevelEditSubAction) {
-    mChangedRangeForTopLevelEditSubAction = nsRange::Create(GetDocument());
+    mChangedRangeForTopLevelEditSubAction = dom::Range::Create(GetDocument());
   }
   return do_AddRef(mChangedRangeForTopLevelEditSubAction);
 }

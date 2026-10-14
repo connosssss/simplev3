@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,15 +8,17 @@
  */
 
 #include "nsStyleTransformMatrix.h"
-#include "nsLayoutUtils.h"
-#include "nsPresContext.h"
-#include "mozilla/MotionPathUtils.h"
-#include "mozilla/ServoBindings.h"
-#include "mozilla/StaticPrefs_layout.h"
-#include "mozilla/StyleAnimationValue.h"
-#include "mozilla/SVGUtils.h"
+
 #include "gfxMatrix.h"
 #include "gfxQuaternion.h"
+#include "mozilla/MotionPathUtils.h"
+#include "mozilla/SVGUtils.h"
+#include "mozilla/ServoBindings.h"
+#include "mozilla/ServoComputedData.h"
+#include "mozilla/StaticPrefs_layout.h"
+#include "mozilla/StyleAnimationValue.h"
+#include "nsLayoutUtils.h"
+#include "nsPresContext.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -82,12 +82,6 @@ static nsRect GetSVGBox(const nsIFrame* aFrame) {
               bboxInAppUnits.height};
     }
     case StyleTransformBox::BorderBox:
-      if (!StaticPrefs::layout_css_transform_box_content_stroke_enabled()) {
-        // If stroke-box is disabled, we shouldn't use it and fall back to
-        // view-box.
-        return computeViewBox();
-      }
-      [[fallthrough]];
     case StyleTransformBox::StrokeBox: {
       // We are using SVGUtils::PathExtentsToMaxStrokeExtents() to compute the
       // bbox contribution for stroke box (if it doesn't have simple bounds),
@@ -117,6 +111,22 @@ static nsRect GetSVGBox(const nsIFrame* aFrame) {
   return {};
 }
 
+TransformReferenceBox::TransformReferenceBox(const nsIFrame* aFrame)
+    : mFrame(aFrame) {
+  MOZ_ASSERT(mFrame);
+  mEffectiveZoom = mFrame->Style()->EffectiveZoom();
+}
+
+TransformReferenceBox::TransformReferenceBox(
+    const nsIFrame* aFrame, const nsRect& aFallbackDimensions) {
+  mFrame = aFrame;
+  if (!mFrame) {
+    Init(aFallbackDimensions);
+  } else {
+    mEffectiveZoom = mFrame->Style()->EffectiveZoom();
+  }
+}
+
 void TransformReferenceBox::EnsureDimensionsAreCached() {
   if (mIsCached) {
     return;
@@ -126,8 +136,14 @@ void TransformReferenceBox::EnsureDimensionsAreCached() {
 
   mIsCached = true;
 
+  StyleZoom zoom = mFrame->Style()->EffectiveZoom();
+
+  auto MaybeUnzoom = [&](const nsRect& aBox) {
+    return mNeedsUnzooming ? zoom.Unzoom(aBox) : aBox;
+  };
+
   if (mFrame->HasAnyStateBits(NS_FRAME_SVG_LAYOUT)) {
-    mBox = GetSVGBox(mFrame);
+    mBox = MaybeUnzoom(GetSVGBox(mFrame));
     return;
   }
 
@@ -137,7 +153,7 @@ void TransformReferenceBox::EnsureDimensionsAreCached() {
   switch (mFrame->StyleDisplay()->mTransformBox) {
     case StyleTransformBox::FillBox:
     case StyleTransformBox::ContentBox: {
-      mBox = mFrame->GetContentRectRelativeToSelf();
+      mBox = MaybeUnzoom(mFrame->GetContentRectRelativeToSelf());
       return;
     }
     case StyleTransformBox::StrokeBox:
@@ -167,7 +183,7 @@ void TransformReferenceBox::EnsureDimensionsAreCached() {
       }
 #endif
 
-      mBox = {0, 0, rect.Width(), rect.Height()};
+      mBox = MaybeUnzoom({0, 0, rect.Width(), rect.Height()});
       return;
     }
   }
@@ -191,7 +207,8 @@ float ProcessTranslatePart(
 
 /* Helper function to process a matrix entry. */
 static void ProcessMatrix(Matrix4x4& aMatrix,
-                          const StyleTransformOperation& aOp) {
+                          const StyleTransformOperation& aOp,
+                          mozilla::StyleZoom aEffectiveZoom) {
   const auto& matrix = aOp.AsMatrix();
   gfxMatrix result;
 
@@ -199,14 +216,15 @@ static void ProcessMatrix(Matrix4x4& aMatrix,
   result._12 = matrix.b;
   result._21 = matrix.c;
   result._22 = matrix.d;
-  result._31 = matrix.e;
-  result._32 = matrix.f;
+  result._31 = aEffectiveZoom.Zoom(matrix.e);
+  result._32 = aEffectiveZoom.Zoom(matrix.f);
 
   aMatrix = result * aMatrix;
 }
 
 static void ProcessMatrix3D(Matrix4x4& aMatrix,
-                            const StyleTransformOperation& aOp) {
+                            const StyleTransformOperation& aOp,
+                            mozilla::StyleZoom aEffectiveZoom) {
   Matrix4x4 temp;
 
   const auto& matrix = aOp.AsMatrix3D();
@@ -224,9 +242,9 @@ static void ProcessMatrix3D(Matrix4x4& aMatrix,
   temp._33 = matrix.m33;
   temp._34 = matrix.m34;
 
-  temp._41 = matrix.m41;
-  temp._42 = matrix.m42;
-  temp._43 = matrix.m43;
+  temp._41 = aEffectiveZoom.Zoom(matrix.m41);
+  temp._42 = aEffectiveZoom.Zoom(matrix.m42);
+  temp._43 = aEffectiveZoom.Zoom(matrix.m43);
   temp._44 = matrix.m44;
 
   aMatrix = temp * aMatrix;
@@ -329,10 +347,13 @@ template <typename Operator>
 static void ProcessMatrixOperator(Matrix4x4& aMatrix,
                                   const StyleTransform& aFrom,
                                   const StyleTransform& aTo, float aProgress,
-                                  TransformReferenceBox& aRefBox) {
+                                  TransformReferenceBox& aRefBox,
+                                  Zoomed aIsZoomed) {
   float appUnitPerCSSPixel = AppUnitsPerCSSPixel();
-  Matrix4x4 matrix1 = ReadTransforms(aFrom, aRefBox, appUnitPerCSSPixel);
-  Matrix4x4 matrix2 = ReadTransforms(aTo, aRefBox, appUnitPerCSSPixel);
+  Matrix4x4 matrix1 =
+      ReadTransforms(aFrom, aRefBox, appUnitPerCSSPixel, aIsZoomed);
+  Matrix4x4 matrix2 =
+      ReadTransforms(aTo, aRefBox, appUnitPerCSSPixel, aIsZoomed);
   aMatrix = Operator::operateByServo(matrix1, matrix2, aProgress) * aMatrix;
 }
 
@@ -340,64 +361,74 @@ static void ProcessMatrixOperator(Matrix4x4& aMatrix,
  */
 void ProcessInterpolateMatrix(Matrix4x4& aMatrix,
                               const StyleTransformOperation& aOp,
-                              TransformReferenceBox& aRefBox) {
+                              TransformReferenceBox& aRefBox,
+                              Zoomed aIsZoomed) {
   const auto& args = aOp.AsInterpolateMatrix();
   ProcessMatrixOperator<Interpolate>(aMatrix, args.from_list, args.to_list,
-                                     args.progress._0, aRefBox);
+                                     args.progress._0, aRefBox, aIsZoomed);
 }
 
 void ProcessAccumulateMatrix(Matrix4x4& aMatrix,
                              const StyleTransformOperation& aOp,
-                             TransformReferenceBox& aRefBox) {
+                             TransformReferenceBox& aRefBox, Zoomed aIsZoomed) {
   const auto& args = aOp.AsAccumulateMatrix();
   ProcessMatrixOperator<Accumulate>(aMatrix, args.from_list, args.to_list,
-                                    args.count, aRefBox);
+                                    args.count, aRefBox, aIsZoomed);
 }
 
 /* Helper function to process a translatex function. */
 static void ProcessTranslateX(Matrix4x4& aMatrix,
                               const LengthPercentage& aLength,
-                              TransformReferenceBox& aRefBox) {
+                              TransformReferenceBox& aRefBox,
+                              StyleZoom aEffectiveZoom) {
   Point3D temp;
-  temp.x =
-      ProcessTranslatePart(aLength, &aRefBox, &TransformReferenceBox::Width);
+  temp.x = aEffectiveZoom.Unzoom(
+      ProcessTranslatePart(aLength, &aRefBox, &TransformReferenceBox::Width));
   aMatrix.PreTranslate(temp);
 }
 
 /* Helper function to process a translatey function. */
 static void ProcessTranslateY(Matrix4x4& aMatrix,
                               const LengthPercentage& aLength,
-                              TransformReferenceBox& aRefBox) {
+                              TransformReferenceBox& aRefBox,
+                              StyleZoom aEffectiveZoom) {
   Point3D temp;
-  temp.y =
-      ProcessTranslatePart(aLength, &aRefBox, &TransformReferenceBox::Height);
+  temp.y = aEffectiveZoom.Unzoom(
+      ProcessTranslatePart(aLength, &aRefBox, &TransformReferenceBox::Height));
   aMatrix.PreTranslate(temp);
 }
 
-static void ProcessTranslateZ(Matrix4x4& aMatrix, const Length& aLength) {
+static void ProcessTranslateZ(Matrix4x4& aMatrix, const Length& aLength,
+                              StyleZoom aEffectiveZoom) {
   Point3D temp;
-  temp.z = aLength.ToCSSPixels();
+  temp.z = aEffectiveZoom.Unzoom(aLength.ToCSSPixels());
   aMatrix.PreTranslate(temp);
 }
 
 /* Helper function to process a translate function. */
 static void ProcessTranslate(Matrix4x4& aMatrix, const LengthPercentage& aX,
                              const LengthPercentage& aY,
-                             TransformReferenceBox& aRefBox) {
+                             TransformReferenceBox& aRefBox,
+                             StyleZoom aEffectiveZoom) {
   Point3D temp;
-  temp.x = ProcessTranslatePart(aX, &aRefBox, &TransformReferenceBox::Width);
-  temp.y = ProcessTranslatePart(aY, &aRefBox, &TransformReferenceBox::Height);
+  temp.x = aEffectiveZoom.Unzoom(
+      ProcessTranslatePart(aX, &aRefBox, &TransformReferenceBox::Width));
+  temp.y = aEffectiveZoom.Unzoom(
+      ProcessTranslatePart(aY, &aRefBox, &TransformReferenceBox::Height));
   aMatrix.PreTranslate(temp);
 }
 
 static void ProcessTranslate3D(Matrix4x4& aMatrix, const LengthPercentage& aX,
                                const LengthPercentage& aY, const Length& aZ,
-                               TransformReferenceBox& aRefBox) {
+                               TransformReferenceBox& aRefBox,
+                               StyleZoom aEffectiveZoom) {
   Point3D temp;
 
-  temp.x = ProcessTranslatePart(aX, &aRefBox, &TransformReferenceBox::Width);
-  temp.y = ProcessTranslatePart(aY, &aRefBox, &TransformReferenceBox::Height);
-  temp.z = aZ.ToCSSPixels();
+  temp.x = aEffectiveZoom.Unzoom(
+      ProcessTranslatePart(aX, &aRefBox, &TransformReferenceBox::Width));
+  temp.y = aEffectiveZoom.Unzoom(
+      ProcessTranslatePart(aY, &aRefBox, &TransformReferenceBox::Height));
+  temp.z = aEffectiveZoom.Unzoom(aZ.ToCSSPixels());
 
   aMatrix.PreTranslate(temp);
 }
@@ -443,26 +474,32 @@ static void ProcessPerspective(
 
 static void MatrixForTransformFunction(Matrix4x4& aMatrix,
                                        const StyleTransformOperation& aOp,
-                                       TransformReferenceBox& aRefBox) {
+                                       TransformReferenceBox& aRefBox,
+                                       Zoomed aIsZoomed) {
+  StyleZoom effectiveZoom = aRefBox.EffectiveZoom();
+  StyleZoom translateZoom =
+      aIsZoomed == Zoomed::No ? effectiveZoom : StyleZoom::ONE;
+  StyleZoom matrixZoom =
+      aIsZoomed == Zoomed::Yes ? effectiveZoom : StyleZoom::ONE;
   /* Get the keyword for the transform. */
   switch (aOp.tag) {
     case StyleTransformOperation::Tag::TranslateX:
-      ProcessTranslateX(aMatrix, aOp.AsTranslateX(), aRefBox);
+      ProcessTranslateX(aMatrix, aOp.AsTranslateX(), aRefBox, translateZoom);
       break;
     case StyleTransformOperation::Tag::TranslateY:
-      ProcessTranslateY(aMatrix, aOp.AsTranslateY(), aRefBox);
+      ProcessTranslateY(aMatrix, aOp.AsTranslateY(), aRefBox, translateZoom);
       break;
     case StyleTransformOperation::Tag::TranslateZ:
-      ProcessTranslateZ(aMatrix, aOp.AsTranslateZ());
+      ProcessTranslateZ(aMatrix, aOp.AsTranslateZ(), translateZoom);
       break;
     case StyleTransformOperation::Tag::Translate:
       ProcessTranslate(aMatrix, aOp.AsTranslate()._0, aOp.AsTranslate()._1,
-                       aRefBox);
+                       aRefBox, translateZoom);
       break;
     case StyleTransformOperation::Tag::Translate3D:
       return ProcessTranslate3D(aMatrix, aOp.AsTranslate3D()._0,
                                 aOp.AsTranslate3D()._1, aOp.AsTranslate3D()._2,
-                                aRefBox);
+                                aRefBox, translateZoom);
       break;
     case StyleTransformOperation::Tag::ScaleX:
       ProcessScaleHelper(aMatrix, aOp.AsScaleX(), 1.0f, 1.0f);
@@ -505,16 +542,16 @@ static void MatrixForTransformFunction(Matrix4x4& aMatrix,
                       aOp.AsRotate3D()._2, aOp.AsRotate3D()._3);
       break;
     case StyleTransformOperation::Tag::Matrix:
-      ProcessMatrix(aMatrix, aOp);
+      ProcessMatrix(aMatrix, aOp, matrixZoom);
       break;
     case StyleTransformOperation::Tag::Matrix3D:
-      ProcessMatrix3D(aMatrix, aOp);
+      ProcessMatrix3D(aMatrix, aOp, matrixZoom);
       break;
     case StyleTransformOperation::Tag::InterpolateMatrix:
-      ProcessInterpolateMatrix(aMatrix, aOp, aRefBox);
+      ProcessInterpolateMatrix(aMatrix, aOp, aRefBox, aIsZoomed);
       break;
     case StyleTransformOperation::Tag::AccumulateMatrix:
-      ProcessAccumulateMatrix(aMatrix, aOp, aRefBox);
+      ProcessAccumulateMatrix(aMatrix, aOp, aRefBox, aIsZoomed);
       break;
     case StyleTransformOperation::Tag::Perspective:
       ProcessPerspective(aMatrix, aOp.AsPerspective());
@@ -526,11 +563,11 @@ static void MatrixForTransformFunction(Matrix4x4& aMatrix,
 
 Matrix4x4 ReadTransforms(const StyleTransform& aTransform,
                          TransformReferenceBox& aRefBox,
-                         float aAppUnitsPerMatrixUnit) {
+                         float aAppUnitsPerMatrixUnit, Zoomed aIsZoomed) {
   Matrix4x4 result;
 
   for (const StyleTransformOperation& op : aTransform.Operations()) {
-    MatrixForTransformFunction(result, op, aRefBox);
+    MatrixForTransformFunction(result, op, aRefBox, aIsZoomed);
   }
 
   float scale = float(AppUnitsPerCSSPixel()) / aAppUnitsPerMatrixUnit;
@@ -542,14 +579,15 @@ Matrix4x4 ReadTransforms(const StyleTransform& aTransform,
 
 static void ProcessTranslate(Matrix4x4& aMatrix,
                              const StyleTranslate& aTranslate,
-                             TransformReferenceBox& aRefBox) {
+                             TransformReferenceBox& aRefBox,
+                             StyleZoom aEffectiveZoom) {
   switch (aTranslate.tag) {
     case StyleTranslate::Tag::None:
       return;
     case StyleTranslate::Tag::Translate:
-      return ProcessTranslate3D(aMatrix, aTranslate.AsTranslate()._0,
-                                aTranslate.AsTranslate()._1,
-                                aTranslate.AsTranslate()._2, aRefBox);
+      return ProcessTranslate3D(
+          aMatrix, aTranslate.AsTranslate()._0, aTranslate.AsTranslate()._1,
+          aTranslate.AsTranslate()._2, aRefBox, aEffectiveZoom);
     default:
       MOZ_ASSERT_UNREACHABLE("Huh?");
   }
@@ -588,10 +626,12 @@ Matrix4x4 ReadTransforms(const StyleTranslate& aTranslate,
                          const ResolvedMotionPathData* aMotion,
                          const StyleTransform& aTransform,
                          TransformReferenceBox& aRefBox,
-                         float aAppUnitsPerMatrixUnit) {
+                         float aAppUnitsPerMatrixUnit, Zoomed aIsZoomed) {
   Matrix4x4 result;
 
-  ProcessTranslate(result, aTranslate, aRefBox);
+  ProcessTranslate(
+      result, aTranslate, aRefBox,
+      aIsZoomed == Zoomed::No ? aRefBox.EffectiveZoom() : StyleZoom::ONE);
   ProcessRotate(result, aRotate);
   ProcessScale(result, aScale);
 
@@ -613,7 +653,7 @@ Matrix4x4 ReadTransforms(const StyleTranslate& aTranslate,
   }
 
   for (const StyleTransformOperation& op : aTransform.Operations()) {
-    MatrixForTransformFunction(result, op, aRefBox);
+    MatrixForTransformFunction(result, op, aRefBox, aIsZoomed);
   }
 
   float scale = float(AppUnitsPerCSSPixel()) / aAppUnitsPerMatrixUnit;

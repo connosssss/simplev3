@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -121,6 +119,9 @@ class RetAddrEntry {
     // A callVM for the over-recursion check on function entry.
     StackCheck,
 
+    // A callVM for the over-recursion check on the generator resume path.
+    ResumeStackCheck,
+
     // A callVM for an interrupt check.
     InterruptCheck,
 
@@ -190,7 +191,7 @@ class alignas(uintptr_t) BaselineScript final
     : public TrailingArray<BaselineScript> {
  private:
   // Code pointer containing the actual method.
-  HeapPtr<JitCode*> method_ = nullptr;
+  GCPtr<JitCode*> method_{nullptr};
 
   // An ion compilation that is ready, but isn't linked yet.
   MainThreadData<IonCompileTask*> pendingIonCompileTask_{nullptr};
@@ -223,9 +224,6 @@ class alignas(uintptr_t) BaselineScript final
     // Flag set when compiled for use with Debugger. Handles various
     // Debugger hooks and compiles toggled calls for traps.
     HAS_DEBUG_INSTRUMENTATION = 1 << 0,
-
-    // Flag is set if this script has profiling instrumentation turned on.
-    PROFILER_INSTRUMENTATION_ON = 1 << 1,
   };
 
   // Native code offset for OSR from Baseline Interpreter into Baseline JIT at
@@ -361,7 +359,7 @@ class alignas(uintptr_t) BaselineScript final
 
   void toggleProfilerInstrumentation(bool enable);
   bool isProfilerInstrumentationOn() const {
-    return flags_ & PROFILER_INSTRUMENTATION_ON;
+    return method_->isProfilerInstrumented();
   }
 
   static size_t offsetOfResumeEntriesOffset() {
@@ -399,6 +397,7 @@ JitExecStatus EnterBaselineInterpreterAtBranch(JSContext* cx,
                                                jsbytecode* pc);
 
 bool CanBaselineInterpretScript(JSScript* script);
+bool CanBaselineCompileScript(JSContext* cx, JSScript* script);
 
 // Called by the Baseline Interpreter to compile a script for the Baseline JIT.
 // |res| is set to the native code address in the BaselineScript to jump to, or
@@ -413,6 +412,17 @@ void AddSizeOfBaselineData(JSScript* script, mozilla::MallocSizeOf mallocSizeOf,
 
 void ToggleBaselineProfiling(JSContext* cx, bool enable);
 
+// Metadata about a stack frame that is reconstructed during bailout.
+struct BailoutStubInfo {
+  // The stack address up to which the frame's contents extend.
+  // This excludes the return address calling into the next frame.
+  uint8_t* frameBoundary = nullptr;
+  // The bailout stub that pushes the return address for the frame's
+  // call into an outer frame.
+  // A nullptr indicates the final reconstructed frame.
+  uint8_t* bailoutStub = nullptr;
+};
+
 struct alignas(uintptr_t) BaselineBailoutInfo {
   // Pointer into the current C stack, where overwriting will start.
   uint8_t* incomingStack = nullptr;
@@ -421,6 +431,9 @@ struct alignas(uintptr_t) BaselineBailoutInfo {
   // which will be copied to the bottom.
   uint8_t* copyStackTop = nullptr;
   uint8_t* copyStackBottom = nullptr;
+
+  // The number of BailoutStubInfo entries that follow this header.
+  uint32_t numStubInfos = 0;
 
   // The value of the frame pointer register on resume.
   void* resumeFramePtr = nullptr;
@@ -469,6 +482,7 @@ enum class BaselineOption : uint8_t {
 
 using BaselineOptions = EnumFlags<BaselineOption>;
 
+bool DispatchOffThreadBaselineBatchEager(JSContext* cx);
 bool DispatchOffThreadBaselineBatch(JSContext* cx);
 
 MethodStatus BaselineCompile(JSContext* cx, JSScript* script,
@@ -482,12 +496,13 @@ class BaselineInterpreter {
     uint32_t debugEpilogueOffset = 0;
     uint32_t debugAfterYieldOffset = 0;
   };
-  struct ICReturnOffset {
+  struct ICBailoutStubOffset {
     uint32_t offset;
     JSOp op;
-    ICReturnOffset(uint32_t offset, JSOp op) : offset(offset), op(op) {}
+    ICBailoutStubOffset(uint32_t offset, JSOp op) : offset(offset), op(op) {}
   };
-  using ICReturnOffsetVector = Vector<ICReturnOffset, 0, SystemAllocPolicy>;
+  using ICBailoutStubOffsetVector =
+      Vector<ICBailoutStubOffset, 0, SystemAllocPolicy>;
 
  private:
   // The interpreter code.
@@ -502,6 +517,10 @@ class BaselineInterpreter {
   // Early Ion bailouts will enter at this address. This is after frame
   // construction and environment initialization.
   uint32_t bailoutPrologueOffset_ = 0;
+
+  // Ion bailouts of a frame that is still mid-generator-resume enter at this
+  // address, which re-runs the generator resume prologue.
+  uint32_t bailoutResumePrologueOffset_ = 0;
 
   // The offsets for the toggledJump instructions for profiler instrumentation.
   uint32_t profilerEnterToggleOffset_ = 0;
@@ -522,8 +541,8 @@ class BaselineInterpreter {
   // Offsets of toggled jumps for code coverage.
   CodeOffsetVector codeCoverageOffsets_;
 
-  // Offsets of IC calls for IsIonInlinableOp ops, for Ion bailouts.
-  ICReturnOffsetVector icReturnOffsets_;
+  // Offsets of bailout stubs for IsIonInlinableOp IC ops, for Ion bailouts.
+  ICBailoutStubOffsetVector icBailoutStubOffsets_;
 
   // Offsets of some callVMs for BaselineDebugModeOSR.
   CallVMOffsets callVMOffsets_;
@@ -542,12 +561,14 @@ class BaselineInterpreter {
 
   void init(JitCode* code, uint32_t interpretOpOffset,
             uint32_t interpretOpNoDebugTrapOffset,
-            uint32_t bailoutPrologueOffset, uint32_t profilerEnterToggleOffset,
+            uint32_t bailoutPrologueOffset,
+            uint32_t bailoutResumePrologueOffset,
+            uint32_t profilerEnterToggleOffset,
             uint32_t profilerExitToggleOffset, uint32_t debugTrapHandlerOffset,
             CodeOffsetVector&& debugInstrumentationOffsets,
             CodeOffsetVector&& debugTrapOffsets,
             CodeOffsetVector&& codeCoverageOffsets,
-            ICReturnOffsetVector&& icReturnOffsets,
+            ICBailoutStubOffsetVector&& icBailoutStubOffsets,
             const CallVMOffsets& callVMOffsets);
 
   uint8_t* codeRaw() const { return code_->raw(); }
@@ -564,8 +585,11 @@ class BaselineInterpreter {
   uint8_t* bailoutPrologueEntryAddr() const {
     return codeAtOffset(bailoutPrologueOffset_);
   }
+  uint8_t* bailoutResumePrologueEntryAddr() const {
+    return codeAtOffset(bailoutResumePrologueOffset_);
+  }
 
-  uint8_t* retAddrForIC(JSOp op) const;
+  uint8_t* bailoutStubAddrForIC(JSOp op) const;
 
   TrampolinePtr interpretOpAddr() const {
     return TrampolinePtr(codeAtOffset(interpretOpOffset_));

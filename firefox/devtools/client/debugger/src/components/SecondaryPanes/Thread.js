@@ -3,13 +3,16 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 import React, { Component } from "devtools/client/shared/vendor/react";
-import { div, span } from "devtools/client/shared/vendor/react-dom-factories";
+import {
+  button,
+  span,
+} from "devtools/client/shared/vendor/react-dom-factories";
 import PropTypes from "devtools/client/shared/vendor/react-prop-types";
 import { connect } from "devtools/client/shared/vendor/react-redux";
 
 import actions from "../../actions/index";
 import { getCurrentThread, getIsPaused } from "../../selectors/index";
-import AccessibleImage from "../shared/AccessibleImage";
+import DebuggerImage from "devtools/client/shared/components/DebuggerImage";
 
 const classnames = require("resource://devtools/client/shared/classnames.js");
 
@@ -43,24 +46,26 @@ export class Thread extends Component {
     if (thread.serviceWorkerStatus) {
       label += ` (${thread.serviceWorkerStatus})`;
     }
-    return div(
+    const isSelected = thread.actor == currentThread;
+    return button(
       {
+        type: "button",
         className: classnames("thread", {
-          selected: thread.actor == currentThread,
           paused: isPaused,
         }),
         key: thread.actor,
         onClick: this.onSelectThread,
+        "aria-pressed": isSelected,
       },
-      div(
+      span(
         {
           className: "icon",
         },
-        React.createElement(AccessibleImage, {
-          className: iconClassname,
+        React.createElement(DebuggerImage, {
+          name: iconClassname,
         })
       ),
-      div(
+      span(
         {
           className: "label",
         },

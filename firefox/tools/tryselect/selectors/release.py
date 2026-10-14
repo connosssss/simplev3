@@ -46,7 +46,6 @@ class ReleaseParser(BaseTryParser):
                 "choices": [
                     "main-to-beta",
                     "beta-to-release",
-                    "early-to-late-beta",
                     "release-to-esr",
                 ],
                 "help": "Migration to run for the release (can be specified multiple times).",
@@ -65,7 +64,14 @@ class ReleaseParser(BaseTryParser):
             {
                 "choices": TARGET_TASKS.keys(),
                 "default": "staging",
-                "help": "Which tasks to run on-push.",
+                "help": (
+                    "Which tasks to run on-push. "
+                    "'staging' (default): shippable build-phase tasks only (builds, signing, "
+                    "repackaging) — the minimal set before triggering a staging release via "
+                    "https://shipit.staging.mozilla-releng.net/. "
+                    "'release-sim': simulates a full release branch push including tests — "
+                    "used by sheriffs to check for branch-dependent test failures."
+                ),
             },
         ],
     ]
@@ -78,6 +84,7 @@ class ReleaseParser(BaseTryParser):
 
 
 def run(
+    metrics,
     version,
     migrations,
     limit_locales,
@@ -85,10 +92,12 @@ def run(
     try_config_params=None,
     stage_changes=False,
     dry_run=False,
+    write_task_config=False,
     message="{msg}",
     closed_tree=False,
     push_to_vcs=False,
 ):
+    metrics.mach_try.task_config_generation_duration.start()
     app_version = attr.evolve(version, beta_number=None, is_esr=False)
 
     files_to_change = {
@@ -106,9 +115,6 @@ def run(
         "next_weave_version": version.major_number + 2,
     }
 
-    if "beta-to-release" in migrations and "early-to-late-beta" not in migrations:
-        migrations.append("early-to-late-beta")
-
     release_type = version.version_type.name.lower()
     if release_type not in ("beta", "release", "esr"):
         raise Exception(
@@ -117,13 +123,11 @@ def run(
     elif release_type == "esr":
         release_type += str(version.major_number)
     task_config = {"version": 2, "parameters": try_config_params or {}}
-    task_config["parameters"].update(
-        {
-            "target_tasks_method": TARGET_TASKS[tasks],
-            "optimize_target_tasks": True,
-            "release_type": release_type,
-        }
-    )
+    task_config["parameters"].update({
+        "target_tasks_method": TARGET_TASKS[tasks],
+        "optimize_target_tasks": True,
+        "release_type": release_type,
+    })
 
     with open(
         os.path.join(vcs.path, "taskcluster/kinds/merge-automation/kind.yml")
@@ -161,12 +165,15 @@ def run(
             os.path.join(vcs.path, "browser/locales/onchange-locales")
         )
 
+    metrics.mach_try.task_config_generation_duration.stop()
     msg = f"staging release: {version}"
     return push_to_try(
         "release",
         message.format(msg=msg),
+        metrics,
         stage_changes=stage_changes,
         dry_run=dry_run,
+        write_task_config=write_task_config,
         closed_tree=closed_tree,
         try_task_config=task_config,
         files_to_change=files_to_change,

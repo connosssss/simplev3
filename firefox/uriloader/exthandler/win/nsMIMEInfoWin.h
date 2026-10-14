@@ -11,7 +11,7 @@
 #include "nsTArray.h"
 
 class nsMIMEInfoWin : public nsMIMEInfoBase, public nsIPropertyBag {
-  virtual ~nsMIMEInfoWin();
+  virtual ~nsMIMEInfoWin() = default;
 
  public:
   explicit nsMIMEInfoWin(const char* aType = "") : nsMIMEInfoBase(aType) {}
@@ -23,6 +23,7 @@ class nsMIMEInfoWin : public nsMIMEInfoBase, public nsIPropertyBag {
   NS_IMETHOD LaunchWithFile(nsIFile* aFile) override;
   NS_IMETHOD GetHasDefaultHandler(bool* _retval) override;
   NS_IMETHOD GetDefaultExecutable(nsIFile** aExecutable) override;
+  NS_IMETHOD GetDefaultDescription(nsAString& aDescription) override;
   NS_IMETHOD GetPossibleLocalHandlers(nsIArray** _retval) override;
   NS_IMETHOD IsCurrentAppOSDefault(bool* _retval) override;
 

@@ -15,12 +15,14 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Build.VERSION.SDK_INT
+import android.os.Environment
 import android.util.LongSparseArray
 import androidx.annotation.VisibleForTesting
 import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import androidx.core.net.toUri
 import androidx.core.util.set
+import java.io.File
 import mozilla.components.browser.state.action.DownloadAction
 import mozilla.components.browser.state.state.content.DownloadState
 import mozilla.components.browser.state.state.content.DownloadState.Status
@@ -30,11 +32,12 @@ import mozilla.components.concept.fetch.Headers.Names.REFERRER
 import mozilla.components.concept.fetch.Headers.Names.USER_AGENT
 import mozilla.components.feature.downloads.AbstractFetchDownloadService
 import mozilla.components.feature.downloads.ext.isScheme
-import mozilla.components.support.utils.DownloadUtils
+import mozilla.components.support.utils.DownloadFileUtils
 import mozilla.components.support.utils.ext.getSerializableExtraCompat
 import mozilla.components.support.utils.ext.registerReceiverCompat
 
 typealias SystemDownloadManager = android.app.DownloadManager
+
 typealias SystemRequest = android.app.DownloadManager.Request
 
 /**
@@ -45,6 +48,7 @@ typealias SystemRequest = android.app.DownloadManager.Request
 class AndroidDownloadManager(
     private val applicationContext: Context,
     private val store: BrowserStore,
+    private val downloadFileUtils: DownloadFileUtils,
     override var onDownloadStopped: onDownloadStopped = noop,
 ) : BroadcastReceiver(), DownloadManager {
 
@@ -53,17 +57,18 @@ class AndroidDownloadManager(
 
     // Do not require WRITE_EXTERNAL_STORAGE permission on API 29 and above (using scoped storage)
     override val permissions
-        get() = if (getSDKVersion() >= Build.VERSION_CODES.Q) {
-            arrayOf(INTERNET)
-        } else {
-            arrayOf(INTERNET, WRITE_EXTERNAL_STORAGE)
-        }
+        get() =
+            if (getSDKVersion() >= Build.VERSION_CODES.Q) {
+                arrayOf(INTERNET)
+            } else {
+                arrayOf(INTERNET, WRITE_EXTERNAL_STORAGE)
+            }
 
-    @VisibleForTesting
-    internal fun getSDKVersion() = SDK_INT
+    @VisibleForTesting internal fun getSDKVersion() = SDK_INT
 
     /**
      * Schedules a download through the [AndroidDownloadManager].
+     *
      * @param download metadata related to the download.
      * @param cookie any additional cookie to add as part of the download request.
      * @return the id reference of the scheduled download.
@@ -80,7 +85,11 @@ class AndroidDownloadManager(
 
         validatePermissionGranted(applicationContext)
 
-        val request = download.toAndroidRequest(cookie)
+        val request =
+            download.toAndroidRequest(
+                downloadFileUtils = downloadFileUtils,
+                cookie = cookie,
+            )
         val downloadID = androidDownloadManager.enqueue(request)
         store.dispatch(DownloadAction.AddDownloadAction(download.copy(id = downloadID.toString())))
         downloadRequests[downloadID] = request
@@ -93,9 +102,7 @@ class AndroidDownloadManager(
         androidDownloadManager.enqueue(downloadRequests[downloadId.toLong()])
     }
 
-    /**
-     * Remove all the listeners.
-     */
+    /** Remove all the listeners. */
     override fun unregisterListeners() {
         if (isSubscribedReceiver) {
             applicationContext.unregisterReceiver(this)
@@ -119,8 +126,8 @@ class AndroidDownloadManager(
     }
 
     /**
-     * Invoked when a download is complete. Notifies [onDownloadStopped] and removes the queued
-     * download if it's complete.
+     * Invoked when a download is complete. Notifies [onDownloadStopped] and removes the queued download if it's
+     * complete.
      */
     override fun onReceive(context: Context, intent: Intent) {
         val downloadID = intent.getStringExtra(EXTRA_DOWNLOAD_ID) ?: ""
@@ -135,9 +142,11 @@ class AndroidDownloadManager(
     }
 }
 
-private fun DownloadState.toAndroidRequest(cookie: String): SystemRequest {
-    val request = SystemRequest(url.toUri())
-        .setNotificationVisibility(VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+private fun DownloadState.toAndroidRequest(
+    downloadFileUtils: DownloadFileUtils,
+    cookie: String,
+): SystemRequest {
+    val request = SystemRequest(url.toUri()).setNotificationVisibility(VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
 
     if (!contentType.isNullOrEmpty()) {
         request.setMimeType(contentType)
@@ -149,12 +158,25 @@ private fun DownloadState.toAndroidRequest(cookie: String): SystemRequest {
         addRequestHeaderSafely(REFERRER, referrerUrl)
     }
 
-    val fileName = if (fileName.isNullOrBlank()) {
-        DownloadUtils.guessFileName(null, destinationDirectory, url, contentType)
-    } else {
-        fileName
-    }
-    request.setDestinationInExternalPublicDir(destinationDirectory, fileName)
+    val destinationDir =
+        if (directoryPath.isBlank()) {
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        } else {
+            File(directoryPath)
+        }
+
+    val finalFileName =
+        fileName?.takeUnless { it.isBlank() }
+            ?: downloadFileUtils.guessFileName(
+                contentDisposition = null,
+                url = url,
+                mimeType = contentType,
+            )
+
+    destinationDir.mkdirs()
+
+    val destinationFile = File(destinationDir, finalFileName)
+    request.setDestinationUri(destinationFile.toUri())
 
     return request
 }

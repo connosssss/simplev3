@@ -2,10 +2,10 @@
 //! [perfect hash functions](http://en.wikipedia.org/wiki/Perfect_hash_function).
 //!
 //! It currently uses the
-//! [CHD algorithm](http://cmph.sourceforge.net/papers/esa09.pdf) and can generate
-//! a 100,000 entry map in roughly .4 seconds.
+//! [CHD algorithm](http://cmph.sourceforge.net/papers/esa09.pdf) by default and
+//! also ships an experimental `ptrhash` feature for an alternative MPHF layout.
 //!
-//! MSRV (minimum supported rust version) is Rust 1.60.
+//! MSRV (minimum supported rust version) is Rust 1.85.
 //!
 //! ## Usage
 //!
@@ -16,7 +16,16 @@
 //!
 //!```toml
 //! [dependencies]
-//! phf = { version = "0.11", features = ["macros"] }
+//! phf = { version = "0.14.0", features = ["macros"] }
+//! ```
+//!
+//! To try the experimental MPHF alternative instead of the default CHD layout,
+//! enable the `ptrhash` feature on every `phf` crate involved in generation and
+//! runtime lookup:
+//!
+//! ```toml
+//! [dependencies]
+//! phf = { version = "0.14.0", features = ["macros", "ptrhash"] }
 //! ```
 //!
 //! To compile the `phf` crate with a dependency on
@@ -26,7 +35,7 @@
 //! ```toml
 //! [dependencies]
 //! # to use `phf` in `no_std` environments
-//! phf = { version = "0.11", default-features = false }
+//! phf = { version = "0.14.0", default-features = false }
 //! ```
 //!
 //! ## Example (with the `macros` feature enabled)
@@ -64,12 +73,11 @@
 //! ## Note
 //!
 //! Currently, the macro syntax has some limitations and may not
-//! work as you want. See [#183] or [#196] for example.
+//! work as you want. See [#196] for example.
 //!
-//! [#183]: https://github.com/rust-phf/rust-phf/issues/183
 //! [#196]: https://github.com/rust-phf/rust-phf/issues/196
 
-#![doc(html_root_url = "https://docs.rs/phf/0.11")]
+#![doc(html_root_url = "https://docs.rs/phf/0.14.0")]
 #![warn(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -82,10 +90,17 @@ extern crate std as core;
 /// Requires the `macros` feature.
 ///
 /// Supported key expressions are:
-/// - literals: bools, (byte) strings, bytes, chars, and integers (these must have a type suffix)
-/// - arrays of `u8` integers
+/// - literals: bools, (byte) strings, bytes, chars, and integers (integer
+///   literals in the first key's type shape must have suffixes; later
+///   unsuffixed integers infer from the same position in that first key)
+/// - arrays of `u8` integer literals
+/// - tuples of any supported key expressions, up to 12 elements
 /// - dereferenced byte string literals
-/// - `UniCase::unicode(string)` or `UniCase::ascii(string)` if the `unicase` feature is enabled
+/// - OR patterns using `|` to map multiple keys to the same value
+/// - `UniCase::unicode(string)`, `UniCase::ascii(string)`, or `Ascii::new(string)` if the `unicase` feature is enabled
+/// - `UncasedStr::new(string)` if the `uncased` feature is enabled
+///
+/// All keys must use the same supported key expression type as the first key.
 ///
 /// # Example
 ///
@@ -99,6 +114,26 @@ extern crate std as core;
 ///
 /// fn main () {
 ///     assert_eq!(MY_MAP["hello"], 1);
+/// }
+/// ```
+///
+/// # OR Patterns
+///
+/// You can use OR patterns to map multiple keys to the same value:
+///
+/// ```
+/// use phf::{phf_map, Map};
+///
+/// static OPERATORS: Map<&'static str, &'static str> = phf_map! {
+///     "+" | "add" | "plus" => "addition",
+///     "-" | "sub" | "minus" => "subtraction",
+///     "*" | "mul" | "times" => "multiplication",
+/// };
+///
+/// fn main() {
+///     assert_eq!(OPERATORS["+"], "addition");
+///     assert_eq!(OPERATORS["add"], "addition");
+///     assert_eq!(OPERATORS["plus"], "addition");
 /// }
 /// ```
 pub use phf_macros::phf_map;
@@ -128,6 +163,27 @@ pub use phf_macros::phf_ordered_map;
 ///     assert!(MY_SET.contains("hello world"));
 /// }
 /// ```
+///
+/// # OR Patterns
+///
+/// You can use OR patterns to include multiple keys in a single entry:
+///
+/// ```
+/// use phf::{phf_set, Set};
+///
+/// static KEYWORDS: Set<&'static str> = phf_set! {
+///     "if" | "elif" | "else",
+///     "for" | "while" | "loop",
+///     "fn" | "function" | "def",
+/// };
+///
+/// fn main() {
+///     assert!(KEYWORDS.contains("if"));
+///     assert!(KEYWORDS.contains("elif"));
+///     assert!(KEYWORDS.contains("else"));
+///     assert!(KEYWORDS.contains("for"));
+/// }
+/// ```
 pub use phf_macros::phf_set;
 
 #[cfg(feature = "macros")]
@@ -135,6 +191,73 @@ pub use phf_macros::phf_set;
 ///
 /// Requires the `macros` feature. Same usage as [`phf_set`].
 pub use phf_macros::phf_ordered_set;
+
+// `__resolve_cfg` re-enters the proc macro after filtering `#[cfg]`
+// attributes. This supports both `phf::phf_map!` re-exports and direct
+// `phf_macros::phf_map!` users where `phf/macros` is not enabled.
+#[cfg(feature = "macros")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __call_macro {
+    ($callback:ident { $($tokens:tt)* }) => {
+        $crate::$callback! { $($tokens)* }
+    };
+}
+
+#[cfg(not(feature = "macros"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __call_macro {
+    ($callback:ident { $($tokens:tt)* }) => {
+        phf_macros::$callback! { $($tokens)* }
+    };
+}
+
+#[doc(hidden)]
+// Invoked by proc macros to resolve `#[cfg]`s in the caller context.
+#[macro_export]
+macro_rules! __resolve_cfg {
+    // No `#[cfg]`s left to evaluate.
+    ($callback:ident [ $($acc:tt)* ] { $($in:tt)* }) => {
+        $crate::__call_macro! {
+            $callback { $($acc)* $($in)* }
+        }
+    };
+
+    // Evaluate a `#[cfg]`.
+    (
+        $callback:ident
+        [ $($acc:tt)* ]
+        { $($in1:tt)* }
+        { $(#[$meta:meta])+ $($in2:tt)* }
+        $($rest:tt)*
+    ) => {{
+        // Macro shadowing is allowed if the shadowed macro is unused.
+        #[allow(unused)]
+        macro_rules! resolver {
+            () => {
+                $crate::__resolve_cfg! {
+                    $callback
+                    [ $($acc)* $($in1)* ]
+                    $($rest)*
+                }
+            };
+        }
+
+        $(#[$meta])+
+        macro_rules! resolver {
+            () => {
+                $crate::__resolve_cfg! {
+                    $callback
+                    [ $($acc)* $($in1)* $($in2)* ]
+                    $($rest)*
+                }
+            };
+        }
+
+        resolver! {}
+    }};
+}
 
 #[doc(inline)]
 pub use self::map::Map;
@@ -144,7 +267,7 @@ pub use self::ordered_map::OrderedMap;
 pub use self::ordered_set::OrderedSet;
 #[doc(inline)]
 pub use self::set::Set;
-pub use phf_shared::PhfHash;
+pub use phf_shared::{PhfEq, PhfHash};
 
 pub mod map;
 pub mod ordered_map;

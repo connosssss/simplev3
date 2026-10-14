@@ -1,11 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsTraceRefcnt.h"
 
+#include <math.h>
+
+#include "CodeAddressService.h"
 #include "base/process_util.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/AutoRestore.h"
@@ -13,26 +14,22 @@
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Path.h"
 #include "mozilla/Sprintf.h"
+#include "mozilla/StackWalk.h"
 #include "mozilla/StaticPtr.h"
-#include "nsXPCOMPrivate.h"
-#include "nscore.h"
+#include "nsCRT.h"
 #include "nsClassHashtable.h"
 #include "nsContentUtils.h"
-#include "nsISupports.h"
 #include "nsHashKeys.h"
+#include "nsISupports.h"
 #include "nsPrintfCString.h"
 #include "nsTArray.h"
 #include "nsTHashtable.h"
+#include "nsThreadUtils.h"
+#include "nsXPCOMPrivate.h"
+#include "nsXULAppAPI.h"
+#include "nscore.h"
 #include "prenv.h"
 #include "prlink.h"
-#include "nsCRT.h"
-#include <math.h>
-#include "nsHashKeys.h"
-#include "mozilla/StackWalk.h"
-#include "nsThreadUtils.h"
-#include "CodeAddressService.h"
-
-#include "nsXULAppAPI.h"
 #ifdef XP_WIN
 #  include <io.h>
 #  include <process.h>
@@ -41,14 +38,12 @@
 #  include <unistd.h>
 #endif
 
-#include "mozilla/Atomics.h"
+#include <vector>
+
 #include "mozilla/AutoRestore.h"
 #include "mozilla/BlockingResourceBase.h"
 #include "mozilla/PoisonIOInterposer.h"
 #include "mozilla/UniquePtr.h"
-
-#include <string>
-#include <vector>
 
 #ifdef HAVE_DLFCN_H
 #  include <dlfcn.h>
@@ -81,7 +76,12 @@ class MOZ_CAPABILITY("mutex") TraceLogMutex
   }
 };
 
+#ifdef XP_WIN
+// The Windows futex mutex supports constant initialization.
+constinit static TraceLogMutex gTraceLog;
+#else
 MOZ_RUNINIT static TraceLogMutex gTraceLog;
+#endif
 
 class MOZ_RAII AutoTraceLogLock {
  public:
@@ -119,7 +119,9 @@ static StaticAutoPtr<IntPtrSet> gObjectsToLog;
 static StaticAutoPtr<SerialHash> gSerialNumbers;
 
 static intptr_t gNextSerialNumber;
+#ifdef DEBUG
 static bool gDumpedStatistics = false;
+#endif
 static bool gLogJSStacks = false;
 
 // By default, debug builds only do bloat logging. Bloat logging
@@ -403,10 +405,12 @@ nsresult nsTraceRefcnt::DumpStatistics() {
 
   AutoTraceLogLock lock(gTraceLog);
 
+#ifdef DEBUG
   MOZ_ASSERT(!gDumpedStatistics,
              "Calling DumpStatistics more than once may result in "
              "bogus positive or negative leaks being reported");
   gDumpedStatistics = true;
+#endif
 
   // Don't try to log while we hold the lock, we'd deadlock.
   AutoRestore<LoggingType> saveLogging(gLogging);
@@ -734,6 +738,8 @@ static void InitTraceLog() {
 
   DoInitTraceLog(XRE_GetProcessTypeString());
 }
+
+void nsTraceRefcnt::EarlyInit() { InitTraceLog(); }
 
 extern "C" {
 

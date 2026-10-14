@@ -7,18 +7,25 @@
 
 "use strict";
 
+// Decryption failures are transparent in Rust. Cleanup is done via
+// `run_maintenance()` when idle.
+// See Bug 2052523
+const isRustBackend = Services.prefs.getBoolPref(
+  "signon.storage.rust.enabled",
+  false
+);
+
 // Globals
 
 /**
  * Resets the token used to decrypt logins.  This is equivalent to resetting the
  * primary password when it is not known.
  */
-function resetPrimaryPassword() {
-  let token = Cc["@mozilla.org/security/pk11tokendb;1"]
-    .getService(Ci.nsIPK11TokenDB)
-    .getInternalKeyToken();
-  token.reset();
-  token.initPassword("");
+async function resetPrimaryPassword() {
+  let token = Cc["@mozilla.org/security/internalkeytoken;1"].createInstance(
+    Ci.nsIPKCS11Token
+  );
+  await token.reset();
 }
 
 // Tests
@@ -31,24 +38,27 @@ add_task(async function test_logins_decrypt_failure() {
   await Services.logins.addLogins(logins);
 
   // This makes the existing logins non-decryptable.
-  resetPrimaryPassword();
+  await resetPrimaryPassword();
 
   // These functions don't see the non-decryptable entries anymore.
   let savedLogins = await Services.logins.getAllLogins();
   Assert.equal(savedLogins.length, 0, "getAllLogins length");
-  await Assert.rejects(Services.logins.searchLoginsAsync({}), /is required/);
-  Assert.equal(Services.logins.searchLogins(newPropertyBag()).length, 0);
-  Assert.throws(
-    () => Services.logins.modifyLogin(logins[0], newPropertyBag()),
+  const result = await Services.logins.searchLoginsAsync({});
+  Assert.equal(result.length, 0);
+  await Assert.rejects(
+    Services.logins.modifyLoginAsync(logins[0], newPropertyBag()),
     /No matching logins/
   );
-  Assert.throws(
-    () => Services.logins.removeLogin(logins[0]),
+  await Assert.rejects(
+    Services.logins.removeLoginAsync(logins[0]),
     /No matching logins/
   );
 
   // The function that counts logins sees the non-decryptable entries also.
-  Assert.equal(Services.logins.countLogins("", "", ""), logins.length);
+  Assert.equal(
+    await Services.logins.countLoginsAsync("", "", ""),
+    logins.length
+  );
 
   // Equivalent logins can be added.
   await Services.logins.addLogins(logins);
@@ -58,7 +68,10 @@ add_task(async function test_logins_decrypt_failure() {
     logins.length,
     "getAllLogins length"
   );
-  Assert.equal(Services.logins.countLogins("", "", ""), logins.length * 2);
+  Assert.equal(
+    await Services.logins.countLoginsAsync("", "", ""),
+    logins.length * 2
+  );
 
   // Finding logins doesn't return the non-decryptable duplicates.
   Assert.equal(
@@ -69,21 +82,25 @@ add_task(async function test_logins_decrypt_failure() {
     ).length,
     1
   );
-  let matchData = newPropertyBag({ origin: "http://www.example.com" });
-  Assert.equal(Services.logins.searchLogins(matchData).length, 1);
+  let matchData = { origin: "http://www.example.com" };
+  const result2 = await Services.logins.searchLoginsAsync(matchData);
+  Assert.equal(result2.length, 1);
 
   // Removing single logins does not remove non-decryptable logins.
   for (let loginInfo of TestData.loginList()) {
-    Services.logins.removeLogin(loginInfo);
+    await Services.logins.removeLoginAsync(loginInfo);
   }
   Assert.equal((await Services.logins.getAllLogins()).length, 0);
-  Assert.equal(Services.logins.countLogins("", "", ""), logins.length);
+  Assert.equal(
+    await Services.logins.countLoginsAsync("", "", ""),
+    logins.length
+  );
 
   // Removing all logins removes the non-decryptable entries also.
-  Services.logins.removeAllUserFacingLogins();
+  await Services.logins.removeAllUserFacingLoginsAsync();
   Assert.equal((await Services.logins.getAllLogins()).length, 0);
-  Assert.equal(Services.logins.countLogins("", "", ""), 0);
-});
+  Assert.equal(await Services.logins.countLoginsAsync("", "", ""), 0);
+}).skip(isRustBackend);
 
 // Bug 621846 - If a login has a GUID but can't be decrypted, a search for
 // that GUID will (correctly) fail. Ensure we can add a new login with that
@@ -119,12 +136,8 @@ add_task(async function test_add_logins_with_decrypt_failure() {
   await Services.logins.addLoginAsync(login);
 
   // We can search for this login by GUID.
-  let searchProp = Cc["@mozilla.org/hash-property-bag;1"].createInstance(
-    Ci.nsIWritablePropertyBag2
-  );
-  searchProp.setPropertyAsAUTF8String("guid", login.guid);
-
-  equal(Services.logins.searchLogins(searchProp).length, 1);
+  const result = await Services.logins.searchLoginsAsync({ guid: login.guid });
+  equal(result.length, 1);
 
   // We should fail to re-add it as it remains good.
   await Assert.rejects(
@@ -138,17 +151,19 @@ add_task(async function test_add_logins_with_decrypt_failure() {
   );
 
   // This makes the existing login non-decryptable.
-  resetPrimaryPassword();
+  await resetPrimaryPassword();
 
   // We can no longer find it in our search.
-  equal(Services.logins.searchLogins(searchProp).length, 0);
+  const result1 = await Services.logins.searchLoginsAsync({ guid: login.guid });
+  equal(result1.length, 0);
 
   // So we should be able to re-add a login with that same GUID.
   await Services.logins.addLoginAsync(login);
-  equal(Services.logins.searchLogins(searchProp).length, 1);
+  const result2 = await Services.logins.searchLoginsAsync({ guid: login.guid });
+  equal(result2.length, 1);
 
-  Services.logins.removeAllUserFacingLogins();
-});
+  await Services.logins.removeAllUserFacingLoginsAsync();
+}).skip(isRustBackend);
 
 // Test the "syncID" metadata works as expected on decryption failure.
 add_task(async function test_sync_metadata_with_decrypt_failure() {
@@ -159,7 +174,7 @@ add_task(async function test_sync_metadata_with_decrypt_failure() {
   equal(await Services.logins.getLastSync(), 123);
 
   // This makes the existing login and syncID non-decryptable.
-  resetPrimaryPassword();
+  await resetPrimaryPassword();
 
   // The syncID is now null.
   equal(await Services.logins.getSyncID(), null);
@@ -169,4 +184,4 @@ add_task(async function test_sync_metadata_with_decrypt_failure() {
   // But we should be able to set it again.
   await Services.logins.setSyncID("new-id");
   equal(await Services.logins.getSyncID(), "new-id");
-});
+}).skip(isRustBackend);

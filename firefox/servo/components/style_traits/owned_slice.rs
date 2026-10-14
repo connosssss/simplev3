@@ -12,7 +12,11 @@ use serde::ser::{Serialize, Serializer};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
-use std::{fmt, iter, mem, slice, hash::{Hash, Hasher}};
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+    iter, mem, slice,
+};
 use to_shmem::{SharedMemoryBuilder, ToShmem};
 
 /// A struct that basically replaces a `Box<[T]>`, but which cbindgen can
@@ -20,7 +24,7 @@ use to_shmem::{SharedMemoryBuilder, ToShmem};
 ///
 /// We could rely on the struct layout of `Box<[T]>` per:
 ///
-///   https://github.com/rust-lang/unsafe-code-guidelines/blob/master/reference/src/layout/pointers.md
+///   https://github.com/rust-lang/unsafe-code-guidelines/blob/c138499c1de03b908dfe719a41193c84f8146883/reference/src/layout/pointers.md
 ///
 /// But handling fat pointers with cbindgen both in structs and argument
 /// positions more generally is a bit tricky.
@@ -49,7 +53,7 @@ impl<T: Sized> Drop for OwnedSlice<T> {
     #[inline]
     fn drop(&mut self) {
         if self.len != 0 {
-            let _ = mem::replace(self, Self::default()).into_vec();
+            let _ = std::mem::take(self).into_vec();
         }
     }
 }
@@ -60,7 +64,7 @@ unsafe impl<T: Sized + Sync> Sync for OwnedSlice<T> {}
 impl<T: Clone> Clone for OwnedSlice<T> {
     #[inline]
     fn clone(&self) -> Self {
-        Self::from_slice(&**self)
+        Self::from_slice(self)
     }
 }
 
@@ -199,6 +203,6 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for OwnedSlice<T> {
 
 impl<T: Hash> Hash for OwnedSlice<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        T::hash_slice(&**self, state)
+        T::hash_slice(self, state)
     }
 }

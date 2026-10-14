@@ -218,8 +218,8 @@ async function testDoorHanger(
           ok(false, "Unknown message");
         });
 
-        content.document.body.appendChild(ifr);
         ifr.src = obj.page;
+        content.document.body.appendChild(ifr);
       });
     }
   );
@@ -303,13 +303,8 @@ async function preparePermissionsFromOtherSites(topPage) {
 }
 
 async function cleanUp() {
-  info("Cleaning up.");
   SpecialPowers.clearUserPref("network.cookie.sameSite.laxByDefault");
-  await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
-      resolve()
-    );
-  });
+  await clearSiteTestData();
 }
 
 async function runRound(topPage, showPrompt, maxConcurrent, disableWebcompat) {

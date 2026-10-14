@@ -9,11 +9,13 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert
 import org.junit.Ignore
+import org.junit.Rule
 import org.junit.Test
 import org.mozilla.fenix.GleanMetrics.NimbusSystem
-import org.mozilla.fenix.helpers.TestSetup
+import org.mozilla.fenix.helpers.FenixTestRule
 
-class NimbusSystemMetricsTest : TestSetup() {
+class NimbusSystemMetricsTest {
+    @get:Rule(order = 0) val fenixTestRule: FenixTestRule = FenixTestRule()
 
     @Test
     @Ignore("It will be addressed in https://bugzilla.mozilla.org/show_bug.cgi?id=1933543")
@@ -23,7 +25,9 @@ class NimbusSystemMetricsTest : TestSetup() {
         Assert.assertTrue(value?.jsonObject?.get("isFirstRun")?.jsonPrimitive?.booleanOrNull ?: false)
         Assert.assertTrue(value?.jsonObject?.get("installReferrerResponseUtmSource")?.jsonPrimitive?.isString ?: false)
         Assert.assertTrue(value?.jsonObject?.get("installReferrerResponseUtmMedium")?.jsonPrimitive?.isString ?: false)
-        Assert.assertTrue(value?.jsonObject?.get("installReferrerResponseUtmCampaign")?.jsonPrimitive?.isString ?: false)
+        Assert.assertTrue(
+            value?.jsonObject?.get("installReferrerResponseUtmCampaign")?.jsonPrimitive?.isString ?: false
+        )
         Assert.assertTrue(value?.jsonObject?.get("installReferrerResponseUtmTerm")?.jsonPrimitive?.isString ?: false)
         Assert.assertTrue(value?.jsonObject?.get("installReferrerResponseUtmContent")?.jsonPrimitive?.isString ?: false)
     }

@@ -9,7 +9,6 @@ import xml.etree.ElementTree as ET
 from io import StringIO
 from textwrap import dedent
 
-import mozunit
 import pytest
 from mozlog.formatters import (
     GroupingFormatter,
@@ -99,8 +98,8 @@ FORMATS = {
               test: 2 (1 fail, 1 pass)
               subtest: 2 (1 fail, 1 timeout)
 
-            Unexpected Results
-            ------------------
+            Error Summary
+            -------------
             test_foo
               FAIL test_foo - expected 0 got 1
             test_bar
@@ -139,8 +138,8 @@ FORMATS = {
               test: 2 (1 fail, 1 pass)
               subtest: 2 (1 fail, 1 timeout)
 
-            Unexpected Results
-            ------------------
+            Error Summary
+            -------------
             test_foo
               FAIL test_foo - expected 0 got 1
             test_bar
@@ -176,8 +175,8 @@ FORMATS = {
               test: 1 (1 precondition_failed)
               subtest: 1 (1 precondition_failed)
 
-            Unexpected Results
-            ------------------
+            Error Summary
+            -------------
             test_foo
               PRECONDITION_FAILED test_foo
             test_bar
@@ -207,8 +206,8 @@ FORMATS = {
               test: 1 (1 precondition_failed)
               subtest: 1 (1 precondition_failed)
 
-            Unexpected Results
-            ------------------
+            Error Summary
+            -------------
             test_foo
               PRECONDITION_FAILED test_foo
             test_bar
@@ -331,9 +330,7 @@ def test_fail(get_logger, name, opts, expected):
     stack = """
     SimpleTest.is@SimpleTest/SimpleTest.js:312:5
     @caps/tests/mochitest/test_bug246699.html:53:1
-""".strip(
-        "\n"
-    )
+""".strip("\n")
 
     logger = get_logger(name, **opts)
 
@@ -668,6 +665,63 @@ Unexpected results: 3
         self.logger.process_exit(1234, -signal.SIGTERM)
         self.assertIn("1234: killed by SIGTERM", self.loglines[0])
 
+    def test_assertion_failure(self):
+        self.logger.assertion_failure(
+            "MOZ_ASSERT", "x == y", file="dom/a.cpp", lineno=12, fatal=True
+        )
+        self.assertIn("ERROR MOZ_ASSERT: x == y [dom/a.cpp:12]", self.loglines[0])
+
+    def test_assertion_failure_non_fatal_without_location(self):
+        self.logger.assertion_failure("NS_ASSERTION", "boom: 'expr'")
+        self.assertIn("WARNING NS_ASSERTION: boom: 'expr'", self.loglines[0])
+
+    def test_ubsan_error(self):
+        self.logger.ubsan_error(
+            "undefined-behavior",
+            "applying non-zero offset 96 to null pointer",
+            file="ggml-c.c",
+            lineno=7106,
+            column=33,
+        )
+        self.assertIn(
+            "WARNING UndefinedBehaviorSanitizer: applying non-zero offset 96 "
+            "to null pointer [ggml-c.c:7106:33]",
+            self.loglines[0],
+        )
+
+    def test_ubsan_error_without_location(self):
+        self.logger.ubsan_error("undefined-behavior", "division by zero")
+        self.assertIn(
+            "WARNING UndefinedBehaviorSanitizer: division by zero", self.loglines[0]
+        )
+
+    def test_expected_fail_log_conversion(self):
+        """Test that ERROR TEST-EXPECTED-FAIL messages are converted to TODO"""
+        self.set_position()
+
+        # Test a log message that starts with TEST-EXPECTED-FAIL
+        self.logger.error("TEST-EXPECTED-FAIL | some test failed")
+
+        # Test a regular ERROR message (should not be converted)
+        self.logger.error("Regular error message")
+
+        # Test a message containing but not starting with TEST-EXPECTED-FAIL (should not be converted)
+        self.logger.error("Some prefix TEST-EXPECTED-FAIL suffix")
+
+        # Check that the TEST-EXPECTED-FAIL message was converted to TODO
+        # and the prefix was removed
+        output = "\n".join(self.loglines)
+        self.assertIn("TODO | some test failed", output)
+
+        # Check that regular ERROR messages are unchanged
+        self.assertIn("ERROR Regular error message", output)
+
+        # Check that messages not starting with TEST-EXPECTED-FAIL are unchanged
+        self.assertIn("ERROR Some prefix TEST-EXPECTED-FAIL suffix", output)
+
+        # Ensure the original ERROR TEST-EXPECTED-FAIL format doesn't appear
+        self.assertNotIn("ERROR TEST-EXPECTED-FAIL", output)
+
 
 class TestGroupingFormatter(FormatterTest):
     def get_formatter(self):
@@ -762,4 +816,6 @@ class TestXUnitFormatter(FormatterTest):
 
 
 if __name__ == "__main__":
+    import mozunit
+
     mozunit.main()

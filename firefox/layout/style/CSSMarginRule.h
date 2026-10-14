@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,16 +5,12 @@
 #ifndef mozilla_dom_CSSMarginRule_h
 #define mozilla_dom_CSSMarginRule_h
 
-#include "mozilla/css/Rule.h"
 #include "mozilla/ServoBindingTypes.h"
-
+#include "mozilla/css/Rule.h"
 #include "nsDOMCSSDeclaration.h"
 #include "nsICSSDeclaration.h"
 
-namespace mozilla {
-class DeclarationBlock;
-
-namespace dom {
+namespace mozilla::dom {
 class CSSMarginRule;
 
 class CSSMarginRuleDeclaration final : public nsDOMCSSDeclaration {
@@ -28,10 +22,9 @@ class CSSMarginRuleDeclaration final : public nsDOMCSSDeclaration {
   nsISupports* GetParentObject() const final;
 
  protected:
-  DeclarationBlock* GetOrCreateCSSDeclaration(
-      Operation aOperation, DeclarationBlock** aCreated) final;
-  nsresult SetCSSDeclaration(DeclarationBlock* aDecl,
-                             MutationClosureData* aClosureData) final;
+  Block* GetOrCreateCSSDeclaration(Operation aOperation,
+                                   Block** aCreated) final;
+  nsresult SetCSSDeclaration(Block*, MutationClosureData* aClosureData) final;
   Document* DocToUpdate() final { return nullptr; }
   nsDOMCSSDeclaration::ParsingEnvironment GetParsingEnvironment(
       nsIPrincipal* aSubjectPrincipal) const final;
@@ -40,16 +33,15 @@ class CSSMarginRuleDeclaration final : public nsDOMCSSDeclaration {
   // For accessing the constructor.
   friend class CSSMarginRule;
 
-  explicit CSSMarginRuleDeclaration(
-      already_AddRefed<StyleLockedDeclarationBlock> aDecls);
-  void SetRawAfterClone(RefPtr<StyleLockedDeclarationBlock>);
+  explicit CSSMarginRuleDeclaration(already_AddRefed<Block> aDecls);
+  void SetRawAfterClone(RefPtr<Block>);
 
   ~CSSMarginRuleDeclaration();
 
   inline CSSMarginRule* Rule();
   inline const CSSMarginRule* Rule() const;
 
-  RefPtr<DeclarationBlock> mDecls;
+  RefPtr<Block> mDecls;
 };
 
 class CSSMarginRule final : public css::Rule {
@@ -101,7 +93,6 @@ const CSSMarginRule* CSSMarginRuleDeclaration::Rule() const {
       reinterpret_cast<const uint8_t*>(this) - offsetof(CSSMarginRule, mDecls));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_CSSMarginRule_h

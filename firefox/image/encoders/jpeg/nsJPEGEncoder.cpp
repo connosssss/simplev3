@@ -1,21 +1,22 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsJPEGEncoder.h"
-#include "prprf.h"
-#include "nsString.h"
-#include "nsStreamUtils.h"
+
 #include "gfxColor.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/UniquePtrExtensions.h"
+#include "nsStreamUtils.h"
+#include "nsString.h"
+#include "prprf.h"
 
 extern "C" {
 #include "jpeglib.h"
 }
 
 #include <setjmp.h>
+
 #include "jerror.h"
 
 using namespace mozilla;
@@ -85,6 +86,13 @@ nsJPEGEncoder::~nsJPEGEncoder() {
   }
 }
 
+NS_IMETHODIMP
+nsJPEGEncoder::SetColorSpaceInfo(imgIEncoder::CICPColourPrimaries,
+                                 imgIEncoder::CICPTransferCharacteristics,
+                                 imgIEncoder::CICPMatrixCoefficients, bool) {
+  return NS_OK;
+}
+
 // nsJPEGEncoder::InitFromData
 //
 //    One output option is supported: "quality=X" where X is an integer in the
@@ -97,7 +105,8 @@ nsJPEGEncoder::InitFromData(const uint8_t* aData,
                             uint32_t aLength,  // (unused, req'd by JS)
                             uint32_t aWidth, uint32_t aHeight, uint32_t aStride,
                             uint32_t aInputFormat,
-                            const nsAString& aOutputOptions) {
+                            const nsAString& aOutputOptions,
+                            const nsACString& aRandomizationKey) {
   NS_ENSURE_ARG(aData);
 
   // validate input format

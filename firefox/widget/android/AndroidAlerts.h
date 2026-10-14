@@ -1,21 +1,18 @@
-/* -*- Mode: c++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_widget_AndroidAlerts_h__
-#define mozilla_widget_AndroidAlerts_h__
+#ifndef mozilla_widget_AndroidAlerts_h_
+#define mozilla_widget_AndroidAlerts_h_
 
-#include "nsTHashMap.h"
-#include "nsInterfaceHashtable.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/java/WebNotificationWrappers.h"
 #include "nsCOMPtr.h"
 #include "nsHashKeys.h"
 #include "nsIAlertsService.h"
 #include "nsIObserver.h"
-
-#include "mozilla/java/WebNotificationWrappers.h"
-
-#include "mozilla/StaticPtr.h"
+#include "nsInterfaceHashtable.h"
+#include "nsTHashMap.h"
 
 namespace mozilla {
 namespace widget {
@@ -28,7 +25,8 @@ class AndroidAlerts : public nsIAlertsService {
   AndroidAlerts() {}
 
   static void NotifyListener(const nsAString& aName, const char* aTopic,
-                             Maybe<nsString> aAction);
+                             Maybe<nsString> aAction,
+                             const nsACString& aOrigin);
 
  protected:
   virtual ~AndroidAlerts() = default;
@@ -37,4 +35,4 @@ class AndroidAlerts : public nsIAlertsService {
 }  // namespace widget
 }  // namespace mozilla
 
-#endif  // nsAndroidAlerts_h__
+#endif  // mozilla_widget_AndroidAlerts_h_

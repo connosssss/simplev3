@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -28,11 +26,10 @@ namespace js {
 //    which must be cleaned up (by calling IteratorClose) during
 //    exception unwinding.
 //
-// 3. ForOf and ForOfIterclose: For-of loops handle unwinding using
-//    catch blocks. These trynotes are used for for-of breaks/returns,
-//    which create regions that are lexically within a for-of block,
-//    but logically outside of it. See TryNoteIter::settle for more
-//    details.
+// 3. ForOf: For-of loops handle unwinding using a synthetic catch
+//    block. Like Loop below, this try note is unnecessary for exception
+//    unwinding. Used by the debugger to skip the synthetic catch block in
+//    DebuggerScript::IsInCatchScopeMatcher.
 //
 // 4. Loop: This represents normal for/while/do-while loops. It is
 //    unnecessary for exception unwinding, but storing the boundaries
@@ -44,8 +41,8 @@ enum class TryNoteKind : uint8_t {
   ForIn,
   Destructuring,
   ForOf,
-  ForOfIterClose,
-  Loop
+  Loop,
+  Last = Loop
 };
 
 // [SMDOC] Script Flags
@@ -255,7 +252,11 @@ enum class ImmutableScriptFlagsEnum : uint32_t {
 
   // Whether this is a self-hosted function that uses the ArgumentsLength or
   // GetArgument intrinsic.
-  UsesArgumentsIntrinsics = 1 << 30,
+  UsesArgumentsIntrinsics = 1u << 30,
+
+  // Allow redeclaring lexical bindings.
+  // This flag can be used when evaluating scripts in REPL.
+  AllowRedeclaringExistingLexicalBinding = 1u << 31,
 };
 
 enum class MutableScriptFlagsEnum : uint32_t {

@@ -4,6 +4,12 @@
 with Files('moz.build'):
     BUG_COMPONENT = ('Firefox Build System', 'General')
 
+with Files('angle/**'):
+    BUG_COMPONENT = ('Core', 'Graphics: ANGLE')
+
+with Files('cairo/**'):
+    BUG_COMPONENT = ('Core', 'Graphics: Cairo')
+
 with Files('aom/**'):
     BUG_COMPONENT = ('Core', 'Audio/Video: Playback')
 
@@ -20,7 +26,7 @@ with Files('function2/**'):
     BUG_COMPONENT = ('Core', 'MFBT')
 
 with Files('gemmology/**'):
-    BUG_COMPONENT = ('Core', 'Javascript: WebAssembly')
+    BUG_COMPONENT = ('Core', 'JavaScript: WebAssembly')
 
 with Files('googletest/**'):
     BUG_COMPONENT = ('Testing', 'GTest')
@@ -40,20 +46,29 @@ with Files('js/cfworker/**'):
 with Files('js/PKI.js/**'):
     BUG_COMPONENT = ('Firefox', 'Security')
 
-with Files('rust/**'):
+with Files('js/qrcode/**'):
+    BUG_COMPONENT = ('Firefox', 'General')
+
+with Files('khronos/**'):
+    BUG_COMPONENT = ('Core', 'Graphics')
+
+with Files('node/**'):
     BUG_COMPONENT = ('Firefox Build System', 'General')
+
+with Files('rust/**'):
+    BUG_COMPONENT = ('Core', 'General')
 
 with Files('webkit/**'):
-    BUG_COMPONENT = ('Firefox Build System', 'General')
+    BUG_COMPONENT = ('Testing', 'General')
 
 with Files('xsimd/**'):
-    BUG_COMPONENT = ('Firefox Build System', 'General')
+    BUG_COMPONENT = ('Core', 'Performance: General')
 
 with Files('msgpack/**'):
     BUG_COMPONENT = ('Firefox Build System', 'General')
 
 with Files('simde/**'):
-    BUG_COMPONENT = ('Firefox Build System', 'General')
+    BUG_COMPONENT = ('Core', 'Security: RLBox')
 
 with Files('sipcc/**'):
     BUG_COMPONENT = ('Core', 'WebRTC: Signaling')
@@ -76,11 +91,14 @@ with Files("pipewire/**"):
 with Files("drm/**"):
     BUG_COMPONENT = ("Core", "WebRTC")
 
+with Files("khronos/vulkan-headers/**"):
+    BUG_COMPONENT = ("Core", "Audio/Video: Playback")
+
 with Files("libepoxy/**"):
     BUG_COMPONENT = ("Core", "WebRTC")
 
 with Files('picosha2/**'):
-    BUG_COMPONENT = ('Firefox Build System', 'General')
+    BUG_COMPONENT = ('Core', 'Security: RLBox')
 
 with Files('rlbox_wasm2c_sandbox/**'):
     BUG_COMPONENT = ('Core', 'Security: RLBox')
@@ -111,3 +129,12 @@ with Files("fmt"):
 
 with Files("zucchini/**"):
     BUG_COMPONENT = ("Toolkit", "Application Update")
+
+with Files("llama.cpp"):
+    BUG_COMPONENT = ("Core", "Machine Learning: On Device")
+
+with Files("application-services/**"):
+    BUG_COMPONENT = ("Application Services", "General")
+
+with Files('skv/**'):
+    BUG_COMPONENT = ("Core", "SQLite and Embedded Database Bindings")

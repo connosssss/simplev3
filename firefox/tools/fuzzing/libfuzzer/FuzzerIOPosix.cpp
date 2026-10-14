@@ -7,12 +7,12 @@
 //===----------------------------------------------------------------------===//
 // IO functions implementation using Posix API.
 //===----------------------------------------------------------------------===//
-#include "mozilla/Unused.h"
 #include "FuzzerPlatform.h"
 #if LIBFUZZER_POSIX || LIBFUZZER_FUCHSIA
 
 #include "FuzzerExtFunctions.h"
 #include "FuzzerIO.h"
+#include <cerrno>
 #include <cstdarg>
 #include <cstdio>
 #include <dirent.h>
@@ -32,7 +32,7 @@ bool IsFile(const std::string &Path) {
   return S_ISREG(St.st_mode);
 }
 
-static bool IsDirectory(const std::string &Path) {
+bool IsDirectory(const std::string &Path) {
   struct stat St;
   if (stat(Path.c_str(), &St))
     return false;
@@ -54,7 +54,7 @@ std::string Basename(const std::string &Path) {
 }
 
 int ListFilesInDirRecursive(const std::string &Dir, long *Epoch,
-                             Vector<std::string> *V, bool TopDir) {
+                             std::vector<std::string> *V, bool TopDir) {
   auto E = GetEpoch(Dir);
   if (Epoch)
     if (E && *Epoch >= E) return 0;
@@ -83,7 +83,6 @@ int ListFilesInDirRecursive(const std::string &Dir, long *Epoch,
   return 0;
 }
 
-
 void IterateDirRecursive(const std::string &Dir,
                          void (*DirPreCallback)(const std::string &Dir),
                          void (*DirPostCallback)(const std::string &Dir),
@@ -107,6 +106,10 @@ void IterateDirRecursive(const std::string &Dir,
 
 char GetSeparator() {
   return '/';
+}
+
+bool IsSeparator(char C) {
+  return C == '/';
 }
 
 FILE* OpenFile(int Fd, const char* Mode) {
@@ -160,7 +163,7 @@ bool IsInterestingCoverageFile(const std::string &FileName) {
 }
 
 void RawPrint(const char *Str) {
-  mozilla::Unused << write(2, Str, strlen(Str));
+  (void)write(2, Str, strlen(Str));
 }
 
 void MkDir(const std::string &Path) {

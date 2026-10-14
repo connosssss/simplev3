@@ -9,10 +9,13 @@ transforms:
     - gecko_taskgraph.transforms.job:transforms
     - gecko_taskgraph.transforms.task:transforms
 
+task-defaults:
+    run-on-repo-type: [hg]
+
 tasks:
     mach-release:
         description: Inform Sentry of new revisions (aka Mach releases)
-        worker-type: b-linux-gcp
+        worker-type: b-linux
         worker:
             taskcluster-proxy: true
             max-run-time: 3600
@@ -23,6 +26,7 @@ tasks:
         scopes:
             - "secrets:get:project/engwf/gecko/{level}/tokens"
         run:
+            clone-with: hg
             using: run-task
             checkout: false
             command: /bin/bash /usr/bin/submit_sentry_release.sh

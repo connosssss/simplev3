@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // eslint-disable-next-line import/no-unresolved
-import { classMap, html, ifDefined } from "lit.all.mjs";
+import { html, ifDefined } from "lit.all.mjs";
 import "./moz-card.mjs";
 
 export default {
@@ -23,8 +23,12 @@ moz-card-heading-with-icon =
       options: ["default", "accordion"],
       control: { type: "select" },
     },
-    hasHeadingIcon: {
-      options: [true, false],
+    spacing: {
+      options: ["default", "compact"],
+      control: { type: "select" },
+    },
+    headingLevel: {
+      options: [1, 2, 3, 4, 5, 6],
       control: { type: "select" },
     },
     expanded: {
@@ -41,23 +45,103 @@ moz-card-heading-with-icon =
   },
 };
 
-const Template = ({ l10nId, content, type, hasHeadingIcon, expanded }) => html`
+const Template = ({
+  l10nId,
+  content,
+  type,
+  spacing,
+  headingLevel,
+  iconSrc,
+  expanded,
+}) => html`
   <style>
     main {
       max-width: 400px;
-    }
-    moz-card.headingWithIcon::part(icon) {
-      background-image: url("chrome://browser/skin/preferences/category-general.svg");
     }
   </style>
   <main>
     <moz-card
       type=${ifDefined(type)}
-      ?icon=${hasHeadingIcon}
-      class=${classMap({ headingWithIcon: hasHeadingIcon })}
+      spacing=${ifDefined(spacing)}
+      headingLevel=${ifDefined(headingLevel)}
+      iconSrc=${ifDefined(iconSrc)}
       data-l10n-id=${ifDefined(l10nId)}
       expanded=${ifDefined(expanded)}
     >
+      <div>${content}</div>
+    </moz-card>
+  </main>
+`;
+
+const TemplateWithImage = ({
+  l10nId,
+  content,
+  type,
+  spacing,
+  headingLevel,
+  iconSrc,
+  expanded,
+}) => html`
+  <style>
+    main {
+      max-width: 400px;
+    }
+  </style>
+  <main>
+    <moz-card
+      type=${ifDefined(type)}
+      spacing=${ifDefined(spacing)}
+      headingLevel=${ifDefined(headingLevel)}
+      iconSrc=${ifDefined(iconSrc)}
+      data-l10n-id=${ifDefined(l10nId)}
+      expanded=${ifDefined(expanded)}
+    >
+      <img
+        src="https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/newtab-wallpapers-v2/e1108381-5c19-4cb4-a630-69f9e45503fb.avif"
+        alt
+        slot="cover-image"
+      />
+      <div>${content}</div>
+    </moz-card>
+  </main>
+`;
+
+const TemplateWithLightDOMStyling = ({
+  l10nId,
+  content,
+  type,
+  spacing,
+  headingLevel,
+  iconSrc,
+  expanded,
+}) => html`
+  <style>
+    main {
+      max-width: 400px;
+    }
+
+    .custom-cover-image {
+      width: 100%;
+      height: 215px;
+      border-radius: var(--border-radius-small);
+    }
+  </style>
+  <main>
+    <moz-card
+      type=${ifDefined(type)}
+      spacing=${ifDefined(spacing)}
+      headingLevel=${ifDefined(headingLevel)}
+      iconSrc=${ifDefined(iconSrc)}
+      data-l10n-id=${ifDefined(l10nId)}
+      expanded=${ifDefined(expanded)}
+    >
+      <picture slot="cover-image">
+        <img
+          src="https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/newtab-wallpapers-v2/e1108381-5c19-4cb4-a630-69f9e45503fb.avif"
+          alt
+          class="custom-cover-image"
+        />
+      </picture>
       <div>${content}</div>
     </moz-card>
   </main>
@@ -69,9 +153,23 @@ WithHeading.args = {
   content: "This is the content",
 };
 
+export const WithHeadingLevel = Template.bind({});
+WithHeadingLevel.args = {
+  ...WithHeading.args,
+  content: "This is the content",
+  headingLevel: 3,
+};
+
 export const Default = Template.bind({});
 Default.args = {
   content: "This card only contains content",
+};
+
+export const Compact = Template.bind({});
+Compact.args = {
+  l10nId: "moz-card-heading",
+  content: "This is the content",
+  spacing: "compact",
 };
 
 export const Accordion = Template.bind({});
@@ -86,7 +184,7 @@ Accordion.parameters = {
   a11y: {
     config: {
       rules: [
-        /* 
+        /*
         The accordion card can be expanded either by the chevron icon
         button or by activating the details element. Mouse users can
         click on the chevron button or the details element, while
@@ -127,5 +225,19 @@ WithHeadingIcon.args = {
   Nunc velit turpis, mollis a ultricies vitae, accumsan ut augue.
   In a eros ac dolor hendrerit varius et at mauris.`,
   type: "default",
-  hasHeadingIcon: true,
+  iconSrc: "chrome://global/skin/icons/settings.svg",
+};
+
+export const WithImage = TemplateWithImage.bind({});
+WithImage.args = {
+  l10nId: "moz-card-heading",
+  content:
+    'Using an img tag with `slot="cover-image"` will use some default styles that can be overridden with CSS custom properties.',
+};
+
+export const WithCustomImage = TemplateWithLightDOMStyling.bind({});
+WithCustomImage.args = {
+  l10nId: "moz-card-heading",
+  content:
+    "Custom content can be put into the cover-image slot, but you need to bring your own styles.",
 };

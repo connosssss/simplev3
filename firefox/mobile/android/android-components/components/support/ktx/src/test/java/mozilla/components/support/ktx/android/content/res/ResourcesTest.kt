@@ -8,11 +8,11 @@ import android.content.res.Configuration
 import android.content.res.Resources
 import android.graphics.Typeface.BOLD
 import android.graphics.Typeface.ITALIC
-import android.os.Build
 import android.os.LocaleList
 import android.text.Html
 import android.text.style.StyleSpan
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import java.util.Locale
 import mozilla.components.support.test.mock
 import mozilla.components.support.test.whenever
 import org.junit.Assert.assertEquals
@@ -20,8 +20,6 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mockito.spy
-import org.robolectric.annotation.Config
-import java.util.Locale
 
 @RunWith(AndroidJUnit4::class)
 class ResourcesTest {
@@ -37,22 +35,18 @@ class ResourcesTest {
         whenever(resources.configuration).thenReturn(configuration)
     }
 
-    @Config(sdk = [Build.VERSION_CODES.N])
     @Test
     fun `locale returns first item in locales list`() {
         whenever(configuration.locales).thenReturn(LocaleList(Locale.CANADA, Locale.ENGLISH))
         assertEquals(Locale.CANADA, resources.locale)
     }
 
-    @Suppress("Deprecation")
-    @Config(sdk = [Build.VERSION_CODES.M])
     @Test
     fun `locale returns locale from configuration`() {
-        configuration.locale = Locale.FRENCH
+        configuration.setLocales(LocaleList(Locale.FRENCH))
         assertEquals(Locale.FRENCH, resources.locale)
     }
 
-    @Config(sdk = [Build.VERSION_CODES.N])
     @Test
     fun `getSpanned formats corresponding string`() {
         val id = 100

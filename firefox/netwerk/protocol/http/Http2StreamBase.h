@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,13 +8,12 @@
 // HTTP/2 - RFC7540
 // https://www.rfc-editor.org/rfc/rfc7540.txt
 
-#include "mozilla/Attributes.h"
+#include "SimpleBuffer.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
 #include "nsAHttpTransaction.h"
-#include "nsISupportsPriority.h"
-#include "SimpleBuffer.h"
 #include "nsISupportsImpl.h"
+#include "nsISupportsPriority.h"
 #include "nsIURI.h"
 
 class nsISocketTransport;
@@ -35,10 +33,12 @@ class Http2PushedStream;
 class Http2Decompressor;
 class Http2WebTransportSession;
 
-class Http2StreamBase : public nsAHttpSegmentReader,
+class Http2StreamBase : public nsISupports,
+                        public nsAHttpSegmentReader,
                         public nsAHttpSegmentWriter,
                         public SupportsWeakPtr {
  public:
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSAHTTPSEGMENTREADER
 
   enum stateType {
@@ -205,9 +205,12 @@ class Http2StreamBase : public nsAHttpSegmentReader,
     }
   }
 
+  bool Closed() const { return mClosed; }
+
  protected:
   virtual ~Http2StreamBase();
-
+  friend class DeleteHttp2StreamBase;
+  void DeleteSelfOnSocketThread();
   virtual void HandleResponseHeaders(nsACString& aHeadersOut,
                                      int32_t httpResponseCode) {}
   virtual nsresult CallToWriteData(uint32_t count, uint32_t* countRead) = 0;
@@ -297,8 +300,10 @@ class Http2StreamBase : public nsAHttpSegmentReader,
   // close by setting this to the max value.
   int64_t mRequestBodyLenRemaining{0};
 
+  bool mClosed{false};
+
  private:
-  friend class mozilla::DefaultDelete<Http2StreamBase>;
+  friend mozilla::DefaultDelete<Http2StreamBase>;
 
   [[nodiscard]] nsresult ParseHttpRequestHeaders(const char*, uint32_t,
                                                  uint32_t*);

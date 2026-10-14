@@ -1,5 +1,4 @@
 [DEFAULT]
-skip-if = ["debug"] # bug 1884982 - takes 20+ minutes to run on debug
 prefs = [
   "dom.storage_access.prompt.testing=true", # Disable the Storage Access API prompts for all of the tests in this directory
   "dom.storage_access.prompt.testing.allow=true",
@@ -51,10 +50,10 @@ support-files = [
   "blobPartitionPage.html",
   "raptor.jpg",
   "!/browser/modules/test/browser/head.js",
-  "!/browser/base/content/test/general/head.js",
-  "!/browser/base/content/test/protectionsUI/cookieServer.sjs",
-  "!/browser/base/content/test/protectionsUI/trackingPage.html",
-  "!/browser/base/content/test/protectionsUI/trackingAPI.js",
+  "!/browser/base/content/test/browser-general/head.js",
+  "!/browser/base/content/test/browser-protectionsUI/cookieServer.sjs",
+  "!/browser/base/content/test/browser-protectionsUI/trackingPage.html",
+  "!/browser/base/content/test/browser-protectionsUI/trackingAPI.js",
   "!/toolkit/content/tests/browser/common/mockTransfer.js",
 ]
 
@@ -92,6 +91,14 @@ support-files = [
 
 ["browser_fixed_ABA_partitionKey.js"]
 
+["browser_flushOnQuery.js"]
+
+["browser_foreignWorker_eventSource.js"]
+support-files= [
+  "eventsource_worker.js",
+  "eventsource_message.sjs",
+]
+
 ["browser_hasStorageAccess.js"]
 
 ["browser_iframe_document_open.js"]
@@ -108,13 +115,13 @@ support-files = [
 
 ["browser_nimbus_etp_features.js"]
 
-["browser_nimbus_thirdPartyTrackerCookieBlocking.js"]
-
 ["browser_noStorageAccessAutoGrant_thirdPartyTracker.js"]
 
 ["browser_onBeforeRequestNotificationForTrackingResources.js"]
 
 ["browser_onModifyRequestNotificationForTrackingResources.js"]
+
+["browser_openerAfterUserInteractionHeuristic.js"]
 
 ["browser_partitionKey_XSLT.js"]
 support-files= [
@@ -123,6 +130,10 @@ support-files= [
 ]
 
 ["browser_partitionedABA.js"]
+
+["browser_partitionedABBredirectToABAServiceWorkers.js"]
+
+["browser_partitionedABOpen.js"]
 
 ["browser_partitionedABnavigatestToAA.js"]
 
@@ -154,9 +165,11 @@ support-files = ["localStorageEvents.html"]
 ["browser_partitionedLockManager.js"]
 
 ["browser_partitionedMessaging.js"]
-skip-if = ["true"] #Bug 1588241
 
 ["browser_partitionedServiceWorkers.js"]
+skip-if = [
+  "debug", # Bug 2046514 - currently crashing on debug
+]
 support-files = [
   "dedicatedWorker.js",
   "matchAll.js",
@@ -171,17 +184,20 @@ support-files = [
 
 ["browser_partitionkey_bloburl.js"]
 
+["browser_partitionkey_mediasourceurl.js"]
+
 ["browser_permissionInNormalWindows.js"]
 
 ["browser_permissionInPrivateWindows.js"]
 
 ["browser_permissionPropagation.js"]
-skip-if = ["os == 'win' && debug"] # Bug 1645505
 
 ["browser_referrerDefaultPolicy.js"]
 support-files = ["referrer.sjs"]
 
 ["browser_sameSiteTrackerBlocking.js"]
+
+["browser_scopedTrackingProtection.js"]
 
 ["browser_script.js"]
 support-files = ["tracker.js"]
@@ -224,9 +240,6 @@ support-files = [
   "!/browser/components/originattributes/test/browser/file_thirdPartyChild.worker.xhr.html",
   "!/browser/components/originattributes/test/browser/file_thirdPartyChild.xhr.html",
 ]
-skip-if = [
-  "os == 'mac' && os_version == '15.30' && arch == 'aarch64' && debug", # Bug 1775745
-]
 
 ["browser_staticPartition_network.js"]
 
@@ -241,7 +254,6 @@ support-files = [
 ["browser_staticPartition_tls_session.js"]
 
 ["browser_staticPartition_websocket.js"]
-skip-if = ["os == 'mac' && verify"] # Bug 1721210
 support-files = ["file_ws_handshake_delay_wsh.py"]
 
 ["browser_storageAccessAutograntFromFedCM.js"]
@@ -290,35 +302,11 @@ support-files = [
 
 ["browser_storageAccessWithHeuristics.js"]
 
-["browser_storageAccess_TopLevel_Arguments.js"]
-
-["browser_storageAccess_TopLevel_CookieBehavior.js"]
-
-["browser_storageAccess_TopLevel_CookiePermission.js"]
-
-["browser_storageAccess_TopLevel_CrossOriginSameSite.js"]
-
-["browser_storageAccess_TopLevel_Doorhanger.js"]
-
-["browser_storageAccess_TopLevel_Embed.js"]
-
-["browser_storageAccess_TopLevel_Enable.js"]
-
-["browser_storageAccess_TopLevel_RequireIntermediatePermission.js"]
-
-["browser_storageAccess_TopLevel_StorageAccessPermission.js"]
-
-["browser_storageAccess_TopLevel_UserActivation.js"]
-skip-if = ["debug"] # Bug 1700551
-
 ["browser_storageAccess_cookies_on_grant.js"]
 
 ["browser_storageAccess_userActivation.js"]
 
 ["browser_subResources.js"]
-support-files = ["subResources.sjs"]
-
-["browser_subResourcesPartitioned.js"]
 support-files = ["subResources.sjs"]
 
 ["browser_thirdPartyChecks_sandboxed_context.js"]
@@ -351,14 +339,14 @@ support-files = [
 
 ["browser_urlQueryStringStripping.js"]
 support-files = ["file_stripping.html"]
+skip-if = [
+  "opt && verify-standalone",
+]
 
 ["browser_urlQueryStringStrippingWithEncoding.js"]
 support-files = ["file_stripping.html"]
 
 ["browser_urlQueryStringStripping_allowList.js"]
-support-files = ["file_stripping.html"]
-
-["browser_urlQueryStringStripping_nimbus.js"]
 support-files = ["file_stripping.html"]
 
 ["browser_urlQueryStringStripping_pbmode.js"]

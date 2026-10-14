@@ -68,6 +68,7 @@ pub fn map_texture_format_failable(
         Tf::Depth32Float => DXGI_FORMAT_D32_FLOAT,
         Tf::Depth32FloatStencil8 => DXGI_FORMAT_D32_FLOAT_S8X24_UINT,
         Tf::NV12 => DXGI_FORMAT_NV12,
+        Tf::P010 => DXGI_FORMAT_P010,
         Tf::Bc1RgbaUnorm => DXGI_FORMAT_BC1_UNORM,
         Tf::Bc1RgbaUnormSrgb => DXGI_FORMAT_BC1_UNORM_SRGB,
         Tf::Bc2RgbaUnorm => DXGI_FORMAT_BC2_UNORM,
@@ -174,6 +175,12 @@ pub fn map_texture_format_for_copy(
             crate::FormatAspects::STENCIL,
         ) => Dxgi::Common::DXGI_FORMAT_R8_UINT,
 
+        // `CopyTextureRegion` on a plane subresource wants the
+        // single-plane DXGI format, not the planar one.
+        (format, aspects) if format.is_multi_planar_format() && aspects.is_one() => {
+            map_texture_format(format.aspect_specific_format(aspects.map())?)
+        }
+
         (format, crate::FormatAspects::COLOR) => map_texture_format(format),
 
         _ => return None,
@@ -277,6 +284,10 @@ pub fn map_vertex_format(format: wgt::VertexFormat) -> Dxgi::Common::DXGI_FORMAT
         Vf::Sint32x4 => DXGI_FORMAT_R32G32B32A32_SINT,
         Vf::Float32x4 => DXGI_FORMAT_R32G32B32A32_FLOAT,
         Vf::Unorm10_10_10_2 => DXGI_FORMAT_R10G10B10A2_UNORM,
+        // https://github.com/gfx-rs/wgpu/issues/10216
+        Vf::Snorm10_10_10_2 => {
+            unimplemented!("VertexFormat::Snorm10_10_10_2 requires a polyfill in HLSL")
+        }
         Vf::Unorm8x4Bgra => DXGI_FORMAT_B8G8R8A8_UNORM,
         Vf::Float64 | Vf::Float64x2 | Vf::Float64x3 | Vf::Float64x4 => unimplemented!(),
     }

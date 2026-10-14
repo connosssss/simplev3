@@ -117,23 +117,9 @@ const TEST_GLOBAL = {
       prefix: "ASRouter",
     }),
   },
-  AWScreenUtils: {
-    evaluateTargetingAndRemoveScreens() {
-      return true;
-    },
-    async removeScreens() {
-      return true;
-    },
-    evaluateScreenTargeting() {
-      return true;
-    },
-  },
   BrowserUtils: {
     sendToDeviceEmailsSupported() {
       return true;
-    },
-    isChinaRepack() {
-      return false;
     },
   },
   UpdateUtils: { getUpdateChannel() {} },
@@ -202,6 +188,7 @@ const TEST_GLOBAL = {
       insert() {},
       markPageAsTyped() {},
       removeObserver() {},
+      pageFrecencyThreshold() {},
     },
     "@mozilla.org/io/string-input-stream;1": {
       createInstance() {
@@ -241,12 +228,6 @@ const TEST_GLOBAL = {
       CRYPTOMINERS_ID: 3,
       FINGERPRINTERS_ID: 4,
       SOCIAL_ID: 5,
-    },
-    nsICookieBannerService: {
-      MODE_DISABLED: 0,
-      MODE_REJECT: 1,
-      MODE_REJECT_OR_ACCEPT: 2,
-      MODE_UNSET: 3,
     },
   },
   Cu: {
@@ -480,6 +461,7 @@ const TEST_GLOBAL = {
   ShellService: {
     doesAppNeedPin: () => false,
     isDefaultBrowser: () => true,
+    isDefaultBrowserAsync: async () => true,
   },
   FilterExpressions: {
     eval() {
@@ -520,9 +502,6 @@ const TEST_GLOBAL = {
       onUpdate() {},
       offUpdate() {},
     },
-    cookieBannerHandling: {
-      getVariable() {},
-    },
   },
   TelemetryEnvironment: {
     setExperimentActive() {},
@@ -561,6 +540,9 @@ const TEST_GLOBAL = {
     return Promise.resolve({ value: "complete" });
   },
   AboutNewTab: {},
+  AWWaitForNimbus() {
+    return Promise.resolve("skipped");
+  },
   Glean: {
     newtab: {
       opened: {

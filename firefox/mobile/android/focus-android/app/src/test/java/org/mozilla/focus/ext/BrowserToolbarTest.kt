@@ -6,14 +6,14 @@ package org.mozilla.focus.ext
 
 import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.core.view.isVisible
+import kotlin.test.assertIs
 import mozilla.components.browser.engine.gecko.GeckoEngineView
 import mozilla.components.browser.toolbar.BrowserToolbar
 import mozilla.components.support.test.robolectric.testContext
 import mozilla.components.ui.widgets.behavior.EngineViewClippingBehavior
-import mozilla.components.ui.widgets.behavior.EngineViewScrollingBehavior
+import mozilla.components.ui.widgets.behavior.EngineViewScrollingGesturesBehavior
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mockito.doReturn
@@ -42,8 +42,10 @@ internal class BrowserToolbarTest {
 
         toolbar.enableDynamicBehavior(testContext, engineView)
 
-        assertTrue((toolbar.layoutParams as? CoordinatorLayout.LayoutParams)?.behavior is EngineViewScrollingBehavior)
-        assertTrue((engineView.layoutParams as? CoordinatorLayout.LayoutParams)?.behavior is EngineViewClippingBehavior)
+        assertIs<EngineViewScrollingGesturesBehavior>(
+            (toolbar.layoutParams as? CoordinatorLayout.LayoutParams)?.behavior
+        )
+        assertIs<EngineViewClippingBehavior>((engineView.layoutParams as? CoordinatorLayout.LayoutParams)?.behavior)
         assertEquals(0, (engineView.layoutParams as? CoordinatorLayout.LayoutParams)?.topMargin)
         verify(engineView).setDynamicToolbarMaxHeight(toolbarHeight)
     }

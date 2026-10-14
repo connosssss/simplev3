@@ -3,6 +3,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import contextlib
 import functools
+import glob
 import importlib
 import inspect
 import logging
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zipfile
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from io import StringIO
@@ -30,7 +32,8 @@ MULTI_REVISION_ROOT = f"{API_ROOT}/namespaces"
 MULTI_TASK_ROOT = f"{API_ROOT}/tasks"
 ON_TRY = "MOZ_AUTOMATION" in os.environ
 DOWNLOAD_TIMEOUT = 30
-METRICS_MATCHER = re.compile(r"(perfMetrics.*)")
+PERF_METRICS_MATCHER = re.compile(r"(perfMetrics.*)")
+EVAL_DATA_MATCHER = re.compile(r"(evalDataPayload.*)")
 PRETTY_APP_NAMES = {
     "org.mozilla.fenix": "fenix",
     "org.mozilla.firefox": "fenix",
@@ -54,6 +57,17 @@ class NoPerfMetricsError(Exception):
         super().__init__(
             f"No perftest results were found in the {flavor} test. Results must be "
             'reported using:\n info("perfMetrics", { metricName: metricValue });'
+        )
+
+
+class NoEvalDataError(Exception):
+    """Raised when evalDataPayload was not found, or were not output
+    during a test run."""
+
+    def __init__(self, flavor):
+        super().__init__(
+            f"No eval data was found in the {flavor} test. Results must be "
+            'reported using:\n info("evalDataPayload", { evalData: evalValue });'
         )
 
 
@@ -193,6 +207,12 @@ class MachLogger:
     def error(self, msg, name="mozperftest", **kwargs):
         self._logger(logging.ERROR, name, kwargs, msg)
 
+    def group_start(self, msg=None, name="mozperftest", **kwargs):
+        self._logger(logging.INFO, name, kwargs, msg or "")
+
+    def group_end(self, msg=None, name="mozperftest", **kwargs):
+        self._logger(logging.INFO, name, kwargs, msg or "")
+
 
 def install_package(virtualenv_manager, package, ignore_failure=False):
     """Installs a package using the virtualenv manager.
@@ -229,9 +249,13 @@ def install_package(virtualenv_manager, package, ignore_failure=False):
             return True
     with silence():
         try:
-            subprocess.check_call(
-                [virtualenv_manager.python_path, "-m", "pip", "install", package]
-            )
+            subprocess.check_call([
+                virtualenv_manager.python_path,
+                "-m",
+                "pip",
+                "install",
+                package,
+            ])
             return True
         except Exception:
             if not ignore_failure:
@@ -274,19 +298,17 @@ def install_requirements_file(
         cwd = os.getcwd()
         try:
             os.chdir(Path(requirements_file).parent)
-            subprocess.check_call(
-                [
-                    virtualenv_manager.python_path,
-                    "-m",
-                    "pip",
-                    "install",
-                    "-r",
-                    requirements_file,
-                    "--no-index",
-                    "--find-links",
-                    "https://pypi.pub.build.mozilla.org/pub/",
-                ]
-            )
+            subprocess.check_call([
+                virtualenv_manager.python_path,
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                requirements_file,
+                "--no-index",
+                "--find-links",
+                "https://pypi.pub.build.mozilla.org/pub/",
+            ])
             return True
         except Exception:
             if not ignore_failure:
@@ -300,12 +322,18 @@ def install_requirements_file(
 # xpcshell tests, don't have the same path.
 # see - python/mozbuild/mozbuild/action/test_archive.py
 # this mapping will map paths when running there.
-# The key is the source path, and the value the ci path
+# The key is the source path, and the value the list of candidate ci paths,
+# tried in order. A single source directory can hold tests of several flavors,
+# which end up in different subdirectories of the test package.
 _TRY_MAPPING = {
-    Path("browser"): Path("mochitest", "browser", "browser"),
-    Path("netwerk"): Path("xpcshell", "tests", "netwerk"),
-    Path("dom"): Path("mochitest", "tests", "dom"),
-    Path("toolkit"): Path("mochitest", "browser", "toolkit"),
+    Path("accessible"): [Path("mochitest", "browser", "accessible")],
+    Path("browser"): [Path("mochitest", "browser", "browser")],
+    Path("netwerk"): [Path("xpcshell", "tests", "netwerk")],
+    Path("dom"): [
+        Path("mochitest", "tests", "dom"),
+        Path("mochitest", "browser", "dom"),
+    ],
+    Path("toolkit"): [Path("mochitest", "browser", "toolkit")],
 }
 
 
@@ -336,11 +364,18 @@ def build_test_list(tests):
         p_test = Path(test)
         if ON_TRY and not p_test.resolve().exists():
             # until we have pathlib.Path.is_relative_to() (3.9)
-            for src_path, ci_path in _TRY_MAPPING.items():
-                src_path, ci_path = str(src_path), str(ci_path)  # noqa
-                if test.startswith(src_path):
-                    p_test = Path(test.replace(src_path, ci_path, 1))
-                    break
+            for src_path, ci_paths in _TRY_MAPPING.items():
+                src_path = str(src_path)
+                if not test.startswith(src_path):
+                    continue
+                candidates = [
+                    Path(test.replace(src_path, str(ci_path), 1))
+                    for ci_path in ci_paths
+                ]
+                p_test = next(
+                    (c for c in candidates if c.resolve().exists()), candidates[0]
+                )
+                break
 
         resolved_test = p_test.resolve()
 
@@ -348,6 +383,8 @@ def build_test_list(tests):
             res.append(str(resolved_test))
         elif resolved_test.is_dir():
             for file in resolved_test.rglob("perftest_*.js"):
+                res.append(str(file))
+            for file in resolved_test.rglob("eval_*.js"):
                 res.append(str(file))
         else:
             raise FileNotFoundError(str(resolved_test))
@@ -444,7 +481,7 @@ def strtobool(val):
     elif val in ("n", "no", "f", "false", "off", "0"):
         return 0
     else:
-        raise ValueError("invalid truth value %r" % (val,))
+        raise ValueError(f"invalid truth value {val!r}")
 
 
 @contextlib.contextmanager
@@ -588,7 +625,7 @@ _WPT_URL = "{0}/secrets/v1/secret/project/perftest/gecko/level-{1}/perftest-logi
 _DEFAULT_SERVER = "https://firefox-ci-tc.services.mozilla.com"
 
 
-@functools.lru_cache
+@functools.cache
 def get_tc_secret(wpt=False):
     """Returns the Taskcluster secret.
 
@@ -656,3 +693,259 @@ def archive_folder(folder_to_archive, output_path, archive_name=None):
         tar.add(folder_to_archive, arcname=archive_name)
 
     return full_archive_path
+
+
+def archive_files(
+    files, output_dir, archive_name, prefix="", sort_key=None, base_dir=None
+):
+    """Archives individual files into a zip file, with optional append mode.
+
+    Args:
+        files: List of Path objects to archive
+        output_dir: Path object - directory where the archive should be created
+        archive_name: Name for the archive
+        prefix: Optional subdirectory within the archive for files (ignored if base_dir is set)
+        sort_key: Optional sorting key function for ordering files
+        base_dir: Optional base directory to compute relative paths from
+
+    Returns:
+        Path to the archive if created/updated, None otherwise
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = output_dir / f"{archive_name}.zip"
+
+    mode = "a" if archive_path.exists() else "w"
+
+    sorted_files = sorted(files, key=sort_key) if sort_key else files
+
+    with zipfile.ZipFile(archive_path, mode, compression=zipfile.ZIP_DEFLATED) as zf:
+        for file_path in sorted_files:
+            if base_dir:
+                archive_name = str(file_path.relative_to(base_dir))
+            elif prefix:
+                archive_name = f"{prefix}/{file_path.name}"
+            else:
+                archive_name = file_path.name
+
+            print(f"Adding {archive_name} to archive")
+            zf.write(file_path, arcname=archive_name)
+
+    return archive_path
+
+
+def extract_tgz_and_find_files(output_dir, tgz_name, patterns):
+    """Extract TGZ file if on CI and find files matching patterns.
+
+    Args:
+        output_dir: Path object - directory where files are located or where TGZ should be extracted
+        tgz_name: Name of the TGZ file (without extension)
+        patterns: List of patterns for file extensions (e.g., ["*.data", "*.json.gz"])
+
+    Returns:
+        Tuple of (files, search_dir, work_dir) where:
+            - files: list of found file paths
+            - search_dir: base directory where files were found (for relative path computation)
+            - work_dir: temp directory to clean up (or None if not on CI)
+    """
+    work_dir = None
+    search_dir = output_dir
+
+    if ON_TRY:
+        tgz_path = output_dir / f"{tgz_name}.tgz"
+        if tgz_path.exists():
+            work_dir = Path(tempfile.mkdtemp())
+            with tarfile.open(tgz_path, "r:gz") as tar:
+                tar.extractall(path=work_dir)
+            search_dir = work_dir
+
+    found_files = []
+    for pattern in patterns:
+        found_files.extend(search_dir.rglob(pattern))
+
+    valid_files = [f for f in found_files if f.is_file()]
+
+    return (valid_files, search_dir, work_dir)
+
+
+def get_adb_device_or_emu(verbose=False):
+    from mozdevice import ADBDeviceFactory, ADBError
+
+    try:
+        return ADBDeviceFactory(verbose=verbose)
+    except Exception as e:
+        if "No ready devices found." not in str(e):
+            raise e
+        from mozbuild.base import MozbuildObject
+        from mozrunner.devices.android_device import AndroidEmulator
+
+        try:
+            build_obj = MozbuildObject.from_environment()
+            substs = build_obj.substs
+        except Exception:
+            substs = None
+        emulator = AndroidEmulator("*", substs=substs, verbose=True)
+        if emulator.is_available():
+            try:
+                response = input(
+                    "No Android devices connected. Start an emulator? (Y/n) "
+                ).strip()
+            except EOFError:
+                raise EOFError("Could not get input on non-interective output")
+            if response.lower().startswith("y") or response == "":
+                if not emulator.check_avd():
+                    print("Android AVD not found, please run |mach bootstrap|")
+                    raise ADBError("No ready devices found.")
+                print(f"Starting emulator running {emulator.get_avd_description()}...")
+                emulator.start()
+                emulator.wait_for_start()
+                return ADBDeviceFactory(verbose=True)
+            else:
+                raise ADBError("No emulator started and android device not found")
+
+
+def _android_sdk_root():
+    """Return the fetched Android SDK root, or None if it is not set."""
+    return os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
+
+
+def _prepend_to_path(directory):
+    """Prepend an existing directory to the PATH environment variable, once."""
+    if not os.path.isdir(directory):
+        return
+    entries = os.environ.get("PATH", "").split(os.pathsep)
+    if directory not in entries:
+        os.environ["PATH"] = os.pathsep.join([directory, *entries])
+
+
+def get_adb_path():
+    """Return the path to the adb executable.
+
+    Prefer the SDK pointed to by ANDROID_SDK_ROOT/ANDROID_HOME, so adb is found
+    in automation where it is not on PATH; fall back to ``adb`` otherwise.
+    """
+    sdk_root = _android_sdk_root()
+    if sdk_root:
+        adb_path = os.path.join(sdk_root, "platform-tools", "adb")
+        if os.path.exists(adb_path):
+            return adb_path
+    return "adb"
+
+
+def ensure_adb_on_path():
+    """Put the fetched SDK's platform-tools on PATH so ``adb`` resolves by name.
+
+    Tests and tools spawned as subprocesses invoke ``adb`` directly; in
+    automation the SDK is fetched but not on PATH.
+    """
+    sdk_root = _android_sdk_root()
+    if sdk_root:
+        _prepend_to_path(os.path.join(sdk_root, "platform-tools"))
+
+
+def ensure_profgen_on_path():
+    """Put the fetched SDK's cmdline-tools bin on PATH so ``profgen`` resolves.
+
+    Installing a Fenix APK with its baseline profile shells out to ``profgen``,
+    which ships in a versioned ``cmdline-tools/<version>/bin`` directory of the
+    SDK rather than on PATH.
+    """
+    sdk_root = _android_sdk_root()
+    if not sdk_root:
+        return
+    for bin_dir in glob.glob(os.path.join(sdk_root, "cmdline-tools", "*", "bin")):
+        _prepend_to_path(bin_dir)
+
+
+def ensure_java_on_path():
+    """Set JAVA_HOME and put its bin on PATH from the fetched JDK.
+
+    ``profgen`` (used to extract Fenix baseline profiles) is a Java tool, so it
+    needs a JRE. In automation the JDK is fetched to ``MOZ_FETCHES_DIR/jdk`` but
+    is not on PATH and JAVA_HOME is unset. The macOS JDK nests the runtime under
+    ``<version>/Contents/Home``; other platforms use ``<version>`` directly.
+    """
+    fetches_dir = os.environ.get("MOZ_FETCHES_DIR")
+    if not fetches_dir:
+        return
+    candidates = glob.glob(
+        os.path.join(fetches_dir, "jdk", "*", "Contents", "Home")
+    ) + glob.glob(os.path.join(fetches_dir, "jdk", "*"))
+    for java_home in candidates:
+        if os.path.isfile(os.path.join(java_home, "bin", "java")):
+            os.environ["JAVA_HOME"] = java_home
+            _prepend_to_path(os.path.join(java_home, "bin"))
+            return
+
+
+def start_test_emulator(verbose=False):
+    """Start the Mozilla test emulator when no Android device is connected.
+
+    Intended as a fallback when connecting to a device fails. The emulator is
+    started unattended in automation (with software rendering, which headless
+    CI workers require) or after a prompt when run interactively.
+
+    Returns True if an emulator was started, False if none was (e.g. the
+    emulator or AVD is unavailable, or the user declined the prompt).
+    """
+    from mozdevice import ADBError
+    from mozrunner.devices.android_device import AndroidEmulator
+
+    emulator = None
+    for avd_type in ("arm64", "x86_64", "arm"):
+        candidate = AndroidEmulator(avd_type, verbose=verbose)
+        if candidate.is_available() and candidate.check_avd():
+            emulator = candidate
+            break
+    if emulator is None:
+        return False
+
+    interactive = not ON_TRY and sys.stdin is not None and sys.stdin.isatty()
+    if interactive:
+        response = input(
+            "No Android devices connected. Start an emulator? (Y/n) "
+        ).strip()
+        if response and not response.lower().startswith("y"):
+            return False
+    else:
+        # Use host GPU rendering: the macOS perf workers have
+        # a window server, and swiftshader_indirect produces a corrupt guest
+        # framebuffer that shows up as static in the screen recordings.
+        # These mirror emulator_extra_args in raptor's
+        # android_emulator_macosx_config.py; keep them in sync except -gpu, which
+        # differs by design (mozperftest records the guest framebuffer, raptor
+        # uses the Firefox window recorder).
+        os.environ.setdefault(
+            "MOZ_EMULATOR_COMMAND_ARGS",
+            "-gpu host -skip-adb-auth -verbose -show-kernel "
+            "-ranchu -selinux permissive -memory 3072 -cores 4 -skin 800x1280 "
+            "-no-snapstorage -no-snapshot -prop ro.test_harness=true",
+        )
+
+    print(f"Starting emulator running {emulator.get_avd_description()}...")
+    emulator.start()
+    if emulator.wait_for_start() is False:
+        raise ADBError("The Android emulator failed to start.")
+    return True
+
+
+def ensure_android_device(verbose=False):
+    """Make a usable Android device available, starting the emulator if needed.
+
+    Centralizes Android device readiness for mozperftest: it makes adb reachable
+    (see :func:`ensure_adb_on_path`) and, when no device is connected, starts the
+    Mozilla test emulator, unattended in automation or after a prompt
+    interactively (see :func:`start_test_emulator`). It does not open a
+    connection; the AndroidDevice layer owns the (logged) device connection.
+
+    :raises ADBError: when no device is connected and no emulator could be
+        started.
+    """
+    from mozdevice import ADBError, ADBHost
+
+    ensure_adb_on_path()
+    adb_path = get_adb_path()
+
+    adbhost = ADBHost(adb=adb_path, verbose=verbose)
+    ready_devices = [d for d in adbhost.devices() if d.get("state") == "device"]
+    if not ready_devices and not start_test_emulator(verbose=verbose):
+        raise ADBError("No Android device connected and no emulator could be started.")

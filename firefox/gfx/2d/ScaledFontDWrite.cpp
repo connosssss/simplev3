@@ -1,32 +1,25 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ScaledFontDWrite.h"
-#include "gfxDWriteCommon.h"
-#include "UnscaledFontDWrite.h"
-#include "PathD2D.h"
-#include "gfxFont.h"
-#include "Logging.h"
-#include "mozilla/FontPropertyTypes.h"
-#include "mozilla/webrender/WebRenderTypes.h"
-#include "HelpersD2D.h"
-#include "StackArray.h"
-
-#include "dwrite_3.h"
-
-#include "PathSkia.h"
-#include "skia/include/core/SkPaint.h"
-#include "skia/include/core/SkPath.h"
-#include "skia/include/ports/SkTypeface_win.h"
 
 #include <vector>
 
-#include "cairo-dwrite.h"
-
 #include "HelpersWinFonts.h"
+#include "Logging.h"
+#include "PathSkia.h"
+#include "StackArray.h"
+#include "UnscaledFontDWrite.h"
+#include "cairo-dwrite.h"
+#include "dwrite_3.h"
+#include "gfxDWriteCommon.h"
+#include "gfxFont.h"
+#include "mozilla/FontPropertyTypes.h"
+#include "mozilla/webrender/WebRenderTypes.h"
+#include "skia/include/core/SkPaint.h"
+#include "skia/include/core/SkPath.h"
+#include "skia/include/ports/SkTypeface_win.h"
 
 namespace mozilla {
 namespace gfx {
@@ -87,29 +80,12 @@ ScaledFontDWrite::ScaledFontDWrite(IDWriteFontFace* aFontFace,
       mGDIForced(aGDIForced) {
   if (aStyle) {
     mStyle = SkFontStyle(aStyle->weight.ToIntRounded(),
-                         DWriteFontStretchFromStretch(aStyle->stretch),
+                         DWriteFontStretchFromWidth(aStyle->width),
                          // FIXME(jwatt): also use kOblique_Slant
                          aStyle->style == FontSlantStyle::NORMAL
                              ? SkFontStyle::kUpright_Slant
                              : SkFontStyle::kItalic_Slant);
   }
-}
-
-already_AddRefed<Path> ScaledFontDWrite::GetPathForGlyphs(
-    const GlyphBuffer& aBuffer, const DrawTarget* aTarget) {
-  RefPtr<PathBuilder> pathBuilder = aTarget->CreatePathBuilder();
-
-  if (pathBuilder->GetBackendType() != BackendType::DIRECT2D &&
-      pathBuilder->GetBackendType() != BackendType::DIRECT2D1_1) {
-    return ScaledFontBase::GetPathForGlyphs(aBuffer, aTarget);
-  }
-
-  PathBuilderD2D* pathBuilderD2D =
-      static_cast<PathBuilderD2D*>(pathBuilder.get());
-
-  CopyGlyphsToSink(aBuffer, pathBuilderD2D->GetSink());
-
-  return pathBuilder->Finish();
 }
 
 SkTypeface* ScaledFontDWrite::CreateSkTypeface() {
@@ -136,9 +112,15 @@ SkTypeface* ScaledFontDWrite::CreateSkTypeface() {
     clearTypeLevel = 1.0f;
   }
 
-  return SkCreateTypefaceFromDWriteFont(factory, mFontFace, mStyle,
-                                        (int)settings.RenderingMode(), gamma,
-                                        contrast, clearTypeLevel);
+  IDWriteFont* font =
+      static_cast<UnscaledFontDWrite*>(mUnscaledFont.get())->GetFont();
+  RefPtr<IDWriteFontFamily> family;
+  if (font) {
+    font->GetFontFamily(getter_AddRefs(family));
+  }
+  return SkCreateTypefaceFromDWriteFont(factory, mFontFace, font, family,
+                                        mStyle, (int)settings.RenderingMode(),
+                                        gamma, contrast, clearTypeLevel);
 }
 
 void ScaledFontDWrite::SetupSkFontDrawOptions(SkFont& aFont) {
@@ -153,51 +135,6 @@ void ScaledFontDWrite::SetupSkFontDrawOptions(SkFont& aFont) {
 
 bool ScaledFontDWrite::MayUseBitmaps() {
   return ForceGDIMode() || UseEmbeddedBitmaps();
-}
-
-void ScaledFontDWrite::CopyGlyphsToBuilder(const GlyphBuffer& aBuffer,
-                                           PathBuilder* aBuilder,
-                                           const Matrix* aTransformHint) {
-  BackendType backendType = aBuilder->GetBackendType();
-  if (backendType != BackendType::DIRECT2D &&
-      backendType != BackendType::DIRECT2D1_1) {
-    ScaledFontBase::CopyGlyphsToBuilder(aBuffer, aBuilder, aTransformHint);
-    return;
-  }
-
-  PathBuilderD2D* pathBuilderD2D = static_cast<PathBuilderD2D*>(aBuilder);
-
-  if (pathBuilderD2D->IsFigureActive()) {
-    gfxCriticalNote
-        << "Attempting to copy glyphs to PathBuilderD2D with active figure.";
-  }
-
-  CopyGlyphsToSink(aBuffer, pathBuilderD2D->GetSink());
-}
-
-void ScaledFontDWrite::CopyGlyphsToSink(const GlyphBuffer& aBuffer,
-                                        ID2D1SimplifiedGeometrySink* aSink) {
-  std::vector<UINT16> indices;
-  std::vector<FLOAT> advances;
-  std::vector<DWRITE_GLYPH_OFFSET> offsets;
-  indices.resize(aBuffer.mNumGlyphs);
-  advances.resize(aBuffer.mNumGlyphs);
-  offsets.resize(aBuffer.mNumGlyphs);
-
-  memset(&advances.front(), 0, sizeof(FLOAT) * aBuffer.mNumGlyphs);
-  for (unsigned int i = 0; i < aBuffer.mNumGlyphs; i++) {
-    indices[i] = aBuffer.mGlyphs[i].mIndex;
-    offsets[i].advanceOffset = aBuffer.mGlyphs[i].mPosition.x;
-    offsets[i].ascenderOffset = -aBuffer.mGlyphs[i].mPosition.y;
-  }
-
-  HRESULT hr = mFontFace->GetGlyphRunOutline(
-      mSize, &indices.front(), &advances.front(), &offsets.front(),
-      aBuffer.mNumGlyphs, FALSE, FALSE, aSink);
-  if (FAILED(hr)) {
-    gfxCriticalNote << "Failed to copy glyphs to geometry sink. Code: "
-                    << hexa(hr);
-  }
 }
 
 bool UnscaledFontDWrite::GetFontFileData(FontFileDataOutput aDataCallback,
@@ -335,18 +272,18 @@ bool UnscaledFontDWrite::GetFontDescriptor(FontDescriptorOutput aCb,
                                            void* aBaton) {
   MOZ_ASSERT(NS_IsMainThread());
 
-  if (!mFont) {
-    return false;
-  }
-
   // We cache the font file name as it involves multiple DirectWrite calls.
   if (mFontFileName.empty()) {
+    if (!mFont) {
+      return false;
+    }
+
     if (!GetFontFileName(mFontFace, mFontFileName)) {
       return false;
     }
   }
-  uint32_t index = mFontFace->GetIndex();
 
+  uint32_t index = mFontFace->GetIndex();
   aCb(reinterpret_cast<const uint8_t*>(mFontFileName.data()),
       mFontFileName.size() * sizeof(WCHAR), index, aBaton);
   return true;
@@ -414,7 +351,7 @@ bool ScaledFontDWrite::HasVariationSettings() {
 // Helper for ScaledFontDWrite::GetFontInstanceData: if the font has variation
 // axes, get their current values into the aOutput vector.
 static void GetVariationsFromFontFace(IDWriteFontFace* aFace,
-                                      std::vector<FontVariation>* aOutput) {
+                                      std::vector<wr::FontVariation>* aOutput) {
   RefPtr<IDWriteFontFace5> ff5;
   aFace->QueryInterface(__uuidof(IDWriteFontFace5),
                         (void**)getter_AddRefs(ff5));
@@ -445,7 +382,7 @@ static void GetVariationsFromFontFace(IDWriteFontFace* aFace,
       uint32_t t = TRUETYPE_TAG(
           uint8_t(values[i].axisTag), uint8_t(values[i].axisTag >> 8),
           uint8_t(values[i].axisTag >> 16), uint8_t(values[i].axisTag >> 24));
-      aOutput->push_back(FontVariation{uint32_t(t), float(v)});
+      aOutput->push_back(wr::FontVariation{uint32_t(t), float(v)});
     }
   }
 }
@@ -455,7 +392,7 @@ bool ScaledFontDWrite::GetFontInstanceData(FontInstanceDataOutput aCb,
   InstanceData instance(this);
 
   // If the font has variations, get the list of axis values.
-  std::vector<FontVariation> variations;
+  std::vector<wr::FontVariation> variations;
   GetVariationsFromFontFace(mFontFace, &variations);
 
   aCb(reinterpret_cast<uint8_t*>(&instance), sizeof(instance),
@@ -467,7 +404,7 @@ bool ScaledFontDWrite::GetFontInstanceData(FontInstanceDataOutput aCb,
 bool ScaledFontDWrite::GetWRFontInstanceOptions(
     Maybe<wr::FontInstanceOptions>* aOutOptions,
     Maybe<wr::FontInstancePlatformOptions>* aOutPlatformOptions,
-    std::vector<FontVariation>* aOutVariations) {
+    std::vector<wr::FontVariation>* aOutVariations) {
   wr::FontInstanceOptions options = {};
   options.render_mode = wr::ToFontRenderMode(GetDefaultAAMode());
   options.flags = wr::FontInstanceFlags{0};
@@ -496,7 +433,7 @@ bool ScaledFontDWrite::GetWRFontInstanceOptions(
     default:
       break;
   }
-  if (Factory::GetBGRSubpixelOrder()) {
+  if (Factory::GetSubpixelOrder() == SubpixelOrder::BGR) {
     options.flags |= wr::FontInstanceFlags::SUBPIXEL_BGR;
   }
   options.synthetic_italics =
@@ -526,7 +463,8 @@ DWriteSettings& ScaledFontDWrite::DWriteSettings() const {
 // Returns nullptr in case of failure.
 static already_AddRefed<IDWriteFontFace5> CreateFaceWithVariations(
     IDWriteFontFace* aFace, DWRITE_FONT_SIMULATIONS aSimulations,
-    const FontVariation* aVariations = nullptr, uint32_t aNumVariations = 0) {
+    const wr::FontVariation* aVariations = nullptr,
+    uint32_t aNumVariations = 0) {
   auto makeDWriteAxisTag = [](uint32_t aTag) {
     return DWRITE_MAKE_FONT_AXIS_TAG((aTag >> 24) & 0xff, (aTag >> 16) & 0xff,
                                      (aTag >> 8) & 0xff, aTag & 0xff);
@@ -550,7 +488,7 @@ static already_AddRefed<IDWriteFontFace5> CreateFaceWithVariations(
       fontAxisValues.reserve(aNumVariations);
       for (uint32_t i = 0; i < aNumVariations; i++) {
         DWRITE_FONT_AXIS_VALUE axisValue = {
-            makeDWriteAxisTag(aVariations[i].mTag), aVariations[i].mValue};
+            makeDWriteAxisTag(aVariations[i].tag), aVariations[i].value};
         fontAxisValues.push_back(axisValue);
       }
     } else {
@@ -622,7 +560,7 @@ bool UnscaledFontDWrite::InitBold() {
 
 already_AddRefed<ScaledFont> UnscaledFontDWrite::CreateScaledFont(
     Float aGlyphSize, const uint8_t* aInstanceData,
-    uint32_t aInstanceDataLength, const FontVariation* aVariations,
+    uint32_t aInstanceDataLength, const wr::FontVariation* aVariations,
     uint32_t aNumVariations) {
   if (aInstanceDataLength < sizeof(ScaledFontDWrite::InstanceData)) {
     gfxWarning() << "DWrite scaled font instance data is truncated.";
@@ -662,7 +600,7 @@ already_AddRefed<ScaledFont> UnscaledFontDWrite::CreateScaledFont(
 already_AddRefed<ScaledFont> UnscaledFontDWrite::CreateScaledFontFromWRFont(
     Float aGlyphSize, const wr::FontInstanceOptions* aOptions,
     const wr::FontInstancePlatformOptions* aPlatformOptions,
-    const FontVariation* aVariations, uint32_t aNumVariations) {
+    const wr::FontVariation* aVariations, uint32_t aNumVariations) {
   ScaledFontDWrite::InstanceData instanceData(aOptions, aPlatformOptions);
   return CreateScaledFont(aGlyphSize, reinterpret_cast<uint8_t*>(&instanceData),
                           sizeof(instanceData), aVariations, aNumVariations);
@@ -710,8 +648,11 @@ void ScaledFontDWrite::PrepareCairoScaledFont(cairo_scaled_font_t* aFont) {
 already_AddRefed<UnscaledFont> UnscaledFontDWrite::CreateFromFontDescriptor(
     const uint8_t* aData, uint32_t aDataLength, uint32_t aIndex) {
   // Note that despite the type of aData here, it actually points to a 16-bit
-  // Windows font file path (hence the cast to WCHAR* below).
-  if (aDataLength == 0) {
+  // Windows font file path (hence the cast to WCHAR* below) and must be null-
+  // terminated.
+  const WCHAR* path = (const WCHAR*)aData;
+  size_t pathLen = aDataLength / sizeof(WCHAR);
+  if (pathLen < 1 || path[pathLen - 1] != 0) {
     gfxWarning() << "DWrite font descriptor is truncated.";
     return nullptr;
   }
@@ -723,7 +664,7 @@ already_AddRefed<UnscaledFont> UnscaledFontDWrite::CreateFromFontDescriptor(
 
   MOZ_SEH_TRY {
     RefPtr<IDWriteFontFile> fontFile;
-    HRESULT hr = factory->CreateFontFileReference((const WCHAR*)aData, nullptr,
+    HRESULT hr = factory->CreateFontFileReference(path, nullptr,
                                                   getter_AddRefs(fontFile));
     if (FAILED(hr)) {
       return nullptr;
@@ -745,11 +686,13 @@ already_AddRefed<UnscaledFont> UnscaledFontDWrite::CreateFromFontDescriptor(
       return nullptr;
     }
     RefPtr unscaledFont = new UnscaledFontDWrite(fontFace, nullptr);
+    unscaledFont->mFontFileName.assign(path, path + pathLen);
     return unscaledFont.forget();
   }
   MOZ_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-    gfxCriticalNote << "Exception occurred creating unscaledFont for "
-                    << NS_ConvertUTF16toUTF8((const char16_t*)aData).get();
+    gfxCriticalNote
+        << "Exception occurred creating UnscaledFont for "
+        << NS_ConvertUTF16toUTF8((const char16_t*)path, pathLen - 1).get();
     return nullptr;
   }
 }

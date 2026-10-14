@@ -4,7 +4,8 @@
 
 package org.mozilla.fenix.home.recenttabs
 
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -16,15 +17,12 @@ import org.mozilla.fenix.components.AppStore
 import org.mozilla.fenix.components.appstate.AppAction
 import org.mozilla.fenix.ext.asRecentTabs
 
-/**
- * View-bound feature that dispatches recent tab changes to the [AppStore] when the
- * [BrowserStore] is updated.
- */
-@OptIn(ExperimentalCoroutinesApi::class)
+/** View-bound feature that dispatches recent tab changes to the [AppStore] when the [BrowserStore] is updated. */
 class RecentTabsListFeature(
     browserStore: BrowserStore,
     private val appStore: AppStore,
-) : AbstractBinding<BrowserState>(browserStore) {
+    mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
+) : AbstractBinding<BrowserState>(browserStore, mainDispatcher) {
 
     override suspend fun onState(flow: Flow<BrowserState>) {
         // Listen for changes regarding the currently selected tab and in progress media tab.

@@ -36,6 +36,8 @@ pub fn convert<P: AsRef<Path>>(path: P, wast: &str) -> Result<String> {
         err
     };
 
+    println!("Processing {} ...", filename.display());
+
     let mut lexer = wast::lexer::Lexer::new(wast);
     // The 'names.wast' spec test has confusable unicode -- disable detection.
     lexer.allow_confusing_unicode(filename.ends_with("names.wast"));
@@ -350,22 +352,33 @@ fn convert_directive(
             span: _,
             exec,
             message,
-        } => unimplemented!(
-            "unsupported assert_suspension directive at {}:{}:{}: exec {:#?}, message {:#?}",
-            filename.display(),
-            line,
-            col,
-            exec,
-            message
-        ),
-        Thread(thread) => {
+        } => {
+            let exec_node = execute_to_js(current_instance, exec, wast)?;
+            let expected_node = Box::new(JSNode::Raw(format!(
+                "`{}`",
+                escape_template_name_string(message)
+            )));
             writejs!(
-                "let ${0} = new Thread(${1}, \"${1}\", `",
+                "{};",
+                JSNode::Assert {
+                    name: "assert_suspension".to_string(),
+                    exec: exec_node,
+                    expected: expected_node,
+                }
+                .output(0),
+            )?;
+        }
+        Thread(thread) => {
+            let (shared_module, shared_module_name) = match thread.shared_module {
+                Some(m) => (format!("${}", m.name()), format!("${}", m.name())),
+                None => ("null".to_string(), "__nomodule".to_string()),
+            };
+
+            writejs!(
+                "let ${} = new Thread({}, \"{}\", `",
                 thread.name.name(),
-                thread
-                    .shared_module
-                    .expect("shared_module on threads is required")
-                    .name()
+                shared_module,
+                shared_module_name,
             )?;
 
             for directive in thread.directives {
@@ -397,9 +410,73 @@ fn convert_directive(
         Wait { span: _, thread } => {
             writejs!("${}.wait();", thread.name())?;
         }
+
+        AssertInvalidCustom {
+            span: _,
+            module,
+            message,
+        } => {
+            writejs!(
+                "{};",
+                assert_bad_custom_to_js("assert_invalid_custom", module, message, wast)?
+            )?;
+        }
+        AssertMalformedCustom {
+            span: _,
+            module,
+            message,
+        } => {
+            writejs!(
+                "{};",
+                assert_bad_custom_to_js("assert_malformed_custom", module, message, wast)?
+            )?;
+        }
     }
 
     Ok(())
+}
+
+/// Custom section tests can be "bad" in three ways: the text format can be
+/// malformed, a custom section can be structurally invalid, or a custom
+/// section can be well-formed but be semantically wrong (e.g. referencing
+/// functions that don't exist.) None of this really matters from a harness
+/// point of view except for knowing whether or not the WAT will parse, so we
+/// lump them together.
+fn assert_bad_custom_to_js(
+    directive: &str,
+    module: wast::QuoteWat,
+    message: &str,
+    wast: &str,
+) -> Result<String> {
+    let (text, text_is_malformed) = match module {
+        wast::QuoteWat::Wat(wast::Wat::Module(m)) => (module_to_js_string(&m, wast)?, false),
+        wast::QuoteWat::QuoteModule(_, source) => {
+            let text = quote_text(source)?;
+            let parses = match wast::parser::ParseBuffer::new(&text) {
+                Ok(buf) => wast::parser::parse::<wast::Wat>(&buf).is_ok(),
+                Err(_) => false,
+            };
+            (escape_template_module_string(&text), !parses)
+        }
+        other => bail!("unsupported {:?} in {}", other, directive),
+    };
+    let name = if text_is_malformed {
+        // If we can't even parse the WAT, we use the general assert_malformed
+        // directive instead of anything about custom sections. This is sort of
+        // a bug in the upstream tests if we're being honest.
+        "assert_malformed"
+    } else {
+        directive
+    };
+    Ok(JSNode::Assert {
+        name: name.to_string(),
+        exec: Box::new(JSNode::Raw(format!("module(`{}`)", text))),
+        expected: Box::new(JSNode::Raw(format!(
+            "`{}`",
+            escape_template_name_string(message)
+        ))),
+    }
+    .output(0))
 }
 
 fn escape_template_string(text: &str, escape_ascii_lf_tab: bool) -> String {
@@ -453,36 +530,27 @@ fn closed_module(module: &str) -> Result<&str> {
         bail!("expected module source");
     }
 
-    enum State {
-        Module,
-        QStr,
-        EscapeQStr,
-    }
+    let mut lexer = wast::lexer::Lexer::new(module);
+    lexer.allow_confusing_unicode(true);
 
     let mut i = 0;
     let mut level = 1;
-    let mut state = State::Module;
 
-    let mut chars = module.chars();
     while level != 0 {
-        let next = chars.next().ok_or(anyhow!("unable to close module"))?;
-        match state {
-            State::Module => match next {
-                '(' => level += 1,
-                ')' => level -= 1,
-                '"' => state = State::QStr,
+        match lexer.parse(&mut i) {
+            Ok(Some(tok)) => match tok.kind {
+                wast::lexer::TokenKind::LParen => {
+                    level += 1;
+                }
+                wast::lexer::TokenKind::RParen => {
+                    level -= 1;
+                }
                 _ => {}
             },
-            State::QStr => match next {
-                '"' => state = State::Module,
-                '\\' => state = State::EscapeQStr,
-                _ => {}
-            },
-            State::EscapeQStr => match next {
-                _ => state = State::QStr,
-            },
+            Ok(None) | Err(_) => {
+                return Err(anyhow!("unable to close module"));
+            }
         }
-        i += next.len_utf8();
     }
     return Ok(&module[0..i]);
 }
@@ -499,24 +567,28 @@ fn module_to_js_string(module: &wast::core::Module, wast: &str) -> Result<String
     )))
 }
 
-fn quote_module_to_js_string(quotes: Vec<(wast::token::Span, &[u8])>) -> Result<String> {
+fn quote_text(quotes: Vec<(wast::token::Span, &[u8])>) -> Result<String> {
     let mut text = String::new();
     for (_, src) in quotes {
         text.push_str(str::from_utf8(src)?);
         text.push_str(" ");
     }
-    let escaped = escape_template_module_string(&text);
-    Ok(escaped)
+    Ok(text)
+}
+
+fn quote_module_to_js_string(quotes: Vec<(wast::token::Span, &[u8])>) -> Result<String> {
+    Ok(escape_template_module_string(&quote_text(quotes)?))
 }
 
 fn module_definition_to_js_string(module: &wast::core::Module, wast: &str) -> Result<String> {
     let offset = span_to_offset(module.span, wast)?;
     let opened_module = &wast[offset..];
 
-    // strip "module definition $M" down to just "module"
-    let pattern = r"^module definition (?:\$[a-zA-Z_$][a-zA-Z0-9_$]* )?(.*)";
+    // strip "module definition $M" down to just "module", keeping whatever
+    // whitespace follows
+    let pattern = r"^module\s+definition(\s+\$[a-zA-Z_$][a-zA-Z0-9_$]*)?";
     let re = Regex::new(pattern).expect("Invalid regex pattern");
-    let without_definition = re.replace(opened_module, "module $1");
+    let without_definition = re.replace(opened_module, "module");
 
     Ok(escape_template_module_string(&format!(
         "({}",

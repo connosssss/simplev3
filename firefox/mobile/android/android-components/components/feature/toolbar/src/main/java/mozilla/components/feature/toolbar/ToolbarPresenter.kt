@@ -6,7 +6,9 @@ package mozilla.components.feature.toolbar
 
 import androidx.annotation.VisibleForTesting
 import androidx.annotation.VisibleForTesting.Companion.PRIVATE
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import mozilla.components.browser.state.selector.findCustomTabOrSelectedTab
@@ -21,8 +23,8 @@ import mozilla.components.lib.state.ext.flowScoped
 import mozilla.components.support.ktx.kotlin.isContentUrl
 
 /**
- * Presenter implementation for a toolbar implementation in order to update the toolbar whenever
- * the state of the selected session.
+ * Presenter implementation for a toolbar implementation in order to update the toolbar whenever the state of the
+ * selected session.
  */
 class ToolbarPresenter(
     private val toolbar: Toolbar,
@@ -30,24 +32,24 @@ class ToolbarPresenter(
     private val customTabId: String? = null,
     private val shouldDisplaySearchTerms: Boolean = false,
     urlRenderConfiguration: ToolbarFeature.UrlRenderConfiguration? = null,
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
 ) {
-    @VisibleForTesting
-    internal var renderer = URLRenderer(toolbar, urlRenderConfiguration)
+    @VisibleForTesting internal var renderer = URLRenderer(toolbar, urlRenderConfiguration)
 
     private var scope: CoroutineScope? = null
 
-    /**
-     * Start presenter: Display data in toolbar.
-     */
+    /** Start presenter: Display data in toolbar. */
     fun start() {
         renderer.start()
 
-        scope = store.flowScoped { flow ->
-            flow.distinctUntilChangedBy { it.findCustomTabOrSelectedTab(customTabId) }
-                .collect { state ->
-                    render(state)
-                }
-        }
+        scope =
+            store.flowScoped(dispatcher = mainDispatcher) { flow ->
+                flow
+                    .distinctUntilChangedBy { it.findCustomTabOrSelectedTab(customTabId) }
+                    .collect { state ->
+                        render(state)
+                    }
+            }
     }
 
     fun stop() {
@@ -69,23 +71,25 @@ class ToolbarPresenter(
             toolbar.setSearchTerms(tab.content.searchTerms)
             toolbar.displayProgress(tab.content.progress)
 
-            toolbar.siteInfo = if (tab.content.url.isContentUrl()) {
-                Toolbar.SiteInfo.LOCAL_PDF
-            } else if (tab.content.securityInfo.secure) {
-                Toolbar.SiteInfo.SECURE
-            } else {
-                Toolbar.SiteInfo.INSECURE
-            }
+            toolbar.siteInfo =
+                if (tab.content.url.isContentUrl()) {
+                    Toolbar.SiteInfo.LOCAL_PDF
+                } else if (tab.content.securityInfo.isSecure) {
+                    Toolbar.SiteInfo.SECURE
+                } else {
+                    Toolbar.SiteInfo.INSECURE
+                }
 
-            toolbar.siteTrackingProtection = when {
-                tab.trackingProtection.ignoredOnTrackingProtection -> SiteTrackingProtection.OFF_FOR_A_SITE
-                tab.trackingProtection.enabled && tab.trackingProtection.blockedTrackers.isNotEmpty() ->
-                    SiteTrackingProtection.ON_TRACKERS_BLOCKED
+            toolbar.siteTrackingProtection =
+                when {
+                    tab.trackingProtection.ignoredOnTrackingProtection -> SiteTrackingProtection.OFF_FOR_A_SITE
+                    tab.trackingProtection.enabled && tab.trackingProtection.blockedTrackers.isNotEmpty() ->
+                        SiteTrackingProtection.ON_TRACKERS_BLOCKED
 
-                tab.trackingProtection.enabled -> SiteTrackingProtection.ON_NO_TRACKERS_BLOCKED
+                    tab.trackingProtection.enabled -> SiteTrackingProtection.ON_NO_TRACKERS_BLOCKED
 
-                else -> SiteTrackingProtection.OFF_GLOBALLY
-            }
+                    else -> SiteTrackingProtection.OFF_GLOBALLY
+                }
 
             updateHighlight(tab)
         } else {
@@ -94,12 +98,12 @@ class ToolbarPresenter(
     }
 
     private fun updateHighlight(tab: SessionState) {
-        toolbar.highlight = when {
-            tab.content.permissionHighlights.permissionsChanged ||
-                tab.trackingProtection.ignoredOnTrackingProtection
-            -> Highlight.PERMISSIONS_CHANGED
-            else -> Highlight.NONE
-        }
+        toolbar.highlight =
+            when {
+                tab.content.permissionHighlights.permissionsChanged ||
+                    tab.trackingProtection.ignoredOnTrackingProtection -> Highlight.PERMISSIONS_CHANGED
+                else -> Highlight.NONE
+            }
     }
 
     @VisibleForTesting(otherwise = PRIVATE)

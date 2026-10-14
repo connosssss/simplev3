@@ -38,6 +38,7 @@ ChromeUtils.defineLazyGetter(lazy, "jexl", () => {
     preferenceIsUserSet: prefKey => Services.prefs.prefHasUserValue(prefKey),
     preferenceExists: prefKey =>
       Services.prefs.getPrefType(prefKey) != Ci.nsIPrefBranch.PREF_INVALID,
+    preferenceIsLocked: prefKey => Services.prefs.prefIsLocked(prefKey),
     keys,
     values,
     length,
@@ -63,7 +64,8 @@ export var FilterExpressions = {
 /**
  * Return an array of the given object's own keys (specifically, its enumerable
  * properties), or undefined if the argument isn't an object.
- * @param {Object} obj
+ *
+ * @param {object} obj
  * @return {Array[String]|undefined}
  */
 function keys(obj) {
@@ -78,7 +80,8 @@ function keys(obj) {
  * Return an array of the given object's values (specifically, its own
  * enumerable string-keyed property values), or undefined if the argument isn't
  * an object.
- * @param {Object} obj
+ *
+ * @param {object} obj
  * @return {Array|undefined}
  */
 function values(obj) {
@@ -91,6 +94,7 @@ function values(obj) {
 
 /**
  * Return the length of an array
+ *
  * @param {Array} arr
  * @return {number}
  */
@@ -101,6 +105,7 @@ function length(arr) {
 /**
  * Given an input array and property name, return an array with each element of
  * the original array replaced with the given property of that element.
+ *
  * @param {Array} arr
  * @param {string} prop
  * @return {Array}
@@ -112,6 +117,7 @@ function mapToProperty(arr, prop) {
 /**
  * Find all the values that are present in both lists. Returns undefined if
  * the arguments are not both Arrays.
+ *
  * @param {Array} listA
  * @param {Array} listB
  * @return {Array|undefined}
@@ -127,6 +133,7 @@ function operatorIntersect(listA, listB) {
 /**
  * Matches a string against a regular expression. Returns null if there are
  * no matches or an Array of matches.
+ *
  * @param {string} str
  * @param {string} pattern
  * @param {string} flags
@@ -140,6 +147,7 @@ function regExpMatch(str, pattern, flags) {
 /**
  * Compares v1 to v2 and returns 0 if they are equal, a negative number if
  * v1 < v2 or a positive number if v1 > v2.
+ *
  * @param {string} v1
  * @param {string} v2
  * @return {number}

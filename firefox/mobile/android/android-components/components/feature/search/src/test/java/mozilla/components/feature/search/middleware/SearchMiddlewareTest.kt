@@ -5,46 +5,42 @@
 package mozilla.components.feature.search.middleware
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import java.util.Locale
+import java.util.UUID
+import kotlin.test.assertNotNull
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestDispatcher
+import kotlinx.coroutines.test.runTest
 import mozilla.components.browser.state.action.SearchAction
 import mozilla.components.browser.state.search.RegionState
 import mozilla.components.browser.state.search.SearchEngine
 import mozilla.components.browser.state.state.availableSearchEngines
 import mozilla.components.browser.state.state.searchEngines
+import mozilla.components.browser.state.state.selectedOrDefaultPrivateSearchEngine
 import mozilla.components.browser.state.state.selectedOrDefaultSearchEngine
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.feature.search.ext.createSearchEngine
 import mozilla.components.feature.search.storage.CustomSearchEngineStorage
 import mozilla.components.feature.search.storage.SearchMetadataStorage
-import mozilla.components.support.test.ext.joinBlocking
 import mozilla.components.support.test.fakes.android.FakeSharedPreferences
-import mozilla.components.support.test.libstate.ext.waitUntilIdle
 import mozilla.components.support.test.mock
 import mozilla.components.support.test.robolectric.testContext
-import mozilla.components.support.test.rule.MainCoroutineRule
-import mozilla.components.support.test.rule.runTestOnMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
-import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoMoreInteractions
-import java.util.Locale
-import java.util.UUID
 
 @RunWith(AndroidJUnit4::class)
 class SearchMiddlewareTest {
-    @get:Rule
-    val coroutinesTestRule = MainCoroutineRule()
-    private val dispatcher = coroutinesTestRule.testDispatcher
 
+    private val dispatcher = StandardTestDispatcher()
     private lateinit var originalLocale: Locale
 
     @Before
@@ -61,25 +57,20 @@ class SearchMiddlewareTest {
 
     @Test
     fun `Loads search engines for locale (US)`() {
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("US", "US"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -91,15 +82,14 @@ class SearchMiddlewareTest {
 
     @Test
     fun `WHEN distribution doesn't exist THEN Loads default search engines`() {
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
@@ -107,10 +97,10 @@ class SearchMiddlewareTest {
             SearchAction.SetRegionAction(
                 RegionState("US", "US"),
                 "test",
-            ),
-        ).joinBlocking()
+            )
+        )
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -122,25 +112,20 @@ class SearchMiddlewareTest {
 
     fun `Loads search engines for locale (An)`() {
         Locale.setDefault(Locale.Builder().setLanguage("an").setRegion("AN").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("AN", "AN"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("AN", "AN")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -160,25 +145,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (CA)`() {
         Locale.setDefault(Locale.Builder().setLanguage("CA").setRegion("CA").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("CA", "CA"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("CA", "CA")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -198,25 +178,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (CY)`() {
         Locale.setDefault(Locale.Builder().setLanguage("cy").setRegion("CY").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("CY", "CY"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("CY", "CY")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -236,25 +211,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (fy-NL)`() {
         Locale.setDefault(Locale.Builder().setLanguage("fy").setRegion("NL").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("FY", "NL"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("FY", "NL")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -274,25 +244,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (en-AU)`() {
         Locale.setDefault(Locale.Builder().setLanguage("en").setRegion("AU").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("EN", "AU"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("EN", "AU")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -312,25 +277,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (en-GB)`() {
         Locale.setDefault(Locale.Builder().setLanguage("en").setRegion("GB").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("EN", "GB"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("EN", "GB")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -351,25 +311,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (en-IE)`() {
         Locale.setDefault(Locale.Builder().setLanguage("en").setRegion("IE").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("EN", "IE"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("EN", "IE")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -390,25 +345,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (fr-BE)`() {
         Locale.setDefault(Locale.Builder().setLanguage("fr").setRegion("BE").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("FR", "BE"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("FR", "BE")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -429,25 +379,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (fr-CA)`() {
         Locale.setDefault(Locale.Builder().setLanguage("fr").setRegion("CA").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("FR", "CA"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("FR", "CA")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -467,25 +412,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (fr-FR)`() {
         Locale.setDefault(Locale.Builder().setLanguage("fr").setRegion("FR").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("FR", "FR"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("FR", "FR")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -506,25 +446,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (de-AT)`() {
         Locale.setDefault(Locale.Builder().setLanguage("de").setRegion("AT").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("DE", "AT"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("DE", "AT")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -546,25 +481,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (DE)`() {
         Locale.setDefault(Locale.Builder().setLanguage("de").setRegion("DE").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("DE", "DE"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("DE", "DE")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -586,25 +516,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (DSB)`() {
         Locale.setDefault(Locale.Builder().setLanguage("dsb").setRegion("DE").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("DSB", "DE"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("DSB", "DE")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -624,25 +549,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (HSB)`() {
         Locale.setDefault(Locale.Builder().setLanguage("hsb").setRegion("DE").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("HSB", "DE"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("HSB", "DE")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -662,25 +582,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (ES)`() {
         Locale.setDefault(Locale.Builder().setLanguage("es").setRegion("ES").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("ES", "ES"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("ES", "ES")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -700,25 +615,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (IT)`() {
         Locale.setDefault(Locale.Builder().setLanguage("it").setRegion("IT").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("it", "IT"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("it", "IT")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -738,25 +648,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for Locale (lij)`() {
         Locale.setDefault(Locale.Builder().setLanguage("lij").setRegion("ZE").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("lij", "ZE"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("lij", "ZE")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -776,25 +681,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (SE)`() {
         Locale.setDefault(Locale.Builder().setLanguage("sv").setRegion("SE").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("sv", "SE"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("sv", "SE")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -815,25 +715,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (PL)`() {
         Locale.setDefault(Locale.Builder().setLanguage("pl").setRegion("PL").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("pl", "PL"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("pl", "PL")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -852,25 +747,20 @@ class SearchMiddlewareTest {
 
     @Test
     fun `Loads search engines for locale (RU)`() {
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("RU", "RU"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("RU", "RU")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -883,26 +773,21 @@ class SearchMiddlewareTest {
 
     @Test
     fun `Loads additional search engines`() {
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            additionalBundledSearchEngineIds = listOf("reddit", "youtube"),
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                additionalBundledSearchEngineIds = listOf("reddit", "youtube"),
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("US", "US"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isNotEmpty())
@@ -926,112 +811,110 @@ class SearchMiddlewareTest {
     }
 
     @Test
-    fun `Loads additional search engine and honors user choice`() = runTestOnMain {
-        val metadataStorage = SearchMetadataStorage(testContext, preferences = lazy { FakeSharedPreferences() })
-        metadataStorage.setAdditionalSearchEngines(listOf("reddit"))
+    fun `Loads additional search engine and honors user choice`() =
+        runTest(dispatcher) {
+            val metadataStorage = SearchMetadataStorage(testContext, preferences = lazy { FakeSharedPreferences() })
+            metadataStorage.setAdditionalSearchEngines(listOf("reddit"))
 
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            additionalBundledSearchEngineIds = listOf("reddit", "youtube"),
-            metadataStorage = metadataStorage,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+            val searchMiddleware =
+                SearchMiddleware(
+                    testContext,
+                    additionalBundledSearchEngineIds = listOf("reddit", "youtube"),
+                    metadataStorage = metadataStorage,
+                    ioDispatcher = dispatcher,
+                    customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+            val store = BrowserStore(middleware = listOf(searchMiddleware))
 
-        assertTrue(store.state.search.regionSearchEngines.isEmpty())
+            assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("US", "US"),
-            ),
-        ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-        wait(store, dispatcher)
+            wait(dispatcher)
 
-        assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
-        assertTrue(store.state.search.additionalAvailableSearchEngines.isNotEmpty())
-        assertTrue(store.state.search.additionalSearchEngines.isNotEmpty())
+            assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
+            assertTrue(store.state.search.additionalAvailableSearchEngines.isNotEmpty())
+            assertTrue(store.state.search.additionalSearchEngines.isNotEmpty())
 
-        assertEquals(1, store.state.search.additionalAvailableSearchEngines.size)
-        assertEquals(1, store.state.search.additionalSearchEngines.size)
+            assertEquals(1, store.state.search.additionalAvailableSearchEngines.size)
+            assertEquals(1, store.state.search.additionalSearchEngines.size)
 
-        val additional = store.state.search.additionalSearchEngines[0]
-        assertEquals("Reddit", additional.name)
-        assertEquals("reddit", additional.id)
+            val additional = store.state.search.additionalSearchEngines[0]
+            assertEquals("Reddit", additional.name)
+            assertEquals("reddit", additional.id)
 
-        val available = store.state.search.additionalAvailableSearchEngines[0]
-        assertEquals("YouTube", available.name)
-        assertEquals("youtube", available.id)
+            val available = store.state.search.additionalAvailableSearchEngines[0]
+            assertEquals("YouTube", available.name)
+            assertEquals("youtube", available.id)
 
-        assertNull(store.state.search.searchEngines.find { searchEngine -> searchEngine.id == "youtube" })
-        assertNotNull(store.state.search.searchEngines.find { searchEngine -> searchEngine.id == "reddit" })
+            assertNull(store.state.search.searchEngines.find { searchEngine -> searchEngine.id == "youtube" })
+            assertNotNull(store.state.search.searchEngines.find { searchEngine -> searchEngine.id == "reddit" })
 
-        assertNotNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "youtube" })
-        assertNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "reddit" })
-    }
+            assertNotNull(
+                store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "youtube" }
+            )
+            assertNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "reddit" })
+        }
 
     @Test
-    fun `Loads custom search engines`() = runTestOnMain {
-        val searchEngine = SearchEngine(
-            id = "test-search",
-            name = "Test Engine",
-            icon = mock(),
-            type = SearchEngine.Type.CUSTOM,
-            resultUrls = listOf(),
-            suggestUrl = null,
-        )
+    fun `Loads custom search engines`() =
+        runTest(dispatcher) {
+            val searchEngine =
+                SearchEngine(
+                    id = "test-search",
+                    name = "Test Engine",
+                    icon = mock(),
+                    type = SearchEngine.Type.CUSTOM,
+                    resultUrls = listOf(),
+                    suggestUrl = null,
+                )
 
-        val storage = CustomSearchEngineStorage(testContext, dispatcher)
-        storage.saveSearchEngine(searchEngine)
+            val storage = CustomSearchEngineStorage(testContext, dispatcher)
+            storage.saveSearchEngine(searchEngine)
 
-        val store = BrowserStore(
-            middleware = listOf(
+            val store =
+                BrowserStore(
+                    middleware =
+                        listOf(
+                            SearchMiddleware(
+                                testContext,
+                                ioDispatcher = dispatcher,
+                                customStorage = storage,
+                            )
+                        )
+                )
+
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
+
+            wait(dispatcher)
+
+            assertTrue(store.state.search.customSearchEngines.isNotEmpty())
+            assertNull(store.state.search.userSelectedSearchEngineId)
+        }
+
+    @Test
+    fun `Loads default search engine ID`() =
+        runTest(dispatcher) {
+            val storage = SearchMetadataStorage(testContext)
+            storage.setUserSelectedSearchEngine("test-id", null)
+
+            val middleware =
                 SearchMiddleware(
                     testContext,
                     ioDispatcher = dispatcher,
-                    customStorage = storage,
-                ),
-            ),
-        )
+                    metadataStorage = storage,
+                    customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                )
 
-        store.dispatch(
-            SearchAction.SetRegionAction(RegionState.Default),
-        ).joinBlocking()
+            val store = BrowserStore(middleware = listOf(middleware))
 
-        wait(store, dispatcher)
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
 
-        assertTrue(store.state.search.customSearchEngines.isNotEmpty())
-        assertNull(store.state.search.userSelectedSearchEngineId)
-    }
+            wait(dispatcher)
 
-    @Test
-    fun `Loads default search engine ID`() = runTestOnMain {
-        val storage = SearchMetadataStorage(testContext)
-        storage.setUserSelectedSearchEngine("test-id", null)
-
-        val middleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            metadataStorage = storage,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
-
-        val store = BrowserStore(
-            middleware = listOf(middleware),
-        )
-
-        store.dispatch(
-            SearchAction.SetRegionAction(RegionState.Default),
-        ).joinBlocking()
-
-        wait(store, dispatcher)
-
-        assertEquals("test-id", store.state.search.userSelectedSearchEngineId)
-    }
+            assertEquals("test-id", store.state.search.userSelectedSearchEngineId)
+        }
 
     @Test
     fun `Update default search engine`() {
@@ -1039,49 +922,49 @@ class SearchMiddlewareTest {
         val id = "test-id-${UUID.randomUUID()}"
 
         run {
-            val store = BrowserStore(
-                middleware = listOf(
-                    SearchMiddleware(
-                        testContext,
-                        ioDispatcher = dispatcher,
-                        metadataStorage = storage,
-                        customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-                    ),
-                ),
-            )
+            val store =
+                BrowserStore(
+                    middleware =
+                        listOf(
+                            SearchMiddleware(
+                                testContext,
+                                ioDispatcher = dispatcher,
+                                metadataStorage = storage,
+                                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                            )
+                        )
+                )
 
-            store.dispatch(
-                SearchAction.SetRegionAction(RegionState.Default),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertNull(store.state.search.userSelectedSearchEngineId)
 
-            store.dispatch(SearchAction.SelectSearchEngineAction(id, null)).joinBlocking()
+            store.dispatch(SearchAction.SelectSearchEngineAction(id, null))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertEquals(id, store.state.search.userSelectedSearchEngineId)
         }
 
         run {
-            val store = BrowserStore(
-                middleware = listOf(
-                    SearchMiddleware(
-                        testContext,
-                        ioDispatcher = dispatcher,
-                        metadataStorage = storage,
-                        customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-                    ),
-                ),
-            )
+            val store =
+                BrowserStore(
+                    middleware =
+                        listOf(
+                            SearchMiddleware(
+                                testContext,
+                                ioDispatcher = dispatcher,
+                                metadataStorage = storage,
+                                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                            )
+                        )
+                )
 
-            store.dispatch(
-                SearchAction.SetRegionAction(RegionState.Default),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertEquals(id, store.state.search.userSelectedSearchEngineId)
         }
@@ -1090,26 +973,26 @@ class SearchMiddlewareTest {
     @Test
     fun `Updates and persists additional search engines`() {
         val storage = SearchMetadataStorage(testContext, preferences = lazy { FakeSharedPreferences() })
-        val middleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            metadataStorage = storage,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-            additionalBundledSearchEngineIds = listOf(
-                "reddit",
-                "youtube",
-            ),
-        )
+        val middleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                metadataStorage = storage,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                additionalBundledSearchEngineIds =
+                    listOf(
+                        "reddit",
+                        "youtube",
+                    ),
+            )
 
         // First run: Add additional search engine
         run {
             val store = BrowserStore(middleware = listOf(middleware))
 
-            store.dispatch(
-                SearchAction.SetRegionAction(RegionState.Default),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
             assertTrue(store.state.search.additionalAvailableSearchEngines.isNotEmpty())
@@ -1128,14 +1011,16 @@ class SearchMiddlewareTest {
             assertNull(store.state.search.searchEngines.find { searchEngine -> searchEngine.id == "youtube" })
             assertNull(store.state.search.searchEngines.find { searchEngine -> searchEngine.id == "reddit" })
 
-            assertNotNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "youtube" })
-            assertNotNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "reddit" })
+            assertNotNull(
+                store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "youtube" }
+            )
+            assertNotNull(
+                store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "reddit" }
+            )
 
-            store.dispatch(
-                SearchAction.AddAdditionalSearchEngineAction("youtube"),
-            ).joinBlocking()
+            store.dispatch(SearchAction.AddAdditionalSearchEngineAction("youtube"))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
             assertTrue(store.state.search.additionalAvailableSearchEngines.isNotEmpty())
@@ -1153,18 +1038,18 @@ class SearchMiddlewareTest {
             assertNull(store.state.search.searchEngines.find { searchEngine -> searchEngine.id == "reddit" })
 
             assertNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "youtube" })
-            assertNotNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "reddit" })
+            assertNotNull(
+                store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "reddit" }
+            )
         }
 
         // Second run: Restores additional search engine and removes it
         run {
             val store = BrowserStore(middleware = listOf(middleware))
 
-            store.dispatch(
-                SearchAction.SetRegionAction(RegionState.Default),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
             assertTrue(store.state.search.additionalAvailableSearchEngines.isNotEmpty())
@@ -1182,15 +1067,13 @@ class SearchMiddlewareTest {
             assertNull(store.state.search.searchEngines.find { searchEngine -> searchEngine.id == "reddit" })
 
             assertNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "youtube" })
-            assertNotNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "reddit" })
+            assertNotNull(
+                store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "reddit" }
+            )
 
-            store.dispatch(
-                SearchAction.RemoveAdditionalSearchEngineAction(
-                    "youtube",
-                ),
-            ).joinBlocking()
+            store.dispatch(SearchAction.RemoveAdditionalSearchEngineAction("youtube"))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
             assertTrue(store.state.search.additionalAvailableSearchEngines.isNotEmpty())
@@ -1209,19 +1092,21 @@ class SearchMiddlewareTest {
             assertNull(store.state.search.searchEngines.find { searchEngine -> searchEngine.id == "youtube" })
             assertNull(store.state.search.searchEngines.find { searchEngine -> searchEngine.id == "reddit" })
 
-            assertNotNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "youtube" })
-            assertNotNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "reddit" })
+            assertNotNull(
+                store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "youtube" }
+            )
+            assertNotNull(
+                store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "reddit" }
+            )
         }
 
         // Third run: Restores without additional search engine
         run {
             val store = BrowserStore(middleware = listOf(middleware))
 
-            store.dispatch(
-                SearchAction.SetRegionAction(RegionState.Default),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
             assertTrue(store.state.search.additionalAvailableSearchEngines.isNotEmpty())
@@ -1240,32 +1125,36 @@ class SearchMiddlewareTest {
             assertNull(store.state.search.searchEngines.find { searchEngine -> searchEngine.id == "youtube" })
             assertNull(store.state.search.searchEngines.find { searchEngine -> searchEngine.id == "reddit" })
 
-            assertNotNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "youtube" })
-            assertNotNull(store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "reddit" })
+            assertNotNull(
+                store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "youtube" }
+            )
+            assertNotNull(
+                store.state.search.availableSearchEngines.find { searchEngine -> searchEngine.id == "reddit" }
+            )
         }
     }
 
     @Test
     fun `Custom search engines - Create, Update, Delete`() {
-        runTestOnMain {
+        runTest(dispatcher) {
             val storage: SearchMiddleware.CustomStorage = mock()
             doReturn(emptyList<SearchEngine>()).`when`(storage).loadSearchEngineList()
 
-            val store = BrowserStore(
-                middleware = listOf(
-                    SearchMiddleware(
-                        testContext,
-                        ioDispatcher = dispatcher,
-                        customStorage = storage,
-                    ),
-                ),
-            )
+            val store =
+                BrowserStore(
+                    middleware =
+                        listOf(
+                            SearchMiddleware(
+                                testContext,
+                                ioDispatcher = dispatcher,
+                                customStorage = storage,
+                            )
+                        )
+                )
 
-            store.dispatch(
-                SearchAction.SetRegionAction(RegionState.Default),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertTrue(store.state.search.customSearchEngines.isEmpty())
             verify(storage).loadSearchEngineList()
@@ -1274,9 +1163,9 @@ class SearchMiddlewareTest {
             // Add a custom search engine
 
             val engine1 = SearchEngine("test-id-1", "test engine one", mock(), type = SearchEngine.Type.CUSTOM)
-            store.dispatch(SearchAction.UpdateCustomSearchEngineAction(engine1)).joinBlocking()
+            store.dispatch(SearchAction.UpdateCustomSearchEngineAction(engine1))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertTrue(store.state.search.customSearchEngines.isNotEmpty())
             assertEquals(1, store.state.search.customSearchEngines.size)
@@ -1286,9 +1175,9 @@ class SearchMiddlewareTest {
             // Add another custom search engine
 
             val engine2 = SearchEngine("test-id-2", "test engine two", mock(), type = SearchEngine.Type.CUSTOM)
-            store.dispatch(SearchAction.UpdateCustomSearchEngineAction(engine2)).joinBlocking()
+            store.dispatch(SearchAction.UpdateCustomSearchEngineAction(engine2))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertTrue(store.state.search.customSearchEngines.isNotEmpty())
             assertEquals(2, store.state.search.customSearchEngines.size)
@@ -1300,12 +1189,10 @@ class SearchMiddlewareTest {
 
             // Update first engine
 
-            val updated = engine1.copy(
-                name = "updated engine",
-            )
-            store.dispatch(SearchAction.UpdateCustomSearchEngineAction(updated)).joinBlocking()
+            val updated = engine1.copy(name = "updated engine")
+            store.dispatch(SearchAction.UpdateCustomSearchEngineAction(updated))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertTrue(store.state.search.customSearchEngines.isNotEmpty())
             assertEquals(2, store.state.search.customSearchEngines.size)
@@ -1317,9 +1204,9 @@ class SearchMiddlewareTest {
 
             // Remove second engine
 
-            store.dispatch(SearchAction.RemoveCustomSearchEngineAction(engine2.id)).joinBlocking()
+            store.dispatch(SearchAction.RemoveCustomSearchEngineAction(engine2.id))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertTrue(store.state.search.customSearchEngines.isNotEmpty())
             assertEquals(1, store.state.search.customSearchEngines.size)
@@ -1331,148 +1218,140 @@ class SearchMiddlewareTest {
     }
 
     @Test
-    fun `GIVEN disabled engines list contains elements WHEN metadata storage is created THEN the engines are disabled`() = runTestOnMain {
-        val additionalBundledSearchEngineIds = setOf("reddit", "youtube")
-        val metadataStorage = SearchMetadataStorage(
-            testContext,
-            additionalBundledSearchEngineIds,
-            lazy { FakeSharedPreferences() },
-        )
-        val disabledSearchEngineIds = metadataStorage.getDisabledSearchEngineIds()
-        assertTrue(disabledSearchEngineIds.contains("reddit"))
-        assertTrue(disabledSearchEngineIds.contains("youtube"))
-    }
+    fun `GIVEN disabled engines list contains elements WHEN metadata storage is created THEN the engines are disabled`() =
+        runTest(dispatcher) {
+            val additionalBundledSearchEngineIds = setOf("reddit", "youtube")
+            val metadataStorage =
+                SearchMetadataStorage(
+                    testContext,
+                    additionalBundledSearchEngineIds,
+                    lazy { FakeSharedPreferences() },
+                )
+            val disabledSearchEngineIds = metadataStorage.getDisabledSearchEngineIds()
+            assertTrue(disabledSearchEngineIds.contains("reddit"))
+            assertTrue(disabledSearchEngineIds.contains("youtube"))
+        }
 
     @Test
-    fun `WHEN update disabled engine action is sent THEN search state and storage get updated`() = runTestOnMain {
-        val metadataStorage = SearchMetadataStorage(testContext, preferences = lazy { FakeSharedPreferences() })
-        metadataStorage.setAdditionalSearchEngines(listOf("reddit"))
+    fun `WHEN update disabled engine action is sent THEN search state and storage get updated`() =
+        runTest(dispatcher) {
+            val metadataStorage = SearchMetadataStorage(testContext, preferences = lazy { FakeSharedPreferences() })
+            metadataStorage.setAdditionalSearchEngines(listOf("reddit"))
 
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            additionalBundledSearchEngineIds = listOf("reddit", "youtube"),
-            metadataStorage = metadataStorage,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+            val searchMiddleware =
+                SearchMiddleware(
+                    testContext,
+                    additionalBundledSearchEngineIds = listOf("reddit", "youtube"),
+                    metadataStorage = metadataStorage,
+                    ioDispatcher = dispatcher,
+                    customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+            val store = BrowserStore(middleware = listOf(searchMiddleware))
 
-        assertFalse(metadataStorage.getDisabledSearchEngineIds().contains("bing"))
-        assertFalse(store.state.search.disabledSearchEngineIds.contains("bing"))
+            assertFalse(metadataStorage.getDisabledSearchEngineIds().contains("bing"))
+            assertFalse(store.state.search.disabledSearchEngineIds.contains("bing"))
 
-        store.dispatch(
-            SearchAction.UpdateDisabledSearchEngineIdsAction(
-                "bing",
-                false,
-            ),
-        ).joinBlocking()
+            store.dispatch(
+                SearchAction.UpdateDisabledSearchEngineIdsAction(
+                    "bing",
+                    false,
+                )
+            )
 
-        wait(store, dispatcher)
+            wait(dispatcher)
 
-        assertTrue(metadataStorage.getDisabledSearchEngineIds().contains("bing"))
-        assertTrue(store.state.search.disabledSearchEngineIds.contains("bing"))
+            assertTrue(metadataStorage.getDisabledSearchEngineIds().contains("bing"))
+            assertTrue(store.state.search.disabledSearchEngineIds.contains("bing"))
 
-        store.dispatch(
-            SearchAction.UpdateDisabledSearchEngineIdsAction(
-                "bing",
-                true,
-            ),
-        ).joinBlocking()
+            store.dispatch(
+                SearchAction.UpdateDisabledSearchEngineIdsAction(
+                    "bing",
+                    true,
+                )
+            )
 
-        wait(store, dispatcher)
+            wait(dispatcher)
 
-        assertFalse(metadataStorage.getDisabledSearchEngineIds().contains("bing"))
-        assertFalse(store.state.search.disabledSearchEngineIds.contains("bing"))
-    }
+            assertFalse(metadataStorage.getDisabledSearchEngineIds().contains("bing"))
+            assertFalse(store.state.search.disabledSearchEngineIds.contains("bing"))
+        }
 
     @Test
-    fun `WHEN restore hidden search engines action THEN hidden engines are added back to bundled engines list`() = runTestOnMain {
-        val metadataStorage = SearchMetadataStorage(testContext, preferences = lazy { FakeSharedPreferences() })
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-            metadataStorage = metadataStorage,
-        )
-        val store = BrowserStore(middleware = listOf(searchMiddleware))
+    fun `WHEN restore hidden search engines action THEN hidden engines are added back to bundled engines list`() =
+        runTest(dispatcher) {
+            val metadataStorage = SearchMetadataStorage(testContext, preferences = lazy { FakeSharedPreferences() })
+            val searchMiddleware =
+                SearchMiddleware(
+                    testContext,
+                    ioDispatcher = dispatcher,
+                    customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                    metadataStorage = metadataStorage,
+                )
+            val store = BrowserStore(middleware = listOf(searchMiddleware))
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("US", "US"),
-            ),
-        ).joinBlocking()
-        wait(store, dispatcher)
+            store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
+            wait(dispatcher)
 
-        val google = store.state.search.regionSearchEngines.find { searchEngine -> searchEngine.name == "Google" }
-        assertNotNull(google!!)
-        assertEquals(0, store.state.search.hiddenSearchEngines.size)
-        assertEquals(0, metadataStorage.getHiddenSearchEngines().size)
+            val google = store.state.search.regionSearchEngines.find { searchEngine -> searchEngine.name == "Google" }
+            assertNotNull(google)
+            assertEquals(0, store.state.search.hiddenSearchEngines.size)
+            assertEquals(0, metadataStorage.getHiddenSearchEngines().size)
 
-        store.dispatch(SearchAction.HideSearchEngineAction(google.id)).joinBlocking()
-        wait(store, dispatcher)
+            store.dispatch(SearchAction.HideSearchEngineAction(google.id))
+            wait(dispatcher)
 
-        assertNull(store.state.search.regionSearchEngines.find { it.id == google.id })
+            assertNull(store.state.search.regionSearchEngines.find { it.id == google.id })
 
-        assertEquals(1, store.state.search.hiddenSearchEngines.size)
-        assertEquals(1, metadataStorage.getHiddenSearchEngines().size)
-        assertNotNull(store.state.search.hiddenSearchEngines.find { it.id == google.id })
-        assertNotNull(metadataStorage.getHiddenSearchEngines().find { it == google.id })
+            assertEquals(1, store.state.search.hiddenSearchEngines.size)
+            assertEquals(1, metadataStorage.getHiddenSearchEngines().size)
+            assertNotNull(store.state.search.hiddenSearchEngines.find { it.id == google.id })
+            assertNotNull(metadataStorage.getHiddenSearchEngines().find { it == google.id })
 
-        store.dispatch(SearchAction.RestoreHiddenSearchEnginesAction).joinBlocking()
-        wait(store, dispatcher)
+            store.dispatch(SearchAction.RestoreHiddenSearchEnginesAction)
+            wait(dispatcher)
 
-        assertNotNull(store.state.search.regionSearchEngines.find { it.id == google.id })
+            assertNotNull(store.state.search.regionSearchEngines.find { it.id == google.id })
 
-        assertEquals(0, store.state.search.hiddenSearchEngines.size)
-        assertEquals(0, metadataStorage.getHiddenSearchEngines().size)
-        assertNull(store.state.search.hiddenSearchEngines.find { it.id == google.id })
-        assertNull(metadataStorage.getHiddenSearchEngines().find { it == google.id })
-    }
+            assertEquals(0, store.state.search.hiddenSearchEngines.size)
+            assertEquals(0, metadataStorage.getHiddenSearchEngines().size)
+            assertNull(store.state.search.hiddenSearchEngines.find { it.id == google.id })
+            assertNull(metadataStorage.getHiddenSearchEngines().find { it == google.id })
+        }
 
     @Test
     fun `Hiding and showing search engines`() {
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-            metadataStorage = SearchMetadataStorage(testContext),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                metadataStorage = SearchMetadataStorage(testContext),
+            )
 
-        val google = BrowserStore(middleware = listOf(searchMiddleware)).let { store ->
-            store.dispatch(
-                SearchAction.SetRegionAction(
-                    RegionState("US", "US"),
-                ),
-            ).joinBlocking()
+        val google =
+            BrowserStore(middleware = listOf(searchMiddleware)).let { store ->
+                store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-            wait(store, dispatcher)
+                wait(dispatcher)
 
-            store.state.search.regionSearchEngines.find { searchEngine -> searchEngine.name == "Google" }
-        }
-        assertNotNull(google!!)
+                store.state.search.regionSearchEngines.find { searchEngine -> searchEngine.name == "Google" }
+            }
+        assertNotNull(google)
 
         run {
             val store = BrowserStore(middleware = listOf(searchMiddleware))
 
-            store.dispatch(
-                SearchAction.SetRegionAction(
-                    RegionState("US", "US"),
-                ),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertNotNull(store.state.search.regionSearchEngines.find { it.id == google.id })
             assertEquals(0, store.state.search.hiddenSearchEngines.size)
 
-            store.dispatch(
-                SearchAction.HideSearchEngineAction(google.id),
-            ).joinBlocking()
+            store.dispatch(SearchAction.HideSearchEngineAction(google.id))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertNull(store.state.search.regionSearchEngines.find { it.id == google.id })
             assertEquals(1, store.state.search.hiddenSearchEngines.size)
@@ -1482,21 +1361,15 @@ class SearchMiddlewareTest {
         run {
             val store = BrowserStore(middleware = listOf(searchMiddleware))
 
-            store.dispatch(
-                SearchAction.SetRegionAction(
-                    RegionState("US", "US"),
-                ),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertNull(store.state.search.regionSearchEngines.find { it.id == google.id })
             assertEquals(1, store.state.search.hiddenSearchEngines.size)
             assertNotNull(store.state.search.hiddenSearchEngines.find { it.id == google.id })
 
-            store.dispatch(
-                SearchAction.ShowSearchEngineAction(google.id),
-            ).joinBlocking()
+            store.dispatch(SearchAction.ShowSearchEngineAction(google.id))
 
             assertNotNull(store.state.search.regionSearchEngines.find { it.id == google.id })
             assertEquals(0, store.state.search.hiddenSearchEngines.size)
@@ -1505,13 +1378,9 @@ class SearchMiddlewareTest {
         run {
             val store = BrowserStore(middleware = listOf(searchMiddleware))
 
-            store.dispatch(
-                SearchAction.SetRegionAction(
-                    RegionState("US", "US"),
-                ),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertNotNull(store.state.search.regionSearchEngines.find { it.id == google.id })
             assertEquals(0, store.state.search.hiddenSearchEngines.size)
@@ -1520,42 +1389,39 @@ class SearchMiddlewareTest {
 
     @Test
     fun `Keeps user choice based on search engine name even if search engine id changes`() {
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-            metadataStorage = SearchMetadataStorage(testContext),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                metadataStorage = SearchMetadataStorage(testContext),
+            )
 
         run {
             val store = BrowserStore(middleware = listOf(searchMiddleware))
 
-            store.dispatch(
-                SearchAction.SetRegionAction(
-                    RegionState("US", "US"),
-                ),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             val google = store.state.search.searchEngines.find { it.name == "Google" }
-            assertNotNull(google!!)
+            assertNotNull(google)
             assertEquals("google-b-1-m", google.id)
 
             store.dispatch(
                 SearchAction.SelectSearchEngineAction(
                     searchEngineId = "google-b-1-m",
                     searchEngineName = "Google",
-                ),
-            ).joinBlocking()
+                )
+            )
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertEquals("google-b-1-m", store.state.search.userSelectedSearchEngineId)
             assertEquals("Google", store.state.search.userSelectedSearchEngineName)
 
             val searchEngine = store.state.search.selectedOrDefaultSearchEngine
-            assertNotNull(searchEngine!!)
+            assertNotNull(searchEngine)
             assertEquals("google-b-1-m", searchEngine.id)
             assertEquals("Google", searchEngine.name)
         }
@@ -1563,19 +1429,15 @@ class SearchMiddlewareTest {
         run {
             val store = BrowserStore(middleware = listOf(searchMiddleware))
 
-            store.dispatch(
-                SearchAction.SetRegionAction(
-                    RegionState("DE", "DE"),
-                ),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState("DE", "DE")))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertEquals("google-b-1-m", store.state.search.userSelectedSearchEngineId)
             assertEquals("Google", store.state.search.userSelectedSearchEngineName)
 
             val searchEngine = store.state.search.selectedOrDefaultSearchEngine
-            assertNotNull(searchEngine!!)
+            assertNotNull(searchEngine)
             assertEquals("google-b-m", searchEngine.id)
             assertEquals("Google", searchEngine.name)
         }
@@ -1583,23 +1445,20 @@ class SearchMiddlewareTest {
 
     @Test
     fun `Adding and restoring custom search engine`() {
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-            metadataStorage = SearchMetadataStorage(testContext),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                metadataStorage = SearchMetadataStorage(testContext),
+            )
 
         run {
             val store = BrowserStore(middleware = listOf(searchMiddleware))
 
-            store.dispatch(
-                SearchAction.SetRegionAction(
-                    RegionState("US", "US"),
-                ),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertEquals(0, store.state.search.customSearchEngines.size)
 
@@ -1610,14 +1469,12 @@ class SearchMiddlewareTest {
                         name = "Example",
                         icon = mock(),
                         type = SearchEngine.Type.CUSTOM,
-                        resultUrls = listOf(
-                            "https://example.org/?q=%s",
-                        ),
-                    ),
-                ),
-            ).joinBlocking()
+                        resultUrls = listOf("https://example.org/?q=%s"),
+                    )
+                )
+            )
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertEquals(1, store.state.search.customSearchEngines.size)
         }
@@ -1625,13 +1482,9 @@ class SearchMiddlewareTest {
         run {
             val store = BrowserStore(middleware = listOf(searchMiddleware))
 
-            store.dispatch(
-                SearchAction.SetRegionAction(
-                    RegionState("US", "US"),
-                ),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertEquals(1, store.state.search.customSearchEngines.size)
         }
@@ -1643,66 +1496,63 @@ class SearchMiddlewareTest {
         val metadataStorage = SearchMetadataStorage(testContext)
 
         run {
-            val searchMiddleware = SearchMiddleware(
-                testContext,
-                ioDispatcher = dispatcher,
-                customStorage = customStorage,
-                metadataStorage = metadataStorage,
-                migration = object : SearchMiddleware.Migration {
-                    override fun getValuesToMigrate() = SearchMiddleware.Migration.MigrationValues(
-                        customSearchEngines = listOf(
-                            createSearchEngine(
-                                name = "Example",
-                                url = "https://example.org/?q={searchTerms}",
-                                icon = mock(),
-                            ),
-                        ),
-                        defaultSearchEngineName = "Example",
-                    )
-                },
-            )
+            val searchMiddleware =
+                SearchMiddleware(
+                    testContext,
+                    ioDispatcher = dispatcher,
+                    customStorage = customStorage,
+                    metadataStorage = metadataStorage,
+                    migration =
+                        object : SearchMiddleware.Migration {
+                            override fun getValuesToMigrate() =
+                                SearchMiddleware.Migration.MigrationValues(
+                                    customSearchEngines =
+                                        listOf(
+                                            createSearchEngine(
+                                                name = "Example",
+                                                url = "https://example.org/?q={searchTerms}",
+                                                icon = mock(),
+                                            )
+                                        ),
+                                    defaultSearchEngineName = "Example",
+                                )
+                        },
+                )
 
             val store = BrowserStore(middleware = listOf(searchMiddleware))
 
-            store.dispatch(
-                SearchAction.SetRegionAction(
-                    RegionState("US", "US"),
-                ),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertEquals(1, store.state.search.customSearchEngines.size)
 
             val selectedSearchEngine = store.state.search.selectedOrDefaultSearchEngine
-            assertNotNull(selectedSearchEngine!!)
+            assertNotNull(selectedSearchEngine)
 
             assertEquals("Example", selectedSearchEngine.name)
             assertEquals("https://example.org/?q={searchTerms}", selectedSearchEngine.resultUrls[0])
         }
 
         run {
-            val searchMiddleware = SearchMiddleware(
-                testContext,
-                ioDispatcher = dispatcher,
-                customStorage = customStorage,
-                metadataStorage = metadataStorage,
-            )
+            val searchMiddleware =
+                SearchMiddleware(
+                    testContext,
+                    ioDispatcher = dispatcher,
+                    customStorage = customStorage,
+                    metadataStorage = metadataStorage,
+                )
 
             val store = BrowserStore(middleware = listOf(searchMiddleware))
 
-            store.dispatch(
-                SearchAction.SetRegionAction(
-                    RegionState("US", "US"),
-                ),
-            ).joinBlocking()
+            store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-            wait(store, dispatcher)
+            wait(dispatcher)
 
             assertEquals(1, store.state.search.customSearchEngines.size)
 
             val selectedSearchEngine = store.state.search.selectedOrDefaultSearchEngine
-            assertNotNull(selectedSearchEngine!!)
+            assertNotNull(selectedSearchEngine)
 
             assertEquals("Example", selectedSearchEngine.name)
             assertEquals("https://example.org/?q={searchTerms}", selectedSearchEngine.resultUrls[0])
@@ -1711,25 +1561,20 @@ class SearchMiddlewareTest {
 
     @Test
     fun `Reorders list of region search engines after adding previously removed search engines`() {
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("US", "US"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         // ///////////////////////////////////////////////////////////////////////////////////////////
         // Verify initial state
@@ -1745,17 +1590,9 @@ class SearchMiddlewareTest {
 
         assertEquals("Google", store.state.search.selectedOrDefaultSearchEngine!!.name)
 
-        store.dispatch(
-            SearchAction.HideSearchEngineAction(
-                "google-b-1-m",
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.HideSearchEngineAction("google-b-1-m"))
 
-        store.dispatch(
-            SearchAction.HideSearchEngineAction(
-                "ddg",
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.HideSearchEngineAction("ddg"))
 
         // ///////////////////////////////////////////////////////////////////////////////////////////
         // Verify after hiding search engines
@@ -1771,13 +1608,9 @@ class SearchMiddlewareTest {
 
         println(store.state.search.regionSearchEngines)
 
-        store.dispatch(
-            SearchAction.ShowSearchEngineAction("google-b-1-m"),
-        ).joinBlocking()
+        store.dispatch(SearchAction.ShowSearchEngineAction("google-b-1-m"))
 
-        store.dispatch(
-            SearchAction.ShowSearchEngineAction("ddg"),
-        ).joinBlocking()
+        store.dispatch(SearchAction.ShowSearchEngineAction("ddg"))
 
         // ///////////////////////////////////////////////////////////////////////////////////////////
         // Verify state after adding search engines back
@@ -1797,25 +1630,20 @@ class SearchMiddlewareTest {
     @Test
     fun `Loads search engines for locale (JA)`() {
         Locale.setDefault(Locale.Builder().setLanguage("ja").setRegion("JA").build())
-        val searchMiddleware = SearchMiddleware(
-            testContext,
-            ioDispatcher = dispatcher,
-            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
-        )
+        val searchMiddleware =
+            SearchMiddleware(
+                testContext,
+                ioDispatcher = dispatcher,
+                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+            )
 
-        val store = BrowserStore(
-            middleware = listOf(searchMiddleware),
-        )
+        val store = BrowserStore(middleware = listOf(searchMiddleware))
 
         assertTrue(store.state.search.regionSearchEngines.isEmpty())
 
-        store.dispatch(
-            SearchAction.SetRegionAction(
-                RegionState("JA", "JA"),
-            ),
-        ).joinBlocking()
+        store.dispatch(SearchAction.SetRegionAction(RegionState("JA", "JA")))
 
-        wait(store, dispatcher)
+        wait(dispatcher)
 
         assertTrue(store.state.search.regionSearchEngines.isNotEmpty())
         assertTrue(store.state.search.additionalAvailableSearchEngines.isEmpty())
@@ -1834,15 +1662,177 @@ class SearchMiddlewareTest {
 
         assertEquals("Google", store.state.search.selectedOrDefaultSearchEngine!!.name)
     }
+
+    @Test
+    fun `GIVEN a persisted private search engine selection WHEN the store initializes THEN load the userSelectedPrivateSearchEngineId and name into state`() =
+        runTest(dispatcher) {
+            val storage = SearchMetadataStorage(testContext)
+            storage.setUserSelectedPrivateSearchEngine("private-test-id", "Private Engine")
+
+            val middleware =
+                SearchMiddleware(
+                    testContext,
+                    ioDispatcher = dispatcher,
+                    metadataStorage = storage,
+                    customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                )
+
+            val store = BrowserStore(middleware = listOf(middleware))
+
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
+
+            wait(dispatcher)
+
+            assertEquals("private-test-id", store.state.search.userSelectedPrivateSearchEngineId)
+            assertEquals("Private Engine", store.state.search.userSelectedPrivateSearchEngineName)
+        }
+
+    @Test
+    fun `GIVEN no private search engine selection WHEN dispatching SelectPrivateSearchEngineAction THEN persist the selection and restore it in a new store`() {
+        val storage = SearchMetadataStorage(testContext)
+        val id = "private-test-id-${UUID.randomUUID()}"
+
+        run {
+            val store =
+                BrowserStore(
+                    middleware =
+                        listOf(
+                            SearchMiddleware(
+                                testContext,
+                                ioDispatcher = dispatcher,
+                                metadataStorage = storage,
+                                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                            )
+                        )
+                )
+
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
+
+            wait(dispatcher)
+
+            assertNull(store.state.search.userSelectedPrivateSearchEngineId)
+
+            store.dispatch(SearchAction.SelectPrivateSearchEngineAction(id, "My Private Engine"))
+
+            wait(dispatcher)
+
+            assertEquals(id, store.state.search.userSelectedPrivateSearchEngineId)
+            assertEquals("My Private Engine", store.state.search.userSelectedPrivateSearchEngineName)
+        }
+
+        run {
+            val store =
+                BrowserStore(
+                    middleware =
+                        listOf(
+                            SearchMiddleware(
+                                testContext,
+                                ioDispatcher = dispatcher,
+                                metadataStorage = storage,
+                                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                            )
+                        )
+                )
+
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
+
+            wait(dispatcher)
+
+            assertEquals(id, store.state.search.userSelectedPrivateSearchEngineId)
+            assertEquals("My Private Engine", store.state.search.userSelectedPrivateSearchEngineName)
+        }
+    }
+
+    @Test
+    fun `GIVEN a selected private search engine WHEN dispatching ClearPrivateSearchEngineAction THEN remove the selection from state and persist the removal `() {
+        val storage = SearchMetadataStorage(testContext)
+
+        run {
+            val store =
+                BrowserStore(
+                    middleware =
+                        listOf(
+                            SearchMiddleware(
+                                testContext,
+                                ioDispatcher = dispatcher,
+                                metadataStorage = storage,
+                                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                            )
+                        )
+                )
+
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
+
+            wait(dispatcher)
+
+            store.dispatch(SearchAction.SelectPrivateSearchEngineAction("some-id", "Some Engine"))
+
+            wait(dispatcher)
+
+            assertEquals("some-id", store.state.search.userSelectedPrivateSearchEngineId)
+
+            store.dispatch(SearchAction.ClearPrivateSearchEngineAction)
+
+            wait(dispatcher)
+
+            assertNull(store.state.search.userSelectedPrivateSearchEngineId)
+            assertNull(store.state.search.userSelectedPrivateSearchEngineName)
+        }
+
+        run {
+            val store =
+                BrowserStore(
+                    middleware =
+                        listOf(
+                            SearchMiddleware(
+                                testContext,
+                                ioDispatcher = dispatcher,
+                                metadataStorage = storage,
+                                customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                            )
+                        )
+                )
+
+            store.dispatch(SearchAction.SetRegionAction(RegionState.Default))
+
+            wait(dispatcher)
+
+            assertNull(store.state.search.userSelectedPrivateSearchEngineId)
+            assertNull(store.state.search.userSelectedPrivateSearchEngineName)
+        }
+    }
+
+    @Test
+    fun `GIVEN no userSelectedPrivateSearchEngineId WHEN getting selectedOrDefaultPrivateSearchEngine THEN return the same engine as selectedOrDefaultSearchEngine`() {
+        val storage = SearchMetadataStorage(testContext)
+
+        val store =
+            BrowserStore(
+                middleware =
+                    listOf(
+                        SearchMiddleware(
+                            testContext,
+                            ioDispatcher = dispatcher,
+                            metadataStorage = storage,
+                            customStorage = CustomSearchEngineStorage(testContext, dispatcher),
+                        )
+                    )
+            )
+
+        store.dispatch(SearchAction.SetRegionAction(RegionState("US", "US")))
+
+        wait(dispatcher)
+
+        assertNull(store.state.search.userSelectedPrivateSearchEngineId)
+
+        val normalDefault = store.state.search.selectedOrDefaultSearchEngine
+        val privateDefault = store.state.search.selectedOrDefaultPrivateSearchEngine
+        assertNotNull(normalDefault)
+        assertEquals(normalDefault, privateDefault)
+    }
 }
 
-private fun wait(store: BrowserStore, dispatcher: TestDispatcher) {
-    // First we wait for the InitAction that may still need to be processed.
-    store.waitUntilIdle()
-
+private fun wait(dispatcher: TestDispatcher) {
     // Now we wait for the Middleware that may need to asynchronously process an action the test dispatched
     dispatcher.scheduler.advanceUntilIdle()
-
-    // Since the Middleware may have dispatched an action, we now wait for the store again.
-    store.waitUntilIdle()
 }

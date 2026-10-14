@@ -11,9 +11,14 @@
 
 #include <algorithm>
 #include <iterator>
+#include <map>
+#include <optional>
 #include <ostream>
+#include <set>
 #include <string>
+#include <utility>
 
+#include "absl/strings/string_view.h"
 #include "api/units/timestamp.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/strings/string_builder.h"
@@ -31,7 +36,7 @@ std::string StreamCodecInfo::ToString() const {
       << "; last_frame_id=" << last_frame_id
       << "; switched_on_at=" << webrtc::ToString(switched_on_at)
       << "; switched_from_at=" << webrtc::ToString(switched_from_at) << " }";
-  return out.str();
+  return out.Release();
 }
 
 std::ostream& operator<<(std::ostream& os, const StreamCodecInfo& state) {
@@ -101,7 +106,7 @@ StreamStats::StreamStats(Timestamp stream_started_time)
 std::string StatsKey::ToString() const {
   StringBuilder out;
   out << stream_label << "_" << receiver;
-  return out.str();
+  return out.Release();
 }
 
 bool operator<(const StatsKey& a, const StatsKey& b) {

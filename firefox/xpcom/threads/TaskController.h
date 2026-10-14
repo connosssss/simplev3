@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,22 +5,23 @@
 #ifndef mozilla_TaskController_h
 #define mozilla_TaskController_h
 
+#include <atomic>
+#include <set>
+#include <stack>
+#include <vector>
+
 #include "MainThreadUtils.h"
 #include "mozilla/CondVar.h"
-#include "mozilla/IdlePeriodState.h"
-#include "mozilla/RefPtr.h"
-#include "mozilla/Mutex.h"
-#include "mozilla/StaticPtr.h"
-#include "mozilla/TimeStamp.h"
 #include "mozilla/EventQueue.h"
+#include "mozilla/IdlePeriodState.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/StaticString.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
 #include "nsISupportsImpl.h"
 #include "nsThreadUtils.h"  // for MOZ_COLLECTING_RUNNABLE_TELEMETRY
-
-#include <atomic>
-#include <vector>
-#include <set>
-#include <stack>
 
 class nsIRunnable;
 class nsIThreadObserver;
@@ -67,7 +66,7 @@ class TaskManager {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(TaskManager)
 
-  TaskManager() : mTaskCount(0) {}
+  TaskManager() = default;
 
   // Subclasses implementing task manager will have this function called to
   // determine whether their associated tasks are currently suspended. This
@@ -95,7 +94,7 @@ class TaskManager {
   uint32_t PendingTaskCount() { return mTaskCount; }
 
  protected:
-  virtual ~TaskManager() {}
+  virtual ~TaskManager() = default;
 
  private:
   friend class TaskController;
@@ -107,7 +106,7 @@ class TaskManager {
   bool mCurrentSuspended = false;
   int32_t mCurrentPriorityModifier = 0;
 
-  std::atomic<uint32_t> mTaskCount;
+  std::atomic<uint32_t> mTaskCount{};
 };
 
 // A Task is the the base class for any unit of work that may be scheduled.
@@ -202,7 +201,7 @@ class Task {
         mSeqNo(sCurrentTaskSeqNo++),
         mPriority(static_cast<uint32_t>(aPriority)) {}
 
-  virtual ~Task() {}
+  virtual ~Task() = default;
 
   friend class TaskController;
 
@@ -258,7 +257,7 @@ class Task {
 // run during idle periods.
 class IdleTaskManager : public TaskManager {
  public:
-  explicit IdleTaskManager(already_AddRefed<nsIIdlePeriod>&& aIdlePeriod)
+  explicit IdleTaskManager(already_AddRefed<nsIIdlePeriod> aIdlePeriod)
       : mIdlePeriodState(std::move(aIdlePeriod)), mProcessedTaskCount(0) {}
 
   IdlePeriodState& State() { return mIdlePeriodState; }
@@ -280,6 +279,16 @@ class IdleTaskManager : public TaskManager {
   IdlePeriodState mIdlePeriodState;
 
   std::atomic<uint64_t> mProcessedTaskCount;
+};
+
+// A task manager implementation for tasks that run only when the main thread
+// has nothing else to do. They lose against everything else, and callers asking
+// whether the main thread has real work can discount them. While an idle task
+// is queued we suspend ourselves, because an idle task is not runnable until
+// the main thread runs out of tasks and asks for a deadline.
+class LowestTaskManager : public TaskManager {
+ public:
+  bool IsSuspended(const MutexAutoLock& aProofOfLock) override;
 };
 
 // The TaskController is the core class of the scheduler. It is used to
@@ -306,10 +315,12 @@ class TaskController {
     mExternalCondVar = aExternalCondVar;
   }
 
-  void SetIdleTaskManager(IdleTaskManager* aIdleTaskManager) {
+  void SetIdleTaskManager(already_AddRefed<IdleTaskManager> aIdleTaskManager) {
     mIdleTaskManager = aIdleTaskManager;
   }
   IdleTaskManager* GetIdleTaskManager() { return mIdleTaskManager.get(); }
+
+  LowestTaskManager* GetLowestTaskManager() { return mLowestTaskManager.get(); }
 
   uint64_t RunOutOfMTTasksCount() { return mRunOutOfMTTasksCounter; }
 
@@ -323,7 +334,7 @@ class TaskController {
 
   // This adds a task to the TaskController graph.
   // This may be called on any thread.
-  void AddTask(already_AddRefed<Task>&& aTask);
+  void AddTask(already_AddRefed<Task> aTask);
 
   // This wait function is the theoretical function you would need if our main
   // thread needs to also process OS messages or something along those lines.
@@ -340,7 +351,7 @@ class TaskController {
   // This may be called on any thread.
   void ReprioritizeTask(Task* aTask, uint32_t aPriority);
 
-  void DispatchRunnable(already_AddRefed<nsIRunnable>&& aRunnable,
+  void DispatchRunnable(already_AddRefed<nsIRunnable> aRunnable,
                         uint32_t aPriority, TaskManager* aManager = nullptr);
 
   nsIRunnable* GetRunnableForMTTask(bool aReallyWait);
@@ -360,14 +371,18 @@ class TaskController {
 
 #ifdef MOZ_MEMORY
   // To be called once during startup.
-  static void SetupIdleMemoryCleanup();
+  static void SetupMemoryCleanup();
 
   // Used internally to update prefs (can't be private, though).
-  void UpdateIdleMemoryCleanupPrefs();
+  void UpdateMemoryCleanupPrefs();
 
-  // If needed, schedule a round of idle processing for moz_jemalloc's
-  // idle purge.
-  void MayScheduleIdleMemoryCleanup();
+  // If needed, schedule a round of purging for moz_jemalloc's lazy purge.
+  void MayScheduleMemoryCleanup();
+
+  // Request a memory cleanup, e.g. after GC/CC completion.
+  // Unlike MayScheduleMemoryCleanup, this does not check for pending
+  // tasks -- the caller knows cleanup is needed regardless.
+  void RequestMemoryCleanup(StaticString aReason);
 #endif
 
  private:
@@ -431,8 +446,9 @@ class TaskController {
   std::stack<RefPtr<Task>> mCurrentTasksMT;
 
   // A list of all tasks ordered by priority.
-  std::set<RefPtr<Task>, Task::PriorityCompare> mThreadableTasks;
-  std::set<RefPtr<Task>, Task::PriorityCompare> mMainThreadTasks;
+  using PrioritySortedTasks = std::set<RefPtr<Task>, Task::PriorityCompare>;
+  PrioritySortedTasks mThreadableTasks;
+  PrioritySortedTasks mMainThreadTasks;
 
   // TaskManagers currently active.
   // We can use a raw pointer since tasks always hold on to their TaskManager.
@@ -471,6 +487,9 @@ class TaskController {
   CondVar* mExternalCondVar = nullptr;
   // Idle task manager so we can properly do idle state stuff.
   RefPtr<IdleTaskManager> mIdleTaskManager;
+
+  // Task manager for the tasks that run only if nothing else does.
+  RefPtr<LowestTaskManager> mLowestTaskManager;
 
   // How many times the main thread was empty.
   std::atomic<uint64_t> mRunOutOfMTTasksCounter;

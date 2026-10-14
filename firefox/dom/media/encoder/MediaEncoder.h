@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-*/
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,12 +10,11 @@
 #include "MediaQueue.h"
 #include "MediaTrackGraph.h"
 #include "MediaTrackListener.h"
-#include "mozilla/DebugOnly.h"
+#include "TrackEncoder.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/UniquePtr.h"
 #include "nsIMemoryReporter.h"
-#include "TrackEncoder.h"
 
 namespace mozilla {
 
@@ -85,7 +83,7 @@ class DriftCompensator;
  *    contains at least `timeslice` worth of data it notifies the
  *    DataAvailableEvent that was connected in step 2.
  *    => void OnBlob(RefPtr<BlobImpl> aBlob) {
- *    =>   DispatchBlobEvent(Blob::Create(GetOwnerGlobal(), aBlob));
+ *    =>   DispatchBlobEvent(Blob::Create(GetRelevantGlobal(), aBlob));
  *    => };
  *
  * 5) To stop encoding, there are multiple options:
@@ -121,8 +119,8 @@ class MediaEncoder {
                UniquePtr<VideoTrackEncoder> aVideoEncoder,
                UniquePtr<MediaQueue<EncodedFrame>> aEncodedAudioQueue,
                UniquePtr<MediaQueue<EncodedFrame>> aEncodedVideoQueue,
-               TrackRate aTrackRate, const nsAString& aMIMEType,
-               uint64_t aMaxMemory, TimeDuration aTimeslice);
+               const nsAString& aMIMEType, uint64_t aMaxMemory,
+               TimeDuration aTimeslice);
 
  public:
   /**
@@ -149,11 +147,6 @@ class MediaEncoder {
    * Connects a MediaStreamTrack with the appropriate encoder.
    */
   void ConnectMediaStreamTrack(dom::MediaStreamTrack* aTrack);
-
-  /**
-   * Removes a connected MediaStreamTrack.
-   */
-  void RemoveMediaStreamTrack(dom::MediaStreamTrack* aTrack);
 
   /**
    * Creates an encoder with the given MIME type. This must be a valid MIME type
@@ -255,6 +248,11 @@ class MediaEncoder {
   void EnsureGraphTrackFrom(MediaTrack* aTrack);
 
   /**
+   * Removes a connected MediaStreamTrack.
+   */
+  void RemoveMediaStreamTrack(dom::MediaStreamTrack* aTrack);
+
+  /**
    * Shuts down gracefully if there is no remaining live track encoder.
    */
   void MaybeShutdown();
@@ -316,9 +314,9 @@ class MediaEncoder {
 
   const UniquePtr<Muxer> mMuxer;
   const UniquePtr<AudioTrackEncoder> mAudioEncoder;
-  const RefPtr<AudioTrackListener> mAudioListener;
+  RefPtr<AudioTrackListener> mAudioListener;
   const UniquePtr<VideoTrackEncoder> mVideoEncoder;
-  const RefPtr<VideoTrackListener> mVideoListener;
+  RefPtr<VideoTrackListener> mVideoListener;
   const RefPtr<EncoderListener> mEncoderListener;
 
  public:

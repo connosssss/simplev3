@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,14 +5,17 @@
 #ifndef mozilla_dom_WindowGlobalActor_h
 #define mozilla_dom_WindowGlobalActor_h
 
-#include "nsWrapperCache.h"
-#include "nsISupports.h"
 #include "mozilla/dom/BrowsingContext.h"
-#include "nsIURI.h"
-#include "nsString.h"
 #include "mozilla/dom/JSActor.h"
 #include "mozilla/dom/JSActorManager.h"
+#include "mozilla/dom/WindowContext.h"
 #include "mozilla/dom/WindowGlobalTypes.h"
+#include "nsILoadInfo.h"
+#include "nsIOpenWindowInfo.h"
+#include "nsISupports.h"
+#include "nsIURI.h"
+#include "nsString.h"
+#include "nsWrapperCache.h"
 
 namespace mozilla {
 class ErrorResult;
@@ -33,6 +34,16 @@ class WindowGlobalActor : public JSActorManager {
   // specific existing nsGlobalWindowInner.
   static WindowGlobalInit WindowInitializer(nsGlobalWindowInner* aWindow);
 
+  // Compute the initial synced field values which follow from the browsing
+  // context alone. See BrowsingContext::ComputeInitialFields.
+  static WindowContext::FieldValues ComputeInitialFields(
+      dom::BrowsingContext* aBrowsingContext);
+
+  // The partitioned principal should be identical to the document principal,
+  // with the exception of the partitionKey origin attribute.
+  [[nodiscard]] static bool VerifyPartitionedPrincipalMatchesDocumentPrincipal(
+      nsIPrincipal* aPrincipal, nsIPrincipal* aPartitionedPrincipal);
+
  protected:
   virtual ~WindowGlobalActor() = default;
 
@@ -41,7 +52,6 @@ class WindowGlobalActor : public JSActorManager {
       ErrorResult& aRv) final;
 
   virtual nsIURI* GetDocumentURI() = 0;
-  virtual const nsACString& GetRemoteType() = 0;
   virtual dom::BrowsingContext* BrowsingContext() = 0;
 
   static WindowGlobalInit BaseInitializer(

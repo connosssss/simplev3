@@ -1,17 +1,18 @@
-// Copyright (c) 2006-2008 The Chromium Authors. All rights reserved.
+// Copyright 2006-2008 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #include "sandbox/win/src/target_interceptions.h"
 
+#include <ntstatus.h>
+
+#include "base/compiler_specific.h"
 #include "base/win/static_constants.h"
 #include "sandbox/win/src/interception_agent.h"
 #include "sandbox/win/src/sandbox_factory.h"
 #include "sandbox/win/src/sandbox_nt_util.h"
 
 namespace sandbox {
-
-SANDBOX_INTERCEPT NtExports g_nt;
 
 const char KERNEL32_DLL_NAME[] = "kernel32.dll";
 
@@ -54,9 +55,9 @@ TargetNtMapViewOfSection(NtMapViewOfSectionFunction orig_MapViewOfSection,
       // find what looks like a valid export directory for a PE module but the
       // pointer to the module name will be pointing to invalid memory.
       __try {
-        if (ansi_module_name &&
-            (g_nt._strnicmp(ansi_module_name, KERNEL32_DLL_NAME,
-                            sizeof(KERNEL32_DLL_NAME)) == 0)) {
+        if (ansi_module_name && (UNSAFE_TODO(GetNtExports()->_strnicmp)(
+                                     ansi_module_name, KERNEL32_DLL_NAME,
+                                     sizeof(KERNEL32_DLL_NAME)) == 0)) {
           s_state = kAfterKernel32;
         }
       } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -91,7 +92,7 @@ TargetNtMapViewOfSection(NtMapViewOfSectionFunction orig_MapViewOfSection,
     if (agent) {
       if (!agent->OnDllLoad(file_name, module_name, *base)) {
         // Interception agent is demanding to un-map the module.
-        g_nt.UnmapViewOfSection(process, *base);
+        GetNtExports()->UnmapViewOfSection(process, *base);
         *base = nullptr;
         ret = STATUS_UNSUCCESSFUL;
       }

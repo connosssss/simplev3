@@ -22,11 +22,12 @@ config = {
         "-memory",
         "3072",
         "-cores",
-        "4",
+        "8",
         "-skin",
         "800x1280",
         "-no-snapstorage",
         "-no-snapshot",
+        "-no-metrics",
         # Skips first-run dialogs
         "-prop",
         "ro.test_harness=true",
@@ -42,5 +43,6 @@ config = {
     "bogomips_minimum": 3000,
     # in support of test-verify
     "android_version": 24,
+    "os_version": "7.0",
     "is_emulator": True,
 }

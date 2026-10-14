@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { BackupResource } from "resource:///modules/backup/BackupResource.sys.mjs";
+import { BackupResource } from "moz-src:///browser/components/backup/resources/BackupResource.sys.mjs";
 
 /**
  * Class representing Cookies database within a user profile.
@@ -16,15 +16,16 @@ export class CookiesBackupResource extends BackupResource {
     return true;
   }
 
+  static get canBackupResource() {
+    // We don't backup cookies right now
+    return false;
+  }
+
   async backup(
     stagingPath,
     profilePath = PathUtils.profileDir,
     _isEncrypting = false
   ) {
-    if (!BackupResource.canBackupHistory()) {
-      return null;
-    }
-
     await BackupResource.copySqliteDatabases(profilePath, stagingPath, [
       "cookies.sqlite",
     ]);

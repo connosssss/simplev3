@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,9 +7,11 @@
 
 #include "FileSystemParentTypes.h"
 #include "ResultConnection.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/NotNull.h"
 #include "mozilla/TaskQueue.h"
 #include "mozilla/ThreadBound.h"
+#include "mozilla/dom/FileSystemCipherKeyManager.h"
 #include "mozilla/dom/FileSystemHelpers.h"
 #include "mozilla/dom/FileSystemTypes.h"
 #include "mozilla/dom/quota/CheckedUnsafePtr.h"
@@ -54,7 +54,8 @@ Result<EntryId, QMResult> GetEntryHandle(
 
 Result<ResultConnection, QMResult> GetStorageConnection(
     const quota::OriginMetadata& aOriginMetadata,
-    const int64_t aDirectoryLockId);
+    const int64_t aDirectoryLockId,
+    const Maybe<FileSystemCipherKey>& aMaybeCipherKey);
 
 // The assertion type must be the same as the assertion type used for defining
 // FileSystemDataManagerHashKey in FileSystemDataManager.cpp!
@@ -102,6 +103,16 @@ class FileSystemDataManager
 
   Maybe<quota::ClientDirectoryLock&> MaybeDirectoryLockRef() const {
     return ToMaybeRef(mDirectoryLockHandle.get());
+  }
+
+  /**
+   * Null unless the origin is private, in which case its files are encrypted
+   * with the key this manages. It is fetched from the FileSystemQuotaClient
+   * while opening, because the client only hands its managers out on the quota
+   * manager IO thread, and is safe to use from any IO target afterwards.
+   */
+  RefPtr<FileSystemCipherKeyManager> MaybeCipherKeyManager() const {
+    return mCipherKeyManager;
   }
 
   FileSystemDatabaseManager* MutableDatabaseManagerPtr() const {
@@ -179,12 +190,15 @@ class FileSystemDataManager
   const NotNull<nsCOMPtr<nsISerialEventTarget>> mBackgroundTarget;
   const NotNull<nsCOMPtr<nsIEventTarget>> mIOTarget;
   const NotNull<RefPtr<TaskQueue>> mIOTaskQueue;
+  // Assigned while opening, on the quota manager IO thread, and never written
+  // again.
+  RefPtr<FileSystemCipherKeyManager> mCipherKeyManager;
   quota::ClientDirectoryLockHandle mDirectoryLockHandle;
   UniquePtr<FileSystemDatabaseManager> mDatabaseManager;
   MozPromiseHolder<BoolPromise> mOpenPromiseHolder;
   MozPromiseHolder<BoolPromise> mClosePromiseHolder;
   int64_t mDirectoryLockId;
-  uint32_t mRegCount;
+  Atomic<uint32_t, Relaxed> mRegCount;
   DatabaseVersion mVersion;
   State mState;
 };

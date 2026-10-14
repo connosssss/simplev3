@@ -1,6 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:expandtab:shiftwidth=2:tabstop=2:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18,7 +15,6 @@
 #include "nsPrintfCString.h"
 #include "nsServiceManagerUtils.h"
 #include "mozilla/GUniquePtr.h"
-#include "mozilla/UniquePtrExtensions.h"
 #include "nsImportModule.h"
 #include "nsIOpenTabsProvider.h"
 #include "imgIContainer.h"
@@ -186,8 +182,9 @@ void nsGNOMEShellSearchProvider::LaunchSearch(
   }
 }
 
-static void HandleMethodCall(GDBusConnection* aConnection, const gchar* aSender,
-                             const gchar* aObjectPath,
+static void HandleMethodCall(GDBusConnection* /*aConnection*/,
+                             const gchar* /*aSender*/,
+                             const gchar* /*aObjectPath*/,
                              const gchar* aInterfaceName,
                              const gchar* aMethodName, GVariant* aParameters,
                              GDBusMethodInvocation* aInvocation,
@@ -221,9 +218,9 @@ static void HandleMethodCall(GDBusConnection* aConnection, const gchar* aSender,
   }
 }
 
-static GVariant* HandleGetProperty(GDBusConnection* aConnection,
-                                   const gchar* aSender,
-                                   const gchar* aObjectPath,
+static GVariant* HandleGetProperty(GDBusConnection* /*aConnection*/,
+                                   const gchar* /*aSender*/,
+                                   const gchar* /*aObjectPath*/,
                                    const gchar* aInterfaceName,
                                    const gchar* aPropertyName, GError** aError,
                                    gpointer aUserData) {
@@ -234,12 +231,13 @@ static GVariant* HandleGetProperty(GDBusConnection* aConnection,
   return nullptr;
 }
 
-static gboolean HandleSetProperty(GDBusConnection* aConnection,
-                                  const gchar* aSender,
-                                  const gchar* aObjectPath,
+static gboolean HandleSetProperty(GDBusConnection* /*aConnection*/,
+                                  const gchar* /*aSender*/,
+                                  const gchar* /*aObjectPath*/,
                                   const gchar* aInterfaceName,
-                                  const gchar* aPropertyName, GVariant* aValue,
-                                  GError** aError, gpointer aUserData) {
+                                  const gchar* aPropertyName,
+                                  GVariant* /*aValue*/, GError** aError,
+                                  gpointer aUserData) {
   MOZ_ASSERT(aUserData);
   MOZ_ASSERT(NS_IsMainThread());
   g_set_error(aError, G_IO_ERROR, G_IO_ERROR_FAILED,
@@ -490,8 +488,8 @@ void nsGNOMEShellHistorySearchResult::ReceiveSearchResultContainer(
 
   // Getting the currently open tabs to mark them accordingly
   nsresult rv;
-  nsCOMPtr<nsIOpenTabsProvider> provider =
-      do_ImportESModule("resource:///modules/OpenTabsProvider.sys.mjs", &rv);
+  nsCOMPtr<nsIOpenTabsProvider> provider = do_ImportESModule(
+      "moz-src:///browser/components/shell/OpenTabsProvider.sys.mjs", &rv);
   if (NS_FAILED(rv)) {
     // Don't fail, just log an error message
     NS_WARNING("Failed to determine currently open tabs. Using history only.");

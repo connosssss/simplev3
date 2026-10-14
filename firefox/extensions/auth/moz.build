@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -18,10 +16,16 @@ if CONFIG["OS_ARCH"] == "WINNT":
     SOURCES += [
         "nsAuthSSPI.cpp",
     ]
+    SOURCE_HEADERS += [
+        "nsAuthSSPI.h",
+    ]
     DEFINES["USE_SSPI"] = True
 else:
     UNIFIED_SOURCES += [
         "nsAuthSambaNTLM.cpp",
+    ]
+    SOURCE_HEADERS += [
+        "nsAuthSambaNTLM.h",
     ]
 
 LOCAL_INCLUDES += [
@@ -37,3 +41,15 @@ with Files("**"):
 include("/tools/fuzzing/libfuzzer-config.mozbuild")
 
 include("/ipc/chromium/chromium-config.mozbuild")
+
+LICENSED_UNDER += ["openvision"]
+LICENSED_UNDER["openvision"].paths = [
+    "gssapi.h",
+]
+
+SOURCE_HEADERS += [
+    "nsAuth.h",
+    "nsAuthGSSAPI.h",
+    "nsAuthSASL.h",
+    "nsHttpNegotiateAuth.h",
+]

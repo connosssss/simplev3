@@ -1,24 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/SVGGraphicsElement.h"
 
+#include "mozilla/ISVGDisplayableFrame.h"
+#include "mozilla/SVGContentUtils.h"
+#include "mozilla/SVGUtils.h"
 #include "mozilla/dom/BindContext.h"
-#include "mozilla/dom/Document.h"
+#include "mozilla/dom/SVGAnimatedLength.h"
 #include "mozilla/dom/SVGGraphicsElementBinding.h"
 #include "mozilla/dom/SVGMatrix.h"
 #include "mozilla/dom/SVGRect.h"
-#include "mozilla/dom/SVGSVGElement.h"
-#include "mozilla/ISVGDisplayableFrame.h"
-#include "mozilla/SVGContentUtils.h"
-#include "mozilla/SVGTextFrame.h"
-#include "mozilla/SVGUtils.h"
-
 #include "nsIContentInlines.h"
-#include "nsLayoutUtils.h"
 
 namespace mozilla::dom {
 
@@ -36,92 +30,53 @@ NS_INTERFACE_MAP_END_INHERITING(SVGGraphicsElementBase)
 // Implementation
 
 SVGGraphicsElement::SVGGraphicsElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo)
     : SVGGraphicsElementBase(std::move(aNodeInfo)) {}
-
-SVGElement* SVGGraphicsElement::GetNearestViewportElement() {
-  return SVGContentUtils::GetNearestViewportElement(this);
-}
-
-SVGElement* SVGGraphicsElement::GetFarthestViewportElement() {
-  return SVGContentUtils::GetOuterSVGElement(this);
-}
-
-static already_AddRefed<SVGRect> ZeroBBox(SVGGraphicsElement& aOwner) {
-  return MakeAndAddRef<SVGRect>(&aOwner, gfx::Rect{0, 0, 0, 0});
-}
 
 already_AddRefed<SVGRect> SVGGraphicsElement::GetBBox(
     const SVGBoundingBoxOptions& aOptions) {
   nsIFrame* frame = GetPrimaryFrame(FlushType::Layout);
 
+  auto ZeroBBox = [this]() {
+    return MakeAndAddRef<SVGRect>(this, gfx::Rect{0, 0, 0, 0});
+  };
+
   if (!frame || frame->HasAnyStateBits(NS_FRAME_IS_NONDISPLAY)) {
-    return ZeroBBox(*this);
+    return ZeroBBox();
   }
   ISVGDisplayableFrame* svgframe = do_QueryFrame(frame);
 
-  if (!svgframe) {
-    if (!frame->IsInSVGTextSubtree()) {
-      return ZeroBBox(*this);
-    }
-
-    // For <tspan>, <textPath>, the frame is an nsInlineFrame or
-    // nsBlockFrame, |svgframe| will be a nullptr.
-    // We implement their getBBox directly here instead of in
-    // SVGUtils::GetBBox, because SVGUtils::GetBBox is more
-    // or less used for other purpose elsewhere. e.g. gradient
-    // code assumes GetBBox of <tspan> returns the bbox of the
-    // outer <text>.
-    // TODO: cleanup this sort of usecase of SVGUtils::GetBBox,
-    // then move this code SVGUtils::GetBBox.
-    SVGTextFrame* text =
-        static_cast<SVGTextFrame*>(nsLayoutUtils::GetClosestFrameOfType(
-            frame->GetParent(), LayoutFrameType::SVGText));
-
-    if (text->HasAnyStateBits(NS_FRAME_IS_NONDISPLAY)) {
-      return ZeroBBox(*this);
-    }
-
-    gfxRect rec = text->TransformFrameRectFromTextChild(
-        frame->GetRectRelativeToSelf(), frame);
-
-    // Should also add the |x|, |y| of the SVGTextFrame itself, since
-    // the result obtained by TransformFrameRectFromTextChild doesn't
-    // include them.
-    rec.x += float(text->GetPosition().x) / AppUnitsPerCSSPixel();
-    rec.y += float(text->GetPosition().y) / AppUnitsPerCSSPixel();
-
-    return do_AddRef(new SVGRect(this, ToRect(rec)));
+  if (!svgframe && !frame->IsInSVGTextSubtree()) {
+    return ZeroBBox();
   }
 
   if (!NS_SVGNewGetBBoxEnabled()) {
-    return do_AddRef(new SVGRect(
-        this, ToRect(SVGUtils::GetBBox(
-                  frame, SVGUtils::eBBoxIncludeFillGeometry |
-                             SVGUtils::eUseUserSpaceOfUseElement))));
+    return MakeAndAddRef<SVGRect>(
+        this,
+        ToRect(SVGUtils::GetBBox(frame, {SVGBBoxFlag::IncludeFillGeometry,
+                                         SVGBBoxFlag::TextContentBounds,
+                                         SVGBBoxFlag::UseUserSpaceOfUseElement,
+                                         SVGBBoxFlag::DisregardCSSZoom})));
   }
-  uint32_t flags = 0;
+  SVGBBoxFlags flags;
   if (aOptions.mFill) {
-    flags |= SVGUtils::eBBoxIncludeFillGeometry;
+    flags += SVGBBoxFlag::IncludeFillGeometry;
   }
   if (aOptions.mStroke) {
-    flags |= SVGUtils::eBBoxIncludeStroke;
+    flags += SVGBBoxFlag::IncludeStroke;
   }
   if (aOptions.mMarkers) {
-    flags |= SVGUtils::eBBoxIncludeMarkers;
+    flags += {SVGBBoxFlag::IncludeFillGeometry, SVGBBoxFlag::IncludeMarkers};
   }
   if (aOptions.mClipped) {
-    flags |= SVGUtils::eBBoxIncludeClipped;
+    flags += {SVGBBoxFlag::IncludeFillGeometry, SVGBBoxFlag::IncludeClipped};
   }
-  if (flags == 0) {
-    return do_AddRef(new SVGRect(this, {}));
+  if (flags.isEmpty()) {
+    return ZeroBBox();
   }
-  if (flags == SVGUtils::eBBoxIncludeMarkers ||
-      flags == SVGUtils::eBBoxIncludeClipped) {
-    flags |= SVGUtils::eBBoxIncludeFillGeometry;
-  }
-  flags |= SVGUtils::eUseUserSpaceOfUseElement;
-  return do_AddRef(new SVGRect(this, ToRect(SVGUtils::GetBBox(frame, flags))));
+  flags += {SVGBBoxFlag::UseUserSpaceOfUseElement,
+            SVGBBoxFlag::TextContentBounds, SVGBBoxFlag::DisregardCSSZoom};
+  return MakeAndAddRef<SVGRect>(this, ToRect(SVGUtils::GetBBox(frame, flags)));
 }
 
 already_AddRefed<SVGMatrix> SVGGraphicsElement::GetCTM() {
@@ -130,9 +85,10 @@ already_AddRefed<SVGMatrix> SVGGraphicsElement::GetCTM() {
     currentDoc->FlushPendingNotifications(FlushType::Layout);
   }
   gfx::Matrix m = SVGContentUtils::GetCTM(this);
-  RefPtr<SVGMatrix> mat =
-      m.IsSingular() ? nullptr : new SVGMatrix(ThebesMatrix(m));
-  return mat.forget();
+  if (m.IsSingular()) {
+    m = {};
+  }
+  return MakeAndAddRef<SVGMatrix>(ThebesMatrix(m));
 }
 
 already_AddRefed<SVGMatrix> SVGGraphicsElement::GetScreenCTM() {
@@ -141,9 +97,10 @@ already_AddRefed<SVGMatrix> SVGGraphicsElement::GetScreenCTM() {
     currentDoc->FlushPendingNotifications(FlushType::Layout);
   }
   gfx::Matrix m = SVGContentUtils::GetScreenCTM(this);
-  RefPtr<SVGMatrix> mat =
-      m.IsSingular() ? nullptr : new SVGMatrix(ThebesMatrix(m));
-  return mat.forget();
+  if (m.IsSingular()) {
+    m = {};
+  }
+  return MakeAndAddRef<SVGMatrix>(ThebesMatrix(m));
 }
 
 bool SVGGraphicsElement::IsSVGFocusable(bool* aIsFocusable,

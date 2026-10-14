@@ -2,31 +2,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/** @import {Store} from "resource://newtab/lib/Store.sys.mjs" */
+
 import {
   actionCreators as ac,
   actionTypes as at,
-  actionUtils as au,
 } from "resource://newtab/common/Actions.mjs";
-
-// We use importESModule here instead of static import so that
-// the Karma test environment won't choke on this module. This
-// is because the Karma test environment already stubs out
-// AboutNewTab, and overrides importESModule to be a no-op (which
-// can't be done for a static import statement).
-
-// eslint-disable-next-line mozilla/use-static-import
-const { AboutNewTab } = ChromeUtils.importESModule(
-  "resource:///modules/AboutNewTab.sys.mjs"
-);
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   BrowserUtils: "resource://gre/modules/BrowserUtils.sys.mjs",
   NewTabUtils: "resource://gre/modules/NewTabUtils.sys.mjs",
-  PartnerLinkAttribution: "resource:///modules/PartnerLinkAttribution.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
-  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
 });
 
 const LINK_BLOCKED_EVENT = "newtab-linkBlocked";
@@ -89,7 +78,7 @@ class PlacesObserver {
             source === lazy.PlacesUtils.bookmarks.SOURCES.SYNC ||
             (!url.startsWith("http://") && !url.startsWith("https://"))
           ) {
-            return;
+            continue;
           }
 
           this.dispatch({ type: at.PLACES_LINKS_CHANGED });
@@ -140,6 +129,9 @@ class PlacesObserver {
 }
 
 export class PlacesFeed {
+  /** @type {Store} */
+  store = null;
+
   constructor() {
     this.placesChangedTimer = null;
     this.customDispatch = this.customDispatch.bind(this);
@@ -158,8 +150,8 @@ export class PlacesFeed {
   /**
    * setTimeout - A custom function that creates an nsITimer that can be cancelled
    *
-   * @param {func} callback       A function to be executed after the timer expires
-   * @param {int}  delay          The time (in ms) the timer should wait before the function is executed
+   * @param {() => void} callback    A function to be executed after the timer expires
+   * @param {number}  delay          The time (in ms) the timer should wait before the function is executed
    */
   setTimeout(callback, delay) {
     let timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
@@ -208,8 +200,8 @@ export class PlacesFeed {
    *           on such a generic level.
    *
    * @param  {null} subject
-   * @param  {str} topic   The name of the event
-   * @param  {str} value   The data associated with the event
+   * @param  {string} topic   The name of the event
+   * @param  {string} value   The data associated with the event
    */
   observe(subject, topic, value) {
     if (topic === LINK_BLOCKED_EVENT) {
@@ -231,11 +223,30 @@ export class PlacesFeed {
       targetBrowser: action._target.browser,
       forceForeground: false, // This ensure we maintain user preference for how to open new tabs.
       globalHistoryOptions: {
-        triggeringSponsoredURL: action.data.sponsored_tile_id
+        triggeringSponsoredURL: action.data.is_sponsored
           ? action.data.url
           : undefined,
+        triggeringSource: "newtab",
       },
     };
+
+    // Pass the browser that receives the load to the rest of the feeds, so
+    // TelemetryFeed can measure active time on the page this opens. Only links
+    // that opted in by setting dwell_label qualify, except in a private
+    // window.
+    if (action.data.dwell_label && !isPrivate) {
+      params.resolveOnContentBrowserCreated = browser =>
+        // Dispatched without meta on purpose. The data carries a <browser>,
+        // which must not leave the parent process, and only actions tagged for
+        // content are sent there. Do not wrap this in an ac.* creator.
+        this.store.dispatch({
+          type: at.DWELL_LINK_OPENED,
+          data: {
+            browser,
+            dwell_label: action.data.dwell_label,
+          },
+        });
+    }
 
     // Always include the referrer (even for http links) if we have one
     const { event, referrer, typedBonus } = action.data;
@@ -273,7 +284,7 @@ export class PlacesFeed {
       lazy.PlacesUtils.history.markPageAsTyped(Services.io.newURI(urlToOpen));
     }
 
-    const win = action._target.browser.ownerGlobal;
+    const win = action._target.window;
     win.openTrustedLinkIn(
       urlToOpen,
       where || lazy.BrowserUtils.whereToOpenLink(event),
@@ -290,115 +301,35 @@ export class PlacesFeed {
     }
   }
 
-  /**
-   * Sends an attribution request for Top Sites interactions.
-   * @param {object} data
-   *   Attribution paramters from a Top Site.
-   */
-  makeAttributionRequest(data) {
-    let args = Object.assign(
-      {
-        campaignID: Services.prefs.getStringPref(
-          "browser.partnerlink.campaign.topsites"
-        ),
-      },
-      data
-    );
-    lazy.PartnerLinkAttribution.makeRequest(args);
-  }
-
   async fillSearchTopSiteTerm({ _target, data }) {
-    const searchEngine = await Services.search.getEngineByAlias(data.label);
-    _target.browser.ownerGlobal.gURLBar.search(data.label, {
+    const searchEngine = await lazy.SearchService.getEngineByAlias(data.label);
+    _target.window.gURLBar.search(data.label, {
       searchEngine,
       searchModeEntry: "topsites_newtab",
     });
   }
 
   _getDefaultSearchEngine(isPrivateWindow) {
-    return Services.search[
+    return lazy.SearchService[
       isPrivateWindow ? "defaultPrivateEngine" : "defaultEngine"
     ];
-  }
-
-  handoffSearchToAwesomebar(action) {
-    const { _target, data, meta } = action;
-    const searchEngine = this._getDefaultSearchEngine(
-      lazy.PrivateBrowsingUtils.isBrowserPrivate(_target.browser)
-    );
-    const urlBar = _target.browser.ownerGlobal.gURLBar;
-    let isFirstChange = true;
-
-    const newtabSession = AboutNewTab.activityStream.store.feeds
-      .get("feeds.telemetry")
-      ?.sessions.get(au.getPortIdOfSender(action));
-    if (!data || !data.text) {
-      urlBar.setHiddenFocus();
-    } else {
-      urlBar.handoff(data.text, searchEngine, newtabSession?.session_id);
-      isFirstChange = false;
-    }
-
-    const checkFirstChange = () => {
-      // Check if this is the first change since we hidden focused. If it is,
-      // remove hidden focus styles, prepend the search alias and hide the
-      // in-content search.
-      if (isFirstChange) {
-        isFirstChange = false;
-        urlBar.removeHiddenFocus(true);
-        urlBar.handoff("", searchEngine, newtabSession?.session_id);
-        this.store.dispatch(
-          ac.OnlyToOneContent({ type: at.DISABLE_SEARCH }, meta.fromTarget)
-        );
-        urlBar.removeEventListener("compositionstart", checkFirstChange);
-        urlBar.removeEventListener("paste", checkFirstChange);
-      }
-    };
-
-    const onKeydown = ev => {
-      // Check if the keydown will cause a value change.
-      if (ev.key.length === 1 && !ev.altKey && !ev.ctrlKey && !ev.metaKey) {
-        checkFirstChange();
-      }
-      // If the Esc button is pressed, we are done. Show in-content search and cleanup.
-      if (ev.key === "Escape") {
-        onDone(); // eslint-disable-line no-use-before-define
-      }
-    };
-
-    const onDone = ev => {
-      // We are done. Show in-content search again and cleanup.
-      this.store.dispatch(
-        ac.OnlyToOneContent({ type: at.SHOW_SEARCH }, meta.fromTarget)
-      );
-
-      const forceSuppressFocusBorder = ev?.type === "mousedown";
-      urlBar.removeHiddenFocus(forceSuppressFocusBorder);
-
-      urlBar.removeEventListener("keydown", onKeydown);
-      urlBar.removeEventListener("mousedown", onDone);
-      urlBar.removeEventListener("blur", onDone);
-      urlBar.removeEventListener("compositionstart", checkFirstChange);
-      urlBar.removeEventListener("paste", checkFirstChange);
-    };
-
-    urlBar.addEventListener("keydown", onKeydown);
-    urlBar.addEventListener("mousedown", onDone);
-    urlBar.addEventListener("blur", onDone);
-    urlBar.addEventListener("compositionstart", checkFirstChange);
-    urlBar.addEventListener("paste", checkFirstChange);
   }
 
   /**
    * Add the hostnames of the given urls to the Top Sites sponsor blocklist.
    *
-   * @param {array} urls
+   * @param {Array} urls
    *   An array of the objects structured as `{ url }`
    */
   addToBlockedTopSitesSponsors(urls) {
-    const blockedPref = JSON.parse(
-      Services.prefs.getStringPref(TOP_SITES_BLOCKED_SPONSORS_PREF, "[]")
-    );
+    let blockedPref;
+    try {
+      blockedPref = JSON.parse(
+        Services.prefs.getStringPref(TOP_SITES_BLOCKED_SPONSORS_PREF, "[]")
+      );
+    } catch (e) {
+      blockedPref = [];
+    }
     const merged = new Set([
       ...blockedPref,
       ...urls.map(url => lazy.NewTabUtils.shortURL(url)),
@@ -415,7 +346,7 @@ export class PlacesFeed {
    * to send back to the ads service when requesting new topsite ads
    * from the unified ads service
    *
-   * @param {array} block_key
+   * @param {Array} keysArray
    *   An array of the (string) keys
    */
   addToUnifiedAdsBlockedAdsList(keysArray) {
@@ -464,7 +395,7 @@ export class PlacesFeed {
         const url = `${Services.urlFormatter.formatURLPref(
           "app.support.baseURL"
         )}sponsor-privacy`;
-        const win = action._target.browser.ownerGlobal;
+        const win = action._target.window;
         win.openTrustedLinkIn(url, "tab");
         break;
       }
@@ -497,17 +428,22 @@ export class PlacesFeed {
       case at.BOOKMARK_URL:
         lazy.NewTabUtils.activityStreamLinks.addBookmark(
           action.data,
-          action._target.browser.ownerGlobal
+          action._target.window
         );
         break;
       case at.DELETE_BOOKMARK_BY_ID:
         lazy.NewTabUtils.activityStreamLinks.deleteBookmark(action.data);
         break;
       case at.DELETE_HISTORY_URL: {
-        const { url, forceBlock, pocket_id } = action.data;
-        lazy.NewTabUtils.activityStreamLinks.deleteHistoryEntry(url);
+        const { url, forceBlock, pocket_id, original_url } = action.data;
+        lazy.NewTabUtils.activityStreamLinks.deleteHistoryEntry(
+          original_url || url
+        );
         if (forceBlock) {
-          lazy.NewTabUtils.activityStreamLinks.blockURL({ url, pocket_id });
+          lazy.NewTabUtils.activityStreamLinks.blockURL({
+            url: original_url || url,
+            pocket_id,
+          });
         }
         break;
       }
@@ -520,16 +456,10 @@ export class PlacesFeed {
       case at.FILL_SEARCH_TERM:
         this.fillSearchTopSiteTerm(action);
         break;
-      case at.HANDOFF_SEARCH_TO_AWESOMEBAR:
-        this.handoffSearchToAwesomebar(action);
-        break;
       case at.OPEN_LINK: {
-        this.openLink(action);
+        this.openLink(action, action.data.where);
         break;
       }
-      case at.PARTNER_LINK_ATTRIBUTION:
-        this.makeAttributionRequest(action.data);
-        break;
     }
   }
 }

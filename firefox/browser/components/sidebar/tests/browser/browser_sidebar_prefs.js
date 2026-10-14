@@ -15,7 +15,7 @@ add_task(async function test_tools_prefs() {
   );
 
   // Open customize sidebar
-  await toggleSidebarPanel(win, "viewCustomizeSidebar");
+  await SidebarTestUtils.showPanel(win, "viewCustomizeSidebar");
 
   // Set tools
   let customizeDocument = win.SidebarController.browser.contentDocument;
@@ -30,27 +30,24 @@ add_task(async function test_tools_prefs() {
     `${toolEntrypointsCount} inputs to toggle Firefox Tools are shown in the Customize Menu.`
   );
   let bookmarksInput = Array.from(customizeComponent.toolInputs).find(
-    input => input.name === "viewBookmarksSidebar"
+    input => input.id === "viewBookmarksSidebar"
   );
   ok(
     bookmarksInput.checked,
     "The bookmarks input is checked initially as Bookmarks is a default tool."
   );
   for (const toolInput of customizeComponent.toolInputs) {
-    let toolDisabledInitialState = !toolInput.checked;
-    if (toolInput.name == "viewBookmarksSidebar") {
+    // deselect all tools that are selected in the Customize Sidebar panel except bookmarks
+    if (toolInput.id == "viewBookmarksSidebar" || !toolInput.checked) {
       continue;
     }
     toolInput.click();
-    await BrowserTestUtils.waitForCondition(
-      () => {
-        let toggledTool = win.SidebarController.toolsAndExtensions.get(
-          toolInput.name
-        );
-        return toggledTool.disabled === !toolDisabledInitialState;
-      },
-      `The entrypoint for ${toolInput.name} has been ${toolDisabledInitialState ? "enabled" : "disabled"} in the sidebar.`
-    );
+    await TestUtils.waitForCondition(() => {
+      let toggledTool = win.SidebarController.toolsAndExtensions.get(
+        toolInput.id
+      );
+      return toggledTool.disabled === !toolInput.checked;
+    }, `The entrypoint for ${toolInput.name} has been disabled in the sidebar.`);
     toolEntrypointsCount = sidebar.toolButtons.length;
     checkedInputs = Array.from(customizeComponent.toolInputs).filter(
       input => input.checked
@@ -58,9 +55,7 @@ add_task(async function test_tools_prefs() {
     is(
       toolEntrypointsCount,
       checkedInputs.length,
-      `The button for the ${toolInput.name} entrypoint has been ${
-        toolDisabledInitialState ? "added" : "removed"
-      }.`
+      `The button for the ${toolInput.name} entrypoint has been removed.`
     );
   }
 
@@ -75,23 +70,22 @@ add_task(async function test_tools_prefs() {
 
   //   Open a new window to check that it uses the pref
   const newWin = await BrowserTestUtils.openNewBrowserWindow();
+  await newWin.SidebarController.waitUntilStable();
   const newSidebar = newWin.document.querySelector("sidebar-main");
-  ok(newSidebar, "New Window sidebar is shown.");
-  await newSidebar.updateComplete;
+
+  // toggle open the sidebar launcher to check which tools are visible
+  await SidebarTestUtils.ensureLauncherVisible(newWin);
+
   info("Waiting for customize button to be present");
   await BrowserTestUtils.waitForMutationCondition(
     newSidebar,
     { childList: true, subTree: true },
     () => !!newSidebar.customizeButton
   );
-  ok(
-    BrowserTestUtils.isVisible(newSidebar.customizeButton),
-    "The sidebar-main component has fully rendered, and the customize button is present."
-  );
 
   // TO DO: opening the customize category can be removed once bug 1898613 is resolved.
   // Open customize sidebar
-  await toggleSidebarPanel(newWin, "viewCustomizeSidebar");
+  await SidebarTestUtils.showPanel(newWin, "viewCustomizeSidebar");
 
   let newCustomizeDocument = newWin.SidebarController.browser.contentDocument;
   let newCustomizeComponent =
@@ -111,7 +105,7 @@ add_task(async function test_tools_prefs() {
     "The number of tool inputs checked matches that of the other window's sidebar"
   );
   let newBookmarksInput = Array.from(newCustomizeComponent.toolInputs).find(
-    input => input.name === "viewBookmarksSidebar"
+    input => input.id === "viewBookmarksSidebar"
   );
   is(
     newBookmarksInput.checked,
@@ -134,6 +128,9 @@ add_task(async function test_tools_prefs() {
 add_task(async function test_tool_pref_change() {
   const sidebar = document.querySelector("sidebar-main");
   await sidebar.updateComplete;
+
+  // Ensure the sidebar is visible so toolButtons are in the DOM
+  await SidebarTestUtils.ensureLauncherVisible(window);
 
   const origCount = sidebar.toolButtons.length;
   is(origCount, 1, "Expected number of initial tools");
@@ -159,7 +156,8 @@ add_task(async function test_tool_pref_change() {
  */
 add_task(async function test_flip_revamp_pref() {
   const win = await BrowserTestUtils.openNewBrowserWindow();
-  await waitForTabstripOrientation("horizontal", win);
+  await SidebarTestUtils.waitForTabstripOrientation(win, "horizontal");
+
   const { sidebarMain, sidebarContainer } = win.SidebarController;
 
   let verticalTabs = win.document.querySelector("#vertical-tabs");
@@ -168,10 +166,10 @@ add_task(async function test_flip_revamp_pref() {
     "Vertical tabs slot is not visible initially"
   );
   // Open history sidebar
-  await toggleSidebarPanel(win, "viewHistorySidebar");
+  await SidebarTestUtils.showPanel(win, "viewHistorySidebar");
 
   await SpecialPowers.pushPrefEnv({ set: [[VERTICAL_TABS_PREF, true]] });
-  await waitForTabstripOrientation("vertical", win);
+  await SidebarTestUtils.waitForTabstripOrientation(win, "vertical");
   ok(BrowserTestUtils.isVisible(verticalTabs), "Vertical tabs slot is visible");
   ok(
     BrowserTestUtils.isVisible(sidebarMain),
@@ -188,7 +186,7 @@ add_task(async function test_flip_revamp_pref() {
   );
 
   await SpecialPowers.pushPrefEnv({ set: [["sidebar.revamp", false]] });
-  await waitForTabstripOrientation("horizontal", win);
+  await SidebarTestUtils.waitForTabstripOrientation(win, "horizontal");
 
   info("Waiting for sidebar container to be visible");
   await BrowserTestUtils.waitForMutationCondition(
@@ -234,7 +232,7 @@ add_task(async function test_flip_revamp_pref() {
  * Check that panels can stay open when flipping sidebar.revamp
  */
 add_task(async function test_flip_revamp_pref_with_panel() {
-  await toggleSidebarPanel(window, "viewGenaiChatSidebar");
+  await SidebarTestUtils.showPanel(window, "viewGenaiChatSidebar");
   ok(SidebarController.isOpen, "panel open with revamp");
 
   await SpecialPowers.pushPrefEnv({
@@ -247,6 +245,10 @@ add_task(async function test_flip_revamp_pref_with_panel() {
     set: [["sidebar.revamp", true]],
   });
 
+  await TestUtils.waitForCondition(
+    () => SidebarController.isOpen,
+    "Waiting for the panel to reopen."
+  );
   ok(SidebarController.isOpen, "panel still open after new");
 
   await SidebarController.hide();
@@ -289,4 +291,56 @@ add_task(async function test_opening_panel_flips_has_used_pref() {
     Services.prefs.getBoolPref("sidebar.new-sidebar.has-used"),
     "has-used pref enabled for revamped sidebar."
   );
+});
+
+add_task(async function test_visibility_normalization_preserves_valid_value() {
+  const { SidebarManager } = SidebarController;
+
+  info("A visibility already valid for vertical tabs is preserved.");
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["sidebar.verticalTabs", true],
+      ["sidebar.visibility", "hide-sidebar"],
+    ],
+  });
+  // Simulates a (possibly spurious) re-run of the vertical-tabs normalization,
+  // which must not clobber an explicit, orientation-valid choice.
+  SidebarManager.handleVerticalTabsPrefChange(true);
+  is(
+    Services.prefs.getStringPref("sidebar.visibility"),
+    "hide-sidebar",
+    "Valid vertical visibility is preserved."
+  );
+  await SpecialPowers.popPrefEnv();
+
+  info("A visibility invalid for the orientation is reset to its default.");
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["sidebar.verticalTabs", true],
+      // hide-on-close is a horizontal-only value.
+      ["sidebar.visibility", "hide-on-close"],
+    ],
+  });
+  SidebarManager.handleVerticalTabsPrefChange(true);
+  is(
+    Services.prefs.getStringPref("sidebar.visibility"),
+    "always-show",
+    "Visibility invalid for vertical tabs is reset to the vertical default."
+  );
+  await SpecialPowers.popPrefEnv();
+
+  info("A visibility already valid for horizontal tabs is preserved.");
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["sidebar.verticalTabs", false],
+      ["sidebar.visibility", "hide-launcher"],
+    ],
+  });
+  SidebarManager.handleVerticalTabsPrefChange(false);
+  is(
+    Services.prefs.getStringPref("sidebar.visibility"),
+    "hide-launcher",
+    "Valid horizontal visibility is preserved."
+  );
+  await SpecialPowers.popPrefEnv();
 });

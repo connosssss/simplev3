@@ -38,8 +38,25 @@ add_task(async function test_encrypt_decrypt() {
   cipherText = await OSKeyStore.encrypt(testText);
   Assert.notEqual(testText, cipherText);
 
-  let plainText = await OSKeyStore.decrypt(cipherText);
+  let plainText = await OSKeyStore.decrypt(cipherText, "testing");
   Assert.equal(testText, plainText);
+});
+
+add_task(async function test_unlocking_is_announced_once() {
+  const unlocked = [];
+  const observer = () => unlocked.push(OSKeyStore.isLoggedIn);
+  Services.obs.addObserver(observer, OSKeyStore.UNLOCKED_TOPIC);
+  try {
+    // As a session starts: nothing has used the store yet.
+    OSKeyStore._isLocked = true;
+    await OSKeyStore.ensureLoggedIn();
+    Assert.deepEqual(unlocked, [true], "unlocking is announced, once unlocked");
+
+    await OSKeyStore.decrypt(cipherText, "testing");
+    Assert.deepEqual(unlocked, [true], "using an unlocked store is not");
+  } finally {
+    Services.obs.removeObserver(observer, OSKeyStore.UNLOCKED_TOPIC);
+  }
 });
 
 add_task(async function test_reauth() {
@@ -55,7 +72,7 @@ add_task(async function test_reauth() {
   let reauthObserved = OSKeyStoreTestUtils.waitForOSKeyStoreLogin(false);
   await new Promise(resolve => TestUtils.executeSoon(resolve));
   try {
-    await OSKeyStore.decrypt(cipherText, "prompt message text");
+    await OSKeyStore.decrypt(cipherText, "testing", "prompt message text");
     throw new Error("Not receiving canceled OS unlock error");
   } catch (ex) {
     Assert.equal(ex.message, "User canceled OS unlock entry");
@@ -74,7 +91,11 @@ add_task(async function test_reauth() {
 
   reauthObserved = OSKeyStoreTestUtils.waitForOSKeyStoreLogin(true);
   await new Promise(resolve => TestUtils.executeSoon(resolve));
-  let plainText2 = await OSKeyStore.decrypt(cipherText, "prompt message text");
+  let plainText2 = await OSKeyStore.decrypt(
+    cipherText,
+    "testing",
+    "prompt message text"
+  );
   await reauthObserved;
   Assert.equal(testText, plainText2);
 
@@ -90,7 +111,7 @@ add_task(async function test_reauth() {
 
 add_task(async function test_decryption_failure() {
   try {
-    await OSKeyStore.decrypt("Malformed cipher text");
+    await OSKeyStore.decrypt("Malformed cipher text", "testing");
     throw new Error("Not receiving decryption error");
   } catch (ex) {
     Assert.notEqual(ex.result, Cr.NS_ERROR_ABORT);
@@ -147,7 +168,7 @@ add_task(async function test_exportRecoveryPhrase() {
     recoveryPhrase
   );
 
-  let decryptedString = await OSKeyStore.decrypt(encryptedString);
+  let decryptedString = await OSKeyStore.decrypt(encryptedString, "testing");
 
   Assert.equal(
     decryptedString,

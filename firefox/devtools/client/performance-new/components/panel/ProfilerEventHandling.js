@@ -5,7 +5,6 @@
 
 /**
  * @typedef {import("../../@types/perf").PerfFront} PerfFront
- * @typedef {import("../../@types/perf").RecordingState} RecordingState
  * @typedef {import("../../@types/perf").State} StoreState
  * @typedef {import("../../@types/perf").RootTraits} RootTraits
  * @typedef {import("../../@types/perf").PanelWindow} PanelWindow
@@ -17,20 +16,19 @@
  */
 
 /**
- * @typedef {Object} StateProps
- * @property {RecordingState} recordingState
+ * @typedef {object} StateProps
  * @property {boolean?} isSupportedPlatform
  */
 
 /**
- * @typedef {Object} ThunkDispatchProps
+ * @typedef {object} ThunkDispatchProps
  * @property {typeof actions.reportProfilerReady} reportProfilerReady
  * @property {typeof actions.reportProfilerStarted} reportProfilerStarted
  * @property {typeof actions.reportProfilerStopped} reportProfilerStopped
  */
 
 /**
- * @typedef {Object} OwnProps
+ * @typedef {object} OwnProps
  * @property {PerfFront} perfFront
  * @property {RootTraits} traits
  */
@@ -56,7 +54,7 @@ const selectors = require("resource://devtools/client/performance-new/store/sele
  * suddenly becomes unavailable, it needs to react to those changes, and update the
  * recordingState in the store.
  *
- * @extends {React.PureComponent<Props>}
+ * @augments {React.PureComponent<Props>}
  */
 class ProfilerEventHandling extends PureComponent {
   componentDidMount() {
@@ -80,25 +78,6 @@ class ProfilerEventHandling extends PureComponent {
     this.props.perfFront.on("profiler-stopped", reportProfilerStopped);
   }
 
-  componentWillUnmount() {
-    switch (this.props.recordingState) {
-      case "not-yet-known":
-      case "available-to-record":
-      case "request-to-stop-profiler":
-      case "request-to-get-profile-and-stop-profiler":
-        // Do nothing for these states.
-        break;
-
-      case "recording":
-      case "request-to-start-recording":
-        this.props.perfFront.stopProfilerAndDiscardProfile();
-        break;
-
-      default:
-        throw new Error("Unhandled recording state.");
-    }
-  }
-
   render() {
     return null;
   }
@@ -110,7 +89,6 @@ class ProfilerEventHandling extends PureComponent {
  */
 function mapStateToProps(state) {
   return {
-    recordingState: selectors.getRecordingState(state),
     isSupportedPlatform: selectors.getIsSupportedPlatform(state),
   };
 }

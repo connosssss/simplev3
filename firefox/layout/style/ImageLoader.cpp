@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,24 +8,24 @@
 
 #include "mozilla/css/ImageLoader.h"
 
+#include "Image.h"
+#include "imgIContainer.h"
+#include "imgINotificationObserver.h"
+#include "mozilla/PresShell.h"
+#include "mozilla/ProfilerLabels.h"
+#include "mozilla/SVGObserverUtils.h"
+#include "mozilla/StaticPtr.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/dom/LargestContentfulPaint.h"
+#include "mozilla/layers/WebRenderUserData.h"
+#include "nsCanvasFrame.h"
 #include "nsContentUtils.h"
+#include "nsDisplayList.h"
+#include "nsError.h"
+#include "nsIFrameInlines.h"
 #include "nsIReflowCallback.h"
 #include "nsLayoutUtils.h"
-#include "nsError.h"
-#include "nsCanvasFrame.h"
-#include "nsDisplayList.h"
-#include "nsIFrameInlines.h"
-#include "imgIContainer.h"
-#include "imgINotificationObserver.h"
-#include "Image.h"
-#include "mozilla/PresShell.h"
-#include "mozilla/ProfilerLabels.h"
-#include "mozilla/StaticPtr.h"
-#include "mozilla/SVGObserverUtils.h"
-#include "mozilla/layers/WebRenderUserData.h"
 #include "nsTHashSet.h"
 
 using namespace mozilla::dom;
@@ -79,7 +77,7 @@ static StaticRefPtr<GlobalImageObserver> sImageObserver;
 /* static */
 void ImageLoader::Init() {
   sImages = new GlobalRequestTable();
-  sImageObserver = new GlobalImageObserver();
+  sImageObserver = MakeRefPtr<GlobalImageObserver>();
 }
 
 /* static */

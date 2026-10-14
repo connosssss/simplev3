@@ -3,9 +3,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #import <MediaPlayer/MediaPlayer.h>
 
-#include "gtest/gtest.h"
 #include "MediaHardwareKeysEventSourceMacMediaCenter.h"
 #include "MediaKeyListenerTest.h"
+#include "gtest/gtest.h"
 #include "mozilla/TimeStamp.h"
 #include "nsCocoaUtils.h"
 #include "prinrval.h"
@@ -208,8 +208,9 @@ TEST(MediaHardwareKeysEventSourceMacMediaCenter,
   changePositionHandler(event);
 
   ASSERT_TRUE(listener->IsKeyEqualTo(MediaControlKey::Seekto));
-  mozilla::Maybe<SeekDetails> seekDetails = listener->GetSeekDetails();
-  ASSERT_TRUE(seekDetails->mAbsolute->mSeekTime == seekPosition);
+  MediaControlActionParams actionParams =
+      listener->GetMediaControlActionParams();
+  ASSERT_TRUE(actionParams.mAbsolute->mSeekTime == seekPosition);
 
   MPRemoteCommandCenter* commandCenter =
       [MPRemoteCommandCenter sharedCommandCenter];
@@ -286,6 +287,60 @@ TEST(MediaHardwareKeysEventSourceMacMediaCenter, TestMediaCenterSetPosition)
            5.0) < 0.1);
   ASSERT_TRUE([center.nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate]
       isEqualToNumber:@1.0]);
+}
+
+TEST(MediaHardwareKeysEventSourceMacMediaCenter, TestMediaCenterClearPosition)
+{
+  RefPtr<MediaHardwareKeysEventSourceMacMediaCenter> source =
+      new MediaHardwareKeysEventSourceMacMediaCenter();
+
+  RefPtr<MediaKeyListenerTest> listener = new MediaKeyListenerTest();
+
+  source->AddListener(listener.get());
+
+  ASSERT_TRUE(source->Open());
+
+  MediaMetadataBase metadata;
+  metadata.mTitle = u"MediaPlayback";
+  metadata.mArtist = u"Firefox";
+  metadata.mAlbum = u"Mozilla";
+  source->SetMediaMetadata(metadata);
+
+  PositionState positionState;
+  positionState.mDuration = 10.0;
+  positionState.mPlaybackRate = 1.0;
+  positionState.mLastReportedPlaybackPosition = 5.0;
+  positionState.mPositionUpdatedTime = mozilla::TimeStamp::Now();
+  source->SetPositionState(mozilla::Some(positionState));
+
+  PR_Sleep(PR_SecondsToInterval(1));
+  MPNowPlayingInfoCenter* center = [MPNowPlayingInfoCenter defaultCenter];
+  ASSERT_TRUE([center.nowPlayingInfo[MPMediaItemPropertyPlaybackDuration]
+      isEqualToNumber:@10.0]);
+
+  source->SetPositionState(mozilla::Nothing());
+
+  PR_Sleep(PR_SecondsToInterval(1));
+  ASSERT_TRUE(center.nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] ==
+              nil);
+  ASSERT_TRUE(
+      center.nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] ==
+      nil);
+  ASSERT_TRUE(center.nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] ==
+              nil);
+  // Only the timeline goes away, the rest of the now playing info stays.
+  ASSERT_TRUE([center.nowPlayingInfo[MPMediaItemPropertyTitle]
+      isEqualToString:@"MediaPlayback"]);
+
+  // With no now playing info to clear, nothing gets published at all.
+  source->Close();
+  PR_Sleep(PR_SecondsToInterval(1));
+  ASSERT_TRUE(center.nowPlayingInfo == nil);
+
+  source->SetPositionState(mozilla::Nothing());
+
+  PR_Sleep(PR_SecondsToInterval(1));
+  ASSERT_TRUE(center.nowPlayingInfo == nil);
 }
 
 NS_ASSUME_NONNULL_END

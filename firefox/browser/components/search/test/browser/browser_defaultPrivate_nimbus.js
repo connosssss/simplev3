@@ -60,9 +60,9 @@ add_setup(async () => {
   // Current default values.
   await SpecialPowers.pushPrefEnv({
     set: [
-      ["browser.search.separatePrivateDefault.ui.enabled", false],
+      ["browser.search.separatePrivateDefault.featureGate", false],
       ["browser.search.separatePrivateDefault.urlbarResult.enabled", false],
-      ["browser.search.separatePrivateDefault", true],
+      ["browser.search.separatePrivateDefault.enabled", true],
       ["browser.urlbar.suggest.searches", true],
     ],
   });
@@ -72,7 +72,7 @@ add_setup(async () => {
 
 add_task(async function test_nimbus_experiment() {
   Assert.equal(
-    Services.search.defaultPrivateEngine.name,
+    SearchService.defaultPrivateEngine.name,
     "basic",
     "Should have basic as private default while not in experiment"
   );
@@ -91,7 +91,7 @@ add_task(async function test_nimbus_experiment() {
   });
   await reloadObserved;
   Assert.equal(
-    Services.search.defaultPrivateEngine.name,
+    SearchService.defaultPrivateEngine.name,
     "private",
     "Should have private as private default while in experiment"
   );
@@ -100,7 +100,7 @@ add_task(async function test_nimbus_experiment() {
   await doExperimentCleanup();
   await reloadObserved;
   Assert.equal(
-    Services.search.defaultPrivateEngine.name,
+    SearchService.defaultPrivateEngine.name,
     "basic",
     "Should turn off private default and restore default engine after experiment"
   );
@@ -108,7 +108,7 @@ add_task(async function test_nimbus_experiment() {
 
 add_task(async function test_nimbus_experiment_urlbar_result_enabled() {
   Assert.equal(
-    Services.search.defaultPrivateEngine.name,
+    SearchService.defaultPrivateEngine.name,
     "basic",
     "Should have basic as private default while not in experiment"
   );
@@ -127,7 +127,7 @@ add_task(async function test_nimbus_experiment_urlbar_result_enabled() {
   });
   await reloadObserved;
   Assert.equal(
-    Services.search.separatePrivateDefaultUrlbarResultEnabled,
+    SearchService.separatePrivateDefaultUrlbarResultEnabled,
     true,
     "Should have set the urlbar result enabled value to true"
   );
@@ -136,7 +136,7 @@ add_task(async function test_nimbus_experiment_urlbar_result_enabled() {
   await doExperimentCleanup();
   await reloadObserved;
   Assert.equal(
-    Services.search.defaultPrivateEngine.name,
+    SearchService.defaultPrivateEngine.name,
     "basic",
     "Should turn off private default and restore default engine after experiment"
   );
@@ -144,11 +144,11 @@ add_task(async function test_nimbus_experiment_urlbar_result_enabled() {
 
 add_task(async function test_non_experiment_prefs() {
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.search.separatePrivateDefault.ui.enabled", false]],
+    set: [["browser.search.separatePrivateDefault.featureGate", false]],
   });
   let uiPref = () =>
     Services.prefs.getBoolPref(
-      "browser.search.separatePrivateDefault.ui.enabled"
+      "browser.search.separatePrivateDefault.featureGate"
     );
   Assert.equal(uiPref(), false, "defaulted false");
   await ExperimentAPI.ready();

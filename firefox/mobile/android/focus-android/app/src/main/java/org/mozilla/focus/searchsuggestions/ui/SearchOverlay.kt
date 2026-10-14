@@ -6,7 +6,10 @@ package org.mozilla.focus.searchsuggestions.ui
 
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.remember
@@ -21,7 +24,7 @@ import mozilla.components.compose.browser.awesomebar.AwesomeBar
 import mozilla.components.compose.browser.awesomebar.AwesomeBarDefaults
 import mozilla.components.concept.awesomebar.AwesomeBar
 import mozilla.components.feature.awesomebar.provider.SearchSuggestionProvider
-import org.mozilla.focus.R
+import mozilla.components.ui.icons.R as iconsR
 import org.mozilla.focus.components
 import org.mozilla.focus.searchsuggestions.SearchSuggestionsViewModel
 import org.mozilla.focus.searchsuggestions.State
@@ -44,30 +47,48 @@ fun SearchOverlay(
     val state = viewModel.state.observeAsState()
     val query = viewModel.searchQuery.observeAsState()
 
-    when (state.value) {
+    Box(modifier = Modifier.fillMaxSize().background(focusColors.surface)) {
+        SearchOverlayContent(
+            state = state.value,
+            query = query.value,
+            onSuggestionClicked = { title ->
+                viewModel.selectSearchSuggestion(title, defaultSearchEngineName)
+            },
+            onAutoComplete = { suggestion ->
+                suggestion.editSuggestion?.let { viewModel.setAutocompleteSuggestion(it) }
+            },
+            onListScrolled = onListScrolled,
+        )
+    }
+}
+
+@Composable
+private fun SearchOverlayContent(
+    state: State?,
+    query: String?,
+    onSuggestionClicked: (String) -> Unit,
+    onAutoComplete: (AwesomeBar.Suggestion) -> Unit,
+    onListScrolled: () -> Unit,
+) {
+    when (state) {
         is State.Disabled,
-        is State.NoSuggestionsAPI,
-        -> {
-            if (query.value.isNullOrEmpty()) {
-                TopSitesOverlay(modifier = Modifier.background(focusColors.surface))
+        is State.NoSuggestionsAPI -> {
+            if (query.isNullOrEmpty()) {
+                TopSitesOverlay(modifier = Modifier.fillMaxWidth())
             }
         }
         is State.ReadyForSuggestions -> {
-            if (query.value.isNullOrEmpty()) {
-                TopSitesOverlay(modifier = Modifier.background(focusColors.surface))
+            if (query.isNullOrEmpty()) {
+                TopSitesOverlay(modifier = Modifier.fillMaxWidth())
             } else {
                 SearchSuggestions(
-                    text = query.value ?: "",
+                    text = query,
                     onSuggestionClicked = { suggestion ->
-                        viewModel.selectSearchSuggestion(
-                            suggestion.title!!,
-                            defaultSearchEngineName,
-                        )
+                        if (suggestion is AwesomeBar.Suggestion) {
+                            suggestion.title?.let { onSuggestionClicked(it) }
+                        }
                     },
-                    onAutoComplete = { suggestion ->
-                        val editSuggestion = suggestion.editSuggestion ?: return@SearchSuggestions
-                        viewModel.setAutocompleteSuggestion(editSuggestion)
-                    },
+                    onAutoComplete = onAutoComplete,
                     onListScrolled = onListScrolled,
                 )
             }
@@ -81,17 +102,16 @@ fun SearchOverlay(
 @Composable
 private fun SearchSuggestions(
     text: String,
-    onSuggestionClicked: (AwesomeBar.Suggestion) -> Unit,
+    onSuggestionClicked: (AwesomeBar.SuggestionItem) -> Unit,
     onAutoComplete: (AwesomeBar.Suggestion) -> Unit,
     onListScrolled: () -> Unit,
 ) {
     val context = LocalContext.current
     val components = components
 
-    val icon = AppCompatResources.getDrawable(context, R.drawable.mozac_ic_search_24)?.toBitmap()
-    val provider = remember(context) {
+    val icon = AppCompatResources.getDrawable(context, iconsR.drawable.mozac_ic_search_24)?.toBitmap()
+    val provider = remember {
         SearchSuggestionProvider(
-            context,
             components.store,
             components.searchUseCases.newPrivateTabSearch,
             components.client,
@@ -111,17 +131,23 @@ private fun SearchSuggestions(
         }
     }
 
-    Column(
-        modifier = Modifier.nestedScroll(nestedScrollConnection),
-    ) {
+    Column(modifier = Modifier.fillMaxSize().nestedScroll(nestedScrollConnection)) {
         AwesomeBar(
             text = text,
-            colors = AwesomeBarDefaults.colors(
-                background = focusColors.surface,
-            ),
+            colors =
+                AwesomeBarDefaults.colors(
+                    background = focusColors.surface,
+                    title = focusColors.onBackground,
+                    description = focusColors.onBackground.copy(alpha = 0.6f),
+                    autocompleteIcon = focusColors.onSurface,
+                    groupTitle = focusColors.onBackground,
+                ),
             providers = listOf(provider),
             onSuggestionClicked = onSuggestionClicked,
             onAutoComplete = onAutoComplete,
+            onRemoveClicked = {
+                // not supported
+            },
         )
     }
 }

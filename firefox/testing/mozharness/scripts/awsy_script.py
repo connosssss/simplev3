@@ -28,7 +28,6 @@ from mozharness.mozilla.testing.codecoverage import (
 from mozharness.mozilla.testing.testbase import TestingMixin, testing_config_options
 from mozharness.mozilla.tooltool import TooltoolMixin
 
-PY2 = sys.version_info.major == 2
 scripts_path = os.path.abspath(os.path.dirname(os.path.dirname(mozharness.__file__)))
 external_tools_path = os.path.join(scripts_path, "external_tools")
 
@@ -115,7 +114,7 @@ class AWSY(TestingMixin, MercurialScript, TooltoolMixin, CodeCoverageMixin):
             ],
         )
         kwargs.setdefault("config", {})
-        super(AWSY, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.installer_url = self.config.get("installer_url")
         self.tests = None
 
@@ -129,7 +128,7 @@ class AWSY(TestingMixin, MercurialScript, TooltoolMixin, CodeCoverageMixin):
     def query_abs_dirs(self):
         if self.abs_dirs:
             return self.abs_dirs
-        abs_dirs = super(AWSY, self).query_abs_dirs()
+        abs_dirs = super().query_abs_dirs()
 
         dirs = {}
         dirs["abs_blob_upload_dir"] = os.path.join(
@@ -141,9 +140,7 @@ class AWSY(TestingMixin, MercurialScript, TooltoolMixin, CodeCoverageMixin):
         return self.abs_dirs
 
     def download_and_extract(self, extract_dirs=None, suite_categories=None):
-        ret = super(AWSY, self).download_and_extract(
-            suite_categories=["common", "awsy"]
-        )
+        ret = super().download_and_extract(suite_categories=["common", "awsy"])
         return ret
 
     @PreScriptAction("create-virtualenv")
@@ -226,7 +223,7 @@ class AWSY(TestingMixin, MercurialScript, TooltoolMixin, CodeCoverageMixin):
             env["EXTERNALTOOLSPATH"] = external_tools_path
 
         runtime_testvars_path = os.path.join(self.awsy_path, "runtime-testvars.json")
-        runtime_testvars_file = open(runtime_testvars_path, "wb" if PY2 else "w")
+        runtime_testvars_file = open(runtime_testvars_path, "w")
         runtime_testvars_file.write(json.dumps(runtime_testvars, indent=2))
         runtime_testvars_file.close()
 

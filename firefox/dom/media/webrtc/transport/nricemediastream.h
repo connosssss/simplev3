@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -41,19 +39,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
 // This is a wrapper around the nICEr ICE stack
-#ifndef nricemediastream_h__
-#define nricemediastream_h__
+#ifndef nricemediastream_h_
+#define nricemediastream_h_
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
-#include "sigslot.h"
-
+#include "m_cpp_utils.h"
+#include "mediapacket.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
+#include "nsISupportsImpl.h"
 #include "nscore.h"
-
-#include "m_cpp_utils.h"
+#include "sigslot.h"
 
 namespace mozilla {
 
@@ -78,11 +77,13 @@ struct NrIceCandidate {
 
   NrIceAddr cand_addr;
   NrIceAddr local_addr;
-  std::string mdns_addr;
+  std::string domain_name;
   Type type;
   TcpType tcp_type;
   std::string codeword;
   std::string label;
+  std::string foundation;
+  std::string username_fragment;
   bool trickled;
   uint32_t priority;
   bool is_proxied = false;
@@ -120,6 +121,8 @@ struct NrIceCandidatePair {
   // for RTCIceCandidatePairStats
   uint64_t bytes_sent;
   uint64_t bytes_recvd;
+  uint64_t packets_sent;
+  uint64_t packets_recvd;
   uint64_t ms_since_last_send;
   uint64_t ms_since_last_recv;
   uint64_t responses_recvd;
@@ -163,7 +166,7 @@ class NrIceMediaStream {
   // Parse trickle ICE candidate
   nsresult ParseTrickleCandidate(const std::string& candidate,
                                  const std::string& ufrag,
-                                 const std::string& mdns_addr);
+                                 const std::string& resolved_address);
 
   // Disable a component
   nsresult DisableComponent(int component);
@@ -172,6 +175,12 @@ class NrIceMediaStream {
   // caller's responsibility to free these.
   nsresult GetActivePair(int component, UniquePtr<NrIceCandidate>* local,
                          UniquePtr<NrIceCandidate>* remote);
+
+  // Like GetActivePair, but returns the local and remote candidates as
+  // candidate-attribute strings (eg; "candidate:...") suitable for re-parse on
+  // the DOM side.
+  nsresult GetActivePairAsAttributes(int aComponent, std::string* aLocal,
+                                     std::string* aRemote) const;
 
   // Get the current ICE consent send status plus the timeval of the last
   // consent update time.
@@ -184,12 +193,31 @@ class NrIceMediaStream {
   // Signals to indicate events. API users can (and should)
   // register for these.
 
-  // Send a packet
-  nsresult SendPacket(int component_id, const unsigned char* data, size_t len);
+  // Send a packet on the underlying stream carrying the given DTLS association.
+  nsresult SendPacket(int component_id, const unsigned char* data, size_t len,
+                      uint32_t aDtlsId);
+
+  // Each underlying ICE stream carries exactly one DTLS association, identified
+  // by an id that is opaque to callers and unique only within this
+  // NrIceMediaStream. An ICE restart's new stream inherits the association of
+  // the stream it replaces; AdvanceDtlsId() gives the new stream a fresh one
+  // instead, for a restart that also changes the remote DTLS fingerprint. Call
+  // it right after the restart's SetIceCredentials.
+  uint32_t GetDtlsId() const;
+  void AdvanceDtlsId();
+  // Closes the old stream if it carries a different DTLS association than the
+  // current one. After AdvanceDtlsId(), the old stream is kept until this is
+  // called, so the previous association can keep working while the new one is
+  // established. A no-op when both streams carry the same association; Ready()
+  // handles that case. Must not be called from within an ICE callback.
+  void CloseOldStream();
 
   // Set your state to ready. Called by the NrIceCtx;
   void Ready(nr_ice_media_stream* stream);
   void Failed();
+  // A packet arrived on one of the underlying streams. Called by the NrIceCtx.
+  void PacketReceived(nr_ice_media_stream* stream, int component_id,
+                      const unsigned char* data, int len);
 
   void OnGatheringStarted(nr_ice_media_stream* stream);
   void OnGatheringComplete(nr_ice_media_stream* stream);
@@ -204,6 +232,10 @@ class NrIceMediaStream {
   // the candidate belongs to.
   const std::string& GetId() const { return id_; }
 
+  // The local ICE username fragment of the current generation, or the empty
+  // string if the stream has no active generation.
+  std::string GetUfrag() const;
+
   bool AllGenerationsDoneGathering() const;
   bool AnyGenerationIsConnected() const;
 
@@ -213,12 +245,17 @@ class NrIceMediaStream {
   sigslot::signal2<const std::string&, NrIceMediaStream::GatheringState>
       SignalGatheringStateChange;
 
+  // address, port, url, errorCode, errorText
+  sigslot::signal6<NrIceMediaStream*, const std::string&, uint16_t,
+                   const std::string&, uint16_t, const std::string&>
+      SignalCandidateError;
+
   sigslot::signal1<NrIceMediaStream*> SignalReady;   // Candidate pair ready.
   sigslot::signal1<NrIceMediaStream*> SignalFailed;  // Candidate pair failed.
-  sigslot::signal4<NrIceMediaStream*, int, const unsigned char*, int>
-      SignalPacketReceived;  // Incoming packet
+  sigslot::signal4<NrIceMediaStream*, int, uint32_t, MediaPacket&>
+      SignalPacketReceived;  // Incoming packet (component, dtls id, packet)
 
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(NrIceMediaStream)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(NrIceMediaStream);
 
  private:
   ~NrIceMediaStream();
@@ -235,6 +272,10 @@ class NrIceMediaStream {
   const size_t components_;
   nr_ice_media_stream* stream_;
   nr_ice_media_stream* old_stream_;
+  uint32_t DtlsIdForStream(nr_ice_media_stream* aStream) const;
+  uint32_t dtls_id_ = 0;
+  uint32_t old_dtls_id_ = 0;
+  uint32_t next_dtls_id_ = 1;
   const std::string id_;
 };
 

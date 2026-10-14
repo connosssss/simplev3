@@ -4,7 +4,9 @@
 
 import copy
 import os
+import shutil
 import sys
+import tempfile
 
 import mozinfo
 
@@ -20,6 +22,7 @@ class GeckoRuntimeRunner(BaseRunner):
 
     def __init__(self, binary, cmdargs=None, **runner_args):
         self.show_crash_reporter = runner_args.pop("show_crash_reporter", False)
+        self._appdata_tmpdir = None
         BaseRunner.__init__(self, **runner_args)
 
         self.binary = binary
@@ -80,6 +83,15 @@ class GeckoRuntimeRunner(BaseRunner):
                 "%s : failure to reset profile" % self.__class__.__name__
             )
 
+        if "MOZ_APP_DATA" not in self.env:
+            self._appdata_tmpdir = tempfile.mkdtemp(suffix=".moz-appdata")
+            self.env["MOZ_APP_DATA"] = os.path.normpath(
+                os.path.join(self._appdata_tmpdir, "AppData", "Roaming")
+            )
+            self.env["MOZ_LOCAL_APP_DATA"] = os.path.normpath(
+                os.path.join(self._appdata_tmpdir, "Local")
+            )
+
         has_debugger = "debug_args" in kwargs and kwargs["debug_args"]
         if has_debugger:
             self.env["MOZ_CRASHREPORTER_DISABLE"] = "1"
@@ -91,12 +103,18 @@ class GeckoRuntimeRunner(BaseRunner):
 
         BaseRunner.start(self, *args, **kwargs)
 
+    def cleanup(self, *args, **kwargs):
+        BaseRunner.cleanup(self, *args, **kwargs)
+        if self._appdata_tmpdir and os.path.exists(self._appdata_tmpdir):
+            shutil.rmtree(self._appdata_tmpdir, ignore_errors=True)
+            self._appdata_tmpdir = None
+
 
 class BlinkRuntimeRunner(BaseRunner):
     """A base runner class for running apps like Google Chrome or Chromium."""
 
     def __init__(self, binary, cmdargs=None, **runner_args):
-        super(BlinkRuntimeRunner, self).__init__(**runner_args)
+        super().__init__(**runner_args)
         self.binary = binary
         self.cmdargs = cmdargs or []
 

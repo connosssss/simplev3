@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- *
+/*
  * Copyright 2021 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +16,7 @@
 
 #include "wasm/WasmValue.h"
 
-#include "jsmath.h"
+#include "builtin/Math.h"
 #include "js/friend/ErrorMessages.h"  // JSMSG_*
 #include "js/Printf.h"
 #include "js/Value.h"
@@ -88,11 +86,21 @@ void Val::readFromHeapLocation(const void* loc) {
   memcpy(&cell_, loc, type_.size());
 }
 
-void Val::writeToHeapLocation(void* loc) const {
+void Val::writeToHeapLocation(gc::Cell* owner, void* loc) const {
   if (isAnyRef()) {
-    *((GCPtr<AnyRef>*)loc) = toAnyRef();
+    BarrieredSet(owner, loc, toAnyRef());
     return;
   }
+
+  memcpy(loc, &cell_, type_.size());
+}
+
+void Val::writeToTenuredHeapLocation(void* loc) const {
+  if (isAnyRef()) {
+    BarrieredSet(false, loc, toAnyRef());
+    return;
+  }
+
   memcpy(loc, &cell_, type_.size());
 }
 
@@ -166,6 +174,20 @@ bool CheckNullExnRefValue(JSContext* cx, HandleValue v,
   vp.set(AnyRef::null());
   return true;
 }
+
+#ifdef ENABLE_WASM_JSPI
+bool CheckNullContRefValue(JSContext* cx, HandleValue v,
+                           MutableHandleAnyRef vp) {
+  if (!v.isNull()) {
+    JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr,
+                             JSMSG_WASM_BAD_NULL_CONTREF_VALUE);
+    return false;
+  }
+
+  vp.set(AnyRef::null());
+  return true;
+}
+#endif  // ENABLE_WASM_JSPI
 
 bool CheckNullExternRefValue(JSContext* cx, HandleValue v,
                              MutableHandleAnyRef vp) {
@@ -261,6 +283,14 @@ bool CheckArrayRefValue(JSContext* cx, HandleValue v, MutableHandleAnyRef vp) {
 
 bool CheckTypeRefValue(JSContext* cx, const TypeDef* typeDef, HandleValue v,
                        MutableHandleAnyRef vp) {
+#ifdef ENABLE_WASM_JSPI
+  if (typeDef->isContType()) {
+    JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr,
+                             JSMSG_WASM_BAD_VAL_TYPE);
+    return false;
+  }
+#endif
+
   if (v.isNull()) {
     vp.set(AnyRef::null());
     return true;
@@ -303,12 +333,21 @@ bool wasm::CheckRefType(JSContext* cx, RefType targetType, HandleValue v,
     case RefType::Exn:
       // Break to the non-exposable case
       break;
+#ifdef ENABLE_WASM_JSPI
+    case RefType::Cont:
+      // Break to the non-exposable case
+      break;
+#endif
     case RefType::Any:
       return CheckAnyRefValue(cx, v, vp);
     case RefType::NoFunc:
       return CheckNullFuncRefValue(cx, v, vp);
     case RefType::NoExn:
       return CheckNullExnRefValue(cx, v, vp);
+#ifdef ENABLE_WASM_JSPI
+    case RefType::NoCont:
+      return CheckNullContRefValue(cx, v, vp);
+#endif
     case RefType::NoExtern:
       return CheckNullExternRefValue(cx, v, vp);
     case RefType::None:
@@ -390,7 +429,8 @@ bool ToWebAssemblyValue_i32(JSContext* cx, HandleValue val, int32_t* loc,
                             bool mustWrite64) {
   bool ok = ToInt32(cx, val, loc);
   if (ok && mustWrite64) {
-#if defined(JS_CODEGEN_MIPS64)
+#if defined(JS_CODEGEN_MIPS64) || defined(JS_CODEGEN_LOONG64) || \
+    defined(JS_CODEGEN_RISCV64)
     loc[1] = loc[0] >> 31;
 #else
     loc[1] = 0;
@@ -462,6 +502,25 @@ bool ToWebAssemblyValue_nullexnref(JSContext* cx, HandleValue val, void** loc,
   Debug::print(*loc);
   return true;
 }
+
+#ifdef ENABLE_WASM_JSPI
+template <typename Debug = NoDebug>
+bool ToWebAssemblyValue_nullcontref(JSContext* cx, HandleValue val, void** loc,
+                                    bool mustWrite64) {
+  RootedAnyRef result(cx, AnyRef::null());
+  if (!CheckNullContRefValue(cx, val, &result)) {
+    return false;
+  }
+  loc[0] = result.get().forCompiledCode();
+#  ifndef JS_64BIT
+  if (mustWrite64) {
+    loc[1] = nullptr;
+  }
+#  endif
+  Debug::print(*loc);
+  return true;
+}
+#endif
 
 template <typename Debug = NoDebug>
 bool ToWebAssemblyValue_nullexternref(JSContext* cx, HandleValue val,
@@ -685,6 +744,11 @@ bool wasm::ToWebAssemblyValue(JSContext* cx, HandleValue val, ValType type,
         case RefType::Exn:
           // Break to the non-exposable case
           break;
+#ifdef ENABLE_WASM_JSPI
+        case RefType::Cont:
+          // Break to the non-exposable case
+          break;
+#endif
         case RefType::Any:
           return ToWebAssemblyValue_anyref<Debug>(cx, val, (void**)loc,
                                                   mustWrite64);
@@ -694,6 +758,11 @@ bool wasm::ToWebAssemblyValue(JSContext* cx, HandleValue val, ValType type,
         case RefType::NoExn:
           return ToWebAssemblyValue_nullexnref<Debug>(cx, val, (void**)loc,
                                                       mustWrite64);
+#ifdef ENABLE_WASM_JSPI
+        case RefType::NoCont:
+          return ToWebAssemblyValue_nullcontref<Debug>(cx, val, (void**)loc,
+                                                       mustWrite64);
+#endif
         case RefType::NoExtern:
           return ToWebAssemblyValue_nullexternref<Debug>(cx, val, (void**)loc,
                                                          mustWrite64);
@@ -726,21 +795,21 @@ bool wasm::ToWebAssemblyValue(JSContext* cx, HandleValue val, ValType type,
 
 template <typename Debug = NoDebug>
 bool ToJSValue_i8(JSContext* cx, int8_t src, MutableHandleValue dst) {
-  dst.set(Int32Value(src));
+  dst.setInt32(src);
   Debug::print(src);
   return true;
 }
 
 template <typename Debug = NoDebug>
 bool ToJSValue_i16(JSContext* cx, int16_t src, MutableHandleValue dst) {
-  dst.set(Int32Value(src));
+  dst.setInt32(src);
   Debug::print(src);
   return true;
 }
 
 template <typename Debug = NoDebug>
 bool ToJSValue_i32(JSContext* cx, int32_t src, MutableHandleValue dst) {
-  dst.set(Int32Value(src));
+  dst.setInt32(src);
   Debug::print(src);
   return true;
 }
@@ -753,21 +822,21 @@ bool ToJSValue_i64(JSContext* cx, int64_t src, MutableHandleValue dst) {
   if (!bi) {
     return false;
   }
-  dst.set(BigIntValue(bi));
+  dst.setBigInt(bi);
   Debug::print(src);
   return true;
 }
 
 template <typename Debug = NoDebug>
 bool ToJSValue_f32(JSContext* cx, float src, MutableHandleValue dst) {
-  dst.set(JS::CanonicalizedDoubleValue(src));
+  dst.setDouble(src);
   Debug::print(src);
   return true;
 }
 
 template <typename Debug = NoDebug>
 bool ToJSValue_f64(JSContext* cx, double src, MutableHandleValue dst) {
-  dst.set(JS::CanonicalizedDoubleValue(src));
+  dst.setDouble(src);
   Debug::print(src);
   return true;
 }
@@ -805,7 +874,7 @@ bool ToJSValue_lossless(JSContext* cx, const void* src, MutableHandleValue dst,
   if (!srcGlobal) {
     return false;
   }
-  dst.set(ObjectValue(*srcGlobal.get()));
+  dst.setObject(*srcGlobal.get());
   return true;
 }
 
@@ -846,6 +915,11 @@ bool wasm::ToJSValue(JSContext* cx, const void* src, StorageType type,
         case RefTypeHierarchy::Exn:
           // Break to the non-exposable case
           break;
+#ifdef ENABLE_WASM_JSPI
+        case RefTypeHierarchy::Cont:
+          // Break to the non-exposable case
+          break;
+#endif  // ENABLE_WASM_JSPI
         case RefTypeHierarchy::Extern:
           return ToJSValue_externref<Debug>(
               cx, *reinterpret_cast<void* const*>(src), dst);
@@ -900,3 +974,14 @@ Value wasm::UnboxFuncRef(FuncRef val) {
   result.setObjectOrNull(fn);
   return result;
 }
+
+#ifdef DEBUG
+void wasm::AssertEdgeSourceNotInsideNursery(void* vp) {
+  JSContext* cx = TlsContext.get();
+  if (cx) {
+    // We can't check this when called off thread.
+    Nursery& nursery = cx->runtime()->gc.nursery();
+    MOZ_ASSERT(!nursery.isInside(vp));
+  }
+}
+#endif

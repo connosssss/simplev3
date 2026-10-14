@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -13,6 +11,7 @@
 #define js_ForOfIterator_h
 
 #include "mozilla/Attributes.h"  // MOZ_STACK_CLASS
+#include "mozilla/Maybe.h"       // mozilla::Maybe
 
 #include <stdint.h>  // UINT32_MAX, uint32_t
 
@@ -55,29 +54,31 @@ class MOZ_STACK_CLASS JS_PUBLIC_API ForOfIterator {
   // try to optimize iteration across arrays.
   //
   //  Case 1: Regular Iteration
-  //      iterator - pointer to the iterator object.
-  //      nextMethod - value of |iterator|.next.
-  //      index - fixed to NOT_ARRAY (== UINT32_MAX)
+  //      isOptimizedArray_ - false.
+  //      iteratorOrArray_ - pointer to the iterator object.
+  //      nextMethod_ - value of |iterator|.next.
+  //      arrayIndex_ - unused.
   //
   //  Case 2: Optimized Array Iteration
-  //      iterator - pointer to the array object.
-  //      nextMethod - the undefined value.
-  //      index - current position in array.
+  //      isOptimizedArray_ - true.
+  //      iteratorOrArray_ - pointer to the array object.
+  //      nextMethod_ - the undefined value.
+  //      arrayIndex_ - current position in array.
   //
-  // The cases are distinguished by whether |index == NOT_ARRAY|.
-  Rooted<JSObject*> iterator;
-  Rooted<Value> nextMethod;
+  // The cases are distinguished by |isOptimizedArray_|. In the optimized-array
+  // case, |iteratorOrArray_| is the array itself.
+  Rooted<JSObject*> iteratorOrArray_;
+  Rooted<Value> nextMethod_;
 
-  static constexpr uint32_t NOT_ARRAY = UINT32_MAX;
-
-  uint32_t index = NOT_ARRAY;
-
-  ForOfIterator(const ForOfIterator&) = delete;
-  ForOfIterator& operator=(const ForOfIterator&) = delete;
+  uint32_t arrayIndex_ = 0;
+  bool isOptimizedArray_ = false;
 
  public:
   explicit ForOfIterator(JSContext* cx)
-      : cx_(cx), iterator(cx), nextMethod(cx) {}
+      : cx_(cx), iteratorOrArray_(cx), nextMethod_(cx) {}
+
+  ForOfIterator(const ForOfIterator&) = delete;
+  ForOfIterator& operator=(const ForOfIterator&) = delete;
 
   enum NonIterableBehavior { ThrowOnNonIterable, AllowNonIterable };
 
@@ -107,7 +108,16 @@ class MOZ_STACK_CLASS JS_PUBLIC_API ForOfIterator {
    * If initialized with throwOnNonCallable = false, check whether
    * the value is iterable.
    */
-  bool valueIsIterable() const { return iterator; }
+  bool valueIsIterable() const { return iteratorOrArray_ != nullptr; }
+
+  /**
+   * For an array iterated through the optimized array path, the number of
+   * elements it currently stores densely; Nothing for any other iterable.
+   * Callers use this to reserve storage before iterating. It is only a hint:
+   * the array may change during iteration and holes are still read through
+   * the normal element lookup.
+   */
+  mozilla::Maybe<uint32_t> sizeHint() const;
 
  private:
   inline bool nextFromOptimizedArray(MutableHandle<Value> val, bool* done);

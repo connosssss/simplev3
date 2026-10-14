@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 // Copyright (c) 2008 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -27,8 +25,7 @@
 #include <sys/un.h>
 #include <sys/uio.h>
 
-#include <string>
-#include <map>
+#include <memory>
 
 #include "base/command_line.h"
 #include "base/eintr_wrapper.h"
@@ -41,10 +38,8 @@
 #include "chrome/common/ipc_message_utils.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/ProtocolUtils.h"
-#include "mozilla/Atomics.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
 
 // Use OS specific iovec array limit where it's possible.
 #if defined(IOV_MAX)
@@ -103,18 +98,22 @@ static inline ssize_t corrected_sendmsg(int socket,
 }  // namespace
 //------------------------------------------------------------------------------
 
-Channel::ChannelImpl::ChannelImpl(ChannelHandle pipe, Mode mode,
-                                  base::ProcessId other_pid)
-    : chan_cap_("ChannelImpl::SendMutex",
-                MessageLoopForIO::current()->SerialEventTarget()),
-      other_pid_(other_pid) {
+const Channel::ChannelKind ChannelPosix::sKind{
+    .create_raw_pipe = &ChannelPosix::CreateRawPipe,
+    .num_relayed_attachments = &ChannelPosix::NumRelayedAttachments,
+    .is_valid_handle = &ChannelPosix::IsValidHandle,
+};
+
+ChannelPosix::ChannelPosix(mozilla::UniqueFileHandle pipe, Mode mode,
+                           base::ProcessId other_pid)
+    : other_pid_(other_pid) {
   Init(mode);
   SetPipe(pipe.release());
 
   EnqueueHelloMessage();
 }
 
-void Channel::ChannelImpl::SetPipe(int fd) {
+void ChannelPosix::SetPipe(int fd) {
   chan_cap_.NoteExclusiveAccess();
 
   pipe_ = fd;
@@ -133,14 +132,14 @@ void Channel::ChannelImpl::SetPipe(int fd) {
   }
 }
 
-bool Channel::ChannelImpl::PipeBufHasSpaceAfter(size_t already_written) {
+bool ChannelPosix::PipeBufHasSpaceAfter(size_t already_written) {
   // If the OS didn't tell us the buffer size for some reason, then
   // don't apply this limitation on the amount we try to write.
   return pipe_buf_len_ == 0 ||
          static_cast<size_t>(pipe_buf_len_) > already_written;
 }
 
-void Channel::ChannelImpl::Init(Mode mode) {
+void ChannelPosix::Init(Mode mode) {
   // Verify that we fit in a "quantum-spaced" jemalloc bucket.
   static_assert(sizeof(*this) <= 512, "Exceeded expected size class");
 
@@ -164,9 +163,9 @@ void Channel::ChannelImpl::Init(Mode mode) {
 #endif
 }
 
-bool Channel::ChannelImpl::EnqueueHelloMessage() {
-  mozilla::UniquePtr<Message> msg(
-      new Message(MSG_ROUTING_NONE, HELLO_MESSAGE_TYPE));
+bool ChannelPosix::EnqueueHelloMessage() {
+  mozilla::UniquePtr<Message> msg =
+      std::make_unique<Message>(MSG_ROUTING_NONE, HELLO_MESSAGE_TYPE);
   if (!msg->WriteInt(base::GetCurrentProcId())) {
     CloseLocked();
     return false;
@@ -176,7 +175,7 @@ bool Channel::ChannelImpl::EnqueueHelloMessage() {
   return true;
 }
 
-bool Channel::ChannelImpl::Connect(Listener* listener) {
+bool ChannelPosix::Connect(Listener* listener) {
   IOThread().AssertOnCurrentThread();
   mozilla::MutexAutoLock lock(SendMutex());
   chan_cap_.NoteExclusiveAccess();
@@ -190,14 +189,14 @@ bool Channel::ChannelImpl::Connect(Listener* listener) {
   return ContinueConnect();
 }
 
-bool Channel::ChannelImpl::ContinueConnect() {
+bool ChannelPosix::ContinueConnect() {
   chan_cap_.NoteExclusiveAccess();
   MOZ_ASSERT(pipe_ != -1);
 
 #if defined(XP_DARWIN)
   // If we're still waiting for our peer task to be provided, don't start
   // listening yet. We'll start receiving messages once the task_t is set.
-  if (accept_mach_ports_ && privileged_ && !other_task_) {
+  if (mode_ == MODE_BROKER_SERVER && !other_task_) {
     MOZ_ASSERT(waiting_connect_);
     return true;
   }
@@ -210,7 +209,7 @@ bool Channel::ChannelImpl::ContinueConnect() {
   return ProcessOutgoingMessages();
 }
 
-void Channel::ChannelImpl::SetOtherPid(base::ProcessId other_pid) {
+void ChannelPosix::SetOtherPid(base::ProcessId other_pid) {
   IOThread().AssertOnCurrentThread();
   mozilla::MutexAutoLock lock(SendMutex());
   chan_cap_.NoteExclusiveAccess();
@@ -220,10 +219,10 @@ void Channel::ChannelImpl::SetOtherPid(base::ProcessId other_pid) {
   other_pid_ = other_pid;
 }
 
-bool Channel::ChannelImpl::ProcessIncomingMessages() {
+bool ChannelPosix::ProcessIncomingMessages() {
   chan_cap_.NoteOnTarget();
 
-  struct msghdr msg = {0};
+  struct msghdr msg = {nullptr};
   struct iovec iov;
 
   msg.msg_iov = &iov;
@@ -243,7 +242,11 @@ bool Channel::ChannelImpl::ProcessIncomingMessages() {
     // Read from pipe.
     // recvmsg() returns 0 if the connection has closed or EAGAIN if no data
     // is waiting on the pipe.
-    ssize_t bytes_read = HANDLE_EINTR(recvmsg(pipe_, &msg, MSG_DONTWAIT));
+    int recvFlags = MSG_DONTWAIT;
+#ifdef MSG_CMSG_CLOEXEC
+    recvFlags |= MSG_CMSG_CLOEXEC;
+#endif
+    ssize_t bytes_read = HANDLE_EINTR(recvmsg(pipe_, &msg, recvFlags));
 
     if (bytes_read < 0) {
       if (errno == EAGAIN) {
@@ -262,9 +265,8 @@ bool Channel::ChannelImpl::ProcessIncomingMessages() {
     }
     DCHECK(bytes_read);
 
-    // a pointer to an array of |num_wire_fds| file descriptors from the read
-    const int* wire_fds = NULL;
-    unsigned num_wire_fds = 0;
+    // an array of descriptors from the read
+    nsTArray<mozilla::UniqueFileHandle> wire_fds;
 
     // walk the list of control messages and, if we find an array of file
     // descriptors, save a pointer to the array
@@ -288,17 +290,25 @@ bool Channel::ChannelImpl::ProcessIncomingMessages() {
         if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
           const unsigned payload_len = cmsg->cmsg_len - CMSG_LEN(0);
           DCHECK(payload_len % sizeof(int) == 0);
-          wire_fds = reinterpret_cast<int*>(CMSG_DATA(cmsg));
-          num_wire_fds = payload_len / 4;
+          int* const raw_wire_fds = reinterpret_cast<int*>(CMSG_DATA(cmsg));
+          const size_t num_wire_fds = payload_len / sizeof(int);
+          // Transfer fd ownershop into RAII-land.
+          wire_fds.SetCapacity(num_wire_fds);
+          for (size_t i = 0; i < num_wire_fds; ++i) {
+            MOZ_RELEASE_ASSERT(raw_wire_fds[i] >= -1);
+            wire_fds.AppendElement(raw_wire_fds[i]);
+#ifndef MSG_CMSG_CLOEXEC
+            mozilla::SetCloseOnExec(wire_fds[i]);
+#endif
+          }
 
           if (msg.msg_flags & MSG_CTRUNC) {
             CHROMIUM_LOG(ERROR)
                 << "SCM_RIGHTS message was truncated"
                 << " cmsg_len:" << cmsg->cmsg_len << " fd:" << pipe_;
-            for (unsigned i = 0; i < num_wire_fds; ++i)
-              IGNORE_EINTR(close(wire_fds[i]));
             return false;
           }
+
           break;
         }
       }
@@ -308,40 +318,12 @@ bool Channel::ChannelImpl::ProcessIncomingMessages() {
     const char* p = input_buf_.get();
     const char* end = input_buf_.get() + input_buf_offset_ + bytes_read;
 
-    // A pointer to an array of |num_fds| file descriptors which includes any
-    // fds that have spilled over from a previous read.
-    const int* fds;
-    unsigned num_fds;
-    unsigned fds_i = 0;  // the index of the first unused descriptor
-
-    if (input_overflow_fds_.empty()) {
-      fds = wire_fds;
-      num_fds = num_wire_fds;
-    } else {
-      // This code may look like a no-op in the case where
-      // num_wire_fds == 0, but in fact:
-      //
-      // 1. wire_fds will be nullptr, so passing it to memcpy is
-      // undefined behavior according to the C standard, even though
-      // the memcpy length is 0.
-      //
-      // 2. prev_size will be an out-of-bounds index for
-      // input_overflow_fds_; this is undefined behavior according to
-      // the C++ standard, even though the element only has its
-      // pointer taken and isn't accessed (and the corresponding
-      // operation on a C array would be defined).
-      //
-      // UBSan makes #1 a fatal error, and assertions in libstdc++ do
-      // the same for #2 if enabled.
-      if (num_wire_fds > 0) {
-        const size_t prev_size = input_overflow_fds_.size();
-        input_overflow_fds_.resize(prev_size + num_wire_fds);
-        memcpy(&input_overflow_fds_[prev_size], wire_fds,
-               num_wire_fds * sizeof(int));
-      }
-      fds = &input_overflow_fds_[0];
-      num_fds = input_overflow_fds_.size();
-    }
+    // All pending file descriptors, including any that have spilled over from a
+    // previous read:
+    nsTArray<mozilla::UniqueFileHandle> fds = std::move(input_overflow_fds_);
+    fds.AppendElements(std::move(wire_fds));
+    // Elements below fds_i will have been move()d into a message
+    size_t fds_i = 0;
 
     // The data for the message we're currently reading consists of any data
     // stored in incoming_message_ followed by data in input_buf_ (followed by
@@ -410,17 +392,19 @@ bool Channel::ChannelImpl::ProcessIncomingMessages() {
 
       Message& m = *incoming_message_;
 
-      if (m.header()->num_handles) {
+      size_t msg_num_handles = m.header()->num_handles;
+      if (msg_num_handles > 0) {
         // the message has file descriptors
-        const char* error = NULL;
-        if (m.header()->num_handles > num_fds - fds_i) {
+        const char* error = nullptr;
+        if (msg_num_handles > fds.Length() - fds_i) {
           // the message has been completely received, but we didn't get
           // enough file descriptors.
           error = "Message needs unreceived descriptors";
         }
 
-        if (m.header()->num_handles >
-            IPC::Message::MAX_DESCRIPTORS_PER_MESSAGE) {
+        size_t max_handles = std::min<size_t>(
+            m.size(), IPC::Message::MAX_DESCRIPTORS_PER_MESSAGE);
+        if (msg_num_handles > max_handles) {
           // There are too many descriptors in this message
           error = "Message requires an excessive number of descriptors";
         }
@@ -428,12 +412,8 @@ bool Channel::ChannelImpl::ProcessIncomingMessages() {
         if (error) {
           CHROMIUM_LOG(WARNING)
               << error << " channel:" << this << " message-type:" << m.type()
-              << " header()->num_handles:" << m.header()->num_handles
-              << " num_fds:" << num_fds << " fds_i:" << fds_i;
-          // close the existing file descriptors so that we don't leak them
-          for (unsigned i = fds_i; i < num_fds; ++i)
-            IGNORE_EINTR(close(fds[i]));
-          input_overflow_fds_.clear();
+              << " header()->num_handles:" << msg_num_handles
+              << " fds.Length():" << fds.Length() << " fds_i:" << fds_i;
           // abort the connection
           return false;
         }
@@ -451,12 +431,11 @@ bool Channel::ChannelImpl::ProcessIncomingMessages() {
         }
 #endif
 
-        nsTArray<mozilla::UniqueFileHandle> handles(m.header()->num_handles);
-        for (unsigned end_i = fds_i + m.header()->num_handles; fds_i < end_i;
-             ++fds_i) {
-          handles.AppendElement(mozilla::UniqueFileHandle(fds[fds_i]));
+        nsTArray<mozilla::UniqueFileHandle> msg_handles(msg_num_handles);
+        for (size_t i = 0; i < msg_num_handles; ++i, ++fds_i) {
+          msg_handles.AppendElement(std::move(fds[fds_i]));
         }
-        m.SetAttachedFileHandles(std::move(handles));
+        m.SetAttachedFileHandles(std::move(msg_handles));
       }
 
       // Note: We set other_pid_ below when we receive a Hello message (which
@@ -495,20 +474,22 @@ bool Channel::ChannelImpl::ProcessIncomingMessages() {
       incoming_message_ = nullptr;
     }
 
-    input_overflow_fds_ = std::vector<int>(&fds[fds_i], &fds[num_fds]);
+    // Any remaining fds go back into the channel state for next time.
+    fds.RemoveElementsAt(0, fds_i);
+    MOZ_ASSERT(input_overflow_fds_.IsEmpty());
+    input_overflow_fds_ = std::move(fds);
 
     // When the input data buffer is empty, the overflow fds should be too. If
     // this is not the case, we probably have a rogue renderer which is trying
     // to fill our descriptor table.
     if (!incoming_message_ && input_buf_offset_ == 0 &&
-        !input_overflow_fds_.empty()) {
-      // We close these descriptors in Close()
+        !input_overflow_fds_.IsEmpty()) {
       return false;
     }
   }
 }
 
-bool Channel::ChannelImpl::ProcessOutgoingMessages() {
+bool ChannelPosix::ProcessOutgoingMessages() {
   // NOTE: This method may be called on threads other than `IOThread()`.
   chan_cap_.NoteLockHeld();
 
@@ -525,7 +506,7 @@ bool Channel::ChannelImpl::ProcessOutgoingMessages() {
   while (!output_queue_.IsEmpty()) {
     Message* msg = output_queue_.FirstElement().get();
 
-    struct msghdr msgh = {0};
+    struct msghdr msgh = {nullptr};
 
     char cmsgBuf[kControlBufferSize];
 
@@ -536,8 +517,9 @@ bool Channel::ChannelImpl::ProcessOutgoingMessages() {
       }
 #endif
 
-      if (msg->attached_handles_.Length() >
-          IPC::Message::MAX_DESCRIPTORS_PER_MESSAGE) {
+      size_t maxHandles = std::min<size_t>(
+          msg->size(), IPC::Message::MAX_DESCRIPTORS_PER_MESSAGE);
+      if (msg->attached_handles_.Length() > maxHandles) {
         MOZ_DIAGNOSTIC_CRASH("Too many file descriptors!");
         CHROMIUM_LOG(FATAL) << "Too many file descriptors!";
         // This should not be reached.
@@ -683,6 +665,7 @@ bool Channel::ChannelImpl::ProcessOutgoingMessages() {
 
       is_blocked_on_write_ = true;
       if (IOThread().IsOnCurrentThread()) {
+        IOThread().AssertOnCurrentThread();
         // If we're on the I/O thread already, tell libevent to call us back
         // when things are unblocked.
         MessageLoopForIO::current()->WatchFileDescriptor(
@@ -694,8 +677,8 @@ bool Channel::ChannelImpl::ProcessOutgoingMessages() {
         // which will re-try the write, and then potentially start watching if
         // still necessary.
         IOThread().Dispatch(mozilla::NewRunnableMethod<int>(
-            "ChannelImpl::ContinueProcessOutgoing", this,
-            &ChannelImpl::OnFileCanWriteWithoutBlocking, -1));
+            "ChannelPosix::ContinueProcessOutgoing", this,
+            &ChannelPosix::OnFileCanWriteWithoutBlocking, -1));
       }
       return true;
     } else {
@@ -731,7 +714,7 @@ bool Channel::ChannelImpl::ProcessOutgoingMessages() {
   return true;
 }
 
-bool Channel::ChannelImpl::Send(mozilla::UniquePtr<Message> message) {
+bool ChannelPosix::Send(mozilla::UniquePtr<Message> message) {
   // NOTE: This method may be called on threads other than `IOThread()`.
   mozilla::MutexAutoLock lock(SendMutex());
   chan_cap_.NoteLockHeld();
@@ -766,7 +749,7 @@ bool Channel::ChannelImpl::Send(mozilla::UniquePtr<Message> message) {
 }
 
 // Called by libevent when we can read from th pipe without blocking.
-void Channel::ChannelImpl::OnFileCanReadWithoutBlocking(int fd) {
+void ChannelPosix::OnFileCanReadWithoutBlocking(int fd) {
   IOThread().AssertOnCurrentThread();
   chan_cap_.NoteOnTarget();
 
@@ -781,7 +764,7 @@ void Channel::ChannelImpl::OnFileCanReadWithoutBlocking(int fd) {
 }
 
 #if defined(XP_DARWIN)
-void Channel::ChannelImpl::CloseDescriptors(uint32_t pending_fd_id) {
+void ChannelPosix::CloseDescriptors(uint32_t pending_fd_id) {
   mozilla::MutexAutoLock lock(SendMutex());
   chan_cap_.NoteExclusiveAccess();
 
@@ -797,7 +780,7 @@ void Channel::ChannelImpl::CloseDescriptors(uint32_t pending_fd_id) {
 }
 #endif
 
-void Channel::ChannelImpl::OutputQueuePush(mozilla::UniquePtr<Message> msg) {
+void ChannelPosix::OutputQueuePush(mozilla::UniquePtr<Message> msg) {
   chan_cap_.NoteLockHeld();
 
   mozilla::LogIPCMessage::LogDispatchWithPid(msg.get(), other_pid_);
@@ -807,7 +790,7 @@ void Channel::ChannelImpl::OutputQueuePush(mozilla::UniquePtr<Message> msg) {
   output_queue_.Push(std::move(msg));
 }
 
-void Channel::ChannelImpl::OutputQueuePop() {
+void ChannelPosix::OutputQueuePop() {
   // Clear any reference to the front of output_queue_ before we destroy it.
   partial_write_.reset();
 
@@ -815,8 +798,8 @@ void Channel::ChannelImpl::OutputQueuePop() {
 }
 
 // Called by libevent when we can write to the pipe without blocking.
-void Channel::ChannelImpl::OnFileCanWriteWithoutBlocking(int fd) {
-  RefPtr<ChannelImpl> grip(this);
+void ChannelPosix::OnFileCanWriteWithoutBlocking(int fd) {
+  RefPtr<ChannelPosix> grip(this);
   IOThread().AssertOnCurrentThread();
   mozilla::ReleasableMutexAutoLock lock(SendMutex());
   chan_cap_.NoteExclusiveAccess();
@@ -827,13 +810,13 @@ void Channel::ChannelImpl::OnFileCanWriteWithoutBlocking(int fd) {
   }
 }
 
-void Channel::ChannelImpl::Close() {
+void ChannelPosix::Close() {
   IOThread().AssertOnCurrentThread();
   mozilla::MutexAutoLock lock(SendMutex());
   CloseLocked();
 }
 
-void Channel::ChannelImpl::CloseLocked() {
+void ChannelPosix::CloseLocked() {
   chan_cap_.NoteExclusiveAccess();
 
   // Close can be called multiple times, so we need to make sure we're
@@ -852,11 +835,7 @@ void Channel::ChannelImpl::CloseLocked() {
   }
 
   // Close any outstanding, received file descriptors
-  for (std::vector<int>::iterator i = input_overflow_fds_.begin();
-       i != input_overflow_fds_.end(); ++i) {
-    IGNORE_EINTR(close(*i));
-  }
-  input_overflow_fds_.clear();
+  input_overflow_fds_.Clear();
 
 #if defined(XP_DARWIN)
   pending_fds_.clear();
@@ -866,7 +845,7 @@ void Channel::ChannelImpl::CloseLocked() {
 }
 
 #if defined(XP_DARWIN)
-void Channel::ChannelImpl::SetOtherMachTask(task_t task) {
+void ChannelPosix::SetOtherMachTask(task_t task) {
   IOThread().AssertOnCurrentThread();
   mozilla::MutexAutoLock lock(SendMutex());
   chan_cap_.NoteExclusiveAccess();
@@ -875,23 +854,10 @@ void Channel::ChannelImpl::SetOtherMachTask(task_t task) {
     return;
   }
 
-  MOZ_ASSERT(accept_mach_ports_ && privileged_ && waiting_connect_);
+  MOZ_ASSERT(mode_ == MODE_BROKER_SERVER && waiting_connect_);
   other_task_ = mozilla::RetainMachSendRight(task);
   // Now that `other_task_` is provided, we can continue connecting.
   ContinueConnect();
-}
-
-void Channel::ChannelImpl::StartAcceptingMachPorts(Mode mode) {
-  IOThread().AssertOnCurrentThread();
-  mozilla::MutexAutoLock lock(SendMutex());
-  chan_cap_.NoteExclusiveAccess();
-
-  if (accept_mach_ports_) {
-    MOZ_ASSERT(privileged_ == (MODE_SERVER == mode));
-    return;
-  }
-  accept_mach_ports_ = true;
-  privileged_ = MODE_SERVER == mode;
 }
 
 //------------------------------------------------------------------------------
@@ -1033,18 +999,12 @@ static mozilla::Maybe<mach_port_name_t> BrokerTransferSendRight(
 
 // Process footer information attached to the message, and acquire owning
 // references to any transferred mach ports. See comment above for details.
-bool Channel::ChannelImpl::AcceptMachPorts(Message& msg) {
+bool ChannelPosix::AcceptMachPorts(Message& msg) {
   chan_cap_.NoteOnTarget();
 
   uint32_t num_send_rights = msg.header()->num_send_rights;
   if (num_send_rights == 0) {
     return true;
-  }
-
-  if (!accept_mach_ports_) {
-    CHROMIUM_LOG(ERROR) << "invalid message: " << msg.name()
-                        << ". channel is not configured to accept mach ports";
-    return false;
   }
 
   // Read in the payload from the footer, truncating the message.
@@ -1061,20 +1021,29 @@ bool Channel::ChannelImpl::AcceptMachPorts(Message& msg) {
   nsTArray<mozilla::UniqueMachSendRight> rights(num_send_rights);
   for (uint32_t name : payload) {
     mozilla::UniqueMachSendRight right;
-    if (privileged_) {
-      if (!other_task_) {
-        CHROMIUM_LOG(ERROR) << "other_task_ is invalid in AcceptMachPorts";
-        return false;
+    switch (mode_) {
+      case MODE_BROKER_SERVER:
+        if (!other_task_) {
+          CHROMIUM_LOG(ERROR) << "other_task_ is invalid in AcceptMachPorts";
+          return false;
+        }
+        right = BrokerExtractSendRight(other_task_.get(), name);
+        break;
+      case MODE_BROKER_CLIENT: {
+        kern_return_t kr = MachReceivePortSendRight(
+            mozilla::UniqueMachReceiveRight(name), mozilla::Some(0), &right);
+        if (kr != KERN_SUCCESS) {
+          CHROMIUM_LOG(ERROR)
+              << "failed to receive mach send right. " << mach_error_string(kr);
+          return false;
+        }
+        break;
       }
-      right = BrokerExtractSendRight(other_task_.get(), name);
-    } else {
-      kern_return_t kr = MachReceivePortSendRight(
-          mozilla::UniqueMachReceiveRight(name), mozilla::Some(0), &right);
-      if (kr != KERN_SUCCESS) {
+      default:
         CHROMIUM_LOG(ERROR)
-            << "failed to receive mach send right. " << mach_error_string(kr);
+            << "invalid message: " << msg.name()
+            << ". channel is not configured to accept mach ports";
         return false;
-      }
     }
     if (!right) {
       return false;
@@ -1091,16 +1060,16 @@ bool Channel::ChannelImpl::AcceptMachPorts(Message& msg) {
 // Transfer ownership of any attached mach ports to the peer task, and add the
 // required information for AcceptMachPorts to the message footer. See comment
 // above for details.
-bool Channel::ChannelImpl::TransferMachPorts(Message& msg) {
+bool ChannelPosix::TransferMachPorts(Message& msg) {
+  uint32_t num_receive_rights = msg.num_receive_rights();
+  if (num_receive_rights != 0) {
+    CHROMIUM_LOG(ERROR) << "ChannelPosix does not support receive rights";
+    return false;
+  }
+
   uint32_t num_send_rights = msg.num_send_rights();
   if (num_send_rights == 0) {
     return true;
-  }
-
-  if (!accept_mach_ports_) {
-    CHROMIUM_LOG(ERROR) << "cannot send message: " << msg.name()
-                        << ". channel is not configured to accept mach ports";
-    return false;
   }
 
 #  ifdef DEBUG
@@ -1109,19 +1078,28 @@ bool Channel::ChannelImpl::TransferMachPorts(Message& msg) {
 
   nsTArray<uint32_t> payload(num_send_rights);
   for (auto& port_to_send : msg.attached_send_rights_) {
-    if (privileged_) {
-      if (!other_task_) {
-        CHROMIUM_LOG(ERROR) << "other_task_ is invalid in TransferMachPorts";
-        return false;
+    switch (mode_) {
+      case MODE_BROKER_SERVER: {
+        if (!other_task_) {
+          CHROMIUM_LOG(ERROR) << "other_task_ is invalid in TransferMachPorts";
+          return false;
+        }
+        mozilla::Maybe<mach_port_name_t> endpoint =
+            BrokerTransferSendRight(other_task_.get(), std::move(port_to_send));
+        if (!endpoint) {
+          return false;
+        }
+        payload.AppendElement(*endpoint);
+        break;
       }
-      mozilla::Maybe<mach_port_name_t> endpoint =
-          BrokerTransferSendRight(other_task_.get(), std::move(port_to_send));
-      if (!endpoint) {
+      case MODE_BROKER_CLIENT:
+        payload.AppendElement(port_to_send.release());
+        break;
+      default:
+        CHROMIUM_LOG(ERROR)
+            << "cannot send message: " << msg.name()
+            << ". channel is not configured to accept mach ports";
         return false;
-      }
-      payload.AppendElement(*endpoint);
-    } else {
-      payload.AppendElement(port_to_send.release());
     }
   }
   msg.attached_send_rights_.Clear();
@@ -1136,71 +1114,53 @@ bool Channel::ChannelImpl::TransferMachPorts(Message& msg) {
 }
 #endif
 
-//------------------------------------------------------------------------------
-// Channel's methods simply call through to ChannelImpl.
-Channel::Channel(ChannelHandle pipe, Mode mode, base::ProcessId other_pid)
-    : channel_impl_(new ChannelImpl(std::move(pipe), mode, other_pid)) {
-  MOZ_COUNT_CTOR(IPC::Channel);
-}
-
-Channel::~Channel() { MOZ_COUNT_DTOR(IPC::Channel); }
-
-bool Channel::Connect(Listener* listener) {
-  return channel_impl_->Connect(listener);
-}
-
-void Channel::Close() { channel_impl_->Close(); }
-
-bool Channel::Send(mozilla::UniquePtr<Message> message) {
-  return channel_impl_->Send(std::move(message));
-}
-
-void Channel::SetOtherPid(base::ProcessId other_pid) {
-  channel_impl_->SetOtherPid(other_pid);
-}
-
-bool Channel::IsClosed() const { return channel_impl_->IsClosed(); }
-
-#if defined(XP_DARWIN)
-void Channel::SetOtherMachTask(task_t task) {
-  channel_impl_->SetOtherMachTask(task);
-}
-
-void Channel::StartAcceptingMachPorts(Mode mode) {
-  channel_impl_->StartAcceptingMachPorts(mode);
-}
+// static
+bool ChannelPosix::CreateRawPipe(ChannelHandle* server, ChannelHandle* client) {
+  int fds[2];
+  int type = SOCK_STREAM;
+#ifdef SOCK_CLOEXEC
+  type |= SOCK_CLOEXEC;
+#endif
+#ifdef SOCK_NONBLOCK
+  type |= SOCK_NONBLOCK;
 #endif
 
-// static
-bool Channel::CreateRawPipe(ChannelHandle* server, ChannelHandle* client) {
-  int fds[2];
-  if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) < 0) {
+  if (socketpair(AF_UNIX, type, 0, fds) < 0) {
     mozilla::ipc::AnnotateCrashReportWithErrno(
         CrashReporter::Annotation::IpcCreatePipeSocketPairErrno, errno);
     return false;
   }
 
   auto configureFd = [](int fd) -> bool {
+#ifndef SOCK_NONBLOCK
     // Mark the endpoints as non-blocking
-    if (fcntl(fd, F_SETFL, O_NONBLOCK) == -1) {
+    int flFlags = fcntl(fd, F_GETFL);
+    if (flFlags == -1) {
       mozilla::ipc::AnnotateCrashReportWithErrno(
           CrashReporter::Annotation::IpcCreatePipeFcntlErrno, errno);
       return false;
     }
+    if (fcntl(fd, F_SETFL, flFlags | O_NONBLOCK) == -1) {
+      mozilla::ipc::AnnotateCrashReportWithErrno(
+          CrashReporter::Annotation::IpcCreatePipeFcntlErrno, errno);
+      return false;
+    }
+#endif
 
+#ifndef SOCK_CLOEXEC
     // Mark the pipes as FD_CLOEXEC
-    int flags = fcntl(fd, F_GETFD);
-    if (flags == -1) {
+    int fdFlags = fcntl(fd, F_GETFD);
+    if (fdFlags == -1) {
       mozilla::ipc::AnnotateCrashReportWithErrno(
           CrashReporter::Annotation::IpcCreatePipeCloExecErrno, errno);
       return false;
     }
-    flags |= FD_CLOEXEC;
-    if (fcntl(fd, F_SETFD, flags) == -1) {
+    if (fcntl(fd, F_SETFD, fdFlags | FD_CLOEXEC) == -1) {
       mozilla::ipc::AnnotateCrashReportWithErrno(
           CrashReporter::Annotation::IpcCreatePipeCloExecErrno, errno);
       return false;
     }
+#endif
     return true;
   };
 
@@ -1210,9 +1170,24 @@ bool Channel::CreateRawPipe(ChannelHandle* server, ChannelHandle* client) {
     return false;
   }
 
-  server->reset(fds[0]);
-  client->reset(fds[1]);
+  server->emplace<mozilla::UniqueFileHandle>(fds[0]);
+  client->emplace<mozilla::UniqueFileHandle>(fds[1]);
   return true;
+}
+
+// static
+uint32_t ChannelPosix::NumRelayedAttachments(const Message& message) {
+#ifdef XP_DARWIN
+  return message.num_send_rights();
+#else
+  return 0;
+#endif
+}
+
+// static
+bool ChannelPosix::IsValidHandle(const ChannelHandle& handle) {
+  const auto* fileHandle = std::get_if<mozilla::UniqueFileHandle>(&handle);
+  return fileHandle && *fileHandle;
 }
 
 }  // namespace IPC

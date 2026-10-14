@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -136,6 +135,9 @@ class SourceText final {
       js_free(const_cast<Unit*>(units_));
     }
   }
+
+  SourceText(const SourceText&) = delete;
+  void operator=(const SourceText&) = delete;
 
  private:
   template <typename ContextT>
@@ -342,10 +344,6 @@ class SourceText final {
    * than units.
    */
   CharT* takeChars() { return reinterpret_cast<CharT*>(takeUnits()); }
-
- private:
-  SourceText(const SourceText&) = delete;
-  void operator=(const SourceText&) = delete;
 };
 
 }  // namespace JS

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,7 +11,7 @@
 #include "js/AllocPolicy.h"            // js::ReportOutOfMemory
 #include "js/CompileOptions.h"  // JS::PrefableCompileOptions, JS::CompileOptions
 #include "js/Exception.h"  // JS_IsExceptionPending, JS_IsThrowingOutOfMemory, JS_GetPendingException, JS_ClearPendingException, JS_ErrorFromException
-#include "js/experimental/CompileScript.h"  // JS::NewFrontendContext, JS::DestroyFrontendContext, JS::SetNativeStackQuota, JS::CompileGlobalScriptToStencil, JS::ConvertFrontendErrorsToRuntimeErrors, JS::HadFrontendErrors, JS::HadFrontendOverRecursed, JS::HadFrontendOutOfMemory, JS::HadFrontendAllocationOverflow, JS::GetFrontendWarningCount, JS::GetFrontendWarningAt
+#include "js/experimental/CompileScript.h"  // JS::NewFrontendContext, JS::DestroyFrontendContext, JS::SetNativeStackQuota, JS::CompileGlobalScriptToStencil, JS::ConvertFrontendErrorsToRuntimeErrors, JS::HadFrontendErrors, JS::HadFrontendOverRecursed, JS::HadFrontendOutOfMemory, JS::HadFrontendAllocationOverflow, JS::AllowCancellingCompilation, JS::RequestFrontendCompilationCancellation, JS::HadFrontendCancelled, JS::GetFrontendWarningCount, JS::GetFrontendWarningAt
 #include "js/friend/ErrorMessages.h"        // JSMSG_*
 #include "js/friend/StackLimits.h"          // js::ReportOverRecursed
 #include "js/RootingAPI.h"                  // JS::Rooted
@@ -89,8 +87,8 @@ BEGIN_TEST(testFrontendErrors_error) {
     CHECK(exception.isObject());
     JS::Rooted<JSObject*> exceptionObj(cx, &exception.toObject());
 
-    const JSErrorReport* report = JS_ErrorFromException(cx, exceptionObj);
-    CHECK(report);
+    JS::BorrowedErrorReport report(cx);
+    CHECK(JS_ErrorFromException(cx, exceptionObj, report));
 
     CHECK(report->errorNumber == JSMSG_UNEXPECTED_TOKEN_NO_EXPECT);
     // Runtime's error report doesn't borrow the filename.
@@ -269,8 +267,8 @@ BEGIN_TEST(testFrontendErrors_overRecursed) {
     CHECK(exception.isObject());
     JS::Rooted<JSObject*> exceptionObj(cx, &exception.toObject());
 
-    const JSErrorReport* report = JS_ErrorFromException(cx, exceptionObj);
-    CHECK(report);
+    JS::BorrowedErrorReport report(cx);
+    CHECK(JS_ErrorFromException(cx, exceptionObj, report));
 
     CHECK(report->errorNumber == JSMSG_OVER_RECURSED);
   }
@@ -327,8 +325,8 @@ BEGIN_TEST(testFrontendErrors_allocationOverflow) {
     CHECK(exception.isObject());
     JS::Rooted<JSObject*> exceptionObj(cx, &exception.toObject());
 
-    const JSErrorReport* report = JS_ErrorFromException(cx, exceptionObj);
-    CHECK(report);
+    JS::BorrowedErrorReport report(cx);
+    CHECK(JS_ErrorFromException(cx, exceptionObj, report));
 
     CHECK(report->errorNumber == JSMSG_ALLOC_OVERFLOW);
   }
@@ -349,3 +347,45 @@ END_TEST(testFrontendErrors_allocationOverflow)
 
 /* static */ bool
     cls_testFrontendErrors_allocationOverflow::warningReporterCalled = false;
+
+BEGIN_TEST(testFrontendErrors_cancelled) {
+  JS::FrontendContext* fc =
+      JS::NewFrontendContext(JS::AllowCancellingCompilation::Yes);
+  CHECK(fc);
+
+  static constexpr JS::NativeStackSize stackSize = 128 * sizeof(size_t) * 1024;
+
+  JS::SetNativeStackQuota(fc, stackSize);
+
+  JS::PrefableCompileOptions prefableOptions;
+  JS::CompileOptions options(prefableOptions);
+  options.setFile("testFrontendErrors_cancelled.js");
+
+  CHECK(!JS::HadFrontendErrors(fc));
+
+  JS::RequestFrontendCompilationCancellation(fc);
+
+  {
+    const char source[] = "function f(a) { return a + 1; } f(1);";
+
+    JS::SourceText<mozilla::Utf8Unit> srcBuf;
+    CHECK(
+        srcBuf.init(fc, source, strlen(source), JS::SourceOwnership::Borrowed));
+    RefPtr<JS::Stencil> stencil =
+        JS::CompileGlobalScriptToStencil(fc, options, srcBuf);
+    CHECK(!stencil);
+  }
+
+  CHECK(JS::HadFrontendErrors(fc));
+  CHECK(JS::HadFrontendCancelled(fc));
+  CHECK(!JS::HadFrontendOverRecursed(fc));
+  CHECK(!JS::HadFrontendOutOfMemory(fc));
+  CHECK(!JS::HadFrontendAllocationOverflow(fc));
+  CHECK(JS::GetFrontendWarningCount(fc) == 0);
+  CHECK(!JS::GetFrontendErrorReport(fc, options));
+
+  JS::DestroyFrontendContext(fc);
+
+  return true;
+}
+END_TEST(testFrontendErrors_cancelled)

@@ -1,20 +1,16 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef COLR_FONTS_H
 #define COLR_FONTS_H
 
+#include "harfbuzz/hb.h"
 #include "mozilla/gfx/2D.h"
-#include "mozilla/UniquePtr.h"
 #include "nsAtom.h"
+#include "nsColor.h"
 #include "nsTArray.h"
 #include "nsTHashtable.h"
-
-struct hb_blob_t;
-struct hb_face_t;
-struct hb_font_t;
 
 namespace mozilla {
 
@@ -30,7 +26,7 @@ class FontPaletteValueSet {
 
   struct OverrideColor {
     uint32_t mIndex = 0;
-    sRGBColor mColor;
+    nscolor mColor;
   };
 
   struct PaletteValues {
@@ -102,7 +98,7 @@ class COLRFonts {
       hb_blob_t* aCOLR, hb_face_t* aFace, const GlyphLayers* aLayers,
       DrawTarget* aDrawTarget, layout::TextDrawTarget* aTextDrawer,
       ScaledFont* aScaledFont, DrawOptions aDrawOptions, const Point& aPoint,
-      const sRGBColor& aCurrentColor, const nsTArray<sRGBColor>* aColors);
+      const sRGBColor& aCurrentColor, const nsTArray<hb_color_t>* aColors);
 
   // COLRv1 support: color glyph is represented by a directed acyclic graph of
   // paint records.
@@ -116,7 +112,7 @@ class COLRFonts {
       hb_blob_t* aCOLR, hb_font_t* aFont, const GlyphPaintGraph* aPaintGraph,
       DrawTarget* aDrawTarget, layout::TextDrawTarget* aTextDrawer,
       ScaledFont* aScaledFont, DrawOptions aDrawOptions, const Point& aPoint,
-      const sRGBColor& aCurrentColor, const nsTArray<sRGBColor>* aColors,
+      const sRGBColor& aCurrentColor, const nsTArray<hb_color_t>* aColors,
       uint32_t aGlyphId, float aFontUnitsToPixels);
 
   static Rect GetColorGlyphBounds(hb_blob_t* aCOLR, hb_font_t* aFont,
@@ -126,7 +122,7 @@ class COLRFonts {
 
   static uint16_t GetColrTableVersion(hb_blob_t* aCOLR);
 
-  static nsTArray<sRGBColor> CreateColorPalette(
+  static nsTArray<hb_color_t> CreateColorPalette(
       hb_face_t* aFace, const FontPaletteValueSet* aPaletteValueSet,
       nsAtom* aFontPalette, const nsACString& aFamilyName);
 };

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -64,8 +62,7 @@ void GCRuntime::beginCompactPhase() {
 #endif
 }
 
-IncrementalProgress GCRuntime::compactPhase(JS::GCReason reason,
-                                            SliceBudget& sliceBudget,
+IncrementalProgress GCRuntime::compactPhase(SliceBudget& sliceBudget,
                                             AutoGCSession& session) {
   assertBackgroundSweepingFinished();
   MOZ_ASSERT(startedCompacting);
@@ -77,6 +74,9 @@ IncrementalProgress GCRuntime::compactPhase(JS::GCReason reason,
   // middle of relocating an arena, invalid JSScript pointers may be
   // accessed. Suppress all sampling until a finer-grained solution can be
   // found. See bug 1295775.
+  // This is the one site that actually relocates JSScripts, so it keeps the
+  // default ProfilerScriptAccess::Deny: ProfilingStackFrame::script() returns
+  // null here so the sampler never observes a script mid-relocation.
   AutoSuppressProfilerSampling suppressSampling(rt->mainContextFromOwnThread());
 
   ZoneList relocatedZones;
@@ -86,14 +86,14 @@ IncrementalProgress GCRuntime::compactPhase(JS::GCReason reason,
     zonesToMaybeCompact.ref().removeFront();
 
     MOZ_ASSERT(nursery().isEmpty());
-    zone->changeGCState(Zone::Finished, Zone::Compact);
+    zone->changeGCState(this, Zone::Finished, Zone::Compact);
 
-    if (relocateArenas(zone, reason, relocatedArenas, sliceBudget)) {
+    if (relocateArenas(zone, relocatedArenas, sliceBudget)) {
       updateZonePointersToRelocatedCells(zone);
       relocatedZones.append(zone);
       zonesCompacted++;
     } else {
-      zone->changeGCState(Zone::Compact, Zone::Finished);
+      zone->changeGCState(this, Zone::Compact, Zone::Finished);
     }
 
     if (sliceBudget.isOverBudget()) {
@@ -107,14 +107,14 @@ IncrementalProgress GCRuntime::compactPhase(JS::GCReason reason,
     do {
       Zone* zone = relocatedZones.front();
       relocatedZones.removeFront();
-      zone->changeGCState(Zone::Compact, Zone::Finished);
+      zone->changeGCState(this, Zone::Compact, Zone::Finished);
     } while (!relocatedZones.isEmpty());
   }
 
-  clearRelocatedArenas(relocatedArenas, reason);
+  clearRelocatedArenas(relocatedArenas);
 
 #ifdef DEBUG
-  protectOrReleaseRelocatedArenas(relocatedArenas, reason);
+  protectOrReleaseRelocatedArenas(relocatedArenas);
 #else
   releaseRelocatedArenas(relocatedArenas);
 #endif
@@ -253,10 +253,6 @@ static void RelocateCell(Zone* zone, TenuredCell* src, AllocKind thingKind,
             srcNative->getElementsHeader()->numShiftedElements();
         dstNative->setFixedElements(numShifted);
       }
-    } else if (srcObj->is<ProxyObject>()) {
-      if (srcObj->as<ProxyObject>().usingInlineValueArray()) {
-        dstObj->as<ProxyObject>().setInlineValueArray();
-      }
     }
 
     // Call object moved hook if present.
@@ -285,8 +281,6 @@ static void RelocateCell(Zone* zone, TenuredCell* src, AllocKind thingKind,
     JSObject* srcObj = static_cast<JSObject*>(static_cast<Cell*>(src));
     poison = !(srcObj->is<WasmArrayObject>() &&
                srcObj->as<WasmArrayObject>().isDataInline());
-  } else if (IsBufferAllocKind(thingKind)) {
-    poison = false;
   }
   if (poison) {
     AlwaysPoison(reinterpret_cast<uint8_t*>(src) + sizeof(uintptr_t),
@@ -424,17 +418,16 @@ bool ArenaLists::relocateArenas(Arena*& relocatedListOut, JS::GCReason reason,
   return true;
 }
 
-bool GCRuntime::relocateArenas(Zone* zone, JS::GCReason reason,
-                               Arena*& relocatedListOut,
+bool GCRuntime::relocateArenas(Zone* zone, Arena*& relocatedListOut,
                                SliceBudget& sliceBudget) {
   gcstats::AutoPhase ap(stats(), gcstats::PhaseKind::COMPACT_MOVE);
 
-  MOZ_ASSERT(!zone->isPreservingCode());
+  MOZ_ASSERT(!zone->isAnyRealmPreservingCode());
   MOZ_ASSERT(canRelocateZone(zone));
 
   js::CancelOffThreadCompile(rt, JS::Zone::Compact);
 
-  if (!zone->arenas.relocateArenas(relocatedListOut, reason, sliceBudget,
+  if (!zone->arenas.relocateArenas(relocatedListOut, sliceReason, sliceBudget,
                                    stats())) {
     return false;
   }
@@ -463,12 +456,13 @@ MovingTracer::MovingTracer(JSRuntime* rt)
                         JS::WeakMapTraceAction::TraceKeysAndValues) {}
 
 template <typename T>
-inline void MovingTracer::onEdge(T** thingp, const char* name) {
+inline bool MovingTracer::onEdge(T** thingp, const char* name) {
   T* thing = *thingp;
-  if (IsForwarded(thing)) {
+  if (thing && IsForwarded(thing)) {
     MOZ_ASSERT(thing->runtimeFromAnyThread() == runtime());
     *thingp = Forwarded(thing);
   }
+  return true;
 }
 
 void GCRuntime::sweepZoneAfterCompacting(MovingTracer* trc, Zone* zone) {
@@ -477,10 +471,11 @@ void GCRuntime::sweepZoneAfterCompacting(MovingTracer* trc, Zone* zone) {
   zone->traceWeakMaps(trc);
   zone->sweepObjectsWithWeakPointers(trc);
 
+  // Must happen after tracing weak maps above.
   traceWeakFinalizationObserverEdges(trc, zone);
 
   for (auto* cache : zone->weakCaches()) {
-    cache->traceWeak(trc, JS::detail::WeakCacheBase::DontLockStoreBuffer);
+    cache->traceWeak(trc, JS::detail::WeakCacheBase::DontLock);
   }
 
   if (jit::JitZone* jitZone = zone->jitZone()) {
@@ -753,6 +748,10 @@ static constexpr AllocKinds UpdatePhaseTwo{AllocKind::FUNCTION,
                                            AllocKind::OBJECT4,
                                            AllocKind::OBJECT4_FOREGROUND,
                                            AllocKind::OBJECT4_BACKGROUND,
+                                           AllocKind::ARRAYBUFFER6,
+                                           AllocKind::OBJECT6,
+                                           AllocKind::OBJECT6_FOREGROUND,
+                                           AllocKind::OBJECT6_BACKGROUND,
                                            AllocKind::ARRAYBUFFER8,
                                            AllocKind::OBJECT8,
                                            AllocKind::OBJECT8_FOREGROUND,
@@ -788,7 +787,6 @@ void GCRuntime::updateZonePointersToRelocatedCells(Zone* zone) {
   MovingTracer trc(rt);
 
   zone->fixupAfterMovingGC();
-  zone->fixupScriptMapsAfterMovingGC(&trc);
 
   // Fixup compartment global pointers as these get accessed during marking.
   for (CompartmentsInZoneIter comp(zone); !comp.done(); comp.next()) {
@@ -826,8 +824,6 @@ void GCRuntime::updateRuntimePointersToRelocatedCells(AutoGCSession& session) {
 
   Zone::fixupAllCrossCompartmentWrappersAfterMovingGC(&trc);
 
-  rt->geckoProfiler().fixupStringsMapAfterMovingGC();
-
   // Mark roots to update them.
 
   traceRuntimeForMajorGC(&trc, session);
@@ -841,18 +837,13 @@ void GCRuntime::updateRuntimePointersToRelocatedCells(AutoGCSession& session) {
 
     // Mark all gray roots.
     traceEmbeddingGrayRoots(&trc);
-    Compartment::traceIncomingCrossCompartmentEdgesForZoneGC(
-        &trc, Compartment::GrayEdges);
+    traceIncomingCrossCompartmentEdgesForZoneGC(&trc, GrayEdges);
   }
 
   // Sweep everything to fix up weak pointers.
   jit::JitRuntime::TraceWeakJitcodeGlobalTable(rt, &trc);
-  for (JS::detail::WeakCacheBase* cache : rt->weakCaches()) {
-    cache->traceWeak(&trc, JS::detail::WeakCacheBase::DontLockStoreBuffer);
-  }
-
-  if (rt->hasJitRuntime() && rt->jitRuntime()->hasInterpreterEntryMap()) {
-    rt->jitRuntime()->getInterpreterEntryMap()->updateScriptsAfterMovingGC();
+  for (JS::detail::WeakCacheBase* cache : weakCaches()) {
+    cache->traceWeak(&trc, JS::detail::WeakCacheBase::DontLock);
   }
 
   // Type inference may put more blocks here to free.
@@ -866,14 +857,9 @@ void GCRuntime::updateRuntimePointersToRelocatedCells(AutoGCSession& session) {
   callWeakPointerZonesCallbacks(&trc);
 }
 
-void GCRuntime::clearRelocatedArenas(Arena* arenaList, JS::GCReason reason) {
+void GCRuntime::clearRelocatedArenas(Arena* arenaList) {
   AutoLockGC lock(this);
-  clearRelocatedArenasWithoutUnlocking(arenaList, reason, lock);
-}
 
-void GCRuntime::clearRelocatedArenasWithoutUnlocking(Arena* arenaList,
-                                                     JS::GCReason reason,
-                                                     const AutoLockGC& lock) {
   // Clear the relocated arenas, now containing only forwarding pointers
   while (arenaList) {
     Arena* arena = arenaList;
@@ -901,17 +887,12 @@ void GCRuntime::clearRelocatedArenasWithoutUnlocking(Arena* arenaList,
     //    have allocated a similar number of arenas. (This only happens for
     //    collections triggered by GC zeal.)
     //  - if they were allocated since the start of the GC.
-    bool allArenasRelocated = ShouldRelocateAllArenas(reason);
+    bool allArenasRelocated = ShouldRelocateAllArenas(sliceReason);
     bool updateRetainedSize = !allArenasRelocated && !arena->isNewlyCreated();
     Zone* zone = arena->zone();
-    if (IsBufferAllocKind(arena->getAllocKind())) {
-      size_t usableBytes = ArenaSize - arena->getFirstThingOffset();
-      zone->mallocHeapSize.removeBytes(usableBytes, updateRetainedSize);
-    } else {
-      zone->gcHeapSize.removeBytes(ArenaSize, updateRetainedSize, heapSize);
-    }
+    zone->gcHeapSize.removeBytes(ArenaSize, updateRetainedSize, heapSize);
 
-    // There is no atom marking bitmap index to free.
+    // There is no atom reference bitmap index to free.
     MOZ_ASSERT(!zone->isAtomsZone());
 
     // Release the arena but don't return it to the chunk yet.
@@ -938,9 +919,8 @@ static inline bool ShouldProtectRelocatedArenas(JS::GCReason reason) {
   return reason == JS::GCReason::DEBUG_GC && CanProtectArenas();
 }
 
-void GCRuntime::protectOrReleaseRelocatedArenas(Arena* arenaList,
-                                                JS::GCReason reason) {
-  if (ShouldProtectRelocatedArenas(reason)) {
+void GCRuntime::protectOrReleaseRelocatedArenas(Arena* arenaList) {
+  if (ShouldProtectRelocatedArenas(sliceReason)) {
     protectAndHoldArenas(arenaList);
     return;
   }

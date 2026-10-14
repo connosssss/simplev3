@@ -1,54 +1,49 @@
-/* -*- mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/ArrayUtils.h"
-
-#include "mozilla/LookAndFeel.h"
-#include "mozilla/RWLock.h"
-#include "nscore.h"
-
 #include "nsXPLookAndFeel.h"
-#include "nsLookAndFeel.h"
+
+#include <bitset>
+
 #include "HeadlessLookAndFeel.h"
 #include "RemoteLookAndFeel.h"
-#include "nsContentUtils.h"
-#include "nsCRT.h"
-#include "nsFont.h"
-#include "nsIFrame.h"
-#include "nsIXULRuntime.h"
-#include "nsLayoutUtils.h"
-#include "Theme.h"
 #include "SurfaceCacheUtils.h"
-#include "mozilla/dom/ContentParent.h"
-#include "mozilla/dom/ContentChild.h"
-#include "mozilla/glean/WidgetMetrics.h"
+#include "Theme.h"
+#include "gfxFont.h"
+#include "gfxPlatform.h"
+#include "mozilla/LookAndFeel.h"
+#include "mozilla/PreferenceSheet.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/RWLock.h"
+#include "mozilla/RelativeLuminanceUtils.h"
 #include "mozilla/Services.h"
-#include "mozilla/ServoStyleSet.h"
 #include "mozilla/ServoCSSParser.h"
+#include "mozilla/ServoStyleSet.h"
 #include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_editor.h"
 #include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/StaticPrefs_ui.h"
 #include "mozilla/StaticPrefs_widget.h"
-#include "mozilla/dom/Document.h"
-#include "mozilla/PreferenceSheet.h"
-#include "mozilla/gfx/2D.h"
-#include "mozilla/widget/WidgetMessageUtils.h"
-#include "mozilla/dom/KeyboardEventBinding.h"
-#include "mozilla/RelativeLuminanceUtils.h"
-#include "mozilla/glean/GleanMetrics.h"
 #include "mozilla/TelemetryScalarEnums.h"
 #include "mozilla/Try.h"
-
-#include "gfxPlatform.h"
-#include "gfxFont.h"
-
+#include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/KeyboardEventBinding.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/glean/GleanMetrics.h"
+#include "mozilla/glean/WidgetMetrics.h"
+#include "mozilla/widget/WidgetMessageUtils.h"
+#include "nsCRT.h"
+#include "nsContentUtils.h"
+#include "nsFont.h"
+#include "nsIFrame.h"
+#include "nsIXULRuntime.h"
+#include "nsLayoutUtils.h"
+#include "nsLookAndFeel.h"
+#include "nscore.h"
 #include "qcms.h"
-
-#include <bitset>
 
 using namespace mozilla;
 
@@ -82,8 +77,8 @@ static EnumeratedArray<FloatID, RelaxedAtomicUint32, size_t(FloatID::End)>
 constexpr int32_t kNoInt = INT32_MIN;
 static EnumeratedArray<IntID, RelaxedAtomicInt32, size_t(IntID::End)> sIntStore;
 StaticRWLock sFontStoreLock;
-MOZ_RUNINIT static EnumeratedArray<FontID, widget::LookAndFeelFont,
-                                   size_t(FontID::End)>
+constinit static EnumeratedArray<FontID, widget::LookAndFeelFont,
+                                 size_t(FontID::End)>
     sFontStore MOZ_GUARDED_BY(sFontStoreLock);
 
 // To make one of these prefs toggleable from a reftest add a user
@@ -121,8 +116,7 @@ static const char sIntPrefs[][45] = {
     "ui.windowsMica",
     "ui.windowsMicaPopups",
     "ui.macBigSurTheme",
-    "ui.macRTL",
-    "ui.macTitlebarHeight",
+    "ui.macTahoeTheme",
     "ui.alertNotificationOrigin",
     "ui.scrollToClick",
     "ui.IMERawInputUnderlineStyle",
@@ -165,6 +159,7 @@ static const char sIntPrefs[][45] = {
     "ui.fullKeyboardAccess",
     "ui.pointingDeviceKinds",
     "ui.nativeMenubar",
+    "ui.hourCycle",
 };
 
 static_assert(std::size(sIntPrefs) == size_t(LookAndFeel::IntID::End),
@@ -530,6 +525,7 @@ static constexpr struct {
     // need to re-layout.
     {"browser.theme.toolbar-theme"_ns, widget::ThemeChangeKind::AllBits},
     {"browser.theme.content-theme"_ns},
+    {"browser.theme.native-theme"_ns},
     // Affects PreferenceSheet, and thus styling.
     {"browser.anchor_color"_ns, widget::ThemeChangeKind::Style},
     {"browser.anchor_color.dark"_ns, widget::ThemeChangeKind::Style},
@@ -548,6 +544,9 @@ static constexpr struct {
     {"browser.display.permit_backplate"_ns, widget::ThemeChangeKind::Style},
     {"ui.use_standins_for_native_colors"_ns, widget::ThemeChangeKind::Style},
     {"privacy.resistFingerprinting"_ns, widget::ThemeChangeKind::Style},
+    // This could be dealt with in nsPresContext::PreferenceChanged but
+    // accessibility telemetry gets recorded in PreferenceSheet.
+    {"layout.css.always_underline_links"_ns, widget::ThemeChangeKind::Style},
     // End of PreferenceSheet prefs.
 };
 
@@ -667,11 +666,11 @@ nscolor nsXPLookAndFeel::GetStandinForNativeColor(ColorID aID,
     case ColorID::Activeborder:
     case ColorID::Inactiveborder:
     case ColorID::Buttonborder:
-      return NS_RGB(0x8f, 0x8f, 0x9d);
+      return NS_RGB(0x81, 0x7f, 0x84);
 
       COLOR(MozButtonhoverborder, 0x67, 0x67, 0x74)
       COLOR(MozButtonactiveborder, 0x48, 0x48, 0x51)
-      COLORA(MozButtondisabledborder, 0x8f, 0x8f, 0x9d, 0x7f)
+      COLORA(MozButtondisabledborder, 0xc7, 0xc6, 0xcb, 0x7f)
 
       COLOR(Graytext, 0x6D, 0x6D, 0x6D)
       COLOR(Highlight, 0x33, 0x99, 0xFF)
@@ -712,7 +711,7 @@ nscolor nsXPLookAndFeel::GetStandinForNativeColor(ColorID aID,
       COLOR(Activetext, 0xee, 0x00, 0x00)
       COLOR(Visitedtext, 0x55, 0x1A, 0x8B)
       COLOR(MozAutofillBackground, 0xff, 0xfc, 0xc8)
-      COLOR(TargetTextBackground, 0xff, 0xeb, 0xcd)
+      COLOR(TargetTextBackground, 0xf5, 0xcc, 0x58)  // --yellow-20
       COLOR(TargetTextForeground, 0x00, 0x00, 0x00)
     default:
       break;
@@ -729,7 +728,7 @@ Maybe<nscolor> nsXPLookAndFeel::GenericDarkColor(ColorID aID) {
   static constexpr nscolor kWindowBackground = NS_RGB(28, 27, 34);
   static constexpr nscolor kWindowText = NS_RGB(251, 251, 254);
   switch (aID) {
-    case ColorID::Window:  // --in-content-page-background
+    case ColorID::Window:  // --background-color-canvas
     case ColorID::Background:
     case ColorID::Appworkspace:
     case ColorID::Scrollbar:
@@ -759,13 +758,12 @@ Maybe<nscolor> nsXPLookAndFeel::GenericDarkColor(ColorID aID) {
     case ColorID::MozDialog:  // --background-color-box
       color = NS_RGB(35, 34, 43);
       break;
-    case ColorID::Windowtext:  // --in-content-page-color
+    case ColorID::Windowtext:  // --text-color
     case ColorID::MozDialogtext:
     case ColorID::MozSidebartext:
     case ColorID::Fieldtext:
     case ColorID::Infotext:
-    case ColorID::Buttontext:  // --in-content-button-text-color (via
-                               // --in-content-page-color)
+    case ColorID::Buttontext:  // --button-text-color
     case ColorID::MozComboboxtext:
     case ColorID::MozButtonhovertext:
     case ColorID::MozButtonactivetext:
@@ -780,7 +778,7 @@ Maybe<nscolor> nsXPLookAndFeel::GenericDarkColor(ColorID aID) {
       color = kWindowText;
       break;
     case ColorID::MozSidebarborder:
-    case ColorID::Windowframe:  // --in-content-box-border-color computed
+    case ColorID::Windowframe:  // --border-color computed
                                 // with kWindowText above
                                 // kWindowBackground.
     case ColorID::Graytext:     // opacity: 0.4 of kWindowText blended over the
@@ -792,8 +790,10 @@ Maybe<nscolor> nsXPLookAndFeel::GenericDarkColor(ColorID aID) {
     case ColorID::Threedlightshadow:
     case ColorID::Threedhighlight:
     case ColorID::Buttonborder:
+      color = NS_RGB(0x94, 0x92, 0x97);
+      break;
     case ColorID::MozButtondisabledborder:
-      color = NS_RGB(0x8f, 0x8f, 0x9d);
+      color = NS_RGBA(0x51, 0x50, 0x54, 0x7f);
       break;
     case ColorID::MozButtonactiveborder:
       color = NS_RGB(0xd0, 0xd0, 0xd7);
@@ -802,21 +802,19 @@ Maybe<nscolor> nsXPLookAndFeel::GenericDarkColor(ColorID aID) {
       color = NS_RGB(0xb1, 0xb1, 0xb1);
       break;
     case ColorID::MozCellhighlight:
-    case ColorID::Selecteditem:  // --in-content-primary-button-background /
-                                 // --in-content-item-selected
+    case ColorID::Selecteditem:  // --color-accent-primary-selected
       color = NS_RGB(0, 221, 255);
       break;
     case ColorID::MozSidebar:
     case ColorID::Field:
-    case ColorID::Buttonface:  // --in-content-button-background
+    case ColorID::Buttonface:  // --button-background-color
     case ColorID::Buttonshadow:
     case ColorID::Buttonhighlight:
     case ColorID::MozColheader:
     case ColorID::Threedface:
     case ColorID::MozCombobox:
     case ColorID::MozCellhighlighttext:
-    case ColorID::Selecteditemtext:  // --in-content-primary-button-text-color /
-                                     // --in-content-item-selected-text
+    case ColorID::Selecteditemtext:  // --text-color-accent-primary-selected
       color = NS_RGB(43, 42, 51);
       break;
     case ColorID::Threeddarkshadow:  // Same as Threedlightshadow but with the
@@ -826,11 +824,11 @@ Maybe<nscolor> nsXPLookAndFeel::GenericDarkColor(ColorID aID) {
     case ColorID::MozButtondisabledface:
       color = NS_ComposeColors(kWindowBackground, NS_RGBA(43, 42, 51, 102));
       break;
-    case ColorID::MozButtonhoverface:  // --in-content-button-background-hover
+    case ColorID::MozButtonhoverface:  // --button-background-color-hover
     case ColorID::MozColheaderhover:
       color = NS_RGB(82, 82, 94);
       break;
-    case ColorID::MozButtonactiveface:  // --in-content-button-background-active
+    case ColorID::MozButtonactiveface:  // --button-background-color-active
     case ColorID::MozColheaderactive:
       color = NS_RGB(91, 91, 102);
       break;
@@ -843,7 +841,7 @@ Maybe<nscolor> nsXPLookAndFeel::GenericDarkColor(ColorID aID) {
     case ColorID::Linktext:
       // If you change this color, you probably also want to change the default
       // value of browser.anchor_color.dark.
-      color = NS_RGB(0x8c, 0x8c, 0xff);
+      color = NS_RGB(0x00, 0xca, 0xdb);
       break;
     case ColorID::Activetext:
     case ColorID::SpellCheckerUnderline:
@@ -871,6 +869,12 @@ Maybe<nscolor> nsXPLookAndFeel::GenericDarkColor(ColorID aID) {
       // This is the light version of this color, but darkened to have good
       // contrast with our white-ish FieldText.
       color = NS_RGB(0x72, 0x6c, 0x00);
+      break;
+    case ColorID::TargetTextBackground:
+      color = NS_RGB(0xff, 0xf4, 0xd0);  // --yellow-0
+      break;
+    case ColorID::TargetTextForeground:
+      color = NS_RGB(0x00, 0x00, 0x00);
       break;
     default:
       return Nothing();
@@ -964,8 +968,7 @@ static nsresult SystemColorUseDebuggingColor(LookAndFeel::ColorID aID,
 static nsresult GetPrefColor(const char* aPref, nscolor& aResult) {
   nsAutoCString colorStr;
   MOZ_TRY(Preferences::GetCString(aPref, colorStr));
-  if (!ServoCSSParser::ComputeColor(nullptr, NS_RGB(0, 0, 0), colorStr,
-                                    &aResult)) {
+  if (!ServoCSSParser::ComputeColor(nullptr, colorStr, &aResult)) {
     return NS_ERROR_FAILURE;
   }
   return NS_OK;
@@ -1070,9 +1073,10 @@ widget::LookAndFeelFont nsXPLookAndFeel::StyleToLookAndFeelFont(
 #ifdef DEBUG
   {
     // Assert that all the remaining font style properties have their
-    // default values.
+    // default values, except `systemFont` which should be true.
     gfxFontStyle candidate = aStyle;
     gfxFontStyle defaults{};
+    defaults.systemFont = true;
     candidate.size = defaults.size;
     candidate.weight = defaults.weight;
     candidate.style = defaults.style;
@@ -1291,9 +1295,8 @@ bool LookAndFeel::IsDarkColor(nscolor aColor) {
          RelativeLuminanceUtils::Compute(aColor) < kThreshold;
 }
 
-ColorScheme LookAndFeel::ColorSchemeForStyle(
-    const dom::Document& aDoc, const StyleColorSchemeFlags& aFlags,
-    ColorSchemeMode aMode) {
+Maybe<ColorScheme> LookAndFeel::ExplicitColorSchemeForStyle(
+    const dom::Document& aDoc, const StyleColorSchemeFlags& aFlags) {
   const auto& prefs = PreferenceSheet::PrefsFor(aDoc);
   StyleColorSchemeFlags style(aFlags);
   if (!style) {
@@ -1303,27 +1306,41 @@ ColorScheme LookAndFeel::ColorSchemeForStyle(
   const bool supportsLight = bool(style & StyleColorSchemeFlags::LIGHT);
   if (supportsLight && supportsDark) {
     // Both color-schemes are explicitly supported, use the preferred one.
-    return aDoc.PreferredColorScheme();
+    return Some(aDoc.PreferredColorScheme());
   }
   if (supportsDark || supportsLight) {
     // One color-scheme is explicitly supported and one isn't, so use the one
     // the content supports.
-    return supportsDark ? ColorScheme::Dark : ColorScheme::Light;
+    return Some(supportsDark ? ColorScheme::Dark : ColorScheme::Light);
   }
   // No value specified. Chrome docs, and forced-colors mode always supports
   // both, so use the preferred color-scheme.
-  if (aMode == ColorSchemeMode::Preferred || aDoc.ChromeRulesEnabled() ||
-      !prefs.mUseDocumentColors) {
-    return aDoc.PreferredColorScheme();
+  if (aDoc.ChromeRulesEnabled() || !prefs.mUseDocumentColors) {
+    return Some(aDoc.PreferredColorScheme());
   }
-  // Otherwise default content to light.
-  return ColorScheme::Light;
+  return {};
 }
 
-LookAndFeel::ColorScheme LookAndFeel::ColorSchemeForFrame(
-    const nsIFrame* aFrame, ColorSchemeMode aMode) {
+ColorScheme LookAndFeel::ColorSchemeForStyle(
+    const dom::Document& aDoc, const StyleColorSchemeFlags& aFlags,
+    ColorSchemeMode aMode) {
+  if (auto s = ExplicitColorSchemeForStyle(aDoc, aFlags)) {
+    return *s;
+  }
+  return aMode == ColorSchemeMode::Preferred ? aDoc.PreferredColorScheme()
+                                             : ColorScheme::Light;
+}
+
+ColorScheme LookAndFeel::ColorSchemeForFrame(const nsIFrame* aFrame,
+                                             ColorSchemeMode aMode) {
   return ColorSchemeForStyle(*aFrame->PresContext()->Document(),
                              aFrame->StyleUI()->mColorScheme.bits, aMode);
+}
+
+Maybe<ColorScheme> LookAndFeel::ExplicitColorSchemeForFrame(
+    const nsIFrame* aFrame) {
+  return ExplicitColorSchemeForStyle(*aFrame->PresContext()->Document(),
+                                     aFrame->StyleUI()->mColorScheme.bits);
 }
 
 // static
@@ -1488,7 +1505,7 @@ Modifiers LookAndFeel::GetMenuAccessKeyModifiers() {
   }
 }
 
-void LookAndFeel::EnsureInit() { Unused << nsXPLookAndFeel::GetInstance(); }
+void LookAndFeel::EnsureInit() { (void)nsXPLookAndFeel::GetInstance(); }
 
 // static
 void LookAndFeel::Refresh() {

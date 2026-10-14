@@ -1,18 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "DOMSVGTransformList.h"
 
+#include <algorithm>
+
+#include "DOMSVGTransform.h"
+#include "SVGAnimatedTransformList.h"
 #include "mozilla/dom/SVGElement.h"
 #include "mozilla/dom/SVGMatrix.h"
 #include "mozilla/dom/SVGTransformListBinding.h"
-#include "DOMSVGTransform.h"
-#include "SVGAnimatedTransformList.h"
 #include "nsError.h"
-#include <algorithm>
 
 // local helper functions
 namespace {
@@ -110,7 +109,8 @@ void DOMSVGTransformList::InternalListLengthWillChange(uint32_t aNewLength) {
 }
 
 SVGTransformList& DOMSVGTransformList::InternalList() const {
-  SVGAnimatedTransformList* alist = Element()->GetAnimatedTransformList();
+  SVGAnimatedTransformList* alist =
+      Element()->GetExistingAnimatedTransformList();
   return IsAnimValList() && alist->mAnimVal ? *alist->mAnimVal
                                             : alist->mBaseVal;
 }
@@ -130,7 +130,7 @@ void DOMSVGTransformList::Clear(ErrorResult& error) {
     mAList->InternalBaseValListWillChangeLengthTo(0);
 
     mItems.Clear();
-    auto* alist = Element()->GetAnimatedTransformList();
+    auto* alist = Element()->GetExistingAnimatedTransformList();
     alist->mBaseVal.Clear();
     alist->mIsBaseSet = false;
   }
@@ -183,6 +183,14 @@ already_AddRefed<DOMSVGTransform> DOMSVGTransformList::IndexedGetter(
   return nullptr;
 }
 
+void DOMSVGTransformList::IndexedSetter(uint32_t aIndex,
+                                        DOMSVGTransform& aNewValue,
+                                        ErrorResult& aRv) {
+  // Need to take a ref to the return value so it does not leak.
+  RefPtr<DOMSVGTransform> ignored = ReplaceItem(aNewValue, aIndex, aRv);
+  (void)ignored;
+}
+
 already_AddRefed<DOMSVGTransform> DOMSVGTransformList::InsertItemBefore(
     DOMSVGTransform& newItem, uint32_t index, ErrorResult& error) {
   if (IsAnimValList()) {
@@ -190,9 +198,8 @@ already_AddRefed<DOMSVGTransform> DOMSVGTransformList::InsertItemBefore(
     return nullptr;
   }
 
-  index = std::min(index, LengthNoFlush());
-  if (index >= DOMSVGTransform::MaxListIndex()) {
-    error.ThrowIndexSizeError("Index out of range");
+  if (LengthNoFlush() >= DOMSVGTransform::MaxListIndex()) {
+    error.ThrowIndexSizeError("List too long");
     return nullptr;
   }
 
@@ -215,10 +222,15 @@ already_AddRefed<DOMSVGTransform> DOMSVGTransformList::InsertItemBefore(
     }
   }
 
-  AutoChangeTransformListNotifier notifier(this);
-  // Now that we know we're inserting, keep animVal list in sync as necessary.
-  MaybeInsertNullInAnimValListAt(index);
+  index = std::min(index, LengthNoFlush());
 
+  // Keep animVal list in sync as necessary.
+  if (!MaybeInsertNullInAnimValListAt(index)) {
+    error.ThrowIndexSizeError("List too long");
+    return nullptr;
+  }
+
+  AutoChangeTransformListNotifier notifier(this);
   InternalList().InsertItem(index, domItem->ToSVGTransform());
   MOZ_ALWAYS_TRUE(mItems.InsertElementAt(index, domItem.get(), fallible));
 
@@ -348,21 +360,26 @@ already_AddRefed<DOMSVGTransform> DOMSVGTransformList::GetItemAt(
   return result.forget();
 }
 
-void DOMSVGTransformList::MaybeInsertNullInAnimValListAt(uint32_t aIndex) {
+bool DOMSVGTransformList::MaybeInsertNullInAnimValListAt(uint32_t aIndex) {
   MOZ_ASSERT(!IsAnimValList(), "call from baseVal to animVal");
 
   if (!AnimListMirrorsBaseList()) {
-    return;
+    return true;
+  }
+  DOMSVGTransformList* animVal = mAList->mAnimVal;
+  MOZ_ASSERT(animVal, "AnimListMirrorsBaseList() promised a non-null animVal");
+
+  if (animVal->mItems.Length() >= DOMSVGTransform::MaxListIndex()) {
+    return false;
   }
 
-  DOMSVGTransformList* animVal = mAList->mAnimVal;
-
-  MOZ_ASSERT(animVal, "AnimListMirrorsBaseList() promised a non-null animVal");
   MOZ_ASSERT(animVal->mItems.Length() == mItems.Length(),
              "animVal list not in sync!");
   MOZ_ALWAYS_TRUE(animVal->mItems.InsertElementAt(aIndex, nullptr, fallible));
 
   UpdateListIndicesFromIndex(animVal->mItems, aIndex + 1);
+
+  return true;
 }
 
 void DOMSVGTransformList::MaybeRemoveItemFromAnimValListAt(uint32_t aIndex) {

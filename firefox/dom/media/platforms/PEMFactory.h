@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,6 +14,7 @@ class StaticMutex;
 enum class RemoteMediaIn;
 
 using PEMCreateEncoderPromise = PlatformEncoderModule::CreateEncoderPromise;
+using PEMSupportsEncoderPromise = PlatformEncoderModule::SupportsEncoderPromise;
 
 class PEMFactory final {
  public:
@@ -35,6 +34,13 @@ class PEMFactory final {
 
   media::EncodeSupportSet Supports(const EncoderConfig& aConfig) const;
   media::EncodeSupportSet SupportsCodec(CodecType aCodec) const;
+
+  // Asynchronous variant of Supports() that resolves once the encoder module
+  // which would handle aConfig can report accurate (hardware-inclusive)
+  // support. For remote modules this waits for the relevant process to report
+  // in. Must be called off the main thread.
+  RefPtr<PEMSupportsEncoderPromise> SupportsAsync(
+      const EncoderConfig& aConfig) const;
 
   static media::MediaCodecsSupported Supported(bool aForceRefresh = false);
   static media::EncodeSupportSet SupportsCodec(

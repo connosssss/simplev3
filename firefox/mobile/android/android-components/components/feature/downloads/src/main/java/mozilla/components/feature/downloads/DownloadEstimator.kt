@@ -4,6 +4,8 @@
 
 package mozilla.components.feature.downloads
 
+import mozilla.components.support.utils.DateTimeProvider
+
 private const val NUM_MS_IN_SEC = 1000f
 
 /**
@@ -11,9 +13,7 @@ private const val NUM_MS_IN_SEC = 1000f
  *
  * @param dateTimeProvider The [DateTimeProvider] used to get the current time.
  */
-class DownloadEstimator(
-    private val dateTimeProvider: DateTimeProvider,
-) {
+class DownloadEstimator(private val dateTimeProvider: DateTimeProvider) {
 
     /**
      * Returns estimated time remaining for download completion in seconds.

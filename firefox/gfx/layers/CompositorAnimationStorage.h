@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,15 +5,16 @@
 #ifndef mozilla_layers_CompositorAnimationStorage_h
 #define mozilla_layers_CompositorAnimationStorage_h
 
-#include "mozilla/layers/AnimationStorageData.h"
-#include "mozilla/layers/LayersMessages.h"  // for TransformData, etc
-#include "mozilla/webrender/webrender_ffi.h"
-#include "mozilla/Variant.h"
-#include "nsClassHashtable.h"
-#include "X11UndefineNone.h"
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
+
+#include "X11UndefineNone.h"
+#include "mozilla/Variant.h"
+#include "mozilla/layers/AnimationStorageData.h"
+#include "mozilla/layers/LayersMessages.h"  // for TransformData, etc
+#include "mozilla/webrender/webrender_ffi.h"
+#include "nsClassHashtable.h"
 
 namespace mozilla {
 namespace layers {
@@ -90,7 +89,8 @@ struct AnimatedValue final {
     mValue.as<nscolor>() = aColor;
   }
 
-  already_AddRefed<StyleAnimationValue> AsAnimationValue(nsCSSPropertyID) const;
+  already_AddRefed<StyleAnimationValue> AsAnimationValue(
+      NonCustomCSSPropertyId) const;
 
  private:
   AnimatedValueType mValue;
@@ -203,7 +203,7 @@ class CompositorAnimationStorage final {
    * Store the animated values from |aAnimationValues|.
    */
   void StoreAnimatedValue(
-      nsCSSPropertyID aProperty, uint64_t aId,
+      NonCustomCSSPropertyId aProperty, uint64_t aId,
       const std::unique_ptr<AnimationStorageData>& aAnimationStorageData,
       SampledAnimationArray&& aAnimationValues,
       const MutexAutoLock& aProofOfMapLock,

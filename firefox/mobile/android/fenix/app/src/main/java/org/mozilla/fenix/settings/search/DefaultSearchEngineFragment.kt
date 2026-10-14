@@ -11,13 +11,12 @@ import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import mozilla.components.support.ktx.android.view.hideKeyboard
 import org.mozilla.fenix.R
+import org.mozilla.fenix.e2e.SystemInsetsPaddedFragment
 import org.mozilla.fenix.ext.getPreferenceKey
 import org.mozilla.fenix.ext.showToolbar
 
-/**
- * A [Fragment] that allows user to set the default search engine.
- */
-class DefaultSearchEngineFragment : PreferenceFragmentCompat() {
+/** A [Fragment] that allows user to set the default search engine. */
+class DefaultSearchEngineFragment : PreferenceFragmentCompat(), SystemInsetsPaddedFragment {
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         setPreferencesFromResource(R.xml.default_search_engine_preferences, rootKey)
@@ -32,8 +31,8 @@ class DefaultSearchEngineFragment : PreferenceFragmentCompat() {
     override fun onPreferenceTreeClick(preference: Preference): Boolean {
         when (preference.key) {
             getPreferenceKey(R.string.pref_key_add_search_engine) -> {
-                val directions = DefaultSearchEngineFragmentDirections
-                    .actionDefaultEngineFragmentToSaveSearchEngineFragment(null)
+                val directions =
+                    DefaultSearchEngineFragmentDirections.actionDefaultEngineFragmentToSaveSearchEngineFragment(null)
                 findNavController().navigate(directions)
             }
         }

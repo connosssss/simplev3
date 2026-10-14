@@ -17,20 +17,18 @@ def inline(title):
 
 class TestTaskbarTabSessionState(SessionStoreTestCase):
     def setUp(self):
-        super(TestTaskbarTabSessionState, self).setUp(
+        super().setUp(
             startup_page=1,
             include_private=False,
             restore_on_demand=False,
             taskbartabs_enable=True,
-            test_windows=set(
-                [
-                    # Window 1
-                    (
-                        inline("lorem ipsom"),
-                        inline("dolor"),
-                    ),
-                ]
-            ),
+            test_windows=set([
+                # Window 1
+                (
+                    inline("lorem ipsom"),
+                    inline("dolor"),
+                ),
+            ]),
         )
 
     """
@@ -66,7 +64,7 @@ class TestTaskbarTabSessionState(SessionStoreTestCase):
             self.marionette.execute_script(
                 """
                 const { _LastSession } = ChromeUtils.importESModule(
-                    "resource:///modules/sessionstore/SessionStore.sys.mjs"
+                    "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs"
                     );
                 return _LastSession.getState().windows.length
             """
@@ -79,7 +77,7 @@ class TestTaskbarTabSessionState(SessionStoreTestCase):
             self.marionette.execute_script(
                 """
                 const { _LastSession } = ChromeUtils.importESModule(
-                    "resource:///modules/sessionstore/SessionStore.sys.mjs"
+                    "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs"
                     );
                 return _LastSession.getState().windows[0].tabs.length
             """

@@ -13,10 +13,10 @@ const TEST_URI = `
   <style>
   body {
     color: blue;
-    scrollbar-color: gold;
+    text-box-edge: text;
     user-modify: read-only;
-    object-view-box: inset(0% 19% -33% 57%);
-    overflow-clip-box: padding-box;
+    stroke-color: red;
+    -moz-orient: horizontal;
   }
   div {
     overflow-anchor: auto;
@@ -30,35 +30,34 @@ const TEST_URI = `
 const TEST_DATA_SELECTED = [
   {
     type: COMPATIBILITY_ISSUE_TYPE.CSS_PROPERTY,
-    property: "scrollbar-color",
-    url: "https://developer.mozilla.org/docs/Web/CSS/scrollbar-color",
+    property: "text-box-edge",
+    url: "https://developer.mozilla.org/docs/Web/CSS/Reference/Properties/text-box-edge",
     deprecated: false,
     experimental: false,
   },
   {
     type: COMPATIBILITY_ISSUE_TYPE.CSS_PROPERTY_ALIASES,
     property: "user-modify",
-    url: "https://developer.mozilla.org/docs/Web/CSS/user-modify",
+    url: "https://developer.mozilla.org/docs/Web/CSS/Reference/Properties/user-modify",
     aliases: ["user-modify"],
     deprecated: true,
     experimental: false,
   },
   {
     type: COMPATIBILITY_ISSUE_TYPE.CSS_PROPERTY,
-    property: "object-view-box",
-    // No MDN url but a spec one
-    specUrl: "https://drafts.csswg.org/css-images-5/#propdef-object-view-box",
+    property: "stroke-color",
+    // No MDN url, but a spec one
+    specUrl: "https://drafts.csswg.org/fill-stroke-3/#stroke-color",
     deprecated: false,
     experimental: true,
   },
-  // TODO: Re-enable it when we have another property with no MDN url nor spec url Bug 1840910
-  /*{
-    // No MDN url nor spec url
+  {
     type: COMPATIBILITY_ISSUE_TYPE.CSS_PROPERTY,
-    property: "overflow-clip-box",
+    property: "-moz-orient",
+    // Neither MDN url nor spec url, so the property is not rendered as a link
     deprecated: false,
     experimental: false,
-  },*/
+  },
 ];
 
 const TEST_DATA_ALL = [
@@ -66,7 +65,7 @@ const TEST_DATA_ALL = [
   {
     type: COMPATIBILITY_ISSUE_TYPE.CSS_PROPERTY,
     property: "overflow-anchor",
-    url: "https://developer.mozilla.org/docs/Web/CSS/overflow-anchor",
+    url: "https://developer.mozilla.org/docs/Web/CSS/Reference/Properties/overflow-anchor",
     deprecated: false,
     experimental: false,
   },
@@ -75,13 +74,10 @@ const TEST_DATA_ALL = [
 add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
 
+  // This test relies on the mock dataset, see
+  // devtools/shared/compatibility/dataset/mock-css-properties.json
   const { allElementsPane, selectedElementPane } =
     await openCompatibilityView();
-
-  // If the test fail because the properties used are no longer in the dataset, or they
-  // now have mdn/spec url although we expected them not to, uncomment the next line
-  // to get all the properties in the dataset that don't have a MDN url.
-  // logCssCompatDataPropertiesWithoutMDNUrl()
 
   info("Check the content of the issue list on the selected element");
   await assertIssueList(selectedElementPane, TEST_DATA_SELECTED);

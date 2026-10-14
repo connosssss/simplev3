@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsAppRunner_h__
-#define nsAppRunner_h__
+#ifndef nsAppRunner_h_
+#define nsAppRunner_h_
 
 #ifdef XP_WIN
 #  include <windows.h>
@@ -25,8 +24,10 @@
 #  endif
 #endif
 
+#include "mozilla/Maybe.h"
 #include "nsCOMPtr.h"
-#include "nsStringFwd.h"
+#include "nsIFile.h"
+#include "nsString.h"
 #include "nsXULAppAPI.h"
 #ifdef MOZ_HAS_REMOTE
 #  include "nsIRemoteService.h"
@@ -63,6 +64,14 @@ extern bool gAllowContentAnalysisArgPresent;
 
 namespace mozilla {
 nsresult AppInfoConstructor(const nsID& aIID, void** aResult);
+
+// Append the EncryptedDatabases marker to the running profile's
+// compatibility.ini (append-only; skips if already present). Exposed as a free
+// function so storage (SQLite at-rest encryption) can call it directly rather
+// than via an XPCOM service lookup;
+// nsIXULRuntime::MarkProfileEncryptedDatabases delegates here for the JS / test
+// entry point.
+nsresult MarkProfileEncryptedDatabases();
 }  // namespace mozilla
 
 // Exported for gtests.
@@ -76,6 +85,37 @@ void BuildCompatVersion(const char* aAppVersion, const char* aAppBuildID,
  */
 int32_t CompareCompatVersions(const nsACString& aOldCompatVersion,
                               const nsACString& aNewCompatVersion);
+
+void ExtractCompatVersionInfo(const nsACString& aCompatVersion,
+                              nsACString& aAppVersion, nsACString& aAppBuildID);
+
+struct CompatCheckResult {
+  bool isCompatible = false;
+  bool cachesOK = false;
+  bool isDowngrade = false;
+  bool isDifferentInstall = false;
+  bool hasEncryptedDatabases = false;
+  nsCString lastAppVersion{VoidCString()};
+  nsCString lastAppBuildID{VoidCString()};
+  nsCString lastVersion;
+};
+
+CompatCheckResult CheckCompatibility(nsIFile* aProfileDir,
+                                     const nsCString& aVersion,
+                                     const nsCString& aOSABI,
+                                     nsIFile* aXULRunnerDir, nsIFile* aAppDir,
+                                     nsIFile* aFlagFile);
+
+#ifdef MOZ_BLOCK_PROFILE_DOWNGRADE
+mozilla::Maybe<mozilla::PathString> GenerateDowngradeTelemetry(
+    const nsACString& aPingId, const nsCString& aLastVersion, bool aHasSync,
+    int32_t aButton, const nsACString& aChannel,
+    const nsACString& aProfileSelectionReason,
+    mozilla::Maybe<PRTime> aReplacedLockTime, bool aIsDifferentInstall);
+
+bool BuildDowngradePingUrl(const nsACString& aPingId,
+                           const nsACString& aChannel, nsACString& aUrlOut);
+#endif
 
 /**
  * Create the nativeappsupport implementation.
@@ -175,4 +215,4 @@ void setASanReporterPath(nsIFile* aDir);
 
 bool IsWaylandEnabled();
 
-#endif  // nsAppRunner_h__
+#endif  // nsAppRunner_h_

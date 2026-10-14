@@ -12,8 +12,8 @@
 /**
  * This file defines shortcut keys for <input>, <textarea>, page navigation
  * and HTML editor.  You must write each mapping in one line and append inline
- * comment on which platform it's mapped since this style helps you to looking
- * for the defintion with searchfox, etc.
+ * comment on which platform it's mapped since this style helps you to look
+ * for the definition with searchfox, etc.
  * Be aware, the commands defined in this file may not work because editor or
  * other keyboard event listeners may handle before.
  * Note: When you change key mappings, you need to change
@@ -178,10 +178,10 @@ ShortcutKeyData ShortcutKeys::sInputHandlers[] = {
     {u"keypress", nullptr, u"z", u"accel",       u"cmd_undo"},   // Win, macOS, Linux, Android, Emacs
     {u"keypress", nullptr, u"z", u"accel,shift", u"cmd_redo"},   // Win, macOS, Linux, Android, Emacs
 
-    {u"keypress", nullptr, u"v", u"accel,shift",     u"cmd_paste"},  // Win, macOS, Linux, Android, Emacs
+    {u"keypress", nullptr, u"v", u"accel,shift",     u"cmd_pasteNoFormatting"},  // Win, macOS, Linux, Android, Emacs
 // Mac uses Option+Shift+Command+V for Paste and Match Style
 #if defined(MOZ_WIDGET_COCOA)
-    {u"keypress", nullptr, u"v", u"accel,alt,shift", u"cmd_paste"},  // macOS
+    {u"keypress", nullptr, u"v", u"accel,alt,shift", u"cmd_pasteNoFormatting"},  // macOS
 #endif  // MOZ_WIDGET_COCOA
 
 #if defined(XP_WIN) || defined(MOZ_WIDGET_GTK) ||\
@@ -321,10 +321,10 @@ ShortcutKeyData ShortcutKeys::sTextAreaHandlers[] = {
     {u"keypress", u"VK_INSERT", nullptr, u"shift",   u"cmd_paste"},  // Win, Emacs
 #endif  // XP_WIN || USE_EMACS_KEY_BINDINGS
 
-    {u"keypress", nullptr, u"v", u"accel,shift",     u"cmd_paste"},  // Win, macOS, Linux, Android, Emacs
+    {u"keypress", nullptr, u"v", u"accel,shift",     u"cmd_pasteNoFormatting"},  // Win, macOS, Linux, Android, Emacs
 // Mac uses Option+Shift+Command+V for Paste and Match Style
 #if defined(MOZ_WIDGET_COCOA)
-    {u"keypress", nullptr, u"v", u"accel,alt,shift", u"cmd_paste"},  // macOS
+    {u"keypress", nullptr, u"v", u"accel,alt,shift", u"cmd_pasteNoFormatting"},  // macOS
 #endif  // MOZ_WIDGET_COCOA
 
     /**************************************************************************
@@ -458,10 +458,12 @@ ShortcutKeyData ShortcutKeys::sBrowserHandlers[] = {
     {u"keypress", u"VK_DOWN", nullptr, u"control,shift", u"cmd_selectDown2"},   // Win, Linux
 #endif  // XP_WIN || MOZ_WIDGET_GTK
 #if defined(MOZ_WIDGET_COCOA)
-    {u"keypress", u"VK_UP",   nullptr, u"accel",         u"cmd_moveUp2"},       // macOS
-    {u"keypress", u"VK_DOWN", nullptr, u"accel",         u"cmd_moveDown2"},     // macOS
-    {u"keypress", u"VK_UP",   nullptr, u"alt,shift",     u"cmd_selectUp2"},     // macOS
-    {u"keypress", u"VK_DOWN", nullptr, u"alt,shift",     u"cmd_selectDown2"},   // macOS
+    {u"keypress", u"VK_UP",   nullptr, u"accel",         u"cmd_moveUp2"},        // macOS
+    {u"keypress", u"VK_DOWN", nullptr, u"accel",         u"cmd_moveDown2"},      // macOS
+    {u"keypress", u"VK_UP",   nullptr, u"alt,shift",     u"cmd_selectUp2"},      // macOS
+    {u"keypress", u"VK_DOWN", nullptr, u"alt,shift",     u"cmd_selectDown2"},    // macOS
+    {u"keypress", u"VK_UP",   nullptr, u"alt",           u"cmd_scrollPageUp"},   // macOS
+    {u"keypress", u"VK_DOWN", nullptr, u"alt",           u"cmd_scrollPageDown"}, // macOS
 #endif  // MOZ_WIDGET_COCOA
 #if defined(MOZ_WIDGET_ANDROID)
     {u"keypress", u"VK_UP",   nullptr, u"alt",           u"cmd_moveTop"},       // Android

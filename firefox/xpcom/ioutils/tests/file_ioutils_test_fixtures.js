@@ -1,13 +1,11 @@
 // Utility functions.
 
-/* eslint-env mozilla/simpletest */
-
-Uint8Array.prototype.equals = function equals(other) {
-  if (this.byteLength !== other.byteLength) {
+function bytesEqual(bytes, other) {
+  if (bytes.byteLength !== other.byteLength) {
     return false;
   }
-  return this.every((val, i) => val === other[i]);
-};
+  return bytes.every((val, i) => val === other[i]);
+}
 
 async function createFile(location, contents = "") {
   if (typeof contents === "string") {
@@ -33,7 +31,7 @@ async function fileHasBinaryContents(location, expectedContents) {
   }
   info(`Opening ${location} for reading`);
   const bytes = await IOUtils.read(location);
-  return bytes.equals(expectedContents);
+  return bytesEqual(bytes, expectedContents);
 }
 
 async function fileHasTextContents(location, expectedContents) {

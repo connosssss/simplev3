@@ -9,15 +9,11 @@
 
 use std::fmt::{self, Display, Formatter};
 
-use neqo_common::IpTos;
+use neqo_common::Tos;
 use qlog::events::quic::PacketHeader;
 use strum::Display;
 
-use super::DecryptedPacket;
-use crate::{
-    packet::{PacketNumber, PacketType},
-    path::PathRef,
-};
+use crate::{packet, path::PathRef, version::Version};
 
 #[derive(Clone, Copy, Display)]
 pub enum Direction {
@@ -30,9 +26,10 @@ pub enum Direction {
 pub struct MetaData<'a> {
     path: &'a PathRef,
     direction: Direction,
-    packet_type: PacketType,
-    packet_number: PacketNumber,
-    tos: IpTos,
+    packet_type: packet::Type,
+    packet_number: packet::Number,
+    version: Version,
+    tos: Tos,
     len: usize,
     payload: &'a [u8],
 }
@@ -40,15 +37,17 @@ pub struct MetaData<'a> {
 impl MetaData<'_> {
     pub fn new_in<'a>(
         path: &'a PathRef,
-        tos: IpTos,
+        tos: Tos,
         len: usize,
-        decrypted: &'a DecryptedPacket,
+        decrypted: &'a packet::Decrypted,
+        version: Version,
     ) -> MetaData<'a> {
         MetaData {
             path,
             direction: Direction::Rx,
             packet_type: decrypted.packet_type(),
             packet_number: decrypted.pn(),
+            version,
             tos,
             len,
             payload: decrypted,
@@ -57,17 +56,19 @@ impl MetaData<'_> {
 
     pub const fn new_out<'a>(
         path: &'a PathRef,
-        packet_type: PacketType,
-        packet_number: PacketNumber,
+        packet_type: packet::Type,
+        packet_number: packet::Number,
         length: usize,
         payload: &'a [u8],
-        tos: IpTos,
+        tos: Tos,
+        version: Version,
     ) -> MetaData<'a> {
         MetaData {
             path,
             direction: Direction::Tx,
             packet_type,
             packet_number,
+            version,
             tos,
             len: length,
             payload,
@@ -92,12 +93,25 @@ impl MetaData<'_> {
 
 impl From<MetaData<'_>> for PacketHeader {
     fn from(val: MetaData<'_>) -> Self {
+        let path = val.path.borrow();
+        // For long-header packets, scid/dcid reflect who sent the packet:
+        // on TX we are the source; on RX the peer is the source.
+        let (scid, dcid) = match val.direction {
+            Direction::Tx => (
+                path.local_cid().map(AsRef::as_ref),
+                path.remote_cid().map(AsRef::as_ref),
+            ),
+            Direction::Rx => (
+                path.remote_cid().map(AsRef::as_ref),
+                path.local_cid().map(AsRef::as_ref),
+            ),
+        };
         Self::with_type(
             val.packet_type.into(),
             Some(val.packet_number),
-            None,
-            None,
-            None,
+            Some(val.version.wire_version()),
+            scid,
+            dcid,
         )
     }
 }

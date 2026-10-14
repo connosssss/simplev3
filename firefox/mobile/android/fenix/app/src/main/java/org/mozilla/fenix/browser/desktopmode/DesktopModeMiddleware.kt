@@ -12,7 +12,7 @@ import mozilla.components.browser.state.action.DefaultDesktopModeAction
 import mozilla.components.browser.state.action.InitAction
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
+import mozilla.components.lib.state.Store
 import mozilla.telemetry.glean.private.NoExtras
 import org.mozilla.fenix.GleanMetrics.DesktopMode
 
@@ -20,8 +20,7 @@ import org.mozilla.fenix.GleanMetrics.DesktopMode
  * [Middleware] for handling side effects related to the Desktop Mode feature.
  *
  * @param scope [CoroutineScope] used for writing settings changes to disk.
- * @param repository [DesktopModeRepository] used to interact with the desktop mode preference.
- * feature is enabled.
+ * @param repository [DesktopModeRepository] used to interact with the desktop mode preference. feature is enabled.
  */
 class DesktopModeMiddleware(
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO),
@@ -29,7 +28,7 @@ class DesktopModeMiddleware(
 ) : Middleware<BrowserState, BrowserAction> {
 
     override fun invoke(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         next: (BrowserAction) -> Unit,
         action: BrowserAction,
     ) {
@@ -38,30 +37,22 @@ class DesktopModeMiddleware(
         when (action) {
             InitAction -> {
                 scope.launch {
-                    context.store.dispatch(
-                        DefaultDesktopModeAction.DesktopModeUpdated(
-                            newValue = repository.getDesktopBrowsingEnabled(),
-                        ),
+                    store.dispatch(
+                        DefaultDesktopModeAction.DesktopModeUpdated(newValue = repository.getDesktopBrowsingEnabled())
                     )
                 }
             }
 
             DefaultDesktopModeAction.ToggleDesktopMode -> {
                 scope.launch {
-                    val updatedDesktopMode = context.state.desktopMode
+                    val updatedDesktopMode = store.state.desktopMode
                     val preferenceWriteSucceeded = repository.setDesktopBrowsingEnabled(updatedDesktopMode)
 
                     if (!preferenceWriteSucceeded) {
                         // If the preference write fails, revert the state change.
-                        context.store.dispatch(
-                            DefaultDesktopModeAction.DesktopModeUpdated(
-                                newValue = !updatedDesktopMode,
-                            ),
-                        )
+                        store.dispatch(DefaultDesktopModeAction.DesktopModeUpdated(newValue = !updatedDesktopMode))
                     } else if (updatedDesktopMode) {
-                        DesktopMode.settingsAlwaysRequestDesktopSite.record(
-                            NoExtras(),
-                        )
+                        DesktopMode.settingsAlwaysRequestDesktopSite.record(NoExtras())
                     }
                 }
             }

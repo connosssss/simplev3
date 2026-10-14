@@ -2,7 +2,11 @@ use super::{
     COMPONENT_SORT, CORE_MODULE_SORT, CORE_SORT, FUNCTION_SORT, INSTANCE_SORT, TYPE_SORT,
     VALUE_SORT,
 };
-use crate::{encode_section, ComponentSection, ComponentSectionId, ComponentTypeRef, Encode};
+use crate::{
+    ComponentExternName, ComponentSection, ComponentSectionId, ComponentTypeRef, Encode,
+    encode_section,
+};
+use alloc::vec::Vec;
 
 /// Represents the kind of an export from a WebAssembly component.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,14 +90,14 @@ impl ComponentExportSection {
     }
 
     /// Define an export in the export section.
-    pub fn export(
+    pub fn export<'a>(
         &mut self,
-        name: &str,
+        name: impl Into<ComponentExternName<'a>>,
         kind: ComponentExportKind,
         index: u32,
         ty: Option<ComponentTypeRef>,
     ) -> &mut Self {
-        crate::encode_component_export_name(&mut self.bytes, name);
+        name.into().encode(&mut self.bytes);
         kind.encode(&mut self.bytes);
         index.encode(&mut self.bytes);
         match ty {
@@ -120,10 +124,4 @@ impl ComponentSection for ComponentExportSection {
     fn id(&self) -> u8 {
         ComponentSectionId::Export.into()
     }
-}
-
-/// For more information on this see `encode_component_import_name`.
-pub(crate) fn encode_component_export_name(bytes: &mut Vec<u8>, name: &str) {
-    bytes.push(0x00);
-    name.encode(bytes);
 }

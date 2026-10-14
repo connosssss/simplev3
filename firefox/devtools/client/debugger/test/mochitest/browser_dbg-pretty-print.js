@@ -12,12 +12,25 @@ add_task(async function () {
   const dbg = await initDebugger("doc-minified.html", "math.min.js");
 
   await selectSource(dbg, "math.min.js", 2);
-  clickElement(dbg, "prettyPrintButton");
+  await togglePrettyPrint(dbg);
+  is(
+    countTabs(dbg),
+    1,
+    "After pretty printing there is still only one tab in the reducer store"
+  );
 
-  await waitForSelectedSource(dbg, "math.min.js:formatted");
   ok(
     !findElement(dbg, "mappedSourceLink"),
     "When we are on the pretty printed source, we don't show the link to the minified source"
+  );
+  const footerButton = findElement(dbg, "sourceMapFooterButton");
+  ok(
+    !footerButton.classList.contains("original"),
+    "The pretty printed source isn't described as an original to the user"
+  );
+  ok(
+    footerButton.classList.contains("not-mapped"),
+    "Neither is it described as being mapped"
   );
   const ppSrc = findSource(dbg, "math.min.js:formatted");
 
@@ -39,14 +52,19 @@ add_task(async function () {
 
   await resume(dbg);
 
-  // The pretty-print button should be disabled in the pretty-printed source.
   ok(
-    findElement(dbg, "prettyPrintButton").disabled,
-    "Pretty Print Button should be disabled"
+    !findElement(dbg, "prettyPrintButton").disabled,
+    "Pretty Print Button shouldn't be disabled when on the pretty print version"
+  );
+  ok(
+    !findElement(dbg, "prettyPrintButton").classList.contains("active"),
+    "Pretty Print Button should be active when on the pretty print version"
   );
 
-  await selectSource(dbg, "math.min.js");
-  await waitForSelectedSource(dbg, "math.min.js");
+  // Ensure that trying to select the minified version, would select the pretty printed one
+  // Do not wait for `selectSource` as it won't select the expected source for the test helper
+  selectSource(dbg, "math.min.js");
+  await waitForSelectedSource(dbg, "math.min.js:formatted");
   ok(
     !findElement(dbg, "mappedSourceLink"),
     "When we are on the minified source,  we don't show the link to the pretty printed source"
@@ -56,10 +74,16 @@ add_task(async function () {
     !findElement(dbg, "prettyPrintButton").disabled,
     "Pretty Print Button should be enabled"
   );
+
+  await togglePrettyPrint(dbg);
+  is(
+    countTabs(dbg),
+    1,
+    "After disabling pretty printing, there is still only one tab in the reducer store"
+  );
 });
 
-add_task(async function testPrivateFields() {
-  // Create a source containing a class with private fields
+add_task(async function testPrettyPrintNewSyntax() {
   const httpServer = createTestHTTPServer();
   httpServer.registerContentType("html", "text/html");
   httpServer.registerContentType("js", "application/javascript");
@@ -68,22 +92,23 @@ add_task(async function testPrivateFields() {
     response.setStatusLine(request.httpVersion, 200, "OK");
     response.write(`
       <html>
-          Test pretty-printing class with private fields
-          <script type="text/javascript" src="class-with-private-fields.js"></script>
+          Test pretty-printing script with newly introduced JS syntax
+          <script type="text/javascript" src="new-syntax.js"></script>
       </html>`);
   });
 
   httpServer.registerPathHandler(
-    "/class-with-private-fields.js",
+    "/new-syntax.js",
     function (request, response) {
       response.setHeader("Content-Type", "application/javascript");
       response.write(`
       class MyClass {
         constructor(a) {
-          this.#a = a;this.#b = Math.random();this.ab = this.#getAB();
+          this.#a = a;this.#b = Math.random();this.ab = this.#getAB();this.#reg = /[a-zA-Z]/gv;
         }
         #a
         #b = "default value"
+        #reg
         static #someStaticPrivate
         #getA() {
           return this.#a;
@@ -102,19 +127,16 @@ add_task(async function testPrivateFields() {
   info("Open toolbox");
   const dbg = await initDebuggerWithAbsoluteURL(TEST_URL);
 
-  info("Select script with private fields");
-  await selectSource(dbg, "class-with-private-fields.js", 2);
+  info("Select script to pretty print");
+  await selectSource(dbg, "new-syntax.js", 2);
 
   info("Pretty print the script");
-  clickElement(dbg, "prettyPrintButton");
-
-  info("Wait until the script is pretty-printed");
-  await waitForSelectedSource(dbg, "class-with-private-fields.js:formatted");
+  await togglePrettyPrint(dbg);
 
   info("Check that the script was pretty-printed as expected");
   const prettyPrintedSource = await findSourceContent(
     dbg,
-    "class-with-private-fields.js:formatted"
+    "new-syntax.js:formatted"
   );
 
   is(
@@ -125,9 +147,11 @@ class MyClass {
     this.#a = a;
     this.#b = Math.random();
     this.ab = this.#getAB();
+    this.#reg = /[a-zA-Z]/gv;
   }
   #a
-  #b = 'default value'
+  #b = "default value"
+  #reg
   static #someStaticPrivate
   #getA() {
     return this.#a;

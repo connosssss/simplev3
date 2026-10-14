@@ -1,9 +1,17 @@
-use metal::{
-    MTLBlendFactor, MTLBlendOperation, MTLBlitOption, MTLClearColor, MTLColorWriteMask,
-    MTLCompareFunction, MTLCullMode, MTLOrigin, MTLPrimitiveTopologyClass, MTLPrimitiveType,
+use objc2::rc::Retained;
+use objc2_foundation::{NSArray, NSRange};
+use objc2_metal::{
+    MTLAccelerationStructureBoundingBoxGeometryDescriptor, MTLAccelerationStructureDescriptor,
+    MTLAccelerationStructureGeometryDescriptor, MTLAccelerationStructureInstanceDescriptorType,
+    MTLAccelerationStructureTriangleGeometryDescriptor, MTLAccelerationStructureUsage,
+    MTLAttributeFormat, MTLBlendFactor, MTLBlendOperation, MTLBlitOption, MTLClearColor,
+    MTLColorWriteMask, MTLCompareFunction, MTLCullMode, MTLIndexType,
+    MTLInstanceAccelerationStructureDescriptor, MTLOrigin,
+    MTLPrimitiveAccelerationStructureDescriptor, MTLPrimitiveTopologyClass, MTLPrimitiveType,
     MTLRenderStages, MTLResourceUsage, MTLSamplerAddressMode, MTLSamplerBorderColor,
-    MTLSamplerMinMagFilter, MTLSize, MTLStencilOperation, MTLStoreAction, MTLTextureType,
-    MTLTextureUsage, MTLVertexFormat, MTLVertexStepFunction, MTLWinding, NSRange,
+    MTLSamplerMinMagFilter, MTLSize, MTLStencilOperation, MTLStoreAction, MTLTextureSwizzle,
+    MTLTextureSwizzleChannels, MTLTextureType, MTLTextureUsage, MTLVertexFormat,
+    MTLVertexStepFunction, MTLWinding,
 };
 
 pub fn map_texture_usage(format: wgt::TextureFormat, usage: wgt::TextureUses) -> MTLTextureUsage {
@@ -13,13 +21,17 @@ pub fn map_texture_usage(format: wgt::TextureFormat, usage: wgt::TextureUses) ->
 
     mtl_usage.set(
         MTLTextureUsage::RenderTarget,
-        usage.intersects(Tu::COLOR_TARGET | Tu::DEPTH_STENCIL_READ | Tu::DEPTH_STENCIL_WRITE),
+        usage.intersects(
+            Tu::COLOR_TARGET
+                | Tu::DEPTH_READ
+                | Tu::DEPTH_WRITE
+                | Tu::STENCIL_READ
+                | Tu::STENCIL_WRITE,
+        ),
     );
     mtl_usage.set(
         MTLTextureUsage::ShaderRead,
-        usage.intersects(
-            Tu::RESOURCE | Tu::DEPTH_STENCIL_READ | Tu::STORAGE_READ_ONLY | Tu::STORAGE_READ_WRITE,
-        ),
+        usage.intersects(Tu::RESOURCE | Tu::STORAGE_READ_ONLY | Tu::STORAGE_READ_WRITE),
     );
     mtl_usage.set(
         MTLTextureUsage::ShaderWrite,
@@ -44,12 +56,12 @@ pub fn map_texture_view_dimension(dim: wgt::TextureViewDimension) -> MTLTextureT
     use wgt::TextureViewDimension as Tvd;
     use MTLTextureType as MTL;
     match dim {
-        Tvd::D1 => MTL::D1,
-        Tvd::D2 => MTL::D2,
-        Tvd::D2Array => MTL::D2Array,
-        Tvd::D3 => MTL::D3,
-        Tvd::Cube => MTL::Cube,
-        Tvd::CubeArray => MTL::CubeArray,
+        Tvd::D1 => MTL::Type1D,
+        Tvd::D2 => MTL::Type2D,
+        Tvd::D2Array => MTL::Type2DArray,
+        Tvd::D3 => MTL::Type3D,
+        Tvd::Cube => MTL::TypeCube,
+        Tvd::CubeArray => MTL::TypeCubeArray,
     }
 }
 
@@ -229,8 +241,16 @@ pub fn map_vertex_format(format: wgt::VertexFormat) -> MTLVertexFormat {
         Vf::Sint32x4 => MTL::Int4,
         Vf::Float32x4 => MTL::Float4,
         Vf::Unorm10_10_10_2 => MTL::UInt1010102Normalized,
+        Vf::Snorm10_10_10_2 => MTL::Int1010102Normalized,
         Vf::Unorm8x4Bgra => MTL::UChar4Normalized_BGRA,
         Vf::Float64 | Vf::Float64x2 | Vf::Float64x3 | Vf::Float64x4 => unimplemented!(),
+    }
+}
+
+pub fn map_index_format(format: wgt::IndexFormat) -> (u64, MTLIndexType) {
+    match format {
+        wgt::IndexFormat::Uint16 => (2, MTLIndexType::UInt16),
+        wgt::IndexFormat::Uint32 => (4, MTLIndexType::UInt32),
     }
 }
 
@@ -274,24 +294,24 @@ pub fn map_cull_mode(face: Option<wgt::Face>) -> MTLCullMode {
 
 pub fn map_range(range: &crate::MemoryRange) -> NSRange {
     NSRange {
-        location: range.start,
-        length: range.end - range.start,
+        location: range.start as usize,
+        length: (range.end - range.start) as usize,
     }
 }
 
 pub fn map_copy_extent(extent: &crate::CopyExtent) -> MTLSize {
     MTLSize {
-        width: extent.width as u64,
-        height: extent.height as u64,
-        depth: extent.depth as u64,
+        width: extent.width as usize,
+        height: extent.height as usize,
+        depth: extent.depth as usize,
     }
 }
 
 pub fn map_origin(origin: &wgt::Origin3d) -> MTLOrigin {
     MTLOrigin {
-        x: origin.x as u64,
-        y: origin.y as u64,
-        z: origin.z as u64,
+        x: origin.x as usize,
+        y: origin.y as usize,
+        z: origin.z as usize,
     }
 }
 
@@ -341,6 +361,7 @@ pub fn map_render_stages(stage: wgt::ShaderStages) -> MTLRenderStages {
 
 pub fn map_resource_usage(ty: &wgt::BindingType) -> MTLResourceUsage {
     match ty {
+        #[allow(deprecated)]
         wgt::BindingType::Texture { .. } => MTLResourceUsage::Sample,
         wgt::BindingType::StorageTexture { access, .. } => match access {
             wgt::StorageTextureAccess::WriteOnly => MTLResourceUsage::Write,
@@ -350,6 +371,152 @@ pub fn map_resource_usage(ty: &wgt::BindingType) -> MTLResourceUsage {
             }
         },
         wgt::BindingType::Sampler(..) => MTLResourceUsage::empty(),
+        wgt::BindingType::Buffer { ty, .. } => match ty {
+            wgt::BufferBindingType::Uniform
+            | wgt::BufferBindingType::Storage { read_only: true } => MTLResourceUsage::Read,
+            wgt::BufferBindingType::Storage { read_only: false } => {
+                MTLResourceUsage::Read | MTLResourceUsage::Write
+            }
+        },
         _ => unreachable!(),
+    }
+}
+
+pub fn map_acceleration_structure_descriptor<'a>(
+    entries: &'a crate::AccelerationStructureEntries<'a, super::Buffer>,
+    flags: crate::AccelerationStructureBuildFlags,
+) -> Retained<MTLAccelerationStructureDescriptor> {
+    let descriptor = match entries {
+        crate::AccelerationStructureEntries::Instances(instances) => {
+            let descriptor = MTLInstanceAccelerationStructureDescriptor::new();
+            descriptor.setInstanceDescriptorType(
+                MTLAccelerationStructureInstanceDescriptorType::Indirect,
+            );
+            descriptor.setInstanceCount(instances.count as usize);
+            descriptor.setInstanceDescriptorBuffer(Some(&instances.buffer.unwrap().raw));
+            unsafe {
+                descriptor.setInstanceDescriptorBufferOffset(instances.offset as usize);
+            }
+            descriptor.into_super()
+        }
+        crate::AccelerationStructureEntries::Triangles(entries) => {
+            let geometry_descriptors = entries
+                .iter()
+                .map(|triangles| {
+                    let descriptor = MTLAccelerationStructureTriangleGeometryDescriptor::new();
+                    if let Some(indices) = triangles.indices.as_ref() {
+                        descriptor.setIndexBuffer(Some(&indices.buffer.unwrap().raw));
+                        unsafe {
+                            descriptor.setIndexBufferOffset(indices.offset as usize);
+                        }
+                        descriptor.setIndexType(map_index_format(indices.format).1);
+                        descriptor.setTriangleCount(indices.count as usize / 3);
+                    } else {
+                        descriptor.setTriangleCount(triangles.vertex_count as usize / 3);
+                    }
+                    descriptor.setVertexBuffer(Some(&triangles.vertex_buffer.unwrap().raw));
+                    unsafe {
+                        descriptor.setVertexBufferOffset(
+                            triangles.first_vertex as usize * triangles.vertex_stride as usize,
+                        );
+                    }
+                    descriptor.setVertexStride(triangles.vertex_stride as usize);
+                    // Safety: MTLVertexFormat and MTLAttributeFormat are identical.
+                    // https://docs.rs/objc2-metal/latest/objc2_metal/struct.MTLAttributeFormat.html
+                    // https://docs.rs/objc2-metal/latest/objc2_metal/struct.MTLVertexFormat.html
+                    descriptor.setVertexFormat(unsafe {
+                        core::mem::transmute::<MTLVertexFormat, MTLAttributeFormat>(
+                            map_vertex_format(triangles.vertex_format),
+                        )
+                    });
+                    if let Some(transform) = triangles.transform.as_ref() {
+                        unsafe {
+                            descriptor.setTransformationMatrixBuffer(Some(&transform.buffer.raw));
+                            descriptor
+                                .setTransformationMatrixBufferOffset(transform.offset as usize);
+                        }
+                    }
+                    descriptor.setOpaque(
+                        triangles
+                            .flags
+                            .contains(wgt::AccelerationStructureGeometryFlags::OPAQUE),
+                    );
+                    if !triangles.flags.contains(
+                        wgt::AccelerationStructureGeometryFlags::NO_DUPLICATE_ANY_HIT_INVOCATION,
+                    ) {
+                        descriptor.allowDuplicateIntersectionFunctionInvocation();
+                    }
+                    // descriptor.setIntersectionFunctionTableOffset(offset);
+                    descriptor.into_super()
+                })
+                .collect::<alloc::vec::Vec<Retained<MTLAccelerationStructureGeometryDescriptor>>>();
+            let descriptor = MTLPrimitiveAccelerationStructureDescriptor::new();
+            descriptor.setGeometryDescriptors(Some(&NSArray::from_retained_slice(
+                geometry_descriptors.as_slice(),
+            )));
+            descriptor.into_super()
+        }
+        crate::AccelerationStructureEntries::AABBs(entries) => {
+            let geometry_descriptors = entries
+                .iter()
+                .map(|aabbs| {
+                    let descriptor = MTLAccelerationStructureBoundingBoxGeometryDescriptor::new();
+                    descriptor.setBoundingBoxBuffer(Some(&aabbs.buffer.unwrap().raw));
+                    descriptor.setBoundingBoxCount(aabbs.count as usize);
+                    unsafe {
+                        descriptor.setBoundingBoxStride(aabbs.stride as usize);
+                        descriptor.setBoundingBoxBufferOffset(aabbs.offset as usize);
+                    }
+                    descriptor.setOpaque(
+                        aabbs
+                            .flags
+                            .contains(wgt::AccelerationStructureGeometryFlags::OPAQUE),
+                    );
+                    if !aabbs.flags.contains(
+                        wgt::AccelerationStructureGeometryFlags::NO_DUPLICATE_ANY_HIT_INVOCATION,
+                    ) {
+                        descriptor.allowDuplicateIntersectionFunctionInvocation();
+                    }
+                    // descriptor.setIntersectionFunctionTableOffset(offset);
+                    descriptor.into_super()
+                })
+                .collect::<alloc::vec::Vec<Retained<MTLAccelerationStructureGeometryDescriptor>>>();
+            let descriptor = MTLPrimitiveAccelerationStructureDescriptor::new();
+            descriptor.setGeometryDescriptors(Some(&NSArray::from_retained_slice(
+                geometry_descriptors.as_slice(),
+            )));
+            descriptor.into_super()
+        }
+    };
+    let mut usage = MTLAccelerationStructureUsage::None;
+    if flags.contains(wgt::AccelerationStructureFlags::ALLOW_UPDATE) {
+        usage |= MTLAccelerationStructureUsage::Refit;
+    }
+    if flags.contains(wgt::AccelerationStructureFlags::PREFER_FAST_BUILD) {
+        usage |= MTLAccelerationStructureUsage::PreferFastBuild;
+    }
+    descriptor.setUsage(usage);
+    descriptor
+}
+
+pub fn map_component_swizzle(swizzle: wgt::ComponentSwizzle) -> MTLTextureSwizzle {
+    match swizzle {
+        wgt::ComponentSwizzle::Zero => MTLTextureSwizzle::Zero,
+        wgt::ComponentSwizzle::One => MTLTextureSwizzle::One,
+        wgt::ComponentSwizzle::R => MTLTextureSwizzle::Red,
+        wgt::ComponentSwizzle::G => MTLTextureSwizzle::Green,
+        wgt::ComponentSwizzle::B => MTLTextureSwizzle::Blue,
+        wgt::ComponentSwizzle::A => MTLTextureSwizzle::Alpha,
+    }
+}
+
+pub fn map_texture_component_swizzle(
+    swizzle: wgt::TextureComponentSwizzle,
+) -> MTLTextureSwizzleChannels {
+    MTLTextureSwizzleChannels {
+        red: map_component_swizzle(swizzle.r),
+        green: map_component_swizzle(swizzle.g),
+        blue: map_component_swizzle(swizzle.b),
+        alpha: map_component_swizzle(swizzle.a),
     }
 }

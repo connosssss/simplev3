@@ -14,8 +14,6 @@ export var AppConstants = Object.freeze({
   // defines: https://wiki.mozilla.org/Platform/Channel-specific_build_defines
   NIGHTLY_BUILD: @NIGHTLY_BUILD_BOOL@,
 
-  ENABLE_EXPLICIT_RESOURCE_MANAGEMENT: @ENABLE_EXPLICIT_RESOURCE_MANAGEMENT_BOOL@,
-
   RELEASE_OR_BETA: @RELEASE_OR_BETA_BOOL@,
 
   EARLY_BETA_OR_EARLIER: @EARLY_BETA_OR_EARLIER_BOOL@,
@@ -30,6 +28,13 @@ export var AppConstants = Object.freeze({
   MOZILLA_OFFICIAL: @MOZILLA_OFFICIAL_BOOL@,
 
   MOZ_OFFICIAL_BRANDING: @MOZ_OFFICIAL_BRANDING_BOOL@,
+
+  BUILT_BY_MOZILLA:
+#ifdef BUILT_BY_MOZILLA
+  true,
+#else
+  false,
+#endif
 
   MOZ_DEV_EDITION: @MOZ_DEV_EDITION_BOOL@,
 
@@ -150,10 +155,6 @@ export var AppConstants = Object.freeze({
 
   MOZ_GECKOVIEW_HISTORY: @MOZ_GECKOVIEW_HISTORY_BOOL@,
 
-  MOZ_GECKO_PROFILER: @MOZ_GECKO_PROFILER_BOOL@,
-
-  BROWSER_NEWTAB_AS_ADDON: @BROWSER_NEWTAB_AS_ADDON_BOOL@,
-
   DLL_PREFIX: "@DLL_PREFIX@",
   DLL_SUFFIX: "@DLL_SUFFIX@",
 
@@ -165,6 +166,8 @@ export var AppConstants = Object.freeze({
   MOZ_APP_DISPLAYNAME_DO_NOT_USE: "@MOZ_APP_DISPLAYNAME@",
   MOZ_APP_VERSION: "@MOZ_APP_VERSION@",
   MOZ_APP_VERSION_DISPLAY: "@MOZ_APP_VERSION_DISPLAY@",
+  MOZ_BACKGROUNDTASK_ACTIVATABLE_CLASS_ID:
+    "@MOZ_BACKGROUNDTASK_ACTIVATABLE_CLASS_ID@",
   MOZ_BUILDID: "@MOZ_BUILDID@",
   MOZ_BUILD_APP: "@MOZ_BUILD_APP@",
   MOZ_MACBUNDLE_ID: "@MOZ_MACBUNDLE_ID@",
@@ -176,7 +179,9 @@ export var AppConstants = Object.freeze({
 
   MOZ_BING_API_CLIENTID: "@MOZ_BING_API_CLIENTID@",
   MOZ_BING_API_KEY: "@MOZ_BING_API_KEY@",
+#if !defined(MOZ_WIDGET_ANDROID) && !defined(XP_WIN)
   MOZ_GOOGLE_LOCATION_SERVICE_API_KEY: "@MOZ_GOOGLE_LOCATION_SERVICE_API_KEY@",
+#endif
   MOZ_GOOGLE_SAFEBROWSING_API_KEY: "@MOZ_GOOGLE_SAFEBROWSING_API_KEY@",
   MOZ_MOZILLA_API_KEY: "@MOZ_MOZILLA_API_KEY@",
 
@@ -207,11 +212,11 @@ export var AppConstants = Object.freeze({
 
   ENABLE_WEBDRIVER: @ENABLE_WEBDRIVER_BOOL@,
 
-  REMOTE_SETTINGS_SERVER_URL:
+  REMOTE_SETTINGS_SERVER_URLS:
 #ifdef MOZ_THUNDERBIRD
-    "https://thunderbird-settings.thunderbird.net/v1",
+    [ "https://thunderbird-settings.thunderbird.net/v1" ],
 #else
-    "https://firefox.settings.services.mozilla.com/v1",
+    [ "https://firefox.settings.services.mozilla.com/v2" ],
 #endif
 
   REMOTE_SETTINGS_VERIFY_SIGNATURE:
@@ -267,9 +272,7 @@ export var AppConstants = Object.freeze({
     false,
 #endif
 
-#ifdef MOZ_WIDGET_ANDROID
-  MOZ_ANDROID_CONTENT_SERVICE_ISOLATED_PROCESS: @MOZ_ANDROID_CONTENT_SERVICE_ISOLATED_PROCESS_BOOL@,
-#endif
-
   USE_LIBZ_RS: @USE_LIBZ_RS_BOOL@,
+
+  MOZ_DIAGNOSTIC_ASSERT_ENABLED: @MOZ_DIAGNOSTIC_ASSERT_ENABLED_BOOL@,
 });

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,58 +9,56 @@
  */
 
 #include "nsImageLoadingContent.h"
-#include "nsError.h"
-#include "nsIContent.h"
-#include "nsIScriptGlobalObject.h"
-#include "nsServiceManagerUtils.h"
-#include "nsContentList.h"
-#include "nsContentPolicyUtils.h"
-#include "nsIURI.h"
+
+#include "Orientation.h"
 #include "imgIContainer.h"
 #include "imgLoader.h"
 #include "imgRequestProxy.h"
-#include "nsThreadUtils.h"
-#include "nsNetUtil.h"
-#include "nsImageFrame.h"
-
-#include "nsIChannel.h"
-#include "nsIStreamListener.h"
-
-#include "nsIFrame.h"
-
-#include "nsContentUtils.h"
-#include "nsLayoutUtils.h"
-#include "nsIContentPolicy.h"
-
 #include "mozAutoDocUpdate.h"
 #include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/AutoRestore.h"
 #include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/EventStateManager.h"
+#include "mozilla/PageloadEvent.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
-#include "mozilla/StaticPrefs_image.h"
-#include "mozilla/StaticPrefs_svg.h"
 #include "mozilla/SVGImageFrame.h"
 #include "mozilla/SVGObserverUtils.h"
+#include "mozilla/StaticPrefs_image.h"
+#include "mozilla/StaticPrefs_svg.h"
 #include "mozilla/dom/BindContext.h"
+#include "mozilla/dom/ContentList.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/ElementInlines.h"
 #include "mozilla/dom/FetchPriority.h"
-#include "mozilla/dom/PContent.h"  // For TextRecognitionResult
 #include "mozilla/dom/HTMLImageElement.h"
 #include "mozilla/dom/ImageTextBinding.h"
+#include "mozilla/dom/LargestContentfulPaint.h"
+#include "mozilla/dom/PContent.h"  // For TextRecognitionResult
 #include "mozilla/dom/PageLoadEventUtils.h"
 #include "mozilla/dom/ReferrerInfo.h"
 #include "mozilla/dom/ResponsiveImageSelector.h"
 #include "mozilla/dom/ScriptSettings.h"
-#include "mozilla/intl/LocaleService.h"
 #include "mozilla/intl/Locale.h"
-#include "mozilla/dom/LargestContentfulPaint.h"
-#include "mozilla/net/UrlClassifierFeatureFactory.h"
+#include "mozilla/intl/LocaleService.h"
+#include "mozilla/net/ChannelClassifierUtils.h"
 #include "mozilla/widget/TextRecognition.h"
-
-#include "Orientation.h"
+#include "nsContentPolicyUtils.h"
+#include "nsContentUtils.h"
+#include "nsError.h"
+#include "nsIChannel.h"
+#include "nsIContent.h"
+#include "nsIContentPolicy.h"
+#include "nsIFrame.h"
+#include "nsIScriptGlobalObject.h"
+#include "nsIStreamListener.h"
+#include "nsIURI.h"
+#include "nsImageFrame.h"
+#include "nsLayoutUtils.h"
+#include "nsNetUtil.h"
+#include "nsServiceManagerUtils.h"
+#include "nsThreadUtils.h"
 
 #ifdef LoadImage
 // Undefine LoadImage to prevent naming conflict with Windows.
@@ -114,7 +110,7 @@ class ImageLoadTask : public MicroTaskRunnable {
   }
 
   bool Suppressed() override {
-    nsIGlobalObject* global = mElement->AsContent()->GetOwnerGlobal();
+    nsIGlobalObject* global = mElement->AsContent()->GetRelevantGlobal();
     return global && global->IsInSyncOperation();
   }
 
@@ -131,17 +127,7 @@ class ImageLoadTask : public MicroTaskRunnable {
   const bool mUseUrgentStartForChannel;
 };
 
-nsImageLoadingContent::nsImageLoadingContent()
-    : mObserverList(nullptr),
-      mOutstandingDecodePromises(0),
-      mRequestGeneration(0),
-      mLoadingEnabled(true),
-      mUseUrgentStartForChannel(false),
-      mLazyLoading(false),
-      mSyncDecodingHint(false),
-      mInDocResponsiveContent(false),
-      mCurrentRequestRegistered(false),
-      mPendingRequestRegistered(false) {
+nsImageLoadingContent::nsImageLoadingContent() : mObserverList(nullptr) {
   if (!nsContentUtils::GetImgLoaderForChannel(nullptr, nullptr)) {
     mLoadingEnabled = false;
   }
@@ -299,7 +285,7 @@ void nsImageLoadingContent::Notify(imgIRequest* aRequest, int32_t aType,
        * We make a note of this image node by including it in a dedicated
        * array of blocked tracking nodes under its parent document.
        */
-      if (net::UrlClassifierFeatureFactory::IsClassifierBlockingErrorCode(
+      if (net::ChannelClassifierUtils::IsClassifierBlockingErrorCode(
               errorCode)) {
         Document* doc = GetOurOwnerDoc();
         doc->AddBlockedNodeByClassifier(AsContent());
@@ -322,6 +308,10 @@ void nsImageLoadingContent::Notify(imgIRequest* aRequest, int32_t aType,
     }
     UpdateImageState(true);
   }
+}
+
+bool nsImageLoadingContent::HasPendingAlwaysLoadImageTask() const {
+  return mPendingImageLoadTask && mPendingImageLoadTask->AlwaysLoad();
 }
 
 void nsImageLoadingContent::OnLoadComplete(imgIRequest* aRequest,
@@ -438,6 +428,7 @@ nsresult nsImageLoadingContent::GetSyncDecodingHint(bool* aHint) {
 
 already_AddRefed<Promise> nsImageLoadingContent::QueueDecodeAsync(
     ErrorResult& aRv) {
+  // XXX probably should use our global.
   Document* doc = GetOurOwnerDoc();
   RefPtr<Promise> promise = Promise::Create(doc->GetScopeObject(), aRv);
   if (aRv.Failed()) {
@@ -452,11 +443,12 @@ already_AddRefed<Promise> nsImageLoadingContent::QueueDecodeAsync(
           mPromise(aPromise),
           mRequestGeneration(aRequestGeneration) {}
 
-    virtual void Run(AutoSlowOperation& aAso) override {
+    void Run(AutoSlowOperation& aAso) override {
       mOwner->DecodeAsync(std::move(mPromise), mRequestGeneration);
     }
 
-    virtual bool Suppressed() override {
+    bool Suppressed() override {
+      // XXX Probably should use mOwner->GetRelevantGlobal()
       nsIGlobalObject* global = mOwner->GetOurOwnerDoc()->GetScopeObject();
       return global && global->IsInSyncOperation();
     }
@@ -867,7 +859,7 @@ void nsImageLoadingContent::CloneScriptedRequests(imgRequestProxy* aRequest) {
 
     nsresult rv =
         aRequest->Clone(observer->mObserver, nullptr, getter_AddRefs(req));
-    Unused << NS_WARN_IF(NS_FAILED(rv));
+    (void)NS_WARN_IF(NS_FAILED(rv));
   } while (i > 0);
 }
 
@@ -1110,7 +1102,7 @@ nsresult nsImageLoadingContent::LoadImage(const nsAString& aNewURI, bool aForce,
   // Parse the URI string to get image URI
   nsCOMPtr<nsIURI> imageURI;
   if (!aNewURI.IsEmpty()) {
-    Unused << StringToURI(aNewURI, doc, getter_AddRefs(imageURI));
+    (void)StringToURI(aNewURI, doc, getter_AddRefs(imageURI));
   }
 
   return LoadImage(imageURI, aForce, aNotify, aImageLoadType, LoadFlags(), doc,
@@ -1224,7 +1216,7 @@ nsresult nsImageLoadingContent::LoadImage(nsIURI* aNewURI, bool aForce,
 
   if (fetchPriority != FetchPriority::Auto) {
     aDocument->SetPageloadEventFeature(
-        pageload_event::FeatureBits::FETCH_PRIORITY_IMAGES);
+        performance::pageload_event::DocumentFeature::FETCH_PRIORITY_IMAGES);
   }
 
   // Reset the flag to avoid loading from XPCOM or somewhere again else without
@@ -1295,6 +1287,7 @@ already_AddRefed<Promise> nsImageLoadingContent::RecognizeCurrentImageText(
     return nullptr;
   }
 
+  // XXX Probably should use this->GetRelevantGlobal()
   RefPtr<Promise> domPromise =
       Promise::Create(GetOurOwnerDoc()->GetScopeObject(), aRv);
   if (aRv.Failed()) {
@@ -1361,26 +1354,18 @@ already_AddRefed<Promise> nsImageLoadingContent::RecognizeCurrentImageText(
             auto& textRecognitionResult = aValue.ResolveValue();
             Element* el = ilc->AsContent()->AsElement();
 
-            // When enabled, this feature will place the recognized text as
-            // spans inside of the shadow dom of the img element. These are then
-            // positioned so that the user can select the text.
-            if (Preferences::GetBool("dom.text-recognition.shadow-dom-enabled",
-                                     false)) {
-              el->AttachAndSetUAShadowRoot(Element::NotifyUAWidgetSetup::Yes);
-              TextRecognition::FillShadow(*el->GetShadowRoot(),
-                                          textRecognitionResult);
-              el->NotifyUAWidgetSetupOrChange();
-            }
-
             nsTArray<ImageText> imageTexts(
                 textRecognitionResult.quads().Length());
-            nsIGlobalObject* global = el->OwnerDoc()->GetOwnerGlobal();
+            // XXX shouldn't this be GetRelevantGlobal? But it's privileged code
+            // so seems probably fine.
+            nsIGlobalObject* global = el->GetDocumentGlobal();
 
             for (const auto& quad : textRecognitionResult.quads()) {
               NotNull<ImageText*> imageText = imageTexts.AppendElement();
 
-              // Note: These points are not actually CSSPixels, but a DOMQuad is
-              // a conveniently similar structure that can store these values.
+              // Note: These points are not actually CSSPixels, but a
+              // DOMQuad is a conveniently similar structure that can store
+              // these values.
               CSSPoint points[4];
               points[0] = CSSPoint(quad.points()[0].x, quad.points()[0].y);
               points[1] = CSSPoint(quad.points()[1].x, quad.points()[1].y);
@@ -1398,6 +1383,12 @@ already_AddRefed<Promise> nsImageLoadingContent::RecognizeCurrentImageText(
 
 CSSIntSize nsImageLoadingContent::NaturalSize(
     DoDensityCorrection aDensityCorrection) {
+  // This function implements the image.naturalWidth and image.naturalHeight
+  // APIs, specced here:
+  // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-naturalwidth-dev
+
+  // Trivial case from the spec: "return [...] 0 if the image is not available"
+  // (our early-return statements here return a zero-filled CSSIntSize).
   if (!mCurrentRequest) {
     return {};
   }
@@ -1414,30 +1405,51 @@ CSSIntSize nsImageLoadingContent::NaturalSize(
     return {};
   }
 
+  // If we get here, we have enough information about the image to return its
+  // "density-corrected natural width and height", which is specced here:
+  // https://html.spec.whatwg.org/multipage/images.html#density-corrected-intrinsic-width-and-height
+  //
+  // At a high level, here's what happens:
+  // * If the image has an intrinsic size in both axes, we density-correct it
+  //   and return it.
+  // * Otherwise: use the (non-density-corrected) fallback size to fill in
+  //   whichever component is missing -- though if we can transfer the size
+  //   through the aspect ratio, we do that instead (and density-correct it).
+
+  // * If we *only* have an intrinsic aspect ratio, then we use the fallback
+  //   width, and we transfer it through the aspect ratio to produce a suitable
+  //   fallback height. (And neither component gets density-corrected since
+  //   they're both fallbacks.)
   CSSIntSize size;  // defaults to 0,0
-  if (!StaticPrefs::image_natural_size_fallback_enabled()) {
-    size.width = intrinsicSize.mWidth.valueOr(0);
-    size.height = intrinsicSize.mHeight.valueOr(0);
-  } else {
-    // Fallback case, for web-compatibility!
-    // See https://github.com/whatwg/html/issues/11287 and bug 1935269.
-    // If we lack an intrinsic size in either axis, then use the fallback size,
-    // unless we can transfer the size through the aspect ratio.
-    // (And if we *only* have an intrinsic aspect ratio, use the fallback width
-    // and transfer that through the aspect ratio to produce a height.)
-    size.width = intrinsicSize.mWidth.valueOr(kFallbackIntrinsicWidthInPixels);
-    size.height =
-        intrinsicSize.mHeight.valueOr(kFallbackIntrinsicHeightInPixels);
-    AspectRatio ratio = image->GetIntrinsicRatio();
-    if (ratio) {
-      if (!intrinsicSize.mHeight) {
-        // Compute the height from the width & ratio.  (Note that the width we
-        // use here might be kFallbackIntrinsicWidthInPixels, and that's fine.)
-        size.height = ratio.Inverted().ApplyTo(size.width);
-      } else if (!intrinsicSize.mWidth) {
-        // Compute the width from the height & ratio.
-        size.width = ratio.ApplyTo(size.height);
-      }
+
+  // Use intrinsicSize.mWidth, if it exists; otherwise, use fallback width.
+  bool isUsingFallbackWidth = !intrinsicSize.mWidth;
+  size.width = isUsingFallbackWidth ? kFallbackIntrinsicWidthInPixels
+                                    : CSSIntCoord(*intrinsicSize.mWidth);
+
+  // Use intrinsicSize.mHeight, if it exists; otherwise, use fallback height.
+  bool isUsingFallbackHeight = !intrinsicSize.mHeight;
+  size.height = isUsingFallbackHeight ? kFallbackIntrinsicHeightInPixels
+                                      : CSSIntCoord(*intrinsicSize.mHeight);
+
+  AspectRatio ratio = image->GetIntrinsicRatio();
+  if (ratio) {
+    if (isUsingFallbackHeight) {
+      // If we're using the fallback height and we have an aspect ratio, we
+      // instead compute our height from the width & ratio.  (Note that the
+      // width we use here might be the fallback width, and that's fine. If
+      // so, we just keep treating the resulting height as a fallback, i.e.
+      // we won't density-correct it.)
+      size.height = ratio.Inverted().ApplyTo(size.width);
+      isUsingFallbackHeight = isUsingFallbackWidth;
+    } else if (isUsingFallbackWidth) {
+      // We're tentatively using the fallback width, but we have an
+      // aspect-ratio and a (non-fallback) height.  So we don't use the
+      // fallback width after all; instead, we compute a width from the height
+      // & ratio.  (And we don't treat the result as fallback, because it's
+      // computed from a non-fallback height.)
+      size.width = ratio.ApplyTo(size.height);
+      isUsingFallbackWidth = false;
     }
   }
 
@@ -1455,53 +1467,47 @@ CSSIntSize nsImageLoadingContent::NaturalSize(
     }
   }
 
-  resolution.ApplyTo(size.width, size.height);
+  if (!isUsingFallbackWidth) {
+    resolution.ApplyXTo(size.width);
+  }
+  if (!isUsingFallbackHeight) {
+    resolution.ApplyYTo(size.height);
+  }
   return size;
 }
 
 CSSIntSize nsImageLoadingContent::GetWidthHeightForImage() {
+  // Determine the value for .width and .height getters. The spec text for this
+  // lives here:
+  // https://html.spec.whatwg.org/multipage/embedded-content.html#img-dimensions
+  // It mostly defers to a "determine the dimensions" algorithm which lives
+  // here:
+  // https://html.spec.whatwg.org/multipage/embedded-content-other.html#determine-dimensions
+  //
+  // Quotes below are from that "determine the dimensions" spec text.
+
+  // "If element is being rendered, then return the width and height of
+  // element's content box, in CSS pixels."
   Element* element = AsContent()->AsElement();
   if (nsIFrame* frame = element->GetPrimaryFrame(FlushType::Layout)) {
     return CSSIntSize::FromAppUnitsRounded(frame->GetContentRect().Size());
   }
 
-  CSSIntSize size;
-  nsCOMPtr<imgIContainer> image;
-  if (StaticPrefs::image_natural_size_fallback_enabled()) {
-    // Our image is not rendered (we don't have any frame); so we should should
-    // return the natural size, per:
-    // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-width
-    //
-    // Note that the spec says to use the "density-corrected natural width and
-    // height of the image", but we don't do that -- we specifically request
-    // the NaturalSize *without* density-correction here.  This handles a case
-    // where browsers deviate from the spec in an interoperable way, which
-    // hopefully we'll address in the spec soon. See case (2) in this comment
-    // for more:
-    // https://github.com/whatwg/html/issues/11287#issuecomment-2923467541
-    size = NaturalSize(DoDensityCorrection::No);
-  } else if (mCurrentRequest) {
-    mCurrentRequest->GetImage(getter_AddRefs(image));
-  }
+  // "...set width to naturalDimensions's width and height to
+  // naturalDimensions's height" [in the tentative return value]
+  CSSIntSize size = NaturalSize(DoDensityCorrection::Yes);
 
-  // If we have width or height attrs, we'll let those stomp on whatever
-  // NaturalSize we may have gotten above. This handles a case where browsers
-  // deviate from the spec in an interoperable way, which hopefully we'll
-  // address in the spec soon. See case (1) in this comment for more:
-  // https://github.com/whatwg/html/issues/11287#issuecomment-2923467541
+  // "If element has a width attribute: [attempt to parse and use that value]"
   const nsAttrValue* value;
   if ((value = element->GetParsedAttr(nsGkAtoms::width)) &&
       value->Type() == nsAttrValue::eInteger) {
     size.width = value->GetIntegerValue();
-  } else if (image) {
-    image->GetWidth(&size.width);
   }
 
+  // "If element has a height attribute: [attempt to parse and use that value]"
   if ((value = element->GetParsedAttr(nsGkAtoms::height)) &&
       value->Type() == nsAttrValue::eInteger) {
     size.height = value->GetIntegerValue();
-  } else if (image) {
-    image->GetHeight(&size.height);
   }
 
   NS_ASSERTION(size.width >= 0, "negative width");
@@ -1946,7 +1952,7 @@ Element* nsImageLoadingContent::FindImageMap() {
     return nullptr;  // useMap == "#"
   }
 
-  RefPtr<nsContentList> imageMapList;
+  RefPtr<ContentList> imageMapList;
   if (aElement->IsInUncomposedDoc()) {
     // Optimize the common case and use document level image map.
     imageMapList = aElement->OwnerDoc()->ImageMapList();
@@ -1955,15 +1961,15 @@ Element* nsImageLoadingContent::FindImageMap() {
     // so using SubtreeRoot() here.
     // Because this is a temporary list, we don't need to make it live.
     imageMapList =
-        new nsContentList(aElement->SubtreeRoot(), kNameSpaceID_XHTML,
-                          nsGkAtoms::map, nsGkAtoms::map, true, /* deep */
-                          false /* live */);
+        new ContentList(aElement->SubtreeRoot(), kNameSpaceID_XHTML,
+                        nsGkAtoms::map, nsGkAtoms::map, true, /* deep */
+                        false /* live */);
   }
 
   nsAutoString mapName(Substring(start, end));
 
-  uint32_t i, n = imageMapList->Length(true);
-  for (i = 0; i < n; ++i) {
+  const uint32_t n = imageMapList->Length();
+  for (uint32_t i = 0; i < n; ++i) {
     nsIContent* map = imageMapList->Item(i);
     if (map->AsElement()->AttrValueIs(kNameSpaceID_None, nsGkAtoms::id, mapName,
                                       eCaseMatters) ||

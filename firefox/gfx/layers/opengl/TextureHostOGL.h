@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,14 +7,14 @@
 
 #include <stddef.h>  // for size_t
 #include <stdint.h>  // for uint64_t
+
 #include "CompositableHost.h"
 #include "GLContextTypes.h"  // for GLContext
 #include "GLDefs.h"          // for GLenum, LOCAL_GL_CLAMP_TO_EDGE, etc
 #include "GLTextureImage.h"  // for TextureImage
 #include "gfxTypes.h"
-#include "mozilla/GfxMessageUtils.h"         // for gfxContentType
 #include "mozilla/Assertions.h"              // for MOZ_ASSERT, etc
-#include "mozilla/Attributes.h"              // for override
+#include "mozilla/GfxMessageUtils.h"         // for gfxContentType
 #include "mozilla/RefPtr.h"                  // for RefPtr
 #include "mozilla/gfx/Matrix.h"              // for Matrix4x4
 #include "mozilla/gfx/Point.h"               // for IntSize, IntPoint
@@ -47,6 +45,7 @@ namespace layers {
 class Compositor;
 class CompositorOGL;
 class AndroidHardwareBuffer;
+class AndroidImageConsumer;
 class SurfaceDescriptorAndroidHardwareBuffer;
 class TextureImageTextureSourceOGL;
 class GLTextureSource;
@@ -64,10 +63,10 @@ already_AddRefed<TextureHost> CreateTextureHostOGL(
  *
  * Note that it is important to be careful about the ownership model with
  * the OpenGL backend, due to some widget limitation on Linux: before
- * the nsBaseWidget associated with our OpenGL context has been completely
+ * the nsIWidget associated with our OpenGL context has been completely
  * deleted, every resource belonging to the OpenGL context MUST have been
  * released. At the moment the teardown sequence happens in the middle of
- * the nsBaseWidget's destructor, meaning that at a given moment we must be
+ * the nsIWidget's destructor, meaning that at a given moment we must be
  * able to easily find and release all the GL resources.
  * The point is: be careful about the ownership model and limit the number
  * of objects sharing references to GL resources to make the tear down
@@ -88,14 +87,6 @@ class TextureSourceOGL {
 
   virtual void BindTexture(GLenum aTextureUnit,
                            gfx::SamplingFilter aSamplingFilter) = 0;
-
-  // To be overridden in textures that need this. This method will be called
-  // when the compositor has used the texture to draw. This allows us to set
-  // a fence with glFenceSync which we can wait on later to ensure the GPU
-  // is done with the draw calls using that texture. We would like to be able
-  // to simply use glFinishObjectAPPLE, but this returns earlier than
-  // expected with nvidia drivers.
-  virtual void MaybeFenceTexture() {}
 
   virtual gfx::IntSize GetSize() const = 0;
 
@@ -270,39 +261,6 @@ class GLTextureSource : public DataTextureSource, public TextureSourceOGL {
   GLenum mTextureTarget;
   gfx::IntSize mSize;
   gfx::SurfaceFormat mFormat;
-};
-
-// This texture source try to wrap "aSurface" in ctor for compositor direct
-// access. Since we can't know the timing for gpu buffer access, the surface
-// should be alive until the ~ClientStorageTextureSource(). And if we try to
-// update the surface we mapped before, we need to call Sync() to make sure
-// the surface is not used by compositor.
-class DirectMapTextureSource : public GLTextureSource {
- public:
-  DirectMapTextureSource(gl::GLContext* aContext,
-                         gfx::DataSourceSurface* aSurface);
-  DirectMapTextureSource(TextureSourceProvider* aProvider,
-                         gfx::DataSourceSurface* aSurface);
-  ~DirectMapTextureSource();
-
-  bool Update(gfx::DataSourceSurface* aSurface,
-              nsIntRegion* aDestRegion = nullptr,
-              gfx::IntPoint* aSrcOffset = nullptr,
-              gfx::IntPoint* aDstOffset = nullptr) override;
-
-  // If aBlocking is false, check if this texture is no longer being used
-  // by the GPU - if aBlocking is true, this will block until the GPU is
-  // done with it.
-  bool Sync(bool aBlocking) override;
-
-  void MaybeFenceTexture() override;
-
- private:
-  bool UpdateInternal(gfx::DataSourceSurface* aSurface,
-                      nsIntRegion* aDestRegion, gfx::IntPoint* aSrcOffset,
-                      bool aInit);
-
-  GLsync mSync;
 };
 
 class GLTextureHost : public TextureHost {
@@ -541,11 +499,7 @@ class AndroidHardwareBufferTextureHost : public TextureHost {
                         const Range<wr::ImageKey>& aImageKeys,
                         PushDisplayItemFlagSet aFlags) override;
 
-  void SetAcquireFence(UniqueFileHandle&& aFenceFd) override;
-
-  void SetReleaseFence(UniqueFileHandle&& aFenceFd) override;
-
-  UniqueFileHandle GetAndResetReleaseFence() override;
+  void SetReadFence(Fence* aReadFence) override;
 
   AndroidHardwareBuffer* GetAndroidHardwareBuffer() const override {
     return mAndroidHardwareBuffer;
@@ -559,6 +513,101 @@ class AndroidHardwareBufferTextureHost : public TextureHost {
 
  protected:
   RefPtr<AndroidHardwareBuffer> mAndroidHardwareBuffer;
+};
+
+class AndroidImageReaderImageTextureSource : public TextureSource,
+                                             public TextureSourceOGL {
+ public:
+  AndroidImageReaderImageTextureSource(
+      TextureSourceProvider* aProvider,
+      AndroidImageConsumer* aAndroidImageConsumer, gfx::SurfaceFormat aFormat,
+      GLenum aTarget, GLenum aWrapMode, gfx::IntSize aSize);
+
+  const char* Name() const override {
+    return "AndroidImageReaderImageTextureSource";
+  }
+
+  TextureSourceOGL* AsSourceOGL() override { return this; }
+
+  void BindTexture(GLenum activetex,
+                   gfx::SamplingFilter aSamplingFilter) override;
+
+  bool IsValid() const override;
+
+  gfx::IntSize GetSize() const override { return mSize; }
+
+  gfx::SurfaceFormat GetFormat() const override { return mFormat; }
+
+  GLenum GetTextureTarget() const override { return mTextureTarget; }
+
+  GLenum GetWrapMode() const override { return mWrapMode; }
+
+  void DeallocateDeviceData() override;
+
+  gl::GLContext* gl() const { return mGL; }
+
+ protected:
+  virtual ~AndroidImageReaderImageTextureSource();
+
+  RefPtr<gl::GLContext> mGL;
+  RefPtr<AndroidImageConsumer> mAndroidImageConsumer;
+  const gfx::SurfaceFormat mFormat;
+  const GLenum mTextureTarget;
+  const GLenum mWrapMode;
+  const gfx::IntSize mSize;
+};
+
+class AndroidImageReaderImageTextureHost : public TextureHost {
+ public:
+  AndroidImageReaderImageTextureHost(
+      TextureFlags aFlags,
+      const AndroidImageReaderImageDescriptor& aDescriptor);
+
+  virtual ~AndroidImageReaderImageTextureHost();
+
+  void DeallocateDeviceData() override;
+
+  gfx::SurfaceFormat GetFormat() const override;
+
+  already_AddRefed<gfx::DataSourceSurface> GetAsSurface(
+      gfx::DataSourceSurface* aSurface) override {
+    return nullptr;  // XXX - implement this (for MOZ_DUMP_PAINTING)
+  }
+
+  gfx::IntSize GetSize() const override { return mSize; }
+
+  const char* Name() override { return "AndroidImageReaderImageTextureHost"; }
+
+  void CreateRenderTexture(
+      const wr::ExternalImageId& aExternalImageId) override;
+
+  uint32_t NumSubTextures() override;
+
+  void PushResourceUpdates(wr::TransactionBuilder& aResources,
+                           ResourceUpdateOp aOp,
+                           const Range<wr::ImageKey>& aImageKeys,
+                           const wr::ExternalImageId& aExtID) override;
+
+  void PushDisplayItems(wr::DisplayListBuilder& aBuilder,
+                        const wr::LayoutRect& aBounds,
+                        const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
+                        const Range<wr::ImageKey>& aImageKeys,
+                        PushDisplayItemFlagSet aFlags) override;
+
+  bool SupportsExternalCompositing(WebRenderBackend aBackend) override;
+
+  // gecko does not need deferred deletion with WebRender
+  // GPU/hardware task end could be checked by android fence.
+  // SurfaceTexture uses android fence internally,
+  bool NeedsDeferredDeletion() const override { return false; }
+
+  SurfaceDescriptor GetSurfaceDescriptor() override;
+
+  const AndroidImageReaderImageDescriptor mDescriptor;
+  const layers::GpuProcessAndroidImageReaderId mImageReaderId;
+  const layers::AndroidMediaCodecFrameId mFrameId;
+  const gfx::IntSize mSize;
+  const gfx::SurfaceFormat mFormat;
 };
 
 #endif  // MOZ_WIDGET_ANDROID

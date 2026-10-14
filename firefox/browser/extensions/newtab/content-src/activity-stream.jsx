@@ -58,7 +58,8 @@ export function renderWithoutState() {
     );
   });
 
-  ReactDOM.hydrate(<NewTab store={store} />, document.getElementById("root"));
+  const container = document.getElementById("root");
+  ReactDOM.createRoot(container).render(<NewTab store={store} />);
 }
 
 export function renderCache(initialState) {
@@ -77,5 +78,7 @@ export function renderCache(initialState) {
     );
   });
 
-  ReactDOM.hydrate(<NewTab store={store} />, document.getElementById("root"));
+  // Use createRoot so stale startup cache DOM doesn't cause hydration mismatches. (Issue with React 19)
+  const container = document.getElementById("root");
+  ReactDOM.createRoot(container).render(<NewTab store={store} />);
 }

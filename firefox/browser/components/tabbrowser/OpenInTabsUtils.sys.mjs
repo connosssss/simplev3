@@ -2,13 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const lazy = {};
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
-ChromeUtils.defineLazyGetter(lazy, "l10n", () => {
-  return new Localization(
-    ["browser/tabbrowser.ftl", "branding/brand.ftl"],
-    true
-  );
+const lazy = XPCOMUtils.declareLazy({
+  l10n: () =>
+    new Localization(["browser/tabbrowser.ftl", "branding/brand.ftl"], true),
 });
 
 /**
@@ -21,11 +19,11 @@ export const OpenInTabsUtils = {
    */
   confirmOpenInTabs(numTabsToOpen, aWindow) {
     const WARN_ON_OPEN_PREF = "browser.tabs.warnOnOpen";
-    const MAX_OPNE_PREF = "browser.tabs.maxOpenBeforeWarn";
+    const MAX_OPEN_PREF = "browser.tabs.maxOpenBeforeWarn";
     if (!Services.prefs.getBoolPref(WARN_ON_OPEN_PREF)) {
       return true;
     }
-    if (numTabsToOpen < Services.prefs.getIntPref(MAX_OPNE_PREF)) {
+    if (numTabsToOpen < Services.prefs.getIntPref(MAX_OPEN_PREF)) {
       return true;
     }
 

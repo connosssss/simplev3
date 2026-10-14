@@ -19,20 +19,21 @@ import androidx.core.view.isVisible
 import androidx.preference.Preference
 import androidx.preference.PreferenceManager
 import androidx.preference.PreferenceViewHolder
+import androidx.preference.R as preferenceR
 import mozilla.components.support.ktx.android.content.res.resolveAttribute
 import mozilla.components.support.ktx.android.view.putCompoundDrawablesRelative
 import org.mozilla.focus.R
 
+/** Interface for radio buttons that can be grouped together. */
 interface GroupableRadioButton {
+    /** Updates the checked state of the radio button. */
     fun updateRadioValue(isChecked: Boolean)
 
+    /** Adds the given [radioButton] to this radio button's group. */
     fun addToRadioGroup(radioButton: GroupableRadioButton)
 }
 
-/**
- * Connect all the given radio buttons into a group,
- * so that when one radio is checked the others are unchecked.
- */
+/** Connect all the given radio buttons into a group, so that when one radio is checked the others are unchecked. */
 fun addToRadioGroup(vararg radios: GroupableRadioButton) {
     for (i in 0..radios.lastIndex) {
         for (j in (i + 1)..radios.lastIndex) {
@@ -42,12 +43,16 @@ fun addToRadioGroup(vararg radios: GroupableRadioButton) {
     }
 }
 
+/** Unchecks all radio buttons in this [Iterable]. */
 fun Iterable<GroupableRadioButton>.uncheckAll() {
     forEach { it.updateRadioValue(isChecked = false) }
 }
 
+/** A custom [Preference] that displays a radio button. */
 @SuppressLint("RestrictedApi")
-open class RadioButtonPreference @JvmOverloads constructor(
+open class RadioButtonPreference
+@JvmOverloads
+constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : Preference(context, attrs), GroupableRadioButton {
@@ -72,18 +77,19 @@ open class RadioButtonPreference @JvmOverloads constructor(
             R.styleable.RadioButtonPreference,
             getAttr(
                 context,
-                androidx.preference.R.attr.preferenceStyle,
+                preferenceR.attr.preferenceStyle,
                 android.R.attr.preferenceStyle,
             ),
             0,
         ) {
-            defaultValue = when {
-                hasValue(R.styleable.RadioButtonPreference_defaultValue) ->
-                    getBoolean(R.styleable.RadioButtonPreference_defaultValue, false)
-                hasValue(R.styleable.RadioButtonPreference_android_defaultValue) ->
-                    getBoolean(R.styleable.RadioButtonPreference_android_defaultValue, false)
-                else -> false
-            }
+            defaultValue =
+                when {
+                    hasValue(R.styleable.RadioButtonPreference_defaultValue) ->
+                        getBoolean(R.styleable.RadioButtonPreference_defaultValue, false)
+                    hasValue(R.styleable.RadioButtonPreference_android_defaultValue) ->
+                        getBoolean(R.styleable.RadioButtonPreference_android_defaultValue, false)
+                    else -> false
+                }
         }
     }
 
@@ -91,6 +97,7 @@ open class RadioButtonPreference @JvmOverloads constructor(
         radioGroups.add(radioButton)
     }
 
+    /** Sets a listener to be invoked when the preference is clicked. */
     fun onClickListener(listener: (() -> Unit)) {
         clickListener = listener
     }
@@ -149,9 +156,11 @@ open class RadioButtonPreference @JvmOverloads constructor(
         titleView = holder.findViewById(R.id.title) as TextView
         titleView?.alpha = if (isEnabled) FULL_ALPHA else HALF_ALPHA
 
-        title?.takeIf { it.isNotEmpty() }?.let {
-            titleView?.text = it
-        }
+        title
+            ?.takeIf { it.isNotEmpty() }
+            ?.let {
+                titleView?.text = it
+            }
     }
 
     private fun bindSummaryView(holder: PreferenceViewHolder) {
@@ -162,11 +171,12 @@ open class RadioButtonPreference @JvmOverloads constructor(
             if (summary.isNullOrEmpty()) {
                 it.isVisible = false
             } else {
-                it.text = if (shouldSummaryBeParsedAsHtmlContent) {
-                    HtmlCompat.fromHtml(summary.toString(), HtmlCompat.FROM_HTML_MODE_COMPACT)
-                } else {
-                    summary
-                }
+                it.text =
+                    if (shouldSummaryBeParsedAsHtmlContent) {
+                        HtmlCompat.fromHtml(summary.toString(), HtmlCompat.FROM_HTML_MODE_COMPACT)
+                    } else {
+                        summary
+                    }
 
                 it.isVisible = true
             }
@@ -174,8 +184,9 @@ open class RadioButtonPreference @JvmOverloads constructor(
     }
 
     /**
-     * In devices with Android 6, when we use android:button="@null" android:drawableStart doesn't work via xml
-     * as a result we have to apply it programmatically. More info about this issue https://github.com/mozilla-mobile/fenix/issues/1414
+     * In devices with Android 6, when we use android:button="@null" android:drawableStart doesn't work via xml as a
+     * result we have to apply it programmatically. More info about this issue
+     * https://github.com/mozilla-mobile/fenix/issues/1414
      */
     private fun RadioButton.setStartCheckedIndicator() {
         val attr = context.theme.resolveAttribute(android.R.attr.listChoiceIndicatorSingle)

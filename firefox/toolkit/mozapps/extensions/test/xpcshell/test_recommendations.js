@@ -12,8 +12,6 @@ ChromeUtils.defineESModuleGetters(this, {
   Management: "resource://gre/modules/Extension.sys.mjs",
 });
 
-AddonTestUtils.init(this);
-AddonTestUtils.overrideCertDB();
 AddonTestUtils.usePrivilegedSignatures = false;
 
 const testStartTime = Date.now();
@@ -699,6 +697,21 @@ add_task(
       extensionValidRecommended.awaitStartup(),
       extensionLine.awaitStartup(),
     ]);
+
+    Assert.equal(
+      WebExtensionPolicy.getByID(extensionInvalidRecommended.id)
+        .hasRecommendedState,
+      false
+    );
+    Assert.equal(
+      WebExtensionPolicy.getByID(extensionValidRecommended.id)
+        .hasRecommendedState,
+      true
+    );
+    Assert.equal(
+      WebExtensionPolicy.getByID(extensionLine.id).hasRecommendedState,
+      true
+    );
 
     // Uninstall all test extensions.
     await Promise.all(

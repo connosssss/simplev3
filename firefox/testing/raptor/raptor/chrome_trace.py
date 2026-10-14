@@ -16,7 +16,7 @@ from logger.logger import RaptorLogger
 
 here = Path(__file__).resolve().parent
 LOG = RaptorLogger(component="raptor-chrome-trace")
-from raptor_profiling import RaptorProfiling
+from raptor_profiling import RaptorProfiling, _profile_archive_paths
 
 
 class ChromeTrace(RaptorProfiling):
@@ -35,7 +35,7 @@ class ChromeTrace(RaptorProfiling):
         # Make sure no archive already exists in the location where
         # we plan to output our profiler archive
         self.profile_arcname = Path(
-            self.upload_dir, "profile_{0}.zip".format(self.test_config["name"])
+            self.upload_dir, "profile_{}.zip".format(self.test_config["name"])
         )
         LOG.info(f"Clearing archive {self.profile_arcname}")
         mozfile.remove(self.profile_arcname)
@@ -69,17 +69,29 @@ class ChromeTrace(RaptorProfiling):
                 LOG.error("No profiles collected")
             return
 
-        test_type = self.test_config.get("type", "pageload")
         try:
             mode = zipfile.ZIP_DEFLATED
         except NameError:
             mode = zipfile.ZIP_STORED
 
+        # Compute the in-archive paths from the profiles that exist, so that
+        # a missing profile cannot force collision aliases on the others.
+        existing_profiles = []
+        for profile_info in profiles:
+            if not os.path.exists(profile_info["path"]):
+                if self._is_extra_profiler_run:
+                    LOG.info("Trace not found on extra profiler run.")
+                else:
+                    LOG.error("Trace not found.")
+                continue
+            existing_profiles.append(profile_info)
+        archive_paths = _profile_archive_paths(self.test_config, existing_profiles)
+
         with zipfile.ZipFile(self.profile_arcname, "a", mode) as arc:
-            for profile_info in profiles:
+            for profile_info, path_in_zip in zip(existing_profiles, archive_paths):
                 profile_path = profile_info["path"]
 
-                LOG.info("Opening profile at %s" % profile_path)
+                LOG.info(f"Opening profile at {profile_path}")
                 try:
                     profile = self._open_profile_file(profile_path)
                 except FileNotFoundError:
@@ -90,25 +102,9 @@ class ChromeTrace(RaptorProfiling):
                     continue
 
                 try:
-                    test_run_type = (
-                        "{0}-{1}".format(test_type, profile_info["type"])
-                        if test_type == "pageload"
-                        else test_type
-                    )
-                    folder_name = "%s-%s" % (self.test_config["name"], test_run_type)
-                    iteration = Path(profile_path).parts[-1].split("-")[-1]
-                    if test_type == "pageload" and profile_info["type"] == "cold":
-                        iteration_type = "browser-cycle"
-                    elif profile_info["type"] == "warm":
-                        iteration_type = "page-cycle"
-                    else:
-                        iteration_type = "iteration"
-                    profile_name = "-".join([iteration_type, iteration])
-                    path_in_zip = Path(folder_name, profile_name)
-
                     LOG.info(
-                        "Adding profile %s to archive %s as %s"
-                        % (profile_path, self.profile_arcname, path_in_zip)
+                        f"Adding profile {profile_path} to archive "
+                        f"{self.profile_arcname} as {path_in_zip}"
                     )
                     arc.writestr(
                         str(path_in_zip),
@@ -116,8 +112,8 @@ class ChromeTrace(RaptorProfiling):
                     )
                 except Exception:
                     LOG.exception(
-                        "Failed to add profile %s to archive %s"
-                        % (profile_path, self.profile_arcname)
+                        f"Failed to add profile {profile_path} to archive "
+                        f"{self.profile_arcname}"
                     )
                     raise
 
@@ -125,7 +121,7 @@ class ChromeTrace(RaptorProfiling):
         # it can be viewed automatically via the view-gecko-profile tool.
         # since we are using the firefox profiler to view the trace, it
         # is convenient to just use the same env var.
-        os.environ["RAPTOR_LATEST_GECKO_PROFILE_ARCHIVE"] = str(
+        os.environ["RAPTOR_LATEST_PROFILE"] = str(
             self.profile_arcname
         )  # convert posixpath object to string for environment
 
@@ -133,4 +129,4 @@ class ChromeTrace(RaptorProfiling):
         """
         Clean up temp folders created with the instance creation.
         """
-        mozfile.remove(self.temp_profile_dir)
+        super().clean()

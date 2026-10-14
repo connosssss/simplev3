@@ -1,18 +1,14 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SpeechRecognitionAlternative_h
-#define mozilla_dom_SpeechRecognitionAlternative_h
+#ifndef DOM_MEDIA_WEBSPEECH_RECOGNITION_SPEECHRECOGNITIONALTERNATIVE_H_
+#define DOM_MEDIA_WEBSPEECH_RECOGNITION_SPEECHRECOGNITIONALTERNATIVE_H_
 
+#include "js/TypeDecls.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsString.h"
 #include "nsWrapperCache.h"
-#include "js/TypeDecls.h"
-
-#include "mozilla/Attributes.h"
 
 namespace mozilla::dom {
 
@@ -23,7 +19,7 @@ class SpeechRecognitionAlternative final : public nsISupports,
  public:
   explicit SpeechRecognitionAlternative(SpeechRecognition* aParent);
 
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(SpeechRecognitionAlternative)
 
   nsISupports* GetParentObject() const;
@@ -46,4 +42,4 @@ class SpeechRecognitionAlternative final : public nsISupports,
 
 }  // namespace mozilla::dom
 
-#endif
+#endif  // DOM_MEDIA_WEBSPEECH_RECOGNITION_SPEECHRECOGNITIONALTERNATIVE_H_

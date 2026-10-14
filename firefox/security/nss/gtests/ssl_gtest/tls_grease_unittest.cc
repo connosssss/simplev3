@@ -43,7 +43,7 @@ class GreasePresenceAbsenceTestBase : public TlsConnectTestBase {
  public:
   GreasePresenceAbsenceTestBase(SSLProtocolVariant variant, uint16_t version,
                                 bool shouldGrease)
-      : TlsConnectTestBase(variant, version), set_grease_(shouldGrease){};
+      : TlsConnectTestBase(variant, version), set_grease_(shouldGrease) {};
 
   void SetupGrease() {
     EnsureTlsSetup();
@@ -75,7 +75,7 @@ class GreasePresenceAbsenceTestAllVersions
   GreasePresenceAbsenceTestAllVersions()
       : GreasePresenceAbsenceTestBase(std::get<0>(GetParam()),
                                       std::get<1>(GetParam()),
-                                      std::get<2>(GetParam())){};
+                                      std::get<2>(GetParam())) {};
 };
 
 // Varies stream/datagram, TLS Version and whether GREASE is enabled
@@ -91,7 +91,7 @@ class GreasePresenceAbsenceTestTlsStream13
  public:
   GreasePresenceAbsenceTestTlsStream13()
       : GreasePresenceAbsenceTestBase(
-            ssl_variant_stream, SSL_LIBRARY_VERSION_TLS_1_3, GetParam()){};
+            ssl_variant_stream, SSL_LIBRARY_VERSION_TLS_1_3, GetParam()) {};
 };
 
 INSTANTIATE_TEST_SUITE_P(GreaseTests, GreasePresenceAbsenceTestTlsStream13,
@@ -131,10 +131,35 @@ TEST_P(GreasePresenceAbsenceTestAllVersions, ClientGreaseKeyShare) {
 
   auto ch1 =
       MakeTlsFilter<TlsExtensionCapture>(client_, ssl_tls13_key_share_xtn);
+  // filters only work with particular groups
+  server_->ConfigNamedGroups(kNonPQDHEGroups);
+  client_->ConfigNamedGroups(kNonPQDHEGroups);
   Connect();
   EXPECT_TRUE((version_ >= SSL_LIBRARY_VERSION_TLS_1_3) == ch1->captured());
 
-  checkGreasePresence(1, 0, ch1->extension());
+  // Parse the key_share extension structurally: only count GREASE values in
+  // the group ID fields. Scanning the raw buffer with countGreaseInBuffer
+  // would spuriously count GREASE patterns in the random key_exchange bytes.
+  size_t greaseCount = 0;
+  if (ch1->captured()) {
+    TlsParser extParser(ch1->extension());
+    DataBuffer keyShares;
+    ASSERT_TRUE(extParser.ReadVariable(&keyShares, 2));
+    TlsParser shareParser(keyShares);
+    while (shareParser.remaining()) {
+      uint32_t group;
+      DataBuffer keyExchange;
+      ASSERT_TRUE(shareParser.Read(&group, 2));
+      ASSERT_TRUE(shareParser.ReadVariable(&keyExchange, 2));
+      for (uint16_t greaseVal : kTlsGreaseValues) {
+        if (static_cast<uint16_t>(group) == greaseVal) {
+          greaseCount++;
+        }
+      }
+    }
+  }
+  size_t expected = expectGrease() ? size_t(1) : size_t(0);
+  EXPECT_EQ(expected, greaseCount);
 }
 
 TEST_P(GreasePresenceAbsenceTestAllVersions, ClientGreaseSigAlg) {
@@ -412,7 +437,7 @@ TEST_F(TlsConnectStreamTls13, GreasePsk) {
 
   Connect();
   SendReceive();
-  CheckKeys(ssl_kea_ecdh, ssl_grp_ec_curve25519, ssl_auth_psk, ssl_sig_none);
+  CheckKeys(ssl_auth_psk, ssl_sig_none);
 }
 
 // Test that ECH and GREASE work together successfully
@@ -541,7 +566,7 @@ class GreaseTestStreamTls12
     : public TlsConnectStreamTls12,
       public ::testing::WithParamInterface<uint16_t /* GREASE */> {
  public:
-  GreaseTestStreamTls12() : TlsConnectStreamTls12(), grease_(GetParam()){};
+  GreaseTestStreamTls12() : TlsConnectStreamTls12(), grease_(GetParam()) {};
 
   void ConnectExpectSigAlgFail() {
     client_->ExpectSendAlert(kTlsAlertIllegalParameter);
@@ -670,7 +695,7 @@ class GreaseTestStreamTls13
     : public TlsConnectStreamTls13,
       public ::testing::WithParamInterface<uint16_t /* GREASE */> {
  public:
-  GreaseTestStreamTls13() : grease_(GetParam()){};
+  GreaseTestStreamTls13() : grease_(GetParam()) {};
 
  protected:
   uint16_t grease_;
@@ -735,7 +760,7 @@ class GreaseTestStreamTls123
  public:
   GreaseTestStreamTls123()
       : TlsConnectTestBase(ssl_variant_stream, std::get<0>(GetParam())),
-        grease_(std::get<1>(GetParam())){};
+        grease_(std::get<1>(GetParam())) {};
 
   void ConnectExpectIllegalGreaseFail() {
     client_->ExpectSendAlert(kTlsAlertIllegalParameter);
@@ -783,7 +808,7 @@ class GreaseExtensionTestStreamTls13
   GreaseExtensionTestStreamTls13()
       : TlsConnectStreamTls13(),
         message_(std::get<0>(GetParam())),
-        grease_(std::get<1>(GetParam())){};
+        grease_(std::get<1>(GetParam())) {};
 
  protected:
   uint8_t message_;

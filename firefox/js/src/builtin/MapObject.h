@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -94,7 +92,7 @@ struct HashableValueHasher {
   }
   static bool match(const Key& k, const Lookup& l) { return k.get().equals(l); }
   static bool isEmpty(const Key& v) {
-    return v.get().get().isMagic(JS_HASH_KEY_EMPTY);
+    return v.get().get().isMagicNoReleaseCheck(JS_HASH_KEY_EMPTY);
   }
   static void makeEmpty(Key* vp) { vp->set(HashableValue(JS_HASH_KEY_EMPTY)); }
 };
@@ -125,11 +123,10 @@ class MapObject : public OrderedHashMapObject {
 
   friend class OrderedHashTableRef<MapObject>;
 
-  enum {
-    NurseryKeysSlot = Table::SlotCount,
-    RegisteredNurseryIteratorsSlot,
-    SlotCount
-  };
+  JS_DEFINE_TYPED_SLOT(Table::SlotCount + 0, NURSERY_KEYS_SLOT, Private);
+  JS_DEFINE_TYPED_SLOT(Table::SlotCount + 1, REGISTERED_NURSERY_ITERATORS_SLOT,
+                       Boolean);
+  static constexpr uint32_t SLOT_COUNT = Table::SlotCount + 2;
 
   using IteratorKind = TableIteratorObject::Kind;
 
@@ -153,10 +150,8 @@ class MapObject : public OrderedHashMapObject {
   [[nodiscard]] bool get(JSContext* cx, const Value& key,
                          MutableHandleValue rval);
   [[nodiscard]] bool has(JSContext* cx, const Value& key, bool* rval);
-#ifdef NIGHTLY_BUILD
   [[nodiscard]] bool getOrInsert(JSContext* cx, const Value& key,
                                  const Value& val, MutableHandleValue rval);
-#endif  // #ifdef NIGHTLY_BUILD
   [[nodiscard]] bool delete_(JSContext* cx, const Value& key, bool* rval);
 
   // Set call for public JSAPI exposure. Does not actually return map object
@@ -177,15 +172,12 @@ class MapObject : public OrderedHashMapObject {
   // it, or nullptr.
   static MapObject* sweepAfterMinorGC(JS::GCContext* gcx, MapObject* mapobj);
 
-  size_t sizeOfData(mozilla::MallocSizeOf mallocSizeOf);
+  size_t sizeOfBufferData();
+  size_t sizeOfMallocData(mozilla::MallocSizeOf mallocSizeOf);
 
   [[nodiscard]] static bool get(JSContext* cx, unsigned argc, Value* vp);
   [[nodiscard]] static bool set(JSContext* cx, unsigned argc, Value* vp);
   [[nodiscard]] static bool has(JSContext* cx, unsigned argc, Value* vp);
-
-  static bool isOriginalSizeGetter(Native native) {
-    return native == static_cast<Native>(MapObject::size);
-  }
 
  private:
   static const ClassSpec classSpec_;
@@ -207,7 +199,6 @@ class MapObject : public OrderedHashMapObject {
   static bool finishInit(JSContext* cx, HandleObject ctor, HandleObject proto);
 
   static void trace(JSTracer* trc, JSObject* obj);
-  static void finalize(JS::GCContext* gcx, JSObject* obj);
   static size_t objectMoved(JSObject* obj, JSObject* old);
 
   [[nodiscard]] static bool construct(JSContext* cx, unsigned argc, Value* vp);
@@ -223,12 +214,10 @@ class MapObject : public OrderedHashMapObject {
   [[nodiscard]] static bool get_impl(JSContext* cx, const CallArgs& args);
   [[nodiscard]] static bool has_impl(JSContext* cx, const CallArgs& args);
   [[nodiscard]] static bool set_impl(JSContext* cx, const CallArgs& args);
-#ifdef NIGHTLY_BUILD
   [[nodiscard]] static bool getOrInsert(JSContext* cx, unsigned argc,
                                         Value* vp);
   [[nodiscard]] static bool getOrInsert_impl(JSContext* cx,
                                              const CallArgs& args);
-#endif
   [[nodiscard]] static bool delete_impl(JSContext* cx, const CallArgs& args);
   [[nodiscard]] static bool delete_(JSContext* cx, unsigned argc, Value* vp);
   [[nodiscard]] static bool keys_impl(JSContext* cx, const CallArgs& args);
@@ -267,11 +256,10 @@ class SetObject : public OrderedHashSetObject {
 
   friend class OrderedHashTableRef<SetObject>;
 
-  enum {
-    NurseryKeysSlot = Table::SlotCount,
-    RegisteredNurseryIteratorsSlot,
-    SlotCount
-  };
+  JS_DEFINE_TYPED_SLOT(Table::SlotCount + 0, NURSERY_KEYS_SLOT, Private);
+  JS_DEFINE_TYPED_SLOT(Table::SlotCount + 1, REGISTERED_NURSERY_ITERATORS_SLOT,
+                       Boolean);
+  static constexpr uint32_t SLOT_COUNT = Table::SlotCount + 2;
 
   using IteratorKind = TableIteratorObject::Kind;
 
@@ -314,11 +302,8 @@ class SetObject : public OrderedHashSetObject {
   // it, or nullptr.
   static SetObject* sweepAfterMinorGC(JS::GCContext* gcx, SetObject* setobj);
 
-  size_t sizeOfData(mozilla::MallocSizeOf mallocSizeOf);
-
-  static bool isOriginalSizeGetter(Native native) {
-    return native == static_cast<Native>(SetObject::size);
-  }
+  size_t sizeOfBufferData();
+  size_t sizeOfMallocData(mozilla::MallocSizeOf mallocSizeOf);
 
  private:
   static const ClassSpec classSpec_;
@@ -339,7 +324,6 @@ class SetObject : public OrderedHashSetObject {
   static bool finishInit(JSContext* cx, HandleObject ctor, HandleObject proto);
 
   static void trace(JSTracer* trc, JSObject* obj);
-  static void finalize(JS::GCContext* gcx, JSObject* obj);
   static size_t objectMoved(JSObject* obj, JSObject* old);
 
   static bool construct(JSContext* cx, unsigned argc, Value* vp);

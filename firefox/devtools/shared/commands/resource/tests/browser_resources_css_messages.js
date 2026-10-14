@@ -12,6 +12,7 @@ const { MESSAGE_CATEGORY } = require("resource://devtools/shared/constants.js");
 const httpServer = createTestHTTPServer();
 httpServer.registerPathHandler(`/test_css_messages.html`, (req, res) => {
   res.setStatusLine(req.httpVersion, 200, "OK");
+  res.setHeader("Content-Type", "text/html");
   res.write(`<meta charset=utf8>
     <style>
       html {
@@ -57,7 +58,7 @@ async function testWatchingCssMessages() {
   // We need to wait for the first CSS Warning as it is not a cached message; when we
   // start watching, the `cssErrorReportingEnabled` is checked on the target docShell, and
   // if it is false, we re-parse the stylesheets to get the messages.
-  await BrowserTestUtils.waitForCondition(() => receivedMessages.length === 1);
+  await TestUtils.waitForCondition(() => receivedMessages.length === 1);
 
   info("Trigger a CSS Warning");
   triggerCSSWarning(tab);
@@ -93,7 +94,7 @@ async function testWatchingCachedCssMessages() {
   // emit warnings. But it does not automatically emit warnings for the existing CSS
   // errors in the stylesheets. So here we reload the tab, which will make the Parser
   // parse the stylesheets again, this time emitting warnings.
-  await reloadBrowser();
+  await reloadSelectedTab();
   // and trigger more CSS warnings
   await triggerCSSWarning(tab);
 
@@ -134,7 +135,7 @@ function setupOnAvailableFunction(
   const expectedMessages = [
     {
       pageError: {
-        errorMessage: /Expected color but found ‘bloup’/,
+        errorMessage: /Error in parsing value for ‘color: bloup;’/,
         sourceName: /test_css_messages/,
         category: MESSAGE_CATEGORY.CSS_PARSER,
         timeStamp: FRACTIONAL_NUMBER_REGEX,
@@ -146,7 +147,7 @@ function setupOnAvailableFunction(
     },
     {
       pageError: {
-        errorMessage: /Error in parsing value for ‘width’/,
+        errorMessage: /Error in parsing value for ‘width: red’/,
         sourceName: /test_css_messages/,
         category: MESSAGE_CATEGORY.CSS_PARSER,
         timeStamp: FRACTIONAL_NUMBER_REGEX,
@@ -157,7 +158,7 @@ function setupOnAvailableFunction(
     },
     {
       pageError: {
-        errorMessage: /Error in parsing value for ‘height’/,
+        errorMessage: /Error in parsing value for ‘height: blue’/,
         sourceName: /test_css_messages/,
         category: MESSAGE_CATEGORY.CSS_PARSER,
         timeStamp: FRACTIONAL_NUMBER_REGEX,
@@ -206,7 +207,7 @@ function setupOnAvailableFunction(
  * Sets invalid values for width and height on the document's body style attribute.
  */
 function triggerCSSWarning(tab) {
-  return ContentTask.spawn(tab.linkedBrowser, null, function frameScript() {
+  return SpecialPowers.spawn(tab.linkedBrowser, [], function frameScript() {
     content.document.body.style.width = "red";
     content.document.body.style.height = "blue";
   });

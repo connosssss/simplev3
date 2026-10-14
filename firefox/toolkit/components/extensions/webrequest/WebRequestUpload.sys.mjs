@@ -14,7 +14,7 @@ XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "mimeHeader",
   "@mozilla.org/network/mime-hdrparam;1",
-  "nsIMIMEHeaderParam"
+  Ci.nsIMIMEHeaderParam
 );
 
 const BinaryInputStream = Components.Constructor(
@@ -115,22 +115,6 @@ class Headers extends Map {
 
     return null;
   }
-}
-
-/**
- * Creates a new Object with a corresponding property for every
- * key-value pair in the given Map.
- *
- * @param {Map} map
- *        The map to convert.
- * @returns {object}
- */
-function mapToObject(map) {
-  let result = {};
-  for (let [key, value] of map) {
-    result[key] = value;
-  }
-  return result;
 }
 
 /**
@@ -401,10 +385,10 @@ function parseFormData(stream, channel, lenient = false) {
     let contentType = channel.getRequestHeader("Content-Type");
 
     switch (Headers.getParam(contentType, "")) {
-      case "multipart/form-data":
+      case "multipart/form-data": {
         let boundary = Headers.getParam(contentType, "boundary");
         return parseMultiPart(stream, `\r\n--${boundary}`);
-
+      }
       case "application/x-www-form-urlencoded":
         return parseUrlEncoded(stream);
     }
@@ -446,7 +430,7 @@ function createFormData(stream, channel, lenient) {
   try {
     let formData = parseFormData(stream, channel, lenient);
     if (formData) {
-      return mapToObject(formData);
+      return Object.fromEntries(formData);
     }
   } catch (e) {
     Cu.reportError(e);
@@ -522,13 +506,6 @@ WebRequestUpload = {
   createRequestBody(channel) {
     if (!(channel instanceof Ci.nsIUploadChannel) || !channel.uploadStream) {
       return null;
-    }
-
-    if (
-      channel instanceof Ci.nsIUploadChannel2 &&
-      channel.uploadStreamHasHeaders
-    ) {
-      return { error: "Upload streams with headers are unsupported" };
     }
 
     try {

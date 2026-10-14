@@ -302,39 +302,6 @@ loser:
     return (cert);
 }
 
-CERTCertList *
-CERT_MatchUserCert(CERTCertDBHandle *handle,
-                   SECCertUsage usage,
-                   int nCANames, char **caNames,
-                   void *proto_win)
-{
-    CERTCertList *certList = NULL;
-    SECStatus rv;
-
-    certList = CERT_FindUserCertsByUsage(handle, usage, PR_TRUE, PR_TRUE,
-                                         proto_win);
-    if (certList == NULL) {
-        goto loser;
-    }
-
-    rv = CERT_FilterCertListByCANames(certList, nCANames, caNames, usage);
-    if (rv != SECSuccess) {
-        goto loser;
-    }
-
-    goto done;
-
-loser:
-    if (certList != NULL) {
-        CERT_DestroyCertList(certList);
-        certList = NULL;
-    }
-
-done:
-
-    return (certList);
-}
-
 typedef struct stringNode {
     struct stringNode *next;
     char *string;
@@ -743,85 +710,6 @@ loser:
     return NULL;
 }
 
-CERTDistNames *
-CERT_DistNamesFromNicknames(CERTCertDBHandle *handle, char **nicknames,
-                            int nnames)
-{
-    CERTDistNames *dnames = NULL;
-    PLArenaPool *arena;
-    int i, rv;
-    SECItem *names = NULL;
-    CERTCertificate *cert = NULL;
-
-    arena = PORT_NewArena(DER_DEFAULT_CHUNKSIZE);
-    if (arena == NULL)
-        goto loser;
-    dnames = PORT_ArenaZNew(arena, CERTDistNames);
-    if (dnames == NULL)
-        goto loser;
-
-    dnames->arena = arena;
-    dnames->nnames = nnames;
-    dnames->names = names = PORT_ArenaZNewArray(arena, SECItem, nnames);
-    if (names == NULL)
-        goto loser;
-
-    for (i = 0; i < nnames; i++) {
-        cert = CERT_FindCertByNicknameOrEmailAddr(handle, nicknames[i]);
-        if (cert == NULL)
-            goto loser;
-        rv = SECITEM_CopyItem(arena, &names[i], &cert->derSubject);
-        if (rv == SECFailure)
-            goto loser;
-        CERT_DestroyCertificate(cert);
-    }
-    return dnames;
-
-loser:
-    if (cert != NULL)
-        CERT_DestroyCertificate(cert);
-    if (arena != NULL)
-        PORT_FreeArena(arena, PR_FALSE);
-    return NULL;
-}
-
-/* [ from pcertdb.c - calls Ascii to Name ] */
-/*
- * Lookup a certificate in the database by name
- */
-CERTCertificate *
-CERT_FindCertByNameString(CERTCertDBHandle *handle, char *nameStr)
-{
-    CERTName *name;
-    SECItem *nameItem;
-    CERTCertificate *cert = NULL;
-    PLArenaPool *arena = NULL;
-
-    arena = PORT_NewArena(DER_DEFAULT_CHUNKSIZE);
-
-    if (arena == NULL) {
-        goto loser;
-    }
-
-    name = CERT_AsciiToName(nameStr);
-
-    if (name) {
-        nameItem = SEC_ASN1EncodeItem(arena, NULL, (void *)name,
-                                      CERT_NameTemplate);
-        if (nameItem != NULL) {
-            cert = CERT_FindCertByName(handle, nameItem);
-        }
-        CERT_DestroyName(name);
-    }
-
-loser:
-    if (arena) {
-        PORT_FreeArena(arena, PR_FALSE);
-    }
-
-    return (cert);
-}
-
 /* From certv3.c */
 
 CERTCrlDistributionPoints *
@@ -1035,7 +923,7 @@ CERT_CertChainFromCert(CERTCertificate *cert, SECCertUsage usage,
     NSSCertificate *stanCert;
     PLArenaPool *arena;
     NSSUsage nssUsage;
-    int i, len;
+    int i = 0, len;
     NSSTrustDomain *td = STAN_GetDefaultTrustDomain();
     NSSCryptoContext *cc = STAN_GetDefaultCryptoContext();
 
@@ -1072,7 +960,6 @@ CERT_CertChainFromCert(CERTCertificate *cert, SECCertUsage usage,
     chain->certs = (SECItem *)PORT_ArenaAlloc(arena, len * sizeof(SECItem));
     if (!chain->certs)
         goto loser;
-    i = 0;
     stanCert = stanChain[i];
     while (stanCert) {
         SECItem derCert;
@@ -1084,7 +971,7 @@ CERT_CertChainFromCert(CERTCertificate *cert, SECCertUsage usage,
         derCert.data = (unsigned char *)stanCert->encoding.data;
         derCert.type = siBuffer;
         if (SECITEM_CopyItem(arena, &chain->certs[i], &derCert) != SECSuccess) {
-            CERT_DestroyCertificate(cCert);
+            /* loser: will release stanChain[i]; don't release it here too. */
             goto loser;
         }
         stanCert = stanChain[++i];
@@ -1106,7 +993,9 @@ CERT_CertChainFromCert(CERTCertificate *cert, SECCertUsage usage,
     nss_ZFreeIf(stanChain);
     return chain;
 loser:
-    i = 0;
+    /* Release only the chain entries not already released by the copy
+     * loop above; entries 0..i-1 have already had their BuildChain
+     * reference dropped, so start at i to avoid an over-release. */
     stanCert = stanChain[i];
     while (stanCert) {
         CERTCertificate *cCert = STAN_GetCERTCertificate(stanCert);

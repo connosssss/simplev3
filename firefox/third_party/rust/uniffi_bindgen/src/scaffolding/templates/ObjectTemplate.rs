@@ -9,7 +9,7 @@ pub trait r#{{ obj.name() }} {
     {% if meth.is_async() %}async {% endif %}fn r#{{ meth.name() }}(
         {% if meth.takes_self_by_arc()%}self: Arc<Self>{% else %}&self{% endif %},
         {%- for arg in meth.arguments() %}
-        r#{{ arg.name() }}: {% if arg.by_ref() %}&{% endif %}{{ arg.as_type().borrow()|type_rs }},
+        r#{{ arg.name() }}: {{ arg|arg_rs }},
         {%- endfor %}
     )
     {%- match (meth.return_type(), meth.throws_type()) %}
@@ -21,18 +21,22 @@ pub trait r#{{ obj.name() }} {
     {% endfor %}
 }
 {%- else %}
-{%- for tm in obj.uniffi_traits() %}
-{%      match tm %}
-{%          when UniffiTrait::Debug { fmt }%}
-#[uniffi::export(Debug)]
-{%          when UniffiTrait::Display { fmt }%}
-#[uniffi::export(Display)]
-{%          when UniffiTrait::Hash { hash }%}
-#[uniffi::export(Hash)]
-{%          when UniffiTrait::Eq { eq, ne }%}
-#[uniffi::export(Eq)]
-{%      endmatch %}
-{% endfor %}
+{%- let uniffi_trait_methods = obj.uniffi_trait_methods() %}
+{%- if uniffi_trait_methods.debug_fmt.is_some() %}
+#[::uniffi::export_for_udl_derive(Debug)]
+{%- endif %}
+{%- if uniffi_trait_methods.display_fmt.is_some() %}
+#[::uniffi::export_for_udl_derive(Display)]
+{%- endif %}
+{%- if uniffi_trait_methods.hash_hash.is_some() %}
+#[::uniffi::export_for_udl_derive(Hash)]
+{%- endif %}
+{%- if uniffi_trait_methods.ord_cmp.is_some() %}
+#[::uniffi::export_for_udl_derive(Ord)]
+{%- endif %}
+{%- if uniffi_trait_methods.eq_eq.is_some() %}
+#[::uniffi::export_for_udl_derive(Eq)]
+{%- endif %}
 {%- if obj.remote() %}
 #[::uniffi::udl_remote(Object)]
 {%- else %}
@@ -46,7 +50,7 @@ impl {{ obj.rust_name() }} {
     #[uniffi::constructor]
     pub {% if cons.is_async() %}async {% endif %}fn r#{{ cons.name() }}(
         {%- for arg in cons.arguments() %}
-        r#{{ arg.name() }}: {% if arg.by_ref() %}&{% endif %}{{ arg.as_type().borrow()|type_rs }},
+        r#{{ arg.name() }}: {{ arg|arg_rs }},
         {%- endfor %}
     )
     {%- match (cons.return_type(), cons.throws_type()) %}
@@ -67,7 +71,7 @@ impl {{ obj.rust_name() }} {
     pub {% if meth.is_async() %}async {% endif %}fn r#{{ meth.name() }}(
         {% if meth.takes_self_by_arc()%}self: Arc<Self>{% else %}&self{% endif %},
         {%- for arg in meth.arguments() %}
-        r#{{ arg.name() }}: {% if arg.by_ref() %}&{% endif %}{{ arg.as_type().borrow()|type_rs }},
+        r#{{ arg.name() }}: {{ arg|arg_rs }},
         {%- endfor %}
     )
     {%- match (meth.return_type(), meth.throws_type()) %}

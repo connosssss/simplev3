@@ -34,7 +34,7 @@
   function createIframe() {
     return new Promise((resolve) => {
       let iframe = document.createElement("iframe");
-      iframe.src = `data:text/html,<html><body>hey</body></html>`;
+      iframe.src = `data:text/html,<html><title>hello</title><body>hey</body></html>`;
       iframe.onload = () => resolve(iframe.contentDocument);
       document.body.appendChild(iframe);
       document.body.offsetTop; // We rely on the a11y tree being created
@@ -117,6 +117,12 @@
       case 7:
         states = [
           "readonly", "busy", "focusable", "opaque", "stale", "enabled", "sensitive",
+        ];
+        break;
+      case 8:
+        states = [
+          "readonly", "busy", "focusable", "selectable text", "opaque", "stale",
+          "enabled", "sensitive",
         ];
         break;
       default:

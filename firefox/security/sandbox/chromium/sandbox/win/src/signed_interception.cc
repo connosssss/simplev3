@@ -1,11 +1,13 @@
-// Copyright 2019 The Chromium Authors. All rights reserved.
+// Copyright 2019 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #include "sandbox/win/src/signed_interception.h"
 
+#include <ntstatus.h>
 #include <stdint.h>
 
+#include "base/win/win_util.h"
 #include "sandbox/win/src/crosscall_client.h"
 #include "sandbox/win/src/ipc_tags.h"
 #include "sandbox/win/src/policy_params.h"
@@ -14,7 +16,7 @@
 #include "sandbox/win/src/sandbox_nt_util.h"
 #include "sandbox/win/src/sharedmem_ipc_client.h"
 #include "sandbox/win/src/target_services.h"
-#include "mozilla/sandboxing/sandboxLogging.h"
+#include "sandbox/win/TargetGeckoClient.h"
 
 namespace sandbox {
 
@@ -46,8 +48,6 @@ TargetNtCreateSection(NtCreateSectionFunction orig_CreateSection,
     if (allocation_attributes != SEC_IMAGE)
       break;
 
-    mozilla::sandboxing::LogBlocked("NtCreateSection");
-
     // IPC must be fully started.
     void* memory = GetGlobalIPCMemory();
     if (!memory)
@@ -62,15 +62,20 @@ TargetNtCreateSection(NtCreateSectionFunction orig_CreateSection,
     OBJECT_NAME_INFORMATION* path =
         reinterpret_cast<OBJECT_NAME_INFORMATION*>(path_buffer);
     ULONG out_buffer_size = 0;
-    NTSTATUS status = g_nt.QueryObject(file_handle, ObjectNameInformation, path,
-                                       path_buffer_size, &out_buffer_size);
+    NTSTATUS status =
+        GetNtExports()->QueryObject(file_handle, ObjectNameInformation, path,
+                                    path_buffer_size, &out_buffer_size);
 
     if (!NT_SUCCESS(status)) {
       break;
     }
 
+    SYSCALL_BROKERING_WITH_CONTEXT(&path->Name);
+
     CountedParameterSet<NameBased> params;
-    params[NameBased::NAME] = ParamPickerMake(path->ObjectName.Buffer);
+    std::wstring_view object_name =
+        base::win::UnicodeStringToView(path->Name);
+    params[NameBased::NAME] = ParamPickerMake(object_name);
 
     // Check if this will be sent to the broker.
     if (!QueryBroker(IpcTag::NTCREATESECTION, params.GetBase()))
@@ -96,7 +101,7 @@ TargetNtCreateSection(NtCreateSectionFunction orig_CreateSection,
 
     __try {
       *section_handle = answer.handle;
-      mozilla::sandboxing::LogAllowed("NtCreateSection");
+      SYSCALL_BROKERED();
       return answer.nt_status;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
       break;

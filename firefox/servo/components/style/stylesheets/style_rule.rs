@@ -4,12 +4,12 @@
 
 //! A style rule.
 
+use crate::derives::*;
 use crate::properties::PropertyDeclarationBlock;
 use crate::selector_parser::SelectorImpl;
 use crate::shared_lock::{
     DeepCloneWithLock, Locked, SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard,
 };
-use crate::str::CssStringWriter;
 use crate::stylesheets::{CssRules, style_or_page_rule_to_css};
 use cssparser::SourceLocation;
 #[cfg(feature = "gecko")]
@@ -19,6 +19,7 @@ use malloc_size_of::{
 use selectors::SelectorList;
 use servo_arc::Arc;
 use std::fmt::{self, Write};
+use style_traits::CssStringWriter;
 
 /// A style rule, with selectors and declarations.
 #[derive(Debug, ToShmem)]
@@ -47,7 +48,7 @@ impl DeepCloneWithLock for StyleRule {
                 let rules = rules.read_with(guard);
                 Arc::new(lock.wrap(rules.deep_clone_with_lock(lock, guard)))
             }),
-            source_location: self.source_location.clone(),
+            source_location: self.source_location,
         }
     }
 }
@@ -58,11 +59,11 @@ impl StyleRule {
     pub fn size_of(&self, guard: &SharedRwLockReadGuard, ops: &mut MallocSizeOfOps) -> usize {
         let mut n = 0;
         n += self.selectors.unconditional_size_of(ops);
-        n += self.block.unconditional_shallow_size_of(ops) +
-            self.block.read_with(guard).size_of(ops);
+        n += self.block.unconditional_shallow_size_of(ops)
+            + self.block.read_with(guard).size_of(ops);
         if let Some(ref rules) = self.rules {
-            n += rules.unconditional_shallow_size_of(ops) +
-                rules.read_with(guard).size_of(guard, ops)
+            n += rules.unconditional_shallow_size_of(ops)
+                + rules.read_with(guard).size_of(guard, ops)
         }
         n
     }

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,8 +5,8 @@
 #include "WebGLChild.h"
 
 #include "ClientWebGLContext.h"
-#include "mozilla/StaticPrefs_webgl.h"
 #include "WebGLMethodDispatcher.h"
+#include "mozilla/StaticPrefs_webgl.h"
 
 namespace mozilla::dom {
 
@@ -33,7 +32,7 @@ void WebGLChild::ActorDestroy(ActorDestroyReason why) {
 
 // -
 
-Maybe<Range<uint8_t>> WebGLChild::AllocPendingCmdBytes(
+Maybe<mozilla::Range<uint8_t>> WebGLChild::AllocPendingCmdBytes(
     const size_t size, const size_t fyiAlignmentOverhead) {
   if (!mPendingCmdsShmem.Size()) {
     size_t capacity = mDefaultCmdsShmemSize;
@@ -56,7 +55,7 @@ Maybe<Range<uint8_t>> WebGLChild::AllocPendingCmdBytes(
     }
   }
 
-  const auto range = Range<uint8_t>{mPendingCmdsShmem.AsSpan()};
+  const auto range = mozilla::Range<uint8_t>{mPendingCmdsShmem.AsSpan()};
 
   auto itr = range.begin() + mPendingCmdsPos;
   const auto offset = AlignmentOffset(kUniversalAlignment, itr.get());
@@ -68,10 +67,11 @@ Maybe<Range<uint8_t>> WebGLChild::AllocPendingCmdBytes(
     return AllocPendingCmdBytes(size, fyiAlignmentOverhead);
   }
   itr = range.begin() + mPendingCmdsPos;
-  const auto remaining = Range<uint8_t>{itr, range.end()};
+  const auto remaining = mozilla::Range<uint8_t>{itr, range.end()};
   mPendingCmdsPos += size;
   mPendingCmdsAlignmentOverhead += fyiAlignmentOverhead;
-  return Some(Range<uint8_t>{remaining.begin(), remaining.begin() + size});
+  return Some(
+      mozilla::Range<uint8_t>{remaining.begin(), remaining.begin() + size});
 }
 
 void WebGLChild::FlushPendingCmds() {
@@ -158,7 +158,8 @@ mozilla::ipc::IPCResult WebGLChild::RecvJsWarning(
 mozilla::ipc::IPCResult WebGLChild::RecvOnContextLoss(
     const webgl::ContextLossReason reason) const {
   if (!mContext) return IPC_OK();
-  mContext->OnContextLoss(reason);
+  const RefPtr<ClientWebGLContext> context = mContext.get();
+  context->OnContextLoss(reason);
   return IPC_OK();
 }
 

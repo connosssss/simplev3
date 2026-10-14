@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +6,6 @@
 #define MOZILLA_GFX_SCALEDFONTBASE_H_
 
 #include "2D.h"
-
 #include "skia/include/core/SkFont.h"
 #include "skia/include/core/SkPath.h"
 #include "skia/include/core/SkTypeface.h"
@@ -44,6 +41,10 @@ class ScaledFontBase : public ScaledFont {
   Atomic<SkTypeface*> mTypeface;
   virtual SkTypeface* CreateSkTypeface() { return nullptr; }
   SkPath GetSkiaPathForGlyphs(const GlyphBuffer& aBuffer);
+#ifdef USE_CAIRO
+  cairo_path_t* GetCairoPathForGlyphs(const GlyphBuffer& aBuffer, cairo_t* aCtx,
+                                      const Maybe<Matrix>& aTransform);
+#endif
   virtual cairo_font_face_t* CreateCairoFontFace(
       cairo_font_options_t* aFontOptions) {
     return nullptr;

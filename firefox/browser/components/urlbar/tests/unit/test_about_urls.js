@@ -76,12 +76,12 @@ add_task(async function aboutAboutAndAboutAddons() {
         heuristic: true,
       }),
       makeVisitResult(context, {
-        source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
         uri: "about:addons",
         title: "about:addons",
         iconUri: "page-icon:about:addons",
         tags: null,
-        providerName: "AboutPages",
+        providerName: "UrlbarProviderAboutPages",
       }),
     ],
   });
@@ -95,12 +95,12 @@ add_task(async function aboutColonMatchesOnlyAboutPages() {
     const aboutPageNames = AboutPagesUtils.visibleAboutUrls.slice(0, 9);
     const aboutPageResults = aboutPageNames.map(aboutPageName => {
       return makeVisitResult(context, {
-        source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
         uri: aboutPageName,
         title: aboutPageName,
         iconUri: "page-icon:" + aboutPageName,
         tags: null,
-        providerName: "AboutPages",
+        providerName: "UrlbarProviderAboutPages",
       });
     });
     return aboutPageResults;
@@ -113,7 +113,7 @@ add_task(async function aboutColonMatchesOnlyAboutPages() {
     matches: [
       makeSearchResult(context, {
         engineName: SUGGESTIONS_ENGINE_NAME,
-        providerName: "HeuristicFallback",
+        providerName: "UrlbarProviderHeuristicFallback",
         heuristic: true,
       }),
       ...getFirst9AboutPages(),
@@ -139,7 +139,7 @@ add_task(async function aboutResultsDoNotMatchTitlesInHistory() {
         uri: "about:config",
         title: "about:config",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
     ],
   });
@@ -162,19 +162,19 @@ add_task(async function after_general() {
         uri: "about:about",
         title: "about:about",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
       makeVisitResult(context, {
         uri: "http://example.com/guide/aboutaddons/",
         title: "Guide to about:addons in Firefox",
       }),
       makeVisitResult(context, {
-        source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
         uri: "about:addons",
         title: "about:addons",
         iconUri: "page-icon:about:addons",
         tags: null,
-        providerName: "AboutPages",
+        providerName: "UrlbarProviderAboutPages",
       }),
     ],
   });

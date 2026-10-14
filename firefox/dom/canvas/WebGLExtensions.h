@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,12 +5,11 @@
 #ifndef WEBGL_EXTENSIONS_H_
 #define WEBGL_EXTENSIONS_H_
 
-#include "mozilla/AlreadyAddRefed.h"
+#include "WebGLObjectModel.h"
+#include "WebGLTypes.h"
 #include "nsString.h"
 #include "nsTArray.h"
 #include "nsWrapperCache.h"
-#include "WebGLObjectModel.h"
-#include "WebGLTypes.h"
 
 namespace mozilla {
 class ErrorResult;
@@ -189,6 +187,18 @@ class WebGLExtensionProvokingVertex : public WebGLExtensionBase {
       : WebGLExtensionBase(webgl) {}
 };
 
+class WebGLExtensionPolygonOffsetClamp : public WebGLExtensionBase {
+ public:
+  explicit WebGLExtensionPolygonOffsetClamp(WebGLContext* webgl);
+  static bool IsSupported(const WebGLContext* webgl);
+};
+
+class WebGLExtensionClipControl : public WebGLExtensionBase {
+ public:
+  explicit WebGLExtensionClipControl(WebGLContext* webgl);
+  static bool IsSupported(const WebGLContext* webgl);
+};
+
 class WebGLExtensionSRGB : public WebGLExtensionBase {
  public:
   explicit WebGLExtensionSRGB(WebGLContext*);
@@ -237,6 +247,12 @@ class WebGLExtensionTextureHalfFloat : public WebGLExtensionBase {
 class WebGLExtensionTextureHalfFloatLinear : public WebGLExtensionBase {
  public:
   explicit WebGLExtensionTextureHalfFloatLinear(WebGLContext*);
+};
+
+class WebGLExtensionTextureMirrorClampToEdge : public WebGLExtensionBase {
+ public:
+  explicit WebGLExtensionTextureMirrorClampToEdge(WebGLContext* webgl)
+      : WebGLExtensionBase(webgl) {}
 };
 
 class WebGLExtensionTextureNorm16 : public WebGLExtensionBase {

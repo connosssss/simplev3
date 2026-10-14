@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 // Copyright (c) 2011-2016 Google Inc.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the gfx/skia/LICENSE file.
@@ -7,9 +5,12 @@
 #ifndef MOZILLA_GFX_SKCONVOLVER_H_
 #define MOZILLA_GFX_SKCONVOLVER_H_
 
-#include "mozilla/Assertions.h"
 #include <cfloat>
 #include <cmath>
+#include <numbers>
+
+#include "Types.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/Vector.h"
 
 namespace skia {
@@ -46,7 +47,7 @@ class SkLanczosFilter final : public SkBitmapFilter {
     if (x > -FLT_EPSILON && x < FLT_EPSILON) {
       return 1.0f;  // Special case the discontinuity at the origin.
     }
-    float xpi = x * float(M_PI);
+    float xpi = x * std::numbers::pi_v<float>;
     return (sinf(xpi) / xpi) *                   // sinc(x)
            sinf(xpi / fWidth) / (xpi / fWidth);  // sinc(x/fWidth)
   }
@@ -68,7 +69,7 @@ class SkConvolutionFilter1D {
   enum { kShiftBits = 14 };
 
   SkConvolutionFilter1D();
-  ~SkConvolutionFilter1D();
+  ~SkConvolutionFilter1D() = default;
 
   // Convert between floating point and our ConvolutionFixed point
   // representation.
@@ -109,13 +110,21 @@ class SkConvolutionFilter1D {
   inline const ConvolutionFixed* FilterForValue(int valueOffset,
                                                 int* filterOffset,
                                                 int* filterLength) const {
-    const FilterInstance& filter = fFilters[valueOffset];
+    // Unchecked indexing: valueOffset is always in [0, numValues()), and
+    // numValues() == fFilters.length(); fDataLocation is set by AddFilter to a
+    // valid index into fFilterValues. begin()[] skips the mozilla::Vector
+    // bounds check (there is no unchecked operator[]); the asserts keep both
+    // invariants guarded in debug builds at no release cost.
+    MOZ_ASSERT(valueOffset >= 0 && size_t(valueOffset) < fFilters.length());
+    const FilterInstance& filter = fFilters.begin()[valueOffset];
     *filterOffset = filter.fOffset;
     *filterLength = filter.fTrimmedLength;
     if (filter.fTrimmedLength == 0) {
       return nullptr;
     }
-    return &fFilterValues[filter.fDataLocation];
+    MOZ_ASSERT(filter.fDataLocation >= 0 &&
+               size_t(filter.fDataLocation) < fFilterValues.length());
+    return &fFilterValues.begin()[filter.fDataLocation];
   }
 
   bool ComputeFilterValues(const SkBitmapFilter& aBitmapFilter,
@@ -152,15 +161,17 @@ class SkConvolutionFilter1D {
 
 void convolve_horizontally(const unsigned char* srcData,
                            const SkConvolutionFilter1D& filter,
-                           unsigned char* outRow, bool hasAlpha);
+                           unsigned char* outRow,
+                           mozilla::gfx::SurfaceFormat format);
 
 void convolve_vertically(
     const SkConvolutionFilter1D::ConvolutionFixed* filterValues,
     int filterLength, unsigned char* const* sourceDataRows, int pixelWidth,
-    unsigned char* outRow, bool hasAlpha);
+    unsigned char* outRow, mozilla::gfx::SurfaceFormat format);
 
 bool BGRAConvolve2D(const unsigned char* sourceData, int sourceByteRowStride,
-                    bool sourceHasAlpha, const SkConvolutionFilter1D& filterX,
+                    mozilla::gfx::SurfaceFormat format,
+                    const SkConvolutionFilter1D& filterX,
                     const SkConvolutionFilter1D& filterY,
                     int outputByteRowStride, unsigned char* output);
 

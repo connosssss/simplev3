@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -31,6 +29,7 @@ class SVGTransformList {
   friend class SVGAnimatedTransformList;
   friend class dom::DOMSVGTransform;
   friend class dom::DOMSVGTransformList;
+  using const_iterator = FallibleTArray<SVGTransform>::const_iterator;
 
  public:
   SVGTransformList() = default;
@@ -39,7 +38,7 @@ class SVGTransformList {
   SVGTransformList& operator=(const SVGTransformList& aOther) {
     mItems.ClearAndRetainStorage();
     // Best-effort, really.
-    Unused << mItems.AppendElements(aOther.mItems, fallible);
+    (void)mItems.AppendElements(aOther.mItems, fallible);
     return *this;
   }
 
@@ -58,6 +57,9 @@ class SVGTransformList {
   const SVGTransform& operator[](uint32_t aIndex) const {
     return mItems[aIndex];
   }
+
+  [[nodiscard]] const_iterator begin() const { return mItems.begin(); }
+  [[nodiscard]] const_iterator end() const { return mItems.end(); }
 
   bool operator==(const SVGTransformList& rhs) const {
     return mItems == rhs.mItems;

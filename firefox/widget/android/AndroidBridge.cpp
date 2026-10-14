@@ -1,48 +1,43 @@
-/* -*- Mode: c++; c-basic-offset: 2; tab-width: 20; indent-tabs-mode: nil; -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "AndroidBridge.h"
+
+#include <GLES2/gl2.h>
 #include <android/log.h>
 #include <dlfcn.h>
 #include <math.h>
-#include <GLES2/gl2.h>
-
-#include "mozilla/layers/CompositorBridgeChild.h"
-#include "mozilla/layers/CompositorBridgeParent.h"
-
-#include "mozilla/Hal.h"
-#include "nsXULAppAPI.h"
 #include <prthread.h>
-#include "AndroidBridge.h"
+
 #include "AndroidBridgeUtilities.h"
-#include "nsAlertsUtils.h"
-#include "nsAppShell.h"
-#include "nsOSHelperAppService.h"
-#include "nsWindow.h"
-#include "mozilla/Preferences.h"
-#include "nsThreadUtils.h"
-#include "nsPresContext.h"
-#include "nsPIDOMWindow.h"
-#include "mozilla/ClearOnShutdown.h"
-#include "mozilla/Mutex.h"
-#include "nsPrintfCString.h"
-#include "nsContentUtils.h"
-
 #include "EventDispatcher.h"
-
-#include "mozilla/TimeStamp.h"
-#include "mozilla/UniquePtr.h"
+#include "MessageQueue.h"
 #include "WidgetUtils.h"
-
+#include "mozilla/ClearOnShutdown.h"
+#include "mozilla/Hal.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/java/EventDispatcherWrappers.h"
 #include "mozilla/java/GeckoAppShellWrappers.h"
 #include "mozilla/java/GeckoThreadWrappers.h"
+#include "mozilla/layers/CompositorBridgeChild.h"
+#include "mozilla/layers/CompositorBridgeParent.h"
+#include "nsAlertsUtils.h"
+#include "nsAppShell.h"
+#include "nsContentUtils.h"
+#include "nsOSHelperAppService.h"
+#include "nsPIDOMWindow.h"
+#include "nsPresContext.h"
+#include "nsPrintfCString.h"
+#include "nsThreadUtils.h"
+#include "nsWindow.h"
+#include "nsXULAppAPI.h"
 
 using namespace mozilla;
 
 AndroidBridge* AndroidBridge::sBridge = nullptr;
-static jobject sGlobalContext = nullptr;
 
 jmethodID AndroidBridge::GetMethodID(JNIEnv* env, jclass jClass,
                                      const char* methodName,
@@ -144,9 +139,6 @@ AndroidBridge::AndroidBridge() {
   // mMessageQueueNext must not be null
   mMessageQueueNext =
       GetMethodID(jEnv, msgQueueClass.Get(), "next", "()Landroid/os/Message;");
-  // mMessageQueueMessages may be null (e.g. due to proguard optimization)
-  mMessageQueueMessages = jEnv->GetFieldID(msgQueueClass.Get(), "mMessages",
-                                           "Landroid/os/Message;");
 }
 
 void AndroidBridge::Vibrate(const nsTArray<uint32_t>& aPattern) {
@@ -274,21 +266,13 @@ void AndroidBridge::GetCurrentNetworkInformation(
   env->ReleaseDoubleArrayElements(arr.Get(), info, 0);
 }
 
-jobject AndroidBridge::GetGlobalContextRef() {
-  // The context object can change, so get a fresh copy every time.
-  auto context = java::GeckoAppShell::GetApplicationContext();
-  sGlobalContext = jni::Object::GlobalRef(context).Forget();
-  MOZ_ASSERT(sGlobalContext);
-  return sGlobalContext;
-}
-
 /* Implementation file */
 NS_IMPL_ISUPPORTS(nsAndroidBridge, nsIGeckoViewEventDispatcher,
                   nsIGeckoViewBridge)
 
 nsAndroidBridge::nsAndroidBridge() {
   if (jni::IsAvailable()) {
-    RefPtr<widget::EventDispatcher> dispatcher = new widget::EventDispatcher();
+    auto dispatcher = MakeRefPtr<widget::EventDispatcher>();
     dispatcher->Attach(java::EventDispatcher::GetInstance());
     mEventDispatcher = dispatcher;
   }
@@ -301,7 +285,7 @@ nsAndroidBridge::GetDispatcherByName(const char* aName,
     return NS_ERROR_FAILURE;
   }
 
-  RefPtr<widget::EventDispatcher> dispatcher = new widget::EventDispatcher();
+  auto dispatcher = MakeRefPtr<widget::EventDispatcher>();
   dispatcher->Attach(java::EventDispatcher::ByName(aName));
   dispatcher.forget(aResult);
   return NS_OK;
@@ -328,20 +312,16 @@ nsresult AndroidBridge::GetProxyForURI(const nsACString& aSpec,
 }
 
 bool AndroidBridge::PumpMessageLoop() {
-  JNIEnv* const env = jni::GetGeckoThreadEnv();
-
-  if (mMessageQueueMessages) {
-    auto msg = jni::Object::LocalRef::Adopt(
-        env, env->GetObjectField(mMessageQueue.Get(), mMessageQueueMessages));
-    // if queue.mMessages is null, queue.next() will block, which we don't
-    // want. It turns out to be an order of magnitude more performant to do
-    // this extra check here and block less vs. one fewer checks here and
-    // more blocking.
-    if (!msg) {
-      return false;
-    }
+  auto msgQueue = java::sdk::MessageQueue::LocalRef::From(mMessageQueue);
+  // if queue.isIdle is true, queue.next() will block, which we don't
+  // want. It turns out to be an order of magnitude more performant to do
+  // this extra check here and block less vs. one fewer checks here and
+  // more blocking.
+  if (msgQueue->IsIdle()) {
+    return false;
   }
 
+  JNIEnv* const env = jni::GetGeckoThreadEnv();
   auto msg = jni::Object::LocalRef::Adopt(
       env, env->CallObjectMethod(mMessageQueue.Get(), mMessageQueueNext));
   if (!msg) {

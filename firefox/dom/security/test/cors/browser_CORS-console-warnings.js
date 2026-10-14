@@ -32,6 +32,7 @@ async function do_cleanup() {
 
 /**
  * Set e10s related preferences in the test environment.
+ *
  * @return {Promise} promise that resolves when preferences are set.
  */
 function setCookiePref() {
@@ -48,6 +49,7 @@ function setCookiePref() {
 
 /**
  * Unset e10s related preferences in the test environment.
+ *
  * @return {Promise} promise that resolves when preferences are unset.
  */
 function unsetCookiePref() {
@@ -93,7 +95,7 @@ add_task(async function () {
     gBrowser,
     test_two_uri + "#finishedTestTwo"
   );
-  await BrowserTestUtils.waitForCondition(() => messages_seen > 0);
+  await TestUtils.waitForCondition(() => messages_seen > 0);
 
   Assert.greater(messages_seen, 0, "Saw " + messages_seen + " messages.");
 

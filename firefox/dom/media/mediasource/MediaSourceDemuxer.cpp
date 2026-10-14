@@ -1,25 +1,23 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "MediaSourceDemuxer.h"
 
+#include <stdint.h>
+
+#include <algorithm>
+
 #include "MediaSourceUtils.h"
 #include "SourceBufferList.h"
 #include "VideoUtils.h"
 #include "nsPrintfCString.h"
 
-#include <algorithm>
-#include <limits>
-#include <stdint.h>
-
 extern mozilla::LogModule* GetMediaSourceLog();
 
-#define MSE_DEBUG(arg, ...)                                              \
-  DDMOZ_LOG(GetMediaSourceLog(), mozilla::LogLevel::Debug, "::%s: " arg, \
-            __func__, ##__VA_ARGS__)
+#define MSE_DEBUG(arg, ...)                                                  \
+  DDMOZ_LOG_FMT(GetMediaSourceLog(), mozilla::LogLevel::Debug, "::{}: " arg, \
+                __func__, ##__VA_ARGS__)
 
 namespace mozilla {
 
@@ -68,7 +66,7 @@ void MediaSourceDemuxer::AddSizeOfResources(
 
   nsresult rv = GetTaskQueue()->Dispatch(task.forget());
   MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-  Unused << rv;
+  (void)rv;
 }
 
 void MediaSourceDemuxer::NotifyInitDataArrived() {
@@ -84,7 +82,7 @@ void MediaSourceDemuxer::NotifyInitDataArrived() {
       });
   nsresult rv = GetTaskQueue()->Dispatch(task.forget());
   MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-  Unused << rv;
+  (void)rv;
 }
 
 bool MediaSourceDemuxer::ScanSourceBuffersForContent() {
@@ -164,7 +162,7 @@ void MediaSourceDemuxer::AttachSourceBuffer(
       &MediaSourceDemuxer::DoAttachSourceBuffer, aSourceBuffer);
   nsresult rv = GetTaskQueue()->Dispatch(task.forget());
   MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-  Unused << rv;
+  (void)rv;
 }
 
 void MediaSourceDemuxer::DoAttachSourceBuffer(
@@ -183,7 +181,7 @@ void MediaSourceDemuxer::DetachSourceBuffer(
                              });
   nsresult rv = GetTaskQueue()->Dispatch(task.forget());
   MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-  Unused << rv;
+  (void)rv;
 }
 
 void MediaSourceDemuxer::DoDetachSourceBuffer(
@@ -335,7 +333,7 @@ void MediaSourceTrackDemuxer::Reset() {
       });
   nsresult rv = mParent->GetTaskQueue()->Dispatch(task.forget());
   MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-  Unused << rv;
+  (void)rv;
 }
 
 nsresult MediaSourceTrackDemuxer::GetNextRandomAccessPoint(TimeUnit* aTime) {
@@ -371,7 +369,7 @@ void MediaSourceTrackDemuxer::BreakCycles() {
       });
   nsresult rv = mParent->GetTaskQueue()->Dispatch(task.forget());
   MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-  Unused << rv;
+  (void)rv;
 }
 
 RefPtr<MediaSourceTrackDemuxer::SeekPromise> MediaSourceTrackDemuxer::DoSeek(
@@ -399,8 +397,7 @@ RefPtr<MediaSourceTrackDemuxer::SeekPromise> MediaSourceTrackDemuxer::DoSeek(
                         TimeUnit::Zero());
   }
 
-  MSE_DEBUG("DoSeek, original target=%" PRId64 "%s, seekTime=%" PRId64
-            "%s, buffered=%s",
+  MSE_DEBUG("DoSeek, original target={}{}, seekTime={}{}, buffered={}",
             aTime.ToMicroseconds(), aTime.ToString().get(),
             seekTime.ToMicroseconds(), seekTime.ToString().get(),
             DumpTimeRanges(buffered).get());
@@ -420,10 +417,10 @@ RefPtr<MediaSourceTrackDemuxer::SeekPromise> MediaSourceTrackDemuxer::DoSeek(
     // the interval.
     TimeIntervals::IndexType index = buffered.Find(aTime);
     MOZ_ASSERT(index != TimeIntervals::NoIndex);
-    MSE_DEBUG("Can't find seekTime %" PRId64
-              " in the buffer range, use the earliest time %" PRId64,
-              seekTime.ToMicroseconds(),
-              buffered[index].mStart.ToMicroseconds());
+    MSE_DEBUG(
+        "Can't find seekTime {} in the buffer range, use the earliest "
+        "time {}",
+        seekTime.ToMicroseconds(), buffered[index].mStart.ToMicroseconds());
     seekTime = buffered[index].mStart;
   }
   seekTime = mManager->Seek(mType, seekTime, MediaSourceDemuxer::EOS_FUZZ);

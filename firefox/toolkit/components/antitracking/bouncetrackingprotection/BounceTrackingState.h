@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,12 +6,15 @@
 #define mozilla_BounceTrackingState_h
 
 #include "BounceTrackingRecord.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/WeakPtr.h"
 #include "mozilla/OriginAttributes.h"
 #include "nsIPrincipal.h"
 #include "nsStringFwd.h"
 #include "nsIWebProgressListener.h"
 #include "nsWeakReference.h"
+#include "fmt/format.h"
 
 class nsIChannel;
 class nsITimer;
@@ -61,7 +62,7 @@ class BounceTrackingState : public nsIWebProgressListener,
   static void ResetAllForOriginAttributesPattern(
       const OriginAttributesPattern& aPattern);
 
-  const Maybe<BounceTrackingRecord>& GetBounceTrackingRecord();
+  BounceTrackingRecord* GetBounceTrackingRecord();
 
   void ResetBounceTrackingRecord();
 
@@ -78,18 +79,14 @@ class BounceTrackingState : public nsIWebProgressListener,
   // record, or append a client-side redirect to the current bounce tracking
   // record.
   // Should only be called for top level content navigations.
+  // aLoadId is the navigation's load identifier
+  // (nsDocShellLoadState::GetLoadIdentifier). A single logical navigation can
+  // reach this method more than once (speculative parent load, process switch,
+  // or a re-open of the same load) all carrying the same load id; only the
+  // first call for a given id advances the state machine.
   [[nodiscard]] nsresult OnStartNavigation(
       nsIPrincipal* aTriggeringPrincipal,
-      const bool aHasValidUserGestureActivation);
-
-  // Record sites which have written cookies in the current extended
-  // navigation.
-  [[nodiscard]] nsresult OnCookieWrite(const nsACString& aSiteHost);
-
-  // Whether the given BrowsingContext should hold a BounceTrackingState
-  // instance to monitor bounce tracking navigations.
-  static bool ShouldCreateBounceTrackingStateForBC(
-      dom::CanonicalBrowsingContext* aBrowsingContext);
+      const bool aHasValidUserGestureActivation, uint64_t aLoadId);
 
   // Whether the given principal should be tracked for bounce tracking.
   static bool ShouldTrackPrincipal(nsIPrincipal* aPrincipal);
@@ -112,13 +109,6 @@ class BounceTrackingState : public nsIWebProgressListener,
 
   const OriginAttributes& OriginAttributesRef();
 
-  // Create a string that describes this object. Used for logging.
-  nsCString Describe();
-
-  // Record sites which have accessed storage in the current extended
-  // navigation.
-  [[nodiscard]] nsresult OnStorageAccess(nsIPrincipal* aPrincipal);
-
   // Record sites which have user activation in the current extended
   // navigation.
   [[nodiscard]] nsresult OnUserActivation(const nsACString& aSiteHost);
@@ -139,7 +129,13 @@ class BounceTrackingState : public nsIWebProgressListener,
 
   // Record to keep track of extended navigation data. Reset on extended
   // navigation end.
-  Maybe<BounceTrackingRecord> mBounceTrackingRecord;
+  RefPtr<BounceTrackingRecord> mBounceTrackingRecord;
+
+  // Load id of the most recent navigation OnStartNavigation ran the state
+  // machine for. Used to ignore duplicate calls for the same logical
+  // navigation, which happen because one navigation can span multiple
+  // DocumentLoadListeners across process switches and speculative loads.
+  Maybe<uint64_t> mLastStartedLoadId;
 
   // Timer to wait to wait for a client redirect after a navigation ends.
   RefPtr<nsITimer> mClientBounceDetectionTimeout;
@@ -167,11 +163,29 @@ class BounceTrackingState : public nsIWebProgressListener,
   // final host.
   [[nodiscard]] nsresult OnDocumentLoaded(nsIPrincipal* aDocumentPrincipal);
 
-  // Record sites which have activated service workers in the current
-  // extended navigation.
-  [[nodiscard]] nsresult OnServiceWorkerActivation();
+  friend struct fmt::formatter<BounceTrackingState>;
 };
 
 }  // namespace mozilla
+
+template <>
+struct fmt::formatter<mozilla::BounceTrackingState>
+    : fmt::formatter<std::string_view> {
+  auto format(const mozilla::BounceTrackingState& aState,
+              fmt::format_context& aCtx) const {
+    nsAutoCString oaSuffix;
+    aState.mOriginAttributes.CreateSuffix(oaSuffix);
+
+    auto out = aCtx.out();
+    out = fmt::format_to(out, "{{ mBounceTrackingRecord: ");
+    if (aState.mBounceTrackingRecord) {
+      out = fmt::format_to(out, "{}", *aState.mBounceTrackingRecord);
+    } else {
+      out = fmt::format_to(out, "null");
+    }
+    return fmt::format_to(out, ", mOriginAttributes: {}, mBrowserId: {} }}",
+                          oaSuffix, aState.mBrowserId);
+  }
+};
 
 #endif

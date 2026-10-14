@@ -1,12 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/StaticPrefs_dom.h"
 #include "XRNativeOriginLocalFloor.h"
+
 #include "VRDisplayClient.h"
+#include "mozilla/StaticPrefs_dom.h"
 
 namespace mozilla::dom {
 
@@ -22,6 +21,8 @@ XRNativeOriginLocalFloor::XRNativeOriginLocalFloor(
   const double kFloorFuzz = StaticPrefs::dom_vr_webxr_quantization();  // Meters
   mFloorRandom = double(rand()) / double(RAND_MAX) * kFloorFuzz;
 }
+
+XRNativeOriginLocalFloor::~XRNativeOriginLocalFloor() = default;
 
 gfx::PointDouble3D XRNativeOriginLocalFloor::GetPosition() {
   // Keep returning {0,-fuzz,0} until a position can be found

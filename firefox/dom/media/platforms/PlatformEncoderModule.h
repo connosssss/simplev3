@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,18 +5,18 @@
 #if !defined(PlatformEncoderModule_h_)
 #  define PlatformEncoderModule_h_
 
+#  include "EncoderConfig.h"
 #  include "MP4Decoder.h"
 #  include "MediaCodecsSupport.h"
 #  include "MediaResult.h"
 #  include "VPXDecoder.h"
+#  include "VideoUtils.h"
 #  include "mozilla/Maybe.h"
 #  include "mozilla/MozPromise.h"
 #  include "mozilla/RefPtr.h"
 #  include "mozilla/TaskQueue.h"
 #  include "mozilla/dom/ImageBitmapBinding.h"
 #  include "nsISupportsImpl.h"
-#  include "VideoUtils.h"
-#  include "EncoderConfig.h"
 
 namespace mozilla {
 
@@ -48,6 +46,20 @@ class PlatformEncoderModule {
       const EncoderConfig& aConfig) const = 0;
   virtual media::EncodeSupportSet SupportsCodec(CodecType aCodecType) const = 0;
 
+  using SupportsEncoderPromise =
+      MozPromise<media::EncodeSupportSet, nsresult, /* IsExclusive = */ true>;
+
+  // Asynchronous variant of Supports(). The default resolves with the
+  // synchronous result; modules that proxy to a remote process override this
+  // to first wait until that process has reported its codec support, so the
+  // answer reflects accurate hardware capabilities. Must be called off the
+  // main thread.
+  virtual RefPtr<SupportsEncoderPromise> SupportsAsync(
+      const EncoderConfig& aConfig) const {
+    return SupportsEncoderPromise::CreateAndResolve(Supports(aConfig),
+                                                    __func__);
+  }
+
   // Returns a readable name for this Platform Encoder Module
   virtual const char* GetName() const = 0;
 
@@ -64,13 +76,6 @@ class PlatformEncoderModule {
 class MediaDataEncoder {
  public:
   NS_INLINE_DECL_PURE_VIRTUAL_REFCOUNTING
-
-  static bool IsVideo(const CodecType aCodec) {
-    return aCodec > CodecType::_BeginVideo_ && aCodec < CodecType::_EndVideo_;
-  }
-  static bool IsAudio(const CodecType aCodec) {
-    return aCodec > CodecType::_BeginAudio_ && aCodec < CodecType::_EndAudio_;
-  }
 
   using InitPromise = MozPromise<bool, MediaResult, /* IsExclusive = */ true>;
   using EncodedData = nsTArray<RefPtr<MediaRawData>>;
@@ -92,6 +97,17 @@ class MediaDataEncoder {
   // returns will be resolved with already encoded MediaRawData at the moment,
   // or empty when there is none available yet.
   virtual RefPtr<EncodePromise> Encode(const MediaData* aSample) = 0;
+
+  // Inserts a batch of samples into the encoder's encode pipeline. The
+  // EncodePromise it returns will be resolved with already encoded MediaRawData
+  // at the moment, or empty when there is none available yet.
+  virtual RefPtr<EncodePromise> Encode(nsTArray<RefPtr<MediaData>>&& aSamples) {
+    MOZ_ASSERT_UNREACHABLE("Encode samples in a batch is not implemented");
+    return EncodePromise::CreateAndReject(
+        MediaResult(NS_ERROR_NOT_IMPLEMENTED,
+                    "Encode samples in a batch is not implemented"),
+        __func__);
+  }
 
   // Attempt to reconfigure the encoder on the fly. This can fail if the
   // underlying PEM doesn't support this type of reconfiguration.
@@ -151,6 +167,8 @@ class StrongTypedef {
   explicit StrongTypedef(T&& value) : mValue(std::move(value)) {}
   T& get() { return mValue; }
   T const& get() const { return mValue; }
+
+  auto MutTiedFields() { return std::tie(mValue); }
 
  private:
   T mValue{};

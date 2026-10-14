@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,16 +7,15 @@
 #define mozilla_image_ProgressTracker_h
 
 #include "CopyOnWrite.h"
-#include "mozilla/NotNull.h"
+#include "IProgressObserver.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/WeakPtr.h"
-#include "nsTHashMap.h"
 #include "nsCOMPtr.h"
+#include "nsRect.h"
+#include "nsTHashMap.h"
 #include "nsTObserverArray.h"
 #include "nsThreadUtils.h"
-#include "nsRect.h"
-#include "IProgressObserver.h"
 
 class nsIRunnable;
 
@@ -86,7 +84,7 @@ class ObserverTable : public nsTHashMap<nsPtrHashKey<IProgressObserver>,
   }
 
  private:
-  ~ObserverTable() {}
+  ~ObserverTable() = default;
 };
 
 /**
@@ -100,22 +98,19 @@ class ObserverTable : public nsTHashMap<nsPtrHashKey<IProgressObserver>,
  * asynchronously.
  */
 class ProgressTracker : public mozilla::SupportsWeakPtr {
-  virtual ~ProgressTracker() {}
+  virtual ~ProgressTracker() = default;
 
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ProgressTracker)
 
   ProgressTracker();
+  ProgressTracker(const ProgressTracker& aOther) = delete;
 
   bool HasImage() const {
     MutexAutoLock lock(mMutex);
     return mImage;
   }
-  already_AddRefed<Image> GetImage() const {
-    MutexAutoLock lock(mMutex);
-    RefPtr<Image> image = mImage;
-    return image.forget();
-  }
+  already_AddRefed<Image> GetImage() const;
 
   // Get the current image status (as in imgIRequest).
   uint32_t GetImageStatus() const;
@@ -191,8 +186,6 @@ class ProgressTracker : public mozilla::SupportsWeakPtr {
   friend class AsyncNotifyCurrentStateRunnable;
   friend class ImageFactory;
 
-  ProgressTracker(const ProgressTracker& aOther) = delete;
-
   // Sets our weak reference to our image. Only ImageFactory should call this.
   void SetImage(Image* aImage);
 
@@ -208,7 +201,7 @@ class ProgressTracker : public mozilla::SupportsWeakPtr {
   // other imagelib runnables.
   class RenderBlockingRunnable final : public PrioritizableRunnable {
     explicit RenderBlockingRunnable(
-        already_AddRefed<AsyncNotifyRunnable>&& aEvent);
+        already_AddRefed<AsyncNotifyRunnable> aEvent);
     virtual ~RenderBlockingRunnable() = default;
 
    public:
@@ -216,7 +209,7 @@ class ProgressTracker : public mozilla::SupportsWeakPtr {
     void RemoveObserver(IProgressObserver* aObserver);
 
     static already_AddRefed<RenderBlockingRunnable> Create(
-        already_AddRefed<AsyncNotifyRunnable>&& aEvent);
+        already_AddRefed<AsyncNotifyRunnable> aEvent);
   };
 
   // The runnable, if any, that we've scheduled to deliver async notifications.

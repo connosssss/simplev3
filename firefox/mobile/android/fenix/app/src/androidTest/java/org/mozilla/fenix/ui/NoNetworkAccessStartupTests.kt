@@ -4,7 +4,7 @@
 
 package org.mozilla.fenix.ui
 
-import androidx.compose.ui.test.junit4.AndroidComposeTestRule
+import androidx.compose.ui.test.junit4.v2.AndroidComposeTestRule as AndroidComposeTestRuleV2
 import androidx.core.net.toUri
 import androidx.test.filters.SdkSuppress
 import org.junit.Ignore
@@ -12,81 +12,74 @@ import org.junit.Rule
 import org.junit.Test
 import org.mozilla.fenix.customannotations.SmokeTest
 import org.mozilla.fenix.helpers.AppAndSystemHelper.setNetworkEnabled
+import org.mozilla.fenix.helpers.FenixTestRule
 import org.mozilla.fenix.helpers.HomeActivityTestRule
-import org.mozilla.fenix.helpers.TestSetup
 import org.mozilla.fenix.ui.robots.browserScreen
 import org.mozilla.fenix.ui.robots.homeScreen
 import org.mozilla.fenix.ui.robots.navigationToolbar
 
-/**
- * Tests to verify some main UI flows with Network connection off
- *
- */
+/** Tests to verify some main UI flows with Network connection off */
+class NoNetworkAccessStartupTests {
+    @get:Rule(order = 0) val fenixTestRule: FenixTestRule = FenixTestRule()
 
-class NoNetworkAccessStartupTests : TestSetup() {
-
-    @get:Rule
+    @get:Rule(order = 1)
     val composeTestRule =
-        AndroidComposeTestRule(
-            HomeActivityTestRule.withDefaultSettingsOverrides(launchActivity = false),
-        ) { it.activity }
+        AndroidComposeTestRuleV2(HomeActivityTestRule.withDefaultSettingsOverrides(launchActivity = false)) {
+            it.activity
+        }
 
     // Test running on beta/release builds in CI:
     // caution when making changes to it, so they don't block the builds
     // Based on STR from https://github.com/mozilla-mobile/fenix/issues/16886
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2240542
-    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1964989")
     @Test
+    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1987355")
     fun noNetworkConnectionStartupTest() {
         setNetworkEnabled(false)
 
         composeTestRule.activityRule.launchActivity(null)
 
-        homeScreen {
+        homeScreen(composeTestRule) {
             verifyHomeScreen()
         }
     }
 
     // Based on STR from https://github.com/mozilla-mobile/fenix/issues/16886
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2240722
-    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1964989")
+    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1987355")
     @Test
     fun networkInterruptedFromBrowserToHomeTest() {
         val url = "example.com"
 
         composeTestRule.activityRule.launchActivity(null)
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(url.toUri()) {}
+        navigationToolbar(composeTestRule) {}.enterURLAndEnterToBrowser(url.toUri()) {}
 
         setNetworkEnabled(false)
 
-        browserScreen {
-        }.goToHomescreen(composeTestRule) {
-            verifyHomeScreen()
-        }
+        browserScreen(composeTestRule) {}
+            .goToHomescreen {
+                verifyHomeScreen()
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2240723
-    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1964989")
+    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1987355")
     @Test
     fun testPageReloadAfterNetworkInterrupted() {
         val url = "example.com"
 
         composeTestRule.activityRule.launchActivity(null)
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(url.toUri()) {}
+        navigationToolbar(composeTestRule) {}.enterURLAndEnterToBrowser(url.toUri()) {}
 
         setNetworkEnabled(false)
 
-        browserScreen {
-        }.openThreeDotMenu {
-        }.refreshPage { }
+        browserScreen(composeTestRule) {}.openThreeDotMenu {}.clickRefreshButton {}
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2240721
-    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1964989")
+    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1987355")
     @SdkSuppress(minSdkVersion = 34)
     @SmokeTest
     @Test
@@ -95,14 +88,14 @@ class NoNetworkAccessStartupTests : TestSetup() {
 
         composeTestRule.activityRule.launchActivity(null)
 
-        homeScreen {
-        }.openThreeDotMenu {
-        }.openSettings {
-        }.openTurnOnSyncMenu {
-            tapOnUseEmailToSignIn()
-            browserScreen {
-                verifyUrl("firefox.com")
+        homeScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openTurnOnSyncMenu(composeTestRule) {
+                tapOnUseEmailToSignIn()
+                browserScreen(composeTestRule) {
+                    verifyUrl("firefox.com")
+                }
             }
-        }
     }
 }

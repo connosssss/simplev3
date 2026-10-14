@@ -17,7 +17,7 @@
 
 #ifndef WR_FEATURE_FAST_PATH
 // Parameters for compositor clip
-varying highp vec2 vNormalizedWorldPos;
+varying highp vec2 vNormalizedDevicePos;
 flat varying highp vec2 vRoundedClipParams;
 flat varying highp vec4 vRoundedClipRadii;
 #endif
@@ -50,7 +50,7 @@ uniform mediump vec2 uTextureSize;
 
 #ifdef WR_VERTEX_SHADER
 // CPU side data is in CompositeInstance (gpu_types.rs) and is
-// converted to GPU data using desc::COMPOSITE (renderer.rs) by
+// converted to GPU data using desc::COMPOSITE (renderer/vertex.rs) by
 // filling vaos.composite_vao with VertexArrayKind::Composite.
 PER_INSTANCE attribute vec4 aDeviceRect;
 PER_INSTANCE attribute vec4 aDeviceClipRect;
@@ -86,21 +86,21 @@ void main(void) {
     // Flip device rect if required
     vec4 device_rect = mix(aDeviceRect.xyzw, aDeviceRect.zwxy, aFlip.xyxy);
 
-    // Get world position
-    vec2 world_pos = mix(device_rect.xy, device_rect.zw, aPosition.xy);
+    // Get device position
+    vec2 device_pos = mix(device_rect.xy, device_rect.zw, aPosition.xy);
 
-    // Clip the position to the world space clip rect
-    vec2 clipped_world_pos = clamp(world_pos, aDeviceClipRect.xy, aDeviceClipRect.zw);
+    // Clip the position to the device space clip rect
+    vec2 clipped_device_pos = clamp(device_pos, aDeviceClipRect.xy, aDeviceClipRect.zw);
 
 #ifndef WR_FEATURE_FAST_PATH
     vec2 half_clip_box_size = 0.5 * (aDeviceRoundedClipRect.zw - aDeviceRoundedClipRect.xy);
-    vNormalizedWorldPos = aDeviceRoundedClipRect.xy + half_clip_box_size - clipped_world_pos;
+    vNormalizedDevicePos = aDeviceRoundedClipRect.xy + half_clip_box_size - clipped_device_pos;
     vRoundedClipParams = half_clip_box_size;
     vRoundedClipRadii = aDeviceRoundedClipRadii;
 #endif
 
     // Derive the normalized UV from the clipped vertex position
-    vec2 uv = (clipped_world_pos - device_rect.xy) / (device_rect.zw - device_rect.xy);
+    vec2 uv = (clipped_device_pos - device_rect.xy) / (device_rect.zw - device_rect.xy);
 
 #ifdef WR_FEATURE_YUV
     YuvPrimitive prim = fetch_yuv_primitive();
@@ -110,7 +110,7 @@ void main(void) {
     // also needs to know how many bits of scaling are required to normalize
     // HDR textures. Note that MSB HDR formats don't need renormalization.
     vRescaleFactor = 0;
-    if (prim.channel_bit_depth > 8 && prim.yuv_format != YUV_FORMAT_P010) {
+    if (prim.channel_bit_depth > 8 && !yuv_format_is_msb_aligned(prim.yuv_format)) {
         vRescaleFactor = 16 - prim.channel_bit_depth;
     }
 #endif
@@ -174,7 +174,7 @@ void main(void) {
 #endif
 #endif
 
-    gl_Position = uTransform * vec4(clipped_world_pos, 0.0, 1.0);
+    gl_Position = uTransform * vec4(clipped_device_pos, 0.0, 1.0);
 }
 #endif
 
@@ -226,10 +226,10 @@ void main(void) {
 #ifndef WR_FEATURE_TEXTURE_EXTERNAL_ESSL1
 #ifndef WR_FEATURE_FAST_PATH
     // Apply compositor clip
-    float aa_range = compute_aa_range(vNormalizedWorldPos);
+    float aa_range = compute_aa_range(vNormalizedDevicePos);
 
     float dist = sd_round_box(
-        vNormalizedWorldPos,
+        vNormalizedDevicePos,
         vRoundedClipParams,
         vRoundedClipRadii
     );
@@ -264,7 +264,7 @@ void swgl_drawSpanRGBA8() {
                                     vYcbcrBias,
                                     vRgbFromDebiasedYcbcr,
                                     vRescaleFactor);
-    } else if (vYuvFormat.x == YUV_FORMAT_NV12 || vYuvFormat.x == YUV_FORMAT_P010) {
+    } else if (yuv_format_is_biplanar(vYuvFormat.x)) {
         swgl_commitTextureLinearYUV(sColor0, vUV_y, vUVBounds_y,
                                     sColor1, vUV_u, vUVBounds_u,
                                     vYcbcrBias,

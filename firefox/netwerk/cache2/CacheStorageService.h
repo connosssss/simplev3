@@ -2,28 +2,29 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef CacheStorageService__h__
-#define CacheStorageService__h__
+#ifndef CacheStorageService_h_
+#define CacheStorageService_h_
 
+#include "mozilla/AtomicBitfields.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/LinkedList.h"
+#include "mozilla/Monitor.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/StaticMutex.h"
+#include "mozilla/TimeStamp.h"
+#include "nsClassHashtable.h"
 #include "nsICacheStorageService.h"
+#include "nsICacheTesting.h"
 #include "nsIMemoryReporter.h"
 #include "nsINamed.h"
 #include "nsITimer.h"
-#include "nsICacheTesting.h"
-
-#include "nsClassHashtable.h"
-#include "nsTHashMap.h"
-#include "nsString.h"
-#include "nsThreadUtils.h"
 #include "nsProxyRelease.h"
-#include "mozilla/Monitor.h"
-#include "mozilla/Mutex.h"
-#include "mozilla/AtomicBitfields.h"
-#include "mozilla/Atomics.h"
-#include "mozilla/TimeStamp.h"
+#include "nsString.h"
 #include "nsTArray.h"
+#include "nsTHashMap.h"
+#include "nsThreadUtils.h"
 
+class nsICacheEntry;
 class nsIURI;
 class nsICacheEntryDoomCallback;
 class nsICacheStorageVisitor;
@@ -41,8 +42,12 @@ class CacheStorageService;
 class CacheStorage;
 class CacheEntry;
 class CacheEntryHandle;
+class CacheEntryTable;
 
 class CacheMemoryConsumer {
+ public:
+  CacheMemoryConsumer() = delete;
+
  private:
   friend class CacheStorageService;
   // clang-format off
@@ -51,9 +56,6 @@ class CacheMemoryConsumer {
     (uint32_t, Flags, 2)
   ))
   // clang-format on
-
- private:
-  CacheMemoryConsumer() = delete;
 
  protected:
   enum {
@@ -73,11 +75,22 @@ class CacheMemoryConsumer {
   void DoMemoryReport(uint32_t aCurrentSize);
 };
 
+using GlobalEntryTables = nsClassHashtable<nsCStringHashKey, CacheEntryTable>;
+class WalkMemoryCacheRunnable;
+
+namespace CacheStorageServiceInternal {
+class WalkMemoryCacheRunnable;
+class WalkDiskCacheRunnable;
+}  // namespace CacheStorageServiceInternal
+
 class CacheStorageService final : public nsICacheStorageService,
                                   public nsIMemoryReporter,
                                   public nsITimerCallback,
                                   public nsICacheTesting,
                                   public nsINamed {
+  friend class CacheStorageServiceInternal::WalkMemoryCacheRunnable;
+  friend class CacheStorageServiceInternal::WalkDiskCacheRunnable;
+
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSICACHESTORAGESERVICE
@@ -99,7 +112,7 @@ class CacheStorageService final : public nsICacheStorageService,
   static bool IsRunning() { return sSelf && !sSelf->mShutdown; }
   static bool IsOnManagementThread();
   already_AddRefed<nsIEventTarget> Thread() const;
-  mozilla::Mutex& Lock() { return mLock; }
+  StaticMutex& Lock() { return sLock; }
 
   // Tracks entries that may be forced valid in a pruned hashtable.
   struct ForcedValidData {
@@ -129,8 +142,7 @@ class CacheStorageService final : public nsICacheStorageService,
   static void GetCacheEntryInfo(CacheEntry* aEntry,
                                 EntryInfoCallback* aCallback);
 
-  nsresult GetCacheIndexEntryAttrs(CacheStorage const* aStorage,
-                                   const nsACString& aURI,
+  nsresult GetCacheIndexEntryAttrs(CacheStorage const* aStorage, nsIURI* aURI,
                                    const nsACString& aIdExtension,
                                    bool* aHasAltData, uint32_t* aFileSizeKb);
 
@@ -141,9 +153,24 @@ class CacheStorageService final : public nsICacheStorageService,
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
   MOZ_DEFINE_MALLOC_SIZE_OF(MallocSizeOf)
 
+  void NoteNoVarySearchEntry(const nsACString& aContextKey,
+                             const nsACString& aBasePath,
+                             const nsACString& aFullKey);
+  void NoteNoVarySearchEntry(nsICacheEntry* aEntry, nsIURI* aURI);
+
  private:
   virtual ~CacheStorageService();
   void ShutdownBackground();
+
+  /**
+   * Keeps tables of entries.  There is one entries table for each distinct load
+   * context type.  The distinction is based on following load context info
+   * states: <isPrivate|isAnon|inIsolatedMozBrowser> which builds a mapping
+   * key.
+   *
+   * Thread-safe to access, protected by the service mutex.
+   */
+  static GlobalEntryTables* sGlobalEntryTables MOZ_GUARDED_BY(sLock);
 
  private:
   // The following methods may only be called on the management
@@ -224,7 +251,7 @@ class CacheStorageService final : public nsICacheStorageService,
    * Get, or create when not existing and demanded, an entry for the storage
    * and uri+id extension.
    */
-  nsresult AddStorageEntry(CacheStorage const* aStorage, const nsACString& aURI,
+  nsresult AddStorageEntry(CacheStorage const* aStorage, nsIURI* aURI,
                            const nsACString& aIdExtension, uint32_t aFlags,
                            CacheEntryHandle** aResult);
 
@@ -232,16 +259,14 @@ class CacheStorageService final : public nsICacheStorageService,
    * Check existance of an entry.  This may throw NS_ERROR_NOT_AVAILABLE
    * when the information cannot be obtained synchronously w/o blocking.
    */
-  nsresult CheckStorageEntry(CacheStorage const* aStorage,
-                             const nsACString& aURI,
+  nsresult CheckStorageEntry(CacheStorage const* aStorage, nsIURI* aURI,
                              const nsACString& aIdExtension, bool* aResult);
 
   /**
    * Removes the entry from the related entry hash table, if still present
    * and returns it.
    */
-  nsresult DoomStorageEntry(CacheStorage const* aStorage,
-                            const nsACString& aURI,
+  nsresult DoomStorageEntry(CacheStorage const* aStorage, nsIURI* aURI,
                             const nsACString& aIdExtension,
                             nsICacheEntryDoomCallback* aCallback);
 
@@ -263,9 +288,11 @@ class CacheStorageService final : public nsICacheStorageService,
   /**
    * CacheFileIOManager uses this method to notify CacheStorageService that
    * an active entry was removed. This method is called even if the entry
-   * removal was originated by CacheStorageService.
+   * removal was originated by CacheStorageService.  This also removes the entry
+   * from the DictionaryCache.
    */
-  void CacheFileDoomed(nsILoadContextInfo* aLoadContextInfo,
+  void CacheFileDoomed(const nsACString& aKey,
+                       nsILoadContextInfo* aLoadContextInfo,
                        const nsACString& aIdExtension,
                        const nsACString& aURISpec);
 
@@ -310,8 +337,7 @@ class CacheStorageService final : public nsICacheStorageService,
   nsresult DoomStorageEntries(const nsACString& aContextKey,
                               nsILoadContextInfo* aContext, bool aDiskStorage,
                               bool aPin, nsICacheEntryDoomCallback* aCallback);
-  nsresult AddStorageEntry(const nsACString& aContextKey,
-                           const nsACString& aURI,
+  nsresult AddStorageEntry(const nsACString& aContextKey, nsIURI* aURI,
                            const nsACString& aIdExtension, bool aWriteToDisk,
                            bool aSkipSizeCheck, bool aPin, uint32_t aFlags,
                            CacheEntryHandle** aResult);
@@ -322,7 +348,7 @@ class CacheStorageService final : public nsICacheStorageService,
 
   static CacheStorageService* sSelf;
 
-  mozilla::Mutex mLock MOZ_UNANNOTATED{"CacheStorageService.mLock"};
+  static StaticMutex sLock;
   mozilla::Mutex mForcedValidEntriesLock{
       "CacheStorageService.mForcedValidEntriesLock"};
 
@@ -338,6 +364,8 @@ class CacheStorageService final : public nsICacheStorageService,
 
     explicit MemoryPool(EType aType);
     ~MemoryPool();
+
+    MemoryPool() = delete;
 
     // We want to have constant O(1) for removal from this list.
     LinkedList<RefPtr<CacheEntry>> mManagedEntries;
@@ -355,7 +383,6 @@ class CacheStorageService final : public nsICacheStorageService,
 
    private:
     uint32_t Limit() const;
-    MemoryPool() = delete;
   };
 
   MemoryPool mDiskPool{MemoryPool::DISK};
@@ -411,8 +438,8 @@ class CacheStorageService final : public nsICacheStorageService,
     virtual ~IOThreadSuspender() = default;
     NS_IMETHOD Run() override;
 
-    Monitor mMon MOZ_UNANNOTATED;
-    bool mSignaled{false};
+    Monitor mMon;
+    bool mSignaled MOZ_GUARDED_BY(mMon){false};
   };
 
   RefPtr<IOThreadSuspender> mActiveIOSuspender;

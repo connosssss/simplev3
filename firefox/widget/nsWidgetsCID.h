@@ -1,9 +1,11 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* bd57cee8-1dd1-11b2-9fe7-95cf4709aea3 */
+#ifndef WIDGET_NSWIDGETSCID_H_
+#define WIDGET_NSWIDGETSCID_H_
+
 #define NS_FILEPICKER_CID \
   {0xbd57cee8, 0x1dd1, 0x11b2, {0x9f, 0xe7, 0x95, 0xcf, 0x47, 0x09, 0xae, 0xa3}}
 
@@ -115,7 +117,7 @@
 #define NS_SCREENMANAGER_CID \
   {0xc401eb80, 0xf9ea, 0x11d3, {0xbb, 0x6f, 0xe7, 0x32, 0xb7, 0x3e, 0xbe, 0x7c}}
 
-// {6987230e-0089-4e78-bc5f-1493ee7519fa}
+// {6987230e-0098-4e78-bc5f-1493ee7519fa}
 #define NS_IDLE_SERVICE_CID \
   {0x6987230e, 0x0098, 0x4e78, {0xbc, 0x5f, 0x14, 0x93, 0xee, 0x75, 0x19, 0xfa}}
 
@@ -150,3 +152,5 @@
 
 #define NS_WINDOWS_UIUTILS_CID \
   {0xe04a55e8, 0xfee3, 0x4ea2, {0xa9, 0x8b, 0x41, 0xd2, 0x62, 0x1a, 0xdc, 0x3c}}
+
+#endif  // WIDGET_NSWIDGETSCID_H_

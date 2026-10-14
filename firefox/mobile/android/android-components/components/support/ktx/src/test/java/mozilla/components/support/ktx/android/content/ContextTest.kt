@@ -7,6 +7,7 @@ package mozilla.components.support.ktx.android.content
 import android.Manifest.permission.WRITE_EXTERNAL_STORAGE
 import android.app.Activity
 import android.app.ActivityManager
+import android.app.Application
 import android.content.ActivityNotFoundException
 import android.content.ClipboardManager
 import android.content.Context
@@ -24,10 +25,12 @@ import android.content.pm.PackageManager.PERMISSION_GRANTED
 import android.hardware.camera2.CameraManager
 import android.net.Uri
 import android.os.Build
+import android.service.chooser.ChooserAction
 import androidx.core.content.FileProvider
 import androidx.core.content.getSystemService
 import androidx.core.net.toUri
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import java.io.File
 import mozilla.components.support.ktx.R
 import mozilla.components.support.test.any
 import mozilla.components.support.test.argumentCaptor
@@ -54,8 +57,6 @@ import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
 import org.robolectric.shadows.ShadowApplication
 import org.robolectric.shadows.ShadowCameraCharacteristics
-import org.robolectric.shadows.ShadowProcess
-import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class ContextTest {
@@ -71,9 +72,12 @@ class ContextTest {
 
         val activityManager: ActivityManager? = testContext.getSystemService()
 
-        val normalMethodResult = ActivityManager.MemoryInfo().also { memoryInfo ->
-            activityManager?.getMemoryInfo(memoryInfo)
-        }.lowMemory
+        val normalMethodResult =
+            ActivityManager.MemoryInfo()
+                .also { memoryInfo ->
+                    activityManager?.getMemoryInfo(memoryInfo)
+                }
+                .lowMemory
 
         assertEquals(extensionFunctionResult, normalMethodResult)
     }
@@ -121,16 +125,14 @@ class ContextTest {
         val chooserIntent = argCaptor.value
         val chooserTitle: String = chooserIntent.extras!!.getString(EXTRA_TITLE) as String
 
-        @Suppress("DEPRECATION")
-        val shareIntent: Intent = chooserIntent.extras!!.get(EXTRA_INTENT) as Intent
+        @Suppress("DEPRECATION") val shareIntent: Intent = chooserIntent.extras!!.get(EXTRA_INTENT) as Intent
 
         assertTrue(chooserIntent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
         assertTrue(chooserIntent.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
         assertEquals(context.getString(R.string.mozac_support_ktx_menu_share_with), chooserTitle)
         assertEquals(ACTION_SEND, shareIntent.action)
 
-        @Suppress("DEPRECATION")
-        assertEquals("fakeUri".toUri(), shareIntent.extras!![EXTRA_STREAM])
+        @Suppress("DEPRECATION") assertEquals("fakeUri".toUri(), shareIntent.extras!![EXTRA_STREAM])
         assertEquals("subject", shareIntent.extras!!.getString(EXTRA_SUBJECT))
         assertEquals("message", shareIntent.extras!!.getString(EXTRA_TEXT))
         assertTrue(shareIntent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
@@ -140,12 +142,14 @@ class ContextTest {
     @Suppress("UNREACHABLE_CODE")
     @Test
     fun `shareMedia returns false if the chooser could not be shown`() {
-        val context = spy(
-            object : FakeContext() {
-                override fun startActivity(intent: Intent?) = throw ActivityNotFoundException()
-                override fun getApplicationContext() = testContext
-            },
-        )
+        val context =
+            spy(
+                object : FakeContext() {
+                    override fun startActivity(intent: Intent?) = throw ActivityNotFoundException()
+
+                    override fun getApplicationContext() = testContext
+                }
+            )
         doReturn(testContext.resources).`when`(context).resources
 
         val result = context.shareMedia("fakeUri".toUri(), "*/*", "subject", "message")
@@ -170,7 +174,7 @@ class ContextTest {
     }
 
     @Test
-    @Config(sdk = [Build.VERSION_CODES.LOLLIPOP, Build.VERSION_CODES.P])
+    @Config(sdk = [Build.VERSION_CODES.O, Build.VERSION_CODES.P])
     fun `shareMedia will not show a thumbnail prior to Android 10`() {
         val context = spy(testContext)
         val argCaptor = argumentCaptor<Intent>()
@@ -185,6 +189,52 @@ class ContextTest {
     }
 
     @Test
+    @Config(sdk = [Build.VERSION_CODES.UPSIDE_DOWN_CAKE])
+    fun `shareWithChooserActions attaches a thumbnail preview when a thumbnailUri is provided`() {
+        val context = spy(testContext)
+        val argCaptor = argumentCaptor<Intent>()
+
+        val result =
+            context.shareWithChooserActions(
+                text = "https://mozilla.org",
+                subject = "subject",
+                actions = emptyArray<ChooserAction>(),
+                thumbnailUri = "fakeUri".toUri(),
+            )
+
+        verify(context).startActivity(argCaptor.capture())
+        assertTrue(result)
+
+        @Suppress("DEPRECATION") val shareIntent = argCaptor.value.extras!!.get(EXTRA_INTENT) as Intent
+        assertEquals("subject", shareIntent.extras!!.getString(EXTRA_TITLE))
+        assertEquals(1, shareIntent.clipData!!.itemCount)
+        assertEquals("fakeUri".toUri(), shareIntent.clipData!!.getItemAt(0).uri)
+        assertTrue(shareIntent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+    }
+
+    @Test
+    @Config(sdk = [Build.VERSION_CODES.UPSIDE_DOWN_CAKE])
+    fun `shareWithChooserActions does not attach a thumbnail preview when thumbnailUri is null`() {
+        val context = spy(testContext)
+        val argCaptor = argumentCaptor<Intent>()
+
+        val result =
+            context.shareWithChooserActions(
+                text = "https://mozilla.org",
+                subject = "subject",
+                actions = emptyArray<ChooserAction>(),
+            )
+
+        verify(context).startActivity(argCaptor.capture())
+        assertTrue(result)
+
+        @Suppress("DEPRECATION") val shareIntent = argCaptor.value.extras!!.get(EXTRA_INTENT) as Intent
+        assertNull(shareIntent.extras!!.getString(EXTRA_TITLE))
+        assertNull(shareIntent.clipData?.getItemAt(0)?.uri)
+        assertTrue(shareIntent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION == 0)
+    }
+
+    @Test
     @Config(shadows = [ShadowFileProvider::class])
     fun `copyImage will copy the file URI to the clipboard & invoke the confirmation action`() {
         val context = spy(testContext)
@@ -192,8 +242,7 @@ class ContextTest {
 
         context.copyImage("filePath", confirmationAction)
 
-        val clipboardManager =
-            testContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clipboardManager = testContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         assertEquals(
             ShadowFileProvider.FAKE_URI_RESULT,
             clipboardManager.primaryClip!!.getItemAt(0).uri,
@@ -228,20 +277,20 @@ class ContextTest {
     }
 
     @Test
+    @Config(shadows = [ShadowApplicationProcessName::class])
     fun `isMainProcess must only return true if we are in the main process`() {
-        val myPid = Int.MAX_VALUE
-
+        ShadowApplicationProcessName.processName = testContext.packageName
         assertTrue(testContext.isMainProcess())
 
-        ShadowProcess.setPid(myPid)
+        ShadowApplicationProcessName.processName = "${testContext.packageName}:notmain"
         isMainProcess = null
-
         assertFalse(testContext.isMainProcess())
     }
 
     @Test
+    @Config(shadows = [ShadowApplicationProcessName::class])
     fun `runOnlyInMainProcess must only run if we are in the main process`() {
-        val myPid = Int.MAX_VALUE
+        ShadowApplicationProcessName.processName = testContext.packageName
         var wasExecuted = false
 
         testContext.runOnlyInMainProcess {
@@ -251,8 +300,8 @@ class ContextTest {
         assertTrue(wasExecuted)
 
         wasExecuted = false
-        ShadowProcess.setPid(myPid)
-        isMainProcess = false
+        ShadowApplicationProcessName.processName = "${testContext.packageName}:notmain"
+        isMainProcess = null
 
         testContext.runOnlyInMainProcess {
             wasExecuted = true
@@ -300,11 +349,12 @@ class ContextTest {
         `when`(context.packageManager).thenReturn(packageManager)
         `when`(context.packageName).thenReturn("org.mozilla.app")
         `when`(
-            packageManager.getPackageInfo(
-                anyString(),
-                any<PackageManager.PackageInfoFlags>(),
-            ),
-        ).thenReturn(packageInfo)
+                packageManager.getPackageInfo(
+                    anyString(),
+                    any<PackageManager.PackageInfoFlags>(),
+                )
+            )
+            .thenReturn(packageInfo)
 
         val versionName = context.appVersionName
         assertEquals("1.0.0", versionName)
@@ -319,14 +369,23 @@ class ContextTest {
         `when`(context.packageManager).thenReturn(packageManager)
         `when`(context.packageName).thenReturn("org.mozilla.app")
         `when`(
-            packageManager.getPackageInfo(
-                anyString(),
-                any<PackageManager.PackageInfoFlags>(),
-            ),
-        ).thenReturn(packageInfo)
+                packageManager.getPackageInfo(
+                    anyString(),
+                    any<PackageManager.PackageInfoFlags>(),
+                )
+            )
+            .thenReturn(packageInfo)
 
         val versionName = context.appVersionName
         assertEquals("", versionName)
+    }
+
+    @Test
+    fun `pixelSizeFor returns the same as getDimensionPixelSize`() {
+        assertEquals(
+            testContext.resources.getDimensionPixelSize(android.R.dimen.app_icon_size),
+            testContext.pixelSizeFor(android.R.dimen.app_icon_size),
+        )
     }
 }
 
@@ -342,4 +401,13 @@ object ShadowFileProvider {
         authority: String?,
         file: File,
     ) = FAKE_URI_RESULT
+}
+
+@Implements(Application::class)
+class ShadowApplicationProcessName : ShadowApplication() {
+    companion object {
+        @JvmField var processName: String = ""
+
+        @JvmStatic @Implementation(minSdk = Build.VERSION_CODES.P) fun getProcessName(): String = processName
+    }
 }

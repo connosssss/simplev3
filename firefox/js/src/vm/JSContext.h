@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -9,6 +7,7 @@
 #ifndef vm_JSContext_h
 #define vm_JSContext_h
 
+#include "mozilla/Attributes.h"
 #include "mozilla/BaseProfilerUtils.h"  // BaseProfilerThreadId
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
@@ -18,15 +17,19 @@
 #include "builtin/AtomicsObject.h"
 #include "ds/TraceableFifo.h"
 #include "frontend/NameCollections.h"
+#include "gc/Allocator.h"
 #include "gc/GCEnum.h"
 #include "gc/Memory.h"
 #include "irregexp/RegExpTypes.h"
 #include "js/ContextOptions.h"  // JS::ContextOptions
+#include "js/Debug.h"           // JS::CustomObjectSummaryCallback
 #include "js/Exception.h"
+#include "js/friend/MicroTask.h"
 #include "js/GCVector.h"
 #include "js/Interrupt.h"
 #include "js/Promise.h"
 #include "js/Result.h"
+#include "js/RootingAPI.h"
 #include "js/Stack.h"  // JS::NativeStackBase, JS::NativeStackLimit
 #include "js/Utility.h"
 #include "js/Vector.h"
@@ -83,18 +86,19 @@ struct AutoResolving;
 class InternalJobQueue : public JS::JobQueue {
  public:
   explicit InternalJobQueue(JSContext* cx)
-      : queue(cx, SystemAllocPolicy()), draining_(false), interrupted_(false) {}
+      : draining_(false), interrupted_(false) {}
   ~InternalJobQueue() = default;
 
   // JS::JobQueue methods.
-  bool getHostDefinedData(JSContext* cx,
-                          JS::MutableHandle<JSObject*> data) const override;
+  bool getHostDefinedData(
+      JSContext* cx, JS::MutableHandle<JSObject*> incumbentGlobal,
+      JS::MutableHandle<JSObject*> optionalHostDefinedData) const override;
 
-  bool enqueuePromiseJob(JSContext* cx, JS::HandleObject promise,
-                         JS::HandleObject job, JS::HandleObject allocationSite,
-                         JS::HandleObject hostDefinedData) override;
+  bool getHostDefinedGlobal(JSContext*,
+                            JS::MutableHandle<JSObject*>) const override;
+
   void runJobs(JSContext* cx) override;
-  bool empty() const override;
+
   bool isDrainingStopped() const override { return interrupted_; }
 
   // If we are currently in a call to runJobs(), make that call stop processing
@@ -104,19 +108,11 @@ class InternalJobQueue : public JS::JobQueue {
 
   void uninterrupt() { interrupted_ = false; }
 
-  // Return the front element of the queue, or nullptr if the queue is empty.
-  // This is only used by shell testing functions.
-  JSObject* maybeFront() const;
-
 #ifdef DEBUG
   JSObject* copyJobs(JSContext* cx);
 #endif
 
  private:
-  using Queue = js::TraceableFifo<JSObject*, 0, SystemAllocPolicy>;
-
-  JS::PersistentRooted<Queue> queue;
-
   // True if we are in the midst of draining jobs from this queue. We use this
   // to avoid re-entry (nested calls simply return immediately).
   bool draining_;
@@ -143,9 +139,118 @@ enum class InterruptReason : uint32_t {
   AttachOffThreadCompilations = 1 << 2,
   CallbackUrgent = 1 << 3,
   CallbackCanWait = 1 << 4,
+  OOMStackTrace = 1 << 5,
 };
 
 enum class ShouldCaptureStack { Maybe, Always };
+
+// A wrapper type to allow customization of tracing of
+// MicroTaskElements.
+class MicroTaskQueueElement {
+ public:
+  // This is distinct from the JS::MicroTask::Kind, as we add more
+  // internal allowable kinds between FirstJSKind and EndJSKind
+  enum class Kind : uint8_t {
+    Embedder = JS::MicroTask::Kind::Embedder,
+
+    // A PromiseReactionRecord, run by PromiseReactionJob.
+    PromiseReaction = JS::MicroTask::Kind::FirstJSKind,
+
+    // A ThenableJob; the kind selects which resolution routine it runs.
+    ResolveThenable,
+    ResolveBuiltinThenable,
+    // Used by JS::SafeResolve: runs PerformPromiseResolution on the job's
+    // promise with the resolution value stored in the Thenable slot.
+    DeferredResolve,
+
+    // New task kinds go here.
+
+    // LastQueueElementKind gets auto incremented as we add new kinds
+    // and powers the below static assert that ensures we
+    // don't blow our kind allocation.
+    LastQueueElementKind
+  };
+
+  static_assert(static_cast<uint8_t>(Kind::LastQueueElementKind) <
+                JS::MicroTask::Kind::EndJSKind);
+
+  // Arguments are forwarded to a JS::MicroTask constructor, so the task is
+  // built in place in the slot the queue allocated for this entry rather than
+  // copied from a temporary.
+  template <typename... Args>
+  explicit MicroTaskQueueElement(Kind kind, Args&&... args)
+      : microTask_(static_cast<JS::MicroTask::Kind>(kind),
+                   std::forward<Args>(args)...) {}
+
+  explicit MicroTaskQueueElement(const JS::MicroTask& microTask)
+      : microTask_(microTask) {}
+
+  const JS::MicroTask& toMicroTask() const { return microTask_; }
+
+  void trace(JSTracer* trc);
+
+ private:
+  JS::MicroTask microTask_;
+};
+
+// Use TempAllocPolicy to report OOM
+// MG:XXX: It would be nice to explore the typical depth of the queue
+//         to see if we can get it all inline in the common case.
+// MG:XXX: This appears to be broken for non-zero values of inline!
+using MicroTaskQueue =
+    js::TraceableFifo<MicroTaskQueueElement, 0, TempAllocPolicy>;
+
+// A pair of microtask queues; one debug and one 'regular' (non-debug).
+struct MicroTaskQueueSet {
+  explicit MicroTaskQueueSet(JSContext* cx)
+      : microTaskQueue(cx), debugMicroTaskQueue(cx) {}
+
+  // We want to swap so we need move constructors
+  MicroTaskQueueSet(MicroTaskQueueSet&&) = default;
+  MicroTaskQueueSet& operator=(MicroTaskQueueSet&&) = default;
+
+  // Don't copy.
+  MicroTaskQueueSet(const MicroTaskQueueSet&) = delete;
+  MicroTaskQueueSet& operator=(const MicroTaskQueueSet&) = delete;
+
+  template <typename... Args>
+  bool enqueueRegularMicroTask(JSContext* cx, MicroTaskQueueElement::Kind kind,
+                               Args&&... args) {
+    JS_LOG(mtq, Verbose, "JS: Enqueue Regular MT");
+    JS::JobQueueMayNotBeEmpty(cx);
+    return microTaskQueue.emplaceBack(kind, std::forward<Args>(args)...);
+  }
+  bool enqueueRegularMicroTask(JSContext* cx, const JS::MicroTask&);
+
+  template <typename... Args>
+  bool enqueueDebugMicroTask(JSContext* cx, MicroTaskQueueElement::Kind kind,
+                             Args&&... args) {
+    JS_LOG(mtq, Verbose, "JS: Enqueue Debug MT");
+    return debugMicroTaskQueue.emplaceBack(kind, std::forward<Args>(args)...);
+  }
+  bool enqueueDebugMicroTask(JSContext* cx, const JS::MicroTask&);
+
+  bool prependRegularMicroTask(JSContext* cx, const JS::MicroTask&);
+
+  mozilla::Maybe<JS::MicroTask> popFront();
+  mozilla::Maybe<JS::MicroTask> popDebugFront();
+  mozilla::Maybe<JS::MicroTask> peekFront();
+
+  bool empty() { return microTaskQueue.empty() && debugMicroTaskQueue.empty(); }
+
+  void trace(JSTracer* trc) {
+    microTaskQueue.trace(trc);
+    debugMicroTaskQueue.trace(trc);
+  }
+
+  void clear() {
+    microTaskQueue.clear();
+    debugMicroTaskQueue.clear();
+  }
+
+  MicroTaskQueue microTaskQueue;
+  MicroTaskQueue debugMicroTaskQueue;
+};
 
 } /* namespace js */
 
@@ -230,7 +335,15 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   /* Clear the pending exception (if any) due to OOM. */
   void recoverFromOutOfMemory();
 
-  void reportAllocationOverflow();
+  // Clears a pending OOM or over-recursion exception. Documents that the
+  // preceding operation is only fallible due to resource exhaustion, not
+  // spec-related reasons.
+  void recoverFromResourceExhaustion() {
+    MOZ_ASSERT(isThrowingOutOfMemory() || isThrowingOverRecursed());
+    clearPendingException();
+  }
+
+  void reportAllocOverflow();
 
   // Accessors for immutable runtime data.
   JSAtomState& names() { return *runtime_->commonNames; }
@@ -250,6 +363,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
     return nativeStackLimit[kind];
   }
   JS::NativeStackLimit stackLimitForJitCode(JS::StackKind kind);
+  bool stackContainsAddress(uintptr_t address, JS::StackKind kind);
   size_t gcSystemPageSize() { return js::gc::SystemPageSize(); }
 
   /*
@@ -317,13 +431,14 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   js::SymbolRegistry& symbolRegistry() { return runtime_->symbolRegistry(); }
 
   // Methods to access other runtime data that checks locking internally.
-  js::gc::AtomMarkingRuntime& atomMarking() { return runtime_->gc.atomMarking; }
-  void markAtom(JSAtom* atom) { atomMarking().markAtom(this, atom); }
-  void markAtom(JS::Symbol* symbol) { atomMarking().markAtom(this, symbol); }
-  void markId(jsid id) { atomMarking().markId(this, id); }
-  void markAtomValue(const js::Value& value) {
-    atomMarking().markAtomValue(this, value);
+  js::gc::AtomRefRuntime& atomReferences() {
+    return runtime_->gc.atomReferences;
   }
+
+  void recordRef(JSAtom* atom);
+  bool wrapOrRecordRef(JS::MutableHandle<JS::Symbol*> symbol);
+  bool wrapOrRecordRefToId(JS::MutableHandle<jsid> id);
+  bool wrapOrRecordRefToValue(JS::MutableHandle<JS::Value> value);
 
   // Interface for recording telemetry metrics.
   js::Metrics metrics() { return js::Metrics(runtime_); }
@@ -331,6 +446,10 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   JSRuntime* runtime() { return runtime_; }
   const JSRuntime* runtime() const { return runtime_; }
 
+  static size_t offsetOfRuntime() {
+    return offsetof(JSContext, runtime_) +
+           js::UnprotectedData<JSRuntime*>::offsetOfValue();
+  }
   static size_t offsetOfRealm() { return offsetof(JSContext, realm_); }
 
   friend class JS::AutoSaveExceptionState;
@@ -560,16 +679,28 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   mozilla::Atomic<bool, mozilla::SequentiallyConsistent>
       suppressProfilerSampling;
 
+  // While sampling is suppressed, whether the sampler may still read tenured
+  // script data (e.g. line/column) via ProfilingStackFrame::script(). Most
+  // suppression sites leave this false because the script pointers may be
+  // unsafe, notably during the compacting phase of GC where scripts are being
+  // relocated. Minor GC sets it because it does not move scripts. Read from
+  // the sampler thread, written from the main thread, hence atomic.
+  mozilla::Atomic<bool, mozilla::SequentiallyConsistent>
+      allowProfilerScriptAccess_;
+
  public:
   bool isProfilerSamplingEnabled() const { return !suppressProfilerSampling; }
   void disableProfilerSampling() { suppressProfilerSampling = true; }
   void enableProfilerSampling() { suppressProfilerSampling = false; }
+  bool allowProfilerScriptAccess() const { return allowProfilerScriptAccess_; }
+  void setAllowProfilerScriptAccess(bool b) { allowProfilerScriptAccess_ = b; }
 
  private:
   js::wasm::Context wasm_;
 
  public:
   js::wasm::Context& wasm() { return wasm_; }
+  static constexpr size_t offsetOfWasm() { return offsetof(JSContext, wasm_); }
 
   /* Temporary arena pool used while compiling and decompiling. */
   static const size_t TEMP_LIFO_ALLOC_PRIMARY_CHUNK_SIZE = 4 * 1024;
@@ -638,6 +769,34 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
     hadUncatchableException_ = true;
 #endif
   }
+
+  // Used by irregexp code to delay calling ReportOverRecursed until we can
+  // allocate.
+ private:
+  js::ContextData<bool> hasDelayedOverRecursed;
+
+ public:
+  void noteDelayedOverRecursed() {
+    MOZ_ASSERT(!hasDelayedOverRecursed);
+    hasDelayedOverRecursed = true;
+  }
+  bool maybeReportDelayedOverRecursed() {
+    if (hasDelayedOverRecursed) {
+      hasDelayedOverRecursed = false;
+      ReportOverRecursed(this);
+      return false;
+    }
+    return true;
+  }
+  static constexpr size_t offsetOfHasDelayedOverRecursed() {
+    return offsetof(JSContext, hasDelayedOverRecursed);
+  }
+
+  // OOM stack trace buffer management
+  void unsetOOMStackTrace();
+  const char* getOOMStackTrace() const;
+  bool hasOOMStackTrace() const;
+  void captureOOMStackTrace();
 
   js::ContextData<int32_t> reportGranularity; /* see vm/Probes.h */
 
@@ -761,7 +920,6 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 #endif
 
   bool isThrowingDebuggeeWouldRun();
-  bool isClosingGenerator();
 
   void setPendingException(JS::HandleValue v,
                            JS::Handle<js::SavedFrame*> stack);
@@ -857,6 +1015,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   // that's fine.
   void requestInterrupt(js::InterruptReason reason);
   bool handleInterrupt();
+  bool handleInterruptNoCallbacks();
 
   MOZ_ALWAYS_INLINE bool hasAnyPendingInterrupt() const {
     static_assert(sizeof(interruptBits_) == sizeof(uint32_t),
@@ -911,6 +1070,14 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
       promiseRejectionTrackerCallback;
   js::ContextData<void*> promiseRejectionTrackerCallbackData;
 
+  // Pre-allocated buffer for storing out-of-memory stack traces.
+  // This buffer is allocated during context initialization to avoid
+  // allocation during OOM conditions. The buffer stores a formatted
+  // stack trace string that can be retrieved by privileged JavaScript.
+  static constexpr size_t OOMStackTraceBufferSize = 4096;
+  js::ContextData<char*> oomStackTraceBuffer_;
+  js::ContextData<bool> oomStackTraceBufferValid_;
+
   JSObject* getIncumbentGlobal(JSContext* cx);
   bool enqueuePromiseJob(JSContext* cx, js::HandleFunction job,
                          js::HandleObject promise,
@@ -929,8 +1096,17 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   }
 
  public:
-  // Assert the arguments are in this context's realm (for scripts),
-  // compartment (for objects) or zone (for strings, symbols).
+  // [SMDOC] Argument Compatibility Conventions
+  //
+  // The convention within SpiderMonkey is that if a function takes a JSContext*
+  // argument, all the other arguments are in the same compartment as the
+  // JSContext for objects, same-realm for scripts, and same-zone for strings
+  // and symbols.
+  //
+  // Exceptions to this are allowed, but should be documented explicitly in
+  // some fashion (e.g. naming the parameter `unwrappedFoo`)
+  //
+  // The below `check` functions are used for dynamic enforcement.
   template <class... Args>
   inline void check(const Args&... args);
   template <class... Args>
@@ -947,6 +1123,15 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   js::StructuredSpewer& spewer() { return structuredSpewer_.ref(); }
 #endif
 
+  // This flag indicates whether we should bypass CSP restrictions for
+  // eval() and Function() calls or not. This flag can be set when
+  // evaluating the code for Debugger.Frame.prototype.eval.
+  js::ContextData<bool> bypassCSPForDebugger;
+
+  // Set to true if a global lexical was initialized by the debugger using
+  // forceLexicalInitializationByName.
+  js::ContextData<bool> hasDebuggerForcedLexicalInit;
+
   // Debugger having set `exclusiveDebuggerOnEval` property to true
   // want their evaluations and calls to be ignore by all other Debuggers
   // except themself. This flag indicates whether we are in such debugger
@@ -956,6 +1141,8 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
 
 #ifdef MOZ_EXECUTION_TRACING
  private:
+  CustomObjectSummaryCallback customObjectSummaryCallback_ = nullptr;
+
   // This holds onto the JS execution tracer, a system which when turned on
   // records function calls and other information about the JS which has been
   // run under this context.
@@ -972,6 +1159,15 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   js::ExecutionTracer& getExecutionTracer() {
     MOZ_ASSERT(hasExecutionTracer());
     return *executionTracer_;
+  }
+
+  CustomObjectSummaryCallback getCustomObjectSummaryCallback() {
+    MOZ_ASSERT(hasExecutionTracer());
+    return customObjectSummaryCallback_;
+  }
+
+  void setCustomObjectSummaryCallback(CustomObjectSummaryCallback cb) {
+    customObjectSummaryCallback_ = cb;
   }
 
   // See the latter clause of the comment over executionTracer_
@@ -993,6 +1189,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
   bool hasExecutionTracer() { return false; }
 #endif
 
+  JS::PersistentRooted<js::UniquePtr<js::MicroTaskQueueSet>> microTaskQueues;
 }; /* struct JSContext */
 
 inline JSContext* JSRuntime::mainContextFromOwnThread() {
@@ -1123,11 +1320,20 @@ class MOZ_RAII AutoNoteExclusiveDebuggerOnEval {
   }
 };
 
-enum UnsafeABIStrictness {
-  NoExceptions,
-  AllowPendingExceptions,
-  AllowThrownExceptions
+class MOZ_RAII AutoSetBypassCSPForDebugger {
+  JSContext* cx;
+  bool oldValue;
+
+ public:
+  AutoSetBypassCSPForDebugger(JSContext* cx, bool value)
+      : cx(cx), oldValue(cx->bypassCSPForDebugger) {
+    cx->bypassCSPForDebugger = value;
+  }
+
+  ~AutoSetBypassCSPForDebugger() { cx->bypassCSPForDebugger = oldValue; }
 };
+
+enum UnsafeABIStrictness { NoExceptions, AllowPendingExceptions };
 
 // Should be used in functions called directly from JIT code (with
 // masm.callWithABI). This assert invariants in debug builds. Resets
@@ -1148,7 +1354,7 @@ class MOZ_RAII AutoUnsafeCallWithABI {
 #ifdef JS_CHECK_UNSAFE_CALL_WITH_ABI
   JSContext* cx_;
   bool nested_;
-  bool checkForPendingException_;
+  bool checkForPendingException_ = false;
 #endif
   JS::AutoCheckCannotGC nogc;
 
@@ -1163,6 +1369,10 @@ class MOZ_RAII AutoUnsafeCallWithABI {
 #endif
 };
 
+template <typename T>
+inline BufferHolder<T>::BufferHolder(JSContext* cx, T* buffer)
+    : BufferHolder(cx->zone(), buffer) {}
+
 } /* namespace js */
 
 #define CHECK_THREAD(cx) \
@@ -1173,7 +1383,7 @@ class MOZ_RAII AutoUnsafeCallWithABI {
  *
  * ## Checking Results when your return type is not Result
  *
- * This header defines alternatives to MOZ_TRY and MOZ_TRY_VAR for when you
+ * This header defines alternatives to MOZ_TRY for when you
  * need to call a `Result` function from a function that uses false or nullptr
  * to indicate errors:
  *

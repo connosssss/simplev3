@@ -1,7 +1,7 @@
 "use strict";
 
 const { ForgetAboutSite } = ChromeUtils.importESModule(
-  "resource://gre/modules/ForgetAboutSite.sys.mjs"
+  "moz-src:///toolkit/components/forgetaboutsite/ForgetAboutSite.sys.mjs"
 );
 
 var db;
@@ -13,7 +13,7 @@ function promiseUnregister(keyID) {
 }
 
 function run_test() {
-  do_get_profile();
+  do_get_profile(true);
   setPrefs({
     userAgentID,
   });

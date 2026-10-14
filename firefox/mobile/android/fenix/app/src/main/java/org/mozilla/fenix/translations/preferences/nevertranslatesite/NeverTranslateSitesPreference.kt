@@ -4,14 +4,13 @@
 
 package org.mozilla.fenix.translations.preferences.nevertranslatesite
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -23,11 +22,15 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.tooling.preview.PreviewLightDark
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
+import mozilla.components.compose.base.InfoCard
+import mozilla.components.compose.base.InfoType
+import mozilla.components.compose.base.theme.PreviewThemeProvider
+import mozilla.components.compose.base.theme.Theme
+import mozilla.components.ui.icons.R as iconsR
 import org.mozilla.fenix.R
-import org.mozilla.fenix.compose.InfoCard
-import org.mozilla.fenix.compose.InfoType
 import org.mozilla.fenix.compose.list.TextListItem
 import org.mozilla.fenix.theme.FirefoxTheme
 
@@ -44,23 +47,16 @@ fun NeverTranslateSitesPreference(
     hasNeverTranslateSitesError: Boolean,
     onItemClick: (String) -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .background(
-                color = FirefoxTheme.colors.layer1,
-            ),
-    ) {
+    Surface {
         LazyColumn {
             item {
                 TextListItem(
                     label = stringResource(R.string.never_translate_site_header_preference),
-                    modifier = Modifier
-                        .padding(
-                            start = 56.dp,
-                        )
-                        .semantics { heading() }
-                        .defaultMinSize(minHeight = 76.dp)
-                        .wrapContentHeight(),
+                    modifier =
+                        Modifier.padding(start = 56.dp)
+                            .semantics { heading() }
+                            .defaultMinSize(minHeight = 76.dp)
+                            .wrapContentHeight(),
                     maxLabelLines = Int.MAX_VALUE,
                 )
             }
@@ -73,24 +69,23 @@ fun NeverTranslateSitesPreference(
 
             neverTranslateSitesListPreferences?.let {
                 items(neverTranslateSitesListPreferences) { item: String ->
-                    val itemContentDescription = stringResource(
-                        id = R.string.never_translate_site_item_list_content_description_preference,
-                        item,
-                    )
+                    val itemContentDescription =
+                        stringResource(
+                            id = R.string.never_translate_site_item_list_content_description_preference,
+                            item,
+                        )
                     TextListItem(
                         label = item,
-                        modifier = Modifier
-                            .padding(
-                                start = 56.dp,
-                            )
-                            .clearAndSetSemantics {
-                                role = Role.Button
-                                contentDescription = itemContentDescription
-                            }
-                            .defaultMinSize(minHeight = 56.dp)
-                            .wrapContentHeight(),
+                        modifier =
+                            Modifier.padding(start = 56.dp)
+                                .clearAndSetSemantics {
+                                    role = Role.Button
+                                    contentDescription = itemContentDescription
+                                }
+                                .defaultMinSize(minHeight = 56.dp)
+                                .wrapContentHeight(),
                         onClick = { onItemClick(item) },
-                        iconPainter = painterResource(R.drawable.mozac_ic_delete_24),
+                        iconPainter = painterResource(iconsR.drawable.mozac_ic_delete_24),
                         onIconClick = { onItemClick(item) },
                     )
                 }
@@ -101,11 +96,11 @@ fun NeverTranslateSitesPreference(
 
 @Composable
 private fun NeverTranslateSitesErrorWarning() {
-    val modifier = Modifier
-        .fillMaxWidth()
-        .padding(start = 72.dp, end = 16.dp, bottom = 16.dp, top = 16.dp)
-        .defaultMinSize(minHeight = 56.dp)
-        .wrapContentHeight()
+    val modifier =
+        Modifier.fillMaxWidth()
+            .padding(start = 72.dp, end = 16.dp, bottom = 16.dp, top = 16.dp)
+            .defaultMinSize(minHeight = 56.dp)
+            .wrapContentHeight()
 
     InfoCard(
         description = stringResource(id = R.string.never_translate_site_error_warning_text),
@@ -118,19 +113,28 @@ private fun NeverTranslateSitesErrorWarning() {
 @Composable
 internal fun getNeverTranslateSitesList(): List<String> {
     return mutableListOf<String>().apply {
-        add(
-            "mozilla.org",
-        )
+        add("mozilla.org")
     }
 }
 
+@Preview
 @Composable
-@PreviewLightDark
-private fun NeverTranslateSitePreferencePreview() {
-    FirefoxTheme {
+private fun NeverTranslateSitePreferencePreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
         NeverTranslateSitesPreference(
             neverTranslateSitesListPreferences = getNeverTranslateSitesList(),
             hasNeverTranslateSitesError = false,
+        ) {}
+    }
+}
+
+@Preview
+@Composable
+private fun NeverTranslateSitePreferenceErrorPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
+        NeverTranslateSitesPreference(
+            neverTranslateSitesListPreferences = getNeverTranslateSitesList(),
+            hasNeverTranslateSitesError = true,
         ) {}
     }
 }

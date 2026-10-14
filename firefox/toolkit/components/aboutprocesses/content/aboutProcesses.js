@@ -1,5 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-*/
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -27,6 +25,8 @@ const ONE_GIGA = 1024 * 1024 * 1024;
 const ONE_MEGA = 1024 * 1024;
 const ONE_KILO = 1024;
 
+const WEB_ISOLATED_L10N_ID = "about-processes-web-isolated-process2";
+
 const { XPCOMUtils } = ChromeUtils.importESModule(
   "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
@@ -36,7 +36,8 @@ const { AppConstants } = ChromeUtils.importESModule(
 
 ChromeUtils.defineESModuleGetters(this, {
   ContextualIdentityService:
-    "resource://gre/modules/ContextualIdentityService.sys.mjs",
+    "moz-src:///toolkit/components/contextualidentity/ContextualIdentityService.sys.mjs",
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(this, "ProfilerPopupBackground", function () {
@@ -72,6 +73,19 @@ const PROFILE_DURATION = Math.max(
  * }.
  */
 let gLocalizedUnits;
+
+/**
+ * To avoid needing to re-fetching at each update we prefetch the localized
+ * process properties.
+ *
+ * @type {
+ *   privateWindow: string,
+ *   serviceWorker: string,
+ *   jitDisabled: string,
+ *   withCoopCoep: string,
+ * }.
+ */
+let gLocalizedProcessProperties;
 
 let tabFinder = {
   update() {
@@ -124,6 +138,168 @@ let tabFinder = {
   },
 };
 
+// requestProcInfo() can't attribute a subframe back to its owning tab (its
+// WindowInfoDictionary carries no such link), so weights are computed by
+// walking each tab's own BrowsingContext tree instead, weighting the root
+// frame higher than subframes.
+const TOP_LEVEL_FRAME_WEIGHT = 2;
+const SUBFRAME_WEIGHT = 1;
+
+function* iterateBrowsingContexts(browsingContext) {
+  if (!browsingContext) {
+    return;
+  }
+  yield browsingContext;
+  for (let child of browsingContext.children) {
+    yield* iterateBrowsingContexts(child);
+  }
+}
+
+/**
+ * Attributes per-process resource usage (from `State.getCounters()`) to the
+ * individual tabs that share each process, weighted by how much of that
+ * process each tab's frames occupy.
+ */
+class TabAttribution {
+  // Set once by init(); read synchronously after that since core count
+  // doesn't change at runtime.
+  _cpuCount = 1;
+
+  async init() {
+    try {
+      this._cpuCount = Math.max(
+        1,
+        Number((await Services.sysinfo.processInfo)?.count) || 1
+      );
+    } catch (e) {
+      console.error("about:processes: failed to get CPU core count", e);
+    }
+  }
+
+  // tabbrowser.tabs (not .browsers) so discarded/never-loaded tabs, which
+  // have no content window, are still included. Uses tabFinder's own
+  // Services.wm.getEnumerator pattern -- BrowserWindowTracker would be
+  // nicer but is browser/-owned, off-limits from toolkit/.
+  _getTopLevelTabs() {
+    let ownBrowser = window.docShell.browsingContext.embedderElement;
+    // A non-private view must never show a private tab's title/URL (or vice
+    // versa) -- a privacy hazard, not just a missing label.
+    let ownIsPrivate = PrivateBrowsingUtils.isBrowserPrivate(ownBrowser);
+    let tabs = [];
+    for (let win of Services.wm.getEnumerator("navigator:browser")) {
+      let tabbrowser = win.gBrowser;
+      if (!tabbrowser) {
+        continue;
+      }
+      for (let tab of tabbrowser.tabs) {
+        if (tab.closing) {
+          continue;
+        }
+        let browser = tab.linkedBrowser;
+        if (browser == ownBrowser) {
+          continue;
+        }
+        if (PrivateBrowsingUtils.isBrowserPrivate(browser) != ownIsPrivate) {
+          continue;
+        }
+        // currentURI/contentTitle are lazy getters backed by SessionStore's
+        // lazy tab data, so they stay meaningful with no content process.
+        let uri = browser.currentURI;
+        if (!uri || uri.schemeIs("chrome")) {
+          continue;
+        }
+        tabs.push({
+          tab,
+          tabbrowser,
+          browser,
+          uri,
+          title: tab.label || browser.contentTitle || "",
+          // No content process -- discarded or never loaded.
+          discarded: !browser.outerWindowID,
+        });
+      }
+    }
+    return tabs;
+  }
+
+  // Keyed by <tab>, not outerWindowID: discarded tabs lack one, and a
+  // reload would change it anyway.
+  _computeFrameWeights(tabs) {
+    let tabWeights = new Map();
+    let weightsByPid = new Map();
+    for (let tab of tabs) {
+      let rootBrowsingContext = tab.browser.browsingContext;
+      if (!rootBrowsingContext) {
+        continue;
+      }
+      let perTabWeights = new Map();
+      for (let browsingContext of iterateBrowsingContexts(
+        rootBrowsingContext
+      )) {
+        let pid = browsingContext.currentWindowGlobal?.osPid;
+        // The parent process's own window globals report osPid === -1, a
+        // real pid a falsy check wouldn't catch -- excluded explicitly.
+        if (pid == null || pid < 0) {
+          continue;
+        }
+        let weight =
+          browsingContext == rootBrowsingContext
+            ? TOP_LEVEL_FRAME_WEIGHT
+            : SUBFRAME_WEIGHT;
+        perTabWeights.set(pid, (perTabWeights.get(pid) ?? 0) + weight);
+        weightsByPid.set(pid, (weightsByPid.get(pid) ?? 0) + weight);
+      }
+      tabWeights.set(tab.tab, perTabWeights);
+    }
+    return { tabWeights, weightsByPid };
+  }
+
+  // `slopeCpuOfTotal` is a fraction of total CPU capacity, not one core, so
+  // entries across tabs are summable.
+  getTabCounters(counters) {
+    let tabs = this._getTopLevelTabs();
+    let { tabWeights, weightsByPid } = this._computeFrameWeights(tabs);
+
+    let ramByPid = new Map();
+    let cpuByPid = new Map();
+    for (let process of counters) {
+      ramByPid.set(process.pid, process.totalRamSize);
+      cpuByPid.set(process.pid, process.slopeCpu ?? 0);
+    }
+
+    return tabs.map(tab => {
+      let weights = tabWeights.get(tab.tab);
+      let totalRamSize = 0;
+      let slopeCpuOneCore = 0;
+      let hasUsageData = false;
+      if (weights) {
+        for (let [pid, weight] of weights) {
+          let totalWeight = weightsByPid.get(pid);
+          if (!totalWeight || !ramByPid.has(pid)) {
+            continue;
+          }
+          hasUsageData = true;
+          let share = weight / totalWeight;
+          totalRamSize += (ramByPid.get(pid) ?? 0) * share;
+          slopeCpuOneCore += (cpuByPid.get(pid) ?? 0) * share;
+        }
+      }
+      return {
+        tab: tab.tab,
+        tabbrowser: tab.tabbrowser,
+        uri: tab.uri,
+        title: tab.title,
+        discarded: tab.discarded,
+        // False for discarded/never-loaded tabs and ones whose process
+        // isn't in `counters` at all -- shown as "—", not a misleading 0.
+        hasUsageData,
+        totalRamSize,
+        slopeCpuOfTotal: slopeCpuOneCore / this._cpuCount,
+      };
+    });
+  }
+}
+
 /**
  * Utilities for dealing with state
  */
@@ -133,7 +309,7 @@ var State = {
   _latest: null,
 
   async _promiseSnapshot() {
-    let date = Cu.now();
+    let date = ChromeUtils.now();
     let main = await ChromeUtils.requestProcInfo();
     main.date = date;
 
@@ -156,7 +332,8 @@ var State = {
     if (
       force ||
       !this._latest ||
-      Cu.now() - this._latest.date > MINIMUM_INTERVAL_BETWEEN_SAMPLES_MS
+      ChromeUtils.now() - this._latest.date >
+        MINIMUM_INTERVAL_BETWEEN_SAMPLES_MS
     ) {
       // Replacing this._previous before we are done awaiting
       // this._promiseSnapshot can cause this._previous and this._latest to be
@@ -322,14 +499,34 @@ var State = {
   },
 };
 
-var View = {
-  // Processes, tabs and subframes that we killed during the previous iteration.
-  // Array<{pid:Number} | {windowId:Number}>
-  _killedRecently: [],
-  commit() {
-    this._killedRecently.length = 0;
-    let tbody = document.getElementById("process-tbody");
+/**
+ * Row-reuse bookkeeping shared by both view/controller pairs in this file
+ * (see ProcessesTabView below): rows are keyed by id and diff-inserted into
+ * `tbody` in commitOrder() so unrelated rows aren't recreated -- and don't
+ * lose scroll/focus state -- just because their position in the list moved.
+ */
+class RowSet {
+  _rowsById = new Map();
+  _orderedRows = [];
 
+  _getOrCreateRow(rowId, createRow) {
+    let row = this._rowsById.get(rowId);
+    if (!row) {
+      row = createRow();
+      row.rowId = rowId;
+      this._rowsById.set(rowId, row);
+    }
+    this._orderedRows.push(row);
+    return row;
+  }
+
+  _removeRow(row) {
+    this._rowsById.delete(row.rowId);
+    row.remove();
+  }
+
+  _commitOrder() {
+    let tbody = document.getElementById("process-tbody");
     let insertPoint = tbody.firstChild;
     let nextRow;
     while ((nextRow = this._orderedRows.shift())) {
@@ -339,16 +536,27 @@ var View = {
         tbody.insertBefore(nextRow, insertPoint);
       }
     }
-
     if (insertPoint) {
       while ((nextRow = insertPoint.nextSibling)) {
         this._removeRow(nextRow);
       }
       this._removeRow(insertPoint);
     }
-  },
-  // If we are not going to display the updated list of rows, drop references
-  // to rows that haven't been inserted in the DOM tree.
+  }
+}
+
+class ProcessesView extends RowSet {
+  // Processes, tabs and subframes that we killed during the previous iteration.
+  // Array<{pid:Number} | {windowId:Number}>
+  _killedRecently = [];
+
+  commit() {
+    this._killedRecently.length = 0;
+    this._commitOrder();
+  }
+  // Drops not-yet-inserted rows entirely, unlike ProcessesTabView's
+  // _discardOrder() (which appends new rows immediately) -- this isn't a
+  // persistently-visible panel, so a briefly-invisible new row doesn't matter.
   discardUpdate() {
     for (let row of this._orderedRows) {
       if (!row.parentNode) {
@@ -356,34 +564,23 @@ var View = {
       }
     }
     this._orderedRows = [];
-  },
+  }
   insertAfterRow(row) {
     let tbody = row.parentNode;
     let nextRow;
     while ((nextRow = this._orderedRows.pop())) {
       tbody.insertBefore(nextRow, row.nextSibling);
     }
-  },
-
-  _rowsById: new Map(),
-  _removeRow(row) {
-    this._rowsById.delete(row.rowId);
-
-    row.remove();
-  },
+  }
   _getOrCreateRow(rowId, cellCount) {
-    let row = this._rowsById.get(rowId);
-    if (!row) {
-      row = document.createElement("tr");
+    return super._getOrCreateRow(rowId, () => {
+      let row = document.createElement("tr");
       while (cellCount--) {
         row.appendChild(document.createElement("td"));
       }
-      row.rowId = rowId;
-      this._rowsById.set(rowId, row);
-    }
-    this._orderedRows.push(row);
-    return row;
-  },
+      return row;
+    });
+  }
 
   displayCpu(data, cpuCell, maxSlopeCpu) {
     // Put a value < 0% when we really don't want to see a bar as
@@ -391,7 +588,7 @@ var View = {
     // don't have an integer number of pixels.
     let barWidth = -0.5;
     if (data.slopeCpu == null) {
-      this._fillCell(cpuCell, {
+      fillCell(cpuCell, {
         fluentName: "about-processes-cpu-user-and-kernel-not-ready",
         classes: ["cpu"],
       });
@@ -411,7 +608,7 @@ var View = {
         let fluentName = data.active
           ? "about-processes-cpu-almost-idle"
           : "about-processes-cpu-fully-idle";
-        this._fillCell(cpuCell, {
+        fillCell(cpuCell, {
           fluentName,
           fluentArgs: {
             total: duration,
@@ -420,7 +617,7 @@ var View = {
           classes: ["cpu"],
         });
       } else {
-        this._fillCell(cpuCell, {
+        fillCell(cpuCell, {
           fluentName: "about-processes-cpu",
           fluentArgs: {
             percent: data.slopeCpu,
@@ -439,13 +636,204 @@ var View = {
       }
     }
     cpuCell.style.setProperty("--bar-width", barWidth);
-  },
+  }
+
+  /**
+   * Updates the name cell of a process row.
+   *
+   * @param {ProcessDelta} data The data to display.
+   * @param {DOMElement} nameCell The cell displaying the process name.
+   */
+  updateProcessName(data, nameCell) {
+    let classNames = [];
+    let fluentName;
+    let fluentArgs = {
+      pid: "" + data.pid, // Make sure that this number is not localized
+    };
+    let processProperties = [];
+
+    switch (data.type) {
+      case "web":
+        fluentName = "about-processes-web-process";
+        break;
+      case "webIsolated":
+        fluentName = WEB_ISOLATED_L10N_ID;
+        fluentArgs.origin = data.origin;
+        processProperties.push(fluentArgs.pid);
+        break;
+      case "webServiceWorker":
+        fluentName = WEB_ISOLATED_L10N_ID;
+        fluentArgs.origin = data.origin;
+        processProperties.push(fluentArgs.pid);
+        processProperties.push(gLocalizedProcessProperties.serviceWorker);
+        break;
+      case "file":
+        fluentName = "about-processes-file-process";
+        break;
+      case "extension":
+        fluentName = "about-processes-extension-process";
+        classNames = ["extensions"];
+        break;
+      case "privilegedabout":
+        fluentName = "about-processes-privilegedabout-process";
+        break;
+      case "privilegedmozilla":
+        fluentName = "about-processes-privilegedmozilla-process";
+        break;
+      case "withCoopCoep":
+        fluentName = WEB_ISOLATED_L10N_ID;
+        fluentArgs.origin = data.origin;
+        processProperties.push(fluentArgs.pid);
+        processProperties.push(gLocalizedProcessProperties.withCoopCoep);
+        break;
+      case "browser":
+        fluentName = "about-processes-browser-process";
+        break;
+      case "plugin":
+        fluentName = "about-processes-plugin-process";
+        break;
+      case "gmpPlugin":
+        fluentName = "about-processes-gmp-plugin-process";
+        break;
+      case "gpu":
+        fluentName = "about-processes-gpu-process";
+        break;
+      case "vr":
+        fluentName = "about-processes-vr-process";
+        break;
+      case "rdd":
+        fluentName = "about-processes-rdd-process";
+        break;
+      case "socket":
+        fluentName = "about-processes-socket-process";
+        break;
+      case "forkServer":
+        fluentName = "about-processes-fork-server-process";
+        break;
+      case "preallocated":
+        fluentName = "about-processes-preallocated-process";
+        break;
+      case "utility":
+        fluentName = "about-processes-utility-process";
+        break;
+      case "inference":
+        fluentName = "about-processes-inference-process";
+        break;
+      // The following are probably not going to show up for users
+      // but let's handle the case anyway to avoid heisenoranges
+      // during tests in case of a leftover process from a previous
+      // test.
+      default:
+        fluentName = "about-processes-unknown-process";
+        fluentArgs.type = data.type;
+        break;
+    }
+
+    // Show container names instead of raw origin attribute suffixes.
+    if (fluentArgs.origin?.includes("^")) {
+      let origin = fluentArgs.origin;
+      if (
+        origin.endsWith("^disableJit=1") ||
+        origin.endsWith("&disableJit=1")
+      ) {
+        processProperties.push(gLocalizedProcessProperties.jitDisabled);
+      }
+
+      let privateBrowsingId, userContextId;
+      try {
+        ({ privateBrowsingId, userContextId } =
+          ChromeUtils.createOriginAttributesFromOrigin(origin));
+        fluentArgs.origin = origin.slice(0, origin.indexOf("^"));
+      } catch (e) {
+        // createOriginAttributesFromOrigin can throw NS_ERROR_FAILURE for incorrect origin strings.
+      }
+      if (userContextId) {
+        let identityLabel =
+          ContextualIdentityService.getUserContextLabel(userContextId);
+        if (identityLabel) {
+          fluentArgs.origin += ` — ${identityLabel}`;
+        }
+      }
+      if (privateBrowsingId) {
+        processProperties.push(gLocalizedProcessProperties.privateWindow);
+      }
+    }
+
+    if (processProperties.length) {
+      fluentArgs.properties = new Intl.ListFormat(undefined, {
+        type: "unit",
+      }).format(processProperties);
+    }
+
+    let processNameElement = nameCell;
+    if (SHOW_PROFILER_ICONS) {
+      if (!nameCell.firstChild) {
+        processNameElement = document.createElement("span");
+        nameCell.appendChild(processNameElement);
+
+        let profilerButton = document.createElement("span");
+        profilerButton.className = "profiler-icon";
+        profilerButton.setAttribute("role", "button");
+        profilerButton.setAttribute("tabindex", "0");
+        profilerButton.setAttribute("aria-pressed", "false");
+        document.l10n.setAttributes(
+          profilerButton,
+          "about-processes-profile-process",
+          { duration: PROFILE_DURATION }
+        );
+        nameCell.appendChild(profilerButton);
+      } else {
+        processNameElement = nameCell.firstChild;
+      }
+    }
+    document.l10n.setAttributes(processNameElement, fluentName, fluentArgs);
+    nameCell.className = ["type", "favicon", ...classNames].join(" ");
+    nameCell.setAttribute("id", data.pid + "-label");
+
+    let image;
+    switch (data.type) {
+      case "browser":
+      case "privilegedabout":
+        image = "chrome://branding/content/icon32.png";
+        break;
+      case "extension":
+        image = "chrome://mozapps/skin/extensions/extension.svg";
+        break;
+      default:
+        // If all favicons match, pick the shared favicon.
+        // Otherwise, pick a default icon.
+        // If some tabs have no favicon, we ignore them.
+        for (let win of data.windows || []) {
+          if (!win.tab) {
+            continue;
+          }
+          let favicon = win.tab.tab.getAttribute("image");
+          if (!favicon) {
+            // No favicon here, let's ignore the tab.
+          } else if (!image) {
+            // Let's pick a first favicon.
+            // We'll remove it later if we find conflicting favicons.
+            image = favicon;
+          } else if (image == favicon) {
+            // So far, no conflict, keep the favicon.
+          } else {
+            // Conflicting favicons, fallback to default.
+            image = null;
+            break;
+          }
+        }
+        if (!image) {
+          image = "chrome://global/skin/icons/link.svg";
+        }
+    }
+    nameCell.style.backgroundImage = `url('${image}')`;
+  }
 
   /**
    * Display a row showing a single process (without its threads).
    *
    * @param {ProcessDelta} data The data to display.
-   * @param {Number} maxSlopeCpu The largest slopeCpu value.
+   * @param {number} maxSlopeCpu The largest slopeCpu value.
    * @return {DOMElement} The row displaying the process.
    */
   displayProcessRow(data, maxSlopeCpu) {
@@ -463,178 +851,15 @@ var View = {
 
     // Column: Name
     let nameCell = row.firstChild;
-    {
-      let classNames = [];
-      let fluentName;
-      let fluentArgs = {
-        pid: "" + data.pid, // Make sure that this number is not localized
-      };
-      switch (data.type) {
-        case "web":
-          fluentName = "about-processes-web-process";
-          break;
-        case "webIsolated":
-          fluentName = "about-processes-web-isolated-process";
-          fluentArgs.origin = data.origin;
-          break;
-        case "webServiceWorker":
-          fluentName = "about-processes-web-serviceworker";
-          fluentArgs.origin = data.origin;
-          break;
-        case "file":
-          fluentName = "about-processes-file-process";
-          break;
-        case "extension":
-          fluentName = "about-processes-extension-process";
-          classNames = ["extensions"];
-          break;
-        case "privilegedabout":
-          fluentName = "about-processes-privilegedabout-process";
-          break;
-        case "privilegedmozilla":
-          fluentName = "about-processes-privilegedmozilla-process";
-          break;
-        case "withCoopCoep":
-          fluentName = "about-processes-with-coop-coep-process";
-          fluentArgs.origin = data.origin;
-          break;
-        case "browser":
-          fluentName = "about-processes-browser-process";
-          break;
-        case "plugin":
-          fluentName = "about-processes-plugin-process";
-          break;
-        case "gmpPlugin":
-          fluentName = "about-processes-gmp-plugin-process";
-          break;
-        case "gpu":
-          fluentName = "about-processes-gpu-process";
-          break;
-        case "vr":
-          fluentName = "about-processes-vr-process";
-          break;
-        case "rdd":
-          fluentName = "about-processes-rdd-process";
-          break;
-        case "socket":
-          fluentName = "about-processes-socket-process";
-          break;
-        case "forkServer":
-          fluentName = "about-processes-fork-server-process";
-          break;
-        case "preallocated":
-          fluentName = "about-processes-preallocated-process";
-          break;
-        case "utility":
-          fluentName = "about-processes-utility-process";
-          break;
-        case "inference":
-          fluentName = "about-processes-inference-process";
-          break;
-        // The following are probably not going to show up for users
-        // but let's handle the case anyway to avoid heisenoranges
-        // during tests in case of a leftover process from a previous
-        // test.
-        default:
-          fluentName = "about-processes-unknown-process";
-          fluentArgs.type = data.type;
-          break;
-      }
-
-      // Show container names instead of raw origin attribute suffixes.
-      if (fluentArgs.origin?.includes("^")) {
-        let origin = fluentArgs.origin;
-        let privateBrowsingId, userContextId;
-        try {
-          ({ privateBrowsingId, userContextId } =
-            ChromeUtils.createOriginAttributesFromOrigin(origin));
-          fluentArgs.origin = origin.slice(0, origin.indexOf("^"));
-        } catch (e) {
-          // createOriginAttributesFromOrigin can throw NS_ERROR_FAILURE for incorrect origin strings.
-        }
-        if (userContextId) {
-          let identityLabel =
-            ContextualIdentityService.getUserContextLabel(userContextId);
-          if (identityLabel) {
-            fluentArgs.origin += ` — ${identityLabel}`;
-          }
-        }
-        if (privateBrowsingId) {
-          fluentName += "-private";
-        }
-      }
-
-      let processNameElement = nameCell;
-      if (SHOW_PROFILER_ICONS) {
-        if (!nameCell.firstChild) {
-          processNameElement = document.createElement("span");
-          nameCell.appendChild(processNameElement);
-
-          let profilerButton = document.createElement("span");
-          profilerButton.className = "profiler-icon";
-          profilerButton.setAttribute("role", "button");
-          profilerButton.setAttribute("tabindex", "0");
-          profilerButton.setAttribute("aria-pressed", "false");
-          document.l10n.setAttributes(
-            profilerButton,
-            "about-processes-profile-process",
-            { duration: PROFILE_DURATION }
-          );
-          nameCell.appendChild(profilerButton);
-        } else {
-          processNameElement = nameCell.firstChild;
-        }
-      }
-      document.l10n.setAttributes(processNameElement, fluentName, fluentArgs);
-      nameCell.className = ["type", "favicon", ...classNames].join(" ");
-      nameCell.setAttribute("id", data.pid + "-label");
-
-      let image;
-      switch (data.type) {
-        case "browser":
-        case "privilegedabout":
-          image = "chrome://branding/content/icon32.png";
-          break;
-        case "extension":
-          image = "chrome://mozapps/skin/extensions/extension.svg";
-          break;
-        default:
-          // If all favicons match, pick the shared favicon.
-          // Otherwise, pick a default icon.
-          // If some tabs have no favicon, we ignore them.
-          for (let win of data.windows || []) {
-            if (!win.tab) {
-              continue;
-            }
-            let favicon = win.tab.tab.getAttribute("image");
-            if (!favicon) {
-              // No favicon here, let's ignore the tab.
-            } else if (!image) {
-              // Let's pick a first favicon.
-              // We'll remove it later if we find conflicting favicons.
-              image = favicon;
-            } else if (image == favicon) {
-              // So far, no conflict, keep the favicon.
-            } else {
-              // Conflicting favicons, fallback to default.
-              image = null;
-              break;
-            }
-          }
-          if (!image) {
-            image = "chrome://global/skin/icons/link.svg";
-          }
-      }
-      nameCell.style.backgroundImage = `url('${image}')`;
-    }
+    this.updateProcessName(data, nameCell);
 
     // Column: Memory
     let memoryCell = nameCell.nextSibling;
     {
-      let formattedTotal = this._formatMemory(data.totalRamSize);
+      let formattedTotal = formatMemory(data.totalRamSize);
       if (data.deltaRamSize) {
-        let formattedDelta = this._formatMemory(data.deltaRamSize);
-        this._fillCell(memoryCell, {
+        let formattedDelta = formatMemory(data.deltaRamSize);
+        fillCell(memoryCell, {
           fluentName: "about-processes-total-memory-size-changed",
           fluentArgs: {
             total: formattedTotal.amount,
@@ -646,7 +871,7 @@ var View = {
           classes: ["memory"],
         });
       } else {
-        this._fillCell(memoryCell, {
+        fillCell(memoryCell, {
           fluentName: "about-processes-total-memory-size-no-change",
           fluentArgs: {
             total: formattedTotal.amount,
@@ -699,7 +924,7 @@ var View = {
     }
 
     return row;
-  },
+  }
 
   /**
    * Display a thread summary row with the thread count and a twisty to
@@ -801,7 +1026,7 @@ var View = {
     // as a button that is focusable and actionable with keyboard (see killButton)
 
     return isOpen;
-  },
+  }
 
   displayDOMWindowRow(data) {
     const cellCount = 2;
@@ -836,7 +1061,7 @@ var View = {
           : data.documentURI.prePath;
       className = "frame-many";
     }
-    this._fillCell(nameCell, {
+    fillCell(nameCell, {
       fluentName,
       fluentArgs,
       classes: ["name", "indent", "favicon", className],
@@ -883,7 +1108,7 @@ var View = {
         document.l10n.setAttributes(killButton, "about-processes-shutdown-tab");
       }
     }
-  },
+  }
 
   utilityActorNameToFluentName(actorName) {
     let fluentName;
@@ -916,12 +1141,20 @@ var View = {
         fluentName = "about-processes-utility-actor-windows-file-dialog";
         break;
 
+      case "pkcs11Module":
+        fluentName = "about-processes-utility-actor-pkcs11-module";
+        break;
+
+      case "hwInference":
+        fluentName = "about-processes-utility-actor-hw-inference";
+        break;
+
       default:
         fluentName = "about-processes-utility-actor-unknown";
         break;
     }
     return fluentName;
-  },
+  }
 
   displayUtilityActorRow(data, parent) {
     const cellCount = 2;
@@ -935,18 +1168,18 @@ var View = {
     let nameCell = row.firstChild;
     let fluentName = this.utilityActorNameToFluentName(data.actorName);
     let fluentArgs = {};
-    this._fillCell(nameCell, {
+    fillCell(nameCell, {
       fluentName,
       fluentArgs,
       classes: ["name", "indent", "favicon"],
     });
-  },
+  }
 
   /**
    * Display a row showing a single thread.
    *
    * @param {ThreadDelta} data The data to display.
-   * @param {Number} maxSlopeCpu The largest slopeCpu value.
+   * @param {number} maxSlopeCpu The largest slopeCpu value.
    */
   displayThreadRow(data, maxSlopeCpu) {
     const cellCount = 3;
@@ -957,7 +1190,7 @@ var View = {
 
     // Column: name
     let nameCell = row.firstChild;
-    this._fillCell(nameCell, {
+    fillCell(nameCell, {
       fluentName: "about-processes-thread-name-and-id",
       fluentArgs: {
         name: data.name,
@@ -970,13 +1203,7 @@ var View = {
     this.displayCpu(data, nameCell.nextSibling, maxSlopeCpu);
 
     // Third column (Buttons) is empty, nothing to do.
-  },
-
-  _orderedRows: [],
-  _fillCell(elt, { classes, fluentName, fluentArgs }) {
-    document.l10n.setAttributes(elt, fluentName, fluentArgs);
-    elt.className = classes.join(" ");
-  },
+  }
 
   _getDuration(rawDurationNS) {
     if (rawDurationNS <= NS_PER_US) {
@@ -998,95 +1225,139 @@ var View = {
       return { duration: rawDurationNS / NS_PER_HOUR, unit: "h" };
     }
     return { duration: rawDurationNS / NS_PER_DAY, unit: "d" };
-  },
+  }
+}
 
-  /**
-   * Format a value representing an amount of memory.
-   *
-   * As a special case, we also handle `null`, which represents the case in which we do
-   * not have sufficient information to compute an amount of memory.
-   *
-   * @param {Number?} value The value to format. Must be either `null` or a non-negative number.
-   * @return { {unit: "GB" | "MB" | "KB" | B" | "?"}, amount: Number } The formated amount and its
-   *  unit, which may be used for e.g. additional CSS formating.
-   */
-  _formatMemory(value) {
-    if (value == null) {
-      return { unit: "?", amount: 0 };
-    }
-    if (typeof value != "number") {
-      throw new Error(`Invalid memory value ${value}`);
-    }
-    let abs = Math.abs(value);
-    if (abs >= ONE_GIGA) {
-      return {
-        unit: "GB",
-        amount: value / ONE_GIGA,
-      };
-    }
-    if (abs >= ONE_MEGA) {
-      return {
-        unit: "MB",
-        amount: value / ONE_MEGA,
-      };
-    }
-    if (abs >= ONE_KILO) {
-      return {
-        unit: "KB",
-        amount: value / ONE_KILO,
-      };
-    }
+// Shared by both view/controller pairs below (ProcessesView and
+// ProcessesTabView), so neither needs to reach into the other's instance.
+function fillCell(elt, { classes, fluentName, fluentArgs }) {
+  document.l10n.setAttributes(elt, fluentName, fluentArgs);
+  elt.className = classes.join(" ");
+}
+
+/**
+ * Format a value representing an amount of memory.
+ *
+ * As a special case, we also handle `null`, which represents the case in which we do
+ * not have sufficient information to compute an amount of memory.
+ *
+ * @param {number?} value The value to format. Must be either `null` or a non-negative number.
+ * @return { {unit: "GB" | "MB" | "KB" | B" | "?"}, amount: Number } The formated amount and its
+ *  unit, which may be used for e.g. additional CSS formating.
+ */
+function formatMemory(value) {
+  if (value == null) {
+    return { unit: "?", amount: 0 };
+  }
+  if (typeof value != "number") {
+    throw new Error(`Invalid memory value ${value}`);
+  }
+  let abs = Math.abs(value);
+  if (abs >= ONE_GIGA) {
     return {
-      unit: "B",
-      amount: value,
+      unit: "GB",
+      amount: value / ONE_GIGA,
     };
-  },
-};
+  }
+  if (abs >= ONE_MEGA) {
+    return {
+      unit: "MB",
+      amount: value / ONE_MEGA,
+    };
+  }
+  if (abs >= ONE_KILO) {
+    return {
+      unit: "KB",
+      amount: value / ONE_KILO,
+    };
+  }
+  return {
+    unit: "B",
+    amount: value,
+  };
+}
 
-var Control = {
+// Shared by both view/controller pairs (see the bottom of this file) so
+// gLocalizedUnits/gLocalizedProcessProperties get populated regardless of
+// which one is entered first.
+async function promiseLocalizations() {
+  let [
+    ns,
+    us,
+    ms,
+    s,
+    m,
+    h,
+    d,
+    B,
+    KB,
+    MB,
+    GB,
+    TB,
+    PB,
+    EB,
+    privateWindow,
+    serviceWorker,
+    jitDisabled,
+    withCoopCoep,
+  ] = await document.l10n.formatValues([
+    "duration-unit-ns",
+    "duration-unit-us",
+    "duration-unit-ms",
+    "duration-unit-s",
+    "duration-unit-m",
+    "duration-unit-h",
+    "duration-unit-d",
+    "memory-unit-B",
+    "memory-unit-KB",
+    "memory-unit-MB",
+    "memory-unit-GB",
+    "memory-unit-TB",
+    "memory-unit-PB",
+    "memory-unit-EB",
+    "about-processes-web-isolated-property-private",
+    "about-processes-web-isolated-property-serviceworker",
+    "about-processes-web-isolated-property-jit-disabled",
+    "about-processes-web-isolated-property-with-coop-coep",
+  ]);
+
+  return {
+    units: {
+      duration: { ns, us, ms, s, m, h, d },
+      memory: { B, KB, MB, GB, TB, PB, EB },
+    },
+    properties: { privateWindow, serviceWorker, jitDisabled, withCoopCoep },
+  };
+}
+
+class ProcessesController {
   // The set of all processes reported as "hung" by the process hang monitor.
   //
   // type: Set<ChildID>
-  _hungItems: new Set(),
-  _sortColumn: null,
-  _sortAscendent: true,
+  _hungItems = new Set();
+  _sortColumn = null;
+  _sortAscendent = true;
+  _lastMouseEvent = 0;
+
+  constructor(view) {
+    this._view = view;
+  }
+
   _removeSubtree(row) {
     let sibling = row.nextSibling;
     while (sibling && !sibling.classList.contains("process")) {
       let next = sibling.nextSibling;
       if (sibling.classList.contains("thread")) {
-        View._removeRow(sibling);
+        this._view._removeRow(sibling);
       }
       sibling = next;
     }
-  },
+  }
   init() {
     this._initHangReports();
 
-    // Start prefetching units.
-    this._promisePrefetchedUnits = (async function () {
-      let [ns, us, ms, s, m, h, d, B, KB, MB, GB, TB, PB, EB] =
-        await document.l10n.formatValues([
-          { id: "duration-unit-ns" },
-          { id: "duration-unit-us" },
-          { id: "duration-unit-ms" },
-          { id: "duration-unit-s" },
-          { id: "duration-unit-m" },
-          { id: "duration-unit-h" },
-          { id: "duration-unit-d" },
-          { id: "memory-unit-B" },
-          { id: "memory-unit-KB" },
-          { id: "memory-unit-MB" },
-          { id: "memory-unit-GB" },
-          { id: "memory-unit-TB" },
-          { id: "memory-unit-PB" },
-          { id: "memory-unit-EB" },
-        ]);
-      return {
-        duration: { ns, us, ms, s, m, h, d },
-        memory: { B, KB, MB, GB, TB, PB, EB },
-      };
-    })();
+    // Start prefetching localizations.
+    this._promiseLocalizations = promiseLocalizations();
 
     let tbody = document.getElementById("process-tbody");
 
@@ -1130,13 +1401,13 @@ var Control = {
           // We've clicked on a tab, navigate.
           let { tab, tabbrowser } = target.parentNode.win.tab;
           tabbrowser.selectedTab = tab;
-          tabbrowser.ownerGlobal.focus();
+          tabbrowser.documentGlobal.focus();
           return;
         }
         if (target.classList.contains("extensions")) {
           // We've clicked on the extensions process, open or reuse window.
           let parentWin =
-            window.docShell.browsingContext.embedderElement.ownerGlobal;
+            window.docShell.browsingContext.embedderElement.documentGlobal;
           parentWin.BrowserAddonUI.openAddonsMgr();
           return;
         }
@@ -1193,11 +1464,10 @@ var Control = {
 
         await this._updateDisplay(true);
       });
-  },
-  _lastMouseEvent: 0,
+  }
   _updateLastMouseEvent() {
     this._lastMouseEvent = Date.now();
-  },
+  }
   _initHangReports() {
     const PROCESS_HANG_REPORT_NOTIFICATION = "process-hang-report";
 
@@ -1220,7 +1490,7 @@ var Control = {
       },
       { once: true }
     );
-  },
+  }
   async update(force = false) {
     await State.update(force);
 
@@ -1229,15 +1499,17 @@ var Control = {
     }
 
     await this._updateDisplay(force);
-  },
+  }
 
   // The force parameter can force a full update even when the mouse has been
   // moved recently.
   async _updateDisplay(force = false) {
     let counters = State.getCounters();
-    if (this._promisePrefetchedUnits) {
-      gLocalizedUnits = await this._promisePrefetchedUnits;
-      this._promisePrefetchedUnits = null;
+    if (this._promiseLocalizations) {
+      let { units, properties } = await this._promiseLocalizations;
+      gLocalizedUnits = units;
+      gLocalizedProcessProperties = properties;
+      this._promiseLocalizations = null;
     }
 
     // We reset `_hungItems`, based on the assumption that the process hang
@@ -1258,25 +1530,25 @@ var Control = {
 
       process.isHung = process.childID && hungItems.has(process.childID);
 
-      let processRow = View.displayProcessRow(process, this._maxSlopeCpu);
+      let processRow = this._view.displayProcessRow(process, this._maxSlopeCpu);
 
       if (process.type != "extension") {
         // We do not want to display extensions.
         for (let win of process.windows) {
           if (SHOW_ALL_SUBFRAMES || win.tab || win.isProcessRoot) {
-            View.displayDOMWindowRow(win, process);
+            this._view.displayDOMWindowRow(win, process);
           }
         }
       }
 
       if (process.type === "utility") {
         for (let actor of process.utilityActors) {
-          View.displayUtilityActorRow(actor, process);
+          this._view.displayUtilityActorRow(actor, process);
         }
       }
 
       if (SHOW_THREADS) {
-        if (View.displayThreadSummaryRow(process)) {
+        if (this._view.displayThreadSummaryRow(process)) {
           this._showThreads(processRow, this._maxSlopeCpu);
         }
       }
@@ -1301,11 +1573,11 @@ var Control = {
       // or kill a process.
       // We didn't return earlier because updating CPU and memory values is
       // still valuable.
-      View.discardUpdate();
+      this._view.discardUpdate();
       return;
     }
 
-    View.commit();
+    this._view.commit();
 
     // Reset the selectedRow field if that row is no longer in the DOM
     // to avoid keeping forever references to dead processes.
@@ -1315,19 +1587,19 @@ var Control = {
 
     // Used by tests to differentiate full updates from l10n updates.
     document.dispatchEvent(new CustomEvent("AboutProcessesUpdated"));
-  },
+  }
   _compareCpu(a, b) {
     return (
       b.slopeCpu - a.slopeCpu || b.active - a.active || b.totalCpu - a.totalCpu
     );
-  },
+  }
   _showThreads(row, maxSlopeCpu) {
     let process = row.process;
     this._sortThreads(process.threads);
     for (let thread of process.threads) {
-      View.displayThreadRow(thread, maxSlopeCpu);
+      this._view.displayThreadRow(thread, maxSlopeCpu);
     }
-  },
+  }
   _sortThreads(threads) {
     return threads.sort((a, b) => {
       let order;
@@ -1350,7 +1622,7 @@ var Control = {
       }
       return order;
     });
-  },
+  }
   _sortProcesses(counters) {
     return counters.sort((a, b) => {
       let order;
@@ -1382,7 +1654,7 @@ var Control = {
       }
       return order;
     });
-  },
+  }
   _sortDOMWindows(windows) {
     return windows.sort((a, b) => {
       let order =
@@ -1394,7 +1666,7 @@ var Control = {
       }
       return order;
     });
-  },
+  }
 
   // Assign a display rank to a process.
   //
@@ -1446,7 +1718,7 @@ var Control = {
       default:
         return RANK_UTILITY;
     }
-  },
+  }
 
   // Handle events on image controls.
   _handleActivate(target) {
@@ -1465,7 +1737,7 @@ var Control = {
     }
 
     this._handleSelection(target);
-  },
+  }
 
   // Open/close list of threads.
   _handleTwisty(target) {
@@ -1473,12 +1745,12 @@ var Control = {
     if (target.classList.toggle("open")) {
       target.setAttribute("aria-expanded", "true");
       this._showThreads(row, this._maxSlopeCpu);
-      View.insertAfterRow(row);
+      this._view.insertAfterRow(row);
     } else {
       target.setAttribute("aria-expanded", "false");
       this._removeSubtree(row);
     }
-  },
+  }
 
   // Kill process/close tab/close subframe.
   _handleKill(target) {
@@ -1489,7 +1761,7 @@ var Control = {
 
       // Make sure that the user can't click twice on the kill button.
       // Otherwise, chaos might ensue. Plus we risk crashing under Windows.
-      View._killedRecently.push({ pid });
+      this._view._killedRecently.push({ pid });
 
       // Discard tab contents and show that the process and all its contents are getting killed.
       row.classList.add("killing");
@@ -1506,7 +1778,7 @@ var Control = {
         childRow.classList.add("killing");
         let win = childRow.win;
         if (win) {
-          View._killedRecently.push({ pid: win.outerWindowId });
+          this._view._killedRecently.push({ pid: win.outerWindowId });
           if (win.tab && win.tab.tabbrowser) {
             win.tab.tabbrowser.discardBrowser(
               win.tab.tab,
@@ -1527,7 +1799,7 @@ var Control = {
         skipPermitUnload: true,
         animate: true,
       });
-      View._killedRecently.push({ outerWindowId: row.win.outerWindowId });
+      this._view._killedRecently.push({ outerWindowId: row.win.outerWindowId });
       row.classList.add("killing");
       row.setAttribute("aria-busy", "true");
       target.removeAttribute("data-l10n-id");
@@ -1548,7 +1820,7 @@ var Control = {
           // It might actually become a preloaded process rather than
           // dying. That's an acceptable error. Even if we display incorrectly
           // that the process is dying, this error will last only one refresh.
-          View._killedRecently.push({ pid: parentRow.process.pid });
+          this._view._killedRecently.push({ pid: parentRow.process.pid });
           parentRow.classList.add("killing");
           let actionIcon = parentRow.querySelector(".action-item");
           actionIcon?.removeAttribute("data-l10n-id");
@@ -1556,7 +1828,7 @@ var Control = {
         }
       }
     }
-  },
+  }
 
   // Handle profiling of a process.
   _handleProfiling(target) {
@@ -1576,7 +1848,7 @@ var Control = {
       target.classList.remove("profiler-active");
       target.setAttribute("aria-pressed", "false");
     }, PROFILE_DURATION * 1000);
-  },
+  }
 
   // Handle selection changes.
   _handleSelection(target) {
@@ -1594,10 +1866,384 @@ var Control = {
     }
     row.setAttribute("selected", "true");
     this.selectedRow = row;
-  },
-};
+  }
+}
+
+// A tab's CPU share below this reads as "< 0.1%" rather than a percent that
+// would round to "0%" and look identical to genuinely idle.
+const TAB_CPU_NEGLIGIBLE_THRESHOLD = 0.001;
+
+/**
+ * A flat, per-tab view. Extends RowSet (see above) for the row-reuse
+ * mechanics it shares with ProcessesView; rendering (_createRow/_updateRow)
+ * is its own, since the two views show different columns.
+ */
+class ProcessesTabView extends RowSet {
+  commit(tabCounters, { reorder = true } = {}) {
+    for (let tabData of tabCounters) {
+      let row = this._getOrCreateRow(tabData.tab, () => this._createRow());
+      this._updateRow(row, tabData);
+    }
+    if (reorder) {
+      this._commitOrder();
+    } else {
+      this._discardOrder();
+    }
+  }
+
+  // Unlike ProcessesView.discardUpdate(), appends new rows immediately so a
+  // freshly opened tab isn't invisible for the freeze window -- existing
+  // rows' DOM position stays untouched either way.
+  _discardOrder() {
+    let tbody = document.getElementById("process-tbody");
+    for (let row of this._orderedRows) {
+      if (!row.parentNode) {
+        tbody.appendChild(row);
+      }
+    }
+    this._orderedRows = [];
+  }
+
+  _createRow() {
+    const cellCount = 4;
+    let row = document.createElement("tr");
+    row.className = "tab-row";
+    while (row.children.length < cellCount) {
+      row.appendChild(document.createElement("td"));
+    }
+
+    // The unload button, not the row, is the Tab stop -- same as the
+    // default view's kill button; rows here don't carry their own
+    // tabindex.
+    let actionCell = row.children[3];
+    let unloadButton = document.createElement("span");
+    unloadButton.className = "action-icon unload-icon";
+    unloadButton.setAttribute("role", "button");
+    unloadButton.setAttribute("tabindex", "0");
+    document.l10n.setAttributes(unloadButton, "about-processes-unload-tab");
+    actionCell.appendChild(unloadButton);
+    row.unloadButton = unloadButton;
+
+    return row;
+  }
+
+  _updateRow(row, tabData) {
+    row.tabData = tabData;
+
+    // Keep discarded tabs in the list, shown asleep rather than removed.
+    row.classList.toggle("killed", !!tabData.discarded);
+    if (tabData.discarded) {
+      row.classList.remove("killing");
+      row.removeAttribute("aria-busy");
+    }
+    // Kept visible and focusable rather than hidden, so a discarded row
+    // still has a keyboard-reachable way back. Selecting a discarded tab
+    // already triggers Firefox's own restore-on-select, so this navigates
+    // there rather than claiming to reload in place.
+    row.unloadButton.classList.toggle("unload-icon", !tabData.discarded);
+    row.unloadButton.classList.toggle("go-to-tab-icon", !!tabData.discarded);
+    document.l10n.setAttributes(
+      row.unloadButton,
+      tabData.discarded
+        ? "about-processes-go-to-tab"
+        : "about-processes-unload-tab"
+    );
+
+    let [nameCell, memoryCell, cpuCell] = row.children;
+    nameCell.className = "name favicon";
+    nameCell.textContent = tabData.title || tabData.uri?.spec || "";
+    // Rows are reused across polls, so a stale image needs clearing, not
+    // just skipping, when the current tab has none.
+    let image = tabData.tab.getAttribute("image");
+    nameCell.style.backgroundImage = image ? `url('${image}')` : "";
+
+    if (tabData.hasUsageData) {
+      let formattedTotal = formatMemory(tabData.totalRamSize);
+      fillCell(memoryCell, {
+        classes: ["memory"],
+        fluentName: "about-processes-total-memory-size-no-change",
+        fluentArgs: {
+          total: formattedTotal.amount,
+          totalUnit: gLocalizedUnits.memory[formattedTotal.unit],
+        },
+      });
+      if (tabData.slopeCpuOfTotal == 0) {
+        fillCell(cpuCell, {
+          classes: ["cpu"],
+          fluentName: "about-processes-tab-cpu-fully-idle",
+        });
+      } else if (tabData.slopeCpuOfTotal < TAB_CPU_NEGLIGIBLE_THRESHOLD) {
+        fillCell(cpuCell, {
+          classes: ["cpu"],
+          fluentName: "about-processes-tab-cpu-almost-idle",
+        });
+      } else {
+        fillCell(cpuCell, {
+          classes: ["cpu"],
+          fluentName: "about-processes-tab-cpu",
+          fluentArgs: { percent: tabData.slopeCpuOfTotal },
+        });
+      }
+    } else {
+      // No process to attribute usage from (discarded/never-loaded, or
+      // sharing the parent process) -- clear any stale l10n attrs too, so a
+      // later locale-change re-translation can't overwrite the "—".
+      memoryCell.className = "memory";
+      memoryCell.removeAttribute("data-l10n-id");
+      memoryCell.removeAttribute("data-l10n-args");
+      memoryCell.textContent = "—";
+      cpuCell.className = "cpu";
+      cpuCell.removeAttribute("data-l10n-id");
+      cpuCell.removeAttribute("data-l10n-args");
+      cpuCell.textContent = "—";
+    }
+  }
+}
+
+class ProcessesTabController {
+  // Reuses the default view's column header markup, but unlike that view,
+  // ascending always means the up caret here -- this view's columns don't
+  // have per-column sort-direction semantics.
+  _sortColumn = null;
+  _sortAscendent = false;
+  _lastTabCounters = null;
+  _lastMouseEvent = 0;
+
+  constructor(view) {
+    this._view = view;
+    this._tabAttribution = new TabAttribution();
+  }
+
+  init() {
+    // Prefetch localizations: this view's entry point doesn't go through
+    // ProcessesController.init(), so gLocalizedUnits isn't populated yet.
+    this._promiseLocalizations = promiseLocalizations();
+    this._promiseCpuCount = this._tabAttribution.init();
+
+    // The CPU header is shared with the default view, but means % of total
+    // capacity here rather than % of one core -- swap in a tooltip
+    // clarifying that, since the visible header text stays the same.
+    document.l10n.setAttributes(
+      document.getElementById("column-cpu-total"),
+      "about-processes-column-cpu-total-tab"
+    );
+
+    // Shortened here rather than renaming the shared "Memory" string, to
+    // reclaim width in this narrower view without changing the default one.
+    document.l10n.setAttributes(
+      document.getElementById("column-memory-resident"),
+      "about-processes-column-memory-resident-tab"
+    );
+
+    let tbody = document.getElementById("process-tbody");
+
+    // Single click, and Enter/Space keypress: close a tab. One delegate at
+    // the tbody level, matching ProcessesController.init()'s own pattern,
+    // rather than a listener per row.
+    tbody.addEventListener("click", event => {
+      this._lastMouseEvent = Date.now();
+      this._handleActivate(event.target);
+    });
+    tbody.addEventListener("keypress", event => {
+      if (event.key === "Enter" || event.key === " ") {
+        // Matches the click handler -- else keyboard-only users never get
+        // the freeze below, and a poll can reorder focus out from under them.
+        this._lastMouseEvent = Date.now();
+        this._handleActivate(event.target);
+      }
+    });
+
+    // Double click: navigate to the tab. Not when the action button itself
+    // was double-clicked -- its own click handler already acted on the tab,
+    // and navigating too would immediately reload it right back.
+    tbody.addEventListener("dblclick", event => {
+      if (event.target.closest(".action-icon")) {
+        return;
+      }
+      let row = event.target.closest("tr.tab-row");
+      if (row) {
+        this._navigateToTab(row);
+      }
+    });
+
+    tbody.addEventListener("mousemove", () => {
+      this._lastMouseEvent = Date.now();
+    });
+
+    // State already re-polls every interval tick regardless of
+    // document.hidden, so re-derive tab counters from it here instead of
+    // forcing another ProcInfo snapshot on resume.
+    window.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        let tabCounters = this._tabAttribution.getTabCounters(
+          State.getCounters()
+        );
+        this._lastTabCounters = tabCounters;
+        this._sortTabCounters(tabCounters);
+        this._commitView(tabCounters, { force: true });
+      }
+    });
+
+    document
+      .getElementById("process-thead")
+      .addEventListener("click", event => {
+        if (!event.target.classList.contains("clickable")) {
+          return;
+        }
+        const columnId = event.target.id;
+        let ascending =
+          columnId == this._sortColumn
+            ? !this._sortAscendent
+            : // Resource columns start with the busiest tabs first.
+              columnId == "column-name";
+        this._setSortIndicator(columnId, ascending);
+        this._resort();
+      });
+
+    // Match the real initial sort (memory, descending) with a visible
+    // indicator -- otherwise the first click on Memory looks like a no-op.
+    this._setSortIndicator("column-memory-resident", false);
+  }
+
+  _setSortIndicator(columnId, ascending) {
+    const ascArrow = "arrow-up";
+    const descArrow = "arrow-down";
+    if (this._sortColumn) {
+      let previous = document.getElementById(this._sortColumn);
+      previous.setAttribute("aria-sort", "none");
+      previous.classList.remove(ascArrow, descArrow);
+    }
+    this._sortColumn = columnId;
+    this._sortAscendent = ascending;
+    let header = document.getElementById(columnId);
+    header.classList.toggle(ascArrow, ascending);
+    header.classList.toggle(descArrow, !ascending);
+    header.setAttribute("aria-sort", ascending ? "ascending" : "descending");
+  }
+
+  _handleActivate(target) {
+    // Not .unload-icon: that class is swapped for .go-to-tab-icon once
+    // discarded, but the button itself is still the only activation target.
+    if (!target.classList.contains("action-icon")) {
+      return;
+    }
+    let row = target.closest("tr.tab-row");
+    if (row.tabData.discarded) {
+      this._navigateToTab(row);
+    } else {
+      this._unloadRow(row);
+    }
+  }
+
+  _navigateToTab(row) {
+    let { tab, tabbrowser } = row.tabData;
+    tabbrowser.selectedTab = tab;
+    tabbrowser.documentGlobal.focus();
+  }
+
+  // Unloads rather than closes, then dims the row for feedback until the
+  // next poll confirms the discard. Not removeTab(): the tab stays open,
+  // just asleep, and reload-on-reselect brings it back.
+  async _unloadRow(row) {
+    row.classList.add("killing");
+    row.setAttribute("aria-busy", "true");
+    let { tab, tabbrowser } = row.tabData;
+    await tabbrowser.explicitUnloadTabs([tab]);
+    if (!tab.hasAttribute("discarded")) {
+      // The tab was ineligible for unload (e.g. a non-remote tab) -- don't
+      // leave it looking busy forever.
+      row.classList.remove("killing");
+      row.removeAttribute("aria-busy");
+    }
+  }
+
+  // Re-sorts/re-renders from the last sample rather than update(): resampling
+  // CPU right after the last poll amplifies slopeCpu's noise. Forces the
+  // reorder despite a recent mouse event too -- sorting was the explicit ask,
+  // so freezing here would just look broken.
+  _resort() {
+    if (!this._lastTabCounters) {
+      return;
+    }
+    this._sortTabCounters(this._lastTabCounters);
+    this._commitView(this._lastTabCounters, { force: true });
+  }
+
+  _sortTabCounters(tabCounters) {
+    let order;
+    switch (this._sortColumn) {
+      case "column-name":
+        order = (a, b) =>
+          (a.title || "").localeCompare(b.title || "") ||
+          (a.uri?.spec ?? "").localeCompare(b.uri?.spec ?? "");
+        break;
+      case "column-cpu-total":
+        order = (a, b) => a.slopeCpuOfTotal - b.slopeCpuOfTotal;
+        break;
+      case "column-memory-resident":
+        order = (a, b) => a.totalRamSize - b.totalRamSize;
+        break;
+      default:
+        throw new Error("Unsupported order: " + this._sortColumn);
+    }
+    tabCounters.sort(this._sortAscendent ? order : (a, b) => order(b, a));
+  }
+
+  _commitView(tabCounters, { force = false } = {}) {
+    // If there's been a recent mouse event, don't reorder or remove rows,
+    // so the row under the cursor doesn't shift right as the user is about
+    // to click its unload button. Matches ProcessesController._updateDisplay.
+    let reorder =
+      force || Date.now() - this._lastMouseEvent >= TIME_BEFORE_SORTING_AGAIN;
+    this._view.commit(tabCounters, { reorder });
+    document.dispatchEvent(new CustomEvent("AboutProcessesUpdated"));
+  }
+
+  async update() {
+    // force=true is intentional, unlike the default view: right after
+    // opening the panel this poll can beat MINIMUM_INTERVAL_BETWEEN_SAMPLES_MS,
+    // and skipping the real snapshot then races a just-opened tab's title
+    // propagating from content to chrome -- a no-op during regular polling,
+    // since UPDATE_INTERVAL_MS always exceeds that window anyway.
+    await State.update(true);
+    if (document.hidden) {
+      return;
+    }
+    if (this._promiseLocalizations) {
+      let { units, properties } = await this._promiseLocalizations;
+      gLocalizedUnits = units;
+      gLocalizedProcessProperties = properties;
+      this._promiseLocalizations = null;
+    }
+    if (this._promiseCpuCount) {
+      await this._promiseCpuCount;
+      this._promiseCpuCount = null;
+    }
+    let counters = State.getCounters();
+    let tabCounters = this._tabAttribution.getTabCounters(counters);
+    this._lastTabCounters = tabCounters;
+    this._sortTabCounters(tabCounters);
+    this._commitView(tabCounters);
+  }
+}
+
+// Instantiable, not static, so a future URL-parameter-selected view (e.g. a
+// per-tab/site grouping) can be added as its own View/Controller pair
+// without touching this one.
+var View = new ProcessesView();
+var Control = new ProcessesController(View);
+var TabView = new ProcessesTabView();
+var TabControl = new ProcessesTabController(TabView);
 
 window.onload = async function () {
+  let groupBy = new URLSearchParams(location.search).get("groupby");
+  if (groupBy == "tab") {
+    TabControl.init();
+    await TabControl.update();
+    window.setInterval(() => TabControl.update(), UPDATE_INTERVAL_MS);
+    return;
+  }
+
   Control.init();
 
   // Display immediately the list of processes. CPU values will be missing.

@@ -19,13 +19,6 @@
 
 #include <sys/ucontext.h>
 
-#include "absl/base/config.h"
-#if defined(__linux__)
-#include <sys/mman.h>
-#include <ucontext.h>
-#include <unistd.h>
-#endif
-
 #include <atomic>
 #include <cassert>
 #include <cstdint>
@@ -34,7 +27,15 @@
 #include <utility>
 
 #include "absl/base/attributes.h"
+#include "absl/base/config.h"
+#include "absl/debugging/internal/addresses.h"
 #include "absl/debugging/stacktrace.h"
+
+#if defined(__linux__)
+#include <sys/mman.h>
+#include <ucontext.h>
+#include <unistd.h>
+#endif
 
 static constexpr ptrdiff_t kUnknownFrameSize = 0;
 
@@ -44,7 +45,8 @@ template <typename T>
 static inline ptrdiff_t ComputeStackFrameSize(const T *low, const T *high) {
   const char *low_char_ptr = reinterpret_cast<const char *>(low);
   const char *high_char_ptr = reinterpret_cast<const char *>(high);
-  return low < high ? high_char_ptr - low_char_ptr : kUnknownFrameSize;
+  return low < high ? static_cast<ptrdiff_t>(high_char_ptr - low_char_ptr)
+                    : kUnknownFrameSize;
 }
 
 // Given a pointer to a stack frame, locate and return the calling stackframe,
@@ -54,6 +56,7 @@ static inline ptrdiff_t ComputeStackFrameSize(const T *low, const T *high) {
 template <bool STRICT_UNWINDING, bool WITH_CONTEXT>
 ABSL_ATTRIBUTE_NO_SANITIZE_ADDRESS  // May read random elements from stack.
 ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY   // May read random elements from stack.
+ABSL_ATTRIBUTE_NO_SANITIZE_THREAD   // May read random elements from stack.
 static void ** NextStackFrame(void **old_frame_pointer, const void *uc,
                               const std::pair<size_t, size_t> range) {
   //               .
@@ -116,8 +119,10 @@ static void ** NextStackFrame(void **old_frame_pointer, const void *uc,
 template <bool IS_STACK_FRAMES, bool IS_WITH_CONTEXT>
 ABSL_ATTRIBUTE_NO_SANITIZE_ADDRESS  // May read random elements from stack.
 ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY   // May read random elements from stack.
-static int UnwindImpl(void **result, int *sizes, int max_depth, int skip_count,
-                      const void *ucp, int *min_dropped_frames) {
+ABSL_ATTRIBUTE_NO_SANITIZE_THREAD   // May read random elements from stack.
+static int UnwindImpl(void **result, uintptr_t *frames, int *sizes,
+                      int max_depth, int skip_count, const void *ucp,
+                      int *min_dropped_frames) {
   // The `frame_pointer` that is computed here points to the top of the frame.
   // The two words preceding the address are the return address and the previous
   // frame pointer.
@@ -137,6 +142,10 @@ static int UnwindImpl(void **result, int *sizes, int max_depth, int skip_count,
   void *return_address = nullptr;
   while (frame_pointer && n < max_depth) {
     return_address = frame_pointer[-1];
+    // Follow x86 and stop if the return address is null (end of stack).
+    if (return_address == nullptr) {
+      break;
+    }
 
     // The absl::GetStackFrames routine is called when we are in some
     // informational context (the failure signal handler for example).  Use the
@@ -152,8 +161,14 @@ static int UnwindImpl(void **result, int *sizes, int max_depth, int skip_count,
       result[n] = return_address;
       if (IS_STACK_FRAMES) {
         // NextStackFrame() has already checked that frame size fits to int
-        sizes[n] = static_cast<int>(ComputeStackFrameSize(frame_pointer,
-                                                          next_frame_pointer));
+        if (frames != nullptr) {
+          frames[n] =
+              absl::debugging_internal::StripPointerMetadata(frame_pointer);
+        }
+        if (sizes != nullptr) {
+          sizes[n] = static_cast<int>(
+              ComputeStackFrameSize(frame_pointer, next_frame_pointer));
+        }
       }
       n++;
     }

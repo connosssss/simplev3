@@ -4,10 +4,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 pub mod decoder;
 mod decoder_instructions;
 pub mod encoder;
 mod encoder_instructions;
+mod fuzz;
 mod header_block;
 pub mod huffman;
 mod huffman_decode_helper;
@@ -20,53 +23,144 @@ mod static_table;
 mod stats;
 mod table;
 
-use std::fmt::{self, Display, Formatter};
-
-pub use decoder::QPackDecoder;
-pub use encoder::QPackEncoder;
 pub use stats::Stats;
+use thiserror::Error;
+
+pub use crate::{decoder::Decoder, encoder::Encoder};
 
 type Res<T> = Result<T, Error>;
 
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Clone, Copy)]
-pub struct QpackSettings {
-    pub max_table_size_decoder: u64,
-    pub max_table_size_encoder: u64,
-    pub max_blocked_streams: u16,
+#[expect(clippy::struct_field_names, reason = "That's how they are called.")]
+pub struct Settings {
+    max_table_size_decoder: u64,
+    max_table_size_encoder: u64,
+    max_blocked_streams: u16,
+    /// Upper bound on the number of streams the encoder tracks.
+    /// Dynamic table references will be avoided once this limit is hit.
+    max_tracked_streams: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Error {
-    DecompressionFailed,
-    EncoderStream,
-    DecoderStream,
-    ClosedCriticalStream,
-    InternalError,
+impl Default for Settings {
+    fn default() -> Self {
+        const MAX_TABLE_SIZE_DEFAULT: u64 = 65536;
+        Self {
+            max_table_size_decoder: MAX_TABLE_SIZE_DEFAULT,
+            max_table_size_encoder: MAX_TABLE_SIZE_DEFAULT,
+            max_blocked_streams: 20,
+            max_tracked_streams: 1000,
+        }
+    }
+}
 
-    // These are internal errors, they will be transformed into one of the above.
-    NeedMoreData, /* Return when an input stream does not have more data that a decoder
-                   * needs.(It does not mean that a stream is closed.) */
-    HeaderLookup,
-    HuffmanDecompressionFailed,
-    BadUtf8,
-    ChangeCapacity,
-    DynamicTableFull,
-    IncrementAck,
-    IntegerOverflow,
-    WrongStreamCount,
-    Decoding, // Decoding internal error that is not one of the above.
-    EncoderStreamBlocked,
+impl Settings {
+    /// The QPACK specification limits the table size to `(1 << 30) - 1`.
+    const TABLE_SIZE_LIMIT: u64 = (1 << 30) - 1;
+
+    #[must_use]
+    pub const fn get_max_table_size_decoder(&self) -> u64 {
+        self.max_table_size_decoder
+    }
+
+    /// # Panics
+    ///
+    /// The table size must be smaller than `1 << 30` by the spec.
+    #[must_use]
+    pub const fn max_table_size_decoder(mut self, v: u64) -> Self {
+        assert!(v <= Self::TABLE_SIZE_LIMIT);
+        self.max_table_size_decoder = v;
+        self
+    }
+
+    #[must_use]
+    pub const fn get_max_table_size_encoder(&self) -> u64 {
+        self.max_table_size_encoder
+    }
+
+    /// # Panics
+    ///
+    /// The table size must be smaller than `1 << 30` by the spec.
+    #[must_use]
+    pub const fn max_table_size_encoder(mut self, v: u64) -> Self {
+        assert!(v <= Self::TABLE_SIZE_LIMIT);
+        self.max_table_size_encoder = v;
+        self
+    }
+
+    #[must_use]
+    pub const fn get_max_blocked_streams(&self) -> u16 {
+        self.max_blocked_streams
+    }
+
+    #[must_use]
+    pub const fn max_blocked_streams(mut self, v: u16) -> Self {
+        self.max_blocked_streams = v;
+        self
+    }
+
+    #[must_use]
+    pub const fn get_max_tracked_streams(&self) -> usize {
+        self.max_tracked_streams
+    }
+
+    #[must_use]
+    pub const fn max_tracked_streams(mut self, v: usize) -> Self {
+        self.max_tracked_streams = v;
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum Error {
+    #[error("Decompression error")]
+    Decompression,
+    #[error("Encoder stream error")]
+    EncoderStream,
+    #[error("Decoder stream error")]
+    DecoderStream,
+    #[error("Critical stream closed")]
+    ClosedCriticalStream,
+    #[error("Internal error")]
     Internal,
 
-    TransportError(neqo_transport::Error),
-    QlogError,
+    // These are internal errors, they will be transformed into one of the above.
+    ///
+    /// Return when an input stream does not have more data that a decoder needs.
+    /// It does not mean that a stream is closed.
+    #[error("Need more data")]
+    NeedMoreData,
+    #[error("Header lookup failed")]
+    HeaderLookup,
+    #[error("Huffman decompression error")]
+    HuffmanDecompression,
+    #[error("Bad UTF-8 encoding")]
+    BadUtf8,
+    #[error("Change capacity error")]
+    ChangeCapacity,
+    #[error("Dynamic table full")]
+    DynamicTableFull,
+    #[error("Incremented ack is larger than inserts")]
+    IncrementAck,
+    #[error("Integer overflow")]
+    IntegerOverflow,
+    #[error("Wrong stream count")]
+    WrongStreamCount,
+    #[error("Decoding error")]
+    Decoding, // Decoding internal error that is not one of the above.
+    #[error("Encoder stream blocked")]
+    EncoderStreamBlocked,
+
+    #[error(transparent)]
+    Transport(#[from] neqo_transport::Error),
+    #[error("Qlog error")]
+    Qlog,
 }
 
 impl Error {
     #[must_use]
     pub const fn code(&self) -> neqo_transport::AppError {
         match self {
-            Self::DecompressionFailed => 0x200,
+            Self::Decompression => 0x200,
             Self::EncoderStream => 0x201,
             Self::DecoderStream => 0x202,
             Self::ClosedCriticalStream => 0x104,
@@ -89,29 +183,59 @@ impl Error {
     }
 }
 
-impl ::std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn ::std::error::Error + 'static)> {
-        match self {
-            Self::TransportError(e) => Some(e),
-            _ => None,
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::Error;
+    use crate::Settings;
+
+    #[test]
+    fn error_codes() {
+        assert_eq!(Error::Decompression.code(), 0x200);
+        assert_eq!(Error::EncoderStream.code(), 0x201);
+        assert_eq!(Error::DecoderStream.code(), 0x202);
+        assert_eq!(Error::ClosedCriticalStream.code(), 0x104);
+        for err in [
+            Error::Internal,
+            Error::NeedMoreData,
+            Error::HeaderLookup,
+            Error::HuffmanDecompression,
+            Error::BadUtf8,
+            Error::ChangeCapacity,
+            Error::DynamicTableFull,
+            Error::IncrementAck,
+            Error::IntegerOverflow,
+            Error::WrongStreamCount,
+            Error::Decoding,
+            Error::EncoderStreamBlocked,
+            Error::Transport(neqo_transport::Error::NoMoreData),
+            Error::Qlog,
+        ] {
+            assert_eq!(err.code(), 3);
         }
     }
-}
 
-impl Display for Error {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "QPACK error: {self:?}")
+    #[test]
+    fn map_error() {
+        assert_eq!(
+            Error::map_error::<()>(Err(Error::ClosedCriticalStream), Error::Internal),
+            Err(Error::ClosedCriticalStream)
+        );
+        assert_eq!(
+            Error::map_error::<()>(Err(Error::Internal), Error::Decompression),
+            Err(Error::Decompression)
+        );
     }
-}
 
-impl From<neqo_transport::Error> for Error {
-    fn from(err: neqo_transport::Error) -> Self {
-        Self::TransportError(err)
+    #[test]
+    #[should_panic(expected = "assertion")]
+    fn max_encoder_table_size_enforced() {
+        _ = Settings::default().max_table_size_encoder(1 << 30);
     }
-}
 
-impl From<::qlog::Error> for Error {
-    fn from(_err: ::qlog::Error) -> Self {
-        Self::QlogError
+    #[test]
+    #[should_panic(expected = "assertion")]
+    fn max_decoder_table_size_enforced() {
+        _ = Settings::default().max_table_size_decoder(1 << 30);
     }
 }

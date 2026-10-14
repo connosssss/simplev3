@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "BaseHistory.h"
+#include "nsAboutProtocolUtils.h"
 #include "nsThreadUtils.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/Document.h"
@@ -18,18 +17,25 @@ namespace mozilla {
 using mozilla::dom::ContentParent;
 using mozilla::dom::Link;
 
-BaseHistory::BaseHistory() : mTrackedURIs(kTrackedUrisInitialSize) {}
-
-BaseHistory::~BaseHistory() = default;
-
 static constexpr nsLiteralCString kDisallowedSchemes[] = {
     "about"_ns,         "blob"_ns,           "cached-favicon"_ns,
     "chrome"_ns,        "data"_ns,           "imap"_ns,
     "javascript"_ns,    "mailbox"_ns,        "news"_ns,
     "page-icon"_ns,     "resource"_ns,       "view-source"_ns,
     "moz-extension"_ns, "moz-page-thumb"_ns, "moz-src"_ns,
-    "x-moz-ews"_ns,
-};
+    "x-moz-ews"_ns,     "x-moz-graph"_ns};
+
+// about:smartpage renders a page the user asked Firefox to generate, so unlike
+// the rest of about: it belongs in history alongside the pages they browsed to.
+static bool IsSmartPage(nsIURI* aURI, const nsACString& aScheme) {
+  if (!aScheme.EqualsLiteral("about") ||
+      !StaticPrefs::browser_smartwindow_aitab_enabled()) {
+    return false;
+  }
+  nsAutoCString module;
+  return NS_SUCCEEDED(NS_GetAboutModuleName(aURI, module)) &&
+         module.EqualsLiteral("smartpage");
+}
 
 bool BaseHistory::CanStore(nsIURI* aURI) {
   nsAutoCString scheme;
@@ -37,7 +43,8 @@ bool BaseHistory::CanStore(nsIURI* aURI) {
     return false;
   }
 
-  if (!scheme.EqualsLiteral("http") && !scheme.EqualsLiteral("https")) {
+  if (!scheme.EqualsLiteral("http") && !scheme.EqualsLiteral("https") &&
+      !IsSmartPage(aURI, scheme)) {
     for (const nsLiteralCString& disallowed : kDisallowedSchemes) {
       if (scheme.Equals(disallowed)) {
         return false;
@@ -218,7 +225,7 @@ void BaseHistory::SendPendingVisitedResultsToChildProcesses() {
       }
     }
     if (!resultsForProcess.IsEmpty()) {
-      Unused << NS_WARN_IF(!cp->SendNotifyVisited(resultsForProcess));
+      (void)NS_WARN_IF(!cp->SendNotifyVisited(resultsForProcess));
     }
   }
 }

@@ -46,7 +46,7 @@ def main():
     )
     parser.add_argument(
         "--tool-version",
-        default="11.0.0",
+        default="12.2.1",
         help="The playback tool version to use (default: %(default)s)",
     )
     parser.add_argument(
@@ -85,7 +85,6 @@ def main():
         default=False,
         help="Enable or disable inject_deterministic script when recording.",
     )
-
     mozlog.commandline.add_logging_group(parser)
 
     args = parser.parse_args()
@@ -113,50 +112,43 @@ def main():
                 raise Exception("Please provide at least one recording file!")
 
             # Playback mode
-            proxy_service = get_playback(
-                {
-                    "run_local": args.local,
-                    "host": args.host,
-                    "binary": args.binary,
-                    "obj_path": args.objdir,
-                    "platform": mozinfo.os,
-                    "playback_tool": args.tool,
-                    "playback_version": args.tool_version,
-                    "playback_files": args.file,
-                    "app": args.app,
-                    "local_profile_dir": args.profiledir,
-                    "verbose": args.verbose,
-                }
-            )
+            proxy_service = get_playback({
+                "run_local": args.local,
+                "host": args.host,
+                "binary": args.binary,
+                "obj_path": args.objdir,
+                "platform": mozinfo.os,
+                "playback_tool": args.tool,
+                "playback_version": args.tool_version,
+                "playback_files": args.file,
+                "app": args.app,
+                "local_profile_dir": args.profiledir,
+                "verbose": args.verbose,
+            })
         if args.mode == "record":
             # Record mode
             if len(args.file) > 1:
                 raise Exception("Please provide only one recording file!")
 
-            LOG.info("Recording will be saved to: %s" % args.file)
-            proxy_service = get_playback(
-                {
-                    "run_local": args.local,
-                    "host": args.host,
-                    "binary": args.binary,
-                    "obj_path": args.objdir,
-                    "platform": mozinfo.os,
-                    "playback_tool": args.tool,
-                    # bug 1883701 linux uses a different version for now
-                    "playback_version": (
-                        "8.1.1" if mozinfo.isLinux else args.tool_version
-                    ),
-                    "record": True,
-                    "recording_file": args.file[0],
-                    "app": args.app,
-                    "local_profile_dir": args.profiledir,
-                    "verbose": args.verbose,
-                    "inject_deterministic": args.deterministic,
-                }
-            )
-        LOG.info("Proxy settings %s" % proxy_service)
+            LOG.info(f"Recording will be saved to: {args.file}")
+            proxy_service = get_playback({
+                "run_local": args.local,
+                "host": args.host,
+                "binary": args.binary,
+                "obj_path": args.objdir,
+                "platform": mozinfo.os,
+                "playback_tool": args.tool,
+                "playback_version": args.tool_version,
+                "record": True,
+                "recording_file": args.file[0],
+                "app": args.app,
+                "local_profile_dir": args.profiledir,
+                "verbose": args.verbose,
+                "inject_deterministic": args.deterministic,
+            })
+        LOG.info(f"Proxy settings {proxy_service}")
         proxy_service.start()
-        LOG.info("Proxy running on port %d" % proxy_service.port)
+        LOG.info(f"Proxy running on port {proxy_service.port}")
         # Wait for a keyboard interrupt from the caller so we know when to
         # terminate.
         proxy_service.wait()

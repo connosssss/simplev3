@@ -1,18 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ServiceWorkerRegistrationProxy.h"
 
+#include "ServiceWorkerManager.h"
+#include "ServiceWorkerRegistrationParent.h"
+#include "ServiceWorkerUnregisterCallback.h"
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/dom/notification/NotificationUtils.h"
 #include "mozilla/ipc/BackgroundParent.h"
-#include "ServiceWorkerManager.h"
-#include "ServiceWorkerRegistrationParent.h"
-#include "ServiceWorkerUnregisterCallback.h"
 #include "nsINotificationStorage.h"
 
 namespace mozilla::dom {
@@ -66,7 +64,7 @@ void ServiceWorkerRegistrationProxy::UpdateStateOnBGThread(
   if (!mActor) {
     return;
   }
-  Unused << mActor->SendUpdateState(aDescriptor.ToIPC());
+  (void)mActor->SendUpdateState(aDescriptor.ToIPC());
 }
 
 void ServiceWorkerRegistrationProxy::FireUpdateFoundOnBGThread() {
@@ -74,7 +72,7 @@ void ServiceWorkerRegistrationProxy::FireUpdateFoundOnBGThread() {
   if (!mActor) {
     return;
   }
-  Unused << mActor->SendFireUpdateFound();
+  (void)mActor->SendFireUpdateFound();
 }
 
 void ServiceWorkerRegistrationProxy::InitOnMainThread() {
@@ -117,6 +115,11 @@ void ServiceWorkerRegistrationProxy::MaybeShutdownOnMainThread() {
 
 void ServiceWorkerRegistrationProxy::StopListeningOnMainThread() {
   AssertIsOnMainThread();
+
+  if (mDelayedUpdate) {
+    mDelayedUpdate->Reject();
+    mDelayedUpdate = nullptr;
+  }
 
   if (!mReg) {
     return;
@@ -487,45 +490,6 @@ ServiceWorkerRegistrationProxy::GetNavigationPreloadState() {
   return promise;
 }
 
-// TODO(krosylight): Ideally this callback shouldn't be needed, see bug 1950116.
-class NotificationsCallback : public nsINotificationStorageCallback {
- public:
-  NS_DECL_ISUPPORTS
-
-  already_AddRefed<NotificationsPromise> Promise() {
-    return mPromiseHolder.Ensure(__func__);
-  }
-
-  NS_IMETHOD Done(
-      const nsTArray<RefPtr<nsINotificationStorageEntry>>& aEntries) final {
-    AssertIsOnMainThread();
-
-    nsTArray<IPCNotification> notifications(aEntries.Length());
-    for (const auto& entry : aEntries) {
-      auto result = NotificationStorageEntry::ToIPC(*entry);
-      if (result.isErr()) {
-        continue;
-      }
-      MOZ_ASSERT(!result.inspect().id().IsEmpty());
-      notifications.AppendElement(result.unwrap());
-    }
-
-    mPromiseHolder.Resolve(std::move(notifications), __func__);
-    return NS_OK;
-  }
-
- protected:
-  virtual ~NotificationsCallback() {
-    // We may be shutting down prematurely without getting the result, so make
-    // sure to settle the promise.
-    mPromiseHolder.RejectIfExists(NS_ERROR_DOM_INVALID_STATE_ERR, __func__);
-  };
-
-  MozPromiseHolder<NotificationsPromise> mPromiseHolder;
-};
-
-NS_IMPL_ISUPPORTS(NotificationsCallback, nsINotificationStorageCallback)
-
 RefPtr<NotificationsPromise> ServiceWorkerRegistrationProxy::GetNotifications(
     const nsAString& aTag) {
   AssertIsOnBackgroundThread();
@@ -545,18 +509,8 @@ RefPtr<NotificationsPromise> ServiceWorkerRegistrationProxy::GetNotifications(
         nsString origin;
         GetOrigin(principal, origin);
 
-        RefPtr<NotificationsCallback> callback = new NotificationsCallback();
-        RefPtr<NotificationsPromise> promise = callback->Promise();
-
-        nsCOMPtr<nsINotificationStorage> notificationStorage =
-            GetNotificationStorage(
-                self->mListeningClientInfo.IsPrivateBrowsing());
-
-        nsString scope;
-        self->GetScope(scope);
-
-        notificationStorage->Get(origin, scope, tag, callback);
-
+        RefPtr<NotificationsPromise> promise = GetStoredNotificationsForScope(
+            principal, self->mDescriptor.Scope(), tag);
         return promise;
       });
 }

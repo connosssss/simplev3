@@ -17,27 +17,37 @@ function waitForLoginCountToReach(browser, loginCount) {
   );
 }
 
+function promptEvents() {
+  return (Glean.pwmgr.primaryPasswordPrompt.testGetValue() ?? []).map(
+    event => event.extra
+  );
+}
+
 add_setup(async function () {
+  // ensure the rust mirror is disabled (Rust has its own PrP dialog)
+  await SpecialPowers.pushPrefEnv({
+    set: [["signon.rustMirror.enabled", false]],
+  });
   await addLogin(TEST_LOGIN1);
-  registerCleanupFunction(() => {
-    Services.logins.removeAllUserFacingLogins();
-    LoginTestUtils.primaryPassword.disable();
+
+  // head.js enables OS auth for all tests in this directory but since we
+  // prefer that to PrP now it means we cannot test so I am disabling it here.
+  await sinon.restore();
+  LoginHelper.setOSAuthEnabled(false);
+
+  registerCleanupFunction(async () => {
+    await Services.logins.removeAllUserFacingLoginsAsync();
+    await LoginTestUtils.primaryPassword.disable();
+    await SpecialPowers.popPrefEnv();
   });
 });
 
 add_task(async function test() {
-  // Confirm that the mocking of the OS auth dialog isn't enabled so the
-  // test will timeout if a real OS auth dialog is shown. We don't show
-  // the OS auth dialog when Primary Password is enabled.
-  Assert.equal(
-    Services.prefs.getStringPref(
-      "toolkit.osKeyStore.unofficialBuildOnlyLogin",
-      ""
-    ),
-    "",
-    "Pref should be set to default value of empty string to start the test"
+  ok(
+    !LoginHelper.getOSAuthEnabled(),
+    "OS auth must be disabled for PrP tests."
   );
-  LoginTestUtils.primaryPassword.enable();
+  await LoginTestUtils.primaryPassword.enable();
 
   let mpDialogShown = forceAuthTimeoutAndWaitForMPDialog("cancel");
   await BrowserTestUtils.openNewForegroundTab({
@@ -209,7 +219,7 @@ add_task(async function test() {
       "login-list should show all results since the filter is empty"
     );
   });
-  LoginTestUtils.primaryPassword.disable();
+  await LoginTestUtils.primaryPassword.disable();
   await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function () {
     Cu.waiveXrays(content).AboutLoginsUtils.primaryPasswordEnabled = false;
     const loginList = Cu.waiveXrays(
@@ -232,18 +242,11 @@ add_task(async function test() {
 });
 
 add_task(async function test_login_item_after_successful_auth() {
-  // Confirm that the mocking of the OS auth dialog isn't enabled so the
-  // test will timeout if a real OS auth dialog is shown. We don't show
-  // the OS auth dialog when Primary Password is enabled.
-  Assert.equal(
-    Services.prefs.getStringPref(
-      "toolkit.osKeyStore.unofficialBuildOnlyLogin",
-      ""
-    ),
-    "",
-    "Pref should be set to default value of empty string to start the test"
+  ok(
+    !LoginHelper.getOSAuthEnabled(),
+    "OS auth must be disabled for PrP tests."
   );
-  LoginTestUtils.primaryPassword.enable();
+  await LoginTestUtils.primaryPassword.enable();
 
   let mpDialogShown = forceAuthTimeoutAndWaitForMPDialog("authenticate");
   await BrowserTestUtils.openNewForegroundTab({
@@ -267,6 +270,86 @@ add_task(async function test_login_item_after_successful_auth() {
     );
   });
 
-  LoginTestUtils.primaryPassword.disable();
+  await LoginTestUtils.primaryPassword.disable();
+  BrowserTestUtils.removeTab(gBrowser.selectedTab);
+});
+
+add_task(async function test_prompt_telemetry() {
+  ok(
+    !LoginHelper.getOSAuthEnabled(),
+    "OS auth must be disabled for PrP tests."
+  );
+  await LoginTestUtils.primaryPassword.enable();
+
+  let storageSource = Services.prefs.getBoolPref(
+    "signon.storage.rust.active",
+    false
+  )
+    ? "rust_storage"
+    : "crypto_sdr";
+
+  for (let [action, result] of [
+    ["cancel", "cancel"],
+    ["authenticate", "success"],
+  ]) {
+    Services.fog.testResetFOG();
+
+    let mpDialogShown = forceAuthTimeoutAndWaitForMPDialog(action);
+    let tab = await BrowserTestUtils.openNewForegroundTab({
+      gBrowser,
+      url: "about:logins",
+    });
+    await mpDialogShown;
+    await waitForLoginCountToReach(
+      tab.linkedBrowser,
+      action == "cancel" ? 0 : 1
+    );
+
+    // Loading the list decrypts the stored logins, which unlocks the token
+    // through the active storage back-end rather than through the
+    // re-authentication gate.
+    Assert.ok(
+      promptEvents().some(
+        extra => extra.source == storageSource && extra.result == result
+      ),
+      `Unlocking to decrypt the list is recorded as ${storageSource}/${result}`
+    );
+
+    if (action == "cancel") {
+      BrowserTestUtils.removeTab(tab);
+    }
+  }
+
+  for (let [action, result] of [
+    ["cancel", "cancel"],
+    ["authenticate", "success"],
+  ]) {
+    Services.fog.testResetFOG();
+
+    let mpDialogShown = forceAuthTimeoutAndWaitForMPDialog(action);
+    await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function () {
+      let loginItem = content.document.querySelector("login-item");
+      loginItem.shadowRoot.querySelector("copy-password-button").click();
+    });
+    await mpDialogShown;
+
+    // The token login only settles a tick after the dialog closes, so the
+    // event trails the dialog.
+    let events;
+    await TestUtils.waitForCondition(() => {
+      events = promptEvents().filter(extra => extra.source == "reauth");
+      return events.length;
+    }, `waiting for the reauth prompt of the ${action} run to be recorded`);
+
+    Assert.equal(events.length, 1, `One reauth prompt recorded for ${action}`);
+    Assert.deepEqual(
+      events[0],
+      { source: "reauth", trigger: "copy_logins", result },
+      `Copying a password records a reauth prompt with the ${result} result`
+    );
+  }
+
+  Services.fog.testResetFOG();
+  await LoginTestUtils.primaryPassword.disable();
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
 });

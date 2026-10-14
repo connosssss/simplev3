@@ -328,11 +328,6 @@ extern SECStatus DSA_SignDigestWithSeed(DSAPrivateKey *key,
 ** Diffie Helman key exchange algorithm
 */
 
-/* Generates parameters for Diffie-Helman key generation.
-**  primeLen is the length in bytes of prime P to be generated.
-*/
-extern SECStatus DH_GenParam(int primeLen, DHParams **params);
-
 /* Generates a public and private key, both of which are encoded in a single
 **  DHPrivateKey struct. Params is input, privKey are output.
 **  This is Phase 1 of Diffie Hellman.
@@ -1946,6 +1941,34 @@ extern SECStatus X25519_DerivePublicKey(const SECItem *privateKey, SECItem *publ
 
 /* Public key derivation is supported only for the curves supporting pt_mul method. */
 extern SECStatus EC_DerivePublicKey(const SECItem *privateKey, const ECParams *ecParams, SECItem *publicKey);
+
+/*
+ * ML_DSA functions
+ */
+SECStatus MLDSA_NewKey(CK_ML_DSA_PARAMETER_SET_TYPE paramSet, SECItem *seed,
+                       MLDSAPrivateKey *privKey, MLDSAPublicKey *pubKey);
+/* The context takes its own copy of "key", so the caller is free to release or
+ * change its own copy before MLDSA_SignFinal (or MLDSA_VerifyFinal) runs. */
+SECStatus MLDSA_SignInit(MLDSAPrivateKey *key, CK_HEDGE_TYPE hedgeType,
+                         const SECItem *sgnCtx, MLDSAContext **ctx);
+SECStatus MLDSA_SignUpdate(MLDSAContext *ctx, const SECItem *data);
+SECStatus MLDSA_SignFinal(MLDSAContext *ctx, SECItem *signature);
+
+SECStatus MLDSA_VerifyInit(MLDSAPublicKey *key, const SECItem *sgnCtx,
+                           MLDSAContext **ctx);
+SECStatus MLDSA_VerifyUpdate(MLDSAContext *ctx, const SECItem *data);
+SECStatus MLDSA_VerifyFinal(MLDSAContext *ctx, const SECItem *signature);
+/* Release a context from MLDSA_SignInit or MLDSA_VerifyInit. The *Final calls
+ * do not free it, so this must be called even after a successful *Final, and
+ * it is what lets a caller clean up an operation it abandons part way. */
+void MLDSA_DestroyContext(MLDSAContext *ctx);
+
+/* Decompress public key.
+ ** On input, publicCompressed == buffer containing compressed key
+ ** Output, publicRaw == decompressed public key. The function returns true iff the
+ ** decompressed key belongs to the appropriate curve.
+ */
+SECStatus EC_DecompressPublicKey(const SECItem *publicCompressed, const ECParams *params, SECItem *publicUncompressed);
 
 SEC_END_PROTOS
 

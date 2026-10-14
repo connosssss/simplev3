@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/// <reference path="./moz-breadcrumb-group.tagmap.d.ts" />
+
 import { html } from "../vendor/lit.all.mjs";
 import { MozLitElement } from "../lit-utils.mjs";
 
@@ -19,17 +21,19 @@ export class MozBreadcrumb extends MozLitElement {
   static properties = {
     href: { type: String },
     label: { type: String, fluent: true },
+    heading: { type: String, fluent: true },
     ariaCurrent: { attribute: "aria-current", type: String },
   };
 
   constructor() {
     super();
     this.label = "";
+    this.heading = "";
     this.href = "";
   }
 
   render() {
-    const labelTemplate = this.label || html`<slot></slot>`;
+    const labelTemplate = this.label || this.heading || html`<slot></slot>`;
     return html`
       <link
         rel="stylesheet"

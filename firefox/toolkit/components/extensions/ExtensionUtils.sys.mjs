@@ -1,16 +1,17 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
-const lazy = XPCOMUtils.declareLazy({
-  setTimeout: "resource://gre/modules/Timer.sys.mjs",
-  // xpcshell doesn't handle idle callbacks well.
-  idleTimeout: () => (Services.appinfo.name === "XPCShell" ? 500 : undefined),
-});
+const lazy = XPCOMUtils.declareLazy(
+  {
+    setTimeout: "resource://gre/modules/Timer.sys.mjs",
+    // xpcshell doesn't handle idle callbacks well.
+    idleTimeout: () => (Services.appinfo.name === "XPCShell" ? 500 : undefined),
+  },
+  { global: "contextual" }
+);
 
 // It would be nicer to go through `Services.appinfo`, but some tests need to be
 // able to replace that field with a custom implementation before it is first
@@ -50,13 +51,6 @@ export class ExtensionError extends DOMException {
   }
 }
 
-function filterStack(error) {
-  return String(error.stack).replace(
-    /(^.*(Task\.jsm|Promise-backend\.js).*\n)+/gm,
-    "<Promise Chain>\n"
-  );
-}
-
 /**
  * An Error subclass used to recognize the errors that should
  * to be forwarded to the worker thread and being accessible
@@ -73,9 +67,13 @@ export class WorkerExtensionError extends DOMException {
 /**
  * Similar to a WeakMap, but creates a new key with the given
  * constructor if one is not present.
+ *
+ * @template {WeakKey} K
+ * @template V
+ * @augments {WeakMap<K, V>}
  */
-// @ts-ignore (https://github.com/microsoft/TypeScript/issues/56664)
 class DefaultWeakMap extends WeakMap {
+  /** @param {(key: K) => V} [defaultConstructor] */
   constructor(defaultConstructor = undefined, init = undefined) {
     super(init);
     if (defaultConstructor) {
@@ -320,8 +318,26 @@ async function makeDataURI(iconUrl) {
   let buffer = await response.arrayBuffer();
   let contentType = response.headers.get("content-type");
   let bytes = new Uint8Array(buffer);
+  // @ts-ignore: strictBindCallApply wants number[] but we have Uint8Array.
   let str = String.fromCharCode.apply(null, bytes);
   return `data:${contentType};base64,${btoa(str)}`;
+}
+
+/**
+ * Returns whether the given url is a moz-extension scheme url.
+ *
+ * @param {string | nsIURI | nsIPrincipal | URL} url The url to check.
+ * @returns {boolean} Whether the url is a moz-extension scheme url.
+ */
+function isExtensionUrl(url) {
+  if (typeof url === "string") {
+    return url.startsWith("moz-extension://");
+  } else if (URL.isInstance(url)) {
+    return url.protocol === "moz-extension:";
+  } else if (url instanceof Ci.nsIURI || url instanceof Ci.nsIPrincipal) {
+    return url.schemeIs("moz-extension");
+  }
+  return false;
 }
 
 export var ExtensionUtils = {
@@ -329,8 +345,8 @@ export var ExtensionUtils = {
   getInnerWindowID,
   getMessageManager,
   getUniqueId,
-  filterStack,
   makeDataURI,
+  isExtensionUrl,
   parseMatchPatterns,
   promiseDocumentIdle,
   promiseDocumentLoaded,

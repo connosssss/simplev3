@@ -94,6 +94,13 @@ pub enum WastDirective<'a> {
         message: &'a str,
     },
 
+    /// Asserts the module has an invalid custom section.
+    AssertInvalidCustom {
+        span: Span,
+        module: QuoteWat<'a>,
+        message: &'a str,
+    },
+
     /// Registers the `module` instance with the given `name` to be available
     /// for importing in future module instances.
     Register {
@@ -149,6 +156,13 @@ pub enum WastDirective<'a> {
 
     /// Waits for the specified thread to exit.
     Wait { span: Span, thread: Id<'a> },
+
+    /// Asserts that a custom section of `module` is malformed.
+    AssertMalformedCustom {
+        span: Span,
+        module: QuoteWat<'a>,
+        message: &'a str,
+    },
 }
 
 impl WastDirective<'_> {
@@ -163,12 +177,14 @@ impl WastDirective<'_> {
             | WastDirective::ModuleDefinition(QuoteWat::QuoteComponent(span, _)) => *span,
             WastDirective::ModuleInstance { span, .. }
             | WastDirective::AssertMalformed { span, .. }
+            | WastDirective::AssertMalformedCustom { span, .. }
             | WastDirective::Register { span, .. }
             | WastDirective::AssertTrap { span, .. }
             | WastDirective::AssertReturn { span, .. }
             | WastDirective::AssertExhaustion { span, .. }
             | WastDirective::AssertUnlinkable { span, .. }
             | WastDirective::AssertInvalid { span, .. }
+            | WastDirective::AssertInvalidCustom { span, .. }
             | WastDirective::AssertException { span, .. }
             | WastDirective::AssertSuspension { span, .. }
             | WastDirective::Wait { span, .. } => *span,
@@ -190,9 +206,23 @@ impl<'a> Parse<'a> for WastDirective<'a> {
                 module: parser.parens(|p| p.parse())?,
                 message: parser.parse()?,
             })
+        } else if l.peek::<kw::assert_malformed_custom>()? {
+            let span = parser.parse::<kw::assert_malformed_custom>()?.0;
+            Ok(WastDirective::AssertMalformedCustom {
+                span,
+                module: parser.parens(|p| p.parse())?,
+                message: parser.parse()?,
+            })
         } else if l.peek::<kw::assert_invalid>()? {
             let span = parser.parse::<kw::assert_invalid>()?.0;
             Ok(WastDirective::AssertInvalid {
+                span,
+                module: parser.parens(|p| p.parse())?,
+                message: parser.parse()?,
+            })
+        } else if l.peek::<kw::assert_invalid_custom>()? {
+            let span = parser.parse::<kw::assert_invalid_custom>()?.0;
+            Ok(WastDirective::AssertInvalidCustom {
                 span,
                 module: parser.parens(|p| p.parse())?,
                 message: parser.parse()?,
@@ -498,12 +528,9 @@ pub enum QuoteWatTest {
 
 #[derive(Debug)]
 #[allow(missing_docs)]
+#[non_exhaustive]
 pub enum WastArg<'a> {
     Core(WastArgCore<'a>),
-    // TODO: technically this isn't cargo-compliant since it means that this
-    // isn't and additive feature by defining this conditionally. That being
-    // said this seems unlikely to break many in practice so this isn't a shared
-    // type, so fixing this is left to a future commit.
     #[cfg(feature = "component-model")]
     Component(WastVal<'a>),
 }
@@ -524,6 +551,7 @@ impl<'a> Parse<'a> for WastArg<'a> {
 
 #[derive(Debug)]
 #[allow(missing_docs)]
+#[non_exhaustive]
 pub enum WastRet<'a> {
     Core(WastRetCore<'a>),
     #[cfg(feature = "component-model")]

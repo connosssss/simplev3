@@ -38,12 +38,25 @@ function fakeHealthSchedulerTimer(set, clear) {
 add_setup(async function setup() {
   // Trigger a proper telemetry init.
   do_get_profile(true);
+  // Make sure TelemetryEnvironment initialization doesn't wait for
+  // browser-delayed-startup-finished indefinitely as part of waiting
+  // for Intl initialization promise to be resolved.
+  fakeIntlReady();
   // Make sure we don't generate unexpected pings due to pref changes.
   await setEmptyPrefWatchlist();
   Services.prefs.setBoolPref(
     TelemetryUtils.Preferences.HealthPingEnabled,
     true
   );
+
+  // Bypass TOU flow and legacy datareporting flow so that telemetry upload is allowed
+  Services.prefs.setBoolPref("termsofuse.bypassNotification", true);
+  Services.prefs.setBoolPref(
+    "datareporting.policy.dataSubmissionPolicyBypassNotification",
+    true
+  );
+  // Upload must be enabled to permit sending telemetry
+  Services.prefs.setBoolPref("datareporting.healthreport.uploadEnabled", true);
 
   await TelemetryController.testSetup();
   PingServer.start();
@@ -56,6 +69,11 @@ add_setup(async function setup() {
 
 registerCleanupFunction(async function cleanup() {
   await PingServer.stop();
+  Services.prefs.clearUserPref("termsofuse.bypassNotification");
+  Services.prefs.clearUserPref(
+    "datareporting.policy.dataSubmissionPolicyBypassNotification"
+  );
+  Services.prefs.clearUserPref("datareporting.healthreport.uploadEnabled");
 });
 
 add_task(async function test_sendImmediately() {

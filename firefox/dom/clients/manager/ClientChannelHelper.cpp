@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,11 +7,11 @@
 #include "ClientManager.h"
 #include "ClientSource.h"
 #include "MainThreadUtils.h"
+#include "mozilla/AntiTrackingUtils.h"
+#include "mozilla/StoragePrincipalHelper.h"
 #include "mozilla/dom/ClientsBinding.h"
 #include "mozilla/dom/ServiceWorkerDescriptor.h"
 #include "mozilla/ipc/BackgroundUtils.h"
-#include "mozilla/StaticPrefs_privacy.h"
-#include "mozilla/StoragePrincipalHelper.h"
 #include "nsContentUtils.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
 #include "nsIChannel.h"
@@ -112,9 +110,7 @@ class ClientChannelHelper : public nsIInterfaceRequestor,
             nsCOMPtr<nsIPrincipal> foreignPartitionedPrincipal;
             rv = StoragePrincipalHelper::GetPrincipal(
                 aNewChannel,
-                StaticPrefs::privacy_partition_serviceWorkers()
-                    ? StoragePrincipalHelper::eForeignPartitionedPrincipal
-                    : StoragePrincipalHelper::eRegularPrincipal,
+                StoragePrincipalHelper::eForeignPartitionedPrincipal,
                 getter_AddRefs(foreignPartitionedPrincipal));
             NS_ENSURE_SUCCESS(rv, rv);
             reservedClient.reset();
@@ -133,12 +129,16 @@ class ClientChannelHelper : public nsIInterfaceRequestor,
     // If it's a cross-origin redirect then we discard the old reserved client
     // and create a new one.
     else {
+      // The partition-key, and in particular the foreign bit, can change on a
+      // cross-origin redirect so it is essential to update the anti-tracking
+      // info for the channel.  This will happen in nsHttpChannel::AsyncOpen but
+      // that happens strictly after now, whereas we are sampling the principal
+      // now.
+      AntiTrackingUtils::UpdateAntiTrackingInfoForChannel(aNewChannel);
+
       nsCOMPtr<nsIPrincipal> foreignPartitionedPrincipal;
       rv = StoragePrincipalHelper::GetPrincipal(
-          aNewChannel,
-          StaticPrefs::privacy_partition_serviceWorkers()
-              ? StoragePrincipalHelper::eForeignPartitionedPrincipal
-              : StoragePrincipalHelper::eRegularPrincipal,
+          aNewChannel, StoragePrincipalHelper::eForeignPartitionedPrincipal,
           getter_AddRefs(foreignPartitionedPrincipal));
       NS_ENSURE_SUCCESS(rv, rv);
 
@@ -224,7 +224,7 @@ class ClientChannelHelperParent final : public ClientChannelHelper {
     }
 
     if (aClientInfo) {
-      Unused << NS_WARN_IF(!ClientManager::ExpectFutureSource(*aClientInfo));
+      (void)NS_WARN_IF(!ClientManager::ExpectFutureSource(*aClientInfo));
     }
 
     mRecentFutureSourceInfo = std::move(aClientInfo);
@@ -304,10 +304,7 @@ nsresult AddClientChannelHelperInternal(nsIChannel* aChannel,
 
   nsCOMPtr<nsIPrincipal> channelForeignPartitionedPrincipal;
   nsresult rv = StoragePrincipalHelper::GetPrincipal(
-      aChannel,
-      StaticPrefs::privacy_partition_serviceWorkers()
-          ? StoragePrincipalHelper::eForeignPartitionedPrincipal
-          : StoragePrincipalHelper::eRegularPrincipal,
+      aChannel, StoragePrincipalHelper::eForeignPartitionedPrincipal,
       getter_AddRefs(channelForeignPartitionedPrincipal));
   NS_ENSURE_SUCCESS(rv, rv);
 

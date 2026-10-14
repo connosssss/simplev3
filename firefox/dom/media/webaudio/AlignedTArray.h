@@ -1,13 +1,10 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef AlignedTArray_h__
-#define AlignedTArray_h__
+#ifndef AlignedTArray_h_
+#define AlignedTArray_h_
 
-#include "mozilla/Alignment.h"
 #include "nsTArray.h"
 
 /**
@@ -28,6 +25,10 @@ class AlignedAutoTArray : private AutoTArray<E, S + N> {
   AlignedAutoTArray() = default;
   explicit AlignedAutoTArray(size_type capacity)
       : base_type(capacity + sExtra) {}
+
+  AlignedAutoTArray(const AlignedAutoTArray& other) = delete;
+  void operator=(const AlignedAutoTArray& other) = delete;
+
   value_type* Elements() { return getAligned(base_type::Elements()); }
   const value_type* Elements() const {
     return getAligned(base_type::Elements());
@@ -49,9 +50,6 @@ class AlignedAutoTArray : private AutoTArray<E, S + N> {
   using base_type::ShallowSizeOfIncludingThis;
 
  private:
-  AlignedAutoTArray(const AlignedAutoTArray& other) = delete;
-  void operator=(const AlignedAutoTArray& other) = delete;
-
   static const size_type sPadding = N <= alignof(E) ? 0 : N - alignof(E);
   static const size_type sExtra = (sPadding + sizeof(E) - 1) / sizeof(E);
 
@@ -77,6 +75,10 @@ class AlignedTArray : private nsTArray_Impl<E, nsTArrayInfallibleAllocator> {
 
   AlignedTArray() = default;
   explicit AlignedTArray(size_type capacity) : base_type(capacity + sExtra) {}
+
+  AlignedTArray(const AlignedTArray& other) = delete;
+  void operator=(const AlignedTArray& other) = delete;
+
   value_type* Elements() { return getAligned(base_type::Elements()); }
   const value_type* Elements() const {
     return getAligned(base_type::Elements());
@@ -98,9 +100,6 @@ class AlignedTArray : private nsTArray_Impl<E, nsTArrayInfallibleAllocator> {
   using base_type::ShallowSizeOfIncludingThis;
 
  private:
-  AlignedTArray(const AlignedTArray& other) = delete;
-  void operator=(const AlignedTArray& other) = delete;
-
   static const size_type sPadding = N <= alignof(E) ? 0 : N - alignof(E);
   static const size_type sExtra = (sPadding + sizeof(E) - 1) / sizeof(E);
 
@@ -110,4 +109,4 @@ class AlignedTArray : private nsTArray_Impl<E, nsTArrayInfallibleAllocator> {
   }
 };
 
-#endif  // AlignedTArray_h__
+#endif  // AlignedTArray_h_

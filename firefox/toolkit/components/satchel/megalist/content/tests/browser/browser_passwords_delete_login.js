@@ -8,8 +8,10 @@ add_setup(async function () {
     set: [
       ["browser.contextual-password-manager.enabled", true],
       ["signon.rememberSignons", true],
+      ["toolkit.osKeyStore.unofficialBuildOnlyLogin", ""],
     ],
   });
+  LoginTestUtils.clearData();
   registerCleanupFunction(LoginTestUtils.clearData);
 });
 
@@ -26,7 +28,7 @@ add_task(async function test_delete_login_success() {
 
   const passwordCard = megalist.querySelector("password-card");
   await waitForReauth(() => passwordCard.editBtn.click());
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => megalist.querySelector("login-form"),
     "Login form failed to render"
   );
@@ -35,7 +37,7 @@ add_task(async function test_delete_login_success() {
   const deleteLoginBtn = loginForm.querySelector(".delete-login-button");
   deleteLoginBtn.click();
 
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => loginForm.querySelector(".remove-login-card"),
     "Remove login card failed to render."
   );
@@ -66,4 +68,7 @@ add_task(async function test_delete_login_success() {
 
   const numPasswords = megalist.querySelectorAll("password-card").length;
   is(numPasswords, 2, "One login was successfully deleted.");
+
+  info("Closing the sidebar");
+  SidebarController.hide();
 });

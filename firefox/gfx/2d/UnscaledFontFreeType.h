@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -47,13 +45,13 @@ class UnscaledFontFreeType : public UnscaledFont {
 
   already_AddRefed<ScaledFont> CreateScaledFont(
       Float aGlyphSize, const uint8_t* aInstanceData,
-      uint32_t aInstanceDataLength, const FontVariation* aVariations,
+      uint32_t aInstanceDataLength, const wr::FontVariation* aVariations,
       uint32_t aNumVariations) override;
 
   already_AddRefed<ScaledFont> CreateScaledFontFromWRFont(
       Float aGlyphSize, const wr::FontInstanceOptions* aOptions,
       const wr::FontInstancePlatformOptions* aPlatformOptions,
-      const FontVariation* aVariations, uint32_t aNumVariations) override;
+      const wr::FontVariation* aVariations, uint32_t aNumVariations) override;
 #endif
 
  protected:
@@ -65,9 +63,9 @@ class UnscaledFontFreeType : public UnscaledFont {
   friend class ScaledFontFontconfig;
 
   static void GetVariationSettingsFromFace(
-      std::vector<FontVariation>* aVariations, FT_Face aFace);
+      std::vector<wr::FontVariation>* aVariations, FT_Face aFace);
 
-  static void ApplyVariationsToFace(const FontVariation* aVariations,
+  static void ApplyVariationsToFace(const wr::FontVariation* aVariations,
                                     uint32_t aNumVariations, FT_Face aFace);
 };
 
@@ -91,13 +89,13 @@ class UnscaledFontFontconfig : public UnscaledFontFreeType {
 
   already_AddRefed<ScaledFont> CreateScaledFont(
       Float aGlyphSize, const uint8_t* aInstanceData,
-      uint32_t aInstanceDataLength, const FontVariation* aVariations,
+      uint32_t aInstanceDataLength, const wr::FontVariation* aVariations,
       uint32_t aNumVariations) override;
 
   already_AddRefed<ScaledFont> CreateScaledFontFromWRFont(
       Float aGlyphSize, const wr::FontInstanceOptions* aOptions,
       const wr::FontInstancePlatformOptions* aPlatformOptions,
-      const FontVariation* aVariations, uint32_t aNumVariations) override;
+      const wr::FontVariation* aVariations, uint32_t aNumVariations) override;
 };
 
 extern bool FcPatternAllowsBitmaps(FcPattern* aPattern, bool aAntialias,

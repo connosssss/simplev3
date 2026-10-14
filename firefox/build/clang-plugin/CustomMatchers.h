@@ -2,11 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef CustomMatchers_h__
-#define CustomMatchers_h__
+#ifndef CustomMatchers_h_
+#define CustomMatchers_h_
 
 #include "MemMoveAnnotation.h"
 #include "Utils.h"
+#include "llvm/Support/FileSystem.h"
 
 #if CLANG_VERSION_FULL >= 1300
 // Starting with clang-13 Expr::isRValue has been renamed to Expr::isPRValue
@@ -19,8 +20,8 @@ namespace ast_matchers {
 /// This matcher will match any function declaration that is declared as a heap
 /// allocator.
 AST_MATCHER(VarDecl, hasMozGlobalType) {
-  if(auto * TD = Node.getType().getTypePtr()->getAsTagDecl()) {
-    if(hasCustomAttribute<moz_global_class>(TD))
+  if (auto *TD = Node.getType().getTypePtr()->getAsTagDecl()) {
+    if (hasCustomAttribute<moz_global_class>(TD))
       return true;
   }
   return false;
@@ -37,9 +38,7 @@ AST_MATCHER(VarDecl, isMozGenerated) {
 }
 
 /// Match any variable declared with the constinit qualifier.
-AST_MATCHER(VarDecl, hasConstInitAttr) {
-  return Node.hasAttr<ConstInitAttr>();
-}
+AST_MATCHER(VarDecl, hasConstInitAttr) { return Node.hasAttr<ConstInitAttr>(); }
 
 /// This matcher will match any function declaration that is declared as a heap
 /// allocator.
@@ -96,15 +95,64 @@ AST_MATCHER(DeclaratorDecl, isNotSpiderMonkey) {
          Path.find("XPC") == std::string::npos;
 }
 
+/// This matcher will match if the file is located in a given path
+AST_MATCHER_P(Decl, isInPath, std::string, Substring) {
+  SourceManager &SM = Finder->getASTContext().getSourceManager();
+  std::string PresumedName =
+      SM.getPresumedLoc(Node.getBeginLoc()).getFilename();
+  llvm::SmallString<256> RealPath;
+  llvm::sys::fs::real_path(PresumedName, RealPath, /*expand_tilde=*/false);
+  llvm::StringRef Path = RealPath.empty() ? llvm::StringRef(PresumedName)
+                                          : llvm::StringRef(RealPath);
+  return Path.find(Substring) != llvm::StringRef::npos;
+}
+
 /// This matcher will match any declaration with an initializer that's
 /// considered as constant by the compiler.
 AST_MATCHER(VarDecl, hasConstantInitializer) {
-  if(Node.hasInit())
-    return Node.getInit()->isConstantInitializer(
-                  Finder->getASTContext(),
-                  Node.getType()->isReferenceType());
-  else
+  if (Node.hasInit()) {
+    if (const auto *CE = dyn_cast<CXXConstructExpr>(Node.getInit())) {
+      if (const auto *CD = CE->getConstructor();
+          CD && CD->isDefined() && CD->isDefaultConstructor()) {
+        const CXXRecordDecl *CR = CD->getParent();
+        if (CR->hasTrivialDefaultConstructor())
+          return true;
+        if (CR->hasConstexprDefaultConstructor())
+          return true;
+
+        // This sorts our several situations like virtual bases etc.
+        if (CR->defaultedDefaultConstructorIsConstexpr()) {
+          // Only accept constructor with empty body and constant initializer
+          // for each member initialization.
+          if (const auto *CS = dyn_cast<CompoundStmt>(CD->getBody());
+              CS && CS->body_empty()) {
+            bool AllCustomInitializerCorrect = true;
+            for (const CXXCtorInitializer *CI : CD->inits()) {
+              bool ForRef =
+                  CI->isAnyMemberInitializer()
+                      ? CI->getAnyMember()->getType()->isReferenceType()
+                      : false;
+              if (!CI->getInit()->isConstantInitializer(Finder->getASTContext(),
+                                                        ForRef)) {
+                AllCustomInitializerCorrect = false;
+                break;
+              }
+            }
+            if (AllCustomInitializerCorrect)
+              return true;
+          }
+        }
+      }
+    }
+
+    bool ForRef = Node.getType()->isReferenceType();
+    return Node.getInit()->isConstantInitializer(Finder->getASTContext(),
+                                                 ForRef);
+  } else if (Node.hasConstantInitialization()) {
+    return true;
+  } else {
     return Node.getType().isTrivialType(Finder->getASTContext());
+  }
 }
 
 /// This matcher will match temporary expressions.
@@ -125,6 +173,16 @@ AST_MATCHER(CXXMethodDecl, noDanglingOnTemporaries) {
 /// calling AddRef or Release on its return value.
 AST_MATCHER(FunctionDecl, hasNoAddRefReleaseOnReturnAttr) {
   return hasCustomAttribute<moz_no_addref_release_on_return>(&Node);
+}
+
+AST_MATCHER(Decl, isInterestingForImplicitConversion) {
+  return isInterestingDeclForImplicitConversion(&Node);
+}
+
+AST_MATCHER(VarDecl, isReferenced) { return Node.isReferenced(); }
+
+AST_MATCHER(VarDecl, isParameter) {
+  return isa<ImplicitParamDecl>(Node) || isa<ParmVarDecl>(Node);
 }
 
 /// This matcher will match any function declaration that is marked as being
@@ -289,13 +347,25 @@ AST_MATCHER(CXXRecordDecl, hasRefCntMember) {
   return isClassRefCounted(&Node) && getClassRefCntMember(&Node);
 }
 
-/// This matcher will select classes which are refcounted.
-AST_MATCHER(CXXRecordDecl, isRefCounted) { return isClassRefCounted(&Node); }
+/// This matcher will select types which are refcounted.
+AST_MATCHER(QualType, isRefCounted) { return isClassRefCounted(Node); }
 
 AST_MATCHER(QualType, hasVTable) { return typeHasVTable(Node); }
 
 AST_MATCHER(CXXRecordDecl, hasNeedsNoVTableTypeAttr) {
   return hasCustomAttribute<moz_needs_no_vtable_type>(&Node);
+}
+
+AST_MATCHER(CXXRecordDecl, hasTrivialDestructor) {
+  return Node.hasTrivialDestructor();
+}
+
+AST_MATCHER(CXXRecordDecl, hasTrivialDefaultConstructor) {
+  return Node.hasTrivialDefaultConstructor();
+}
+
+AST_MATCHER(CXXRecordDecl, hasConstexprDefaultConstructor) {
+  return Node.hasConstexprDefaultConstructor();
 }
 
 /// This matcher will select classes which are non-memmovable
@@ -363,8 +433,14 @@ AST_MATCHER_P2(Expr, ignoreTrivialsConditional, internal::Matcher<Expr>,
 
 // We can't call this "isImplicit" since it clashes with an existing matcher in
 // clang.
-AST_MATCHER(CXXConstructorDecl, isMarkedImplicit) {
+AST_MATCHER(FunctionDecl, isMarkedImplicit) {
   return hasCustomAttribute<moz_implicit>(&Node);
+}
+AST_MATCHER(FunctionDecl, isMarkedMustOverride) {
+  return hasCustomAttribute<moz_must_override>(&Node);
+}
+AST_MATCHER(FunctionDecl, isMarkedNonTerminatedString) {
+  return hasCustomAttribute<moz_non_terminated_string>(&Node);
 }
 
 AST_MATCHER(CXXRecordDecl, isConcreteClass) { return !Node.isAbstract(); }
@@ -384,14 +460,6 @@ AST_MATCHER(CXXConstructorDecl, isExplicitMoveConstructor) {
 
 AST_MATCHER(CXXConstructorDecl, isCompilerProvidedCopyConstructor) {
   return !Node.isUserProvided() && Node.isCopyConstructor();
-}
-
-AST_MATCHER(CallExpr, isAssertAssignmentTestFunc) {
-  static const std::string AssertName = "MOZ_AssertAssignmentTest";
-  const FunctionDecl *Method = Node.getDirectCallee();
-
-  return Method && Method->getDeclName().isIdentifier() &&
-         Method->getName() == AssertName;
 }
 
 AST_MATCHER(CallExpr, isSnprintfLikeFunc) {
@@ -458,6 +526,11 @@ AST_MATCHER(CXXMethodDecl, isNonVirtual) {
   return Decl && !Decl->isVirtual();
 }
 
+AST_MATCHER(CXXMethodDecl, hasMethodDefinition) {
+  const CXXMethodDecl *Decl = Node.getCanonicalDecl();
+  return Decl && Decl->isDefined();
+}
+
 AST_MATCHER(FunctionDecl, isMozMustReturnFromCaller) {
   const FunctionDecl *Decl = Node.getCanonicalDecl();
   return Decl &&
@@ -490,6 +563,11 @@ AST_MATCHER(MemberExpr, hasKnownLiveAnnotation) {
   return Field && hasCustomAttribute<moz_known_live>(Field);
 }
 
+AST_MATCHER(CXXMethodDecl, methodHasKnownLiveAnnotation) {
+  const CXXMethodDecl *Decl = Node.getCanonicalDecl();
+  return Decl && hasCustomAttribute<moz_known_live>(Decl);
+}
+
 #define GENERATE_JSTYPEDEF_PAIR(templateName)                                  \
   {templateName "Function", templateName "<JSFunction*>"},                     \
       {templateName "Id", templateName "<JS::PropertyKey>"},                   \
@@ -500,9 +578,8 @@ AST_MATCHER(MemberExpr, hasKnownLiveAnnotation) {
       {templateName "BigInt", templateName "<JS::BigInt*>"},                   \
       {templateName "Value", templateName "<JS::Value>"},                      \
       {templateName "ValueVector", templateName "Vector<JS::Value>"},          \
-      {templateName "ObjectVector", templateName "Vector<JSObject*>"}, {       \
-    templateName "IdVector", templateName "Vector<JS::PropertyKey>"            \
-  }
+      {templateName "ObjectVector", templateName "Vector<JSObject*>"},         \
+      {templateName "IdVector", templateName "Vector<JS::PropertyKey>"}
 
 static const char *const JSHandleRootedTypedefMap[][2] = {
     GENERATE_JSTYPEDEF_PAIR("JS::Handle"),

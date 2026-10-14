@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -9,11 +7,10 @@
 
 #include "vm/Compartment.h"
 
-#include <type_traits>
-
 #include "jsapi.h"
 #include "jsfriendapi.h"
-#include "jsnum.h"
+
+#include "builtin/Number.h"
 #include "js/CallArgs.h"
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/Wrapper.h"
@@ -36,13 +33,12 @@ inline bool JS::Compartment::wrap(JSContext* cx, JS::MutableHandleValue vp) {
   }
 
   /*
-   * Symbols are GC things, but never need to be wrapped or copied because
-   * they are always allocated in the atoms zone. They still need to be
-   * marked in the new compartment's zone, however.
+   * Unique symbols need to be wrapped and non-unique symbols need to be marked
+   * as referenced in the new compartment's zone.
    */
   if (vp.isSymbol()) {
-    cx->markAtomValue(vp);
-    return true;
+    MOZ_ASSERT(vp.toSymbol()->isUnique() == vp.toSymbol()->isLocal());
+    return cx->wrapOrRecordRefToValue(vp);
   }
 
   /* Handle strings. */

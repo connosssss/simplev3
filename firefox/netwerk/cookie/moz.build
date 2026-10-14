@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -21,7 +19,6 @@ XPIDL_SOURCES += [
 
 XPIDL_MODULE = "necko_cookie"
 
-
 EXPORTS.mozilla.net = [
     "Cookie.h",
     "CookieCommons.h",
@@ -30,30 +27,37 @@ EXPORTS.mozilla.net = [
     "CookieNotification.h",
     "CookieParser.h",
     "CookiePersistentStorage.h",
+    "CookiePrefixes.h",
     "CookiePrivateStorage.h",
     "CookieService.h",
     "CookieServiceChild.h",
     "CookieServiceParent.h",
     "CookieStorage.h",
     "CookieValidation.h",
+    "PrefetchCookieCopier.h",
     "ThirdPartyCookieBlockingExceptions.h",
 ]
+
 UNIFIED_SOURCES += [
     "Cookie.cpp",
     "CookieCommons.cpp",
+    "CookieDBWriteQueue.cpp",
     "CookieJarSettings.cpp",
     "CookieLogging.cpp",
     "CookieNotification.cpp",
     "CookieParser.cpp",
     "CookiePersistentStorage.cpp",
+    "CookiePrefixes.cpp",
     "CookiePrivateStorage.cpp",
     "CookieService.cpp",
     "CookieServiceChild.cpp",
     "CookieServiceParent.cpp",
     "CookieStorage.cpp",
     "CookieValidation.cpp",
+    "PrefetchCookieCopier.cpp",
     "ThirdPartyCookieBlockingExceptions.cpp",
 ]
+
 XPCSHELL_TESTS_MANIFESTS += [
     "test/unit/xpcshell.toml",
 ]
@@ -92,3 +96,9 @@ XPCOM_MANIFESTS += [
 include("/ipc/chromium/chromium-config.mozbuild")
 
 FINAL_LIBRARY = "xul"
+
+SOURCE_HEADERS += [
+    "CookieDBWriteQueue.h",
+    "CookieDummyStorage.h",
+    "CookieLogging.h",
+]

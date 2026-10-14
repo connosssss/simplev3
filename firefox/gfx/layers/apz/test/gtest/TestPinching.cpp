@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -51,6 +49,9 @@ class APZCPinchTester : public APZCBasicTester {
 
   void DoPinchTest(bool aShouldTriggerPinch,
                    nsTArray<uint32_t>* aAllowedTouchBehaviors = nullptr) {
+    if (aAllowedTouchBehaviors) {
+      apzc->DisableDefaultTouchBehaviors();
+    }
     apzc->SetFrameMetrics(GetPinchableFrameMetrics());
     MakeApzcZoomable();
 
@@ -158,7 +159,7 @@ class APZCPinchLockingTester : public APZCPinchTester {
  private:
   ScreenIntPoint mFocus;
   float mSpan;
-  int mPinchLockBufferMaxAge;
+  uint32_t mPinchLockBufferMaxAge;
 
  public:
   APZCPinchLockingTester()
@@ -571,13 +572,12 @@ TEST_F(APZCPinchGestureDetectorTester, Pinch_NoSpan) {
 
   const TimeDuration TIME_BETWEEN_TOUCH_EVENT =
       TimeDuration::FromMilliseconds(50);
-  const auto touchBehaviors = Some(nsTArray<uint32_t>{kDefaultTouchBehavior});
 
   MultiTouchInput mtiStart =
       MultiTouchInput(MultiTouchInput::MULTITOUCH_START, 0, mcc->Time(), 0);
   mtiStart.mTouches.AppendElement(CreateSingleTouchData(inputId, focus));
   mtiStart.mTouches.AppendElement(CreateSingleTouchData(inputId + 1, focus));
-  apzc->ReceiveInputEvent(mtiStart, touchBehaviors);
+  apzc->ReceiveInputEvent(mtiStart);
   mcc->AdvanceBy(TIME_BETWEEN_TOUCH_EVENT);
 
   focus.y -= 35 + 1;  // this is to get over the PINCH_START_THRESHOLD in

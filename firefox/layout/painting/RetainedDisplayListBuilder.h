@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +5,9 @@
 #ifndef RETAINEDDISPLAYLISTBUILDER_H_
 #define RETAINEDDISPLAYLISTBUILDER_H_
 
-#include "nsDisplayList.h"
-#include "mozilla/Maybe.h"
 #include "mozilla/EnumSet.h"
+#include "mozilla/Maybe.h"
+#include "nsDisplayList.h"
 
 class nsWindowSizes;
 
@@ -23,7 +21,7 @@ class nsDisplayList;
  * Currently this is implemented as a map of frame pointers to flags.
  */
 struct RetainedDisplayListData {
-  enum class FrameFlag : uint8_t { Modified, HasProps, HadWillChange };
+  enum class FrameFlag : uint8_t { Modified, HasProps };
   using FrameFlags = mozilla::EnumSet<FrameFlag, uint8_t>;
 
   RetainedDisplayListData();

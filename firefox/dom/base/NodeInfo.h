@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18,16 +16,17 @@
  * references are released the nsNodeInfoManager deletes itself.
  */
 
-#ifndef mozilla_dom_NodeInfo_h___
-#define mozilla_dom_NodeInfo_h___
+#ifndef mozilla_dom_NodeInfo_h_
+#define mozilla_dom_NodeInfo_h_
 
-#include "nsCycleCollectionParticipant.h"
-#include "mozilla/dom/NameSpaceConstants.h"
-#include "nsString.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/dom/NameSpaceConstants.h"
 #include "nsAtom.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsHTMLTags.h"
 #include "nsHashKeys.h"
+#include "nsString.h"
 
 class nsNodeInfoManager;
 
@@ -57,6 +56,9 @@ class NodeInfo final {
    */
   nsAtom* NameAtom() const { return mInner.mName; }
 
+  // Return the bloom filter hash for NameAtom().
+  uint64_t NameBloomFilterHash() const { return mNameBloomHash; }
+
   /*
    * Get the qualified name from this node as a string, the qualified name
    * includes the prefix, if one exists.
@@ -75,6 +77,11 @@ class NodeInfo final {
    * Returns the node's localName as defined in DOM Core
    */
   const nsString& LocalName() const { return mLocalName; }
+
+  /**
+   * Returns an nsHTMLTag value if this is for an HTML element node.
+   */
+  const mozilla::Maybe<const nsHTMLTag>& HTMLTag() const;
 
   /*
    * Get the prefix from this node as a string.
@@ -174,10 +181,10 @@ class NodeInfo final {
    */
   Document* GetDocument() const { return mDocument; }
 
- private:
   NodeInfo() = delete;
   NodeInfo(const NodeInfo& aOther) = delete;
 
+ private:
   // NodeInfo is only constructed by nsNodeInfoManager which is a friend class.
   // aName and aOwnerManager may not be null.
   NodeInfo(nsAtom* aName, nsAtom* aPrefix, int32_t aNamespaceID,
@@ -261,8 +268,9 @@ class NodeInfo final {
 
     uint32_t Hash() const {
       if (!mHash) {
-        mHash.emplace(mName ? mName->hash()
-                            : mozilla::HashString(*mNameString));
+        uint32_t nameHash =
+            mName ? mName->hash() : mozilla::HashString(*mNameString);
+        mHash.emplace(mozilla::AddToHash(nameHash, mNamespaceID, mNodeType));
       }
       return mHash.value();
     }
@@ -301,8 +309,12 @@ class NodeInfo final {
   // localName for the node. This is either equal to mInner.mName, or a
   // void string, depending on mInner.mNodeType.
   nsString mLocalName;
+
+  // Bloom filter hash for the name.
+  uint64_t mNameBloomHash;
+  mutable Maybe<const nsHTMLTag> mHTMLTag;
 };
 
 }  // namespace mozilla::dom
 
-#endif /* mozilla_dom_NodeInfo_h___ */
+#endif /* mozilla_dom_NodeInfo_h_ */

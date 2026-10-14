@@ -12,7 +12,7 @@ import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.lib.state.Action
 import mozilla.components.lib.state.Middleware
 import mozilla.components.lib.state.Store
-import java.lang.IllegalArgumentException
+import org.mockito.DoNotMock
 
 /**
  * The [BrowserStore] holds the [BrowserState] (state tree).
@@ -20,15 +20,21 @@ import java.lang.IllegalArgumentException
  * The only way to change the [BrowserState] inside [BrowserStore] is to dispatch an [Action] on it.
  */
 @Suppress("UseRequire")
+@DoNotMock(
+    reason =
+        "Mocking the store hides state transitions and violates the Redux-like flow. " +
+            "Use a real instance instead. To verify behavior, use CaptureActionsMiddleware to assert dispatched actions, " +
+            "or assert on the resulting BrowserState."
+)
 class BrowserStore(
     initialState: BrowserState = BrowserState(),
     middleware: List<Middleware<BrowserState, BrowserAction>> = emptyList(),
-) : Store<BrowserState, BrowserAction>(
-    initialState,
-    BrowserStateReducer::reduce,
-    middleware,
-    "BrowserStore",
-) {
+) :
+    Store<BrowserState, BrowserAction>(
+        initialState,
+        BrowserStateReducer::reduce,
+        middleware,
+    ) {
     init {
         initialState.selectedTabId?.let {
             if (state.findTab(it) == null) {
@@ -36,12 +42,7 @@ class BrowserStore(
             }
         }
 
-        if (initialState.tabs
-                .groupingBy { it.id }
-                .eachCount()
-                .filter { it.value > 1 }
-                .isNotEmpty()
-        ) {
+        if (initialState.tabs.groupingBy { it.id }.eachCount().filter { it.value > 1 }.isNotEmpty()) {
             throw IllegalArgumentException("Duplicate tabs found")
         }
 

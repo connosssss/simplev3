@@ -96,7 +96,11 @@ function getItem(itemKey) {
         req = store.get(itemKey);
         req.onerror = function getItemOnError() {
           console.error("Error in asyncStorage.getItem():", req.error.name);
-          reject(req.error);
+          reject(
+            new Error(
+              `async-storage failed to get item for key: ${itemKey}, error: ${req.error}`
+            )
+          );
         };
       },
       reject
@@ -111,9 +115,17 @@ function setItem(itemKey, value) {
       store => {
         store.transaction.oncomplete = resolve;
         const req = store.put(value, itemKey);
+        // setItemOnError closes over this scope, so leaving `value` in it keeps
+        // the stored value, and through it the browser loader sandbox it was
+        // created in, alive for as long as the request is pending.
+        value = null;
         req.onerror = function setItemOnError() {
           console.error("Error in asyncStorage.setItem():", req.error.name);
-          reject(req.error);
+          reject(
+            new Error(
+              `async-storage failed to set item for key: ${itemKey}, error: ${req.error}`
+            )
+          );
         };
       },
       reject
@@ -130,7 +142,11 @@ function removeItem(itemKey) {
         const req = store.delete(itemKey);
         req.onerror = function removeItemOnError() {
           console.error("Error in asyncStorage.removeItem():", req.error.name);
-          reject(req.error);
+          reject(
+            new Error(
+              `async-storage failed to remove item for key: ${itemKey}, error: ${req.error}`
+            )
+          );
         };
       },
       reject
@@ -147,7 +163,9 @@ function clear() {
         const req = store.clear();
         req.onerror = function clearOnError() {
           console.error("Error in asyncStorage.clear():", req.error.name);
-          reject(req.error);
+          reject(
+            new Error(`async-storage failed to clear, error: ${req.error}`)
+          );
         };
       },
       reject
@@ -167,7 +185,11 @@ function length() {
         req = store.count();
         req.onerror = function lengthOnError() {
           console.error("Error in asyncStorage.length():", req.error.name);
-          reject(req.error.name);
+          reject(
+            new Error(
+              `async-storage failed to retrieve length, error: ${req.error}`
+            )
+          );
         };
       },
       reject
@@ -210,7 +232,11 @@ function key(n) {
         };
         req.onerror = function keyOnError() {
           console.error("Error in asyncStorage.key():", req.error.name);
-          reject(req.error);
+          reject(
+            new Error(
+              `async-storage failed to retrieve key with n: ${n}, error: ${req.error}`
+            )
+          );
         };
       },
       reject

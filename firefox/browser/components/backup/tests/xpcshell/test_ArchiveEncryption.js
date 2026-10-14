@@ -4,13 +4,13 @@ https://creativecommons.org/publicdomain/zero/1.0/ */
 "use strict";
 
 const { ArchiveEncryptionState } = ChromeUtils.importESModule(
-  "resource:///modules/backup/ArchiveEncryptionState.sys.mjs"
+  "moz-src:///browser/components/backup/ArchiveEncryptionState.sys.mjs"
 );
 const { ArchiveEncryptor, ArchiveDecryptor } = ChromeUtils.importESModule(
-  "resource:///modules/backup/ArchiveEncryption.sys.mjs"
+  "moz-src:///browser/components/backup/ArchiveEncryption.sys.mjs"
 );
 const { ArchiveUtils } = ChromeUtils.importESModule(
-  "resource:///modules/backup/ArchiveUtils.sys.mjs"
+  "moz-src:///browser/components/backup/ArchiveUtils.sys.mjs"
 );
 
 const TEST_RECOVERY_CODE = "This is my recovery code.";
@@ -21,9 +21,6 @@ let fakeBytes = null;
 
 add_setup(async () => {
   fakeBytes = new Uint8Array(FAKE_BYTES_AMOUNT);
-  // seededRandomNumberGenerator is defined in head.js, but eslint doesn't seem
-  // happy about it. Maybe that's because it's a generator function.
-  // eslint-disable-next-line no-undef
   let gen = seededRandomNumberGenerator();
   for (let i = 0; i < FAKE_BYTES_AMOUNT; ++i) {
     fakeBytes.set(gen.next().value, i);

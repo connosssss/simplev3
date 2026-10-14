@@ -1,42 +1,39 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "MemoryTelemetry.h"
-#include "nsMemoryReporterManager.h"
 
 #include "mozilla/ClearOnShutdown.h"
+#include "nsMemoryReporterManager.h"
 #ifdef MOZ_PHC
 #  include "mozilla/PHCManager.h"
 #endif
+#include <cstdlib>
+
 #include "mozilla/Result.h"
 #include "mozilla/ResultExtensions.h"
-#include "mozilla/Services.h"
 #include "mozilla/ScopeExit.h"
+#include "mozilla/Services.h"
 #include "mozilla/SimpleEnumerator.h"
-#include "mozilla/glean/XpcomMetrics.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/glean/XpcomMetrics.h"
 #include "nsContentUtils.h"
 #include "nsGlobalWindowOuter.h"
 #include "nsIBrowserDOMWindow.h"
 #include "nsIMemoryReporter.h"
+#include "nsITelemetry.h"
 #include "nsIWindowMediator.h"
 #include "nsImportModule.h"
-#include "nsITelemetry.h"
 #include "nsNetCID.h"
-#include "nsObserverService.h"
 #include "nsReadableUtils.h"
 #include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
 #include "xpcpublic.h"
-
-#include <cstdlib>
 
 using namespace mozilla;
 
@@ -55,8 +52,6 @@ static constexpr uint32_t kTelemetryCooldownS = 10;
 // that counts as "active".
 static constexpr unsigned kPokeWindowEvents = 10;
 static constexpr unsigned kPokeWindowSeconds = 1;
-
-static constexpr const char* kTopicShutdown = "content-child-shutdown";
 
 namespace {
 
@@ -119,35 +114,31 @@ class TimeStampWindow {
   AutoCleanLinkedList<Event> mEvents;
 };
 
-NS_IMPL_ISUPPORTS(MemoryTelemetry, nsIObserver, nsISupportsWeakReference)
-
 MemoryTelemetry::MemoryTelemetry()
-    : mThreadPool(do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID)) {}
-
-void MemoryTelemetry::Init() {
+    : mThreadPool(do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID)) {
   for (auto& val : gPrevValues) {
     val = kUninitialized;
   }
-
-  if (XRE_IsContentProcess()) {
-    nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
-    MOZ_RELEASE_ASSERT(obs);
-
-    obs->AddObserver(this, kTopicShutdown, true);
-  }
 }
 
-/* static */ MemoryTelemetry& MemoryTelemetry::Get() {
-  static RefPtr<MemoryTelemetry> sInstance;
+MemoryTelemetry::~MemoryTelemetry() = default;
 
+static StaticRefPtr<MemoryTelemetry> sInstance;
+
+/* static */ RefPtr<MemoryTelemetry> MemoryTelemetry::Create() {
   MOZ_ASSERT(NS_IsMainThread());
 
   if (!sInstance) {
     sInstance = new MemoryTelemetry();
-    sInstance->Init();
     ClearOnShutdown(&sInstance);
   }
-  return *sInstance;
+
+  return sInstance;
+}
+
+/* static */ RefPtr<MemoryTelemetry> MemoryTelemetry::Get() {
+  MOZ_ASSERT(NS_IsMainThread());
+  return sInstance;
 }
 
 void MemoryTelemetry::DelayedInit() {
@@ -170,7 +161,7 @@ void MemoryTelemetry::Poke() {
 
   if (XRE_IsContentProcess()) {
     auto& remoteType = dom::ContentChild::GetSingleton()->GetRemoteType();
-    if (remoteType == PREALLOC_REMOTE_TYPE) {
+    if (remoteType.IsPrealloc()) {
       // Preallocated processes should stay dormant and not run this telemetry
       // code.
       return;
@@ -214,7 +205,8 @@ void MemoryTelemetry::Poke() {
     RefPtr<MemoryTelemetry> self(this);
     auto res = NS_NewTimerWithCallback(
         [self](nsITimer* aTimer) { self->GatherReports(); }, delay,
-        nsITimer::TYPE_ONE_SHOT_LOW_PRIORITY, "MemoryTelemetry::GatherReports");
+        nsITimer::TYPE_ONE_SHOT_LOW_PRIORITY,
+        "MemoryTelemetry::GatherReports"_ns);
 
     if (res.isOk()) {
       // Errors are ignored, if there was an error then we just don't get
@@ -229,10 +221,7 @@ nsresult MemoryTelemetry::Shutdown() {
     mTimer->Cancel();
   }
 
-  nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
-  MOZ_RELEASE_ASSERT(obs);
-
-  obs->RemoveObserver(this, kTopicShutdown);
+  sInstance = nullptr;
 
   return NS_OK;
 }
@@ -266,6 +255,8 @@ nsresult MemoryTelemetry::GatherReports(
   RECORD_OUTER(metric, glean::memory::id.AccumulateSingleSample(amt);)
 #define RECORD_BYTES(id, metric) \
   RECORD_OUTER(metric, glean::memory::id.Accumulate(amt / 1024);)
+#define RECORD_BYTES_PER_PROCESS(id, metric) \
+  RECORD_OUTER(metric, glean::memory::id.ProcessGet().Accumulate(amt / 1024);)
 #define RECORD_PERCENTAGE(id, metric) \
   RECORD_OUTER(metric, glean::memory::id.AccumulateSingleSample(amt / 100);)
 #define RECORD_COUNT_CUMULATIVE(id, metric)                               \
@@ -312,7 +303,7 @@ nsresult MemoryTelemetry::GatherReports(
 
   // Collect cheap or main-thread only metrics synchronously, on the main
   // thread.
-  RECORD_BYTES(js_gc_heap, JSMainRuntimeGCHeap);
+  RECORD_BYTES_PER_PROCESS(js_gc_heap, JSMainRuntimeGCHeap);
   RECORD_COUNT(js_compartments_system, JSMainRuntimeCompartmentsSystem);
   RECORD_COUNT(js_compartments_user, JSMainRuntimeCompartmentsUser);
   RECORD_COUNT(js_realms_system, JSMainRuntimeRealmsSystem);
@@ -357,12 +348,12 @@ nsresult MemoryTelemetry::GatherReports(
 #if !defined(HAVE_64BIT_BUILD) || !defined(XP_WIN)
         RECORD_BYTES(vsize_max_contiguous, VsizeMaxContiguous);
 #endif
-        RECORD_BYTES(resident_fast, ResidentFast);
-        RECORD_BYTES(resident_peak, ResidentPeak);
+        RECORD_BYTES_PER_PROCESS(resident_fast, ResidentFast);
+        RECORD_BYTES_PER_PROCESS(resident_peak, ResidentPeak);
 // Although we can measure unique memory on MacOS we choose not to, because
 // doing so is too slow for telemetry.
 #ifndef XP_MACOSX
-        RECORD_BYTES(unique, ResidentUnique);
+        RECORD_BYTES_PER_PROCESS(unique, ResidentUnique);
 #endif
 
         if (completionRunnable) {
@@ -439,8 +430,10 @@ void MemoryTelemetry::GatherTotalMemory() {
         infos.AppendElement(info);
       });
 
+  RefPtr<MemoryTelemetry> self = this;
   mThreadPool->Dispatch(NS_NewRunnableFunction(
-      "MemoryTelemetry::GatherTotalMemory", [infos = std::move(infos)] {
+      "MemoryTelemetry::GatherTotalMemory",
+      [self = std::move(self), infos = std::move(infos)] {
         RefPtr<nsMemoryReporterManager> mgr =
             nsMemoryReporterManager::GetOrCreate();
         MOZ_RELEASE_ASSERT(mgr);
@@ -482,9 +475,8 @@ void MemoryTelemetry::GatherTotalMemory() {
 
         NS_DispatchToMainThread(NS_NewRunnableFunction(
             "MemoryTelemetry::FinishGatheringTotalMemory",
-            [mbTotal, childSizes = std::move(childSizes)] {
-              MemoryTelemetry::Get().FinishGatheringTotalMemory(mbTotal,
-                                                                childSizes);
+            [self, mbTotal, childSizes = std::move(childSizes)] {
+              self->FinishGatheringTotalMemory(mbTotal, childSizes);
             }));
       }));
 }
@@ -504,8 +496,7 @@ nsresult MemoryTelemetry::FinishGatheringTotalMemory(
   }
 
   if (aChildSizes.Length() > 1) {
-    int32_t tabsCount;
-    MOZ_TRY_VAR(tabsCount, GetOpenTabsCount());
+    int32_t tabsCount = MOZ_TRY(GetOpenTabsCount());
 
     nsCString key;
     if (tabsCount <= 10) {
@@ -574,15 +565,4 @@ nsresult MemoryTelemetry::FinishGatheringTotalMemory(
   }
 
   return total;
-}
-
-nsresult MemoryTelemetry::Observe(nsISupports* aSubject, const char* aTopic,
-                                  const char16_t* aData) {
-  if (strcmp(aTopic, kTopicShutdown) == 0) {
-    if (nsCOMPtr<nsITelemetry> telemetry =
-            do_GetService("@mozilla.org/base/telemetry;1")) {
-      telemetry->FlushBatchedChildTelemetry();
-    }
-  }
-  return NS_OK;
 }

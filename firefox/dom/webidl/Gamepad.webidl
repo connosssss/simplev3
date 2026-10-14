@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -59,13 +58,6 @@ interface Gamepad {
    */
   [Pref="dom.gamepad.extensions.enabled"]
   readonly attribute GamepadHand hand;
-
-  /**
-   * The displayId in use for as an association point in the VRDisplay API
-   * to identify which VRDisplay that the gamepad is associated with.
-   */
-  [Pref="dom.vr.enabled"]
-  readonly attribute unsigned long displayId;
 
   /**
    * true if this gamepad is currently connected to the system.

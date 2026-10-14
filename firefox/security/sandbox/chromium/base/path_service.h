@@ -1,11 +1,9 @@
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+// Copyright 2012 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #ifndef BASE_PATH_SERVICE_H_
 #define BASE_PATH_SERVICE_H_
-
-#include <string>
 
 #include "base/base_export.h"
 #include "base/base_paths.h"
@@ -22,14 +20,13 @@ class ScopedPathOverride;
 //
 class BASE_EXPORT PathService {
  public:
-  // Retrieves a path to a special directory or file and places it into the
-  // string pointed to by 'path'. If you ask for a directory it is guaranteed
-  // to NOT have a path separator at the end. For example, "c:\windows\temp"
-  // Directories are also guaranteed to exist when this function succeeds.
-  //
-  // Returns true if the directory or file was successfully retrieved. On
-  // failure, 'path' will not be changed.
+  // Populates |path| with a special directory or file. Returns true on success,
+  // in which case |path| is guaranteed to have a non-empty value. On failure,
+  // |path| will not be changed.
   static bool Get(int key, FilePath* path);
+
+  // Returns the corresponding path; CHECKs that the operation succeeds.
+  static FilePath CheckedGet(int key);
 
   // Overrides the path to a special directory or file.  This cannot be used to
   // change the value of DIR_CURRENT, but that should be obvious.  Also, if the
@@ -60,6 +57,13 @@ class BASE_EXPORT PathService {
                                         bool is_absolute,
                                         bool create);
 
+  // This function does the same as `PathService::Override()` but it skips the
+  // checks for testing the invalid cases.
+  static bool OverrideWithoutCheckForTesting(int key, const FilePath& path);
+
+  // Returns whether an override is present for a special directory or file.
+  static bool IsOverriddenForTesting(int key);
+
   // To extend the set of supported keys, you can register a path provider,
   // which is just a function mirroring PathService::Get.  The ProviderFunc
   // returns false if it cannot provide a non-empty path for the given key.
@@ -85,8 +89,7 @@ class BASE_EXPORT PathService {
 
   // Removes an override for a special directory or file. Returns true if there
   // was an override to remove or false if none was present.
-  // NOTE: This function is intended to be used by tests only!
-  static bool RemoveOverride(int key);
+  static bool RemoveOverrideForTests(int key);
 };
 
 }  // namespace base

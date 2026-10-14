@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -27,7 +25,7 @@ class FileDescriptor {
   typedef base::ProcessId ProcessId;
 
   using UniquePlatformHandle = mozilla::UniqueFileHandle;
-  using PlatformHandleType = UniquePlatformHandle::ElementType;
+  using PlatformHandleType = UniquePlatformHandle::element_type;
 
   // This should only ever be created by IPDL.
   struct IPDLPrivate {};
@@ -46,7 +44,7 @@ class FileDescriptor {
 
   explicit FileDescriptor(UniquePlatformHandle&& aHandle);
 
-  ~FileDescriptor();
+  ~FileDescriptor() = default;
 
   FileDescriptor& operator=(const FileDescriptor& aOther);
 
@@ -68,8 +66,6 @@ class FileDescriptor {
   bool operator==(const FileDescriptor& aOther) const;
 
  private:
-  static UniqueFileHandle Clone(PlatformHandleType aHandle);
-
   UniquePlatformHandle mHandle;
 };
 

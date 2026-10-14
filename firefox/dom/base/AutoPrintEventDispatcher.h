@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,6 +14,19 @@
 namespace mozilla::dom {
 
 class AutoPrintEventDispatcher {
+ public:
+  MOZ_CAN_RUN_SCRIPT explicit AutoPrintEventDispatcher(Document& aDoc) {
+    if (!aDoc.IsStaticDocument()) {
+      mDocuments.AppendElement(&aDoc);
+      CollectInProcessSubdocuments(aDoc, mDocuments);
+    }
+
+    DispatchEvent(true);
+  }
+
+  MOZ_CAN_RUN_SCRIPT ~AutoPrintEventDispatcher() { DispatchEvent(false); }
+
+ private:
   // NOTE(emilio): For fission iframes, we dispatch this event in
   // RecvCloneDocumentTreeIntoSelf.
   static void CollectInProcessSubdocuments(
@@ -28,9 +39,13 @@ class AutoPrintEventDispatcher {
   }
 
   MOZ_CAN_RUN_SCRIPT void DispatchEvent(bool aBefore) {
-    for (auto& doc : mDocuments) {
+    for (const auto& doc : mDocuments) {
+      const RefPtr<nsGlobalWindowOuter> window =
+          nsGlobalWindowOuter::Cast(doc->GetWindow());
+      // mDocuments won't be modified. Therefore, we can use MOZ_KnownLive(doc)
+      // here.
       nsContentUtils::DispatchTrustedEvent(
-          doc, nsGlobalWindowOuter::Cast(doc->GetWindow()),
+          MOZ_KnownLive(doc), window,
           aBefore ? u"beforeprint"_ns : u"afterprint"_ns, CanBubble::eNo,
           Cancelable::eNo, nullptr);
       if (RefPtr<nsPresContext> presContext = doc->GetPresContext()) {
@@ -42,18 +57,6 @@ class AutoPrintEventDispatcher {
       }
     }
   }
-
- public:
-  MOZ_CAN_RUN_SCRIPT explicit AutoPrintEventDispatcher(Document& aDoc) {
-    if (!aDoc.IsStaticDocument()) {
-      mDocuments.AppendElement(&aDoc);
-      CollectInProcessSubdocuments(aDoc, mDocuments);
-    }
-
-    DispatchEvent(true);
-  }
-
-  MOZ_CAN_RUN_SCRIPT ~AutoPrintEventDispatcher() { DispatchEvent(false); }
 
   AutoTArray<nsCOMPtr<Document>, 8> mDocuments;
   const nsSize mPageSize;

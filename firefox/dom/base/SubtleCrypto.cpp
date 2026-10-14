@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -104,6 +102,37 @@ already_AddRefed<Promise> SubtleCrypto::DeriveBits(
     JSContext* cx, const ObjectOrString& algorithm, CryptoKey& baseKey,
     const Nullable<uint32_t>& length, ErrorResult& aRv){
     SUBTLECRYPTO_METHOD_BODY(DeriveBits, aRv, cx, algorithm, baseKey, length)}
+
+already_AddRefed<Promise> SubtleCrypto::EncapsulateBits(
+    JSContext* cx, const ObjectOrString& encapsulationAlgorithm,
+    CryptoKey& encapsulationKey, ErrorResult& aRv){
+    SUBTLECRYPTO_METHOD_BODY(EncapsulateBits, aRv, cx, encapsulationAlgorithm,
+                             encapsulationKey)}
+
+already_AddRefed<Promise> SubtleCrypto::EncapsulateKey(
+    JSContext* cx, const ObjectOrString& encapsulationAlgorithm,
+    CryptoKey& encapsulationKey, const ObjectOrString& sharedKeyAlgorithm,
+    bool extractable, const Sequence<nsString>& keyUsages, ErrorResult& aRv){
+    SUBTLECRYPTO_METHOD_BODY(EncapsulateKey, aRv, mParent, cx,
+                             encapsulationAlgorithm, encapsulationKey,
+                             sharedKeyAlgorithm, extractable, keyUsages)}
+
+already_AddRefed<Promise> SubtleCrypto::DecapsulateBits(
+    JSContext* cx, const ObjectOrString& decapsulationAlgorithm,
+    CryptoKey& decapsulationKey, const CryptoOperationData& ciphertext,
+    ErrorResult& aRv){SUBTLECRYPTO_METHOD_BODY(DecapsulateBits, aRv, cx,
+                                               decapsulationAlgorithm,
+                                               decapsulationKey, ciphertext)}
+
+already_AddRefed<Promise> SubtleCrypto::DecapsulateKey(
+    JSContext* cx, const ObjectOrString& decapsulationAlgorithm,
+    CryptoKey& decapsulationKey, const CryptoOperationData& ciphertext,
+    const ObjectOrString& sharedKeyAlgorithm, bool extractable,
+    const Sequence<nsString>& keyUsages, ErrorResult& aRv){
+    SUBTLECRYPTO_METHOD_BODY(DecapsulateKey, aRv, mParent, cx,
+                             decapsulationAlgorithm, decapsulationKey,
+                             ciphertext, sharedKeyAlgorithm, extractable,
+                             keyUsages)}
 
 already_AddRefed<Promise> SubtleCrypto::WrapKey(
     JSContext* cx, const nsAString& format, CryptoKey& key,

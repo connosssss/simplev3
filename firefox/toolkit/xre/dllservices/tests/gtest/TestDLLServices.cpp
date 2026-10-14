@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -80,4 +78,35 @@ TEST(TestDllServices, DoNotGetNestedMicrosoftCertificate)
   ::WaitForSingleObject(threadW, INFINITE);
   EXPECT_EQ(info.orgName,
             u"Microsoft Windows Software Compatibility Publisher"_ns);
+}
+
+// An interrupted update can leave firefox.exe, mozglue.dll and xul.dll at
+// different versions, so a ModuleLoadInfo handed to DllServices may have been
+// built with another layout.  DllServices must leave such an object alone.
+TEST(TestDllServices, RejectIncompatibleModuleLoadInfo)
+{
+  RefPtr<DllServices> dllSvc(DllServices::Get());
+
+  ModuleLoadInfo noMagic;
+  noMagic.mMagic = 0;
+  EXPECT_FALSE(noMagic.HasCompatibleLayout());
+  dllSvc->DispatchDllLoadNotification(std::move(noMagic));
+
+  ModuleLoadInfoVec backlog;
+  ASSERT_TRUE(backlog.emplaceBack(ModuleLoadInfo()));
+  EXPECT_FALSE(backlog.begin()->HasCompatibleLayout());
+  dllSvc->DispatchModuleLoadBacklogNotification(std::move(backlog));
+  EXPECT_EQ(backlog.length(), 1u);
+}
+
+TEST(TestDllServices, IsLayoutCompatible)
+{
+  EXPECT_TRUE(ModuleLoadInfo::IsLayoutCompatible(::GetModuleHandleW(nullptr)));
+  EXPECT_TRUE(
+      ModuleLoadInfo::IsLayoutCompatible(::GetModuleHandleW(L"xul.dll")));
+  EXPECT_TRUE(
+      ModuleLoadInfo::IsLayoutCompatible(::GetModuleHandleW(L"mozglue.dll")));
+  EXPECT_FALSE(
+      ModuleLoadInfo::IsLayoutCompatible(::GetModuleHandleW(L"ntdll.dll")));
+  EXPECT_FALSE(ModuleLoadInfo::IsLayoutCompatible(nullptr));
 }

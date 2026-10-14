@@ -1,0 +1,56 @@
+schema: 1
+
+bugzilla:
+  product: Core
+  component: "Graphics: Text"
+
+origin:
+  name: freetype2
+  description: Freely available software library to render fonts.
+
+  url: https://gitlab.freedesktop.org/freetype/freetype
+
+  release: d5d4bef0c6d5363931d346a6b2380317a32b8601 (2026-10-06T10:11:29.000-04:00).
+  revision: d5d4bef0c6d5363931d346a6b2380317a32b8601
+
+  license: FTL
+  license-file: docs/FTL.TXT
+
+updatebot:
+  maintainer-phab: jfkthame
+  maintainer-bz: jfkthame@gmail.com
+  try-preset: freetype
+  tasks:
+    - type: vendoring
+      enabled: true
+      frequency: 1 week
+
+vendoring:
+  url: https://gitlab.freedesktop.org/freetype/freetype
+  source-hosting: gitlab
+  tracking: commit
+
+  exclude:
+    - ".**"
+    - autogen.sh
+    - builds
+    - CMakeLists.txt
+    - configure
+    - devel
+    - docs
+    - Makefile
+    - meson.build
+    - meson_options.txt
+    - mkfile
+    - MSBuild.rsp
+    - MSBuild.sln
+    - objs
+    - subprojects
+    - tests
+    - vms_make.com
+
+  include:
+    - docs/FTL.TXT
+
+  keep:
+    - moz.build

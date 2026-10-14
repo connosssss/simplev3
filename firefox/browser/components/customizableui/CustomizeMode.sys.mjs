@@ -18,7 +18,7 @@ const kDownloadAutohideCheckboxId = "downloads-button-autohide-checkbox";
 const kDownloadAutohidePanelId = "downloads-button-autohide-panel";
 const kDownloadAutoHidePref = "browser.download.autohideButton";
 
-import { CustomizableUI } from "resource:///modules/CustomizableUI.sys.mjs";
+import { CustomizableUI } from "moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs";
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 
@@ -26,7 +26,8 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   BrowserUsageTelemetry: "resource:///modules/BrowserUsageTelemetry.sys.mjs",
-  DragPositionManager: "resource:///modules/DragPositionManager.sys.mjs",
+  DragPositionManager:
+    "moz-src:///browser/components/customizableui/DragPositionManager.sys.mjs",
   URILoadingHelper: "resource:///modules/URILoadingHelper.sys.mjs",
 });
 ChromeUtils.defineLazyGetter(lazy, "gWidgetsBundle", function () {
@@ -38,7 +39,7 @@ XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "gTouchBarUpdater",
   "@mozilla.org/widget/touchbarupdater;1",
-  "nsITouchBarUpdater"
+  Ci.nsITouchBarUpdater
 );
 
 let gDebug;
@@ -59,7 +60,7 @@ var gDraggingInToolbars;
 var gTab;
 
 function closeGlobalTab() {
-  let win = gTab.ownerGlobal;
+  let win = gTab.documentGlobal;
   if (win.gBrowser.browsers.length == 1) {
     win.BrowserCommands.openTab();
   }
@@ -86,7 +87,7 @@ var gTabsProgressListener = {
 
 function unregisterGlobalTab() {
   gTab.removeEventListener("TabClose", unregisterGlobalTab);
-  let win = gTab.ownerGlobal;
+  let win = gTab.documentGlobal;
   win.removeEventListener("unload", unregisterGlobalTab);
   win.gBrowser.removeTabsProgressListener(gTabsProgressListener);
 
@@ -355,7 +356,7 @@ export class CustomizeMode {
       gTab.linkedBrowser.stop();
     }
 
-    let win = gTab.ownerGlobal;
+    let win = gTab.documentGlobal;
 
     win.gBrowser.setTabTitle(gTab);
     win.gBrowser.setIcon(gTab, "chrome://browser/skin/customize.svg");
@@ -387,7 +388,8 @@ export class CustomizeMode {
   enter() {
     if (
       !this.#window.toolbar.visible ||
-      this.#window.document.documentElement.hasAttribute("taskbartab")
+      this.#window.document.documentElement.hasAttribute("taskbartab") ||
+      this.#window.document.documentElement.hasAttribute("mini-window")
     ) {
       let w = lazy.URILoadingHelper.getTargetWindow(this.#window, {
         skipPopups: true,
@@ -439,10 +441,10 @@ export class CustomizeMode {
     if (!gTab.selected) {
       // This will force another .enter() to be called via the
       // onlocationchange handler of the tabbrowser, so we return early.
-      gTab.ownerGlobal.gBrowser.selectedTab = gTab;
+      gTab.documentGlobal.gBrowser.selectedTab = gTab;
       return;
     }
-    gTab.ownerGlobal.focus();
+    gTab.documentGlobal.focus();
     if (gTab.ownerDocument != this.#document) {
       return;
     }
@@ -511,7 +513,7 @@ export class CustomizeMode {
       this.#document.documentElement.toggleAttribute("customizing", true);
 
       let customizableToolbars = document.querySelectorAll(
-        "toolbar[customizable=true]:not([autohide=true], [collapsed=true])"
+        "toolbar[customizable=true]:not([autohide], [collapsed])"
       );
       for (let toolbar of customizableToolbars) {
         toolbar.toggleAttribute("customizing", true);
@@ -667,7 +669,7 @@ export class CustomizeMode {
       this._previousPanelContextMenuParent.appendChild(panelContextMenu);
 
       let customizableToolbars = document.querySelectorAll(
-        "toolbar[customizable=true]:not([autohide=true])"
+        "toolbar[customizable=true]:not([autohide])"
       );
       for (let toolbar of customizableToolbars) {
         toolbar.removeAttribute("customizing");
@@ -833,7 +835,7 @@ export class CustomizeMode {
       this.#window.requestAnimationFrame(() => {
         this.#window.requestAnimationFrame(() => {
           animationNode.classList.add("animate-out");
-          animationNode.ownerGlobal.gNavToolbox.addEventListener(
+          animationNode.documentGlobal.gNavToolbox.addEventListener(
             "customizationending",
             cleanupCustomizationExit
           );
@@ -1147,7 +1149,7 @@ export class CustomizeMode {
     for (let command of this.#document.querySelectorAll("command")) {
       if (!command.id || !this.#enabledCommands.has(command.id)) {
         if (shouldBeDisabled) {
-          if (command.getAttribute("disabled") != "true") {
+          if (!command.hasAttribute("disabled")) {
             command.setAttribute("disabled", true);
           } else {
             command.setAttribute("wasdisabled", true);
@@ -1351,7 +1353,7 @@ export class CustomizeMode {
       aNode.removeAttribute("observes");
     }
 
-    if (aNode.getAttribute("checked") == "true") {
+    if (aNode.hasAttribute("checked")) {
       wrapper.setAttribute("itemchecked", "true");
       aNode.removeAttribute("checked");
     }
@@ -1479,11 +1481,11 @@ export class CustomizeMode {
       let commandID = aWrapper.getAttribute("itemcommand");
       toolbarItem.setAttribute("command", commandID);
 
-      // XXX Bug 309953 - toolbarbuttons aren't in sync with their commands after customizing
       let command = this.$(commandID);
-      if (command && command.hasAttribute("disabled")) {
-        toolbarItem.setAttribute("disabled", command.getAttribute("disabled"));
-      }
+      toolbarItem.toggleAttribute(
+        "disabled",
+        !!command?.hasAttribute("disabled")
+      );
     }
 
     let wrappedContext = toolbarItem.getAttribute("wrapped-context");
@@ -1791,7 +1793,7 @@ export class CustomizeMode {
    *   case of an overflowable toolbar).
    */
   onWidgetBeforeDOMChange(aNodeToChange, aSecondaryNode, aContainer) {
-    if (aContainer.ownerGlobal != this.#window || this.resetting) {
+    if (aContainer.documentGlobal != this.#window || this.resetting) {
       return;
     }
     // If we get called for widgets that aren't in the window yet, they might not have
@@ -1817,7 +1819,7 @@ export class CustomizeMode {
    *   case of an overflowable toolbar).
    */
   onWidgetAfterDOMChange(aNodeToChange, aSecondaryNode, aContainer) {
-    if (aContainer.ownerGlobal != this.#window || this.resetting) {
+    if (aContainer.documentGlobal != this.#window || this.resetting) {
       return;
     }
     // If the node is still attached to the container, wrap it again:
@@ -1925,6 +1927,45 @@ export class CustomizeMode {
   }
 
   /**
+   * Opens about:preferences#appearance to the Window Density section in a new tab.
+   */
+  #openUIDensityPreferences() {
+    this.#window.openPreferences("appearance-windowDensity");
+  }
+
+  /**
+   * Updates the visible state of the UI density controls. When Nova is enabled,
+   * a link to the Window Density section of about:preferences is shown instead
+   * of the density dropdown, regardless of the compact mode pref. Otherwise the
+   * dropdown is shown following the legacy compact mode visibility rules.
+   */
+  #updateDensityMenu() {
+    let button = this.#document.getElementById(
+      "customization-uidensity-button"
+    );
+    let link = this.#document.getElementById("customization-uidensity-link");
+
+    if (this.#window.gUIDensity.novaEnabled) {
+      button.hidden = true;
+      link.hidden = false;
+      return;
+    }
+
+    link.hidden = true;
+
+    // If we're entering Customize Mode, and we're using compact mode,
+    // then show the button after that.
+    let gUIDensity = this.#window.gUIDensity;
+    if (gUIDensity.getCurrentDensity().mode == gUIDensity.MODE_COMPACT) {
+      Services.prefs.setBoolPref(kCompactModeShowPref, true);
+    }
+
+    button.hidden =
+      !Services.prefs.getBoolPref(kCompactModeShowPref) &&
+      !button.querySelector("#customization-uidensity-menuitem-touch");
+  }
+
+  /**
    * Opens about:addons in a new tab, showing the themes list.
    */
   #openAddonsManagerThemes() {
@@ -1965,16 +2006,9 @@ export class CustomizeMode {
   setUIDensity(mode) {
     let win = this.#window;
     let gUIDensity = win.gUIDensity;
-    let currentDensity = gUIDensity.getCurrentDensity();
     let panel = win.document.getElementById("customization-uidensity-menu");
 
     Services.prefs.setIntPref(gUIDensity.uiDensityPref, mode);
-
-    // If the user is choosing a different UI density mode while
-    // the mode is overriden to Touch, remove the override.
-    if (currentDensity.overridden) {
-      Services.prefs.setBoolPref(gUIDensity.autoTouchModePref, false);
-    }
 
     this.#onUIChange();
     panel.hidePopup();
@@ -2145,25 +2179,6 @@ export class CustomizeMode {
     let isTouchBarInitialized = lazy.gTouchBarUpdater.isTouchBarInitialized();
     touchBarButton.hidden = !isTouchBarInitialized;
     touchBarSpacer.hidden = !isTouchBarInitialized;
-  }
-
-  /**
-   * Updates the hidden / visible state of the UI density button.
-   */
-  #updateDensityMenu() {
-    // If we're entering Customize Mode, and we're using compact mode,
-    // then show the button after that.
-    let gUIDensity = this.#window.gUIDensity;
-    if (gUIDensity.getCurrentDensity().mode == gUIDensity.MODE_COMPACT) {
-      Services.prefs.setBoolPref(kCompactModeShowPref, true);
-    }
-
-    let button = this.#document.getElementById(
-      "customization-uidensity-button"
-    );
-    button.hidden =
-      !Services.prefs.getBoolPref(kCompactModeShowPref) &&
-      !button.querySelector("#customization-uidensity-menuitem-touch");
   }
 
   /**
@@ -2382,6 +2397,10 @@ export class CustomizeMode {
     };
     densityMenu.addEventListener("blur", resetDensity);
     densityMenu.addEventListener("mouseout", resetDensity);
+
+    this.$("customization-uidensity-link").addEventListener("click", () => {
+      this.#openUIDensityPreferences();
+    });
 
     this.$("customization-lwtheme-link").addEventListener("click", () => {
       this.#openAddonsManagerThemes();
@@ -3006,8 +3025,6 @@ export class CustomizeMode {
     __dumpDragData(aEvent, "#onDragEnd");
 
     let document = aEvent.target.ownerDocument;
-    document.documentElement.removeAttribute("customizing-movingItem");
-
     let documentId = document.documentElement.id;
     if (!aEvent.dataTransfer.mozTypesAt(0)) {
       return;
@@ -3065,7 +3082,7 @@ export class CustomizeMode {
     let mozSourceNode = aEvent.dataTransfer.mozSourceNode;
     // mozSourceNode is null in the dragStart event handler or if
     // the drag event originated in an external application.
-    return !mozSourceNode || mozSourceNode.ownerGlobal != this.#window;
+    return !mozSourceNode || mozSourceNode.documentGlobal != this.#window;
   }
 
   /**
@@ -3095,7 +3112,7 @@ export class CustomizeMode {
     if (aDraggedOverItem.getAttribute("dragover") != aValue) {
       aDraggedOverItem.setAttribute("dragover", aValue);
 
-      let window = aDraggedOverItem.ownerGlobal;
+      let window = aDraggedOverItem.documentGlobal;
       let draggedItem = window.document.getElementById(aDraggedItemId);
       if (aPlace == "palette") {
         // We mostly delegate the complexity of grid placeholder effects to
@@ -3383,9 +3400,7 @@ export class CustomizeMode {
   /**
    * Handler for mousedown events in the customize mode UI for the primary
    * button. If the mousedown event is being fired on a customizable item, it
-   * will have a "mousedown" attribute set to "true" on it. A
-   * "customizing-movingItem" attribute is also set to "true" on the
-   * document element.
+   * will have a "mousedown" attribute set to "true" on it.
    *
    * @param {MouseEvent} aEvent
    *   The mousedown event being handled.
@@ -3395,8 +3410,6 @@ export class CustomizeMode {
     if (aEvent.button != 0) {
       return;
     }
-    let doc = aEvent.target.ownerDocument;
-    doc.documentElement.setAttribute("customizing-movingItem", true);
     let item = this.#getWrapper(aEvent.target);
     if (item) {
       item.toggleAttribute("mousedown", true);
@@ -3406,9 +3419,7 @@ export class CustomizeMode {
   /**
    * Handler for mouseup events in the customize mode UI for the primary
    * button. If the mouseup event is being fired on a customizable item, it
-   * will have the "mousedown" attribute added in #onMouseDown removed. This
-   * will also remove the "customizing-movingItem" attribute on the document
-   * element.
+   * will have the "mousedown" attribute added in #onMouseDown removed.
    *
    * @param {MouseEvent} aEvent
    *   The mouseup event being handled.
@@ -3418,8 +3429,6 @@ export class CustomizeMode {
     if (aEvent.button != 0) {
       return;
     }
-    let doc = aEvent.target.ownerDocument;
-    doc.documentElement.removeAttribute("customizing-movingItem");
     let item = this.#getWrapper(aEvent.target);
     if (item) {
       item.removeAttribute("mousedown");
@@ -3506,7 +3515,7 @@ export class CustomizeMode {
     doc.getElementById("customizationPanelItemContextMenuPin").hidden =
       inPermanentArea;
 
-    doc.ownerGlobal.MozXULElement.insertFTLIfNeeded(
+    doc.documentGlobal.MozXULElement.insertFTLIfNeeded(
       "browser/toolbarContextMenu.ftl"
     );
     event.target.querySelectorAll("[data-lazy-l10n-id]").forEach(el => {

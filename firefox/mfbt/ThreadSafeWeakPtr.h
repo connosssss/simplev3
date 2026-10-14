@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -56,6 +54,7 @@
 #define mozilla_ThreadSafeWeakPtr_h
 
 #include "mozilla/Assertions.h"
+#include "mozilla/HashFunctions.h"
 #include "mozilla/RefCountType.h"
 #include "mozilla/RefCounted.h"
 #include "mozilla/RefPtr.h"
@@ -214,17 +213,17 @@ class ThreadSafeWeakPtr {
   ThreadSafeWeakPtr& operator=(ThreadSafeWeakPtr&& aOther) = default;
   ThreadSafeWeakPtr(ThreadSafeWeakPtr&& aOther) = default;
 
-  ThreadSafeWeakPtr& operator=(const RefPtr<T>& aOther) {
-    if (aOther) {
-      // Get the underlying shared weak reference to the object.
-      mRef = aOther->getThreadSafeWeakReference();
-    } else {
-      mRef = nullptr;
-    }
+  // Construct a ThreadSafeWeakPtr from a raw pointer to the object.
+  //
+  // NOTE: This will construct a ThreadSafeWeakPtr with the correct identity,
+  // but which cannot be upgraded, during the object's destructor.
+  MOZ_IMPLICIT ThreadSafeWeakPtr(const T* aOther)
+      : mRef(aOther ? aOther->getThreadSafeWeakReference() : nullptr) {}
+
+  ThreadSafeWeakPtr& operator=(const T* aOther) {
+    mRef = aOther ? aOther->getThreadSafeWeakReference() : nullptr;
     return *this;
   }
-
-  explicit ThreadSafeWeakPtr(const RefPtr<T>& aOther) { *this = aOther; }
 
   ThreadSafeWeakPtr& operator=(decltype(nullptr)) {
     mRef = nullptr;
@@ -245,9 +244,7 @@ class ThreadSafeWeakPtr {
   // that any future upgrade will be successful.
   bool IsDead() const { return IsNull() || size_t(mRef->mStrongCnt) == 0; }
 
-  bool operator==(const ThreadSafeWeakPtr& aOther) const {
-    return mRef == aOther.mRef;
-  }
+  bool operator==(const ThreadSafeWeakPtr& aOther) const = default;
 
   bool operator==(const RefPtr<T>& aOther) const {
     return *this == aOther.get();
@@ -269,6 +266,8 @@ class ThreadSafeWeakPtr {
   bool operator!=(const U& aOther) const {
     return !(*this == aOther);
   }
+
+  HashNumber Hash() const { return HashGeneric(mRef.get()); }
 
   // Convert the weak pointer to a strong RefPtr.
   explicit operator RefPtr<T>() const { return getRefPtr(); }

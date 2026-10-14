@@ -1,5 +1,7 @@
 [DEFAULT]
-skip-if = ["appname == 'thunderbird'"]
+run-if = [
+  "appname != 'thunderbird'",
+]
 
 ["test_actors.js"]
 
@@ -14,7 +16,5 @@ skip-if = ["appname == 'thunderbird'"]
 ["test_navigate.js"]
 
 ["test_prefs.js"]
-
-["test_sync.js"]
 
 ["test_web-reference.js"]

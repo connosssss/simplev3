@@ -1,65 +1,64 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-#include "nsCOMPtr.h"
 #include "mozilla/dom/PrototypeDocumentContentSink.h"
-#include "nsIParser.h"
-#include "mozilla/dom/Document.h"
-#include "nsIContent.h"
-#include "nsIURI.h"
-#include "nsNetUtil.h"
-#include "nsHTMLParts.h"
-#include "nsCRT.h"
-#include "mozilla/StyleSheetInlines.h"
-#include "mozilla/css/Loader.h"
-#include "nsGkAtoms.h"
-#include "nsContentUtils.h"
-#include "nsDocElementCreatedNotificationRunner.h"
-#include "nsIScriptContext.h"
-#include "nsNameSpaceManager.h"
-#include "nsIScriptError.h"
-#include "prtime.h"
-#include "mozilla/Logging.h"
-#include "nsRect.h"
-#include "nsIScriptElement.h"
-#include "nsReadableUtils.h"
-#include "nsUnicharUtils.h"
-#include "nsIChannel.h"
-#include "nsNodeInfoManager.h"
-#include "nsContentCreatorFunctions.h"
-#include "nsIContentPolicy.h"
-#include "nsContentPolicyUtils.h"
-#include "nsError.h"
-#include "nsIScriptGlobalObject.h"
+
+#include "js/CompilationAndEvaluation.h"
+#include "js/Utility.h"  // JS::FreePolicy
+#include "js/experimental/JSStencil.h"
 #include "mozAutoDocUpdate.h"
-#include "nsMimeTypes.h"
-#include "nsHtml5SVGLoadDispatcher.h"
-#include "nsTextNode.h"
-#include "mozilla/dom/AutoEntryScript.h"
-#include "mozilla/dom/CDATASection.h"
-#include "mozilla/dom/Comment.h"
-#include "mozilla/dom/DocumentType.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/dom/HTMLTemplateElement.h"
-#include "mozilla/dom/ProcessingInstruction.h"
-#include "mozilla/dom/XMLStylesheetProcessingInstruction.h"
-#include "mozilla/dom/ScriptLoader.h"
-#include "mozilla/dom/nsCSPUtils.h"
+#include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/LoadInfo.h"
+#include "mozilla/Logging.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/ProfilerLabels.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/StyleSheetInlines.h"
 #include "mozilla/Try.h"
-
-#include "nsXULPrototypeCache.h"
+#include "mozilla/css/Loader.h"
+#include "mozilla/dom/AutoEntryScript.h"
+#include "mozilla/dom/CDATASection.h"
+#include "mozilla/dom/Comment.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/DocumentType.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/HTMLTemplateElement.h"
+#include "mozilla/dom/PolicyContainer.h"
+#include "mozilla/dom/ProcessingInstruction.h"
+#include "mozilla/dom/ScriptLoader.h"
+#include "mozilla/dom/XMLStylesheetProcessingInstruction.h"
+#include "mozilla/dom/nsCSPUtils.h"
+#include "nsCOMPtr.h"
+#include "nsCRT.h"
+#include "nsContentCreatorFunctions.h"
+#include "nsContentPolicyUtils.h"
+#include "nsContentUtils.h"
+#include "nsDocElementCreatedNotificationRunner.h"
+#include "nsError.h"
+#include "nsGkAtoms.h"
+#include "nsHTMLParts.h"
+#include "nsHtml5SVGLoadDispatcher.h"
+#include "nsIChannel.h"
+#include "nsIContent.h"
+#include "nsIContentPolicy.h"
+#include "nsIParser.h"
+#include "nsIScriptContext.h"
+#include "nsIScriptElement.h"
+#include "nsIScriptError.h"
+#include "nsIScriptGlobalObject.h"
+#include "nsIURI.h"
+#include "nsMimeTypes.h"
+#include "nsNameSpaceManager.h"
+#include "nsNetUtil.h"
+#include "nsNodeInfoManager.h"
+#include "nsReadableUtils.h"
+#include "nsRect.h"
+#include "nsTextNode.h"
+#include "nsUnicharUtils.h"
 #include "nsXULElement.h"
-#include "mozilla/CycleCollectedJSContext.h"
-#include "js/CompilationAndEvaluation.h"
-#include "js/experimental/JSStencil.h"
-#include "js/Utility.h"  // JS::FreePolicy
+#include "nsXULPrototypeCache.h"
+#include "prtime.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -114,7 +113,7 @@ nsresult PrototypeDocumentContentSink::Init(Document* aDoc, nsIURI* aURI,
   nsresult rv = NS_GetFinalChannelURI(aChannel, getter_AddRefs(mDocumentURI));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  mScriptLoader = mDocument->ScriptLoader();
+  mScriptLoader = mDocument->GetScriptLoader();
 
   return NS_OK;
 }
@@ -151,6 +150,10 @@ nsISupports* PrototypeDocumentContentSink::GetTarget() {
 }
 
 bool PrototypeDocumentContentSink::IsScriptExecuting() {
+  if (!mScriptLoader) {
+    MOZ_ASSERT(false, "Can't load prototype docs as data");
+    return false;
+  }
   return !!mScriptLoader->GetCurrentScript();
 }
 
@@ -332,7 +335,7 @@ nsresult PrototypeDocumentContentSink::PrepareToWalk() {
   mDocument->UpdateDocumentStates(DocumentState::RTL_LOCALE, true);
 
   nsContentUtils::AddScriptRunner(
-      new nsDocElementCreatedNotificationRunner(mDocument));
+      MakeAndAddRef<nsDocElementCreatedNotificationRunner>(mDocument));
 
   // There'd better not be anything on the context stack at this
   // point! This is the basis case for our "induction" in
@@ -353,9 +356,8 @@ nsresult PrototypeDocumentContentSink::CreateAndInsertPI(
   MOZ_ASSERT(aProtoPI, "null ptr");
   MOZ_ASSERT(aParent, "null ptr");
 
-  RefPtr<ProcessingInstruction> node =
-      NS_NewXMLProcessingInstruction(aParent->OwnerDoc()->NodeInfoManager(),
-                                     aProtoPI->mTarget, aProtoPI->mData);
+  RefPtr<ProcessingInstruction> node = NS_NewXMLProcessingInstruction(
+      aParent->NodeInfoManager(), aProtoPI->mTarget, aProtoPI->mData);
 
   nsresult rv;
   if (aProtoPI->mTarget.EqualsLiteral("xml-stylesheet")) {
@@ -414,11 +416,11 @@ nsresult PrototypeDocumentContentSink::InsertXMLStylesheetPI(
   return NS_OK;
 }
 
-void PrototypeDocumentContentSink::CloseElement(Element* aElement,
-                                                bool aHadChildren) {
+void PrototypeDocumentContentSink::CloseElement(Element* aElement) {
   if (nsIContent::RequiresDoneAddingChildren(
           aElement->NodeInfo()->NamespaceID(),
           aElement->NodeInfo()->NameAtom())) {
+    nsAutoScriptBlocker scriptBlocker;
     aElement->DoneAddingChildren(false);
   }
 
@@ -430,21 +432,22 @@ void PrototypeDocumentContentSink::CloseElement(Element* aElement,
     return;
   }
 
-  if (!aHadChildren) {
-    return;
-  }
-
-  // See bug 370111 and bug 1495946. We don't cache inline styles nor module
-  // scripts in the prototype cache, and we don't notify on node insertion, so
-  // we need to do this for the stylesheet / script to be properly processed.
-  // This kinda sucks, but notifying was a pretty sizeable perf regression so...
+  // See bug 370111 and bug 1495946. We don't cache module scripts in the
+  // prototype cache, so we need to do this for the script to be properly
+  // processed.
   if (aElement->IsHTMLElement(nsGkAtoms::script) ||
       aElement->IsSVGElement(nsGkAtoms::script)) {
     nsCOMPtr<nsIScriptElement> sele = do_QueryInterface(aElement);
     MOZ_ASSERT(sele, "Node didn't QI to script.");
     if (sele->GetScriptIsModule()) {
-      DebugOnly<bool> block = sele->AttemptToExecute();
-      MOZ_ASSERT(!block, "<script type=module> shouldn't block the parser");
+      // https://html.spec.whatwg.org/#parsing-main-incdata
+      // An end tag whose tag name is "script"
+      //  - If the active speculative HTML parser is null and the JavaScript
+      // execution context stack is empty, then perform a microtask checkpoint.
+      {
+        nsAutoMicroTask mt;
+      }
+      sele->AttemptToExecute(nullptr /* aParser */);
     }
   }
 }
@@ -494,7 +497,7 @@ nsresult PrototypeDocumentContentSink::ResumeWalkInternal() {
       if (indx >= (int32_t)proto->mChildren.Length()) {
         if (element) {
           // We've processed all of the prototype's children.
-          CloseElement(element->AsElement(), /* aHadChildren = */ true);
+          CloseElement(element->AsElement());
         }
         // Now pop the context stack back up to the parent
         // element and continue the prototype walk.
@@ -547,7 +550,7 @@ nsresult PrototypeDocumentContentSink::ResumeWalkInternal() {
             if (NS_FAILED(rv)) return rv;
           } else {
             // If there are no children, close the element immediately.
-            CloseElement(child, /* aHadChildren = */ false);
+            CloseElement(child);
           }
         } break;
 
@@ -599,7 +602,7 @@ nsresult PrototypeDocumentContentSink::ResumeWalkInternal() {
 
             nsContentUtils::ReportToConsole(
                 nsIScriptError::warningFlag, "XUL Document"_ns, nullptr,
-                nsContentUtils::eXUL_PROPERTIES, "PINotInProlog2", params,
+                PropertiesFile::XUL_PROPERTIES, "PINotInProlog2", params,
                 SourceLocation(docURI.get()));
           }
 
@@ -647,20 +650,20 @@ nsresult PrototypeDocumentContentSink::DoneWalking() {
   MOZ_ASSERT(!mStillWalking, "walk not done");
   MOZ_ASSERT(!mDocument->HasPendingInitialTranslation(), "translation pending");
 
-  if (mDocument) {
-    MOZ_ASSERT(mDocument->GetReadyStateEnum() == Document::READYSTATE_LOADING,
+  if (const RefPtr<Document> doc = mDocument) {
+    MOZ_ASSERT(doc->GetReadyStateEnum() == Document::READYSTATE_LOADING,
                "Bad readyState");
-    mDocument->SetReadyStateInternal(Document::READYSTATE_INTERACTIVE);
-    mDocument->NotifyPossibleTitleChange(false);
+    doc->SetReadyStateInternal(Document::READYSTATE_INTERACTIVE);
+    doc->NotifyPossibleTitleChange(false);
 
-    nsContentUtils::DispatchEventOnlyToChrome(mDocument, mDocument,
+    nsContentUtils::DispatchEventOnlyToChrome(doc, doc,
                                               u"MozBeforeInitialXULLayout"_ns,
                                               CanBubble::eYes, Cancelable::eNo);
   }
 
-  if (mScriptLoader) {
-    mScriptLoader->ParsingComplete(false);
-    mScriptLoader->DeferCheckpointReached();
+  if (const RefPtr<ScriptLoader> scriptLoader = mScriptLoader) {
+    scriptLoader->ParsingComplete(false);
+    scriptLoader->DeferCheckpointReached();
   }
 
   StartLayout();
@@ -692,7 +695,7 @@ nsresult PrototypeDocumentContentSink::DoneWalking() {
 
   doc->SetScrollToRef(mDocument->GetDocumentURI());
 
-  doc->EndLoad();
+  doc->EndLoad(/* aFireDOMContentLoadedSync = */ true);
 
   return NS_OK;
 }
@@ -1017,7 +1020,8 @@ nsresult PrototypeDocumentContentSink::ExecuteScript(
 
   if (!aScript->mOutOfLine) {
     // Check if CSP allows loading of inline scripts.
-    if (nsCOMPtr<nsIContentSecurityPolicy> csp = mDocument->GetCsp()) {
+    if (nsCOMPtr<nsIContentSecurityPolicy> csp =
+            PolicyContainer::GetCSP(mDocument->GetPolicyContainer())) {
       nsAutoJSString content;
       JS::Rooted<JSString*> decompiled(cx,
                                        JS_DecompileScript(cx, scriptObject));
@@ -1043,7 +1047,7 @@ nsresult PrototypeDocumentContentSink::ExecuteScript(
   // On failure, ~AutoScriptEntry will handle exceptions, so
   // there is no need to manually check the return value.
   JS::Rooted<JS::Value> rval(cx);
-  Unused << JS_ExecuteScript(cx, scriptObject, &rval);
+  (void)JS_ExecuteScript(cx, scriptObject, &rval);
 
   return NS_OK;
 }
@@ -1093,10 +1097,10 @@ nsresult PrototypeDocumentContentSink::CreateElementFromPrototype(
     if (aPrototype->mIsAtom &&
         newNodeInfo->NamespaceID() == kNameSpaceID_XHTML) {
       rv = NS_NewHTMLElement(getter_AddRefs(result), newNodeInfo.forget(),
-                             NOT_FROM_PARSER, aPrototype->mIsAtom);
+                             FROM_PARSER_NETWORK, aPrototype->mIsAtom);
     } else {
       rv = NS_NewElement(getter_AddRefs(result), newNodeInfo.forget(),
-                         NOT_FROM_PARSER);
+                         FROM_PARSER_NETWORK);
     }
     if (NS_FAILED(rv)) return rv;
 
@@ -1106,19 +1110,7 @@ nsresult PrototypeDocumentContentSink::CreateElementFromPrototype(
     if (isScript) {
       nsCOMPtr<nsIScriptElement> sele = do_QueryInterface(result);
       MOZ_ASSERT(sele, "Node didn't QI to script.");
-
       sele->FreezeExecutionAttrs(doc);
-      // Script loading is handled by the this content sink, so prevent the
-      // script from loading when it is bound to the document.
-      //
-      // NOTE(emilio): This is only done for non-module scripts, because we
-      // don't support caching modules properly yet, see the comment in
-      // XULContentSinkImpl::OpenScript. For non-inline scripts, this is enough,
-      // since we can start the load when the node is inserted. Non-inline
-      // scripts need another special-case in CloseElement.
-      if (!sele->GetScriptIsModule()) {
-        sele->PreventExecution();
-      }
     }
   }
 

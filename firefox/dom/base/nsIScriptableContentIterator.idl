@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -34,11 +33,11 @@ interface nsIScriptableContentIterator : nsISupports
   void initWithRootNode(in nsIScriptableContentIterator_IteratorType aType,
                         in Node aRoot);
 
-  // See ContentIteratorBase::Init(nsRange*)
+  // See ContentIteratorBase::Init(Range*)
   void initWithRange(in nsIScriptableContentIterator_IteratorType aType,
                      in Range aRange);
 
-  // See ContentSubtreeIterator::InitWithAllowCrossShadowBoundary(nsRange*)
+  // See ContentSubtreeIterator::InitWithAllowCrossShadowBoundary(Range*)
   void initWithRangeAllowCrossShadowBoundary(
                      in nsIScriptableContentIterator_IteratorType aType,
                      in Range aRange);

@@ -8,89 +8,10 @@ Please note that some targeting attributes require stricter controls on the tele
 
 ## Available attributes
 
-* [activeNotifications](#activenotifications)
-* [addonsInfo](#addonsinfo)
-* [addressesSaved](#addressessaved)
-* [alltabsButtonAreaType](#alltabsButtonAreaType)
-* [archBits](#archbits)
-* [attachedFxAOAuthClients](#attachedfxaoauthclients)
-* [attributionData](#attributiondata)
-* [backgroundTaskName](#backgroundtaskname)
-* [blockedCountByType](#blockedcountbytype)
-* [browserIsSelected](#browserisselected)
-* [browserSettings](#browsersettings)
-* [buildId](#buildId)
-* [canCreateSelectableProfiles](#cancreateselectableprofiles)
-* [creditCardsSaved](#creditcardssaved)
-* [currentDate](#currentdate)
-* [currentTabGroups](#currenttabgroups)
-* [currentProfileId](#currentprofileid)
-* [defaultPDFHandler](#defaultpdfhandler)
-* [devToolsOpenedCount](#devtoolsopenedcount)
-* [distributionId](#distributionid)
-* [doesAppNeedPin](#doesappneedpin)
-* [doesAppNeedPinUncached](#doesappneedpinuncached)
-* [doesAppNeedPrivatePin](#doesappneedprivatepin)
-* [firefoxVersion](#firefoxversion)
-* [fxViewButtonAreaType](#fxviewbuttonareatype)
-* [hasAccessedFxAPanel](#hasaccessedfxapanel)
-* [hasActiveEnterprisePolicies](#hasactiveenterprisepolicies)
-* [hasMigratedBookmarks](#hasmigratedbookmarks)
-* [hasMigratedCSVPasswords](#hasmigratedcsvpasswords)
-* [hasMigratedHistory](#hasmigratedhistory)
-* [hasMigratedPasswords](#hasmigratedpasswords)
-* [hasPinnedTabs](#haspinnedtabs)
-* [hasSelectableProfiles](#hasselectableprofiles)
-* [homePageSettings](#homepagesettings)
-* [isBackgroundTaskMode](#isbackgroundtaskmode)
-* [isChinaRepack](#ischinarepack)
-* [isDefaultBrowser](#isdefaultbrowser)
-* [isDefaultBrowserUncached](#isdefaultbrowseruncached)
-* [isDefaultHandler](#isdefaulthandler)
-* [isDeviceMigration](#isdevicemigration)
-* [isFxAEnabled](#isfxaenabled)
-* [isFxASignedIn](#isfxasignedin)
-* [isMajorUpgrade](#ismajorupgrade)
-* [isMSIX](#ismsix)
-* [isRTAMO](#isrtamo)
-* [unhandledCampaignAction](#unhandledCampaignAction)
-* [launchOnLoginEnabled](#launchonloginenabled)
-* [locale](#locale)
-* [localeLanguageCode](#localelanguagecode)
-* [memoryMB](#memorymb)
-* [messageImpressions](#messageimpressions)
-* [needsUpdate](#needsupdate)
-* [newtabSettings](#newtabsettings)
-* [packageFamilyName](#packagefamilyname)
-* [pinnedSites](#pinnedsites)
-* [platformName](#platformname)
-* [previousSessionEnd](#previoussessionend)
-* [primaryResolution](#primaryresolution)
-* [profileAgeCreated](#profileagecreated)
-* [profileAgeReset](#profileagereset)
-* [profileGroupId](#profilegroupid)
-* [profileRestartCount](#profilerestartcount)
-* [providerCohorts](#providercohorts)
-* [recentBookmarks](#recentbookmarks)
-* [region](#region)
-* [savedTabGroups](#savedtabgroups)
-* [screenImpressions](#screenimpressions)
-* [searchEngines](#searchengines)
-* [sync](#sync)
-* [systemArch](#systemarch)
-* [topFrecentSites](#topfrecentsites)
-* [totalBlockedCount](#totalblockedcount)
-* [totalBookmarksCount](#totalbookmarkscount)
-* [userId](#userid)
-* [userMonthlyActivity](#usermonthlyactivity)
-* [userPrefersReducedMotion](#userprefersreducedmotion)
-* [useEmbeddedMigrationWizard](#useembeddedmigrationwizard)
-* [userPrefs](#userprefs)
-* [usesFirefoxSync](#usesfirefoxsync)
-* [xpinstallEnabled](#xpinstallenabled)
-* [totalSearches](#totalsearches)
-
-## Detailed usage
+```{contents}
+:local:
+:depth: 1
+```
 
 ### `addonsInfo`
 Provides information about the add-ons the user has installed.
@@ -138,6 +59,28 @@ interface AddonsInfoResponse {
   hasInstalledAddons: boolean;
 }
 ```
+### `allowedNotificationOrigins`
+
+The number of origins the user has allowed to send web notifications. Origins the
+user has explicitly blocked are not counted. A count rather than a boolean, so it
+can also be used to distinguish users with a single allowed site from those with
+many.
+
+#### Examples
+* Has the user allowed any site to send notifications?
+```java
+allowedNotificationOrigins > 0
+```
+* Has the user allowed five or more sites?
+```java
+allowedNotificationOrigins >= 5
+```
+
+#### Definition
+```ts
+declare const allowedNotificationOrigins: number;
+```
+
 ### `attributionData`
 
 An object containing information on exactly how Firefox was downloaded
@@ -244,6 +187,59 @@ declare const currentDate; ECMA262DateString;
 type ECMA262DateString = string;
 ```
 
+### `currentTabPageCategory`
+
+Category of the page in the selected tab of the most recent non-private
+window, or `null` if it doesn't match any category. With multiple windows
+open, this isn't necessarily the window the message is evaluated for, or the
+tab that fired the trigger.
+
+* `"product-detail"`: a product page on Amazon, Walmart, Best Buy or Sephora,
+  US (`.com`) only.
+* `"shopping-home"`: the home page of a US or Canadian retailer.
+* `"news-home"`: the home page of a US or Canadian news site.
+
+Matching is done on the URL only, against a list of hosts and paths. Page
+content isn't read. US and Canadian sites share one list, so use `region` if
+you only want users in one market.
+
+```{note}
+  Only the category is exposed, never the URL, and it must not be recorded in
+  telemetry. Always `null` in private windows, including permanent private
+  browsing.
+```
+
+The host lists live in
+`browser/components/aiwindow/ui/modules/AgentPageDetector.sys.mjs` and ship
+with the build. They can't be changed through Nimbus or Remote Settings, so
+adding or fixing a site needs a patch on the trains.
+
+#### Triggers
+
+Targeting is only evaluated when a message is requested, so this needs a
+trigger. Use `openURL` with `params`, `patterns` or `regexPatterns` covering
+the same sites. `openURL` also exposes `url` and `host` for the tab that fired
+it, if you need the exact page.
+
+#### Examples
+* Is the selected tab on a shopping home page?
+```java
+currentTabPageCategory == "shopping-home"
+```
+* Is the selected tab on a news home page, in Canada?
+```java
+currentTabPageCategory == "news-home" && region == "CA"
+```
+
+#### Definition
+```ts
+declare const currentTabPageCategory:
+  | "product-detail"
+  | "shopping-home"
+  | "news-home"
+  | null;
+```
+
 ### `devToolsOpenedCount`
 Number of usages of the web console.
 
@@ -256,6 +252,32 @@ devToolsOpenedCount > 10
 #### Definition
 ```ts
 declare const devToolsOpenedCount: number;
+```
+
+### `recentSearchCount`
+
+Number of distinct search terms submitted from a Search Access Point (SAP) in the last 28 days based on form history. Excludes private-browsing searches.
+
+#### Definition
+
+```ts
+declare const recentSearchCount: Promise<number>;
+```
+
+#### Examples
+* Has the user performed more than one SAP search in the last 28 days?
+```ts
+recentSearchCount > 1
+```
+
+* Has the user performed no SAP searches in the last 28 days?
+```ts
+recentSearchCount == 0
+```
+
+* Has the user performed between 1 to 10 SAP searches in the last 28 days?
+```ts
+recentSearchCount >= 1 && recentSearchCount <= 10
 ```
 
 ### `isDefaultBrowser`
@@ -272,9 +294,46 @@ declare const isDefaultBrowser: boolean;
 
 Behaves the same as `isDefaultBrowser`, but retrieves the current value directly from shell service instead of using the cached value. This may not be as performant.
 
+### `hasAttemptedSetDefault`
+
+Has the user asked Firefox to make itself the default browser during this session. True as soon as the request is made, whether or not the OS honours it.
+Does not persist across restarts.
+
+#### Definition
+
+```ts
+declare const hasAttemptedSetDefault: boolean;
+```
+
+### `isOneClickSetDefaultEnabled`
+
+Windows only. Can Firefox currently make itself the default browser by writing
+the Windows UserChoice registry keys, instead of having to send the user into the
+Windows Settings app to do it manually. Accounts for the
+`browser.shell.setDefaultBrowserUserChoice` and
+`browser.shell.setDefaultBrowserUserChoice.regRename` prefs as well as whether
+Windows will currently accept a UserChoice change from a third-party browser.
+
+`true` means a set-default request would be honored or that Firefox is already the default (the latter is a shortcut to `true` to avoid the risk of a UserChoice write when we don't need to attempt to set to default anyway).
+
+
+If the UserChoice Protection Driver (UCPD) is running and Firefox isn't already
+the default, this temporarily renames the `http` association key and renames it
+back. UCPD versions where one-click still works permit this rename, while those where it doesn't do not.
+
+
+Always `false` on macOS and Linux. Neither goes through UserChoice, and neither
+is reliably one-click, since both can (but don't always) defer to an OS consent prompt. Supporting them needs its own handling (see bug 2060879).
+
+#### Definition
+
+```ts
+declare const isOneClickSetDefaultEnabled: boolean;
+```
+
 ### `isDefaultHandler`
 
-Is Firefox the user's default handler for various file extensions?
+Is Firefox the user's default handler for various file extensions and protocols?
 
 Windows-only.
 
@@ -284,6 +343,7 @@ Windows-only.
 declare const isDefaultHandler: {
   pdf: boolean;
   html: boolean;
+  mailto: boolean;
 };
 ```
 
@@ -291,6 +351,16 @@ declare const isDefaultHandler: {
 * Is Firefox the default PDF handler?
 ```ts
 isDefaultHandler.pdf
+```
+
+* Is Firefox the default mailto protocol handler?
+```ts
+isDefaultHandler.mailto
+```
+
+* Prompt to set Firefox as default when on their configured email site
+```ts
+host == mailtoHandlerHost && !isDefaultHandler.mailto
 ```
 
 ### `defaultPDFHandler`
@@ -309,6 +379,35 @@ declare const defaultPDFHandler: {
   // Is the default PDF handler a known browser?
   knownBrowser: boolean;
 };
+```
+
+### `mailtoHandlerHost`
+
+The host of the web service Firefox is configured to hand `mailto:` links to
+(e.g. `"mail.google.com"`), or `null` if Firefox has no configured web handler
+for `mailto:`. This reflects only Firefox's own handler setting, not the
+OS-level `mailto:` default (see [`isDefaultHandler`](#isdefaulthandler)), and
+says nothing about whether the preferred action is "always ask".
+
+Windows-only.
+
+#### Definition
+
+```ts
+declare const mailtoHandlerHost: string | null;
+```
+
+#### Examples
+
+* Is the user currently on their configured mail host? (Pair with a trigger that
+  exposes the navigated `host`, such as `openURL`.)
+```java
+host == mailtoHandlerHost && !isDefaultHandler.mailto
+```
+
+* Prompt only when on Gmail and Firefox isn't the OS default
+```java
+mailtoHandlerHost == "mail.google.com" && !isDefaultHandler.mailto
 ```
 
 ### `firefoxVersion`
@@ -335,8 +434,22 @@ Is the launch on login option enabled?
 declare const launchOnLoginEnabled: boolean;
 ```
 
+### `launchOnLoginAllowedByPolicy`
+
+Whether launch on login is allowed to be enabled, i.e. it has not been overridden
+by Windows Settings or enterprise policy. Mirrors the `isAllowedByPolicy` value
+from `getLaunchOnLoginEnablementDetails()`. Always `false` on non-Windows
+platforms. Use together with `launchOnLoginEnabled` to target users who do not
+have launch on login enabled but for whom it could be enabled.
+
+```ts
+declare const launchOnLoginAllowedByPolicy: boolean;
+```
+
 ### `locale`
-The current locale of the browser including country code, e.g. `en-US`.
+The current UI locale of the browser including country code, e.g. `en-US`. This is
+the locale Firefox chose to render its UI in: the first match between Firefox's
+available locales and the user's ranked OS/browser language preferences.
 
 #### Examples
 * Is the locale of the browser either English (US) or German (Germany)?
@@ -348,6 +461,8 @@ locale in ["en-US", "de-DE"]
 ```ts
 declare const locale: string;
 ```
+
+[Source](https://searchfox.org/mozilla-central/source/browser/components/asrouter/modules/ASRouterTargeting.sys.mjs#651)
 
 ### `localeLanguageCode`
 The current locale of the browser NOT including country code, e.g. `en`.
@@ -469,6 +584,25 @@ declare const profileAgeReset: undefined | UnixEpochNumber;
 type UnixEpochNumber = number;
 ```
 
+### `profileLastUse`
+
+The date the profile was last used before the current session, as a UNIX Epoch
+timestamp. This is the more recent of the previous session's lock file time and
+the `prefs.js` modification time, and is `0` when neither is available.
+
+#### Examples
+* Has the profile been unused for at least 60 days?
+```java
+profileLastUse && currentDate|date - profileLastUse >= 5184000000
+```
+
+#### Definition
+```ts
+declare const profileLastUse: UnixEpochNumber;
+// UnixEpochNumber is UNIX Epoch timestamp, e.g. 1522843725924
+type UnixEpochNumber = number;
+```
+
 ### `providerCohorts`
 
 Information about cohort settings (from prefs, including shield studies) for each provider.
@@ -489,7 +623,15 @@ declare const providerCohorts: {
 
 ### `region`
 
-Country code retrieved from `location.services.mozilla.com`. Can be `""` if request did not finish or encountered an error.
+The user's home region as a country code. Firefox distinguishes between two region concepts:
+
+- **Home region** (`Region.home`): the region determined when the user first set up their
+  profile, queried from `location.services.mozilla.com` and then persisted. This is
+  what this targeting attribute exposes.
+- **Current region** (`Region.current`): the most recently detected region via IP-based
+  geolocation, which may differ from home if the user is traveling.
+
+Can be `""` if the location service request has not yet completed or encountered an error.
 
 #### Examples
 * Is the user in Canada?
@@ -503,14 +645,26 @@ region == "CA"
 declare const region: string;
 ```
 
+[Source](https://searchfox.org/mozilla-central/source/browser/components/asrouter/modules/ASRouterTargeting.sys.mjs#835)
+
 ### `searchEngines`
 
-Information about the current and available search engines.
+Information about the user's default search engine, available appProvided config engines, and whether
+each engine has entered search mode. If the user’s default engine is a third-party engine,
+``current`` is ``null``.
 
 #### Examples
 * Is the current default search engine set to google?
 ```java
 searchEngines.current == "google"
+```
+* Is google in the list of appProvided config engines?
+```java
+"google" in searchEngines.installed
+```
+* Has google been entered in search mode.
+```java
+searchEngines.hasEnteredSearchMode.google
 ```
 
 #### Definition
@@ -518,10 +672,11 @@ searchEngines.current == "google"
 ```ts
 declare const searchEngines: Promise<SearchEnginesResponse>;
 interface SearchEnginesResponse: {
-  current: SearchEngineId;
+  current: SearchEngineId | null;
   installed: Array<SearchEngineId>;
+  hasEnteredSearchMode: Record<SearchEngineId, boolean>;
 }
-// This is an identifier for a search engine such as "google" or "amazondotcom"
+// This is an identifier for a search engine such as "google" or "ddg"
 type SearchEngineId = string;
 ```
 
@@ -549,13 +704,16 @@ declare const sync: {
 
 Information about the browser's top 25 frecent sites.
 
-**Please note this is a restricted targeting property that influences what telemetry is allowed to be collected may not be used without review**
+**Please note this is a restricted targeting property that influences what telemetry is allowed to be collected and may not be used without data review. This attribute has received legal approval for use in message targeting.**
 
+**When using this attribute, targeting must not allow inference that a user visited a single specific website. Avoid checking for a single domain; instead, use a broad list or bucket of domains.**
 
 #### Examples
-* Is mozilla.com in the user's top frecent sites with a frececy greater than 400?
-```java
-"mozilla.com" in topFrecentSites[.frecency >= 400]|mapToProperty("host")
+* Is any of a broad set of shopping-related domains in the user's top frecent sites with a last visit date greater than April 4th, 2018 (UNIX Epoch timestamp 1522843725924)?
+```js
+(["amazon.com", "ebay.com", "etsy.com", "walmart.com", "target.com",
+  "bestbuy.com", "newegg.com", "costco.com", "homedepot.com", "wayfair.com"
+  ] intersect topFrecentSites[.lastVisitDate > 1522843725924]|mapToProperty('host'))|length > 1
 ```
 
 #### Definition
@@ -566,6 +724,7 @@ interface TopSite {
   url: string;
   // e.g. foo.mozilla.com
   host: string;
+  // Deprecated property unsupported in Firefox 145+, refer to bug 1987415 for guidance on future options.
   frecency: number;
   lastVisitDate: UnixEpochNumber;
 }
@@ -581,6 +740,21 @@ Total number of bookmarks.
 
 ```ts
 declare const totalBookmarksCount: number;
+```
+
+### `userActiveDaysWithHundredPlusSites`
+The number of days in the past month where the user visited 100 or more URLs.
+Derived from [`userMonthlyActivity`](#usermonthlyactivity).
+
+#### Example
+* Has the user visited 100+ sites on at least 5 days in the past month?
+```java
+userActiveDaysWithHundredPlusSites >= 5
+```
+
+#### Definition
+```ts
+declare const userActiveDaysWithHundredPlusSites: Promise;
 ```
 
 ### `usesFirefoxSync`
@@ -662,9 +836,40 @@ Pref used by system administrators to disallow add-ons from installed altogether
 ```ts
 declare const xpinstallEnabled: boolean;
 ```
+
+### `currentTabInstalledAsWebApp`
+
+Returns whether the current tab has a matching Web App (Taskbar Tab) installed.
+
+#### Definition
+
+```ts
+declare const currentTabInstalledAsWebApp: Promise<boolean>;
+```
+
+### `installedWebAppsCount`
+
+Returns the number of Web Apps (Taskbar Tabs) the user has installed.
+
+#### Definition
+
+```ts
+declare const installedWebAppsCount: Promise<number>;
+```
+
 ### `currentTabGroups`
 
 Returns the number of currently open tab groups.
+
+### `tabsOpenInTopWindow`
+
+Returns the number of tabs open in the top browser window.
+
+#### Definition
+
+```ts
+declare const tabsOpenInTopWindow: number;
+```
 
 ### `savedTabGroups`
 
@@ -734,6 +939,22 @@ declare const userPrefs: {
 }
 ```
 
+### `userWeekdaysActiveInLastMonth`
+
+The number of days in the past month the user was active on a weekday (Monday–Friday).
+Derived from [`userMonthlyActivity`](#usermonthlyactivity).
+
+#### Examples
+* Has the user used Firefox on 2 or more weekdays in the past month?
+```java
+userWeekdaysActiveInLastMonth >= 2
+```
+
+#### Definition
+```ts
+declare const userWeekdaysActiveInLastMonth: Promise;
+```
+
 ### `attachedFxAOAuthClients`
 
 Information about connected services associated with the FxA Account.
@@ -759,6 +980,75 @@ declare const attachedFxAOAuthClients: Promise<OAuthClient[]>
   name: "Pocket",
   lastAccessTime: 1513599164000
 }
+```
+
+### `relayProfileInfo`
+
+Firefox Relay profile information including subscription tier and mask count.
+Returns null if the user is not signed into Firefox, has no Relay account, or if an error occurs.
+
+This attribute fetches data from the Relay API, including both profile information (subscription tier) and the total number of email masks created.
+
+#### Definition
+
+```
+interface RelayProfileInfo {
+  has_premium: boolean;  // true if user has premium subscription
+  has_phone: boolean;    // true if user has phone masking
+  has_vpn: boolean;      // true if user has VPN bundled
+  masksCount: number;    // total number of email masks created
+}
+
+declare const relayProfileInfo: Promise<RelayProfileInfo | null>
+```
+
+#### Examples
+```javascript
+// Check if user has premium
+relayProfileInfo.has_premium
+
+// Get mask count from profile
+relayProfileInfo.masksCount > 1
+```
+
+### `relayEmailMasksCount`
+
+Number of Firefox Relay email masks created by the signed-in user.
+Returns 0 if the user is not signed into Firefox, has no Relay account, or if an error occurs.
+
+#### Definition
+
+```
+declare const relayEmailMasksCount: Promise<number>
+```
+
+#### Examples
+```javascript
+// Show to users with more than 1 mask
+relayEmailMasksCount > 1
+
+// Show to users with at least 5 masks
+relayEmailMasksCount >= 5
+```
+
+### `isRelayFreeTier`
+
+Boolean indicating if the signed-in user has a FREE tier Relay subscription (not premium).
+Returns false if the user is not signed into Firefox, has no Relay account, or if an error occurs.
+
+#### Definition
+
+```
+declare const isRelayFreeTier: Promise<boolean>
+```
+
+#### Examples
+```javascript
+// Show only to FREE tier Relay users
+isRelayFreeTier
+
+// Show only to premium Relay users
+!isRelayFreeTier && relayEmailMasksCount > 0
 ```
 
 ### `platformName`
@@ -835,15 +1125,68 @@ actually emit from tabs, this is always true. For other triggers, like
 declare const browserIsSelected: boolean;
 ```
 
-### `isChinaRepack`
+### `hasActiveAIWindow`
 
-Does the user use [the partner repack distributed by Mozilla Online](https://github.com/mozilla-partners/mozillaonline),
-a wholly owned subsidiary of the Mozilla Corporation that operates in China.
+Whether any currently open window is an active Smart Window. Unlike
+`isAIWindow`, which only reflects the window that fired the trigger, this checks
+every window, so a message can be suppressed while a Smart Window is open
+anywhere.
 
 #### Definition
 
 ```ts
-declare const isChinaRepack: boolean;
+declare const hasActiveAIWindow: boolean;
+```
+
+### `isAIWindow`
+
+A context property included for all triggers that evaluates to `true` when the
+message comes from an AI Window, and `false` otherwise.
+
+#### Definition
+
+```ts
+declare const isAIWindow: boolean;
+```
+
+#### Examples
+
+* Target AI Windows only:
+```javascript
+isAIWindow
+```
+
+* Target Classic Windows only:
+```javascript
+!isAIWindow
+```
+
+* Target both AI Windows and Classic Windows:
+```javascript
+isAIWindow == isAIWindow
+or equivalently
+(isAIWindow || !isAIWindow)
+```
+
+### `isSmartTabGroupingAllowed`
+
+Whether Smart Tab Grouping is available to this user, delegating to
+`SmartTabGroupingManager.isAllowed`. Smart Tab Grouping is currently gated on an
+English application locale, but that rule lives in the feature itself, so prefer
+this attribute over a hand-written locale check: messages that depend on the
+feature then stay in sync when the gate changes.
+
+#### Definition
+
+```ts
+declare const isSmartTabGroupingAllowed: boolean;
+```
+
+#### Examples
+
+* Only show a message when the feature can actually run:
+```javascript
+isSmartTabGroupingAllowed
 ```
 
 ### `userId`
@@ -954,6 +1297,17 @@ Object {
     { url: "moz-extension://123dsa43213acklncd/home.html", host: "" }
   ],
 }
+```
+
+### `newtabAddonVersion`
+
+The full version string of the built-in New Tab add-on that is actively in use.
+Comparisons should be done with the `versionCompare` filter expression.
+
+#### Definition
+
+```ts
+declare const newtabAddonVersion: string;
 ```
 
 ### `newtabSettings`
@@ -1087,9 +1441,39 @@ A boolean. `true` if the user is configured to use the embedded Migration Wizard
 
 A boolean. `true` when [RTAMO](first-run.md#return-to-amo-rtamo) has been used to download Firefox, `false` otherwise.
 
+### `isPrivateWindow`
+
+A boolean. `true` when the top window is in Private Browsing Mode; `false` otherwise.
+
+### `isTaskbarTabWindow`
+
+A boolean. `true` when the top window is a taskbar tab; `false` otherwise.
+
+### `canRestoreLastSession`
+
+A boolean. `true` when the user has a previous session saved that can be
+restored; `false` otherwise. Typically false when the previous session has
+already been restored, when the user has configured the browser to not save
+sessions, or on first run.
+
+### `autoRestoreSessionEnabled`
+
+A boolean. `true` when the user has configured the browser to automatically
+restore the previous session on startup; `false` otherwise.
+
 ### `canCreateSelectableProfiles`
 
 A boolean. `true` when both the current install and current profile support creating additional profiles using the `SelectableProfileService`; `false` otherwise.
+
+### `canResetProfile`
+
+A boolean. `true` when the current profile can be refreshed.
+
+Any message using the `RESET_PROFILE` action should include this in its targeting.
+
+### `isFirefoxReinstalled`
+
+Windows-only. A boolean. `true` when Firefox was uninstalled and then reinstalled over an existing profile since the previous run; `false` otherwise.
 
 ### `hasSelectableProfiles`
 
@@ -1097,7 +1481,7 @@ A boolean. `true` when the `toolkit.profiles.storeID` pref has a value. Indicate
 
 ### `unhandledCampaignAction`
 
-A string. A special message action to be executed on first-run. For example, `"SET_DEFAULT_BROWSER"` when the user selected to set as default via the [install marketing page](https://www.mozilla.org/firefox/new/) and set default has not yet been automatically triggered, `null` otherwise.
+A string. A special message action to be executed on first-run. For example, `"SET_DEFAULT_BROWSER"` when the user selected to set as default via the [install marketing page](https://www.mozilla.org/firefox/new/) and set default has not yet been automatically triggered, `null` otherwise. Currently supported actions include `"PIN_AND_DEFAULT"`, `"PIN_FIREFOX_TO_TASKBAR"`, and `"SET_DEFAULT_BROWSER"`.
 
 ### `isMSIX`
 
@@ -1126,6 +1510,17 @@ The architecture of this Firefox build: x86, x86-64 or aarch64.
 declare const systemArch: string | null;
 ```
 
+### `tabNotesCount`
+
+The total number of tab notes the user has stored in their current profile.
+
+#### Definition
+
+```ts
+declare const tabNotesCount: Promise<number>;
+```
+
+
 ### `totalSearches`
 
 Returns the number of times a user has completed a search in the URL Bar. The number is arbitrarily capped at 100.
@@ -1137,3 +1532,171 @@ Returns the stable profile group ID used for data reporting.
 ### `currentProfileId`
 
 The integer-valued identifier of the current selectable profile, as reported by `SelectableProfileService`, converted to a string.
+
+### `profileGroupProfileCount`
+
+The number of profiles in the current profile group or zero if either the
+feature is not enabled or the user has not created any profiles.
+
+### `backupsInfo`
+
+Provides information about the backups a user has in the default directory.
+
+#### Definition
+
+```ts
+declare const backupsInfo: {
+  // True if exactly one backup was found.
+  found: boolean;
+
+  // True if multiple backups were found.
+  multipleBackupsFound: boolean;
+
+  // Absolute path to the selected backup to restore when `found` is true.
+  // Null when no single file is selected (none or multiple).
+  backupFileToRestore: string | null;
+};
+```
+
+### `backupArchiveEnabled`
+
+Indicates whether the archive function is enabled by BackupService.
+
+### `backupRestoreEnabled`
+
+Indicates whether the restore function is enabled by BackupService.
+
+### `isEncryptedBackup`
+
+Indicates whether a user has selected an encrypted or non-encrypted backup method during the spotlight onboarding flow. (Refers to the `messaging-system-action.backupChooser` pref.)
+
+### `isSmartWindowOnboarding`
+
+A boolean. `true` when a user downloads Firefox from a Smart Window marketing campaign (ie. `attributionData.campaign == "smart_window"`), `false` otherwise.
+
+### `isFirstRun`
+
+`true` on the first time Normandy runs on a new profile. Normandy sets the
+`app.normandy.first_run` pref to `false` after its first run, so this will be
+`true` exactly once per profile regardless of installation mechanism.
+
+> ⚠ **NOTE:** This targeting attribute is only available for the JEXL expressions
+> of experiments' advanced targeting configs, which are defined in the
+> [experimenter repository](https://experimenter.info). Targeting expressions for
+> messages do not have access to this attribute.
+
+#### Definition
+
+```ts
+declare const isFirstRun: boolean;
+```
+
+[Source](https://searchfox.org/mozilla-central/source/toolkit/components/normandy/lib/ClientEnvironment.sys.mjs#121)
+
+### `isFirstStartup`
+
+`true` while Firefox is running through its first-startup sequence (i.e., when
+`FirstStartup` is in the `IN_PROGRESS` state). Unlike `isFirstRun`, which tracks
+the first Normandy run, this tracks the first startup of the browser itself.
+
+> ⚠ **NOTE:** This targeting attribute is only available for the JEXL expressions
+> of experiments' advanced targeting configs, which are defined in the
+> [experimenter repository](https://experimenter.info). Targeting expressions for
+> messages do not have access to this attribute.
+
+#### Definition
+
+```ts
+declare const isFirstStartup: boolean;
+```
+
+[Source](https://searchfox.org/mozilla-central/source/toolkit/components/nimbus/lib/ExperimentManager.sys.mjs#233)
+
+### `isNonStubFirstRun`
+
+`true` during the first Nimbus `updateRecipes` pass on a new profile, `false`
+on all subsequent passes. The `nimbus.firstUpdateComplete` pref is set to `true`
+after the first `updateRecipes` pass completes; this attribute reads from that
+pref.
+
+This is the cross-platform equivalent of `isFirstStartup` for platforms where
+`isFirstStartup` is always `false` (Mac, Linux, and MSIX). On Windows stub
+installer builds, both `isFirstStartup` and `isNonStubFirstRun` will be `true`
+during first-run enrollment.
+
+> **NOTE:** This targeting attribute is only available for the JEXL expressions
+> of experiments' advanced targeting configs, which are defined in the
+> [experimenter repository](https://experimenter.info). Targeting expressions for
+> messages do not have access to this attribute.
+
+#### Definition
+
+```ts
+declare const isNonStubFirstRun: boolean;
+```
+
+[Source](https://searchfox.org/mozilla-central/source/toolkit/components/nimbus/lib/ExperimentManager.sys.mjs#235)
+
+### `experimentsLoaded`
+
+Boolean that's true once Nimbus has loaded remote experiments from Remote Settings at least once. Returns true if experiments are disabled. This generally shouldn't be used outside of the splash screen.
+
+### `crashCount`
+
+The total number of crashes per 180 days the user has experienced, as recorded by the [crash manager](https://searchfox.org/firefox-main/source/toolkit/components/crashes/CrashManager.in.sys.mjs#1006-1016) at crash time, independent of whether a crash report was submitted.
+
+#### Definition
+
+```ts
+declare const crashCount: Promise<number>;
+```
+
+### `daysSinceLastCrash`
+
+The number of days since the most recent crash, as recorded by the [crash manager](https://searchfox.org/firefox-main/source/toolkit/components/crashes/CrashManager.in.sys.mjs#1006-1016) at crash time, independent of whether a crash report was submitted. If there are no recorded crashes, returns `null`.
+
+#### Definition
+
+```ts
+declare const daysSinceLastCrash: Promise<number|null>;
+```
+
+### `crashCountInLastDay`
+
+The number of crashes the user has experienced in the last 24 hours, as recorded by the [crash manager](https://searchfox.org/firefox-main/source/toolkit/components/crashes/CrashManager.in.sys.mjs#1006-1016) at crash time, independent of whether a crash report was submitted.
+
+#### Definition
+
+```ts
+declare const crashCountInLastDay: Promise<number>;
+```
+
+### `crashCountInLastWeek`
+
+The number of crashes the user has experienced in the last 7 days, as recorded by the [crash manager](https://searchfox.org/firefox-main/source/toolkit/components/crashes/CrashManager.in.sys.mjs#1006-1016) at crash time, independent of whether a crash report was submitted.
+
+#### Definition
+
+```ts
+declare const crashCountInLastWeek: Promise<number>;
+```
+
+### `previousSessionCrashed`
+
+`true` if the previous browser session ended in a crash, as reported by [`SessionStartup`](https://searchfox.org/firefox-main/source/browser/components/sessionstore/SessionStartup.sys.mjs#437).
+
+#### Definition
+
+```ts
+declare const previousSessionCrashed: boolean;
+```
+
+### `isLaunchOnLogin`
+
+`true` if this Firefox launch was initiated by the OS on login. Detected via the `-os-autostart` command-line flag, which is only injected by the Windows launch-on-login paths. This attribute is always `false` on macOS and Linux. It also will not detect cases where a user has manually added Firefox to OS-level login items outside of Firefox's own launch-on-login setting.
+
+#### Definition
+
+```ts
+declare const isLaunchOnLogin: boolean;
+```

@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_a11y_MsaaDocAccessible_h__
-#define mozilla_a11y_MsaaDocAccessible_h__
+#ifndef mozilla_a11y_MsaaDocAccessible_h_
+#define mozilla_a11y_MsaaDocAccessible_h_
 
 #include "ia2AccessibleHypertext.h"
 #include "nsTHashMap.h"
@@ -29,8 +27,8 @@ class MsaaDocAccessible : public ia2AccessibleHypertext {
 
   // Override get_accParent for e10s
   virtual /* [id][propget] */ HRESULT STDMETHODCALLTYPE get_accParent(
-      /* [retval][out] */ IDispatch __RPC_FAR* __RPC_FAR* ppdispParent)
-      override;
+      /* [retval][out] */ IDispatch __RPC_FAR * __RPC_FAR *
+      ppdispParent) override;
 
   // Override get_accValue to provide URL when no other value is available
   virtual /* [id][propget] */ HRESULT STDMETHODCALLTYPE get_accValue(

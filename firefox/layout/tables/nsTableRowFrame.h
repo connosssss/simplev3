@@ -1,15 +1,13 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#ifndef nsTableRowFrame_h__
-#define nsTableRowFrame_h__
+#ifndef nsTableRowFrame_h_
+#define nsTableRowFrame_h_
 
-#include "mozilla/Attributes.h"
-#include "nscore.h"
+#include "mozilla/WritingModes.h"
 #include "nsContainerFrame.h"
 #include "nsTableRowGroupFrame.h"
-#include "mozilla/WritingModes.h"
+#include "nscore.h"
 
 class nsTableCellFrame;
 namespace mozilla {
@@ -217,6 +215,8 @@ class nsTableRowFrame : public nsContainerFrame {
 
   nsTableRowFrame* GetPrevRow() const;
   nsTableRowFrame* GetNextRow() const;
+  // Like GetNextRow(), but continues into the next-in-flows of our row group.
+  nsTableRowFrame* GetNextRowAcrossFragments() const;
 
   bool HasUnpaginatedBSize() const {
     return HasAnyStateBits(NS_TABLE_ROW_HAS_UNPAGINATED_BSIZE);

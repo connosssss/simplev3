@@ -1,19 +1,18 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cin: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef GeckoViewInputStream_h__
-#define GeckoViewInputStream_h__
+#ifndef GeckoViewInputStream_h_
+#define GeckoViewInputStream_h_
 
 #include "mozilla/java/GeckoViewInputStreamWrappers.h"
 #include "mozilla/java/ContentInputStreamWrappers.h"
+#include "mozilla/Mutex.h"
 #include "nsIAndroidContentInputStream.h"
 #include "nsIInputStream.h"
 
 class GeckoViewInputStream : public nsIAndroidContentInputStream {
-  NS_DECL_ISUPPORTS
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIINPUTSTREAM
   NS_DECL_NSIANDROIDCONTENTINPUTSTREAM
 
@@ -29,8 +28,11 @@ class GeckoViewInputStream : public nsIAndroidContentInputStream {
   virtual ~GeckoViewInputStream() = default;
 
  private:
-  mozilla::java::GeckoViewInputStream::GlobalRef mInstance;
-  bool mClosed{false};
+  mutable mozilla::Mutex mMutex{"GeckoViewInputStream"};
+
+  mozilla::java::GeckoViewInputStream::GlobalRef MOZ_GUARDED_BY(
+      mMutex) mInstance;
+  bool mClosed MOZ_GUARDED_BY(mMutex) = false;
 };
 
 class GeckoViewContentInputStream final : public GeckoViewInputStream {
@@ -49,4 +51,4 @@ class GeckoViewContentInputStream final : public GeckoViewInputStream {
             mozilla::jni::StringParam(aUri), aPDFOnly)) {}
 };
 
-#endif  // !GeckoViewInputStream_h__
+#endif  // !GeckoViewInputStream_h_

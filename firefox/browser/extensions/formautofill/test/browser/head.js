@@ -29,6 +29,10 @@ const { VALID_ADDRESS_FIELDS, VALID_CREDIT_CARD_FIELDS } =
     "resource://autofill/FormAutofillStorageBase.sys.mjs"
   );
 
+const { formAutofillStorage } = ChromeUtils.importESModule(
+  "resource://autofill/FormAutofillStorage.sys.mjs"
+);
+
 const { FormAutofillUtils } = ChromeUtils.importESModule(
   "resource://gre/modules/shared/FormAutofillUtils.sys.mjs"
 );
@@ -62,7 +66,16 @@ const EDIT_ADDRESS_DIALOG_URL =
   "chrome://formautofill/content/editAddress.xhtml";
 const EDIT_CREDIT_CARD_DIALOG_URL =
   "chrome://formautofill/content/editCreditCard.xhtml";
-const PRIVACY_PREF_URL = "about:preferences#privacy";
+// FormAutofill's autocomplete footer + prompts open
+// openPreferences("privacy-payment-methods-autofill"/"privacy-address-autofill"),
+// which the Settings Redesign LegacyPaneMappings shim routes to the
+// passwordsAutofill pane. Pick the matching URL for the active mode.
+const PRIVACY_PREF_URL = Services.prefs.getBoolPref(
+  "browser.settings-redesign.enabled",
+  false
+)
+  ? "about:preferences#passwordsAutofill"
+  : "about:preferences#privacy";
 
 const HTTP_TEST_PATH = "/browser/browser/extensions/formautofill/test/browser/";
 const BASE_URL = "http://mochi.test:8888" + HTTP_TEST_PATH;
@@ -87,7 +100,11 @@ const FORM_IFRAME_SANDBOXED_URL =
 const FORMS_WITH_DYNAMIC_FORM_CHANGE =
   "https://example.org" + HTTP_TEST_PATH + "dynamic_forms.html";
 const FORMS_REPLACING_ALL_FIELDS_ON_INPUT =
-  "https://example.org" + HTTP_TEST_PATH + "dynamic_forms.html";
+  "https://example.org" +
+  HTTP_TEST_PATH +
+  "dynamic_form_replacing_all_fields.html";
+const FORMS_REPLACING_FORM_ON_INPUT =
+  "https://example.org" + HTTP_TEST_PATH + "dynamic_form_replace_form.html";
 const FORM_WITH_USER_INITIATED_FORM_CHANGE =
   "https://example.org" +
   HTTP_TEST_PATH +
@@ -193,6 +210,11 @@ const CROSS_ORIGIN_2_CC_EXP =
   CROSS_ORIGIN_2_URL + "../fixtures/autocomplete_cc_exp_embeded.html";
 const CROSS_ORIGIN_2_CC_TYPE =
   CROSS_ORIGIN_2_URL + "../fixtures/autocomplete_cc_type_embeded.html";
+
+const SAME_ORIGIN_NESTED_IFRAME =
+  TOP_LEVEL_URL + "../fixtures/nested_iframe.html";
+const CROSS_ORIGIN_NESTED_IFRAME =
+  CROSS_ORIGIN_URL + "../fixtures/nested_iframe.html";
 
 // Test profiles
 const TEST_ADDRESS_1 = {
@@ -335,19 +357,32 @@ async function ensureCreditCardDialogNotClosed(win) {
   win.removeEventListener("unload", unloadHandler);
 }
 
-function getDisplayedPopupItems(
-  browser,
-  selector = ".autocomplete-richlistitem"
-) {
+function getDisplayedPopupItems(browser, selector = ".autocomplete-row-item") {
+  const baseSelector = ".autocomplete-row-item";
+  const originalType = selector.includes("[originaltype=")
+    ? selector.replace(".autocomplete-richlistitem", "").trim()
+    : "";
+  selector = baseSelector + originalType;
+
   info("getDisplayedPopupItems");
   const {
     autoCompletePopup: { richlistbox: itemsBox },
   } = browser;
   const listItemElems = itemsBox.querySelectorAll(selector);
 
-  return [...listItemElems].filter(
-    item => item.getAttribute("collapsed") != "true"
-  );
+  return [...listItemElems].filter(item => !item.hasAttribute("collapsed"));
+}
+
+function getACItemLabel(item) {
+  return item.querySelector("autocomplete-row-item").label;
+}
+
+function getACItemValue(item) {
+  return item.querySelector("autocomplete-row-item").value;
+}
+
+function getACItemIcon(item) {
+  return item.querySelector("autocomplete-row-item").icon;
 }
 
 async function sleep(ms = 500) {
@@ -391,6 +426,14 @@ async function waitForStorageChangedEvents(...eventTypes) {
       )
     )
   );
+}
+
+// Run a UI action that mutates storage and wait for the matching
+// `formautofill-storage-changed` notification, so assertions see the result.
+async function withStorageChange(eventType, action) {
+  const observed = waitForStorageChangedEvents(eventType);
+  await action();
+  await observed;
 }
 
 /**
@@ -682,7 +725,9 @@ async function waitForPopupEnabled(browser) {
   await BrowserTestUtils.waitForMutationCondition(
     itemsBox,
     { subtree: true, attributes: true, attributeFilter: ["disabled"] },
-    () => !itemsBox.querySelectorAll(".autocomplete-richlistitem")[0].disabled
+    () => {
+      return !itemsBox.querySelectorAll(".autocomplete-row-item")[0].disabled;
+    }
   );
 }
 
@@ -802,6 +847,10 @@ function getCreditCards() {
   return getRecords({ collectionName: "creditCards" });
 }
 
+function getPassports() {
+  return getRecords({ collectionName: "passports" });
+}
+
 async function saveAddress(address) {
   info("expecting address saved");
   let observePromise = TestUtils.topicObserved("formautofill-storage-changed");
@@ -859,10 +908,11 @@ async function clickDoorhangerButton(buttonType, index = 0) {
   let button;
   if (buttonType == MAIN_BUTTON || buttonType == SECONDARY_BUTTON) {
     button = getNotification()[buttonType];
+    button.click();
   } else if (buttonType == MENU_BUTTON) {
     // Click the dropmarker arrow and wait for the menu to show up.
     info("expecting notification menu button present");
-    await BrowserTestUtils.waitForCondition(() => getNotification().menubutton);
+    await TestUtils.waitForCondition(() => getNotification().menubutton);
     await sleep(2000); // menubutton needs extra time for binding
     let notification = getNotification();
 
@@ -872,14 +922,19 @@ async function clickDoorhangerButton(buttonType, index = 0) {
       "popupshown"
     );
 
-    notification.menubutton.click();
+    notification.menubutton.chevronButtonEl.click();
     info("expecting notification popup show up");
     await dropdownPromise;
 
-    button = notification.querySelectorAll("menuitem")[index];
+    // Only look in the dropmarker popup; some doorhangers have other menus too.
+    button = notification.menupopup.querySelectorAll("menuitem")[index];
+    if (notification.menupopup.isNativeMenu) {
+      notification.menupopup.activateItem(button);
+    } else {
+      button.click();
+    }
   }
 
-  button.click();
   info("expecting notification popup hidden");
   await popuphidden;
 }
@@ -888,7 +943,7 @@ async function clickAddressDoorhangerButton(buttonType, subType) {
   const notification = getNotification();
   let button;
   if (buttonType == EDIT_ADDRESS_BUTTON) {
-    button = AddressSaveDoorhanger.editButton(notification);
+    button = notification.querySelector(`#${AddressSaveDoorhanger.editLinkId}`);
   } else if (buttonType == ADDRESS_MENU_BUTTON) {
     const menu = AutofillDoorhanger.menuButton(notification);
     const menupopup = AutofillDoorhanger.menuPopup(notification);
@@ -900,10 +955,18 @@ async function clickAddressDoorhangerButton(buttonType, subType) {
     } else if (subType == ADDRESS_MENU_LEARN_MORE) {
       button = AutofillDoorhanger.learnMoreButton(notification);
     }
+    if (menupopup.isNativeMenu) {
+      menupopup.activateItem(button);
+      return;
+    }
   } else {
     await clickDoorhangerButton(buttonType);
     return;
   }
+
+  // The doorhanger's strings are applied asynchronously. An untranslated label
+  // has an empty rect, so the synthesized click would land on its container.
+  await notification.ownerDocument.l10n.translateFragment(notification);
 
   EventUtils.synthesizeMouseAtCenter(button, {});
 }
@@ -936,6 +999,17 @@ async function removeAllRecords() {
   if (creditCards.length) {
     await removeCreditCards(creditCards.map(cc => cc.guid));
   }
+  // Passports have no "FormAutofill:RemovePassports" actor message, so clear
+  // them straight from storage. Guarded on the feature pref so tests that never
+  // enabled passports don't touch the Rust-backed passport store.
+  if (
+    Services.prefs.getCharPref(
+      "extensions.formautofill.passports.supported",
+      "off"
+    ) != "off"
+  ) {
+    await formAutofillStorage.passports.removeAll();
+  }
 }
 
 async function waitForFocusAndFormReady(win) {
@@ -961,18 +1035,36 @@ async function expectWarningText(browser, expectedText) {
   ok(true, `Got expected warning text: ${expectedText}`);
 }
 
+// Whether the Rust credit card store is the one serving, which
+// rustCreditCard/browser.toml sets for a second run of the credit card tests.
+// A test has to ask when it asserts on the OS key store's own behaviour or
+// telemetry, neither of which covers the store that holds its key in NSS.
+const RUST_CREDIT_CARD_STORE = Services.prefs.getBoolPref(
+  "extensions.formautofill.creditCards.storage.rust.enabled",
+  false
+);
+
+/**
+ * The number behind a stored card, in the clear.
+ *
+ * Asked of the collection rather than of a key store: each store encrypts
+ * under its own key, so which one reads a record back depends on which one
+ * wrote it.
+ *
+ * @param {object} record A card as the collection handed it out.
+ * @returns {Promise<?string>} The number, or null if the record holds none.
+ */
+async function decryptCreditCardNumber(record) {
+  return formAutofillStorage.creditCards.decryptField(record, "cc-number");
+}
+
 async function testDialog(url, testFn, arg = undefined) {
-  // Skip this step for test cards that lack an encrypted
-  // number since they will fail to decrypt.
-  if (
-    url == EDIT_CREDIT_CARD_DIALOG_URL &&
-    arg &&
-    arg.record &&
-    arg.record["cc-number-encrypted"]
-  ) {
-    arg.record = Object.assign({}, arg.record, {
-      "cc-number": await OSKeyStore.decrypt(arg.record["cc-number-encrypted"]),
-    });
+  if (url == EDIT_CREDIT_CARD_DIALOG_URL && arg?.record) {
+    // A test card that holds no number keeps the one it carries.
+    const number = await decryptCreditCardNumber(arg.record);
+    if (number) {
+      arg.record = Object.assign({}, arg.record, { "cc-number": number });
+    }
   }
   const win = window.openDialog(url, null, "width=600,height=600", {
     ...arg,
@@ -1041,7 +1133,9 @@ function fillEditDoorhanger(record) {
   for (const [key, value] of Object.entries(record)) {
     const id = AddressEditDoorhanger.getInputId(key);
     const element = notification.querySelector(`#${id}`);
-    element.value = value;
+    if (element) {
+      element.value = value;
+    }
   }
 }
 
@@ -1065,7 +1159,7 @@ async function verifyConfirmationHint(
   forceClose,
   anchorID = "identity-icon-box"
 ) {
-  let hintElem = browser.ownerGlobal.ConfirmationHint._panel;
+  let hintElem = browser.documentGlobal.ConfirmationHint._panel;
   let popupshown = BrowserTestUtils.waitForPopupEvent(hintElem, "shown");
   let popuphidden;
 
@@ -1206,7 +1300,8 @@ async function verifyPreviewResult(browser, section, expectedSection) {
   for (let i = 0; i < fieldDetails.length; i++) {
     const selector = getSelectorFromFieldDetail(fieldDetails[i]);
     const context = await findContext(browser, selector);
-    let expected = expectedFieldDetails[i].autofill ?? "";
+    let expected =
+      expectedFieldDetails[i].preview ?? expectedFieldDetails[i].autofill ?? "";
     if (fieldDetails[i].fieldName == "cc-number" && expected.length) {
       expected = "•".repeat(expected.length - 4) + expected.slice(-4);
     }
@@ -1216,7 +1311,10 @@ async function verifyPreviewResult(browser, section, expectedSection) {
       if (content.HTMLSelectElement.isInstance(element)) {
         if (obj.expected) {
           for (let idx = 0; idx < element.options.length; idx++) {
-            if (element.options[idx].value == obj.expected) {
+            if (
+              element.options[idx].value == obj.expected &&
+              element.previewValue == element.options[idx].text
+            ) {
               obj.expected = element.options[idx].text;
               break;
             }
@@ -1245,11 +1343,21 @@ async function verifyAutofillResult(browser, section, expectedSection) {
     const expected = expectedFieldDetails[i].autofill ?? "";
     await SpecialPowers.spawn(context, [{ expected, selector }], async obj => {
       const element = content.document.querySelector(obj.selector);
+
+      if (obj.expected) {
+        Assert.equal(
+          element.autofillState,
+          "autofill",
+          `element ${obj.selector} is highlighted`
+        );
+      }
+
       if (content.HTMLSelectElement.isInstance(element)) {
         if (!obj.expected) {
           obj.expected = element.options[0].value;
         }
       }
+
       Assert.equal(
         element.value,
         obj.expected,
@@ -1451,6 +1559,9 @@ async function triggerCapture(browser, submitButtonSelector, fillSelectors) {
  *        Region to assign before running the test
  * @param {Array} patterns.expectedResult
  *        The expected result of this heuristic test. See below for detailed explanation
+ * @param {Function} patterns.onTestSetup
+ *        Function that is executed after preferences and profile data are set, but before
+ *        the test document is opened.
  * @param {Function} patterns.onTestStart
  *        Function that is executed before the test starts. This runs after the form
  *        field has been focused.
@@ -1473,6 +1584,9 @@ async function triggerCapture(browser, submitButtonSelector, fillSelectors) {
  * @param {object} patterns.captureExpectedRecord
  *        The expected saved record after capturing the form. Keyed by field name. This
  *        parameter is only used when `options.testCapture` is set.
+ * @param {boolean} patterns.useTestYear
+ *        Set to the current year to assign while running the test, useful for credit
+ *        card expiry tests with a manual set of year options in the dropdown.
  * @param {object} patterns.only
  *        This parameter is used solely for debugging purposes. When set to true,
  *        it restricts the execution to only the specified testcase.
@@ -1567,7 +1681,7 @@ async function add_heuristic_tests(
 
     let regionInfo = null;
     if (testPattern.region) {
-      regionInfo = { home: Region._home, current: Region._current };
+      regionInfo = { home: Region._home, current: Region.current };
 
       const region = testPattern.region;
       Region._setCurrentRegion(region);
@@ -1584,6 +1698,10 @@ async function add_heuristic_tests(
       await setStorage(testPattern.profile);
     }
 
+    if (testPattern.onTestSetup) {
+      await testPattern.onTestSetup();
+    }
+
     await BrowserTestUtils.withNewTab(TEST_URL, async browser => {
       await SimpleTest.promiseFocus(browser);
 
@@ -1597,16 +1715,32 @@ async function add_heuristic_tests(
       const sleepAfterFocus = contexts.length > 1;
 
       for (const context of contexts) {
-        await SpecialPowers.spawn(context, [], async () => {
-          const elements = Array.from(
-            content.document.querySelectorAll("input, select")
-          );
-          // Focus on each field in the test document to trigger autofill field detection
-          // on all the fields.
-          elements.forEach(element => {
-            element.focus();
-          });
-        });
+        await SpecialPowers.spawn(
+          context,
+          [testPattern.useTestYear],
+          async year => {
+            let FormAutofillHeuristics;
+            if (year) {
+              FormAutofillHeuristics = ChromeUtils.importESModule(
+                "resource://gre/modules/shared/FormAutofillHeuristics.sys.mjs"
+              ).FormAutofillHeuristics;
+              FormAutofillHeuristics.useTestYear = year;
+            }
+
+            const elements = Array.from(
+              content.document.querySelectorAll("input, select")
+            );
+            // Focus on each field in the test document to trigger autofill field detection
+            // on all the fields.
+            elements.forEach(element => {
+              element.focus();
+            });
+
+            if (year) {
+              FormAutofillHeuristics.useTestYear = null;
+            }
+          }
+        );
 
         try {
           await BrowserTestUtils.synthesizeKey("VK_ESCAPE", {}, context);
@@ -1625,7 +1759,7 @@ async function add_heuristic_tests(
       info(`Waiting for expected section count`);
       const actor =
         browser.browsingContext.currentWindowGlobal.getActor("FormAutofill");
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         const sections = Array.from(actor.sectionsByRootId.values()).flat();
         return sections.length == testPattern.expectedResult.length;
       }, "Expected section count.");
@@ -1730,6 +1864,52 @@ async function add_autofill_heuristic_tests(patterns, fixturePathPrefix = "") {
 add_setup(function () {
   OSKeyStoreTestUtils.setup();
 });
+
+// rust/browser.toml runs these tests a second time with the Rust address store
+// serving, which it asks for with rust.enabled and pins with rust.active.
+// Checked after the test rather than before it: FormAutofillStorage.getAddresses()
+// follows rust.active, so a test that leaves it cleared hands every test after
+// it the JSON store, and they would pass having never touched Rust.
+if (
+  Services.prefs.getBoolPref(
+    "extensions.formautofill.addresses.storage.rust.enabled",
+    false
+  )
+) {
+  registerCleanupFunction(function rust_served_the_addresses() {
+    Assert.ok(
+      Services.prefs.getBoolPref(
+        "extensions.formautofill.addresses.storage.rust.active",
+        false
+      ),
+      "the Rust store served addresses, so this run exercised it"
+    );
+  });
+}
+
+// rustCreditCard/browser.toml runs these tests a second time with
+// extensions.formautofill.creditCards.storage.rust.enabled set. That pref only
+// asks: FormAutofillStorage serves credit cards from the JSON store until the
+// migration completes and sets ...rust.active, and reports nothing when it does
+// not, so a run that never reached the Rust store would pass. Asserted after
+// the test rather than before it, so that the store is the one the test's own
+// reads and writes went to.
+if (
+  Services.prefs.getBoolPref(
+    "extensions.formautofill.creditCards.storage.rust.enabled",
+    false
+  )
+) {
+  registerCleanupFunction(function rust_served_the_credit_cards() {
+    Assert.ok(
+      Services.prefs.getBoolPref(
+        "extensions.formautofill.creditCards.storage.rust.active",
+        false
+      ),
+      "the Rust store served credit cards, so this run exercised it"
+    );
+  });
+}
 
 registerCleanupFunction(async () => {
   await removeAllRecords();

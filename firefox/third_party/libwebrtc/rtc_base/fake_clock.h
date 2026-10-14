@@ -24,7 +24,7 @@ namespace webrtc {
 // Fake clock for use with unit tests, which does not tick on its own.
 // Starts at time 0.
 //
-// TODO(deadbeef): Unify with webrtc::SimulatedClock.
+// TODO(deadbeef): Unify with SimulatedClock.
 class FakeClock : public ClockInterface {
  public:
   FakeClock() = default;
@@ -47,29 +47,9 @@ class FakeClock : public ClockInterface {
   int64_t time_ns_ RTC_GUARDED_BY(lock_) = 0;
 };
 
-class ThreadProcessingFakeClock : public ClockInterface {
- public:
-  int64_t TimeNanos() const override { return clock_.TimeNanos(); }
-  void SetTime(Timestamp time);
-  void AdvanceTime(TimeDelta delta);
-
- private:
-  FakeClock clock_;
-};
-
 // Helper class that sets itself as the global clock in its constructor and
 // unsets it in its destructor.
-class ScopedBaseFakeClock : public FakeClock {
- public:
-  ScopedBaseFakeClock();
-  ~ScopedBaseFakeClock() override;
-
- private:
-  ClockInterface* prev_clock_;
-};
-
-// TODO(srte): Rename this to reflect that it also does thread processing.
-class ScopedFakeClock : public ThreadProcessingFakeClock {
+class ScopedFakeClock : public FakeClock {
  public:
   ScopedFakeClock();
   ~ScopedFakeClock() override;
@@ -80,13 +60,5 @@ class ScopedFakeClock : public ThreadProcessingFakeClock {
 
 }  //  namespace webrtc
 
-// Re-export symbols from the webrtc namespace for backwards compatibility.
-// TODO(bugs.webrtc.org/4222596): Remove once all references are updated.
-namespace rtc {
-using ::webrtc::FakeClock;
-using ::webrtc::ScopedBaseFakeClock;
-using ::webrtc::ScopedFakeClock;
-using ::webrtc::ThreadProcessingFakeClock;
-}  // namespace rtc
 
 #endif  // RTC_BASE_FAKE_CLOCK_H_

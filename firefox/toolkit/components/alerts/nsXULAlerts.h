@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode:nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsXULAlerts_h__
-#define nsXULAlerts_h__
+#ifndef nsXULAlerts_h_
+#define nsXULAlerts_h_
 
 #include "nsCycleCollectionParticipant.h"
 #include "nsHashKeys.h"
@@ -15,16 +14,16 @@
 #include "nsIObserver.h"
 
 struct PendingAlert {
-  void Init(nsIAlertNotification* aAlert, nsIObserver* aListener) {
+  void Init(nsIAlertNotification* aAlert, nsIAlertCallbacks* aCallbacks) {
     mAlert = aAlert;
-    mListener = aListener;
+    mCallbacks = aCallbacks;
   }
   nsCOMPtr<nsIAlertNotification> mAlert;
-  nsCOMPtr<nsIObserver> mListener;
+  nsCOMPtr<nsIAlertCallbacks> mCallbacks;
 };
 
 class nsXULAlerts : public nsIAlertsService, public nsIAlertsDoNotDisturb {
-  friend class nsXULAlertObserver;
+  friend class nsXULAlertCallbacks;
 
  public:
   NS_DECL_NSIALERTSDONOTDISTURB
@@ -38,8 +37,9 @@ class nsXULAlerts : public nsIAlertsService, public nsIAlertsDoNotDisturb {
  protected:
   virtual ~nsXULAlerts() = default;
   void PersistentAlertFinished();
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY
   nsresult ShowAlertImpl(nsIAlertNotification* aAlert,
-                         nsIObserver* aAlertListener);
+                         nsIAlertCallbacks* aAlertListener);
 
   nsInterfaceHashtable<nsStringHashKey, mozIDOMWindowProxy> mNamedWindows;
   uint32_t mPersistentAlertCount = 0;
@@ -55,29 +55,29 @@ class nsXULAlerts : public nsIAlertsService, public nsIAlertsDoNotDisturb {
  * for the "alertfinished" event in order to release
  * the reference on the nsIDOMWindow of the XUL alert.
  */
-class nsXULAlertObserver : public nsIObserver {
+class nsXULAlertCallbacks : public nsIAlertCallbacks {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_NSIOBSERVER
-  NS_DECL_CYCLE_COLLECTION_CLASS(nsXULAlertObserver)
+  NS_DECL_NSIALERTCALLBACKS
+  NS_DECL_CYCLE_COLLECTION_CLASS(nsXULAlertCallbacks)
 
-  nsXULAlertObserver(nsXULAlerts* aXULAlerts, const nsAString& aAlertName,
-                     nsIObserver* aObserver, bool aIsPersistent)
+  nsXULAlertCallbacks(nsXULAlerts* aXULAlerts, const nsAString& aAlertName,
+                      nsIAlertCallbacks* aCallbacks, bool aIsPersistent)
       : mXULAlerts(aXULAlerts),
         mAlertName(aAlertName),
-        mObserver(aObserver),
+        mCallbacks(aCallbacks),
         mIsPersistent(aIsPersistent) {}
 
   void SetAlertWindow(mozIDOMWindowProxy* aWindow) { mAlertWindow = aWindow; }
 
  protected:
-  virtual ~nsXULAlertObserver() = default;
+  virtual ~nsXULAlertCallbacks() = default;
 
   RefPtr<nsXULAlerts> mXULAlerts;
   nsString mAlertName;
   nsCOMPtr<mozIDOMWindowProxy> mAlertWindow;
-  nsCOMPtr<nsIObserver> mObserver;
+  nsCOMPtr<nsIAlertCallbacks> mCallbacks;
   bool mIsPersistent;
 };
 
-#endif /* nsXULAlerts_h__ */
+#endif /* nsXULAlerts_h_ */

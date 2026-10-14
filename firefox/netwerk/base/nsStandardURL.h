@@ -1,26 +1,27 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsStandardURL_h__
-#define nsStandardURL_h__
+#ifndef nsStandardURL_h_
+#define nsStandardURL_h_
 
-#include <bitset>
+#include <cstring>
 
-#include "nsString.h"
-#include "nsISerializable.h"
-#include "nsIFileURL.h"
-#include "nsIStandardURL.h"
+#include "URIHasher.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/Encoding.h"
-#include "nsCOMPtr.h"
-#include "nsURLHelper.h"
-#include "nsISizeOf.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/LinkedList.h"
-#include "mozilla/MemoryReporting.h"
+#include "nsCOMPtr.h"
+#include "nsCRT.h"
+#include "nsIFileURL.h"
+#include "nsIIPCSerializableURI.h"
 #include "nsISensitiveInfoHiddenURI.h"
+#include "nsISerializable.h"
+#include "nsIStandardURL.h"
 #include "nsIURIMutator.h"
+#include "nsIURIWithSizeOf.h"
+#include "nsString.h"
+#include "nsURLHelper.h"
 
 #ifdef NS_BUILD_REFCNT_LOGGING
 #  define DEBUG_DUMP_URLS_AT_SHUTDOWN
@@ -31,7 +32,7 @@ class nsIBinaryOutputStream;
 class nsIIDNService;
 class nsIPrefBranch;
 class nsIFile;
-class nsIURLParser;
+class nsBaseURLParser;
 
 namespace mozilla {
 class Encoding;
@@ -99,8 +100,17 @@ class URLSegmentNumber {
     return value;
   }
   bool CalculateParity() const {
-    std::bitset<32> bits((uint32_t)mData);
-    return bits.count() % 2 == 0 ? false : true;
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_parity(static_cast<uint32_t>(mData));
+#else
+    // https://graphics.stanford.edu/~seander/bithacks.html#ParityParallel
+    // Branchless XOR-fold parity for callers without __builtin_parity.
+    uint32_t x = static_cast<uint32_t>(mData);
+    x ^= x >> 16;
+    x ^= x >> 8;
+    x ^= x >> 4;
+    return (0x6996u >> (x & 0xf)) & 1;
+#endif
   }
   bool Parity() const { return mParity; }
 };
@@ -112,8 +122,10 @@ class URLSegmentNumber {
 class nsStandardURL : public nsIFileURL,
                       public nsIStandardURL,
                       public nsISerializable,
-                      public nsISizeOf,
-                      public nsISensitiveInfoHiddenURI
+                      public nsISensitiveInfoHiddenURI,
+                      public nsIIPCSerializableURI,
+                      public nsIURIWithSizeOf,
+                      public URIHasher
 #ifdef DEBUG_DUMP_URLS_AT_SHUTDOWN
     ,
                       public LinkedListElement<nsStandardURL>
@@ -131,10 +143,8 @@ class nsStandardURL : public nsIFileURL,
   NS_DECL_NSISTANDARDURL
   NS_DECL_NSISERIALIZABLE
   NS_DECL_NSISENSITIVEINFOHIDDENURI
-
-  // nsISizeOf
-  virtual size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override;
-  virtual size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const override;
+  NS_DECL_NSIIPCSERIALIZABLEURI
+  NS_DECL_NSIURIWITHSIZEOF
 
   static void InitGlobalObjects();
   static void ShutdownGlobalObjects();
@@ -241,6 +251,8 @@ class nsStandardURL : public nsIFileURL,
   bool Deserialize(const mozilla::ipc::URIParams&);
   nsresult ReadPrivate(nsIObjectInputStream* stream);
 
+  bool CheckSegmentInvariants() const;
+
  private:
   nsresult Init(uint32_t urlType, int32_t defaultPort, const nsACString& spec,
                 const char* charset, nsIURI* baseURI);
@@ -279,12 +291,40 @@ class nsStandardURL : public nsIFileURL,
   bool SegmentIs(const URLSegment& seg1, const char* val,
                  const URLSegment& seg2, bool ignoreCase = false);
 
+  // String-literal fast paths: length is compile-time so we avoid the
+  // out-of-line strlen, and on length mismatch (the common case for these
+  // checks against specific schemes) we bail without crossing into the .cpp.
+  template <size_t N>
+  bool SegmentIs(const URLSegment& seg, const char (&val)[N],
+                 bool ignoreCase = false) {
+    constexpr size_t vlen = N - 1;
+    if (seg.mLen < 0 || static_cast<size_t>(seg.mLen) != vlen ||
+        mSpec.IsEmpty()) {
+      return false;
+    }
+    if (ignoreCase) {
+      return !nsCRT::strncasecmp(mSpec.get() + seg.mPos, val, vlen);
+    }
+    return !memcmp(mSpec.get() + seg.mPos, val, vlen);
+  }
+  template <size_t N>
+  bool SegmentIs(const char* spec, const URLSegment& seg, const char (&val)[N],
+                 bool ignoreCase = false) {
+    constexpr size_t vlen = N - 1;
+    if (!spec || seg.mLen < 0 || static_cast<size_t>(seg.mLen) != vlen) {
+      return false;
+    }
+    if (ignoreCase) {
+      return !nsCRT::strncasecmp(spec + seg.mPos, val, vlen);
+    }
+    return !memcmp(spec + seg.mPos, val, vlen);
+  }
+
   int32_t ReplaceSegment(uint32_t pos, uint32_t len, const char* val,
                          uint32_t valLen);
   int32_t ReplaceSegment(uint32_t pos, uint32_t len, const nsACString& val);
 
   nsresult ParseURL(const char* spec, int32_t specLen);
-  nsresult ParsePath(const char* spec, uint32_t pathPos, int32_t pathLen = -1);
 
   char* AppendToSubstring(uint32_t pos, int32_t len, const char* tail);
 
@@ -334,8 +374,10 @@ class nsStandardURL : public nsIFileURL,
   // Asserts that the URL has sane values
   void SanityCheck();
 
-  // Checks if the URL has a valid representation.
-  bool IsValid();
+  // Checks if the URL has a valid representation. On failure, if
+  // aFailReason is non-null, it receives a code identifying the first check
+  // that failed (see the InvalidURLReason values in nsStandardURL.cpp).
+  bool IsValid(uint32_t* aFailReason = nullptr);
 
   // This value will only be updated on the main thread once.
   static Atomic<bool, Relaxed> gInitialized;
@@ -359,7 +401,8 @@ class nsStandardURL : public nsIFileURL,
   URLSegment mQuery;
   URLSegment mRef;
 
-  nsCOMPtr<nsIURLParser> mParser;
+  // Concretely typed so ParseAll() is reachable without a downcast.
+  RefPtr<nsBaseURLParser> mParser;
 
   // mFile is protected so subclasses can access it directly
  protected:
@@ -414,6 +457,9 @@ class nsStandardURL : public nsIFileURL,
     }
 
     [[nodiscard]] NS_IMETHOD Finalize(nsIURI** aURI) override {
+      if (!BaseURIMutator<T>::mURI) {
+        return NS_ERROR_NULL_POINTER;
+      }
       BaseURIMutator<T>::mURI.forget(aURI);
       return NS_OK;
     }
@@ -603,6 +649,11 @@ inline nsDependentCSubstring nsStandardURL::Host() {
   if (mHost.mLen > 0) {
     pos = mHost.mPos;
     len = mHost.mLen;
+    MOZ_RELEASE_ASSERT(pos < mSpec.Length());
+    // `pos + len - 1 < mSpec.Length()` is `len <= mSpec.Length() - pos`
+    // but also avoids overflow. Underflow can't happen because of previous
+    // assert.
+    MOZ_RELEASE_ASSERT(len <= mSpec.Length() - pos);
     if (mSpec.CharAt(pos) == '[' && mSpec.CharAt(pos + len - 1) == ']') {
       pos++;
       len -= 2;
@@ -625,4 +676,4 @@ inline nsDependentCSubstring nsStandardURL::Filename() {
 }  // namespace net
 }  // namespace mozilla
 
-#endif  // nsStandardURL_h__
+#endif  // nsStandardURL_h_

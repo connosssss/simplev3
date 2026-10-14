@@ -1,13 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_quota_originorpatternstring_h__
-#define mozilla_dom_quota_originorpatternstring_h__
+#ifndef mozilla_dom_quota_originorpatternstring_h_
+#define mozilla_dom_quota_originorpatternstring_h_
 
 #include <utility>
+
 #include "mozilla/Assertions.h"
 #include "mozilla/OriginAttributes.h"
 #include "mozilla/UniquePtr.h"
@@ -36,6 +35,8 @@ class OriginScope {
           mAttributes(MakeUnique<OriginAttributes>(*aOther.mAttributes)) {}
 
     Origin(Origin&& aOther) = default;
+
+    bool operator==(const OriginScope& aOther) = delete;
 
     const PrincipalMetadata& GetPrincipalMetadata() const {
       return mPrincipalMetadata;
@@ -409,10 +410,8 @@ class OriginScope {
     PatternMatcher patternMatcher(aOther);
     return mData.match(PatternMatcher(aOther));
   }
-
-  bool operator==(const OriginScope& aOther) = delete;
 };
 
 }  // namespace mozilla::dom::quota
 
-#endif  // mozilla_dom_quota_originorpatternstring_h__
+#endif  // mozilla_dom_quota_originorpatternstring_h_

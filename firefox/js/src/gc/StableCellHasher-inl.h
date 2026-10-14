@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -82,29 +80,6 @@ inline bool GetOrCreateUniqueId(Cell* cell, uint64_t* uidp) {
   }
 
   return CreateUniqueIdForNonNativeObject(cell, p, uidp);
-}
-
-inline bool SetOrUpdateUniqueId(JSContext* cx, Cell* cell, uint64_t uid) {
-  MOZ_ASSERT(CurrentThreadCanAccessRuntime(cell->runtimeFromAnyThread()));
-
-  if (cell->is<JSObject>()) {
-    JSObject* obj = cell->as<JSObject>();
-    if (obj->is<NativeObject>()) {
-      auto* nobj = &obj->as<NativeObject>();
-      return nobj->setOrUpdateUniqueId(cx, uid);
-    }
-  }
-
-  // If the cell was in the nursery, hopefully unlikely, then we need to
-  // tell the nursery about it so that it can sweep the uid if the thing
-  // does not get tenured.
-  JSRuntime* runtime = cell->runtimeFromMainThread();
-  if (IsInsideNursery(cell) &&
-      !runtime->gc.nursery().addedUniqueIdToCell(cell)) {
-    return false;
-  }
-
-  return cell->zone()->uniqueIds().put(cell, uid);
 }
 
 inline uint64_t GetUniqueIdInfallible(Cell* cell) {
@@ -208,6 +183,10 @@ template <typename T>
 
 template <typename T>
 /* static */ bool StableCellHasher<T>::match(const Key& k, const Lookup& l) {
+  // Barriered types are handled by the specializations in gc/Barrier.h which
+  // are implemented in terms of this.
+  static_assert(!IsBarriered<Key>::value);
+
   if (k == l) {
     return true;
   }
@@ -223,11 +202,9 @@ template <typename T>
   // Incremental table sweeping means that existing table entries may no
   // longer have unique IDs. We fail the match in that case and the entry is
   // removed from the table later on.
-  if (!gc::HasUniqueId(k)) {
-    Key key = k;
-    MOZ_ASSERT(key->zoneFromAnyThread()->needsIncrementalBarrier() &&
-               !key->isMarkedAny());
-  }
+  MOZ_ASSERT_IF(!gc::HasUniqueId(k),
+                k->isTenured() && k->zoneFromAnyThread()->isGCSweeping() &&
+                    !k->isMarkedAny());
   MOZ_ASSERT(gc::HasUniqueId(l));
 #endif
 

@@ -19,45 +19,6 @@ extern "C" {
 #if !defined(LIBYUV_DISABLE_SME) && defined(CLANG_HAS_SME) && \
     defined(__aarch64__)
 
-// Read twice as much data from YUV, putting the even elements from the Y data
-// in z0.h and odd elements in z1.h.
-#define READYUV444_SVE_2X                        \
-  "ld1b       {z0.b}, p1/z, [%[src_y]]       \n" \
-  "ld1b       {z2.b}, p1/z, [%[src_u]]       \n" \
-  "ld1b       {z3.b}, p1/z, [%[src_v]]       \n" \
-  "incb       %[src_y]                       \n" \
-  "incb       %[src_u]                       \n" \
-  "incb       %[src_v]                       \n" \
-  "prfm       pldl1keep, [%[src_y], 448]     \n" \
-  "prfm       pldl1keep, [%[src_u], 128]     \n" \
-  "prfm       pldl1keep, [%[src_v], 128]     \n" \
-  "trn2       z1.b, z0.b, z0.b               \n" \
-  "trn1       z0.b, z0.b, z0.b               \n"
-
-#define I444TORGB_SVE_2X                                  \
-  "umulh      z0.h, z24.h, z0.h              \n" /* Y0 */ \
-  "umulh      z1.h, z24.h, z1.h              \n" /* Y1 */ \
-  "umullb     z6.h, z30.b, z2.b              \n"          \
-  "umullt     z7.h, z30.b, z2.b              \n"          \
-  "umullb     z4.h, z28.b, z2.b              \n" /* DB */ \
-  "umullt     z2.h, z28.b, z2.b              \n" /* DB */ \
-  "umlalb     z6.h, z31.b, z3.b              \n" /* DG */ \
-  "umlalt     z7.h, z31.b, z3.b              \n" /* DG */ \
-  "umullb     z5.h, z29.b, z3.b              \n" /* DR */ \
-  "umullt     z3.h, z29.b, z3.b              \n" /* DR */ \
-  "add        z17.h, z0.h, z26.h             \n" /* G */  \
-  "add        z21.h, z1.h, z26.h             \n" /* G */  \
-  "add        z16.h, z0.h, z4.h              \n" /* B */  \
-  "add        z20.h, z1.h, z2.h              \n" /* B */  \
-  "add        z18.h, z0.h, z5.h              \n" /* R */  \
-  "add        z22.h, z1.h, z3.h              \n" /* R */  \
-  "uqsub      z17.h, z17.h, z6.h             \n" /* G */  \
-  "uqsub      z21.h, z21.h, z7.h             \n" /* G */  \
-  "uqsub      z16.h, z16.h, z25.h            \n" /* B */  \
-  "uqsub      z20.h, z20.h, z25.h            \n" /* B */  \
-  "uqsub      z18.h, z18.h, z27.h            \n" /* R */  \
-  "uqsub      z22.h, z22.h, z27.h            \n" /* R */
-
 #define RGBTOARGB8_SVE_2X                                 \
   /* Inputs: B: z16.h,  G: z17.h,  R: z18.h,  A: z19.b */ \
   "uqshrnb     z16.b, z16.h, #6     \n" /* B0 */          \
@@ -113,6 +74,16 @@ __arm_locally_streaming void I444ToARGBRow_SME(
       : [kUVCoeff] "r"(&yuvconstants->kUVCoeff),           // %[kUVCoeff]
         [kRGBCoeffBias] "r"(&yuvconstants->kRGBCoeffBias)  // %[kRGBCoeffBias]
       : "cc", "memory", YUVTORGB_SVE_REGS);
+}
+
+__arm_locally_streaming void I444ToRGB24Row_SME(
+    const uint8_t* src_y,
+    const uint8_t* src_u,
+    const uint8_t* src_v,
+    uint8_t* dst_rgb24,
+    const struct YuvConstants* yuvconstants,
+    int width) {
+  I444ToRGB24Row_SVE_SC(src_y, src_u, src_v, dst_rgb24, yuvconstants, width);
 }
 
 __arm_locally_streaming void I400ToARGBRow_SME(
@@ -185,6 +156,16 @@ __arm_locally_streaming void I422ToRGBARow_SME(
     const struct YuvConstants* yuvconstants,
     int width) {
   I422ToRGBARow_SVE_SC(src_y, src_u, src_v, dst_argb, yuvconstants, width);
+}
+
+__arm_locally_streaming void I422ToAR30Row_SME(
+    const uint8_t* src_y,
+    const uint8_t* src_u,
+    const uint8_t* src_v,
+    uint8_t* dst_argb,
+    const struct YuvConstants* yuvconstants,
+    int width) {
+  I422ToAR30Row_SVE_SC(src_y, src_u, src_v, dst_argb, yuvconstants, width);
 }
 
 __arm_locally_streaming void I422AlphaToARGBRow_SME(
@@ -588,7 +569,7 @@ __arm_locally_streaming void Convert16To8Row_SME(const uint16_t* src_y,
   // 15 - clz(scale), + 8 to shift result into the high half of the lane to
   // saturate, then we can just use UZP2 to narrow rather than a pair of
   // saturating narrow instructions.
-  int shift = 23 - __builtin_clz((int32_t)scale);
+  const int shift = 23 - __builtin_clz((int32_t)scale);
   int vl;
   asm volatile(
       "cntb     %x[vl]                                  \n"
@@ -926,17 +907,17 @@ __arm_locally_streaming void InterpolateRow_16_SME(uint16_t* dst_ptr,
       : "cc", "memory", "z0", "z1", "z2", "z3", "z4", "p0");
 }
 
-__arm_locally_streaming static void HalfRow_16To8_SME(uint8_t* dst_ptr,
-                                                      const uint16_t* src_ptr,
-                                                      ptrdiff_t src_stride,
-                                                      int scale,
-                                                      int width) {
+__arm_locally_streaming void HalfRow_16To8_SME(const uint16_t* src_ptr,
+                                               ptrdiff_t src_stride,
+                                               uint8_t* dst_ptr,
+                                               int scale,
+                                               int width) {
   const uint16_t* src_ptr1 = src_ptr + src_stride;
 
   // 15 - clz(scale), + 8 to shift result into the high half of the lane to
   // saturate, then we can just use UZP2 to narrow rather than a pair of
   // saturating narrow instructions.
-  int shift = 23 - __builtin_clz((int32_t)scale);
+  const int shift = 23 - __builtin_clz((int32_t)scale);
 
   int vl;
   asm volatile(
@@ -984,64 +965,38 @@ __arm_locally_streaming static void HalfRow_16To8_SME(uint8_t* dst_ptr,
       : "cc", "memory", "z0", "z1", "z2", "z3", "z31", "p0");
 }
 
-// Use scale to convert lsb formats to msb, depending how many bits there are:
-// 32768 = 9 bits
-// 16384 = 10 bits
-// 4096 = 12 bits
-// 256 = 16 bits
-// TODO(fbarchard): change scale to bits
-__arm_locally_streaming void InterpolateRow_16To8_SME(uint8_t* dst_ptr,
-                                                      const uint16_t* src_ptr,
-                                                      ptrdiff_t src_stride,
-                                                      int scale,
-                                                      int width,
-                                                      int source_y_fraction) {
-  int y1_fraction = source_y_fraction;
-  int y0_fraction = 256 - y1_fraction;
+__arm_locally_streaming void HalfWidthRow_16To8_SME(const uint16_t* src_ptr,
+                                                    ptrdiff_t src_stride,
+                                                    uint8_t* dst_ptr,
+                                                    int scale,
+                                                    int width) {
   const uint16_t* src_ptr1 = src_ptr + src_stride;
-
-  // y0_fraction == 0 is never called here.
-  if (y0_fraction == 128) {
-    HalfRow_16To8_SME(dst_ptr, src_ptr, src_stride, scale, width);
-    return;
-  }
-  if (y0_fraction == 256) {
-    Convert16To8Row_SME(src_ptr, dst_ptr, scale, width);
-    return;
-  }
-
-  // 15 - clz(scale), + 8 to shift result into the high half of the lane to
-  // saturate, then we can just use UZP2 to narrow rather than a pair of
-  // saturating narrow instructions.
-  int shift = 23 - __builtin_clz((int32_t)scale);
-
+  const int shift = 23 - __builtin_clz((int32_t)scale);
   int vl;
   asm volatile(
       "cnth     %x[vl]                                  \n"
       "dup      z31.h, %w[shift]                        \n"
-      "dup      z0.h, %w[y0_fraction]                   \n"
-      "dup      z1.h, %w[y1_fraction]                   \n"
       "subs     %w[width], %w[width], %w[vl]            \n"
       "b.lt     2f                                      \n"
 
-      // Run bulk of computation with an all-true predicate to avoid predicate
-      // generation overhead.
       "ptrue    p0.h                                    \n"
       "1:                                               \n"
-      "ld1h     {z2.h}, p0/z, [%[src_ptr]]              \n"
-      "ld1h     {z3.h}, p0/z, [%[src_ptr1]]             \n"
-      "incb     %[src_ptr]                              \n"
-      "incb     %[src_ptr1]                             \n"
-      "umullb   z4.s, z2.h, z0.h                        \n"
-      "umullt   z2.s, z2.h, z0.h                        \n"
+      "ld2h     {z0.h, z1.h}, p0/z, [%[src_ptr]]        \n"
+      "ld2h     {z2.h, z3.h}, p0/z, [%[src_ptr1]]       \n"
+      "incb     %[src_ptr], all, mul #2                 \n"
+      "incb     %[src_ptr1], all, mul #2                \n"
+      "uaddlb   z4.s, z0.h, z1.h                        \n"
+      "uaddlt   z5.s, z0.h, z1.h                        \n"
+      "uaddlb   z6.s, z2.h, z3.h                        \n"
+      "uaddlt   z7.s, z2.h, z3.h                        \n"
+      "add      z4.s, z4.s, z6.s                        \n"
+      "add      z5.s, z5.s, z7.s                        \n"
+      "rshrnb   z0.h, z4.s, #2                          \n"
+      "rshrnt   z0.h, z5.s, #2                          \n"
       "subs     %w[width], %w[width], %w[vl]            \n"
-      "umlalb   z4.s, z3.h, z1.h                        \n"
-      "umlalt   z2.s, z3.h, z1.h                        \n"
-      "rshrnb   z3.h, z4.s, #8                          \n"
-      "rshrnt   z3.h, z2.s, #8                          \n"
-      "uqshl    z3.h, p0/m, z3.h, z31.h                 \n"
-      "shrnb    z3.b, z3.h, #8                          \n"
-      "st1b     {z3.h}, p0, [%[dst_ptr]]                \n"
+      "uqshl    z0.h, p0/m, z0.h, z31.h                 \n"
+      "shrnb    z0.b, z0.h, #8                          \n"
+      "st1b     {z0.h}, p0, [%[dst_ptr]]                \n"
       "inch     %[dst_ptr]                              \n"
       "b.ge     1b                                      \n"
 
@@ -1049,30 +1004,30 @@ __arm_locally_streaming void InterpolateRow_16To8_SME(uint8_t* dst_ptr,
       "adds     %w[width], %w[width], %w[vl]            \n"
       "b.eq     99f                                     \n"
 
-      // Calculate a predicate for the final iteration to deal with the tail.
       "whilelt  p0.h, wzr, %w[width]                    \n"
-      "ld1h     {z2.h}, p0/z, [%[src_ptr]]              \n"
-      "ld1h     {z3.h}, p0/z, [%[src_ptr1]]             \n"
-      "umullb   z4.s, z2.h, z0.h                        \n"
-      "umullt   z2.s, z2.h, z0.h                        \n"
-      "umlalb   z4.s, z3.h, z1.h                        \n"
-      "umlalt   z2.s, z3.h, z1.h                        \n"
-      "rshrnb   z3.h, z4.s, #8                          \n"
-      "rshrnt   z3.h, z2.s, #8                          \n"
-      "uqshl    z3.h, p0/m, z3.h, z31.h                 \n"
-      "shrnb    z3.b, z3.h, #8                          \n"
-      "st1b     {z3.h}, p0, [%[dst_ptr]]                \n"
+      "ld2h     {z0.h, z1.h}, p0/z, [%[src_ptr]]        \n"
+      "ld2h     {z2.h, z3.h}, p0/z, [%[src_ptr1]]       \n"
+      "uaddlb   z4.s, z0.h, z1.h                        \n"
+      "uaddlt   z5.s, z0.h, z1.h                        \n"
+      "uaddlb   z6.s, z2.h, z3.h                        \n"
+      "uaddlt   z7.s, z2.h, z3.h                        \n"
+      "add      z4.s, z4.s, z6.s                        \n"
+      "add      z5.s, z5.s, z7.s                        \n"
+      "rshrnb   z0.h, z4.s, #2                          \n"
+      "rshrnt   z0.h, z5.s, #2                          \n"
+      "uqshl    z0.h, p0/m, z0.h, z31.h                 \n"
+      "shrnb    z0.b, z0.h, #8                          \n"
+      "st1b     {z0.h}, p0, [%[dst_ptr]]                \n"
 
       "99:                                              \n"
-      : [src_ptr] "+r"(src_ptr),         // %[src_ptr]
-        [src_ptr1] "+r"(src_ptr1),       // %[src_ptr1]
-        [dst_ptr] "+r"(dst_ptr),         // %[dst_ptr]
-        [width] "+r"(width),             // %[width]
-        [vl] "=&r"(vl)                   // %[vl]
-      : [y0_fraction] "r"(y0_fraction),  // %[y0_fraction]
-        [y1_fraction] "r"(y1_fraction),  // %[y1_fraction]
-        [shift] "r"(shift)               // %[shift]
-      : "cc", "memory", "z0", "z1", "z2", "z3", "z4", "z31", "p0");
+      : [src_ptr] "+r"(src_ptr),    // %[src_ptr]
+        [src_ptr1] "+r"(src_ptr1),  // %[src_ptr1]
+        [dst_ptr] "+r"(dst_ptr),    // %[dst_ptr]
+        [width] "+r"(width),        // %[width]
+        [vl] "=&r"(vl)              // %[vl]
+      : [shift] "r"(shift)          // %[shift]
+      : "cc", "memory", "z0", "z1", "z2", "z3", "z4", "z5", "z6", "z7", "z31",
+        "p0");
 }
 
 __arm_locally_streaming void Convert8To8Row_SME(const uint8_t* src_y,
@@ -1081,6 +1036,83 @@ __arm_locally_streaming void Convert8To8Row_SME(const uint8_t* src_y,
                                                 int bias,
                                                 int width) {
   Convert8To8Row_SVE_SC(src_y, dst_y, scale, bias, width);
+}
+
+#define CONVERT8TO16_SVE                                 \
+  "ld1b        {z0.h}, p0/z, [%[src]]                \n" \
+  "ld1b        {z1.h}, p1/z, [%[src], #1, mul vl]    \n" \
+  "incb        %[src]                                \n" \
+  "subs        %w[width], %w[width], %w[vl], lsl #1  \n" \
+  "trn1        z0.b, z0.b, z0.b                      \n" \
+  "trn1        z1.b, z1.b, z1.b                      \n" \
+  "lsr         z0.h, p0/m, z0.h, z2.h                \n" \
+  "lsr         z1.h, p1/m, z1.h, z2.h                \n" \
+  "prfm        pldl1keep, [%[src], 448]              \n" \
+  "st1h        {z0.h}, p0, [%[dst]]                  \n" \
+  "st1h        {z1.h}, p1, [%[dst], #1, mul vl]      \n" \
+  "incb        %[dst], all, mul #2                   \n"
+
+__arm_locally_streaming void Convert8To16Row_SME(const uint8_t* src_y,
+                                                 uint16_t* dst_y,
+                                                 int bits,
+                                                 int width) {
+  // (src * 0x0101) >> (16 - bits).
+  const int shift = 16 - bits;
+
+  uint64_t vl;
+  asm volatile(
+      "dup         z2.h, %w[shift]                      \n"
+      "cnth        %[vl]                                \n"
+      "subs        %w[width], %w[width], %w[vl], lsl #1 \n"
+      "b.lt        2f                                   \n"
+
+      // Run bulk of computation with all-true predicates to avoid predicate
+      // generation overhead.
+      "ptrue       p0.h                                 \n"
+      "ptrue       p1.h                                 \n"
+      "1:                                               \n"  //
+      CONVERT8TO16_SVE
+      "b.ge        1b                                   \n"
+
+      "2:                                               \n"
+      "adds        %w[width], %w[width], %w[vl], lsl #1 \n"
+      "b.eq        99f                                  \n"
+
+      // Calculate predicates for the final iteration to deal with the tail.
+      "whilelt     p0.h, wzr, %w[width]                 \n"
+      "whilelt     p1.h, %w[vl], %w[width]              \n"  //
+      CONVERT8TO16_SVE
+
+      "99:                                              \n"
+      : [src] "+r"(src_y),    // %[src]
+        [dst] "+r"(dst_y),    // %[dst]
+        [width] "+r"(width),  // %[width]
+        [vl] "=&r"(vl)        // %[vl]
+      : [shift] "r"(shift)    // %[shift]
+      : "cc", "memory", "z0", "z1", "z2", "p0", "p1");
+}
+
+__arm_locally_streaming void ARGBToUVMatrixRow_SME(
+    const uint8_t* src_argb,
+    int src_stride_argb,
+    uint8_t* dst_u,
+    uint8_t* dst_v,
+    int width,
+    const struct ArgbConstants* c) {
+  int8_t uvconstants[8] = {(int8_t)c->kRGBToU[0], (int8_t)c->kRGBToU[1],
+                           (int8_t)c->kRGBToU[2], (int8_t)c->kRGBToU[3],
+                           (int8_t)c->kRGBToV[0], (int8_t)c->kRGBToV[1],
+                           (int8_t)c->kRGBToV[2], (int8_t)c->kRGBToV[3]};
+  ARGBToUVMatrixRow_SVE_SC(src_argb, src_stride_argb, dst_u, dst_v, width,
+                           uvconstants);
+}
+
+__arm_locally_streaming void ARGBToYMatrixRow_SME(
+    const uint8_t* src_argb,
+    uint8_t* dst_y,
+    int width,
+    const struct ArgbConstants* c) {
+  ARGBToYMatrixRow_SVE_SC(src_argb, dst_y, width, c);
 }
 
 #endif  // !defined(LIBYUV_DISABLE_SME) && defined(CLANG_HAS_SME) &&

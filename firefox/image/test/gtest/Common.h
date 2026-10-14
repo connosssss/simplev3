@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,20 +7,19 @@
 
 #include <vector>
 
-#include "gtest/gtest.h"
-
-#include "mozilla/Attributes.h"
-#include "mozilla/gtest/MozAssertions.h"
-#include "mozilla/Maybe.h"
-#include "mozilla/UniquePtr.h"
-#include "mozilla/gfx/2D.h"
 #include "Decoder.h"
-#include "gfxColor.h"
-#include "gfxPlatform.h"
-#include "nsCOMPtr.h"
 #include "SurfaceFlags.h"
 #include "SurfacePipe.h"
 #include "SurfacePipeFactory.h"
+#include "gfxColor.h"
+#include "gfxPlatform.h"
+#include "gtest/gtest.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/UniquePtr.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gtest/MozAssertions.h"
+#include "nsCOMPtr.h"
 
 class nsIInputStream;
 
@@ -527,11 +525,18 @@ ImageTestCase GreenFirstFrameAnimatedGIFTestCase();
 ImageTestCase GreenFirstFrameAnimatedPNGTestCase();
 ImageTestCase GreenFirstFrameAnimatedWebPTestCase();
 ImageTestCase GreenFirstFrameAnimatedAVIFTestCase();
+#ifdef MOZ_JXL
+ImageTestCase GreenFirstFrameAnimatedJXLTestCase();
+ImageTestCase LongAnimatedJXLTestCase();
+#endif
 
 ImageTestCase BlendAnimatedGIFTestCase();
 ImageTestCase BlendAnimatedPNGTestCase();
 ImageTestCase BlendAnimatedWebPTestCase();
 ImageTestCase BlendAnimatedAVIFTestCase();
+#ifdef MOZ_JXL
+ImageTestCase BlendAnimatedJXLTestCase();
+#endif
 
 ImageTestCase CorruptTestCase();
 ImageTestCase CorruptBMPWithTruncatedHeader();
@@ -588,12 +593,22 @@ ImageTestCase TransparentAVIFTestCase();
 
 #ifdef MOZ_JXL
 ImageTestCase GreenJXLTestCase();
+ImageTestCase ProgressiveJXLTestCase();
 ImageTestCase DownscaledJXLTestCase();
 ImageTestCase LargeJXLTestCase();
+ImageTestCase LargeJXLReferenceWebPTestCase();
 ImageTestCase TransparentJXLTestCase();
+ImageTestCase CorruptJXLTestCase();
+ImageTestCase PerfRgbLosslessJXLTestCase();
+ImageTestCase PerfRgbAlphaLosslessJXLTestCase();
+ImageTestCase PerfRgbLossyJXLTestCase();
+ImageTestCase PerfRgbAlphaLossyJXLTestCase();
+ImageTestCase ProgressiveAlphaMultiGroupJXLTestCase();
 #endif
 
 ImageTestCase ExifResolutionTestCase();
+
+ImageTestCase ExifOrientationDownscaleJPGTestCase();
 
 RefPtr<Image> TestCaseToDecodedImage(const ImageTestCase&);
 

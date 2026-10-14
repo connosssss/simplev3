@@ -91,16 +91,15 @@ def get_logger():
     # wrap the logger into the BridgeLogger
     new_logger = BridgeLogger(new_logger)
 
-    # bridge for Arsenic
-    if sys.version_info.major == 3:
-        try:
-            from arsenic import connection
-            from structlog import wrap_logger
+    try:
+        # bridge for Arsenic
+        from arsenic import connection
+        from structlog import wrap_logger
 
-            connection.log = wrap_logger(new_logger)
-        except ImportError:
-            # Arsenic is not installed for client-only usage
-            pass
+        connection.log = wrap_logger(new_logger)
+    except ImportError:
+        # Arsenic is not installed for client-only usage
+        pass
     logger = new_logger
     return logger
 
@@ -477,7 +476,7 @@ def get_credentials():
         if not TASK_CLUSTER:
             return None, None
         secret = get_tc_secret()
-        password = secret["password"]
-        username = secret["username"]
+        password = secret.get("password", None)
+        username = secret.get("username", None)
     _CACHED["creds"] = username, password
     return username, password

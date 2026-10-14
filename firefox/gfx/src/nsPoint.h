@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,9 +6,11 @@
 #define NSPOINT_H
 
 #include <cstdint>
-#include "nsCoord.h"
+
+#include "fmt/ostream.h"
 #include "mozilla/gfx/BasePoint.h"
 #include "mozilla/gfx/Point.h"
+#include "nsCoord.h"
 
 // nsIntPoint represents a point in one of the types of pixels.
 // Uses of nsIntPoint should eventually be converted to CSSIntPoint,
@@ -91,5 +91,8 @@ inline nsPoint ToAppUnits(const nsIntPoint& aPoint, nscoord aAppUnitsPerPixel) {
   return nsPoint(NSIntPixelsToAppUnits(aPoint.x, aAppUnitsPerPixel),
                  NSIntPixelsToAppUnits(aPoint.y, aAppUnitsPerPixel));
 }
+
+template <>
+struct fmt::formatter<nsPoint> : fmt::ostream_formatter {};
 
 #endif /* NSPOINT_H */

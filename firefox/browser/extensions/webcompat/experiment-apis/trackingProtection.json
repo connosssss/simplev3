@@ -78,11 +78,21 @@
             "type": "string"
           },
           {
-            "name": "patterns",
-            "description": "Array of match patterns",
+            "name": "matchEntries",
+            "description": "Array of match entries with URL patterns and request types",
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "object",
+              "properties": {
+                "patterns": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "types": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
             }
           },
           {
@@ -175,12 +185,6 @@
             "description": "the webcompat tab id of the calling tab, used to get the correct window"
           }
         ]
-      },
-      {
-        "name": "incrementSmartblockEmbedShownTelemetry",
-        "type": "function",
-        "description": "Sends an observer message to inform protections panel that a embed was replaced on the window specified by the tab id",
-        "parameters": []
       },
       {
         "name": "getSmartBlockEmbedFluentString",

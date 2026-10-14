@@ -98,6 +98,14 @@ DownloadLegacyTransfer.prototype = {
       // object to be available before notifying.
       this._promiseDownload
         .then(download => {
+          download.source.triggeredByContentDispositionHeader = false;
+          if (aRequest instanceof Ci.nsIHttpChannel) {
+            try {
+              download.source.triggeredByContentDispositionHeader =
+                !!aRequest.contentDispositionHeader;
+            } catch (e) {}
+          }
+
           // If the request was blocked, now that we have the download object we
           // should set a flag that can be retrieved later when handling the
           // cancellation so that the proper error can be thrown.
@@ -257,7 +265,8 @@ DownloadLegacyTransfer.prototype = {
     aIsPrivate,
     aDownloadClassification,
     aReferrerInfo,
-    aOpenDownloadsListOnStart
+    aOpenDownloadsListOnStart,
+    aFilesFolder
   ) {
     return this._nsITransferInitInternal(
       aSource,
@@ -271,7 +280,8 @@ DownloadLegacyTransfer.prototype = {
       aIsPrivate,
       aDownloadClassification,
       aReferrerInfo,
-      aOpenDownloadsListOnStart
+      aOpenDownloadsListOnStart,
+      aFilesFolder
     );
   },
 
@@ -313,6 +323,7 @@ DownloadLegacyTransfer.prototype = {
       aDownloadClassification,
       aReferrerInfo,
       aOpenDownloadsListOnStart,
+      null,
       userContextId,
       browsingContextId,
       aHandleInternally,
@@ -332,7 +343,8 @@ DownloadLegacyTransfer.prototype = {
     isPrivate,
     aDownloadClassification,
     referrerInfo,
-    openDownloadsListOnStart = true,
+    openDownloadsListOnStart,
+    filesFolder,
     userContextId = 0,
     browsingContextId = 0,
     handleInternally = false,
@@ -380,6 +392,7 @@ DownloadLegacyTransfer.prototype = {
       target: {
         path: aTarget.QueryInterface(Ci.nsIFileURL).file.path,
         partFilePath: aTempFile && aTempFile.path,
+        filesFolderPath: filesFolder && filesFolder.path,
       },
       saver: "legacy",
       launchWhenSucceeded,

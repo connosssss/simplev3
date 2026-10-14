@@ -15,7 +15,6 @@ import mozilla.components.browser.state.state.SessionState
 import mozilla.components.concept.engine.Engine
 import mozilla.components.concept.engine.EngineSession
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
 import mozilla.components.lib.state.Store
 import mozilla.components.support.base.log.logger.Logger
 
@@ -30,15 +29,15 @@ internal class CreateEngineSessionMiddleware(
     private val logger = Logger("CreateEngineSessionMiddleware")
 
     override fun invoke(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         next: (BrowserAction) -> Unit,
         action: BrowserAction,
     ) {
         if (action is EngineAction.CreateEngineSessionAction) {
-            val engineState = context.state.findTabOrCustomTab(action.tabId)?.engineState
+            val engineState = store.state.findTabOrCustomTab(action.tabId)?.engineState
             if (engineState?.initializing == false && engineState.engineSession == null && !engineState.crashed) {
-                context.dispatch(EngineAction.UpdateEngineSessionInitializingAction(action.tabId, true))
-                createEngineSession(context.store, action)
+                store.dispatch(EngineAction.UpdateEngineSessionInitializingAction(action.tabId, true))
+                createEngineSession(store, action)
                 next(action)
             } else {
                 // Initialization is in progress by a pending CreateEngineSessionAction. Let's
@@ -47,7 +46,7 @@ internal class CreateEngineSessionMiddleware(
                 // is created which has been launched on main already at this point.
                 action.followupAction?.let {
                     scope.launch {
-                        context.store.dispatch(it)
+                        store.dispatch(it)
                     }
                 }
             }
@@ -116,20 +115,22 @@ private fun createEngineSession(
     tab: SessionState,
     includeParent: Boolean,
 ): EngineSession {
-    val engineSession = engine.createSession(tab.content.private, tab.contextId).apply {
-        // The engineSession's desktopMode needs to be updated based on the tab's desktopMode value,
-        // because the tab's desktopMode value can be different from the Browser-wide desktopMode
-        // settings, which is stored in defaultSettings and used to create the EngineSession.
-        toggleDesktopMode(enable = tab.content.desktopMode, reload = false)
-    }
+    val engineSession =
+        engine.createSession(tab.content.private, tab.contextId).apply {
+            // The engineSession's desktopMode needs to be updated based on the tab's desktopMode value,
+            // because the tab's desktopMode value can be different from the Browser-wide desktopMode
+            // settings, which is stored in defaultSettings and used to create the EngineSession.
+            toggleDesktopMode(enable = tab.content.desktopMode, reload = false)
+        }
     logger.debug("Created engine session for tab ${tab.id}")
 
     val engineSessionState = tab.engineState.engineSessionState
-    val skipLoading = if (engineSessionState != null) {
-        engineSession.restoreState(engineSessionState)
-    } else {
-        false
-    }
+    val skipLoading =
+        if (engineSessionState != null) {
+            engineSession.restoreState(engineSessionState)
+        } else {
+            false
+        }
 
     store.dispatch(
         EngineAction.LinkEngineSessionAction(
@@ -137,7 +138,7 @@ private fun createEngineSession(
             engineSession,
             skipLoading = skipLoading,
             includeParent = includeParent,
-        ),
+        )
     )
 
     return engineSession

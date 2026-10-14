@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -15,8 +14,8 @@ interface HTMLSelectElement : HTMLElement {
   attribute DOMString autocomplete;
   [CEReactions, SetterThrows, Pure]
   attribute boolean disabled;
-  [Pure]
-  readonly attribute HTMLFormElement? form;
+  [Pure, BinaryName=formForBindings]
+  readonly attribute Element? form;
   [CEReactions, SetterThrows, Pure]
   attribute boolean multiple;
   [CEReactions, SetterThrows, Pure]
@@ -59,6 +58,7 @@ interface HTMLSelectElement : HTMLElement {
   [Throws, Pref="dom.select.showPicker.enabled"]
   undefined showPicker();
 
+  [BinaryName=labelsForBindings]
   readonly attribute NodeList labels;
 
   // https://www.w3.org/Bugs/Public/show_bug.cgi?id=20720
@@ -73,6 +73,10 @@ partial interface HTMLSelectElement {
   undefined userFinishedInteracting(boolean changed);
   [ChromeOnly, Pure]
   readonly attribute boolean isCombobox;
+  // The elements that this select, or one of its optgroups, renders as rows,
+  // in tree order: consists of option, hr, optgroup elements.
+  [ChromeOnly]
+  sequence<Element> getListItems(optional HTMLOptGroupElement? group = null);
   [ChromeOnly]
   attribute boolean openInParentProcess;
   [ChromeOnly]

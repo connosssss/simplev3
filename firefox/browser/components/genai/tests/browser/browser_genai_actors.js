@@ -17,35 +17,16 @@ add_task(async function test_got_actor() {
 });
 
 /**
- * Test the actor gets text from webpage
- */
-add_task(async function test_actor_extract_text() {
-  await BrowserTestUtils.withNewTab(
-    {
-      gBrowser,
-      url: "data:text/html, <body>Hello world!</body>",
-    },
-    async browser => {
-      const actor =
-        browser.browsingContext.currentWindowContext.getActor("GenAI");
-      Assert.ok(actor, "GenAI should be attached to this tab");
-
-      const result = await actor.sendQuery("GetReadableText");
-      Assert.equal(result.readerMode, false, "Not reader mode content");
-      Assert.ok(
-        result.selection.includes("Hello world!"),
-        "Page text was extracted"
-      );
-    }
-  );
-});
-
-/**
  * Check that actor not found when disabled
  */
 add_task(async function test_actor_disabled() {
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.ml.chat.provider", ""]],
+    set: [
+      ["browser.ml.chat.provider", ""],
+      ["browser.ml.chat.page", false],
+      ["browser.ml.chat.shortcuts", false],
+      ["browser.ml.chat.shortcuts.smartwindow", false],
+    ],
   });
   await BrowserTestUtils.withNewTab("about:blank", async browser => {
     Assert.throws(
@@ -54,4 +35,5 @@ add_task(async function test_actor_disabled() {
       "Actor disabled"
     );
   });
+  await SpecialPowers.popPrefEnv();
 });

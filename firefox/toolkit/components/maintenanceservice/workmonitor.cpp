@@ -21,7 +21,6 @@
 #include "mozilla/CmdLineAndEnvUtils.h"
 #include "mozilla/NotNull.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
 
 using namespace mozilla;
 
@@ -166,6 +165,11 @@ Maybe<UpdaterArgs> parseUpdaterArgs(int argc, wchar_t** argv) {
     installDirPath = optionalArg(argc, argv, 3);
     applyToDirPath = optionalArg(argc, argv, 4);
     whichInvocation = optionalArg(argc, argv, 5);
+    if (whichInvocation.isSome() &&
+        wcscmp(whichInvocation.value(), L"second") != 0) {
+      LOG_WARN(("only the second invocation should be through MMS"));
+      return Nothing();
+    }
     waitPid = optionalArg(argc, argv, 6);
     callbackWorkingDir = optionalArg(argc, argv, 7);
     callbackBinPath = optionalArg(argc, argv, 8);

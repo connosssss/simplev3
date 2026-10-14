@@ -11,7 +11,6 @@ import android.text.TextUtils
 import android.util.AttributeSet
 import android.widget.EditText
 import android.widget.ProgressBar
-import androidx.core.os.bundleOf
 import androidx.core.view.isVisible
 import androidx.core.widget.doOnTextChanged
 import androidx.preference.Preference
@@ -23,8 +22,8 @@ import mozilla.components.support.ktx.util.URLStringUtils
 import mozilla.components.support.utils.ext.getParcelableCompat
 import org.mozilla.focus.R
 
-class ManualAddSearchEnginePreference(context: Context, attrs: AttributeSet) :
-    Preference(context, attrs) {
+/** A custom preference for manually adding a search engine. */
+class ManualAddSearchEnginePreference(context: Context, attrs: AttributeSet) : Preference(context, attrs) {
     private var engineNameEditText: EditText? = null
     private var searchQueryEditText: EditText? = null
     private var engineNameErrorLayout: TextInputLayout? = null
@@ -38,10 +37,8 @@ class ManualAddSearchEnginePreference(context: Context, attrs: AttributeSet) :
     override fun onBindViewHolder(holder: PreferenceViewHolder) {
         super.onBindViewHolder(holder)
 
-        engineNameErrorLayout =
-            holder.findViewById(R.id.edit_engine_name_layout) as TextInputLayout
-        searchQueryErrorLayout =
-            holder.findViewById(R.id.edit_search_string_layout) as TextInputLayout
+        engineNameErrorLayout = holder.findViewById(R.id.edit_engine_name_layout) as TextInputLayout
+        searchQueryErrorLayout = holder.findViewById(R.id.edit_search_string_layout) as TextInputLayout
 
         engineNameEditText = holder.findViewById(R.id.edit_engine_name) as EditText
 
@@ -72,43 +69,49 @@ class ManualAddSearchEnginePreference(context: Context, attrs: AttributeSet) :
     override fun onSaveInstanceState(): Parcelable {
         val state = super.onSaveInstanceState()
 
-        return bundleOf(
-            SUPER_STATE_KEY to state,
-            SEARCH_ENGINE_NAME_KEY to engineNameEditText?.text.toString(),
-            SEARCH_QUERY_KEY to searchQueryEditText?.text.toString(),
-        )
+        return Bundle().apply {
+            putParcelable(SUPER_STATE_KEY, state)
+            putString(SEARCH_ENGINE_NAME_KEY, engineNameEditText?.text.toString())
+            putString(SEARCH_QUERY_KEY, searchQueryEditText?.text.toString())
+        }
     }
 
+    /** Validates the [engineName] and shows an error message if it's invalid or already exists in [existingEngines]. */
     fun validateEngineNameAndShowError(engineName: String, existingEngines: List<SearchEngine>): Boolean {
-        val errorMessage = when {
-            TextUtils.isEmpty(engineName) ->
-                context.getString(R.string.search_add_error_empty_name)
+        val errorMessage =
+            when {
+                TextUtils.isEmpty(engineName) -> context.getString(R.string.search_add_error_empty_name)
 
-            existingEngines.any { it.name.equals(engineName, ignoreCase = true) } ->
-                context.getString(R.string.search_add_error_duplicate_name)
+                existingEngines.any { it.name.equals(engineName, ignoreCase = true) } ->
+                    context.getString(R.string.search_add_error_duplicate_name)
 
-            else -> null
-        }
+                else -> null
+            }
 
         engineNameErrorLayout?.error = errorMessage
         return errorMessage == null
     }
 
+    /** Validates the [searchQuery] and shows an error message if it's invalid. */
     fun validateSearchQueryAndShowError(searchQuery: String): Boolean {
-        val errorMessage = when {
-            TextUtils.isEmpty(searchQuery) -> context.getString(R.string.search_add_error_empty_search)
-            !URLStringUtils.isValidSearchQueryUrl(searchQuery) -> context.getString(R.string.search_add_error_format)
-            else -> null
-        }
+        val errorMessage =
+            when {
+                TextUtils.isEmpty(searchQuery) -> context.getString(R.string.search_add_error_empty_search)
+                !URLStringUtils.isValidSearchQueryUrl(searchQuery) ->
+                    context.getString(R.string.search_add_error_format)
+                else -> null
+            }
 
         searchQueryErrorLayout?.error = errorMessage
         return errorMessage == null
     }
 
+    /** Sets the error text for the search query input field. */
     fun setSearchQueryErrorText(err: String) {
         searchQueryErrorLayout?.error = err
     }
 
+    /** Sets whether the progress view should be shown. */
     fun setProgressViewShown(isShown: Boolean) {
         progressView?.isVisible = isShown
     }

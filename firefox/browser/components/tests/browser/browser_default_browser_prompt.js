@@ -13,17 +13,17 @@ const { ExperimentAPI } = ChromeUtils.importESModule(
   "resource://nimbus/ExperimentAPI.sys.mjs"
 );
 
-const { SpecialMessageActions } = ChromeUtils.importESModule(
-  "resource://messaging-system/lib/SpecialMessageActions.sys.mjs"
+const { Spotlight } = ChromeUtils.importESModule(
+  "resource:///modules/asrouter/Spotlight.sys.mjs"
 );
 const CHECK_PREF = "browser.shell.checkDefaultBrowser";
 
-function showAndWaitForModal(callback) {
+async function showAndWaitForModal(callback) {
   const promise = BrowserTestUtils.promiseAlertDialog(null, undefined, {
     callback,
     isSubDialog: true,
   });
-  DefaultBrowserCheck.prompt(BrowserWindowTracker.getTopWindow());
+  await DefaultBrowserCheck.prompt(BrowserWindowTracker.getTopWindow());
   return promise;
 }
 
@@ -53,15 +53,18 @@ let testSetDefaultSpotlight = {
     ],
   },
 };
-function AssertHistogram(histogram, name, expect = 1) {
-  TelemetryTestUtils.assertHistogram(
-    histogram,
-    TELEMETRY_NAMES.indexOf(name),
-    expect
+function AssertSetDefaultResult(name, expect = 1) {
+  const distribution = Glean.browser.setDefaultResult.testGetValue();
+  Assert.equal(
+    (distribution?.values ?? {})[TELEMETRY_NAMES.indexOf(name)] ?? 0,
+    expect,
+    `Should have recorded ${name}`
   );
-}
-function getHistogram() {
-  return TelemetryTestUtils.getAndClearHistogram("BROWSER_SET_DEFAULT_RESULT");
+  Assert.equal(
+    distribution?.count ?? 0,
+    expect,
+    `Should have recorded nothing but ${name}`
+  );
 }
 
 add_task(async function proton_shows_prompt() {
@@ -85,7 +88,7 @@ add_task(async function proton_shows_prompt() {
 });
 
 add_task(async function not_now() {
-  const histogram = getHistogram();
+  Services.fog.testResetFOG();
   await showAndWaitForModal(win => {
     win.document.querySelector("dialog").getButton("cancel").click();
   });
@@ -95,11 +98,11 @@ add_task(async function not_now() {
     true,
     "Canceling keeps pref true"
   );
-  AssertHistogram(histogram, "cancel");
+  AssertSetDefaultResult("cancel");
 });
 
 add_task(async function stop_asking() {
-  const histogram = getHistogram();
+  Services.fog.testResetFOG();
 
   await showAndWaitForModal(win => {
     const dialog = win.document.querySelector("dialog");
@@ -112,12 +115,12 @@ add_task(async function stop_asking() {
     false,
     "Canceling with checkbox checked clears the pref"
   );
-  AssertHistogram(histogram, "cancel check");
+  AssertSetDefaultResult("cancel check");
 });
 
 add_task(async function primary_default() {
   const mock = mockShell({ isPinned: true, isPinnedToStartMenu: true });
-  const histogram = getHistogram();
+  Services.fog.testResetFOG();
 
   await showAndWaitForModal(win => {
     win.document.querySelector("dialog").getButton("accept").click();
@@ -129,21 +132,21 @@ add_task(async function primary_default() {
     "Primary button sets as default"
   );
   Assert.equal(
-    mock.pinCurrentAppToTaskbarAsync.callCount,
+    mock.pinCurrentAppToTaskbar.callCount,
     0,
     "Primary button doesn't pin if already pinned"
   );
   Assert.equal(
-    mock.pinCurrentAppToStartMenuAsync.callCount,
+    mock.pinCurrentAppToStartMenu.callCount,
     0,
     "Primary button doesn't pin if already pinned"
   );
-  AssertHistogram(histogram, "accept");
+  AssertSetDefaultResult("accept");
 });
 
 add_task(async function primary_pin() {
   const mock = mockShell({ canPin: true });
-  const histogram = getHistogram();
+  Services.fog.testResetFOG();
 
   await showAndWaitForModal(win => {
     win.document.querySelector("dialog").getButton("accept").click();
@@ -156,19 +159,19 @@ add_task(async function primary_pin() {
   );
   if (AppConstants.platform == "win") {
     Assert.equal(
-      mock.pinCurrentAppToTaskbarAsync.callCount,
+      mock.pinCurrentAppToTaskbar.callCount,
       1,
       "Primary button also pins"
     );
     if (Services.sysinfo.getProperty("hasWinPackageId")) {
       Assert.equal(
-        mock.pinCurrentAppToStartMenuAsync.callCount,
+        mock.pinCurrentAppToStartMenu.callCount,
         1,
         "Primary button also pins to Windows start menu on MSIX"
       );
     }
   }
-  AssertHistogram(histogram, "accept");
+  AssertSetDefaultResult("accept");
 });
 
 add_task(async function showDefaultPrompt() {
@@ -244,7 +247,9 @@ add_task(async function showPromptStyleSpotlight() {
   const willPromptStub = sandbox
     .stub(DefaultBrowserCheck, "willCheckDefaultBrowser")
     .returns(true);
-  const showSpotlightSpy = sandbox.spy(SpecialMessageActions, "handleAction");
+  const showSpotlightStub = sandbox
+    .stub(Spotlight, "showSpotlightDialog")
+    .resolves(false);
 
   await ExperimentAPI.ready();
   let doExperimentCleanup = await NimbusTestUtils.enrollWithFeatureConfig(
@@ -266,14 +271,182 @@ add_task(async function showPromptStyleSpotlight() {
   await BROWSER_GLUE._maybeShowDefaultBrowserPrompt();
 
   Assert.equal(willPromptStub.callCount, 1, "willCheckDefaultBrowser called");
-  Assert.equal(showSpotlightSpy.callCount, 1, "handleAction should  be called");
+  Assert.equal(
+    showSpotlightStub.callCount,
+    1,
+    "showSpotlightDialog should be called"
+  );
+  Assert.equal(
+    showSpotlightStub.getCall(0).args[1],
+    testSetDefaultSpotlight,
+    "showSpotlightDialog called with right message"
+  );
 
-  ok(
-    showSpotlightSpy.calledWith({
-      type: "SHOW_SPOTLIGHT",
-      data: testSetDefaultSpotlight,
-    }),
-    "handleAction called with right args"
+  await doExperimentCleanup();
+  await sandbox.restore();
+  await BrowserTestUtils.closeWindow(win);
+});
+
+add_task(async function spotlightStoresImpressionTimestamp() {
+  let sandbox = sinon.createSandbox();
+  const mock = mockShell();
+
+  const win = await BrowserTestUtils.openNewBrowserWindow();
+  sandbox.stub(win, "getShellService").returns(mock);
+  Services.prefs.clearUserPref("browser.shell.mostRecentDefaultPromptSeen");
+
+  sandbox.stub(DefaultBrowserCheck, "willCheckDefaultBrowser").returns(true);
+  sandbox.stub(Spotlight, "showSpotlightDialog").resolves(true);
+
+  await ExperimentAPI.ready();
+  let doExperimentCleanup = await NimbusTestUtils.enrollWithFeatureConfig(
+    {
+      featureId: NimbusFeatures.setToDefaultPrompt.featureId,
+      value: {
+        showSpotlightPrompt: true,
+        message: testSetDefaultSpotlight,
+      },
+    },
+    { slug: "test-spotlight-impression-ts" },
+    { isRollout: true }
+  );
+
+  await BROWSER_GLUE._maybeShowDefaultBrowserPrompt();
+
+  const impressionTimestamp = Services.prefs.getCharPref(
+    "browser.shell.mostRecentDefaultPromptSeen",
+    ""
+  );
+  const now = Math.floor(Date.now() / 1000);
+  const oneHourInS = 60 * 60;
+  Assert.ok(
+    impressionTimestamp &&
+      now - parseInt(impressionTimestamp, 10) <= oneHourInS,
+    "Spotlight impression timestamp is stored"
+  );
+
+  await doExperimentCleanup();
+  await sandbox.restore();
+  await BrowserTestUtils.closeWindow(win);
+});
+
+add_task(async function spotlightRecordsTelemetryOnAccept() {
+  Services.fog.testResetFOG();
+  let sandbox = sinon.createSandbox();
+  const mock = mockShell({ isDefault: true });
+
+  const win = await BrowserTestUtils.openNewBrowserWindow();
+  // _showSetToDefaultSpotlight calls browser.documentGlobal.getShellService(),
+  // which is the new window, so stub it there too.
+  sandbox.stub(win, "getShellService").returns(mock);
+
+  sandbox.stub(DefaultBrowserCheck, "willCheckDefaultBrowser").returns(true);
+  sandbox.stub(Spotlight, "showSpotlightDialog").resolves(true);
+
+  await ExperimentAPI.ready();
+  let doExperimentCleanup = await NimbusTestUtils.enrollWithFeatureConfig(
+    {
+      featureId: NimbusFeatures.setToDefaultPrompt.featureId,
+      value: {
+        showSpotlightPrompt: true,
+        message: testSetDefaultSpotlight,
+      },
+    },
+    { slug: "test-spotlight-telemetry-accept" },
+    { isRollout: true }
+  );
+
+  await SpecialPowers.pushPrefEnv({
+    set: [[CHECK_PREF, true]],
+  });
+
+  await BROWSER_GLUE._maybeShowDefaultBrowserPrompt();
+
+  // isNowDefault=true, shouldCheckDefaultBrowser=true → resultEnum = 0*2+1 = 1 → "accept"
+  AssertSetDefaultResult("accept");
+
+  await doExperimentCleanup();
+  await sandbox.restore();
+  await SpecialPowers.popPrefEnv();
+  await BrowserTestUtils.closeWindow(win);
+});
+
+add_task(async function spotlightRecordsTelemetryWhenNotDefault() {
+  Services.fog.testResetFOG();
+  let sandbox = sinon.createSandbox();
+
+  const mock = mockShell({ isDefault: false });
+
+  const win = await BrowserTestUtils.openNewBrowserWindow();
+  sandbox.stub(win, "getShellService").returns(mock);
+
+  sandbox.stub(DefaultBrowserCheck, "willCheckDefaultBrowser").returns(true);
+  sandbox.stub(Spotlight, "showSpotlightDialog").resolves(true);
+
+  await ExperimentAPI.ready();
+  let doExperimentCleanup = await NimbusTestUtils.enrollWithFeatureConfig(
+    {
+      featureId: NimbusFeatures.setToDefaultPrompt.featureId,
+      value: {
+        showSpotlightPrompt: true,
+        message: testSetDefaultSpotlight,
+      },
+    },
+    { slug: "test-spotlight-telemetry-not-default" },
+    { isRollout: true }
+  );
+
+  await SpecialPowers.pushPrefEnv({
+    set: [[CHECK_PREF, true]],
+  });
+
+  await BROWSER_GLUE._maybeShowDefaultBrowserPrompt();
+
+  // isNowDefault=false, shouldCheckDefaultBrowser=true → resultEnum = 1*2+1 = 3 → "cancel"
+  AssertSetDefaultResult("cancel");
+
+  await doExperimentCleanup();
+  await sandbox.restore();
+  await SpecialPowers.popPrefEnv();
+  await BrowserTestUtils.closeWindow(win);
+});
+
+add_task(async function spotlightNotShownDoesNotRecordTelemetry() {
+  Services.fog.testResetFOG();
+  let sandbox = sinon.createSandbox();
+  mockShell();
+
+  const win = await BrowserTestUtils.openNewBrowserWindow();
+  Services.prefs.clearUserPref("browser.shell.mostRecentDefaultPromptSeen");
+
+  sandbox.stub(DefaultBrowserCheck, "willCheckDefaultBrowser").returns(true);
+  // Simulate spotlight being suppressed (e.g. gDialogBox already open)
+  sandbox.stub(Spotlight, "showSpotlightDialog").resolves(false);
+
+  await ExperimentAPI.ready();
+  let doExperimentCleanup = await NimbusTestUtils.enrollWithFeatureConfig(
+    {
+      featureId: NimbusFeatures.setToDefaultPrompt.featureId,
+      value: {
+        showSpotlightPrompt: true,
+        message: testSetDefaultSpotlight,
+      },
+    },
+    { slug: "test-spotlight-not-shown" },
+    { isRollout: true }
+  );
+
+  await BROWSER_GLUE._maybeShowDefaultBrowserPrompt();
+
+  Assert.equal(
+    Glean.browser.setDefaultResult.testGetValue(),
+    null,
+    "No telemetry recorded when spotlight is not shown"
+  );
+  Assert.equal(
+    Services.prefs.getCharPref("browser.shell.mostRecentDefaultPromptSeen", ""),
+    "",
+    "Impression pref not set when spotlight is not shown"
   );
 
   await doExperimentCleanup();

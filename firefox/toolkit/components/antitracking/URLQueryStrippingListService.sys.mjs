@@ -69,7 +69,17 @@ function combineAndParseLists(mainList, arrOfLists) {
       if (Object.hasOwn(mainList, key)) {
         mainList[key].queryParams.push(...additionalList[key].queryParams);
 
-        mainList[key].topLevelSites.push(...additionalList[key].topLevelSites);
+        // Ensure empty hosts in global rules function as intended
+        mainList[key].hosts ??= [];
+        additionalList[key].hosts ??= [];
+
+        mainList[key].hosts.push(...additionalList[key].hosts);
+
+        mainList[key].schemelessSites ??= [];
+        additionalList[key].schemelessSites ??= [];
+        mainList[key].schemelessSites.push(
+          ...additionalList[key].schemelessSites
+        );
       } else {
         mainList[key] = additionalList[key];
       }
@@ -77,18 +87,23 @@ function combineAndParseLists(mainList, arrOfLists) {
   });
 
   for (let key in mainList) {
-    mainList[key].queryParams = mainList[key].queryParams.map(param =>
+    mainList[key].queryParams = (mainList[key].queryParams ?? []).map(param =>
       param.toLowerCase()
     );
 
-    mainList[key].topLevelSites = mainList[key].topLevelSites.map(param =>
-      param.toLowerCase()
+    // Hosts can be missing for global rules (isGlobal: true) and for any bad input.
+    mainList[key].hosts = (mainList[key].hosts ?? []).map(host =>
+      host.toLowerCase()
+    );
+    mainList[key].schemelessSites = (mainList[key].schemelessSites ?? []).map(
+      schemelessSites => schemelessSites.toLowerCase()
     );
 
-    // Removes duplicates topLevelSites
-    mainList[key].topLevelSites = [...new Set(mainList[key].topLevelSites)];
+    // Removes duplicate hosts
+    mainList[key].hosts = [...new Set(mainList[key].hosts)];
+    mainList[key].schemelessSites = [...new Set(mainList[key].schemelessSites)];
 
-    // Removes duplicates queryParams
+    // Removes duplicate queryParams
     mainList[key].queryParams = [...new Set(mainList[key].queryParams)];
   }
 
@@ -435,10 +450,11 @@ export class URLQueryStrippingListService {
       case "xpcom-shutdown":
         this.#shutdown();
         break;
-      case "nsPref:changed":
+      case "nsPref:changed": {
         let prefValue = Services.prefs.getStringPref(data, "");
         this._onPrefUpdate(data, prefValue);
         break;
+      }
       default:
         console.error(`Unexpected event ${topic}`);
     }

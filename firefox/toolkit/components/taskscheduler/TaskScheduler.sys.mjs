@@ -1,4 +1,3 @@
-/* -*- js-indent-level: 2; indent-tabs-mode: nil -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,11 +8,18 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   WinImpl: "resource://gre/modules/TaskSchedulerWinImpl.sys.mjs",
+  WinMSIXImpl: "resource://gre/modules/TaskSchedulerWinMSIXImpl.sys.mjs",
   MacOSImpl: "resource://gre/modules/TaskSchedulerMacOSImpl.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "gImpl", () => {
   if (AppConstants.platform == "win") {
+    // Packaged (MSIX) installs can use the classic Task Scheduler, but its
+    // tasks are not cleaned up when the package is uninstalled, so register
+    // WinRT background tasks instead.
+    if (Services.sysinfo.getProperty("hasWinPackageId")) {
+      return lazy.WinMSIXImpl;
+    }
     return lazy.WinImpl;
   }
 
@@ -76,7 +82,7 @@ export var TaskScheduler = {
    * @param intervalSeconds
    *        Interval at which to run the command, in seconds. Minimum 1800 (30 minutes).
    *
-   * @param {Object} options
+   * @param {object} options
    *        Optional, as are all of its properties:
    *        {
    *          options.args
@@ -130,7 +136,7 @@ export var TaskScheduler = {
   /**
    * Delete a scheduled task previously created with registerTask.
    *
-   * @param {Object} options
+   * @param {object} options
    *        Optional, as are all of its properties:
    *        {
    *            options.nameVersion
@@ -150,7 +156,7 @@ export var TaskScheduler = {
   /**
    * Delete all tasks registered by this application.
    *
-   * @param {Object} options
+   * @param {object} options
    *        Optional, as are all of its properties:
    *        {
    *            options.nameVersion
@@ -172,7 +178,7 @@ export var TaskScheduler = {
    * @param id
    *        A string representing the identifier of the task to look for.
    *
-   * @param {Object} options
+   * @param {object} options
    *        Optional, as are all of its properties:
    *        {
    *            options.nameVersion

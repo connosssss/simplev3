@@ -3,12 +3,6 @@
 
 "use strict";
 
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
-
 /**
  * This test case open 5 tabs across 2 windows, requesting a translation to a different language in all 5 tabs before
  * resolving all of the downloads at once. It then goes one by one through each open tab and ensures that they all show
@@ -18,6 +12,7 @@ add_setup(async function () {
 add_task(
   async function test_full_page_translations_panel_recent_language_memory_with_multiple_windows_and_multiple_tabs() {
     const window1 = window;
+    await focusWindow(window1);
     const {
       runInPage: runInEsEnPage,
       cleanup: cleanupWindow1,
@@ -68,7 +63,7 @@ add_task(
 
     info("Opening a tab for es-fa in window 2");
 
-    const window2 = await BrowserTestUtils.openNewBrowserWindow();
+    const window2 = await openNewFocusedBrowserWindow();
     const { runInPage: runInEsFaPage, cleanup: cleanupWindow2 } =
       await loadTestPage({
         win: window2,

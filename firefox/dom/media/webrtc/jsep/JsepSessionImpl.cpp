@@ -6,28 +6,25 @@
 
 #include <stdlib.h>
 
-#include <bitset>
-#include <iterator>
+#include <algorithm>
 #include <set>
 #include <string>
 #include <utility>
 
-#include "mozilla/StaticPrefs_media.h"
-#include "transport/logging.h"
+#include "api/rtp_parameters.h"
+#include "jsep/JsepTrack.h"
+#include "jsep/JsepTransport.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/StaticPrefs_media.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/net/DataChannelProtocol.h"
 #include "nsDebug.h"
 #include "nspr.h"
 #include "nss.h"
 #include "pk11pub.h"
-
-#include "api/rtp_parameters.h"
-
-#include "jsep/JsepTrack.h"
-#include "jsep/JsepTransport.h"
 #include "sdp/HybridSdpParser.h"
-#include "sdp/SipccSdp.h"
+#include "sdp/SdpImpl.h"
+#include "transport/logging.h"
 
 namespace mozilla {
 
@@ -40,17 +37,6 @@ MOZ_MTLOG_MODULE("jsep")
     mLastError = os.str();                                    \
     MOZ_MTLOG(ML_ERROR, "[" << mName << "]: " << mLastError); \
   } while (0);
-
-static std::bitset<128> GetForbiddenSdpPayloadTypes() {
-  std::bitset<128> forbidden(0);
-  forbidden[1] = true;
-  forbidden[2] = true;
-  forbidden[19] = true;
-  for (uint16_t i = 64; i < 96; ++i) {
-    forbidden[i] = true;
-  }
-  return forbidden;
-}
 
 static std::string GetRandomHex(size_t words) {
   std::ostringstream os;
@@ -90,9 +76,9 @@ JsepSessionImpl::JsepSessionImpl(const JsepSessionImpl& aOrig)
                                     ? aOrig.mPendingRemoteDescription->Clone()
                                     : nullptr),
       mSdpHelper(&mLastError),
-      mParser(new HybridSdpParser()) {
+      mParser(MakeUnique<HybridSdpParser>()) {
   for (const auto& codec : aOrig.mSupportedCodecs) {
-    mSupportedCodecs.emplace_back(codec->Clone());
+    mSupportedCodecs.EmplaceBack(codec->Clone());
   }
 }
 
@@ -177,6 +163,21 @@ void JsepSessionImpl::InitTransceiver(JsepTransceiver& aTransceiver) {
   // We do not set mLevel yet, we do that either on createOffer, or setRemote
 }
 
+nsresult JsepSessionImpl::SetRtcpMuxPolicy(JsepRtcpMuxPolicy policy) {
+  mLastError.clear();
+  if (mRtcpMuxPolicy == policy) {
+    return NS_OK;
+  }
+  if (mCurrentLocalDescription) {
+    JSEP_SET_ERROR(
+        "Changing the rtcpMux policy is only supported before the "
+        "first SetLocalDescription.");
+    return NS_ERROR_UNEXPECTED;
+  }
+  mRtcpMuxPolicy = policy;
+  return NS_OK;
+}
+
 nsresult JsepSessionImpl::SetBundlePolicy(JsepBundlePolicy policy) {
   mLastError.clear();
 
@@ -203,21 +204,25 @@ nsresult JsepSessionImpl::AddDtlsFingerprint(
   fp.mAlgorithm = algorithm;
   fp.mValue = value;
 
-  mDtlsFingerprints.push_back(fp);
+  mDtlsFingerprints.push_back(std::move(fp));
 
   return NS_OK;
 }
 
 nsresult JsepSessionImpl::AddRtpExtension(
-    JsepMediaType mediaType, const std::string& extensionName,
+    JsepMediaType mediaType, const nsACString& extensionName,
     SdpDirectionAttribute::Direction direction) {
   mLastError.clear();
 
   for (auto& ext : mRtpExtensions) {
-    if (ext.mExtmap.direction == direction &&
-        ext.mExtmap.extensionname == extensionName) {
+    if (ext.mExtmap.extensionname == extensionName) {
       if (ext.mMediaType != mediaType) {
         ext.mMediaType = JsepMediaType::kAudioVideo;
+      }
+      if (ext.mExtmap.direction != direction) {
+        ext.mExtmap.direction |= direction;
+        ext.mExtmap.direction_specified =
+            ext.mExtmap.direction != SdpDirectionAttribute::kSendrecv;
       }
       return NS_OK;
     }
@@ -233,26 +238,27 @@ nsresult JsepSessionImpl::AddRtpExtension(
       mediaType,
       {freeEntry, direction,
        // do we want to specify direction?
-       direction != SdpDirectionAttribute::kSendrecv, extensionName, ""}};
+       direction != SdpDirectionAttribute::kSendrecv, nsCString(extensionName),
+       ""_ns}};
 
-  mRtpExtensions.push_back(extMediaType);
+  mRtpExtensions.push_back(std::move(extMediaType));
   return NS_OK;
 }
 
 nsresult JsepSessionImpl::AddAudioRtpExtension(
-    const std::string& extensionName,
+    const nsACString& extensionName,
     SdpDirectionAttribute::Direction direction) {
   return AddRtpExtension(JsepMediaType::kAudio, extensionName, direction);
 }
 
 nsresult JsepSessionImpl::AddVideoRtpExtension(
-    const std::string& extensionName,
+    const nsACString& extensionName,
     SdpDirectionAttribute::Direction direction) {
   return AddRtpExtension(JsepMediaType::kVideo, extensionName, direction);
 }
 
 nsresult JsepSessionImpl::AddAudioVideoRtpExtension(
-    const std::string& extensionName,
+    const nsACString& extensionName,
     SdpDirectionAttribute::Direction direction) {
   return AddRtpExtension(JsepMediaType::kAudioVideo, extensionName, direction);
 }
@@ -300,17 +306,21 @@ nsresult JsepSessionImpl::CreateOfferMsection(const JsepOfferOptions& options,
   if (mSdpHelper.HasRtcp(msection->GetProtocol())) {
     // Set RTCP-MUX.
     msection->GetAttributeList().SetAttribute(
-        new SdpFlagAttribute(SdpAttribute::kRtcpMuxAttribute));
+        MakeUnique<SdpFlagAttribute>(SdpAttribute::kRtcpMuxAttribute));
     // Set RTCP-RSIZE
     if (msection->GetMediaType() == SdpMediaSection::MediaType::kVideo &&
         Preferences::GetBool("media.navigator.video.offer_rtcp_rsize", false)) {
       msection->GetAttributeList().SetAttribute(
-          new SdpFlagAttribute(SdpAttribute::kRtcpRsizeAttribute));
+          MakeUnique<SdpFlagAttribute>(SdpAttribute::kRtcpRsizeAttribute));
     }
   }
-  // Ditto for extmap-allow-mixed
-  msection->GetAttributeList().SetAttribute(
-      new SdpFlagAttribute(SdpAttribute::kExtmapAllowMixedAttribute));
+
+  if (msection->GetMediaType() != SdpMediaSection::MediaType::kApplication) {
+    // Ditto for extmap-allow-mixed Add to session level instead of media
+    // level. Adding more than once is a no-op.
+    local->GetAttributeList().SetAttribute(
+        MakeUnique<SdpFlagAttribute>(SdpAttribute::kExtmapAllowMixedAttribute));
+  }
 
   nsresult rv = AddTransportAttributes(msection, SdpSetupAttribute::kActpass);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -330,7 +340,7 @@ nsresult JsepSessionImpl::CreateOfferMsection(const JsepOfferOptions& options,
   }
 
   msection->GetAttributeList().SetAttribute(
-      new SdpStringAttribute(SdpAttribute::kMidAttribute, mid));
+      MakeUnique<SdpStringAttribute>(SdpAttribute::kMidAttribute, mid));
 
   return NS_OK;
 }
@@ -368,7 +378,7 @@ void JsepSessionImpl::SetupBundle(Sdp* sdp) const {
 
       if (useBundleOnly) {
         attrs.SetAttribute(
-            new SdpFlagAttribute(SdpAttribute::kBundleOnlyAttribute));
+            MakeUnique<SdpFlagAttribute>(SdpAttribute::kBundleOnlyAttribute));
         // Set port to 0 for sections with bundle-only attribute. (mjf)
         sdp->GetMediaSection(i).SetPort(0);
       }
@@ -378,9 +388,9 @@ void JsepSessionImpl::SetupBundle(Sdp* sdp) const {
   }
 
   if (!mids.empty()) {
-    UniquePtr<SdpGroupAttributeList> groupAttr(new SdpGroupAttributeList);
+    auto groupAttr = MakeUnique<SdpGroupAttributeList>();
     groupAttr->PushEntry(SdpGroupAttributeList::kBundle, mids);
-    sdp->GetAttributeList().SetAttribute(groupAttr.release());
+    sdp->GetAttributeList().SetAttribute(std::move(groupAttr));
   }
 }
 
@@ -402,6 +412,19 @@ JsepSession::Result JsepSessionImpl::CreateOffer(
   // Make the basic SDP that is common to offer/answer.
   nsresult rv = CreateGenericSDP(&sdp);
   NS_ENSURE_SUCCESS(rv, dom::PCError::OperationError);
+
+  // Create a data "transceiver" if none exists yet.
+  if (mAlwaysNegotiateDataChannels) {
+    Maybe<JsepTransceiver> dcTransceiver =
+        FindTransceiver([](const JsepTransceiver& aTransceiver) {
+          return aTransceiver.GetMediaType() == SdpMediaSection::kApplication;
+        });
+
+    if (!dcTransceiver) {
+      AddTransceiver(
+          JsepTransceiver(SdpMediaSection::MediaType::kApplication, *mUuidGen));
+    }
+  }
 
   for (size_t level = 0;
        Maybe<JsepTransceiver> transceiver = GetTransceiverForLocal(level);
@@ -451,9 +474,9 @@ void JsepSessionImpl::AddExtmap(SdpMediaSection* msection) {
   auto extensions = GetRtpExtensions(*msection);
 
   if (!extensions.empty()) {
-    SdpExtmapAttributeList* extmap = new SdpExtmapAttributeList;
-    extmap->mExtmaps = extensions;
-    msection->GetAttributeList().SetAttribute(extmap);
+    auto extmap = MakeUnique<SdpExtmapAttributeList>();
+    extmap->mExtmaps = std::move(extensions);
+    msection->GetAttributeList().SetAttribute(std::move(extmap));
   }
 }
 
@@ -470,24 +493,30 @@ std::vector<SdpExtmapAttributeList::Extmap> JsepSessionImpl::GetRtpExtensions(
       break;
     case SdpMediaSection::kVideo:
       mediaType = JsepMediaType::kVideo;
-      // We need to add the dependency descriptor extension for simulcast
-      if (includes_send && StaticPrefs::media_peerconnection_video_use_dd() &&
-          msection.GetAttributeList().HasAttribute(
-              SdpAttribute::kSimulcastAttribute)) {
-        AddVideoRtpExtension(webrtc::RtpExtension::kDependencyDescriptorUri,
-                             SdpDirectionAttribute::kSendonly);
+      if (StaticPrefs::media_peerconnection_video_use_dd()) {
+        // We always want to receive the dependency descriptor, as libwebrtc
+        // relies on it for layered streams (Bug 2071030). We only send it for
+        // simulcast.
+        const bool sendSimulcast =
+            includes_send && msection.GetAttributeList().HasAttribute(
+                                 SdpAttribute::kSimulcastAttribute);
+        AddVideoRtpExtension(
+            nsLiteralCString(webrtc::RtpExtension::kDependencyDescriptorUri),
+            sendSimulcast ? SdpDirectionAttribute::kSendrecv
+                          : SdpDirectionAttribute::kRecvonly);
       }
       if (msection.GetAttributeList().HasAttribute(
               SdpAttribute::kRidAttribute)) {
         // We need RID support
         // TODO: Would it be worth checking that the direction is sane?
-        AddVideoRtpExtension(webrtc::RtpExtension::kRidUri,
+        AddVideoRtpExtension(nsLiteralCString(webrtc::RtpExtension::kRidUri),
                              SdpDirectionAttribute::kSendonly);
 
         if (mRtxIsAllowed &&
             Preferences::GetBool("media.peerconnection.video.use_rtx", false)) {
-          AddVideoRtpExtension(webrtc::RtpExtension::kRepairedRidUri,
-                               SdpDirectionAttribute::kSendonly);
+          AddVideoRtpExtension(
+              nsLiteralCString(webrtc::RtpExtension::kRepairedRidUri),
+              SdpDirectionAttribute::kSendonly);
         }
       }
       break;
@@ -555,7 +584,8 @@ JsepSession::Result JsepSessionImpl::CreateAnswer(
     const JsepAnswerOptions& options, std::string* answer) {
   mLastError.clear();
 
-  if (mState != kJsepStateHaveRemoteOffer) {
+  if (mState != kJsepStateHaveRemoteOffer &&
+      mState != kJsepStateHaveLocalPranswer) {
     JSEP_SET_ERROR("Cannot create answer in state " << GetStateStr(mState));
     return dom::PCError::InvalidStateError;
   }
@@ -569,15 +599,15 @@ JsepSession::Result JsepSessionImpl::CreateAnswer(
   const Sdp& offer = *mPendingRemoteDescription;
 
   // Copy the bundle groups into our answer
-  UniquePtr<SdpGroupAttributeList> groupAttr(new SdpGroupAttributeList);
+  auto groupAttr = MakeUnique<SdpGroupAttributeList>();
   mSdpHelper.GetBundleGroups(offer, &groupAttr->mGroups);
-  sdp->GetAttributeList().SetAttribute(groupAttr.release());
+  sdp->GetAttributeList().SetAttribute(std::move(groupAttr));
 
   // Copy EXTMAP-ALLOW-MIXED from the offer to the answer
   if (offer.GetAttributeList().HasAttribute(
           SdpAttribute::kExtmapAllowMixedAttribute)) {
     sdp->GetAttributeList().SetAttribute(
-        new SdpFlagAttribute(SdpAttribute::kExtmapAllowMixedAttribute));
+        MakeUnique<SdpFlagAttribute>(SdpAttribute::kExtmapAllowMixedAttribute));
   } else {
     sdp->GetAttributeList().RemoveAttribute(
         SdpAttribute::kExtmapAllowMixedAttribute);
@@ -600,7 +630,7 @@ JsepSession::Result JsepSessionImpl::CreateAnswer(
   // Ensure that each bundle-group starts with a mid that has a transport, in
   // case we've disabled what the offerer wanted to use. If the group doesn't
   // contain anything that has a transport, remove it.
-  groupAttr.reset(new SdpGroupAttributeList);
+  groupAttr = MakeUnique<SdpGroupAttributeList>();
   std::vector<SdpGroupAttributeList::Group> bundleGroups;
   mSdpHelper.GetBundleGroups(*sdp, &bundleGroups);
   for (auto& group : bundleGroups) {
@@ -616,7 +646,7 @@ JsepSession::Result JsepSessionImpl::CreateAnswer(
       }
     }
   }
-  sdp->GetAttributeList().SetAttribute(groupAttr.release());
+  sdp->GetAttributeList().SetAttribute(std::move(groupAttr));
 
   if (mCurrentLocalDescription) {
     // per discussion with bwc, 3rd parm here should be offer, not *sdp. (mjf)
@@ -653,7 +683,7 @@ nsresult JsepSessionImpl::CreateAnswerMsection(
 
   MOZ_ASSERT(transceiver.IsAssociated());
   if (msection.GetAttributeList().GetMid().empty()) {
-    msection.GetAttributeList().SetAttribute(new SdpStringAttribute(
+    msection.GetAttributeList().SetAttribute(MakeUnique<SdpStringAttribute>(
         SdpAttribute::kMidAttribute, transceiver.GetMid()));
   }
 
@@ -743,6 +773,37 @@ JsepSession::Result JsepSessionImpl::SetLocalDescription(
                           << "\nSDP=\n"
                           << sdp);
 
+  // Syntactic sugar for repeated sLD(offer)
+  if (type == kJsepSdpOffer && mState == kJsepStateHaveLocalOffer) {
+    // Rollback previous offer before applying the new one.
+    SetLocalDescription(kJsepSdpRollback, "");
+    MOZ_ASSERT(mState == kJsepStateStable);
+  }
+
+  // State checking
+  switch (type) {
+    case kJsepSdpOffer:
+      if (mState != kJsepStateStable) {
+        JSEP_SET_ERROR("Cannot set a local offer in " << mState);
+        return dom::PCError::InvalidStateError;
+      }
+      break;
+    case kJsepSdpAnswer:
+    case kJsepSdpPranswer:
+      if (mState != kJsepStateHaveRemoteOffer &&
+          mState != kJsepStateHaveLocalPranswer) {
+        JSEP_SET_ERROR("Cannot set a local answer in " << mState);
+        return dom::PCError::InvalidStateError;
+      }
+      break;
+    case kJsepSdpRollback:
+      if (mState != kJsepStateHaveLocalOffer) {
+        JSEP_SET_ERROR("Cannot rollback a local offer in " << mState);
+        return dom::PCError::InvalidStateError;
+      }
+  }
+
+  // The most basic of munging checking
   switch (type) {
     case kJsepSdpOffer:
       if (!mGeneratedOffer) {
@@ -752,11 +813,6 @@ JsepSession::Result JsepSessionImpl::SetLocalDescription(
       }
       if (sdp.empty()) {
         sdp = mGeneratedOffer->ToString();
-      }
-      if (mState == kJsepStateHaveLocalOffer) {
-        // Rollback previous offer before applying the new one.
-        SetLocalDescription(kJsepSdpRollback, "");
-        MOZ_ASSERT(mState == kJsepStateStable);
       }
       break;
     case kJsepSdpAnswer:
@@ -771,62 +827,49 @@ JsepSession::Result JsepSessionImpl::SetLocalDescription(
       }
       break;
     case kJsepSdpRollback:
-      if (mState != kJsepStateHaveLocalOffer) {
-        JSEP_SET_ERROR("Cannot rollback local description in "
-                       << GetStateStr(mState));
-        // Currently, spec allows this in any state except stable, and
-        // sRD(rollback) and sLD(rollback) do exactly the same thing.
-        return dom::PCError::InvalidStateError;
-      }
-
-      mPendingLocalDescription.reset();
-      SetState(kJsepStateStable);
-      RollbackLocalOffer();
-      return Result();
+      break;
   }
 
-  switch (mState) {
-    case kJsepStateStable:
-      if (type != kJsepSdpOffer) {
-        JSEP_SET_ERROR("Cannot set local answer in state "
-                       << GetStateStr(mState));
-        return dom::PCError::InvalidStateError;
-      }
-      break;
-    case kJsepStateHaveRemoteOffer:
-      if (type != kJsepSdpAnswer && type != kJsepSdpPranswer) {
-        JSEP_SET_ERROR("Cannot set local offer in state "
-                       << GetStateStr(mState));
-        return dom::PCError::InvalidStateError;
-      }
-      break;
-    default:
-      JSEP_SET_ERROR("Cannot set local offer or answer in state "
-                     << GetStateStr(mState));
-      return dom::PCError::InvalidStateError;
+  if (type == kJsepSdpRollback) {
+    mPendingLocalDescription.reset();
+    SetState(kJsepStateStable);
+    RollbackLocalOffer();
+    return Result();
   }
 
   UniquePtr<Sdp> parsed;
-  nsresult rv = ParseSdp(sdp, &parsed);
-  // Needs to be RTCError with sdp-syntax-error
-  NS_ENSURE_SUCCESS(rv, dom::PCError::OperationError);
+  JsepSession::Result parse_result = ParseSdp(sdp, &parsed);
+  if (parse_result.mError.isSome()) {
+    return parse_result;
+  }
 
   // Check that content hasn't done anything unsupported with the SDP
-  rv = ValidateLocalDescription(*parsed, type);
-  NS_ENSURE_SUCCESS(rv, dom::PCError::InvalidModificationError);
-
+  Result result = ValidateLocalDescription(*parsed, type);
+  if (result.mError.isSome()) {
+    return result;
+  }
   switch (type) {
     case kJsepSdpOffer:
-      rv = ValidateOffer(*parsed);
+      result = ValidateOffer(*parsed);
       break;
     case kJsepSdpAnswer:
     case kJsepSdpPranswer:
-      rv = ValidateAnswer(*mPendingRemoteDescription, *parsed);
+      result = ValidateAnswer(*mPendingRemoteDescription, *parsed);
       break;
     case kJsepSdpRollback:
       MOZ_CRASH();  // Handled above
   }
-  NS_ENSURE_SUCCESS(rv, dom::PCError::InvalidAccessError);
+  if (result.mError.isSome()) {
+    return result;
+  }
+
+  if (mState == kJsepStateHaveLocalPranswer) {
+    // Might be a final answer, might be another pranswer
+    result = ValidateAnswerAgainstPranswer(*mPendingLocalDescription, *parsed);
+    if (result.mError.isSome()) {
+      return result;
+    }
+  }
 
   if (type == kJsepSdpOffer) {
     // Save in case we need to rollback
@@ -834,14 +877,48 @@ JsepSession::Result JsepSessionImpl::SetLocalDescription(
   }
 
   SdpHelper::BundledMids bundledMids;
-  rv = mSdpHelper.GetBundledMids(*parsed, &bundledMids);
-  NS_ENSURE_SUCCESS(rv, dom::PCError::OperationError);
+  nsresult ns_rv = mSdpHelper.GetBundledMids(*parsed, &bundledMids);
+  NS_ENSURE_SUCCESS(ns_rv, dom::PCError::OperationError);
 
   SdpHelper::BundledMids remoteBundledMids;
   if (type != kJsepSdpOffer) {
-    rv = mSdpHelper.GetBundledMids(*mPendingRemoteDescription,
-                                   &remoteBundledMids);
-    NS_ENSURE_SUCCESS(rv, dom::PCError::OperationError);
+    ns_rv = mSdpHelper.GetBundledMids(*mPendingRemoteDescription,
+                                      &remoteBundledMids);
+    NS_ENSURE_SUCCESS(ns_rv, dom::PCError::OperationError);
+  }
+
+  // This loop is inspecting the previous state on transceivers by calling
+  // HasOwnTransport; do this before we begin updating them in the loop
+  // below.
+  std::set<size_t> levelsWithNegotiatedTransport;
+  for (size_t i = 0; i < parsed->GetMediaSectionCount(); ++i) {
+    Maybe<JsepTransceiver> currentTransportOwner;
+
+    const auto& msection = parsed->GetMediaSection(i);
+    if (msection.GetAttributeList().HasAttribute(SdpAttribute::kMidAttribute)) {
+      auto bundleTagIt = bundledMids.find(msection.GetAttributeList().GetMid());
+      if (bundleTagIt != bundledMids.end()) {
+        // Bundled!
+        currentTransportOwner =
+            GetTransceiverForLevel(bundleTagIt->second->GetLevel());
+      }
+    }
+
+    if (!currentTransportOwner) {
+      // Not bundled! This transceiver owns its transport.
+      currentTransportOwner = GetTransceiverForLevel(i);
+    }
+
+    // HasOwnTransport has not been updated yet; this tells us if the
+    // *current* transport owner owned a transport *last* time. In other
+    // words, the transport owner has an already negotiated transport, and
+    // the transceiver at level i can use it.
+    // Note: It is possible that this m-section is disabled, making the
+    // setting of this flag moot.
+    if (currentTransportOwner && currentTransportOwner->IsNegotiated() &&
+        currentTransportOwner->HasOwnTransport()) {
+      levelsWithNegotiatedTransport.insert(i);
+    }
   }
 
   for (size_t i = 0; i < parsed->GetMediaSectionCount(); ++i) {
@@ -858,9 +935,20 @@ JsepSession::Result JsepSessionImpl::SetLocalDescription(
 
     if (mSdpHelper.MsectionIsDisabled(msection)) {
       transceiver->mTransport.Close();
+      transceiver->SetCanUseExistingTransport(false);
       SetTransceiver(*transceiver);
       continue;
     }
+
+    // If the transceiver has been stopped, but we receive an enabled msection
+    // for that transceiver, don't try to resurrect the dead transceiver.
+    if (transceiver->IsStopped()) {
+      JSEP_SET_ERROR("Transceiver for level " << i << " has been stopped.");
+      return dom::PCError::OperationError;
+    }
+
+    transceiver->SetCanUseExistingTransport(
+        levelsWithNegotiatedTransport.contains(i));
 
     bool hasOwnTransport = mSdpHelper.OwnsTransport(
         msection, bundledMids,
@@ -873,6 +961,10 @@ JsepSession::Result JsepSessionImpl::SetLocalDescription(
           remoteMsection, remoteBundledMids, sdp::kOffer);
     }
 
+    // For an offer, OwnsTransport() can't be sure a m-section that isn't
+    // marked bundle-only will actually end up bundled (that depends on the
+    // answer), so it conservatively says such a m-section owns its
+    // transport.
     if (hasOwnTransport) {
       EnsureHasOwnTransport(parsed->GetMediaSection(i), *transceiver);
     }
@@ -890,6 +982,7 @@ JsepSession::Result JsepSessionImpl::SetLocalDescription(
         transceiver->SetBundleLevel(it->second->GetLevel());
       }
     }
+
     SetTransceiver(*transceiver);
   }
 
@@ -897,17 +990,17 @@ JsepSession::Result JsepSessionImpl::SetLocalDescription(
 
   switch (type) {
     case kJsepSdpOffer:
-      rv = SetLocalDescriptionOffer(std::move(parsed));
+      ns_rv = SetLocalDescriptionOffer(std::move(parsed));
       break;
     case kJsepSdpAnswer:
     case kJsepSdpPranswer:
-      rv = SetLocalDescriptionAnswer(type, std::move(parsed));
+      ns_rv = SetLocalDescriptionAnswer(type, std::move(parsed));
       break;
     case kJsepSdpRollback:
       MOZ_CRASH();  // Handled above
   }
 
-  NS_ENSURE_SUCCESS(rv, dom::PCError::OperationError);
+  NS_ENSURE_SUCCESS(ns_rv, dom::PCError::OperationError);
   return Result();
 }
 
@@ -934,13 +1027,28 @@ nsresult JsepSessionImpl::SetLocalDescriptionOffer(UniquePtr<Sdp> offer) {
 
 nsresult JsepSessionImpl::SetLocalDescriptionAnswer(JsepSdpType type,
                                                     UniquePtr<Sdp> answer) {
-  MOZ_ASSERT(mState == kJsepStateHaveRemoteOffer);
+  MOZ_ASSERT(mState == kJsepStateHaveRemoteOffer ||
+             mState == kJsepStateHaveLocalPranswer);
+  const bool firstAnswer = (mState == kJsepStateHaveRemoteOffer);
   mPendingLocalDescription = std::move(answer);
 
   nsresult rv = HandleNegotiatedSession(mPendingLocalDescription,
                                         mPendingRemoteDescription);
   NS_ENSURE_SUCCESS(rv, rv);
 
+  // Counts exchanges, not answers; a repeated provisional answer is the same
+  // exchange.
+  if (firstAnswer) {
+    mNegotiations++;
+  }
+
+  if (type == kJsepSdpPranswer) {
+    SetState(kJsepStateHaveLocalPranswer);
+    return NS_OK;
+  }
+
+  mGeneratedAnswer.reset();
+  mGeneratedOffer.reset();
   mCurrentRemoteDescription = std::move(mPendingRemoteDescription);
   mCurrentLocalDescription = std::move(mPendingLocalDescription);
   MOZ_ASSERT(mIsPendingOfferer.isSome() && !*mIsPendingOfferer);
@@ -1003,25 +1111,38 @@ JsepSession::Result JsepSessionImpl::SetRemoteDescription(
 
   // Parse.
   UniquePtr<Sdp> parsed;
-  nsresult rv = ParseSdp(sdp, &parsed);
-  // Needs to be RTCError with sdp-syntax-error
-  NS_ENSURE_SUCCESS(rv, dom::PCError::OperationError);
+  JsepSession::Result parse_result = ParseSdp(sdp, &parsed);
+  if (parse_result.mError.isSome()) {
+    return parse_result;
+  }
 
-  rv = ValidateRemoteDescription(*parsed);
-  NS_ENSURE_SUCCESS(rv, dom::PCError::InvalidAccessError);
+  Result result = ValidateRemoteDescription(*parsed);
+  if (result.mError.isSome()) {
+    return result;
+  }
 
   switch (type) {
     case kJsepSdpOffer:
-      rv = ValidateOffer(*parsed);
+      result = ValidateOffer(*parsed);
       break;
     case kJsepSdpAnswer:
     case kJsepSdpPranswer:
-      rv = ValidateAnswer(*mPendingLocalDescription, *parsed);
+      result = ValidateAnswer(*mPendingLocalDescription, *parsed);
       break;
     case kJsepSdpRollback:
       MOZ_CRASH();  // Handled above
   }
-  NS_ENSURE_SUCCESS(rv, dom::PCError::InvalidAccessError);
+  if (result.mError.isSome()) {
+    return result;
+  }
+
+  if (mState == kJsepStateHaveRemotePranswer) {
+    // Might be a final answer, might be another pranswer
+    result = ValidateAnswerAgainstPranswer(*mPendingRemoteDescription, *parsed);
+    if (result.mError.isSome()) {
+      return result;
+    }
+  }
 
   bool iceLite =
       parsed->GetAttributeList().HasAttribute(SdpAttribute::kIceLiteAttribute);
@@ -1066,8 +1187,8 @@ JsepSession::Result JsepSessionImpl::SetRemoteDescription(
 
   // TODO(bug 1095780): Note that we create remote tracks even when
   // They contain only codecs we can't negotiate or other craziness.
-  rv = UpdateTransceiversFromRemoteDescription(*parsed);
-  NS_ENSURE_SUCCESS(rv, dom::PCError::OperationError);
+  nsresult ns_rv = UpdateTransceiversFromRemoteDescription(*parsed);
+  NS_ENSURE_SUCCESS(ns_rv, dom::PCError::OperationError);
 
   for (size_t i = 0; i < parsed->GetMediaSectionCount(); ++i) {
     MOZ_ASSERT(GetTransceiverForLevel(i));
@@ -1075,20 +1196,20 @@ JsepSession::Result JsepSessionImpl::SetRemoteDescription(
 
   switch (type) {
     case kJsepSdpOffer:
-      rv = SetRemoteDescriptionOffer(std::move(parsed));
+      ns_rv = SetRemoteDescriptionOffer(std::move(parsed));
       break;
     case kJsepSdpAnswer:
     case kJsepSdpPranswer:
-      rv = SetRemoteDescriptionAnswer(type, std::move(parsed));
+      ns_rv = SetRemoteDescriptionAnswer(type, std::move(parsed));
       break;
     case kJsepSdpRollback:
       MOZ_CRASH();  // Handled above
   }
 
-  NS_ENSURE_SUCCESS(rv, dom::PCError::OperationError);
+  NS_ENSURE_SUCCESS(ns_rv, dom::PCError::OperationError);
 
   mRemoteIsIceLite = iceLite;
-  mIceOptions = iceOptions;
+  mIceOptions = std::move(iceOptions);
   SetIceRestarting(iceRestarting);
   return Result();
 }
@@ -1102,7 +1223,12 @@ nsresult JsepSessionImpl::HandleNegotiatedSession(
   bool remoteIceLite =
       remote->GetAttributeList().HasAttribute(SdpAttribute::kIceLiteAttribute);
 
-  mIceControlling = remoteIceLite || *mIsPendingOfferer;
+  // RFC 8445 Section 9: roles persist for the session lifetime. Only set on
+  // first negotiation, or force controlling if remote switched to ICE-lite.
+  mIceControlling |= remoteIceLite;
+  if (!mNegotiations) {
+    mIceControlling |= *mIsPendingOfferer;
+  }
 
   const Sdp& answer = *mIsPendingOfferer ? *remote : *local;
 
@@ -1174,11 +1300,6 @@ nsresult JsepSessionImpl::HandleNegotiatedSession(
   }
   JsepTrack::SetReceivePayloadTypes(receiveTracks);
 
-  mNegotiations++;
-
-  mGeneratedAnswer.reset();
-  mGeneratedOffer.reset();
-
   return NS_OK;
 }
 
@@ -1207,6 +1328,11 @@ nsresult JsepSessionImpl::MakeNegotiatedTransceiver(
                           << " receiving=" << receiving);
 
   transceiver.SetNegotiated();
+
+  // Deliberately not touching CanUseExistingTransport() here: it's only
+  // ever consulted while in have-local-offer, and gets recomputed from
+  // scratch by SetLocalDescription() the next time around, so there's
+  // nothing to update on this path.
 
   // Ensure that this is finalized in case we need to copy it below
   nsresult rv =
@@ -1249,7 +1375,7 @@ nsresult JsepSessionImpl::MakeNegotiatedTransceiver(
   }
 
   if (answer.GetAttributeList().HasAttribute(SdpAttribute::kExtmapAttribute)) {
-    const auto extmaps = answer.GetAttributeList().GetExtmap().mExtmaps;
+    const auto& extmaps = answer.GetAttributeList().GetExtmap().mExtmaps;
     for (const auto& negotiatedExtension : extmaps) {
       if (negotiatedExtension.entry == 0) {
         MOZ_ASSERT(false, "This should have been caught sooner");
@@ -1407,12 +1533,13 @@ nsresult JsepSessionImpl::AddTransportAttributes(
   }
 
   SdpAttributeList& attrList = msection->GetAttributeList();
+  attrList.SetAttribute(MakeUnique<SdpStringAttribute>(
+      SdpAttribute::kIceUfragAttribute, mIceUfrag));
   attrList.SetAttribute(
-      new SdpStringAttribute(SdpAttribute::kIceUfragAttribute, mIceUfrag));
-  attrList.SetAttribute(
-      new SdpStringAttribute(SdpAttribute::kIcePwdAttribute, mIcePwd));
+      MakeUnique<SdpStringAttribute>(SdpAttribute::kIcePwdAttribute, mIcePwd));
 
-  msection->GetAttributeList().SetAttribute(new SdpSetupAttribute(dtlsRole));
+  msection->GetAttributeList().SetAttribute(
+      MakeUnique<SdpSetupAttribute>(dtlsRole));
 
   return NS_OK;
 }
@@ -1444,16 +1571,20 @@ nsresult JsepSessionImpl::CopyPreviousTransportParams(
   return NS_OK;
 }
 
-nsresult JsepSessionImpl::ParseSdp(const std::string& sdp,
-                                   UniquePtr<Sdp>* parsedp) {
+JsepSession::Result JsepSessionImpl::ParseSdp(const std::string& sdp,
+                                              UniquePtr<Sdp>* parsedp) {
   auto results = mParser->Parse(sdp);
   auto parsed = std::move(results->Sdp());
   mLastSdpParsingErrors = results->Errors();
   if (!parsed) {
     std::string error = results->ParserName() + " Failed to parse SDP: ";
     mSdpHelper.AppendSdpParseErrors(mLastSdpParsingErrors, &error);
+    Maybe<size_t> lineNumber;
+    if (!mLastSdpParsingErrors.empty()) {
+      lineNumber = Some(mLastSdpParsingErrors[0].first);
+    }
     JSEP_SET_ERROR(error);
-    return NS_ERROR_INVALID_ARG;
+    return Result(dom::PCError::SyntaxError, "sdp-syntax-error", lineNumber);
   }
   // Verify that the JSEP rules for all SDP are followed
   for (size_t i = 0; i < parsed->GetMediaSectionCount(); ++i) {
@@ -1467,11 +1598,8 @@ nsresult JsepSessionImpl::ParseSdp(const std::string& sdp,
 
     if (mediaAttrs.HasAttribute(SdpAttribute::kMidAttribute) &&
         mediaAttrs.GetMid().length() > 16) {
-      JSEP_SET_ERROR(
-          "Invalid description, mid length greater than 16 "
-          "unsupported until 2-byte rtp header extensions are "
-          "supported in webrtc.org");
-      return NS_ERROR_INVALID_ARG;
+      JSEP_SET_ERROR("Invalid description, mid length greater than 16");
+      return Result(dom::PCError::OperationError);
     }
 
     if (mediaAttrs.HasAttribute(SdpAttribute::kExtmapAttribute)) {
@@ -1479,26 +1607,26 @@ nsresult JsepSessionImpl::ParseSdp(const std::string& sdp,
       for (const auto& ext : mediaAttrs.GetExtmap().mExtmaps) {
         uint16_t id = ext.entry;
 
-        if (id < 1 || id > 14) {
+        if (id < 1 || id > 255) {
           JSEP_SET_ERROR("Description contains invalid extension id "
                          << id << " on level " << i
-                         << " which is unsupported until 2-byte rtp"
-                            " header extensions are supported in webrtc.org");
-          return NS_ERROR_INVALID_ARG;
+                         << " (valid range is 1-255)");
+          return Result(dom::PCError::OperationError);
         }
 
         if (extIds.find(id) != extIds.end()) {
           JSEP_SET_ERROR("Description contains duplicate extension id "
                          << id << " on level " << i);
-          return NS_ERROR_INVALID_ARG;
+          return Result(dom::PCError::InvalidAccessError);
         }
         extIds.insert(id);
       }
     }
 
-    static const std::bitset<128> forbidden = GetForbiddenSdpPayloadTypes();
     if (msection.GetMediaType() == SdpMediaSection::kAudio ||
         msection.GetMediaType() == SdpMediaSection::kVideo) {
+      const bool rtcpMux = msection.GetAttributeList().HasAttribute(
+          SdpAttribute::kRtcpMuxAttribute);
       // Sanity-check that payload type can work with RTP
       for (const std::string& fmt : msection.GetFormats()) {
         uint16_t payloadType;
@@ -1506,24 +1634,40 @@ nsresult JsepSessionImpl::ParseSdp(const std::string& sdp,
           JSEP_SET_ERROR("Payload type \""
                          << fmt << "\" is not a 16-bit unsigned int at level "
                          << i);
-          return NS_ERROR_INVALID_ARG;
+          return Result(dom::PCError::InvalidAccessError);
         }
         if (payloadType > 127) {
           JSEP_SET_ERROR("audio/video payload type \""
                          << fmt << "\" is too large at level " << i);
-          return NS_ERROR_INVALID_ARG;
+          return Result(dom::PCError::InvalidAccessError);
         }
-        if (forbidden.test(payloadType)) {
-          JSEP_SET_ERROR("Illegal audio/video payload type \""
-                         << fmt << "\" at level " << i);
-          return NS_ERROR_INVALID_ARG;
+        // PT is well-formed, but it may be reserved
+        switch (payloadType) {
+          // https://www.rfc-editor.org/info/rfc3551/#section-6
+          case 1:
+          case 2:
+          case 19:
+            JSEP_SET_ERROR("Audio/video payload type \""
+                           << fmt << "\" at level " << i
+                           << " is using reserved payload type number");
+            return Result(dom::PCError::InvalidAccessError);
+          default:
+            break;
+        }
+        if (rtcpMux && payloadType >= 64 && payloadType <= 95) {
+          JSEP_SET_ERROR(
+              "Audio/video payload type \""
+              << fmt << "\" at level " << i
+              << " is using payload type number in the range 64 to 95 which"
+                 " is reserved while rtcp-mux is in use");
+          return Result(dom::PCError::InvalidAccessError);
         }
       }
     }
   }
 
   *parsedp = std::move(parsed);
-  return NS_OK;
+  return Result();
 }
 
 nsresult JsepSessionImpl::SetRemoteDescriptionOffer(UniquePtr<Sdp> offer) {
@@ -1540,13 +1684,24 @@ nsresult JsepSessionImpl::SetRemoteDescriptionAnswer(JsepSdpType type,
                                                      UniquePtr<Sdp> answer) {
   MOZ_ASSERT(mState == kJsepStateHaveLocalOffer ||
              mState == kJsepStateHaveRemotePranswer);
-
+  const bool firstAnswer = (mState == kJsepStateHaveLocalOffer);
   mPendingRemoteDescription = std::move(answer);
 
   nsresult rv = HandleNegotiatedSession(mPendingLocalDescription,
                                         mPendingRemoteDescription);
   NS_ENSURE_SUCCESS(rv, rv);
 
+  if (firstAnswer) {
+    mNegotiations++;
+  }
+
+  if (type == kJsepSdpPranswer) {
+    SetState(kJsepStateHaveRemotePranswer);
+    return NS_OK;
+  }
+
+  mGeneratedAnswer.reset();
+  mGeneratedOffer.reset();
   mCurrentRemoteDescription = std::move(mPendingRemoteDescription);
   mCurrentLocalDescription = std::move(mPendingLocalDescription);
   MOZ_ASSERT(mIsPendingOfferer.isSome() && *mIsPendingOfferer);
@@ -1578,7 +1733,7 @@ Maybe<JsepTransceiver> JsepSessionImpl::GetTransceiverForLocal(size_t level) {
       // Attempt to recycle. If this fails, the old transceiver stays put.
       transceiver->Disassociate();
       Maybe<JsepTransceiver> newTransceiver =
-          FindUnassociatedTransceiver(transceiver->GetMediaType(), false);
+          FindUnassociatedRtpTransceiver(transceiver->GetMediaType(), false);
       if (newTransceiver) {
         newTransceiver->SetLevel(level);
         transceiver->ClearLevel();
@@ -1594,6 +1749,18 @@ Maybe<JsepTransceiver> JsepSessionImpl::GetTransceiverForLocal(size_t level) {
   }
 
   // There is no transceiver for |level| right now.
+
+  // The datachannel m-section comes before any m-section that has not been
+  // negotiated yet when the alwaysNegotiateDataChannels flag is set.
+  if (mAlwaysNegotiateDataChannels) {
+    for (auto& transceiver : mTransceivers) {
+      if (transceiver.GetMediaType() == SdpMediaSection::kApplication &&
+          transceiver.IsFreeToUse()) {
+        transceiver.SetLevel(level);
+        return Some(transceiver);
+      }
+    }
+  }
 
   // Look for an RTP transceiver (spec requires us to give the lower levels to
   // new RTP transceivers)
@@ -1624,14 +1791,31 @@ Maybe<JsepTransceiver> JsepSessionImpl::GetTransceiverForRemote(
     if (!transceiver->CanRecycleMyMsection()) {
       return transceiver;
     }
+    // Recycle
     transceiver->Disassociate();
     transceiver->ClearLevel();
     transceiver->mSendTrack.ClearRids();
     SetTransceiver(*transceiver);
+    // Shouldn't be strictly necessary to unset this, but it's clearer this way
+    transceiver = Nothing();
   }
 
   // No transceiver for |level|
-  transceiver = FindUnassociatedTransceiver(msection.GetMediaType(), true);
+  if (msection.GetMediaType() == SdpMediaSection::kApplication) {
+    // Other side has done something weird like rejecting the datachannel
+    // m-section. Try to recover.
+    for (auto& tx : mTransceivers) {
+      if (tx.GetMediaType() == SdpMediaSection::kApplication) {
+        tx.RestartDatachannelTransceiver();
+        transceiver = Some(tx);
+        break;
+      }
+    }
+  } else if (msection.IsReceiving()) {
+    transceiver = FindUnassociatedRtpTransceiver(msection.GetMediaType(), true);
+  }
+
+  // We found a transceiver to associate
   if (transceiver) {
     transceiver->SetLevel(level);
     SetTransceiver(*transceiver);
@@ -1707,22 +1891,23 @@ nsresult JsepSessionImpl::UpdateTransceiversFromRemoteDescription(
     // This will process a=msid if present, or clear the stream ids if the
     // msection is not sending. If the msection is sending, and there are no
     // a=msid, the previously set default will stay.
-    transceiver->mRecvTrack.RecvTrackSetRemote(remote, msection);
+    transceiver->mRecvTrack.RecvTrackSetRemote(
+        remote, msection, transceiver->mSendTrack.GetSsrcs());
     SetTransceiver(*transceiver);
   }
 
   return NS_OK;
 }
 
-Maybe<JsepTransceiver> JsepSessionImpl::FindUnassociatedTransceiver(
+Maybe<JsepTransceiver> JsepSessionImpl::FindUnassociatedRtpTransceiver(
     SdpMediaSection::MediaType type, bool magic) {
+  if (type == SdpMediaSection::kApplication) {
+    MOZ_ASSERT(false);
+    return Nothing();
+  }
+
   // Look through transceivers that are not mapped to an m-section
   for (auto& transceiver : mTransceivers) {
-    if (type == SdpMediaSection::kApplication &&
-        type == transceiver.GetMediaType()) {
-      transceiver.RestartDatachannelTransceiver();
-      return Some(transceiver);
-    }
     if (transceiver.IsFreeToUse() &&
         (!magic || transceiver.HasAddTrackMagic()) &&
         (transceiver.GetMediaType() == type)) {
@@ -1786,8 +1971,8 @@ void JsepSessionImpl::RollbackRemoteOffer() {
   mTransceivers = std::move(mOldTransceivers);
 }
 
-nsresult JsepSessionImpl::ValidateLocalDescription(const Sdp& description,
-                                                   JsepSdpType type) {
+JsepSession::Result JsepSessionImpl::ValidateLocalDescription(
+    const Sdp& description, JsepSdpType type) {
   Sdp* generated = nullptr;
   // TODO(bug 1095226): Better checking.
   if (type == kJsepSdpOffer) {
@@ -1799,13 +1984,14 @@ nsresult JsepSessionImpl::ValidateLocalDescription(const Sdp& description,
   if (!generated) {
     JSEP_SET_ERROR(
         "Calling SetLocal without first calling CreateOffer/Answer"
-        " is not supported.");
-    return NS_ERROR_UNEXPECTED;
+        " is not supported. This operation should have been rejected"
+        " before even getting here.");
+    return Result(dom::PCError::OperationError);
   }
 
   if (description.GetMediaSectionCount() != generated->GetMediaSectionCount()) {
     JSEP_SET_ERROR("Changing the number of m-sections is not allowed");
-    return NS_ERROR_INVALID_ARG;
+    return Result(dom::PCError::InvalidModificationError);
   }
 
   for (size_t i = 0; i < description.GetMediaSectionCount(); ++i) {
@@ -1813,21 +1999,23 @@ nsresult JsepSessionImpl::ValidateLocalDescription(const Sdp& description,
     auto& finalMsection = description.GetMediaSection(i);
     if (origMsection.GetMediaType() != finalMsection.GetMediaType()) {
       JSEP_SET_ERROR("Changing the media-type of m-sections is not allowed");
-      return NS_ERROR_INVALID_ARG;
+      return Result(dom::PCError::InvalidModificationError);
     }
 
     // These will be present in reoffer
     if (!mCurrentLocalDescription) {
       if (finalMsection.GetAttributeList().HasAttribute(
               SdpAttribute::kCandidateAttribute)) {
-        JSEP_SET_ERROR("Adding your own candidate attributes is not supported");
-        return NS_ERROR_INVALID_ARG;
+        JSEP_SET_ERROR(
+            "Adding your own candidate attributes is not allowed,"
+            "and SDP munging in general is not allowed either.");
+        return Result(dom::PCError::InvalidModificationError);
       }
 
       if (finalMsection.GetAttributeList().HasAttribute(
               SdpAttribute::kEndOfCandidatesAttribute)) {
         JSEP_SET_ERROR("Why are you trying to set a=end-of-candidates?");
-        return NS_ERROR_INVALID_ARG;
+        return Result(dom::PCError::InvalidAccessError);
       }
     }
 
@@ -1838,18 +2026,23 @@ nsresult JsepSessionImpl::ValidateLocalDescription(const Sdp& description,
     if (!finalMsection.GetAttributeList().HasAttribute(
             SdpAttribute::kMidAttribute)) {
       JSEP_SET_ERROR("Local descriptions must have a=mid attributes.");
-      return NS_ERROR_INVALID_ARG;
+      return Result(dom::PCError::InvalidModificationError);
     }
 
     if (finalMsection.GetAttributeList().GetMid() !=
         origMsection.GetAttributeList().GetMid()) {
       JSEP_SET_ERROR("Changing the mid of m-sections is not allowed.");
-      return NS_ERROR_INVALID_ARG;
+      return Result(dom::PCError::InvalidModificationError);
+    }
+
+    if (mSdpHelper.FingerprintsDiffer(origMsection, finalMsection)) {
+      JSEP_SET_ERROR(
+          "Changing the DTLS fingerprint of m-sections is not allowed.");
+      return Result(dom::PCError::InvalidModificationError);
     }
 
     // TODO(bug 1095218): Check msid
     // TODO(bug 1095226): Check ice-ufrag and ice-pwd
-    // TODO(bug 1095226): Check fingerprints
     // TODO(bug 1095226): Check payload types (at least ensure that payload
     // types we don't actually support weren't added)
     // TODO(bug 1095226): Check ice-options?
@@ -1858,16 +2051,17 @@ nsresult JsepSessionImpl::ValidateLocalDescription(const Sdp& description,
   if (description.GetAttributeList().HasAttribute(
           SdpAttribute::kIceLiteAttribute)) {
     JSEP_SET_ERROR("Running ICE in lite mode is unsupported");
-    return NS_ERROR_INVALID_ARG;
+    return Result(dom::PCError::InvalidModificationError);
   }
 
-  return NS_OK;
+  return Result();
 }
 
-nsresult JsepSessionImpl::ValidateRemoteDescription(const Sdp& description) {
+JsepSession::Result JsepSessionImpl::ValidateRemoteDescription(
+    const Sdp& description) {
   if (!mCurrentLocalDescription) {
     // Initial offer; nothing to validate besides the stuff in ParseSdp
-    return NS_OK;
+    return Result();
   }
 
   if (mCurrentLocalDescription->GetMediaSectionCount() >
@@ -1875,7 +2069,7 @@ nsresult JsepSessionImpl::ValidateRemoteDescription(const Sdp& description) {
     JSEP_SET_ERROR(
         "New remote description has fewer m-sections than the "
         "previous remote description.");
-    return NS_ERROR_INVALID_ARG;
+    return Result(dom::PCError::InvalidModificationError);
   }
 
   for (size_t i = 0; i < description.GetMediaSectionCount(); ++i) {
@@ -1891,7 +2085,7 @@ nsresult JsepSessionImpl::ValidateRemoteDescription(const Sdp& description) {
               << ext.entry << " from "
               << mExtmapEntriesEverNegotiated[ext.entry] << " to "
               << ext.extensionname);
-          return NS_ERROR_INVALID_ARG;
+          return Result(dom::PCError::InvalidAccessError);
         }
       }
     }
@@ -1899,17 +2093,17 @@ nsresult JsepSessionImpl::ValidateRemoteDescription(const Sdp& description) {
 
   if (!mCurrentRemoteDescription) {
     // No further checking for initial answers
-    return NS_OK;
+    return Result();
   }
 
   // These are solely to check that bundle is valid
   SdpHelper::BundledMids bundledMids;
-  nsresult rv = GetNegotiatedBundledMids(&bundledMids);
-  NS_ENSURE_SUCCESS(rv, rv);
+  nsresult ns_rv = GetNegotiatedBundledMids(&bundledMids);
+  NS_ENSURE_SUCCESS(ns_rv, dom::PCError::InvalidAccessError);
 
   SdpHelper::BundledMids newBundledMids;
-  rv = mSdpHelper.GetBundledMids(description, &newBundledMids);
-  NS_ENSURE_SUCCESS(rv, rv);
+  ns_rv = mSdpHelper.GetBundledMids(description, &newBundledMids);
+  NS_ENSURE_SUCCESS(ns_rv, dom::PCError::InvalidAccessError);
 
   // check for partial ice restart, which is not supported
   Maybe<bool> iceCredsDiffer;
@@ -1919,15 +2113,32 @@ nsresult JsepSessionImpl::ValidateRemoteDescription(const Sdp& description) {
     const SdpMediaSection& oldMsection =
         mCurrentRemoteDescription->GetMediaSection(i);
 
-    if (mSdpHelper.MsectionIsDisabled(newMsection) ||
-        mSdpHelper.MsectionIsDisabled(oldMsection)) {
+    if (mSdpHelper.MsectionIsDisabled(oldMsection)) {
+      bool oldIsApp =
+          oldMsection.GetMediaType() == SdpMediaSection::kApplication;
+      bool newIsApp =
+          newMsection.GetMediaType() == SdpMediaSection::kApplication;
+      if (oldIsApp != newIsApp) {
+        JSEP_SET_ERROR("Remote description changes the media type of m-line "
+                       << i
+                       << " to or from application, which is not"
+                          " permitted");
+        return Result(dom::PCError::InvalidAccessError);
+      }
       continue;
     }
 
     if (oldMsection.GetMediaType() != newMsection.GetMediaType()) {
       JSEP_SET_ERROR("Remote description changes the media type of m-line "
-                     << i);
-      return NS_ERROR_INVALID_ARG;
+                     << i
+                     << "; media type changes are only permitted when the "
+                        "m-section was previously disabled");
+      return Result(dom::PCError::InvalidAccessError);
+    }
+
+    if (mSdpHelper.MsectionIsDisabled(newMsection)) {
+      // Nothing else to do media is being disabled to possibly be reused.
+      continue;
     }
 
     bool differ = mSdpHelper.IceCredentialsDiffer(newMsection, oldMsection);
@@ -1938,7 +2149,15 @@ nsresult JsepSessionImpl::ValidateRemoteDescription(const Sdp& description) {
           "Remote description indicates ICE restart but offer did not "
           "request ICE restart (new remote description changes either "
           "the ice-ufrag or ice-pwd)");
-      return NS_ERROR_INVALID_ARG;
+      return Result(dom::PCError::InvalidAccessError);
+    }
+
+    if (mSdpHelper.FingerprintsDiffer(newMsection, oldMsection) && !differ) {
+      JSEP_SET_ERROR(
+          "Remote description changes the DTLS fingerprint without changing "
+          "the ICE credentials (i.e. without an ICE restart), which is not "
+          "permitted (see RFC 9429 section 5.11)");
+      return Result(dom::PCError::InvalidAccessError);
     }
 
     // Detect whether all the creds are the same or all are different
@@ -1951,27 +2170,80 @@ nsresult JsepSessionImpl::ValidateRemoteDescription(const Sdp& description) {
           "Partial ICE restart is unsupported at this time "
           "(new remote description changes either the ice-ufrag "
           "or ice-pwd on fewer than all msections)");
-      return NS_ERROR_INVALID_ARG;
+      return Result(dom::PCError::OperationError);
     }
   }
 
-  return NS_OK;
+  return Result();
 }
 
-nsresult JsepSessionImpl::ValidateOffer(const Sdp& offer) {
-  return mSdpHelper.ValidateTransportAttributes(offer, sdp::kOffer);
+JsepSession::Result JsepSessionImpl::CheckRtcpMux(const Sdp& description) {
+  if (mRtcpMuxPolicy != kRtcpMuxRequire) {
+    return Result();
+  }
+  for (size_t i = 0; i < description.GetMediaSectionCount(); ++i) {
+    const SdpMediaSection& msection = description.GetMediaSection(i);
+    if (mSdpHelper.MsectionIsDisabled(msection)) {
+      continue;
+    }
+    if (!mSdpHelper.HasRtcp(msection.GetProtocol())) {
+      continue;
+    }
+    if (!msection.GetAttributeList().HasAttribute(
+            SdpAttribute::kRtcpMuxAttribute)) {
+      JSEP_SET_ERROR(
+          "m-section at level "
+          << i << " is missing a=rtcp-mux, which is required by rtcpMuxPolicy");
+      return Result(dom::PCError::InvalidAccessError);
+    }
+  }
+  return Result();
 }
 
-nsresult JsepSessionImpl::ValidateAnswer(const Sdp& offer, const Sdp& answer) {
+// Bug 2036111 - Syntax Errors Should Be Parser Generated
+// All uses of this function should be eliminated when implement Bug 2036111.
+inline static JsepSession::Result MkContextlessSdpResult(
+    Maybe<dom::PCError> aErr) {
+  constexpr const size_t BOGUS_LINE_NUMBER = 0;
+  if (aErr) {
+    const auto err = aErr.extract();
+    if (err == dom::PCError::SyntaxError) {
+      return JsepSession::Result(err, "sdp-syntax-error",
+                                 Some(BOGUS_LINE_NUMBER));
+    }
+    return JsepSession::Result(err);
+  }
+  return JsepSession::Result();
+}
+
+JsepSession::Result JsepSessionImpl::ValidateOffer(const Sdp& offer) {
+  Result result = CheckRtcpMux(offer);
+  if (result.mError.isSome()) {
+    return result;
+  }
+  return MkContextlessSdpResult(
+      mSdpHelper.ValidateTransportAttributes(offer, sdp::kOffer));
+}
+
+JsepSession::Result JsepSessionImpl::ValidateAnswer(const Sdp& offer,
+                                                    const Sdp& answer) {
   if (offer.GetMediaSectionCount() != answer.GetMediaSectionCount()) {
     JSEP_SET_ERROR("Offer and answer have different number of m-lines "
                    << "(" << offer.GetMediaSectionCount() << " vs "
                    << answer.GetMediaSectionCount() << ")");
-    return NS_ERROR_INVALID_ARG;
+    return Result(dom::PCError::InvalidAccessError);
   }
 
-  nsresult rv = mSdpHelper.ValidateTransportAttributes(answer, sdp::kAnswer);
-  NS_ENSURE_SUCCESS(rv, rv);
+  Result result = CheckRtcpMux(answer);
+  if (result.mError.isSome()) {
+    return result;
+  }
+
+  Maybe validation_err =
+      mSdpHelper.ValidateTransportAttributes(answer, sdp::kAnswer);
+  if (validation_err.isSome()) {
+    return MkContextlessSdpResult(validation_err);
+  }
 
   for (size_t i = 0; i < offer.GetMediaSectionCount(); ++i) {
     const SdpMediaSection& offerMsection = offer.GetMediaSection(i);
@@ -1980,7 +2252,7 @@ nsresult JsepSessionImpl::ValidateAnswer(const Sdp& offer, const Sdp& answer) {
     if (offerMsection.GetMediaType() != answerMsection.GetMediaType()) {
       JSEP_SET_ERROR("Answer and offer have different media types at m-line "
                      << i);
-      return NS_ERROR_INVALID_ARG;
+      return Result(dom::PCError::InvalidAccessError);
     }
 
     if (mSdpHelper.MsectionIsDisabled(answerMsection)) {
@@ -1990,17 +2262,17 @@ nsresult JsepSessionImpl::ValidateAnswer(const Sdp& offer, const Sdp& answer) {
     if (mSdpHelper.MsectionIsDisabled(offerMsection)) {
       JSEP_SET_ERROR(
           "Answer tried to enable an m-section that was disabled in the offer");
-      return NS_ERROR_INVALID_ARG;
+      return Result(dom::PCError::InvalidAccessError);
     }
 
     if (!offerMsection.IsSending() && answerMsection.IsReceiving()) {
       JSEP_SET_ERROR("Answer tried to set recv when offer did not set send");
-      return NS_ERROR_INVALID_ARG;
+      return Result(dom::PCError::InvalidAccessError);
     }
 
     if (!offerMsection.IsReceiving() && answerMsection.IsSending()) {
       JSEP_SET_ERROR("Answer tried to set send when offer did not set recv");
-      return NS_ERROR_INVALID_ARG;
+      return Result(dom::PCError::InvalidAccessError);
     }
 
     const SdpAttributeList& answerAttrs(answerMsection.GetAttributeList());
@@ -2012,14 +2284,14 @@ nsresult JsepSessionImpl::ValidateAnswer(const Sdp& offer, const Sdp& answer) {
                      << offerMsection.GetAttributeList().GetMid()
                      << "\', now \'"
                      << answerMsection.GetAttributeList().GetMid() << "\'");
-      return NS_ERROR_INVALID_ARG;
+      return Result(dom::PCError::InvalidAccessError);
     }
 
     // Sanity check extmap
     if (answerAttrs.HasAttribute(SdpAttribute::kExtmapAttribute)) {
       if (!offerAttrs.HasAttribute(SdpAttribute::kExtmapAttribute)) {
         JSEP_SET_ERROR("Answer adds extmap attributes to level " << i);
-        return NS_ERROR_INVALID_ARG;
+        return Result(dom::PCError::InvalidAccessError);
       }
 
       for (const auto& ansExt : answerAttrs.GetExtmap().mExtmaps) {
@@ -2045,7 +2317,7 @@ nsresult JsepSessionImpl::ValidateAnswer(const Sdp& offer, const Sdp& answer) {
               JSEP_SET_ERROR("Answer changed id for extmap attribute at level "
                              << i << " (" << offExt.extensionname << ") from "
                              << offExt.entry << " to " << ansExt.entry << ".");
-              return NS_ERROR_INVALID_ARG;
+              return Result(dom::PCError::InvalidAccessError);
             }
 
             if (ansExt.entry >= 4096) {
@@ -2053,7 +2325,7 @@ nsresult JsepSessionImpl::ValidateAnswer(const Sdp& offer, const Sdp& answer) {
                              << ansExt.entry
                              << ") for extmap attribute at level " << i << " ("
                              << ansExt.extensionname << ").");
-              return NS_ERROR_INVALID_ARG;
+              return Result(dom::PCError::InvalidAccessError);
             }
 
             found = true;
@@ -2067,13 +2339,164 @@ nsresult JsepSessionImpl::ValidateAnswer(const Sdp& offer, const Sdp& answer) {
                          << " at "
                             "level "
                          << i << " that was not present in offer.");
-          return NS_ERROR_INVALID_ARG;
+          return Result(dom::PCError::InvalidAccessError);
         }
       }
     }
   }
 
-  return NS_OK;
+  return Result();
+}
+
+// Empty if |aAttrs| has no attribute of that type.
+static std::string SerializeAttribute(const SdpAttributeList& aAttrs,
+                                      SdpAttribute::AttributeType aType) {
+  std::ostringstream os;
+  if (aAttrs.HasAttribute(aType)) {
+    aAttrs.GetAttribute(aType)->Serialize(os);
+  }
+  return os.str();
+}
+
+// Once a provisional answer has been applied, the answers that follow it
+// (final, or more pranswers) may change what the media looks like, but not the
+// transports it runs over. RFC 9429 sections 5.10 and 5.11 permit new ICE
+// credentials or a new DTLS fingerprint (provided the offer had new
+// credentials/fingerprints), but say nothing about BUNDLE, rtcp-mux, the DTLS
+// role, recycling (or resurrection!) of m-sections, ice-lite, ice-options,
+// msid, and on and on. We call shenanigans and forbid all of this. If someone
+// complains, we'll cross that bridge when we get there.
+JsepSession::Result JsepSessionImpl::ValidateAnswerAgainstPranswer(
+    const Sdp& pranswer, const Sdp& answer) {
+  struct Frozen {
+    SdpAttribute::AttributeType mType;
+    const char* mWhat;
+  };
+
+  // Session level. The identity assertion is validated again for every
+  // remote description, so changing it would swap the peer identity out from
+  // under JS; the ICE roles were decided from ice-lite at the provisional
+  // answer.
+  static const Frozen kSessionFrozen[] = {
+      {SdpAttribute::kGroupAttribute, "group"},
+      {SdpAttribute::kIdentityAttribute, "identity"},
+      {SdpAttribute::kIceLiteAttribute, "ice-lite"},
+  };
+  for (const auto& [type, what] : kSessionFrozen) {
+    if (SerializeAttribute(pranswer.GetAttributeList(), type) !=
+        SerializeAttribute(answer.GetAttributeList(), type)) {
+      JSEP_SET_ERROR("Answer changes " << what << " of the provisional answer");
+      return Result(dom::PCError::InvalidAccessError);
+    }
+  }
+
+  // Per m-section. Simulcast is driven by SDP and by JS at the same time, and
+  // every answer, provisional or not, prunes send encodings that nothing puts
+  // back. RFC 9429 section 5.11 would have an SCTP port change tear down the
+  // association, even in have-remote-pranswer; we have no exercised path for
+  // that.
+  // TODO: Check a=tls-id when we support it, see
+  // https://bugzilla.mozilla.org/show_bug.cgi?id=1319681
+  // If we ever support ice-mismatch or ice-pacing, we'll want to check those
+  // here too.
+  // See https://bugzilla.mozilla.org/show_bug.cgi?id=2073595
+  // See https://bugzilla.mozilla.org/show_bug.cgi?id=2073597
+  static const Frozen kMsectionFrozen[] = {
+      {SdpAttribute::kIceUfragAttribute, "ice-ufrag"},
+      {SdpAttribute::kIcePwdAttribute, "ice-pwd"},
+      {SdpAttribute::kIceOptionsAttribute, "ice-options"},
+      {SdpAttribute::kFingerprintAttribute, "fingerprint"},
+      {SdpAttribute::kSetupAttribute, "setup"},
+      {SdpAttribute::kRtcpMuxAttribute, "rtcp-mux"},
+      {SdpAttribute::kRtcpRsizeAttribute, "rtcp-rsize"},
+      {SdpAttribute::kSimulcastAttribute, "simulcast"},
+      {SdpAttribute::kRidAttribute, "rid"},
+      {SdpAttribute::kSctpPortAttribute, "sctp-port"},
+      {SdpAttribute::kSctpmapAttribute, "sctpmap"},
+  };
+
+  // ValidateAnswer has checked both against the offer, so the m-section
+  // counts match.
+  for (size_t i = 0; i < answer.GetMediaSectionCount(); ++i) {
+    const SdpMediaSection& pranswerMsection = pranswer.GetMediaSection(i);
+    const SdpMediaSection& answerMsection = answer.GetMediaSection(i);
+
+    const bool answerDisabled = mSdpHelper.MsectionIsDisabled(answerMsection);
+    if (answerDisabled != mSdpHelper.MsectionIsDisabled(pranswerMsection)) {
+      JSEP_SET_ERROR("Answer " << (answerDisabled ? "rejects" : "accepts")
+                               << " m-section " << i
+                               << ", which the provisional answer "
+                               << (answerDisabled ? "accepted" : "rejected"));
+      return Result(dom::PCError::InvalidAccessError);
+    }
+    if (answerDisabled) {
+      continue;
+    }
+
+    const SdpAttributeList& pranswerAttrs = pranswerMsection.GetAttributeList();
+    const SdpAttributeList& answerAttrs = answerMsection.GetAttributeList();
+
+    for (const auto& [type, what] : kMsectionFrozen) {
+      if (SerializeAttribute(pranswerAttrs, type) !=
+          SerializeAttribute(answerAttrs, type)) {
+        JSEP_SET_ERROR("Answer changes " << what
+                                         << " of the provisional answer at "
+                                            "m-section "
+                                         << i);
+        return Result(dom::PCError::InvalidAccessError);
+      }
+    }
+
+    // extmap ids are pinned to the offer's by ValidateAnswer, for the
+    // provisional answer and this one alike, so an id cannot change meaning
+    // between them. Which extensions are accepted is a media choice and may.
+
+    // An answer may pick payload types of its own (asymmetric payload types),
+    // and which codecs it accepts may change, but a number that appears in
+    // both the provisional answer and this one has to keep its meaning.
+    if (pranswerAttrs.HasAttribute(SdpAttribute::kRtpmapAttribute) &&
+        answerAttrs.HasAttribute(SdpAttribute::kRtpmapAttribute)) {
+      const SdpRtpmapAttributeList& answerRtpmap = answerAttrs.GetRtpmap();
+      for (const auto& entry : pranswerAttrs.GetRtpmap().mRtpmaps) {
+        if (!answerRtpmap.HasEntry(entry.pt)) {
+          continue;
+        }
+        const auto& answerEntry = answerRtpmap.GetEntry(entry.pt);
+        if (answerEntry.name != entry.name ||
+            answerEntry.clock != entry.clock ||
+            answerEntry.channels != entry.channels) {
+          JSEP_SET_ERROR("Answer changes payload type "
+                         << entry.pt
+                         << " of the provisional answer at m-section " << i);
+          return Result(dom::PCError::InvalidAccessError);
+        }
+      }
+    }
+
+    // msid may appear (the answerer started sending) or disappear (it
+    // stopped), but a stream JS has already been told about keeps its id.
+    if (pranswerAttrs.HasAttribute(SdpAttribute::kMsidAttribute) &&
+        answerAttrs.HasAttribute(SdpAttribute::kMsidAttribute)) {
+      const auto& pranswerMsids = pranswerAttrs.GetMsid().mMsids;
+      const auto& answerMsids = answerAttrs.GetMsid().mMsids;
+      bool sameStreams = pranswerMsids.size() == answerMsids.size();
+      for (size_t j = 0; sameStreams && j < pranswerMsids.size(); ++j) {
+        sameStreams = pranswerMsids[j].identifier == answerMsids[j].identifier;
+      }
+      if (!sameStreams) {
+        JSEP_SET_ERROR(
+            "Answer changes the msid of the provisional answer at "
+            "m-section "
+            << i);
+        return Result(dom::PCError::InvalidAccessError);
+      }
+    }
+
+    // max-message-size is meant to be picked up from any answer (webrtc-pc
+    // "set the session description", step 10.1), so it is left alone.
+  }
+
+  return Result();
 }
 
 nsresult JsepSessionImpl::CreateGenericSDP(UniquePtr<Sdp>* sdpp) {
@@ -2097,7 +2520,7 @@ nsresult JsepSessionImpl::CreateGenericSDP(UniquePtr<Sdp>* sdpp) {
   auto origin = SdpOrigin("mozilla...THIS_IS_SDPARTA-99.0", mSessionId,
                           mSessionVersion, sdp::kIPv4, "0.0.0.0");
 
-  UniquePtr<Sdp> sdp = MakeUnique<SipccSdp>(origin);
+  UniquePtr<Sdp> sdp = MakeUnique<SdpImpl>(origin);
 
   if (mDtlsFingerprints.empty()) {
     JSEP_SET_ERROR("Missing DTLS fingerprint");
@@ -2109,11 +2532,12 @@ nsresult JsepSessionImpl::CreateGenericSDP(UniquePtr<Sdp>* sdpp) {
   for (auto& dtlsFingerprint : mDtlsFingerprints) {
     fpl->PushEntry(dtlsFingerprint.mAlgorithm, dtlsFingerprint.mValue);
   }
-  sdp->GetAttributeList().SetAttribute(fpl.release());
+  sdp->GetAttributeList().SetAttribute(std::move(fpl));
 
-  auto* iceOpts = new SdpOptionsAttribute(SdpAttribute::kIceOptionsAttribute);
+  auto iceOpts =
+      MakeUnique<SdpOptionsAttribute>(SdpAttribute::kIceOptionsAttribute);
   iceOpts->PushEntry("trickle");
-  sdp->GetAttributeList().SetAttribute(iceOpts);
+  sdp->GetAttributeList().SetAttribute(std::move(iceOpts));
 
   // This assumes content doesn't add a bunch of msid attributes with a
   // different semantic in mind.
@@ -2150,11 +2574,11 @@ nsresult JsepSessionImpl::SetupIds() {
 }
 
 void JsepSessionImpl::SetDefaultCodecs(
-    const std::vector<UniquePtr<JsepCodecDescription>>& aPreferredCodecs) {
-  mSupportedCodecs.clear();
+    const nsTArray<UniquePtr<JsepCodecDescription>>& aPreferredCodecs) {
+  mSupportedCodecs.Clear();
 
   for (const auto& codec : aPreferredCodecs) {
-    mSupportedCodecs.emplace_back(codec->Clone());
+    mSupportedCodecs.EmplaceBack(codec->Clone());
   }
 }
 
@@ -2312,7 +2736,7 @@ nsresult JsepSessionImpl::UpdateDefaultCandidate(
 
       auto& msection = sdp->GetMediaSection(level);
 
-      // Do not add default candidate to a bundle-only m-section, sinice that
+      // Do not add default candidate to a bundle-only m-section, since that
       // might confuse endpoints that do not support bundle-only.
       if (!msection.GetAttributeList().HasAttribute(
               SdpAttribute::kBundleOnlyAttribute)) {
@@ -2335,6 +2759,34 @@ nsresult JsepSessionImpl::GetNegotiatedBundledMids(
   }
 
   return mSdpHelper.GetBundledMids(*answerSdp, bundledMids);
+}
+
+bool JsepSessionImpl::LocalOfferedRecvParamsChanged(const std::string& aMid) {
+  const mozilla::Sdp* currentSdp =
+      GetParsedLocalDescription(kJsepDescriptionCurrent);
+  if (!currentSdp) {
+    return true;
+  }
+  const SdpMediaSection* current =
+      mSdpHelper.FindMsectionByMid(*currentSdp, aMid);
+  if (!current) {
+    return true;
+  }
+
+  const mozilla::Sdp* pendingSdp =
+      GetParsedLocalDescription(kJsepDescriptionPending);
+  if (!pendingSdp) {
+    return false;
+  }
+  const SdpMediaSection* pending =
+      mSdpHelper.FindMsectionByMid(*pendingSdp, aMid);
+  if (!pending) {
+    return false;
+  }
+
+  return pending->GetFormats() != current->GetFormats() ||
+         pending->GetDirectionAttribute().mValue !=
+             current->GetDirectionAttribute().mValue;
 }
 
 mozilla::Sdp* JsepSessionImpl::GetParsedLocalDescription(
@@ -2407,6 +2859,13 @@ bool JsepSessionImpl::CheckNegotiationNeeded() const {
       continue;
     }
 
+    if (transceiver.GetMediaType() == SdpMediaSection::kApplication) {
+      // Whether this needs negotiation depends on whether a datachannel was
+      // created, which JSEP does not know about. `alwaysNegotiateDataChannels`
+      // can also create a datachannel transceiver without a datachannel.
+      continue;
+    }
+
     if (transceiver.IsStopping()) {
       MOZ_MTLOG(ML_DEBUG, "[" << mName
                               << "]: Negotiation needed because of "
@@ -2433,10 +2892,6 @@ bool JsepSessionImpl::CheckNegotiationNeeded() const {
 
     if (!transceiver.HasLevel()) {
       MOZ_CRASH("Associated transceivers should always have a level.");
-      continue;
-    }
-
-    if (transceiver.GetMediaType() == SdpMediaSection::kApplication) {
       continue;
     }
 

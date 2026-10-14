@@ -11,7 +11,7 @@ import {
   SkippableTimer,
   UrlbarProvider,
   UrlbarUtils,
-} from "resource:///modules/UrlbarUtils.sys.mjs";
+} from "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs";
 
 const lazy = {};
 
@@ -19,8 +19,9 @@ ChromeUtils.defineESModuleGetters(lazy, {
   ExtensionSearchHandler:
     "resource://gre/modules/ExtensionSearchHandler.sys.mjs",
 
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
-  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
+  UrlbarPrefs: "moz-src:///browser/components/urlbar/UrlbarPrefs.sys.mjs",
+  UrlbarResult: "chrome://browser/content/urlbar/UrlbarResult.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
 });
 
 /**
@@ -28,25 +29,16 @@ ChromeUtils.defineESModuleGetters(lazy, {
  * Omnibox API. If the user types a registered keyword, we send subsequent
  * keystrokes to the extension.
  */
-class ProviderOmnibox extends UrlbarProvider {
+export class UrlbarProviderOmnibox extends UrlbarProvider {
   constructor() {
     super();
   }
 
   /**
-   * Returns the name of this provider.
-   *
-   * @returns {string} the name of this provider.
-   */
-  get name() {
-    return "Omnibox";
-  }
-
-  /**
-   * @returns {Values<typeof UrlbarUtils.PROVIDER_TYPE>}
+   * @returns {Values<typeof lazy.UrlbarShared.PROVIDER_TYPE>}
    */
   get type() {
-    return UrlbarUtils.PROVIDER_TYPE.HEURISTIC;
+    return lazy.UrlbarShared.PROVIDER_TYPE.HEURISTIC;
   }
 
   /**
@@ -68,7 +60,7 @@ class ProviderOmnibox extends UrlbarProvider {
         queryContext.searchString,
         queryContext.tokens[0].value
       ) &&
-      !queryContext.searchMode
+      !queryContext.restrictInSearchMode()
     ) {
       return true;
     }
@@ -95,13 +87,11 @@ class ProviderOmnibox extends UrlbarProvider {
   }
 
   /**
-   * This method is called by the providers manager when a query starts to fetch
-   * each extension provider's results.  It fires the resultsRequested event.
+   * Starts querying.
    *
    * @param {UrlbarQueryContext} queryContext
-   *   The query context object.
-   * @param {Function} addCallback
-   *   The callback invoked by this method to add each result.
+   * @param {(provider: UrlbarProvider, result: UrlbarResult) => void} addCallback
+   *   Callback invoked by the provider to add a new result.
    */
   async startQuery(queryContext, addCallback) {
     let instance = this.queryInstance;
@@ -109,17 +99,22 @@ class ProviderOmnibox extends UrlbarProvider {
     // Fetch heuristic result.
     let keyword = queryContext.tokens[0].value;
     let description = lazy.ExtensionSearchHandler.getDescription(keyword);
-    let heuristicResult = new lazy.UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.OMNIBOX,
-      UrlbarUtils.RESULT_SOURCE.ADDON,
-      ...lazy.UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, {
-        title: [description, UrlbarUtils.HIGHLIGHT.TYPED],
-        content: [queryContext.searchString, UrlbarUtils.HIGHLIGHT.TYPED],
-        keyword: [queryContext.tokens[0].value, UrlbarUtils.HIGHLIGHT.TYPED],
-        icon: UrlbarUtils.ICON.EXTENSION,
-      })
-    );
-    heuristicResult.heuristic = true;
+    let heuristicResult = new lazy.UrlbarResult({
+      type: lazy.UrlbarShared.RESULT_TYPE.OMNIBOX,
+      source: lazy.UrlbarShared.RESULT_SOURCE.ADDON,
+      heuristic: true,
+      payload: {
+        title: description,
+        content: queryContext.searchString,
+        keyword: queryContext.tokens[0].value,
+        icon: lazy.UrlbarShared.ICON.EXTENSION,
+      },
+      highlights: {
+        title: lazy.UrlbarShared.HIGHLIGHT.TYPED,
+        content: lazy.UrlbarShared.HIGHLIGHT.TYPED,
+        keyword: lazy.UrlbarShared.HIGHLIGHT.TYPED,
+      },
+    });
     addCallback(this, heuristicResult);
 
     // Fetch non-heuristic results.
@@ -128,7 +123,7 @@ class ProviderOmnibox extends UrlbarProvider {
       text: queryContext.searchString,
       inPrivateWindow: queryContext.isPrivate,
     };
-    this._resultsPromise = lazy.ExtensionSearchHandler.handleSearch(
+    let resultsPromise = lazy.ExtensionSearchHandler.handleSearch(
       data,
       suggestions => {
         if (instance != this.queryInstance) {
@@ -139,24 +134,22 @@ class ProviderOmnibox extends UrlbarProvider {
           if (content == heuristicResult.payload.content) {
             continue;
           }
-          let result = new lazy.UrlbarResult(
-            UrlbarUtils.RESULT_TYPE.OMNIBOX,
-            UrlbarUtils.RESULT_SOURCE.ADDON,
-            ...lazy.UrlbarResult.payloadAndSimpleHighlights(
-              queryContext.tokens,
-              {
-                title: [suggestion.description, UrlbarUtils.HIGHLIGHT.TYPED],
-                content: [content, UrlbarUtils.HIGHLIGHT.TYPED],
-                keyword: [
-                  queryContext.tokens[0].value,
-                  UrlbarUtils.HIGHLIGHT.TYPED,
-                ],
-                isBlockable: suggestion.deletable,
-                icon: UrlbarUtils.ICON.EXTENSION,
-              }
-            )
-          );
-
+          let result = new lazy.UrlbarResult({
+            type: lazy.UrlbarShared.RESULT_TYPE.OMNIBOX,
+            source: lazy.UrlbarShared.RESULT_SOURCE.ADDON,
+            payload: {
+              title: suggestion.description,
+              content,
+              keyword: queryContext.tokens[0].value,
+              isBlockable: suggestion.deletable,
+              icon: lazy.UrlbarShared.ICON.EXTENSION,
+            },
+            highlights: {
+              title: lazy.UrlbarShared.HIGHLIGHT.TYPED,
+              content: lazy.UrlbarShared.HIGHLIGHT.TYPED,
+              keyword: lazy.UrlbarShared.HIGHLIGHT.TYPED,
+            },
+          });
           addCallback(this, result);
         }
       }
@@ -169,11 +162,16 @@ class ProviderOmnibox extends UrlbarProvider {
       time: lazy.UrlbarPrefs.get("extension.omnibox.timeout"),
       logger: this.logger,
     }).promise;
-    await Promise.race([timeoutPromise, this._resultsPromise]).catch(ex =>
+    await Promise.race([timeoutPromise, resultsPromise]).catch(ex =>
       this.logger.error(ex)
     );
   }
 
+  /**
+   * @param {UrlbarQueryContext} queryContext
+   * @param {UrlbarParentController} controller
+   * @param {object} details
+   */
   onEngagement(queryContext, controller, details) {
     let { result } = details;
     if (details.selType == "dismiss" && result.payload.isBlockable) {
@@ -182,5 +180,3 @@ class ProviderOmnibox extends UrlbarProvider {
     }
   }
 }
-
-export var UrlbarProviderOmnibox = new ProviderOmnibox();

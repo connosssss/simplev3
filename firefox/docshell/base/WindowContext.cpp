@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,6 +20,7 @@
 #include "nsIScriptError.h"
 #include "nsIWebProgressListener.h"
 #include "nsIXULRuntime.h"
+#include "nsPIDOMWindowInlines.h"
 #include "nsRFPTargetSetIDL.h"
 #include "nsRefPtrHashtable.h"
 #include "nsContentUtils.h"
@@ -65,19 +64,14 @@ BrowsingContextGroup* WindowContext::Group() const {
 
 WindowGlobalParent* WindowContext::Canonical() {
   MOZ_RELEASE_ASSERT(XRE_IsParentProcess());
-  return static_cast<WindowGlobalParent*>(this);
+  return WindowGlobalParent::Cast(this);
 }
 
 bool WindowContext::IsCurrent() const {
   return mBrowsingContext->mCurrentWindowContext == this;
 }
 
-bool WindowContext::IsInBFCache() {
-  if (mozilla::SessionHistoryInParent()) {
-    return mBrowsingContext->IsInBFCache();
-  }
-  return TopWindowContext()->GetWindowStateSaved();
-}
+bool WindowContext::IsInBFCache() { return mBrowsingContext->IsInBFCache(); }
 
 already_AddRefed<nsIRFPTargetSetIDL>
 WindowContext::GetOverriddenFingerprintingSettingsWebIDL() const {
@@ -87,9 +81,8 @@ WindowContext::GetOverriddenFingerprintingSettingsWebIDL() const {
     return nullptr;
   }
 
-  nsCOMPtr<nsIRFPTargetSetIDL> protections =
-      new nsRFPTargetSetIDL(overriddenFingerprintingSettings.ref());
-  return protections.forget();
+  return MakeAndAddRef<nsRFPTargetSetIDL>(
+      overriddenFingerprintingSettings.ref());
 }
 
 nsGlobalWindowInner* WindowContext::GetInnerWindow() const {
@@ -214,7 +207,7 @@ uint32_t WindowContext::NonSyntheticLightDOMChildrenCount() {
 void WindowContext::SendCommitTransaction(ContentParent* aParent,
                                           const BaseTransaction& aTxn,
                                           uint64_t aEpoch) {
-  Unused << aParent->SendCommitWindowContextTransaction(this, aTxn, aEpoch);
+  (void)aParent->SendCommitWindowContextTransaction(this, aTxn, aEpoch);
 }
 
 void WindowContext::SendCommitTransaction(ContentChild* aChild,
@@ -235,128 +228,8 @@ bool WindowContext::CheckOnlyOwningProcessCanSet(ContentParent* aSource) {
   return false;
 }
 
-bool WindowContext::CanSet(FieldIndex<IDX_IsSecure>, const bool& aIsSecure,
-                           ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_NeedsBeforeUnload>,
-                           const bool& aHasBeforeUnload,
-                           ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_CookieBehavior>,
-                           const Maybe<uint32_t>& aValue,
-                           ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_IsOnContentBlockingAllowList>,
-                           const bool& aValue, ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_IsThirdPartyWindow>,
-                           const bool& IsThirdPartyWindow,
-                           ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_IsThirdPartyTrackingResourceWindow>,
-                           const bool& aIsThirdPartyTrackingResourceWindow,
-                           ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_UsingStorageAccess>,
-                           const bool& aUsingStorageAccess,
-                           ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_ShouldResistFingerprinting>,
-                           const bool& aShouldResistFingerprinting,
-                           ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_OverriddenFingerprintingSettings>,
-                           const Maybe<RFPTargetSet>& aValue,
-                           ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_IsSecureContext>,
-                           const bool& aIsSecureContext,
-                           ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_IsOriginalFrameSource>,
-                           const bool& aIsOriginalFrameSource,
-                           ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_DocTreeHadMedia>, const bool& aValue,
-                           ContentParent* aSource) {
-  return IsTop();
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_AutoplayPermission>,
-                           const uint32_t& aValue, ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_ShortcutsPermission>,
-                           const uint32_t& aValue, ContentParent* aSource) {
-  return IsTop() && CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_ActiveMediaSessionContextId>,
-                           const Maybe<uint64_t>& aValue,
-                           ContentParent* aSource) {
-  return IsTop();
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_PopupPermission>, const uint32_t&,
-                           ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(
-    FieldIndex<IDX_DelegatedPermissions>,
-    const PermissionDelegateHandler::DelegatedPermissionList& aValue,
-    ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(
-    FieldIndex<IDX_DelegatedExactHostMatchPermissions>,
-    const PermissionDelegateHandler::DelegatedPermissionList& aValue,
-    ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_IsLocalIP>, const bool& aValue,
-                           ContentParent* aSource) {
-  return CheckOnlyOwningProcessCanSet(aSource);
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_AllowJavascript>, bool aValue,
-                           ContentParent* aSource) {
-  return (XRE_IsParentProcess() && !aSource) ||
-         CheckOnlyOwningProcessCanSet(aSource);
-}
-
 void WindowContext::DidSet(FieldIndex<IDX_AllowJavascript>, bool aOldValue) {
   RecomputeCanExecuteScripts();
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_HasActivePeerConnections>, bool,
-                           ContentParent*) {
-  return XRE_IsParentProcess() && IsTop();
 }
 
 void WindowContext::ProcessCloseRequest() {
@@ -365,7 +238,7 @@ void WindowContext::ProcessCloseRequest() {
   top->PreOrderWalk([&](BrowsingContext* aBrowsingContext) {
     CanonicalBrowsingContext* canonical = aBrowsingContext->Canonical();
     if (WindowGlobalParent* parent = canonical->GetCurrentWindowGlobal()) {
-      Unused << parent->SendProcessCloseRequest(aBrowsingContext);
+      (void)parent->SendProcessCloseRequest(aBrowsingContext);
     }
   });
 }
@@ -461,7 +334,7 @@ void WindowContext::DidSet(FieldIndex<IDX_HasReportedShadowDOMUsage>,
       Document* topLevelDoc = mBrowsingContext->GetDocument();
       if (topLevelDoc) {
         nsAutoString uri;
-        Unused << topLevelDoc->GetDocumentURI(uri);
+        (void)topLevelDoc->GetDocumentURI(uri);
         if (!uri.IsEmpty()) {
           nsAutoString msg = u"Shadow DOM used in ["_ns + uri +
                              u"] or in some of its subdocuments."_ns;
@@ -471,12 +344,6 @@ void WindowContext::DidSet(FieldIndex<IDX_HasReportedShadowDOMUsage>,
       }
     }
   }
-}
-
-bool WindowContext::CanSet(FieldIndex<IDX_WindowStateSaved>, bool aValue,
-                           ContentParent* aSource) {
-  return !mozilla::SessionHistoryInParent() && IsTop() &&
-         CheckOnlyOwningProcessCanSet(aSource);
 }
 
 void WindowContext::CreateFromIPC(IPCInitializer&& aInit) {
@@ -563,13 +430,13 @@ void WindowContext::NotifyUserGestureActivation(
   if (auto* innerWindow = GetInnerWindow()) {
     innerWindow->EnsureCloseWatcherManager()->NotifyUserInteraction();
   }
-  Unused << SetUserActivationStateAndModifiers(stateAndModifiers.GetRawData());
+  (void)SetUserActivationStateAndModifiers(stateAndModifiers.GetRawData());
 }
 
 void WindowContext::NotifyResetUserGestureActivation() {
   UserActivation::StateAndModifiers stateAndModifiers;
   stateAndModifiers.SetState(UserActivation::State::None);
-  Unused << SetUserActivationStateAndModifiers(stateAndModifiers.GetRawData());
+  (void)SetUserActivationStateAndModifiers(stateAndModifiers.GetRawData());
 }
 
 bool WindowContext::HasBeenUserGestureActivated() {
@@ -609,12 +476,43 @@ bool WindowContext::HasValidTransientUserGestureActivation() {
          (TimeStamp::Now() - mLastActivationTimestamp) <= timeout;
 }
 
+template <typename F>
+static void ConsumeUserGestureActivationBetweenPiP(BrowsingContext* aTop,
+                                                   F&& aCallback) {
+  // https://wicg.github.io/document-picture-in-picture/#user-activation-propagation
+  // Monkey patch to consume user activation
+  if (aTop->GetIsDocumentPiP()) {
+    // 4. If top is a PIP window, then extend navigables with the opener
+    // window's inclusive decendant navigables
+    RefPtr<BrowsingContext> opener = aTop->GetOpener();
+    if (!opener) {
+      return;
+    }
+    opener->GetBrowsingContext()->PreOrderWalk(aCallback);
+  } else {
+    // 5. Get top-level navigable's last opened PiP window
+    nsGlobalWindowInner* pip = aTop->GetOpenedDocumentPiPWindow();
+    if (!pip) {
+      return;
+    }
+
+    // 6. Extend navigables with the inclusive descendant navigables of the PIP
+    // window.
+    BrowsingContext* pipBC = pip->GetBrowsingContext();
+    NS_ENSURE_TRUE_VOID(pipBC);
+    WindowContext* pipWC = pipBC->GetCurrentWindowContext();
+    NS_ENSURE_TRUE_VOID(pipWC);
+    pipBC->PreOrderWalk(aCallback);
+  }
+}
+
 // https://html.spec.whatwg.org/#consume-user-activation
 bool WindowContext::ConsumeTransientUserGestureActivation() {
   MOZ_ASSERT(IsInProcess());
-  MOZ_ASSERT(IsCurrent());
-
   // 1. If W's navigable is null, then return.
+  if (!IsCurrent()) {
+    return false;
+  }
 
   if (!HasValidTransientUserGestureActivation()) {
     return false;
@@ -625,7 +523,7 @@ bool WindowContext::ConsumeTransientUserGestureActivation() {
 
   // 3. Let navigables be the inclusive descendant navigables of top's active
   // document.
-  top->PreOrderWalk([&](BrowsingContext* aBrowsingContext) {
+  auto callback = [&](BrowsingContext* aBrowsingContext) {
     // 4. Let windows be the list of Window objects constructed by taking the
     // active window of each item in navigables.
     WindowContext* windowContext = aBrowsingContext->GetCurrentWindowContext();
@@ -641,10 +539,13 @@ bool WindowContext::ConsumeTransientUserGestureActivation() {
       // DidSet(FieldIndex<IDX_UserActivationStateAndModifiers>),
       // which in turn updates mLastActivationTimestamp.
       stateAndModifiers.SetState(UserActivation::State::HasBeenActivated);
-      Unused << windowContext->SetUserActivationStateAndModifiers(
+      (void)windowContext->SetUserActivationStateAndModifiers(
           stateAndModifiers.GetRawData());
     }
-  });
+  };
+  top->PreOrderWalk(callback);
+
+  ConsumeUserGestureActivationBetweenPiP(top, callback);
 
   return true;
 }
@@ -702,6 +603,18 @@ bool WindowContext::CanShowPopup() {
   }
 
   return !StaticPrefs::dom_disable_open_during_load();
+}
+
+bool WindowContext::CanFramebust() {
+  uint32_t permit = GetPopupPermission();
+  if (permit == nsIPermissionManager::ALLOW_ACTION) {
+    return true;
+  }
+  if (permit == nsIPermissionManager::DENY_ACTION) {
+    return false;
+  }
+
+  return !StaticPrefs::dom_security_framebusting_intervention_enabled();
 }
 
 void WindowContext::TransientSetHasActivePeerConnections() {
@@ -775,27 +688,33 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(WindowContext)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 }  // namespace dom
+}  // namespace mozilla
 
-namespace ipc {
+namespace IPC {
 
-void IPDLParamTraits<dom::MaybeDiscarded<dom::WindowContext>>::Write(
-    IPC::MessageWriter* aWriter, IProtocol* aActor,
-    const dom::MaybeDiscarded<dom::WindowContext>& aParam) {
+using mozilla::dom::MaybeDiscarded;
+using mozilla::dom::WindowContext;
+
+void ParamTraits<MaybeDiscarded<WindowContext>>::Write(
+    MessageWriter* aWriter, const MaybeDiscarded<WindowContext>& aParam) {
   uint64_t id = aParam.ContextId();
-  WriteIPDLParam(aWriter, aActor, id);
+  WriteParam(aWriter, id);
 }
 
-bool IPDLParamTraits<dom::MaybeDiscarded<dom::WindowContext>>::Read(
-    IPC::MessageReader* aReader, IProtocol* aActor,
-    dom::MaybeDiscarded<dom::WindowContext>* aResult) {
+bool ParamTraits<MaybeDiscarded<WindowContext>>::Read(
+    MessageReader* aReader, MaybeDiscarded<WindowContext>* aResult) {
   uint64_t id = 0;
-  if (!ReadIPDLParam(aReader, aActor, &id)) {
+  if (!ReadParam(aReader, &id)) {
     return false;
   }
 
   if (id == 0) {
     *aResult = nullptr;
-  } else if (RefPtr<dom::WindowContext> wc = dom::WindowContext::GetById(id)) {
+  } else if (RefPtr<WindowContext> wc = WindowContext::GetById(id)) {
+    if (!wc->Group()->IsKnownForMessageReader(aReader)) {
+      return false;
+    }
+
     *aResult = std::move(wc);
   } else {
     aResult->SetDiscarded(id);
@@ -803,27 +722,10 @@ bool IPDLParamTraits<dom::MaybeDiscarded<dom::WindowContext>>::Read(
   return true;
 }
 
-void IPDLParamTraits<dom::WindowContext::IPCInitializer>::Write(
-    IPC::MessageWriter* aWriter, IProtocol* aActor,
-    const dom::WindowContext::IPCInitializer& aInit) {
-  // Write actor ID parameters.
-  WriteIPDLParam(aWriter, aActor, aInit.mInnerWindowId);
-  WriteIPDLParam(aWriter, aActor, aInit.mOuterWindowId);
-  WriteIPDLParam(aWriter, aActor, aInit.mBrowsingContextId);
-  WriteIPDLParam(aWriter, aActor, aInit.mFields);
-}
+IMPLEMENT_IPC_SERIALIZER_WITH_FIELDS(WindowContext::IPCInitializer,
+                                     mInnerWindowId, mOuterWindowId,
+                                     mBrowsingContextId, mFields);
 
-bool IPDLParamTraits<dom::WindowContext::IPCInitializer>::Read(
-    IPC::MessageReader* aReader, IProtocol* aActor,
-    dom::WindowContext::IPCInitializer* aInit) {
-  // Read actor ID parameters.
-  return ReadIPDLParam(aReader, aActor, &aInit->mInnerWindowId) &&
-         ReadIPDLParam(aReader, aActor, &aInit->mOuterWindowId) &&
-         ReadIPDLParam(aReader, aActor, &aInit->mBrowsingContextId) &&
-         ReadIPDLParam(aReader, aActor, &aInit->mFields);
-}
+template struct ParamTraits<WindowContext::BaseTransaction>;
 
-template struct IPDLParamTraits<dom::WindowContext::BaseTransaction>;
-
-}  // namespace ipc
-}  // namespace mozilla
+}  // namespace IPC

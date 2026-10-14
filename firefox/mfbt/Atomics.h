@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,13 +22,17 @@
 #  include <atomic>
 #endif  // __wasi__
 
-#include <stddef.h>  // For ptrdiff_t
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 #include <type_traits>
 
 #if defined(__i386) || defined(_M_IX86) || defined(__x86_64__) || \
     defined(_M_X64)
 #  include <emmintrin.h>
+#endif
+
+#ifdef MOZ_TSAN
+#  include <sanitizer/tsan_interface.h>
 #endif
 
 namespace mozilla {
@@ -65,7 +67,7 @@ namespace mozilla {
  * the modes we provide below, or not relevant for the CPUs we support
  * in Gecko.  These three modes are confusing enough as it is!
  */
-enum MemoryOrdering {
+enum MemoryOrdering : uint8_t {
   /*
    * Relaxed ordering is the simplest memory ordering: none at all.
    * When the result of a write is observed, nothing may be inferred
@@ -255,8 +257,8 @@ struct IntrinsicIncDec : public IntrinsicAddSub<T, Order> {
 };
 
 template <typename T, MemoryOrdering Order>
-struct AtomicIntrinsics : public IntrinsicMemoryOps<T, Order>,
-                          public IntrinsicIncDec<T, Order> {
+struct MOZ_EMPTY_BASES AtomicIntrinsics : public IntrinsicMemoryOps<T, Order>,
+                                          public IntrinsicIncDec<T, Order> {
   typedef IntrinsicBase<T, Order> Base;
 
   static T or_(typename Base::ValueType& aPtr, T aVal) {
@@ -273,8 +275,9 @@ struct AtomicIntrinsics : public IntrinsicMemoryOps<T, Order>,
 };
 
 template <typename T, MemoryOrdering Order>
-struct AtomicIntrinsics<T*, Order> : public IntrinsicMemoryOps<T*, Order>,
-                                     public IntrinsicIncDec<T*, Order> {};
+struct MOZ_EMPTY_BASES
+    AtomicIntrinsics<T*, Order> : public IntrinsicMemoryOps<T*, Order>,
+                                  public IntrinsicIncDec<T*, Order> {};
 
 template <typename T>
 struct ToStorageTypeArgument {
@@ -306,6 +309,8 @@ class AtomicBase {
     return aVal;
   }
 
+  AtomicBase(const AtomicBase& aCopy) = delete;
+
   /**
    * Performs an atomic swap operation.  aVal is stored and the previous
    * value of this variable is returned.
@@ -326,9 +331,6 @@ class AtomicBase {
   bool compareExchange(T aOldValue, T aNewValue) {
     return Intrinsics::compareExchange(mValue, aOldValue, aNewValue);
   }
-
- private:
-  AtomicBase(const AtomicBase& aCopy) = delete;
 };
 
 template <typename T, MemoryOrdering Order>
@@ -341,14 +343,13 @@ class AtomicBaseIncDec : public AtomicBase<T, Order> {
 
   using Base::operator=;
 
+  AtomicBaseIncDec(const AtomicBaseIncDec& aCopy) = delete;
+
   operator T() const { return Base::Intrinsics::load(Base::mValue); }
   T operator++(int) { return Base::Intrinsics::inc(Base::mValue); }
   T operator--(int) { return Base::Intrinsics::dec(Base::mValue); }
   T operator++() { return Base::Intrinsics::inc(Base::mValue) + 1; }
   T operator--() { return Base::Intrinsics::dec(Base::mValue) - 1; }
-
- private:
-  AtomicBaseIncDec(const AtomicBaseIncDec& aCopy) = delete;
 };
 
 }  // namespace detail
@@ -395,6 +396,8 @@ class Atomic<
 
   using Base::operator=;
 
+  Atomic(Atomic& aOther) = delete;
+
   T operator+=(T aDelta) {
     return Base::Intrinsics::add(Base::mValue, aDelta) + aDelta;
   }
@@ -414,9 +417,6 @@ class Atomic<
   T operator&=(T aVal) {
     return Base::Intrinsics::and_(Base::mValue, aVal) & aVal;
   }
-
- private:
-  Atomic(Atomic& aOther) = delete;
 };
 
 /**
@@ -437,6 +437,8 @@ class Atomic<T*, Order> : public detail::AtomicBaseIncDec<T*, Order> {
 
   using Base::operator=;
 
+  Atomic(Atomic& aOther) = delete;
+
   T* operator+=(ptrdiff_t aDelta) {
     return Base::Intrinsics::add(Base::mValue, aDelta) + aDelta;
   }
@@ -444,9 +446,6 @@ class Atomic<T*, Order> : public detail::AtomicBaseIncDec<T*, Order> {
   T* operator-=(ptrdiff_t aDelta) {
     return Base::Intrinsics::sub(Base::mValue, aDelta) - aDelta;
   }
-
- private:
-  Atomic(Atomic& aOther) = delete;
 };
 
 /**
@@ -467,7 +466,6 @@ class Atomic<T, Order, std::enable_if_t<std::is_enum_v<T>>>
 
   using Base::operator=;
 
- private:
   Atomic(Atomic& aOther) = delete;
 };
 
@@ -495,6 +493,8 @@ class Atomic<bool, Order> : protected detail::AtomicBase<uint32_t, Order> {
   constexpr Atomic() : Base() {}
   explicit constexpr Atomic(bool aInit) : Base(aInit) {}
 
+  Atomic(Atomic& aOther) = delete;
+
   // We provide boolean wrappers for the underlying AtomicBase methods.
   MOZ_IMPLICIT operator bool() const {
     return Base::Intrinsics::load(Base::mValue);
@@ -507,9 +507,6 @@ class Atomic<bool, Order> : protected detail::AtomicBase<uint32_t, Order> {
   bool compareExchange(bool aOldValue, bool aNewValue) {
     return Base::compareExchange(aOldValue, aNewValue);
   }
-
- private:
-  Atomic(Atomic& aOther) = delete;
 };
 
 /**
@@ -523,14 +520,13 @@ class Atomic<double, Order> : protected detail::AtomicBase<double, Order> {
   constexpr Atomic() : Base() {}
   explicit constexpr Atomic(double aInit) : Base(aInit) {}
 
+  Atomic(Atomic& aOther) = delete;
+
   operator double() const {
     return double(Base::Intrinsics::load(Base::mValue));
   }
 
   double operator=(double aVal) { return Base::operator=(aVal); }
-
- private:
-  Atomic(Atomic& aOther) = delete;
 };
 
 // Relax the CPU during a spinlock.  It's a good idea to place this in a
@@ -540,7 +536,44 @@ inline void cpu_pause() {
 #if defined(__i386) || defined(_M_IX86) || defined(__x86_64__) || \
     defined(_M_X64)
   _mm_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+  // TODO: Rust uses isb rather than yield on aarch64, see
+  // https://github.com/rust-lang/rust/pull/84725
+  __asm__ __volatile__("yield");
+#else
+  __asm__ __volatile__("" ::: "memory");
 #endif
+}
+
+/**
+ * Decrements an atomic reference count and returns the new value.
+ *
+ * The decrement has release semantics: writes this thread made before
+ * releasing its reference become visible to whichever thread destroys the
+ * object. When the count drops to zero, the decrement also has acquire
+ * semantics: this thread, usually about to destroy the object, then sees all
+ * writes that other threads made before releasing their references.
+ *
+ * The count is not accessed after the decrement, so another thread may free
+ * the object as soon as it sees the count drop to zero.
+ */
+template <typename T>
+MOZ_ALWAYS_INLINE T AtomicRefCountDecrement(std::atomic<T>& aCount) {
+  T result = aCount.fetch_sub(1, std::memory_order_release) - 1;
+  if (result == 0) {
+#if defined(__wasi__)
+    // The WASI atomic shim does not provide std::atomic_thread_fence.
+    (void)aCount.load(std::memory_order_acquire);
+#else
+    std::atomic_thread_fence(std::memory_order_acquire);
+#  ifdef MOZ_TSAN
+    // TSan does not model std::atomic_thread_fence, so annotate the acquire
+    // for it, which unlike a load does not access the count.
+    __tsan_acquire(&aCount);
+#  endif
+#endif
+  }
+  return result;
 }
 
 }  // namespace mozilla

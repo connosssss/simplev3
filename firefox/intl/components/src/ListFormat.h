@@ -6,7 +6,6 @@
 
 #include "mozilla/CheckedInt.h"
 #include "mozilla/intl/ICU4CGlue.h"
-#include "mozilla/PodOperations.h"
 #include "mozilla/Try.h"
 #include "mozilla/Vector.h"
 #include "unicode/ulistformatter.h"
@@ -167,11 +166,12 @@ class ListFormat final {
     return FormattedToParts(value, buffer.length(), parts);
   }
 
- private:
   ListFormat() = delete;
-  explicit ListFormat(UListFormatter* fmt) : mListFormatter(fmt) {}
   ListFormat(const ListFormat&) = delete;
   ListFormat& operator=(const ListFormat&) = delete;
+
+ private:
+  explicit ListFormat(UListFormatter* fmt) : mListFormatter(fmt) {}
 
   ICUPointer<UListFormatter> mListFormatter =
       ICUPointer<UListFormatter>(nullptr);

@@ -10,40 +10,31 @@ import {
   SkippableTimer,
   UrlbarProvider,
   UrlbarUtils,
-} from "resource:///modules/UrlbarUtils.sys.mjs";
+} from "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs";
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
-  UrlbarSearchUtils: "resource:///modules/UrlbarSearchUtils.sys.mjs",
-  UrlbarTokenizer: "resource:///modules/UrlbarTokenizer.sys.mjs",
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
+  UrlbarResult: "chrome://browser/content/urlbar/UrlbarResult.mjs",
+  UrlbarSearchUtils:
+    "moz-src:///browser/components/urlbar/UrlbarSearchUtils.sys.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
 });
 
 /**
  * Class used to create the provider.
  */
-class ProviderPrivateSearch extends UrlbarProvider {
+export class UrlbarProviderPrivateSearch extends UrlbarProvider {
   constructor() {
     super();
-    // Maps the open tabs by userContextId.
-    this.openTabs = new Map();
   }
 
   /**
-   * Returns the name of this provider.
-   *
-   * @returns {string} the name of this provider.
-   */
-  get name() {
-    return "PrivateSearch";
-  }
-
-  /**
-   * @returns {Values<typeof UrlbarUtils.PROVIDER_TYPE>}
+   * @returns {Values<typeof lazy.UrlbarShared.PROVIDER_TYPE>}
    */
   get type() {
-    return UrlbarUtils.PROVIDER_TYPE.PROFILE;
+    return lazy.UrlbarShared.PROVIDER_TYPE.PROFILE;
   }
 
   /**
@@ -64,16 +55,16 @@ class ProviderPrivateSearch extends UrlbarProvider {
   /**
    * Starts querying.
    *
-   * @param {object} queryContext The query context object
-   * @param {Function} addCallback Callback invoked by the provider to add a new
-   *        match.
-   * @returns {Promise} resolved when the query stops.
+   * @param {UrlbarQueryContext} queryContext
+   * @param {(provider: UrlbarProvider, result: UrlbarResult) => void} addCallback
+   *   Callback invoked by the provider to add a new result.
+   * @param {UrlbarParentController} controller The controller instance.
    */
-  async startQuery(queryContext, addCallback) {
+  async startQuery(queryContext, addCallback, controller) {
     let searchString = queryContext.trimmedSearchString;
     if (
       queryContext.tokens.some(
-        t => t.type == lazy.UrlbarTokenizer.TYPE.RESTRICT_SEARCH
+        t => t.type == lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_SEARCH
       )
     ) {
       if (queryContext.tokens.length == 1) {
@@ -82,7 +73,7 @@ class ProviderPrivateSearch extends UrlbarProvider {
       }
       // Remove the restriction char from the search string.
       searchString = queryContext.tokens
-        .filter(t => t.type != lazy.UrlbarTokenizer.TYPE.RESTRICT_SEARCH)
+        .filter(t => t.type != lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_SEARCH)
         .map(t => t.value)
         .join(" ");
     }
@@ -90,11 +81,11 @@ class ProviderPrivateSearch extends UrlbarProvider {
     let instance = this.queryInstance;
 
     let engine = queryContext.searchMode?.engineName
-      ? Services.search.getEngineByName(queryContext.searchMode.engineName)
-      : await Services.search.getDefaultPrivate();
+      ? lazy.SearchService.getEngineByName(queryContext.searchMode.engineName)
+      : await lazy.SearchService.getDefaultPrivate();
     let isPrivateEngine =
       lazy.UrlbarSearchUtils.separatePrivateDefault &&
-      engine != (await Services.search.getDefault());
+      engine != (await lazy.SearchService.getDefault());
     this.logger.info(`isPrivateEngine: ${isPrivateEngine}`);
 
     // This is a delay added before returning results, to avoid flicker.
@@ -107,25 +98,27 @@ class ProviderPrivateSearch extends UrlbarProvider {
       logger: this.logger,
     }).promise;
 
-    let icon = await engine.getIconURL();
+    let icon = await UrlbarUtils.getEngineIconUrl(engine, controller);
     if (instance != this.queryInstance) {
       return;
     }
 
-    let result = new lazy.UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.SEARCH,
-      UrlbarUtils.RESULT_SOURCE.SEARCH,
-      ...lazy.UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, {
-        engine: [engine.name, UrlbarUtils.HIGHLIGHT.TYPED],
-        query: [searchString, UrlbarUtils.HIGHLIGHT.NONE],
+    let result = new lazy.UrlbarResult({
+      type: lazy.UrlbarShared.RESULT_TYPE.SEARCH,
+      source: lazy.UrlbarShared.RESULT_SOURCE.SEARCH,
+      suggestedIndex: 1,
+      payload: {
+        engine: engine.name,
+        query: searchString,
+        title: searchString,
         icon,
         inPrivateWindow: true,
         isPrivateEngine,
-      })
-    );
-    result.suggestedIndex = 1;
+      },
+      highlights: {
+        engine: lazy.UrlbarShared.HIGHLIGHT.TYPED,
+      },
+    });
     addCallback(this, result);
   }
 }
-
-export var UrlbarProviderPrivateSearch = new ProviderPrivateSearch();

@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
 * License, v. 2.0. If a copy of the MPL was not distributed with this
 * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -84,11 +83,10 @@ interface mozIMozIntl : nsISupports
   jsval getLocaleDisplayNames(in jsval locales, in jsval localeCodes, [optional] in jsval options);
 
   /**
-   * Returns the assumed script directionality for known Firefox locales. This is
-   * somewhat crude, but should work until Bug 1750781 lands.
+   * Returns the script direction of a locale, either "ltr" or "rtl".
+   * Locales whose direction cannot be determined are treated as "ltr".
    *
-   * TODO (Bug 1750781) - Callers should use Intl.LocaleInfo once it is standardized (see
-   * Bug 1693576), rather than maintaining a hardcoded list of RTL locales.
+   * TODO(Bug 2079006): Consider removing getScriptDirection in Favor of getTextInfo
    */
   jsval getScriptDirection(in jsval locale);
 

@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef SuspendableChannelWrapper_h__
-#define SuspendableChannelWrapper_h__
+#ifndef SuspendableChannelWrapper_h_
+#define SuspendableChannelWrapper_h_
 
 #include "nsISuspendableChannelWrapper.h"
 
@@ -39,11 +38,10 @@ class SuspendableChannelWrapper final : public BaseSuspendableChannelWrapper {
   NS_IMETHOD AsyncOpen(nsIStreamListener* aListener) override;
   NS_IMETHOD Open(nsIInputStream** _retval) override;
 
-  explicit SuspendableChannelWrapper(nsIChannel* aInnerChannel)
-      : BaseSuspendableChannelWrapper(aInnerChannel) {}
+  explicit SuspendableChannelWrapper(nsIChannel* aInnerChannel);
 
  private:
-  ~SuspendableChannelWrapper() override = default;
+  ~SuspendableChannelWrapper() override;
 
   nsCOMPtr<nsIStreamListener> mListener;
   uint32_t mSuspendCount = 0;
@@ -54,4 +52,4 @@ class SuspendableChannelWrapper final : public BaseSuspendableChannelWrapper {
 }  // namespace net
 }  // namespace mozilla
 
-#endif  // SuspendableChannelWrapper_h__
+#endif  // SuspendableChannelWrapper_h_

@@ -23,6 +23,7 @@ const doNotAutoselectTags = {
 
 /**
  * Gets the rect for an element if getBoundingClientRect exists
+ *
  * @param ele The element to get the rect from
  * @returns The bounding client rect of the element or null
  */
@@ -55,10 +56,10 @@ export function setMaxDetectWidth(maxWidth) {
  *
  * If the element is not an iframe, then we will just return the element.
  *
- * @param {Number} x The x coordinate
- * @param {Number} y The y coordinate
+ * @param {number} x The x coordinate
+ * @param {number} y The y coordinate
  * @param {Document} doc The document
- * @returns {Object}
+ * @returns {object}
  *    ele: The element for a given point (x, y)
  *    rect: The rect for the given point if ele is an iframe
  *          otherwise null
@@ -78,18 +79,18 @@ export async function getElementFromPoint(x, y, doc) {
       rect = await actor.sendQuery(
         "ScreenshotsHelper:GetElementRectFromPoint",
         {
-          x: x + ele.ownerGlobal.mozInnerScreenX,
-          y: y + ele.ownerGlobal.mozInnerScreenY,
-          bcId: ele.browsingContext.id,
+          x: x + ele.documentGlobal.mozInnerScreenX,
+          y: y + ele.documentGlobal.mozInnerScreenY,
+          bc: ele.browsingContext,
         }
       );
 
       if (rect) {
         rect = {
-          left: rect.left - ele.ownerGlobal.mozInnerScreenX,
-          right: rect.right - ele.ownerGlobal.mozInnerScreenX,
-          top: rect.top - ele.ownerGlobal.mozInnerScreenY,
-          bottom: rect.bottom - ele.ownerGlobal.mozInnerScreenY,
+          left: rect.left - ele.documentGlobal.mozInnerScreenX,
+          right: rect.right - ele.documentGlobal.mozInnerScreenX,
+          top: rect.top - ele.documentGlobal.mozInnerScreenY,
+          bottom: rect.bottom - ele.documentGlobal.mozInnerScreenY,
         };
       }
     } else if (ele.openOrClosedShadowRoot) {
@@ -111,6 +112,7 @@ export async function getElementFromPoint(x, y, doc) {
 
 /**
  * This function takes an element and finds a suitable rect to draw the hover box on
+ *
  * @param {Element} ele The element to find a suitale rect of
  * @param {Document} doc The current document
  * @returns A suitable rect or null
@@ -200,6 +202,7 @@ export function getBestRectForElement(ele, doc) {
 
 /**
  * This finds a better element by looking for elements with role article
+ *
  * @param {Element} node The currently hovered node
  * @param {Document} doc The current document
  * @returns A better node or null
@@ -234,6 +237,7 @@ export class Region {
   #xOffset;
   #yOffset;
   #windowDimensions;
+  #confineToViewport = false;
 
   constructor(windowDimensions) {
     this.resetDimensions();
@@ -241,9 +245,38 @@ export class Region {
   }
 
   /**
+   * When true, coordinates are confined to the currently visible viewport
+   * instead of the whole page.
+   *
+   * @param {boolean} val
+   */
+  set confineToViewport(val) {
+    this.#confineToViewport = !!val;
+  }
+
+  #clampX(val) {
+    if (this.#confineToViewport) {
+      let viewportLeft = this.#windowDimensions.scrollX;
+      let viewportRight = viewportLeft + this.#windowDimensions.clientWidth;
+      return Math.min(viewportRight, Math.max(viewportLeft, val));
+    }
+    return Math.min(this.#windowDimensions.scrollWidth, Math.max(0, val));
+  }
+
+  #clampY(val) {
+    if (this.#confineToViewport) {
+      let viewportTop = this.#windowDimensions.scrollY;
+      let viewportBottom = viewportTop + this.#windowDimensions.clientHeight;
+      return Math.min(viewportBottom, Math.max(viewportTop, val));
+    }
+    return Math.min(this.#windowDimensions.scrollHeight, Math.max(0, val));
+  }
+
+  /**
    * Sets the dimensions if the given dimension is defined.
    * Otherwise will reset the dimensions
-   * @param {Object} dims The new region dimensions
+   *
+   * @param {object} dims The new region dimensions
    *  {
    *    left: new left dimension value or undefined
    *    top: new top dimension value or undefined
@@ -269,6 +302,32 @@ export class Region {
     if (dims.bottom != null) {
       this.bottom = dims.bottom;
     }
+  }
+
+  /**
+   * Sets the dimensions from a given DOMRect. This will offset the rect
+   * relative to the screenshots container before setting the dimensions.
+   *
+   * @param {DOMRect} rect The DOMRect to set the dimensions from
+   */
+  setDimensionsFromDOMRect(rect) {
+    if (rect == null) {
+      this.resetDimensions();
+      return;
+    }
+
+    // eslint-disable-next-line no-shadow
+    let { scrollX, scrollY } = this.#windowDimensions.dimensions;
+    // eslint-disable-next-line no-shadow
+    let { left, top, right, bottom } = rect;
+    let dims = {
+      left: left + scrollX,
+      top: top + scrollY,
+      right: right + scrollX,
+      bottom: bottom + scrollY,
+    };
+
+    this.dimensions = dims;
   }
 
   get dimensions() {
@@ -357,28 +416,28 @@ export class Region {
     return Math.min(this.#y1, this.#y2);
   }
   set top(val) {
-    this.#y1 = Math.min(this.#windowDimensions.scrollHeight, Math.max(0, val));
+    this.#y1 = this.#clampY(val);
   }
 
   get left() {
     return Math.min(this.#x1, this.#x2);
   }
   set left(val) {
-    this.#x1 = Math.min(this.#windowDimensions.scrollWidth, Math.max(0, val));
+    this.#x1 = this.#clampX(val);
   }
 
   get right() {
     return Math.max(this.#x1, this.#x2);
   }
   set right(val) {
-    this.#x2 = Math.min(this.#windowDimensions.scrollWidth, Math.max(0, val));
+    this.#x2 = this.#clampX(val);
   }
 
   get bottom() {
     return Math.max(this.#y1, this.#y2);
   }
   set bottom(val) {
-    this.#y2 = Math.min(this.#windowDimensions.scrollHeight, Math.max(0, val));
+    this.#y2 = this.#clampY(val);
   }
 
   get width() {

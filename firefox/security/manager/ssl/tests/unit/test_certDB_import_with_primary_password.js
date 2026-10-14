@@ -1,4 +1,3 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // Any copyright is dedicated to the Public Domain.
 // http://creativecommons.org/publicdomain/zero/1.0/
 "use strict";
@@ -88,16 +87,7 @@ function getCertAsByteArray(certPath) {
   return byteArray;
 }
 
-function findCertByCommonName(commonName) {
-  for (let cert of gCertDB.getCerts()) {
-    if (cert.commonName == commonName) {
-      return cert;
-    }
-  }
-  return null;
-}
-
-function run_test() {
+add_task(async function run_test() {
   let certificateDialogsCID = MockRegistrar.register(
     "@mozilla.org/nsCertificateDialogs;1",
     gCertificateDialogs
@@ -107,16 +97,15 @@ function run_test() {
   });
 
   // Set a primary password.
-  let tokenDB = Cc["@mozilla.org/security/pk11tokendb;1"].getService(
-    Ci.nsIPK11TokenDB
+  let token = Cc["@mozilla.org/security/internalkeytoken;1"].createInstance(
+    Ci.nsIPKCS11Token
   );
-  let token = tokenDB.getInternalKeyToken();
-  token.initPassword("password");
-  token.logoutSimple();
+  await token.changePassword("", "password");
+  await token.logout();
 
   // Sanity check the CA cert is missing.
   equal(
-    findCertByCommonName(CA_CERT_COMMON_NAME),
+    await findCertByCommonName(CA_CERT_COMMON_NAME),
     null,
     "CA cert should not be in the database before import"
   );
@@ -135,7 +124,7 @@ function run_test() {
     "Confirmation dialog for the CA cert should only be shown once"
   );
 
-  let caCert = findCertByCommonName(CA_CERT_COMMON_NAME);
+  let caCert = await findCertByCommonName(CA_CERT_COMMON_NAME);
   notEqual(caCert, null, "CA cert should now be found in the database");
   ok(
     gCertDB.isCertTrusted(
@@ -145,4 +134,4 @@ function run_test() {
     ),
     "CA cert should be trusted for e-mail"
   );
-}
+});

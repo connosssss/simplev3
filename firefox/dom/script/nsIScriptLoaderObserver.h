@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,8 +5,8 @@
 #ifndef MOZILLA_DOM_SCRIPT_NSISCRIPTLOADEROBSERVER_H_
 #define MOZILLA_DOM_SCRIPT_NSISCRIPTLOADEROBSERVER_H_
 
-#include "nsISupports.h"
 #include "js/GCAnnotations.h"
+#include "nsISupports.h"
 
 class nsIScriptElement;
 class nsIURI;
@@ -35,11 +34,9 @@ class NS_NO_VTABLE nsIScriptLoaderObserver : public nsISupports {
    * @param aLineNo At what line does the script appear (generally 1
    *        if it is a loaded script).
    */
-  JS_HAZ_CAN_RUN_SCRIPT NS_IMETHOD ScriptAvailable(nsresult aResult,
-                                                   nsIScriptElement* aElement,
-                                                   bool aIsInlineClassicScript,
-                                                   nsIURI* aURI,
-                                                   uint32_t aLineNo) = 0;
+  JS_HAZ_CAN_RUN_SCRIPT MOZ_CAN_RUN_SCRIPT NS_IMETHOD ScriptAvailable(
+      nsresult aResult, nsIScriptElement* aElement, bool aIsInlineClassicScript,
+      nsIURI* aURI, uint32_t aLineNo) = 0;
 
   /**
    * The script has been evaluated.
@@ -53,11 +50,11 @@ class NS_NO_VTABLE nsIScriptLoaderObserver : public nsISupports {
       nsresult aResult, nsIScriptElement* aElement, bool aIsInline) = 0;
 };
 
-#define NS_DECL_NSISCRIPTLOADEROBSERVER                                    \
-  NS_IMETHOD ScriptAvailable(nsresult aResult, nsIScriptElement* aElement, \
-                             bool aIsInlineClassicScript, nsIURI* aURI,    \
-                             uint32_t aLineNo) override;                   \
-  MOZ_CAN_RUN_SCRIPT NS_IMETHOD ScriptEvaluated(                           \
+#define NS_DECL_NSISCRIPTLOADEROBSERVER                                      \
+  MOZ_CAN_RUN_SCRIPT NS_IMETHOD ScriptAvailable(                             \
+      nsresult aResult, nsIScriptElement* aElement,                          \
+      bool aIsInlineClassicScript, nsIURI* aURI, uint32_t aLineNo) override; \
+  MOZ_CAN_RUN_SCRIPT NS_IMETHOD ScriptEvaluated(                             \
       nsresult aResult, nsIScriptElement* aElement, bool aIsInline) override;
 
 #endif  // MOZILLA_DOM_SCRIPT_NSISCRIPTLOADEROBSERVER_H_

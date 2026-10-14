@@ -5,7 +5,7 @@
 # This modules provides functionality for dealing with code completion.
 
 import os
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 
 import mozpack.path as mozpath
 
@@ -17,7 +17,6 @@ from mozbuild.frontend.data import (
     Sources,
     VariablePassthru,
 )
-from mozbuild.shellutil import quote as shell_quote
 from mozbuild.util import expand_variables
 
 
@@ -26,7 +25,7 @@ class CompileDBBackend(CommonBackend):
         CommonBackend._init(self)
 
         # The database we're going to dump out to.
-        self._db = OrderedDict()
+        self._db = {}
 
         # The cache for per-directory flags
         self._flags = {}
@@ -68,7 +67,6 @@ class CompileDBBackend(CommonBackend):
                 self._build_db_line(
                     obj.objdir, obj.relsrcdir, obj.config, f, obj.canonical_suffix
                 )
-
         elif isinstance(obj, VariablePassthru):
             for var in ("MOZBUILD_CMFLAGS", "MOZBUILD_CMMFLAGS"):
                 if var in obj.variables:
@@ -108,7 +106,7 @@ class CompileDBBackend(CommonBackend):
                     # Handle that case by checking whether there are an even
                     # number of double-quotes in the word and appending it to
                     # the accumulator if not. Meanwhile, shlex.split() and
-                    # mozbuild.shellutil.split() aren't able to properly handle
+                    # mozshellutil.split() aren't able to properly handle
                     # this and break in various ways, so we can't use something
                     # off-the-shelf.
                     has_quote = bool(word.count('"') % 2)
@@ -126,16 +124,21 @@ class CompileDBBackend(CommonBackend):
             # encounter a lot of errors parsing some files.)
             c.insert(-1, "-ferror-limit=0")
 
+            # Header entries come from the static-analysis backend, which adds
+            # -xc++ to tell clang to treat the .h file as C++. On Windows,
+            # CXXFLAGS also contains -TP, clang-cl's own "treat as C++" flag.
+            # With both present, clang warns that -TP is unused, so drop it.
+            if "-xc++" in c:
+                c = [arg for arg in c if arg != "-TP"]
+
             per_source_flags = self._per_source_flags.get(filename)
             if per_source_flags is not None:
                 c.extend(per_source_flags)
-            db.append(
-                {
-                    "directory": directory,
-                    "command": shell_quote(*c),
-                    "file": mozpath.join(directory, filename),
-                }
-            )
+            db.append({
+                "directory": directory,
+                "arguments": c,
+                "file": mozpath.join(directory, filename),
+            })
 
         import json
 
@@ -195,9 +198,12 @@ class CompileDBBackend(CommonBackend):
     ):
         for f in unified_source_mapping:
             self._build_db_line(bindings_dir, None, self.environment, f[0], ".cpp")
+        for f in global_define_files:
+            self._build_db_line(bindings_dir, None, self.environment, f, ".cpp")
 
     COMPILERS = {
         ".c": "CC",
+        ".h": "CXX",
         ".cpp": "CXX",
         ".m": "CC",
         ".mm": "CXX",
@@ -205,6 +211,7 @@ class CompileDBBackend(CommonBackend):
 
     CFLAGS = {
         ".c": "CFLAGS",
+        ".h": "CXXFLAGS",
         ".cpp": "CXXFLAGS",
         ".m": "CFLAGS",
         ".mm": "CXXFLAGS",
@@ -213,7 +220,7 @@ class CompileDBBackend(CommonBackend):
     def _get_compiler_args(self, cenv, canonical_suffix):
         if canonical_suffix not in self.COMPILERS:
             return None
-        return cenv.substs[self.COMPILERS[canonical_suffix]].split()
+        return cenv.substs[self.COMPILERS[canonical_suffix]]
 
     def _build_db_line(
         self, objdir, reldir, cenv, filename, canonical_suffix, unified=None
@@ -242,3 +249,4 @@ class CompileDBBackend(CommonBackend):
         elif canonical_suffix == ".mm":
             append_var("OS_COMPILE_CMMFLAGS")
             db.append("$(MOZBUILD_CMMFLAGS)")
+        return db

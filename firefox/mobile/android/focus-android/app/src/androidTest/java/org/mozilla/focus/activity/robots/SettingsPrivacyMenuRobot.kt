@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-@file:Suppress("TooManyFunctions")
-
 package org.mozilla.focus.activity.robots
 
 import androidx.test.espresso.Espresso.onView
@@ -94,11 +92,11 @@ class SettingsPrivacyMenuRobot {
                     matches(
                         hasCousin(
                             allOf(
-                                withId(R.id.switchWidget),
+                                withId(android.R.id.switch_widget),
                                 isChecked(),
-                            ),
-                        ),
-                    ),
+                            )
+                        )
+                    )
                 )
         } else {
             adTrackersBlockSwitch()
@@ -106,11 +104,11 @@ class SettingsPrivacyMenuRobot {
                     matches(
                         hasCousin(
                             allOf(
-                                withId(R.id.switchWidget),
+                                withId(android.R.id.switch_widget),
                                 isNotChecked(),
-                            ),
-                        ),
-                    ),
+                            )
+                        )
+                    )
                 )
         }
     }
@@ -122,11 +120,11 @@ class SettingsPrivacyMenuRobot {
                     matches(
                         hasCousin(
                             allOf(
-                                withId(R.id.switchWidget),
+                                withId(android.R.id.switch_widget),
                                 isChecked(),
-                            ),
-                        ),
-                    ),
+                            )
+                        )
+                    )
                 )
         } else {
             analyticTrackersBlockSwitch()
@@ -134,11 +132,11 @@ class SettingsPrivacyMenuRobot {
                     matches(
                         hasCousin(
                             allOf(
-                                withId(R.id.switchWidget),
+                                withId(android.R.id.switch_widget),
                                 isNotChecked(),
-                            ),
-                        ),
-                    ),
+                            )
+                        )
+                    )
                 )
         }
     }
@@ -150,11 +148,11 @@ class SettingsPrivacyMenuRobot {
                     matches(
                         hasCousin(
                             allOf(
-                                withId(R.id.switchWidget),
+                                withId(android.R.id.switch_widget),
                                 isChecked(),
-                            ),
-                        ),
-                    ),
+                            )
+                        )
+                    )
                 )
         } else {
             socialTrackersBlockSwitch()
@@ -162,11 +160,11 @@ class SettingsPrivacyMenuRobot {
                     matches(
                         hasCousin(
                             allOf(
-                                withId(R.id.switchWidget),
+                                withId(android.R.id.switch_widget),
                                 isNotChecked(),
-                            ),
-                        ),
-                    ),
+                            )
+                        )
+                    )
                 )
         }
     }
@@ -178,11 +176,11 @@ class SettingsPrivacyMenuRobot {
                     matches(
                         hasCousin(
                             allOf(
-                                withId(R.id.switchWidget),
+                                withId(android.R.id.switch_widget),
                                 isChecked(),
-                            ),
-                        ),
-                    ),
+                            )
+                        )
+                    )
                 )
         } else {
             otherContentTrackersBlockSwitch()
@@ -190,11 +188,11 @@ class SettingsPrivacyMenuRobot {
                     matches(
                         hasCousin(
                             allOf(
-                                withId(R.id.switchWidget),
+                                withId(android.R.id.switch_widget),
                                 isNotChecked(),
-                            ),
-                        ),
-                    ),
+                            )
+                        )
+                    )
                 )
         }
     }
@@ -215,19 +213,17 @@ class SettingsPrivacyMenuRobot {
     }
 
     fun clickYesPleaseOption() = blockCookiesYesPleaseOption.click()
+
     fun clickBlockThirdPartyCookiesOnly() = block3rdPartyCookiesOnlyOption.click()
 
     fun switchSafeBrowsingToggle(): ViewInteraction = safeBrowsingSwitch().perform(click())
 
     fun verifyExceptionsListDisabled() {
-        exceptionsList()
-            .check(matches(Matchers.not(isEnabled())))
+        exceptionsList().check(matches(Matchers.not(isEnabled())))
     }
 
     fun openExceptionsList() {
-        exceptionsList()
-            .check(matches(isEnabled()))
-            .perform(click())
+        exceptionsList().check(matches(isEnabled())).perform(click())
     }
 
     fun verifyExceptionURL(url: String) {
@@ -236,17 +232,13 @@ class SettingsPrivacyMenuRobot {
 
     fun removeException() {
         openActionBarOverflowOrOptionsMenu(getTargetContext)
-        onView(withText("Remove"))
-            .perform(click())
-        onView(withId(R.id.checkbox))
-            .perform(click())
-        onView(withId(R.id.remove))
-            .perform(click())
+        onView(withText("Remove")).perform(click())
+        onView(withId(R.id.checkbox)).perform(click())
+        onView(withId(R.id.remove)).perform(click())
     }
 
     fun removeAllExceptions() {
-        onView(withId(R.id.removeAllExceptions))
-            .perform(click())
+        onView(withId(R.id.removeAllExceptions)).perform(click())
     }
 
     class Transition {
@@ -257,7 +249,9 @@ class SettingsPrivacyMenuRobot {
             return SettingsRobot.Transition()
         }
 
-        fun clickSitePermissionsSettings(interact: SettingsSitePermissionsRobot.() -> Unit): SettingsSitePermissionsRobot.Transition {
+        fun clickSitePermissionsSettings(
+            interact: SettingsSitePermissionsRobot.() -> Unit
+        ): SettingsSitePermissionsRobot.Transition {
             sitePermissions().waitForExists(waitingTime)
             sitePermissions().click()
 
@@ -267,12 +261,10 @@ class SettingsPrivacyMenuRobot {
     }
 }
 
-private val privacySettingsList =
-    UiScrollable(UiSelector().resourceId("$packageName:id/recycler_view"))
+private val privacySettingsList = UiScrollable(UiSelector().resourceId("$packageName:id/recycler_view"))
 
 private fun adTrackersBlockSwitch(): ViewInteraction {
-    privacySettingsList
-        .scrollTextIntoView("Block ad trackers")
+    privacySettingsList.scrollTextIntoView("Block ad trackers")
     return onView(withText("Block ad trackers"))
 }
 
@@ -283,11 +275,11 @@ private fun assertAdTrackersBlockSwitchState(enabled: Boolean = true) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     } else {
         adTrackersBlockSwitch()
@@ -295,18 +287,17 @@ private fun assertAdTrackersBlockSwitchState(enabled: Boolean = true) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isNotChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     }
 }
 
 private fun analyticTrackersBlockSwitch(): ViewInteraction {
-    privacySettingsList
-        .scrollTextIntoView("Block analytic trackers")
+    privacySettingsList.scrollTextIntoView("Block analytic trackers")
     return onView(withText("Block analytic trackers"))
 }
 
@@ -317,11 +308,11 @@ private fun assertAnalyticTrackersBlockSwitchState(enabled: Boolean = true) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     } else {
         analyticTrackersBlockSwitch()
@@ -329,18 +320,17 @@ private fun assertAnalyticTrackersBlockSwitchState(enabled: Boolean = true) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isNotChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     }
 }
 
 private fun socialTrackersBlockSwitch(): ViewInteraction {
-    privacySettingsList
-        .scrollTextIntoView("Block social trackers")
+    privacySettingsList.scrollTextIntoView("Block social trackers")
     return onView(withText("Block social trackers"))
 }
 
@@ -351,11 +341,11 @@ private fun assertSocialTrackersBlockSwitchState(enabled: Boolean = true) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     } else {
         socialTrackersBlockSwitch()
@@ -363,18 +353,17 @@ private fun assertSocialTrackersBlockSwitchState(enabled: Boolean = true) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isNotChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     }
 }
 
 private fun otherContentTrackersBlockSwitch(): ViewInteraction {
-    privacySettingsList
-        .scrollTextIntoView("Block other content trackers")
+    privacySettingsList.scrollTextIntoView("Block other content trackers")
     return onView(withText("Block other content trackers"))
 }
 
@@ -385,11 +374,11 @@ private fun assertOtherContentTrackersBlockSwitchState(enabled: Boolean = false)
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     } else {
         otherContentTrackersBlockSwitch()
@@ -397,18 +386,17 @@ private fun assertOtherContentTrackersBlockSwitchState(enabled: Boolean = false)
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isNotChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     }
 }
 
 private fun blockWebFontsSwitch(): ViewInteraction {
-    privacySettingsList
-        .scrollTextIntoView("Block web fonts")
+    privacySettingsList.scrollTextIntoView("Block web fonts")
     return onView(withText("Block web fonts"))
 }
 
@@ -419,11 +407,11 @@ private fun assertBlockWebFontsSwitchState(enabled: Boolean = false) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     } else {
         blockWebFontsSwitch()
@@ -431,18 +419,17 @@ private fun assertBlockWebFontsSwitchState(enabled: Boolean = false) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isNotChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     }
 }
 
 private fun blockJavaScriptSwitch(): ViewInteraction {
-    privacySettingsList
-        .scrollTextIntoView("Block JavaScript")
+    privacySettingsList.scrollTextIntoView("Block JavaScript")
     return onView(withText("Block JavaScript"))
 }
 
@@ -453,11 +440,11 @@ private fun assertBlockJavaScriptSwitchState(enabled: Boolean = false) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     } else {
         blockJavaScriptSwitch()
@@ -465,42 +452,38 @@ private fun assertBlockJavaScriptSwitchState(enabled: Boolean = false) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isNotChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     }
 }
 
 private fun cookiesAndSiteDataSection() =
-    privacySettingsList
-        .getChildByText(
-            UiSelector().text("Cookies and Site Data"),
-            "Cookies and Site Data",
-            true,
-        )
+    privacySettingsList.getChildByText(
+        UiSelector().text("Cookies and Site Data"),
+        "Cookies and Site Data",
+        true,
+    )
 
 private fun blockCookiesMenuButton() =
-    privacySettingsList
-        .getChildByText(
-            UiSelector().text("Block cookies"),
-            "Block cookies",
-            true,
-        )
+    privacySettingsList.getChildByText(
+        UiSelector().text("Block cookies"),
+        "Block cookies",
+        true,
+    )
 
 private fun blockCookiesDefaultOption() =
-    privacySettingsList
-        .getChildByText(
-            UiSelector().text("Block cross-site cookies"),
-            "Block cross-site cookies",
-            true,
-        )
+    privacySettingsList.getChildByText(
+        UiSelector().text("Block cross-site cookies"),
+        "Block cross-site cookies",
+        true,
+    )
 
 private fun sitePermissions() =
-    privacySettingsList
-        .getChildByText(UiSelector().text("Site permissions"), "Site permissions", true)
+    privacySettingsList.getChildByText(UiSelector().text("Site permissions"), "Site permissions", true)
 
 private fun useFingerprintSwitch(): ViewInteraction {
     val useFingerprintSwitchSummary = getStringResource(R.string.preference_security_biometric_summary2)
@@ -515,11 +498,11 @@ private fun assertUseFingerprintSwitchState(enabled: Boolean = false) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     } else {
         useFingerprintSwitch()
@@ -527,11 +510,11 @@ private fun assertUseFingerprintSwitchState(enabled: Boolean = false) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isNotChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     }
 }
@@ -549,11 +532,11 @@ private fun assertStealthModeSwitchState(enabled: Boolean = false) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     } else {
         stealthModeSwitch()
@@ -561,22 +544,18 @@ private fun assertStealthModeSwitchState(enabled: Boolean = false) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isNotChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     }
 }
 
 private fun safeBrowsingSwitch(): ViewInteraction {
     val safeBrowsingSwitchText =
-        mDevice.findObject(
-            UiSelector().text(
-                getStringResource(R.string.preference_safe_browsing_summary),
-            ),
-        )
+        mDevice.findObject(UiSelector().text(getStringResource(R.string.preference_safe_browsing_summary)))
     privacySettingsList.scrollToEnd(3)
     privacySettingsList.scrollIntoView(safeBrowsingSwitchText)
     return onView(withText(getStringResource(R.string.preference_safe_browsing_summary)))
@@ -589,11 +568,11 @@ private fun assertSafeBrowsingSwitchState(enabled: Boolean = true) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     } else {
         safeBrowsingSwitch()
@@ -601,11 +580,11 @@ private fun assertSafeBrowsingSwitchState(enabled: Boolean = true) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isNotChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     }
 }
@@ -623,11 +602,11 @@ private fun assertHttpsOnlyModeSwitchState(enabled: Boolean = true) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     } else {
         httpsOnlyModeSwitch()
@@ -635,11 +614,11 @@ private fun assertHttpsOnlyModeSwitchState(enabled: Boolean = true) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isNotChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     }
 }
@@ -657,11 +636,11 @@ private fun assertSendDataSwitchState(enabled: Boolean = false) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     } else {
         sendDailyUsagePingSwitch()
@@ -669,11 +648,11 @@ private fun assertSendDataSwitchState(enabled: Boolean = false) {
                 matches(
                     hasCousin(
                         allOf(
-                            withId(R.id.switchWidget),
+                            withId(android.R.id.switch_widget),
                             isNotChecked(),
-                        ),
-                    ),
-                ),
+                        )
+                    )
+                )
             )
     }
 }
@@ -688,41 +667,37 @@ private val blockCookiesPromptHeading =
     mDevice.findObject(
         UiSelector()
             .resourceId("$packageName:id/alertTitle")
-            .textContains(getStringResource(R.string.preference_block_cookies_title)),
+            .textContains(getStringResource(R.string.preference_block_cookies_title))
     )
 
 private val blockCookiesYesPleaseOption =
     mDevice.findObject(
-        UiSelector()
-            .textContains(getStringResource(R.string.preference_privacy_should_block_cookies_yes_option2)),
+        UiSelector().textContains(getStringResource(R.string.preference_privacy_should_block_cookies_yes_option2))
     )
 
 private val block3rdPartyCookiesOnlyOption =
     mDevice.findObject(
         UiSelector()
-            .textContains(getStringResource(R.string.preference_privacy_should_block_cookies_third_party_only_option)),
+            .textContains(getStringResource(R.string.preference_privacy_should_block_cookies_third_party_only_option))
     )
 
 private val block3rdPartyTrackerCookiesOnlyOption =
     mDevice.findObject(
         UiSelector()
-            .textContains(getStringResource(R.string.preference_privacy_should_block_cookies_third_party_tracker_cookies_option)),
+            .textContains(
+                getStringResource(R.string.preference_privacy_should_block_cookies_third_party_tracker_cookies_option)
+            )
     )
 
 private val blockCrossSiteCookiesOption =
     mDevice.findObject(
-        UiSelector()
-            .textContains(getStringResource(R.string.preference_privacy_should_block_cookies_cross_site_option)),
+        UiSelector().textContains(getStringResource(R.string.preference_privacy_should_block_cookies_cross_site_option))
     )
 
 private val noThanksOption =
     mDevice.findObject(
-        UiSelector()
-            .textContains(getStringResource(R.string.preference_privacy_should_block_cookies_no_option2)),
+        UiSelector().textContains(getStringResource(R.string.preference_privacy_should_block_cookies_no_option2))
     )
 
 private val cancelBlockCookiesPrompt =
-    mDevice.findObject(
-        UiSelector()
-            .textContains(getStringResource(R.string.action_cancel)),
-    )
+    mDevice.findObject(UiSelector().textContains(getStringResource(R.string.action_cancel)))

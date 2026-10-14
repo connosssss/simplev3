@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- *
+/*
  * Copyright 2015 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,8 +15,6 @@
  */
 
 #include "wasm/WasmModule.h"
-
-#include <chrono>
 
 #include "js/BuildId.h"                 // JS::BuildIdCharVector
 #include "js/experimental/TypedData.h"  // JS_NewUint8Array
@@ -53,8 +49,8 @@ using namespace js::jit;
 using namespace js::wasm;
 
 static UniqueChars Tier2ResultsContext(const ScriptedCaller& scriptedCaller) {
-  return scriptedCaller.filename
-             ? JS_smprintf("%s:%d", scriptedCaller.filename.get(),
+  return scriptedCaller.source
+             ? JS_smprintf("%s:%d", scriptedCaller.source.get(),
                            scriptedCaller.line)
              : UniqueChars();
 }
@@ -152,6 +148,15 @@ class Module::CompleteTier2GeneratorTaskImpl
   }
 };
 
+Module::Module(const ModuleMetadata& moduleMeta, const Code& code,
+               bool loggingDeserialized)
+    : moduleMeta_(&moduleMeta),
+      code_(&code),
+      loggingDeserialized_(loggingDeserialized),
+      testingTier2Active_(false) {
+  initGCMallocBytesExcludingCode();
+}
+
 Module::~Module() {
   // Note: Modules can be destroyed on any thread.
   MOZ_ASSERT(!completeTier2Listener_);
@@ -232,13 +237,6 @@ JSObject* Module::createObject(JSContext* cx) const {
   return WasmModuleObject::create(cx, *this, proto);
 }
 
-/* virtual */
-JSObject* Module::createObjectForAsmJS(JSContext* cx) const {
-  // Use nullptr to get the default object prototype. These objects are never
-  // exposed to script for asm.js.
-  return WasmModuleObject::create(cx, *this, nullptr);
-}
-
 bool wasm::GetOptimizedEncodingBuildId(JS::BuildIdCharVector* buildId) {
   // From a JS API perspective, the "build id" covers everything that can
   // cause machine code to become invalid, so include both the actual build-id
@@ -263,10 +261,20 @@ bool wasm::GetOptimizedEncodingBuildId(JS::BuildIdCharVector* buildId) {
   buildId->infallibleAppend(')');
 
   buildId->infallibleAppend('m');
-  buildId->infallibleAppend(wasm::IsHugeMemoryEnabled(AddressType::I32) ? '+'
-                                                                        : '-');
-  buildId->infallibleAppend(wasm::IsHugeMemoryEnabled(AddressType::I64) ? '+'
-                                                                        : '-');
+  buildId->infallibleAppend(
+      wasm::IsHugeMemoryEnabled(AddressType::I32, PageSize::Standard) ? '+'
+                                                                      : '-');
+  buildId->infallibleAppend(
+      wasm::IsHugeMemoryEnabled(AddressType::I64, PageSize::Standard) ? '+'
+                                                                      : '-');
+
+  // We don't expect huge memory to be supported if custom page sizes are used.
+#ifdef ENABLE_WASM_CUSTOM_PAGE_SIZES
+  MOZ_RELEASE_ASSERT(
+      !wasm::IsHugeMemoryEnabled(AddressType::I32, PageSize::Tiny));
+  MOZ_RELEASE_ASSERT(
+      !wasm::IsHugeMemoryEnabled(AddressType::I64, PageSize::Tiny));
+#endif
 
   return true;
 }
@@ -274,11 +282,10 @@ bool wasm::GetOptimizedEncodingBuildId(JS::BuildIdCharVector* buildId) {
 /* virtual */
 void Module::addSizeOfMisc(mozilla::MallocSizeOf mallocSizeOf,
                            CodeMetadata::SeenSet* seenCodeMeta,
-                           CodeMetadataForAsmJS::SeenSet* seenCodeMetaForAsmJS,
                            Code::SeenSet* seenCode, size_t* code,
                            size_t* data) const {
-  code_->addSizeOfMiscIfNotSeen(mallocSizeOf, seenCodeMeta,
-                                seenCodeMetaForAsmJS, seenCode, code, data);
+  code_->addSizeOfMiscIfNotSeen(mallocSizeOf, seenCodeMeta, seenCode, code,
+                                data);
   *data += mallocSizeOf(this);
 }
 
@@ -397,10 +404,6 @@ bool Module::instantiateFunctions(JSContext* cx,
   MOZ_ASSERT(funcImports.length() == code().funcImports().length());
 #endif
 
-  if (codeMeta().isAsmJS()) {
-    return true;
-  }
-
   for (size_t i = 0; i < code().funcImports().length(); i++) {
     if (!funcImports[i]->is<JSFunction>()) {
       continue;
@@ -436,14 +439,7 @@ template <typename T>
 static bool CheckLimits(JSContext* cx, T declaredMin,
                         const mozilla::Maybe<T>& declaredMax, T defaultMax,
                         T actualLength, const mozilla::Maybe<T>& actualMax,
-                        bool isAsmJS, const char* kind) {
-  if (isAsmJS) {
-    MOZ_ASSERT(actualLength >= declaredMin);
-    MOZ_ASSERT(!declaredMax);
-    MOZ_ASSERT(actualLength == actualMax.value());
-    return true;
-  }
-
+                        const char* kind) {
   if (actualLength < declaredMin ||
       actualLength > declaredMax.valueOr(defaultMax)) {
     JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr,
@@ -484,9 +480,19 @@ static bool CheckSharing(JSContext* cx, bool declaredShared, bool isShared) {
   return true;
 }
 
-// asm.js module instantiation supplies its own buffer, but for wasm, create and
-// initialize the buffer if one is requested. Either way, the buffer is wrapped
-// in a WebAssembly.Memory object which is what the Instance stores.
+#ifdef ENABLE_WASM_CUSTOM_PAGE_SIZES
+static bool CheckPageSize(JSContext* cx, PageSize declaredPageSize,
+                          PageSize actualPageSize) {
+  if (declaredPageSize != actualPageSize) {
+    JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr,
+                             JSMSG_WASM_BAD_IMP_PAGE_SIZE);
+    return false;
+  }
+
+  return true;
+}
+#endif
+
 bool Module::instantiateMemories(
     JSContext* cx, const WasmMemoryObjectVector& memoryImports,
     MutableHandle<WasmMemoryObjectVector> memoryObjs) const {
@@ -497,9 +503,7 @@ bool Module::instantiateMemories(
     Rooted<WasmMemoryObject*> memory(cx);
     if (memoryIndex < memoryImports.length()) {
       memory = memoryImports[memoryIndex];
-      MOZ_ASSERT_IF(codeMeta().isAsmJS(),
-                    memory->buffer().isPreparedForAsmJS());
-      MOZ_ASSERT_IF(!codeMeta().isAsmJS(), memory->buffer().isWasm());
+      MOZ_ASSERT(memory->buffer().isWasm());
 
       if (memory->addressType() != desc.addressType()) {
         JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr,
@@ -508,11 +512,20 @@ bool Module::instantiateMemories(
         return false;
       }
 
+#ifdef ENABLE_WASM_CUSTOM_PAGE_SIZES
+      // Page size needs to be checked first because comparisons between
+      // incompatible page sizes are invalid in CheckLimits.
+      if (!CheckPageSize(cx, desc.pageSize(), memory->pageSize())) {
+        return false;
+      }
+#endif
+
       if (!CheckLimits(cx, desc.initialPages(), desc.maximumPages(),
-                       /* defaultMax */ MaxMemoryPages(desc.addressType()),
+                       /* defaultMax */
+                       MaxMemoryPages(desc.addressType(), desc.pageSize()),
                        /* actualLength */
                        memory->volatilePages(), memory->sourceMaxPages(),
-                       codeMeta().isAsmJS(), "Memory")) {
+                       "Memory")) {
         return false;
       }
 
@@ -520,9 +533,8 @@ bool Module::instantiateMemories(
         return false;
       }
     } else {
-      MOZ_ASSERT(!codeMeta().isAsmJS());
-
-      if (desc.initialPages() > MaxMemoryPages(desc.addressType())) {
+      if (desc.initialPages() >
+          MaxMemoryPages(desc.addressType(), desc.pageSize())) {
         JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr,
                                  JSMSG_WASM_MEM_IMP_LIMIT);
         return false;
@@ -536,15 +548,16 @@ bool Module::instantiateMemories(
 
       RootedObject proto(cx, &cx->global()->getPrototype(JSProto_WasmMemory));
       memory = WasmMemoryObject::create(
-          cx, buffer, IsHugeMemoryEnabled(desc.addressType()), proto);
+          cx, buffer, IsHugeMemoryEnabled(desc.addressType(), desc.pageSize()),
+          proto);
       if (!memory) {
         return false;
       }
     }
 
-    MOZ_RELEASE_ASSERT(codeMeta().isAsmJS() ||
-                       memory->isHuge() ==
-                           IsHugeMemoryEnabled(desc.addressType()));
+    MOZ_RELEASE_ASSERT(
+        memory->isHuge() ==
+        IsHugeMemoryEnabled(desc.addressType(), desc.pageSize()));
 
     if (!memoryObjs.get().append(memory)) {
       ReportOutOfMemory(cx);
@@ -587,7 +600,6 @@ bool Module::instantiateImportedTable(JSContext* cx, const TableDesc& td,
                                       WasmTableObjectVector* tableObjs,
                                       SharedTableVector* tables) const {
   MOZ_ASSERT(tableObj);
-  MOZ_ASSERT(!codeMeta().isAsmJS());
 
   Table& table = tableObj->table();
   if (table.addressType() != td.addressType()) {
@@ -600,8 +612,7 @@ bool Module::instantiateImportedTable(JSContext* cx, const TableDesc& td,
                    /*declaredMax=*/td.maximumLength(),
                    /*defaultMax=*/MaxTableElemsValidation(td.addressType()),
                    /*actualLength=*/uint64_t(table.length()),
-                   /*actualMax=*/table.maximum(), codeMeta().isAsmJS(),
-                   "Table")) {
+                   /*actualMax=*/table.maximum(), "Table")) {
     return false;
   }
 
@@ -631,7 +642,7 @@ bool Module::instantiateLocalTable(JSContext* cx, const TableDesc& td,
   Rooted<WasmTableObject*> tableObj(cx);
   if (td.isExported) {
     RootedObject proto(cx, &cx->global()->getPrototype(JSProto_WasmTable));
-    tableObj.set(WasmTableObject::create(cx, td.limits, td.elemType, proto));
+    tableObj.set(WasmTableObject::create(cx, td.type, proto));
     if (!tableObj) {
       return false;
     }
@@ -759,9 +770,8 @@ bool Module::instantiateGlobals(JSContext* cx,
     MOZ_ASSERT_IF(global.isIndirect(),
                   globalIndex < globalObjs.length() || globalObjs[globalIndex]);
   }
-  MOZ_ASSERT_IF(!codeMeta().isAsmJS(),
-                numGlobalImports == globals.length() ||
-                    !globals[numGlobalImports].isImport());
+  MOZ_ASSERT(numGlobalImports == globals.length() ||
+             !globals[numGlobalImports].isImport());
 #endif
   return true;
 }
@@ -810,28 +820,12 @@ static bool CreateExportObject(
   const CodeMetadata& codeMeta = instance.codeMeta();
   const GlobalDescVector& globals = codeMeta.globals;
 
-  if (codeMeta.isAsmJS() && exports.length() == 1 &&
-      exports[0].fieldName().isEmpty()) {
-    RootedFunction func(cx);
-    if (!instance.getExportedFunction(cx, exports[0].funcIndex(), &func)) {
-      return false;
-    }
-    instanceObj->initExportsObj(*func.get());
-    return true;
-  }
-
-  RootedObject exportObj(cx);
-  uint8_t propertyAttr = JSPROP_ENUMERATE;
-
-  if (codeMeta.isAsmJS()) {
-    exportObj = NewPlainObject(cx);
-  } else {
-    exportObj = NewPlainObjectWithProto(cx, nullptr);
-    propertyAttr |= JSPROP_READONLY | JSPROP_PERMANENT;
-  }
+  RootedObject exportObj(cx, NewPlainObjectWithProto(cx, nullptr));
   if (!exportObj) {
     return false;
   }
+
+  uint8_t propertyAttr = JSPROP_ENUMERATE | JSPROP_READONLY | JSPROP_PERMANENT;
 
   for (const Export& exp : exports) {
     JSAtom* atom = exp.fieldName().toAtom(cx);
@@ -878,10 +872,8 @@ static bool CreateExportObject(
     }
   }
 
-  if (!codeMeta.isAsmJS()) {
-    if (!PreventExtensions(cx, exportObj)) {
-      return false;
-    }
+  if (!PreventExtensions(cx, exportObj)) {
+    return false;
   }
 
   instanceObj->initExportsObj(*exportObj);
@@ -981,9 +973,7 @@ bool Module::instantiate(JSContext* cx, ImportValues& imports,
     }
   }
 
-  JSUseCounter useCounter =
-      codeMeta().isAsmJS() ? JSUseCounter::ASMJS : JSUseCounter::WASM;
-  cx->runtime()->setUseCounter(instance, useCounter);
+  cx->runtime()->setUseCounter(instance, JSUseCounter::WASM);
   SetUseCountersForFeatureUsage(cx, instance, moduleMeta().featureUsage);
 
   // Warn for deprecated features. Don't do this with differential testing as
@@ -992,15 +982,6 @@ bool Module::instantiate(JSContext* cx, ImportValues& imports,
     // Warn if the user is using the legacy exceptions proposal.
     if (moduleMeta().featureUsage & FeatureUsage::LegacyExceptions) {
       if (!js::WarnNumberASCII(cx, JSMSG_WASM_LEGACY_EXCEPTIONS_DEPRECATED)) {
-        if (cx->isExceptionPending()) {
-          cx->clearPendingException();
-        }
-      }
-    }
-
-    // Warn if the user is using asm.js still.
-    if (JS::Prefs::warn_asmjs_deprecation() && codeMeta().isAsmJS()) {
-      if (!js::WarnNumberASCII(cx, JSMSG_USE_ASM_DEPRECATED)) {
         if (cx->isExceptionPending()) {
           cx->clearPendingException();
         }

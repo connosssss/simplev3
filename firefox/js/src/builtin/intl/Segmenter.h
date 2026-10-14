@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -14,6 +12,7 @@
 #include "js/Class.h"
 #include "js/Value.h"
 #include "vm/NativeObject.h"
+#include "vm/StringType.h"
 
 struct JS_PUBLIC_API JSContext;
 class JSString;
@@ -22,7 +21,7 @@ namespace JS {
 class GCContext;
 }
 
-namespace js {
+namespace js::intl {
 
 enum class SegmenterGranularity : int8_t { Grapheme, Word, Sentence };
 
@@ -31,30 +30,41 @@ class SegmenterObject : public NativeObject {
   static const JSClass class_;
   static const JSClass& protoClass_;
 
-  static constexpr uint32_t INTERNALS_SLOT = 0;
-  static constexpr uint32_t LOCALE_SLOT = 1;
-  static constexpr uint32_t GRANULARITY_SLOT = 2;
-  static constexpr uint32_t SEGMENTER_SLOT = 3;
-  static constexpr uint32_t SLOT_COUNT = 4;
+  JS_DEFINE_TYPED_SLOT(0, LOCALE_SLOT, Object, String, Undefined);
+  JS_DEFINE_TYPED_SLOT(1, GRANULARITY_SLOT, Int32, Undefined);
+  JS_DEFINE_TYPED_SLOT(2, SEGMENTER_SLOT, Private, Undefined);
+  static constexpr uint32_t SLOT_COUNT = 3;
 
-  static_assert(INTERNALS_SLOT == INTL_INTERNALS_OBJECT_SLOT,
-                "INTERNALS_SLOT must match self-hosting define for internals "
-                "object slot");
+  bool isLocaleResolved() const {
+    return getFixedSlotTyped(LOCALE_SLOT).isString();
+  }
 
-  JSString* getLocale() const {
-    const auto& slot = getFixedSlot(LOCALE_SLOT);
+  JSObject* getRequestedLocales() const {
+    const auto& slot = getFixedSlotTyped(LOCALE_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
-    return slot.toString();
+    return &slot.toObject();
   }
 
-  void setLocale(JSString* locale) {
-    setFixedSlot(LOCALE_SLOT, StringValue(locale));
+  void setRequestedLocales(JSObject* requestedLocales) {
+    setFixedSlotTyped(LOCALE_SLOT, JS::ObjectValue(*requestedLocales));
+  }
+
+  JSLinearString* getLocale() const {
+    const auto& slot = getFixedSlotTyped(LOCALE_SLOT);
+    if (slot.isUndefined()) {
+      return nullptr;
+    }
+    return &slot.toString()->asLinear();
+  }
+
+  void setLocale(JSLinearString* locale) {
+    setFixedSlotTyped(LOCALE_SLOT, JS::StringValue(locale));
   }
 
   SegmenterGranularity getGranularity() const {
-    const auto& slot = getFixedSlot(GRANULARITY_SLOT);
+    const auto& slot = getFixedSlotTyped(GRANULARITY_SLOT);
     if (slot.isUndefined()) {
       return SegmenterGranularity::Grapheme;
     }
@@ -62,12 +72,12 @@ class SegmenterObject : public NativeObject {
   }
 
   void setGranularity(SegmenterGranularity granularity) {
-    setFixedSlot(GRANULARITY_SLOT,
-                 Int32Value(static_cast<int32_t>(granularity)));
+    setFixedSlotTyped(GRANULARITY_SLOT,
+                      Int32Value(static_cast<int32_t>(granularity)));
   }
 
   void* getSegmenter() const {
-    const auto& slot = getFixedSlot(SEGMENTER_SLOT);
+    const auto& slot = getFixedSlotTyped(SEGMENTER_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
@@ -75,7 +85,7 @@ class SegmenterObject : public NativeObject {
   }
 
   void setSegmenter(void* brk) {
-    setFixedSlot(SEGMENTER_SLOT, PrivateValue(brk));
+    setFixedSlotTyped(SEGMENTER_SLOT, PrivateValue(brk));
   }
 
  private:
@@ -149,19 +159,19 @@ class SegmentsObject : public NativeObject {
  public:
   static const JSClass class_;
 
-  static constexpr uint32_t SEGMENTER_SLOT = 0;
-  static constexpr uint32_t STRING_SLOT = 1;
-  static constexpr uint32_t STRING_CHARS_SLOT = 2;
-  static constexpr uint32_t INDEX_SLOT = 3;
-  static constexpr uint32_t GRANULARITY_SLOT = 4;
-  static constexpr uint32_t BREAK_ITERATOR_SLOT = 5;
+  JS_DEFINE_TYPED_SLOT(0, SEGMENTER_SLOT, Object, Undefined);
+  JS_DEFINE_TYPED_SLOT(1, STRING_SLOT, String, Undefined);
+  JS_DEFINE_TYPED_SLOT(2, STRING_CHARS_SLOT, Private, Undefined);
+  JS_DEFINE_TYPED_SLOT(3, INDEX_SLOT, Int32, Undefined);
+  JS_DEFINE_TYPED_SLOT(4, GRANULARITY_SLOT, Int32, Undefined);
+  JS_DEFINE_TYPED_SLOT(5, BREAK_ITERATOR_SLOT, Private, Undefined);
   static constexpr uint32_t SLOT_COUNT = 6;
 
-  static_assert(STRING_SLOT == INTL_SEGMENTS_STRING_SLOT,
+  static_assert(STRING_SLOT.index() == INTL_SEGMENTS_STRING_SLOT,
                 "STRING_SLOT must match self-hosting define for string slot");
 
   SegmenterObject* getSegmenter() const {
-    const auto& slot = getFixedSlot(SEGMENTER_SLOT);
+    const auto& slot = getFixedSlotTyped(SEGMENTER_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
@@ -169,25 +179,27 @@ class SegmentsObject : public NativeObject {
   }
 
   void setSegmenter(SegmenterObject* segmenter) {
-    setFixedSlot(SEGMENTER_SLOT, ObjectValue(*segmenter));
+    setFixedSlotTyped(SEGMENTER_SLOT, ObjectValue(*segmenter));
   }
 
   JSString* getString() const {
-    const auto& slot = getFixedSlot(STRING_SLOT);
+    const auto& slot = getFixedSlotTyped(STRING_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
     return slot.toString();
   }
 
-  void setString(JSString* str) { setFixedSlot(STRING_SLOT, StringValue(str)); }
+  void setString(JSString* str) {
+    setFixedSlotTyped(STRING_SLOT, StringValue(str));
+  }
 
   bool hasStringChars() const {
-    return !getFixedSlot(STRING_CHARS_SLOT).isUndefined();
+    return !getFixedSlotTyped(STRING_CHARS_SLOT).isUndefined();
   }
 
   SegmentsStringChars getStringChars() const {
-    const auto& slot = getFixedSlot(STRING_CHARS_SLOT);
+    const auto& slot = getFixedSlotTyped(STRING_CHARS_SLOT);
     if (slot.isUndefined()) {
       return SegmentsStringChars{};
     }
@@ -195,7 +207,7 @@ class SegmentsObject : public NativeObject {
   }
 
   void setStringChars(SegmentsStringChars chars) {
-    setFixedSlot(STRING_CHARS_SLOT, PrivateValue(chars.tagged()));
+    setFixedSlotTyped(STRING_CHARS_SLOT, PrivateValue(chars.tagged()));
   }
 
   bool hasLatin1StringChars() const {
@@ -204,17 +216,19 @@ class SegmentsObject : public NativeObject {
   }
 
   int32_t getIndex() const {
-    const auto& slot = getFixedSlot(INDEX_SLOT);
+    const auto& slot = getFixedSlotTyped(INDEX_SLOT);
     if (slot.isUndefined()) {
       return 0;
     }
     return slot.toInt32();
   }
 
-  void setIndex(int32_t index) { setFixedSlot(INDEX_SLOT, Int32Value(index)); }
+  void setIndex(int32_t index) {
+    setFixedSlotTyped(INDEX_SLOT, Int32Value(index));
+  }
 
   SegmenterGranularity getGranularity() const {
-    const auto& slot = getFixedSlot(GRANULARITY_SLOT);
+    const auto& slot = getFixedSlotTyped(GRANULARITY_SLOT);
     if (slot.isUndefined()) {
       return SegmenterGranularity::Grapheme;
     }
@@ -222,12 +236,12 @@ class SegmentsObject : public NativeObject {
   }
 
   void setGranularity(SegmenterGranularity granularity) {
-    setFixedSlot(GRANULARITY_SLOT,
-                 Int32Value(static_cast<int32_t>(granularity)));
+    setFixedSlotTyped(GRANULARITY_SLOT,
+                      Int32Value(static_cast<int32_t>(granularity)));
   }
 
   void* getBreakIterator() const {
-    const auto& slot = getFixedSlot(BREAK_ITERATOR_SLOT);
+    const auto& slot = getFixedSlotTyped(BREAK_ITERATOR_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
@@ -235,7 +249,7 @@ class SegmentsObject : public NativeObject {
   }
 
   void setBreakIterator(void* brk) {
-    setFixedSlot(BREAK_ITERATOR_SLOT, PrivateValue(brk));
+    setFixedSlotTyped(BREAK_ITERATOR_SLOT, PrivateValue(brk));
   }
 
  private:
@@ -248,22 +262,22 @@ class SegmentIteratorObject : public NativeObject {
  public:
   static const JSClass class_;
 
-  static constexpr uint32_t SEGMENTER_SLOT = 0;
-  static constexpr uint32_t STRING_SLOT = 1;
-  static constexpr uint32_t STRING_CHARS_SLOT = 2;
-  static constexpr uint32_t INDEX_SLOT = 3;
-  static constexpr uint32_t GRANULARITY_SLOT = 4;
-  static constexpr uint32_t BREAK_ITERATOR_SLOT = 5;
+  JS_DEFINE_TYPED_SLOT(0, SEGMENTER_SLOT, Object, Null, Undefined);
+  JS_DEFINE_TYPED_SLOT(1, STRING_SLOT, String, Undefined);
+  JS_DEFINE_TYPED_SLOT(2, STRING_CHARS_SLOT, Private, Undefined);
+  JS_DEFINE_TYPED_SLOT(3, INDEX_SLOT, Int32, Undefined);
+  JS_DEFINE_TYPED_SLOT(4, GRANULARITY_SLOT, Int32, Undefined);
+  JS_DEFINE_TYPED_SLOT(5, BREAK_ITERATOR_SLOT, Private, Undefined);
   static constexpr uint32_t SLOT_COUNT = 6;
 
-  static_assert(STRING_SLOT == INTL_SEGMENT_ITERATOR_STRING_SLOT,
+  static_assert(STRING_SLOT.index() == INTL_SEGMENT_ITERATOR_STRING_SLOT,
                 "STRING_SLOT must match self-hosting define for string slot");
 
-  static_assert(INDEX_SLOT == INTL_SEGMENT_ITERATOR_INDEX_SLOT,
+  static_assert(INDEX_SLOT.index() == INTL_SEGMENT_ITERATOR_INDEX_SLOT,
                 "INDEX_SLOT must match self-hosting define for index slot");
 
   SegmenterObject* getSegmenter() const {
-    const auto& slot = getFixedSlot(SEGMENTER_SLOT);
+    const auto& slot = getFixedSlotTyped(SEGMENTER_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
@@ -271,25 +285,27 @@ class SegmentIteratorObject : public NativeObject {
   }
 
   void setSegmenter(SegmenterObject* segmenter) {
-    setFixedSlot(SEGMENTER_SLOT, ObjectOrNullValue(segmenter));
+    setFixedSlotTyped(SEGMENTER_SLOT, ObjectOrNullValue(segmenter));
   }
 
   JSString* getString() const {
-    const auto& slot = getFixedSlot(STRING_SLOT);
+    const auto& slot = getFixedSlotTyped(STRING_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
     return slot.toString();
   }
 
-  void setString(JSString* str) { setFixedSlot(STRING_SLOT, StringValue(str)); }
+  void setString(JSString* str) {
+    setFixedSlotTyped(STRING_SLOT, StringValue(str));
+  }
 
   bool hasStringChars() const {
-    return !getFixedSlot(STRING_CHARS_SLOT).isUndefined();
+    return !getFixedSlotTyped(STRING_CHARS_SLOT).isUndefined();
   }
 
   SegmentsStringChars getStringChars() const {
-    const auto& slot = getFixedSlot(STRING_CHARS_SLOT);
+    const auto& slot = getFixedSlotTyped(STRING_CHARS_SLOT);
     if (slot.isUndefined()) {
       return SegmentsStringChars{};
     }
@@ -297,7 +313,7 @@ class SegmentIteratorObject : public NativeObject {
   }
 
   void setStringChars(SegmentsStringChars chars) {
-    setFixedSlot(STRING_CHARS_SLOT, PrivateValue(chars.tagged()));
+    setFixedSlotTyped(STRING_CHARS_SLOT, PrivateValue(chars.tagged()));
   }
 
   bool hasLatin1StringChars() const {
@@ -306,17 +322,19 @@ class SegmentIteratorObject : public NativeObject {
   }
 
   int32_t getIndex() const {
-    const auto& slot = getFixedSlot(INDEX_SLOT);
+    const auto& slot = getFixedSlotTyped(INDEX_SLOT);
     if (slot.isUndefined()) {
       return 0;
     }
     return slot.toInt32();
   }
 
-  void setIndex(int32_t index) { setFixedSlot(INDEX_SLOT, Int32Value(index)); }
+  void setIndex(int32_t index) {
+    setFixedSlotTyped(INDEX_SLOT, Int32Value(index));
+  }
 
   SegmenterGranularity getGranularity() const {
-    const auto& slot = getFixedSlot(GRANULARITY_SLOT);
+    const auto& slot = getFixedSlotTyped(GRANULARITY_SLOT);
     if (slot.isUndefined()) {
       return SegmenterGranularity::Grapheme;
     }
@@ -324,12 +342,12 @@ class SegmentIteratorObject : public NativeObject {
   }
 
   void setGranularity(SegmenterGranularity granularity) {
-    setFixedSlot(GRANULARITY_SLOT,
-                 Int32Value(static_cast<int32_t>(granularity)));
+    setFixedSlotTyped(GRANULARITY_SLOT,
+                      Int32Value(static_cast<int32_t>(granularity)));
   }
 
   void* getBreakIterator() const {
-    const auto& slot = getFixedSlot(BREAK_ITERATOR_SLOT);
+    const auto& slot = getFixedSlotTyped(BREAK_ITERATOR_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
@@ -337,7 +355,7 @@ class SegmentIteratorObject : public NativeObject {
   }
 
   void setBreakIterator(void* brk) {
-    setFixedSlot(BREAK_ITERATOR_SLOT, PrivateValue(brk));
+    setFixedSlotTyped(BREAK_ITERATOR_SLOT, PrivateValue(brk));
   }
 
  private:
@@ -346,13 +364,9 @@ class SegmentIteratorObject : public NativeObject {
   static void finalize(JS::GCContext* gcx, JSObject* obj);
 };
 
-/**
- * Create a new Segments object.
- *
- * Usage: segment = intl_CreateSegmentsObject(segmenter, string)
- */
-[[nodiscard]] extern bool intl_CreateSegmentsObject(JSContext* cx,
-                                                    unsigned argc, Value* vp);
+}  // namespace js::intl
+
+namespace js {
 
 /**
  * Create a new Segment Iterator object.

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,8 +10,8 @@
 #include "GeckoProfiler.h"
 #include "HangDetails.h"
 #include "ThreadStackHelper.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/CPUUsageWatcher.h"
+#include "mozilla/HelperMacros.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/Preferences.h"
@@ -22,7 +20,6 @@
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/ThreadLocal.h"
-#include "mozilla/Unused.h"
 #if defined(XP_WIN)
 #  include "mozilla/WindowsStackWalkInitialization.h"
 #endif  // XP_WIN
@@ -61,6 +58,19 @@ bool StackScriptEntriesCollapser(const char* aStackEntry,
           !strcmp(aStackEntry, "(content script)"));
 }
 
+namespace geckoprofiler::markers {
+
+struct HangMarker : public mozilla::BaseMarkerType<HangMarker> {
+  static constexpr const char* Name = "BHR-detected hang";
+  using MS = mozilla::MarkerSchema;
+  static constexpr MS::Location Locations[] = {
+      MS::Location::MarkerChart,
+      MS::Location::MarkerTable,
+  };
+};
+
+}  // namespace geckoprofiler::markers
+
 namespace mozilla {
 
 /**
@@ -71,9 +81,6 @@ class BackgroundHangManager : public nsIObserver {
  private:
   // Stop hang monitoring
   bool mShutdown;
-
-  BackgroundHangManager(const BackgroundHangManager&);
-  BackgroundHangManager& operator=(const BackgroundHangManager&);
 
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
@@ -96,7 +103,7 @@ class BackgroundHangManager : public nsIObserver {
 
   void InitMonitorThread() {
     mHangMonitorProfilerThreadId = profiler_current_thread_id();
-#if defined(MOZ_GECKO_PROFILER) && defined(XP_WIN) && defined(_M_X64)
+#if defined(XP_WIN) && defined(_M_X64)
     // Pre-commit 5 more pages of stack to guarantee enough commited stack
     // space on this thread upon hang detection, when we will need to run
     // profiler_suspend_and_sample_thread (bug 1840164).
@@ -118,7 +125,7 @@ class BackgroundHangManager : public nsIObserver {
     if (aForce ||
         aNow - mLastCheckedCPUUsage >
             TimeDuration::FromMilliseconds(kCheckCPUIntervalMilliseconds)) {
-      Unused << NS_WARN_IF(mCPUUsageWatcher.CollectCPUUsage().isErr());
+      (void)NS_WARN_IF(mCPUUsageWatcher.CollectCPUUsage().isErr());
       mLastCheckedCPUUsage = aNow;
     }
   }
@@ -129,6 +136,9 @@ class BackgroundHangManager : public nsIObserver {
   }
 
   BackgroundHangManager();
+
+  BackgroundHangManager(const BackgroundHangManager&) = delete;
+  BackgroundHangManager& operator=(const BackgroundHangManager&) = delete;
 
  private:
   virtual ~BackgroundHangManager();
@@ -185,8 +195,6 @@ class BackgroundHangThread final
   static MOZ_THREAD_LOCAL(BackgroundHangThread*) sTlsKey;
   static bool sTlsKeyInitialized;
 
-  BackgroundHangThread(const BackgroundHangThread&);
-  BackgroundHangThread& operator=(const BackgroundHangThread&);
   ~BackgroundHangThread();
 
   /* Keep a reference to the manager, so we can keep going even
@@ -231,10 +239,8 @@ class BackgroundHangThread final
   bool mWaiting;
   // Is the thread dedicated to a single BackgroundHangMonitor
   BackgroundHangMonitor::ThreadType mThreadType;
-#ifdef MOZ_GECKO_PROFILER
   // Platform-specific helper to get hang stacks
   ThreadStackHelper mStackHelper;
-#endif
   // Stack of current hang
   HangStack mHangStack;
   // Annotations for the current hang
@@ -250,6 +256,9 @@ class BackgroundHangThread final
                        uint32_t aMaxTimeoutMs,
                        BackgroundHangMonitor::ThreadType aThreadType =
                            BackgroundHangMonitor::THREAD_SHARED);
+
+  BackgroundHangThread(const BackgroundHangThread&) = delete;
+  BackgroundHangThread& operator=(const BackgroundHangThread&) = delete;
 
   // Report a hang; aManager->mLock IS locked. The hang will be processed
   // off-main-thread, and will then be submitted back.
@@ -419,10 +428,10 @@ void BackgroundHangThread::ReportHang(TimeDuration aHangTime,
   // Recovered from a hang; called on the monitor thread
   // mManager->mLock IS locked
 
-  HangDetails hangDetails(aHangTime,
-                          nsDependentCString(XRE_GetProcessTypeString()),
-                          NOT_REMOTE_TYPE, mThreadName, mRunnableName,
-                          std::move(mHangStack), std::move(mAnnotations));
+  HangDetails hangDetails(
+      aHangTime, nsDependentCString(XRE_GetProcessTypeString()),
+      dom::RemoteType::NotRemote().Stringify(), mThreadName, mRunnableName,
+      std::move(mHangStack), std::move(mAnnotations));
 
   PersistedToDisk persistedToDisk = aPersistedToDisk;
   if (aPersistedToDisk == PersistedToDisk::Yes && XRE_IsParentProcess() &&
@@ -446,31 +455,15 @@ void BackgroundHangThread::ReportHang(TimeDuration aHangTime,
     hd->Submit();
   }
 
-  // If the profiler is enabled, add a marker.
-#ifdef MOZ_GECKO_PROFILER
   if (profiler_thread_is_being_profiled_for_markers(
           mStackHelper.GetThreadId())) {
-    struct HangMarker {
-      static constexpr Span<const char> MarkerTypeName() {
-        return MakeStringSpan("BHR-detected hang");
-      }
-      static void StreamJSONMarkerData(
-          baseprofiler::SpliceableJSONWriter& aWriter) {}
-      static MarkerSchema MarkerTypeDisplay() {
-        using MS = MarkerSchema;
-        MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
-        return schema;
-      }
-    };
-
     const TimeStamp endTime = TimeStamp::Now();
     const TimeStamp startTime = endTime - aHangTime;
     profiler_add_marker("BHR-detected hang", geckoprofiler::category::OTHER,
                         {MarkerThreadId(mStackHelper.GetThreadId()),
                          MarkerTiming::Interval(startTime, endTime)},
-                        HangMarker{});
+                        geckoprofiler::markers::HangMarker{});
   }
-#endif
 }
 
 void BackgroundHangThread::ReportPermaHang() {
@@ -513,10 +506,8 @@ NS_IMETHODIMP BackgroundHangThread::Notify(nsITimer* aTimer) {
   }
 
   if (MOZ_LIKELY(!mHanging && hangTime >= mTimeout)) {
-#ifdef MOZ_GECKO_PROFILER
     // A hang started, collect a stack
     mStackHelper.GetStack(mHangStack, mRunnableName, true);
-#endif
 
     // If we hang immediately on waking, then the most recently collected
     // CPU usage is going to be an average across the whole time we were
@@ -568,7 +559,7 @@ BackgroundHangThread* BackgroundHangThread::FindThread() {
 bool BackgroundHangMonitor::ShouldDisableOnBeta(const nsCString& clientID) {
   MOZ_ASSERT(clientID.Length() == 36, "clientID is invalid");
   const char* suffix = clientID.get() + clientID.Length() - 4;
-  return strtol(suffix, NULL, 16) % BHR_BETA_MOD;
+  return strtol(suffix, nullptr, 16) % BHR_BETA_MOD;
 }
 
 bool BackgroundHangMonitor::DisableOnBeta() {
@@ -601,11 +592,11 @@ void BackgroundHangMonitor::Startup() {
     return;
   }
 
-#  if defined(MOZ_GECKO_PROFILER) && defined(XP_WIN)
+#  if defined(XP_WIN)
 #    if defined(_M_AMD64) || defined(_M_ARM64)
   mozilla::WindowsStackWalkInitialization();
 #    endif  // _M_AMD64 || _M_ARM64
-#  endif    // MOZ_GECKO_PROFILER && XP_WIN
+#  endif    // XP_WIN
 
   nsCOMPtr<nsIObserverService> observerService =
       mozilla::services::GetObserverService();
@@ -619,7 +610,7 @@ void BackgroundHangMonitor::Startup() {
     if (XRE_IsParentProcess()) {  // cached ClientID hasn't been read yet
       BackgroundHangThread::Startup();
       new BackgroundHangManager();
-      Unused << NS_WARN_IF(
+      (void)NS_WARN_IF(
           BackgroundHangManager::sInstance->mCPUUsageWatcher.Init().isErr());
       observerService->AddObserver(BackgroundHangManager::sInstance,
                                    "profile-after-change", false);
@@ -634,7 +625,7 @@ void BackgroundHangMonitor::Startup() {
 
   BackgroundHangThread::Startup();
   new BackgroundHangManager();
-  Unused << NS_WARN_IF(
+  (void)NS_WARN_IF(
       BackgroundHangManager::sInstance->mCPUUsageWatcher.Init().isErr());
   if (XRE_IsParentProcess()) {
     observerService->AddObserver(BackgroundHangManager::sInstance,

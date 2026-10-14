@@ -3,24 +3,35 @@
  */
 "use strict";
 
-const { TelemetryEnvironment } = ChromeUtils.importESModule(
-  "resource://gre/modules/TelemetryEnvironment.sys.mjs"
+const { AMTelemetry } = ChromeUtils.importESModule(
+  "resource://gre/modules/AddonManager.sys.mjs"
 );
 
-// Regression test for bug 1665568: verifies that AddonManager unblocks shutdown
+add_setup(() => {
+  Services.fog.testResetFOG();
+});
+
+// Regression test for bug 1601678: verifies that AddonManager unblocks shutdown
 // when startup is interrupted very early.
 add_task(async function test_shutdown_immediately_after_startup() {
   // Set as migrated to prevent sync DB load at startup.
   Services.prefs.setCharPref("extensions.lastAppVersion", "42");
   createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "42");
 
+  Assert.deepEqual(
+    Glean.addons.activeAddons.testGetValue(),
+    undefined,
+    "Expect Glean addons.activeAddons to not be set yet"
+  );
+  Assert.equal(
+    AMTelemetry.addonsBuilder,
+    undefined,
+    "Expect addonsBuilder to not be initialized yet"
+  );
+
   Cc["@mozilla.org/addons/integration;1"]
     .getService(Ci.nsIObserver)
     .observe(null, "addons-startup", null);
-
-  // Above, we have configured the runtime to avoid a forced synchronous load
-  // of the database. Confirm that this is indeed the case.
-  equal(AddonManagerPrivate.isDBLoaded(), false, "DB not loaded synchronously");
 
   let shutdownCount = 0;
   AddonManager.beforeShutdown.addBlocker("count", async () => ++shutdownCount);
@@ -30,13 +41,15 @@ add_task(async function test_shutdown_immediately_after_startup() {
     databaseLoaded = true;
   });
 
-  // Accessing TelemetryEnvironment.currentEnvironment triggers initialization
-  // of TelemetryEnvironment / EnvironmentAddonBuilder, which registers a
-  // shutdown blocker.
-  equal(
-    TelemetryEnvironment.currentEnvironment.addons,
-    undefined,
-    "TelemetryEnvironment.currentEnvironment.addons is uninitialized"
+  // Above, we have configured the runtime to avoid a forced synchronous load
+  // of the database. Confirm that this is indeed the case.
+  equal(AddonManagerPrivate.isDBLoaded(), false, "DB not loaded synchronously");
+
+  // NOTE: AMTelemetry is implicitly initialize when the AddonManager is starting up
+  // as a side-effect of notifying "addons-startup" to ""@mozilla.org/addons/integration;1".
+  Assert.ok(
+    AMTelemetry.addonsBuilder,
+    "Expect addonsBuilder to have been initialized"
   );
 
   info("Immediate exit at startup, without quit-application-granted");
@@ -51,12 +64,12 @@ add_task(async function test_shutdown_immediately_after_startup() {
   // Waiting for AddonManager to have shut down.
   await shutdownPromise;
 
-  ok(databaseLoaded, "Addon DB loaded for use by TelemetryEnvironment");
+  ok(databaseLoaded, "Addon DB loaded for use by EnvironmentAddonBuilder");
   equal(AddonManagerPrivate.isDBLoaded(), false, "DB unloaded after shutdown");
 
   Assert.deepEqual(
-    TelemetryEnvironment.currentEnvironment.addons.activeAddons,
-    {},
-    "TelemetryEnvironment.currentEnvironment.addons is initialized"
+    Glean.addons.activeAddons.testGetValue(),
+    [],
+    "Expect Glean addons.activeAddons to have been set"
   );
 });

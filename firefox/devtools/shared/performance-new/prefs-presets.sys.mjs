@@ -46,14 +46,14 @@ const PREF_PREFIX = "devtools.performance.recording.";
 //
 // IMPORTANT NOTE: Please keep the existing profiler presets in sync with their
 // Fenix counterparts and consider adding any new presets to Fenix:
-// https://github.com/mozilla-mobile/firefox-android/blob/1d177e7e78d027e8ab32cedf0fc68316787d7454/fenix/app/src/main/java/org/mozilla/fenix/perf/ProfilerUtils.kt
+// https://searchfox.org/firefox-main/rev/d87eb30d610a3032111f9ee47441b53927de63d3/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/perf/ProfilerUtils.kt
 
 /** @type {Presets} */
 export const presets = {
   "web-developer": {
     entries: 128 * 1024 * 1024,
     interval: 1,
-    features: ["screenshots", "js", "cpu", "memory"],
+    features: ["screenshots", "js", "memory"],
     threads: ["GeckoMain", "Compositor", "Renderer", "DOM Worker"],
     duration: 0,
     profilerViewMode: "active-tab",
@@ -75,7 +75,6 @@ export const presets = {
       "screenshots",
       "js",
       "stackwalk",
-      "cpu",
       "java",
       "processcpu",
       "memory",
@@ -86,6 +85,11 @@ export const presets = {
       "Renderer",
       "SwComposite",
       "DOM Worker",
+      // On-device machine learning threads:
+      "onnx_worker",
+      "llama.cpp",
+      "Parakeet",
+      "TextGenerator",
     ],
     duration: 0,
     l10nIds: {
@@ -102,7 +106,7 @@ export const presets = {
   graphics: {
     entries: 128 * 1024 * 1024,
     interval: 1,
-    features: ["stackwalk", "js", "cpu", "java", "processcpu", "memory"],
+    features: ["stackwalk", "js", "java", "processcpu", "memory"],
     threads: [
       "GeckoMain",
       "Compositor",
@@ -114,6 +118,10 @@ export const presets = {
       "WrWorker",
       "CanvasWorkers",
       "TextureUpdate",
+      // Image decoding threads: most formats decode on the TaskController
+      // thread pool, JPEG XL additionally uses its own pool.
+      "TaskController",
+      "JxlDecode",
     ],
     duration: 0,
     l10nIds: {
@@ -133,7 +141,6 @@ export const presets = {
     features: [
       "js",
       "stackwalk",
-      "cpu",
       "audiocallbacktracing",
       "ipcmessages",
       "processcpu",
@@ -180,13 +187,16 @@ export const presets = {
   ml: {
     entries: 128 * 1024 * 1024,
     interval: 1,
-    features: ["js", "stackwalk", "cpu", "ipcmessages", "processcpu", "memory"],
+    features: ["js", "stackwalk", "ipcmessages", "processcpu", "memory"],
     threads: [
       "BackgroundThreadPool",
       "DOM Worker",
       "GeckoMain",
       "IPDL Background",
       "onnx_worker",
+      "llama.cpp",
+      "Parakeet",
+      "TextGenerator",
     ],
     duration: 0,
     l10nIds: {
@@ -196,7 +206,7 @@ export const presets = {
       },
       devtools: {
         label: "perftools-presets-ml-label",
-        description: "perftools-presets-ml-description",
+        description: "perftools-presets-ml-description2",
       },
     },
   },
@@ -207,7 +217,6 @@ export const presets = {
       "screenshots",
       "js",
       "stackwalk",
-      "cpu",
       "java",
       "processcpu",
       "bandwidth",
@@ -237,6 +246,48 @@ export const presets = {
       },
     },
   },
+  "networking-with-logs": {
+    entries: 128 * 1024 * 1024,
+    interval: 1,
+    features: [
+      "screenshots",
+      "js",
+      "stackwalk",
+      "cpu",
+      "java",
+      "processcpu",
+      "bandwidth",
+      "memory",
+    ],
+    threads: [
+      "Cache2 I/O",
+      "Compositor",
+      "DNS Resolver",
+      "DOM Worker",
+      "GeckoMain",
+      "Renderer",
+      "Socket Thread",
+      "StreamTrans",
+      "SwComposite",
+      "TRR Background",
+    ],
+    // Keep these MOZ_LOG modules in sync with the "networking" logging preset
+    // in toolkit/content/aboutLogging/aboutLogging.mjs (the profiler does not
+    // need the "timestamp" and "sync" modules used there).
+    mozLogs:
+      "nsHttp:5,cache2:5,nsSocketTransport:5,nsHostResolver:5,EarlyHint:5",
+    duration: 0,
+    l10nIds: {
+      popup: {
+        label: "profiler-popup-presets-networking-with-logs-label",
+        description: "profiler-popup-presets-networking-with-logs-description",
+      },
+      devtools: {
+        label: "perftools-presets-networking-with-logs-label",
+        description: "perftools-presets-networking-with-logs-description",
+      },
+    },
+  },
   power: {
     entries: 128 * 1024 * 1024,
     interval: 10,
@@ -244,7 +295,6 @@ export const presets = {
       "screenshots",
       "js",
       "stackwalk",
-      "cpu",
       "processcpu",
       "nostacksampling",
       "ipcmessages",
@@ -270,7 +320,6 @@ export const presets = {
     entries: 128 * 1024 * 1024,
     interval: 1,
     features: [
-      "cpu",
       "ipcmessages",
       "js",
       "markersallthreads",
@@ -278,6 +327,7 @@ export const presets = {
       "samplingallthreads",
       "stackwalk",
       "unregisteredthreads",
+      "flows",
     ],
     threads: ["*"],
     duration: 0,
@@ -289,6 +339,25 @@ export const presets = {
       devtools: {
         label: "perftools-presets-debug-label",
         description: "perftools-presets-debug-description",
+      },
+    },
+  },
+  "web-compat": {
+    entries: 128 * 1024 * 1024,
+    interval: 1,
+    features: ["screenshots", "js", "stackwalk", "nostacksampling", "tracing"],
+    threads: ["GeckoMain", "DOM Worker"],
+    mozLogs: "console: 5, PageMessages: 5",
+    duration: 0,
+    profilerViewMode: "active-tab",
+    l10nIds: {
+      popup: {
+        label: "profiler-popup-presets-web-compat-label",
+        description: "profiler-popup-presets-web-compat-description",
+      },
+      devtools: {
+        label: "perftools-presets-web-compat-label",
+        description: "perftools-presets-web-compat-description",
       },
     },
   },
@@ -316,15 +385,20 @@ export function getPrefPostfix(pageContext) {
   switch (pageContext) {
     case "devtools":
     case "aboutprofiling":
-    case "aboutlogging":
       // Don't use any postfix on the prefs.
       return "";
     case "devtools-remote":
     case "aboutprofiling-remote":
       return ".remote";
+    case "aboutlogging":
+      // about:logging uses its own set of recording prefs, so that using it
+      // doesn't clobber the settings used for normal profiling (the popup,
+      // about:profiling).
+      return ".aboutlogging";
     default: {
       const { UnhandledCaseError } = ChromeUtils.importESModule(
-        "resource://devtools/shared/performance-new/errors.sys.mjs"
+        "resource://devtools/shared/performance-new/errors.sys.mjs",
+        { global: "contextual" }
       );
       throw new UnhandledCaseError(pageContext, "Page Context");
     }
@@ -430,10 +504,11 @@ export function setRecordingSettings(pageContext, prefs) {
 
 /**
  * Revert the recording prefs for both local and remote profiling.
+ *
  * @return {void}
  */
 export function revertRecordingSettings() {
-  for (const prefPostfix of ["", ".remote"]) {
+  for (const prefPostfix of ["", ".remote", ".aboutlogging"]) {
     Services.prefs.clearUserPref(PRESET_PREF + prefPostfix);
     Services.prefs.clearUserPref(ENTRIES_PREF + prefPostfix);
     Services.prefs.clearUserPref(INTERVAL_PREF + prefPostfix);
@@ -447,6 +522,7 @@ export function revertRecordingSettings() {
 
 /**
  * Add an observer for the profiler-related preferences.
+ *
  * @param {PrefObserver} observer
  * @return {void}
  */
@@ -456,6 +532,7 @@ export function addPrefObserver(observer) {
 
 /**
  * Removes an observer for the profiler-related preferences.
+ *
  * @param {PrefObserver} observer
  * @return {void}
  */
@@ -466,6 +543,7 @@ export function removePrefObserver(observer) {
  * Return the proper view mode for the Firefox Profiler front-end timeline by
  * looking at the proper preset that is selected.
  * Return value can be undefined when the preset is unknown or custom.
+ *
  * @param {PageContext} pageContext
  * @return {ProfilerViewMode | undefined}
  */
@@ -515,6 +593,7 @@ export function getRecordingSettingsFromPreset(
       supportedFeatures.includes(feature)
     ),
     threads: preset.threads,
+    mozLogs: preset.mozLogs,
     objdirs,
     duration: preset.duration,
   };
@@ -542,6 +621,7 @@ export function getRecordingSettings(pageContext, supportedFeatures) {
 /**
  * Change the prefs based on a preset. This mechanism is used by the popup to
  * easily switch between different settings.
+ *
  * @param {string} presetName
  * @param {PageContext} pageContext
  * @param {string[]} supportedFeatures

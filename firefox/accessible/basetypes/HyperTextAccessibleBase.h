@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _HyperTextAccessibleBase_H_
-#define _HyperTextAccessibleBase_H_
+#ifndef HyperTextAccessibleBase_H_
+#define HyperTextAccessibleBase_H_
 
 #include "AccAttributes.h"
 #include "nsIAccessibleText.h"
@@ -83,6 +82,15 @@ class HyperTextAccessibleBase {
    */
   virtual int32_t CaretOffset() const;
   MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual void SetCaretOffset(int32_t aOffset);
+
+  /**
+   * Return the caret rect and the widget containing the caret within this
+   * text accessible.
+   *
+   * @return the caret rect and containing widget
+   */
+  virtual std::pair<mozilla::LayoutDeviceIntRect, nsIWidget*>
+  GetCaretRect() = 0;
 
   /**
    * Provide the line number for the caret.

@@ -1,13 +1,17 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "OSKeyStore.h"
 
+#include <memory>
+
 #include "mozilla/Base64.h"
+#include "mozilla/ClearOnShutdown.h"
 #include "mozilla/dom/Promise.h"
+#include "nsINSSComponent.h"
+#include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
 #include "nsXPCOM.h"
 #include "pk11pub.h"
@@ -28,9 +32,31 @@ NS_IMPL_ISUPPORTS(OSKeyStore, nsIOSKeyStore)
 using namespace mozilla;
 using dom::Promise;
 
+StaticRefPtr<OSKeyStore> sOSKeyStore;
+
+already_AddRefed<OSKeyStore> OSKeyStore::GetSingleton() {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (!NS_IsMainThread()) {
+    return nullptr;
+  }
+
+  // Ensure NSS is initialized.
+  nsCOMPtr<nsISupports> nss(do_GetService(PSM_COMPONENT_CONTRACTID));
+  if (!nss) {
+    return nullptr;
+  }
+
+  if (!sOSKeyStore) {
+    sOSKeyStore = new OSKeyStore();
+    ClearOnShutdown(&sOSKeyStore);
+  }
+
+  return do_AddRef(sOSKeyStore);
+}
+
 OSKeyStore::OSKeyStore() : mKs(nullptr) {
   MOZ_ASSERT(NS_IsMainThread());
-  if (NS_WARN_IF(!NS_IsMainThread())) {
+  if (!NS_IsMainThread()) {
     return;
   }
 
@@ -40,9 +66,9 @@ OSKeyStore::OSKeyStore() : mKs(nullptr) {
   mKs.reset(new CredentialManagerSecret());
 #elif defined(MOZ_WIDGET_GTK)
   if (NS_SUCCEEDED(MaybeLoadLibSecret())) {
-    mKs.reset(new LibSecret());
+    mKs = std::make_unique<LibSecret>();
   } else {
-    mKs.reset(new NSSKeyStore());
+    mKs = std::make_unique<NSSKeyStore>();
   }
 #else
   mKs.reset(new NSSKeyStore());
@@ -73,7 +99,17 @@ static nsresult GenerateRandom(std::vector<uint8_t>& r) {
 nsresult OSKeyStore::SecretAvailable(const nsACString& aLabel,
                                      /* out */ bool* aAvailable) {
   NS_ENSURE_STATE(mKs);
-  *aAvailable = mKs->SecretAvailable(aLabel);
+  nsresult rv = mKs->SecretAvailable(aLabel);
+  *aAvailable = false;
+  if (rv == nsresult::NS_ERROR_NOT_AVAILABLE) {
+    // This indicates that there was no such entry in the keystore. Returning
+    // false from this function suggests generating a new entry so this fits.
+    return NS_OK;
+  }
+  // We want to raise other errors
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  *aAvailable = true;
   return NS_OK;
 }
 
@@ -677,7 +713,7 @@ nsresult AbstractOSKeyStore::DoCipher(const UniquePK11SymKey& aSymKey,
                        &outLen, inBytes.size() + blockLength, inBytes.data(),
                        inBytes.size());
     // Prepend the used IV to the ciphertext.
-    Unused << outBytes.insert(outBytes.begin(), ivp, ivp + mIVLength);
+    (void)outBytes.insert(outBytes.begin(), ivp, ivp + mIVLength);
     outLen += mIVLength;
   } else {
     // Remove the IV from the input.
@@ -698,13 +734,16 @@ nsresult AbstractOSKeyStore::DoCipher(const UniquePK11SymKey& aSymKey,
   return NS_OK;
 }
 
-bool AbstractOSKeyStore::SecretAvailable(const nsACString& aLabel) {
+nsresult AbstractOSKeyStore::SecretAvailable(const nsACString& aLabel) {
   nsAutoCString secret;
   nsresult rv = RetrieveSecret(aLabel, secret);
-  if (NS_FAILED(rv) || secret.Length() == 0) {
-    return false;
+  NS_ENSURE_SUCCESS(rv, rv);
+  if (secret.Length() == 0) {
+    // This should probably never happen.
+    MOZ_ASSERT(false, "Secret from OS key store must not have zero length");
+    return nsresult::NS_ERROR_ILLEGAL_VALUE;
   }
-  return true;
+  return NS_OK;
 }
 
 nsresult AbstractOSKeyStore::EncryptDecrypt(const nsACString& aLabel,

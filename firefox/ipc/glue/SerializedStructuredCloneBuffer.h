@@ -1,24 +1,15 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __IPC_GLUE_SERIALIZEDSTRUCTUREDCLONEBUFFER_H__
-#define __IPC_GLUE_SERIALIZEDSTRUCTUREDCLONEBUFFER_H__
+#ifndef IPC_GLUE_SERIALIZEDSTRUCTUREDCLONEBUFFER_H_
+#define IPC_GLUE_SERIALIZEDSTRUCTUREDCLONEBUFFER_H_
 
-#include <algorithm>
-#include <cstdint>
-#include <cstdlib>
-#include <string>
-#include <utility>
 #include "chrome/common/ipc_message.h"
 #include "chrome/common/ipc_message_utils.h"
+#include "ipc/IPCMessageUtils.h"
 #include "js/AllocPolicy.h"
 #include "js/StructuredClone.h"
-#include "mozilla/Assertions.h"
-#include "mozilla/BufferList.h"
-#include "mozilla/Vector.h"
 #include "mozilla/mozalloc.h"
 class PickleIterator;
 
@@ -69,19 +60,9 @@ struct ParamTraits<JSStructuredCloneData> {
   static bool Read(MessageReader* aReader, paramType* aResult);
 };
 
-template <>
-struct ParamTraits<mozilla::SerializedStructuredCloneBuffer> {
-  typedef mozilla::SerializedStructuredCloneBuffer paramType;
-
-  static void Write(MessageWriter* aWriter, const paramType& aParam) {
-    WriteParam(aWriter, aParam.data);
-  }
-
-  static bool Read(MessageReader* aReader, paramType* aResult) {
-    return ReadParam(aReader, &aResult->data);
-  }
-};
+DEFINE_IPC_SERIALIZER_WITH_FIELDS(mozilla::SerializedStructuredCloneBuffer,
+                                  data);
 
 }  // namespace IPC
 
-#endif /* __IPC_GLUE_SERIALIZEDSTRUCTUREDCLONEBUFFER_H__ */
+#endif /* IPC_GLUE_SERIALIZEDSTRUCTUREDCLONEBUFFER_H_ */

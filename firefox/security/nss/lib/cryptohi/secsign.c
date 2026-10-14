@@ -21,9 +21,8 @@ struct SGNContextStr {
     SECOidTag signalg;
     SECOidTag hashalg;
     CK_MECHANISM_TYPE mech;
-    void *hashcx;
     /* if we are using explicitly hashing, this value will be non-null */
-    const SECHashObject *hashobj;
+    PK11Context *hashcx;
     /* if we are using the combined mechanism, this value will be non-null */
     PK11Context *signcx;
     SECKEYPrivateKey *key;
@@ -121,7 +120,7 @@ SGN_DestroyContext(SGNContext *cx, PRBool freeit)
 {
     if (cx) {
         if (cx->hashcx != NULL) {
-            (*cx->hashobj->destroy)(cx->hashcx, PR_TRUE);
+            PK11_DestroyContext(cx->hashcx, PR_TRUE);
             cx->hashcx = NULL;
         }
         if (cx->signcx != NULL) {
@@ -160,11 +159,11 @@ SGN_Begin(SGNContext *cx)
     PK11Context *signcx = NULL;
 
     if (cx->hashcx != NULL) {
-        (*cx->hashobj->destroy)(cx->hashcx, PR_TRUE);
+        PK11_DestroyContext(cx->hashcx, PR_TRUE);
         cx->hashcx = NULL;
     }
     if (cx->signcx != NULL) {
-        (void)PK11_DestroyContext(cx->signcx, PR_TRUE);
+        PK11_DestroyContext(cx->signcx, PR_TRUE);
         cx->signcx = NULL;
     }
     /* if we can get a combined context, we'll use that */
@@ -174,15 +173,15 @@ SGN_Begin(SGNContext *cx)
         return SECSuccess;
     }
 
-    cx->hashobj = HASH_GetHashObjectByOidTag(cx->hashalg);
-    if (!cx->hashobj)
+    cx->hashcx = PK11_CreateDigestContext(cx->hashalg);
+    if (cx->hashcx == NULL)
         return SECFailure; /* error code is already set */
 
-    cx->hashcx = (*cx->hashobj->create)();
-    if (cx->hashcx == NULL)
-        return SECFailure;
-
-    (*cx->hashobj->begin)(cx->hashcx);
+    if (PK11_DigestBegin(cx->hashcx) != SECSuccess) {
+        PK11_DestroyContext(cx->hashcx, PR_TRUE);
+        cx->hashcx = NULL;
+        return SECFailure; /* error code is already set */
+    }
     return SECSuccess;
 }
 
@@ -196,8 +195,7 @@ SGN_Update(SGNContext *cx, const unsigned char *input, unsigned int inputLen)
         }
         return PK11_DigestOp(cx->signcx, input, inputLen);
     }
-    (*cx->hashobj->update)(cx->hashcx, input, inputLen);
-    return SECSuccess;
+    return PK11_DigestOp(cx->hashcx, input, inputLen);
 }
 
 /* XXX Old template; want to expunge it eventually. */
@@ -273,7 +271,8 @@ SECStatus
 SGN_End(SGNContext *cx, SECItem *result)
 {
     unsigned char digest[HASH_LENGTH_MAX];
-    unsigned part1;
+    unsigned int part1 = 0;
+    unsigned int expectedLen;
     SECStatus rv;
     SECItem digder, sigitem;
     PLArenaPool *arena = 0;
@@ -305,7 +304,16 @@ SGN_End(SGNContext *cx, SECItem *result)
         return sgn_PKCS11ToX509Sig(cx, result);
     }
     /* Finish up digest function */
-    (*cx->hashobj->end)(cx->hashcx, digest, &part1, sizeof(digest));
+    rv = PK11_DigestFinal(cx->hashcx, digest, &part1, sizeof(digest));
+    if (rv != SECSuccess) {
+        goto loser;
+    }
+    expectedLen = HASH_ResultLenByOidTag(cx->hashalg);
+    if (expectedLen == 0 || part1 != expectedLen) {
+        PORT_SetError(SEC_ERROR_LIBRARY_FAILURE);
+        rv = SECFailure;
+        goto loser;
+    }
 
     if (privKey->keyType == rsaKey &&
         cx->signalg != SEC_OID_PKCS1_RSA_PSS_SIGNATURE) {
@@ -466,22 +474,22 @@ DERTemplate CERTSignedDataTemplate[] = {
     { 0 }
 };
 
-SEC_ASN1_MKSUB(SECOID_AlgorithmIDTemplate)
+static SECOidTag
+seckey_CurveOidFromPrivKey(const SECKEYPrivateKey *privKey)
+{
+    SECItem params;
+    SECStatus rv;
+    SECOidTag tag;
 
-const SEC_ASN1Template CERT_SignedDataTemplate[] = {
-    { SEC_ASN1_SEQUENCE,
-      0, NULL, sizeof(CERTSignedData) },
-    { SEC_ASN1_ANY,
-      offsetof(CERTSignedData, data) },
-    { SEC_ASN1_INLINE | SEC_ASN1_XTRN,
-      offsetof(CERTSignedData, signatureAlgorithm),
-      SEC_ASN1_SUB(SECOID_AlgorithmIDTemplate) },
-    { SEC_ASN1_BIT_STRING,
-      offsetof(CERTSignedData, signature) },
-    { 0 }
-};
-
-SEC_ASN1_CHOOSER_IMPLEMENT(CERT_SignedDataTemplate)
+    rv = PK11_ReadAttribute(privKey->pkcs11Slot, privKey->pkcs11ID,
+                            CKA_EC_PARAMS, NULL, &params);
+    if (rv != SECSuccess) {
+        return SEC_OID_UNKNOWN;
+    }
+    tag = SECKEY_GetECCOid(&params);
+    SECITEM_FreeItem(&params, PR_FALSE);
+    return tag;
+}
 
 static SECStatus
 sec_DerSignData(PLArenaPool *arena, SECItem *result,
@@ -521,10 +529,20 @@ sec_DerSignData(PLArenaPool *arena, SECItem *result,
             case ecKey:
                 algID = SEC_OID_ANSIX962_ECDSA_SHA256_SIGNATURE;
                 break;
+            case edKey:
+                algID = seckey_CurveOidFromPrivKey(pk);
+                break;
+            case mldsaKey:
+                algID = seckey_GetParameterSet(pk);
+                break;
             default:
-                PORT_SetError(SEC_ERROR_INVALID_KEY);
-                return SECFailure;
+                algID = SEC_OID_UNKNOWN;
+                break;
         }
+    }
+    if (algID == SEC_OID_UNKNOWN) {
+        PORT_SetError(SEC_ERROR_INVALID_KEY);
+        return SECFailure;
     }
 
     /* Sign input buffer */
@@ -600,9 +618,17 @@ SGN_Digest(SECKEYPrivateKey *privKey,
         PORT_SetError(SEC_ERROR_SIGNATURE_ALGORITHM_DISABLED);
         return SECFailure;
     }
+
+    if ((privKey->keyType == mldsaKey) || (privKey->keyType == edKey)) {
+        /* don't allow digest sign for mldsa. May be possible if mu
+         * is enabled, in that case the hash must be the special mldsa
+         * hash, which we don't have defined yet */
+        PORT_SetError(SEC_ERROR_UNSUPPORTED_KEYALG);
+        return SECFailure;
+    }
     /* check the policy on the encryption algorithm */
     enctag = sec_GetEncAlgFromSigAlg(
-        SEC_GetSignatureAlgorithmOidTag(privKey->keyType, algtag));
+        SEC_GetSignatureAlgorithmOidTagByKey(privKey, NULL, algtag));
     if ((enctag == SEC_OID_UNKNOWN) ||
         (NSS_GetAlgorithmPolicy(enctag, &policyFlags) == SECFailure) ||
         !(policyFlags & NSS_USE_ALG_IN_ANY_SIGNATURE)) {
@@ -675,6 +701,9 @@ SEC_GetSignatureAlgorithmOidTag(KeyType keyType, SECOidTag hashAlgTag)
     SECOidTag sigTag = SEC_OID_UNKNOWN;
 
     switch (keyType) {
+        case rsaPssKey:
+            sigTag = SEC_OID_PKCS1_RSA_PSS_SIGNATURE;
+            break;
         case rsaKey:
             switch (hashAlgTag) {
                 case SEC_OID_MD2:
@@ -719,6 +748,19 @@ SEC_GetSignatureAlgorithmOidTag(KeyType keyType, SECOidTag hashAlgTag)
                     break;
             }
             break;
+        case mldsaKey:
+            switch (hashAlgTag) {
+                case SEC_OID_ML_DSA_44:
+                case SEC_OID_ML_DSA_65:
+                case SEC_OID_ML_DSA_87:
+                    /* only accept known mldsa values. For mldsa, the hash must
+                     * match the underlying signature algorithm */
+                    sigTag = hashAlgTag;
+                    break;
+                default:
+                    break;
+            }
+            break;
         case ecKey:
             switch (hashAlgTag) {
                 case SEC_OID_SHA1:
@@ -740,29 +782,86 @@ SEC_GetSignatureAlgorithmOidTag(KeyType keyType, SECOidTag hashAlgTag)
                 default:
                     break;
             }
+            break;
+        case edKey:
+            /* signature and curve are the same oid, just make sure
+             * it's valid */
+            switch (hashAlgTag) {
+                case SEC_OID_ED25519_SIGNATURE:
+                    /* add curve 448 here if/when we to support it */
+                    sigTag = hashAlgTag;
+                    break;
+                default:
+                    break;
+            }
+            break;
         default:
             break;
     }
     return sigTag;
 }
 
-static SECItem *
+SECOidTag
+SEC_GetSignatureAlgorithmOidTagByKey(const SECKEYPrivateKey *privKey, const SECKEYPublicKey *pubKey, SECOidTag hashAlgTag)
+{
+    KeyType keyType = nullKey;
+    /* make sure we have a key */
+    if ((privKey && pubKey) || (!privKey && !pubKey)) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return SEC_OID_UNKNOWN;
+    }
+    /* make sure we have only one key */
+    if (privKey) {
+        keyType = privKey->keyType;
+        switch (keyType) {
+            case mldsaKey:
+                /* for mldsa, the hash has to match the paramset anyway, so
+                 * pass in the param set as the hash */
+                hashAlgTag = seckey_GetParameterSet(privKey);
+                break;
+            case edKey:
+                /* for ed, hash matches the curve, so we return the curve oid */
+                hashAlgTag = seckey_CurveOidFromPrivKey(privKey);
+                break;
+            default:
+                /* everything gets the hash from the caller, or will default */
+                break;
+        }
+    } else {
+        /* the logic above should guarentee the following assert. */
+        PORT_Assert(pubKey != NULL);
+        PORT_Assert(privKey == NULL);
+        keyType = pubKey->keyType;
+        switch (keyType) {
+            case mldsaKey:
+                /* for mldsa, the hash has to match the paramset anyway, so
+                 * pass in the param set as the hash */
+                hashAlgTag = pubKey->u.mldsa.paramSet;
+                break;
+            case edKey:
+                /* for ed, hash matches the curve, so we return the curve oid */
+                hashAlgTag = SECKEY_GetECCOid(&pubKey->u.ec.DEREncodedParams);
+                break;
+            default:
+                /* everything gets the hash from the caller, or will default */
+                break;
+        }
+    }
+    return SEC_GetSignatureAlgorithmOidTag(keyType, hashAlgTag);
+}
+
+SECItem *
 sec_CreateRSAPSSParameters(PLArenaPool *arena,
                            SECItem *result,
                            SECOidTag hashAlgTag,
                            const SECItem *params,
-                           const SECKEYPrivateKey *key)
+                           int modBytes)
 {
     SECKEYRSAPSSParams pssParams;
-    int modBytes, hashLength;
+    int hashLength;
     unsigned long saltLength;
     PRBool defaultSHA1 = PR_FALSE;
     SECStatus rv;
-
-    if (key->keyType != rsaKey && key->keyType != rsaPssKey) {
-        PORT_SetError(SEC_ERROR_INVALID_ALGORITHM);
-        return NULL;
-    }
 
     PORT_Memset(&pssParams, 0, sizeof(pssParams));
 
@@ -795,10 +894,22 @@ sec_CreateRSAPSSParameters(PLArenaPool *arena,
         }
     }
 
-    modBytes = PK11_GetPrivateModulusLen((SECKEYPrivateKey *)key);
-
     /* Determine the hash algorithm to use, based on hashAlgTag and
-     * pssParams.hashAlg; there are four cases */
+     * pssParams.hashAlg; there are 6  cases.
+     *  case:
+     *  1) We have params and params.hashAlg and we have a specified hashAlgTag,
+     *  make sure that hashAlgTag specified by the appication matches.
+     *  2) We have params, but no params.hashAlg and we have a specified
+     *  hashAlg, make sure the hashAlgTag matches SEC_OID_SHA1.
+     *  3) we did not specify any parameters but we did specified
+     *  a hashAlgTag. Use the specified hash algtag.
+     *  4) We have params and params.hashAlg and we did not specify a
+     *  hashAlgTag, use the hashAlg from the parameter.
+     *  5) We have params, but no params.hashAlg and we did not specify a
+     *  hashAlgTag, use the SEC_OID_SHA1
+     *  6) We did not specify any parameters, nor did we specify a
+     *  hashAlgTag, use the key size to select an appropriate hashAlg.
+     */
     if (hashAlgTag != SEC_OID_UNKNOWN) {
         SECOidTag tag = SEC_OID_UNKNOWN;
 
@@ -829,6 +940,7 @@ sec_CreateRSAPSSParameters(PLArenaPool *arena,
         }
     }
 
+    /* explicitly restrict hashAlg to SHA2 variants */
     if (hashAlgTag != SEC_OID_SHA1 && hashAlgTag != SEC_OID_SHA224 &&
         hashAlgTag != SEC_OID_SHA256 && hashAlgTag != SEC_OID_SHA384 &&
         hashAlgTag != SEC_OID_SHA512) {
@@ -873,6 +985,11 @@ sec_CreateRSAPSSParameters(PLArenaPool *arena,
     }
 
     hashLength = HASH_ResultLenByOidTag(hashAlgTag);
+
+    if (modBytes < hashLength + 2) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return NULL;
+    }
 
     if (pssParams.saltLength.data) {
         rv = SEC_ASN1DecodeInteger((SECItem *)&pssParams.saltLength,
@@ -963,6 +1080,47 @@ sec_CreateRSAPSSParameters(PLArenaPool *arena,
 }
 
 SECItem *
+SEC_CreateRSAPSSParameters(PLArenaPool *arena,
+                           SECItem *result,
+                           SECOidTag hashAlgTag,
+                           const SECItem *params,
+                           const SECKEYPrivateKey *privKey,
+                           const SECKEYPublicKey *pubKey)
+{
+    /* if no keys are provided arrange for the saltLength to be hashLen */
+    int modBytes = (HASH_LENGTH_MAX * 2) + 2;
+
+    /* we don't need all these parameters, but we should have at least
+     * one of these */
+    if (!privKey && !pubKey && !params && (hashAlgTag == SEC_OID_UNKNOWN)) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return NULL;
+    }
+    /* only allow one key */
+    if (privKey && pubKey) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return NULL;
+    }
+    if (privKey) {
+        if (privKey->keyType != rsaKey && privKey->keyType != rsaPssKey) {
+            PORT_SetError(SEC_ERROR_INVALID_ALGORITHM);
+            return NULL;
+        }
+        /* cast away the const, even though it's still logically a const
+         * function */
+        modBytes = PK11_GetPrivateModulusLen((SECKEYPrivateKey *)privKey);
+    } else if (pubKey) {
+        if (pubKey->keyType != rsaKey && pubKey->keyType != rsaPssKey) {
+            PORT_SetError(SEC_ERROR_INVALID_ALGORITHM);
+            return NULL;
+        }
+        modBytes = pubKey->u.rsa.modulus.len;
+    }
+    return sec_CreateRSAPSSParameters(arena, result, hashAlgTag,
+                                      params, modBytes);
+}
+
+SECItem *
 SEC_CreateSignatureAlgorithmParameters(PLArenaPool *arena,
                                        SECItem *result,
                                        SECOidTag signAlgTag,
@@ -970,18 +1128,102 @@ SEC_CreateSignatureAlgorithmParameters(PLArenaPool *arena,
                                        const SECItem *params,
                                        const SECKEYPrivateKey *key)
 {
+    PORT_SetError(0);
     switch (signAlgTag) {
         case SEC_OID_PKCS1_RSA_PSS_SIGNATURE:
-            return sec_CreateRSAPSSParameters(arena, result,
-                                              hashAlgTag, params, key);
+            return SEC_CreateRSAPSSParameters(arena, result,
+                                              hashAlgTag, params, key, NULL);
 
         default:
             if (params == NULL)
                 return NULL;
             if (result == NULL)
                 result = SECITEM_AllocItem(arena, NULL, 0);
+            if (result == NULL) {
+                return NULL;
+            }
             if (SECITEM_CopyItem(arena, result, params) != SECSuccess)
                 return NULL;
             return result;
     }
+}
+
+SECItem *
+SEC_CreateVerifyAlgorithmParameters(PLArenaPool *arena,
+                                    SECItem *result,
+                                    SECOidTag signAlgTag,
+                                    SECOidTag hashAlgTag,
+                                    const SECItem *params,
+                                    const SECKEYPublicKey *key)
+{
+    PORT_SetError(0);
+    switch (signAlgTag) {
+        case SEC_OID_PKCS1_RSA_PSS_SIGNATURE:
+            return SEC_CreateRSAPSSParameters(arena, result,
+                                              hashAlgTag, params, NULL, key);
+
+        default:
+            if (params == NULL)
+                return NULL;
+            if (result == NULL)
+                result = SECITEM_AllocItem(arena, NULL, 0);
+            if (result == NULL) {
+                return NULL;
+            }
+            if (SECITEM_CopyItem(arena, result, params) != SECSuccess)
+                return NULL;
+            return result;
+    }
+}
+
+SECStatus
+SEC_CreateSignatureAlgorithmID(PLArenaPool *arena,
+                               SECAlgorithmID *signAlgID,
+                               SECOidTag signAlgTag,
+                               SECOidTag hashAlgTag,
+                               const SECItem *params,
+                               const SECKEYPrivateKey *privKey,
+                               const SECKEYPublicKey *pubKey)
+{
+    SECItem *newParams = NULL;
+
+    if (signAlgTag == SEC_OID_UNKNOWN) {
+        signAlgTag = SEC_GetSignatureAlgorithmOidTagByKey(privKey, pubKey,
+                                                          hashAlgTag);
+    } else {
+        /* SEC_GetSignatureAlgorithm already checks if privKey and pubKey
+         * is present and the only case */
+        if ((privKey && pubKey) || (!privKey && !pubKey)) {
+            PORT_SetError(SEC_ERROR_INVALID_ARGS);
+            return SECFailure;
+        }
+    }
+
+    if (signAlgTag == SEC_OID_UNKNOWN) {
+        /* error already set by SEC_GetSignatureAlgorithmOidTagByKey */
+        return SECFailure;
+    }
+
+    if (privKey) {
+        newParams = SEC_CreateSignatureAlgorithmParameters(arena, NULL,
+                                                           signAlgTag,
+                                                           hashAlgTag,
+                                                           params,
+                                                           privKey);
+    } else {
+        /* must be pubKey */
+        newParams = SEC_CreateVerifyAlgorithmParameters(arena, NULL,
+                                                        signAlgTag,
+                                                        hashAlgTag,
+                                                        params,
+                                                        pubKey);
+    }
+
+    /* It's legal (and common) for params to be NULL; look at the error
+     * code to see if there was a failure */
+    if (!newParams && PORT_GetError() != 0) {
+        return SECFailure;
+    }
+
+    return SECOID_SetAlgorithmID(arena, signAlgID, signAlgTag, newParams);
 }

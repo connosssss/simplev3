@@ -5,7 +5,6 @@
 package org.mozilla.focus.biometrics
 
 import android.content.Context
-import android.os.Build
 import androidx.fragment.app.FragmentActivity
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
@@ -16,10 +15,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito.doReturn
-import org.mockito.Mockito.never
 import org.mockito.Mockito.spy
-import org.mockito.Mockito.verify
-import org.robolectric.annotation.Config
 
 class BiometricAuthenticationFragmentTest {
     private lateinit var biometricPromptAuth: BiometricPromptAuth
@@ -37,28 +33,20 @@ class BiometricAuthenticationFragmentTest {
         doReturn(activity).`when`(fragment).requireActivity()
         doReturn(fragmentManger).`when`(activity).supportFragmentManager
         doReturn(fragmentTransaction).`when`(fragmentManger).beginTransaction()
-        biometricPromptAuth = spy(
-            BiometricPromptAuth(
-                testContext,
-                fragment,
-                object : AuthenticationDelegate {
-                    override fun onAuthError(errorText: String) {
-                    }
-                    override fun onAuthFailure() {
-                    }
-                    override fun onAuthSuccess() {
-                    }
-                },
-            ),
-        )
-    }
+        biometricPromptAuth =
+            spy(
+                BiometricPromptAuth(
+                    testContext,
+                    fragment,
+                    object : AuthenticationDelegate {
+                        override fun onAuthError(errorText: String) {}
 
-    @Config(sdk = [Build.VERSION_CODES.LOLLIPOP])
-    @Test
-    fun `GIVEN biometric authentication fragment WHEN show biometric prompt is called and can use feature returns false THEN request authentication is not called`() {
-        fragment.showBiometricPrompt(biometricPromptAuth, "title", "subtitle")
+                        override fun onAuthFailure() {}
 
-        verify(biometricPromptAuth, never()).requestAuthentication("title", "subtitle")
+                        override fun onAuthSuccess() {}
+                    },
+                )
+            )
     }
 
     @Test

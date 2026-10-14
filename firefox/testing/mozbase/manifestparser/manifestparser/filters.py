@@ -8,22 +8,27 @@ dictionary of values, and returns a new iterable of test objects. It is
 possible to define custom filters if the built-in ones are not enough.
 """
 
+import functools
 import itertools
 import os
+from bisect import bisect_left
 from collections import defaultdict
 from collections.abc import MutableSequence
 
 from .expression import ParseError, parse
 from .logger import Logger
-from .util import normsep
+from .util import norm_needed, normsep
 
 # built-in filters
 
 
+@functools.cache
 def _match(exprs, strict, **values):
-    if any(parse(e, strict=strict, **values) for e in exprs.splitlines() if e):
-        return True
-    return False
+    """Return the first matching expression, or None if no match."""
+    for e in exprs.splitlines():
+        if e and parse(e, strict=strict, **values):
+            return e
+    return None
 
 
 def skip_if(tests, values, strict=False):
@@ -31,10 +36,12 @@ def skip_if(tests, values, strict=False):
     Sets disabled on all tests containing the `skip-if` tag and whose condition
     is True. This filter is added by default.
     """
-    tag = "skip-if"
     for test in tests:
-        if tag in test and _match(test[tag], strict, **values):
-            test.setdefault("disabled", f"{tag}: {test[tag]}")
+        test_tag = test.get("skip-if")
+        if test_tag:
+            matching_expr = _match(test_tag, strict, **values)
+            if matching_expr:
+                test.setdefault("disabled", f"skip-if: {matching_expr}")
         yield test
 
 
@@ -46,6 +53,7 @@ def run_if(tests, values, strict=False):
     tag = "run-if"
     for test in tests:
         if tag in test and not _match(test[tag], strict, **values):
+            # For run-if, show all conditions since none of them matched
             test.setdefault("disabled", f"{tag}: {test[tag]}")
         yield test
 
@@ -159,53 +167,6 @@ class subsuite(InstanceFilter):
                 yield test
 
 
-class chunk_by_slice(InstanceFilter):
-    """
-    Basic chunking algorithm that splits tests evenly across total chunks.
-
-    :param this_chunk: the current chunk, 1 <= this_chunk <= total_chunks
-    :param total_chunks: the total number of chunks
-    :param disabled: Whether to include disabled tests in the chunking
-                     algorithm. If False, each chunk contains an equal number
-                     of non-disabled tests. If True, each chunk contains an
-                     equal number of tests (default False)
-    """
-
-    def __init__(self, this_chunk, total_chunks, disabled=False):
-        assert 1 <= this_chunk <= total_chunks
-        InstanceFilter.__init__(self, this_chunk, total_chunks, disabled=disabled)
-        self.this_chunk = this_chunk
-        self.total_chunks = total_chunks
-        self.disabled = disabled
-
-    def __call__(self, tests, values, strict=False):
-        tests = list(tests)
-        if self.disabled:
-            chunk_tests = tests[:]
-        else:
-            chunk_tests = [t for t in tests if "disabled" not in t]
-
-        tests_per_chunk = float(len(chunk_tests)) / self.total_chunks
-        # pylint: disable=W1633
-        start = int(round((self.this_chunk - 1) * tests_per_chunk))
-        end = int(round(self.this_chunk * tests_per_chunk))
-
-        if not self.disabled:
-            # map start and end back onto original list of tests. Disabled
-            # tests will still be included in the returned list, but each
-            # chunk will contain an equal number of enabled tests.
-            if self.this_chunk == 1:
-                start = 0
-            elif start < len(chunk_tests):
-                start = tests.index(chunk_tests[start])
-
-            if self.this_chunk == self.total_chunks:
-                end = len(tests)
-            elif end < len(chunk_tests):
-                end = tests.index(chunk_tests[end])
-        return (t for t in tests[start:end])
-
-
 class chunk_by_dir(InstanceFilter):
     """
     Basic chunking algorithm that splits directories of tests evenly at a
@@ -265,8 +226,7 @@ class chunk_by_dir(InstanceFilter):
             disabled_dirs = [
                 v for k, v in tests_by_dir.items() if k not in ordered_dirs
             ]
-            for disabled_test in itertools.chain(*disabled_dirs):
-                yield disabled_test
+            yield from itertools.chain(*disabled_dirs)
 
 
 class chunk_by_manifest(InstanceFilter):
@@ -327,49 +287,78 @@ class chunk_by_runtime(InstanceFilter):
         self.runtimes = {normsep(m): r for m, r in runtimes.items()}
         self.logger = Logger()
 
-    @classmethod
-    def get_manifest(cls, test):
-        manifest = normsep(test.get("ancestor_manifest", ""))
+    # NOTE: get_manifest is called a lot, so we 'inline' normsep when it's
+    # profitable.
+    if norm_needed:
 
-        # Ignore ancestor_manifests that live at the root (e.g, don't have a
-        # path separator). The only time this should happen is when they are
-        # generated by the build system and we shouldn't count generated
-        # manifests for chunking purposes.
-        if not manifest or "/" not in manifest:
-            manifest = normsep(test["manifest_relpath"])
-        return manifest
+        @staticmethod
+        def get_manifest(test):
+            manifest = normsep(test.get("ancestor_manifest", ""))
+
+            # Ignore ancestor_manifests that live at the root (e.g, don't have a
+            # path separator). The only time this should happen is when they are
+            # generated by the build system and we shouldn't count generated
+            # manifests for chunking purposes.
+            if not manifest or "/" not in manifest:
+                manifest = normsep(test["manifest_relpath"])
+            return manifest
+
+    else:
+
+        @staticmethod
+        def get_manifest(test):
+            manifest = test.get("ancestor_manifest")
+            return (
+                manifest if manifest and "/" in manifest else test["manifest_relpath"]
+            )
 
     def get_chunked_manifests(self, manifests):
         # Find runtimes for all relevant manifests.
         runtimes = [(self.runtimes[m], m) for m in manifests if m in self.runtimes]
 
-        # Compute the average to use as a default for manifests that don't exist.
-        times = [r[0] for r in runtimes]
-        # pylint --py3k W1619
-        # pylint: disable=W1633
-        avg = round(sum(times) / len(times), 2) if times else 0
-        missing = sorted([m for m in manifests if m not in self.runtimes])
-        self.logger.debug(
-            "Applying average runtime of {}s to the following missing manifests:\n{}".format(
-                avg, "  " + "\n  ".join(missing)
+        if len(runtimes) != len(self.runtimes):
+            # Compute the average to use as a default for manifests that don't exist.
+            times = [r[0] for r in runtimes]
+            # pylint --py3k W1619
+            # pylint: disable=W1633
+            avg = round(sum(times) / len(times), 2) if times else 0
+
+            missing = sorted([m for m in manifests if m not in self.runtimes])
+            self.logger.debug(
+                "Applying average runtime of {}s to the following missing manifests:\n{}".format(
+                    avg, "  " + "\n  ".join(missing)
+                )
             )
-        )
-        runtimes.extend([(avg, m) for m in missing])
+            runtimes.extend([(avg, m) for m in missing])
 
         # Each chunk is of the form [<runtime>, <manifests>].
         chunks = [[0, []] for i in range(self.total_chunks)]
+
+        def key(x):
+            return (x[0], len(x[1]))
 
         # Sort runtimes from slowest -> fastest.
         for runtime, manifest in sorted(runtimes, reverse=True):
             # Sort chunks from fastest -> slowest. This guarantees the fastest
             # chunk will be assigned the slowest remaining manifest.
-            chunks.sort(key=lambda x: (x[0], len(x[1]), x[1]))
-            chunks[0][0] += runtime
-            chunks[0][1].append(manifest)
+            chunk0 = chunks[0]
+            chunk0[0] += runtime
+            chunk0[1].append(manifest)
 
-        # Sort one last time so we typically get chunks ordered from fastest to
-        # slowest.
-        chunks.sort(key=lambda x: (x[0], len(x[1])))
+            # find location that would keep chunks sorted
+            insertion_point = bisect_left(chunks, key(chunk0), lo=1, key=key)
+
+            # To keep chunks sorted, we need to move from
+            #   [c_0, c_1, ... c_n]
+            # to
+            #   [c_1, ..., c_{insertion_point - 1}, c_0, c_{insertion_point},  ... c_n]
+            #
+            # Do this while avoiding reallocating pieces of the underlying list
+            # by rotating-left the first `insertion_point' elements.
+            for i in range(insertion_point - 1):
+                chunks[i] = chunks[i + 1]
+            chunks[insertion_point - 1] = chunk0
+
         return chunks
 
     def __call__(self, tests, values, strict=False):
@@ -499,7 +488,7 @@ class pathprefix(InstanceFilter):
                 if "disabled" in test and os.path.normpath(test["relpath"]) == tp:
                     del test["disabled"]
 
-                seen.add(tp)
+                seen.add(testpath)
                 yield test
                 break
 

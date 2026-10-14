@@ -1,41 +1,94 @@
 [DEFAULT]
+run-if = [
+  "os != 'android'",
+]
 head = "head.js"
 firefox-appdir = "browser"
 support-files = ["data/engine.xml"]
+# The shipped engines contribute tab-to-search rows to queries that prefix
+# their domain, which these tests don't account for.
+prefs = ["browser.urlbar.suggest.engines=false"]
 
 ["test_000_frecency.js"]
 
-["test_UrlbarController_integration.js"]
+["test_UrlbarChildController_unit.js"]
 
-["test_UrlbarController_telemetry.js"]
+["test_UrlbarNewTabComponentRegistrant.js"]
 
-["test_UrlbarController_unit.js"]
+["test_UrlbarParentController_integration.js"]
+
+["test_UrlbarParentController_telemetry.js"]
+
+["test_UrlbarParentController_unit.js"]
 
 ["test_UrlbarPrefs.js"]
 
+["test_UrlbarProviderAiChat.js"]
+
+["test_UrlbarProviderSearchSuggestions.js"]
+
 ["test_UrlbarProviderSemanticHistorySearch.js"]
+
+["test_UrlbarProviderTopSites.js"]
 
 ["test_UrlbarQueryContext.js"]
 
 ["test_UrlbarQueryContext_restrictSource.js"]
 
+["test_UrlbarResult_getDisplayableValueAndHighlights.js"]
+
+["test_UrlbarResult_wireSerialization.js"]
+
 ["test_UrlbarSearchUtils.js"]
+
+["test_UrlbarShared_deepEqual.js"]
+
+["test_UrlbarShared_formatDate.js"]
+
+["test_UrlbarShared_getTokenMatches.js"]
+
+["test_UrlbarShared_isOriginUrl.js"]
+
+["test_UrlbarShared_stripUnsafeProtocolOnPaste.js"]
+
+["test_UrlbarShared_unEscapeURIForUI.js"]
+
+["test_UrlbarTelemetryUtils_wireSerialization.js"]
+
+["test_UrlbarUtils_addToInputHistoryWhenReady.js"]
 
 ["test_UrlbarUtils_addToUrlbarHistory.js"]
 
+["test_UrlbarUtils_autofillBackspaceCount.js"]
+
+["test_UrlbarUtils_autofillBlock.js"]
+
 ["test_UrlbarUtils_copySnakeKeysToCamel.js"]
+
+["test_UrlbarUtils_dismissAutofill.js"]
+
+["test_UrlbarUtils_getBackspaceBlock.js"]
+
+["test_UrlbarUtils_getRemoteImageUrl.js"]
 
 ["test_UrlbarUtils_getShortcutOrURIAndPostData.js"]
 
-["test_UrlbarUtils_getTokenMatches.js"]
+["test_UrlbarUtils_reintegrateAutofill.js"]
 
 ["test_UrlbarUtils_skippableTimer.js"]
-
-["test_UrlbarUtils_unEscapeURIForUI.js"]
 
 ["test_about_urls.js"]
 
 ["test_autofill_adaptiveHistory.js"]
+requesttimeoutfactor = 3  # Slow on Mac debug
+
+["test_autofill_adaptiveHistory_bookmarks.js"]
+
+["test_autofill_adaptiveHistory_history_disabled.js"]
+
+["test_autofill_adaptive_origin_fallback.js"]
+
+["test_autofill_blocking.js"]
 
 ["test_autofill_bookmarked.js"]
 
@@ -44,14 +97,18 @@ support-files = ["data/engine.xml"]
 ["test_autofill_functional.js"]
 
 ["test_autofill_origins.js"]
+requesttimeoutfactor = 3  # Slow on Mac debug
 
 ["test_autofill_originsAndQueries.js"]
+requesttimeoutfactor = 3  # Slow on Linux debug and Mac debug
 
 ["test_autofill_origins_alt_frecency.js"]
 prefs = [
   "places.frecency.origins.alternative.featureGate=true",
   "browser.urlbar.suggest.quickactions=false",
 ]
+
+["test_autofill_origins_typed_frecency.js"]
 
 ["test_autofill_prefix_fallback.js"]
 
@@ -109,6 +166,8 @@ prefs = [
 
 ["test_muxer.js"]
 
+["test_muxer_excludeSponsoredResults.js"]
+
 ["test_pages_alt_frecency.js"]
 prefs = [
   "places.frecency.pages.alternative.featureGate=true",
@@ -119,14 +178,14 @@ prefs = [
 
 ["test_protocol_swap.js"]
 skip-if = [
-  "os == 'linux' && os_version == '24.04' && processor == 'x86_64' && display == 'x11'", # Bug 1968543
+  "os == 'linux' && os_version == '24.04' && arch == 'x86_64' && display == 'x11'", # Bug 1968543
 ]
 
 ["test_providerAliasEngines.js"]
 
 ["test_providerHeuristicFallback.js"]
 skip-if = [
-  "os == 'linux' && os_version == '24.04' && processor == 'x86_64' && display == 'x11'", # Bug 1968543
+  "os == 'linux' && os_version == '24.04' && arch == 'x86_64' && display == 'x11'", # Bug 1968543
 ]
 
 ["test_providerHistoryUrlHeuristic.js"]
@@ -134,6 +193,7 @@ skip-if = [
 ["test_providerKeywords.js"]
 
 ["test_providerOmnibox.js"]
+requesttimeoutfactor = 2  # Slow on Linux and Windows
 
 ["test_providerOpenTabs.js"]
 
@@ -146,8 +206,10 @@ skip-if = [
 ["test_providerRecentSearches.js"]
 
 ["test_providerTabToSearch.js"]
+prefs = ["browser.urlbar.suggest.engines=true"]
 
 ["test_providerTabToSearch_partialHost.js"]
+prefs = ["browser.urlbar.suggest.engines=true"]
 
 ["test_provider_notification.js"]
 
@@ -161,22 +223,32 @@ skip-if = [
 
 ["test_query_url.js"]
 
+["test_quickaction_telemetry.js"]
+
 ["test_quickactions.js"]
 
 ["test_remote_tabs.js"]
-skip-if = ["!sync"]
+skip-if = [
+  "!sync",
+]
 
 ["test_resultGroups.js"]
+
+["test_resultGroups_smartbar.js"]
+
+["test_result_highlights.js"]
 
 ["test_richsuggestions.js"]
 
 ["test_richsuggestions_order.js"]
 
+["test_searchEngineStore.js"]
+
 ["test_search_engine_restyle.js"]
 
 ["test_search_suggestions.js"]
 skip-if = [
-  "os == 'linux' && os_version == '24.04' && processor == 'x86_64' && display == 'x11'", # Bug 1968543
+  "os == 'linux' && os_version == '24.04' && arch == 'x86_64' && display == 'x11'", # Bug 1968543
 ]
 
 ["test_search_suggestions_aliases.js"]

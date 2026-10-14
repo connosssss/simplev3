@@ -6,56 +6,108 @@ package org.mozilla.fenix.tabhistory
 
 import androidx.navigation.NavController
 import io.mockk.mockk
-import io.mockk.spyk
 import io.mockk.verify
+import kotlinx.coroutines.test.TestScope
+import mozilla.components.browser.state.action.BrowserAction
+import mozilla.components.browser.state.action.EngineAction
+import mozilla.components.browser.state.engine.EngineMiddleware
+import mozilla.components.browser.state.state.BrowserState
+import mozilla.components.browser.state.state.createTab
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.feature.session.SessionUseCases
-import org.junit.Before
+import mozilla.components.support.test.middleware.CaptureActionsMiddleware
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class TabHistoryControllerTest {
 
-    private lateinit var navController: NavController
-    private lateinit var goToHistoryIndexUseCase: SessionUseCases.GoToHistoryIndexUseCase
-    private lateinit var currentItem: TabHistoryItem
-    private lateinit var store: BrowserStore
+    private val navController = mockk<NavController>(relaxed = true)
+    private val captureActionsMiddleware = CaptureActionsMiddleware<BrowserState, BrowserAction>()
+    private val tab = createTab("https://www.mozilla.org")
 
-    @Before
-    fun setUp() {
-        store = BrowserStore()
-        navController = mockk(relaxed = true)
-        goToHistoryIndexUseCase = spyk(SessionUseCases(store).goToHistoryIndex)
-        currentItem = TabHistoryItem(
+    private val store =
+        BrowserStore(
+            initialState =
+                BrowserState(
+                    tabs = listOf(tab),
+                    selectedTabId = tab.id,
+                ),
+            middleware =
+                listOf(captureActionsMiddleware) +
+                    EngineMiddleware.create(
+                        engine = mockk(),
+                        TestScope(),
+                    ),
+        )
+
+    private val goToHistoryIndexUseCase = SessionUseCases(store).goToHistoryIndex
+
+    private val currentItem =
+        TabHistoryItem(
             index = 0,
             title = "",
             url = "",
             isSelected = true,
         )
-    }
 
     @Test
     fun handleGoToHistoryIndexNormalBrowsing() {
-        val controller = DefaultTabHistoryController(
-            navController = navController,
-            goToHistoryIndexUseCase = goToHistoryIndexUseCase,
-        )
+        val controller =
+            DefaultTabHistoryController(
+                navController = navController,
+                goToHistoryIndexUseCase = goToHistoryIndexUseCase,
+            )
 
         controller.handleGoToHistoryItem(currentItem)
+
         verify { navController.navigateUp() }
-        verify { goToHistoryIndexUseCase.invoke(currentItem.index) }
+        captureActionsMiddleware.assertFirstAction(EngineAction.GoToHistoryIndexAction::class) { action ->
+            assertEquals(tab.id, action.tabId)
+            assertEquals(0, action.index)
+        }
+    }
+
+    @Test
+    fun `WHEN the user requests to go to the homepage THEN handleGoToHistoryItem brings the user to the homepage`() {
+        val controller =
+            DefaultTabHistoryController(
+                navController = navController,
+                goToHistoryIndexUseCase = goToHistoryIndexUseCase,
+            )
+        val currentItem =
+            TabHistoryItem(
+                index = 0,
+                title = "Homepage",
+                url = "about:home",
+                isSelected = true,
+            )
+
+        controller.handleGoToHistoryItem(currentItem)
+
+        verify { navController.navigateUp() }
+        captureActionsMiddleware.assertFirstAction(EngineAction.GoToHistoryIndexAction::class) { action ->
+            assertEquals(tab.id, action.tabId)
+            assertEquals(0, action.index)
+        }
     }
 
     @Test
     fun handleGoToHistoryIndexCustomTab() {
         val customTabId = "customTabId"
-        val customTabController = DefaultTabHistoryController(
-            navController = navController,
-            goToHistoryIndexUseCase = goToHistoryIndexUseCase,
-            customTabId = customTabId,
-        )
+
+        val customTabController =
+            DefaultTabHistoryController(
+                navController = navController,
+                goToHistoryIndexUseCase = goToHistoryIndexUseCase,
+                customTabId = customTabId,
+            )
 
         customTabController.handleGoToHistoryItem(currentItem)
+
         verify { navController.navigateUp() }
-        verify { goToHistoryIndexUseCase.invoke(currentItem.index, customTabId) }
+        captureActionsMiddleware.assertFirstAction(EngineAction.GoToHistoryIndexAction::class) { action ->
+            assertEquals("customTabId", action.tabId)
+            assertEquals(0, action.index)
+        }
     }
 }

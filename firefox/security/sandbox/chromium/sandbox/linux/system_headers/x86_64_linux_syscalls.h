@@ -1,4 +1,4 @@
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+// Copyright 2012 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -1431,10 +1431,6 @@
 #define __NR_mount_setattr 442
 #endif
 
-#if !defined(__NR_quotactl_fd)
-#define __NR_quotactl_fd 443
-#endif
-
 #if !defined(__NR_landlock_create_ruleset)
 #define __NR_landlock_create_ruleset 444
 #endif
@@ -1507,4 +1503,9 @@
 #define __NR_lsm_list_modules 461
 #endif
 
+#if !defined(__NR_mseal)
+#define __NR_mseal 462
+#endif
+
 #endif  // SANDBOX_LINUX_SYSTEM_HEADERS_X86_64_LINUX_SYSCALLS_H_
+

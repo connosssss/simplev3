@@ -53,6 +53,21 @@ function notifyBackgroundScriptStatus(addonId, isRunning) {
   Services.obs.notifyObservers(subject, "extension:background-script-status");
 }
 
+function notifyBackgroundScriptSuspendIgnored(extension) {
+  // Notify developer that background did not suspend due to active devtools.
+  const context = extension.backgroundContext;
+  // TODO: Also log for background_worker. Currently excluded because the
+  // logConsoleScriptError helper is designed for windows, not workers.
+  if (context?.viewType === "background") {
+    context.logConsoleScriptError({
+      message:
+        "Background event page was not terminated on idle because a DevTools toolbox is attached to the extension.",
+      fileName: context.uri.spec,
+      flags: Ci.nsIScriptError.warningFlag,
+    });
+  }
+}
+
 // Same as nsITelemetry msSinceProcessStartExcludingSuspend but returns
 // undefined instead of throwing an extension.
 function msSinceProcessStartExcludingSuspend() {
@@ -202,7 +217,7 @@ class BackgroundWorker {
       );
     });
 
-    // TODO(Bug 17228327): follow up to spawn the active worker for a previously installed
+    // TODO bug 1728327: follow up to spawn the active worker for a previously installed
     // background service worker.
     await serviceWorkerManager.registerForAddonPrincipal(
       this.extension.principal
@@ -800,7 +815,8 @@ class BackgroundBuilder {
         return;
       }
 
-      // Keep in sync with categories in WEBEXT_EVENTPAGE_IDLE_RESULT_COUNT.
+      // Keep in sync with the labels listed in the extensions.counters.event_page_idle_result
+      // Glean metric.
       let KNOWN = ["nativeapp", "streamfilter", "listeners"];
       ExtensionTelemetry.eventPageIdleResult.histogramAdd({
         extension,
@@ -864,6 +880,7 @@ class BackgroundBuilder {
         ExtensionParent.DebugUtils.hasDevToolsAttached(extension.id)
       ) {
         extension.emit("background-script-suspend-ignored");
+        notifyBackgroundScriptSuspendIgnored(extension);
         return;
       }
 
@@ -1052,7 +1069,7 @@ var IdleManager = class IdleManager {
     // in clearState() below, while also not keeping the originalPromise alive.
     let { promise, resolve } = Promise.withResolvers();
     originalPromise.finally(() => resolve());
-    let start = Cu.now();
+    let start = ChromeUtils.now();
 
     this.keepAlive.set(promise, { reason, resolve });
     promise.finally(() => {
@@ -1064,8 +1081,10 @@ var IdleManager = class IdleManager {
         this.resetTimer();
       }
 
-      if (Cu.now() - start > backgroundIdleTimeout) {
-        let value = Math.round((Cu.now() - start) / backgroundIdleTimeout);
+      if (ChromeUtils.now() - start > backgroundIdleTimeout) {
+        let value = Math.round(
+          (ChromeUtils.now() - start) / backgroundIdleTimeout
+        );
         // GIFFT doesn't support mirroring to a categorical histogram with
         // values that are not 1, so do the histogramAdd call as many times
         // as needed. It will be once most of the time, sometimes twice.
@@ -1093,14 +1112,14 @@ var IdleManager = class IdleManager {
   }
 
   resetTimer() {
-    this.sleepTime = Cu.now() + backgroundIdleTimeout;
+    this.sleepTime = ChromeUtils.now() + backgroundIdleTimeout;
     if (!this.timer) {
       this.createTimer();
     }
   }
 
   createTimer() {
-    let timeLeft = this.sleepTime - Cu.now();
+    let timeLeft = this.sleepTime - ChromeUtils.now();
     this.timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
     this.timer.init(() => this.timeout(), timeLeft, Ci.nsITimer.TYPE_ONE_SHOT);
   }
@@ -1108,7 +1127,7 @@ var IdleManager = class IdleManager {
   timeout() {
     this.clearTimer();
     if (!this.keepAlive.size) {
-      if (Cu.now() < this.sleepTime) {
+      if (ChromeUtils.now() < this.sleepTime) {
         this.createTimer();
       } else {
         // As explained in the comment before the IdleManager class, the timer

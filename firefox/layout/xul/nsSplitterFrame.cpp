@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,35 +9,38 @@
 // See documentation in associated header file
 //
 
+#include "nsSplitterFrame.h"
+
 #include "LayoutConstants.h"
 #include "SimpleXULLeafFrame.h"
 #include "gfxContext.h"
-#include "mozilla/ReflowInput.h"
-#include "nsSplitterFrame.h"
-#include "nsGkAtoms.h"
-#include "nsXULElement.h"
-#include "nsPresContext.h"
-#include "mozilla/dom/Document.h"
-#include "nsNameSpaceManager.h"
-#include "nsScrollbarButtonFrame.h"
-#include "nsIDOMEventListener.h"
-#include "nsICSSDeclaration.h"
-#include "nsFrameList.h"
-#include "nsHTMLParts.h"
-#include "mozilla/ComputedStyle.h"
 #include "mozilla/CSSOrderAwareFrameIterator.h"
-#include "nsContainerFrame.h"
-#include "nsLayoutUtils.h"
-#include "nsDisplayList.h"
-#include "nsContentUtils.h"
-#include "nsFlexContainerFrame.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/dom/Event.h"
-#include "mozilla/dom/MouseEvent.h"
+#include "mozilla/ComputedStyle.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/PresShell.h"
-#include "mozilla/UniquePtr.h"
+#include "mozilla/ReflowInput.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/Event.h"
+#include "mozilla/dom/KeyboardEvent.h"
+#include "mozilla/dom/KeyboardEventBinding.h"
+#include "mozilla/dom/MouseEvent.h"
+#include "nsContainerFrame.h"
+#include "nsContentUtils.h"
+#include "nsDOMCSSDeclaration.h"
+#include "nsDisplayList.h"
+#include "nsFlexContainerFrame.h"
+#include "nsFrameList.h"
+#include "nsGkAtoms.h"
+#include "nsGridContainerFrame.h"
+#include "nsHTMLParts.h"
+#include "nsIDOMEventListener.h"
+#include "nsLayoutUtils.h"
+#include "nsNameSpaceManager.h"
+#include "nsPresContext.h"
+#include "nsScrollbarButtonFrame.h"
 #include "nsStyledElement.h"
+#include "nsXULElement.h"
 
 using namespace mozilla;
 
@@ -114,6 +115,7 @@ class nsSplitterFrameInner final : public nsIDOMEventListener {
   nsresult MouseDown(Event* aMouseEvent);
   nsresult MouseUp(Event* aMouseEvent);
   nsresult MouseMove(Event* aMouseEvent);
+  nsresult KeyDown(Event* aKeyEvent);
 
   void MouseDrag(nsPresContext* aPresContext, WidgetGUIEvent* aEvent);
   void MouseUp(nsPresContext* aPresContext, WidgetGUIEvent* aEvent);
@@ -144,6 +146,10 @@ class nsSplitterFrameInner final : public nsIDOMEventListener {
 
   void EnsureOrient();
   void SetPreferredSize(nsIFrame* aChildBox, bool aIsHorizontal, nscoord aSize);
+
+  // Collects child information for resizing. Returns false if the splitter
+  // is at a boundary or there are no valid children to resize.
+  bool CollectChildInfos();
 
   nsSplitterFrame* mOuter;
   bool mDidDrag = false;
@@ -226,7 +232,7 @@ void nsSplitterFrame::Destroy(DestroyContext& aContext) {
 
 nsresult nsSplitterFrame::AttributeChanged(int32_t aNameSpaceID,
                                            nsAtom* aAttribute,
-                                           int32_t aModType) {
+                                           AttrModType aModType) {
   nsresult rv =
       SimpleXULLeafFrame::AttributeChanged(aNameSpaceID, aAttribute, aModType);
   if (aAttribute == nsGkAtoms::state) {
@@ -252,7 +258,7 @@ void nsSplitterFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
 }
 
 static bool IsValidParentBox(nsIFrame* aFrame) {
-  return aFrame->IsFlexContainerFrame();
+  return aFrame->IsFlexContainerFrame() || aFrame->IsGridContainerFrame();
 }
 
 static nsIFrame* GetValidParentBox(nsIFrame* aChild) {
@@ -273,11 +279,33 @@ void nsSplitterFrame::Reflow(nsPresContext* aPresContext,
                                     aStatus);
 }
 
-static bool SplitterIsHorizontal(const nsIFrame* aParentBox) {
-  // If our parent is horizontal, the splitter is vertical and vice-versa.
-  MOZ_ASSERT(aParentBox->IsFlexContainerFrame());
-  const FlexboxAxisInfo info(aParentBox);
-  return !info.mIsRowOriented;
+static bool SplitterIsHorizontal(const nsIFrame* aParentBox,
+                                 const Element* aSplitterElement) {
+  if (aParentBox->IsFlexContainerFrame()) {
+    // If our parent is horizontal, the splitter is vertical and vice-versa.
+    const FlexboxAxisInfo info(aParentBox);
+    return !info.mIsRowOriented;
+  }
+
+  static Element::AttrValuesArray strings[] = {nsGkAtoms::horizontal,
+                                               nsGkAtoms::vertical, nullptr};
+  switch (aSplitterElement->FindAttrValueIn(
+      kNameSpaceID_None, nsGkAtoms::orient, strings, eCaseMatters)) {
+    // When the splitter has orient=horizontal, it means that the elements to
+    // resize are on its left/right, so the splitter itself is a vertical line.
+    case 0:
+      return false;
+    // When the splitter has orient=vertical, it means that the elements to
+    // resize are on top/bottom of it, so the splitter itself is a horizontal
+    // line.
+    case 1:
+      return true;
+    default:
+      break;
+  }
+
+  MOZ_ASSERT_UNREACHABLE("Non Flex Items should have a 'orient' attribute");
+  return false;
 }
 
 NS_IMETHODIMP
@@ -463,6 +491,7 @@ void nsSplitterFrameInner::AddListener() {
   mOuter->GetContent()->AddEventListener(u"mousedown"_ns, this, false, false);
   mOuter->GetContent()->AddEventListener(u"mousemove"_ns, this, false, false);
   mOuter->GetContent()->AddEventListener(u"mouseout"_ns, this, false, false);
+  mOuter->GetContent()->AddEventListener(u"keydown"_ns, this, false, false);
 }
 
 void nsSplitterFrameInner::RemoveListener() {
@@ -471,6 +500,7 @@ void nsSplitterFrameInner::RemoveListener() {
   mOuter->GetContent()->RemoveEventListener(u"mousedown"_ns, this, false);
   mOuter->GetContent()->RemoveEventListener(u"mousemove"_ns, this, false);
   mOuter->GetContent()->RemoveEventListener(u"mouseout"_ns, this, false);
+  mOuter->GetContent()->RemoveEventListener(u"keydown"_ns, this, false);
 }
 
 nsresult nsSplitterFrameInner::HandleEvent(dom::Event* aEvent) {
@@ -485,6 +515,9 @@ nsresult nsSplitterFrameInner::HandleEvent(dom::Event* aEvent) {
   if (eventType.EqualsLiteral("mousemove") ||
       eventType.EqualsLiteral("mouseout")) {
     return MouseMove(aEvent);
+  }
+  if (eventType.EqualsLiteral("keydown")) {
+    return KeyDown(aEvent);
   }
 
   MOZ_ASSERT_UNREACHABLE("Unexpected eventType");
@@ -526,30 +559,10 @@ static void ApplyMargin(nsSize& aSize, const nsMargin& aMargin) {
   }
 }
 
-nsresult nsSplitterFrameInner::MouseDown(Event* aMouseEvent) {
-  NS_ENSURE_TRUE(mOuter, NS_OK);
-  dom::MouseEvent* mouseEvent = aMouseEvent->AsMouseEvent();
-  if (!mouseEvent) {
-    return NS_OK;
-  }
-
-  // only if left button
-  if (mouseEvent->Button() != 0) {
-    return NS_OK;
-  }
-
-  if (SplitterElement()->AttrValueIs(kNameSpaceID_None, nsGkAtoms::disabled,
-                                     nsGkAtoms::_true, eCaseMatters)) {
-    return NS_OK;
-  }
-
-  mParentBox = GetValidParentBox(mOuter);
+bool nsSplitterFrameInner::CollectChildInfos() {
   if (!mParentBox) {
-    return NS_OK;
+    return false;
   }
-
-  // get our index
-  mDidDrag = false;
 
   EnsureOrient();
   const bool isHorizontal = !mOuter->IsHorizontal();
@@ -576,11 +589,11 @@ nsresult nsSplitterFrameInner::MouseDown(Event* aMouseEvent) {
       foundOuter = true;
       if (!count) {
         // We're at the beginning, nothing to do.
-        return NS_OK;
+        return false;
       }
       if (count == childCount - 1 && resizeAfter != ResizeType::Grow) {
         // If it's the last index then we need to allow for resizeafter="grow"
-        return NS_OK;
+        return false;
       }
     }
     count++;
@@ -598,9 +611,9 @@ nsresult nsSplitterFrameInner::MouseDown(Event* aMouseEvent) {
         }
 
         // We need to check for hidden attribute too, since treecols with
-        // the hidden="true" attribute are not really hidden, just collapsed
-        if (element->GetXULBoolAttr(nsGkAtoms::fixed) ||
-            element->GetXULBoolAttr(nsGkAtoms::hidden)) {
+        // the hidden attribute are not really hidden, just collapsed
+        if (element->GetBoolAttr(nsGkAtoms::fixed) ||
+            element->GetBoolAttr(nsGkAtoms::hidden)) {
           return false;
         }
       }
@@ -628,6 +641,14 @@ nsresult nsSplitterFrameInner::MouseDown(Event* aMouseEvent) {
         case ResizeType::Farthest:
           break;
       }
+
+      // When the splitter is not in a flex container, we're only supporting
+      // sibling resize
+      if (!mParentBox->IsFlexContainerFrame() &&
+          resizeType != ResizeType::Sibling) {
+        return false;
+      }
+
       return true;
     }();
 
@@ -639,18 +660,16 @@ nsresult nsSplitterFrameInner::MouseDown(Event* aMouseEvent) {
     const auto& pos = *childBox->StylePosition();
     const auto anchorResolutionParams =
         AnchorPosResolutionParams::From(childBox);
-    nsSize minSize = ToLengthWithFallback(
-        *pos.GetMinWidth(anchorResolutionParams.mPosition),
-        *pos.GetMinHeight(anchorResolutionParams.mPosition));
+    nsSize minSize =
+        ToLengthWithFallback(*pos.GetMinWidth(anchorResolutionParams),
+                             *pos.GetMinHeight(anchorResolutionParams));
     nsSize maxSize = ToLengthWithFallback(
-        *pos.GetMaxWidth(anchorResolutionParams.mPosition),
-        *pos.GetMaxHeight(anchorResolutionParams.mPosition),
-        NS_UNCONSTRAINEDSIZE);
-    nsSize prefSize(
-        ToLengthWithFallback(*pos.GetWidth(anchorResolutionParams.mPosition),
-                             curSize.width),
-        ToLengthWithFallback(*pos.GetHeight(anchorResolutionParams.mPosition),
-                             curSize.height));
+        *pos.GetMaxWidth(anchorResolutionParams),
+        *pos.GetMaxHeight(anchorResolutionParams), NS_UNCONSTRAINEDSIZE);
+    nsSize prefSize(ToLengthWithFallback(*pos.GetWidth(anchorResolutionParams),
+                                         curSize.width),
+                    ToLengthWithFallback(*pos.GetHeight(anchorResolutionParams),
+                                         curSize.height));
 
     maxSize.width = std::max(maxSize.width, minSize.width);
     maxSize.height = std::max(maxSize.height, minSize.height);
@@ -676,19 +695,23 @@ nsresult nsSplitterFrameInner::MouseDown(Event* aMouseEvent) {
   }
 
   if (!foundOuter) {
-    return NS_OK;
+    return false;
   }
 
-  mPressed = true;
-
   const bool reverseDirection = [&] {
+    const bool rtl =
+        mParentBox->StyleVisibility()->mDirection == StyleDirection::Rtl;
+
+    if (mParentBox->IsGridContainerFrame()) {
+      return isHorizontal && rtl;
+    }
+
     MOZ_ASSERT(mParentBox->IsFlexContainerFrame());
     const FlexboxAxisInfo info(mParentBox);
     if (!info.mIsRowOriented) {
       return info.mIsMainAxisReversed;
     }
-    const bool rtl =
-        mParentBox->StyleVisibility()->mDirection == StyleDirection::Rtl;
+
     return info.mIsMainAxisReversed != rtl;
   }();
 
@@ -715,6 +738,41 @@ nsresult nsSplitterFrameInner::MouseDown(Event* aMouseEvent) {
     mChildInfosAfter.Reverse();
   }
 
+  return true;
+}
+
+nsresult nsSplitterFrameInner::MouseDown(Event* aMouseEvent) {
+  NS_ENSURE_TRUE(mOuter, NS_OK);
+  dom::MouseEvent* mouseEvent = aMouseEvent->AsMouseEvent();
+  if (!mouseEvent) {
+    return NS_OK;
+  }
+
+  // only if left button
+  if (mouseEvent->Button() != 0) {
+    return NS_OK;
+  }
+
+  if (SplitterElement()->GetBoolAttr(nsGkAtoms::disabled)) {
+    return NS_OK;
+  }
+
+  mParentBox = GetValidParentBox(mOuter);
+  if (!mParentBox) {
+    return NS_OK;
+  }
+
+  // get our index
+  mDidDrag = false;
+
+  // Collect child information for resizing
+  if (!CollectChildInfos()) {
+    return NS_OK;
+  }
+
+  mPressed = true;
+
+  const bool isHorizontal = !mOuter->IsHorizontal();
   int32_t c;
   nsPoint pt =
       nsLayoutUtils::GetDOMEventCoordinatesRelativeTo(mouseEvent, mParentBox);
@@ -752,6 +810,112 @@ nsresult nsSplitterFrameInner::MouseMove(Event* aMouseEvent) {
 
   RemoveListener();
   mDragging = true;
+
+  return NS_OK;
+}
+
+nsresult nsSplitterFrameInner::KeyDown(Event* aKeyEvent) {
+  NS_ENSURE_TRUE(mOuter, NS_OK);
+
+  dom::KeyboardEvent* keyEvent = aKeyEvent->AsKeyboardEvent();
+  if (!keyEvent) {
+    return NS_OK;
+  }
+
+  // Check if splitter is disabled
+  if (SplitterElement()->GetBoolAttr(nsGkAtoms::disabled)) {
+    return NS_OK;
+  }
+
+  mParentBox = GetValidParentBox(mOuter);
+  if (!mParentBox) {
+    return NS_OK;
+  }
+
+  uint32_t keyCode = keyEvent->KeyCode();
+
+  // Determine orientation to map arrow keys correctly
+  EnsureOrient();
+  const bool isHorizontal = !mOuter->IsHorizontal();
+
+  // Use 5px movement per keypress
+  const nscoord kKeyboardDelta = nsPresContext::CSSPixelsToAppUnits(5);
+  nscoord delta = 0;
+
+  switch (keyCode) {
+    case dom::KeyboardEvent_Binding::DOM_VK_LEFT:
+      if (isHorizontal) {
+        delta = -kKeyboardDelta;
+      }
+      break;
+
+    case dom::KeyboardEvent_Binding::DOM_VK_RIGHT:
+      if (isHorizontal) {
+        delta = kKeyboardDelta;
+      }
+      break;
+
+    case dom::KeyboardEvent_Binding::DOM_VK_UP:
+      if (!isHorizontal) {
+        delta = -kKeyboardDelta;
+      }
+      break;
+
+    case dom::KeyboardEvent_Binding::DOM_VK_DOWN:
+      if (!isHorizontal) {
+        delta = kKeyboardDelta;
+      }
+      break;
+
+    default:
+      // Other keys - don't consume
+      return NS_OK;
+  }
+
+  if (delta == 0) {
+    return NS_OK;
+  }
+
+  keyEvent->PreventDefault();
+
+  // Collect child information for resizing
+  if (!CollectChildInfos()) {
+    return NS_OK;
+  }
+
+  for (auto& info : mChildInfosBefore) {
+    // If pref > current, its width/height attribute says it should be larger
+    // than it actually is (due to container constraints). Use current value so
+    // AdjustChildren() calculations start from reality.
+    if (info.pref > info.current) {
+      info.pref = info.current;
+    }
+
+    info.changed = info.current;
+  }
+
+  for (auto& info : mChildInfosAfter) {
+    // If pref > current, sync them (see comment above)
+    if (info.pref > info.current) {
+      info.pref = info.current;
+    }
+
+    info.changed = info.current;
+  }
+
+  // Apply the delta to resize children
+  ResizeChildTo(delta);
+
+  AdjustChildren(mOuter->PresContext());
+
+  mChildInfosBefore.Clear();
+  mChildInfosAfter.Clear();
+
+  // Fire command event to notify of change
+  RefPtr<nsXULElement> element = nsXULElement::FromNode(mOuter->GetContent());
+  if (element) {
+    element->DoCommand();
+  }
 
   return NS_OK;
 }
@@ -834,14 +998,14 @@ void nsSplitterFrameInner::UpdateState() {
           // CollapsedBefore -> Dragging
           // CollapsedAfter -> Open
           // CollapsedAfter -> Dragging
-          nsContentUtils::AddScriptRunner(new nsUnsetAttrRunnable(
+          nsContentUtils::AddScriptRunner(MakeAndAddRef<nsUnsetAttrRunnable>(
               sibling->AsElement(), nsGkAtoms::collapsed));
         } else if ((mState == State::Open || mState == State::Dragging) &&
                    (newState == State::CollapsedBefore ||
                     newState == State::CollapsedAfter)) {
           // Open -> CollapsedBefore / CollapsedAfter
           // Dragging -> CollapsedBefore / CollapsedAfter
-          nsContentUtils::AddScriptRunner(new nsSetAttrRunnable(
+          nsContentUtils::AddScriptRunner(MakeAndAddRef<nsSetAttrRunnable>(
               sibling->AsElement(), nsGkAtoms::collapsed, u"true"_ns));
         }
       }
@@ -851,7 +1015,7 @@ void nsSplitterFrameInner::UpdateState() {
 }
 
 void nsSplitterFrameInner::EnsureOrient() {
-  mOuter->mIsHorizontal = SplitterIsHorizontal(mParentBox);
+  mOuter->mIsHorizontal = SplitterIsHorizontal(mParentBox, SplitterElement());
 }
 
 void nsSplitterFrameInner::AdjustChildren(nsPresContext* aPresContext) {
@@ -911,7 +1075,7 @@ void nsSplitterFrameInner::SetPreferredSize(nsIFrame* aChildBox,
   element->SetAttr(aIsHorizontal ? nsGkAtoms::width : nsGkAtoms::height,
                    attrValue, IgnoreErrors());
 
-  nsCOMPtr<nsICSSDeclaration> decl = element->Style();
+  nsCOMPtr<nsDOMCSSDeclaration> decl = element->Style();
 
   nsAutoCString cssValue;
   cssValue.AppendInt(pixels);

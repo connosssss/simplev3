@@ -9,8 +9,9 @@ genai-settings-chat-claude-links = By choosing Anthropic Claude, you agree to th
 genai-settings-chat-copilot-links = By choosing Copilot, you agree to the <a data-l10n-name="link1">Copilot AI Experiences Terms</a> and <a data-l10n-name="link2">Microsoft Privacy Statement</a>.
 genai-settings-chat-gemini-links = By choosing Google Gemini, you agree to the <a data-l10n-name="link1">Google Terms of Service</a>, <a data-l10n-name="link2">Generative AI Prohibited Use Policy</a>, and <a data-l10n-name="link3">Gemini Apps Privacy Notice</a>.
 genai-settings-chat-huggingchat-links = By choosing HuggingChat, you agree to the <a data-l10n-name="link1">HuggingChat Privacy Notice</a> and <a data-l10n-name="link2">Hugging Face Privacy Policy</a>.
-genai-settings-chat-lechat-links = By choosing Le Chat Mistral, you agree to the Mistral AI <a data-l10n-name="link1">Terms of Service</a> and <a data-l10n-name="link2">Privacy Policy</a>.
+genai-settings-chat-lechat-links-2 = By choosing Mistral Vibe, you agree to the Mistral AI <a data-l10n-name="link1">Terms of Service</a> and <a data-l10n-name="link2">Privacy Policy</a>.
 genai-settings-chat-localhost-links = Bring your own private local chatbot such as <a data-l10n-name="link1">llamafile</a> from { -vendor-short-name }’s Innovation group.
+genai-settings-chat-scout-links = By choosing Yahoo Scout, you agree to the Yahoo <a data-l10n-name="link1">Terms of Service</a> and <a data-l10n-name="link2">Privacy Policy</a>.
 
 ## Chatbot prompts
 ## Prompts are plain language ‘instructions’ sent to a chatbot.
@@ -27,6 +28,9 @@ genai-prompt-prefix-selection = I’m on page “{ $tabTitle }” with “{ $sel
 genai-prompts-summarize =
     .label = Summarize
     .value = Please summarize the selection using precise and concise language. Use headers and bulleted lists in the summary, to make it scannable. Maintain the meaning and factual accuracy.
+# Prompt purpose: help users understand what a webpage covers at a glance
+# $url (string) - address of the webpage to summarize
+genai-prompts-summarize-page = Please summarize the webpage at { $url } using precise and concise language. Use headers and bulleted lists in the summary, to make it scannable. Maintain the meaning and factual accuracy.
 # Prompt purpose: make a selection easier to read
 genai-prompts-simplify =
     .label = Simplify language
@@ -46,15 +50,21 @@ genai-prompts-proofread =
 
 ## Chatbot menu shortcuts
 
-genai-menu-no-provider =
+genai-menu-ask-smart-window =
+    .label = Ask…
+    .accesskey = z
+genai-menu-no-provider-2 =
     .label = Ask an AI Chatbot
+    .accesskey = z
 genai-menu-choose-chatbot =
     .label = Choose an AI Chatbot
-genai-menu-ask-generic =
+genai-menu-ask-generic-2 =
     .label = Ask AI Chatbot
+    .accesskey = z
 # $provider (string) - name of the provider
-genai-menu-ask-provider =
+genai-menu-ask-provider-2 =
     .label = Ask { $provider }
+    .accesskey = z
 genai-menu-open-generic =
     .label = Open AI Chatbot
 # $provider (string) - name of the provider
@@ -67,10 +77,26 @@ genai-menu-remove-provider =
     .label = Remove { $provider }
 genai-menu-remove-sidebar =
     .label = Remove from Sidebar
+genai-shortcut-button-3 =
+    .tooltiptext = Ask about this text
+    .aria-label = Ask about this text
+# $engine (string) - name of the search engine
+# $selection (string) - the selected text, truncated
+genai-shortcut-search-button =
+    .tooltiptext = Search { $engine } for “{ $selection }”
+    .aria-label = Search { $engine } for “{ $selection }”
+genai-shortcut-copy-button =
+    .tooltiptext = Copy selected text
+    .aria-label = Copy selected text
+genai-shortcut-more-actions-button =
+    .tooltiptext = More options
+    .aria-label = More options
 
 genai-menu-new-badge = New
 genai-menu-summarize-page = Summarize Page
 
+genai-input-ask-smart-window =
+    .placeholder = Ask…
 genai-input-ask-generic =
     .placeholder = Ask AI chatbot…
 # $provider (string) - name of the provider
@@ -100,8 +126,8 @@ genai-shortcuts-hide =
 genai-chatbot-title = AI chatbot
 genai-header-provider-menu =
     .title = Choose a chatbot
-genai-header-options-button =
-    .title = Open menu
+genai-header-settings-button =
+    .title = AI Chat settings
 genai-header-close-button =
     .title = Close
 
@@ -141,57 +167,25 @@ genai-chatbot-contextual-title = Use an AI chatbot without switching tabs
 genai-chatbot-contextual-subtitle = Chat and browse side-by-side when you add an AI chatbot in the { -brand-short-name } sidebar.
 genai-chatbot-contextual-button = Choose a chatbot
 
-genai-onboarding-header = Summarize, brainstorm, and more as you browse
 genai-onboarding-choose-header = Choose an AI chatbot to use in the { -brand-short-name } sidebar
-# "Switch anytime" refers to allowing the user to switch to a different chatbot.
-genai-onboarding-description = Choose an AI chatbot to use in the { -brand-short-name } sidebar. We’ll show details about each chatbot when you select it. Switch anytime. <a data-l10n-name="learn-more">Learn more</a>
 # "Switch anytime" refers to allowing the user to switch to a different chatbot.
 genai-onboarding-choose-description = Switch anytime. For help choosing, <a data-l10n-name="learn-more">learn more about each chatbot</a>.
 genai-onboarding-primary = Continue
 genai-onboarding-secondary = Close
 genai-onboarding-claude-tooltip =
     .title = Anthropic Claude
-genai-onboarding-claude-learn = Learn more about Claude
 genai-onboarding-chatgpt-tooltip =
     .title = ChatGPT
-genai-onboarding-chatgpt-learn = Learn more about ChatGPT
 genai-onboarding-copilot-tooltip =
     .title = Copilot
-genai-onboarding-copilot-learn = Learn more about Copilot
 genai-onboarding-gemini-tooltip =
     .title = Google Gemini
-genai-onboarding-gemini-learn = Learn more about Gemini
 genai-onboarding-huggingchat-tooltip =
     .title = HuggingChat
-genai-onboarding-huggingchat-learn = Learn more about HuggingChat
-genai-onboarding-lechat-tooltip =
-    .title = Le Chat Mistral
-genai-onboarding-lechat-learn = Learn more about Le Chat
-
-genai-onboarding-select-header = Select text to see suggestions
-genai-onboarding-select-description = When you select text, we’ll suggest prompts you can send to the chatbot. You can also write in your own prompts.
-genai-onboarding-select-primary = Start chatting
-
-## Chatbot onboarding choices
-## These describe features/capabilities of chatbot providers. These are not buttons/actions.
-
-genai-onboarding-claude-generate = Generate text and code
-genai-onboarding-claude-analyze = Analyze documents and images
-genai-onboarding-claude-price = Free and paid options; account required
-genai-onboarding-chatgpt-generate = Generate text, images, and code
-genai-onboarding-chatgpt-analyze = Analyze documents and images
-genai-onboarding-chatgpt-price = Free and paid options; account required for some countries and tasks
-genai-onboarding-copilot-generate = Generate text, images, and code
-genai-onboarding-copilot-analyze = Analyze images
-genai-onboarding-copilot-price = Free and paid options; account required for some tasks
-genai-onboarding-gemini-generate = Generate text, images, and code
-genai-onboarding-gemini-analyze = Analyze images (free) and documents (paid)
-genai-onboarding-gemini-price = Free and paid options; account required
-genai-onboarding-huggingchat-generate = Generate text and code
-genai-onboarding-huggingchat-switch = Switch between a diverse set of open models
-genai-onboarding-huggingchat-price-2 = Free; account required after a certain number of requests
-genai-onboarding-lechat-generate = Generate text and code
-genai-onboarding-lechat-price = Free; account required
+genai-onboarding-lechat-tooltip-2 =
+    .title = Mistral Vibe
+genai-onboarding-scout-tooltip =
+    .title = Yahoo Scout
 
 ## Model Optin Component
 
@@ -218,3 +212,76 @@ link-preview-reading-time =
         [one] { $range } min reading time
        *[other] { $range } mins reading time
     }
+
+# Error message displayed when a link preview cannot be generated
+link-preview-error-message-v2 = { -brand-short-name } can’t preview this link
+
+# Text for the link to visit the original URL when in error state
+link-preview-visit-link = Visit link
+
+# Error message when key points generation (summary highlights or main ideas of page content) fails for a page
+link-preview-generation-error-missing-data-v2 = { -brand-short-name } can’t generate key points for this webpage.
+
+# Error message when something went wrong during key point generation
+link-preview-generation-error-unexpected = Something went wrong.
+
+# Text for the retry link when generation fails
+link-preview-generation-retry = Try again
+
+# Button that opens the Link Preview settings
+link-preview-settings-button =
+    .title = Link Preview Settings
+
+link-preview-settings-enable =
+    .label = Enable link previews
+    .description = See the page title, description, and more when you use the shortcut or right-click on a link.
+link-preview-settings-key-points =
+    .label = Allow AI to read the beginning of the page and generate key points
+link-preview-settings-long-press =
+    .label = Shortcut: Click and hold the link for 1 second (long press)
+
+highlight-to-search-settings-enable =
+    .label = Show actions menu when selecting text
+    .description = Get quick access to helpful actions when you select content.
+# $provider (string) - name of the AI chatbot provider
+highlight-to-search-settings-ask-provider =
+    .label = Ask { $provider }
+highlight-to-search-settings-ask-generic =
+    .label = Ask AI
+
+# Title that appears when user is shown the opt-in flow for link previews
+link-preview-optin-title = See more with AI?
+
+# Message that appears when user is shown the opt-in flow for link previews
+link-preview-optin-message = { -brand-short-name } uses AI to read the beginning of the page and generate a few key points. To prioritize your privacy, this happens on your device.
+
+# Onboarding card title for long press
+link-preview-onboarding-title-long-press = New: Click and hold any link for a preview
+
+# Onboarding card description for long press
+link-preview-onboarding-description-long-press = See a short description, reading time, and more to decide if the link is worth opening. Also available on right-click.
+
+# Header for the key points section
+link-preview-key-points-header = Key points
+
+# Disclaimer for AI-generated key points
+link-preview-key-points-disclaimer = Key points are AI-generated and may have mistakes.
+
+# Progress message for the first-time setup
+# $progress (number) - The percentage value 1-100 indicating the progress of the setup.
+link-preview-setup = First-time setup • <strong>{ $progress }%</strong>
+
+# Message indicating faster performance after initial setup
+link-preview-setup-faster-next-time = You’ll see key points more quickly next time.
+
+# Onboarding card See a preview button
+link-preview-onboarding-button = See a preview
+
+# Onboarding card Close button
+link-preview-onboarding-close = Close
+
+# Title for the first-time setup modal
+link-preview-first-time-setup-title = First-time setup
+
+# Message for the first-time setup modal
+link-preview-first-time-setup-message = This may take a moment. You’ll see key points more quickly next time.

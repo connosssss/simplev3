@@ -11,15 +11,17 @@
 #ifndef MODULES_AUDIO_CODING_INCLUDE_AUDIO_CODING_MODULE_H_
 #define MODULES_AUDIO_CODING_INCLUDE_AUDIO_CODING_MODULE_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
-#include <string>
 #include <utility>
 #include <vector>
 
 #include "api/audio_codecs/audio_encoder.h"
 #include "api/function_view.h"
 #include "modules/audio_coding/include/audio_coding_module_typedefs.h"
+#include "rtc_base/checks.h"
 
 namespace webrtc {
 
@@ -34,6 +36,18 @@ class AudioPacketizationCallback {
  public:
   virtual ~AudioPacketizationCallback() {}
 
+  virtual int32_t SendData(
+      AudioFrameType frame_type,
+      uint8_t payload_type,
+      uint32_t timestamp,
+      const uint8_t* payload_data,
+      size_t payload_len_bytes,
+      int64_t absolute_capture_timestamp_ms,
+      std::optional<uint8_t> audio_level_dbov_override,
+      std::optional<std::vector<uint32_t>> csrcs_override) {
+    return SendData(frame_type, payload_type, timestamp, payload_data,
+                    payload_len_bytes, absolute_capture_timestamp_ms);
+  }
   virtual int32_t SendData(AudioFrameType frame_type,
                            uint8_t payload_type,
                            uint32_t timestamp,

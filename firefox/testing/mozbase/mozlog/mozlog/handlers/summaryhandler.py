@@ -2,7 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 
 from ..reader import LogHandler
 
@@ -18,9 +18,9 @@ class SummaryHandler(LogHandler):
     """
 
     def __init__(self, **kwargs):
-        super(SummaryHandler, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
-        self.summary = OrderedDict()
+        self.summary = {}
         self.current_suite = None
 
     @property
@@ -74,8 +74,7 @@ class SummaryHandler(LogHandler):
         Yields a tuple of (suite, summary). The summary returned is
         the same format as returned by 'get'.
         """
-        for suite, data in self.summary.items():
-            yield suite, data
+        yield from self.summary.items()
 
     @classmethod
     def aggregate(cls, key, counts, include_skip=True):
@@ -118,8 +117,8 @@ class SummaryHandler(LogHandler):
                         "known_intermittent": defaultdict(int),
                     },
                 },
-                "unexpected_logs": OrderedDict(),
-                "intermittent_logs": OrderedDict(),
+                "unexpected_logs": {},
+                "intermittent_logs": {},
                 "harness_errors": [],
             }
 

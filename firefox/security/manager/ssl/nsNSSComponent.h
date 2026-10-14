@@ -1,13 +1,10 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef _nsNSSComponent_h_
 #define _nsNSSComponent_h_
-
-#include "nsINSSComponent.h"
 
 #include "EnterpriseRoots.h"
 #include "ScopedNSSTypes.h"
@@ -16,20 +13,24 @@
 #include "mozilla/Mutex.h"
 #include "mozilla/RefPtr.h"
 #include "nsCOMPtr.h"
+#include "nsINSSComponent.h"
 #include "nsIObserver.h"
+#include "nsISerialEventTarget.h"
 #include "nsNSSCallbacks.h"
 #include "nsServiceManagerUtils.h"
 #include "prerror.h"
 #include "sslt.h"
 
 #ifdef XP_WIN
-#  include <windows.h>  // this needs to be before the following includes
+// clang-format off
+// wincrypt.h depends on windows.h, so needs to go before
+#  include <windows.h>
 #  include <wincrypt.h>
-#endif  // XP_WIN
+// clang-format on
+#endif
 
 class nsIDOMWindow;
 class nsIPrompt;
-class nsISerialEventTarget;
 class nsITimer;
 
 namespace mozilla {
@@ -51,20 +52,23 @@ bool HandleTLSPrefChange(const nsCString& aPref);
 void SetValidationOptionsCommon();
 void PrepareForShutdownInSocketProcess();
 
-// RAII helper class to indicate that gecko is searching for client auth
-// certificates. Will automatically stop indicating that a search is happening
-// when it goes out of scope.
+// RAII helper class to indicate that gecko is searching for certificates. Will
+// automatically stop indicating that a search is happening when it goes out of
+// scope.
+// remotecerts will call IsGeckoSearchingForCertificates() to determine if gecko
+// is searching for certificates. If so, it will refresh its list of
+// certificates and keys by querying the remote PKCS#11 module process.
+class AutoSearchingForCertificates {
+ public:
+  AutoSearchingForCertificates();
+  ~AutoSearchingForCertificates();
+};
+
+// Similarly, but just for client authentication certificates.
 // osclientcerts (or ipcclientcerts, in the socket process) will call
 // IsGeckoSearchingForClientAuthCertificates() to determine if gecko is
 // searching for client auth certificates. If so, the module knows to refresh
 // its list of certificates and keys (which can be costly).
-// In theory, two separate threads could both create a
-// AutoSearchingForClientAuthCertificates at overlapping times. If one goes out
-// of scope sooner than the other, IsGeckoSearchingForClientAuthCertificates()
-// could potentially incorrectly return false for the slower thread. However,
-// as long as the faster thread has ensured that osclientcerts/ipcclientcerts
-// has updated its list of known certificates, a second search would be
-// redundant anyway, so it doesn't matter.
 class AutoSearchingForClientAuthCertificates {
  public:
   AutoSearchingForClientAuthCertificates();
@@ -96,12 +100,6 @@ class nsNSSComponent final : public nsINSSComponent, public nsIObserver {
                                   SSLVersionRange defaults);
 
   static nsresult SetEnabledTLSVersions();
-
-  // This function does the actual work of clearing the session cache. It is to
-  // be used by the socket process (where there is no nsINSSComponent) and
-  // internally by nsNSSComponent.
-  // NB: NSS must have already been initialized before this is called.
-  static void DoClearSSLExternalAndInternalSessionCache();
 
  protected:
   ~nsNSSComponent();
@@ -148,6 +146,10 @@ class nsNSSComponent final : public nsINSSComponent, public nsIObserver {
 
   // The following members are accessed only on the main thread:
   static int mInstanceCount;
+  // A serial event target used primarily for operations that modify the NSS
+  // module DB. Using this queue for all such tasks avoids threading issues in
+  // NSS.
+  nsCOMPtr<nsISerialEventTarget> mNSSTaskQueue;
 };
 
 inline nsresult BlockUntilLoadableCertsLoaded() {
@@ -158,16 +160,19 @@ inline nsresult BlockUntilLoadableCertsLoaded() {
   return component->BlockUntilLoadableCertsLoaded();
 }
 
-inline nsresult CheckForSmartCardChanges() {
-#ifndef MOZ_NO_SMART_CARDS
-  nsCOMPtr<nsINSSComponent> component(do_GetService(PSM_COMPONENT_CONTRACTID));
-  if (!component) {
-    return NS_ERROR_FAILURE;
-  }
-  return component->CheckForSmartCardChanges();
-#else
-  return NS_OK;
-#endif
-}
+// In theory a token on a PKCS#11 module can be inserted or removed at any
+// time. Operations that may depend on resources on external tokens should call
+// this to ensure they have a recent view of the token.
+nsresult CheckForSmartCardChanges();
+
+// Gets the path to the current profile as a string in a way that NSS can make
+// use of it. In particular, uses UTF-8 file paths on Windows (regardless of
+// the current system code page), because that's what SQLite (which provides
+// NSS' storage) requires.
+nsresult GetNSSProfilePath(nsAutoCString& aProfilePath);
+
+// Helper to determine if the platform is in safe mode or not. Conservatively
+// defaults to `true` if no nsIXULRuntime is available.
+bool GetInSafeMode();
 
 #endif  // _nsNSSComponent_h_

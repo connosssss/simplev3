@@ -5,28 +5,29 @@
 package org.mozilla.fenix.webcompat.middleware
 
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
+import mozilla.components.lib.state.Store
 import org.mozilla.fenix.webcompat.store.WebCompatReporterAction
 import org.mozilla.fenix.webcompat.store.WebCompatReporterState
 import org.mozilla.fenix.webcompat.store.WebCompatReporterStore
 
-/**
- * [Middleware] that handles navigation events for the WebCompat Reporter.
- */
+/** [Middleware] that handles navigation events for the WebCompat Reporter. */
 class WebCompatReporterNavigationMiddleware : Middleware<WebCompatReporterState, WebCompatReporterAction> {
 
     override fun invoke(
-        context: MiddlewareContext<WebCompatReporterState, WebCompatReporterAction>,
+        store: Store<WebCompatReporterState, WebCompatReporterAction>,
         next: (WebCompatReporterAction) -> Unit,
         action: WebCompatReporterAction,
     ) {
         next(action)
 
         when (action) {
+            is WebCompatReporterAction.ReasonChanged -> {
+                if (action.newReason == WebCompatReporterState.BrokenSiteReason.DeceptiveSite) {
+                    store.dispatch(WebCompatReporterAction.DeceptiveSiteReportSelected)
+                }
+            }
             is WebCompatReporterAction.NavigationAction ->
-                (context.store as WebCompatReporterStore).emitNavAction(
-                    action = action,
-                )
+                (store as WebCompatReporterStore).emitNavAction(action = action)
             else -> {}
         }
     }

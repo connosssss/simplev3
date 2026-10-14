@@ -10,11 +10,11 @@ http://creativecommons.org/publicdomain/zero/1.0/ */
  */
 
 const { ChromeMigrationUtils } = ChromeUtils.importESModule(
-  "resource:///modules/ChromeMigrationUtils.sys.mjs"
+  "moz-src:///browser/components/migration/ChromeMigrationUtils.sys.mjs"
 );
 
 const { ChromeProfileMigrator } = ChromeUtils.importESModule(
-  "resource:///modules/ChromeProfileMigrator.sys.mjs"
+  "moz-src:///browser/components/migration/ChromeProfileMigrator.sys.mjs"
 );
 
 const { sinon } = ChromeUtils.importESModule(
@@ -34,8 +34,7 @@ add_setup(async () => {
   );
   gTempDir = do_get_tempdir();
   await IOUtils.writeJSON(PathUtils.join(gTempDir.path, "Local State"), []);
-
-  MockFilePicker.init(/* mock BrowsingContext */ { window: globalThis });
+  MockFilePicker.init();
   registerCleanupFunction(() => {
     MockFilePicker.cleanup();
   });

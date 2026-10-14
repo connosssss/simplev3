@@ -3,26 +3,18 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import subprocess
-import sys
 
-from mozboot.base import MERCURIAL_INSTALL_PROMPT, BaseBootstrapper
+from mozboot.base import BaseBootstrapper
 from mozboot.linux_common import LinuxBootstrapper
 
 
 class DebianBootstrapper(LinuxBootstrapper, BaseBootstrapper):
-    def __init__(self, distro, version, dist_id, codename, **kwargs):
+    def __init__(self, distro, version, dist_id, **kwargs):
         BaseBootstrapper.__init__(self, **kwargs)
 
         self.distro = distro
         self.version = version
         self.dist_id = dist_id
-        self.codename = codename
-
-    def suggest_install_pip3(self):
-        print(
-            "HINT: Try installing pip3 with `apt-get install python3-pip`.",
-            file=sys.stderr,
-        )
 
     def install_packages(self, packages):
         try:
@@ -37,38 +29,22 @@ class DebianBootstrapper(LinuxBootstrapper, BaseBootstrapper):
     def _update_package_manager(self):
         self.apt_update()
 
-    def upgrade_mercurial(self, current):
-        """Install Mercurial from pip because Debian packages typically lag."""
-        if self.no_interactive:
-            # Install via Apt in non-interactive mode because it is the more
-            # conservative option and less likely to make people upset.
-            self.apt_install("mercurial")
-            return
-
-        res = self.prompt_int(MERCURIAL_INSTALL_PROMPT, 1, 3)
-
-        # Apt.
-        if res == 2:
-            self.apt_install("mercurial")
-            return False
-
-        # No Mercurial.
-        if res == 3:
-            print("Not installing Mercurial.")
-            return False
-
-        # pip.
-        assert res == 1
-        self.run_as_root(["pip3", "install", "--upgrade", "Mercurial"])
-
     def _check_packages_installed(self, *packages):
-        command = ["dpkg-query", "-W"]
+        # `dpkg-query -W` succeeds for any name dpkg merely knows about, which
+        # includes packages that were installed in the past but were removed,
+        # so the status of every match has to be inspected rather than relying
+        # on the exit code alone.
+        command = ["dpkg-query", "-W", "-f=${db:Status-Status}\n"]
         command.extend(packages)
-        return (
-            subprocess.run(
-                command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            ).returncode
-            == 0
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return result.returncode == 0 and all(
+            status == "installed" for status in result.stdout.split()
         )
 
     def apt_install(self, *packages):

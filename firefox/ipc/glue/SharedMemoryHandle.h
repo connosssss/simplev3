@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,6 +22,8 @@ struct CommandLineArg;
 }
 
 namespace mozilla::ipc {
+
+struct SharedMemoryInternalTest;  // For gtests.
 
 namespace shared_memory {
 
@@ -89,6 +89,9 @@ class HandleBase {
   friend struct mozilla::geckoargs::CommandLineArg<
       mozilla::ipc::shared_memory::ReadOnlyHandle>;
 
+  HandleBase(const HandleBase&) = delete;
+  HandleBase& operator=(const HandleBase&) = delete;
+
  protected:
   HandleBase();
   MOZ_IMPLICIT HandleBase(std::nullptr_t) {}
@@ -99,9 +102,6 @@ class HandleBase {
         mSize(std::exchange(aOther.mSize, 0)) {}
 
   HandleBase& operator=(HandleBase&& aOther);
-
-  HandleBase(const HandleBase&) = delete;
-  HandleBase& operator=(const HandleBase&) = delete;
 
   HandleBase Clone() const;
 
@@ -131,6 +131,8 @@ class HandleBase {
 
   PlatformHandle mHandle = nullptr;
   uint64_t mSize = 0;
+
+  friend SharedMemoryInternalTest;
 };
 
 /**

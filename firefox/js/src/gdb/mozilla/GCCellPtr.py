@@ -7,6 +7,7 @@
 import gdb
 
 import mozilla.prettyprinters
+from mozilla.CellHeader import get_cell_alloc_kind
 from mozilla.prettyprinters import pretty_printer
 
 # Forget any printers from previous loads of this module.
@@ -19,9 +20,6 @@ class GCCellPtrTypeCache:
     def __init__(self, cache):
         self.TraceKind_t = gdb.lookup_type("JS::TraceKind")
         self.AllocKind_t = gdb.lookup_type("js::gc::AllocKind")
-        self.Arena_t = gdb.lookup_type("js::gc::Arena")
-        self.Cell_t = gdb.lookup_type("js::gc::Cell")
-        self.TenuredCell_t = gdb.lookup_type("js::gc::TenuredCell")
 
         trace_kinds = gdb.types.make_enum_dict(self.TraceKind_t)
         alloc_kinds = gdb.types.make_enum_dict(self.AllocKind_t)
@@ -38,26 +36,26 @@ class GCCellPtrTypeCache:
             "Object": "JSObject",
             "BigInt": "JS::BigInt",
             "String": "JSString",
+            "GetterSetter": "js::GetterSetter",
             "Symbol": "JS::Symbol",
             "Shape": "js::Shape",
-            "BaseShape": "js::BaseShape",
             "Null": "std::nullptr_t",
             # Out-of-line types.
+            "BaseShape": "js::BaseShape",
             "JitCode": "js::jit::JitCode",
             "Script": "js::BaseScript",
             "Scope": "js::Scope",
             "RegExpShared": "js::RegExpShared",
-            "GetterSetter": "js::GetterSetter",
             "PropMap": "js::PropMap",
         }
 
         # Map from AllocKind to TraceKind for out-of-line types.
         alloc_map = {
+            "BASE_SHAPE": "BaseShape",
             "JITCODE": "JitCode",
             "SCRIPT": "Script",
             "SCOPE": "Scope",
             "REGEXP_SHARED": "RegExpShared",
-            "GETTER_SETTER": "GetterSetter",
             "COMPACT_PROP_MAP": "PropMap",
             "NORMAL_PROP_MAP": "PropMap",
             "DICT_PROP_MAP": "PropMap",
@@ -72,7 +70,6 @@ class GCCellPtrTypeCache:
 
         self.Null = trace_kind("Null")
         self.tracekind_mask = gdb.parse_and_eval("JS::OutOfLineTraceKindMask")
-        self.arena_mask = gdb.parse_and_eval("js::gc::ArenaMask")
 
 
 @pretty_printer("JS::GCCellPtr")
@@ -93,29 +90,11 @@ class GCCellPtr:
             #
             # Compute the underlying type for out-of-line kinds by
             # reimplementing the GCCellPtr::outOfLineKind() method.
-            #
-            # The extra casts below are only present to make it easier to
-            # compare this code against the C++ implementation.
 
             # GCCellPtr::asCell()
             cell_ptr = ptr & ~self.cache.mod_GCCellPtr.tracekind_mask
-            cell = cell_ptr.reinterpret_cast(self.cache.mod_GCCellPtr.Cell_t.pointer())
 
-            # Cell::asTenured()
-            tenured = cell.cast(self.cache.mod_GCCellPtr.TenuredCell_t.pointer())
-
-            # TenuredCell::arena()
-            addr = int(tenured)
-            arena_ptr = addr & ~self.cache.mod_GCCellPtr.arena_mask
-            arena = arena_ptr.reinterpret_cast(
-                self.cache.mod_GCCellPtr.Arena_t.pointer()
-            )
-
-            # Arena::getAllocKind()
-            alloc_kind = arena["allocKind"].cast(self.cache.mod_GCCellPtr.AllocKind_t)
-            alloc_idx = int(
-                alloc_kind.cast(self.cache.mod_GCCellPtr.AllocKind_t.target())
-            )
+            alloc_idx = get_cell_alloc_kind(cell_ptr, self.cache)
 
             # Map the AllocKind to a TraceKind.
             kind = self.cache.mod_GCCellPtr.alloc_kind_to_trace_kind[alloc_idx]

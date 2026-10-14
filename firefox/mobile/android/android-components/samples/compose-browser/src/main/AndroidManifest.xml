@@ -39,8 +39,9 @@
         android:theme="@style/Theme.AppCompat.DayNight.NoActionBar"
         android:name=".BrowserApplication"
         android:usesCleartextTraffic="true"
-        tools:ignore="DataExtractionRules,UnusedAttribute"
-        android:dataExtractionRules="@xml/data_extraction_rules">
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        tools:ignore="DataExtractionRules">
         <activity android:name=".BrowserComposeActivity"
             android:launchMode="singleTask"
             android:exported="true">

@@ -735,10 +735,13 @@ bool ProcessGeneric(ots::FontFile *header,
   ots::Table *loca = font->GetTable(OTS_TAG_LOCA);
   ots::Table *cff  = font->GetTable(OTS_TAG_CFF);
   ots::Table *cff2 = font->GetTable(OTS_TAG_CFF2);
-  ots::OpenTypeMAXP *maxp = static_cast<ots::OpenTypeMAXP*>(
-    font->GetTypedTable(OTS_TAG_MAXP));
 
   if (glyf && loca) {
+    ots::OpenTypeMAXP *maxp = static_cast<ots::OpenTypeMAXP*>(
+      font->GetTypedTable(OTS_TAG_MAXP));
+    if (!maxp) {
+      return OTS_FAILURE_MSG_TAG("missing maxp table", OTS_TAG_MAXP);
+    }
     if (font->version != 0x000010000) {
       OTS_WARNING_MSG_HDR("wrong sfntVersion for glyph data");
       font->version = 0x000010000;
@@ -752,6 +755,11 @@ bool ProcessGeneric(ots::FontFile *header,
     if (cff2)
        cff2->Drop("font contains both CFF and glyf/loca tables");
   } else if (cff || cff2) {
+    ots::OpenTypeMAXP *maxp = static_cast<ots::OpenTypeMAXP*>(
+      font->GetTypedTable(OTS_TAG_MAXP));
+    if (!maxp) {
+      return OTS_FAILURE_MSG_TAG("missing maxp table", OTS_TAG_MAXP);
+    }
     if (font->version != OTS_TAG('O','T','T','O')) {
       OTS_WARNING_MSG_HDR("wrong sfntVersion for glyph data");
       font->version = OTS_TAG('O','T','T','O');
@@ -764,8 +772,10 @@ bool ProcessGeneric(ots::FontFile *header,
       OTS_WARNING_MSG_HDR("fixing incorrect maxp version for CFF font");
       maxp->version_1 = false;
     }
-  } else if (font->GetTable(OTS_TAG('C','B','D','T')) &&
-             font->GetTable(OTS_TAG('C','B','L','C'))) {
+  } else if ((font->GetTable(OTS_TAG('C','B','D','T')) &&
+              font->GetTable(OTS_TAG('C','B','L','C'))) ||
+             (font->GetTable(OTS_TAG('E','B','D','T')) &&
+              font->GetTable(OTS_TAG('E','B','L','C')))) {
       // We don't sanitize bitmap tables, but don’t reject bitmap-only fonts if
       // we are asked to pass them thru.
   } else {
@@ -1072,7 +1082,7 @@ bool Table::ShouldSerialize() {
 void Table::Message(int level, const char *format, va_list va) {
   char msg[206] = { OTS_UNTAG(m_tag), ':', ' ' };
   std::vsnprintf(msg + 6, 200, format, va);
-  m_font->file->context->Message(level, msg);
+  m_font->file->context->Message(level, "%s", msg);
 }
 
 bool Table::Error(const char *format, ...) {

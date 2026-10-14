@@ -1,19 +1,19 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsURLHelper_h__
-#define nsURLHelper_h__
+#ifndef nsURLHelper_h_
+#define nsURLHelper_h_
 
+#include <mozilla/CompactPair.h>
+#include <mozilla/Maybe.h>
+
+#include "nsASCIIMask.h"
 #include "nsString.h"
 #include "nsTArray.h"
-#include "nsASCIIMask.h"
-#include <mozilla/Maybe.h>
-#include <mozilla/CompactPair.h>
 
 class nsIFile;
-class nsIURLParser;
+class nsBaseURLParser;
 
 //----------------------------------------------------------------------------
 // This module contains some private helper functions related to URL parsing.
@@ -21,14 +21,11 @@ class nsIURLParser;
 
 /* shutdown frees URL parser */
 void net_ShutdownURLHelper();
-#ifdef XP_MACOSX
-void net_ShutdownURLHelperOSX();
-#endif
 
 /* access URL parsers */
-already_AddRefed<nsIURLParser> net_GetAuthURLParser();
-already_AddRefed<nsIURLParser> net_GetNoAuthURLParser();
-already_AddRefed<nsIURLParser> net_GetStdURLParser();
+already_AddRefed<nsBaseURLParser> net_GetAuthURLParser();
+already_AddRefed<nsBaseURLParser> net_GetNoAuthURLParser();
+already_AddRefed<nsBaseURLParser> net_GetStdURLParser();
 
 /* convert between nsIFile and file:// URL spec
  * net_GetURLSpecFromFile does an extra stat, so callers should
@@ -247,18 +244,47 @@ class URLParams final {
   template <typename ParamHandler>
   static bool Parse(const nsACString& aInput, bool aShouldDecode,
                     ParamHandler aParamHandler) {
+    return ParseWithEquals(aInput, aShouldDecode,
+                           [&](nsCString&& aName, nsCString&& aValue, bool) {
+                             return aParamHandler(std::move(aName),
+                                                  std::move(aValue));
+                           });
+  }
+
+  /**
+   * \brief Like Parse(), but the parameter handler additionally receives
+   * whether the parsed segment contained an '=' character. Parse() and
+   * Serialize() cannot otherwise distinguish "x" from "x=", both yield
+   * {name: "x", value: ""}, which is correct for Serialize()'s
+   * spec-mandated name=value output (used by URLSearchParams), but loses
+   * information a caller needs to reproduce the original query string
+   * with a minimal edit.
+   *
+   * \param aInput the query string to parse
+   * \param aShouldDecode whether to percent-decode names/values
+   * \param aParamHandler callback compatible with signature
+   * bool(nsCString&&, nsCString&&, bool)
+   *
+   * \return false if the parameter handler returned false for any
+   * parameter, true otherwise
+   */
+  template <typename ParamHandler>
+  static bool ParseWithEquals(const nsACString& aInput, bool aShouldDecode,
+                              ParamHandler aParamHandler) {
     const char* start = aInput.BeginReading();
     const char* const end = aInput.EndReading();
 
     while (start != end) {
       nsAutoCString name;
       nsAutoCString value;
+      bool hasEquals = false;
 
-      if (!ParseNextInternal(start, end, aShouldDecode, &name, &value)) {
+      if (!ParseNextInternal(start, end, aShouldDecode, &name, &value,
+                             hasEquals)) {
         continue;
       }
 
-      if (!aParamHandler(std::move(name), std::move(value))) {
+      if (!aParamHandler(std::move(name), std::move(value), hasEquals)) {
         return false;
       }
     }
@@ -347,7 +373,8 @@ class URLParams final {
  private:
   static bool ParseNextInternal(const char*& aStart, const char* aEnd,
                                 bool aShouldDecode, nsACString* aOutputName,
-                                nsACString* aOutputValue);
+                                nsACString* aOutputValue,
+                                bool& aOutputHasEquals);
 
   struct Param {
     nsCString mKey;
@@ -358,4 +385,4 @@ class URLParams final {
 };
 }  // namespace mozilla
 
-#endif  // !nsURLHelper_h__
+#endif  // !nsURLHelper_h_

@@ -10,7 +10,7 @@ endif
 
 ifdef CROSS_COMPILE
 # Narrow the definition of cross compilation to not include win32 builds
-# on win64 and linux32 builds on linux64.
+# on win64.
 ifeq ($(HOST_OS_ARCH),$(OS_TARGET))
 ifneq (,$(filter x86%,$(TARGET_CPU)))
 FUZZY_CROSS_COMPILE =
@@ -37,9 +37,6 @@ endif
 ifndef JS_STANDALONE
 include $(topsrcdir)/toolkit/mozapps/installer/package-name.mk
 include $(topsrcdir)/toolkit/mozapps/installer/upload-files.mk
-
-# Clear out DIST_FILES if it was set by upload-files.mk (for Android builds)
-DIST_FILES =
 endif
 
 # Helper variables to convert from MOZ_AUTOMATION_* variables to the

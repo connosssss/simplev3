@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -78,19 +76,29 @@ nsresult AudioWorkletImpl::SendControlMessage(
 }
 
 void AudioWorkletImpl::OnAddModuleStarted() const {
-#ifdef MOZ_GECKO_PROFILER
   profiler_add_marker(ProfilerStringView("AudioWorklet.addModule"),
                       geckoprofiler::category::MEDIA_RT,
                       {MarkerTiming::IntervalStart()});
-#endif
 }
 
 void AudioWorkletImpl::OnAddModulePromiseSettled() const {
-#ifdef MOZ_GECKO_PROFILER
   profiler_add_marker(ProfilerStringView("AudioWorklet.addModule"),
                       geckoprofiler::category::MEDIA_RT,
                       {MarkerTiming::IntervalEnd()});
-#endif
+}
+
+void AudioWorkletImpl::OnFinishedOnExecutionThread() {
+  if (mGlobalScopePortIdentifier.neutered()) {
+    // ConstructGlobalScope() consumed it.
+    return;
+  }
+  // addModule() was never called, so the global scope's port is still open.
+  // ~UniqueMessagePortId closes it over PBackground, which on the graph thread
+  // would bind the connection to the graph as its serial event target and
+  // outlive it, so destroy the identifier on the main thread instead.
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(NS_NewRunnableFunction(
+      "AudioWorkletImpl::ReleaseGlobalScopePortIdentifier",
+      [identifier = std::move(mGlobalScopePortIdentifier)] {})));
 }
 
 already_AddRefed<dom::WorkletGlobalScope>

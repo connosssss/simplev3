@@ -22,7 +22,8 @@ import {
   kTextureUsages,
   kTextureViewDimensions,
   sampledAndStorageBindingEntries,
-  texBindingTypeInfo } from
+  texBindingTypeInfo,
+  isValidTextureUsageCombination } from
 '../../capability_info.js';
 import { GPUConst } from '../../constants.js';
 import { kPossibleStorageTextureFormats, kRegularTextureFormats } from '../../format_info.js';
@@ -199,6 +200,13 @@ u //
 combine('usage', kTextureUsages).
 unless(({ entry, usage }) => {
   const info = texBindingTypeInfo(entry);
+  // TRANSIENT_ATTACHMENT is only valid when combined with RENDER_ATTACHMENT, so skip.
+  if (
+  usage === GPUConst.TextureUsage.TRANSIENT_ATTACHMENT &&
+  info.resource !== 'sampledTexMS')
+  {
+    return true;
+  }
   // Can't create the texture for this (usage=STORAGE_BINDING and sampleCount=4), so skip.
   return usage === GPUConst.TextureUsage.STORAGE_BINDING && info.resource === 'sampledTexMS';
 })
@@ -211,6 +219,11 @@ fn((t) => {
     t.isCompatibility && info.resource === 'sampledTexMS',
     "The test requires 'r32float' multisampled support which compat mode doesn't guarantee."
   );
+
+  // MAINTENANCE_TODO(#4509): Remove this after all implementations have TRANSIENT_ATTACHMENT.
+  if ((usage & GPUConst.TextureUsage.TRANSIENT_ATTACHMENT) !== 0) {
+    t.skipIfTransientAttachmentNotSupported();
+  }
 
   const bindGroupLayout = t.device.createBindGroupLayout({
     entries: [{ binding: 0, visibility: GPUShaderStage.COMPUTE, ...entry }]
@@ -463,7 +476,7 @@ paramsSubcasesOnly([
 // Unaligned buffer offset is invalid
 { offset: 1, size: 256, _success: false },
 { offset: 1, size: undefined, _success: false },
-{ offset: 128, size: 256, _success: false },
+{ offset: 127, size: 256, _success: false },
 { offset: 255, size: 256, _success: false },
 
 // Out-of-bounds
@@ -609,10 +622,11 @@ paramsSubcasesOnly((u) =>
 u.
 combine('state', kResourceStates).
 combine('entry', sampledAndStorageBindingEntries(true, kTestFormat)).
-combine('visibilityMask', [kAllShaderStages, GPUConst.ShaderStage.COMPUTE])
+combine('visibilityMask', [kAllShaderStages, GPUConst.ShaderStage.COMPUTE]).
+combine('bindTextureResource', [false, true])
 ).
 fn((t) => {
-  const { state, entry, visibilityMask } = t.params;
+  const { state, entry, visibilityMask, bindTextureResource } = t.params;
   const info = texBindingTypeInfo(entry);
 
   const visibility = info.validStages & visibilityMask;
@@ -640,20 +654,19 @@ fn((t) => {
     sampleCount: entry.texture?.multisampled ? 4 : 1
   });
 
-  let textureView;
-  t.expectValidationError(() => {
-    textureView = texture.createView();
-  }, state === 'invalid');
+  let resource;
+  if (bindTextureResource) {
+    resource = texture;
+  } else {
+    t.expectValidationError(() => {
+      resource = texture.createView();
+    }, state === 'invalid');
+  }
 
   t.expectValidationError(() => {
     t.device.createBindGroup({
       layout: bgl,
-      entries: [
-      {
-        binding: 0,
-        resource: textureView
-      }]
-
+      entries: [{ binding: 0, resource }]
     });
   }, state === 'invalid');
 });
@@ -780,12 +793,20 @@ u //
 // If usage0 and usage1 are the same, the usage being test is a single usage. Otherwise, it's
 // a combined usage.
 .combine('usage0', kTextureUsages).
-combine('usage1', kTextureUsages)
+combine('usage1', kTextureUsages).
+unless(({ usage0, usage1 }) => {
+  return !isValidTextureUsageCombination(usage0 | usage1);
+})
 ).
 fn((t) => {
   const { usage0, usage1 } = t.params;
 
   const usage = usage0 | usage1;
+
+  // MAINTENANCE_TODO(#4509): Remove this after all implementations have TRANSIENT_ATTACHMENT.
+  if ((usage & GPUConst.TextureUsage.TRANSIENT_ATTACHMENT) !== 0) {
+    t.skipIfTransientAttachmentNotSupported();
+  }
 
   const bindGroupLayout = t.device.createBindGroupLayout({
     entries: [
@@ -1211,12 +1232,20 @@ u //
 // If usage0 and usage1 are the same, the usage being test is a single usage. Otherwise, it's
 // a combined usage.
 .combine('usage0', kTextureUsages).
-combine('usage1', kTextureUsages)
+combine('usage1', kTextureUsages).
+unless(({ usage0, usage1 }) => {
+  return !isValidTextureUsageCombination(usage0 | usage1);
+})
 ).
 fn((t) => {
   const { usage0, usage1 } = t.params;
 
   const usage = usage0 | usage1;
+
+  // MAINTENANCE_TODO(#4509): Remove this after all implementations have TRANSIENT_ATTACHMENT.
+  if ((usage & GPUConst.TextureUsage.TRANSIENT_ATTACHMENT) !== 0) {
+    t.skipIfTransientAttachmentNotSupported();
+  }
 
   const bindGroupLayout = t.device.createBindGroupLayout({
     entries: [

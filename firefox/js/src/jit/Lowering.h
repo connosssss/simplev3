@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -55,13 +53,15 @@ class LIRGenerator final : public LIRGeneratorSpecific {
     return useBoxFixed(mir, reg1, reg2, /* useAtStart = */ true);
   }
 
+  using LIRGeneratorSpecific::useBoxFixed;
+  LBoxAllocation useBoxFixed(MDefinition* mir, ValueOperand op);
   LBoxAllocation useBoxFixedAtStart(MDefinition* mir, ValueOperand op);
+
   LBoxAllocation useBoxAtStart(MDefinition* mir,
                                LUse::Policy policy = LUse::REGISTER);
 
   void lowerBitOp(JSOp op, MBinaryInstruction* ins);
   void lowerShiftOp(JSOp op, MShiftInstruction* ins);
-  LInstructionHelper<1, 1, 0>* allocateAbs(MAbs* ins, LAllocation input);
   bool definePhis();
 
   template <typename T>
@@ -69,8 +69,6 @@ class LIRGenerator final : public LIRGeneratorSpecific {
 
   friend class LIRGeneratorShared;
   void visitInstructionDispatch(MInstruction* ins);
-
-  void visitReturnImpl(MDefinition* def, bool isGenerator = false);
 
   [[nodiscard]] bool visitInstruction(MInstruction* ins);
   [[nodiscard]] bool visitBlock(MBasicBlock* block);

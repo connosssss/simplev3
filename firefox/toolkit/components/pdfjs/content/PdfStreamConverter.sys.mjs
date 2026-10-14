@@ -16,11 +16,24 @@
 const PDFJS_EVENT_ID = "pdf.js.message";
 const PDF_VIEWER_ORIGIN = "resource://pdf.js";
 const PDF_VIEWER_WEB_PAGE = "resource://pdf.js/web/viewer.html";
-const MAX_NUMBER_OF_PREFS = 50;
+const PDF_VIEWER_WORKER_URL = "resource://pdf.js/build/pdf.worker.mjs";
+const MAX_NUMBER_OF_PREFS = 60;
+const POINTS_PER_INCH = 72;
+const MIN_PRINT_TO_PDF_PAGE_SIZE_IN_PT = POINTS_PER_INCH;
+// Match PdfJsPrint's 14,400-point page-box cap.
+const MAX_PRINT_TO_PDF_PAGE_SIZE_IN_PT = 200 * POINTS_PER_INCH;
+const MAX_PRINT_TO_PDF_FONT_SIZE_IN_PT = 1000;
+// Match the line height used by the pdf.js viewer and by the appearances it
+// generates itself (LINE_FACTOR in pdf.js).
+const PRINT_TO_PDF_LINE_HEIGHT = 1.35;
+const VERTICAL_ALIGN_VALUES = new Set(["top", "center"]);
 const PDF_CONTENT_TYPE = "application/pdf";
+const SUMO_URL = "https://support.mozilla.org/";
+const SVG_DATA_URL_REGEX = /^data:image\/svg\+xml(?:[;,]|$)/i;
 
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
+import { isEmbeddedPdfLoad } from "resource://gre/modules/pdfjs.sys.mjs";
 
 // Non-pdfjs preferences to get when the viewer is created and to observe.
 const toolbarDensityPref = "browser.uidensity";
@@ -31,6 +44,8 @@ ChromeUtils.defineESModuleGetters(lazy, {
   NetUtil: "resource://gre/modules/NetUtil.sys.mjs",
   NetworkManager: "resource://pdf.js/PdfJsNetwork.sys.mjs",
   PdfJs: "resource://pdf.js/PdfJs.sys.mjs",
+  PdfJsFeaturesNotification:
+    "resource://pdf.js/PdfJsFeaturesNotification.sys.mjs",
   PdfJsTelemetryContent: "resource://pdf.js/PdfJsTelemetry.sys.mjs",
   PdfSandbox: "resource://pdf.js/PdfSandbox.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
@@ -41,13 +56,13 @@ XPCOMUtils.defineLazyServiceGetter(
   Svc,
   "mime",
   "@mozilla.org/mime;1",
-  "nsIMIMEService"
+  Ci.nsIMIMEService
 );
 XPCOMUtils.defineLazyServiceGetter(
   Svc,
   "handlers",
   "@mozilla.org/uriloader/handler-service;1",
-  "nsIHandlerService"
+  Ci.nsIHandlerService
 );
 
 ChromeUtils.defineLazyGetter(lazy, "gOurBinary", () => {
@@ -88,7 +103,7 @@ function getDOMWindow(aChannel, aPrincipal) {
 function getActor(window) {
   try {
     const actorName =
-      AppConstants.platform === "android" ? "GeckoViewPdfjs" : "Pdfjs";
+      AppConstants.platform === "android" ? "GeckoViewPdfJs" : "PdfJs";
     return window.windowGlobalChild.getActor(actorName);
   } catch (ex) {
     return null;
@@ -186,6 +201,9 @@ class PrefObserver {
   #domWindow;
 
   #prefs = new Map([
+    // [pref-trie-audit] "accessibility.browsewithcaret" is an ambiguous prefix of
+    // "accessibility.browsewithcaret_shortcut.enabled"; triggers only for the exact pref
+    // (sibling is not in this Map so the observe() handler returns early for it).
     [
       caretBrowsingModePref,
       {
@@ -222,6 +240,9 @@ class PrefObserver {
       });
 
       // Once the experiment for new alt-text stuff is removed, we can remove this.
+      // [pref-trie-audit] "pdfjs.enableAltText" is an ambiguous prefix of
+      // "pdfjs.enableAltTextForEnglish", "pdfjs.enableAltTextModelDownload"; triggers only for
+      // the exact pref ("enableAltTextModelDownload" has its own entry in this Map above).
       this.#prefs.set("pdfjs.enableAltText", {
         name: "enableAltText",
         type: "bool",
@@ -236,6 +257,13 @@ class PrefObserver {
         name: "browser.ml.enable",
         type: "bool",
         dispatchToParent: true,
+      });
+      // Reaching the impression limit must not close open bars.
+      this.#prefs.set(lazy.PdfJsFeaturesNotification.IMPRESSION_COUNT_PREF, {
+        name: "featuresNotificationDismissed",
+        getValue: () => lazy.PdfJsFeaturesNotification.isConsumed(),
+        dispatchToContent: true,
+        shouldDispatchToContent: value => value,
       });
     }
     for (const pref of this.#prefs.keys()) {
@@ -252,24 +280,37 @@ class PrefObserver {
     if (!actor) {
       return;
     }
-    const { name, type, dispatchToContent, dispatchToParent } =
-      this.#prefs.get(aPrefName) || {};
+    const {
+      name,
+      type,
+      getValue,
+      dispatchToContent,
+      shouldDispatchToContent,
+      dispatchToParent,
+    } = this.#prefs.get(aPrefName) || {};
     if (!name) {
       return;
     }
     let value;
-    switch (type) {
-      case "bool": {
-        value = Services.prefs.getBoolPref(aPrefName);
-        break;
-      }
-      case "int": {
-        value = Services.prefs.getIntPref(aPrefName);
-        break;
+    if (getValue) {
+      value = getValue();
+    } else {
+      switch (type) {
+        case "bool": {
+          value = Services.prefs.getBoolPref(aPrefName);
+          break;
+        }
+        case "int": {
+          value = Services.prefs.getIntPref(aPrefName);
+          break;
+        }
       }
     }
     const data = { name, value };
-    if (dispatchToContent) {
+    if (
+      dispatchToContent &&
+      (!shouldDispatchToContent || shouldDispatchToContent(value))
+    ) {
       actor.dispatchEvent("updatedPreference", data);
     }
     if (dispatchToParent) {
@@ -291,12 +332,51 @@ class ChromeActions {
     "outlineloaded",
   ]);
 
+  #viewerDocument = null;
+
+  #worker = null;
+
+  #workerUnloadListener = () => this.closeWorker();
+
   constructor(domWindow, contentDispositionFilename) {
     this.domWindow = domWindow;
+    this.#viewerDocument = domWindow.document;
     this.contentDispositionFilename = contentDispositionFilename;
     this.sandbox = null;
     this.unloadListener = null;
     this.observer = new PrefObserver(domWindow, this.isMobile());
+  }
+
+  // PDF.js does not terminate a Worker supplied through workerPort.
+  closeWorker() {
+    try {
+      const worker = this.#worker;
+      this.#worker = null;
+      worker?.terminate();
+
+      const { domWindow } = this;
+      if (domWindow.document === this.#viewerDocument) {
+        domWindow.wrappedJSObject.pdfjsPreloadedWorker = null;
+      }
+    } catch (e) {
+      console.error("Error while closing the PDF.js worker:", e);
+    }
+  }
+
+  preloadWorker() {
+    const { domWindow } = this;
+    try {
+      this.#worker?.terminate();
+      this.#worker = new domWindow.Worker(PDF_VIEWER_WORKER_URL, {
+        type: "module",
+      });
+      domWindow.wrappedJSObject.pdfjsPreloadedWorker = this.#worker;
+      domWindow.addEventListener("unload", this.#workerUnloadListener, {
+        once: true,
+      });
+    } catch (e) {
+      console.error("Error while preloading the PDF.js worker:", e);
+    }
   }
 
   createSandbox(data, sendResponse) {
@@ -392,7 +472,230 @@ class ChromeActions {
     sendResponse(await actor.sendQuery("PDFJS:Parent:loadAIEngine", data));
   }
 
+  async verifyPdfSignature(data, sendResponse) {
+    const actor = getActor(this.domWindow);
+    if (!actor) {
+      sendResponse({ error: "no-actor" });
+      return;
+    }
+    sendResponse(
+      await actor.sendQuery("PDFJS:Parent:verifyPdfSignature", data)
+    );
+  }
+
+  async viewPdfCertificate(data, sendResponse) {
+    const actor = getActor(this.domWindow);
+    if (!actor) {
+      sendResponse(false);
+      return;
+    }
+    sendResponse(
+      await actor.sendQuery("PDFJS:Parent:viewPdfCertificate", data)
+    );
+  }
+
+  #validatePrintToPDFData(items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return null;
+    }
+
+    const entries = [];
+    let largestEntryWidth = 0;
+    let largestEntryHeight = 0;
+
+    for (const item of items) {
+      const pdfData = item?.data;
+      if (typeof pdfData !== "object" || pdfData === null) {
+        return null;
+      }
+      // Only the size of the appearance box matters: each entry is laid out on
+      // its own page, and its position in the PDF is the caller's business.
+      const { width, height } = pdfData;
+      if (
+        !Number.isFinite(width) ||
+        !Number.isFinite(height) ||
+        width <= 0 ||
+        height <= 0 ||
+        width > MAX_PRINT_TO_PDF_PAGE_SIZE_IN_PT ||
+        height > MAX_PRINT_TO_PDF_PAGE_SIZE_IN_PT
+      ) {
+        return null;
+      }
+
+      const hasText = typeof pdfData.text === "string" && pdfData.text !== "";
+      const hasSVG =
+        typeof pdfData.svgUrl === "string" && pdfData.svgUrl !== "";
+      if (hasText === hasSVG) {
+        return null;
+      }
+
+      if (hasText) {
+        const { color, fontSize, fontFamily, verticalAlign } = pdfData;
+        if (
+          typeof color !== "string" ||
+          !/^#[0-9a-f]{6}$/i.test(color) ||
+          typeof fontSize !== "number" ||
+          !Number.isFinite(fontSize) ||
+          fontSize <= 0 ||
+          fontSize > MAX_PRINT_TO_PDF_FONT_SIZE_IN_PT ||
+          (fontFamily != null && typeof fontFamily !== "string") ||
+          (verticalAlign != null && !VERTICAL_ALIGN_VALUES.has(verticalAlign))
+        ) {
+          return null;
+        }
+      } else if (!SVG_DATA_URL_REGEX.test(pdfData.svgUrl)) {
+        return null;
+      }
+
+      // All the entries share one sheet size, hence keep the largest ones.
+      largestEntryWidth = Math.max(largestEntryWidth, width);
+      largestEntryHeight = Math.max(largestEntryHeight, height);
+      entries.push(pdfData);
+    }
+
+    // Round up without clipping fractional entry dimensions.
+    return {
+      entries,
+      largestEntryWidth: Math.ceil(largestEntryWidth),
+      largestEntryHeight: Math.ceil(largestEntryHeight),
+    };
+  }
+
+  #makeElementForSVG({ svgUrl }, parent, doc) {
+    const img = doc.createElement("img");
+    parent.append(img);
+    img.style.width = img.style.height = "100%";
+    // Avoid inline-image baseline space.
+    img.style.display = "block";
+    img.src = svgUrl;
+    return img;
+  }
+
+  #makeElementForText({ text, color, fontFamily, fontSize }, parent, doc) {
+    const span = doc.createElement("span");
+    parent.append(span);
+    const { style } = span;
+    style.display = "block";
+    // Preserve the newlines in `text` as line breaks.
+    style.whiteSpace = "pre";
+    style.color = color;
+    style.fontSize = `${fontSize}pt`;
+    style.lineHeight = `${PRINT_TO_PDF_LINE_HEIGHT}`;
+    style.fontFamily = fontFamily || "sans-serif";
+    span.textContent = text;
+  }
+
+  /**
+   * Render pdf.js form field appearances into a PDF, one field per page.
+   *
+   * This is the outermost entry point: it builds the markup for the fields in
+   * a hidden iframe and then hands that iframe off to
+   * `PdfJsPrint.printToPDF` (in the parent process) to be printed.
+   *
+   * @param {Array<object>} data - one item per field appearance, each shaped
+   *   like `{ data: { width, height, ... } }` where `width` and `height` are
+   *   the size of the appearance box in pt, and the remaining properties
+   *   describe either a text appearance (`text`, `color`, `fontSize`,
+   *   `fontFamily` and `verticalAlign`) or an SVG one (`svgUrl`).
+   * @param {Function} sendResponse - called with the PDF bytes, or with null
+   *   if the data is invalid or printing failed.
+   */
+  async printToPDF(data, sendResponse) {
+    if (!sendResponse) {
+      console.warn(
+        "PdfStreamConverter: printToPDF called without a response callback."
+      );
+      return;
+    }
+    const printData = this.#validatePrintToPDFData(data);
+    if (!printData) {
+      console.warn("PdfStreamConverter: ignored invalid print data.");
+      sendResponse(null);
+      return;
+    }
+    const actor = getActor(this.domWindow);
+    if (!actor) {
+      sendResponse(null);
+      return;
+    }
+    const doc = this.domWindow.document;
+    let iframe;
+    try {
+      iframe = doc.createElement("iframe");
+      iframe.style.display = "none";
+      doc.body.appendChild(iframe);
+      const iframeDoc = iframe.contentDocument;
+      const iframeWindow = iframe.contentWindow;
+      const fragment = new iframeWindow.DocumentFragment();
+      const { entries, largestEntryWidth, largestEntryHeight } = printData;
+      // Each PDF page contains one field at its bottom-left corner (see the
+      // padding-top on the page below).
+      const pageWidth = Math.max(
+        MIN_PRINT_TO_PDF_PAGE_SIZE_IN_PT,
+        largestEntryWidth
+      );
+      const pageHeight = Math.max(
+        MIN_PRINT_TO_PDF_PAGE_SIZE_IN_PT,
+        largestEntryHeight
+      );
+      iframeDoc.body.style.margin = "0";
+
+      const images = [];
+      for (const pdfData of entries) {
+        const { width: fieldWidth, height: fieldHeight } = pdfData;
+        const pageDiv = iframeDoc.createElement("div");
+        const pageStyle = pageDiv.style;
+        fragment.append(pageDiv);
+        pageStyle.breakAfter = "page";
+        pageStyle.boxSizing = "border-box";
+        pageStyle.width = `${pageWidth}pt`;
+        pageStyle.height = `${pageHeight}pt`;
+        // Push the field down to the bottom of the page.
+        pageStyle.paddingTop = `${pageHeight - fieldHeight}pt`;
+        const div = iframeDoc.createElement("div");
+        pageDiv.append(div);
+        const { style } = div;
+        style.boxSizing = "border-box";
+        style.width = `${fieldWidth}pt`;
+        style.height = `${fieldHeight}pt`;
+        // A column-oriented flex container, just to align the field contents
+        // along the block axis.
+        style.display = "flex";
+        style.flexDirection = "column";
+        style.justifyContent =
+          pdfData.verticalAlign === "top" ? "flex-start" : "center";
+        // Valid text entries have a non-empty string; other entries are SVGs.
+        if (typeof pdfData.text === "string" && pdfData.text !== "") {
+          this.#makeElementForText(pdfData, div, iframeDoc);
+        } else {
+          images.push(this.#makeElementForSVG(pdfData, div, iframeDoc));
+        }
+      }
+      iframeDoc.body.append(fragment);
+
+      // Prevent printing before SVG images finish decoding.
+      await Promise.all(images.map(img => img.decode()));
+
+      const buffer = await actor.sendQuery("PDFJS:Parent:printToPDF", {
+        id: iframeWindow.browsingContext.id,
+        width: pageWidth / POINTS_PER_INCH,
+        height: pageHeight / POINTS_PER_INCH,
+      });
+      sendResponse(buffer);
+    } catch (ex) {
+      console.error("PdfStreamConverter: printToPDF failed.", ex);
+      sendResponse(null);
+    } finally {
+      iframe?.remove();
+    }
+  }
+
   download(data) {
+    if (!this.supportsDownloading()) {
+      console.warn("PdfStreamConverter: blocked a download request.");
+      return;
+    }
+
     const { originalUrl } = data;
     const blobUrl = data.blobUrl || originalUrl;
     let { filename } = data;
@@ -423,6 +726,22 @@ class ChromeActions {
     return this.domWindow.windowGlobalChild.browsingContext.parent === null;
   }
 
+  supportsDownloading() {
+    const context = this.domWindow.windowGlobalChild.browsingContext;
+    // A top-level document may always trigger downloads. The sandboxed-downloads
+    // flag is meant to let an embedder gate downloads from embedded content; at
+    // top level there is no embedder, and since the PDF response's CSP sandbox
+    // is already ignored for http(s) URLs, enforcing it only for the blob: edge
+    // case would be inconsistent and needlessly stop users saving a PDF they
+    // view.
+    if (context.parent === null) {
+      return true;
+    }
+    // Copied from nsSandboxFlags.h
+    const SANDBOXED_DOWNLOADS = 0x10000;
+    return (context.sandboxFlags & SANDBOXED_DOWNLOADS) === 0;
+  }
+
   async getBrowserPrefs() {
     const isMobile = this.isMobile();
     const nimbusDataStr = isMobile
@@ -440,6 +759,7 @@ class ChromeActions {
         !!Services.prefs.getIntPref("browser.display.use_document_fonts") &&
         Services.prefs.getBoolPref("gfx.downloadable_fonts.enabled"),
       supportsIntegratedFind: this.supportsIntegratedFind(),
+      supportsDownloading: this.supportsDownloading(),
       supportsMouseWheelZoomCtrlKey:
         Services.prefs.getIntPref("mousewheel.with_control.action") === 3,
       supportsMouseWheelZoomMetaKey:
@@ -498,6 +818,21 @@ class ChromeActions {
   reportTelemetry(data) {
     const actor = getActor(this.domWindow);
     actor?.sendAsyncMessage("PDFJS:Parent:reportTelemetry", data);
+  }
+
+  reportText(data) {
+    const actor = getActor(this.domWindow);
+    actor?.sendAsyncMessage("PDFJS:Parent:reportText", data);
+  }
+
+  openAboutPdfFeatures() {
+    const doc = this.domWindow.document;
+    if (!doc.hasValidTransientUserGestureActivation) {
+      return;
+    }
+    doc.consumeTransientUserGestureActivation();
+    const actor = getActor(this.domWindow);
+    actor?.sendAsyncMessage("PDFJS:Parent:openAboutPdfFeatures");
   }
 
   updateFindControlState(data) {
@@ -581,21 +916,40 @@ class ChromeActions {
         case "number":
           currentPrefs[key] = Services.prefs.getIntPref(prefName, prefValue);
           break;
-        case "string":
+        case "string": {
           // The URL contains some dynamic values (%VERSION%, ...), so we need to
           // format it.
+          const str = Services.prefs.getStringPref(prefName, prefValue);
           currentPrefs[key] =
-            key === "altTextLearnMoreUrl"
+            str.startsWith(SUMO_URL) && str.includes("%")
               ? Services.urlFormatter.formatURLPref(prefName)
-              : Services.prefs.getStringPref(prefName, prefValue);
+              : str;
           break;
+        }
       }
+    }
+
+    if ("featuresNotificationDismissed" in currentPrefs) {
+      currentPrefs.featuresNotificationDismissed =
+        !(await this.#claimFeaturesNotification());
     }
 
     sendResponse({
       browserPrefs,
       prefs: currentPrefs,
     });
+  }
+
+  // Claim an impression in the parent before exposing the notification.
+  async #claimFeaturesNotification() {
+    if (this.isMobile() || this.domWindow !== this.domWindow.top) {
+      return false;
+    }
+    return (
+      (await getActor(this.domWindow)?.sendQuery(
+        "PDFJS:Parent:claimFeaturesNotification"
+      )) === true
+    );
   }
 
   async setPreferences(data, sendResponse) {
@@ -608,24 +962,24 @@ class ChromeActions {
   /**
    * Set the different editor states in order to be able to update the context
    * menu.
-   * @param {Object} details
+   *
+   * @param {object} details
    */
   updateEditorStates({ details }) {
     const doc = this.domWindow.document;
-    if (!doc.editorStates) {
-      doc.editorStates = {
-        isEditing: false,
-        isEmpty: true,
-        hasSomethingToUndo: false,
-        hasSomethingToRedo: false,
-        hasSelectedEditor: false,
-        hasSelectedText: false,
-      };
-    }
-    const { editorStates } = doc;
+    doc.pdfStates ||= {
+      isEditing: false,
+      isEmpty: true,
+      hasSomethingToUndo: false,
+      hasSomethingToRedo: false,
+      hasSelectedEditor: false,
+      hasSelectedText: false,
+      hasSelectedPages: false,
+    };
+    const { pdfStates } = doc;
     for (const [key, value] of Object.entries(details)) {
-      if (typeof value === "boolean" && key in editorStates) {
-        editorStates[key] = value;
+      if (typeof value === "boolean" && key in pdfStates) {
+        pdfStates[key] = value;
       }
     }
   }
@@ -746,7 +1100,12 @@ class RangedChromeActions extends ChromeActions {
         );
       };
       this.dataListener.oncomplete = () => {
-        if (!done && this.dataListener.isDone) {
+        const { dataListener } = this;
+        if (!dataListener) {
+          return;
+        }
+        this.dataListener = null;
+        if (!done && dataListener.isDone) {
           this.domWindow.postMessage(
             {
               pdfjsLoadAction: "progressiveDone",
@@ -754,10 +1113,12 @@ class RangedChromeActions extends ChromeActions {
             PDF_VIEWER_ORIGIN
           );
         }
-        this.dataListener = null;
       };
     }
 
+    if (done && !data) {
+      this.closeWorker();
+    }
     this.domWindow.postMessage(
       {
         pdfjsLoadAction: "supportsRangedLoading",
@@ -853,6 +1214,9 @@ class StandardChromeActions extends ChromeActions {
     };
 
     this.dataListener.oncomplete = (data, errorCode) => {
+      if (!data) {
+        this.closeWorker();
+      }
       this.domWindow.postMessage(
         {
           pdfjsLoadAction: "complete",
@@ -1039,6 +1403,13 @@ PdfStreamConverter.prototype = {
   },
 
   getConvertedType(aFromType, aChannel) {
+    // nsIStreamConverter allows a null channel, but PDF.js needs one to decide
+    // how the PDF must be handled.
+    if (!aChannel) {
+      Components.returnCode = Cr.NS_ERROR_INVALID_ARG;
+      return "";
+    }
+
     if (aChannel instanceof Ci.nsIMultiPartChannel) {
       throw new Components.Exception(
         "PDF.js doesn't support multipart responses.",
@@ -1046,8 +1417,20 @@ PdfStreamConverter.prototype = {
       );
     }
 
+    // Without a browsing context there's nowhere to render the result, so
+    // PDF.js must not claim the channel and rewrite its type to text/html -
+    // that breaks the external handler for attachments opened from the compose
+    // window (bug 1698140).
+    let browsingContext = aChannel.loadInfo?.targetBrowsingContext;
+    if (!browsingContext) {
+      throw new Components.Exception(
+        "PDF.js can't be used without a browsing context.",
+        Cr.NS_ERROR_FAILURE
+      );
+    }
+
     const HTML = "text/html";
-    let channelURI = aChannel?.URI;
+    let channelURI = aChannel.URI;
     // We can be invoked for application/octet-stream; check if we want the
     // channel first:
     if (aFromType != "application/pdf") {
@@ -1062,11 +1445,8 @@ PdfStreamConverter.prototype = {
           "pdf";
       }
 
-      let browsingContext = aChannel?.loadInfo.targetBrowsingContext;
       let toplevelOctetStream =
-        aFromType == "application/octet-stream" &&
-        browsingContext &&
-        !browsingContext.parent;
+        aFromType == "application/octet-stream" && !browsingContext.parent;
       if (
         !isPDF ||
         !toplevelOctetStream ||
@@ -1109,12 +1489,8 @@ PdfStreamConverter.prototype = {
       }
     }
 
-    // If we're loading this PDF with an object/embed element, we always want to
-    // try to render it inline, as we can't fall back to an external handler.
-    if (
-      aChannel.loadInfo?.externalContentPolicyType ==
-      Ci.nsIContentPolicy.TYPE_OBJECT
-    ) {
+    // Keep embedded PDFs in PDF.js instead of invoking the configured handler.
+    if (isEmbeddedPdfLoad(aChannel.loadInfo)) {
       return HTML;
     }
 
@@ -1145,6 +1521,13 @@ PdfStreamConverter.prototype = {
 
     var rangeRequest = false;
     var streamRequest = false;
+    const searchParams = new URLSearchParams(aRequest.URI.ref.toLowerCase());
+    const isPDFBugEnabled = Services.prefs.getBoolPref(
+      "pdfjs.pdfBugEnabled",
+      false
+    );
+    const disableWorker =
+      isPDFBugEnabled && searchParams.get("disableworker") === "true";
     if (isHttpRequest) {
       var contentEncoding = "identity";
       try {
@@ -1156,23 +1539,17 @@ PdfStreamConverter.prototype = {
         acceptRanges = aRequest.getResponseHeader("Accept-Ranges");
       } catch (e) {}
 
-      var hash = aRequest.URI.ref;
-      const isPDFBugEnabled = Services.prefs.getBoolPref(
-        "pdfjs.pdfBugEnabled",
-        false
-      );
       rangeRequest =
         contentEncoding === "identity" &&
         acceptRanges === "bytes" &&
         aRequest.contentLength >= 0 &&
         !Services.prefs.getBoolPref("pdfjs.disableRange", false) &&
-        (!isPDFBugEnabled || !hash.toLowerCase().includes("disablerange=true"));
+        (!isPDFBugEnabled || searchParams.get("disablerange") !== "true");
       streamRequest =
         contentEncoding === "identity" &&
         aRequest.contentLength >= 0 &&
         !Services.prefs.getBoolPref("pdfjs.disableStream", false) &&
-        (!isPDFBugEnabled ||
-          !hash.toLowerCase().includes("disablestream=true"));
+        (!isPDFBugEnabled || searchParams.get("disablestream") !== "true");
     }
 
     aRequest.QueryInterface(Ci.nsIChannel);
@@ -1204,6 +1581,9 @@ PdfStreamConverter.prototype = {
       );
       // The viewer does not need to handle HTTP Refresh header.
       aRequest.setResponseHeader("Refresh", "", false);
+      // There is no reason to load something via <link>: the only external
+      // resource is the pdf itself.
+      aRequest.setResponseHeader("Link", "", false);
     }
 
     lazy.PdfJsTelemetryContent.onViewerIsUsed();
@@ -1242,7 +1622,7 @@ PdfStreamConverter.prototype = {
         listener.onDataAvailable(aRequest, inputStream, offset, count);
       },
       onStopRequest(request, statusCode) {
-        var domWindow = getDOMWindow(channel, resourcePrincipal);
+        const domWindow = getDOMWindow(channel, resourcePrincipal);
         if (!Components.isSuccessCode(statusCode) || !domWindow) {
           // The request may have been aborted and the document may have been
           // replaced with something that is not PDF.js, abort attaching.
@@ -1266,6 +1646,10 @@ PdfStreamConverter.prototype = {
             aRequest,
             dataListener
           );
+        }
+        // viewer.mjs reads pdfjsPreloadedWorker during module evaluation.
+        if (!disableWorker) {
+          actions.preloadWorker();
         }
 
         var requestListener = new RequestListener(actions);

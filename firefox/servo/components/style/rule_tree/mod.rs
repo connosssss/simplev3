@@ -15,14 +15,28 @@ use smallvec::SmallVec;
 use std::io::{self, Write};
 
 mod core;
-mod level;
+pub mod level;
 mod map;
 mod source;
 mod unsafe_box;
 
 pub use self::core::{RuleTree, StrongRuleNode};
-pub use self::level::{CascadeLevel, ShadowCascadeOrder};
-pub use self::source::StyleSource;
+pub use self::level::{CascadeLevel, CascadeOrigin, ShadowCascadeOrder};
+pub use self::source::{StyleSource, StyleSourceBorrow};
+
+bitflags! {
+    /// Flags that are part of the cascade priority, and that we use to track
+    /// information about where the rule came from.
+    #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+    pub struct RuleCascadeFlags: u8 {
+        /// Whether the rule is inside a @starting-style block.
+        const STARTING_STYLE = 1 << 0;
+        /// Whether the rule is inside an @appearance-base block.
+        const APPEARANCE_BASE = 1 << 1;
+    }
+}
+
+malloc_size_of::malloc_size_of_is_0!(RuleCascadeFlags);
 
 impl RuleTree {
     fn dump<W: Write>(&self, guards: &StylesheetGuards, writer: &mut W) {
@@ -48,16 +62,15 @@ impl RuleTree {
         guards: &StylesheetGuards,
     ) -> StrongRuleNode
     where
-        I: Iterator<Item = (StyleSource, CascadePriority)>,
+        I: Iterator<Item = (StyleSourceBorrow<'a>, CascadePriority)>,
     {
-        use self::CascadeLevel::*;
         let mut current = self.root().clone();
 
         let mut found_important = false;
 
-        let mut important_author = SmallVec::<[(StyleSource, CascadePriority); 4]>::new();
-        let mut important_user = SmallVec::<[(StyleSource, CascadePriority); 4]>::new();
-        let mut important_ua = SmallVec::<[(StyleSource, CascadePriority); 4]>::new();
+        let mut important_author = SmallVec::<[(StyleSourceBorrow, CascadePriority); 4]>::new();
+        let mut important_user = SmallVec::<[(StyleSourceBorrow, CascadePriority); 4]>::new();
+        let mut important_ua = SmallVec::<[(StyleSourceBorrow, CascadePriority); 4]>::new();
         let mut transition = None;
 
         for (source, priority) in iter {
@@ -71,12 +84,10 @@ impl RuleTree {
 
             if any_important {
                 found_important = true;
-                match level {
-                    AuthorNormal { .. } => {
-                        important_author.push((source.clone(), priority.important()))
-                    },
-                    UANormal => important_ua.push((source.clone(), priority.important())),
-                    UserNormal => important_user.push((source.clone(), priority.important())),
+                match level.origin() {
+                    CascadeOrigin::Author => important_author.push((source, priority.important())),
+                    CascadeOrigin::UA => important_ua.push((source, priority.important())),
+                    CascadeOrigin::User => important_user.push((source, priority.important())),
                     _ => {},
                 };
             }
@@ -91,7 +102,7 @@ impl RuleTree {
             // breaking inspector's expectations, we'd need to run
             // selector-matching again at the inspector's request. That may or
             // may not be a better trade-off.
-            if matches!(level, Transitions) && found_important {
+            if level.origin() == CascadeOrigin::Transitions && found_important {
                 // There can be at most one transition, and it will come at
                 // the end of the iterator. Stash it and apply it after
                 // !important rules.
@@ -112,8 +123,8 @@ impl RuleTree {
         //
         // Important rules are sorted differently from unimportant ones by
         // shadow order and cascade order.
-        if !important_author.is_empty() &&
-            important_author.first().unwrap().1 != important_author.last().unwrap().1
+        if !important_author.is_empty()
+            && important_author.first().unwrap().1 != important_author.last().unwrap().1
         {
             // We only need to sort if the important rules come from
             // different trees, but we need this sort to be stable.
@@ -146,7 +157,11 @@ impl RuleTree {
             current = current.ensure_child(
                 self.root(),
                 source,
-                CascadePriority::new(Transitions, LayerOrder::root()),
+                CascadePriority::new(
+                    CascadeLevel::new(CascadeOrigin::Transitions),
+                    LayerOrder::root(),
+                    RuleCascadeFlags::empty(),
+                ),
             );
         }
 
@@ -160,8 +175,18 @@ impl RuleTree {
         applicable_declarations: &mut ApplicableDeclarationList,
         guards: &StylesheetGuards,
     ) -> StrongRuleNode {
+        let mut prev = None;
         self.insert_ordered_rules_with_important(
-            applicable_declarations.drain(..).map(|d| d.for_rule_tree()),
+            applicable_declarations.drain(..).filter_map(|d| {
+                // for_rule_tree keeps only these two, so adjacent entries that
+                // agree on them contribute the same thing to the rule path.
+                let key = (d.source.key(), d.cascade_priority);
+                if prev == Some(key) {
+                    return None;
+                }
+                prev = Some(key);
+                Some(d.for_rule_tree())
+            }),
             guards,
         )
     }
@@ -170,14 +195,14 @@ impl RuleTree {
     /// return the corresponding rule node representing the last inserted one.
     pub fn insert_ordered_rules<'a, I>(&self, iter: I) -> StrongRuleNode
     where
-        I: Iterator<Item = (StyleSource, CascadePriority)>,
+        I: Iterator<Item = (StyleSourceBorrow<'a>, CascadePriority)>,
     {
         self.insert_ordered_rules_from(self.root().clone(), iter)
     }
 
     fn insert_ordered_rules_from<'a, I>(&self, from: StrongRuleNode, iter: I) -> StrongRuleNode
     where
-        I: Iterator<Item = (StyleSource, CascadePriority)>,
+        I: Iterator<Item = (StyleSourceBorrow<'a>, CascadePriority)>,
     {
         let mut current = from;
         for (source, priority) in iter {
@@ -214,7 +239,7 @@ impl RuleTree {
             current = current.parent().unwrap().clone();
         }
 
-        let cascade_priority = CascadePriority::new(level, layer_order);
+        let cascade_priority = CascadePriority::new(level, layer_order, RuleCascadeFlags::empty());
 
         // Then remove the one at the level we want to replace, if any.
         //
@@ -256,36 +281,39 @@ impl RuleTree {
         // These optimizations are likely to be important, because the levels where replacements
         // apply (style and animations) tend to trigger pretty bad styling cases already.
         if let Some(pdb) = pdb {
+            let source = StyleSourceBorrow::from_declarations(pdb);
             if level.is_important() {
                 if pdb.read_with(level.guard(guards)).any_important() {
-                    current = current.ensure_child(
-                        self.root(),
-                        StyleSource::from_declarations(pdb.clone_arc()),
-                        cascade_priority,
-                    );
+                    current = current.ensure_child(self.root(), source, cascade_priority);
                     *important_rules_changed = true;
                 }
-            } else {
-                if pdb.read_with(level.guard(guards)).any_normal() {
-                    current = current.ensure_child(
-                        self.root(),
-                        StyleSource::from_declarations(pdb.clone_arc()),
-                        cascade_priority,
-                    );
-                }
+            } else if pdb.read_with(level.guard(guards)).any_normal() {
+                current = current.ensure_child(self.root(), source, cascade_priority);
             }
         }
 
         // Now the rule is in the relevant place, push the children as
         // necessary.
-        let rule = self.insert_ordered_rules_from(current, children.drain(..).rev());
+        let rule = self.insert_ordered_rules_from(
+            current,
+            children.iter().rev().map(|(s, p)| (s.borrow(), *p)),
+        );
         Some(rule)
     }
 
+    /// Returns whether this rule node has any @starting-style rule.
+    pub fn has_starting_style(path: &StrongRuleNode) -> bool {
+        path.self_and_ancestors().any(|node| {
+            node.cascade_priority()
+                .flags()
+                .intersects(RuleCascadeFlags::STARTING_STYLE)
+        })
+    }
+
     /// Returns new rule nodes without Transitions level rule.
-    pub fn remove_transition_rule_if_applicable(&self, path: &StrongRuleNode) -> StrongRuleNode {
+    pub fn remove_transition_rule_if_applicable(path: &StrongRuleNode) -> StrongRuleNode {
         // Return a clone if there is no transition level.
-        if path.cascade_level() != CascadeLevel::Transitions {
+        if path.cascade_level().origin() != CascadeOrigin::Transitions {
             return path.clone();
         }
 
@@ -299,9 +327,9 @@ impl RuleTree {
             return path.clone();
         }
 
-        let iter = path
-            .self_and_ancestors()
-            .take_while(|node| node.cascade_level() >= CascadeLevel::SMILOverride);
+        let iter = path.self_and_ancestors().take_while(|node| {
+            node.cascade_level() >= CascadeLevel::new(CascadeOrigin::SMILOverride)
+        });
         let mut last = path;
         let mut children = SmallVec::<[_; 10]>::new();
         for node in iter {
@@ -314,15 +342,16 @@ impl RuleTree {
             last = node;
         }
 
-        let rule = self
-            .insert_ordered_rules_from(last.parent().unwrap().clone(), children.drain(..).rev());
-        rule
+        self.insert_ordered_rules_from(
+            last.parent().unwrap().clone(),
+            children.iter().rev().map(|(s, p)| (s.borrow(), *p)),
+        )
     }
 }
 
 impl StrongRuleNode {
     /// Get an iterator for this rule node and its ancestors.
-    pub fn self_and_ancestors(&self) -> SelfAndAncestors {
+    pub fn self_and_ancestors(&self) -> SelfAndAncestors<'_> {
         SelfAndAncestors {
             current: Some(self),
         }
@@ -331,7 +360,9 @@ impl StrongRuleNode {
     /// Returns true if there is either animation or transition level rule.
     pub fn has_animation_or_transition_rules(&self) -> bool {
         self.self_and_ancestors()
-            .take_while(|node| node.cascade_level() >= CascadeLevel::SMILOverride)
+            .take_while(|node| {
+                node.cascade_level() >= CascadeLevel::new(CascadeOrigin::SMILOverride)
+            })
             .any(|node| node.cascade_level().is_animation())
     }
 
@@ -356,8 +387,8 @@ impl StrongRuleNode {
         // override animations.
         let iter = self
             .self_and_ancestors()
-            .skip_while(|node| node.cascade_level() == CascadeLevel::Transitions)
-            .take_while(|node| node.cascade_level() > CascadeLevel::Animations);
+            .skip_while(|node| node.cascade_level().origin() == CascadeOrigin::Transitions)
+            .take_while(|node| node.cascade_level() > CascadeLevel::new(CascadeOrigin::Animations));
         let mut result = (LonghandIdSet::new(), false);
         for node in iter {
             let style = node.style_source().unwrap();
@@ -392,9 +423,8 @@ impl<'a> Iterator for SelfAndAncestors<'a> {
     type Item = &'a StrongRuleNode;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.current.map(|node| {
+        self.current.inspect(|node| {
             self.current = node.parent();
-            node
         })
     }
 }

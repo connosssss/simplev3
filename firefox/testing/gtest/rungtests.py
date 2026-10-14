@@ -5,19 +5,24 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import argparse
+import functools
+import json
 import os
+import pathlib
+import re
 import sys
 
 import mozcrash
 import mozinfo
-import mozlog
 import mozprocess
 from mozfile import load_source
+from mozlog import commandline
 from mozrunner.utils import get_stack_fixer_function
+from suites import get_gtest_suites, suite_filters
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 
-log = mozlog.unstructured.getLogger("gtest")
+log = None
 
 
 class GTests:
@@ -31,6 +36,28 @@ class GTests:
         else:
             return 2400
 
+    def merge_perfherder_data(self, perfherder_data):
+        grouped = {}
+
+        for data in perfherder_data:
+            framework_name = data.get("framework", {}).get("name")
+            suites_by_name = grouped.setdefault(framework_name, {})
+            for suite in data.get("suites", []):
+                suite_name = suite.get("name")
+                suite_data = suites_by_name.setdefault(
+                    suite_name, {"name": suite_name, "subtests": []}
+                )
+                suite_data["subtests"].extend(suite.get("subtests", []))
+
+        results = {}
+        for framework_name, suites in grouped.items():
+            results[framework_name] = {
+                "framework": {"name": framework_name},
+                "suites": list(suites.values()),
+            }
+
+        return results
+
     def run_gtest(
         self,
         prog,
@@ -40,9 +67,10 @@ class GTests:
         utility_path=None,
         enable_inc_origin_init=False,
         filter_set=None,
+        combine_suites=False,
     ):
         """
-        Run a single C++ unit test program.
+        Run a C++ unit test program.
 
         Arguments:
         * prog: The path to the test program to run.
@@ -54,11 +82,15 @@ class GTests:
         * utility_path: A path to a directory containing utility programs.
                         currently used to locate a stack fixer to provide
                         symbols symbols for assertion stacks.
+        * combine_suites: Run one program with all suites, rather than running
+                          each suite as a separate program invocation.
 
-        Return True if the program exits with a zero status, False otherwise.
+        Return True if the program(s) exit with a zero status, False otherwise.
         """
         self.xre_path = xre_path
         env = self.build_environment(enable_inc_origin_init, filter_set)
+        perfherder_data = []
+        PERFHERDER_MATCHER = re.compile(r"PERFHERDER_DATA:\s*(\{.*\})\s*$")
         log.info("Running gtest")
 
         if cwd and not os.path.isdir(cwd):
@@ -68,49 +100,82 @@ class GTests:
         if utility_path:
             stack_fixer = get_stack_fixer_function(utility_path, symbols_path)
 
-        GTests.run_gtest.timed_out = False
-
         def output_line_handler(proc, line):
             if stack_fixer:
                 print(stack_fixer(line))
             else:
                 print(line)
 
-        def proc_timeout_handler(proc):
-            GTests.run_gtest.timed_out = True
-            log.testFail(
-                "gtest | timed out after %d seconds", self.gtest_timeout_value()
+            match = PERFHERDER_MATCHER.search(line)
+            if match:
+                data = json.loads(match.group(1))
+                perfherder_data.append(data)
+
+        args = [prog, "-unittest", "--gtest_death_test_style=threadsafe"]
+
+        def run_test_process(test_name, env):
+            def timeout_handler(timeout, context, proc):
+                timeout_handler.timed_out = True
+                log.error(f"{test_name} | timed out after {timeout} seconds{context}")
+                mozcrash.kill_and_get_minidump(proc.pid, cwd, utility_path)
+
+            timeout_handler.timed_out = False
+
+            proc = mozprocess.run_and_wait(
+                args,
+                cwd=cwd,
+                env=env,
+                output_line_handler=output_line_handler,
+                timeout=self.gtest_timeout_value(),
+                timeout_handler=functools.partial(
+                    timeout_handler, self.gtest_timeout_value(), ""
+                ),
+                output_timeout=GTests.TEST_PROC_NO_OUTPUT_TIMEOUT,
+                output_timeout_handler=functools.partial(
+                    timeout_handler,
+                    GTests.TEST_PROC_NO_OUTPUT_TIMEOUT,
+                    " without output",
+                ),
             )
-            mozcrash.kill_and_get_minidump(proc.pid, cwd, utility_path)
+            returncode = proc.returncode
 
-        def output_timeout_handler(proc):
-            GTests.run_gtest.timed_out = True
-            log.testFail(
-                "gtest | timed out after %d seconds without output",
-                GTests.TEST_PROC_NO_OUTPUT_TIMEOUT,
-            )
-            mozcrash.kill_and_get_minidump(proc.pid, cwd, utility_path)
+            log.info(f"{test_name} | process wait complete, returncode={returncode}")
+            if mozcrash.check_for_crashes(cwd, symbols_path, test_name=test_name):
+                # mozcrash will output the log failure line for us.
+                return False
+            if timeout_handler.timed_out:
+                return False
+            result = returncode == 0
+            if not result:
+                log.error(f"{test_name} | test failed with return code {returncode}")
+            return result
 
-        proc = mozprocess.run_and_wait(
-            [prog, "-unittest", "--gtest_death_test_style=threadsafe"],
-            cwd=cwd,
-            env=env,
-            output_line_handler=output_line_handler,
-            timeout=self.gtest_timeout_value(),
-            timeout_handler=proc_timeout_handler,
-            output_timeout=GTests.TEST_PROC_NO_OUTPUT_TIMEOUT,
-            output_timeout_handler=output_timeout_handler,
-        )
+        if combine_suites:
+            result = run_test_process("gtest", env)
+        else:
+            suites = get_gtest_suites(args, cwd, env)
+            # Some suites have side-effects like emitting PERFHERDER_DATA, so
+            # don't short-circuit on the first failure.
+            results = [
+                run_test_process(f"gtest.{filt.suite}", filt(env))
+                for filt in suite_filters(suites)
+            ]
+            result = all(results)
 
-        log.info("gtest | process wait complete, returncode=%s" % proc.returncode)
-        if mozcrash.check_for_crashes(cwd, symbols_path, test_name="gtest"):
-            # mozcrash will output the log failure line for us.
-            return False
-        if GTests.run_gtest.timed_out:
-            return False
-        result = proc.returncode == 0
-        if not result:
-            log.testFail("gtest | test failed with return code %d", proc.returncode)
+        if perfherder_data and "MOZ_AUTOMATION" in os.environ:
+            upload_dir = pathlib.Path(os.getenv("MOZ_UPLOAD_DIR"))
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            merged_perfherder_data = self.merge_perfherder_data(perfherder_data)
+            for framework_name, data in merged_perfherder_data.items():
+                file_name = (
+                    "perfherder-data-gtest.json"
+                    if len(merged_perfherder_data) == 1
+                    else f"perfherder-data-gtest-{framework_name}.json"
+                )
+                out_path = upload_dir / file_name
+                with out_path.open("w", encoding="utf-8") as f:
+                    json.dump(data, f)
+
         return result
 
     def build_core_environment(self, env={}):
@@ -127,8 +192,6 @@ class GTests:
         env["MOZ_CRASHREPORTER"] = "1"
         env["MOZ_DISABLE_NONLOCAL_CONNECTIONS"] = "1"
         env["MOZ_RUN_GTEST"] = "1"
-        # Normally we run with GTest default output, override this to use the TBPL test format.
-        env["MOZ_TBPL_PARSER"] = "1"
 
         if not mozinfo.has_sandbox:
             # Bug 1082193 - This is horrible. Our linux build boxes run CentOS 6,
@@ -149,6 +212,12 @@ class GTests:
             raise Exception("xre_path does not exist: %s", self.xre_path)
         env = dict(os.environ)
         env = self.build_core_environment(env)
+        # Some gtests spawn a Python helper via the PYTHON env var (e.g.
+        # DesktopLauncherDownloaderTest launches `python -m http.server`).
+        # Point it at the interpreter running the harness rather than
+        # inheriting a bare `python3` that ShellExecuteExW on Windows would
+        # resolve to the WindowsApps alias.
+        env["PYTHON"] = sys.executable
         env["PERFHERDER_ALERTING_ENABLED"] = "1"
         pathvar = ""
         if mozinfo.os == "linux":
@@ -181,10 +250,9 @@ class GTests:
                 )
             if os.path.isfile(llvmsym):
                 env[symbolizer_path] = llvmsym
-                log.info("Using LLVM symbolizer at %s", llvmsym)
+                log.info("Using LLVM symbolizer at %s" % llvmsym)
             else:
-                # This should be |testFail| instead of |info|. See bug 1050891.
-                log.info("Failed to find LLVM symbolizer at %s", llvmsym)
+                log.info("Failed to find LLVM symbolizer at %s" % llvmsym)
 
         # webrender needs gfx.webrender.all=true, gtest doesn't use prefs
         env["MOZ_WEBRENDER"] = "1"
@@ -204,28 +272,29 @@ class GTests:
             gtest_filter_for_filter_set = gtest_filter_sets.get(filter_set)
             if gtest_filter_for_filter_set:
                 env["GTEST_FILTER"] = gtest_filter_for_filter_set
-                log.info("Using gtest filter for %s", filter_set)
+                log.info("Using gtest filter for %s" % filter_set)
             else:
-                log.info("Failed to get gtest filter for %s", filter_set)
+                log.info("Failed to get gtest filter for %s" % filter_set)
 
         return env
 
 
 class gtestOptions(argparse.ArgumentParser):
     def __init__(self):
-        super(gtestOptions, self).__init__()
+        super().__init__()
+        commandline.add_logging_group(self)
 
         self.add_argument(
             "--cwd",
             dest="cwd",
             default=os.getcwd(),
-            help="absolute path to directory from which " "to run the binary",
+            help="absolute path to directory from which to run the binary",
         )
         self.add_argument(
             "--xre-path",
             dest="xre_path",
             default=None,
-            help="absolute path to directory containing XRE " "(probably xulrunner)",
+            help="absolute path to directory containing XRE (probably xulrunner)",
         )
         self.add_argument(
             "--symbols-path",
@@ -254,6 +323,13 @@ class gtestOptions(argparse.ArgumentParser):
             default=None,
             help="predefined gtest filter",
         )
+        self.add_argument(
+            "--combine-suites",
+            action="store_true",
+            dest="combine_suites",
+            default=False,
+            help="test all suites in one program invocation",
+        )
         self.add_argument("args", nargs=argparse.REMAINDER)
 
 
@@ -270,8 +346,10 @@ def update_mozinfo():
 
 
 def main():
+    global log
     parser = gtestOptions()
     options = parser.parse_args()
+    log = commandline.setup_logging("gtest", options, {"raw": sys.stdout})
     args = options.args
     if not args:
         print("Usage: %s <binary>" % sys.argv[0])
@@ -295,6 +373,7 @@ def main():
             utility_path=options.utility_path,
             enable_inc_origin_init=options.enable_inc_origin_init,
             filter_set=options.filter_set,
+            combine_suites=options.combine_suites,
         )
     except Exception as e:
         log.error(str(e))

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +6,7 @@
 #define mozilla_PreallocatedProcessManager_h
 
 #include "base/basictypes.h"
+#include "mozilla/dom/RemoteType.h"
 #include "mozilla/dom/UniqueContentParentKeepAlive.h"
 #include "nsStringFwd.h"
 
@@ -30,6 +29,7 @@ class PreallocatedProcessManagerImpl;
 
 class PreallocatedProcessManager final {
   using ContentParent = mozilla::dom::ContentParent;
+  using RemoteType = mozilla::dom::RemoteType;
   using UniqueContentParentKeepAlive =
       mozilla::dom::UniqueContentParentKeepAlive;
 
@@ -43,8 +43,8 @@ class PreallocatedProcessManager final {
    * background. To avoid that, the PreallocatedProcessManager won't start up
    * any processes while there is a blocker active.
    */
-  static void AddBlocker(const nsACString& aRemoteType, ContentParent* aParent);
-  static void RemoveBlocker(const nsACString& aRemoteType,
+  static void AddBlocker(const RemoteType& aRemoteType, ContentParent* aParent);
+  static void RemoveBlocker(const RemoteType& aRemoteType,
                             ContentParent* aParent);
 
   /**
@@ -54,7 +54,7 @@ class PreallocatedProcessManager final {
    * If we use a preallocated process, it will schedule the start of
    * another on Idle (AllocateOnIdle()).
    */
-  static UniqueContentParentKeepAlive Take(const nsACString& aRemoteType);
+  static UniqueContentParentKeepAlive Take(const RemoteType& aRemoteType);
 
   /**
    * Note that a process was shut down, and should no longer be tracked as a

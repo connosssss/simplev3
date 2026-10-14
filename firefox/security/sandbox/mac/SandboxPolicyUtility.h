@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -61,7 +60,7 @@ static const char SandboxPolicyUtility[] = R"SANDBOX_LITERAL(
     (global-name "com.apple.coreservices.launchservicesd"))
 )SANDBOX_LITERAL";
 
-static const char SandboxPolicyUtilityAudioDecoderAppleMediaAddend[] =
+static const char SandboxPolicyUtilityMediaServiceAppleMediaAddend[] =
     R"SANDBOX_LITERAL(
   ; For Utility AudioDecoder AppleMedia codecs (bug 1565575)
   (allow mach-lookup (global-name "com.apple.audio.AudioComponentRegistrar"))

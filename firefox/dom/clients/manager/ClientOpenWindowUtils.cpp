@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,37 +7,37 @@
 #include "ClientInfo.h"
 #include "ClientManager.h"
 #include "ClientState.h"
-#include "mozilla/ResultExtensions.h"
+#include "mozilla/NullPrincipal.h"
+#include "mozilla/dom/BrowserParent.h"
+#include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/PolicyContainer.h"
+#include "mozilla/dom/WindowGlobalParent.h"
+#include "mozilla/dom/nsCSPContext.h"
 #include "nsContentUtils.h"
 #include "nsDocShell.h"
 #include "nsDocShellLoadState.h"
 #include "nsFocusManager.h"
 #include "nsGlobalWindowOuter.h"
+#include "nsIBrowser.h"
 #include "nsIBrowserDOMWindow.h"
 #include "nsIDocShell.h"
 #include "nsIDocShellTreeOwner.h"
 #include "nsIMutableArray.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIURI.h"
-#include "nsIBrowser.h"
 #include "nsIWebProgress.h"
 #include "nsIWebProgressListener.h"
 #include "nsIWindowMediator.h"
 #include "nsIWindowWatcher.h"
 #include "nsIXPConnect.h"
 #include "nsNetUtil.h"
+#include "nsOpenWindowInfo.h"
 #include "nsPIDOMWindow.h"
 #include "nsPIWindowWatcher.h"
 #include "nsPrintfCString.h"
 #include "nsWindowWatcher.h"
-#include "nsOpenWindowInfo.h"
-
-#include "mozilla/dom/BrowserParent.h"
-#include "mozilla/dom/BrowsingContext.h"
-#include "mozilla/dom/CanonicalBrowsingContext.h"
-#include "mozilla/dom/nsCSPContext.h"
-#include "mozilla/dom/WindowGlobalParent.h"
 
 #ifdef MOZ_GECKOVIEW
 #  include "mozilla/dom/Promise-inl.h"
@@ -204,12 +202,13 @@ struct ClientOpenWindowArgsParsed {
   nsCOMPtr<nsIURI> uri;
   nsCOMPtr<nsIURI> baseURI;
   nsCOMPtr<nsIPrincipal> principal;
-  nsCOMPtr<nsIContentSecurityPolicy> csp;
+  nsCOMPtr<nsIPolicyContainer> policyContainer;
   RefPtr<ThreadsafeContentParentHandle> originContent;
 };
 
 #ifndef MOZ_GECKOVIEW
 
+MOZ_CAN_RUN_SCRIPT
 static Result<Ok, nsresult> OpenNewWindow(
     const ClientOpenWindowArgsParsed& aArgsValidated,
     nsOpenWindowInfo* aOpenWindowInfo) {
@@ -247,8 +246,8 @@ static Result<Ok, nsresult> OpenNewWindow(
   args->AppendElement(nullptr);                   // 7: originStoragePrincipal
   args->AppendElement(aArgsValidated.principal);  // 8: triggeringPrincipal
   args->AppendElement(nsFalse);                   // 9: allowInheritPrincipal
-  args->AppendElement(aArgsValidated.csp);        // 10: csp
-  args->AppendElement(aOpenWindowInfo);           // 11: nsOpenWindowInfo
+  args->AppendElement(aArgsValidated.policyContainer);  // 10: policyContainer
+  args->AppendElement(aOpenWindowInfo);                 // 11: nsOpenWindowInfo
 
   nsCOMPtr<nsIWindowWatcher> ww = do_GetService(NS_WINDOWWATCHER_CONTRACTID);
   nsCString features = "chrome,all,dialog=no"_ns;
@@ -262,7 +261,7 @@ static Result<Ok, nsresult> OpenNewWindow(
 
   nsCOMPtr<mozIDOMWindowProxy> win;
   MOZ_TRY(ww->OpenWindow(nullptr, nsDependentCString(BROWSER_CHROME_URL_QUOTED),
-                         "_blank"_ns, features, args, getter_AddRefs(win)));
+                         u"_blank"_ns, features, args, getter_AddRefs(win)));
   return Ok();
 }
 
@@ -270,6 +269,7 @@ static Result<Ok, nsresult> OpenNewWindow(
  * @return true when the caller need to load URI on the resulting browsing
  *         context, otherwise false
  */
+MOZ_CAN_RUN_SCRIPT
 bool OpenWindow(const ClientOpenWindowArgsParsed& aArgsValidated,
                 nsOpenWindowInfo* aOpenInfo, BrowsingContext** aBC,
                 ErrorResult& aRv) {
@@ -314,7 +314,7 @@ bool OpenWindow(const ClientOpenWindowArgsParsed& aArgsValidated,
   nsresult rv = bwin->CreateContentWindow(
       nullptr, aOpenInfo, nsIBrowserDOMWindow::OPEN_DEFAULTWINDOW,
       nsIBrowserDOMWindow::OPEN_NEW, aArgsValidated.principal,
-      aArgsValidated.csp, aBC);
+      aArgsValidated.policyContainer, aBC);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     aRv.ThrowTypeError("Unable to open window");
     return false;
@@ -323,6 +323,7 @@ bool OpenWindow(const ClientOpenWindowArgsParsed& aArgsValidated,
 }
 #endif
 
+MOZ_CAN_RUN_SCRIPT
 void WaitForLoad(const ClientOpenWindowArgsParsed& aArgsValidated,
                  BrowsingContext* aBrowsingContext,
                  ClientOpPromise::Private* aPromise, bool aShouldLoadURI) {
@@ -368,7 +369,7 @@ void WaitForLoad(const ClientOpenWindowArgsParsed& aArgsValidated,
     loadState->SetTriggeringRemoteType(
         aArgsValidated.originContent
             ? aArgsValidated.originContent->GetRemoteType()
-            : NOT_REMOTE_TYPE);
+            : RemoteType::NotRemote());
 
     rv = aBrowsingContext->LoadURI(loadState, true);
     if (NS_FAILED(rv)) {
@@ -479,15 +480,28 @@ RefPtr<ClientOpPromise> ClientOpenWindow(
   nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
   MOZ_DIAGNOSTIC_ASSERT(principal);
 
+  rv = nsContentUtils::GetSecurityManager()->CheckLoadURIWithPrincipal(
+      principal, uri, nsIScriptSecurityManager::DONT_REPORT_ERRORS, 0);
+  if (NS_FAILED(rv)) {
+    nsPrintfCString err("Opening \"%s\" is not allowed", aArgs.url().get());
+    CopyableErrorResult errResult;
+    errResult.ThrowTypeError(err);
+    promise->Reject(errResult, __func__);
+    return promise;
+  }
+
   nsCOMPtr<nsIContentSecurityPolicy> csp;
+  nsCOMPtr<PolicyContainer> policyContainer;
   if (aArgs.cspInfo().isSome()) {
     csp = CSPInfoToCSP(aArgs.cspInfo().ref(), nullptr);
+    policyContainer = new PolicyContainer();
+    PolicyContainer::Cast(policyContainer)->SetCSP(csp);
   }
   ClientOpenWindowArgsParsed argsValidated{
       .uri = uri,
       .baseURI = baseURI,
       .principal = principal,
-      .csp = csp,
+      .policyContainer = policyContainer,
       .originContent = aOriginContent,
   };
 
@@ -499,7 +513,10 @@ RefPtr<ClientOpPromise> ClientOpenWindow(
 
   RefPtr<nsOpenWindowInfo> openInfo = new nsOpenWindowInfo();
   openInfo->mBrowsingContextReadyCallback = callback;
-  openInfo->mOriginAttributes = principal->OriginAttributesRef();
+  nsCOMPtr<nsIURI> nullPrincipalURI = NullPrincipal::CreateURI(nullptr);
+  nsCOMPtr<nsIPrincipal> initialPrincipal =
+      NullPrincipal::Create(principal->OriginAttributesRef(), nullPrincipalURI);
+  openInfo->mPrincipalToInheritForAboutBlank = std::move(initialPrincipal);
   openInfo->mIsRemote = true;
 
   RefPtr<BrowsingContext> bc;
@@ -520,7 +537,7 @@ RefPtr<ClientOpPromise> ClientOpenWindow(
   browsingContextReadyPromise->Then(
       GetCurrentSerialEventTarget(), __func__,
       [argsValidated, promise,
-       shouldLoadURI](const RefPtr<BrowsingContext>& aBC) {
+       shouldLoadURI](const RefPtr<BrowsingContext>& aBC) MOZ_CAN_RUN_SCRIPT {
         WaitForLoad(argsValidated, aBC, promise, shouldLoadURI);
       },
       [promise]() {

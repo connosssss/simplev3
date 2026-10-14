@@ -1,15 +1,18 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #if !defined(NesteggPacketHolder_h_)
 #  define NesteggPacketHolder_h_
 
-#  include <deque>
 #  include <stdint.h>
-#  include "nsAutoRef.h"
+
+#  include <deque>
+
+#  include "mozilla/Assertions.h"
+#  include "mozilla/RefPtr.h"
 #  include "nestegg/nestegg.h"
+#  include "nsAutoRef.h"
+#  include "nsISupportsImpl.h"
 
 namespace mozilla {
 
@@ -27,6 +30,9 @@ class NesteggPacketHolder {
         mDuration(-1),
         mTrack(0),
         mIsKeyframe(false) {}
+
+  NesteggPacketHolder(const NesteggPacketHolder& aOther) = delete;
+  NesteggPacketHolder& operator=(NesteggPacketHolder const& aOther) = delete;
 
   bool Init(nestegg_packet* aPacket, int64_t aOffset, unsigned aTrack,
             bool aIsKeyframe) {
@@ -74,6 +80,13 @@ class NesteggPacketHolder {
     MOZ_ASSERT(IsInitialized());
     return mIsKeyframe;
   }
+  // Return the discard padding (if exists) in microseconds for the packet.
+  int64_t DiscardPaddingUs() const {
+    MOZ_ASSERT(IsInitialized());
+    int64_t paddingNs = 0;
+    nestegg_packet_discard_padding(mPacket, &paddingNs);
+    return paddingNs / 1000;
+  }
 
  private:
   ~NesteggPacketHolder() { nestegg_free_packet(mPacket); }
@@ -98,10 +111,6 @@ class NesteggPacketHolder {
 
   // Does this packet contain a keyframe?
   bool mIsKeyframe;
-
-  // Copy constructor and assignment operator not implemented. Don't use them!
-  NesteggPacketHolder(const NesteggPacketHolder& aOther);
-  NesteggPacketHolder& operator=(NesteggPacketHolder const& aOther);
 };
 
 // Queue for holding nestegg packets.
@@ -115,10 +124,10 @@ class WebMPacketQueue {
     mQueue.push_front(std::move(aItem));
   }
 
-  already_AddRefed<NesteggPacketHolder> PopFront() {
+  RefPtr<NesteggPacketHolder> PopFront() {
     RefPtr<NesteggPacketHolder> result = std::move(mQueue.front());
     mQueue.pop_front();
-    return result.forget();
+    return result;
   }
 
   void Reset() {

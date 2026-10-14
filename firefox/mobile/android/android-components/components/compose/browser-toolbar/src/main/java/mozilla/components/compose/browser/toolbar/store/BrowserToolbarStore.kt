@@ -10,22 +10,22 @@ import mozilla.components.compose.browser.toolbar.store.BrowserDisplayToolbarAct
 import mozilla.components.compose.browser.toolbar.store.BrowserDisplayToolbarAction.PageActionsEndUpdated
 import mozilla.components.compose.browser.toolbar.store.BrowserDisplayToolbarAction.PageActionsStartUpdated
 import mozilla.components.compose.browser.toolbar.store.BrowserDisplayToolbarAction.PageOriginUpdated
-import mozilla.components.compose.browser.toolbar.store.BrowserEditToolbarAction.UrlSuggestionAutocompleted
+import mozilla.components.compose.browser.toolbar.store.BrowserEditToolbarAction.AutocompleteSuggestionUpdated
 import mozilla.components.compose.browser.toolbar.store.BrowserToolbarInteraction.BrowserToolbarEvent
+import mozilla.components.compose.browser.toolbar.ui.BrowserToolbarQuery
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.UiStore
+import mozilla.components.lib.state.Store
 
-/**
- * [UiStore] for maintaining the state of the browser toolbar.
- */
-open class BrowserToolbarStore(
+/** [Store] for maintaining the state of the browser toolbar. */
+class BrowserToolbarStore(
     initialState: BrowserToolbarState = BrowserToolbarState(),
     middleware: List<Middleware<BrowserToolbarState, BrowserToolbarAction>> = emptyList(),
-) : UiStore<BrowserToolbarState, BrowserToolbarAction>(
-    initialState = initialState,
-    reducer = ::reduce,
-    middleware = middleware,
-) {
+) :
+    Store<BrowserToolbarState, BrowserToolbarAction>(
+        initialState = initialState,
+        reducer = ::reduce,
+        middleware = middleware,
+    ) {
     init {
         // Allow integrators intercept and update the initial state.
         dispatch(
@@ -33,7 +33,8 @@ open class BrowserToolbarStore(
                 mode = initialState.mode,
                 displayState = initialState.displayState,
                 editState = initialState.editState,
-            ),
+                gravity = initialState.gravity,
+            )
         )
     }
 }
@@ -41,96 +42,87 @@ open class BrowserToolbarStore(
 @Suppress("LongMethod")
 private fun reduce(state: BrowserToolbarState, action: BrowserToolbarAction): BrowserToolbarState {
     return when (action) {
-        is BrowserToolbarAction.Init -> BrowserToolbarState(
-            mode = action.mode,
-            displayState = action.displayState,
-            editState = action.editState,
-        )
+        is BrowserToolbarAction.Init ->
+            BrowserToolbarState(
+                mode = action.mode,
+                displayState = action.displayState,
+                editState = action.editState,
+                gravity = action.gravity,
+            )
 
-        is BrowserToolbarAction.ToggleEditMode -> state.copy(
-            mode = if (action.editMode) Mode.EDIT else Mode.DISPLAY,
-            editState = state.editState.copy(
-                query = if (action.editMode) state.editState.query else "",
-            ),
-        )
+        is BrowserToolbarAction.EnterEditMode ->
+            state.copy(
+                mode = Mode.EDIT,
+                editState = state.editState.copy(isQueryPrivate = action.isPrivate),
+            )
+
+        is BrowserToolbarAction.ExitEditMode ->
+            state.copy(
+                mode = Mode.DISPLAY,
+                editState =
+                    state.editState.copy(
+                        query = BrowserToolbarQuery(""),
+                        queryWasPrefilled = false,
+                        suggestion = null,
+                    ),
+            )
+
+        is BrowserToolbarAction.ToolbarGravityUpdated -> state.copy(gravity = action.gravity)
 
         is BrowserToolbarAction.CommitUrl -> state
 
-        is BrowserActionsStartUpdated -> state.copy(
-            displayState = state.displayState.copy(
-                browserActionsStart = action.actions,
-            ),
-        )
+        is BrowserActionsStartUpdated ->
+            state.copy(displayState = state.displayState.copy(browserActionsStart = action.actions))
 
-        is PageActionsStartUpdated -> state.copy(
-            displayState = state.displayState.copy(
-                pageActionsStart = action.actions,
-            ),
-        )
+        is PageActionsStartUpdated ->
+            state.copy(displayState = state.displayState.copy(pageActionsStart = action.actions))
 
-        is PageOriginUpdated -> state.copy(
-            displayState = state.displayState.copy(
-                pageOrigin = action.pageOrigin,
-            ),
-        )
+        is PageOriginUpdated -> state.copy(displayState = state.displayState.copy(pageOrigin = action.pageOrigin))
 
-        is PageActionsEndUpdated -> state.copy(
-            displayState = state.displayState.copy(
-                pageActionsEnd = action.actions,
-            ),
-        )
+        is PageActionsEndUpdated -> state.copy(displayState = state.displayState.copy(pageActionsEnd = action.actions))
 
-        is BrowserActionsEndUpdated -> state.copy(
-            displayState = state.displayState.copy(
-                browserActionsEnd = action.actions,
-            ),
-        )
+        is BrowserActionsEndUpdated ->
+            state.copy(displayState = state.displayState.copy(browserActionsEnd = action.actions))
 
-        is NavigationActionsUpdated -> state.copy(
-            displayState = state.displayState.copy(
-                navigationActions = action.actions,
-            ),
-        )
+        is NavigationActionsUpdated ->
+            state.copy(displayState = state.displayState.copy(navigationActions = action.actions))
 
-        is BrowserEditToolbarAction.SearchQueryUpdated -> state.copy(
-            editState = state.editState.copy(
-                query = action.query,
-                showQueryAsPreselected = action.showAsPreselected,
-            ),
-        )
+        is BrowserDisplayToolbarAction.ToolbarCFRShown ->
+            state.copy(displayState = state.displayState.copy(cfr = action.cfr))
 
-        is BrowserEditToolbarAction.AutocompleteProvidersUpdated -> state.copy(
-            editState = state.editState.copy(
-                autocompleteProviders = action.autocompleteProviders,
-            ),
-        )
+        is BrowserDisplayToolbarAction.ToolbarCFRDismissed ->
+            state.copy(displayState = state.displayState.copy(cfr = null))
 
-        is BrowserEditToolbarAction.SearchActionsStartUpdated -> state.copy(
-            editState = state.editState.copy(
-                editActionsStart = action.actions,
-            ),
-        )
+        is BrowserEditToolbarAction.SearchQueryUpdated ->
+            state.copy(
+                editState =
+                    state.editState.copy(
+                        query = action.query,
+                        isQueryPrefilled = action.isQueryPrefilled,
+                        queryWasPrefilled =
+                            state.editState.queryWasPrefilled ||
+                                (action.isQueryPrefilled && action.query.current.isNotEmpty()),
+                    )
+            )
 
-        is BrowserEditToolbarAction.SearchActionsEndUpdated -> state.copy(
-            editState = state.editState.copy(
-                editActionsEnd = action.actions,
-            ),
-        )
+        is AutocompleteSuggestionUpdated ->
+            state.copy(editState = state.editState.copy(suggestion = action.autocompletedSuggestion))
 
-        is BrowserDisplayToolbarAction.UpdateProgressBarConfig -> state.copy(
-            displayState = state.displayState.copy(
-                progressBarConfig = action.config,
-            ),
-        )
+        is BrowserEditToolbarAction.SearchActionsStartUpdated ->
+            state.copy(editState = state.editState.copy(editActionsStart = action.actions))
 
-        is EnvironmentRehydrated,
-        is EnvironmentCleared,
-        is UrlSuggestionAutocompleted,
-        is BrowserToolbarEvent,
-            -> {
+        is BrowserEditToolbarAction.SearchActionsEndUpdated ->
+            state.copy(editState = state.editState.copy(editActionsEnd = action.actions))
+
+        is BrowserDisplayToolbarAction.UpdateProgressBarConfig ->
+            state.copy(displayState = state.displayState.copy(progressBarConfig = action.config))
+
+        is BrowserToolbarEvent -> {
             // no-op
             // Expected to be handled in middlewares set by integrators.
             state
         }
+
+        is BrowserEditToolbarAction.HintUpdated -> state.copy(editState = state.editState.copy(hint = action.hint))
     }
 }

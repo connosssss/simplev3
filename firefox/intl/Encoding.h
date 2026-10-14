@@ -267,14 +267,6 @@ class Encoding final {
   }
 
   /**
-   * Checks whether this is a Japanese legacy encoding.
-   */
-  inline bool IsJapaneseLegacy() const {
-    return this == SHIFT_JIS_ENCODING || this == EUC_JP_ENCODING ||
-           this == ISO_2022_JP_ENCODING;
-  }
-
-  /**
    * Returns the _output encoding_ of this encoding. This is UTF-8 for
    * UTF-16BE, UTF-16LE and replacement and the encoding itself otherwise.
    */
@@ -653,10 +645,7 @@ class Encoding final {
    * BOM sniffing may cause the returned decoder to morph into a decoder
    * for UTF-8, UTF-16LE or UTF-16BE instead of this encoding.
    */
-  inline UniquePtr<Decoder> NewDecoder() const {
-    UniquePtr<Decoder> decoder(encoding_new_decoder(this));
-    return decoder;
-  }
+  UniquePtr<Decoder> NewDecoder() const;
 
   /**
    * Instantiates a new decoder for this encoding with BOM sniffing enabled
@@ -678,10 +667,7 @@ class Encoding final {
    * (potentially malformed) input to the decoding algorithm for this
    * encoding.
    */
-  inline UniquePtr<Decoder> NewDecoderWithBOMRemoval() const {
-    UniquePtr<Decoder> decoder(encoding_new_decoder_with_bom_removal(this));
-    return decoder;
-  }
+  UniquePtr<Decoder> NewDecoderWithBOMRemoval() const;
 
   /**
    * Instantiates a new decoder for this encoding with BOM removal
@@ -708,10 +694,7 @@ class Encoding final {
    * removed the BOM, the caller should use `NewDecoderWithBOMRemoval()`
    * instead of this method to cause the BOM to be removed.
    */
-  inline UniquePtr<Decoder> NewDecoderWithoutBOMHandling() const {
-    UniquePtr<Decoder> decoder(encoding_new_decoder_without_bom_handling(this));
-    return decoder;
-  }
+  UniquePtr<Decoder> NewDecoderWithoutBOMHandling() const;
 
   /**
    * Instantiates a new decoder for this encoding with BOM handling disabled
@@ -732,10 +715,7 @@ class Encoding final {
   /**
    * Instantiates a new encoder for the output encoding of this encoding.
    */
-  inline UniquePtr<Encoder> NewEncoder() const {
-    UniquePtr<Encoder> encoder(encoding_new_encoder(this));
-    return encoder;
-  }
+  UniquePtr<Encoder> NewEncoder() const;
 
   /**
    * Instantiates a new encoder for the output encoding of this encoding
@@ -1352,6 +1332,26 @@ class Encoder final {
   Encoder(const Encoder&) = delete;
   Encoder& operator=(const Encoder&) = delete;
 };
+
+inline UniquePtr<Decoder> Encoding::NewDecoder() const {
+  UniquePtr<Decoder> decoder(encoding_new_decoder(this));
+  return decoder;
+}
+
+inline UniquePtr<Decoder> Encoding::NewDecoderWithBOMRemoval() const {
+  UniquePtr<Decoder> decoder(encoding_new_decoder_with_bom_removal(this));
+  return decoder;
+}
+
+inline UniquePtr<Decoder> Encoding::NewDecoderWithoutBOMHandling() const {
+  UniquePtr<Decoder> decoder(encoding_new_decoder_without_bom_handling(this));
+  return decoder;
+}
+
+inline UniquePtr<Encoder> Encoding::NewEncoder() const {
+  UniquePtr<Encoder> encoder(encoding_new_encoder(this));
+  return encoder;
+}
 
 };  // namespace mozilla
 

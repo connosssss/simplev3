@@ -1,16 +1,21 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/CDMProxy.h"
-#include "mozilla/MozPromise.h"
-#include "MediaFormatReader.h"
 #include "ReaderProxy.h"
+
+#include "MediaFormatReader.h"
 #include "TimeUnits.h"
+#include "mozilla/CDMProxy.h"
+#include "mozilla/Logging.h"
+#include "mozilla/MozPromise.h"
 
 namespace mozilla {
+
+extern LazyLogModule gMediaDecoderLog;
+
+#define LOG(msg, ...) \
+  MOZ_LOG_FMT(gMediaDecoderLog, LogLevel::Debug, msg, ##__VA_ARGS__)
 
 ReaderProxy::ReaderProxy(AbstractThread* aOwnerThread,
                          MediaFormatReader* aReader)
@@ -84,11 +89,36 @@ RefPtr<ReaderProxy::VideoDataPromise> ReaderProxy::RequestVideoData(
       ->Then(
           mOwnerThread, __func__,
           [startTime](RefPtr<VideoData> aVideo) {
-            return aVideo->AdjustForStartTime(startTime)
-                       ? VideoDataPromise::CreateAndResolve(aVideo.forget(),
-                                                            __func__)
-                       : VideoDataPromise::CreateAndReject(
-                             NS_ERROR_DOM_MEDIA_OVERFLOW_ERR, __func__);
+            const auto originalTime = aVideo->mTime;
+            if (!aVideo->AdjustForStartTime(startTime)) {
+              LOG("Failed to adjust video sample time {} for media start {}",
+                  originalTime.ToString().get(), startTime.ToString().get());
+              return VideoDataPromise::CreateAndReject(
+                  NS_ERROR_DOM_MEDIA_OVERFLOW_ERR, __func__);
+            }
+            const auto endTime = aVideo->GetEndTime();
+            if (!endTime.IsValid()) {
+              LOG("Rejecting video sample at {} with an invalid end time",
+                  aVideo->mTime.ToString().get());
+              return VideoDataPromise::CreateAndReject(
+                  NS_ERROR_DOM_MEDIA_OVERFLOW_ERR, __func__);
+            }
+            const auto zero = media::TimeUnit::Zero(aVideo->mTime);
+            if (aVideo->mTime.IsNegative() && endTime < zero) {
+              LOG("Rejecting video sample [{}, {}] before media start",
+                  aVideo->mTime.ToString().get(), endTime.ToString().get());
+              return VideoDataPromise::CreateAndReject(
+                  NS_ERROR_DOM_MEDIA_OVERFLOW_ERR, __func__);
+            }
+            if (aVideo->mTime.IsNegative()) {
+              LOG("Clipping video sample start from {} to {}, preserving end "
+                  "{}",
+                  aVideo->mTime.ToString().get(), zero.ToString().get(),
+                  endTime.ToString().get());
+              aVideo->UpdateTimestamp(zero);
+            }
+            return VideoDataPromise::CreateAndResolve(aVideo.forget(),
+                                                      __func__);
           },
           [](const MediaResult& aError) {
             return VideoDataPromise::CreateAndReject(aError, __func__);
@@ -124,7 +154,7 @@ void ReaderProxy::ReleaseResources() {
                         &MediaFormatReader::ReleaseResources);
   nsresult rv = mReader->OwnerThread()->Dispatch(r.forget());
   MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-  Unused << rv;
+  (void)rv;
 }
 
 void ReaderProxy::ResetDecode(TrackSet aTracks) {
@@ -134,7 +164,7 @@ void ReaderProxy::ResetDecode(TrackSet aTracks) {
                                   &MediaFormatReader::ResetDecode, aTracks);
   nsresult rv = mReader->OwnerThread()->Dispatch(r.forget());
   MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-  Unused << rv;
+  (void)rv;
 }
 
 RefPtr<ShutdownPromise> ReaderProxy::Shutdown() {
@@ -174,7 +204,7 @@ void ReaderProxy::SetVideoBlankDecode(bool aIsBlankDecode) {
       &MediaFormatReader::SetVideoNullDecode, aIsBlankDecode);
   nsresult rv = mReader->OwnerThread()->Dispatch(r.forget());
   MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-  Unused << rv;
+  (void)rv;
 }
 
 void ReaderProxy::UpdateDuration() {
@@ -200,7 +230,7 @@ void ReaderProxy::UpdateMediaEngineId(uint64_t aMediaEngineId) {
       &MediaFormatReader::UpdateMediaEngineId, aMediaEngineId);
   nsresult rv = mReader->OwnerThread()->Dispatch(r.forget());
   MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-  Unused << rv;
+  (void)rv;
 }
 
 RefPtr<SetCDMPromise> ReaderProxy::SetCDMProxy(CDMProxy* aProxy) {

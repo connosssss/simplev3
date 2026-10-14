@@ -17,17 +17,19 @@ import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import androidx.activity.result.ActivityResultLauncher
-import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.R as appcompatR
 import androidx.core.view.MenuProvider
 import androidx.fragment.app.DialogFragment
 import androidx.lifecycle.Lifecycle
 import androidx.navigation.fragment.findNavController
 import androidx.navigation.fragment.navArgs
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.map
 import mozilla.components.lib.state.ext.consumeFrom
 import mozilla.components.lib.state.ext.flowScoped
+import mozilla.components.lib.state.helpers.StoreProvider.Companion.fragmentStore
 import mozilla.components.support.base.feature.UserInteractionHandler
 import mozilla.components.support.ktx.kotlin.toShortUrl
 import mozilla.components.ui.widgets.withCenterAlignedButtons
@@ -35,8 +37,8 @@ import org.mozilla.fenix.HomeActivity
 import org.mozilla.fenix.R
 import org.mozilla.fenix.addons.showSnackBar
 import org.mozilla.fenix.browser.browsingmode.BrowsingMode
-import org.mozilla.fenix.components.StoreProvider
 import org.mozilla.fenix.databinding.FragmentHistoryMetadataGroupBinding
+import org.mozilla.fenix.e2e.SystemInsetsPaddedFragment
 import org.mozilla.fenix.ext.components
 import org.mozilla.fenix.ext.nav
 import org.mozilla.fenix.ext.requireComponents
@@ -49,18 +51,15 @@ import org.mozilla.fenix.library.historymetadata.controller.DefaultHistoryMetada
 import org.mozilla.fenix.library.historymetadata.interactor.DefaultHistoryMetadataGroupInteractor
 import org.mozilla.fenix.library.historymetadata.interactor.HistoryMetadataGroupInteractor
 import org.mozilla.fenix.library.historymetadata.view.HistoryMetadataGroupView
-import org.mozilla.fenix.lifecycle.registerForVerification
-import org.mozilla.fenix.lifecycle.verifyUser
-import org.mozilla.fenix.tabstray.DefaultTabManagementFeatureHelper
-import org.mozilla.fenix.tabstray.Page
+import org.mozilla.fenix.pbmlock.registerForVerification
+import org.mozilla.fenix.pbmlock.verifyUser
+import org.mozilla.fenix.tabstray.redux.state.Page
 import org.mozilla.fenix.utils.allowUndo
 
-/**
- * Displays a list of history metadata items for a history metadata search group.
- */
+/** Displays a list of history metadata items for a history metadata search group. */
 @SuppressWarnings("TooManyFunctions")
 class HistoryMetadataGroupFragment :
-    LibraryPageFragment<History.Metadata>(), UserInteractionHandler, MenuProvider {
+    LibraryPageFragment<History.Metadata>(), UserInteractionHandler, MenuProvider, SystemInsetsPaddedFragment {
 
     private lateinit var historyMetadataGroupStore: HistoryMetadataGroupFragmentStore
     private lateinit var interactor: HistoryMetadataGroupInteractor
@@ -68,8 +67,10 @@ class HistoryMetadataGroupFragment :
     private var _historyMetadataGroupView: HistoryMetadataGroupView? = null
     private val historyMetadataGroupView: HistoryMetadataGroupView
         get() = _historyMetadataGroupView!!
+
     private var _binding: FragmentHistoryMetadataGroupBinding? = null
-    private val binding get() = _binding!!
+    private val binding
+        get() = _binding!!
 
     private val args by navArgs<HistoryMetadataGroupFragmentArgs>()
     private var verificationResultLauncher: ActivityResultLauncher<Intent> =
@@ -86,42 +87,48 @@ class HistoryMetadataGroupFragment :
         _binding = FragmentHistoryMetadataGroupBinding.inflate(inflater, container, false)
 
         val historyItems = args.historyMetadataItems.filterIsInstance<History.Metadata>()
-        historyMetadataGroupStore = StoreProvider.get(this) {
-            HistoryMetadataGroupFragmentStore(
-                HistoryMetadataGroupFragmentState(
-                    items = historyItems,
-                    pendingDeletionItems = requireContext().components.appStore.state.pendingDeletionHistoryItems,
-                    isEmpty = historyItems.isEmpty(),
-                ),
+        historyMetadataGroupStore =
+            fragmentStore(
+                    HistoryMetadataGroupFragmentState(
+                        items = historyItems,
+                        pendingDeletionItems = requireContext().components.appStore.state.pendingDeletionHistoryItems,
+                        isEmpty = historyItems.isEmpty(),
+                    )
+                ) {
+                    HistoryMetadataGroupFragmentStore(it)
+                }
+                .value
+
+        interactor =
+            DefaultHistoryMetadataGroupInteractor(
+                controller =
+                    DefaultHistoryMetadataGroupController(
+                        historyStorage = requireComponents.core.historyStorage,
+                        browserStore = requireComponents.core.store,
+                        appStore = requireComponents.appStore,
+                        store = historyMetadataGroupStore,
+                        selectOrAddUseCase = requireComponents.useCases.tabsUseCases.selectOrAddTab,
+                        fenixBrowserUseCases = requireComponents.useCases.fenixBrowserUseCases,
+                        navController = findNavController(),
+                        settings = requireComponents.settings,
+                        shareUseCases = requireComponents.useCases.shareUseCases,
+                        scope = CoroutineScope(Dispatchers.IO),
+                        searchTerm = args.title,
+                        deleteSnackbar = ::deleteSnackbar,
+                        promptDeleteAll = ::promptDeleteAll,
+                        allDeletedSnackbar = ::allDeletedSnackbar,
+                    )
             )
-        }
 
-        interactor = DefaultHistoryMetadataGroupInteractor(
-            controller = DefaultHistoryMetadataGroupController(
-                historyStorage = (activity as HomeActivity).components.core.historyStorage,
-                browserStore = (activity as HomeActivity).components.core.store,
-                appStore = requireContext().components.appStore,
-                store = historyMetadataGroupStore,
-                selectOrAddUseCase = requireComponents.useCases.tabsUseCases.selectOrAddTab,
-                navController = findNavController(),
-                scope = CoroutineScope(Dispatchers.IO),
-                searchTerm = args.title,
-                deleteSnackbar = ::deleteSnackbar,
-                promptDeleteAll = ::promptDeleteAll,
-                allDeletedSnackbar = ::allDeletedSnackbar,
-            ),
-        )
-
-        _historyMetadataGroupView = HistoryMetadataGroupView(
-            container = binding.historyMetadataGroupLayout,
-            interactor = interactor,
-            title = args.title,
-            onEmptyStateChanged = {
-                historyMetadataGroupStore.dispatch(
-                    HistoryMetadataGroupFragmentAction.ChangeEmptyState(it),
-                )
-            },
-        )
+        _historyMetadataGroupView =
+            HistoryMetadataGroupView(
+                container = binding.historyMetadataGroupLayout,
+                interactor = interactor,
+                title = args.title,
+                onEmptyStateChanged = {
+                    historyMetadataGroupStore.dispatch(HistoryMetadataGroupFragmentAction.ChangeEmptyState(it))
+                },
+            )
 
         return binding.root
     }
@@ -134,14 +141,14 @@ class HistoryMetadataGroupFragment :
             activity?.invalidateOptionsMenu()
         }
 
-        requireContext().components.appStore.flowScoped(viewLifecycleOwner) { flow ->
-            flow.map { state -> state.pendingDeletionHistoryItems }.collect { items ->
-                historyMetadataGroupStore.dispatch(
-                    HistoryMetadataGroupFragmentAction.UpdatePendingDeletionItems(
-                        pendingDeletionItems = items,
-                    ),
-                )
-            }
+        requireContext().components.appStore.flowScoped(viewLifecycleOwner, Dispatchers.Main) { flow ->
+            flow
+                .map { state -> state.pendingDeletionHistoryItems }
+                .collect { items ->
+                    historyMetadataGroupStore.dispatch(
+                        HistoryMetadataGroupFragmentAction.UpdatePendingDeletionItems(pendingDeletionItems = items)
+                    )
+                }
         }
     }
 
@@ -163,9 +170,10 @@ class HistoryMetadataGroupFragment :
             inflater.inflate(R.menu.history_select_multi, menu)
 
             menu.findItem(R.id.delete_history_multi_select)?.let { deleteItem ->
-                deleteItem.title = SpannableString(deleteItem.title).apply {
-                    setTextColor(requireContext(), R.attr.textCritical)
-                }
+                deleteItem.title =
+                    SpannableString(deleteItem.title).apply {
+                        setTextColor(requireContext(), appcompatR.attr.colorError)
+                    }
             }
         } else {
             inflater.inflate(R.menu.history_menu, menu)
@@ -234,28 +242,32 @@ class HistoryMetadataGroupFragment :
         undo: suspend (items: Set<History.Metadata>) -> Unit,
         delete: (Set<History.Metadata>) -> suspend (context: Context) -> Unit,
     ) {
-        CoroutineScope(Dispatchers.IO).allowUndo(
-            requireView(),
-            getSnackBarMessage(items),
-            getString(R.string.snackbar_deleted_undo),
-            {
-                undo.invoke(items)
-            },
-            delete(items),
-        )
+        CoroutineScope(Dispatchers.IO)
+            .allowUndo(
+                requireView(),
+                settings = requireComponents.settings,
+                getSnackBarMessage(items),
+                getString(R.string.snackbar_deleted_undo),
+                {
+                    undo.invoke(items)
+                },
+                delete(items),
+            )
     }
 
     private fun promptDeleteAll() {
-        if (childFragmentManager.findFragmentByTag(DeleteAllConfirmationDialogFragment.TAG)
+        if (
+            childFragmentManager.findFragmentByTag(DeleteAllConfirmationDialogFragment.TAG)
                 as? DeleteAllConfirmationDialogFragment != null
         ) {
             return
         }
 
-        DeleteAllConfirmationDialogFragment(interactor, args.title).show(
-            childFragmentManager,
-            DeleteAllConfirmationDialogFragment.TAG,
-        )
+        DeleteAllConfirmationDialogFragment(interactor, args.title)
+            .show(
+                childFragmentManager,
+                DeleteAllConfirmationDialogFragment.TAG,
+            )
     }
 
     private fun allDeletedSnackbar() {
@@ -268,29 +280,18 @@ class HistoryMetadataGroupFragment :
     }
 
     private fun showTabTray(openInPrivate: Boolean = false) {
-        if (DefaultTabManagementFeatureHelper.enhancementsEnabled) {
-            findNavController().nav(
+        findNavController()
+            .nav(
                 R.id.historyMetadataGroupFragment,
                 HistoryMetadataGroupFragmentDirections.actionGlobalTabManagementFragment(
-                    page = if (openInPrivate) {
-                        Page.PrivateTabs
-                    } else {
-                        Page.NormalTabs
-                    },
+                    page =
+                        if (openInPrivate) {
+                            Page.PrivateTabs
+                        } else {
+                            Page.NormalTabs
+                        }
                 ),
             )
-        } else {
-            findNavController().nav(
-                R.id.historyMetadataGroupFragment,
-                HistoryMetadataGroupFragmentDirections.actionGlobalTabsTrayFragment(
-                    page = if (openInPrivate) {
-                        Page.PrivateTabs
-                    } else {
-                        Page.NormalTabs
-                    },
-                ),
-            )
-        }
     }
 
     private fun getSnackBarMessage(historyItems: Set<History.Metadata>): String {
@@ -306,12 +307,12 @@ class HistoryMetadataGroupFragment :
         private val groupName: String,
     ) : DialogFragment() {
         override fun onCreateDialog(savedInstanceState: Bundle?): Dialog =
-            AlertDialog.Builder(requireContext())
+            MaterialAlertDialogBuilder(requireContext())
                 .setMessage(
                     String.format(
                         getString(R.string.delete_all_history_group_prompt_message),
                         groupName,
-                    ),
+                    )
                 )
                 .setNegativeButton(R.string.delete_history_group_prompt_cancel) { dialog: DialogInterface, _ ->
                     dialog.cancel()
@@ -320,7 +321,8 @@ class HistoryMetadataGroupFragment :
                     interactor.onDeleteAllConfirmed()
                     dialog.dismiss()
                 }
-                .create().withCenterAlignedButtons()
+                .create()
+                .withCenterAlignedButtons()
 
         companion object {
             const val TAG = "DELETE_CONFIRMATION_DIALOG_FRAGMENT"

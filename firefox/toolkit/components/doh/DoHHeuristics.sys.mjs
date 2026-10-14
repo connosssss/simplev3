@@ -15,14 +15,14 @@ XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "gNetworkLinkService",
   "@mozilla.org/network/network-link-service;1",
-  "nsINetworkLinkService"
+  Ci.nsINetworkLinkService
 );
 
 XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "gParentalControlsService",
   "@mozilla.org/parental-controls-service;1",
-  "nsIParentalControlsService"
+  Ci.nsIParentalControlsService
 );
 
 ChromeUtils.defineESModuleGetters(lazy, {
@@ -53,11 +53,11 @@ export const Heuristics = {
       zscalerCanary: zscaler,
       canary,
       browserParent: await parentalControls(),
-      thirdPartyRoots: await thirdPartyRoots(),
       policy: await enterprisePolicy(),
       vpn: platformChecks.vpn,
       proxy: platformChecks.proxy,
       nrpt: platformChecks.nrpt,
+      privateDns: platformChecks.privateDns,
       steeredProvider: "",
     };
 
@@ -89,12 +89,11 @@ export const Heuristics = {
       modifiedRoots: Ci.nsITRRSkipReason.TRR_HEURISTIC_TRIPPED_MODIFIED_ROOTS,
       browserParent:
         Ci.nsITRRSkipReason.TRR_HEURISTIC_TRIPPED_PARENTAL_CONTROLS,
-      thirdPartyRoots:
-        Ci.nsITRRSkipReason.TRR_HEURISTIC_TRIPPED_THIRD_PARTY_ROOTS,
       policy: Ci.nsITRRSkipReason.TRR_HEURISTIC_TRIPPED_ENTERPRISE_POLICY,
       vpn: Ci.nsITRRSkipReason.TRR_HEURISTIC_TRIPPED_VPN,
       proxy: Ci.nsITRRSkipReason.TRR_HEURISTIC_TRIPPED_PROXY,
       nrpt: Ci.nsITRRSkipReason.TRR_HEURISTIC_TRIPPED_NRPT,
+      privateDns: Ci.nsITRRSkipReason.TRR_HEURISTIC_TRIPPED_PRIVATE_DNS,
     };
 
     let value = namesToSkipReason[heuristicName];
@@ -126,6 +125,7 @@ export const Heuristics = {
     zscalerCanary: 16,
     canary: 17,
     ignored: 18,
+    privateDns: 19,
 
     heuristicNames() {
       return [
@@ -139,6 +139,7 @@ export const Heuristics = {
         "vpn",
         "proxy",
         "nrpt",
+        "privateDns",
       ];
     },
 
@@ -290,26 +291,6 @@ export async function parentalControls() {
   return "enable_doh";
 }
 
-async function thirdPartyRoots() {
-  if (Cu.isInAutomation) {
-    return "enable_doh";
-  }
-
-  let certdb = Cc["@mozilla.org/security/x509certdb;1"].getService(
-    Ci.nsIX509CertDB
-  );
-
-  let hasThirdPartyRoots = await new Promise(resolve => {
-    certdb.asyncHasThirdPartyRoots(resolve);
-  });
-
-  if (hasThirdPartyRoots) {
-    return "disable_doh";
-  }
-
-  return "enable_doh";
-}
-
 async function enterprisePolicy() {
   if (!Services.policies) {
     return "no_policy_set";
@@ -432,6 +413,10 @@ async function platform() {
       : "enable_doh";
   platformChecks.nrpt =
     indications & Ci.nsINetworkLinkService.NRPT_DETECTED
+      ? "disable_doh"
+      : "enable_doh";
+  platformChecks.privateDns =
+    indications & Ci.nsINetworkLinkService.PRIVATE_DNS_DETECTED
       ? "disable_doh"
       : "enable_doh";
 

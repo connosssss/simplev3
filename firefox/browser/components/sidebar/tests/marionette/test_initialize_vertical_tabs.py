@@ -55,12 +55,12 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
         if orientation == "vertical":
             self.assertEqual(
                 h_collapsed,
-                "true",
+                "",
                 "Horizontal tab strip has expected collapsed attribute value",
             )
             self.assertEqual(
                 v_collapsed,
-                "false",
+                None,
                 "Vertical tab strip has expected collapsed attribute value",
             )
 
@@ -77,7 +77,7 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
         else:
             self.assertEqual(
                 v_collapsed,
-                "true",
+                "",
                 "Vertical tab strip has expected collapsed attribute value",
             )
 
@@ -97,14 +97,12 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
 
     def test_vertical_widgets_in_area(self):
         # A clean startup in verticalTabs mode; we should get all the defaults
-        self.restart_with_prefs(
-            {
-                "sidebar.revamp": True,
-                "sidebar.verticalTabs": True,
-                customization_pref: None,
-                snapshot_pref: None,
-            }
-        )
+        self.restart_with_prefs({
+            "sidebar.revamp": True,
+            "sidebar.verticalTabs": True,
+            customization_pref: None,
+            snapshot_pref: None,
+        })
         horiz_tab_ids = self.get_area_widgets("AREA_TABSTRIP")
         vertical_tab_ids = self.get_area_widgets("AREA_VERTICAL_TABSTRIP")
 
@@ -130,14 +128,22 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
 
         self.check_tabs_toolbar_visibilities("horizontal")
 
-        # Make sure we ended up with sensible defaults
+        # Make sure we ended up with sensible defaults. The flexible space is a
+        # special widget whose resolved id (customizableui-special-springN) isn't
+        # deterministic, so normalize it back to "spring" before comparing.
+        normalized_ids = [
+            "spring" if wid.startswith("customizableui-special-spring") else wid
+            for wid in horiz_tab_ids
+        ]
         self.assertEqual(
-            horiz_tab_ids,
+            normalized_ids,
             [
-                "firefox-view-button",
                 "tabbrowser-tabs",
                 "new-tab-button",
+                "spring",
                 "alltabs-button",
+                "smartwindow-group-tabs-button",
+                "ai-window-toggle",
             ],
             msg="The tabstrip was populated with the expected defaults",
         )
@@ -148,18 +154,66 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
             msg="The vertical tabstrip area was emptied",
         )
 
+    def _count_springs(self, area):
+        return len([
+            wid
+            for wid in self.get_area_widgets(area)
+            if wid.startswith("customizableui-special-spring")
+        ])
+
+    def test_flexible_space_removed_in_vertical(self):
+        # Start fresh in horizontal tabs, where the tabstrip has a flexible space
+        # (spring) to the left of the alltabs-button by default.
+        self.restart_with_prefs({
+            "sidebar.revamp": True,
+            "sidebar.verticalTabs": False,
+            customization_pref: None,
+            snapshot_pref: None,
+        })
+
+        default_navbar_springs = self._count_springs("AREA_NAVBAR")
+        self.assertEqual(
+            self._count_springs("AREA_TABSTRIP"),
+            1,
+            msg="The tabstrip has a flexible space by default in horizontal tabs",
+        )
+
+        # Switching to vertical tabs should remove the tabstrip's flexible space
+        # entirely, not move it into the nav-bar.
+        self.marionette.set_pref("sidebar.verticalTabs", True)
+        self.check_tabs_toolbar_visibilities("vertical")
+
+        self.assertEqual(
+            len(self.get_area_widgets("AREA_TABSTRIP")),
+            0,
+            msg="The horizontal tabstrip area is empty in vertical tabs",
+        )
+        self.assertEqual(
+            self._count_springs("AREA_NAVBAR"),
+            default_navbar_springs,
+            msg="The tabstrip flexible space was not moved into the nav-bar",
+        )
+
+        # Switching back to horizontal should restore the flexible space.
+        self.marionette.set_pref("sidebar.verticalTabs", False)
+        self.check_tabs_toolbar_visibilities("horizontal")
+
+        self.assertEqual(
+            self._count_springs("AREA_TABSTRIP"),
+            1,
+            msg="The flexible space returned to the tabstrip in horizontal tabs",
+        )
+
     def test_restore_tabstrip_customizations(self):
         fixture_prefs = {
             "sidebar.revamp": True,
             "sidebar.verticalTabs": False,
         }
-        self.restart_with_prefs(
-            {
-                **fixture_prefs,
-                customization_pref: None,
-                snapshot_pref: None,
-            }
-        )
+        self.restart_with_prefs({
+            **fixture_prefs,
+            customization_pref: None,
+            snapshot_pref: None,
+        })
 
         # Add a widget at the start of the horizontal tabstrip
         # This is synchronous and should result in updating the UI and the saved state in uiCustomization pref
@@ -222,13 +276,11 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
             "sidebar.verticalTabs": True,
             "sidebar.visibility": "hide-sidebar",
         }
-        self.restart_with_prefs(
-            {
-                **fixture_prefs,
-                customization_pref: None,
-                snapshot_pref: None,
-            }
-        )
+        self.restart_with_prefs({
+            **fixture_prefs,
+            customization_pref: None,
+            snapshot_pref: None,
+        })
 
         pref_value = self.marionette.execute_script(
             """
@@ -250,7 +302,7 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
         self.assertEqual(pref_value, "always-show")
 
         # Restart with vertical tabs disabled. We should get the default for horizontal tabs
-        # which is hide-sidebar
+        # which is hide-on-close
 
         fixture_prefs["sidebar.visibility"] = None
         fixture_prefs["sidebar.verticalTabs"] = False
@@ -261,4 +313,31 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
             return Services.prefs.getStringPref("sidebar.visibility", null);
         """
         )
-        self.assertEqual(pref_value, "hide-sidebar")
+        self.assertEqual(pref_value, "hide-on-close")
+
+    def test_hide_drag_to_pin_promo_if_horizontal_tabs_pinned(self):
+        # Pin a tab using the horizontal tabstrip.
+        self.restart_with_prefs({
+            "sidebar.revamp": False,
+            "sidebar.verticalTabs": False,
+        })
+        self.marionette.execute_async_script(
+            """
+            let resolve = arguments[0];
+            let tab = gBrowser.selectedTab;
+            tab.addEventListener("TabPinned", resolve, { once: true });
+            gBrowser.pinTab(tab);
+            """
+        )
+
+        # Switch to vertical tabs.
+        self.marionette.execute_script(
+            """
+            Services.prefs.setBoolPref("sidebar.verticalTabs", true);
+            """
+        )
+
+        promo_card = self.marionette.find_element(By.ID, "drag-to-pin-promo-card")
+        self.assertFalse(
+            promo_card.is_displayed(), "Drag-to-pin promo card is not displayed."
+        )

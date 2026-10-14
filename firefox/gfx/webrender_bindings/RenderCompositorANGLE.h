@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -83,27 +81,20 @@ class RenderCompositorANGLE final : public RenderCompositor {
 
   bool ShouldUseNativeCompositor() override;
 
-  bool ShouldUseLayerCompositor() override;
+  bool ShouldUseLayerCompositor() const override;
+  bool UseLayerCompositor() const override;
 
   // Interface for wr::Compositor
   void CompositorBeginFrame() override;
   void CompositorEndFrame() override;
-  void Bind(wr::NativeTileId aId, wr::DeviceIntPoint* aOffset, uint32_t* aFboId,
-            wr::DeviceIntRect aDirtyRect,
-            wr::DeviceIntRect aValidRect) override;
-  void Unbind() override;
   void BindSwapChain(wr::NativeSurfaceId aId,
                      const wr::DeviceIntRect* aDirtyRects,
                      size_t aNumDirtyRects) override;
   void PresentSwapChain(wr::NativeSurfaceId aId,
                         const wr::DeviceIntRect* aDirtyRects,
                         size_t aNumDirtyRects) override;
-  void CreateSurface(wr::NativeSurfaceId aId, wr::DeviceIntPoint aVirtualOffset,
-                     wr::DeviceIntSize aTileSize, bool aIsOpaque) override;
   void CreateExternalSurface(wr::NativeSurfaceId aId, bool aIsOpaque) override;
   void DestroySurface(NativeSurfaceId aId) override;
-  void CreateTile(wr::NativeSurfaceId aId, int32_t aX, int32_t aY) override;
-  void DestroyTile(wr::NativeSurfaceId aId, int32_t aX, int32_t aY) override;
   void AttachExternalImage(wr::NativeSurfaceId aId,
                            wr::ExternalImageId aExternalImage) override;
   void CreateSwapChainSurface(wr::NativeSurfaceId aId, wr::DeviceIntSize aSize,
@@ -117,9 +108,7 @@ class RenderCompositorANGLE final : public RenderCompositor {
                   wr::ImageRendering aImageRendering,
                   wr::DeviceIntRect aRoundedClipRect,
                   wr::ClipRadius aClipRadius) override;
-  void EnableNativeCompositor(bool aEnable) override;
   bool EnableAsyncScreenshot() override;
-  void GetCompositorCapabilities(CompositorCapabilities* aCaps) override;
   void GetWindowProperties(WindowProperties* aProperties) override;
 
   // Interface for partial present
@@ -127,7 +116,7 @@ class RenderCompositorANGLE final : public RenderCompositor {
   bool RequestFullRender() override;
   uint32_t GetMaxPartialPresentRects() override;
 
-  RefPtr<layers::Fence> GetAndResetReleaseFence() override;
+  RefPtr<layers::Fence> GetAndResetReadFence() override;
 
   bool MaybeReadback(const gfx::IntSize& aReadbackSize,
                      const wr::ImageFormat& aReadbackFormat,
@@ -135,8 +124,6 @@ class RenderCompositorANGLE final : public RenderCompositor {
                      bool* aNeedsYFlip) override;
 
  protected:
-  bool UseCompositor() const;
-  bool UseLayerCompositor() const;
   bool RecreateNonNativeCompositorSwapChain();
   void InitializeUsePartialPresent();
   void InsertGraphicsCommandsFinishedWaitQuery(
@@ -180,8 +167,6 @@ class RenderCompositorANGLE final : public RenderCompositor {
   Maybe<LayoutDeviceIntSize> mBufferSize;
   bool mUsePartialPresent = false;
   bool mFullRender = false;
-  // Used to know a timing of disabling native compositor.
-  bool mDisablingNativeCompositor = false;
   bool mFirstPresent = true;
   // Wether we're currently using alpha.
   bool mSwapChainUsingAlpha = false;

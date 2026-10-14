@@ -1,21 +1,20 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsFocusManager_h___
-#define nsFocusManager_h___
+#ifndef nsFocusManager_h_
+#define nsFocusManager_h_
 
-#include "nsCycleCollectionParticipant.h"
-#include "nsIContent.h"
-#include "mozilla/dom/Document.h"
-#include "nsIFocusManager.h"
-#include "nsIObserver.h"
-#include "nsWeakReference.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/dom/Document.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsIContent.h"
+#include "nsIFocusManager.h"
+#include "nsIObserver.h"
+#include "nsPIDOMWindowInlines.h"  // FIXME: Stop including inline definitions!
+#include "nsWeakReference.h"
 
 #define FOCUSMANAGER_CONTRACTID "@mozilla.org/focus-manager;1"
 
@@ -51,7 +50,7 @@ class nsFocusManager final : public nsIFocusManager,
 
  public:
   NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsFocusManager, nsIFocusManager)
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_NSIOBSERVER
   NS_DECL_NSIFOCUSMANAGER
 
@@ -143,11 +142,17 @@ class nsFocusManager final : public nsIFocusManager,
     return mActiveBrowsingContextInContent;
   }
 
+  void ContentInserted(nsIContent* aChild, const ContentInsertInfo& aInfo);
+
+  void ContentAppended(nsIContent* aFirstNewContent,
+                       const ContentAppendInfo& aInfo);
+
   /**
    * Called when content has been removed.
    */
   MOZ_CAN_RUN_SCRIPT nsresult ContentRemoved(Document* aDocument,
-                                             nsIContent* aContent);
+                                             nsIContent* aContent,
+                                             const ContentRemoveInfo& aInfo);
 
   void NeedsFlushBeforeEventHandling(mozilla::dom::Element* aElement) {
     if (mFocusedElement == aElement) {
@@ -321,7 +326,8 @@ class nsFocusManager final : public nsIFocusManager,
   /**
    * Activate or deactivate the window and send the activate/deactivate events.
    */
-  void ActivateOrDeactivate(nsPIDOMWindowOuter* aWindow, bool aActive);
+  MOZ_CAN_RUN_SCRIPT void ActivateOrDeactivate(nsPIDOMWindowOuter* aWindow,
+                                               bool aActive);
 
   /**
    * Blur whatever is currently focused and focus aNewContent. aFlags is a
@@ -573,6 +579,19 @@ class nsFocusManager final : public nsIFocusManager,
                             nsIContent** aStartContent,
                             nsIContent** aEndContent);
 
+  /*
+   * Determine place to start sequential focus navigation, for
+   * MOVEFOCUS_FORWARD/BACKWARD.
+   * *aConsiderStartContent is set to true if we should move
+   * focus directly to *aStartContent if it is focusable
+   * (rather than the next/previous content).
+   */
+  void GetSequentialFocusNavigationStartingPoint(Document* aDocument,
+                                                 nsIContent* aFocusedContent,
+                                                 bool aForward,
+                                                 nsIContent** aStartContent,
+                                                 bool* aConsiderStartContent);
+
   /**
    * Retrieve the next tabbable element in scope owned by aOwner, using
    * focusability and tabindex to determine the tab order.
@@ -688,9 +707,6 @@ class nsFocusManager final : public nsIFocusManager,
    * from where the selection is. Similarly, if the starting element isn't
    * focusable, since it doesn't really have a defined tab index.
    *
-   * aSkipPopover should be true to avoid an invoker triggering to step into
-   * the popover that was already been visited again.
-   *
    * aNavigateByKey to move focus by keyboard as a side effect of computing the
    * next target.
    *
@@ -702,7 +718,7 @@ class nsFocusManager final : public nsIFocusManager,
       mozilla::PresShell* aPresShell, nsIContent* aRootContent,
       nsIContent* aOriginalStartContent, nsIContent* aStartContent,
       bool aForward, int32_t aCurrentTabIndex, bool aIgnoreTabIndex,
-      bool aForDocumentNavigation, bool aNavigateByKey, bool aSkipPopover,
+      bool aForDocumentNavigation, bool aNavigateByKey,
       bool aReachedToEndForDocumentNavigation, nsIContent** aResultContent);
 
   /**
@@ -894,6 +910,8 @@ class nsFocusManager final : public nsIFocusManager,
   // Returns true if set and false if ignored.
   bool SetActiveBrowsingContextInChrome(mozilla::dom::BrowsingContext* aContext,
                                         uint64_t aActionId);
+
+  void FocusedElementMayHaveMoved(nsIContent* aContent, nsINode* aOldParent);
 
  public:
   // Chrome-only

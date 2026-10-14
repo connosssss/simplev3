@@ -1,20 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ProxyConfigLookup.h"
+
 #include "ProxyConfigLookupChild.h"
 #include "mozilla/Components.h"
-#include "mozilla/Unused.h"
 #include "nsContentUtils.h"
 #include "nsICancelable.h"
+#include "nsIChannel.h"
+#include "nsIHttpChannelInternal.h"
 #include "nsIProtocolProxyService.h"
 #include "nsIProtocolProxyService2.h"
 #include "nsNetUtil.h"
 #include "nsThreadUtils.h"
-#include "nsIChannel.h"
 
 namespace mozilla {
 namespace net {
@@ -22,20 +21,22 @@ namespace net {
 // static
 nsresult ProxyConfigLookup::Create(
     std::function<void(nsIProxyInfo*, nsresult)>&& aCallback, nsIURI* aURI,
-    uint32_t aProxyResolveFlags, nsICancelable** aLookupCancellable) {
+    uint32_t aProxyResolveFlags, bool aIsTRRServiceChannel,
+    nsICancelable** aLookupCancellable) {
   MOZ_ASSERT(NS_IsMainThread());
 
-  RefPtr<ProxyConfigLookup> lookUp =
-      new ProxyConfigLookup(std::move(aCallback), aURI, aProxyResolveFlags);
+  RefPtr<ProxyConfigLookup> lookUp = new ProxyConfigLookup(
+      std::move(aCallback), aURI, aProxyResolveFlags, aIsTRRServiceChannel);
   return lookUp->DoProxyResolve(aLookupCancellable);
 }
 
 ProxyConfigLookup::ProxyConfigLookup(
     std::function<void(nsIProxyInfo*, nsresult)>&& aCallback, nsIURI* aURI,
-    uint32_t aProxyResolveFlags)
+    uint32_t aProxyResolveFlags, bool aIsTRRServiceChannel)
     : mCallback(std::move(aCallback)),
       mURI(aURI),
-      mProxyResolveFlags(aProxyResolveFlags) {}
+      mProxyResolveFlags(aProxyResolveFlags),
+      mIsTRRServiceChannel(aIsTRRServiceChannel) {}
 
 ProxyConfigLookup::~ProxyConfigLookup() = default;
 
@@ -43,7 +44,7 @@ nsresult ProxyConfigLookup::DoProxyResolve(nsICancelable** aLookupCancellable) {
   if (!XRE_IsParentProcess()) {
     RefPtr<ProxyConfigLookup> self = this;
     bool result = ProxyConfigLookupChild::Create(
-        mURI, mProxyResolveFlags,
+        mURI, mProxyResolveFlags, mIsTRRServiceChannel,
         [self](nsIProxyInfo* aProxyinfo, nsresult aResult) {
           self->OnProxyAvailable(nullptr, nullptr, aProxyinfo, aResult);
         });
@@ -58,6 +59,18 @@ nsresult ProxyConfigLookup::DoProxyResolve(nsICancelable** aLookupCancellable) {
                      nsIContentPolicy::TYPE_OTHER);
   if (NS_FAILED(rv)) {
     return rv;
+  }
+
+  // The real requester is a TRRServiceChannel, which can't be handed to the
+  // proxy service because it doesn't live on the main thread. Propagate the
+  // flag onto this stand-in channel so that proxy filters see DoH traffic for
+  // what it is; IPPChannelFilter relies on it to keep DoH out of the IP
+  // Protection tunnel.
+  if (mIsTRRServiceChannel) {
+    if (nsCOMPtr<nsIHttpChannelInternal> internal =
+            do_QueryInterface(channel)) {
+      (void)internal->SetIsTRRServiceChannel(true);
+    }
   }
 
   nsCOMPtr<nsIProtocolProxyService> pps;

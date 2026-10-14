@@ -1,13 +1,16 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#if !defined(AudioConverter_h)
-#  define AudioConverter_h
+#ifndef AudioConverter_h
+#define AudioConverter_h
 
-#  include "MediaInfo.h"
+#include <speex/speex_resampler.h>
+
+#include <type_traits>
+
+#include "MediaInfo.h"
+#include "mozilla/CheckedInt.h"
 
 // Forward declaration
 typedef struct SpeexResamplerState_ SpeexResamplerState;
@@ -98,10 +101,7 @@ class AudioDataBuffer {
     mBuffer = std::move(aOther.mBuffer);
     return *this;
   }
-  AudioDataBuffer& operator=(const AudioDataBuffer& aOther) {
-    mBuffer = aOther.mBuffer;
-    return *this;
-  }
+  AudioDataBuffer& operator=(const AudioDataBuffer& aOther) = default;
 
   Value* Data() const { return mBuffer.Data(); }
   size_t Length() const { return mBuffer.Length(); }
@@ -119,7 +119,8 @@ typedef AudioDataBuffer<AudioConfig::FORMAT_DEFAULT> AudioSampleBuffer;
 
 class AudioConverter {
  public:
-  AudioConverter(const AudioConfig& aIn, const AudioConfig& aOut);
+  AudioConverter(const AudioConfig& aIn, const AudioConfig& aOut,
+                 int aResamplerQuality = SPEEX_RESAMPLER_QUALITY_DEFAULT);
   ~AudioConverter();
 
   // Convert the AudioDataBuffer.
@@ -135,7 +136,9 @@ class AudioConverter {
     AudioDataBuffer<Format, Value> buffer = std::move(aBuffer);
     if (CanWorkInPlace()) {
       AlignedBuffer<Value> temp = buffer.Forget();
-      Process(temp, temp.Data(), SamplesInToFrames(temp.Length()));
+      if (!Process(temp, temp.Data(), SamplesInToFrames(temp.Length()))) {
+        return AudioDataBuffer<Format, Value>();
+      }
       return AudioDataBuffer<Format, Value>(std::move(temp));
     }
     return Process(buffer);
@@ -163,10 +166,15 @@ class AudioConverter {
     AlignedBuffer<Value>* outputBuffer = &temp1;
     AlignedBuffer<Value> temp2;
     if (!frames || mOut.Rate() > mIn.Rate()) {
+      uint32_t resampledFrames;
       // We are upsampling or about to drain, we can't work in place.
       // Allocate another temporary buffer where the upsampling will occur.
-      if (!temp2.SetLength(
-              FramesOutToSamples(ResampleRecipientFrames(frames)))) {
+      if (!ResampleRecipientFrames(frames, &resampledFrames)) {
+        return AudioDataBuffer<Format, Value>(std::move(temp2));
+      }
+      CheckedInt<size_t> outputSamples =
+          CheckedInt<size_t>(resampledFrames) * mOut.Channels();
+      if (!outputSamples.isValid() || !temp2.SetLength(outputSamples.value())) {
         return AudioDataBuffer<Format, Value>(std::move(temp2));
       }
       outputBuffer = &temp2;
@@ -195,36 +203,55 @@ class AudioConverter {
     return frames;
   }
 
-  template <typename Value>
-  size_t Process(AlignedBuffer<Value>& aOutBuffer, const Value* aInBuffer,
-                 size_t aFrames) {
+  // Returns the number of frames written to aOutBuffer, or 0 on failure (e.g.
+  // an allocation failure): callers must check the return value, the output
+  // buffer's contents are meaningless when 0 is returned.
+  template <typename Value, typename ArrayT = AlignedBuffer<Value>>
+  [[nodiscard]] size_t Process(ArrayT& aOutBuffer, const Value* aInBuffer,
+                               size_t aFrames) {
     MOZ_DIAGNOSTIC_ASSERT(mIn.Format() == mOut.Format());
     MOZ_ASSERT((aFrames && aInBuffer) || !aFrames);
+
+    auto setLengthFallible = [&](size_t aLength) {
+      if constexpr (std::is_same_v<nsTArray<Value>, ArrayT>) {
+        return aOutBuffer.SetLength(aLength, fallible);
+      } else {
+        return aOutBuffer.SetLength(aLength);
+      }
+    };
+
     // Up/down mixing first
-    if (!aOutBuffer.SetLength(FramesOutToSamples(aFrames))) {
-      MOZ_ALWAYS_TRUE(aOutBuffer.SetLength(0));
+    if (!setLengthFallible(FramesOutToSamples(aFrames))) {
       return 0;
     }
-    size_t frames = ProcessInternal(aOutBuffer.Data(), aInBuffer, aFrames);
+    size_t frames = ProcessInternal(aOutBuffer.Elements(), aInBuffer, aFrames);
     MOZ_ASSERT(frames == aFrames);
     // Check if resampling is needed
     if (mIn.Rate() == mOut.Rate()) {
       return frames;
     }
     // Prepare output in cases of drain or up-sampling
-    if ((!frames || mOut.Rate() > mIn.Rate()) &&
-        !aOutBuffer.SetLength(
-            FramesOutToSamples(ResampleRecipientFrames(frames)))) {
-      MOZ_ALWAYS_TRUE(aOutBuffer.SetLength(0));
-      return 0;
+    if (!frames || mOut.Rate() > mIn.Rate()) {
+      uint32_t resampledFrames;
+      if (!ResampleRecipientFrames(frames, &resampledFrames)) {
+        return 0;
+      }
+      CheckedInt<size_t> outputSamples =
+          CheckedInt<size_t>(resampledFrames) * mOut.Channels();
+      if (!outputSamples.isValid() ||
+          !setLengthFallible(outputSamples.value())) {
+        return 0;
+      }
     }
     if (!frames) {
-      frames = DrainResampler(aOutBuffer.Data());
+      frames = DrainResampler(aOutBuffer.Elements());
     } else {
-      frames = ResampleAudio(aOutBuffer.Data(), aInBuffer, frames);
+      frames = ResampleAudio(aOutBuffer.Elements(), aInBuffer, frames);
     }
     // Update with the actual buffer length
-    MOZ_ALWAYS_TRUE(aOutBuffer.SetLength(FramesOutToSamples(frames)));
+    if (!setLengthFallible(FramesOutToSamples(frames))) {
+      return 0;
+    }
     return frames;
   }
 
@@ -244,6 +271,8 @@ class AudioConverter {
   // channel layout.
   AutoTArray<uint8_t, AudioConfig::ChannelLayout::MAX_CHANNELS>
       mChannelOrderMap;
+  // Resampler quality (0-10, default is SPEEX_RESAMPLER_QUALITY_DEFAULT)
+  int mResamplerQuality = SPEEX_RESAMPLER_QUALITY_DEFAULT;
   /**
    * ProcessInternal
    * Parameters:
@@ -266,7 +295,7 @@ class AudioConverter {
   // Resampler context.
   SpeexResamplerState* mResampler;
   size_t ResampleAudio(void* aOut, const void* aIn, size_t aFrames);
-  size_t ResampleRecipientFrames(size_t aFrames) const;
+  bool ResampleRecipientFrames(size_t aFrames, uint32_t* aOutFrames) const;
   void RecreateResampler();
   size_t DrainResampler(void* aOut);
 };

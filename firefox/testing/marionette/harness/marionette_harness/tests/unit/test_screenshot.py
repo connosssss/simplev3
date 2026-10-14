@@ -4,8 +4,8 @@
 
 import base64
 import hashlib
-import imghdr
 import struct
+import sys
 import tempfile
 import unittest
 
@@ -33,6 +33,11 @@ box = inline(
 input = inline("<body><input id='text-input'></input></body>")
 long = inline("<body style='height: 300vh'><p style='margin-top: 100vh'>foo</p></body>")
 short = inline("<body style='height: 10vh'></body>")
+partially_visible = inline(
+    "<body style='height: 300vh'>"
+    "<div id='abs' style='position:absolute;margin-top:200px;width:20px;height:100vh;background:green'></div>"
+    "</body>"
+)
 svg = inline(
     """
     <svg xmlns="http://www.w3.org/2000/svg" height="20" width="20">
@@ -82,49 +87,52 @@ class ScreenCaptureTestCase(MarionetteTestCase):
         """Test that screenshot is a Base64 encoded PNG file."""
         if not isinstance(screenshot, bytes):
             screenshot = bytes(screenshot, encoding="utf-8")
-        image = base64.decodebytes(screenshot)
-        self.assertEqual(imghdr.what("", image), "png")
+            image = base64.decodebytes(screenshot)
+        else:
+            if screenshot.startswith(b"\211PNG\r\n\032\n"):
+                image = screenshot
+            else:
+                image = base64.decodebytes(screenshot)
+        self.assertRegex(image, b"\211PNG\r\n\032\n", "Expected image to be PNG")
+        return image
 
     def assert_formats(self, element=None):
         if element is None:
             element = self.document_element
 
-        screenshot_default = self.marionette.screenshot(element=element)
-        if not isinstance(screenshot_default, bytes):
-            screenshot_default = bytes(screenshot_default, encoding="utf-8")
-        screenshot_image = self.marionette.screenshot(element=element, format="base64")
-        if not isinstance(screenshot_image, bytes):
-            screenshot_image = bytes(screenshot_image, encoding="utf-8")
-        binary1 = self.marionette.screenshot(element=element, format="binary")
-        binary2 = self.marionette.screenshot(element=element, format="binary")
-        hash1 = self.marionette.screenshot(element=element, format="hash")
-        hash2 = self.marionette.screenshot(element=element, format="hash")
+        image_default = self.assert_png(self.marionette.screenshot(element=element))
+        screenshot_base64 = self.marionette.screenshot(element=element, format="base64")
+        image_base64 = self.assert_png(screenshot_base64)
+        image_binary1 = self.marionette.screenshot(element=element, format="binary")
+        image_binary2 = self.marionette.screenshot(element=element, format="binary")
+        screenshot_hash1 = self.marionette.screenshot(element=element, format="hash")
+        screenshot_hash2 = self.marionette.screenshot(element=element, format="hash")
 
         # Valid data should have been returned
-        self.assert_png(screenshot_image)
-        self.assertEqual(imghdr.what("", binary1), "png")
-        self.assertEqual(screenshot_image, base64.b64encode(binary1))
-        self.assertEqual(hash1, hashlib.sha256(screenshot_image).hexdigest())
+        self.assert_png(image_base64)
+        self.assert_png(image_binary1)
+        self.assertEqual(image_base64, image_binary1)
+        self.assertEqual(
+            screenshot_hash1,
+            hashlib.sha256(screenshot_base64.encode("utf-8")).hexdigest(),
+        )
 
         # Different formats produce different data
-        self.assertNotEqual(screenshot_image, binary1)
-        self.assertNotEqual(screenshot_image, hash1)
-        self.assertNotEqual(binary1, hash1)
+        self.assertNotEqual(screenshot_base64, image_binary1)
+        self.assertNotEqual(screenshot_base64, screenshot_hash1)
+        self.assertNotEqual(image_binary1, screenshot_hash1)
 
         # A second capture should be identical
-        self.assertEqual(screenshot_image, screenshot_default)
-        self.assertEqual(binary1, binary2)
-        self.assertEqual(hash1, hash2)
+        self.assertEqual(image_base64, image_default)
+        self.assertEqual(image_binary1, image_binary2)
+        self.assertEqual(screenshot_hash1, screenshot_hash2)
 
     def get_element_dimensions(self, element):
         rect = element.rect
         return rect["width"], rect["height"]
 
-    def get_image_dimensions(self, screenshot):
-        if not isinstance(screenshot, bytes):
-            screenshot = bytes(screenshot, encoding="utf-8")
-        self.assert_png(screenshot)
-        image = base64.decodebytes(screenshot)
+    def get_image_dimensions(self, image):
+        image = self.assert_png(image)
         width, height = struct.unpack(">LL", image[16:24])
         return int(width), int(height)
 
@@ -244,6 +252,38 @@ class TestScreenCaptureContent(WindowManagerMixin, ScreenCaptureTestCase):
         self.assertNotEqual(before, after)
         self.assertGreater(self.page_y_offset, 0)
 
+    def assert_readback_viewport(self, screenshot):
+        # The captured region is the composited content area, which can differ
+        # from the content viewport by a device pixel due to rounding.
+        width, height = self.get_image_dimensions(screenshot)
+        expected_width, expected_height = self.scale(self.viewport_dimensions)
+        self.assertAlmostEqual(width, expected_width, delta=2)
+        self.assertAlmostEqual(height, expected_height, delta=2)
+
+    @unittest.skipIf(sys.platform.startswith("darwin"), "Not supported on MacOS")
+    def test_readback_viewport(self):
+        self.marionette.navigate(short)
+        with self.marionette.using_prefs({"remote.screenshot.use_readback": True}):
+            screenshot = self.marionette.screenshot(full=False)
+        self.assert_readback_viewport(screenshot)
+
+    @unittest.skipIf(sys.platform.startswith("darwin"), "Not supported on MacOS")
+    def test_readback_full_page_degrades_to_viewport(self):
+        # Readback can only return composited pixels, so a full-document
+        # capture degrades to the viewport instead of the scroll dimensions.
+        self.marionette.navigate(long)
+        with self.marionette.using_prefs({"remote.screenshot.use_readback": True}):
+            screenshot = self.marionette.screenshot()
+        self.assert_readback_viewport(screenshot)
+
+    @unittest.skipIf(sys.platform.startswith("darwin"), "Not supported on MacOS")
+    def test_readback_element_degrades_to_viewport(self):
+        self.marionette.navigate(box)
+        el = self.marionette.find_element(By.TAG_NAME, "div")
+        with self.marionette.using_prefs({"remote.screenshot.use_readback": True}):
+            screenshot = self.marionette.screenshot(element=el)
+        self.assert_readback_viewport(screenshot)
+
     def test_formats(self):
         self.marionette.navigate(box)
 
@@ -279,8 +319,8 @@ class TestScreenCaptureContent(WindowManagerMixin, ScreenCaptureTestCase):
         self.assertNotEqual(before, self.page_y_offset)
 
     def test_scroll_off(self):
-        self.marionette.navigate(long)
-        el = self.marionette.find_element(By.TAG_NAME, "p")
+        self.marionette.navigate(partially_visible)
+        el = self.marionette.find_element(By.ID, "abs")
         before = self.page_y_offset
         self.marionette.screenshot(element=el, format="hash", scroll=False)
         self.assertEqual(before, self.page_y_offset)

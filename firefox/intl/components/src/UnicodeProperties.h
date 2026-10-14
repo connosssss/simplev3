@@ -13,6 +13,12 @@
 #include "unicode/uchar.h"
 #include "unicode/uscript.h"
 
+extern "C" {
+
+uint8_t mozilla_canonical_combining_class(uint32_t c);
+
+}  // extern "C"
+
 namespace mozilla::intl {
 
 /**
@@ -49,13 +55,14 @@ class UnicodeProperties final {
    * UnicodeData.txt.
    */
   static inline uint8_t GetCombiningClass(uint32_t aCh) {
-    return u_getCombiningClass(aCh);
+    return mozilla_canonical_combining_class(aCh);
   }
 
   enum class IntProperty {
     BidiPairedBracketType,
     EastAsianWidth,
     HangulSyllableType,
+    IdentifierStatus,
     LineBreak,
     NumericType,
     VerticalOrientation,
@@ -85,6 +92,9 @@ class UnicodeProperties final {
         break;
       case IntProperty::VerticalOrientation:
         prop = UCHAR_VERTICAL_ORIENTATION;
+        break;
+      case IntProperty::IdentifierStatus:
+        prop = UCHAR_IDENTIFIER_STATUS;
         break;
     }
     return u_getIntPropertyValue(aCh, prop);
@@ -242,6 +252,44 @@ class UnicodeProperties final {
   }
 
   /**
+   * Check if the width of aCh is East Asian Fullwidth (F).
+   */
+  static inline bool IsEastAsianFullWidth(char32_t aCh) {
+    return GetIntPropertyValue(aCh, IntProperty::EastAsianWidth) ==
+           U_EA_FULLWIDTH;
+  }
+
+  /**
+   * Check if the CharType of aCh is a letter type.
+   */
+  static inline bool IsLetter(char32_t aCh) {
+    switch (CharType(aCh)) {
+      case GeneralCategory::Uppercase_Letter:
+      case GeneralCategory::Lowercase_Letter:
+      case GeneralCategory::Titlecase_Letter:
+      case GeneralCategory::Modifier_Letter:
+      case GeneralCategory::Other_Letter:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * Check if the CharType of aCh is a combining mark type.
+   */
+  static inline bool IsCombiningMark(char32_t aCh) {
+    switch (CharType(aCh)) {
+      case GeneralCategory::Nonspacing_Mark:
+      case GeneralCategory::Spacing_Mark:
+      case GeneralCategory::Enclosing_Mark:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /**
    * Check if the CharType of aCh is a punctuation type.
    */
   static inline bool IsPunctuation(uint32_t aCh) {
@@ -287,6 +335,18 @@ class UnicodeProperties final {
     return u_getIntPropertyMaxValue(UCHAR_SCRIPT);
   }
 
+  // Attempt to get a script code corresponding to an ISO 15924 tag given as a
+  // C string. Returns Script::UNKNOWN if the string cannot be mapped to a
+  // Script code.
+  static inline Script GetScriptCodeFromString(const char* aStr) {
+    UScriptCode icu_script;
+    UErrorCode status = U_ZERO_ERROR;
+    if (uscript_getCode(aStr, &icu_script, 1, &status) == 1) {
+      return Script(icu_script);
+    }
+    return Script::UNKNOWN;
+  }
+
   // Return true if aChar belongs to a SEAsian script that is written without
   // word spaces, so we need to use the "complex breaker" to find possible word
   // boundaries. (https://en.wikipedia.org/wiki/Scriptio_continua)
@@ -295,6 +355,15 @@ class UnicodeProperties final {
     return sc == Script::THAI || sc == Script::MYANMAR || sc == Script::KHMER ||
            sc == Script::JAVANESE || sc == Script::BALINESE ||
            sc == Script::SUNDANESE || sc == Script::LAO;
+  }
+
+  // Return true if aChar belongs to a cursive script for which inter-character
+  // justification should be disabled.
+  static bool IsCursiveScript(char32_t aChar) {
+    Script sc = GetScriptCode(aChar);
+    return sc == Script::ARABIC || sc == Script::SYRIAC || sc == Script::NKO ||
+           sc == Script::MANDAIC || sc == Script::MONGOLIAN ||
+           sc == Script::PHAGS_PA || sc == Script::HANIFI_ROHINGYA;
   }
 
   // The code point which has the most script extensions is 0x0965, which has 21
@@ -351,6 +420,37 @@ class UnicodeProperties final {
     }
 
     return Ok();
+  }
+
+  /**
+   * IdentifierType values, matching ICU's UIdentifierType constants.
+   * https://www.unicode.org/reports/tr39/#Identifier_Status_and_Type.
+   */
+  enum class IdentifierType {
+    NotCharacter = U_ID_TYPE_NOT_CHARACTER,
+    Deprecated = U_ID_TYPE_DEPRECATED,
+    DefaultIgnorable = U_ID_TYPE_DEFAULT_IGNORABLE,
+    NotNFKC = U_ID_TYPE_NOT_NFKC,
+    NotXID = U_ID_TYPE_NOT_XID,
+    Exclusion = U_ID_TYPE_EXCLUSION,
+    Obsolete = U_ID_TYPE_OBSOLETE,
+    Technical = U_ID_TYPE_TECHNICAL,
+    UncommonUse = U_ID_TYPE_UNCOMMON_USE,
+    LimitedUse = U_ID_TYPE_LIMITED_USE,
+    Inclusion = U_ID_TYPE_INCLUSION,
+    Recommended = U_ID_TYPE_RECOMMENDED,
+  };
+
+  /**
+   * Return whether the codepoint has the given IdentifierType value and does
+   * not combine it with any additional IdentifierTypes.
+   */
+  static bool HasSingleIdentifierType(char32_t aCodePoint,
+                                      IdentifierType aType) {
+    UErrorCode status = U_ZERO_ERROR;
+    UIdentifierType type;
+    return u_getIDTypes(aCodePoint, &type, 1, &status) == 1 &&
+           IdentifierType(type) == aType;
   }
 };
 

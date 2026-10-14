@@ -2,25 +2,27 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "CacheLog.h"
 #include "CacheFileContextEvictor.h"
+
 #include "CacheFileIOManager.h"
 #include "CacheFileMetadata.h"
+#include "CacheFileUtils.h"
 #include "CacheIndex.h"
 #include "CacheIndexIterator.h"
-#include "CacheFileUtils.h"
+#include "CacheLog.h"
 #include "CacheObserver.h"
+#include "LoadContextInfo.h"
+#include "mozilla/Base64.h"
 #include "mozilla/Components.h"
+#include "mozilla/IntegerPrintfMacros.h"
+#include "nsCharSeparatedTokenizer.h"
+#include "nsContentUtils.h"
+#include "nsIDirectoryEnumerator.h"
 #include "nsIEffectiveTLDService.h"
 #include "nsIFile.h"
-#include "LoadContextInfo.h"
-#include "nsThreadUtils.h"
-#include "nsString.h"
-#include "nsIDirectoryEnumerator.h"
-#include "mozilla/Base64.h"
-#include "mozilla/IntegerPrintfMacros.h"
-#include "nsContentUtils.h"
 #include "nsNetUtil.h"
+#include "nsString.h"
+#include "nsThreadUtils.h"
 
 namespace mozilla::net {
 
@@ -443,7 +445,7 @@ nsresult CacheFileContextEvictor::LoadEvictInfoFromDisk() {
     }
 
     auto entry = MakeUnique<CacheFileContextEvictorEntry>();
-    entry->mInfo = info;
+    entry->mInfo = std::move(info);
     entry->mPinned = pinned;
     CopyUTF8toUTF16(origin, entry->mOrigin);
     CopyUTF8toUTF16(baseDomain, entry->mBaseDomain);
@@ -660,8 +662,8 @@ void CacheFileContextEvictor::EvictEntries() {
       // this must be a new one. Skip it.
       LOG(
           ("CacheFileContextEvictor::EvictEntries() - Skipping entry since we "
-           "found an active handle. [handle=%p]",
-           handle.get()));
+           "found an active handle. [handle=%p key=%s]",
+           handle.get(), handle->Key().get()));
       continue;
     }
 
@@ -672,7 +674,7 @@ void CacheFileContextEvictor::EvictEntries() {
     };
     rv = CacheIndex::HasEntry(hash, &status, callback);
     // This must never fail, since eviction (this code) happens only when the
-    // index is up-to-date and thus the informatin is known.
+    // index is up-to-date and thus the information is known.
     MOZ_ASSERT(NS_SUCCEEDED(rv));
 
     if (pinned != mEntries[0]->mPinned) {
@@ -684,20 +686,22 @@ void CacheFileContextEvictor::EvictEntries() {
       continue;
     }
 
-    // Check whether we must filter by either base domain or by origin.
-    if (!mEntries[0]->mBaseDomain.IsEmpty() ||
-        !mEntries[0]->mOrigin.IsEmpty()) {
+    // Read metadata from the file synchronously
+    RefPtr<CacheFileMetadata> metadata = new CacheFileMetadata();
+    {
       // Get and read metadata for the entry
       nsCOMPtr<nsIFile> file;
       CacheFileIOManager::gInstance->GetFile(&hash, getter_AddRefs(file));
 
-      // Read metadata from the file synchronously
-      RefPtr<CacheFileMetadata> metadata = new CacheFileMetadata();
       rv = metadata->SyncReadMetadata(file);
       if (NS_WARN_IF(NS_FAILED(rv))) {
         continue;
       }
+    }
 
+    // Check whether we must filter by either base domain or by origin.
+    if (!mEntries[0]->mBaseDomain.IsEmpty() ||
+        !mEntries[0]->mOrigin.IsEmpty()) {
       // Now get the context + enhance id + URL from the key.
       nsAutoCString uriSpec;
       RefPtr<nsILoadContextInfo> info =
@@ -820,7 +824,7 @@ void CacheFileContextEvictor::EvictEntries() {
 
     LOG(("CacheFileContextEvictor::EvictEntries - Removing entry."));
     file->Remove(false);
-    CacheIndex::RemoveEntry(&hash);
+    CacheIndex::RemoveEntry(&hash, metadata->GetKey(), false);
   }
 
   MOZ_ASSERT_UNREACHABLE("We should never get here");

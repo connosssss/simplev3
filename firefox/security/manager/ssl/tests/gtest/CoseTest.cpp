@@ -1,26 +1,22 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "gtest/gtest.h"
-
 #include <assert.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <cstddef>
-#include <memory>
-
+#include <cert.h>
 #include <keyhi.h>
 #include <nss.h>
 #include <pk11pub.h>
-
 #include <pkcs11t.h>
 #include <secmodt.h>
-#include <cert.h>
+#include <stdint.h>
+
+#include <cstddef>
+#include <cstring>
 
 #include "ScopedNSSTypes.h"
 #include "cosec.h"
+#include "gtest/gtest.h"
 
 namespace mozilla {
 
@@ -659,7 +655,7 @@ bool verify_callback(const uint8_t* payload, size_t payload_len,
                      const size_t* certs_len, const uint8_t* ee_cert,
                      size_t ee_cert_len, const uint8_t* signature,
                      size_t signature_len, uint8_t signature_algorithm,
-                     void* ctx) {
+                     void* /*ctx*/) {
   UniquePK11SlotInfo slot(PK11_GetInternalSlot());
   if (!slot) {
     return false;

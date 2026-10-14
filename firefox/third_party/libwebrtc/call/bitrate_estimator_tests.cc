@@ -7,7 +7,6 @@
  *  in the file PATENTS.  All contributing project authors may
  *  be found in the AUTHORS file in the root of the source tree.
  */
-#include <cstddef>
 #include <functional>
 #include <list>
 #include <memory>
@@ -17,6 +16,7 @@
 
 #include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
+#include "api/rtp_header_extension_id.h"
 #include "api/rtp_parameters.h"
 #include "api/test/create_frame_generator.h"
 #include "api/test/simulated_network.h"
@@ -46,9 +46,9 @@ namespace {
 // writing tests that don't depend on the logging system.
 class LogObserver {
  public:
-  LogObserver() { rtc::LogMessage::AddLogToStream(&callback_, rtc::LS_INFO); }
+  LogObserver() { LogMessage::AddLogToStream(&callback_, LS_INFO); }
 
-  ~LogObserver() { rtc::LogMessage::RemoveLogToStream(&callback_); }
+  ~LogObserver() { LogMessage::RemoveLogToStream(&callback_); }
 
   void PushExpectedLogLine(absl::string_view expected_log_line) {
     callback_.PushExpectedLogLine(expected_log_line);
@@ -57,7 +57,7 @@ class LogObserver {
   bool Wait() { return callback_.Wait(); }
 
  private:
-  class Callback : public rtc::LogSink {
+  class Callback : public LogSink {
    public:
     void OnLogMessage(const std::string& message) override {
       OnLogMessage(absl::string_view(message));
@@ -109,18 +109,17 @@ class LogObserver {
 
   Callback callback_;
 };
-}  // namespace
 
-static const int kTOFExtensionId = 4;
-static const int kASTExtensionId = 5;
+constexpr RtpHeaderExtensionId kTOFExtensionId(4);
+constexpr RtpHeaderExtensionId kASTExtensionId(5);
 
 class BitrateEstimatorTest : public test::CallTest {
  public:
   BitrateEstimatorTest() : receive_config_(nullptr) {}
 
-  virtual ~BitrateEstimatorTest() { EXPECT_TRUE(streams_.empty()); }
+  ~BitrateEstimatorTest() override { EXPECT_TRUE(streams_.empty()); }
 
-  virtual void SetUp() {
+  void SetUp() override {
     SendTask(task_queue(), [this]() {
       RegisterRtpExtension(
           RtpExtension(RtpExtension::kTimestampOffsetUri, kTOFExtensionId));
@@ -152,12 +151,10 @@ class BitrateEstimatorTest : public test::CallTest {
           VideoReceiveStreamInterface::Config(receive_transport_.get());
       // receive_config_.decoders will be set by every stream separately.
       receive_config_.rtp.remote_ssrc = GetVideoSendConfig()->rtp.ssrcs[0];
-      receive_config_.rtp.local_ssrc =
-          test::VideoTestConstants::kReceiverLocalVideoSsrc;
     });
   }
 
-  virtual void TearDown() {
+  void TearDown() override {
     SendTask(task_queue(), [this]() {
       for (auto* stream : streams_) {
         stream->StopSending();
@@ -209,7 +206,6 @@ class BitrateEstimatorTest : public test::CallTest {
       test_->receive_config_.decoders.push_back(decoder);
       test_->receive_config_.rtp.remote_ssrc =
           test_->GetVideoSendConfig()->rtp.ssrcs[0];
-      test_->receive_config_.rtp.local_ssrc++;
       test_->receive_config_.renderer = &test->fake_renderer_;
       video_receive_stream_ = test_->receiver_call_->CreateVideoReceiveStream(
           test_->receive_config_.Copy());
@@ -335,4 +331,5 @@ TEST_F(BitrateEstimatorTest, DISABLED_SwitchesToASTThenBackToTOFForVideo) {
   });
   EXPECT_TRUE(receiver_log_.Wait());
 }
+}  // namespace
 }  // namespace webrtc

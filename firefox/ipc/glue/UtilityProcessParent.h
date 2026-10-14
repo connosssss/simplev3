@@ -1,10 +1,8 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#ifndef _include_ipc_glue_UtilityProcessParent_h__
-#define _include_ipc_glue_UtilityProcessParent_h__
+#ifndef _include_ipc_glue_UtilityProcessParent_h_
+#define _include_ipc_glue_UtilityProcessParent_h_
 #include "mozilla/ipc/PUtilityProcessParent.h"
 #include "mozilla/ipc/CrashReporterHelper.h"
 #include "mozilla/ipc/UtilityProcessHost.h"
@@ -40,9 +38,11 @@ class UtilityProcessParent final
 
   mozilla::ipc::IPCResult RecvFOGData(ByteBuf&& aBuf);
 
+  mozilla::ipc::IPCResult RecvGeckoTraceExport(ByteBuf&& aBuf);
+
 #if defined(XP_WIN)
   mozilla::ipc::IPCResult RecvGetModulesTrust(
-      ModulePaths&& aModPaths, bool aRunAtNormalPriority,
+      ModuleIdentifiers&& aModIdents, bool aRunAtNormalPriority,
       GetModulesTrustResolver&& aResolver);
 #endif  // defined(XP_WIN)
 
@@ -61,6 +61,12 @@ class UtilityProcessParent final
 
   mozilla::ipc::IPCResult RecvInitCompleted();
 
+  mozilla::ipc::IPCResult RecvShutdownProfile(
+      mozilla::ProfileAndAdditionalInformation&&
+          aProfileAndAdditionalInformation);
+
+  mozilla::ipc::IPCResult RecvFinishShutdown();
+
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
  private:
@@ -76,4 +82,4 @@ class UtilityProcessParent final
 
 }  // namespace mozilla
 
-#endif  // _include_ipc_glue_UtilityProcessParent_h__
+#endif  // _include_ipc_glue_UtilityProcessParent_h_

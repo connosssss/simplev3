@@ -15,15 +15,11 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import org.mozilla.fenix.R
-import org.mozilla.fenix.ext.settings
+import org.mozilla.fenix.utils.Settings
 
-/**
- * The repository for managing setup checklist preferences.
- */
+/** The repository for managing setup checklist preferences. */
 interface SetupChecklistRepository {
-    /**
-     * An update to a [SetupChecklistPreference].
-     */
+    /** An update to a [SetupChecklistPreference]. */
     data class SetupChecklistPreferenceUpdate(
         val preference: SetupChecklistPreference,
         val value: Boolean,
@@ -37,14 +33,10 @@ interface SetupChecklistRepository {
      */
     fun setPreference(type: SetupChecklistPreference, value: Boolean)
 
-    /**
-     * A [Flow] of [SetupChecklistPreferenceUpdate]s.
-     */
+    /** A [Flow] of [SetupChecklistPreferenceUpdate]s. */
     val setupChecklistPreferenceUpdates: Flow<SetupChecklistPreferenceUpdate>
 
-    /**
-     * Initializes the repository and starts the [SharedPreferences] listener.
-     */
+    /** Initializes the repository and starts the [SharedPreferences] listener. */
     fun init()
 }
 
@@ -59,7 +51,7 @@ enum class SetupChecklistPreference(@param:StringRes val preferenceKey: Int) {
     ThemeComplete(R.string.pref_key_setup_step_theme),
     ToolbarComplete(R.string.pref_key_setup_step_toolbar),
     ExtensionsComplete(R.string.pref_key_setup_step_extensions),
-    InstallSearchWidget(R.string.pref_key_search_widget_installed_2),
+    InstallSearchWidget(R.string.pref_key_setup_step_install_search_widget),
     ShowSetupChecklist(R.string.pref_key_setup_checklist_complete),
 }
 
@@ -67,13 +59,14 @@ enum class SetupChecklistPreference(@param:StringRes val preferenceKey: Int) {
  * The default implementation of [SetupChecklistRepository].
  *
  * @param context the Android context.
+ * @param settings the [Settings] instance for accessing and modifying preferences.
  * @param coroutineScope the coroutine scope used for emitting flows.
  */
 class DefaultSetupChecklistRepository(
     private val context: Context,
+    private val settings: Settings,
     private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Main),
 ) : SetupChecklistRepository {
-    private val settings = context.settings()
     private val _setupChecklistPreferenceUpdates =
         MutableSharedFlow<SetupChecklistRepository.SetupChecklistPreferenceUpdate>()
 
@@ -86,48 +79,45 @@ class DefaultSetupChecklistRepository(
 
     override fun setPreference(type: SetupChecklistPreference, value: Boolean) {
         when (type) {
-            SetupChecklistPreference.ToolbarComplete ->
-                settings.hasCompletedSetupStepToolbar = value
+            SetupChecklistPreference.ToolbarComplete -> settings.hasCompletedSetupStepToolbar = value
 
-            SetupChecklistPreference.ThemeComplete ->
-                settings.hasCompletedSetupStepTheme = value
+            SetupChecklistPreference.ThemeComplete -> settings.hasCompletedSetupStepTheme = value
 
-            SetupChecklistPreference.ExtensionsComplete ->
-                settings.hasCompletedSetupStepExtensions = value
+            SetupChecklistPreference.ExtensionsComplete -> settings.hasCompletedSetupStepExtensions = value
 
-            SetupChecklistPreference.ShowSetupChecklist ->
-                settings.showSetupChecklist = value
+            SetupChecklistPreference.ShowSetupChecklist -> settings.showSetupChecklist = value
+
+            SetupChecklistPreference.InstallSearchWidget -> settings.hasCompletedSetupStepInstallSearchWidget = value
 
             // no-ops
             // these preferences are handled elsewhere outside of the setup checklist feature.
             SetupChecklistPreference.SetToDefault,
-            SetupChecklistPreference.SignIn,
-            SetupChecklistPreference.InstallSearchWidget,
-            -> {}
+            SetupChecklistPreference.SignIn -> {}
         }
     }
 
     @VisibleForTesting
-    internal val onPreferenceChange =
-        SharedPreferences.OnSharedPreferenceChangeListener { sharedPreferences, key ->
-            val preference = SetupChecklistPreference.entries.find {
+    internal val onPreferenceChange = SharedPreferences.OnSharedPreferenceChangeListener { sharedPreferences, key ->
+        val preference =
+            SetupChecklistPreference.entries.find {
                 context.getString(it.preferenceKey) == key
             }
 
-            preference?.let {
-                val preferenceValue = sharedPreferences.getBoolean(key, false)
+        preference?.let {
+            val preferenceValue = sharedPreferences.getBoolean(key, false)
 
-                submitPreferenceUpdate(
-                    SetupChecklistRepository.SetupChecklistPreferenceUpdate(
-                        preference = preference,
-                        value = preferenceValue,
-                    ),
+            submitPreferenceUpdate(
+                SetupChecklistRepository.SetupChecklistPreferenceUpdate(
+                    preference = preference,
+                    value = preferenceValue,
                 )
-            }
+            )
         }
+    }
 
     @VisibleForTesting
-    internal fun submitPreferenceUpdate(
-        preferenceUpdate: SetupChecklistRepository.SetupChecklistPreferenceUpdate,
-    ) = coroutineScope.launch { _setupChecklistPreferenceUpdates.emit(preferenceUpdate) }
+    internal fun submitPreferenceUpdate(preferenceUpdate: SetupChecklistRepository.SetupChecklistPreferenceUpdate) =
+        coroutineScope.launch {
+            _setupChecklistPreferenceUpdates.emit(preferenceUpdate)
+        }
 }

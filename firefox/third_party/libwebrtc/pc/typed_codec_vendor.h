@@ -11,12 +11,17 @@
 #ifndef PC_TYPED_CODEC_VENDOR_H_
 #define PC_TYPED_CODEC_VENDOR_H_
 
+#include <utility>
+#include <vector>
+
 #include "api/field_trials_view.h"
 #include "api/media_types.h"
+#include "media/base/codec.h"
 #include "media/base/codec_list.h"
 #include "media/base/media_engine.h"
+#include "pc/codec_configuration.h"
 
-namespace cricket {
+namespace webrtc {
 
 // This class vends codecs of a specific type only.
 // It is intended to eventually be owned by the RtpSender and RtpReceiver
@@ -25,22 +30,38 @@ class TypedCodecVendor {
  public:
   // Constructor for the case where media engine is not provided. The resulting
   // vendor will always return an empty codec list.
-  TypedCodecVendor() {}
-  TypedCodecVendor(MediaEngineInterface* media_engine,
-                   webrtc::MediaType type,
-                   bool is_sender,
-                   bool rtx_enabled,
-                   const webrtc::FieldTrialsView& trials);
-  const CodecList& codecs() const { return codecs_; }
-  void set_codecs(const CodecList& codecs) { codecs_ = codecs; }
-  // For easy initialization, copying is allowed.
+  TypedCodecVendor() = default;
+
+  // Copying, move assignment+construction is allowed.
+  TypedCodecVendor(TypedCodecVendor&&) = default;
+  TypedCodecVendor& operator=(TypedCodecVendor&& from) = default;
   TypedCodecVendor(const TypedCodecVendor& from) = default;
   TypedCodecVendor& operator=(const TypedCodecVendor& from) = default;
 
+  // TODO: bugs.webrtc.org/412904801 - This constructor is provided as
+  // part of the `CodecVendor::ModifyVideoCodecs` workaround.
+  explicit TypedCodecVendor(CodecList codecs) : codecs_(std::move(codecs)) {}
+
+  void SetRawPacketization(const Codec& codec);
+
+  TypedCodecVendor(const MediaEngineInterface* media_engine,
+                   MediaType type,
+                   bool is_sender,
+                   bool rtx_enabled,
+                   const FieldTrialsView& trials);
+
+  const CodecList& codecs() const { return codecs_; }
+  const std::vector<CodecConfiguration>& configurations() const {
+    return configurations_;
+  }
+
  private:
+  // Effectively const, but not marked as such since that breaks move semantics.
   CodecList codecs_;
+  std::vector<CodecConfiguration> configurations_;
 };
 
-}  // namespace cricket
+}  //  namespace webrtc
+
 
 #endif  // PC_TYPED_CODEC_VENDOR_H_

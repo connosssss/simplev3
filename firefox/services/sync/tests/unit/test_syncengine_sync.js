@@ -195,6 +195,131 @@ add_task(async function test_syncStartup_syncIDMismatchResetsClient() {
   }
 });
 
+async function syncStartupWithRegistry(payload) {
+  let collection = new ServerCollection();
+  collection.insert(
+    "flying",
+    encryptPayload({ id: "flying", denomination: "LNER Class A3 4472" })
+  );
+  let server = sync_httpd_setup({
+    "/1.1/foo/storage/meta/syncids": new ServerWBO(
+      "syncids",
+      payload
+    ).handler(),
+    "/1.1/foo/storage/rotary": collection.handler(),
+  });
+  await SyncTestingInfrastructure(server);
+  Service.syncID = "abcdefghij";
+
+  let engine = makeRotaryEngine();
+  try {
+    await engine._syncStartup();
+    let metaGlobal = await Service.recordManager.get(engine.metaURL);
+    return {
+      published: metaGlobal.payload.engines.rotary,
+      syncID: await engine.getSyncID(),
+      wiped: !collection.payload("flying"),
+    };
+  } finally {
+    await cleanAndGo(engine, server);
+  }
+}
+
+add_task(async function test_syncStartup_adoptsRegisteredSyncID() {
+  _("A missing meta/global entry adopts a matching meta/syncids entry.");
+  let result = await syncStartupWithRegistry({
+    version: 1,
+    globalSyncID: "abcdefghij",
+    engines: { rotary: { version: 1, syncID: "registered0" } },
+  });
+  Assert.equal(result.syncID, "registered0");
+  Assert.equal(result.published.syncID, "registered0");
+  Assert.ok(!result.wiped, "Adopting a generation doesn't wipe the server.");
+});
+
+add_task(async function test_syncStartup_ignoresUnusableRegistry() {
+  _("Registry entries for another account or engine version are ignored.");
+  let registries = [
+    {
+      version: 1,
+      globalSyncID: "oldaccount0",
+      engines: { rotary: { version: 1, syncID: "registered0" } },
+    },
+    {
+      version: 1,
+      globalSyncID: "abcdefghij",
+      engines: { rotary: { version: 0, syncID: "registered0" } },
+    },
+    {
+      version: 2,
+      globalSyncID: "abcdefghij",
+      engines: { rotary: { version: 1, syncID: "registered0" } },
+    },
+  ];
+  for (let payload of registries) {
+    let result = await syncStartupWithRegistry(payload);
+    Assert.notEqual(result.syncID, "registered0");
+    Assert.equal(result.published.syncID, result.syncID);
+    Assert.ok(result.wiped, "Falls back to resetting, as before.");
+  }
+});
+
+add_task(async function test_syncStartup_newerRegisteredVersion() {
+  _(
+    "A newer engine version in meta/syncids stops the engine without resetting."
+  );
+  let collection = new ServerCollection();
+  collection.insert(
+    "flying",
+    encryptPayload({ id: "flying", denomination: "LNER Class A3 4472" })
+  );
+  let server = sync_httpd_setup({
+    "/1.1/foo/storage/meta/syncids": new ServerWBO("syncids", {
+      version: 1,
+      globalSyncID: "abcdefghij",
+      engines: { rotary: { version: 2, syncID: "registered0" } },
+    }).handler(),
+    "/1.1/foo/storage/rotary": collection.handler(),
+  });
+  await SyncTestingInfrastructure(server);
+  Service.syncID = "abcdefghij";
+
+  let engine = makeRotaryEngine();
+  try {
+    await Assert.rejects(
+      engine._syncStartup(),
+      ex => ex.failureCode == VERSION_OUT_OF_DATE
+    );
+    Assert.ok(collection.payload("flying"), "The server wasn't wiped.");
+  } finally {
+    await cleanAndGo(engine, server);
+  }
+});
+
+add_task(async function test_syncStartup_registryErrorDoesNotReset() {
+  _("A server error fetching meta/syncids fails the engine without resetting.");
+  let collection = new ServerCollection();
+  collection.insert(
+    "flying",
+    encryptPayload({ id: "flying", denomination: "LNER Class A3 4472" })
+  );
+  let server = sync_httpd_setup({
+    "/1.1/foo/storage/meta/syncids": httpd_handler(500, "Server Error"),
+    "/1.1/foo/storage/rotary": collection.handler(),
+  });
+  await SyncTestingInfrastructure(server);
+
+  let engine = makeRotaryEngine();
+  try {
+    await engine.ensureCurrentSyncID("localsyncid");
+    await Assert.rejects(engine._syncStartup(), ex => ex.status == 500);
+    Assert.equal(await engine.getSyncID(), "localsyncid");
+    Assert.ok(collection.payload("flying"), "The server wasn't wiped.");
+  } finally {
+    await cleanAndGo(engine, server);
+  }
+});
+
 add_task(async function test_processIncoming_emptyServer() {
   _("SyncEngine._processIncoming working with an empty server backend");
 
@@ -676,7 +801,7 @@ add_task(async function test_processIncoming_resume_toFetch() {
   let engine = makeRotaryEngine();
   await engine.setLastSync(LASTSYNC);
   engine.toFetch = new SerializableSet(["flying", "scotsman"]);
-  engine.previousFailed = new SerializableSet([
+  engine.previousFailedIn = new SerializableSet([
     "failed0",
     "failed1",
     "failed2",
@@ -710,7 +835,7 @@ add_task(async function test_processIncoming_resume_toFetch() {
     Assert.equal(engine._store.items.failed0, "Record No. 0");
     Assert.equal(engine._store.items.failed1, "Record No. 1");
     Assert.equal(engine._store.items.failed2, "Record No. 2");
-    Assert.equal(engine.previousFailed.size, 0);
+    Assert.equal(engine.previousFailedIn.size, 0);
   } finally {
     await cleanAndGo(engine, server);
   }
@@ -763,7 +888,7 @@ add_task(async function test_processIncoming_notify_count() {
     // Confirm initial environment.
     Assert.equal(await engine.getLastSync(), 0);
     Assert.equal(engine.toFetch.size, 0);
-    Assert.equal(engine.previousFailed.size, 0);
+    Assert.equal(engine.previousFailedIn.size, 0);
     do_check_empty(engine._store.items);
 
     let called = 0;
@@ -782,7 +907,7 @@ add_task(async function test_processIncoming_notify_count() {
     // Confirm failures.
     do_check_attribute_count(engine._store.items, 12);
     Assert.deepEqual(
-      Array.from(engine.previousFailed).sort(),
+      Array.from(engine.previousFailedIn).sort(),
       ["record-no-00", "record-no-05", "record-no-10"].sort()
     );
 
@@ -802,7 +927,7 @@ add_task(async function test_processIncoming_notify_count() {
     do_check_attribute_count(engine._store.items, 14);
     // After failing twice the record that failed again [record-no-00]
     // should NOT be stored to try again
-    Assert.deepEqual(Array.from(engine.previousFailed), []);
+    Assert.deepEqual(Array.from(engine.previousFailedIn), []);
 
     Assert.equal(called, 2);
     Assert.equal(counts.failed, 1);
@@ -862,17 +987,17 @@ add_task(async function test_processIncoming_previousFailed() {
     // Confirm initial environment.
     Assert.equal(await engine.getLastSync(), 0);
     Assert.equal(engine.toFetch.size, 0);
-    Assert.equal(engine.previousFailed.size, 0);
+    Assert.equal(engine.previousFailedIn.size, 0);
     do_check_empty(engine._store.items);
 
-    // Initial failed items in previousFailed to be reset.
-    let previousFailed = new SerializableSet([
+    // Initial failed items in previousFailedIn to be reset.
+    let previousFailedIn = new SerializableSet([
       Utils.makeGUID(),
       Utils.makeGUID(),
       Utils.makeGUID(),
     ]);
-    engine.previousFailed = previousFailed;
-    Assert.equal(engine.previousFailed, previousFailed);
+    engine.previousFailedIn = previousFailedIn;
+    Assert.equal(engine.previousFailedIn, previousFailedIn);
 
     // Do sync.
     await engine._syncStartup();
@@ -881,7 +1006,7 @@ add_task(async function test_processIncoming_previousFailed() {
     // Expected result: 4 sync batches with 2 failures each => 8 failures
     do_check_attribute_count(engine._store.items, 6);
     Assert.deepEqual(
-      Array.from(engine.previousFailed).sort(),
+      Array.from(engine.previousFailedIn).sort(),
       [
         "record-no-00",
         "record-no-01",
@@ -899,8 +1024,8 @@ add_task(async function test_processIncoming_previousFailed() {
 
     do_check_attribute_count(engine._store.items, 10);
     // A second sync with the same failed items should NOT add the same items again.
-    // Items that did not fail a second time should no longer be in previousFailed.
-    Assert.deepEqual(Array.from(engine.previousFailed).sort(), []);
+    // Items that did not fail a second time should no longer be in previousFailedIn.
+    Assert.deepEqual(Array.from(engine.previousFailedIn).sort(), []);
 
     // Refetched items that didn't fail the second time are in engine._store.items.
     Assert.equal(engine._store.items["record-no-04"], "Record No. 4");
@@ -987,7 +1112,7 @@ add_task(async function test_processIncoming_failed_records() {
     // Confirm initial environment
     Assert.equal(await engine.getLastSync(), 0);
     Assert.equal(engine.toFetch.size, 0);
-    Assert.equal(engine.previousFailed.size, 0);
+    Assert.equal(engine.previousFailedIn.size, 0);
     do_check_empty(engine._store.items);
 
     let observerSubject;
@@ -1008,9 +1133,9 @@ add_task(async function test_processIncoming_failed_records() {
     );
 
     // Ensure that the bogus records will be fetched again on the next sync.
-    Assert.equal(engine.previousFailed.size, BOGUS_RECORDS.length);
+    Assert.equal(engine.previousFailedIn.size, BOGUS_RECORDS.length);
     Assert.deepEqual(
-      Array.from(engine.previousFailed).sort(),
+      Array.from(engine.previousFailedIn).sort(),
       BOGUS_RECORDS.sort()
     );
 
@@ -1094,7 +1219,7 @@ add_task(async function test_processIncoming_decrypt_failed() {
   try {
     // Confirm initial state
     Assert.equal(engine.toFetch.size, 0);
-    Assert.equal(engine.previousFailed.size, 0);
+    Assert.equal(engine.previousFailedIn.size, 0);
 
     let observerSubject;
     let observerData;
@@ -1116,11 +1241,11 @@ add_task(async function test_processIncoming_decrypt_failed() {
     // There should be 4 of the same error
     Assert.equal(ping.engines[0].incoming.failedReasons[0].count, 4);
 
-    Assert.equal(engine.previousFailed.size, 4);
-    Assert.ok(engine.previousFailed.has("nojson"));
-    Assert.ok(engine.previousFailed.has("nojson2"));
-    Assert.ok(engine.previousFailed.has("nodecrypt"));
-    Assert.ok(engine.previousFailed.has("nodecrypt2"));
+    Assert.equal(engine.previousFailedIn.size, 4);
+    Assert.ok(engine.previousFailedIn.has("nojson"));
+    Assert.ok(engine.previousFailedIn.has("nojson2"));
+    Assert.ok(engine.previousFailedIn.has("nodecrypt"));
+    Assert.ok(engine.previousFailedIn.has("nodecrypt2"));
 
     // Ensure the observer was notified
     Assert.equal(observerData, engine.name);
@@ -1138,11 +1263,13 @@ add_task(async function test_uploadOutgoing_toEmptyServer() {
   let collection = new ServerCollection();
   collection._wbos.flying = new ServerWBO("flying");
   collection._wbos.scotsman = new ServerWBO("scotsman");
+  collection._wbos.failed = new ServerWBO("failed");
 
   let server = sync_httpd_setup({
     "/1.1/foo/storage/rotary": collection.handler(),
     "/1.1/foo/storage/rotary/flying": collection.wbo("flying").handler(),
     "/1.1/foo/storage/rotary/scotsman": collection.wbo("scotsman").handler(),
+    "/1.1/foo/storage/rotary/failed": collection.wbo("failed").handler(),
   });
 
   await SyncTestingInfrastructure(server);
@@ -1152,9 +1279,13 @@ add_task(async function test_uploadOutgoing_toEmptyServer() {
   engine._store.items = {
     flying: "LNER Class A3 4472",
     scotsman: "Flying Scotsman",
+    failed: "Previously Failed Item",
+    failagain: "Item that failed and will fail again",
   };
-  // Mark one of these records as changed
+  // Mark some of these records as changed
   await engine._tracker.addChangedID("scotsman", 0);
+  await engine._tracker.addChangedID("failed", 0);
+  await engine._tracker.addChangedID("failagain", 0);
 
   let syncID = await engine.resetLocalSyncID();
   let meta_global = Service.recordManager.set(
@@ -1165,24 +1296,36 @@ add_task(async function test_uploadOutgoing_toEmptyServer() {
 
   try {
     await engine.setLastSync(123); // needs to be non-zero so that tracker is queried
+    engine.previousFailedOut = new SerializableSet(["failed", "failagain"]);
 
     // Confirm initial environment
     Assert.equal(collection.payload("flying"), undefined);
     Assert.equal(collection.payload("scotsman"), undefined);
+    Assert.equal(collection.payload("failed"), undefined);
 
     await engine._syncStartup();
     await engine._uploadOutgoing();
 
-    // Ensure the marked record ('scotsman') has been uploaded and is
-    // no longer marked.
+    // Ensure the marked record ('scotsman') and previously failed record
+    // ('failed') have been uploaded and are no longer marked.
     Assert.equal(collection.payload("flying"), undefined);
     Assert.ok(!!collection.payload("scotsman"));
     Assert.equal(collection.cleartext("scotsman").id, "scotsman");
     const changes = await engine._tracker.getChangedIDs();
     Assert.equal(changes.scotsman, undefined);
+    Assert.ok(!!collection.payload("failed"));
+    Assert.equal(collection.cleartext("failed").id, "failed");
+    Assert.equal(changes.failed, undefined);
 
-    // The 'flying' record wasn't marked so it wasn't uploaded
+    // The 'flying' record wasn't marked and 'failagain' failed, so they
+    // weren't uploaded
     Assert.equal(collection.payload("flying"), undefined);
+    Assert.equal(changes.flying, undefined);
+    Assert.equal(changes.failagain, undefined);
+
+    // Nothing failed on this run except failagain' which we already retried,
+    // so this should be empty.
+    Assert.equal(engine.previousFailedOut.size, 0);
   } finally {
     await cleanAndGo(engine, server);
   }
@@ -1327,9 +1470,13 @@ add_task(async function test_uploadOutgoing_failed() {
     Assert.equal(changes.flying, undefined);
 
     // The 'scotsman' and 'peppercorn' records couldn't be uploaded so
-    // they weren't cleared from the tracker.
+    // they were added to `previousFailedOut` and weren't cleared from the
+    // tracker.
     Assert.equal(changes.scotsman, SCOTSMAN_CHANGED);
     Assert.equal(changes.peppercorn, PEPPERCORN_CHANGED);
+    Assert.equal(engine.previousFailedOut.size, 2);
+    Assert.ok(engine.previousFailedOut.has("scotsman"));
+    Assert.ok(engine.previousFailedOut.has("peppercorn"));
   } finally {
     await promiseClean(engine, server);
   }
@@ -1653,14 +1800,22 @@ add_task(async function test_sync_partialUpload() {
     const changes = await engine._tracker.getChangedIDs();
     for (let i = 0; i < 234; i++) {
       let id = "record-no-" + i;
-      // Ensure failed records are back in the tracker:
-      // * records no. 23 and 42 were rejected by the server,
-      // * records after the third batch and higher couldn't be uploaded because
-      //   we failed hard on the 3rd upload.
-      if (i == 23 || i == 42 || i >= 200) {
-        Assert.equal(changes[id], i);
+      // Ensure that failed records are back in the tracker and failures have
+      // been added to `previousFailedOut`.
+      if (i < 200) {
+        // Records no. 23 and 42 were rejected by the server,
+        if (i == 23 || i == 42) {
+          Assert.equal(changes[id], i);
+          Assert.ok(engine.previousFailedOut.has(id));
+        } else {
+          Assert.equal(false, id in changes);
+          Assert.ok(!engine.previousFailedOut.has(id));
+        }
       } else {
-        Assert.equal(false, id in changes);
+        // Records after the third batch and higher couldn't be uploaded because
+        // we failed hard on the 3rd upload.
+        Assert.equal(changes[id], i);
+        Assert.ok(!engine.previousFailedOut.has(id));
       }
     }
   } finally {

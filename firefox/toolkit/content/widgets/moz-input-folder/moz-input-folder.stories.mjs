@@ -46,11 +46,13 @@ const Template = ({
   l10nId,
   description,
   supportPage,
+  title,
   hasSlottedDescription,
   hasSlottedSupportLink,
   ellipsized,
+  hasAdditionalAction,
 }) => html`
-  <div style="width: 400px;">
+  <div style="width: 450px;">
     <moz-input-folder
       name=${name}
       value=${ifDefined(value || null)}
@@ -58,9 +60,10 @@ const Template = ({
       ?disabled=${disabled}
       data-l10n-id=${l10nId}
       support-page=${ifDefined(supportPage || null)}
+      title=${ifDefined(title || null)}
       @click=${{
         handleEvent: e => {
-          if (e.composedPath().some(el => el.localName == "moz-button")) {
+          if (e.composedPath().some(el => el.id == "choose-folder-button")) {
             e.stopPropagation();
             alert("This would open the file picker");
           }
@@ -75,6 +78,13 @@ const Template = ({
       ${hasSlottedSupportLink
         ? html`<a slot="support-link" href="www.example.com">Click me!</a>`
         : ""}
+      ${hasAdditionalAction
+        ? html`<moz-button
+            slot="actions"
+            @click=${() => alert("Use the 'actions' slot for more actions.")}
+            >Click me!</moz-button
+          >`
+        : ""}
     </moz-input-folder>
   </div>
 `;
@@ -87,6 +97,7 @@ Default.args = {
   disabled: false,
   l10nId: "moz-input-folder-label",
   supportPage: "",
+  title: "",
   hasSlottedDescription: false,
   hasSlottedSupportLink: false,
 };
@@ -148,4 +159,10 @@ WithEllipsizedLabel.args = {
   ...Default.args,
   ellipsized: true,
   l10nId: "moz-input-folder-long-label",
+};
+
+export const WithAdditionalActions = Template.bind({});
+WithAdditionalActions.args = {
+  ...Default.args,
+  hasAdditionalAction: true,
 };

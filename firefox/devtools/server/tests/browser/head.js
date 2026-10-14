@@ -97,9 +97,7 @@ function initDevToolsServer() {
 }
 
 async function initPerfFront() {
-  initDevToolsServer();
-  const client = new DevToolsClient(DevToolsServer.connectPipe());
-  await waitUntilClientConnected(client);
+  const client = await createLocalClientForTests();
   const front = await client.mainRoot.getFront("perf");
   return { front, client };
 }
@@ -113,20 +111,12 @@ async function initInspectorFront(url) {
 }
 
 /**
- * Wait until a DevToolsClient is connected.
- * @param {DevToolsClient} client
- * @return {Promise} Resolves when connected.
- */
-function waitUntilClientConnected(client) {
-  return client.once("connected");
-}
-
-/**
  * Wait for eventName on target.
- * @param {Object} target An observable object that either supports on/off or
+ *
+ * @param {object} target An observable object that either supports on/off or
  * addEventListener/removeEventListener
- * @param {String} eventName
- * @param {Boolean} useCapture Optional, for addEventListener/removeEventListener
+ * @param {string} eventName
+ * @param {boolean} useCapture Optional, for addEventListener/removeEventListener
  * @return A promise that resolves when the event has been handled
  */
 function once(target, eventName, useCapture = false) {
@@ -245,13 +235,15 @@ function waitForMarkerType(
   });
 }
 
-function getCookieId(name, domain, path, partitionKey = "") {
-  return `${name}${SEPARATOR_GUID}${domain}${SEPARATOR_GUID}${path}${SEPARATOR_GUID}${partitionKey}`;
+function getCookieId(name, domain, path, originAttributes = {}) {
+  const suffix = ChromeUtils.originAttributesToSuffix(originAttributes);
+  return `${name}${SEPARATOR_GUID}${domain}${SEPARATOR_GUID}${path}${SEPARATOR_GUID}${suffix}`;
 }
 
 /**
  * Trigger DOM activity and wait for the corresponding accessibility event.
- * @param  {Object} emitter   Devtools event emitter, usually a front.
+ *
+ * @param  {object} emitter   Devtools event emitter, usually a front.
  * @param  {Sting} name       Accessibility event in question.
  * @param  {Function} handler Accessibility event handler function with checks.
  * @param  {Promise} task     A promise that resolves when DOM activity is done.
@@ -265,9 +257,10 @@ async function emitA11yEvent(emitter, name, handler, task) {
 /**
  * Check that accessibilty front is correct and its attributes are also
  * up-to-date.
- * @param  {Object} front         Accessibility front to be tested.
- * @param  {Object} expected      A map of a11y front properties to be verified.
- * @param  {Object} expectedFront Expected accessibility front.
+ *
+ * @param  {object} front         Accessibility front to be tested.
+ * @param  {object} expected      A map of a11y front properties to be verified.
+ * @param  {object} expectedFront Expected accessibility front.
  */
 function checkA11yFront(front, expected, expectedFront) {
   ok(front, "The accessibility front is created");

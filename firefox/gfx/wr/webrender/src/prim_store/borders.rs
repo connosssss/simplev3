@@ -2,48 +2,30 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use api::{NormalBorder, PremultipliedColorF, Shadow, RasterSpace};
+use api::{ColorF, NormalBorder, RepeatMode};
 use api::units::*;
-use crate::border::create_border_segments;
-use crate::border::NormalBorderAu;
-use crate::scene_building::{CreateShadow, IsVisible};
-use crate::frame_builder::FrameBuildingState;
-use crate::gpu_cache::GpuDataRequest;
+use smallvec::SmallVec;
+use crate::border::{build_border_instances, NormalBorderSegment, MAX_BORDER_RESOLUTION};
+use crate::command_buffer::CommandBufferIndex;
+use crate::pattern::image::ImagePattern;
+use crate::quad::{self, QuadDescriptor, QuadTransformState};
+use crate::quad_clip::QuadClipStack;
+use crate::render_task_cache::{RenderTaskCacheKey, RenderTaskCacheKeyKind, RenderTaskParent, to_cache_size};
+use crate::frame_builder::{FrameBuildingContext, FrameBuildingState};
 use crate::intern;
-use crate::internal_types::{LayoutPrimitiveInfo, FrameId};
+use crate::internal_types::LayoutPrimitiveInfo;
 use crate::prim_store::{
-    BorderSegmentInfo, BrushSegment, NinePatchDescriptor, PrimKey,
-    PrimTemplate, PrimTemplateCommonData,
-    PrimitiveInstanceKind, PrimitiveOpacity,
-    PrimitiveStore, InternablePrimitive,
+    InternablePrimitive, NinePatchDescriptor, PrimTemplate, PrimTemplateCommonData, PrimitiveKind, PrimitiveScratchBuffer, PrimitiveStore
 };
 use crate::resource_cache::ImageRequest;
-use crate::render_task::RenderTask;
+use crate::render_task::{RenderTask, RenderTaskKind};
 use crate::render_task_graph::RenderTaskId;
+use crate::util::clamp_to_scale_factor;
 
-use super::storage;
-
-#[cfg_attr(feature = "capture", derive(Serialize))]
-#[cfg_attr(feature = "replay", derive(Deserialize))]
-#[derive(Debug, Clone, Eq, MallocSizeOf, PartialEq, Hash)]
-pub struct NormalBorderPrim {
-    pub border: NormalBorderAu,
-    pub widths: LayoutSideOffsetsAu,
-}
-
-pub type NormalBorderKey = PrimKey<NormalBorderPrim>;
-
-impl NormalBorderKey {
-    pub fn new(
-        info: &LayoutPrimitiveInfo,
-        normal_border: NormalBorderPrim,
-    ) -> Self {
-        NormalBorderKey {
-            common: info.into(),
-            kind: normal_border,
-        }
-    }
-}
+// `NormalBorderPrim` and its key live in `webrender_api::interned_prims` so
+// content-process interning can hold them. Re-exported to keep existing
+// references working.
+pub use api::interned_prims::{NormalBorderKey, NormalBorderPrim};
 
 impl intern::InternDebug for NormalBorderKey {}
 
@@ -51,57 +33,280 @@ impl intern::InternDebug for NormalBorderKey {}
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 #[derive(MallocSizeOf)]
 pub struct NormalBorderData {
-    pub brush_segments: Vec<BrushSegment>,
-    pub border_segments: Vec<BorderSegmentInfo>,
     pub border: NormalBorder,
     pub widths: LayoutSideOffsets,
 }
 
 impl NormalBorderData {
-    /// Update the GPU cache for a given primitive template. This may be called multiple
-    /// times per frame, by each primitive reference that refers to this interned
-    /// template. The initial request call to the GPU cache ensures that work is only
-    /// done if the cache entry is invalid (due to first use or eviction).
     pub fn update(
-        &mut self,
-        common: &mut PrimTemplateCommonData,
+        &self,
+        desc: &QuadDescriptor,
+        clips: &QuadClipStack,
+        quad_transform: &mut QuadTransformState,
+        snap_thickness: bool,
+        frame_context: &FrameBuildingContext,
+        targets: &[CommandBufferIndex],
         frame_state: &mut FrameBuildingState,
+        scratch: &mut PrimitiveScratchBuffer,
     ) {
-        if let Some(ref mut request) = frame_state.gpu_cache.request(&mut common.gpu_cache_handle) {
-            self.write_prim_gpu_blocks(request, common.prim_rect.size());
-            self.write_segment_gpu_blocks(request);
+        // The border is rasterized at the scale it is composited at: the
+        // primitive to raster transform of the surface being drawn into, times
+        // that surface's device pixel scale. The two are kept apart because only
+        // the raster part is quantized to a power of two below.
+        let raster_scale = quad_transform.raster_scale_factors();
+        let device_pixel_scale = quad_transform.device_pixel_scale();
+
+        // Snap the thickness of a border the author declared at >= 1 CSS pixel
+        // to a whole device pixel. Border edges are composited onto their
+        // layout-space rects, so a transform makes a 1px edge a fractional
+        // device thickness: under a downscale it can shrink below a device
+        // pixel and be antialiased away entirely, until whole sides of the
+        // border vanish (bug 1258112); at other scales the four sides land at
+        // different sub-pixel phases and render with visibly uneven thickness
+        // (bug 1950029). Rounding the device thickness to the nearest pixel
+        // (floored at 1 so a real border can't disappear) makes every side a
+        // consistent whole-pixel width. Genuinely sub-CSS-pixel edges are left
+        // untouched.
+        //
+        // Both this and the corner snapping below are expressed in layout
+        // space, so they are only valid when a single device scale describes
+        // the whole border. Under a perspective transform `w` varies across the
+        // border box, there is no such scale, and `coplanar_scale_factors`
+        // returns None: widening the layout width by 1/scale would then swell
+        // the border by an unbounded amount as the element tilts away from the
+        // viewer, eating into the content box. Leave those borders at their
+        // authored dimensions.
+        //
+        // Uses the unclamped device scale factors, since that is the transform
+        // the edge is actually composited with, not the power-of-2
+        // rasterization scale.
+        //
+        // An anti-aliased border declines the thickness snapping: its thickness
+        // is geometry the caller resolved exactly (an SVG stroke, say) and the
+        // shader resolves its edges at their sub-pixel positions, so moving
+        // them to the grid is what the anti-aliasing is there to avoid. The
+        // corner snapping below still applies, since it is about how the corner
+        // texture is sampled rather than where the border's edges are.
+        let mut widths = self.widths;
+        let mut border = self.border;
+        if let Some((device_scale_x, device_scale_y)) = quad_transform.coplanar_scale_factors() {
+            let snap_width = |w: f32, s: f32| {
+                if w >= 1.0 && s > 0.0 { (w * s).round().max(1.0) / s } else { w }
+            };
+            if snap_thickness {
+                widths.left = snap_width(widths.left, device_scale_x);
+                widths.right = snap_width(widths.right, device_scale_x);
+                widths.top = snap_width(widths.top, device_scale_y);
+                widths.bottom = snap_width(widths.bottom, device_scale_y);
+            }
+
+            // A corner's cached texture is rasterized at the whole-pixel size of its
+            // corner box and then stretched onto that box, so a box with a fractional
+            // device size is resampled on composite: the arc loses contrast against
+            // the grid-snapped straight edges, which reads as the curve being thinner
+            // than the sides (bug 2062877). The box is `max(radius, width)`, so
+            // snapping a radius that exceeds its border width to a whole device pixel
+            // makes that composite exact. Radii below the width don't drive the box
+            // size, so they are left alone.
+            //
+            // Rounds down rather than to the nearest pixel. Growing a radius can push
+            // the pair that shares an edge past the length of that edge, which makes
+            // the two corner segments overlap and double-blend a translucent border;
+            // and since the two axes are constrained by different edges, guarding them
+            // separately can round one axis up and the other down, turning a circular
+            // corner into an elliptical one.
+            let snap_radius = |r: f32, w: f32, s: f32| {
+                if r > w && s > 0.0 { (r * s).floor().max(w * s) / s } else { r }
+            };
+            let r = &mut border.radius;
+            r.top_left.width = snap_radius(r.top_left.width, widths.left, device_scale_x);
+            r.top_left.height = snap_radius(r.top_left.height, widths.top, device_scale_y);
+            r.top_right.width = snap_radius(r.top_right.width, widths.right, device_scale_x);
+            r.top_right.height = snap_radius(r.top_right.height, widths.top, device_scale_y);
+            r.bottom_left.width = snap_radius(r.bottom_left.width, widths.left, device_scale_x);
+            r.bottom_left.height = snap_radius(r.bottom_left.height, widths.bottom, device_scale_y);
+            r.bottom_right.width = snap_radius(r.bottom_right.width, widths.right, device_scale_x);
+            r.bottom_right.height = snap_radius(r.bottom_right.height, widths.bottom, device_scale_y);
         }
 
-        common.opacity = PrimitiveOpacity::translucent();
-    }
+        // Under an animated or pinch-zoomed transform, scale factors are
+        // normalized to a power of 2 to reduce the number of resolution changes:
+        // rounding up to the nearest power-of-2 boundary means we don't keep
+        // having to redraw the content as it scales up and down. It ensures we
+        // never scale up, only down --- avoiding jaggies. It also ensures we
+        // never scale down by more than a factor of 2, avoiding bad downscaling
+        // quality.
+        // Under a static transform the exact scale is used, so that the corner
+        // textures composite 1:1 instead of being resampled.
+        let prim_spatial_node = frame_context.spatial_tree
+            .get_spatial_node(quad_transform.prim_spatial_node_index());
+        let scale_may_change = prim_spatial_node.is_ancestor_or_self_animating
+            || prim_spatial_node.is_ancestor_or_self_zooming;
+        let (scale_width, scale_height) = if scale_may_change {
+            (
+                clamp_to_scale_factor(raster_scale.0, false),
+                clamp_to_scale_factor(raster_scale.1, false),
+            )
+        } else {
+            (raster_scale.0.abs(), raster_scale.1.abs())
+        };
+        // Pick the maximum dimension as scale
+        let mut scale = LayoutToDeviceScale::new(
+            scale_width.max(scale_height) * device_pixel_scale.0,
+        );
 
-    fn write_prim_gpu_blocks(
-        &self,
-        request: &mut GpuDataRequest,
-        prim_size: LayoutSize
-    ) {
-        // Border primitives currently used for
-        // image borders, and run through the
-        // normal brush_image shader.
-        request.push(PremultipliedColorF::WHITE);
-        request.push(PremultipliedColorF::WHITE);
-        request.push([
-            prim_size.width,
-            prim_size.height,
-            0.0,
-            0.0,
-        ]);
-    }
+        // Build the per-frame border segments up front so we can clamp the
+        // rasterization scale against the largest segment before requesting
+        // any render tasks. Capping the scale renders very large corners at a
+        // lower resolution and stretches them: the right shape, but blurrier.
+        let mut segments: SmallVec<[NormalBorderSegment; 8]> = SmallVec::new();
+        crate::border::create_border_segments(
+            desc.pattern_rect,
+            &border,
+            &widths,
+            &mut |segment| segments.push(segment.clone()),
+        );
 
-    fn write_segment_gpu_blocks(
-        &self,
-        request: &mut GpuDataRequest,
-    ) {
-        for segment in &self.brush_segments {
-            // has to match VECS_PER_SEGMENT
-            request.write_segment(
-                segment.local_rect,
-                segment.extra_data,
+        let mut max_dim = 1.0;
+        for segment in &segments {
+            if segment.is_solid.is_none() {
+                max_dim = segment.task_size.width.max(segment.task_size.height.max(max_dim));
+            }
+        }
+        let max_scale = LayoutToDeviceScale::new(MAX_BORDER_RESOLUTION as f32 / max_dim);
+        scale.0 = scale.0.min(max_scale.0);
+
+        for segment in &segments {
+            let segment_bounds = |extent: &LayoutRect| {
+                let mut bounds = desc.bounds.intersection_unchecked(extent);
+                if let Some(clip_rect) = segment.clip_rect {
+                    bounds = bounds.intersection_unchecked(&clip_rect);
+                }
+                bounds
+            };
+
+            if let Some(color) = &segment.is_solid {
+                quad::prepare_quad(
+                    color,
+                    &QuadDescriptor {
+                        pattern_rect: segment.pattern_rect,
+                        bounds: segment_bounds(&segment.pattern_rect),
+                        aligned_aa_edges: desc.aligned_aa_edges & segment.edge_flags,
+                        transformed_aa_edges: desc.transformed_aa_edges & segment.edge_flags,
+                    },
+                    &None,
+                    clips,
+                    quad_transform,
+                    frame_context.spatial_tree,
+                    targets,
+                    frame_state,
+                    scratch,
+                );
+
+                continue;
+            }
+
+            // Update the cache key device size based on requested scale.
+            let cache_size = to_cache_size(segment.task_size, &mut scale);
+            let cache_key = RenderTaskCacheKey {
+                kind: RenderTaskCacheKeyKind::BorderSegment(segment.cache_key.clone()),
+                origin: DeviceIntPoint::zero(),
+                size: cache_size,
+            };
+
+            // TODO(gw): We don't calculate opacity for borders yet!
+            let is_opaque = false;
+
+            let task_id = frame_state.resource_cache.request_render_task(
+                Some(cache_key),
+                is_opaque,
+                RenderTaskParent::Surface,
+                &mut frame_state.frame_gpu_data.f32,
+                frame_state.rg_builder,
+                &mut frame_state.surface_builder,
+                &mut |rg_builder, gpu_buffer_builder| {
+                    rg_builder.add().init(RenderTask::new_dynamic(
+                        cache_size,
+                        RenderTaskKind::new_border_segment(
+                            build_border_instances(
+                                &segment.cache_key,
+                                cache_size,
+                                &border,
+                                scale,
+                                gpu_buffer_builder,
+                            )
+                        ),
+                    ))
+                }
+            );
+
+            let pattern = ImagePattern {
+                src_task_id: task_id,
+                src_is_opaque: is_opaque,
+                premultiplied: true,
+                sampler_kind: api::ImageBufferKind::Texture2D,
+                color: ColorF::WHITE,
+            };
+
+            // The texture is drawn across the full segment rect (for
+            // corners that is the natural corner-image size, which may
+            // extend past the visible area). `clip_rect` crops it back to
+            // the visible part for corners whose adjacent corner overlaps.
+            let segment_pattern_rect = segment.pattern_rect;
+
+            let mut stretch_size = segment_pattern_rect.size();
+            let mut spacing = LayoutSize::zero();
+            let mut _repeat_offset = LayoutVector2D::zero();
+            crate::border::compute_border_repetition(
+                segment_pattern_rect.size(),
+                cache_size.to_f32(),
+                segment.repeat_x,
+                segment.repeat_y,
+                &mut stretch_size,
+                &mut spacing,
+                &mut _repeat_offset,
+            );
+
+            // The positioning and size of the dashes and dots is not specified
+            // but browsers are encouraged to make the pattern symetrical.
+            // One way to do this is to apply the repeat offset computed
+            // by compute_border_repetition. However the pattern that we
+            // are repeating is meant to be instead stretched to so that
+            // an integer number of repetitions fills the space.
+
+            if segment.repeat_x == RepeatMode::Repeat {
+                let w = segment_pattern_rect.width();
+                let sw = stretch_size.width;
+                let scale = w / ((w / sw).round() * sw);
+
+                stretch_size.width *= scale;
+            }
+
+            if segment.repeat_y == RepeatMode::Repeat {
+                let h = segment_pattern_rect.height();
+                let sh = stretch_size.height;
+                let scale = h / ((h / sh).round() * sh);
+
+                stretch_size.height *= scale;
+            }
+
+            quad::prepare_repeatable_quad(
+                &pattern,
+                &QuadDescriptor {
+                    pattern_rect: segment_pattern_rect,
+                    bounds: segment_bounds(&segment_pattern_rect),
+                    aligned_aa_edges: desc.aligned_aa_edges & segment.edge_flags,
+                    transformed_aa_edges: desc.transformed_aa_edges & segment.edge_flags,
+                },
+                stretch_size,
+                spacing,
+                &None,
+                clips,
+                quad_transform,
+                frame_context.spatial_tree,
+                targets,
+                frame_state,
+                scratch,
             );
         }
     }
@@ -119,22 +324,9 @@ impl From<NormalBorderKey> for NormalBorderTemplate {
         // FIXME(emilio): Is this the best place to do this?
         border.normalize(&widths);
 
-        let mut brush_segments = Vec::new();
-        let mut border_segments = Vec::new();
-
-        create_border_segments(
-            common.prim_rect.size(),
-            &border,
-            &widths,
-            &mut border_segments,
-            &mut brush_segments,
-        );
-
         NormalBorderTemplate {
             common,
             kind: NormalBorderData {
-                brush_segments,
-                border_segments,
                 border,
                 widths,
             }
@@ -157,7 +349,7 @@ impl InternablePrimitive for NormalBorderPrim {
         info: &LayoutPrimitiveInfo,
     ) -> NormalBorderKey {
         NormalBorderKey::new(
-            info,
+            info.into(),
             self,
         )
     }
@@ -166,62 +358,21 @@ impl InternablePrimitive for NormalBorderPrim {
         _key: NormalBorderKey,
         data_handle: NormalBorderDataHandle,
         _: &mut PrimitiveStore,
-    ) -> PrimitiveInstanceKind {
-        PrimitiveInstanceKind::NormalBorder {
+    ) -> PrimitiveKind {
+        PrimitiveKind::NormalBorder {
             data_handle,
-            render_task_ids: storage::Range::empty(),
         }
-    }
-}
-
-impl CreateShadow for NormalBorderPrim {
-    fn create_shadow(
-        &self,
-        shadow: &Shadow,
-        _: bool,
-        _: RasterSpace,
-    ) -> Self {
-        let border = self.border.with_color(shadow.color.into());
-        NormalBorderPrim {
-            border,
-            widths: self.widths,
-        }
-    }
-}
-
-impl IsVisible for NormalBorderPrim {
-    fn is_visible(&self) -> bool {
-        true
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#[cfg_attr(feature = "capture", derive(Serialize))]
-#[cfg_attr(feature = "replay", derive(Deserialize))]
-#[derive(Debug, Clone, Eq, MallocSizeOf, PartialEq, Hash)]
-pub struct ImageBorder {
-    #[ignore_malloc_size_of = "Arc"]
-    pub request: ImageRequest,
-    pub nine_patch: NinePatchDescriptor,
-}
-
-pub type ImageBorderKey = PrimKey<ImageBorder>;
-
-impl ImageBorderKey {
-    pub fn new(
-        info: &LayoutPrimitiveInfo,
-        image_border: ImageBorder,
-    ) -> Self {
-        ImageBorderKey {
-            common: info.into(),
-            kind: image_border,
-        }
-    }
-}
+// `ImageBorder` now lives in `webrender_api::interned_prims` (with the image
+// request inlined as key/rendering/tile so the value is api-resident). The
+// frame-time `ImageBorderData` below rebuilds the `ImageRequest`.
+pub use api::interned_prims::{ImageBorder, ImageBorderKey};
 
 impl intern::InternDebug for ImageBorderKey {}
-
 
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
@@ -229,83 +380,30 @@ impl intern::InternDebug for ImageBorderKey {}
 pub struct ImageBorderData {
     #[ignore_malloc_size_of = "Arc"]
     pub request: ImageRequest,
-    pub brush_segments: Vec<BrushSegment>,
-    pub src_color: Option<RenderTaskId>,
-    pub frame_id: FrameId,
-    pub is_opaque: bool,
+    pub nine_patch: NinePatchDescriptor,
 }
 
 impl ImageBorderData {
-    /// Update the GPU cache for a given primitive template. This may be called multiple
-    /// times per frame, by each primitive reference that refers to this interned
-    /// template. The initial request call to the GPU cache ensures that work is only
-    /// done if the cache entry is invalid (due to first use or eviction).
     pub fn update(
-        &mut self,
-        common: &mut PrimTemplateCommonData,
+        &self,
         frame_state: &mut FrameBuildingState,
-    ) {
-        if let Some(ref mut request) = frame_state.gpu_cache.request(&mut common.gpu_cache_handle) {
-            self.write_prim_gpu_blocks(request, &common.prim_rect.size());
-            self.write_segment_gpu_blocks(request);
-        }
+    ) -> (RenderTaskId, DeviceIntSize, bool) {
+        let size = frame_state.resource_cache.request_image(
+            self.request,
+            &mut frame_state.frame_gpu_data.f32,
+        );
 
-        let frame_id = frame_state.rg_builder.frame_id();
-        if self.frame_id != frame_id {
-            self.frame_id = frame_id;
+        let task_id = frame_state.rg_builder.add().init(
+            RenderTask::new_image(size, self.request, false)
+        );
 
-            let size = frame_state.resource_cache.request_image(
-                self.request,
-                frame_state.gpu_cache,
-            );
+        let is_opaque = frame_state
+            .resource_cache
+            .get_image_properties(self.request.key)
+            .map(|properties| properties.descriptor.is_opaque())
+            .unwrap_or(true);
 
-            let task_id = frame_state.rg_builder.add().init(
-                RenderTask::new_image(size, self.request)
-            );
-
-            self.src_color = Some(task_id);
-
-            let image_properties = frame_state
-                .resource_cache
-                .get_image_properties(self.request.key);
-
-            self.is_opaque = image_properties
-                .map(|properties| properties.descriptor.is_opaque())
-                .unwrap_or(true);
-        }
-
-        common.opacity = PrimitiveOpacity { is_opaque: self.is_opaque };
-    }
-
-    fn write_prim_gpu_blocks(
-        &self,
-        request: &mut GpuDataRequest,
-        prim_size: &LayoutSize,
-    ) {
-        // Border primitives currently used for
-        // image borders, and run through the
-        // normal brush_image shader.
-        request.push(PremultipliedColorF::WHITE);
-        request.push(PremultipliedColorF::WHITE);
-        request.push([
-            prim_size.width,
-            prim_size.height,
-            0.0,
-            0.0,
-        ]);
-    }
-
-    fn write_segment_gpu_blocks(
-        &self,
-        request: &mut GpuDataRequest,
-    ) {
-        for segment in &self.brush_segments {
-            // has to match VECS_PER_SEGMENT
-            request.write_segment(
-                segment.local_rect,
-                segment.extra_data,
-            );
-        }
+        (task_id, size, is_opaque)
     }
 }
 
@@ -315,15 +413,15 @@ impl From<ImageBorderKey> for ImageBorderTemplate {
     fn from(key: ImageBorderKey) -> Self {
         let common = PrimTemplateCommonData::with_key_common(key.common);
 
-        let brush_segments = key.kind.nine_patch.create_segments(common.prim_rect.size());
         ImageBorderTemplate {
             common,
             kind: ImageBorderData {
-                request: key.kind.request,
-                brush_segments,
-                src_color: None,
-                frame_id: FrameId::INVALID,
-                is_opaque: false,
+                request: ImageRequest {
+                    key: key.kind.key,
+                    rendering: key.kind.rendering,
+                    tile: key.kind.tile,
+                },
+                nine_patch: key.kind.nine_patch,
             }
         }
     }
@@ -344,7 +442,7 @@ impl InternablePrimitive for ImageBorder {
         info: &LayoutPrimitiveInfo,
     ) -> ImageBorderKey {
         ImageBorderKey::new(
-            info,
+            info.into(),
             self,
         )
     }
@@ -353,16 +451,10 @@ impl InternablePrimitive for ImageBorder {
         _key: ImageBorderKey,
         data_handle: ImageBorderDataHandle,
         _: &mut PrimitiveStore,
-    ) -> PrimitiveInstanceKind {
-        PrimitiveInstanceKind::ImageBorder {
+    ) -> PrimitiveKind {
+        PrimitiveKind::ImageBorder {
             data_handle
         }
-    }
-}
-
-impl IsVisible for ImageBorder {
-    fn is_visible(&self) -> bool {
-        true
     }
 }
 
@@ -376,10 +468,10 @@ fn test_struct_sizes() {
     //     test expectations and move on.
     // (b) You made a structure larger. This is not necessarily a problem, but should only
     //     be done with care, and after checking if talos performance regresses badly.
-    assert_eq!(mem::size_of::<NormalBorderPrim>(), 84, "NormalBorderPrim size changed");
-    assert_eq!(mem::size_of::<NormalBorderTemplate>(), 216, "NormalBorderTemplate size changed");
-    assert_eq!(mem::size_of::<NormalBorderKey>(), 104, "NormalBorderKey size changed");
+    assert_eq!(mem::size_of::<NormalBorderPrim>(), 116, "NormalBorderPrim size changed");
+    assert_eq!(mem::size_of::<NormalBorderTemplate>(), 200, "NormalBorderTemplate size changed");
+    assert_eq!(mem::size_of::<NormalBorderKey>(), 152, "NormalBorderKey size changed");
     assert_eq!(mem::size_of::<ImageBorder>(), 68, "ImageBorder size changed");
     assert_eq!(mem::size_of::<ImageBorderTemplate>(), 104, "ImageBorderTemplate size changed");
-    assert_eq!(mem::size_of::<ImageBorderKey>(), 88, "ImageBorderKey size changed");
+    assert_eq!(mem::size_of::<ImageBorderKey>(), 104, "ImageBorderKey size changed");
 }

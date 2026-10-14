@@ -38,6 +38,8 @@ pub struct Config {
     pub debug: bool,
     #[serde(default, deserialize_with = "from_json")]
     pub docker_build_args: HashMap<String, String>,
+    pub chown_output: Option<String>,
+    pub target_arch: Option<String>,
 }
 
 impl Config {
@@ -69,7 +71,9 @@ mod test {
                 image_name: "mozilla.org/taskgraph/default-image:latest".into(),
                 docker_image_zstd_level: 3,
                 debug: false,
-                docker_build_args: Default::default()
+                docker_build_args: Default::default(),
+                chown_output: None,
+                target_arch: None,
             }
         );
         Ok(())
@@ -105,6 +109,36 @@ mod test {
                     .iter()
                     .cloned()
                     .collect(),
+                chown_output: None,
+                target_arch: None,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_user_config() -> Result<()> {
+        let env: Vec<(String, String)> = vec![
+            ("CONTEXT_TASK_ID".into(), "xGRRgzG6QlCCwsFsyuqm0Q".into()),
+            (
+                "CONTEXT_PATH".into(),
+                "public/docker-contexts/image.tar.gz".into(),
+            ),
+            ("CHOWN_OUTPUT".into(), "1000:1000".into()),
+        ];
+        let config: super::Config = envy::from_iter(env.into_iter())?;
+        assert_eq!(
+            config,
+            super::Config {
+                context_task_id: "xGRRgzG6QlCCwsFsyuqm0Q".into(),
+                context_path: "public/docker-contexts/image.tar.gz".into(),
+                parent_task_id: None,
+                image_name: "mozilla.org/taskgraph/default-image:latest".into(),
+                docker_image_zstd_level: 3,
+                debug: false,
+                docker_build_args: Default::default(),
+                chown_output: Some("1000:1000".into()),
+                target_arch: None,
             }
         );
         Ok(())

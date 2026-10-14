@@ -14,8 +14,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.drawable.Icon
-import android.os.Build
-import android.os.Build.VERSION.SDK_INT
 import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationCompat.BADGE_ICON_NONE
@@ -39,6 +37,7 @@ import mozilla.components.support.utils.ext.registerReceiverCompat
 
 /**
  * Displays site controls notification for fullscreen web apps.
+ *
  * @param sessionId ID of the web app session to observe.
  * @param manifest Web App Manifest reference used to populate the notification.
  * @param controlsBuilder Customizes the created notification.
@@ -74,11 +73,9 @@ class WebAppSiteControlsFeature(
 
     private var notificationIcon: Deferred<mozilla.components.browser.icons.Icon>? = null
 
-    /**
-     * Starts loading the [notificationIcon] on create.
-     */
+    /** Starts loading the [notificationIcon] on create. */
     override fun onCreate(owner: LifecycleOwner) {
-        if (SDK_INT >= Build.VERSION_CODES.M && manifest != null && icons != null) {
+        if (manifest != null && icons != null) {
             val request = manifest.toMonochromeIconRequest()
             if (request.resources.isNotEmpty()) {
                 notificationIcon = icons.loadIcon(request)
@@ -87,9 +84,9 @@ class WebAppSiteControlsFeature(
     }
 
     /**
-     * Displays a notification from the given [SiteControlsBuilder.buildNotification] that will be
-     * shown as long as the lifecycle is in the foreground. Registers this class as a broadcast
-     * receiver to receive events from the notification and call [SiteControlsBuilder.onReceiveBroadcast].
+     * Displays a notification from the given [SiteControlsBuilder.buildNotification] that will be shown as long as the
+     * lifecycle is in the foreground. Registers this class as a broadcast receiver to receive events from the
+     * notification and call [SiteControlsBuilder.onReceiveBroadcast].
      */
     override fun onResume(owner: LifecycleOwner) {
         val filter = controlsBuilder.getFilter()
@@ -115,48 +112,33 @@ class WebAppSiteControlsFeature(
         )
     }
 
-    /**
-     * Cancels the site controls notification and unregisters the broadcast receiver.
-     */
+    /** Cancels the site controls notification and unregisters the broadcast receiver. */
     override fun onPause(owner: LifecycleOwner) {
         applicationContext.unregisterReceiver(this)
 
-        NotificationManagerCompat.from(applicationContext)
-            .cancel(NOTIFICATION_TAG, NOTIFICATION_ID)
+        NotificationManagerCompat.from(applicationContext).cancel(NOTIFICATION_TAG, NOTIFICATION_ID)
     }
 
-    /**
-     * Cancels the [notificationIcon] loading job on destroy.
-     */
+    /** Cancels the [notificationIcon] loading job on destroy. */
     override fun onDestroy(owner: LifecycleOwner) {
         notificationIcon?.cancel()
     }
 
-    /**
-     * Responds to [PendingIntent]s fired by the site controls notification.
-     */
+    /** Responds to [PendingIntent]s fired by the site controls notification. */
     override fun onReceive(context: Context, intent: Intent) {
         store.state.findCustomTab(sessionId)?.also { tab ->
             controlsBuilder.onReceiveBroadcast(context, tab, intent)
         }
     }
 
-    /**
-     * Build the notification with site controls to be displayed while the web app is active.
-     */
+    /** Build the notification with site controls to be displayed while the web app is active. */
     private fun buildNotification(icon: Bitmap?): Notification {
-        val builder = if (SDK_INT >= Build.VERSION_CODES.O) {
-            val channelId = ensureChannelExists()
+        val channelId = ensureChannelExists()
+        val builder =
             Notification.Builder(applicationContext, channelId).apply {
                 setBadgeIconType(BADGE_ICON_NONE)
             }
-        } else {
-            @Suppress("Deprecation")
-            Notification.Builder(applicationContext).apply {
-                setPriority(Notification.PRIORITY_MIN)
-            }
-        }
-        if (icon != null && SDK_INT >= Build.VERSION_CODES.M) {
+        if (icon != null) {
             builder.setSmallIcon(Icon.createWithBitmap(icon))
         } else {
             builder.setSmallIcon(R.drawable.ic_pwa)
@@ -175,17 +157,16 @@ class WebAppSiteControlsFeature(
      * Returns the channel id to be used for notifications.
      */
     private fun ensureChannelExists(): String {
-        if (SDK_INT >= Build.VERSION_CODES.O) {
-            val notificationManager: NotificationManager = applicationContext.getSystemService()!!
+        val notificationManager: NotificationManager = applicationContext.getSystemService()!!
 
-            val channel = NotificationChannel(
+        val channel =
+            NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
                 applicationContext.getString(R.string.mozac_feature_pwa_site_controls_notification_channel),
                 NotificationManager.IMPORTANCE_MIN,
             )
 
-            notificationManager.createNotificationChannel(channel)
-        }
+        notificationManager.createNotificationChannel(channel)
 
         return NOTIFICATION_CHANNEL_ID
     }

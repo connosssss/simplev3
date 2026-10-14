@@ -1,16 +1,22 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <algorithm>
+#include <type_traits>
+
 #include "gtest/gtest.h"
+#include "mozilla/gtest/ipc/TestUtilityProcess.h"
+#include "mozilla/gtest/WaitFor.h"
 #include "mozilla/SpinEventLoopUntil.h"
+#include "nsThreadUtils.h"
 
 #include "mozilla/ipc/UtilityProcessManager.h"
+#include "nsIProcessToolsService.h"
+#include "nsServiceManagerUtils.h"
 
 #if defined(MOZ_WIDGET_ANDROID) || defined(XP_MACOSX)
 #  include "nsIAppShellService.h"
-#  include "nsServiceManagerUtils.h"
 #endif  // defined(MOZ_WIDGET_ANDROID) || defined(XP_MACOSX)
 
 #if defined(XP_WIN)
@@ -27,117 +33,190 @@
 #endif  // XP_MACOSX
 
 using namespace mozilla;
+using namespace mozilla::gtest::ipc;
 using namespace mozilla::ipc;
 
-#define WAIT_FOR_EVENTS \
-  SpinEventLoopUntil("UtilityProcess::emptyUtil"_ns, [&]() { return done; });
-
-bool setupDone = false;
-
-class UtilityProcess : public ::testing::Test {
- protected:
-  void SetUp() override {
-    if (setupDone) {
-      return;
-    }
-
-#if defined(MOZ_WIDGET_ANDROID) || defined(XP_MACOSX)
-    appShell = do_GetService(NS_APPSHELLSERVICE_CONTRACTID);
-#endif  // defined(MOZ_WIDGET_ANDROID) || defined(XP_MACOSX)
-
+// Note that some test suites inherit TestUtilityProcess, so any change here
+// will propagate there. Please ensure compatibility.
+/* static */ void TestUtilityProcess::SetUpTestSuite() {
 #if defined(XP_WIN) && defined(MOZ_SANDBOX)
+  // Ensure only one execution even with GTEST_REPEAT>1
+  static bool sOnce = false;
+  if (!sOnce) {
     mozilla::SandboxBroker::GeckoDependentInitialize();
+    sOnce = true;
+  }
 #endif  // defined(XP_WIN) && defined(MOZ_SANDBOX)
 
-    setupDone = true;
+#if defined(MOZ_WIDGET_ANDROID) || defined(XP_MACOSX)
+  // Ensure that the app shell service is running
+  nsCOMPtr<nsIAppShellService> appShell =
+      do_GetService(NS_APPSHELLSERVICE_CONTRACTID);
+#endif  // defined(MOZ_WIDGET_ANDROID) || defined(XP_MACOSX)
+}
+
+TEST_F(TestUtilityProcess, LaunchAllKinds) {
+  using kind_t = std::underlying_type<SandboxingKind>::type;
+
+  auto manager = UtilityProcessManager::GetSingleton();
+  ASSERT_TRUE(manager);
+
+  auto currentPid = base::GetCurrentProcId();
+  ASSERT_GE(currentPid, base::ProcessId(1));
+
+  // Launch all kinds
+  for (kind_t i = 0; i < SandboxingKind::COUNT; ++i) {
+    auto kind = static_cast<SandboxingKind>(i);
+    auto res = WaitFor(manager->LaunchProcess(kind));
+    ASSERT_TRUE(res.isOk())
+    << "First launch LaunchError: " << res.inspectErr().FunctionName() << ", "
+    << res.inspectErr().ErrorCode();
   }
 
-#if defined(MOZ_WIDGET_ANDROID) || defined(XP_MACOSX)
-  nsCOMPtr<nsIAppShellService> appShell;
-#endif  // defined(MOZ_WIDGET_ANDROID) || defined(XP_MACOSX)
-};
+  // Collect process identifiers
+  std::array<base::ProcessId, SandboxingKind::COUNT> pids{};
+  for (kind_t i = 0; i < SandboxingKind::COUNT; ++i) {
+    auto kind = static_cast<SandboxingKind>(i);
+    auto utilityPid = manager->ProcessPid(kind);
+    ASSERT_TRUE(utilityPid.isSome())
+    << "No PID for kind " << kind;
+    ASSERT_GE(*utilityPid, base::ProcessId(1));
+    ASSERT_NE(*utilityPid, currentPid);
 
-TEST_F(UtilityProcess, ProcessManager) {
-  RefPtr<UtilityProcessManager> utilityProc =
-      UtilityProcessManager::GetSingleton();
-  ASSERT_NE(utilityProc, nullptr);
+    printf_stderr("Utility process running as PID %" PRIPID "\n", *utilityPid);
+
+    pids[i] = *utilityPid;
+  }
+
+  // Re-launching should resolve immediately with process identifiers unchanged
+  for (kind_t i = 0; i < SandboxingKind::COUNT; ++i) {
+    auto kind = static_cast<SandboxingKind>(i);
+    auto res = WaitFor(manager->LaunchProcess(kind));
+    ASSERT_TRUE(res.isOk())
+    << "Second launch LaunchError: " << res.inspectErr().FunctionName() << ", "
+    << res.inspectErr().ErrorCode();
+
+    ASSERT_TRUE(manager->ProcessPid(kind) == Some(pids[i]));
+  }
+
+  // Check that every process identifier is unique
+  std::sort(pids.begin(), pids.end());
+  auto adjacentEqualPids = std::adjacent_find(pids.begin(), pids.end());
+  ASSERT_TRUE(adjacentEqualPids == pids.end());
+
+  // After being individually shut down, a process is no longer referenced
+  for (kind_t i = 0; i < SandboxingKind::COUNT; ++i) {
+    auto kind = static_cast<SandboxingKind>(i);
+    manager->CleanShutdown(kind);
+    ASSERT_TRUE(manager->ProcessPid(kind).isNothing());
+  }
+
+  // Drain the event queue.
+  NS_ProcessPendingEvents(nullptr);
 }
 
-TEST_F(UtilityProcess, NoProcess) {
-  RefPtr<UtilityProcessManager> utilityProc =
-      UtilityProcessManager::GetSingleton();
-  EXPECT_NE(utilityProc, nullptr);
+// Android declares a single `utility` service, so it cannot keep several
+// utility processes alive at once.
+#ifndef ANDROID
 
-  Maybe<int32_t> noPid =
-      utilityProc->ProcessPid(SandboxingKind::GENERIC_UTILITY);
-  ASSERT_TRUE(noPid.isNothing());
+// A keep-alive whose process crashed turns inert: letting go of it must not
+// touch anything else.
+TEST_F(TestUtilityProcess, KeepAliveOutlivesCrashedProcess) {
+  auto manager = UtilityProcessManager::GetSingleton();
+  ASSERT_TRUE(manager);
+
+  // An unrelated process stays up throughout, so the crash cannot be confused
+  // with everything having gone away.
+  auto other = WaitFor(manager->LaunchProcess(SandboxingKind::GENERIC_UTILITY));
+  ASSERT_TRUE(other.isOk());
+
+  RefPtr<UtilityProcessKeepAlive> keepAlive =
+      manager->LaunchIndependentProcess(SandboxingKind::GENERIC_UTILITY);
+  ASSERT_TRUE(keepAlive);
+  auto res = WaitFor(keepAlive->GetLaunchPromise());
+  ASSERT_TRUE(res.isOk())
+  << "Launch LaunchError: " << res.inspectErr().FunctionName() << ", "
+  << res.inspectErr().ErrorCode();
+  ASSERT_EQ(manager->AliveProcesses(), 2u);
+
+  nsCOMPtr<nsIProcessToolsService> processTools =
+      do_GetService("@mozilla.org/processtools-service;1");
+  ASSERT_TRUE(processTools);
+  ASSERT_TRUE(NS_SUCCEEDED(
+      processTools->Kill(keepAlive->GetProcessParent()->OtherPid())));
+
+  ASSERT_TRUE(SpinEventLoopUntil("KeepAliveOutlivesCrashedProcess"_ns,
+                                 [&]() { return !keepAlive->IsAlive(); }));
+  ASSERT_FALSE(keepAlive->GetProcessParent());
+  ASSERT_EQ(manager->AliveProcesses(), 1u);
+
+  keepAlive = nullptr;
+  ASSERT_EQ(manager->AliveProcesses(), 1u);
+  ASSERT_TRUE(manager->ProcessPid(SandboxingKind::GENERIC_UTILITY).isSome());
+
+  manager->CleanShutdown(SandboxingKind::GENERIC_UTILITY);
+
+  // Drain the event queue.
+  NS_ProcessPendingEvents(nullptr);
 }
 
-TEST_F(UtilityProcess, LaunchProcess) {
-  bool done = false;
+// Independent processes are distinct from the shared process of their kind and
+// from each other, and each one lives exactly as long as its keep-alive.
+TEST_F(TestUtilityProcess, IndependentProcesses) {
+  auto manager = UtilityProcessManager::GetSingleton();
+  ASSERT_TRUE(manager);
 
-  RefPtr<UtilityProcessManager> utilityProc =
-      UtilityProcessManager::GetSingleton();
-  EXPECT_NE(utilityProc, nullptr);
+  auto shared =
+      WaitFor(manager->LaunchProcess(SandboxingKind::GENERIC_UTILITY));
+  ASSERT_TRUE(shared.isOk());
+  auto sharedPid = manager->ProcessPid(SandboxingKind::GENERIC_UTILITY);
+  ASSERT_TRUE(sharedPid.isSome());
 
-  int32_t thisPid = base::GetCurrentProcId();
-  EXPECT_GE(thisPid, 1);
+  RefPtr<UtilityProcessKeepAlive> first =
+      manager->LaunchIndependentProcess(SandboxingKind::GENERIC_UTILITY);
+  RefPtr<UtilityProcessKeepAlive> second =
+      manager->LaunchIndependentProcess(SandboxingKind::GENERIC_UTILITY);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  ASSERT_NE(first.get(), second.get());
+  for (const auto& keepAlive : {first, second}) {
+    auto res = WaitFor(keepAlive->GetLaunchPromise());
+    ASSERT_TRUE(res.isOk())
+    << "Launch LaunchError: " << res.inspectErr().FunctionName() << ", "
+    << res.inspectErr().ErrorCode();
+  }
 
-  utilityProc->LaunchProcess(SandboxingKind::GENERIC_UTILITY)
-      ->Then(
-          GetCurrentSerialEventTarget(), __func__,
-          [&]() mutable {
-            EXPECT_TRUE(true);
+  // Three processes of the same kind, all with distinct pids.
+  ASSERT_EQ(manager->AliveProcesses(), 3u);
+  nsTArray<base::ProcessId> pids;
+  for (const auto& parent : manager->GetAllProcessesProcessParent()) {
+    pids.AppendElement(parent->OtherPid());
+  }
+  ASSERT_EQ(pids.Length(), 3u);
+  ASSERT_TRUE(pids.Contains(*sharedPid));
+  pids.Sort();
+  ASSERT_TRUE(std::adjacent_find(pids.begin(), pids.end()) == pids.end());
 
-            Maybe<int32_t> utilityPid =
-                utilityProc->ProcessPid(SandboxingKind::GENERIC_UTILITY);
-            EXPECT_TRUE(utilityPid.isSome());
-            EXPECT_GE(*utilityPid, 1);
-            EXPECT_NE(*utilityPid, thisPid);
+  // Only the process a keep-alive owns goes away with it; the shared one and
+  // the per-kind lookups are unaffected.
+  first = nullptr;
+  ASSERT_EQ(manager->AliveProcesses(), 2u);
+  ASSERT_TRUE(manager->ProcessPid(SandboxingKind::GENERIC_UTILITY) ==
+              sharedPid);
 
-            printf_stderr("UtilityProcess running as %d\n", *utilityPid);
+  second = nullptr;
+  ASSERT_EQ(manager->AliveProcesses(), 1u);
+  ASSERT_TRUE(manager->ProcessPid(SandboxingKind::GENERIC_UTILITY) ==
+              sharedPid);
 
-            done = true;
-          },
-          [&](LaunchError const&) {
-            EXPECT_TRUE(false);
-            done = true;
-          });
+  manager->CleanShutdown(SandboxingKind::GENERIC_UTILITY);
+  ASSERT_TRUE(manager->ProcessPid(SandboxingKind::GENERIC_UTILITY).isNothing());
 
-  WAIT_FOR_EVENTS;
+  // Drain the event queue.
+  NS_ProcessPendingEvents(nullptr);
 }
 
-TEST_F(UtilityProcess, DestroyProcess) {
-  bool done = false;
-
-  RefPtr<UtilityProcessManager> utilityProc =
-      UtilityProcessManager::GetSingleton();
-
-  utilityProc->LaunchProcess(SandboxingKind::GENERIC_UTILITY)
-      ->Then(
-          GetCurrentSerialEventTarget(), __func__,
-          [&]() {
-            Maybe<int32_t> utilityPid =
-                utilityProc->ProcessPid(SandboxingKind::GENERIC_UTILITY);
-            EXPECT_TRUE(utilityPid.isSome());
-            EXPECT_GE(*utilityPid, 1);
-
-            utilityProc->CleanShutdown(SandboxingKind::GENERIC_UTILITY);
-
-            utilityPid =
-                utilityProc->ProcessPid(SandboxingKind::GENERIC_UTILITY);
-            EXPECT_TRUE(utilityPid.isNothing());
-
-            EXPECT_TRUE(true);
-            done = true;
-          },
-          [&](LaunchError const&) {
-            EXPECT_TRUE(false);
-            done = true;
-          });
-
-  WAIT_FOR_EVENTS;
-}
+#endif  // !ANDROID
 
 #if defined(XP_WIN)
 static void LoadLibraryCrash_Test() {
@@ -147,9 +226,7 @@ static void LoadLibraryCrash_Test() {
       L"2b49036e-6ba3-400c-a297-38fa1f6c5255.dll");
 }
 
-TEST_F(UtilityProcess, LoadLibraryCrash) {
+TEST_F(TestUtilityProcess, LoadLibraryCrash) {
   ASSERT_DEATH_IF_SUPPORTED(LoadLibraryCrash_Test(), "");
 }
 #endif  // defined(XP_WIN)
-
-#undef WAIT_FOR_EVENTS

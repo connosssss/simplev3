@@ -7,14 +7,18 @@ use hal::{
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::{
-    event::{ElementState, Event, KeyEvent, WindowEvent},
-    event_loop::ControlFlow,
+    application::ApplicationHandler,
+    event::{ElementState, KeyEvent, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow},
     keyboard::{Key, NamedKey},
+    window::Window,
 };
 
 use std::{
     borrow::{Borrow, Cow},
-    iter, ptr,
+    iter,
+    num::NonZeroU64,
+    ptr,
     time::Instant,
 };
 
@@ -52,7 +56,7 @@ struct ExecutionContext<A: hal::Api> {
 
 impl<A: hal::Api> ExecutionContext<A> {
     unsafe fn wait_and_clear(&mut self, device: &A::Device) {
-        device.wait(&self.fence, self.fence_value, !0).unwrap();
+        device.wait(&self.fence, self.fence_value, None).unwrap();
         self.encoder.reset_all(self.used_cmd_bufs.drain(..));
         for view in self.used_views.drain(..) {
             device.destroy_texture_view(view);
@@ -91,21 +95,25 @@ struct Example<A: hal::Api> {
 
 impl<A: hal::Api> Example<A> {
     fn init(window: &winit::window::Window) -> Result<Self, Box<dyn std::error::Error>> {
+        // The Instance can be initialized with the DisplayHandle from the EventLoop as well
+        let raw_display_handle = window.display_handle()?;
+
         let instance_desc = hal::InstanceDescriptor {
             name: "example",
             flags: wgpu_types::InstanceFlags::from_build_config().with_env(),
             memory_budget_thresholds: wgpu_types::MemoryBudgetThresholds::default(),
             // Can't rely on having DXC available, so use FXC instead
             backend_options: wgpu_types::BackendOptions::default(),
+            telemetry: None,
+            display: Some(raw_display_handle),
         };
         let instance = unsafe { A::Instance::init(&instance_desc)? };
         let surface = {
             let raw_window_handle = window.window_handle()?.as_raw();
-            let raw_display_handle = window.display_handle()?.as_raw();
 
             unsafe {
                 instance
-                    .create_surface(raw_display_handle, raw_window_handle)
+                    .create_surface(raw_display_handle.as_raw(), raw_window_handle)
                     .unwrap()
             }
         };
@@ -121,7 +129,7 @@ impl<A: hal::Api> Example<A> {
 
         let surface_caps = unsafe { adapter.surface_capabilities(&surface) }
             .ok_or("failed to get surface capabilities")?;
-        log::info!("Surface caps: {:#?}", surface_caps);
+        log::info!("Surface caps: {surface_caps:#?}");
 
         let hal::OpenDevice { device, queue } = unsafe {
             adapter
@@ -142,6 +150,7 @@ impl<A: hal::Api> Example<A> {
             present_mode: wgpu_types::PresentMode::Fifo,
             composite_alpha_mode: wgpu_types::CompositeAlphaMode::Opaque,
             format: wgpu_types::TextureFormat::Bgra8UnormSrgb,
+            color_space: wgpu_types::SurfaceColorSpace::Srgb,
             extent: wgpu_types::Extent3d {
                 width: window_size.0,
                 height: window_size.1,
@@ -239,8 +248,8 @@ impl<A: hal::Api> Example<A> {
         let pipeline_layout_desc = hal::PipelineLayoutDescriptor {
             label: None,
             flags: hal::PipelineLayoutFlags::empty(),
-            bind_group_layouts: &[&global_group_layout, &local_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&global_group_layout), Some(&local_group_layout)],
+            immediate_size: 0,
         };
         let pipeline_layout = unsafe {
             device
@@ -252,13 +261,15 @@ impl<A: hal::Api> Example<A> {
         let pipeline_desc = hal::RenderPipelineDescriptor {
             label: None,
             layout: &pipeline_layout,
-            vertex_stage: hal::ProgrammableStage {
-                module: &shader,
-                entry_point: "vs_main",
-                constants: &constants,
-                zero_initialize_workgroup_memory: true,
+            vertex_processor: hal::VertexProcessor::Standard {
+                vertex_stage: hal::ProgrammableStage {
+                    module: &shader,
+                    entry_point: "vs_main",
+                    constants: &constants,
+                    zero_initialize_workgroup_memory: true,
+                },
+                vertex_buffers: &[],
             },
-            vertex_buffers: &[],
             fragment_stage: Some(hal::ProgrammableStage {
                 module: &shader,
                 entry_point: "fs_main",
@@ -276,7 +287,7 @@ impl<A: hal::Api> Example<A> {
                 blend: Some(wgpu_types::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu_types::ColorWrites::default(),
             })],
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         };
         let pipeline = unsafe { device.create_render_pipeline(&pipeline_desc).unwrap() };
@@ -289,7 +300,7 @@ impl<A: hal::Api> Example<A> {
             usage: wgpu_types::BufferUses::MAP_WRITE | wgpu_types::BufferUses::COPY_SRC,
             memory_flags: hal::MemoryFlags::TRANSIENT | hal::MemoryFlags::PREFER_COHERENT,
         };
-        let staging_buffer = unsafe { device.create_buffer(&staging_buffer_desc).unwrap() };
+        let (staging_buffer, _) = unsafe { device.create_buffer(&staging_buffer_desc).unwrap() };
         unsafe {
             let mapping = device
                 .map_buffer(&staging_buffer, 0..staging_buffer_desc.size)
@@ -341,6 +352,7 @@ impl<A: hal::Api> Example<A> {
                     from: wgpu_types::TextureUses::UNINITIALIZED,
                     to: wgpu_types::TextureUses::COPY_DST,
                 },
+                queue_family_ownership_transfer: None,
             };
             let texture_barrier2 = hal::TextureBarrier {
                 texture: &texture,
@@ -349,6 +361,7 @@ impl<A: hal::Api> Example<A> {
                     from: wgpu_types::TextureUses::COPY_DST,
                     to: wgpu_types::TextureUses::RESOURCE,
                 },
+                queue_family_ownership_transfer: None,
             };
             let copy = hal::BufferTextureCopy {
                 buffer_layout: wgpu_types::TexelCopyBufferLayout {
@@ -381,7 +394,7 @@ impl<A: hal::Api> Example<A> {
             address_modes: [wgpu_types::AddressMode::ClampToEdge; 3],
             mag_filter: wgpu_types::FilterMode::Linear,
             min_filter: wgpu_types::FilterMode::Nearest,
-            mipmap_filter: wgpu_types::FilterMode::Nearest,
+            mipmap_filter: wgpu_types::MipmapFilterMode::Nearest,
             lod_clamp: 0.0..32.0,
             compare: None,
             anisotropy_clamp: 1,
@@ -408,7 +421,7 @@ impl<A: hal::Api> Example<A> {
             memory_flags: hal::MemoryFlags::PREFER_COHERENT,
         };
         let global_buffer = unsafe {
-            let buffer = device.create_buffer(&global_buffer_desc).unwrap();
+            let (buffer, _) = device.create_buffer(&global_buffer_desc).unwrap();
             let mapping = device
                 .map_buffer(&buffer, 0..global_buffer_desc.size)
                 .unwrap();
@@ -433,7 +446,7 @@ impl<A: hal::Api> Example<A> {
             usage: wgpu_types::BufferUses::MAP_WRITE | wgpu_types::BufferUses::UNIFORM,
             memory_flags: hal::MemoryFlags::PREFER_COHERENT,
         };
-        let local_buffer = unsafe { device.create_buffer(&local_buffer_desc).unwrap() };
+        let (local_buffer, _) = unsafe { device.create_buffer(&local_buffer_desc).unwrap() };
 
         let view_desc = hal::TextureViewDescriptor {
             label: None,
@@ -441,15 +454,17 @@ impl<A: hal::Api> Example<A> {
             dimension: wgpu_types::TextureViewDimension::D2,
             usage: wgpu_types::TextureUses::RESOURCE,
             range: wgpu_types::ImageSubresourceRange::default(),
+            swizzle: wgpu_types::TextureComponentSwizzle::default(),
         };
         let texture_view = unsafe { device.create_texture_view(&texture, &view_desc).unwrap() };
 
         let global_group = {
-            let global_buffer_binding = hal::BufferBinding {
-                buffer: &global_buffer,
-                offset: 0,
-                size: None,
-            };
+            // SAFETY: This is the same size that was specified for buffer creation.
+            let global_buffer_binding = hal::BufferBinding::new_unchecked(
+                &global_buffer,
+                0,
+                NonZeroU64::new(global_buffer_desc.size).unwrap(),
+            );
             let texture_binding = hal::TextureBinding {
                 view: &texture_view,
                 usage: wgpu_types::TextureUses::RESOURCE,
@@ -461,6 +476,7 @@ impl<A: hal::Api> Example<A> {
                 samplers: &[&sampler],
                 textures: &[texture_binding],
                 acceleration_structures: &[],
+                external_textures: &[],
                 entries: &[
                     hal::BindGroupEntry {
                         binding: 0,
@@ -483,11 +499,12 @@ impl<A: hal::Api> Example<A> {
         };
 
         let local_group = {
-            let local_buffer_binding = hal::BufferBinding {
-                buffer: &local_buffer,
-                offset: 0,
-                size: wgpu_types::BufferSize::new(size_of::<Locals>() as _),
-            };
+            // SAFETY: The size must fit within the buffer.
+            let local_buffer_binding = hal::BufferBinding::new_unchecked(
+                &local_buffer,
+                0,
+                wgpu_types::BufferSize::new(size_of::<Locals>() as _).unwrap(),
+            );
             let local_group_desc = hal::BindGroupDescriptor {
                 label: Some("local"),
                 layout: &local_group_layout,
@@ -495,6 +512,7 @@ impl<A: hal::Api> Example<A> {
                 samplers: &[],
                 textures: &[],
                 acceleration_structures: &[],
+                external_textures: &[],
                 entries: &[hal::BindGroupEntry {
                     binding: 0,
                     resource_index: 0,
@@ -511,7 +529,7 @@ impl<A: hal::Api> Example<A> {
             queue
                 .submit(&[&init_cmd], &[], (&mut fence, init_fence_value))
                 .unwrap();
-            device.wait(&fence, init_fence_value, !0).unwrap();
+            device.wait(&fence, init_fence_value, None).unwrap();
             device.destroy_buffer(staging_buffer);
             cmd_encoder.reset_all(iter::once(init_cmd));
             fence
@@ -666,7 +684,6 @@ impl<A: hal::Api> Example<A> {
             self.surface
                 .acquire_texture(None, &ctx.fence)
                 .unwrap()
-                .unwrap()
                 .texture
         };
 
@@ -677,6 +694,7 @@ impl<A: hal::Api> Example<A> {
                 from: wgpu_types::TextureUses::UNINITIALIZED,
                 to: wgpu_types::TextureUses::COLOR_TARGET,
             },
+            queue_family_ownership_transfer: None,
         };
         unsafe {
             ctx.encoder.begin_encoding(Some("frame")).unwrap();
@@ -689,6 +707,7 @@ impl<A: hal::Api> Example<A> {
             dimension: wgpu_types::TextureViewDimension::D2,
             usage: wgpu_types::TextureUses::COLOR_TARGET,
             range: wgpu_types::ImageSubresourceRange::default(),
+            swizzle: wgpu_types::TextureComponentSwizzle::default(),
         };
         let surface_tex_view = unsafe {
             self.device
@@ -710,7 +729,7 @@ impl<A: hal::Api> Example<A> {
                 },
                 depth_slice: None,
                 resolve_target: None,
-                ops: hal::AttachmentOps::STORE,
+                ops: hal::AttachmentOps::STORE | hal::AttachmentOps::LOAD_CLEAR,
                 clear_value: wgpu_types::Color {
                     r: 0.1,
                     g: 0.2,
@@ -719,7 +738,7 @@ impl<A: hal::Api> Example<A> {
                 },
             })],
             depth_stencil_attachment: None,
-            multiview: None,
+            multiview_mask: None,
             timestamp_writes: None,
             occlusion_query_set: None,
         };
@@ -749,6 +768,7 @@ impl<A: hal::Api> Example<A> {
                 from: wgpu_types::TextureUses::COLOR_TARGET,
                 to: wgpu_types::TextureUses::PRESENT,
             },
+            queue_family_ownership_transfer: None,
         };
         unsafe {
             ctx.encoder.end_render_pass();
@@ -819,67 +839,87 @@ cfg_if::cfg_if! {
     }
 }
 
+struct App {
+    example: Option<Example<Api>>,
+    window: Option<Window>,
+    last_frame_inst: Instant,
+    frame_count: u32,
+    accum_time: f32,
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let window = event_loop
+            .create_window(Window::default_attributes().with_title("hal-bunnymark"))
+            .unwrap();
+        let example = Example::<Api>::init(&window).expect("Selected backend is not supported");
+        self.window = Some(window);
+        self.example = Some(example);
+        println!("Press space to spawn bunnies.");
+        self.window.as_ref().unwrap().request_redraw();
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.example.take().unwrap().exit();
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        event_loop.set_control_flow(ControlFlow::Poll);
+
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            }
+            | WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::RedrawRequested => {
+                let ex = self.example.as_mut().unwrap();
+                {
+                    self.accum_time += self.last_frame_inst.elapsed().as_secs_f32();
+                    self.last_frame_inst = Instant::now();
+                    self.frame_count += 1;
+                    if self.frame_count >= 100 && !ex.is_empty() {
+                        println!(
+                            "Avg frame time {}ms",
+                            self.accum_time * 1000.0 / self.frame_count as f32
+                        );
+                        self.accum_time = 0.0;
+                        self.frame_count = 0;
+                    }
+                }
+                ex.render();
+                self.window.as_ref().unwrap().request_redraw();
+            }
+            _ => {
+                self.example.as_mut().unwrap().update(event);
+            }
+        }
+    }
+}
+
 fn main() {
     env_logger::init();
 
     let event_loop = winit::event_loop::EventLoop::new().unwrap();
-    let window = winit::window::WindowBuilder::new()
-        .with_title("hal-bunnymark")
-        .build(&event_loop)
-        .unwrap();
-
-    let example_result = Example::<Api>::init(&window);
-    let mut example = Some(example_result.expect("Selected backend is not supported"));
-
-    println!("Press space to spawn bunnies.");
-
-    let mut last_frame_inst = Instant::now();
-    let (mut frame_count, mut accum_time) = (0, 0.0);
-
-    event_loop
-        .run(move |event, target| {
-            let _ = &window; // force ownership by the closure
-            target.set_control_flow(ControlFlow::Poll);
-
-            match event {
-                Event::LoopExiting => {
-                    example.take().unwrap().exit();
-                }
-                Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::KeyboardInput {
-                        event:
-                            KeyEvent {
-                                logical_key: Key::Named(NamedKey::Escape),
-                                state: ElementState::Pressed,
-                                ..
-                            },
-                        ..
-                    }
-                    | WindowEvent::CloseRequested => target.exit(),
-                    WindowEvent::RedrawRequested => {
-                        let ex = example.as_mut().unwrap();
-                        {
-                            accum_time += last_frame_inst.elapsed().as_secs_f32();
-                            last_frame_inst = Instant::now();
-                            frame_count += 1;
-                            if frame_count == 100 && !ex.is_empty() {
-                                println!(
-                                    "Avg frame time {}ms",
-                                    accum_time * 1000.0 / frame_count as f32
-                                );
-                                accum_time = 0.0;
-                                frame_count = 0;
-                            }
-                        }
-                        ex.render();
-                        window.request_redraw();
-                    }
-                    _ => {
-                        example.as_mut().unwrap().update(event);
-                    }
-                },
-                _ => {}
-            }
-        })
-        .unwrap();
+    let mut app = App {
+        example: None,
+        window: None,
+        last_frame_inst: Instant::now(),
+        frame_count: 0,
+        accum_time: 0.0,
+    };
+    event_loop.run_app(&mut app).unwrap();
 }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -52,25 +53,25 @@ fun HorizontalFadingEdgeBox(
         Box(modifier) {
             content()
             Spacer(
-                Modifier
-                    .width(fadeWidth)
+                Modifier.width(fadeWidth)
                     .fillMaxHeight()
                     .align(
                         if (isContentRtl) {
                             Alignment.CenterStart
                         } else {
                             Alignment.CenterEnd
-                        },
+                        }
                     )
                     .background(
                         Brush.horizontalGradient(
-                            colors = if (isContentRtl) {
-                                colorList.reversed()
-                            } else {
-                                colorList
-                            },
-                        ),
-                    ),
+                            colors =
+                                if (isContentRtl) {
+                                    colorList.reversed()
+                                } else {
+                                    colorList
+                                }
+                        )
+                    )
             )
         }
     }
@@ -80,18 +81,14 @@ fun HorizontalFadingEdgeBox(
 @Composable
 private fun FadingRightTextPreview() {
     FirefoxTheme {
-        Surface(modifier = Modifier.background(FirefoxTheme.colors.layer1)) {
+        Surface {
             HorizontalFadingEdgeBox(
-                modifier = Modifier
-                    .width(250.dp)
-                    .height(20.dp)
-                    .clipToBounds(),
-                backgroundColor = FirefoxTheme.colors.layer1,
+                modifier = Modifier.width(250.dp).height(20.dp).clipToBounds(),
+                backgroundColor = MaterialTheme.colorScheme.surface,
             ) {
                 Text(
                     "Example text set to fade on the right",
-                    modifier = Modifier
-                        .fillMaxSize(),
+                    modifier = Modifier.fillMaxSize(),
                     softWrap = false,
                 )
             }
@@ -103,20 +100,16 @@ private fun FadingRightTextPreview() {
 @Composable
 private fun FadingLeftTextPreview() {
     FirefoxTheme {
-        Surface(modifier = Modifier.background(FirefoxTheme.colors.layer1)) {
+        Surface {
             HorizontalFadingEdgeBox(
-                modifier = Modifier
-                    .width(250.dp)
-                    .height(20.dp)
-                    .clipToBounds(),
+                modifier = Modifier.width(250.dp).height(20.dp).clipToBounds(),
                 isContentRtl = true,
                 fadeWidth = 50.dp,
-                backgroundColor = FirefoxTheme.colors.layer1,
+                backgroundColor = MaterialTheme.colorScheme.surface,
             ) {
                 Text(
                     "Example text set to fade on the left",
-                    modifier = Modifier
-                        .fillMaxSize(),
+                    modifier = Modifier.fillMaxSize(),
                     softWrap = false,
                 )
             }

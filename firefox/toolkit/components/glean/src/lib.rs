@@ -23,8 +23,11 @@ use firefox_on_glean::{ipc, metrics};
 use nserror::{nsresult, NS_ERROR_FAILURE, NS_OK};
 use nsstring::{nsACString, nsAString, nsCString};
 use std::cell::UnsafeCell;
+use std::ffi::{c_char, CStr};
 use std::fs;
 use std::io::ErrorKind;
+use std::mem;
+use std::sync::RwLock;
 use thin_vec::ThinVec;
 
 #[macro_use]
@@ -41,6 +44,37 @@ use glean::{AttributionMetrics, DistributionMetrics};
 #[no_mangle]
 pub extern "C" fn fog_shutdown() {
     glean::shutdown();
+}
+
+/// Application ID to use on initialization.
+///
+/// See [`fog_set_application_id`] (available as `FOG::SetApplicationID` in C++).
+/// An empty string is considered to be unset.
+pub(crate) static APP_ID: RwLock<String> = RwLock::new(String::new());
+
+/// Set the application ID to be used at initialization.
+///
+/// An empty string is considered to be unset.
+///
+/// Note: `app_id_override` takes priority over this.
+///
+/// # SAFETY:
+///
+/// * `c_app_id` MUST be a null-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn fog_set_application_id(c_app_id: *const c_char) {
+    let app_id = unsafe {
+        debug_assert!(!c_app_id.is_null());
+        let app_id = CStr::from_ptr(c_app_id);
+        app_id.to_string_lossy().to_string()
+    };
+
+    log::debug!("Setting global app id to: {app_id}");
+    let mut global_app_id = APP_ID.write().unwrap();
+    let old_app_id = mem::replace(&mut *global_app_id, app_id);
+    if !old_app_id.is_empty() {
+        log::warn!("App ID was overriden. Old app ID: {old_app_id}");
+    }
 }
 
 #[no_mangle]
@@ -271,6 +305,62 @@ pub extern "C" fn fog_apply_serverknobs(serverknobs_path: &nsAString) -> bool {
     true
 }
 
+#[no_mangle]
+pub extern "C" fn fog_set_store_submitted_pings_enabled(enabled: bool) {
+    glean::set_store_submitted_pings_enabled(enabled);
+}
+
+#[repr(C)]
+pub struct SubmittedPing {
+    pub document_id: nsCString,
+    pub ping: nsCString,
+    pub submitted_date: nsCString,
+    pub uploaded_date: nsCString,
+    pub upload_failed: nsCString,
+    pub payload: nsCString,
+}
+
+impl From<glean::SubmittedPing> for SubmittedPing {
+    fn from(value: glean::SubmittedPing) -> Self {
+        SubmittedPing {
+            document_id: value.document_id.into(),
+            ping: value.ping.into(),
+            submitted_date: value.submitted_date.into(),
+            uploaded_date: value.uploaded_date.unwrap_or_default().into(),
+            upload_failed: value.upload_failed.unwrap_or_default().into(),
+            payload: value
+                .payload
+                .map(|p| p.to_string())
+                .unwrap_or_default()
+                .into(),
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn fog_get_all_stored_submitted_pings(submitted_pings: &mut ThinVec<SubmittedPing>) {
+    let pings = glean::get_all_stored_submitted_pings();
+    for submitted_ping in pings {
+        submitted_pings.push(submitted_ping.into());
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn fog_get_stored_submitted_pings_by_name(
+    ping: &nsACString,
+    submitted_pings: &mut ThinVec<SubmittedPing>,
+) {
+    let pings = glean::get_stored_submitted_pings_by_name(ping.to_string());
+    for submitted_ping in pings {
+        submitted_pings.push(submitted_ping.into());
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn fog_clear_stored_submitted_pings() {
+    glean::clear_stored_submitted_pings();
+}
+
 #[repr(C)]
 pub struct FogAttributionMetrics {
     source: nsCString,
@@ -343,6 +433,12 @@ impl From<&FogDistributionMetrics> for DistributionMetrics {
         DistributionMetrics { name }
     }
 }
+
+#[no_mangle]
+pub extern "C" fn fog_clear_attribution() {
+    glean::clear_attribution();
+}
+
 #[no_mangle]
 pub extern "C" fn fog_update_attribution(attr: &FogAttributionMetrics) {
     glean::update_attribution(attr.into());
@@ -351,6 +447,11 @@ pub extern "C" fn fog_update_attribution(attr: &FogAttributionMetrics) {
 #[no_mangle]
 pub extern "C" fn fog_test_get_attribution(value: &mut FogAttributionMetrics) {
     value.take(glean::test_get_attribution());
+}
+
+#[no_mangle]
+pub extern "C" fn fog_clear_distribution() {
+    glean::clear_distribution();
 }
 
 #[no_mangle]

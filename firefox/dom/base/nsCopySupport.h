@@ -1,12 +1,12 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsCopySupport_h__
-#define nsCopySupport_h__
+#ifndef nsCopySupport_h_
+#define nsCopySupport_h_
 
 #include <cstdint>
+
 #include "ErrorList.h"
 #include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Attributes.h"
@@ -35,12 +35,14 @@ class nsCopySupport {
  public:
   static nsresult ClearSelectionCache();
 
+  enum class UpdateClipboard : bool { No, Yes };
   /**
    * @param aDoc Needs to be not nullptr.
    */
   static nsresult EncodeDocumentWithContextAndPutToClipboard(
       mozilla::dom::Selection* aSel, mozilla::dom::Document* aDoc,
-      nsIClipboard::ClipboardType aClipboardID, bool aWithRubyAnnotation);
+      nsIClipboard::ClipboardType aClipboardID, bool aWithRubyAnnotation,
+      UpdateClipboard = UpdateClipboard::Yes);
 
   // Get the selection, or entire document, in the format specified by the mime
   // type (text/html or text/plain). If aSel is non-null, use it, otherwise get
@@ -60,6 +62,17 @@ class nsCopySupport {
   static nsresult GetTransferableForSelection(
       mozilla::dom::Selection* aSelection, mozilla::dom::Document* aDocument,
       nsITransferable** aTransferable);
+
+  // Get the document's source URL that will be added to the tranferable used
+  // for copying. The source URL might be empty for chrome pages or censored in
+  // private browsing mode.
+  static nsString GetDocumentSourceURL(mozilla::dom::Document& aDocument);
+
+  /**
+   * Adds a browser-owned source URL to the transferable.
+   */
+  static nsresult AppendSourceURL(nsITransferable& aTransferable,
+                                  const nsAString& aSourceURL);
 
   // Same as GetTransferableForSelection, but doesn't skip invisible content.
   // @param aNode Needs to be not nullptr.

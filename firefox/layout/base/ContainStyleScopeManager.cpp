@@ -1,18 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ContainStyleScopeManager.h"
 
-#include "mozilla/ServoStyleSet.h"
-#include "nsIContentInlines.h"
 #include "CounterStyleManager.h"
+#include "mozilla/ServoStyleSet.h"
+#include "nsContentUtils.h"
 #include "nsCounterManager.h"
 #include "nsIContent.h"
+#include "nsIContentInlines.h"
 #include "nsIFrame.h"
-#include "nsContentUtils.h"
 #include "nsQuoteList.h"
 
 namespace mozilla {
@@ -141,6 +139,10 @@ bool ContainStyleScopeManager::DestroyCounterNodesFor(nsIFrame* aFrame) {
 }
 
 bool ContainStyleScopeManager::AddCounterChanges(nsIFrame* aNewFrame) {
+  if (!nsCounterManager::HasCounterChanges(aNewFrame)) {
+    MOZ_ASSERT(!aNewFrame->HasAnyStateBits(NS_FRAME_HAS_CSS_COUNTER_STYLE));
+    return false;
+  }
   return GetOrCreateScopeForContent(
              aNewFrame->GetContent()->GetFlattenedTreeParent())
       .GetCounterManager()

@@ -1,24 +1,21 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "TRRServiceBase.h"
 
-#include "TRRService.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/ScopeExit.h"
-#include "nsHostResolver.h"
-#include "nsNetUtil.h"
-#include "nsIOService.h"
-#include "nsIDNSService.h"
-#include "nsIProxyInfo.h"
-#include "nsHttpConnectionInfo.h"
-#include "nsHttpHandler.h"
-#include "mozilla/StaticPrefs_network.h"
 #include "AlternateServices.h"
 #include "ProxyConfigLookup.h"
+#include "TRRService.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/StaticPrefs_network.h"
+#include "nsHostResolver.h"
+#include "nsHttpConnectionInfo.h"
+#include "nsHttpHandler.h"
+#include "nsIDNSService.h"
+#include "nsIOService.h"
+#include "nsIProxyInfo.h"
+#include "nsNetUtil.h"
 // Put DNSLogging.h at the end to avoid LOG being overwritten by other headers.
 #include "DNSLogging.h"
 
@@ -86,7 +83,7 @@ void TRRServiceBase::ProcessURITemplate(nsACString& aURI) {
     }
   } while (true);
 
-  aURI = uri;
+  aURI = std::move(uri);
 }
 
 void TRRServiceBase::CheckURIPrefs() {
@@ -181,7 +178,7 @@ void TRRServiceBase::OnTRRURIChange() {
   CheckURIPrefs();
 }
 
-static already_AddRefed<nsHttpConnectionInfo> CreateConnInfoHelper(
+already_AddRefed<nsHttpConnectionInfo> TRRServiceBase::CreateConnInfoHelper(
     nsIURI* aURI, nsIProxyInfo* aProxyInfo) {
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -227,7 +224,10 @@ static already_AddRefed<nsHttpConnectionInfo> CreateConnInfoHelper(
       (scheme.EqualsLiteral("http") || scheme.EqualsLiteral("https")) &&
       (mapping = gHttpHandler->GetAltServiceMapping(
            scheme, host, port, false, OriginAttributes(), http2Allowed,
-           http3Allowed))) {
+           http3Allowed,
+           StaticPrefs::network_trr_force_http3_first() ||
+               (StaticPrefs::network_trr_allow_default_http3_first() &&
+                GetHttp3FirstForServer(host))))) {
     mapping->GetConnectionInfo(getter_AddRefs(connInfo), proxyInfo,
                                OriginAttributes());
   }
@@ -235,12 +235,12 @@ static already_AddRefed<nsHttpConnectionInfo> CreateConnInfoHelper(
   return connInfo.forget();
 }
 
-void TRRServiceBase::InitTRRConnectionInfo() {
+void TRRServiceBase::InitTRRConnectionInfo(bool aForceReinit) {
   if (!XRE_IsParentProcess()) {
     return;
   }
 
-  if (mTRRConnectionInfoInited) {
+  if (mTRRConnectionInfoInited && !aForceReinit) {
     return;
   }
 
@@ -285,29 +285,40 @@ void TRRServiceBase::AsyncCreateTRRConnectionInfoInternal(
     return;
   }
 
+  // Tag this lookup with a generation. Consecutive proxy config changes start
+  // overlapping ProxyConfigLookups that may complete out of order; only the
+  // most recent one is allowed to store its result, so a stale lookup (e.g.
+  // resolved before a PAC took effect) can't overwrite a newer one.
+  uint32_t generation = ++mTRRConnectionInfoGeneration;
+
   rv = ProxyConfigLookup::Create(
-      [self = RefPtr{this}, uri(dnsURI)](nsIProxyInfo* aProxyInfo,
-                                         nsresult aStatus) mutable {
+      [self = RefPtr{this}, uri(dnsURI), generation](nsIProxyInfo* aProxyInfo,
+                                                     nsresult aStatus) mutable {
+        if (generation != self->mTRRConnectionInfoGeneration) {
+          // A newer lookup has been started since; ignore this stale result.
+          return;
+        }
+
         if (NS_FAILED(aStatus)) {
           self->SetDefaultTRRConnectionInfo(nullptr);
           return;
         }
 
         RefPtr<nsHttpConnectionInfo> connInfo =
-            CreateConnInfoHelper(uri, aProxyInfo);
+            self->CreateConnInfoHelper(uri, aProxyInfo);
         self->SetDefaultTRRConnectionInfo(connInfo);
         if (!self->mTRRConnectionInfoInited) {
           self->mTRRConnectionInfoInited = true;
           self->RegisterProxyChangeListener();
         }
       },
-      dnsURI, 0, nullptr);
+      dnsURI, 0, /* aIsTRRServiceChannel */ true, nullptr);
 
   // mDefaultTRRConnectionInfo is set to nullptr at the beginning of this
   // method, so we don't really care aobut the |rv| here. If it's failed,
   // mDefaultTRRConnectionInfo stays as nullptr and we'll create a new
   // connection info in TRRServiceChannel again.
-  Unused << NS_WARN_IF(NS_FAILED(rv));
+  (void)NS_WARN_IF(NS_FAILED(rv));
 }
 
 already_AddRefed<nsHttpConnectionInfo> TRRServiceBase::TRRConnectionInfo() {
@@ -357,43 +368,19 @@ void TRRServiceBase::UnregisterProxyChangeListener() {
   pps->RemoveProxyConfigCallback(this);
 }
 
-void TRRServiceBase::DoReadEtcHostsFile(ParsingCallback aCallback) {
-  MOZ_ASSERT(XRE_IsParentProcess());
+void TRRServiceBase::SetHttp3FirstForServer(const nsACString& aServer,
+                                            bool aEnabled) {
+  MutexAutoLock lock(mLock);
+  LOG(("SetHttp3FirstForServer %s %d", PromiseFlatCString(aServer).get(),
+       aEnabled));
+  mHttp3FirstServers.InsertOrUpdate(aServer, aEnabled);
+}
 
-  if (!StaticPrefs::network_trr_exclude_etc_hosts()) {
-    return;
-  }
-
-  auto readHostsTask = [aCallback]() {
-    MOZ_ASSERT(!NS_IsMainThread(), "Must not run on the main thread");
-#if defined(XP_WIN)
-    // Inspired by libevent/evdns.c
-    // Windows is a little coy about where it puts its configuration
-    // files.  Sure, they're _usually_ in C:\windows\system32, but
-    // there's no reason in principle they couldn't be in
-    // W:\hoboken chicken emergency
-
-    nsCString path;
-    path.SetLength(MAX_PATH + 1);
-    if (!SHGetSpecialFolderPathA(NULL, path.BeginWriting(), CSIDL_SYSTEM,
-                                 false)) {
-      LOG(("Calling SHGetSpecialFolderPathA failed"));
-      return;
-    }
-
-    path.SetLength(strlen(path.get()));
-    path.Append("\\drivers\\etc\\hosts");
-#else
-    nsAutoCString path("/etc/hosts"_ns);
-#endif
-
-    LOG(("Reading hosts file at %s", path.get()));
-    rust_parse_etc_hosts(&path, aCallback);
-  };
-
-  Unused << NS_DispatchBackgroundTask(
-      NS_NewRunnableFunction("Read /etc/hosts file", readHostsTask),
-      NS_DISPATCH_EVENT_MAY_BLOCK);
+bool TRRServiceBase::GetHttp3FirstForServer(const nsACString& aServer) {
+  MutexAutoLock lock(mLock);
+  bool res = mHttp3FirstServers.MaybeGet(aServer).valueOr(false);
+  LOG(("GetHttp3FirstForServer %s %d", PromiseFlatCString(aServer).get(), res));
+  return res;
 }
 
 }  // namespace net

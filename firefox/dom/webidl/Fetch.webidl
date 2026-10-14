@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -9,8 +8,7 @@
 
 typedef object JSON;
 typedef (Blob or BufferSource or FormData or URLSearchParams or USVString) XMLHttpRequestBodyInit;
-/* no support for request body streams yet */
-typedef XMLHttpRequestBodyInit BodyInit;
+typedef (ReadableStream or XMLHttpRequestBodyInit) BodyInit;
 
 interface mixin Body {
   readonly attribute boolean bodyUsed;

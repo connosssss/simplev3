@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -417,7 +415,7 @@ class ModuloBuffer {
     // without Undefined Behavior!
     template <typename T, bool NotIsBufferConst = !IsBufferConst>
     std::enable_if_t<NotIsBufferConst> PokeObject(const T& aObject) const {
-      static_assert(std::is_trivially_copyable<T>::value,
+      static_assert(std::is_trivially_copyable_v<T>,
                     "PokeObject<T> - T must be trivially copyable");
       return Poke(&aObject, sizeof(T));
     }
@@ -435,7 +433,7 @@ class ModuloBuffer {
     // without Undefined Behavior!
     template <typename T, bool NotIsBufferConst = !IsBufferConst>
     std::enable_if_t<NotIsBufferConst> WriteObject(const T& aObject) {
-      static_assert(std::is_trivially_copyable<T>::value,
+      static_assert(std::is_trivially_copyable_v<T>,
                     "WriteObject<T> - T must be trivially copyable");
       return Write(&aObject, sizeof(T));
     }
@@ -479,7 +477,7 @@ class ModuloBuffer {
     // Undefined Behavior!
     template <typename T>
     void PeekIntoObject(T& aObject) const {
-      static_assert(std::is_trivially_copyable<T>::value,
+      static_assert(std::is_trivially_copyable_v<T>,
                     "PeekIntoObject<T> - T must be trivially copyable");
       Peek(&aObject, sizeof(T));
     }
@@ -490,7 +488,7 @@ class ModuloBuffer {
     // support this without Undefined Behavior!
     template <typename T>
     T PeekObject() const {
-      static_assert(std::is_trivially_copyable<T>::value,
+      static_assert(std::is_trivially_copyable_v<T>,
                     "PeekObject<T> - T must be trivially copyable");
       T object;
       PeekIntoObject(object);
@@ -530,7 +528,7 @@ class ModuloBuffer {
     // Undefined Behavior!
     template <typename T>
     void ReadIntoObject(T& aObject) {
-      static_assert(std::is_trivially_copyable<T>::value,
+      static_assert(std::is_trivially_copyable_v<T>,
                     "ReadIntoObject<T> - T must be trivially copyable");
       Read(&aObject, sizeof(T));
     }
@@ -541,7 +539,7 @@ class ModuloBuffer {
     // support this without Undefined Behavior!
     template <typename T>
     T ReadObject() {
-      static_assert(std::is_trivially_copyable<T>::value,
+      static_assert(std::is_trivially_copyable_v<T>,
                     "ReadObject<T> - T must be trivially copyable");
       T object;
       ReadIntoObject(object);

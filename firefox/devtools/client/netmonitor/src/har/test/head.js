@@ -18,7 +18,7 @@ const HAR_EXAMPLE_URL =
 /**
  * Trigger a "copy all as har" from the context menu of the requests list.
 
- * @param {Object} monitor
+ * @param {object} monitor
  *        The network monitor object
  */
 async function copyAllAsHARWithContextMenu(monitor, { asString = false } = {}) {
@@ -30,7 +30,7 @@ async function copyAllAsHARWithContextMenu(monitor, { asString = false } = {}) {
   const firstRequest =
     monitor.panelWin.document.querySelectorAll(".request-list-item")[0];
 
-  EventUtils.sendMouseEvent({ type: "mousedown" }, firstRequest);
+  clickOnRequestRow(firstRequest);
   EventUtils.sendMouseEvent({ type: "contextmenu" }, firstRequest);
 
   info("Trigger Copy All As HAR from the context menu");
@@ -47,7 +47,7 @@ async function copyAllAsHARWithContextMenu(monitor, { asString = false } = {}) {
 /**
  * Trigger a "save as har" from the context menu of the requests list.
 
- * @param {Object} monitor
+ * @param {object} monitor
  *        The network monitor object
  */
 async function saveAsHARWithContextMenu(monitor, { asString = false } = {}) {
@@ -55,7 +55,7 @@ async function saveAsHARWithContextMenu(monitor, { asString = false } = {}) {
   const firstRequest =
     monitor.panelWin.document.querySelectorAll(".request-list-item")[0];
 
-  EventUtils.sendMouseEvent({ type: "mousedown" }, firstRequest);
+  clickOnRequestRow(firstRequest);
   EventUtils.sendMouseEvent({ type: "contextmenu" }, firstRequest);
 
   info("Trigger Save As HAR from the context menu");
@@ -63,7 +63,7 @@ async function saveAsHARWithContextMenu(monitor, { asString = false } = {}) {
 
   info("Mock the file picker dialog to save the HAR file to disk");
   const MockFilePicker = SpecialPowers.MockFilePicker;
-  MockFilePicker.init(window.browsingContext);
+  MockFilePicker.init();
   const nsiFile = new FileUtils.File(
     PathUtils.join(PathUtils.tempDir, `save_as_har-${Date.now()}.har`)
   );
@@ -71,8 +71,8 @@ async function saveAsHARWithContextMenu(monitor, { asString = false } = {}) {
   const path = nsiFile.path;
 
   info("Wait for the downloaded file to be fully saved to disk");
-  await BrowserTestUtils.waitForCondition(() => IOUtils.exists(path));
-  await BrowserTestUtils.waitForCondition(async () => {
+  await TestUtils.waitForCondition(() => IOUtils.exists(path));
+  await TestUtils.waitForCondition(async () => {
     const { size } = await IOUtils.stat(path);
     return size > 0;
   });

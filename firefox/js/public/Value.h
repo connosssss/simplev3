@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -92,10 +90,8 @@ class JS_PUBLIC_API Value;
 //   holds the address of a JSObject; if a string, the address of a
 //   JSString; and so on.
 //
-//   To enforce this invariant, anywhere that may provide a numerical value
-//   which may have a non-canonical NaN value (NaN, but not the one we've chosen
-//   for ECMAScript) we must convert that to the canonical NaN. See
-//   JS::CanonicalizeNaN.
+//   To enforce this invariant, setDouble and setNumber canonicalize NaNs before
+//   storing them; see JS::CanonicalizeNaN.
 //
 // We have two boxing modes defined: NUNBOX32 and PUNBOX64.The first is
 // "NaN unboxed boxing" (or Nunboxing), as non-Number payload are stored
@@ -116,10 +112,13 @@ class JS_PUBLIC_API Value;
 // Tag values are carefully ordered to support a set of micro-optimizations. In
 // particular:
 //
-// 1. Object is the highest tag, to simplify isPrimitive checks. (See
-//    ValueUpperExclPrimitiveTag)
+// 1. The shifted String, Symbol and Object tags are each a contiguous run of
+//    set bits, which AArch64 encodes as a logical immediate, so boxing,
+//    unboxing and tag tests for these GC things need no instruction to
+//    materialize the tag.
 // 2. Numbers (Double and Int32) are the lowest tags, to simplify isNumber
-//    checks. (See ValueUpperInclNumberTag)
+//    checks, and Boolean follows Int32. (See ValueUpperInclNumberTag and
+//    ValueUpperExclShiftedNumberTag)
 // 3. Non-GC tags are ordered before GC-tags, to simplify isGCThing checks. (See
 //    ValueLowerInclGCThingTag)
 // 4. The tags for Object and Null differ by a single flipped bit, to simplify
@@ -141,6 +140,12 @@ class JS_PUBLIC_API Value;
 //    left to allocate new tags.)
 //
 //    * But see JS_NONCANONICAL_HARDWARE_NAN below.
+// 6. The low two bits of the String, Object and BigInt tags are their
+//    JS::TraceKind, and the PrivateGCThing and Symbol tags are adjacent, so
+//    Value::traceKind needs a single branch. (See Value::traceKind)
+// 7. Int32 and Undefined have even type codes, so on PUNBOX64 their shifted
+//    tags occupy only the top 16 bits and AArch64 materializes them with a
+//    single movz. Type code 0x01 is unused so that Int32 can be even.
 //
 // [1]:
 // https://wingolog.org/archives/2011/05/18/value-representation-in-javascript-implementations#969f63bbe4eb912778c9da85feb0f5763e7a7862
@@ -161,16 +166,16 @@ class JS_PUBLIC_API Value;
 
 enum JSValueType : uint8_t {
   JSVAL_TYPE_DOUBLE = 0x00,
-  JSVAL_TYPE_INT32 = 0x01,
-  JSVAL_TYPE_BOOLEAN = 0x02,
-  JSVAL_TYPE_UNDEFINED = 0x03,
+  JSVAL_TYPE_INT32 = 0x02,
+  JSVAL_TYPE_BOOLEAN = 0x03,
   JSVAL_TYPE_NULL = 0x04,
   JSVAL_TYPE_MAGIC = 0x05,
-  JSVAL_TYPE_STRING = 0x06,
-  JSVAL_TYPE_SYMBOL = 0x07,
-  JSVAL_TYPE_PRIVATE_GCTHING = 0x08,
+  JSVAL_TYPE_UNDEFINED = 0x06,
+  JSVAL_TYPE_PRIVATE_GCTHING = 0x07,
+  JSVAL_TYPE_SYMBOL = 0x08,
   JSVAL_TYPE_BIGINT = 0x09,
   JSVAL_TYPE_OBJECT = 0x0c,
+  JSVAL_TYPE_STRING = 0x0e,
 
   // This type never appears in a Value; it's only an out-of-band value.
   JSVAL_TYPE_UNKNOWN = 0x20
@@ -179,6 +184,8 @@ enum JSValueType : uint8_t {
 namespace JS {
 enum class ValueType : uint8_t {
   Double = JSVAL_TYPE_DOUBLE,
+  // Alias for Double storing a non-GC pointer.
+  Private = JSVAL_TYPE_DOUBLE,
   Int32 = JSVAL_TYPE_INT32,
   Boolean = JSVAL_TYPE_BOOLEAN,
   Undefined = JSVAL_TYPE_UNDEFINED,
@@ -270,9 +277,8 @@ constexpr bool ValueIsDouble(uint64_t bits) {
   return uint32_t(bits >> JSVAL_TAG_SHIFT) <= uint32_t(JSVAL_TAG_CLEAR);
 }
 
-constexpr JSValueTag ValueUpperExclPrimitiveTag = JSVAL_TAG_OBJECT;
 constexpr JSValueTag ValueUpperInclNumberTag = JSVAL_TAG_INT32;
-constexpr JSValueTag ValueLowerInclGCThingTag = JSVAL_TAG_STRING;
+constexpr JSValueTag ValueLowerInclGCThingTag = JSVAL_TAG_PRIVATE_GCTHING;
 
 #elif defined(JS_PUNBOX64)
 
@@ -300,13 +306,14 @@ constexpr uint64_t ValueTypeToShiftedTag(JSValueType type) {
 #  define JSVAL_TYPE_TO_SHIFTED_TAG(type) \
     (JS::detail::ValueTypeToShiftedTag(type))
 
-constexpr JSValueTag ValueUpperExclPrimitiveTag = JSVAL_TAG_OBJECT;
 constexpr JSValueTag ValueUpperInclNumberTag = JSVAL_TAG_INT32;
-constexpr JSValueTag ValueLowerInclGCThingTag = JSVAL_TAG_STRING;
+constexpr JSValueTag ValueLowerInclGCThingTag = JSVAL_TAG_PRIVATE_GCTHING;
 
-constexpr uint64_t ValueUpperExclShiftedPrimitiveTag = JSVAL_SHIFTED_TAG_OBJECT;
 constexpr uint64_t ValueUpperExclShiftedNumberTag = JSVAL_SHIFTED_TAG_BOOLEAN;
-constexpr uint64_t ValueLowerInclShiftedGCThingTag = JSVAL_SHIFTED_TAG_STRING;
+static_assert(JSVAL_TYPE_BOOLEAN == JSVAL_TYPE_INT32 + 1,
+              "Boolean must be the tag after the number tags");
+constexpr uint64_t ValueLowerInclShiftedGCThingTag =
+    JSVAL_SHIFTED_TAG_PRIVATE_GCTHING;
 
 // JSVAL_TYPE_OBJECT and JSVAL_TYPE_NULL differ by one bit. We can use this to
 // implement toObjectOrNull more efficiently.
@@ -323,20 +330,30 @@ constexpr uint64_t IsValidUserModePointer(uint64_t bits) {
 
 #endif /* JS_PUNBOX64 */
 
+constexpr bool ValueTypeIsGCThing(JSValueType type) {
+  return ValueTypeToTag(type) >= ValueLowerInclGCThingTag;
+}
+
 }  // namespace detail
 }  // namespace JS
 
 #define JSVAL_TYPE_TO_TAG(type) (JS::detail::ValueTypeToTag(type))
 
 enum JSWhyMagic {
+  /**
+   * uninitialized lexical bindings that produce ReferenceError on touch.
+   *
+   * Kept first so its payload is zero: the JITs materialize this Value at
+   * every TDZ check and lexical slot initialization, and a zero payload takes
+   * one instruction fewer on ARM64.
+   */
+  JS_UNINITIALIZED_LEXICAL,
+
   /** a hole in a native object's elements */
   JS_ELEMENTS_HOLE,
 
   /** there is not a pending iterator value */
   JS_NO_ITER_VALUE,
-
-  /** exception value thrown when closing a generator */
-  JS_GENERATOR_CLOSING,
 
   /** used in debug builds to catch tracing errors */
   JS_ARG_POISON,
@@ -358,9 +375,6 @@ enum JSWhyMagic {
 
   /** optimized out slot */
   JS_OPTIMIZED_OUT,
-
-  /** uninitialized lexical bindings that produce ReferenceError on touch. */
-  JS_UNINITIALIZED_LEXICAL,
 
   /** arguments object can't be created because environment is dead. */
   JS_MISSING_ARGUMENTS,
@@ -426,7 +440,7 @@ constexpr uint64_t CanonicalizedNaNSignificand = 0x8000000000000;
 #endif
 
 #if defined(JS_RUNTIME_CANONICAL_NAN)
-extern uint64_t CanonicalizedNaNBits;
+extern JS_PUBLIC_API uint64_t CanonicalizedNaNBits;
 #else
 constexpr uint64_t CanonicalizedNaNBits =
     mozilla::SpecificNaNBits<double, detail::CanonicalizedNaNSignBit,
@@ -452,7 +466,14 @@ static MOZ_ALWAYS_INLINE double Infinity() {
 // Convert an arbitrary double to one compatible with JS::Value representation
 // by replacing any NaN value with a canonical one.
 static MOZ_ALWAYS_INLINE double CanonicalizeNaN(double d) {
-  if (MOZ_UNLIKELY(std::isnan(d))) {
+  // std::isnan(double) is not inlined on Linux with glibc < 2.23. Use
+  // __builtin_isnan instead to ensure the NaN-check is inlined.
+#if defined(__clang__) || defined(__GNUC__)
+  bool isNaN = __builtin_isnan(d);
+#else
+  bool isNaN = std::isnan(d);
+#endif
+  if (MOZ_UNLIKELY(isNaN)) {
     return GenericNaN();
   }
   return d;
@@ -475,8 +496,8 @@ static MOZ_ALWAYS_INLINE double CanonicalizeNaN(double d) {
  *   "reason" for the magic value or a uint32_t value. By providing JSWhyMagic
  *   values when creating and checking for magic values, it is possible to
  *   assert, at runtime, that only magic values with the expected reason flow
- *   through a particular value. For example, if cx->exception has a magic
- *   value, the reason must be JS_GENERATOR_CLOSING.
+ *   through a particular value. For example, if an array's dense elements
+ *   contains a magic value, the reason must be JS_ELEMENTS_HOLE.
  *
  * - To help prevent mistakenly boxing a nullable JSObject* as an object,
  *   Value::setObject takes a JSObject&. (Conversely, Value::toObject returns a
@@ -510,13 +531,6 @@ class Value {
  private:
   explicit constexpr Value(uint64_t asBits) : asBits_(asBits) {}
 
-  static uint64_t bitsFromDouble(double d) {
-#if defined(JS_NONCANONICAL_HARDWARE_NAN)
-    d = CanonicalizeNaN(d);
-#endif
-    return mozilla::BitwiseCast<uint64_t>(d);
-  }
-
   static_assert(sizeof(JSValueType) == 1,
                 "type bits must fit in a single byte");
   static_assert(sizeof(JSValueTag) == 4,
@@ -549,11 +563,10 @@ class Value {
     return fromTagAndPayload(JSVAL_TAG_INT32, uint32_t(i));
   }
 
-  static Value fromDouble(double d) { return fromRawBits(bitsFromDouble(d)); }
-
   /**
    * Returns false if creating a NumberValue containing the given type would
-   * be lossy, true otherwise.
+   * be lossy, true otherwise. Note that this will return false for NaN,
+   * despite NaN being representable as a double, because NaN !== NaN.
    */
   template <typename T>
   static bool isNumberRepresentable(const T t) {
@@ -578,7 +591,28 @@ class Value {
   }
 
   void setDouble(double d) {
-    asBits_ = bitsFromDouble(d);
+    d = CanonicalizeNaN(d);
+    asBits_ = mozilla::BitwiseCast<uint64_t>(d);
+    MOZ_ASSERT(isDouble());
+  }
+
+  // Like setDouble but only canonicalizes NaNs on architectures with
+  // non-canonical hardware NaNs (see JS_NONCANONICAL_HARDWARE_NAN). Because
+  // storing a non-canonical NaN breaks the Value representation, this should
+  // only be used in performance-sensitive SpiderMonkey code where the input is
+  // guaranteed not to be a non-canonical NaN.
+  void setDoubleAssumeCanonicalNaN(double d) {
+#if defined(JS_NONCANONICAL_HARDWARE_NAN)
+    d = CanonicalizeNaN(d);
+#elif defined(DEBUG)
+    // If the double is a NaN, assert it's the canonical NaN, but allow the sign
+    // bit to be set. See also the CanonicalizedNaNSignBit comment.
+    static_assert(detail::CanonicalizedNaNSignBit == 0);
+    constexpr uint64_t signBit = mozilla::FloatingPoint<double>::kSignBit;
+    uint64_t bits = mozilla::BitwiseCast<uint64_t>(d) & ~signBit;
+    MOZ_ASSERT_IF(std::isnan(d), bits == detail::CanonicalizedNaNBits);
+#endif
+    asBits_ = mozilla::BitwiseCast<uint64_t>(d);
     MOZ_ASSERT(isDouble());
   }
 
@@ -666,7 +700,7 @@ class Value {
 
   template <typename T>
   void setNumber(const T t) {
-    static_assert(std::is_integral<T>::value, "must be integral type");
+    static_assert(std::is_integral_v<T>, "must be integral type");
     MOZ_ASSERT(isNumberRepresentable(t), "value creation would be lossy");
 
     if constexpr (std::numeric_limits<T>::is_signed) {
@@ -692,6 +726,20 @@ class Value {
     }
   }
 
+  // Like setNumber(double) but only canonicalizes NaNs on architectures with
+  // non-canonical hardware NaNs (see JS_NONCANONICAL_HARDWARE_NAN). Because
+  // storing a non-canonical NaN breaks the Value representation, this should
+  // only be used in performance-sensitive SpiderMonkey code where the input is
+  // guaranteed not to be a non-canonical NaN.
+  void setNumberAssumeCanonicalNaN(double d) {
+    int32_t i;
+    if (mozilla::NumberIsInt32(d, &i)) {
+      setInt32(i);
+      return;
+    }
+    setDoubleAssumeCanonicalNaN(d);
+  }
+
   void setObjectOrNull(JSObject* arg) {
     if (arg) {
       setObject(*arg);
@@ -705,6 +753,16 @@ class Value {
     rhs.asBits_ = asBits_;
     asBits_ = tmp;
   }
+
+#if JS_BITS_PER_WORD == 64
+  // Relaxed atomic load and store operations on a Value.
+  Value atomicGet() const {
+    return fromRawBits(__atomic_load_n(&asBits_, __ATOMIC_RELAXED));
+  }
+  void atomicSet(const Value& value) {
+    __atomic_store_n(&asBits_, value.asBits_, __ATOMIC_RELAXED);
+  }
+#endif
 
  private:
   JSValueTag toTag() const { return JSValueTag(asBits_ >> JSVAL_TAG_SHIFT); }
@@ -788,22 +846,9 @@ class Value {
 
   bool isBigInt() const { return toTag() == JSVAL_TAG_BIGINT; }
 
-  bool isObject() const {
-#if defined(JS_NUNBOX32)
-    return toTag() == JSVAL_TAG_OBJECT;
-#elif defined(JS_PUNBOX64)
-    MOZ_ASSERT((asBits_ >> JSVAL_TAG_SHIFT) <= JSVAL_TAG_OBJECT);
-    return asBits_ >= JSVAL_SHIFTED_TAG_OBJECT;
-#endif
-  }
+  bool isObject() const { return toTag() == JSVAL_TAG_OBJECT; }
 
-  bool isPrimitive() const {
-#if defined(JS_NUNBOX32)
-    return uint32_t(toTag()) < uint32_t(detail::ValueUpperExclPrimitiveTag);
-#elif defined(JS_PUNBOX64)
-    return asBits_ < detail::ValueUpperExclShiftedPrimitiveTag;
-#endif
-  }
+  bool isPrimitive() const { return !isObject(); }
 
   bool isObjectOrNull() const { return isObject() || isNull(); }
 
@@ -839,28 +884,32 @@ class Value {
   }
 
   // Like isMagic, but without the release assertion.
+  // Note that in release builds this will return *false* for
+  // non-matching magic values, because it is generally safer to
+  // ignore an unexpected magic value than to misinterpret it. See bug
+  // 2032226.
   bool isMagicNoReleaseCheck(JSWhyMagic why) const {
-    if (!isMagic()) {
-      return false;
-    }
-    MOZ_ASSERT(whyMagic() == why);
-    return true;
+    MOZ_ASSERT_IF(isMagic(), whyMagic() == why);
+    return asBits_ == bitsFromTagAndPayload(JSVAL_TAG_MAGIC, uint32_t(why));
   }
 
   JS::TraceKind traceKind() const {
     MOZ_ASSERT(isGCThing());
     static_assert((JSVAL_TAG_STRING & 0x03) == size_t(JS::TraceKind::String),
                   "Value type tags must correspond with JS::TraceKinds.");
-    static_assert((JSVAL_TAG_SYMBOL & 0x03) == size_t(JS::TraceKind::Symbol),
-                  "Value type tags must correspond with JS::TraceKinds.");
     static_assert((JSVAL_TAG_OBJECT & 0x03) == size_t(JS::TraceKind::Object),
                   "Value type tags must correspond with JS::TraceKinds.");
     static_assert((JSVAL_TAG_BIGINT & 0x03) == size_t(JS::TraceKind::BigInt),
                   "Value type tags must correspond with JS::TraceKinds.");
-    if (MOZ_UNLIKELY(isPrivateGCThing())) {
+    static_assert(JSVAL_TAG_PRIVATE_GCTHING + 1 == JSVAL_TAG_SYMBOL,
+                  "Symbol and PrivateGCThing tags should be adjacent to allow "
+                  "checking for them with a single branch");
+    JSValueTag tag = toTag();
+    if (MOZ_UNLIKELY(tag == JSVAL_TAG_SYMBOL ||
+                     tag == JSVAL_TAG_PRIVATE_GCTHING)) {
       return JS::GCThingTraceKind(toGCThing());
     }
-    return JS::TraceKind(toTag() & 0x03);
+    return JS::TraceKind(tag & 0x03);
   }
 
   JSWhyMagic whyMagic() const {
@@ -875,9 +924,7 @@ class Value {
 
   /*** Comparison ***/
 
-  bool operator==(const Value& rhs) const { return asBits_ == rhs.asBits_; }
-
-  bool operator!=(const Value& rhs) const { return asBits_ != rhs.asBits_; }
+  bool operator==(const Value& rhs) const = default;
 
   friend inline bool SameType(const Value& lhs, const Value& rhs);
 
@@ -971,7 +1018,7 @@ class Value {
     }
 
     JSValueType type = extractNonDoubleType();
-    MOZ_ASSERT(type <= JSVAL_TYPE_OBJECT);
+    MOZ_ASSERT(type <= JSVAL_TYPE_STRING);
     return JS::ValueType(type);
   }
 
@@ -1091,8 +1138,10 @@ static inline Value DoubleValue(double dbl) {
   return v;
 }
 
-static inline Value CanonicalizedDoubleValue(double d) {
-  return Value::fromDouble(CanonicalizeNaN(d));
+static inline Value DoubleValueAssumeCanonicalNaN(double dbl) {
+  Value v;
+  v.setDoubleAssumeCanonicalNaN(dbl);
+  return v;
 }
 
 static inline Value NaNValue() {
@@ -1164,14 +1213,19 @@ static inline Value MagicValueUint32(uint32_t payload) {
 }
 
 static constexpr Value NumberValue(uint32_t i) {
-  return i <= JSVAL_INT_MAX ? Int32Value(int32_t(i))
-                            : Value::fromDouble(double(i));
+  return i <= JSVAL_INT_MAX ? Int32Value(int32_t(i)) : DoubleValue(double(i));
 }
 
 template <typename T>
 static inline Value NumberValue(const T t) {
   Value v;
   v.setNumber(t);
+  return v;
+}
+
+static inline Value NumberValueAssumeCanonicalNaN(double d) {
+  Value v;
+  v.setNumberAssumeCanonicalNaN(d);
   return v;
 }
 
@@ -1224,7 +1278,7 @@ JS_PUBLIC_API void HeapValueWriteBarriers(Value* valuep, const Value& prev,
                                           const Value& next);
 
 template <>
-struct GCPolicy<JS::Value> {
+struct GCPolicy<JS::Value> : public GCPolicyBase<JS::Value> {
   static void trace(JSTracer* trc, Value* v, const char* name) {
     // This should only be called as part of root marking since that's the only
     // time we should trace unbarriered GC thing pointers. This will assert if
@@ -1348,6 +1402,9 @@ class MutableWrappedPtrOperations<JS::Value, Wrapper>
   void setUndefined() { set(JS::UndefinedValue()); }
   void setInt32(int32_t i) { set(JS::Int32Value(i)); }
   void setDouble(double d) { set(JS::DoubleValue(d)); }
+  void setDoubleAssumeCanonicalNaN(double d) {
+    set(JS::DoubleValueAssumeCanonicalNaN(d));
+  }
   void setNaN() { set(JS::NaNValue()); }
   void setInfinity() { set(JS::InfinityValue()); }
   void setBoolean(bool b) { set(JS::BooleanValue(b)); }
@@ -1355,6 +1412,9 @@ class MutableWrappedPtrOperations<JS::Value, Wrapper>
   template <typename T>
   void setNumber(T t) {
     set(JS::NumberValue(t));
+  }
+  void setNumberAssumeCanonicalNaN(double d) {
+    set(JS::NumberValueAssumeCanonicalNaN(d));
   }
   void setString(JSString* str) { set(JS::StringValue(str)); }
   void setSymbol(JS::Symbol* sym) { set(JS::SymbolValue(sym)); }
@@ -1376,7 +1436,7 @@ template <typename Wrapper>
 class HeapOperations<JS::Value, Wrapper>
     : public MutableWrappedPtrOperations<JS::Value, Wrapper> {};
 
-MOZ_HAVE_NORETURN MOZ_COLD MOZ_NEVER_INLINE void ReportBadValueTypeAndCrash(
+[[noreturn]] MOZ_COLD MOZ_NEVER_INLINE void ReportBadValueTypeAndCrash(
     const JS::Value& val);
 
 // If the Value is a GC pointer type, call |f| with the pointer cast to that
@@ -1406,7 +1466,8 @@ auto MapGCThingTyped(const JS::Value& val, F&& f) {
     }
     case JS::ValueType::PrivateGCThing: {
       MOZ_ASSERT(gc::IsCellPointerValid(val.toGCThing()));
-      return mozilla::Some(MapGCThingTyped(val.toGCCellPtr(), std::move(f)));
+      return mozilla::Some(
+          MapGCThingTyped(val.toGCCellPtr(), std::forward<F>(f)));
     }
     case JS::ValueType::Double:
     case JS::ValueType::Int32:

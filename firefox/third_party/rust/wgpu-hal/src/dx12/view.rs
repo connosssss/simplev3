@@ -12,6 +12,8 @@ pub(super) struct ViewDescriptor {
     array_layer_count: u32,
     mip_level_base: u32,
     mip_level_count: u32,
+    swizzle: wgt::TextureComponentSwizzle,
+    plane_slice_override: Option<u32>,
 }
 
 impl crate::TextureViewDescriptor<'_> {
@@ -28,6 +30,8 @@ impl crate::TextureViewDescriptor<'_> {
             mip_level_count: self.range.mip_level_count.unwrap_or(!0),
             array_layer_base: self.range.base_array_layer,
             array_layer_count: self.range.array_layer_count.unwrap_or(!0),
+            swizzle: self.swizzle,
+            plane_slice_override: texture.plane_slice_override(),
         }
     }
 }
@@ -42,11 +46,36 @@ fn aspects_to_plane(aspects: crate::FormatAspects) -> u32 {
 }
 
 impl ViewDescriptor {
+    pub(super) fn plane_slice(&self) -> u32 {
+        self.plane_slice_override
+            .unwrap_or_else(|| aspects_to_plane(self.aspects))
+    }
+}
+
+impl ViewDescriptor {
     pub(crate) unsafe fn to_srv(&self) -> Option<Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC> {
+        let swizzle = if self.aspects == crate::FormatAspects::STENCIL {
+            // Stencil views use `DXGI_FORMAT_X24_TYPELESS_G8_UINT` or
+            // `DXGI_FORMAT_X32_TYPELESS_G8X24_UINT`, which have the stencil value in
+            // the green component. WebGPU specifies that the stencil value be in the
+            // red component. It also specifies that the remaining components _should_
+            // be (0, 0, 1), but may have an unspecified value.
+            wgt::TextureComponentSwizzle {
+                r: wgt::ComponentSwizzle::G,
+                g: wgt::ComponentSwizzle::Zero,
+                b: wgt::ComponentSwizzle::Zero,
+                a: wgt::ComponentSwizzle::One,
+            }
+            .compose(self.swizzle)
+        } else {
+            self.swizzle
+        };
+
         let mut desc = Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC {
             Format: self.srv_uav_format?,
             ViewDimension: Direct3D12::D3D12_SRV_DIMENSION_UNKNOWN,
-            Shader4ComponentMapping: Direct3D12::D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+            Shader4ComponentMapping: crate::dx12::conv::map_texture_component_swizzle(swizzle).0
+                as u32,
             Anonymous: Default::default(),
         };
 
@@ -82,7 +111,7 @@ impl ViewDescriptor {
                 desc.Anonymous.Texture2D = Direct3D12::D3D12_TEX2D_SRV {
                     MostDetailedMip: self.mip_level_base,
                     MipLevels: self.mip_level_count,
-                    PlaneSlice: aspects_to_plane(self.aspects),
+                    PlaneSlice: self.plane_slice(),
                     ResourceMinLODClamp: 0.0,
                 }
             }
@@ -102,7 +131,7 @@ impl ViewDescriptor {
                     MipLevels: self.mip_level_count,
                     FirstArraySlice: self.array_layer_base,
                     ArraySize: self.array_layer_count,
-                    PlaneSlice: aspects_to_plane(self.aspects),
+                    PlaneSlice: self.plane_slice(),
                     ResourceMinLODClamp: 0.0,
                 }
             }
@@ -168,7 +197,7 @@ impl ViewDescriptor {
                 desc.ViewDimension = Direct3D12::D3D12_UAV_DIMENSION_TEXTURE2D;
                 desc.Anonymous.Texture2D = Direct3D12::D3D12_TEX2D_UAV {
                     MipSlice: self.mip_level_base,
-                    PlaneSlice: aspects_to_plane(self.aspects),
+                    PlaneSlice: self.plane_slice(),
                 }
             }
             wgt::TextureViewDimension::D2 | wgt::TextureViewDimension::D2Array => {
@@ -177,7 +206,7 @@ impl ViewDescriptor {
                     MipSlice: self.mip_level_base,
                     FirstArraySlice: self.array_layer_base,
                     ArraySize: self.array_layer_count,
-                    PlaneSlice: aspects_to_plane(self.aspects),
+                    PlaneSlice: self.plane_slice(),
                 }
             }
             wgt::TextureViewDimension::D3 => {
@@ -229,7 +258,7 @@ impl ViewDescriptor {
                 desc.ViewDimension = Direct3D12::D3D12_RTV_DIMENSION_TEXTURE2D;
                 desc.Anonymous.Texture2D = Direct3D12::D3D12_TEX2D_RTV {
                     MipSlice: self.mip_level_base,
-                    PlaneSlice: aspects_to_plane(self.aspects),
+                    PlaneSlice: self.plane_slice(),
                 }
             }
             wgt::TextureViewDimension::D2 | wgt::TextureViewDimension::D2Array
@@ -247,7 +276,7 @@ impl ViewDescriptor {
                     MipSlice: self.mip_level_base,
                     FirstArraySlice: self.array_layer_base,
                     ArraySize: self.array_layer_count,
-                    PlaneSlice: aspects_to_plane(self.aspects),
+                    PlaneSlice: self.plane_slice(),
                 }
             }
             wgt::TextureViewDimension::D3
@@ -262,20 +291,19 @@ impl ViewDescriptor {
 
     pub(crate) unsafe fn to_dsv(
         &self,
-        read_only: bool,
+        depth_read_only: bool,
+        stencil_read_only: bool,
     ) -> Direct3D12::D3D12_DEPTH_STENCIL_VIEW_DESC {
         let mut desc = Direct3D12::D3D12_DEPTH_STENCIL_VIEW_DESC {
             Format: self.rtv_dsv_format,
             ViewDimension: Direct3D12::D3D12_DSV_DIMENSION_UNKNOWN,
             Flags: {
                 let mut flags = Direct3D12::D3D12_DSV_FLAG_NONE;
-                if read_only {
-                    if self.aspects.contains(crate::FormatAspects::DEPTH) {
-                        flags |= Direct3D12::D3D12_DSV_FLAG_READ_ONLY_DEPTH;
-                    }
-                    if self.aspects.contains(crate::FormatAspects::STENCIL) {
-                        flags |= Direct3D12::D3D12_DSV_FLAG_READ_ONLY_STENCIL;
-                    }
+                if depth_read_only && self.aspects.contains(crate::FormatAspects::DEPTH) {
+                    flags |= Direct3D12::D3D12_DSV_FLAG_READ_ONLY_DEPTH;
+                }
+                if stencil_read_only && self.aspects.contains(crate::FormatAspects::STENCIL) {
+                    flags |= Direct3D12::D3D12_DSV_FLAG_READ_ONLY_STENCIL;
                 }
                 flags
             },

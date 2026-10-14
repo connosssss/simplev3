@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,6 +12,7 @@
 #include "nsJSUtils.h"
 
 #include <utility>
+
 #include "MainThreadUtils.h"
 #include "js/ArrayBuffer.h"
 #include "js/ComparisonOperators.h"
@@ -21,20 +20,19 @@
 #include "js/CompileOptions.h"
 #include "js/Date.h"
 #include "js/EnvironmentChain.h"
-#include "js/experimental/TypedData.h"
 #include "js/GCVector.h"
 #include "js/HeapAPI.h"
 #include "js/Modules.h"
 #include "js/RootingAPI.h"
 #include "js/SourceText.h"
 #include "js/TypeDecls.h"
+#include "js/experimental/TypedData.h"
 #include "jsfriendapi.h"
 #include "mozilla/CycleCollectedJSContext.h"
+#include "mozilla/ProfilerLabels.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/ScriptSettings.h"
-#include "mozilla/fallible.h"
-#include "mozilla/ProfilerLabels.h"
 #include "nsContentUtils.h"
 #include "nsDebug.h"
 #include "nsGlobalWindowInner.h"
@@ -158,7 +156,8 @@ void nsJSUtils::ResetTimeZone() { JS::ResetTimeZone(); }
 bool nsJSUtils::DumpEnabled() {
 #ifdef FUZZING
   static bool mozFuzzDebug = !!PR_GetEnv("MOZ_FUZZ_DEBUG");
-  return mozFuzzDebug;
+  // We also want to dump in automation so mochitests can run.
+  return mozFuzzDebug || xpc::IsInAutomation();
 #endif
 
 #if defined(DEBUG) || defined(MOZ_ENABLE_JS_DUMP)

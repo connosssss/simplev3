@@ -10,6 +10,7 @@ support-files = [
   "audio.ogv",
   "audiovideo.mp4",
   "audioBufferSourceNodeDetached_worker.js",
+  "bug2038465_varying_channels.flac",
   "corsServer.sjs",
   "!/dom/events/test/event_leak_utils.js",
   "file_nodeCreationDocumentGone.html",
@@ -82,6 +83,7 @@ support-files = [
   "sixteen-frames.mp3", # only 16 frames of valid audio
   "8ch-f32le.wav",
   "8ch-s16.wav",
+  "vorbis-6ch-channel-order.webm",
   "../../webrtc/tests/mochitests/mediaStreamPlayback.js",
   "../../webrtc/tests/mochitests/head.js",
   "tiny.flac"
@@ -94,25 +96,27 @@ support-files = [
 ["test_WebAudioMemoryReporting.html"]
 
 ["test_analyserNode.html"]
-run-if = ["os == 'android'"] # These are tested in web-platform-tests, except on Android which don't run WPT.
-
-["test_analyserNodeMinimum.html"]
-run-if = ["os == 'android'"] # These are tested in web-platform-tests, except on Android which don't run WPT.
-
-["test_analyserNodeOutput.html"]
-run-if = ["os == 'android'"] # These are tested in web-platform-tests, except on Android which don't run WPT.
+run-if = [
+  "os == 'android'", # Tested in web-platform-tests test-analysernode.html, but times out on Android.
+]
 
 ["test_analyserNodePassThrough.html"]
 
 ["test_analyserNodeWithGain.html"]
-run-if = ["os == 'android'"] # These are tested in web-platform-tests, except on Android which don't run WPT.
+run-if = [
+  "os == 'android'", # Tested in web-platform-tests test-analyser-gain.html, but times out on Android.
+]
 
 ["test_analyserScale.html"]
-run-if = ["os == 'android'"] # These are tested in web-platform-tests, except on Android which don't run WPT.
+run-if = [
+  "os == 'android'", # Tested in web-platform-tests test-analyser-scale.html, but times out on Android.
+]
 
 ["test_audioContextParams_recordNonDefaultSampleRate.html"]
 
 ["test_audioContextParams_sampleRate.html"]
+
+["test_bug2038465.html"]
 
 ["test_channelMergerNode.html"]
 
@@ -126,7 +130,9 @@ run-if = ["os == 'android'"] # These are tested in web-platform-tests, except on
 # This is a copy of
 # testing/web-platform/tests/webaudio/the-audio-api/the-convolvernode-interface/convolver-upmixing-1-channel-response.html,
 # but WPT are not run with Android builds.
-run-if = ["os == 'android'"]
+run-if = [
+  "os == 'android'",
+]
 
 ["test_convolverNode.html"]
 
@@ -143,7 +149,6 @@ run-if = ["os == 'android'"]
 ["test_convolverNodeOOM.html"]
 skip-if = [
   "asan",
-  "tsan", # 1672869
 ]
 
 ["test_convolverNodePassThrough.html"]
@@ -162,9 +167,14 @@ skip-if = [
 
 ["test_decodeMultichannel.html"]
 
+["test_decodeMultichannelOrder.html"]
+
 ["test_decodeOpusTail.html"]
 
 ["test_decoderDelay.html"]
+skip-if = [
+  "os == 'android'", # Bug 2018243
+]
 
 ["test_delayNode.html"]
 
@@ -192,7 +202,9 @@ skip-if = [
 # This is a copy of
 # testing/web-platform/tests/webaudio/the-audio-api/the-delaynode-interface/delaynode-channel-count-1.html
 # but WPT are not run with Android builds.
-run-if = ["os == 'android'"]
+run-if = [
+  "os == 'android'",
+]
 
 ["test_disconnectAll.html"]
 
@@ -329,8 +341,6 @@ run-if = ["os == 'android'"]
 ["test_webAudio_muteTab.html"]
 scheme = "https"
 skip-if = [
-  "os == 'mac' && os_version == '10.15' && processor == 'x86_64'",
-  "os == 'mac' && os_version == '11.20' && arch == 'aarch64'",
-  "os == 'win'",
   "os == 'android'", # Bug 1404995, no loopback devices on some platforms
+  "os == 'mac' && os_version == '10.15' && arch == 'x86_64'",
 ]

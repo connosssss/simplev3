@@ -1,12 +1,12 @@
 const triggeringPrincipal_base64 = E10SUtils.SERIALIZED_SYSTEMPRINCIPAL;
 
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
-
 add_task(async function () {
+  if (SRD_PREF_VALUE) {
+    Assert.ok(true, "New settings redesign UI is enabled.");
+    // Bail early, as this test doesn't apply to the redesigned settings.
+    return;
+  }
+
   waitForExplicitFinish();
 
   const tabURL =
@@ -80,10 +80,10 @@ add_task(async function () {
   const TAB_SHENTRY = { url: TAB_URL, triggeringPrincipal_base64 };
   const TAB_STATE = { entries: [TAB_SHENTRY], formdata: TAB_FORMDATA };
 
-  let tab = (gBrowser.selectedTab = BrowserTestUtils.addTab(
+  let tab = await BrowserTestUtils.openNewForegroundTab(
     gBrowser,
     "about:blank"
-  ));
+  );
 
   // Fake a post-crash tab
   SessionStore.setTabState(tab, JSON.stringify(TAB_STATE));

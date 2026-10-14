@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,29 +5,28 @@
 #include "mozilla/Logging.h"
 
 #include "gfxContext.h"
-#include "nsArrayUtils.h"
-#include "nsDragService.h"
-#include "nsArrayUtils.h"
-#include "nsObjCExceptions.h"
-#include "nsITransferable.h"
-#include "nsString.h"
-#include "nsClipboard.h"
-#include "nsXPCOM.h"
-#include "nsCOMPtr.h"
-#include "nsPrimitiveHelpers.h"
-#include "nsLinebreakConverter.h"
-#include "nsINode.h"
-#include "nsRect.h"
-#include "nsPoint.h"
+#include "gfxPlatform.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentInlines.h"
-#include "nsIContent.h"
-#include "nsView.h"
-#include "nsCocoaUtils.h"
 #include "mozilla/gfx/2D.h"
-#include "gfxPlatform.h"
+#include "nsArrayUtils.h"
+#include "nsCOMPtr.h"
+#include "nsClipboard.h"
+#include "nsCocoaUtils.h"
 #include "nsDeviceContext.h"
+#include "nsDragService.h"
+#include "nsIContent.h"
+#include "nsINode.h"
+#include "nsITransferable.h"
+#include "nsLinebreakConverter.h"
+#include "nsObjCExceptions.h"
+#include "nsPoint.h"
+#include "nsPrimitiveHelpers.h"
+#include "nsRect.h"
+#include "nsServiceManagerUtils.h"
+#include "nsString.h"
+#include "nsXPCOM.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -45,8 +43,61 @@ extern bool gUserCancelledDrag;
 mozilla::StaticRefPtr<nsIArray> gDraggedTransferables;
 
 already_AddRefed<nsIDragSession> nsDragService::CreateDragSession() {
-  RefPtr<nsIDragSession> sess = new nsDragSession();
+  auto sess = MakeRefPtr<nsDragSession>();
   return sess.forget();
+}
+
+/* static */
+void nsDragService::EndStaleDragSession(const char* aCaller) {
+  nsCOMPtr<nsIDragService> service =
+      do_GetService("@mozilla.org/widget/dragservice;1");
+  if (!service) {
+    return;
+  }
+
+  nsCOMPtr<nsIDragSession> session;
+  service->GetCurrentSession(nullptr, getter_AddRefs(session));
+  if (!session) {
+    return;
+  }
+
+  RefPtr<nsDragSession> dragSession =
+      static_cast<nsDragSession*>(session.get());
+  MOZ_LOG(sCocoaLog, LogLevel::Info,
+          ("nsDragService::EndStaleDragSession: %s found session %p", aCaller,
+           dragSession.get()));
+  dragSession->EndAsStale();
+}
+
+void nsDragSession::EndAsStale() {
+  // Ending a session tells the source about the end of the drag, which runs
+  // script. Leave a session that is already doing this alone, and leave the
+  // sessions that automated tests drive by hand alone as well. A drag that
+  // another application started has no native drag view. macOS can send us
+  // mouse moves without a pressed button while it is over one of our views, and
+  // it ends through draggingExited: or performDragOperation:.
+  if (mEndingSession || mSessionIsSynthesizedForTests || !mNativeDragView) {
+    MOZ_LOG(
+        sCocoaLog, LogLevel::Info,
+        ("nsDragSession::EndAsStale: keeping session %p | ending: %d | "
+         "synthesized for tests: %d | native drag view: %p",
+         this, mEndingSession, mSessionIsSynthesizedForTests, mNativeDragView));
+    return;
+  }
+
+  MOZ_LOG(sCocoaLog, LogLevel::Info,
+          ("nsDragSession::EndAsStale: ending session %p", this));
+  NS_WARNING("Ending a drag session that lost its native drag session.");
+
+  // Report this as a drag that the user cancelled. Any other drop effect would,
+  // for example, make a tab drag tear the tab into a new window at whatever
+  // position the mouse happens to be in. EndDragSessionImpl takes
+  // mUserCancelled from gUserCancelledDrag.
+  gUserCancelledDrag = true;
+  if (mDataTransfer) {
+    mDataTransfer->SetDropEffectInt(nsIDragService::DRAGDROP_ACTION_NONE);
+  }
+  EndDragSession(true, 0);
 }
 
 NSImage* nsDragSession::ConstructDragImage(nsINode* aDOMNode,
@@ -115,13 +166,16 @@ NSImage* nsDragSession::ConstructDragImage(nsINode* aDOMNode,
 
   RefPtr<DataSourceSurface> dataSurface = Factory::CreateDataSourceSurface(
       IntSize(width, height), SurfaceFormat::B8G8R8A8);
+  if (!dataSurface) {
+    return nil;
+  }
   DataSourceSurface::MappedSurface map;
   if (!dataSurface->Map(DataSourceSurface::MapType::READ_WRITE, &map)) {
     return nil;
   }
 
   RefPtr<DrawTarget> dt = Factory::CreateDrawTargetForData(
-      BackendType::CAIRO, map.mData, dataSurface->GetSize(), map.mStride,
+      BackendType::SKIA, map.mData, dataSurface->GetSize(), map.mStride,
       dataSurface->GetFormat());
   if (!dt) {
     dataSurface->Unmap();
@@ -133,7 +187,7 @@ NSImage* nsDragSession::ConstructDragImage(nsINode* aDOMNode,
                DrawOptions(1.0f, CompositionOp::OP_SOURCE));
 
   NSBitmapImageRep* imageRep =
-      [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+      [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr
                                               pixelsWide:width
                                               pixelsHigh:height
                                            bitsPerSample:8
@@ -196,25 +250,12 @@ nsresult nsDragSession::InvokeDragSessionImpl(
     return NS_ERROR_FAILURE;
   }
 
-  mDataItems = aTransferableArray;
-
-  // Save the transferables away in case a promised file callback is invoked.
-  gDraggedTransferables = aTransferableArray;
-
-  // We need to retain the view and the event during the drag in case either
-  // gets destroyed.
-  mNativeDragView = [gLastDragView retain];
-  mNativeDragEvent = [gLastDragMouseDownEvent retain];
-
   gUserCancelledDrag = false;
 
-  NSPasteboardItem* pbItem = [NSPasteboardItem new];
   NSMutableArray* types = [NSMutableArray arrayWithCapacity:5];
-
-  if (gDraggedTransferables) {
+  if (aTransferableArray) {
     uint32_t count = 0;
-    gDraggedTransferables->GetLength(&count);
-
+    aTransferableArray->GetLength(&count);
     for (uint32_t j = 0; j < count; j++) {
       nsCOMPtr<nsITransferable> currentTransferable =
           do_QueryElementAt(aTransferableArray, j);
@@ -237,6 +278,18 @@ nsresult nsDragSession::InvokeDragSessionImpl(
       [types addObject:[UTIHelper stringFromPboardType:kMozWildcardPboardType]];
     }
   }
+
+  // Save the transferables away in case a promised file callback is invoked.
+  gDraggedTransferables = aTransferableArray;
+
+  mDataItems = aTransferableArray;
+
+  // We need to retain the view and the event during the drag in case either
+  // gets destroyed.
+  mNativeDragView = [gLastDragView retain];
+  mNativeDragEvent = [gLastDragMouseDownEvent retain];
+
+  NSPasteboardItem* pbItem = [[NSPasteboardItem new] autorelease];
   [pbItem setDataProvider:mNativeDragView forTypes:types];
 
   NSPoint draggingPoint;
@@ -247,17 +300,23 @@ nsresult nsDragSession::InvokeDragSessionImpl(
   localDragRect.origin.y = draggingPoint.y - localDragRect.size.height;
 
   NSDraggingItem* dragItem =
-      [[NSDraggingItem alloc] initWithPasteboardWriter:pbItem];
-  [pbItem release];
+      [[[NSDraggingItem alloc] initWithPasteboardWriter:pbItem] autorelease];
   [dragItem setDraggingFrame:localDragRect contents:image];
 
   OpenDragPopup();
 
   mNSDraggingSession = [mNativeDragView
-      beginDraggingSessionWithItems:[NSArray
-                                        arrayWithObject:[dragItem autorelease]]
+      beginDraggingSessionWithItems:[NSArray arrayWithObject:dragItem]
                               event:mNativeDragEvent
                              source:mNativeDragView];
+  if (!mNSDraggingSession) {
+    // The system refused to start a drag, for example because the mouse button
+    // was released before we got here. Fail, so that our caller ends this drag
+    // session instead of leaving it behind without a native drag session that
+    // could ever end it.
+    NS_WARNING("The system refused to begin a native drag session.");
+    return NS_ERROR_FAILURE;
+  }
 
   mNSDraggingSession.animatesToStartingPositionsOnCancelOrFail =
       !mDataTransfer || mDataTransfer->MozShowFailAnimation();
@@ -388,6 +447,18 @@ nsDragSession::IsDataFlavorSupported(const char* aDataFlavor, bool* _retval) {
     *_retval = true;
   }
 
+  // Also accept files for kURLMime, which we convert to file:// URLs.
+  if (!*_retval && dataFlavor.EqualsLiteral(kURLMime)) {
+    NSString* fileType =
+        [UTIHelper stringFromPboardType:(NSString*)kUTTypeFileURL];
+    NSString* availableFileType =
+        [globalDragPboard availableTypeFromArray:@[ (id)fileType ]];
+    if (availableFileType &&
+        nsCocoaUtils::IsValidPasteboardType(availableFileType, true)) {
+      *_retval = true;
+    }
+  }
+
   return NS_OK;
 
   NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE);
@@ -489,6 +560,12 @@ nsresult nsDragSession::EndDragSessionImpl(bool aDoneDrag,
                                            uint32_t aKeyModifiers) {
   NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
+  // The base class runs script while it ends the session, and that script can
+  // try to end the session again.
+  if (mEndingSession) {
+    return NS_ERROR_FAILURE;
+  }
+
   mNSDraggingSession = nil;
 
   if (mNativeDragView) {
@@ -501,9 +578,11 @@ nsresult nsDragSession::EndDragSessionImpl(bool aDoneDrag,
   }
 
   mUserCancelled = gUserCancelledDrag;
+  gUserCancelledDrag = false;
 
   nsresult rv = nsBaseDragSession::EndDragSessionImpl(aDoneDrag, aKeyModifiers);
   mDataItems = nullptr;
+  gDraggedTransferables = nullptr;
   return rv;
 
   NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE);

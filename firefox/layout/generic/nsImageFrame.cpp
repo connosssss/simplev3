@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,95 +6,89 @@
 
 #include "nsImageFrame.h"
 
+#include <algorithm>
+
 #include "TextDrawTarget.h"
 #include "gfx2DGlue.h"
 #include "gfxContext.h"
 #include "gfxUtils.h"
-#include "mozilla/dom/NameSpaceConstants.h"
-#include "mozilla/intl/BidiEmbeddingLevel.h"
 #include "mozilla/ComputedStyle.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Encoding.h"
 #include "mozilla/HTMLEditor.h"
-#include "mozilla/dom/FetchPriority.h"
-#include "mozilla/gfx/2D.h"
-#include "mozilla/gfx/Helpers.h"
-#include "mozilla/gfx/PathHelpers.h"
-#include "mozilla/dom/GeneratedImageContent.h"
-#include "mozilla/dom/HTMLAreaElement.h"
-#include "mozilla/dom/HTMLImageElement.h"
-#include "mozilla/dom/ReferrerInfo.h"
-#include "mozilla/dom/ResponsiveImageSelector.h"
-#include "mozilla/dom/ViewTransition.h"
-#include "mozilla/dom/LargestContentfulPaint.h"
-#include "mozilla/image/WebRenderImageProvider.h"
-#include "mozilla/layers/RenderRootStateManager.h"
-#include "mozilla/layers/WebRenderLayerManager.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/PresShellInlines.h"
+#include "mozilla/ReflowInput.h"
+#include "mozilla/SVGImageContext.h"
 #include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_image.h"
 #include "mozilla/StaticPrefs_layout.h"
-#include "mozilla/SVGImageContext.h"
-#include "mozilla/Unused.h"
-
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/FetchPriority.h"
+#include "mozilla/dom/GeneratedImageContent.h"
+#include "mozilla/dom/HTMLAreaElement.h"
+#include "mozilla/dom/HTMLImageElement.h"
+#include "mozilla/dom/LargestContentfulPaint.h"
+#include "mozilla/dom/NameSpaceConstants.h"
+#include "mozilla/dom/PerformanceContainerTiming.h"
+#include "mozilla/dom/ReferrerInfo.h"
+#include "mozilla/dom/ResponsiveImageSelector.h"
+#include "mozilla/dom/ViewTransition.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/Helpers.h"
+#include "mozilla/gfx/PathHelpers.h"
+#include "mozilla/image/WebRenderImageProvider.h"
+#include "mozilla/intl/BidiEmbeddingLevel.h"
+#include "mozilla/layers/RenderRootStateManager.h"
+#include "mozilla/layers/WebRenderLayerManager.h"
 #include "nsCOMPtr.h"
+#include "nsCSSRendering.h"
+#include "nsContentUtils.h"
 #include "nsFontMetrics.h"
+#include "nsGkAtoms.h"
 #include "nsIFrameInlines.h"
 #include "nsIImageLoadingContent.h"
+#include "nsILoadGroup.h"
 #include "nsImageLoadingContent.h"
+#include "nsImageMap.h"
 #include "nsImageRenderer.h"
+#include "nsNameSpaceManager.h"
+#include "nsNetCID.h"
+#include "nsNetUtil.h"
 #include "nsObjectLoadingContent.h"
-#include "nsString.h"
-#include "nsPrintfCString.h"
 #include "nsPresContext.h"
-#include "nsGkAtoms.h"
-#include "mozilla/dom/Document.h"
-#include "nsContentUtils.h"
-#include "nsCSSAnonBoxes.h"
+#include "nsPrintfCString.h"
+#include "nsString.h"
 #include "nsStyleConsts.h"
 #include "nsStyleUtil.h"
 #include "nsTransform2D.h"
-#include "nsImageMap.h"
-#include "nsILoadGroup.h"
-#include "nsNetUtil.h"
-#include "nsNetCID.h"
-#include "nsCSSRendering.h"
-#include "nsNameSpaceManager.h"
-#include <algorithm>
 #ifdef ACCESSIBILITY
 #  include "nsAccessibilityService.h"
 #endif
-#include "nsLayoutUtils.h"
-#include "nsDisplayList.h"
-#include "nsIContent.h"
-#include "mozilla/dom/Selection.h"
-#include "nsIURIMutator.h"
-
+#include "DisplayListClipState.h"
+#include "ImageContainer.h"
+#include "ImageRegion.h"
+#include "gfxRect.h"
 #include "imgIContainer.h"
 #include "imgLoader.h"
 #include "imgRequestProxy.h"
-
-#include "nsCSSFrameConstructor.h"
-#include "nsRange.h"
-
-#include "nsError.h"
-#include "nsBidiUtils.h"
-#include "nsBidiPresUtils.h"
-
-#include "gfxRect.h"
-#include "ImageRegion.h"
-#include "ImageContainer.h"
 #include "mozilla/ServoStyleSet.h"
-#include "nsBlockFrame.h"
-#include "nsStyleStructInlines.h"
-
-#include "mozilla/Preferences.h"
-
-#include "mozilla/dom/Link.h"
-#include "mozilla/dom/HTMLAnchorElement.h"
 #include "mozilla/dom/BrowserChild.h"
+#include "mozilla/dom/HTMLAnchorElement.h"
+#include "mozilla/dom/Link.h"
+#include "mozilla/dom/Range.h"
+#include "mozilla/dom/Selection.h"
+#include "nsBidiPresUtils.h"
+#include "nsBidiUtils.h"
+#include "nsBlockFrame.h"
+#include "nsCSSFrameConstructor.h"
+#include "nsDisplayList.h"
+#include "nsError.h"
+#include "nsIContent.h"
+#include "nsIURIMutator.h"
+#include "nsLayoutUtils.h"
+#include "nsStyleStructInlines.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -128,11 +120,10 @@ class nsDisplayGradient final : public nsPaintedDisplayItem {
 
   void Paint(nsDisplayListBuilder*, gfxContext* aCtx) final;
 
-  bool CreateWebRenderCommands(wr::DisplayListBuilder&,
-                               wr::IpcResourceUpdateQueue&,
-                               const StackingContextHelper&,
-                               layers::RenderRootStateManager*,
-                               nsDisplayListBuilder*) final;
+  WebRenderCommandsResult CreateWebRenderCommands(
+      wr::DisplayListBuilder&, wr::IpcResourceUpdateQueue&,
+      const StackingContextHelper&, layers::RenderRootStateManager*,
+      nsDisplayListBuilder*) final;
 
   NS_DISPLAY_DECL_NAME("Gradient", TYPE_GRADIENT)
 };
@@ -154,10 +145,10 @@ void nsDisplayGradient::Paint(nsDisplayListBuilder* aBuilder,
         frame->PresContext(), *aCtx, dest, dest, dest.TopLeft(),
         GetPaintRect(aBuilder, aCtx), dest.Size(), /* aOpacity = */ 1.0f);
   }
-  Unused << result;
+  (void)result;
 }
 
-bool nsDisplayGradient::CreateWebRenderCommands(
+WebRenderCommandsResult nsDisplayGradient::CreateWebRenderCommands(
     wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
     const StackingContextHelper& aSc, layers::RenderRootStateManager* aManager,
     nsDisplayListBuilder* aDisplayListBuilder) {
@@ -177,10 +168,10 @@ bool nsDisplayGradient::CreateWebRenderCommands(
         dest, dest.TopLeft(), dest, dest.Size(),
         /* aOpacity = */ 1.0f);
     if (result == ImgDrawResult::NOT_SUPPORTED) {
-      return false;
+      return Err("gradient image layer is not supported");
     }
   }
-  return true;
+  return Ok();
 }
 
 // sizes (pixels) for image icon, padding and border frame
@@ -221,7 +212,7 @@ class BrokenImageIcon final : public imgINotificationObserver {
  private:
   static BrokenImageIcon& Get(const nsImageFrame& aFrame) {
     if (!gSingleton) {
-      gSingleton = new BrokenImageIcon(aFrame);
+      gSingleton = MakeRefPtr<BrokenImageIcon>(aFrame);
     }
     return *gSingleton;
   }
@@ -272,7 +263,7 @@ BrokenImageIcon::BrokenImageIcon(const nsImageFrame& aFrame) {
                     false, /* aUseUrgentStartForChannel */
                     false, /* aLinkPreload */
                     0, FetchPriority::Auto, getter_AddRefs(mImage));
-  Unused << NS_WARN_IF(NS_FAILED(rv));
+  (void)NS_WARN_IF(NS_FAILED(rv));
 }
 
 void BrokenImageIcon::Shutdown() {
@@ -323,12 +314,12 @@ void BrokenImageIcon::Notify(imgIRequest* aRequest, int32_t aType,
 // This is used by nsImageFrame::ImageFrameTypeFor and should not be used for
 // layout decisions.
 static bool HaveSpecifiedSize(const nsStylePosition* aStylePosition,
-                              StylePositionProperty aProp) {
+                              const AnchorPosResolutionParams& aParams) {
   // check the width and height values in the reflow input's style struct
   // - if width and height are specified as either coord or percentage, then
   //   the size of the image frame is constrained
-  return aStylePosition->GetWidth(aProp)->IsLengthPercentage() &&
-         aStylePosition->GetHeight(aProp)->IsLengthPercentage();
+  return aStylePosition->GetWidth(aParams)->IsLengthPercentage() &&
+         aStylePosition->GetHeight(aParams)->IsLengthPercentage();
 }
 
 template <typename SizeOrMaxSize>
@@ -367,14 +358,12 @@ static bool SizeDependsOnIntrinsicSize(const ReflowInput& aReflowInput) {
   // don't need to check them.
   //
   // Flex item's min-[width|height]:auto resolution depends on intrinsic size.
-  return !position.GetHeight(anchorResolutionParams.mPosition)
-              ->ConvertsToLength() ||
-         !position.GetWidth(anchorResolutionParams.mPosition)
-              ->ConvertsToLength() ||
+  return !position.GetHeight(anchorResolutionParams)->ConvertsToLength() ||
+         !position.GetWidth(anchorResolutionParams)->ConvertsToLength() ||
          DependsOnIntrinsicSize(
-             *position.MinISize(wm, anchorResolutionParams.mPosition)) ||
+             *position.MinISize(wm, anchorResolutionParams)) ||
          DependsOnIntrinsicSize(
-             *position.MaxISize(wm, anchorResolutionParams.mPosition)) ||
+             *position.MaxISize(wm, anchorResolutionParams)) ||
          aReflowInput.mFrame->IsFlexItem();
 }
 
@@ -736,13 +725,13 @@ void nsImageFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
 
   nsAtomicContainerFrame::Init(aContent, aParent, aPrevInFlow);
 
-  mListener = new nsImageListener(this);
+  mListener = MakeRefPtr<nsImageListener>(this);
 
   GetImageMap();  // Ensure to init the image map asap. This is important to
                   // make <area> elements focusable.
 
   if (StaticPrefs::layout_image_eager_broken_image_icon()) {
-    Unused << BrokenImageIcon::GetImage(this);
+    (void)BrokenImageIcon::GetImage(this);
   }
 
   nsPresContext* pc = PresContext();
@@ -779,7 +768,8 @@ void nsImageFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
 
     // Increase load priority further if intrinsic size might be important for
     // layout.
-    if (!HaveSpecifiedSize(StylePosition(), StyleDisplay()->mPosition)) {
+    if (!HaveSpecifiedSize(StylePosition(),
+                           AnchorPosResolutionParams::From(this))) {
       categoryToBoostPriority |= imgIRequest::CATEGORY_SIZE_QUERY;
     }
 
@@ -886,13 +876,16 @@ IntrinsicSize nsImageFrame::ComputeIntrinsicSize(
          GetContent()->AsElement()->HasNonEmptyAttr(nsGkAtoms::src))) {
       ScaleIntrinsicSizeForDensity(mImage, *GetContent(), intrinsicSize);
     } else {
+      // We don't include zoom here because FinishIntrinsicSize already does it
+      // for us.
       ScaleIntrinsicSizeForDensity(
-          intrinsicSize, GetImageFromStyle()->GetResolution(*Style()));
+          intrinsicSize,
+          GetImageFromStyle()->GetResolution(/* aStyleForZoom = */ nullptr));
     }
     return FinishIntrinsicSize(containAxes, intrinsicSize);
   }
 
-  if (auto size = GetViewTransitionSnapshotSize()) {
+  if (auto size = GetViewTransitionBorderBoxSize()) {
     IntrinsicSize intrinsicSize;
     intrinsicSize.width.emplace(size->width);
     intrinsicSize.height.emplace(size->height);
@@ -969,7 +962,7 @@ nsAtom* nsImageFrame::GetViewTransitionName() const {
       ->GetAtomValue();
 }
 
-Maybe<nsSize> nsImageFrame::GetViewTransitionSnapshotSize() const {
+Maybe<nsSize> nsImageFrame::GetViewTransitionBorderBoxSize() const {
   auto* name = GetViewTransitionName();
   if (!name) {
     return {};
@@ -978,9 +971,9 @@ Maybe<nsSize> nsImageFrame::GetViewTransitionSnapshotSize() const {
   if (NS_WARN_IF(!vt)) {
     return {};
   }
-  return Style()->GetPseudoType() == PseudoStyleType::viewTransitionOld
-             ? vt->GetOldSize(name)
-             : vt->GetNewSize(name);
+  return Style()->GetPseudoType() == PseudoStyleType::ViewTransitionOld
+             ? vt->GetOldBorderBoxSize(name)
+             : vt->GetNewBorderBoxSize(name);
 }
 
 wr::ImageKey nsImageFrame::GetViewTransitionImageKey(
@@ -995,7 +988,7 @@ wr::ImageKey nsImageFrame::GetViewTransitionImageKey(
     return kNoKey;
   }
   const auto* key =
-      Style()->GetPseudoType() == PseudoStyleType::viewTransitionOld
+      Style()->GetPseudoType() == PseudoStyleType::ViewTransitionOld
           ? vt->ReadOldImageKey(name, aManager, aResources)
           : vt->GetNewImageKey(name);
   return key ? *key : kNoKey;
@@ -1013,7 +1006,7 @@ AspectRatio nsImageFrame::ComputeIntrinsicRatioForImage(
     }
   }
 
-  if (auto size = GetViewTransitionSnapshotSize()) {
+  if (auto size = GetViewTransitionBorderBoxSize()) {
     return AspectRatio::FromSize(*size);
   }
 
@@ -1164,7 +1157,7 @@ auto nsImageFrame::ImageFrameTypeFor(const Element& aElement,
   // HaveSpecifiedSize changes...
   if (aElement.OwnerDoc()->GetCompatibilityMode() == eCompatibility_NavQuirks &&
       HaveSpecifiedSize(aStyle.StylePosition(),
-                        aStyle.StyleDisplay()->mPosition)) {
+                        {nullptr, aStyle.StyleDisplay()->mPosition})) {
     return ImageFrameType::ForElementRequest;
   }
 
@@ -1338,8 +1331,8 @@ void nsImageFrame::MaybeSendIntrinsicSizeAndRatioToEmbedder(
   }
 
   if (BrowserChild* browserChild = BrowserChild::GetFrom(docShell)) {
-    Unused << browserChild->SendIntrinsicSizeOrRatioChanged(aIntrinsicSize,
-                                                            aIntrinsicRatio);
+    (void)browserChild->SendIntrinsicSizeOrRatioChanged(aIntrinsicSize,
+                                                        aIntrinsicRatio);
   }
 }
 
@@ -1527,15 +1520,16 @@ void nsImageFrame::EnsureIntrinsicSizeAndRatio(bool aConsiderIntrinsicsDirty) {
 }
 
 nsIFrame::SizeComputationResult nsImageFrame::ComputeSize(
-    gfxContext* aRenderingContext, WritingMode aWM, const LogicalSize& aCBSize,
-    nscoord aAvailableISize, const LogicalSize& aMargin,
-    const LogicalSize& aBorderPadding, const StyleSizeOverrides& aSizeOverrides,
-    ComputeSizeFlags aFlags) {
+    const SizeComputationInput& aSizingInput, WritingMode aWM,
+    const LogicalSize& aCBSize, nscoord aAvailableISize,
+    const LogicalSize& aMargin, const LogicalSize& aBorderPadding,
+    const StyleSizeOverrides& aSizeOverrides, ComputeSizeFlags aFlags) {
   EnsureIntrinsicSizeAndRatio();
-  return {ComputeSizeWithIntrinsicDimensions(
-              aRenderingContext, aWM, mIntrinsicSize, GetAspectRatio(), aCBSize,
-              aMargin, aBorderPadding, aSizeOverrides, aFlags),
-          AspectRatioUsage::None};
+  return {
+      ComputeSizeWithIntrinsicDimensions(
+          aSizingInput.mRenderingContext, aWM, mIntrinsicSize, GetAspectRatio(),
+          aCBSize, aMargin, aBorderPadding, aSizeOverrides, aFlags),
+      AspectRatioUsage::None};
 }
 
 Element* nsImageFrame::GetMapElement() const {
@@ -1564,22 +1558,18 @@ nscoord nsImageFrame::IntrinsicISize(const IntrinsicSizeInput& aInput,
 void nsImageFrame::ReflowChildren(nsPresContext* aPresContext,
                                   const ReflowInput& aReflowInput,
                                   const LogicalSize& aImageSize) {
+  const WritingMode wm = GetWritingMode();
   for (nsIFrame* child : mFrames) {
     ReflowOutput childDesiredSize(aReflowInput);
-    WritingMode wm = GetWritingMode();
-    // Shouldn't be hard to support if we want, but why bother.
-    MOZ_ASSERT(
-        wm == child->GetWritingMode(),
-        "We don't expect mismatched writing-modes in content we control");
-    nsReflowStatus childStatus;
-
+    const WritingMode childWm = child->GetWritingMode();
+    ReflowInput childReflowInput(aPresContext, aReflowInput, child,
+                                 aImageSize.ConvertTo(childWm, wm));
     LogicalPoint childOffset(wm);
-    ReflowInput childReflowInput(aPresContext, aReflowInput, child, aImageSize);
     const nsSize containerSize = aImageSize.GetPhysicalSize(wm);
+    nsReflowStatus childStatus;
     ReflowChild(child, aPresContext, childDesiredSize, childReflowInput, wm,
                 childOffset, containerSize, ReflowChildFlags::Default,
                 childStatus);
-
     FinishReflowChild(child, aPresContext, childDesiredSize, &childReflowInput,
                       wm, childOffset, containerSize,
                       ReflowChildFlags::Default);
@@ -1626,9 +1616,14 @@ void nsImageFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
     currentRequest->GetImageStatus(&loadStatus);
   }
 
-  if (aPresContext->IsPaginated() &&
-      ((loadStatus & imgIRequest::STATUS_SIZE_AVAILABLE) ||
-       HasAnyStateBits(IMAGE_SIZECONSTRAINED)) &&
+  const bool haveSize = loadStatus & imgIRequest::STATUS_SIZE_AVAILABLE;
+
+  // Printing an image frame in vertical writing mode is not properly supported
+  // yet (Bug 1751260). In this case, don't split it, and let the display-list
+  // slicing fallback (layout.display-list.improve-fragmentation) handle
+  // fragmentation.
+  if (aPresContext->IsPaginated() && !wm.IsVertical() &&
+      (haveSize || HasAnyStateBits(IMAGE_SIZECONSTRAINED)) &&
       NS_UNCONSTRAINEDSIZE != aReflowInput.AvailableHeight() &&
       aMetrics.Height() > aReflowInput.AvailableHeight()) {
     // our desired height was greater than 0, so to avoid infinite
@@ -1639,15 +1634,8 @@ void nsImageFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
   }
 
   aMetrics.SetOverflowAreasToDesiredBounds();
-  bool imageOK = mKind != Kind::ImageLoadingContent ||
-                 ImageOk(mContent->AsElement()->State());
-
-  // Determine if the size is available
-  bool haveSize = false;
-  if (loadStatus & imgIRequest::STATUS_SIZE_AVAILABLE) {
-    haveSize = true;
-  }
-
+  const bool imageOK = mKind != Kind::ImageLoadingContent ||
+                       ImageOk(mContent->AsElement()->State());
   if (!imageOK || !haveSize) {
     nsRect altFeedbackSize(
         0, 0,
@@ -1660,10 +1648,19 @@ void nsImageFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
     // outside the image.
     nsRect& inkOverflow = aMetrics.InkOverflow();
     inkOverflow.UnionRect(inkOverflow, altFeedbackSize);
-  } else if (PresShell()->IsActive()) {
-    // We've just reflowed and we should have an accurate size, so we're ready
-    // to request a decode.
-    MaybeDecodeForPredictedSize();
+  } else {
+    // Union with our dest rect (note that it will most likely get clipped in
+    // FinishAndStoreOverflow). Only do this if we're not fragmented, since in
+    // that case overflow goes into our continuation.
+    if (aStatus.IsComplete()) {
+      aMetrics.mOverflowAreas.UnionAllWith(
+          GetDestRect(aReflowInput.ComputedPhysicalContentBoxRelativeToSelf()));
+    }
+    if (PresShell()->IsActive()) {
+      // We've just reflowed and we should have an accurate size, so we're ready
+      // to request a decode.
+      MaybeDecodeForPredictedSize();
+    }
   }
   FinishAndStoreOverflow(&aMetrics, aReflowInput.mStyleDisplay);
 
@@ -1873,10 +1870,8 @@ struct nsRecessedBorder : public nsStyleBorder {
   explicit nsRecessedBorder(nscoord aBorderWidth) {
     for (const auto side : AllPhysicalSides()) {
       BorderColorFor(side) = StyleColor::Black();
-      mBorder.Side(side) = aBorderWidth;
-      // Note: use SetBorderStyle here because we want to affect
-      // mComputedBorder
-      SetBorderStyle(side, StyleBorderStyle::Inset);
+      mBorder.Get(side) = aBorderWidth;
+      mBorderStyle.Get(side) = StyleBorderStyle::Inset;
     }
   }
 };
@@ -1897,11 +1892,11 @@ class nsDisplayAltFeedback final : public nsPaintedDisplayItem {
     uint32_t flags = imgIContainer::FLAG_SYNC_DECODE;
 
     nsImageFrame* f = static_cast<nsImageFrame*>(mFrame);
-    Unused << f->DisplayAltFeedback(*aCtx, GetPaintRect(aBuilder, aCtx),
-                                    ToReferenceFrame(), flags);
+    (void)f->DisplayAltFeedback(*aCtx, GetPaintRect(aBuilder, aCtx),
+                                ToReferenceFrame(), flags);
   }
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -1915,7 +1910,10 @@ class nsDisplayAltFeedback final : public nsPaintedDisplayItem {
         this, aBuilder, aResources, aSc, aManager, aDisplayListBuilder,
         ToReferenceFrame(), flags);
 
-    return result == ImgDrawResult::SUCCESS;
+    if (result != ImgDrawResult::SUCCESS) {
+      return Err("alt feedback could not be fully drawn");
+    }
+    return Ok();
   }
 
   NS_DISPLAY_DECL_NAME("AltFeedback", TYPE_ALT_FEEDBACK)
@@ -1959,7 +1957,7 @@ ImgDrawResult nsImageFrame::DisplayAltFeedback(gfxContext& aRenderingContext,
     // returns.
     MOZ_ASSERT(recessedBorder.mBorderImageSource.IsNone());
 
-    Unused << nsCSSRendering::PaintBorderWithStyleBorder(
+    (void)nsCSSRendering::PaintBorderWithStyleBorder(
         PresContext(), aRenderingContext, this, inner, inner, recessedBorder,
         mComputedStyle, PaintBorderFlags::SyncDecodeImages);
   }
@@ -2136,7 +2134,7 @@ ImgDrawResult nsImageFrame::DisplayAltFeedbackWithoutLayer(
     MOZ_ASSERT(recessedBorder.mBorderImageSource.IsNone());
 
     nsRect rect = nsRect(aPt, GetSize());
-    Unused << nsCSSRendering::CreateWebRenderCommandsForBorderWithStyleBorder(
+    (void)nsCSSRendering::CreateWebRenderCommandsForBorderWithStyleBorder(
         aItem, this, rect, aBuilder, aResources, aSc, aManager,
         aDisplayListBuilder, recessedBorder);
   }
@@ -2191,17 +2189,19 @@ ImgDrawResult nsImageFrame::DisplayAltFeedbackWithoutLayer(
 
       SVGImageContext svgContext;
       Maybe<ImageIntRegion> region;
+      bool rasterizedForDest = false;
       IntSize decodeSize =
           nsLayoutUtils::ComputeImageContainerDrawingParameters(
-              imgCon, this, destRect, destRect, aSc, aFlags, svgContext,
-              region);
+              imgCon, this, destRect, destRect, aBuilder, aSc, aFlags,
+              svgContext, region, &rasterizedForDest);
       RefPtr<image::WebRenderImageProvider> provider;
       result = imgCon->GetImageProvider(aManager->LayerManager(), decodeSize,
                                         svgContext, region, aFlags,
                                         getter_AddRefs(provider));
       if (provider) {
         bool wrResult = aManager->CommandBuilder().PushImageProvider(
-            aItem, provider, result, aBuilder, aResources, destRect, bounds);
+            aItem, provider, result, aBuilder, aResources, destRect, bounds,
+            rasterizedForDest && !region);
         result &= wrResult ? ImgDrawResult::SUCCESS : ImgDrawResult::NOT_READY;
       } else {
         // We don't use &= here because we want the result to be NOT_READY so
@@ -2226,7 +2226,7 @@ ImgDrawResult nsImageFrame::DisplayAltFeedbackWithoutLayer(
       auto borderWidths = wr::ToBorderWidths(1.0, 1.0, 1.0, 1.0);
       wr::BorderSide side = {color, wr::BorderStyle::Solid};
       wr::BorderSide sides[4] = {side, side, side, side};
-      Range<const wr::BorderSide> sidesRange(sides, 4);
+      mozilla::Range<const wr::BorderSide> sidesRange(sides, 4);
       aBuilder.PushBorder(dest, wrBounds, isBackfaceVisible, borderWidths,
                           sidesRange, wr::EmptyBorderRadius());
 
@@ -2238,7 +2238,7 @@ ImgDrawResult nsImageFrame::DisplayAltFeedbackWithoutLayer(
           rect, PresContext()->AppUnitsPerDevPixel());
       dest = wr::ToLayoutRect(devPxRect);
 
-      aBuilder.PushRoundedRect(dest, wrBounds, isBackfaceVisible, color);
+      aBuilder.PushEllipse(dest, wrBounds, isBackfaceVisible, color);
     }
 
     // Reduce the inner rect by the width of the icon, and leave an
@@ -2258,9 +2258,9 @@ ImgDrawResult nsImageFrame::DisplayAltFeedbackWithoutLayer(
 
   // Draw text
   if (!inner.IsEmpty()) {
-    RefPtr<TextDrawTarget> textDrawer =
-        new TextDrawTarget(aBuilder, aResources, aSc, aManager, aItem, inner,
-                           /* aCallerDoesSaveRestore = */ true);
+    auto textDrawer = MakeRefPtr<TextDrawTarget>(
+        aBuilder, aResources, aSc, aManager, aItem, inner,
+        /* aCallerDoesSaveRestore = */ true);
     MOZ_ASSERT(textDrawer->IsValid());
     if (textDrawer->IsValid()) {
       gfxContext captureCtx(textDrawer);
@@ -2335,8 +2335,8 @@ void nsDisplayImage::Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) {
       OldImageHasDifferentRatio(*frame, *image, prevImage);
 
   uint32_t flags = aBuilder->GetImageDecodeFlags();
-  if (aBuilder->ShouldSyncDecodeImages() || oldImageIsDifferent ||
-      frame->mForceSyncDecoding) {
+  if (oldImageIsDifferent || frame->mForceSyncDecoding ||
+      frame->UsedImageDecoding() == StyleImageDecoding::Sync) {
     flags |= imgIContainer::FLAG_SYNC_DECODE;
   }
 
@@ -2357,10 +2357,71 @@ void nsDisplayImage::Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) {
 }
 
 nsRect nsDisplayImage::GetDestRect() const {
-  bool snap = true;
-  const nsRect frameContentBox = GetBounds(&snap);
-  nsImageFrame* imageFrame = static_cast<nsImageFrame*>(mFrame);
-  return imageFrame->GetDestRect(frameContentBox);
+  auto* f = static_cast<nsImageFrame*>(mFrame);
+  return f->GetDestRect(f->GetContentRectRelativeToSelf() + ToReferenceFrame());
+}
+
+nsRect nsDisplayImage::GetDestRectViewTransition() const {
+  nsRect destRect = GetDestRect();
+  auto* image = static_cast<nsImageFrame*>(mFrame);
+
+  auto* name = image->GetViewTransitionName();
+  auto* vt = image->PresContext()->Document()->GetActiveViewTransition();
+
+  if (!name || !vt) {
+    return destRect;
+  }
+
+  // In view transitions, the snapshot images natural dimension is the captured
+  // elements principal border box. In order to render the captured overflow to
+  // its appropiate position and scale, we must internally map and scale the
+  // destRect with respect to the captured element's inkOverflowRect.
+  nsRect inkOverflowRect;
+  nsSize borderBoxSize;
+  Maybe<nsRect> activeRect;
+
+  if (image->Style()->GetPseudoType() == PseudoStyleType::ViewTransitionOld) {
+    inkOverflowRect = vt->GetOldInkOverflowRect(name).value();
+    borderBoxSize = vt->GetOldBorderBoxSize(name).value();
+    activeRect = vt->GetOldActiveRect(name);
+  } else {
+    inkOverflowRect = vt->GetNewInkOverflowRect(name).value();
+    borderBoxSize = vt->GetNewBorderBoxSize(name).value();
+    activeRect = vt->GetNewActiveRect(name);
+  }
+
+  if (borderBoxSize.IsEmpty()) {
+    return destRect;
+  }
+
+  // Scale the ink overflow offset to maintain its position relative to
+  // the destination border box, as if the offset scaled with the element.
+  auto xRatio = static_cast<float>(inkOverflowRect.X()) / borderBoxSize.Width();
+  auto yRatio =
+      static_cast<float>(inkOverflowRect.Y()) / borderBoxSize.Height();
+  auto scaledX = std::round(xRatio * destRect.Width());
+  auto scaledY = std::round(yRatio * destRect.Height());
+
+  const nsPoint scaledInkOverflowOffset(scaledX, scaledY);
+
+  // Scale destRect’s size to match the captured element’s relative ink overflow
+  // size.
+  auto widthRatio =
+      static_cast<float>(inkOverflowRect.Width()) / borderBoxSize.Width();
+  auto heightRatio =
+      static_cast<float>(inkOverflowRect.Height()) / borderBoxSize.Height();
+  const nsSize scaledInkOverflowSize(
+      std::round(widthRatio * destRect.Width()),
+      std::round(heightRatio * destRect.Height()));
+
+  destRect = nsRect(destRect.TopLeft() + scaledInkOverflowOffset,
+                    scaledInkOverflowSize);
+
+  if (activeRect) {
+    destRect = destRect.Intersect(activeRect.value());
+  }
+
+  return destRect;
 }
 
 nsRegion nsDisplayImage::GetOpaqueRegion(nsDisplayListBuilder* aBuilder,
@@ -2386,7 +2447,7 @@ void nsDisplayImage::MaybeCreateWebRenderCommandsForViewTransition(
   }
   VT_LOG_DEBUG("GetViewTransitionImageKey(%s) = %s", frame->ListTag().get(),
                ToString(key).c_str());
-  const nsRect destAppUnits = GetDestRect();
+  nsRect destAppUnits = GetDestRectViewTransition();
   const int32_t factor = mFrame->PresContext()->AppUnitsPerDevPixel();
   const auto destRect =
       wr::ToLayoutRect(LayoutDeviceRect::FromAppUnits(destAppUnits, factor));
@@ -2396,7 +2457,7 @@ void nsDisplayImage::MaybeCreateWebRenderCommandsForViewTransition(
                      /* aForceAntiAliasing = */ false, rendering, key);
 }
 
-bool nsDisplayImage::CreateWebRenderCommands(
+WebRenderCommandsResult nsDisplayImage::CreateWebRenderCommands(
     wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
     const StackingContextHelper& aSc, RenderRootStateManager* aManager,
     nsDisplayListBuilder* aDisplayListBuilder) {
@@ -2405,13 +2466,13 @@ bool nsDisplayImage::CreateWebRenderCommands(
   if (!image) {
     MaybeCreateWebRenderCommandsForViewTransition(
         aBuilder, aResources, aSc, aManager, aDisplayListBuilder);
-    return true;
+    return Ok();
   }
 
   if (nsImageMap* map = frame->GetImageMap(); map && map->HasFocus()) {
     // We can't draw some of the focus areas (in particular, PolyArea would be
     // somewhat hard to do).
-    return false;
+    return Err("focused image map area cannot be drawn");
   }
 
   auto* prevImage = frame->mPrevImage.get();
@@ -2421,8 +2482,8 @@ bool nsDisplayImage::CreateWebRenderCommands(
       OldImageHasDifferentRatio(*frame, *image, prevImage);
 
   uint32_t flags = aDisplayListBuilder->GetImageDecodeFlags();
-  if (aDisplayListBuilder->ShouldSyncDecodeImages() || oldImageIsDifferent ||
-      frame->mForceSyncDecoding) {
+  if (oldImageIsDifferent || frame->mForceSyncDecoding ||
+      frame->UsedImageDecoding() == StyleImageDecoding::Sync) {
     flags |= imgIContainer::FLAG_SYNC_DECODE;
   }
   if (StaticPrefs::image_svg_blob_image() &&
@@ -2436,8 +2497,10 @@ bool nsDisplayImage::CreateWebRenderCommands(
 
   SVGImageContext svgContext;
   Maybe<ImageIntRegion> region;
+  bool rasterizedForDest = false;
   IntSize decodeSize = nsLayoutUtils::ComputeImageContainerDrawingParameters(
-      image, mFrame, destRect, destRect, aSc, flags, svgContext, region);
+      image, mFrame, destRect, destRect, aBuilder, aSc, flags, svgContext,
+      region, &rasterizedForDest);
 
   RefPtr<image::WebRenderImageProvider> provider;
   ImgDrawResult drawResult =
@@ -2445,10 +2508,14 @@ bool nsDisplayImage::CreateWebRenderCommands(
                               region, flags, getter_AddRefs(provider));
 
   if (nsCOMPtr<imgIRequest> currentRequest = frame->GetCurrentRequest()) {
+    Element* element = frame->GetContent()->AsElement();
+    nsRect rectRelativeToSelf = destAppUnits - ToReferenceFrame();
+
+    ContainerTimingHelpers::MaybeProcessPaintForContainer(element, frame,
+                                                          rectRelativeToSelf);
     LCPHelpers::FinalizeLCPEntryForImage(
-        frame->GetContent()->AsElement(),
-        static_cast<imgRequestProxy*>(currentRequest.get()),
-        destAppUnits - ToReferenceFrame());
+        element, static_cast<imgRequestProxy*>(currentRequest.get()),
+        rectRelativeToSelf);
   }
 
   // While we got a container, it may not contain a fully decoded surface. If
@@ -2492,7 +2559,7 @@ bool nsDisplayImage::CreateWebRenderCommands(
       }
       break;
     case ImgDrawResult::NOT_SUPPORTED:
-      return false;
+      return Err("image provider is not supported");
     default:
       updatePrevImage = prevImage != image;
       break;
@@ -2509,8 +2576,9 @@ bool nsDisplayImage::CreateWebRenderCommands(
   // failure will be due to resource constraints and fallback is unlikely to
   // help us. Hence we can ignore the return value from PushImage.
   aManager->CommandBuilder().PushImageProvider(
-      this, provider, drawResult, aBuilder, aResources, destRect, destRect);
-  return true;
+      this, provider, drawResult, aBuilder, aResources, destRect, destRect,
+      rasterizedForDest && !region);
+  return Ok();
 }
 
 ImgDrawResult nsImageFrame::PaintImage(gfxContext& aRenderingContext,
@@ -2524,7 +2592,8 @@ ImgDrawResult nsImageFrame::PaintImage(gfxContext& aRenderingContext,
                "bad width");
 
   nsPoint anchorPoint;
-  nsRect dest = GetDestRect(GetContentRectRelativeToSelf() + aPt, &anchorPoint);
+  const nsRect dest =
+      GetDestRect(GetContentRectRelativeToSelf() + aPt, &anchorPoint);
 
   SVGImageContext svgContext;
   SVGImageContext::MaybeStoreContextPaint(svgContext, this, aImage);
@@ -2590,21 +2659,26 @@ void nsImageFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     return;
   }
 
-  uint32_t clipFlags =
-      nsStyleUtil::ObjectPropsMightCauseOverflow(StylePosition())
-          ? 0
-          : DisplayListClipState::ASSUME_DRAWING_RESTRICTED_TO_CONTENT_RECT;
-
-  DisplayListClipState::AutoClipContainingBlockDescendantsToContentBox clip(
-      aBuilder, this, clipFlags);
+  DisplayListClipState::AutoSaveRestore clipState(aBuilder);
+  auto clipAxes = ShouldApplyOverflowClipping(StyleDisplay());
+  if (!clipAxes.isEmpty()) {
+    nsRect clipRect;
+    nsRectCornerRadii radii;
+    nsMargin inset;
+    bool haveRadii =
+        ComputeOverflowClipRectRelativeToSelf(clipAxes, clipRect, radii, inset);
+    clipState.ClipContainingBlockDescendants(
+        clipRect + aBuilder->ToReferenceFrame(this),
+        haveRadii ? &radii : nullptr, haveRadii ? &inset : nullptr);
+  }
 
   if (!mComputedSize.IsEmpty()) {
-    const bool isViewTransition = mKind == Kind::ViewTransition;
     const bool imageOK = mKind != Kind::ImageLoadingContent ||
                          ImageOk(mContent->AsElement()->State());
 
     nsCOMPtr<imgIRequest> currentRequest = GetCurrentRequest();
 
+    const bool isViewTransition = mKind == Kind::ViewTransition;
     const bool isImageFromStyle = mKind != Kind::ImageLoadingContent &&
                                   mKind != Kind::XULImage && !isViewTransition;
     const bool drawAltFeedback = [&] {
@@ -2691,7 +2765,7 @@ bool nsImageFrame::ShouldDisplaySelection() {
 nsImageMap* nsImageFrame::GetImageMap() {
   if (!mImageMap) {
     if (nsIContent* map = GetMapElement()) {
-      mImageMap = new nsImageMap();
+      mImageMap = MakeRefPtr<nsImageMap>();
       mImageMap->Init(this, map);
     }
   }
@@ -2749,8 +2823,9 @@ bool nsImageFrame::IsLeafDynamic() const {
   return !shadow;
 }
 
-nsIContent* nsImageFrame::GetContentForEvent(const WidgetEvent* aEvent) const {
-  if (mImageMap) {
+nsIContent* nsImageFrame::GetExplicitEventTargetContent(
+    const WidgetEvent* aEvent /* = nullptr */) const {
+  if (mImageMap && aEvent) {
     // XXX We need to make this special check for area element's capturing the
     // mouse due to bug 135040. Remove it once that's fixed.
     nsIContent* capturingContent = aEvent->HasMouseEventMessage()
@@ -2765,7 +2840,7 @@ nsIContent* nsImageFrame::GetContentForEvent(const WidgetEvent* aEvent) const {
       return area;
     }
   }
-  return nsIFrame::GetContentForEvent(aEvent);
+  return nsIFrame::GetExplicitEventTargetContent(aEvent);
 }
 
 // XXX what should clicks on transparent pixels do?
@@ -2864,7 +2939,8 @@ nsIFrame::Cursor nsImageFrame::GetCursor(const nsPoint& aPoint) {
 }
 
 nsresult nsImageFrame::AttributeChanged(int32_t aNameSpaceID,
-                                        nsAtom* aAttribute, int32_t aModType) {
+                                        nsAtom* aAttribute,
+                                        AttrModType aModType) {
   nsresult rv = nsAtomicContainerFrame::AttributeChanged(aNameSpaceID,
                                                          aAttribute, aModType);
   if (NS_FAILED(rv)) {
@@ -2967,12 +3043,12 @@ static bool IsInAutoWidthTableCellForQuirk(nsIFrame* aFrame) {
   }
   // Check if the parent of the closest nsBlockFrame has auto width.
   nsBlockFrame* ancestor = nsLayoutUtils::FindNearestBlockAncestor(aFrame);
-  if (ancestor->Style()->GetPseudoType() == PseudoStyleType::cellContent) {
+  if (ancestor->Style()->GetPseudoType() == PseudoStyleType::MozCellContent) {
     // Assume direct parent is a table cell frame.
     nsIFrame* grandAncestor = static_cast<nsIFrame*>(ancestor->GetParent());
     return grandAncestor &&
            grandAncestor->StylePosition()
-               ->GetWidth(grandAncestor->StyleDisplay()->mPosition)
+               ->GetWidth(AnchorPosResolutionParams::From(grandAncestor))
                ->IsAuto();
   }
   return false;

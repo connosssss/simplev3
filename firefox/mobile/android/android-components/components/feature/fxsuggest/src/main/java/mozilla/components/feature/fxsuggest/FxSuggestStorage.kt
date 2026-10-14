@@ -11,25 +11,29 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.withContext
 import mozilla.appservices.remotesettings.RemoteSettingsServer
+import mozilla.appservices.suggest.InternalException as UniffiInternalException
 import mozilla.appservices.suggest.SuggestApiException
 import mozilla.appservices.suggest.SuggestIngestionConstraints
 import mozilla.appservices.suggest.SuggestStore
 import mozilla.appservices.suggest.SuggestStoreBuilder
 import mozilla.appservices.suggest.Suggestion
 import mozilla.appservices.suggest.SuggestionQuery
+import mozilla.components.concept.base.crash.CrashReporting
+import mozilla.components.feature.fxsuggest.facts.emitSuggestionQueryCountFact
 import mozilla.components.support.base.log.logger.Logger
 import mozilla.components.support.remotesettings.RemoteSettingsService
+import mozilla.components.support.rusterrors.reportRustError
 
 /**
  * A coroutine-aware wrapper around the synchronous [SuggestStore] interface.
  *
  * @param context The Android application context.
- * @param remoteSettingsServer The [RemoteSettingsServer] from which to ingest
- * suggestions.
+ * @param remoteSettingsServer The [RemoteSettingsServer] from which to ingest suggestions.
  */
 class FxSuggestStorage(
     context: Context,
     remoteSettingsService: RemoteSettingsService,
+    private val crashReporter: CrashReporting? = null,
 ) {
     // Lazily initializes the store on first use. `cacheDir` and using the `File` constructor
     // does I/O, so `store.value` should only be accessed from the read or write scope.
@@ -58,7 +62,11 @@ class FxSuggestStorage(
     suspend fun query(query: SuggestionQuery): List<Suggestion> =
         withContext(readScope.coroutineContext) {
             handleSuggestExceptions("query", emptyList()) {
-                store.value.query(query)
+                val result = store.value.query(query)
+                if (result.isNotEmpty()) {
+                    emitSuggestionQueryCountFact(queryCount = result.size)
+                }
+                result
             }
         }
 
@@ -79,18 +87,16 @@ class FxSuggestStorage(
     /**
      * Run startup ingestion
      *
-     * This will run ingestion, only if there are currently no suggestions in the database.  This is
-     * used to initialize the database on first startup and also after Firefox updates that change
-     * the schema (which often cause the suggestions table to be cleared).
+     * This will run ingestion, only if there are currently no suggestions in the database. This is used to initialize
+     * the database on first startup and also after Firefox updates that change the schema (which often cause the
+     * suggestions table to be cleared).
      */
     suspend fun runStartupIngestion() {
         logger.info("runStartupIngestion")
         ingest(SuggestIngestionConstraints(emptyOnly = true))
     }
 
-    /**
-     * Interrupts any ongoing queries for suggestions.
-     */
+    /** Interrupts any ongoing queries for suggestions. */
     fun cancelReads() {
         if (store.isInitialized()) {
             store.value.interrupt()
@@ -99,9 +105,8 @@ class FxSuggestStorage(
     }
 
     /**
-     * Runs an [operation] with the given [name], ignoring and logging any non-fatal exceptions.
-     * Returns either the result of the [operation], or the provided [default] value if the
-     * [operation] throws an exception.
+     * Runs an [operation] with the given [name], ignoring and logging any non-fatal exceptions. Returns either the
+     * result of the [operation], or the provided [default] value if the [operation] throws an exception.
      *
      * @param name The name of the operation to run.
      * @param default The default value to return if the operation fails.
@@ -116,14 +121,17 @@ class FxSuggestStorage(
             operation()
         } catch (e: SuggestApiException) {
             logger.warn("Ignoring exception from `$name`", e)
+            crashReporter?.submitCaughtException(e)
+            default
+        } catch (e: UniffiInternalException) {
+            Logger.error("Ignoring internal exception from `$name`", e)
+            reportRustError("suggest-internal-error", e)
             default
         }
     }
 
     internal companion object {
-        /**
-         * The database file name for permanent data.
-         */
+        /** The database file name for permanent data. */
         const val DATABASE_NAME = "suggest_data.sqlite"
     }
 }

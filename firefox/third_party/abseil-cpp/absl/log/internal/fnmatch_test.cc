@@ -27,6 +27,7 @@ TEST(FNMatchTest, Works) {
   EXPECT_THAT(FNMatch("foo", "bar"), IsFalse());
   EXPECT_THAT(FNMatch("foo", "fo"), IsFalse());
   EXPECT_THAT(FNMatch("foo", "foo2"), IsFalse());
+  EXPECT_THAT(FNMatch("foo/*", "foo/1/2/3/4"), IsTrue());
   EXPECT_THAT(FNMatch("bar/foo.ext", "bar/foo.ext"), IsTrue());
   EXPECT_THAT(FNMatch("*ba*r/fo*o.ext*", "bar/foo.ext"), IsTrue());
   EXPECT_THAT(FNMatch("bar/foo.ext", "bar/baz.ext"), IsFalse());
@@ -54,6 +55,21 @@ TEST(FNMatchTest, Works) {
   EXPECT_THAT(FNMatch("***", "**p"), IsTrue());
   EXPECT_THAT(FNMatch("**", "*"), IsTrue());
   EXPECT_THAT(FNMatch("*?", "*"), IsTrue());
+}
+
+TEST(FNMatchTest, BacktracksAfterStar) {
+  using absl::log_internal::FNMatch;
+  // A literal run after '*' may occur more than once in `str`; the match must
+  // not commit to the first occurrence.
+  EXPECT_THAT(FNMatch("*test", "testtest"), IsTrue());
+  EXPECT_THAT(FNMatch("*.cc", "aa.cc.cc"), IsTrue());
+  EXPECT_THAT(FNMatch("*_test", "unit_test_test"), IsTrue());
+  EXPECT_THAT(FNMatch("*aa", "aaa"), IsTrue());
+  EXPECT_THAT(FNMatch("*a*b", "aXaXb"), IsTrue());
+  EXPECT_THAT(FNMatch("*ab*ab", "abXab"), IsTrue());
+  // Backtracking must still reject genuine non-matches.
+  EXPECT_THAT(FNMatch("*test", "testtes"), IsFalse());
+  EXPECT_THAT(FNMatch("*_test", "unit_tests"), IsFalse());
 }
 
 }  // namespace

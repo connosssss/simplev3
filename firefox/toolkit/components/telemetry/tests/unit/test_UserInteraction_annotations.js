@@ -23,9 +23,8 @@ const TEST_ADDITIONAL_TEXT_2 = "some other additional text";
  * HANG_TIME, and then returns the BHR hang report generated for
  * that hang.
  *
- * @returns {Promise}
- * @resolves {nsIHangDetails}
- *   The hang report that was created.
+ * @returns {Promise<nsIHangDetails>}
+ *   Resolves to the hang report that was created.
  */
 async function hangAndWaitForReport(expectTestAnnotation) {
   let hangPromise = TestUtils.topicObserved("bhr-thread-hang", subject => {
@@ -81,15 +80,15 @@ function startProfiler() {
  * the UserInteraction backend added. This function only checks
  * markers on thread 0.
  *
- * @param {Object} profile
+ * @param {object} profile
  *   A profile returned from Services.profiler.getProfileData();
- * @param {String} value
+ * @param {string} value
  *   The value that the marker is expected to have.
- * @param {String} additionalText
+ * @param {string} additionalText
  *   (Optional) If additionalText was provided when finishing the
  *   UserInteraction, then markerCount will check for a marker with
  *   text in the form of "value,additionalText".
- * @returns {Number}
+ * @returns {number}
  *   A count of how many markers appear that match the criteria.
  */
 function markerCount(profile, value, additionalText) {
@@ -102,9 +101,12 @@ function markerCount(profile, value, additionalText) {
   let stringTable = thread0.stringTable;
   let markerStringIndex = stringTable.indexOf(TEST_USER_INTERACTION_ID);
 
+  // The Text marker's "name" field is a unique string, so the payload holds
+  // an index into the thread's string table rather than the string itself.
   let markers = thread0.markers.data.filter(markerData => {
     return (
-      markerData[0] == markerStringIndex && markerData[5].name == expectedName
+      markerData[0] == markerStringIndex &&
+      stringTable[markerData[5].name] == expectedName
     );
   });
 
@@ -117,7 +119,7 @@ function markerCount(profile, value, additionalText) {
  *
  * @param {nsIHangReport} report
  *   The hang report to check the annotations of.
- * @param {String} value
+ * @param {string} value
  *   The value that the annotation should have.
  * @returns {boolean}
  *   True if the annotation was found.
@@ -137,7 +139,7 @@ function hasHangAnnotation(report, value) {
  *
  * @param {nsIHangReport} report
  *   The hang report to check the annotations of.
- * @param {String} value
+ * @param {string} value
  *   The value that the annotation should have.
  * @returns {boolean}
  *   True if the annotation was found.

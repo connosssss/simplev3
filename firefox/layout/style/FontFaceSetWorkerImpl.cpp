@@ -1,18 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "FontFaceSetWorkerImpl.h"
+
 #include "mozilla/FontLoaderUtils.h"
+#include "mozilla/LoadInfo.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/dom/WorkerRunnable.h"
-#include "mozilla/LoadInfo.h"
+#include "mozilla/dom/WorkerScope.h"
 #include "nsContentPolicyUtils.h"
 #include "nsFontFaceLoader.h"
-#include "nsINetworkPredictor.h"
 #include "nsIWebNavigation.h"
 
 using namespace mozilla;
@@ -46,6 +45,7 @@ bool FontFaceSetWorkerImpl::Initialize(WorkerPrivate* aWorkerPrivate) {
   {
     RecursiveMutexAutoLock lock(mMutex);
     mWorkerRef = new ThreadSafeWorkerRef(workerRef);
+    mClientInfo = aWorkerPrivate->GlobalScope()->GetClientInfo();
   }
 
   class InitRunnable final : public WorkerMainThreadRunnable {
@@ -102,12 +102,10 @@ void FontFaceSetWorkerImpl::InitializeOnMainThread() {
   // that of that docshell. This matches the behaviour from
   // WorkerScriptLoader::LoadScript.
   if (topWorkerPrivate->IsDedicatedWorker()) {
-    nsCOMPtr<nsPIDOMWindowInner> window = topWorkerPrivate->GetWindow();
-    if (window) {
-      nsCOMPtr<nsIDocShell> docShell = window->GetDocShell();
-      if (docShell) {
-        docShell->GetDefaultLoadFlags(&loadFlags);
-        docShell->GetLoadType(&loadType);
+    if (nsCOMPtr<nsPIDOMWindowInner> window = topWorkerPrivate->GetWindow()) {
+      if (nsCOMPtr<nsIDocShell> docShell = window->GetDocShell()) {
+        loadFlags = docShell->GetDefaultLoadFlags();
+        loadType = docShell->GetLoadType();
       }
     }
   }
@@ -248,6 +246,10 @@ nsresult FontFaceSetWorkerImpl::StartLoad(gfxUserFontEntry* aUserFontEntry,
     return NS_ERROR_FAILURE;
   }
 
+  if (NS_WARN_IF(!mClientInfo)) {
+    return NS_ERROR_CONTENT_BLOCKED;
+  }
+
   nsresult rv;
 
   nsCOMPtr<nsIStreamLoader> streamLoader;
@@ -259,7 +261,7 @@ nsresult FontFaceSetWorkerImpl::StartLoad(gfxUserFontEntry* aUserFontEntry,
   rv = FontLoaderUtils::BuildChannel(
       getter_AddRefs(channel), src.mURI->get(), CORS_ANONYMOUS,
       dom::ReferrerPolicy::_empty /* not used */, aUserFontEntry, &src,
-      mWorkerRef->Private(), loadGroup, nullptr);
+      mWorkerRef->Private(), *mClientInfo, loadGroup, nullptr);
   NS_ENSURE_SUCCESS(rv, rv);
 
   auto fontLoader =
@@ -282,9 +284,6 @@ nsresult FontFaceSetWorkerImpl::StartLoad(gfxUserFontEntry* aUserFontEntry,
   }
 
   mLoaders.PutEntry(fontLoader);
-
-  net::PredictorLearn(src.mURI->get(), mWorkerRef->Private()->GetBaseURI(),
-                      nsINetworkPredictor::LEARN_LOAD_SUBRESOURCE, loadGroup);
 
   if (NS_SUCCEEDED(rv)) {
     fontLoader->StartedLoading(streamLoader);
@@ -356,7 +355,11 @@ nsresult FontFaceSetWorkerImpl::CreateChannelForSyncLoadFontData(
                                         : nsIContentPolicy::TYPE_FONT);
 }
 
-nsPresContext* FontFaceSetWorkerImpl::GetPresContext() const { return nullptr; }
+FontVisibilityProvider* FontFaceSetWorkerImpl::GetFontVisibilityProvider()
+    const {
+  RecursiveMutexAutoLock lock(mMutex);
+  return mWorkerRef ? mWorkerRef->Private() : nullptr;
+}
 
 TimeStamp FontFaceSetWorkerImpl::GetNavigationStartTimeStamp() {
   RecursiveMutexAutoLock lock(mMutex);

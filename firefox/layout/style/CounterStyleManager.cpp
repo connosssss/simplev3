@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,7 +11,8 @@
 #include "mozilla/CheckedInt.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/PresShell.h"
-#include "mozilla/Types.h"
+#include "mozilla/ServoBindings.h"
+#include "mozilla/ServoStyleSet.h"
 #include "mozilla/WritingModes.h"
 #include "nsPresContext.h"
 #include "nsPresContextInlines.h"
@@ -21,8 +20,6 @@
 #include "nsTArray.h"
 #include "nsTHashtable.h"
 #include "nsUnicodeProperties.h"
-#include "mozilla/ServoBindings.h"
-#include "mozilla/ServoStyleSet.h"
 
 namespace mozilla {
 
@@ -435,7 +432,7 @@ static bool HebrewToText(CounterValue aOrdinal, nsAString& aResult) {
     outputSep = true;
   } while (aOrdinal >= 1);
 
-  aResult = allText;
+  aResult = std::move(allText);
   return true;
 }
 
@@ -893,7 +890,7 @@ bool BuiltinCounterStyle::GetInitialCounterText(CounterValue aOrdinal,
 static constexpr BuiltinCounterStyle gBuiltinStyleTable[] = {
 #define BUILTIN_COUNTER_STYLE(value_, atom_) \
   {ListStyle::value_, nsGkAtoms::atom_},
-#include "BuiltinCounterStyleList.h"
+#include "BuiltinCounterStyleList.inc"
 #undef BUILTIN_COUNTER_STYLE
 };
 
@@ -902,7 +899,7 @@ static constexpr BuiltinCounterStyle gBuiltinStyleTable[] = {
       gBuiltinStyleTable[static_cast<size_t>(ListStyle::value_)].GetStyle() == \
           ListStyle::value_,                                                   \
       "Builtin counter style " #atom_ " has unmatched index and value.");
-#include "BuiltinCounterStyleList.h"
+#include "BuiltinCounterStyleList.inc"
 #undef BUILTIN_COUNTER_STYLE
 
 class DependentBuiltinCounterStyle final : public BuiltinCounterStyle {

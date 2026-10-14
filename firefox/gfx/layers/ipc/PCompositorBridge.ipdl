@@ -1,6 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=8 et :
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -52,7 +49,6 @@ struct FrameStats {
   TimeStamp compositeEnd;
   int32_t contentFrameTime;
   double resourceUploadTime;
-  double gpuCacheUploadTime;
   TimeStamp transactionStart;
   TimeStamp refreshStart;
   TimeStamp fwdTime;
@@ -86,7 +82,7 @@ struct FrameStats {
  * protocol, which is per-browser. A lot of the functions in the protocol are
  * basically multiplexing/demultiplexing stuff in PLayerTransaction.
  */
-[ParentImpl="CompositorBridgeParentBase"]
+[ParentImpl="mozilla::layers::CompositorBridgeParentBase"]
 sync protocol PCompositorBridge
 {
   manager PCompositorManager;
@@ -143,23 +139,30 @@ parent:
 
   // See bug 1316632 comment #33 for why this has to be sync. Otherwise,
   // there are ordering issues with SendPLayerTransactionConstructor.
-  sync NotifyChildCreated(LayersId id)
+  //
+  // |embedderId| is the LayersId of the pipeline that embeds |id|, or an
+  // invalid LayersId if no widget could be found.
+  sync NotifyChildCreated(LayersId id, LayersId embedderId)
     returns (CompositorOptions compositorOptions);
 
   // This version of NotifyChildCreated also performs a layer tree mapping.
   //
   // See bug 1316632 comment #33 for why this has to be sync. Otherwise,
   // there are ordering issues with SendPLayerTransactionConstructor.
-  sync MapAndNotifyChildCreated(LayersId id, ProcessId owner)
+  sync MapAndNotifyChildCreated(LayersId id, LayersId embedderId, ProcessId owner)
     returns (CompositorOptions compositorOptions);
 
-  async AdoptChild(LayersId id);
+  // |embedderId| is |id|'s current embedder, recomputed by the caller at
+  // adopt time -- adopting |id| under a new CompositorBridgeParent can
+  // happen because |id| (a tab) was moved to a different top-level window,
+  // which does change who embeds it.
+  async AdoptChild(LayersId id, LayersId embedderId);
 
   // Same as NotifyChildCreated, but used when child processes need to
   // reassociate layers. This must be synchronous to ensure that the
   // association happens before PLayerTransactions are sent over the
   // cross-process bridge.
-  sync NotifyChildRecreated(LayersId id)
+  sync NotifyChildRecreated(LayersId id, LayersId embedderId)
     returns (CompositorOptions compositorOptions);
 
   async NotifyMemoryPressure();
@@ -185,9 +188,13 @@ parent:
   sync StopFrameTimeRecording(uint32_t startIndex)
     returns (float[] intervals);
 
-  async PTexture(SurfaceDescriptor aSharedData, ReadLockDescriptor aReadLock, LayersBackend aBackend, TextureFlags aTextureFlags, LayersId id, uint64_t aSerial, MaybeExternalImageId aExternalImageId);
+  async PTexture(SurfaceDescriptor aSharedData, ReadLockDescriptor aReadLock, LayersBackend aBackend, TextureFlags aTextureFlags, uint64_t aSerial, MaybeExternalImageId aExternalImageId);
 
   sync SyncWithCompositor();
+
+  // Check if WebRender rasterized any tiles in the last frame, and clear the state.
+  // Used by reftest to verify no rasterization occurred.
+  sync CheckAndClearWRDidRasterize(LayersId id) returns (bool didRasterize);
 
   // The pipelineId is the same as the layersId
   async PWebRenderBridge(PipelineId pipelineId, LayoutDeviceIntSize aSize, WindowKind aKind);

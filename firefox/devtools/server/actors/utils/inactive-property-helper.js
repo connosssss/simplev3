@@ -11,22 +11,13 @@ loader.lazyRequireGetter(
   true
 );
 
-const INACTIVE_CSS_ENABLED = Services.prefs.getBoolPref(
-  "devtools.inspector.inactive.css.enabled",
-  false
-);
-
 const TEXT_WRAP_BALANCE_LIMIT = Services.prefs.getIntPref(
   "layout.css.text-wrap-balance.limit",
   10
 );
 
-const ALIGN_CONTENT_BLOCKS = Services.prefs.getBoolPref(
-  "layout.css.align-content.blocks.enabled",
-  false
-);
-
-const VISITED_MDN_LINK = "https://developer.mozilla.org/docs/Web/CSS/:visited";
+const VISITED_MDN_LINK =
+  "https://developer.mozilla.org/docs/Web/CSS/Reference/Selectors/:visited";
 const VISITED_INVALID_PROPERTIES = allCssPropertiesExcept([
   "all",
   "color",
@@ -81,7 +72,7 @@ const REPLACED_ELEMENTS_NAMES = new Set([
 ]);
 
 const CUE_PSEUDO_ELEMENT_STYLING_SPEC_URL =
-  "https://developer.mozilla.org/docs/Web/CSS/::cue";
+  "https://developer.mozilla.org/docs/Web/CSS/Reference/Selectors/::cue";
 
 const HIGHLIGHT_PSEUDO_ELEMENTS_STYLING_SPEC_URL =
   "https://www.w3.org/TR/css-pseudo-4/#highlight-styling";
@@ -96,6 +87,7 @@ const HIGHLIGHT_PSEUDO_ELEMENTS = [
 const REGEXP_HIGHLIGHT_PSEUDO_ELEMENTS = new RegExp(
   `${HIGHLIGHT_PSEUDO_ELEMENTS.join("|")}`
 );
+const REGEXP_UPPERCASE_CHAR = /[A-Z]/;
 
 const FIRST_LINE_PSEUDO_ELEMENT_STYLING_SPEC_URL =
   "https://www.w3.org/TR/css-pseudo-4/#first-line-styling";
@@ -105,6 +97,9 @@ const FIRST_LETTER_PSEUDO_ELEMENT_STYLING_SPEC_URL =
 
 const PLACEHOLDER_PSEUDO_ELEMENT_STYLING_SPEC_URL =
   "https://www.w3.org/TR/css-pseudo-4/#placeholder-pseudo";
+
+const AT_POSITION_TRY_MDN_URL =
+  "https://developer.mozilla.org/docs/Web/CSS/Reference/At-rules/@position-try";
 
 class InactivePropertyHelper {
   /**
@@ -128,7 +123,7 @@ class InactivePropertyHelper {
    *     The rule itself, a JS function used to identify the conditions
    *     indicating whether a property is valid or not.
    *   fixId:
-   *     A Fluent id containing a suggested solution to the problem that is
+   *     An optional Fluent id containing a suggested solution to the problem that is
    *     causing a property to be inactive.
    *   msgId:
    *     A Fluent id containing an error message explaining why a property is
@@ -138,8 +133,8 @@ class InactivePropertyHelper {
    * If you add a new rule, also add a test for it in:
    * server/tests/chrome/test_inspector-inactive-property-helper.html
    *
-   * The main export is `isPropertyUsed()`, which can be used to check if a
-   * property is used or not, and why.
+   * The main export is `getInactiveCssDataForProperty()`, which can be used to check if a
+   * property is inactive or not, and why.
    *
    * NOTE: We should generally *not* add rules here for any CSS properties that
    * inherit by default, because it's hard for us to know whether such
@@ -161,14 +156,14 @@ class InactivePropertyHelper {
       {
         invalidProperties: ["flex-direction", "flex-flow", "flex-wrap"],
         when: () => !this.flexContainer,
-        fixId: "inactive-css-not-flex-container-fix",
+        fixId: "inactive-css-not-flex-container-fix-1",
         msgId: "inactive-css-not-flex-container",
       },
       // Flex item property used on non-flex item.
       {
         invalidProperties: ["flex", "flex-basis", "flex-grow", "flex-shrink"],
         when: () => !this.flexItem,
-        fixId: "inactive-css-not-flex-item-fix-2",
+        fixId: "inactive-css-not-flex-item-fix-3",
         msgId: "inactive-css-not-flex-item",
       },
       // Grid container property used on non-grid container.
@@ -184,10 +179,10 @@ class InactivePropertyHelper {
           "justify-items",
         ],
         when: () => !this.gridContainer,
-        fixId: "inactive-css-not-grid-container-fix",
+        fixId: "inactive-css-not-grid-container-fix-1",
         msgId: "inactive-css-not-grid-container",
       },
-      // Grid item property used on non-grid item.
+      // Grid/absolutely positioned item property used on non-grid/non-absolutely positioned item.
       {
         invalidProperties: [
           "grid-area",
@@ -197,19 +192,36 @@ class InactivePropertyHelper {
           "grid-row",
           "grid-row-end",
           "grid-row-start",
-          "justify-self",
         ],
         when: () => !this.gridItem && !this.isAbsPosGridElement(),
-        fixId: "inactive-css-not-grid-item-fix-2",
+        fixId: "inactive-css-not-grid-item-fix-3",
         msgId: "inactive-css-not-grid-item",
       },
       // Grid and flex item properties used on non-grid or non-flex item.
       {
-        invalidProperties: ["align-self", "place-self", "order"],
-        when: () =>
-          !this.gridItem && !this.flexItem && !this.isAbsPosGridElement(),
-        fixId: "inactive-css-not-grid-or-flex-item-fix-3",
+        invalidProperties: ["order"],
+        when: () => !this.gridItem && !this.flexItem,
+        fixId: "inactive-css-not-grid-or-flex-item-fix-4",
         msgId: "inactive-css-not-grid-or-flex-item",
+      },
+      // Absolutely positioned, grid and flex item properties used on non absolutely positioned,
+      // non-grid or non-flex item.
+      {
+        invalidProperties: ["align-self", "place-self"],
+        when: () =>
+          !this.gridItem && !this.flexItem && !this.isAbsolutelyPositioned,
+        fixId:
+          "inactive-css-not-grid-or-flex-or-absolutely-positioned-item-fix-1",
+        msgId: "inactive-css-not-grid-or-flex-or-absolutely-positioned-item",
+      },
+      // Absolutely positioned and grid item properties used on non absolutely positioned,
+      // or non-grid item.
+      {
+        invalidProperties: ["justify-self"],
+        // This should be updated when justify-self support is added on block level boxes (see Bug 2005203)
+        when: () => !this.gridItem && !this.isAbsolutelyPositioned,
+        fixId: "inactive-css-not-grid-or-absolutely-positioned-item-fix-1",
+        msgId: "inactive-css-not-grid-or-absolutely-positioned-item",
       },
       // Grid and flex container properties used on non-grid or non-flex container.
       {
@@ -224,7 +236,7 @@ class InactivePropertyHelper {
           "grid-row-gap",
         ],
         when: () => !this.gridContainer && !this.flexContainer,
-        fixId: "inactive-css-not-grid-or-flex-container-fix",
+        fixId: "inactive-css-not-grid-or-flex-container-fix-1",
         msgId: "inactive-css-not-grid-or-flex-container",
       },
       // align-content is special as align-content:baseline does have an effect on all
@@ -241,20 +253,15 @@ class InactivePropertyHelper {
             "inline-flex",
             "grid",
             "inline-grid",
+            "block",
+            "inline-block",
             // Uncomment table-cell when Bug 1883357 is fixed.
             // "table-cell"
           ];
-          if (ALIGN_CONTENT_BLOCKS) {
-            supportedDisplay.push("block", "inline-block");
-          }
           return !this.checkComputedStyle("display", supportedDisplay);
         },
-        fixId: ALIGN_CONTENT_BLOCKS
-          ? "inactive-css-not-grid-or-flex-or-block-container-fix"
-          : "inactive-css-not-grid-or-flex-container-fix",
-        msgId: ALIGN_CONTENT_BLOCKS
-          ? "inactive-css-property-because-of-display"
-          : "inactive-css-not-grid-or-flex-container",
+        fixId: "inactive-css-not-grid-or-flex-or-block-container-fix-1",
+        msgId: "inactive-css-property-because-of-display",
       },
       // column-gap and shorthands used on non-grid or non-flex or non-multi-col container.
       {
@@ -269,7 +276,7 @@ class InactivePropertyHelper {
         when: () =>
           !this.gridContainer && !this.flexContainer && !this.multiColContainer,
         fixId:
-          "inactive-css-not-grid-or-flex-container-or-multicol-container-fix",
+          "inactive-css-not-grid-or-flex-container-or-multicol-container-fix-1",
         msgId: "inactive-css-not-grid-or-flex-container-or-multicol-container",
       },
       // Multi-column related properties used on non-multi-column container.
@@ -282,14 +289,14 @@ class InactivePropertyHelper {
           "column-rule-width",
         ],
         when: () => !this.multiColContainer,
-        fixId: "inactive-css-not-multicol-container-fix",
+        fixId: "inactive-css-not-multicol-container-fix-1",
         msgId: "inactive-css-not-multicol-container",
       },
       // column-span used within non-multi-column container.
       {
         invalidProperties: ["column-span"],
         when: () => !this.inMultiColContainer,
-        fixId: "inactive-css-column-span-fix",
+        fixId: "inactive-css-column-span-fix-1",
         msgId: "inactive-css-column-span",
       },
       // Inline properties used on non-inline-level elements.
@@ -297,14 +304,13 @@ class InactivePropertyHelper {
         invalidProperties: ["vertical-align"],
         when: () =>
           !this.isInlineLevel() && !this.isFirstLetter && !this.isFirstLine,
-        fixId: "inactive-css-not-inline-or-tablecell-fix",
+        fixId: "inactive-css-not-inline-or-tablecell-fix-1",
         msgId: "inactive-css-not-inline-or-tablecell",
       },
       // Writing mode properties used on ::first-line pseudo-element.
       {
         invalidProperties: ["direction", "text-orientation", "writing-mode"],
         when: () => this.isFirstLine,
-        fixId: "learn-more",
         msgId: "inactive-css-first-line-pseudo-element-not-supported",
         learnMoreURL: FIRST_LINE_PSEUDO_ELEMENT_STYLING_SPEC_URL,
       },
@@ -312,7 +318,6 @@ class InactivePropertyHelper {
       {
         invalidProperties: ["content"],
         when: () => this.isFirstLetter,
-        fixId: "learn-more",
         msgId: "inactive-css-first-letter-pseudo-element-not-supported",
         learnMoreURL: FIRST_LETTER_PSEUDO_ELEMENT_STYLING_SPEC_URL,
       },
@@ -336,7 +341,6 @@ class InactivePropertyHelper {
           const { selectorText } = this.cssRule;
           return selectorText && selectorText.includes("::placeholder");
         },
-        fixId: "learn-more",
         msgId: "inactive-css-placeholder-pseudo-element-not-supported",
         learnMoreURL: PLACEHOLDER_PSEUDO_ELEMENT_STYLING_SPEC_URL,
       },
@@ -347,7 +351,8 @@ class InactivePropertyHelper {
           this.nonReplacedInlineBox ||
           this.horizontalTableTrack ||
           this.horizontalTableTrackGroup,
-        fixId: "inactive-css-non-replaced-inline-or-table-row-or-row-group-fix",
+        fixId:
+          "inactive-css-non-replaced-inline-or-table-row-or-row-group-fix-1",
         msgId: "inactive-css-property-because-of-display",
       },
       // (max-|min-)height used on inline elements, table columns, or column groups.
@@ -358,7 +363,7 @@ class InactivePropertyHelper {
           this.verticalTableTrack ||
           this.verticalTableTrackGroup,
         fixId:
-          "inactive-css-non-replaced-inline-or-table-column-or-column-group-fix",
+          "inactive-css-non-replaced-inline-or-table-column-or-column-group-fix-1",
         msgId: "inactive-css-property-because-of-display",
       },
       {
@@ -380,22 +385,49 @@ class InactivePropertyHelper {
             "table-column-group",
             "table-caption",
           ]),
-        fixId: "inactive-css-not-display-block-on-floated-fix",
+        fixId: "inactive-css-not-display-block-on-floated-fix-1",
         msgId: "inactive-css-not-display-block-on-floated-2",
       },
       // float property used on non-floating elements.
       {
         invalidProperties: ["float"],
         when: () => this.gridItem || this.flexItem,
-        fixId: "inactive-css-only-non-grid-or-flex-item-fix",
+        fixId: "inactive-css-only-non-grid-or-flex-item-fix-1",
         msgId: "inactive-css-only-non-grid-or-flex-item",
       },
       // clear property used on non-floating elements.
       {
         invalidProperties: ["clear"],
-        when: () => !this.isBlockLevel(),
-        fixId: "inactive-css-not-block-fix",
+        when: () =>
+          !this.isBlockLevel() &&
+          // The br element is a special case and allows clear for backwards compatibility to make its clear attribute work.
+          // https://html.spec.whatwg.org/multipage/rendering.html#phrasing-content-3
+          this.localName != "br",
+        fixId: "inactive-css-not-block-fix-1",
         msgId: "inactive-css-not-block",
+      },
+      // Block container properties used on non-block-container elements.
+      {
+        invalidProperties: ["text-overflow"],
+        when: () => !this.isBlockContainer(),
+        fixId: "inactive-css-not-block-container-fix-1",
+        msgId: "inactive-css-not-block-container",
+      },
+      // Block, flex, and grid container properties used on non-block, non-flex or non-grid container elements.
+      {
+        invalidProperties: [
+          "overflow",
+          "overflow-block",
+          "overflow-inline",
+          "overflow-x",
+          "overflow-y",
+        ],
+        when: () =>
+          !this.isBlockContainer() &&
+          !this.flexContainer &&
+          !this.gridContainer,
+        fixId: "inactive-css-not-block-flex-grid-container-fix-1",
+        msgId: "inactive-css-not-block-flex-grid-container",
       },
       // shape-image-threshold, shape-margin, shape-outside properties used on non-floated elements.
       {
@@ -405,14 +437,13 @@ class InactivePropertyHelper {
           "shape-outside",
         ],
         when: () => !this.isFloated,
-        fixId: "inactive-css-not-floated-fix",
+        fixId: "inactive-css-not-floated-fix-1",
         msgId: "inactive-css-not-floated",
       },
       // The property is impossible to override due to :visited restriction.
       {
         invalidProperties: VISITED_INVALID_PROPERTIES,
         when: () => this.isVisitedRule(),
-        fixId: "learn-more",
         msgId: "inactive-css-property-is-impossible-to-override-in-visited",
         learnMoreURL: VISITED_MDN_LINK,
       },
@@ -420,21 +451,21 @@ class InactivePropertyHelper {
       {
         invalidProperties: ["top", "right", "bottom", "left"],
         when: () => !this.isPositioned,
-        fixId: "inactive-css-position-property-on-unpositioned-box-fix",
+        fixId: "inactive-css-position-property-on-unpositioned-box-fix-1",
         msgId: "inactive-css-position-property-on-unpositioned-box",
       },
       // z-index property used on non positioned boxes that are not grid/flex items.
       {
         invalidProperties: ["z-index"],
         when: () => !this.isPositioned && !this.gridItem && !this.flexItem,
-        fixId: "inactive-css-position-property-on-unpositioned-box-fix",
+        fixId: "inactive-css-position-property-on-unpositioned-box-fix-1",
         msgId: "inactive-css-position-property-on-unpositioned-box",
       },
       // object-fit or object-position property used on non-replaced elements.
       {
         invalidProperties: ["object-fit", "object-position"],
         when: () => !this.replaced,
-        fixId: "inactive-css-only-replaced-elements-fix",
+        fixId: "inactive-css-only-replaced-elements-fix-1",
         msgId: "inactive-css-only-replaced-elements",
       },
       // text-overflow property used on elements for which 'overflow' is set to 'visible'
@@ -450,7 +481,7 @@ class InactivePropertyHelper {
       {
         invalidProperties: ["text-overflow"],
         when: () => this.checkComputedStyle("overflow-inline", ["visible"]),
-        fixId: "inactive-text-overflow-when-no-overflow-fix",
+        fixId: "inactive-text-overflow-when-no-overflow-fix-1",
         msgId: "inactive-text-overflow-when-no-overflow",
       },
       // content-visibility used on elements for which size containment doesn't apply.
@@ -463,7 +494,7 @@ class InactivePropertyHelper {
           this.rubyContainer ||
           this.internalRubyElement ||
           this.nonAtomicInlineBox,
-        fixId: "inactive-css-no-size-containment-fix",
+        fixId: "inactive-css-no-size-containment-fix-1",
         msgId: "inactive-css-no-size-containment",
       },
       // margin properties used on table internal elements.
@@ -482,7 +513,7 @@ class InactivePropertyHelper {
           "margin-top",
         ],
         when: () => this.internalTableElement,
-        fixId: "inactive-css-not-for-internal-table-elements-fix",
+        fixId: "inactive-css-not-for-internal-table-elements-fix-1",
         msgId: "inactive-css-not-for-internal-table-elements",
       },
       // padding properties used on table internal elements except table cells.
@@ -504,7 +535,7 @@ class InactivePropertyHelper {
           this.internalTableElement &&
           !this.checkComputedStyle("display", ["table-cell"]),
         fixId:
-          "inactive-css-not-for-internal-table-elements-except-table-cells-fix",
+          "inactive-css-not-for-internal-table-elements-except-table-cells-fix-1",
         msgId:
           "inactive-css-not-for-internal-table-elements-except-table-cells",
       },
@@ -517,21 +548,21 @@ class InactivePropertyHelper {
         ],
         when: () =>
           !this.checkComputedStyle("display", ["table", "inline-table"]),
-        fixId: "inactive-css-not-table-fix",
+        fixId: "inactive-css-not-table-fix-1",
         msgId: "inactive-css-not-table",
       },
       // border-spacing property used on collapsed table borders.
       {
         invalidProperties: ["border-spacing"],
         when: () => this.checkComputedStyle("border-collapse", ["collapse"]),
-        fixId: "inactive-css-collapsed-table-borders-fix",
+        fixId: "inactive-css-collapsed-table-borders-fix-1",
         msgId: "inactive-css-collapsed-table-borders",
       },
       // empty-cells property used on non-table-cell elements.
       {
         invalidProperties: ["empty-cells"],
         when: () => !this.checkComputedStyle("display", ["table-cell"]),
-        fixId: "inactive-css-not-table-cell-fix",
+        fixId: "inactive-css-not-table-cell-fix-1",
         msgId: "inactive-css-not-table-cell",
       },
       // scroll-padding-* properties used on non-scrollable elements.
@@ -550,7 +581,7 @@ class InactivePropertyHelper {
           "scroll-padding-inline-start",
         ],
         when: () => !this.isScrollContainer,
-        fixId: "inactive-scroll-padding-when-not-scroll-container-fix",
+        fixId: "inactive-scroll-padding-when-not-scroll-container-fix-1",
         msgId: "inactive-scroll-padding-when-not-scroll-container",
       },
       // border-image properties used on internal table with border collapse.
@@ -566,7 +597,7 @@ class InactivePropertyHelper {
         when: () =>
           this.internalTableElement &&
           this.checkTableParentHasBorderCollapsed(),
-        fixId: "inactive-css-border-image-fix",
+        fixId: "inactive-css-border-image-fix-1",
         msgId: "inactive-css-border-image",
       },
       // width & height properties used on ruby elements.
@@ -580,14 +611,14 @@ class InactivePropertyHelper {
           "max-width",
         ],
         when: () => this.checkComputedStyle("display", ["ruby", "ruby-text"]),
-        fixId: "inactive-css-ruby-element-fix",
+        fixId: "inactive-css-ruby-element-fix-1",
         msgId: "inactive-css-ruby-element",
       },
       // resize property used on non-overflowing elements or replaced elements other than textarea.
       {
         invalidProperties: ["resize"],
         when: () => !this.isScrollContainer && !this.isResizableReplacedElement,
-        fixId: "inactive-css-resize-fix",
+        fixId: "inactive-css-resize-fix-1",
         msgId: "inactive-css-resize",
       },
       // text-wrap: balance; used on elements exceeding the threshold line number
@@ -606,7 +637,7 @@ class InactivePropertyHelper {
             blockLineCounts && blockLineCounts[0] > TEXT_WRAP_BALANCE_LIMIT
           );
         },
-        fixId: "inactive-css-text-wrap-balance-lines-exceeded-fix",
+        fixId: "inactive-css-text-wrap-balance-lines-exceeded-fix-1",
         msgId: "inactive-css-text-wrap-balance-lines-exceeded",
         lineCount: TEXT_WRAP_BALANCE_LIMIT,
       },
@@ -621,15 +652,42 @@ class InactivePropertyHelper {
           const isFragmented = blockLineCounts && blockLineCounts.length > 1;
           return isFragmented;
         },
-        fixId: "inactive-css-text-wrap-balance-fragmented-fix",
+        fixId: "inactive-css-text-wrap-balance-fragmented-fix-1",
         msgId: "inactive-css-text-wrap-balance-fragmented",
       },
       // box-sizing used on element ignoring width and height.
       {
         invalidProperties: ["box-sizing"],
         when: () => this.nonReplacedInlineBox,
-        fixId: "learn-more",
         msgId: "inactive-css-no-width-height",
+      },
+      // anchor-name used on element not creating a principal box.
+      {
+        invalidProperties: ["anchor-name"],
+        when: () => !this.hasPrincipalBox,
+        fixId: "inactive-css-no-principal-box-fix-1",
+        msgId: "inactive-css-no-principal-box",
+      },
+      // position-area used on element which is not absolutely positionned and the
+      // declaration isn't in a @position-try rule.
+      {
+        invalidProperties: ["position-area"],
+        when: () =>
+          !this.isAbsolutelyPositioned &&
+          ChromeUtils.getClassName(this.cssRule) !== "CSSPositionTryRule",
+        msgId: "inactive-css-not-absolutely-positioned-item",
+        fixId: "inactive-css-not-absolutely-positioned-item-fix-1",
+      },
+      // position-area for absolutely positionned element without default anchor element,
+      // and the declaration isn't in a @position-try rule.
+      {
+        invalidProperties: ["position-area"],
+        when: () =>
+          this.isAbsolutelyPositioned &&
+          !this.hasDefaultAnchorElement() &&
+          ChromeUtils.getClassName(this.cssRule) !== "CSSPositionTryRule",
+        msgId: "inactive-css-no-default-anchor",
+        fixId: "inactive-css-no-default-anchor-fix-1",
       },
     ];
   }
@@ -660,7 +718,7 @@ class InactivePropertyHelper {
    * If you add a new rule, also add a test for it in:
    * server/tests/chrome/test_inspector-inactive-property-helper.html
    *
-   * The main export is `isPropertyUsed()`, which can be used to check if a
+   * The main export is `getInactiveCssDataForProperty()`, which can be used to check if a
    * property is used or not, and why.
    */
   ACCEPTED_PROPERTIES_VALIDATORS = [
@@ -693,7 +751,6 @@ class InactivePropertyHelper {
         );
       },
       msgId: "inactive-css-highlight-pseudo-elements-not-supported",
-      fixId: "learn-more",
       learnMoreURL: HIGHLIGHT_PSEUDO_ELEMENTS_STYLING_SPEC_URL,
     },
     // Constrained set of properties on ::cue pseudo-element
@@ -760,8 +817,23 @@ class InactivePropertyHelper {
         return selectorText && selectorText.includes("::cue");
       },
       msgId: "inactive-css-cue-pseudo-element-not-supported",
-      fixId: "learn-more",
       learnMoreURL: CUE_PSEUDO_ELEMENT_STYLING_SPEC_URL,
+    },
+    // Constrained set of properties on @position-try rules
+    {
+      acceptedProperties: new Set(
+        Object.keys(globalThis.CSSPositionTryDescriptors.prototype).filter(
+          // CSSPositionTryDescriptors.prototype gives us both css property names
+          // and their JS equivalent (e.g. `min-width` and `minWidth`).
+          // We can filter out the latter by checking if the property has an uppercase
+          p => !REGEXP_UPPERCASE_CHAR.test(p)
+        )
+      ),
+      rejectCustomProperties: true,
+      when: () =>
+        ChromeUtils.getClassName(this.cssRule) === "CSSPositionTryRule",
+      msgId: "inactive-css-at-position-try-not-supported",
+      learnMoreURL: AT_POSITION_TRY_MDN_URL,
     },
   ];
 
@@ -792,32 +864,26 @@ class InactivePropertyHelper {
    *        The computed style for this DOMNode.
    * @param {DOMRule} cssRule
    *        The CSS rule the property is defined in.
-   * @param {String} property
+   * @param {string} property
    *        The CSS property name.
    *
-   * @return {Object} object
-   * @return {String} object.display
+   * @return {object | null} object
+   *         if the property is active, this will return null
+   * @return {string} object.display
    *         The element computed display value.
-   * @return {String} object.fixId
+   * @return {string} object.fixId
    *         A Fluent id containing a suggested solution to the problem that is
    *         causing a property to be inactive.
-   * @return {String} object.msgId
+   * @return {string} object.msgId
    *         A Fluent id containing an error message explaining why a property
    *         is inactive in this situation.
-   * @return {String} object.property
+   * @return {string} object.property
    *         The inactive property name.
-   * @return {String} object.learnMoreURL
+   * @return {string} object.learnMoreURL
    *         An optional link if we need to open an other link than
    *         the default MDN property one.
-   * @return {Boolean} object.used
-   *         true if the property is used.
    */
-  isPropertyUsed(el, elStyle, cssRule, property) {
-    // Assume the property is used when the Inactive CSS pref is not enabled
-    if (!INACTIVE_CSS_ENABLED) {
-      return { used: true };
-    }
-
+  getInactiveCssDataForProperty(el, elStyle, cssRule, property) {
     let fixId = "";
     let msgId = "";
     let learnMoreURL = null;
@@ -833,8 +899,7 @@ class InactivePropertyHelper {
       } else if (validator.acceptedProperties) {
         isRuleConcerned =
           !validator.acceptedProperties.has(property) &&
-          // custom properties can always be set
-          !property.startsWith("--");
+          (!property.startsWith("--") || validator.rejectCustomProperties);
       }
 
       if (!isRuleConcerned) {
@@ -866,7 +931,7 @@ class InactivePropertyHelper {
     // in the accepted properties validators, assume the property is used.
     if (!isNotAccepted && !this.invalidProperties.has(property)) {
       this.unselect();
-      return { used: true };
+      return null;
     }
 
     // Otherwise, if there was no issue from the accepted properties validators,
@@ -884,6 +949,10 @@ class InactivePropertyHelper {
       display = elStyle ? elStyle.display : null;
     } catch (e) {}
 
+    if (used) {
+      return null;
+    }
+
     return {
       display,
       fixId,
@@ -891,7 +960,6 @@ class InactivePropertyHelper {
       property,
       learnMoreURL,
       lineCount,
-      used,
     };
   }
 
@@ -943,7 +1011,7 @@ class InactivePropertyHelper {
    * Check if the current node's propName is set to one of the values passed in
    * the values array.
    *
-   * @param {String} propName
+   * @param {string} propName
    *        Property name to check.
    * @param {Array} values
    *        Values to compare against.
@@ -959,7 +1027,7 @@ class InactivePropertyHelper {
    * Check if a rule's propName is set to one of the values passed in the values
    * array.
    *
-   * @param {String} propName
+   * @param {string} propName
    *        Property name to check.
    * @param {Array} values
    *        Values to compare against.
@@ -984,6 +1052,13 @@ class InactivePropertyHelper {
       "grid",
       "table",
     ]);
+  }
+
+  /**
+   *  Check if the current node is an block container.
+   */
+  isBlockContainer() {
+    return this.node ? InspectorUtils.isBlockContainer(this.node) : false;
   }
 
   /**
@@ -1336,7 +1411,7 @@ class InactivePropertyHelper {
   /**
    * Return the current node's localName.
    *
-   * @returns {String}
+   * @returns {string}
    */
   get localName() {
     return this.node.localName;
@@ -1360,7 +1435,7 @@ class InactivePropertyHelper {
    * Check if the current node is an absolutely-positioned grid element.
    * See: https://drafts.csswg.org/css-grid/#abspos-items
    *
-   * @return {Boolean} whether or not the current node is absolutely-positioned by a
+   * @return {boolean} whether or not the current node is absolutely-positioned by a
    *                   grid container.
    */
   isAbsPosGridElement() {
@@ -1475,7 +1550,7 @@ class InactivePropertyHelper {
         return p;
       }
 
-      const style = computedStyle(p, node.ownerGlobal);
+      const style = computedStyle(p, node.documentGlobal);
       const display = style.display;
 
       if (display !== "contents") {
@@ -1528,7 +1603,7 @@ class InactivePropertyHelper {
       p && p !== node.ownerDocument;
       p = p.flattenedTreeParentNode
     ) {
-      const style = computedStyle(p, node.ownerGlobal);
+      const style = computedStyle(p, node.documentGlobal);
       if (style.columnWidth !== "auto" || style.columnCount !== "auto") {
         // It's a multi-column container!
         return p;
@@ -1563,13 +1638,17 @@ class InactivePropertyHelper {
     return computedStyle(node).writingMode !== "horizontal-tb";
   }
 
+  hasDefaultAnchorElement() {
+    return InspectorUtils.getAnchorFor(this.node) !== null;
+  }
+
   /**
    * Assuming the current element is a table track (row or column) or table track group,
    * get the parent table.
    * This is either going to be the table element if there is one, or the parent element.
    * If the current element is not a table track, this returns the current element.
    *
-   * @param  {Boolean} isGroup
+   * @param  {boolean} isGroup
    *         Whether the element is a table track group, instead of a table track.
    * @return {DOMNode}
    *         The parent table, the parent element, or the element itself.
@@ -1621,7 +1700,7 @@ class InactivePropertyHelper {
    * Assuming the current element is an internal table element,
    * check wether its parent table element has `border-collapse` set to `collapse`.
    *
-   * @returns {Boolean}
+   * @returns {boolean}
    */
   checkTableParentHasBorderCollapsed() {
     const parent = this.getTableParent();
@@ -1659,15 +1738,16 @@ function allCssPropertiesExcept(propertiesToIgnore) {
  *         The node to get the styles for.
  * @param  {Window} window
  *         Optional window object. If omitted, will get the node's window.
- * @return {Object}
+ * @return {object}
  */
-function computedStyle(node, window = node.ownerGlobal) {
+function computedStyle(node, window = node.documentGlobal) {
   return window.getComputedStyle(node);
 }
 
 const inactivePropertyHelper = new InactivePropertyHelper();
 
-// The only public method from this module is `isPropertyUsed`.
-exports.isPropertyUsed = inactivePropertyHelper.isPropertyUsed.bind(
-  inactivePropertyHelper
-);
+// The only public method from this module is `getInactiveCssDataForProperty`.
+exports.getInactiveCssDataForProperty =
+  inactivePropertyHelper.getInactiveCssDataForProperty.bind(
+    inactivePropertyHelper
+  );

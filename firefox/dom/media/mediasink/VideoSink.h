@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -49,7 +47,8 @@ class VideoSink : public MediaSink {
 
   void SetPreservesPitch(bool aPreservesPitch) override;
 
-  void SetPlaying(bool aPlaying) override;
+  void SetPlaying(bool aPlaying,
+                  StopReason aReason = StopReason::Regular) override;
 
   RefPtr<GenericPromise> SetAudioDevice(
       RefPtr<AudioDeviceInfo> aDevice) override;
@@ -58,10 +57,10 @@ class VideoSink : public MediaSink {
 
   void Redraw(const VideoInfo& aInfo) override;
 
-  nsresult Start(const media::TimeUnit& aStartTime,
-                 const MediaInfo& aInfo) override;
+  nsresult Start(const media::TimeUnit& aStartTime, const MediaInfo& aInfo,
+                 StartType aStartType = StartType::Initial) override;
 
-  void Stop() override;
+  void Stop(StopReason aReason = StopReason::Regular) override;
 
   bool IsStarted() const override;
 
@@ -72,6 +71,10 @@ class VideoSink : public MediaSink {
   void SetSecondaryVideoContainer(VideoFrameContainer* aSecondary) override;
 
   void GetDebugInfo(dom::MediaSinkDebugInfo& aInfo) override;
+
+  void SetVideoQueueSendToCompositorSize(const uint32_t aSize) override {
+    mVideoQueueSendToCompositorSize = aSize;
+  }
 
  private:
   virtual ~VideoSink();
@@ -149,8 +152,8 @@ class VideoSink : public MediaSink {
   DelayedScheduler<TimeStamp> mUpdateScheduler;
 
   // Max frame number sent to compositor at a time.
-  // Based on the pref value obtained in MDSM.
-  const uint32_t mVideoQueueSendToCompositorSize;
+  // Based on the value obtained in MDSM.
+  uint32_t mVideoQueueSendToCompositorSize;
 
 #ifdef XP_WIN
   // Whether we've called timeBeginPeriod(1) to request high resolution

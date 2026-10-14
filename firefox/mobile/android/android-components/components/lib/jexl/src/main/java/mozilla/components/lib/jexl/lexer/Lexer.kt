@@ -12,27 +12,26 @@ internal class LexerException(message: String) : Exception(message)
 /**
  * JEXL lexer for the lexical parsing of a JEXL string.
  *
- * Its responsibility is to identify the "parts of speech" of a Jexl expression, and tokenize and label each, but
- * to do only the most minimal syntax checking; the only errors the Lexer should be concerned with are if it's unable
- * to identify the utility of any of its tokens.  Errors stemming from these tokens not being in a sensible
- * configuration should be left for the Parser to handle.
+ * Its responsibility is to identify the "parts of speech" of a Jexl expression, and tokenize and label each, but to do
+ * only the most minimal syntax checking; the only errors the Lexer should be concerned with are if it's unable to
+ * identify the utility of any of its tokens. Errors stemming from these tokens not being in a sensible configuration
+ * should be left for the Parser to handle.
  */
 @Suppress("LargeClass")
 internal class Lexer(private val grammar: Grammar) {
-    private val negateAfter = listOf(
-        Token.Type.BINARY_OP,
-        Token.Type.UNARY_OP,
-        Token.Type.OPEN_PAREN,
-        Token.Type.OPEN_BRACKET,
-        Token.Type.QUESTION,
-        Token.Type.COLON,
-    )
+    private val negateAfter =
+        listOf(
+            Token.Type.BINARY_OP,
+            Token.Type.UNARY_OP,
+            Token.Type.OPEN_PAREN,
+            Token.Type.OPEN_BRACKET,
+            Token.Type.QUESTION,
+            Token.Type.COLON,
+        )
 
-    /**
-     * Splits the JEXL expression string into a list of tokens.
-     */
-    @Suppress("ComplexMethod", "LongMethod")
+    /** Splits the JEXL expression string into a list of tokens. */
     @Throws(LexerException::class)
+    @Suppress("CyclomaticComplexMethod")
     fun tokenize(raw: String): List<Token> {
         val input = LexerInput(raw)
         val tokens = mutableListOf<Token>()
@@ -51,21 +50,23 @@ internal class Lexer(private val grammar: Grammar) {
 
                 input.character().isWhitespace() -> consumeWhiteSpaces(input)
 
-                input.peekEquals("true") -> tokens.add(
-                    Token(
-                        Token.Type.LITERAL,
-                        "true",
-                        true,
-                    ),
-                )
+                input.peekEquals("true") ->
+                    tokens.add(
+                        Token(
+                            Token.Type.LITERAL,
+                            "true",
+                            true,
+                        )
+                    )
 
-                input.peekEquals("false") -> tokens.add(
-                    Token(
-                        Token.Type.LITERAL,
-                        "false",
-                        false,
-                    ),
-                )
+                input.peekEquals("false") ->
+                    tokens.add(
+                        Token(
+                            Token.Type.LITERAL,
+                            "false",
+                            false,
+                        )
+                    )
 
                 input.character() == '#' -> discardComment(input)
 
@@ -165,9 +166,7 @@ internal class Lexer(private val grammar: Grammar) {
             throw LexerException("String literal not closed")
         }
 
-        val value = raw.substring(1, raw.length - 1)
-            .replace("\\" + quote, quote.toString())
-            .replace("\\\\", "\\")
+        val value = raw.substring(1, raw.length - 1).replace("\\" + quote, quote.toString()).replace("\\\\", "\\")
 
         return Token(Token.Type.LITERAL, raw, value)
     }
@@ -188,7 +187,6 @@ internal class Lexer(private val grammar: Grammar) {
         return Token(Token.Type.IDENTIFIER, raw, raw)
     }
 
-    @Suppress("ComplexMethod")
     private fun readDigit(input: LexerInput, negate: Boolean): Token {
         input.mark()
 
@@ -206,17 +204,19 @@ internal class Lexer(private val grammar: Grammar) {
             input.proceed()
         }
 
-        val raw = if (negate) {
-            "-${input.emit()}"
-        } else {
-            input.emit()
-        }
+        val raw =
+            if (negate) {
+                "-${input.emit()}"
+            } else {
+                input.emit()
+            }
 
-        val value: Any = if (raw.contains(".")) {
-            raw.toDouble()
-        } else {
-            raw.toInt()
-        }
+        val value: Any =
+            if (raw.contains(".")) {
+                raw.toDouble()
+            } else {
+                raw.toInt()
+            }
 
         return Token(Token.Type.LITERAL, raw, value)
     }

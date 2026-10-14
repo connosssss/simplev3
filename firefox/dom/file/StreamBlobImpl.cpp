@@ -1,26 +1,26 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "StreamBlobImpl.h"
+
+#include "BlobMemoryReporter.h"
 #include "EmptyBlobImpl.h"
+#include "js/GCAPI.h"
 #include "mozilla/InputStreamLengthWrapper.h"
 #include "mozilla/SlicedInputStream.h"
-#include "StreamBlobImpl.h"
-#include "nsNetCID.h"
-#include "nsServiceManagerUtils.h"
-#include "nsStreamUtils.h"
-#include "nsStringStream.h"
 #include "nsIAsyncOutputStream.h"
 #include "nsICloneableInputStream.h"
 #include "nsIEventTarget.h"
 #include "nsIPipe.h"
-#include "js/GCAPI.h"
+#include "nsNetCID.h"
+#include "nsServiceManagerUtils.h"
+#include "nsStreamUtils.h"
+#include "nsStringStream.h"
 
 namespace mozilla::dom {
 
-NS_IMPL_ISUPPORTS_INHERITED(StreamBlobImpl, BlobImpl, nsIMemoryReporter)
+MOZ_DEFINE_MALLOC_SIZE_OF(StreamBlobImplMallocSizeOf)
 
 static already_AddRefed<nsICloneableInputStream> EnsureCloneableStream(
     nsIInputStream* aInputStream, uint64_t aLength) {
@@ -121,7 +121,7 @@ StreamBlobImpl::~StreamBlobImpl() {
     nsCOMPtr<nsIInputStream> stream = do_QueryInterface(mInputStream);
     stream->Close();
   }
-  UnregisterWeakMemoryReporter(this);
+  BlobMemoryReporter::Unregister(this);
 }
 
 void StreamBlobImpl::CreateInputStream(nsIInputStream** aStream,
@@ -186,12 +186,11 @@ void StreamBlobImpl::MaybeRegisterMemoryReporter() {
     return;
   }
 
-  RegisterWeakMemoryReporter(this);
+  BlobMemoryReporter::Register(this);
 }
 
-NS_IMETHODIMP
-StreamBlobImpl::CollectReports(nsIHandleReportCallback* aHandleReport,
-                               nsISupports* aData, bool aAnonymize) {
+nsresult StreamBlobImpl::CollectReports(nsIHandleReportCallback* aHandleReport,
+                                        nsISupports* aData, bool aAnonymize) {
   nsCOMPtr<nsIStringInputStream> stringInputStream =
       do_QueryInterface(mInputStream);
   if (!stringInputStream) {
@@ -199,10 +198,11 @@ StreamBlobImpl::CollectReports(nsIHandleReportCallback* aHandleReport,
   }
 
   MOZ_COLLECT_REPORT(
-      "explicit/dom/memory-file-data/stream", KIND_HEAP, UNITS_BYTES,
-      stringInputStream->SizeOfIncludingThisIfUnshared(MallocSizeOf),
+      "explicit/dom/memory-file-data/stream", nsIMemoryReporter::KIND_HEAP,
+      nsIMemoryReporter::UNITS_BYTES,
+      stringInputStream->SizeOfIncludingThisIfUnshared(
+          StreamBlobImplMallocSizeOf),
       "Memory used to back a File/Blob based on an input stream.");
-
   return NS_OK;
 }
 
@@ -218,7 +218,8 @@ size_t StreamBlobImpl::GetAllocationSize() const {
     return 0;
   }
 
-  return stringInputStream->SizeOfIncludingThisEvenIfShared(MallocSizeOf);
+  return stringInputStream->SizeOfIncludingThisEvenIfShared(
+      StreamBlobImplMallocSizeOf);
 }
 
 void StreamBlobImpl::GetBlobImplType(nsAString& aBlobImplType) const {

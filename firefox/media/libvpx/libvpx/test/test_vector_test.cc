@@ -35,18 +35,12 @@ const int kThreads = 0;
 const int kMtMode = 1;
 const int kFileName = 2;
 
-typedef std::tuple<int, int, const char *> DecodeParam;
+using DecodeParam = std::tuple<int, int, const char *>;
 
 class TestVectorTest : public ::libvpx_test::DecoderTest,
                        public ::libvpx_test::CodecTestWithParam<DecodeParam> {
  protected:
-  TestVectorTest() : DecoderTest(GET_PARAM(0)), md5_file_(nullptr) {
-#if CONFIG_VP9_DECODER
-    resize_clips_.insert(::libvpx_test::kVP9TestVectorsResize,
-                         ::libvpx_test::kVP9TestVectorsResize +
-                             ::libvpx_test::kNumVP9TestVectorsResize);
-#endif
-  }
+  TestVectorTest() : DecoderTest(GET_PARAM(0)), md5_file_(nullptr) {}
 
   ~TestVectorTest() override {
     if (md5_file_) fclose(md5_file_);
@@ -96,9 +90,6 @@ class TestVectorTest : public ::libvpx_test::DecoderTest,
         << "Md5 checksums don't match: frame number = " << frame_number;
   }
 
-#if CONFIG_VP9_DECODER
-  std::set<std::string> resize_clips_;
-#endif
   int mt_mode_;
 
  private:

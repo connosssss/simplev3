@@ -4,10 +4,11 @@
 ---
 task-defaults:
     description: "hostutils toolchain build"
-    worker-type: b-linux-gcp
+    worker-type: b-linux-docker-amd
     worker:
         max-run-time: 1800
     run:
+        clone-with: hg
         using: toolchain-script
         script: get-hostutils.sh
         toolchain-artifact: public/build/hostutils.tar.zst

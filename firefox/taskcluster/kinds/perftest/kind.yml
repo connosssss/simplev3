@@ -21,12 +21,14 @@ transforms:
 
 tasks-from:
     - android.yml
+    - android-emulator.yml
     - linux.yml
-    - macosx.yml
+    - macosx-aarch64.yml
     - windows11-24h2.yml
     - windows11-24h2-ref.yml
 
 task-defaults:
+    run-on-repo-type: [hg]
     attributes:
         retrigger: true
     run-on-projects: []
@@ -39,7 +41,7 @@ task-defaults:
         substitution-fields: []
     worker:
         taskcluster-proxy: true
-        max-run-time: 10800
+        max-run-time: 2400
         env:
             USE_ARTIFACT: '1'
             HOSTUTILS_MANIFEST_PATH: "testing/config/tooltool-manifests/linux64/hostutils.manifest"
@@ -48,6 +50,7 @@ task-defaults:
               name: public/build
               path: artifacts
     run:
+        clone-with: hg
         run-as-root: true
         using: run-task
         checkout: false

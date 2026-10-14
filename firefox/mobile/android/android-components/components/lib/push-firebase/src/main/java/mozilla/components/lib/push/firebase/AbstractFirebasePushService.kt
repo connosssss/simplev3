@@ -12,33 +12,33 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import java.io.IOException
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import mozilla.components.concept.push.PushError
 import mozilla.components.concept.push.PushProcessor
 import mozilla.components.concept.push.PushService
 import mozilla.components.concept.push.PushService.Companion.MESSAGE_KEY_CHANNEL_ID
 import mozilla.components.support.base.log.logger.Logger
-import java.io.IOException
-import kotlin.coroutines.CoroutineContext
 
 /**
  * A Firebase Cloud Messaging implementation of the [PushService] for Android devices that support Google Play Services.
  */
-abstract class AbstractFirebasePushService(
-    internal val coroutineContext: CoroutineContext = Dispatchers.IO,
-) : FirebaseMessagingService(), PushService {
+abstract class AbstractFirebasePushService(internal val coroutineContext: CoroutineContext = Dispatchers.IO) :
+    FirebaseMessagingService(), PushService {
 
+    private val scope = CoroutineScope(coroutineContext + SupervisorJob())
     private val logger = Logger("AbstractFirebasePushService")
 
     @VisibleForTesting
     internal val googleApiAvailability: GoogleApiAvailability
         get() = GoogleApiAvailability.getInstance()
 
-    /**
-     * Initializes Firebase and starts the messaging service if not already started and enables auto-start as well.
-     */
+    /** Initializes Firebase and starts the messaging service if not already started and enables auto-start as well. */
     override fun start(context: Context) {
         logger.info("start")
         FirebaseApp.initializeApp(context)
@@ -76,21 +76,19 @@ abstract class AbstractFirebasePushService(
         }
     }
 
-    /**
-     * Stops the Firebase messaging service and disables auto-start.
-     */
+    /** Stops the Firebase messaging service and disables auto-start. */
     final override fun stop() {
         stopSelf()
     }
 
     /**
-     * Removes the Firebase instance ID. This would lead a new token being generated when the
-     * service hits the Firebase servers.
+     * Removes the Firebase instance ID. This would lead a new token being generated when the service hits the Firebase
+     * servers.
      */
     override fun deleteToken() {
-        CoroutineScope(coroutineContext).launch {
+        scope.launch {
             try {
-                FirebaseMessaging.getInstance().deleteToken()
+                getFirebaseMessaging().deleteToken()
             } catch (e: IOException) {
                 logger.error("Force registration renewable failed.", e)
             }
@@ -100,4 +98,11 @@ abstract class AbstractFirebasePushService(
     override fun isServiceAvailable(context: Context): Boolean {
         return googleApiAvailability.isGooglePlayServicesAvailable(context) == ConnectionResult.SUCCESS
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        scope.cancel()
+    }
+
+    protected open fun getFirebaseMessaging(): FirebaseMessaging = FirebaseMessaging.getInstance()
 }

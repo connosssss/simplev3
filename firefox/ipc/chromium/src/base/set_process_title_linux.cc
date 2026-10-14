@@ -46,7 +46,6 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -208,8 +207,7 @@ void setproctitle_init(char** main_argv) {
     p += strlen(p) + 1;
   }
   char* argv_end = p;
-  size_t environ_size = 0;
-  for (size_t i = 0; environ[i]; ++i, ++environ_size) {
+  for (size_t i = 0; environ[i]; ++i) {
     if (p != environ[i]) {
       return;
     }

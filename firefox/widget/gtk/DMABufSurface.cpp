@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "DMABufSurface.h"
+
 #include "DMABufDevice.h"
 #include "DMABufFormats.h"
 
@@ -12,19 +11,18 @@
 #  include "nsWaylandDisplay.h"
 #endif
 
-#include <gbm.h>
+#include <dlfcn.h>
 #include <fcntl.h>
+#include <gbm.h>
 #include <getopt.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/time.h>
-#include <dlfcn.h>
 #include <sys/mman.h>
+#include <sys/time.h>
+#include <unistd.h>
 #ifdef HAVE_EVENTFD
 #  include <sys/eventfd.h>
 #endif
@@ -33,6 +31,9 @@
 #  include <sys/ioccom.h>
 #endif
 #include <sys/ioctl.h>
+#ifdef MOZ_LOGGING
+#  include "gfxUtils.h"
+#endif
 
 // DMABufDevice defines its own version of this which collides with the
 // official version in drm_fourcc.h
@@ -40,29 +41,27 @@
 #  undef DRM_FORMAT_MOD_INVALID
 #endif
 #include <libdrm/drm_fourcc.h>
+#ifndef DRM_FORMAT_MOD_INVALID
+#  define DRM_FORMAT_MOD_INVALID ((1ULL << 56) - 1)
+#endif
 
-#include "mozilla/widget/va_drmcommon.h"
-#include "mozilla/gfx/2D.h"
-#include "mozilla/gfx/FileHandleWrapper.h"
-#include "GLContextTypes.h"  // for GLContext, etc
+#include "GLBlitHelper.h"
 #include "GLContextEGL.h"
 #include "GLContextProvider.h"
-#include "ScopedGLHelpers.h"
-#include "GLBlitHelper.h"
+#include "GLContextTypes.h"  // for GLContext, etc
 #include "GLReadTexImageHelper.h"
-#include "nsGtkUtils.h"
 #include "ImageContainer.h"
-#include "mozilla/layers/LayersSurfaces.h"
+#include "ScopedGLHelpers.h"
 #include "mozilla/ScopeExit.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/FileHandleWrapper.h"
 #include "mozilla/gfx/gfxVars.h"
-
-/*
-TODO:
-  - DRM device selection:
-    https://lists.freedesktop.org/archives/wayland-devel/2018-November/039660.html
-  - Use uint64_t mBufferModifiers / mGbmBufferObject for RGBA
-  - Remove file descriptors open/close?
-*/
+#include "mozilla/layers/ImageDataSerializer.h"
+#include "mozilla/layers/LayersSurfaces.h"
+#include "mozilla/widget/SHMBufSurface.h"
+#include "mozilla/widget/va_drmcommon.h"
+#include "nsGtkUtils.h"
+#include "nsIMemoryReporter.h"
 
 /* C++ / C typecast macros for special EGL handle values */
 #if defined(__cplusplus)
@@ -80,14 +79,16 @@ using namespace mozilla::gfx;
 #undef LOGDMABUF
 #undef LOGDMABUFREF
 #ifdef MOZ_LOGGING
+#  include "Units.h"
 #  include "mozilla/Logging.h"
 #  include "nsTArray.h"
-#  include "Units.h"
 
 extern mozilla::LazyLogModule gDmabufLog;
 #  define LOGDMABUF(str, ...)                     \
     MOZ_LOG(gDmabufLog, mozilla::LogLevel::Debug, \
             ("%s: " str, GetDebugTag().get(), ##__VA_ARGS__))
+#  define LOGDMAVERBOSES(str, ...) \
+    MOZ_LOG(gDmabufLog, mozilla::LogLevel::Verbose, (str, ##__VA_ARGS__))
 #  define LOGDMABUFS(str, ...) \
     MOZ_LOG(gDmabufLog, mozilla::LogLevel::Debug, (str, ##__VA_ARGS__))
 static LazyLogModule gDmabufRefLog("DmabufRef");
@@ -136,9 +137,85 @@ static const std::string FormatEGLError(EGLint err) {
   }
 }
 
-MOZ_RUNINIT static RefPtr<GLContext> sSnapshotContext;
+constinit static RefPtr<GLContext> sSnapshotContext;
 static StaticMutex sSnapshotContextMutex MOZ_UNANNOTATED;
-static Atomic<int> gNewSurfaceUID(1);
+MOZ_RUNINIT static Atomic<int> gNewSurfaceUID(getpid());
+/* Memory reporter stuff */
+static Atomic<int64_t, Relaxed> gDMABufSurfaceMemoryRGBAUsed(0);
+static Atomic<size_t, Relaxed> gDMABufSurfaceRGBAUsed(0);
+static Atomic<int64_t, Relaxed> gDMABufSurfaceMemoryYUVUsed(0);
+static Atomic<size_t, Relaxed> gDMABufSurfaceYUVUsed(0);
+
+void LogMemoryAddRGBA(int aUID, size_t aUsedMem) {
+  gDMABufSurfaceRGBAUsed++;
+  gDMABufSurfaceMemoryRGBAUsed += aUsedMem;
+  LOGDMAVERBOSES("UID %d Memory RGBA surfaces %zu total mem %" PRId64
+                 " KB (+ %zu KB)",
+                 aUID, static_cast<size_t>(gDMABufSurfaceRGBAUsed),
+                 static_cast<int64_t>(gDMABufSurfaceMemoryRGBAUsed) / 1000,
+                 aUsedMem / 1000);
+}
+
+void LogMemorySubRGBA(int aUID, size_t aUsedMem) {
+  gDMABufSurfaceMemoryRGBAUsed -= aUsedMem;
+  gDMABufSurfaceRGBAUsed--;
+  LOGDMAVERBOSES("UID %d Memory RGBA surfaces %zu total mem %" PRId64
+                 " KB (- %zu KB)",
+                 aUID, static_cast<size_t>(gDMABufSurfaceRGBAUsed),
+                 static_cast<int64_t>(gDMABufSurfaceMemoryRGBAUsed) / 1000,
+                 aUsedMem / 1000);
+}
+
+void LogMemoryAddYUV(int aUID, size_t aUsedMem) {
+  gDMABufSurfaceYUVUsed++;
+  gDMABufSurfaceMemoryYUVUsed += aUsedMem;
+  LOGDMAVERBOSES("UID %d Memory YUV surfaces %zu total mem %" PRId64
+                 " KB (+ %zu KB)",
+                 aUID, static_cast<size_t>(gDMABufSurfaceYUVUsed),
+                 static_cast<int64_t>(gDMABufSurfaceMemoryYUVUsed) / 1000,
+                 aUsedMem / 1000);
+}
+
+void LogMemorySubYUV(int aUID, size_t aUsedMem) {
+  gDMABufSurfaceMemoryYUVUsed -= aUsedMem;
+  gDMABufSurfaceYUVUsed--;
+  LOGDMAVERBOSES("UID %d Memory YUV surfaces %zu total mem %" PRId64
+                 " KB (- %zu KB)",
+                 aUID, static_cast<size_t>(gDMABufSurfaceYUVUsed),
+                 static_cast<int64_t>(gDMABufSurfaceMemoryYUVUsed) / 1000,
+                 aUsedMem / 1000);
+}
+
+class DMABufSurfaceReporter final : public nsIMemoryReporter {
+  ~DMABufSurfaceReporter() = default;
+
+ public:
+  NS_DECL_ISUPPORTS
+
+  NS_IMETHOD CollectReports(nsIHandleReportCallback* aHandleReport,
+                            nsISupports* aData, bool aAnonymize) override {
+    MOZ_COLLECT_REPORT("dmabuf-rgba", KIND_OTHER, UNITS_BYTES,
+                       gDMABufSurfaceMemoryRGBAUsed,
+                       "Memory used by GPU/DMABuf for RGBA framebuffers.");
+    MOZ_COLLECT_REPORT("dmabuf-rgba-num", KIND_OTHER, UNITS_COUNT,
+                       gDMABufSurfaceRGBAUsed,
+                       "Number of allocated GPU/DMABuf RGBA framebuffers.");
+    MOZ_COLLECT_REPORT("dmabuf-yuv", KIND_OTHER, UNITS_BYTES,
+                       gDMABufSurfaceMemoryYUVUsed,
+                       "Memory used by GPU/DMABuf for YUV video frames.");
+    MOZ_COLLECT_REPORT("dmabuf-yuv-num", KIND_OTHER, UNITS_COUNT,
+                       gDMABufSurfaceYUVUsed,
+                       "Number of allocated GPU/DMABuf YUV video frames.");
+
+    return NS_OK;
+  }
+};
+
+NS_IMPL_ISUPPORTS(DMABufSurfaceReporter, nsIMemoryReporter)
+
+void DMABufSurface::InitMemoryReporting() {
+  RegisterStrongMemoryReporter(MakeAndAddRef<DMABufSurfaceReporter>());
+}
 
 // We should release all resources allocated by SnapshotGLContext before
 // ReturnSnapshotGLContext() call. Otherwise DMABufSurface references
@@ -155,20 +232,21 @@ RefPtr<GLContext> DMABufSurface::ClaimSnapshotGLContext() {
     sSnapshotContext->mOwningThreadId = Nothing();  // No singular owner.
   }
   if (!sSnapshotContext->MakeCurrent()) {
-    LOGDMABUFS("ClaimSnapshotGLContext: Failed to make GLContext current.");
+    gfxCriticalNote
+        << "ClaimSnapshotGLContext: Failed to make GLContext current";
     return nullptr;
   }
   return sSnapshotContext;
 }
 
 void DMABufSurface::ReturnSnapshotGLContext(RefPtr<GLContext> aGLContext) {
-  // direct eglMakeCurrent() call breaks current context caching so make sure
-  // it's not used.
-  MOZ_ASSERT(!aGLContext->mUseTLSIsCurrent);
-  if (!aGLContext->IsCurrent()) {
+  if (!aGLContext || !aGLContext->IsCurrent()) {
     LOGDMABUFS("ReturnSnapshotGLContext() failed, is not current!");
     return;
   }
+  // direct eglMakeCurrent() call breaks current context caching so make sure
+  // it's not used.
+  MOZ_ASSERT(!aGLContext->mUseTLSIsCurrent);
   const auto& gle = gl::GLContextEGL::Cast(aGLContext);
   const auto& egl = gle->mEgl;
   egl->fMakeCurrent(EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -188,15 +266,27 @@ bool DMABufSurface::UseDmaBufGL(GLContext* aGLContext) {
     return false;
   }
 
-  static bool useDmabufGL = [&]() {
-    if (!aGLContext->IsExtensionSupported(gl::GLContext::OES_EGL_image)) {
-      gfxCriticalNote << "DMABufSurface::UseDmaBufGL(): no OES_EGL_image.";
-      return false;
-    }
-    return true;
-  }();
+  // dma-buf is only used with hardware GL rendering.
+  if (gfx::gfxVars::UseSoftwareWebRender()) {
+    gfxCriticalNote << "DMABufSurface::UseDmaBufGL(): refusing dma-buf with "
+                       "software rendering.";
+    return false;
+  }
 
-  return useDmabufGL;
+  // Checked per context (not cached): mGL and the snapshot context can differ.
+  if (!aGLContext->IsExtensionSupported(gl::GLContext::OES_EGL_image)) {
+    gfxCriticalNote << "DMABufSurface::UseDmaBufGL(): no OES_EGL_image.";
+    return false;
+  }
+
+  const auto& egl = gl::GLContextEGL::Cast(aGLContext)->mEgl;
+  if (!egl->IsExtensionSupported(EGLExtension::EXT_image_dma_buf_import)) {
+    gfxCriticalNote
+        << "DMABufSurface::UseDmaBufGL(): no EXT_image_dma_buf_import.";
+    return false;
+  }
+
+  return true;
 }
 
 bool DMABufSurface::UseDmaBufExportExtension(GLContext* aGLContext) {
@@ -206,6 +296,8 @@ bool DMABufSurface::UseDmaBufExportExtension(GLContext* aGLContext) {
     }
 
     if (!UseDmaBufGL(aGLContext)) {
+      gfxCriticalNote
+          << "DMABufSurface::UseDmaBufExportExtension(): dmabuf is disabled.";
       return false;
     }
 
@@ -224,8 +316,25 @@ bool DMABufSurface::UseDmaBufExportExtension(GLContext* aGLContext) {
             EGLExtension::EXT_image_dma_buf_import_modifiers) &&
         egl->IsExtensionSupported(EGLExtension::MESA_image_dma_buf_export);
     if (!extensionsAvailable) {
-      gfxCriticalNote << "DMABufSurface::UseDmaBufExportExtension(): "
-                         "MESA_image_dma_buf import/export extensions!";
+      if (!egl->IsExtensionSupported(EGLExtension::EXT_image_dma_buf_import)) {
+        gfxCriticalNote << "DMABufSurface::UseDmaBufExportExtension(): "
+                           "EXT_image_dma_buf_import is missing!";
+      }
+      if (!egl->IsExtensionSupported(
+              EGLExtension::EXT_image_dma_buf_import_modifiers)) {
+        gfxCriticalNote << "DMABufSurface::UseDmaBufExportExtension(): "
+                           "EXT_image_dma_buf_import_modifiers is missing!";
+      }
+      if (!egl->IsExtensionSupported(EGLExtension::MESA_image_dma_buf_export)) {
+        gfxCriticalNote << "DMABufSurface::UseDmaBufExportExtension(): "
+                           "MESA_image_dma_buf_export is missing!";
+      }
+      LOGDMAVERBOSES("Vendor: %s", aGLContext->VendorString().get());
+      LOGDMAVERBOSES("Renderer: %s", aGLContext->RendererString().get());
+      auto& strings = aGLContext->ExtensionStrings();
+      for (auto& ext : strings) {
+        LOGDMAVERBOSES("%s", ext.get());
+      }
     }
     return extensionsAvailable;
   }();
@@ -233,11 +342,6 @@ bool DMABufSurface::UseDmaBufExportExtension(GLContext* aGLContext) {
   return aGLContext && useDmabufExport;
 }
 
-nsAutoCString DMABufSurface::GetDebugTag() const {
-  nsAutoCString tag;
-  tag.AppendPrintf("[%p]", this);
-  return tag;
-}
 bool DMABufSurface::IsGlobalRefSet() {
   MutexAutoLock lock(mSurfaceLock);
   if (!mGlobalRefCountFd) {
@@ -247,6 +351,28 @@ bool DMABufSurface::IsGlobalRefSet() {
   pfd.fd = mGlobalRefCountFd;
   pfd.events = POLLIN;
   return poll(&pfd, 1, 0) == 1;
+}
+
+int DMABufSurface::GetGlobalRefCountFd() {
+  MutexAutoLock lock(mSurfaceLock);
+  return mGlobalRefCountFd;
+}
+
+/* static */
+void DMABufSurface::GetGlobalRefsSet(Span<const int> aRefCountFds,
+                                     nsTArray<bool>& aRefSet) {
+  // poll() ignores negative fds and reports no events for them, so surfaces
+  // without a global refcount still get a slot and the two arrays map 1:1.
+  AutoTArray<struct pollfd, 32> pfds;
+  pfds.SetCapacity(aRefCountFds.Length());
+  for (int fd : aRefCountFds) {
+    pfds.AppendElement(pollfd{fd ? fd : -1, POLLIN, 0});
+  }
+  aRefSet.SetCapacity(aRefCountFds.Length());
+  bool ret = poll(pfds.Elements(), pfds.Length(), 0) > 0;
+  for (const auto& pfd : pfds) {
+    aRefSet.AppendElement(ret && (pfd.revents & POLLIN));
+  }
 }
 
 void DMABufSurface::GlobalRefRelease() {
@@ -340,7 +466,7 @@ void DMABufSurface::GlobalRefCountDelete() {
   }
 }
 
-void DMABufSurface::ReleaseDMABuf() {
+bool DMABufSurface::ReleaseDMABuf() {
   LOGDMABUF("DMABufSurface::ReleaseDMABuf() UID %d", mUID);
 #ifdef MOZ_LOGGING
   for (int i = 0; i < mBufferPlaneCount; i++) {
@@ -348,7 +474,7 @@ void DMABufSurface::ReleaseDMABuf() {
   }
 #endif
 
-  CloseFileDescriptors();
+  bool released = CloseFileDescriptors();
 
   for (int i = 0; i < mBufferPlaneCount; i++) {
     if (mGbmBufferObject[i]) {
@@ -357,29 +483,18 @@ void DMABufSurface::ReleaseDMABuf() {
     }
   }
   mBufferPlaneCount = 0;
+
+  return released;
 }
 
 DMABufSurface::DMABufSurface(SurfaceType aSurfaceType)
-    : mSurfaceType(aSurfaceType),
-      mBufferPlaneCount(0),
-      mStrides(),
-      mOffsets(),
-      mGbmBufferObject(),
-      mGbmBufferFlags(0),
-#ifdef MOZ_LOGGING
-      mMappedRegion(),
-      mMappedRegionStride(),
-#endif
-      mSync(nullptr),
-      mGlobalRefCountFd(0),
-      mUID(gNewSurfaceUID++),
-      mPID(0),
-      mCanRecycle(true),
-      mSurfaceLock("DMABufSurface") {
+    : mSurfaceLock("DMABufSurface") {
+  mUID = gNewSurfaceUID++;
+  MOZ_COUNT_CTOR(DMABufSurface);
 }
 
 DMABufSurface::~DMABufSurface() {
-  FenceDelete();
+  MOZ_COUNT_DTOR(DMABufSurface);
   GlobalRefRelease();
   GlobalRefCountDelete();
 }
@@ -406,120 +521,162 @@ already_AddRefed<DMABufSurface> DMABufSurface::CreateDMABufSurface(
   return surf.forget();
 }
 
-void DMABufSurface::FenceDelete() {
-  if (mSyncFd) {
-    mSyncFd = nullptr;
-  }
+void DMABufSurface::FenceSet() {
+  MutexAutoLock lock(mSurfaceLock);
 
   if (!mGL) {
+    gfxCriticalNoteOnce
+        << "DMABufSurface::FenceSet() failed: missing GL context";
     return;
   }
+
+  mGL->MakeCurrent();
+
   const auto& gle = gl::GLContextEGL::Cast(mGL);
   const auto& egl = gle->mEgl;
 
-  if (mSync) {
-    egl->fDestroySync(mSync);
-    mSync = nullptr;
-  }
-}
-
-void DMABufSurface::FenceSet() {
-  if (!mGL || !mGL->MakeCurrent()) {
-    MOZ_DIAGNOSTIC_ASSERT(mGL,
-                          "DMABufSurface::FenceSet(): missing GL context!");
-    return;
-  }
-  const auto& gle = gl::GLContextEGL::Cast(mGL);
-  const auto& egl = gle->mEgl;
+  LOGDMABUF("DMABufSurface::FenceSet() UID %d", mUID);
 
   if (egl->IsExtensionSupported(EGLExtension::KHR_fence_sync) &&
       egl->IsExtensionSupported(EGLExtension::ANDROID_native_fence_sync)) {
-    FenceDelete();
-
-    mSync = egl->fCreateSync(LOCAL_EGL_SYNC_NATIVE_FENCE_ANDROID, nullptr);
-    if (mSync) {
-      auto rawFd = egl->fDupNativeFenceFDANDROID(mSync);
+    if (EGLSyncKHR sync =
+            egl->fCreateSyncKHR(LOCAL_EGL_SYNC_NATIVE_FENCE_ANDROID, nullptr)) {
+      auto rawFd = egl->fDupNativeFenceFDANDROID(sync);
       mSyncFd = new gfx::FileHandleWrapper(UniqueFileHandle(rawFd));
+      egl->fDestroySync(sync);
       mGL->fFlush();
       return;
     }
   }
 
-  // ANDROID_native_fence_sync may not be supported so call glFinish()
-  // as a slow path.
   mGL->fFinish();
 }
 
-void DMABufSurface::FenceWait() {
-  if (!mGL || !mSyncFd) {
-    MOZ_DIAGNOSTIC_ASSERT(mGL,
-                          "DMABufSurface::FenceWait() missing GL context!");
-    return;
-  }
-
-  const auto& gle = gl::GLContextEGL::Cast(mGL);
+/* static */
+void DMABufSurface::FenceWaitFd(RefPtr<gl::GLContext> aGL,
+                                RefPtr<gfx::FileHandleWrapper> aSyncFd) {
+  const auto& gle = gl::GLContextEGL::Cast(aGL);
   const auto& egl = gle->mEgl;
-  auto syncFd = mSyncFd->ClonePlatformHandle();
-  // No need to try mSyncFd twice.
-  mSyncFd = nullptr;
+  auto syncFd = aSyncFd->ClonePlatformHandle();
 
   const EGLint attribs[] = {LOCAL_EGL_SYNC_NATIVE_FENCE_FD_ANDROID,
                             syncFd.get(), LOCAL_EGL_NONE};
-  EGLSync sync = egl->fCreateSync(LOCAL_EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
+  EGLSync sync =
+      egl->fCreateSyncKHR(LOCAL_EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
   if (!sync) {
-    MOZ_ASSERT(false, "DMABufSurface::FenceWait(): Failed to create GLFence!");
+    gfxCriticalNoteOnce << "CreateSync failed";
+    int rawFd = syncFd.get();
+    if (rawFd >= 0) {
+      // CreateSync failed, so we cannot use eglClientWaitSync; poll(POLLIN)
+      // waits for the sync_file fd to become readable when the fence signals.
+      constexpr int kSyncPollTimeoutMs = 100;
+      struct pollfd pfd = {rawFd, POLLIN, 0};
+      int ret = poll(&pfd, 1, kSyncPollTimeoutMs);
+      if (!(ret == 1 && (pfd.revents & POLLIN))) {
+        gfxCriticalNoteOnce << "poll failed: " << ret;
+      }
+    }
     return;
   }
 
   // syncFd is owned by GLFence so clear local reference to avoid double.
-  Unused << syncFd.release();
+  (void)syncFd.release();
 
   egl->fClientWaitSync(sync, 0, LOCAL_EGL_FOREVER);
   egl->fDestroySync(sync);
 }
 
+void DMABufSurface::FenceWait(mozilla::gl::GLContext* aGLContext) {
+  RefPtr<gl::GLContext> gl;
+  RefPtr<gfx::FileHandleWrapper> syncFd;
+  {
+    MutexAutoLock lock(mSurfaceLock);
+    if (!mSyncFd) {
+      return;
+    }
+    gl = mGL;
+    // eglCreateSyncKHR() can use any GL context to sync and wait to finish.
+    if (!gl) {
+      gl = aGLContext;
+    }
+    if (!gl) {
+      gfxCriticalNoteOnce
+          << "DMABufSurface::FenceWait() failed: missing GL context";
+      return;
+    }
+    syncFd = mSyncFd.forget();
+  }
+
+  LOGDMABUF("DMABufSurface::FenceWait() UID %d", mUID);
+  FenceWaitFd(std::move(gl), std::move(syncFd));
+}
+
+void DMABufSurface::SetSemaphoreFd(int aDuppedRawFd, bool aIsSyncFd) {
+  MutexAutoLock lock(mSurfaceLock);
+  mSemaphoreFd = new gfx::FileHandleWrapper(UniqueFileHandle(aDuppedRawFd));
+  mSemaphoreFdIsSyncFd = aIsSyncFd;
+}
+
 void DMABufSurface::MaybeSemaphoreWait(GLuint aGlTexture) {
   MOZ_ASSERT(aGlTexture);
 
-  if (!mSemaphoreFd) {
+  RefPtr<gl::GLContext> gl;
+  RefPtr<gfx::FileHandleWrapper> semFdWrapper;
+  bool isSyncFd;
+  {
+    MutexAutoLock lock(mSurfaceLock);
+    if (!mSemaphoreFd) {
+      return;
+    }
+    if (!mGL) {
+      MOZ_DIAGNOSTIC_ASSERT(
+          mGL, "DMABufSurface::SemaphoreWait() missing GL context!");
+      return;
+    }
+    gl = mGL;
+    semFdWrapper = mSemaphoreFd.forget();
+    isSyncFd = mSemaphoreFdIsSyncFd;
+  }
+
+  auto fd = semFdWrapper->ClonePlatformHandle();
+
+  if (isSyncFd) {
+    const auto& gle = gl::GLContextEGL::Cast(gl);
+    const auto& egl = gle->mEgl;
+    if (egl->IsExtensionSupported(EGLExtension::ANDROID_native_fence_sync)) {
+      FenceWaitFd(gl, new gfx::FileHandleWrapper(std::move(fd)));
+    }
     return;
   }
 
-  if (!mGL) {
-    MOZ_DIAGNOSTIC_ASSERT(mGL,
-                          "DMABufSurface::SemaphoreWait() missing GL context!");
-    return;
-  }
-
-  if (!mGL->IsExtensionSupported(gl::GLContext::EXT_semaphore) ||
-      !mGL->IsExtensionSupported(gl::GLContext::EXT_semaphore_fd)) {
+  if (!gl->IsExtensionSupported(gl::GLContext::EXT_semaphore) ||
+      !gl->IsExtensionSupported(gl::GLContext::EXT_semaphore_fd)) {
     MOZ_ASSERT_UNREACHABLE("unexpected to be called");
-    gfxCriticalNoteOnce << "EXT_semaphore_fd is not suppored";
+    gfxCriticalNoteOnce << "EXT_semaphore_fd is not supported";
     return;
   }
-
-  auto fd = mSemaphoreFd->ClonePlatformHandle();
-  // No need to try mSemaphoreFd twice.
-  mSemaphoreFd = nullptr;
 
   GLuint semaphoreHandle = 0;
-  mGL->fGenSemaphoresEXT(1, &semaphoreHandle);
-  mGL->fImportSemaphoreFdEXT(semaphoreHandle,
-                             LOCAL_GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd.release());
-  auto error = mGL->fGetError();
+  gl->fGenSemaphoresEXT(1, &semaphoreHandle);
+  gl->fImportSemaphoreFdEXT(semaphoreHandle, LOCAL_GL_HANDLE_TYPE_OPAQUE_FD_EXT,
+                            fd.release());
+  auto error = gl->fGetError();
   if (error != LOCAL_GL_NO_ERROR) {
     gfxCriticalNoteOnce << "glImportSemaphoreFdEXT failed: " << error;
     return;
   }
 
   GLenum srcLayout = LOCAL_GL_LAYOUT_COLOR_ATTACHMENT_EXT;
-  mGL->fWaitSemaphoreEXT(semaphoreHandle, 0, nullptr, 1, &aGlTexture,
-                         &srcLayout);
-  error = mGL->fGetError();
+  gl->fWaitSemaphoreEXT(semaphoreHandle, 0, nullptr, 1, &aGlTexture,
+                        &srcLayout);
+  error = gl->fGetError();
   if (error != LOCAL_GL_NO_ERROR) {
     gfxCriticalNoteOnce << "glWaitSemaphoreEXT failed: " << error;
+    gl->fDeleteSemaphoresEXT(1, &semaphoreHandle);
     return;
   }
+  gl->fDeleteSemaphoresEXT(1, &semaphoreHandle);
+  LOGDMABUF("MaybeSemaphoreWait: done (GL semaphore wait)");
 }
 
 bool DMABufSurface::OpenFileDescriptors(
@@ -532,12 +689,15 @@ bool DMABufSurface::OpenFileDescriptors(
   return true;
 }
 
-void DMABufSurface::CloseFileDescriptors() {
-  for (int i = 0; i < DMABUF_BUFFER_PLANES; i++) {
-    if (mDmabufFds[i]) {
-      mDmabufFds[i] = nullptr;
+bool DMABufSurface::CloseFileDescriptors() {
+  bool released = false;
+  for (auto& mDmabufFd : mDmabufFds) {
+    if (mDmabufFd) {
+      mDmabufFd = nullptr;
+      released = true;
     }
   }
+  return released;
 }
 
 nsresult DMABufSurface::ReadIntoBuffer(mozilla::gl::GLContext* aGLContext,
@@ -547,18 +707,16 @@ nsresult DMABufSurface::ReadIntoBuffer(mozilla::gl::GLContext* aGLContext,
   LOGDMABUF("DMABufSurface::ReadIntoBuffer UID %d", mUID);
 
   // We're empty, nothing to copy
-  if (!GetTextureCount()) {
+  if (!mBufferPlaneCount) {
     return NS_ERROR_FAILURE;
   }
 
   MOZ_ASSERT(aSize.width == GetWidth());
   MOZ_ASSERT(aSize.height == GetHeight());
 
-  for (int i = 0; i < GetTextureCount(); i++) {
-    if (!GetTexture(i) && !CreateTexture(aGLContext, i)) {
-      LOGDMABUF("ReadIntoBuffer: Failed to create DMABuf textures.");
-      return NS_ERROR_FAILURE;
-    }
+  if (!CreateTextures(aGLContext)) {
+    LOGDMABUF("ReadIntoBuffer: Failed to create DMABuf textures.");
+    return NS_ERROR_FAILURE;
   }
 
   ScopedTexture scopedTex(aGLContext);
@@ -577,7 +735,8 @@ nsresult DMABufSurface::ReadIntoBuffer(mozilla::gl::GLContext* aGLContext,
   const gl::OriginPos destOrigin = gl::OriginPos::BottomLeft;
   {
     const ScopedBindFramebuffer bindFB(aGLContext, autoFBForTex.FB());
-    if (!aGLContext->BlitHelper()->Blit(this, aSize, destOrigin)) {
+    if (!aGLContext->BlitHelper()->Blit(
+            this, gfx::IntRect(gfx::IntPoint(0, 0), aSize), destOrigin)) {
       LOGDMABUF("ReadIntoBuffer: Blit failed.");
       return NS_ERROR_FAILURE;
     }
@@ -632,14 +791,12 @@ already_AddRefed<gfx::DataSourceSurface> DMABufSurface::GetAsSourceSurface() {
 }
 
 DMABufSurfaceRGBA::DMABufSurfaceRGBA()
-    : DMABufSurface(SURFACE_RGBA),
-      mWidth(0),
-      mHeight(0),
-      mEGLImage(LOCAL_EGL_NO_IMAGE),
-      mTexture(0),
-      mBufferModifier(DRM_FORMAT_MOD_INVALID) {}
+    : DMABufSurface(SURFACE_RGBA), mBufferModifier(DRM_FORMAT_MOD_INVALID) {}
 
-DMABufSurfaceRGBA::~DMABufSurfaceRGBA() { ReleaseSurface(); }
+DMABufSurfaceRGBA::~DMABufSurfaceRGBA() {
+  LOGDMABUF("DMABufSurfaceRGBA::~DMABufSurfaceRGBA() UID %d", mUID);
+  ReleaseSurface();
+}
 
 bool DMABufSurfaceRGBA::OpenFileDescriptorForPlane(
     DMABufDeviceLock* aDeviceLock, int aPlane) {
@@ -689,30 +846,6 @@ bool DMABufSurfaceRGBA::OpenFileDescriptorForPlane(
 bool DMABufSurfaceRGBA::Create(mozilla::gl::GLContext* aGLContext, int aWidth,
                                int aHeight, int aDMABufSurfaceFlags,
                                RefPtr<DRMFormat> aFormat) {
-  bool useGLSnapshot = gfx::gfxVars::UseDMABufSurfaceExport() && !aGLContext;
-  if (useGLSnapshot) {
-    StaticMutexAutoLock lock(sSnapshotContextMutex);
-    RefPtr<GLContext> context = ClaimSnapshotGLContext();
-    auto releaseTextures = MakeScopeExit([&] {
-      ReleaseTextures();
-      ReturnSnapshotGLContext(context);
-    });
-
-    // If gfxVars::UseDMABufSurfaceExport() is set but we fail due to missing
-    // system support, don't try GBM.
-    if (!UseDmaBufExportExtension(context)) {
-      return false;
-    }
-    return CreateExport(context, aWidth, aHeight, aDMABufSurfaceFlags);
-  }
-
-  if (gfx::gfxVars::UseDMABufSurfaceExport()) {
-    if (!UseDmaBufExportExtension(aGLContext)) {
-      return false;
-    }
-    return CreateExport(aGLContext, aWidth, aHeight, aDMABufSurfaceFlags);
-  }
-
   if (!aFormat) {
     mFOURCCFormat = aDMABufSurfaceFlags & DMABUF_ALPHA ? GBM_FORMAT_ARGB8888
                                                        : GBM_FORMAT_XRGB8888;
@@ -722,7 +855,27 @@ bool DMABufSurfaceRGBA::Create(mozilla::gl::GLContext* aGLContext, int aWidth,
                 mFOURCCFormat);
       return false;
     }
+  } else {
+    mFOURCCFormat = aFormat->GetFormat();
   }
+
+  bool useGLSnapshot = gfx::gfxVars::UseDMABufSurfaceExport() && !aGLContext;
+  if (useGLSnapshot) {
+    LOGDMAVERBOSES("DMABufSurfaceRGBA::Create(): use GL snapshot.");
+    StaticMutexAutoLock lock(sSnapshotContextMutex);
+    RefPtr<GLContext> context = ClaimSnapshotGLContext();
+    auto releaseTextures = MakeScopeExit([&] {
+      ReleaseTextures();
+      ReturnSnapshotGLContext(context);
+    });
+    return CreateExport(context, aWidth, aHeight, aDMABufSurfaceFlags, aFormat);
+  }
+
+  if (gfx::gfxVars::UseDMABufSurfaceExport()) {
+    return CreateExport(aGLContext, aWidth, aHeight, aDMABufSurfaceFlags,
+                        aFormat);
+  }
+
   return CreateGBM(aWidth, aHeight, aDMABufSurfaceFlags, aFormat);
 }
 
@@ -733,14 +886,14 @@ bool DMABufSurfaceRGBA::CreateGBM(int aWidth, int aHeight,
 
   DMABufDeviceLock device;
 
-  mWidth = aWidth;
-  mHeight = aHeight;
+  mWidth[0] = aWidth;
+  mHeight[0] = aHeight;
   mFOURCCFormat = aFormat->GetFormat();
 
   LOGDMABUF(
-      "DMABufSurfaceRGBA::Create() UID %d size %d x %d format 0x%x "
+      "DMABufSurfaceRGBA::CreateGBM() UID %d size %d x %d format 0x%x "
       "modifiers %d\n",
-      mUID, mWidth, mHeight, mFOURCCFormat, aFormat->UseModifiers());
+      mUID, mWidth[0], mHeight[0], mFOURCCFormat, aFormat->UseModifiers());
 
   if (aDMABufSurfaceFlags & DMABUF_TEXTURE) {
     mGbmBufferFlags = GBM_BO_USE_RENDERING;
@@ -753,9 +906,9 @@ bool DMABufSurfaceRGBA::CreateGBM(int aWidth, int aHeight,
     LOGDMABUF("    Creating with modifiers\n");
     uint32_t modifiersNum = 0;
     const uint64_t* modifiers = aFormat->GetModifiers(modifiersNum);
-    mGbmBufferObject[0] =
-        GbmLib::CreateWithModifiers2(device, mWidth, mHeight, mFOURCCFormat,
-                                     modifiers, modifiersNum, mGbmBufferFlags);
+    mGbmBufferObject[0] = GbmLib::CreateWithModifiers2(
+        device, mWidth[0], mHeight[0], mFOURCCFormat, modifiers, modifiersNum,
+        mGbmBufferFlags);
     if (mGbmBufferObject[0]) {
       mBufferModifier = GbmLib::GetModifier(mGbmBufferObject[0]);
     }
@@ -764,8 +917,8 @@ bool DMABufSurfaceRGBA::CreateGBM(int aWidth, int aHeight,
   if (!mGbmBufferObject[0]) {
     LOGDMABUF("    Creating without modifiers\n");
     mGbmBufferFlags = GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR;
-    mGbmBufferObject[0] =
-        GbmLib::Create(device, mWidth, mHeight, mFOURCCFormat, mGbmBufferFlags);
+    mGbmBufferObject[0] = GbmLib::Create(device, mWidth[0], mHeight[0],
+                                         mFOURCCFormat, mGbmBufferFlags);
     mBufferModifier = DRM_FORMAT_MOD_INVALID;
   }
 
@@ -777,9 +930,9 @@ bool DMABufSurfaceRGBA::CreateGBM(int aWidth, int aHeight,
   if (mBufferModifier != DRM_FORMAT_MOD_INVALID) {
     mBufferPlaneCount = GbmLib::GetPlaneCount(mGbmBufferObject[0]);
     LOGDMABUF("    Planes count %d", mBufferPlaneCount);
-    if (mBufferPlaneCount > DMABUF_BUFFER_PLANES) {
+    if (mBufferPlaneCount > BUFFER_SURFACE_PLANES) {
       LOGDMABUF("    There's too many dmabuf planes! (%d)", mBufferPlaneCount);
-      mBufferPlaneCount = DMABUF_BUFFER_PLANES;
+      mBufferPlaneCount = BUFFER_SURFACE_PLANES;
       return false;
     }
 
@@ -798,18 +951,32 @@ bool DMABufSurfaceRGBA::CreateGBM(int aWidth, int aHeight,
   }
 
   LOGDMABUF("    Success\n");
+
+  LogMemoryAddRGBA(GetUID(), GetUsedMemory(mWidth[0], mHeight[0]));
   return true;
 }
 
 bool DMABufSurfaceRGBA::CreateExport(mozilla::gl::GLContext* aGLContext,
                                      int aWidth, int aHeight,
-                                     int aDMABufSurfaceFlags) {
-  LOGDMABUF("DMABufSurfaceRGBA::CreateExport() UID %d size %d x %d flags %d",
-            mUID, aWidth, aHeight, aDMABufSurfaceFlags);
-
+                                     int aDMABufSurfaceFlags,
+                                     const DRMFormat* aFormat) {
   MOZ_ASSERT(aGLContext);
-  MOZ_DIAGNOSTIC_ASSERT(!mTexture && !mEGLImage, "Already exported??");
+  MOZ_DIAGNOSTIC_ASSERT(!HoldsTexture(), "Already exported??");
   MOZ_DIAGNOSTIC_ASSERT(!mGL || mGL == aGLContext);
+  MOZ_DIAGNOSTIC_ASSERT(aGLContext);
+  MOZ_DIAGNOSTIC_ASSERT(aFormat);
+
+  if (!UseDmaBufExportExtension(aGLContext)) {
+    LOGDMAVERBOSES(
+        "DMABufSurfaceRGBA::Create(): quit, can't use "
+        "UseDmaBufExportExtension!");
+    return false;
+  }
+
+  LOGDMABUF(
+      "DMABufSurfaceRGBA::CreateExport() UID %d size %d x %d flags %d format "
+      "0x%x",
+      mUID, aWidth, aHeight, aDMABufSurfaceFlags, aFormat->GetFormat());
 
   mGL = aGLContext;
   auto releaseTextures = MakeScopeExit([&] { ReleaseTextures(); });
@@ -819,15 +986,19 @@ bool DMABufSurfaceRGBA::CreateExport(mozilla::gl::GLContext* aGLContext,
     return false;
   }
 
-  mWidth = aWidth;
-  mHeight = aHeight;
+  mWidth[0] = aWidth;
+  mHeight[0] = aHeight;
 
-  mGL->fGenTextures(1, &mTexture);
-  const ScopedBindTexture savedTex(mGL, mTexture);
+  mGL->fGenTextures(1, &mTexture[0]);
+  const ScopedBindTexture savedTex(mGL, mTexture[0]);
 
   GLContext::LocalErrorScope errorScope(*mGL);
-  mGL->fTexImage2D(LOCAL_GL_TEXTURE_2D, 0, LOCAL_GL_RGBA, mWidth, mHeight, 0,
-                   LOCAL_GL_RGBA, LOCAL_GL_UNSIGNED_BYTE, nullptr);
+  GLenum type = LOCAL_GL_UNSIGNED_BYTE;
+  if (aFormat->GetFormat() == GBM_FORMAT_ABGR2101010) {
+    type = LOCAL_GL_UNSIGNED_INT_2_10_10_10_REV;
+  }
+  mGL->fTexImage2D(LOCAL_GL_TEXTURE_2D, 0, LOCAL_GL_RGBA, mWidth[0], mHeight[0],
+                   0, LOCAL_GL_RGBA, type, nullptr);
   const auto err = errorScope.GetError();
   if (err) {
     LOGDMABUF("  TexImage2D failed %x error %s", err,
@@ -838,27 +1009,27 @@ bool DMABufSurfaceRGBA::CreateExport(mozilla::gl::GLContext* aGLContext,
   const auto& gle = gl::GLContextEGL::Cast(mGL);
   const auto& context = gle->mContext;
   const auto& egl = gle->mEgl;
-  mEGLImage =
-      egl->fCreateImage(context, LOCAL_EGL_GL_TEXTURE_2D,
-                        reinterpret_cast<EGLClientBuffer>(mTexture), nullptr);
-  if (mEGLImage == LOCAL_EGL_NO_IMAGE) {
+  mEGLImage[0] = egl->fCreateImage(
+      context, LOCAL_EGL_GL_TEXTURE_2D,
+      reinterpret_cast<EGLClientBuffer>(mTexture[0]), nullptr);
+  if (mEGLImage[0] == LOCAL_EGL_NO_IMAGE) {
     LOGDMABUF("  EGLImageKHR creation failed, EGL error %s",
               FormatEGLError(egl->mLib->fGetError()).c_str());
     return false;
   }
 
-  if (!egl->fExportDMABUFImageQuery(mEGLImage, &mFOURCCFormat,
+  if (!egl->fExportDMABUFImageQuery(mEGLImage[0], &mFOURCCFormat,
                                     &mBufferPlaneCount, &mBufferModifier)) {
     LOGDMABUF("  ExportDMABUFImageQueryMESA failed, quit\n");
     return false;
   }
-  if (mBufferPlaneCount > DMABUF_BUFFER_PLANES) {
+  if (mBufferPlaneCount > BUFFER_SURFACE_PLANES) {
     LOGDMABUF("  wrong plane count %d, quit\n", mBufferPlaneCount);
-    mBufferPlaneCount = DMABUF_BUFFER_PLANES;
+    mBufferPlaneCount = BUFFER_SURFACE_PLANES;
     return false;
   }
-  int fds[DMABUF_BUFFER_PLANES] = {-1};
-  if (!egl->fExportDMABUFImage(mEGLImage, fds, mStrides, mOffsets)) {
+  int fds[BUFFER_SURFACE_PLANES] = {-1};
+  if (!egl->fExportDMABUFImage(mEGLImage[0], fds, mStrides, mOffsets)) {
     LOGDMABUF("  ExportDMABUFImageMESA failed, quit\n");
     return false;
   }
@@ -886,10 +1057,52 @@ bool DMABufSurfaceRGBA::CreateExport(mozilla::gl::GLContext* aGLContext,
 
   LOGDMABUF("  created size %d x %d format %x planes %d modifiers %" PRIx64
             " alpha %d",
-            mWidth, mHeight, mFOURCCFormat, mBufferPlaneCount, mBufferModifier,
-            HasAlpha());
+            mWidth[0], mHeight[0], mFOURCCFormat, mBufferPlaneCount,
+            mBufferModifier, HasAlpha());
 
   releaseTextures.release();
+
+  LogMemoryAddRGBA(GetUID(), GetUsedMemory(mWidth[0], mHeight[0]));
+  return true;
+}
+
+bool DMABufSurfaceRGBA::Create(mozilla::gl::GLContext* aGLContext,
+                               GLuint aSrcTexture, IntSize aSize,
+                               int32_t aFOURCCFormat) {
+  MOZ_DIAGNOSTIC_ASSERT(aGLContext);
+  MOZ_DIAGNOSTIC_ASSERT(aSrcTexture);
+  LOGDMABUF(
+      "DMABufSurfaceRGBA::Create() from texture UID %d size %d x %d format "
+      "0x%x",
+      mUID, aSize.width, aSize.height, aFOURCCFormat);
+
+  mFOURCCFormat = aFOURCCFormat;
+  auto flags = DMABUF_USE_MODIFIERS | DMABUF_TEXTURE;
+  auto format = GetGlobalDMABufFormats()->GetDRMFormat(mFOURCCFormat);
+  if (!format) {
+    LOGDMABUF("  Missing DRM format 0x%x", mFOURCCFormat);
+    return false;
+  }
+
+  if (!(gfx::gfxVars::UseDMABufSurfaceExport()
+            ? CreateExport(aGLContext, aSize.width, aSize.height, flags, format)
+            : CreateGBM(aSize.width, aSize.height, flags, format))) {
+    return false;
+  }
+
+  if (!CreateTextures(aGLContext)) {
+    return false;
+  }
+  auto releaseTextures = MakeScopeExit([&] { ReleaseTextures(); });
+
+  aGLContext->BlitHelper()->BlitTextureToTexture(
+      aSrcTexture, GetTexture(), aSize, aSize, LOCAL_GL_TEXTURE_2D,
+      LOCAL_GL_TEXTURE_2D);
+
+  FenceSet();
+
+  // TODO: Keep textures?
+
   return true;
 }
 
@@ -897,11 +1110,11 @@ bool DMABufSurfaceRGBA::Create(
     RefPtr<mozilla::gfx::FileHandleWrapper>&& aFd,
     const mozilla::webgpu::ffi::WGPUDMABufInfo& aDMABufInfo, int aWidth,
     int aHeight) {
-  LOGDMABUF("DMABufSurfaceRGBA::Create() UID %d size %d x %d\n", mUID, mWidth,
-            mHeight);
+  LOGDMABUF("DMABufSurfaceRGBA::CreateWGPUDMABufInfo() UID %d size %d x %d\n",
+            mUID, mWidth[0], mHeight[0]);
 
-  mWidth = aWidth;
-  mHeight = aHeight;
+  mWidth[0] = aWidth;
+  mHeight[0] = aHeight;
   mBufferModifier = aDMABufInfo.modifier;
 
   // TODO: Read Vulkan modifiers from DMABufFormats?
@@ -916,8 +1129,7 @@ bool DMABufSurfaceRGBA::Create(
     mOffsets[i] = aDMABufInfo.offsets[i];
   }
 
-  LOGDMABUF("  imported size %d x %d format %x planes %d modifiers %" PRIx64,
-            mWidth, mHeight, mFOURCCFormat, mBufferPlaneCount, mBufferModifier);
+  LogMemoryAddRGBA(GetUID(), GetUsedMemory(mWidth[0], mHeight[0]));
   return true;
 }
 
@@ -925,19 +1137,28 @@ bool DMABufSurfaceRGBA::ImportSurfaceDescriptor(
     const SurfaceDescriptor& aDesc) {
   const SurfaceDescriptorDMABuf& desc = aDesc.get_SurfaceDescriptorDMABuf();
 
-  mFOURCCFormat = desc.fourccFormat();
-  mWidth = desc.width()[0];
-  mHeight = desc.height()[0];
   mBufferPlaneCount = desc.fds().Length();
+
+  MOZ_RELEASE_ASSERT(mBufferPlaneCount <= BUFFER_SURFACE_PLANES);
+  if (mBufferPlaneCount <= 0 || desc.width().Length() == 0 ||
+      desc.height().Length() == 0 || desc.modifier().Length() == 0 ||
+      desc.strides().Length() < (uint32_t)mBufferPlaneCount ||
+      desc.offsets().Length() < (uint32_t)mBufferPlaneCount) {
+    return false;
+  }
+
+  mFOURCCFormat = desc.fourccFormat();
+  mWidth[0] = desc.width()[0];
+  mHeight[0] = desc.height()[0];
   mGbmBufferFlags = desc.flags();
   mBufferModifier = desc.modifier()[0];
-  MOZ_RELEASE_ASSERT(mBufferPlaneCount <= DMABUF_BUFFER_PLANES);
   mUID = desc.uid();
   mPID = desc.pid();
+  mHDRMetadata = mozilla::gfx::HDRMetadata();
 
   LOGDMABUF(
       "DMABufSurfaceRGBA::ImportSurfaceDescriptor() UID %d size %d x %d\n",
-      mUID, mWidth, mHeight);
+      mUID, mWidth[0], mHeight[0]);
 
   for (int i = 0; i < mBufferPlaneCount; i++) {
     mDmabufFds[i] = desc.fds()[i];
@@ -951,14 +1172,17 @@ bool DMABufSurfaceRGBA::ImportSurfaceDescriptor(
 
   if (desc.semaphoreFd()) {
     mSemaphoreFd = desc.semaphoreFd();
+    mSemaphoreFdIsSyncFd = desc.semaphoreFdIsSyncFd();
   }
 
   if (desc.refCount().Length() > 0) {
     GlobalRefCountImport(desc.refCount()[0].ClonePlatformHandle().release());
   }
 
-  LOGDMABUF("  imported size %d x %d format %x planes %d", mWidth, mHeight,
-            mFOURCCFormat, mBufferPlaneCount);
+  LOGDMABUF("  imported size %d x %d format %x planes %d", mWidth[0],
+            mHeight[0], mFOURCCFormat, mBufferPlaneCount);
+
+  LogMemoryAddRGBA(GetUID(), GetUsedMemory(mWidth[0], mHeight[0]));
   return true;
 }
 
@@ -968,20 +1192,21 @@ bool DMABufSurfaceRGBA::Create(const SurfaceDescriptor& aDesc) {
 
 bool DMABufSurfaceRGBA::Serialize(
     mozilla::layers::SurfaceDescriptor& aOutDescriptor) {
-  AutoTArray<uint32_t, DMABUF_BUFFER_PLANES> width;
-  AutoTArray<uint32_t, DMABUF_BUFFER_PLANES> height;
-  AutoTArray<NotNull<RefPtr<gfx::FileHandleWrapper>>, DMABUF_BUFFER_PLANES> fds;
-  AutoTArray<uint32_t, DMABUF_BUFFER_PLANES> strides;
-  AutoTArray<uint32_t, DMABUF_BUFFER_PLANES> offsets;
-  AutoTArray<uintptr_t, DMABUF_BUFFER_PLANES> images;
-  AutoTArray<uint64_t, DMABUF_BUFFER_PLANES> modifiers;
+  AutoTArray<uint32_t, BUFFER_SURFACE_PLANES> width;
+  AutoTArray<uint32_t, BUFFER_SURFACE_PLANES> height;
+  AutoTArray<NotNull<RefPtr<gfx::FileHandleWrapper>>, BUFFER_SURFACE_PLANES>
+      fds;
+  AutoTArray<uint32_t, BUFFER_SURFACE_PLANES> strides;
+  AutoTArray<uint32_t, BUFFER_SURFACE_PLANES> offsets;
+  AutoTArray<uintptr_t, BUFFER_SURFACE_PLANES> images;
+  AutoTArray<uint64_t, BUFFER_SURFACE_PLANES> modifiers;
   AutoTArray<NotNull<RefPtr<gfx::FileHandleWrapper>>, 1> fenceFDs;
   AutoTArray<ipc::FileDescriptor, 1> refCountFDs;
 
   LOGDMABUF("DMABufSurfaceRGBA::Serialize() UID %d\n", mUID);
 
-  width.AppendElement(mWidth);
-  height.AppendElement(mHeight);
+  width.AppendElement(mWidth[0]);
+  height.AppendElement(mHeight[0]);
   modifiers.AppendElement(mBufferModifier);
   for (int i = 0; i < mBufferPlaneCount; i++) {
     fds.AppendElement(WrapNotNull(mDmabufFds[i]));
@@ -989,7 +1214,7 @@ bool DMABufSurfaceRGBA::Serialize(
     offsets.AppendElement(mOffsets[i]);
   }
 
-  if (mSync && mSyncFd) {
+  if (mSyncFd) {
     fenceFDs.AppendElement(WrapNotNull(mSyncFd));
   }
 
@@ -1000,17 +1225,17 @@ bool DMABufSurfaceRGBA::Serialize(
   // GCC needs it (Bug 1959653).
   AutoTArray<uint32_t, 1> tmp;
   aOutDescriptor = SurfaceDescriptorDMABuf(
-      mSurfaceType, mFOURCCFormat, modifiers, mGbmBufferFlags, fds, width,
+      GetSurfaceType(), mFOURCCFormat, modifiers, mGbmBufferFlags, fds, width,
       height, width, height, tmp, strides, offsets, GetYUVColorSpace(),
       mColorRange, mozilla::gfx::ColorSpace2::UNKNOWN,
-      mozilla::gfx::TransferFunction::Default, fenceFDs, mUID,
+      mozilla::gfx::TransferFunction::Default, 0, fenceFDs, mUID,
       mCanRecycle ? getpid() : 0, refCountFDs,
-      /* semaphoreFd */ nullptr);
+      /* semaphoreFd */ nullptr, /* semaphoreFdIsSyncFd */ false, mHDRMetadata);
   return true;
 }
 
 bool DMABufSurfaceRGBA::CreateTexture(GLContext* aGLContext, int aPlane) {
-  if (mTexture) {
+  if (mTexture[0]) {
     MOZ_DIAGNOSTIC_ASSERT(mGL == aGLContext);
     return true;
   }
@@ -1023,14 +1248,15 @@ bool DMABufSurfaceRGBA::CreateTexture(GLContext* aGLContext, int aPlane) {
     return false;
   }
 
+  MOZ_DIAGNOSTIC_ASSERT(aGLContext);
   mGL = aGLContext;
   auto releaseTextures = MakeScopeExit([&] { ReleaseTextures(); });
 
   nsTArray<EGLint> attribs;
   attribs.AppendElement(LOCAL_EGL_WIDTH);
-  attribs.AppendElement(mWidth);
+  attribs.AppendElement(mWidth[0]);
   attribs.AppendElement(LOCAL_EGL_HEIGHT);
-  attribs.AppendElement(mHeight);
+  attribs.AppendElement(mHeight[0]);
   attribs.AppendElement(LOCAL_EGL_LINUX_DRM_FOURCC_EXT);
   attribs.AppendElement(mFOURCCFormat);
 #define ADD_PLANE_ATTRIBS(plane_idx)                                        \
@@ -1068,72 +1294,33 @@ bool DMABufSurfaceRGBA::CreateTexture(GLContext* aGLContext, int aPlane) {
   const auto& gle = gl::GLContextEGL::Cast(aGLContext);
   const auto& egl = gle->mEgl;
 
-  MOZ_ASSERT(!mEGLImage);
-  mEGLImage =
+  MOZ_ASSERT(mEGLImage[0] == LOCAL_EGL_NO_IMAGE);
+  mEGLImage[0] =
       egl->fCreateImage(LOCAL_EGL_NO_CONTEXT, LOCAL_EGL_LINUX_DMA_BUF_EXT,
                         nullptr, attribs.Elements());
 
-  if (mEGLImage == LOCAL_EGL_NO_IMAGE) {
+  if (mEGLImage[0] == LOCAL_EGL_NO_IMAGE) {
     LOGDMABUF("  EGLImageKHR creation failed, EGL error %s",
               FormatEGLError(egl->mLib->fGetError()).c_str());
     return false;
   }
 
-  aGLContext->fGenTextures(1, &mTexture);
-  const ScopedBindTexture savedTex(aGLContext, mTexture);
-  aGLContext->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_WRAP_S,
-                             LOCAL_GL_CLAMP_TO_EDGE);
-  aGLContext->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_WRAP_T,
-                             LOCAL_GL_CLAMP_TO_EDGE);
-  aGLContext->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MAG_FILTER,
-                             LOCAL_GL_LINEAR);
-  aGLContext->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MIN_FILTER,
-                             LOCAL_GL_LINEAR);
-  aGLContext->fEGLImageTargetTexture2D(LOCAL_GL_TEXTURE_2D, mEGLImage);
+  aGLContext->fGenTextures(1, &mTexture[0]);
+  SetTextureFilters(aGLContext, mTexture[0]);
+  const ScopedBindTexture savedTex(aGLContext, mTexture[0]);
+  aGLContext->fEGLImageTargetTexture2D(LOCAL_GL_TEXTURE_2D, mEGLImage[0]);
 
   releaseTextures.release();
   return true;
 }
 
-void DMABufSurfaceRGBA::ReleaseTextures() {
-  LOGDMABUF("DMABufSurfaceRGBA::ReleaseTextures() UID %d\n", mUID);
-  FenceDelete();
-
-  if (!mTexture && !mEGLImage) {
-    return;
-  }
-
-  if (!mGL) {
-#ifdef NIGHTLY_BUILD
-    MOZ_DIAGNOSTIC_ASSERT(mGL, "Missing GL context!");
-#else
-    NS_WARNING(
-        "DMABufSurfaceRGBA::ReleaseTextures(): Missing GL context! We're "
-        "leaking textures!");
-    return;
-#endif
-  }
-
-  const auto& gle = gl::GLContextEGL::Cast(mGL);
-  const auto& egl = gle->mEgl;
-
-  if (mTexture && mGL->MakeCurrent()) {
-    mGL->fDeleteTextures(1, &mTexture);
-    mTexture = 0;
-  }
-
-  if (mEGLImage != LOCAL_EGL_NO_IMAGE) {
-    egl->fDestroyImage(mEGLImage);
-    mEGLImage = LOCAL_EGL_NO_IMAGE;
-  }
-  mGL = nullptr;
-}
-
 void DMABufSurfaceRGBA::ReleaseSurface() {
+  LOGDMABUF("DMABufSurfaceRGBA::ReleaseSurface() UID %d", mUID);
   MOZ_ASSERT(!IsMapped(), "We can't release mapped buffer!");
-
   ReleaseTextures();
-  ReleaseDMABuf();
+  if (ReleaseDMABuf()) {
+    LogMemorySubRGBA(GetUID(), GetUsedMemory(mWidth[0], mHeight[0]));
+  }
 }
 
 #ifdef MOZ_WAYLAND
@@ -1248,7 +1435,8 @@ void* DMABufSurfaceRGBA::MapReadOnly(uint32_t aX, uint32_t aY, uint32_t aWidth,
 }
 
 void* DMABufSurfaceRGBA::MapReadOnly(uint32_t* aStride) {
-  return MapInternal(0, 0, mWidth, mHeight, aStride, GBM_BO_TRANSFER_READ);
+  return MapInternal(0, 0, mWidth[0], mHeight[0], aStride,
+                     GBM_BO_TRANSFER_READ);
 }
 
 void* DMABufSurfaceRGBA::Map(uint32_t aX, uint32_t aY, uint32_t aWidth,
@@ -1258,7 +1446,7 @@ void* DMABufSurfaceRGBA::Map(uint32_t aX, uint32_t aY, uint32_t aWidth,
 }
 
 void* DMABufSurfaceRGBA::Map(uint32_t* aStride) {
-  return MapInternal(0, 0, mWidth, mHeight, aStride,
+  return MapInternal(0, 0, mWidth[0], mHeight[0], aStride,
                      GBM_BO_TRANSFER_READ_WRITE);
 }
 
@@ -1279,31 +1467,6 @@ nsresult DMABufSurface::BuildSurfaceDescriptorBuffer(
     const std::function<MemoryOrShmem(uint32_t)>& aAllocate) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
-
-#ifdef MOZ_LOGGING
-void DMABufSurfaceRGBA::DumpToFile(const char* pFile) {
-  uint32_t stride;
-
-  if (!MapReadOnly(&stride)) {
-    return;
-  }
-  cairo_surface_t* surface = nullptr;
-
-  auto unmap = MakeScopeExit([&] {
-    if (surface) {
-      cairo_surface_destroy(surface);
-    }
-    Unmap();
-  });
-
-  surface = cairo_image_surface_create_for_data(
-      (unsigned char*)mMappedRegion[0], CAIRO_FORMAT_ARGB32, mWidth, mHeight,
-      stride);
-  if (cairo_surface_status(surface) == CAIRO_STATUS_SUCCESS) {
-    cairo_surface_write_to_png(surface, pFile);
-  }
-}
-#endif
 
 #if 0
 // Copy from source surface by GL
@@ -1342,50 +1505,22 @@ void DMABufSurfaceRGBA::Clear(unsigned int aValue) {
 }
 #endif
 
-bool DMABufSurfaceRGBA::HasAlpha() {
-  return mFOURCCFormat == GBM_FORMAT_ARGB8888 ||
-         mFOURCCFormat == GBM_FORMAT_ABGR8888 ||
-         mFOURCCFormat == GBM_FORMAT_RGBA8888 ||
-         mFOURCCFormat == GBM_FORMAT_BGRA8888;
-}
-
-gfx::SurfaceFormat DMABufSurfaceRGBA::GetFormat() {
-  switch (mFOURCCFormat) {
-    case GBM_FORMAT_ARGB8888:
-      return gfx::SurfaceFormat::B8G8R8A8;
-    case GBM_FORMAT_ABGR8888:
-      return gfx::SurfaceFormat::R8G8B8A8;
-    case GBM_FORMAT_BGRA8888:
-      return gfx::SurfaceFormat::A8R8G8B8;
-    case GBM_FORMAT_RGBA8888:
-      gfxCriticalError() << "DMABufSurfaceRGBA::GetFormat(): Unsupported "
-                            "format GBM_FORMAT_RGBA8888";
-      return gfx::SurfaceFormat::UNKNOWN;
-
-    case GBM_FORMAT_XRGB8888:
-      return gfx::SurfaceFormat::B8G8R8X8;
-    case GBM_FORMAT_XBGR8888:
-      return gfx::SurfaceFormat::R8G8B8X8;
-    case GBM_FORMAT_BGRX8888:
-      return gfx::SurfaceFormat::X8R8G8B8;
-    case GBM_FORMAT_RGBX8888:
-      gfxCriticalError() << "DMABufSurfaceRGBA::GetFormat(): Unsupported "
-                            "format GBM_FORMAT_RGBX8888";
-      return gfx::SurfaceFormat::UNKNOWN;
-
-    default:
-      gfxCriticalError() << "DMABufSurfaceRGBA::GetFormat(): Unknown format"
-                         << gfx::hexa(mFOURCCFormat);
-      return gfx::SurfaceFormat::UNKNOWN;
-  }
-}
-
 already_AddRefed<DMABufSurfaceRGBA> DMABufSurfaceRGBA::CreateDMABufSurface(
     mozilla::gl::GLContext* aGLContext, int aWidth, int aHeight,
     int aDMABufSurfaceFlags, RefPtr<mozilla::widget::DRMFormat> aFormat) {
-  RefPtr<DMABufSurfaceRGBA> surf = new DMABufSurfaceRGBA();
+  auto surf = MakeRefPtr<DMABufSurfaceRGBA>();
   if (!surf->Create(aGLContext, aWidth, aHeight, aDMABufSurfaceFlags,
                     aFormat)) {
+    return nullptr;
+  }
+  return surf.forget();
+}
+
+already_AddRefed<DMABufSurfaceRGBA> DMABufSurfaceRGBA::CreateDMABufSurface(
+    mozilla::gl::GLContext* aGLContext, GLuint aSrcTexture,
+    mozilla::gfx::IntSize aSize, int32_t aFOURCCFormat) {
+  auto surf = MakeRefPtr<DMABufSurfaceRGBA>();
+  if (!surf->Create(aGLContext, aSrcTexture, aSize, aFOURCCFormat)) {
     return nullptr;
   }
   return surf.forget();
@@ -1395,7 +1530,7 @@ already_AddRefed<DMABufSurface> DMABufSurfaceRGBA::CreateDMABufSurface(
     RefPtr<mozilla::gfx::FileHandleWrapper>&& aFd,
     const mozilla::webgpu::ffi::WGPUDMABufInfo& aDMABufInfo, int aWidth,
     int aHeight) {
-  RefPtr<DMABufSurfaceRGBA> surf = new DMABufSurfaceRGBA();
+  auto surf = MakeRefPtr<DMABufSurfaceRGBA>();
   if (!surf->Create(std::move(aFd), aDMABufInfo, aWidth, aHeight)) {
     return nullptr;
   }
@@ -1404,7 +1539,7 @@ already_AddRefed<DMABufSurface> DMABufSurfaceRGBA::CreateDMABufSurface(
 
 already_AddRefed<DMABufSurfaceYUV> DMABufSurfaceYUV::CreateYUVSurface(
     const VADRMPRIMESurfaceDescriptor& aDesc, int aWidth, int aHeight) {
-  RefPtr<DMABufSurfaceYUV> surf = new DMABufSurfaceYUV();
+  auto surf = MakeRefPtr<DMABufSurfaceYUV>();
   LOGDMABUFS("[%p] DMABufSurfaceYUV::CreateYUVSurface() UID %d from desc\n",
              surf.get(), surf->GetUID());
   if (!surf->UpdateYUVData(aDesc, aWidth, aHeight, /* aCopy */ false)) {
@@ -1415,7 +1550,7 @@ already_AddRefed<DMABufSurfaceYUV> DMABufSurfaceYUV::CreateYUVSurface(
 
 already_AddRefed<DMABufSurfaceYUV> DMABufSurfaceYUV::CopyYUVSurface(
     const VADRMPRIMESurfaceDescriptor& aDesc, int aWidth, int aHeight) {
-  RefPtr<DMABufSurfaceYUV> surf = new DMABufSurfaceYUV();
+  auto surf = MakeRefPtr<DMABufSurfaceYUV>();
   LOGDMABUFS("[%p] DMABufSurfaceYUV::CreateYUVSurfaceCopy() UID %d from desc\n",
              surf.get(), surf->GetUID());
   if (!surf->UpdateYUVData(aDesc, aWidth, aHeight, /* aCopy */ true)) {
@@ -1424,21 +1559,31 @@ already_AddRefed<DMABufSurfaceYUV> DMABufSurfaceYUV::CopyYUVSurface(
   return surf.forget();
 }
 
-DMABufSurfaceYUV::DMABufSurfaceYUV()
-    : DMABufSurface(SURFACE_YUV),
-      mWidth(),
-      mHeight(),
-      mWidthAligned(),
-      mHeightAligned(),
-      mDrmFormats(),
-      mTexture() {
-  for (int i = 0; i < DMABUF_BUFFER_PLANES; i++) {
-    mEGLImage[i] = LOCAL_EGL_NO_IMAGE;
-    mBufferModifiers[i] = DRM_FORMAT_MOD_INVALID;
+already_AddRefed<DMABufSurfaceYUV> DMABufSurfaceYUV::CreateYUVSurface(
+    mozilla::gl::GLContext* aGLContext, BufferSurface* aSourceSurface) {
+  auto surf = MakeRefPtr<DMABufSurfaceYUV>();
+  LOGDMABUFS(
+      "[%p] DMABufSurfaceYUV::CreateYUVSurface() UID %d from surface [%p]\n",
+      surf.get(), surf->GetUID(), aSourceSurface);
+  if (!surf->UpdateYUVData(aGLContext, aSourceSurface)) {
+    return nullptr;
   }
+  return surf.forget();
 }
 
-DMABufSurfaceYUV::~DMABufSurfaceYUV() { ReleaseSurface(); }
+DMABufSurfaceYUV::DMABufSurfaceYUV()
+    : DMABufSurface(SURFACE_YUV),
+      mWidthAligned(),
+      mHeightAligned(),
+      mDrmFormats() {
+  std::fill(std::begin(mBufferModifiers), std::end(mBufferModifiers),
+            DRM_FORMAT_MOD_INVALID);
+}
+
+DMABufSurfaceYUV::~DMABufSurfaceYUV() {
+  LOGDMABUF("DMABufSurfaceYUV::~DMABufSurfaceYUV() UID %d", mUID);
+  ReleaseSurface();
+}
 
 bool DMABufSurfaceYUV::OpenFileDescriptorForPlane(DMABufDeviceLock* aDeviceLock,
                                                   int aPlane) {
@@ -1474,13 +1619,12 @@ bool DMABufSurfaceYUV::ImportPRIMESurfaceDescriptor(
   // Already exists?
   MOZ_DIAGNOSTIC_ASSERT(!mDmabufFds[0]);
 
-  if (aDesc.num_layers > DMABUF_BUFFER_PLANES ||
-      aDesc.num_objects > DMABUF_BUFFER_PLANES) {
+  if (aDesc.num_layers > BUFFER_SURFACE_PLANES ||
+      aDesc.num_objects > BUFFER_SURFACE_PLANES) {
     LOGDMABUF("  Can't import, wrong layers/objects number (%d, %d)",
               aDesc.num_layers, aDesc.num_objects);
     return false;
   }
-  mSurfaceType = SURFACE_YUV;
   mFOURCCFormat = aDesc.fourcc;
   mBufferPlaneCount = aDesc.num_layers;
 
@@ -1489,6 +1633,9 @@ bool DMABufSurfaceYUV::ImportPRIMESurfaceDescriptor(
     unsigned int subsample = i == 0 ? 0 : 1;
 
     unsigned int object = aDesc.layers[i].object_index[0];
+    if (object >= aDesc.num_objects) {
+      return false;
+    }
     mBufferModifiers[i] = aDesc.objects[object].drm_format_modifier;
     mDrmFormats[i] = aDesc.layers[i].drm_format;
     mOffsets[i] = aDesc.layers[i].offset[0];
@@ -1503,6 +1650,20 @@ bool DMABufSurfaceYUV::ImportPRIMESurfaceDescriptor(
   return true;
 }
 
+void DMABufSurfaceYUV::ReleaseVADRMPRIMESurfaceDescriptor(
+    VADRMPRIMESurfaceDescriptor& aDesc) {
+  for (unsigned int i = 0; i < aDesc.num_layers; i++) {
+    unsigned int object = aDesc.layers[i].object_index[0];
+    if (object >= aDesc.num_objects) {
+      continue;
+    }
+    if (aDesc.objects[object].fd != -1) {
+      close(aDesc.objects[object].fd);
+      aDesc.objects[object].fd = -1;
+    }
+  }
+}
+
 bool DMABufSurfaceYUV::MoveYUVDataImpl(const VADRMPRIMESurfaceDescriptor& aDesc,
                                        int aWidth, int aHeight) {
   if (!ImportPRIMESurfaceDescriptor(aDesc, aWidth, aHeight)) {
@@ -1515,18 +1676,8 @@ bool DMABufSurfaceYUV::MoveYUVDataImpl(const VADRMPRIMESurfaceDescriptor& aDesc,
     auto rawFd = dup(aDesc.objects[object].fd);
     mDmabufFds[i] = new gfx::FileHandleWrapper(UniqueFileHandle(rawFd));
   }
+  LogMemoryAddYUV(GetUID(), GetUsedMemory(mWidth[0], mHeight[0]));
   return true;
-}
-
-void DMABufSurfaceYUV::ReleaseVADRMPRIMESurfaceDescriptor(
-    VADRMPRIMESurfaceDescriptor& aDesc) {
-  for (unsigned int i = 0; i < aDesc.num_layers; i++) {
-    unsigned int object = aDesc.layers[i].object_index[0];
-    if (aDesc.objects[object].fd != -1) {
-      close(aDesc.objects[object].fd);
-      aDesc.objects[object].fd = -1;
-    }
-  }
 }
 
 bool DMABufSurfaceYUV::CreateYUVPlaneGBM(int aPlane, DRMFormat* aFormat) {
@@ -1580,12 +1731,23 @@ bool DMABufSurfaceYUV::CreateYUVPlaneGBM(int aPlane, DRMFormat* aFormat) {
 }
 
 bool DMABufSurfaceYUV::CreateYUVPlaneExport(GLContext* aGLContext, int aPlane) {
+  if (!UseDmaBufExportExtension(aGLContext)) {
+    LOGDMAVERBOSES(
+        "DMABufSurfaceYUV::CreateYUVPlane(): quit, can't use "
+        "UseDmaBufExportExtension.");
+    return false;
+  }
+
   LOGDMABUF(
       "DMABufSurfaceYUV::CreateYUVPlaneExport() UID %d size %d x %d plane %d",
       mUID, mWidth[aPlane], mHeight[aPlane], aPlane);
 
+  MOZ_DIAGNOSTIC_ASSERT(aGLContext);
   mGL = aGLContext;
   auto releaseTextures = MakeScopeExit([&] { ReleaseTextures(); });
+
+  MOZ_DIAGNOSTIC_ASSERT(!mEGLImage[aPlane]);
+  MOZ_DIAGNOSTIC_ASSERT(!mTexture[aPlane]);
 
   mGL->fGenTextures(1, &mTexture[aPlane]);
   const ScopedBindTexture savedTex(mGL, mTexture[aPlane]);
@@ -1616,7 +1778,8 @@ bool DMABufSurfaceYUV::CreateYUVPlaneExport(GLContext* aGLContext, int aPlane) {
       break;
     default:
       gfxCriticalError()
-          << "DMABufSurfaceYUV::CreateYUVPlaneExport(): Unsupported format";
+          << "DMABufSurfaceYUV::CreateYUVPlaneExport(): Unsupported format:"
+          << gfx::hexa(mDrmFormats[aPlane]);
       return false;
   }
 
@@ -1656,7 +1819,7 @@ bool DMABufSurfaceYUV::CreateYUVPlaneExport(GLContext* aGLContext, int aPlane) {
     LOGDMABUF("  wrong plane count %d, quit\n", bufferPlaneCount);
     return false;
   }
-  int fds[DMABUF_BUFFER_PLANES] = {-1};
+  int fds[BUFFER_SURFACE_PLANES] = {-1};
   if (!egl->fExportDMABUFImage(mEGLImage[aPlane], fds, mStrides + aPlane,
                                mOffsets + aPlane)) {
     LOGDMABUF("  ExportDMABUFImageMESA failed, quit\n");
@@ -1680,13 +1843,9 @@ bool DMABufSurfaceYUV::CreateYUVPlaneExport(GLContext* aGLContext, int aPlane) {
 
 bool DMABufSurfaceYUV::CreateYUVPlane(GLContext* aGLContext, int aPlane,
                                       DRMFormat* aFormat) {
-  if (gfx::gfxVars::UseDMABufSurfaceExport()) {
-    if (!UseDmaBufExportExtension(aGLContext)) {
-      return false;
-    }
-    return CreateYUVPlaneExport(aGLContext, aPlane);
-  }
-  return CreateYUVPlaneGBM(aPlane, aFormat);
+  return gfx::gfxVars::UseDMABufSurfaceExport()
+             ? CreateYUVPlaneExport(aGLContext, aPlane)
+             : CreateYUVPlaneGBM(aPlane, aFormat);
 }
 
 bool DMABufSurfaceYUV::CopyYUVDataImpl(const VADRMPRIMESurfaceDescriptor& aDesc,
@@ -1720,6 +1879,8 @@ bool DMABufSurfaceYUV::CopyYUVDataImpl(const VADRMPRIMESurfaceDescriptor& aDesc,
         tmpSurf->GetTexture(i), GetTexture(i), size, size, LOCAL_GL_TEXTURE_2D,
         LOCAL_GL_TEXTURE_2D);
   }
+
+  LogMemoryAddYUV(GetUID(), GetUsedMemory(mWidth[0], mHeight[0]));
   return true;
 }
 
@@ -1730,25 +1891,25 @@ bool DMABufSurfaceYUV::UpdateYUVData(const VADRMPRIMESurfaceDescriptor& aDesc,
                : MoveYUVDataImpl(aDesc, aWidth, aHeight);
 }
 
-bool DMABufSurfaceYUV::UpdateYUVData(
-    const mozilla::layers::PlanarYCbCrData& aData,
-    gfx::SurfaceFormat aImageFormat) {
-  LOGDMABUF("DMABufSurfaceYUV::UpdateYUVData() PlanarYCbCrData.");
+bool DMABufSurfaceYUV::UpdateYUVData(mozilla::gl::GLContext* aGLContext,
+                                     BufferSurface* aSourceSurface) {
+  LOGDMABUF("DMABufSurfaceYUV::UpdateYUVData() from surface [%p]",
+            aSourceSurface);
 
-  gfx::SurfaceFormat targetFormat = GetHWFormat(aImageFormat);
+  gfx::SurfaceFormat targetFormat = GetHWFormat(aSourceSurface->GetFormat());
   if (targetFormat == gfx::SurfaceFormat::UNKNOWN) {
     LOGDMABUF("DMABufSurfaceYUV::UpdateYUVData() wrong format!");
     return false;
   }
 
-  StaticMutexAutoLock lock(sSnapshotContextMutex);
-  RefPtr<GLContext> context = ClaimSnapshotGLContext();
-  auto releaseTextures = MakeScopeExit([&] {
-    ReleaseTextures();
-    ReturnSnapshotGLContext(context);
-  });
+  if (!aSourceSurface->CreateTextures(aGLContext)) {
+    LOGDMABUF(
+        "DMABufSurfaceYUV::UpdateYUVData() failed to create BufferSurface "
+        "textures!");
+    return false;
+  }
 
-  gfx::IntSize size = aData.YPictureSize();
+  gfx::IntSize size = aSourceSurface->GetSize();
 
   mWidthAligned[0] = mWidth[0] = size.width;
   mHeightAligned[0] = mHeight[0] = size.height;
@@ -1778,15 +1939,27 @@ bool DMABufSurfaceYUV::UpdateYUVData(
 
   auto format = GetGlobalDMABufFormats()->GetDRMFormat(mFOURCCFormat);
   for (int i = 0; i < mBufferPlaneCount; i++) {
-    if (!CreateYUVPlane(context, i, format)) {
+    if (!CreateYUVPlane(aGLContext, i, format)) {
       return false;
     }
-    if (!CreateTexture(context, i)) {
+    if (!CreateTexture(aGLContext, i)) {
       return false;
     }
   }
 
-  return context->BlitHelper()->BlitYCbCrImageToDMABuf(aData, this);
+  LogMemoryAddYUV(GetUID(), GetUsedMemory(mWidth[0], mHeight[0]));
+  bool ret =
+      aGLContext->BlitHelper()->BlitYCbCrTexturesToDMABuf(aSourceSurface, this);
+  if (ret) {
+    // Add fence to commit all changes before we derive wl_buffer from it.
+    FenceSet();
+  }
+
+  // We're finished here, keep dmabuf memory only. We're going to
+  // export it as wl_buffer.
+  // TODO: Move to upper level? Add an argument?
+  ReleaseTextures();
+  return ret;
 }
 
 bool DMABufSurfaceYUV::Create(const SurfaceDescriptor& aDesc) {
@@ -1796,19 +1969,32 @@ bool DMABufSurfaceYUV::Create(const SurfaceDescriptor& aDesc) {
 bool DMABufSurfaceYUV::ImportSurfaceDescriptor(
     const SurfaceDescriptorDMABuf& aDesc) {
   mBufferPlaneCount = aDesc.fds().Length();
-  mSurfaceType = SURFACE_YUV;
+  MOZ_RELEASE_ASSERT(mBufferPlaneCount <= BUFFER_SURFACE_PLANES);
+  if (mBufferPlaneCount <= 0 ||
+      aDesc.width().Length() < (uint32_t)mBufferPlaneCount ||
+      aDesc.height().Length() < (uint32_t)mBufferPlaneCount ||
+      aDesc.widthAligned().Length() < (uint32_t)mBufferPlaneCount ||
+      aDesc.heightAligned().Length() < (uint32_t)mBufferPlaneCount ||
+      aDesc.format().Length() < (uint32_t)mBufferPlaneCount ||
+      aDesc.modifier().Length() < (uint32_t)mBufferPlaneCount ||
+      aDesc.strides().Length() < (uint32_t)mBufferPlaneCount ||
+      aDesc.offsets().Length() < (uint32_t)mBufferPlaneCount) {
+    return false;
+  }
+
   mFOURCCFormat = aDesc.fourccFormat();
   mColorSpace = aDesc.yUVColorSpace();
   mColorRange = aDesc.colorRange();
   mColorPrimaries = aDesc.colorPrimaries();
   mTransferFunction = aDesc.transferFunction();
+  mWPChromaLocation = aDesc.chromaLocation();
   mGbmBufferFlags = aDesc.flags();
   mUID = aDesc.uid();
   mPID = aDesc.pid();
+  mHDRMetadata = aDesc.hdrMetadata();
 
   LOGDMABUF("DMABufSurfaceYUV::ImportSurfaceDescriptor() UID %d", mUID);
 
-  MOZ_RELEASE_ASSERT(mBufferPlaneCount <= DMABUF_BUFFER_PLANES);
   for (int i = 0; i < mBufferPlaneCount; i++) {
     mDmabufFds[i] = aDesc.fds()[i];
     mWidth[i] = aDesc.width()[i];
@@ -1828,24 +2014,31 @@ bool DMABufSurfaceYUV::ImportSurfaceDescriptor(
     mSyncFd = aDesc.fence()[0];
   }
 
+  if (aDesc.semaphoreFd()) {
+    mSemaphoreFd = aDesc.semaphoreFd();
+    mSemaphoreFdIsSyncFd = aDesc.semaphoreFdIsSyncFd();
+  }
+
   if (aDesc.refCount().Length() > 0) {
     GlobalRefCountImport(aDesc.refCount()[0].ClonePlatformHandle().release());
   }
 
+  LogMemoryAddYUV(GetUID(), GetUsedMemory(mWidth[0], mHeight[0]));
   return true;
 }
 
 bool DMABufSurfaceYUV::Serialize(
     mozilla::layers::SurfaceDescriptor& aOutDescriptor) {
-  AutoTArray<uint32_t, DMABUF_BUFFER_PLANES> width;
-  AutoTArray<uint32_t, DMABUF_BUFFER_PLANES> height;
-  AutoTArray<uint32_t, DMABUF_BUFFER_PLANES> widthBytes;
-  AutoTArray<uint32_t, DMABUF_BUFFER_PLANES> heightBytes;
-  AutoTArray<uint32_t, DMABUF_BUFFER_PLANES> format;
-  AutoTArray<NotNull<RefPtr<gfx::FileHandleWrapper>>, DMABUF_BUFFER_PLANES> fds;
-  AutoTArray<uint32_t, DMABUF_BUFFER_PLANES> strides;
-  AutoTArray<uint32_t, DMABUF_BUFFER_PLANES> offsets;
-  AutoTArray<uint64_t, DMABUF_BUFFER_PLANES> modifiers;
+  AutoTArray<uint32_t, BUFFER_SURFACE_PLANES> width;
+  AutoTArray<uint32_t, BUFFER_SURFACE_PLANES> height;
+  AutoTArray<uint32_t, BUFFER_SURFACE_PLANES> widthBytes;
+  AutoTArray<uint32_t, BUFFER_SURFACE_PLANES> heightBytes;
+  AutoTArray<uint32_t, BUFFER_SURFACE_PLANES> format;
+  AutoTArray<NotNull<RefPtr<gfx::FileHandleWrapper>>, BUFFER_SURFACE_PLANES>
+      fds;
+  AutoTArray<uint32_t, BUFFER_SURFACE_PLANES> strides;
+  AutoTArray<uint32_t, BUFFER_SURFACE_PLANES> offsets;
+  AutoTArray<uint64_t, BUFFER_SURFACE_PLANES> modifiers;
   AutoTArray<NotNull<RefPtr<gfx::FileHandleWrapper>>, 1> fenceFDs;
   AutoTArray<ipc::FileDescriptor, 1> refCountFDs;
 
@@ -1863,7 +2056,7 @@ bool DMABufSurfaceYUV::Serialize(
     modifiers.AppendElement(mBufferModifiers[i]);
   }
 
-  if (mSync && mSyncFd) {
+  if (mSyncFd) {
     fenceFDs.AppendElement(WrapNotNull(mSyncFd));
   }
 
@@ -1872,16 +2065,17 @@ bool DMABufSurfaceYUV::Serialize(
   }
 
   aOutDescriptor = SurfaceDescriptorDMABuf(
-      mSurfaceType, mFOURCCFormat, modifiers, mGbmBufferFlags, fds, width,
+      GetSurfaceType(), mFOURCCFormat, modifiers, mGbmBufferFlags, fds, width,
       height, widthBytes, heightBytes, format, strides, offsets,
       GetYUVColorSpace(), mColorRange, mColorPrimaries, mTransferFunction,
-      fenceFDs, mUID, mCanRecycle ? getpid() : 0, refCountFDs,
-      /* semaphoreFd */ nullptr);
+      mWPChromaLocation, fenceFDs, mUID, mCanRecycle ? getpid() : 0,
+      refCountFDs, mSemaphoreFd, mSemaphoreFdIsSyncFd, mHDRMetadata);
   return true;
 }
 
 bool DMABufSurfaceYUV::CreateTexture(GLContext* aGLContext, int aPlane) {
   if (mTexture[aPlane]) {
+    MOZ_DIAGNOSTIC_ASSERT(aGLContext);
     MOZ_DIAGNOSTIC_ASSERT(mGL == aGLContext);
     return true;
   }
@@ -1893,6 +2087,7 @@ bool DMABufSurfaceYUV::CreateTexture(GLContext* aGLContext, int aPlane) {
     return false;
   }
 
+  MOZ_DIAGNOSTIC_ASSERT(aGLContext);
   MOZ_DIAGNOSTIC_ASSERT(!mGL || mGL == aGLContext);
 
   mGL = aGLContext;
@@ -1901,6 +2096,44 @@ bool DMABufSurfaceYUV::CreateTexture(GLContext* aGLContext, int aPlane) {
   if (!aGLContext->MakeCurrent()) {
     LOGDMABUF("  Failed to make GL context current.");
     return false;
+  }
+
+  const auto& gle = gl::GLContextEGL::Cast(aGLContext);
+  const auto& egl = gle->mEgl;
+
+  if ((aPlane == 1) &&
+      ((GetFOURCCFormat() == VA_FOURCC_NV12) ||
+       (GetFOURCCFormat() == VA_FOURCC_P010) ||
+       (GetFOURCCFormat() == VA_FOURCC_P016)) &&
+      egl->IsExtensionSupported(
+          EGLExtension::EXT_image_dma_buf_import_modifiers)) {
+    uint32_t wasRG = (mDrmFormats[aPlane] == DRM_FORMAT_RG88 ||
+                      mDrmFormats[aPlane] == DRM_FORMAT_RG1616);
+    uint32_t wasGR = (mDrmFormats[aPlane] == DRM_FORMAT_GR88 ||
+                      mDrmFormats[aPlane] == DRM_FORMAT_GR1616);
+
+    EGLint modifierCount = 0;
+    egl->mLib->fQueryDmaBufModifiersEXT(egl->mDisplay, mDrmFormats[aPlane], 0,
+                                        nullptr, nullptr, &modifierCount);
+    if (modifierCount <= 0 && (wasGR || wasRG)) {
+      uint32_t swappedFormat = 0;
+      if (GetFOURCCFormat() == VA_FOURCC_NV12) {
+        swappedFormat = wasGR ? DRM_FORMAT_RG88 : DRM_FORMAT_GR88;
+      } else if (GetFOURCCFormat() == VA_FOURCC_P010 ||
+                 GetFOURCCFormat() == VA_FOURCC_P016) {
+        swappedFormat = wasGR ? DRM_FORMAT_RG1616 : DRM_FORMAT_GR1616;
+      }
+      EGLint swappedModifierCount = 0;
+      egl->mLib->fQueryDmaBufModifiersEXT(
+          egl->mDisplay, static_cast<EGLint>(swappedFormat), 0, nullptr,
+          nullptr, &swappedModifierCount);
+      if (swappedModifierCount > 0) {
+        mDrmFormats[aPlane] = static_cast<int>(swappedFormat);
+        int bits = GetFOURCCFormat() == VA_FOURCC_NV12 ? 8 : 16;
+        LOGDMABUF("  EGL DMA-BUF import: swapped plane 1 to %s%d%d",
+                  wasGR ? "RG" : "GR", bits, bits);
+      }
+    }
   }
 
   nsTArray<EGLint> attribs;
@@ -1929,8 +2162,13 @@ bool DMABufSurfaceYUV::CreateTexture(GLContext* aGLContext, int aPlane) {
 #undef ADD_PLANE_ATTRIBS_NV12
   attribs.AppendElement(LOCAL_EGL_NONE);
 
-  const auto& gle = gl::GLContextEGL::Cast(aGLContext);
-  const auto& egl = gle->mEgl;
+  LOGDMABUF(
+      "Plane %d: attributes: "
+      "fd=%d, offset=%u, pitch=%u, modifier=0x%llx, format=0x%x, size=%dx%d",
+      aPlane, mDmabufFds[aPlane]->GetHandle(), mOffsets[aPlane],
+      mStrides[aPlane], (unsigned long long)mBufferModifiers[aPlane],
+      mDrmFormats[aPlane], mWidthAligned[aPlane], mHeightAligned[aPlane]);
+
   mEGLImage[aPlane] =
       egl->fCreateImage(LOCAL_EGL_NO_CONTEXT, LOCAL_EGL_LINUX_DMA_BUF_EXT,
                         nullptr, attribs.Elements());
@@ -1942,71 +2180,87 @@ bool DMABufSurfaceYUV::CreateTexture(GLContext* aGLContext, int aPlane) {
   }
 
   aGLContext->fGenTextures(1, &mTexture[aPlane]);
+  SetTextureFilters(aGLContext, mTexture[aPlane]);
   const ScopedBindTexture savedTex(aGLContext, mTexture[aPlane]);
-  aGLContext->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_WRAP_S,
-                             LOCAL_GL_CLAMP_TO_EDGE);
-  aGLContext->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_WRAP_T,
-                             LOCAL_GL_CLAMP_TO_EDGE);
-  aGLContext->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MAG_FILTER,
-                             LOCAL_GL_LINEAR);
-  aGLContext->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MIN_FILTER,
-                             LOCAL_GL_LINEAR);
   aGLContext->fEGLImageTargetTexture2D(LOCAL_GL_TEXTURE_2D, mEGLImage[aPlane]);
 
-  releaseTextures.release();
-  return true;
+  GLenum glErr = aGLContext->fGetError();
+
+  if (glErr == 0) {
+    LOGDMABUF("  Plane %d: zero-copy EGLImageTargetTexture2D succeeded",
+              aPlane);
+    releaseTextures.release();
+    return true;
+  }
+
+  if (mBufferModifiers[aPlane] == DRM_FORMAT_MOD_LINEAR &&
+      GetFOURCCFormat() == VA_FOURCC_NV12 &&
+      CreateTextureViaCopyYUV(aGLContext, aPlane)) {
+    LOGDMABUF("  Plane %d: successfully created texture via copy", aPlane);
+    releaseTextures.release();
+    return true;
+  }
+
+  if (mBufferModifiers[aPlane] == DRM_FORMAT_MOD_LINEAR &&
+      (GetFOURCCFormat() == VA_FOURCC_P010 ||
+       GetFOURCCFormat() == VA_FOURCC_P016) &&
+      CreateTextureViaCopyP010(aGLContext, aPlane)) {
+    LOGDMABUF("  Plane %d: successfully created P010 texture via copy", aPlane);
+    releaseTextures.release();
+    return true;
+  }
+
+  LOGDMABUF(
+      "  CreateTexture failed: EGLImageTargetTexture2D glErr=0x%x, copy "
+      "fallback not used or failed",
+      glErr);
+  return false;
 }
 
-void DMABufSurfaceYUV::ReleaseTextures() {
-  LOGDMABUF("DMABufSurfaceYUV::ReleaseTextures() UID %d", mUID);
-
-  FenceDelete();
-
-  bool textureActive = false;
-  for (int i = 0; i < mBufferPlaneCount; i++) {
-    if (mTexture[i] || mEGLImage[i]) {
-      textureActive = true;
-      break;
-    }
+bool DMABufSurfaceYUV::CreateTextureViaCopyP010(GLContext* aGLContext,
+                                                int aPlane) {
+  GLuint srcTex = 0;
+  aGLContext->fGenTextures(1, &srcTex);
+  SetTextureFilters(aGLContext, srcTex, LOCAL_GL_TEXTURE_EXTERNAL);
+  aGLContext->fBindTexture(LOCAL_GL_TEXTURE_EXTERNAL, srcTex);
+  aGLContext->fEGLImageTargetTexture2D(LOCAL_GL_TEXTURE_EXTERNAL,
+                                       mEGLImage[aPlane]);
+  if (aGLContext->fGetError() != 0) {
+    aGLContext->fDeleteTextures(1, &srcTex);
+    return false;
   }
+  GLenum internalFormat = (aPlane == 0) ? LOCAL_GL_R16 : LOCAL_GL_RG16;
+  aGLContext->fBindTexture(LOCAL_GL_TEXTURE_2D, mTexture[aPlane]);
+  aGLContext->fTexStorage2D(LOCAL_GL_TEXTURE_2D, 1, internalFormat,
+                            mWidth[aPlane], mHeight[aPlane]);
+  aGLContext->fCopyImageSubData(srcTex, LOCAL_GL_TEXTURE_EXTERNAL, 0, 0, 0, 0,
+                                mTexture[aPlane], LOCAL_GL_TEXTURE_2D, 0, 0, 0,
+                                0, mWidth[aPlane], mHeight[aPlane], 1);
+  aGLContext->fDeleteTextures(1, &srcTex);
+  return aGLContext->fGetError() == 0;
+}
 
-  if (!textureActive) {
-    return;
+bool DMABufSurfaceYUV::CreateTextureViaCopyYUV(GLContext* aGLContext,
+                                               int aPlane) {
+  GLuint srcTex = 0;
+  aGLContext->fGenTextures(1, &srcTex);
+  SetTextureFilters(aGLContext, srcTex, LOCAL_GL_TEXTURE_EXTERNAL);
+  aGLContext->fBindTexture(LOCAL_GL_TEXTURE_EXTERNAL, srcTex);
+  aGLContext->fEGLImageTargetTexture2D(LOCAL_GL_TEXTURE_EXTERNAL,
+                                       mEGLImage[aPlane]);
+  if (aGLContext->fGetError() != 0) {
+    aGLContext->fDeleteTextures(1, &srcTex);
+    return false;
   }
-
-  if (!mGL) {
-#ifdef NIGHTLY_BUILD
-    MOZ_DIAGNOSTIC_ASSERT(mGL, "Missing GL context!");
-#else
-    NS_WARNING(
-        "DMABufSurfaceYUV::ReleaseTextures(): Missing GL context! We're "
-        "leaking textures!");
-    return;
-#endif
-  }
-
-  if (!mGL->MakeCurrent()) {
-    NS_WARNING(
-        "DMABufSurfaceYUV::ReleaseTextures(): MakeCurrent failed. We're "
-        "leaking textures!");
-    return;
-  }
-
-  mGL->fDeleteTextures(DMABUF_BUFFER_PLANES, mTexture);
-  for (int i = 0; i < DMABUF_BUFFER_PLANES; i++) {
-    mTexture[i] = 0;
-  }
-
-  const auto& gle = gl::GLContextEGL::Cast(mGL);
-  const auto& egl = gle->mEgl;
-  for (int i = 0; i < mBufferPlaneCount; i++) {
-    if (mEGLImage[i] != LOCAL_EGL_NO_IMAGE) {
-      egl->fDestroyImage(mEGLImage[i]);
-      mEGLImage[i] = LOCAL_EGL_NO_IMAGE;
-    }
-  }
-
-  mGL = nullptr;
+  GLenum internalFormat = (aPlane == 0) ? LOCAL_GL_R8 : LOCAL_GL_RG8;
+  aGLContext->fBindTexture(LOCAL_GL_TEXTURE_2D, mTexture[aPlane]);
+  aGLContext->fTexStorage2D(LOCAL_GL_TEXTURE_2D, 1, internalFormat,
+                            mWidth[aPlane], mHeight[aPlane]);
+  aGLContext->fCopyImageSubData(srcTex, LOCAL_GL_TEXTURE_EXTERNAL, 0, 0, 0, 0,
+                                mTexture[aPlane], LOCAL_GL_TEXTURE_2D, 0, 0, 0,
+                                0, mWidth[aPlane], mHeight[aPlane], 1);
+  aGLContext->fDeleteTextures(1, &srcTex);
+  return aGLContext->fGetError() == 0;
 }
 
 bool DMABufSurfaceYUV::VerifyTextureCreation() {
@@ -2019,33 +2273,13 @@ bool DMABufSurfaceYUV::VerifyTextureCreation() {
     ReturnSnapshotGLContext(context);
   });
 
-  for (int i = 0; i < mBufferPlaneCount; i++) {
-    if (!CreateTexture(context, i)) {
-      LOGDMABUF("  failed to create EGL image!");
-      return false;
-    }
+  if (!CreateTextures(context)) {
+    LOGDMABUF("  failed to create EGL image!");
+    return false;
   }
 
   LOGDMABUF("  success");
   return true;
-}
-
-gfx::SurfaceFormat DMABufSurfaceYUV::GetFormat() {
-  switch (mFOURCCFormat) {
-    case VA_FOURCC_P010:
-      return gfx::SurfaceFormat::P010;
-    case VA_FOURCC_P016:
-      return gfx::SurfaceFormat::P016;
-    case VA_FOURCC_NV12:
-      return gfx::SurfaceFormat::NV12;
-    case VA_FOURCC_YV12:
-    case VA_FOURCC_I420:
-      return gfx::SurfaceFormat::YUV420;
-    default:
-      gfxCriticalNoteOnce << "DMABufSurfaceYUV::GetFormat() unknown format: "
-                          << mFOURCCFormat;
-      return gfx::SurfaceFormat::UNKNOWN;
-  }
 }
 
 gfx::SurfaceFormat DMABufSurfaceYUV::GetHWFormat(gfx::SurfaceFormat aSWFormat) {
@@ -2059,12 +2293,12 @@ gfx::SurfaceFormat DMABufSurfaceYUV::GetHWFormat(gfx::SurfaceFormat aSWFormat) {
   }
 }
 
-int DMABufSurfaceYUV::GetTextureCount() { return mBufferPlaneCount; }
-
 void DMABufSurfaceYUV::ReleaseSurface() {
   LOGDMABUF("DMABufSurfaceYUV::ReleaseSurface() UID %d", mUID);
   ReleaseTextures();
-  ReleaseDMABuf();
+  if (ReleaseDMABuf()) {
+    LogMemorySubYUV(GetUID(), GetUsedMemory(mWidth[0], mHeight[0]));
+  }
 }
 
 nsresult DMABufSurfaceYUV::BuildSurfaceDescriptorBuffer(
@@ -2189,6 +2423,273 @@ wl_buffer* DMABufSurfaceYUV::CreateWlBuffer() {
 }
 #endif
 
+static const char kHLGToPQVertexShader[] = R"(
+  #version 300 es
+  in vec2 aPosition;
+  out vec2 vTexCoord;
+  void main() {
+    gl_Position = vec4(aPosition * 2.0 - 1.0, 0.0, 1.0);
+    vTexCoord = aPosition;
+  }
+)";
+
+static const char kHLGToPQFragmentShader[] = R"(
+  #version 300 es
+  precision highp float;
+  in vec2 vTexCoord;
+  out vec4 fragColor;
+
+  uniform sampler2D uTexY;
+  uniform sampler2D uTexUV;
+  uniform mat4 uYuvToRgb;
+
+  // BT.2100 HLG inverse OETF: HLG signal [0, 1] to scene light normalized so
+  // that 1.0 is the scene peak. The two branches meet at signal 0.5 / scene
+  // 1/12. Note that gfx/gl/Colorspaces.cpp uses the other common scaling of
+  // this curve, where scene peak is 12.0 rather than 1.0.
+  vec3 HLGtoScene(vec3 e) {
+    float a = 0.17883277;
+    float b = 0.28466892;
+    float c = 0.55991073;
+    return mix(e * e / 3.0, (exp((e - c) / a) + b) / 12.0, step(0.5, e));
+  }
+
+  // BT.2100 HLG reference OOTF, minus its alpha = Lw factor which is folded
+  // into the PQ normalization in main(): scene light to display light, both
+  // normalized to [0, 1]. The luma coefficients are BT.2020 and gamma = 1.2
+  // is the value BT.2100 specifies for a 1000 cd/m^2 nominal peak display.
+  vec3 ApplyOOTF(vec3 scene) {
+    float gamma = 1.2;
+    float Ys = dot(scene, vec3(0.2627, 0.6780, 0.0593));
+    return scene * pow(max(Ys, 0.0), gamma - 1.0);
+  }
+
+  // Inverse of the PQ (SMPTE ST 2084) EOTF: display light normalized so that
+  // 1.0 is 10000 cd/m^2, to a PQ signal in [0, 1].
+  vec3 LinearToPQ(vec3 rgb) {
+    float m1 = 0.1593017578;
+    float m2 = 78.84375;
+    float c1 = 0.8359375;
+    float c2 = 18.8515625;
+    float c3 = 18.6875;
+    vec3 y = pow(max(rgb, 0.0), vec3(m1));
+    return pow((c1 + c2 * y) / (1.0 + c3 * y), vec3(m2));
+  }
+
+  void main() {
+    vec2 uv = vTexCoord;
+    float y = texture(uTexY, uv).r;
+    vec2 cbcr = texture(uTexUV, uv).rg;
+    vec3 srcYUV = vec3(y, cbcr.x, cbcr.y);
+    vec3 srcRGB = (uYuvToRgb * vec4(srcYUV, 1.0)).rgb;
+    // Clamp to avoid negative values from narrow range YUV to RGB conversion.
+    srcRGB = max(srcRGB, 0.0);
+
+    vec3 scene = HLGtoScene(srcRGB);
+    vec3 display = ApplyOOTF(scene);
+
+    // Scale from [0, 1] display light (representing [0, Lw] nits) to the PQ
+    // domain [0, 1] (representing [0, 10000] nits). Lw is the OOTF alpha and
+    // must match the gamma picked in ApplyOOTF(); with 1000 nits, HLG
+    // reference white (signal 0.75) lands on 203 nits, which is
+    // Rec2100ReferenceDisplayWhite in gfx/gl/Colorspaces.h.
+    float Lw = 1000.0;
+    vec3 pq = LinearToPQ(display * (Lw / 10000.0));
+    fragColor = vec4(pq, 1.0);
+  }
+)";
+
+// BT.2020 non-constant-luminance YUV to RGB matrices for P010 (10-bit).
+// Row-major layout, uploaded with GL_TRUE transpose for GLSL mat4.
+// P010 stores 10 bits in the high bits of a 16-bit word, so sampling gives
+// code * 64 / 65535, and the studio range scales are computed against
+// 65535/64 rather than 1023.
+static const float kYuvToRgbBT2020Studio[16] = {
+    1.168932f,  0.000000f, 1.685231f, -0.915688f, 1.168932f,  -0.188058f,
+    -0.652965f, 0.347458f, 1.168932f, 2.150139f,  -0.000000f, -1.148145f,
+    0.000000f,  0.000000f, 0.000000f, 1.000000f};
+
+static const float kYuvToRgbBT2020Full[16] = {
+    1.000000f,  -0.000000f, 1.474600f, -0.737311f, 1.000000f,  -0.164553f,
+    -0.571353f, 0.367959f,  1.000000f, 1.881400f,  -0.000000f, -0.940714f,
+    0.000000f,  0.000000f,  0.000000f, 1.000000f};
+
+static GLuint sHLGToPQProgram = 0;
+static uintptr_t sHLGToPQProgramContext = 0;
+
+static GLuint CompileShader(GLContext* gl, GLenum type, const char* src) {
+  GLuint shader = gl->fCreateShader(type);
+  gl->fShaderSource(shader, 1, &src, nullptr);
+  gl->fCompileShader(shader);
+  GLint status = 0;
+  gl->fGetShaderiv(shader, LOCAL_GL_COMPILE_STATUS, &status);
+  if (!status) {
+    gl->fDeleteShader(shader);
+    return 0;
+  }
+  return shader;
+}
+
+static GLuint GetHLGToPQProgram(GLContext* gl) {
+  if (sHLGToPQProgram &&
+      sHLGToPQProgramContext == reinterpret_cast<uintptr_t>(gl)) {
+    return sHLGToPQProgram;
+  }
+
+  // We may leak the sHLGToPQProgram here but it doesn't matter - it will be
+  // deleted with its GL context.
+  sHLGToPQProgram = 0;
+
+  GLuint vs = CompileShader(gl, LOCAL_GL_VERTEX_SHADER, kHLGToPQVertexShader);
+  if (!vs) {
+    return 0;
+  }
+  GLuint fs =
+      CompileShader(gl, LOCAL_GL_FRAGMENT_SHADER, kHLGToPQFragmentShader);
+  if (!fs) {
+    gl->fDeleteShader(vs);
+    return 0;
+  }
+
+  GLuint program = gl->fCreateProgram();
+  gl->fAttachShader(program, vs);
+  gl->fAttachShader(program, fs);
+  gl->fBindAttribLocation(program, 0, "aPosition");
+  gl->fLinkProgram(program);
+  gl->fDeleteShader(vs);
+  gl->fDeleteShader(fs);
+
+  GLint status = 0;
+  gl->fGetProgramiv(program, LOCAL_GL_LINK_STATUS, &status);
+  if (!status) {
+    gl->fDeleteProgram(program);
+    return 0;
+  }
+
+  sHLGToPQProgramContext = reinterpret_cast<uintptr_t>(gl);
+  sHLGToPQProgram = program;
+  return program;
+}
+
+already_AddRefed<DMABufSurfaceRGBA> DMABufSurfaceYUV::ConvertHLGToPQ(
+    GLContext* gl) {
+  MOZ_DIAGNOSTIC_ASSERT(GetTransferFunction() == gfx::TransferFunction::HLG,
+                        "Unexpected transfer function!");
+  if (GetFOURCCFormat() != VA_FOURCC_P010) {
+    LOGDMABUF("DMABufSurfaceYUV::ConvertHLGToPQ(): failed, unknown format [%x]",
+              GetFOURCCFormat());
+    return nullptr;
+  }
+
+  if (!CreateTextures(gl)) {
+    return nullptr;
+  }
+
+  int width = GetWidth();
+  int height = GetHeight();
+
+  auto format = GetGlobalDMABufFormats()->GetDRMFormat(GBM_FORMAT_ABGR2101010);
+  if (!format) {
+    LOGDMABUF(
+        "DMABufSurfaceYUV::ConvertHLGToPQ(): 10-bit RGBA format is not "
+        "suppored");
+    return nullptr;
+  }
+
+  LOGDMABUF("DMABufSurfaceYUV::ConvertHLGToPQ() size [%d x %d]", width, height);
+
+  RefPtr<DMABufSurfaceRGBA> target = DMABufSurfaceRGBA::CreateDMABufSurface(
+      gl, width, height, DMABUF_TEXTURE | DMABUF_USE_MODIFIERS, format);
+  if (!target) {
+    LOGDMABUF(" failed to create GBM_FORMAT_ABGR2101010 dmabuf");
+    return nullptr;
+  }
+  if (!target->CreateTextures(gl)) {
+    LOGDMABUF(" failed to create texture");
+    return nullptr;
+  }
+
+  ScopedFramebufferForTexture autoFBForTex(gl, target->GetTexture());
+  if (!autoFBForTex.IsComplete()) {
+    LOGDMABUF(" failed to create framebuffer for texture");
+    return nullptr;
+  }
+  const ScopedBindFramebuffer bindFB(gl, autoFBForTex.FB());
+  const ScopedViewportRect viewport(gl, 0, 0, width, height);
+
+  GLuint program = GetHLGToPQProgram(gl);
+  if (!program) {
+    LOGDMABUF(" failed to get HLG to PQ shader");
+    return nullptr;
+  }
+  const ScopedBindProgram bindProg(gl, program);
+
+  const ScopedSaveMultiTex saveTex(gl, 2, LOCAL_GL_TEXTURE_2D);
+
+  gl->fActiveTexture(LOCAL_GL_TEXTURE0);
+  gl->fBindTexture(LOCAL_GL_TEXTURE_2D, GetTexture(0));
+  gl->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MIN_FILTER,
+                     LOCAL_GL_LINEAR);
+  gl->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MAG_FILTER,
+                     LOCAL_GL_LINEAR);
+  gl->fUniform1i(gl->fGetUniformLocation(program, "uTexY"), 0);
+
+  gl->fActiveTexture(LOCAL_GL_TEXTURE1);
+  gl->fBindTexture(LOCAL_GL_TEXTURE_2D, GetTexture(1));
+  gl->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MIN_FILTER,
+                     LOCAL_GL_LINEAR);
+  gl->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MAG_FILTER,
+                     LOCAL_GL_LINEAR);
+  gl->fUniform1i(gl->fGetUniformLocation(program, "uTexUV"), 1);
+
+  const float* matrix =
+      IsFullRange() ? kYuvToRgbBT2020Full : kYuvToRgbBT2020Studio;
+  gl->fUniformMatrix4fv(gl->fGetUniformLocation(program, "uYuvToRgb"), 1,
+                        LOCAL_GL_TRUE, matrix);
+
+  const float quad[] = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
+
+  GLuint oldVAO = 0;
+  GLuint vao = 0;
+  if (gl->IsSupported(GLFeature::vertex_array_object)) {
+    oldVAO = gl->GetIntAs<GLuint>(LOCAL_GL_VERTEX_ARRAY_BINDING);
+    gl->fGenVertexArrays(1, &vao);
+    gl->fBindVertexArray(vao);
+  }
+
+  GLuint vbo = 0;
+  gl->fGenBuffers(1, &vbo);
+
+  {
+    const ScopedVertexAttribPointer autoAttrib(gl, 0, 2, LOCAL_GL_FLOAT,
+                                               LOCAL_GL_FALSE, 0, vbo, nullptr);
+    gl->fBufferData(LOCAL_GL_ARRAY_BUFFER, sizeof(quad), quad,
+                    LOCAL_GL_STATIC_DRAW);
+    gl->fDrawArrays(LOCAL_GL_TRIANGLE_STRIP, 0, 4);
+  }
+
+  if (vao) {
+    gl->fBindVertexArray(oldVAO);
+    gl->fDeleteVertexArrays(1, &vao);
+  }
+  gl->fDeleteBuffers(1, &vbo);
+
+  target->SetTransferFunction(gfx::TransferFunction::PQ);
+  target->SetYUVColorSpace(gfx::YUVColorSpace::BT2020);
+  target->SetColorRange(gfx::ColorRange::FULL);
+  target->SetColorPrimaries(gfx::ColorSpace2::BT2020);
+  target->SetHDRMetadata(GetHDRMetadata());
+
+  // Add fence to commit all changes before we derive wl_buffer from it.
+  target->FenceSet();
+
+  // We're finished here, keep dmabuf memory only.
+  // TODO: skip/move?
+  target->ReleaseTextures();
+
+  return target.forget();
+}
+
 #if 0
 void DMABufSurfaceYUV::ClearPlane(int aPlane) {
   if (!MapInternal(0, 0, mWidth[aPlane], mHeight[aPlane], nullptr,
@@ -2201,12 +2702,5 @@ void DMABufSurfaceYUV::ClearPlane(int aPlane) {
   memset((char*)mMappedRegion[aPlane], 0,
          mMappedRegionStride[aPlane] * mHeight[aPlane]);
   Unmap(aPlane);
-}
-
-#  include "gfxUtils.h"
-
-void DMABufSurfaceYUV::DumpToFile(const char* aFile) {
-  RefPtr<gfx::DataSourceSurface> surf = GetAsSourceSurface();
-  gfxUtils::WriteAsPNG(surf, aFile);
 }
 #endif

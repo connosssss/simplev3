@@ -67,7 +67,7 @@ and limit the number of permutations needed to calculate the final result.`
       ] as const)
   )
   .fn(async t => {
-    t.skipIfDeviceDoesNotHaveFeature('subgroups' as GPUFeatureName);
+    t.skipIfDeviceDoesNotHaveFeature('subgroups');
     if (t.params.type === 'f16') {
       t.skipIfDeviceDoesNotHaveFeature('shader-f16');
     }
@@ -168,7 +168,7 @@ TODO: support vec3 types.
       .combine('operation', kOperations)
   )
   .fn(async t => {
-    t.skipIfDeviceDoesNotHaveFeature('subgroups' as GPUFeatureName);
+    t.skipIfDeviceDoesNotHaveFeature('subgroups');
     const type = kDataTypes[t.params.type];
     if (type.requiresF16()) {
       t.skipIfDeviceDoesNotHaveFeature('shader-f16');
@@ -295,7 +295,7 @@ g.test('compute,split')
       .combine('wgSize', kWGSizes)
   )
   .fn(async t => {
-    t.skipIfDeviceDoesNotHaveFeature('subgroups' as GPUFeatureName);
+    t.skipIfDeviceDoesNotHaveFeature('subgroups');
     const testcase = kPredicateCases[t.params.case];
     const outputUintsPerElement = 1;
     const inputData = new Uint32Array([0]); // no input data
@@ -305,7 +305,6 @@ g.test('compute,split')
 enable subgroups;
 
 diagnostic(off, subgroup_uniformity);
-diagnostic(off, subgroup_branching);
 
 @group(0) @binding(0)
 var<storage> input : array<u32>;
@@ -482,11 +481,8 @@ g.test('fragment')
       .combineWithParams([{ format: 'rgba32uint' }] as const)
   )
   .fn(async t => {
-    t.skipIfDeviceDoesNotHaveFeature('subgroups' as GPUFeatureName);
-    interface SubgroupProperties extends GPUAdapterInfo {
-      subgroupMinSize: number;
-    }
-    const { subgroupMinSize } = t.device.adapterInfo as SubgroupProperties;
+    t.skipIfDeviceDoesNotHaveFeature('subgroups');
+    const subgroupMinSize = t.device.adapterInfo.subgroupMinSize!;
     const innerTexels = (t.params.size[0] - 1) * (t.params.size[1] - 1);
     t.skipIf(innerTexels < subgroupMinSize, 'Too few texels to be reliable');
 

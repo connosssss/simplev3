@@ -8,11 +8,13 @@ import android.content.DialogInterface
 import android.os.Looper.getMainLooper
 import android.view.View.GONE
 import android.widget.TextView
+import androidx.appcompat.R as appcompatR
 import androidx.appcompat.app.AlertDialog
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import mozilla.components.feature.prompts.R.id
 import mozilla.components.support.test.ext.appCompatContext
 import mozilla.components.support.test.mock
+import mozilla.components.support.test.robolectric.testContext
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
@@ -23,7 +25,6 @@ import org.mockito.Mockito.spy
 import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations.openMocks
 import org.robolectric.Shadows.shadowOf
-import androidx.appcompat.R as appcompatR
 
 @RunWith(AndroidJUnit4::class)
 class AuthenticationDialogFragmentTest {
@@ -33,23 +34,25 @@ class AuthenticationDialogFragmentTest {
     @Before
     fun setup() {
         openMocks(this)
+        testContext.setTheme(com.google.android.material.R.style.Theme_MaterialComponents_Light)
     }
 
     @Test
     fun `build dialog`() {
-        val fragment = spy(
-            AuthenticationDialogFragment.newInstance(
-                "sessionId",
-                "uid",
-                true,
-                "title",
-                "message",
-                "username",
-                "password",
-                onlyShowPassword = false,
-                url = "https://mozilla.com",
-            ),
-        )
+        val fragment =
+            spy(
+                AuthenticationDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    true,
+                    "title",
+                    "message",
+                    "username",
+                    "password",
+                    onlyShowPassword = false,
+                    url = "https://mozilla.com",
+                )
+            )
 
         doReturn(appCompatContext).`when`(fragment).requireContext()
 
@@ -86,19 +89,20 @@ class AuthenticationDialogFragmentTest {
 
     @Test
     fun `dialog with onlyShowPassword must not have a username field`() {
-        val fragment = spy(
-            AuthenticationDialogFragment.newInstance(
-                "sessionId",
-                "uid",
-                false,
-                "title",
-                "message",
-                "username",
-                "password",
-                true,
-                url = "https://mozilla.com",
-            ),
-        )
+        val fragment =
+            spy(
+                AuthenticationDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    false,
+                    "title",
+                    "message",
+                    "username",
+                    "password",
+                    true,
+                    url = "https://mozilla.com",
+                )
+            )
 
         doReturn(appCompatContext).`when`(fragment).requireContext()
 
@@ -113,19 +117,20 @@ class AuthenticationDialogFragmentTest {
 
     @Test
     fun `when the title is not provided the dialog must has a default value`() {
-        val fragment = spy(
-            AuthenticationDialogFragment.newInstance(
-                "sessionId",
-                "uid",
-                true,
-                "",
-                "message",
-                "username",
-                "password",
-                true,
-                url = "https://mozilla.com",
-            ),
-        )
+        val fragment =
+            spy(
+                AuthenticationDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    true,
+                    "",
+                    "message",
+                    "username",
+                    "password",
+                    true,
+                    url = "https://mozilla.com",
+                )
+            )
 
         doReturn(appCompatContext).`when`(fragment).requireContext()
 
@@ -141,19 +146,20 @@ class AuthenticationDialogFragmentTest {
 
     @Test
     fun `Clicking on positive button notifies the feature`() {
-        val fragment = spy(
-            AuthenticationDialogFragment.newInstance(
-                "sessionId",
-                "uid",
-                false,
-                "title",
-                "message",
-                "username",
-                "password",
-                false,
-                url = "https://mozilla.com",
-            ),
-        )
+        val fragment =
+            spy(
+                AuthenticationDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    false,
+                    "title",
+                    "message",
+                    "username",
+                    "password",
+                    false,
+                    url = "https://mozilla.com",
+                )
+            )
 
         fragment.feature = mockFeature
 
@@ -171,19 +177,20 @@ class AuthenticationDialogFragmentTest {
 
     @Test
     fun `touching outside of the dialog must notify the feature onCancel`() {
-        val fragment = spy(
-            AuthenticationDialogFragment.newInstance(
-                "sessionId",
-                "uid",
-                true,
-                "title",
-                "message",
-                "username",
-                "password",
-                false,
-                url = "https://mozilla.com",
-            ),
-        )
+        val fragment =
+            spy(
+                AuthenticationDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    true,
+                    "title",
+                    "message",
+                    "username",
+                    "password",
+                    false,
+                    url = "https://mozilla.com",
+                )
+            )
 
         fragment.feature = mockFeature
 

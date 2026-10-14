@@ -1,12 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "APZCTreeManagerTester.h"
 #include "APZTestCommon.h"
-
 #include "InputUtils.h"
 #include "mozilla/StaticPrefs_layout.h"
 
@@ -21,8 +18,7 @@ TEST_F(APZCSnappingOnMomentumTesterMock, Snap_On_Momentum) {
       LayerIntRect(0, 0, 100, 100),
   };
   CreateScrollData(treeShape, layerVisibleRect);
-  SetScrollableFrameMetrics(root, ScrollableLayerGuid::START_SCROLL_ID,
-                            CSSRect(0, 0, 100, 500));
+  SetScrollableFrameMetrics(root, START_SCROLL_ID, CSSRect(0, 0, 100, 500));
 
   // Set up some basic scroll snapping
   ScrollSnapInfo snap;
@@ -50,17 +46,17 @@ TEST_F(APZCSnappingOnMomentumTesterMock, Snap_On_Momentum) {
 
   TimeStamp now = mcc->Time();
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 80),
              ScreenPoint(0, 2), now);
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, manager, ScreenIntPoint(50, 80),
              ScreenPoint(0, 25), mcc->Time());
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, manager, ScreenIntPoint(50, 80),
              ScreenPoint(0, 25), mcc->Time());
 
@@ -69,29 +65,29 @@ TEST_F(APZCSnappingOnMomentumTesterMock, Snap_On_Momentum) {
 
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 80),
              ScreenPoint(0, 0), mcc->Time());
 
   // After lifting the fingers, the velocity should be zero and a smooth
   // animation should have been triggered for scroll snap.
   EXPECT_EQ(apzc->GetVelocityVector().y, 0);
-  apzc->AssertStateIsSmoothMsdScroll();
+  apzc->AssertInSmoothMsdScroll();
 
   mcc->AdvanceByMillis(5);
 
   apzc->AdvanceAnimations(mcc->GetSampleTime());
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMSTART, manager,
              ScreenIntPoint(50, 80), ScreenPoint(0, 200), mcc->Time());
   mcc->AdvanceByMillis(10);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMPAN, manager,
              ScreenIntPoint(50, 80), ScreenPoint(0, 50), mcc->Time());
   mcc->AdvanceByMillis(10);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMEND, manager,
              ScreenIntPoint(50, 80), ScreenPoint(0, 0), mcc->Time());
 

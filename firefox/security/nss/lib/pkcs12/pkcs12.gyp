@@ -10,9 +10,7 @@
       'target_name': 'pkcs12',
       'type': 'static_library',
       'sources': [
-        'p12creat.c',
         'p12d.c',
-        'p12dec.c',
         'p12e.c',
         'p12local.c',
         'p12plcy.c',
@@ -20,7 +18,14 @@
       ],
       'dependencies': [
         '<(DEPTH)/exports.gyp:nss_exports'
-      ]
+      ],
+      'conditions': [
+        [ 'fuzz_tls==1', {
+          'defines': [
+            'UNSAFE_FUZZER_MODE',
+          ],
+        }],
+      ],
     }
   ],
   'variables': {

@@ -12,7 +12,7 @@
 [package]
 edition = "2018"
 name = "cssparser-macros"
-version = "0.6.1"
+version = "0.7.1"
 authors = ["Simon Sapin <simon.sapin@exyr.org>"]
 build = false
 autolib = false
@@ -35,7 +35,7 @@ proc-macro = true
 quote = "1.0.29"
 
 [dependencies.syn]
-version = "2"
+version = ">=2,<4"
 features = [
     "full",
     "extra-traits",

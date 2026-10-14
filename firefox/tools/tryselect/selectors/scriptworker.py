@@ -6,16 +6,12 @@
 import sys
 
 import requests
-from gecko_taskgraph.util.taskgraph import find_existing_tasks
-from taskgraph.parameters import Parameters
-from taskgraph.util.taskcluster import find_task_id, get_artifact, get_session
 
 from ..cli import BaseTryParser
 from ..push import push_to_try
 
 TASK_TYPES = {
     "linux-signing": [
-        "build-signing-linux-shippable/opt",
         "build-signing-linux64-shippable/opt",
         "build-signing-win64-shippable/opt",
         "build-signing-win32-shippable/opt",
@@ -85,6 +81,8 @@ def get_release_graph(release):
 
 
 def get_nightly_graph():
+    from taskgraph.util.taskcluster import find_task_id
+
     return find_task_id(
         "gecko.v2.mozilla-central.latest.taskgraph.decision-nightly-all"
     )
@@ -99,6 +97,8 @@ def print_available_task_types():
 
 
 def get_hg_file(parameters, path):
+    from taskgraph.util.taskcluster import get_session
+
     session = get_session()
     response = session.get(parameters.file_url(path))
     response.raise_for_status()
@@ -106,11 +106,13 @@ def get_hg_file(parameters, path):
 
 
 def run(
+    metrics,
     task_type,
     release_type,
     try_config_params=None,
     stage_changes=False,
     dry_run=False,
+    write_task_config=False,
     message="{msg}",
     closed_tree=False,
     push_to_vcs=False,
@@ -119,13 +121,20 @@ def run(
         print_available_task_types()
         sys.exit(0)
 
+    metrics.mach_try.remote_data_fetching_duration.start()
+    from gecko_taskgraph.util.taskgraph import find_existing_tasks
+    from taskgraph.parameters import Parameters
+    from taskgraph.util.taskcluster import get_artifact
+
     if release_type == "nightly":
         previous_graph = get_nightly_graph()
     else:
         release = get_releases(RELEASE_TO_BRANCH[release_type])[-1]
         previous_graph = get_release_graph(release)
     existing_tasks = find_existing_tasks([previous_graph])
+    metrics.mach_try.remote_data_fetching_duration.stop()
 
+    metrics.mach_try.task_config_generation_duration.start()
     previous_parameters = Parameters(
         strict=False, **get_artifact(previous_graph, "public/parameters.yml")
     )
@@ -161,12 +170,15 @@ def run(
         if label in existing_tasks:
             del existing_tasks[label]
 
+    metrics.mach_try.task_config_generation_duration.stop()
     msg = f"scriptworker tests: {task_type}"
     return push_to_try(
         "scriptworker",
         message.format(msg=msg),
+        metrics,
         stage_changes=stage_changes,
         dry_run=dry_run,
+        write_task_config=write_task_config,
         closed_tree=closed_tree,
         try_task_config=task_config,
         files_to_change=files_to_change,

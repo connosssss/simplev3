@@ -1,132 +1,119 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "base/basictypes.h"
-
 #include "nsLayoutStatics.h"
-#include "nscore.h"
 
-#include "mozilla/intl/AppDateTimeFormat.h"
-#include "mozilla/intl/EncodingToLang.h"
-#include "mozilla/dom/ServiceWorkerRegistrar.h"
-#include "nsAttrValue.h"
-#include "nsComputedDOMStyle.h"
-#include "nsContentDLF.h"
-#include "nsContentUtils.h"
-#include "nsCSSAnonBoxes.h"
-#include "mozilla/css/ErrorReporter.h"
-#include "nsCSSProps.h"
-#include "nsCSSPseudoElements.h"
-#include "nsCSSRendering.h"
-#include "nsGenericHTMLFrameElement.h"
-#include "mozilla/dom/Attr.h"
-#include "mozilla/dom/PopupBlocker.h"
-#include "nsIFrame.h"
-#include "nsFrameState.h"
-#include "nsGlobalWindowInner.h"
-#include "nsGlobalWindowOuter.h"
-#include "nsGkAtoms.h"
-#include "nsImageFrame.h"
-#include "mozilla/GlobalStyleSheetCache.h"
-#include "nsRegion.h"
-#include "nsRepeatService.h"
-#include "nsFloatManager.h"
-#include "nsTextControlFrame.h"
-#include "txMozillaXSLTProcessor.h"
-#include "nsTreeSanitizer.h"
-#include "nsCellMap.h"
-#include "nsTextFrame.h"
-#include "nsCCUncollectableMarker.h"
-#include "nsTextFragment.h"
-#include "nsCORSListenerProxy.h"
-#include "nsHtml5Module.h"
-#include "nsHTMLTags.h"
-#include "nsFocusManager.h"
-#include "mozilla/dom/HTMLDNSPrefetch.h"
-#include "mozilla/dom/HTMLInputElement.h"
-#include "mozilla/dom/SVGElementFactory.h"
-#include "nsMathMLAtoms.h"
-#include "nsMathMLOperators.h"
-#include "Navigator.h"
-#include "StorageObserver.h"
+#include "ActiveLayerTracker.h"
+#include "AnimationCommon.h"
+#include "AudioChannelService.h"
 #include "CacheObserver.h"
 #include "DisplayItemClip.h"
 #include "HitTestInfo.h"
-#include "ActiveLayerTracker.h"
-#include "AnimationCommon.h"
 #include "LayerAnimationInfo.h"
-
-#include "AudioChannelService.h"
+#include "Navigator.h"
+#include "StorageObserver.h"
+#include "base/basictypes.h"
+#include "mozilla/GlobalStyleSheetCache.h"
+#include "mozilla/css/ErrorReporter.h"
+#include "mozilla/dom/Attr.h"
+#include "mozilla/dom/CharacterDataBuffer.h"
+#include "mozilla/dom/HTMLDNSPrefetch.h"
+#include "mozilla/dom/HTMLInputElement.h"
+#include "mozilla/dom/PopupBlocker.h"
 #include "mozilla/dom/PromiseDebugging.h"
+#include "mozilla/dom/SVGElementFactory.h"
+#include "mozilla/dom/ServiceWorkerRegistrar.h"
+#include "mozilla/dom/UIDirectionManager.h"
 #include "mozilla/dom/nsMixedContentBlocker.h"
-
-#include "nsXULPopupManager.h"
+#include "mozilla/intl/AppCollator.h"
+#include "mozilla/intl/AppDateTimeFormat.h"
+#include "mozilla/intl/EncodingToLang.h"
+#include "nsAttrValue.h"
+#include "nsCCUncollectableMarker.h"
+#include "nsCORSListenerProxy.h"
+#include "nsCSSProps.h"
+#include "nsCSSRendering.h"
+#include "nsCellMap.h"
+#include "nsComputedDOMStyle.h"
+#include "nsContentDLF.h"
+#include "nsContentUtils.h"
+#include "nsFloatManager.h"
+#include "nsFocusManager.h"
+#include "nsFrameState.h"
+#include "nsGenericHTMLFrameElement.h"
+#include "nsGlobalWindowInner.h"
+#include "nsGlobalWindowOuter.h"
+#include "nsHTMLTags.h"
+#include "nsHtml5Module.h"
+#include "nsIFrame.h"
+#include "nsImageFrame.h"
+#include "nsMathMLAtoms.h"
+#include "nsMathMLOperators.h"
+#include "nsRegion.h"
+#include "nsRepeatService.h"
+#include "nsTextControlFrame.h"
+#include "nsTextFrame.h"
+#include "nsTreeSanitizer.h"
 #include "nsXULContentUtils.h"
+#include "nsXULPopupManager.h"
 #include "nsXULPrototypeCache.h"
 #include "nsXULTooltipListener.h"
-
-#include "mozilla/dom/UIDirectionManager.h"
+#include "nscore.h"
+#include "txMozillaXSLTProcessor.h"
 
 #ifdef XP_WIN
-#  include "mozilla/widget/AudioSession.h"
+#  include "mozilla/widget/WinAudioSession.h"
 #endif
 #include "CubebUtils.h"
-#include "WebAudioUtils.h"
-
-#include "nsError.h"
-
-#include "nsJSEnvironment.h"
-#include "nsContentSink.h"
-#include "nsFrameMessageManager.h"
-#include "nsDOMMutationObserver.h"
-#include "nsHyphenationManager.h"
-#include "nsWindowMemoryReporter.h"
-#include "mozilla/dom/ContentParent.h"
-#include "mozilla/ProcessPriorityManager.h"
-#include "mozilla/PermissionManager.h"
-#include "mozilla/dom/CustomElementRegistry.h"
-#include "mozilla/EventDispatcher.h"
-#include "mozilla/IMEStateManager.h"
-#ifndef MOZ_WIDGET_ANDROID
-#  include "mozilla/Viaduct.h"
-#endif
-#include "mozilla/dom/HTMLVideoElement.h"
-#include "ThirdPartyUtil.h"
-#include "TouchManager.h"
 #include "DecoderDoctorLogger.h"
 #include "MediaDecoder.h"
+#include "RLBoxWOFF2Types.h"
+#include "RestoreTabContentObserver.h"
+#include "ThirdPartyUtil.h"
+#include "TouchManager.h"
+#include "WebAudioUtils.h"
+#include "gfxUserFontSet.h"
 #include "mozilla/ClearSiteData.h"
 #include "mozilla/EditorController.h"
+#include "mozilla/EventDispatcher.h"
 #include "mozilla/HTMLEditorController.h"
+#include "mozilla/IMEStateManager.h"
+#include "mozilla/PermissionManager.h"
+#include "mozilla/ProcessPriorityManager.h"
+#include "mozilla/RemoteLazyInputStreamStorage.h"
 #include "mozilla/ServoBindings.h"
 #include "mozilla/StaticPresData.h"
+#include "mozilla/css/ImageLoader.h"
 #include "mozilla/dom/AbstractRange.h"
+#include "mozilla/dom/BlobURLProtocolHandler.h"
+#include "mozilla/dom/BrowserParent.h"
+#include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/CustomElementRegistry.h"
 #include "mozilla/dom/Document.h"
-#include "mozilla/dom/WebIDLGlobalNameHash.h"
+#include "mozilla/dom/HTMLVideoElement.h"
+#include "mozilla/dom/MIDIPlatformService.h"
 #include "mozilla/dom/PointerEventHandler.h"
 #include "mozilla/dom/RemoteWorkerService.h"
-#include "mozilla/dom/BlobURLProtocolHandler.h"
 #include "mozilla/dom/ReportingHeader.h"
-#include "mozilla/dom/BrowserParent.h"
-#include "mozilla/dom/MIDIPlatformService.h"
+#include "mozilla/dom/SerialPlatformService.h"
+#include "mozilla/dom/WebIDLGlobalNameHash.h"
+#include "mozilla/dom/localstorage/ActorsParent.h"
 #include "mozilla/dom/quota/ActorsParent.h"
 #include "mozilla/dom/quota/StringifyUtils.h"
-#include "mozilla/dom/localstorage/ActorsParent.h"
-#include "mozilla/net/UrlClassifierFeatureFactory.h"
-#include "mozilla/RemoteLazyInputStreamStorage.h"
-#include "nsLayoutUtils.h"
-#include "nsThreadManager.h"
-#include "mozilla/css/ImageLoader.h"
-#include "gfxUserFontSet.h"
-#include "RestoreTabContentObserver.h"
-#include "mozilla/intl/LineBreaker.h"
 #include "mozilla/intl/LineBreakCache.h"
-
+#include "mozilla/intl/LineBreaker.h"
+#include "mozilla/net/UrlClassifierFeatureFactory.h"
+#include "nsContentSink.h"
+#include "nsDOMMutationObserver.h"
+#include "nsError.h"
+#include "nsFrameMessageManager.h"
+#include "nsHyphenationManager.h"
+#include "nsJSEnvironment.h"
+#include "nsLayoutUtils.h"
 #include "nsRLBoxExpatDriver.h"
-#include "RLBoxWOFF2Types.h"
+#include "nsThreadManager.h"
+#include "nsWindowMemoryReporter.h"
 
 using namespace mozilla;
 using namespace mozilla::net;
@@ -145,13 +132,13 @@ nsresult nsLayoutStatics::Initialize() {
 
   nsresult rv;
 
+  mozilla::intl::AppCollator::Initialize();
+
   ContentParent::StartUp();
 
   nsCSSProps::Init();
 
 #ifdef DEBUG
-  nsCSSPseudoElements::AssertAtoms();
-  nsCSSAnonBoxes::AssertAtoms();
   DebugVerifyFrameStateBits();
 #endif
 
@@ -168,9 +155,9 @@ nsresult nsLayoutStatics::Initialize() {
 
   nsAttrValue::Init();
 
-  rv = nsTextFragment::Init();
+  rv = CharacterDataBuffer::Init();
   if (NS_FAILED(rv)) {
-    NS_ERROR("Could not initialize nsTextFragment");
+    NS_ERROR("Could not initialize CharacterDataBuffer");
     return rv;
   }
 
@@ -210,11 +197,7 @@ nsresult nsLayoutStatics::Initialize() {
     return rv;
   }
 
-  rv = nsXULPopupManager::Init();
-  if (NS_FAILED(rv)) {
-    NS_ERROR("Could not initialize nsXULPopupManager");
-    return rv;
-  }
+  nsXULPopupManager::Init();
 
   rv = nsFocusManager::Init();
   if (NS_FAILED(rv)) {
@@ -295,12 +278,6 @@ nsresult nsLayoutStatics::Initialize() {
     MIDIPlatformService::InitStatics();
   }
 
-#ifndef MOZ_WIDGET_ANDROID
-  if (XRE_IsParentProcess()) {
-    InitializeViaduct();
-  }
-#endif
-
   mozilla::intl::EncodingToLang::Initialize();
 
   return NS_OK;
@@ -336,7 +313,6 @@ void nsLayoutStatics::Shutdown() {
   // Release all of our atoms
   nsRepeatService::Shutdown();
 
-  nsXULContentUtils::Finish();
   nsXULPrototypeCache::ReleaseGlobals();
 
   SVGElementFactory::Shutdown();
@@ -347,7 +323,7 @@ void nsLayoutStatics::Shutdown() {
 
   mozilla::css::ErrorReporter::ReleaseGlobals();
 
-  nsTextFragment::Shutdown();
+  CharacterDataBuffer::Shutdown();
 
   nsAttrValue::Shutdown();
   nsContentUtils::Shutdown();

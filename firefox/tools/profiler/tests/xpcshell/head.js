@@ -16,16 +16,18 @@ const sharedHead = do_get_file("shared-head.js", false);
 if (!sharedHead) {
   throw new Error("Could not load the shared head.");
 }
-Services.scriptloader.loadSubScript(
+Services.scriptloader.loadSubScriptWithOptions(
   Services.io.newFileURI(sharedHead).spec,
-  this
+  { target: this, allowUnsafeURL: true }
 );
+
+add_setup(ProfilerTestUtils.assertProfilerInactive);
 
 /**
  * This function takes a thread, and a sample tuple from the "data" array, and
  * inflates the frame to be an array of strings.
  *
- * @param {Object} thread - The thread from the profile.
+ * @param {object} thread - The thread from the profile.
  * @param {Array} sample - The tuple from the thread.samples.data array.
  * @returns {Array<string>} An array of function names.
  */

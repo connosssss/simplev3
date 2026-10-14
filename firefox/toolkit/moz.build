@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -25,10 +23,19 @@ DIRS += [
 ]
 
 if CONFIG["OS_ARCH"] == "WINNT":
-    # mingw is missing Windows toast notification definitions.
+    # mingw-w64 is missing the WRL headers the toast notification code uses.
     if CONFIG["CC_TYPE"] == "clang-cl":
         if CONFIG["MOZ_NOTIFICATION_SERVER"]:
             DIRS += ["mozapps/notificationserver"]
+
+    if CONFIG["MOZ_BACKGROUNDTASKS"]:
+        DIRS += [
+            "mozapps/msixcomserver",
+            "mozapps/msixcomserver-rust",
+        ]
+
+    if CONFIG["MOZ_PUSH_NOTIFICATION_HELPER"]:
+        DIRS += ["mozapps/pushnotificationhelper"]
 
     if CONFIG["CC_TYPE"] == "clang-cl" or CONFIG["MOZ_ARTIFACT_BUILDS"]:
         # Default Browser Agent relies on Windows toast notifications, so should
@@ -52,9 +59,13 @@ DIRS += ["xre"]
 if CONFIG["MOZ_WIDGET_TOOLKIT"] != "android":
     DIRS += ["mozapps/handling"]
 if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
-    DIRS += ["system/unixproxy"]
+    DIRS += [
+        "system/commonproxy",
+        "system/unixproxy",
+    ]
 elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
     DIRS += [
+        "mozapps/dmgInstallHelper",
         "mozapps/macos-frameworks",
         "system/commonproxy",
         "system/osxproxy",
@@ -76,6 +87,9 @@ TEST_HARNESS_FILES.testing.mochitest.browser.toolkit.crashreporter.test.browser 
     "crashreporter/test/browser/crashreport.sjs",
 ]
 
+if CONFIG["ENABLE_TESTS"]:
+    DIRS += ["tests/gtest"]
+
 with Files("docs/**"):
     BUG_COMPONENT = ("Toolkit", "General")
 
@@ -95,7 +109,7 @@ with Files("mozapps/preferences/**"):
     BUG_COMPONENT = ("Toolkit", "Preferences")
 
 with Files("l10n-registry.manifest"):
-    BUG_COMPONENT = ("Core", "Localization")
+    BUG_COMPONENT = ("Core", "Internationalization: Localization")
 
 with Files("jsconfig.json"):
     BUG_COMPONENT = ("Developer Infrastructure", "Lint and Formatting")

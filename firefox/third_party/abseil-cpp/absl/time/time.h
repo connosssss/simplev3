@@ -62,19 +62,6 @@
 #ifndef ABSL_TIME_TIME_H_
 #define ABSL_TIME_TIME_H_
 
-#if !defined(_MSC_VER)
-#include <sys/time.h>
-#else
-// We don't include `winsock2.h` because it drags in `windows.h` and friends,
-// and they define conflicting macros like OPAQUE, ERROR, and more. This has the
-// potential to break Abseil users.
-//
-// Instead we only forward declare `timeval` and require Windows users include
-// `winsock2.h` themselves. This is both inconsistent and troublesome, but so is
-// including 'windows.h' so we are picking the lesser of two evils here.
-struct timeval;
-#endif
-
 #include "absl/base/config.h"
 
 // For feature testing and determining which headers can be included.
@@ -101,6 +88,19 @@ struct timeval;
 #include "absl/strings/string_view.h"
 #include "absl/time/civil_time.h"
 #include "absl/time/internal/cctz/include/cctz/time_zone.h"
+
+#if !defined(_MSC_VER)
+#include <sys/time.h>
+#else
+// We don't include `winsock2.h` because it drags in `windows.h` and friends,
+// and they define conflicting macros like OPAQUE, ERROR, and more. This has the
+// potential to break Abseil users.
+//
+// Instead we only forward declare `timeval` and require Windows users include
+// `winsock2.h` themselves. This is both inconsistent and troublesome, but so is
+// including 'windows.h' so we are picking the lesser of two evils here.
+struct timeval;
+#endif
 
 #if defined(__cpp_impl_three_way_comparison) && \
     defined(__cpp_lib_three_way_comparison)
@@ -134,11 +134,10 @@ ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Duration FromInt64(int64_t v,
 ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Duration FromInt64(int64_t v,
                                                            std::ratio<3600>);
 template <typename T>
-using EnableIfIntegral = typename std::enable_if<
-    std::is_integral<T>::value || std::is_enum<T>::value, int>::type;
+using EnableIfIntegral =
+    std::enable_if_t<std::is_integral_v<T> || std::is_enum_v<T>, int>;
 template <typename T>
-using EnableIfFloat =
-    typename std::enable_if<std::is_floating_point<T>::value, int>::type;
+using EnableIfFloat = std::enable_if_t<std::is_floating_point_v<T>, int>;
 }  // namespace time_internal
 
 // Duration
@@ -148,7 +147,8 @@ using EnableIfFloat =
 // the result of subtracting one `absl::Time` from another. Durations behave
 // like unit-safe integers and they support all the natural integer-like
 // arithmetic operations. Arithmetic overflows and saturates at +/- infinity.
-// `Duration` should be passed by value rather than const reference.
+// `Duration` is trivially destructible and should be passed by value rather
+// than const reference.
 //
 // Factory functions `Nanoseconds()`, `Microseconds()`, `Milliseconds()`,
 // `Seconds()`, `Minutes()`, `Hours()` and `InfiniteDuration()` allow for
@@ -588,9 +588,10 @@ ABSL_ATTRIBUTE_CONST_FUNCTION Duration Seconds(T n) {
     }
     return time_internal::MakePosDoubleDuration(n);
   } else {
-    if (std::isnan(n))
-      return std::signbit(n) ? -InfiniteDuration() : InfiniteDuration();
-    if (n <= (std::numeric_limits<int64_t>::min)()) return -InfiniteDuration();
+    if (std::isnan(n)) return -InfiniteDuration();
+    if (n <= static_cast<T>((std::numeric_limits<int64_t>::min)())) {
+      return -InfiniteDuration();
+    }
     return -time_internal::MakePosDoubleDuration(-n);
   }
 }
@@ -619,12 +620,12 @@ ABSL_ATTRIBUTE_CONST_FUNCTION Duration Hours(T n) {
 //
 //   absl::Duration d = absl::Milliseconds(1500);
 //   int64_t isec = absl::ToInt64Seconds(d);  // isec == 1
-ABSL_ATTRIBUTE_CONST_FUNCTION int64_t ToInt64Nanoseconds(Duration d);
-ABSL_ATTRIBUTE_CONST_FUNCTION int64_t ToInt64Microseconds(Duration d);
-ABSL_ATTRIBUTE_CONST_FUNCTION int64_t ToInt64Milliseconds(Duration d);
-ABSL_ATTRIBUTE_CONST_FUNCTION int64_t ToInt64Seconds(Duration d);
-ABSL_ATTRIBUTE_CONST_FUNCTION int64_t ToInt64Minutes(Duration d);
-ABSL_ATTRIBUTE_CONST_FUNCTION int64_t ToInt64Hours(Duration d);
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Nanoseconds(Duration d);
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Microseconds(Duration d);
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Milliseconds(Duration d);
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Seconds(Duration d);
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Minutes(Duration d);
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Hours(Duration d);
 
 // ToDoubleNanoseconds()
 // ToDoubleMicroseconds()
@@ -730,16 +731,15 @@ bool ParseDuration(absl::string_view dur_string, Duration* d);
 // `absl::ParseDuration()`.
 bool AbslParseFlag(absl::string_view text, Duration* dst, std::string* error);
 
-
 // AbslUnparseFlag()
 //
 // Unparses a Duration value into a command-line string representation using
 // the format specified by `absl::ParseDuration()`.
 std::string AbslUnparseFlag(Duration d);
 
-ABSL_DEPRECATED("Use AbslParseFlag() instead.")
+[[deprecated("Use AbslParseFlag() instead.")]]
 bool ParseFlag(const std::string& text, Duration* dst, std::string* error);
-ABSL_DEPRECATED("Use AbslUnparseFlag() instead.")
+[[deprecated("Use AbslUnparseFlag() instead.")]]
 std::string UnparseFlag(Duration d);
 
 // Time
@@ -748,8 +748,9 @@ std::string UnparseFlag(Duration d);
 // are provided for naturally expressing time calculations. Instances are
 // created using `absl::Now()` and the `absl::From*()` factory functions that
 // accept the gamut of other time representations. Formatting and parsing
-// functions are provided for conversion to and from strings.  `absl::Time`
-// should be passed by value rather than const reference.
+// functions are provided for conversion to and from strings. `absl::Time` is
+// trivially destructible and should be passed by value rather than const
+// reference.
 //
 // `absl::Time` assumes there are 60 seconds in a minute, which means the
 // underlying time scales must be "smeared" to eliminate leap seconds.
@@ -823,7 +824,7 @@ class Time {
   // `absl::TimeZone`.
   //
   // Deprecated. Use `absl::TimeZone::CivilInfo`.
-  struct ABSL_DEPRECATED("Use `absl::TimeZone::CivilInfo`.") Breakdown {
+  struct [[deprecated("Use `absl::TimeZone::CivilInfo`.")]] Breakdown {
     int64_t year;        // year (e.g., 2013)
     int month;           // month of year [1:12]
     int day;             // day of month [1:31]
@@ -850,7 +851,7 @@ class Time {
   //
   // Deprecated. Use `absl::TimeZone::At(Time)`.
   ABSL_INTERNAL_DISABLE_DEPRECATED_DECLARATION_WARNING
-  ABSL_DEPRECATED("Use `absl::TimeZone::At(Time)`.")
+  [[deprecated("Use `absl::TimeZone::At(Time)`.")]]
   Breakdown In(TimeZone tz) const;
   ABSL_INTERNAL_RESTORE_DEPRECATED_DECLARATION_WARNING
 
@@ -1062,11 +1063,6 @@ bool AbslParseFlag(absl::string_view text, Time* t, std::string* error);
 // Unparses a Time value into a command-line string representation using
 // the format specified by `absl::ParseTime()`.
 std::string AbslUnparseFlag(Time t);
-
-ABSL_DEPRECATED("Use AbslParseFlag() instead.")
-bool ParseFlag(const std::string& text, Time* t, std::string* error);
-ABSL_DEPRECATED("Use AbslUnparseFlag() instead.")
-std::string UnparseFlag(Time t);
 
 // TimeZone
 //
@@ -1360,7 +1356,7 @@ ABSL_ATTRIBUTE_PURE_FUNCTION inline Time FromCivil(CivilSecond ct,
 // `absl::ConvertDateTime()`. Legacy version of `absl::TimeZone::TimeInfo`.
 //
 // Deprecated. Use `absl::TimeZone::TimeInfo`.
-struct ABSL_DEPRECATED("Use `absl::TimeZone::TimeInfo`.") TimeConversion {
+struct [[deprecated("Use `absl::TimeZone::TimeInfo`.")]] TimeConversion {
   Time pre;    // time calculated using the pre-transition offset
   Time trans;  // when the civil-time discontinuity occurred
   Time post;   // time calculated using the post-transition offset
@@ -1395,7 +1391,7 @@ struct ABSL_DEPRECATED("Use `absl::TimeZone::TimeInfo`.") TimeConversion {
 //
 // Deprecated. Use `absl::TimeZone::At(CivilSecond)`.
 ABSL_INTERNAL_DISABLE_DEPRECATED_DECLARATION_WARNING
-ABSL_DEPRECATED("Use `absl::TimeZone::At(CivilSecond)`.")
+[[deprecated("Use `absl::TimeZone::At(CivilSecond)`.")]]
 TimeConversion ConvertDateTime(int64_t year, int mon, int day, int hour,
                                int min, int sec, TimeZone tz);
 ABSL_INTERNAL_RESTORE_DEPRECATED_DECLARATION_WARNING
@@ -1415,7 +1411,7 @@ ABSL_INTERNAL_RESTORE_DEPRECATED_DECLARATION_WARNING
 // Deprecated. Use `absl::FromCivil(CivilSecond, TimeZone)`. Note that the
 // behavior of `FromCivil()` differs from `FromDateTime()` for skipped civil
 // times. If you care about that see `absl::TimeZone::At(absl::CivilSecond)`.
-ABSL_DEPRECATED("Use `absl::FromCivil(CivilSecond, TimeZone)`.")
+[[deprecated("Use `absl::FromCivil(CivilSecond, TimeZone)`.")]]
 inline Time FromDateTime(int64_t year, int mon, int day, int hour, int min,
                          int sec, TimeZone tz) {
   ABSL_INTERNAL_DISABLE_DEPRECATED_DECLARATION_WARNING
@@ -1678,14 +1674,16 @@ ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Duration FromInt64(int64_t v,
   return (v <= (std::numeric_limits<int64_t>::max)() / 60 &&
           v >= (std::numeric_limits<int64_t>::min)() / 60)
              ? MakeDuration(v * 60)
-             : v > 0 ? InfiniteDuration() : -InfiniteDuration();
+         : v > 0 ? InfiniteDuration()
+                 : -InfiniteDuration();
 }
 ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Duration FromInt64(int64_t v,
                                                            std::ratio<3600>) {
   return (v <= (std::numeric_limits<int64_t>::max)() / 3600 &&
           v >= (std::numeric_limits<int64_t>::min)() / 3600)
              ? MakeDuration(v * 3600)
-             : v > 0 ? InfiniteDuration() : -InfiniteDuration();
+         : v > 0 ? InfiniteDuration()
+                 : -InfiniteDuration();
 }
 
 // IsValidRep64<T>(0) is true if the expression `int64_t{std::declval<T>()}` is
@@ -1803,13 +1801,12 @@ ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Duration operator-(Duration d) {
                        (std::numeric_limits<int64_t>::min)()
                    ? InfiniteDuration()
                    : time_internal::MakeDuration(-time_internal::GetRepHi(d))
-             : time_internal::IsInfiniteDuration(d)
-                   ? time_internal::OppositeInfinity(d)
-                   : time_internal::MakeDuration(
-                         time_internal::NegateAndSubtractOne(
-                             time_internal::GetRepHi(d)),
-                         time_internal::kTicksPerSecond -
-                             time_internal::GetRepLo(d));
+         : time_internal::IsInfiniteDuration(d)
+             ? time_internal::OppositeInfinity(d)
+             : time_internal::MakeDuration(
+                   time_internal::NegateAndSubtractOne(
+                       time_internal::GetRepHi(d)),
+                   time_internal::kTicksPerSecond - time_internal::GetRepLo(d));
 }
 
 ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Duration InfiniteDuration() {
@@ -1860,6 +1857,61 @@ ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Time FromUnixSeconds(int64_t s) {
 
 ABSL_ATTRIBUTE_CONST_FUNCTION constexpr Time FromTimeT(time_t t) {
   return time_internal::FromUnixDuration(Seconds(t));
+}
+
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Nanoseconds(Duration d) {
+  if (time_internal::GetRepHi(d) >= 0 &&
+      time_internal::GetRepHi(d) >> 33 == 0) {
+    return (time_internal::GetRepHi(d) * 1000 * 1000 * 1000) +
+           (time_internal::GetRepLo(d) / time_internal::kTicksPerNanosecond);
+  } else {
+    return d / Nanoseconds(1);
+  }
+}
+
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Microseconds(
+    Duration d) {
+  if (time_internal::GetRepHi(d) >= 0 &&
+      time_internal::GetRepHi(d) >> 43 == 0) {
+    return (time_internal::GetRepHi(d) * 1000 * 1000) +
+           (time_internal::GetRepLo(d) /
+            (time_internal::kTicksPerNanosecond * 1000));
+  } else {
+    return d / Microseconds(1);
+  }
+}
+
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Milliseconds(
+    Duration d) {
+  if (time_internal::GetRepHi(d) >= 0 &&
+      time_internal::GetRepHi(d) >> 53 == 0) {
+    return (time_internal::GetRepHi(d) * 1000) +
+           (time_internal::GetRepLo(d) /
+            (time_internal::kTicksPerNanosecond * 1000 * 1000));
+  } else {
+    return d / Milliseconds(1);
+  }
+}
+
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Seconds(Duration d) {
+  int64_t hi = time_internal::GetRepHi(d);
+  if (time_internal::IsInfiniteDuration(d)) return hi;
+  if (hi < 0 && time_internal::GetRepLo(d) != 0) ++hi;
+  return hi;
+}
+
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Minutes(Duration d) {
+  int64_t hi = time_internal::GetRepHi(d);
+  if (time_internal::IsInfiniteDuration(d)) return hi;
+  if (hi < 0 && time_internal::GetRepLo(d) != 0) ++hi;
+  return hi / 60;
+}
+
+ABSL_ATTRIBUTE_CONST_FUNCTION constexpr int64_t ToInt64Hours(Duration d) {
+  int64_t hi = time_internal::GetRepHi(d);
+  if (time_internal::IsInfiniteDuration(d)) return hi;
+  if (hi < 0 && time_internal::GetRepLo(d) != 0) ++hi;
+  return hi / (60 * 60);
 }
 
 ABSL_NAMESPACE_END

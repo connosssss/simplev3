@@ -5,9 +5,13 @@
 package mozilla.components.feature.downloads.temporary
 
 import android.content.Context
-import android.webkit.MimeTypeMap
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import java.io.File
+import java.nio.charset.StandardCharsets
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import mozilla.components.browser.state.action.BrowserAction
 import mozilla.components.browser.state.action.CopyInternetResourceAction
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.state.ContentState
@@ -21,244 +25,275 @@ import mozilla.components.concept.fetch.Request
 import mozilla.components.concept.fetch.Response
 import mozilla.components.support.test.any
 import mozilla.components.support.test.argumentCaptor
-import mozilla.components.support.test.ext.joinBlocking
+import mozilla.components.support.test.middleware.CaptureActionsMiddleware
 import mozilla.components.support.test.mock
 import mozilla.components.support.test.robolectric.testContext
-import mozilla.components.support.test.rule.MainCoroutineRule
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doNothing
 import org.mockito.Mockito.doReturn
+import org.mockito.Mockito.doThrow
 import org.mockito.Mockito.spy
 import org.mockito.Mockito.verify
-import org.robolectric.Shadows.shadowOf
-import java.io.File
-import java.nio.charset.StandardCharsets
 
-/**
- * The 89a gif header as seen on https://www.w3.org/Graphics/GIF/spec-gif89a.txt
- */
+/** The 89a gif header as seen on https://www.w3.org/Graphics/GIF/spec-gif89a.txt */
 private const val GIF_HEADER = "GIF89a"
 
 @RunWith(AndroidJUnit4::class)
 class CopyDownloadFeatureTest {
-    // When writing new tests initialize CopyDownloadFeature with this class' context property
-    // When creating new directories use class' context property#cacheDir as a parent
-    // This will ensure the effectiveness of @After. Otherwise leftover files may be left on the machine running tests.
 
     private lateinit var context: Context
-    private val testCacheDirName = "testCacheDir"
+    private val testDispatcher = StandardTestDispatcher()
+    private val scope = TestScope(testDispatcher)
 
-    @get:Rule
-    val coroutinesTestRule = MainCoroutineRule()
-    private val dispatcher = coroutinesTestRule.testDispatcher
-    private val scope = coroutinesTestRule.scope
+    @get:Rule val temporaryFolder = TemporaryFolder()
 
     @Before
     fun setup() {
         // Effectively reset context mock
         context = spy(testContext)
-        doReturn(File(testCacheDirName)).`when`(context).cacheDir
-    }
-
-    @After
-    fun cleanup() {
-        context.cacheDir.deleteRecursively()
+        doReturn(temporaryFolder.root).`when`(context).cacheDir
     }
 
     @Test
-    fun `cleanupCache should automatically be called when this class is initialized`() = runTest {
-        val cacheDir = File(context.cacheDir, cacheDirName).also { dir ->
-            dir.mkdirs()
-            File(dir, "leftoverFile").also { file -> file.createNewFile() }
+    fun `cleanupCache should automatically be called when this class is initialized`() =
+        runTest(testDispatcher) {
+            val cacheDir =
+                File(context.cacheDir, cacheDirName).also { dir ->
+                    dir.mkdirs()
+                    File(dir, "leftoverFile").also { file -> file.createNewFile() }
+                }
+
+            assertEquals(1, cacheDir.listFiles()?.size)
+
+            CopyDownloadFeature(context, BrowserStore(), null, mock(), mock(), testDispatcher, testDispatcher)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            assertEquals(0, cacheDir.listFiles()?.size)
         }
-
-        assertTrue(cacheDir.listFiles()!!.isNotEmpty())
-
-        CopyDownloadFeature(context, mock(), null, mock(), mock(), dispatcher)
-
-        assertTrue(cacheDir.listFiles()!!.isEmpty())
-    }
 
     @Test
     fun `CopyFeature starts the copy process for AddCopyAction which is immediately consumed`() {
-        val store = spy(
+        val captureMiddleware = CaptureActionsMiddleware<BrowserState, BrowserAction>()
+
+        val store =
             BrowserStore(
                 BrowserState(
-                    tabs = listOf(
-                        TabSessionState(
-                            "123",
-                            ContentState(url = "https://www.mozilla.org"),
-                        ),
-                    ),
+                    tabs =
+                        listOf(
+                            TabSessionState(
+                                "123",
+                                ContentState(url = "https://www.mozilla.org"),
+                            )
+                        )
                 ),
-            ),
-        )
-        val copyFeature =
-            spy(CopyDownloadFeature(context, store, "123", mock(), mock(), dispatcher))
+                middleware = listOf(captureMiddleware),
+            )
+
+        val copyFeature = spy(createFeature(store = store, tabId = "123"))
         doNothing().`when`(copyFeature).startCopy(any())
+
         val download = ShareResourceState.InternetResource(url = "testDownload")
         val action = CopyInternetResourceAction.AddCopyAction("123", download)
         copyFeature.start()
 
-        store.dispatch(action).joinBlocking()
-        dispatcher.scheduler.advanceUntilIdle()
+        store.dispatch(action)
+        testDispatcher.scheduler.advanceUntilIdle()
 
         verify(copyFeature).startCopy(download)
-        verify(store).dispatch(CopyInternetResourceAction.ConsumeCopyAction("123"))
+
+        captureMiddleware.assertFirstAction(CopyInternetResourceAction.ConsumeCopyAction::class) { action ->
+            assertEquals("123", action.tabId)
+        }
     }
 
     @Test
-    fun `cleanupCache should delete all files from the cache directory`() = runTest {
-        val copyFeature =
-            spy(CopyDownloadFeature(context, mock(), null, mock(), mock(), dispatcher))
-        val testDir = File(context.cacheDir, cacheDirName).also { dir ->
-            dir.mkdirs()
-            File(dir, "testFile").also { file -> file.createNewFile() }
+    fun `cleanupCache should delete all files from the cache directory`() =
+        runTest(testDispatcher) {
+            val copyFeature = createFeature()
+            val cacheDir = copyFeature.getMediaShareCacheDirectory()
+
+            val testFile = File(cacheDir, "testFile")
+            testFile.createNewFile()
+
+            assertTrue("File was created", testFile.exists())
+
+            copyFeature.cleanupCache()
+
+            val remainingFiles = cacheDir.listFiles()?.toList() ?: emptyList()
+
+            assertTrue("Cache not empty. Found: $remainingFiles", remainingFiles.isEmpty())
         }
 
-        doReturn(testDir).`when`(copyFeature).getCacheDirectory()
-        assertTrue(testDir.listFiles()!!.isNotEmpty())
+    @Test
+    fun `a failing cleanup is handled instead of escaping the init coroutine`() =
+        runTest(testDispatcher) {
+            doThrow(RuntimeException("cache unavailable")).`when`(context).cacheDir
+
+            createFeature()
+            testDispatcher.scheduler.advanceUntilIdle()
+        }
+
+    @Test
+    fun `cleanupCache tolerates a cache entry removed while it is running`() {
+        val copyFeature = spy(createFeature())
+        // deleteRecursively() reads isFile to choose a walk strategy and asserts on it again;
+        // an entry that disappears between the two reads is what throws.
+        val racedEntry = mock<File>()
+        doReturn(true, false).`when`(racedEntry).isFile
+        val cacheDir = mock<File>()
+        doReturn(arrayOf(racedEntry)).`when`(cacheDir).listFiles()
+        doReturn(cacheDir).`when`(copyFeature).getCacheDirectory()
+
+        copyFeature.cleanupCache()
+    }
+
+    @Test
+    fun `cleanupCache deletes later entries after one that cannot be removed`() {
+        val copyFeature = spy(createFeature())
+        val locked = mock<File>()
+        doReturn(true).`when`(locked).isFile
+        doReturn(true).`when`(locked).exists()
+        doReturn(false).`when`(locked).delete()
+        val deletable = File(temporaryFolder.root, "deletable").apply { createNewFile() }
+        val cacheDir = mock<File>()
+        doReturn(arrayOf(locked, deletable)).`when`(cacheDir).listFiles()
+        doReturn(cacheDir).`when`(copyFeature).getCacheDirectory()
 
         copyFeature.cleanupCache()
 
-        assertTrue(testDir.listFiles()!!.isEmpty())
+        assertFalse(deletable.exists())
     }
 
     @Test
-    fun `startCopy() will download and then copy the selected download`() = runTest {
-        val confirmationAction = mock<() -> Unit>()
-        val copyFeature =
-            spy(
-                CopyDownloadFeature(
-                    context,
-                    mock(),
-                    null,
-                    confirmationAction,
-                    mock(),
-                    dispatcher,
-                ),
-            )
-        val shareState = ShareResourceState.InternetResource(url = "testUrl", contentType = "contentType")
-        val downloadedFile = File("filePath")
-        doReturn(downloadedFile).`when`(copyFeature).download(any())
-        copyFeature.scope = scope
+    fun `startCopy() will download and then copy the selected download`() =
+        runTest(testDispatcher) {
+            val confirmationAction = mock<() -> Unit>()
+            val copyFeature = spy(createFeature(confirmationAction))
 
-        copyFeature.startCopy(shareState)
+            val shareState = ShareResourceState.InternetResource(url = "testUrl", contentType = "contentType")
+            val downloadedFile = File("filePath")
+            doReturn(downloadedFile).`when`(copyFeature).download(any())
+            copyFeature.scope = scope
 
-        verify(copyFeature).download(shareState)
-        verify(copyFeature).copy(downloadedFile.canonicalPath, confirmationAction)
-    }
+            copyFeature.startCopy(shareState)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            verify(copyFeature).download(shareState)
+            verify(copyFeature).copy(downloadedFile.canonicalPath, confirmationAction)
+        }
 
     @Test
-    fun `download() will persist in cache the response#body() if available`() = runTest {
-        val copyFeature =
-            CopyDownloadFeature(context, mock(), null, mock(), mock(), dispatcher)
-        val inputStream = "test".byteInputStream(StandardCharsets.UTF_8)
-        val responseFromShareState = mock<Response>()
-        doReturn(Response.Body(inputStream)).`when`(responseFromShareState).body
-        val shareState =
-            ShareResourceState.InternetResource("randomUrl.jpg", response = responseFromShareState)
-        doReturn(Response.SUCCESS).`when`(responseFromShareState).status
-        doReturn(MutableHeaders()).`when`(responseFromShareState).headers
+    fun `download() will persist in cache the response#body() if available`() =
+        runTest(testDispatcher) {
+            val copyFeature = createFeature()
+            val inputStream = "test".byteInputStream(StandardCharsets.UTF_8)
+            val responseFromShareState = mock<Response>()
+            doReturn(Response.Body(inputStream)).`when`(responseFromShareState).body
+            val shareState = ShareResourceState.InternetResource("randomUrl.jpg", response = responseFromShareState)
+            doReturn(Response.SUCCESS).`when`(responseFromShareState).status
+            doReturn(MutableHeaders()).`when`(responseFromShareState).headers
 
-        val result = copyFeature.download(shareState)
+            val result = copyFeature.download(shareState)
 
-        assertTrue(result.exists())
-        assertTrue(result.name.endsWith(".$DEFAULT_IMAGE_EXTENSION"))
-        assertEquals(cacheDirName, result.parentFile!!.name)
-        assertEquals("test", result.inputStream().bufferedReader().use { it.readText() })
-    }
+            assertTrue(result.exists())
+            assertTrue(result.name.endsWith(".$DEFAULT_IMAGE_EXTENSION"))
+            assertEquals(cacheDirName, result.parentFile!!.name)
+            assertEquals("test", result.inputStream().bufferedReader().use { it.readText() })
+        }
 
     @Test(expected = RuntimeException::class)
-    fun `download() will throw an error if the request is not successful`() = runTest {
-        val copyFeature =
-            CopyDownloadFeature(context, mock(), null, mock(), mock(), dispatcher)
-        val inputStream = "test".byteInputStream(StandardCharsets.UTF_8)
-        val responseFromShareState = mock<Response>()
-        doReturn(Response.Body(inputStream)).`when`(responseFromShareState).body
-        val shareState =
-            ShareResourceState.InternetResource("randomUrl.jpg", response = responseFromShareState)
-        doReturn(500).`when`(responseFromShareState).status
+    fun `download() will throw an error if the request is not successful`() =
+        runTest(testDispatcher) {
+            val copyFeature = createFeature()
+            val inputStream = "test".byteInputStream(StandardCharsets.UTF_8)
+            val responseFromShareState = mock<Response>()
+            doReturn(Response.Body(inputStream)).`when`(responseFromShareState).body
+            val shareState = ShareResourceState.InternetResource("randomUrl.jpg", response = responseFromShareState)
+            doReturn(500).`when`(responseFromShareState).status
 
-        copyFeature.download(shareState)
-    }
-
-    @Test
-    fun `download() will download from the provided url the response#body() if is unavailable`() = runTest {
-        val client: Client = mock()
-        val inputStream = "clientTest".byteInputStream(StandardCharsets.UTF_8)
-        doAnswer { Response("randomUrl", 200, MutableHeaders(), Response.Body(inputStream)) }
-            .`when`(client).fetch(any())
-        val copyFeature =
-            CopyDownloadFeature(context, mock(), null, mock(), client, dispatcher)
-        val shareState = ShareResourceState.InternetResource("randomUrl")
-
-        val result = copyFeature.download(shareState)
-
-        assertTrue(result.exists())
-        assertTrue(result.name.endsWith(".$DEFAULT_IMAGE_EXTENSION"))
-        assertEquals(cacheDirName, result.parentFile!!.name)
-        assertEquals("clientTest", result.inputStream().bufferedReader().use { it.readText() })
-    }
-
-    @Test
-    fun `download() will create a not private Request if not in private mode`() = runTest {
-        val client: Client = mock()
-        val requestCaptor = argumentCaptor<Request>()
-        val inputStream = "clientTest".byteInputStream(StandardCharsets.UTF_8)
-        doAnswer {
-            Response(
-                "randomUrl.png",
-                200,
-                MutableHeaders(),
-                Response.Body(inputStream),
-            )
+            copyFeature.download(shareState)
         }
-            .`when`(client).fetch(requestCaptor.capture())
-        val copyFeature =
-            CopyDownloadFeature(context, mock(), null, mock(), client, dispatcher)
-        val shareState = ShareResourceState.InternetResource("randomUrl.png", private = false)
-
-        copyFeature.download(shareState)
-
-        assertFalse(requestCaptor.value.private)
-    }
 
     @Test
-    fun `download() will create a private Request if in private mode`() = runTest {
-        val client: Client = mock()
-        val requestCaptor = argumentCaptor<Request>()
-        val inputStream = "clientTest".byteInputStream(StandardCharsets.UTF_8)
-        doAnswer {
-            Response(
-                "randomUrl.png",
-                200,
-                MutableHeaders(),
-                Response.Body(inputStream),
-            )
+    fun `download() will download from the provided url the response#body() if is unavailable`() =
+        runTest(testDispatcher) {
+            val client: Client = mock()
+            val inputStream = "clientTest".byteInputStream(StandardCharsets.UTF_8)
+            doAnswer { Response("randomUrl", 200, MutableHeaders(), Response.Body(inputStream)) }
+                .`when`(client)
+                .fetch(any())
+
+            val copyFeature = createFeature(client = client)
+            val shareState = ShareResourceState.InternetResource("randomUrl")
+
+            val result = copyFeature.download(shareState)
+
+            assertTrue(result.exists())
+            assertTrue(result.name.endsWith(".$DEFAULT_IMAGE_EXTENSION"))
+            assertEquals(cacheDirName, result.parentFile!!.name)
+            assertEquals("clientTest", result.inputStream().bufferedReader().use { it.readText() })
         }
-            .`when`(client).fetch(requestCaptor.capture())
-        val copyFeature =
-            CopyDownloadFeature(context, mock(), null, mock(), client, dispatcher)
-        val shareState = ShareResourceState.InternetResource("randomUrl.png", private = true)
 
-        copyFeature.download(shareState)
+    @Test
+    fun `download() will create a not private Request if not in private mode`() =
+        runTest(testDispatcher) {
+            val client: Client = mock()
+            val requestCaptor = argumentCaptor<Request>()
+            val inputStream = "clientTest".byteInputStream(StandardCharsets.UTF_8)
+            doAnswer {
+                    Response(
+                        "randomUrl.png",
+                        200,
+                        MutableHeaders(),
+                        Response.Body(inputStream),
+                    )
+                }
+                .`when`(client)
+                .fetch(requestCaptor.capture())
 
-        assertTrue(requestCaptor.value.private)
-    }
+            val copyFeature = createFeature(client = client)
+            val shareState = ShareResourceState.InternetResource("randomUrl.png", private = false)
+
+            copyFeature.download(shareState)
+
+            assertFalse(requestCaptor.value.private)
+        }
+
+    @Test
+    fun `download() will create a private Request if in private mode`() =
+        runTest(testDispatcher) {
+            val client: Client = mock()
+            val requestCaptor = argumentCaptor<Request>()
+            val inputStream = "clientTest".byteInputStream(StandardCharsets.UTF_8)
+            doAnswer {
+                    Response(
+                        "randomUrl.png",
+                        200,
+                        MutableHeaders(),
+                        Response.Body(inputStream),
+                    )
+                }
+                .`when`(client)
+                .fetch(requestCaptor.capture())
+            val copyFeature = createFeature(client = client)
+            val shareState = ShareResourceState.InternetResource("randomUrl.png", private = true)
+
+            copyFeature.download(shareState)
+
+            assertTrue(requestCaptor.value.private)
+        }
 
     @Test
     fun `getFilename(extension) will return a String with the extension suffix`() {
-        val copyFeature =
-            CopyDownloadFeature(context, mock(), null, mock(), mock(), dispatcher)
+        val copyFeature = createFeature()
         val testExtension = "testExtension"
 
         val result = copyFeature.getFilename(testExtension)
@@ -269,8 +304,7 @@ class CopyDownloadFeatureTest {
 
     @Test
     fun `getTempFile(extension) will return a File from the cache dir and with name ending in extension`() {
-        val copyFeature =
-            spy(CopyDownloadFeature(context, mock(), null, mock(), mock(), dispatcher))
+        val copyFeature = createFeature()
         val testExtension = "testExtension"
 
         val result = copyFeature.getTempFile(testExtension)
@@ -281,20 +315,17 @@ class CopyDownloadFeatureTest {
 
     @Test
     fun `getCacheDirectory() will return a new directory in the app's cache`() {
-        val copyFeature =
-            CopyDownloadFeature(context, mock(), null, mock(), mock(), dispatcher)
+        val copyFeature = createFeature()
 
         val result = copyFeature.getCacheDirectory()
 
-        assertEquals(testCacheDirName, result.parent)
+        assertEquals(context.cacheDir.absolutePath, result.parentFile?.absolutePath)
         assertEquals(cacheDirName, result.name)
     }
 
     @Test
     fun `getMediaShareCacheDirectory creates the needed files if they don't exist`() {
-        val copyFeature =
-            spy(CopyDownloadFeature(context, mock(), null, mock(), mock(), dispatcher))
-        assertFalse(context.cacheDir.exists())
+        val copyFeature = createFeature()
 
         val result = copyFeature.getMediaShareCacheDirectory()
 
@@ -304,8 +335,7 @@ class CopyDownloadFeatureTest {
 
     @Test
     fun `getFileExtension returns a default extension if one cannot be extracted`() {
-        val copyFeature =
-            CopyDownloadFeature(context, mock(), null, mock(), mock(), dispatcher)
+        val copyFeature = createFeature()
 
         val result = copyFeature.getFileExtension(mock(), mock())
 
@@ -314,11 +344,9 @@ class CopyDownloadFeatureTest {
 
     @Test
     fun `getFileExtension returns an extension based on the media type inferred from the stream`() {
-        val copyFeature =
-            CopyDownloadFeature(context, mock(), null, mock(), mock(), dispatcher)
+        val copyFeature = createFeature()
         val gifStream = (GIF_HEADER + "testImage").byteInputStream(StandardCharsets.UTF_8)
         // Add the gif mapping to a by default empty shadow of MimeTypeMap.
-        shadowOf(MimeTypeMap.getSingleton()).addExtensionMimeTypeMapping("gif", "image/gif")
 
         val result = copyFeature.getFileExtension(mock(), gifStream)
 
@@ -327,14 +355,29 @@ class CopyDownloadFeatureTest {
 
     @Test
     fun `getFileExtension returns an extension based on the response headers`() {
-        val copyFeature =
-            CopyDownloadFeature(context, mock(), null, mock(), mock(), dispatcher)
+        val copyFeature = createFeature()
         val gifHeaders = MutableHeaders().apply { set(CONTENT_TYPE, "image/gif") }
         // Add the gif mapping to a by default empty shadow of MimeTypeMap.
-        shadowOf(MimeTypeMap.getSingleton()).addExtensionMimeTypeMapping("gif", "image/gif")
 
         val result = copyFeature.getFileExtension(gifHeaders, mock())
 
         assertEquals("gif", result)
+    }
+
+    private fun createFeature(
+        confirmationAction: () -> Unit = mock(),
+        client: Client = mock(),
+        store: BrowserStore = BrowserStore(),
+        tabId: String? = null,
+    ): CopyDownloadFeature {
+        return CopyDownloadFeature(
+            context,
+            store,
+            tabId,
+            confirmationAction,
+            client,
+            testDispatcher,
+            testDispatcher,
+        )
     }
 }

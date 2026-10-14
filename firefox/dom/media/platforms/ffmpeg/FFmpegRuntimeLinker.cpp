@@ -1,17 +1,17 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "FFmpegRuntimeLinker.h"
+
 #include "FFmpegLibWrapper.h"
 #include "FFmpegLog.h"
-#include "FFmpegRuntimeLinker.h"
-#include "mozilla/ArrayUtils.h"
+#include "mozilla/StaticPrefs_media.h"
 #include "prlink.h"
 
 namespace mozilla {
 
+StaticMutex FFmpegRuntimeLinker::sMutex;
 FFmpegRuntimeLinker::LinkStatus FFmpegRuntimeLinker::sLinkStatus =
     LinkStatus_INIT;
 const char* FFmpegRuntimeLinker::sLinkStatusLibraryName = "";
@@ -19,14 +19,17 @@ const char* FFmpegRuntimeLinker::sLinkStatusLibraryName = "";
 template <int V>
 class FFmpegDecoderModule {
  public:
-  static void Init(FFmpegLibWrapper*);
-  static already_AddRefed<PlatformDecoderModule> Create(FFmpegLibWrapper*);
+  static void Init(const FFmpegLibWrapper*);
+  static already_AddRefed<PlatformDecoderModule> Create(
+      const FFmpegLibWrapper*);
 };
 
 template <int V>
 class FFmpegEncoderModule {
  public:
-  static already_AddRefed<PlatformEncoderModule> Create(FFmpegLibWrapper*);
+  static void Init(const FFmpegLibWrapper*);
+  static already_AddRefed<PlatformEncoderModule> Create(
+      const FFmpegLibWrapper*);
 };
 
 static FFmpegLibWrapper sLibAV;
@@ -34,6 +37,8 @@ static FFmpegLibWrapper sLibAV;
 static const char* sLibs[] = {
 // clang-format off
 #if defined(XP_DARWIN)
+  "libavcodec." FFMPEG_MAX_MAJOR_VERSION_STR(FFMPEG_MAX_MAJOR_VERSION) ".dylib",
+  "libavcodec.62.dylib",
   "libavcodec.61.dylib",
   "libavcodec.60.dylib",
   "libavcodec.59.dylib",
@@ -44,9 +49,11 @@ static const char* sLibs[] = {
   "libavcodec.54.dylib",
   "libavcodec.53.dylib",
 #elif defined(XP_OPENBSD)
-  "libavcodec.so", // OpenBSD hardly controls the major/minor library version
+  "libavcodec.so", // OpenBSD port controls the major/minor library version
                    // of ffmpeg and update it regulary on ABI/API changes
 #else
+  "libavcodec.so." FFMPEG_MAX_MAJOR_VERSION_STR(FFMPEG_MAX_MAJOR_VERSION),
+  "libavcodec.so.62",
   "libavcodec.so.61",
   "libavcodec.so.60",
   "libavcodec.so.59",
@@ -70,6 +77,7 @@ void FFmpegRuntimeLinker::PrefCallbackLogLevel(const char* aPref, void* aData) {
 
 /* static */
 bool FFmpegRuntimeLinker::Init() {
+  StaticMutexAutoLock lock(sMutex);
   if (sLinkStatus != LinkStatus_INIT) {
     return sLinkStatus == LinkStatus_SUCCEEDED;
   }
@@ -78,8 +86,7 @@ bool FFmpegRuntimeLinker::Init() {
   // more precise error if possible.
   sLinkStatus = LinkStatus_NOT_FOUND;
 
-  for (size_t i = 0; i < std::size(sLibs); i++) {
-    const char* lib = sLibs[i];
+  for (auto lib : sLibs) {
     PRLibSpec lspec;
     lspec.type = PR_LibSpec_Pathname;
     lspec.value.pathname = lib;
@@ -96,28 +103,44 @@ bool FFmpegRuntimeLinker::Init() {
           switch (sLibAV.mVersion) {
             case 53:
               FFmpegDecoderModule<53>::Init(&sLibAV);
+              FFmpegEncoderModule<53>::Init(&sLibAV);
               break;
             case 54:
               FFmpegDecoderModule<54>::Init(&sLibAV);
+              FFmpegEncoderModule<54>::Init(&sLibAV);
               break;
             case 55:
             case 56:
               FFmpegDecoderModule<55>::Init(&sLibAV);
+              FFmpegEncoderModule<55>::Init(&sLibAV);
               break;
             case 57:
               FFmpegDecoderModule<57>::Init(&sLibAV);
+              FFmpegEncoderModule<57>::Init(&sLibAV);
               break;
             case 58:
               FFmpegDecoderModule<58>::Init(&sLibAV);
+              FFmpegEncoderModule<58>::Init(&sLibAV);
               break;
             case 59:
               FFmpegDecoderModule<59>::Init(&sLibAV);
+              FFmpegEncoderModule<59>::Init(&sLibAV);
               break;
             case 60:
               FFmpegDecoderModule<60>::Init(&sLibAV);
+              FFmpegEncoderModule<60>::Init(&sLibAV);
               break;
             case 61:
               FFmpegDecoderModule<61>::Init(&sLibAV);
+              FFmpegEncoderModule<61>::Init(&sLibAV);
+              break;
+            case 62:
+              FFmpegDecoderModule<62>::Init(&sLibAV);
+              FFmpegEncoderModule<62>::Init(&sLibAV);
+              break;
+            case 63:
+              FFmpegDecoderModule<63>::Init(&sLibAV);
+              FFmpegEncoderModule<63>::Init(&sLibAV);
               break;
           }
           return true;
@@ -163,18 +186,24 @@ bool FFmpegRuntimeLinker::Init() {
           }
           break;
       }
-      FFMPEGP_LOG("Failed to link %s: %s", lib,
+      FFMPEGP_LOG("Failed to link {}: {}", lib,
                   FFmpegLibWrapper::EnumValueToString(res));
     }
   }
 
   FFMPEGV_LOG("H264/AAC codecs unsupported without [");
   for (size_t i = 0; i < std::size(sLibs); i++) {
-    FFMPEGV_LOG("%s %s", i ? "," : " ", sLibs[i]);
+    FFMPEGV_LOG("{} {}", i ? "," : " ", sLibs[i]);
   }
   FFMPEGV_LOG(" ]\n");
 
   return false;
+}
+
+/* static */
+bool FFmpegRuntimeLinker::PreferSystemFFmpegForVulkan() {
+  return StaticPrefs::
+      media_hardware_video_decoding_vulkan_prefer_system_ffmpeg();
 }
 
 /* static */
@@ -208,6 +237,12 @@ already_AddRefed<PlatformDecoderModule> FFmpegRuntimeLinker::CreateDecoder() {
       break;
     case 61:
       module = FFmpegDecoderModule<61>::Create(&sLibAV);
+      break;
+    case 62:
+      module = FFmpegDecoderModule<62>::Create(&sLibAV);
+      break;
+    case 63:
+      module = FFmpegDecoderModule<63>::Create(&sLibAV);
       break;
     default:
       module = nullptr;
@@ -247,6 +282,12 @@ already_AddRefed<PlatformEncoderModule> FFmpegRuntimeLinker::CreateEncoder() {
     case 61:
       module = FFmpegEncoderModule<61>::Create(&sLibAV);
       break;
+    case 62:
+      module = FFmpegEncoderModule<62>::Create(&sLibAV);
+      break;
+    case 63:
+      module = FFmpegEncoderModule<63>::Create(&sLibAV);
+      break;
     default:
       module = nullptr;
   }
@@ -254,6 +295,7 @@ already_AddRefed<PlatformEncoderModule> FFmpegRuntimeLinker::CreateEncoder() {
 }
 
 /* static */ const char* FFmpegRuntimeLinker::LinkStatusString() {
+  StaticMutexAutoLock lock(sMutex);
   switch (sLinkStatus) {
     case LinkStatus_INIT:
       return "Libavcodec not initialized yet";

@@ -1,24 +1,24 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _NS_DEVICECONTEXT_H_
-#define _NS_DEVICECONTEXT_H_
+#ifndef NS_DEVICECONTEXT_H_
+#define NS_DEVICECONTEXT_H_
 
-#include <stdint.h>                   // for uint32_t
-#include "gfxTypes.h"                 // for gfxFloat
-#include "mozilla/RefPtr.h"           // for RefPtr
-#include "nsCOMPtr.h"                 // for nsCOMPtr
-#include "nsCoord.h"                  // for nscoord
-#include "nsError.h"                  // for nsresult
-#include "nsISupports.h"              // for NS_INLINE_DECL_REFCOUNTING
-#include "nsMathUtils.h"              // for NS_round
-#include "nscore.h"                   // for char16_t, nsAString
-#include "mozilla/AppUnits.h"         // for AppUnits
-#include "nsFontMetrics.h"            // for nsFontMetrics::Params
-#include "mozilla/gfx/Point.h"        // for IntSize
-#include "mozilla/gfx/PrintPromise.h" // for PrintEndDocumentPromise
+#include <stdint.h>  // for uint32_t
+
+#include "gfxTypes.h"                  // for gfxFloat
+#include "mozilla/AppUnits.h"          // for AppUnits
+#include "mozilla/RefPtr.h"            // for RefPtr
+#include "mozilla/gfx/Point.h"         // for IntSize
+#include "mozilla/gfx/PrintPromise.h"  // for PrintEndDocumentPromise
+#include "nsCOMPtr.h"                  // for nsCOMPtr
+#include "nsCoord.h"                   // for nscoord
+#include "nsError.h"                   // for nsresult
+#include "nsFontMetrics.h"             // for nsFontMetrics::Params
+#include "nsISupports.h"               // for NS_INLINE_DECL_REFCOUNTING
+#include "nsMathUtils.h"               // for NS_round
+#include "nscore.h"                    // for char16_t, nsAString
 
 class gfxContext;
 class gfxTextPerfMetrics;
@@ -34,6 +34,7 @@ struct nsRect;
 namespace mozilla {
 namespace dom {
 enum class ScreenColorGamut : uint8_t;
+class WindowContext;
 }  // namespace dom
 namespace hal {
 enum class ScreenOrientation : uint32_t;
@@ -90,6 +91,10 @@ class nsDeviceContext final {
    * not guaranteed.
    */
   int32_t AppUnitsPerDevPixel() const { return mAppUnitsPerDevPixel; }
+
+  static int32_t ComputeAppUnitsPerDevPixelForWidgetScale(
+      mozilla::CSSToLayoutDeviceScale);
+  static int32_t ApplyFullZoomToAPD(int32_t aAppUnitsPerPixel, float aFullZoom);
 
   /**
    * Convert device pixels which is used for gfx/thebes to nearest
@@ -189,6 +194,8 @@ class nsDeviceContext final {
    * @param aTitle - title of Document
    * @param aPrintToFileName - name of file to print to, if empty then don't
    *                           print to file
+   * @param aWindowContext - the window global of the (static clone) document
+   *                         being printed
    * @param aStartPage - starting page number (must be greater than zero)
    * @param aEndPage - ending page number (must be less than or
    * equal to number of pages)
@@ -196,8 +203,9 @@ class nsDeviceContext final {
    * @return error status
    */
   nsresult BeginDocument(const nsAString& aTitle,
-                         const nsAString& aPrintToFileName, int32_t aStartPage,
-                         int32_t aEndPage);
+                         const nsAString& aPrintToFileName,
+                         mozilla::dom::WindowContext* aWindowContext,
+                         int32_t aStartPage, int32_t aEndPage);
 
   /**
    * Inform the output device that output of a document is ending.
@@ -300,6 +308,7 @@ class nsDeviceContext final {
   RefPtr<PrintTarget> mPrintTarget;
   bool mIsCurrentlyPrintingDoc;
   bool mIsInitialized = false;
+  uint64_t mInnerWindowId = 0;
 };
 
-#endif /* _NS_DEVICECONTEXT_H_ */
+#endif /* NS_DEVICECONTEXT_H_ */

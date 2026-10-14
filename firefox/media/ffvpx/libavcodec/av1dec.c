@@ -20,6 +20,7 @@
 
 #include "config_components.h"
 
+#include "libavutil/attributes.h"
 #include "libavutil/hdr_dynamic_metadata.h"
 #include "libavutil/film_grain_params.h"
 #include "libavutil/mastering_display_metadata.h"
@@ -41,7 +42,7 @@
 #include "progressframe.h"
 #include "libavutil/refstruct.h"
 
-/**< same with Div_Lut defined in spec 7.11.3.7 */
+/** same with Div_Lut defined in spec 7.11.3.7 */
 static const uint16_t div_lut[AV1_DIV_LUT_NUM] = {
   16384, 16320, 16257, 16194, 16132, 16070, 16009, 15948, 15888, 15828, 15768,
   15709, 15650, 15592, 15534, 15477, 15420, 15364, 15308, 15252, 15197, 15142,
@@ -98,12 +99,11 @@ static int32_t decode_signed_subexp_with_ref(uint32_t sub_exp, int low,
 
 static void read_global_param(AV1DecContext *s, int type, int ref, int idx)
 {
-    uint8_t primary_frame, prev_frame;
+    int primary_frame;
     uint32_t abs_bits, prec_bits, round, prec_diff, sub, mx;
     int32_t r, prev_gm_param;
 
     primary_frame = s->raw_frame_header->primary_ref_frame;
-    prev_frame = s->raw_frame_header->ref_frame_idx[primary_frame];
     abs_bits = AV1_GM_ABS_ALPHA_BITS;
     prec_bits = AV1_GM_ALPHA_PREC_BITS;
 
@@ -113,8 +113,10 @@ static void read_global_param(AV1DecContext *s, int type, int ref, int idx)
      */
     if (s->raw_frame_header->primary_ref_frame == AV1_PRIMARY_REF_NONE)
         prev_gm_param = s->cur_frame.gm_params[ref][idx];
-    else
+    else {
+        int prev_frame = s->raw_frame_header->ref_frame_idx[primary_frame];
         prev_gm_param = s->ref[prev_frame].gm_params[ref][idx];
+    }
 
     if (idx < 2) {
         if (type == AV1_WARP_MODEL_TRANSLATION) {
@@ -773,11 +775,13 @@ static int set_context_with_sequence(AVCodecContext *avctx,
     avctx->profile = seq->seq_profile;
     avctx->level = seq->seq_level_idx[0];
 
-    avctx->color_range =
-        seq->color_config.color_range ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
-    avctx->color_primaries = seq->color_config.color_primaries;
-    avctx->colorspace = seq->color_config.matrix_coefficients;
-    avctx->color_trc = seq->color_config.transfer_characteristics;
+    if (seq->color_config.color_description_present_flag) {
+        avctx->color_range =
+            seq->color_config.color_range ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+        avctx->color_primaries = seq->color_config.color_primaries;
+        avctx->colorspace = seq->color_config.matrix_coefficients;
+        avctx->color_trc = seq->color_config.transfer_characteristics;
+    }
 
     switch (seq->color_config.chroma_sample_position) {
     case AV1_CSP_VERTICAL:
@@ -787,15 +791,6 @@ static int set_context_with_sequence(AVCodecContext *avctx,
         avctx->chroma_sample_location = AVCHROMA_LOC_TOPLEFT;
         break;
     }
-
-#if FF_API_CODEC_PROPS
-FF_DISABLE_DEPRECATION_WARNINGS
-    if (seq->film_grain_params_present)
-        avctx->properties |= FF_CODEC_PROPERTY_FILM_GRAIN;
-    else
-        avctx->properties &= ~FF_CODEC_PROPERTY_FILM_GRAIN;
-FF_ENABLE_DEPRECATION_WARNINGS
-#endif
 
     if (avctx->width != width || avctx->height != height) {
         int ret = ff_set_dimensions(avctx, width, height);
@@ -890,7 +885,8 @@ static av_cold int av1_decode_init(AVCodecContext *avctx)
 
         seq = ((CodedBitstreamAV1Context *)(s->cbc->priv_data))->sequence_header;
         if (!seq) {
-            av_log(avctx, AV_LOG_WARNING, "No sequence header available.\n");
+            if (!(avctx->extradata[0] & 0x80))
+                av_log(avctx, AV_LOG_WARNING, "No sequence header available in extradata.\n");
             goto end;
         }
 
@@ -963,82 +959,19 @@ fail:
 static int export_itut_t35(AVCodecContext *avctx, AVFrame *frame,
                            const AV1RawMetadataITUTT35 *itut_t35)
 {
-    GetByteContext gb;
     AV1DecContext *s = avctx->priv_data;
-    int ret, provider_code;
+    FFITUTT35 itut35 = { .country_code = itut_t35->itu_t_t35_country_code };
+    FFITUTT35Aux aux = { .dovi = &s->dovi };
+    int ret;
 
-    bytestream2_init(&gb, itut_t35->payload, itut_t35->payload_size);
+    ret = ff_itut_t35_parse_buffer(&itut35, itut_t35->payload, itut_t35->payload_size,
+                                   FF_ITUT_T35_FLAG_COUNTRY_CODE);
+    if (ret <= 0)
+        return ret;
 
-    provider_code = bytestream2_get_be16(&gb);
-    switch (provider_code) {
-    case ITU_T_T35_PROVIDER_CODE_ATSC: {
-        uint32_t user_identifier = bytestream2_get_be32(&gb);
-        switch (user_identifier) {
-        case MKBETAG('G', 'A', '9', '4'): { // closed captions
-            AVBufferRef *buf = NULL;
-
-            ret = ff_parse_a53_cc(&buf, gb.buffer, bytestream2_get_bytes_left(&gb));
-            if (ret < 0)
-                return ret;
-            if (!ret)
-                break;
-
-            ret = ff_frame_new_side_data_from_buf(avctx, frame, AV_FRAME_DATA_A53_CC, &buf);
-            if (ret < 0)
-                return ret;
-
-#if FF_API_CODEC_PROPS
-FF_DISABLE_DEPRECATION_WARNINGS
-            avctx->properties |= FF_CODEC_PROPERTY_CLOSED_CAPTIONS;
-FF_ENABLE_DEPRECATION_WARNINGS
-#endif
-            break;
-        }
-        default: // ignore unsupported identifiers
-            break;
-        }
-        break;
-    }
-    case ITU_T_T35_PROVIDER_CODE_SMTPE: {
-        AVDynamicHDRPlus *hdrplus;
-        int provider_oriented_code = bytestream2_get_be16(&gb);
-        int application_identifier = bytestream2_get_byte(&gb);
-
-        if (itut_t35->itu_t_t35_country_code != ITU_T_T35_COUNTRY_CODE_US ||
-            provider_oriented_code != 1 || application_identifier != 4)
-            break;
-
-        hdrplus = av_dynamic_hdr_plus_create_side_data(frame);
-        if (!hdrplus)
-            return AVERROR(ENOMEM);
-
-        ret = av_dynamic_hdr_plus_from_t35(hdrplus, gb.buffer,
-                                           bytestream2_get_bytes_left(&gb));
-        if (ret < 0)
-            return ret;
-        break;
-    }
-    case ITU_T_T35_PROVIDER_CODE_DOLBY: {
-        int provider_oriented_code = bytestream2_get_be32(&gb);
-        if (itut_t35->itu_t_t35_country_code != ITU_T_T35_COUNTRY_CODE_US ||
-            provider_oriented_code != 0x800)
-            break;
-
-        ret = ff_dovi_rpu_parse(&s->dovi, gb.buffer, gb.buffer_end - gb.buffer,
-                                avctx->err_recognition);
-        if (ret < 0) {
-            av_log(avctx, AV_LOG_WARNING, "Error parsing DOVI OBU.\n");
-            break; // ignore
-        }
-
-        ret = ff_dovi_attach_side_data(&s->dovi, frame);
-        if (ret < 0)
-            return ret;
-        break;
-    }
-    default: // ignore unsupported provider codes
-        break;
-    }
+    ret = ff_itut_t35_parse_payload_to_frame(&itut35, &aux, avctx, frame);
+    if (ret < 0)
+        return ret;
 
     return 0;
 }
@@ -1196,12 +1129,6 @@ static int set_output_frame(AVCodecContext *avctx, AVFrame *frame)
 
     frame->pts = pkt->pts;
     frame->pkt_dts = pkt->dts;
-#if FF_API_FRAME_PKT
-FF_DISABLE_DEPRECATION_WARNINGS
-    frame->pkt_size = pkt->size;
-    frame->pkt_pos = pkt->pos;
-FF_ENABLE_DEPRECATION_WARNINGS
-#endif
 
     av_packet_unref(pkt);
 
@@ -1317,6 +1244,8 @@ static int av1_receive_frame_internal(AVCodecContext *avctx, AVFrame *frame)
             av_refstruct_replace(&s->seq_ref, unit->content_ref);
 
             s->raw_seq = &obu->obu.sequence_header;
+            s->raw_frame_header = NULL;
+            raw_tile_group      = NULL;
 
             ret = set_context_with_sequence(avctx, s->raw_seq);
             if (ret < 0) {
@@ -1329,11 +1258,20 @@ static int av1_receive_frame_internal(AVCodecContext *avctx, AVFrame *frame)
 
             s->pix_fmt = AV_PIX_FMT_NONE;
 
+            if (FF_HW_HAS_CB(avctx, decode_params)) {
+                ret = FF_HW_CALL(avctx, decode_params, AV1_OBU_SEQUENCE_HEADER,
+                                 s->seq_data_ref->data, s->seq_data_ref->size);
+                if (ret < 0) {
+                    av_log(avctx, AV_LOG_ERROR, "HW accel decode params fail.\n");
+                    return ret;
+                }
+            }
+
             break;
         case AV1_OBU_REDUNDANT_FRAME_HEADER:
             if (s->raw_frame_header)
                 break;
-        // fall-through
+            av_fallthrough;
         case AV1_OBU_FRAME:
         case AV1_OBU_FRAME_HEADER:
             if (!s->raw_seq) {
@@ -1343,6 +1281,8 @@ static int av1_receive_frame_internal(AVCodecContext *avctx, AVFrame *frame)
             }
 
             av_refstruct_replace(&s->header_ref, unit->content_ref);
+
+            raw_tile_group      = NULL;
 
             if (unit->type == AV1_OBU_FRAME)
                 s->raw_frame_header = &obu->obu.frame.header;
@@ -1380,7 +1320,8 @@ static int av1_receive_frame_internal(AVCodecContext *avctx, AVFrame *frame)
             s->cur_frame.temporal_id = header->temporal_id;
 
             if (avctx->hwaccel && s->cur_frame.f) {
-                ret = FF_HW_CALL(avctx, start_frame, unit->data, unit->data_size);
+                ret = FF_HW_CALL(avctx, start_frame, s->pkt->buf,
+                                 unit->data, unit->data_size);
                 if (ret < 0) {
                     av_log(avctx, AV_LOG_ERROR, "HW accel start frame fail.\n");
                     goto end;
@@ -1388,7 +1329,7 @@ static int av1_receive_frame_internal(AVCodecContext *avctx, AVFrame *frame)
             }
             if (unit->type != AV1_OBU_FRAME)
                 break;
-        // fall-through
+            av_fallthrough;
         case AV1_OBU_TILE_GROUP:
             if (!s->raw_frame_header) {
                 av_log(avctx, AV_LOG_ERROR, "Missing Frame Header.\n");
@@ -1415,8 +1356,11 @@ static int av1_receive_frame_internal(AVCodecContext *avctx, AVFrame *frame)
                 }
             }
             break;
-        case AV1_OBU_TILE_LIST:
         case AV1_OBU_TEMPORAL_DELIMITER:
+            s->raw_frame_header = NULL;
+            raw_tile_group      = NULL;
+            break;
+        case AV1_OBU_TILE_LIST:
         case AV1_OBU_PADDING:
             break;
         case AV1_OBU_METADATA:
@@ -1450,7 +1394,7 @@ static int av1_receive_frame_internal(AVCodecContext *avctx, AVFrame *frame)
             break;
         default:
             av_log(avctx, AV_LOG_DEBUG,
-                   "Unknown obu type: %d (%"SIZE_SPECIFIER" bits).\n",
+                   "Unknown obu type: %d (%zu bits).\n",
                    unit->type, unit->data_size);
         }
 
@@ -1539,7 +1483,7 @@ static int av1_receive_frame(AVCodecContext *avctx, AVFrame *frame)
     return ret;
 }
 
-static void av1_decode_flush(AVCodecContext *avctx)
+static av_cold void av1_decode_flush(AVCodecContext *avctx)
 {
     AV1DecContext *s = avctx->priv_data;
     AV1RawMetadataITUTT35 itut_t35;

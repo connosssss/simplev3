@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,7 +11,11 @@
 #include "mozilla/EditorBase.h"
 #include "mozilla/HTMLEditor.h"
 #include "mozilla/Logging.h"
+#include "mozilla/RangeBoundary.h"
+#include "mozilla/ToString.h"
+#include "mozilla/dom/CharacterDataBuffer.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/Range.h"
 
 #include "nsDebug.h"
 #include "nsAtom.h"
@@ -20,8 +23,6 @@
 #include "nsUnicodeProperties.h"
 #include "nsServiceManagerUtils.h"
 #include "nsIContent.h"
-#include "nsTextFragment.h"
-#include "nsRange.h"
 #include "nsContentUtils.h"
 #include "nsIFrame.h"
 
@@ -113,7 +114,7 @@ bool NodeOffset::operator==(
          (*rangeBoundaryOffset == static_cast<uint32_t>(mOffset));
 }
 
-bool NodeOffsetRange::operator==(const nsRange& aRange) const {
+bool NodeOffsetRange::operator==(const dom::Range& aRange) const {
   return mBegin == aRange.StartRef() && mEnd == aRange.EndRef();
 }
 
@@ -139,7 +140,7 @@ Maybe<mozInlineSpellWordUtil> mozInlineSpellWordUtil::Create(
   return Some(std::move(util));
 }
 
-static inline bool IsSpellCheckingTextNode(nsINode* aNode) {
+static inline bool IsSpellCheckingTextNode(const nsINode* aNode) {
   nsIContent* parent = aNode->GetParent();
   if (parent &&
       parent->IsAnyOfHTMLElements(nsGkAtoms::script, nsGkAtoms::style))
@@ -182,23 +183,22 @@ static nsINode* FindNextNode(nsINode* aNode, const nsINode* aRoot,
 
 // aNode is not a text node. Find the first text node starting at aNode/aOffset
 // in a preorder DOM traversal.
-static nsINode* FindNextTextNode(nsINode* aNode, int32_t aOffset,
+template <typename PT, typename RT>
+static nsINode* FindNextTextNode(const RangeBoundaryBase<PT, RT>& aBoundary,
                                  const nsINode* aRoot) {
-  MOZ_ASSERT(aNode, "Null starting node?");
-  MOZ_ASSERT(!IsSpellCheckingTextNode(aNode),
+  MOZ_ASSERT(aBoundary.IsSetAndInComposedDoc());
+  MOZ_ASSERT(!IsSpellCheckingTextNode(aBoundary.GetContainer()),
              "FindNextTextNode should start with a non-text node");
 
   nsINode* checkNode;
   // Need to start at the aOffset'th child
-  nsIContent* child = aNode->GetChildAt_Deprecated(aOffset);
-
-  if (child) {
+  if (nsIContent* child = aBoundary.GetChildAtOffset()) {
     checkNode = child;
   } else {
     // aOffset was beyond the end of the child list.
     // goto next node after the last descendant of aNode in
     // a preorder DOM traversal.
-    checkNode = aNode->GetNextNonChildNode(aRoot);
+    checkNode = aBoundary.GetContainer()->GetNextNonChildNode(aRoot);
   }
 
   while (checkNode && !IsSpellCheckingTextNode(checkNode)) {
@@ -224,24 +224,30 @@ static nsINode* FindNextTextNode(nsINode* aNode, int32_t aOffset,
 //    SetPosition(). You might think of the soft boundary as being this initial
 //    position.
 
-nsresult mozInlineSpellWordUtil::SetPositionAndEnd(nsINode* aPositionNode,
-                                                   int32_t aPositionOffset,
-                                                   nsINode* aEndNode,
-                                                   int32_t aEndOffset) {
-  MOZ_LOG(sInlineSpellWordUtilLog, LogLevel::Debug,
-          ("%s: pos=(%p, %i), end=(%p, %i)", __FUNCTION__, aPositionNode,
-           aPositionOffset, aEndNode, aEndOffset));
+template nsresult mozInlineSpellWordUtil::SetPositionAndEnd(
+    const RangeBoundary&, const RangeBoundary&);
+template nsresult mozInlineSpellWordUtil::SetPositionAndEnd(
+    const RawRangeBoundary&, const RawRangeBoundary&);
 
-  MOZ_ASSERT(aPositionNode, "Null begin node?");
-  MOZ_ASSERT(aEndNode, "Null end node?");
+template <typename PT, typename RT>
+nsresult mozInlineSpellWordUtil::SetPositionAndEnd(
+    const RangeBoundaryBase<PT, RT>& aCurrentPosition,
+    const RangeBoundaryBase<PT, RT>& aEndBoundary) {
+  MOZ_LOG(sInlineSpellWordUtilLog, LogLevel::Debug,
+          ("%s: aCurrentPosition=(%s), aEndBoundary=(%s)", __FUNCTION__,
+           mozilla::ToString(aCurrentPosition).c_str(),
+           mozilla::ToString(aEndBoundary).c_str()));
+
+  MOZ_ASSERT(aCurrentPosition.IsSetAndInComposedDoc());
+  MOZ_ASSERT(aEndBoundary.IsSetAndInComposedDoc());
 
   MOZ_ASSERT(mRootNode, "Not initialized");
 
   // Find a appropriate root if we are dealing with contenteditable nodes which
   // are in the shadow DOM.
   if (mIsContentEditableOrDesignMode) {
-    nsINode* rootNode = aPositionNode->SubtreeRoot();
-    if (rootNode != aEndNode->SubtreeRoot()) {
+    nsINode* rootNode = aCurrentPosition.GetContainer()->SubtreeRoot();
+    if (rootNode != aEndBoundary.GetContainer()->SubtreeRoot()) {
       return NS_ERROR_FAILURE;
     }
 
@@ -252,19 +258,27 @@ nsresult mozInlineSpellWordUtil::SetPositionAndEnd(nsINode* aPositionNode,
 
   mSoftText.Invalidate();
 
-  if (!IsSpellCheckingTextNode(aPositionNode)) {
+  RawRangeBoundary currentPosition = aCurrentPosition.AsRaw();
+  if (!IsSpellCheckingTextNode(currentPosition.GetContainer())) {
     // Start at the start of the first text node after aNode/aOffset.
-    aPositionNode = FindNextTextNode(aPositionNode, aPositionOffset, mRootNode);
-    aPositionOffset = 0;
+    if (nsINode* nextTextNode = FindNextTextNode(currentPosition, mRootNode)) {
+      currentPosition = RawRangeBoundary::StartOfParent(*nextTextNode);
+    } else {
+      currentPosition = RawRangeBoundary();
+    }
   }
-  NodeOffset softBegin = NodeOffset(aPositionNode, aPositionOffset);
+  NodeOffset softBegin = NodeOffset(currentPosition);
 
-  if (!IsSpellCheckingTextNode(aEndNode)) {
+  RawRangeBoundary endBoundary = aEndBoundary.AsRaw();
+  if (!IsSpellCheckingTextNode(endBoundary.GetContainer())) {
     // End at the start of the first text node after aEndNode/aEndOffset.
-    aEndNode = FindNextTextNode(aEndNode, aEndOffset, mRootNode);
-    aEndOffset = 0;
+    if (nsINode* nextTextNode = FindNextTextNode(endBoundary, mRootNode)) {
+      endBoundary = RawRangeBoundary::StartOfParent(*nextTextNode);
+    } else {
+      endBoundary = RawRangeBoundary();
+    }
   }
-  NodeOffset softEnd = NodeOffset(aEndNode, aEndOffset);
+  NodeOffset softEnd = NodeOffset(endBoundary);
 
   nsresult rv = EnsureWords(std::move(softBegin), std::move(softEnd));
   if (NS_FAILED(rv)) {
@@ -298,7 +312,7 @@ nsresult mozInlineSpellWordUtil::EnsureWords(NodeOffset aSoftBegin,
 }
 
 nsresult mozInlineSpellWordUtil::MakeRangeForWord(const RealWord& aWord,
-                                                  nsRange** aRange) const {
+                                                  dom::Range** aRange) const {
   NodeOffset begin =
       MapSoftTextOffsetToDOMPosition(aWord.mSoftTextOffset, HINT_BEGIN);
   NodeOffset end = MapSoftTextOffsetToDOMPosition(aWord.EndOffset(), HINT_END);
@@ -316,7 +330,7 @@ void mozInlineSpellWordUtil::MakeNodeOffsetRangeForWord(
 
 nsresult mozInlineSpellWordUtil::GetRangeForWord(nsINode* aWordNode,
                                                  int32_t aWordOffset,
-                                                 nsRange** aRange) {
+                                                 dom::Range** aRange) {
   // Set our soft end and start
   NodeOffset pt(aWordNode, aWordOffset);
 
@@ -392,15 +406,15 @@ bool mozInlineSpellWordUtil::GetNextWord(Word& aWord) {
 //    Convenience function for creating a range over the current document.
 
 nsresult mozInlineSpellWordUtil::MakeRange(NodeOffset aBegin, NodeOffset aEnd,
-                                           nsRange** aRange) const {
+                                           dom::Range** aRange) const {
   NS_ENSURE_ARG_POINTER(aBegin.mNode);
   if (!mDocument) {
     return NS_ERROR_NOT_INITIALIZED;
   }
 
   ErrorResult error;
-  RefPtr<nsRange> range = nsRange::Create(aBegin.mNode, aBegin.mOffset,
-                                          aEnd.mNode, aEnd.mOffset, error);
+  RefPtr<dom::Range> range = dom::Range::Create(
+      aBegin.mNode, aBegin.mOffset, aEnd.mNode, aEnd.mOffset, error);
   if (NS_WARN_IF(error.Failed())) {
     return error.StealNSResult();
   }
@@ -410,12 +424,12 @@ nsresult mozInlineSpellWordUtil::MakeRange(NodeOffset aBegin, NodeOffset aEnd,
 }
 
 // static
-already_AddRefed<nsRange> mozInlineSpellWordUtil::MakeRange(
+already_AddRefed<dom::Range> mozInlineSpellWordUtil::MakeRange(
     const NodeOffsetRange& aRange) {
   IgnoredErrorResult ignoredError;
-  RefPtr<nsRange> range =
-      nsRange::Create(aRange.Begin().Node(), aRange.Begin().Offset(),
-                      aRange.End().Node(), aRange.End().Offset(), ignoredError);
+  RefPtr<dom::Range> range = dom::Range::Create(
+      aRange.Begin().Node(), aRange.Begin().Offset(), aRange.End().Node(),
+      aRange.End().Offset(), ignoredError);
   NS_WARNING_ASSERTION(!ignoredError.Failed(), "Creating a range failed");
   return range.forget();
 }
@@ -697,17 +711,19 @@ static inline bool IsBRElement(nsINode* aNode) {
  */
 static Maybe<int32_t> FindOffsetOfLastDOMWordSeparatorSequence(
     nsIContent* aContent, int32_t aBeforeOffset) {
-  const nsTextFragment* textFragment = aContent->GetText();
-  MOZ_ASSERT(textFragment, "Where is our text?");
-  int32_t end = std::min(aBeforeOffset, int32_t(textFragment->GetLength()));
+  const dom::CharacterDataBuffer* characterDataBuffer =
+      aContent->GetCharacterDataBuffer();
+  MOZ_ASSERT(characterDataBuffer, "Where is our text?");
+  int32_t end =
+      std::min(aBeforeOffset, int32_t(characterDataBuffer->GetLength()));
 
-  if (textFragment->Is2b()) {
-    nsDependentSubstring targetText(textFragment->Get2b(), end);
+  if (characterDataBuffer->Is2b()) {
+    nsDependentSubstring targetText(characterDataBuffer->Get2b(), end);
     WordSplitState<nsDependentSubstring> state(targetText);
     return state.FindOffsetOfLastDOMWordSeparatorSequence(end);
   }
 
-  nsDependentCSubstring targetText(textFragment->Get1b(), end);
+  nsDependentCSubstring targetText(characterDataBuffer->Get1b(), end);
   WordSplitState<nsDependentCSubstring> state(targetText);
   return state.FindOffsetOfLastDOMWordSeparatorSequence(end);
 }
@@ -783,7 +799,7 @@ static void CheckLeavingBreakElement(nsINode* aNode, void* aClosure) {
 void mozInlineSpellWordUtil::NormalizeWord(nsAString& aWord) {
   nsAutoString result;
   ::NormalizeWord(aWord, 0, aWord.Length(), result);
-  aWord = result;
+  aWord = std::move(result);
 }
 
 void mozInlineSpellWordUtil::SoftText::AdjustBeginAndBuildText(
@@ -873,16 +889,17 @@ void mozInlineSpellWordUtil::SoftText::AdjustBeginAndBuildText(
     if (IsSpellCheckingTextNode(node)) {
       nsIContent* content = static_cast<nsIContent*>(node);
       MOZ_ASSERT(content, "Where is our content?");
-      const nsTextFragment* textFragment = content->GetText();
-      MOZ_ASSERT(textFragment, "Where is our text?");
-      uint32_t lastOffsetInNode = textFragment->GetLength();
+      const dom::CharacterDataBuffer* characterDataBuffer =
+          content->GetCharacterDataBuffer();
+      MOZ_ASSERT(characterDataBuffer, "Where is our text?");
+      uint32_t lastOffsetInNode = characterDataBuffer->GetLength();
 
       if (seenSoftEnd) {
         // check whether we can stop after this
         for (uint32_t i =
                  node == mEnd.mNode ? AssertedCast<uint32_t>(mEnd.mOffset) : 0;
-             i < textFragment->GetLength(); ++i) {
-          if (IsDOMWordSeparator(textFragment->CharAt(i))) {
+             i < characterDataBuffer->GetLength(); ++i) {
+          if (IsDOMWordSeparator(characterDataBuffer->CharAt(i))) {
             exit = true;
             // stop at the first separator after the soft end point
             lastOffsetInNode = i;
@@ -897,7 +914,7 @@ void mozInlineSpellWordUtil::SoftText::AdjustBeginAndBuildText(
         mDOMMapping.AppendElement(DOMTextMapping(
             NodeOffset(node, firstOffsetInNode), mValue.Length(), len));
 
-        const bool ok = textFragment->AppendTo(
+        const bool ok = characterDataBuffer->AppendTo(
             mValue, static_cast<uint32_t>(firstOffsetInNode), len,
             mozilla::fallible);
         if (!ok) {

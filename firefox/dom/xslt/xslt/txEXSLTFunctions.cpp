@@ -1,34 +1,31 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/EnumeratedArray.h"
 #include "mozilla/EnumeratedRange.h"
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/MacroArgs.h"
 #include "mozilla/MacroForEach.h"
-
+#include "mozilla/dom/DocumentFragmentBinding.h"
 #include "nsAtom.h"
+#include "nsComponentManagerUtils.h"
+#include "nsContentCreatorFunctions.h"
 #include "nsGkAtoms.h"
+#include "nsIContent.h"
+#include "nsImportModule.h"
+#include "nsPrintfCString.h"
+#include "nsTextNode.h"
+#include "prtime.h"
 #include "txExecutionState.h"
 #include "txExpr.h"
-#include "txIXPathContext.h"
 #include "txIEXSLTFunctions.h"
+#include "txIXPathContext.h"
+#include "txMozillaXMLOutput.h"
 #include "txNodeSet.h"
 #include "txOutputFormat.h"
 #include "txRtfHandler.h"
 #include "txXPathTreeWalker.h"
-#include "nsImportModule.h"
-#include "nsPrintfCString.h"
-#include "nsComponentManagerUtils.h"
-#include "nsContentCreatorFunctions.h"
-#include "nsIContent.h"
-#include "txMozillaXMLOutput.h"
-#include "nsTextNode.h"
-#include "mozilla/dom/DocumentFragmentBinding.h"
-#include "prtime.h"
 #include "xpcprivate.h"
 
 using namespace mozilla;
@@ -677,8 +674,8 @@ nsresult txEXSLTRegExFunctionCall::evaluate(txIEvalContext* aContext,
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
-  nsCOMPtr<txIEXSLTFunctions> funcs =
-      do_ImportESModule("resource://gre/modules/txEXSLTRegExFunctions.sys.mjs");
+  nsCOMPtr<txIEXSLTFunctions> funcs = do_ImportESModule(
+      "moz-src:///dom/xslt/xslt/txEXSLTRegExFunctions.sys.mjs");
   MOZ_ALWAYS_TRUE(funcs);
 
   switch (mType) {

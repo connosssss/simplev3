@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,11 +9,11 @@
 
 #include "APZUtils.h"
 #include "AxisPhysicsMSDModel.h"
-#include "mozilla/DataMutex.h"  // for DataMutex
-#include "mozilla/gfx/Types.h"  // for Side
-#include "mozilla/TimeStamp.h"  // for TimeDuration
-#include "nsTArray.h"           // for nsTArray
 #include "Units.h"
+#include "mozilla/DataMutex.h"  // for DataMutex
+#include "mozilla/TimeStamp.h"  // for TimeDuration
+#include "mozilla/gfx/Types.h"  // for Side
+#include "nsTArray.h"           // for nsTArray
 
 namespace mozilla {
 namespace layers {
@@ -31,6 +29,8 @@ const float EPSILON = 0.0001f;
  * for sufficiently large coordinate values).
  */
 bool FuzzyEqualsCoordinate(CSSCoord aValue1, CSSCoord aValue2);
+
+bool FuzzyEqualsPoint(const CSSPoint& aValue1, const CSSPoint& aValue2);
 
 struct FrameMetrics;
 class AsyncPanZoomController;
@@ -385,7 +385,7 @@ class Axis {
 
   // Do not use this function directly, use
   // AsyncPanZoomController::GetAllowedHandoffDirections instead.
-  virtual OverscrollBehavior GetOverscrollBehavior() const = 0;
+  virtual StyleOverscrollBehavior GetOverscrollBehavior() const = 0;
 
   // Adjust a requested overscroll amount for resistance, yielding a smaller
   // actual overscroll amount.
@@ -422,7 +422,7 @@ class AxisX : public Axis {
   SideBits ScrollableDirections() const;
 
  private:
-  OverscrollBehavior GetOverscrollBehavior() const override;
+  StyleOverscrollBehavior GetOverscrollBehavior() const override;
 };
 
 class AxisY : public Axis {
@@ -455,7 +455,7 @@ class AxisY : public Axis {
       const ScreenMargin& aFixedLayerMargins) const;
 
  private:
-  OverscrollBehavior GetOverscrollBehavior() const override;
+  StyleOverscrollBehavior GetOverscrollBehavior() const override;
   ParentLayerCoord GetCompositionLengthWithoutDynamicToolbar() const;
   bool HasDynamicToolbar() const;
 };

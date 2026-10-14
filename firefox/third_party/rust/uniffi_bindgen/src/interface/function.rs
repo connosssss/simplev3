@@ -36,7 +36,7 @@ use anyhow::Result;
 use uniffi_meta::Checksum;
 
 use super::ffi::{FfiArgument, FfiFunction, FfiType};
-use super::{AsType, ComponentInterface, Literal, ObjectImpl, Type, TypeIterator};
+use super::{AsType, ComponentInterface, DefaultValue, Type, TypeIterator};
 
 /// Represents a standalone function.
 ///
@@ -131,6 +131,10 @@ impl Function {
     pub fn docstring(&self) -> Option<&str> {
         self.docstring.as_deref()
     }
+
+    pub fn checksum_from_metadata(meta: uniffi_meta::FnMetadata) -> u16 {
+        uniffi_meta::checksum(&Self::from(meta))
+    }
 }
 
 impl From<uniffi_meta::FnParamMetadata> for Argument {
@@ -183,7 +187,7 @@ pub struct Argument {
     pub(super) type_: Type,
     pub(super) by_ref: bool,
     pub(super) optional: bool,
-    pub(super) default: Option<Literal>,
+    pub(super) default: Option<DefaultValue>,
 }
 
 impl Argument {
@@ -199,11 +203,13 @@ impl Argument {
         self.by_ref
     }
 
-    pub fn is_trait_ref(&self) -> bool {
-        matches!(&self.type_, Type::Object { imp, .. } if *imp == ObjectImpl::Trait)
+    /// True for zero-copy `&[u8]` / `[ByRef] bytes` arguments, which take the
+    /// `ForeignBytes` FFI path instead of the owned `RustBuffer` path.
+    pub fn is_borrowed_bytes(&self) -> bool {
+        self.by_ref && matches!(self.type_, Type::Bytes)
     }
 
-    pub fn default_value(&self) -> Option<&Literal> {
+    pub fn default_value(&self) -> Option<&DefaultValue> {
         self.default.as_ref()
     }
 
@@ -220,9 +226,14 @@ impl AsType for Argument {
 
 impl From<&Argument> for FfiArgument {
     fn from(a: &Argument) -> FfiArgument {
+        let type_ = if a.is_borrowed_bytes() {
+            FfiType::ForeignBytes
+        } else {
+            (&a.type_).into()
+        };
         FfiArgument {
             name: a.name.clone(),
-            type_: (&a.type_).into(),
+            type_,
         }
     }
 }
@@ -251,9 +262,11 @@ pub trait Callable {
     fn throws_type(&self) -> Option<&Type>;
     fn is_async(&self) -> bool;
     fn docstring(&self) -> Option<&str>;
-    fn takes_self(&self) -> bool {
-        false
+
+    fn self_type(&self) -> Option<Type> {
+        None
     }
+
     fn result_type(&self) -> ResultType<'_> {
         ResultType {
             return_type: self.return_type(),
@@ -354,8 +367,8 @@ impl<T: Callable> Callable for &T {
         (*self).ffi_func()
     }
 
-    fn takes_self(&self) -> bool {
-        (*self).takes_self()
+    fn self_type(&self) -> Option<Type> {
+        (*self).self_type()
     }
 }
 
@@ -427,6 +440,32 @@ mod test {
                 .unwrap(),
             "informative docstring"
         );
+    }
+
+    #[test]
+    fn byref_bytes_maps_to_foreignbytes() {
+        let arg = Argument {
+            name: "buf".into(),
+            type_: Type::Bytes,
+            by_ref: true,
+            optional: false,
+            default: None,
+        };
+        let ffi_arg: FfiArgument = (&arg).into();
+        assert!(matches!(ffi_arg.type_, FfiType::ForeignBytes));
+    }
+
+    #[test]
+    fn owned_bytes_maps_to_rustbuffer() {
+        let arg = Argument {
+            name: "buf".into(),
+            type_: Type::Bytes,
+            by_ref: false,
+            optional: false,
+            default: None,
+        };
+        let ffi_arg: FfiArgument = (&arg).into();
+        assert!(matches!(ffi_arg.type_, FfiType::RustBuffer(None)));
     }
 
     #[test]

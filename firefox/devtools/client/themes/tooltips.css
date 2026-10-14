@@ -11,6 +11,7 @@
 @import url(chrome://devtools/content/shared/widgets/filter-widget.css);
 @import url(chrome://devtools/content/shared/widgets/linear-widget.css);
 @import url(chrome://devtools/content/shared/widgets/spectrum.css);
+@import url(chrome://devtools/content/shared/components/MdnLink.css);
 /*
  * compatibility.css is primarily used by the Compatibility panel, so import it in a layer
  * to give it a lower importance than the rule here and mitigate styling mismatch.
@@ -37,8 +38,8 @@
 :root {
   --theme-arrowpanel-border-radius: 3.5px;
 
-  --bezier-diagonal-color: light-dark(rgba(0, 0, 0, 0.2), #eee);
-  --timing-function-grid-color: light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.1));
+  --bezier-diagonal-color: light-dark(rgb(0 0 0 / 0.2), #eee);
+  --timing-function-grid-color: light-dark(rgb(0 0 0 / 0.05), rgb(255 255 255 / 0.1));
   --timing-function-line-color: #4c9ed9;
   --timing-function-preview-scale: light-dark(var(--grey-43), var(--grey-40));
   --timing-function-preview-dot-border: white;
@@ -46,18 +47,18 @@
 
   /* Tooltips */
   --theme-tooltip-color: light-dark(var(--theme-body-color), var(--theme-text-color-strong));
-  --theme-tooltip-background: light-dark(rgb(255, 255, 255), var(--theme-popup-background));
-  --theme-tooltip-shadow-color: light-dark(var(--grey-90-a10), rgba(25, 25, 25, 0.76));
+  --theme-tooltip-background: light-dark(rgb(255 255 255), var(--theme-popup-background));
+  --theme-tooltip-shadow-color: light-dark(var(--grey-90-a10), rgb(25 25 25 / 0.76));
 
   /* Doorhangers */
   /* These colors are based on the colors used for doorhangers elsewhere in Firefox. */
   --theme-arrowpanel-background: var(--theme-popup-background);
   --theme-arrowpanel-color: var(--theme-popup-color);
   --theme-arrowpanel-border-color: var(--theme-popup-border-color);
-  --theme-arrowpanel-separator: light-dark(ThreeDShadow, rgba(249, 249, 250, 0.1));
-  --theme-arrowpanel-active-background: light-dark(hsla(0, 0%, 80%, 0.45), rgba(249, 249, 250, 0.15));
+  --theme-arrowpanel-separator: light-dark(ThreeDShadow, rgb(249 249 250 / 0.1));
+  --theme-arrowpanel-active-background: light-dark(hsl(0 0% 80% / 0.45), rgb(249 249 250 / 0.15));
   --theme-arrowpanel-active-outline-color: transparent;
-  --theme-arrowpanel-disabled-color: light-dark(GrayText, rgba(249, 249, 250, 0.5));
+  --theme-arrowpanel-disabled-color: light-dark(GrayText, rgb(249 249 250 / 0.5));
 
   &[forced-colors-active] {
     /* The active state have a different background but with an outline in HCM */
@@ -86,7 +87,7 @@
 }
 
 :root[platform="mac"].theme-light {
-  --theme-arrowpanel-separator: hsla(210, 4%, 10%, 0.14);
+  --theme-arrowpanel-separator: hsl(210 4% 10% / 0.14);
 }
 
 /*
@@ -107,6 +108,7 @@ strong {
 
 /* Tooltip: CSS variables tooltip */
 
+/* stylelint-disable-next-line stylelint-plugin-mozilla/no-has-selector */
 .tooltip-container:has(.devtools-tooltip-css-variable) {
   /* By default, in dark mode, the tooltip background color is lighter than the background
      color of the Rules view. Since we're using the same color than in the Rules view
@@ -127,10 +129,12 @@ strong {
   max-inline-size: min(500px, 100vw);
 
   /* If only the "top" section is displayed, to avoid smaller text (e.g. `10px`) to look unbalanced */
+  /* stylelint-disable-next-line stylelint-plugin-mozilla/no-has-selector */
   .variable-value:not(:has(+ .variable-tooltip-section)) {
     text-align: center;
   }
   /* If there are other sections, add some space below the value */
+  /* stylelint-disable-next-line stylelint-plugin-mozilla/no-has-selector */
   .variable-value:has(+ .variable-tooltip-section) {
     padding-block-end: var(--block-padding);
   }
@@ -213,10 +217,10 @@ strong {
   margin-block-end: 0;
 }
 
-.devtools-tooltip-inactive-css .link,
-.devtools-tooltip-css-compatibility .link {
+:is(.devtools-tooltip-inactive-css, .devtools-tooltip-css-compatibility) .link {
   color: var(--theme-link-color);
   cursor: pointer;
+  text-decoration: 1px underline;
 }
 
 /* Tooltip: Compatibility tooltip */
@@ -229,8 +233,17 @@ strong {
 }
 
 /* Tooltip: query container info */
+/* stylelint-disable-next-line stylelint-plugin-mozilla/no-has-selector */
+.tooltip-container:has(.devtools-tooltip-query-container) {
+  /* By default, in dark mode, the tooltip background color is lighter than the background
+     color of the Rules view. Since we're using the same color than in the Rules view
+     for CSS values, this can lead to poor contrast.
+     To prevent this, we apply the same background color than in the Rules view */
+  --theme-arrowpanel-background: var(--theme-body-background);
+}
+
 .devtools-tooltip-query-container {
-  color: var(--theme-arrowpanel-color);
+  color: var(--theme-body-color);
   margin: 0;
   padding: 10px 14px 12px;
   font-size: 12px;
@@ -247,12 +260,37 @@ strong {
   text-overflow: ellipsis;
   overflow: hidden;
   color: var(--theme-body-color);
+
+  .open-inspector {
+    display: inline-block;
+    vertical-align: top;
+    height: 15px;
+    width: 15px;
+    margin: 1px 4px 0;
+    padding: 0;
+    border: none;
+    color: var(--theme-icon-color);
+    fill: currentColor;
+    cursor: pointer;
+    -moz-context-properties: fill;
+    background: url("chrome://devtools/skin/images/open-inspector.svg") no-repeat;
+  }
+
+  .objectBox-node:hover .open-inspector {
+    color: var(--theme-icon-alternate-hover-color);
+  }
 }
 
 .devtools-tooltip-query-container ul {
   padding: 0;
   margin: 0;
   list-style: none;
+}
+
+.devtools-tooltip-query-container ul.unset-properties {
+  margin-block-start: 1em;
+  padding-block-start: 1em;
+  border-block-start: 1px solid var(--theme-popup-dimmed);
 }
 
 .devtools-tooltip-query-container .objectBox-node .tag-name {
@@ -269,6 +307,57 @@ strong {
 
 .devtools-tooltip-query-container .property-value {
   color: var(--theme-highlight-red);
+
+  &.empty {
+    color: var(--theme-text-color-inactive);
+  }
+}
+
+/* Tooltip: CSS explainers */
+/* stylelint-disable-next-line stylelint-plugin-mozilla/no-has-selector */
+.tooltip-container:has(.devtools-tooltip-css-explainers) {
+  /* By default, in dark mode, the tooltip background color is lighter than the background
+     color of the Rules view. Since we're using the same color than in the Rules view
+     for CSS values, this can lead to poor contrast.
+     To prevent this, we apply the same background color than in the Rules view */
+  --theme-arrowpanel-background: var(--theme-body-background);
+}
+
+/* stylelint-disable-next-line stylelint-plugin-mozilla/no-has-selector */
+.tooltip-container[type="doorhanger"] > .tooltip-panel:has(.devtools-tooltip-css-explainers) {
+  --max-tooltip-width: 600px;
+  max-width: var(--max-tooltip-width);
+}
+
+.devtools-tooltip-css-explainers {
+  color: var(--theme-body-color);
+  width: max-content;
+  max-width: min(var(--max-tooltip-width), 100vw);
+  box-sizing: border-box;
+  padding: 5px 10px;
+  user-select: text;
+  -moz-user-focus: normal;
+
+  ol {
+    margin: 0;
+    padding: 0;
+    font-family: var(--monospace-font-family);
+
+    li {
+      padding-inline-start: 1ch;
+      color: var(--theme-highlight-red);
+    }
+
+    li:not(:first-of-type)::marker {
+      content: "↪";
+      color: var(--theme-body-color);
+    }
+
+    /* Add a top margin for the last item unless there are less that 2 steps displayed */
+    li:last-of-type:not(:nth-of-type(1), :nth-of-type(2)) {
+      margin-block-start: 8px;
+    }
+  }
 }
 
 /* Tooltip: Tiles */
@@ -300,15 +389,17 @@ strong {
   background: transparent;
   border: none;
   padding: 0;
+  min-width: 1px;
+  min-height: 1px;
   -moz-window-shadow: none;
   --panel-border-radius: 0px;
   --panel-padding: 0px;
-  --panel-background: transparent;
+  --panel-background-color: transparent;
   --panel-border-color: transparent;
-  --panel-shadow: none;
+  --panel-box-shadow: none;
 
   /* This is enough room for the shadow of the tooltip-container */
-  --panel-shadow-margin: 10px;
+  --panel-box-shadow-margin: 10px;
 
   &::part(content) {
     border: none;
@@ -473,7 +564,7 @@ strong {
     background: var(--theme-arrowpanel-background);
     border: 1px solid var(--theme-arrowpanel-border-color);
     border-radius: var(--theme-arrowpanel-border-radius);
-    box-shadow: 0 0 4px hsla(210, 4%, 10%, 0.2);
+    box-shadow: 0 0 4px hsl(210 4% 10% / 0.2);
   }
 
   > .tooltip-arrow {
@@ -587,7 +678,7 @@ strong {
     &:not([disabled]):is([open], :hover:active) {
       background-color: var(--theme-arrowpanel-active-background);
       color: var(--theme-arrowpanel-active-color);
-      box-shadow: 0 1px 0 hsla(210, 4%, 10%, 0.03) inset;
+      box-shadow: 0 1px 0 hsl(210 4% 10% / 0.03) inset;
       outline: 1px solid var(--theme-arrowpanel-active-outline-color);
     }
 
@@ -624,7 +715,7 @@ strong {
   }
 
   /* Use :where to avoid having a high specificity that would take over the rule above */
-  .menuitem > button.command:where([role="menuitem"], [role="menuitemcheckbox"], [role="link"]) {
+  .menuitem > button.command:where([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="link"]) {
     appearance: none;
     border: none;
     background-color: transparent;
@@ -828,6 +919,10 @@ strong {
   margin: 0;
   font-size: 9px;
   line-height: 14px;
+  max-width: 20ch;
+  text-overflow: ellipsis;
+  overflow-x: hidden;
+  white-space: nowrap;
 }
 
 .event-tooltip-editor-frame {
@@ -910,7 +1005,7 @@ strong {
 
 .invoke-confirm {
   color: var(--theme-popup-color);
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 1px solid rgb(0 0 0 / 0.1);
   max-width: 212px;
 }
 
@@ -1018,6 +1113,16 @@ strong {
       border-block-start: 1px solid var(--theme-splitter-color);
     }
   }
+}
+
+/* Tooltip: attr() */
+.devtools-tooltip-css-attr {
+  padding: 5px 10px;
+  width: max-content;
+  max-width: 400px;
+  max-height: 200px;
+  text-overflow: ellipsis;
+  overflow: hidden;
 }
 
 /* Indent the content script items */

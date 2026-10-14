@@ -1,19 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ScrollAnchorContainer.h"
+
 #include <cstddef>
 
-#include "mozilla/dom/Text.h"
-#include "mozilla/ScopeExit.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/ProfilerLabels.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/ScrollContainerFrame.h"
 #include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/ToString.h"
+#include "mozilla/dom/Text.h"
 #include "nsBlockFrame.h"
 #include "nsIFrame.h"
 #include "nsIFrameInlines.h"
@@ -58,8 +57,6 @@ ScrollAnchorContainer::ScrollAnchorContainer(ScrollContainerFrame* aScrollFrame)
       mSuppressAnchorAdjustment(false) {
   MOZ_ASSERT(aScrollFrame == Frame());
 }
-
-ScrollAnchorContainer::~ScrollAnchorContainer() = default;
 
 ScrollAnchorContainer* ScrollAnchorContainer::FindFor(nsIFrame* aFrame) {
   aFrame = aFrame->GetParent();
@@ -318,9 +315,7 @@ void ScrollAnchorContainer::UserScrolled() {
   }
   InvalidateAnchor();
 
-  if (!StaticPrefs::
-          layout_css_scroll_anchoring_reset_heuristic_during_animation() &&
-      Frame()->ScrollAnimationState().contains(
+  if (Frame()->ScrollAnimationState().contains(
           ScrollContainerFrame::AnimationState::APZInProgress)) {
     // We'd want to skip resetting our heuristic while APZ is running an async
     // scroll because this UserScrolled function gets called on every refresh
@@ -410,7 +405,7 @@ bool ScrollAnchorContainer::DisablingHeuristic::AdjustmentMade(
 
   nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "Layout"_ns,
                                   aAnchor.Frame()->PresContext()->Document(),
-                                  nsContentUtils::eLAYOUT_PROPERTIES,
+                                  PropertiesFile::LAYOUT_PROPERTIES,
                                   "ScrollAnchoringDisabledInContainer",
                                   arguments);
   return true;
@@ -468,20 +463,16 @@ void ScrollAnchorContainer::Destroy() {
 void ScrollAnchorContainer::ApplyAdjustments() {
   if (!mAnchorNode || mAnchorNodeIsDirty || mDisabled ||
       Frame()->HasPendingScrollRestoration() ||
-      (StaticPrefs::
-           layout_css_scroll_anchoring_reset_heuristic_during_animation() &&
-       Frame()->IsProcessingScrollEvent()) ||
       Frame()->ScrollAnimationState().contains(
           ScrollContainerFrame::AnimationState::TriggeredByScript) ||
       Frame()->GetScrollPosition() == nsPoint()) {
     ANCHOR_LOG(
         "Ignoring post-reflow (anchor=%p, dirty=%d, disabled=%d, "
-        "pendingRestoration=%d, scrollevent=%d, scriptAnimating=%d, "
+        "pendingRestoration=%d, scriptAnimating=%d, "
         "zeroScrollPos=%d pendingSuppression=%d, "
         "container=%p).\n",
         mAnchorNode, mAnchorNodeIsDirty, mDisabled,
         Frame()->HasPendingScrollRestoration(),
-        Frame()->IsProcessingScrollEvent(),
         Frame()->ScrollAnimationState().contains(
             ScrollContainerFrame::AnimationState::TriggeredByScript),
         Frame()->GetScrollPosition() == nsPoint(), mSuppressAnchorAdjustment,
@@ -718,12 +709,10 @@ nsIFrame* ScrollAnchorContainer::FindAnchorIn(nsIFrame* aFrame) const {
     // Skip child lists that contain out-of-flow frames, we'll visit them by
     // following placeholders in the in-flow lists so that we visit these
     // frames in DOM order.
-    // XXX do we actually need to exclude FrameChildListID::OverflowOutOfFlow
-    // too?
+    // XXX do we actually need to exclude FrameChildListID::OverflowFloats too?
     if (listID == FrameChildListID::Absolute ||
-        listID == FrameChildListID::Fixed ||
         listID == FrameChildListID::Float ||
-        listID == FrameChildListID::OverflowOutOfFlow) {
+        listID == FrameChildListID::OverflowFloats) {
       continue;
     }
 

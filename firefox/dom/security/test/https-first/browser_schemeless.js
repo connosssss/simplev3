@@ -4,7 +4,7 @@
 "use strict";
 
 // We explicitly need HTTP URLs in this test
-/* eslint-disable @microsoft/sdl/no-insecure-url */
+/* eslint-disable sdl/no-insecure-url */
 
 ChromeUtils.defineLazyGetter(this, "UrlbarTestUtils", () => {
   const { UrlbarTestUtils: module } = ChromeUtils.importESModule(
@@ -18,7 +18,7 @@ XPCOMUtils.defineLazyServiceGetter(
   this,
   "clipboardHelper",
   "@mozilla.org/widget/clipboardhelper;1",
-  "nsIClipboardHelper"
+  Ci.nsIClipboardHelper
 );
 
 /** Type aInput into the address bar and press enter */
@@ -39,7 +39,8 @@ async function runMainTest(aInput, aDesc, aExpectedScheme) {
 /**
  * Type aInput into the address bar and press ctrl+enter,
  * resulting in the input being canonized first.
- * This should not change schemeless HTTPS behaviour. */
+ * This should not change schemeless HTTPS behaviour.
+ */
 async function runCanonizedTest(aInput, aDesc, aExpectedScheme) {
   await BrowserTestUtils.withNewTab("about:blank", async function (browser) {
     const loaded = BrowserTestUtils.browserLoaded(browser, false, null, true);
@@ -57,7 +58,8 @@ async function runCanonizedTest(aInput, aDesc, aExpectedScheme) {
 /**
  * Type aInput into the address bar and press alt+enter,
  * resulting in the input being loaded in a new tab.
- * This should not change schemeless HTTPS behaviour. */
+ * This should not change schemeless HTTPS behaviour.
+ */
 async function runNewTabTest(aInput, aDesc, aExpectedScheme) {
   await BrowserTestUtils.withNewTab(
     "about:about", // For alt+enter to do anything, we need to be on a page other than about:blank.
@@ -88,7 +90,8 @@ async function runNewTabTest(aInput, aDesc, aExpectedScheme) {
 /**
  * Type aInput into the address bar and press shift+enter,
  * resulting in the input being loaded in a new window.
- * This should not change schemeless HTTPS behaviour. */
+ * This should not change schemeless HTTPS behaviour.
+ */
 async function runNewWindowTest(aInput, aDesc, aExpectedScheme) {
   await BrowserTestUtils.withNewTab("about:about", async function () {
     const newWindowPromise = BrowserTestUtils.waitForNewWindow({
@@ -114,7 +117,8 @@ async function runNewWindowTest(aInput, aDesc, aExpectedScheme) {
 /**
  * Instead of typing aInput into the address bar, copy it
  * to the clipboard and use the "Paste and Go" menu entry.
- * This should not change schemeless HTTPS behaviour. */
+ * This should not change schemeless HTTPS behaviour.
+ */
 async function runPasteAndGoTest(aInput, aDesc, aExpectedScheme) {
   await BrowserTestUtils.withNewTab("about:blank", async function (browser) {
     gURLBar.focus();
@@ -123,15 +127,14 @@ async function runPasteAndGoTest(aInput, aDesc, aExpectedScheme) {
     });
 
     const loaded = BrowserTestUtils.browserLoaded(browser, false, null, true);
-    const textBox = gURLBar.querySelector("moz-input-box");
-    const cxmenu = textBox.menupopup;
+    const cxmenu = window.EditContextMenu.popup;
     const cxmenuPromise = BrowserTestUtils.waitForEvent(cxmenu, "popupshown");
     EventUtils.synthesizeMouseAtCenter(gURLBar.inputField, {
       type: "contextmenu",
       button: 2,
     });
     await cxmenuPromise;
-    const menuitem = textBox.getMenuItem("paste-and-go");
+    const menuitem = cxmenu.querySelector('[anonid="paste-and-go"]');
     menuitem.closest("menupopup").activateItem(menuitem);
     await loaded;
 

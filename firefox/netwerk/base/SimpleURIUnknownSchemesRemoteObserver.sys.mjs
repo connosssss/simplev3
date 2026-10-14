@@ -13,14 +13,15 @@ ChromeUtils.defineESModuleGetters(lazy, {
 const SETTINGS_DEFAULTURI_BYPASS_LIST_KEY =
   "url-parser-default-unknown-schemes-interventions";
 
+/**
+ * Manages the Remote Settings-backed list of URI schemes that should be parsed
+ * using the simple URI parser instead of the default URI parser.
+ */
 export class SimpleURIUnknownSchemesRemoteObserver {
   #initialized = false;
   #bypassListSettings;
   classID = Components.ID("{86606ba1-de17-4df4-9013-e571ab94fd94}");
-  QueryInterface = ChromeUtils.generateQI([
-    "nsIObserver",
-    "nsISimpleURIUnknownSchemesRemoteObserver",
-  ]);
+  QueryInterface = ChromeUtils.generateQI(["nsIObserver"]);
 
   observe(subject, topic) {
     // signal selected because RemoteSettingsClient is first getting initialised
@@ -89,7 +90,7 @@ export class SimpleURIUnknownSchemesRemoteObserver {
    *
    * @param {boolean} [firstTime]
    *   Internal boolean to indicate if this is the first time check or not.
-   * @returns {array}
+   * @returns {Array}
    *   An array of objects in the database, or an empty array if none
    *   could be obtained.
    */

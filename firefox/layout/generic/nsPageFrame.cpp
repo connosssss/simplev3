@@ -1,34 +1,35 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsPageFrame.h"
 
+#include "PrintedSheetFrame.h"
+#include "gfxContext.h"
 #include "mozilla/AppUnits.h"
+#include "mozilla/Logging.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/ReflowInput.h"
 #include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/StaticPrefs_print.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/intl/Segmenter.h"
-#include "gfxContext.h"
-#include "nsDeviceContext.h"
-#include "nsFontMetrics.h"
-#include "nsIFrame.h"
-#include "nsLayoutUtils.h"
-#include "nsPresContext.h"
-#include "nsGkAtoms.h"
-#include "nsFieldSetFrame.h"
-#include "nsPageContentFrame.h"
-#include "nsDisplayList.h"
-#include "nsPageSequenceFrame.h"  // for nsSharedPageData
-#include "nsTextFormatter.h"      // for page number localization formatting
 #include "nsBidiUtils.h"
+#include "nsDeviceContext.h"
+#include "nsDisplayList.h"
+#include "nsFieldSetFrame.h"
+#include "nsFontMetrics.h"
+#include "nsGkAtoms.h"
+#include "nsIFrame.h"
 #include "nsIPrintSettings.h"
-#include "PrintedSheetFrame.h"
-
-#include "mozilla/Logging.h"
+#include "nsLayoutUtils.h"
+#include "nsPageContentFrame.h"
+#include "nsPageSequenceFrame.h"  // for nsSharedPageData
+#include "nsPresContext.h"
+#include "nsTextFormatter.h"  // for page number localization formatting
+#ifdef ACCESSIBILITY
+#  include "mozilla/a11y/PdfStructTreeBuilder.h"
+#endif
 extern mozilla::LazyLogModule gLayoutPrintingLog;
 #define PR_PL(_p1) MOZ_LOG(gLayoutPrintingLog, mozilla::LogLevel::Debug, _p1)
 
@@ -103,9 +104,13 @@ nsReflowStatus nsPageFrame::ReflowPageContent(
     return {};
   }
 
-  ReflowInput kidReflowInput(
-      aPresContext, aPageReflowInput, frame,
-      LogicalSize(frame->GetWritingMode(), availableSpace));
+  const auto kidWM = frame->GetWritingMode();
+  LogicalSize availSizeForKid(kidWM, availableSpace);
+  if (aPageReflowInput.mFlags.mIsInFragmentainerMeasuringReflow) {
+    availSizeForKid.BSize(kidWM) = NS_UNCONSTRAINEDSIZE;
+  }
+  ReflowInput kidReflowInput(aPresContext, aPageReflowInput, frame,
+                             availSizeForKid);
   kidReflowInput.mFlags.mIsTopOfPage = true;
   kidReflowInput.mFlags.mTableIsSplittable = true;
 
@@ -128,8 +133,7 @@ nsReflowStatus nsPageFrame::ReflowPageContent(
       AnchorPosResolutionParams::From(&kidReflowInput);
   if (mPD->mPrintSettings->GetHonorPageRuleMargins()) {
     for (const auto side : mozilla::AllPhysicalSides()) {
-      if (!kidReflowInput.mStyleMargin
-               ->GetMargin(side, anchorResolutionParams.mPosition)
+      if (!kidReflowInput.mStyleMargin->GetMargin(side, anchorResolutionParams)
                ->IsAuto()) {
         // Computed margins are already in the coordinate space of the content,
         // do not scale.
@@ -251,11 +255,25 @@ nsresult nsPageFrame::GetFrameName(nsAString& aResult) const {
 void nsPageFrame::ProcessSpecialCodes(const nsString& aStr, nsString& aNewStr) {
   aNewStr = aStr;
 
+  // Helper to wrap a string in Unicode FSI/PDI controls, so that its bidi
+  // rendering will be isolated from the context, and will respect the default
+  // directionality of the string's content.
+  // We apply this to each of the strings being substituted in for "special"
+  // codes in the header/footer.
+  constexpr char16_t kFirstStrongIsolate = char16_t(0x2068);
+  constexpr char16_t kPopDirectionalIsolate = char16_t(0x2069);
+  auto bidiIsolateWrap = [](nsString& aString) {
+    aString.Insert(kFirstStrongIsolate, 0);
+    aString.Append(kPopDirectionalIsolate);
+  };
+
   // Search to see if the &D code is in the string
   // then subst in the current date/time
   constexpr auto kDate = u"&D"_ns;
   if (aStr.Find(kDate) != kNotFound) {
-    aNewStr.ReplaceSubstring(kDate, mPD->mDateTimeStr);
+    nsAutoString uStr(mPD->mDateTimeStr);
+    bidiIsolateWrap(uStr);
+    aNewStr.ReplaceSubstring(kDate, uStr);
   }
 
   // NOTE: Must search for &PT before searching for &P
@@ -268,6 +286,7 @@ void nsPageFrame::ProcessSpecialCodes(const nsString& aStr, nsString& aNewStr) {
     nsAutoString uStr;
     nsTextFormatter::ssprintf(uStr, mPD->mPageNumAndTotalsFormat.get(),
                               mPageNum, mPD->mRawNumPages);
+    bidiIsolateWrap(uStr);
     aNewStr.ReplaceSubstring(kPageAndTotal, uStr);
   }
 
@@ -277,17 +296,22 @@ void nsPageFrame::ProcessSpecialCodes(const nsString& aStr, nsString& aNewStr) {
   if (aStr.Find(kPage) != kNotFound) {
     nsAutoString uStr;
     nsTextFormatter::ssprintf(uStr, mPD->mPageNumFormat.get(), mPageNum);
+    bidiIsolateWrap(uStr);
     aNewStr.ReplaceSubstring(kPage, uStr);
   }
 
   constexpr auto kTitle = u"&T"_ns;
   if (aStr.Find(kTitle) != kNotFound) {
-    aNewStr.ReplaceSubstring(kTitle, mPD->mDocTitle);
+    nsAutoString uStr(mPD->mDocTitle);
+    bidiIsolateWrap(uStr);
+    aNewStr.ReplaceSubstring(kTitle, uStr);
   }
 
   constexpr auto kDocURL = u"&U"_ns;
   if (aStr.Find(kDocURL) != kNotFound) {
-    aNewStr.ReplaceSubstring(kDocURL, mPD->mDocURL);
+    nsAutoString uStr(mPD->mDocURL);
+    bidiIsolateWrap(uStr);
+    aNewStr.ReplaceSubstring(kDocURL, uStr);
   }
 
   constexpr auto kPageTotal = u"&L"_ns;
@@ -295,6 +319,7 @@ void nsPageFrame::ProcessSpecialCodes(const nsString& aStr, nsString& aNewStr) {
     nsAutoString uStr;
     nsTextFormatter::ssprintf(uStr, mPD->mPageNumFormat.get(),
                               mPD->mRawNumPages);
+    bidiIsolateWrap(uStr);
     aNewStr.ReplaceSubstring(kPageTotal, uStr);
   }
 }
@@ -592,8 +617,6 @@ enum {
 // This takes into account the value of the pref "print.center_page_on_sheet".
 static float OffsetToCenterPage(nscoord aContentSize, nscoord aSheetSize,
                                 float aScale, float aAppUnitsPerPixel) {
-  MOZ_ASSERT(aScale <= 1.0f && aScale > 0.0f,
-             "Scale must be in the range (0,1]");
   const unsigned centerPagePref = StaticPrefs::print_center_page_on_sheet();
   if (centerPagePref == kPrintCenterPageOnSheetNever) {
     return 0.0f;
@@ -663,6 +686,9 @@ static gfx::Matrix4x4 ComputePagesPerSheetAndPageSizeTransform(
     // then center the page on the sheet.
     const float scale =
         pageFrame->ComputeSinglePPSPageSizeScale(contentPageSize);
+    MOZ_ASSERT(scale > 0.0f &&
+                   scale <= pageFrame->GetSharedPageData()->mMaxPageZoomRatio,
+               "Scale must be between 0 and the maximum page zoom ratio");
     const float centeringOffset = OffsetToCenterPage(
         contentPageSize.width, sheetSize.width, scale, aAppUnitsPerPixel);
 
@@ -817,6 +843,8 @@ float nsPageFrame::ComputeSinglePPSPageSizeScale(
     const nsSize aContentPageSize) const {
   MOZ_ASSERT(GetSharedPageData()->PagesPerSheetInfo()->mNumPages == 1,
              "Only intended for the pps==1 case");
+  MOZ_ASSERT(GetSharedPageData()->mMaxPageZoomRatio >= 1.0f,
+             "Max zoom ratio should be >= 1.0");
   MOZ_ASSERT(aContentPageSize == ComputePageSize(),
              "Incorrect content page size");
 
@@ -832,23 +860,22 @@ float nsPageFrame::ComputeSinglePPSPageSizeScale(
   // Compute scaling due to a possible mismatch in the paper size we are
   // printing to (from the pres context) and the specified page size when the
   // content uses "@page {size: ...}" to specify a page size for the content.
-  float scale = 1.0f;
-
   const nsSize sheetSize = sheet->GetSizeForChildren();
-  nscoord contentPageHeight = aContentPageSize.height;
-  // Scale down if the target is too wide.
-  if (aContentPageSize.width > sheetSize.width) {
-    scale *= float(sheetSize.width) / float(aContentPageSize.width);
-    contentPageHeight = NSToCoordRound(contentPageHeight * scale);
-  }
-  // Scale down if the target is too tall.
-  if (contentPageHeight > sheetSize.height) {
-    scale *= float(sheetSize.height) / float(contentPageHeight);
-  }
-  MOZ_ASSERT(
-      scale <= 1.0f,
-      "Page-size mismatches should only have caused us to scale down, not up.");
-  return scale;
+  // Find the scale factors to shrink or grow the page to match the sheet's
+  // width and height, respectively. This scale factor is then limited by the
+  // max zoom, which will be 1.0 by default.
+  //
+  // When the max zoom is 1.0, the page is never scaled above its size as given
+  // by the "@page {size: ...}" value.
+  // When the max zoom is above 1.0, the page can be scaled above its size
+  // within the sheet. This currently only occurs when printing a PDF scaled
+  // above 100% by user settings in the print dialog.
+  const float widthScale =
+      float(sheetSize.width) / float(aContentPageSize.width);
+  const float heightScale =
+      float(sheetSize.height) / float(aContentPageSize.height);
+  const float scale = std::min(widthScale, heightScale);
+  return std::min(scale, GetSharedPageData()->mMaxPageZoomRatio);
 }
 
 double nsPageFrame::GetPageOrientationRotation(nsSharedPageData* aPD) const {
@@ -962,6 +989,10 @@ void nsPageFrame::PaintHeaderFooter(gfxContext& aRenderingContext, nsPoint aPt,
   mPD->mPrintSettings->GetHeaderStrLeft(headerLeft);
   mPD->mPrintSettings->GetHeaderStrCenter(headerCenter);
   mPD->mPrintSettings->GetHeaderStrRight(headerRight);
+#ifdef ACCESSIBILITY
+  aRenderingContext.GetDrawTarget()->AccessibleId(
+      0, a11y::PdfStructTreeBuilder::SpecialId::PageHeader);
+#endif
   DrawHeaderFooter(aRenderingContext, *fontMet, eHeader, headerLeft,
                    headerCenter, headerRight, rect, ascent, visibleHeight);
 
@@ -969,6 +1000,10 @@ void nsPageFrame::PaintHeaderFooter(gfxContext& aRenderingContext, nsPoint aPt,
   mPD->mPrintSettings->GetFooterStrLeft(footerLeft);
   mPD->mPrintSettings->GetFooterStrCenter(footerCenter);
   mPD->mPrintSettings->GetFooterStrRight(footerRight);
+#ifdef ACCESSIBILITY
+  aRenderingContext.GetDrawTarget()->AccessibleId(
+      0, a11y::PdfStructTreeBuilder::SpecialId::PageFooter);
+#endif
   DrawHeaderFooter(aRenderingContext, *fontMet, eFooter, footerLeft,
                    footerCenter, footerRight, rect, ascent, visibleHeight);
 }
@@ -1023,8 +1058,8 @@ void nsPageBreakFrame::Reflow(nsPresContext* aPresContext,
     // frame and thus "misplaced".  nsFieldSetFrame::Reflow deals with these
     // forced breaks explicitly instead.
     const nsContainerFrame* parent = GetParent();
-    if (parent &&
-        parent->Style()->GetPseudoType() == PseudoStyleType::fieldsetContent) {
+    if (parent && parent->Style()->GetPseudoType() ==
+                      PseudoStyleType::MozFieldsetContent) {
       while ((parent = parent->GetParent())) {
         if (const nsFieldSetFrame* const fieldset = do_QueryFrame(parent)) {
           const auto* const legend = fieldset->GetLegend();

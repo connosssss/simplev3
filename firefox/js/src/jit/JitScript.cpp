@@ -1,24 +1,25 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
-#include "jit/JitScript-inl.h"
 
 #include "mozilla/BinarySearch.h"
 #include "mozilla/CheckedInt.h"
 
 #include <utility>
 
+#include "gc/GCMarker.h"
 #include "jit/BaselineIC.h"
 #include "jit/BaselineJIT.h"
 #include "jit/BytecodeAnalysis.h"
+#include "jit/CacheIRCompiler.h"
+#include "jit/IonOptimizationLevels.h"  // jit::OptimizationInfo
 #include "jit/IonScript.h"
 #include "jit/JitFrames.h"
 #include "jit/JitSpewer.h"
 #include "jit/ScriptFromCalleeToken.h"
+#include "jit/ShapeList.h"
 #include "jit/TrialInlining.h"
+#include "jit/WarpSnapshot.h"
 #include "js/ColumnNumber.h"  // JS::LimitedColumnNumberOneOrigin
 #include "vm/BytecodeUtil.h"
 #include "vm/Compartment.h"
@@ -27,6 +28,7 @@
 #include "vm/JSScript.h"
 
 #include "gc/GCContext-inl.h"
+#include "jit/JitScript-inl.h"
 #include "jit/JSJitFrameIter-inl.h"
 #include "vm/JSContext-inl.h"
 #include "vm/JSScript-inl.h"
@@ -90,6 +92,11 @@ bool JSScript::createJitScript(JSContext* cx) {
     if (!profileString) {
       return false;
     }
+
+    if (!cx->runtime()->geckoProfiler().insertScriptSource(scriptSource())) {
+      ReportOutOfMemory(cx);
+      return false;
+    }
   }
 
   static_assert(sizeof(JitScript) % sizeof(uintptr_t) == 0,
@@ -128,6 +135,13 @@ bool JSScript::createJitScript(JSContext* cx) {
   jitScript->icScript()->initICEntries(cx, this);
 
   cx->zone()->jitZone()->registerJitScript(jitScript.get());
+
+  uint32_t baseWarmUpThreshold =
+      jit::OptimizationInfo::baseWarmUpThresholdForScript(cx, this);
+  jitScript->setIonThreshold(baseWarmUpThreshold);
+
+  // Ensure concurrent marking doesn't see uninitialized jitScript.
+  MemoryReleaseFence(cx->zone());
 
   warmUpData_.initJitScript(jitScript.release());
   AddCellMemory(this, allocSize.value(), MemoryUse::JitScript);
@@ -183,17 +197,17 @@ void JitScript::trace(JSTracer* trc) {
 
   icScript_.trace(trc);
 
-  if (hasBaselineScript()) {
-    baselineScript()->trace(trc);
+  BaselineScript* baselineScript = baselineScript_.getForTracing();
+  if (baselineScript && IsBaselineScript(baselineScript)) {
+    baselineScript->trace(trc);
   }
 
-  if (hasIonScript()) {
-    ionScript()->trace(trc);
+  IonScript* ionScript = ionScript_.getForTracing();
+  if (ionScript && IsIonScript(ionScript)) {
+    ionScript->trace(trc);
   }
 
-  if (templateEnv_.isSome()) {
-    TraceNullableEdge(trc, templateEnv_.ptr(), "jitscript-template-env");
-  }
+  TraceEdge(trc, &templateEnv_, "jitscript-template-env");
 
   if (hasInliningRoot()) {
     inliningRoot()->trace(trc);
@@ -217,10 +231,13 @@ void JitScript::traceWeak(JSTracer* trc) {
 }
 
 void ICScript::trace(JSTracer* trc) {
+  gc::AutoMarkingLock lock(trc, markingLock_);
+
   // Mark all IC stub codes hanging off the IC stub entries.
   for (size_t i = 0; i < numICEntries(); i++) {
     ICEntry& ent = icEntry(i);
-    ent.trace(trc);
+    ICFallbackStub* fallback = fallbackStub(i);
+    ent.trace(trc, fallback);
   }
 
   for (gc::AllocSite* site : allocSites_) {
@@ -233,7 +250,8 @@ bool ICScript::traceWeak(JSTracer* trc) {
   bool allSurvived = true;
   for (size_t i = 0; i < numICEntries(); i++) {
     ICEntry& ent = icEntry(i);
-    if (!ent.traceWeak(trc)) {
+    ICFallbackStub* fallback = fallbackStub(i);
+    if (!ent.traceWeak(trc, fallback)) {
       allSurvived = false;
     }
   }
@@ -347,6 +365,16 @@ void JitScript::ensureProfileString(JSContext* cx, JSScript* script) {
   }
 }
 
+void JitScript::ensureProfilerScriptSource(JSContext* cx, JSScript* script) {
+  MOZ_ASSERT(cx->runtime()->geckoProfiler().enabled());
+
+  AutoEnterOOMUnsafeRegion oomUnsafe;
+  if (!cx->runtime()->geckoProfiler().insertScriptSource(
+          script->scriptSource())) {
+    oomUnsafe.crash("Failed to insert profiled script source");
+  }
+}
+
 /* static */
 void JitScript::Destroy(Zone* zone, JitScript* script) {
   script->prepareForDestruction(zone);
@@ -393,6 +421,7 @@ void JitScript::prepareForDestruction(Zone* zone) {
   owningScript_ = nullptr;
   baselineScript_.set(zone, nullptr);
   ionScript_.set(zone, nullptr);
+  templateEnv_ = nullptr;
 }
 
 struct FallbackStubs {
@@ -483,7 +512,7 @@ void JitScript::purgeInactiveICScripts() {
   }
 }
 
-void JitScript::purgeStubs(JSScript* script, ICStubSpace& newStubSpace) {
+void JitScript::purgeStubs(JSScript* script) {
   MOZ_ASSERT(script->jitScript() == this);
 
   Zone* zone = script->zone();
@@ -498,6 +527,10 @@ void JitScript::purgeStubs(JSScript* script, ICStubSpace& newStubSpace) {
 
   JitSpew(JitSpew_BaselineIC, "Purging optimized stubs");
 
+  // We can use the stub space of the outer script's JitRealm for all ICScripts
+  // because we never inline cross-realm calls.
+  ICStubSpace& newStubSpace = *script->realm()->jitRealm().stubSpace();
+
   forEachICScript(
       [&](ICScript* script) { script->purgeStubs(zone, newStubSpace); });
 
@@ -505,6 +538,8 @@ void JitScript::purgeStubs(JSScript* script, ICStubSpace& newStubSpace) {
 }
 
 void ICScript::purgeStubs(Zone* zone, ICStubSpace& newStubSpace) {
+  gc::AutoMarkingLock lock(zone, markingLock());
+
   for (size_t i = 0; i < numICEntries(); i++) {
     ICEntry& entry = icEntry(i);
     ICFallbackStub* fallback = fallbackStub(i);
@@ -532,7 +567,8 @@ void ICScript::purgeStubs(Zone* zone, ICStubSpace& newStubSpace) {
       ICCacheIRStub* prev = nullptr;
       ICStub* stub = entry.firstStub();
       while (stub != fallback) {
-        ICCacheIRStub* clone = stub->toCacheIRStub()->clone(rt, newStubSpace);
+        ICCacheIRStub* clone = stub->toCacheIRStub()->clone(
+            rt, newStubSpace, ICCacheIRStub::ICScriptHandling::AssertActive);
         if (prev) {
           prev->setNext(clone);
         } else {
@@ -547,20 +583,22 @@ void ICScript::purgeStubs(Zone* zone, ICStubSpace& newStubSpace) {
 
     MOZ_ASSERT(!hasInlinedChild(fallback->pcOffset()));
 
-    fallback->discardStubs(zone, &entry);
+    fallback->discardStubs(zone, &entry, lock);
     fallback->state().reset();
   }
 }
 
 bool JitScript::ensureHasCachedBaselineJitData(JSContext* cx,
                                                HandleScript script) {
-  if (templateEnv_.isSome()) {
+  if (flags_.initializedTemplateEnv) {
     return true;
   }
 
+  MOZ_ASSERT(!templateEnv_);
+
   if (!script->function() ||
       !script->function()->needsFunctionEnvironmentObjects()) {
-    templateEnv_.emplace();
+    flags_.initializedTemplateEnv = true;
     return true;
   }
 
@@ -581,7 +619,8 @@ bool JitScript::ensureHasCachedBaselineJitData(JSContext* cx,
     }
   }
 
-  templateEnv_.emplace(templateEnv);
+  templateEnv_ = templateEnv;
+  flags_.initializedTemplateEnv = true;
   return true;
 }
 
@@ -733,9 +772,18 @@ using StubHashMap = HashMap<ICCacheIRStub*, ICCacheIRStub*,
 
 static void MarkActiveICScriptsAndCopyStubs(
     JSContext* cx, const JitActivationIterator& activation,
-    ICStubSpace& newStubSpace, StubHashMap& alreadyClonedStubs) {
+    StubHashMap& alreadyClonedStubs) {
+  auto isPreservingCode = [](JSScript* script) {
+    return script->realm()->jitRealm().isPreservingCode();
+  };
+
   for (OnlyJSJitFrameIter iter(activation); !iter.done(); ++iter) {
     const JSJitFrameIter& frame = iter.frame();
+
+    if (frame.isScripted() && isPreservingCode(frame.script())) {
+      continue;
+    }
+
     switch (frame.type()) {
       case FrameType::BaselineJS:
         frame.script()->jitScript()->icScript()->setActive();
@@ -748,28 +796,28 @@ static void MarkActiveICScriptsAndCopyStubs(
       case FrameType::BaselineStub: {
         auto* layout = reinterpret_cast<BaselineStubFrameLayout*>(frame.fp());
         if (layout->maybeStubPtr() && !layout->maybeStubPtr()->isFallback()) {
-          ICCacheIRStub* stub = layout->maybeStubPtr()->toCacheIRStub();
-          auto lookup = alreadyClonedStubs.lookupForAdd(stub);
-          if (!lookup) {
-            ICCacheIRStub* newStub = stub->clone(cx->runtime(), newStubSpace);
-            AutoEnterOOMUnsafeRegion oomUnsafe;
-            if (!alreadyClonedStubs.add(lookup, stub, newStub)) {
-              oomUnsafe.crash("MarkActiveICScriptsAndCopyStubs");
+          // The stub belongs to the caller's JitScript, so clone it into the
+          // stub space for the caller's realm.
+          OnlyJSJitFrameIter callerIter(iter);
+          ++callerIter;
+          MOZ_RELEASE_ASSERT(callerIter.frame().type() ==
+                             FrameType::BaselineJS);
+          JSScript* callerScript = callerIter.frame().script();
+          if (!isPreservingCode(callerScript)) {
+            ICCacheIRStub* stub = layout->maybeStubPtr()->toCacheIRStub();
+            auto lookup = alreadyClonedStubs.lookupForAdd(stub);
+            if (!lookup) {
+              ICStubSpace& newStubSpace =
+                  *callerScript->realm()->jitRealm().stubSpace();
+              ICCacheIRStub* newStub =
+                  stub->clone(cx->runtime(), newStubSpace,
+                              ICCacheIRStub::ICScriptHandling::MarkActive);
+              AutoEnterOOMUnsafeRegion oomUnsafe;
+              if (!alreadyClonedStubs.add(lookup, stub, newStub)) {
+                oomUnsafe.crash("MarkActiveICScriptsAndCopyStubs");
+              }
             }
-          }
-          layout->setStubPtr(lookup->value());
-
-          // If this is a trial-inlining call site, also preserve the callee
-          // ICScript. Inlined constructor calls invoke CreateThisFromIC (which
-          // can trigger GC) before using the inlined ICScript.
-          JSJitFrameIter parentFrame(frame);
-          ++parentFrame;
-          BaselineFrame* blFrame = parentFrame.baselineFrame();
-          jsbytecode* pc;
-          parentFrame.baselineScriptAndPc(nullptr, &pc);
-          uint32_t pcOffset = blFrame->script()->pcToOffset(pc);
-          if (blFrame->icScript()->hasInlinedChild(pcOffset)) {
-            blFrame->icScript()->findInlinedChild(pcOffset)->setActive();
+            layout->setStubPtr(lookup->value());
           }
         }
         break;
@@ -780,7 +828,9 @@ static void MarkActiveICScriptsAndCopyStubs(
               frame.exitFrame()->as<LazyLinkExitFrameLayout>();
           JSScript* script =
               ScriptFromCalleeToken(ll->jsFrame()->calleeToken());
-          script->jitScript()->icScript()->setActive();
+          if (!isPreservingCode(script)) {
+            script->jitScript()->icScript()->setActive();
+          }
         }
         break;
       case FrameType::Bailout:
@@ -802,8 +852,7 @@ static void MarkActiveICScriptsAndCopyStubs(
   }
 }
 
-void jit::MarkActiveICScriptsAndCopyStubs(Zone* zone,
-                                          ICStubSpace& newStubSpace) {
+void jit::MarkActiveICScriptsAndCopyStubs(Zone* zone) {
   if (zone->isAtomsZone()) {
     return;
   }
@@ -811,8 +860,7 @@ void jit::MarkActiveICScriptsAndCopyStubs(Zone* zone,
   JSContext* cx = TlsContext.get();
   for (JitActivationIterator iter(cx); !iter.done(); ++iter) {
     if (iter->compartment()->zone() == zone) {
-      MarkActiveICScriptsAndCopyStubs(cx, iter, newStubSpace,
-                                      alreadyClonedStubs);
+      MarkActiveICScriptsAndCopyStubs(cx, iter, alreadyClonedStubs);
     }
   }
 }
@@ -833,7 +881,8 @@ InliningRoot* JitScript::getOrCreateInliningRoot(JSContext* cx,
 }
 
 gc::AllocSite* ICScript::getOrCreateAllocSite(JSScript* outerScript,
-                                              uint32_t pcOffset) {
+                                              uint32_t pcOffset,
+                                              const gc::AutoMarkingLock& lock) {
   // The script must be the outer script.
   MOZ_ASSERT(outerScript->jitScript()->icScript() == this ||
              (inliningRoot() && inliningRoot()->owningScript() == outerScript));
@@ -851,19 +900,20 @@ gc::AllocSite* ICScript::getOrCreateAllocSite(JSScript* outerScript,
     }
   }
 
+  Zone* zone = outerScript->zone();
   Nursery& nursery = outerScript->runtimeFromMainThread()->gc.nursery();
   if (!nursery.canCreateAllocSite()) {
     // Don't block attaching an optimized stub, but don't process allocations
     // for this site.
-    return outerScript->zone()->unknownAllocSite(JS::TraceKind::Object);
+    return zone->unknownAllocSite(JS::TraceKind::Object);
   }
 
   if (!allocSites_.reserve(allocSites_.length() + 1)) {
     return nullptr;
   }
 
-  auto* site = allocSitesSpace_.new_<gc::AllocSite>(
-      outerScript->zone(), outerScript, pcOffset, JS::TraceKind::Object);
+  auto* site = allocSitesSpace_.new_<gc::AllocSite>(zone, outerScript, pcOffset,
+                                                    JS::TraceKind::Object);
   if (!site) {
     return nullptr;
   }
@@ -875,14 +925,15 @@ gc::AllocSite* ICScript::getOrCreateAllocSite(JSScript* outerScript,
   return site;
 }
 
-void ICScript::ensureEnvAllocSite(JSScript* outerScript) {
+void ICScript::ensureEnvAllocSite(JSScript* outerScript,
+                                  const gc::AutoMarkingLock& lock) {
   if (envAllocSite_) {
     return;
   }
 
   // Use a dummy offset for this site.
   uint32_t pcoffset = gc::AllocSite::EnvSitePCOffset;
-  gc::AllocSite* site = getOrCreateAllocSite(outerScript, pcoffset);
+  gc::AllocSite* site = getOrCreateAllocSite(outerScript, pcoffset, lock);
   if (!site) {
     // Use the unknown site on failure.
     site = outerScript->zone()->unknownAllocSite(JS::TraceKind::Object);
@@ -930,7 +981,7 @@ void JitScript::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
                                        size_t* data, size_t* allocSites) const {
   *data += mallocSizeOf(this);
 
-  forEachICScript([=](const ICScript* script) {
+  forEachICScript([=, this](const ICScript* script) {
     // |data| already includes the outer ICScript because it's part of the
     // JitScript.
     if (script != &icScript_) {
@@ -965,13 +1016,69 @@ JitScript* ICScript::outerJitScript() {
 //    changes from 0.
 // 4. The hash will change if the failure count of the fallback stub
 //    changes from 0.
-HashNumber ICScript::hash() {
+// 5. The hash will change if the set of shapes stored in ShapeListSnapshot
+//    is changed by stub folding or GC (the shapes in ShapeListObject are weak
+//    pointers).
+HashNumber ICScript::hash(JSContext* cx) {
   HashNumber h = 0;
   for (size_t i = 0; i < numICEntries(); i++) {
     ICStub* stub = icEntry(i).firstStub();
+    ICFallbackStub* fallback = fallbackStub(i);
 
     // Hash the address of the first stub.
     h = mozilla::AddToHash(h, stub);
+
+    // Hash shapes snapshotted in ShapeListSnapshot for GuardMultipleShapes.
+    if (!stub->isFallback() && fallback->mayHaveFoldedStub()) {
+      const CacheIRStubInfo* stubInfo = stub->toCacheIRStub()->stubInfo();
+      CacheIRReader reader(stubInfo);
+      while (reader.more()) {
+        CacheOp op = reader.readOp();
+        switch (op) {
+          case CacheOp::GuardMultipleShapes: {
+            auto args = reader.argsForGuardMultipleShapes();
+            JSObject* shapes =
+                stubInfo->getStubField<StubField::Type::JSObject>(
+                    stub->toCacheIRStub(), args.shapesOffset);
+            auto* shapesObject = &shapes->as<ShapeListObject>();
+            size_t numShapes = shapesObject->length();
+            if (ShapeListSnapshot::shouldSnapshot(numShapes)) {
+              for (size_t i = 0; i < numShapes; i++) {
+                Shape* shape = shapesObject->getUnbarriered(i);
+                h = mozilla::AddToHash(h, shape);
+              }
+              // Also include the GC number to handle the case where we bail
+              // out, add an additional shape, remove this new shape during GC,
+              // and then recompile with the current set of shapes.
+              // See bug 2002447.
+              h = mozilla::AddToHash(h, cx->runtime()->gc.majorGCCount());
+            }
+            break;
+          }
+          case CacheOp::GuardMultipleShapesToOffset: {
+            auto args = reader.argsForGuardMultipleShapesToOffset();
+            JSObject* shapes =
+                stubInfo->getStubField<StubField::Type::JSObject>(
+                    stub->toCacheIRStub(), args.shapesOffset);
+            auto* shapesObject = &shapes->as<ShapeListWithOffsetsObject>();
+            size_t numShapes = shapesObject->numShapes();
+            if (ShapeListSnapshot::shouldSnapshot(numShapes)) {
+              for (size_t i = 0; i < numShapes; i++) {
+                Shape* shape = shapesObject->getShapeUnbarriered(i);
+                h = mozilla::AddToHash(h, shape);
+                h = mozilla::AddToHash(h, shapesObject->getOffset(i));
+              }
+              // See GuardMultipleShapes above.
+              h = mozilla::AddToHash(h, cx->runtime()->gc.majorGCCount());
+            }
+            break;
+          }
+          default:
+            reader.skip(CacheIROpInfos[size_t(op)].argLength);
+            break;
+        }
+      }
+    }
 
     // Hash whether subsequent stubs have entry count 0.
     if (!stub->isFallback()) {

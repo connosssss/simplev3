@@ -1,10 +1,6 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
-#include "jit/JitFrames-inl.h"
 
 #include "mozilla/ScopeExit.h"
 
@@ -33,11 +29,13 @@
 #include "vm/JSFunction.h"
 #include "vm/JSObject.h"
 #include "vm/JSScript.h"
+#include "vm/Stack.h"  // js::ResumeFrameArgs
 #include "wasm/WasmBuiltins.h"
 #include "wasm/WasmInstance.h"
 
 #include "builtin/Sorting-inl.h"
 #include "debugger/DebugAPI-inl.h"
+#include "jit/JitFrames-inl.h"
 #include "jit/JSJitFrameIter-inl.h"
 #include "vm/GeckoProfiler-inl.h"
 #include "vm/JSScript-inl.h"
@@ -84,6 +82,20 @@ static uint32_t NumArgAndLocalSlots(const InlineFrameIterator& frame) {
   JSScript* script = frame.script();
   return CountArgSlots(script, frame.maybeCalleeTemplate()) + script->nfixed();
 }
+
+#ifdef JS_HW_SHADOW_STACK
+// Advance the tracked shadow stack pointer by one entry if it matches the
+// native JIT frame. This ensures that we unwind the shadow stack only for
+// native stack frames corresponding to real calls.
+static void MaybeUnwindShadowStackEntry(CommonFrameLayout* frame,
+                                        ResumeFromException* rfe) {
+  if (rfe->shadowStackPointer &&
+      *rfe->shadowStackPointer ==
+          reinterpret_cast<uintptr_t>(frame->returnAddress())) {
+    rfe->shadowStackPointer++;
+  }
+}
+#endif
 
 static TrampolineNative TrampolineNativeForFrame(
     JSRuntime* rt, TrampolineNativeFrameLayout* layout) {
@@ -140,7 +152,7 @@ static void CloseLiveIteratorIon(JSContext* cx,
   RootedObject iterObject(cx, &v.toObject());
 
   if (isDestructuring) {
-    RootedValue doneValue(cx, si.read());
+    RootedValue doneValue(cx, si.maybeRead(recover));
     MOZ_RELEASE_ASSERT(!doneValue.isMagic());
     bool done = ToBoolean(doneValue);
     // Do not call IteratorClose if the destructuring iterator is already
@@ -218,9 +230,7 @@ static bool ShouldBailoutForDebugger(JSContext* cx,
 
 static void OnLeaveIonFrame(JSContext* cx, const InlineFrameIterator& frame,
                             ResumeFromException* rfe) {
-  bool returnFromThisFrame =
-      cx->isPropagatingForcedReturn() || cx->isClosingGenerator();
-  if (!returnFromThisFrame) {
+  if (!cx->isPropagatingForcedReturn()) {
     return;
   }
 
@@ -237,11 +247,7 @@ static void OnLeaveIonFrame(JSContext* cx, const InlineFrameIterator& frame,
 
   MOZ_ASSERT(!frame.more());
 
-  if (cx->isClosingGenerator()) {
-    HandleClosingGeneratorReturn(cx, rematFrame, /*frameOk=*/true);
-  } else {
-    cx->clearPropagatingForcedReturn();
-  }
+  cx->clearPropagatingForcedReturn();
 
   Value& rval = rematFrame->returnValue();
   MOZ_RELEASE_ASSERT(!rval.isMagic());
@@ -261,6 +267,22 @@ static void OnLeaveIonFrame(JSContext* cx, const InlineFrameIterator& frame,
 static void HandleExceptionIon(JSContext* cx, const InlineFrameIterator& frame,
                                ResumeFromException* rfe,
                                bool* hitBailoutException) {
+  // A frame that's still mid-generator-resume must not handle the exception
+  // here. JSOp::AfterYield hasn't run, so the expression stack slots aren't
+  // restored yet and CloseLiveIteratorIon below would read them from the
+  // snapshot, and the environment chain is still the suspended generator's so
+  // it must not be unwound. Pop the frame and keep propagating, like
+  // HandleExceptionBaseline does.
+  //
+  // Only resource errors get here: the overrecursion check in the resume
+  // prologue, which no try note covers, and OOM from instructions LICM hoisted
+  // into a loop's resume merge block. The latter does skip the generator's own
+  // try/catch blocks, but OOM is implementation-defined so that's acceptable.
+  if (frame.frame().jsFrame()->isResumingGenerator()) {
+    MOZ_ASSERT(!frame.more(), "the resume path has no calls to inline");
+    return;
+  }
+
   if (ShouldBailoutForDebugger(cx, frame, *hitBailoutException)) {
     // We do the following:
     //
@@ -281,7 +303,10 @@ static void HandleExceptionIon(JSContext* cx, const InlineFrameIterator& frame,
     *hitBailoutException = true;
   }
 
-  RootedScript script(cx, frame.script());
+  RootedTuple<JSScript*, Value, Value> ionRoots(cx);
+  RootedField<JSScript*> script(ionRoots, frame.script());
+  RootedField<Value, 1> exception(ionRoots);
+  RootedField<Value, 2> exceptionStack(ionRoots);
 
   for (TryNoteIterIon tni(cx, frame); !tni.done(); ++tni) {
     const TryNote* tn = *tni;
@@ -292,11 +317,6 @@ static void HandleExceptionIon(JSContext* cx, const InlineFrameIterator& frame,
         break;
 
       case TryNoteKind::Catch:
-        // If we're closing a generator, we have to skip catch blocks.
-        if (cx->isClosingGenerator()) {
-          break;
-        }
-
         if (cx->isExceptionPending()) {
           // Ion can compile try-catch, but bailing out to catch
           // exceptions is slow. Reset the warm-up counter so that if we
@@ -343,8 +363,8 @@ static void HandleExceptionIon(JSContext* cx, const InlineFrameIterator& frame,
         ExceptionBailoutInfo excInfo(cx, frame.frameNo(), finallyPC,
                                      tn->stackDepth);
 
-        RootedValue exception(cx);
-        RootedValue exceptionStack(cx);
+        exception = UndefinedValue();
+        exceptionStack = UndefinedValue();
         if (!cx->getPendingException(&exception) ||
             !cx->getPendingExceptionStack(&exceptionStack)) {
           exception = UndefinedValue();
@@ -371,8 +391,6 @@ static void HandleExceptionIon(JSContext* cx, const InlineFrameIterator& frame,
       case TryNoteKind::Loop:
         break;
 
-      // TryNoteKind::ForOfIterclose is handled internally by the try note
-      // iterator.
       default:
         MOZ_CRASH("Unexpected try note");
     }
@@ -387,6 +405,9 @@ static void OnLeaveBaselineFrame(JSContext* cx, const JSJitFrameIter& frame,
   BaselineFrame* baselineFrame = frame.baselineFrame();
   bool returnFromThisFrame = jit::DebugEpilogue(cx, baselineFrame, pc, frameOk);
   if (returnFromThisFrame) {
+    if (!baselineFrame->hasReturnValue()) {
+      baselineFrame->setReturnValue(UndefinedValue());
+    }
     rfe->kind = ExceptionResumeKind::ForcedReturnBaseline;
     rfe->framePointer = frame.fp();
     rfe->stackPointer = reinterpret_cast<uint8_t*>(baselineFrame);
@@ -473,7 +494,12 @@ static bool ProcessTryNotesBaseline(JSContext* cx, const JSJitFrameIter& frame,
   MOZ_ASSERT(frame.baselineFrame()->runningInInterpreter(),
              "Caller must ensure frame is an interpreter frame");
 
-  RootedScript script(cx, frame.baselineFrame()->script());
+  RootedTuple<JSScript*, Value, Value, Value, JSObject*> baselineRoots(cx);
+  RootedField<JSScript*> script(baselineRoots, frame.baselineFrame()->script());
+  RootedField<Value, 1> exception(baselineRoots);
+  RootedField<Value, 2> exceptionStack(baselineRoots);
+  RootedField<Value, 3> doneValue(baselineRoots);
+  RootedField<JSObject*> iterObject(baselineRoots);
 
   for (TryNoteIterBaseline tni(cx, frame, *pc); !tni.done(); ++tni) {
     const TryNote* tn = *tni;
@@ -481,11 +507,6 @@ static bool ProcessTryNotesBaseline(JSContext* cx, const JSJitFrameIter& frame,
     MOZ_ASSERT(cx->isExceptionPending());
     switch (tn->kind()) {
       case TryNoteKind::Catch: {
-        // If we're closing a generator, we have to skip catch blocks.
-        if (cx->isClosingGenerator()) {
-          break;
-        }
-
         SettleOnTryNote(cx, tn, frame, ei, rfe, pc);
 
         // Ion can compile try-catch, but bailing out to catch
@@ -516,8 +537,8 @@ static bool ProcessTryNotesBaseline(JSContext* cx, const JSJitFrameIter& frame,
         }
 
         // Drop the exception instead of leaking cross compartment data.
-        RootedValue exception(cx);
-        RootedValue exceptionStack(cx);
+        exception = UndefinedValue();
+        exceptionStack = UndefinedValue();
         if (!cx->getPendingException(&exception) ||
             !cx->getPendingExceptionStack(&exceptionStack)) {
           rfe->exception = UndefinedValue();
@@ -548,12 +569,12 @@ static bool ProcessTryNotesBaseline(JSContext* cx, const JSJitFrameIter& frame,
                                                  &stackPointer);
         // Note: if this ever changes, also update the
         // TryNoteKind::Destructuring code in WarpBuilder.cpp!
-        RootedValue doneValue(cx, *(reinterpret_cast<Value*>(stackPointer)));
+        doneValue = *(reinterpret_cast<Value*>(stackPointer));
         MOZ_RELEASE_ASSERT(!doneValue.isMagic());
         bool done = ToBoolean(doneValue);
         if (!done) {
           Value iterValue(*(reinterpret_cast<Value*>(stackPointer) + 1));
-          RootedObject iterObject(cx, &iterValue.toObject());
+          iterObject = &iterValue.toObject();
           if (!IteratorCloseForException(cx, iterObject)) {
             SettleOnTryNote(cx, tn, frame, ei, rfe, pc);
             return false;
@@ -566,8 +587,6 @@ static bool ProcessTryNotesBaseline(JSContext* cx, const JSJitFrameIter& frame,
       case TryNoteKind::Loop:
         break;
 
-      // TryNoteKind::ForOfIterClose is handled internally by the try note
-      // iterator.
       default:
         MOZ_CRASH("Invalid try note");
     }
@@ -583,6 +602,18 @@ static void HandleExceptionBaseline(JSContext* cx, JSJitFrameIter& frame,
 
   jsbytecode* pc;
   frame.baselineScriptAndPc(nullptr, &pc);
+
+  if (frame.baselineFrame()->isResumingGenerator()) {
+    // We're in the generator-resume prologue and JSOp::AfterYield hasn't run
+    // yet. The only fallible operation in the prologue is the overrecursion
+    // check. The debugger hasn't been told about this resume (that happens at
+    // JSOp::AfterYield) and the environment chain is the suspended generator's
+    // environment, so it must not be unwound here. Just pop the frame.
+    MOZ_ASSERT(pc == frame.baselineFrame()->script()->code());
+    EnsureUnwoundJitExitFrame(cx->activation()->asJit(),
+                              frame.baselineFrame()->framePrefix());
+    return;
+  }
 
   // Ensure the BaselineFrame is an interpreter frame. This is easy to do and
   // simplifies the code below and interaction with DebugModeOSR.
@@ -624,16 +655,14 @@ static void HandleExceptionBaseline(JSContext* cx, JSJitFrameIter& frame,
 
 again:
   if (cx->isExceptionPending()) {
-    if (!cx->isClosingGenerator()) {
-      if (!DebugAPI::onExceptionUnwind(cx, frame.baselineFrame())) {
-        if (!cx->isExceptionPending()) {
-          goto again;
-        }
+    if (!DebugAPI::onExceptionUnwind(cx, frame.baselineFrame())) {
+      if (!cx->isExceptionPending()) {
+        goto again;
       }
-      // Ensure that the debugger hasn't returned 'true' while clearing the
-      // exception state.
-      MOZ_ASSERT(cx->isExceptionPending());
     }
+    // Ensure that the debugger hasn't returned 'true' while clearing the
+    // exception state.
+    MOZ_ASSERT(cx->isExceptionPending());
 
     if (hasTryNotes) {
       EnvironmentIter ei(cx, frame.baselineFrame(), pc);
@@ -647,8 +676,6 @@ again:
         return;
       }
     }
-
-    frameOk = HandleClosingGeneratorReturn(cx, frame.baselineFrame(), frameOk);
   } else {
     if (hasTryNotes) {
       CloseLiveIteratorsBaselineForUncatchableException(cx, frame, pc);
@@ -691,6 +718,10 @@ static JitFrameLayout* GetLastProfilingFrame(ResumeFromException* rfe) {
 void HandleException(ResumeFromException* rfe) {
   JSContext* cx = TlsContext.get();
 
+  if (!CheckForOOMStackTraceInterrupt(cx)) {
+    return;
+  }
+
   cx->realm()->localAllocSite = nullptr;
 #ifdef DEBUG
   if (!IsPortableBaselineInterpreterEnabled()) {
@@ -730,9 +761,6 @@ void HandleException(ResumeFromException* rfe) {
   }
 #endif
 
-  JitFrameIter iter(cx->activation()->asJit(),
-                    /* mustUnwindActivation = */ true);
-
   // Live wasm code on the stack is kept alive (in TraceJitActivation) by
   // marking the instance of every wasm::Frame found by WasmFrameIter.
   // However, we're going to pop frames while iterating which means that a GC
@@ -743,9 +771,25 @@ void HandleException(ResumeFromException* rfe) {
   // jump to the JIT's exception handling trampoline. However, we must keep the
   // throw stub alive itself which is owned by the innermost instance.
   Rooted<WasmInstanceObject*> keepAlive(cx);
-  if (iter.isWasm()) {
-    keepAlive = iter.asWasm().instance()->object();
+  if (activation->hasWasmExitFP() && !activation->isWasmTrapping()) {
+    keepAlive = activation->wasmExitInstance()->object();
   }
+
+  JitFrameIter iter(activation, /* mustUnwindActivation = */ true);
+
+#ifdef JS_HW_SHADOW_STACK
+  if (rfe->shadowStackPointer && iter.isJSJit() &&
+      iter.asJSJit().isUnwoundJitExit()) {
+    uintptr_t returnAddress =
+        reinterpret_cast<uintptr_t>(iter.asJSJit().current()->returnAddress());
+    if (*rfe->shadowStackPointer != returnAddress) {
+      // An already-unwound frame can leave one extra shadow stack entry, for
+      // example when DebugEpilogue discards its VM exit frame.
+      MOZ_RELEASE_ASSERT(rfe->shadowStackPointer[1] == returnAddress);
+      rfe->shadowStackPointer++;
+    }
+  }
+#endif
 
   CommonFrameLayout* prevJitFrame = nullptr;
   while (!iter.done()) {
@@ -842,6 +886,13 @@ void HandleException(ResumeFromException* rfe) {
 
     prevJitFrame = frame.current();
     ++iter;
+#ifdef JS_HW_SHADOW_STACK
+    if (!iter.done()) {
+      // Unwind the topmost entry on the shadow stack if it corresponds to the
+      // native-stack frame we just processed.
+      MaybeUnwindShadowStackEntry(prevJitFrame, rfe);
+    }
+#endif
   }
 
   // Return to C++ code by returning to the activation's JS or Wasm entry frame.
@@ -929,6 +980,14 @@ uintptr_t* JitFrameLayout::slotRef(SafepointSlotEntry where) {
   return (uintptr_t*)((uint8_t*)thisAndActualArgs() + where.slot);
 }
 
+JS::Value* JitFrameLayout::resumeArgs() {
+  MOZ_ASSERT(isResumingGenerator());
+  if (!CalleeTokenIsFunction(calleeToken())) {
+    return moduleResumeArgs();
+  }
+  return actualArgs() + CalleeTokenToFunction(calleeToken())->nargs();
+}
+
 #ifdef DEBUG
 void ExitFooterFrame::assertValidVMFunctionId() const {
   MOZ_ASSERT(data_ >= uintptr_t(ExitFrameType::VMFunction));
@@ -958,6 +1017,13 @@ static void TraceThisAndArguments(JSTracer* trc, const JSJitFrameIter& frame,
   //
   // For other frames such as LazyLink frames or InterpreterStub frames, we
   // always trace all actual and formal arguments.
+
+  // If we're in the middle of resuming a generator or an async function/module,
+  // we have to trace the ResumeFrameArgs too.
+  if (layout->isResumingGenerator()) {
+    TraceRootRange(trc, ResumeFrameArgs::NumSlots, layout->resumeArgs(),
+                   "jit-resume-args");
+  }
 
   if (!CalleeTokenIsFunction(layout->calleeToken())) {
     return;
@@ -1242,6 +1308,7 @@ static void TraceJitExitFrame(JSTracer* trc, const JSJitFrameIter& frame) {
     size_t len = native->argc() + 2;
     Value* vp = native->vp();
     TraceRootRange(trc, len, vp, "ion-native-args");
+    TraceRoot(trc, native->savedCallee(), "ion-native-saved-callee");
     if (frame.isExitFrameLayout<ConstructNativeExitFrameLayout>()) {
       TraceRoot(trc, vp + len, "ion-native-new-target");
     }
@@ -1253,6 +1320,7 @@ static void TraceJitExitFrame(JSTracer* trc, const JSJitFrameIter& frame) {
         frame.exitFrame()->as<IonOOLNativeExitFrameLayout>();
     TraceRoot(trc, oolnative->stubCode(), "ion-ool-native-code");
     TraceRoot(trc, oolnative->vp(), "iol-ool-native-vp");
+    TraceRoot(trc, oolnative->savedCallee(), "ion-ool-native-saved-callee");
     size_t len = oolnative->argc() + 1;
     TraceRootRange(trc, len, oolnative->thisp(), "ion-ool-native-thisargs");
     return;
@@ -1389,15 +1457,6 @@ static void TraceBaselineInterpreterEntryFrame(JSTracer* trc,
   TraceThisAndArguments(trc, frame, layout);
 }
 
-static void TraceRectifierFrame(JSTracer* trc, const JSJitFrameIter& frame) {
-  // Trace thisv.
-  //
-  // Baseline JIT code generated as part of the ICCall_Fallback stub may use
-  // it if we're calling a constructor that returns a primitive value.
-  RectifierFrameLayout* layout = (RectifierFrameLayout*)frame.fp();
-  TraceRoot(trc, &layout->thisv(), "rectifier-thisv");
-}
-
 static void TraceTrampolineNativeFrame(JSTracer* trc,
                                        const JSJitFrameIter& frame) {
   auto* layout = (TrampolineNativeFrameLayout*)frame.fp();
@@ -1415,7 +1474,7 @@ static void TraceTrampolineNativeFrame(JSTracer* trc,
   }
 }
 
-static void TraceJitActivation(JSTracer* trc, JitActivation* activation) {
+void TraceJitFrames(JSTracer* trc, JitActivation* activation) {
 #ifdef CHECK_OSIPOINT_REGISTERS
   if (JitOptions.checkOsiPointRegisters) {
     // GC can modify spilled registers, breaking our register checks.
@@ -1424,9 +1483,6 @@ static void TraceJitActivation(JSTracer* trc, JitActivation* activation) {
     activation->setCheckRegs(false);
   }
 #endif
-
-  activation->traceRematerializedFrames(trc);
-  activation->traceIonRecovery(trc);
 
   // This is used for sanity checking continuity of the sequence of wasm stack
   // maps as we unwind.  It has no functional purpose.
@@ -1454,9 +1510,6 @@ static void TraceJitActivation(JSTracer* trc, JitActivation* activation) {
         case FrameType::BaselineInterpreterEntry:
           TraceBaselineInterpreterEntryFrame(trc, jitFrame);
           break;
-        case FrameType::Rectifier:
-          TraceRectifierFrame(trc, jitFrame);
-          break;
         case FrameType::TrampolineNative:
           TraceTrampolineNativeFrame(trc, jitFrame);
           break;
@@ -1476,11 +1529,25 @@ static void TraceJitActivation(JSTracer* trc, JitActivation* activation) {
       gc::AssertRootMarkingPhase(trc);
       MOZ_ASSERT(frames.isWasm());
       uint8_t* nextPC = frames.resumePCinCurrentFrame();
-      MOZ_ASSERT(nextPC != 0);
+      MOZ_ASSERT(nextPC != nullptr);
       wasm::WasmFrameIter& wasmFrameIter = frames.asWasm();
+
+      // At the start of a wasm segment, keep alive the instance owning the
+      // exit stub we entered wasm through. Forget it afterwards so we only
+      // trace it once per segment.
+      if (wasm::Instance* exitInstance = wasmFrameIter.exitInstance()) {
+        wasm::TraceInstanceEdge(trc, exitInstance,
+                                "WasmFrameIter exit instance");
+        wasmFrameIter.resetExitInstance();
+      }
 #ifdef ENABLE_WASM_JSPI
       if (wasmFrameIter.currentFrameStackSwitched()) {
         highestByteVisitedInPrevWasmFrame = 0;
+        if (wasmFrameIter.contStack()) {
+          // Trace the fields on the continuation stack itself. The frames on
+          // the stack will be traced below.
+          wasmFrameIter.contStack()->traceFields(trc);
+        }
       }
 #endif
       wasm::Instance* instance = wasmFrameIter.instance();
@@ -1491,15 +1558,29 @@ static void TraceJitActivation(JSTracer* trc, JitActivation* activation) {
   }
 }
 
-void TraceJitActivations(JSContext* cx, JSTracer* trc) {
-  for (JitActivationIterator activations(cx); !activations.done();
-       ++activations) {
-    TraceJitActivation(trc, activations->asJit());
-  }
 #ifdef ENABLE_WASM_JSPI
-  cx->wasm().promiseIntegration.traceRoots(trc);
-#endif
+void TraceWasmSuspendedContStacks(JSContext* cx, JSTracer* trc) {
+  gc::AssertRootMarkingPhase(trc);
+
+  // If we're tenuring, then unconditionally trace all suspended stacks. This
+  // is needed as they may point at nursery entries, but also don't have any
+  // store buffer entries.
+  //
+  // If we're not tenuring, then the suspended ones will be traced through
+  // references to their continuation object.
+  if (!trc->isTenuringTracer()) {
+    return;
+  }
+
+  cx->wasm().contStacks().forEachAllocatedStack([trc](wasm::ContStack* stack) {
+    if (stack->canResume()) {
+      // The tenuring tracer has no owning ContObject as a source; inferred
+      // ContObject to Debugger.Frame edges are only traced while marking.
+      stack->traceSuspended(trc, nullptr);
+    }
+  });
 }
+#endif
 
 void TraceWeakJitActivationsInSweepingZones(JSContext* cx, JSTracer* trc) {
   for (JitActivationIterator activation(cx); !activation.done(); ++activation) {
@@ -1518,6 +1599,7 @@ void TraceWeakJitActivationsInSweepingZones(JSContext* cx, JSTracer* trc) {
 
 void UpdateJitActivationsForMinorGC(JSRuntime* rt) {
   MOZ_ASSERT(JS::RuntimeHeapIsMinorCollecting());
+  Nursery& nursery = rt->gc.nursery();
   JSContext* cx = rt->mainContextFromOwnThread();
   for (JitActivationIterator activations(cx); !activations.done();
        ++activations) {
@@ -1530,14 +1612,23 @@ void UpdateJitActivationsForMinorGC(JSRuntime* rt) {
       } else if (iter.isWasm()) {
         const wasm::WasmFrameIter& frame = iter.asWasm();
         frame.instance()->updateFrameForMovingGC(
-            frame, frame.resumePCinCurrentFrame());
+            frame, frame.resumePCinCurrentFrame(), nursery);
       }
     }
   }
+#ifdef ENABLE_WASM_JSPI
+  cx->wasm().contStacks().forEachAllocatedStack(
+      [&nursery](wasm::ContStack* stack) {
+        if (stack->canResume()) {
+          stack->updateSuspendedForMovingGC(nursery);
+        }
+      });
+#endif
 }
 
 void UpdateJitActivationsForCompactingGC(JSRuntime* rt) {
   MOZ_ASSERT(JS::RuntimeHeapIsMajorCollecting());
+  Nursery& nursery = rt->gc.nursery();
   JSContext* cx = rt->mainContextFromOwnThread();
   for (JitActivationIterator activations(cx); !activations.done();
        ++activations) {
@@ -1545,10 +1636,18 @@ void UpdateJitActivationsForCompactingGC(JSRuntime* rt) {
       if (iter.isWasm()) {
         const wasm::WasmFrameIter& frame = iter.asWasm();
         frame.instance()->updateFrameForMovingGC(
-            frame, frame.resumePCinCurrentFrame());
+            frame, frame.resumePCinCurrentFrame(), nursery);
       }
     }
   }
+#ifdef ENABLE_WASM_JSPI
+  cx->wasm().contStacks().forEachAllocatedStack(
+      [&nursery](wasm::ContStack* stack) {
+        if (stack->canResume()) {
+          stack->updateSuspendedForMovingGC(nursery);
+        }
+      });
+#endif
 }
 
 JSScript* GetTopJitJSScript(JSContext* cx) {
@@ -1582,9 +1681,7 @@ RInstructionResults& RInstructionResults::operator=(RInstructionResults&& rhs) {
   return *this;
 }
 
-RInstructionResults::~RInstructionResults() {
-  // results_ is freed by the UniquePtr.
-}
+// results_ is freed by the UniquePtr.
 
 bool RInstructionResults::init(JSContext* cx, uint32_t numResults) {
   if (numResults) {
@@ -1699,10 +1796,15 @@ bool SnapshotIterator::allocationReadable(const RValueAllocation& alloc,
 
   switch (alloc.mode()) {
     case RValueAllocation::DOUBLE_REG:
+    case RValueAllocation::FLOAT32_REG:
       return hasRegister(alloc.fpuReg());
+    case RValueAllocation::FLOAT32_STACK:
+      return hasStack(alloc.stackOffset());
 
     case RValueAllocation::TYPED_REG:
       return hasRegister(alloc.reg2());
+    case RValueAllocation::TYPED_STACK:
+      return hasStack(alloc.stackOffset2());
 
 #if defined(JS_NUNBOX32)
     case RValueAllocation::UNTYPED_REG_REG:
@@ -1745,11 +1847,19 @@ bool SnapshotIterator::allocationReadable(const RValueAllocation& alloc,
     case RValueAllocation::INT64_REG:
       return hasRegister(alloc.reg());
     case RValueAllocation::INT64_STACK:
+    case RValueAllocation::INT64_INT32_STACK:
       return hasStack(alloc.stackOffset());
 #endif
 
-    default:
+    case RValueAllocation::CONSTANT:
+    case RValueAllocation::CST_UNDEFINED:
+    case RValueAllocation::CST_NULL:
+    case RValueAllocation::INTPTR_CST:
+    case RValueAllocation::INT64_CST:
       return true;
+
+    default:
+      MOZ_CRASH("Unexpected mode");
   }
 }
 
@@ -1769,10 +1879,10 @@ Value SnapshotIterator::allocationValue(const RValueAllocation& alloc,
       return DoubleValue(fromRegister<double>(alloc.fpuReg()));
 
     case RValueAllocation::FLOAT32_REG:
-      return Float32Value(fromRegister<float>(alloc.fpuReg()));
+      return DoubleValue(fromRegister<float>(alloc.fpuReg()));
 
     case RValueAllocation::FLOAT32_STACK:
-      return Float32Value(ReadFrameFloat32Slot(fp_, alloc.stackOffset()));
+      return DoubleValue(ReadFrameFloat32Slot(fp_, alloc.stackOffset()));
 
     case RValueAllocation::TYPED_REG:
       return FromTypedPayload(alloc.knownType(), fromRegister(alloc.reg2()));
@@ -1855,6 +1965,7 @@ Value SnapshotIterator::allocationValue(const RValueAllocation& alloc,
 #elif defined(JS_PUNBOX64)
     case RValueAllocation::INT64_REG:
     case RValueAllocation::INT64_STACK:
+    case RValueAllocation::INT64_INT32_STACK:
 #endif
       MOZ_CRASH("Can't read Int64 as Value");
 
@@ -1911,6 +2022,7 @@ bool SnapshotIterator::readMaybeUnpackedBigInt(JSContext* cx,
 #elif defined(JS_PUNBOX64)
     case RValueAllocation::INT64_REG:
     case RValueAllocation::INT64_STACK:
+    case RValueAllocation::INT64_INT32_STACK:
 #endif
     {
       auto* bigInt = JS::BigInt::createFromInt64(cx, allocationInt64(alloc));
@@ -1977,6 +2089,9 @@ int64_t SnapshotIterator::allocationInt64(const RValueAllocation& alloc) {
     }
     case RValueAllocation::INT64_STACK: {
       return static_cast<int64_t>(fromStack(alloc.stackOffset()));
+    }
+    case RValueAllocation::INT64_INT32_STACK: {
+      return static_cast<int64_t>(ReadFrameInt32Slot(fp_, alloc.stackOffset()));
     }
 #endif
     default:
@@ -2051,6 +2166,7 @@ void SnapshotIterator::writeAllocationValuePayload(
 #elif defined(JS_PUNBOX64)
     case RValueAllocation::INT64_REG:
     case RValueAllocation::INT64_STACK:
+    case RValueAllocation::INT64_INT32_STACK:
 #endif
       MOZ_CRASH("Not a GC thing: Unexpected write");
       break;
@@ -2132,7 +2248,7 @@ const RResumePoint* SnapshotIterator::resumePoint() const {
 }
 
 uint32_t SnapshotIterator::numAllocations() const {
-  return instruction()->numOperands();
+  return recover_.numOperands();
 }
 
 uint32_t SnapshotIterator::pcOffset() const {
@@ -2145,7 +2261,7 @@ ResumeMode SnapshotIterator::resumeMode() const {
 
 void SnapshotIterator::skipInstruction() {
   MOZ_ASSERT(snapshot_.numAllocationsRead() == 0);
-  size_t numOperands = instruction()->numOperands();
+  size_t numOperands = recover_.numOperands();
   for (size_t i = 0; i < numOperands; i++) {
     skip();
   }
@@ -2261,8 +2377,11 @@ void SnapshotIterator::storeInstructionResult(const Value& v) {
 }
 
 Value SnapshotIterator::fromInstructionResult(uint32_t index) const {
-  MOZ_ASSERT(!(*instructionResults_)[index].isMagic(JS_ION_BAILOUT));
-  return (*instructionResults_)[index];
+  MOZ_RELEASE_ASSERT(instructionResults_,
+                     "missing instruction results for recovered allocation");
+  Value v = (*instructionResults_)[index];
+  MOZ_RELEASE_ASSERT(!v.isMagic());
+  return v;
 }
 
 void SnapshotIterator::settleOnFrame() {
@@ -2514,6 +2633,10 @@ char* MachineState::SafepointState::addressOfRegister(FloatRegister reg) const {
   char* ptr = floatSpillBase;
   for (FloatRegisterBackwardIterator iter(floatRegs); iter.more(); ++iter) {
     ptr -= (*iter).size();
+    if ((*iter).size() < reg.size()) {
+      // The spilled slot is too small to hold |reg|.
+      continue;
+    }
     for (uint32_t a = 0; a < (*iter).numAlignedAliased(); a++) {
       // Only say that registers that actually start here start here.
       // e.g. d0 should not start at s1, only at s0.
@@ -2524,6 +2647,24 @@ char* MachineState::SafepointState::addressOfRegister(FloatRegister reg) const {
     }
   }
   MOZ_CRASH("Invalid register");
+}
+
+bool MachineState::has(FloatRegister reg) const {
+  if (state_.is<BailoutState>()) {
+    return true;
+  }
+  // ReduceSetForPush may represent a register using a wider alias in the
+  // spill set (for example, on arm64 a float32 register is spilled using its
+  // double-precision alias). Look for any aligned alias of |reg| that's at
+  // least as wide as |reg|. This must match addressOfRegister above.
+  const auto& s = state_.as<SafepointState>();
+  for (uint32_t a = 0; a < reg.numAlignedAliased(); a++) {
+    FloatRegister alias = reg.alignedAliased(a);
+    if (alias.size() >= reg.size() && s.floatRegs.hasRegisterIndex(alias)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 uintptr_t MachineState::read(Register reg) const {
@@ -2539,13 +2680,13 @@ uintptr_t MachineState::read(Register reg) const {
 
 template <typename T>
 T MachineState::read(FloatRegister reg) const {
-  MOZ_ASSERT(reg.size() == sizeof(T));
+  MOZ_RELEASE_ASSERT(reg.size() == sizeof(T));
 
 #if !defined(JS_CODEGEN_NONE) && !defined(JS_CODEGEN_WASM32)
   if (state_.is<BailoutState>()) {
     uint32_t offset = reg.getRegisterDumpOffsetInBytes();
-    MOZ_ASSERT((offset % sizeof(T)) == 0);
-    MOZ_ASSERT((offset + sizeof(T)) <= sizeof(RegisterDump::FPUArray));
+    MOZ_RELEASE_ASSERT((offset % sizeof(T)) == 0);
+    MOZ_RELEASE_ASSERT(offset <= sizeof(RegisterDump::FPUArray) - sizeof(T));
 
     const BailoutState& state = state_.as<BailoutState>();
     char* addr = reinterpret_cast<char*>(state.floatRegs.begin()) + offset;
@@ -2712,16 +2853,19 @@ void AssertJitStackInvariants(JSContext* cx) {
         frameSize = callerFp - calleeFp;
 
         if (frames.isScripted() &&
-            (frames.prevType() == FrameType::Rectifier ||
-             frames.prevType() == FrameType::BaselineInterpreterEntry)) {
+            frames.prevType() == FrameType::BaselineInterpreterEntry) {
           MOZ_RELEASE_ASSERT(
               frameSize % JitStackAlignment == 0,
-              "The rectifier and bli entry frame should keep the alignment");
+              "The blinterp entry frame should keep the alignment");
 
+          size_t numArgs = frames.numActualArgs();
+          if (frames.isFunctionFrame()) {
+            // The caller pushes `undefined` for missing formals.
+            numArgs = std::max(numArgs, frames.callee()->nargs());
+          }
           size_t expectedFrameSize =
-              sizeof(Value) *
-                  (frames.callee()->nargs() + 1 /* |this| argument */ +
-                   frames.isConstructing() /* new.target */) +
+              sizeof(Value) * (numArgs + 1 /* |this| argument */ +
+                               frames.isConstructing() /* new.target */) +
               sizeof(JitFrameLayout);
           MOZ_RELEASE_ASSERT(frameSize >= expectedFrameSize,
                              "The frame is large enough to hold all arguments");
@@ -2759,8 +2903,7 @@ void AssertJitStackInvariants(JSContext* cx) {
                              "The baseline stub restores the stack alignment");
         }
 
-        isScriptedCallee =
-            frames.isScripted() || frames.type() == FrameType::Rectifier;
+        isScriptedCallee = frames.isScripted();
       }
 
       MOZ_RELEASE_ASSERT(

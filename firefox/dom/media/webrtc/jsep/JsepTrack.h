@@ -2,26 +2,26 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _JSEPTRACK_H_
-#define _JSEPTRACK_H_
-
-#include <functional>
-#include <algorithm>
-#include <string>
-#include <map>
-#include <set>
-#include <vector>
+#ifndef JSEPTRACK_H_
+#define JSEPTRACK_H_
 
 #include <mozilla/UniquePtr.h>
-#include "mozilla/Preferences.h"
-#include "nsError.h"
+
+#include <algorithm>
+#include <functional>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "jsep/JsepTrackEncoding.h"
 #include "jsep/SsrcGenerator.h"
+#include "libwebrtcglue/RtpRtcpConfig.h"
+#include "mozilla/Preferences.h"
+#include "nsError.h"
 #include "sdp/Sdp.h"
 #include "sdp/SdpAttribute.h"
 #include "sdp/SdpMediaSection.h"
-#include "libwebrtcglue/RtpRtcpConfig.h"
 namespace mozilla {
 
 class JsepTrackNegotiatedDetails {
@@ -54,8 +54,8 @@ class JsepTrackNegotiatedDetails {
   }
 
   const SdpExtmapAttributeList::Extmap* GetExt(
-      const std::string& ext_name) const {
-    auto it = mExtmap.find(ext_name);
+      const nsACString& ext_name) const {
+    auto it = mExtmap.find(nsCString(ext_name));
     if (it != mExtmap.end()) {
       return &it->second;
     }
@@ -77,7 +77,7 @@ class JsepTrackNegotiatedDetails {
  private:
   friend class JsepTrack;
 
-  std::map<std::string, SdpExtmapAttributeList::Extmap> mExtmap;
+  std::map<nsCString, SdpExtmapAttributeList::Extmap> mExtmap;
   std::vector<UniquePtr<JsepTrackEncoding>> mEncodings;
   uint32_t mTias;  // bits per second
   RtpRtcpConfig mRtpRtcpConf;
@@ -91,7 +91,7 @@ class JsepTrack {
         mActive(false),
         mRemoteSetSendBit(false) {}
 
-  virtual ~JsepTrack() {}
+  virtual ~JsepTrack() = default;
 
   void UpdateStreamIds(const std::vector<std::string>& streamIds) {
     mStreamIds = streamIds;
@@ -101,7 +101,8 @@ class JsepTrack {
 
   void ClearStreamIds() { mStreamIds.clear(); }
 
-  void RecvTrackSetRemote(const Sdp& aSdp, const SdpMediaSection& aMsection);
+  void RecvTrackSetRemote(const Sdp& aSdp, const SdpMediaSection& aMsection,
+                          const std::vector<uint32_t>& aOwnSendSsrcs = {});
   void RecvTrackSetLocal(const SdpMediaSection& aMsection);
 
   // This is called whenever a remote description is set; we do not wait for
@@ -142,9 +143,14 @@ class JsepTrack {
       for (const auto& codec : rhs.mPrototypeCodecs) {
         mPrototypeCodecs.emplace_back(codec->Clone());
       }
+      mEarlyRecvCodecs.clear();
+      for (const auto& codec : rhs.mEarlyRecvCodecs) {
+        mEarlyRecvCodecs.emplace_back(codec->Clone());
+      }
+      mEarlyRtpExtensions = rhs.mEarlyRtpExtensions;
       if (rhs.mNegotiatedDetails) {
-        mNegotiatedDetails.reset(
-            new JsepTrackNegotiatedDetails(*rhs.mNegotiatedDetails));
+        mNegotiatedDetails = std::make_unique<JsepTrackNegotiatedDetails>(
+            *rhs.mNegotiatedDetails);
       }
     }
     return *this;
@@ -166,20 +172,7 @@ class JsepTrack {
 
   virtual const std::vector<uint32_t>& GetSsrcs() const { return mSsrcs; }
 
-  virtual std::vector<uint32_t> GetRtxSsrcs() const {
-    std::vector<uint32_t> result;
-    if (mRtxIsAllowed &&
-        Preferences::GetBool("media.peerconnection.video.use_rtx", false) &&
-        !mSsrcToRtxSsrc.empty()) {
-      MOZ_ASSERT(mSsrcToRtxSsrc.size() == mSsrcs.size());
-      for (const auto ssrc : mSsrcs) {
-        auto it = mSsrcToRtxSsrc.find(ssrc);
-        MOZ_ASSERT(it != mSsrcToRtxSsrc.end());
-        result.push_back(it->second);
-      }
-    }
-    return result;
-  }
+  virtual std::vector<uint32_t> GetRtxSsrcs() const;
 
   virtual void EnsureSsrcs(SsrcGenerator& ssrcGenerator, size_t aNumber);
 
@@ -191,16 +184,30 @@ class JsepTrack {
   bool GetReceptive() const { return mReceptive; }
 
   void PopulatePreferredCodecs(
-      const std::vector<UniquePtr<JsepCodecDescription>>& aPreferredCodecs,
+      const nsTArray<UniquePtr<JsepCodecDescription>>& aPreferredCodecs,
       bool aUsePreferredCodecsOrder);
 
   virtual void PopulateCodecs(
-      const std::vector<UniquePtr<JsepCodecDescription>>& prototype,
+      const nsTArray<UniquePtr<JsepCodecDescription>>& prototype,
       bool aUsePreferredCodecsOrder = false);
 
   template <class UnaryFunction>
   void ForEachCodec(UnaryFunction func) {
     std::for_each(mPrototypeCodecs.begin(), mPrototypeCodecs.end(), func);
+  }
+
+  template <class UnaryFunction>
+  void ForEachEarlyRecvCodec(UnaryFunction func) {
+    std::for_each(mEarlyRecvCodecs.begin(), mEarlyRecvCodecs.end(), func);
+  }
+
+  // For a receive track, the recv-usable RTP header extensions from the
+  // local m-section last passed to RecvTrackSetLocal(). Used for early
+  // media (bug 2019381) instead of GetNegotiatedDetails(), which is stale
+  // during a pending offer.
+  const std::vector<SdpExtmapAttributeList::Extmap>& GetEarlyRtpExtensions()
+      const {
+    return mEarlyRtpExtensions;
   }
 
   template <class BinaryPredicate>
@@ -308,6 +315,12 @@ class JsepTrack {
   std::string mCNAME;
   sdp::Direction mDirection;
   std::vector<UniquePtr<JsepCodecDescription>> mPrototypeCodecs;
+  // For a receive track, a snapshot of mPrototypeCodecs taken at the moment
+  // they were last written into an offer (see AddToOffer()). Used for early
+  // media (bug 2019381) instead of mPrototypeCodecs directly.
+  std::vector<UniquePtr<JsepCodecDescription>> mEarlyRecvCodecs;
+  // For a receive track, see GetEarlyRtpExtensions().
+  std::vector<SdpExtmapAttributeList::Extmap> mEarlyRtpExtensions;
   // List of rids. May be initially populated from JS, or from a remote SDP.
   // Can be updated by remote SDP. If no negotiation has taken place at all,
   // this will be empty. If negotiation has taken place, but no simulcast
@@ -316,6 +329,12 @@ class JsepTrack {
   // negotiated rids.
   std::vector<std::string> mRids;
   UniquePtr<JsepTrackNegotiatedDetails> mNegotiatedDetails;
+  // Storage of mSsrcs and mSsrcToRtxSsrc could be improved, see Bug 1990364
+  // For send tracks: the SSRCs this endpoint will transmit on, populated by
+  // UpdateSsrcs(). For recv tracks: SSRCs from the remote's a=ssrc lines,
+  // populated by RecvTrackSetRemote(); any that duplicate our own send SSRCs
+  // (aOwnSendSsrcs) are filtered out to prevent EnsureLocalSSRC() from
+  // regenerating our send SSRC to a value the peer never negotiated.
   std::vector<uint32_t> mSsrcs;
   std::map<uint32_t, uint32_t> mSsrcToRtxSsrc;
   bool mActive;

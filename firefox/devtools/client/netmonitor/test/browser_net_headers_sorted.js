@@ -22,7 +22,7 @@ add_task(async function () {
   store.dispatch(Actions.batchEnable(false));
 
   const wait = waitForNetworkEvents(monitor, 1);
-  await reloadBrowser();
+  await reloadSelectedTab();
   await wait;
 
   // Verify request and response headers.
@@ -39,10 +39,7 @@ async function verifyHeaders(monitor) {
   info("Check if Request-Headers and Response-Headers are sorted");
 
   const wait = waitForDOM(document, ".headers-overview");
-  EventUtils.sendMouseEvent(
-    { type: "mousedown" },
-    document.querySelectorAll(".request-list-item")[0]
-  );
+  clickOnRequestRow(document.querySelectorAll(".request-list-item")[0]);
   await wait;
 
   await waitForRequestData(store, ["requestHeaders", "responseHeaders"]);
@@ -57,6 +54,7 @@ async function verifyHeaders(monitor) {
     "foo-bar",
     "foo-bar",
     "foo-bar",
+    "no-vary-search",
     "pragma",
     "server",
     "set-cookie",
@@ -121,6 +119,7 @@ async function verifyRawHeaders(monitor) {
     "cache-control",
     "pragma",
     "expires",
+    "no-vary-search",
     "set-cookie",
     "set-cookie",
     "content-type",
@@ -200,7 +199,7 @@ async function verifyRawHeaders(monitor) {
   )) {
     ok(rawToggleInput.checked, "Toggle is checked");
     rawToggleInput.focus();
-    EventUtils.synthesizeKey("VK_SPACE", {}, rawToggleInput.ownerGlobal);
+    EventUtils.synthesizeKey("VK_SPACE", {}, rawToggleInput.documentGlobal);
   }
 
   // Wait till raw headers are not available anymore.

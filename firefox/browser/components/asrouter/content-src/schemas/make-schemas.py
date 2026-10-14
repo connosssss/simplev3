@@ -22,6 +22,8 @@ due to the JSONSchema validation library used by Experimenter not fully
 supporting self-references and bundled schema.
 """
 
+from __future__ import annotations
+
 import sys
 from argparse import ArgumentParser
 from itertools import chain
@@ -63,16 +65,13 @@ SCHEMAS = [
         schema_id="chrome://browser/content/asrouter/schemas/MessagingExperiment.schema.json",
         schema_path=Path("MessagingExperiment.schema.json"),
         message_types={
+            "ActionOnlyMessage": (
+                SCHEMA_DIR / "OnboardingMessage" / "ActionOnlyMessage.schema.json"
+            ),
             "BookmarksBarButton": (
                 SCHEMA_DIR / "OnboardingMessage" / "BookmarksBarButton.schema.json"
             ),
-            "CFRUrlbarChiclet": (
-                SCHEMA_DIR / "CFR" / "templates" / "CFRUrlbarChiclet.schema.json"
-            ),
-            "ExtensionDoorhanger": (
-                SCHEMA_DIR / "CFR" / "templates" / "ExtensionDoorhanger.schema.json"
-            ),
-            "InfoBar": SCHEMA_DIR / "CFR" / "templates" / "InfoBar.schema.json",
+            "InfoBar": SCHEMA_DIR / "InfoBar" / "InfoBar.schema.json",
             "MenuMessage": (
                 SCHEMA_DIR / "OnboardingMessage" / "MenuMessage.schema.json"
             ),
@@ -81,6 +80,12 @@ SCHEMAS = [
             ),
             "NewtabMessage": (
                 SCHEMA_DIR / "OnboardingMessage" / "NewtabMessage.schema.json"
+            ),
+            "SidebarChatBotPromo": (
+                SCHEMA_DIR / "OnboardingMessage" / "SidebarChatBotPromo.schema.json"
+            ),
+            "SmartWindowNewtabPromo": (
+                SCHEMA_DIR / "OnboardingMessage" / "SmartWindowNewtabPromo.schema.json"
             ),
             "Spotlight": SCHEMA_DIR / "OnboardingMessage" / "Spotlight.schema.json",
             "ToastNotification": (
@@ -97,7 +102,6 @@ SCHEMAS = [
         test_corpus={
             "ReachExperiments": Path("corpus", "ReachExperiments.messages.json"),
             # These are generated via extract-test-corpus.js
-            "CFRMessageProvider": Path("corpus", "CFRMessageProvider.messages.json"),
             "OnboardingMessageProvider": Path(
                 "corpus", "OnboardingMessageProvider.messages.json"
             ),
@@ -262,13 +266,11 @@ def bundle_schema(schema_def: SchemaDefinition):
 
         # patch_schema mutates the given schema, so we read a new copy in for
         # each bundle operation.
-        defs.update(
-            {
-                name: dfn
-                for name, dfn in common_schema["$defs"].items()
-                if dfn_filter(name)
-            }
-        )
+        defs.update({
+            name: dfn
+            for name, dfn in common_schema["$defs"].items()
+            if dfn_filter(name)
+        })
 
     # Ensure all bundled schemas have an $id so that $refs inside the
     # bundled schema work correctly (i.e, they will reference the subschema
@@ -424,7 +426,7 @@ def validate_corpus(schema_def: SchemaDefinition, schema: dict[str, Any]):
         print(f"    Validating messages from {provider}:")
 
         try:
-            with provider_path.open("r") as f:
+            with provider_path.open("r", encoding="utf-8") as f:
                 messages = json.load(f)
         except FileNotFoundError as e:
             if not provider_path.parent.exists():

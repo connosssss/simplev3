@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,15 +5,15 @@
 #ifndef MobileViewportManager_h_
 #define MobileViewportManager_h_
 
+#include "UnitTransforms.h"
+#include "Units.h"
 #include "mozilla/Logging.h"
-#include "mozilla/Maybe.h"
 #include "mozilla/MVMContext.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/PresShellForwards.h"
 #include "nsCOMPtr.h"
 #include "nsIDOMEventListener.h"
 #include "nsIObserver.h"
-#include "Units.h"
-#include "UnitTransforms.h"
 
 class nsViewportInfo;
 
@@ -67,6 +65,11 @@ class MobileViewportManager final : public nsIDOMEventListener,
    * reasons explained at the declaration of FrameMetrics::mPresShellResolution.
    */
   float ComputeIntrinsicResolution() const;
+
+  /* Return the intrinsic scale based on viewport size (from meta viewport),
+   * and content size. Use this for position:fixed calculations.
+   */
+  mozilla::CSSToScreenScale GetIntrinsicScaleForFixedViewport() const;
 
   /* The only direct calls to this should be in test code.
    * Normally, it gets called by HandleEvent().

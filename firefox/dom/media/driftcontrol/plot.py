@@ -21,7 +21,6 @@
 # open it in the default browser.
 
 import argparse
-from collections import OrderedDict
 
 import pandas
 from bokeh.io import output_file, show
@@ -49,7 +48,7 @@ MOZ_LOG_FILE=/tmp/driftcontrol.csv       \
 
     # Filter on distinct ids to support multiple plotting sources
     tabs = []
-    for id in list(OrderedDict.fromkeys(all_df["id"])):
+    for id in dict.fromkeys(all_df["id"]):
         df = all_df[all_df["id"] == id]
 
         t = df["t"]
@@ -106,12 +105,10 @@ MOZ_LOG_FILE=/tmp/driftcontrol.csv       \
         absAvgError = [abs(e) for e in avgError]
         slow_offset = [e / slowConvergenceSecs - slowHysteresis for e in absAvgError]
         fast_offset = [e / adjustmentInterval for e in absAvgError]
-        low_offset, high_offset = zip(
-            *[
-                (s, f) if e >= 0 else (-f, -s)
-                for (e, s, f) in zip(avgError, slow_offset, fast_offset)
-            ]
-        )
+        low_offset, high_offset = zip(*[
+            (s, f) if e >= 0 else (-f, -s)
+            for (e, s, f) in zip(avgError, slow_offset, fast_offset)
+        ])
 
         fig2 = figure(x_range=fig1.x_range)
         fig2.varea(

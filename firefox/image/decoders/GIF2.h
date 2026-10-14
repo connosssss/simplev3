@@ -1,10 +1,11 @@
-/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef mozilla_image_decoders_GIF2_H
 #define mozilla_image_decoders_GIF2_H
+
+#include <cstdint>
 
 #define MAX_LZW_BITS 12
 #define MAX_BITS 4097  // 2^MAX_LZW_BITS+1

@@ -2,15 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "CacheLog.h"
 #include "CacheFileOutputStream.h"
 
-#include "CacheFile.h"
+#include <algorithm>
+
 #include "CacheEntry.h"
+#include "CacheFile.h"
+#include "CacheLog.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "nsStreamUtils.h"
 #include "nsThreadUtils.h"
-#include "mozilla/IntegerPrintfMacros.h"
-#include <algorithm>
 
 namespace mozilla::net {
 
@@ -126,6 +127,12 @@ CacheFileOutputStream::Write(const char* aBuf, uint32_t aCount,
   }
 
   *_retval = aCount;
+
+  if (mDict) {
+    // We need to calculate the hash for the entry as we save it
+    // We don't necessarily need to save the data in memory, however
+    mDict->AccumulateHash(aBuf, aCount);
+  }
 
   while (aCount) {
     EnsureCorrectChunk(false);

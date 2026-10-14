@@ -10,33 +10,45 @@ import androidx.recyclerview.widget.RecyclerView
 import mozilla.components.browser.state.state.TabSessionState
 import org.mozilla.focus.databinding.ItemSessionBinding
 
-/**
- * Adapter implementation to show a list of active tabs.
- */
-class TabsAdapter internal constructor(
+/** Adapter implementation to show a list of active tabs. */
+class TabsAdapter
+internal constructor(
     private val tabList: List<TabSessionState>,
     private val isCurrentSession: (TabSessionState) -> Boolean,
     private val selectSession: (TabSessionState) -> Unit,
     private val closeSession: (TabSessionState) -> Unit,
     private val closeOtherSessions: () -> Unit,
+    private val addNewTab: () -> Unit,
 ) : RecyclerView.Adapter<TabViewHolder>() {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): TabViewHolder {
-        val binding =
-            ItemSessionBinding.inflate(LayoutInflater.from(parent.context), parent, false)
+        val binding = ItemSessionBinding.inflate(LayoutInflater.from(parent.context), parent, false)
         return TabViewHolder(binding)
     }
 
     override fun onBindViewHolder(holder: TabViewHolder, position: Int) {
-        val currentItem = tabList.getOrNull(position)
+        val isAddNewTabItem = position == 0
+        val isCloseAllItem = position == tabList.size + 1
+
+        val tabIndex = position - 1
+        val currentItem =
+            if (!isAddNewTabItem && !isCloseAllItem) {
+                tabList.getOrNull(tabIndex)
+            } else {
+                null
+            }
+
         holder.bind(
             currentItem,
             isCurrentSession = if (currentItem != null) isCurrentSession.invoke(currentItem) else false,
             selectSession = selectSession,
             closeSession = closeSession,
             closeOtherSessions = closeOtherSessions,
+            addNewTab = addNewTab,
+            isCloseAllItem = isCloseAllItem,
+            isAddNewTabItem = isAddNewTabItem,
         )
     }
 
-    override fun getItemCount() = tabList.size + 1
+    override fun getItemCount() = tabList.size + 2
 }

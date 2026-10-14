@@ -7,8 +7,9 @@
 export const HeuristicsRegExp = {
   RULES: {
     email: undefined,
-    tel: undefined,
     "tel-country-code" : undefined,
+    tel: undefined,
+    "address-extra-housesuffix": undefined,
     "address-housenumber": undefined,
     "street-address": undefined,
     "address-line1": undefined,
@@ -37,6 +38,20 @@ export const HeuristicsRegExp = {
     "cc-exp-year": undefined,
     "cc-exp": undefined,
     "cc-type": undefined,
+    "passport-number": undefined,
+    "passport-name": undefined,
+    "passport-given-name": undefined,
+    "passport-additional-name": undefined,
+    "passport-family-name": undefined,
+    "passport-country": undefined,
+    "passport-issue-date-month": undefined,
+    "passport-issue-date-day": undefined,
+    "passport-issue-date-year": undefined,
+    "passport-issue-date": undefined,
+    "passport-expiry-date-month": undefined,
+    "passport-expiry-date-day": undefined,
+    "passport-expiry-date-year": undefined,
+    "passport-expiry-date": undefined,
   },
 
   // regular expressions that only apply to label
@@ -49,30 +64,45 @@ export const HeuristicsRegExp = {
     //=========================================================================
     // Firefox-specific rules
     {
-      "street-address": "ulica(.*(numer|nr))?", // pl-PL
+      "street-address":
+        "ulica(.*(numer|nr))?" + // pl-PL
+        "|straat", // nl
       "address-line1": "addrline1|address_1|addl1" +
         // TODO: Bug 1829583
         "|(?<neg>nome.*)|endereço", // es
       "address-line2":
         "addrline2|address_2|addl2" +
-        "|landmark", // common in IN
-      "address-line3": "addrline3|address_3|addl3",
-      "address-level2": 
+		"|landmark" + // common in IN
+		"|complement|interior|interno|dpto", // es-MX
+      "address-line3": "addrline3|address_3|addl3" +
+		"|complement|interior|interno|dpto", // es-MX
+      "address-level2":
         "città" + // it-IT
-        "|miasto|miejscowosc|miejscowość", //pl-PL
+        "|miasto|miejscowosc|miejscowość" + //pl-PL
+        "|\\bstad|woonplaats|plaats" + // nl
+		"|ciudad", // es-MX
       "address-housenumber":
-        "(house|building)\\s*number|hausnummer|haus|house[a-z\-]*n(r|o)" +
-        "|n[úu]mero" +
-        "|domu", // pl-PL
+        "(house|building|street1?)[\\s\\-_]*number|hausnummer|haus|house[a-z\-]*n(r|o)" +
+		"|n[úu]mero(?!\\s*int)|exterior" +
+        "|domu" + // pl-PL
+        "|huisnummer", // nl
+      "address-extra-housesuffix":
+        "toevoeging|toev.?", // nl
       "address-level3":
         "(^address-?level-?3$)" +
         "|neighbou*rhood|barrio|bairro|colonia|suburb", // en/es/pt/mx/au/nz
-      "postal-code": 
+      "postal-code":
         "^PLZ(\\b|\\*)" + // de-DE
         "|kod.?pocztowy", // pl-PL
-      "given-name": "imię", // pl-PL
-      "additional-name": "apellido.?materno|lastlastname",
-      "family-name": "nazwisko",
+      "given-name":
+        "imię" + // pl-PL
+        "|voornaam", // nl
+      "additional-name":
+        "apellido.?materno|lastlastname" +
+        "|voorletters?|tussenvoegsel", // nl
+      "family-name":
+        "nazwisko" +
+        "|achternaam", // nl
       "cc-name":
         "accountholdername" +
         "|titulaire", // fr-FR
@@ -105,8 +135,39 @@ export const HeuristicsRegExp = {
         "(\\bcvn\\b|\\bcvv\\b|\\bcvc\\b|\\bcsc\\b|\\bcvd\\b|\\bcid\\b|\\bccv\\b)",
       "tel-country-code":
         "phone.*country|country.*phone" +
-        "tel.*country|country.*tel",
-      "tel": "(numer|nr)?\\.?telefonu", //pl-PL
+        "|tel.*country|country.*tel" +
+        "|phone(?!-local).*prefix|tel(?!-local).*prefix" +
+        "|prefix.*phone|prefix.*tel",
+      "tel":
+        "(numer|nr)?\\.?telefonu" + //pl-PL
+        "|telefoon", // nl
+      // TODO: These passport rules are a temporary heuristic for testing and
+      // should be removed once the ML model supports passport fields.
+      "passport-number": "passport[\\s_-]*(number|num|no\\b|#)",
+      "passport-name":
+        "passport[\\s_-]*(holder[\\s_-]*)?name|name[\\s_-]*on[\\s_-]*passport",
+      "passport-given-name":
+        "(?=.*(passport|document)).*(first|given)[\\s_-]*name",
+      "passport-additional-name":
+        "(?=.*(passport|document)).*(middle|additional)[\\s_-]*name",
+      "passport-family-name":
+        "(?=.*(passport|document)).*(family[\\s_-]*name|last[\\s_-]*name|surname)",
+      "passport-country":
+        "passport[\\s_-]*(issuing[\\s_-]*)?country" +
+        "|issuing[\\s_-]*country|country[\\s_-]*of[\\s_-]*issue" +
+        "|place[\\s_-]*of[\\s_-]*issue|nationality",
+      "passport-issue-date-month":
+        "issue[\\s_-]*(date[\\s_-]*)?month|month[\\s_-]*of[\\s_-]*issue",
+      "passport-issue-date-day":
+        "issue[\\s_-]*(date[\\s_-]*)?day|day[\\s_-]*of[\\s_-]*issue",
+      "passport-issue-date-year":
+        "issue[\\s_-]*(date[\\s_-]*)?year|year[\\s_-]*of[\\s_-]*issue",
+      "passport-issue-date": "issue[\\s_-]*date|date[\\s_-]*of[\\s_-]*issue",
+      "passport-expiry-date-month":
+        "(?=.*(passport|document))(?=.*expir).*month",
+      "passport-expiry-date-day": "(?=.*(passport|document))(?=.*expir).*day",
+      "passport-expiry-date-year": "(?=.*(passport|document))(?=.*expir).*year",
+      "passport-expiry-date": "(?=.*(passport|document)).*expir",
     },
 
     //=========================================================================
@@ -158,7 +219,7 @@ export const HeuristicsRegExp = {
         "|(^street-?3$)",
 
       "address-level2":
-        "(^city$)" +
+		"(^city$)" +
         "|(^town$)" +
         "|(^address-?level-?2$)" +
         "|(^address-?city$)" +
@@ -379,7 +440,8 @@ export const HeuristicsRegExp = {
 
       // ==== Telephone ====
       tel:
-        "phone|mobile|contact.?number" +
+        "(?<neg>phonetic)" +
+        "|phone|mobile|contact.?number" +
         "|telefonnummer" + // de-DE
         "|telefono|teléfono" + // es
         "|telfixe" + // fr-FR
@@ -433,7 +495,7 @@ export const HeuristicsRegExp = {
       "address-line2":
         "address[_-]?line(2|two)|address2|addr2|street|suite|unit(?!e)" + // Firefox adds `(?!e)` to unit to skip `United State`
         "|adresszusatz|ergänzende.?angaben" + // de-DE
-        "|direccion2|colonia|adicional" + // es
+        "|direccion2|adicional" + // es
         "|addresssuppl|complementnom|appartement" + // fr-FR
         "|indirizzo2" + // it-IT
         "|住所2" + // ja-JP
@@ -445,7 +507,7 @@ export const HeuristicsRegExp = {
       "address-line3":
         "address[_-]?line(3|three)|address3|addr3|street|suite|unit(?!e)" + // Firefox adds `(?!e)` to unit to skip `United State`
         "|adresszusatz|ergänzende.?angaben" + // de-DE
-        "|direccion3|colonia|adicional" + // es
+        "|direccion3|adicional" + // es
         "|addresssuppl|complementnom|appartement" + // fr-FR
         "|indirizzo3" + // it-IT
         "|住所3" + // ja-JP
@@ -552,7 +614,7 @@ export const HeuristicsRegExp = {
         "|vorname" + // de-DE
         "|nombre" + // es
         "|forename|prénom|prenom" + // fr-FR
-        "|名" + // ja-JP
+        "|(^|[^\\p{L}\\p{N}])名([^\\p{L}\\p{N}]|$)" + // ja-JP
         "|nome" + // pt-BR, pt-PT
         "|Имя" + // ru
         "|نام" + // fa
@@ -609,7 +671,7 @@ export const HeuristicsRegExp = {
         "|月", // zh-CN
 
       "cc-exp-year":
-        "exp|^/|(add)?year" +
+        "exp(?![a-hj-z])|^/|(add)?year" +
         "|ablaufdatum|gueltig|gültig|jahr" + // de-DE
         "|fecha" + // es
         "|scadenza" + // it-IT
@@ -665,8 +727,8 @@ export const HeuristicsRegExp = {
       "address-line2":
         "address|line" +
         "|house|building|apartment|floor" +    // de-DE
-        "|apartamento|" +    // pt
-        "|adresse" +      // fr-FR
+        "|apartamento" +    // pt
+        "|adresse|maison|bâtiment|immeuble|appartement|étage" +      // fr-FR
         "|indirizzo" +    // it-IT
         "|地址" +         // zh-CN
         "|주소" +         // ko-KR
@@ -689,7 +751,14 @@ export const HeuristicsRegExp = {
           // lower-cased field name and get a rough equivalent of a case-insensitive
           // match. This avoids a performance cliff with the "iu" flag on regular
           // expressions.
-          regexps.push(`(${set[name].toLowerCase()})`.normalize("NFKC"));
+          let pattern = `(${set[name].toLowerCase()})`.normalize("NFKC");
+
+          // We should not lower case the \p{L} & \p{N} parts of the pattern,
+          // revert them back.
+          pattern = pattern.replaceAll("\\p{l}", "\\p{L}");
+          pattern = pattern.replaceAll("\\p{n}", "\\p{N}");
+
+          regexps.push(pattern);
         }
       });
 

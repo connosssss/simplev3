@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -173,6 +171,78 @@ mozilla::ipc::IPCResult Transaction<Context>::CommitFromIPC(
 }
 
 template <typename Context>
+void Transaction<Context>::SendCorrection(Context* aOwner,
+                                          ContentParent* aTarget) {
+  if (mModified.isEmpty()) {
+    return;
+  }
+  MOZ_LOG(
+      Context::GetSyncLog(), LogLevel::Debug,
+      ("Transaction::SendCorrection(#%" PRIx64 ", childid %d): %s",
+       aOwner->Id(), aTarget->OtherChildID(),
+       StringJoin(", "_ns, mModified, [](nsACString& dest, const auto& idx) {
+         dest.Append(Context::FieldIndexToName(idx));
+       }).get()));
+  aOwner->SendCommitTransaction(aTarget, *this,
+                                aTarget->GetBrowsingContextFieldEpoch());
+}
+
+template <typename Context>
+void Transaction<Context>::ReconcileInitialFields(
+    Context* aOwner, typename Context::FieldValues&& aRequested,
+    ContentParent* aSource, Transaction<Context>& aCorrection) {
+  MOZ_DIAGNOSTIC_ASSERT(XRE_IsParentProcess());
+  MOZ_DIAGNOSTIC_ASSERT(aSource);
+
+  Transaction<Context> accepted;
+  EachIndex([&](auto idx) {
+    if (!(aRequested.Get(idx) == aOwner->mFields.mValues.Get(idx))) {
+      accepted.mValues.Get(idx) = std::move(aRequested.Get(idx));
+      accepted.mModified += idx;
+    }
+  });
+
+  MOZ_LOG(Context::GetSyncLog(), LogLevel::Debug,
+          ("Transaction::ReconcileInitialFields(#%" PRIx64 ", childid %d): %s",
+           aOwner->Id(), aSource->OtherChildID(),
+           FormatTransaction<Context>(accepted.mModified,
+                                      aOwner->mFields.mValues, accepted.mValues)
+               .get()));
+
+  // Not `Validate`: it sends reverts to `aSource` immediately, and `aOwner`
+  // cannot be serialized before it is attached.
+  EachIndex([&](auto idx) {
+    if (!accepted.mModified.contains(idx)) {
+      return;
+    }
+    if (accepted.ValidateOne(idx, aOwner, aSource) == CanSetResult::Allow) {
+      return;
+    }
+    aCorrection.mValues.Get(idx) = aOwner->mFields.mValues.Get(idx);
+    aCorrection.mModified += idx;
+    accepted.mModified -= idx;
+  });
+
+  if (!aCorrection.mModified.isEmpty()) {
+    MOZ_LOG(Context::GetSyncLog(), LogLevel::Warning,
+            ("Transaction::ReconcileInitialFields(#%" PRIx64
+             ", childid %d): refused %s",
+             aOwner->Id(), aSource->OtherChildID(),
+             StringJoin(", "_ns, aCorrection.mModified,
+                        [](nsACString& dest, const auto& idx) {
+                          dest.Append(Context::FieldIndexToName(idx));
+                        })
+                 .get()));
+  }
+
+  // Not `Apply`: `DidSet` must not run on a context which is still being
+  // constructed, and did not run for the values it was constructed with either.
+  if (!accepted.mModified.isEmpty()) {
+    accepted.CommitWithoutSyncing(aOwner);
+  }
+}
+
+template <typename Context>
 mozilla::ipc::IPCResult Transaction<Context>::CommitFromIPC(
     const MaybeDiscarded<Context>& aOwner, uint64_t aEpoch,
     ContentChild* aSource) {
@@ -259,7 +329,7 @@ typename Transaction<Context>::IndexSet Transaction<Context>::Validate(
       return;
     }
 
-    switch (AsCanSetResult(aOwner->CanSet(idx, mValues.Get(idx), aSource))) {
+    switch (ValidateOne(idx, aOwner, aSource)) {
       case CanSetResult::Allow:
         break;
       case CanSetResult::Deny:
@@ -297,27 +367,62 @@ typename Transaction<Context>::IndexSet Transaction<Context>::Validate(
 }
 
 template <typename Context>
-void Transaction<Context>::Write(IPC::MessageWriter* aWriter,
-                                 mozilla::ipc::IProtocol* aActor) const {
+template <size_t I>
+CanSetResult Transaction<Context>::ValidateOne(Index<I>, Context* aOwner,
+                                               ContentParent* aSource) {
+  constexpr FieldInfo info = Context::FieldIndexToInfo(Index<I>{});
+  if constexpr (info.mTopOnly) {
+    if (!aOwner->IsTop()) {
+      return CanSetResult::Deny;
+    }
+  }
+
+  if constexpr (info.mCanSet == CanSet::ParentOnly) {
+    return AsCanSetResult(aOwner->CheckOnlyParentProcessCanSet(aSource));
+  } else if constexpr (info.mCanSet == CanSet::EmbedderOnly) {
+    // NOTE: This member is only on BrowsingContext.
+    return AsCanSetResult(aOwner->CheckOnlyEmbedderCanSet(aSource));
+  } else if constexpr (info.mCanSet == CanSet::EmbedderOrParentOnly) {
+    // NOTE: This member is only on BrowsingContext.
+    return AsCanSetResult(aOwner->CheckOnlyParentProcessCanSet(aSource) ||
+                          aOwner->CheckOnlyEmbedderCanSet(aSource));
+  } else if constexpr (info.mCanSet == CanSet::OwnerOnly) {
+    // NOTE: This member is only on WindowContext.
+    return AsCanSetResult(aOwner->CheckOnlyOwningProcessCanSet(aSource));
+  } else if constexpr (info.mCanSet == CanSet::OwnerOrParentOnly) {
+    // NOTE: This member is only on WindowContext.
+    return AsCanSetResult(aOwner->CheckOnlyParentProcessCanSet(aSource) ||
+                          aOwner->CheckOnlyOwningProcessCanSet(aSource));
+  } else if constexpr (info.mCanSet == CanSet::Unrestricted) {
+    return CanSetResult::Allow;
+  } else {
+    static_assert(info.mCanSet == CanSet::Custom,
+                  "Field has unknown mCanSetValue for ValidateOne");
+    return AsCanSetResult(
+        aOwner->CanSet(Index<I>{}, mValues.Get(Index<I>{}), aSource));
+  }
+}
+
+template <typename Context>
+void Transaction<Context>::Write(IPC::MessageWriter* aWriter) const {
   // Record which field indices will be included, and then write those fields
   // out.
   typename IndexSet::serializedType modified = mModified.serialize();
-  WriteIPDLParam(aWriter, aActor, modified);
+  IPC::WriteParam(aWriter, modified);
   EachIndex([&](auto idx) {
     if (mModified.contains(idx)) {
-      WriteIPDLParam(aWriter, aActor, mValues.Get(idx));
+      IPC::WriteParam(aWriter, mValues.Get(idx));
     }
   });
 }
 
 template <typename Context>
-bool Transaction<Context>::Read(IPC::MessageReader* aReader,
-                                mozilla::ipc::IProtocol* aActor) {
+bool Transaction<Context>::Read(IPC::MessageReader* aReader) {
   // Read in which field indices were sent by the remote, followed by the fields
   // identified by those indices.
   typename IndexSet::serializedType modified =
       typename IndexSet::serializedType{};
-  if (!ReadIPDLParam(aReader, aActor, &modified)) {
+  if (!IPC::ReadParam(aReader, &modified)) {
     return false;
   }
   mModified.deserialize(modified);
@@ -325,29 +430,27 @@ bool Transaction<Context>::Read(IPC::MessageReader* aReader,
   bool ok = true;
   EachIndex([&](auto idx) {
     if (ok && mModified.contains(idx)) {
-      ok = ReadIPDLParam(aReader, aActor, &mValues.Get(idx));
+      ok = IPC::ReadParam(aReader, &mValues.Get(idx));
     }
   });
   return ok;
 }
 
 template <typename Base, size_t Count>
-void FieldValues<Base, Count>::Write(IPC::MessageWriter* aWriter,
-                                     mozilla::ipc::IProtocol* aActor) const {
+void FieldValues<Base, Count>::Write(IPC::MessageWriter* aWriter) const {
   // XXX The this-> qualification is necessary to work around a bug in older gcc
   // versions causing an ICE.
-  EachIndex([&](auto idx) { WriteIPDLParam(aWriter, aActor, this->Get(idx)); });
+  EachIndex([&](auto idx) { IPC::WriteParam(aWriter, this->Get(idx)); });
 }
 
 template <typename Base, size_t Count>
-bool FieldValues<Base, Count>::Read(IPC::MessageReader* aReader,
-                                    mozilla::ipc::IProtocol* aActor) {
+bool FieldValues<Base, Count>::Read(IPC::MessageReader* aReader) {
   bool ok = true;
   EachIndex([&](auto idx) {
     if (ok) {
       // XXX The this-> qualification is necessary to work around a bug in older
       // gcc versions causing an ICE.
-      ok = ReadIPDLParam(aReader, aActor, &this->Get(idx));
+      ok = IPC::ReadParam(aReader, &this->Get(idx));
     }
   });
   return ok;

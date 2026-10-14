@@ -1,6 +1,6 @@
 [package]
 name = "web-sys"
-version = "0.3.100"
+version = "0.3.200"
 edition = "2018"
 license = "MIT OR Apache-2.0"
 
@@ -1033,8 +1033,6 @@ QueuingStrategy = []
 QueuingStrategyInit = []
 RadioNodeList = ["NodeList"]
 Range = []
-RcwnPerfStats = []
-RcwnStatus = []
 ReadableByteStreamController = []
 ReadableStream = []
 ReadableStreamByobReader = []

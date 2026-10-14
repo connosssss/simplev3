@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,12 +5,12 @@
 #ifndef AccAttributes_h_
 #define AccAttributes_h_
 
-#include "mozilla/ServoStyleConsts.h"
-#include "mozilla/a11y/AccGroupInfo.h"
 #include "mozilla/Variant.h"
-#include "nsTHashMap.h"
-#include "nsStringFwd.h"
+#include "mozilla/WritingModes.h"
+#include "mozilla/a11y/AccGroupInfo.h"
 #include "mozilla/gfx/Matrix.h"
+#include "nsStringFwd.h"
+#include "nsTHashMap.h"
 
 class nsVariant;
 
@@ -31,21 +30,13 @@ namespace a11y {
 struct FontSize {
   int32_t mValue;
 
-  bool operator==(const FontSize& aOther) const {
-    return mValue == aOther.mValue;
-  }
-
-  bool operator!=(const FontSize& aOther) const {
-    return mValue != aOther.mValue;
-  }
+  bool operator==(const FontSize& aOther) const = default;
 };
 
 struct Color {
   nscolor mValue;
 
-  bool operator==(const Color& aOther) const { return mValue == aOther.mValue; }
-
-  bool operator!=(const Color& aOther) const { return mValue != aOther.mValue; }
+  bool operator==(const Color& aOther) const = default;
 };
 
 // A special type. If an entry has a value of this type, it instructs the
@@ -55,7 +46,6 @@ struct DeleteEntry {
   bool mValue;
 
   bool operator==(const DeleteEntry& aOther) const { return true; }
-
   bool operator!=(const DeleteEntry& aOther) const { return false; }
 };
 
@@ -106,8 +96,9 @@ class AccAttributes {
       Variant<bool, float, double, int32_t, RefPtr<nsAtom>, nsTArray<int32_t>,
               CSSCoord, FontSize, Color, DeleteEntry, UniquePtr<nsString>,
               RefPtr<AccAttributes>, uint64_t, UniquePtr<AccGroupInfo>,
-              UniquePtr<gfx::Matrix4x4>, nsTArray<uint64_t>,
-              nsTArray<TextOffsetAttribute>>;
+              UniquePtr<gfx::Matrix4x4>, UniquePtr<nsRect>, nsTArray<uint64_t>,
+              nsTArray<TextOffsetAttribute>, WritingMode,
+              nsTArray<RefPtr<nsAtom>>>;
   static_assert(sizeof(AttrValueType) <= 16);
   using AtomVariantMap = nsTHashMap<RefPtr<nsAtom>, AttrValueType>;
 
@@ -129,10 +120,14 @@ class AccAttributes {
       static_assert(std::is_rvalue_reference_v<decltype(aAttrValue)>,
                     "Please only move strings into this function. To make a "
                     "copy, use SetAttributeStringCopy.");
-      UniquePtr<nsString> value = MakeUnique<nsString>(std::move(aAttrValue));
+      UniquePtr<nsString> value =
+          MakeUnique<nsString>(std::forward<T>(aAttrValue));
       mData.InsertOrUpdate(aAttrName, AsVariant(std::move(value)));
     } else if constexpr (std::is_same_v<ValType, gfx::Matrix4x4>) {
       UniquePtr<gfx::Matrix4x4> value = MakeUnique<gfx::Matrix4x4>(aAttrValue);
+      mData.InsertOrUpdate(aAttrName, AsVariant(std::move(value)));
+    } else if constexpr (std::is_same_v<ValType, nsRect>) {
+      UniquePtr<nsRect> value = MakeUnique<nsRect>(aAttrValue);
       mData.InsertOrUpdate(aAttrName, AsVariant(std::move(value)));
     } else if constexpr (std::is_same_v<ValType, AccGroupInfo*>) {
       UniquePtr<AccGroupInfo> value(aAttrValue);
@@ -159,6 +154,11 @@ class AccAttributes {
       } else if constexpr (std::is_same_v<gfx::Matrix4x4, T>) {
         if (value->is<UniquePtr<gfx::Matrix4x4>>()) {
           const T& val = *(value->as<UniquePtr<gfx::Matrix4x4>>());
+          return SomeRef(val);
+        }
+      } else if constexpr (std::is_same_v<nsRect, T>) {
+        if (value->is<UniquePtr<nsRect>>()) {
+          const T& val = *(value->as<UniquePtr<nsRect>>());
           return SomeRef(val);
         }
       } else {
@@ -196,7 +196,8 @@ class AccAttributes {
   template <typename T>
   Maybe<T&> GetMutableAttribute(nsAtom* aAttrName) const {
     static_assert(std::is_same_v<nsTArray<int32_t>, T> ||
-                      std::is_same_v<nsTArray<uint64_t>, T>,
+                      std::is_same_v<nsTArray<uint64_t>, T> ||
+                      std::is_same_v<nsTArray<RefPtr<nsAtom>>, T>,
                   "Only arrays should be mutable attributes");
     if (auto value = mData.Lookup(aAttrName)) {
       if (value->is<T>()) {
@@ -222,6 +223,9 @@ class AccAttributes {
   // will be emptied.
   void Update(AccAttributes* aOther);
 
+  // Remove all entries that are identical to the supplied AccAttributes.
+  void RemoveIdentical(const AccAttributes* aOther);
+
   /**
    * Return true if all the attributes in this instance are equal to all the
    * attributes in another instance.
@@ -234,8 +238,10 @@ class AccAttributes {
    * cached attributes without modifying the cache. It can only copy simple
    * value types; e.g. it can't copy array values. Attempting to copy an
    * AccAttributes with uncopyable values will cause an assertion.
+   * If aOnlyMissing is true, don't copy entries if destination already has
+   * a given key.
    */
-  void CopyTo(AccAttributes* aDest) const;
+  void CopyTo(AccAttributes* aDest, bool aOnlyMissing = false) const;
 
   // An entry class for our iterator.
   class Entry {
@@ -255,6 +261,11 @@ class AccAttributes {
       } else if constexpr (std::is_same_v<gfx::Matrix4x4, T>) {
         if (mValue->is<UniquePtr<gfx::Matrix4x4>>()) {
           const T& val = *(mValue->as<UniquePtr<gfx::Matrix4x4>>());
+          return SomeRef(val);
+        }
+      } else if constexpr (std::is_same_v<nsRect, T>) {
+        if (mValue->is<UniquePtr<nsRect>>()) {
+          const T& val = *(mValue->as<UniquePtr<nsRect>>());
           return SomeRef(val);
         }
       } else {

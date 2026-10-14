@@ -1,22 +1,23 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsLookAndFeel.h"
+
+#include <shellapi.h>
 #include <stdint.h>
 #include <windows.h>
-#include <shellapi.h>
-#include "nsStyleConsts.h"
-#include "nsUXThemeConstants.h"
-#include "nsWindowDefs.h"
-#include "nsWindowsHelpers.h"
+
 #include "WinUtils.h"
 #include "WindowsUIUtils.h"
 #include "mozilla/FontPropertyTypes.h"
 #include "mozilla/glean/WidgetWindowsMetrics.h"
 #include "mozilla/intl/LocaleService.h"
 #include "mozilla/widget/WinRegistry.h"
+#include "nsStyleConsts.h"
+#include "nsUXThemeConstants.h"
+#include "nsWindowDefs.h"
+#include "nsWindowsHelpers.h"
 
 #define AVG2(a, b) (((a) + (b) + 1) >> 1)
 
@@ -107,7 +108,7 @@ HANDLE nsLookAndFeel::GetTheme(UXThemeClass aClass) {
 }
 
 uint32_t nsLookAndFeel::SystemColorFilter() {
-  if (NS_WARN_IF(!mColorFilterWatcher)) {
+  if (!mColorFilterWatcher) {
     return 0;
   }
 
@@ -118,13 +119,8 @@ uint32_t nsLookAndFeel::SystemColorFilter() {
   return key.GetValueAsDword(u"FilterType"_ns).valueOr(0);
 }
 
-nsLookAndFeel::nsLookAndFeel() {
-  glean::widget::touch_enabled_device
-      .EnumGet(static_cast<glean::widget::TouchEnabledDeviceLabel>(
-          WinUtils::IsTouchDeviceSupportPresent()))
-      .Add();
-}
-
+// {Con/De}structor in .cpp as mColorFilterWatcher needs KeyWatcher definition
+nsLookAndFeel::nsLookAndFeel() = default;
 nsLookAndFeel::~nsLookAndFeel() = default;
 
 void nsLookAndFeel::NativeInit() { EnsureInit(); }
@@ -256,19 +252,15 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
                                                 : NS_RGB(0xf9, 0xf9, 0xfb);
         }
       } else {
-        aColor = GetColorForSysColorIndex(COLOR_MENU);
+        // Map Menu to Window to match Windows explorer rendering of menus, and
+        // to allow users to customize menu backgrounds in Settings dialog. This
+        // color is set with Background. (See Bug 2037167 for context)
+        aColor = GetColorForSysColorIndex(COLOR_WINDOW);
       }
       return NS_OK;
     }
     default:
       break;
-  }
-
-  if (aScheme == ColorScheme::Dark) {
-    if (auto color = GenericDarkColor(aID)) {
-      aColor = *color;
-      return NS_OK;
-    }
   }
 
   if (mHighContrastOn) {
@@ -278,12 +270,14 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
       case ColorID::MozColheaderhover:
       case ColorID::MozButtonactivetext:
       case ColorID::MozColheaderactivetext:
+      case ColorID::TargetTextBackground:
         aColor = GetColorForSysColorIndex(COLOR_HIGHLIGHT);
         return NS_OK;
       case ColorID::MozButtonhovertext:
       case ColorID::MozColheaderhovertext:
       case ColorID::MozButtonactiveface:
       case ColorID::MozColheaderactive:
+      case ColorID::TargetTextForeground:
         aColor = GetColorForSysColorIndex(COLOR_HIGHLIGHTTEXT);
         return NS_OK;
       case ColorID::MozButtondisabledborder:
@@ -317,6 +311,13 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
       }
       default:
         break;
+    }
+  }
+
+  if (aScheme == ColorScheme::Dark) {
+    if (auto color = GenericDarkColor(aID)) {
+      aColor = *color;
+      return NS_OK;
     }
   }
 
@@ -410,7 +411,10 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
         aColor = kNonNativeMenuText;
         return NS_OK;
       }
-      idx = COLOR_MENUTEXT;
+      // Map MenuText to WindowText to match Windows explorer rendering of
+      // menus, and to allow users to customize menu backgrounds in Settings
+      // dialog. This color is set with Text. (See Bug 2037167 for context)
+      idx = COLOR_WINDOWTEXT;
       break;
     case ColorID::Scrollbar:
       idx = COLOR_SCROLLBAR;
@@ -432,6 +436,7 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
       idx = COLOR_3DSHADOW;
       break;
     case ColorID::Window:
+    case ColorID::MozDialog:
       idx = COLOR_WINDOW;
       break;
     case ColorID::Windowframe:
@@ -458,7 +463,6 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
       break;
     case ColorID::MozHeaderbar:
     case ColorID::MozHeaderbarinactive:
-    case ColorID::MozDialog:
       idx = COLOR_3DFACE;
       break;
     case ColorID::Accentcolor:
@@ -543,8 +547,9 @@ nsresult nsLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
       aResult = GetSystemParam(SPI_GETMENUSHOWDELAY, 400);
       break;
     case IntID::MenusCanOverlapOSBar:
-      // we want XUL popups to be able to overlap the task bar.
-      aResult = 1;
+      // Context menus should not overlap the OS taskbar (default Windows
+      // behavior).
+      aResult = 0;
       break;
     case IntID::DragThresholdX:
       // The system metric is the number of pixels at which a drag should
@@ -897,7 +902,8 @@ nscolor nsLookAndFeel::GetColorForSysColorIndex(int index) {
 auto nsLookAndFeel::ComputeTitlebarColors() -> TitlebarColors {
   TitlebarColors result;
 
-  // Start with the native / non-accent-in-titlebar colors.
+  // Start with the native / non-accent-in-titlebar colors for light mode, and
+  // non-native colors always for dark mode.
   result.mActiveLight = {GetColorForSysColorIndex(COLOR_ACTIVECAPTION),
                          GetColorForSysColorIndex(COLOR_CAPTIONTEXT),
                          GetColorForSysColorIndex(COLOR_ACTIVEBORDER)};
@@ -905,9 +911,15 @@ auto nsLookAndFeel::ComputeTitlebarColors() -> TitlebarColors {
   result.mInactiveLight = {GetColorForSysColorIndex(COLOR_INACTIVECAPTION),
                            GetColorForSysColorIndex(COLOR_INACTIVECAPTIONTEXT),
                            GetColorForSysColorIndex(COLOR_INACTIVEBORDER)};
+  result.mActiveDark = {*GenericDarkColor(ColorID::Activecaption),
+                        *GenericDarkColor(ColorID::Captiontext),
+                        *GenericDarkColor(ColorID::Activeborder)};
+  result.mInactiveDark = {*GenericDarkColor(ColorID::Inactivecaption),
+                          *GenericDarkColor(ColorID::Inactivecaptiontext),
+                          *GenericDarkColor(ColorID::Inactiveborder)};
 
   if (!mHighContrastOn) {
-    // Use our non-native colors.
+    // Use our non-native light colors.
     result.mActiveLight = {
         GetStandinForNativeColor(ColorID::Activecaption, ColorScheme::Light),
         GetStandinForNativeColor(ColorID::Captiontext, ColorScheme::Light),
@@ -917,15 +929,12 @@ auto nsLookAndFeel::ComputeTitlebarColors() -> TitlebarColors {
         GetStandinForNativeColor(ColorID::Inactivecaptiontext,
                                  ColorScheme::Light),
         GetStandinForNativeColor(ColorID::Inactiveborder, ColorScheme::Light)};
+    if (WinUtils::MicaEnabled()) {
+      // Use transparent titlebar backgrounds when using mica.
+      result.mActiveDark.mBg = result.mActiveLight.mBg =
+          result.mInactiveDark.mBg = result.mInactiveLight.mBg = NS_TRANSPARENT;
+    }
   }
-
-  // Our dark colors are always non-native.
-  result.mActiveDark = {*GenericDarkColor(ColorID::Activecaption),
-                        *GenericDarkColor(ColorID::Captiontext),
-                        *GenericDarkColor(ColorID::Activeborder)};
-  result.mInactiveDark = {*GenericDarkColor(ColorID::Inactivecaption),
-                          *GenericDarkColor(ColorID::Inactivecaptiontext),
-                          *GenericDarkColor(ColorID::Inactiveborder)};
 
   // TODO(bug 1825241): Somehow get notified when this changes? Hopefully the
   // sys color notification is enough.
@@ -949,16 +958,12 @@ auto nsLookAndFeel::ComputeTitlebarColors() -> TitlebarColors {
   result.mAccentInactive = dwmKey.GetValueAsDword(u"AccentColorInactive"_ns);
   result.mAccentInactiveText = GetAccentColorText(result.mAccentInactive);
 
-  if (WinUtils::MicaEnabled()) {
-    // Use transparent titlebar backgrounds when using mica.
-    result.mActiveDark.mBg = result.mActiveLight.mBg =
-        result.mInactiveDark.mBg = result.mInactiveLight.mBg = NS_TRANSPARENT;
-  }
-
   // The ColorPrevalence value is set to 1 when the "Show color on title bar"
   // setting in the Color section of Window's Personalization settings is
-  // turned on.
+  // turned on. This setting is not supposed to have an effect in high contrast
+  // mode, see bug 2007306.
   result.mUseAccent =
+      !mHighContrastOn &&
       dwmKey.GetValueAsDword(u"ColorPrevalence"_ns).valueOr(0) == 1;
   if (!result.mUseAccent) {
     return result;

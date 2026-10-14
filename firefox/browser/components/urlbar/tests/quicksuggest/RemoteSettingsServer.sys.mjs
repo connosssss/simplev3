@@ -11,6 +11,10 @@ ChromeUtils.defineESModuleGetters(lazy, {
   HTTP_404: "resource://testing-common/httpd.sys.mjs",
 });
 
+/**
+ * @import {HttpError} from "resource://testing-common/httpd.sys.mjs"
+ */
+
 const SERVER_PREF = "services.settings.server";
 
 /**
@@ -22,7 +26,7 @@ export class RemoteSettingsServer {
    * The server must be started by calling `start()`.
    *
    * @param {object} options
-   * @param {number} options.maxLogLevel
+   * @param {ConsoleLogLevel} [options.maxLogLevel]
    *   A log level value as defined by ConsoleInstance. `Info` logs server start
    *   and stop. `Debug` logs requests, responses, and added and removed
    *   records.
@@ -60,7 +64,7 @@ export class RemoteSettingsServer {
     }
     this.#server.start(-1);
 
-    this.#url = new URL("http://localhost/v1");
+    this.#url = new URL("http://localhost/v2");
     this.#url.port = this.#server.identity.primaryPort;
 
     this.#originalServerPrefValue = Services.prefs.getCharPref(
@@ -281,7 +285,7 @@ export class RemoteSettingsServer {
   get #routes() {
     return [
       {
-        spec: "/v1",
+        spec: "/v2",
         response: () => ({
           body: {
             capabilities: {
@@ -294,7 +298,7 @@ export class RemoteSettingsServer {
       },
 
       {
-        spec: "/v1/buckets/monitor/collections/changes/changeset",
+        spec: "/v2/buckets/monitor/collections/changes/changeset",
         response: () => ({
           body: {
             timestamp: this.#lastModified,
@@ -308,7 +312,7 @@ export class RemoteSettingsServer {
       },
 
       {
-        spec: "/v1/buckets/$bucket/collections/$collection/changeset",
+        spec: "/v2/buckets/$bucket/collections/$collection/changeset",
         response: ({ bucket, collection }, request) => {
           let records = this.#getRecords(bucket, collection, request);
           return !records
@@ -317,27 +321,20 @@ export class RemoteSettingsServer {
                 body: {
                   metadata: {
                     bucket,
-                    signature: {
-                      signature: "",
-                      x5u: "",
-                    },
+                    signatures: [
+                      {
+                        signature: "",
+                        x5u: "",
+                        // The signature type. ECDSA P384 is the only type
+                        // supported by both the Rust client (which requires
+                        // this field and skips signatures with any other
+                        // mode) and the JS one (RemoteSettingsClient.sys.mjs).
+                        mode: "p384ecdsa",
+                      },
+                    ],
                   },
                   timestamp: this.#lastModified,
                   changes: records,
-                },
-              };
-        },
-      },
-
-      {
-        spec: "/v1/buckets/$bucket/collections/$collection/records",
-        response: ({ bucket, collection }, request) => {
-          let records = this.#getRecords(bucket, collection, request);
-          return !records
-            ? lazy.HTTP_404
-            : {
-                body: {
-                  data: records,
                 },
               };
         },
@@ -348,7 +345,7 @@ export class RemoteSettingsServer {
           // The Rust remote settings client doesn't include "v1" in attachment
           // URLs, but the JS client does.
           "/attachments/$bucket/$collection/$filename",
-          "/v1/attachments/$bucket/$collection/$filename",
+          "/v2/attachments/$bucket/$collection/$filename",
         ],
         response: ({ bucket, collection, filename }) => {
           return {
@@ -467,8 +464,8 @@ export class RemoteSettingsServer {
       // Example value: "%221368273600004%22"
       let match = /^"([0-9]+)"$/.exec(decodeURIComponent(since));
       if (match) {
-        since = parseInt(match[1]);
-        records = records.filter(r => r.last_modified > since);
+        let sinceTime = parseInt(match[1]);
+        records = records.filter(r => r.last_modified > sinceTime);
       }
     }
 
@@ -548,11 +545,11 @@ export class RemoteSettingsServer {
    * @param {object} options
    * @param {nsIHttpRequest} options.request
    * @param {nsIHttpResponse} options.response
-   * @param {object|null} options.body
+   * @param {object|null} [options.body]
    *   Currently only JSON'able objects are supported. They will be converted to
    *   JSON in the response.
-   * @param {integer} options.status
-   * @param {string} options.statusText
+   * @param {number} [options.status]
+   * @param {string} [options.statusText]
    */
   #prepareResponse({
     request,
@@ -566,7 +563,7 @@ export class RemoteSettingsServer {
       headers["Content-Type"] = "application/json; charset=UTF-8";
     }
 
-    this.#logResponse({ request, status, statusText, headers, body });
+    this.#logResponse({ request, status, body });
 
     for (let [name, value] of Object.entries(headers)) {
       response.setHeader(name, value, false);
@@ -616,14 +613,12 @@ export class RemoteSettingsServer {
    * @param {object} options
    * @param {nsIHttpRequest} options.request
    *   The associated request.
-   * @param {integer} options.status
+   * @param {number} options.status
    *   The HTTP status code of the response.
-   * @param {object} options._headers
-   *   An object mapping from response header names to values.
    * @param {object} options.body
    *   The response body, if any.
    */
-  #logResponse({ request, status, _headers, body }) {
+  #logResponse({ request, status, body }) {
     this.#log.debug(`> ${status} ${request.path}`);
     if (body) {
       this.#log.debug("Response body:", body);

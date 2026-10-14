@@ -1,4 +1,3 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // Any copyright is dedicated to the Public Domain.
 // http://creativecommons.org/publicdomain/zero/1.0/
 "use strict";
@@ -22,15 +21,6 @@ var deleted = false;
 const { MockRegistrar } = ChromeUtils.importESModule(
   "resource://testing-common/MockRegistrar.sys.mjs"
 );
-
-function findCertByCommonName(commonName) {
-  for (let cert of certDB.getCerts()) {
-    if (cert.commonName == commonName) {
-      return cert;
-    }
-  }
-  return null;
-}
 
 async function testHelper(connectURL, expectedURL) {
   let win = await BrowserTestUtils.openNewBrowserWindow();
@@ -147,7 +137,7 @@ const gClientAuthDialogService = {
 };
 
 add_task(async function testRememberedDecisionsUI() {
-  cert = findCertByCommonName("Mochitest client");
+  cert = await findCertByCommonName("Mochitest client");
   cert2 = await readCertificate("pgo-ca-all-usages.pem", ",,");
   cert3 = await readCertificate("client-cert-via-intermediate.pem", ",,");
   isnot(cert, null, "Should be able to find the test client cert");
@@ -161,10 +151,14 @@ add_task(async function testRememberedDecisionsUI() {
 
   let win = await openCertManager();
 
-  let listItems = win.document
-    .getElementById("rememberedList")
-    .querySelectorAll("richlistitem");
+  let rememberedList = win.document.getElementById("rememberedList");
 
+  await TestUtils.waitForCondition(
+    () => !!rememberedList.querySelectorAll("richlistitem").length,
+    "rememberedList is populated"
+  );
+
+  let listItems = rememberedList.querySelectorAll("richlistitem");
   Assert.equal(
     listItems.length,
     4,
@@ -181,7 +175,7 @@ add_task(async function testRememberedDecisionsUI() {
     "rememberedList has expected number of labels"
   );
 
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => !!labels[10].textContent.length,
     "Localized label is populated"
   );

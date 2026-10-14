@@ -1,5 +1,4 @@
-// |jit-test| skip-if: getPrefValue("wasm_lazy_tiering")
-// TODO: skip lazy tiering temporarily to avoid a timeout
+// |jit-test| test-also=--setpref=wasm_baseline_debug=true; skip-variant-if: --setpref=wasm_baseline_debug=true, wasmCompileMode() == "ion"
 
 load(libdir + "wasm-binary.js");
 

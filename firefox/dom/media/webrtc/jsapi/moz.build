@@ -1,17 +1,17 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 include("/dom/media/webrtc/third_party_build/webrtc.mozbuild")
 
 LOCAL_INCLUDES += [
+    "!/dist/include/libwebrtc_overrides",
     "!/ipc/ipdl/_ipdlheaders",
     "/dom/base",
     "/dom/media",
     "/dom/media/webrtc",
     "/ipc/chromium/src",
     "/media/webrtc",
+    "/netwerk/base",  # For nsSocketTransportService2.h
     "/netwerk/dns",  # For nsDNSService2.h
     "/netwerk/sctp/datachannel",
     "/third_party/abseil-cpp",
@@ -34,6 +34,9 @@ UNIFIED_SOURCES += [
     "RTCEncodedAudioFrame.cpp",
     "RTCEncodedFrameBase.cpp",
     "RTCEncodedVideoFrame.cpp",
+    "RTCError.cpp",
+    "RTCIceCandidate.cpp",
+    "RTCIceCandidatePair.cpp",
     "RTCIceTransport.cpp",
     "RTCRtpReceiver.cpp",
     "RTCRtpScriptTransform.cpp",
@@ -56,6 +59,9 @@ EXPORTS.mozilla.dom += [
     "RTCEncodedAudioFrame.h",
     "RTCEncodedFrameBase.h",
     "RTCEncodedVideoFrame.h",
+    "RTCError.h",
+    "RTCIceCandidate.h",
+    "RTCIceCandidatePair.h",
     "RTCIceTransport.h",
     "RTCRtpReceiver.h",
     "RTCRtpScriptTransform.h",
@@ -67,3 +73,19 @@ EXPORTS.mozilla.dom += [
 ]
 
 FINAL_LIBRARY = "xul"
+
+SOURCE_HEADERS += [
+    "DefaultCodecPreferences.h",
+    "MediaTransportHandler.h",
+    "MediaTransportHandlerIPC.h",
+    "PacketDumper.h",
+    "PeerConnectionCtx.h",
+    "PeerConnectionImpl.h",
+    "RemoteTrackSource.h",
+    "RTCStatsIdGenerator.h",
+    "RTCTransformEventRunnable.h",
+    "WebrtcGlobalChild.h",
+    "WebrtcGlobalInformation.h",
+    "WebrtcGlobalParent.h",
+    "WebrtcGlobalStatsHistory.h",
+]

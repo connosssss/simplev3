@@ -1,14 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "RenderTextureHostSWGL.h"
 
+#include "RenderThread.h"
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/layers/TextureHost.h"
-#include "RenderThread.h"
 
 namespace mozilla {
 namespace wr {
@@ -69,6 +67,10 @@ bool RenderTextureHostSWGL::UpdatePlanes(RenderCompositor* aCompositor) {
         MOZ_ASSERT(colorDepth == gfx::ColorDepth::COLOR_10);
         internalFormat = i > 0 ? LOCAL_GL_RG16 : LOCAL_GL_R16;
         break;
+      case gfx::SurfaceFormat::P016:
+        MOZ_ASSERT(colorDepth == gfx::ColorDepth::COLOR_16);
+        internalFormat = i > 0 ? LOCAL_GL_RG16 : LOCAL_GL_R16;
+        break;
       case gfx::SurfaceFormat::YUY2:
         MOZ_ASSERT(colorDepth == gfx::ColorDepth::COLOR_8);
         internalFormat = LOCAL_GL_RGB_RAW_422_APPLE;
@@ -109,11 +111,13 @@ wr::WrExternalImage RenderTextureHostSWGL::LockSWGL(
   if (!SetContext(aContext)) {
     return InvalidToWrExternalImage();
   }
-  if (!mLocked) {
+  if (!HasLockedSWGL()) {
     if (!UpdatePlanes(aCompositor)) {
       return InvalidToWrExternalImage();
     }
-    mLocked = true;
+    mLockedSWGL = true;
+  } else if (!mLockedSWGL) {
+    return InvalidToWrExternalImage();
   }
   if (aChannelIndex >= mPlanes.size()) {
     return InvalidToWrExternalImage();
@@ -134,8 +138,8 @@ wr::WrExternalImage RenderTextureHostSWGL::LockSWGL(
 }
 
 void RenderTextureHostSWGL::UnlockSWGL() {
-  if (mLocked) {
-    mLocked = false;
+  if (mLockedSWGL) {
+    mLockedSWGL = false;
     UnmapPlanes();
   }
 }
@@ -162,11 +166,13 @@ bool RenderTextureHostSWGL::LockSWGLCompositeSurface(
   if (!SetContext(aContext)) {
     return false;
   }
-  if (!mLocked) {
+  if (!HasLockedSWGL()) {
     if (!UpdatePlanes(nullptr)) {
       return false;
     }
-    mLocked = true;
+    mLockedSWGLCompositeSurface = true;
+  } else if (!mLockedSWGLCompositeSurface) {
+    return false;
   }
   MOZ_ASSERT(mPlanes.size() <= 3);
   for (size_t i = 0; i < mPlanes.size(); i++) {
@@ -176,6 +182,7 @@ bool RenderTextureHostSWGL::LockSWGLCompositeSurface(
     case gfx::SurfaceFormat::YUV420:
     case gfx::SurfaceFormat::NV12:
     case gfx::SurfaceFormat::P010:
+    case gfx::SurfaceFormat::P016:
     case gfx::SurfaceFormat::YUY2: {
       aInfo->yuv_planes = mPlanes.size();
       auto colorSpace = GetYUVColorSpace();
@@ -195,6 +202,13 @@ bool RenderTextureHostSWGL::LockSWGLCompositeSurface(
   aInfo->size.width = mPlanes[0].mSize.width;
   aInfo->size.height = mPlanes[0].mSize.height;
   return true;
+}
+
+void RenderTextureHostSWGL::UnlockSWGLCompositeSurface() {
+  if (mLockedSWGLCompositeSurface) {
+    mLockedSWGLCompositeSurface = false;
+    UnmapPlanes();
+  }
 }
 
 bool wr_swgl_lock_composite_surface(void* aContext, wr::ExternalImageId aId,
@@ -219,7 +233,7 @@ void wr_swgl_unlock_composite_surface(void* aContext, wr::ExternalImageId aId) {
   if (!swglTex) {
     return;
   }
-  swglTex->UnlockSWGL();
+  swglTex->UnlockSWGLCompositeSurface();
 }
 
 }  // namespace wr

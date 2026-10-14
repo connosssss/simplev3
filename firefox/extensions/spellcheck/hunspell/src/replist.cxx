@@ -77,49 +77,46 @@
 #include "csutil.hxx"
 
 RepList::RepList(int n) {
-  dat = (replentry**)malloc(sizeof(replentry*) * n);
-  if (dat == 0)
-    size = 0;
-  else
-    size = n;
-  pos = 0;
+  dat.reserve(std::min(n, 16384));
+  can_use_trie = true;
 }
 
 RepList::~RepList() {
-  for (int i = 0; i < pos; i++) {
-    delete dat[i];
+  for (auto& i : dat) {
+    delete i;
   }
-  free(dat);
 }
 
-replentry* RepList::item(int n) {
-  return dat[n];
-}
-
-int RepList::find(const char* word) {
+int RepList::find(const char* word, size_t max_len) {
   int p1 = 0;
-  int p2 = pos - 1;
+  int p2 = dat.size() - 1;
   int ret = -1;
   while (p1 <= p2) {
     int m = ((unsigned)p1 + (unsigned)p2) >> 1;
-    int c = strncmp(word, dat[m]->pattern.c_str(), dat[m]->pattern.size());
+    const std::string& pattern = dat[m]->pattern;
+    // compare only as far as max_len, so a caller can restrict the search to
+    // patterns no longer than a given length
+    size_t cmplen = pattern.size() < max_len ? pattern.size() : max_len;
+    int c = strncmp(word, pattern.c_str(), cmplen);
     if (c < 0)
       p2 = m - 1;
     else if (c > 0)
       p1 = m + 1;
-    else {      // scan in the right half for a longer match
-      ret = m;
+    else if (pattern.size() <= max_len) {  // a prefix within the limit
+      ret = m;                             // scan right for a longer match
       p1 = m + 1;
+    } else {
+      // pattern shares the capped prefix but is too long; any shorter
+      // candidate sorts earlier
+      p2 = m - 1;
     }
   }
   return ret;
 }
 
-std::string RepList::replace(const char* word, int ind, bool atstart) {
+std::string RepList::replace(const size_t wordlen, int ind, bool atstart) {
   int type = atstart ? 1 : 0;
-  if (ind < 0)
-    return std::string();
-  if (strlen(word) == dat[ind]->pattern.size())
+  if (wordlen == dat[ind]->pattern.size())
     type = atstart ? 3 : 2;
   while (type && dat[ind]->outstrings[type].empty())
     type = (type == 2 && !atstart) ? 0 : type - 1;
@@ -127,9 +124,10 @@ std::string RepList::replace(const char* word, int ind, bool atstart) {
 }
 
 int RepList::add(const std::string& in_pat1, const std::string& pat2) {
-  if (pos >= size || in_pat1.empty() || pat2.empty()) {
+  if (in_pat1.empty() || pat2.empty()) {
     return 1;
   }
+
   // analyse word context
   int type = 0;
   std::string pat1(in_pat1);
@@ -143,8 +141,21 @@ int RepList::add(const std::string& in_pat1, const std::string& pat2) {
   }
   mystrrep(pat1, "_", " ");
 
+  // The trie does unanchored whole-string replacement only. Anchored entries
+  // (a leading or trailing _) depend on the match position within the word,
+  // which the trie does not model, so fall back to the linear scan once one is
+  // seen. Feed the trie the same _-to-space normalised strings the linear path
+  // stores, otherwise the two paths would disagree on output.
+  if (type == 0 && can_use_trie) {
+    std::string out(pat2);
+    mystrrep(out, "_", " ");
+    trie.add(pat1, out);
+  } else {
+    can_use_trie = false;
+  }
+
   // find existing entry
-  int m = find(pat1.c_str());
+  int m = find(pat1.c_str(), pat1.size());
   if (m >= 0 && dat[m]->pattern == pat1) {
     // since already used
     dat[m]->outstrings[type] = pat2;
@@ -154,15 +165,13 @@ int RepList::add(const std::string& in_pat1, const std::string& pat2) {
 
   // make a new entry if none exists
   replentry* r = new replentry;
-  if (r == NULL)
-    return 1;
-  r->pattern = pat1;
+  r->pattern = std::move(pat1);
   r->outstrings[type] = pat2;
   mystrrep(r->outstrings[type], "_", " ");
-  dat[pos++] = r;
+  dat.push_back(r);
   // sort to the right place in the list
-  int i;
-  for (i = pos - 1; i > 0; i--) {
+  size_t i;
+  for (i = dat.size() - 1; i > 0; --i) {
     if (strcmp(r->pattern.c_str(), dat[i - 1]->pattern.c_str()) < 0) {
       dat[i] = dat[i - 1];
     } else
@@ -172,25 +181,66 @@ int RepList::add(const std::string& in_pat1, const std::string& pat2) {
   return 0;
 }
 
-bool RepList::conv(const std::string& in_word, std::string& dest) {
+bool RepList::conv(const std::string& in_word, std::string& dest, size_t maxlen) {
+  // get_status guards against a trie that overflowed its index type while
+  // building, in which case the linear scan below is the correct fallback.
+  if (can_use_trie && trie.get_status())
+    return trie.transcode(in_word, dest, maxlen) != TranscodeResult::None;
+
   dest.clear();
 
-  size_t wordlen = in_word.size();
+  const size_t wordlen = in_word.size();
   const char* word = in_word.c_str();
 
   bool change = false;
-  for (size_t i = 0; i < wordlen; ++i) {
-    int n = find(word + i);
-    std::string l = replace(word + i, n, i == 0);
-    if (!l.empty()) {
-      dest.append(l);
-      i += dat[n]->pattern.size() - 1;
-      change = true;
-    } else {
-      dest.push_back(word[i]);
+  for (size_t i = 0; i < wordlen && dest.size() <= maxlen; ++i) {
+    int n = -1;
+    std::string l;
+
+    // Find the longest matching pattern whose replacement actually applies.
+    // The longest match may be rejected, for example an end-anchored key that
+    // is not at the end of the word, in which case retry with strictly shorter
+    // patterns so a shorter match can still apply.
+    for (size_t max_len = wordlen - i; max_len > 0;) {
+      int m = find(word + i, max_len);
+      if (m < 0)
+        break;
+      l = replace(wordlen - i, m, i == 0);
+      if (!l.empty()) {
+        n = m;
+        break;
+      }
+      size_t plen = dat[m]->pattern.size();
+      if (plen == 0)
+        break;
+      max_len = plen - 1;
     }
+
+    if (n < 0) {
+      dest.push_back(word[i]);
+      continue;
+    }
+
+    dest.append(l);
+    if (!dat[n]->pattern.empty()) {
+      i += dat[n]->pattern.size() - 1;
+    }
+    change = true;
   }
 
   return change;
 }
 
+bool RepList::check_against_breaktable(const std::vector<std::string>& breaktable) const {
+  for (const auto i : dat) {
+    for (auto& outstring : i->outstrings) {
+      for (const auto& str : breaktable) {
+        if (outstring.find(str) != std::string::npos) {
+          return false;
+        }
+      }
+    }
+  }
+
+  return true;
+}

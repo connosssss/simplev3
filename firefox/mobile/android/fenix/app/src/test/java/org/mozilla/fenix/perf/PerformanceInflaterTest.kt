@@ -11,7 +11,7 @@ import android.view.View
 import android.widget.FrameLayout
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.mockkStatic
+import java.io.File
 import mozilla.components.support.test.robolectric.testContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -20,25 +20,22 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.fenix.R
 import org.mozilla.fenix.ext.components
-import org.mozilla.fenix.ext.settings
 import org.robolectric.RobolectricTestRunner
-import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 class PerformanceInflaterTest {
 
     private lateinit var perfInflater: MockInflater
 
-    private val layoutsNotToTest = setOf(
-        "fragment_browser",
-        "fragment_add_on_internal_settings",
-        "activity_privacy_content_display",
-        /**
-         *  activity_home.xml contains FragmentContainerView which needs to be
-         *  put inside FragmentActivity in order to get inflated
-         */
-        "activity_home",
-    )
+    private val layoutsNotToTest =
+        setOf(
+            "fragment_browser",
+            "fragment_add_on_internal_settings",
+            "activity_privacy_content_display",
+            // activity_home.xml contains FragmentContainerView which needs to be
+            // put inside FragmentActivity in order to get inflated
+            "activity_home",
+        )
 
     @Before
     fun setup() {
@@ -51,30 +48,27 @@ class PerformanceInflaterTest {
     @Test
     fun `WHEN we inflate a view,THEN the inflation counter should increase`() {
         assertEquals(0, InflationCounter.inflationCount.get())
-        perfInflater.inflate(R.layout.fragment_home, null, false)
+        perfInflater.inflate(R.layout.fragment_about, null, false)
         assertEquals(1, InflationCounter.inflationCount.get())
     }
 
     @Test
     fun `WHEN inflating one of our resource file, the inflater should not crash`() {
         val fileList = File("./src/main/res/layout").listFiles()
+        every { testContext.components.settings } returns mockk(relaxed = true)
 
-        // There might be custom views who try to access `Settings` through the extension function.
-        mockkStatic("org.mozilla.fenix.ext.ContextKt") {
-            every { any<Context>().settings() } returns mockk(relaxed = true)
-
-            for (file in fileList!!) {
-                val layoutName = file.name.split(".")[0]
-                val layoutId = testContext.resources.getIdentifier(
+        for (file in fileList!!) {
+            val layoutName = file.name.split(".")[0]
+            val layoutId =
+                testContext.resources.getIdentifier(
                     layoutName,
                     "layout",
                     testContext.packageName,
                 )
 
-                assertNotEquals(-1, layoutId)
-                if (!layoutsNotToTest.contains(layoutName)) {
-                    perfInflater.inflate(layoutId, FrameLayout(testContext), true)
-                }
+            assertNotEquals(-1, layoutId)
+            if (!layoutsNotToTest.contains(layoutName)) {
+                perfInflater.inflate(layoutId, FrameLayout(testContext), true)
             }
         }
     }
@@ -83,10 +77,11 @@ class PerformanceInflaterTest {
 private class MockInflater(
     inflater: LayoutInflater,
     context: Context,
-) : PerformanceInflater(
-    inflater,
-    context,
-) {
+) :
+    PerformanceInflater(
+        inflater,
+        context,
+    ) {
 
     override fun onCreateView(name: String?, attrs: AttributeSet?): View? {
         // We skip the fragment layout for the simple reason that it implements

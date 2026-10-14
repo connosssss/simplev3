@@ -1,8 +1,12 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.fenix.downloads.listscreen.middleware
 
+import kotlin.test.assertNotNull
 import mozilla.components.support.test.robolectric.testContext
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
@@ -12,13 +16,13 @@ import org.mozilla.fenix.downloads.listscreen.store.DownloadUIAction
 import org.mozilla.fenix.downloads.listscreen.store.DownloadUIState
 import org.mozilla.fenix.downloads.listscreen.store.DownloadUIStore
 import org.mozilla.fenix.downloads.listscreen.store.FileItem
+import org.mozilla.fenix.downloads.listscreen.store.fileItem
 import org.mozilla.fenix.helpers.FenixGleanTestRule
 import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class DownloadTelemetryMiddlewareTest {
-    @get:Rule
-    val gleanTestRule = FenixGleanTestRule(testContext)
+    @get:Rule val gleanTestRule = FenixGleanTestRule(testContext)
 
     @Test
     fun `WHEN the user enters in DownloadScreen THEN record screen viewed telemetry`() {
@@ -65,7 +69,7 @@ class DownloadTelemetryMiddlewareTest {
 
         assertNull(Downloads.shareFile.testGetValue())
 
-        store.dispatch(DownloadUIAction.ShareFileClicked(filePath = "path", contentType = ""))
+        store.dispatch(DownloadUIAction.ShareFileClicked(directoryPath = "path", fileName = "", contentType = ""))
 
         assertNotNull(Downloads.shareFile.testGetValue())
         val snapshot = Downloads.shareFile.testGetValue()!!
@@ -143,12 +147,38 @@ class DownloadTelemetryMiddlewareTest {
         assertEquals("cancel_download", snapshot.single().name)
     }
 
-    private fun createStore(
-        downloadUIState: DownloadUIState = DownloadUIState.INITIAL,
-    ) = DownloadUIStore(
-        initialState = downloadUIState,
-        middleware = listOf(
-            DownloadTelemetryMiddleware(),
-        ),
-    )
+    @Test
+    fun `WHEN the user adds a pending deletion set THEN record delete snackbar shown telemetry`() {
+        val store = createStore()
+
+        assertNull(Downloads.deleteSnackbarShown.testGetValue())
+
+        val fileItem = fileItem(id = "id")
+        store.dispatch(DownloadUIAction.AddPendingDeletionSet(setOf(fileItem), removeFromDisk = true))
+
+        assertNotNull(Downloads.deleteSnackbarShown.testGetValue())
+        val snapshot = Downloads.deleteSnackbarShown.testGetValue()!!
+        assertEquals(1, snapshot.size)
+        assertEquals("delete_snackbar_shown", snapshot.single().name)
+    }
+
+    @Test
+    fun `WHEN the user undoes a pending deletion THEN record delete snackbar undo clicked telemetry`() {
+        val store = createStore()
+
+        assertNull(Downloads.deleteSnackbarUndoClicked.testGetValue())
+
+        store.dispatch(DownloadUIAction.UndoPendingDeletion)
+
+        assertNotNull(Downloads.deleteSnackbarUndoClicked.testGetValue())
+        val snapshot = Downloads.deleteSnackbarUndoClicked.testGetValue()!!
+        assertEquals(1, snapshot.size)
+        assertEquals("delete_snackbar_undo_clicked", snapshot.single().name)
+    }
+
+    private fun createStore(downloadUIState: DownloadUIState = DownloadUIState.INITIAL) =
+        DownloadUIStore(
+            initialState = downloadUIState,
+            middleware = listOf(DownloadTelemetryMiddleware()),
+        )
 }

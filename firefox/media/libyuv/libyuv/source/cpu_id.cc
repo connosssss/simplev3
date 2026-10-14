@@ -23,7 +23,7 @@
 #include <stdio.h>  // For fopen()
 #include <string.h>
 
-#if defined(__linux__) && defined(__aarch64__)
+#if defined(__linux__) && (defined(__aarch64__) || defined(__loongarch__))
 #include <sys/auxv.h>  // For getauxval()
 #endif
 
@@ -182,11 +182,13 @@ LIBYUV_API SAFEBUFFERS int ArmCpuCaps(const char* cpuinfo_name) {
 #ifdef __linux__
 // Define hwcap values ourselves: building with an old auxv header where these
 // hwcap values are not defined should not prevent features from being enabled.
-#define YUV_AARCH64_HWCAP_ASIMDDP (1 << 20)
-#define YUV_AARCH64_HWCAP_SVE (1 << 22)
-#define YUV_AARCH64_HWCAP2_SVE2 (1 << 1)
-#define YUV_AARCH64_HWCAP2_I8MM (1 << 13)
-#define YUV_AARCH64_HWCAP2_SME (1 << 23)
+#define YUV_AARCH64_HWCAP_ASIMDDP (1UL << 20)
+#define YUV_AARCH64_HWCAP_SVE (1UL << 22)
+#define YUV_AARCH64_HWCAP2_SVE2 (1UL << 1)
+#define YUV_AARCH64_HWCAP2_SVEF32MM (1UL << 10)
+#define YUV_AARCH64_HWCAP2_I8MM (1UL << 13)
+#define YUV_AARCH64_HWCAP2_SME (1UL << 23)
+#define YUV_AARCH64_HWCAP2_SME2 (1UL << 37)
 
 // For AArch64, but public to allow testing on any CPU.
 LIBYUV_API SAFEBUFFERS int AArch64CpuCaps(unsigned long hwcap,
@@ -206,11 +208,18 @@ LIBYUV_API SAFEBUFFERS int AArch64CpuCaps(unsigned long hwcap,
       features |= kCpuHasNeonI8MM;
       if (hwcap & YUV_AARCH64_HWCAP_SVE) {
         features |= kCpuHasSVE;
+        if (hwcap2 & YUV_AARCH64_HWCAP2_SVEF32MM) {
+          features |= kCpuHasSVEF32MM;
+        }
         if (hwcap2 & YUV_AARCH64_HWCAP2_SVE2) {
           features |= kCpuHasSVE2;
-          if (hwcap2 & YUV_AARCH64_HWCAP2_SME) {
-            features |= kCpuHasSME;
-          }
+        }
+      }
+      // SME may be present without SVE
+      if (hwcap2 & YUV_AARCH64_HWCAP2_SME) {
+        features |= kCpuHasSME;
+        if (hwcap2 & YUV_AARCH64_HWCAP2_SME2) {
+          features |= kCpuHasSME2;
         }
       }
     }
@@ -239,12 +248,14 @@ LIBYUV_API SAFEBUFFERS int AArch64CpuCaps() {
 static bool have_feature(const char* feature) {
   // For more information on sysctlbyname(), see:
   // https://developer.apple.com/documentation/kernel/1387446-sysctlbyname/determining_instruction_set_characteristics
+  // If feature is "hw.optional.arm.sme_max_svl_b", this function returns
+  // whether the value of sme_max_svl_b is nonzero.
   int64_t feature_present = 0;
   size_t size = sizeof(feature_present);
   if (sysctlbyname(feature, &feature_present, &size, NULL, 0) != 0) {
     return false;
   }
-  return feature_present;
+  return feature_present != 0;
 }
 
 // For AArch64, but public to allow testing on any CPU.
@@ -256,8 +267,18 @@ LIBYUV_API SAFEBUFFERS int AArch64CpuCaps() {
     features |= kCpuHasNeonDotProd;
     if (have_feature("hw.optional.arm.FEAT_I8MM")) {
       features |= kCpuHasNeonI8MM;
-      if (have_feature("hw.optional.arm.FEAT_SME2")) {
+      // An Apple processor may have SME hardware (e.g. A18/A19), but the XNU
+      // kernel only enables EL0 execution if sme_max_svl_b is nonzero.
+      // macOS and iPadOS (e.g. on M4) support and enable user-mode SME, but iOS
+      // disables user-mode SME, which causes SMSTART to trigger an
+      // EXC_BAD_INSTRUCTION fault. See
+      // https://github.com/pytorch/cpuinfo/issues/432.
+      if (have_feature("hw.optional.arm.sme_max_svl_b") &&
+          have_feature("hw.optional.arm.FEAT_SME")) {
         features |= kCpuHasSME;
+        if (have_feature("hw.optional.arm.FEAT_SME2")) {
+          features |= kCpuHasSME2;
+        }
       }
     }
   }
@@ -283,7 +304,7 @@ LIBYUV_API SAFEBUFFERS int RiscvCpuCaps(const char* cpuinfo_name) {
   int flag = 0;
   FILE* f = fopen(cpuinfo_name, "re");
   if (!f) {
-#if defined(__riscv_vector)
+#if !defined(LIBYUV_DISABLE_RVV) && defined(__riscv) && __riscv_xlen == 64
     // Assume RVV if /proc/cpuinfo is unavailable.
     // This will occur for Chrome sandbox for Pepper or Render process.
     return kCpuHasRVV;
@@ -318,16 +339,21 @@ LIBYUV_API SAFEBUFFERS int RiscvCpuCaps(const char* cpuinfo_name) {
         // supervisor-level extensions.
         extensions = strpbrk(isa, "zxs");
         if (extensions) {
+          extensions_len = strlen(extensions);
           // Multi-letter extensions are seperated by a single underscore
           // as described in RISC-V User-Level ISA V2.2.
-          char* ext = strtok(extensions, "_");
-          extensions_len = strlen(extensions);
+          char* ext = extensions;
           while (ext) {
+            char* next = strchr(ext, '_');
+            if (next) {
+              *next = '\0';
+              next++;
+            }
             // Search for the ZVFH (Vector FP16) extension.
             if (!strcmp(ext, "zvfh")) {
               flag |= kCpuHasRVVZVFH;
             }
-            ext = strtok(NULL, "_");
+            ext = next;
           }
         }
         std_isa_len = isa_len - extensions_len - 5;
@@ -338,7 +364,7 @@ LIBYUV_API SAFEBUFFERS int RiscvCpuCaps(const char* cpuinfo_name) {
         }
       }
     }
-#if defined(__riscv_vector)
+#if !defined(LIBYUV_DISABLE_RVV) && defined(__riscv) && __riscv_xlen == 64
     // Assume RVV if /proc/cpuinfo is from x86 host running QEMU.
     else if ((memcmp(cpuinfo_line, "vendor_id\t: GenuineIntel", 24) == 0) ||
              (memcmp(cpuinfo_line, "vendor_id\t: AuthenticAMD", 24) == 0)) {
@@ -351,50 +377,20 @@ LIBYUV_API SAFEBUFFERS int RiscvCpuCaps(const char* cpuinfo_name) {
   return flag;
 }
 
-LIBYUV_API SAFEBUFFERS int MipsCpuCaps(const char* cpuinfo_name) {
-  char cpuinfo_line[512];
+#if defined(__loongarch__) && defined(__linux__)
+// Define hwcap values ourselves: building with an old auxv header where these
+// hwcap values are not defined should not prevent features from being enabled.
+#define YUV_LOONGARCH_HWCAP_LSX (1 << 4)
+#define YUV_LOONGARCH_HWCAP_LASX (1 << 5)
+
+LIBYUV_API SAFEBUFFERS int LoongArchCpuCaps(void) {
   int flag = 0;
-  FILE* f = fopen(cpuinfo_name, "re");
-  if (!f) {
-    // Assume nothing if /proc/cpuinfo is unavailable.
-    // This will occur for Chrome sandbox for Pepper or Render process.
-    return 0;
-  }
-  memset(cpuinfo_line, 0, sizeof(cpuinfo_line));
-  while (fgets(cpuinfo_line, sizeof(cpuinfo_line), f)) {
-    if (memcmp(cpuinfo_line, "cpu model", 9) == 0) {
-      // Workaround early kernel without MSA in ASEs line.
-      if (strstr(cpuinfo_line, "Loongson-2K")) {
-        flag |= kCpuHasMSA;
-      }
-    }
-    if (memcmp(cpuinfo_line, "ASEs implemented", 16) == 0) {
-      if (strstr(cpuinfo_line, "msa")) {
-        flag |= kCpuHasMSA;
-      }
-      // ASEs is the last line, so we can break here.
-      break;
-    }
-  }
-  fclose(f);
-  return flag;
-}
+  unsigned long hwcap = getauxval(AT_HWCAP);
 
-#define LOONGARCH_CFG2 0x2
-#define LOONGARCH_CFG2_LSX (1 << 6)
-#define LOONGARCH_CFG2_LASX (1 << 7)
-
-#if defined(__loongarch__)
-LIBYUV_API SAFEBUFFERS int LoongarchCpuCaps(void) {
-  int flag = 0;
-  uint32_t cfg2 = 0;
-
-  __asm__ volatile("cpucfg %0, %1 \n\t" : "+&r"(cfg2) : "r"(LOONGARCH_CFG2));
-
-  if (cfg2 & LOONGARCH_CFG2_LSX)
+  if (hwcap & YUV_LOONGARCH_HWCAP_LSX)
     flag |= kCpuHasLSX;
 
-  if (cfg2 & LOONGARCH_CFG2_LASX)
+  if (hwcap & YUV_LOONGARCH_HWCAP_LASX)
     flag |= kCpuHasLASX;
   return flag;
 }
@@ -410,6 +406,7 @@ static SAFEBUFFERS int GetCpuFlags(void) {
   int cpu_info7[4] = {0, 0, 0, 0};
   int cpu_einfo7[4] = {0, 0, 0, 0};
   int cpu_info24[4] = {0, 0, 0, 0};
+  int cpu_info21[4] = {0, 0, 0, 0};
   int cpu_amdinfo21[4] = {0, 0, 0, 0};
   CpuId(0, 0, cpu_info0);
   CpuId(1, 0, cpu_info1);
@@ -417,6 +414,9 @@ static SAFEBUFFERS int GetCpuFlags(void) {
     CpuId(7, 0, cpu_info7);
     CpuId(7, 1, cpu_einfo7);
     CpuId(0x80000021, 0, cpu_amdinfo21);
+  }
+  if (cpu_info0[0] >= 0x21) {
+    CpuId(0x21, 0, cpu_info21);
   }
   if (cpu_info0[0] >= 0x24) {
     CpuId(0x24, 0, cpu_info24);
@@ -440,7 +440,7 @@ static SAFEBUFFERS int GetCpuFlags(void) {
     cpu_info |= ((cpu_amdinfo21[0] & 0x00008000) ? kCpuHasERMS : 0);
 
     // Detect AVX512bw
-    if ((GetXCR0() & 0xe0) == 0xe0) {
+    if ((GetXCR0() & 0xe0) == 0xe0 && (cpu_info7[1] & 0x00010000)) {
       cpu_info |= ((cpu_info7[1] & 0x40000000) ? kCpuHasAVX512BW : 0) |
                   ((cpu_info7[1] & 0x80000000) ? kCpuHasAVX512VL : 0) |
                   ((cpu_info7[2] & 0x00000002) ? kCpuHasAVX512VBMI : 0) |
@@ -448,19 +448,16 @@ static SAFEBUFFERS int GetCpuFlags(void) {
                   ((cpu_info7[2] & 0x00000800) ? kCpuHasAVX512VNNI : 0) |
                   ((cpu_info7[2] & 0x00001000) ? kCpuHasAVX512VBITALG : 0) |
                   ((cpu_einfo7[3] & 0x00080000) ? kCpuHasAVX10 : 0) |
-                  ((cpu_info7[3] & 0x02000000) ? kCpuHasAMXINT8 : 0);
+                  ((cpu_info7[3] & 0x02000000) ? kCpuHasAMXINT8 : 0) |
+                  ((cpu_info21[0] & 0x00800000) ? kCpuHasAVX512BMM : 0);
       if (cpu_info0[0] >= 0x24 && (cpu_einfo7[3] & 0x00080000)) {
         cpu_info |= ((cpu_info24[1] & 0xFF) >= 2) ? kCpuHasAVX10_2 : 0;
       }
     }
   }
 #endif
-#if defined(__mips__) && defined(__linux__)
-  cpu_info = MipsCpuCaps("/proc/cpuinfo");
-  cpu_info |= kCpuHasMIPS;
-#endif
 #if defined(__loongarch__) && defined(__linux__)
-  cpu_info = LoongarchCpuCaps();
+  cpu_info = LoongArchCpuCaps();
   cpu_info |= kCpuHasLOONGARCH;
 #endif
 #if defined(__aarch64__)
@@ -495,6 +492,12 @@ static SAFEBUFFERS int GetCpuFlags(void) {
   cpu_info = RiscvCpuCaps("/proc/cpuinfo");
   cpu_info |= kCpuHasRISCV;
 #endif  // __riscv
+#if defined(__wasm__)
+  cpu_info = kCpuHasWASM;
+#if !defined(LIBYUV_DISABLE_WASM) && defined(__wasm_simd128__)
+  cpu_info |= kCpuHasWASMSIMD;
+#endif
+#endif  // __wasm__
   cpu_info |= kCpuInitialized;
   return cpu_info;
 }

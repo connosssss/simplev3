@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -129,10 +127,10 @@
   RANGE(ContextualKeywordFirst, As)                                    \
   /* TODO: Move to alphabetical order when IF_DECORATORS is removed */ \
   IF_DECORATORS(MACRO(Accessor, "'accessor'"))                         \
-  MACRO(Assert, "'assert'")                                            \
   MACRO(Async, "'async'")                                              \
   MACRO(Await, "'await'")                                              \
   MACRO(Each, "'each'")                                                \
+  MACRO(Defer, "'defer'")                                              \
   MACRO(From, "'from'")                                                \
   MACRO(Get, "'get'")                                                  \
   MACRO(Let, "'let'")                                                  \
@@ -140,8 +138,9 @@
   MACRO(Of, "'of'")                                                    \
   MACRO(Set, "'set'")                                                  \
   MACRO(Static, "'static'")                                            \
+  MACRO(Source, "'source'")                                            \
   MACRO(Target, "'target'")                                            \
-  IF_EXPLICIT_RESOURCE_MANAGEMENT(MACRO(Using, "'using'"))             \
+  MACRO(Using, "'using'")                                              \
   MACRO(Yield, "'yield'")                                              \
   RANGE(ContextualKeywordLast, Yield)                                  \
                                                                        \

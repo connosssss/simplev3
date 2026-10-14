@@ -2,13 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "jsapi-tests/tests.h"
+
 #include "builtin/TestingFunctions.h"
 #include "js/ArrayBuffer.h"  // JS::{IsArrayBufferObject,GetArrayBufferLengthAndData,NewExternalArrayBuffer}
 #include "js/GlobalObject.h"        // JS_NewGlobalObject
 #include "js/PropertyAndElement.h"  // JS_GetProperty, JS_SetProperty
 #include "js/StructuredClone.h"
-
-#include "jsapi-tests/tests.h"
 
 using namespace js;
 
@@ -221,7 +221,8 @@ struct StructuredCloneTestPrincipals final : public JSPrincipals {
     return JS_WriteUint32Pair(writer, rank, 0);
   }
 
-  bool isSystemOrAddonPrincipal() override { return true; }
+  bool isSystemPrincipal() override { return true; }
+  bool isAddonPrincipal() override { return true; }
 
   static bool read(JSContext* cx, JSStructuredCloneReader* reader,
                    JSPrincipals** outPrincipals) {

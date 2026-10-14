@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -8,14 +6,12 @@
 #define mozilla_UntrustedModulesProcessor_h
 
 #include "mozilla/Atomics.h"
-#include "mozilla/DebugOnly.h"
 #include "mozilla/glue/WindowsDllServices.h"
 #include "mozilla/LazyIdleThread.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/UntrustedModulesData.h"
-#include "mozilla/Vector.h"
 #include "mozilla/WinHeaderOnlyUtils.h"
 #include "nsCOMPtr.h"
 #include "nsIObserver.h"
@@ -26,6 +22,21 @@
 namespace mozilla {
 
 class ModuleEvaluator;
+
+/**
+ * Decides whether a file handle a child process sent us is one we should
+ * evaluate and, if so, derives the module's path from it.  We require the
+ * handle to refer to a file, on a local disk, that is not low-integrity.  The
+ * requirements reconstruct, on the parent side, the limits the sandbox
+ * mitigations MITIGATION_IMAGE_LOAD_NO_REMOTE and
+ * MITIGATION_IMAGE_LOAD_NO_LOW_LABEL enforce, since the file handle can be
+ * obtained even if the child process isn't permitted to load it as a module.
+ *
+ * Declared here so that gtest can exercise it directly. Nothing outside of the
+ * UntrustedModules implementation and tests should call it.
+ */
+bool ValidateAndResolveModuleFile(const ipc::FileDescriptor& aFile,
+                                  nsAString& aOutNtPath);
 
 using UntrustedModulesPromise =
     MozPromise<Maybe<UntrustedModulesData>, nsresult, true>;
@@ -77,7 +88,7 @@ class UntrustedModulesProcessor final : public nsIObserver,
 
   // Called by IPC actors in the parent process to evaluate module trust
   // on behalf of child processes
-  RefPtr<ModulesTrustPromise> GetModulesTrust(ModulePaths&& aModPaths,
+  RefPtr<ModulesTrustPromise> GetModulesTrust(ModuleIdentifiers&& aModIdents,
                                               bool aRunAtNormalPriority);
 
   UntrustedModulesProcessor(const UntrustedModulesProcessor&) = delete;
@@ -133,8 +144,9 @@ class UntrustedModulesProcessor final : public nsIObserver,
   RefPtr<UntrustedModulesPromise> GetProcessedDataInternalChildProcess();
 
   RefPtr<ModulesTrustPromise> GetModulesTrustInternal(
-      ModulePaths&& aModPaths, bool aRunAtNormalPriority);
-  RefPtr<ModulesTrustPromise> GetModulesTrustInternal(ModulePaths&& aModPaths);
+      ModuleIdentifiers&& aModIdents, bool aRunAtNormalPriority);
+  RefPtr<ModulesTrustPromise> GetModulesTrustInternal(
+      ModuleIdentifiers&& aModIdents);
 
   // This function is only called by the parent process
   RefPtr<ModuleRecord> GetOrAddModuleRecord(const ModuleEvaluator& aModEval,
@@ -145,8 +157,8 @@ class UntrustedModulesProcessor final : public nsIObserver,
       const ModulesMap& aModules,
       const glue::EnhancedModuleLoadInfo& aModuleLoadInfo);
 
-  RefPtr<GetModulesTrustIpcPromise> SendGetModulesTrust(ModulePaths&& aModules,
-                                                        Priority aPriority);
+  RefPtr<GetModulesTrustIpcPromise> SendGetModulesTrust(
+      ModuleIdentifiers&& aModules, Priority aPriority);
 
   void CompleteProcessing(ModulesMapResultWithLoads&& aModulesAndLoads);
   RefPtr<UntrustedModulesPromise> GetAllProcessedData(StaticString aSource);

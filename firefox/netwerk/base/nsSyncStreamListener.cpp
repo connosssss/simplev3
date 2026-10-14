@@ -2,12 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsSyncStreamListener.h"
+
+#include <algorithm>
+
 #include "mozilla/SpinEventLoopUntil.h"
 #include "nsIOService.h"
 #include "nsIPipe.h"
-#include "nsSyncStreamListener.h"
 #include "nsThreadUtils.h"
-#include <algorithm>
 
 using namespace mozilla::net;
 
@@ -105,6 +107,9 @@ nsSyncStreamListener::Close() {
 
 NS_IMETHODIMP
 nsSyncStreamListener::Available(uint64_t* result) {
+  // Nested event loop can run code that drops the last external reference.
+  RefPtr<nsSyncStreamListener> self(this);
+
   if (NS_FAILED(mStatus)) return mStatus;
 
   mStatus = mPipeIn->Available(result);
@@ -138,6 +143,8 @@ nsSyncStreamListener::Read(char* buf, uint32_t bufLen, uint32_t* result) {
     return NS_OK;
   }
 
+  RefPtr<nsSyncStreamListener> self(this);
+
   uint64_t avail64;
   if (NS_FAILED(Available(&avail64))) return mStatus;
 
@@ -153,6 +160,8 @@ nsSyncStreamListener::ReadSegments(nsWriteSegmentFun writer, void* closure,
     *result = 0;
     return NS_OK;
   }
+
+  RefPtr<nsSyncStreamListener> self(this);
 
   uint64_t avail64;
   if (NS_FAILED(Available(&avail64))) return mStatus;

@@ -44,13 +44,13 @@ function isNoticeVisible(win) {
 add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
-      // Enable clientid - see Discovery.sys.mjs for the first two prefs.
+      // Enable clientid with the following two prefs:
       ["browser.discovery.enabled", true],
+      ["datareporting.healthreport.uploadEnabled", true],
       // Enabling the Data Upload pref may upload data.
       // Point data reporting services to localhost so the data doesn't escape.
       ["toolkit.telemetry.server", "https://localhost:1337"],
       ["telemetry.fog.test.localhost_port", -1],
-      ["datareporting.healthreport.uploadEnabled", true],
       ["extensions.getAddons.discovery.api_url", `${serverBaseUrl}discoapi`],
       ["app.support.baseURL", `${serverBaseUrl}sumo/`],
       // Discovery API requests can be triggered by the discopane and the
@@ -88,7 +88,7 @@ add_task(async function clientid_enabled() {
     "Moz-Client-Id should be set when telemetry & discovery are enabled"
   );
 
-  let tabbrowser = win.windowRoot.ownerGlobal.gBrowser;
+  let tabbrowser = win.windowRoot.window.gBrowser;
   let expectedUrl = `${serverBaseUrl}sumo/personalized-addons`;
   let tabPromise = BrowserTestUtils.waitForNewTab(tabbrowser, expectedUrl);
 

@@ -5,7 +5,9 @@
 [DEFAULT]
 tags = "inc-origin-init"
 dupe-manifest = true
-skip-if = ["xorigin"]
+skip-if = [
+  "xorigin",
+]
 support-files = [
   "head.js",
   "bucketFS_getDirectory.html",
@@ -15,11 +17,6 @@ support-files = [
 
 ["test_basics.html"]
 scheme = "https"
-skip-if = [
-  "os == 'win'", # Bug 1841281
-  "os == 'linux' && debug",  # Bug 1841281
-  "os == 'mac' && debug", # Bug 1841281
-]
 
 ["test_basics_worker.html"]
 scheme = "https"

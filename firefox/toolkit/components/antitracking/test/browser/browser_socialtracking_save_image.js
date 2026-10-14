@@ -13,7 +13,7 @@ const TEST_IMAGE_URL =
   "http://social-tracking.example.org/browser/toolkit/components/antitracking/test/browser/raptor.jpg";
 
 let MockFilePicker = SpecialPowers.MockFilePicker;
-MockFilePicker.init(window.browsingContext);
+MockFilePicker.init();
 
 const tempDir = createTemporarySaveDirectory();
 MockFilePicker.displayDirectory = tempDir;
@@ -52,7 +52,6 @@ add_setup(async function () {
 
   await SpecialPowers.pushPrefEnv({
     set: [
-      ["test.wait300msAfterTabSwitch", true],
       ["privacy.trackingprotection.socialtracking.enabled", true],
       [
         "urlclassifier.features.socialtracking.blacklistHosts",

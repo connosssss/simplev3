@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +6,7 @@
 #define mozilla_dom_localstorage_LSWriteOptimizer_h
 
 #include <cstdint>
-#include <utility>
+
 #include "mozilla/Assertions.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/UniquePtr.h"
@@ -39,17 +37,9 @@ class LSWriteOptimizerBase {
   NS_DECL_OWNINGTHREAD
 
  public:
-  LSWriteOptimizerBase() : mLastSerialNumber(0), mTotalDelta(0) {}
+  LSWriteOptimizerBase();
 
-  LSWriteOptimizerBase(LSWriteOptimizerBase&& aWriteOptimizer)
-      : mTruncateInfo(std::move(aWriteOptimizer.mTruncateInfo)) {
-    AssertIsOnOwningThread();
-    MOZ_ASSERT(&aWriteOptimizer != this);
-
-    mWriteInfos.SwapElements(aWriteOptimizer.mWriteInfos);
-    mTotalDelta = aWriteOptimizer.mTotalDelta;
-    aWriteOptimizer.mTotalDelta = 0;
-  }
+  LSWriteOptimizerBase(LSWriteOptimizerBase&& aWriteOptimizer);
 
   void AssertIsOnOwningThread() const {
     NS_ASSERT_OWNINGTHREAD(LSWriteOptimizerBase);
@@ -65,12 +55,7 @@ class LSWriteOptimizerBase {
     return mTruncateInfo || !mWriteInfos.IsEmpty();
   }
 
-  void Reset() {
-    AssertIsOnOwningThread();
-
-    mTruncateInfo = nullptr;
-    mWriteInfos.Clear();
-  }
+  void Reset();
 
  protected:
   uint64_t NextSerialNumber() {

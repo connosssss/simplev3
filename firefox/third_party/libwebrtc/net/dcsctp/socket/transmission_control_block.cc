@@ -10,30 +10,38 @@
 #include "net/dcsctp/socket/transmission_control_block.h"
 
 #include <algorithm>
-#include <cstdint>
+#include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/functional/bind_front.h"
+#include "absl/strings/string_view.h"
+#include "api/task_queue/task_queue_base.h"
 #include "api/units/time_delta.h"
+#include "api/units/timestamp.h"
+#include "net/dcsctp/common/internal_types.h"
 #include "net/dcsctp/packet/chunk/data_chunk.h"
-#include "net/dcsctp/packet/chunk/forward_tsn_chunk.h"
 #include "net/dcsctp/packet/chunk/idata_chunk.h"
-#include "net/dcsctp/packet/chunk/iforward_tsn_chunk.h"
 #include "net/dcsctp/packet/chunk/reconfig_chunk.h"
-#include "net/dcsctp/packet/chunk/sack_chunk.h"
 #include "net/dcsctp/packet/sctp_packet.h"
+#include "net/dcsctp/public/dcsctp_handover_state.h"
 #include "net/dcsctp/public/dcsctp_options.h"
+#include "net/dcsctp/public/dcsctp_socket.h"
 #include "net/dcsctp/public/types.h"
 #include "net/dcsctp/rx/data_tracker.h"
 #include "net/dcsctp/rx/reassembly_queue.h"
 #include "net/dcsctp/socket/capabilities.h"
+#include "net/dcsctp/socket/packet_sender.h"
 #include "net/dcsctp/socket/stream_reset_handler.h"
 #include "net/dcsctp/timer/timer.h"
 #include "net/dcsctp/tx/retransmission_queue.h"
 #include "net/dcsctp/tx/retransmission_timeout.h"
+#include "net/dcsctp/tx/send_queue.h"
+#include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/strings/string_builder.h"
 
@@ -262,8 +270,8 @@ void TransmissionControlBlock::SendBufferedPackets(SctpPacket::Builder& builder,
     // "When an end point sends a packet containing a COOKIE ECHO chunk, it MUST
     // include a correct CRC32c checksum in the packet containing the COOKIE
     // ECHO chunk."
-    bool write_checksum =
-        !capabilities_.zero_checksum || cookie_echo_chunk_.has_value();
+    bool write_checksum = !capabilities_.zero_checksum_enabled() ||
+                          cookie_echo_chunk_.has_value();
     if (!packet_sender_.Send(builder, write_checksum)) {
       break;
     }
@@ -293,7 +301,7 @@ std::string TransmissionControlBlock::ToString() const {
   if (capabilities_.reconfig) {
     sb << "Reconfig,";
   }
-  if (capabilities_.zero_checksum) {
+  if (capabilities_.zero_checksum_enabled()) {
     sb << "ZeroChecksum,";
   }
   sb << " max_in=" << capabilities_.negotiated_maximum_incoming_streams;
@@ -312,11 +320,12 @@ HandoverReadinessStatus TransmissionControlBlock::GetHandoverReadiness() const {
 }
 
 void TransmissionControlBlock::AddHandoverState(
+    webrtc::Timestamp now,
     DcSctpSocketHandoverState& state) {
   state.capabilities.partial_reliability = capabilities_.partial_reliability;
   state.capabilities.message_interleaving = capabilities_.message_interleaving;
   state.capabilities.reconfig = capabilities_.reconfig;
-  state.capabilities.zero_checksum = capabilities_.zero_checksum;
+  state.capabilities.zero_checksum = capabilities_.zero_checksum_enabled();
   state.capabilities.negotiated_maximum_incoming_streams =
       capabilities_.negotiated_maximum_incoming_streams;
   state.capabilities.negotiated_maximum_outgoing_streams =
@@ -331,13 +340,14 @@ void TransmissionControlBlock::AddHandoverState(
   data_tracker_.AddHandoverState(state);
   stream_reset_handler_.AddHandoverState(state);
   reassembly_queue_.AddHandoverState(state);
-  retransmission_queue_.AddHandoverState(state);
+  retransmission_queue_.AddHandoverState(now, state);
 }
 
 void TransmissionControlBlock::RestoreFromState(
+    webrtc::Timestamp now,
     const DcSctpSocketHandoverState& state) {
   data_tracker_.RestoreFromState(state);
-  retransmission_queue_.RestoreFromState(state);
+  retransmission_queue_.RestoreFromState(now, state);
   reassembly_queue_.RestoreFromState(state);
 }
 }  // namespace dcsctp

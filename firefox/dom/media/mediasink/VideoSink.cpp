@@ -1,13 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifdef XP_WIN
 // Include Windows headers required for enabling high precision timers.
+// clang-format off
 #  include <windows.h>
 #  include <mmsystem.h>
+// clang-format on
 #endif
 
 #include "VideoSink.h"
@@ -15,7 +15,6 @@
 #include "AudioDeviceInfo.h"
 #include "MediaQueue.h"
 #include "VideoUtils.h"
-
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/ProfilerLabels.h"
 #include "mozilla/ProfilerMarkerTypes.h"
@@ -28,11 +27,11 @@ extern LazyLogModule gMediaDecoderLog;
 
 #undef FMT
 
-#define FMT(x, ...) "VideoSink=%p " x, this, ##__VA_ARGS__
+#define FMT(x, ...) "VideoSink={} " x, fmt::ptr(this), ##__VA_ARGS__
 #define VSINK_LOG(x, ...) \
-  MOZ_LOG(gMediaDecoderLog, LogLevel::Debug, (FMT(x, ##__VA_ARGS__)))
+  MOZ_LOG_FMT(gMediaDecoderLog, LogLevel::Debug, FMT(x, ##__VA_ARGS__))
 #define VSINK_LOG_V(x, ...) \
-  MOZ_LOG(gMediaDecoderLog, LogLevel::Verbose, (FMT(x, ##__VA_ARGS__)))
+  MOZ_LOG_FMT(gMediaDecoderLog, LogLevel::Verbose, FMT(x, ##__VA_ARGS__))
 
 namespace mozilla {
 
@@ -42,7 +41,7 @@ using namespace mozilla::layers;
 // duration of a 60-fps frame.
 static const int64_t MIN_UPDATE_INTERVAL_US = 1000000 / (60 * 2);
 
-static void SetImageToGreenPixel(PlanarYCbCrImage* aImage) {
+static bool SetImageToGreenPixel(PlanarYCbCrImage* aImage) {
   static uint8_t greenPixel[] = {0x00, 0x00, 0x00};
   PlanarYCbCrData data;
   data.mYChannel = greenPixel;
@@ -51,7 +50,7 @@ static void SetImageToGreenPixel(PlanarYCbCrImage* aImage) {
   data.mYStride = data.mCbCrStride = 1;
   data.mPictureRect = gfx::IntRect(0, 0, 1, 1);
   data.mYUVColorSpace = gfx::YUVColorSpace::BT601;
-  aImage->CopyData(data);
+  return NS_SUCCEEDED(aImage->CopyData(data));
 }
 
 VideoSink::VideoSink(AbstractThread* aThread, MediaSink* aAudioSink,
@@ -193,9 +192,9 @@ void VideoSink::EnsureHighResTimersOnOnlyIfPlaying() {
 #endif
 }
 
-void VideoSink::SetPlaying(bool aPlaying) {
+void VideoSink::SetPlaying(bool aPlaying, StopReason aReason) {
   AssertOwnerThread();
-  VSINK_LOG_V(" playing (%d) -> (%d)", mAudioSink->IsPlaying(), aPlaying);
+  VSINK_LOG_V(" playing ({}) -> ({})", mAudioSink->IsPlaying(), aPlaying);
 
   if (!aPlaying) {
     // Reset any update timer if paused.
@@ -203,7 +202,13 @@ void VideoSink::SetPlaying(bool aPlaying) {
     // Since playback is paused, tell compositor to render only current frame.
     TimeStamp nowTime;
     const auto clockTime = mAudioSink->GetPosition(&nowTime);
-    RefPtr<VideoData> currentFrame = VideoQueue().PeekFront();
+    // Skip frames that the clock has already passed, as
+    // UpdateRenderedVideoFrames() would, so that pausing doesn't go back to an
+    // earlier frame than the one being shown.
+    AutoTArray<RefPtr<VideoData>, 10> frames;
+    VideoQueue().GetElementsAfter(clockTime, &frames);
+    RefPtr<VideoData> currentFrame =
+        frames.IsEmpty() ? VideoQueue().PeekBack() : frames[0];
     if (currentFrame) {
       RenderVideoFrames(Span(&currentFrame, 1), clockTime.ToMicroseconds(),
                         nowTime);
@@ -216,7 +221,7 @@ void VideoSink::SetPlaying(bool aPlaying) {
     }
   }
 
-  mAudioSink->SetPlaying(aPlaying);
+  mAudioSink->SetPlaying(aPlaying, aReason);
 
   if (mHasVideo && aPlaying) {
     // There's no thread in VideoSink for pulling video frames, need to trigger
@@ -229,11 +234,11 @@ void VideoSink::SetPlaying(bool aPlaying) {
 }
 
 nsresult VideoSink::Start(const media::TimeUnit& aStartTime,
-                          const MediaInfo& aInfo) {
+                          const MediaInfo& aInfo, StartType aStartType) {
   AssertOwnerThread();
-  VSINK_LOG("[%s]", __func__);
+  VSINK_LOG("[{}]", __func__);
 
-  nsresult rv = mAudioSink->Start(aStartTime, aInfo);
+  nsresult rv = mAudioSink->Start(aStartTime, aInfo, aStartType);
 
   mHasVideo = aInfo.HasVideo();
 
@@ -275,12 +280,12 @@ nsresult VideoSink::Start(const media::TimeUnit& aStartTime,
   return rv;
 }
 
-void VideoSink::Stop() {
+void VideoSink::Stop(StopReason aReason) {
   AssertOwnerThread();
   MOZ_ASSERT(mAudioSink->IsStarted(), "playback not started.");
-  VSINK_LOG("[%s]", __func__);
+  VSINK_LOG("[{}]", __func__);
 
-  mAudioSink->Stop();
+  mAudioSink->Stop(aReason);
 
   mUpdateScheduler.Reset();
   if (mHasVideo) {
@@ -309,7 +314,7 @@ bool VideoSink::IsPlaying() const {
 void VideoSink::Shutdown() {
   AssertOwnerThread();
   MOZ_ASSERT(!mAudioSink->IsStarted(), "must be called after playback stops.");
-  VSINK_LOG("[%s]", __func__);
+  VSINK_LOG("[{}]", __func__);
 
   mAudioSink->Shutdown();
 }
@@ -487,8 +492,7 @@ void VideoSink::RenderVideoFrames(Span<const RefPtr<VideoData>> aFrames,
     img->mProducerID = mProducerID;
     img->mMediaTime = frame->mTime;
 
-    VSINK_LOG_V("playing video frame %" PRId64
-                " (id=%x, vq-queued=%zu, clock=%" PRId64 ")",
+    VSINK_LOG_V("playing video frame {} (id={:x}, vq-queued={}, clock={})",
                 frame->mTime.ToMicroseconds(), frame->mFrameID,
                 VideoQueue().GetSize(), aClockTime);
     if (!wasSent) {
@@ -507,6 +511,24 @@ void VideoSink::RenderVideoFrames(Span<const RefPtr<VideoData>> aFrames,
     }
   }
 }
+
+struct VideoSinkDroppedFrameMarker
+    : public BaseMarkerType<VideoSinkDroppedFrameMarker> {
+  static constexpr const char* Name = "VideoSinkDroppedFrame";
+  using MS = MarkerSchema;
+  static constexpr MS::Location Locations[] = {
+      MS::Location::MarkerChart,
+      MS::Location::MarkerTable,
+  };
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"sampleStartTimeUs", MS::InputType::Int64, "Sample start time",
+       MS::Format::Microseconds},
+      {"sampleEndTimeUs", MS::InputType::Int64, "Sample end time",
+       MS::Format::Microseconds},
+      {"clockTimeUs", MS::InputType::Int64, "Audio clock time",
+       MS::Format::Microseconds},
+  };
+};
 
 void VideoSink::UpdateRenderedVideoFrames() {
   AUTO_PROFILER_LABEL("VideoSink::UpdateRenderedVideoFrames", MEDIA_PLAYBACK);
@@ -535,34 +557,9 @@ void VideoSink::UpdateRenderedVideoFrames() {
     } else {
       droppedInSink++;
       mDroppedInSinkSequenceDuration += frame->mDuration;
-      VSINK_LOG_V("discarding video frame mTime=%" PRId64
-                  " clock_time=%" PRId64,
+      VSINK_LOG_V("discarding video frame mTime={} clock_time={}",
                   frame->mTime.ToMicroseconds(), clockTime.ToMicroseconds());
 
-      struct VideoSinkDroppedFrameMarker {
-        static constexpr Span<const char> MarkerTypeName() {
-          return MakeStringSpan("VideoSinkDroppedFrame");
-        }
-        static void StreamJSONMarkerData(
-            baseprofiler::SpliceableJSONWriter& aWriter,
-            int64_t aSampleStartTimeUs, int64_t aSampleEndTimeUs,
-            int64_t aClockTimeUs) {
-          aWriter.IntProperty("sampleStartTimeUs", aSampleStartTimeUs);
-          aWriter.IntProperty("sampleEndTimeUs", aSampleEndTimeUs);
-          aWriter.IntProperty("clockTimeUs", aClockTimeUs);
-        }
-        static MarkerSchema MarkerTypeDisplay() {
-          using MS = MarkerSchema;
-          MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
-          schema.AddKeyLabelFormat("sampleStartTimeUs", "Sample start time",
-                                   MS::Format::Microseconds);
-          schema.AddKeyLabelFormat("sampleEndTimeUs", "Sample end time",
-                                   MS::Format::Microseconds);
-          schema.AddKeyLabelFormat("clockTimeUs", "Audio clock time",
-                                   MS::Format::Microseconds);
-          return schema;
-        }
-      };
       profiler_add_marker(
           "VideoSinkDroppedFrame", geckoprofiler::category::MEDIA_PLAYBACK, {},
           VideoSinkDroppedFrameMarker{}, frame->mTime.ToMicroseconds(),
@@ -576,7 +573,7 @@ void VideoSink::UpdateRenderedVideoFrames() {
         totalCompositorDroppedCount - mOldCompositorDroppedCount;
     if (droppedInCompositor > 0) {
       mOldCompositorDroppedCount = totalCompositorDroppedCount;
-      VSINK_LOG_V("%u video frame previously discarded by compositor",
+      VSINK_LOG_V("{} video frame previously discarded by compositor",
                   droppedInCompositor);
     }
     mPendingDroppedCount += droppedInCompositor;
@@ -685,7 +682,7 @@ void VideoSink::MaybeResolveEndPromise() {
     if (clockTime < mVideoFrameEndTime) {
       VSINK_LOG_V(
           "Not reach video end time yet, reschedule timer to resolve "
-          "end promise. clockTime=%" PRId64 ", endTime=%" PRId64,
+          "end promise. clockTime={}, endTime={}",
           clockTime.ToMicroseconds(), mVideoFrameEndTime.ToMicroseconds());
       int64_t delta = (mVideoFrameEndTime - clockTime).ToMicroseconds() /
                       mAudioSink->PlaybackRate();
@@ -754,7 +751,10 @@ bool VideoSink::InitializeBlankImage() {
   if (mBlankImage == nullptr) {
     return false;
   }
-  SetImageToGreenPixel(mBlankImage->AsPlanarYCbCrImage());
+  if (!SetImageToGreenPixel(mBlankImage->AsPlanarYCbCrImage())) {
+    mBlankImage = nullptr;
+    return false;
+  }
   return true;
 }
 

@@ -3,8 +3,9 @@
 #ifndef APPMENU_CLIENT_PROTOCOL_H
 #define APPMENU_CLIENT_PROTOCOL_H
 
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
+
 #include "wayland-client.h"
 
 #ifdef __cplusplus
@@ -22,7 +23,7 @@ extern "C" {
  *
  * SPDX-FileCopyrightText: 2017 David Edmundson
  *
- * SPDX-License-Identifier: LGPL-2.1-or-later
+ * SPDX-License-Identifier: MIT
  * </pre>
  */
 struct org_kde_kwin_appmenu;

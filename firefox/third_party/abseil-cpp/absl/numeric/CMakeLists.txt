@@ -23,7 +23,9 @@ absl_cc_library(
   COPTS
     ${ABSL_DEFAULT_COPTS}
   DEPS
+    absl::config
     absl::core_headers
+    absl::endian
   PUBLIC
 )
 
@@ -53,10 +55,10 @@ absl_cc_library(
   COPTS
     ${ABSL_DEFAULT_COPTS}
   DEPS
+    absl::bits
     absl::compare
     absl::config
     absl::core_headers
-    absl::bits
   PUBLIC
 )
 
@@ -69,12 +71,12 @@ absl_cc_test(
   COPTS
     ${ABSL_TEST_COPTS}
   DEPS
-    absl::int128
     absl::base
     absl::compare
     absl::hash_testing
-    absl::type_traits
+    absl::int128
     absl::strings
+    absl::type_traits
     GTest::gmock_main
 )
 

@@ -134,7 +134,7 @@ g.test('data_types')
       .combine('op', kOps)
   )
   .fn(async t => {
-    t.skipIfDeviceDoesNotHaveFeature('subgroups' as GPUFeatureName);
+    t.skipIfDeviceDoesNotHaveFeature('subgroups');
     const type = kTypes[t.params.type];
     let numEles = 1;
     if (type instanceof VectorType) {
@@ -293,7 +293,7 @@ g.test('compute,all_active')
       .combine('op', kOps)
   )
   .fn(async t => {
-    t.skipIfDeviceDoesNotHaveFeature('subgroups' as GPUFeatureName);
+    t.skipIfDeviceDoesNotHaveFeature('subgroups');
     const wgThreads = t.params.wgSize[0] * t.params.wgSize[1] * t.params.wgSize[2];
 
     const wgsl = `
@@ -364,7 +364,7 @@ g.test('compute,split')
       .combine('case', [...iterRange(kNumCases, x => x)])
   )
   .fn(async t => {
-    t.skipIfDeviceDoesNotHaveFeature('subgroups' as GPUFeatureName);
+    t.skipIfDeviceDoesNotHaveFeature('subgroups');
     const testcase = kPredicateCases[t.params.predicate];
     const wgThreads = t.params.wgSize[0] * t.params.wgSize[1] * t.params.wgSize[2];
 
@@ -372,7 +372,6 @@ g.test('compute,split')
 enable subgroups;
 
 diagnostic(off, subgroup_uniformity);
-diagnostic(off, subgroup_branching);
 
 @group(0) @binding(0)
 var<storage> inputs : array<u32>;
@@ -536,13 +535,10 @@ g.test('fragment,all_active')
       .combineWithParams([{ format: 'rg32uint' }] as const)
   )
   .fn(async t => {
-    t.skipIfDeviceDoesNotHaveFeature('subgroups' as GPUFeatureName);
+    t.skipIfDeviceDoesNotHaveFeature('subgroups');
     const numInputs = t.params.size[0] * t.params.size[1];
 
-    interface SubgroupProperties extends GPUAdapterInfo {
-      subgroupMinSize: number;
-    }
-    const { subgroupMinSize } = t.device.adapterInfo as SubgroupProperties;
+    const subgroupMinSize = t.device.adapterInfo.subgroupMinSize!;
     const innerTexels = (t.params.size[0] - 1) * (t.params.size[1] - 1);
     t.skipIf(innerTexels < subgroupMinSize, 'Too few texels to be reliable');
 

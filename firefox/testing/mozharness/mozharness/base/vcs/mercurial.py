@@ -2,15 +2,13 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-"""Mercurial VCS support.
-"""
+"""Mercurial VCS support."""
 
 import hashlib
 import os
 import re
 import subprocess
 import sys
-from collections import namedtuple
 
 try:
     from urlparse import urlsplit
@@ -21,14 +19,14 @@ import mozharness
 from mozharness.base.errors import HgErrorList, VCSException
 from mozharness.base.log import LogMixin, OutputParser
 from mozharness.base.script import ScriptMixin
-from mozharness.base.transfer import TransferMixin
 
 sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.dirname(sys.path[0]))))
 
 
-external_tools_path = os.path.join(
-    os.path.abspath(os.path.dirname(os.path.dirname(mozharness.__file__))),
-    "external_tools",
+topsrcdir = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(os.path.dirname(os.path.dirname(mozharness.__file__)))
+    )
 )
 
 
@@ -52,7 +50,7 @@ class RepositoryUpdateRevisionParser(OutputParser):
         if m:
             self.revision = m.group(1)
 
-        return super(RepositoryUpdateRevisionParser, self).parse_single_line(line)
+        return super().parse_single_line(line)
 
 
 def make_hg_url(hg_host, repo_path, protocol="http", revision=None, filename=None):
@@ -73,14 +71,14 @@ def make_hg_url(hg_host, repo_path, protocol="http", revision=None, filename=Non
         return "/".join([p.strip("/") for p in [repo, "raw-file", revision, filename]])
 
 
-class MercurialVCS(ScriptMixin, LogMixin, TransferMixin):
+class MercurialVCS(ScriptMixin, LogMixin):
     # For the most part, scripts import mercurial, update
     # tag-release.py imports
     #  apply_and_push, update, get_revision, out, BRANCH, REVISION,
     #  get_branches, cleanOutgoingRevs
 
     def __init__(self, log_obj=None, config=None, vcs_config=None, script_obj=None):
-        super(MercurialVCS, self).__init__()
+        super().__init__()
         self.can_share = None
         self.log_obj = log_obj
         self.script_obj = script_obj
@@ -300,7 +298,8 @@ class MercurialVCS(ScriptMixin, LogMixin, TransferMixin):
             try:
                 revs = []
                 for line in (
-                    self.get_output_from_command(cmd, cwd=src, throw_exception=True)
+                    self
+                    .get_output_from_command(cmd, cwd=src, throw_exception=True)
                     .rstrip()
                     .split("\n")
                 ):
@@ -344,7 +343,7 @@ class MercurialVCS(ScriptMixin, LogMixin, TransferMixin):
     @property
     def robustcheckout_path(self):
         """Path to the robustcheckout extension."""
-        ext = os.path.join(external_tools_path, "robustcheckout.py")
+        ext = os.path.join(topsrcdir, "taskcluster", "scripts", "robustcheckout.py")
         if os.path.exists(ext):
             return ext
 
@@ -382,7 +381,7 @@ class MercurialVCS(ScriptMixin, LogMixin, TransferMixin):
         # only have 1 local copy of logical repo stores.
         if not share_base:
             raise VCSException(
-                "vcs share base not defined; " "refusing to operate sub-optimally"
+                "vcs share base not defined; refusing to operate sub-optimally"
             )
 
         if not self.robustcheckout_path:
@@ -434,41 +433,6 @@ class MercurialVCS(ScriptMixin, LogMixin, TransferMixin):
                 cwd=reponame,
                 error_list=HgErrorList,
             )
-
-    def query_pushinfo(self, repository, revision):
-        """Query the pushdate and pushid of a repository/revision.
-        This is intended to be used on hg.mozilla.org/mozilla-central and
-        similar. It may or may not work for other hg repositories.
-        """
-        PushInfo = namedtuple("PushInfo", ["pushid", "pushdate"])
-
-        try:
-            url = "%s/json-pushes?changeset=%s" % (repository, revision)
-            self.info("Pushdate URL is: %s" % url)
-            contents = self.retry(self.load_json_from_url, args=(url,))
-
-            # The contents should be something like:
-            # {
-            #   "28537": {
-            #    "changesets": [
-            #     "1d0a914ae676cc5ed203cdc05c16d8e0c22af7e5",
-            #    ],
-            #    "date": 1428072488,
-            #    "user": "user@mozilla.com"
-            #   }
-            # }
-            #
-            # So we grab the first element ("28537" in this case) and then pull
-            # out the 'date' field.
-            pushid = next(contents.keys())
-            self.info("Pushid is: %s" % pushid)
-            pushdate = contents[pushid]["date"]
-            self.info("Pushdate is: %s" % pushdate)
-            return PushInfo(pushid, pushdate)
-
-        except Exception:
-            self.exception("Failed to get push info from hg.mozilla.org")
-            raise
 
 
 # __main__ {{{1

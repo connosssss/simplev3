@@ -170,16 +170,15 @@ function test() {
   is(document.n1[1], t1, "t1 doc.name inserted after");
   is(document.n1.length, 2, "doc.name1.length inserted after");
   is(document.n2[0], i2_1, "i2_1 doc.name inserted after");
-  todo_is(document.n2[1], t2, "This is where t2 should show up. The elements in here should be in order-in-document rather than order-of-insertion");
-  is(document.n2[1], i2_2, "i2_2 doc.name inserted after");
-  is(document.n2[2], t2, "t2 doc.name inserted after");
+  is(document.n2[1], t2, "t2 doc.name inserted after");
+  is(document.n2[2], i2_2, "i2_2 doc.name inserted after");
   is(document.n2[3], t3, "t3 doc.name inserted after");
   is(document.n2.length, 4, "doc.name2.length inserted after");
   is(document.n3[0], i3_1, "i3_1 doc.name inserted after");
-  is(document.n3[1], i3_2, "i3_3 doc.name inserted after");
-  is(document.n3[2], i3_3, "i3_2 doc.name inserted after");
-  is(document.n3[3], t4, "t4 doc.name inserted after");
-  is(document.n3[4], t5, "t5 doc.name inserted after");
+  is(document.n3[1], t4, "t4 doc.name inserted after");
+  is(document.n3[2], i3_2, "i3_2 doc.name inserted after");
+  is(document.n3[3], t5, "t5 doc.name inserted after");
+  is(document.n3[4], i3_3, "i3_3 doc.name inserted after");
   is(document.n3[5], t6, "t6 doc.name inserted after");
   is(document.n3.length, 6, "doc.name3.length inserted after");
 
@@ -191,20 +190,20 @@ function test() {
   insertBefore(t6, i3_3);
 
   checkHasNameNoDocProp("inserted before");
-  is(document.n1[0], i1_1, "i1_1 doc.name inserted before");
-  is(document.n1[1], t1, "t1 doc.name inserted before");
+  is(document.n1[0], t1, "t1 doc.name inserted before");
+  is(document.n1[1], i1_1, "i1_1 doc.name inserted before");
   is(document.n1.length, 2, "doc.name1.length inserted before");
-  is(document.n2[0], i2_1, "i2_1 doc.name inserted before");
-  is(document.n2[1], i2_2, "i2_2 doc.name inserted before");
-  is(document.n2[2], t2, "t2 doc.name inserted before");
-  is(document.n2[3], t3, "t3 doc.name inserted before");
+  is(document.n2[0], t2, "t2 doc.name inserted before");
+  is(document.n2[1], i2_1, "i2_1 doc.name inserted before");
+  is(document.n2[2], t3, "t3 doc.name inserted before");
+  is(document.n2[3], i2_2, "i2_2 doc.name inserted before");
   is(document.n2.length, 4, "doc.name2.length inserted before");
-  is(document.n3[0], i3_1, "i3_1 doc.name inserted before");
-  is(document.n3[1], i3_2, "i3_3 doc.name inserted before");
-  is(document.n3[2], i3_3, "i3_2 doc.name inserted before");
-  is(document.n3[3], t4, "t4 doc.name inserted before");
-  is(document.n3[4], t5, "t5 doc.name inserted before");
-  is(document.n3[5], t6, "t6 doc.name inserted before");
+  is(document.n3[0], t4, "t4 doc.name inserted before");
+  is(document.n3[1], i3_1, "i3_1 doc.name inserted before");
+  is(document.n3[2], t5, "t5 doc.name inserted before");
+  is(document.n3[3], i3_2, "i3_2 doc.name inserted before");
+  is(document.n3[4], t6, "t6 doc.name inserted before");
+  is(document.n3[5], i3_3, "i3_3 doc.name inserted before");
   is(document.n3.length, 6, "doc.name3.length inserted before");
 
   t1.removeAttribute("name");
@@ -224,20 +223,20 @@ function test() {
   t6.setAttribute("name", "n3");
 
   checkHasNameNoDocProp("inserted before");
-  is(document.n1[0], i1_1, "i1_1 doc.name inserted before");
-  is(document.n1[1], t1, "t1 doc.name inserted before");
+  is(document.n1[0], t1, "t1 doc.name inserted before");
+  is(document.n1[1], i1_1, "i1_1 doc.name inserted before");
   is(document.n1.length, 2, "doc.name1.length inserted before");
-  is(document.n2[0], i2_1, "i2_1 doc.name inserted before");
-  is(document.n2[1], i2_2, "i2_2 doc.name inserted before");
-  is(document.n2[2], t2, "t2 doc.name inserted before");
-  is(document.n2[3], t3, "t3 doc.name inserted before");
+  is(document.n2[0], t2, "t2 doc.name inserted before");
+  is(document.n2[1], i2_1, "i2_1 doc.name inserted before");
+  is(document.n2[2], t3, "t3 doc.name inserted before");
+  is(document.n2[3], i2_2, "i2_2 doc.name inserted before");
   is(document.n2.length, 4, "doc.name2.length inserted before");
-  is(document.n3[0], i3_1, "i3_1 doc.name inserted before");
-  is(document.n3[1], i3_2, "i3_3 doc.name inserted before");
-  is(document.n3[2], i3_3, "i3_2 doc.name inserted before");
-  is(document.n3[3], t4, "t4 doc.name inserted before");
-  is(document.n3[4], t5, "t5 doc.name inserted before");
-  is(document.n3[5], t6, "t6 doc.name inserted before");
+  is(document.n3[0], t4, "t4 doc.name inserted before");
+  is(document.n3[1], i3_1, "i3_1 doc.name inserted before");
+  is(document.n3[2], t5, "t5 doc.name inserted before");
+  is(document.n3[3], i3_2, "i3_2 doc.name inserted before");
+  is(document.n3[4], t6, "t6 doc.name inserted before");
+  is(document.n3[5], i3_3, "i3_3 doc.name inserted before");
   is(document.n3.length, 6, "doc.name3.length inserted before");
 
   removeNode(t1);
@@ -258,78 +257,11 @@ function test() {
 
   checkHasNameNoDocProp("removed node");
 
-  // Check that removing an element during UnsetAttr works
-  is(i1_1.name, "n1", "i1_1 has name set");
-  var mutateFired = false;
-  root.appendChild(i1_1);
-  i1_1.addEventListener("DOMAttrModified", function(e) {
-    is(e.target, i1_1, "target is i1_1");
-    is(i1_1.name, "", "i1_1 no longer has name");
-    is(i1_1.getAttribute("name"), null, "i1_1 no longer has name attr");
-    removeNode(i1_1);
-    is(i1_1.parentNode, null, "i1_1 was removed");
-    mutateFired = true;
-  }, {once: true});
-  i1_1.removeAttribute("name");
-  ok(mutateFired, "mutation event fired");
-  SpecialPowers.gc();
-
-  // Check that removing an element during SetAttr works
-  i2_1.name = "";
-  mutateFired = false;
-  root.appendChild(i2_1);
-  i2_1.addEventListener("DOMAttrModified", function(e) {
-    is(e.target, i2_1, "target is i2_1");
-    is(i2_1.name, "n2", "i2_1 no longer has name");
-    is(i2_1.getAttribute("name"), "n2", "i2_1 no longer has name attr");
-    removeNode(i2_1);
-    is(i2_1.parentNode, null, "i2_1 was removed");
-    mutateFired = true;
-  }, {once: true});
-  i2_1.name = "n2";
-  ok(mutateFired, "mutation event fired");
-  SpecialPowers.gc();
-
-  // Re-add the name inside a mutation event on a HTML element
-  is(i2_2.name, "n2", "i2_2 has name set");
-  root.appendChild(i2_2);
-  mutateFired = false;
-  root.appendChild(i2_2);
-  i2_2.addEventListener("DOMAttrModified", function(e) {
-    is(e.target, i2_2, "target is i2_2");
-    is(i2_2.name, "", "i2_2 no longer has name");
-    is(i2_2.getAttribute("name"), "", "i2_2 has empty name attr");
-    i2_2.name = "n2";
-    mutateFired = true;
-  }, {once: true});
-  i2_2.name = "";
-  ok(mutateFired, "mutation event fired");
-  is(document.n2, i2_2, "named was readded during mutation");
-  removeNode(i2_2);
-  SpecialPowers.gc();
-
-  // Re-remove the name inside a mutation event on a HTML element
-  i3_1.name = "";
-  root.appendChild(i3_1);
-  mutateFired = false;
-  root.appendChild(i3_1);
-  i3_1.addEventListener("DOMAttrModified", function(e) {
-    is(e.target, i3_1, "target is i3_1");
-    is(i3_1.name, "n3", "i3_1 no longer has name");
-    is(i3_1.getAttribute("name"), "n3", "i3_1 has empty name attr");
-    i3_1.removeAttribute("name");
-    mutateFired = true;
-  }, {once: true});
-  i3_1.name = "n3";
-  ok(mutateFired, "mutation event fired");
-  is(document.n3, undefined, "named was readded during mutation");
-  removeNode(i3_1);
-  SpecialPowers.gc();
   SimpleTest.finish();
 }
 
 SimpleTest.waitForExplicitFinish();
-SpecialPowers.pushPrefEnv({"set": [["dom.mutation_events.enabled", true]]}, test);
+SimpleTest.executeSoon(test);
 
 </script>
 </pre>

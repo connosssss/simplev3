@@ -13,6 +13,7 @@ import sys
 import jinja2
 from glean_parser import util
 from glean_parser.metrics import Rate
+from rust import rust_int
 from util import type_ids_and_categories
 
 from js import ID_BITS, PING_INDEX_BITS
@@ -23,14 +24,16 @@ RUNTIME_PING_BIT = PING_INDEX_BITS - 1
 # The list of all args to CommonMetricData.
 # No particular order is required, but I have these in common_metric_data.rs
 # order just to be organized.
-# Note that this is util.common_metric_args + "dynamic_label"
+# Note that this is util.common_metric_args with "label" in the spot
+# expected by glean-core's CommonMetricData.
 common_metric_data_args = [
     "name",
     "category",
     "send_in_pings",
     "lifetime",
     "disabled",
-    "dynamic_label",
+    "in_session",
+    "label",
 ]
 
 # List of all metric-type-specific args that JOG understands.
@@ -111,7 +114,7 @@ def load_monkeypatches():
 
 
 def sometimes_supports_noncommutative_operations(metric_type_name):
-    return metric_type_name in ("boolean", "labeled_boolean")
+    return metric_type_name in ("boolean", "labeled_boolean", "quantity")
 
 
 def output_factory(objs, output_fd, options={}):
@@ -133,7 +136,7 @@ def output_factory(objs, output_fd, options={}):
 
     template = util.get_jinja2_template(
         "jog_factory.jinja2",
-        filters=(("snake_case", util.snake_case),),
+        filters=(("snake_case", util.snake_case), ("rust_int", rust_int)),
     )
 
     output_fd.write(
@@ -190,15 +193,16 @@ def output_file(objs, output_fd, options={}):
             return value.name
         if isinstance(value, Rate):  # `numerators` for an external Denominator metric
             args = []
-            for arg_name in common_metric_data_args[:-1]:
+            for arg_name in common_metric_data_args:
+                if arg_name == "label":
+                    # "label" is special because it is on the Rust
+                    # CommonMetricData struct, but isn't in the glean_parser
+                    # object model.
+                    # Luckily, JOG doesn't need it. So merely supply None.
+                    args.append(None)
+                    continue
                 args.append(getattr(value, arg_name))
 
-            # These are deserialized as CommonMetricData.
-            # CMD have a final param JOG never uses: `dynamic_label`
-            # It's optional, so we should be able to omit it, but we'd need to
-            # annotate it with #[serde(default)]... so here we add the sixth
-            # param as None.
-            args.append(None)
             return args
         return json.dumps(value)
 
@@ -206,9 +210,9 @@ def output_file(objs, output_fd, options={}):
         dict_cat = jog_data["metrics"].setdefault(category, [])
         for metric in metrics.values():
             metric_arg_list = [camel_to_snake(metric.__class__.__name__)]
-            for arg in common_metric_data_args[:-1]:
-                if arg in ["category"]:
-                    continue  # We don't include the category in each metric.
+            for arg in common_metric_data_args:
+                if arg in ["category", "label"]:
+                    continue
                 metric_arg_list.append(getattr(metric, arg))
             extra = {}
             for arg in known_extra_args:

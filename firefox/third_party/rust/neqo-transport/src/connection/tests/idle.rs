@@ -4,19 +4,22 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::time::{Duration, Instant};
+use std::{
+    num::NonZeroUsize,
+    time::{Duration, Instant},
+};
 
-use neqo_common::{qtrace, qwarn, Encoder};
-use test_fixture::{now, split_datagram};
+use neqo_common::{Encoder, qtrace, qwarn};
+use test_fixture::now;
 
 use super::{
     super::{Connection, ConnectionParameters, IdleTimeout, Output, State},
-    connect, connect_force_idle, connect_rtt_idle, connect_with_rtt, default_client,
-    default_server, maybe_authenticate, new_client, new_server, send_and_receive, send_something,
-    AT_LEAST_PTO, DEFAULT_STREAM_DATA,
+    AT_LEAST_PTO, DEFAULT_RTT, DEFAULT_STREAM_DATA, connect, connect_force_idle, connect_rtt_idle,
+    connect_with_rtt, default_client, default_server, maybe_authenticate, new_client, new_server,
+    send_and_receive, send_something,
 };
 use crate::{
-    packet::PacketBuilder,
+    CloseReason, Error, packet, recovery,
     stats::FrameStats,
     stream_id::{StreamId, StreamType},
     tparams::{TransportParameter, TransportParameterId},
@@ -189,7 +192,7 @@ fn idle_send_packet1() {
 
     // Still connected after 39 seconds because idle timer reset by the
     // outgoing packet.
-    now += default_timeout() - DELTA;
+    now += default_timeout().checked_sub(DELTA).unwrap();
     let dgram = client.process_output(now).dgram();
     assert!(dgram.is_some()); // PTO
     assert!(client.state().connected());
@@ -224,7 +227,7 @@ fn idle_send_packet2() {
     assert!((GAP * 2 + DELTA) < default_timeout());
 
     // Still connected just before GAP + default_timeout().
-    now += default_timeout() - DELTA;
+    now += default_timeout().checked_sub(DELTA).unwrap();
     let dgram = client.process_output(now).dgram();
     assert!(dgram.is_some()); // PTO
     assert!(matches!(client.state(), State::Confirmed));
@@ -267,7 +270,7 @@ fn idle_recv_packet() {
     assert!(matches!(client.state(), State::Confirmed));
 
     // Add a little less than the idle timeout and we're still connected.
-    now += default_timeout() - FUDGE;
+    now += default_timeout().checked_sub(FUDGE).unwrap();
     drop(client.process_output(now));
     assert!(matches!(client.state(), State::Confirmed));
 
@@ -285,18 +288,17 @@ fn idle_caching() {
     let mut client = default_client();
     let mut server = default_server();
     let start = now();
-    let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+    let mut builder =
+        packet::Builder::short(Encoder::default(), false, None::<&[u8]>, packet::LIMIT);
 
     // Perform the first round trip, but drop the Initial from the server.
     // The client then caches the Handshake packet.
     let dgram = client.process_output(start).dgram();
     let dgram2 = client.process_output(start).dgram();
     server.process_input(dgram.unwrap(), start);
-    let dgram = server.process(dgram2, start).dgram();
-    let dgram = client.process(dgram, start).dgram();
-    let dgram = server.process(dgram, start).dgram();
-    let (_, handshake) = split_datagram(&dgram.unwrap());
-    client.process_input(handshake.unwrap(), start);
+    let server_initial = server.process(dgram2, start).dgram().unwrap();
+    let server_handshake = server.process_output(start).dgram().unwrap();
+    client.process_input(server_handshake, start);
 
     // Perform an exchange and keep the connection alive.
     let middle = start + AT_LEAST_PTO;
@@ -308,7 +310,7 @@ fn idle_caching() {
     // Now let the server process the RTX'ed client Initial.  This causes the server
     // to send CRYPTO frames again, so manually extract and discard those.
     server.process_input(dgram.unwrap(), middle);
-    let mut tokens = Vec::new();
+    let mut tokens = recovery::Tokens::new();
     server.crypto.streams_mut().write_frame(
         PacketNumberSpace::Initial,
         server.conn_params.sni_slicing_enabled(),
@@ -328,24 +330,19 @@ fn idle_caching() {
     assert!(tokens.is_empty());
     let dgram = server.process_output(middle).dgram();
 
-    // Now only allow the Initial packet from the server through;
-    // it shouldn't contain a CRYPTO frame.
-    let (initial, _) = split_datagram(&dgram.unwrap());
-    let crypto_before_c = client.stats().frame_rx.crypto;
+    // The packet may contain CRYPTO if a PTO marked Initial packets for retransmission.
+    // The important thing for this test is that an ACK is received, keeping the connection alive.
     let ack_before = client.stats().frame_rx.ack;
-    client.process_input(initial, middle);
-    assert_eq!(client.stats().frame_rx.crypto, crypto_before_c);
+    client.process_input(dgram.unwrap(), middle);
     assert_eq!(client.stats().frame_rx.ack, ack_before + 1);
 
     let end = start + default_timeout() + (AT_LEAST_PTO / 2);
     // Now let the server Initial through, with the CRYPTO frame.
-    let dgram = server.process_output(end).dgram();
-    let (initial, _) = split_datagram(&dgram.unwrap());
     qwarn!("client ingests initial, finally");
-    drop(client.process(Some(initial), end));
+    drop(client.process(Some(server_initial), end));
     maybe_authenticate(&mut client);
-    let dgram = client.process_output(end).dgram();
-    let dgram = server.process(dgram, end).dgram();
+    let dgram = client.process_output(end).dgram().unwrap();
+    let dgram = server.process(Some(dgram), end).dgram();
     client.process_input(dgram.unwrap(), end);
     assert_eq!(*client.state(), State::Confirmed);
     assert_eq!(*server.state(), State::Confirmed);
@@ -476,11 +473,14 @@ fn keep_alive_lost() {
 
     assert!(client.process(out, now).dgram().is_none());
 
-    // TODO: if we run server.process with current value of now, the server will
-    // return some small timeout for the recovery although it does not have
-    // any outstanding data. Therefore we call it after AT_LEAST_PTO.
+    // Advance past the recovery timeout. Without this, the server returns a small
+    // timeout for recovery even though it has no outstanding data.
     now += AT_LEAST_PTO;
-    assert_idle(&mut server, now, keep_alive_timeout() - AT_LEAST_PTO);
+    assert_idle(
+        &mut server,
+        now,
+        keep_alive_timeout().checked_sub(AT_LEAST_PTO).unwrap(),
+    );
 }
 
 /// The other peer can also keep it alive.
@@ -681,7 +681,7 @@ fn keep_alive_with_ack_eliciting_packet_lost() {
     //    IDLE_TIMEOUT / 2)
     //  - PTO timer will trigger again. (at the start time + pto + 2*pto)
     //  - Idle time out  will trigger (at the timeout + IDLE_TIMEOUT)
-    const IDLE_TIMEOUT: Duration = Duration::from_millis(6000);
+    const IDLE_TIMEOUT: Duration = Duration::from_secs(6);
 
     // This test makes too many assumptions about single-packet flights and PTOs for multi-packet
     // MLKEM flights to work.
@@ -718,11 +718,11 @@ fn keep_alive_with_ack_eliciting_packet_lost() {
     // The next callback should be for an idle PING.
     assert_eq!(
         client.process_output(now).callback(),
-        IDLE_TIMEOUT / 2 - pto
+        (IDLE_TIMEOUT / 2).checked_sub(pto).unwrap()
     );
 
     // Wait that long and the client should send a PING frame.
-    now += IDLE_TIMEOUT / 2 - pto;
+    now += (IDLE_TIMEOUT / 2).checked_sub(pto).unwrap();
     let pings_before = client.stats().frame_tx.ping;
     let ping = client.process_output(now).dgram();
     assert!(ping.is_some());
@@ -740,10 +740,10 @@ fn keep_alive_with_ack_eliciting_packet_lost() {
     // The next callback will be an idle timeout.
     assert_eq!(
         client.process_output(now).callback(),
-        IDLE_TIMEOUT / 2 - 2 * pto
+        (IDLE_TIMEOUT / 2).checked_sub(2 * pto).unwrap()
     );
 
-    now += IDLE_TIMEOUT / 2 - 2 * pto;
+    now += (IDLE_TIMEOUT / 2).checked_sub(2 * pto).unwrap();
     let out = client.process_output(now);
     assert!(matches!(out, Output::None));
     assert!(matches!(client.state(), State::Closed(_)));
@@ -803,4 +803,122 @@ fn keep_alive_with_unresponsive_server() {
     }
     // Connection should be closed due to idle timeout.
     assert!(matches!(client.state(), State::Closed(_)));
+}
+
+/// A connection whose packets are all dropped (a black hole) is declared broken
+/// after `max_pto` consecutive PTOs, and crucially does so earlier than the idle
+/// timeout would have.
+#[test]
+fn declare_broken_after_max_pto() {
+    const MAX_PTO: usize = 7;
+    // For this test to prove anything, the whole PTO backoff ladder must fit inside
+    // the idle timeout; otherwise "closed before the idle timeout" is vacuously true.
+    // This checks the *last* PTO interval (a conservative sufficient condition, since
+    // the 3*RTT factor overestimates the actual PTO in a zero-jitter test).
+    assert!(DEFAULT_RTT * (1_u32 << (MAX_PTO - 1)) * 3 < default_timeout());
+
+    let mut client =
+        new_client(ConnectionParameters::default().max_pto(NonZeroUsize::new(MAX_PTO)));
+    let mut server = default_server();
+    let start = connect_rtt_idle(&mut client, &mut server, DEFAULT_RTT);
+
+    // The client sends data that never reaches the server: a black hole.
+    let mut now = start;
+    drop(send_something(&mut client, now));
+
+    // Advance through PTOs, dropping every probe the client emits.
+    for _ in 0..=MAX_PTO {
+        let cb = loop {
+            match client.process_output(now) {
+                // Drop the PTO probe(s) without advancing time.
+                Output::Datagram(_) => {}
+                Output::Callback(t) => break t,
+                Output::None => break Duration::ZERO,
+            }
+        };
+        now += cb;
+    }
+
+    assert!(
+        matches!(
+            client.state(),
+            State::Closed(CloseReason::Transport(Error::TooManyPtos))
+        ),
+        "expected TooManyPtos, got {:?}",
+        client.state()
+    );
+    assert_eq!(client.loss_recovery.pto_count(), MAX_PTO);
+    // The whole point: we gave up well before the idle timeout would have fired.
+    assert!(
+        now - start < default_timeout(),
+        "closed after {:?}, which is not earlier than the {:?} idle timeout",
+        now - start,
+        default_timeout()
+    );
+}
+
+/// A received acknowledgement resets the consecutive-PTO counter, so a transient
+/// loss burst followed by recovery does not accumulate toward `max_pto`: a second,
+/// independent black hole counts fresh from zero rather than adding to the first
+/// (the property a fixed timer lacks). That a full fresh ladder then closes the
+/// connection is covered by `declare_broken_after_max_pto`.
+#[test]
+fn max_pto_counter_resets_on_ack() {
+    const MAX_PTO: usize = 7;
+    let mut client =
+        new_client(ConnectionParameters::default().max_pto(NonZeroUsize::new(MAX_PTO)));
+    let mut server = default_server();
+    let mut now = connect_rtt_idle(&mut client, &mut server, DEFAULT_RTT);
+
+    // Black-hole a flight and let a couple of PTOs fire, staying below MAX_PTO.
+    drop(send_something(&mut client, now));
+    while client.loss_recovery.pto_count() < 2 {
+        let cb = loop {
+            match client.process_output(now) {
+                // Drop the PTO probe(s) without advancing time.
+                Output::Datagram(_) => {}
+                Output::Callback(t) => break t,
+                Output::None => break Duration::ZERO,
+            }
+        };
+        now += cb;
+    }
+    assert!(!matches!(client.state(), State::Closed(_)));
+
+    // A fresh client packet reaches the server, whose ACK reaches the client and
+    // resets the counter. Flush any ACK the server delays behind its ack timer.
+    let d = send_something(&mut client, now);
+    let mut out = server.process(Some(d), now);
+    let ack = loop {
+        match out {
+            Output::Datagram(d) => break Some(d),
+            Output::Callback(t) => {
+                now += t;
+                out = server.process_output(now);
+            }
+            Output::None => break None,
+        }
+    };
+    drop(client.process(ack, now));
+
+    // The received ACK reset the counter, so the connection survives.
+    assert_eq!(client.loss_recovery.pto_count(), 0);
+    assert!(!matches!(client.state(), State::Closed(_)));
+
+    // A second, independent black hole counts fresh from zero: after two more
+    // PTOs the count is 2, not 2 + the earlier 2, so separate episodes do not
+    // accumulate toward the threshold and the connection stays open.
+    drop(send_something(&mut client, now));
+    while client.loss_recovery.pto_count() < 2 {
+        let cb = loop {
+            match client.process_output(now) {
+                Output::Datagram(_) => {}
+                Output::Callback(t) => break t,
+                Output::None => break Duration::ZERO,
+            }
+        };
+        now += cb;
+    }
+    assert_eq!(client.loss_recovery.pto_count(), 2);
+    assert!(!matches!(client.state(), State::Closed(_)));
 }

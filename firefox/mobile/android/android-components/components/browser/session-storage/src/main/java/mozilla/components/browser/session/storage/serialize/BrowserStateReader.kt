@@ -7,6 +7,7 @@ package mozilla.components.browser.session.storage.serialize
 import android.util.AtomicFile
 import android.util.JsonReader
 import android.util.JsonToken
+import java.util.UUID
 import mozilla.components.browser.session.storage.RecoverableBrowserState
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.state.LastMediaAccessState
@@ -22,11 +23,10 @@ import mozilla.components.support.ktx.android.util.nextBooleanOrNull
 import mozilla.components.support.ktx.android.util.nextIntOrNull
 import mozilla.components.support.ktx.android.util.nextStringOrNull
 import mozilla.components.support.ktx.util.readJSON
-import java.util.UUID
 
 /**
- * Reads a [RecoverableBrowserState] (partial, serialized [BrowserState]) or a single [RecoverableTab]
- * (partial, serialized [TabSessionState]) from disk.
+ * Reads a [RecoverableBrowserState] (partial, serialized [BrowserState]) or a single [RecoverableTab] (partial,
+ * serialized [TabSessionState]) from disk.
  */
 class BrowserStateReader {
     /**
@@ -55,10 +55,10 @@ class BrowserStateReader {
      * Reads a single [RecoverableTab] from the given [file].
      *
      * @param engine The [Engine] implementation for restoring the engine state.
-     * @param restoreSessionId Whether the original tab ID should be restored or whether a new ID
-     * should be generated for the tab.
-     * @param restoreParentId Whether the original parent tab ID should be restored or whether it
-     * should be set to `null`.
+     * @param restoreSessionId Whether the original tab ID should be restored or whether a new ID should be generated
+     *   for the tab.
+     * @param restoreParentId Whether the original parent tab ID should be restored or whether it should be set to
+     *   `null`.
      */
     fun readTab(
         engine: Engine,
@@ -70,7 +70,6 @@ class BrowserStateReader {
     }
 }
 
-@Suppress("ComplexMethod")
 private fun JsonReader.browsingSession(
     engine: Engine,
     restoreSessionId: Boolean = true,
@@ -83,13 +82,16 @@ private fun JsonReader.browsingSession(
     var tabs: List<RecoverableTab>? = null
     var selectedIndex: Int? = null
     var selectedTabId: String? = null
+    var isTranslationsEngineSupported: Boolean? = null
 
     while (hasNext()) {
         when (nextName()) {
             Keys.VERSION_KEY -> version = nextInt()
             Keys.SELECTED_SESSION_INDEX_KEY -> selectedIndex = nextInt()
             Keys.SELECTED_TAB_ID_KEY -> selectedTabId = nextStringOrNull()
+            Keys.TRANSLATIONS_ENGINE_IS_SUPPORTED_KEY -> isTranslationsEngineSupported = nextBooleanOrNull()
             Keys.SESSION_STATE_TUPLES_KEY -> tabs = tabs(engine, restoreSessionId, restoreParentId, predicate)
+            else -> skipValue()
         }
     }
 
@@ -102,14 +104,14 @@ private fun JsonReader.browsingSession(
         selectedTabId = tabs?.getOrNull(selectedIndex)?.state?.id
     }
 
-    return if (tabs != null && tabs.isNotEmpty()) {
+    return if (!tabs.isNullOrEmpty()) {
         // Check if selected tab still exists after restoring/filtering and
         // use most recently accessed tab otherwise.
         if (tabs.find { it.state.id == selectedTabId } == null) {
             selectedTabId = tabs.sortedByDescending { it.state.lastAccess }.first().state.id
         }
 
-        RecoverableBrowserState(tabs, selectedTabId)
+        RecoverableBrowserState(tabs, selectedTabId, isTranslationsEngineSupported)
     } else {
         null
     }
@@ -150,6 +152,7 @@ private fun JsonReader.tab(
         when (nextName()) {
             Keys.SESSION_KEY -> tab = tabSession()
             Keys.ENGINE_SESSION_KEY -> engineSessionState = engine.createSessionStateFrom(this)
+            else -> skipValue()
         }
     }
 
@@ -157,14 +160,15 @@ private fun JsonReader.tab(
 
     return tab?.copy(
         engineSessionState = engineSessionState,
-        state = tab.state.copy(
-            id = if (restoreSessionId) tab.state.id else UUID.randomUUID().toString(),
-            parentId = if (restoreParentId) tab.state.parentId else null,
-        ),
+        state =
+            tab.state.copy(
+                id = if (restoreSessionId) tab.state.id else UUID.randomUUID().toString(),
+                parentId = if (restoreParentId) tab.state.parentId else null,
+            ),
     )
 }
 
-@Suppress("ComplexMethod", "LongMethod")
+@Suppress("LongMethod", "CyclomaticComplexMethod")
 private fun JsonReader.tabSession(): RecoverableTab {
     var id: String? = null
     var parentId: String? = null
@@ -174,6 +178,7 @@ private fun JsonReader.tabSession(): RecoverableTab {
     var contextId: String? = null
     var lastAccess: Long? = null
     var createdAt: Long? = null
+    var lastVisibleAt: Long? = null
     var lastMediaUrl: String? = null
     var lastMediaAccess: Long? = null
     var mediaSessionActive: Boolean? = null
@@ -195,7 +200,7 @@ private fun JsonReader.tabSession(): RecoverableTab {
     beginObject()
 
     while (hasNext()) {
-        when (val name = nextName()) {
+        when (nextName()) {
             Keys.SESSION_URL_KEY -> url = nextString()
             Keys.SESSION_UUID_KEY -> id = nextString()
             Keys.SESSION_CONTEXT_ID_KEY -> contextId = nextStringOrNull()
@@ -210,6 +215,7 @@ private fun JsonReader.tabSession(): RecoverableTab {
             Keys.SESSION_HISTORY_METADATA_REFERRER_URL -> historyMetadataReferrerUrl = nextStringOrNull()
             Keys.SESSION_LAST_ACCESS -> lastAccess = nextLong()
             Keys.SESSION_CREATED_AT -> createdAt = nextLong()
+            Keys.SESSION_LAST_VISIBLE_AT -> lastVisibleAt = nextLong()
             Keys.SESSION_LAST_MEDIA_URL -> lastMediaUrl = nextString()
             Keys.SESSION_LAST_MEDIA_SESSION_ACTIVE -> mediaSessionActive = nextBoolean()
             Keys.SESSION_LAST_MEDIA_ACCESS -> lastMediaAccess = nextLong()
@@ -218,7 +224,7 @@ private fun JsonReader.tabSession(): RecoverableTab {
             Keys.SESSION_EXTERNAL_SOURCE_PACKAGE_CATEGORY -> externalSourceCategory = nextIntOrNull()
             Keys.SESSION_DEPRECATED_SOURCE_KEY -> nextString()
             Keys.SESSION_DESKTOP_MODE -> desktopMode = nextBoolean()
-            else -> throw IllegalArgumentException("Unknown session key: $name")
+            else -> skipValue()
         }
     }
 
@@ -226,37 +232,42 @@ private fun JsonReader.tabSession(): RecoverableTab {
 
     return RecoverableTab(
         engineSessionState = null, // This will be deserialized and added separately
-        state = TabState(
-            id = requireNotNull(id),
-            parentId = parentId,
-            url = requireNotNull(url),
-            title = requireNotNull(title),
-            searchTerm = requireNotNull(searchTerm),
-            contextId = contextId,
-            readerState = ReaderState(
-                active = readerStateActive ?: false,
-                activeUrl = readerActiveUrl,
-                scrollY = readerScrollY,
+        state =
+            TabState(
+                id = requireNotNull(id),
+                parentId = parentId,
+                url = requireNotNull(url),
+                title = requireNotNull(title),
+                searchTerm = requireNotNull(searchTerm),
+                contextId = contextId,
+                readerState =
+                    ReaderState(
+                        active = readerStateActive ?: false,
+                        activeUrl = readerActiveUrl,
+                        scrollY = readerScrollY,
+                    ),
+                historyMetadata =
+                    if (historyMetadataUrl != null) {
+                        HistoryMetadataKey(
+                            historyMetadataUrl,
+                            historyMetadataSearchTerm,
+                            historyMetadataReferrerUrl,
+                        )
+                    } else {
+                        null
+                    },
+                private = false, // We never serialize private sessions
+                lastAccess = lastAccess ?: 0,
+                createdAt = createdAt ?: 0,
+                lastVisibleAt = lastVisibleAt ?: 0,
+                lastMediaAccessState =
+                    LastMediaAccessState(
+                        lastMediaUrl ?: "",
+                        lastMediaAccess = lastMediaAccess ?: 0,
+                        mediaSessionActive = mediaSessionActive ?: false,
+                    ),
+                source = SessionState.Source.restore(sourceId, externalSourcePackageId, externalSourceCategory),
+                desktopMode = desktopMode ?: false,
             ),
-            historyMetadata = if (historyMetadataUrl != null) {
-                HistoryMetadataKey(
-                    historyMetadataUrl,
-                    historyMetadataSearchTerm,
-                    historyMetadataReferrerUrl,
-                )
-            } else {
-                null
-            },
-            private = false, // We never serialize private sessions
-            lastAccess = lastAccess ?: 0,
-            createdAt = createdAt ?: 0,
-            lastMediaAccessState = LastMediaAccessState(
-                lastMediaUrl ?: "",
-                lastMediaAccess = lastMediaAccess ?: 0,
-                mediaSessionActive = mediaSessionActive ?: false,
-            ),
-            source = SessionState.Source.restore(sourceId, externalSourcePackageId, externalSourceCategory),
-            desktopMode = desktopMode ?: false,
-        ),
     )
 }

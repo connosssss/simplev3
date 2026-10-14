@@ -7,7 +7,7 @@
 == test-async.html test-async-ref.html
 
 # test that zoom works (and really zooms, not just scales)
-fails-if(useDrawSnapshot) == test-zoom.html test-zoom-ref.html
+== test-zoom.html test-zoom-ref.html
 
 == text-zoom.html text-zoom-ref.html
 != text-zoom.html text-zoom-notref.html
@@ -44,7 +44,7 @@ fails-if(geckoview&&device) == filter-2.xhtml filter-2-ref.xhtml
 
 # test that the MozReftestInvalidate event fires
 == invalidation.html about:blank
-fails-if(useDrawSnapshot) == zoom-invalidation.html zoom-invalidation-ref.html # bug 773482
+== zoom-invalidation.html zoom-invalidation-ref.html # bug 773482
 
 # test parsing of asserts() expressions
 asserts(0) load about:blank
@@ -165,6 +165,14 @@ noautofuzz fails fuzzy-if(false,0-2,0-1) == fuzzy.html fuzzy-ref.html
 
 # Test that reftest-no-paint fails correctly.
 == reftest-no-paint.html reftest-no-paint-ref.html
+
+# Test that reftest-no-wr-raster works correctly.
+# Pass test: no content change after MozReftestInvalidate, so no rasterization.
+skip-if(useDrawSnapshot) == reftest-no-wr-raster-pass.html reftest-no-wr-raster-pass-ref.html
+# Fail test: content changes, triggering rasterization, which fails the check.
+skip-if(useDrawSnapshot) fails == reftest-no-wr-raster-fail.html reftest-no-wr-raster-fail-ref.html
+# Scroll test: scrolling should not cause tile rasterization.
+skip-if(useDrawSnapshot) == reftest-no-wr-raster-scroll.html reftest-no-wr-raster-scroll-ref.html
 
 skip-if(useDrawSnapshot) == async-scroll-1a.html async-scroll-1-ref.html
 

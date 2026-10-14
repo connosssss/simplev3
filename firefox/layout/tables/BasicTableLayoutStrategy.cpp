@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-// vim:cindent:ts=2:et:sw=2:
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,13 +11,14 @@
 
 #include <algorithm>
 
-#include "nsTableFrame.h"
-#include "nsTableColFrame.h"
-#include "nsTableCellFrame.h"
-#include "nsLayoutUtils.h"
-#include "nsGkAtoms.h"
 #include "SpanningCellSorter.h"
+#include "mozilla/ReflowInput.h"
+#include "nsGkAtoms.h"
 #include "nsIContent.h"
+#include "nsLayoutUtils.h"
+#include "nsTableCellFrame.h"
+#include "nsTableColFrame.h"
+#include "nsTableFrame.h"
 
 using namespace mozilla;
 using namespace mozilla::layout;
@@ -99,15 +98,17 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
     // specified block size. See nsTableFrame::Reflow() and
     // ReflowInput::Flags::mSpecialBSizeReflow.
     const nscoord cbBSize = NS_UNCONSTRAINEDSIZE;
+    const auto bSizeOffsets = aFrame->IntrinsicBSizeOffsets();
     const nscoord contentEdgeToBoxSizingBSize =
-        stylePos->mBoxSizing == StyleBoxSizing::Border
-            ? aFrame->IntrinsicBSizeOffsets().BorderPadding()
+        stylePos->mBoxSizing == StyleBoxSizing::BorderBox
+            ? bSizeOffsets.BorderPadding()
             : 0;
     const nscoord cellBSize = nsIFrame::ComputeBSizeValueAsPercentageBasis(
-        *stylePos->BSize(aWM, anchorResolutionParams.mPosition),
-        *stylePos->MinBSize(aWM, anchorResolutionParams.mPosition),
-        *stylePos->MaxBSize(aWM, anchorResolutionParams.mPosition), cbBSize,
-        contentEdgeToBoxSizingBSize);
+        *stylePos->BSize(aWM, anchorResolutionParams),
+        *stylePos->MinBSize(aWM, anchorResolutionParams),
+        *stylePos->MaxBSize(aWM, anchorResolutionParams), cbBSize,
+        contentEdgeToBoxSizingBSize, bSizeOffsets.margin,
+        bSizeOffsets.BorderPadding());
 
     const IntrinsicSizeInput input(
         aRenderingContext, Nothing(),
@@ -123,10 +124,10 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
 
     // XXX Should we ignore percentage padding?
     nsIFrame::IntrinsicSizeOffsetData offsets = aFrame->IntrinsicISizeOffsets();
-    if (stylePos->mBoxSizing == StyleBoxSizing::Content) {
+    if (stylePos->mBoxSizing == StyleBoxSizing::ContentBox) {
       boxSizingToBorderEdge = offsets.padding + offsets.border;
     } else {
-      // StyleBoxSizing::Border
+      // StyleBoxSizing::BorderBox
       minCoord += offsets.padding + offsets.border;
       prefCoord += offsets.padding + offsets.border;
     }
@@ -137,7 +138,7 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
   float prefPercent = 0.0f;
   bool hasSpecifiedISize = false;
 
-  const auto iSize = stylePos->ISize(aWM, anchorResolutionParams.mPosition);
+  const auto iSize = stylePos->ISize(aWM, anchorResolutionParams);
   // NOTE: We're ignoring calc() units with both lengths and percentages here,
   // for lack of a sensible idea for what to do with them.  This means calc()
   // with percentages is basically handled like 'auto' for table cells and
@@ -180,7 +181,7 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
     }
   }
 
-  auto maxISize = stylePos->MaxISize(aWM, anchorResolutionParams.mPosition);
+  auto maxISize = stylePos->MaxISize(aWM, anchorResolutionParams);
   if (nsIFrame::ToExtremumLength(*maxISize)) {
     if (!aIsCell || maxISize->BehavesLikeStretchOnInlineAxis()) {
       maxISize = AnchorResolvedMaxSizeHelper::None();
@@ -196,10 +197,10 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
   if (maxISize->ConvertsToLength() || nsIFrame::ToExtremumLength(*maxISize)) {
     nscoord c =
         aFrame
-            ->ComputeISizeValue(
-                aRenderingContext, aWM, zeroSize, zeroSize, 0, *maxISize,
-                *stylePos->BSize(aWM, anchorResolutionParams.mPosition),
-                aFrame->GetAspectRatio())
+            ->ComputeISizeValue(aRenderingContext, aWM, zeroSize, zeroSize,
+                                zeroSize, *maxISize,
+                                *stylePos->BSize(aWM, anchorResolutionParams),
+                                aFrame->GetAspectRatio())
             .mISize;
     minCoord = std::min(c, minCoord);
     prefCoord = std::min(c, prefCoord);
@@ -210,7 +211,7 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
     }
   }
 
-  auto minISize = stylePos->MinISize(aWM, anchorResolutionParams.mPosition);
+  auto minISize = stylePos->MinISize(aWM, anchorResolutionParams);
   if (nsIFrame::ToExtremumLength(*maxISize)) {
     if (!aIsCell || minISize->BehavesLikeStretchOnInlineAxis()) {
       minISize = AnchorResolvedSizeHelper::Zero();
@@ -224,10 +225,10 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
   if (minISize->ConvertsToLength() || nsIFrame::ToExtremumLength(*minISize)) {
     nscoord c =
         aFrame
-            ->ComputeISizeValue(
-                aRenderingContext, aWM, zeroSize, zeroSize, 0, *minISize,
-                *stylePos->BSize(aWM, anchorResolutionParams.mPosition),
-                aFrame->GetAspectRatio())
+            ->ComputeISizeValue(aRenderingContext, aWM, zeroSize, zeroSize,
+                                zeroSize, *minISize,
+                                *stylePos->BSize(aWM, anchorResolutionParams),
+                                aFrame->GetAspectRatio())
             .mISize;
     minCoord = std::max(c, minCoord);
     prefCoord = std::max(c, prefCoord);

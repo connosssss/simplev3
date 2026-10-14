@@ -1,34 +1,14 @@
 /**
- * \file xf86drm.h 
+ * \file xf86drm.h
  * OS-independent header for DRM user-level library interface.
  *
- * \author Rickard E. (Rik) Faith <faith@valinux.com>
  */
- 
+
 /*
- * Copyright 1999, 2000 Precision Insight, Inc., Cedar Park, Texas.
- * Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
- * All Rights Reserved.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * PRECISION INSIGHT AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- *
+ * SPDX-FileContributor: Rickard E. (Rik) Faith <faith@valinux.com>
+ * SPDX-FileCopyrightText: 1999, 2000 Precision Insight, Inc., Cedar Park, Texas.
+ * SPDX-FileCopyrightText: 2000 VA Linux Systems, Inc., Sunnyvale, California.
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef _XF86DRM_H_
@@ -197,9 +177,9 @@ typedef enum {
 typedef enum {
     /** \name Flags for DMA buffer dispatch */
     /*@{*/
-    DRM_DMA_BLOCK        = 0x01, /**< 
+    DRM_DMA_BLOCK        = 0x01, /**<
 				  * Block until buffer dispatched.
-				  * 
+				  *
 				  * \note the buffer may not yet have been
 				  * processed by the hardware -- getting a
 				  * hardware lock with the hardware quiescent
@@ -693,7 +673,7 @@ extern int           drmGetLock(int fd,
 			        drmLockFlags flags);
 extern int           drmUnlock(int fd, drm_context_t context);
 extern int           drmFinish(int fd, int context, drmLockFlags flags);
-extern int	     drmGetContextPrivateMapping(int fd, drm_context_t ctx_id, 
+extern int	     drmGetContextPrivateMapping(int fd, drm_context_t ctx_id,
 						 drm_handle_t * handle);
 
 /* AGP/GART support: X server (root) only */
@@ -779,7 +759,7 @@ typedef struct _drmEventContext {
 	int version;
 
 	void (*vblank_handler)(int fd,
-			       unsigned int sequence, 
+			       unsigned int sequence,
 			       unsigned int tv_sec,
 			       unsigned int tv_usec,
 			       void *user_data);
@@ -843,6 +823,7 @@ extern char *drmGetRenderDeviceNameFromFd(int fd);
 #define DRM_BUS_USB       1
 #define DRM_BUS_PLATFORM  2
 #define DRM_BUS_HOST1X    3
+#define DRM_BUS_FAUX      4
 
 typedef struct _drmPciBusInfo {
     uint16_t domain;
@@ -889,6 +870,12 @@ typedef struct _drmHost1xDeviceInfo {
     char **compatible; /* NULL terminated list of compatible strings */
 } drmHost1xDeviceInfo, *drmHost1xDeviceInfoPtr;
 
+#define DRM_FAUX_DEVICE_NAME_LEN 512
+
+typedef struct _drmFauxBusInfo {
+    char name[DRM_FAUX_DEVICE_NAME_LEN];
+} drmFauxBusInfo, *drmFauxBusInfoPtr;
+
 typedef struct _drmDevice {
     char **nodes; /* DRM_NODE_MAX sized array */
     int available_nodes; /* DRM_NODE_* bitmask */
@@ -898,6 +885,7 @@ typedef struct _drmDevice {
         drmUsbBusInfoPtr usb;
         drmPlatformBusInfoPtr platform;
         drmHost1xBusInfoPtr host1x;
+        drmFauxBusInfoPtr faux;
     } businfo;
     union {
         drmPciDeviceInfoPtr pci;

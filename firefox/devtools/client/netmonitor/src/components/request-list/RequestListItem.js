@@ -156,7 +156,6 @@ const UPDATED_REQ_ITEM_PROPS = [
   "status",
   "statusText",
   "fromCache",
-  "isRacing",
   "fromServiceWorker",
   "method",
   "url",
@@ -173,6 +172,8 @@ const UPDATED_REQ_ITEM_PROPS = [
   "waitingTime",
   "isEventStream",
   "priority",
+  "blockedReason",
+  "extension",
 ];
 
 const UPDATED_REQ_PROPS = [
@@ -287,6 +288,7 @@ class RequestListItem extends Component {
       onDragStart: PropTypes.func.isRequired,
       onFocusedNodeChange: PropTypes.func,
       onInitiatorBadgeMouseDown: PropTypes.func.isRequired,
+      onClick: PropTypes.func.isRequired,
       onMouseDown: PropTypes.func.isRequired,
       onSecurityIconMouseDown: PropTypes.func.isRequired,
       onWaterfallMouseDown: PropTypes.func.isRequired,
@@ -369,6 +371,7 @@ class RequestListItem extends Component {
       networkActionOpen,
       onDoubleClick,
       onDragStart,
+      onClick,
       onContextMenu,
       onMouseDown,
       onWaterfallMouseDown,
@@ -391,6 +394,9 @@ class RequestListItem extends Component {
           networkActionOpen &&
           selectedActionBarTabId === PANELS.BLOCKING,
         tabIndex: 0,
+        role: "option",
+        "aria-selected": isSelected,
+        onClick,
         onContextMenu,
         onMouseDown,
         onDoubleClick,

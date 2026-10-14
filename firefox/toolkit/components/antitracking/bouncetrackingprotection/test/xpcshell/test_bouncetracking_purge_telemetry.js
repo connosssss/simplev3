@@ -15,6 +15,7 @@ let bounceTrackingGracePeriodSec;
 
 /**
  * Wait for purge telemetry to be recorded for a list of site hosts.
+ *
  * @param {Array} siteHosts - List of site hosts to be purged.
  */
 function waitForPurgeTelemetry(siteHosts) {
@@ -32,9 +33,6 @@ function waitForPurgeTelemetry(siteHosts) {
 }
 
 add_setup(async function () {
-  // Need a profile to data clearing calls.
-  do_get_profile();
-
   Services.prefs.setIntPref(
     "privacy.bounceTrackingProtection.mode",
     Ci.nsIBounceTrackingProtection.MODE_ENABLED
@@ -146,4 +144,17 @@ add_task(async function test_purging_increments_classified_tracker_counter() {
 
   // Clear telemetry state.
   Services.fog.testResetFOG();
+});
+
+add_task(async function test_purge_ping_submitted_on_idle_daily() {
+  let submitted = false;
+  GleanPings.bounceTrackingProtection.testBeforeNextSubmit(() => {
+    submitted = true;
+  });
+
+  // The idle-daily category calls into the observer directly, it does not go
+  // through the observer service.
+  btp.QueryInterface(Ci.nsIObserver).observe(null, "idle-daily", null);
+
+  Assert.ok(submitted, "idle-daily submitted the purge telemetry ping");
 });

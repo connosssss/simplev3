@@ -1,23 +1,43 @@
-{%- call swift::docstring(e, 0) %}
-public enum {{ type_name }}: Swift.Error {
+{%- call swift::docstring(e, 0) %}{% endcall %}
+public {% if ci.is_recursive(e.name()) %}indirect {% endif %}
+{%- if config.error_has_additional_conformances(e, contains_object_references) %}
+enum {{ type_name }}: Swift.Error, {{ config.additional_conformance_list_for_error(e, contains_object_references) }} {
+{%- else %}
+enum {{ type_name }}: Swift.Error {
+{%- endif %}
 
     {% if e.is_flat() %}
     {% for variant in e.variants() %}
-    {%- call swift::docstring(variant, 4) %}
+    {%- call swift::docstring(variant, 4) %}{% endcall %}
     case {{ variant.name()|class_name }}(message: String)
     {% endfor %}
 
     {%- else %}
     {% for variant in e.variants() %}
-    {%- call swift::docstring(variant, 4) %}
+    {%- call swift::docstring(variant, 4) %}{% endcall %}
     case {{ variant.name()|class_name }}{% if variant.fields().len() > 0 %}(
-        {%- call swift::field_list_decl(variant, variant.has_nameless_fields()) %}
+        {%- call swift::field_list_decl(variant, variant.has_nameless_fields()) %}{% endcall %}
     ){% endif -%}
     {% endfor %}
 
     {%- endif %}
+
+    {% for meth in e.methods() -%}
+    {%- call swift::func_decl("public func", meth, 4) %}{% endcall %}
+    {% endfor %}
+
+    {% call swift::uniffi_trait_impls(e.uniffi_trait_methods()) %}{% endcall %}
+
+    {% if !config.omit_localized_error_conformance() %}
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    {% endif %}
 }
 
+#if compiler(>=6)
+extension {{ type_name }}: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -71,10 +91,10 @@ public struct {{ ffi_converter_name }}: FfiConverterRustBuffer {
 
         {% for variant in e.variants() %}
         {% if variant.has_fields() %}
-        case let .{{ variant.name()|error_variant_swift_quoted }}({% for field in variant.fields() %}{%- call swift::field_name(field, loop.index) -%}{%- if loop.last -%}{%- else -%},{%- endif -%}{% endfor %}):
+        case let .{{ variant.name()|error_variant_swift_quoted }}({% for field in variant.fields() %}{%- call swift::field_name(field, loop.index) %}{% endcall -%}{%- if loop.last -%}{%- else -%},{%- endif -%}{% endfor %}):
             writeInt(&buf, Int32({{ loop.index }}))
             {% for field in variant.fields() -%}
-            {{ field|write_fn }}({% call swift::field_name(field, loop.index) %}, into: &buf)
+            {{ field|write_fn }}({% call swift::field_name(field, loop.index) %}{% endcall %}, into: &buf)
             {% endfor -%}
         {% else %}
         case .{{ variant.name()|class_name }}:
@@ -104,22 +124,3 @@ public func {{ ffi_converter_name }}_lift(_ buf: RustBuffer) throws -> {{ type_n
 public func {{ ffi_converter_name }}_lower(_ value: {{ type_name }}) -> RustBuffer {
     return {{ ffi_converter_name }}.lower(value)
 }
-
-{% if !contains_object_references %}
-extension {{ type_name }}: Equatable, Hashable {}
-{% if config.generate_codable_conformance() %}
-extension {{ type_name }}: Codable {}
-{% endif %}
-{% endif %}
-
-{% if !config.omit_localized_error_conformance() %}
-extension {{ type_name }}: Foundation.LocalizedError {
-    public var errorDescription: String? {
-        String(reflecting: self)
-    }
-}
-{% endif %}
-
-{% if config.generate_case_iterable_conformance() && !e.is_flat() && !e.contains_variant_fields() %}
-extension {{ type_name }}: CaseIterable {}
-{% endif %}

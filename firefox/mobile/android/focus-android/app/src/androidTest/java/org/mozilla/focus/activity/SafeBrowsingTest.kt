@@ -3,50 +3,44 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 package org.mozilla.focus.activity
 
-import okhttp3.mockwebserver.MockWebServer
+import mozilla.components.browser.errorpages.R as errorpagesR
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
-import org.mozilla.focus.R
 import org.mozilla.focus.activity.robots.homeScreen
 import org.mozilla.focus.activity.robots.searchScreen
 import org.mozilla.focus.helpers.FeatureSettingsHelper
+import org.mozilla.focus.helpers.FocusTestRule
 import org.mozilla.focus.helpers.MainActivityFirstrunTestRule
-import org.mozilla.focus.helpers.MockWebServerHelper
 import org.mozilla.focus.helpers.TestHelper.exitToTop
 import org.mozilla.focus.helpers.TestHelper.getStringResource
-import org.mozilla.focus.helpers.TestSetup
 import org.mozilla.focus.testAnnotations.SmokeTest
 
 // These tests verify the Safe Browsing feature by visiting unsafe URLs and checking they are blocked
-class SafeBrowsingTest : TestSetup() {
-    private lateinit var webServer: MockWebServer
-    private val malwareWarning = getStringResource(R.string.mozac_browser_errorpages_safe_browsing_malware_uri_title)
-    private val phishingWarning = getStringResource(R.string.mozac_browser_errorpages_safe_phishing_uri_title)
+class SafeBrowsingTest {
+    private val malwareWarning =
+        getStringResource(errorpagesR.string.mozac_browser_errorpages_safe_browsing_malware_uri_title)
+    private val phishingWarning = getStringResource(errorpagesR.string.mozac_browser_errorpages_safe_phishing_uri_title)
     private val unwantedSoftwareWarning =
-        getStringResource(R.string.mozac_browser_errorpages_safe_browsing_unwanted_uri_title)
-    private val harmfulSiteWarning = getStringResource(R.string.mozac_browser_errorpages_safe_harmful_uri_title)
-    private val tryAgainButton = getStringResource(R.string.mozac_browser_errorpages_page_refresh)
+        getStringResource(errorpagesR.string.mozac_browser_errorpages_safe_browsing_unwanted_uri_title)
+    private val harmfulSiteWarning =
+        getStringResource(errorpagesR.string.mozac_browser_errorpages_safe_harmful_uri_title)
+    private val tryAgainButton = getStringResource(errorpagesR.string.mozac_browser_errorpages_page_refresh)
     private val featureSettingsHelper = FeatureSettingsHelper()
 
-    @get:Rule
-    val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
+    @get:Rule(order = 0) val focusTestRule: FocusTestRule = FocusTestRule()
+
+    @get:Rule val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
 
     @Before
-    override fun setUp() {
-        super.setUp()
+    fun setUp() {
         featureSettingsHelper.setCfrForTrackingProtectionEnabled(false)
         featureSettingsHelper.setSearchWidgetDialogEnabled(false)
-        webServer = MockWebServer().apply {
-            dispatcher = MockWebServerHelper.AndroidAssetDispatcher()
-            start()
-        }
     }
 
     @After
     fun tearDown() {
-        webServer.shutdown()
         featureSettingsHelper.resetAllFeatureFlags()
     }
 
@@ -55,11 +49,11 @@ class SafeBrowsingTest : TestSetup() {
     fun blockMalwarePageTest() {
         val malwareURl = "http://itisatrap.org/firefox/its-an-attack.html"
 
-        searchScreen {
-        }.loadPage(malwareURl) {
-            verifyPageContent(malwareWarning)
-            verifyPageContent(tryAgainButton)
-        }
+        searchScreen {}
+            .loadPage(malwareURl) {
+                verifyPageContent(malwareWarning)
+                verifyPageContent(tryAgainButton)
+            }
     }
 
     @SmokeTest
@@ -67,11 +61,11 @@ class SafeBrowsingTest : TestSetup() {
     fun blockPhishingPageTest() {
         val phishingURl = "http://itisatrap.org/firefox/its-a-trap.html"
 
-        searchScreen {
-        }.loadPage(phishingURl) {
-            verifyPageContent(phishingWarning)
-            verifyPageContent(tryAgainButton)
-        }
+        searchScreen {}
+            .loadPage(phishingURl) {
+                verifyPageContent(phishingWarning)
+                verifyPageContent(tryAgainButton)
+            }
     }
 
     @SmokeTest
@@ -79,11 +73,11 @@ class SafeBrowsingTest : TestSetup() {
     fun blockUnwantedSoftwarePageTest() {
         val unwantedURl = "http://itisatrap.org/firefox/unwanted.html"
 
-        searchScreen {
-        }.loadPage(unwantedURl) {
-            verifyPageContent(unwantedSoftwareWarning)
-            verifyPageContent(tryAgainButton)
-        }
+        searchScreen {}
+            .loadPage(unwantedURl) {
+                verifyPageContent(unwantedSoftwareWarning)
+                verifyPageContent(tryAgainButton)
+            }
     }
 
     @SmokeTest
@@ -91,11 +85,11 @@ class SafeBrowsingTest : TestSetup() {
     fun blockHarmfulPageTest() {
         val harmfulURl = "https://www.itisatrap.org/firefox/harmful.html"
 
-        searchScreen {
-        }.loadPage(harmfulURl) {
-            verifyPageContent(harmfulSiteWarning)
-            verifyPageContent(tryAgainButton)
-        }
+        searchScreen {}
+            .loadPage(harmfulURl) {
+                verifyPageContent(harmfulSiteWarning)
+                verifyPageContent(tryAgainButton)
+            }
     }
 
     @SmokeTest
@@ -103,17 +97,17 @@ class SafeBrowsingTest : TestSetup() {
     fun unblockSafeBrowsingTest() {
         val malwareURl = "http://itisatrap.org/firefox/its-an-attack.html"
 
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openPrivacySettingsMenu {
-            switchSafeBrowsingToggle()
-            exitToTop()
-        }
-        searchScreen {
-        }.loadPage(malwareURl) {
-            verifyPageContent("It’s an Attack!")
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openPrivacySettingsMenu {
+                switchSafeBrowsingToggle()
+                exitToTop()
+            }
+        searchScreen {}
+            .loadPage(malwareURl) {
+                verifyPageContent("It’s an Attack!")
+            }
     }
 
     @SmokeTest
@@ -122,20 +116,24 @@ class SafeBrowsingTest : TestSetup() {
         val safePageUrl = "https://mozilla-mobile.github.io/testapp/"
         val insecurePageUrl = "http://itisatrap.org/firefox/its-a-trap.html"
 
-        searchScreen {
-        }.loadPage(safePageUrl) {
-            verifyPageContent("Lets test!")
-            verifySiteTrackingProtectionIconShown()
-        }.openSiteSecurityInfoSheet {
-            verifySiteConnectionInfoIsSecure(true)
-        }.closeSecurityInfoSheet {
-        }.clearBrowsingData {}
-        searchScreen {
-        }.loadPage(insecurePageUrl) {
-            verifyPageURL(insecurePageUrl)
-            verifySiteInfoIndicatorShown()
-        }.openSiteSecurityInfoSheet {
-            verifySiteConnectionInfoIsSecure(false)
-        }.closeSecurityInfoSheet { }
+        searchScreen {}
+            .loadPage(safePageUrl) {
+                verifyPageContent("Lets test!")
+                verifySiteTrackingProtectionIconShown()
+            }
+            .openSiteSecurityInfoSheet {
+                verifySiteConnectionInfoIsSecure(true)
+            }
+            .closeSecurityInfoSheet {}
+            .clearBrowsingData {}
+        searchScreen {}
+            .loadPage(insecurePageUrl) {
+                verifyPageURL(insecurePageUrl)
+                verifySiteInfoIndicatorShown()
+            }
+            .openSiteSecurityInfoSheet {
+                verifySiteConnectionInfoIsSecure(false)
+            }
+            .closeSecurityInfoSheet {}
     }
 }

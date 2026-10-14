@@ -11,10 +11,9 @@ import mozilla.components.concept.engine.permission.SitePermissions.AutoplayStat
 import mozilla.components.feature.sitepermissions.SitePermissionsRules.Action.ASK_TO_ALLOW
 import mozilla.components.feature.sitepermissions.SitePermissionsRules.Action.BLOCKED
 
-/**
- * Indicate how site permissions must behave by permission category.
- */
-data class SitePermissionsRules constructor(
+/** Indicate how site permissions must behave by permission category. */
+data class SitePermissionsRules
+constructor(
     val camera: Action,
     val location: Action,
     val notification: Action,
@@ -24,36 +23,40 @@ data class SitePermissionsRules constructor(
     val persistentStorage: Action,
     val mediaKeySystemAccess: Action,
     val crossOriginStorageAccess: Action,
+    val localDeviceAccess: Action,
+    val localNetworkAccess: Action,
 ) {
 
     enum class Action {
-        ALLOWED, BLOCKED, ASK_TO_ALLOW;
+        ALLOWED,
+        BLOCKED,
+        ASK_TO_ALLOW;
 
-        fun toStatus(): SitePermissions.Status = when (this) {
-            ALLOWED -> SitePermissions.Status.ALLOWED
-            BLOCKED -> SitePermissions.Status.BLOCKED
-            ASK_TO_ALLOW -> SitePermissions.Status.NO_DECISION
-        }
+        fun toStatus(): SitePermissions.Status =
+            when (this) {
+                ALLOWED -> SitePermissions.Status.ALLOWED
+                BLOCKED -> SitePermissions.Status.BLOCKED
+                ASK_TO_ALLOW -> SitePermissions.Status.NO_DECISION
+            }
     }
 
-    /**
-     * Autoplay requests will never prompt the user
-     */
+    /** Autoplay requests will never prompt the user */
     enum class AutoplayAction {
-        ALLOWED, BLOCKED;
+        ALLOWED,
+        BLOCKED;
 
-        internal fun toAction(): Action = when (this) {
-            ALLOWED -> Action.ALLOWED
-            BLOCKED -> Action.BLOCKED
-        }
+        internal fun toAction(): Action =
+            when (this) {
+                ALLOWED -> Action.ALLOWED
+                BLOCKED -> Action.BLOCKED
+            }
 
-        /**
-         * Convert from an AutoplayAction to an AutoplayStatus.
-         */
-        fun toAutoplayStatus(): AutoplayStatus = when (this) {
-            ALLOWED -> AutoplayStatus.ALLOWED
-            BLOCKED -> AutoplayStatus.BLOCKED
-        }
+        /** Convert from an AutoplayAction to an AutoplayStatus. */
+        fun toAutoplayStatus(): AutoplayStatus =
+            when (this) {
+                ALLOWED -> AutoplayStatus.ALLOWED
+                BLOCKED -> AutoplayStatus.BLOCKED
+            }
     }
 
     internal fun getActionFrom(request: PermissionRequest): Action {
@@ -75,10 +78,12 @@ data class SitePermissionsRules constructor(
             is Permission.ContentPersistentStorage -> {
                 persistentStorage
             }
-            is Permission.ContentAudioCapture, is Permission.ContentAudioMicrophone -> {
+            is Permission.ContentAudioCapture,
+            is Permission.ContentAudioMicrophone -> {
                 microphone
             }
-            is Permission.ContentVideoCamera, is Permission.ContentVideoCapture -> {
+            is Permission.ContentVideoCamera,
+            is Permission.ContentVideoCapture -> {
                 camera
             }
             is Permission.ContentAutoPlayAudible -> {
@@ -93,6 +98,12 @@ data class SitePermissionsRules constructor(
             is Permission.ContentCrossOriginStorageAccess -> {
                 crossOriginStorageAccess
             }
+            is Permission.ContentLocalDeviceAccess -> {
+                localDeviceAccess
+            }
+            is Permission.ContentLocalNetworkAccess -> {
+                localNetworkAccess
+            }
             else -> ASK_TO_ALLOW
         }
     }
@@ -105,10 +116,8 @@ data class SitePermissionsRules constructor(
         }
     }
 
-    /**
-     * Converts a [SitePermissionsRules] object into a [SitePermissions] .
-     */
-    fun toSitePermissions(origin: String, savedAt: Long = System.currentTimeMillis()): SitePermissions {
+    /** Converts a [SitePermissionsRules] object into a [SitePermissions] . */
+    fun toSitePermissions(origin: String): SitePermissions {
         return SitePermissions(
             origin = origin,
             location = location.toStatus(),
@@ -120,7 +129,8 @@ data class SitePermissionsRules constructor(
             localStorage = persistentStorage.toStatus(),
             mediaKeySystemAccess = mediaKeySystemAccess.toStatus(),
             crossOriginStorageAccess = crossOriginStorageAccess.toStatus(),
-            savedAt = savedAt,
+            localDeviceAccess = localDeviceAccess.toStatus(),
+            localNetworkAccess = localNetworkAccess.toStatus(),
         )
     }
 }

@@ -17,11 +17,11 @@ the graph.
 # `{'relative-datestamp': '..'}` is handled at the last possible moment during
 # task creation.
 
-
 import copy
 import logging
 import os
 import re
+from collections import defaultdict
 
 from slugid import nice as slugid
 from taskgraph.graph import Graph
@@ -65,9 +65,16 @@ def derive_misc_task(
     image."""
     label = f"{purpose}-{target_task.label}"
 
-    # this is why all docker image tasks are included in the target task graph: we
-    # need to find them in label_to_taskid, even if nothing else required them
-    image_taskid = label_to_taskid["docker-image-" + image]
+    # docker-image is in enable_always_target by default but that can be turned off
+    image_taskid = label_to_taskid.get("docker-image-" + image)
+    if image_taskid is None:
+        if not parameters["enable_always_target"]:
+            logger.warning(
+                f"{image} docker image not in the task graph, "
+                f"skipping {purpose} for {target_task.description}"
+            )
+            return
+        raise RuntimeError(f"{image} docker image missing from the task graph")
 
     provisioner_id, worker_type = get_worker_type(
         graph_config,
@@ -93,6 +100,14 @@ def derive_misc_task(
             "source": target_task.task["metadata"]["source"],
         },
         "scopes": [],
+        "tags": {
+            "createdForUser": parameters["owner"],
+            "kind": "misc",
+            "label": label,
+            "project": parameters["project"],
+            "trust-domain": graph_config["trust-domain"],
+            "worker-implementation": "docker-worker",
+        },
         "payload": {
             "image": {
                 "path": "public/image.tar.zst",
@@ -152,6 +167,8 @@ def make_index_task(
         graph_config,
         dependencies,
     )
+    if task is None:
+        return
 
     # we need to "summarize" the scopes, otherwise a particularly
     # namespace-heavy index task might have more scopes than can fit in a
@@ -170,9 +187,22 @@ def make_index_task(
     task.task["payload"]["command"] = ["insert-indexes.js"] + index_paths
     task.task["payload"]["env"] = {
         "TARGET_TASKID": parent_task.task_id,
-        "INDEX_RANK": index_rank,
+        "INDEX_RANK": f"{index_rank}",
     }
     return task
+
+
+@register_morph
+def skip_dontbuild(taskgraph, label_to_taskid, parameters, graph_config):
+    """
+    Remove all tasks from the graph when DONTBUILD was set in the commit
+    message. target-tasks.json is written before morphing, so run-missing-tests
+    can still schedule tasks.
+    """
+    if not parameters.get("dontbuild"):
+        return taskgraph, label_to_taskid
+    logger.info("DONTBUILD set; removing all tasks from the task graph")
+    return TaskGraph({}, Graph(set(), set())), {}
 
 
 @register_morph
@@ -195,19 +225,19 @@ def add_index_tasks(taskgraph, label_to_taskid, parameters, graph_config):
         task.task["routes"] = [
             r for r in task.task["routes"] if not r.startswith("index.")
         ]
-        added.append(
-            make_index_task(
-                task,
-                taskgraph,
-                label_to_taskid,
-                parameters,
-                graph_config,
-                index_paths=index_paths,
-                index_rank=task.task.get("extra", {}).get("index", {}).get("rank", 0),
-                purpose="index-task",
-                dependencies={"parent": task.task_id},
-            )
+        index_task = make_index_task(
+            task,
+            taskgraph,
+            label_to_taskid,
+            parameters,
+            graph_config,
+            index_paths=index_paths,
+            index_rank=task.task.get("extra", {}).get("index", {}).get("rank", 0),
+            purpose="index-task",
+            dependencies={"parent": task.task_id},
         )
+        if index_task is not None:
+            added.append(index_task)
 
     if added:
         taskgraph, label_to_taskid = amend_taskgraph(taskgraph, label_to_taskid, added)
@@ -232,19 +262,19 @@ def add_eager_cache_index_tasks(taskgraph, label_to_taskid, parameters, graph_co
         if "eager_indexes" not in task.attributes:
             continue
         eager_indexes = task.attributes["eager_indexes"]
-        added.append(
-            make_index_task(
-                task,
-                taskgraph,
-                label_to_taskid,
-                parameters,
-                graph_config,
-                index_paths=eager_indexes,
-                index_rank=0,  # Be sure complete tasks get priority
-                purpose="eager-index",
-                dependencies={},
-            )
+        eager_index_task = make_index_task(
+            task,
+            taskgraph,
+            label_to_taskid,
+            parameters,
+            graph_config,
+            index_paths=eager_indexes,
+            index_rank=0,  # Be sure complete tasks get priority
+            purpose="eager-index",
+            dependencies={},
         )
+        if eager_index_task is not None:
+            added.append(eager_index_task)
 
     if added:
         taskgraph, label_to_taskid = amend_taskgraph(taskgraph, label_to_taskid, added)
@@ -253,16 +283,58 @@ def add_eager_cache_index_tasks(taskgraph, label_to_taskid, parameters, graph_co
 
 
 @register_morph
-def add_try_task_duplicates(taskgraph, label_to_taskid, parameters, graph_config):
-    return _add_try_task_duplicates(
-        taskgraph, label_to_taskid, parameters, graph_config
+def add_code_coverage_task(taskgraph, label_to_taskid, parameters, graph_config):
+    """
+    Add a code-coverage-artifacts task that depends on all ccov test tasks, if
+    and only if any such tasks are present in the graph.  This ensures the task
+    is not added (and does not pull in extra dependencies) when only a subset of
+    ccov tasks is targeted. Only applies to mozilla-central and comm-central.
+    """
+    if parameters["project"] not in ("mozilla-central", "comm-central"):
+        return taskgraph, label_to_taskid
+
+    ccov_tasks = {
+        label: task.task_id
+        for label, task in taskgraph.tasks.items()
+        if task.attributes.get("ccov")
+    }
+    if not ccov_tasks:
+        return taskgraph, label_to_taskid
+
+    task_def = {
+        "provisionerId": "built-in",
+        "workerType": "succeed",
+        "dependencies": sorted(ccov_tasks.values()),
+        "requires": "all-resolved",
+        "created": {"relative-datestamp": "0 seconds"},
+        "deadline": {"relative-datestamp": "1 day"},
+        "expires": {"relative-datestamp": "1 day"},
+        "metadata": {
+            "name": "code-coverage-artifacts",
+            "description": "Notify when all code-coverage tasks in this task group are complete",
+            "owner": parameters["owner"],
+            "source": parameters["head_repository"],
+        },
+        "scopes": [],
+        "payload": {},
+        "routes": ["project.codecoverage.v1.tasks_done"],
+        "tags": {},
+    }
+    task = Task(
+        kind="code-coverage",
+        label="code-coverage-artifacts",
+        attributes={},
+        task=task_def,
+        dependencies=ccov_tasks,
     )
+    task.task_id = slugid()
+    taskgraph, label_to_taskid = amend_taskgraph(taskgraph, label_to_taskid, [task])
+    logger.info("Added code-coverage-artifacts task.")
+    return taskgraph, label_to_taskid
 
 
-# this shim function exists so we can call it from the unittests.
-# this works around an issue with
-# third_party/python/taskcluster_taskgraph/taskgraph/morph.py#40
-def _add_try_task_duplicates(taskgraph, label_to_taskid, parameters, graph_config):
+@register_morph
+def add_try_task_duplicates(taskgraph, label_to_taskid, parameters, graph_config):
     try_config = parameters.get("try_task_config", {})
     tasks = try_config.get("tasks", [])
     glob_tasks = {x.strip("-*") for x in tasks if x.endswith("-*")}
@@ -270,15 +342,37 @@ def _add_try_task_duplicates(taskgraph, label_to_taskid, parameters, graph_confi
 
     rebuild = try_config.get("rebuild")
     if rebuild:
+        if isinstance(rebuild, int):
+            rebuild = defaultdict(lambda n=rebuild: n)
+        else:
+            rebuild = defaultdict(lambda: 1, rebuild)
         for task in taskgraph.tasks.values():
+            count = rebuild[task.label]
+
+            if count == 1:
+                continue
+
             chunk_index = -1
             if task.label.endswith("-cf"):
                 chunk_index = -2
             label_parts = task.label.split("-")
             label_no_chunk = "-".join(label_parts[:chunk_index])
+            label_no_cf = (
+                "-".join(label_parts[:-1]) if chunk_index == -2 else task.label
+            )
 
-            if label_parts[chunk_index].isnumeric() and label_no_chunk in glob_tasks:
-                task.attributes["task_duplicates"] = rebuild
+            # A task's chunk count is only known once the decision task has
+            # resolved it, so a selection made from `mach try`'s task list can
+            # name the task unchunked while the graph ends up chunking it.
+            if label_parts[chunk_index].isnumeric() and (
+                label_no_chunk in glob_tasks or label_no_chunk in tasks
+            ):
+                task.attributes["task_duplicates"] = count
             elif task.label in tasks:
-                task.attributes["task_duplicates"] = rebuild
+                task.attributes["task_duplicates"] = count
+            elif label_no_cf in glob_tasks:
+                # When dynamic chunking produces 1 chunk, the label has no
+                # numeric suffix to match the chunked-glob branch above, so
+                # match the unchunked name against the selected glob too.
+                task.attributes["task_duplicates"] = count
     return taskgraph, label_to_taskid

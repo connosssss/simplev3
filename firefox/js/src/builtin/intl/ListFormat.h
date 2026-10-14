@@ -1,43 +1,72 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef builtin_intl_ListFormat_h
 #define builtin_intl_ListFormat_h
 
+#include <stddef.h>
 #include <stdint.h>
 
-#include "builtin/SelfHostingDefines.h"
 #include "js/Class.h"
 #include "js/TypeDecls.h"
+#include "js/Value.h"
 #include "vm/NativeObject.h"
+#include "vm/StringType.h"
 
 namespace mozilla::intl {
 class ListFormat;
 }  // namespace mozilla::intl
 
-namespace js {
+namespace js::intl {
+
+struct ListFormatOptions;
 
 class ListFormatObject : public NativeObject {
  public:
   static const JSClass class_;
   static const JSClass& protoClass_;
 
-  static constexpr uint32_t INTERNALS_SLOT = 0;
-  static constexpr uint32_t LIST_FORMAT_SLOT = 1;
-  static constexpr uint32_t SLOT_COUNT = 2;
-
-  static_assert(INTERNALS_SLOT == INTL_INTERNALS_OBJECT_SLOT,
-                "INTERNALS_SLOT must match self-hosting define for internals "
-                "object slot");
+  JS_DEFINE_TYPED_SLOT(0, LOCALE, Object, String, Undefined);
+  JS_DEFINE_TYPED_SLOT(1, OPTIONS, Int32, Undefined);
+  JS_DEFINE_TYPED_SLOT(2, LIST_FORMAT_SLOT, Private, Undefined);
+  static constexpr uint32_t SLOT_COUNT = 3;
 
   // Estimated memory use for UListFormatter (see IcuMemoryUsage).
   static constexpr size_t EstimatedMemoryUse = 24;
 
+  bool isLocaleResolved() const { return getFixedSlotTyped(LOCALE).isString(); }
+
+  JSObject* getRequestedLocales() const {
+    const auto& slot = getFixedSlotTyped(LOCALE);
+    if (slot.isUndefined()) {
+      return nullptr;
+    }
+    return &slot.toObject();
+  }
+
+  void setRequestedLocales(JSObject* requestedLocales) {
+    setFixedSlotTyped(LOCALE, JS::ObjectValue(*requestedLocales));
+  }
+
+  JSLinearString* getLocale() const {
+    const auto& slot = getFixedSlotTyped(LOCALE);
+    if (slot.isUndefined()) {
+      return nullptr;
+    }
+    return &slot.toString()->asLinear();
+  }
+
+  void setLocale(JSLinearString* locale) {
+    setFixedSlotTyped(LOCALE, JS::StringValue(locale));
+  }
+
+  ListFormatOptions getOptions() const;
+
+  void setOptions(const ListFormatOptions& options);
+
   mozilla::intl::ListFormat* getListFormatSlot() const {
-    const auto& slot = getFixedSlot(LIST_FORMAT_SLOT);
+    const auto& slot = getFixedSlotTyped(LIST_FORMAT_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
@@ -45,7 +74,7 @@ class ListFormatObject : public NativeObject {
   }
 
   void setListFormatSlot(mozilla::intl::ListFormat* format) {
-    setFixedSlot(LIST_FORMAT_SLOT, PrivateValue(format));
+    setFixedSlotTyped(LIST_FORMAT_SLOT, JS::PrivateValue(format));
   }
 
  private:
@@ -55,15 +84,6 @@ class ListFormatObject : public NativeObject {
   static void finalize(JS::GCContext* gcx, JSObject* obj);
 };
 
-/**
- * Returns a string representing the array of string values |list| according to
- * the effective locale and the formatting options of the given ListFormat.
- *
- * Usage: formatted = intl_FormatList(listFormat, list, formatToParts)
- */
-[[nodiscard]] extern bool intl_FormatList(JSContext* cx, unsigned argc,
-                                          Value* vp);
-
-}  // namespace js
+}  // namespace js::intl
 
 #endif /* builtin_intl_ListFormat_h */

@@ -8,36 +8,25 @@
  * the page title.
  */
 
-import {
-  UrlbarProvider,
-  UrlbarUtils,
-} from "resource:///modules/UrlbarUtils.sys.mjs";
+import { UrlbarProvider } from "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs";
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
-  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
+  UrlbarResult: "chrome://browser/content/urlbar/UrlbarResult.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
 });
 
 /**
  * Class used to create the provider.
  */
-class ProviderHistoryUrlHeuristic extends UrlbarProvider {
+export class UrlbarProviderHistoryUrlHeuristic extends UrlbarProvider {
   /**
-   * Returns the name of this provider.
-   *
-   * @returns {string} the name of this provider.
-   */
-  get name() {
-    return "HistoryUrlHeuristic";
-  }
-
-  /**
-   * @returns {Values<typeof UrlbarUtils.PROVIDER_TYPE>}
+   * @returns {Values<typeof lazy.UrlbarShared.PROVIDER_TYPE>}
    */
   get type() {
-    return UrlbarUtils.PROVIDER_TYPE.HEURISTIC;
+    return lazy.UrlbarShared.PROVIDER_TYPE.HEURISTIC;
   }
 
   /**
@@ -56,17 +45,16 @@ class ProviderHistoryUrlHeuristic extends UrlbarProvider {
       queryContext.fixupInfo?.href &&
       !queryContext.fixupInfo.isSearch &&
       queryContext.fixupInfo.scheme.startsWith("http") &&
-      queryContext.fixupInfo.href.length <= UrlbarUtils.MAX_TEXT_LENGTH
+      queryContext.fixupInfo.href.length <= lazy.UrlbarShared.MAX_TEXT_LENGTH
     );
   }
 
   /**
    * Starts querying.
    *
-   * @param {object} queryContext The query context object
-   * @param {Function} addCallback Callback invoked by the provider to add a new
-   *        result.
-   * @returns {Promise} resolved when the query stops.
+   * @param {UrlbarQueryContext} queryContext
+   * @param {(provider: UrlbarProvider, result: UrlbarResult) => void} addCallback
+   *   Callback invoked by the provider to add a new result.
    */
   async startQuery(queryContext, addCallback) {
     const instance = this.queryInstance;
@@ -78,7 +66,7 @@ class ProviderHistoryUrlHeuristic extends UrlbarProvider {
 
   async #getResult(queryContext) {
     const inputedURL = queryContext.fixupInfo.href;
-    const [strippedURL] = UrlbarUtils.stripPrefixAndTrim(inputedURL, {
+    const [strippedURL] = lazy.UrlbarShared.stripPrefixAndTrim(inputedURL, {
       stripHttp: true,
       stripHttps: true,
       stripWww: true,
@@ -96,6 +84,12 @@ class ProviderHistoryUrlHeuristic extends UrlbarProvider {
           hash('https://www.' || :strippedURL),
           hash('http://' || :strippedURL),
           hash('http://www.' || :strippedURL)
+        )
+        AND url IN (
+          'https://' || :strippedURL,
+          'https://www.' || :strippedURL,
+          'http://' || :strippedURL,
+          'http://www.' || :strippedURL
         )
         AND frecency <> 0
       ORDER BY
@@ -118,20 +112,20 @@ class ProviderHistoryUrlHeuristic extends UrlbarProvider {
       return null;
     }
 
-    return Object.assign(
-      new lazy.UrlbarResult(
-        UrlbarUtils.RESULT_TYPE.URL,
-        UrlbarUtils.RESULT_SOURCE.HISTORY,
-        ...lazy.UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, {
-          url: [inputedURL, UrlbarUtils.HIGHLIGHT.TYPED],
-          title: [title, UrlbarUtils.HIGHLIGHT.NONE],
-          icon: UrlbarUtils.getIconForUrl(resultSet[0].getResultByName("url")),
-        })
-      ),
-      { heuristic: true }
-    );
+    return new lazy.UrlbarResult({
+      type: lazy.UrlbarShared.RESULT_TYPE.URL,
+      source: lazy.UrlbarShared.RESULT_SOURCE.HISTORY,
+      heuristic: true,
+      payload: {
+        url: inputedURL,
+        title,
+        icon: lazy.UrlbarShared.getIconForUrl(
+          resultSet[0].getResultByName("url")
+        ),
+      },
+      highlights: {
+        url: lazy.UrlbarShared.HIGHLIGHT.TYPED,
+      },
+    });
   }
 }
-
-export var UrlbarProviderHistoryUrlHeuristic =
-  new ProviderHistoryUrlHeuristic();

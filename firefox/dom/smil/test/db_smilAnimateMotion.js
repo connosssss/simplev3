@@ -1,5 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -73,18 +71,18 @@ var _reusedCTMLists = {
     ctm1: [40, 80, Math.PI / 3],
   },
   justMoveRAuto: {
-    ctm0: [40, 80, Math.atan(2)],
-    ctm1_6: [40, 80, Math.atan(2)],
-    ctm1_3: [40, 80, Math.atan(2)],
-    ctm2_3: [40, 80, Math.atan(2)],
-    ctm1: [40, 80, Math.atan(2)],
+    ctm0: [40, 80, 0],
+    ctm1_6: [40, 80, 0],
+    ctm1_3: [40, 80, 0],
+    ctm2_3: [40, 80, 0],
+    ctm1: [40, 80, 0],
   },
   justMoveRAutoReverse: {
-    ctm0: [40, 80, Math.PI + Math.atan(2)],
-    ctm1_6: [40, 80, Math.PI + Math.atan(2)],
-    ctm1_3: [40, 80, Math.PI + Math.atan(2)],
-    ctm2_3: [40, 80, Math.PI + Math.atan(2)],
-    ctm1: [40, 80, Math.PI + Math.atan(2)],
+    ctm0: [40, 80, Math.PI],
+    ctm1_6: [40, 80, Math.PI],
+    ctm1_3: [40, 80, Math.PI],
+    ctm2_3: [40, 80, Math.PI],
+    ctm1: [40, 80, Math.PI],
   },
   nullMoveBasic: {
     ctm0: [0, 0, 0],

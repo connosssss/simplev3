@@ -11,7 +11,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.CornerSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -26,12 +29,6 @@ import mozilla.components.ui.colors.PhotonColors
 import org.mozilla.fenix.theme.FirefoxTheme
 
 private val heightProgressBarChecklist = 12.dp
-private val shapeProgressBarChecklist = RoundedCornerShape(
-    topStartPercent = 50,
-    topEndPercent = 50,
-    bottomEndPercent = 50,
-    bottomStartPercent = 50,
-)
 
 /**
  * The progress bar for checklist tasks.
@@ -41,7 +38,7 @@ private val shapeProgressBarChecklist = RoundedCornerShape(
  */
 @Composable
 fun ProgressBarSetupChecklistView(numberOfTasks: Int, numberOfTasksCompleted: Int) {
-    Box(modifier = Modifier.background(FirefoxTheme.colors.layer1)) {
+    Surface {
         ProgressBarBackground()
 
         ProgressBarCompleted(numberOfTasks, numberOfTasksCompleted)
@@ -50,93 +47,85 @@ fun ProgressBarSetupChecklistView(numberOfTasks: Int, numberOfTasksCompleted: In
     }
 }
 
-/**
- * The gray background for progressbar.
- */
+/** The gray background for progressbar. */
 @Composable
 private fun ProgressBarBackground() {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(heightProgressBarChecklist)
-            .clip(shapeProgressBarChecklist)
-            .background(FirefoxTheme.colors.borderDisabled),
+        modifier =
+            Modifier.fillMaxWidth()
+                .height(heightProgressBarChecklist)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f))
     ) {}
 }
 
-/**
- * The progress bar with the colored gradient for checklist tasks.
- */
+/** The progress bar with the colored gradient for checklist tasks. */
 @Composable
 private fun ProgressBarCompleted(numberOfTasks: Int, numberOfTasksCompleted: Int) {
-    val progress by remember(numberOfTasksCompleted) {
-        mutableFloatStateOf(numberOfTasksCompleted.toFloat() / numberOfTasks.toFloat())
-    }
+    val progress by
+        remember(numberOfTasksCompleted) {
+            mutableFloatStateOf(numberOfTasksCompleted.toFloat() / numberOfTasks.toFloat())
+        }
 
-    val gradient = Brush.horizontalGradient(
-        colors = listOf(
-            Color(PhotonColors.Violet50.value),
-            Color(PhotonColors.Pink40.value),
-            Color(PhotonColors.Yellow40.value),
-        ),
-    )
+    val gradient =
+        Brush.horizontalGradient(
+            colors =
+                listOf(
+                    Color(PhotonColors.Violet50.value),
+                    Color(PhotonColors.Pink40.value),
+                    Color(PhotonColors.Yellow40.value),
+                )
+        )
 
-    var shape = shapeProgressBarChecklist
+    var shape = MaterialTheme.shapes.extraLarge
 
     if (numberOfTasksCompleted < numberOfTasks) {
-        shape = RoundedCornerShape(
-            topStartPercent = 50,
-            bottomStartPercent = 50,
-        )
+        shape =
+            MaterialTheme.shapes.extraLarge.copy(
+                topEnd = CornerSize(0.dp),
+                bottomEnd = CornerSize(0.dp),
+            )
     }
 
     Row(
-        modifier = Modifier
-            .fillMaxWidth(progress)
-            .height(heightProgressBarChecklist)
-            .clip(shape)
-            .background(brush = gradient),
+        modifier =
+            Modifier.fillMaxWidth(progress).height(heightProgressBarChecklist).clip(shape).background(brush = gradient)
     ) {}
 }
 
-/**
- * The layer to create the segmented visual.
- */
+/** The layer to create the segmented visual. */
 @Composable
 private fun ProgressBarSegmentation(numberOfTasks: Int) {
     Row(modifier = Modifier.height(heightProgressBarChecklist)) {
         for (task in 1..numberOfTasks) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(heightProgressBarChecklist)
-                    .background(Color.Transparent)
-                    .weight(1f),
+                modifier =
+                    Modifier.fillMaxWidth().height(heightProgressBarChecklist).background(Color.Transparent).weight(1f)
             ) {}
 
             if (task != numberOfTasks) {
                 Row(
-                    modifier = Modifier
-                        .height(heightProgressBarChecklist)
-                        .width(4.dp)
-                        .background(FirefoxTheme.colors.layer1),
+                    modifier =
+                        Modifier.height(heightProgressBarChecklist)
+                            .width(4.dp)
+                            .background(MaterialTheme.colorScheme.surface)
                 ) {}
             }
         }
     }
 }
 
-@Suppress("MagicNumber")
 @FlexibleWindowLightDarkPreview
 @Composable
 private fun PreviewProgressIndicatorSetupChecklist() {
     FirefoxTheme {
-        Box(
-            modifier = Modifier
-                .background(color = FirefoxTheme.colors.layer1)
-                .padding(16.dp),
-        ) {
-            ProgressBarSetupChecklistView(6, 3)
+        Surface {
+            Box(modifier = Modifier.padding(16.dp)) {
+                ProgressBarSetupChecklistView(
+                    numberOfTasks = 6,
+                    numberOfTasksCompleted = 3,
+                )
+            }
         }
     }
 }

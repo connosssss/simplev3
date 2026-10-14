@@ -1,16 +1,16 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 interface nsISupports;
 
-[Pref="media.webspeech.recognition.enable",
+[SecureContext,
+ Pref="media.webspeech.recognition.enable",
  Exposed=Window]
 interface SpeechRecognitionEvent : Event
 {
   constructor(DOMString type,
-              optional SpeechRecognitionEventInit eventInitDict = {});
+              SpeechRecognitionEventInit eventInitDict);
 
   readonly attribute unsigned long resultIndex;
   readonly attribute SpeechRecognitionResultList? results;
@@ -21,7 +21,7 @@ interface SpeechRecognitionEvent : Event
 dictionary SpeechRecognitionEventInit : EventInit
 {
   unsigned long resultIndex = 0;
-  SpeechRecognitionResultList? results = null;
+  required SpeechRecognitionResultList results;
   any interpretation = null;
   Document? emma = null;
 };

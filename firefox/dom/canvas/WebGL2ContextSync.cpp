@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "WebGL2Context.h"
-
 #include "GLContext.h"
+#include "WebGL2Context.h"
 #include "WebGLSync.h"
 #include "mozilla/StaticPrefs_webgl.h"
 
@@ -38,8 +36,6 @@ GLenum WebGL2Context::ClientWaitSync(WebGLSync& sync, GLbitfield flags,
                                      GLuint64 timeout) {
   const FuncScope funcScope(*this, "clientWaitSync");
   if (IsContextLost()) return LOCAL_GL_WAIT_FAILED;
-
-  if (!ValidateObject("sync", sync)) return LOCAL_GL_WAIT_FAILED;
 
   if (flags != 0 && flags != LOCAL_GL_SYNC_FLUSH_COMMANDS_BIT) {
     ErrorInvalidValue("`flags` must be SYNC_FLUSH_COMMANDS_BIT or 0.");

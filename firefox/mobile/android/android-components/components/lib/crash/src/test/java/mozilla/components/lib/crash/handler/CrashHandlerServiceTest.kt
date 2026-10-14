@@ -7,18 +7,17 @@ package mozilla.components.lib.crash.handler
 import android.content.ComponentName
 import android.content.Intent
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.runTest
 import mozilla.components.lib.crash.CrashReporter
 import mozilla.components.support.test.any
 import mozilla.components.support.test.mock
 import mozilla.components.support.test.robolectric.testContext
-import mozilla.components.support.test.rule.MainCoroutineRule
-import mozilla.components.support.test.rule.runTestOnMain
 import org.junit.After
 import org.junit.Before
-import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doNothing
 import org.mockito.Mockito.never
 import org.mockito.Mockito.spy
@@ -26,34 +25,33 @@ import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.robolectric.Robolectric
 
-@ExperimentalCoroutinesApi
 @RunWith(AndroidJUnit4::class)
 class CrashHandlerServiceTest {
     private var service: CrashHandlerService? = null
     private var reporter: CrashReporter? = null
     private val intent = Intent("org.mozilla.gecko.ACTION_CRASHED")
 
-    @get:Rule
-    val coroutinesTestRule = MainCoroutineRule()
-    private val scope = coroutinesTestRule.scope
+    private val testDispatcher = StandardTestDispatcher()
 
     @Before
     fun setUp() {
         service = spy(Robolectric.setupService(CrashHandlerService::class.java))
-        reporter = spy(
-            CrashReporter(
-                context = testContext,
-                shouldPrompt = CrashReporter.Prompt.NEVER,
-                services = listOf(mock()),
-                nonFatalCrashIntent = mock(),
-                scope = scope,
-            ),
-        ).install(testContext)
+        reporter =
+            spy(
+                    CrashReporter(
+                        context = testContext,
+                        shouldPrompt = CrashReporter.Prompt.NEVER,
+                        services = listOf(mock()),
+                        nonFatalCrashIntent = mock(),
+                    )
+                )
+                .install(testContext)
 
-        intent.component = ComponentName(
-            "org.mozilla.samples.browser",
-            "mozilla.components.lib.crash.handler.CrashHandlerService",
-        )
+        intent.component =
+            ComponentName(
+                "org.mozilla.samples.browser",
+                "mozilla.components.lib.crash.handler.CrashHandlerService",
+            )
         intent.putExtra(
             "uuid",
             "94f66ed7-50c7-41d1-96a7-299139a8c2af",
@@ -77,44 +75,54 @@ class CrashHandlerServiceTest {
     }
 
     @Test
-    fun `CrashHandlerService forwards main process native code crash to crash reporter`() = runTestOnMain {
-        doNothing().`when`(reporter)!!.sendCrashReport(any(), any())
+    fun `CrashHandlerService forwards main process native code crash to crash reporter`() =
+        runTest(testDispatcher) {
+            doAnswer {}.`when`(reporter)!!.sendCrashReport(any(), any())
 
-        intent.putExtra("processVisibility", "MAIN")
-        service!!.handleCrashIntent(intent, coroutinesTestRule.scope)
-        verify(reporter)!!.onCrash(any(), any())
-        verify(reporter)!!.sendCrashReport(any(), any())
-        verify(reporter, never())!!.sendNonFatalCrashIntent(any(), any())
-    }
+            intent.putExtra("processVisibility", "MAIN")
+            service!!.handleCrashIntent(intent, this)
+            testDispatcher.scheduler.advanceUntilIdle()
 
-    @Test
-    fun `CrashHandlerService forwards foreground child process native code crash to crash reporter`() = runTestOnMain {
-        doNothing().`when`(reporter)!!.sendCrashReport(any(), any())
-
-        intent.putExtra("processVisibility", "FOREGROUND_CHILD")
-        service!!.handleCrashIntent(intent, coroutinesTestRule.scope)
-        verify(reporter)!!.onCrash(any(), any())
-        verify(reporter)!!.sendNonFatalCrashIntent(any(), any())
-        verify(reporter, never())!!.sendCrashReport(any(), any())
-    }
+            verify(reporter)!!.onCrash(any(), any())
+            verify(reporter)!!.sendCrashReport(any(), any())
+            verify(reporter, never())!!.sendNonFatalCrashIntent(any(), any())
+        }
 
     @Test
-    fun `CrashHandlerService forwards background child process native code crash to crash reporter`() = runTestOnMain {
-        doNothing().`when`(reporter)!!.sendCrashReport(any(), any())
+    fun `CrashHandlerService forwards foreground child process native code crash to crash reporter`() =
+        runTest(testDispatcher) {
+            doAnswer {}.`when`(reporter)!!.sendCrashReport(any(), any())
 
-        intent.putExtra("processVisibility", "BACKGROUND_CHILD")
-        service!!.handleCrashIntent(intent, coroutinesTestRule.scope)
-        verify(reporter)!!.onCrash(any(), any())
-        verify(reporter)!!.sendCrashReport(any(), any())
-        verify(reporter, never())!!.sendNonFatalCrashIntent(any(), any())
-    }
+            intent.putExtra("processVisibility", "FOREGROUND_CHILD")
+            service!!.handleCrashIntent(intent, this)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            verify(reporter)!!.onCrash(any(), any())
+            verify(reporter)!!.sendNonFatalCrashIntent(any(), any())
+            verify(reporter, never())!!.sendCrashReport(any(), any())
+        }
 
     @Test
-    fun `CrashHandlerService null intent in onStartCommand`() = runTestOnMain {
-        doNothing().`when`(service)!!.handleCrashIntent(any(), any())
+    fun `CrashHandlerService forwards background child process native code crash to crash reporter`() =
+        runTest(testDispatcher) {
+            doAnswer {}.`when`(reporter)!!.sendCrashReport(any(), any())
 
-        service!!.onStartCommand(null, 0, 0)
+            intent.putExtra("processVisibility", "BACKGROUND_CHILD")
+            service!!.handleCrashIntent(intent, this)
+            testDispatcher.scheduler.advanceUntilIdle()
 
-        verify(service, times(0))!!.handleCrashIntent(any(), any())
-    }
+            verify(reporter)!!.onCrash(any(), any())
+            verify(reporter)!!.sendCrashReport(any(), any())
+            verify(reporter, never())!!.sendNonFatalCrashIntent(any(), any())
+        }
+
+    @Test
+    fun `CrashHandlerService null intent in onStartCommand`() =
+        runTest(testDispatcher) {
+            doNothing().`when`(service)!!.handleCrashIntent(any(), any())
+
+            service!!.onStartCommand(null, 0, 0)
+
+            verify(service, times(0))!!.handleCrashIntent(any(), any())
+        }
 }

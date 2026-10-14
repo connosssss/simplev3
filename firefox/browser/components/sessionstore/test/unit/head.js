@@ -1,7 +1,23 @@
 ChromeUtils.defineESModuleGetters(this, {
-  SessionStartup: "resource:///modules/sessionstore/SessionStartup.sys.mjs",
-  SessionStore: "resource:///modules/sessionstore/SessionStore.sys.mjs",
+  SessionStartup:
+    "moz-src:///browser/components/sessionstore/SessionStartup.sys.mjs",
+  SessionStore:
+    "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
 });
+
+function sessionStoreReadOptions() {
+  let opts = { decompress: true };
+  if (
+    Services.prefs.getBoolPref(
+      "browser.sessionstore.encryption.available",
+      false
+    ) &&
+    Services.prefs.getBoolPref("browser.sessionstore.encryption.enabled", false)
+  ) {
+    opts.decrypt = "sessionstore";
+  }
+  return opts;
+}
 
 // Call a function once initialization of SessionStartup is complete
 function afterSessionStartupInitialization(cb) {

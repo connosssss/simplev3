@@ -1,16 +1,30 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "FontFaceSetImpl.h"
 
+#include "ReferrerInfo.h"
 #include "gfxFontConstants.h"
 #include "gfxFontSrcPrincipal.h"
 #include "gfxFontSrcURI.h"
 #include "gfxFontUtils.h"
 #include "gfxPlatformFontList.h"
+#include "mozilla/AsyncEventDispatcher.h"
+#include "mozilla/BasePrincipal.h"
+#include "mozilla/FontPropertyTypes.h"
+#include "mozilla/LoadInfo.h"
+#include "mozilla/Logging.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/PresShell.h"
+#include "mozilla/PresShellInlines.h"
+#include "mozilla/ServoBindings.h"
+#include "mozilla/ServoCSSParser.h"
+#include "mozilla/ServoStyleSet.h"
+#include "mozilla/ServoUtils.h"
+#include "mozilla/Sprintf.h"
+#include "mozilla/StaticPrefs_layout.h"
+#include "mozilla/Utf16.h"
 #include "mozilla/css/Loader.h"
 #include "mozilla/dom/CSSFontFaceRule.h"
 #include "mozilla/dom/DocumentInlines.h"
@@ -23,40 +37,24 @@
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerRunnable.h"
-#include "mozilla/FontPropertyTypes.h"
-#include "mozilla/AsyncEventDispatcher.h"
-#include "mozilla/BasePrincipal.h"
-#include "mozilla/glean/NetwerkProtocolHttpMetrics.h"
-#include "mozilla/Logging.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/PresShell.h"
-#include "mozilla/PresShellInlines.h"
-#include "mozilla/ServoBindings.h"
-#include "mozilla/ServoCSSParser.h"
-#include "mozilla/ServoStyleSet.h"
-#include "mozilla/ServoUtils.h"
-#include "mozilla/Sprintf.h"
-#include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/glean/GfxMetrics.h"
-#include "mozilla/LoadInfo.h"
+#include "mozilla/glean/NetwerkProtocolHttpMetrics.h"
 #include "nsComponentManagerUtils.h"
 #include "nsContentUtils.h"
+#include "nsDOMNavigationTiming.h"
 #include "nsDeviceContext.h"
 #include "nsFontFaceLoader.h"
 #include "nsIConsoleService.h"
 #include "nsIContentPolicy.h"
 #include "nsIDocShell.h"
+#include "nsIInputStream.h"
 #include "nsILoadContext.h"
 #include "nsIPrincipal.h"
 #include "nsIWebNavigation.h"
-#include "nsNetUtil.h"
-#include "nsIInputStream.h"
 #include "nsLayoutUtils.h"
+#include "nsNetUtil.h"
 #include "nsPresContext.h"
 #include "nsPrintfCString.h"
-#include "nsUTF8Utils.h"
-#include "nsDOMNavigationTiming.h"
-#include "ReferrerInfo.h"
 
 using namespace mozilla;
 using namespace mozilla::css;
@@ -93,10 +91,12 @@ void FontFaceSetImpl::DestroyLoaders() {
     return;
   }
   if (NS_IsMainThread()) {
-    for (const auto& key : mLoaders.Keys()) {
+    // Move mLoaders to a local, because Cancel() calls RemoveLoader() which
+    // would otherwise mutate the table during the iteration.
+    auto loaders = std::move(mLoaders);
+    for (const auto& key : loaders.Keys()) {
       key->Cancel();
     }
-    mLoaders.Clear();
     return;
   }
 
@@ -143,7 +143,7 @@ void FontFaceSetImpl::Destroy() {
 
 void FontFaceSetImpl::ParseFontShorthandForMatching(
     const nsACString& aFont, StyleFontFamilyList& aFamilyList,
-    FontWeight& aWeight, FontStretch& aStretch, FontSlantStyle& aStyle,
+    FontWeight& aWeight, FontWidth& aWidth, FontSlantStyle& aStyle,
     ErrorResult& aRv) {
   RefPtr<URLExtraData> url = GetURLExtraData();
   if (!url) {
@@ -151,8 +151,8 @@ void FontFaceSetImpl::ParseFontShorthandForMatching(
     return;
   }
 
-  if (!ServoCSSParser::ParseFontShorthandForMatching(
-          aFont, url, aFamilyList, aStyle, aStretch, aWeight)) {
+  if (!ServoCSSParser::ParseFontShorthandForMatching(aFont, url, aFamilyList,
+                                                     aStyle, aWidth, aWeight)) {
     aRv.ThrowSyntaxError("Invalid font shorthand");
     return;
   }
@@ -164,7 +164,7 @@ static bool HasAnyCharacterInUnicodeRange(gfxUserFontEntry* aEntry,
   const char16_t* end = p + aInput.Length();
 
   while (p < end) {
-    uint32_t c = UTF16CharEnumerator::NextChar(&p, end);
+    uint32_t c = DecodeOneUtf16CodePoint(&p, end);
     if (aEntry->CharacterInUnicodeRange(c)) {
       return true;
     }
@@ -180,9 +180,9 @@ void FontFaceSetImpl::FindMatchingFontFaces(const nsACString& aFont,
 
   StyleFontFamilyList familyList;
   FontWeight weight;
-  FontStretch stretch;
+  FontWidth width;
   FontSlantStyle italicStyle;
-  ParseFontShorthandForMatching(aFont, familyList, weight, stretch, italicStyle,
+  ParseFontShorthandForMatching(aFont, familyList, weight, width, italicStyle,
                                 aRv);
   if (aRv.Failed()) {
     return;
@@ -191,7 +191,7 @@ void FontFaceSetImpl::FindMatchingFontFaces(const nsACString& aFont,
   gfxFontStyle style;
   style.style = italicStyle;
   style.weight = weight;
-  style.stretch = stretch;
+  style.width = width;
 
   // Set of FontFaces that we want to return.
   nsTHashSet<FontFace*> matchingFaces;
@@ -241,11 +241,6 @@ void FontFaceSetImpl::FindMatchingFontFaces(
   }
 }
 
-bool FontFaceSetImpl::ReadyPromiseIsPending() const {
-  RecursiveMutexAutoLock lock(mMutex);
-  return mOwner && mOwner->ReadyPromiseIsPending();
-}
-
 FontFaceSetLoadStatus FontFaceSetImpl::Status() {
   RecursiveMutexAutoLock lock(mMutex);
   FlushUserFontSet();
@@ -254,8 +249,6 @@ FontFaceSetLoadStatus FontFaceSetImpl::Status() {
 
 bool FontFaceSetImpl::Add(FontFaceImpl* aFontFace, ErrorResult& aRv) {
   RecursiveMutexAutoLock lock(mMutex);
-  FlushUserFontSet();
-
   if (aFontFace->IsInFontFaceSet(this)) {
     return false;
   }
@@ -288,8 +281,6 @@ bool FontFaceSetImpl::Add(FontFaceImpl* aFontFace, ErrorResult& aRv) {
 
 void FontFaceSetImpl::Clear() {
   RecursiveMutexAutoLock lock(mMutex);
-  FlushUserFontSet();
-
   if (mNonRuleFaces.IsEmpty()) {
     return;
   }
@@ -308,8 +299,6 @@ void FontFaceSetImpl::Clear() {
 
 bool FontFaceSetImpl::Delete(FontFaceImpl* aFontFace) {
   RecursiveMutexAutoLock lock(mMutex);
-  FlushUserFontSet();
-
   if (aFontFace->HasRule()) {
     return false;
   }
@@ -371,21 +360,24 @@ void FontFaceSetImpl::UpdateUserFontEntry(gfxUserFontEntry* aEntry,
                                           gfxUserFontAttributes&& aAttr) {
   MOZ_ASSERT(NS_IsMainThread());
 
-  bool resetFamilyName = !aEntry->mFamilyName.IsEmpty() &&
-                         aEntry->mFamilyName != aAttr.mFamilyName;
-  // aFontFace already has a user font entry, so we update its attributes
-  // rather than creating a new one.
-  aEntry->UpdateAttributes(std::move(aAttr));
-  // If the family name has changed, remove the entry from its current family
-  // and clear the mFamilyName field so it can be reset when added to a new
-  // family.
+  nsCString familyName = aEntry->FamilyName();
+  bool resetFamilyName =
+      !familyName.IsEmpty() && familyName != aAttr.mFamilyName;
   if (resetFamilyName) {
-    RefPtr<gfxUserFontFamily> family = LookupFamily(aEntry->mFamilyName);
+    // If the family name has changed, remove the entry from its current family
+    // and clear the mFamilyName field so it can be reset when added to a new
+    // family.
+    AutoWriteLock lock(aEntry->mLock);
+    RefPtr<gfxUserFontFamily> family = LookupFamily(familyName);
     if (family) {
       family->RemoveFontEntry(aEntry);
     }
     aEntry->mFamilyName.Truncate(0);
   }
+
+  // aFontFace already has a user font entry, so we update its attributes
+  // rather than creating a new one.
+  aEntry->UpdateAttributes(std::move(aAttr));
 }
 
 class FontFaceSetImpl::UpdateUserFontEntryRunnable final
@@ -464,7 +456,7 @@ FontFaceSetImpl::FindOrCreateUserFontEntryFromFontFace(
           face->mSourceType = gfxFontFaceSrc::eSourceType_URL;
           const StyleCssUrl* url = component.AsUrl();
           nsIURI* uri = url->GetURI();
-          face->mURI = uri ? new gfxFontSrcURI(uri) : nullptr;
+          face->mURI = uri ? MakeRefPtr<gfxFontSrcURI>(uri) : nullptr;
           const URLExtraData& extraData = url->ExtraData();
           face->mReferrerInfo = extraData.ReferrerInfo();
 
@@ -475,7 +467,7 @@ FontFaceSetImpl::FindOrCreateUserFontEntryFromFontFace(
           if (aOrigin == StyleOrigin::User ||
               aOrigin == StyleOrigin::UserAgent) {
             face->mUseOriginPrincipal = true;
-            face->mOriginPrincipal = new gfxFontSrcPrincipal(
+            face->mOriginPrincipal = MakeRefPtr<gfxFontSrcPrincipal>(
                 extraData.Principal(), extraData.Principal());
           }
 
@@ -516,26 +508,22 @@ FontFaceSetImpl::FindOrCreateUserFontEntryFromFontFace(
                       StyleFontFaceSourceFormatKeyword::EmbeddedOpentype;
                 } else if (valueString.LowerCaseEqualsASCII("svg")) {
                   face->mFormatHint = StyleFontFaceSourceFormatKeyword::Svg;
-                } else if (StaticPrefs::layout_css_font_variations_enabled()) {
-                  // Non-standard values that Firefox accepted, for back-compat;
-                  // these are superseded by the tech() function.
-                  if (valueString.LowerCaseEqualsASCII("woff-variations")) {
-                    face->mFormatHint = StyleFontFaceSourceFormatKeyword::Woff;
-                  } else if (valueString.LowerCaseEqualsASCII(
-                                 "woff2-variations")) {
-                    face->mFormatHint = StyleFontFaceSourceFormatKeyword::Woff2;
-                  } else if (valueString.LowerCaseEqualsASCII(
-                                 "opentype-variations")) {
-                    face->mFormatHint =
-                        StyleFontFaceSourceFormatKeyword::Opentype;
-                  } else if (valueString.LowerCaseEqualsASCII(
-                                 "truetype-variations")) {
-                    face->mFormatHint =
-                        StyleFontFaceSourceFormatKeyword::Truetype;
-                  } else {
-                    face->mFormatHint =
-                        StyleFontFaceSourceFormatKeyword::Unknown;
-                  }
+                }
+                // Non-standard values that Firefox accepted, for back-compat;
+                // these are superseded by the tech() function.
+                else if (valueString.LowerCaseEqualsASCII("woff-variations")) {
+                  face->mFormatHint = StyleFontFaceSourceFormatKeyword::Woff;
+                } else if (valueString.LowerCaseEqualsASCII(
+                               "woff2-variations")) {
+                  face->mFormatHint = StyleFontFaceSourceFormatKeyword::Woff2;
+                } else if (valueString.LowerCaseEqualsASCII(
+                               "opentype-variations")) {
+                  face->mFormatHint =
+                      StyleFontFaceSourceFormatKeyword::Opentype;
+                } else if (valueString.LowerCaseEqualsASCII(
+                               "truetype-variations")) {
+                  face->mFormatHint =
+                      StyleFontFaceSourceFormatKeyword::Truetype;
                 } else {
                   // unknown format specified, mark to distinguish from the
                   // case where no format hints are specified
@@ -595,14 +583,14 @@ nsresult FontFaceSetImpl::LogMessage(gfxUserFontEntry* aUserFontEntry,
 
   nsAutoCString weightString;
   aUserFontEntry->Weight().ToString(weightString);
-  nsAutoCString stretchString;
-  aUserFontEntry->Stretch().ToString(stretchString);
+  nsAutoCString widthString;
+  aUserFontEntry->Width().ToString(widthString);
   nsPrintfCString message(
       "downloadable font: %s "
-      "(font-family: \"%s\" style:%s weight:%s stretch:%s src index:%d)",
+      "(font-family: \"%s\" style:%s weight:%s width:%s src index:%d)",
       aMessage, familyName.get(),
       aUserFontEntry->IsItalic() ? "italic" : "normal",  // XXX todo: oblique?
-      weightString.get(), stretchString.get(), aSrcIndex);
+      weightString.get(), widthString.get(), aSrcIndex);
 
   if (NS_FAILED(aStatus)) {
     message.AppendLiteral(": ");
@@ -643,19 +631,8 @@ nsresult FontFaceSetImpl::LogMessage(gfxUserFontEntry* aUserFontEntry,
   if (rule) {
     Servo_FontFaceRule_GetSourceLocation(rule, &line, &column);
     // FIXME We need to figure out an approach to get the style sheet
-    // of this raw rule. See bug 1450903.
-#if 0
-    StyleSheet* sheet = rule->GetStyleSheet();
-    // if the style sheet is removed while the font is loading can be null
-    if (sheet) {
-      nsCString spec = sheet->GetSheetURI()->GetSpecOrDefault();
-      CopyUTF8toUTF16(spec, href);
-    } else {
-      NS_WARNING("null parent stylesheet for @font-face rule");
-      href.AssignLiteral("unknown");
-    }
-#endif
-    // Leave href empty if we don't know how to get the correct sheet.
+    // of this raw rule. See bug 1450903. Leave href empty if we don't know how
+    // to get the correct sheet.
   }
 
   nsresult rv;
@@ -764,21 +741,6 @@ void FontFaceSetImpl::OnFontFaceStatusChanged(FontFaceImpl* aFontFace) {
 }
 
 void FontFaceSetImpl::DispatchCheckLoadingFinishedAfterDelay() {
-  gfxFontUtils::AssertSafeThreadOrServoFontMetricsLocked();
-
-  if (ServoStyleSet* set = gfxFontUtils::CurrentServoStyleSet()) {
-    // See comments in Gecko_GetFontMetrics.
-    //
-    // We can't just dispatch the runnable below if we're not on the main
-    // thread, since it needs to take a strong reference to the FontFaceSet,
-    // and being a DOM object, FontFaceSet doesn't support thread-safe
-    // refcounting.
-    set->AppendTask(
-        PostTraversalTask::DispatchFontFaceSetCheckLoadingFinishedAfterDelay(
-            this));
-    return;
-  }
-
   DispatchToOwningThread(
       "FontFaceSetImpl::DispatchCheckLoadingFinishedAfterDelay",
       [self = RefPtr{this}]() { self->CheckLoadingFinishedAfterDelay(); });
@@ -805,6 +767,7 @@ void FontFaceSetImpl::CheckLoadingStarted() {
   }
 
   mStatus = FontFaceSetLoadStatus::Loading;
+  mLoadingFinishedScheduled = false;
 
   if (IsOnOwningThread()) {
     OnLoadingStarted();
@@ -815,7 +778,7 @@ void FontFaceSetImpl::CheckLoadingStarted() {
                          [self = RefPtr{this}]() { self->OnLoadingStarted(); });
 }
 
-void FontFaceSetImpl::OnLoadingStarted() {
+void FontFaceSetImpl::DispatchLoadingEventAndReplaceReadyPromise() {
   RecursiveMutexAutoLock lock(mMutex);
   if (mOwner) {
     mOwner->DispatchLoadingEventAndReplaceReadyPromise();
@@ -854,7 +817,7 @@ void FontFaceSetImpl::CheckLoadingFinished() {
     return;
   }
 
-  if (!ReadyPromiseIsPending()) {
+  if (mLoadingFinishedScheduled) {
     // We've already resolved mReady (or set the flag to do that lazily) and
     // dispatched the loadingdone/loadingerror events.
     return;
@@ -866,21 +829,26 @@ void FontFaceSetImpl::CheckLoadingFinished() {
   }
 
   mStatus = FontFaceSetLoadStatus::Loaded;
-
-  if (IsOnOwningThread()) {
-    OnLoadingFinished();
-    return;
-  }
+  mLoadingFinishedScheduled = true;
 
   DispatchToOwningThread(
       "FontFaceSetImpl::CheckLoadingFinished",
-      [self = RefPtr{this}]() { self->OnLoadingFinished(); });
+      [self = RefPtr{this}]()
+          MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA { self->OnLoadingFinished(); });
 }
 
 void FontFaceSetImpl::OnLoadingFinished() {
-  RecursiveMutexAutoLock lock(mMutex);
-  if (mOwner) {
-    mOwner->MaybeResolve();
+  RefPtr<FontFaceSet> owner;
+  {
+    RecursiveMutexAutoLock lock(mMutex);
+    if (mStatus != FontFaceSetLoadStatus::Loaded) {
+      // Someone scheduled a load since the last time we were here.
+      return;
+    }
+    owner = mOwner;
+  }
+  if (owner) {
+    owner->MaybeResolve();
   }
 }
 
@@ -918,9 +886,8 @@ void FontFaceSetImpl::DoRebuildUserFontSet() { MarkUserFontSetDirty(); }
 already_AddRefed<gfxUserFontEntry> FontFaceSetImpl::CreateUserFontEntry(
     nsTArray<gfxFontFaceSrc>&& aFontFaceSrcList,
     gfxUserFontAttributes&& aAttr) {
-  RefPtr<gfxUserFontEntry> entry = new FontFaceImpl::Entry(
-      this, std::move(aFontFaceSrcList), std::move(aAttr));
-  return entry.forget();
+  return MakeAndAddRef<FontFaceImpl::Entry>(this, std::move(aFontFaceSrcList),
+                                            std::move(aAttr));
 }
 
 void FontFaceSetImpl::ForgetLocalFaces() {

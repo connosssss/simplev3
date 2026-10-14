@@ -37,24 +37,19 @@ function dragAndDrop(
   EventUtils.synthesizeMouseAtCenter(tab2, { type: "mouseup" }, context);
 }
 
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
-
 add_task(async function () {
   await BrowserTestUtils.openNewForegroundTab(gBrowser, URLs[0]);
   await BrowserTestUtils.openNewForegroundTab(gBrowser, URLs[1]);
   await withFirefoxView({}, async browser => {
     const { document } = browser.contentWindow;
-    let win1 = browser.ownerGlobal;
+    let win1 = browser.documentGlobal;
     await navigateToViewAndWait(document, "opentabs");
 
     let openTabs = document.querySelector("view-opentabs[name=opentabs]");
     await openTabs.updateComplete;
     await TestUtils.waitForCondition(
-      () => openTabs.viewCards[0].tabList.rowEls.length
+      () => openTabs.viewCards[0].tabList.rowEls.length,
+      "The first view card tab list to have row elements"
     );
     await openTabs.openTabsTarget.readyWindowsPromise;
     let card = openTabs.viewCards[0];

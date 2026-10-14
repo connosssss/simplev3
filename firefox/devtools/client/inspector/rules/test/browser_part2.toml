@@ -18,7 +18,8 @@ support-files = [
   "doc_keyframeanimation.html",
   "doc_keyframeLineNumbers.html",
   "doc_media_queries.html",
-  "doc_print_media_simulation.html",
+  "doc_prefers_reduced_motion_emulation.html",
+  "doc_print_media_emulation.html",
   "doc_pseudoelement.html",
   "doc_ruleLineNumbers.html",
   "doc_rules_imported_stylesheet_edit.html",
@@ -51,14 +52,8 @@ support-files = [
   "!/devtools/client/inspector/test/head.js",
   "!/devtools/client/inspector/test/shared-head.js",
   "!/devtools/client/shared/test/shared-head.js",
-  "!/devtools/client/shared/test/telemetry-test-helpers.js",
   "!/devtools/client/shared/test/highlighter-test-actor.js",
   "!/devtools/client/webconsole/test/browser/shared-head.js",
-]
-prefs = [
-  # This pref has to be set for all tests since calls to InspectorUtils.getCSSPseudoElementNames
-  # is cached and the cache is populated by other tests before the one that is checking ::details-content
-  "layout.css.details-content.enabled=true",
 ]
 
 ["browser_rules_css-compatibility-add-rename-rule.js"]
@@ -71,8 +66,14 @@ prefs = [
 
 ["browser_rules_css-compatibility-tooltip-telemetry.js"]
 
+["browser_rules_element_specific_pseudo_classes.js"]
+
+["browser_rules_emulation_panel_mdn_links.js"]
+
 ["browser_rules_filtereditor-appears-on-swatch-click.js"]
-fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and/or labeled
+fail-if = [
+  "a11y_checks", # Bug 1849028 clicked element may not be focusable and/or labeled
+]
 
 ["browser_rules_filtereditor-commit-on-ENTER.js"]
 
@@ -130,15 +131,11 @@ fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and
 
 ["browser_rules_guessIndentation.js"]
 
-["browser_rules_highlight-element-rule.js"]
-
 ["browser_rules_highlight-property.js"]
 
 ["browser_rules_highlight-used-fonts.js"]
 
 ["browser_rules_imported_stylesheet_edit.js"]
-
-["browser_rules_inactive_css_display-justify.js"]
 
 ["browser_rules_inactive_css_flexbox.js"]
 
@@ -147,6 +144,8 @@ fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and
 ["browser_rules_inactive_css_inline.js"]
 
 ["browser_rules_inactive_css_split-condition.js"]
+
+["browser_rules_inactive_css_update.js"]
 
 ["browser_rules_inactive_css_visited.js"]
 
@@ -193,7 +192,9 @@ fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and
 ["browser_rules_lineNumbers.js"]
 
 ["browser_rules_linear-easing-swatch.js"]
-fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and/or labeled
+fail-if = [
+  "a11y_checks", # Bug 1849028 clicked element may not be focusable and/or labeled
+]
 
 ["browser_rules_livepreview.js"]
 
@@ -214,6 +215,8 @@ fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and
 ["browser_rules_mark_overridden_08.js"]
 
 ["browser_rules_mark_overridden_layers.js"]
+
+["browser_rules_mark_overridden_refresh.js"]
 
 ["browser_rules_mathml-element.js"]
 
@@ -240,14 +243,18 @@ fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and
 ["browser_rules_non_ascii.js"]
 
 ["browser_rules_original-source-link.js"]
-fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and/or labeled
 
 ["browser_rules_original-source-link2.js"]
-fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and/or labeled
+
+["browser_rules_popup_override.js"]
+
+["browser_rules_position-try.js"]
+
+["browser_rules_prefers_reduced_motion_emulation.js"]
 
 ["browser_rules_preview-tooltips-sizes.js"]
 
-["browser_rules_print_media_simulation.js"]
+["browser_rules_print_media_emulation.js"]
 
 ["browser_rules_pseudo-element_01.js"]
 
@@ -268,7 +275,9 @@ fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and
 ["browser_rules_refresh-on-style-change.js"]
 
 ["browser_rules_refresh-on-stylesheet-change.js"]
-fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and/or labeled
+fail-if = [
+  "a11y_checks", # Bug 1849028 clicked element may not be focusable and/or labeled
+]
 
 ["browser_rules_registered-custom-properties.js"]
 
@@ -333,9 +342,6 @@ fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and
 ["browser_rules_selector_highlight.js"]
 
 ["browser_rules_selector_warnings.js"]
-skip-if = [
-  "os == 'win' && os_version == '11.26100' && processor == 'x86_64'", # Bug 1945519, perma failing on windows.
-]
 
 ["browser_rules_shadowdom_slot_rules.js"]
 
@@ -359,6 +365,8 @@ skip-if = [
 
 ["browser_rules_shorthand-overridden-lists_01.js"]
 
+["browser_rules_sibling_functions_color.js"]
+
 ["browser_rules_strict-search-filter-computed-list_01.js"]
 
 ["browser_rules_strict-search-filter_01.js"]
@@ -368,7 +376,6 @@ skip-if = [
 ["browser_rules_strict-search-filter_03.js"]
 
 ["browser_rules_style-editor-link.js"]
-fail-if = ["a11y_checks"] # Bug 1849028 clicked element may not be focusable and/or labeled
 
 ["browser_rules_update_mask_image_cors.js"]
 

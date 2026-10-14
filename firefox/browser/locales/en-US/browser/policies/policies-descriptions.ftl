@@ -11,6 +11,8 @@
 
 policy-3rdparty = Set policies that WebExtensions can access via chrome.storage.managed.
 
+policy-AIControls = Configure AI controls.
+
 policy-AllowedDomainsForApps = Define domains allowed to access Google Workspace.
 
 policy-AllowFileSelectionDialogs = Allow file selection dialogs.
@@ -31,19 +33,28 @@ policy-AutoLaunchProtocolsFromOrigins = Define a list of external protocols that
 
 policy-BackgroundAppUpdate2 = Enable or disable the background updater.
 
+policy-Backup = Disable backup or restore of profile data.
+
 policy-BlockAboutAddons = Block access to the Add-ons Manager (about:addons).
 
-policy-BlockAboutConfig = Block access to the about:config page.
+policy-BlockAboutConfig2 = Block access to Advanced Preferences (about:config).
 
-policy-BlockAboutProfiles = Block access to the about:profiles page.
+policy-BlockAboutProfiles2 = Block access to About Profiles (about:profiles).
 
-policy-BlockAboutSupport = Block access to the about:support page.
+policy-BlockAboutSupport2 = Block access to Troubleshooting Information (about:support).
 
 policy-Bookmarks = Create bookmarks in the Bookmarks toolbar, Bookmarks menu, or a specified folder inside them.
 
 policy-CaptivePortal = Enable or disable captive portal support.
 
 policy-CertificatesDescription = Add certificates or use built-in certificates.
+
+policy-ClearOnShutdown = Clear browsing data when { -brand-short-name } closes.
+
+# CNSA 2.0 is the United States National Security Agency's Commercial National
+# Security Algorithm Suite 2.0. ML-KEM-1024 is a post-quantum key agreement
+# algorithm. Neither should be translated.
+policy-CNSA2KeyAgreementEnabled = Enable the CNSA 2.0 ML-KEM-1024 key agreement for TLS.
 
 policy-ContentAnalysis = Enable or disable connection to data-loss-prevention agent.
 
@@ -56,13 +67,17 @@ policy-DisableAccounts = Disable account-based services, including sync.
 
 policy-DisabledCiphers = Disable ciphers.
 
+policy-DefaultBrowserSettingEnabled = Control whether the user can set { -brand-short-name } as the default browser.
+
 policy-DefaultDownloadDirectory = Set the default download directory.
+
+policy-DefaultSerialGuardSetting = Control use of the Serial API.
 
 policy-DisableAppUpdate = Prevent the browser from updating.
 
 policy-DisableBuiltinPDFViewer = Disable PDF.js, the built-in PDF viewer in { -brand-short-name }.
 
-policy-DisableDefaultBrowserAgent = Prevent the default browser agent from taking any actions. Only applicable to Windows; other platforms don’t have the agent.
+policy-DisableDefaultBrowserAgent2 = Prevent the default browser agent from taking any actions.
 
 policy-DisableDeveloperTools = Block access to the developer tools.
 
@@ -82,17 +97,23 @@ policy-DisableForgetButton = Prevent access to the Forget button.
 
 policy-DisableFormHistory = Don’t remember search and form history.
 
+policy-DisableLaunchOnLogin = Prevent { -brand-short-name } from launching automatically when the user logs in.
+
 policy-DisablePrimaryPasswordCreation = If true, a Primary Password can’t be created.
 
-policy-DisablePasswordReveal = Do not allow passwords to be revealed in saved logins.
+policy-DisablePasswordReveal2 = Do not allow passwords to be revealed in saved logins or password fields.
 
 policy-DisablePrivateBrowsing = Disable Private Browsing.
 
 policy-DisableProfileImport = Disable the menu command to Import data from another browser.
 
-policy-DisableProfileRefresh = Disable the Refresh { -brand-short-name } button in the about:support page.
+policy-DisableProfileRefresh2 = Disable the Refresh { -brand-short-name } button in Troubleshooting Information (about:support) and on support.mozilla.org, as well as the prompt offering to refresh { -brand-short-name } when it hasn’t been used for a while.
 
-policy-DisableSafeMode = Disable the feature to restart in Safe Mode. Note: the Shift key to enter Safe Mode can only be disabled on Windows using Group Policy.
+policy-DisableRemoteImprovements = Prevent { -brand-short-name } from applying performance, stability, and feature changes between updates.
+
+policy-DisableRemoteSettingsAndAcceptSecurityConsequences = Disable remote settings.
+
+policy-DisableSafeMode2 = Disable restarting in Troubleshoot Mode (Safe Mode).
 
 policy-DisableSecurityBypass = Prevent the user from bypassing certain security warnings.
 
@@ -102,7 +123,7 @@ policy-DisableSystemAddonUpdate = Prevent the browser from installing and updati
 
 policy-DisableTelemetry = Turn off Telemetry.
 
-policy-DisableThirdPartyModuleBlocking = Prevent the user from blocking third-party modules that get injected into the { -brand-short-name } process.
+policy-DisableThirdPartyModuleBlocking2 = Prevent the user from using Third-party Module Information (about:third-party) to block third-party modules injected into the { -brand-short-name } process.
 
 policy-DisplayBookmarksToolbar = Display the Bookmarks Toolbar by default.
 
@@ -135,6 +156,8 @@ policy-FirefoxHome2 = Configure { -firefox-home-brand-name }.
 
 policy-FirefoxSuggest = Configure { -firefox-suggest-brand-name }.
 
+policy-GenerativeAI = Configure generative AI features.
+
 policy-GoToIntranetSiteForSingleWordEntryInAddressBar = Force direct intranet site navigation instead of searching when typing single word entries in the address bar.
 
 policy-Handlers = Configure default application handlers.
@@ -150,6 +173,8 @@ policy-HttpsOnlyMode = Allow HTTPS-Only Mode to be enabled.
 
 policy-InstallAddonsPermission = Allow certain websites to install add-ons.
 
+policy-IPProtectionAvailable = Prevent the built-in VPN from being available to users.
+
 policy-LegacyProfiles = Disable the feature enforcing a separate profile for each installation.
 
 ## Do not translate "SameSite", it's the name of a cookie attribute.
@@ -161,6 +186,8 @@ policy-LegacySameSiteCookieBehaviorEnabledForDomainList = Revert to legacy SameS
 ##
 
 policy-LocalFileLinks = Allow specific websites to link to local files.
+
+policy-LocalNetworkAccess = Enable or disable local network access checks.
 
 policy-ManagedBookmarks = Configures a list of bookmarks managed by an administrator that cannot be changed by the user.
 
@@ -184,7 +211,7 @@ policy-OverrideFirstRunPage = Override the first run page. Set this policy to bl
 
 policy-OverridePostUpdatePage = Override the post-update “What’s New” page. Set this policy to blank if you want to disable the post-update page.
 
-policy-PasswordManagerEnabled = Enable saving passwords to the password manager.
+policy-PasswordManagerEnabled2 = Enable or disable saving passwords to the password manager. If disabled, Passwords (about:logins) is also blocked.
 
 policy-PasswordManagerExceptions = Prevent { -brand-short-name } from saving passwords for specific sites.
 
@@ -199,7 +226,7 @@ policy-Permissions2 = Configure permissions for camera, microphone, location, no
 
 policy-PictureInPicture = Enable or disable Picture-in-Picture.
 
-policy-PopupBlocking = Allow certain websites to display popups by default.
+policy-PopupBlocking2 = Allow certain websites to display popups and be redirected by third-party frames.
 
 policy-Preferences = Set and lock the value for a subset of preferences.
 
@@ -209,13 +236,15 @@ policy-PromptForDownloadLocation = Ask where to save files when downloading.
 
 policy-Proxy = Configure proxy settings.
 
+policy-RelaunchRequired = Require { -brand-short-name } to be relaunched within a given period and notify the user of the upcoming relaunch.
+
 policy-RequestedLocales = Set the list of requested locales for the application in order of preference.
 
 policy-SanitizeOnShutdown2 = Clear navigation data on shutdown.
 
 policy-SearchBar = Set the default location of the search bar. The user is still allowed to customize it.
 
-policy-SearchEngines = Configure search engine settings. This policy is only available on the Extended Support Release (ESR) version.
+policy-SearchEngines2 = Configure search engine settings.
 
 policy-SearchSuggestEnabled = Enable or disable search suggestions.
 
@@ -223,6 +252,8 @@ policy-SearchSuggestEnabled = Enable or disable search suggestions.
 policy-SecurityDevices2 = Add or delete PKCS #11 modules.
 
 policy-ShowHomeButton = Show the home button on the toolbar.
+
+policy-SitePolicies = Site specific policies.
 
 # ”You represent that...” means ”You confirm/declare that...”
 policy-SkipTermsOfUse2 = Do not display the Terms of Use and Privacy Notice upon startup. You represent that you accept and have the authority to accept the Terms of Use on behalf of all individuals to whom you provide access to this browser.
@@ -241,6 +272,8 @@ policy-UserMessaging = Don’t show certain messages to the user.
 
 policy-UseSystemPrintDialog = Print using the system print dialog.
 
+policy-VisualSearchEnabled = Enable or disable visual search.
+
 # “format” refers to the format used for the value of this policy.
 policy-WebsiteFilter = Block websites from being visited. See documentation for more details on the format.
 
@@ -248,3 +281,6 @@ policy-Windows10SSO = Allow Windows single sign-on for Microsoft, work, and scho
 
 # Entra is the name of a Microsoft product.
 policy-MicrosoftEntraSSO = Allow single sign-on for Microsoft Entra accounts.
+
+# Do not translate "XSLTProcessor" as it is the name of an API interface.
+policy-XSLTEnabled = Enable or disable support for the XSLTProcessor JavaScript API and the XSLT processing instruction.

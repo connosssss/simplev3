@@ -4,8 +4,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-/*!
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+/*!
 # The HTTP/3 protocol
 
 This crate implements [RFC9114](https://datatracker.ietf.org/doc/html/rfc9114).
@@ -23,8 +24,8 @@ implementation is not meant to be used in production and its only purpose is to 
 of the client-side code.
 
 __`WebTransport`__
-([draft version 2](https://datatracker.ietf.org/doc/html/draft-vvv-webtransport-http3-02)) is
-supported and can be enabled using [`Http3Parameters`](struct.Http3Parameters.html).
+WebTransport is supported
+and can be enabled using [`Http3Parameters`](struct.Http3Parameters.html).
 
 ## Interaction with an application
 
@@ -135,17 +136,19 @@ while let Some(event) = client.next_event() {
 mod buffered_send_stream;
 mod client_events;
 mod conn_params;
+pub mod connect_udp;
 mod connection;
 mod connection_client;
 mod connection_server;
 mod control_stream_local;
 mod control_stream_remote;
 pub mod features;
+#[cfg(fuzzing)]
+pub mod frames;
+#[cfg(not(fuzzing))]
 mod frames;
 mod headers_checks;
 mod priority;
-mod push_controller;
-mod push_id;
 mod qlog;
 mod qpack_decoder_receiver;
 mod qpack_encoder_receiver;
@@ -157,82 +160,117 @@ mod server_connection_events;
 mod server_events;
 mod settings;
 mod stream_type_reader;
+pub mod webtransport;
 
-use std::{
-    cell::RefCell,
-    fmt::{self, Debug, Display, Formatter},
-    rc::Rc,
-};
+use std::{cell::RefCell, fmt::Debug, rc::Rc, time::Instant};
 
 use buffered_send_stream::BufferedStream;
-pub use client_events::{Http3ClientEvent, WebTransportEvent};
+pub use client_events::{ConnectUdpEvent, Http3ClientEvent, WebTransportEvent};
 pub use conn_params::Http3Parameters;
-pub use connection::{Http3State, WebTransportSessionAcceptAction};
+pub use connection::{Http3State, SessionAcceptAction};
 pub use connection_client::Http3Client;
-use features::extended_connect::WebTransportSession;
 use frames::HFrame;
 pub use neqo_common::Header;
 use neqo_common::MessageType;
 use neqo_qpack::Error as QpackError;
-pub use neqo_transport::{streams::SendOrder, Output, StreamId};
-use neqo_transport::{
-    AppError, Connection, Error as TransportError, RecvStreamStats, SendStreamStats,
+use neqo_transport::{AppError, Connection, Error as TransportError, recv_stream, send_stream};
+pub use neqo_transport::{
+    Output, StreamId,
+    streams::{SendGroupId, SendOrder},
 };
 pub use priority::Priority;
-pub use push_id::PushId;
 pub use server::Http3Server;
-pub use server_events::{
-    Http3OrWebTransportStream, Http3ServerEvent, WebTransportRequest, WebTransportServerEvent,
-};
+pub use server_events::{Http3OrWebTransportStream, Http3ServerEvent};
+#[cfg(fuzzing)]
+pub use settings::HSettings;
 use stream_type_reader::NewStreamType;
+use thiserror::Error;
 
-use crate::priority::PriorityHandler;
+use crate::{features::extended_connect, priority::PriorityHandler};
 
 type Res<T> = Result<T, Error>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum Error {
-    HttpNoError,
+    #[error("HTTP no error")]
+    HttpNone,
+    #[error("HTTP general protocol error")]
     HttpGeneralProtocol,
-    HttpGeneralProtocolStream, /* this is the same as the above but it should only close a
-                                * stream not a connection. */
+    // This is the same as the above but it should only close a stream not a
+    // connection.
+    #[error("HTTP protocol error on stream")]
+    HttpGeneralProtocolStream,
     // When using this error, you need to provide a value that is unique, which
     // will allow the specific error to be identified.  This will be validated in CI.
+    #[error("HTTP internal error: {0}")]
     HttpInternal(u16),
+    #[error("HTTP stream creation error")]
     HttpStreamCreation,
+    #[error("HTTP closed critical stream")]
     HttpClosedCriticalStream,
+    #[error("HTTP unexpected frame")]
     HttpFrameUnexpected,
+    #[error("HTTP frame error")]
     HttpFrame,
+    #[error("HTTP excessive load")]
     HttpExcessiveLoad,
+    #[error("HTTP ID error")]
     HttpId,
+    #[error("HTTP settings error")]
     HttpSettings,
+    #[error("HTTP missing settings")]
     HttpMissingSettings,
+    #[error("HTTP request rejected")]
     HttpRequestRejected,
+    #[error("HTTP request cancelled")]
     HttpRequestCancelled,
+    #[error("HTTP request incomplete")]
     HttpRequestIncomplete,
+    #[error("HTTP connect error")]
     HttpConnect,
+    #[error("HTTP version fallback")]
     HttpVersionFallback,
-    HttpMessageError,
-    QpackError(neqo_qpack::Error),
+    #[error("HTTP message error")]
+    HttpMessage,
+    #[error("QPACK error: {0}")]
+    Qpack(#[source] neqo_qpack::Error),
 
     // Internal errors from here.
+    #[error("Already closed")]
     AlreadyClosed,
+    #[error("Already initialized")]
     AlreadyInitialized,
-    FatalError,
+    #[error("Fatal error")]
+    Fatal,
+    #[error("Flow control limit reached")]
+    FlowControlLimit,
+    #[error("HTTP GOAWAY received")]
     HttpGoaway,
+    #[error("Internal error")]
     Internal,
+    #[error("Invalid header")]
     InvalidHeader,
+    #[error("Invalid input")]
     InvalidInput,
+    #[error("Invalid request target")]
     InvalidRequestTarget,
+    #[error("Invalid resumption token")]
     InvalidResumptionToken,
+    #[error("Invalid state")]
     InvalidState,
+    #[error("Invalid stream ID")]
     InvalidStreamId,
-    NoMoreData,
+    #[error("Not enough data")]
     NotEnoughData,
-    StreamLimitError,
-    TransportError(TransportError),
+    #[error("Stream limit reached")]
+    StreamLimit,
+    #[error("Transport error: {0}")]
+    Transport(#[source] TransportError),
+    #[error("Transport stream does not exist")]
     TransportStreamDoesNotExist,
+    #[error("Operation unavailable")]
     Unavailable,
+    #[error("Unexpected condition")]
     Unexpected,
 }
 
@@ -240,7 +278,7 @@ impl Error {
     #[must_use]
     pub const fn code(&self) -> AppError {
         match self {
-            Self::HttpNoError => 0x100,
+            Self::HttpNone => 0x100,
             Self::HttpGeneralProtocol | Self::HttpGeneralProtocolStream | Self::InvalidHeader => {
                 0x101
             }
@@ -256,10 +294,10 @@ impl Error {
             Self::HttpRequestRejected => 0x10b,
             Self::HttpRequestCancelled => 0x10c,
             Self::HttpRequestIncomplete => 0x10d,
-            Self::HttpMessageError => 0x10e,
+            Self::HttpMessage => 0x10e,
             Self::HttpConnect => 0x10f,
             Self::HttpVersionFallback => 0x110,
-            Self::QpackError(e) => e.code(),
+            Self::Qpack(e) => e.code(),
             // These are all internal errors.
             _ => 3,
         }
@@ -279,73 +317,13 @@ impl Error {
                 | Self::HttpId
                 | Self::HttpSettings
                 | Self::HttpMissingSettings
-                | Self::QpackError(QpackError::EncoderStream | QpackError::DecoderStream)
+                | Self::Qpack(QpackError::EncoderStream | QpackError::DecoderStream)
         )
     }
 
     #[must_use]
     pub const fn stream_reset_error(&self) -> bool {
         matches!(self, Self::HttpGeneralProtocolStream | Self::InvalidHeader)
-    }
-
-    /// # Panics
-    ///
-    /// On unexpected errors, in debug mode.
-    #[must_use]
-    pub fn map_stream_send_errors(err: &Self) -> Self {
-        match err {
-            Self::TransportError(
-                TransportError::InvalidStreamId | TransportError::FinalSizeError,
-            ) => Self::TransportStreamDoesNotExist,
-            Self::TransportError(TransportError::InvalidInput) => Self::InvalidInput,
-            _ => {
-                debug_assert!(false, "Unexpected error");
-                Self::TransportStreamDoesNotExist
-            }
-        }
-    }
-
-    /// # Panics
-    ///
-    /// On unexpected errors, in debug mode.
-    #[must_use]
-    pub fn map_stream_create_errors(err: &TransportError) -> Self {
-        match err {
-            TransportError::ConnectionState => Self::Unavailable,
-            TransportError::StreamLimitError => Self::StreamLimitError,
-            _ => {
-                debug_assert!(false, "Unexpected error");
-                Self::TransportStreamDoesNotExist
-            }
-        }
-    }
-
-    /// # Panics
-    ///
-    /// On unexpected errors, in debug mode.
-    #[must_use]
-    pub fn map_stream_recv_errors(err: &Self) -> Self {
-        match err {
-            Self::TransportError(TransportError::NoMoreData) => {
-                debug_assert!(
-                    false,
-                    "Do not call stream_recv if FIN has been previously read"
-                );
-            }
-            Self::TransportError(TransportError::InvalidStreamId) => {}
-            _ => {
-                debug_assert!(false, "Unexpected error");
-            }
-        }
-        Self::TransportStreamDoesNotExist
-    }
-
-    #[must_use]
-    pub const fn map_set_resumption_errors(err: &TransportError) -> Self {
-        match err {
-            TransportError::ConnectionState => Self::InvalidState,
-            _ => Self::InvalidResumptionToken,
-        }
     }
 
     /// # Errors
@@ -364,60 +342,26 @@ impl Error {
     }
 }
 
-impl From<TransportError> for Error {
-    fn from(err: TransportError) -> Self {
-        Self::TransportError(err)
-    }
-}
-
 impl From<QpackError> for Error {
     fn from(err: QpackError) -> Self {
         match err {
             QpackError::ClosedCriticalStream => Self::HttpClosedCriticalStream,
-            e => Self::QpackError(e),
+            e => Self::Qpack(e),
         }
     }
 }
 
-impl From<AppError> for Error {
-    fn from(error: AppError) -> Self {
-        match error {
-            0x100 => Self::HttpNoError,
-            0x101 => Self::HttpGeneralProtocol,
-            0x103 => Self::HttpStreamCreation,
-            0x104 => Self::HttpClosedCriticalStream,
-            0x105 => Self::HttpFrameUnexpected,
-            0x106 => Self::HttpFrame,
-            0x107 => Self::HttpExcessiveLoad,
-            0x108 => Self::HttpId,
-            0x109 => Self::HttpSettings,
-            0x10a => Self::HttpMissingSettings,
-            0x10b => Self::HttpRequestRejected,
-            0x10c => Self::HttpRequestCancelled,
-            0x10d => Self::HttpRequestIncomplete,
-            0x10f => Self::HttpConnect,
-            0x110 => Self::HttpVersionFallback,
-            0x200 => Self::QpackError(QpackError::DecompressionFailed),
-            0x201 => Self::QpackError(QpackError::EncoderStream),
-            0x202 => Self::QpackError(QpackError::DecoderStream),
-            _ => Self::HttpInternal(0),
+impl From<TransportError> for Error {
+    fn from(err: TransportError) -> Self {
+        match err {
+            TransportError::InvalidStreamId | TransportError::FinalSize => {
+                Self::TransportStreamDoesNotExist
+            }
+            TransportError::InvalidInput => Self::InvalidInput,
+            TransportError::ConnectionState => Self::Unavailable,
+            TransportError::StreamLimit => Self::StreamLimit,
+            other => Self::Transport(other),
         }
-    }
-}
-
-impl ::std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn ::std::error::Error + 'static)> {
-        match self {
-            Self::TransportError(e) => Some(e),
-            Self::QpackError(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "HTTP/3 error: {self:?}")
     }
 }
 
@@ -428,7 +372,6 @@ pub enum Http3StreamType {
     Encoder,
     NewStream,
     Http,
-    Push,
     ExtendedConnect,
     WebTransport(StreamId),
     Unknown,
@@ -446,6 +389,30 @@ enum ReceiveOutput {
 
 trait Stream: Debug {
     fn stream_type(&self) -> Http3StreamType;
+
+    // Unreachable: callers filter by ExtendedConnect before calling.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn session_protocol(&self) -> Option<String> {
+        None
+    }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn register_send_group(&mut self, _id: SendGroupId) -> Res<()> {
+        debug_assert!(
+            false,
+            "register_send_group called on a stream that does not support send groups"
+        );
+        Err(Error::InvalidStreamId)
+    }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn validate_send_group(&self, _group_id: SendGroupId) -> bool {
+        debug_assert!(
+            false,
+            "validate_send_group called on a stream that does not support send groups"
+        );
+        false
+    }
 }
 
 trait RecvStream: Stream {
@@ -456,7 +423,7 @@ trait RecvStream: Stream {
     /// # Errors
     ///
     /// An error may happen while reading a stream, e.g. early close, protocol error, etc.
-    fn receive(&mut self, conn: &mut Connection) -> Res<(ReceiveOutput, bool)>;
+    fn receive(&mut self, conn: &mut Connection, now: Instant) -> Res<(ReceiveOutput, bool)>;
 
     /// # Errors
     ///
@@ -470,7 +437,12 @@ trait RecvStream: Stream {
     /// # Errors
     ///
     /// An error may happen while reading a stream, e.g. early close, protocol error, etc.
-    fn read_data(&mut self, _conn: &mut Connection, _buf: &mut [u8]) -> Res<(usize, bool)> {
+    fn read_data(
+        &mut self,
+        _conn: &mut Connection,
+        _buf: &mut [u8],
+        _now: Instant,
+    ) -> Res<(usize, bool)> {
         Err(Error::InvalidStreamId)
     }
 
@@ -478,12 +450,12 @@ trait RecvStream: Stream {
         None
     }
 
-    fn webtransport(&self) -> Option<Rc<RefCell<WebTransportSession>>> {
+    fn extended_connect_session(&self) -> Option<Rc<RefCell<extended_connect::session::Session>>> {
         None
     }
 
     /// This function is only implemented by `WebTransportRecvStream`.
-    fn stats(&mut self, _conn: &mut Connection) -> Res<RecvStreamStats> {
+    fn stats(&mut self, _conn: &mut Connection) -> Res<recv_stream::Stats> {
         Err(Error::Unavailable)
     }
 }
@@ -496,7 +468,11 @@ trait HttpRecvStream: RecvStream {
     /// # Errors
     ///
     /// An error may happen while reading a stream, e.g. early close, protocol error, etc.
-    fn header_unblocked(&mut self, conn: &mut Connection) -> Res<(ReceiveOutput, bool)>;
+    fn header_unblocked(
+        &mut self,
+        conn: &mut Connection,
+        now: Instant,
+    ) -> Res<(ReceiveOutput, bool)>;
 
     fn maybe_update_priority(&mut self, priority: Priority) -> Res<bool>;
     fn priority_update_frame(&mut self) -> Option<HFrame>;
@@ -537,6 +513,10 @@ impl Http3StreamInfo {
         }
     }
 
+    pub(crate) const fn stream_type(&self) -> Http3StreamType {
+        self.stream_type
+    }
+
     #[must_use]
     pub fn is_http(&self) -> bool {
         self.stream_type == Http3StreamType::Http
@@ -544,14 +524,14 @@ impl Http3StreamInfo {
 }
 
 trait RecvStreamEvents: Debug {
-    fn data_readable(&self, _stream_info: Http3StreamInfo) {}
-    fn recv_closed(&self, _stream_info: Http3StreamInfo, _close_type: CloseType) {}
+    fn data_readable(&self, _stream_info: &Http3StreamInfo) {}
+    fn recv_closed(&self, _stream_info: &Http3StreamInfo, _close_type: CloseType) {}
 }
 
 trait HttpRecvStreamEvents: RecvStreamEvents {
     fn header_ready(
         &self,
-        stream_info: Http3StreamInfo,
+        stream_info: &Http3StreamInfo,
         headers: Vec<Header>,
         interim: bool,
         fin: bool,
@@ -563,20 +543,33 @@ trait SendStream: Stream {
     /// # Errors
     ///
     /// Error may occur during sending data, e.g. protocol error, etc.
-    fn send(&mut self, conn: &mut Connection) -> Res<()>;
+    fn send(&mut self, conn: &mut Connection, now: Instant) -> Res<()>;
     fn has_data_to_send(&self) -> bool;
     fn stream_writable(&self);
     fn done(&self) -> bool;
 
+    /// Commit to reliably delivering the data buffered so far, so that it is still delivered
+    /// (via `RESET_STREAM_AT`) even if the stream is later reset. Implementations of this are
+    /// expected to send all data they have buffered so the commitment covers everything written so
+    /// far. The default implementation fails immediately.
+    ///
+    /// # Errors
+    /// Transport errors (e.g. the peer did not enable reliable reset),
+    /// or [`Error::FlowControlLimit`] if the buffered data could not be fully flushed.
+    /// The latter should be rare as most cases of buffering should include a couple of bytes.
+    fn commit(&mut self, _conn: &mut Connection, _now: Instant) -> Res<()> {
+        Err(Error::Unavailable)
+    }
+
     /// # Errors
     ///
     /// Error may occur during sending data, e.g. protocol error, etc.
-    fn send_data(&mut self, _conn: &mut Connection, _buf: &[u8]) -> Res<usize>;
+    fn send_data(&mut self, _conn: &mut Connection, _buf: &[u8], now: Instant) -> Res<usize>;
 
     /// # Errors
     ///
     /// It may happen that the transport stream is already closed. This is unlikely.
-    fn close(&mut self, conn: &mut Connection) -> Res<()>;
+    fn close(&mut self, conn: &mut Connection, now: Instant) -> Res<()>;
 
     /// # Errors
     ///
@@ -586,6 +579,7 @@ trait SendStream: Stream {
         _conn: &mut Connection,
         _error: u32,
         _message: &str,
+        _now: Instant,
     ) -> Res<()> {
         Err(Error::InvalidStreamId)
     }
@@ -600,12 +594,26 @@ trait SendStream: Stream {
     /// # Errors
     ///
     /// It may happen that the transport stream is already closed. This is unlikely.
-    fn send_data_atomic(&mut self, _conn: &mut Connection, _buf: &[u8]) -> Res<()> {
+    fn send_data_atomic(&mut self, _conn: &mut Connection, _buf: &[u8], _now: Instant) -> Res<()> {
         Err(Error::InvalidStreamId)
     }
 
-    /// This function is only implemented by `WebTransportSendStream`.
-    fn stats(&mut self, _conn: &mut Connection) -> Res<SendStreamStats> {
+    /// This function is only implemented by
+    /// [`WebTransportSendStream`](crate::features::extended_connect::webtransport_streams::WebTransportSendStream).
+    fn stats(&mut self, _conn: &mut Connection) -> Res<send_stream::Stats> {
+        Err(Error::Unavailable)
+    }
+
+    /// This function is only implemented by
+    /// [`WebTransportSendStream`](crate::features::extended_connect::webtransport_streams::WebTransportSendStream).
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn set_send_group(&mut self, _send_group: SendGroupId) -> Res<()> {
+        Err(Error::Unavailable)
+    }
+    /// This function is only implemented by
+    /// [`WebTransportSendStream`](crate::features::extended_connect::webtransport_streams::WebTransportSendStream).
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn clear_send_group(&mut self) -> Res<()> {
         Err(Error::Unavailable)
     }
 }
@@ -623,8 +631,8 @@ trait HttpSendStream: SendStream {
 }
 
 trait SendStreamEvents: Debug {
-    fn send_closed(&self, _stream_info: Http3StreamInfo, _close_type: CloseType) {}
-    fn data_writable(&self, _stream_info: Http3StreamInfo) {}
+    fn send_closed(&self, _stream_info: &Http3StreamInfo, _close_type: CloseType) {}
+    fn data_writable(&self, _stream_info: &Http3StreamInfo) {}
 }
 
 /// This enum is used to mark a different type of closing a stream:
@@ -655,5 +663,71 @@ impl CloseType {
     #[must_use]
     pub const fn locally_initiated(&self) -> bool {
         matches!(self, Self::ResetApp(_))
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use neqo_transport::StreamId;
+
+    use super::{Error, Http3StreamInfo, Http3StreamType};
+
+    #[test]
+    fn stream_info_is_http() {
+        let http = Http3StreamInfo::new(StreamId::new(0), Http3StreamType::Http);
+        assert!(http.is_http());
+
+        let control = Http3StreamInfo::new(StreamId::new(2), Http3StreamType::Control);
+        assert!(!control.is_http());
+
+        let wt = Http3StreamInfo::new(
+            StreamId::new(4),
+            Http3StreamType::WebTransport(StreamId::new(0)),
+        );
+        assert!(!wt.is_http());
+    }
+
+    #[test]
+    fn error_codes() {
+        for (error, expected) in [
+            (Error::HttpNone, 0x100),
+            (Error::HttpGeneralProtocol, 0x101),
+            (Error::HttpGeneralProtocolStream, 0x101),
+            (Error::InvalidHeader, 0x101),
+            (Error::HttpInternal(0), 0x102),
+            (Error::HttpStreamCreation, 0x103),
+            (Error::HttpClosedCriticalStream, 0x104),
+            (Error::HttpFrameUnexpected, 0x105),
+            (Error::HttpFrame, 0x106),
+            (Error::HttpExcessiveLoad, 0x107),
+            (Error::HttpId, 0x108),
+            (Error::HttpSettings, 0x109),
+            (Error::HttpMissingSettings, 0x10a),
+            (Error::HttpRequestRejected, 0x10b),
+            (Error::HttpRequestCancelled, 0x10c),
+            (Error::HttpRequestIncomplete, 0x10d),
+            (Error::HttpMessage, 0x10e),
+            (Error::HttpConnect, 0x10f),
+            (Error::HttpVersionFallback, 0x110),
+        ] {
+            assert_eq!(error.code(), expected);
+        }
+    }
+
+    #[test]
+    fn error_mapping() {
+        use neqo_transport::Error as Te;
+
+        for (input, expected) in [
+            (Te::InvalidStreamId, Error::TransportStreamDoesNotExist),
+            (Te::FinalSize, Error::TransportStreamDoesNotExist),
+            (Te::InvalidInput, Error::InvalidInput),
+            (Te::ConnectionState, Error::Unavailable),
+            (Te::StreamLimit, Error::StreamLimit),
+            (Te::NotConnected, Error::Transport(Te::NotConnected)),
+        ] {
+            assert_eq!(Error::from(input), expected);
+        }
     }
 }

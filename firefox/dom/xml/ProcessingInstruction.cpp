@@ -1,17 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsGkAtoms.h"
-#include "nsUnicharUtils.h"
-#include "mozilla/dom/LinkStyle.h"
 #include "mozilla/dom/ProcessingInstruction.h"
+
+#include "mozilla/IntegerPrintfMacros.h"
+#include "mozilla/dom/LinkStyle.h"
 #include "mozilla/dom/ProcessingInstructionBinding.h"
 #include "mozilla/dom/XMLStylesheetProcessingInstruction.h"
-#include "mozilla/IntegerPrintfMacros.h"
 #include "nsContentUtils.h"
+#include "nsGkAtoms.h"
+#include "nsUnicharUtils.h"
 
 already_AddRefed<mozilla::dom::ProcessingInstruction>
 NS_NewXMLProcessingInstruction(nsNodeInfoManager* aNodeInfoManager,
@@ -45,13 +44,12 @@ NS_NewXMLProcessingInstruction(nsNodeInfoManager* aNodeInfoManager,
 namespace mozilla::dom {
 
 ProcessingInstruction::ProcessingInstruction(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
-    const nsAString& aData)
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo, const nsAString& aData)
     : CharacterData(std::move(aNodeInfo)) {
   MOZ_ASSERT(mNodeInfo->NodeType() == nsINode::PROCESSING_INSTRUCTION_NODE,
              "Bad NodeType in aNodeInfo");
 
-  SetTextInternal(0, mText.GetLength(), aData.BeginReading(), aData.Length(),
+  SetTextInternal(0, mBuffer.GetLength(), aData.BeginReading(), aData.Length(),
                   false);  // Don't notify (bug 420429).
 }
 
@@ -93,7 +91,7 @@ void ProcessingInstruction::List(FILE* out, int32_t aIndent) const {
   fprintf(out, "Processing instruction refcount=%" PRIuPTR "<", mRefCnt.get());
 
   nsAutoString tmp;
-  ToCString(tmp, 0, mText.GetLength());
+  ToCString(tmp, 0, mBuffer.GetLength());
   tmp.Insert(nsDependentAtomString(NodeInfo()->GetExtraName()).get(), 0);
   fputs(NS_LossyConvertUTF16toASCII(tmp).get(), out);
 

@@ -1,4 +1,3 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -12,30 +11,18 @@ const certDB = Cc["@mozilla.org/security/x509certdb;1"].getService(
   Ci.nsIX509CertDB
 );
 
-function excMessage(e) {
-  if (e.message) {
-    let msg = e.message;
-    if (e.data) {
-      msg = msg + ": " + e.data;
-    }
-    return msg;
-  }
-
-  return e.toString();
-}
-
 function testGood(data) {
-  try {
-    let cert = certDB.constructX509FromBase64(data.cert);
-    equal(
-      cert.commonName,
-      data.cn,
-      "Actual and expected commonName should match"
-    );
-  } catch (e) {
-    info(`Exception: ${excMessage(e)}`);
-    ok(false, `Should not have gotten an exception for "CN=${data.cn}"`);
-  }
+  let cert = certDB.constructX509FromBase64(data.cert);
+  equal(
+    cert.commonName,
+    data.cn,
+    "Actual and expected commonName should match"
+  );
+  throws(
+    () => certDB.setCertTrustFromString(cert, "CTu,CTu,"),
+    /NS_ERROR_ILLEGAL_VALUE/,
+    "Changing the trust of a temporary certificate is not supported"
+  );
 }
 
 function testBad(data) {

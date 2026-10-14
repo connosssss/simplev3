@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,19 +5,18 @@
 #ifndef mozilla_net_CookieService_h
 #define mozilla_net_CookieService_h
 
-#include "nsICookieService.h"
-#include "nsICookieManager.h"
-#include "nsIObserver.h"
-#include "nsWeakReference.h"
-
 #include "Cookie.h"
 #include "CookieCommons.h"
 #include "ThirdPartyCookieBlockingExceptions.h"
-
-#include "nsString.h"
-#include "nsIMemoryReporter.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/MozPromise.h"
+#include "nsICookieManager.h"
+#include "nsICookieService.h"
+#include "nsICookieValidation.h"
+#include "nsIMemoryReporter.h"
+#include "nsIObserver.h"
+#include "nsString.h"
+#include "nsWeakReference.h"
 
 class nsIConsoleReportCollector;
 class nsICookieJarSettings;
@@ -78,7 +76,7 @@ class CookieService final : public nsICookieService,
       nsIURI* aHostURI, bool aIsForeign, bool aIsThirdPartyTrackingResource,
       bool aIsThirdPartySocialTrackingResource,
       bool aStorageAccessPermissionGranted, const nsACString& aCookieHeader,
-      const int aNumOfCookies, const OriginAttributes& aOriginAttrs,
+      bool aHasExistingCookies, const OriginAttributes& aOriginAttrs,
       uint32_t* aRejectedReason);
 
   void GetCookiesForURI(nsIURI* aHostURI, nsIChannel* aChannel, bool aIsForeign,
@@ -100,11 +98,11 @@ class CookieService final : public nsICookieService,
                   const nsACString& aName, const nsACString& aPath,
                   bool aFromHttp, const nsID* aOperationID);
 
-  bool SetCookiesFromIPC(const nsACString& aBaseDomain,
-                         const OriginAttributes& aAttrs, nsIURI* aHostURI,
-                         bool aFromHttp, bool aIsThirdParty,
-                         const nsTArray<CookieStruct>& aCookies,
-                         dom::BrowsingContext* aBrowsingContext);
+  nsICookieValidation::ValidationError SetCookiesFromIPC(
+      const nsACString& aBaseDomain, const OriginAttributes& aAttrs,
+      nsIURI* aHostURI, bool aIsThirdParty,
+      const nsTArray<CookieStruct>& aCookies,
+      dom::BrowsingContext* aBrowsingContext);
 
  protected:
   virtual ~CookieService();
@@ -115,7 +113,7 @@ class CookieService final : public nsICookieService,
   void CloseCookieStorages();
 
   nsresult NormalizeHost(nsCString& aHost);
-  void NotifyAccepted(nsIChannel* aChannel);
+  void NotifyAccepted(nsIChannel* aChannel, uint32_t aRejectedReason);
 
   nsresult GetCookiesWithOriginAttributes(
       const OriginAttributesPattern& aPattern, const nsCString& aBaseDomain,
@@ -141,6 +139,13 @@ class CookieService final : public nsICookieService,
   RefPtr<CookieStorage> mPersistentStorage;
   RefPtr<CookieStorage> mPrivateStorage;
 
+  // Holds the real persistent storage after shutdown swap so it is not
+  // destroyed (and its in-memory cookie tree torn down) on the main thread
+  // during the critical shutdown window. Releases naturally with the service.
+  RefPtr<CookieStorage> mRetiredStorage;
+
+  void RetirePersistentStorageForShutdown();
+
  private:
   nsresult AddInternal(nsIURI* aCookieURI, const nsACString& aHost,
                        const nsACString& aPath, const nsACString& aName,
@@ -149,7 +154,6 @@ class CookieService final : public nsICookieService,
                        OriginAttributes* aOriginAttributes, int32_t aSameSite,
                        nsICookie::schemeType aSchemeMap, bool aIsPartitioned,
                        bool aFromHttp, const nsID* aOperationID,
-                       bool aRejectWhenInvalid,
                        nsICookieValidation** aValidation);
 };
 

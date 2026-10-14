@@ -1,5 +1,3 @@
-# -*- makefile -*-
-# vim:set ts=8 sw=8 sts=8 noet:
 #
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -43,8 +41,6 @@ EXEC			= exec
 # Testing frameworks support
 ################################################################################
 
-testxpcobjdir = $(DEPTH)/_tests/xpcshell
-
 ifdef ENABLE_TESTS
 ifdef CPP_UNIT_TESTS
 ifdef COMPILE_ENVIRONMENT
@@ -61,16 +57,6 @@ CPP_UNIT_TESTS_TARGET = target
 INSTALL_TARGETS += CPP_UNIT_TESTS
 endif
 
-run-cppunittests::
-	@$(PYTHON3) $(MOZILLA_DIR)/testing/runcppunittests.py --xre-path=$(DIST)/bin --symbols-path=$(DIST)/crashreporter-symbols $(CPP_UNIT_TESTS)
-
-cppunittests-remote:
-	$(PYTHON3) -u $(MOZILLA_DIR)/testing/remotecppunittests.py \
-		--xre-path=$(DEPTH)/dist/bin \
-		--localLib=$(DEPTH)/dist/$(MOZ_APP_NAME) \
-		--deviceIP=${TEST_DEVICE} \
-		$(CPP_UNIT_TESTS) $(EXTRA_TEST_ARGS); \
-
 endif # COMPILE_ENVIRONMENT
 endif # CPP_UNIT_TESTS
 endif # ENABLE_TESTS
@@ -79,18 +65,6 @@ endif # ENABLE_TESTS
 #
 # Library rules
 #
-# If FORCE_STATIC_LIB is set, build a static library.
-# Otherwise, build a shared library.
-#
-
-ifndef LIBRARY
-ifdef REAL_LIBRARY
-ifdef NO_EXPAND_LIBS
-# Only build actual library if it is requested.
-LIBRARY			:= $(REAL_LIBRARY)
-endif
-endif
-endif
 
 ifdef FORCE_SHARED_LIB
 ifdef MKSHLIB
@@ -194,7 +168,6 @@ CMOBJS = $(notdir $(CMSRCS:.m=.$(OBJ_SUFFIX)))
 CMMOBJS = $(notdir $(CMMSRCS:.mm=.$(OBJ_SUFFIX)))
 # ASFILES can have different extensions (.s, .asm)
 ASOBJS = $(notdir $(addsuffix .$(OBJ_SUFFIX),$(basename $(ASFILES))))
-RS_STATICLIB_CRATE_OBJ = $(addprefix lib,$(notdir $(RS_STATICLIB_CRATE_SRC:.rs=.$(LIB_SUFFIX))))
 ifndef OBJS
 _OBJS = $(COBJS) $(SOBJS) $(CPPOBJS) $(CMOBJS) $(CMMOBJS) $(ASOBJS) $(CWASMOBJS) $(CPPWASMOBJS)
 OBJS = $(strip $(_OBJS))
@@ -217,15 +190,6 @@ SIMPLE_PROGRAMS :=
 HOST_SHARED_LIBRARY :=
 HOST_PROGRAM :=
 HOST_SIMPLE_PROGRAMS :=
-endif
-
-ifdef MACH
-ifndef NO_BUILDSTATUS_MESSAGES
-define BUILDSTATUS
-@echo 'BUILDSTATUS@$(relativesrcdir) $1'
-
-endef
-endif
 endif
 
 define SUBMAKE # $(call SUBMAKE,target,directory,static)
@@ -279,14 +243,6 @@ ifneq (,$(SHARED_LIBRARY))
 _LOADER_PATH := @rpath
 EXTRA_DSO_LDOPTS	+= -dynamiclib -install_name $(_LOADER_PATH)/$(@F) -compatibility_version 1 -current_version 1
 endif
-endif
-
-#
-# GNU doesn't have path length limitation
-#
-
-ifeq ($(OS_ARCH),GNU)
-OS_CPPFLAGS += -DPATH_MAX=1024 -DMAXPATHLEN=1024
 endif
 
 #
@@ -414,7 +370,7 @@ endef
 # PROGRAM = Foo
 # creates OBJS, links with LIBS to create Foo
 #
-$(PROGRAM): $(PROGOBJS) $(STATIC_LIBS) $(EXTRA_DEPS) $(call resfile,$(PROGRAM)) $(GLOBAL_DEPS) $(call mkdir_deps,$(FINAL_TARGET))
+$(PROGRAM): $(PROGOBJS) $(STATIC_LIBS) $(call resfile,$(PROGRAM)) $(GLOBAL_DEPS) $(call mkdir_deps,$(FINAL_TARGET))
 	$(REPORT_BUILD)
 	$(call BUILDSTATUS,START_Program $(@F))
 ifeq (clang-cl_WINNT,$(CC_TYPE)_$(OS_ARCH))
@@ -427,12 +383,9 @@ endif # WINNT && clang-cl
 ifdef ENABLE_STRIP
 	$(STRIP) $(STRIP_FLAGS) $@
 endif
-ifdef MOZ_POST_PROGRAM_COMMAND
-	$(MOZ_POST_PROGRAM_COMMAND) $@
-endif
 	$(call BUILDSTATUS,END_Program $(@F))
 
-$(HOST_PROGRAM): $(HOST_PROGOBJS) $(HOST_LIBS) $(HOST_EXTRA_DEPS) $(GLOBAL_DEPS) $(call mkdir_deps,$(DEPTH)/dist/host/bin)
+$(HOST_PROGRAM): $(HOST_PROGOBJS) $(HOST_LIBS) $(GLOBAL_DEPS) $(call mkdir_deps,$(DEPTH)/dist/host/bin)
 	$(REPORT_BUILD)
 	$(call BUILDSTATUS,START_Program $(@F))
 ifeq (clang-cl_WINNT,$(HOST_CC_TYPE)_$(HOST_OS_ARCH))
@@ -455,7 +408,7 @@ endif
 # creates Foo.o Bar.o, links with LIBS to create Foo, Bar.
 #
 define simple_program_deps
-$1: $(1:$(BIN_SUFFIX)=.$(OBJ_SUFFIX)) $(STATIC_LIBS) $(EXTRA_DEPS) $(call resfile_for_manifest,$1) $(GLOBAL_DEPS)
+$1: $(1:$(BIN_SUFFIX)=.$(OBJ_SUFFIX)) $(STATIC_LIBS) $(call resfile_for_manifest,$1) $(GLOBAL_DEPS)
 endef
 $(foreach p,$(SIMPLE_PROGRAMS),$(eval $(call simple_program_deps,$(p))))
 
@@ -472,12 +425,9 @@ endif # WINNT && clang-cl
 ifdef ENABLE_STRIP
 	$(STRIP) $(STRIP_FLAGS) $@
 endif
-ifdef MOZ_POST_PROGRAM_COMMAND
-	$(MOZ_POST_PROGRAM_COMMAND) $@
-endif
 	$(call BUILDSTATUS,END_Program $(@F))
 
-$(HOST_SIMPLE_PROGRAMS): host_%$(HOST_BIN_SUFFIX): $(HOST_LIBS) $(HOST_EXTRA_DEPS) $(GLOBAL_DEPS)
+$(HOST_SIMPLE_PROGRAMS): host_%$(HOST_BIN_SUFFIX): $(HOST_LIBS) $(GLOBAL_DEPS)
 	$(REPORT_BUILD)
 	$(call BUILDSTATUS,START_Program $(@F))
 ifeq (WINNT_clang-cl,$(HOST_OS_ARCH)_$(HOST_CC_TYPE))
@@ -491,14 +441,14 @@ endif
 endif
 	$(call BUILDSTATUS,END_Program $(@F))
 
-$(LIBRARY): $(OBJS) $(STATIC_LIBS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
+$(LIBRARY): $(OBJS) $(STATIC_LIBS) $(GLOBAL_DEPS)
 	$(REPORT_BUILD)
 	$(call BUILDSTATUS,START_StaticLib $@)
 	$(RM) $(REAL_LIBRARY)
 	$(AR) $(AR_FLAGS) $($@_OBJS)
 	$(call BUILDSTATUS,END_StaticLib $@)
 
-$(WASM_ARCHIVE): $(CWASMOBJS) $(CPPWASMOBJS) $(STATIC_LIBS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
+$(WASM_ARCHIVE): $(CWASMOBJS) $(CPPWASMOBJS) $(STATIC_LIBS) $(GLOBAL_DEPS)
 	$(REPORT_BUILD_VERBOSE)
 	$(call BUILDSTATUS,START_WasmLib $@)
 	$(RM) $(WASM_ARCHIVE)
@@ -532,11 +482,11 @@ endif
 # symlinks back to the originals. The symlinks are a no-op for stabs debugging,
 # so no need to conditionalize on OS version or debugging format.
 
-$(SHARED_LIBRARY): $(OBJS) $(call resfile,$(SHARED_LIBRARY)) $(STATIC_LIBS) $(EXTRA_DEPS) $(GLOBAL_DEPS) $(call mkdir_deps,$(FINAL_TARGET))
+$(SHARED_LIBRARY): $(OBJS) $(call resfile,$(SHARED_LIBRARY)) $(STATIC_LIBS) $(GLOBAL_DEPS) $(call mkdir_deps,$(FINAL_TARGET))
 	$(REPORT_BUILD)
 	$(call BUILDSTATUS,START_SharedLib $@)
 	$(RM) $@
-	$(MKSHLIB) $(if $(filter clang-cl_WINNT,$(CC_TYPE)_$(OS_ARCH)),-IMPLIB:$(basename $(@F)).lib )$($(notdir $@)_OBJS) $(filter %.res,$^) $(RELRHACK_LDFLAGS) $(LDFLAGS) $(STATIC_LIBS) $(SHARED_LIBS) $(EXTRA_DSO_LDOPTS) $(MOZ_GLUE_LDFLAGS) $(OS_LIBS)
+	$(MKSHLIB) $(if $(filter clang-cl_WINNT,$(CC_TYPE)_$(OS_ARCH)),-IMPLIB:$(basename $(@F)).lib )$($(notdir $@)_OBJS) $(filter %.res,$^) $(RELRHACK_LDFLAGS) $(LDFLAGS) $(STATIC_LIBS) $(SHARED_LIBS) $(EXTRA_DSO_LDOPTS) $(OS_LIBS)
 	$(call py_action,check_binary,$@)
 
 ifeq (clang-cl_WINNT,$(CC_TYPE)_$(OS_ARCH))
@@ -558,12 +508,6 @@ endef
 $(foreach f,$(CSRCS) $(SSRCS) $(CPPSRCS) $(CMSRCS) $(CMMSRCS) $(ASFILES),$(eval $(call src_objdep,$(f),$(OBJ_SUFFIX))))
 $(foreach f,$(HOST_CSRCS) $(HOST_CPPSRCS),$(eval $(call src_objdep,$(f),$(OBJ_SUFFIX),host_)))
 $(foreach f,$(WASM_CSRCS) $(WASM_CPPSRCS),$(eval $(call src_objdep,$(f),wasm)))
-
-# The Rust compiler only outputs library objects, and so we need different
-# mangling to generate dependency rules for it.
-mk_global_crate_libname = $(basename lib$(notdir $1)).$(LIB_SUFFIX)
-crate_src_libdep = $(call mk_global_crate_libname,$1): $1 $$(call mkdir_deps,$$(MDDEPDIR))
-$(foreach f,$(RS_STATICLIB_CRATE_SRC),$(eval $(call crate_src_libdep,$(f))))
 
 $(OBJS) $(HOST_OBJS) $(PROGOBJS) $(HOST_PROGOBJS): $(GLOBAL_DEPS)
 
@@ -635,7 +579,7 @@ endif
 endef
 
 ifneq (,$(filter $(DIST)/bin%,$(FINAL_TARGET)))
-DUMP_SYMS_TARGETS := $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS)
+DUMP_SYMS_TARGETS := $(filter-out $(MOZBUILD_NON_DEFAULT_TARGETS),$(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(RUST_PROGRAMS))
 endif
 
 ifdef MOZ_AUTOMATION
@@ -797,8 +741,7 @@ endif
 
 endif
 
-# EXTRA_DEPS contains manifests (manually added in Makefile.in ; bug 1498414)
-%.res: $(or $(RCFILE),%.rc) $(MOZILLA_DIR)/config/create_res.py $(EXTRA_DEPS)
+%.res: $(or $(RCFILE),%.rc) $(MOZILLA_DIR)/config/create_res.py
 	$(REPORT_BUILD)
 	$(call BUILDSTATUS,START_Res $@)
 	$(PYTHON3) $(MOZILLA_DIR)/config/create_res.py $(DEFINES) $(INCLUDES) -o $@ $<
@@ -806,8 +749,10 @@ endif
 
 $(notdir $(addsuffix .rc,$(PROGRAM) $(SHARED_LIBRARY) $(SIMPLE_PROGRAMS) module)): %.rc: $(RCINCLUDE) $(MOZILLA_DIR)/config/create_rc.py
 	$(call BUILDSTATUS,START_Rc $@)
-	$(PYTHON3) $(MOZILLA_DIR)/config/create_rc.py '$(if $(filter module,$*),,$*)' '$(RCINCLUDE)'
+	$(PYTHON3) $(MOZILLA_DIR)/config/create_rc.py '$(if $(filter module,$*),,$*)' --include '$(RCINCLUDE)' --dep-file '$(MDDEPDIR)/$@.d'
 	$(call BUILDSTATUS,END_Rc $@)
+
+-include $(addsuffix .rc.d, $(addprefix $(MDDEPDIR)/,$(PROGRAM) $(SHARED_LIBRARY) $(SIMPLE_PROGRAMS) module))
 
 # Cancel GNU make built-in implicit rules
 MAKEFLAGS += -r
@@ -833,18 +778,6 @@ export:: $(FINAL_TARGET)
 endif
 
 ################################################################################
-# The default location for prefs is the gre prefs directory.
-# PREF_DIR is used for L10N_PREF_JS_EXPORTS in various locales/ directories.
-PREF_DIR = defaults/pref
-
-# If DIST_SUBDIR is defined it indicates that app and gre dirs are
-# different and that we are building app related resources. Hence,
-# PREF_DIR should point to the app prefs location.
-ifneq (,$(DIST_SUBDIR)$(XPI_NAME))
-PREF_DIR = defaults/preferences
-endif
-
-################################################################################
 # CHROME PACKAGING
 
 chrome::
@@ -855,23 +788,6 @@ $(FINAL_TARGET)/chrome: $(call mkdir_deps,$(FINAL_TARGET)/chrome)
 
 ifneq (,$(JAR_MANIFEST))
 ifndef NO_DIST_INSTALL
-
-ifdef XPI_NAME
-ifdef XPI_ROOT_APPID
-# For add-on packaging we may specify that an application
-# sub-dir should be added to the root chrome manifest with
-# a specific application id.
-MAKE_JARS_FLAGS += --root-manifest-entry-appid='$(XPI_ROOT_APPID)'
-endif
-
-# if DIST_SUBDIR is defined but XPI_ROOT_APPID is not there's
-# no way langpacks will get packaged right, so error out.
-ifneq (,$(DIST_SUBDIR))
-ifndef XPI_ROOT_APPID
-$(error XPI_ROOT_APPID is not defined - langpacks will break.)
-endif
-endif
-endif
 
 misc realchrome:: $(FINAL_TARGET)/chrome
 	$(call py_action,jar_maker $(subst $(topsrcdir)/,,$(JAR_MANIFEST)),\
@@ -906,10 +822,14 @@ $(4):: $$(abspath $(3))/$(1).xpi
 
 endef
 
+ifdef XPI_TESTDIR
+$(eval $(call xpi_package_rule,$(XPI_PKGNAME),$(srcdir),$(XPI_TESTDIR),misc))
+else
 # When you move this out of the tools tier, please remove the corresponding
 # hacks in recursivemake.py that check if Makefile.in sets the variable.
 ifdef XPI_PKGNAME
 $(eval $(call xpi_package_rule,$(XPI_PKGNAME),$(FINAL_TARGET),$(FINAL_TARGET)/..,tools realchrome))
+endif
 endif
 
 #############################################################################
@@ -1067,7 +987,7 @@ $(foreach category,$(PP_TARGETS), \
   ) \
   $(foreach file,$($(category)), \
     $(eval $(call create_dependency,$(call pp_target_result,$(category),$(file)), \
-                                    $(file) $(GLOBAL_DEPS))) \
+                                    $(file) $(GLOBAL_DEPS) $($(category)_EXTRA_DEPS))) \
   ) \
   $(eval $(call pp_target_results,$(category)): PP_TARGET_FLAGS=$($(category)_FLAGS)) \
 )

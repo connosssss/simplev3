@@ -1,78 +1,20 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "CookieValidation.h"
+
 #include "CookieLogging.h"
+#include "CookiePrefixes.h"
 #include "CookieService.h"
-#include "mozilla/dom/nsMixedContentBlocker.h"
 #include "mozilla/StaticPrefs_network.h"
+#include "mozilla/dom/nsMixedContentBlocker.h"
 
 constexpr uint32_t kMaxBytesPerCookie = 4096;
 constexpr uint32_t kMaxBytesPerDomain = 1024;
 constexpr uint32_t kMaxBytesPerPath = 1024;
 
 using namespace mozilla::net;
-
-namespace {
-
-struct CookiePrefix {
-  nsCString mPrefix;
-  std::function<bool(const CookieStruct&, bool)> mCallback;
-};
-
-MOZ_RUNINIT CookiePrefix gCookiePrefixes[] = {
-    {"__Secure-"_ns,
-     [](const CookieStruct& aCookieData, bool aSecureRequest) -> bool {
-       // If a cookie's name begins with a case-sensitive match for the string
-       // __Secure-, then the cookie will have been set with a Secure attribute.
-       return aSecureRequest && aCookieData.isSecure();
-     }},
-
-    {"__Host-"_ns,
-     [](const CookieStruct& aCookieData, bool aSecureRequest) -> bool {
-       // If a cookie's name begins with a case-sensitive match for the string
-       // __Host-, then the cookie will have been set with a Secure attribute, a
-       // Path attribute with a value of /, and no Domain attribute.
-       return aSecureRequest && aCookieData.isSecure() &&
-              aCookieData.host()[0] != '.' &&
-              aCookieData.path().EqualsLiteral("/");
-     }},
-
-    {"__Http-"_ns,
-     [](const CookieStruct& aCookieData, bool aSecureRequest) -> bool {
-       // If a cookie's name begins with a case-sensitive match for the string
-       // __Http-, then the cookie will have been set with a Secure attribute,
-       // and an HttpOnly attribute.
-       return aSecureRequest && aCookieData.isSecure() &&
-              aCookieData.isHttpOnly();
-     }},
-
-    {"__HostHttp-"_ns,
-     [](const CookieStruct& aCookieData, bool aSecureRequest) -> bool {
-       // If a cookie's name begins with a case-sensitive match for the string
-       // __HostHttp-, then the cookie will have been set with a Secure
-       // attribute, an HttpOnly attribute, a Path attribute with a value of /,
-       // and no Domain attribute.
-       return aSecureRequest && aCookieData.isSecure() &&
-              aCookieData.isHttpOnly() && aCookieData.host()[0] != '.' &&
-              aCookieData.path().EqualsLiteral("/");
-     }},
-};
-
-CookiePrefix* FindCookiePrefix(const nsACString& aString) {
-  for (CookiePrefix& prefix : gCookiePrefixes) {
-    if (StringBeginsWith(aString, prefix.mPrefix,
-                         nsCaseInsensitiveCStringComparator)) {
-      return &prefix;
-    }
-  }
-
-  return nullptr;
-}
-
-}  // namespace
 
 NS_IMPL_ISUPPORTS(CookieValidation, nsICookieValidation)
 
@@ -151,7 +93,8 @@ void CookieValidation::ValidateInternal() {
   }
 
   // If a cookie is nameless, then its value must not start with a known prefix.
-  if (mCookieData.name().IsEmpty() && !!FindCookiePrefix(mCookieData.value())) {
+  if (mCookieData.name().IsEmpty() &&
+      CookiePrefixes::Has(mCookieData.value())) {
     mResult = eRejectedInvalidPrefix;
     return;
   }
@@ -172,9 +115,10 @@ void CookieValidation::ValidateInternal() {
   // This part checks if the caleers have set the expiry value to max 400 days.
   if (!mCookieData.isSession()) {
     int64_t maxageCap = StaticPrefs::network_cookie_maxageCap();
-    int64_t currentTimeInMSec = PR_Now() / PR_USEC_PER_MSEC;
-    int64_t expiry = mCookieData.expiry();
-    if (maxageCap && expiry > currentTimeInMSec + maxageCap * 1000) {
+    int64_t creationTimeInMSec =
+        mCookieData.updateTimeInUSec() / PR_USEC_PER_MSEC;
+    int64_t expiryInMSec = mCookieData.expiryInMSec();
+    if (maxageCap && expiryInMSec > creationTimeInMSec + maxageCap * 1000) {
       mResult = eRejectedAttributeExpiryOversize;
       return;
     }
@@ -198,6 +142,12 @@ void CookieValidation::ValidateForHostInternal(nsIURI* aHostURI,
     return;
   }
 
+  if ((mCookieData.schemeMap() & nsICookie::SCHEME_FILE) &&
+      !mCookieData.host().IsEmpty()) {
+    mResult = eRejectedInvalidDomain;
+    return;
+  }
+
   // if the new cookie is httponly, make sure we're not coming from script
   if (!aFromHttp && mCookieData.isHttpOnly()) {
     mResult = eRejectedHttpOnlyButFromScript;
@@ -207,12 +157,12 @@ void CookieValidation::ValidateForHostInternal(nsIURI* aHostURI,
   bool potentiallyTrustworthy =
       nsMixedContentBlocker::IsPotentiallyTrustworthyOrigin(aHostURI);
 
-  // FixDomain() and FixPath() from CookieParser MUST be run first to make sure
-  // invalid attributes are rejected and to regularlize them. In particular all
+  // FixDomain() from CookieParser MUST be run first to make sure invalid
+  // attributes are rejected and to regularlize them. In particular all
   // explicit domain attributes result in a host that starts with a dot, and if
   // the host doesn't start with a dot it correctly matches the true
   // host.
-  if (!CheckPrefixes(mCookieData, potentiallyTrustworthy)) {
+  if (!CookiePrefixes::Check(mCookieData, potentiallyTrustworthy)) {
     mResult = eRejectedInvalidPrefix;
     return;
   }
@@ -332,22 +282,6 @@ bool CookieValidation::CheckDomain(const CookieStruct& aCookieData,
    * it breaks sites (IE doesn't enforce it), so we don't perform this check.
    */
   return false;
-}
-
-// CheckPrefixes
-//
-// Reject cookies whose name starts with the magic prefixes from
-// https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis
-// if they do not meet the criteria required by the prefix.
-bool CookieValidation::CheckPrefixes(const CookieStruct& aCookieData,
-                                     bool aSecureRequest) {
-  CookiePrefix* prefix = FindCookiePrefix(aCookieData.name());
-  if (!prefix) {
-    // not one of the magic prefixes: carry on
-    return true;
-  }
-
-  return prefix->mCallback(aCookieData, aSecureRequest);
 }
 
 void CookieValidation::RetrieveErrorLogData(uint32_t* aFlags,
@@ -522,7 +456,7 @@ CookieValidation::GetErrorString(nsAString& aResult) {
   RetrieveErrorLogData(&flags, category, key, params);
 
   return nsContentUtils::FormatLocalizedString(
-      nsContentUtils::eNECKO_PROPERTIES_en_US, key.get(), params, aResult);
+      PropertiesFile::NECKO_PROPERTIES_en_US, key.get(), params, aResult);
 }
 
 // static
@@ -535,6 +469,11 @@ bool CookieValidation::CheckNameAndValueSize(const CookieStruct& aCookieData) {
 bool CookieValidation::CheckName(const CookieStruct& aCookieData) {
   if (!aCookieData.name().IsEmpty() && (aCookieData.name().First() == 0x20 ||
                                         aCookieData.name().Last() == 0x20)) {
+    return false;
+  }
+
+  if (StaticPrefs::network_cookie_valueless_cookie() &&
+      aCookieData.name().IsEmpty()) {
     return false;
   }
 

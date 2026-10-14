@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,13 +6,14 @@
  * UI. */
 
 #include "nsFontInflationData.h"
+
 #include "FrameProperties.h"
-#include "nsTextControlFrame.h"
-#include "nsListControlFrame.h"
-#include "nsComboboxControlFrame.h"
-#include "mozilla/dom/Text.h"  // for inline nsINode::AsText() definition
 #include "mozilla/PresShell.h"
 #include "mozilla/ReflowInput.h"
+#include "mozilla/dom/Text.h"  // for inline nsINode::AsText() definition
+#include "nsComboboxControlFrame.h"
+#include "nsListControlFrame.h"
+#include "nsTextControlFrame.h"
 #include "nsTextFrameUtils.h"
 
 using namespace mozilla;
@@ -311,8 +310,7 @@ static uint32_t DoCharCountOfLargestOption(nsIFrame* aContainer) {
 
 static uint32_t CharCountOfLargestOption(nsIFrame* aListControlFrame) {
   return DoCharCountOfLargestOption(
-      static_cast<nsListControlFrame*>(aListControlFrame)
-          ->GetOptionsContainer());
+      aListControlFrame->GetContentInsertionFrame());
 }
 
 void nsFontInflationData::ScanTextIn(nsIFrame* aFrame) {

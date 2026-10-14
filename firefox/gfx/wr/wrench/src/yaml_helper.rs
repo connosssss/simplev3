@@ -20,6 +20,7 @@ pub trait YamlHelper {
     fn as_pipeline_id(&self) -> Option<PipelineId>;
     fn as_rect(&self) -> Option<LayoutRect>;
     fn as_size(&self) -> Option<LayoutSize>;
+    fn as_side_offsets(&self) -> Option<LayoutSideOffsets>;
     fn as_point(&self) -> Option<LayoutPoint>;
     fn as_vector(&self) -> Option<LayoutVector2D>;
     fn as_matrix4d(&self) -> Option<LayoutTransform>;
@@ -39,15 +40,17 @@ pub trait YamlHelper {
     fn as_vec_filter_op(&self) -> Option<Vec<FilterOp>>;
     fn as_filter_data(&self) -> Option<FilterData>;
     fn as_vec_filter_data(&self) -> Option<Vec<FilterData>>;
-    fn as_filter_input(&self) -> Option<FilterPrimitiveInput>;
-    fn as_filter_primitive(&self) -> Option<FilterPrimitive>;
-    fn as_vec_filter_primitive(&self) -> Option<Vec<FilterPrimitive>>;
-    fn as_color_space(&self) -> Option<ColorSpace>;
     fn as_complex_clip_region(&self) -> ComplexClipRegion;
     fn as_sticky_offset_bounds(&self) -> StickyOffsetBounds;
-    fn as_gradient(&self, dl: &mut DisplayListBuilder) -> Gradient;
-    fn as_radial_gradient(&self, dl: &mut DisplayListBuilder) -> RadialGradient;
-    fn as_conic_gradient(&self, dl: &mut DisplayListBuilder) -> ConicGradient;
+    fn as_gradient(&self, dl: &mut DisplayListBuilder) -> (Gradient, Vec<GradientStop>);
+    fn as_radial_gradient(
+        &self,
+        dl: &mut DisplayListBuilder,
+    ) -> (RadialGradient, Vec<GradientStop>);
+    fn as_conic_gradient(
+        &self,
+        dl: &mut DisplayListBuilder,
+    ) -> (ConicGradient, Vec<GradientStop>);
     fn as_complex_clip_regions(&self) -> Vec<ComplexClipRegion>;
     fn as_rotation(&self) -> Option<Rotation>;
 }
@@ -212,6 +215,8 @@ impl YamlHelper for Yaml {
         match *self {
             Yaml::Integer(iv) => Some(iv as f32),
             Yaml::Real(ref sv) => f32::from_str(sv.as_str()).ok(),
+            Yaml::String(ref sv) if sv == "+Inf" => Some(f32::INFINITY),
+            Yaml::String(ref sv) if sv == "-Inf" => Some(f32::NEG_INFINITY),
             _ => None,
         }
     }
@@ -292,6 +297,18 @@ impl YamlHelper for Yaml {
         None
     }
 
+    fn as_side_offsets(&self) -> Option<LayoutSideOffsets> {
+        self.as_vec_f32().and_then(|v| match v.as_slice() {
+            &[top, right, bottom, left] => Some(LayoutSideOffsets::new(
+                top,
+                right,
+                bottom,
+                left
+            )),
+            _ => None,
+        })
+    }
+
     fn as_point(&self) -> Option<LayoutPoint> {
         if self.is_badvalue() {
             return None;
@@ -337,6 +354,9 @@ impl YamlHelper for Yaml {
                     let (function, ref args, reminder) = parse_function(slice);
                     slice = reminder;
                     let mx = match function {
+                        "identity" => {
+                            LayoutTransform::identity()
+                        }
                         "translate" if args.len() >= 2 => {
                             let z = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(0.);
                             LayoutTransform::translation(
@@ -480,6 +500,30 @@ impl YamlHelper for Yaml {
                     top_right,
                     bottom_left,
                     bottom_right,
+                    shape_top_left: 1.0,
+                    shape_top_right: 1.0,
+                    shape_bottom_left: 1.0,
+                    shape_bottom_right: 1.0,
+                })
+            }
+            Yaml::Array(ref array) if array.len() == 8 => {
+                let top_left = array[0].as_border_radius_component();
+                let top_right = array[1].as_border_radius_component();
+                let bottom_left = array[2].as_border_radius_component();
+                let bottom_right = array[3].as_border_radius_component();
+                let shape_top_left = array[4].as_f32().unwrap();
+                let shape_top_right = array[5].as_f32().unwrap();
+                let shape_bottom_left = array[6].as_f32().unwrap();
+                let shape_bottom_right = array[7].as_f32().unwrap();
+                Some(BorderRadius {
+                    top_left,
+                    top_right,
+                    bottom_left,
+                    bottom_right,
+                    shape_top_left,
+                    shape_top_right,
+                    shape_bottom_left,
+                    shape_bottom_right,
                 })
             }
             Yaml::Hash(_) => {
@@ -487,11 +531,19 @@ impl YamlHelper for Yaml {
                 let top_right = self["top-right"].as_border_radius_component();
                 let bottom_left = self["bottom-left"].as_border_radius_component();
                 let bottom_right = self["bottom-right"].as_border_radius_component();
+                let shape_top_left = self["shape-top-left"].as_f32().unwrap_or(1.0);
+                let shape_top_right = self["shape-top-right"].as_f32().unwrap_or(1.0);
+                let shape_bottom_left = self["shape-bottom-left"].as_f32().unwrap_or(1.0);
+                let shape_bottom_right = self["shape-bottom-right"].as_f32().unwrap_or(1.0);
                 Some(BorderRadius {
                     top_left,
                     top_right,
                     bottom_left,
                     bottom_right,
+                    shape_top_left,
+                    shape_top_right,
+                    shape_bottom_left,
+                    shape_bottom_right,
                 })
             }
             _ => {
@@ -727,7 +779,7 @@ impl YamlHelper for Yaml {
                     let scale = self["scale"].as_f32().unwrap();
                     let x_channel_selector = self["x_channel_selector"].as_i64().unwrap() as u32;
                     let y_channel_selector = self["y_channel_selector"].as_i64().unwrap() as u32;
-                    Some(FilterOp::SVGFEDisplacementMap{node, scale, x_channel_selector, y_channel_selector})
+                    Some(FilterOp::SVGFEDisplacementMap{node, scale_x: scale, scale_y: scale, x_channel_selector, y_channel_selector})
                 },
                 "dropshadow" => {
                     let color = self["color"].as_colorf().unwrap();
@@ -866,7 +918,7 @@ impl YamlHelper for Yaml {
                     Some(FilterOp::ComponentTransfer)
                 }
                 ("blur", ref args, _) if args.len() == 2 => {
-                    Some(FilterOp::Blur(args[0].parse().unwrap(), args[1].parse().unwrap()))
+                    Some(FilterOp::Blur(args[0].parse().unwrap(), args[1].parse().unwrap(), true))
                 }
                 ("brightness", ref args, _) if args.len() == 1 => {
                     Some(FilterOp::Brightness(args[0].parse().unwrap()))
@@ -886,6 +938,18 @@ impl YamlHelper for Yaml {
                 ("opacity", ref args, _) if args.len() == 1 => {
                     let amount: f32 = args[0].parse().unwrap();
                     Some(FilterOp::Opacity(amount.into(), amount))
+                }
+                // A second argument is a property binding id, which makes the
+                // filter animated rather than static. The bound value is the
+                // amount above; nothing needs to update it for the binding to
+                // count as animating.
+                ("opacity", ref args, _) if args.len() == 2 => {
+                    let amount: f32 = args[0].parse().unwrap();
+                    let id: u64 = args[1].parse().unwrap();
+                    Some(FilterOp::Opacity(
+                        PropertyBinding::Binding(PropertyBindingKey::new(id), amount),
+                        amount,
+                    ))
                 }
                 ("saturate", ref args, _) if args.len() == 1 => {
                     Some(FilterOp::Saturate(args[0].parse().unwrap()))
@@ -972,140 +1036,12 @@ impl YamlHelper for Yaml {
         None
     }
 
-    fn as_filter_input(&self) -> Option<FilterPrimitiveInput> {
-        if let Some(input) = self.as_str() {
-            match input {
-                "original" => Some(FilterPrimitiveInput::Original),
-                "previous" => Some(FilterPrimitiveInput::Previous),
-                _ => None,
-            }
-        } else if let Some(index) = self.as_i64() {
-            if index >= 0 {
-                Some(FilterPrimitiveInput::OutputOfPrimitiveIndex(index as usize))
-            } else {
-                panic!("Filter input index cannot be negative");
-            }
-        } else {
-            panic!("Invalid filter input");
-        }
-    }
-
     fn as_vec_filter_data(&self) -> Option<Vec<FilterData>> {
         if let Some(v) = self.as_vec() {
             Some(v.iter().map(|x| x.as_filter_data().unwrap()).collect())
         } else {
             self.as_filter_data().map(|data| vec![data])
         }
-    }
-
-    fn as_filter_primitive(&self) -> Option<FilterPrimitive> {
-        if let Some(filter_type) = self["type"].as_str() {
-            let kind = match filter_type {
-                "identity" => {
-                    FilterPrimitiveKind::Identity(IdentityPrimitive {
-                        input: self["in"].as_filter_input().unwrap(),
-                    })
-                }
-                "blend" => {
-                    FilterPrimitiveKind::Blend(BlendPrimitive {
-                        input1: self["in1"].as_filter_input().unwrap(),
-                        input2: self["in2"].as_filter_input().unwrap(),
-                        mode: self["blend-mode"].as_mix_blend_mode().unwrap(),
-                    })
-                }
-                "flood" => {
-                    FilterPrimitiveKind::Flood(FloodPrimitive {
-                        color: self["color"].as_colorf().unwrap(),
-                    })
-                }
-                "blur" => {
-                    FilterPrimitiveKind::Blur(BlurPrimitive {
-                        input: self["in"].as_filter_input().unwrap(),
-                        width: self["width"].as_f32().unwrap(),
-                        height: self["height"].as_f32().unwrap(),
-                    })
-                }
-                "opacity" => {
-                    FilterPrimitiveKind::Opacity(OpacityPrimitive {
-                        input: self["in"].as_filter_input().unwrap(),
-                        opacity: self["opacity"].as_f32().unwrap(),
-                    })
-                }
-                "color-matrix" => {
-                    let m: Vec<f32> = self["matrix"].as_vec_f32().unwrap();
-                    let mut matrix: [f32; 20] = [0.0; 20];
-                    matrix.clone_from_slice(&m);
-
-                    FilterPrimitiveKind::ColorMatrix(ColorMatrixPrimitive {
-                        input: self["in"].as_filter_input().unwrap(),
-                        matrix,
-                    })
-                }
-                "drop-shadow" => {
-                    FilterPrimitiveKind::DropShadow(DropShadowPrimitive {
-                        input: self["in"].as_filter_input().unwrap(),
-                        shadow: Shadow {
-                            offset: self["offset"].as_vector().unwrap(),
-                            color: self["color"].as_colorf().unwrap(),
-                            blur_radius: self["radius"].as_f32().unwrap(),
-                        }
-                    })
-                }
-                "component-transfer" => {
-                    FilterPrimitiveKind::ComponentTransfer(ComponentTransferPrimitive {
-                        input: self["in"].as_filter_input().unwrap(),
-                    })
-                }
-                "offset" => {
-                    FilterPrimitiveKind::Offset(OffsetPrimitive {
-                        input: self["in"].as_filter_input().unwrap(),
-                        offset: self["offset"].as_vector().unwrap(),
-                    })
-                }
-                "composite" => {
-                    let operator = match self["operator"].as_str().unwrap() {
-                        "over" => CompositeOperator::Over,
-                        "in" => CompositeOperator::In,
-                        "out" => CompositeOperator::Out,
-                        "atop" => CompositeOperator::Atop,
-                        "xor" => CompositeOperator::Xor,
-                        "lighter" => CompositeOperator::Lighter,
-                        "arithmetic" => {
-                            let k_vals = self["k-values"].as_vec_f32().unwrap();
-                            assert!(k_vals.len() == 4, "Must be 4 k values for arithmetic composite operator");
-                            let k_vals = [k_vals[0], k_vals[1], k_vals[2], k_vals[3]];
-                            CompositeOperator::Arithmetic(k_vals)
-                        }
-                        _ => panic!("Invalid composite operator"),
-                    };
-                    FilterPrimitiveKind::Composite(CompositePrimitive {
-                        input1: self["in1"].as_filter_input().unwrap(),
-                        input2: self["in2"].as_filter_input().unwrap(),
-                        operator,
-                    })
-                }
-                _ => return None,
-            };
-
-            Some(FilterPrimitive {
-                kind,
-                color_space: self["color-space"].as_color_space().unwrap_or(ColorSpace::LinearRgb),
-            })
-        } else {
-            None
-        }
-    }
-
-    fn as_vec_filter_primitive(&self) -> Option<Vec<FilterPrimitive>> {
-        if let Some(v) = self.as_vec() {
-            Some(v.iter().map(|x| x.as_filter_primitive().unwrap()).collect())
-        } else {
-            self.as_filter_primitive().map(|data| vec![data])
-        }
-    }
-
-    fn as_color_space(&self) -> Option<ColorSpace> {
-        self.as_str().and_then(StringEnum::from_str)
     }
 
     fn as_complex_clip_region(&self) -> ComplexClipRegion {
@@ -1115,10 +1051,13 @@ impl YamlHelper for Yaml {
         let radius = self["radius"]
             .as_border_radius()
             .unwrap_or_else(BorderRadius::zero);
+        let inset = self["inset"]
+            .as_side_offsets()
+            .unwrap_or_else(LayoutSideOffsets::zero);
         let mode = self["clip-mode"]
             .as_clip_mode()
             .unwrap_or(ClipMode::Clip);
-        ComplexClipRegion::new(rect, radius, mode)
+        ComplexClipRegion::new(rect, radius, inset, mode)
     }
 
     fn as_sticky_offset_bounds(&self) -> StickyOffsetBounds {
@@ -1131,7 +1070,7 @@ impl YamlHelper for Yaml {
         }
     }
 
-    fn as_gradient(&self, dl: &mut DisplayListBuilder) -> Gradient {
+    fn as_gradient(&self, dl: &mut DisplayListBuilder) -> (Gradient, Vec<GradientStop>) {
         let start = self["start"].as_point().expect("gradient must have start");
         let end = self["end"].as_point().expect("gradient must have end");
         let stops = self["stops"]
@@ -1155,10 +1094,10 @@ impl YamlHelper for Yaml {
             ExtendMode::Clamp
         };
 
-        dl.create_gradient(start, end, stops, extend_mode)
+        dl.create_gradient(start.to_vector(), end.to_vector(), stops, extend_mode)
     }
 
-    fn as_radial_gradient(&self, dl: &mut DisplayListBuilder) -> RadialGradient {
+    fn as_radial_gradient(&self, dl: &mut DisplayListBuilder) -> (RadialGradient, Vec<GradientStop>) {
         let center = self["center"].as_point().expect("radial gradient must have center");
         let radius = self["radius"].as_size().expect("radial gradient must have a radius");
         let stops = self["stops"]
@@ -1182,10 +1121,10 @@ impl YamlHelper for Yaml {
             ExtendMode::Clamp
         };
 
-        dl.create_radial_gradient(center, radius, stops, extend_mode)
+        dl.create_radial_gradient(center.to_vector(), radius, stops, extend_mode)
     }
 
-    fn as_conic_gradient(&self, dl: &mut DisplayListBuilder) -> ConicGradient {
+    fn as_conic_gradient(&self, dl: &mut DisplayListBuilder) -> (ConicGradient, Vec<GradientStop>) {
         let center = self["center"].as_point().expect("conic gradient must have center");
         let angle = self["angle"].as_force_f32().expect("conic gradient must have an angle");
         let stops = self["stops"]
@@ -1209,7 +1148,7 @@ impl YamlHelper for Yaml {
             ExtendMode::Clamp
         };
 
-        dl.create_conic_gradient(center, angle, stops, extend_mode)
+        dl.create_conic_gradient(center.to_vector(), angle, stops, extend_mode)
     }
 
     fn as_complex_clip_regions(&self) -> Vec<ComplexClipRegion> {

@@ -12,6 +12,7 @@
 #include "mozilla/Result.h"
 #include "mozilla/Span.h"
 #include "mozilla/gfx/Point.h"
+#include "mozilla/gfx/Types.h"
 #include "nsStringFwd.h"
 #include "nsTArray.h"
 
@@ -112,6 +113,11 @@ class H265NALU final {
   bool IsIframe() const {
     return mNalUnitType == NAL_TYPES::IDR_W_RADL ||
            mNalUnitType == NAL_TYPES::IDR_N_LP;
+  }
+
+  bool IsIRAP() const {
+    return mNalUnitType >= NAL_TYPES::BLA_W_LP &&
+           mNalUnitType <= NAL_TYPES::CRA_NUT;
   }
 
   bool IsSPS() const { return mNalUnitType == NAL_TYPES::SPS_NUT; }
@@ -396,6 +402,12 @@ class H265 final {
   static uint32_t ComputeMaxRefFrames(
       const mozilla::MediaByteBuffer* aExtraData);
 
+  // Return sps_max_num_reorder_pics at the highest sub-layer from a valid
+  // SPS in the extradata, otherwise return 0. A non-zero value means
+  // decode order can differ from presentation order (B-frames).
+  static uint32_t ComputeMaxReorderPics(
+      const mozilla::MediaByteBuffer* aExtraData);
+
   // Create a dummy extradata, useful to create a decoder and test the
   // capabilities of the decoder.
   static already_AddRefed<mozilla::MediaByteBuffer> CreateFakeExtraData();
@@ -405,6 +417,28 @@ class H265 final {
   // given NALUS, which are usually SPS, PPS, VPS and SEI.
   static already_AddRefed<mozilla::MediaByteBuffer> CreateNewExtraData(
       const HVCCConfig& aConfig, const nsTArray<H265NALU>& aNALUs);
+
+  // Return true if the given sample is a keyframe. Return error if we can't
+  // determine the result.
+  static Result<bool, nsresult> IsKeyFrame(
+      const mozilla::MediaRawData* aSample);
+
+  // Return true if the given sample is a random access point (IDR, CRA or
+  // BLA). Return error if we can't determine the result.
+  static Result<bool, nsresult> IsRandomAccessPoint(
+      const mozilla::MediaRawData* aSample);
+
+  // Parse SMPTE ST 2086 mastering display and CTA-861.3 content light level
+  // from a PREFIX_SEI_NUT NALU. Returns Nothing if neither type is present.
+  static mozilla::Maybe<mozilla::gfx::HDRMetadata> ParseSEIHDRMetadata(
+      const H265NALU& aNALU);
+
+#ifdef MOZ_WMF
+  // Return a filtered PREFIX_SEI_NUT NAL unit with user_data_unregistered
+  // payloads removed, or nullptr if no other payloads remain.
+  static already_AddRefed<mozilla::MediaByteBuffer> FilterPrefixSEIForWindows(
+      const H265NALU& aNALU);
+#endif
 
  private:
   // Return RAW BYTE SEQUENCE PAYLOAD (rbsp) from NAL content.

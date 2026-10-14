@@ -1,21 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/net/DNSRequestParent.h"
+
+#include "DNSAdditionalInfo.h"
+#include "mozilla/Components.h"
 #include "mozilla/net/DNSRequestChild.h"
-#include "nsIDNSService.h"
-#include "nsNetCID.h"
-#include "nsThreadUtils.h"
+#include "nsHostResolver.h"
 #include "nsICancelable.h"
 #include "nsIDNSRecord.h"
-#include "nsHostResolver.h"
-#include "mozilla/Components.h"
-#include "mozilla/Unused.h"
-#include "DNSAdditionalInfo.h"
+#include "nsIDNSService.h"
+#include "nsNetCID.h"
 #include "nsServiceManagerUtils.h"
+#include "nsThreadUtils.h"
 
 using namespace mozilla::ipc;
 
@@ -31,9 +29,9 @@ NS_IMPL_ISUPPORTS(DNSRequestHandler, nsIDNSListener)
 static void SendLookupCompletedHelper(DNSRequestActor* aActor,
                                       const DNSRequestResponse& aReply) {
   if (DNSRequestParent* parent = aActor->AsDNSRequestParent()) {
-    Unused << parent->SendLookupCompleted(aReply);
+    (void)parent->SendLookupCompleted(aReply);
   } else if (DNSRequestChild* child = aActor->AsDNSRequestChild()) {
-    Unused << child->SendLookupCompleted(aReply);
+    (void)child->SendLookupCompleted(aReply);
   }
 }
 
@@ -104,6 +102,7 @@ DNSRequestHandler::OnLookupComplete(nsICancelable* request,
     if (byTypeRec) {
       IPCTypeRecord result;
       byTypeRec->GetResults(&result.mData);
+      byTypeRec->GetFromStaleCache(&result.mFromStaleCache);
       if (nsCOMPtr<nsIDNSHTTPSSVCRecord> rec = do_QueryInterface(aRecord)) {
         rec->GetTtl(&result.mTTL);
         rec->IsTRR(&result.mIsTRR);
@@ -144,11 +143,14 @@ DNSRequestHandler::OnLookupComplete(nsICancelable* request,
     TimeStamp lastUpdate;
     rec->GetLastUpdate(&lastUpdate);
 
+    bool fromStaleCache = false;
+    rec->GetFromStaleCache(&fromStaleCache);
+
     SendLookupCompletedHelper(
         mIPCActor,
-        DNSRequestResponse(DNSRecord(cname, array, trrFetchDuration,
-                                     trrFetchDurationNetworkOnly, isTRR,
-                                     effectiveTRRMode, ttl, lastUpdate)));
+        DNSRequestResponse(DNSRecord(
+            cname, array, trrFetchDuration, trrFetchDurationNetworkOnly, isTRR,
+            effectiveTRRMode, ttl, lastUpdate, fromStaleCache)));
   } else {
     SendLookupCompletedHelper(mIPCActor, DNSRequestResponse(status));
   }

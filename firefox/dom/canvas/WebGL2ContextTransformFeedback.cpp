@@ -1,12 +1,11 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "GLContext.h"
 #include "WebGL2Context.h"
 #include "WebGLProgram.h"
 #include "WebGLTransformFeedback.h"
-#include "GLContext.h"
 
 namespace mozilla {
 
@@ -20,15 +19,13 @@ RefPtr<WebGLTransformFeedback> WebGL2Context::CreateTransformFeedback() {
   GLuint tf = 0;
   gl->fGenTransformFeedbacks(1, &tf);
 
-  return new WebGLTransformFeedback(this, tf);
+  return MakeRefPtr<WebGLTransformFeedback>(this, tf);
 }
 
 void WebGL2Context::BindTransformFeedback(WebGLTransformFeedback* tf) {
   FuncScope funcScope(*this, "bindTransformFeedback");
   if (IsContextLost()) return;
   funcScope.mBindFailureGuard = true;
-
-  if (tf && !ValidateObject("tf", *tf)) return;
 
   if (mBoundTransformFeedback->mIsActive &&
       !mBoundTransformFeedback->mIsPaused) {
@@ -85,8 +82,6 @@ void WebGL2Context::TransformFeedbackVaryings(
     GLenum bufferMode) const {
   const FuncScope funcScope(*this, "transformFeedbackVaryings");
   if (IsContextLost()) return;
-
-  if (!ValidateObject("program", program)) return;
 
   program.TransformFeedbackVaryings(varyings, bufferMode);
 }

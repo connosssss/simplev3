@@ -18,7 +18,7 @@ add_task(async function test_monthyear_close_date() {
     `data:text/html, <input type="date" value=${inputValue}>`
   );
   let pickerDoc = helper.panel.querySelector(
-    "#dateTimePopupFrame"
+    "#DateTimePickerPanelPopupFrame"
   ).contentDocument;
 
   // Move focus from the selected date to the month-year toggle button:
@@ -49,19 +49,19 @@ add_task(async function test_monthyear_close_datetime() {
     `data:text/html, <input type="datetime-local" value=${inputValue}>`
   );
   let pickerDoc = helper.panel.querySelector(
-    "#dateTimePopupFrame"
+    "#DateTimePickerPanelPopupFrame"
   ).contentDocument;
 
   // Move focus from the selected date to the month-year toggle button:
-  await EventUtils.synthesizeKey("KEY_Tab", { repeat: 3 });
+  await EventUtils.synthesizeKey("KEY_Tab", { repeat: 6 });
 
   // Test a month spinner
-  await testKeyOnSpinners("KEY_Enter", pickerDoc);
-  await testKeyOnSpinners(" ", pickerDoc);
+  await testKeyOnSpinners("KEY_Enter", pickerDoc, 1, true);
+  await testKeyOnSpinners(" ", pickerDoc, 1, true);
 
   // Test a year spinner
-  await testKeyOnSpinners("KEY_Enter", pickerDoc, 2);
-  await testKeyOnSpinners(" ", pickerDoc, 2);
+  await testKeyOnSpinners("KEY_Enter", pickerDoc, 2, true);
+  await testKeyOnSpinners(" ", pickerDoc, 2, true);
 
   await helper.tearDown();
 });
@@ -78,7 +78,7 @@ add_task(async function test_monthyear_escape_date() {
     `data:text/html, <input type="date" value=${inputValue}>`
   );
   let pickerDoc = helper.panel.querySelector(
-    "#dateTimePopupFrame"
+    "#DateTimePickerPanelPopupFrame"
   ).contentDocument;
 
   // Move focus from the today's date to the month-year toggle button:
@@ -150,17 +150,17 @@ add_task(async function test_monthyear_escape_datetime() {
     `data:text/html, <input type="datetime-local" value=${inputValue}>`
   );
   let pickerDoc = helper.panel.querySelector(
-    "#dateTimePopupFrame"
+    "#DateTimePickerPanelPopupFrame"
   ).contentDocument;
 
   // Move focus from the today's date to the month-year toggle button:
-  EventUtils.synthesizeKey("KEY_Tab", { repeat: 3 });
+  EventUtils.synthesizeKey("KEY_Tab", { repeat: 6 });
 
   // Test a month spinner
-  await testKeyOnSpinners("KEY_Escape", pickerDoc);
+  await testKeyOnSpinners("KEY_Escape", pickerDoc, 1, true);
 
   // Test a year spinner
-  await testKeyOnSpinners("KEY_Escape", pickerDoc, 2);
+  await testKeyOnSpinners("KEY_Escape", pickerDoc, 2, true);
 
   info(
     `Testing "KEY_Escape" behavior without any interaction with spinners

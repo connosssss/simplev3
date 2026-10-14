@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-*/
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "MediaTrackListener.h"
 
-#include "AudioSegment.h"
 #include "VideoSegment.h"
 
 namespace mozilla {
@@ -14,12 +12,8 @@ namespace mozilla {
 #  undef LOG
 #endif
 
-#define LOG(type, msg) MOZ_LOG(gMediaTrackGraphLog, type, msg)
-
-void DirectMediaTrackListener::MirrorAndDisableSegment(AudioSegment& aFrom,
-                                                       AudioSegment& aTo) {
-  aTo.AppendNullData(aFrom.GetDuration());
-}
+#define LOG(type, ...) \
+  MOZ_LOG_FMT(gMediaTrackGraphLog, type, MOZ_LOG_EXPAND_ARGS __VA_ARGS__)
 
 void DirectMediaTrackListener::MirrorAndDisableSegment(
     VideoSegment& aFrom, VideoSegment& aTo, DisabledTrackMode aMode) {
@@ -44,10 +38,7 @@ void DirectMediaTrackListener::NotifyRealtimeTrackDataAndApplyTrackDisabling(
                                ? DisabledTrackMode::SILENCE_BLACK
                                : DisabledTrackMode::SILENCE_FREEZE;
   UniquePtr<MediaSegment> media(aMedia.CreateEmptyClone());
-  if (aMedia.GetType() == MediaSegment::AUDIO) {
-    MirrorAndDisableSegment(static_cast<AudioSegment&>(aMedia),
-                            static_cast<AudioSegment&>(*media));
-  } else if (aMedia.GetType() == MediaSegment::VIDEO) {
+  if (aMedia.GetType() == MediaSegment::VIDEO) {
     MirrorAndDisableSegment(static_cast<VideoSegment&>(aMedia),
                             static_cast<VideoSegment&>(*media), mode);
   } else {
@@ -66,9 +57,10 @@ void DirectMediaTrackListener::IncreaseDisabled(DisabledTrackMode aMode) {
   }
 
   LOG(LogLevel::Debug,
-      ("DirectMediaTrackListener %p increased disabled "
-       "mode %s. Current counts are: freeze=%d, black=%d",
-       this, aMode == DisabledTrackMode::SILENCE_FREEZE ? "freeze" : "black",
+      ("DirectMediaTrackListener {} increased disabled "
+       "mode {}. Current counts are: freeze={}, black={}",
+       fmt::ptr(this),
+       aMode == DisabledTrackMode::SILENCE_FREEZE ? "freeze" : "black",
        int32_t(mDisabledFreezeCount), int32_t(mDisabledBlackCount)));
 }
 
@@ -84,9 +76,10 @@ void DirectMediaTrackListener::DecreaseDisabled(DisabledTrackMode aMode) {
   }
 
   LOG(LogLevel::Debug,
-      ("DirectMediaTrackListener %p decreased disabled "
-       "mode %s. Current counts are: freeze=%d, black=%d",
-       this, aMode == DisabledTrackMode::SILENCE_FREEZE ? "freeze" : "black",
+      ("DirectMediaTrackListener {} decreased disabled "
+       "mode {}. Current counts are: freeze={}, black={}",
+       fmt::ptr(this),
+       aMode == DisabledTrackMode::SILENCE_FREEZE ? "freeze" : "black",
        int32_t(mDisabledFreezeCount), int32_t(mDisabledBlackCount)));
 }
 

@@ -10,6 +10,9 @@ loader.lazyRequireGetter(
   "resource://devtools/client/shared/link.js",
   true
 );
+const { getMdnLinkParams } = ChromeUtils.importESModule(
+  "resource://devtools/shared/mdn.mjs"
+);
 
 class InactiveCssTooltipHelper {
   constructor() {
@@ -18,33 +21,16 @@ class InactiveCssTooltipHelper {
 
   /**
    * Fill the tooltip with inactive CSS information.
-   *
-   * @param {String} propertyName
-   *        The property name to be displayed in bold.
-   * @param {String} text
-   *        The main text, which follows property name.
    */
   async setContent(data, tooltip) {
     const fragment = this.getTemplate(data, tooltip);
-    const { doc } = tooltip;
-
-    tooltip.panel.innerHTML = "";
 
     tooltip.panel.addEventListener("click", this.addTab);
     tooltip.once("hidden", () => {
       tooltip.panel.removeEventListener("click", this.addTab);
     });
 
-    // Because Fluent is async we need to manually translate the fragment and
-    // then insert it into the tooltip. This is needed in order for the tooltip
-    // to size to the contents properly and for tests.
-    await doc.l10n.translateFragment(fragment);
-    doc.l10n.pauseObserving();
-    tooltip.panel.appendChild(fragment);
-    doc.l10n.resumeObserving();
-
-    // Size the content.
-    tooltip.setContentSize({ width: 267, height: Infinity });
+    await tooltip.setLocalizedFragment(fragment, { width: 267 });
   }
 
   /**
@@ -56,14 +42,16 @@ class InactiveCssTooltipHelper {
    *   <p data-l10n-id="inactive-css-not-grid-or-flex-container"
    *      data-l10n-args="{&quot;property&quot;:&quot;align-content&quot;}">
    *   </p>
-   *   <p data-l10n-id="inactive-css-not-grid-or-flex-container-fix">
-   *     <span data-l10n-name="link" class="link"></span>
+   *   <p data-l10n-id="inactive-css-not-grid-or-flex-container-fix-1">
+   *   </p>
+   *   <p>
+   *     <a data-l10n-id="devtools-tooltip-learn-more" class="link learn-more-link mdn-link" href="..."></a>
    *   </p>
    * </div>
    *
-   * @param {Object} data
+   * @param {object} data
    *        An object in the following format: {
-   *          fixId: "inactive-css-not-grid-item-fix-2", // Fluent id containing the
+   *          fixId: "inactive-css-not-grid-item-fix-3", // Fluent id containing the
    *                                                     // Inactive CSS fix.
    *          msgId: "inactive-css-not-grid-item", // Fluent id containing the
    *                                               // Inactive CSS message.
@@ -78,28 +66,33 @@ class InactiveCssTooltipHelper {
     const { doc } = tooltip;
 
     const documentUrl = new URL(
-      learnMoreURL || `https://developer.mozilla.org/docs/Web/CSS/${property}`
+      (learnMoreURL ||
+        `https://developer.mozilla.org/docs/Web/CSS/Reference/Properties/${property}`) +
+        "?" +
+        getMdnLinkParams("inspector-inactive-css")
     );
     this._currentTooltip = tooltip;
-    const { searchParams } = documentUrl;
-    searchParams.append("utm_source", "devtools");
-    searchParams.append("utm_medium", "inspector-inactive-css");
     this._currentUrl = documentUrl.toString();
 
     const templateNode = doc.createElementNS(XHTML_NS, "template");
 
+    const isMdnUrl = documentUrl.hostname === "developer.mozilla.org";
+    const className = `link${isMdnUrl ? " learn-more-link mdn-link" : ""}`;
     // eslint-disable-next-line
     templateNode.innerHTML = `
     <div class="devtools-tooltip-inactive-css">
       <p data-l10n-id="${msgId}"
          data-l10n-args='${JSON.stringify({ property, display, lineCount })}'>
       </p>
-      <p data-l10n-id="${fixId}">
-        <span data-l10n-name="link" class="link"></span>
+      ${fixId ? `<p data-l10n-id="${fixId}"></p>` : ""}
+      <p>
+        <a data-l10n-id="devtools-tooltip-learn-more" class="${className}"></a>
       </p>
     </div>`;
 
-    return doc.importNode(templateNode.content, true);
+    const fragment = doc.importNode(templateNode.content, true);
+    fragment.querySelector(".link").setAttribute("href", this._currentUrl);
+    return fragment;
   }
 
   /**
@@ -107,15 +100,15 @@ class InactiveCssTooltipHelper {
    *
    * @param {DOMEvent} event
    *        The click event originating from the tooltip.
-   *
    */
   addTab(event) {
     // The XUL panel swallows click events so handlers can't be added directly
-    // to the link span. As a workaround we listen to all click events in the
-    // panel and if a link span is clicked we proceed.
-    if (event.target.className !== "link") {
+    // to the link. As a workaround we listen to all click events in the
+    // panel and if a link is clicked we proceed.
+    if (!event.target.classList.contains("link")) {
       return;
     }
+    event.preventDefault();
 
     const tooltip = this._currentTooltip;
     tooltip.hide();

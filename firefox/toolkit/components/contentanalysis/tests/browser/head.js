@@ -4,7 +4,8 @@
 "use strict";
 
 ChromeUtils.defineESModuleGetters(this, {
-  ContentAnalysis: "resource:///modules/ContentAnalysis.sys.mjs",
+  ContentAnalysis:
+    "moz-src:///browser/components/contentanalysis/content/ContentAnalysis.sys.mjs",
 });
 
 // Wraps the given object in an XPConnect wrapper and, if an interface
@@ -48,11 +49,7 @@ function mockService(serviceNames, contractId, interfaceObj, mockService) {
   const { MockRegistrar } = ChromeUtils.importESModule(
     "resource://testing-common/MockRegistrar.sys.mjs"
   );
-  let cid = MockRegistrar.registerEx(
-    contractId,
-    { shouldCreateInstance: false },
-    o
-  );
+  let cid = MockRegistrar.register(contractId, o);
   registerCleanupFunction(() => {
     MockRegistrar.unregister(cid);
   });
@@ -253,8 +250,7 @@ function makeMockContentAnalysis() {
       info(
         `  Text content: '${request.textContent}' ` +
           `| filePath: '${request.filePath}' ` +
-          `| printDataHandle: ${request.printDataHandle} ` +
-          `| printDataSize: ${request.printDataSize}`
+          `| printDataLength: ${request.getPrintData().length}`
       );
       info(
         `  Printer name: '${request.printerName}' ` +
@@ -275,6 +271,12 @@ function makeMockContentAnalysis() {
       this.calls.push(request);
       if (this.showDialogs) {
         Services.obs.notifyObservers(request, "dlp-request-made");
+      }
+
+      // If we are checking a file, make sure it exists.
+      if (request.filePath) {
+        const nsiFile = new FileUtils.File(request.filePath);
+        ok(nsiFile.exists(), "File to check exists");
       }
 
       // Use setTimeout to simulate an async activity.
@@ -365,49 +367,6 @@ function makeMockContentAnalysis() {
       );
     },
   };
-}
-
-function whenTabLoaded(aTab, aCallback) {
-  promiseTabLoadEvent(aTab).then(aCallback);
-}
-
-function promiseTabLoaded(aTab) {
-  return new Promise(resolve => {
-    whenTabLoaded(aTab, resolve);
-  });
-}
-
-/**
- * Waits for a load (or custom) event to finish in a given tab. If provided
- * load an uri into the tab.
- *
- * @param {object} tab
- *        The tab to load into.
- * @param {string} [url]
- *        The url to load, or the current url.
- * @returns {Promise<string>} resolved when the event is handled. Rejected if
- *          a valid load event is not received within a meaningful interval
- */
-function promiseTabLoadEvent(tab, url) {
-  info("Wait tab event: load");
-
-  function handle(loadedUrl) {
-    if (loadedUrl === "about:blank" || (url && loadedUrl !== url)) {
-      info(`Skipping spurious load event for ${loadedUrl}`);
-      return false;
-    }
-
-    info("Tab event received: load");
-    return true;
-  }
-
-  let loaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser, false, handle);
-
-  if (url) {
-    BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, url);
-  }
-
-  return loaded;
 }
 
 function promisePopupShown(popup) {

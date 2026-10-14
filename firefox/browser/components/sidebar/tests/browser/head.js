@@ -4,6 +4,19 @@
 const { sinon } = ChromeUtils.importESModule(
   "resource://testing-common/Sinon.sys.mjs"
 );
+ChromeUtils.defineLazyGetter(this, "SidebarTestUtils", () => {
+  const { SidebarTestUtils: utils } = ChromeUtils.importESModule(
+    "resource://testing-common/SidebarTestUtils.sys.mjs"
+  );
+  utils.init(this);
+  return utils;
+});
+ChromeUtils.defineLazyGetter(this, "BookmarksSidebarTestUtils", () => {
+  const { BookmarksSidebarTestUtils: utils } = ChromeUtils.importESModule(
+    "resource://testing-common/BookmarksSidebarTestUtils.sys.mjs"
+  );
+  return utils;
+});
 
 const imageBuffer = imageBufferFromDataURI(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg=="
@@ -17,6 +30,8 @@ function imageBufferFromDataURI(encodedImageData) {
 const SIDEBAR_VISIBILITY_PREF = "sidebar.visibility";
 const POSITION_SETTING_PREF = "sidebar.position_start";
 const VERTICAL_TABS_PREF = "sidebar.verticalTabs";
+const HOVER_PREVIEW_PREF = "sidebar.openTabsPanel.hoverPreview.enabled";
+const BOOKMARKS_TEST_URL = "https://example.com/";
 const kPrefCustomizationState = "browser.uiCustomization.state";
 const kPrefCustomizationHorizontalTabstrip =
   "browser.uiCustomization.horizontalTabstrip";
@@ -27,12 +42,22 @@ const MODIFIED_PREFS = Object.freeze([
   kPrefCustomizationState,
   kPrefCustomizationHorizontalTabstrip,
   kPrefCustomizationNavBarWhenVerticalTabs,
+  "sidebar.new-sidebar.has-used",
+  "browser.engagement.home-button.has-removed",
+  "browser.engagement.home-button.has-removed",
+  "browser.engagement.sidebar-button.has-used",
+  "browser.toolbarbuttons.introduced.sidebar-button",
+  "sidebar.verticalTabs.dragToPinPromo.dismissed",
 ]);
 
-// Ensure we clear any previous pref values
-for (const pref of MODIFIED_PREFS) {
-  Services.prefs.clearUserPref(pref);
+function clearModifiedPrefs() {
+  for (const pref of MODIFIED_PREFS) {
+    Services.prefs.clearUserPref(pref);
+  }
 }
+
+// Ensure we clear any previous pref values
+clearModifiedPrefs();
 
 /* global browser */
 const extData = {
@@ -89,6 +114,9 @@ const extData = {
         case "set-title":
           await browser.sidebarAction.setTitle({ title: data });
           break;
+        case "reload-extension":
+          browser.runtime.reload();
+          break;
       }
       browser.test.sendMessage("done");
     });
@@ -96,17 +124,12 @@ const extData = {
 };
 
 // Ensure each test leaves the sidebar in its initial state when it completes
-const initialSidebarState = { ...SidebarController.getUIState(), command: "" };
-async function resetSidebarToInitialState() {
-  info(
-    `Restoring sidebar state from: ${JSON.stringify(SidebarController.getUIState())}, back to: ${JSON.stringify(initialSidebarState)}`
-  );
-  await SidebarController.initializeUIState(initialSidebarState);
-}
+SidebarTestUtils.restoreStateAtCleanup(window);
+
 registerCleanupFunction(async () => {
-  await resetSidebarToInitialState();
   // Reset the Glean events after each test.
   Services.fog.testResetFOG();
+  clearModifiedPrefs();
 });
 
 function waitForBrowserWindowActive(win) {
@@ -120,59 +143,60 @@ function waitForBrowserWindowActive(win) {
   });
 }
 
-function openAndWaitForContextMenu(popup, button, onShown) {
-  return new Promise(resolve => {
-    function onPopupShown() {
-      info("onPopupShown");
-      popup.removeEventListener("popupshown", onPopupShown);
+async function openAndWaitForContextMenu(popup, button, onShown) {
+  const menuShownPromise = BrowserTestUtils.waitForPopupEvent(popup, "shown");
+  button.scrollIntoView();
 
-      onShown && onShown();
-      resolve(popup);
-    }
+  const eventDetails = { type: "contextmenu", button: 2 };
+  EventUtils.synthesizeMouseAtCenter(
+    button,
+    eventDetails,
+    // eslint-disable-next-line mozilla/use-documentGlobal
+    button.ownerDocument.defaultView
+  );
+  await menuShownPromise;
+  if (onShown) {
+    await onShown();
+  }
+  return popup;
+}
 
-    popup.addEventListener("popupshown", onPopupShown);
-
-    info("wait for the context menu to open");
-
-    button.scrollIntoView();
-    const eventDetails = { type: "contextmenu", button: 2 };
-    EventUtils.synthesizeMouseAtCenter(
-      button,
-      eventDetails,
-      // eslint-disable-next-line mozilla/use-ownerGlobal
-      button.ownerDocument.defaultView
+/**
+ * Right-click a sidebar element to open the current sidebar context menu, then
+ * activate a menu item (or run a custom callback). Resolves once the command
+ * has fired and the menu has fully closed.
+ *
+ * @param {Element} triggerEl
+ *   The element to right-click.
+ * @param {string} menuItemId
+ *   The id of the `<menuitem>` to activate. Ignored if `callback` is provided.
+ * @param {(contextMenu: Element) => any} [callback]
+ *   Custom handler invoked to dispatch a command once the context menu is
+ *   shown. Receives the context menu popup element.
+ */
+async function activateContextMenuItem(triggerEl, menuItemId, callback) {
+  const contextMenu = SidebarController.currentContextMenu;
+  const promiseHidden = BrowserTestUtils.waitForPopupEvent(
+    contextMenu,
+    "hidden"
+  );
+  await openAndWaitForContextMenu(contextMenu, triggerEl, async () => {
+    const promiseCommand = BrowserTestUtils.waitForEvent(
+      contextMenu,
+      "command"
     );
+    if (callback) {
+      await callback(contextMenu);
+    } else {
+      contextMenu.activateItem(document.getElementById(menuItemId));
+    }
+    await promiseCommand;
   });
+  await promiseHidden;
 }
 
 function isActiveElement(el) {
   return el.getRootNode().activeElement == el;
-}
-
-async function toggleSidebarPanel(win, commandID) {
-  const promiseFocused = BrowserTestUtils.waitForEvent(win, "SidebarFocused");
-  win.SidebarController.toggle(commandID);
-  await promiseFocused;
-}
-
-async function waitForTabstripOrientation(
-  toOrientation = "vertical",
-  win = window
-) {
-  await win.SidebarController.promiseInitialized;
-  // We use the orient attribute on the tabstrip element as a reliable signal that
-  // tabstrip orientation has changed/is settled into the given orientation
-  info(
-    `waitForTabstripOrientation: waiting for orient attribute to be "${toOrientation}"`
-  );
-  await BrowserTestUtils.waitForMutationCondition(
-    win.gBrowser.tabContainer,
-    { attributes: true, attributeFilter: ["orient"] },
-    () => win.gBrowser.tabContainer.getAttribute("orient") == toOrientation
-  );
-  // This change is followed by a update/render step for the lit elements.
-  // We need to wait for that too
-  await win.SidebarController.sidebarMain?.updateComplete;
 }
 
 /**
@@ -194,4 +218,200 @@ function cleanUpExtraTabs() {
   while (window.gBrowser.tabs.length > 1) {
     BrowserTestUtils.removeTab(window.gBrowser.tabs.at(-1));
   }
+}
+
+async function showHistorySidebar({ waitForPendingHistory = true } = {}) {
+  if (SidebarController.currentID !== "viewHistorySidebar") {
+    await SidebarTestUtils.showPanel(window, "viewHistorySidebar");
+  }
+  const { contentDocument, contentWindow } = SidebarController.browser;
+  const component = contentDocument.querySelector("sidebar-history");
+  if (waitForPendingHistory) {
+    await TestUtils.waitForCondition(
+      () => !component.controller.isHistoryPending
+    );
+  }
+  await component.updateComplete;
+  return { component, contentWindow };
+}
+
+/**
+ * Insert visits for history testing.
+ *
+ * @returns {{ URLs: string[]; dates: Date[]; }}
+ */
+async function populateHistory() {
+  const URLs = [
+    "http://mochi.test:8888/browser/",
+    "https://www.example.com/",
+    "https://example.net/",
+    "https://example.org/",
+  ];
+
+  const today = new Date();
+  const yesterday = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate() - 1
+  );
+  // Get date for the second-last day of the previous month.
+  // (Do not use the last day, since that could be the same as yesterday's date.)
+  const lastMonth = new Date(today.getFullYear(), today.getMonth(), -2);
+
+  const dates = [today, yesterday, lastMonth];
+  await PlacesUtils.history.clear();
+  const pageInfos = URLs.flatMap((url, i) =>
+    dates.map(date => ({
+      url,
+      title: `Example Domain ${i}`,
+      visits: [{ date }],
+    }))
+  );
+  await PlacesUtils.history.insertMany(pageInfos);
+  return { URLs, dates };
+}
+
+async function addBookmark({
+  url = BOOKMARKS_TEST_URL,
+  title = "Test Bookmark",
+  parentGuid,
+} = {}) {
+  return PlacesUtils.bookmarks.insert({
+    url,
+    title,
+    parentGuid: parentGuid ?? PlacesUtils.bookmarks.toolbarGuid,
+  });
+}
+
+async function addFolder(title = "Test Folder", parentGuid) {
+  return PlacesUtils.bookmarks.insert({
+    type: PlacesUtils.bookmarks.TYPE_FOLDER,
+    title,
+    parentGuid: parentGuid ?? PlacesUtils.bookmarks.toolbarGuid,
+  });
+}
+
+/**
+ * Opens a bookmark's ancestor folders and returns its containing list.
+ *
+ * @param {SidebarBookmarkList} tabList - The sidebar's root bookmark list.
+ * @param {string} parentGuid - The GUID of the containing Places folder.
+ * @returns {SidebarBookmarkList} The list containing the requested bookmark or folder.
+ */
+async function getBookmarkList(tabList, parentGuid) {
+  const path = [];
+  while (parentGuid !== PlacesUtils.bookmarks.rootGuid) {
+    path.unshift(parentGuid);
+    parentGuid = (await PlacesUtils.bookmarks.fetch(parentGuid)).parentGuid;
+  }
+
+  let list = tabList;
+  for (const guid of path) {
+    const folder = await BookmarksSidebarTestUtils.findBookmarkItemByGuid(
+      list,
+      "folderEls",
+      guid
+    );
+    await BookmarksSidebarTestUtils.openFolder(folder);
+    list = folder.querySelector("sidebar-bookmark-list");
+  }
+  return list;
+}
+
+/**
+ * Finds a bookmark row, expanding its ancestor folders as needed.
+ *
+ * @param {SidebarBookmarkList} tabList - The sidebar's root bookmark list.
+ * @param {object} bookmark - The bookmark returned by Places insertion.
+ * @returns {SidebarBookmarkRow} The matching rendered bookmark row.
+ */
+async function getBookmarkRow(tabList, bookmark) {
+  const list = await getBookmarkList(tabList, bookmark.parentGuid);
+  return BookmarksSidebarTestUtils.findBookmarkItemByGuid(
+    list,
+    "rowEls",
+    bookmark.guid
+  );
+}
+
+/**
+ * Finds a bookmark folder, expanding its ancestor folders as needed.
+ *
+ * @param {SidebarBookmarkList} tabList - The sidebar's root bookmark list.
+ * @param {object} folder - The folder returned by Places insertion.
+ * @returns {HTMLDetailsElement} The matching rendered folder.
+ */
+async function getBookmarkFolder(tabList, folder) {
+  const list = await getBookmarkList(tabList, folder.parentGuid);
+  return BookmarksSidebarTestUtils.findBookmarkItemByGuid(
+    list,
+    "folderEls",
+    folder.guid
+  );
+}
+
+async function expandToolbarFolder(tabList) {
+  await BrowserTestUtils.waitForMutationCondition(
+    tabList.shadowRoot,
+    { childList: true, subtree: true },
+    () => tabList.folderEls[0]
+  );
+  const toolbarFolder = [...tabList.folderEls].find(
+    ({ guid }) => guid === PlacesUtils.bookmarks.toolbarGuid
+  );
+  Assert.ok(toolbarFolder, "Toolbar folder is rendered.");
+  if (!toolbarFolder.open) {
+    toolbarFolder.querySelector("summary").click();
+    await BrowserTestUtils.waitForMutationCondition(
+      toolbarFolder,
+      { attributes: true },
+      () => toolbarFolder.open
+    );
+  }
+  return toolbarFolder.querySelector("sidebar-bookmark-list");
+}
+
+/**
+ * Synthesize a key press and wait for an element to be focused.
+ *
+ * @param {Element} element
+ * @param {string} keyCode
+ * @param {ChromeWindow} contentWindow
+ */
+async function focusWithKeyboard(element, keyCode, contentWindow) {
+  await SimpleTest.promiseFocus(contentWindow);
+  const focused = BrowserTestUtils.waitForEvent(
+    element,
+    "focus",
+    contentWindow
+  );
+  EventUtils.synthesizeKey(keyCode, {}, contentWindow);
+  await focused;
+}
+
+async function waitForElementHidden(elem, hidden = true) {
+  info(`waitForElementHidden, expected: ${hidden}, current: ${elem.hidden}`);
+  await BrowserTestUtils.waitForMutationCondition(
+    elem,
+    { attributes: true, attributeFilter: ["hidden"] },
+    () => elem.hidden === hidden,
+    { msg: `Element hidden should be ${hidden}` }
+  );
+}
+
+/**
+ * Perform a task function and wait for a specific URL to load.
+ *
+ * @param {Function} pageLoadTask
+ * @param {string} expectedUrl
+ */
+async function waitForPageLoadTask(pageLoadTask, expectedUrl) {
+  const promiseTabOpen = BrowserTestUtils.waitForEvent(
+    window.gBrowser.tabContainer,
+    "TabOpen"
+  );
+  await pageLoadTask();
+  await promiseTabOpen;
+  await BrowserTestUtils.browserLoaded(window.gBrowser, false, expectedUrl);
+  info(`Navigated to ${expectedUrl}.`);
 }

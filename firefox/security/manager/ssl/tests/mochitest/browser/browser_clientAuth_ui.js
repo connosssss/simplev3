@@ -1,4 +1,3 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // Any copyright is dedicated to the Public Domain.
 // http://creativecommons.org/publicdomain/zero/1.0/
 "use strict";
@@ -107,17 +106,8 @@ async function checkDialogContents(win, notBefore, notAfter) {
   });
 }
 
-function findCertByCommonName(commonName) {
-  for (let cert of certDB.getCerts()) {
-    if (cert.commonName == commonName) {
-      return cert;
-    }
-  }
-  return null;
-}
-
 add_setup(async function () {
-  cert = findCertByCommonName("Mochitest client");
+  cert = await findCertByCommonName("Mochitest client");
   isnot(cert, null, "Should be able to find the test client cert");
 });
 

@@ -1,9 +1,9 @@
-//* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ProtocolParser.h"
+#include "Entries.h"
 #include "LookupCache.h"
 #include "nsNetCID.h"
 #include "mozilla/Components.h"
@@ -20,6 +20,7 @@
 #include "mozilla/EndianUtils.h"
 #include "mozilla/ErrorNames.h"
 #include "mozilla/IntegerPrintfMacros.h"
+#include "nsCharSeparatedTokenizer.h"
 
 // MOZ_LOG=UrlClassifierProtocolParser:5
 extern mozilla::LazyLogModule gUrlClassifierDbServiceLog;
@@ -71,6 +72,22 @@ ProtocolParser::ProtocolParser() : mUpdateStatus(NS_OK), mUpdateWaitSec(0) {}
 
 ProtocolParser::~ProtocolParser() = default;
 
+nsTArray<TableWaitDuration> ProtocolParser::TakeUpdateWaits() {
+  // V5: the response carries a duration per hash list, so hand over the ones
+  // that were parsed.
+  if (!mUpdateWaits.IsEmpty()) {
+    return std::move(mUpdateWaits);
+  }
+
+  // V2 and V4: the response carries a single duration, which applies to every
+  // table we asked for.
+  nsTArray<TableWaitDuration> waits(mRequestedTables.Length());
+  for (const auto& table : mRequestedTables) {
+    waits.AppendElement(TableWaitDuration{table, mUpdateWaitSec});
+  }
+  return waits;
+}
+
 nsresult ProtocolParser::Begin(const nsACString& aTable,
                                const nsTArray<nsCString>& aUpdateTables) {
   // ProtocolParser objects should never be reused.
@@ -79,6 +96,7 @@ nsresult ProtocolParser::Begin(const nsACString& aTable,
   MOZ_ASSERT(mForwards.IsEmpty());
   MOZ_ASSERT(mRequestedTables.IsEmpty());
   MOZ_ASSERT(mTablesToReset.IsEmpty());
+  MOZ_ASSERT(mUpdateWaits.IsEmpty());
 
   if (!aTable.IsEmpty()) {
     SetCurrentTable(aTable);
@@ -413,6 +431,12 @@ nsresult ProtocolParserV2::ProcessPlaintextChunk(const nsACString& aChunk) {
 nsresult ProtocolParserV2::ProcessShaChunk(const nsACString& aChunk) {
   uint32_t start = 0;
   while (start < aChunk.Length()) {
+    // Each chunk must be at least 5 bytes (domain + count))
+    if (aChunk.Length() - start < DOMAIN_SIZE + 1) {
+      NS_WARNING("Chunk is not long enough to contain the record header.");
+      return NS_ERROR_FAILURE;
+    }
+
     // First four bytes are the domain key.
     Prefix domain;
     domain.Assign(Substring(aChunk, start, DOMAIN_SIZE));
@@ -467,8 +491,10 @@ nsresult ProtocolParserV2::ProcessDigestChunk(const nsACString& aChunk) {
 nsresult ProtocolParserV2::ProcessDigestAdd(const nsACString& aChunk) {
   MOZ_ASSERT(mTableUpdate);
   // The ABNF format for add chunks is (HASH)+, where HASH is 32 bytes.
-  MOZ_ASSERT(aChunk.Length() % 32 == 0,
-             "Chunk length in bytes must be divisible by 4");
+  if (aChunk.Length() % COMPLETE_SIZE != 0) {
+    NS_WARNING("Chunk length in bytes must be divisible by 32");
+    return NS_ERROR_FAILURE;
+  }
   uint32_t start = 0;
   while (start < aChunk.Length()) {
     Completion hash;
@@ -486,8 +512,10 @@ nsresult ProtocolParserV2::ProcessDigestSub(const nsACString& aChunk) {
   MOZ_ASSERT(mTableUpdate);
   // The ABNF format for sub chunks is (ADDCHUNKNUM HASH)+, where ADDCHUNKNUM
   // is a 4 byte chunk number, and HASH is 32 bytes.
-  MOZ_ASSERT(aChunk.Length() % 36 == 0,
-             "Chunk length in bytes must be divisible by 36");
+  if (aChunk.Length() % (4 + COMPLETE_SIZE) != 0) {
+    NS_WARNING("Chunk length in bytes must be divisible by 36");
+    return NS_ERROR_FAILURE;
+  }
   uint32_t start = 0;
   while (start < aChunk.Length()) {
     // Read ADDCHUNKNUM
@@ -732,7 +760,7 @@ void ProtocolParserProtobuf::End() {
       minWaitDuration.seconds() + minWaitDuration.nanos() / 1000000000;
 
   for (int i = 0; i < response.list_update_responses_size(); i++) {
-    auto r = response.list_update_responses(i);
+    const auto& r = response.list_update_responses(i);
     nsAutoCString listName;
     nsresult rv = ProcessOneResponse(r, listName);
     if (NS_SUCCEEDED(rv)) {
@@ -782,7 +810,7 @@ nsresult ProtocolParserProtobuf::ProcessOneResponse(
   // per provider and return the first one. See bug 1287059."
   nsTArray<nsCString> possibleListNameArray;
   Classifier::SplitTables(possibleListNames, possibleListNameArray);
-  for (auto possibleName : possibleListNameArray) {
+  for (const auto& possibleName : possibleListNameArray) {
     if (mRequestedTables.Contains(possibleName)) {
       aListName = possibleName;
       break;
@@ -851,7 +879,7 @@ nsresult ProtocolParserProtobuf::ProcessAdditionOrRemoval(
   nsresult ret = NS_OK;
 
   for (int i = 0; i < aUpdate.size(); i++) {
-    auto update = aUpdate.Get(i);
+    const auto& update = aUpdate.Get(i);
     if (!update.has_compression_type()) {
       NS_WARNING(nsPrintfCString("%s with no compression type.",
                                  aIsAddition ? "Addition" : "Removal")
@@ -886,7 +914,7 @@ nsresult ProtocolParserProtobuf::ProcessRawAddition(
     return NS_OK;
   }
 
-  auto rawHashes = aAddition.raw_hashes();
+  const auto& rawHashes = aAddition.raw_hashes();
   if (!rawHashes.has_prefix_size()) {
     NS_WARNING("Raw hash has no prefix size");
     return NS_OK;
@@ -1060,6 +1088,424 @@ nsresult ProtocolParserProtobuf::ProcessEncodedRemoval(
   nsresult rv = DoRiceDeltaDecode(aRemoval.rice_indices(), decoded);
   if (NS_FAILED(rv)) {
     PARSER_LOG(("Failed to decode encoded removal indices."));
+    return rv;
+  }
+
+  // The encoded prefixes are always 4 bytes.
+  rv = aTableUpdate.NewRemovalIndices(&decoded[0], decoded.Length());
+  if (NS_FAILED(rv)) {
+    PARSER_LOG(("Failed to create new removal indices."));
+    return rv;
+  }
+
+  return NS_OK;
+}
+
+///////////////////////////////////////////////////////////////////////
+// ProtocolParserProtobufV5
+
+ProtocolParserProtobufV5::ProtocolParserProtobufV5() = default;
+
+ProtocolParserProtobufV5::~ProtocolParserProtobufV5() = default;
+
+void ProtocolParserProtobufV5::SetCurrentTable(const nsACString& aTable) {
+  // Should never occur.
+  MOZ_ASSERT_UNREACHABLE("SetCurrentTable shouldn't be called");
+}
+
+RefPtr<TableUpdate> ProtocolParserProtobufV5::CreateTableUpdate(
+    const nsACString& aTableName) const {
+  // For v5, we still use the same V4 table because the table format is the
+  // same.
+  return new TableUpdateV4(aTableName);
+}
+
+nsresult ProtocolParserProtobufV5::AppendStream(const nsACString& aData) {
+  // Protobuf data cannot be parsed progressively. Just save the incoming data.
+  if (!mPending.Append(aData, mozilla::fallible)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+  return NS_OK;
+}
+
+void ProtocolParserProtobufV5::End() {
+  mUpdateStatus = NS_ERROR_FAILURE;
+
+  v5::BatchGetHashListsResponse response;
+
+  if (!response.ParseFromArray(mPending.get(), mPending.Length())) {
+    NS_WARNING("ProtocolParserProtobufV5 failed parsing data.");
+    return;
+  }
+
+  // Iterate over all the hash lists in the response.
+  for (int i = 0; i < response.hash_lists_size(); i++) {
+    const v5::HashList& hashList = response.hash_lists(i);
+    nsAutoCString listName;
+    nsresult rv = ProcessOneResponse(hashList, listName);
+    if (NS_SUCCEEDED(rv)) {
+      mUpdateStatus = rv;
+    } else {
+      nsAutoCString errorName;
+      mozilla::GetErrorName(rv, errorName);
+      NS_WARNING(
+          nsPrintfCString("Failed to process one V5 response for '%s': %s",
+                          listName.get(), errorName.get())
+              .get());
+      if (!listName.IsEmpty()) {
+        PARSER_LOG(("Table %s will be reset.", listName.get()));
+        mTablesToReset.AppendElement(listName);
+      }
+    }
+  }
+}
+
+nsresult ProtocolParserProtobufV5::ProcessOneResponse(
+    const v5::HashList& aHashList, nsACString& aListName) {
+  MOZ_ASSERT(aListName.IsEmpty());
+
+  nsUrlClassifierUtils* urlUtil = nsUrlClassifierUtils::GetInstance();
+  if (NS_WARN_IF(!urlUtil)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  auto& name = aHashList.name();
+  nsAutoCString serverListName;
+  serverListName.Assign(name.c_str(), name.size());
+
+  nsresult rv = urlUtil->ConvertServerListNameToLocalListNameV5(serverListName,
+                                                                aListName);
+  if (NS_FAILED(rv)) {
+    PARSER_LOG(("Failed to convert v5 server list name to local list name: %s",
+                serverListName.get()));
+    return rv;
+  }
+  MOZ_ASSERT(!aListName.IsEmpty());
+
+  bool isPartialUpdate = aHashList.partial_update();
+
+  // We use the V4 table for the V5 update because the table format is the same.
+  auto tu = GetTableUpdate(aListName);
+  auto tuV4 = TableUpdate::Cast<TableUpdateV4>(tu);
+  NS_ENSURE_TRUE(tuV4, NS_ERROR_FAILURE);
+
+  // The V5 response has a version field which is compatible with the V4 state
+  // field.
+  nsCString version(aHashList.version().c_str(), aHashList.version().size());
+  tuV4->SetNewClientState(version);
+
+  tuV4->SetFullUpdate(!isPartialUpdate);
+
+  const std::string& sha256Checksum = aHashList.sha256_checksum();
+  if (sha256Checksum.size() != 0) {
+    tuV4->SetSHA256(sha256Checksum);
+  }
+
+  switch (aHashList.compressed_additions_case()) {
+    case v5::HashList::kAdditionsFourBytes:
+      rv = ProcessAddition4Bytes(*tuV4, aHashList.additions_four_bytes());
+      break;
+    case v5::HashList::kAdditionsEightBytes:
+      rv = ProcessAddition8Bytes(*tuV4, aHashList.additions_eight_bytes());
+      break;
+    case v5::HashList::kAdditionsSixteenBytes:
+      rv = ProcessAddition16Bytes(*tuV4, aHashList.additions_sixteen_bytes());
+      break;
+    case v5::HashList::kAdditionsThirtyTwoBytes:
+      rv =
+          ProcessAddition32Bytes(*tuV4, aHashList.additions_thirty_two_bytes());
+      break;
+    case v5::HashList::COMPRESSED_ADDITIONS_NOT_SET:
+      break;
+  }
+
+  if (aHashList.has_compressed_removals()) {
+    rv = ProcessRemoval(*tuV4, aHashList.compressed_removals());
+    if (NS_FAILED(rv)) {
+      PARSER_LOG(("Failed to parse encoded removal indices."));
+      return rv;
+    }
+  }
+
+  const auto& minWaitDuration = aHashList.minimum_wait_duration();
+  uint32_t waitSec =
+      minWaitDuration.seconds() + minWaitDuration.nanos() / 1000000000;
+  mUpdateWaits.AppendElement(TableWaitDuration{nsCString(aListName), waitSec});
+
+  PARSER_LOG(("==== V5 Update for list '%s' ====",
+              PromiseFlatCString(aListName).get()));
+  PARSER_LOG(("* newVersion: %s\n", version.get()));
+  PARSER_LOG(("* isFullUpdate: %s\n", (!isPartialUpdate ? "yes" : "no")));
+  PARSER_LOG(("* minimumWaitDuration: %u sec\n", waitSec));
+
+  return NS_OK;
+}
+
+static nsresult DoRiceDeltaDecode4Bytes(
+    const v5::RiceDeltaEncoded32Bit& aEncoding, nsTArray<uint32_t>& aDecoded) {
+  auto first_value = aEncoding.first_value();
+
+  PARSER_LOG(("* Encoding info for V5 4bytes encoding:"));
+  PARSER_LOG(("  - First value: %u", first_value));
+  PARSER_LOG(("  - Num of entries: %d", aEncoding.entries_count()));
+  PARSER_LOG(("  - Rice parameter: %d", aEncoding.rice_parameter()));
+
+  // Set up the input buffer. Note that the bits should be read
+  // from LSB to MSB so that we in-place reverse the bits before
+  // feeding to the decoder.
+  auto encoded =
+      const_cast<v5::RiceDeltaEncoded32Bit&>(aEncoding).mutable_encoded_data();
+  RiceDeltaDecoder decoder((uint8_t*)encoded->c_str(), encoded->size());
+
+  // Setup the output buffer. The "first value" is included in
+  // the output buffer.
+  if (!aDecoded.SetLength(aEncoding.entries_count() + 1, mozilla::fallible)) {
+    NS_WARNING("Not enough memory to decode the RiceDelta input.");
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  // Decode!
+  bool rv = decoder.Decode(
+      aEncoding.rice_parameter(), first_value,
+      aEncoding.entries_count(),  // # of entries (first value not included).
+      &aDecoded[0], /* aIsV5 */ true);
+
+  NS_ENSURE_TRUE(rv, NS_ERROR_UC_PARSER_DECODE_FAILURE);
+
+  return NS_OK;
+}
+
+static nsresult DoRiceDeltaDecode8Bytes(
+    const v5::RiceDeltaEncoded64Bit& aEncoding, nsTArray<uint64_t>& aDecoded) {
+  auto first_value = aEncoding.first_value();
+
+  PARSER_LOG(("* Encoding info for V5 8bytes encoding:"));
+  PARSER_LOG(("  - First value: %" PRIu64, first_value));
+  PARSER_LOG(("  - Num of entries: %d", aEncoding.entries_count()));
+  PARSER_LOG(("  - Rice parameter: %d", aEncoding.rice_parameter()));
+
+  // Set up the input buffer. Note that the bits should be read
+  // from LSB to MSB so that we in-place reverse the bits before
+  // feeding to the decoder.
+  auto encoded =
+      const_cast<v5::RiceDeltaEncoded64Bit&>(aEncoding).mutable_encoded_data();
+  RiceDeltaDecoder decoder((uint8_t*)encoded->c_str(), encoded->size());
+
+  // Setup the output buffer. The "first value" is included in
+  // the output buffer.
+  if (!aDecoded.SetLength(aEncoding.entries_count() + 1, mozilla::fallible)) {
+    NS_WARNING("Not enough memory to decode the RiceDelta input.");
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  // Decode!
+  bool rv = decoder.Decode64(
+      aEncoding.rice_parameter(), first_value,
+      aEncoding.entries_count(),  // # of entries (first value not included).
+      &aDecoded[0]);
+
+  NS_ENSURE_TRUE(rv, NS_ERROR_UC_PARSER_DECODE_FAILURE);
+
+  return NS_OK;
+}
+
+static nsresult DoRiceDeltaDecode16Bytes(
+    const v5::RiceDeltaEncoded128Bit& aEncoding, nsACString& aDecoded) {
+  auto first_value_hi = aEncoding.first_value_hi();
+  auto first_value_lo = aEncoding.first_value_lo();
+
+  PARSER_LOG(("* Encoding info for V5 16bytes encoding:"));
+  PARSER_LOG(("  - First value hi: %" PRIu64, first_value_hi));
+  PARSER_LOG(("  - First value lo: %" PRIu64, first_value_lo));
+  PARSER_LOG(("  - Num of entries: %d", aEncoding.entries_count()));
+  PARSER_LOG(("  - Rice parameter: %d", aEncoding.rice_parameter()));
+
+  // Set up the input buffer. Note that the bits should be read
+  // from LSB to MSB so that we in-place reverse the bits before
+  // feeding to the decoder.
+  auto encoded =
+      const_cast<v5::RiceDeltaEncoded128Bit&>(aEncoding).mutable_encoded_data();
+  RiceDeltaDecoder decoder((uint8_t*)encoded->c_str(), encoded->size());
+
+  // Setup the output buffer. The "first value" is included in
+  // the output buffer.
+  if (!aDecoded.SetCapacity(aEncoding.entries_count() * 16,
+                            mozilla::fallible)) {
+    NS_WARNING("Not enough memory to decode the RiceDelta input.");
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  // Decode!
+  bool rv = decoder.Decode128(
+      aEncoding.rice_parameter(), first_value_hi, first_value_lo,
+      aEncoding.entries_count(),  // # of entries (first value not included).
+      aDecoded);
+
+  NS_ENSURE_TRUE(rv, NS_ERROR_UC_PARSER_DECODE_FAILURE);
+
+  return NS_OK;
+}
+
+static nsresult DoRiceDeltaDecode32Bytes(
+    const v5::RiceDeltaEncoded256Bit& aEncoding, nsACString& aDecoded) {
+  auto first_value_first_part = aEncoding.first_value_first_part();
+  auto first_value_second_part = aEncoding.first_value_second_part();
+  auto first_value_third_part = aEncoding.first_value_third_part();
+  auto first_value_fourth_part = aEncoding.first_value_fourth_part();
+
+  PARSER_LOG(("* Encoding info for V5 32bytes encoding:"));
+  PARSER_LOG(("  - First value first part: %" PRIu64, first_value_first_part));
+  PARSER_LOG(
+      ("  - First value second part: %" PRIu64, first_value_second_part));
+  PARSER_LOG(("  - First value third part: %" PRIu64, first_value_third_part));
+  PARSER_LOG(
+      ("  - First value fourth part: %" PRIu64, first_value_fourth_part));
+  PARSER_LOG(("  - Num of entries: %d", aEncoding.entries_count()));
+  PARSER_LOG(("  - Rice parameter: %d", aEncoding.rice_parameter()));
+
+  // Set up the input buffer. Note that the bits should be read
+  // from LSB to MSB so that we in-place reverse the bits before
+  // feeding to the decoder.
+  auto encoded =
+      const_cast<v5::RiceDeltaEncoded256Bit&>(aEncoding).mutable_encoded_data();
+  RiceDeltaDecoder decoder((uint8_t*)encoded->c_str(), encoded->size());
+
+  // Setup the output buffer. The "first value" is included in
+  // the output buffer.
+  if (!aDecoded.SetCapacity((aEncoding.entries_count() + 1) * 32,
+                            mozilla::fallible)) {
+    NS_WARNING("Not enough memory to decode the RiceDelta input.");
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  // Decode!
+  bool rv = decoder.Decode256(
+      aEncoding.rice_parameter(), first_value_first_part,
+      first_value_second_part, first_value_third_part, first_value_fourth_part,
+      aEncoding.entries_count(),  // # of entries (first value not included).
+      aDecoded);
+
+  NS_ENSURE_TRUE(rv, NS_ERROR_UC_PARSER_DECODE_FAILURE);
+
+  return NS_OK;
+}
+
+nsresult ProtocolParserProtobufV5::ProcessAddition4Bytes(
+    TableUpdateV4& aTableUpdate, const v5::RiceDeltaEncoded32Bit& aAddition) {
+  nsTArray<uint32_t> decoded;
+
+  nsresult rv = DoRiceDeltaDecode4Bytes(aAddition, decoded);
+  if (NS_FAILED(rv)) {
+    PARSER_LOG(("Failed to parse encoded prefixes."));
+    return rv;
+  }
+
+  nsCString prefixes;
+  if (!prefixes.SetCapacity(decoded.Length() * 4, mozilla::fallible)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  for (size_t i = 0; i < decoded.Length(); i++) {
+    // This is the main difference between V4 and V5 for the RiceDeltaDecoder.
+    // V4 uses little-endian to encode the prefixes, while V5 uses big-endian.
+    // We need to swap the bytes to get the correct prefix.
+    char p[4];
+    NativeEndian::copyAndSwapToBigEndian(p, &decoded[i], 1);
+
+    prefixes.Append(p, 4);
+  }
+
+  aTableUpdate.NewPrefixes(4, prefixes);
+  return NS_OK;
+}
+
+nsresult ProtocolParserProtobufV5::ProcessAddition8Bytes(
+    TableUpdateV4& aTableUpdate, const v5::RiceDeltaEncoded64Bit& aAddition) {
+  nsTArray<uint64_t> decoded;
+
+  nsresult rv = DoRiceDeltaDecode8Bytes(aAddition, decoded);
+  if (NS_FAILED(rv)) {
+    PARSER_LOG(("Failed to parse encoded prefixes."));
+    return rv;
+  }
+
+  nsCString prefixes;
+  if (!prefixes.SetCapacity(decoded.Length() * 8, mozilla::fallible)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  for (size_t i = 0; i < decoded.Length(); i++) {
+    char p[8];
+    NativeEndian::copyAndSwapToBigEndian(p, &decoded[i], 1);
+    prefixes.Append(p, 8);
+  }
+
+  aTableUpdate.NewPrefixes(8, prefixes);
+  return NS_OK;
+}
+
+nsresult ProtocolParserProtobufV5::ProcessAddition16Bytes(
+    TableUpdateV4& aTableUpdate, const v5::RiceDeltaEncoded128Bit& aAddition) {
+  nsAutoCString decoded;
+
+  nsresult rv = DoRiceDeltaDecode16Bytes(aAddition, decoded);
+  if (NS_FAILED(rv)) {
+    PARSER_LOG(("Failed to parse encoded prefixes."));
+    return rv;
+  }
+
+  nsCString prefixes;
+  if (!prefixes.SetCapacity(decoded.Length(), mozilla::fallible)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  for (size_t i = 0; i < decoded.Length() / 16; i++) {
+    // Swap the bytes to the correct endianness, the data is 128-bits long.
+    char p[16];
+    for (size_t j = 0; j < 16; j++) {
+      p[j] = decoded[i * 16 + (15 - j)];
+    }
+    prefixes.Append(p, 16);
+  }
+
+  aTableUpdate.NewPrefixes(16, prefixes);
+  return NS_OK;
+}
+
+nsresult ProtocolParserProtobufV5::ProcessAddition32Bytes(
+    TableUpdateV4& aTableUpdate, const v5::RiceDeltaEncoded256Bit& aAddition) {
+  nsAutoCString decoded;
+
+  nsresult rv = DoRiceDeltaDecode32Bytes(aAddition, decoded);
+  if (NS_FAILED(rv)) {
+    PARSER_LOG(("Failed to parse encoded prefixes."));
+    return rv;
+  }
+
+  nsCString prefixes;
+  if (!prefixes.SetCapacity(decoded.Length(), mozilla::fallible)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
+  for (size_t i = 0; i < decoded.Length() / 32; i++) {
+    // Swap the bytes to the correct endianness, the data is 256-bits long.
+    char p[32];
+    for (size_t j = 0; j < 32; j++) {
+      p[j] = decoded[i * 32 + (31 - j)];
+    }
+    prefixes.Append(p, 32);
+  }
+
+  aTableUpdate.NewPrefixes(32, prefixes);
+  return NS_OK;
+}
+
+nsresult ProtocolParserProtobufV5::ProcessRemoval(
+    TableUpdateV4& aTableUpdate, const v5::RiceDeltaEncoded32Bit& aRemoval) {
+  nsTArray<uint32_t> decoded;
+  nsresult rv = DoRiceDeltaDecode4Bytes(aRemoval, decoded);
+  if (NS_FAILED(rv)) {
+    PARSER_LOG(("Failed to parse encoded removal indices."));
     return rv;
   }
 

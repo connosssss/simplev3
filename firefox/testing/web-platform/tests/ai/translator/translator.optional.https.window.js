@@ -1,33 +1,16 @@
 // META: title=Optional Translator tests
 // META: global=window
 // META: timeout=long
-// META: script=../resources/util.js
 // META: script=/resources/testdriver.js
+// META: script=/resources/testdriver-vendor.js
+// META: script=../resources/util.js
+// META: script=/common/gc.js
 // META: script=resources/util.js
 //
 // Setting `timeout=long` as this test may require downloading the translation
 // library and the language models.
 
 'use strict';
-
-promise_test(async t => {
-  const languagePair = {sourceLanguage: 'en', targetLanguage: 'ja'};
-
-  // Creating the translator without user activation rejects with
-  // NotAllowedError.
-  const createPromise = Translator.create(languagePair);
-  await promise_rejects_dom(t, 'NotAllowedError', createPromise);
-
-  // Creating the translator with user activation succeeds.
-  await createTranslator(languagePair);
-
-  // Creating it should have switched it to available.
-  const availability = await Translator.availability(languagePair);
-  assert_equals(availability, 'available');
-
-  // Now that it is available, we should no longer need user activation.
-  await Translator.create(languagePair);
-}, 'Translator.create() requires user activation when availability is "downloadable.');
 
 promise_test(async t => {
   const translator =
@@ -52,16 +35,44 @@ promise_test(async () => {
 promise_test(async () => {
   const translator =
       await createTranslator({sourceLanguage: 'en', targetLanguage: 'ja'});
+  const streamingResponse = translator.translateStreaming('Welcome. Nice to meet you.');
+  assert_equals(
+      Object.prototype.toString.call(streamingResponse),
+      '[object ReadableStream]');
+  let result = '';
+  for await (const chunk of streamingResponse) {
+    result += chunk;
+  }
+  assert_equals(result, 'ようこそ。 はじめまして。');
+}, 'Multiple sentence Translator.translateStreaming() call');
+
+promise_test(async () => {
+  const translator =
+      await createTranslator({sourceLanguage: 'en', targetLanguage: 'ja'});
+  const streamingResponse = translator.translateStreaming('Hello, Dr. Sanders. Nice to meet you.');
+  assert_equals(
+      Object.prototype.toString.call(streamingResponse),
+      '[object ReadableStream]');
+  let result = '';
+  for await (const chunk of streamingResponse) {
+    result += chunk;
+  }
+  assert_equals(result, 'こんにちは、サンダース博士です。 はじめまして。');
+}, 'Multiple sentence Translator.translateStreaming() call with honorific');
+
+promise_test(async () => {
+  const translator =
+      await createTranslator({sourceLanguage: 'en', targetLanguage: 'ja'});
   const streamingResponse = translator.translateStreaming('hello');
-  gc();
+  garbageCollect();
   assert_equals(Object.prototype.toString.call(streamingResponse),
                 '[object ReadableStream]');
   let result = '';
   for await (const value of streamingResponse) {
     result += value;
-    gc();
+    garbageCollect();
   }
-assert_greater_than(result.length, 0, 'The result should not be empty.');
+  assert_greater_than(result.length, 0, 'The result should not be empty.');
 }, 'Translate Streaming API must continue even after GC has been performed.');
 
 promise_test(async t => {
@@ -189,8 +200,7 @@ promise_test(async t => {
   if (inputUsage < translator.inputQuota) {
     assert_equals(await translator.translate(text), 'こんにちは');
   } else {
-    await promise_rejects_dom(
-        t, 'QuotaExceededError', translator.translate(text));
+    await promise_rejects_quotaexceedederror(t, translator.translate(text), requested => requested !== null, translator.inputQuota);
   }
 }, 'Translator.measureInputUsage() and inputQuota basic usage.');
 

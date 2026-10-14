@@ -1,19 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* base class for all rule types in a CSS style sheet */
 
-#ifndef mozilla_css_Rule_h___
-#define mozilla_css_Rule_h___
+#ifndef mozilla_css_Rule_h_
+#define mozilla_css_Rule_h_
 
+#include "mozilla/MemoryReporting.h"
+#include "mozilla/StyleSheet.h"
+#include "mozilla/WeakPtr.h"
 #include "mozilla/dom/CSSRuleBinding.h"
 #include "mozilla/dom/DocumentOrShadowRoot.h"
-#include "mozilla/StyleSheet.h"
-#include "mozilla/MemoryReporting.h"
-#include "mozilla/WeakPtr.h"
 #include "nsISupports.h"
 #include "nsWrapperCache.h"
 
@@ -104,6 +102,7 @@ class Rule : public nsISupports, public nsWrapperCache, public SupportsWeakPtr {
   virtual void GetCssText(nsACString& aCssText) const = 0;
   void SetCssText(const nsACString& aCssText);
   Rule* GetParentRule() const;
+  already_AddRefed<Rule> GetParentRuleForBindings() const;
   StyleSheet* GetParentStyleSheet() const { return GetStyleSheet(); }
   nsINode* GetAssociatedDocumentOrShadowRoot() const {
     if (!mSheet) {
@@ -150,4 +149,4 @@ class Rule : public nsISupports, public nsWrapperCache, public SupportsWeakPtr {
 }  // namespace css
 }  // namespace mozilla
 
-#endif /* mozilla_css_Rule_h___ */
+#endif /* mozilla_css_Rule_h_ */

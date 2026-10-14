@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
 async function loadExtension(options) {
@@ -185,10 +183,10 @@ add_task(async function run_test_shortcuts_view() {
       const addonPageHeader =
         content.document.querySelector("addon-page-header");
       const extension1Card = content.document.querySelector(
-        `.card.shortcut[addon-id="${ext1}"]`
+        `moz-card.shortcut[addon-id="${ext1}"]`
       );
       const extension2Card = content.document.querySelector(
-        `.card.shortcut[addon-id="${ext2}"]`
+        `moz-card.shortcut[addon-id="${ext2}"]`
       );
       return {
         view: addonPageHeader?.getAttribute("current-view"),

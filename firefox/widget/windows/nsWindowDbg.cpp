@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,22 +7,24 @@
  */
 
 #include "nsWindowDbg.h"
-#include "nsToolkit.h"
-#include "WinPointerEvents.h"
-#include "nsWindowLoggedMessages.h"
-#include "mozilla/Logging.h"
-#include "mozilla/Maybe.h"
-#include "nsWindow.h"
-#include "GeckoProfiler.h"
-#include "mozilla/PresShell.h"
-#include "mozilla/dom/Document.h"
 
-#include <winuser.h>
 #include <dbt.h>
 #include <imm.h>
 #include <tpcshrd.h>
+#include <winuser.h>
 
 #include <unordered_set>
+
+#include "ETWTools.h"
+#include "GeckoProfiler.h"
+#include "WinPointerEvents.h"
+#include "mozilla/Logging.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/PresShell.h"
+#include "mozilla/dom/Document.h"
+#include "nsToolkit.h"
+#include "nsWindow.h"
+#include "nsWindowLoggedMessages.h"
 
 using namespace mozilla;
 using namespace mozilla::widget;
@@ -45,38 +46,58 @@ static UINT gLastEventMsg = 0;
 
 namespace geckoprofiler::markers {
 
-struct WindowProcMarker {
-  static constexpr Span<const char> MarkerTypeName() {
-    return MakeStringSpan("WindowProc");
-  }
-  static void StreamJSONMarkerData(baseprofiler::SpliceableJSONWriter& aWriter,
-                                   const ProfilerString8View& aMsgLoopName,
-                                   UINT aMsg, WPARAM aWParam, LPARAM aLParam) {
-    aWriter.StringProperty("messageLoop", aMsgLoopName);
-    aWriter.IntProperty("uMsg", aMsg);
-    const char* name;
+struct WindowProcMarker : public BaseMarkerType<WindowProcMarker> {
+  static constexpr const char* Name = "WindowProc";
+  using MS = MarkerSchema;
+  static constexpr MS::Location Locations[] = {
+      MS::Location::MarkerChart,
+      MS::Location::MarkerTable,
+  };
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"loop", MS::InputType::CString, "Message Loop Name", MS::Format::String,
+       MS::PayloadFlags::Hidden},
+      {"uMsg", MS::InputType::Uint32, nullptr, MS::Format::Integer},
+      {"msg", MS::InputType::CString, nullptr, MS::Format::String,
+       MS::PayloadFlags::Hidden},
+      {"wParam", MS::InputType::Int64, nullptr, MS::Format::Integer},
+      {"lParam", MS::InputType::Int64, nullptr, MS::Format::Integer},
+  };
+  static constexpr const char* ChartLabel =
+      "{marker.data.loop} | {marker.data.msg} ({marker.data.uMsg})";
+  static constexpr const char* TableLabel =
+      "{marker.data.loop} - {marker.data.msg} ({marker.data.uMsg})";
+  static constexpr const char* TooltipLabel =
+      "{marker.data.loop} - {marker.name} - {marker.data.msg}";
+
+  static ProfilerString8View MessageToString(UINT aMsg) {
     if (aMsg < WM_USER) {
       const auto eventMsgInfo = mozilla::widget::gAllEvents.find(aMsg);
       if (eventMsgInfo != mozilla::widget::gAllEvents.end()) {
-        name = eventMsgInfo->second.mStr;
+        return ProfilerString8View::WrapNullTerminatedString(
+            eventMsgInfo->second.mStr);
       } else {
-        name = "ui message";
+        return "ui message";
       }
     } else if (aMsg >= WM_USER && aMsg < WM_APP) {
-      name = "WM_USER message";
+      return "WM_USER message";
     } else if (aMsg >= WM_APP && aMsg < 0xC000) {
-      name = "WM_APP message";
+      return "WM_APP message";
     } else if (aMsg >= 0xC000 && aMsg < 0x10000) {
       if (aMsg == sAppShellGeckoMsgId) {
-        name = "nsAppShell:EventID";
+        return "nsAppShell:EventID";
       } else {
-        name = "registered Windows message";
+        return "registered Windows message";
       }
     } else {
-      name = "system message";
+      return "system message";
     }
-    aWriter.StringProperty("name", MakeStringSpan(name));
+  }
 
+  static void StreamJSONMarkerData(baseprofiler::SpliceableJSONWriter& aWriter,
+                                   const ProfilerString8View& aMsgLoopName,
+                                   UINT aMsg, WPARAM aWParam, LPARAM aLParam) {
+    StreamJSONMarkerDataImpl(aWriter, aMsgLoopName, aMsg,
+                             MessageToString(aMsg));
     if (aWParam) {
       aWriter.IntProperty("wParam", aWParam);
     }
@@ -84,21 +105,11 @@ struct WindowProcMarker {
       aWriter.IntProperty("lParam", aLParam);
     }
   }
-
-  static MarkerSchema MarkerTypeDisplay() {
-    using MS = MarkerSchema;
-    MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
-    schema.AddKeyFormat("uMsg", MS::Format::Integer);
-    schema.SetChartLabel(
-        "{marker.data.messageLoop} | {marker.data.name} ({marker.data.uMsg})");
-    schema.SetTableLabel(
-        "{marker.name} - {marker.data.messageLoop} - {marker.data.name} "
-        "({marker.data.uMsg})");
-    schema.SetTooltipLabel(
-        "{marker.data.messageLoop} - {marker.name} - {marker.data.name}");
-    schema.AddKeyFormat("wParam", MS::Format::Integer);
-    schema.AddKeyFormat("lParam", MS::Format::Integer);
-    return schema;
+  static void TranslateMarkerInputToSchema(
+      void* aContext, const ProfilerString8View& aMsgLoopName, UINT aMsg,
+      WPARAM aWParam, LPARAM aLParam) {
+    ETW::OutputMarkerSchema(aContext, WindowProcMarker{}, aMsgLoopName, aMsg,
+                            MessageToString(aMsg), aWParam, aLParam);
   }
 };
 
@@ -110,6 +121,20 @@ AutoProfilerMessageMarker::AutoProfilerMessageMarker(
     Span<const char> aMsgLoopName, HWND hWnd, UINT msg, WPARAM wParam,
     LPARAM lParam)
     : mMsgLoopName(aMsgLoopName), mMsg(msg), mWParam(wParam), mLParam(lParam) {
+  // Sanitize wParam for keyboard messages that might contain sensitive data
+  // Char messages contain actual character data
+  if (msg == WM_CHAR || msg == WM_SYSCHAR || msg == WM_IME_CHAR) {
+    mWParam = 0;
+  } else if (msg == WM_KEYDOWN || msg == WM_KEYUP) {
+    // Key messages: only sanitize printable character keys
+    if ((wParam >= 0x30 && wParam <= 0x39) ||  // 0-9
+        (wParam >= 0x41 && wParam <= 0x5A) ||  // A-Z
+        (wParam >= 0xBA && wParam <= 0xE4) ||  // Punctuation
+        (wParam == 0x20)) {                    // Space
+      mWParam = 0;
+    }
+  }
+
   if (profiler_thread_is_being_profiled_for_markers()) {
     mOptions.emplace(MarkerOptions(MarkerTiming::IntervalStart()));
     nsWindow* win = WinUtils::GetNSWindowPtr(hWnd);
@@ -179,7 +204,7 @@ NativeEventLogger::NativeEventLogger(Span<const char> aMsgLoopName, HWND hwnd,
       mMsgLoopName(aMsgLoopName.data()),
       mHwnd(hwnd),
       mMsg(msg),
-      mWParam(wParam),
+      mWParam(mProfilerMarker.WParam()),
       mLParam(lParam),
       mResult(mozilla::Nothing()),
       mShouldLogPostCall(false) {
@@ -245,7 +270,7 @@ void AppendEnumValueInfo(
 }
 
 bool AppendFlagsInfo(nsCString& str, uint64_t flags,
-                     const nsTArray<EnumValueAndName>& flagsAndNames,
+                     Span<const EnumValueAndName> flagsAndNames,
                      const char* name) {
   if (name != nullptr) {
     str.AppendPrintf("%s=", name);
@@ -359,6 +384,7 @@ bool NativeEventLogger::NativeEventLoggerInternal() {
       }
       const char* resultMsg = [&]() {
         if (!mResult.isSome()) return "initial call";
+        if (!mResult.value()) return "false";
         if (mMsg == WM_NCHITTEST) {
           auto const& htr = HitTestResults();
           if (auto const it = htr.find(mRetValue); it != htr.end()) {
@@ -366,7 +392,7 @@ bool NativeEventLogger::NativeEventLoggerInternal() {
           }
           return "undocumented value?";
         }
-        return mResult.value() ? "true" : "false";
+        return "true";
       }();
 
       nsAutoCString logMessage;
@@ -374,10 +400,10 @@ bool NativeEventLogger::NativeEventLoggerInternal() {
           "%s | %6ld %08" PRIX64 " - 0x%04X %s%s%s: 0x%08" PRIX64 " (%s)\n",
           mMsgLoopName, mEventCounter.valueOr(gEventCounter),
           reinterpret_cast<uint64_t>(mHwnd), mMsg,
-          !msgText.IsEmpty() ? msgText.Data() : "Unknown",
+          !msgText.IsEmpty() ? msgText.get() : "Unknown",
           paramInfo.IsEmpty() ? "" : " ", paramInfo.get(),
           mResult.isSome() ? static_cast<uint64_t>(mRetValue) : 0, resultMsg);
-      const char* logMessageData = logMessage.Data();
+      const char* logMessageData = logMessage.get();
       MOZ_LOG(gWindowsEventLog, targetLogLevel, ("%s", logMessageData));
     }
     return true;
@@ -465,24 +491,24 @@ void CreateStructParamInfo(nsCString& str, uint64_t value, const char* name,
       GetNameFromAtom(createStruct->lpszClass).getW(), createStruct->x,
       createStruct->y, createStruct->cx, createStruct->cy);
   str.AppendASCII(" ");
-  const static nsTArray<EnumValueAndName> windowStyles = {
-      // these combinations of other flags need to come first
-      VALANDNAME_ENTRY(WS_OVERLAPPEDWINDOW), VALANDNAME_ENTRY(WS_POPUPWINDOW),
-      VALANDNAME_ENTRY(WS_CAPTION),
-      // regular flags
-      VALANDNAME_ENTRY(WS_POPUP), VALANDNAME_ENTRY(WS_CHILD),
-      VALANDNAME_ENTRY(WS_MINIMIZE), VALANDNAME_ENTRY(WS_VISIBLE),
-      VALANDNAME_ENTRY(WS_DISABLED), VALANDNAME_ENTRY(WS_CLIPSIBLINGS),
-      VALANDNAME_ENTRY(WS_CLIPCHILDREN), VALANDNAME_ENTRY(WS_MAXIMIZE),
-      VALANDNAME_ENTRY(WS_BORDER), VALANDNAME_ENTRY(WS_DLGFRAME),
-      VALANDNAME_ENTRY(WS_VSCROLL), VALANDNAME_ENTRY(WS_HSCROLL),
-      VALANDNAME_ENTRY(WS_SYSMENU), VALANDNAME_ENTRY(WS_THICKFRAME),
-      VALANDNAME_ENTRY(WS_GROUP), VALANDNAME_ENTRY(WS_TABSTOP),
-      // zero value needs to come last
-      VALANDNAME_ENTRY(WS_OVERLAPPED)};
+  const static std::array<EnumValueAndName, 20> windowStyles{
+      {// these combinations of other flags need to come first
+       VALANDNAME_ENTRY(WS_OVERLAPPEDWINDOW), VALANDNAME_ENTRY(WS_POPUPWINDOW),
+       VALANDNAME_ENTRY(WS_CAPTION),
+       // regular flags
+       VALANDNAME_ENTRY(WS_POPUP), VALANDNAME_ENTRY(WS_CHILD),
+       VALANDNAME_ENTRY(WS_MINIMIZE), VALANDNAME_ENTRY(WS_VISIBLE),
+       VALANDNAME_ENTRY(WS_DISABLED), VALANDNAME_ENTRY(WS_CLIPSIBLINGS),
+       VALANDNAME_ENTRY(WS_CLIPCHILDREN), VALANDNAME_ENTRY(WS_MAXIMIZE),
+       VALANDNAME_ENTRY(WS_BORDER), VALANDNAME_ENTRY(WS_DLGFRAME),
+       VALANDNAME_ENTRY(WS_VSCROLL), VALANDNAME_ENTRY(WS_HSCROLL),
+       VALANDNAME_ENTRY(WS_SYSMENU), VALANDNAME_ENTRY(WS_THICKFRAME),
+       VALANDNAME_ENTRY(WS_GROUP), VALANDNAME_ENTRY(WS_TABSTOP),
+       // zero value needs to come last
+       VALANDNAME_ENTRY(WS_OVERLAPPED)}};
   AppendFlagsInfo(str, createStruct->style, windowStyles, "style");
   str.AppendASCII(" ");
-  const nsTArray<EnumValueAndName> extendedWindowStyles = {
+  const std::array<EnumValueAndName, 27> extendedWindowStyles{{
       // these combinations of other flags need to come first
       VALANDNAME_ENTRY(WS_EX_OVERLAPPEDWINDOW),
       VALANDNAME_ENTRY(WS_EX_PALETTEWINDOW),
@@ -512,7 +538,7 @@ void CreateStructParamInfo(nsCString& str, uint64_t value, const char* name,
       VALANDNAME_ENTRY(WS_EX_NOACTIVATE),
       VALANDNAME_ENTRY(WS_EX_COMPOSITED),
       VALANDNAME_ENTRY(WS_EX_NOREDIRECTIONBITMAP),
-  };
+  }};
   AppendFlagsInfo(str, createStruct->dwExStyle, extendedWindowStyles,
                   "dwExStyle");
 }
@@ -543,9 +569,12 @@ void VirtualKeyParamInfo(nsCString& result, uint64_t param, const char* name,
                          bool /* isPreCall */) {
   // check that `name` is of length 2
   constexpr static const auto ASCII_KEY_ENTRY_HELPER =
-      [](const char(&name)[2]) -> uint64_t { return name[0]; };
+      [](const char (&name)[2]) -> uint64_t { return name[0]; };
 
-#define ASCII_KEY_ENTRY(name) {ASCII_KEY_ENTRY_HELPER(name), name}
+#define ASCII_KEY_ENTRY(name)          \
+  {                                    \
+    ASCII_KEY_ENTRY_HELPER(name), name \
+  }
 
   const static std::unordered_map<uint64_t, const char*> virtualKeys{
       VALANDNAME_ENTRY(VK_LBUTTON),
@@ -733,11 +762,15 @@ void VirtualKeyParamInfo(nsCString& result, uint64_t param, const char* name,
 
 void VirtualModifierKeysParamInfo(nsCString& result, uint64_t param,
                                   const char* name, bool /* isPreCall */) {
-  const static nsTArray<EnumValueAndName> virtualKeys{
-      VALANDNAME_ENTRY(MK_CONTROL),  VALANDNAME_ENTRY(MK_LBUTTON),
-      VALANDNAME_ENTRY(MK_MBUTTON),  VALANDNAME_ENTRY(MK_RBUTTON),
-      VALANDNAME_ENTRY(MK_SHIFT),    VALANDNAME_ENTRY(MK_XBUTTON1),
-      VALANDNAME_ENTRY(MK_XBUTTON2), {0, "(none)"}};
+  const static std::array<EnumValueAndName, 8> virtualKeys{
+      {VALANDNAME_ENTRY(MK_CONTROL),
+       VALANDNAME_ENTRY(MK_LBUTTON),
+       VALANDNAME_ENTRY(MK_MBUTTON),
+       VALANDNAME_ENTRY(MK_RBUTTON),
+       VALANDNAME_ENTRY(MK_SHIFT),
+       VALANDNAME_ENTRY(MK_XBUTTON1),
+       VALANDNAME_ENTRY(MK_XBUTTON2),
+       {0, "(none)"}}};
   AppendFlagsInfo(result, param, virtualKeys, name);
 }
 
@@ -1036,17 +1069,22 @@ nsAutoCString WmSizeParamInfo(uint64_t wParam, uint64_t lParam,
   return result;
 }
 
-MOZ_RUNINIT const nsTArray<EnumValueAndName> windowPositionFlags = {
-    VALANDNAME_ENTRY(SWP_DRAWFRAME),  VALANDNAME_ENTRY(SWP_HIDEWINDOW),
-    VALANDNAME_ENTRY(SWP_NOACTIVATE), VALANDNAME_ENTRY(SWP_NOCOPYBITS),
-    VALANDNAME_ENTRY(SWP_NOMOVE),     VALANDNAME_ENTRY(SWP_NOOWNERZORDER),
-    VALANDNAME_ENTRY(SWP_NOREDRAW),   VALANDNAME_ENTRY(SWP_NOSENDCHANGING),
-    VALANDNAME_ENTRY(SWP_NOSIZE),     VALANDNAME_ENTRY(SWP_NOZORDER),
+constexpr std::array<EnumValueAndName, 11> windowPositionFlags{{
+    VALANDNAME_ENTRY(SWP_DRAWFRAME),
+    VALANDNAME_ENTRY(SWP_HIDEWINDOW),
+    VALANDNAME_ENTRY(SWP_NOACTIVATE),
+    VALANDNAME_ENTRY(SWP_NOCOPYBITS),
+    VALANDNAME_ENTRY(SWP_NOMOVE),
+    VALANDNAME_ENTRY(SWP_NOOWNERZORDER),
+    VALANDNAME_ENTRY(SWP_NOREDRAW),
+    VALANDNAME_ENTRY(SWP_NOSENDCHANGING),
+    VALANDNAME_ENTRY(SWP_NOSIZE),
+    VALANDNAME_ENTRY(SWP_NOZORDER),
     VALANDNAME_ENTRY(SWP_SHOWWINDOW),
-};
+}};
 
 static std::unordered_map<uint64_t, const char*> const& HitTestResults() {
-  static const std::unordered_map<uint64_t, const char*> data{
+  static const std::unordered_map<uint64_t, const char*> data{{
       VALANDNAME_ENTRY(HTBORDER),     VALANDNAME_ENTRY(HTBOTTOM),
       VALANDNAME_ENTRY(HTBOTTOMLEFT), VALANDNAME_ENTRY(HTBOTTOMRIGHT),
       VALANDNAME_ENTRY(HTCAPTION),    VALANDNAME_ENTRY(HTCLIENT),
@@ -1060,7 +1098,7 @@ static std::unordered_map<uint64_t, const char*> const& HitTestResults() {
       VALANDNAME_ENTRY(HTTOP),        VALANDNAME_ENTRY(HTTOPLEFT),
       VALANDNAME_ENTRY(HTTOPRIGHT),   VALANDNAME_ENTRY(HTTRANSPARENT),
       VALANDNAME_ENTRY(HTVSCROLL),    VALANDNAME_ENTRY(HTZOOM),
-  };
+  }};
   return data;
 }
 

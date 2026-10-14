@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,7 +5,9 @@
 #include "mozilla/dom/VideoFrame.h"
 
 #include <math.h>
+
 #include <limits>
+#include <memory>
 #include <utility>
 
 #include "ImageContainer.h"
@@ -17,7 +17,6 @@
 #include "js/StructuredClone.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/ResultVariant.h"
-#include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/Try.h"
 #include "mozilla/UniquePtr.h"
@@ -39,6 +38,7 @@
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/Swizzle.h"
 #include "mozilla/layers/LayersSurfaces.h"
+#include "mozilla/webgpu/ExternalTexture.h"
 #include "nsIPrincipal.h"
 #include "nsIURI.h"
 #include "nsLayoutUtils.h"
@@ -51,7 +51,7 @@ namespace mozilla::dom {
 #  undef LOG_INTERNAL
 #endif  // LOG_INTERNAL
 #define LOG_INTERNAL(level, msg, ...) \
-  MOZ_LOG(gWebCodecsLog, LogLevel::level, (msg, ##__VA_ARGS__))
+  MOZ_LOG_FMT(gWebCodecsLog, LogLevel::level, msg, ##__VA_ARGS__)
 
 #ifdef LOG
 #  undef LOG
@@ -129,9 +129,21 @@ class I420BufferReader : public YUVBufferReaderBase {
         mStrideV(CeilingOfHalf(aWidth)) {}
   virtual ~I420BufferReader() = default;
 
-  const uint8_t* DataU() const { return &mBuffer[YByteSize().value()]; }
-  const uint8_t* DataV() const {
-    return &mBuffer[YByteSize().value() + UByteSize().value()];
+  Result<const uint8_t*, MediaResult> DataU() const {
+    auto offset = YByteSize();
+    if (!offset.isValid()) {
+      return Err(
+          MediaResult(NS_ERROR_INVALID_ARG, "offset for U plane overflow"_ns));
+    }
+    return &mBuffer[offset.value()];
+  }
+  Result<const uint8_t*, MediaResult> DataV() const {
+    auto offset = YByteSize() + UByteSize();
+    if (!offset.isValid()) {
+      return Err(
+          MediaResult(NS_ERROR_INVALID_ARG, "offset for V plane overflow"_ns));
+    }
+    return &mBuffer[offset.value()];
   }
   virtual I420ABufferReader* AsI420ABufferReader() { return nullptr; }
 
@@ -157,9 +169,13 @@ class I420ABufferReader final : public I420BufferReader {
   }
   virtual ~I420ABufferReader() = default;
 
-  const uint8_t* DataA() const {
-    return &mBuffer[YByteSize().value() + UByteSize().value() +
-                    VSize().value()];
+  Result<const uint8_t*, MediaResult> DataA() const {
+    auto offset = YByteSize() + UByteSize() + VSize();
+    if (!offset.isValid()) {
+      return Err(MediaResult(NS_ERROR_INVALID_ARG,
+                             "offset for Alpha plane overflow"_ns));
+    }
+    return &mBuffer[offset.value()];
   }
 
   virtual I420ABufferReader* AsI420ABufferReader() override { return this; }
@@ -175,7 +191,14 @@ class NV12BufferReader final : public YUVBufferReaderBase {
         mStrideUV(aWidth + aWidth % 2) {}
   virtual ~NV12BufferReader() = default;
 
-  const uint8_t* DataUV() const { return &mBuffer[YByteSize().value()]; }
+  Result<const uint8_t*, MediaResult> DataUV() const {
+    auto offset = YByteSize();
+    if (!offset.isValid()) {
+      return Err(
+          MediaResult(NS_ERROR_INVALID_ARG, "offset for UV plane overflow"_ns));
+    }
+    return &mBuffer[offset.value()];
+  }
 
   const int32_t mStrideUV;
 };
@@ -238,8 +261,8 @@ static Result<RefPtr<layers::Image>, MediaResult> CreateImageFromSourceSurface(
   }
 
   // Gecko favors BGRA so we convert surface into BGRA format first.
-  RefPtr<gfx::DataSourceSurface> bgraSurface;
-  MOZ_TRY_VAR(bgraSurface, AllocateBGRASurface(surface));
+  RefPtr<gfx::DataSourceSurface> bgraSurface =
+      MOZ_TRY(AllocateBGRASurface(surface));
 
   return RefPtr<layers::Image>(
       new layers::SourceSurfaceImage(bgraSurface.get()));
@@ -260,8 +283,8 @@ static Result<RefPtr<layers::Image>, MediaResult> CreateImageFromRawData(
   }
 
   // Gecko favors BGRA so we convert surface into BGRA format first.
-  RefPtr<gfx::DataSourceSurface> bgraSurface;
-  MOZ_TRY_VAR(bgraSurface, AllocateBGRASurface(surface));
+  RefPtr<gfx::DataSourceSurface> bgraSurface =
+      MOZ_TRY(AllocateBGRASurface(surface));
   MOZ_ASSERT(bgraSurface);
 
   return RefPtr<layers::Image>(
@@ -294,11 +317,11 @@ static Result<RefPtr<layers::Image>, MediaResult> CreateYUVImageFromBuffer(
       aFormat.PixelFormat() == VideoPixelFormat::I420A) {
     UniquePtr<I420BufferReader> reader;
     if (aFormat.PixelFormat() == VideoPixelFormat::I420) {
-      reader.reset(
-          new I420BufferReader(aBuffer, aSize.Width(), aSize.Height()));
+      reader = std::make_unique<I420BufferReader>(aBuffer, aSize.Width(),
+                                                  aSize.Height());
     } else {
-      reader.reset(
-          new I420ABufferReader(aBuffer, aSize.Width(), aSize.Height()));
+      reader = std::make_unique<I420ABufferReader>(aBuffer, aSize.Width(),
+                                                   aSize.Height());
     }
 
     layers::PlanarYCbCrData data;
@@ -309,16 +332,16 @@ static Result<RefPtr<layers::Image>, MediaResult> CreateYUVImageFromBuffer(
     data.mYStride = reader->mStrideY;
     data.mYSkip = 0;
     // Cb plane.
-    data.mCbChannel = const_cast<uint8_t*>(reader->DataU());
+    data.mCbChannel = const_cast<uint8_t*>(MOZ_TRY(reader->DataU()));
     data.mCbSkip = 0;
     // Cr plane.
-    data.mCrChannel = const_cast<uint8_t*>(reader->DataV());
+    data.mCrChannel = const_cast<uint8_t*>(MOZ_TRY(reader->DataV()));
     data.mCbSkip = 0;
     // A plane.
     if (aFormat.PixelFormat() == VideoPixelFormat::I420A) {
       data.mAlpha.emplace();
       data.mAlpha->mChannel =
-          const_cast<uint8_t*>(reader->AsI420ABufferReader()->DataA());
+          const_cast<uint8_t*>(MOZ_TRY(reader->AsI420ABufferReader()->DataA()));
       data.mAlpha->mSize = data.mPictureRect.Size();
       // No values for mDepth and mPremultiplied.
     }
@@ -366,7 +389,7 @@ static Result<RefPtr<layers::Image>, MediaResult> CreateYUVImageFromBuffer(
     data.mYStride = reader.mStrideY;
     data.mYSkip = 0;
     // Cb plane.
-    data.mCbChannel = const_cast<uint8_t*>(reader.DataUV());
+    data.mCbChannel = const_cast<uint8_t*>(MOZ_TRY(reader.DataUV()));
     data.mCbSkip = 1;
     // Cr plane.
     data.mCrChannel = data.mCbChannel + 1;
@@ -575,13 +598,13 @@ static Result<Ok, nsCString> ValidateVisibility(
   MOZ_ASSERT(aVisibleRect.Height() > 0);
 
   const auto w = CheckedInt<uint32_t>(aVisibleRect.Width()) + aVisibleRect.X();
-  if (w.value() > static_cast<uint32_t>(aPicSize.Width())) {
+  if (!w.isValid() || w.value() > static_cast<uint32_t>(aPicSize.Width())) {
     return Err(
         "Sum of visible rectangle's x and width exceeds the picture's width"_ns);
   }
 
   const auto h = CheckedInt<uint32_t>(aVisibleRect.Height()) + aVisibleRect.Y();
-  if (h.value() > static_cast<uint32_t>(aPicSize.Height())) {
+  if (!h.isValid() || h.value() > static_cast<uint32_t>(aPicSize.Height())) {
     return Err(
         "Sum of visible rectangle's y and height exceeds the picture's height"_ns);
   }
@@ -601,13 +624,12 @@ static Result<Maybe<gfx::IntSize>, nsCString> MaybeGetDisplaySize(
 
   Maybe<gfx::IntSize> displaySize;
   if (aInit.mDisplayWidth.WasPassed() && aInit.mDisplayHeight.WasPassed()) {
-    displaySize.emplace();
-    MOZ_TRY_VAR(displaySize.ref(), ToIntSize(aInit.mDisplayWidth.Value(),
-                                             aInit.mDisplayHeight.Value())
-                                       .mapErr([](nsCString error) {
-                                         error.Insert("display", 0);
-                                         return error;
-                                       }));
+    displaySize.emplace(MOZ_TRY(
+        ToIntSize(aInit.mDisplayWidth.Value(), aInit.mDisplayHeight.Value())
+            .mapErr([](nsCString error) {
+              error.Insert("display", 0);
+              return error;
+            })));
   }
   return displaySize;
 }
@@ -617,27 +639,24 @@ static Result<
     std::tuple<gfx::IntSize, Maybe<gfx::IntRect>, Maybe<gfx::IntSize>>,
     nsCString>
 ValidateVideoFrameBufferInit(const VideoFrameBufferInit& aInit) {
-  gfx::IntSize codedSize;
-  MOZ_TRY_VAR(codedSize, ToIntSize(aInit.mCodedWidth, aInit.mCodedHeight)
-                             .mapErr([](nsCString error) {
-                               error.Insert("coded", 0);
-                               return error;
-                             }));
+  gfx::IntSize codedSize =
+      MOZ_TRY(ToIntSize(aInit.mCodedWidth, aInit.mCodedHeight)
+                  .mapErr([](nsCString error) {
+                    error.Insert("coded", 0);
+                    return error;
+                  }));
 
   Maybe<gfx::IntRect> visibleRect;
   if (aInit.mVisibleRect.WasPassed()) {
-    visibleRect.emplace();
-    MOZ_TRY_VAR(
-        visibleRect.ref(),
+    visibleRect.emplace(MOZ_TRY(
         ToIntRect(aInit.mVisibleRect.Value()).mapErr([](nsCString error) {
           error.Insert("visibleRect's ", 0);
           return error;
-        }));
+        })));
     MOZ_TRY(ValidateVisibility(visibleRect.ref(), codedSize));
   }
 
-  Maybe<gfx::IntSize> displaySize;
-  MOZ_TRY_VAR(displaySize, MaybeGetDisplaySize(aInit));
+  Maybe<gfx::IntSize> displaySize = MOZ_TRY(MaybeGetDisplaySize(aInit));
 
   return std::make_tuple(codedSize, visibleRect, displaySize);
 }
@@ -849,12 +868,11 @@ static Result<CombinedBufferLayout, MediaResult> ParseVideoFrameCopyToOptions(
     // TODO: We handle some edge cases that spec misses:
     // https://github.com/w3c/webcodecs/issues/513
     // This comment should be removed once the issue is resolved.
-    overrideRect.emplace();
-    MOZ_TRY_VAR(overrideRect.ref(),
-                ToIntRect(aOptions.mRect.Value()).mapErr([](nsCString error) {
-                  error.Insert("rect's ", 0);
-                  return MediaResult(NS_ERROR_INVALID_ARG, error);
-                }));
+    overrideRect.emplace(
+        MOZ_TRY(ToIntRect(aOptions.mRect.Value()).mapErr([](nsCString error) {
+          error.Insert("rect's ", 0);
+          return MediaResult(NS_ERROR_INVALID_ARG, error);
+        })));
 
     MediaResult r = VerifyRectSizeAlignment(aFormat, overrideRect.ref());
     if (NS_FAILED(r.Code())) {
@@ -862,9 +880,8 @@ static Result<CombinedBufferLayout, MediaResult> ParseVideoFrameCopyToOptions(
     }
   }
 
-  gfx::IntRect parsedRect;
-  MOZ_TRY_VAR(parsedRect, ParseVisibleRect(aVisibleRect, overrideRect,
-                                           aCodedSize, aFormat));
+  gfx::IntRect parsedRect = MOZ_TRY(
+      ParseVisibleRect(aVisibleRect, overrideRect, aCodedSize, aFormat));
 
   const Sequence<PlaneLayout>* optLayout = OptionalToPointer(aOptions.mLayout);
 
@@ -982,20 +999,17 @@ ValidateVideoFrameInit(const VideoFrameInit& aInit,
 
   Maybe<gfx::IntRect> visibleRect;
   if (aInit.mVisibleRect.WasPassed()) {
-    visibleRect.emplace();
-    MOZ_TRY_VAR(
-        visibleRect.ref(),
+    visibleRect.emplace(MOZ_TRY(
         ToIntRect(aInit.mVisibleRect.Value()).mapErr([](nsCString error) {
           error.Insert("visibleRect's ", 0);
           return error;
-        }));
+        })));
     MOZ_TRY(ValidateVisibility(visibleRect.ref(), aCodedSize));
 
     MOZ_TRY(VerifyRectOffsetAlignment(aFormat, visibleRect.ref()));
   }
 
-  Maybe<gfx::IntSize> displaySize;
-  MOZ_TRY_VAR(displaySize, MaybeGetDisplaySize(aInit));
+  Maybe<gfx::IntSize> displaySize = MOZ_TRY(MaybeGetDisplaySize(aInit));
 
   return std::make_pair(visibleRect, displaySize);
 }
@@ -1013,11 +1027,10 @@ static Result<RefPtr<VideoFrame>, MediaResult> CreateVideoFrameFromBuffer(
                            "linear RGB is not supported"_ns));
   }
 
-  std::tuple<gfx::IntSize, Maybe<gfx::IntRect>, Maybe<gfx::IntSize>> init;
-  MOZ_TRY_VAR(init,
-              ValidateVideoFrameBufferInit(aInit).mapErr([](nsCString error) {
-                return MediaResult(NS_ERROR_INVALID_ARG, error);
-              }));
+  std::tuple<gfx::IntSize, Maybe<gfx::IntRect>, Maybe<gfx::IntSize>> init =
+      MOZ_TRY(ValidateVideoFrameBufferInit(aInit).mapErr([](nsCString error) {
+        return MediaResult(NS_ERROR_INVALID_ARG, error);
+      }));
   gfx::IntSize codedSize = std::get<0>(init);
   Maybe<gfx::IntRect> visibleRect = std::get<1>(init);
   Maybe<gfx::IntSize> displaySize = std::get<2>(init);
@@ -1031,44 +1044,38 @@ static Result<RefPtr<VideoFrame>, MediaResult> CreateVideoFrameFromBuffer(
                            "coded width and/or height is invalid"_ns));
   }
 
-  gfx::IntRect parsedRect;
-  MOZ_TRY_VAR(parsedRect, ParseVisibleRect(gfx::IntRect({0, 0}, codedSize),
-                                           visibleRect, codedSize, format));
+  gfx::IntRect parsedRect = MOZ_TRY(ParseVisibleRect(
+      gfx::IntRect({0, 0}, codedSize), visibleRect, codedSize, format));
 
   const Sequence<PlaneLayout>* optLayout = OptionalToPointer(aInit.mLayout);
 
-  CombinedBufferLayout combinedLayout;
-  MOZ_TRY_VAR(combinedLayout,
-              ComputeLayoutAndAllocationSize(parsedRect, format, optLayout));
+  CombinedBufferLayout combinedLayout =
+      MOZ_TRY(ComputeLayoutAndAllocationSize(parsedRect, format, optLayout));
 
   Maybe<uint64_t> duration = OptionalToMaybe(aInit.mDuration);
 
   VideoColorSpaceInternal colorSpace =
       PickColorSpace(OptionalToPointer(aInit.mColorSpace), aInit.mFormat);
 
-  RefPtr<layers::Image> data;
-  MOZ_TRY_VAR(
-      data,
-      aBuffer.ProcessFixedData(
-          [&](const Span<uint8_t>& aData)
-              -> Result<RefPtr<layers::Image>, MediaResult> {
-            if (aData.Length() <
-                static_cast<size_t>(combinedLayout.mAllocationSize)) {
-              return Err(
-                  MediaResult(NS_ERROR_INVALID_ARG, "data is too small"_ns));
-            }
+  RefPtr<layers::Image> data = MOZ_TRY(aBuffer.ProcessFixedData(
+      [&](const Span<uint8_t>& aData)
+          -> Result<RefPtr<layers::Image>, MediaResult> {
+        if (aData.Length() <
+            static_cast<size_t>(combinedLayout.mAllocationSize)) {
+          return Err(MediaResult(NS_ERROR_INVALID_ARG, "data is too small"_ns));
+        }
 
-            // TODO: If codedSize is (3, 3) and visibleRect is (0, 0, 1, 1) but
-            // the data is 2 x 2 RGBA buffer (2 x 2 x 4 bytes), it pass the
-            // above check. In this case, we can crop it to a 1 x 1-codedSize
-            // image (Bug 1782128).
-            if (aData.Length() < format.ByteCount(codedSize)) {
-              return Err(
-                  MediaResult(NS_ERROR_INVALID_ARG, "data is too small"_ns));
-            }
+        // TODO: If codedSize is (3, 3) and visibleRect is (0, 0, 1, 1) but
+        // the data is 2 x 2 RGBA buffer (2 x 2 x 4 bytes), it pass the
+        // above check. In this case, we can crop it to a 1 x 1-codedSize
+        // image (Bug 1782128).
+        size_t byteCount = MOZ_TRY(format.ByteCount(codedSize));
+        if (aData.Length() < byteCount) {
+          return Err(MediaResult(NS_ERROR_INVALID_ARG, "data is too small"_ns));
+        }
 
-            return CreateImageFromBuffer(format, colorSpace, codedSize, aData);
-          }));
+        return CreateImageFromBuffer(format, colorSpace, codedSize, aData);
+      }));
 
   MOZ_ASSERT(data);
   MOZ_ASSERT(data->GetSize() == codedSize);
@@ -1107,7 +1114,7 @@ static already_AddRefed<VideoFrame> CreateVideoFrameFromBuffer(
 }
 
 // https://w3c.github.io/webcodecs/#videoframe-initialize-visible-rect-and-display-size
-static void InitializeVisibleRectAndDisplaySize(
+static Result<Ok, nsCString> InitializeVisibleRectAndDisplaySize(
     Maybe<gfx::IntRect>& aVisibleRect, Maybe<gfx::IntSize>& aDisplaySize,
     gfx::IntRect aDefaultVisibleRect, gfx::IntSize aDefaultDisplaySize) {
   if (!aVisibleRect) {
@@ -1118,11 +1125,17 @@ static void InitializeVisibleRectAndDisplaySize(
                     aDefaultVisibleRect.Width();
     double hScale = static_cast<double>(aDefaultDisplaySize.Height()) /
                     aDefaultVisibleRect.Height();
-    double w = wScale * aVisibleRect->Width();
-    double h = hScale * aVisibleRect->Height();
-    aDisplaySize.emplace(gfx::IntSize(static_cast<uint32_t>(round(w)),
-                                      static_cast<uint32_t>(round(h))));
+    double wd = round(wScale * aVisibleRect->Width());
+    double hd = round(hScale * aVisibleRect->Height());
+    constexpr double kMax =
+        static_cast<double>(std::numeric_limits<int32_t>::max());
+    if (wd <= 0 || hd <= 0 || wd > kMax || hd > kMax) {
+      return Err("Computed display size is invalid"_ns);
+    }
+    aDisplaySize.emplace(
+        gfx::IntSize(static_cast<int32_t>(wd), static_cast<int32_t>(hd)));
   }
+  return Ok();
 }
 
 // https://w3c.github.io/webcodecs/#videoframe-initialize-frame-with-resource-and-size
@@ -1142,8 +1155,8 @@ InitializeFrameWithResourceAndSize(nsIGlobalObject* aGlobal,
             return VideoFrame::Format(aFormat);
           });
 
-  std::pair<Maybe<gfx::IntRect>, Maybe<gfx::IntSize>> init;
-  MOZ_TRY_VAR(init, ValidateVideoFrameInit(aInit, format, image->GetSize()));
+  std::pair<Maybe<gfx::IntRect>, Maybe<gfx::IntSize>> init =
+      MOZ_TRY(ValidateVideoFrameInit(aInit, format, image->GetSize()));
   Maybe<gfx::IntRect> visibleRect = init.first;
   Maybe<gfx::IntSize> displaySize = init.second;
 
@@ -1155,9 +1168,9 @@ InitializeFrameWithResourceAndSize(nsIGlobalObject* aGlobal,
     // to do in this case?
   }
 
-  InitializeVisibleRectAndDisplaySize(visibleRect, displaySize,
-                                      gfx::IntRect({0, 0}, image->GetSize()),
-                                      image->GetSize());
+  MOZ_TRY(InitializeVisibleRectAndDisplaySize(
+      visibleRect, displaySize, gfx::IntRect({0, 0}, image->GetSize()),
+      image->GetSize()));
 
   Maybe<uint64_t> duration = OptionalToMaybe(aInit.mDuration);
 
@@ -1191,14 +1204,13 @@ InitializeFrameFromOtherFrame(nsIGlobalObject* aGlobal, VideoFrameData&& aData,
     // to do in this case?
   }
 
-  std::pair<Maybe<gfx::IntRect>, Maybe<gfx::IntSize>> init;
-  MOZ_TRY_VAR(init,
-              ValidateVideoFrameInit(aInit, format, aData.mImage->GetSize()));
+  std::pair<Maybe<gfx::IntRect>, Maybe<gfx::IntSize>> init =
+      MOZ_TRY(ValidateVideoFrameInit(aInit, format, aData.mImage->GetSize()));
   Maybe<gfx::IntRect> visibleRect = init.first;
   Maybe<gfx::IntSize> displaySize = init.second;
 
-  InitializeVisibleRectAndDisplaySize(visibleRect, displaySize,
-                                      aData.mVisibleRect, aData.mDisplaySize);
+  MOZ_TRY(InitializeVisibleRectAndDisplaySize(
+      visibleRect, displaySize, aData.mVisibleRect, aData.mDisplaySize));
 
   Maybe<uint64_t> duration = OptionalToMaybe(aInit.mDuration);
 
@@ -1357,7 +1369,7 @@ VideoFrame::VideoFrame(nsIGlobalObject* aParent,
       mTimestamp(aTimestamp),
       mColorSpace(aColorSpace) {
   MOZ_ASSERT(mParent);
-  LOG("VideoFrame %p ctor", this);
+  LOG("VideoFrame {} ctor", fmt::ptr(this));
   mResource.emplace(
       Resource(aImage, aFormat.map([](const VideoPixelFormat& aPixelFormat) {
         return VideoFrame::Format(aPixelFormat);
@@ -1378,7 +1390,7 @@ VideoFrame::VideoFrame(nsIGlobalObject* aParent,
       mTimestamp(aData.mTimestamp),
       mColorSpace(aData.mColorSpace) {
   MOZ_ASSERT(mParent);
-  LOG("VideoFrame %p ctor (from serialized data)", this);
+  LOG("VideoFrame {} ctor (from serialized data)", fmt::ptr(this));
   mResource.emplace(Resource(
       aData.mImage, aData.mFormat.map([](const VideoPixelFormat& aPixelFormat) {
         return VideoFrame::Format(aPixelFormat);
@@ -1399,13 +1411,13 @@ VideoFrame::VideoFrame(const VideoFrame& aOther)
       mTimestamp(aOther.mTimestamp),
       mColorSpace(aOther.mColorSpace) {
   MOZ_ASSERT(mParent);
-  LOG("VideoFrame %p copy ctor", this);
+  LOG("VideoFrame {} copy ctor", fmt::ptr(this));
   StartAutoClose();
 }
 
 VideoFrame::~VideoFrame() {
   MOZ_ASSERT(IsClosed());
-  LOG("VideoFrame %p dtor", this);
+  LOG("VideoFrame {} dtor", fmt::ptr(this));
 }
 
 nsIGlobalObject* VideoFrame::GetParentObject() const {
@@ -1979,54 +1991,61 @@ already_AddRefed<Promise> VideoFrame::CopyTo(
     }
   }
 
-  return ProcessTypedArraysFixed(aDestination, [&](const Span<uint8_t>& aData) {
-    if (aData.size_bytes() < layout.mAllocationSize) {
-      p->MaybeRejectWithTypeError("Destination buffer is too small");
-      return p.forget();
-    }
+  Sequence<PlaneLayout> planeLayouts;
+  nsCString errorMessage;
+  bool ok =
+      ProcessTypedArraysFixed(aDestination, [&](const Span<uint8_t>& aData) {
+        if (aData.size_bytes() < layout.mAllocationSize) {
+          errorMessage.Assign("Destination buffer is too small");
+          return false;
+        }
 
-    Sequence<PlaneLayout> planeLayouts;
+        nsTArray<Format::Plane> planes = mResource->mFormat->Planes();
+        MOZ_ASSERT(layout.mComputedLayouts.Length() == planes.Length());
 
-    nsTArray<Format::Plane> planes = mResource->mFormat->Planes();
-    MOZ_ASSERT(layout.mComputedLayouts.Length() == planes.Length());
+        // TODO: These jobs can be run in a thread pool (bug 1780656) to unblock
+        // the current thread.
+        for (size_t i = 0; i < layout.mComputedLayouts.Length(); ++i) {
+          ComputedPlaneLayout& l = layout.mComputedLayouts[i];
+          uint32_t destinationOffset = l.mDestinationOffset;
 
-    // TODO: These jobs can be run in a thread pool (bug 1780656) to unblock
-    // the current thread.
-    for (size_t i = 0; i < layout.mComputedLayouts.Length(); ++i) {
-      ComputedPlaneLayout& l = layout.mComputedLayouts[i];
-      uint32_t destinationOffset = l.mDestinationOffset;
+          PlaneLayout* pl = planeLayouts.AppendElement(fallible);
+          if (!pl) {
+            errorMessage.Assign("Out of memory");
+            return false;
+          }
+          pl->mOffset = l.mDestinationOffset;
+          pl->mStride = l.mDestinationStride;
 
-      PlaneLayout* pl = planeLayouts.AppendElement(fallible);
-      if (!pl) {
-        p->MaybeRejectWithTypeError("Out of memory");
-        return p.forget();
-      }
-      pl->mOffset = l.mDestinationOffset;
-      pl->mStride = l.mDestinationStride;
+          // Copy pixels of `size` starting from `origin` on planes[i] to
+          // `aDestination`.
+          gfx::IntPoint origin(
+              l.mSourceLeftBytes / mResource->mFormat->SampleBytes(planes[i]),
+              l.mSourceTop);
+          gfx::IntSize size(
+              l.mSourceWidthBytes / mResource->mFormat->SampleBytes(planes[i]),
+              l.mSourceHeight);
+          if (!mResource->CopyPlaneInto(
+                  planes[i], {origin, size}, aData.From(destinationOffset),
+                  static_cast<size_t>(l.mDestinationStride))) {
+            errorMessage.Assign(
+                nsPrintfCString("Failed to copy image data in %s plane",
+                                mResource->mFormat->PlaneName(planes[i])));
+            return false;
+          }
+        }
 
-      // Copy pixels of `size` starting from `origin` on planes[i] to
-      // `aDestination`.
-      gfx::IntPoint origin(
-          l.mSourceLeftBytes / mResource->mFormat->SampleBytes(planes[i]),
-          l.mSourceTop);
-      gfx::IntSize size(
-          l.mSourceWidthBytes / mResource->mFormat->SampleBytes(planes[i]),
-          l.mSourceHeight);
-      if (!mResource->CopyTo(planes[i], {origin, size},
-                             aData.From(destinationOffset),
-                             static_cast<size_t>(l.mDestinationStride))) {
-        p->MaybeRejectWithTypeError(
-            nsPrintfCString("Failed to copy image data in %s plane",
-                            mResource->mFormat->PlaneName(planes[i])));
-        return p.forget();
-      }
-    }
+        MOZ_ASSERT(layout.mComputedLayouts.Length() == planes.Length());
+        return true;
+      });
 
-    MOZ_ASSERT(layout.mComputedLayouts.Length() == planes.Length());
-
+  if (ok) {
     p->MaybeResolve(planeLayouts);
-    return p.forget();
-  });
+  } else {
+    p->MaybeRejectWithTypeError(errorMessage);
+  }
+
+  return p.forget();
 }
 
 // https://w3c.github.io/webcodecs/#dom-videoframe-clone
@@ -2045,13 +2064,20 @@ already_AddRefed<VideoFrame> VideoFrame::Clone(ErrorResult& aRv) const {
 // https://w3c.github.io/webcodecs/#close-videoframe
 void VideoFrame::Close() {
   AssertIsOnOwningThread();
-  LOG("VideoFrame %p is closed", this);
+  LOG("VideoFrame {} is closed", fmt::ptr(this));
 
   mResource.reset();
   mCodedSize = gfx::IntSize();
   mVisibleRect = gfx::IntRect();
   mDisplaySize = gfx::IntSize();
   mColorSpace = VideoColorSpaceInternal();
+
+  for (const auto& weakExternalTexture : mWebGPUExternalTextures) {
+    if (auto* externalTexture = weakExternalTexture.get()) {
+      externalTexture->Expire();
+    }
+  }
+  mWebGPUExternalTextures.Clear();
 
   StopAutoClose();
 }
@@ -2067,6 +2093,11 @@ already_AddRefed<layers::Image> VideoFrame::GetImage() const {
   return do_AddRef(mResource->mImage);
 }
 
+void VideoFrame::TrackWebGPUExternalTexture(
+    WeakPtr<webgpu::ExternalTexture> aExternalTexture) {
+  mWebGPUExternalTextures.AppendElement(aExternalTexture);
+}
+
 nsCString VideoFrame::ToString() const {
   nsCString rv;
 
@@ -2078,7 +2109,7 @@ nsCString VideoFrame::ToString() const {
   Maybe<VideoPixelFormat> format = mResource->TryPixelFormat();
   rv.AppendPrintf(
       "VideoFrame ts: %" PRId64
-      ", %s, coded[%dx%d] visible[%dx%d], display[%dx%d] color: %s",
+      ", %s, coded[%dx%d] visible[%dx%d], display[%dx%d], %s",
       mTimestamp,
       format ? dom::GetEnumString(*format).get() : "unknown pixel format",
       mCodedSize.width, mCodedSize.height, mVisibleRect.width,
@@ -2169,8 +2200,9 @@ already_AddRefed<VideoFrame> VideoFrame::ConvertToRGBFrame(
   auto r = ConvertToRGBAImage(mResource->mImage, aFormat, aColorSpace);
   if (r.isErr()) {
     MediaResult err = r.unwrapErr();
-    LOGE("VideoFrame %p, failed to convert image into %s format: %s", this,
-         dom::GetEnumString(aFormat).get(), err.Description().get());
+    LOGE("VideoFrame {}, failed to convert image into {} format: {}",
+         fmt::ptr(this), dom::GetEnumString(aFormat).get(),
+         err.Description().get());
     return nullptr;
   }
   const RefPtr<layers::Image> img = r.unwrap();
@@ -2190,21 +2222,21 @@ void VideoFrame::StartAutoClose() {
 
   mShutdownWatcher = media::ShutdownWatcher::Create(this);
   if (NS_WARN_IF(!mShutdownWatcher)) {
-    LOG("VideoFrame %p, cannot monitor resource release", this);
+    LOG("VideoFrame {}, cannot monitor resource release", fmt::ptr(this));
     Close();
     return;
   }
 
-  LOG("VideoFrame %p, start monitoring resource release, watcher %p", this,
-      mShutdownWatcher.get());
+  LOG("VideoFrame {}, start monitoring resource release, watcher {}",
+      fmt::ptr(this), fmt::ptr(mShutdownWatcher.get()));
 }
 
 void VideoFrame::StopAutoClose() {
   AssertIsOnOwningThread();
 
   if (mShutdownWatcher) {
-    LOG("VideoFrame %p, stop monitoring resource release, watcher %p", this,
-        mShutdownWatcher.get());
+    LOG("VideoFrame {}, stop monitoring resource release, watcher {}",
+        fmt::ptr(this), fmt::ptr(mShutdownWatcher.get()));
     mShutdownWatcher->Destroy();
     mShutdownWatcher = nullptr;
   }
@@ -2213,10 +2245,10 @@ void VideoFrame::StopAutoClose() {
 void VideoFrame::CloseIfNeeded() {
   AssertIsOnOwningThread();
 
-  LOG("VideoFrame %p, needs to close itself? %s", this,
+  LOG("VideoFrame {}, needs to close itself? {}", fmt::ptr(this),
       IsClosed() ? "no" : "yes");
   if (!IsClosed()) {
-    LOG("Close VideoFrame %p obligatorily", this);
+    LOG("Close VideoFrame {} obligatorily", fmt::ptr(this));
     Close();
   }
 }
@@ -2674,7 +2706,8 @@ bool VideoFrame::Format::IsValidSize(const gfx::IntSize& aSize) const {
   return false;
 }
 
-size_t VideoFrame::Format::ByteCount(const gfx::IntSize& aSize) const {
+Result<size_t, MediaResult> VideoFrame::Format::ByteCount(
+    const gfx::IntSize& aSize) const {
   MOZ_ASSERT(IsValidSize(aSize));
 
   CheckedInt<size_t> bytes;
@@ -2690,6 +2723,11 @@ size_t VideoFrame::Format::ByteCount(const gfx::IntSize& aSize) const {
     planeBytes *= SampleBytes(p);
 
     bytes += planeBytes;
+  }
+
+  if (!bytes.isValid()) {
+    return Err(MediaResult(NS_ERROR_DOM_MEDIA_OVERFLOW_ERR,
+                           "VideoFrame buffer size overflow"_ns));
   }
 
   return bytes.value();
@@ -2786,64 +2824,148 @@ uint32_t VideoFrame::Resource::Stride(const Format::Plane& aPlane) const {
   return 0;
 }
 
-bool VideoFrame::Resource::CopyTo(const Format::Plane& aPlane,
-                                  const gfx::IntRect& aRect,
-                                  Span<uint8_t>&& aPlaneDest,
-                                  size_t aDestinationStride) const {
+// int32_t stride keeps CheckedInt's negative-stride guard; size_t needs none.
+template <typename StrideT>
+static CheckedInt<size_t> RegionByteReach(const gfx::IntRect& aRect,
+                                          StrideT aStride,
+                                          size_t aBytesPerSample) {
+  return CheckedInt<size_t>(aRect.Height() - 1) * aStride +
+         CheckedInt<size_t>(aRect.Width()) * aBytesPerSample;
+}
+
+// Validates that region aRect, read at aStride with aBytesPerSample bytes per
+// sample, fits within an aSrcLen-byte source and that each row fits aStride.
+// Returns aRect's origin byte offset (to add to the source base pointer), or
+// Nothing when aRect is empty, has a negative origin or stride, or does not
+// fit within aStride and the source.
+static Maybe<size_t> CheckedSourceRegionOffset(const gfx::IntRect& aRect,
+                                               size_t aBytesPerSample,
+                                               int32_t aStride,
+                                               size_t aSrcLen) {
+  if (aRect.X() < 0 || aRect.Y() < 0 || aRect.IsEmpty() || aStride < 0) {
+    return Nothing();
+  }
+  CheckedInt<size_t> rowEnd =
+      CheckedInt<size_t>(aRect.XMost()) * aBytesPerSample;
+  if (!rowEnd.isValid() || rowEnd.value() > static_cast<size_t>(aStride)) {
+    return Nothing();
+  }
+  CheckedInt<size_t> offset = CheckedInt<size_t>(aRect.Y()) * aStride +
+                              CheckedInt<size_t>(aRect.X()) * aBytesPerSample;
+  CheckedInt<size_t> regionEnd =
+      offset + RegionByteReach(aRect, aStride, aBytesPerSample);
+  if (!regionEnd.isValid() || regionEnd.value() > aSrcLen) {
+    return Nothing();
+  }
+  return Some(offset.value());
+}
+
+// Copies aRect from aSrc into the packed destination aDst. aRect is relative to
+// aSrc's origin; per row the source advances by aSrcStride and the destination
+// by aDstStride. Returns false without copying unless aRect, with these
+// strides, fits within both aSrc and aDst.
+static bool CopyPlaneRegion(size_t aBytesPerSample, Span<const uint8_t> aSrc,
+                            int32_t aSrcStride, const gfx::IntRect& aRect,
+                            Span<uint8_t> aDst, size_t aDstStride) {
+  MOZ_ASSERT(aBytesPerSample > 0);
+
+  Maybe<size_t> srcOffset = CheckedSourceRegionOffset(
+      aRect, aBytesPerSample, aSrcStride, aSrc.Length());
+  if (!srcOffset) {
+    return false;
+  }
+  // The packed destination row must fit aDstStride, and the packed region must
+  // fit aDst (destination origin is 0, so only the region end is checked).
+  CheckedInt<size_t> rowBytes =
+      CheckedInt<size_t>(aRect.Width()) * aBytesPerSample;
+  CheckedInt<size_t> dstEnd =
+      RegionByteReach(aRect, aDstStride, aBytesPerSample);
+  if (!rowBytes.isValid() || rowBytes.value() > aDstStride ||
+      !dstEnd.isValid() || dstEnd.value() > aDst.Length()) {
+    return false;
+  }
+
+  const uint8_t* src = aSrc.data() + *srcOffset;
+  uint8_t* dst = aDst.data();
+  for (int32_t row = 0; row < aRect.Height(); ++row) {
+    PodCopy(dst, src, rowBytes.value());
+    src += aSrcStride;
+    dst += aDstStride;
+  }
+  return true;
+}
+
+static size_t PlaneByteLengthOrZero(int32_t aStride, int32_t aHeight) {
+  CheckedInt<size_t> length = CheckedInt<size_t>(aStride) * aHeight;
+  return length.isValid() ? length.value() : 0;
+}
+
+bool VideoFrame::Resource::CopyPlaneInto(const Format::Plane& aPlane,
+                                         const gfx::IntRect& aRect,
+                                         Span<uint8_t> aPlaneDest,
+                                         size_t aDestinationStride) const {
   if (!mFormat) {
     return false;
   }
 
-  auto copyPlane = [&](const uint8_t* aPlaneData) {
-    MOZ_ASSERT(aPlaneData);
-
-    CheckedInt<size_t> offset(aRect.Y());
-    offset *= Stride(aPlane);
-    offset += aRect.X() * mFormat->SampleBytes(aPlane);
-    if (!offset.isValid()) {
-      return false;
-    }
-
-    CheckedInt<size_t> elementsBytes(aRect.Width());
-    elementsBytes *= mFormat->SampleBytes(aPlane);
-    if (!elementsBytes.isValid()) {
-      return false;
-    }
-
-    aPlaneData += offset.value();
-    for (int32_t row = 0; row < aRect.Height(); ++row) {
-      PodCopy(aPlaneDest.data(), aPlaneData, elementsBytes.value());
-      aPlaneData += Stride(aPlane);
-      // Spec asks to move `aDestinationStride` bytes instead of
-      // `Stride(aPlane)` forward.
-      aPlaneDest = aPlaneDest.From(aDestinationStride);
-    }
-    return true;
-  };
-
   if (mImage->GetFormat() == ImageFormat::PLANAR_YCBCR) {
+    const auto* data = mImage->AsPlanarYCbCrImage()->GetData();
+    const gfx::IntSize ySize = data->YDataSize();
+    const gfx::IntSize cbcrSize = data->CbCrDataSize();
     switch (aPlane) {
       case Format::Plane::Y:
-        return copyPlane(mImage->AsPlanarYCbCrImage()->GetData()->mYChannel);
+        return CopyPlaneRegion(
+            mFormat->SampleBytes(aPlane),
+            Span<const uint8_t>(
+                data->mYChannel,
+                PlaneByteLengthOrZero(data->mYStride, ySize.height)),
+            data->mYStride, aRect, aPlaneDest, aDestinationStride);
       case Format::Plane::U:
-        return copyPlane(mImage->AsPlanarYCbCrImage()->GetData()->mCbChannel);
+        return CopyPlaneRegion(
+            mFormat->SampleBytes(aPlane),
+            Span<const uint8_t>(
+                data->mCbChannel,
+                PlaneByteLengthOrZero(data->mCbCrStride, cbcrSize.height)),
+            data->mCbCrStride, aRect, aPlaneDest, aDestinationStride);
       case Format::Plane::V:
-        return copyPlane(mImage->AsPlanarYCbCrImage()->GetData()->mCrChannel);
+        return CopyPlaneRegion(
+            mFormat->SampleBytes(aPlane),
+            Span<const uint8_t>(
+                data->mCrChannel,
+                PlaneByteLengthOrZero(data->mCbCrStride, cbcrSize.height)),
+            data->mCbCrStride, aRect, aPlaneDest, aDestinationStride);
       case Format::Plane::A:
         MOZ_ASSERT(mFormat->PixelFormat() == VideoPixelFormat::I420A);
-        MOZ_ASSERT(mImage->AsPlanarYCbCrImage()->GetData()->mAlpha);
-        return copyPlane(
-            mImage->AsPlanarYCbCrImage()->GetData()->mAlpha->mChannel);
+        MOZ_ASSERT(data->mAlpha);
+        return CopyPlaneRegion(
+            mFormat->SampleBytes(aPlane),
+            Span<const uint8_t>(
+                data->mAlpha->mChannel,
+                PlaneByteLengthOrZero(data->mYStride, ySize.height)),
+            data->mYStride, aRect, aPlaneDest, aDestinationStride);
     }
     MOZ_ASSERT_UNREACHABLE("invalid plane");
   }
 
   if (mImage->GetFormat() == ImageFormat::NV_IMAGE) {
+    const auto* data = mImage->AsNVImage()->GetData();
+    const gfx::IntSize ySize = data->YDataSize();
+    const gfx::IntSize cbcrSize = data->CbCrDataSize();
     switch (aPlane) {
       case Format::Plane::Y:
-        return copyPlane(mImage->AsNVImage()->GetData()->mYChannel);
+        return CopyPlaneRegion(
+            mFormat->SampleBytes(aPlane),
+            Span<const uint8_t>(
+                data->mYChannel,
+                PlaneByteLengthOrZero(data->mYStride, ySize.height)),
+            data->mYStride, aRect, aPlaneDest, aDestinationStride);
       case Format::Plane::UV:
-        return copyPlane(mImage->AsNVImage()->GetData()->mCbChannel);
+        return CopyPlaneRegion(
+            mFormat->SampleBytes(aPlane),
+            Span<const uint8_t>(
+                data->mCbChannel,
+                PlaneByteLengthOrZero(data->mCbCrStride, cbcrSize.height)),
+            data->mCbCrStride, aRect, aPlaneDest, aDestinationStride);
       case Format::Plane::V:
       case Format::Plane::A:
         MOZ_ASSERT_UNREACHABLE("invalid plane");
@@ -2884,6 +3006,14 @@ bool VideoFrame::Resource::CopyTo(const Format::Plane& aPlane,
     return false;
   }
 
+  const gfx::IntSize surfaceSize = dataSurface->GetSize();
+  if (NS_WARN_IF(aRect.X() < 0 || aRect.Y() < 0 ||
+                 aRect.XMost() > surfaceSize.Width() ||
+                 aRect.YMost() > surfaceSize.Height())) {
+    LOGE("Source surface is smaller than the requested copy rectangle");
+    return false;
+  }
+
   // The mImage's format can be different from mFormat (since Gecko prefers
   // BGRA). To get the data in the matched format, we create a temp buffer
   // holding the image data in that format and then copy them to `aDestination`.
@@ -2892,11 +3022,39 @@ bool VideoFrame::Resource::CopyTo(const Format::Plane& aPlane,
       f == gfx::SurfaceFormat::R8G8B8A8 || f == gfx::SurfaceFormat::R8G8B8X8 ||
       f == gfx::SurfaceFormat::B8G8R8A8 || f == gfx::SurfaceFormat::B8G8R8X8);
 
+  const int32_t srcStride = map.GetStride();
+  Span<const uint8_t> mapSpan(
+      map.GetData(),
+      PlaneByteLengthOrZero(srcStride, dataSurface->GetSize().height));
+
+  // Fast path: when the source format already matches the destination format
+  // exactly, no swizzle is needed and aRect can be copied straight from the
+  // mapped surface. This must be an exact match, since e.g. B8G8R8X8 ->
+  // B8G8R8A8 is an opaque-alpha swizzle that must not be skipped.
+  if (format == f) {
+    return CopyPlaneRegion(mFormat->SampleBytes(aPlane), mapSpan, srcStride,
+                           aRect, aPlaneDest, aDestinationStride);
+  }
+
+  // Offset the mapped source to the crop origin and swizzle only the visible
+  // region into a temporary surface; the swizzled result is a zero-origin copy
+  // of aRect's size.
+  const size_t srcBytesPerPixel = BytesPerPixel(format);
+  // Validate the cropped source region (each row fits the stride and the region
+  // fits the span) and get aRect's origin offset. SwizzleData reads
+  // aRect.Size() starting there, so the whole region must fit mapSpan; a
+  // zero-length mapSpan also fails this check.
+  Maybe<size_t> swizzleOffset = CheckedSourceRegionOffset(
+      aRect, srcBytesPerPixel, srcStride, mapSpan.Length());
+  if (!swizzleOffset) {
+    return false;
+  }
+  const uint8_t* swizzleSrc = mapSpan.data() + *swizzleOffset;
+
   // TODO: We could use Factory::CreateWrappingDataSourceSurface to wrap
   // `aDestination` to avoid extra copy.
   RefPtr<gfx::DataSourceSurface> tempSurface =
-      gfx::Factory::CreateDataSourceSurfaceWithStride(dataSurface->GetSize(), f,
-                                                      map.GetStride());
+      gfx::Factory::CreateDataSourceSurface(aRect.Size(), f);
   if (NS_WARN_IF(!tempSurface)) {
     LOGE("Failed to create a temporary DataSourceSurface");
     return false;
@@ -2909,15 +3067,28 @@ bool VideoFrame::Resource::CopyTo(const Format::Plane& aPlane,
     return false;
   }
 
-  if (!gfx::SwizzleData(map.GetData(), map.GetStride(),
-                        dataSurface->GetFormat(), tempMap.GetData(),
-                        tempMap.GetStride(), tempSurface->GetFormat(),
-                        tempSurface->GetSize())) {
+  // SwizzleData writes aRect.Size() into the temp surface; require that region
+  // to fit the mapped destination before writing.
+  const int32_t tempStride = tempMap.GetStride();
+  CheckedInt<size_t> dstWriteEnd =
+      RegionByteReach(aRect, tempStride, BytesPerPixel(f));
+  if (!dstWriteEnd.isValid() ||
+      dstWriteEnd.value() >
+          PlaneByteLengthOrZero(tempStride, tempSurface->GetSize().height)) {
+    return false;
+  }
+
+  if (!gfx::SwizzleData(swizzleSrc, srcStride, format, tempMap.GetData(),
+                        tempStride, tempSurface->GetFormat(), aRect.Size())) {
     LOGE("Failed to write data into temporary DataSourceSurface");
     return false;
   }
 
-  return copyPlane(tempMap.GetData());
+  Span<const uint8_t> tempSpan(
+      tempMap.GetData(), PlaneByteLengthOrZero(tempStride, aRect.Height()));
+  return CopyPlaneRegion(mFormat->SampleBytes(aPlane), tempSpan, tempStride,
+                         gfx::IntRect(0, 0, aRect.Width(), aRect.Height()),
+                         aPlaneDest, aDestinationStride);
 }
 
 #undef LOGW

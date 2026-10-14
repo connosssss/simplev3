@@ -59,11 +59,22 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
     }
 
 /** 
+ * Placeholder object used to signal that we're constructing an interface with a FFI handle.
+ *
+ * This is the first argument for interface constructors that input a raw handle. It exists is that
+ * so we can avoid signature conflicts when an interface has a regular constructor than inputs a
+ * Long.
+ *
+ * @suppress
+ * */
+object UniffiWithHandle
+
+/** 
  * Used to instantiate an interface without an actual pointer, for fakes in tests, mostly.
  *
  * @suppress
  * */
-object NoPointer
+object NoHandle
 
 {%- if ci.has_callback_definitions() %}
 {%- include "CallbackInterfaceRuntime.kt" %}
@@ -151,6 +162,9 @@ object NoPointer
 
 {%- when Type::Map { key_type, value_type } %}
 {% include "MapTemplate.kt" %}
+
+{%- when Type::Set { inner_type } %}
+{% include "SetTemplate.kt" %}
 
 {%- when Type::CallbackInterface { module_path, name } %}
 {% include "CallbackInterfaceTemplate.kt" %}

@@ -1,14 +1,33 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "VideoUtils.h"
 #include "gtest/gtest.h"
 #include "nsMimeTypes.h"
 #include "nsString.h"
-#include "VideoUtils.h"
 
 using namespace mozilla;
+
+TEST(VideoUtils, IsValidVideoRegionPictureContainedInFrame)
+{
+  const gfx::IntSize frame(16, 16);
+  const gfx::IntSize display(16, 16);
+
+  EXPECT_TRUE(IsValidVideoRegion(frame, gfx::IntRect(0, 0, 16, 16), display));
+  EXPECT_TRUE(IsValidVideoRegion(frame, gfx::IntRect(15, 0, 1, 16), display));
+  EXPECT_TRUE(IsValidVideoRegion(frame, gfx::IntRect(0, 15, 16, 1), display));
+
+  EXPECT_FALSE(IsValidVideoRegion(frame, gfx::IntRect(16, 0, 1, 16), display));
+  EXPECT_FALSE(IsValidVideoRegion(frame, gfx::IntRect(-1, 0, 1, 16), display));
+  EXPECT_FALSE(IsValidVideoRegion(frame, gfx::IntRect(15, 0, 2, 16), display));
+  EXPECT_FALSE(IsValidVideoRegion(frame, gfx::IntRect(0, 0, 17, 16), display));
+
+  EXPECT_FALSE(IsValidVideoRegion(frame, gfx::IntRect(0, 16, 16, 1), display));
+  EXPECT_FALSE(IsValidVideoRegion(frame, gfx::IntRect(0, -1, 16, 1), display));
+  EXPECT_FALSE(IsValidVideoRegion(frame, gfx::IntRect(0, 15, 16, 2), display));
+  EXPECT_FALSE(IsValidVideoRegion(frame, gfx::IntRect(0, 0, 16, 17), display));
+}
 
 TEST(MediaMIMETypes, IsMediaMIMEType)
 {
@@ -112,17 +131,17 @@ TEST(StringListRange, StringListContains)
     nsCString list(test.mList);
     nsCString itemToSearch(test.mItemToSearch);
     EXPECT_EQ(test.mExpectedSkipEmpties, StringListContains(list, itemToSearch))
-        << "trying to find \"" << itemToSearch.Data() << "\" in \""
-        << list.Data() << "\" (skipping empties)";
+        << "trying to find \"" << itemToSearch.get() << "\" in \"" << list.get()
+        << "\" (skipping empties)";
     EXPECT_EQ(test.mExpectedProcessAll,
               StringListContains<StringListRangeEmptyItems::ProcessAll>(
                   list, itemToSearch))
-        << "trying to find \"" << itemToSearch.Data() << "\" in \""
-        << list.Data() << "\" (processing everything)";
+        << "trying to find \"" << itemToSearch.get() << "\" in \"" << list.get()
+        << "\" (processing everything)";
     EXPECT_EQ(test.mExpectedProcessEmpties,
               StringListContains<StringListRangeEmptyItems::ProcessEmptyItems>(
                   list, itemToSearch))
-        << "trying to find \"" << itemToSearch.Data() << "\" in \""
-        << list.Data() << "\" (processing empties)";
+        << "trying to find \"" << itemToSearch.get() << "\" in \"" << list.get()
+        << "\" (processing empties)";
   }
 }

@@ -171,6 +171,18 @@ export default [
   //     ])
   "URLSearchParams(11) { a → \"1\", a → \"2\", b → \"3\", b → \"3\", b → \"5\", c → \"this is 6\", d → \"7\", e → \"8\", f → \"9\", g → \"10\", … }",
 
+  // const el = document.createElement("h1");
+  // el.setAttribute("class", "test-class-a test-class-b");
+  // el.setAttribute("id", "my-element");
+  // el.setAttribute("aria-collapsed", "false");
+  // el.setAttribute("hidden", "");
+  // el;
+  //     
+  "<h1 id=\"my-element\" class=\"test-class-a test-class-b\" aria-collapsed=\"false\" hidden>",
+
+  // new Document()
+  "Document { … }",
+
   // new Error("foo")
   "Error: foo",
 
@@ -193,10 +205,10 @@ export default [
   // 
   // foo();
   //     
-  "Uncaught ReferenceError: asdf is not defined[Learn More]\ndebugger eval code:3:9",
+  "Uncaught ReferenceError: asdf is not defined Learn More\ndebugger eval code:3:9",
 
   // eval("let a, a")
-  "Uncaught SyntaxError: redeclaration of let a[Learn More]\ndebugger eval code:1:1\nnote: Previously declared at line 1, column 5\ndebugger eval code:1:5",
+  "Uncaught SyntaxError: redeclaration of let a Learn More\ndebugger eval code:1:1\nnote: Previously declared at line 1, column 5\ndebugger eval code:1:5",
 
   // throw "";
   "Uncaught <empty string>\ndebugger eval code:1:1",
@@ -237,13 +249,13 @@ export default [
   // var d = new Error("err-d", { cause: c });
   // throw d;
   //     
-  "Uncaught SyntaxError: redeclaration of const a[Learn More]\ndebugger eval code:1:1",
+  "Uncaught SyntaxError: redeclaration of const a Learn More\ndebugger eval code:1:1",
 
   // var a = new Error("err-a", { cause: b });
   // var b = new Error("err-b", { cause: a });
   // throw b;
   //     
-  "Uncaught SyntaxError: redeclaration of const a[Learn More]\ndebugger eval code:1:1",
+  "Uncaught SyntaxError: redeclaration of const a Learn More\ndebugger eval code:1:1",
 
   // throw new Error("null cause", { cause: null });
   "Uncaught Error: null cause\nCaused by: null\ndebugger eval code:1:7",

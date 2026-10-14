@@ -1,6 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:expandtab:shiftwidth=2:tabstop=2:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,20 +5,17 @@
 #include "ARIAMap.h"
 
 #include "AccAttributes.h"
-#include "nsAccUtils.h"
-#include "nsCoreUtils.h"
-#include "mozilla/a11y/Role.h"
 #include "States.h"
-
-#include "nsAttrName.h"
-#include "nsGenericHTMLElement.h"
-#include "nsWhitespaceTokenizer.h"
-
 #include "mozilla/BinarySearch.h"
+#include "mozilla/a11y/Role.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
-
+#include "nsAccUtils.h"
+#include "nsAttrName.h"
+#include "nsCoreUtils.h"
+#include "nsGenericHTMLElement.h"
 #include "nsUnicharUtils.h"
+#include "nsWhitespaceTokenizer.h"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
@@ -50,7 +44,7 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     kUseMapRole,
     eNoValue,
     eNoAction,
-#if defined(XP_MACOSX)
+#if defined(XP_MACOSX) || defined (ANDROID)
     eAssertiveLiveAttr,
 #else
     eNoLiveAttr,
@@ -76,7 +70,8 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eNoAction,
     eNoLiveAttr,
     eLandmark,
-    kNoReqStates
+    kNoReqStates,
+    eARIAExpanded
   },
   { // article
     nsGkAtoms::article,
@@ -116,8 +111,9 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     ePressAction,
     eNoLiveAttr,
     eButton,
-    kNoReqStates
-    // eARIAPressed is auto applied on any button
+    kNoReqStates,
+    eARIAExpanded,
+    eARIAPressed
   },
   { // caption
     nsGkAtoms::caption,
@@ -147,6 +143,7 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eNoLiveAttr,
     kGenericAccType,
     kNoReqStates,
+    eARIAExpanded,
     eARIACheckableMixed,
     eARIAReadonly
   },
@@ -168,6 +165,7 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eNoLiveAttr,
     eTableCell,
     kNoReqStates,
+    eARIAExpanded,
     eARIASelectableIfDefined,
     eARIAReadonly
   },
@@ -180,6 +178,7 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eNoLiveAttr,
     eCombobox,
     states::EXPANDABLE | states::HASPOPUP,
+    eARIAExpanded,
     eARIAAutoComplete,
     eARIAReadonly,
     eARIAOrientation
@@ -775,7 +774,8 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eNoLiveAttr,
     eTableCell,
     kNoReqStates,
-    eARIASelectable,
+    eARIAExpanded,
+    eARIASelectableIfDefined,
     eARIAReadonly
   },
   { // group
@@ -846,7 +846,8 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eJumpAction,
     eNoLiveAttr,
     kGenericAccType,
-    states::LINKED
+    states::LINKED,
+    eARIAExpanded
   },
   { // list
     nsGkAtoms::list,
@@ -962,7 +963,8 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eClickAction,
     eNoLiveAttr,
     kGenericAccType,
-    kNoReqStates
+    kNoReqStates,
+    eARIAExpanded
   },
   { // menuitemcheckbox
     nsGkAtoms::menuitemcheckbox,
@@ -973,6 +975,7 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eNoLiveAttr,
     kGenericAccType,
     kNoReqStates,
+    eARIAExpanded,
     eARIACheckableMixed,
     eARIAReadonly
   },
@@ -985,6 +988,7 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eNoLiveAttr,
     kGenericAccType,
     kNoReqStates,
+    eARIAExpanded,
     eARIACheckableBool,
     eARIAReadonly
   },
@@ -1112,6 +1116,7 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eNoLiveAttr,
     eTableRow,
     kNoReqStates,
+    eARIAExpanded,
     eARIASelectable
   },
   { // rowgroup
@@ -1133,6 +1138,7 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eNoLiveAttr,
     eTableCell,
     kNoReqStates,
+    eARIAExpanded,
     eARIASelectableIfDefined,
     eARIAReadonly
   },
@@ -1261,6 +1267,7 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eNoLiveAttr,
     kGenericAccType,
     kNoReqStates,
+    eARIAExpanded,
     eARIACheckableBool,
     eARIAReadonly
   },
@@ -1273,6 +1280,7 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eNoLiveAttr,
     kGenericAccType,
     kNoReqStates,
+    eARIAExpanded,
     eARIASelectable
   },
   { // table
@@ -1408,6 +1416,7 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     eNoLiveAttr,
     kGenericAccType,
     kNoReqStates,
+    eARIAExpanded,
     eARIASelectable,
     eARIACheckedMixed
   }
@@ -1429,7 +1438,6 @@ nsRoleMapEntry aria::gEmptyRoleMap = {
  */
 static const EStateRule sWAIUnivStateMap[] = {
     eARIABusy,     eARIACurrent, eARIADisabled,
-    eARIAExpanded,  // Currently under spec review but precedent exists
     eARIAHasPopup,  // Note this is a tokenised attribute starting in ARIA 1.1
     eARIAInvalid,  eARIAModal,
     eARIARequired,  // XXX not global, Bug 553117
@@ -1447,6 +1455,7 @@ struct AttrCharacteristics {
 
 static const AttrCharacteristics gWAIUnivAttrMap[] = {
     // clang-format off
+  {nsGkAtoms::aria_actions,           ATTR_BYPASSOBJ                 | ATTR_GLOBAL | ATTR_REFLECT_ELEMENTS },
   {nsGkAtoms::aria_activedescendant,  ATTR_BYPASSOBJ                               },
   {nsGkAtoms::aria_atomic,   ATTR_BYPASSOBJ_IF_FALSE | ATTR_VALTOKEN | ATTR_GLOBAL },
   {nsGkAtoms::aria_busy,                               ATTR_VALTOKEN | ATTR_GLOBAL },
@@ -1482,7 +1491,7 @@ static const AttrCharacteristics gWAIUnivAttrMap[] = {
   {nsGkAtoms::aria_owns,              ATTR_BYPASSOBJ                 | ATTR_GLOBAL | ATTR_REFLECT_ELEMENTS },
   {nsGkAtoms::aria_orientation,                        ATTR_VALTOKEN               },
   {nsGkAtoms::aria_posinset,          ATTR_BYPASSOBJ                               }, /* handled via groupPosition */
-  {nsGkAtoms::aria_pressed,           ATTR_BYPASSOBJ | ATTR_VALTOKEN               },
+  {nsGkAtoms::aria_pressed,                            ATTR_VALTOKEN               },
   {nsGkAtoms::aria_readonly,          ATTR_BYPASSOBJ | ATTR_VALTOKEN               },
   {nsGkAtoms::aria_relevant,          ATTR_GLOBAL                                  },
   {nsGkAtoms::aria_required,          ATTR_BYPASSOBJ | ATTR_VALTOKEN               },
@@ -1503,15 +1512,14 @@ const nsRoleMapEntry* aria::GetRoleMap(dom::Element* aEl) {
 }
 
 uint8_t aria::GetFirstValidRoleMapIndexExcluding(
-    dom::Element* aEl, std::initializer_list<nsStaticAtom*> aRolesToSkip) {
-  nsAutoString roles;
-  if (!aEl || !nsAccUtils::GetARIAAttr(aEl, nsGkAtoms::role, roles) ||
-      roles.IsEmpty()) {
+    const nsString& aRoleAttrValue,
+    std::initializer_list<nsStaticAtom*> aRolesToSkip) {
+  if (aRoleAttrValue.IsEmpty()) {
     // We treat role="" as if the role attribute is absent (per aria spec:8.1.1)
     return NO_ROLE_MAP_ENTRY_INDEX;
   }
 
-  nsWhitespaceTokenizer tokenizer(roles);
+  nsWhitespaceTokenizer tokenizer(aRoleAttrValue);
   while (tokenizer.hasMoreTokens()) {
     // Do a binary search through table for the next role in role list
     const nsDependentSubstring role = tokenizer.nextToken();
@@ -1546,8 +1554,13 @@ uint8_t aria::GetFirstValidRoleMapIndexExcluding(
 }
 
 uint8_t aria::GetRoleMapIndex(dom::Element* aEl) {
+  nsAutoString roles;
+  if (!aEl || !nsAccUtils::GetARIAAttr(aEl, nsGkAtoms::role, roles)) {
+    return NO_ROLE_MAP_ENTRY_INDEX;
+  }
+
   // Get the rolemap index of the first valid role, excluding nothing.
-  return GetFirstValidRoleMapIndexExcluding(aEl, {});
+  return GetFirstValidRoleMapIndexExcluding(roles, {});
 }
 
 const nsRoleMapEntry* aria::GetRoleMapFromIndex(uint8_t aRoleMapIndex) {
@@ -1595,10 +1608,26 @@ uint64_t aria::UniversalStatesFor(mozilla::dom::Element* aElement) {
   return state;
 }
 
+void aria::MapToStateIfInRoleMapEntry(const nsRoleMapEntry* aRoleMapEntry,
+                                      EStateRule aRule,
+                                      mozilla::dom::Element* aElement,
+                                      uint64_t* aState) {
+  if (!aRoleMapEntry) {
+    return;
+  }
+
+  if (aRoleMapEntry->attributeMap1 == aRule ||
+      aRoleMapEntry->attributeMap2 == aRule ||
+      aRoleMapEntry->attributeMap3 == aRule ||
+      aRoleMapEntry->attributeMap4 == aRule) {
+    MapToState(aRule, aElement, aState);
+  }
+}
+
 uint8_t aria::AttrCharacteristicsFor(nsAtom* aAtom) {
-  for (uint32_t i = 0; i < std::size(gWAIUnivAttrMap); i++) {
-    if (gWAIUnivAttrMap[i].attributeName == aAtom) {
-      return gWAIUnivAttrMap[i].characteristics;
+  for (auto entry : gWAIUnivAttrMap) {
+    if (entry.attributeName == aAtom) {
+      return entry.characteristics;
     }
   }
 
@@ -1611,22 +1640,6 @@ bool aria::IsValidARIAHidden(nsIContent* aContent) {
                                      nsGkAtoms::aria_hidden, nsGkAtoms::_true,
                                      eCaseMatters) &&
          !ShouldIgnoreARIAHidden(aContent);
-}
-
-bool aria::IsValidARIAHidden(DocAccessible* aDocAcc) {
-  nsCOMPtr<nsIContent> docContent = aDocAcc->GetContent();
-  // First, check if our Doc Accessible has aria-hidden set on its content
-  bool isValid = IsValidARIAHidden(docContent);
-
-  // If our Doc Accessible was created using an element other than the
-  // root element, we need to verify the validity of any aria-hidden on
-  // the root element as well.
-  auto* rootElement = aDocAcc->DocumentNode()->GetRootElement();
-  if (docContent != rootElement) {
-    isValid |= IsValidARIAHidden(rootElement);
-  }
-
-  return isValid;
 }
 
 bool aria::ShouldIgnoreARIAHidden(nsIContent* aContent) {

@@ -1,12 +1,9 @@
 #![allow(unused_variables)]
 
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{string::String, sync::Arc, vec, vec::Vec};
 use core::{ptr, sync::atomic::Ordering, time::Duration};
 
-#[cfg(supports_64bit_atomics)]
-use core::sync::atomic::AtomicU64;
-#[cfg(not(supports_64bit_atomics))]
-use portable_atomic::AtomicU64;
+use wgpu_sync::atomic::AtomicU64;
 
 use crate::TlasInstance;
 
@@ -17,7 +14,11 @@ pub use command::CommandBuffer;
 
 #[derive(Clone, Debug)]
 pub struct Api;
-pub struct Context;
+
+#[derive(Debug)]
+pub struct Context {
+    options: Arc<wgt::NoopBackendOptions>,
+}
 #[derive(Debug)]
 pub struct Encoder;
 #[derive(Debug)]
@@ -31,6 +32,8 @@ pub struct Fence {
 type DeviceResult<T> = Result<T, crate::DeviceError>;
 
 impl crate::Api for Api {
+    const VARIANT: wgt::Backend = wgt::Backend::Noop;
+
     type Instance = Context;
     type Surface = Context;
     type Adapter = Context;
@@ -55,6 +58,7 @@ impl crate::Api for Api {
     type PipelineLayout = Resource;
     type ShaderModule = Resource;
     type RenderPipeline = Resource;
+    type RayTracingPipeline = Resource;
     type ComputePipeline = Resource;
 }
 
@@ -71,6 +75,7 @@ impl crate::DynPipelineCache for Resource {}
 impl crate::DynPipelineLayout for Resource {}
 impl crate::DynQuerySet for Resource {}
 impl crate::DynRenderPipeline for Resource {}
+impl crate::DynRayTracingPipeline for Resource {}
 impl crate::DynSampler for Resource {}
 impl crate::DynShaderModule for Resource {}
 impl crate::DynSurfaceTexture for Resource {}
@@ -86,19 +91,10 @@ impl core::borrow::Borrow<dyn crate::DynTexture> for Resource {
 impl crate::Instance for Context {
     type A = Api;
 
-    unsafe fn init(desc: &crate::InstanceDescriptor) -> Result<Self, crate::InstanceError> {
-        let crate::InstanceDescriptor {
-            backend_options:
-                wgt::BackendOptions {
-                    noop: wgt::NoopBackendOptions { enable },
-                    ..
-                },
-            name: _,
-            flags: _,
-            memory_budget_thresholds: _,
-        } = *desc;
-        if enable {
-            Ok(Context)
+    unsafe fn init(desc: &crate::InstanceDescriptor<'_>) -> Result<Self, crate::InstanceError> {
+        let options = Arc::new(desc.backend_options.noop.clone());
+        if options.enable {
+            Ok(Context { options })
         } else {
             Err(crate::InstanceError::new(String::from(
                 "noop backend disabled because NoopBackendOptions::enable is false",
@@ -110,78 +106,71 @@ impl crate::Instance for Context {
         _display_handle: raw_window_handle::RawDisplayHandle,
         _window_handle: raw_window_handle::RawWindowHandle,
     ) -> Result<Context, crate::InstanceError> {
-        Ok(Context)
+        Ok(Context {
+            options: Arc::clone(&self.options),
+        })
     }
     unsafe fn enumerate_adapters(
         &self,
         _surface_hint: Option<&Context>,
     ) -> Vec<crate::ExposedAdapter<Api>> {
+        let device_type = self.options.device_type.unwrap_or(wgt::DeviceType::Other);
+        let subgroup_min_size = self
+            .options
+            .subgroup_min_size
+            .unwrap_or(wgt::MINIMUM_SUBGROUP_MIN_SIZE);
+        let subgroup_max_size = self
+            .options
+            .subgroup_max_size
+            .unwrap_or(wgt::MAXIMUM_SUBGROUP_MAX_SIZE);
+        let features = self.options.features.unwrap_or(wgt::Features::all());
+        let limits = self
+            .options
+            .limits
+            .clone()
+            .unwrap_or(CAPABILITIES.limits.clone());
+
+        let info = wgt::AdapterInfo {
+            subgroup_min_size,
+            subgroup_max_size,
+            ..adapter_info()
+        };
+
+        let capabilities = crate::Capabilities {
+            limits,
+            ..CAPABILITIES
+        };
+
         vec![crate::ExposedAdapter {
-            adapter: Context,
-            info: wgt::AdapterInfo {
-                name: String::from("noop wgpu backend"),
-                vendor: 0,
-                device: 0,
-                device_type: wgt::DeviceType::Cpu,
-                driver: String::from("wgpu"),
-                driver_info: String::new(),
-                backend: wgt::Backend::Noop,
+            adapter: Context {
+                options: Arc::clone(&self.options),
             },
-            features: wgt::Features::all(),
-            capabilities: CAPABILITIES,
+            info,
+            features,
+            capabilities,
         }]
     }
 }
 
-const CAPABILITIES: crate::Capabilities = {
-    /// Guaranteed to be no bigger than isize::MAX which is the maximum size of an allocation,
-    /// except on 16-bit platforms which we certainly don’t fit in.
-    const ALLOC_MAX_U32: u32 = i32::MAX as u32;
+/// Returns the adapter info for the noop backend.
+///
+/// This is used in the test harness to construct info about
+/// the noop backend adapter without actually initializing wgpu.
+pub fn adapter_info() -> wgt::AdapterInfo {
+    wgt::AdapterInfo {
+        name: String::from("noop wgpu backend"),
+        driver: String::from("wgpu"),
+        ..wgt::AdapterInfo::new(wgt::DeviceType::Cpu, wgt::Backend::Noop)
+    }
+}
 
+/// The capabilities of the noop backend.
+///
+/// This is used in the test harness to construct capabilities
+/// of the noop backend without actually initializing wgpu.
+pub const CAPABILITIES: crate::Capabilities = {
     crate::Capabilities {
-        limits: wgt::Limits {
-            // All maximally permissive
-            max_texture_dimension_1d: ALLOC_MAX_U32,
-            max_texture_dimension_2d: ALLOC_MAX_U32,
-            max_texture_dimension_3d: ALLOC_MAX_U32,
-            max_texture_array_layers: ALLOC_MAX_U32,
-            max_bind_groups: ALLOC_MAX_U32,
-            max_bindings_per_bind_group: ALLOC_MAX_U32,
-            max_dynamic_uniform_buffers_per_pipeline_layout: ALLOC_MAX_U32,
-            max_dynamic_storage_buffers_per_pipeline_layout: ALLOC_MAX_U32,
-            max_sampled_textures_per_shader_stage: ALLOC_MAX_U32,
-            max_samplers_per_shader_stage: ALLOC_MAX_U32,
-            max_storage_buffers_per_shader_stage: ALLOC_MAX_U32,
-            max_storage_textures_per_shader_stage: ALLOC_MAX_U32,
-            max_uniform_buffers_per_shader_stage: ALLOC_MAX_U32,
-            max_binding_array_elements_per_shader_stage: ALLOC_MAX_U32,
-            max_binding_array_sampler_elements_per_shader_stage: ALLOC_MAX_U32,
-            max_uniform_buffer_binding_size: ALLOC_MAX_U32,
-            max_storage_buffer_binding_size: ALLOC_MAX_U32,
-            max_vertex_buffers: ALLOC_MAX_U32,
-            max_buffer_size: ALLOC_MAX_U32 as u64,
-            max_vertex_attributes: ALLOC_MAX_U32,
-            max_vertex_buffer_array_stride: ALLOC_MAX_U32,
-            min_uniform_buffer_offset_alignment: 1,
-            min_storage_buffer_offset_alignment: 1,
-            max_inter_stage_shader_components: ALLOC_MAX_U32,
-            max_color_attachments: ALLOC_MAX_U32,
-            max_color_attachment_bytes_per_sample: ALLOC_MAX_U32,
-            max_compute_workgroup_storage_size: ALLOC_MAX_U32,
-            max_compute_invocations_per_workgroup: ALLOC_MAX_U32,
-            max_compute_workgroup_size_x: ALLOC_MAX_U32,
-            max_compute_workgroup_size_y: ALLOC_MAX_U32,
-            max_compute_workgroup_size_z: ALLOC_MAX_U32,
-            max_compute_workgroups_per_dimension: ALLOC_MAX_U32,
-            min_subgroup_size: 1,
-            max_subgroup_size: ALLOC_MAX_U32,
-            max_push_constant_size: ALLOC_MAX_U32,
-            max_non_sampler_bindings: ALLOC_MAX_U32,
-            max_blas_primitive_count: ALLOC_MAX_U32,
-            max_blas_geometry_count: ALLOC_MAX_U32,
-            max_tlas_instance_count: ALLOC_MAX_U32,
-            max_acceleration_structures_per_shader_stage: ALLOC_MAX_U32,
-        },
+        limits: wgt::Limits::unlimited(),
         alignments: crate::Alignments {
             // All maximally permissive
             buffer_copy_offset: wgt::BufferSize::MIN,
@@ -189,12 +178,16 @@ const CAPABILITIES: crate::Capabilities = {
             uniform_bounds_check_alignment: wgt::BufferSize::MIN,
             raw_tlas_instance_size: 0,
             ray_tracing_scratch_buffer_alignment: 1,
+            ray_tracing_pipeline_group_data_size: 1,
+            ray_tracing_pipeline_group_data_alignment: 1,
+            ray_tracing_pipeline_data_offset_alignment: 1,
         },
         downlevel: wgt::DownlevelCapabilities {
             flags: wgt::DownlevelFlags::all(),
             limits: wgt::DownlevelLimits {},
             shader_model: wgt::ShaderModel::Sm5,
         },
+        cooperative_matrix_properties: Vec::new(),
     }
 };
 
@@ -213,10 +206,10 @@ impl crate::Surface for Context {
 
     unsafe fn acquire_texture(
         &self,
-        timeout: Option<Duration>,
-        fence: &Fence,
-    ) -> Result<Option<crate::AcquiredSurfaceTexture<Api>>, crate::SurfaceError> {
-        Ok(None)
+        _timeout: Option<Duration>,
+        _fence: &Fence,
+    ) -> Result<crate::AcquiredSurfaceTexture<Api>, crate::SurfaceError> {
+        Err(crate::SurfaceError::Timeout)
     }
     unsafe fn discard_texture(&self, texture: Resource) {}
 }
@@ -231,8 +224,12 @@ impl crate::Adapter for Context {
         _memory_hints: &wgt::MemoryHints,
     ) -> DeviceResult<crate::OpenDevice<Api>> {
         Ok(crate::OpenDevice {
-            device: Context,
-            queue: Context,
+            device: Context {
+                options: Arc::clone(&self.options),
+            },
+            queue: Context {
+                options: Arc::clone(&self.options),
+            },
         })
     }
     unsafe fn texture_format_capabilities(
@@ -249,6 +246,17 @@ impl crate::Adapter for Context {
     unsafe fn get_presentation_timestamp(&self) -> wgt::PresentationTimestamp {
         wgt::PresentationTimestamp::INVALID_TIMESTAMP
     }
+
+    fn get_ordered_buffer_usages(&self) -> wgt::BufferUses {
+        wgt::BufferUses::INCLUSIVE | wgt::BufferUses::MAP_WRITE
+    }
+
+    fn get_ordered_texture_usages(&self) -> wgt::TextureUses {
+        wgt::TextureUses::INCLUSIVE
+            | wgt::TextureUses::COLOR_TARGET
+            | wgt::TextureUses::DEPTH_WRITE
+            | wgt::TextureUses::STENCIL_WRITE
+    }
 }
 
 impl crate::Queue for Context {
@@ -258,7 +266,7 @@ impl crate::Queue for Context {
         &self,
         command_buffers: &[&CommandBuffer],
         surface_textures: &[&Resource],
-        (fence, fence_value): (&mut Fence, crate::FenceValue),
+        (fence, fence_value): (&Fence, crate::FenceValue),
     ) -> DeviceResult<()> {
         // All commands are executed synchronously.
         for cb in command_buffers {
@@ -282,12 +290,19 @@ impl crate::Queue for Context {
     unsafe fn get_timestamp_period(&self) -> f32 {
         1.0
     }
+
+    unsafe fn wait_for_idle(&self) -> Result<(), crate::DeviceError> {
+        Ok(())
+    }
 }
 
 impl crate::Device for Context {
     type A = Api;
 
-    unsafe fn create_buffer(&self, desc: &crate::BufferDescriptor) -> DeviceResult<Buffer> {
+    unsafe fn create_buffer(
+        &self,
+        desc: &crate::BufferDescriptor,
+    ) -> DeviceResult<(Buffer, wgt::BufferAddress)> {
         Buffer::new(desc)
     }
 
@@ -373,16 +388,6 @@ impl crate::Device for Context {
     ) -> Result<Resource, crate::PipelineError> {
         Ok(Resource)
     }
-    unsafe fn create_mesh_pipeline(
-        &self,
-        desc: &crate::MeshPipelineDescriptor<
-            <Self::A as crate::Api>::PipelineLayout,
-            <Self::A as crate::Api>::ShaderModule,
-            <Self::A as crate::Api>::PipelineCache,
-        >,
-    ) -> Result<<Self::A as crate::Api>::RenderPipeline, crate::PipelineError> {
-        Ok(Resource)
-    }
     unsafe fn destroy_render_pipeline(&self, pipeline: Resource) {}
     unsafe fn create_compute_pipeline(
         &self,
@@ -391,6 +396,20 @@ impl crate::Device for Context {
         Ok(Resource)
     }
     unsafe fn destroy_compute_pipeline(&self, pipeline: Resource) {}
+    unsafe fn create_ray_tracing_pipeline(
+        &self,
+        desc: &crate::RayTracingPipelineDescriptor<Resource, Resource, Resource>,
+    ) -> Result<Resource, crate::PipelineError> {
+        Ok(Resource)
+    }
+    unsafe fn destroy_ray_tracing_pipeline(&self, pipeline: Resource) {}
+    unsafe fn get_raytracing_pipeline_group_data(
+        &self,
+        pipeline: &Resource,
+        groups: core::ops::Range<u32>,
+    ) -> Result<Vec<u8>, crate::DeviceError> {
+        Ok(vec![0; groups.count()])
+    }
     unsafe fn create_pipeline_cache(
         &self,
         desc: &crate::PipelineCacheDescriptor<'_>,
@@ -419,7 +438,7 @@ impl crate::Device for Context {
         &self,
         fence: &Fence,
         value: crate::FenceValue,
-        timeout_ms: u32,
+        timeout: Option<Duration>,
     ) -> DeviceResult<bool> {
         // The relevant commands must have already been submitted, and noop-backend commands are
         // executed synchronously, so there is no waiting — either it is already done,
@@ -455,9 +474,7 @@ impl crate::Device for Context {
     }
     unsafe fn destroy_acceleration_structure(&self, _acceleration_structure: Resource) {}
 
-    fn tlas_instance_to_bytes(&self, instance: TlasInstance) -> Vec<u8> {
-        vec![]
-    }
+    fn tlas_instance_to_bytes(&self, instance: TlasInstance, to_extend: &mut Vec<u8>) {}
 
     fn get_internal_counters(&self) -> wgt::HalCounters {
         Default::default()

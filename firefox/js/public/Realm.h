@@ -1,16 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef js_Realm_h
 #define js_Realm_h
 
-#include "js/shadow/Realm.h"  // JS::shadow::Realm
-
 #include "js/GCPolicyAPI.h"
-#include "js/TypeDecls.h"  // forward-declaration of JS::Realm
+#include "js/shadow/Realm.h"  // JS::shadow::Realm
+#include "js/TypeDecls.h"     // forward-declaration of JS::Realm
 
 /************************************************************************/
 
@@ -21,8 +18,8 @@
 
 namespace js {
 namespace gc {
-JS_PUBLIC_API void TraceRealm(JSTracer* trc, JS::Realm* realm,
-                              const char* name);
+JS_PUBLIC_API void TraceRealmRoot(JSTracer* trc, JS::Realm* realm,
+                                  const char* name);
 }  // namespace gc
 }  // namespace js
 
@@ -34,7 +31,7 @@ template <>
 struct GCPolicy<Realm*> : public NonGCPointerPolicy<Realm*> {
   static void trace(JSTracer* trc, Realm** vp, const char* name) {
     if (*vp) {
-      ::js::gc::TraceRealm(trc, *vp, name);
+      ::js::gc::TraceRealmRoot(trc, *vp, name);
     }
   }
 };

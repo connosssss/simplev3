@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -15,36 +13,31 @@
  *   +---------------------------------------+-------------------------------+
  *   |   FinalizationRegistry compartment    |   Target zone / compartment   |
  *   |                                       |                               |
- *   |        +----------------------+       |     +------------------+      |
- *   |  +-----+ FinalizationRegistry |       |     |       Zone       |      |
- *   |  |     +----------+-----------+       |     +---------+--------+      |
- *   |  |                |                   |               |               |
- *   |  |                v                   |               v               |
- *   |  |  +-------------+-------------+     | +-------------+------------+  |
- *   |  |  |       Registrations       |     | |  FinalizationObservers   |  |
- *   |  |  |         weak map          |     | +-------------+------------+  |
- *   |  |  +---------------------------+     |               |               |
- *   |  |  | Unregister  :   Records   |     |               v               |
- *   |  |  |   token     :   object    |     |  +------------+------------+  |
- *   |  |  +--------------------+------+     |  |      RecordMap map      |  |
- *   |  |                       |            |  +-------------------------+  |
- *   |  |                       v            |  |  Target  : Finalization |  |
- *   |  |  +--------------------+------+     |  |  object  : RecordVector |  |
- *   |  |  |       Finalization        |     |  +----+-------------+------+  |
- *   |  |  |    RegistrationsObject    |     |       |             |         |
- *   |  |  +---------------------------+     |       v             v         |
- *   |  |  |       RecordVector        |     |  +----+-----+  +----+-----+   |
- *   |  |  +-------------+-------------+     |  |  Target  |  | (CCW if  |   |
- *   |  |                |                   |  | JSObject |  |  needed) |   |
- *   |  |              * v                   |  +----------+  +----+-----+   |
- *   |  |  +-------------+-------------+ *   |                     |         |
+ *   |     +------------------------------+  |     +------------------+      |
+ *   |  +--+    FinalizationRegistry      |  |     |       Zone       |      |
+ *   |  |  +---+----------------+---------+  |     +---------+--------+      |
+ *   |  |      |                |            |               |               |
+ *   |  |      v                v            |               v               |
+ *   |  |  +---+---+  +---------+---------+  |  +------------+------------+  |
+ *   |  |  |Record |  |   Registrations   |  |  |  FinalizationObservers  |  |
+ *   |  |  |Vector |  |        map        |  |  +------------+------------+  |
+ *   |  |  +---+---+  +-------------------+  |               |               |
+ *   |  |      |      |   Weak    :Records|  |               |               |
+ *   |  |      |      | unregister:Vector |  |               v               |
+ *   |  |      |      |   token   :       |  |  +------------+------------+  |
+ *   |  |      |      +--------------+----+  |  |      RecordMap map      |  |
+ *   |  |      |                     |       |  +-------------------------+  |
+ *   |  |      |                     |       |  |  Target  : ObserverList |  |
+ *   |  |      |                     |       |  |  object  :              |  |
+ *   |  |    * v                   * v       |  +----+-------------+------+  |
+ *   |  |  +-------------------------+-+ *   |       |             |         |
  *   |  |  | FinalizationRecordObject  +<--------------------------+         |
- *   |  |  +---------------------------+     |                               |
- *   |  |  | Queue                     +--+  |                               |
- *   |  |  +---------------------------+  |  |                               |
- *   |  |  | Held value                |  |  |                               |
- *   |  |  +---------------------------+  |  |                               |
- *   |  |                                 |  |                               |
+ *   |  |  +---------------------------+     |       |                       |
+ *   |  |  | Queue                     +--+  |       v                       |
+ *   |  |  +---------------------------+  |  |  +----+-----+                 |
+ *   |  |  | Held value                |  |  |  |  Target  |                 |
+ *   |  |  +---------------------------+  |  |  | GC thing |                 |
+ *   |  |                                 |  |  +----------+                 |
  *   |  +--------------+   +--------------+  |                               |
  *   |                 |   |                 |                               |
  *   |                 v   v                 |                               |
@@ -54,40 +47,37 @@
  *   |                                       |                               |
  *   +---------------------------------------+-------------------------------+
  *
- * A FinalizationRegistry consists of two parts: the FinalizationRegistry that
- * consumers see and a FinalizationQueue used internally to queue and call the
- * cleanup callbacks.
+ * A FinalizationRegistry consists of several parts:
+ *  - the FinalizationRegistry object that consumers see
+ *  - zero or more FinalizationRecordObjects representing registered targets
+ *  - a FinalizationQueue containing records for targets that have died, used to
+ *    queue and call the cleanup callbacks
+ *  - a map tracking unregister tokens and their associated records
  *
  * Registering a target with a FinalizationRegistry creates a FinalizationRecord
- * containing a pointer to the queue and the heldValue. This is added to a
- * vector of records associated with the target, implemented as a map on the
- * target's Zone. All finalization records are treated as GC roots.
+ * containing a pointer to the queue and the heldValue. This is added to the
+ * registry's vector of registered targets and also to a linked list of
+ * finalization observers which is used to actually track the target.
  *
  * When a target is registered an unregister token may be supplied. If so, this
- * is also recorded by the registry and is stored in a weak map of
- * registrations. The values of this map are FinalizationRegistrationsObject
- * objects. It's necessary to have another JSObject here because our weak map
- * implementation only supports JS types as values.
+ * is also recorded by the registry and is stored in a map of registrations.
+ * They keys of this map are weakly held and do not keep the unregister token
+ * alive.
  *
- * When targets are unregistered, the registration is looked up in the weakmap
- * and the corresponding records are cleared.
+ * When targets are unregistered, the registration is looked up in the
+ * registrations map and the corresponding records are cleared.
 
- * The finalization record maps are swept during GC to check for records that
- * have been cleared by unregistration, for FinalizationRecords that are dead
- * and for nuked CCWs. In all cases the record is removed and the cleanup
- * callback is not run.
- *
- * Following this the targets are checked to see if they are dying. For such
- * targets the associated record list is processed and for each record the
- * heldValue is queued on the FinalizationQueue. At a later time this causes the
- * client's cleanup callback to be run.
+ * The finalization observer lists are swept during GC to check for records
+ * associated with dying targets. For such targets the associated record list is
+ * processed and each record is added to the FinalizationQueueObject. At a later
+ * time this causes the client's cleanup callback to be run.
  */
 
 #ifndef builtin_FinalizationRegistryObject_h
 #define builtin_FinalizationRegistryObject_h
 
 #include "gc/Barrier.h"
-#include "gc/WeakMap.h"
+#include "gc/FinalizationObservers.h"
 #include "js/GCVector.h"
 #include "vm/NativeObject.h"
 
@@ -119,10 +109,18 @@ using RootedFinalizationQueueObject = Rooted<FinalizationQueueObject*>;
 // cancelled. See FinalizationObservers::shouldRemoveRecord for the possible
 // reasons.
 
-class FinalizationRecordObject : public NativeObject {
-  enum { QueueSlot = 0, HeldValueSlot, InMapSlot, SlotCount };
+class FinalizationRecordObject : public gc::ObserverListObject {
+  JS_DEFINE_TYPED_SLOT(ObserverListObject::SlotCount + 0, QUEUE_SLOT, Object,
+                       Undefined);
+  JS_DEFINE_UNTYPED_SLOT(ObserverListObject::SlotCount + 1, HELD_VALUE_SLOT);
+  // Used for assertions only.
+  JS_DEFINE_TYPED_SLOT(ObserverListObject::SlotCount + 2, DEBUG_STATE_SLOT,
+                       Int32, Undefined);
+  static constexpr uint32_t SLOT_COUNT = ObserverListObject::SlotCount + 3;
 
  public:
+  enum State { Unknown, InRecordMap, InQueue };
+
   static const JSClass class_;
 
   static FinalizationRecordObject* create(JSContext* cx,
@@ -132,45 +130,21 @@ class FinalizationRecordObject : public NativeObject {
   FinalizationQueueObject* queue() const;
   Value heldValue() const;
   bool isRegistered() const;
-  bool isInRecordMap() const;
+
+#ifdef DEBUG
+  void setState(State state);
+  State getState() const;
+  bool isInRecordMap() const { return getState() == InRecordMap; }
+  bool isInQueue() const { return getState() == InQueue; }
+#endif
 
   void setInRecordMap(bool newValue);
+  void setInQueue(bool newValue);
   void clear();
-};
-
-// A vector of weakly-held FinalizationRecordObjects.
-using WeakFinalizationRecordVector =
-    GCVector<WeakHeapPtr<FinalizationRecordObject*>, 1, js::CellAllocPolicy>;
-
-// A JS object containing a vector of weakly-held FinalizationRecordObjects,
-// which holds the records corresponding to the registrations for a particular
-// registration token. These are used as the values in the registration
-// weakmap. Since the contents of the vector are weak references they are not
-// traced.
-class FinalizationRegistrationsObject : public NativeObject {
-  enum { RecordsSlot = 0, SlotCount };
-
- public:
-  static const JSClass class_;
-
-  static FinalizationRegistrationsObject* create(JSContext* cx);
-
-  WeakFinalizationRecordVector* records();
-  const WeakFinalizationRecordVector* records() const;
-
-  bool isEmpty() const;
-
-  bool append(HandleFinalizationRecordObject record);
-  void remove(HandleFinalizationRecordObject record);
-
-  bool traceWeak(JSTracer* trc);
 
  private:
   static const JSClassOps classOps_;
 
-  void* privatePtr() const;
-
-  static void trace(JSTracer* trc, JSObject* obj);
   static void finalize(JS::GCContext* gcx, JSObject* obj);
 };
 
@@ -179,22 +153,25 @@ using FinalizationRecordVector =
 
 // The JS FinalizationRegistry object itself.
 class FinalizationRegistryObject : public NativeObject {
-  enum { QueueSlot = 0, RegistrationsSlot, SlotCount };
+  JS_DEFINE_TYPED_SLOT(0, QUEUE_SLOT, Object, Undefined);
+  JS_DEFINE_TYPED_SLOT(1, REGISTRATIONS_SLOT, Private, Undefined);
+  JS_DEFINE_TYPED_SLOT(2, RECORDS_WITHOUT_TOKEN_SLOT, Private, Undefined);
+  static constexpr uint32_t SLOT_COUNT = 3;
 
  public:
+  using RegistrationsMap =
+      GCHashMap<HeapPtr<Value>, FinalizationRecordVector, gc::WeakTargetHasher>;
+
   static const JSClass class_;
   static const JSClass protoClass_;
 
   FinalizationQueueObject* queue() const;
-  ObjectWeakMap* registrations() const;
+  RegistrationsMap* registrations() const;
+  FinalizationRecordVector* recordsWithoutToken() const;
 
-  void traceWeak(JSTracer* trc);
+  void traceWeak(JSTracer* trc, bool* hasSymbolRegistrations);
 
   static bool unregisterRecord(FinalizationRecordObject* record);
-
-  static bool cleanupQueuedRecords(JSContext* cx,
-                                   HandleFinalizationRegistryObject registry,
-                                   HandleObject callback = nullptr);
 
  private:
   static const JSClassOps classOps_;
@@ -209,13 +186,11 @@ class FinalizationRegistryObject : public NativeObject {
 
   static bool addRegistration(JSContext* cx,
                               HandleFinalizationRegistryObject registry,
-                              HandleObject unregisterToken,
+                              HandleValue unregisterToken,
                               HandleFinalizationRecordObject record);
   static void removeRegistrationOnError(
-      HandleFinalizationRegistryObject registry, HandleObject unregisterToken,
+      HandleFinalizationRegistryObject registry, HandleValue unregisterToken,
       HandleFinalizationRecordObject record);
-
-  static bool preserveDOMWrapper(JSContext* cx, HandleObject obj);
 
   static void trace(JSTracer* trc, JSObject* obj);
   static void finalize(JS::GCContext* gcx, JSObject* obj);
@@ -224,26 +199,31 @@ class FinalizationRegistryObject : public NativeObject {
 // Contains information about the cleanup callback and the records queued to
 // be cleaned up. This is not exposed to content JS.
 class FinalizationQueueObject : public NativeObject {
-  enum {
-    CleanupCallbackSlot = 0,
-    HostDefinedDataSlot,
-    RecordsToBeCleanedUpSlot,
-    IsQueuedForCleanupSlot,
-    DoCleanupFunctionSlot,
-    HasRegistrySlot,
-    SlotCount
-  };
+  JS_DEFINE_TYPED_SLOT(0, CLEANUP_CALLBACK_SLOT, Object, Undefined);
+  JS_DEFINE_TYPED_SLOT(1, INCUMBENT_GLOBAL_REPRESENTATIVE_SLOT, Object, Null,
+                       Undefined);
+  JS_DEFINE_TYPED_SLOT(2, RECORDS_TO_BE_CLEANED_UP_SLOT, Private, Undefined);
+  JS_DEFINE_TYPED_SLOT(3, IS_QUEUED_FOR_CLEANUP_SLOT, Boolean);
+  JS_DEFINE_TYPED_SLOT(4, DO_CLEANUP_FUNCTION_SLOT, Object, Undefined);
+  JS_DEFINE_TYPED_SLOT(5, HAS_REGISTRY_SLOT, Boolean);
+  static constexpr uint32_t SLOT_COUNT = 6;
 
   enum DoCleanupFunctionSlots {
     DoCleanupFunction_QueueSlot = 0,
   };
 
  public:
+  // Don't track memory for this vector against the zone as it can grow and be
+  // deleted in the same GC cycle.
+  using QueuedRecordVector =
+      GCVector<HeapPtr<FinalizationRecordObject*>, 1, SystemAllocPolicy>;
+
   static const JSClass class_;
 
   JSObject* cleanupCallback() const;
-  JSObject* getHostDefinedData() const;
-  FinalizationRecordVector* recordsToBeCleanedUp() const;
+  JSObject* getIncumbentGlobalRepresentative() const;
+  bool hasRecordsToCleanUp() const;
+  QueuedRecordVector* recordsToBeCleanedUp() const;
   bool isQueuedForCleanup() const;
   JSFunction* doCleanupFunction() const;
   bool hasRegistry() const;
@@ -252,6 +232,7 @@ class FinalizationQueueObject : public NativeObject {
   void setQueuedForCleanup(bool value);
 
   void setHasRegistry(bool newValue);
+  void clear();
 
   static FinalizationQueueObject* create(JSContext* cx,
                                          HandleObject cleanupCallback);

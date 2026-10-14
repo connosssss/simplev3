@@ -1,6 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
-
 // Copyright (c) 2010 Google Inc. All Rights Reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -66,8 +63,8 @@ using std::pair;
 using std::string;
 
 ByteReader::ByteReader(enum Endianness endian)
-    : offset_reader_(NULL),
-      address_reader_(NULL),
+    : offset_reader_(nullptr),
+      address_reader_(nullptr),
       endian_(endian),
       address_size_(0),
       offset_size_(0),
@@ -76,7 +73,7 @@ ByteReader::ByteReader(enum Endianness endian)
       have_data_base_(),
       have_function_base_() {}
 
-ByteReader::~ByteReader() {}
+ByteReader::~ByteReader() = default;
 
 void ByteReader::SetOffsetSize(uint8 size) {
   offset_size_ = size;
@@ -599,7 +596,7 @@ class CallFrameInfo::Rule final {
   // For debugging only
   string show() const {
     char buf[100];
-    string s = "";
+    string s;
     switch (tag_) {
       case Tag::INVALID:
         s = "INVALID";
@@ -912,9 +909,9 @@ class CallFrameInfo::State {
         handler_(handler),
         reporter_(reporter),
         address_(address),
-        entry_(NULL),
-        cursor_(NULL),
-        saved_rules_(NULL) {}
+        entry_(nullptr),
+        cursor_(nullptr),
+        saved_rules_(nullptr) {}
 
   ~State() {
     if (saved_rules_) delete saved_rules_;
@@ -1153,7 +1150,7 @@ bool CallFrameInfo::State::DoInstruction() {
   // instructions to parse.
   MOZ_ASSERT(cursor_ < entry_->end);
 
-  unsigned opcode = *cursor_++;
+  unsigned opcode = static_cast<unsigned char>(*cursor_++);
   if ((opcode & 0xc0) != 0) {
     switch (opcode & 0xc0) {
       // Advance the address.
@@ -1232,15 +1229,18 @@ bool CallFrameInfo::State::DoInstruction() {
 
     // Change the base register used to compute the CFA.
     case DW_CFA_def_cfa_register: {
+      if (!ParseOperands("r", &ops)) return false;
       Rule* cfa_rule = rules_.CFARuleRef();
       if (!cfa_rule->isVALID()) {
-        reporter_->NoCFARule(entry_->offset, entry_->kind, CursorOffset());
-        return false;
+        if (!DoDefCFA(ops.register_number, 0)) {
+          reporter_->NoCFARule(entry_->offset, entry_->kind, CursorOffset());
+          return false;
+        }
+      } else {
+        cfa_rule->SetBaseRegister(ops.register_number);
+        if (!cfa_rule->Handle(handler_, address_, Handler::kCFARegister))
+          return false;
       }
-      if (!ParseOperands("r", &ops)) return false;
-      cfa_rule->SetBaseRegister(ops.register_number);
-      if (!cfa_rule->Handle(handler_, address_, Handler::kCFARegister))
-        return false;
       break;
     }
 
@@ -1491,7 +1491,7 @@ bool CallFrameInfo::ReadEntryPrologue(const char* cursor, Entry* entry) {
   entry->offset = cursor - buffer_;
   entry->start = cursor;
   entry->kind = kUnknown;
-  entry->end = NULL;
+  entry->end = nullptr;
 
   // Read the initial length. This sets reader_'s offset size.
   size_t length_size;
@@ -1555,7 +1555,7 @@ bool CallFrameInfo::ReadEntryPrologue(const char* cursor, Entry* entry) {
   // The fields specific to this kind of entry start here.
   entry->fields = cursor;
 
-  entry->cie = NULL;
+  entry->cie = nullptr;
 
   return true;
 }
@@ -1574,7 +1574,7 @@ bool CallFrameInfo::ReadCIEFields(CIE* cie) {
   cie->return_address_register = 0;
   cie->has_z_augmentation = false;
   cie->pointer_encoding = DW_EH_PE_absptr;
-  cie->instructions = 0;
+  cie->instructions = nullptr;
 
   // Parse the version number.
   if (cie->end - cursor < 1) return ReportIncomplete(cie);
@@ -2207,6 +2207,54 @@ unsigned int DwarfCFIToModule::RegisterNames::MIPS() {
   return 8 + 8 + 8 + 8 + 9 + 8 + 7 + 7 + 6;
 }
 
+unsigned int DwarfCFIToModule::RegisterNames::LOONGARCH() {
+  /*
+   <https://lldb.llvm.org/cpp_reference/namespaceloongarch__dwarf.html>
+   8 "r0",   "r1",   "r2",   "r3",   "r4",   "r5",   "r6",   "r7",
+   8 "r8",   "r9",   "r10",  "r11",  "r12",  "r13",  "r14",  "r15",
+   8 "r16",  "r17",  "r18",  "r19",  "r20",  "r21",  "r22",  "r23",
+   8 "r24",  "r25",  "r26",  "r27",  "r28",  "r29",  "r30",  "r31",
+   8 "f0",   "f1",   "f2",   "f3",   "f4",   "f5",   "f6",   "f7",
+   8 "f8",   "f9",   "f10",  "f11",  "f12",  "f13",  "f14",  "f15",
+   8 "f16",  "f17",  "f18",  "f19",  "f20",  "f21",  "f22",  "f23",
+   8 "f24",  "f25",  "f26",  "f27",  "f28",  "f29",  "f30",  "f31",
+   8 "fcc0", "fcc1", "fcc2", "fcc3", "fcc4", "fcc5", "fcc6", "fcc7",
+   1 "fcsr",
+   8 "vr0",  "vr1",  "vr2",  "vr3",  "vr4",  "vr5",  "vr6",  "vr7",
+   8 "vr8",  "vr9",  "vr10", "vr11", "vr12", "vr13", "vr14", "vr15",
+   8 "vr16", "vr17", "vr18", "vr19", "vr20", "vr21", "vr22", "vr23",
+   8 "vr24", "vr25", "vr26", "vr27", "vr28", "vr29", "vr30", "vr31",
+   8 "xr0",  "xr1",  "xr2",  "xr3",  "xr4",  "xr5",  "xr6",  "xr7",
+   8 "xr8",  "xr9",  "xr10", "xr11", "xr12", "xr13", "xr14", "xr15",
+   8 "xr16", "xr17", "xr18", "xr19", "xr20", "xr21", "xr22", "xr23",
+   8 "xr24", "xr25", "xr26", "xr27", "xr28", "xr29", "xr30", "xr31"
+  */
+  return 32 + 32 + 8 + 1 + 32 + 32;
+}
+
+unsigned int DwarfCFIToModule::RegisterNames::RISCV() {
+  /*
+    <https://github.com/google/breakpad/blob/8be0e3114685fcc1589561067282edf75ea1259a/src/common/dwarf_cfi_to_module.cc#L152>
+    "pc",  "ra",  "sp",  "gp",  "tp",  "t0",  "t1",  "t2",
+    "s0",  "s1",  "a0",  "a1",  "a2",  "a3",  "a4",  "a5",
+    "a6",  "a7",  "s2",  "s3",  "s4",  "s5",  "s6",  "s7",
+    "s8",  "s9",  "s10", "s11", "t3",  "t4",  "t5",  "t6",
+    "f0",  "f1",  "f2",  "f3",  "f4",  "f5",  "f6",  "f7",
+    "f8",  "f9",  "f10", "f11", "f12", "f13", "f14", "f15",
+    "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23",
+    "f24", "f25", "f26", "f27", "f28", "f29", "f30", "f31",
+    "",    "",    "",    "",    "",    "",    "",    "",
+    "",    "",    "",    "",    "",    "",    "",    "",
+    "",    "",    "",    "",    "",    "",    "",    "",
+    "",    "",    "",    "",    "",    "",    "",    "",
+    "v0",  "v1",  "v2",  "v3",  "v4",  "v5",  "v6",  "v7",
+    "v8",  "v9",  "v10", "v11", "v12", "v13", "v14", "v15",
+    "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23",
+    "v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31"
+  */
+  return 32 + 32 + 8 * 4 + 32;
+}
+
 // See prototype for comments.
 int32_t parseDwarfExpr(Summariser* summ, const ByteReader* reader,
                        ImageSlice expr, bool debug, bool pushCfaAtStart,
@@ -2404,6 +2452,10 @@ const UniqueString* DwarfCFIToModule::RegisterName(int i) {
 }
 
 bool DwarfCFIToModule::UndefinedRule(uint64 address, int reg) {
+  if (registerIsTracked(static_cast<DW_REG_NUMBER>(reg))) {
+    summ_->UndefineRule(address, reg);
+    return true;
+  }
   reporter_->UndefinedNotSupported(entry_offset_, RegisterName(reg));
   // Treat this as a non-fatal error.
   return true;

@@ -2,18 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use super::{finalize_crash_report, BreakpadProcessId, CrashGenerator};
+use super::{BreakpadProcessId, CrashGenerator};
 
-use crash_helper_common::{messages, Pid};
+use anyhow::Result;
+use crash_helper_common::{
+    crash_annotations::CrashAnnotation, messages, ApplicationInfo, ExtraCrashData,
+};
+use mozannotation_server::{AnnotationData, CAnnotation};
 use std::{
     convert::TryInto,
     fs::{create_dir_all, File},
     mem::{size_of, zeroed},
-    os::windows::io::AsRawHandle,
+    os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle},
     path::PathBuf,
     ptr::{null, null_mut},
 };
 use uuid::Uuid;
+use win32_process_mitigations::MitigationOptions;
 use windows_sys::Win32::{
     Foundation::{FALSE, HANDLE},
     System::{
@@ -27,13 +32,13 @@ use windows_sys::Win32::{
             VER_MINORVERSION, VER_SERVICEPACKMAJOR, VER_SERVICEPACKMINOR,
         },
         SystemServices::VER_GREATER_EQUAL,
-        Threading::{OpenProcess, PROCESS_ALL_ACCESS},
+        Threading::{GetProcessId, GetThreadId},
     },
 };
 
 impl CrashGenerator {
-    pub(super) fn generate_wer_minidump(
-        &self,
+    pub(crate) fn generate_wer_minidump(
+        &mut self,
         message: messages::WindowsErrorReportingMinidump,
     ) -> Result<(), ()> {
         let (minidump_file, path) = self.create_minidump_file()?;
@@ -43,22 +48,26 @@ impl CrashGenerator {
         let mut exception_records = message.exception_records;
         let exception_records_ptr = link_exception_records(&mut exception_records);
 
-        let handle = open_process(message.pid)?;
+        let handle = message.process.as_raw_handle() as HANDLE;
+        let pid = get_process_id(message.process.as_handle())?;
         let mut exception_pointers = EXCEPTION_POINTERS {
             ExceptionRecord: exception_records_ptr,
             ContextRecord: &mut context as *mut _,
         };
 
         let exception = MINIDUMP_EXCEPTION_INFORMATION {
-            ThreadId: message.tid,
+            ThreadId: get_thread_id(message.thread.as_handle())?,
             ExceptionPointers: &mut exception_pointers,
             ClientPointers: FALSE,
         };
 
+        // SAFETY: `handle` is guaranteed to be a valid handle and so is
+        // `minidump_file`. The remaining pointers going into this function are
+        // taken from objects allocated on the stack.
         let res = unsafe {
             MiniDumpWriteDump(
                 handle,
-                message.pid,
+                pid,
                 minidump_file.as_raw_handle() as _,
                 minidump_type,
                 &exception,
@@ -68,16 +77,20 @@ impl CrashGenerator {
         };
 
         if res != FALSE {
-            let process_id = BreakpadProcessId {
-                pid: message.pid,
-                handle,
+            let process_id = BreakpadProcessId { pid, handle };
+            let extra_data = ExtraCrashData {
+                error: None,
+                annotations: vec![CAnnotation {
+                    id: CrashAnnotation::WindowsErrorReporting as u32,
+                    data: AnnotationData::ByteBuffer(vec![1]),
+                }],
             };
 
-            finalize_crash_report(
-                process_id,
-                None,
+            self.finalize_crash_report(
+                process_id.get_native(),
+                Some(&extra_data),
                 &path,
-                super::MinidumpOrigin::WindowsErrorReporting,
+                super::ProcessType::Child,
             );
         }
 
@@ -104,13 +117,13 @@ impl CrashGenerator {
 
     fn create_minidump_file(&self) -> Result<(File, PathBuf), ()> {
         // Make sure that the target directory is present
-        create_dir_all(&self._minidump_path).map_err(|_| ())?;
+        create_dir_all(&self.minidump_path).map_err(|_| ())?;
 
         let uuid = Uuid::new_v4()
             .as_hyphenated()
             .encode_lower(&mut Uuid::encode_buffer())
             .to_string();
-        let path = PathBuf::from(self._minidump_path.clone()).join(uuid + ".dmp");
+        let path = self.minidump_path.clone().join(uuid + ".dmp");
         let file = File::create(&path).map_err(|_| ())?;
         Ok((file, path))
     }
@@ -157,10 +170,45 @@ fn is_windows8_or_later() -> bool {
     }
 }
 
-fn open_process(pid: Pid) -> Result<HANDLE, ()> {
+fn get_process_id(handle: BorrowedHandle) -> Result<u32, ()> {
     // SAFETY: No pointers involved, worst case we get an error
-    match unsafe { OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid) } {
+    match unsafe { GetProcessId(handle.as_raw_handle() as HANDLE) } {
         0 => Err(()),
-        handle => Ok(handle),
+        pid => Ok(pid),
+    }
+}
+
+fn get_thread_id(handle: BorrowedHandle) -> Result<u32, ()> {
+    // SAFETY: No pointers involved, worst case we get an error
+    match unsafe { GetThreadId(handle.as_raw_handle() as HANDLE) } {
+        0 => Err(()),
+        tid => Ok(tid),
+    }
+}
+
+/// Create the annotations that are specific to Windows: the process mitigation
+/// options the system is configured to apply to our executable.
+pub(crate) fn create_platform_specific_annotations(
+    app_info: &ApplicationInfo,
+) -> Result<Vec<CAnnotation>> {
+    let app_mitigations = app_info
+        .get_application_path()
+        .map(win32_process_mitigations::get_app_mitigation_options)
+        .transpose()?
+        .flatten();
+    let sys_mitigations = win32_process_mitigations::get_system_mitigation_options()?;
+    if let Some(mitigations) = MitigationOptions::amalgamate(sys_mitigations, app_mitigations) {
+        Ok(vec![
+            super::make_annotation(
+                CrashAnnotation::WindowsProcessMitigationsBytes,
+                &format!("{}", mitigations),
+            ),
+            super::make_annotation(
+                CrashAnnotation::WindowsProcessMitigations,
+                &mitigations.describe(),
+            ),
+        ])
+    } else {
+        Ok(vec![])
     }
 }

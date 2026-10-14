@@ -4,44 +4,35 @@
 
 package mozilla.components.feature.awesomebar.provider
 
-import android.content.Context
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import mozilla.components.feature.search.ext.createSearchEngine
 import mozilla.components.support.test.mock
-import mozilla.components.support.test.whenever
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
-@ExperimentalCoroutinesApi // for runTest
-
 class SearchEngineSuggestionProviderTest {
     private lateinit var defaultProvider: SearchEngineSuggestionProvider
-    private val engineList = listOf(
-        createSearchEngine("amazon", "https://www.amazon.org/?q={searchTerms}", mock()),
-        createSearchEngine("bing", "https://www.bing.com/?q={searchTerms}", mock()),
-        createSearchEngine("bingo", "https://www.bingo.com/?q={searchTerms}", mock()),
-    )
-    private val testContext: Context = mock()
+    private val engineList =
+        listOf(
+            createSearchEngine("amazon", "https://www.amazon.org/?q={searchTerms}", mock()),
+            createSearchEngine("bing", "https://www.bing.com/?q={searchTerms}", mock()),
+            createSearchEngine("bingo", "https://www.bingo.com/?q={searchTerms}", mock()),
+        )
 
     @Before
     fun setup() {
-        defaultProvider = SearchEngineSuggestionProvider(
-            testContext,
-            engineList,
-            mock(),
-            1,
-            "description",
-            mock(),
-            maxSuggestions = 1,
-            charactersThreshold = 1,
-        )
-
-        whenever(testContext.getString(1, "amazon")).thenReturn("Search amazon")
-        whenever(testContext.getString(1, "bing")).thenReturn("Search bing")
-        whenever(testContext.getString(1, "bingo")).thenReturn("Search bingo")
+        defaultProvider =
+            SearchEngineSuggestionProvider(
+                engineList,
+                mock(),
+                "description",
+                mock(),
+                maxSuggestions = 1,
+                charactersThreshold = 1,
+                titleFormatter = { "Search $it" },
+            )
     }
 
     @Test
@@ -60,15 +51,15 @@ class SearchEngineSuggestionProviderTest {
 
     @Test
     fun `Provider returns empty list when text is shorter than charactersThreshold`() = runTest {
-        val provider = SearchEngineSuggestionProvider(
-            testContext,
-            engineList,
-            mock(),
-            1,
-            "description",
-            mock(),
-            charactersThreshold = 3,
-        )
+        val provider =
+            SearchEngineSuggestionProvider(
+                engineList,
+                mock(),
+                "description",
+                mock(),
+                charactersThreshold = 3,
+                titleFormatter = { "Search $it" },
+            )
 
         val suggestions = provider.onInputChanged("am")
 
@@ -98,14 +89,14 @@ class SearchEngineSuggestionProviderTest {
 
     @Test
     fun `Provider returns empty list when the engine list is empty`() = runTest {
-        val providerEmpty = SearchEngineSuggestionProvider(
-            testContext,
-            emptyList(),
-            mock(),
-            1,
-            "description",
-            mock(),
-        )
+        val providerEmpty =
+            SearchEngineSuggestionProvider(
+                emptyList(),
+                mock(),
+                "description",
+                mock(),
+                titleFormatter = { it },
+            )
 
         val suggestions = providerEmpty.onInputChanged("a")
 

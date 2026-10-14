@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsJARProtocolHandler_h__
-#define nsJARProtocolHandler_h__
+#ifndef nsJARProtocolHandler_h_
+#define nsJARProtocolHandler_h_
 
 #include "mozilla/StaticPtr.h"
 #include "nsIProtocolHandler.h"
@@ -23,6 +22,9 @@ class nsJARProtocolHandler final : public nsIProtocolHandler,
   nsJARProtocolHandler();
 
   static already_AddRefed<nsJARProtocolHandler> GetSingleton();
+
+  static already_AddRefed<nsIZipReaderCache> GetJarCache();
+  static already_AddRefed<nsIMIMEService> GetMimeService();
 
   nsresult Init();
 
@@ -46,4 +48,4 @@ extern mozilla::StaticRefPtr<nsJARProtocolHandler> gJarHandler;
    0x11d3,                                        \
    {0x9f, 0x63, 0x00, 0x60, 0x08, 0xa6, 0xef, 0xe9}}
 
-#endif  // !nsJARProtocolHandler_h__
+#endif  // !nsJARProtocolHandler_h_

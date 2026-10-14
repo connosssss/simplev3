@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32,6 +31,7 @@
 #include "js/AllocPolicy.h"
 #include "js/CharacterEncoding.h"  // JS::ConstUTF8CharsZ
 #include "js/ColumnNumber.h"       // JS::ColumnNumberOneOrigin
+#include "js/Exception.h"          // JS::BorrowedErrorReport
 #include "js/RootingAPI.h"         // JS::HandleObject, JS::RootedObject
 #include "js/UniquePtr.h"          // js::UniquePtr
 #include "js/Value.h"              // JS::Value
@@ -77,9 +77,7 @@ enum JSExnType {
   JSEXN_EVALERR,
   JSEXN_RANGEERR,
   JSEXN_REFERENCEERR,
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
   JSEXN_SUPPRESSEDERR,
-#endif
   JSEXN_SYNTAXERR,
   JSEXN_TYPEERR,
   JSEXN_URIERR,
@@ -211,8 +209,8 @@ class JSErrorNotes {
                  js::ErrorArgumentsType argumentsType, va_list ap);
 
  public:
-  JSErrorNotes();
-  ~JSErrorNotes();
+  JSErrorNotes() = default;
+  ~JSErrorNotes() = default;
 
   // Add a note to the given position.
   bool addNoteASCII(JSContext* cx, const char* filename, unsigned sourceId,
@@ -356,7 +354,11 @@ struct MOZ_STACK_CLASS JS_PUBLIC_API ErrorReportBuilder {
   explicit ErrorReportBuilder(JSContext* cx);
   ~ErrorReportBuilder();
 
-  enum SniffingBehavior { WithSideEffects, NoSideEffects };
+  enum SniffingBehavior {
+    WithSideEffects,
+    NoSideEffects,
+    NoSideEffectsListPropertyNames
+  };
 
   /**
    * Generate a JSErrorReport from the provided thrown value.
@@ -382,6 +384,13 @@ struct MOZ_STACK_CLASS JS_PUBLIC_API ErrorReportBuilder {
    * But if the value of |sniffingBehavior| is |NoSideEffects|, these attempts
    * *will not* invoke any observable side effects.  The JSErrorReport will
    * simply contain fewer, less precise details.
+   *
+   * |NoSideEffectsListPropertyNames| behaves like |NoSideEffects|, except that
+   * a non-Error exception object is described by listing its own string-keyed
+   * property names, for instance |Object (code, message)| instead of the
+   * bare |Object|.  Callers must not use this for reports that are exposed to
+   * web content (such as |window.onerror| messages), because the resulting
+   * string depends on the object's shape.
    *
    * Unlike some functions involved in error handling, this function adheres
    * to the usual JSAPI return value error behavior.
@@ -409,14 +418,19 @@ struct MOZ_STACK_CLASS JS_PUBLIC_API ErrorReportBuilder {
   // Reports exceptions from add-on scopes to telemetry.
   void ReportAddonExceptionToTelemetry(JSContext* cx);
 
-  // We may have a provided JSErrorReport, so need a way to represent that.
+  // Maybe create an (owned) JSErrorReport when obj is a DOM Exception object.
+  // Return the "toStringResult" str.
+  JSString* maybeCreateReportFromDOMException(JS::HandleObject obj,
+                                              JSContext* cx);
+
+  // If non-nullptr, this is either |&ownedReport| or |borrowedReport.report_|.
   JSErrorReport* reportp;
 
   // Or we may need to synthesize a JSErrorReport one of our own.
   JSErrorReport ownedReport;
 
-  // Root our exception value to keep a possibly borrowed |reportp| alive.
-  JS::RootedObject exnObject;
+  // Used to keep a possibly borrowed |reportp| alive.
+  JS::BorrowedErrorReport borrowedReport;
 
   // And for our filename.
   JS::UniqueChars filename;

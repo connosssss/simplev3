@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html class=reftest-wait>
 <meta charset="utf-8">
-<title>CSS Anchor Positioning Test: position-visibility: anchors-visible</title>
+<title>CSS Anchor Positioning Test: position-visibility: anchor-visible</title>
 <link rel="help" href="https://github.com/w3c/csswg-drafts/issues/7758">
 <link rel="match" href="position-visibility-anchors-visible-chained-004-ref.html">
 <script src="/common/reftest-wait.js"></script>
@@ -9,6 +9,7 @@
 <style>
   #scroll-container {
     overflow: hidden scroll;
+    scrollbar-width: none;
     width: 300px;
     height: 100px;
   }
@@ -32,14 +33,13 @@
   }
 
   .anchored {
-    position-visibility: anchors-visible;
-    position-area: bottom;
+    position-visibility: anchor-visible;
+    position-area: bottom center;
     width: 100px;
     height: 50px;
     background: green;
     position: absolute;
-    top: 0;
-    left: 0;
+    inset: 0;
   }
 
   #chained {

@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import "./panel-list.js";
+import "./panel-list.mjs";
 import { html, ifDefined } from "../vendor/lit.all.mjs";
 
 let accesskeyOptions = ["n", "w", "e", "c", "b"];
@@ -35,16 +35,6 @@ submenu-item-three = Submenu Item Three
     `,
   },
 };
-
-function openMenu(event) {
-  if (
-    event.type == "mousedown" ||
-    event.inputSource == MouseEvent.MOZ_SOURCE_KEYBOARD ||
-    !event.detail
-  ) {
-    event.target.getRootNode().querySelector("panel-list").toggle(event);
-  }
-}
 
 const Template = ({
   isOpen,
@@ -83,33 +73,30 @@ const Template = ({
     : html`
         <moz-button
           type="icon ghost"
-          @click=${openMenu}
-          @mousedown=${openMenu}
+          menuid="panel-list"
           ?wide=${wideAnchor}
         ></moz-button>
         <moz-button
           type="icon ghost"
           class="end"
-          @click=${openMenu}
-          @mousedown=${openMenu}
+          menuid="panel-list"
           ?wide=${wideAnchor}
         ></moz-button>
         <moz-button
           type="icon ghost"
           class="bottom"
-          @click=${openMenu}
-          @mousedown=${openMenu}
+          menuid="panel-list"
           ?wide=${wideAnchor}
         ></moz-button>
         <moz-button
           type="icon ghost"
           class="bottom end"
-          @click=${openMenu}
-          @mousedown=${openMenu}
+          menuid="panel-list"
           ?wide=${wideAnchor}
         ></moz-button>
       `}
   <panel-list
+    id="panel-list"
     ?stay-open=${isOpen}
     ?open=${isOpen}
     ?min-width-from-anchor=${wideAnchor}
@@ -122,11 +109,12 @@ const Template = ({
         ? html` <hr /> `
         : html`
             <panel-item
-              icon=${item.icon ?? ""}
+              icon=${ifDefined(item.icon)}
               ?checked=${item.checked}
               ?disabled=${item.disabled}
               type=${ifDefined(item.checked ? "checkbox" : undefined)}
               ?badged=${item.badged}
+              badge-type=${ifDefined(item.badgeType)}
               data-l10n-id=${item.l10nId ?? item}
               submenu=${ifDefined(subMenuId)}
               accesskey=${ifDefined(showAccesskeys ? accesskeys[index] : "")}
@@ -196,4 +184,13 @@ WithAccesskeys.args = {
   ...Simple.args,
   showAccesskeys: true,
   accesskeys: accesskeyOptions,
+};
+
+export const WithBadge = Template.bind({});
+WithBadge.args = {
+  ...Simple.args,
+  items: [
+    { l10nId: "panel-list-item-one", badgeType: "new" },
+    { l10nId: "panel-list-item-two", badgeType: "beta" },
+  ],
 };

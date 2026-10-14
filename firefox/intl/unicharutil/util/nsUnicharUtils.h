@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsUnicharUtils_h__
-#define nsUnicharUtils_h__
+#ifndef nsUnicharUtils_h_
+#define nsUnicharUtils_h_
 
 #include "nsString.h"
 
@@ -76,21 +75,6 @@ class nsCaseInsensitiveStringArrayComparator {
 int32_t nsASCIICaseInsensitiveStringComparator(const char16_t*, const char16_t*,
                                                size_t, size_t);
 
-inline bool CaseInsensitiveFindInReadable(
-    const nsAString& aPattern, nsAString::const_iterator& aSearchStart,
-    nsAString::const_iterator& aSearchEnd) {
-  return FindInReadable(aPattern, aSearchStart, aSearchEnd,
-                        nsCaseInsensitiveStringComparator);
-}
-
-inline bool CaseInsensitiveFindInReadable(const nsAString& aPattern,
-                                          const nsAString& aHay) {
-  nsAString::const_iterator searchBegin, searchEnd;
-  return FindInReadable(aPattern, aHay.BeginReading(searchBegin),
-                        aHay.EndReading(searchEnd),
-                        nsCaseInsensitiveStringComparator);
-}
-
 #endif  // MOZILLA_INTERNAL_API
 
 int32_t CaseInsensitiveCompare(const char16_t* a, const char16_t* b,
@@ -144,16 +128,6 @@ bool CaseInsensitiveUTF8CharsEqual(const char* aLeft, const char* aRight,
 namespace mozilla {
 
 /**
- * Hash a UTF8 string as though it were a UTF16 string.
- *
- * The value returned is the same as if we converted the string to UTF16 and
- * then ran HashString() on the result.
- *
- * The given |length| is in bytes.
- */
-uint32_t HashUTF8AsUTF16(const char* aUTF8, size_t aLength, bool* aErr);
-
-/**
  * Tests used in CSS Segment Break Transformation to determine whether a
  * newline is discardable.
  */
@@ -169,4 +143,4 @@ bool IsPunctuationForWordSelect(char16_t aCh);
 
 }  // namespace mozilla
 
-#endif /* nsUnicharUtils_h__ */
+#endif /* nsUnicharUtils_h_ */

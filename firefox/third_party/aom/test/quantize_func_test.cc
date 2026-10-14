@@ -43,19 +43,16 @@ using libaom_test::ACMRandom;
       const int16_t *dequant_ptr, uint16_t *eob_ptr, const int16_t *scan,  \
       const int16_t *iscan
 
-typedef void (*LPQuantizeFunc)(LP_QUANTIZE_PARAM_LIST);
-typedef void (*QuantizeFunc)(QUAN_PARAM_LIST);
-typedef void (*QuantizeFuncHbd)(QUAN_PARAM_LIST, int log_scale);
+using LPQuantizeFunc = void (*)(LP_QUANTIZE_PARAM_LIST);
+using QuantizeFunc = void (*)(QUAN_PARAM_LIST);
+using QuantizeFuncHbd = void (*)(QUAN_PARAM_LIST, int log_scale);
 
 #undef LP_QUANTIZE_PARAM_LIST
 
+#if CONFIG_AV1_HIGHBITDEPTH
 #define HBD_QUAN_FUNC                                                      \
   fn(coeff_ptr, n_coeffs, zbin_ptr, round_ptr, quant_ptr, quant_shift_ptr, \
      qcoeff_ptr, dqcoeff_ptr, dequant_ptr, eob_ptr, scan, iscan, log_scale)
-
-#define LBD_QUAN_FUNC                                                      \
-  fn(coeff_ptr, n_coeffs, zbin_ptr, round_ptr, quant_ptr, quant_shift_ptr, \
-     qcoeff_ptr, dqcoeff_ptr, dequant_ptr, eob_ptr, scan, iscan)
 
 template <QuantizeFuncHbd fn>
 void highbd_quan16x16_wrapper(QUAN_PARAM_LIST) {
@@ -74,6 +71,7 @@ void highbd_quan64x64_wrapper(QUAN_PARAM_LIST) {
   const int log_scale = 2;
   HBD_QUAN_FUNC;
 }
+#endif  // CONFIG_AV1_HIGHBITDEPTH
 
 enum QuantType { TYPE_B, TYPE_DC, TYPE_FP };
 
@@ -83,10 +81,10 @@ template <typename FuncType>
 using QuantizeParam =
     tuple<FuncType, FuncType, TX_SIZE, QuantType, aom_bit_depth_t>;
 
-typedef struct {
+struct QuanTable {
   QUANTS quant;
   Dequants dequant;
-} QuanTable;
+};
 
 const int kTestNum = 1000;
 

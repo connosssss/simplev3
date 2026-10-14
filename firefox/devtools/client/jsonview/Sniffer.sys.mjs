@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
+import { isJsonlMimeType } from "resource://devtools/client/shared/jsonl-mime-types.mjs";
 
 const gPrefs = {};
 
@@ -13,6 +14,7 @@ XPCOMUtils.defineLazyPreferenceGetter(
 );
 
 const JSON_VIEW_MIME_TYPE = "application/vnd.mozilla.json.view";
+const JSONLINES_VIEW_MIME_TYPE = "application/vnd.mozilla.jsonlines.view";
 
 function getContentDisposition(channel) {
   try {
@@ -26,12 +28,10 @@ function getContentDisposition(channel) {
 /**
  * This component represents a sniffer (implements nsIContentSniffer
  * interface) responsible for changing top level 'application/json'
- * document types to: 'application/vnd.mozilla.json.view'.
+ * and JSON Lines document types to internal types consumed by the
+ * JSON View component.
  *
- * This internal type is consequently rendered by JSON View component
- * that represents the JSON through a viewer interface.
- *
- * This is done in the .js file rather than a .jsm to avoid creating
+ * This is done in the .js file rather than a .sys.mjs to avoid creating
  * a compartment at startup when no JSON is being viewed.
  */
 export class Sniffer {
@@ -50,8 +50,26 @@ export class Sniffer {
         if (/^application\/(?:.+\+)?json$/.test(request.contentType)) {
           return JSON_VIEW_MIME_TYPE;
         }
+
+        // Check if this is a JSON Lines content-type (one JSON value per line).
+        let isJsonlines = isJsonlMimeType(request.contentType);
+        if (!isJsonlines) {
+          try {
+            isJsonlines =
+              request.URI.QueryInterface(
+                Ci.nsIURL
+              ).fileExtension.toLowerCase() === "jsonl";
+          } catch (ex) {
+            // The URI scheme doesn't support nsIURL (e.g. some data: URIs).
+          }
+        }
+        if (isJsonlines) {
+          return JSONLINES_VIEW_MIME_TYPE;
+        }
       } else if (request.contentType === JSON_VIEW_MIME_TYPE) {
         return "application/json";
+      } else if (request.contentType === JSONLINES_VIEW_MIME_TYPE) {
+        return "application/jsonl";
       }
     }
 

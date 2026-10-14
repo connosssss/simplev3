@@ -19,20 +19,20 @@
 //! - A '|' token to start a new column.
 //! - A '_' token to start a new row.
 
-use api::{ColorF, ColorU};
+use api::{ColorF, ColorU, RenderCommandInfo};
+#[cfg(feature = "debugger")]
+use api::debugger::{ProfileCounterUpdate, ProfileCounterId};
 use glyph_rasterizer::profiler::GlyphRasterizeProfiler;
 use crate::renderer::DebugRenderer;
 use crate::device::query::GpuTimer;
 use euclid::{Point2D, Rect, Size2D, vec2, default};
 use crate::internal_types::FastHashMap;
-use crate::renderer::{FullFrameStats, MAX_VERTEX_TEXTURE_WIDTH, init::wr_has_been_initialized};
+use crate::renderer::{FullFrameStats, init::wr_has_been_initialized};
 use api::units::DeviceIntSize;
 use std::collections::vec_deque::VecDeque;
 use std::fmt::{Write, Debug};
-use std::f32;
 use std::ops::Range;
 use std::time::Duration;
-use time::precise_time_ns;
 
 macro_rules! set_text {
     ($dst:expr, $($arg:tt)*) => {
@@ -68,6 +68,9 @@ static PROFILER_PRESETS: &'static[(&'static str, &'static str)] = &[
     (&"Frame times", &"Frame CPU total,Frame building,Visibility,Prepare,Batching,Glyph resolve,Texture cache update,Shader build time,Renderer,GPU"),
     // Stats about the content of the frame.
     (&"Frame stats", &"Primitives,Visible primitives,Draw calls,Vertices,Color passes,Alpha passes,Rendered picture tiles,Rasterized glyphs"),
+    // How much of each frame-building pass's traversal produces a draw, and the
+    // per-prim fan-out across dirty tiles.
+    (&"Frame build traversal", &"Primitives,Visibility visited prims,Prepare visited prims,Visible primitives,Prepare cmd targets,Prepare pictures, ,Visibility,Prepare"),
     // Texture cache allocation stats.
     (&"Texture cache stats", &"Atlas textures mem, Standalone textures mem, Picture tiles mem, Render targets mem, Depth targets mem, Atlas items mem,
         Texture cache standalone pressure, Texture cache eviction count, Texture cache youngest evicted, ,
@@ -92,7 +95,7 @@ static PROFILER_PRESETS: &'static[(&'static str, &'static str)] = &[
     (&"GPU Memory", &"External image mem, Atlas textures mem, Standalone textures mem, Picture tiles mem, Render targets mem, Depth targets mem, Atlas items mem, GPU cache mem, GPU buffer mem, GPU total mem"),
     (&"CPU Memory", &"Image templates, Image templates mem, Font templates,Font templates mem, DisplayList mem"),
     (&"Memory", &"$CPU,CPU Memory, ,$GPU,GPU Memory"),
-    (&"Interners", "Interned primitives,Interned clips,Interned pictures,Interned text runs,Interned normal borders,Interned image borders,Interned images,Interned YUV images,Interned line decorations,Interned linear gradients,Interned radial gradients,Interned conic gradients,Interned filter data,Interned backdrop renders, Interned backdrop captures"),
+    (&"Interners", "Intern insertions,Intern removals,Off-grid coords, ,Interned primitives,Interned clips,Interned pictures,Interned text runs,Interned normal borders,Interned image borders,Interned images,Interned YUV images,Interned line decorations,Interned linear gradients,Interned radial gradients,Interned conic gradients,Interned filter data,Interned backdrop renders, Interned backdrop captures"),
     // Gpu sampler queries (need the pref gfx.webrender.debug.gpu-sampler-queries).
     (&"GPU samplers", &"Alpha targets samplers,Transparent pass samplers,Opaque pass samplers,Total samplers"),
 
@@ -149,144 +152,190 @@ pub const UPLOAD_NUM_COPY_BATCHES: usize = 23;
 pub const TOTAL_UPLOAD_TIME: usize = 24;
 pub const CREATE_CACHE_TEXTURE_TIME: usize = 25;
 pub const DELETE_CACHE_TEXTURE_TIME: usize = 26;
-pub const GPU_CACHE_UPLOAD_TIME: usize = 27;
 
-pub const RASTERIZED_BLOBS: usize = 28;
-pub const RASTERIZED_BLOB_TILES: usize = 29;
-pub const RASTERIZED_BLOBS_PX: usize = 30;
-pub const BLOB_RASTERIZATION_TIME: usize = 31;
+pub const RASTERIZED_BLOBS: usize = 27;
+pub const RASTERIZED_BLOB_TILES: usize = 28;
+pub const RASTERIZED_BLOBS_PX: usize = 29;
+pub const BLOB_RASTERIZATION_TIME: usize = 30;
 
-pub const RASTERIZED_GLYPHS: usize = 32;
-pub const GLYPH_RESOLVE_TIME: usize = 33;
+pub const RASTERIZED_GLYPHS: usize = 31;
+pub const GLYPH_RESOLVE_TIME: usize = 32;
 
-pub const DRAW_CALLS: usize = 34;
-pub const VERTICES: usize = 35;
-pub const PRIMITIVES: usize = 36;
-pub const VISIBLE_PRIMITIVES: usize = 37;
+pub const DRAW_CALLS: usize = 33;
+pub const VERTICES: usize = 34;
+pub const PRIMITIVES: usize = 35;
+pub const VISIBLE_PRIMITIVES: usize = 36;
 
-pub const USED_TARGETS: usize = 38;
-pub const CREATED_TARGETS: usize = 39;
-pub const PICTURE_CACHE_SLICES: usize = 40;
+pub const USED_TARGETS: usize = 37;
+pub const CREATED_TARGETS: usize = 38;
+pub const PICTURE_CACHE_SLICES: usize = 39;
 
-pub const COLOR_PASSES: usize = 41;
-pub const ALPHA_PASSES: usize = 42;
-pub const PICTURE_TILES: usize = 43;
-pub const RENDERED_PICTURE_TILES: usize = 44;
+pub const COLOR_PASSES: usize = 40;
+pub const ALPHA_PASSES: usize = 41;
+pub const PICTURE_TILES: usize = 42;
+pub const RENDERED_PICTURE_TILES: usize = 43;
 
-pub const FONT_TEMPLATES: usize = 45;
-pub const FONT_TEMPLATES_MEM: usize = 46;
-pub const IMAGE_TEMPLATES: usize = 47;
-pub const IMAGE_TEMPLATES_MEM: usize = 48;
-
-pub const GPU_CACHE_ROWS_TOTAL: usize = 49;
-pub const GPU_CACHE_ROWS_UPDATED: usize = 50;
-pub const GPU_CACHE_BLOCKS_TOTAL: usize = 51;
-pub const GPU_CACHE_BLOCKS_UPDATED: usize = 52;
-pub const GPU_CACHE_BLOCKS_SAVED: usize = 53;
+pub const FONT_TEMPLATES: usize = 44;
+pub const FONT_TEMPLATES_MEM: usize = 45;
+pub const IMAGE_TEMPLATES: usize = 46;
+pub const IMAGE_TEMPLATES_MEM: usize = 47;
 
 // Atlas items represents the area occupied by items in the cache textures.
 // The actual texture memory allocated is ATLAS_TEXTURES_MEM.
-pub const ATLAS_ITEMS_MEM: usize = 54;
-pub const ATLAS_A8_PIXELS: usize = 55;
-pub const ATLAS_A8_TEXTURES: usize = 56;
-pub const ATLAS_A16_PIXELS: usize = 57;
-pub const ATLAS_A16_TEXTURES: usize = 58;
-pub const ATLAS_RGBA8_LINEAR_PIXELS: usize = 59;
-pub const ATLAS_RGBA8_LINEAR_TEXTURES: usize = 60;
-pub const ATLAS_RGBA8_NEAREST_PIXELS: usize = 61;
-pub const ATLAS_RGBA8_NEAREST_TEXTURES: usize = 62;
-pub const ATLAS_RGBA8_GLYPHS_PIXELS: usize = 63;
-pub const ATLAS_RGBA8_GLYPHS_TEXTURES: usize = 64;
-pub const ATLAS_A8_GLYPHS_PIXELS: usize = 65;
-pub const ATLAS_A8_GLYPHS_TEXTURES: usize = 66;
-pub const ATLAS_COLOR8_LINEAR_PRESSURE: usize = 67;
-pub const ATLAS_COLOR8_NEAREST_PRESSURE: usize = 68;
-pub const ATLAS_COLOR8_GLYPHS_PRESSURE: usize = 69;
-pub const ATLAS_ALPHA8_PRESSURE: usize = 70;
-pub const ATLAS_ALPHA8_GLYPHS_PRESSURE: usize = 71;
-pub const ATLAS_ALPHA16_PRESSURE: usize = 72;
-pub const ATLAS_STANDALONE_PRESSURE: usize = 73;
+pub const ATLAS_ITEMS_MEM: usize = 48;
+pub const ATLAS_A8_PIXELS: usize = 49;
+pub const ATLAS_A8_TEXTURES: usize = 50;
+pub const ATLAS_A16_PIXELS: usize = 51;
+pub const ATLAS_A16_TEXTURES: usize = 52;
+pub const ATLAS_RGBA8_LINEAR_PIXELS: usize = 53;
+pub const ATLAS_RGBA8_LINEAR_TEXTURES: usize = 54;
+pub const ATLAS_RGBA8_NEAREST_PIXELS: usize = 55;
+pub const ATLAS_RGBA8_NEAREST_TEXTURES: usize = 56;
+pub const ATLAS_RGBA8_GLYPHS_PIXELS: usize = 57;
+pub const ATLAS_RGBA8_GLYPHS_TEXTURES: usize = 58;
+pub const ATLAS_A8_GLYPHS_PIXELS: usize = 59;
+pub const ATLAS_A8_GLYPHS_TEXTURES: usize = 60;
+pub const ATLAS_COLOR8_LINEAR_PRESSURE: usize = 61;
+pub const ATLAS_COLOR8_NEAREST_PRESSURE: usize = 62;
+pub const ATLAS_COLOR8_GLYPHS_PRESSURE: usize = 63;
+pub const ATLAS_ALPHA8_PRESSURE: usize = 64;
+pub const ATLAS_ALPHA8_GLYPHS_PRESSURE: usize = 65;
+pub const ATLAS_ALPHA16_PRESSURE: usize = 66;
+pub const ATLAS_STANDALONE_PRESSURE: usize = 67;
 
-pub const TEXTURE_CACHE_EVICTION_COUNT: usize = 74;
-pub const TEXTURE_CACHE_YOUNGEST_EVICTION: usize = 75;
-pub const EXTERNAL_IMAGE_BYTES: usize = 76;
-pub const ATLAS_TEXTURES_MEM: usize = 77;
-pub const STANDALONE_TEXTURES_MEM: usize = 78;
-pub const PICTURE_TILES_MEM: usize = 79;
-pub const RENDER_TARGET_MEM: usize = 80;
+pub const TEXTURE_CACHE_EVICTION_COUNT: usize = 68;
+pub const TEXTURE_CACHE_YOUNGEST_EVICTION: usize = 69;
+pub const EXTERNAL_IMAGE_BYTES: usize = 70;
+pub const ATLAS_TEXTURES_MEM: usize = 71;
+pub const STANDALONE_TEXTURES_MEM: usize = 72;
+pub const PICTURE_TILES_MEM: usize = 73;
+pub const RENDER_TARGET_MEM: usize = 74;
 
-pub const ALPHA_TARGETS_SAMPLERS: usize = 81;
-pub const TRANSPARENT_PASS_SAMPLERS: usize = 82;
-pub const OPAQUE_PASS_SAMPLERS: usize = 83;
-pub const TOTAL_SAMPLERS: usize = 84;
+pub const ALPHA_TARGETS_SAMPLERS: usize = 75;
+pub const TRANSPARENT_PASS_SAMPLERS: usize = 76;
+pub const OPAQUE_PASS_SAMPLERS: usize = 77;
+pub const TOTAL_SAMPLERS: usize = 78;
 
-pub const INTERNED_PRIMITIVES: usize = 85;
-pub const INTERNED_CLIPS: usize = 86;
-pub const INTERNED_TEXT_RUNS: usize = 87;
-pub const INTERNED_NORMAL_BORDERS: usize = 88;
-pub const INTERNED_IMAGE_BORDERS: usize = 89;
-pub const INTERNED_IMAGES: usize = 90;
-pub const INTERNED_YUV_IMAGES: usize = 91;
-pub const INTERNED_LINE_DECORATIONS: usize = 92;
-pub const INTERNED_LINEAR_GRADIENTS: usize = 93;
-pub const INTERNED_RADIAL_GRADIENTS: usize = 94;
-pub const INTERNED_CONIC_GRADIENTS: usize = 95;
-pub const INTERNED_PICTURES: usize = 96;
-pub const INTERNED_FILTER_DATA: usize = 97;
-pub const INTERNED_BACKDROP_CAPTURES: usize = 98;
-pub const INTERNED_BACKDROP_RENDERS: usize = 99;
-pub const INTERNED_POLYGONS: usize = 100;
-pub const INTERNED_BOX_SHADOWS: usize = 101;
-pub const DEPTH_TARGETS_MEM: usize = 102;
+pub const INTERNED_PRIMITIVES: usize = 79;
+pub const INTERNED_CLIPS: usize = 80;
+pub const INTERNED_TEXT_RUNS: usize = 81;
+pub const INTERNED_NORMAL_BORDERS: usize = 82;
+pub const INTERNED_IMAGE_BORDERS: usize = 83;
+pub const INTERNED_IMAGES: usize = 84;
+pub const INTERNED_YUV_IMAGES: usize = 85;
+pub const INTERNED_LINE_DECORATIONS: usize = 86;
+pub const INTERNED_LINEAR_GRADIENTS: usize = 87;
+pub const INTERNED_RADIAL_GRADIENTS: usize = 88;
+pub const INTERNED_CONIC_GRADIENTS: usize = 89;
+pub const INTERNED_PICTURES: usize = 90;
+pub const INTERNED_FILTER_DATA: usize = 91;
+pub const INTERNED_BACKDROP_CAPTURES: usize = 92;
+pub const INTERNED_BACKDROP_RENDERS: usize = 93;
+pub const INTERNED_POLYGONS: usize = 94;
+pub const INTERNED_BOX_SHADOWS: usize = 95;
+pub const DEPTH_TARGETS_MEM: usize = 96;
 
-pub const SHADER_BUILD_TIME: usize = 103;
+pub const SHADER_BUILD_TIME: usize = 97;
 
-pub const RENDER_REASON_FIRST: usize = 104;
-pub const RENDER_REASON_SCENE: usize = 104;
-pub const RENDER_REASON_ANIMATED_PROPERTY: usize = 105;
-pub const RENDER_REASON_RESOURCE_UPDATE: usize = 106;
-pub const RENDER_REASON_ASYNC_IMAGE: usize = 107;
-pub const RENDER_REASON_CLEAR_RESOURCES: usize = 108;
-pub const RENDER_REASON_APZ: usize = 109;
-pub const RENDER_REASON_RESIZE: usize = 110;
-pub const RENDER_REASON_WIDGET: usize = 111;
-pub const RENDER_REASON_TEXTURE_CACHE_FLUSH: usize = 112;
-pub const RENDER_REASON_SNAPSHOT: usize = 113;
-pub const RENDER_REASON_POST_RESOURCE_UPDATE_HOOKS: usize = 114;
-pub const RENDER_REASON_CONFIG_CHANGE: usize = 115;
-pub const RENDER_REASON_CONTENT_SYNC: usize = 116;
-pub const RENDER_REASON_FLUSH: usize = 117;
-pub const RENDER_REASON_TESTING: usize = 118;
-pub const RENDER_REASON_OTHER: usize = 119;
-pub const RENDER_REASON_VSYNC: usize = 120;
+pub const RENDER_REASON_FIRST: usize = 98;
+pub const RENDER_REASON_SCENE: usize = 99;
+pub const RENDER_REASON_ANIMATED_PROPERTY: usize = 100;
+pub const RENDER_REASON_RESOURCE_UPDATE: usize = 101;
+pub const RENDER_REASON_ASYNC_IMAGE: usize = 102;
+pub const RENDER_REASON_CLEAR_RESOURCES: usize = 103;
+pub const RENDER_REASON_APZ: usize = 104;
+pub const RENDER_REASON_RESIZE: usize = 105;
+pub const RENDER_REASON_WIDGET: usize = 106;
+pub const RENDER_REASON_TEXTURE_CACHE_FLUSH: usize = 107;
+pub const RENDER_REASON_SNAPSHOT: usize = 108;
+pub const RENDER_REASON_POST_RESOURCE_UPDATE_HOOKS: usize = 109;
+pub const RENDER_REASON_CONFIG_CHANGE: usize = 110;
+pub const RENDER_REASON_CONTENT_SYNC: usize = 111;
+pub const RENDER_REASON_FLUSH: usize = 112;
+pub const RENDER_REASON_TESTING: usize = 113;
+pub const RENDER_REASON_OTHER: usize = 114;
+pub const RENDER_REASON_VSYNC: usize = 115;
 
-pub const TEXTURES_CREATED: usize = 121;
-pub const TEXTURES_DELETED: usize = 122;
+pub const TEXTURES_CREATED: usize = 116;
+pub const TEXTURES_DELETED: usize = 117;
 
-pub const SLOW_FRAME_CPU_COUNT: usize = 123;
-pub const SLOW_FRAME_GPU_COUNT: usize = 124;
-pub const SLOW_FRAME_BUILD_COUNT: usize = 125;
-pub const SLOW_UPLOAD_COUNT: usize = 126;
-pub const SLOW_RENDER_COUNT: usize = 127;
-pub const SLOW_DRAW_CALLS_COUNT: usize = 128;
-pub const SLOW_TARGETS_COUNT: usize = 129;
-pub const SLOW_BLOB_COUNT: usize = 130;
-pub const SLOW_SCROLL_AFTER_SCENE_COUNT: usize = 131;
+pub const SLOW_FRAME_CPU_COUNT: usize = 118;
+pub const SLOW_FRAME_GPU_COUNT: usize = 119;
+pub const SLOW_FRAME_BUILD_COUNT: usize = 120;
+pub const SLOW_UPLOAD_COUNT: usize = 121;
+pub const SLOW_RENDER_COUNT: usize = 122;
+pub const SLOW_DRAW_CALLS_COUNT: usize = 123;
+pub const SLOW_TARGETS_COUNT: usize = 124;
+pub const SLOW_BLOB_COUNT: usize = 125;
+pub const SLOW_SCROLL_AFTER_SCENE_COUNT: usize = 126;
 
-pub const GPU_CACHE_MEM: usize = 132;
-pub const GPU_BUFFER_MEM: usize = 133;
-pub const GPU_TOTAL_MEM: usize = 134;
+pub const GPU_BUFFER_MEM: usize = 127;
+pub const GPU_TOTAL_MEM: usize = 128;
 
-pub const GPU_CACHE_PREPARE_TIME: usize = 135;
+pub const FRAME_SEND_TIME: usize = 129;
+pub const UPDATE_DOCUMENT_TIME: usize = 130;
 
-pub const FRAME_SEND_TIME: usize = 136;
-pub const UPDATE_DOCUMENT_TIME: usize = 137;
+pub const COMPOSITOR_SURFACE_UNDERLAYS: usize = 131;
+pub const COMPOSITOR_SURFACE_OVERLAYS: usize = 132;
+pub const COMPOSITOR_SURFACE_BLITS: usize = 133;
 
-pub const COMPOSITOR_SURFACE_UNDERLAYS: usize = 138;
-pub const COMPOSITOR_SURFACE_OVERLAYS: usize = 139;
-pub const COMPOSITOR_SURFACE_BLITS: usize = 140;
+/// Primitives visited by the visibility pass (all prims of every visible
+/// cluster it walks). Compare against `VISIBLE_PRIMITIVES` to see how much of
+/// each pass's traversal produces a draw.
+pub const VISIBILITY_VISITED_PRIMS: usize = 134;
+/// Primitives visited by the prepare pass. Lower than
+/// `VISIBILITY_VISITED_PRIMS` when prepare prunes whole picture subtrees whose
+/// surface has no dirty intersection.
+pub const PREPARE_VISITED_PRIMS: usize = 135;
+/// Total (primitive, command buffer) pairs emitted by prepare. Divided by
+/// `VISIBLE_PRIMITIVES` this is the average per-prim fan-out across dirty
+/// tiles and surface tasks.
+pub const PREPARE_CMD_TARGETS: usize = 136;
+/// Pictures that prepare obtained a context for this frame.
+pub const PREPARE_PICTURES: usize = 137;
 
-pub const NUM_PROFILER_EVENTS: usize = 141;
+/// New entries added to any interner by the scene build applied this frame.
+/// Only set on frames that applied a scene build, so an absent value means no
+/// scene was built. A repaint that changes nothing an interning key can see
+/// (notably a pure scroll, whose external scroll offset is normalised out in
+/// the display list builder) must report zero.
+pub const INTERN_INSERTIONS: usize = 138;
+/// Entries garbage-collected from any interner by the scene build applied this
+/// frame. Counterpart to `INTERN_INSERTIONS`; a churning key shows up as both.
+pub const INTERN_REMOVALS: usize = 139;
+/// Coordinates in the display list that were not whole app units on the grid its
+/// builder declared. Scroll offset normalization is exact only on that grid, so a
+/// non-zero value means those positions drift with the scroll offset and will
+/// churn interning and invalidation. Should be zero; useful when investigating
+/// unexplained invalidation.
+pub const OFF_GRID_COORDS: usize = 140;
+
+// The four counters below measure what moving culling and clipping from the root
+// reference frame to each surface's raster space changes.
+
+/// Clips that had to be projected into visibility space to decide whether they
+/// affect a primitive, because clip and primitive are in different coordinate
+/// systems (`ClipSpaceConversion::Transform`). Expected to fall as visibility
+/// space moves towards each surface's raster space, since a raster root inside a
+/// 3D context shares a coordinate system with the content it rasterizes.
+pub const VIS_CLIP_PROJECTIONS: usize = 141;
+/// Projections from the count above that could not be computed, which degrade an
+/// exact accept/reject into "needs a clip mask". Each one is an avoidable mask.
+pub const VIS_CLIP_PROJECTION_FAILS: usize = 142;
+/// Primitives rejected outright by a clip via the projected path. This is the
+/// counter that says content stopped being drawn, so it must not rise without an
+/// explanation.
+pub const VIS_CLIP_REJECTS: usize = 143;
+/// Surfaces whose culling rect fell back to `max_rect` because the screen rect
+/// had no pre-image in visibility space. Zero while visibility space is
+/// axis-aligned with the screen.
+pub const VIS_CULLING_RECT_FALLBACKS: usize = 144;
+/// Clips whose space cannot be related to the surface's raster space at all, so
+/// a mask is assumed. Non-zero only for a clip outside the 3D context that
+/// established the surface's raster root.
+pub const VIS_CLIP_INDETERMINATE: usize = 145;
+
+pub const NUM_PROFILER_EVENTS: usize = 146;
 
 pub struct Profiler {
     counters: Vec<Counter>,
@@ -375,7 +424,6 @@ impl Profiler {
             float("Texture cache upload", "ms", TOTAL_UPLOAD_TIME, expected(0.0..5.0)),
             float("Cache texture creation", "ms", CREATE_CACHE_TEXTURE_TIME, expected(0.0..2.0)),
             float("Cache texture deletion", "ms", DELETE_CACHE_TEXTURE_TIME, expected(0.0..1.0)),
-            float("GPU cache upload", "ms", GPU_CACHE_UPLOAD_TIME, expected(0.0..2.0)),
 
             int("Rasterized blobs", "", RASTERIZED_BLOBS, expected(0..15)),
             int("Rasterized blob tiles", "", RASTERIZED_BLOB_TILES, expected(0..15)),
@@ -403,12 +451,6 @@ impl Profiler {
             float("Font templates mem", "MB", FONT_TEMPLATES_MEM, expected(0.0..20.0)),
             int("Image templates", "", IMAGE_TEMPLATES, expected(0..100)),
             float("Image templates mem", "MB", IMAGE_TEMPLATES_MEM, expected(0.0..50.0)),
-
-            int("GPU cache rows total", "", GPU_CACHE_ROWS_TOTAL, expected(1..50)),
-            int("GPU cache rows updated", "", GPU_CACHE_ROWS_UPDATED, expected(0..25)),
-            int("GPU blocks total", "", GPU_CACHE_BLOCKS_TOTAL, expected(1..65_000)),
-            int("GPU blocks updated", "", GPU_CACHE_BLOCKS_UPDATED, expected(0..1000)),
-            int("GPU blocks saved", "", GPU_CACHE_BLOCKS_SAVED, expected(0..50_000)),
 
             float("Atlas items mem", "MB", ATLAS_ITEMS_MEM, expected(0.0..100.0)),
             int("Atlas A8 pixels", "px", ATLAS_A8_PIXELS, expected(0..1_000_000)),
@@ -465,6 +507,7 @@ impl Profiler {
             float("Depth targets mem", "MB", DEPTH_TARGETS_MEM, Expected::none()),
             float("Shader build time", "ms", SHADER_BUILD_TIME, Expected::none()),
             // We use the expected range to highlight render reasons that are happening.
+            float("Reason First", "", RENDER_REASON_FIRST, expected(0.0..0.01)),
             float("Reason scene", "", RENDER_REASON_SCENE, expected(0.0..0.01)),
             float("Reason animated property", "", RENDER_REASON_ANIMATED_PROPERTY, expected(0.0..0.01)),
             float("Reason resource update", "", RENDER_REASON_RESOURCE_UPDATE, expected(0.0..0.01)),
@@ -496,17 +539,30 @@ impl Profiler {
             int("Slow: blobs", "%", SLOW_BLOB_COUNT, Expected::none()),
             int("Slow: after scene", "%", SLOW_SCROLL_AFTER_SCENE_COUNT, Expected::none()),
 
-            float("GPU cache mem", "MB", GPU_CACHE_MEM, Expected::none()),
             float("GPU buffer mem", "MB", GPU_BUFFER_MEM, Expected::none()),
             float("GPU total mem", "MB", GPU_TOTAL_MEM, Expected::none()),
 
-            float("GPU cache preapre", "ms", GPU_CACHE_PREPARE_TIME, Expected::none()),
             float("Frame send", "ms", FRAME_SEND_TIME, Expected::none()),
             float("Update document", "ms", UPDATE_DOCUMENT_TIME, Expected::none()),
 
             int("Compositor surface underlays", "", COMPOSITOR_SURFACE_UNDERLAYS, Expected::none()),
             int("Compositor surface overlays", "", COMPOSITOR_SURFACE_OVERLAYS, Expected::none()),
             int("Compositor surface blits", "", COMPOSITOR_SURFACE_BLITS, Expected::none()),
+
+            int("Visibility visited prims", "", VISIBILITY_VISITED_PRIMS, Expected::none()),
+            int("Prepare visited prims", "", PREPARE_VISITED_PRIMS, Expected::none()),
+            int("Prepare cmd targets", "", PREPARE_CMD_TARGETS, Expected::none()),
+            int("Prepare pictures", "", PREPARE_PICTURES, Expected::none()),
+
+            int("Intern insertions", "", INTERN_INSERTIONS, Expected::none()),
+            int("Intern removals", "", INTERN_REMOVALS, Expected::none()),
+            int("Off-grid coords", "", OFF_GRID_COORDS, expected(0..1)),
+
+            int("Vis clip projections", "", VIS_CLIP_PROJECTIONS, Expected::none()),
+            int("Vis clip projection fails", "", VIS_CLIP_PROJECTION_FAILS, Expected::none()),
+            int("Vis clip rejects", "", VIS_CLIP_REJECTS, Expected::none()),
+            int("Vis culling rect fallbacks", "", VIS_CULLING_RECT_FALLBACKS, expected(0..1)),
+            int("Vis clip indeterminate", "", VIS_CLIP_INDETERMINATE, Expected::none()),
         ];
 
         let mut counters = Vec::with_capacity(profile_counters.len());
@@ -522,7 +578,7 @@ impl Profiler {
             slow_scroll_frames: ProfilerFrameCollection::new(),
 
             counters,
-            start: precise_time_ns(),
+            start: zeitstempel::now(),
             avg_over_period: ONE_SECOND_NS / 2,
             slow_cpu_frame_threshold: 10.0,
 
@@ -541,6 +597,20 @@ impl Profiler {
 
             ui: Vec::new(),
         }
+    }
+
+    /// The named values of the counters that were set in a transaction profile.
+    pub fn counter_values(&self, profile: &TransactionProfile) -> Vec<ProfileCounterValue> {
+        profile.events.iter().zip(self.counters.iter()).filter_map(|(event, counter)| {
+            match *event {
+                Event::Value(value) => Some(ProfileCounterValue {
+                    name: counter.name,
+                    unit: counter.unit,
+                    value,
+                }),
+                _ => None,
+            }
+        }).collect()
     }
 
     pub fn set_parameter(&mut self, param: &api::Parameter) {
@@ -630,9 +700,25 @@ impl Profiler {
         }
     }
 
+    #[cfg(feature = "debugger")]
+    pub fn collect_updates_for_debugger(&self) -> Vec<ProfileCounterUpdate> {
+        let mut updates = Vec::new();
+
+        for (i, counter) in self.counters.iter().enumerate() {
+            if let Some(value) = counter.get() {
+                updates.push(ProfileCounterUpdate {
+                    id: ProfileCounterId(i),
+                    value,
+                });
+            }
+        }
+
+        updates
+    }
+
     // Call at the end of every frame, after setting the counter values and before drawing the counters.
     pub fn update(&mut self) {
-        let now = precise_time_ns();
+        let now = zeitstempel::now();
         let update_avg = (now - self.start) > self.avg_over_period;
         if update_avg {
             self.start = now;
@@ -690,7 +776,6 @@ impl Profiler {
             RENDER_TARGET_MEM,
             DEPTH_TARGETS_MEM,
             ATLAS_ITEMS_MEM,
-            GPU_CACHE_MEM,
             GPU_BUFFER_MEM,
         ] {
             if let Some(val) = self.counters[counter].get() {
@@ -788,10 +873,6 @@ impl Profiler {
                     flush_counters(&mut counters, selection);
                     selection.push(Item::GpuTimeQueries);
                 }
-                "GPU cache bars" => {
-                    flush_counters(&mut counters, selection);
-                    selection.push(Item::GpuCacheBars);
-                }
                 "Paint phase graph" => {
                     flush_counters(&mut counters, selection);
                     selection.push(Item::PaintPhaseGraph);
@@ -835,8 +916,9 @@ impl Profiler {
         }
     }
 
-    pub fn get(&self, id: usize) -> Option<f64> {
-        self.counters[id].get()
+    #[cfg(feature = "debugger")]
+    pub fn counters(&self) -> &[Counter] {
+        &self.counters
     }
 
     fn draw_counters(
@@ -1077,102 +1159,6 @@ impl Profiler {
         }
     }
 
-    fn draw_bar(
-        label: &str,
-        label_color: ColorU,
-        counters: &[(ColorU, usize)],
-        x: f32, y: f32,
-        debug_renderer: &mut DebugRenderer,
-    ) -> default::Rect<f32> {
-        let x = x + 8.0;
-        let y = y + 24.0;
-        let text_rect = debug_renderer.add_text(
-            x, y,
-            label,
-            label_color,
-            None,
-        );
-
-        let x_base = text_rect.max_x() + 10.0;
-        let width = 300.0;
-        let total_value = counters.last().unwrap().1;
-        let scale = width / total_value as f32;
-        let mut x_current = x_base;
-
-        for &(color, counter) in counters {
-            let x_stop = x_base + counter as f32 * scale;
-            debug_renderer.add_quad(
-                x_current,
-                text_rect.origin.y,
-                x_stop,
-                text_rect.max_y(),
-                color,
-                color,
-            );
-            x_current = x_stop;
-
-        }
-
-        let mut total_rect = text_rect;
-        total_rect.size.width += width + 10.0;
-
-        total_rect
-    }
-
-    fn draw_gpu_cache_bars(&self, x: f32, mut y: f32, text_buffer: &mut String, debug_renderer: &mut DebugRenderer) -> default::Rect<f32> {
-        let color_updated = ColorU::new(0xFF, 0, 0, 0xFF);
-        let color_free = ColorU::new(0, 0, 0xFF, 0xFF);
-        let color_saved = ColorU::new(0, 0xFF, 0, 0xFF);
-
-        let updated_blocks = self.get(GPU_CACHE_BLOCKS_UPDATED).unwrap_or(0.0) as usize;
-        let saved_blocks = self.get(GPU_CACHE_BLOCKS_SAVED).unwrap_or(0.0) as usize;
-        let allocated_blocks = self.get(GPU_CACHE_BLOCKS_TOTAL).unwrap_or(0.0) as usize;
-        let allocated_rows = self.get(GPU_CACHE_ROWS_TOTAL).unwrap_or(0.0) as usize;
-        let updated_rows = self.get(GPU_CACHE_ROWS_UPDATED).unwrap_or(0.0) as usize;
-        let requested_blocks = updated_blocks + saved_blocks;
-        let total_blocks = allocated_rows * MAX_VERTEX_TEXTURE_WIDTH;
-
-        set_text!(text_buffer, "GPU cache rows ({}):", allocated_rows);
-
-        let rect0 = Profiler::draw_bar(
-            text_buffer,
-            ColorU::new(0xFF, 0xFF, 0xFF, 0xFF),
-            &[
-                (color_updated, updated_rows),
-                (color_free, allocated_rows),
-            ],
-            x, y,
-            debug_renderer,
-        );
-
-        y = rect0.max_y();
-
-        let rect1 = Profiler::draw_bar(
-            "GPU cache blocks",
-            ColorU::new(0xFF, 0xFF, 0, 0xFF),
-            &[
-                (color_updated, updated_blocks),
-                (color_saved, requested_blocks),
-                (color_free, allocated_blocks),
-                (ColorU::new(0, 0, 0, 0xFF), total_blocks),
-            ],
-            x, y,
-            debug_renderer,
-        );
-
-        let total_rect = rect0.union(&rect1).inflate(10.0, 10.0);
-        debug_renderer.add_quad(
-            total_rect.origin.x,
-            total_rect.origin.y,
-            total_rect.origin.x + total_rect.size.width,
-            total_rect.origin.y + total_rect.size.height,
-            ColorF::new(0.1, 0.1, 0.1, 0.8).into(),
-            ColorF::new(0.2, 0.2, 0.2, 0.8).into(),
-        );
-
-        total_rect
-    }
-
     // Draws a frame graph for a given frame collection.
     fn draw_frame_graph(
         frame_collection: &ProfilerFrameCollection,
@@ -1338,9 +1324,6 @@ impl Profiler {
                 Item::GpuTimeQueries => {
                     Profiler::draw_frame_graph(&self.gpu_frames, x, y, debug_renderer)
                 }
-                Item::GpuCacheBars => {
-                    self.draw_gpu_cache_bars(x, y, &mut text_buffer, debug_renderer)
-                }
                 Item::PaintPhaseGraph => {
                     Profiler::draw_frame_graph(&self.frame_stats, x, y, debug_renderer)
                 }
@@ -1447,10 +1430,10 @@ pub trait ProfilerHooks : Send + Sync {
     fn unregister_thread(&self);
 
     /// Called at the beginning of a profile scope.
-    fn begin_marker(&self, label: &str);
+    fn begin_marker(&self, label: &str, text: &str);
 
     /// Called at the end of a profile scope.
-    fn end_marker(&self, label: &str);
+    fn end_marker(&self, label: &str, text: &str);
 
     /// Called to mark an event happening.
     fn event_marker(&self, label: &str);
@@ -1482,9 +1465,11 @@ pub fn set_profiler_hooks(hooks: Option<&'static dyn ProfilerHooks>) {
     }
 }
 
+#[allow(unused)]
 /// A simple RAII style struct to manage a profile scope.
 pub struct ProfileScope {
     name: &'static str,
+    text: &'static str,
 }
 
 
@@ -1534,15 +1519,31 @@ pub fn thread_is_being_profiled() -> bool {
 
 impl ProfileScope {
     /// Begin a new profile scope
+    #[allow(unused)]
     pub fn new(name: &'static str) -> Self {
         unsafe {
             if let Some(ref hooks) = PROFILER_HOOKS {
-                hooks.begin_marker(name);
+                hooks.begin_marker(name, "");
             }
         }
 
         ProfileScope {
             name,
+            text: "",
+        }
+    }
+
+    #[allow(unused)]
+    pub fn with_text(name: &'static str, text: &'static str) -> Self {
+        unsafe {
+            if let Some(ref hooks) = PROFILER_HOOKS {
+                hooks.begin_marker(name, text);
+            }
+        }
+
+        ProfileScope {
+            name,
+            text,
         }
     }
 }
@@ -1551,16 +1552,32 @@ impl Drop for ProfileScope {
     fn drop(&mut self) {
         unsafe {
             if let Some(ref hooks) = PROFILER_HOOKS {
-                hooks.end_marker(self.name);
+                hooks.end_marker(self.name, self.text);
             }
         }
     }
 }
 
+#[cfg(not(feature="tracy"))]
 /// A helper macro to define profile scopes.
 macro_rules! profile_marker {
     ($string:expr) => {
         let _scope = $crate::profiler::ProfileScope::new($string);
+    };
+    ($string:expr, $text:expr) => {
+        let _scope = $crate::profiler::ProfileScope::with_text($string, $text);
+    };
+}
+
+#[cfg(feature="tracy")]
+/// A helper macro to define profile scopes.
+macro_rules! profile_marker {
+    ($string:expr) => {
+        tracy_rs::profile_scope!($string)
+    };
+    ($string:expr, $text:expr) => {
+        // Just drop the extra text in the case of tracy.
+        tracy_rs::profile_scope!($string)
     };
 }
 
@@ -1620,6 +1637,14 @@ impl Expected<i64> {
     }
 }
 
+/// The value a profiler counter was set to in one transaction profile.
+#[derive(Copy, Clone, Debug)]
+pub struct ProfileCounterValue {
+    pub name: &'static str,
+    pub unit: &'static str,
+    pub value: f64,
+}
+
 pub struct CounterDescriptor {
     pub name: &'static str,
     pub unit: &'static str,
@@ -1660,7 +1685,7 @@ impl Counter {
             unit: descriptor.unit,
             show_as: descriptor.show_as,
             expected: descriptor.expected.clone(),
-            value: std::f64::NAN,
+            value: f64::NAN,
             num_samples: 0,
             sum: 0.0,
             next_max: 0.0,
@@ -1750,7 +1775,7 @@ impl Counter {
             graph.set(self.value);
         }
 
-        self.value = std::f64::NAN;
+        self.value = f64::NAN;
 
         if update_avg {
             if self.num_samples > 0 {
@@ -1763,7 +1788,7 @@ impl Counter {
             }
             self.sum = 0.0;
             self.num_samples = 0;
-            self.next_max = std::f64::MIN;
+            self.next_max = f64::MIN;
         }
     }
 }
@@ -1801,7 +1826,7 @@ impl TransactionProfile {
     }
 
     pub fn start_time(&mut self, id: usize) {
-        let ns = precise_time_ns();
+        let ns = zeitstempel::now();
         self.events[id] = Event::Start(ns);
     }
 
@@ -1812,8 +1837,8 @@ impl TransactionProfile {
     /// Similar to end_time, but doesn't panic if not matched with start_time.
     pub fn end_time_if_started(&mut self, id: usize) -> Option<f64> {
         if let Event::Start(start) = self.events[id] {
-            let now = precise_time_ns();
-            let time_ns = now - start;
+            let now = zeitstempel::now();
+            let time_ns = now.saturating_sub(start);
 
             let time_ms = ns_to_ms(time_ns);
             self.events[id] = Event::Value(time_ms);
@@ -1909,7 +1934,7 @@ impl TransactionProfile {
 impl GlyphRasterizeProfiler for TransactionProfile {
     fn start_time(&mut self) {
         let id = GLYPH_RESOLVE_TIME;
-        let ns = precise_time_ns();
+        let ns = zeitstempel::now();
         self.events[id] = Event::Start(ns);
     }
 
@@ -2051,7 +2076,6 @@ pub struct CpuFrameTimings {
     pub frame_building_other: f64,
     pub frame_send: f64,
     pub uploads: f64,
-    pub gpu_cache: f64,
     pub draw_calls: f64,
     pub unknown: f64,
 }
@@ -2067,10 +2091,9 @@ impl CpuFrameTimings {
         let frame_send = counters[FRAME_SEND_TIME].get().unwrap_or(0.0);
         let renderer = counters[RENDERER_TIME].get().unwrap_or(0.0);
         let uploads = counters[TEXTURE_CACHE_UPDATE_TIME].get().unwrap_or(0.0);
-        let gpu_cache = counters[GPU_CACHE_PREPARE_TIME].get().unwrap_or(0.0);
         let frame_build = visibility + prepare + glyph_resolve + batching;
         let update_document = counters[UPDATE_DOCUMENT_TIME].get().unwrap_or(0.0) - frame_build;
-        let draw_calls = renderer - uploads - gpu_cache;
+        let draw_calls = renderer - uploads;
         let unknown = (total - (api_send + update_document + frame_build + frame_send + renderer)).max(0.0);
         let frame_building_other = (counters[FRAME_BUILDING_TIME].get().unwrap_or(0.0) - frame_build).max(0.0);
 
@@ -2085,7 +2108,6 @@ impl CpuFrameTimings {
             frame_building_other,
             frame_send,
             uploads,
-            gpu_cache,
             draw_calls,
             unknown,
         }
@@ -2117,10 +2139,9 @@ impl CpuFrameTimings {
                 sample(self.frame_send, "08. frame send", ColorF { r: 1.0, g: 0.8, b: 0.8, a: 1.0 }),
                 // Renderer
                 sample(self.uploads, "09. texture uploads", ColorF { r: 0.8, g: 0.0, b: 0.3, a: 1.0 }),
-                sample(self.gpu_cache, "10. gpu cache update", ColorF { r: 0.5, g: 0.0, b: 0.4, a: 1.0 }),
-                sample(self.draw_calls, "11. draw calls", ColorF { r: 1.0, g: 0.5, b: 0.0, a: 1.0 }),
+                sample(self.draw_calls, "10. draw calls", ColorF { r: 1.0, g: 0.5, b: 0.0, a: 1.0 }),
                 // Unaccounted time
-                sample(self.unknown, "12. unknown", ColorF { r: 0.3, g: 0.3, b: 0.3, a: 1.0 }),
+                sample(self.unknown, "11. unknown", ColorF { r: 0.3, g: 0.3, b: 0.3, a: 1.0 }),
             ],
         }
     }
@@ -2145,11 +2166,60 @@ enum Item {
     ChangeIndicator(usize),
     Fps,
     GpuTimeQueries,
-    GpuCacheBars,
     PaintPhaseGraph,
     SlowScrollFrames,
     Text(String),
     Space,
     Column,
     Row,
+}
+
+pub struct RenderCommandLog {
+    items: Vec<RenderCommandInfo>,
+    current_shader: &'static str,
+}
+
+impl RenderCommandLog {
+    pub fn new() -> Self {
+        RenderCommandLog {
+            items: Vec::new(),
+            current_shader: "",
+        }
+    }
+
+    pub fn get(&self) -> &[RenderCommandInfo] {
+        &self.items
+    }
+
+    pub fn clear(&mut self) {
+        self.current_shader = "";
+        self.items.clear();
+    }
+
+    pub fn set_shader(&mut self, shader: &'static str) {
+        self.current_shader = shader;
+    }
+
+    pub fn begin_render_target(&mut self, label: &str, size: DeviceIntSize) {
+        self.items.push(RenderCommandInfo::RenderTarget { kind: label.into(), size })
+    }
+
+    pub fn draw(&mut self, instances: u32) {
+        self.items.push(RenderCommandInfo::DrawCall {
+            shader: self.current_shader.into(),
+            instances,
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn end_time_before_start_time() {
+        let mut profile = TransactionProfile::new();
+        profile.events[API_SEND_TIME] = Event::Start(zeitstempel::now() + 1_000_000);
+        assert_eq!(profile.end_time_if_started(API_SEND_TIME), Some(0.0));
+    }
 }

@@ -15,7 +15,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
     "resource://gre/modules/components-utils/ClientEnvironment.sys.mjs",
   ClientID: "resource://gre/modules/ClientID.sys.mjs",
   ProfileAge: "resource://gre/modules/ProfileAge.sys.mjs",
-  ShellService: "resource:///modules/ShellService.sys.mjs",
+  ShellService: "moz-src:///browser/components/shell/ShellService.sys.mjs",
   TelemetryUtils: "resource://gre/modules/TelemetryUtils.sys.mjs",
 });
 
@@ -108,7 +108,7 @@ export var UsageReporting = {
       Glean.usage.appDisplayVersion.set(lazy.ClientEnvironmentBase.version);
       Glean.usage.appChannel.set(lazy.ClientEnvironmentBase.channel);
       Glean.usage.isDefaultBrowser.set(
-        lazy.ClientEnvironmentBase.isDefaultBrowser
+        await lazy.ClientEnvironmentBase.isDefaultBrowser
       );
       Glean.usage.distributionId.set(lazy.ClientEnvironmentBase.distribution);
       // Get profile firstUse (ms) and convert to µs for recording

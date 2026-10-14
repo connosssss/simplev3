@@ -11,12 +11,10 @@ import android.os.StrictMode
 import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationManagerCompat
 import androidx.preference.PreferenceManager
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Dispatchers.IO
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.async
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import mozilla.components.browser.state.search.SearchEngine
@@ -26,7 +24,7 @@ import mozilla.components.feature.search.telemetry.SearchProviderModel
 import mozilla.components.feature.search.telemetry.SerpTelemetryRepository
 import mozilla.components.service.glean.net.ConceptFetchHttpUploader
 import mozilla.components.support.base.log.logger.Logger
-import mozilla.components.support.ktx.android.content.res.readJSONObject
+import mozilla.components.support.utils.Browsers
 import mozilla.telemetry.glean.Glean
 import mozilla.telemetry.glean.config.Configuration
 import org.mozilla.focus.BuildConfig
@@ -52,9 +50,14 @@ import org.mozilla.focus.utils.Settings
  *
  * To track events, use Glean's generated bindings directly.
  */
-class GleanMetricsService(context: Context) : MetricsService {
+class GleanMetricsService(
+    context: Context,
+    mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
+    val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+) : MetricsService {
 
-    private val activationPing = ActivationPing(context)
+    private val serviceScope = CoroutineScope(SupervisorJob() + mainDispatcher)
+    private val activationPing = ActivationPing(context, serviceScope, ioDispatcher)
 
     companion object {
         // collection name to fetch from server for SERP telemetry
@@ -75,21 +78,23 @@ class GleanMetricsService(context: Context) : MetricsService {
         }
 
         /**
-         * Determines whether or not telemetry is enabled.
-         * Currently, according to our lean data policy, general telemetry is disabled.
+         * Determines whether or not telemetry is enabled. Currently, according to our lean data policy, general
+         * telemetry is disabled.
          */
         @JvmStatic
         @Suppress("FunctionOnlyReturningConstant", "UNUSED_PARAMETER")
         fun isTelemetryEnabled(context: Context? = null): Boolean = false
 
         /**
-         * Determines whether or not daily usage telemetry should be enabled by default.
-         * This matches whether general telemetry was enabled prior to the switch being removed.
-         * Currently, according to our lean data policy, general telemetry is disabled.
+         * Determines whether or not daily usage telemetry should be enabled by default. This matches whether general
+         * telemetry was enabled prior to the switch being removed. Currently, according to our lean data policy,
+         * general telemetry is disabled.
          */
         @JvmStatic
         fun shouldTelemetryBeEnabledByDefault(context: Context): Boolean {
-            if (isDeviceWithTelemetryDisabled()) { return false }
+            if (isDeviceWithTelemetryDisabled()) {
+                return false
+            }
 
             // The first access to shared preferences will require a disk read.
             val threadPolicy = StrictMode.allowThreadDiskReads()
@@ -107,7 +112,6 @@ class GleanMetricsService(context: Context) : MetricsService {
         }
     }
 
-    @OptIn(DelicateCoroutinesApi::class)
     override fun initialize(context: Context) {
         val components = context.components
         val settings = context.settings
@@ -116,42 +120,37 @@ class GleanMetricsService(context: Context) : MetricsService {
         Glean.initialize(
             applicationContext = context,
             uploadEnabled = telemetryEnabled,
-            configuration = Configuration(
-                channel = BuildConfig.FLAVOR,
-                httpClient = ConceptFetchHttpUploader(
-                    client = lazy(LazyThreadSafetyMode.NONE) { components.client },
-                    usePrivateRequest = true,
-                    supportsOhttp = true,
+            configuration =
+                Configuration(
+                    channel = BuildConfig.FLAVOR,
+                    httpClient =
+                        ConceptFetchHttpUploader(
+                            client = lazy(LazyThreadSafetyMode.NONE) { components.client },
+                            usePrivateRequest = true,
+                            supportsOhttp = true,
+                        ),
                 ),
-            ),
             buildInfo = GleanBuildInfo.buildInfo,
         )
 
         Glean.registerPings(Pings)
 
         if (telemetryEnabled) {
-            CoroutineScope(Dispatchers.Main).launch {
-                val readJson = { context.assets.readJSONObject("search/search_telemetry_v2.json") }
-                val providerList = withContext(IO) {
+            serviceScope.launch {
+                val providerList =
                     SerpTelemetryRepository(
-                        rootStorageDirectory = context.filesDir,
-                        readJson = readJson,
-                        collectionName = COLLECTION_NAME,
-                        serverUrl = if (context.settings.useProductionRemoteSettingsServer) {
-                            REMOTE_PROD_ENDPOINT_URL
-                        } else {
-                            REMOTE_STAGE_ENDPOINT_URL
-                        },
-                    ).updateProviderList()
-                }
+                            collectionName = COLLECTION_NAME,
+                            remoteSettingsService = context.components.remoteSettingsService,
+                        )
+                        .updateProviderList()
                 installSearchTelemetryExtensions(components, providerList)
             }
         }
 
         // Do this immediately after init.
-        GlobalScope.launch(IO) {
+        serviceScope.launch {
             // Wait for preferences to be collected before we send the activation ping.
-            collectPrefMetricsAsync(components, settings, context).await()
+            collectPrefMetrics(components, settings, context)
 
             components.store.waitForSelectedOrDefaultSearchEngine { searchEngine ->
                 if (searchEngine != null) {
@@ -163,72 +162,76 @@ class GleanMetricsService(context: Context) : MetricsService {
         }
     }
 
-    private fun collectPrefMetricsAsync(
+    private suspend fun collectPrefMetrics(
         components: Components,
         settings: Settings,
         context: Context,
-    ) = CoroutineScope(IO).async {
-        val installedBrowsers = BrowsersCache.all(context)
-        val hasFenixInstalled = FenixProductDetector.getInstalledFenixVersions(context).isNotEmpty()
-        val isFenixDefaultBrowser = FenixProductDetector.isFenixDefaultBrowser(installedBrowsers.defaultBrowser)
-        val isFocusDefaultBrowser = installedBrowsers.isDefaultBrowser
+    ) =
+        withContext(ioDispatcher) {
+            val installedBrowsers = Browsers.all(context)
+            val hasFenixInstalled = FenixProductDetector.getInstalledFenixVersions(context).isNotEmpty()
+            val isFenixDefaultBrowser = FenixProductDetector.isFenixDefaultBrowser(installedBrowsers.defaultBrowser)
+            val isFocusDefaultBrowser = Browsers.isDefaultBrowser(context)
 
-        Metrics.searchWidgetInstalled.set(settings.searchWidgetInstalled)
+            Metrics.searchWidgetInstalled.set(settings.searchWidgetInstalled)
 
-        Browser.isDefault.set(isFocusDefaultBrowser)
-        Browser.localeOverride.set(components.store.state.locale?.displayName ?: "none")
-        val shortcutsOnHomeNumber = components.topSitesStorage.getTopSites(
-            totalSites = TOP_SITES_MAX_LIMIT,
-            frecencyConfig = null,
-        ).size
-        Shortcuts.shortcutsOnHomeNumber.set(shortcutsOnHomeNumber.toLong())
+            Browser.isDefault.set(isFocusDefaultBrowser)
+            Browser.localeOverride.set(components.store.state.locale?.displayName ?: "none")
+            val shortcutsOnHomeNumber =
+                components.topSitesStorage
+                    .getTopSites(
+                        totalSites = TOP_SITES_MAX_LIMIT,
+                        frecencyConfig = null,
+                    )
+                    .size
+            Shortcuts.shortcutsOnHomeNumber.set(shortcutsOnHomeNumber.toLong())
 
-        val installSourcePackage = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
-        } else {
-            @Suppress("DEPRECATION")
-            context.packageManager.getInstallerPackageName(context.packageName)
-        }
-
-        Browser.installSource.set(installSourcePackage.orEmpty())
-
-        // Fenix telemetry
-        MozillaProducts.hasFenixInstalled.set(hasFenixInstalled)
-        MozillaProducts.isFenixDefaultBrowser.set(isFenixDefaultBrowser)
-
-        // tracking protection metrics
-        TrackingProtection.hasAdvertisingBlocked.set(settings.hasAdvertisingBlocked())
-        TrackingProtection.hasAnalyticsBlocked.set(settings.hasAnalyticsBlocked())
-        TrackingProtection.hasContentBlocked.set(settings.shouldBlockOtherTrackers())
-        TrackingProtection.hasSocialBlocked.set(settings.hasSocialBlocked())
-
-        // theme telemetry
-        val currentTheme =
-            when {
-                settings.lightThemeSelected -> {
-                    "Light"
-                }
-                settings.darkThemeSelected -> {
-                    "Dark"
+            val installSourcePackage =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
+                } else {
+                    @Suppress("DEPRECATION") context.packageManager.getInstallerPackageName(context.packageName)
                 }
 
-                settings.useDefaultThemeSelected -> {
-                    "Follow device"
+            Browser.installSource.set(installSourcePackage.orEmpty())
+
+            // Fenix telemetry
+            MozillaProducts.hasFenixInstalled.set(hasFenixInstalled)
+            MozillaProducts.isFenixDefaultBrowser.set(isFenixDefaultBrowser)
+
+            // tracking protection metrics
+            TrackingProtection.hasAdvertisingBlocked.set(settings.shouldBlockAdTrackers())
+            TrackingProtection.hasAnalyticsBlocked.set(settings.shouldBlockAnalyticTrackers())
+            TrackingProtection.hasContentBlocked.set(settings.shouldBlockOtherTrackers())
+            TrackingProtection.hasSocialBlocked.set(settings.shouldBlockSocialTrackers())
+
+            // theme telemetry
+            val currentTheme =
+                when {
+                    settings.lightThemeSelected -> {
+                        "Light"
+                    }
+
+                    settings.darkThemeSelected -> {
+                        "Dark"
+                    }
+
+                    settings.useDefaultThemeSelected -> {
+                        "Follow device"
+                    }
+
+                    else -> ""
                 }
-                else -> ""
+            if (currentTheme.isNotEmpty()) {
+                Preferences.userTheme.set(currentTheme)
             }
-        if (currentTheme.isNotEmpty()) {
-            Preferences.userTheme.set(currentTheme)
-        }
 
-        try {
-            Notifications.permissionGranted.set(
-                NotificationManagerCompat.from(context).areNotificationsEnabled(),
-            )
-        } catch (e: RemoteException) {
-            Logger.warn("Failed to check notifications state", e)
+            try {
+                Notifications.permissionGranted.set(NotificationManagerCompat.from(context).areNotificationsEnabled())
+            } catch (e: RemoteException) {
+                Logger.warn("Failed to check notifications state", e)
+            }
         }
-    }
 
     private fun getDefaultSearchEngineIdentifierForTelemetry(context: Context): String {
         val searchEngine = context.components.store.state.search.selectedOrDefaultSearchEngine

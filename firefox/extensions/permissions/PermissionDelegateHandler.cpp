@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,7 +12,7 @@
 #include "mozilla/StaticPrefs_permissions.h"
 #include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/Document.h"
-#include "mozilla/dom/FeaturePolicyUtils.h"
+#include "mozilla/dom/PermissionsPolicyUtils.h"
 #include "mozilla/dom/WindowContext.h"
 #include "mozilla/PermissionManager.h"
 
@@ -29,10 +27,11 @@ typedef PermissionDelegateHandler::PermissionDelegateInfo DelegateInfo;
 // give various types of controls over each of these.
 static const DelegateInfo sPermissionsMap[] = {
     // Permissions API map. All permission names have to be in lowercase.
-    {"geo", u"geolocation", DelegatePolicy::eDelegateUseFeaturePolicy},
+    {"geo", u"geolocation", DelegatePolicy::eDelegateUsePermissionsPolicy},
     // The same with geo, but we support both to save some conversions between
     // "geo" and "geolocation"
-    {"geolocation", u"geolocation", DelegatePolicy::eDelegateUseFeaturePolicy},
+    {"geolocation", u"geolocation",
+     DelegatePolicy::eDelegateUsePermissionsPolicy},
     {"desktop-notification", nullptr,
      DelegatePolicy::ePersistDeniedCrossOrigin},
     {"persistent-storage", nullptr, DelegatePolicy::ePersistDeniedCrossOrigin},
@@ -40,13 +39,24 @@ static const DelegateInfo sPermissionsMap[] = {
     {"midi", nullptr, DelegatePolicy::eDelegateUseIframeOrigin},
     // Like "midi" but with sysex support.
     {"midi-sysex", nullptr, DelegatePolicy::eDelegateUseIframeOrigin},
+    {"serial", nullptr, DelegatePolicy::eDelegateUsePermissionsPolicy},
     {"storage-access", nullptr, DelegatePolicy::eDelegateUseIframeOrigin},
-    {"camera", u"camera", DelegatePolicy::eDelegateUseFeaturePolicy},
-    {"microphone", u"microphone", DelegatePolicy::eDelegateUseFeaturePolicy},
-    {"screen", u"display-capture", DelegatePolicy::eDelegateUseFeaturePolicy},
-    {"xr", u"xr-spatial-tracking", DelegatePolicy::eDelegateUseFeaturePolicy},
+    {"camera", u"camera", DelegatePolicy::eDelegateUsePermissionsPolicy},
+    {"microphone", u"microphone",
+     DelegatePolicy::eDelegateUsePermissionsPolicy},
+    {"screen", u"display-capture",
+     DelegatePolicy::eDelegateUsePermissionsPolicy},
+    {"xr", u"xr-spatial-tracking",
+     DelegatePolicy::eDelegateUsePermissionsPolicy},
+    {"loopback-network", u"loopback-network",
+     DelegatePolicy::eDelegateUsePermissionsPolicy},
+    {"local-network", u"local-network",
+     DelegatePolicy::eDelegateUsePermissionsPolicy},
+
     {"screen-wake-lock", u"screen-wake-lock",
-     DelegatePolicy::eDelegateUseFeaturePolicy}};
+     DelegatePolicy::eDelegateUsePermissionsPolicy},
+    {"speech-recognition-model-download", nullptr,
+     DelegatePolicy::eDelegateUseIframeOrigin}};
 
 static_assert(PermissionDelegateHandler::DELEGATED_PERMISSION_COUNT ==
                   (sizeof(sPermissionsMap) / sizeof(DelegateInfo)),
@@ -95,7 +105,8 @@ PermissionDelegateHandler::MaybeUnsafePermissionDelegate(
     }
 
     nsAutoString featureName(info->mFeatureName);
-    if (FeaturePolicyUtils::IsFeatureUnsafeAllowedAll(mDocument, featureName)) {
+    if (PermissionsPolicyUtils::IsFeatureUnsafeAllowedAll(mDocument,
+                                                          featureName)) {
       *aMaybeUnsafe = true;
       return NS_OK;
     }
@@ -118,7 +129,7 @@ nsresult PermissionDelegateHandler::GetDelegatePrincipal(
   }
 
   if (info->mPolicy == DelegatePolicy::eDelegateUseTopOrigin ||
-      info->mPolicy == DelegatePolicy::eDelegateUseFeaturePolicy) {
+      info->mPolicy == DelegatePolicy::eDelegateUsePermissionsPolicy) {
     return aRequest->GetTopLevelPrincipal(aResult);
   }
 
@@ -163,15 +174,15 @@ static bool IsCrossOriginContentToTop(Document* aDocument) {
   return !aDocument->NodePrincipal()->Subsumes(topLevelPrincipal);
 }
 
-bool PermissionDelegateHandler::HasFeaturePolicyAllowed(
+bool PermissionDelegateHandler::HasPermissionsPolicyAllowed(
     const DelegateInfo* info) const {
-  if (info->mPolicy != DelegatePolicy::eDelegateUseFeaturePolicy ||
+  if (info->mPolicy != DelegatePolicy::eDelegateUsePermissionsPolicy ||
       !info->mFeatureName) {
     return true;
   }
 
   nsAutoString featureName(info->mFeatureName);
-  return FeaturePolicyUtils::IsFeatureAllowed(mDocument, featureName);
+  return PermissionsPolicyUtils::IsFeatureAllowed(mDocument, featureName);
 }
 
 bool PermissionDelegateHandler::HasPermissionDelegated(
@@ -185,7 +196,7 @@ bool PermissionDelegateHandler::HasPermissionDelegated(
 
   const DelegateInfo* info =
       GetPermissionDelegateInfo(NS_ConvertUTF8toUTF16(aType));
-  if (!info || !HasFeaturePolicyAllowed(info)) {
+  if (!info || !HasPermissionsPolicyAllowed(info)) {
     return false;
   }
 
@@ -211,7 +222,7 @@ nsresult PermissionDelegateHandler::GetPermission(const nsACString& aType,
 
   const DelegateInfo* info =
       GetPermissionDelegateInfo(NS_ConvertUTF8toUTF16(aType));
-  if (!info || !HasFeaturePolicyAllowed(info)) {
+  if (!info || !HasPermissionsPolicyAllowed(info)) {
     *aPermission = nsIPermissionManager::DENY_ACTION;
     return NS_OK;
   }
@@ -234,7 +245,7 @@ nsresult PermissionDelegateHandler::GetPermission(const nsACString& aType,
   RefPtr<BrowsingContext> bc = mDocument->GetBrowsingContext();
 
   if ((info->mPolicy == DelegatePolicy::eDelegateUseTopOrigin ||
-       info->mPolicy == DelegatePolicy::eDelegateUseFeaturePolicy) &&
+       info->mPolicy == DelegatePolicy::eDelegateUsePermissionsPolicy) &&
       bc) {
     RefPtr<WindowContext> topWC = bc->GetTopWindowContext();
 
@@ -263,7 +274,23 @@ nsresult PermissionDelegateHandler::GetPermission(const nsACString& aType,
     }
   }
 
-  return (mPermissionManager->*testPermission)(principal, aType, aPermission);
+  nsresult rv =
+      (mPermissionManager->*testPermission)(principal, aType, aPermission);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  if (*aPermission == nsIPermissionManager::UNKNOWN_ACTION && bc) {
+    uint64_t browserId = bc->Top()->BrowserId();
+    if (browserId) {
+      uint32_t browserPerm = nsIPermissionManager::UNKNOWN_ACTION;
+      mPermissionManager->TestForBrowser(principal, aType, browserId,
+                                         &browserPerm);
+      if (browserPerm != nsIPermissionManager::UNKNOWN_ACTION) {
+        *aPermission = browserPerm;
+      }
+    }
+  }
+
+  return NS_OK;
 }
 
 nsresult PermissionDelegateHandler::GetPermissionForPermissionsAPI(
@@ -286,20 +313,39 @@ void PermissionDelegateHandler::PopulateAllDelegatedPermissions() {
   DelegatedPermissionList list;
   DelegatedPermissionList exactHostMatchList;
 
+  RefPtr<BrowsingContext> bc = mDocument->GetBrowsingContext();
+  uint64_t browserId = bc ? bc->Top()->BrowserId() : 0;
+
   for (const auto& perm : sPermissionsMap) {
     size_t idx = std::distance(sPermissionsMap, &perm);
 
     nsDependentCString type(perm.mPermissionName);
     // Populate the permission.
     uint32_t permission = nsIPermissionManager::UNKNOWN_ACTION;
-    Unused << mPermissionManager->TestPermissionFromPrincipal(mPrincipal, type,
-                                                              &permission);
+    (void)mPermissionManager->TestPermissionFromPrincipal(mPrincipal, type,
+                                                          &permission);
+    if (permission == nsIPermissionManager::UNKNOWN_ACTION && browserId) {
+      uint32_t browserPerm = nsIPermissionManager::UNKNOWN_ACTION;
+      mPermissionManager->TestForBrowser(mPrincipal, type, browserId,
+                                         &browserPerm);
+      if (browserPerm != nsIPermissionManager::UNKNOWN_ACTION) {
+        permission = browserPerm;
+      }
+    }
     list.mPermissions[idx] = permission;
 
     // Populate the exact-host-match permission.
     permission = nsIPermissionManager::UNKNOWN_ACTION;
-    Unused << mPermissionManager->TestExactPermissionFromPrincipal(
-        mPrincipal, type, &permission);
+    (void)mPermissionManager->TestExactPermissionFromPrincipal(mPrincipal, type,
+                                                               &permission);
+    if (permission == nsIPermissionManager::UNKNOWN_ACTION && browserId) {
+      uint32_t browserPerm = nsIPermissionManager::UNKNOWN_ACTION;
+      mPermissionManager->TestForBrowser(mPrincipal, type, browserId,
+                                         &browserPerm);
+      if (browserPerm != nsIPermissionManager::UNKNOWN_ACTION) {
+        permission = browserPerm;
+      }
+    }
     exactHostMatchList.mPermissions[idx] = permission;
   }
 
@@ -367,7 +413,22 @@ bool PermissionDelegateHandler::UpdateDelegatePermissionInternal(
   MOZ_ASSERT(mPrincipal);
 
   uint32_t permission = nsIPermissionManager::UNKNOWN_ACTION;
-  Unused << (mPermissionManager->*aTestFunc)(mPrincipal, aType, &permission);
+  (void)(mPermissionManager->*aTestFunc)(mPrincipal, aType, &permission);
+
+  if (permission == nsIPermissionManager::UNKNOWN_ACTION) {
+    RefPtr<BrowsingContext> bc = mDocument->GetBrowsingContext();
+    if (bc) {
+      uint64_t browserId = bc->Top()->BrowserId();
+      if (browserId) {
+        uint32_t browserPerm = nsIPermissionManager::UNKNOWN_ACTION;
+        mPermissionManager->TestForBrowser(mPrincipal, aType, browserId,
+                                           &browserPerm);
+        if (browserPerm != nsIPermissionManager::UNKNOWN_ACTION) {
+          permission = browserPerm;
+        }
+      }
+    }
+  }
 
   if (aList.mPermissions[aIdx] != permission) {
     aList.mPermissions[aIdx] = permission;

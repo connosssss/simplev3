@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,7 +11,6 @@
 #include "mozilla/dom/MemoryReportRequest.h"
 #include "mozilla/gfx/GPUProcessManager.h"
 #include "mozilla/gfx/gfxVars.h"
-#include "mozilla/ipc/CrashReporterHost.h"
 #include "mozilla/ipc/Endpoint.h"
 
 #if defined(XP_LINUX) && defined(MOZ_SANDBOX)
@@ -69,13 +66,9 @@ bool RDDChild::Init() {
   SendInit(updates, brokerFd, Telemetry::CanRecordReleaseData(),
            isReadyForBackgroundProcessing);
 
-  Unused << SendInitProfiler(ProfilerParent::CreateForProcess(OtherPid()));
+  (void)SendInitProfiler(ProfilerParent::CreateForProcess(OtherPid()));
 
   gfxVars::AddReceiver(this);
-  auto* gpm = gfx::GPUProcessManager::Get();
-  if (gpm) {
-    gpm->AddListener(this);
-  }
 
   return true;
 }
@@ -86,37 +79,46 @@ bool RDDChild::SendRequestMemoryReport(const uint32_t& aGeneration,
                                        const Maybe<FileDescriptor>& aDMDFile) {
   mMemoryReportRequest = MakeUnique<MemoryReportRequestHost>(aGeneration);
 
-  PRDDChild::SendRequestMemoryReport(
-      aGeneration, aAnonymize, aMinimizeMemoryUsage, aDMDFile,
-      [&](const uint32_t& aGeneration2) {
-        if (RDDProcessManager* rddpm = RDDProcessManager::Get()) {
-          if (RDDChild* child = rddpm->GetRDDChild()) {
-            if (child->mMemoryReportRequest) {
-              child->mMemoryReportRequest->Finish(aGeneration2);
-              child->mMemoryReportRequest = nullptr;
+  PRDDChild::SendRequestMemoryReport(aGeneration, aAnonymize,
+                                     aMinimizeMemoryUsage, aDMDFile)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [](uint32_t aGeneration2) {
+            if (RDDProcessManager* rddpm = RDDProcessManager::Get()) {
+              if (RDDChild* child = rddpm->GetRDDChild()) {
+                if (child->mMemoryReportRequest) {
+                  child->mMemoryReportRequest->Finish(aGeneration2);
+                  child->mMemoryReportRequest = nullptr;
+                }
+              }
             }
-          }
-        }
-      },
-      [&](mozilla::ipc::ResponseRejectReason) {
-        if (RDDProcessManager* rddpm = RDDProcessManager::Get()) {
-          if (RDDChild* child = rddpm->GetRDDChild()) {
-            child->mMemoryReportRequest = nullptr;
-          }
-        }
-      });
+          },
+          [](mozilla::ipc::ResponseRejectReason) {
+            if (RDDProcessManager* rddpm = RDDProcessManager::Get()) {
+              if (RDDChild* child = rddpm->GetRDDChild()) {
+                child->mMemoryReportRequest = nullptr;
+              }
+            }
+          });
 
   return true;
 }
 
 void RDDChild::OnCompositorUnexpectedShutdown() {
-  auto* rddm = RDDProcessManager::Get();
-  if (rddm) {
-    rddm->CreateVideoBridge();
+  if (!CanSend()) {
+    return;
+  }
+
+  if (RDDProcessManager* rddpm = RDDProcessManager::Get()) {
+    if (auto* gpm = GPUProcessManager::Get()) {
+      gpm->CreateRddVideoBridge(rddpm, this);
+    }
   }
 }
 
-void RDDChild::OnVarChanged(const GfxVarUpdate& aVar) { SendUpdateVar(aVar); }
+void RDDChild::OnVarChanged(const nsTArray<GfxVarUpdate>& aVar) {
+  SendUpdateVar(aVar);
+}
 
 mozilla::ipc::IPCResult RDDChild::RecvAddMemoryReport(
     const MemoryReport& aReport) {
@@ -128,10 +130,10 @@ mozilla::ipc::IPCResult RDDChild::RecvAddMemoryReport(
 
 #if defined(XP_WIN)
 mozilla::ipc::IPCResult RDDChild::RecvGetModulesTrust(
-    ModulePaths&& aModPaths, bool aRunAtNormalPriority,
+    ModuleIdentifiers&& aModIdents, bool aRunAtNormalPriority,
     GetModulesTrustResolver&& aResolver) {
   RefPtr<DllServices> dllSvc(DllServices::Get());
-  dllSvc->GetModulesTrust(std::move(aModPaths), aRunAtNormalPriority)
+  dllSvc->GetModulesTrust(std::move(aModIdents), aRunAtNormalPriority)
       ->Then(
           GetMainThreadSerialEventTarget(), __func__,
           [aResolver](ModulesMapResult&& aResult) {
@@ -205,8 +207,7 @@ void RDDChild::ActorDestroy(ActorDestroyReason aWhy) {
     GenerateCrashReport();
   }
 
-  auto* gpm = gfx::GPUProcessManager::Get();
-  if (gpm) {
+  if (auto* gpm = gfx::GPUProcessManager::Get()) {
     // Note: the manager could have shutdown already.
     gpm->RemoveListener(this);
   }

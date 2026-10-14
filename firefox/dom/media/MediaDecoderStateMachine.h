@@ -1,10 +1,8 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#if !defined(MediaDecoderStateMachine_h__)
-#  define MediaDecoderStateMachine_h__
+#if !defined(MediaDecoderStateMachine_h_)
+#  define MediaDecoderStateMachine_h_
 
 #  include "AudioDeviceInfo.h"
 #  include "ImageContainer.h"
@@ -17,7 +15,6 @@
 #  include "MediaTimer.h"
 #  include "SeekJob.h"
 #  include "mozilla/Atomics.h"
-#  include "mozilla/Attributes.h"
 #  include "mozilla/ReentrantMonitor.h"
 #  include "mozilla/StateMirroring.h"
 #  include "nsThreadUtils.h"
@@ -256,6 +253,7 @@ class MediaDecoderStateMachine
   void OnVideoPopped(const RefPtr<VideoData>& aSample);
 
   void AudioAudibleChanged(bool aAudible);
+  void OnPlaybackRateFallback();
 
   void SetPlaybackRate(double aPlaybackRate) override;
   void SetCanPlayThrough(bool aCanPlayThrough) override {
@@ -316,7 +314,7 @@ class MediaDecoderStateMachine
   // Called on the state machine thread.
   void UpdatePlaybackPositionPeriodically();
 
-  MediaSink* CreateAudioSink();
+  already_AddRefed<MediaSink> CreateAudioSink();
 
   // Always create mediasink which contains an AudioSink or DecodedStream
   // inside.
@@ -325,7 +323,10 @@ class MediaDecoderStateMachine
   // Stops the media sink and shut it down.
   // The decoder monitor must be held with exactly one lock count.
   // Called on the state machine thread.
-  void StopMediaSink();
+  // aReason lets a stop that is part of a seek be distinguished from a real
+  // stop.
+  void StopMediaSink(
+      MediaSink::StopReason aReason = MediaSink::StopReason::Regular);
 
   // Create and start the media sink.
   // The decoder monitor must be held with exactly one lock count.
@@ -338,7 +339,10 @@ class MediaDecoderStateMachine
 
   // Sets internal state which causes playback of media to pause.
   // The decoder monitor must be held.
-  void StopPlayback();
+  // aReason lets a pause that is part of a seek be distinguished from a real
+  // one.
+  void StopPlayback(
+      MediaSink::StopReason aReason = MediaSink::StopReason::Regular);
 
   // If the conditions are right, sets internal state which causes playback
   // of media to begin or resume.
@@ -431,6 +435,14 @@ class MediaDecoderStateMachine
   // The media sink resource.  Used on the state machine thread.
   RefPtr<MediaSink> mMediaSink;
 
+  // True from the completion of a warm seek (one that interrupted active
+  // playback, not a paused seek or a seek to end) until the playback resume it
+  // triggers has been handled. It marks the resume as warm so it can be made
+  // low-latency: the decode pipeline is already primed, so the resume does not
+  // need the full cold-start preroll cushion. Cleared once the resume has been
+  // handled, leaving later cold starts unaffected.
+  bool mStartSinkAfterWarmSeek = false;
+
   // The end time of the last audio frame that's been pushed onto the media sink
   // in microseconds. This will approximately be the end time
   // of the audio stream, unless another frame is pushed to the hardware.
@@ -490,6 +502,7 @@ class MediaDecoderStateMachine
   MediaEventListener mAudioQueueListener;
   MediaEventListener mVideoQueueListener;
   MediaEventListener mAudibleListener;
+  MediaEventListener mPlaybackRateFallbackListener;
   MediaEventListener mOnMediaNotSeekable;
 
   const bool mIsMSE;
@@ -538,13 +551,10 @@ class MediaDecoderStateMachine
   // set.
   Mirror<RefPtr<AudioDeviceInfo>> mSinkDevice;
 
-  // Whether all output should be captured into mOutputTracks, halted, or not
-  // captured.
-  Mirror<MediaDecoder::OutputCaptureState> mOutputCaptureState;
-
-  // A dummy track used to access the right MediaTrackGraph instance. Needed
-  // since there's no guarantee that output tracks are present.
-  Mirror<nsMainThreadPtrHandle<SharedDummyTrack>> mOutputDummyTrack;
+  // Stream capture information. When the state is Capturing, it contains a
+  // dummy track used to access the correct MediaTrackGraph instance, along with
+  // an indication of whether audio should be played out via audio devices.
+  Mirror<MediaDecoder::OutputCaptureInfo> mOutputCaptureInfo;
 
   // Tracks to capture data into.
   Mirror<CopyableTArray<RefPtr<ProcessedMediaTrack>>> mOutputTracks;

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +6,9 @@
 #include "SVGFilterInstance.h"
 
 // Keep others in (case-insensitive) order:
+#include "FilterSupport.h"
+#include "SVGFilterFrame.h"
+#include "gfx2DGlue.h"
 #include "gfxPlatform.h"
 #include "gfxUtils.h"
 #include "mozilla/ISVGDisplayableFrame.h"
@@ -15,18 +16,17 @@
 #include "mozilla/SVGObserverUtils.h"
 #include "mozilla/SVGUtils.h"
 #include "mozilla/dom/HTMLCanvasElement.h"
+#include "mozilla/dom/SVGFilterElement.h"
 #include "mozilla/dom/SVGLengthBinding.h"
 #include "mozilla/dom/SVGUnitTypesBinding.h"
-#include "mozilla/dom/SVGFilterElement.h"
-#include "SVGFilterFrame.h"
-#include "FilterSupport.h"
-#include "gfx2DGlue.h"
 
 using namespace mozilla::dom;
 using namespace mozilla::dom::SVGUnitTypes_Binding;
 using namespace mozilla::gfx;
 
 namespace mozilla {
+
+static const uint32_t MAX_PRIMITIVES_PER_FILTER = 256;
 
 SVGFilterInstance::SVGFilterInstance(
     const StyleFilter& aFilter, SVGFilterFrame* aFilterFrame,
@@ -83,8 +83,8 @@ bool SVGFilterInstance::ComputeBounds() {
   XYWH[3] = *mFilterFrame->GetLengthValue(SVGFilterElement::ATTR_HEIGHT);
   uint16_t filterUnits =
       mFilterFrame->GetEnumValue(SVGFilterElement::FILTERUNITS);
-  gfxRect userSpaceBounds =
-      SVGUtils::GetRelativeRect(filterUnits, XYWH, mTargetBBox, mMetrics);
+  gfxRect userSpaceBounds = SVGUtils::GetRelativeRect(
+      filterUnits, XYWH, mTargetBBox, mFilterElement, mMetrics);
 
   // Transform the user space bounds to filter space, so we
   // can align them with the pixel boundaries of the offscreen surface.
@@ -108,59 +108,53 @@ bool SVGFilterInstance::ComputeBounds() {
 }
 
 float SVGFilterInstance::GetPrimitiveUserSpaceUnitValue(
-    uint8_t aCtxType) const {
+    SVGLength::Axis aAxis) const {
   SVGAnimatedLength val;
-  val.Init(aCtxType, 0xff, 1.0f, SVGLength_Binding::SVG_LENGTHTYPE_NUMBER);
+  val.Init(aAxis, 0xff, 1.0f, SVGLength_Binding::SVG_LENGTHTYPE_NUMBER);
 
-  return UserSpaceToFilterSpace(aCtxType, SVGUtils::UserSpace(mMetrics, &val));
+  return UserSpaceToFilterSpace(aAxis, SVGUtils::UserSpace(mMetrics, &val));
 }
 
-float SVGFilterInstance::GetPrimitiveNumber(uint8_t aCtxType,
+float SVGFilterInstance::GetPrimitiveNumber(SVGLength::Axis aAxis,
                                             float aValue) const {
   SVGAnimatedLength val;
-  val.Init(aCtxType, 0xff, aValue, SVGLength_Binding::SVG_LENGTHTYPE_NUMBER);
+  val.Init(aAxis, 0xff, aValue, SVGLength_Binding::SVG_LENGTHTYPE_NUMBER);
 
   float value;
   if (mPrimitiveUnits == SVG_UNIT_TYPE_OBJECTBOUNDINGBOX) {
-    value = SVGUtils::ObjectSpace(mTargetBBox, &val);
+    // We can pass a dummy SVGElementMetrics because we know we have
+    // SVG_LENGTHTYPE_NUMBER units so we won't need real metrics.
+    value =
+        SVGUtils::ObjectSpace(mTargetBBox, SVGElementMetrics(nullptr), &val);
   } else {
     value = SVGUtils::UserSpace(mMetrics, &val);
   }
 
-  return UserSpaceToFilterSpace(aCtxType, value);
+  return UserSpaceToFilterSpace(aAxis, value);
 }
 
 Point3D SVGFilterInstance::ConvertLocation(const Point3D& aPoint) const {
   SVGAnimatedLength val[4];
-  val[0].Init(SVGContentUtils::X, 0xff, aPoint.x,
+  val[0].Init(SVGLength::Axis::X, 0xff, aPoint.x,
               SVGLength_Binding::SVG_LENGTHTYPE_NUMBER);
-  val[1].Init(SVGContentUtils::Y, 0xff, aPoint.y,
+  val[1].Init(SVGLength::Axis::Y, 0xff, aPoint.y,
               SVGLength_Binding::SVG_LENGTHTYPE_NUMBER);
   // Dummy width/height values
-  val[2].Init(SVGContentUtils::X, 0xff, 0,
+  val[2].Init(SVGLength::Axis::X, 0xff, 0,
               SVGLength_Binding::SVG_LENGTHTYPE_NUMBER);
-  val[3].Init(SVGContentUtils::Y, 0xff, 0,
+  val[3].Init(SVGLength::Axis::Y, 0xff, 0,
               SVGLength_Binding::SVG_LENGTHTYPE_NUMBER);
 
-  gfxRect feArea =
-      SVGUtils::GetRelativeRect(mPrimitiveUnits, val, mTargetBBox, mMetrics);
+  gfxRect feArea = SVGUtils::GetRelativeRect(mPrimitiveUnits, val, mTargetBBox,
+                                             nullptr, mMetrics);
   gfxRect r = UserSpaceToFilterSpace(feArea);
-  return Point3D(r.x, r.y, GetPrimitiveNumber(SVGContentUtils::XY, aPoint.z));
+  return Point3D(r.x, r.y, GetPrimitiveNumber(SVGLength::Axis::XY, aPoint.z));
 }
 
-float SVGFilterInstance::UserSpaceToFilterSpace(uint8_t aCtxType,
+float SVGFilterInstance::UserSpaceToFilterSpace(SVGLength::Axis aAxis,
                                                 float aValue) const {
-  switch (aCtxType) {
-    case SVGContentUtils::X:
-      return aValue * static_cast<float>(mUserSpaceToFilterSpaceScale.xScale);
-    case SVGContentUtils::Y:
-      return aValue * static_cast<float>(mUserSpaceToFilterSpaceScale.yScale);
-    case SVGContentUtils::XY:
-    default:
-      return aValue * SVGContentUtils::ComputeNormalizedHypotenuse(
-                          mUserSpaceToFilterSpaceScale.xScale,
-                          mUserSpaceToFilterSpaceScale.yScale);
-  }
+  return aValue * float(SVGContentUtils::AxisLength(
+                      mUserSpaceToFilterSpaceScale.ToSize(), aAxis));
 }
 
 gfxRect SVGFilterInstance::UserSpaceToFilterSpace(
@@ -194,7 +188,7 @@ IntRect SVGFilterInstance::ComputeFilterPrimitiveSubregion(
   gfxRect feArea = SVGUtils::GetRelativeRect(
       mPrimitiveUnits,
       &fE->mLengthAttributes[SVGFilterPrimitiveElement::ATTR_X], mTargetBBox,
-      mMetrics);
+      fE, mMetrics);
   Rect region = ToRect(UserSpaceToFilterSpace(feArea));
 
   if (!fE->mLengthAttributes[SVGFilterPrimitiveElement::ATTR_X]
@@ -338,6 +332,10 @@ nsresult SVGFilterInstance::BuildPrimitives(
     if (auto* primitive = SVGFilterPrimitiveElement::FromNode(child)) {
       primitives.AppendElement(primitive);
     }
+  }
+
+  if (primitives.Length() > MAX_PRIMITIVES_PER_FILTER) {
+    return NS_ERROR_FAILURE;
   }
 
   // Maps source image name to source index.

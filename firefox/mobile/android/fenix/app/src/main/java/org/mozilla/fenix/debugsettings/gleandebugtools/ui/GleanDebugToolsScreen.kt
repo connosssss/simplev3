@@ -4,7 +4,6 @@
 
 package org.mozilla.fenix.debugsettings.gleandebugtools.ui
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,22 +14,28 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.tooling.preview.PreviewParameter
 import mozilla.components.compose.base.Dropdown
-import mozilla.components.compose.base.annotation.FlexibleWindowLightDarkPreview
-import mozilla.components.compose.base.button.PrimaryButton
+import mozilla.components.compose.base.annotation.FlexibleWindowPreview
+import mozilla.components.compose.base.button.FilledButton
 import mozilla.components.compose.base.menu.MenuItem
 import mozilla.components.compose.base.text.Text
 import mozilla.components.compose.base.textfield.TextField
-import mozilla.components.lib.state.ext.observeAsState
+import mozilla.components.compose.base.theme.PreviewThemeProvider
+import mozilla.components.compose.base.theme.Theme
 import org.mozilla.fenix.R
-import org.mozilla.fenix.compose.SwitchWithLabel
+import org.mozilla.fenix.compose.list.SwitchListItem
 import org.mozilla.fenix.compose.list.TextListItem
 import org.mozilla.fenix.debugsettings.gleandebugtools.GleanDebugToolsAction
 import org.mozilla.fenix.debugsettings.gleandebugtools.GleanDebugToolsState
@@ -48,51 +53,52 @@ fun GleanDebugToolsScreen(
     gleanDebugToolsStore: GleanDebugToolsStore,
     modifier: Modifier = Modifier,
 ) {
-    val gleanDebugToolsState by gleanDebugToolsStore.observeAsState(gleanDebugToolsStore.state) { it }
+    val gleanDebugToolsState by gleanDebugToolsStore.stateFlow.collectAsState()
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(top = FirefoxTheme.layout.space.dynamic400),
-    ) {
-        GleanDebugLoggingSection(logPingsToConsoleEnabled = gleanDebugToolsState.logPingsToConsoleEnabled) {
-            gleanDebugToolsStore.dispatch(GleanDebugToolsAction.LogPingsToConsoleToggled)
+    Surface {
+        Column(
+            modifier =
+                modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(top = FirefoxTheme.layout.space.dynamic400)
+        ) {
+            GleanDebugLoggingSection(logPingsToConsoleEnabled = gleanDebugToolsState.logPingsToConsoleEnabled) {
+                gleanDebugToolsStore.dispatch(GleanDebugToolsAction.LogPingsToConsoleToggled)
+            }
+
+            Spacer(modifier = Modifier.height(FirefoxTheme.layout.space.dynamic150))
+
+            GleanDebugViewSection(
+                buttonsEnabled = gleanDebugToolsState.isDebugTagButtonEnabled,
+                debugViewTag = gleanDebugToolsState.debugViewTag,
+                hasDebugViewTagError = gleanDebugToolsStore.state.hasDebugViewTagError,
+                onOpenDebugView = { useDebugViewTag ->
+                    gleanDebugToolsStore.dispatch(
+                        GleanDebugToolsAction.OpenDebugView(useDebugViewTag = useDebugViewTag)
+                    )
+                },
+                onCopyDebugViewLink = { useDebugViewTag ->
+                    gleanDebugToolsStore.dispatch(
+                        GleanDebugToolsAction.CopyDebugViewLink(useDebugViewTag = useDebugViewTag)
+                    )
+                },
+            ) { newTag ->
+                gleanDebugToolsStore.dispatch(GleanDebugToolsAction.DebugViewTagChanged(newTag))
+            }
+
+            Spacer(modifier = Modifier.height(FirefoxTheme.layout.space.dynamic150))
+
+            GleanDebugSendPingsSection(
+                isButtonEnabled = gleanDebugToolsState.isDebugTagButtonEnabled,
+                curPing = gleanDebugToolsState.pingType,
+                pingTypes = gleanDebugToolsState.pingTypes,
+                onPingItemClicked = {
+                    gleanDebugToolsStore.dispatch(GleanDebugToolsAction.ChangePingType(it))
+                },
+                onSendPing = { gleanDebugToolsStore.dispatch(GleanDebugToolsAction.SendPing) },
+            )
         }
-
-        Spacer(modifier = Modifier.height(FirefoxTheme.layout.space.dynamic150))
-
-        GleanDebugViewSection(
-            buttonsEnabled = gleanDebugToolsState.isDebugTagButtonEnabled,
-            debugViewTag = gleanDebugToolsState.debugViewTag,
-            hasDebugViewTagError = gleanDebugToolsStore.state.hasDebugViewTagError,
-            onOpenDebugView = { useDebugViewTag ->
-                gleanDebugToolsStore.dispatch(
-                    GleanDebugToolsAction.OpenDebugView(
-                        useDebugViewTag = useDebugViewTag,
-                    ),
-                )
-            },
-            onCopyDebugViewLink = { useDebugViewTag ->
-                gleanDebugToolsStore.dispatch(
-                    GleanDebugToolsAction.CopyDebugViewLink(
-                        useDebugViewTag = useDebugViewTag,
-                    ),
-                )
-            },
-        ) { newTag ->
-            gleanDebugToolsStore.dispatch(GleanDebugToolsAction.DebugViewTagChanged(newTag))
-        }
-
-        Spacer(modifier = Modifier.height(FirefoxTheme.layout.space.dynamic150))
-
-        GleanDebugSendPingsSection(
-            isButtonEnabled = gleanDebugToolsState.isDebugTagButtonEnabled,
-            curPing = gleanDebugToolsState.pingType,
-            pingTypes = gleanDebugToolsState.pingTypes,
-            onPingItemClicked = { gleanDebugToolsStore.dispatch(GleanDebugToolsAction.ChangePingType(it)) },
-            onSendPing = { gleanDebugToolsStore.dispatch(GleanDebugToolsAction.SendPing) },
-        )
     }
 }
 
@@ -103,10 +109,11 @@ private fun GleanDebugLoggingSection(
 ) {
     GleanDebugSectionTitle(text = stringResource(R.string.glean_debug_tools_logging_title))
 
-    SwitchWithLabel(
+    SwitchListItem(
         label = stringResource(R.string.glean_debug_tools_log_pings_to_console),
         checked = logPingsToConsoleEnabled,
         modifier = Modifier.padding(horizontal = FirefoxTheme.layout.space.dynamic400),
+        showSwitchAfter = true,
     ) {
         onLogPingsToConsoleToggled()
     }
@@ -136,45 +143,53 @@ private fun GleanDebugViewSection(
             }
         },
         placeholder = stringResource(R.string.glean_debug_tools_debug_view_tag_placeholder),
-        errorText = stringResource(
-            R.string.glean_debug_tools_debug_view_tag_error,
-            GleanDebugToolsState.DEBUG_VIEW_TAG_MAX_LENGTH,
-        ),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = FirefoxTheme.layout.space.dynamic400),
+        errorText =
+            stringResource(
+                R.string.glean_debug_tools_debug_view_tag_error,
+                GleanDebugToolsState.DEBUG_VIEW_TAG_MAX_LENGTH,
+            ),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = FirefoxTheme.layout.space.dynamic400),
         isError = hasDebugViewTagError,
-        keyboardOptions = KeyboardOptions(
-            keyboardType = KeyboardType.Ascii,
-        ),
-        keyboardActions = KeyboardActions(
-            onDone = {
-                keyboardController?.hide()
-            },
-        ),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+        keyboardActions =
+            KeyboardActions(
+                onDone = {
+                    keyboardController?.hide()
+                }
+            ),
     )
 
     if (buttonsEnabled) {
         GleanDebugButton(
-            text = stringResource(
-                R.string.glean_debug_tools_open_debug_view_debug_view_tag,
-                debugViewTag,
-            ),
+            text =
+                stringResource(
+                    R.string.glean_debug_tools_open_debug_view_debug_view_tag,
+                    debugViewTag,
+                )
         ) {
             onOpenDebugView(true)
         }
 
+        HorizontalDivider()
+
         GleanDebugButton(
-            text = stringResource(
-                R.string.glean_debug_tools_copy_debug_view_link_debug_view_tag,
-                debugViewTag,
-            ),
-        ) { onCopyDebugViewLink(true) }
+            text =
+                stringResource(
+                    R.string.glean_debug_tools_copy_debug_view_link_debug_view_tag,
+                    debugViewTag,
+                )
+        ) {
+            onCopyDebugViewLink(true)
+        }
+
+        HorizontalDivider()
     }
 
     GleanDebugButton(text = stringResource(R.string.glean_debug_tools_open_debug_view)) {
         onOpenDebugView(false)
     }
+
+    HorizontalDivider()
 
     GleanDebugButton(text = stringResource(R.string.glean_debug_tools_copy_debug_view_link)) {
         onCopyDebugViewLink(false)
@@ -182,6 +197,7 @@ private fun GleanDebugViewSection(
 }
 
 @Composable
+@Suppress("Deprecation")
 private fun GleanDebugSendPingsSection(
     isButtonEnabled: Boolean,
     curPing: String,
@@ -189,26 +205,23 @@ private fun GleanDebugSendPingsSection(
     onPingItemClicked: (String) -> Unit,
     onSendPing: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier.padding(horizontal = FirefoxTheme.layout.space.dynamic400),
-    ) {
+    Column(modifier = Modifier.padding(horizontal = FirefoxTheme.layout.space.dynamic400)) {
         Dropdown(
             label = "Ping Type",
             placeholder = "",
-            dropdownItems = getPingDropdownMenu(
-                curPing = curPing,
-                pings = pingTypes,
-                onClickItem = onPingItemClicked,
-            ),
+            dropdownItems =
+                getPingDropdownMenu(
+                    curPing = curPing,
+                    pings = pingTypes,
+                    onClickItem = onPingItemClicked,
+                ),
         )
 
         Spacer(modifier = Modifier.height(FirefoxTheme.layout.space.dynamic400))
 
-        PrimaryButton(
+        FilledButton(
             text = stringResource(R.string.glean_debug_tools_send_ping_button_text),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = FirefoxTheme.layout.space.dynamic200),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = FirefoxTheme.layout.space.dynamic200),
             enabled = isButtonEnabled,
             onClick = onSendPing,
         )
@@ -221,13 +234,11 @@ private fun GleanDebugSendPingsSection(
  * @param text The text for a section of Glean Debug Tools page.
  */
 @Composable
-private fun GleanDebugSectionTitle(
-    text: String,
-) {
+private fun GleanDebugSectionTitle(text: String) {
     Text(
         text = text,
         modifier = Modifier.padding(horizontal = FirefoxTheme.layout.space.dynamic400),
-        color = FirefoxTheme.colors.textAccent,
+        color = MaterialTheme.colorScheme.tertiary,
         style = FirefoxTheme.typography.subtitle1,
     )
 }
@@ -259,32 +270,31 @@ private fun getPingDropdownMenu(
     MenuItem.CheckableItem(
         text = Text.String(it),
         isChecked = it == curPing,
-    ) { onClickItem(it) }
+    ) {
+        onClickItem(it)
+    }
 }
 
 @Composable
-@FlexibleWindowLightDarkPreview
-private fun GleanDebugToolsPreview() {
-    FirefoxTheme {
-        Column(
-            modifier = Modifier.background(
-                color = FirefoxTheme.colors.layer1,
-            ),
-        ) {
-            GleanDebugToolsScreen(
-                gleanDebugToolsStore = GleanDebugToolsStore(
-                    initialState = GleanDebugToolsState(
-                        logPingsToConsoleEnabled = false,
-                        debugViewTag = "",
-                        pingTypes = listOf(
-                            "metrics",
-                            "baseline",
-                            "ping type 3",
-                            "ping type 4",
-                        ),
-                    ),
-                ),
-            )
-        }
+@FlexibleWindowPreview
+private fun GleanDebugToolsPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
+        GleanDebugToolsScreen(
+            gleanDebugToolsStore =
+                GleanDebugToolsStore(
+                    initialState =
+                        GleanDebugToolsState(
+                            logPingsToConsoleEnabled = false,
+                            debugViewTag = "",
+                            pingTypes =
+                                listOf(
+                                    "metrics",
+                                    "baseline",
+                                    "ping type 3",
+                                    "ping type 4",
+                                ),
+                        )
+                )
+        )
     }
 }

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,18 +7,17 @@
 
 #include <stdint.h>  // for uint64_t, uint32_t
 
+#include "Units.h"                               // for CSSRect, etc
 #include "mozilla/layers/LayersTypes.h"          // for TouchBehaviorFlags
 #include "mozilla/layers/ScrollableLayerGuid.h"  // for ScrollableLayerGuid, etc
 #include "mozilla/layers/ZoomConstraints.h"      // for ZoomConstraints
+#include "nsISupportsImpl.h"                     // for MOZ_COUNT_CTOR, etc
 #include "nsTArrayForwardDeclare.h"  // for nsTArray, nsTArray_Impl, etc
-#include "nsISupportsImpl.h"         // for MOZ_COUNT_CTOR, etc
-#include "Units.h"                   // for CSSRect, etc
 
 namespace mozilla {
 namespace layers {
 
-class APZInputBridge;
-class KeyboardMap;
+class APZBridge;
 struct ZoomTarget;
 
 enum AllowedTouchBehavior {
@@ -41,20 +38,13 @@ enum ZoomToRectBehavior : uint32_t {
   ZOOM_TO_FOCUSED_INPUT_ON_RESIZES_VISUAL = 1 << 4,
 };
 
-enum class BrowserGestureResponse : bool;
-
 class AsyncDragMetrics;
 struct APZHandledResult;
 
 class IAPZCTreeManager {
-  NS_INLINE_DECL_THREADSAFE_VIRTUAL_REFCOUNTING(IAPZCTreeManager)
+  NS_INLINE_DECL_PURE_VIRTUAL_REFCOUNTING
 
  public:
-  /**
-   * Set the keyboard shortcuts to use for translating keyboard events.
-   */
-  virtual void SetKeyboardMap(const KeyboardMap& aKeyboardMap) = 0;
-
   /**
    * Kicks an animation to zoom to a rect. This may be either a zoom out or zoom
    * in. The actual animation is done on the sampler thread after being set
@@ -98,8 +88,6 @@ class IAPZCTreeManager {
       const ScrollableLayerGuid& aGuid,
       const Maybe<ZoomConstraints>& aConstraints) = 0;
 
-  virtual void SetDPI(float aDpiValue) = 0;
-
   /**
    * Sets allowed touch behavior values for current touch-session for specific
    * input block (determined by aInputBlock).
@@ -112,33 +100,30 @@ class IAPZCTreeManager {
   virtual void SetAllowedTouchBehavior(
       uint64_t aInputBlockId, const nsTArray<TouchBehaviorFlags>& aValues) = 0;
 
-  virtual void SetBrowserGestureResponse(uint64_t aInputBlockId,
-                                         BrowserGestureResponse aResponse) = 0;
-
   virtual void StartScrollbarDrag(const ScrollableLayerGuid& aGuid,
                                   const AsyncDragMetrics& aDragMetrics) = 0;
 
-  virtual bool StartAutoscroll(const ScrollableLayerGuid& aGuid,
-                               const ScreenPoint& aAnchorLocation) = 0;
-
-  virtual void StopAutoscroll(const ScrollableLayerGuid& aGuid) = 0;
-
   /**
-   * Function used to disable LongTap gestures.
-   *
-   * On slow running tests, drags and touch events can be misinterpreted
-   * as a long tap. This allows tests to disable long tap gesture detection.
+   * Notify APZ that the content process has just registered a non-passive
+   * APZ-aware event listener (touchstart/touchmove/touchend/wheel/...).
+   * |aGuid| identifies the nearest scroll container ancestor of the
+   * listener target (root scroll container for document/window listeners).
+   * APZ uses this signal to flag subsequent hit-test results whose target
+   * matches |aGuid| or any of its APZC-tree descendants with
+   * eApzAwareListeners, without waiting for a full paint and WebRender
+   * transaction.
    */
-  virtual void SetLongTapEnabled(bool aTapGestureEnabled) = 0;
+  virtual void NotifyApzAwareListenerAdded(
+      const ScrollableLayerGuid& aGuid) = 0;
 
   /**
-   * Returns an APZInputBridge interface that can be used to send input
+   * Returns an APZBridge interface that can be used to send input
    * events to APZ in a synchronous manner. This will always be non-null, and
    * the returned object's lifetime will match the lifetime of this
    * IAPZCTreeManager implementation.
    * It is only valid to call this function in the UI process.
    */
-  virtual APZInputBridge* InputBridge() = 0;
+  virtual APZBridge* Bridge() = 0;
 
  protected:
   // Discourage destruction outside of decref

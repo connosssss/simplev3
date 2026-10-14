@@ -1,20 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef BaseProfilingStack_h
 #define BaseProfilingStack_h
 
-#ifndef MOZ_GECKO_PROFILER
-#  error Do not #include this header when MOZ_GECKO_PROFILER is not #defined.
-#endif
-
-#include "BaseProfilingCategory.h"
-
 #include "mozilla/Assertions.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/BaseProfilingCategory.h"
 
 #include <stdint.h>
 
@@ -366,6 +359,14 @@ class ProfilingStack final {
 
   MFBT_API ~ProfilingStack();
 
+  // No copying.
+  ProfilingStack(const ProfilingStack&) = delete;
+  void operator=(const ProfilingStack&) = delete;
+
+  // No moving either.
+  ProfilingStack(ProfilingStack&&) = delete;
+  void operator=(ProfilingStack&&) = delete;
+
   void pushLabelFrame(const char* label, const char* dynamicString, void* sp,
                       ProfilingCategoryPair categoryPair, uint32_t flags = 0) {
     // This thread is the only one that ever changes the value of
@@ -439,14 +440,6 @@ class ProfilingStack final {
   // Out of line path for expanding the buffer, since otherwise this would get
   // inlined in every DOM WebIDL call.
   MFBT_API MOZ_COLD void ensureCapacitySlow();
-
-  // No copying.
-  ProfilingStack(const ProfilingStack&) = delete;
-  void operator=(const ProfilingStack&) = delete;
-
-  // No moving either.
-  ProfilingStack(ProfilingStack&&) = delete;
-  void operator=(ProfilingStack&&) = delete;
 
   uint32_t capacity = 0;
 

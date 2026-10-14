@@ -26,13 +26,115 @@ const BOS_TOKEN = 1;
 // Token id for end of sequence
 const EOS_TOKEN = 2;
 
+const FEATURE_ID = "link-preview";
+
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   createEngine: "chrome://global/content/ml/EngineProcess.sys.mjs",
+  FEATURES: "chrome://global/content/ml/EngineProcess.sys.mjs",
   Progress: "chrome://global/content/ml/Utils.sys.mjs",
   BlockListManager: "chrome://global/content/ml/Utils.sys.mjs",
   RemoteSettingsManager: "chrome://global/content/ml/Utils.sys.mjs",
 });
+
+// Smoke-test constants and helpers for runSmokeTest below. The prompt,
+// samplers, and pinned expected output are held together with the
+// SmolLM2-360M-Instruct Q8 checkpoint at
+// HuggingFaceTB/SmolLM2-360M-Instruct-GGUF@main. When a llama.cpp roll
+// or a model update legitimately changes the greedy output, re-pin
+// SMOKE_EXPECTED_TEXT and SMOKE_EXPECTED_HASH here in one place.
+//
+// A single pin has held across the aarch64 and x86_64 CI workers so
+// far; if a future CPU/architecture combination flips a token argmax
+// on precision differences, we will need to bucket the pin by platform.
+
+const SMOKE_MODEL_ID = "HuggingFaceTB/SmolLM2-360M-Instruct-GGUF";
+const SMOKE_MODEL_REVISION = "main";
+
+export const SMOKE_PROMPT = [
+  { role: "system", content: "You are a friendly storyteller." },
+  { role: "user", content: "Once upon a time there was a small mouse who" },
+];
+
+export const SMOKE_SAMPLERS = [{ type: "top-k", topK: 1 }, { type: "dist" }];
+
+export const SMOKE_N_PREDICT = 32;
+
+export const SMOKE_EXPECTED_TEXT =
+  "who lived in a cozy little house with his family. One day, a big, loud, and wonderful mouse named Max came to visit. He was so big";
+
+export const SMOKE_EXPECTED_HASH =
+  "07c098aaf1387c9ab07fbb77e466243bf0498f9d22dcc16672c6cfd9f07f4fe3";
+
+const SMOKE_LAST_BUILD_ID_PREF = "browser.ml.linkPreview.smokeTest.lastBuildID";
+
+export async function sha256Hex(str) {
+  const bytes = new TextEncoder().encode(str);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)]
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Run a fixed prompt through the already-warm Link Preview engine with
+ * greedy sampling, hash the output, and record
+ * genai.linkpreview.smoke_test. Fires at most once per Firefox build ID
+ * per install: the hash tells us whether a llama.cpp roll or a model
+ * update changed SmolLM2's output on real user hardware. The hash lets
+ * downstream analysis bucket users whose output drifted the same way
+ * without storing the raw text.
+ *
+ * The caller must await so this completes before the caller tears the
+ * engine down.
+ *
+ * @param {object} params
+ * @param {object} params.engine - MLEngine instance from createEngine().
+ * @param {string} params.buildID - Services.appinfo.appBuildID at call time.
+ */
+export async function runSmokeTest({ engine, buildID }) {
+  // Only run against the native llama.cpp backend paired with the pinned
+  // SmolLM2 checkpoint: the pinned hash was captured there, and
+  // browser.ml.linkPreview.config can override the engine to use a
+  // different model.
+  const opts = engine?.pipelineOptions;
+  if (
+    opts?.backend !== "llama.cpp" ||
+    opts.modelId !== SMOKE_MODEL_ID ||
+    opts.modelRevision !== SMOKE_MODEL_REVISION
+  ) {
+    return;
+  }
+  const lastBuildID = Services.prefs.getStringPref(
+    SMOKE_LAST_BUILD_ID_PREF,
+    ""
+  );
+  if (lastBuildID === buildID) {
+    return;
+  }
+  try {
+    let text = "";
+    for await (const chunk of engine.runWithGenerator({
+      prompt: SMOKE_PROMPT,
+      samplers: SMOKE_SAMPLERS,
+      nPredict: SMOKE_N_PREDICT,
+    })) {
+      text += chunk.text || "";
+    }
+    const outputHash = await sha256Hex(text);
+    Glean.genaiLinkpreview.smokeTest.record({
+      flow_id: engine.telemetry?.flowId,
+      output_hash: outputHash,
+      matches_pinned: outputHash === SMOKE_EXPECTED_HASH,
+      model_id: opts.modelId,
+      model_revision: opts.modelRevision,
+    });
+    Services.prefs.setStringPref(SMOKE_LAST_BUILD_ID_PREF, buildID);
+  } catch (_) {
+    // Inference failures are already captured by
+    // firefox.ai.runtime.run_inference_failure via the engine plumbing.
+  }
+}
 XPCOMUtils.defineLazyPreferenceGetter(
   lazy,
   "config",
@@ -131,6 +233,14 @@ export const LinkPreviewModel = {
    * @type {BlockListManager}
    */
   blockListManager: null,
+
+  get id() {
+    return FEATURE_ID;
+  },
+
+  get engineId() {
+    return lazy.FEATURES[this.id].engineId;
+  },
 
   /**
    * Blocked token list
@@ -297,8 +407,11 @@ export const LinkPreviewModel = {
     text,
     maxNumSentences = lazy.inputSentences ?? DEFAULT_INPUT_SENTENCES
   ) {
+    // Filter out emoji characters. The `u` flag is for unicode and `g` for global.
+    // Use `Emoji_Presentation` to avoid removing numbers and other symbols.
+    const textWithoutEmoji = text.replace(/\p{Emoji_Presentation}/gu, "");
     return (
-      this.getSentences(text)
+      this.getSentences(textWithoutEmoji)
         .map(s =>
           // trim and replace consecutive blank by a single one.
           s.trim().replace(
@@ -332,10 +445,11 @@ export const LinkPreviewModel = {
    *
    * @param {object} options - Configuration options for the ML engine.
    * @param {?function(ProgressAndStatusCallbackParams):void} notificationsCallback A function to call to indicate notifications.
+   * @param {AbortSignal} abortSignal - The signal to abort the download.
    * @returns {Promise<MLEngine>} - A promise that resolves to the ML engine instance.
    */
-  async createEngine(options, notificationsCallback = null) {
-    return lazy.createEngine(options, notificationsCallback);
+  async createEngine(options, notificationsCallback = null, abortSignal) {
+    return lazy.createEngine(options, notificationsCallback, abortSignal);
   },
 
   /**
@@ -343,11 +457,15 @@ export const LinkPreviewModel = {
    *
    * @param {string} inputText
    * @param {object} callbacks for progress and error
+   * @param {AbortSignal} callbacks.abortSignal - The signal to abort the download.
    * @param {Function} callbacks.onDownload optional for download active
    * @param {Function} callbacks.onText optional for text chunks
    * @param {Function} callbacks.onError optional for error
    */
-  async generateTextAI(inputText, { onDownload, onText, onError } = {}) {
+  async generateTextAI(
+    inputText,
+    { onDownload, onText, onError, abortSignal } = {}
+  ) {
     // Get updated options from remote settings. No failure if no record exists
     const remoteRequestRecord = await lazy.RemoteSettingsManager.getRemoteData({
       collectionName: "ml-inference-request-options",
@@ -397,20 +515,18 @@ export const LinkPreviewModel = {
     try {
       engine = await this.createEngine(
         {
-          backend: "wllama",
-          engineId: "wllamapreview",
-          kvCacheDtype: "q8_0",
+          backend: "llama.cpp",
+          engineId: this.engineId,
+          featureId: this.id,
           modelFile: "smollm2-360m-instruct-q8_0.gguf",
           modelHubRootUrl: "https://model-hub.mozilla.org",
           modelId: "HuggingFaceTB/SmolLM2-360M-Instruct-GGUF",
           modelRevision: "main",
-          numBatch: numContext,
           numContext,
-          numUbatch: numContext,
-          taskName: "wllama-text-generation",
+          taskName: "llama-text-generation",
           timeoutMS: -1,
           useMlock: false,
-          useMmap: true,
+          useMmap: false,
           ...JSON.parse(lazy.config),
         },
         data => {
@@ -420,11 +536,13 @@ export const LinkPreviewModel = {
               Math.round((100 * data.totalLoaded) / data.total)
             );
           }
-        }
+        },
+        abortSignal
       );
 
       const postProcessor = await SentencePostProcessor.initialize();
       const blockedTokens = this.getBlockTokenList();
+      let abandonedGeneration = false;
       for await (const val of engine.runWithGenerator({
         nPredict,
         stopTokens: lazy.stopTokens,
@@ -449,8 +567,19 @@ export const LinkPreviewModel = {
         }
 
         if (abort) {
+          abandonedGeneration = true;
           break;
         }
+      }
+
+      // Breaking out of the loop leaves the engine's run in flight, and the
+      // backend rejects a second generation while one is still active. Only
+      // reuse the warm engine when the generation ended on its own.
+      if (!abandonedGeneration) {
+        await runSmokeTest({
+          engine,
+          buildID: Services.appinfo.appBuildID,
+        });
       }
     } catch (error) {
       onError?.(error);

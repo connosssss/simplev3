@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,8 +10,7 @@ bool RLBoxConvertWOFF2ToTTF(const char* aData, unsigned long aLength,
                             unsigned long aDecompressedSize,
                             unsigned long* aResultSize, void** aResultOwningStr,
                             char** aResultData) {
-  std::unique_ptr<std::string> buf =
-      std::make_unique<std::string>(aDecompressedSize, 0);
+  auto buf = std::make_unique<std::string>(aDecompressedSize, 0);
   woff2::WOFF2StringOut out(buf.get());
   out.SetMaxSize(std::max(size_t(aDecompressedSize), woff2::kDefaultMaxSize));
   if (!woff2::ConvertWOFF2ToTTF(reinterpret_cast<const uint8_t*>(aData),

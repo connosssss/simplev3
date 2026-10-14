@@ -6,14 +6,16 @@
 
 /* import-globals-from ../mochitest/common.js */
 /* import-globals-from ../mochitest/layout.js */
-/* import-globals-from ../mochitest/promisified-events.js */
+/* import-globals-from ../mochitest/events.js */
 
 /* exported Logger, MOCHITESTS_DIR, invokeSetAttribute, invokeFocus,
             invokeSetStyle, getAccessibleDOMNodeID, getAccessibleTagName,
             addAccessibleTask, findAccessibleChildByID, isDefunct,
             CURRENT_CONTENT_DIR, loadScripts, loadContentScripts, snippetToURL,
             Cc, Cu, arrayFromChildren, forceGC, contentSpawnMutation,
-            DEFAULT_IFRAME_ID, DEFAULT_IFRAME_DOC_BODY_ID, invokeContentTask,
+            DEFAULT_CONTENT_DOC_ID, DEFAULT_CONTENT_DOC_BODY_ID,
+            DEFAULT_IFRAME_ID, DEFAULT_IFRAME_DOC_ID,
+            DEFAULT_IFRAME_DOC_BODY_ID, invokeContentTask,
             matchContentDoc, currentContentDoc, getContentDPR,
             waitForImageMap, getContentBoundsForDOMElm, untilCacheIs,
             untilCacheOk, testBoundsWithContent, waitForContentPaint,
@@ -34,13 +36,15 @@ const MOCHITESTS_DIR =
 /**
  * A base URL for test files used in content.
  */
-// eslint-disable-next-line @microsoft/sdl/no-insecure-url
-const CURRENT_CONTENT_DIR = `http://example.com${CURRENT_FILE_DIR}`;
+// eslint-disable-next-line sdl/no-insecure-url
+const CURRENT_CONTENT_DIR = `https://example.com${CURRENT_FILE_DIR}`;
 
 const LOADED_CONTENT_SCRIPTS = new Map();
 
+const DEFAULT_CONTENT_DOC_ID = "default-content-doc-id";
 const DEFAULT_CONTENT_DOC_BODY_ID = "body";
 const DEFAULT_IFRAME_ID = "default-iframe-id";
+const DEFAULT_IFRAME_DOC_ID = "default-iframe-doc-id";
 const DEFAULT_IFRAME_DOC_BODY_ID = "default-iframe-body-id";
 
 const HTML_MIME_TYPE = "text/html";
@@ -72,7 +76,7 @@ let gIsIframe = false;
 let gIsRemoteIframe = false;
 
 function currentContentDoc() {
-  return gIsIframe ? DEFAULT_IFRAME_DOC_BODY_ID : DEFAULT_CONTENT_DOC_BODY_ID;
+  return gIsIframe ? DEFAULT_IFRAME_DOC_ID : DEFAULT_CONTENT_DOC_ID;
 }
 
 /**
@@ -82,7 +86,7 @@ function currentContentDoc() {
  * @param   {nsIAccessibleEvent}  event
  *        Accessible event to be tested for a match.
  *
- * @return  {Boolean}
+ * @return  {boolean}
  *          True if accessible event's accessible object ID matches current
  *          document accessible ID.
  */
@@ -143,15 +147,16 @@ let Logger = {
 /**
  * Asynchronously set or remove content element's attribute (in content process
  * if e10s is enabled).
- * @param  {Object}  browser  current "tabbrowser" element
- * @param  {String}  id       content element id
- * @param  {String}  attr     attribute name
- * @param  {String?} value    optional attribute value, if not present, remove
+ *
+ * @param  {object}  browser  current "tabbrowser" element
+ * @param  {string}  id       content element id
+ * @param  {string}  attr     attribute name
+ * @param  {string?} value    optional attribute value, if not present, remove
  *                            attribute
  * @return {Promise}          promise indicating that attribute is set/removed
  */
-function invokeSetAttribute(browser, id, attr, value) {
-  if (value) {
+function invokeSetAttribute(browser, id, attr, value = null) {
+  if (value !== null) {
     Logger.log(`Setting ${attr} attribute to ${value} for node with id: ${id}`);
   } else {
     Logger.log(`Removing ${attr} attribute from node with id: ${id}`);
@@ -162,7 +167,7 @@ function invokeSetAttribute(browser, id, attr, value) {
     [id, attr, value],
     (contentId, contentAttr, contentValue) => {
       let elm = content.document.getElementById(contentId);
-      if (contentValue) {
+      if (contentValue !== null) {
         elm.setAttribute(contentAttr, contentValue);
       } else {
         elm.removeAttribute(contentAttr);
@@ -175,10 +180,11 @@ function invokeSetAttribute(browser, id, attr, value) {
  * Asynchronously set or remove content element's style (in content process if
  * e10s is enabled, or in fission process if fission is enabled and a fission
  * frame is present).
- * @param  {Object}  browser  current "tabbrowser" element
- * @param  {String}  id       content element id
- * @param  {String}  aStyle   style property name
- * @param  {String?} aValue   optional style property value, if not present,
+ *
+ * @param  {object}  browser  current "tabbrowser" element
+ * @param  {string}  id       content element id
+ * @param  {string}  aStyle   style property name
+ * @param  {string?} aValue   optional style property value, if not present,
  *                            remove style
  * @return {Promise}          promise indicating that style is set/removed
  */
@@ -207,8 +213,9 @@ function invokeSetStyle(browser, id, style, value) {
  * Asynchronously set focus on a content element (in content process if e10s is
  * enabled, or in fission process if fission is enabled and a fission frame is
  * present).
- * @param  {Object}  browser  current "tabbrowser" element
- * @param  {String}  id       content element id
+ *
+ * @param  {object}  browser  current "tabbrowser" element
+ * @param  {string}  id       content element id
  * @return {Promise} promise  indicating that focus is set
  */
 function invokeFocus(browser, id) {
@@ -226,13 +233,13 @@ function invokeFocus(browser, id) {
 
 /**
  * Get DPR for a specific content window.
+ *
  * @param  browser
  *         Browser for which we want its content window's DPR reported.
  *
  * @return {Promise}
  *         Promise with the value that resolves to the devicePixelRatio of the
  *         content window of a given browser.
- *
  */
 function getContentDPR(browser) {
   return invokeContentTask(browser, [], () => content.window.devicePixelRatio);
@@ -242,7 +249,8 @@ function getContentDPR(browser) {
  * Asynchronously perform a task in content (in content process if e10s is
  * enabled, or in fission process if fission is enabled and a fission frame is
  * present).
- * @param  {Object}    browser  current "tabbrowser" element
+ *
+ * @param  {object}    browser  current "tabbrowser" element
  * @param  {Array}     args     arguments for the content task
  * @param  {Function}  task     content task function
  *
@@ -270,9 +278,10 @@ function invokeContentTask(browser, args, task) {
 /**
  * Compare process ID's between the top level content process and possible
  * remote/local iframe proccess.
- * @param {Object}  browser
+ *
+ * @param {object}  browser
  *        Top level browser object for a tab.
- * @param {Boolean} isRemote
+ * @param {boolean} isRemote
  *        Indicates if we expect the iframe content process to be remote or not.
  */
 async function comparePIDs(browser, isRemote) {
@@ -293,6 +302,7 @@ async function comparePIDs(browser, isRemote) {
 
 /**
  * Load a list of scripts into the test
+ *
  * @param {Array} scripts  a list of scripts to load
  */
 function loadScripts(...scripts) {
@@ -307,7 +317,8 @@ function loadScripts(...scripts) {
 
 /**
  * Load a list of scripts into target's content.
- * @param {Object} target
+ *
+ * @param {object} target
  *        target for loading scripts into
  * @param {Array}  scripts
  *        a list of scripts to load into content
@@ -357,7 +368,7 @@ function wrapWithIFrame(doc, options = {}) {
     iframeDocBodyAttrs.hidden = true;
   }
   if (options.remoteIframe) {
-    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    // eslint-disable-next-line sdl/no-insecure-url
     const srcURL = new URL(`http://example.net/document-builder.sjs`);
     if (doc.endsWith("html")) {
       srcURL.searchParams.append("file", `${CURRENT_FILE_DIR}${doc}`);
@@ -368,7 +379,7 @@ function wrapWithIFrame(doc, options = {}) {
       srcURL.searchParams.append(
         "html",
         `<!doctype html>
-        <html>
+        <html id="${DEFAULT_IFRAME_DOC_ID}">
           <head>
             <meta charset="utf-8"/>
             <title>Accessibility Fission Test</title>
@@ -383,12 +394,18 @@ function wrapWithIFrame(doc, options = {}) {
     if (doc.endsWith("html")) {
       doc = loadHTMLFromFile(`${CURRENT_FILE_DIR}${doc}`);
       doc = doc.replace(
+        `id="${DEFAULT_CONTENT_DOC_ID}"`,
+        `id="${DEFAULT_IFRAME_DOC_ID}"`
+      );
+      doc = doc.replace(
         /<body[.\s\S]*?>/,
         `<body ${attrsToString(iframeDocBodyAttrs)}>`
       );
     } else {
       doc = `<!doctype html>
-      <body ${attrsToString(iframeDocBodyAttrs)}>${doc}</body>`;
+      <html id="${DEFAULT_IFRAME_DOC_ID}">
+        <body ${attrsToString(iframeDocBodyAttrs)}>${doc}</body>
+      </html>`;
     }
 
     src = `data:${mimeType};charset=utf-8,${encodeURIComponent(doc)}`;
@@ -410,21 +427,27 @@ function wrapWithIFrame(doc, options = {}) {
 /**
  * Takes an HTML snippet or HTML doc url and returns an encoded URI for a full
  * document with the snippet or the URL as a source for the IFRAME.
- * @param {String} doc
- *        a markup snippet or url.
- * @param {Object} options (see options in addAccessibleTask).
  *
- * @return {String}
+ * @param {string} doc
+ *        a markup snippet or url.
+ * @param {object} options (see options in addAccessibleTask).
+ *
+ * @return {string}
  *        a base64 encoded data url of the document container the snippet.
- **/
+ */
 function snippetToURL(doc, options = {}) {
-  const { contentDocBodyAttrs = {} } = options;
+  const { contentDocAttrs = {}, contentDocBodyAttrs = {} } = options;
+  const isIframe = options.iframe || options.remoteIframe;
+  const docAttrs = {
+    id: DEFAULT_CONTENT_DOC_ID,
+    ...contentDocAttrs,
+  };
   const attrs = {
     id: DEFAULT_CONTENT_DOC_BODY_ID,
     ...contentDocBodyAttrs,
   };
 
-  if (gIsIframe) {
+  if (isIframe) {
     doc = wrapWithIFrame(doc, options);
   } else if (options.contentSetup) {
     // Hide the body initially so we can ensure that any changes made by
@@ -436,7 +459,7 @@ function snippetToURL(doc, options = {}) {
 
   const encodedDoc = encodeURIComponent(
     `<!doctype html>
-    <html>
+    <html ${attrsToString(docAttrs)}>
       <head>
         <meta charset="utf-8"/>
         <title>Accessibility Test</title>
@@ -446,7 +469,7 @@ function snippetToURL(doc, options = {}) {
   );
 
   let url = `data:text/html;charset=utf-8,${encodedDoc}`;
-  if (!gIsIframe && options.urlSuffix) {
+  if (!isIframe && options.urlSuffix) {
     url += options.urlSuffix;
   }
   return url;
@@ -505,6 +528,16 @@ function accessibleTask(doc, task, options = {}) {
       url = snippetToURL(doc, options);
     }
 
+    if (doc.endsWith("xhtml")) {
+      await SpecialPowers.pushPermissions([
+        {
+          type: "allowXULXBL",
+          allow: true,
+          context: CURRENT_CONTENT_DIR,
+        },
+      ]);
+    }
+
     registerCleanupFunction(() => {
       // XXX Bug 1906779: This will run once for each call to addAccessibleTask,
       // but only after the entire test file has completed. This doesn't make
@@ -520,7 +553,7 @@ function accessibleTask(doc, task, options = {}) {
     if (!options.chrome) {
       onContentDocLoad = waitForEvent(
         EVENT_DOCUMENT_LOAD_COMPLETE,
-        DEFAULT_CONTENT_DOC_BODY_ID
+        DEFAULT_CONTENT_DOC_ID
       );
     }
 
@@ -528,7 +561,7 @@ function accessibleTask(doc, task, options = {}) {
     if (options.remoteIframe && !options.skipFissionDocLoad) {
       onIframeDocLoad = waitForEvent(
         EVENT_DOCUMENT_LOAD_COMPLETE,
-        DEFAULT_IFRAME_DOC_BODY_ID
+        DEFAULT_IFRAME_DOC_ID
       );
     }
 
@@ -586,7 +619,7 @@ function accessibleTask(doc, task, options = {}) {
           // Chrome documents don't fire DOCUMENT_LOAD_COMPLETE. Instead, wait
           // until we can get the DocAccessible and it doesn't have the busy
           // state.
-          await BrowserTestUtils.waitForCondition(() => {
+          await TestUtils.waitForCondition(() => {
             docAccessible = getAccessible(browser.contentWindow.document);
             if (!docAccessible) {
               return false;
@@ -676,12 +709,13 @@ function accessibleTask(doc, task, options = {}) {
 /**
  * A wrapper around browser test add_task that triggers an accessible test task
  * as a new browser test task with given document, data URL or markup snippet.
- * @param  {String} doc
+ *
+ * @param  {string} doc
  *         URL (relative to current directory) or data URL or markup snippet
  *         that is used to test content with
  * @param  {Function|AsyncFunction} task
  *         a generator or a function with tests to run
- * @param  {null|Object} options
+ * @param  {null | object} options
  *         Options for running accessibility test tasks:
  *         - {Boolean} topLevel
  *           Flag to run the test with content in the top level content process.
@@ -704,6 +738,11 @@ function accessibleTask(doc, task, options = {}) {
  *         - {Boolean} skipFissionDocLoad
  *           If true, the test will not wait for iframe document document
  *           loaded event (useful for when IFRAME is initially hidden).
+ *         - {Object} contentDocAttrs
+ *           a set of attributes to be applied to the root element (<html>) of
+ *           a top level content document.
+ *           The id defaults to DEFAULT_CONTENT_DOC_ID, the ID used by the
+ *           content document's DocAccessible.
  *         - {Object} contentDocBodyAttrs
  *           a set of attributes to be applied to a top level content document
  *           body
@@ -786,8 +825,9 @@ function addAccessibleTask(doc, task, options = {}) {
 
 /**
  * Check if an accessible object has a defunct test.
+ *
  * @param  {nsIAccessible}  accessible object to test defunct state for
- * @return {Boolean}        flag indicating defunct state
+ * @return {boolean}        flag indicating defunct state
  */
 function isDefunct(accessible) {
   let defunct = false;
@@ -807,8 +847,9 @@ function isDefunct(accessible) {
 
 /**
  * Get the DOM tag name for a given accessible.
+ *
  * @param  {nsIAccessible}  accessible accessible
- * @return {String?}                   tag name of associated DOM node, or null.
+ * @return {string?}                   tag name of associated DOM node, or null.
  */
 function getAccessibleTagName(acc) {
   try {
@@ -821,8 +862,9 @@ function getAccessibleTagName(acc) {
 /**
  * Traverses the accessible tree starting from a given accessible as a root and
  * looks for an accessible that matches based on its DOMNode id.
+ *
  * @param  {nsIAccessible}  accessible root accessible
- * @param  {String}         id         id to look up accessible for
+ * @param  {string}         id         id to look up accessible for
  * @param  {Array?}         interfaces the interface or an array interfaces
  *                                     to query it/them from obtained accessible
  * @return {nsIAccessible?}            found accessible if any
@@ -953,7 +995,7 @@ async function getContentBoundsForDOMElm(browser, id) {
   });
 }
 
-const CACHE_WAIT_TIMEOUT_MS = 5000;
+const CACHE_WAIT_TIMEOUT_MS = 20000;
 
 /**
  * Wait for a predicate to be true after cache ticks.

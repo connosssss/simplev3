@@ -1,5 +1,7 @@
 [DEFAULT]
-skip-if = ["os == 'android'"]
+run-if = [
+  "os != 'android'",
+]
 support-files = [
   "satchel_common.js",
   "subtst_form_submission_1.html",
@@ -21,6 +23,11 @@ support-files = [
 
 ["test_datalist_shadow_dom.html"]
 
+["test_datalist_showPicker.html"]
+skip-if = [
+  "xorigin", # showPicker() is not allowed to be called from a cross-origin iframe.
+]
+
 ["test_datalist_with_caching.html"]
 
 ["test_form_autocomplete.html"]
@@ -29,8 +36,8 @@ support-files = [
 
 ["test_form_autocomplete_with_list.html"]
 skip-if = [
-  "http3",
   "http2",
+  "http3",
 ]
 
 ["test_form_submission.html"]

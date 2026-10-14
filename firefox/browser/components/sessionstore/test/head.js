@@ -18,23 +18,23 @@ const HTTPSROOT = ROOT.replace(
 );
 
 const { SessionSaver } = ChromeUtils.importESModule(
-  "resource:///modules/sessionstore/SessionSaver.sys.mjs"
+  "moz-src:///browser/components/sessionstore/SessionSaver.sys.mjs"
 );
 const { SessionFile } = ChromeUtils.importESModule(
-  "resource:///modules/sessionstore/SessionFile.sys.mjs"
+  "moz-src:///browser/components/sessionstore/SessionFile.sys.mjs"
 );
 const { TabState } = ChromeUtils.importESModule(
-  "resource:///modules/sessionstore/TabState.sys.mjs"
+  "moz-src:///browser/components/sessionstore/TabState.sys.mjs"
 );
 const { TabStateFlusher } = ChromeUtils.importESModule(
-  "resource:///modules/sessionstore/TabStateFlusher.sys.mjs"
+  "moz-src:///browser/components/sessionstore/TabStateFlusher.sys.mjs"
 );
 const { SessionStoreTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/SessionStoreTestUtils.sys.mjs"
 );
 
 const { PageWireframes } = ChromeUtils.importESModule(
-  "resource:///modules/sessionstore/PageWireframes.sys.mjs"
+  "moz-src:///browser/components/sessionstore/PageWireframes.sys.mjs"
 );
 
 const ss = SessionStore;
@@ -193,12 +193,27 @@ function forceSaveState() {
   return SessionSaver.run();
 }
 
+function sessionStoreReadOptions() {
+  let opts = { decompress: true };
+  if (
+    Services.prefs.getBoolPref(
+      "browser.sessionstore.encryption.available",
+      false
+    ) &&
+    Services.prefs.getBoolPref("browser.sessionstore.encryption.enabled", false)
+  ) {
+    opts.decrypt = "sessionstore";
+  }
+  return opts;
+}
+
 function promiseRecoveryFileContents() {
   let promise = forceSaveState();
   return promise.then(function () {
-    return IOUtils.readUTF8(SessionFile.Paths.recovery, {
-      decompress: true,
-    });
+    return IOUtils.readUTF8(
+      SessionFile.Paths.recovery,
+      sessionStoreReadOptions()
+    );
   });
 }
 
@@ -206,9 +221,10 @@ var promiseForEachSessionRestoreFile = async function (cb) {
   for (let key of SessionFile.Paths.loadOrder) {
     let data = "";
     try {
-      data = await IOUtils.readUTF8(SessionFile.Paths[key], {
-        decompress: true,
-      });
+      data = await IOUtils.readUTF8(
+        SessionFile.Paths[key],
+        sessionStoreReadOptions()
+      );
     } catch (ex) {
       // Ignore missing files
       if (!(DOMException.isInstance(ex) && ex.name == "NotFoundError")) {
@@ -376,7 +392,7 @@ function forgetSavedTabGroups() {
 }
 
 function forgetClosedTabGroups(win) {
-  const tabGroups = ss.getClosedTabGroups(win);
+  const tabGroups = ss.getClosedTabGroups({ sourceWindow: win });
   tabGroups.forEach(tabGroup => ss.forgetClosedTabGroup(win, tabGroup.id));
 }
 
@@ -522,7 +538,7 @@ function setScrollPosition(bc, x, y) {
       content.addEventListener(
         "mozvisualscroll",
         function onScroll(event) {
-          if (content.document.ownerGlobal.visualViewport == event.target) {
+          if (content.document.documentGlobal.visualViewport == event.target) {
             content.removeEventListener("mozvisualscroll", onScroll, {
               mozSystemGroup: true,
             });
@@ -570,36 +586,38 @@ function setPropertyOfFormField(browserContext, selector, propName, newValue) {
       node[propNameChild] = newValueChild;
 
       let event = node.ownerDocument.createEvent("UIEvents");
-      event.initUIEvent("input", true, true, node.ownerGlobal, 0);
+      event.initUIEvent("input", true, true, node.documentGlobal, 0);
       node.dispatchEvent(event);
     }
   );
 }
 
 function promiseOnHistoryReplaceEntry(browser) {
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     let sessionHistory = browser.browsingContext?.sessionHistory;
-    if (sessionHistory) {
-      var historyListener = {
-        OnHistoryNewEntry() {},
-        OnHistoryGotoIndex() {},
-        OnHistoryPurge() {},
-        OnHistoryReload() {
-          return true;
-        },
-
-        OnHistoryReplaceEntry() {
-          resolve();
-        },
-
-        QueryInterface: ChromeUtils.generateQI([
-          "nsISHistoryListener",
-          "nsISupportsWeakReference",
-        ]),
-      };
-
-      sessionHistory.addSHistoryListener(historyListener);
+    if (!sessionHistory) {
+      reject("No session history?");
     }
+
+    var historyListener = {
+      OnHistoryNewEntry() {},
+      OnHistoryGotoIndex() {},
+      OnHistoryPurge() {},
+      OnHistoryReload() {
+        return true;
+      },
+
+      OnHistoryReplaceEntry() {
+        resolve();
+      },
+
+      QueryInterface: ChromeUtils.generateQI([
+        "nsISHistoryListener",
+        "nsISupportsWeakReference",
+      ]),
+    };
+
+    sessionHistory.addSHistoryListener(historyListener);
   });
 }
 
@@ -670,7 +688,7 @@ async function openTabMenuFor(tab) {
   EventUtils.synthesizeMouseAtCenter(
     tab,
     { type: "contextmenu" },
-    tab.ownerGlobal
+    tab.documentGlobal
   );
   await tabMenuShown;
 

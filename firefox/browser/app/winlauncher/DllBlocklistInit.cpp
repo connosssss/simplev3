@@ -1,18 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "nsWindowsDllInterceptor.h"
-#include "mozilla/ArrayUtils.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/BinarySearch.h"
 #include "mozilla/ImportDir.h"
 #include "mozilla/NativeNt.h"
 #include "mozilla/PolicyChecks.h"
 #include "mozilla/ScopeExit.h"
-#include "mozilla/Types.h"
 #include "mozilla/WindowsDllBlocklist.h"
 #include "mozilla/WindowsStackCookie.h"
 #include "mozilla/WinHeaderOnlyUtils.h"
@@ -68,6 +62,18 @@ static LauncherVoidResultWithLineInfo InitializeDllBlocklistOOPInternal(
       aTransferMgr, intcpt, "LdrLoadDll", &freestanding::patched_LdrLoadDll);
   if (!ok) {
     return LAUNCHER_ERROR_FROM_DETOUR_ERROR(intcpt.GetLastDetourError());
+  }
+
+  // Only child processes need this hook, and failing to set it is not fatal.
+  if (gBlocklistInitFlags & eDllBlocklistInitFlagWasBootstrapped) {
+#  if defined(DEBUG) && defined(_M_X64) && !defined(__MINGW64__)
+    MOZ_ASSERT(!HasStackCookieCheck(
+        reinterpret_cast<uintptr_t>(&freestanding::patched_NtCreateSection)));
+#  endif  // #if defined(DEBUG) && defined(_M_X64) && !defined(__MINGW64__)
+
+    (void)freestanding::stub_NtCreateSection.SetDetour(
+        aTransferMgr, intcpt, "NtCreateSection",
+        &freestanding::patched_NtCreateSection);
   }
 
   // Because aChildProcess has just been created in a suspended state, its

@@ -1,22 +1,22 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsDOMNavigationTiming_h___
-#define nsDOMNavigationTiming_h___
+#ifndef nsDOMNavigationTiming_h_
+#define nsDOMNavigationTiming_h_
 
-#include "nsCOMPtr.h"
-#include "nsCOMArray.h"
-#include "mozilla/WeakPtr.h"
+#include "mozilla/BaseProfilerMarkersPrerequisites.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/RelativeTimeline.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/BaseProfilerMarkersPrerequisites.h"
+#include "mozilla/WeakPtr.h"
+#include "nsCOMArray.h"
+#include "nsCOMPtr.h"
 #include "nsITimer.h"
 
 class nsDocShell;
 class nsIURI;
+class SharedLcpMarkerState;
 
 using DOMTimeMilliSec = unsigned long long;
 using DOMHighResTimeStamp = double;
@@ -26,12 +26,9 @@ namespace IPC {
 class Message;
 class MessageReader;
 class MessageWriter;
-}  // namespace IPC
-namespace mozilla::ipc {
-class IProtocol;
 template <typename>
-struct IPDLParamTraits;
-}  // namespace mozilla::ipc
+struct ParamTraits;
+}  // namespace IPC
 
 class nsDOMNavigationTiming final : public mozilla::RelativeTimeline {
  public:
@@ -43,6 +40,7 @@ class nsDOMNavigationTiming final : public mozilla::RelativeTimeline {
   };
 
   explicit nsDOMNavigationTiming(nsDocShell* aDocShell);
+  nsDOMNavigationTiming(const nsDOMNavigationTiming&) = delete;
 
   NS_INLINE_DECL_REFCOUNTING(nsDOMNavigationTiming)
 
@@ -178,10 +176,11 @@ class nsDOMNavigationTiming final : public mozilla::RelativeTimeline {
   void NotifyContentfulCompositeForRootContentDocument(
       const mozilla::TimeStamp& aCompositeEndTime);
   void NotifyLargestContentfulRenderForRootContentDocument(
-      const DOMHighResTimeStamp& aRenderTime);
+      const DOMHighResTimeStamp& aRenderTime, const nsAString& aElement,
+      const nsACString& aImageURL);
   void NotifyDocShellStateChanged(DocShellState aDocShellState);
 
-  void MaybeAddLCPProfilerMarker(mozilla::MarkerInnerWindowId aInnerWindowID);
+  RefPtr<SharedLcpMarkerState> GetSharedLcpMarkerState() const;
 
   DOMTimeMilliSec TimeStampToDOM(mozilla::TimeStamp aStamp) const;
 
@@ -206,16 +205,26 @@ class nsDOMNavigationTiming final : public mozilla::RelativeTimeline {
     return timing.forget();
   }
 
-  bool DocShellHasBeenActiveSinceNavigationStart() const {
-    return mDocShellHasBeenActiveSinceNavigationStart;
+  bool WasActivatedFromNavigationalPrefetch() const {
+    return mWasActivatedFromNavigationalPrefetch;
+  }
+  void SetWasActivatedFromNavigationalPrefetch() {
+    mWasActivatedFromNavigationalPrefetch = true;
   }
 
   mozilla::TimeStamp LoadEventEnd() { return mLoadEventEnd; }
 
+  // Whether the tab was foreground when this document's load event started.
+  // Asked of the tab at that moment rather than accumulated from activeness
+  // notifications, which depend on an edge having reached this object. Nothing
+  // if the load event never fired, which leaves no evidence either way.
+  mozilla::Maybe<bool> LoadedInForeground() const {
+    return mForegroundAtLoadEventStart;
+  }
+
  private:
   friend class nsDocShell;
   nsDOMNavigationTiming(nsDocShell* aDocShell, nsDOMNavigationTiming* aOther);
-  nsDOMNavigationTiming(const nsDOMNavigationTiming&) = delete;
   ~nsDOMNavigationTiming();
 
   void Clear();
@@ -224,6 +233,8 @@ class nsDOMNavigationTiming final : public mozilla::RelativeTimeline {
   mozilla::TimeStamp GetUnloadEventEndTimeStamp() const;
 
   bool IsTopLevelContentDocumentInContentProcess() const;
+
+  bool DocShellIsActive() const;
 
   // Should those be amended, the IPC serializer should be updated
   // accordingly.
@@ -239,6 +250,7 @@ class nsDOMNavigationTiming final : public mozilla::RelativeTimeline {
   mozilla::TimeStamp mNonBlankPaint;
   mozilla::TimeStamp mContentfulComposite;
   mozilla::TimeStamp mLargestContentfulRender;
+  RefPtr<SharedLcpMarkerState> mSharedLcpMarkerState;
 
   mozilla::TimeStamp mBeforeUnloadStart;
   mozilla::TimeStamp mUnloadStart;
@@ -254,24 +266,32 @@ class nsDOMNavigationTiming final : public mozilla::RelativeTimeline {
 
   mozilla::TimeStamp mTTFI;
 
+  // Whether the docshell was active at navigation start and has not been
+  // backgrounded since. Only the paint metrics recorded in this class use it;
+  // LoadedInForeground() answers the same question without depending on an
+  // activeness notification having reached this object.
   bool mDocShellHasBeenActiveSinceNavigationStart;
+  bool mWasActivatedFromNavigationalPrefetch = false;
 
-  friend struct mozilla::ipc::IPDLParamTraits<nsDOMNavigationTiming*>;
+  // See LoadedInForeground().
+  mozilla::Maybe<bool> mForegroundAtLoadEventStart;
+
+  friend struct IPC::ParamTraits<nsDOMNavigationTiming*>;
 };
 
 // IPDL serializer. Please be aware of the caveats in sending across
 // the information and the potential resulting data leakage.
 // For now, this serializer is to only be used under a very narrowed scope
 // so that only the starting times are ever set.
-namespace mozilla::ipc {
+namespace IPC {
+
 template <>
-struct IPDLParamTraits<nsDOMNavigationTiming*> {
-  static void Write(IPC::MessageWriter* aWriter, IProtocol* aActor,
-                    nsDOMNavigationTiming* aParam);
-  static bool Read(IPC::MessageReader* aReader, IProtocol* aActor,
+struct ParamTraits<nsDOMNavigationTiming*> {
+  static void Write(MessageWriter* aWriter, nsDOMNavigationTiming* aParam);
+  static bool Read(MessageReader* aReader,
                    RefPtr<nsDOMNavigationTiming>* aResult);
 };
 
-}  // namespace mozilla::ipc
+}  // namespace IPC
 
-#endif /* nsDOMNavigationTiming_h___ */
+#endif /* nsDOMNavigationTiming_h_ */

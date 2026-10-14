@@ -43,6 +43,12 @@ export var OSKeyStore = {
   STORE_LABEL: AppConstants.MOZ_APP_BASENAME + " Encrypted Storage",
 
   /**
+   * Notified once isLoggedIn turns true, for a caller that has to wait for the
+   * store to be usable without prompting rather than make it so.
+   */
+  UNLOCKED_TOPIC: "oskeystore-unlocked",
+
+  /**
    * Consider the module is initialized as locked. OS might unlock without a
    * prompt.
    *
@@ -234,22 +240,30 @@ export var OSKeyStore = {
 
     if (generateKeyIfNotAvailable) {
       unlockPromise = unlockPromise.then(async reauthResult => {
-        if (
-          !(await lazy.nativeOSKeyStore.asyncSecretAvailable(this.STORE_LABEL))
-        ) {
+        try {
+          if (
+            !(await lazy.nativeOSKeyStore.asyncSecretAvailable(
+              this.STORE_LABEL
+            ))
+          ) {
+            lazy.log.debug(
+              "ensureLoggedIn: Secret unavailable, attempt to generate new secret."
+            );
+            let recoveryPhrase =
+              await lazy.nativeOSKeyStore.asyncGenerateSecret(this.STORE_LABEL);
+            // TODO We should somehow have a dialog to ask the user to write this down,
+            // and another dialog somewhere for the user to restore the secret with it.
+            // (Intentionally not printing it out in the console)
+            lazy.log.debug(
+              "ensureLoggedIn: Secret generated. Recovery phrase length: " +
+                recoveryPhrase.length
+            );
+          }
+        } catch (e) {
           lazy.log.debug(
-            "ensureLoggedIn: Secret unavailable, attempt to generate new secret."
+            `ensureLoggedIn: asyncSecretAvailable failed: ${e.result}`
           );
-          let recoveryPhrase = await lazy.nativeOSKeyStore.asyncGenerateSecret(
-            this.STORE_LABEL
-          );
-          // TODO We should somehow have a dialog to ask the user to write this down,
-          // and another dialog somewhere for the user to restore the secret with it.
-          // (Intentionally not printing it out in the console)
-          lazy.log.debug(
-            "ensureLoggedIn: Secret generated. Recovery phrase length: " +
-              recoveryPhrase.length
-          );
+          throw e;
         }
         return reauthResult;
       });
@@ -259,7 +273,12 @@ export var OSKeyStore = {
       reauthResult => {
         lazy.log.debug("ensureLoggedIn: Logged in");
         this._pendingUnlockPromise = null;
-        this._isLocked = false;
+        // Every encrypt and decrypt comes through here, so only the first
+        // one after the store was locked is an unlock.
+        if (this._isLocked) {
+          this._isLocked = false;
+          Services.obs.notifyObservers(null, this.UNLOCKED_TOPIC);
+        }
 
         return reauthResult;
       },
@@ -291,23 +310,38 @@ export var OSKeyStore = {
    *       recover from that and still shows the dialog.)
    *
    * @param   {string}         cipherText Encrypted string including the algorithm details.
+   * @param   {string}         trigger    Caller identifier for telemetry.
    * @param   {boolean|string} reauth     If set to a string, prompt the reauth login dialog.
    *                                      The string may be shown on the native OS
    *                                      login dialog. Empty strings and `true` are disallowed.
    * @returns {Promise<string>}           resolves to the decrypted string, or rejects otherwise.
    */
-  async decrypt(cipherText, reauth = false) {
-    if (!(await this.ensureLoggedIn(reauth)).authenticated) {
-      throw Components.Exception(
-        "User canceled OS unlock entry",
-        Cr.NS_ERROR_ABORT
+  async decrypt(cipherText, trigger, reauth = false) {
+    let errorResult = 0;
+    try {
+      if (!(await this.ensureLoggedIn(reauth)).authenticated) {
+        lazy.log.warn("User canceled encryption login");
+        throw Components.Exception(
+          "User canceled OS unlock entry",
+          Cr.NS_ERROR_ABORT
+        );
+      }
+      let bytes = await lazy.nativeOSKeyStore.asyncDecryptBytes(
+        this.STORE_LABEL,
+        cipherText
       );
+      return String.fromCharCode.apply(String, bytes);
+    } catch (e) {
+      errorResult = e.result;
+      lazy.log.warn(`Decryption failed with result: ${e.result}`);
+      throw e;
+    } finally {
+      Glean.creditcard.osKeystoreDecrypt.record({
+        isDecryptSuccess: errorResult === 0,
+        errorResult,
+        trigger,
+      });
     }
-    let bytes = await lazy.nativeOSKeyStore.asyncDecryptBytes(
-      this.STORE_LABEL,
-      cipherText
-    );
-    return String.fromCharCode.apply(String, bytes);
   },
 
   /**
@@ -368,10 +402,7 @@ export var OSKeyStore = {
 };
 
 ChromeUtils.defineLazyGetter(lazy, "log", () => {
-  let { ConsoleAPI } = ChromeUtils.importESModule(
-    "resource://gre/modules/Console.sys.mjs"
-  );
-  return new ConsoleAPI({
+  return console.createInstance({
     maxLogLevelPref: "toolkit.osKeyStore.loglevel",
     prefix: "OSKeyStore",
   });

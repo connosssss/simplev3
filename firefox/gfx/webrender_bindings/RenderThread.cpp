@@ -1,44 +1,46 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "base/task.h"
-#include "GeckoProfiler.h"
-#include "gfxPlatform.h"
-#include "GLContext.h"
 #include "RenderThread.h"
-#include "nsThread.h"
-#include "nsThreadUtils.h"
-#include "transport/runnable_utils.h"
+
+#include "GLContext.h"
+#include "GeckoProfiler.h"
+#include "GfxInfoBase.h"
+#include "OGLShaderProgram.h"
+#include "base/task.h"
+#include "gfxPlatform.h"
 #include "mozilla/BackgroundHangMonitor.h"
-#include "mozilla/layers/AsyncImagePipelineManager.h"
-#include "mozilla/gfx/gfxVars.h"
+#include "mozilla/Components.h"
+#include "mozilla/PerfStats.h"
+#include "mozilla/StaticPtr.h"
 #include "mozilla/gfx/GPUParent.h"
 #include "mozilla/gfx/GPUProcessManager.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/glean/GfxMetrics.h"
-#include "mozilla/layers/CompositorThread.h"
+#include "mozilla/layers/AsyncImagePipelineManager.h"
 #include "mozilla/layers/CompositorBridgeParent.h"
 #include "mozilla/layers/CompositorManagerParent.h"
+#include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/Fence.h"
-#include "mozilla/layers/WebRenderBridgeParent.h"
 #include "mozilla/layers/SharedSurfacesParent.h"
 #include "mozilla/layers/SurfacePool.h"
 #include "mozilla/layers/SynchronousTask.h"
-#include "mozilla/PerfStats.h"
-#include "mozilla/StaticPtr.h"
-#include "mozilla/webrender/RendererOGL.h"
+#include "mozilla/layers/WebRenderBridgeParent.h"
 #include "mozilla/webrender/RenderTextureHost.h"
+#include "mozilla/webrender/RendererOGL.h"
 #include "mozilla/widget/CompositorWidget.h"
-#include "OGLShaderProgram.h"
+#include "nsThread.h"
+#include "nsThreadUtils.h"
+#include "transport/runnable_utils.h"
 
 #ifdef XP_WIN
 #  include "GLContextEGL.h"
 #  include "GLLibraryEGL.h"
-#  include "mozilla/widget/WinCompositorWindowThread.h"
+#  include "mozilla/WindowsUserHandleValidation.h"
 #  include "mozilla/gfx/DeviceManagerDx.h"
 #  include "mozilla/webrender/DCLayerTree.h"
+#  include "mozilla/widget/WinCompositorWindowThread.h"
 // #  include "nsWindowsHelpers.h"
 // #  include <d3d11.h>
 #endif
@@ -49,8 +51,14 @@
 #endif
 
 #ifdef MOZ_WIDGET_GTK
-#  include "mozilla/WidgetUtilsGtk.h"
 #  include "GLLibraryEGL.h"
+#  include "mozilla/WidgetUtilsGtk.h"
+#endif
+
+#ifdef XP_DARWIN
+#  include "GLContextEGL.h"
+#  include "GLLibraryEGL.h"
+#  include "mozilla/webrender/MetalDeviceManager.h"
 #endif
 
 using namespace mozilla;
@@ -58,6 +66,8 @@ using namespace mozilla;
 static already_AddRefed<gl::GLContext> CreateGLContext(nsACString& aError);
 
 MOZ_DEFINE_MALLOC_SIZE_OF(WebRenderRendererMallocSizeOf)
+MOZ_DEFINE_MALLOC_SIZE_OF(WebRenderPoolMallocSizeOf)
+MOZ_DEFINE_MALLOC_ENCLOSING_SIZE_OF(WebRenderPoolMallocEnclosingSizeOf)
 
 namespace mozilla::wr {
 
@@ -66,7 +76,7 @@ LazyLogModule gRenderThreadLog("RenderThread");
 #define LOG(...) MOZ_LOG(gRenderThreadLog, LogLevel::Debug, (__VA_ARGS__))
 
 static StaticRefPtr<RenderThread> sRenderThread;
-static mozilla::BackgroundHangMonitor* sBackgroundHangMonitor;
+[[maybe_unused]] static mozilla::BackgroundHangMonitor* sBackgroundHangMonitor;
 #ifdef DEBUG
 static bool sRenderThreadEverStarted = false;
 #endif
@@ -84,6 +94,7 @@ RenderThread::RenderThread(RefPtr<nsIThread> aThread)
       mThreadPool(false),
       mThreadPoolLP(true),
       mChunkPool(wr_chunk_pool_new()),
+      mRenderBackendPool(nullptr),
       mGlyphRasterThread(USE_DEDICATED_GLYPH_RASTER_THREAD),
       mSingletonGLIsForHardwareWebRender(true),
       mBatteryInfo("RenderThread.mBatteryInfo"),
@@ -91,11 +102,40 @@ RenderThread::RenderThread(RefPtr<nsIThread> aThread)
       mRenderTextureMapLock("RenderThread.mRenderTextureMapLock"),
       mHasShutdown(false),
       mHandlingDeviceReset(false),
-      mHandlingWebRenderError(false) {}
+      mHandlingWebRenderError(false) {
+  // Pref of `0` (the default) keeps each window on its own private backend
+  // thread; anything `>= 1` creates a shared pool of N backend threads
+  // across the process.
+  uint32_t poolSize =
+      StaticPrefs::gfx_webrender_render_backend_thread_count_AtStartup();
+  if (poolSize >= 1) {
+    mRenderBackendPool =
+        wr_render_backend_pool_new(poolSize, &WebRenderPoolMallocSizeOf,
+                                   &WebRenderPoolMallocEnclosingSizeOf);
+    if (!mRenderBackendPool) {
+      gfxCriticalNote << "wr_render_backend_pool_new(" << poolSize
+                      << ") failed; falling back to private backend threads";
+    }
+  }
+}
 
 RenderThread::~RenderThread() {
   MOZ_ASSERT(mRenderTexturesDeferred.empty());
+  DestroyRenderBackendPool();
   wr_chunk_pool_delete(mChunkPool);
+}
+
+void RenderThread::DestroyRenderBackendPool() {
+  if (!mRenderBackendPool) {
+    return;
+  }
+
+  // This waits for the pool's threads to exit. They register themselves with
+  // the profiler, which lazily creates an nsThread wrapper that is only
+  // released when the thread exits, so a thread still winding down when XPCOM
+  // writes its leak log is reported as a leak.
+  wr_render_backend_pool_delete(mRenderBackendPool);
+  mRenderBackendPool = nullptr;
 }
 
 // static
@@ -158,6 +198,9 @@ void RenderThread::Start(uint32_t aNamespace) {
             nsThread* nsthread = static_cast<nsThread*>(thread.get());
             nsthread->SetUseHangMonitor(true);
             nsthread->SetPriority(nsISupportsPriority::PRIORITY_HIGH);
+#ifdef XP_WIN
+            mozilla::ForceToGuiThreadAndFixTebValidateHandlesFlag();
+#endif
           }),
       {.stackSize = stackSize});
 
@@ -202,6 +245,11 @@ void RenderThread::ShutDown() {
   nsCOMPtr<nsIThread> oldThread = sRenderThread->GetRenderThread();
   oldThread->Shutdown();
 
+  // Tear down the shared render backend threads here rather than relying on
+  // the RenderThread destructor, so that they are guaranteed to be gone
+  // before the rest of Gecko shuts down.
+  sRenderThread->DestroyRenderBackendPool();
+
   layers::SharedSurfacesParent::Shutdown();
 
 #ifdef XP_WIN
@@ -231,9 +279,21 @@ void RenderThread::ShutDownTask() {
     mRenderTextureOps.clear();
   }
 
-  // Let go of our handle to the (internally ref-counted) thread pool.
-  mThreadPool.Release();
-  mThreadPoolLP.Release();
+  // These must be destroyed before the thread pools as they hold a reference to
+  // the worker threads.
+  mShaders = nullptr;
+  mProgramCache = nullptr;
+
+  // Destroy the thread pools, waiting for the worker threads to join in
+  // leak-checking / ASAN / etc builds. In normal builds we don't care and just
+  // want to shut down quickly.
+#ifdef NS_FREE_PERMANENT_DATA
+  const bool joinWorkers = true;
+#else
+  const bool joinWorkers = false;
+#endif
+  mThreadPool.Destroy(joinWorkers);
+  mThreadPoolLP.Destroy(joinWorkers);
 
   // Releasing on the render thread will allow us to avoid dispatching to remove
   // remaining textures from the texture map.
@@ -830,7 +890,7 @@ void RenderThread::UpdateAndRender(
 
   std::string markerName = "Composite #" + std::to_string(AsUint64(aWindowId));
   AutoProfilerTracing tracingCompositeMarker(
-      "Paint", markerName.c_str(), geckoprofiler::category::GRAPHICS,
+      markerName.c_str(), geckoprofiler::category::GRAPHICS,
       Some(renderer->GetCompositorBridge()->GetInnerWindowId()));
 
   bool render = aParams.render;
@@ -865,10 +925,10 @@ void RenderThread::UpdateAndRender(
                           renderer->GetCompositorBridge(), info, aStartId,
                           aStartTime, start, end, render, *aStats));
 
-  RefPtr<layers::Fence> fence;
+  RefPtr<layers::Fence> readFence;
 
   if (latestFrameId.IsValid()) {
-    fence = renderer->GetAndResetReleaseFence();
+    readFence = renderer->GetAndResetReadFence();
 
     // Wait for GPU after posting NotifyDidRender, since the wait is not
     // necessary for the NotifyDidRender.
@@ -897,7 +957,7 @@ void RenderThread::UpdateAndRender(
   // this code at all; it would bail out at the mRenderers.find check above.
   MOZ_ASSERT(pipelineMgr);
   pipelineMgr->NotifyPipelinesUpdated(info, latestFrameId, lastCompletedFrameId,
-                                      std::move(fence));
+                                      std::move(readFence));
 }
 
 void RenderThread::Pause(wr::WindowId aWindowId) {
@@ -938,9 +998,11 @@ bool RenderThread::Resume(wr::WindowId aWindowId) {
 
 void RenderThread::NotifyIdle() {
   if (!IsInRenderThread()) {
-    PostRunnable(NewRunnableMethod("RenderThread::NotifyIdle", this,
-                                   &RenderThread::NotifyIdle));
-
+    PostRunnable(NS_NewRunnableFunction("RenderThread::NotifyIdle", []() {
+      if (auto* rt = RenderThread::Get()) {
+        rt->NotifyIdle();
+      }
+    }));
     return;
   }
 
@@ -1037,7 +1099,8 @@ void RenderThread::RegisterExternalImage(
   if (texture->SyncObjectNeeded()) {
     mSyncObjectNeededRenderTextures.emplace(aExternalImageId, texture);
   }
-  mRenderTextures.emplace(aExternalImageId, texture);
+  auto [it, inserted] = mRenderTextures.emplace(aExternalImageId, texture);
+  MOZ_RELEASE_ASSERT(inserted, "ExternalImageId collision");
 
 #ifdef DEBUG
   int32_t maxAllowedIncrease =
@@ -1279,11 +1342,22 @@ void RenderThread::InitDeviceTask() {
   // lazy initialization to happen now.
   SingletonGL();
 
-  if (mShaders) {
-    // Kick off shader warmup, outside the InitDeviceTask so that this thread
-    // becomes available to handle other messages from the Compositor.
-    PostResumeShaderWarmupRunnable();
+#ifdef MOZ_WIDGET_ANDROID
+  // On Android we must report the GL context's strings to gfxInfo. This allows
+  // gfxInfo to avoid creating a GL context during startup.
+  if (mSingletonGL) {
+    gfx::GfxInfoGLStrings strings(mSingletonGL->VendorString(),
+                                  mSingletonGL->RendererString(),
+                                  mSingletonGL->VersionString(),
+                                  mSingletonGL->ExtensionStrings().Clone());
+    if (XRE_IsGPUProcess()) {
+      gfx::GPUParent::GetSingleton()->ReportGLStrings(std::move(strings));
+    } else if (nsCOMPtr<nsIGfxInfo> gfxInfo = components::GfxInfo::Service()) {
+      static_cast<widget::GfxInfoBase*>(gfxInfo.get())
+          ->ReportGLStrings(std::move(strings));
+    }
   }
+#endif
 
   const auto maxDurationMs = 3 * 1000;
   const auto end = TimeStamp::Now();
@@ -1291,6 +1365,12 @@ void RenderThread::InitDeviceTask() {
   if (durationMs > maxDurationMs) {
     gfxCriticalNoteOnce << "RenderThread::InitDeviceTask is slow: "
                         << durationMs;
+  }
+}
+
+void RenderThread::BeginShaderWarmupIfNeeded() {
+  if (mShaders && gfx::gfxVars::ShouldWarmUpWebRenderProgramBinaries()) {
+    PostResumeShaderWarmupRunnable();
   }
 }
 
@@ -1315,29 +1395,24 @@ void RenderThread::PostRunnable(already_AddRefed<nsIRunnable> aRunnable) {
   mThread->Dispatch(runnable.forget());
 }
 
+/* static */ void RenderThread::PostHandleDeviceReset(
+    gfx::DeviceResetDetectPlace aPlace, gfx::DeviceResetReason aReason) {
+  MOZ_ASSERT(!IsInRenderThread());
+  auto* renderThread = Get();
+  if (!renderThread) {
+    gfx::GPUProcessManager::NotifyDeviceReset(aReason, aPlace);
+    return;
+  }
+
+  renderThread->PostRunnable(
+      NewRunnableMethod<gfx::DeviceResetDetectPlace, gfx::DeviceResetReason>(
+          "wr::RenderThread::HandleDeviceReset", renderThread,
+          &RenderThread::HandleDeviceReset, aPlace, aReason));
+}
+
 void RenderThread::HandleDeviceReset(gfx::DeviceResetDetectPlace aPlace,
                                      gfx::DeviceResetReason aReason) {
   MOZ_ASSERT(IsInRenderThread());
-
-  // This happens only on simulate device reset.
-  if (aReason == gfx::DeviceResetReason::FORCED_RESET) {
-    if (!mHandlingDeviceReset) {
-      mHandlingDeviceReset = true;
-
-      MutexAutoLock lock(mRenderTextureMapLock);
-      mRenderTexturesDeferred.clear();
-      for (const auto& entry : mRenderTextures) {
-        entry.second->ClearCachedResources();
-      }
-
-      // All RenderCompositors will be destroyed by the GPUProcessManager in
-      // either OnRemoteProcessDeviceReset via the GPUChild, or
-      // OnInProcessDeviceReset here directly.
-      gfx::GPUProcessManager::GPUProcessManager::NotifyDeviceReset(
-          gfx::DeviceResetReason::FORCED_RESET, aPlace);
-    }
-    return;
-  }
 
   if (mHandlingDeviceReset) {
     return;
@@ -1345,10 +1420,7 @@ void RenderThread::HandleDeviceReset(gfx::DeviceResetDetectPlace aPlace,
 
   mHandlingDeviceReset = true;
 
-#ifndef XP_WIN
-  // On Windows, see DeviceManagerDx::MaybeResetAndReacquireDevices.
-  gfx::GPUProcessManager::RecordDeviceReset(aReason);
-#endif
+  gfxCriticalNote << "Handle DeviceReset";
 
   {
     MutexAutoLock lock(mRenderTextureMapLock);
@@ -1358,21 +1430,7 @@ void RenderThread::HandleDeviceReset(gfx::DeviceResetDetectPlace aPlace,
     }
   }
 
-  // All RenderCompositors will be destroyed by the GPUProcessManager in
-  // either OnRemoteProcessDeviceReset via the GPUChild, or
-  // OnInProcessDeviceReset here directly.
-  // On Windows, device will be re-created before sessions re-creation.
-  if (XRE_IsGPUProcess()) {
-    gfx::GPUProcessManager::GPUProcessManager::NotifyDeviceReset(aReason,
-                                                                 aPlace);
-  } else {
-#ifndef XP_WIN
-    // FIXME(aosmond): Do we need to do this on Windows? nsWindow::OnPaint
-    // seems to do its own detection for the parent process.
-    gfx::GPUProcessManager::GPUProcessManager::NotifyDeviceReset(aReason,
-                                                                 aPlace);
-#endif
-  }
+  gfx::GPUProcessManager::NotifyDeviceReset(aReason, aPlace);
 }
 
 bool RenderThread::IsHandlingDeviceReset() {
@@ -1576,11 +1634,11 @@ WebRenderThreadPool::WebRenderThreadPool(bool low_priority) {
   mThreadPool = wr_thread_pool_new(low_priority);
 }
 
-WebRenderThreadPool::~WebRenderThreadPool() { Release(); }
+WebRenderThreadPool::~WebRenderThreadPool() { Destroy(false); }
 
-void WebRenderThreadPool::Release() {
+void WebRenderThreadPool::Destroy(bool aJoinWorkers) {
   if (mThreadPool) {
-    wr_thread_pool_delete(mThreadPool);
+    wr_thread_pool_delete(mThreadPool, aJoinWorkers);
     mThreadPool = nullptr;
   }
 }
@@ -1618,16 +1676,9 @@ WebRenderProgramCache::~WebRenderProgramCache() {
 
 }  // namespace mozilla::wr
 
-#ifdef XP_WIN
+#if defined(XP_WIN) || defined(XP_DARWIN)
 static already_AddRefed<gl::GLContext> CreateGLContextANGLE(
     nsACString& aError) {
-  const RefPtr<ID3D11Device> d3d11Device =
-      gfx::DeviceManagerDx::Get()->GetCompositorDevice();
-  if (!d3d11Device) {
-    aError.Assign("RcANGLE(no compositor device for EGLDisplay)"_ns);
-    return nullptr;
-  }
-
   nsCString failureId;
   const auto lib = gl::GLLibraryEGL::Get(&failureId);
   if (!lib) {
@@ -1636,7 +1687,34 @@ static already_AddRefed<gl::GLContext> CreateGLContextANGLE(
     return nullptr;
   }
 
+#  if defined(XP_WIN)
+  const RefPtr<ID3D11Device> d3d11Device =
+      gfx::DeviceManagerDx::Get()->GetCompositorDevice();
+  if (!d3d11Device) {
+    aError.Assign("RcANGLE(no compositor device for EGLDisplay)"_ns);
+    return nullptr;
+  }
+
   const auto egl = lib->CreateDisplay(d3d11Device.get());
+#  elif defined(XP_DARWIN)
+  // Providing an explicit device ID ensures ANGLE's display cache returns to us
+  // a different EGLDisplay than if we simply called CreateDisplay(), even if it
+  // would have selected the same underlying device. Importantly, this ensures a
+  // different display is used for webrender than for WebGL, avoiding rendering
+  // glitches presumably due to lack of thread safety.
+  //
+  // Note that on systems with multiple GPUs the "system default" is the
+  // discrete GPU. We currently block webrender on Metal ANGLE on systems with
+  // multiple GPUs, so this is moot. But in order to support systems with
+  // multiple GPUs we will probably want to do something smarter.
+  auto registryId = wr::MetalDeviceManager::GetSystemDefaultDeviceRegistryId();
+  if (!registryId) {
+    aError.Assign("RcANGLE(no Metal device for EGLDisplay)"_ns);
+    return nullptr;
+  }
+  const auto egl = lib->CreateDisplayForMetalDevice(*registryId);
+#  endif
+
   if (!egl) {
     aError.Assign(nsPrintfCString("RcANGLE(create EGLDisplay failed: %s)",
                                   failureId.get()));
@@ -1647,11 +1725,6 @@ static already_AddRefed<gl::GLContext> CreateGLContextANGLE(
 
   if (StaticPrefs::gfx_webrender_prefer_robustness_AtStartup()) {
     flags |= gl::CreateContextFlags::PREFER_ROBUSTNESS;
-  }
-
-  if (egl->IsExtensionSupported(
-          gl::EGLExtension::MOZ_create_context_provoking_vertex_dont_care)) {
-    flags |= gl::CreateContextFlags::PROVOKING_VERTEX_DONT_CARE;
   }
 
   // Create GLContext with dummy EGLSurface, the EGLSurface is not used.
@@ -1719,7 +1792,11 @@ static already_AddRefed<gl::GLContext> CreateGLContext(nsACString& aError) {
     gl = CreateGLContextEGL();
   }
 #elif XP_DARWIN
-  gl = CreateGLContextCGL();
+  if (gfx::gfxVars::UseWebRenderANGLE()) {
+    gl = CreateGLContextANGLE(aError);
+  } else {
+    gl = CreateGLContextCGL();
+  }
 #endif
 
   wr::RenderThread::MaybeEnableGLDebugMessage(gl);

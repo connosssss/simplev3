@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -12,7 +10,7 @@ option(env="CBINDGEN", nargs=1, help="Path to cbindgen")
 def check_cbindgen_version(cbindgen, fatal=False):
     log.debug("trying cbindgen: %s" % cbindgen)
 
-    cbindgen_min_version = Version("0.27.0")
+    cbindgen_min_version = Version("0.29.4")
 
     # cbindgen x.y.z
     version = Version(check_cmd_output(cbindgen, "--version").strip().split(" ")[1])
@@ -30,9 +28,7 @@ def check_cbindgen_version(cbindgen, fatal=False):
     Please update using 'cargo install cbindgen --force' or running
     './mach bootstrap', after removing the existing executable located at
     {}.
-    """.format(
-                version, cbindgen_min_version, cbindgen
-            )
+    """.format(version, cbindgen_min_version, cbindgen)
         )
     )
 
@@ -189,8 +185,7 @@ def bindgen_libclang_path(libclang_path, clang, library_name_info, host):
     if not clang:
         if libclang_path:
             die(
-                "--with-libclang-path is not valid without a clang compiler "
-                "for bindgen"
+                "--with-libclang-path is not valid without a clang compiler for bindgen"
             )
         return
 
@@ -284,6 +279,7 @@ def bindgen_config_paths(clang, libclang, build_project):
 
 @depends(bindgen_config_paths.libclang, when=bindgen_config_paths)
 @checking("that libclang is new enough", lambda s: "yes" if s else "no")
+@imports(_from="__builtin__", _import="Exception")
 @imports(_from="ctypes", _import="CDLL")
 @imports(_from="textwrap", _import="dedent")
 def min_libclang_version(libclang):
@@ -293,7 +289,8 @@ def min_libclang_version(libclang):
         # Just accessing it should throw if not found.
         fun = lib.clang_getAddressSpace
         return True
-    except:
+    except Exception as e:
+        log.debug(e)
         die(
             dedent(
                 """\
@@ -301,9 +298,7 @@ def min_libclang_version(libclang):
 
         Please make sure to update it or point to a newer libclang using
         --with-libclang-path.
-        """.format(
-                    libclang
-                )
+        """.format(libclang)
             )
         )
         return False
@@ -343,6 +338,11 @@ def basic_bindgen_cflags(
         ],
     }.get(target.os, [])
 
+    # bindgen passes the windows-gnullvm Rust target to clang unchanged, which
+    # clang rejects. https://github.com/rust-lang/rust-bindgen/pull/3505
+    if target.abi == "mingw":
+        args.append(f"--target={target.alias}")
+
     if compiler_info.type == "clang-cl":
         args += [
             # To enable the builtin __builtin_offsetof so that CRT wouldn't
@@ -375,3 +375,13 @@ def bindgen_cflags(base_flags, extra_flags):
 
 
 set_config("BINDGEN_SYSTEM_FLAGS", bindgen_cflags)
+
+
+# Force the target down to all bindgen callers, even those that may not
+# read BINDGEN_SYSTEM_FLAGS some way or another.
+@depends(bindgen_cflags)
+def bindgen_extra_clang_args(flags):
+    return [f for f in flags or [] if f.startswith("--target=")]
+
+
+set_config("BINDGEN_EXTRA_CLANG_ARGS", bindgen_extra_clang_args)

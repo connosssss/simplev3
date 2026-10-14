@@ -1,35 +1,37 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsFrameSelection_h___
-#define nsFrameSelection_h___
+#ifndef nsFrameSelection_h_
+#define nsFrameSelection_h_
 
+#include <fmt/format.h>
 #include <stdint.h>
-#include "mozilla/intl/BidiEmbeddingLevel.h"
+
+#include "WordMovementType.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/CaretAssociationHint.h"
 #include "mozilla/CompactPair.h"
 #include "mozilla/EnumSet.h"
 #include "mozilla/EventForwards.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/dom/Highlight.h"
-#include "mozilla/dom/Selection.h"
 #include "mozilla/Result.h"
 #include "mozilla/TextRange.h"
 #include "mozilla/UniquePtr.h"
-#include "nsIFrame.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/Highlight.h"
+#include "mozilla/dom/Selection.h"
+#include "mozilla/intl/BidiEmbeddingLevel.h"
+#include "nsBidiPresUtils.h"
 #include "nsIContent.h"
+#include "nsIFrame.h"
 #include "nsISelectionController.h"
 #include "nsISelectionListener.h"
 #include "nsITableCellLayout.h"
-#include "WordMovementType.h"
-#include "nsBidiPresUtils.h"
 
-class nsRange;
+namespace mozilla::dom {
+class Range;
+}  // namespace mozilla::dom
 
 #define BIDI_LEVEL_UNDEFINED mozilla::intl::BidiEmbeddingLevel(0x80)
 
@@ -42,7 +44,27 @@ struct SelectionDetails {
       : mStart(), mEnd(), mSelectionType(mozilla::SelectionType::eInvalid) {
     MOZ_COUNT_CTOR(SelectionDetails);
   }
-  MOZ_COUNTED_DTOR(SelectionDetails)
+  ~SelectionDetails() {
+    MOZ_COUNT_DTOR(SelectionDetails);
+    // Destroy the linked list without recursion.
+    auto next = std::move(mNext);
+    while (next) {
+      next = std::move(next->mNext);
+    }
+  }
+
+  friend auto format_as(const SelectionDetails& aDetails) {
+    return fmt::format(
+        "{{ mStart={}, mSelectionType={} }}",
+        aDetails.mStart == aDetails.mEnd
+            ? fmt::format("mEnd={}", aDetails.mStart)
+            : fmt::format("{}, mEnd={}", aDetails.mStart, aDetails.mEnd),
+        aDetails.mSelectionType);
+  }
+  friend std::ostream& operator<<(std::ostream& aStream,
+                                  const SelectionDetails& aDetails) {
+    return aStream << format_as(aDetails);
+  }
 
   int32_t mStart;
   int32_t mEnd;
@@ -103,6 +125,20 @@ enum class PeekOffsetOption : uint16_t {
   // If true, the offset has to end up in an editable node, otherwise we'll keep
   // searching.
   ForceEditableRegion,
+
+  // Whether the peeking is done for a caret move rather than a selection.
+  //
+  // Currently this only affects eSelectParagraph: when paragraph movement
+  // reaches a block boundary without finding a "stop frame", the result is
+  // resolved to the leaf frame at that edge (typically a text frame) rather
+  // than to the block container element. This gives a caret a precise text
+  // position so that scrolling-into-view works for horizontally overflowing
+  // content (bug 2041228). Selection (e.g. triple-click paragraph selection)
+  // intentionally does not set this, because it expects the block container
+  // itself as the boundary.
+  //
+  // Set for all caret moves; currently only takes effect with eSelectParagraph.
+  ForCaretMove,
 };
 
 using PeekOffsetOptions = EnumSet<PeekOffsetOption>;
@@ -234,12 +270,63 @@ enum class TableSelectionMode : uint32_t {
   AllCells, /* All the cells in a table are being selected. */
 };
 
+struct SelectionLimiters {
+  /**
+   * Return true if aContainerNode is in the limiters if one of them is set.
+   *
+   * Note that this returns true when aContainerNode may be in the scope of
+   * an independent selection.  Therefore, even if this returns `true`,
+   * aContainerNode may not be valid container node for a selection managed
+   * by this owner.
+   */
+  [[nodiscard]] bool NodeIsInLimiters(const nsINode* aContainerNode) const;
+
+  /**
+   * Return true if aRange is completely in the limiters if one of them is set.
+   *
+   * Note that this returns true when aContainerNode may be in the scope of
+   * an independent selection.  Therefore, even if this returns `true`,
+   * aRange may not be a valid range for a selection managed by this owner.
+   */
+  [[nodiscard]] bool RangeInLimiters(const dom::AbstractRange& aRange) const {
+    return NodeIsInLimiters(aRange.GetStartContainer()) &&
+           (aRange.GetStartContainer() == aRange.GetEndContainer() ||
+            NodeIsInLimiters(aRange.GetEndContainer()));
+  }
+
+  [[nodiscard]] bool HasLimiters() const {
+    return mIndependentSelectionRootElement || mAncestorLimiter;
+  }
+
+  friend inline std::string format_as(const SelectionLimiters& aLimiters) {
+    return fmt::format(
+        "{{ mIndependentSelectionRootElement={}, mAncestorLimiter={} }}",
+        ToString(aLimiters.mIndependentSelectionRootElement),
+        ToString(aLimiters.mAncestorLimiter));
+  }
+
+  friend inline std::ostream& operator<<(std::ostream& aStream,
+                                         const SelectionLimiters& aLimiters) {
+    return aStream << format_as(aLimiters);
+  }
+
+  // The independent selection root element if and only if the
+  // nsFrameSelection instance is for an independent selection.
+  RefPtr<dom::Element> mIndependentSelectionRootElement;
+  // Limit selection navigation to a descendant of this element.
+  // This is typically the focused editing host if set unless it's the root
+  // element of the document.
+  RefPtr<dom::Element> mAncestorLimiter;
+};
+
 }  // namespace mozilla
 
 class nsFrameSelection final {
  public:
   friend std::ostream& operator<<(std::ostream&, const nsFrameSelection&);
 
+  using AllowRangeCrossShadowBoundary =
+      mozilla::dom::AllowRangeCrossShadowBoundary;
   using CaretAssociationHint = mozilla::CaretAssociationHint;
   using Element = mozilla::dom::Element;
 
@@ -278,7 +365,13 @@ class nsFrameSelection final {
                                           FocusMode aFocusMode,
                                           CaretAssociationHint aHint);
 
- public:
+  [[nodiscard]] bool IsAvailable() const {
+    // mDomSelections is initialized at construction and cleared if the cycle
+    // collector unlink them so that if the first selection is available, the
+    // others should be fine.
+    return !!mDomSelections[0];
+  }
+
   /**
    * Sets the type of the selection based on whether a selection is created
    * by doubleclick, long tapping a word or tripleclick.
@@ -366,7 +459,6 @@ class nsFrameSelection final {
    */
   nsresult SelectCellElement(nsIContent* aCell);
 
- public:
   /**
    * Remove cells from selection inside of the given cell range.
    *
@@ -423,25 +515,27 @@ class nsFrameSelection final {
    * @param aContent is the content asking
    * @param aContentOffset is the starting content boundary
    * @param aContentLength is the length of the content piece asking
-   * @param aSlowCheck will check using slow method with no shortcuts
+   * @param aIgnoreSelection is Yes, this won't return selection details about
+   * the normal selection.
    */
-  mozilla::UniquePtr<SelectionDetails> LookUpSelection(nsIContent* aContent,
-                                                       int32_t aContentOffset,
-                                                       int32_t aContentLength,
-                                                       bool aSlowCheck) const;
+  enum class IgnoreNormalSelection : bool { No, Yes };
+  mozilla::UniquePtr<SelectionDetails> LookUpSelection(
+      nsIContent* aContent, int32_t aContentOffset, int32_t aContentLength,
+      IgnoreNormalSelection aIgnoreNormalSelection) const;
 
   /**
    * Sets the drag state to aState for resons of drag state.
+   * Note that only can run script when called with false as an argument.
    *
    * @param aState is the new state of drag
    */
   MOZ_CAN_RUN_SCRIPT void SetDragState(bool aState);
 
   /**
-   * Gets the drag state to aState for resons of drag state.
-   *
-   * @param aState will hold the state of drag
+   * Marks us as dragging. Equivalent to SetDragState(true), but without the
+   * CAN_RUN_SCRIPT implications.
    */
+  void RestoreDragState() { mDragState = true; }
   [[nodiscard]] bool GetDragState() const { return mDragState; }
 
   /**
@@ -548,12 +642,23 @@ class nsFrameSelection final {
    * aContainerNode may not be valid container node for a selection managed
    * by this instance.
    */
-  [[nodiscard]] bool NodeIsInLimiters(const nsINode* aContainerNode) const;
+  [[nodiscard]] bool NodeIsInLimiters(const nsINode* aContainerNode) const {
+    return mLimiters.NodeIsInLimiters(aContainerNode);
+  }
 
-  [[nodiscard]] static bool NodeIsInLimiters(
-      const nsINode* aContainerNode,
-      const Element* aIndependentSelectionLimiterElement,
-      const Element* aSelectionAncestorLimiter);
+  /**
+   * Return true if the both start and end containers of aRange are in the
+   * limiters.
+   *
+   * Note that this returns true when aRange may be in the scope of an
+   * independent selection.  Therefore, even if this returns `true`,
+   * aRange may not be valid editable range in the UA shadow of the text
+   * control element.
+   */
+  [[nodiscard]] bool RangeInLimiters(
+      const mozilla::dom::AbstractRange& aRange) const {
+    return mLimiters.RangeInLimiters(aRange);
+  }
 
   /**
    * GetFrameToPageSelect() returns a frame which is ancestor limit of
@@ -646,6 +751,15 @@ class nsFrameSelection final {
    * @param aExtend continue selection
    */
   MOZ_CAN_RUN_SCRIPT nsresult IntraLineMove(bool aForward, bool aExtend);
+
+  /**
+   * ParagraphMove will generally be called from the nsiselectioncontroller
+   * implementations. the effect being the selection will move to beginning or
+   * end of paragraph
+   * @param aForward move forward in document.
+   * @param aExtend continue selection
+   */
+  MOZ_CAN_RUN_SCRIPT nsresult ParagraphMove(bool aForward, bool aExtend);
 
   /**
    * CreateRangeExtendedToNextGraphemeClusterBoundary() returns range which is
@@ -829,6 +943,10 @@ class nsFrameSelection final {
            GetClickCountInDelayedCaretData() < 2;
   }
 
+  [[nodiscard]] const mozilla::SelectionLimiters& LimitersRef() const {
+    return mLimiters;
+  }
+
   /**
    * Returns the selection root element if and only if the instance is for an
    * independent selection.  Currently, this is a native anonymous `<div>` for
@@ -943,14 +1061,35 @@ class nsFrameSelection final {
 
   [[nodiscard]] mozilla::PresShell* GetPresShell() const { return mPresShell; }
 
+  [[nodiscard]] nsISelectionController* GetSelectionController() const;
+
   void DisconnectFromPresShell();
   MOZ_CAN_RUN_SCRIPT nsresult ClearNormalSelection();
 
   // Table selection support.
   static nsITableCellLayout* GetCellLayout(const nsIContent* aCellContent);
 
+  /**
+   * Called when eFocus event of aDocument will be dispatched to the DOM.
+   */
+  static void WillFocusDocument(mozilla::PresShell& aPresShell,
+                                mozilla::dom::Document& aDocument);
+
+  /**
+   * Called when eBlur event of aDocument will be dispatched to the DOM.
+   */
+  static void WillBlurDocument(mozilla::PresShell& aPresShell,
+                               mozilla::dom::Document& aDocument);
+
  private:
   ~nsFrameSelection();
+
+  /**
+   * Populates an existing highlight Selection with ranges from a Highlight.
+   * Must be called after the Selection is registered in mHighlightSelections.
+   */
+  MOZ_CAN_RUN_SCRIPT void PopulateHighlightSelection(
+      mozilla::dom::Selection& aSelection, mozilla::dom::Highlight& aHighlight);
 
   // TODO: in case an error is returned, it sometimes refers to a programming
   // error, in other cases to runtime errors. This deserves to be cleaned up.
@@ -1127,7 +1266,7 @@ class nsFrameSelection final {
                                  int32_t& aColIndex);
 
   [[nodiscard]] static nsIContent* GetFirstCellNodeInRange(
-      const nsRange* aRange);
+      const mozilla::dom::Range* aRange);
   // Returns non-null table if in same table, null otherwise
   [[nodiscard]] static nsIContent* IsInSameTable(const nsIContent* aContent1,
                                                  const nsIContent* aContent2);
@@ -1148,12 +1287,14 @@ class nsFrameSelection final {
     // Get our first range, if its first selected node is a cell.  If this does
     // not return null, then the first node in the returned range is a cell
     // (according to GetFirstCellNodeInRange).
-    nsRange* GetFirstCellRange(const mozilla::dom::Selection& aNormalSelection);
+    mozilla::dom::Range* GetFirstCellRange(
+        const mozilla::dom::Selection& aNormalSelection);
 
     // Get our next range, if its first selected node is a cell.  If this does
     // not return null, then the first node in the returned range is a cell
     // (according to GetFirstCellNodeInRange).
-    nsRange* GetNextCellRange(const mozilla::dom::Selection& aNormalSelection);
+    mozilla::dom::Range* GetNextCellRange(
+        const mozilla::dom::Selection& aNormalSelection);
 
     [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult
     HandleSelection(nsINode* aParentContent, int32_t aContentOffset,
@@ -1239,7 +1380,7 @@ class nsFrameSelection final {
         const mozilla::dom::Selection& aNormalSelection,
         nsSelectionAmount aAmount);
 
-    RefPtr<nsRange> mRange;
+    RefPtr<mozilla::dom::Range> mRange;
     nsSelectionAmount mAmount = eSelectNoAmount;
   };
 
@@ -1251,17 +1392,7 @@ class nsFrameSelection final {
 
   Batching mBatching;
 
-  struct Limiters {
-    // The independent selection root element if and only if the
-    // nsFrameSelection instance is for an independent selection.
-    RefPtr<Element> mIndependentSelectionRootElement;
-    // Limit selection navigation to a descendant of this element.
-    // This is typically the focused editing host if set unless it's the root
-    // element of the document.
-    RefPtr<Element> mAncestorLimiter;
-  };
-
-  Limiters mLimiters;
+  mozilla::SelectionLimiters mLimiters;
 
   mozilla::PresShell* mPresShell = nullptr;
   // Reasons for notifications of selection changing.
@@ -1355,34 +1486,23 @@ class MOZ_RAII AutoFrameSelectionBatcher final {
 };
 
 namespace mozilla {
+
 /**
  * A struct for sharing nsFrameSelection outside of its instance.
  */
-struct LimitersAndCaretData {
+struct LimitersAndCaretData : public SelectionLimiters {
   using Element = dom::Element;
 
   LimitersAndCaretData() = default;
+  MOZ_IMPLICIT LimitersAndCaretData(const LimitersAndCaretData&) = default;
+  LimitersAndCaretData(LimitersAndCaretData&&) = default;
+  LimitersAndCaretData& operator=(const LimitersAndCaretData&) = default;
+  LimitersAndCaretData& operator=(LimitersAndCaretData&&) = default;
   explicit LimitersAndCaretData(const nsFrameSelection& aFrameSelection)
-      : mIndependentSelectionRootElement(
-            aFrameSelection.GetIndependentSelectionRootElement()),
-        mAncestorLimiter(aFrameSelection.GetAncestorLimiter()),
+      : SelectionLimiters(aFrameSelection.LimitersRef()),
         mCaretAssociationHint(aFrameSelection.GetHint()),
         mCaretBidiLevel(aFrameSelection.GetCaretBidiLevel()) {}
 
-  [[nodiscard]] bool NodeIsInLimiters(const nsINode* aContainerNode) const {
-    return nsFrameSelection::NodeIsInLimiters(
-        aContainerNode, mIndependentSelectionRootElement, mAncestorLimiter);
-  }
-  [[nodiscard]] bool RangeInLimiters(const dom::AbstractRange& aRange) const {
-    return NodeIsInLimiters(aRange.GetStartContainer()) &&
-           (!aRange.IsPositionedAndSameContainer() ||
-            NodeIsInLimiters(aRange.GetEndContainer()));
-  }
-
-  // nsFrameSelection::GetIndependentSelectionRootElement
-  RefPtr<Element> mIndependentSelectionRootElement;
-  // nsFrameSelection::GetAncestorLimiter
-  RefPtr<Element> mAncestorLimiter;
   // nsFrameSelection::GetHint
   CaretAssociationHint mCaretAssociationHint = CaretAssociationHint::Before;
   // nsFrameSelection::GetCaretBidiLevel
@@ -1391,4 +1511,4 @@ struct LimitersAndCaretData {
 
 }  // namespace mozilla
 
-#endif /* nsFrameSelection_h___ */
+#endif /* nsFrameSelection_h_ */

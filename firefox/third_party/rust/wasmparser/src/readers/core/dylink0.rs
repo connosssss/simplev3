@@ -12,6 +12,7 @@ const WASM_DYLINK_MEM_INFO: u8 = 1;
 const WASM_DYLINK_NEEDED: u8 = 2;
 const WASM_DYLINK_EXPORT_INFO: u8 = 3;
 const WASM_DYLINK_IMPORT_INFO: u8 = 4;
+const WASM_DYLINK_RUNTIME_PATH: u8 = 5;
 
 /// Represents a `WASM_DYLINK_MEM_INFO` field
 #[derive(Debug, Copy, Clone)]
@@ -56,17 +57,16 @@ pub enum Dylink0Subsection<'a> {
     Needed(Vec<&'a str>),
     ExportInfo(Vec<ExportInfo<'a>>),
     ImportInfo(Vec<ImportInfo<'a>>),
+    RuntimePath(Vec<&'a str>),
     Unknown {
         ty: u8,
         data: &'a [u8],
-        range: Range<usize>,
+        range: Range<u64>,
     },
 }
 
 impl<'a> Subsection<'a> for Dylink0Subsection<'a> {
     fn from_reader(id: u8, mut reader: BinaryReader<'a>) -> Result<Self> {
-        let data = reader.remaining_buffer();
-        let offset = reader.original_position();
         Ok(match id {
             WASM_DYLINK_MEM_INFO => Self::MemInfo(MemInfo {
                 memory_size: reader.read_var_u32()?,
@@ -76,14 +76,14 @@ impl<'a> Subsection<'a> for Dylink0Subsection<'a> {
             }),
             WASM_DYLINK_NEEDED => Self::Needed(
                 (0..reader.read_var_u32()?)
-                    .map(|_| reader.read_string())
+                    .map(|_| reader.read_unlimited_string())
                     .collect::<Result<_, _>>()?,
             ),
             WASM_DYLINK_EXPORT_INFO => Self::ExportInfo(
                 (0..reader.read_var_u32()?)
                     .map(|_| {
                         Ok(ExportInfo {
-                            name: reader.read_string()?,
+                            name: reader.read_unlimited_string()?,
                             flags: reader.read()?,
                         })
                     })
@@ -93,17 +93,22 @@ impl<'a> Subsection<'a> for Dylink0Subsection<'a> {
                 (0..reader.read_var_u32()?)
                     .map(|_| {
                         Ok(ImportInfo {
-                            module: reader.read_string()?,
-                            field: reader.read_string()?,
+                            module: reader.read_unlimited_string()?,
+                            field: reader.read_unlimited_string()?,
                             flags: reader.read()?,
                         })
                     })
                     .collect::<Result<_, _>>()?,
             ),
+            WASM_DYLINK_RUNTIME_PATH => Self::RuntimePath(
+                (0..reader.read_var_u32()?)
+                    .map(|_| reader.read_unlimited_string())
+                    .collect::<Result<_, _>>()?,
+            ),
             ty => Self::Unknown {
                 ty,
-                data,
-                range: offset..offset + data.len(),
+                data: reader.remaining_buffer(),
+                range: reader.remaining_range(),
             },
         })
     }

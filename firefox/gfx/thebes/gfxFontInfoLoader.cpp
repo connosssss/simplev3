@@ -1,15 +1,15 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "gfxFontInfoLoader.h"
-#include "mozilla/gfx/Logging.h"
+
+#include "gfxPlatformFontList.h"
 #include "mozilla/AppShutdown.h"
+#include "mozilla/gfx/Logging.h"
 #include "nsCRT.h"
 #include "nsIObserverService.h"
 #include "nsThreadUtils.h"  // for nsRunnable
-#include "gfxPlatformFontList.h"
 
 #ifdef XP_WIN
 #  include <windows.h>
@@ -163,7 +163,7 @@ void gfxFontInfoLoader::StartLoader(uint32_t aDelay) {
     mTimer = NS_NewTimer();
     mTimer->InitWithNamedFuncCallback(DelayedStartCallback, this, aDelay,
                                       nsITimer::TYPE_ONE_SHOT,
-                                      "gfxFontInfoLoader::StartLoader");
+                                      "gfxFontInfoLoader::StartLoader"_ns);
     mState = stateTimerOnDelay;
     return;
   }

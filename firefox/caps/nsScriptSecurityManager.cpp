@@ -1,81 +1,79 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsScriptSecurityManager.h"
 
-#include "mozilla/ArrayUtils.h"
-#include "mozilla/SourceLocation.h"
-#include "mozilla/StaticPrefs_extensions.h"
-#include "mozilla/StaticPrefs_security.h"
-#include "mozilla/StoragePrincipalHelper.h"
+#include <stdint.h>
 
-#include "xpcpublic.h"
-#include "XPCWrapper.h"
-#include "nsILoadContext.h"
-#include "nsIScriptObjectPrincipal.h"
-#include "nsIScriptContext.h"
-#include "nsIScriptError.h"
-#include "nsINestedURI.h"
-#include "nspr.h"
-#include "nsJSPrincipals.h"
-#include "mozilla/BasePrincipal.h"
-#include "mozilla/ContentPrincipal.h"
+#include "DomainPolicy.h"
 #include "ExpandedPrincipal.h"
 #include "SystemPrincipal.h"
-#include "DomainPolicy.h"
-#include "nsString.h"
-#include "nsCRT.h"
-#include "nsCRTGlue.h"
-#include "nsContentSecurityUtils.h"
-#include "nsDocShell.h"
-#include "nsError.h"
-#include "nsGlobalWindowInner.h"
-#include "nsDOMCID.h"
-#include "nsTextFormatter.h"
-#include "nsIStringBundle.h"
-#include "nsNetUtil.h"
-#include "nsIEffectiveTLDService.h"
-#include "nsDirectoryServiceDefs.h"
-#include "nsIScriptGlobalObject.h"
-#include "nsPIDOMWindow.h"
-#include "nsIDocShell.h"
-#include "nsIConsoleService.h"
-#include "nsIOService.h"
-#include "nsIContent.h"
-#include "nsDOMJSUtils.h"
-#include "nsAboutProtocolUtils.h"
-#include "nsIClassInfo.h"
-#include "nsIURIFixup.h"
-#include "nsIURIMutator.h"
-#include "nsIChromeRegistry.h"
-#include "nsIResProtocolHandler.h"
-#include "nsIContentSecurityPolicy.h"
-#include "mozilla/Components.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/dom/BindingUtils.h"
-#include "mozilla/NullPrincipal.h"
-#include <stdint.h>
-#include "mozilla/dom/ContentChild.h"
-#include "mozilla/dom/ContentParent.h"
-#include "mozilla/dom/Exceptions.h"
-#include "mozilla/dom/nsCSPContext.h"
-#include "mozilla/dom/ScriptSettings.h"
-#include "mozilla/ClearOnShutdown.h"
-#include "mozilla/ExtensionPolicyService.h"
-#include "mozilla/ResultExtensions.h"
-#include "mozilla/StaticPtr.h"
-#include "mozilla/dom/TrustedTypeUtils.h"
-#include "mozilla/dom/WorkerCommon.h"
-#include "mozilla/dom/WorkerPrivate.h"
-#include "nsContentUtils.h"
-#include "nsJSUtils.h"
-#include "nsILoadInfo.h"
+#include "XPCWrapper.h"
 #include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin
 #include "js/GCVector.h"
 #include "js/Value.h"
+#include "mozilla/BasePrincipal.h"
+#include "mozilla/ClearOnShutdown.h"
+#include "mozilla/Components.h"
+#include "mozilla/ContentPrincipal.h"
+#include "mozilla/ExtensionPolicyService.h"
+#include "mozilla/NullPrincipal.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/SourceLocation.h"
+#include "mozilla/StaticPrefs_extensions.h"
+#include "mozilla/StaticPrefs_security.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/StoragePrincipalHelper.h"
+#include "mozilla/dom/BindingUtils.h"
+#include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/Exceptions.h"
+#include "mozilla/dom/PolicyContainer.h"
+#include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/dom/TrustedTypeUtils.h"
+#include "mozilla/dom/WorkerCommon.h"
+#include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/dom/nsCSPContext.h"
+#include "nsAboutProtocolUtils.h"
+#include "nsCRT.h"
+#include "nsCRTGlue.h"
+#include "nsContentSecurityUtils.h"
+#include "nsContentUtils.h"
+#include "nsDOMCID.h"
+#include "nsDOMJSUtils.h"
+#include "nsDirectoryServiceDefs.h"
+#include "nsDocShell.h"
+#include "nsError.h"
+#include "nsGlobalWindowInner.h"
+#include "nsIChromeRegistry.h"
+#include "nsIClassInfo.h"
+#include "nsIConsoleService.h"
+#include "nsIContent.h"
+#include "nsIContentSecurityPolicy.h"
+#include "nsIDocShell.h"
+#include "nsIEffectiveTLDService.h"
+#include "nsILoadContext.h"
+#include "nsILoadInfo.h"
+#include "nsINestedURI.h"
+#include "nsIOService.h"
+#include "nsIResProtocolHandler.h"
+#include "nsIScriptContext.h"
+#include "nsIScriptError.h"
+#include "nsIScriptGlobalObject.h"
+#include "nsIScriptObjectPrincipal.h"
+#include "nsIStringBundle.h"
+#include "nsIURIFixup.h"
+#include "nsIURIMutator.h"
+#include "nsJSPrincipals.h"
+#include "nsJSUtils.h"
+#include "nsNetUtil.h"
+#include "nsPIDOMWindow.h"
+#include "nsPIDOMWindowInlines.h"
+#include "nsString.h"
+#include "nsTextFormatter.h"
+#include "nspr.h"
+#include "xpcpublic.h"
 
 // This should be probably defined on some other place... but I couldn't find it
 #define WEBAPPS_PERM_NAME "webapps-manage"
@@ -220,13 +218,6 @@ bool nsScriptSecurityManager::SecurityCompareURIs(nsIURI* aSourceURI,
                                                   nsIURI* aTargetURI) {
   return NS_SecurityCompareURIs(aSourceURI, aTargetURI,
                                 sStrictFileOriginPolicy);
-}
-
-// SecurityHashURI is consistent with SecurityCompareURIs because
-// NS_SecurityHashURI is consistent with NS_SecurityCompareURIs.  See
-// nsNetUtil.h.
-uint32_t nsScriptSecurityManager::SecurityHashURI(nsIURI* aURI) {
-  return NS_SecurityHashURI(aURI);
 }
 
 bool nsScriptSecurityManager::IsHttpOrHttpsAndCrossOrigin(nsIURI* aUriA,
@@ -480,7 +471,7 @@ bool nsScriptSecurityManager::ContentSecurityPolicyPermitsJSAction(
     bool areArgumentsTrusted = TrustedTypeUtils::
         AreArgumentsTrustedForEnsureCSPDoesNotBlockStringCompilation(
             cx, aCodeString, aCompilationType, aParameterStrings, aBodyString,
-            aParameterArgs, aBodyArg, error);
+            aParameterArgs, aBodyArg, subjectPrincipal, error);
     if (error.MaybeSetPendingException(cx)) {
       return false;
     }
@@ -493,10 +484,6 @@ bool nsScriptSecurityManager::ContentSecurityPolicyPermitsJSAction(
   // Check if Eval is allowed per firefox hardening policy
   bool contextForbidsEval =
       (subjectPrincipal->IsSystemPrincipal() || XRE_IsE10sParentProcess());
-#if defined(ANDROID)
-  contextForbidsEval = false;
-#endif
-
   if (contextForbidsEval) {
     nsAutoJSString scriptSample;
     if (aKind == JS::RuntimeCode::JS &&
@@ -514,7 +501,7 @@ bool nsScriptSecurityManager::ContentSecurityPolicyPermitsJSAction(
   // Get the window, if any, corresponding to the current global
   nsCOMPtr<nsIContentSecurityPolicy> csp;
   if (nsGlobalWindowInner* win = xpc::CurrentWindowOrNull(cx)) {
-    csp = win->GetCsp();
+    csp = PolicyContainer::GetCSP(win->GetPolicyContainer());
   }
 
   if (!csp) {
@@ -1078,13 +1065,15 @@ nsresult nsScriptSecurityManager::CheckLoadURIFlags(
           }
         }
       } else if (targetScheme.EqualsLiteral("moz-page-thumb") ||
-                 targetScheme.EqualsLiteral("page-icon")) {
+                 targetScheme.EqualsLiteral("page-icon") ||
+                 targetScheme.EqualsLiteral("moz-newtab-wallpaper") ||
+                 targetScheme.EqualsLiteral("moz-newtab-remote-renderer")) {
         if (XRE_IsParentProcess()) {
           return NS_OK;
         }
 
         auto& remoteType = dom::ContentChild::GetSingleton()->GetRemoteType();
-        if (remoteType == PRIVILEGEDABOUT_REMOTE_TYPE) {
+        if (remoteType.IsPrivilegedAbout()) {
           return NS_OK;
         }
       }
@@ -1238,8 +1227,7 @@ nsScriptSecurityManager::CheckLoadURIStrWithPrincipal(
   // available.
   uint32_t flags[] = {nsIURIFixup::FIXUP_FLAG_NONE,
                       nsIURIFixup::FIXUP_FLAG_FIX_SCHEME_TYPOS};
-  for (uint32_t i = 0; i < std::size(flags); ++i) {
-    uint32_t fixupFlags = flags[i];
+  for (unsigned int fixupFlags : flags) {
     if (aPrincipal->OriginAttributesRef().IsPrivateBrowsing()) {
       fixupFlags |= nsIURIFixup::FIXUP_FLAG_PRIVATE_CONTEXT;
     }
@@ -1275,13 +1263,13 @@ nsScriptSecurityManager::CheckLoadURIWithPrincipalFromJS(
       CheckLoadURIWithPrincipal(aPrincipal, aTargetURI, aFlags, aInnerWindowID);
   if (NS_FAILED(rv)) {
     nsAutoCString uriStr;
-    Unused << aTargetURI->GetSpec(uriStr);
+    (void)aTargetURI->GetSpec(uriStr);
 
     nsAutoCString message("Load of ");
     message.Append(uriStr);
 
     nsAutoCString principalStr;
-    Unused << aPrincipal->GetSpec(principalStr);
+    (void)aPrincipal->GetSpec(principalStr);
     if (!principalStr.IsEmpty()) {
       message.AppendPrintf(" from %s", principalStr.get());
     }
@@ -1496,11 +1484,12 @@ nsScriptSecurityManager::CanCreateWrapper(JSContext* cx, const nsIID& aIID,
   nsresult rv;
   nsAutoString errorMsg;
   if (originUTF16.IsEmpty()) {
-    AutoTArray<nsString, 1> formatStrings = {classInfoUTF16};
+    AutoTArray<nsString, 1> formatStrings = {std::move(classInfoUTF16)};
     rv = bundle->FormatStringFromName("CreateWrapperDenied", formatStrings,
                                       errorMsg);
   } else {
-    AutoTArray<nsString, 2> formatStrings = {classInfoUTF16, originUTF16};
+    AutoTArray<nsString, 2> formatStrings = {std::move(classInfoUTF16),
+                                             std::move(originUTF16)};
     rv = bundle->FormatStringFromName("CreateWrapperDeniedForOrigin",
                                       formatStrings, errorMsg);
   }

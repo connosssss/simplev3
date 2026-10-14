@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -23,6 +22,7 @@ DOM4_MSG_DEF(NamespaceError, "An attempt was made to create or change an object 
 DOM4_MSG_DEF(InvalidAccessError, "A parameter or an operation is not supported by the underlying object", NS_ERROR_DOM_INVALID_ACCESS_ERR)
 DOM4_MSG_DEF(TypeMismatchError, "The type of an object is incompatible with the expected type of the parameter associated to the object", NS_ERROR_DOM_TYPE_MISMATCH_ERR)
 DOM4_MSG_DEF(SecurityError, "The operation is insecure.", NS_ERROR_DOM_SECURITY_ERR)
+DOM4_MSG_DEF(SecurityError, "Property access denied.", NS_ERROR_DOM_PROP_ACCESS_DENIED)
 DOM4_MSG_DEF(NetworkError, "A network error occurred.", NS_ERROR_DOM_NETWORK_ERR)
 DOM4_MSG_DEF(AbortError, "The operation was aborted. ", NS_ERROR_DOM_ABORT_ERR)
 DOM4_MSG_DEF(URLMismatchError, "The given URL does not match another URL.", NS_ERROR_DOM_URL_MISMATCH_ERR)
@@ -34,6 +34,9 @@ DOM4_MSG_DEF(NotAllowedError, "The request is not allowed by the user agent or t
 
 /* StringEncoding API errors from http://wiki.whatwg.org/wiki/StringEncoding */
 DOM4_MSG_DEF(EncodingError, "The given encoding is not supported.", NS_ERROR_DOM_ENCODING_NOT_SUPPORTED_ERR)
+
+/* Web Serial API errors from https://wicg.github.io/serial/ */
+DOM4_MSG_DEF(ParityError, "A parity error occurred while reading from the serial port.", NS_ERROR_DOM_SERIAL_PARITY_ERROR)
 
 /* WebCrypto API errors from http://www.w3.org/TR/WebCryptoAPI/ */
 DOM4_MSG_DEF(UnknownError, "The operation failed for an unknown transient reason", NS_ERROR_DOM_UNKNOWN_ERR)
@@ -60,6 +63,7 @@ DOM4_MSG_DEF(VersionError, "The operation failed because the stored database is 
 DOM4_MSG_DEF(NotFoundError, "The operation failed because the requested database object could not be found. For example, an object store did not exist but was being opened.", NS_ERROR_DOM_INDEXEDDB_NOT_FOUND_ERR)
 DOM4_MSG_DEF(InvalidStateError, "A mutation operation was attempted on a database that did not allow mutations.", NS_ERROR_DOM_INDEXEDDB_NOT_ALLOWED_ERR)
 DOM4_MSG_DEF(AbortError, "A request was aborted, for example through a call to IDBTransaction.abort.", NS_ERROR_DOM_INDEXEDDB_ABORT_ERR)
+DOM4_MSG_DEF(NotReadableError, "The operation failed because the underlying storage containing the requested data could not be read.", NS_ERROR_DOM_INDEXEDDB_NOT_READABLE_ERR)
 DOM4_MSG_DEF(QuotaExceededError, "The current transaction exceeded its quota limitations.", NS_ERROR_DOM_INDEXEDDB_QUOTA_ERR)
 
 /* FileSystem DOM errors. */

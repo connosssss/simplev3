@@ -1,22 +1,19 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SpeechSynthesis_h
-#define mozilla_dom_SpeechSynthesis_h
+#ifndef DOM_MEDIA_WEBSPEECH_SYNTH_SPEECHSYNTHESIS_H_
+#define DOM_MEDIA_WEBSPEECH_SYNTH_SPEECHSYNTHESIS_H_
 
+#include "SpeechSynthesisUtterance.h"
+#include "SpeechSynthesisVoice.h"
+#include "js/TypeDecls.h"
 #include "nsCOMPtr.h"
 #include "nsIObserver.h"
 #include "nsRefPtrHashtable.h"
 #include "nsString.h"
 #include "nsWeakReference.h"
 #include "nsWrapperCache.h"
-#include "js/TypeDecls.h"
-
-#include "SpeechSynthesisUtterance.h"
-#include "SpeechSynthesisVoice.h"
 
 class nsIDOMWindow;
 
@@ -60,6 +57,8 @@ class SpeechSynthesis final : public DOMEventTargetHelper,
 
   void ForceEnd();
 
+  void DisconnectFromOwner() override;
+
   IMPL_EVENT_HANDLER(voiceschanged)
 
  private:
@@ -85,4 +84,4 @@ class SpeechSynthesis final : public DOMEventTargetHelper,
 };
 
 }  // namespace mozilla::dom
-#endif
+#endif  // DOM_MEDIA_WEBSPEECH_SYNTH_SPEECHSYNTHESIS_H_

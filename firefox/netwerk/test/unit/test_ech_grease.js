@@ -1,4 +1,3 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // Any copyright is dedicated to the Public Domain.
 // http://creativecommons.org/publicdomain/zero/1.0/
 
@@ -127,7 +126,7 @@ class ServerSocketListener {
   }
 }
 
-function startServer(
+async function startServer(
   minServerVersion = Ci.nsITLSClientStatus.TLS_VERSION_1_2,
   maxServerVersion = Ci.nsITLSClientStatus.TLS_VERSION_1_3
 ) {
@@ -135,7 +134,7 @@ function startServer(
     Ci.nsITLSServerSocket
   );
   tlsServer.init(-1, true, -1);
-  tlsServer.serverCert = getTestServerCertificate();
+  tlsServer.serverCert = await getTestServerCertificate();
   tlsServer.setVersionRange(minServerVersion, maxServerVersion);
   tlsServer.setSessionTickets(false);
   tlsServer.asyncListen(new ServerSocketListener());
@@ -213,7 +212,7 @@ setup();
 add_task(async function GreaseYConservativeN() {
   // First run a server that accepts TLS 1.2 and 1.3. A conservative client
   // should succeed in connecting.
-  let server = startServer();
+  let server = await startServer();
 
   await startClient(
     server.port,
@@ -226,7 +225,7 @@ add_task(async function GreaseYConservativeN() {
 add_task(async function GreaseNConservativeY() {
   // First run a server that accepts TLS 1.2 and 1.3. A conservative client
   // should succeed in connecting.
-  let server = startServer();
+  let server = await startServer();
 
   await startClient(
     server.port,
@@ -239,7 +238,7 @@ add_task(async function GreaseNConservativeY() {
 add_task(async function GreaseYConservativeY() {
   // First run a server that accepts TLS 1.2 and 1.3. A conservative client
   // should succeed in connecting.
-  let server = startServer();
+  let server = await startServer();
 
   await startClient(
     server.port,
@@ -252,7 +251,7 @@ add_task(async function GreaseYConservativeY() {
 add_task(async function GreaseNConservativeN() {
   // First run a server that accepts TLS 1.2 and 1.3. A conservative client
   // should succeed in connecting.
-  let server = startServer();
+  let server = await startServer();
 
   await startClient(
     server.port,

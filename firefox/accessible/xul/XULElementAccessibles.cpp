@@ -1,20 +1,19 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "XULElementAccessibles.h"
 
-#include "LocalAccessible-inl.h"
 #include "BaseAccessibles.h"
 #include "DocAccessible-inl.h"
+#include "LocalAccessible-inl.h"
+#include "Relation.h"
+#include "States.h"
+#include "TextUpdater.h"
+#include "mozilla/a11y/Role.h"
 #include "nsAccUtils.h"
 #include "nsCoreUtils.h"
 #include "nsTextEquivUtils.h"
-#include "Relation.h"
-#include "mozilla/a11y/Role.h"
-#include "States.h"
-#include "TextUpdater.h"
 
 #ifdef A11Y_LOG
 #  include "Logging.h"
@@ -37,11 +36,6 @@ XULLabelAccessible::XULLabelAccessible(nsIContent* aContent,
   mType = eXULLabelType;
 }
 
-void XULLabelAccessible::Shutdown() {
-  mValueTextLeaf = nullptr;
-  HyperTextAccessible::Shutdown();
-}
-
 void XULLabelAccessible::DispatchClickEvent(uint32_t aActionIndex) const {
   // Bug 1578140: For labels inside buttons, The base implementation of
   // DispatchClickEvent doesn't fire a command event on the button.
@@ -52,10 +46,6 @@ void XULLabelAccessible::DispatchClickEvent(uint32_t aActionIndex) const {
 }
 
 ENameValueFlag XULLabelAccessible::NativeName(nsString& aName) const {
-  // if the value attr doesn't exist, the screen reader must get the accessible
-  // text from the accessible text interface or from the children
-  if (mValueTextLeaf) return mValueTextLeaf->Name(aName);
-
   return LocalAccessible::NativeName(aName);
 }
 
@@ -85,31 +75,6 @@ Relation XULLabelAccessible::RelationByType(RelationType aType) const {
   return rel;
 }
 
-void XULLabelAccessible::UpdateLabelValue(const nsString& aValue) {
-#ifdef A11Y_LOG
-  if (logging::IsEnabled(logging::eText)) {
-    logging::MsgBegin("TEXT", "text may be changed (xul:label @value update)");
-    logging::Node("container", mContent);
-    logging::MsgEntry("old text '%s'",
-                      NS_ConvertUTF16toUTF8(mValueTextLeaf->Text()).get());
-    logging::MsgEntry("new text: '%s'", NS_ConvertUTF16toUTF8(aValue).get());
-    logging::MsgEnd();
-  }
-#endif
-
-  TextUpdater::Run(mDoc, mValueTextLeaf, aValue);
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// XULLabelTextLeafAccessible
-////////////////////////////////////////////////////////////////////////////////
-
-role XULLabelTextLeafAccessible::NativeRole() const { return roles::TEXT_LEAF; }
-
-uint64_t XULLabelTextLeafAccessible::NativeState() const {
-  return TextLeafAccessible::NativeState() | states::READONLY;
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 // XULTooltipAccessible
 ////////////////////////////////////////////////////////////////////////////////
@@ -133,7 +98,7 @@ role XULTooltipAccessible::NativeRole() const { return roles::TOOLTIP; }
 XULLinkAccessible::XULLinkAccessible(nsIContent* aContent, DocAccessible* aDoc)
     : XULLabelAccessible(aContent, aDoc) {}
 
-XULLinkAccessible::~XULLinkAccessible() {}
+XULLinkAccessible::~XULLinkAccessible() = default;
 
 ////////////////////////////////////////////////////////////////////////////////
 // XULLinkAccessible: LocalAccessible
@@ -146,10 +111,7 @@ void XULLinkAccessible::Value(nsString& aValue) const {
 
 ENameValueFlag XULLinkAccessible::NativeName(nsString& aName) const {
   mContent->AsElement()->GetAttr(nsGkAtoms::value, aName);
-  if (!aName.IsEmpty()) return eNameOK;
-
-  nsTextEquivUtils::GetNameFromSubtree(this, aName);
-  return aName.IsEmpty() ? eNameOK : eNameFromSubtree;
+  return eNameOK;
 }
 
 role XULLinkAccessible::NativeRole() const { return roles::LINK; }

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,11 +5,11 @@
 #ifndef mozilla_dom_InProcessParent_h
 #define mozilla_dom_InProcessParent_h
 
-#include "mozilla/dom/PInProcessParent.h"
+#include "mozilla/StaticPtr.h"
 #include "mozilla/dom/JSProcessActorParent.h"
+#include "mozilla/dom/PInProcessParent.h"
 #include "mozilla/dom/ProcessActor.h"
 #include "mozilla/dom/RemoteType.h"
-#include "mozilla/StaticPtr.h"
 #include "nsIDOMProcessParent.h"
 
 namespace mozilla::dom {
@@ -47,7 +45,9 @@ class InProcessParent final : public nsIDOMProcessParent,
   // |nullptr|.
   static IProtocol* ChildActorFor(IProtocol* aActor);
 
-  const nsACString& GetRemoteType() const override { return NOT_REMOTE_TYPE; };
+  const RemoteType& GetRemoteType() const override {
+    return RemoteType::NotRemote();
+  };
 
  protected:
   already_AddRefed<JSActor> InitJSActor(JS::Handle<JSObject*> aMaybeActor,

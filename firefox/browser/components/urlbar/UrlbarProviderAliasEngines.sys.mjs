@@ -10,33 +10,26 @@
 import {
   UrlbarProvider,
   UrlbarUtils,
-} from "resource:///modules/UrlbarUtils.sys.mjs";
+} from "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs";
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
-  UrlbarSearchUtils: "resource:///modules/UrlbarSearchUtils.sys.mjs",
+  UrlbarResult: "chrome://browser/content/urlbar/UrlbarResult.mjs",
+  UrlbarSearchUtils:
+    "moz-src:///browser/components/urlbar/UrlbarSearchUtils.sys.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
 });
 
 /**
  * Class used to create the provider.
  */
-class ProviderAliasEngines extends UrlbarProvider {
+export class UrlbarProviderAliasEngines extends UrlbarProvider {
   /**
-   * Returns the name of this provider.
-   *
-   * @returns {string} the name of this provider.
-   */
-  get name() {
-    return "AliasEngines";
-  }
-
-  /**
-   * @returns {Values<typeof UrlbarUtils.PROVIDER_TYPE>}
+   * @returns {Values<typeof lazy.UrlbarShared.PROVIDER_TYPE>}
    */
   get type() {
-    return UrlbarUtils.PROVIDER_TYPE.HEURISTIC;
+    return lazy.UrlbarShared.PROVIDER_TYPE.HEURISTIC;
   }
 
   /**
@@ -49,8 +42,9 @@ class ProviderAliasEngines extends UrlbarProvider {
   async isActive(queryContext) {
     return (
       (!queryContext.restrictSource ||
-        queryContext.restrictSource == UrlbarUtils.RESULT_SOURCE.SEARCH) &&
-      !queryContext.searchMode &&
+        queryContext.restrictSource ==
+          lazy.UrlbarShared.RESULT_SOURCE.SEARCH) &&
+      !queryContext.restrictInSearchMode() &&
       !!queryContext.tokens.length
     );
   }
@@ -58,35 +52,41 @@ class ProviderAliasEngines extends UrlbarProvider {
   /**
    * Starts querying.
    *
-   * @param {object} queryContext The query context object
-   * @param {Function} addCallback Callback invoked by the provider to add a new
-   *        result.
+   * @param {UrlbarQueryContext} queryContext
+   * @param {(provider: UrlbarProvider, result: UrlbarResult) => void} addCallback
+   *   Callback invoked by the provider to add a new result.
+   * @param {UrlbarParentController} controller The controller instance.
    */
-  async startQuery(queryContext, addCallback) {
+  async startQuery(queryContext, addCallback, controller) {
     let instance = this.queryInstance;
     let alias = queryContext.tokens[0]?.value;
     let engine = await lazy.UrlbarSearchUtils.engineForAlias(
       alias,
       queryContext.searchString
     );
-    let icon = await engine?.getIconURL();
     if (!engine || instance != this.queryInstance) {
       return;
     }
-    let query = UrlbarUtils.substringAfter(queryContext.searchString, alias);
-    let result = new lazy.UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.SEARCH,
-      UrlbarUtils.RESULT_SOURCE.SEARCH,
-      ...lazy.UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, {
+    let icon = await UrlbarUtils.getEngineIconUrl(engine, controller);
+    if (instance != this.queryInstance) {
+      return;
+    }
+    let query = UrlbarUtils.substringAfter(
+      queryContext.searchString,
+      alias
+    ).trimStart();
+    let result = new lazy.UrlbarResult({
+      type: lazy.UrlbarShared.RESULT_TYPE.SEARCH,
+      source: lazy.UrlbarShared.RESULT_SOURCE.SEARCH,
+      heuristic: true,
+      payload: {
         engine: engine.name,
         keyword: alias,
-        query: query.trimStart(),
+        query,
+        title: query,
         icon,
-      })
-    );
-    result.heuristic = true;
+      },
+    });
     addCallback(this, result);
   }
 }
-
-export var UrlbarProviderAliasEngines = new ProviderAliasEngines();

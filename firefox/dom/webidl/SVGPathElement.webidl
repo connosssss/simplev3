@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -18,7 +17,7 @@ interface SVGPathSegment {
 
 dictionary SVGPathSegmentInit {
   required DOMString type;
-  required sequence<float> values;
+  required sequence<unrestricted float> values;
 };
 
 dictionary SVGPathDataSettings {
@@ -26,15 +25,12 @@ dictionary SVGPathDataSettings {
 };
 
 interface mixin SVGPathData {
-   [Pref="dom.svg.pathSegment.enabled"]
    sequence<SVGPathSegment> getPathData(optional SVGPathDataSettings settings = {});
-   [Pref="dom.svg.pathSegment.enabled"]
    undefined setPathData(sequence<SVGPathSegmentInit> pathData);
 };
 
 [Exposed=Window]
 interface SVGPathElement : SVGGeometryElement {
-  [Pref="dom.svg.pathSegment.enabled"]
   SVGPathSegment? getPathSegmentAtLength(float distance);
 };
 

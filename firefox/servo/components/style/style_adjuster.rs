@@ -7,20 +7,22 @@
 
 use crate::computed_value_flags::ComputedValueFlags;
 use crate::dom::TElement;
+use crate::logical_geometry::PhysicalSide;
 #[cfg(feature = "gecko")]
-use crate::properties::longhands::{
-    contain::computed_value::T as Contain,
-    container_type::computed_value::T as ContainerType,
-    content_visibility::computed_value::T as ContentVisibility,
-    overflow_x::computed_value::T as Overflow
-};
+use crate::properties::LonghandId;
 use crate::properties::longhands::display::computed_value::T as Display;
 use crate::properties::longhands::float::computed_value::T as Float;
 use crate::properties::longhands::position::computed_value::T as Position;
-use crate::properties::{self, ComputedValues, StyleBuilder};
-
 #[cfg(feature = "gecko")]
-use selectors::parser::PseudoElement;
+use crate::properties::longhands::{
+    contain::computed_value::T as Contain, container_type::computed_value::T as ContainerType,
+    content_visibility::computed_value::T as ContentVisibility,
+};
+use crate::properties::{ComputedValues, LonghandIdSet, StyleBuilder};
+use crate::values::computed::position::{
+    PositionTryFallbacksTryTactic, PositionTryFallbacksTryTacticKeyword, TryTacticAdjustment,
+};
+use crate::values::specified::align::AlignFlags;
 
 /// A struct that implements all the adjustment methods.
 ///
@@ -148,7 +150,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         if !self.style.is_absolutely_positioned() {
             self.style.mutate_box().set_position(Position::Absolute);
         }
-        if self.style.get_box().clone_display().is_contents() {
+        if self.style.get_box().get_display().is_contents() {
             self.style.mutate_box().set_display(Display::Block);
         }
     }
@@ -164,14 +166,15 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         use crate::properties::longhands::_moz_box_orient::computed_value::T as BoxOrient;
         use crate::values::specified::box_::{DisplayInside, DisplayOutside};
         let box_style = self.style.get_box();
-        if box_style.clone__webkit_line_clamp().is_none() {
+        let line_clamp = box_style.get_line_clamp();
+        if line_clamp.is_none() {
             return;
         }
-        let disp = box_style.clone_display();
-        if disp.inside() != DisplayInside::WebkitBox {
-            return;
-        }
-        if self.style.get_xul().clone__moz_box_orient() != BoxOrient::Vertical {
+
+        let disp = *box_style.get_display();
+        if disp.inside() != DisplayInside::WebkitBox
+            || *self.style.get_xul().get__moz_box_orient() != BoxOrient::Vertical
+        {
             return;
         }
         let new_display = if disp.outside() == DisplayOutside::Block {
@@ -206,7 +209,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
             return pseudo.skip_item_display_fixup();
         }
 
-        element.map_or(false, |e| e.skip_item_display_fixup())
+        element.is_some_and(|e| e.skip_item_display_fixup())
     }
 
     /// Apply the blockification rules based on the table in CSS 2.2 section 9.7.
@@ -230,7 +233,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
 
         blockify_if!(self.style.is_root_element);
         if !self.skip_item_display_fixup(element) {
-            let parent_display = layout_parent_style.get_box().clone_display();
+            let parent_display = *layout_parent_style.get_box().get_display();
             blockify_if!(parent_display.is_item_container());
         }
 
@@ -243,7 +246,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
             return;
         }
 
-        let display = self.style.get_box().clone_display();
+        let display = *self.style.get_box().get_display();
         let blockified_display = display.equivalent_block_display(self.style.is_root_element);
         if display != blockified_display {
             self.style
@@ -255,23 +258,30 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// Compute a few common flags for both text and element's style.
     fn set_bits(&mut self) {
         let box_style = self.style.get_box();
-        let display = box_style.clone_display();
+        let display = *box_style.get_display();
 
         if !display.is_contents() {
-            if !self
-                .style
-                .get_text()
-                .clone_text_decoration_line()
-                .is_empty()
-            {
+            if !self.style.get_text().get_text_decoration_line().is_empty() {
                 self.style
                     .add_flags(ComputedValueFlags::HAS_TEXT_DECORATION_LINES);
             }
 
-            if self.style.get_effects().clone_opacity() == 0. {
+            if *self.style.get_effects().get_opacity() == 0. {
                 self.style
                     .add_flags(ComputedValueFlags::IS_IN_OPACITY_ZERO_SUBTREE);
             }
+        } else if self
+            .style
+            .get_parent_box()
+            .get_display()
+            .is_item_container()
+            || self
+                .style
+                .get_parent_flags()
+                .contains(ComputedValueFlags::DISPLAY_CONTENTS_IN_ITEM_CONTAINER)
+        {
+            self.style
+                .add_flags(ComputedValueFlags::DISPLAY_CONTENTS_IN_ITEM_CONTAINER);
         }
 
         if self.style.pseudo.is_some_and(|p| p.is_first_line()) {
@@ -286,21 +296,16 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
 
         #[cfg(feature = "gecko")]
         if box_style
-            .clone_effective_containment()
+            .get_effective_containment()
             .contains(Contain::STYLE)
         {
             self.style
                 .add_flags(ComputedValueFlags::SELF_OR_ANCESTOR_HAS_CONTAIN_STYLE);
         }
 
-        if box_style.clone_container_type().is_size_container_type() {
+        if box_style.get_container_type().is_size_container_type() {
             self.style
                 .add_flags(ComputedValueFlags::SELF_OR_ANCESTOR_HAS_SIZE_CONTAINER_TYPE);
-        }
-
-        #[cfg(feature = "servo")]
-        if self.style.get_parent_column().is_multicol() {
-            self.style.add_flags(ComputedValueFlags::CAN_BE_FRAGMENTED);
         }
     }
 
@@ -334,8 +339,8 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         use crate::computed_values::writing_mode::T as WritingMode;
         use crate::logical_geometry;
 
-        let writing_mode = self.style.get_inherited_box().clone_writing_mode();
-        let text_combine_upright = self.style.get_inherited_text().clone_text_combine_upright();
+        let writing_mode = *self.style.get_inherited_box().get_writing_mode();
+        let text_combine_upright = *self.style.get_inherited_text().get_text_combine_upright();
 
         if matches!(
             writing_mode,
@@ -359,9 +364,10 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// them.
     #[cfg(feature = "gecko")]
     fn adjust_for_text_in_ruby(&mut self) {
-        let parent_display = self.style.get_parent_box().clone_display();
-        if parent_display.is_ruby_type() ||
-            self.style
+        let parent_display = *self.style.get_parent_box().get_display();
+        if parent_display.is_ruby_type()
+            || self
+                .style
                 .get_parent_flags()
                 .contains(ComputedValueFlags::SHOULD_SUPPRESS_LINEBREAK)
         {
@@ -384,11 +390,11 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// <https://lists.w3.org/Archives/Public/www-style/2017Mar/0045.html>
     /// <https://github.com/servo/servo/issues/15754>
     fn adjust_for_writing_mode(&mut self, layout_parent_style: &ComputedValues) {
-        let our_writing_mode = self.style.get_inherited_box().clone_writing_mode();
-        let parent_writing_mode = layout_parent_style.get_inherited_box().clone_writing_mode();
+        let our_writing_mode = *self.style.get_inherited_box().get_writing_mode();
+        let parent_writing_mode = *layout_parent_style.get_inherited_box().get_writing_mode();
 
-        if our_writing_mode != parent_writing_mode &&
-            self.style.get_box().clone_display() == Display::Inline
+        if our_writing_mode != parent_writing_mode
+            && *self.style.get_box().get_display() == Display::Inline
         {
             // TODO(emilio): Figure out if we can just set the adjusted display
             // on Gecko too and unify this code path.
@@ -402,53 +408,14 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         }
     }
 
-    /// The initial value of border-*-width may be changed at computed value
-    /// time.
-    ///
-    /// This is moved to properties.rs for convenience.
-    fn adjust_for_border_width(&mut self) {
-        properties::adjust_border_width(self.style);
-    }
-
-    /// column-rule-style: none causes a computed column-rule-width of zero
-    /// at computed value time.
-    #[cfg(feature = "gecko")]
-    fn adjust_for_column_rule_width(&mut self) {
-        let column_style = self.style.get_column();
-        if !column_style.clone_column_rule_style().none_or_hidden() {
-            return;
-        }
-        if !column_style.column_rule_has_nonzero_width() {
-            return;
-        }
-        self.style
-            .mutate_column()
-            .set_column_rule_width(crate::Zero::zero());
-    }
-
-    /// outline-style: none causes a computed outline-width of zero at computed
-    /// value time.
-    fn adjust_for_outline_width(&mut self) {
-        let outline = self.style.get_outline();
-        if !outline.clone_outline_style().none_or_hidden() {
-            return;
-        }
-        if !outline.outline_has_nonzero_width() {
-            return;
-        }
-        self.style
-            .mutate_outline()
-            .set_outline_width(crate::Zero::zero());
-    }
-
     /// CSS overflow-x and overflow-y require some fixup as well in some cases.
     /// https://drafts.csswg.org/css-overflow-3/#overflow-properties
     /// "Computed value: as specified, except with `visible`/`clip` computing to
     /// `auto`/`hidden` (respectively) if one of `overflow-x` or `overflow-y` is
     /// neither `visible` nor `clip`."
     fn adjust_for_overflow(&mut self) {
-        let overflow_x = self.style.get_box().clone_overflow_x();
-        let overflow_y = self.style.get_box().clone_overflow_y();
+        let overflow_x = *self.style.get_box().get_overflow_x();
+        let overflow_y = *self.style.get_box().get_overflow_y();
         if overflow_x == overflow_y {
             return; // optimization for the common case
         }
@@ -463,18 +430,18 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     #[cfg(feature = "gecko")]
     fn adjust_for_contain(&mut self) {
         let box_style = self.style.get_box();
-        let container_type = box_style.clone_container_type();
-        let content_visibility = box_style.clone_content_visibility();
-        if container_type == ContainerType::Normal &&
-            content_visibility == ContentVisibility::Visible
+        let container_type = *box_style.get_container_type();
+        let content_visibility = *box_style.get_content_visibility();
+        if !container_type.is_size_container_type()
+            && content_visibility == ContentVisibility::Visible
         {
             debug_assert_eq!(
-                box_style.clone_contain(),
-                box_style.clone_effective_containment()
+                box_style.get_contain(),
+                box_style.get_effective_containment()
             );
             return;
         }
-        let old_contain = box_style.clone_contain();
+        let old_contain = *box_style.get_contain();
         let mut new_contain = old_contain;
         match content_visibility {
             ContentVisibility::Visible => {},
@@ -487,25 +454,21 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
             ContentVisibility::Hidden => new_contain
                 .insert(Contain::LAYOUT | Contain::PAINT | Contain::SIZE | Contain::STYLE),
         }
-        match container_type {
-            ContainerType::Normal => {},
+        if container_type.intersects(ContainerType::INLINE_SIZE) {
             // https://drafts.csswg.org/css-contain-3/#valdef-container-type-inline-size:
             //     Applies layout containment, style containment, and inline-size
             //     containment to the principal box.
-            ContainerType::InlineSize => {
-                new_contain.insert(Contain::STYLE | Contain::INLINE_SIZE)
-            },
+            new_contain.insert(Contain::STYLE | Contain::INLINE_SIZE);
+        } else if container_type.intersects(ContainerType::SIZE) {
             // https://drafts.csswg.org/css-contain-3/#valdef-container-type-size:
             //     Applies layout containment, style containment, and size
             //     containment to the principal box.
-            ContainerType::Size => {
-                new_contain.insert(Contain::STYLE | Contain::SIZE)
-            },
+            new_contain.insert(Contain::STYLE | Contain::SIZE);
         }
         if new_contain == old_contain {
             debug_assert_eq!(
-                box_style.clone_contain(),
-                box_style.clone_effective_containment()
+                box_style.get_contain(),
+                box_style.get_effective_containment()
             );
             return;
         }
@@ -520,14 +483,14 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// <https://github.com/w3c/csswg-drafts/issues/8407>
     #[cfg(feature = "gecko")]
     fn adjust_for_contain_intrinsic_size(&mut self) {
-        let content_visibility = self.style.get_box().clone_content_visibility();
+        let content_visibility = *self.style.get_box().get_content_visibility();
         if content_visibility != ContentVisibility::Auto {
             return;
         }
 
         let pos = self.style.get_position();
-        let new_width = pos.clone_contain_intrinsic_width().add_auto_if_needed();
-        let new_height = pos.clone_contain_intrinsic_height().add_auto_if_needed();
+        let new_width = pos.get_contain_intrinsic_width().add_auto_if_needed();
+        let new_height = pos.get_contain_intrinsic_height().add_auto_if_needed();
         if new_width.is_none() && new_height.is_none() {
             return;
         }
@@ -551,7 +514,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     where
         E: TElement,
     {
-        if self.style.get_box().clone_display() != Display::Contents {
+        if *self.style.get_box().get_display() != Display::Contents {
             return;
         }
 
@@ -582,52 +545,33 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
             return;
         }
 
-        let old_collapse = self.style.get_inherited_text().clone_white_space_collapse();
+        let old_collapse = *self.style.get_inherited_text().get_white_space_collapse();
         let new_collapse = match old_collapse {
             WhiteSpaceCollapse::Preserve | WhiteSpaceCollapse::BreakSpaces => old_collapse,
-            WhiteSpaceCollapse::Collapse |
-            WhiteSpaceCollapse::PreserveSpaces |
-            WhiteSpaceCollapse::PreserveBreaks => WhiteSpaceCollapse::Preserve,
+            WhiteSpaceCollapse::Collapse
+            | WhiteSpaceCollapse::PreserveSpaces
+            | WhiteSpaceCollapse::PreserveBreaks => WhiteSpaceCollapse::Preserve,
         };
         if new_collapse != old_collapse {
             self.style
                 .mutate_inherited_text()
                 .set_white_space_collapse(new_collapse);
         }
-
-        let box_style = self.style.get_box();
-        let overflow_x = box_style.clone_overflow_x();
-        let overflow_y = box_style.clone_overflow_y();
-
-        // If at least one is scrollable we'll adjust the other one in
-        // adjust_for_overflow if needed.
-        if overflow_x.is_scrollable() || overflow_y.is_scrollable() {
-            return;
-        }
-
-        let box_style = self.style.mutate_box();
-        box_style.set_overflow_x(Overflow::Auto);
-        box_style.set_overflow_y(Overflow::Auto);
     }
 
     /// If a <fieldset> has grid/flex display type, we need to inherit
     /// this type into its ::-moz-fieldset-content anonymous box.
-    ///
-    /// NOTE(emilio): We don't need to handle the display change for this case
-    /// in matching.rs because anonymous box restyling works separately to the
-    /// normal cascading process.
     #[cfg(feature = "gecko")]
-    fn adjust_for_fieldset_content(&mut self, layout_parent_style: &ComputedValues) {
+    fn adjust_for_fieldset_content(&mut self) {
         use crate::selector_parser::PseudoElement;
-
-        if self.style.pseudo != Some(&PseudoElement::FieldsetContent) {
+        if self.style.pseudo != Some(&PseudoElement::MozFieldsetContent) {
             return;
         }
-
-        // TODO We actually want style from parent rather than layout
-        // parent, so that this fixup doesn't happen incorrectly when
-        // when <fieldset> has "display: contents".
-        let parent_display = layout_parent_style.get_box().clone_display();
+        let parent_display = *self.style.get_parent_box().get_display();
+        debug_assert!(
+            !parent_display.is_contents(),
+            "How did we create a fieldset-content box with display: contents?"
+        );
         let new_display = match parent_display {
             Display::Flex | Display::InlineFlex => Some(Display::Flex),
             Display::Grid | Display::InlineGrid => Some(Display::Grid),
@@ -646,11 +590,11 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// table.
     fn adjust_for_table_text_align(&mut self) {
         use crate::properties::longhands::text_align::computed_value::T as TextAlign;
-        if self.style.get_box().clone_display() != Display::Table {
+        if *self.style.get_box().get_display() != Display::Table {
             return;
         }
 
-        match self.style.get_inherited_text().clone_text_align() {
+        match *self.style.get_inherited_text().get_text_align() {
             TextAlign::MozLeft | TextAlign::MozCenter | TextAlign::MozRight => {},
             _ => return,
         }
@@ -661,11 +605,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     }
 
     #[cfg(feature = "gecko")]
-    fn should_suppress_linebreak<E>(
-        &self,
-        layout_parent_style: &ComputedValues,
-        element: Option<E>,
-    ) -> bool
+    fn should_suppress_linebreak<E>(&self, element: Option<E>) -> bool
     where
         E: TElement,
     {
@@ -673,18 +613,19 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         if self.style.is_floating() || self.style.is_absolutely_positioned() {
             return false;
         }
-        let parent_display = layout_parent_style.get_box().clone_display();
-        if layout_parent_style
-            .flags
+        let parent_display = *self.style.get_parent_box().get_display();
+        if self
+            .style
+            .get_parent_flags()
             .contains(ComputedValueFlags::SHOULD_SUPPRESS_LINEBREAK)
         {
             // Line break suppression is propagated to any children of
-            // line participants.
-            if parent_display.is_line_participant() {
+            // line participants, and across display: contents boundaries.
+            if parent_display.is_line_participant() || parent_display.is_contents() {
                 return true;
             }
         }
-        match self.style.get_box().clone_display() {
+        match *self.style.get_box().get_display() {
             // Ruby base and text are always non-breakable.
             Display::RubyBase | Display::RubyText => true,
             // Ruby base container and text container are breakable.
@@ -696,7 +637,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
             // line break suppression flag while they shouldn't. However, it is
             // generally fine as far as they can't break the line inside them.
             Display::RubyBaseContainer | Display::RubyTextContainer
-                if element.map_or(true, |e| e.is_html_element()) =>
+                if element.is_none_or(|e| e.is_html_element()) =>
             {
                 false
             },
@@ -713,15 +654,15 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// * suppress border and padding for ruby level containers,
     /// * correct unicode-bidi.
     #[cfg(feature = "gecko")]
-    fn adjust_for_ruby<E>(&mut self, layout_parent_style: &ComputedValues, element: Option<E>)
+    fn adjust_for_ruby<E>(&mut self, element: Option<E>)
     where
         E: TElement,
     {
         use crate::properties::longhands::unicode_bidi::computed_value::T as UnicodeBidi;
 
-        let self_display = self.style.get_box().clone_display();
+        let self_display = *self.style.get_box().get_display();
         // Check whether line break should be suppressed for this element.
-        if self.should_suppress_linebreak(layout_parent_style, element) {
+        if self.should_suppress_linebreak(element) {
             self.style
                 .add_flags(ComputedValueFlags::SHOULD_SUPPRESS_LINEBREAK);
             // Inlinify the display type if allowed.
@@ -746,7 +687,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         // Force bidi isolation on all internal ruby boxes and ruby container
         // per spec https://drafts.csswg.org/css-ruby-1/#bidi
         if self_display.is_ruby_type() {
-            let new_value = match self.style.get_text().clone_unicode_bidi() {
+            let new_value = match *self.style.get_text().get_unicode_bidi() {
                 UnicodeBidi::Normal | UnicodeBidi::Embed => Some(UnicodeBidi::Isolate),
                 UnicodeBidi::BidiOverride => Some(UnicodeBidi::IsolateOverride),
                 _ => None,
@@ -757,27 +698,44 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         }
     }
 
-    /// Computes the RELEVANT_LINK_VISITED flag based on the parent style and on
-    /// whether we're a relevant link.
-    ///
-    /// NOTE(emilio): We don't do this for text styles, which is... dubious, but
-    /// Gecko doesn't seem to do it either. It's extremely easy to do if needed
-    /// though.
-    ///
-    /// FIXME(emilio): This isn't technically a style adjustment thingie, could
-    /// it move somewhere else?
-    fn adjust_for_visited<E>(&mut self, element: Option<E>)
+    fn enforce_link_underline(&mut self) {
+        use crate::values::computed::{Color, TextDecorationLine, TextDecorationStyle};
+
+        let text_style = self.style.get_text();
+        let old_line = *text_style.get_text_decoration_line();
+        let needs_adjustment = !old_line.intersects(TextDecorationLine::UNDERLINE)
+            || text_style.get_text_decoration_style() != &TextDecorationStyle::Solid
+            || text_style.get_text_decoration_color() != &Color::CurrentColor;
+        if !needs_adjustment {
+            return;
+        }
+
+        let text_style = self.style.mutate_text();
+        // Preserve any existing flags that could be mixed with underline.
+        let new_line = (old_line & TextDecorationLine::MIXED_FLAGS) | TextDecorationLine::UNDERLINE;
+        text_style.set_text_decoration_line(new_line);
+        text_style.set_text_decoration_color(Color::CurrentColor);
+        text_style.set_text_decoration_style(TextDecorationStyle::Solid);
+    }
+
+    /// Sets or unset the RELEVANT_LINK_VISITED flag if we're a link (note that it's otherwise
+    /// propagated via flag inheritance), and enforces underlines if configured to do so.
+    fn adjust_for_links<E>(&mut self, element: Option<E>)
     where
         E: TElement,
     {
         if !self.style.has_visited_style() {
+            // Not inside a link.
             return;
         }
 
-        let is_link_element = self.style.pseudo.is_none() && element.map_or(false, |e| e.is_link());
-
+        let is_link_element = self.style.pseudo.is_none() && element.is_some_and(|e| e.is_link());
         if !is_link_element {
             return;
+        }
+
+        if crate::pref!("layout.css.always_underline_links") {
+            self.enforce_link_underline();
         }
 
         if element.unwrap().is_visited_link() {
@@ -797,18 +755,14 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     #[cfg(feature = "gecko")]
     fn adjust_for_justify_items(&mut self) {
         use crate::values::specified::align;
-        let justify_items = self.style.get_position().clone_justify_items();
-        if justify_items.specified.0 != align::AlignFlags::LEGACY {
+        let justify_items = *self.style.get_position().get_justify_items();
+        if justify_items.specified != align::JustifyItems::legacy() {
             return;
         }
 
-        let parent_justify_items = self.style.get_parent_position().clone_justify_items();
+        let parent_justify_items = *self.style.get_parent_position().get_justify_items();
 
-        if !parent_justify_items
-            .computed
-            .0
-            .contains(align::AlignFlags::LEGACY)
-        {
+        if !parent_justify_items.computed.contains(AlignFlags::LEGACY) {
             return;
         }
 
@@ -825,7 +779,6 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// the computed value of 'line-height' is 'normal'.
     ///
     /// https://github.com/w3c/csswg-drafts/issues/3257
-    #[cfg(feature = "gecko")]
     fn adjust_for_appearance<E>(&mut self, element: Option<E>)
     where
         E: TElement,
@@ -834,21 +787,20 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         use crate::properties::longhands::line_height::computed_value::T as LineHeight;
 
         let box_ = self.style.get_box();
-        let appearance = match box_.clone_appearance() {
-            Appearance::Auto => box_.clone__moz_default_appearance(),
+        let appearance = match *box_.get_appearance() {
+            Appearance::Auto => *box_.get__moz_default_appearance(),
             a => a,
         };
 
         if appearance == Appearance::Menulist {
-            if self.style.get_font().clone_line_height() == LineHeight::normal() {
+            if *self.style.get_font().get_line_height() == LineHeight::normal() {
                 return;
             }
             if self.style.pseudo.is_some() {
                 return;
             }
-            let is_html_select_element = element.map_or(false, |e| {
-                e.is_html_element() && e.local_name() == &*atom!("select")
-            });
+            let is_html_select_element =
+                element.is_some_and(|e| e.is_html_element() && e.local_name() == &*atom!("select"));
             if !is_html_select_element {
                 return;
             }
@@ -869,19 +821,18 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// We intentionally don't check 'list-style-image' below since we want it to use
     /// the same font as its fallback ('list-style-type') in case it fails to load.
     #[cfg(feature = "gecko")]
-    fn adjust_for_marker_pseudo(&mut self) {
+    fn adjust_for_marker_pseudo(&mut self, author_or_user_specified_properties: &LonghandIdSet) {
         use crate::values::computed::counters::Content;
         use crate::values::computed::font::{FontFamily, FontSynthesis, FontSynthesisStyle};
         use crate::values::computed::text::{LetterSpacing, WordSpacing};
 
-        let is_legacy_marker = self.style.pseudo.map_or(false, |p| p.is_marker()) &&
-            self.style.get_list().clone_list_style_type().is_bullet() &&
-            self.style.get_counters().clone_content() == Content::Normal;
+        let is_legacy_marker = self.style.pseudo.is_some_and(|p| p.is_marker())
+            && self.style.get_list().get_list_style_type().is_bullet()
+            && matches!(self.style.get_counters().get_content(), Content::Normal);
         if !is_legacy_marker {
             return;
         }
-        let flags = self.style.flags.get();
-        if !flags.contains(ComputedValueFlags::HAS_AUTHOR_SPECIFIED_FONT_FAMILY) {
+        if !author_or_user_specified_properties.contains(LonghandId::FontFamily) {
             self.style
                 .mutate_font()
                 .set_font_family(FontFamily::moz_bullet().clone());
@@ -889,46 +840,219 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
             // FIXME(mats): We can remove this if support for font-synthesis is added to @font-face rules.
             // Then we can add it to the @font-face rule in html.css instead.
             // https://github.com/w3c/csswg-drafts/issues/6081
-            if !flags.contains(ComputedValueFlags::HAS_AUTHOR_SPECIFIED_FONT_SYNTHESIS_WEIGHT) {
+            if !author_or_user_specified_properties.contains(LonghandId::FontSynthesisWeight) {
                 self.style
                     .mutate_font()
                     .set_font_synthesis_weight(FontSynthesis::None);
             }
-            if !flags.contains(ComputedValueFlags::HAS_AUTHOR_SPECIFIED_FONT_SYNTHESIS_STYLE) {
+            if !author_or_user_specified_properties.contains(LonghandId::FontSynthesisStyle) {
                 self.style
                     .mutate_font()
                     .set_font_synthesis_style(FontSynthesisStyle::None);
             }
         }
-        if !flags.contains(ComputedValueFlags::HAS_AUTHOR_SPECIFIED_LETTER_SPACING) {
+        if !author_or_user_specified_properties.contains(LonghandId::LetterSpacing) {
             self.style
                 .mutate_inherited_text()
                 .set_letter_spacing(LetterSpacing::normal());
         }
-        if !flags.contains(ComputedValueFlags::HAS_AUTHOR_SPECIFIED_WORD_SPACING) {
+        if !author_or_user_specified_properties.contains(LonghandId::WordSpacing) {
             self.style
                 .mutate_inherited_text()
                 .set_word_spacing(WordSpacing::normal());
         }
     }
 
-    /// Adjusts the style to account for various fixups that don't fit naturally
-    /// into the cascade.
+    /// Performs adjustments for position-try-fallbacks. The properties that need adjustments here
+    /// are luckily not affected by previous adjustments nor by other computed-value-time effects,
+    /// so we can just perform them here.
     ///
-    /// When comparing to Gecko, this is similar to the work done by
-    /// `ComputedStyle::ApplyStyleFixups`, plus some parts of
-    /// `nsStyleSet::GetContext`.
-    pub fn adjust<E>(&mut self, layout_parent_style: &ComputedValues, element: Option<E>)
-    where
+    /// NOTE(emilio): If we ever perform the interleaving dance, this could / should probably move
+    /// around to the specific properties' to_computed_value implementations, but that seems
+    /// overkill for now.
+    fn adjust_for_try_tactic(&mut self, tactic: &PositionTryFallbacksTryTactic) {
+        debug_assert!(!tactic.is_empty());
+        // TODO: This is supposed to use the containing block's WM (bug 1995256).
+        let wm = self.style.writing_mode;
+        // TODO: Flip inset / margin / sizes percentages and anchor lookup sides as necessary.
+        for tactic in tactic.iter() {
+            use PositionTryFallbacksTryTacticKeyword::*;
+            match tactic {
+                FlipBlock => {
+                    self.flip_self_alignment(/* block = */ true);
+                    self.flip_insets_and_margins(/* horizontal = */ wm.is_vertical());
+                },
+                FlipInline => {
+                    self.flip_self_alignment(/* block = */ false);
+                    self.flip_insets_and_margins(/* horizontal = */ wm.is_horizontal());
+                },
+                FlipX => {
+                    self.flip_self_alignment(/* block = */ wm.is_vertical());
+                    self.flip_insets_and_margins(/* horizontal = */ true);
+                },
+                FlipY => {
+                    self.flip_self_alignment(/* block = */ wm.is_horizontal());
+                    self.flip_insets_and_margins(/* horizontal = */ false);
+                },
+                FlipStart => {
+                    self.flip_start();
+                },
+            }
+            self.apply_position_area_tactic(*tactic);
+        }
+    }
+
+    fn apply_position_area_tactic(&mut self, tactic: PositionTryFallbacksTryTacticKeyword) {
+        let pos = self.style.get_position();
+        let old = *pos.get_position_area();
+        let wm = self.style.writing_mode;
+        let new = old.with_tactic(wm, tactic);
+        if new == old {
+            return;
+        }
+        let pos = self.style.mutate_position();
+        pos.set_position_area(new);
+    }
+
+    // TODO: Could avoid some clones here and below.
+    fn swap_insets(&mut self, a_side: PhysicalSide, b_side: PhysicalSide) {
+        debug_assert_ne!(a_side, b_side);
+        let pos = self.style.mutate_position();
+        let mut a = pos.get_inset(a_side).clone();
+        a.try_tactic_adjustment(a_side, b_side);
+        let mut b = pos.get_inset(b_side).clone();
+        b.try_tactic_adjustment(b_side, a_side);
+        pos.set_inset(a_side, b);
+        pos.set_inset(b_side, a);
+    }
+
+    fn swap_margins(&mut self, a_side: PhysicalSide, b_side: PhysicalSide) {
+        debug_assert_ne!(a_side, b_side);
+        let margin = self.style.get_margin();
+        let mut a = margin.get_margin(a_side).clone();
+        a.try_tactic_adjustment(a_side, b_side);
+        let mut b = margin.get_margin(b_side).clone();
+        b.try_tactic_adjustment(b_side, a_side);
+        let margin = self.style.mutate_margin();
+        margin.set_margin(a_side, b);
+        margin.set_margin(b_side, a);
+    }
+
+    fn swap_sizes(&mut self, block_start: PhysicalSide, inline_start: PhysicalSide) {
+        let pos = self.style.mutate_position();
+        let mut min_width = pos.slow_clone_min_width();
+        min_width.try_tactic_adjustment(inline_start, block_start);
+        let mut max_width = pos.slow_clone_max_width();
+        max_width.try_tactic_adjustment(inline_start, block_start);
+        let mut width = pos.slow_clone_width();
+        width.try_tactic_adjustment(inline_start, block_start);
+
+        let mut min_height = pos.slow_clone_min_height();
+        min_height.try_tactic_adjustment(block_start, inline_start);
+        let mut max_height = pos.slow_clone_max_height();
+        max_height.try_tactic_adjustment(block_start, inline_start);
+        let mut height = pos.slow_clone_height();
+        height.try_tactic_adjustment(block_start, inline_start);
+
+        let pos = self.style.mutate_position();
+        pos.set_width(height);
+        pos.set_height(width);
+        pos.set_max_width(max_height);
+        pos.set_max_height(max_width);
+        pos.set_min_width(min_height);
+        pos.set_min_height(min_width);
+    }
+
+    fn flip_start(&mut self) {
+        let wm = self.style.writing_mode;
+        let bs = wm.block_start_physical_side();
+        let is = wm.inline_start_physical_side();
+        let be = wm.block_end_physical_side();
+        let ie = wm.inline_end_physical_side();
+        self.swap_sizes(bs, is);
+        self.swap_insets(bs, is);
+        self.swap_insets(ie, be);
+        self.swap_margins(bs, is);
+        self.swap_margins(ie, be);
+        self.flip_alignment_start();
+    }
+
+    fn flip_insets_and_margins(&mut self, horizontal: bool) {
+        if horizontal {
+            self.swap_insets(PhysicalSide::Left, PhysicalSide::Right);
+            self.swap_margins(PhysicalSide::Left, PhysicalSide::Right);
+        } else {
+            self.swap_insets(PhysicalSide::Top, PhysicalSide::Bottom);
+            self.swap_margins(PhysicalSide::Top, PhysicalSide::Bottom);
+        }
+    }
+
+    fn flip_alignment_start(&mut self) {
+        let pos = self.style.get_position();
+        let align = *pos.get_align_self();
+        let mut justify = *pos.get_justify_self();
+        if align == justify {
+            return;
+        }
+
+        // Fix-up potential justify-self: {left, right} values which might end up as alignment
+        // values.
+        if matches!(justify.value(), AlignFlags::LEFT | AlignFlags::RIGHT) {
+            let left = justify.value() == AlignFlags::LEFT;
+            let ltr = self.style.writing_mode.is_bidi_ltr();
+            justify = justify.with_value(if left == ltr {
+                AlignFlags::SELF_START
+            } else {
+                AlignFlags::SELF_END
+            });
+        }
+
+        let pos = self.style.mutate_position();
+        pos.set_align_self(justify);
+        pos.set_justify_self(align);
+    }
+
+    fn flip_self_alignment(&mut self, block: bool) {
+        let pos = self.style.get_position();
+        let cur = if block {
+            *pos.get_align_self()
+        } else {
+            *pos.get_justify_self()
+        };
+        let flipped = cur.flip_position();
+        if flipped == cur {
+            return;
+        }
+        let pos = self.style.mutate_position();
+        if block {
+            pos.set_align_self(flipped);
+        } else {
+            pos.set_justify_self(flipped);
+        }
+    }
+
+    /// Adjusts the style to account for various fixups that don't fit naturally into the cascade.
+    #[allow(unused_variables)]
+    pub fn adjust<E>(
+        &mut self,
+        layout_parent_style: &ComputedValues,
+        element: Option<E>,
+        try_tactic: &PositionTryFallbacksTryTactic,
+        author_or_user_specified_properties: &LonghandIdSet,
+    ) where
         E: TElement,
     {
-        if cfg!(debug_assertions) {
-            if element.map_or(false, |e| e.is_pseudo_element()) {
-                // It'd be nice to assert `self.style.pseudo == Some(&pseudo)`,
-                // but we do resolve ::-moz-list pseudos on ::before / ::after
-                // content, sigh.
-                debug_assert!(self.style.pseudo.is_some(), "Someone really messed up");
-            }
+        if cfg!(debug_assertions)
+            && let Some(e) = element
+            && let Some(p) = e.implemented_pseudo_element()
+        {
+            // It'd be nice to assert `self.style.pseudo == Some(&pseudo)`,
+            // but we do resolve ::-moz-list pseudos on ::before / ::after
+            // content, sigh.
+            debug_assert!(
+                self.style.pseudo.is_some(),
+                "Someone really messed up (no pseudo style for {e:?}, {p:?})"
+            );
         }
         // FIXME(emilio): The apply_declarations callsite in Servo's
         // animation, and the font stuff for Gecko
@@ -939,13 +1063,11 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         //     "Should always have an element around for non-pseudo styles"
         // );
 
-        self.adjust_for_visited(element);
+        self.adjust_for_links(element);
         #[cfg(feature = "gecko")]
         {
             self.adjust_for_prohibited_display_contents(element);
-            self.adjust_for_fieldset_content(layout_parent_style);
-            // NOTE: It's important that this happens before
-            // adjust_for_overflow.
+            self.adjust_for_fieldset_content();
             self.adjust_for_text_control_editing_root();
         }
         self.adjust_for_top_layer();
@@ -961,19 +1083,14 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
             self.adjust_for_justify_items();
         }
         self.adjust_for_table_text_align();
-        self.adjust_for_border_width();
-        #[cfg(feature = "gecko")]
-        self.adjust_for_column_rule_width();
-        self.adjust_for_outline_width();
         self.adjust_for_writing_mode(layout_parent_style);
         #[cfg(feature = "gecko")]
-        {
-            self.adjust_for_ruby(layout_parent_style, element);
-        }
+        self.adjust_for_ruby(element);
+        self.adjust_for_appearance(element);
         #[cfg(feature = "gecko")]
-        {
-            self.adjust_for_appearance(element);
-            self.adjust_for_marker_pseudo();
+        self.adjust_for_marker_pseudo(author_or_user_specified_properties);
+        if !try_tactic.is_empty() {
+            self.adjust_for_try_tactic(try_tactic);
         }
         self.set_bits();
     }

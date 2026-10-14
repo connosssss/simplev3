@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,8 +5,11 @@
 #ifndef MOZILLA_GFX_RENDERCOMPOSITOR_EGL_H
 #define MOZILLA_GFX_RENDERCOMPOSITOR_EGL_H
 
+#include <list>
+
 #include "GLTypes.h"
 #include "mozilla/webrender/RenderCompositor.h"
+#include "mozilla/webrender/RenderTextureHost.h"
 
 namespace mozilla {
 
@@ -46,7 +47,9 @@ class RenderCompositorEGL : public RenderCompositor {
   void SetBufferDamageRegion(const wr::DeviceIntRect* aRects,
                              size_t aNumRects) override;
 
-  RefPtr<layers::Fence> GetAndResetReleaseFence() override;
+  RefPtr<layers::Fence> GetAndResetReadFence() override;
+
+  void MaybeWaitingForPendingReadFence(RenderTextureHost* aTexture) override;
 
  protected:
   EGLSurface CreateEGLSurface();
@@ -67,6 +70,8 @@ class RenderCompositorEGL : public RenderCompositor {
   // AHardwareBuffer is ended. The fence is delivered to client side via
   // ImageBridge. It is used only on android.
   RefPtr<layers::Fence> mReleaseFence;
+
+  std::list<RefPtr<RenderTextureHost>> mWaitingForPendingReadFence;
 };
 
 }  // namespace wr

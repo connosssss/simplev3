@@ -8,9 +8,11 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   Addon: "chrome://remote/content/shared/Addon.sys.mjs",
+  AppInfo: "chrome://remote/content/shared/AppInfo.sys.mjs",
   assert: "chrome://remote/content/shared/webdriver/Assert.sys.mjs",
   error: "chrome://remote/content/shared/webdriver/Errors.sys.mjs",
   pprint: "chrome://remote/content/shared/Format.sys.mjs",
+  RemoteAgent: "chrome://remote/content/components/RemoteAgent.sys.mjs",
 });
 
 /**
@@ -25,6 +27,43 @@ ChromeUtils.defineESModuleGetters(lazy, {
  * @typedef InstallResult
  *
  * @property {Extension} extension
+ */
+
+/**
+ * Details about an installed WebExtension.
+ *
+ * @typedef ExtensionInfo
+ * @property {boolean} hidden
+ *     Whether the WebExtension is hidden.
+ * @property {string} id
+ *     The id of the WebExtension.
+ * @property {boolean} isActive
+ *     Whether the WebExtension is active.
+ * @property {boolean} isSystem
+ *     Whether the WebExtension is a system extension.
+ * @property {number} manifestVersion
+ *     The manifest version used by the WebExtension.
+ * @property {string} name
+ *     The name of the WebExtension.
+ * @property {boolean} temporarilyInstalled
+ *     Whether the WebExtension is installed temporarily.
+ * @property {string} version
+ *     The version of the WebExtension.
+ * @property {object?} [policy]
+ *     Policy details, or null if no active policy exists. Only returned
+ *     when RemoteAgent.allowSystemAccess is true.
+ * @property {string?} [sourceURL]
+ *     The installation source URL, or null if unknown. Only returned
+ *     when RemoteAgent.allowSystemAccess is true.
+ */
+
+/**
+ * Return value of the moz:listExtensions command.
+ *
+ * @typedef ListExtensionsResult
+ *
+ * @property {Array<ExtensionInfo>} extensions
+ *     Array of ExtensionInfo objects.
  */
 
 /**
@@ -74,7 +113,9 @@ class WebExtensionModule extends RootBiDiModule {
     super(messageHandler);
   }
 
-  destroy() {}
+  destroy() {
+    lazy.Addon.cleanupTemporaryAddonFiles();
+  }
 
   /**
    * Installs a WebExtension.
@@ -84,6 +125,8 @@ class WebExtensionModule extends RootBiDiModule {
    * @param {object=} options
    * @param {ExtensionArchivePath|ExtensionPath|ExtensionBase64} options.extensionData
    *     The WebExtension to be installed.
+   * @param {boolean=} options.moz_allow_private_browsing (moz:allowPrivateBrowsing)
+   *     If true, install the web extension in private browsing mode. Defaults to `false`.
    * @param {boolean=} options.moz_permanent (moz:permanent)
    *     If true, install the web extension permanently. Defaults to `false`.
    *
@@ -96,7 +139,11 @@ class WebExtensionModule extends RootBiDiModule {
    *     Tried to install an invalid WebExtension.
    */
   async install(options = {}) {
-    const { extensionData, "moz:permanent": permanent = false } = options;
+    const {
+      extensionData,
+      "moz:allowPrivateBrowsing": allowPrivateBrowsing = false,
+      "moz:permanent": permanent = false,
+    } = options;
 
     lazy.assert.object(
       extensionData,
@@ -114,9 +161,22 @@ class WebExtensionModule extends RootBiDiModule {
     )(type);
 
     lazy.assert.boolean(
+      allowPrivateBrowsing,
+      lazy.pprint`Expected "moz:allowPrivateBrowsing" to be a boolean, got ${allowPrivateBrowsing}`
+    );
+
+    lazy.assert.boolean(
       permanent,
       lazy.pprint`Expected "moz:permanent" to be a boolean, got ${permanent}`
     );
+
+    if (lazy.AppInfo.isAndroid && allowPrivateBrowsing && !permanent) {
+      // Bug 2030934: Temporary WebExtension installation does not work
+      // for private browsing mode on Android.
+      throw new lazy.error.UnsupportedOperationError(
+        `On ${lazy.AppInfo.name}, "moz:allowPrivateBrowsing" requires "moz:permanent: true" to be set.`
+      );
+    }
 
     let extensionId;
 
@@ -130,7 +190,7 @@ class WebExtensionModule extends RootBiDiModule {
         extensionId = await lazy.Addon.installWithBase64(
           value,
           !permanent,
-          false
+          allowPrivateBrowsing
         );
         break;
       case ExtensionDataType.ArchivePath:
@@ -146,7 +206,11 @@ class WebExtensionModule extends RootBiDiModule {
           );
         }
 
-        extensionId = await lazy.Addon.installWithPath(path, !permanent, false);
+        extensionId = await lazy.Addon.installWithPath(
+          path,
+          !permanent,
+          allowPrivateBrowsing
+        );
     }
 
     return {
@@ -185,6 +249,43 @@ class WebExtensionModule extends RootBiDiModule {
     }
 
     await lazy.Addon.uninstall(addonId);
+  }
+
+  /**
+   * List information about non-hidden WebExtensions.
+   *
+   * This command is Firefox-specific and not part of the WebDriver BiDi
+   * specification.
+   *
+   * @returns {ListExtensionsResult}
+   *     Array of ExtensionInfo objects wrapped in the command result.
+   */
+  async ["moz:listExtensions"]() {
+    const extensions = await lazy.Addon.getAddons("extension", {
+      includeHidden: false,
+    });
+
+    return {
+      extensions: extensions.map(e => {
+        const extension = {
+          hidden: e.hidden,
+          id: e.id,
+          isActive: e.isActive,
+          isSystem: e.isSystem,
+          manifestVersion: e.manifestVersion,
+          name: e.name,
+          temporarilyInstalled: e.temporarilyInstalled,
+          version: e.version,
+        };
+
+        if (lazy.RemoteAgent.allowSystemAccess) {
+          extension.policy = e.policy;
+          extension.sourceURL = e.sourceURL;
+        }
+
+        return extension;
+      }),
+    };
   }
 }
 

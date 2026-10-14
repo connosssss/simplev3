@@ -1,25 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef TimerThread_h___
-#define TimerThread_h___
+#ifndef TimerThread_h_
+#define TimerThread_h_
 
+#include "TimerThreadMonitor.h"
+#include "mozilla/ProfilerUtils.h"
 #include "nsIObserver.h"
 #include "nsIRunnable.h"
 #include "nsIThread.h"
-
-#include "nsTimerImpl.h"
-#include "nsThreadUtils.h"
-
 #include "nsTArray.h"
-
-#include "mozilla/Attributes.h"
-#include "mozilla/HalTypes.h"
-#include "mozilla/Monitor.h"
-#include "mozilla/ProfilerUtils.h"
+#include "nsThreadUtils.h"
+#include "nsTimerImpl.h"
 
 // Enable this to compute lots of interesting statistics and print them out when
 // PrintStatistics() is called.
@@ -27,7 +20,6 @@
 
 class TimerThread final : public mozilla::Runnable, public nsIObserver {
  public:
-  typedef mozilla::Monitor Monitor;
   typedef mozilla::MutexAutoLock MutexAutoLock;
   typedef mozilla::TimeStamp TimeStamp;
   typedef mozilla::TimeDuration TimeDuration;
@@ -72,20 +64,12 @@ class TimerThread final : public mozilla::Runnable, public nsIObserver {
   nsresult Init() MOZ_REQUIRES(mMonitor);
   void AssertTimersSortedAndUnique() MOZ_REQUIRES(mMonitor);
 
-  // Using atomic because this value is written to in one place, and read from
-  // in another, and those two locations are likely to be executed from separate
-  // threads. Reads/writes to an aligned value this size should be atomic even
-  // without using std::atomic, but doing this explicitly provides a good
-  // reminder that this is accessed from multiple threads.
-  std::atomic<mozilla::hal::ProcessPriority> mCachedPriority =
-      mozilla::hal::PROCESS_PRIORITY_UNKNOWN;
-
   nsCOMPtr<nsIThread> mThread;
   // Lock ordering requirements:
   // (optional) ThreadWrapper::sMutex ->
   // (optional) nsTimerImpl::mMutex   ->
   // TimerThread::mMonitor
-  Monitor mMonitor;
+  mozilla::TimerThreadMonitor mMonitor;
 
   bool mShutdown MOZ_GUARDED_BY(mMonitor);
   bool mWaiting MOZ_GUARDED_BY(mMonitor);
@@ -120,9 +104,10 @@ class TimerThread final : public mozilla::Runnable, public nsIObserver {
   };
 
   struct Entry final : EntryKey {
-    explicit Entry(nsTimerImpl& aTimerImpl)
+    explicit Entry(nsTimerImpl& aTimerImpl) MOZ_REQUIRES(aTimerImpl.mMutex)
         : EntryKey(aTimerImpl),
           mDelay(aTimerImpl.mDelay),
+          mFiringDelay(aTimerImpl.AcceptableFiringDelay()),
           mTimerImpl(&aTimerImpl) {}
 
     // No copies to not fiddle with mTimerImpl's ref-count.
@@ -142,29 +127,26 @@ class TimerThread final : public mozilla::Runnable, public nsIObserver {
 #endif
 
     TimeDuration mDelay;
+    TimeDuration mFiringDelay;
     RefPtr<nsTimerImpl> mTimerImpl;
   };
 
   void PostTimerEvent(Entry& aPostMe) MOZ_REQUIRES(mMonitor);
 
+  // WakeupTime encompasses both a point in time at which we should wake up and
+  // tolerance for how much that wake-up can be delayed.
+  struct WakeupTime {
+    const TimeStamp mWakeupTime;
+    const TimeDuration mDelayTolerance;
+  };
+
   // Computes and returns when we should next try to wake up in order to handle
   // the triggering of the timers in mTimers.
   // If mTimers is empty, returns a null TimeStamp. If mTimers is not empty,
   // returns the timeout of the last timer that can be bundled with the first
-  // timer in mTimers.
-  TimeStamp ComputeWakeupTimeFromTimers() const MOZ_REQUIRES(mMonitor);
-
-  // Computes how late a timer can acceptably fire.
-  // timerDuration is the duration of the timer whose delay we are calculating.
-  // Longer timers can tolerate longer firing delays.
-  // minDelay is an amount by which any timer can be delayed.
-  // This function will never return a value smaller than minDelay (unless this
-  // conflicts with maxDelay). maxDelay is the upper limit on the amount by
-  // which we will ever delay any timer. Takes precedence over minDelay if there
-  // is a conflict. (Zero will effectively disable timer coalescing.)
-  TimeDuration ComputeAcceptableFiringDelay(TimeDuration timerDuration,
-                                            TimeDuration minDelay,
-                                            TimeDuration maxDelay) const;
+  // timer in mTimers along with a tolerance indicating the most that we can be
+  // delayed and not violate the tolerances of any of the timers in the bundle.
+  WakeupTime ComputeWakeupTimeFromTimers() const MOZ_REQUIRES(mMonitor);
 
   // Fires and removes all timers in mTimers that are "due" to be fired,
   // according to the current time and the passed-in early firing tolerance.
@@ -174,7 +156,8 @@ class TimerThread final : public mozilla::Runnable, public nsIObserver {
 
   // Suspends thread execution using mMonitor.Wait(waitFor). Also sets and
   // clears a few flags before and after.
-  void Wait(TimeDuration aWaitFor) MOZ_REQUIRES(mMonitor);
+  void Wait(TimeDuration aWaitFor, TimeDuration aTolerance)
+      MOZ_REQUIRES(mMonitor);
 
   // mTimers is sorted by timeout, followed by a unique sequence number.
   // Some entries are for cancelled entries, but remain in sorted order based
@@ -186,11 +169,14 @@ class TimerThread final : public mozilla::Runnable, public nsIObserver {
 
   ProfilerThreadId mProfilerThreadId MOZ_GUARDED_BY(mMonitor);
 
-  // Time at which we were intending to wake up the last time that we slept.
-  // Is "null" if we have never slept or if our last sleep was "forever".
-  TimeStamp mIntendedWakeupTime;
+  // End of the wakeup window handed to the monitor the last time that we
+  // slept. Is "null" if we have never slept or if our last sleep was "forever".
+  TimeStamp mLatestIntendedWakeupTime;
 
 #if TIMER_THREAD_STATISTICS
+  // Start of that window, with the same "null" cases.
+  TimeStamp mIntendedWakeupTime;
+
   static constexpr size_t sTimersFiredPerWakeupBucketCount = 16;
   static inline constexpr std::array<size_t, sTimersFiredPerWakeupBucketCount>
       sTimersFiredPerWakeupThresholds = {
@@ -232,4 +218,4 @@ class TimerThread final : public mozilla::Runnable, public nsIObserver {
   void PrintStatistics() const;
 #endif
 };
-#endif /* TimerThread_h___ */
+#endif /* TimerThread_h_ */

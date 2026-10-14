@@ -26,15 +26,18 @@ class UpdateLog {
   ~UpdateLog() { Finish(); }
 
  protected:
-  UpdateLog();
+  UpdateLog() = default;
   void PrintTimestampPrefix();
 
-  FILE* logFP;
+  FILE* logFP = nullptr;
   NS_tchar mDstFilePath[MAXPATHLEN];
 };
 
 bool IsValidFullPath(NS_tchar* fullPath);
 bool IsProgramFilesPath(NS_tchar* fullPath);
+FILE* CreateAndOpenFile(NS_tchar* logFilePath, bool binary);
+void LogToOS(const NS_tchar* message);
+bool EnvHasValue(const char* name);
 
 #define LOG_WARN(args) UpdateLog::GetPrimaryLog().WarnPrintf args
 #define LOG(args) UpdateLog::GetPrimaryLog().Printf args

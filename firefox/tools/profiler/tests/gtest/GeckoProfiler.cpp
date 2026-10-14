@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,6 +7,8 @@
 // happens when calling these functions. They don't do much inspection of
 // profiler internals.
 
+#include "mozilla/ProfileChunkedBuffer.h"
+#include "mozilla/ProfilerPlatformMacros.h"
 #include "mozilla/ProfilerThreadPlatformData.h"
 #include "mozilla/ProfilerThreadRegistration.h"
 #include "mozilla/ProfilerThreadRegistrationInfo.h"
@@ -24,45 +24,51 @@
 #include "nsIClassOfService.h"
 
 #include "gtest/gtest.h"
+#include "gtest/MozGTestBench.h"
 #include "mozilla/gtest/MozAssertions.h"
 
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 #include <thread>
+#include <vector>
 
-#if defined(_MSC_VER) || defined(__MINGW32__)
+#if defined(__x86_64__) || defined(__i386__)
+#  include <x86intrin.h>  // __rdtscp / _mm_lfence for the histogram bench timing
+#endif
+
+#if defined(GP_OS_windows)
 #  include <processthreadsapi.h>
 #  include <realtimeapiset.h>
-#elif defined(__APPLE__)
+#elif defined(GP_OS_darwin)
 #  include <mach/thread_act.h>
 #endif
 
-#ifdef MOZ_GECKO_PROFILER
+#include "GeckoProfiler.h"
+#include "mozilla/ProfilerMarkerTypes.h"
+#include "mozilla/ProfilerMarkers.h"
+#include "NetworkMarker.h"
+#include "platform.h"
+#include "ProfileBuffer.h"
+#include "ProfiledThreadData.h"
+#include "ProfilerControl.h"
 
-#  include "GeckoProfiler.h"
-#  include "mozilla/ProfilerMarkerTypes.h"
-#  include "mozilla/ProfilerMarkers.h"
-#  include "NetworkMarker.h"
-#  include "platform.h"
-#  include "ProfileBuffer.h"
-#  include "ProfilerControl.h"
+#include "js/Initialization.h"
+#include "js/Printf.h"
+#include "jsapi.h"
+#include "json/json.h"
+#include "mozilla/Atomics.h"
+#include "mozilla/DataMutex.h"
+#include "mozilla/ProfileBufferEntrySerializationGeckoExtensions.h"
+#include "mozilla/ProfileJSONWriter.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/net/HttpBaseChannel.h"
+#include "nsIChannelEventSink.h"
+#include "nsIThread.h"
+#include "nsThreadUtils.h"
 
-#  include "js/Initialization.h"
-#  include "js/Printf.h"
-#  include "jsapi.h"
-#  include "json/json.h"
-#  include "mozilla/Atomics.h"
-#  include "mozilla/DataMutex.h"
-#  include "mozilla/ProfileBufferEntrySerializationGeckoExtensions.h"
-#  include "mozilla/ProfileJSONWriter.h"
-#  include "mozilla/ScopeExit.h"
-#  include "mozilla/net/HttpBaseChannel.h"
-#  include "nsIChannelEventSink.h"
-#  include "nsIThread.h"
-#  include "nsThreadUtils.h"
-
-#  include <cstring>
-#  include <set>
-
-#endif  // MOZ_GECKO_PROFILER
+#include <cstring>
+#include <set>
 
 // Note: profiler_init() has already been called in XRE_main(), so we can't
 // test it here. Likewise for profiler_shutdown(), and AutoProfilerInit
@@ -143,9 +149,7 @@ TEST(GeckoProfiler, ThreadRegistrationInfo)
     EXPECT_NE(trInfoHere.Name(), "Here")
         << "ThreadRegistrationInfo should keep its own copy of the name";
     TimeStamp baseRegistrationTime;
-#ifdef MOZ_GECKO_PROFILER
     baseRegistrationTime = baseprofiler::detail::GetThreadRegistrationTime();
-#endif
     if (baseRegistrationTime) {
       EXPECT_EQ(trInfoHere.RegisterTime(), baseRegistrationTime);
     } else {
@@ -264,7 +268,7 @@ static void TestConstUnlockedConstReader(
   EXPECT_EQ(aData.Info().ThreadId(), aThreadId);
   EXPECT_FALSE(aData.Info().IsMainThread());
 
-#if (defined(_MSC_VER) || defined(__MINGW32__)) && defined(MOZ_GECKO_PROFILER)
+#if defined(GP_OS_windows)
   HANDLE threadHandle = aData.PlatformDataCRef().ProfiledThread();
   EXPECT_NE(threadHandle, nullptr);
   EXPECT_EQ(ProfilerThreadId::FromNumber(::GetThreadId(threadHandle)),
@@ -273,7 +277,7 @@ static void TestConstUnlockedConstReader(
   // work, but at least it shouldn't crash.
   ULONG64 cycles;
   (void)QueryThreadCycleTime(threadHandle, &cycles);
-#elif defined(__APPLE__) && defined(MOZ_GECKO_PROFILER)
+#elif defined(GP_OS_darwin)
   // Test calling thread_info, we cannot assume that it will always work, but at
   // least it shouldn't crash.
   thread_basic_info_data_t threadBasicInfo;
@@ -281,8 +285,7 @@ static void TestConstUnlockedConstReader(
   (void)thread_info(
       aData.PlatformDataCRef().ProfiledThread(), THREAD_BASIC_INFO,
       reinterpret_cast<thread_info_t>(&threadBasicInfo), &basicCount);
-#elif (defined(__linux__) || defined(__ANDROID__) || defined(__FreeBSD__)) && \
-    defined(MOZ_GECKO_PROFILER)
+#elif (defined(GP_OS_linux) || defined(GP_OS_android) || defined(GP_OS_freebsd))
   // Test calling GetClockId, we cannot assume that it will always work, but at
   // least it shouldn't crash.
   Maybe<clockid_t> maybeClockId = aData.PlatformDataCRef().GetClockId();
@@ -296,9 +299,16 @@ static void TestConstUnlockedConstReader(
   (void)aData.PlatformDataCRef();
 #endif
 
+#if defined(MOZ_ASAN)
+  // When ASan is enabled, onStackChar will be located on ASan's fake stack
+  // instead of the thread's native stack, thus interfering with the following
+  // check. See <https://bugzil.la/2040038>.
+  (void)aOnStackObject;
+#else
   EXPECT_GE(aData.StackTop(), aOnStackObject)
       << "StackTop should be at &onStackChar, or higher on some "
          "platforms";
+#endif  // defined(MOZ_ASAN)
 };
 
 static void TestConstUnlockedConstReaderAndAtomicRW(
@@ -1209,8 +1219,6 @@ TEST(GeckoProfiler, ThreadRegistration_RegistrationEdgeCases)
   EXPECT_GT(otherThreadReads, 0);
 }
 
-#ifdef MOZ_GECKO_PROFILER
-
 // Common JSON checks.
 
 // Check that the given JSON string include no JSON whitespace characters
@@ -1254,120 +1262,115 @@ void JSONWhitespaceCheck(const char* aOutput) {
 }
 
 // Does the GETTER return a non-null TYPE? (Non-critical)
-#  define EXPECT_HAS_JSON(GETTER, TYPE)              \
-    do {                                             \
-      if ((GETTER).isNull()) {                       \
-        EXPECT_FALSE((GETTER).isNull())              \
-            << #GETTER " doesn't exist or is null";  \
-      } else if (!(GETTER).is##TYPE()) {             \
-        EXPECT_TRUE((GETTER).is##TYPE())             \
-            << #GETTER " didn't return type " #TYPE; \
-      }                                              \
-    } while (false)
+#define EXPECT_HAS_JSON(GETTER, TYPE)                                         \
+  do {                                                                        \
+    if ((GETTER).isNull()) {                                                  \
+      EXPECT_FALSE((GETTER).isNull()) << #GETTER " doesn't exist or is null"; \
+    } else if (!(GETTER).is##TYPE()) {                                        \
+      EXPECT_TRUE((GETTER).is##TYPE())                                        \
+          << #GETTER " didn't return type " #TYPE;                            \
+    }                                                                         \
+  } while (false)
 
 // Does the GETTER return a non-null TYPE? (Critical)
-#  define ASSERT_HAS_JSON(GETTER, TYPE) \
-    do {                                \
-      ASSERT_FALSE((GETTER).isNull());  \
-      ASSERT_TRUE((GETTER).is##TYPE()); \
-    } while (false)
+#define ASSERT_HAS_JSON(GETTER, TYPE) \
+  do {                                \
+    ASSERT_FALSE((GETTER).isNull());  \
+    ASSERT_TRUE((GETTER).is##TYPE()); \
+  } while (false)
 
 // Does the GETTER return a non-null TYPE? (Critical)
 // If yes, store the reference to Json::Value into VARIABLE.
-#  define GET_JSON(VARIABLE, GETTER, TYPE) \
-    ASSERT_HAS_JSON(GETTER, TYPE);         \
-    const Json::Value& VARIABLE = (GETTER)
+#define GET_JSON(VARIABLE, GETTER, TYPE) \
+  ASSERT_HAS_JSON(GETTER, TYPE);         \
+  const Json::Value& VARIABLE = (GETTER)
 
 // Does the GETTER return a non-null TYPE? (Critical)
 // If yes, store the value as `const TYPE` into VARIABLE.
-#  define GET_JSON_VALUE(VARIABLE, GETTER, TYPE) \
-    ASSERT_HAS_JSON(GETTER, TYPE);               \
-    const auto VARIABLE = (GETTER).as##TYPE()
+#define GET_JSON_VALUE(VARIABLE, GETTER, TYPE) \
+  ASSERT_HAS_JSON(GETTER, TYPE);               \
+  const auto VARIABLE = (GETTER).as##TYPE()
 
 // Non-const GET_JSON_VALUE.
-#  define GET_JSON_MUTABLE_VALUE(VARIABLE, GETTER, TYPE) \
-    ASSERT_HAS_JSON(GETTER, TYPE);                       \
-    auto VARIABLE = (GETTER).as##TYPE()
+#define GET_JSON_MUTABLE_VALUE(VARIABLE, GETTER, TYPE) \
+  ASSERT_HAS_JSON(GETTER, TYPE);                       \
+  auto VARIABLE = (GETTER).as##TYPE()
 
 // Checks that the GETTER's value is present, is of the expected TYPE, and has
 // the expected VALUE. (Non-critical)
-#  define EXPECT_EQ_JSON(GETTER, TYPE, VALUE)        \
-    do {                                             \
-      if ((GETTER).isNull()) {                       \
-        EXPECT_FALSE((GETTER).isNull())              \
-            << #GETTER " doesn't exist or is null";  \
-      } else if (!(GETTER).is##TYPE()) {             \
-        EXPECT_TRUE((GETTER).is##TYPE())             \
-            << #GETTER " didn't return type " #TYPE; \
-      } else {                                       \
-        EXPECT_EQ((GETTER).as##TYPE(), (VALUE));     \
-      }                                              \
-    } while (false)
+#define EXPECT_EQ_JSON(GETTER, TYPE, VALUE)                                   \
+  do {                                                                        \
+    if ((GETTER).isNull()) {                                                  \
+      EXPECT_FALSE((GETTER).isNull()) << #GETTER " doesn't exist or is null"; \
+    } else if (!(GETTER).is##TYPE()) {                                        \
+      EXPECT_TRUE((GETTER).is##TYPE())                                        \
+          << #GETTER " didn't return type " #TYPE;                            \
+    } else {                                                                  \
+      EXPECT_EQ((GETTER).as##TYPE(), (VALUE));                                \
+    }                                                                         \
+  } while (false)
 
 // Checks that the GETTER's value is present, and is a valid index into the
 // STRINGTABLE array, pointing at the expected STRING.
-#  define EXPECT_EQ_STRINGTABLE(GETTER, STRINGTABLE, STRING)                 \
-    do {                                                                     \
-      if ((GETTER).isNull()) {                                               \
-        EXPECT_FALSE((GETTER).isNull())                                      \
-            << #GETTER " doesn't exist or is null";                          \
-      } else if (!(GETTER).isUInt()) {                                       \
-        EXPECT_TRUE((GETTER).isUInt()) << #GETTER " didn't return an index"; \
-      } else {                                                               \
-        EXPECT_LT((GETTER).asUInt(), (STRINGTABLE).size());                  \
-        EXPECT_EQ_JSON((STRINGTABLE)[(GETTER).asUInt()], String, (STRING));  \
-      }                                                                      \
-    } while (false)
+#define EXPECT_EQ_STRINGTABLE(GETTER, STRINGTABLE, STRING)                    \
+  do {                                                                        \
+    if ((GETTER).isNull()) {                                                  \
+      EXPECT_FALSE((GETTER).isNull()) << #GETTER " doesn't exist or is null"; \
+    } else if (!(GETTER).isUInt()) {                                          \
+      EXPECT_TRUE((GETTER).isUInt()) << #GETTER " didn't return an index";    \
+    } else {                                                                  \
+      EXPECT_LT((GETTER).asUInt(), (STRINGTABLE).size());                     \
+      EXPECT_EQ_JSON((STRINGTABLE)[(GETTER).asUInt()], String, (STRING));     \
+    }                                                                         \
+  } while (false)
 
-#  define EXPECT_JSON_ARRAY_CONTAINS(GETTER, TYPE, VALUE)                     \
-    do {                                                                      \
-      if ((GETTER).isNull()) {                                                \
-        EXPECT_FALSE((GETTER).isNull())                                       \
-            << #GETTER " doesn't exist or is null";                           \
-      } else if (!(GETTER).isArray()) {                                       \
-        EXPECT_TRUE((GETTER).is##TYPE()) << #GETTER " is not an array";       \
-      } else if (const Json::ArrayIndex size = (GETTER).size(); size == 0u) { \
-        EXPECT_NE(size, 0u) << #GETTER " is an empty array";                  \
-      } else {                                                                \
-        bool found = false;                                                   \
-        for (Json::ArrayIndex i = 0; i < size; ++i) {                         \
-          if (!(GETTER)[i].is##TYPE()) {                                      \
-            EXPECT_TRUE((GETTER)[i].is##TYPE())                               \
-                << #GETTER "[" << i << "] is not " #TYPE;                     \
-            break;                                                            \
-          }                                                                   \
-          if ((GETTER)[i].as##TYPE() == (VALUE)) {                            \
-            found = true;                                                     \
-            break;                                                            \
-          }                                                                   \
+#define EXPECT_JSON_ARRAY_CONTAINS(GETTER, TYPE, VALUE)                       \
+  do {                                                                        \
+    if ((GETTER).isNull()) {                                                  \
+      EXPECT_FALSE((GETTER).isNull()) << #GETTER " doesn't exist or is null"; \
+    } else if (!(GETTER).isArray()) {                                         \
+      EXPECT_TRUE((GETTER).is##TYPE()) << #GETTER " is not an array";         \
+    } else if (const Json::ArrayIndex size = (GETTER).size(); size == 0u) {   \
+      EXPECT_NE(size, 0u) << #GETTER " is an empty array";                    \
+    } else {                                                                  \
+      bool found = false;                                                     \
+      for (Json::ArrayIndex i = 0; i < size; ++i) {                           \
+        if (!(GETTER)[i].is##TYPE()) {                                        \
+          EXPECT_TRUE((GETTER)[i].is##TYPE())                                 \
+              << #GETTER "[" << i << "] is not " #TYPE;                       \
+          break;                                                              \
         }                                                                     \
-        EXPECT_TRUE(found) << #GETTER " doesn't contain " #VALUE;             \
+        if ((GETTER)[i].as##TYPE() == (VALUE)) {                              \
+          found = true;                                                       \
+          break;                                                              \
+        }                                                                     \
       }                                                                       \
-    } while (false)
+      EXPECT_TRUE(found) << #GETTER " doesn't contain " #VALUE;               \
+    }                                                                         \
+  } while (false)
 
-#  define EXPECT_JSON_ARRAY_EXCLUDES(GETTER, TYPE, VALUE)               \
-    do {                                                                \
-      if ((GETTER).isNull()) {                                          \
-        EXPECT_FALSE((GETTER).isNull())                                 \
-            << #GETTER " doesn't exist or is null";                     \
-      } else if (!(GETTER).isArray()) {                                 \
-        EXPECT_TRUE((GETTER).is##TYPE()) << #GETTER " is not an array"; \
-      } else {                                                          \
-        const Json::ArrayIndex size = (GETTER).size();                  \
-        for (Json::ArrayIndex i = 0; i < size; ++i) {                   \
-          if (!(GETTER)[i].is##TYPE()) {                                \
-            EXPECT_TRUE((GETTER)[i].is##TYPE())                         \
-                << #GETTER "[" << i << "] is not " #TYPE;               \
-            break;                                                      \
-          }                                                             \
-          if ((GETTER)[i].as##TYPE() == (VALUE)) {                      \
-            EXPECT_TRUE((GETTER)[i].as##TYPE() != (VALUE))              \
-                << #GETTER " contains " #VALUE;                         \
-            break;                                                      \
-          }                                                             \
-        }                                                               \
-      }                                                                 \
-    } while (false)
+#define EXPECT_JSON_ARRAY_EXCLUDES(GETTER, TYPE, VALUE)                       \
+  do {                                                                        \
+    if ((GETTER).isNull()) {                                                  \
+      EXPECT_FALSE((GETTER).isNull()) << #GETTER " doesn't exist or is null"; \
+    } else if (!(GETTER).isArray()) {                                         \
+      EXPECT_TRUE((GETTER).is##TYPE()) << #GETTER " is not an array";         \
+    } else {                                                                  \
+      const Json::ArrayIndex size = (GETTER).size();                          \
+      for (Json::ArrayIndex i = 0; i < size; ++i) {                           \
+        if (!(GETTER)[i].is##TYPE()) {                                        \
+          EXPECT_TRUE((GETTER)[i].is##TYPE())                                 \
+              << #GETTER "[" << i << "] is not " #TYPE;                       \
+          break;                                                              \
+        }                                                                     \
+        if ((GETTER)[i].as##TYPE() == (VALUE)) {                              \
+          EXPECT_TRUE((GETTER)[i].as##TYPE() != (VALUE))                      \
+              << #GETTER " contains " #VALUE;                                 \
+          break;                                                              \
+        }                                                                     \
+      }                                                                       \
+    }                                                                         \
+  } while (false)
 
 // Check that the given process root contains all the expected properties.
 static void JSONRootCheck(const Json::Value& aRoot,
@@ -1612,7 +1615,7 @@ TEST(GeckoProfiler, FeaturesAndParams)
     uint32_t features = ProfilerFeature::JS;
     const char* filters[] = {"GeckoMain", "Compositor"};
 
-#  define PROFILER_DEFAULT_DURATION 20 /* seconds, for tests only */
+#define PROFILER_DEFAULT_DURATION 20 /* seconds, for tests only */
     profiler_start(PROFILER_DEFAULT_ENTRIES, PROFILER_DEFAULT_INTERVAL,
                    features, filters, std::size(filters), 100,
                    Some(PROFILER_DEFAULT_DURATION));
@@ -1638,14 +1641,14 @@ TEST(GeckoProfiler, FeaturesAndParams)
 
     // Testing with some arbitrary buffer size (as could be provided by
     // external code), which we convert to the appropriate power of 2.
-    profiler_start(PowerOfTwo32(999999), 3, features, filters,
+    profiler_start(PowerOfTwo32(999999u), 3, features, filters,
                    std::size(filters), 123, Some(25.0));
 
     ASSERT_TRUE(profiler_is_active());
     ASSERT_TRUE(profiler_feature_active(ProfilerFeature::MainThreadIO));
     ASSERT_TRUE(profiler_feature_active(ProfilerFeature::IPCMessages));
 
-    ActiveParamsCheck(int(PowerOfTwo32(999999).Value()), 3, features, filters,
+    ActiveParamsCheck(int(PowerOfTwo32(999999u).Value()), 3, features, filters,
                       std::size(filters), 123, Some(25.0));
 
     profiler_stop();
@@ -1659,14 +1662,14 @@ TEST(GeckoProfiler, FeaturesAndParams)
         ProfilerFeature::MainThreadIO | ProfilerFeature::IPCMessages;
     const char* filters[] = {"GeckoMain", "Foo", "Bar"};
 
-    profiler_start(PowerOfTwo32(999999), 3, features, filters,
+    profiler_start(PowerOfTwo32(999999u), 3, features, filters,
                    std::size(filters), 0, Nothing());
 
     ASSERT_TRUE(profiler_is_active());
     ASSERT_TRUE(profiler_feature_active(ProfilerFeature::MainThreadIO));
     ASSERT_TRUE(profiler_feature_active(ProfilerFeature::IPCMessages));
 
-    ActiveParamsCheck(int(PowerOfTwo32(999999).Value()), 3, features, filters,
+    ActiveParamsCheck(int(PowerOfTwo32(999999u).Value()), 3, features, filters,
                       std::size(filters), 0, Nothing());
 
     profiler_stop();
@@ -1682,14 +1685,14 @@ TEST(GeckoProfiler, FeaturesAndParams)
     // Turn off tracing because it mucks with other features
     availableFeatures &= ~ProfilerFeature::Tracing;
 
-    profiler_start(PowerOfTwo32(88888), 10, availableFeatures, filters,
+    profiler_start(PowerOfTwo32(88888u), 10, availableFeatures, filters,
                    std::size(filters), 0, Some(15.0));
 
     ASSERT_TRUE(profiler_is_active());
     ASSERT_TRUE(profiler_feature_active(ProfilerFeature::MainThreadIO));
     ASSERT_TRUE(profiler_feature_active(ProfilerFeature::IPCMessages));
 
-    ActiveParamsCheck(PowerOfTwo32(88888).Value(), 10, availableFeatures,
+    ActiveParamsCheck(PowerOfTwo32(88888u).Value(), 10, availableFeatures,
                       filters, std::size(filters), 0, Some(15.0));
 
     // Don't call profiler_stop() here.
@@ -1702,8 +1705,8 @@ TEST(GeckoProfiler, FeaturesAndParams)
 
     // Second profiler_start() call in a row without an intervening
     // profiler_stop(); this will do an implicit profiler_stop() and restart.
-    profiler_start(PowerOfTwo32(0), 0, features, filters, std::size(filters), 0,
-                   Some(0.0));
+    profiler_start(PowerOfTwo32(0u), 0, features, filters, std::size(filters),
+                   0, Some(0.0));
 
     ASSERT_TRUE(profiler_is_active());
     ASSERT_TRUE(!profiler_feature_active(ProfilerFeature::MainThreadIO));
@@ -1783,7 +1786,7 @@ TEST(GeckoProfiler, EnsureStarted)
     // Call profiler_ensure_started with a different feature set than the one
     // it's currently running with. This is supposed to stop and restart the
     // profiler, thereby discarding the buffer contents.
-    uint32_t differentFeatures = features | ProfilerFeature::CPUUtilization;
+    uint32_t differentFeatures = features | ProfilerFeature::IPCMessages;
     profiler_ensure_started(PROFILER_DEFAULT_ENTRIES, PROFILER_DEFAULT_INTERVAL,
                             differentFeatures, filters, std::size(filters), 0);
 
@@ -1945,17 +1948,17 @@ TEST(GeckoProfiler, GetBacktrace)
     static const int N = 100;
     {
       UniqueProfilerBacktrace u[N];
-      for (int i = 0; i < N; i++) {
-        u[i] = profiler_get_backtrace();
-        ASSERT_TRUE(u[i]);
+      for (auto& i : u) {
+        i = profiler_get_backtrace();
+        ASSERT_TRUE(i);
       }
     }
 
     // These will be destroyed after the profiler stops.
     UniqueProfilerBacktrace u[N];
-    for (int i = 0; i < N; i++) {
-      u[i] = profiler_get_backtrace();
-      ASSERT_TRUE(u[i]);
+    for (auto& i : u) {
+      i = profiler_get_backtrace();
+      ASSERT_TRUE(i);
     }
 
     profiler_stop();
@@ -2285,6 +2288,201 @@ TEST(GeckoProfiler, Pause)
   }}.join();
 }
 
+// Mock nsIClassOfService for network marker tests
+class MockClassOfService final : public nsIClassOfService {
+ public:
+  NS_DECL_ISUPPORTS
+
+  explicit MockClassOfService(uint32_t aClassFlags, bool aIncremental = false,
+                              nsIClassOfService::FetchPriority aFetchPriority =
+                                  nsIClassOfService::FETCHPRIORITY_UNSET)
+      : mClassFlags(aClassFlags),
+        mIncremental(aIncremental),
+        mFetchPriority(aFetchPriority) {}
+
+  NS_IMETHOD GetClassFlags(uint32_t* aFlags) override {
+    *aFlags = mClassFlags;
+    return NS_OK;
+  }
+
+  NS_IMETHOD SetClassFlags(uint32_t aFlags) override {
+    mClassFlags = aFlags;
+    return NS_OK;
+  }
+
+  NS_IMETHOD ClearClassFlags(uint32_t aFlags) override {
+    mClassFlags &= ~aFlags;
+    return NS_OK;
+  }
+
+  NS_IMETHOD AddClassFlags(uint32_t aFlags) override {
+    mClassFlags |= aFlags;
+    return NS_OK;
+  }
+
+  NS_IMETHOD GetIncremental(bool* aIncremental) override {
+    *aIncremental = mIncremental;
+    return NS_OK;
+  }
+
+  NS_IMETHOD SetIncremental(bool aIncremental) override {
+    mIncremental = aIncremental;
+    return NS_OK;
+  }
+
+  NS_IMETHOD GetFetchPriority(
+      nsIClassOfService::FetchPriority* aFetchPriority) override {
+    *aFetchPriority = mFetchPriority;
+    return NS_OK;
+  }
+
+  NS_IMETHOD SetFetchPriority(
+      nsIClassOfService::FetchPriority aFetchPriority) override {
+    mFetchPriority = aFetchPriority;
+    return NS_OK;
+  }
+
+  NS_IMETHOD SetClassOfService(mozilla::net::ClassOfService s) override {
+    return NS_ERROR_NOT_IMPLEMENTED;
+  }
+
+  NS_IMETHOD_(void)
+  SetFetchPriorityDOM(mozilla::dom::FetchPriority aPriority) override {}
+
+ private:
+  ~MockClassOfService() = default;
+
+  uint32_t mClassFlags;
+  bool mIncremental;
+  nsIClassOfService::FetchPriority mFetchPriority;
+};
+
+NS_IMPL_ISUPPORTS(MockClassOfService, nsIClassOfService)
+
+// BaseMarkerType-based marker with Format::UniqueString payload fields.
+// Must be at file scope since local structs cannot have static data members.
+struct GtestBaseMarkerTypeUniqueString
+    : public mozilla::BaseMarkerType<GtestBaseMarkerTypeUniqueString> {
+  static constexpr const char* Name = "markers-gtest-base-unique-string";
+  using MS = mozilla::MarkerSchema;
+  static constexpr MS::Location Locations[] = {MS::Location::MarkerChart,
+                                               MS::Location::MarkerTable};
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"uniqueField", MS::InputType::CString, "Unique Field",
+       MS::Format::UniqueString},
+      {"plainField", MS::InputType::CString, "Plain Field",
+       MS::Format::String}};
+  static void StreamJSONMarkerData(
+      mozilla::baseprofiler::SpliceableJSONWriter& aWriter,
+      const mozilla::ProfilerString8View& aUniqueText,
+      const mozilla::ProfilerString8View& aPlainText) {
+    StreamJSONMarkerDataImpl(aWriter, aUniqueText, aPlainText);
+  }
+};
+
+// BaseMarkerType-based marker graphing two of its payload fields, one with an
+// explicit color and one without.
+struct GtestBaseMarkerTypeGraphs
+    : public mozilla::BaseMarkerType<GtestBaseMarkerTypeGraphs> {
+  static constexpr const char* Name = "markers-gtest-base-graphs";
+  using MS = mozilla::MarkerSchema;
+  static constexpr MS::Location Locations[] = {MS::Location::MarkerChart,
+                                               MS::Location::MarkerTable};
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"colored", MS::InputType::Double, "Colored", MS::Format::Decimal},
+      {"plain", MS::InputType::Double, "Plain", MS::Format::Decimal}};
+  static constexpr MS::GraphField GraphFields[] = {
+      {"colored", MS::GraphType::Bar, mozilla::Some(MS::GraphColor::Ink)},
+      {"plain", MS::GraphType::FilledLine}};
+};
+
+// User-defined marker type with different properties, and fake schema.
+struct GtestMarker : public mozilla::BaseMarkerType<GtestMarker> {
+  static constexpr const char* Name = "markers-gtest";
+  using MS = mozilla::MarkerSchema;
+  static constexpr MS::Location Locations[] = {
+      MS::Location::MarkerChart,      MS::Location::MarkerTable,
+      MS::Location::TimelineOverview, MS::Location::TimelineMemory,
+      MS::Location::TimelineIPC,      MS::Location::TimelineFileIO,
+      MS::Location::StackChart};
+  static constexpr const char* ChartLabel = "chart label";
+  static constexpr const char* TooltipLabel = "tooltip label";
+  static constexpr const char* TableLabel = "table label";
+  static constexpr const char* ColorField = "color";
+  static constexpr const char* Description = "static value";
+  // Note: This is a test schema that is not intended to actually match the
+  // StreamJSONMarkerData data below! Instead we only test that it outputs the
+  // expected JSON at the end.
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"key with url", MS::InputType::CString, nullptr, MS::Format::Url},
+      {"key with label filePath", MS::InputType::CString, "label filePath",
+       MS::Format::FilePath},
+      {"key with string", MS::InputType::CString, nullptr, MS::Format::String},
+      {"key with label duration", MS::InputType::TimeDuration, "label duration",
+       MS::Format::Duration},
+      {"key with time", MS::InputType::TimeStamp, nullptr, MS::Format::Time},
+      {"key with seconds", MS::InputType::Uint64, nullptr, MS::Format::Seconds},
+      {"key with milliseconds", MS::InputType::Uint64, nullptr,
+       MS::Format::Milliseconds},
+      {"key with microseconds", MS::InputType::Uint64, nullptr,
+       MS::Format::Microseconds},
+      {"key with nanoseconds", MS::InputType::Uint64, nullptr,
+       MS::Format::Nanoseconds},
+      {"key with bytes", MS::InputType::Uint64, nullptr, MS::Format::Bytes},
+      {"key with percentage", MS::InputType::Double, nullptr,
+       MS::Format::Percentage},
+      {"key with integer", MS::InputType::Uint64, nullptr, MS::Format::Integer},
+      {"key with decimal", MS::InputType::Double, nullptr, MS::Format::Decimal},
+      {"key with hexadecimal", MS::InputType::Uint64, nullptr,
+       MS::Format::Hexadecimal},
+      {"key with unique string", MS::InputType::CString, nullptr,
+       MS::Format::UniqueString},
+      {"key with sanitized string", MS::InputType::CString, nullptr,
+       MS::Format::SanitizedString},
+      {"key with label hidden", MS::InputType::CString, "label",
+       MS::Format::String, MS::PayloadFlags::Hidden},
+      {"key hidden", MS::InputType::CString, nullptr, MS::Format::String,
+       MS::PayloadFlags::Hidden},
+      {"color", MS::InputType::CString, nullptr, MS::Format::String,
+       MS::PayloadFlags::Hidden}};
+  static void StreamJSONMarkerData(
+      mozilla::baseprofiler::SpliceableJSONWriter& aWriter, int aInt,
+      double aDouble, const mozilla::ProfilerString8View& aText,
+      const mozilla::ProfilerString8View& aUniqueText,
+      const mozilla::TimeStamp& aTime) {
+    aWriter.NullProperty("null");
+    aWriter.BoolProperty("bool-false", false);
+    aWriter.BoolProperty("bool-true", true);
+    aWriter.IntProperty("int", aInt);
+    aWriter.DoubleProperty("double", aDouble);
+    aWriter.StringProperty("text", aText);
+    aWriter.UniqueStringProperty("unique text", aUniqueText);
+    aWriter.UniqueStringProperty("unique text again", aUniqueText);
+    aWriter.TimeProperty("time", aTime);
+    aWriter.StringProperty("color", "green");
+  }
+  // The fake schema cannot be filled from the arguments, so nothing is output
+  // to ETW.
+  static void TranslateMarkerInputToSchema(
+      void* aContext, int aInt, double aDouble,
+      const mozilla::ProfilerString8View& aText,
+      const mozilla::ProfilerString8View& aUniqueText,
+      const mozilla::TimeStamp& aTime) {}
+};
+
+// User-defined marker type with no data, special frontend schema.
+struct GtestSpecialMarker : public mozilla::BaseMarkerType<GtestSpecialMarker> {
+  static constexpr const char* Name = "markers-gtest-special";
+  static constexpr bool UseSpecialFrontendLocation = true;
+};
+
+// User-defined marker type that is never used, so it shouldn't appear in the
+// output.
+struct GtestUnusedMarker : public mozilla::BaseMarkerType<GtestUnusedMarker> {
+  static constexpr const char* Name = "markers-gtest-unused";
+  static constexpr bool UseSpecialFrontendLocation = true;
+};
+
 TEST(GeckoProfiler, Markers)
 {
   uint32_t features = ProfilerFeature::StackWalk;
@@ -2304,7 +2502,7 @@ TEST(GeckoProfiler, Markers)
                   MarkerStack::TakeBacktrace(std::move(bt)), Tracing, "B");
 
   {
-    AUTO_PROFILER_TRACING_MARKER("C", "auto tracing", OTHER);
+    AUTO_PROFILER_MARKER("auto tracing", OTHER);
   }
 
   {
@@ -2385,101 +2583,38 @@ TEST(GeckoProfiler, Markers)
       MarkerTiming::Interval(ts1, ts2), geckoprofiler::markers::TextMarker{},
       "First Marker"));
 
-  // User-defined marker type with different properties, and fake schema.
-  struct GtestMarker {
-    static constexpr Span<const char> MarkerTypeName() {
-      return MakeStringSpan("markers-gtest");
-    }
-    static void StreamJSONMarkerData(
-        mozilla::baseprofiler::SpliceableJSONWriter& aWriter, int aInt,
-        double aDouble, const mozilla::ProfilerString8View& aText,
-        const mozilla::ProfilerString8View& aUniqueText,
-        const mozilla::TimeStamp& aTime) {
-      aWriter.NullProperty("null");
-      aWriter.BoolProperty("bool-false", false);
-      aWriter.BoolProperty("bool-true", true);
-      aWriter.IntProperty("int", aInt);
-      aWriter.DoubleProperty("double", aDouble);
-      aWriter.StringProperty("text", aText);
-      aWriter.UniqueStringProperty("unique text", aUniqueText);
-      aWriter.UniqueStringProperty("unique text again", aUniqueText);
-      aWriter.TimeProperty("time", aTime);
-    }
-    static mozilla::MarkerSchema MarkerTypeDisplay() {
-      // Note: This is an test function that is not intended to actually output
-      // that correctly matches StreamJSONMarkerData data above! Instead we only
-      // test that it outputs the expected JSON at the end.
-      using MS = mozilla::MarkerSchema;
-      MS schema{MS::Location::MarkerChart,      MS::Location::MarkerTable,
-                MS::Location::TimelineOverview, MS::Location::TimelineMemory,
-                MS::Location::TimelineIPC,      MS::Location::TimelineFileIO,
-                MS::Location::StackChart};
-      // All label functions.
-      schema.SetChartLabel("chart label");
-      schema.SetTooltipLabel("tooltip label");
-      schema.SetTableLabel("table label");
-      // All data functions, all formats, all "searchable" values.
-      schema.AddKeyFormat("key with url", MS::Format::Url);
-      schema.AddKeyLabelFormat("key with label filePath", "label filePath",
-                               MS::Format::FilePath);
-      schema.AddKeyFormatSearchable("key with string not-searchable",
-                                    MS::Format::String,
-                                    MS::Searchable::NotSearchable);
-      schema.AddKeyLabelFormatSearchable("key with label duration searchable",
-                                         "label duration", MS::Format::Duration,
-                                         MS::Searchable::Searchable);
-      schema.AddKeyFormat("key with time", MS::Format::Time);
-      schema.AddKeyFormat("key with seconds", MS::Format::Seconds);
-      schema.AddKeyFormat("key with milliseconds", MS::Format::Milliseconds);
-      schema.AddKeyFormat("key with microseconds", MS::Format::Microseconds);
-      schema.AddKeyFormat("key with nanoseconds", MS::Format::Nanoseconds);
-      schema.AddKeyFormat("key with bytes", MS::Format::Bytes);
-      schema.AddKeyFormat("key with percentage", MS::Format::Percentage);
-      schema.AddKeyFormat("key with integer", MS::Format::Integer);
-      schema.AddKeyFormat("key with decimal", MS::Format::Decimal);
-      schema.AddStaticLabelValue("static label", "static value");
-      schema.AddKeyFormat("key with unique string", MS::Format::UniqueString);
-      schema.AddKeyFormatSearchable("key with sanitized string",
-                                    MS::Format::SanitizedString,
-                                    MS::Searchable::Searchable);
-      return schema;
-    }
-  };
   EXPECT_TRUE(profiler_add_marker_impl(
       "Gtest custom marker", geckoprofiler::category::OTHER,
       MarkerTiming::Interval(ts1, ts2), GtestMarker{}, 42, 43.0, "gtest text",
       "gtest unique text", ts1));
 
-  // User-defined marker type with no data, special frontend schema.
-  struct GtestSpecialMarker {
-    static constexpr Span<const char> MarkerTypeName() {
-      return MakeStringSpan("markers-gtest-special");
-    }
-    static void StreamJSONMarkerData(
-        mozilla::baseprofiler::SpliceableJSONWriter& aWriter) {}
-    static mozilla::MarkerSchema MarkerTypeDisplay() {
-      return mozilla::MarkerSchema::SpecialFrontendLocation{};
-    }
-  };
   EXPECT_TRUE(profiler_add_marker_impl("Gtest special marker",
                                        geckoprofiler::category::OTHER, {},
                                        GtestSpecialMarker{}));
 
-  // User-defined marker type that is never used, so it shouldn't appear in the
-  // output.
-  struct GtestUnusedMarker {
-    static constexpr Span<const char> MarkerTypeName() {
-      return MakeStringSpan("markers-gtest-unused");
-    }
-    static void StreamJSONMarkerData(
-        mozilla::baseprofiler::SpliceableJSONWriter& aWriter) {}
-    static mozilla::MarkerSchema MarkerTypeDisplay() {
-      return mozilla::MarkerSchema::SpecialFrontendLocation{};
-    }
-  };
+  EXPECT_TRUE(profiler_add_marker_impl(
+      "Gtest base marker type unique string", geckoprofiler::category::OTHER,
+      {}, GtestBaseMarkerTypeUniqueString{}, "gtest unique field value",
+      "gtest plain field value"));
 
-  // Make sure the compiler doesn't complain about this unused struct.
-  mozilla::Unused << GtestUnusedMarker{};
+  EXPECT_TRUE(profiler_add_marker_impl("Gtest base marker type graphs",
+                                       geckoprofiler::category::OTHER, {},
+                                       GtestBaseMarkerTypeGraphs{}, 1.5, 2.5));
+
+  // Test PROFILER_MARKER_SIMPLE_PAYLOAD with various data types.
+  int testInt = 42;
+  double testDouble = 3.14;
+  bool testBool = true;
+  nsCString testString("test_string");
+
+  PROFILER_MARKER_SIMPLE_PAYLOAD("SimplePayload with int", OTHER, testInt);
+  PROFILER_MARKER_SIMPLE_PAYLOAD("SimplePayload with double", OTHER,
+                                 testDouble);
+  PROFILER_MARKER_SIMPLE_PAYLOAD("SimplePayload with bool", OTHER, testBool);
+  PROFILER_MARKER_SIMPLE_PAYLOAD("SimplePayload with string", OTHER,
+                                 testString);
+  PROFILER_MARKER_SIMPLE_PAYLOAD("SimplePayload with multiple", OTHER, testInt,
+                                 testDouble, testBool);
 
   // Other markers in alphabetical order of payload class names.
 
@@ -2487,6 +2622,8 @@ TEST(GeckoProfiler, Markers)
   ASSERT_TRUE(
       NS_SUCCEEDED(NS_NewURI(getter_AddRefs(uri), "http://mozilla.org/"_ns)));
   // The marker name will be "Load <aChannelId>: <aURI>".
+  RefPtr<MockClassOfService> classOfService1 =
+      new MockClassOfService(nsIClassOfService::Leader);
   profiler_add_network_marker(
       /* nsIURI* aURI */ uri,
       /* const nsACString& aRequestMethod */ "GET"_ns,
@@ -2496,11 +2633,11 @@ TEST(GeckoProfiler, Markers)
       /* mozilla::TimeStamp aStart */ ts1,
       /* mozilla::TimeStamp aEnd */ ts2,
       /* int64_t aCount */ 56,
-      /* mozilla::net::CacheDisposition aCacheDisposition */
-      net::kCacheHit,
+      /* nsICacheInfoChannel::CacheDisposition aCacheDisposition */
+      nsICacheInfoChannel::kCacheHit,
       /* uint64_t aInnerWindowID */ 78,
       /* bool aIsPrivateBrowsing */ false,
-      /* unsigned long aClassOfServiceFlag */ nsIClassOfService::Leader,
+      /* nsIClassOfService* aClassOfService */ classOfService1,
       /* nsresult aRequestStatus */ NS_OK
       /* const mozilla::net::TimingStruct* aTimings = nullptr */
       /* mozilla::UniquePtr<mozilla::ProfileChunkedBuffer> aSource =
@@ -2514,6 +2651,8 @@ TEST(GeckoProfiler, Markers)
       /* uint64_t aRedirectChannelId = 0 */
   );
 
+  RefPtr<MockClassOfService> classOfService2 =
+      new MockClassOfService(nsIClassOfService::Follower);
   profiler_add_network_marker(
       /* nsIURI* aURI */ uri,
       /* const nsACString& aRequestMethod */ "GET"_ns,
@@ -2523,12 +2662,14 @@ TEST(GeckoProfiler, Markers)
       /* mozilla::TimeStamp aStart */ ts1,
       /* mozilla::TimeStamp aEnd */ ts2,
       /* int64_t aCount */ 56,
-      /* mozilla::net::CacheDisposition aCacheDisposition */
-      net::kCacheUnresolved,
+      /* nsICacheInfoChannel::CacheDisposition aCacheDisposition */
+      nsICacheInfoChannel::kCacheUnresolved,
       /* uint64_t aInnerWindowID */ 78,
       /* bool aIsPrivateBrowsing */ false,
-      /* unsigned long aClassOfServiceFlag */ nsIClassOfService::Follower,
+      /* nsIClassOfService* aClassOfService */ classOfService2,
       /* nsresult aRequestStatus */ NS_BINDING_ABORTED,
+      /* const nsACString& aSecPurpose */ ""_ns,
+      /* bool aActivatedFromPrefetch */ false,
       /* const mozilla::net::TimingStruct* aTimings = nullptr */ nullptr,
       /* mozilla::UniquePtr<mozilla::ProfileChunkedBuffer> aSource =
          nullptr */
@@ -2547,6 +2688,8 @@ TEST(GeckoProfiler, Markers)
   nsCOMPtr<nsIURI> redirectURI;
   ASSERT_TRUE(NS_SUCCEEDED(
       NS_NewURI(getter_AddRefs(redirectURI), "http://example.com/"_ns)));
+  RefPtr<MockClassOfService> classOfService3 =
+      new MockClassOfService(nsIClassOfService::Speculative);
   profiler_add_network_marker(
       /* nsIURI* aURI */ uri,
       /* const nsACString& aRequestMethod */ "GET"_ns,
@@ -2556,12 +2699,14 @@ TEST(GeckoProfiler, Markers)
       /* mozilla::TimeStamp aStart */ ts1,
       /* mozilla::TimeStamp aEnd */ ts2,
       /* int64_t aCount */ 56,
-      /* mozilla::net::CacheDisposition aCacheDisposition */
-      net::kCacheUnresolved,
+      /* nsICacheInfoChannel::CacheDisposition aCacheDisposition */
+      nsICacheInfoChannel::kCacheUnresolved,
       /* uint64_t aInnerWindowID */ 78,
       /* bool aIsPrivateBrowsing */ false,
-      /* unsigned long aClassOfServiceFlag */ nsIClassOfService::Speculative,
+      /* nsIClassOfService* aClassOfService */ classOfService3,
       /* nsresult aRequestStatus */ NS_ERROR_UNEXPECTED,
+      /* const nsACString& aSecPurpose */ ""_ns,
+      /* bool aActivatedFromPrefetch */ false,
       /* const mozilla::net::TimingStruct* aTimings = nullptr */ nullptr,
       /* mozilla::UniquePtr<mozilla::ProfileChunkedBuffer> aSource =
          nullptr */
@@ -2579,6 +2724,8 @@ TEST(GeckoProfiler, Markers)
       nsIChannelEventSink::REDIRECT_TEMPORARY,
       /* uint64_t aRedirectChannelId = 0 */ 103);
 
+  RefPtr<MockClassOfService> classOfService4 =
+      new MockClassOfService(nsIClassOfService::Background);
   profiler_add_network_marker(
       /* nsIURI* aURI */ uri,
       /* const nsACString& aRequestMethod */ "GET"_ns,
@@ -2588,12 +2735,14 @@ TEST(GeckoProfiler, Markers)
       /* mozilla::TimeStamp aStart */ ts1,
       /* mozilla::TimeStamp aEnd */ ts2,
       /* int64_t aCount */ 56,
-      /* mozilla::net::CacheDisposition aCacheDisposition */
-      net::kCacheUnresolved,
+      /* nsICacheInfoChannel::CacheDisposition aCacheDisposition */
+      nsICacheInfoChannel::kCacheUnresolved,
       /* uint64_t aInnerWindowID */ 78,
       /* bool aIsPrivateBrowsing */ false,
-      /* unsigned long aClassOfServiceFlag */ nsIClassOfService::Background,
+      /* nsIClassOfService* aClassOfService */ classOfService4,
       /* nsresult aRequestStatus */ NS_ERROR_DOCSHELL_DYING,
+      /* const nsACString& aSecPurpose */ ""_ns,
+      /* bool aActivatedFromPrefetch */ false,
       /* const mozilla::net::TimingStruct* aTimings = nullptr */ nullptr,
       /* mozilla::UniquePtr<mozilla::ProfileChunkedBuffer> aSource =
          nullptr */
@@ -2611,6 +2760,8 @@ TEST(GeckoProfiler, Markers)
       nsIChannelEventSink::REDIRECT_PERMANENT,
       /* uint64_t aRedirectChannelId = 0 */ 104);
 
+  RefPtr<MockClassOfService> classOfService5 = new MockClassOfService(
+      nsIClassOfService::Unblocked | nsIClassOfService::TailForbidden);
   profiler_add_network_marker(
       /* nsIURI* aURI */ uri,
       /* const nsACString& aRequestMethod */ "GET"_ns,
@@ -2620,13 +2771,14 @@ TEST(GeckoProfiler, Markers)
       /* mozilla::TimeStamp aStart */ ts1,
       /* mozilla::TimeStamp aEnd */ ts2,
       /* int64_t aCount */ 56,
-      /* mozilla::net::CacheDisposition aCacheDisposition */
-      net::kCacheUnresolved,
+      /* nsICacheInfoChannel::CacheDisposition aCacheDisposition */
+      nsICacheInfoChannel::kCacheUnresolved,
       /* uint64_t aInnerWindowID */ 78,
       /* bool aIsPrivateBrowsing */ false,
-      /* unsigned long aClassOfServiceFlag */ nsIClassOfService::Unblocked |
-          nsIClassOfService::TailForbidden,
+      /* nsIClassOfService* aClassOfService */ classOfService5,
       /* nsresult aRequestStatus */ NS_ERROR_DOM_CORP_FAILED,
+      /* const nsACString& aSecPurpose */ ""_ns,
+      /* bool aActivatedFromPrefetch */ false,
       /* const mozilla::net::TimingStruct* aTimings = nullptr */ nullptr,
       /* mozilla::UniquePtr<mozilla::ProfileChunkedBuffer> aSource =
          nullptr */
@@ -2643,6 +2795,9 @@ TEST(GeckoProfiler, Markers)
       /* uint32_t aRedirectFlags = 0 */ nsIChannelEventSink::REDIRECT_INTERNAL,
       /* uint64_t aRedirectChannelId = 0 */ 105);
 
+  RefPtr<MockClassOfService> classOfService6 = new MockClassOfService(
+      nsIClassOfService::Unblocked | nsIClassOfService::Throttleable |
+      nsIClassOfService::TailForbidden);
   profiler_add_network_marker(
       /* nsIURI* aURI */ uri,
       /* const nsACString& aRequestMethod */ "GET"_ns,
@@ -2652,13 +2807,14 @@ TEST(GeckoProfiler, Markers)
       /* mozilla::TimeStamp aStart */ ts1,
       /* mozilla::TimeStamp aEnd */ ts2,
       /* int64_t aCount */ 56,
-      /* mozilla::net::CacheDisposition aCacheDisposition */
-      net::kCacheUnresolved,
+      /* nsICacheInfoChannel::CacheDisposition aCacheDisposition */
+      nsICacheInfoChannel::kCacheUnresolved,
       /* uint64_t aInnerWindowID */ 78,
       /* bool aIsPrivateBrowsing */ false,
-      /* unsigned long aClassOfServiceFlag */ nsIClassOfService::Unblocked |
-          nsIClassOfService::Throttleable | nsIClassOfService::TailForbidden,
+      /* nsIClassOfService* aClassOfService */ classOfService6,
       /* nsresult aRequestStatus */ NS_ERROR_BLOCKED_BY_POLICY,
+      /* const nsACString& aSecPurpose */ ""_ns,
+      /* bool aActivatedFromPrefetch */ false,
       /* const mozilla::net::TimingStruct* aTimings = nullptr */ nullptr,
       /* mozilla::UniquePtr<mozilla::ProfileChunkedBuffer> aSource =
          nullptr */
@@ -2675,6 +2831,9 @@ TEST(GeckoProfiler, Markers)
       /* uint32_t aRedirectFlags = 0 */ nsIChannelEventSink::REDIRECT_INTERNAL |
           nsIChannelEventSink::REDIRECT_STS_UPGRADE,
       /* uint64_t aRedirectChannelId = 0 */ 106);
+
+  RefPtr<MockClassOfService> classOfService7 =
+      new MockClassOfService(nsIClassOfService::Tail);
   profiler_add_network_marker(
       /* nsIURI* aURI */ uri,
       /* const nsACString& aRequestMethod */ "GET"_ns,
@@ -2684,11 +2843,11 @@ TEST(GeckoProfiler, Markers)
       /* mozilla::TimeStamp aStart */ ts1,
       /* mozilla::TimeStamp aEnd */ ts2,
       /* int64_t aCount */ 56,
-      /* mozilla::net::CacheDisposition aCacheDisposition */
-      net::kCacheUnresolved,
+      /* nsICacheInfoChannel::CacheDisposition aCacheDisposition */
+      nsICacheInfoChannel::kCacheUnresolved,
       /* uint64_t aInnerWindowID */ 78,
       /* bool aIsPrivateBrowsing */ true,
-      /* unsigned long aClassOfServiceFlag */ nsIClassOfService::Tail,
+      /* nsIClassOfService* aClassOfService */ classOfService7,
       /* nsresult aRequestStatus */ NS_BINDING_REDIRECTED
       /* const mozilla::net::TimingStruct* aTimings = nullptr */
       /* mozilla::UniquePtr<mozilla::ProfileChunkedBuffer> aSource =
@@ -2701,6 +2860,67 @@ TEST(GeckoProfiler, Markers)
       /* nsIURI* aRedirectURI = nullptr */
       /* uint64_t aRedirectChannelId = 0 */
   );
+
+  // Test network marker with FetchPriority to verify priorityHeader
+  RefPtr<MockClassOfService> classOfService8 =
+      new MockClassOfService(nsIClassOfService::Leader, /* incremental */ true,
+                             nsIClassOfService::FETCHPRIORITY_HIGH);
+  profiler_add_network_marker(
+      /* nsIURI* aURI */ uri,
+      /* const nsACString& aRequestMethod */ "GET"_ns,
+      /* int32_t aPriority */ 34,
+      /* uint64_t aChannelId */ 8,
+      /* NetworkLoadType aType */ net::NetworkLoadType::LOAD_START,
+      /* mozilla::TimeStamp aStart */ ts1,
+      /* mozilla::TimeStamp aEnd */ ts2,
+      /* int64_t aCount */ 56,
+      /* nsICacheInfoChannel::CacheDisposition aCacheDisposition */
+      nsICacheInfoChannel::kCacheHit,
+      /* uint64_t aInnerWindowID */ 78,
+      /* bool aIsPrivateBrowsing */ false,
+      /* nsIClassOfService* aClassOfService */ classOfService8,
+      /* nsresult aRequestStatus */ NS_OK);
+
+  // The speculative fetch, and then the navigation that consumes it. These
+  // two fields are mutually exclusive in production, so each gets its own
+  // marker.
+  RefPtr<MockClassOfService> classOfService9 =
+      new MockClassOfService(nsIClassOfService::Leader);
+  profiler_add_network_marker(
+      /* nsIURI* aURI */ uri,
+      /* const nsACString& aRequestMethod */ "GET"_ns,
+      /* int32_t aPriority */ 34,
+      /* uint64_t aChannelId */ 9,
+      /* NetworkLoadType aType */ net::NetworkLoadType::LOAD_START,
+      /* mozilla::TimeStamp aStart */ ts1,
+      /* mozilla::TimeStamp aEnd */ ts2,
+      /* int64_t aCount */ 56,
+      /* nsICacheInfoChannel::CacheDisposition aCacheDisposition */
+      nsICacheInfoChannel::kCacheHit,
+      /* uint64_t aInnerWindowID */ 78,
+      /* bool aIsPrivateBrowsing */ false,
+      /* nsIClassOfService* aClassOfService */ classOfService9,
+      /* nsresult aRequestStatus */ NS_OK,
+      /* const nsACString& aSecPurpose */ "prefetch;anonymous-client-ip"_ns,
+      /* bool aActivatedFromPrefetch */ false);
+
+  profiler_add_network_marker(
+      /* nsIURI* aURI */ uri,
+      /* const nsACString& aRequestMethod */ "GET"_ns,
+      /* int32_t aPriority */ 34,
+      /* uint64_t aChannelId */ 10,
+      /* NetworkLoadType aType */ net::NetworkLoadType::LOAD_START,
+      /* mozilla::TimeStamp aStart */ ts1,
+      /* mozilla::TimeStamp aEnd */ ts2,
+      /* int64_t aCount */ 56,
+      /* nsICacheInfoChannel::CacheDisposition aCacheDisposition */
+      nsICacheInfoChannel::kCacheHit,
+      /* uint64_t aInnerWindowID */ 78,
+      /* bool aIsPrivateBrowsing */ false,
+      /* nsIClassOfService* aClassOfService */ classOfService9,
+      /* nsresult aRequestStatus */ NS_OK,
+      /* const nsACString& aSecPurpose */ ""_ns,
+      /* bool aActivatedFromPrefetch */ true);
 
   EXPECT_TRUE(profiler_add_marker_impl(
       "Text in main thread with stack", geckoprofiler::category::OTHER,
@@ -2789,6 +3009,13 @@ TEST(GeckoProfiler, Markers)
     S_FirstMarker,
     S_CustomMarker,
     S_SpecialMarker,
+    S_BaseMarkerTypeUniqueString,
+    S_BaseMarkerTypeGraphs,
+    S_SimplePayload_int,
+    S_SimplePayload_double,
+    S_SimplePayload_bool,
+    S_SimplePayload_string,
+    S_SimplePayload_multiple,
     S_NetworkMarkerPayload_start,
     S_NetworkMarkerPayload_stop,
     S_NetworkMarkerPayload_redirect_temporary,
@@ -2796,6 +3023,9 @@ TEST(GeckoProfiler, Markers)
     S_NetworkMarkerPayload_redirect_internal,
     S_NetworkMarkerPayload_redirect_internal_sts,
     S_NetworkMarkerPayload_private_browsing,
+    S_NetworkMarkerPayload_priorityHeader,
+    S_NetworkMarkerPayload_prefetch,
+    S_NetworkMarkerPayload_prefetchActivation,
 
     S_TextWithStack,
     S_TextToMTWithStack,
@@ -2896,39 +3126,39 @@ TEST(GeckoProfiler, Markers)
               EXPECT_TRUE(marker[PHASE].asUInt() < 4);
               EXPECT_TRUE(marker[CATEGORY].isUInt());
 
-#  define EXPECT_TIMING_INSTANT                  \
-    EXPECT_NE(marker[START_TIME].asDouble(), 0); \
-    EXPECT_EQ(marker[END_TIME].asDouble(), 0);   \
-    EXPECT_EQ(marker[PHASE].asUInt(), PHASE_INSTANT);
-#  define EXPECT_TIMING_INTERVAL                 \
-    EXPECT_NE(marker[START_TIME].asDouble(), 0); \
-    EXPECT_NE(marker[END_TIME].asDouble(), 0);   \
-    EXPECT_EQ(marker[PHASE].asUInt(), PHASE_INTERVAL);
-#  define EXPECT_TIMING_START                    \
-    EXPECT_NE(marker[START_TIME].asDouble(), 0); \
-    EXPECT_EQ(marker[END_TIME].asDouble(), 0);   \
-    EXPECT_EQ(marker[PHASE].asUInt(), PHASE_START);
-#  define EXPECT_TIMING_END                      \
-    EXPECT_EQ(marker[START_TIME].asDouble(), 0); \
-    EXPECT_NE(marker[END_TIME].asDouble(), 0);   \
-    EXPECT_EQ(marker[PHASE].asUInt(), PHASE_END);
+#define EXPECT_TIMING_INSTANT                  \
+  EXPECT_NE(marker[START_TIME].asDouble(), 0); \
+  EXPECT_EQ(marker[END_TIME].asDouble(), 0);   \
+  EXPECT_EQ(marker[PHASE].asUInt(), PHASE_INSTANT);
+#define EXPECT_TIMING_INTERVAL                 \
+  EXPECT_NE(marker[START_TIME].asDouble(), 0); \
+  EXPECT_NE(marker[END_TIME].asDouble(), 0);   \
+  EXPECT_EQ(marker[PHASE].asUInt(), PHASE_INTERVAL);
+#define EXPECT_TIMING_START                    \
+  EXPECT_NE(marker[START_TIME].asDouble(), 0); \
+  EXPECT_EQ(marker[END_TIME].asDouble(), 0);   \
+  EXPECT_EQ(marker[PHASE].asUInt(), PHASE_START);
+#define EXPECT_TIMING_END                      \
+  EXPECT_EQ(marker[START_TIME].asDouble(), 0); \
+  EXPECT_NE(marker[END_TIME].asDouble(), 0);   \
+  EXPECT_EQ(marker[PHASE].asUInt(), PHASE_END);
 
-#  define EXPECT_TIMING_INSTANT_AT(t)            \
-    EXPECT_EQ(marker[START_TIME].asDouble(), t); \
-    EXPECT_EQ(marker[END_TIME].asDouble(), 0);   \
-    EXPECT_EQ(marker[PHASE].asUInt(), PHASE_INSTANT);
-#  define EXPECT_TIMING_INTERVAL_AT(start, end)      \
-    EXPECT_EQ(marker[START_TIME].asDouble(), start); \
-    EXPECT_EQ(marker[END_TIME].asDouble(), end);     \
-    EXPECT_EQ(marker[PHASE].asUInt(), PHASE_INTERVAL);
-#  define EXPECT_TIMING_START_AT(start)              \
-    EXPECT_EQ(marker[START_TIME].asDouble(), start); \
-    EXPECT_EQ(marker[END_TIME].asDouble(), 0);       \
-    EXPECT_EQ(marker[PHASE].asUInt(), PHASE_START);
-#  define EXPECT_TIMING_END_AT(end)              \
-    EXPECT_EQ(marker[START_TIME].asDouble(), 0); \
-    EXPECT_EQ(marker[END_TIME].asDouble(), end); \
-    EXPECT_EQ(marker[PHASE].asUInt(), PHASE_END);
+#define EXPECT_TIMING_INSTANT_AT(t)            \
+  EXPECT_EQ(marker[START_TIME].asDouble(), t); \
+  EXPECT_EQ(marker[END_TIME].asDouble(), 0);   \
+  EXPECT_EQ(marker[PHASE].asUInt(), PHASE_INSTANT);
+#define EXPECT_TIMING_INTERVAL_AT(start, end)      \
+  EXPECT_EQ(marker[START_TIME].asDouble(), start); \
+  EXPECT_EQ(marker[END_TIME].asDouble(), end);     \
+  EXPECT_EQ(marker[PHASE].asUInt(), PHASE_INTERVAL);
+#define EXPECT_TIMING_START_AT(start)              \
+  EXPECT_EQ(marker[START_TIME].asDouble(), start); \
+  EXPECT_EQ(marker[END_TIME].asDouble(), 0);       \
+  EXPECT_EQ(marker[PHASE].asUInt(), PHASE_START);
+#define EXPECT_TIMING_END_AT(end)              \
+  EXPECT_EQ(marker[START_TIME].asDouble(), 0); \
+  EXPECT_EQ(marker[END_TIME].asDouble(), end); \
+  EXPECT_EQ(marker[PHASE].asUInt(), PHASE_END);
 
               if (marker.size() == SIZE_WITHOUT_PAYLOAD) {
                 // root.threads[0].markers.data[i] is an array with 5 elements,
@@ -2948,12 +3178,12 @@ TEST(GeckoProfiler, Markers)
                   EXPECT_EQ(state, S_Markers2DefaultEmptyOptions);
                   state = State(S_Markers2DefaultEmptyOptions + 1);
 // TODO: Re-enable this when bug 1646714 lands, and check for stack.
-#  if 0
+#if 0
               } else if (nameString ==
                          "default-templated markers 2.0 with option") {
                 EXPECT_EQ(state, S_Markers2DefaultWithOptions);
                 state = State(S_Markers2DefaultWithOptions + 1);
-#  endif
+#endif
                 } else if (nameString ==
                            "explicitly-default-templated markers 2.0 with "
                            "empty "
@@ -3016,14 +3246,12 @@ TEST(GeckoProfiler, Markers)
                       state = State(S_tracing_auto_tracing_start + 1);
                       EXPECT_EQ(typeString, "StackMarker");
                       EXPECT_TIMING_START;
-                      EXPECT_EQ_JSON(payload["category"], String, "C");
                       EXPECT_TRUE(payload["stack"].isNull());
                       break;
                     case S_tracing_auto_tracing_end:
                       state = State(S_tracing_auto_tracing_end + 1);
                       EXPECT_EQ(typeString, "StackMarker");
                       EXPECT_TIMING_END;
-                      EXPECT_EQ_JSON(payload["category"], String, "C");
                       ASSERT_TRUE(payload["stack"].isNull());
                       break;
                     default:
@@ -3048,13 +3276,17 @@ TEST(GeckoProfiler, Markers)
                   ts2Double = marker[END_TIME].asDouble();
                   state = State(S_FirstMarker + 1);
                   EXPECT_EQ(typeString, "Text");
-                  EXPECT_EQ_JSON(payload["name"], String, "First Marker");
+                  // The Text marker's "name" field is a unique string.
+                  ASSERT_TRUE(payload["name"].isUInt());
+                  GET_JSON(firstMarkerName,
+                           stringTable[payload["name"].asUInt()], String);
+                  EXPECT_EQ(firstMarkerName.asString(), "First Marker");
 
                 } else if (nameString == "Gtest custom marker") {
                   EXPECT_EQ(state, S_CustomMarker);
                   state = State(S_CustomMarker + 1);
                   EXPECT_EQ(typeString, "markers-gtest");
-                  EXPECT_EQ(payload.size(), 1u + 9u);
+                  EXPECT_EQ(payload.size(), 1u + 10u);
                   EXPECT_TRUE(payload["null"].isNull());
                   EXPECT_EQ_JSON(payload["bool-false"], Bool, false);
                   EXPECT_EQ_JSON(payload["bool-true"], Bool, true);
@@ -3077,6 +3309,65 @@ TEST(GeckoProfiler, Markers)
                   EXPECT_EQ(typeString, "markers-gtest-special");
                   EXPECT_EQ(payload.size(), 1u) << "Only 'type' in the payload";
 
+                } else if (nameString ==
+                           "Gtest base marker type unique string") {
+                  EXPECT_EQ(state, S_BaseMarkerTypeUniqueString);
+                  state = State(S_BaseMarkerTypeUniqueString + 1);
+                  EXPECT_EQ(typeString, "markers-gtest-base-unique-string");
+                  // uniqueField should be stored as a unique-string index.
+                  ASSERT_TRUE(payload["uniqueField"].isUInt());
+                  auto uniqueIndex = payload["uniqueField"].asUInt();
+                  GET_JSON(uniqueValue, stringTable[uniqueIndex], String);
+                  ASSERT_TRUE(uniqueValue.isString());
+                  EXPECT_EQ(uniqueValue.asString(), "gtest unique field value");
+                  // plainField should be stored as a regular string.
+                  EXPECT_EQ_JSON(payload["plainField"], String,
+                                 "gtest plain field value");
+
+                } else if (nameString == "Gtest base marker type graphs") {
+                  EXPECT_EQ(state, S_BaseMarkerTypeGraphs);
+                  state = State(S_BaseMarkerTypeGraphs + 1);
+                  EXPECT_EQ(typeString, "markers-gtest-base-graphs");
+                  EXPECT_EQ_JSON(payload["colored"], Double, 1.5);
+                  EXPECT_EQ_JSON(payload["plain"], Double, 2.5);
+
+                } else if (nameString == "SimplePayload with int") {
+                  EXPECT_EQ(state, S_SimplePayload_int);
+                  state = State(S_SimplePayload_int + 1);
+                  EXPECT_EQ(typeString, "SimplePayload with int");
+                  EXPECT_TIMING_INSTANT;
+                  EXPECT_EQ_JSON(payload["testInt"], Int64, 42);
+
+                } else if (nameString == "SimplePayload with double") {
+                  EXPECT_EQ(state, S_SimplePayload_double);
+                  state = State(S_SimplePayload_double + 1);
+                  EXPECT_EQ(typeString, "SimplePayload with double");
+                  EXPECT_TIMING_INSTANT;
+                  EXPECT_EQ_JSON(payload["testDouble"], Double, 3.14);
+
+                } else if (nameString == "SimplePayload with bool") {
+                  EXPECT_EQ(state, S_SimplePayload_bool);
+                  state = State(S_SimplePayload_bool + 1);
+                  EXPECT_EQ(typeString, "SimplePayload with bool");
+                  EXPECT_TIMING_INSTANT;
+                  EXPECT_EQ_JSON(payload["testBool"], Bool, true);
+
+                } else if (nameString == "SimplePayload with string") {
+                  EXPECT_EQ(state, S_SimplePayload_string);
+                  state = State(S_SimplePayload_string + 1);
+                  EXPECT_EQ(typeString, "SimplePayload with string");
+                  EXPECT_TIMING_INSTANT;
+                  EXPECT_EQ_JSON(payload["testString"], String, "test_string");
+
+                } else if (nameString == "SimplePayload with multiple") {
+                  EXPECT_EQ(state, S_SimplePayload_multiple);
+                  state = State(S_SimplePayload_multiple + 1);
+                  EXPECT_EQ(typeString, "SimplePayload with multiple");
+                  EXPECT_TIMING_INSTANT;
+                  EXPECT_EQ_JSON(payload["testInt"], Int64, 42);
+                  EXPECT_EQ_JSON(payload["testDouble"], Double, 3.14);
+                  EXPECT_EQ_JSON(payload["testBool"], Bool, true);
+
                 } else if (nameString == "Load 1: http://mozilla.org/") {
                   EXPECT_EQ(state, S_NetworkMarkerPayload_start);
                   state = State(S_NetworkMarkerPayload_start + 1);
@@ -3097,6 +3388,8 @@ TEST(GeckoProfiler, Markers)
                   EXPECT_TRUE(payload["isHttpToHttpsRedirect"].isNull());
                   EXPECT_TRUE(payload["redirectId"].isNull());
                   EXPECT_TRUE(payload["contentType"].isNull());
+                  EXPECT_TRUE(payload["secPurpose"].isNull());
+                  EXPECT_TRUE(payload["deliveryType"].isNull());
 
                 } else if (nameString == "Load 2: http://mozilla.org/") {
                   EXPECT_EQ(state, S_NetworkMarkerPayload_stop);
@@ -3241,20 +3534,70 @@ TEST(GeckoProfiler, Markers)
                   EXPECT_TRUE(payload["isHttpToHttpsRedirect"].isNull());
                   EXPECT_TRUE(payload["redirectId"].isNull());
                   EXPECT_TRUE(payload["contentType"].isNull());
+
+                } else if (nameString == "Load 8: http://mozilla.org/") {
+                  EXPECT_EQ(state, S_NetworkMarkerPayload_priorityHeader);
+                  state = State(S_NetworkMarkerPayload_priorityHeader + 1);
+                  EXPECT_EQ(typeString, "Network");
+                  EXPECT_EQ_JSON(payload["startTime"], Double, ts1Double);
+                  EXPECT_EQ_JSON(payload["endTime"], Double, ts2Double);
+                  EXPECT_EQ_JSON(payload["id"], Int64, 8);
+                  EXPECT_EQ_JSON(payload["URI"], String, "http://mozilla.org/");
+                  EXPECT_EQ_JSON(payload["requestMethod"], String, "GET");
+                  EXPECT_EQ_JSON(payload["pri"], Int64, 34);
+                  EXPECT_EQ_JSON(payload["count"], Int64, 56);
+                  EXPECT_EQ_JSON(payload["cache"], String, "Hit");
+                  EXPECT_TRUE(payload["isPrivateBrowsing"].isNull());
+                  EXPECT_EQ_JSON(payload["classOfService"], String, "Leader");
+                  EXPECT_EQ_JSON(payload["requestStatus"], String, "NS_OK");
+                  EXPECT_TRUE(payload["RedirectURI"].isNull());
+                  EXPECT_TRUE(payload["redirectType"].isNull());
+                  EXPECT_TRUE(payload["isHttpToHttpsRedirect"].isNull());
+                  EXPECT_TRUE(payload["redirectId"].isNull());
+                  EXPECT_TRUE(payload["contentType"].isNull());
+                  EXPECT_FALSE(payload["priorityHeader"].isNull());
+                  EXPECT_EQ_JSON(payload["priorityHeader"], String, "u=4, i");
+
+                } else if (nameString == "Load 9: http://mozilla.org/") {
+                  EXPECT_EQ(state, S_NetworkMarkerPayload_prefetch);
+                  state = State(S_NetworkMarkerPayload_prefetch + 1);
+                  EXPECT_EQ(typeString, "Network");
+                  EXPECT_EQ_JSON(payload["id"], Int64, 9);
+                  EXPECT_EQ_JSON(payload["secPurpose"], String,
+                                 "prefetch;anonymous-client-ip");
+                  EXPECT_TRUE(payload["deliveryType"].isNull());
+
+                } else if (nameString == "Load 10: http://mozilla.org/") {
+                  EXPECT_EQ(state, S_NetworkMarkerPayload_prefetchActivation);
+                  state = State(S_NetworkMarkerPayload_prefetchActivation + 1);
+                  EXPECT_EQ(typeString, "Network");
+                  EXPECT_EQ_JSON(payload["id"], Int64, 10);
+                  EXPECT_TRUE(payload["secPurpose"].isNull());
+                  EXPECT_EQ_JSON(payload["deliveryType"], String,
+                                 "navigational-prefetch");
+
                 } else if (nameString == "Text in main thread with stack") {
                   EXPECT_EQ(state, S_TextWithStack);
                   state = State(S_TextWithStack + 1);
                   EXPECT_EQ(typeString, "Text");
                   EXPECT_FALSE(payload["stack"].isNull());
                   EXPECT_TIMING_INTERVAL_AT(ts1Double, ts2Double);
-                  EXPECT_EQ_JSON(payload["name"], String, "");
+                  // The Text marker's "name" field is a unique string.
+                  ASSERT_TRUE(payload["name"].isUInt());
+                  GET_JSON(textName, stringTable[payload["name"].asUInt()],
+                           String);
+                  EXPECT_EQ(textName.asString(), "");
 
                 } else if (nameString == "Text from main thread with stack") {
                   EXPECT_EQ(state, S_TextToMTWithStack);
                   state = State(S_TextToMTWithStack + 1);
                   EXPECT_EQ(typeString, "Text");
                   EXPECT_FALSE(payload["stack"].isNull());
-                  EXPECT_EQ_JSON(payload["name"], String, "");
+                  // The Text marker's "name" field is a unique string.
+                  ASSERT_TRUE(payload["name"].isUInt());
+                  GET_JSON(textName, stringTable[payload["name"].asUInt()],
+                           String);
+                  EXPECT_EQ(textName.asString(), "");
 
                 } else if (nameString ==
                            "Text in registered thread with stack") {
@@ -3267,7 +3610,11 @@ TEST(GeckoProfiler, Markers)
                   state = State(S_RegThread_TextToMTWithStack + 1);
                   EXPECT_EQ(typeString, "Text");
                   EXPECT_FALSE(payload["stack"].isNull());
-                  EXPECT_EQ_JSON(payload["name"], String, "");
+                  // The Text marker's "name" field is a unique string.
+                  ASSERT_TRUE(payload["name"].isUInt());
+                  GET_JSON(textName, stringTable[payload["name"].asUInt()],
+                           String);
+                  EXPECT_EQ(textName.asString(), "");
 
                 } else if (nameString ==
                            "Text in unregistered thread with stack") {
@@ -3280,7 +3627,11 @@ TEST(GeckoProfiler, Markers)
                   state = State(S_UnregThread_TextToMTWithStack + 1);
                   EXPECT_EQ(typeString, "Text");
                   EXPECT_TRUE(payload["stack"].isNull());
-                  EXPECT_EQ_JSON(payload["name"], String, "");
+                  // The Text marker's "name" field is a unique string.
+                  ASSERT_TRUE(payload["name"].isUInt());
+                  GET_JSON(textName, stringTable[payload["name"].asUInt()],
+                           String);
+                  EXPECT_EQ(textName.asString(), "");
                 }
               }  // marker with payload
             }  // for (marker : data)
@@ -3323,7 +3674,7 @@ TEST(GeckoProfiler, Markers)
             ASSERT_TRUE(data[0u].isObject());
             EXPECT_EQ_JSON(data[0u]["key"], String, "name");
             EXPECT_EQ_JSON(data[0u]["label"], String, "Details");
-            EXPECT_EQ_JSON(data[0u]["format"], String, "string");
+            EXPECT_EQ_JSON(data[0u]["format"], String, "unique-string");
 
           } else if (nameString == "NoPayloadUserData") {
             // TODO: Remove this when bug 1646714 lands.
@@ -3443,105 +3794,165 @@ TEST(GeckoProfiler, Markers)
             EXPECT_EQ_JSON(schema["chartLabel"], String, "chart label");
             EXPECT_EQ_JSON(schema["tooltipLabel"], String, "tooltip label");
             EXPECT_EQ_JSON(schema["tableLabel"], String, "table label");
+            EXPECT_EQ_JSON(schema["colorField"], String, "color");
 
-            ASSERT_EQ(data.size(), 16u);
+            ASSERT_EQ(data.size(), 20u);
 
             ASSERT_TRUE(data[0u].isObject());
             EXPECT_EQ_JSON(data[0u]["key"], String, "key with url");
             EXPECT_TRUE(data[0u]["label"].isNull());
             EXPECT_EQ_JSON(data[0u]["format"], String, "url");
-            EXPECT_TRUE(data[0u]["searchable"].isNull());
 
             ASSERT_TRUE(data[1u].isObject());
             EXPECT_EQ_JSON(data[1u]["key"], String, "key with label filePath");
             EXPECT_EQ_JSON(data[1u]["label"], String, "label filePath");
             EXPECT_EQ_JSON(data[1u]["format"], String, "file-path");
-            EXPECT_TRUE(data[1u]["searchable"].isNull());
 
             ASSERT_TRUE(data[2u].isObject());
-            EXPECT_EQ_JSON(data[2u]["key"], String,
-                           "key with string not-searchable");
+            EXPECT_EQ_JSON(data[2u]["key"], String, "key with string");
             EXPECT_TRUE(data[2u]["label"].isNull());
             EXPECT_EQ_JSON(data[2u]["format"], String, "string");
-            EXPECT_EQ_JSON(data[2u]["searchable"], Bool, false);
 
             ASSERT_TRUE(data[3u].isObject());
-            EXPECT_EQ_JSON(data[3u]["key"], String,
-                           "key with label duration searchable");
+            EXPECT_EQ_JSON(data[3u]["key"], String, "key with label duration");
             EXPECT_TRUE(data[3u]["label duration"].isNull());
             EXPECT_EQ_JSON(data[3u]["format"], String, "duration");
-            EXPECT_EQ_JSON(data[3u]["searchable"], Bool, true);
 
             ASSERT_TRUE(data[4u].isObject());
             EXPECT_EQ_JSON(data[4u]["key"], String, "key with time");
             EXPECT_TRUE(data[4u]["label"].isNull());
             EXPECT_EQ_JSON(data[4u]["format"], String, "time");
-            EXPECT_TRUE(data[4u]["searchable"].isNull());
 
             ASSERT_TRUE(data[5u].isObject());
             EXPECT_EQ_JSON(data[5u]["key"], String, "key with seconds");
             EXPECT_TRUE(data[5u]["label"].isNull());
             EXPECT_EQ_JSON(data[5u]["format"], String, "seconds");
-            EXPECT_TRUE(data[5u]["searchable"].isNull());
 
             ASSERT_TRUE(data[6u].isObject());
             EXPECT_EQ_JSON(data[6u]["key"], String, "key with milliseconds");
             EXPECT_TRUE(data[6u]["label"].isNull());
             EXPECT_EQ_JSON(data[6u]["format"], String, "milliseconds");
-            EXPECT_TRUE(data[6u]["searchable"].isNull());
 
             ASSERT_TRUE(data[7u].isObject());
             EXPECT_EQ_JSON(data[7u]["key"], String, "key with microseconds");
             EXPECT_TRUE(data[7u]["label"].isNull());
             EXPECT_EQ_JSON(data[7u]["format"], String, "microseconds");
-            EXPECT_TRUE(data[7u]["searchable"].isNull());
 
             ASSERT_TRUE(data[8u].isObject());
             EXPECT_EQ_JSON(data[8u]["key"], String, "key with nanoseconds");
             EXPECT_TRUE(data[8u]["label"].isNull());
             EXPECT_EQ_JSON(data[8u]["format"], String, "nanoseconds");
-            EXPECT_TRUE(data[8u]["searchable"].isNull());
 
             ASSERT_TRUE(data[9u].isObject());
             EXPECT_EQ_JSON(data[9u]["key"], String, "key with bytes");
             EXPECT_TRUE(data[9u]["label"].isNull());
             EXPECT_EQ_JSON(data[9u]["format"], String, "bytes");
-            EXPECT_TRUE(data[9u]["searchable"].isNull());
 
             ASSERT_TRUE(data[10u].isObject());
             EXPECT_EQ_JSON(data[10u]["key"], String, "key with percentage");
             EXPECT_TRUE(data[10u]["label"].isNull());
             EXPECT_EQ_JSON(data[10u]["format"], String, "percentage");
-            EXPECT_TRUE(data[10u]["searchable"].isNull());
 
             ASSERT_TRUE(data[11u].isObject());
             EXPECT_EQ_JSON(data[11u]["key"], String, "key with integer");
             EXPECT_TRUE(data[11u]["label"].isNull());
             EXPECT_EQ_JSON(data[11u]["format"], String, "integer");
-            EXPECT_TRUE(data[11u]["searchable"].isNull());
 
             ASSERT_TRUE(data[12u].isObject());
             EXPECT_EQ_JSON(data[12u]["key"], String, "key with decimal");
             EXPECT_TRUE(data[12u]["label"].isNull());
             EXPECT_EQ_JSON(data[12u]["format"], String, "decimal");
-            EXPECT_TRUE(data[12u]["searchable"].isNull());
 
             ASSERT_TRUE(data[13u].isObject());
-            EXPECT_EQ_JSON(data[13u]["label"], String, "static label");
-            EXPECT_EQ_JSON(data[13u]["value"], String, "static value");
+            EXPECT_EQ_JSON(data[13u]["key"], String, "key with hexadecimal");
+            EXPECT_TRUE(data[13u]["label"].isNull());
+            EXPECT_EQ_JSON(data[13u]["format"], String, "hexadecimal");
 
             ASSERT_TRUE(data[14u].isObject());
             EXPECT_EQ_JSON(data[14u]["key"], String, "key with unique string");
             EXPECT_TRUE(data[14u]["label"].isNull());
             EXPECT_EQ_JSON(data[14u]["format"], String, "unique-string");
-            EXPECT_TRUE(data[14u]["searchable"].isNull());
 
             ASSERT_TRUE(data[15u].isObject());
             EXPECT_EQ_JSON(data[15u]["key"], String,
                            "key with sanitized string");
             EXPECT_TRUE(data[15u]["label"].isNull());
             EXPECT_EQ_JSON(data[15u]["format"], String, "sanitized-string");
-            EXPECT_EQ_JSON(data[15u]["searchable"], Bool, true);
+
+            ASSERT_TRUE(data[16u].isObject());
+            EXPECT_EQ_JSON(data[16u]["key"], String, "key with label hidden");
+            EXPECT_EQ_JSON(data[16u]["label"], String, "label");
+            EXPECT_EQ_JSON(data[16u]["format"], String, "string");
+            EXPECT_EQ_JSON(data[16u]["hidden"], Bool, true);
+
+            ASSERT_TRUE(data[17u].isObject());
+            EXPECT_EQ_JSON(data[17u]["key"], String, "key hidden");
+            EXPECT_TRUE(data[17u]["label"].isNull());
+            EXPECT_EQ_JSON(data[17u]["format"], String, "string");
+            EXPECT_EQ_JSON(data[17u]["hidden"], Bool, true);
+
+            ASSERT_TRUE(data[18u].isObject());
+            EXPECT_EQ_JSON(data[18u]["key"], String, "color");
+            EXPECT_TRUE(data[18u]["label"].isNull());
+            EXPECT_EQ_JSON(data[18u]["format"], String, "string");
+            EXPECT_EQ_JSON(data[18u]["hidden"], Bool, true);
+
+            ASSERT_TRUE(data[19u].isObject());
+            EXPECT_EQ_JSON(data[19u]["label"], String, "Description");
+            EXPECT_EQ_JSON(data[19u]["value"], String, "static value");
+
+          } else if (nameString == "markers-gtest-base-unique-string") {
+            EXPECT_EQ(display.size(), 2u);
+            EXPECT_EQ(display[0u].asString(), "marker-chart");
+            EXPECT_EQ(display[1u].asString(), "marker-table");
+
+            ASSERT_EQ(data.size(), 2u);
+
+            ASSERT_TRUE(data[0u].isObject());
+            EXPECT_EQ_JSON(data[0u]["key"], String, "uniqueField");
+            EXPECT_EQ_JSON(data[0u]["label"], String, "Unique Field");
+            EXPECT_EQ_JSON(data[0u]["format"], String, "unique-string");
+
+            ASSERT_TRUE(data[1u].isObject());
+            EXPECT_EQ_JSON(data[1u]["key"], String, "plainField");
+            EXPECT_EQ_JSON(data[1u]["label"], String, "Plain Field");
+            EXPECT_EQ_JSON(data[1u]["format"], String, "string");
+
+            EXPECT_TRUE(schema["graphs"].isNull())
+                << "A marker type without GraphFields should not emit a graphs "
+                   "array";
+
+          } else if (nameString == "markers-gtest-base-graphs") {
+            EXPECT_EQ(display.size(), 2u);
+            EXPECT_EQ(display[0u].asString(), "marker-chart");
+            EXPECT_EQ(display[1u].asString(), "marker-table");
+
+            ASSERT_EQ(data.size(), 2u);
+
+            ASSERT_TRUE(data[0u].isObject());
+            EXPECT_EQ_JSON(data[0u]["key"], String, "colored");
+            EXPECT_EQ_JSON(data[0u]["label"], String, "Colored");
+            EXPECT_EQ_JSON(data[0u]["format"], String, "decimal");
+
+            ASSERT_TRUE(data[1u].isObject());
+            EXPECT_EQ_JSON(data[1u]["key"], String, "plain");
+            EXPECT_EQ_JSON(data[1u]["label"], String, "Plain");
+            EXPECT_EQ_JSON(data[1u]["format"], String, "decimal");
+
+            GET_JSON(graphs, schema["graphs"], Array);
+            ASSERT_EQ(graphs.size(), 2u);
+
+            ASSERT_TRUE(graphs[0u].isObject());
+            EXPECT_EQ_JSON(graphs[0u]["key"], String, "colored");
+            EXPECT_EQ_JSON(graphs[0u]["type"], String, "bar");
+            EXPECT_EQ_JSON(graphs[0u]["color"], String, "ink");
+
+            ASSERT_TRUE(graphs[1u].isObject());
+            EXPECT_EQ_JSON(graphs[1u]["key"], String, "plain");
+            EXPECT_EQ_JSON(graphs[1u]["type"], String, "line-filled");
+            EXPECT_TRUE(graphs[1u]["color"].isNull())
+                << "A GraphField left without a color should not emit one";
+
           } else if (nameString == "markers-gtest-special") {
             EXPECT_EQ(display.size(), 0u);
             ASSERT_EQ(data.size(), 0u);
@@ -3617,10 +4028,10 @@ TEST(GeckoProfiler, Markers)
   profiler_stop();
 }
 
-#  define COUNTER_NAME "TestCounter"
-#  define COUNTER_DESCRIPTION "Test of counters in profiles"
-#  define COUNTER_NAME2 "Counter2"
-#  define COUNTER_DESCRIPTION2 "Second Test of counters in profiles"
+#define COUNTER_NAME "TestCounter"
+#define COUNTER_DESCRIPTION "Test of counters in profiles"
+#define COUNTER_NAME2 "Counter2"
+#define COUNTER_DESCRIPTION2 "Second Test of counters in profiles"
 
 PROFILER_DEFINE_COUNT_TOTAL(TestCounter, COUNTER_NAME, COUNTER_DESCRIPTION);
 PROFILER_DEFINE_COUNT_TOTAL(TestCounter2, COUNTER_NAME2, COUNTER_DESCRIPTION2);
@@ -4008,8 +4419,9 @@ class GTestStackCollector final : public ProfilerStackCollector {
 
   virtual void CollectNativeLeafAddr(void* aAddr) { mFrames++; }
   virtual void CollectJitReturnAddr(void* aAddr) { mFrames++; }
-  virtual void CollectWasmFrame(JS::ProfilingCategoryPair aCategory,
-                                const char* aLabel) {
+  virtual void CollectWasmOrSyncJITFrame(JS::ProfilingCategoryPair aCategory,
+                                         const char* aLabel,
+                                         uint32_t aSourceId) {
     mFrames++;
   }
   virtual void CollectProfilingStackFrame(
@@ -4027,7 +4439,7 @@ void DoSuspendAndSample(ProfilerThreadId aTidToSample,
       "GeckoProfiler_SuspendAndSample_Test::TestBody"_ns, aSamplingThread,
       NS_NewRunnableFunction(
           "GeckoProfiler_SuspendAndSample_Test::TestBody", [&]() {
-            uint32_t features = ProfilerFeature::CPUUtilization;
+            uint32_t features = ProfilerFeature::StackWalk;
             GTestStackCollector collector;
             profiler_suspend_and_sample_thread(aTidToSample, features,
                                                collector,
@@ -4134,7 +4546,7 @@ TEST(GeckoProfiler, PostSamplingCallback)
   {
     // No stack sampling -> This label should not appear.
     AUTO_PROFILER_LABEL("PostSamplingCallback completed (no stacks)", OTHER);
-    ASSERT_EQ(WaitForSamplingState(), SamplingState::NoStackSamplingCompleted);
+    ASSERT_EQ(WaitForSamplingState(), SamplingState::SamplingCompleted);
   }
   UniquePtr<char[]> profileNoStacks = profiler_get_profile();
   JSONOutputCheck(profileNoStacks.get(), [](const Json::Value& aRoot) {});
@@ -4235,7 +4647,7 @@ TEST(GeckoProfiler, ProfilingStateCallback)
                  ProfilerFeature::StackWalk | ProfilerFeature::NoStackSampling,
                  filters, std::size(filters), 0);
   CheckStatesOnlyContains(ProfilingState::Started, 1);
-  ASSERT_EQ(WaitForSamplingState(), SamplingState::NoStackSamplingCompleted);
+  ASSERT_EQ(WaitForSamplingState(), SamplingState::SamplingCompleted);
   UniquePtr<char[]> profileNoStacks = profiler_get_profile();
   CheckStatesOnlyContains(ProfilingState::GeneratingProfile, 1);
   JSONOutputCheck(profileNoStacks.get(), [](const Json::Value& aRoot) {});
@@ -4338,17 +4750,17 @@ TEST(GeckoProfiler, BaseProfilerHandOff)
 
 // Bug 1953108: Windows ASan builds frequently time out on
 // GeckoProfiler.FeatureCombinations.
-#  if !defined(XP_WIN) || !defined(MOZ_ASAN)
+#if !defined(XP_WIN) || !defined(MOZ_ASAN)
 
 static std::string_view GetFeatureName(uint32_t feature) {
   switch (feature) {
-#    define FEATURE_NAME(n_, str_, Name_, desc_) \
-      case ProfilerFeature::Name_:               \
-        return str_;
+#  define FEATURE_NAME(n_, str_, Name_, desc_) \
+    case ProfilerFeature::Name_:               \
+      return str_;
 
     PROFILER_FOR_EACH_FEATURE(FEATURE_NAME)
 
-#    undef FEATURE_NAME
+#  undef FEATURE_NAME
 
     default:
       return "?";
@@ -4367,7 +4779,6 @@ TEST(GeckoProfiler, FeatureCombinations)
                             ProfilerFeature::StackWalk,
                             ProfilerFeature::NoStackSampling,
                             ProfilerFeature::NativeAllocations,
-                            ProfilerFeature::CPUUtilization,
                             ProfilerFeature::CPUAllThreads,
                             ProfilerFeature::SamplingAllThreads,
                             ProfilerFeature::MarkersAllThreads,
@@ -4386,12 +4797,7 @@ TEST(GeckoProfiler, FeatureCombinations)
     ASSERT_TRUE(profiler_is_active());
 
     // Write some Gecko Profiler samples.
-    EXPECT_EQ(WaitForSamplingState(),
-              (((features & ProfilerFeature::NoStackSampling) != 0) &&
-               ((features & (ProfilerFeature::CPUUtilization |
-                             ProfilerFeature::CPUAllThreads)) == 0))
-                  ? SamplingState::NoStackSamplingCompleted
-                  : SamplingState::SamplingCompleted);
+    EXPECT_EQ(WaitForSamplingState(), SamplingState::SamplingCompleted);
 
     // Check that the profile looks valid. Note that we don't test feature-
     // specific changes.
@@ -4429,7 +4835,7 @@ TEST(GeckoProfiler, FeatureCombinations)
   }
 }
 
-#  endif  // if !defined(XP_WIN) || !defined(MOZ_ASAN)
+#endif  // if !defined(XP_WIN) || !defined(MOZ_ASAN)
 
 static void CountCPUDeltas(const Json::Value& aThread, size_t& aOutSamplings,
                            uint64_t& aOutCPUDeltaSum) {
@@ -4524,11 +4930,11 @@ TEST(GeckoProfiler, CPUUsage)
 
     profiler_start(
         PROFILER_DEFAULT_ENTRIES, PROFILER_DEFAULT_INTERVAL,
-        ProfilerFeature::StackWalk | ProfilerFeature::CPUUtilization |
+        ProfilerFeature::StackWalk |
             (testWithNoStackSampling ? ProfilerFeature::NoStackSampling : 0),
         filters, std::size(filters), 0);
     // Grab a few samples, each with a different label on the stack.
-#  define SAMPLE_LABEL_PREFIX "CPUUsage sample label "
+#define SAMPLE_LABEL_PREFIX "CPUUsage sample label "
     static constexpr const char* scSampleLabels[] = {
         SAMPLE_LABEL_PREFIX "0", SAMPLE_LABEL_PREFIX "1",
         SAMPLE_LABEL_PREFIX "2", SAMPLE_LABEL_PREFIX "3",
@@ -4564,33 +4970,22 @@ TEST(GeckoProfiler, CPUUsage)
 
     JSONOutputCheck(profile.get(), [testWithNoStackSampling](
                                        const Json::Value& aRoot) {
-      // Check that the "cpu" feature is present.
       GET_JSON(meta, aRoot["meta"], Object);
-      {
-        GET_JSON(configuration, meta["configuration"], Object);
-        {
-          GET_JSON(features, configuration["features"], Array);
-          {
-            EXPECT_JSON_ARRAY_CONTAINS(features, String, "cpu");
-          }
-        }
-      }
-
       {
         GET_JSON(sampleUnits, meta["sampleUnits"], Object);
         {
           EXPECT_EQ_JSON(sampleUnits["time"], String, "ms");
           EXPECT_EQ_JSON(sampleUnits["eventDelay"], String, "ms");
-#  if defined(GP_OS_windows) || defined(GP_OS_darwin) || \
-      defined(GP_OS_linux) || defined(GP_OS_android) || defined(GP_OS_freebsd)
+#if defined(GP_OS_windows) || defined(GP_OS_darwin) || defined(GP_OS_linux) || \
+    defined(GP_OS_android) || defined(GP_OS_freebsd)
           // Note: The exact string is not important here.
           EXPECT_TRUE(sampleUnits["threadCPUDelta"].isString())
               << "There should be a sampleUnits.threadCPUDelta on this "
                  "platform";
-#  else
+#else
         EXPECT_FALSE(sampleUnits.isMember("threadCPUDelta"))
             << "Unexpected sampleUnits.threadCPUDelta on this platform";;
-#  endif
+#endif
         }
       }
 
@@ -4655,16 +5050,16 @@ TEST(GeckoProfiler, CPUUsage)
               EXPECT_GE(stackLeaves.size(), scSampleLabelCount);
             }
 
-#  if defined(GP_OS_windows) || defined(GP_OS_darwin) || \
-      defined(GP_OS_linux) || defined(GP_OS_android) || defined(GP_OS_freebsd)
+#if defined(GP_OS_windows) || defined(GP_OS_darwin) || defined(GP_OS_linux) || \
+    defined(GP_OS_android) || defined(GP_OS_freebsd)
             EXPECT_GE(threadCPUDeltaCount, data.size() - 1u)
                 << "There should be 'threadCPUDelta' values in all but 1 "
                    "samples";
-#  else
+#else
           // All "threadCPUDelta" data should be absent or null on unsupported
           // platforms.
           EXPECT_EQ(threadCPUDeltaCount, 0u);
-#  endif
+#endif
           }
         } else if (name.asString() == "Idle test") {
           foundIdle = true;
@@ -4677,13 +5072,13 @@ TEST(GeckoProfiler, CPUUsage)
           } else {
             EXPECT_GE(samplings, scMinSamplings);
           }
-#  if !(defined(GP_OS_windows) || defined(GP_OS_darwin) || \
-        defined(GP_OS_linux) || defined(GP_OS_android) ||  \
-        defined(GP_OS_freebsd))
+#if !(defined(GP_OS_windows) || defined(GP_OS_darwin) || \
+      defined(GP_OS_linux) || defined(GP_OS_android) ||  \
+      defined(GP_OS_freebsd))
           // All "threadCPUDelta" data should be absent or null on unsupported
           // platforms.
           EXPECT_EQ(idleThreadCPUDeltaSum, 0u);
-#  endif
+#endif
         } else if (name.asString() == "Busy test") {
           foundBusy = true;
           size_t samplings;
@@ -4695,13 +5090,13 @@ TEST(GeckoProfiler, CPUUsage)
           } else {
             EXPECT_GE(samplings, scMinSamplings);
           }
-#  if !(defined(GP_OS_windows) || defined(GP_OS_darwin) || \
-        defined(GP_OS_linux) || defined(GP_OS_android) ||  \
-        defined(GP_OS_freebsd))
+#if !(defined(GP_OS_windows) || defined(GP_OS_darwin) || \
+      defined(GP_OS_linux) || defined(GP_OS_android) ||  \
+      defined(GP_OS_freebsd))
           // All "threadCPUDelta" data should be absent or null on unsupported
           // platforms.
           EXPECT_EQ(busyThreadCPUDeltaSum, 0u);
-#  endif
+#endif
         }
       }
 
@@ -4960,6 +5355,16 @@ TEST(GeckoProfiler, AllThreads)
   }
 }
 
+// User-defined marker type that generates a failure when streaming JSON.
+struct GtestFailingMarker : public mozilla::BaseMarkerType<GtestFailingMarker> {
+  static constexpr const char* Name = "markers-gtest-failing";
+  static constexpr bool UseSpecialFrontendLocation = true;
+  static void StreamJSONMarkerData(
+      mozilla::baseprofiler::SpliceableJSONWriter& aWriter) {
+    aWriter.SetFailure("boom!");
+  }
+};
+
 TEST(GeckoProfiler, FailureHandling)
 {
   profiler_init_main_thread_id();
@@ -4973,19 +5378,6 @@ TEST(GeckoProfiler, FailureHandling)
 
   ASSERT_EQ(WaitForSamplingState(), SamplingState::SamplingCompleted);
 
-  // User-defined marker type that generates a failure when streaming JSON.
-  struct GtestFailingMarker {
-    static constexpr Span<const char> MarkerTypeName() {
-      return MakeStringSpan("markers-gtest-failing");
-    }
-    static void StreamJSONMarkerData(
-        mozilla::baseprofiler::SpliceableJSONWriter& aWriter) {
-      aWriter.SetFailure("boom!");
-    }
-    static mozilla::MarkerSchema MarkerTypeDisplay() {
-      return mozilla::MarkerSchema::SpecialFrontendLocation{};
-    }
-  };
   EXPECT_TRUE(profiler_add_marker_impl("Gtest failing marker",
                                        geckoprofiler::category::OTHER, {},
                                        GtestFailingMarker{}));
@@ -5124,4 +5516,585 @@ TEST(GeckoProfiler, NoMarkerStacks)
   ASSERT_TRUE(!profiler_get_profile());
 }
 
-#endif  // MOZ_GECKO_PROFILER
+TEST(GeckoProfiler, CaptureBacktraceIsRightSized)
+{
+  const char* filters[] = {"GeckoMain"};
+
+  profiler_start(PROFILER_DEFAULT_ENTRIES, PROFILER_DEFAULT_INTERVAL,
+                 ProfilerFeature::StackWalk, filters, std::size(filters), 0);
+
+  mozilla::UniquePtr<mozilla::ProfileChunkedBuffer> backtrace =
+      profiler_capture_backtrace();
+  ASSERT_TRUE(!!backtrace);
+
+  // Stacks are captured into a buffer that can hold the deepest possible stack,
+  // but callers may keep a captured backtrace alive for a long time, so it
+  // should only retain as much memory as the stack actually needed.
+  mozilla::Maybe<size_t> bufferLength = backtrace->BufferLength();
+  ASSERT_TRUE(bufferLength.isSome());
+  EXPECT_LT(
+      *bufferLength,
+      size_t(mozilla::ProfileBufferChunkManager::scExpectedMaximumStackSize));
+
+  // The backtrace should still contain the whole captured stack.
+  mozilla::ProfileChunkedBuffer::State state = backtrace->GetState();
+  EXPECT_GT(state.mRangeEnd, state.mRangeStart);
+  EXPECT_EQ(state.mFailedPutBytes, 0u);
+
+  profiler_stop();
+}
+
+// Microbenchmarks measuring marker insertion speed while the profiler is
+// active, for single- and multi-threaded cases with tiny and large markers.
+namespace {
+
+// Markers per benchmark iteration, split evenly across threads in the
+// multi-threaded benchmarks.
+static constexpr uint32_t kMarkerInsertionCount = 100000;
+
+static constexpr uint32_t kMarkerInsertionThreads = 4;
+
+static_assert(kMarkerInsertionCount % kMarkerInsertionThreads == 0,
+              "marker count must split evenly across threads");
+
+static const nsCString& LargeMarkerText() {
+  static const nsCString sText = []() {
+    nsCString s;
+    s.SetLength(4096);
+    memset(s.BeginWriting(), 'x', s.Length());
+    return s;
+  }();
+  return sText;
+}
+
+void InsertTinyMarkers(uint32_t aCount) {
+  for (uint32_t i = 0; i < aCount; ++i) {
+    PROFILER_MARKER_UNTYPED("M", OTHER, {});
+  }
+}
+
+void InsertLargeMarkers(uint32_t aCount) {
+  const nsCString& text = LargeMarkerText();
+  for (uint32_t i = 0; i < aCount; ++i) {
+    PROFILER_MARKER_TEXT("M", OTHER, {}, text);
+  }
+}
+
+struct BenchFieldsMarker : public mozilla::BaseMarkerType<BenchFieldsMarker> {
+  static constexpr const char* Name = "bench-fields";
+
+  using MS = mozilla::MarkerSchema;
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"int", MS::InputType::Int32, "Int", MS::Format::Integer},
+      {"double", MS::InputType::Double, "Double", MS::Format::Decimal},
+      {"text", MS::InputType::CString, "Text", MS::Format::String}};
+
+  static constexpr MS::Location Locations[] = {MS::Location::MarkerChart,
+                                               MS::Location::MarkerTable};
+};
+
+// Markers carrying a few typed fields and an on-demand stack capture, which is
+// the most expensive common insertion path (it walks the caller's stack).
+void InsertFieldsAndStackMarkers(uint32_t aCount) {
+  for (uint32_t i = 0; i < aCount; ++i) {
+    profiler_add_marker("M", geckoprofiler::category::OTHER,
+                        MarkerStack::Capture(), BenchFieldsMarker{}, 42, 43.0,
+                        "bench");
+  }
+}
+
+// Insert tiny markers until the core buffer has started recycling chunks,
+// leaving it full. Used (untimed) by the recycle-only benchmark fixture so that
+// every subsequently-timed insertion exercises the steady-state recycle path.
+void FillBufferUntilRecycling() {
+  ProfileChunkedBuffer& coreBuffer = profiler_get_core_buffer();
+  while (coreBuffer.GetState().mClearedBlockCount == 0) {
+    InsertTinyMarkers(10000);
+  }
+}
+
+// Worker threads spawned and registered with the profiler once, then reused
+// across timed iterations so that thread startup and registration stay out of
+// the measured region.
+class MarkerBenchThreadPool {
+ public:
+  explicit MarkerBenchThreadPool(uint32_t aThreadCount) {
+    mThreads.reserve(aThreadCount);
+    for (uint32_t threadIdx = 0; threadIdx < aThreadCount; ++threadIdx) {
+      mThreads.emplace_back([this, threadIdx]() { WorkerLoop(threadIdx); });
+    }
+  }
+
+  uint32_t ThreadCount() const { return mThreads.size(); }
+
+  ~MarkerBenchThreadPool() {
+    {
+      std::lock_guard<std::mutex> lock(mMutex);
+      mShutdown = true;
+      ++mGeneration;
+    }
+    mWakeup.notify_all();
+    for (auto& thread : mThreads) {
+      thread.join();
+    }
+  }
+
+  // Runs aTask on every worker thread in parallel, returning once all finish.
+  // aTask receives the worker's index in [0, thread count) and the per-thread
+  // share of aTotalCount.
+  void RunOnAll(uint32_t aTotalCount,
+                std::function<void(uint32_t, uint32_t)> aTask) {
+    {
+      std::lock_guard<std::mutex> lock(mMutex);
+      mTask = std::move(aTask);
+      mPerThread = aTotalCount / static_cast<uint32_t>(mThreads.size());
+      mRemaining = static_cast<uint32_t>(mThreads.size());
+      ++mGeneration;
+    }
+    mWakeup.notify_all();
+    std::unique_lock<std::mutex> lock(mMutex);
+    mDone.wait(lock, [this]() { return mRemaining == 0; });
+  }
+
+  // Convenience overload for tasks that only need the per-thread count.
+  void RunOnAll(uint32_t aTotalCount, void (*aTask)(uint32_t)) {
+    RunOnAll(aTotalCount,
+             [aTask](uint32_t, uint32_t aPerThread) { aTask(aPerThread); });
+  }
+
+ private:
+  void WorkerLoop(uint32_t aThreadIdx) {
+    AUTO_PROFILER_REGISTER_THREAD("MarkerBench");
+    uint64_t lastGeneration = 0;
+    while (true) {
+      std::function<void(uint32_t, uint32_t)> task;
+      uint32_t perThread;
+      {
+        std::unique_lock<std::mutex> lock(mMutex);
+        mWakeup.wait(lock, [&]() { return mGeneration != lastGeneration; });
+        lastGeneration = mGeneration;
+        if (mShutdown) {
+          return;
+        }
+        task = mTask;
+        perThread = mPerThread;
+      }
+      task(aThreadIdx, perThread);
+      {
+        std::lock_guard<std::mutex> lock(mMutex);
+        --mRemaining;
+      }
+      mDone.notify_one();
+    }
+  }
+
+  std::vector<std::thread> mThreads;
+  std::mutex mMutex;
+  std::condition_variable mWakeup;
+  std::condition_variable mDone;
+  // The following are all guarded by mMutex.
+  std::function<void(uint32_t, uint32_t)> mTask;
+  uint32_t mPerThread = 0;
+  // Bumped per request so workers distinguish a new request from a spurious
+  // wakeup without losing notifications.
+  uint64_t mGeneration = 0;
+  uint32_t mRemaining = 0;
+  bool mShutdown = false;
+};
+
+// --- Histogram-timing variant ----------------------------------------------
+// The MOZ_GTEST_BENCH cases above report the median *total* time of a 100k-
+// insertion run (a single aggregate number). These instead time each
+// *individual* insertion and accumulate it into a BPF/bcc-style power-of-two
+// (log2) latency histogram, exposing the latency *distribution* and tail (a
+// rare expensive marker insertion is invisible in a mean). The log2 buckets
+// make the tail mass visible at a glance and cost O(1) memory.
+//
+// Timing uses the x86 TSC (rdtscp), not TimeStamp::Now(): a tiny insert is
+// ~tens of ns, where clock_gettime's ~20-30 ns call overhead would swamp the
+// fast-path buckets. The TSC has ~1-cycle resolution; on a pinned,
+// performance-governor machine the TSC is invariant so cycles<->time is stable.
+// We subtract the measured empty-pair overhead and label buckets in ns via a
+// one-time calibration against TimeStamp. (Non-x86 falls back to ns from
+// TimeStamp, coarse but only used off such a machine.)
+
+#if defined(__x86_64__) || defined(__i386__)
+static inline uint64_t BenchTicks() {
+  unsigned aux;
+  // rdtscp waits for prior instructions to retire before reading the TSC; the
+  // following lfence keeps later instructions from reading it early.
+  uint64_t t = __rdtscp(&aux);
+  _mm_lfence();
+  return t;
+}
+static double BenchTicksPerNs() {
+  static const double sTpns = []() {
+    TimeStamp t0 = TimeStamp::Now();
+    uint64_t c0 = BenchTicks();
+    while ((TimeStamp::Now() - t0).ToMilliseconds() < 50.0) {
+    }
+    uint64_t c1 = BenchTicks();
+    double ns = (TimeStamp::Now() - t0).ToMicroseconds() * 1000.0;
+    return double(c1 - c0) / ns;
+  }();
+  return sTpns;
+}
+#else
+static inline uint64_t BenchTicks() {
+  return uint64_t(
+      (TimeStamp::Now() - TimeStamp::ProcessCreation()).ToMicroseconds() *
+      1000.0);
+}
+static double BenchTicksPerNs() { return 1.0; }
+#endif
+
+// Median cost (ticks) of an empty BenchTicks() pair — the measurement floor,
+// subtracted from each sample so the fast-path buckets reflect the real op.
+static uint64_t BenchOverheadTicks() {
+  static const uint64_t sOv = []() {
+    std::vector<uint64_t> e;
+    e.reserve(4096);
+    for (int i = 0; i < 4096; ++i) {
+      uint64_t a = BenchTicks();
+      uint64_t b = BenchTicks();
+      e.push_back(b - a);
+    }
+    std::sort(e.begin(), e.end());
+    return e[e.size() / 2];
+  }();
+  return sOv;
+}
+
+// A BPF-style log2 histogram of per-op latencies (in TSC ticks).
+struct LatencyHist {
+  static constexpr int kSlots = 64;
+  uint64_t mBuckets[kSlots] = {0};
+  uint64_t mMaxTicks = 0;
+
+  uint64_t Count() const {
+    uint64_t count = 0;
+    for (unsigned long long mBucket : mBuckets) {
+      count += mBucket;
+    }
+    return count;
+  }
+
+  void Add(uint64_t aTicks) {
+    // Slot s >= 1 holds [2^s, 2^(s+1)); slot 0 catches {0, 1} as [0, 2) (and
+    // avoids __builtin_clzll(0), which is undefined).
+    const int slot = aTicks < 2 ? 0 : 63 - __builtin_clzll(aTicks);
+    ++mBuckets[slot];
+    if (aTicks > mMaxTicks) {
+      mMaxTicks = aTicks;
+    }
+  }
+  void Merge(const LatencyHist& aOther) {
+    for (int i = 0; i < kSlots; ++i) {
+      mBuckets[i] += aOther.mBuckets[i];
+    }
+    if (aOther.mMaxTicks > mMaxTicks) {
+      mMaxTicks = aOther.mMaxTicks;
+    }
+  }
+};
+
+template <typename Op>
+void TimedInsert(uint32_t aCount, LatencyHist& aHist, Op aOp) {
+  const uint64_t ov = BenchOverheadTicks();
+  // Accumulate into a stack-local histogram so the hot loop never writes to
+  // memory another worker might share a cache line with, then copy the result
+  // into the caller's histogram once at the end.
+  LatencyHist local;
+  for (uint32_t i = 0; i < aCount; ++i) {
+    const uint64_t c0 = BenchTicks();
+    aOp();
+    const uint64_t c1 = BenchTicks();
+    const uint64_t d = c1 - c0;
+    local.Add(d > ov ? d - ov : 0);
+  }
+  aHist = local;
+}
+
+template <typename Op>
+void TimedInsertMultiThread(MarkerBenchThreadPool& aPool, uint32_t aTotalCount,
+                            LatencyHist& aHist, Op aOp) {
+  std::vector<LatencyHist> perThread(aPool.ThreadCount());
+  aPool.RunOnAll(aTotalCount,
+                 [&perThread, &aOp](uint32_t aThreadIdx, uint32_t aPerThread) {
+                   TimedInsert(aPerThread, perThread[aThreadIdx], aOp);
+                 });
+  for (const auto& h : perThread) {
+    aHist.Merge(h);
+  }
+}
+
+void ReportHistogram(const char* aName, const LatencyHist& aHist) {
+  const uint64_t count = aHist.Count();
+  if (count == 0) {
+    return;
+  }
+  const double tpns = BenchTicksPerNs();
+  auto ticksToNs = [&](double aTicks) { return aTicks / tpns; };
+
+  // bcc-style log2 histogram: one row per occupied bucket [2^s, 2^(s+1)) ticks
+  // (slot 0 is [0, 2)), labelled in ns, with a bar scaled to the busiest
+  // bucket.
+  auto slotLoTicks = [](int aSlot) {
+    return aSlot == 0 ? 0.0 : double(uint64_t(1) << aSlot);
+  };
+  int lo = LatencyHist::kSlots, hi = -1;
+  uint64_t peak = 0;
+  for (int s = 0; s < LatencyHist::kSlots; ++s) {
+    if (aHist.mBuckets[s]) {
+      lo = std::min(lo, s);
+      hi = std::max(hi, s);
+      peak = std::max(peak, aHist.mBuckets[s]);
+    }
+  }
+  // Bucket-derived approximate percentiles (bucket-edge resolution).
+  auto pctNs = [&](double p) {
+    uint64_t target = uint64_t(p * double(count));
+    uint64_t cum = 0;
+    for (int s = 0; s < LatencyHist::kSlots; ++s) {
+      cum += aHist.mBuckets[s];
+      if (cum >= target) {
+        return ticksToNs(slotLoTicks(s));  // bucket lower edge
+      }
+    }
+    return ticksToNs(double(aHist.mMaxTicks));
+  };
+
+  printf(
+      "HISTO %-26s n=%llu overhead=%llutk ~p50=%.0f ~p99=%.0f ~p99.9=%.0f "
+      "max=%.0f (ns/insertion)\n",
+      aName, (unsigned long long)count,
+      (unsigned long long)BenchOverheadTicks(), pctNs(0.50), pctNs(0.99),
+      pctNs(0.999), ticksToNs(double(aHist.mMaxTicks)));
+  for (int s = lo; s <= hi; ++s) {
+    const uint64_t c = aHist.mBuckets[s];
+    const double loNs = ticksToNs(slotLoTicks(s));
+    const double hiNs = ticksToNs(double(uint64_t(1) << (s + 1)));
+    char bar[41];
+    int n = int(40.0 * double(c) / double(peak));
+    for (int i = 0; i < n; ++i) {
+      bar[i] = '@';
+    }
+    bar[n] = '\0';
+    printf("HISTO   %-26s [%9.0f, %9.0f) ns : %8llu |%s\n", aName, loNs, hiNs,
+           (unsigned long long)c, bar);
+  }
+  fflush(stdout);
+}
+
+// Starts the profiler and spawns the thread pool in SetUp()/TearDown(), which
+// run once per benchmark, keeping that setup out of the timed iterations.
+class GeckoProfilerMarkerBench : public ::testing::Test {
+ protected:
+  // Buffer capacity in 8-byte entries. Subclasses override it to size the
+  // buffer for their recycling scenario.
+  virtual PowerOfTwo32 BufferCapacity() const { return PowerOfTwo32(1u << 24); }
+
+  // Hook run (untimed) after the profiler has started, e.g. to pre-fill the
+  // buffer before the timed insertions.
+  virtual void PrepareBuffer() {}
+
+  void SetUp() override {
+    // Make sure first call to LargeMarkerText is not part of the measurement.
+    (void)LargeMarkerText();
+    uint32_t features =
+        ProfilerFeature::NoStackSampling | ProfilerFeature::MarkersAllThreads;
+    profiler_start(BufferCapacity(), PROFILER_DEFAULT_INTERVAL, features,
+                   nullptr, 0, 0);
+    mThreadPool = MakeUnique<MarkerBenchThreadPool>(kMarkerInsertionThreads);
+    PrepareBuffer();
+  }
+
+  void TearDown() override {
+    mThreadPool = nullptr;
+    profiler_stop();
+  }
+
+  UniquePtr<MarkerBenchThreadPool> mThreadPool;
+};
+
+// Variant whose buffer is large enough to hold an entire run without recycling
+// a chunk, isolating the cost of pure insertion (including the amortized cost
+// of allocating chunks as the buffer fills). Used by single-run Histo cases; we
+// verify in TearDown that no chunk was recycled.
+class GeckoProfilerMarkerBenchNoRecycle : public GeckoProfilerMarkerBench {
+ protected:
+  // 1 GiB ceiling. Chunks are allocated on demand, so only the bytes actually
+  // inserted (well under this) are committed.
+  PowerOfTwo32 BufferCapacity() const override {
+    return PowerOfTwo32(1u << 27);
+  }
+
+  void TearDown() override {
+    EXPECT_EQ(profiler_get_core_buffer().GetState().mClearedBlockCount, 0u)
+        << "buffer recycled chunks; capacity too small for the no-recycle case";
+    GeckoProfilerMarkerBench::TearDown();
+  }
+};
+
+// Variant whose (minimum-size) buffer is pre-filled until it starts recycling,
+// so every timed insertion exercises the steady-state recycle path. We verify
+// in TearDown that recycling did occur.
+class GeckoProfilerMarkerBenchRecycle : public GeckoProfilerMarkerBench {
+ protected:
+  void PrepareBuffer() override { FillBufferUntilRecycling(); }
+
+  void TearDown() override {
+    EXPECT_GT(profiler_get_core_buffer().GetState().mClearedBlockCount, 0u)
+        << "buffer never recycled; the recycle case measured nothing";
+    GeckoProfilerMarkerBench::TearDown();
+  }
+};
+
+// Recycle is the only regime that we can use inside MOZ_GTEST_BENCH_F, which
+// runs the body several times against one buffer with no per-iteration reset.
+// NoRecycle does not hold for the last iterations as the buffer fills up, and
+// resetting to a fresh buffer each iteration would require a profiler_start/
+// profiler_stop inside the timed body, whose cost we don't want to measure.
+MOZ_GTEST_BENCH_F(GeckoProfilerMarkerBenchRecycle,
+                  MarkerInsertionSingleThreadTiny,
+                  []() { InsertTinyMarkers(kMarkerInsertionCount); });
+
+MOZ_GTEST_BENCH_F(GeckoProfilerMarkerBenchRecycle,
+                  MarkerInsertionSingleThreadLarge,
+                  []() { InsertLargeMarkers(kMarkerInsertionCount); });
+
+MOZ_GTEST_BENCH_F(GeckoProfilerMarkerBenchRecycle,
+                  MarkerInsertionMultiThreadTiny, [this]() {
+                    mThreadPool->RunOnAll(kMarkerInsertionCount,
+                                          &InsertTinyMarkers);
+                  });
+
+MOZ_GTEST_BENCH_F(GeckoProfilerMarkerBenchRecycle,
+                  MarkerInsertionMultiThreadLarge, [this]() {
+                    mThreadPool->RunOnAll(kMarkerInsertionCount,
+                                          &InsertLargeMarkers);
+                  });
+
+MOZ_GTEST_BENCH_F(GeckoProfilerMarkerBenchRecycle,
+                  MarkerInsertionSingleThreadFieldsAndStack,
+                  []() { InsertFieldsAndStackMarkers(kMarkerInsertionCount); });
+
+MOZ_GTEST_BENCH_F(GeckoProfilerMarkerBenchRecycle,
+                  MarkerInsertionMultiThreadFieldsAndStack, [this]() {
+                    mThreadPool->RunOnAll(kMarkerInsertionCount,
+                                          &InsertFieldsAndStackMarkers);
+                  });
+
+#define DEFINE_HISTO_TESTS(aFixture, aPrefix)                                  \
+  TEST_F(aFixture, HistoSingleThreadTiny) {                                    \
+    LatencyHist hist;                                                          \
+    TimedInsert(kMarkerInsertionCount, hist,                                   \
+                []() { PROFILER_MARKER_UNTYPED("M", OTHER, {}); });            \
+    ReportHistogram(aPrefix "SingleThreadTiny", hist);                         \
+  }                                                                            \
+  TEST_F(aFixture, HistoSingleThreadLarge) {                                   \
+    const nsCString& text = LargeMarkerText();                                 \
+    LatencyHist hist;                                                          \
+    TimedInsert(kMarkerInsertionCount, hist,                                   \
+                [&text]() { PROFILER_MARKER_TEXT("M", OTHER, {}, text); });    \
+    ReportHistogram(aPrefix "SingleThreadLarge", hist);                        \
+  }                                                                            \
+  TEST_F(aFixture, HistoSingleThreadFieldsAndStack) {                          \
+    LatencyHist hist;                                                          \
+    TimedInsert(kMarkerInsertionCount, hist, []() {                            \
+      profiler_add_marker("M", geckoprofiler::category::OTHER,                 \
+                          MarkerStack::Capture(), BenchFieldsMarker{}, 42,     \
+                          43.0, "bench");                                      \
+    });                                                                        \
+    ReportHistogram(aPrefix "SingleThreadFieldsAndStack", hist);               \
+  }                                                                            \
+  TEST_F(aFixture, HistoMultiThreadTiny) {                                     \
+    LatencyHist hist;                                                          \
+    TimedInsertMultiThread(*mThreadPool, kMarkerInsertionCount, hist,          \
+                           []() { PROFILER_MARKER_UNTYPED("M", OTHER, {}); }); \
+    ReportHistogram(aPrefix "MultiThreadTiny", hist);                          \
+  }                                                                            \
+  TEST_F(aFixture, HistoMultiThreadLarge) {                                    \
+    const nsCString& text = LargeMarkerText();                                 \
+    LatencyHist hist;                                                          \
+    TimedInsertMultiThread(                                                    \
+        *mThreadPool, kMarkerInsertionCount, hist,                             \
+        [&text]() { PROFILER_MARKER_TEXT("M", OTHER, {}, text); });            \
+    ReportHistogram(aPrefix "MultiThreadLarge", hist);                         \
+  }                                                                            \
+  TEST_F(aFixture, HistoMultiThreadFieldsAndStack) {                           \
+    LatencyHist hist;                                                          \
+    TimedInsertMultiThread(*mThreadPool, kMarkerInsertionCount, hist, []() {   \
+      profiler_add_marker("M", geckoprofiler::category::OTHER,                 \
+                          MarkerStack::Capture(), BenchFieldsMarker{}, 42,     \
+                          43.0, "bench");                                      \
+    });                                                                        \
+    ReportHistogram(aPrefix "MultiThreadFieldsAndStack", hist);                \
+  }
+
+DEFINE_HISTO_TESTS(GeckoProfilerMarkerBench, "")
+DEFINE_HISTO_TESTS(GeckoProfilerMarkerBenchNoRecycle, "NoRecycle")
+DEFINE_HISTO_TESTS(GeckoProfilerMarkerBenchRecycle, "Recycle")
+
+#undef DEFINE_HISTO_TESTS
+
+// Verifies that when an OS thread id is recycled across several streaming
+// contexts, ProcessStreamingContext::SelectStreamingContextIndex routes a
+// sample to the context whose lifetime window covers its buffer position,
+// rather than the first context with a matching thread id. Regressions here
+// trip a MOZ_RELEASE_ASSERT in UniqueStacks::LookupFramesForJITAddressFrom
+// BufferPos, so this is exercised directly.
+TEST(GeckoProfiler, SelectStreamingContextIndex)
+{
+  using mozilla::Maybe;
+  using mozilla::Nothing;
+  using mozilla::Some;
+  using mozilla::Vector;
+  using PSC = ProcessStreamingContext;
+
+  const ProfilerThreadId tidA = ProfilerThreadId::FromNumber(1628);
+  const ProfilerThreadId tidOther = ProfilerThreadId::FromNumber(4242);
+  const ProfilerThreadId tidUnknown = ProfilerThreadId::FromNumber(999);
+
+  Vector<PSC::ThreadStreamingId> threadIds;
+  auto add = [&](ProfilerThreadId aTid, Maybe<uint64_t> aEnd) {
+    MOZ_RELEASE_ASSERT(threadIds.append(PSC::ThreadStreamingId{aTid, aEnd}));
+  };
+  auto selected = [&](ProfilerThreadId aTid, uint64_t aPos) -> int64_t {
+    Maybe<size_t> index =
+        PSC::SelectStreamingContextIndex(threadIds, aTid, aPos);
+    return index ? int64_t(*index) : -1;
+  };
+
+  // Two dead threads recycling tidA, with an unrelated thread interleaved.
+  add(tidA, Some(uint64_t(3658413)));   // 0: worker A, window [.., 3658413]
+  add(tidOther, Some(uint64_t(5000)));  // 1: unrelated thread id
+  add(tidA, Some(uint64_t(19904658)));  // 2: worker B, window [.., 19904658]
+
+  // A sample inside worker A's window resolves to A.
+  EXPECT_EQ(selected(tidA, 1000000u), 0);
+  // A sample inside worker B's window resolves to B, not the first match (A).
+  EXPECT_EQ(selected(tidA, 19845062u), 2);
+  // Boundary: exactly at A's unregistration position still belongs to A.
+  EXPECT_EQ(selected(tidA, 3658413u), 0);
+  // Just past A's window belongs to B.
+  EXPECT_EQ(selected(tidA, 3658414u), 2);
+  // The unrelated thread id resolves to its own context.
+  EXPECT_EQ(selected(tidOther, 4000u), 1);
+  // A thread id with no context yields no match.
+  EXPECT_EQ(selected(tidUnknown, 1u), -1);
+  // A position past every window for tidA (no live thread) yields no match.
+  EXPECT_EQ(selected(tidA, 20000000u), -1);
+
+  // A still-registered thread (Nothing() end) owns the latest window, but a
+  // dead thread still owns samples within its own earlier window.
+  const ProfilerThreadId tidLive = ProfilerThreadId::FromNumber(77);
+  add(tidLive, Some(uint64_t(100)));  // 3: dead, window [.., 100]
+  add(tidLive, Nothing());            // 4: still registered
+  EXPECT_EQ(selected(tidLive, 50u), 3);
+  EXPECT_EQ(selected(tidLive, 100u), 3);
+  EXPECT_EQ(selected(tidLive, 101u), 4);
+  EXPECT_EQ(selected(tidLive, 20000000u), 4);
+}
+
+}  // namespace

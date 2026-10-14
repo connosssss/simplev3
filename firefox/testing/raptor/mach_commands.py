@@ -137,12 +137,10 @@ class RaptorRunner(MozbuildObject):
             # We don't set `browsertime_ffmpeg` yet: it will need to be on the path.  There is code
             # to configure the environment including the path in
             # `tools/browsertime/mach_commands.py` but integrating it here will take more effort.
-            self.config.update(
-                {
-                    "browsertime_browsertimejs": browsertime.browsertime_path(),
-                    "browsertime_vismet_script": browsertime.visualmetrics_path(),
-                }
-            )
+            self.config.update({
+                "browsertime_browsertimejs": browsertime.browsertime_path(),
+                "browsertime_vismet_script": browsertime.visualmetrics_path(),
+            })
 
             def _get_browsertime_package():
                 with open(
@@ -179,9 +177,9 @@ class RaptorRunner(MozbuildObject):
                 # If ffmpeg doesn't exist in the .mozbuild directory,
                 # then we should install
                 btime_cache = os.path.join(self.config["mozbuild_path"], "browsertime")
-                if not os.path.exists(btime_cache) or not any(
-                    ["ffmpeg" in cache_dir for cache_dir in os.listdir(btime_cache)]
-                ):
+                if not os.path.exists(btime_cache) or not any([
+                    "ffmpeg" in cache_dir for cache_dir in os.listdir(btime_cache)
+                ]):
                     return True
 
                 # If browsertime doesn't exist, install it
@@ -236,7 +234,8 @@ class RaptorRunner(MozbuildObject):
                 )
                 self.config["clean"] = True
 
-            print("Using browsertime version %s from %s" % _get_browsertime_version())
+            version, src = _get_browsertime_version()
+            print(f"Using browsertime version {version} from {src}")
 
         finally:
             sys.path = sys.path[1:]
@@ -353,7 +352,7 @@ def setup_node(command_context):
 
         print("Finished downloading Node v22 from Taskcluster")
 
-    print("Node v22+ found at: %s" % node_exe)
+    print(f"Node v22+ found at: {node_exe}")
     return node_exe
 
 

@@ -10,19 +10,12 @@
 // improves readability, particular for conditional blocks that exceed a single
 // screen.
 
-// Caret browsing is disabled on mobile (bug 476009)
-pref("accessibility.browsewithcaret_shortcut.enabled", false);
-
 pref("accessibility.typeaheadfind", false);
 pref("accessibility.typeaheadfind.flashBar", 1);
 pref("accessibility.typeaheadfind.linksonly", false);
 pref("accessibility.typeaheadfind.timeout", 5000);
 
 pref("app.support.baseURL", "https://support.mozilla.org/1/mobile/%VERSION%/%OS%/%LOCALE%/");
-
-#ifdef MOZ_UPDATER
-  pref("app.update.channel", "@MOZ_UPDATE_CHANNEL@");
-#endif
 
 // Prefs used by UpdateTimerManager (including blocklist pings) (bug 783909)
 pref("app.update.timerFirstInterval", 30000); // milliseconds
@@ -111,6 +104,7 @@ pref("browser.meta_refresh_when_inactive.disabled", true);
 // The download protection UI is not implemented yet (bug 1239094).
 pref("browser.safebrowsing.downloads.enabled", false);
 
+pref("browser.safebrowsing.features.harmfuladdon.update", true);
 pref("browser.safebrowsing.features.cryptomining.update", true);
 pref("browser.safebrowsing.features.fingerprinting.update", true);
 pref("browser.safebrowsing.features.malware.update", true);
@@ -158,10 +152,6 @@ pref("chrome.override_package.passwordmgr", "browser");
 // Allow Console API to log messages on stdout (bug 1480544)
 pref("devtools.console.stdout.chrome", true);
 
-// Absolute path to the devtools unix domain socket file used
-// to communicate with a usb cable via adb forward.
-pref("devtools.debugger.unix-domain-socket", "@ANDROID_PACKAGE_NAME@/firefox-debugger-socket");
-
 // Enable capture attribute for file input (bug 1553603)
 pref("dom.capture.enabled", true);
 
@@ -183,13 +173,8 @@ pref("dom.ipc.keepProcessesAlive.extension", 1);
 // Keep empty content process alive on Android (bug 1447393)
 pref("dom.ipc.keepProcessesAlive.web", 1);
 
-// This value is derived from the calculation:
-// MOZ_ANDROID_CONTENT_SERVICE_COUNT - dom.ipc.processCount
-// (dom.ipc.processCount is set in GeckoRuntimeSettings.java) (bug 1619655)
-pref("dom.ipc.processCount.webCOOP+COEP", 38);
-
-// Disable the preallocated process on Android
-pref("dom.ipc.processPrelaunch.enabled", false);
+// Enable the preallocated process on Android
+pref("dom.ipc.processPrelaunch.enabled", true);
 
 // Increase script timeouts (bug 485610)
 pref("dom.max_script_run_time", 20);
@@ -247,6 +232,11 @@ pref("extensions.update.enabled", true);
 pref("extensions.update.interval", 86400);
 pref("extensions.update.url", "https://versioncheck.addons.mozilla.org/update/VersionCheck.php?reqVersion=%REQ_VERSION%&id=%ITEM_ID%&version=%ITEM_VERSION%&maxAppVersion=%ITEM_MAXAPPVERSION%&status=%ITEM_STATUS%&appID=%APP_ID%&appVersion=%APP_VERSION%&appOS=%APP_OS%&appABI=%APP_ABI%&locale=%APP_LOCALE%&currentAppVersion=%CURRENT_APP_VERSION%&updateType=%UPDATE_TYPE%&compatMode=%COMPATIBILITY_MODE%");
 
+// Register the type of the background-video-playback intervention's kill-switch
+// pref (bug 2060611) so Nimbus can toggle it. Defaults to disabled; the
+// intervention is turned on for Nightly via a Nimbus rollout.
+pref("extensions.webcompat.disabled_interventions.2060611", true);
+
 // Enable prompts for browser.permissions.request() (bug 1392176)
 pref("extensions.webextOptionalPermissionPrompts", true);
 
@@ -256,11 +246,7 @@ pref("extensions.webextOptionalPermissionPrompts", true);
 pref("extensions.webextensions.early_background_wakeup_on_request", true);
 
 // Enable data collection permissions.
-#ifdef NIGHTLY_BUILD
-  pref("extensions.dataCollectionPermissions.enabled", true);
-#else
-  pref("extensions.dataCollectionPermissions.enabled", false);
-#endif
+pref("extensions.dataCollectionPermissions.enabled", true);
 
 // Scroll and zoom into editable form fields (bug 834613)
 pref("formhelper.autozoom", true);
@@ -268,17 +254,14 @@ pref("formhelper.autozoom", true);
 // Optionally send web console output to logcat (bug 1415318)
 pref("geckoview.console.enabled", false);
 
-#ifdef NIGHTLY_BUILD
-  // Used for mocking data for GeckoView shopping tests, should use in addition with an automation check.
-  pref("geckoview.shopping.mock_test_response", false);
-#endif
-
-pref("image.cache.size", 1048576); // bytes
+// How long (ms) to keep an autocomplete selection prompt open after its field
+// loses focus, so that moving focus between fields of the same form doesn't
+// dismiss and immediately reopen the prompt. Tunable for slower devices.
+// (bug 2040184)
+pref("geckoview.autocomplete.selection_dismiss_delay_ms", 150);
 
 // Inherit locale from the OS, used for multi-locale builds
 pref("intl.locale.requested", "");
-
-pref("keyword.enabled", true);
 
 // Always tilt the caret to match the text selection guideline (bug 1097398)
 pref("layout.accessiblecaret.always_tilt", true);
@@ -313,16 +296,6 @@ pref("media.eme.require-app-approval", true);
 // Enable autoplay permission prompts (bug 1577596)
 pref("media.geckoview.autoplay.request", true);
 
-// Disable future downloads of OpenH264 on Android (bug 1548679)
-pref("media.gmp-gmpopenh264.autoupdate", false);
-
-// Keep OpenH264 if already installed before. (bug 1532578)
-pref("media.gmp-gmpopenh264.enabled", true);
-pref("media.gmp-gmpopenh264.visible", true);
-
-// Enable GMP support in the addon manager (bug 1089867)
-pref("media.gmp-provider.enabled", true);
-
 // Enable Widevine MediaKeySystem (bug 1306219)
 pref("media.mediadrm-widevinecdm.visible", true);
 
@@ -333,19 +306,6 @@ pref("media.navigator.permission.device", true);
 // if we're using a cellular connection, even if the download is slow,
 // this is to preserve battery and data (bug 1540573)
 pref("media.throttle-cellular-regardless-of-download-rate", true);
-
-// Number of video frames we buffer while decoding video.
-// On Android this is decided by a similar value which varies for
-// each OMX decoder |OMX_PARAM_PORTDEFINITIONTYPE::nBufferCountMin|. This
-// number must be less than the OMX equivalent or gecko will think it is
-// chronically starved of video frames. All decoders seen so far have a value
-// of at least 4. (bug 973408)
-pref("media.video-queue.default-size", 3);
-
-// The maximum number of queued frames to send to the compositor.
-// On Android, it needs to be throttled because SurfaceTexture contains only one
-// (the most recent) image data. (bug 1299068)
-pref("media.video-queue.send-to-compositor-size", 1);
 
 // Increase necko buffer sizes for Android (bug 560591)
 pref("network.buffer.cache.size",  16384);
@@ -396,9 +356,6 @@ pref("pdfjs.handleOctetStream", true);
 // Disable tracking protection in PBM for GeckoView (bug 1436887)
 pref("privacy.trackingprotection.pbmode.enabled", false);
 
-// Relay integration is not supported on mobile
-pref("signon.firefoxRelay.feature", "not available");
-
 pref("signon.showAutoCompleteFooter", true);
 
 // Locked because any other value would break GeckoView
@@ -411,6 +368,9 @@ pref("toolkit.telemetry.unified", false);
 pref("urlclassifier.downloadAllowTable", "");
 pref("urlclassifier.downloadBlockTable", "");
 
+// Delay the CRC32 check for URLClassifier to improve applink performance. (bug 1956920, bug 1971949)
+pref("urlclassifier.delay_prefixes_crc32_check", true);
+
 // The Potentially Harmful Apps list replaces the malware one on Android (bug 1394017)
 pref("urlclassifier.malwareTable", "goog-harmful-proto,goog-unwanted-proto,moztest-harmful-simple,moztest-malware-simple,moztest-unwanted-simple");
 
@@ -422,3 +382,8 @@ pref("xpinstall.signatures.required", true);
 
 pref("xpinstall.whitelist.add", "https://addons.mozilla.org");
 pref("xpinstall.whitelist.fileRequest", false);
+
+// Pref to enable the IP protection feature
+pref("browser.ipProtection.enabled", true);
+pref("browser.ipProtection.guardian.endpoint", "https://vpn.mozilla.org/");
+pref("toolkit.ipProtection.android.authProvider", "fxa");

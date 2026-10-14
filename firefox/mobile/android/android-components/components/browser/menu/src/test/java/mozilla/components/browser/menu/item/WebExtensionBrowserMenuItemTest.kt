@@ -12,7 +12,9 @@ import android.view.LayoutInflater
 import android.view.View
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.appcompat.R as appcompatR
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlin.test.assertNotNull
 import kotlinx.coroutines.test.runTest
 import mozilla.components.browser.menu.R
 import mozilla.components.browser.menu.WebExtensionBrowserMenu
@@ -20,26 +22,18 @@ import mozilla.components.concept.engine.webextension.Action
 import mozilla.components.support.test.argumentCaptor
 import mozilla.components.support.test.mock
 import mozilla.components.support.test.robolectric.testContext
-import mozilla.components.support.test.rule.MainCoroutineRule
 import mozilla.components.support.test.whenever
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
-import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mockito.notNull
 import org.mockito.Mockito.spy
 import org.mockito.Mockito.verify
-import androidx.appcompat.R as appcompatR
 
 @RunWith(AndroidJUnit4::class)
 class WebExtensionBrowserMenuItemTest {
-
-    @get:Rule
-    val coroutinesTestRule = MainCoroutineRule()
-    private val dispatcher = coroutinesTestRule.testDispatcher
 
     @Test
     fun `web extension menu item is visible by default`() {
@@ -52,8 +46,7 @@ class WebExtensionBrowserMenuItemTest {
     fun `layout resource can be inflated`() {
         val webExtMenuItem = WebExtensionBrowserMenuItem(mock(), mock())
 
-        val view = LayoutInflater.from(testContext)
-            .inflate(webExtMenuItem.getLayoutResource(), null)
+        val view = LayoutInflater.from(testContext).inflate(webExtMenuItem.getLayoutResource(), null)
 
         assertNotNull(view)
     }
@@ -73,18 +66,19 @@ class WebExtensionBrowserMenuItemTest {
         whenever(view.findViewById<View>(R.id.container)).thenReturn(container)
         whenever(view.context).thenReturn(testContext)
 
-        val browserAction = Action(
-            title = "title",
-            loadIcon = { icon },
-            enabled = false,
-            badgeText = "badgeText",
-            badgeTextColor = Color.WHITE,
-            badgeBackgroundColor = Color.BLUE,
-        ) {}
+        val browserAction =
+            Action(
+                title = "title",
+                loadIcon = { icon },
+                enabled = false,
+                badgeText = "badgeText",
+                badgeTextColor = Color.WHITE,
+                badgeBackgroundColor = Color.BLUE,
+            ) {}
 
         val action = WebExtensionBrowserMenuItem(browserAction, {})
         action.bind(mock(), view)
-        dispatcher.scheduler.advanceUntilIdle()
+        testScheduler.advanceUntilIdle()
 
         assertFalse(view.isEnabled)
     }
@@ -106,18 +100,19 @@ class WebExtensionBrowserMenuItemTest {
         whenever(view.findViewById<View>(R.id.container)).thenReturn(container)
         whenever(view.context).thenReturn(testContext)
 
-        val browserAction = Action(
-            title = "title",
-            loadIcon = { icon },
-            enabled = true,
-            badgeText = "badgeText",
-            badgeTextColor = Color.WHITE,
-            badgeBackgroundColor = Color.BLUE,
-        ) {}
+        val browserAction =
+            Action(
+                title = "title",
+                loadIcon = { icon },
+                enabled = true,
+                badgeText = "badgeText",
+                badgeTextColor = Color.WHITE,
+                badgeBackgroundColor = Color.BLUE,
+            ) {}
 
-        val action = WebExtensionBrowserMenuItem(browserAction, {})
+        val action = WebExtensionBrowserMenuItem(browserAction, {}, uiScope = this)
         action.bind(mock(), view)
-        dispatcher.scheduler.advanceUntilIdle()
+        testScheduler.advanceUntilIdle()
 
         val iconCaptor = argumentCaptor<BitmapDrawable>()
         verify(imageView).setImageDrawable(iconCaptor.capture())
@@ -146,25 +141,26 @@ class WebExtensionBrowserMenuItemTest {
         whenever(view.context).thenReturn(testContext)
 
         val badgeText = ""
-        val browserAction = Action(
-            title = "title",
-            loadIcon = { icon },
-            enabled = true,
-            badgeText = badgeText,
-            badgeTextColor = Color.WHITE,
-            badgeBackgroundColor = Color.BLUE,
-        ) {}
+        val browserAction =
+            Action(
+                title = "title",
+                loadIcon = { icon },
+                enabled = true,
+                badgeText = badgeText,
+                badgeTextColor = Color.WHITE,
+                badgeBackgroundColor = Color.BLUE,
+            ) {}
 
         val action = WebExtensionBrowserMenuItem(browserAction, {})
         action.bind(mock(), view)
-        dispatcher.scheduler.advanceUntilIdle()
+        testScheduler.advanceUntilIdle()
 
         verify(badgeView).setBadgeText(badgeText)
         assertEquals(View.INVISIBLE, badgeView.visibility)
     }
 
     @Test
-    fun fallbackToDefaultIcon() {
+    fun fallbackToDefaultIcon() = runTest {
         val imageView: ImageView = mock()
         val badgeView: TextView = mock()
         val labelView: TextView = mock()
@@ -177,24 +173,25 @@ class WebExtensionBrowserMenuItemTest {
         whenever(view.findViewById<View>(R.id.container)).thenReturn(container)
         whenever(view.context).thenReturn(testContext)
 
-        val browserAction = Action(
-            title = "title",
-            loadIcon = { throw IllegalArgumentException() },
-            enabled = true,
-            badgeText = "badgeText",
-            badgeTextColor = Color.WHITE,
-            badgeBackgroundColor = Color.BLUE,
-        ) {}
+        val browserAction =
+            Action(
+                title = "title",
+                loadIcon = { throw IllegalArgumentException() },
+                enabled = true,
+                badgeText = "badgeText",
+                badgeTextColor = Color.WHITE,
+                badgeBackgroundColor = Color.BLUE,
+            ) {}
 
-        val action = WebExtensionBrowserMenuItem(browserAction, {})
+        val action = WebExtensionBrowserMenuItem(browserAction, {}, uiScope = this)
         action.bind(mock(), view)
-        dispatcher.scheduler.advanceUntilIdle()
+        testScheduler.advanceUntilIdle()
 
         verify(imageView).setImageDrawable(notNull())
     }
 
     @Test
-    fun `clicking item view invokes callback and dismisses menu`() {
+    fun `clicking item view invokes callback and dismisses menu`() = runTest {
         var callbackInvoked = false
 
         val icon: Bitmap = mock()
@@ -210,21 +207,22 @@ class WebExtensionBrowserMenuItemTest {
         whenever(view.findViewById<View>(R.id.container)).thenReturn(container)
         whenever(view.context).thenReturn(testContext)
 
-        val browserAction = Action(
-            title = "title",
-            loadIcon = { icon },
-            enabled = true,
-            badgeText = "badgeText",
-            badgeTextColor = Color.WHITE,
-            badgeBackgroundColor = Color.BLUE,
-        ) {}
+        val browserAction =
+            Action(
+                title = "title",
+                loadIcon = { icon },
+                enabled = true,
+                badgeText = "badgeText",
+                badgeTextColor = Color.WHITE,
+                badgeBackgroundColor = Color.BLUE,
+            ) {}
 
         val item = WebExtensionBrowserMenuItem(browserAction, { callbackInvoked = true })
 
         val menu: WebExtensionBrowserMenu = mock()
 
         item.bind(menu, view)
-        dispatcher.scheduler.advanceUntilIdle()
+        testScheduler.advanceUntilIdle()
 
         container.performClick()
 
@@ -247,33 +245,35 @@ class WebExtensionBrowserMenuItemTest {
         whenever(view.findViewById<View>(R.id.container)).thenReturn(container)
         whenever(view.context).thenReturn(testContext)
 
-        val browserAction = Action(
-            title = "title",
-            loadIcon = { icon },
-            enabled = true,
-            badgeText = "badgeText",
-            badgeTextColor = Color.WHITE,
-            badgeBackgroundColor = Color.BLUE,
-        ) {}
+        val browserAction =
+            Action(
+                title = "title",
+                loadIcon = { icon },
+                enabled = true,
+                badgeText = "badgeText",
+                badgeTextColor = Color.WHITE,
+                badgeBackgroundColor = Color.BLUE,
+            ) {}
 
         val item = WebExtensionBrowserMenuItem(browserAction, {})
 
         val menu: WebExtensionBrowserMenu = mock()
 
         item.bind(menu, view)
-        dispatcher.scheduler.advanceUntilIdle()
+        testScheduler.advanceUntilIdle()
 
         verify(labelView).text = "title"
         verify(badgeView).text = "badgeText"
 
-        val browserActionOverride = Action(
-            title = "override",
-            loadIcon = { icon },
-            enabled = true,
-            badgeText = "overrideBadge",
-            badgeTextColor = Color.WHITE,
-            badgeBackgroundColor = Color.BLUE,
-        ) {}
+        val browserActionOverride =
+            Action(
+                title = "override",
+                loadIcon = { icon },
+                enabled = true,
+                badgeText = "overrideBadge",
+                badgeTextColor = Color.WHITE,
+                badgeBackgroundColor = Color.BLUE,
+            ) {}
 
         item.action = browserActionOverride
         item.invalidate(view)
@@ -342,11 +342,12 @@ class WebExtensionBrowserMenuItemTest {
         val imageViewCaptor = argumentCaptor<ImageView>()
         val tintCaptor = argumentCaptor<Int>()
 
-        verify(webExtMenuItem).setupIcon(
-            viewCaptor.capture(),
-            imageViewCaptor.capture(),
-            tintCaptor.capture(),
-        )
+        verify(webExtMenuItem)
+            .setupIcon(
+                viewCaptor.capture(),
+                imageViewCaptor.capture(),
+                tintCaptor.capture(),
+            )
 
         assertEquals(view, viewCaptor.value)
         assertEquals(imageView, imageViewCaptor.value)

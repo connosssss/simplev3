@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,21 +7,24 @@
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/PresState.h"
 #include "mozilla/dom/CustomElementRegistry.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/ElementInternalsBinding.h"
 #include "mozilla/dom/FormData.h"
 #include "mozilla/dom/FromParser.h"
 #include "mozilla/dom/HTMLElementBinding.h"
+#include "mozilla/dom/LifecycleCallbackArgs.h"
 #include "nsContentUtils.h"
 #include "nsGenericHTMLElement.h"
 #include "nsILayoutHistoryState.h"
 
 namespace mozilla::dom {
 
-HTMLElement::HTMLElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
+HTMLElement::HTMLElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo,
                          FromParser aFromParser)
     : nsGenericHTMLFormElement(std::move(aNodeInfo)) {
   if (NodeInfo()->Equals(nsGkAtoms::bdi)) {
     AddStatesSilently(ElementState::HAS_DIR_ATTR_LIKE_AUTO);
+    OwnerDoc()->SetNeedsDirHandling();
   }
 
   InhibitRestoration(!(aFromParser & FROM_PARSER_NETWORK));
@@ -162,7 +163,7 @@ void HTMLElement::RestoreFormAssociatedCustomElementState() {
   }
 
   auto& ce = content.get_CustomElementTuple();
-  nsCOMPtr<nsIGlobalObject> global = GetOwnerDocument()->GetOwnerGlobal();
+  nsCOMPtr<nsIGlobalObject> global = GetRelevantGlobal();
   internals->RestoreFormValue(
       nsContentUtils::ExtractFormAssociatedCustomElementValue(global,
                                                               ce.value()),
@@ -292,6 +293,9 @@ void HTMLElement::AfterClearForm(bool aUnbindOrDelete) {
 
 void HTMLElement::UpdateFormOwner() {
   MOZ_ASSERT(IsFormAssociatedElement());
+  MOZ_ASSERT(GetCustomElementData());
+  MOZ_ASSERT(GetCustomElementData()->mState ==
+             CustomElementData::State::eCustom);
 
   // If @form is set, the element *has* to be in a composed document,
   // otherwise it wouldn't be possible to find an element with the
@@ -363,7 +367,7 @@ void HTMLElement::SetFormInternal(HTMLFormElement* aForm, bool aBindToTree) {
 HTMLFormElement* HTMLElement::GetFormInternal() const {
   ElementInternals* internals = GetElementInternals();
   MOZ_ASSERT(internals);
-  return internals->GetForm();
+  return internals->GetFormInternal();
 }
 
 void HTMLElement::SetFieldSetInternal(HTMLFieldSetElement* aFieldset) {
@@ -393,6 +397,13 @@ void HTMLElement::UpdateDisabledState(bool aNotify) {
 }
 
 void HTMLElement::UpdateFormOwner(bool aBindToTree, Element* aFormIdElement) {
+  MOZ_ASSERT(IsFormAssociatedElement());
+
+  CustomElementData* data = GetCustomElementData();
+  if (data->mState != CustomElementData::State::eCustom) {
+    return;
+  }
+
   HTMLFormElement* oldForm = GetFormInternal();
   nsGenericHTMLFormElement::UpdateFormOwner(aBindToTree, aFormIdElement);
   HTMLFormElement* newForm = GetFormInternal();
@@ -405,8 +416,7 @@ void HTMLElement::UpdateFormOwner(bool aBindToTree, Element* aFormIdElement) {
 }
 
 bool HTMLElement::IsFormAssociatedElement() const {
-  CustomElementData* data = GetCustomElementData();
-  return data && data->IsFormAssociated();
+  return IsFormAssociatedCustomElement();
 }
 
 void HTMLElement::FieldSetDisabledChanged(bool aNotify) {
@@ -452,7 +462,7 @@ void HTMLElement::UpdateBarredFromConstraintValidation() {
 // Here, we expand 'NS_IMPL_NS_NEW_HTML_ELEMENT()' by hand.
 // (Calling the macro directly (with no args) produces compiler warnings.)
 nsGenericHTMLElement* NS_NewHTMLElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo,
     mozilla::dom::FromParser aFromParser) {
   RefPtr<mozilla::dom::NodeInfo> nodeInfo(aNodeInfo);
   auto* nim = nodeInfo->NodeInfoManager();
@@ -462,7 +472,7 @@ nsGenericHTMLElement* NS_NewHTMLElement(
 // Distinct from the above in order to have function pointer that compared
 // unequal to a function pointer to the above.
 nsGenericHTMLElement* NS_NewCustomElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo,
     mozilla::dom::FromParser aFromParser) {
   RefPtr<mozilla::dom::NodeInfo> nodeInfo(aNodeInfo);
   auto* nim = nodeInfo->NodeInfoManager();

@@ -1,13 +1,12 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "txStylesheet.h"
 
+#include <memory>
 #include <utility>
 
-#include "mozilla/FloatingPoint.h"
 #include "txExpr.h"
 #include "txInstructions.h"
 #include "txKey.h"
@@ -20,7 +19,6 @@
 using mozilla::LogLevel;
 using mozilla::MakeUnique;
 using mozilla::UniquePtr;
-using mozilla::Unused;
 using mozilla::WrapUnique;
 
 txStylesheet::txStylesheet() : mRootFrame(nullptr) {}
@@ -35,7 +33,7 @@ nsresult txStylesheet::init() {
   UniquePtr<txNodeTest> nt(new txNodeTypeTest(txNodeTypeTest::NODE_TYPE));
   UniquePtr<Expr> nodeExpr(
       new LocationStep(nt.get(), LocationStep::CHILD_AXIS));
-  Unused << nt.release();
+  (void)nt.release();
 
   txPushNewContext* pushContext = new txPushNewContext(std::move(nodeExpr));
   mContainerTemplate->mNext = WrapUnique(pushContext);
@@ -56,7 +54,7 @@ nsresult txStylesheet::init() {
   // attribute/textnode template
   nt = MakeUnique<txNodeTypeTest>(txNodeTypeTest::NODE_TYPE);
   nodeExpr = MakeUnique<LocationStep>(nt.get(), LocationStep::SELF_AXIS);
-  Unused << nt.release();
+  (void)nt.release();
 
   mCharactersTemplate = MakeUnique<txValueOf>(std::move(nodeExpr), false);
   mCharactersTemplate->mNext = MakeUnique<txReturn>();
@@ -110,7 +108,7 @@ nsresult txStylesheet::findTemplate(const txXPathNode& aNode,
   }
 
 #if defined(TX_TO_STRING)
-  txPattern* match = 0;
+  txPattern* match = nullptr;
 #endif
 
   ImportFrame* frame;
@@ -315,11 +313,11 @@ nsresult txStylesheet::doneCompiling() {
   }
 
   if (!mDecimalFormats.get(txExpandedName())) {
-    UniquePtr<txDecimalFormat> format(new txDecimalFormat);
+    auto format = std::make_unique<txDecimalFormat>();
     rv = mDecimalFormats.add(txExpandedName(), format.get());
     NS_ENSURE_SUCCESS(rv, rv);
 
-    Unused << format.release();
+    (void)format.release();
   }
 
   return NS_OK;
@@ -333,7 +331,7 @@ nsresult txStylesheet::addTemplate(txTemplateItem* aTemplate,
   mTemplateInstructions.add(instr);
 
   // mTemplateInstructions now owns the instructions
-  Unused << aTemplate->mFirstInstruction.release();
+  (void)aTemplate->mFirstInstruction.release();
 
   if (!aTemplate->mName.isNull()) {
     nsresult rv = mNamedTemplates.add(aTemplate->mName, instr);
@@ -351,8 +349,8 @@ nsresult txStylesheet::addTemplate(txTemplateItem* aTemplate,
       aImportFrame->mMatchableTemplates.get(aTemplate->mMode);
 
   if (!templates) {
-    UniquePtr<nsTArray<MatchableTemplate>> newList(
-        new nsTArray<MatchableTemplate>);
+    UniquePtr<nsTArray<MatchableTemplate>> newList =
+        std::make_unique<nsTArray<MatchableTemplate>>();
     nsresult rv =
         aImportFrame->mMatchableTemplates.set(aTemplate->mMode, newList.get());
     NS_ENSURE_SUCCESS(rv, rv);
@@ -452,7 +450,7 @@ nsresult txStylesheet::addAttributeSet(txAttributeSetItem* aAttributeSetItem) {
                             aAttributeSetItem->mFirstInstruction.get());
     NS_ENSURE_SUCCESS(rv, rv);
 
-    Unused << aAttributeSetItem->mFirstInstruction.release();
+    (void)aAttributeSetItem->mFirstInstruction.release();
 
     return NS_OK;
   }
@@ -474,7 +472,7 @@ nsresult txStylesheet::addAttributeSet(txAttributeSetItem* aAttributeSetItem) {
                           aAttributeSetItem->mFirstInstruction.get());
   NS_ENSURE_SUCCESS(rv, rv);
 
-  Unused << aAttributeSetItem->mFirstInstruction.release();
+  (void)aAttributeSetItem->mFirstInstruction.release();
 
   lastNonReturn->mNext =
       WrapUnique(oldInstr);  // ...and link up the old instructions.
@@ -486,13 +484,13 @@ nsresult txStylesheet::addGlobalVariable(txVariableItem* aVariable) {
   if (mGlobalVariables.get(aVariable->mName)) {
     return NS_OK;
   }
-  UniquePtr<GlobalVariable> var(new GlobalVariable(
+  auto var = std::make_unique<GlobalVariable>(
       std::move(aVariable->mValue), std::move(aVariable->mFirstInstruction),
-      aVariable->mIsParam));
+      aVariable->mIsParam);
   nsresult rv = mGlobalVariables.add(aVariable->mName, var.get());
   NS_ENSURE_SUCCESS(rv, rv);
 
-  Unused << var.release();
+  (void)var.release();
 
   return NS_OK;
 }
@@ -530,7 +528,7 @@ nsresult txStylesheet::addDecimalFormat(const txExpandedName& aName,
   nsresult rv = mDecimalFormats.add(aName, aFormat.get());
   NS_ENSURE_SUCCESS(rv, rv);
 
-  Unused << aFormat.release();
+  (void)aFormat.release();
 
   return NS_OK;
 }

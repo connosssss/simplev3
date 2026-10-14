@@ -197,8 +197,8 @@ function TargetMixin(parentClass) {
      * Returns a boolean indicating whether or not the specific actor
      * type exists.
      *
-     * @param {String} actorName
-     * @return {Boolean}
+     * @param {string} actorName
+     * @return {boolean}
      */
     hasActor(actorName) {
       if (this.targetForm) {
@@ -211,10 +211,13 @@ function TargetMixin(parentClass) {
      * Returns a trait from the target actor if it exists,
      * if not it will fallback to that on the root actor.
      *
-     * @param {String} traitName
+     * @param {string} traitName
      * @return {Mixed}
      */
     getTrait(traitName) {
+      if (this.isDestroyedOrBeingDestroyed()) {
+        return null;
+      }
       // If the targeted actor exposes traits and has a defined value for this
       // traits, override the root actor traits
       if (this.targetForm.traits && traitName in this.targetForm.traits) {
@@ -258,6 +261,32 @@ function TargetMixin(parentClass) {
       // ensure that the front is a front, and not async front
       if (front?.actorID) {
         return front;
+      }
+      return null;
+    }
+
+    /**
+     * This method gets the source content for a given resource.
+     *
+     * @param {object} resourceActor - The resource actor for which to get the source content.
+     *                                 This is the actor created by the create...Actor api's in create.js.
+     * @returns {Promise<{source: string, contentType: string}>}
+     */
+    async getSourceContentForResource(resourceActor) {
+      const { resourceCommand } = this.commands;
+      switch (resourceActor.sourceObject.type) {
+        case resourceCommand.TYPES.STYLESHEET: {
+          const stylesheetsFront = await this.getFront("stylesheets");
+          const sourceStr = await stylesheetsFront.getText(resourceActor.id);
+          return { source: await sourceStr.string(), contentType: "text/css" };
+        }
+        case resourceCommand.TYPES.SOURCE: {
+          const sourceFront = this.threadFront.source({
+            actor: resourceActor.id,
+          });
+          const { source, contentType } = await sourceFront.source();
+          return { source, contentType };
+        }
       }
       return null;
     }
@@ -497,7 +526,7 @@ function TargetMixin(parentClass) {
      *
      * @param {Error} e
      *        The real error object.
-     * @param {String} targetType
+     * @param {string} targetType
      *        The type of the target front ("worker", "browsing-context", ...)
      */
     logDetachError(e, targetType) {
@@ -551,9 +580,9 @@ function TargetMixin(parentClass) {
     /**
      * Log an error of some kind to the tab's console.
      *
-     * @param {String} text
+     * @param {string} text
      *                 The text to log.
-     * @param {String} category
+     * @param {string} category
      *                 The category of the message.  @see nsIScriptError.
      * @returns {Promise}
      */
@@ -568,9 +597,9 @@ function TargetMixin(parentClass) {
     /**
      * Log a warning of some kind to the tab's console.
      *
-     * @param {String} text
+     * @param {string} text
      *                 The text to log.
-     * @param {String} category
+     * @param {string} category
      *                 The category of the message.  @see nsIScriptError.
      * @returns {Promise}
      */

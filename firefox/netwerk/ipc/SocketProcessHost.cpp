@@ -1,21 +1,20 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SocketProcessHost.h"
 
+#include "ProfilerParent.h"
 #include "SocketProcessParent.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/FileDescriptor.h"
+#include "mozilla/ipc/ProcessChild.h"
 #include "mozilla/ipc/ProcessUtils.h"
 #include "nsAppRunner.h"
 #include "nsIOService.h"
 #include "nsIObserverService.h"
-#include "ProfilerParent.h"
 #include "nsNetUtil.h"
-#include "mozilla/ipc/Endpoint.h"
-#include "mozilla/ipc/ProcessChild.h"
 
 #if defined(XP_LINUX) && defined(MOZ_SANDBOX)
 #  include "mozilla/SandboxBroker.h"
@@ -35,6 +34,10 @@ using namespace mozilla::ipc;
 
 namespace mozilla {
 namespace net {
+
+#if defined(XP_MACOSX) || defined(XP_IOS)
+static bool sAppleFastDatapathProbeAllowed = true;
+#endif
 
 #if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
 bool SocketProcessHost::sLaunchWithMacSandbox = false;
@@ -70,7 +73,7 @@ bool SocketProcessHost::Launch() {
 
   SharedPreferenceSerializer prefSerializer;
   if (!prefSerializer.SerializeToSharedMemory(GeckoProcessType_VR,
-                                              /* remoteType */ ""_ns)) {
+                                              /* remoteType */ {})) {
     return false;
   }
   prefSerializer.AddSharedPrefCmdLineArgs(*this, extraArgs);
@@ -143,7 +146,7 @@ void SocketProcessHost::InitAfterConnect(bool aSucceeded) {
   DebugOnly<bool> rv = TakeInitialEndpoint().Bind(mSocketProcessParent.get());
   MOZ_ASSERT(rv);
 
-  SocketPorcessInitAttributes attributes;
+  SocketProcessInitAttributes attributes;
   nsCOMPtr<nsIIOService> ioService(do_GetIOService());
   MOZ_ASSERT(ioService, "No IO service?");
   DebugOnly<nsresult> result = ioService->GetOffline(&attributes.mOffline());
@@ -170,16 +173,20 @@ void SocketProcessHost::InitAfterConnect(bool aSucceeded) {
                                 attributes.mSandboxBroker().ref());
       // This is unlikely to fail and probably indicates OS resource
       // exhaustion.
-      Unused << NS_WARN_IF(mSandboxBroker == nullptr);
+      (void)NS_WARN_IF(mSandboxBroker == nullptr);
       MOZ_ASSERT(attributes.mSandboxBroker().ref().IsValid());
     }
     attributes.mInitSandbox() = true;
   }
 #endif  // XP_LINUX && MOZ_SANDBOX
 
-  Unused << GetActor()->SendInit(attributes);
+#if defined(XP_MACOSX) || defined(XP_IOS)
+  attributes.mAppleFastDatapathProbeAllowed() = sAppleFastDatapathProbeAllowed;
+#endif
 
-  Unused << GetActor()->SendInitProfiler(
+  (void)GetActor()->SendInit(attributes);
+
+  (void)GetActor()->SendInitProfiler(
       ProfilerParent::CreateForProcess(GetActor()->OtherPid()));
 
   if (mListener) {
@@ -211,6 +218,12 @@ void SocketProcessHost::Shutdown() {
 
 void SocketProcessHost::OnChannelClosed() {
   MOZ_ASSERT(NS_IsMainThread());
+
+#if defined(XP_MACOSX) || defined(XP_IOS)
+  if (!mShutdownRequested && !mAppleFastDatapathProbeResultReceived) {
+    sAppleFastDatapathProbeAllowed = false;
+  }
+#endif
 
   mChannelClosed = true;
 

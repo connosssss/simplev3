@@ -10,21 +10,21 @@ import android.view.LayoutInflater
 import android.view.Menu
 import android.view.MenuInflater
 import android.view.MenuItem
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.CheckBox
 import android.widget.CompoundButton
 import android.widget.TextView
+import androidx.annotation.LayoutRes
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
+import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.ItemTouchHelper.SimpleCallback
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import java.util.Collections
 import kotlinx.coroutines.launch
 import mozilla.components.concept.engine.content.blocking.TrackingProtectionException
 import org.mozilla.focus.GleanMetrics.TrackingProtectionExceptions
@@ -37,69 +37,65 @@ import org.mozilla.focus.ext.showToolbar
 import org.mozilla.focus.settings.BaseSettingsLikeFragment
 import org.mozilla.focus.state.AppAction
 import org.mozilla.focus.state.Screen
+import org.mozilla.focus.utils.ListDiffCallback
 import org.mozilla.focus.utils.ViewUtils
-import java.util.Collections
-import kotlin.coroutines.CoroutineContext
 
 private const val REMOVE_EXCEPTIONS_DISABLED_ALPHA = 0.5f
+
 typealias DomainFormatter = (String) -> String
 
-/**
- * Fragment showing settings UI listing all exception domains.
- */
-open class ExceptionsListFragment : BaseSettingsLikeFragment(), CoroutineScope {
-    private var job = Job()
-    override val coroutineContext: CoroutineContext
-        get() = job + Dispatchers.Main
+/** Fragment showing settings UI listing all exception domains. */
+open class ExceptionsListFragment : BaseSettingsLikeFragment() {
+
     private var _binding: FragmentExceptionsDomainsBinding? = null
-    protected val binding get() = _binding!!
+    protected val binding
+        get() = _binding!!
 
-    /**
-     * ItemTouchHelper for reordering items in the domain list.
-     */
-    val itemTouchHelper: ItemTouchHelper = ItemTouchHelper(
-        object : SimpleCallback(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0) {
-            override fun onMove(
-                recyclerView: RecyclerView,
-                viewHolder: RecyclerView.ViewHolder,
-                target: RecyclerView.ViewHolder,
-            ): Boolean {
-                val from = viewHolder.bindingAdapterPosition
-                val to = target.bindingAdapterPosition
+    /** ItemTouchHelper for reordering items in the domain list. */
+    val itemTouchHelper: ItemTouchHelper =
+        ItemTouchHelper(
+            object : SimpleCallback(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0) {
+                override fun onMove(
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    target: RecyclerView.ViewHolder,
+                ): Boolean {
+                    val from = viewHolder.bindingAdapterPosition
+                    val to = target.bindingAdapterPosition
 
-                (recyclerView.adapter as DomainListAdapter).move(from, to)
+                    (recyclerView.adapter as DomainListAdapter).move(from, to)
 
-                return true
-            }
+                    return true
+                }
 
-            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
-                // empty on purpose
-            }
+                override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
+                    // empty on purpose
+                }
 
-            override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
-                super.onSelectedChanged(viewHolder, actionState)
+                override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
+                    super.onSelectedChanged(viewHolder, actionState)
 
-                if (viewHolder is DomainViewHolder) {
-                    viewHolder.onSelected()
+                    if (viewHolder is DomainViewHolder) {
+                        viewHolder.onSelected()
+                    }
+                }
+
+                override fun clearView(
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                ) {
+                    super.clearView(recyclerView, viewHolder)
+
+                    if (viewHolder is DomainViewHolder) {
+                        viewHolder.onCleared()
+                    }
                 }
             }
-
-            override fun clearView(
-                recyclerView: RecyclerView,
-                viewHolder: RecyclerView.ViewHolder,
-            ) {
-                super.clearView(recyclerView, viewHolder)
-
-                if (viewHolder is DomainViewHolder) {
-                    viewHolder.onCleared()
-                }
-            }
-        },
-    )
+        )
 
     /**
-     * In selection mode the user can select and remove items. In non-selection mode the list can
-     * be reordered by the user.
+     * In selection mode the user can select and remove items. In non-selection mode the list can be reordered by the
+     * user.
      */
     open fun isSelectionMode() = false
 
@@ -116,8 +112,7 @@ open class ExceptionsListFragment : BaseSettingsLikeFragment(), CoroutineScope {
         super.onViewCreated(view, savedInstanceState)
 
         binding.exceptionList.apply {
-            layoutManager =
-                LinearLayoutManager(activity, RecyclerView.VERTICAL, false)
+            layoutManager = LinearLayoutManager(activity, RecyclerView.VERTICAL, false)
             adapter = DomainListAdapter()
             setHasFixedSize(true)
         }
@@ -134,25 +129,18 @@ open class ExceptionsListFragment : BaseSettingsLikeFragment(), CoroutineScope {
                 alpha = REMOVE_EXCEPTIONS_DISABLED_ALPHA
             }
             requireComponents.trackingProtectionUseCases.removeAllExceptions {
-                val exceptionsListSize =
-                    (binding.exceptionList.adapter as DomainListAdapter).itemCount
+                val exceptionsListSize = (binding.exceptionList.adapter as DomainListAdapter).itemCount
                 TrackingProtectionExceptions.allowListCleared.record(
-                    TrackingProtectionExceptions.AllowListClearedExtra(exceptionsListSize),
+                    TrackingProtectionExceptions.AllowListClearedExtra(exceptionsListSize)
                 )
 
-                requireComponents.appStore.dispatch(
-                    AppAction.NavigateUp(
-                        requireComponents.store.state.selectedTabId,
-                    ),
-                )
+                requireComponents.appStore.dispatch(AppAction.NavigateUp(requireComponents.store.state.selectedTabId))
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
-
-        job = Job()
 
         showToolbar(getString(R.string.preference_exceptions))
 
@@ -161,17 +149,12 @@ open class ExceptionsListFragment : BaseSettingsLikeFragment(), CoroutineScope {
             context?.let {
                 if ((binding.exceptionList.adapter as DomainListAdapter).itemCount == 0) {
                     requireComponents.appStore.dispatch(
-                        AppAction.NavigateUp(requireComponents.store.state.selectedTabId),
+                        AppAction.NavigateUp(requireComponents.store.state.selectedTabId)
                     )
                 }
                 activity?.invalidateOptionsMenu()
             }
         }
-    }
-
-    override fun onStop() {
-        job.cancel()
-        super.onStop()
     }
 
     override fun onDestroyView() {
@@ -194,28 +177,29 @@ open class ExceptionsListFragment : BaseSettingsLikeFragment(), CoroutineScope {
         }
     }
 
-    override fun onMenuItemSelected(menuItem: MenuItem): Boolean = when (menuItem.itemId) {
-        R.id.remove -> {
-            requireComponents.appStore.dispatch(
-                AppAction.OpenSettings(page = Screen.Settings.Page.PrivacyExceptionsRemove),
-            )
-            true
+    override fun onMenuItemSelected(menuItem: MenuItem): Boolean =
+        when (menuItem.itemId) {
+            R.id.remove -> {
+                requireComponents.appStore.dispatch(
+                    AppAction.OpenSettings(page = Screen.Settings.Page.PrivacyExceptionsRemove)
+                )
+                true
+            }
+            else -> false
         }
-        else -> false
-    }
 
-    /**
-     * Adapter implementation for the list of exception domains.
-     */
+    /** Adapter implementation for the list of exception domains. */
     inner class DomainListAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         private var exceptions: List<TrackingProtectionException> = emptyList()
         private val selectedExceptions: MutableList<TrackingProtectionException> = mutableListOf()
 
+        /** Refreshes the list of exceptions. */
         fun refresh(context: Context, body: (() -> Unit)? = null) {
-            this@ExceptionsListFragment.launch(Dispatchers.Main) {
+            viewLifecycleOwner.lifecycleScope.launch {
                 context.components.trackingProtectionUseCases.fetchExceptions {
+                    val diff = DiffUtil.calculateDiff(ListDiffCallback(exceptions, it) { exception -> exception.url })
                     exceptions = it
-                    notifyDataSetChanged()
+                    diff.dispatchUpdatesTo(this@DomainListAdapter)
                     body?.invoke()
                 }
             }
@@ -226,9 +210,9 @@ open class ExceptionsListFragment : BaseSettingsLikeFragment(), CoroutineScope {
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder =
             when (viewType) {
                 DomainViewHolder.LAYOUT_ID ->
-                    DomainViewHolder(
-                        LayoutInflater.from(parent.context).inflate(viewType, parent, false),
-                    ) { AutocompleteDomainFormatter.format(it) }
+                    DomainViewHolder(LayoutInflater.from(parent.context).inflate(viewType, parent, false)) {
+                        AutocompleteDomainFormatter.format(it)
+                    }
                 else -> throw IllegalArgumentException("Unknown view type: $viewType")
             }
 
@@ -252,8 +236,10 @@ open class ExceptionsListFragment : BaseSettingsLikeFragment(), CoroutineScope {
             }
         }
 
+        /** Returns the list of currently selected exceptions. */
         fun selection(): List<TrackingProtectionException> = selectedExceptions
 
+        /** Moves an item from [from] position to [to] position in the list. */
         fun move(from: Int, to: Int) {
             Collections.swap(exceptions, from, to)
             notifyItemMoved(from, to)
@@ -263,9 +249,7 @@ open class ExceptionsListFragment : BaseSettingsLikeFragment(), CoroutineScope {
         }
     }
 
-    /**
-     * ViewHolder implementation for a domain item in the list.
-     */
+    /** ViewHolder implementation for a domain item in the list. */
     private class DomainViewHolder(
         itemView: View,
         val domainFormatter: DomainFormatter? = null,
@@ -275,7 +259,7 @@ open class ExceptionsListFragment : BaseSettingsLikeFragment(), CoroutineScope {
         val handleView: View = itemView.findViewById(R.id.handleView)
 
         companion object {
-            val LAYOUT_ID = R.layout.item_custom_domain
+            @LayoutRes val LAYOUT_ID = R.layout.item_custom_domain
         }
 
         fun bind(
@@ -300,11 +284,9 @@ open class ExceptionsListFragment : BaseSettingsLikeFragment(), CoroutineScope {
             }
 
             handleView.isVisible = isSelectionMode
-            handleView.setOnTouchListener { _, event ->
-                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                    itemTouchHelper.startDrag(this)
-                }
-                false
+            handleView.setOnLongClickListener {
+                itemTouchHelper.startDrag(this)
+                true
             }
 
             if (isSelectionMode) {

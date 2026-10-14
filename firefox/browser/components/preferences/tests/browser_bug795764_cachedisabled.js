@@ -25,6 +25,10 @@ function test() {
 }
 
 async function runTest(win) {
+  const ipProtectionEnabled = SpecialPowers.getBoolPref(
+    "browser.ipProtection.enabled",
+    false
+  );
   is(gBrowser.currentURI.spec, "about:preferences", "about:preferences loaded");
 
   let tab = win.document;
@@ -35,9 +39,14 @@ async function runTest(win) {
   for (let element of elements) {
     let attributeValue = element.getAttribute("data-category");
 
-    // Ignore the cookie banner handling section, as it is currently preffed
-    // off by default (bug 1800679).
-    if (element.id === "cookieBannerHandlingGroup") {
+    // IP Protection section is gated by browser.ipProtection.enabled
+    if (element.id === "dataIPProtectionGroup" && !ipProtectionEnabled) {
+      is_element_hidden(element, "Disabled ipProtection should be hidden");
+      continue;
+    }
+
+    if (element.getAttribute("data-hidden-from-search") == "true") {
+      is_element_hidden(element, "Hidden from search element should be hidden");
       continue;
     }
 

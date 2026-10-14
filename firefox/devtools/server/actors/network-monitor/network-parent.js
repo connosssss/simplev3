@@ -18,8 +18,7 @@ const {
  * This actor manages all network functionality running
  * in the parent process.
  *
- * @constructor
- *
+ * @class
  */
 class NetworkParentActor extends Actor {
   constructor(watcherActor) {
@@ -127,7 +126,8 @@ class NetworkParentActor extends Actor {
 
   /**
    * Blocks the requests based on the filters
-   * @param {Object} filters
+   *
+   * @param {object} filters
    */
   blockRequest(filters) {
     if (!this.networkEventWatcher) {
@@ -138,7 +138,8 @@ class NetworkParentActor extends Actor {
 
   /**
    * Unblocks requests based on the filters
-   * @param {Object} filters
+   *
+   * @param {object} filters
    */
   unblockRequest(filters) {
     if (!this.networkEventWatcher) {
@@ -169,6 +170,22 @@ class NetworkParentActor extends Actor {
       throw new Error("Not listening for network events");
     }
     this.networkEventWatcher.removeOverride(url);
+  }
+
+  setLocalModeMappings(mappings) {
+    if (!this.networkEventWatcher) {
+      throw new Error("Not listening for network events");
+    }
+    this.networkEventWatcher.setLocalModeMappings(mappings);
+  }
+
+  setBodyLimit(bodyLimit) {
+    // We will always call this method, even if we are still using legacy listener.
+    // Do not throw, we will always persist in that deprecated codepath.
+    if (!this.networkEventWatcher) {
+      return;
+    }
+    this.networkEventWatcher.setBodyLimit(bodyLimit);
   }
 }
 

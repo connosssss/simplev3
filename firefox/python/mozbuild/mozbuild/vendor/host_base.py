@@ -17,6 +17,10 @@ class HttpError(Exception):
     pass
 
 
+class TagNotFound(Exception):
+    """No matching tag was found in the upstream repository."""
+
+
 class BaseHost:
     MAX_RETRIES_DEFAULT = urllib3.util.Retry(
         total=5, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504]
@@ -32,40 +36,58 @@ class BaseHost:
 
     def upstream_tag(self, revision):
         """Temporarily clone the repo to get the latest tag and timestamp"""
+        clone_config = ["-c", "core.autocrlf=input"]
+        if self.manifest["vendoring"].get("tolerate-git-fsck-errors", False):
+            clone_config += [
+                "-c",
+                "fetch.fsckObjects=false",
+                "-c",
+                "transfer.fsckObjects=false",
+            ]
+
         with tempfile.TemporaryDirectory() as temp_repo_clone:
-            starting_directory = os.getcwd()
-            os.chdir(temp_repo_clone)
+            # Run git with cwd= rather than moving the process with os.chdir():
+            # this directory is deleted when the block exits, so a caller that
+            # handles the exceptions raised below would be left sitting in a
+            # directory that no longer exists.
+            repo_clone = "/".join([temp_repo_clone, self.manifest["origin"]["name"]])
             subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "-c",
-                    "core.autocrlf=input",
+                ["git", "clone"]
+                + clone_config
+                + [
                     self.manifest["vendoring"]["url"],
                     self.manifest["origin"]["name"],
                 ],
+                cwd=temp_repo_clone,
                 capture_output=True,
                 text=True,
                 check=True,
             )
-            os.chdir("/".join([temp_repo_clone, self.manifest["origin"]["name"]]))
             revision_arg = []
             if revision and revision != "HEAD":
                 revision_arg = [revision]
 
             try:
                 tag = subprocess.run(
-                    ["git", "--no-pager", "tag", "-l", "--sort=creatordate"]
+                    [
+                        "git",
+                        "--no-pager",
+                        "tag",
+                        "-l",
+                        "--no-column",
+                        "--sort=creatordate",
+                    ]
                     + revision_arg,
+                    cwd=repo_clone,
                     capture_output=True,
                     text=True,
                     check=True,
                 ).stdout.splitlines()[-1]
             except IndexError:  # 0 lines of output, the tag does not exist
                 if revision:
-                    raise Exception(f"Requested tag {revision} not found in source.")
+                    raise TagNotFound(f"Requested tag {revision} not found in source.")
                 else:
-                    raise Exception("No tags found in source.")
+                    raise TagNotFound("No tags found in source.")
 
             tag_timestamp = subprocess.run(
                 [
@@ -76,11 +98,11 @@ class BaseHost:
                     "--format=%cd",
                     tag,
                 ],
+                cwd=repo_clone,
                 capture_output=True,
                 text=True,
                 check=True,
             ).stdout.splitlines()[-1]
-            os.chdir(starting_directory)
             return tag, tag_timestamp
 
     def upstream_snapshot(self, revision):
@@ -97,6 +119,12 @@ class BaseHost:
 
     def download_single_file(self, url, destination):
         response = self.session.get(url, stream=True)
+        if response.status_code == requests.codes.not_found:
+            if os.path.isfile(destination):
+                # File no longer exists remove local copy.
+                os.remove(destination)
+            return False
+
         if response.status_code != 200:
             raise HttpError(response.status_code, url)
         with mozfile.NamedTemporaryFile() as tmpfile:
@@ -106,3 +134,4 @@ class BaseHost:
             tmpfile.seek(0)
             os.makedirs(os.path.dirname(destination), exist_ok=True)
             self._transform_single_file_to_destination(tmpfile, destination)
+        return True

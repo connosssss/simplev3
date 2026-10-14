@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -48,6 +46,12 @@ class MOZ_STATIC_LOCAL_CLASS StaticLocalAutoPtr final {
     Assign(aRhs);
     return *this;
   }
+  StaticLocalAutoPtr(const StaticLocalAutoPtr<T>& aOther) = delete;
+
+  // We do not allow assignment as the intention of this class is to only
+  // assign to mRawPtr during construction.
+  StaticLocalAutoPtr& operator=(const StaticLocalAutoPtr<T>& aOther) = delete;
+  StaticLocalAutoPtr& operator=(StaticLocalAutoPtr<T>&&) = delete;
 
   T* get() const { return mRawPtr; }
 
@@ -67,13 +71,6 @@ class MOZ_STATIC_LOCAL_CLASS StaticLocalAutoPtr final {
   }
 
  private:
-  StaticLocalAutoPtr(const StaticLocalAutoPtr<T>& aOther) = delete;
-
-  // We do not allow assignment as the intention of this class is to only
-  // assign to mRawPtr during construction.
-  StaticLocalAutoPtr& operator=(const StaticLocalAutoPtr<T>& aOther) = delete;
-  StaticLocalAutoPtr& operator=(StaticLocalAutoPtr<T>&&) = delete;
-
   void Assign(T* aNewPtr) {
     MOZ_ASSERT(!aNewPtr || mRawPtr != aNewPtr);
     T* oldPtr = mRawPtr;
@@ -95,7 +92,7 @@ class MOZ_STATIC_LOCAL_CLASS StaticLocalRefPtr final {
     AssignAssumingAddRef(aPtr.take());
   }
 
-  explicit StaticLocalRefPtr(already_AddRefed<T>&& aPtr) : mRawPtr(nullptr) {
+  explicit StaticLocalRefPtr(already_AddRefed<T> aPtr) : mRawPtr(nullptr) {
     AssignAssumingAddRef(aPtr.take());
   }
 
@@ -110,6 +107,11 @@ class MOZ_STATIC_LOCAL_CLASS StaticLocalRefPtr final {
     AssignWithAddref(aRhs);
     return *this;
   }
+
+  // We do not allow assignment as the intention of this class is to only
+  // assign to mRawPtr during construction.
+  StaticLocalRefPtr<T>& operator=(const StaticLocalRefPtr<T>& aRhs) = delete;
+  StaticLocalRefPtr<T>& operator=(StaticLocalRefPtr<T>&& aRhs) = delete;
 
   already_AddRefed<T> forget() {
     T* temp = mRawPtr;
@@ -129,11 +131,6 @@ class MOZ_STATIC_LOCAL_CLASS StaticLocalRefPtr final {
   T& operator*() const { return *get(); }
 
  private:
-  // We do not allow assignment as the intention of this class is to only
-  // assign to mRawPtr during construction.
-  StaticLocalRefPtr<T>& operator=(const StaticLocalRefPtr<T>& aRhs) = delete;
-  StaticLocalRefPtr<T>& operator=(StaticLocalRefPtr<T>&& aRhs) = delete;
-
   void AssignWithAddref(T* aNewPtr) {
     if (aNewPtr) {
       aNewPtr->AddRef();

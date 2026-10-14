@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -36,23 +34,24 @@ class GenericPrinter;
 class JSONPrinter;
 
 extern RegExpObject* RegExpAlloc(JSContext* cx, NewObjectKind newKind,
-                                 HandleObject proto = nullptr);
+                                 HandleObject proto = nullptr,
+                                 HandleObject newTarget = nullptr);
 
 extern JSObject* CloneRegExpObject(JSContext* cx, Handle<RegExpObject*> regex);
 
 class RegExpObject : public NativeObject {
-  static const unsigned LAST_INDEX_SLOT = 0;
-  static const unsigned SOURCE_SLOT = 1;
-  static const unsigned FLAGS_SLOT = 2;
+  JS_DEFINE_UNTYPED_SLOT(0, LAST_INDEX_SLOT);
+  JS_DEFINE_TYPED_SLOT(1, SOURCE_SLOT, String, Undefined);
+  JS_DEFINE_TYPED_SLOT(2, FLAGS_SLOT, Int32, Undefined);
 
-  static_assert(RegExpObject::FLAGS_SLOT == REGEXP_FLAGS_SLOT,
+  static_assert(RegExpObject::FLAGS_SLOT.index() == REGEXP_FLAGS_SLOT,
                 "FLAGS_SLOT values should be in sync with self-hosted JS");
 
   static RegExpObject* create(JSContext* cx, Handle<JSAtom*> source,
                               NewObjectKind newKind);
 
  public:
-  static const unsigned SHARED_SLOT = 3;
+  JS_DEFINE_TYPED_SLOT(3, SHARED_SLOT, PrivateGCThing, Undefined);
   static const unsigned RESERVED_SLOTS = 4;
 
   // This must match RESERVED_SLOTS. See assertions in CloneRegExpObject.
@@ -61,23 +60,32 @@ class RegExpObject : public NativeObject {
   static const JSClass class_;
   static const JSClass protoClass_;
 
+  static const size_t RegExpFlagsMask = JS::RegExpFlag::AllFlags;
+  static const size_t LegacyFeaturesEnabledBit = Bit(8);
+
+  static_assert((RegExpFlagsMask & LegacyFeaturesEnabledBit) == 0,
+                "LegacyFeaturesEnabledBit must not overlap");
+
   // The maximum number of pairs a MatchResult can have, without having to
   // allocate a bigger MatchResult.
   static const size_t MaxPairCount = 14;
 
   template <typename CharT>
   static RegExpObject* create(JSContext* cx, const CharT* chars, size_t length,
-                              JS::RegExpFlags flags, NewObjectKind newKind);
+                              JS::RegExpFlags flags, NewObjectKind newKind,
+                              HandleObject newTarget = nullptr);
 
   // This variant assumes that the characters have already previously been
   // syntax checked.
   static RegExpObject* createSyntaxChecked(JSContext* cx,
                                            Handle<JSAtom*> source,
                                            JS::RegExpFlags flags,
-                                           NewObjectKind newKind);
+                                           NewObjectKind newKind,
+                                           HandleObject newTarget = nullptr);
 
   static RegExpObject* create(JSContext* cx, Handle<JSAtom*> source,
-                              JS::RegExpFlags flags, NewObjectKind newKind);
+                              JS::RegExpFlags flags, NewObjectKind newKind,
+                              HandleObject newTarget = nullptr);
 
   /*
    * Compute the initial shape to associate with fresh RegExp objects,
@@ -119,30 +127,61 @@ class RegExpObject : public NativeObject {
   static JSLinearString* toString(JSContext* cx, Handle<RegExpObject*> obj);
 
   JSAtom* getSource() const {
-    return &getReservedSlot(SOURCE_SLOT).toString()->asAtom();
+    return &getReservedSlotTyped(SOURCE_SLOT).toString()->asAtom();
   }
 
   void setSource(JSAtom* source) {
-    setReservedSlot(SOURCE_SLOT, StringValue(source));
+    setReservedSlotTyped(SOURCE_SLOT, StringValue(source));
   }
 
   /* Flags. */
 
-  static constexpr size_t flagsSlot() { return FLAGS_SLOT; }
+  static constexpr size_t flagsSlot() { return FLAGS_SLOT.index(); }
 
   static constexpr size_t offsetOfFlags() {
     return getFixedSlotOffset(flagsSlot());
   }
 
   static constexpr size_t offsetOfShared() {
-    return getFixedSlotOffset(SHARED_SLOT);
+    return getFixedSlotOffsetTyped(SHARED_SLOT);
   }
 
   JS::RegExpFlags getFlags() const {
-    return JS::RegExpFlags(getFixedSlot(FLAGS_SLOT).toInt32());
+    Value flagsVal = getFixedSlotTyped(FLAGS_SLOT);
+    uint32_t raw = flagsVal.toInt32();
+    return JS::RegExpFlags(raw & RegExpFlagsMask);
   }
+
   void setFlags(JS::RegExpFlags flags) {
-    setFixedSlot(FLAGS_SLOT, Int32Value(flags.value()));
+    Value flagsVal = getFixedSlotTyped(FLAGS_SLOT);
+    uint32_t raw = 0;
+    if (flagsVal.isInt32()) {
+      raw = static_cast<uint32_t>(flagsVal.toInt32());
+    }
+    uint32_t newValue = flags.value() | (raw & ~RegExpFlagsMask);
+    setFixedSlotTyped(FLAGS_SLOT, Int32Value(newValue));
+  }
+
+  bool legacyFeaturesEnabled() const {
+    if (!JS::Prefs::experimental_legacy_regexp()) {
+      return false;
+    }
+    return (getFixedSlotTyped(FLAGS_SLOT).toInt32() & LegacyFeaturesEnabledBit);
+  }
+
+  void setLegacyFeaturesEnabled(bool enabled) {
+    MOZ_ASSERT_IF(enabled, JS::Prefs::experimental_legacy_regexp());
+    Value flagsVal = getFixedSlotTyped(FLAGS_SLOT);
+    uint32_t raw = 0;
+    if (flagsVal.isInt32()) {
+      raw = static_cast<uint32_t>(flagsVal.toInt32());
+    }
+    if (enabled) {
+      raw |= LegacyFeaturesEnabledBit;
+    } else {
+      raw &= ~LegacyFeaturesEnabledBit;
+    }
+    setFixedSlotTyped(FLAGS_SLOT, Int32Value(raw));
   }
 
   bool hasIndices() const { return getFlags().hasIndices(); }
@@ -159,22 +198,23 @@ class RegExpObject : public NativeObject {
     return flags.global() || flags.sticky();
   }
 
-  static bool isOriginalFlagGetter(JSNative native, JS::RegExpFlags* mask);
-
   static RegExpShared* getShared(JSContext* cx, Handle<RegExpObject*> regexp);
 
-  bool hasShared() const { return !getFixedSlot(SHARED_SLOT).isUndefined(); }
+  bool hasShared() const {
+    return !getFixedSlotTyped(SHARED_SLOT).isUndefined();
+  }
 
   RegExpShared* getShared() const {
-    return static_cast<RegExpShared*>(getFixedSlot(SHARED_SLOT).toGCThing());
+    return static_cast<RegExpShared*>(
+        getFixedSlotTyped(SHARED_SLOT).toGCThing());
   }
 
   void setShared(RegExpShared* shared) {
     MOZ_ASSERT(shared);
-    setFixedSlot(SHARED_SLOT, PrivateGCThingValue(shared));
+    setFixedSlotTyped(SHARED_SLOT, PrivateGCThingValue(shared));
   }
 
-  void clearShared() { setFixedSlot(SHARED_SLOT, UndefinedValue()); }
+  void clearShared() { setFixedSlotTyped(SHARED_SLOT, UndefinedValue()); }
 
   void initIgnoringLastIndex(JSAtom* source, JS::RegExpFlags flags);
 
@@ -189,6 +229,9 @@ class RegExpObject : public NativeObject {
   void dumpOwnStringContent(js::GenericPrinter& out) const;
 #endif
 
+  /* Call setShared in preference to setPrivate. */
+  void setPrivate(void* priv) = delete;
+
  private:
   /*
    * Precondition: the syntax for |source| has already been validated.
@@ -196,9 +239,6 @@ class RegExpObject : public NativeObject {
    */
   static RegExpShared* createShared(JSContext* cx,
                                     Handle<RegExpObject*> regexp);
-
-  /* Call setShared in preference to setPrivate. */
-  void setPrivate(void* priv) = delete;
 };
 
 /*

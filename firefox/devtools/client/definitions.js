@@ -77,6 +77,13 @@ loader.lazyGetter(
   () =>
     require("resource://devtools/client/application/panel.js").ApplicationPanel
 );
+loader.lazyGetter(
+  this,
+  "AntiTrackingPanel",
+  () =>
+    require("resource://devtools/client/anti-tracking/panel.js")
+      .AntiTrackingPanel
+);
 
 // Other dependencies
 loader.lazyRequireGetter(
@@ -130,6 +137,8 @@ const CommandKeys = new Localization(
   true
 );
 
+const NEW_SETTINGS_PANEL_URL = "chrome://devtools/content/settings/index.html";
+
 var Tools = {};
 exports.Tools = Tools;
 
@@ -137,7 +146,14 @@ exports.Tools = Tools;
 Tools.options = {
   id: "options",
   ordinal: 0,
-  url: "chrome://devtools/content/framework/toolbox-options.html",
+  get url() {
+    if (
+      Services.prefs.getBoolPref("devtools.settings.redesign-enabled", false)
+    ) {
+      return NEW_SETTINGS_PANEL_URL;
+    }
+    return "chrome://devtools/content/framework/toolbox-options.html";
+  },
   icon: "chrome://devtools/skin/images/settings.svg",
   bgTheme: "theme-body",
   label: l10n("options.label"),
@@ -151,6 +167,12 @@ Tools.options = {
   },
 
   build(iframeWindow, toolbox, commands) {
+    if (this.url === NEW_SETTINGS_PANEL_URL) {
+      const {
+        SettingsPanel,
+      } = require("resource://devtools/client/settings/panel.mjs");
+      return new SettingsPanel(iframeWindow, toolbox);
+    }
     return new OptionsPanel(iframeWindow, toolbox, commands);
   },
 };
@@ -475,6 +497,26 @@ Tools.application = {
   },
 };
 
+Tools.antitracking = {
+  id: "antitracking",
+  ordinal: 11,
+  visibilityswitch: "devtools.anti-tracking.enabled",
+  icon: "chrome://browser/skin/tracking-protection.svg",
+  url: "chrome://devtools/content/anti-tracking/index.html",
+  label: "Anti tracking",
+  panelLabel: "Anti tracking",
+  tooltip: "Anti tracking",
+  inMenu: false,
+
+  isToolSupported() {
+    return true;
+  },
+
+  build(iframeWindow, toolbox, commands) {
+    return new AntiTrackingPanel(iframeWindow, toolbox, commands);
+  },
+};
+
 var defaultTools = [
   Tools.options,
   Tools.webConsole,
@@ -489,6 +531,11 @@ var defaultTools = [
   Tools.accessibility,
   Tools.application,
 ];
+
+// The Anti tracking panel is an internal tool, to be enabled manually via about:config
+if (Services.prefs.getBoolPref("devtools.anti-tracking.enabled", false)) {
+  defaultTools.push(Tools.antitracking);
+}
 
 exports.defaultTools = defaultTools;
 
@@ -608,22 +655,32 @@ exports.ToolboxButtons = [
       }
     },
   },
-  createHighlightButton(
-    [HIGHLIGHTER_TYPES.RULERS, HIGHLIGHTER_TYPES.VIEWPORT_SIZE],
-    "rulers"
-  ),
-  createHighlightButton([HIGHLIGHTER_TYPES.MEASURING], "measure"),
+  createHighlightButton({
+    highlighterTypes: [
+      HIGHLIGHTER_TYPES.RULERS,
+      HIGHLIGHTER_TYPES.VIEWPORT_SIZE,
+    ],
+    id: "rulers",
+  }),
+  createHighlightButton({
+    highlighterTypes: [HIGHLIGHTER_TYPES.MEASURING],
+    id: "measure",
+  }),
   {
     id: "command-button-jstracer",
     description: l10n(
       "toolbox.buttons.jstracer",
       osString == "Darwin" ? "Cmd+Shift+5" : "Ctrl+Shift+5"
     ),
-    isToolSupported: () =>
-      Services.prefs.getBoolPref(
-        "devtools.debugger.features.javascript-tracing",
-        false
-      ),
+    isToolSupported: () => {
+      return (
+        lazy.AppConstants.NIGHTLY_BUILD ||
+        Services.prefs.getBoolPref(
+          "devtools.debugger.features.javascript-tracing",
+          false
+        )
+      );
+    },
     async onClick(event, toolbox) {
       await toolbox.commands.tracerCommand.toggle();
     },
@@ -641,6 +698,20 @@ exports.ToolboxButtons = [
     isToggle: true,
     setup(toolbox, onChange) {
       toolbox.commands.tracerCommand.on("toggle", onChange);
+
+      // Automatically enable the button if this old preference was set to true.
+      // When enabling the tracer on all channels we will remove this preference.
+      if (
+        Services.prefs.getBoolPref(
+          "devtools.debugger.features.javascript-tracing",
+          false
+        )
+      ) {
+        Services.prefs.setBoolPref(
+          "devtools.command-button-jstracer.enabled",
+          true
+        );
+      }
     },
     teardown(toolbox, onChange) {
       toolbox.commands.tracerCommand.off("toggle", onChange);
@@ -770,43 +841,46 @@ exports.ToolboxButtons = [
   },
 ];
 
-function createHighlightButton(highlighters, id) {
+/**
+ * Return a definition for a toolbox button that triggers highlighters
+ *
+ * @param {object} options
+ * @param {Array<string>} options.highlighterTypes
+ *        An array of the highlighter types the button controls
+ * @param {string} options.id
+ *        The button id
+ * @returns {object}
+ */
+function createHighlightButton({ highlighterTypes, id }) {
   return {
     id: `command-button-${id}`,
     description: l10n(`toolbox.buttons.${id}`),
+    highlighterTypes,
     isToolSupported: toolbox =>
       toolbox.commands.descriptorFront.isTabDescriptor,
     async onClick(event, toolbox) {
-      const inspectorFront = await toolbox.target.getFront("inspector");
-
-      await Promise.all(
-        highlighters.map(async name => {
-          const highlighter =
-            await inspectorFront.getOrCreateHighlighterByType(name);
-
-          if (highlighter.isShown()) {
-            await highlighter.hide();
-          } else {
-            await highlighter.show();
-          }
-        })
-      );
+      const { targetConfigurationCommand } = toolbox.commands;
+      const { configuration } = targetConfigurationCommand;
+      let highlighters = configuration.enabledHighlighters || [];
+      // Check if all the highlighters were enabled
+      if (highlighterTypes.every(type => highlighters.includes(type))) {
+        // Disable the highlighters
+        highlighters = highlighters.filter(
+          type => !highlighterTypes.includes(type)
+        );
+      } else {
+        // Enable the highlighters
+        highlighters = [...highlighters, ...highlighterTypes];
+      }
+      // Instruct the backend to toggle the highlighters on/off
+      await targetConfigurationCommand.updateConfiguration({
+        enabledHighlighters: highlighters,
+      });
     },
     isChecked(toolbox) {
-      // if the inspector doesn't exist, then the highlighter has not yet been connected
-      // to the front end.
-      const inspectorFront = toolbox.target.getCachedFront("inspector");
-      if (!inspectorFront) {
-        // initialize the inspector front asyncronously. There is a potential for buggy
-        // behavior here, but we need to change how the buttons get data (have them
-        // consume data from reducers rather than writing our own version) in order to
-        // fix this properly.
-        return false;
-      }
-
-      return highlighters.every(name =>
-        inspectorFront.getKnownHighlighter(name)?.isShown()
-      );
+      const { configuration } = toolbox.commands.targetConfigurationCommand;
+      const highlighters = configuration.enabledHighlighters || [];
+      return highlighterTypes.every(type => highlighters.includes(type));
     },
     isToggle: true,
   };

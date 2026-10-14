@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,11 +7,11 @@
 
 /* The aspect ratio of a box, in a "width / height" format. */
 
-#include "mozilla/Attributes.h"
-#include "mozilla/gfx/BaseSize.h"
-#include "nsCoord.h"
 #include <algorithm>
 #include <limits>
+
+#include "mozilla/gfx/BaseSize.h"
+#include "nsCoord.h"
 
 namespace IPC {
 template <typename T>
@@ -49,7 +47,11 @@ struct AspectRatio {
       // using, so using default constructor is fine.
       return AspectRatio();
     }
-    return AspectRatio(aWidth / aHeight, aUseBoxSizing);
+    float ratio = aWidth / aHeight;
+    if (!std::isfinite(ratio)) [[unlikely]] {
+      return AspectRatio();
+    }
+    return AspectRatio(ratio, aUseBoxSizing);
   }
 
   template <typename T, typename Sub, typename Coord>
@@ -112,7 +114,7 @@ struct AspectRatio {
    *                                          use content box dimensions always.
    *
    * The return value is the content-box size on the ratio-dependent axis.
-   * Plese see the definition of the ratio-dependent axis and the
+   * Please see the definition of the ratio-dependent axis and the
    * ratio-determining axis in the spec:
    * https://drafts.csswg.org/css-sizing-4/#aspect-ratio
    */
@@ -121,13 +123,7 @@ struct AspectRatio {
       nscoord aRatioDeterminingSize,
       const LogicalSize& aContentBoxSizeToBoxSizingAdjust) const;
 
-  bool operator==(const AspectRatio& aOther) const {
-    return mRatio == aOther.mRatio && mUseBoxSizing == aOther.mUseBoxSizing;
-  }
-
-  bool operator!=(const AspectRatio& aOther) const {
-    return !(*this == aOther);
-  }
+  bool operator==(const AspectRatio&) const = default;
 
   bool operator<(const AspectRatio& aOther) const {
     MOZ_ASSERT(

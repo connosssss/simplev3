@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <limits>
+#include <memory>
 
 #include "mozHunspellRLBoxHost.h"
 #include "mozilla/DebugOnly.h"
@@ -113,8 +112,8 @@ tainted_hunspell<uint32_t> mozHunspellCallbacks::CreateFilemgr(
         // Get new id
         uint32_t freshId = GetFreshId();
         // Save mapping of id to file manager
-        sFileMgrMap[freshId] = std::unique_ptr<mozHunspellFileMgrHost>(
-            new mozHunspellFileMgrHost(cFilename));
+        sFileMgrMap[freshId] =
+            std::make_unique<mozHunspellFileMgrHost>(cFilename);
 
         return freshId;
       });

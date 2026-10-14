@@ -17,14 +17,14 @@ add_task(async function () {
         true
       );
 
-      await ContentTask.spawn(browser, {}, async function () {
+      await SpecialPowers.spawn(browser, [], async function () {
         let pdfButton = content.document.getElementById("pdfButton");
         pdfButton.click();
       });
 
       await pdfPromise;
 
-      await ContentTask.spawn(browser, {}, async function () {
+      await SpecialPowers.spawn(browser, [], async function () {
         let pdfFrame = content.document.getElementById("pdfFrame");
         // 1) Sanity that we have loaded the PDF using a blob
         ok(pdfFrame.src.startsWith("blob:"), "it's a blob URL");
@@ -39,6 +39,22 @@ add_task(async function () {
         let cspJSON = pdfFrame.contentDocument.cspJSON;
         ok(cspJSON.includes("script-src"), "found script-src directive");
         ok(cspJSON.includes("allowPDF"), "found script-src nonce value");
+
+        // 4) Ensure the inherited CSP does not block a chrome: module.
+        const chromeScriptLoaded = await new Promise(resolve => {
+          const script = pdfFrame.contentDocument.createElement("script");
+          script.type = "module";
+          script.src = "chrome://global/content/elements/moz-message-bar.mjs";
+          script.addEventListener("load", () => resolve(true), { once: true });
+          script.addEventListener("error", () => resolve(false), {
+            once: true,
+          });
+          pdfFrame.contentDocument.head.append(script);
+        });
+        ok(
+          chromeScriptLoaded,
+          "chrome: module script loaded despite the page CSP"
+        );
       });
 
       await SpecialPowers.spawn(browser, [], async () => {

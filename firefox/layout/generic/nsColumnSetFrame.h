@@ -1,15 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsColumnSetFrame_h___
-#define nsColumnSetFrame_h___
+#ifndef nsColumnSetFrame_h_
+#define nsColumnSetFrame_h_
 
 /* rendering object for css3 multi-column layout */
 
-#include "mozilla/Attributes.h"
 #include "nsContainerFrame.h"
 
 class nsCSSBorderRenderer;
@@ -80,6 +77,12 @@ class nsColumnSetFrame final : public nsContainerFrame {
       mozilla::WritingMode aWM, BaselineSharingGroup aBaselineGroup,
       BaselineExportContext aExportContext) const override;
 
+  // Returns true if this column set contains only empty column boxes. For
+  // example, this occurs when a multi-column container starts/ends with a
+  // column spanner, as the wrapper still constructs an empty column set as
+  // the first/last child (see nsCSSFrameConstructor::ConstructBlock).
+  bool IsEmpty() override;
+
  protected:
   nscoord mLastBalanceBSize;
   nsReflowStatus mLastFrameStatus;
@@ -117,6 +120,10 @@ class nsColumnSetFrame final : public nsContainerFrame {
     // A boolean indicates whether or not we are in the last attempt to reflow
     // columns. We set it to true at the end of FindBestBalanceBSize().
     bool mIsLastBalancingReflow = false;
+
+    // A boolean indicates whether or not we use an unconstrained available
+    // block-size to perform a measuring reflow.
+    bool mIsInMeasuringReflow = false;
 
     // The last known column block-size that was 'feasible'. A column bSize is
     // feasible if all child content fits within the specified bSize.
@@ -204,4 +211,4 @@ class nsColumnSetFrame final : public nsContainerFrame {
   nscoord PrefISize(const mozilla::IntrinsicSizeInput& aInput);
 };
 
-#endif  // nsColumnSetFrame_h___
+#endif  // nsColumnSetFrame_h_

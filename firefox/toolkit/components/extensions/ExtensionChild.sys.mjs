@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -188,9 +186,14 @@ export class MessageEvent extends SimpleEventAPI {
   }
 
   wrapResponse(fire, message, sender) {
-    let response, sendResponse;
+    let response, sendResponse, resultIsPromise, warned;
+
     let promise = new Promise(resolve => {
       sendResponse = Cu.exportFunction(value => {
+        if (resultIsPromise && !warned) {
+          this.logSendResponseIgnored(fire);
+          warned = true;
+        }
         resolve(value);
         response = promise;
       }, this.context.cloneScope);
@@ -202,17 +205,35 @@ export class MessageEvent extends SimpleEventAPI {
     } catch (e) {
       return Promise.reject(e);
     }
-    if (
+
+    resultIsPromise =
       result &&
       typeof result === "object" &&
       Cu.getClassName(result, true) === "Promise" &&
-      this.context.principal.subsumes(Cu.getObjectPrincipal(result))
-    ) {
+      this.context.principal.subsumes(Cu.getObjectPrincipal(result));
+
+    if (resultIsPromise) {
+      if (response && !warned) {
+        this.logSendResponseIgnored(fire);
+        warned = true;
+      }
       return StrongPromise.wrap(result, fire.location);
     } else if (result === true) {
       return StrongPromise.wrap(promise, fire.location);
     }
     return response;
+  }
+
+  logSendResponseIgnored(fire) {
+    this.context.logConsoleScriptError({
+      message:
+        `sendResponse() has no effect because the ${this.name} handler has ` +
+        `already returned a Promise. (extension: ${this.context.extension.id})`,
+      fileName: fire.location?.source,
+      lineNumber: fire.location?.line,
+      columnNumber: fire.location?.column,
+      flags: Ci.nsIScriptError.warningFlag,
+    });
   }
 }
 
@@ -712,6 +733,14 @@ export class ProxyAPIImplementation extends SchemaAPIInterface {
     map.ids.delete(id);
     map.removedIds.add(id);
 
+    // While the context is unloading, its conduit is closed and the parent
+    // tears down all of this context's listeners on its own, so sending a
+    // RemoveListener message would be redundant (and racy: the conduit may
+    // already be closed). Skip it to avoid spurious "closed conduit" errors.
+    if (this.childApiManager.context.unloaded) {
+      return;
+    }
+
     this.childApiManager.conduit.sendRemoveListener({
       childId: this.childApiManager.id,
       listenerId: id,
@@ -743,7 +772,7 @@ export class ChildLocalAPIImplementation extends LocalAPIImplementation {
    */
   callAndLog(callable, args) {
     this.context.logActivity("api_call", this.fullname, { args });
-    let start = Cu.now();
+    let start = ChromeUtils.now();
     try {
       return callable();
     } finally {

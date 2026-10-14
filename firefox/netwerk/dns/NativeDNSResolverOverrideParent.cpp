@@ -1,15 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "NativeDNSResolverOverrideParent.h"
 
+#include "DNS.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/net/SocketProcessParent.h"
 #include "nsIOService.h"
-#include "DNS.h"
 
 namespace mozilla {
 namespace net {
@@ -36,7 +34,7 @@ NativeDNSResolverOverrideParent::GetSingleton() {
   auto initTask = []() {
     RefPtr<SocketProcessParent> socketParent =
         SocketProcessParent::GetSingleton();
-    Unused << socketParent->SendPNativeDNSResolverOverrideConstructor(
+    (void)socketParent->SendPNativeDNSResolverOverrideConstructor(
         gNativeDNSResolverOverrideParent);
   };
   gIOService->CallOrWaitForSocketProcess(initTask);
@@ -54,10 +52,11 @@ NS_IMETHODIMP NativeDNSResolverOverrideParent::AddIPOverride(
   RefPtr<NativeDNSResolverOverrideParent> self = this;
   nsCString host(aHost);
   nsCString ip(aIPLiteral);
-  auto task = [self{std::move(self)}, host, ip]() {
-    Unused << self->SendAddIPOverride(host, ip);
+  auto task = [self{std::move(self)}, host = std::move(host),
+               ip = std::move(ip)]() mutable {
+    (void)self->SendAddIPOverride(std::move(host), std::move(ip));
   };
-  gIOService->CallOrWaitForSocketProcess(task);
+  gIOService->CallOrWaitForSocketProcess(std::move(task));
   return NS_OK;
 }
 
@@ -65,8 +64,9 @@ NS_IMETHODIMP NativeDNSResolverOverrideParent::AddHTTPSRecordOverride(
     const nsACString& aHost, const uint8_t* aData, uint32_t aLength) {
   nsCString host(aHost);
   CopyableTArray<uint8_t> data(aData, aLength);
-  auto task = [self = RefPtr{this}, host, data = std::move(data)]() {
-    Unused << self->SendAddHTTPSRecordOverride(host, data);
+  auto task = [self = RefPtr{this}, host = std::move(host),
+               data = std::move(data)]() {
+    (void)self->SendAddHTTPSRecordOverride(host, data);
   };
   gIOService->CallOrWaitForSocketProcess(std::move(task));
   return NS_OK;
@@ -81,10 +81,11 @@ NS_IMETHODIMP NativeDNSResolverOverrideParent::SetCnameOverride(
   RefPtr<NativeDNSResolverOverrideParent> self = this;
   nsCString host(aHost);
   nsCString cname(aCNAME);
-  auto task = [self{std::move(self)}, host, cname]() {
-    Unused << self->SendSetCnameOverride(host, cname);
+  auto task = [self{std::move(self)}, host = std::move(host),
+               cname = std::move(cname)]() mutable {
+    (void)self->SendSetCnameOverride(std::move(host), std::move(cname));
   };
-  gIOService->CallOrWaitForSocketProcess(task);
+  gIOService->CallOrWaitForSocketProcess(std::move(task));
   return NS_OK;
 }
 
@@ -92,19 +93,17 @@ NS_IMETHODIMP NativeDNSResolverOverrideParent::ClearHostOverride(
     const nsACString& aHost) {
   RefPtr<NativeDNSResolverOverrideParent> self = this;
   nsCString host(aHost);
-  auto task = [self{std::move(self)}, host]() {
-    Unused << self->SendClearHostOverride(host);
+  auto task = [self{std::move(self)}, host = std::move(host)]() mutable {
+    (void)self->SendClearHostOverride(std::move(host));
   };
-  gIOService->CallOrWaitForSocketProcess(task);
+  gIOService->CallOrWaitForSocketProcess(std::move(task));
   return NS_OK;
 }
 
 NS_IMETHODIMP NativeDNSResolverOverrideParent::ClearOverrides() {
   RefPtr<NativeDNSResolverOverrideParent> self = this;
-  auto task = [self{std::move(self)}]() {
-    Unused << self->SendClearOverrides();
-  };
-  gIOService->CallOrWaitForSocketProcess(task);
+  auto task = [self{std::move(self)}]() { (void)self->SendClearOverrides(); };
+  gIOService->CallOrWaitForSocketProcess(std::move(task));
   return NS_OK;
 }
 

@@ -15,7 +15,6 @@ var { setTimeout } = ChromeUtils.importESModule(
 
 registerCleanupFunction(async () => {
   Services.prefs.clearUserPref("network.dns.localDomains");
-  Services.prefs.clearUserPref("network.webtransport.datagrams.enabled");
   Services.prefs.clearUserPref(
     "network.http.http3.alt-svc-mapping-for-testing"
   );
@@ -23,8 +22,6 @@ registerCleanupFunction(async () => {
 
 add_task(async function setup() {
   await http3_setup_tests("h3");
-
-  Services.prefs.setBoolPref("network.webtransport.datagrams.enabled", true);
 
   h3Port = Services.env.get("MOZHTTP3_PORT");
   Assert.notEqual(h3Port, null);
@@ -90,7 +87,7 @@ add_task(async function test_wt_datagram() {
   let rawData = new Uint8Array(size);
   rawData.fill(42);
 
-  webTransport.sendDatagram(rawData, 1);
+  webTransport.sendDatagram(rawData, 1, 0, 0);
   let { id, outcome } = await pOutcome;
   Assert.equal(id, 1);
   Assert.equal(outcome, Ci.WebTransportSessionEventListener.SENT);
@@ -106,7 +103,7 @@ add_task(async function test_wt_datagram() {
   info("max size:" + size);
 
   rawData = new Uint8Array(size + 1);
-  webTransport.sendDatagram(rawData, 2);
+  webTransport.sendDatagram(rawData, 2, 0, 0);
 
   pOutcome = new Promise(resolve => {
     listener.onDatagramOutcome = resolve;

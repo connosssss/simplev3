@@ -45,7 +45,7 @@ describe("CSSWarning component:", () => {
     );
     const {
       timestampString,
-    } = require("resource://devtools/client/webconsole/utils/l10n.js");
+    } = require("resource://devtools/shared/webconsole/l10n.js");
 
     expect(wrapper.find(".timestamp").text()).toBe(
       timestampString(message.timeStamp)
@@ -62,7 +62,7 @@ describe("CSSWarning component:", () => {
     // There should be a location.
     const locationLink = wrapper.find(`.message-location`);
     expect(locationLink.length).toBe(1);
-    expect(locationLink.text()).toBe("test-css-message.html:3:27");
+    expect(locationLink.text()).toBe("test-css-message.html:3:5");
   });
 
   it("closes an open message when the collapse button is clicked", () => {

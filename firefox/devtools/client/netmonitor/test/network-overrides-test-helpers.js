@@ -163,11 +163,11 @@ function assertOverrideCellStatus(request, { overridden }) {
 /**
  * Open the netmonitor context menu on the provided element
  *
- * @param {Object} monitor
+ * @param {object} monitor
  *        The network monitor object
  * @param {Element} el
  *        The element on which the menu should be opened
- * @param {String} id
+ * @param {string} id
  *        The id of the context menu item
  */
 async function openContextMenuForItem(monitor, el, id) {
@@ -208,13 +208,10 @@ async function setNetworkOverride(
   overrideContent,
   isEmpty = false
 ) {
-  const overridePath = prepareFilePicker(
-    overrideFileName,
-    monitor.toolbox.topWindow
-  );
+  const overridePath = prepareFilePicker(overrideFileName);
 
   info("Select the request to update");
-  EventUtils.sendMouseEvent({ type: "mousedown" }, request);
+  clickOnRequestRow(request);
 
   info("Use set override from the context menu");
   EventUtils.sendMouseEvent({ type: "contextmenu" }, request);
@@ -242,7 +239,7 @@ async function setNetworkOverride(
  */
 async function removeNetworkOverride(monitor, request) {
   info("Select the request to update");
-  EventUtils.sendMouseEvent({ type: "mousedown" }, request);
+  clickOnRequestRow(request);
 
   info("Use remove override from the context menu");
   EventUtils.sendMouseEvent({ type: "contextmenu" }, request);
@@ -260,14 +257,12 @@ async function removeNetworkOverride(monitor, request) {
  *
  * @param {string} filename
  *     The name of the file to create.
- * @param {XULWindow} chromeWindow
- *     The browser window.
  * @returns {string}
  *     The path of the mocked file.
  */
-function prepareFilePicker(filename, chromeWindow) {
+function prepareFilePicker(filename) {
   const MockFilePicker = SpecialPowers.MockFilePicker;
-  MockFilePicker.init(chromeWindow.browsingContext);
+  MockFilePicker.init();
   const nsiFile = new FileUtils.File(
     PathUtils.join(PathUtils.tempDir, filename)
   );
@@ -287,8 +282,8 @@ function prepareFilePicker(filename, chromeWindow) {
  *     True if the saved file is supposed to be empty.
  */
 async function writeTextContentToPath(textContent, path, isEmpty = false) {
-  await BrowserTestUtils.waitForCondition(() => IOUtils.exists(path));
-  await BrowserTestUtils.waitForCondition(async () => {
+  await TestUtils.waitForCondition(() => IOUtils.exists(path));
+  await TestUtils.waitForCondition(async () => {
     const { size } = await IOUtils.stat(path);
     if (isEmpty) {
       return size === 0;

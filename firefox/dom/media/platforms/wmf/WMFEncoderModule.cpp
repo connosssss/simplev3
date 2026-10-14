@@ -1,11 +1,11 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "WMFEncoderModule.h"
 
+#include "EncoderConfig.h"
+#include "MFTEncoder.h"
 #include "WMFMediaDataEncoder.h"
 
 using mozilla::media::EncodeSupportSet;
@@ -14,19 +14,24 @@ namespace mozilla {
 
 extern LazyLogModule sPEMLog;
 
-static EncodeSupportSet IsSupported(
-    CodecType aCodecType, const gfx::IntSize& aFrameSize,
-    const EncoderConfig::CodecSpecific& aCodecSpecific) {
-  if (CodecToSubtype(aCodecType) == GUID_NULL) {
+static EncodeSupportSet IsSupported(const EncoderConfig& aConfig) {
+  if (CodecToSubtype(aConfig.mCodec) == GUID_NULL) {
     return EncodeSupportSet{};
   }
-  return CanCreateWMFEncoder(aCodecType, aFrameSize, aCodecSpecific);
+  return CanCreateWMFEncoder(aConfig);
 }
+
+void WMFEncoderModule::ClearCache() { MFTEncoder::ClearCache(); }
 
 EncodeSupportSet WMFEncoderModule::SupportsCodec(CodecType aCodecType) const {
   gfx::IntSize kDefaultSize(640, 480);
   EncoderConfig::CodecSpecific kDefaultCodecSpecific = AsVariant(void_t{});
-  return IsSupported(aCodecType, kDefaultSize, kDefaultCodecSpecific);
+  EncoderConfig cfg;
+  cfg.mCodec = aCodecType;
+  cfg.mSize = kDefaultSize;
+  cfg.mCodecSpecific = kDefaultCodecSpecific;
+  cfg.mHardwarePreference = HardwarePreference::None;
+  return IsSupported(cfg);
 }
 
 EncodeSupportSet WMFEncoderModule::Supports(
@@ -37,11 +42,17 @@ EncodeSupportSet WMFEncoderModule::Supports(
   if (aConfig.IsAudio()) {
     return EncodeSupportSet{};
   }
+  // Declining here rather than failing per frame lets PEMFactory fall through
+  // to an encoder that can produce the requested size. Matters for VP8 and VP9,
+  // which can express an odd width; H.264 cannot and is declined above.
+  if (!IsFrameSizeSupportedForNV12Input(aConfig.mSize)) {
+    return EncodeSupportSet{};
+  }
   if (aConfig.mScalabilityMode != ScalabilityMode::None &&
       aConfig.mCodec != CodecType::H264) {
     return EncodeSupportSet{};
   }
-  return IsSupported(aConfig.mCodec, aConfig.mSize, aConfig.mCodecSpecific);
+  return IsSupported(aConfig);
 }
 
 already_AddRefed<MediaDataEncoder> WMFEncoderModule::CreateVideoEncoder(

@@ -1,14 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jit_riscv64_SharedICHelpers_riscv64_inl_h
 #define jit_riscv64_SharedICHelpers_riscv64_inl_h
 
-#include "jit/BaselineFrame.h"
 #include "jit/SharedICHelpers.h"
+
+#include "jit/BaselineFrame.h"
 
 namespace js {
 namespace jit {
@@ -64,11 +63,9 @@ inline void EmitBaselineEnterStubFrame(MacroAssembler& masm, Register scratch) {
   // BaselineStubFrame if needed.
 
   // Push frame descriptor and return address.
+  // Save old frame pointer, stack pointer, and stub reg.
   masm.Push(FrameDescriptor(FrameType::BaselineJS));
-  masm.Push(ICTailCallReg);
-
-  // Save old frame pointer, stack pointer and stub reg.
-  masm.Push(FramePointer);
+  masm.PushRegs(ICTailCallReg, FramePointer);
   masm.movePtr(StackPointer, FramePointer);
   masm.Push(ICStubReg);
 

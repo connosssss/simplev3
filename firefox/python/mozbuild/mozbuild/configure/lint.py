@@ -6,10 +6,11 @@ import inspect
 import re
 import types
 from dis import Bytecode
-from functools import wraps
+from functools import cache, wraps
 from io import StringIO
+from itertools import pairwise
 
-from mozbuild.util import memoize
+import mozpack.path as mozpath
 
 from . import (
     CombinedDependsFunction,
@@ -29,6 +30,41 @@ def code_replace(code, co_filename, co_name, co_firstlineno):
     )
 
 
+SUBST_CONSUMER_SUFFIXES = {
+    ".build",
+    ".conf",
+    ".gradle",
+    ".groovy",
+    ".in",
+    ".kt",
+    ".kts",
+    ".mk",
+    ".mozbuild",
+    ".py",
+}
+
+
+def find_unreferenced_configs(names, topsrcdir, paths):
+    word = re.compile(r"\w+")
+    unreferenced = set(names)
+    for path in paths:
+        suffix = mozpath.splitext(path)[1]
+        if suffix and suffix not in SUBST_CONSUMER_SUFFIXES:
+            continue
+        with open(
+            mozpath.join(topsrcdir, path), encoding="utf-8", errors="replace"
+        ) as fh:
+            for line in fh:
+                stripped = line.lstrip()
+                # Skip comments and preprocessor conditions, but keep a substitution
+                # such as "#define FOO @FOO@".
+                if not stripped.startswith("#") or "@" in stripped:
+                    unreferenced.difference_update(word.findall(line))
+        if not unreferenced:
+            break
+    return sorted(unreferenced)
+
+
 class LintSandbox(ConfigureSandbox):
     def __init__(self, environ=None, argv=None, stdout=None, stderr=None):
         out = StringIO()
@@ -40,10 +76,13 @@ class LintSandbox(ConfigureSandbox):
         self._has_imports = set()
         self._bool_options = []
         self._bool_func_options = []
+        self.set_configs = {}
+        self.defined_depends = {}
+        self._used_depends = set()
+        self._checked = set()
+        self._decorated = {}
         self.LOG = ""
-        super(LintSandbox, self).__init__(
-            {}, environ=environ, argv=argv, stdout=stdout, stderr=stderr
-        )
+        super().__init__({}, environ=environ, argv=argv, stdout=stdout, stderr=stderr)
 
     def run(self, path=None):
         if path:
@@ -58,10 +97,11 @@ class LintSandbox(ConfigureSandbox):
         location.
 
         The location is determined from the values of obj and line.
-        - `obj` can be a function or DependsFunction, in which case
-          `line` corresponds to the line within the function the exception
+
+        - ``obj`` can be a function or DependsFunction, in which case
+          ``line`` corresponds to the line within the function the exception
           will be raised from (as an offset from the function's firstlineno).
-        - `obj` can be a stack frame, in which case `line` is ignored.
+        - ``obj`` can be a stack frame, in which case ``line`` is ignored.
         """
 
         def thrower(e):
@@ -126,7 +166,11 @@ class LintSandbox(ConfigureSandbox):
         used_args = set()
 
         for instr in Bytecode(func):
-            if instr.opname in ("LOAD_FAST", "LOAD_CLOSURE"):
+            if instr.opname == "LOAD_FAST_LOAD_FAST":
+                for argval in instr.argval:
+                    if argval in all_args:
+                        used_args.add(argval)
+            elif instr.opname in ("LOAD_FAST", "LOAD_CLOSURE"):
                 if instr.argval in all_args:
                     used_args.add(instr.argval)
 
@@ -173,7 +217,7 @@ class LintSandbox(ConfigureSandbox):
             return False
         return self._need_help_dependency(obj)
 
-    @memoize
+    @cache
     def _value_for_depends(self, obj):
         with_help = self._help_option in obj.dependencies
         if with_help:
@@ -187,10 +231,90 @@ class LintSandbox(ConfigureSandbox):
         elif self._missing_help_dependency(obj):
             e = ConfigureError("Missing '--help' dependency")
             self._raise_from(e, obj)
-        return super(LintSandbox, self)._value_for_depends(obj)
+        return super()._value_for_depends(obj)
+
+    def __setitem__(self, key, value):
+        frame = inspect.currentframe().f_back
+        # Only module level functions are recorded, because each template call
+        # creates a new `@depends` function that only some callers read.
+        if (
+            isinstance(value, SandboxDependsFunction)
+            and frame.f_code.co_name == "<module>"
+            and self._is_defined_as(self._function(self._depends[value]), key)
+        ):
+            self.defined_depends.setdefault(
+                self._depends[value], (key, frame.f_code.co_filename, frame.f_lineno)
+            )
+        return super().__setitem__(key, value)
+
+    def _function(self, obj):
+        return self._decorated.get(obj, obj._func)
+
+    def _is_defined_as(self, func, key):
+        if not inspect.isroutine(func):
+            return False
+        func, _ = self.unwrap(func)
+        return func.__name__ == key or func.__qualname__ == "<lambda>"
+
+    def _mark_used(self, *values):
+        for value in values:
+            if isinstance(value, SandboxDependsFunction):
+                self._used_depends.add(self._depends[value])
+
+    def _normalize_when(self, when, callee_name):
+        self._mark_used(when)
+        return super()._normalize_when(when, callee_name)
+
+    def unreferenced_depends(self):
+        """Return the module level `@depends` functions that nothing reads.
+
+        A function is read when:
+
+        - it is passed to `set_config`, `set_define`, `imply_option`,
+          `include`, `option` or a `when`,
+        - another `@depends` function depends on it, or
+        - `checking` prints its value.
+
+        A function with no `return` value is a check, so it is never reported.
+        """
+        used = set(self._used_depends)
+        # A function is read by any function that depends on it, even one that is
+        # itself unreferenced. Removing that one exposes the next.
+        for obj in self._depends.values():
+            used.update(d for d in obj.dependencies if isinstance(d, DependsFunction))
+            if isinstance(obj.when, DependsFunction):
+                used.add(obj.when)
+        used.update(
+            obj
+            for obj in self.defined_depends
+            if self._is_checked(self._function(obj))
+            or not self._has_return_value(self._function(obj))
+        )
+        return {
+            location
+            for obj, location in self.defined_depends.items()
+            if obj not in used
+        }
+
+    def _is_checked(self, func):
+        return func in self._checked or (
+            func in self._wrapped and self._is_checked(self._wrapped[func])
+        )
+
+    def _has_return_value(self, func):
+        func, _ = self.unwrap(func)
+        for previous, instr in pairwise(Bytecode(func)):
+            if instr.opname == "RETURN_CONST" and instr.argval is not None:
+                return True
+            if instr.opname == "RETURN_VALUE" and not (
+                previous.opname == "LOAD_CONST" and previous.argval is None
+            ):
+                return True
+        return False
 
     def option_impl(self, *args, **kwargs):
-        result = super(LintSandbox, self).option_impl(*args, **kwargs)
+        self._mark_used(*args, *kwargs.values())
+        result = super().option_impl(*args, **kwargs)
         when = self._conditions.get(result)
         if when:
             self._value_for(when)
@@ -198,6 +322,27 @@ class LintSandbox(ConfigureSandbox):
         self._check_option(result, *args, **kwargs)
 
         return result
+
+    def set_config_impl(self, name, value, when=None):
+        frame = inspect.currentframe().f_back
+        if frame.f_code.co_name == "<module>":
+            self.set_configs.setdefault(
+                name, (frame.f_code.co_filename, frame.f_lineno)
+            )
+        self._mark_used(name, value)
+        return super().set_config_impl(name, value, when)
+
+    def set_define_impl(self, name, value, when=None):
+        self._mark_used(name, value)
+        return super().set_define_impl(name, value, when)
+
+    def imply_option_impl(self, option, value, reason=None, when=None):
+        self._mark_used(value)
+        return super().imply_option_impl(option, value, reason, when)
+
+    def include_impl(self, what, when=None):
+        self._mark_used(what)
+        return super().include_impl(what, when)
 
     def _check_option(self, option, *args, **kwargs):
         self._check_help_message(option, *args, **kwargs)
@@ -235,8 +380,7 @@ class LintSandbox(ConfigureSandbox):
             if name.startswith(f"--{prefix}-"):
                 frame = self._pretty_current_frame()
                 e = ConfigureError(
-                    "{} should be used instead of "
-                    "{} with default={}".format(
+                    "{} should be used instead of {} with default={}".format(
                         name.replace(f"--{prefix}-", f"--{replacement}-"),
                         name,
                         default,
@@ -318,8 +462,31 @@ class LintSandbox(ConfigureSandbox):
 
         return do_wraps
 
+    def template_impl(self, func):
+        template = super().template_impl(func)
+        # `checking` prints the value of the function it decorates, which counts
+        # as a read. `depends_tmpl` hides the function behind its own `wrapper`.
+        if func.__name__ not in ("checking", "depends_tmpl"):
+            return template
+
+        def wrapper(*args, **kwargs):
+            decorator = template(*args, **kwargs)
+
+            def record(decorated):
+                result = decorator(decorated)
+                if func.__name__ == "checking":
+                    self._checked.add(result)
+                else:
+                    self._decorated[self._depends[result]] = decorated
+                return result
+
+            return record
+
+        self._templates.add(wrapper)
+        return wrapper
+
     def imports_impl(self, _import, _from=None, _as=None):
-        wrapper = super(LintSandbox, self).imports_impl(_import, _from=_from, _as=_as)
+        wrapper = super().imports_impl(_import, _from=_from, _as=_as)
 
         def decorator(func):
             self._has_imports.add(func)
@@ -328,7 +495,7 @@ class LintSandbox(ConfigureSandbox):
         return decorator
 
     def _prepare_function(self, func, update_globals=None):
-        wrapped = super(LintSandbox, self)._prepare_function(func, update_globals)
+        wrapped = super()._prepare_function(func, update_globals)
         _, glob = self.unwrap(wrapped)
         imports = set()
         for _from, _import, _as in self._imports.get(func, ()):
@@ -352,9 +519,12 @@ class LintSandbox(ConfigureSandbox):
                 # Raise the same kind of error as what would happen during
                 # execution.
                 e = NameError(f"global name '{instr.argval}' is not defined")
-                if instr.starts_line is None:
+                # python 3.13 changed .starts_line to be a bool and moved the
+                # line number itself to .line_number.
+                line_number = getattr(instr, "line_number", instr.starts_line)
+                if line_number is None:
                     self._raise_from(e, func)
                 else:
-                    self._raise_from(e, func, instr.starts_line - code.co_firstlineno)
+                    self._raise_from(e, func, line_number - code.co_firstlineno)
 
         return wrapped

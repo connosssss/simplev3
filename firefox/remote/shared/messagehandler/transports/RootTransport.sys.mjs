@@ -9,15 +9,18 @@ ChromeUtils.defineESModuleGetters(lazy, {
     "chrome://remote/content/shared/messagehandler/MessageHandler.sys.mjs",
   error: "chrome://remote/content/shared/messagehandler/Errors.sys.mjs",
   isBrowsingContextCompatible:
-    "chrome://remote/content/shared/messagehandler/transports/BrowsingContextUtils.sys.mjs",
+    "chrome://remote/content/shared/BrowsingContextUtils.sys.mjs",
   isInitialDocument:
-    "chrome://remote/content/shared/messagehandler/transports/BrowsingContextUtils.sys.mjs",
+    "chrome://remote/content/shared/BrowsingContextUtils.sys.mjs",
+  isPrivilegedContext:
+    "chrome://remote/content/shared/BrowsingContextUtils.sys.mjs",
   Log: "chrome://remote/content/shared/Log.sys.mjs",
   MessageHandlerFrameActor:
     "chrome://remote/content/shared/messagehandler/transports/js-window-actors/MessageHandlerFrameActor.sys.mjs",
+  RemoteAgent: "chrome://remote/content/components/RemoteAgent.sys.mjs",
   TabManager: "chrome://remote/content/shared/TabManager.sys.mjs",
   waitForCurrentWindowGlobal:
-    "chrome://remote/content/shared/messagehandler/transports/BrowsingContextUtils.sys.mjs",
+    "chrome://remote/content/shared/BrowsingContextUtils.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "logger", () => lazy.Log.get());
@@ -42,7 +45,7 @@ export class RootTransport {
     this._messageHandler = messageHandler;
 
     // RootTransport will rely on the MessageHandlerFrame JSWindow actors.
-    // Make sure they are registered when instanciating a RootTransport.
+    // Make sure they are registered when instantiating a RootTransport.
     lazy.MessageHandlerFrameActor.register();
   }
 
@@ -119,10 +122,12 @@ export class RootTransport {
       retryOnAbort = lazy.isInitialDocument(browsingContext);
     }
 
-    // If a top-level browsing context was replaced and retrying is allowed,
-    // retrieve the new one for the current browser.
+    // If a top-level content browsing context was replaced and
+    // retrying is allowed, retrieve the new one for the current browser.
     if (
-      browsingContext?.isReplaced &&
+      browsingContext &&
+      browsingContext.isContent &&
+      browsingContext.isReplaced &&
       browsingContext.top === browsingContext &&
       retryOnAbort
     ) {
@@ -137,19 +142,42 @@ export class RootTransport {
       );
     }
 
-    // Keep a reference to the webProgress, which will persist, and always use
-    // it to retrieve the currently valid browsing context.
+    // For content browsing contexts keep a reference to the
+    // webProgress, which will persist, and always use it to
+    // retrieve the currently valid browsing context.
     const webProgress = browsingContext.webProgress;
 
     let attempts = 0;
     while (true) {
       try {
-        if (!webProgress.browsingContext.currentWindowGlobal) {
-          await lazy.waitForCurrentWindowGlobal(webProgress.browsingContext);
+        if (browsingContext.isContent) {
+          browsingContext = webProgress.browsingContext;
+
+          // The browsing context is (re-)resolved from the web progress on
+          // every attempt and may have navigated to a privileged page since
+          // the command was initially dispatched. Without system access no
+          // command may run in a privileged context, so refuse to forward it
+          // there instead of executing with elevated privileges. Commands that
+          // are always allowed regardless of privilege (e.g. the base URL
+          // lookup for a navigation) opt out via `skipPrivilegeCheck`.
+          if (
+            !command.skipPrivilegeCheck &&
+            !lazy.RemoteAgent.allowSystemAccess &&
+            lazy.isPrivilegedContext(browsingContext)
+          ) {
+            throw new lazy.error.MessageHandlerError(
+              `Cannot forward command ${name} to a privileged browsing context`
+            );
+          }
         }
-        return await webProgress.browsingContext.currentWindowGlobal
+
+        if (!browsingContext.currentWindowGlobal) {
+          await lazy.waitForCurrentWindowGlobal(browsingContext);
+        }
+
+        return await browsingContext.currentWindowGlobal
           .getActor("MessageHandlerFrame")
-          .sendCommand(command, this._messageHandler.sessionId);
+          .sendCommand(command, this._messageHandler.internalSessionId);
       } catch (e) {
         // Re-throw the error in case it is not an AbortError.
         if (e.name != "AbortError") {
@@ -165,14 +193,14 @@ export class RootTransport {
         if (++attempts > MAX_RETRY_ATTEMPTS) {
           lazy.logger.trace(
             `RootTransport reached the limit of retry attempts (${MAX_RETRY_ATTEMPTS})` +
-              ` for command ${name} and browsing context ${webProgress.browsingContext.id}.`
+              ` for command ${name} and browsing context ${browsingContext.id}.`
           );
           throw new lazy.error.DiscardedBrowsingContextError(e.message);
         }
 
         lazy.logger.trace(
           `RootTransport retrying command ${name} for ` +
-            `browsing context ${webProgress.browsingContext.id}, attempt: ${attempts}.`
+            `browsing context ${browsingContext.id}, attempt: ${attempts}.`
         );
         await new Promise(resolve => Services.tm.dispatchToMainThread(resolve));
       }
@@ -222,7 +250,7 @@ export class RootTransport {
     let browsingContexts = [];
 
     // Fetch all tab related browsing contexts for top-level windows.
-    for (const { browsingContext } of lazy.TabManager.browsers) {
+    for (const { browsingContext } of lazy.TabManager.getBrowsers()) {
       if (
         lazy.isBrowsingContextCompatible(browsingContext, {
           browserId,

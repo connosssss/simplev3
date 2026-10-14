@@ -1,20 +1,18 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#ifndef __nsmultimixedconv__h__
-#define __nsmultimixedconv__h__
+#ifndef _nsmultimixedconv_h_
+#define _nsmultimixedconv_h_
 
-#include "nsIStreamConverter.h"
-#include "nsIChannel.h"
-#include "nsString.h"
-#include "nsCOMPtr.h"
-#include "nsIByteRangeRequest.h"
-#include "nsIMultiPartChannel.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/IncrementalTokenizer.h"
-#include "nsHttpResponseHead.h"
 #include "mozilla/UniquePtr.h"
+#include "nsCOMPtr.h"
+#include "nsHttpResponseHead.h"
+#include "nsIByteRangeRequest.h"
+#include "nsIChannel.h"
+#include "nsIMultiPartChannel.h"
+#include "nsIStreamConverter.h"
+#include "nsString.h"
 
 #define NS_MULTIMIXEDCONVERTER_CID            \
   {/* 7584CE90-5B25-11d3-A175-0050041CAF44 */ \
@@ -206,7 +204,6 @@ class nsMultiMixedConv : public nsIStreamConverter {
     HEADER_CONTENT_TYPE = HEADER_FIRST,
     HEADER_CONTENT_LENGTH,
     HEADER_CONTENT_DISPOSITION,
-    HEADER_SET_COOKIE,
     HEADER_CONTENT_RANGE,
     HEADER_RANGE,
     HEADER_CONTENT_SECURITY_POLICY,
@@ -258,4 +255,4 @@ class nsMultiMixedConv : public nsIStreamConverter {
   nsresult ConsumeToken(Token const& token);
 };
 
-#endif /* __nsmultimixedconv__h__ */
+#endif /* _nsmultimixedconv_h_ */

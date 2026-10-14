@@ -1,52 +1,48 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsDNSService2.h"
-#include "nsIDNSRecord.h"
-#include "nsIDNSListener.h"
-#include "nsIDNSByTypeRecord.h"
-#include "nsICancelable.h"
-#include "nsIPrefBranch.h"
-#include "nsIOService.h"
-#include "nsIXPConnect.h"
-#include "nsProxyRelease.h"
-#include "nsReadableUtils.h"
-#include "nsString.h"
-#include "nsCRT.h"
-#include "nsNetCID.h"
-#include "nsError.h"
-#include "nsDNSPrefetch.h"
-#include "nsThreadUtils.h"
-#include "nsIProtocolProxyService.h"
-#include "nsIObliviousHttp.h"
-#include "prsystem.h"
-#include "prnetdb.h"
-#include "prmon.h"
-#include "prio.h"
-#include "nsCharSeparatedTokenizer.h"
-#include "nsNetAddr.h"
-#include "nsNetUtil.h"
-#include "nsProxyRelease.h"
-#include "nsQueryObject.h"
-#include "nsIObserverService.h"
-#include "nsINetworkLinkService.h"
+
 #include "DNSAdditionalInfo.h"
 #include "TRRService.h"
-
-#include "mozilla/Attributes.h"
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/net/NeckoCommon.h"
-#include "mozilla/net/ChildDNSService.h"
-#include "mozilla/net/DNSListenerProxy.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_network.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/SyncRunnable.h"
-#include "mozilla/TextUtils.h"
-#include "mozilla/Utf8.h"
+#include "mozilla/net/ChildDNSService.h"
+#include "mozilla/net/DNSListenerProxy.h"
+#include "mozilla/net/NeckoCommon.h"
+#include "nsCRT.h"
+#include "nsCharSeparatedTokenizer.h"
+#include "nsDNSPrefetch.h"
+#include "nsError.h"
+#include "nsICancelable.h"
+#include "nsIDNSByTypeRecord.h"
+#include "nsIDNSListener.h"
+#include "nsIDNSRecord.h"
+#include "nsINetworkLinkService.h"
+#include "nsIOService.h"
+#include "nsIObliviousHttp.h"
+#include "nsIObserverService.h"
+#include "nsIPrefBranch.h"
+#include "nsIProtocolProxyService.h"
+#include "nsIXPConnect.h"
+#include "nsNetAddr.h"
+#include "nsNetCID.h"
+#include "nsNetUtil.h"
+#include "nsProxyRelease.h"
+#include "nsQueryObject.h"
+#include "nsReadableUtils.h"
+#include "nsString.h"
+#include "nsThreadUtils.h"
+#include "prio.h"
+#include "prmon.h"
+#include "prnetdb.h"
+#include "prsystem.h"
+// Put DNSLogging.h at the end to avoid LOG being overwritten by other headers.
+#include "DNSLogging.h"
 
 using namespace mozilla;
 using namespace mozilla::net;
@@ -70,7 +66,8 @@ class nsDNSRecord : public nsIDNSAddrRecord {
   NS_DECL_NSIDNSRECORD
   NS_DECL_NSIDNSADDRRECORD
 
-  explicit nsDNSRecord(nsHostRecord* hostRecord) {
+  explicit nsDNSRecord(nsHostRecord* hostRecord, bool aFromStaleCache = false)
+      : mFromStaleCache(aFromStaleCache) {
     mHostRecord = do_QueryObject(hostRecord);
   }
 
@@ -78,6 +75,9 @@ class nsDNSRecord : public nsIDNSAddrRecord {
   virtual ~nsDNSRecord() = default;
 
   RefPtr<AddrHostRecord> mHostRecord;
+  // Whether the answer this record represents was served from a stale
+  // (grace-period) cache entry. Snapshotted at delivery time.
+  const bool mFromStaleCache;
   // Since mIter is holding a weak reference to the NetAddr array we must
   // make sure it is not released. So we also keep a RefPtr to the AddrInfo
   // which is immutable.
@@ -244,9 +244,6 @@ nsDNSRecord::GetAddresses(nsTArray<NetAddr>& aAddressArray) {
   mHostRecord->addr_info_lock.Lock();
   if (mHostRecord->addr_info) {
     for (const auto& address : mHostRecord->addr_info->Addresses()) {
-      if (mHostRecord->Blocklisted(&address)) {
-        continue;
-      }
       NetAddr* addr = aAddressArray.AppendElement(address);
       if (addr->raw.family == AF_INET) {
         addr->inet.port = 0;
@@ -294,9 +291,7 @@ nsDNSRecord::GetNextAddrAsString(nsACString& result) {
     return rv;
   }
 
-  char buf[kIPv6CStrBufSize];
-  if (addr.ToStringBuffer(buf, sizeof(buf))) {
-    result.Assign(buf);
+  if (addr.ToString(result)) {
     return NS_OK;
   }
   NS_ERROR("NetAddrToString failed unexpectedly");
@@ -312,12 +307,14 @@ nsDNSRecord::HasMore(bool* result) {
 
   nsTArray<NetAddr>::const_iterator iterCopy = mIter;
   int iterGenCntCopy = mIterGenCnt;
+  RefPtr<AddrInfo> addrInfoCopy = mAddrInfo;
 
   NetAddr addr;
   *result = NS_SUCCEEDED(GetNextAddr(0, &addr));
 
   mIter = iterCopy;
   mIterGenCnt = iterGenCntCopy;
+  mAddrInfo = std::move(addrInfoCopy);
   mDone = false;
 
   return NS_OK;
@@ -370,6 +367,13 @@ nsDNSRecord::GetLastUpdate(mozilla::TimeStamp* aLastUpdate) {
   return mHostRecord->GetLastUpdate(aLastUpdate);
 }
 
+NS_IMETHODIMP
+nsDNSRecord::GetFromStaleCache(bool* aResult) {
+  NS_ENSURE_ARG(aResult);
+  *aResult = mFromStaleCache;
+  return NS_OK;
+}
+
 class nsDNSByTypeRecord : public nsIDNSByTypeRecord,
                           public nsIDNSTXTRecord,
                           public nsIDNSHTTPSSVCRecord {
@@ -380,13 +384,17 @@ class nsDNSByTypeRecord : public nsIDNSByTypeRecord,
   NS_DECL_NSIDNSTXTRECORD
   NS_DECL_NSIDNSHTTPSSVCRECORD
 
-  explicit nsDNSByTypeRecord(nsHostRecord* hostRecord) {
+  explicit nsDNSByTypeRecord(nsHostRecord* hostRecord,
+                             bool aFromStaleCache = false)
+      : mFromStaleCache(aFromStaleCache) {
     mHostRecord = do_QueryObject(hostRecord);
   }
 
  private:
   virtual ~nsDNSByTypeRecord() = default;
   RefPtr<TypeHostRecord> mHostRecord;
+  // See nsDNSRecord::mFromStaleCache.
+  const bool mFromStaleCache;
 };
 
 NS_IMPL_ISUPPORTS(nsDNSByTypeRecord, nsIDNSRecord, nsIDNSByTypeRecord,
@@ -466,6 +474,13 @@ nsDNSByTypeRecord::GetResults(mozilla::net::TypeRecordResultType* aResults) {
 }
 
 NS_IMETHODIMP
+nsDNSByTypeRecord::GetFromStaleCache(bool* aResult) {
+  NS_ENSURE_ARG(aResult);
+  *aResult = mFromStaleCache;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 nsDNSByTypeRecord::GetTtl(uint32_t* aTtl) { return mHostRecord->GetTtl(aTtl); }
 
 //-----------------------------------------------------------------------------
@@ -489,7 +504,8 @@ class nsDNSAsyncRequest final : public nsResolveHostCallback,
         mFlags(flags),
         mAF(af) {}
 
-  void OnResolveHostComplete(nsHostResolver*, nsHostRecord*, nsresult) override;
+  void OnResolveHostComplete(nsHostResolver*, nsHostRecord*, nsresult,
+                             bool aFromStaleCache) override;
   // Returns TRUE if the DNS listener arg is the same as the member listener
   // Used in Cancellations to remove DNS requests associated with a
   // particular hostname and nsIDNSListener
@@ -515,7 +531,8 @@ NS_IMPL_ISUPPORTS(nsDNSAsyncRequest, nsICancelable)
 
 void nsDNSAsyncRequest::OnResolveHostComplete(nsHostResolver* resolver,
                                               nsHostRecord* hostRecord,
-                                              nsresult status) {
+                                              nsresult status,
+                                              bool aFromStaleCache) {
   // need to have an owning ref when we issue the callback to enable
   // the caller to be able to addref/release multiple times without
   // destroying the record prematurely.
@@ -529,12 +546,13 @@ void nsDNSAsyncRequest::OnResolveHostComplete(nsHostResolver* resolver,
       return;
     }
     if (hostRecord->type != nsDNSService::RESOLVE_TYPE_DEFAULT) {
-      rec = new nsDNSByTypeRecord(hostRecord);
+      rec = new nsDNSByTypeRecord(hostRecord, aFromStaleCache);
     } else {
-      rec = new nsDNSRecord(hostRecord);
+      rec = new nsDNSRecord(hostRecord, aFromStaleCache);
     }
   }
 
+  LOG(("OnResolveHostComplete: %s", mHost.get()));
   mListener->OnLookupComplete(this, rec, status);
   mListener = nullptr;
 }
@@ -579,9 +597,10 @@ class DNSCacheRequest : public nsResolveHostCallback {
   DNSCacheRequest() = default;
 
   void OnResolveHostComplete(nsHostResolver* resolver, nsHostRecord* hostRecord,
-                             nsresult status) override {
+                             nsresult status, bool aFromStaleCache) override {
     mStatus = status;
     mHostRecord = hostRecord;
+    mFromStaleCache = aFromStaleCache;
   }
 
   bool EqualsAsyncListener(nsIDNSListener* aListener) override {
@@ -605,6 +624,7 @@ class DNSCacheRequest : public nsResolveHostCallback {
 
   nsresult mStatus = NS_OK;
   RefPtr<nsHostRecord> mHostRecord;
+  bool mFromStaleCache = false;
 
  protected:
   virtual ~DNSCacheRequest() = default;
@@ -616,7 +636,8 @@ class nsDNSSyncRequest : public DNSCacheRequest {
  public:
   explicit nsDNSSyncRequest(PRMonitor* mon) : mMonitor(mon) {}
 
-  void OnResolveHostComplete(nsHostResolver*, nsHostRecord*, nsresult) override;
+  void OnResolveHostComplete(nsHostResolver*, nsHostRecord*, nsresult,
+                             bool aFromStaleCache) override;
 
   bool mDone = false;
 
@@ -628,11 +649,13 @@ class nsDNSSyncRequest : public DNSCacheRequest {
 
 void nsDNSSyncRequest::OnResolveHostComplete(nsHostResolver* resolver,
                                              nsHostRecord* hostRecord,
-                                             nsresult status) {
+                                             nsresult status,
+                                             bool aFromStaleCache) {
   // store results, and wake up nsDNSService::Resolve to process results.
   PR_EnterMonitor(mMonitor);
   mDone = true;
-  DNSCacheRequest::OnResolveHostComplete(resolver, hostRecord, status);
+  DNSCacheRequest::OnResolveHostComplete(resolver, hostRecord, status,
+                                         aFromStaleCache);
   PR_Notify(mMonitor);
   PR_ExitMonitor(mMonitor);
 }
@@ -666,11 +689,15 @@ NS_IMPL_ISUPPORTS(DNSServiceWrapper, nsIDNSService, nsPIDNSService)
 already_AddRefed<nsIDNSService> DNSServiceWrapper::GetSingleton() {
   if (!gDNSServiceWrapper) {
     gDNSServiceWrapper = new DNSServiceWrapper();
+    // Not strictly needed, but simple and avoids bypassing lock-checking
+    MutexAutoLock lock(gDNSServiceWrapper->mLock);
     gDNSServiceWrapper->mDNSServiceInUse = ChildDNSService::GetSingleton();
     if (gDNSServiceWrapper->mDNSServiceInUse) {
       ClearOnShutdown(&gDNSServiceWrapper);
       nsDNSPrefetch::Initialize(gDNSServiceWrapper);
     } else {
+      MutexAutoUnlock unlock(
+          gDNSServiceWrapper->mLock);  // don't destroy with held lock
       gDNSServiceWrapper = nullptr;
     }
   }
@@ -716,13 +743,21 @@ NS_IMPL_ISUPPORTS_INHERITED(nsDNSService, DNSServiceBase, nsIDNSService,
 static StaticRefPtr<nsDNSService> gDNSService;
 static Atomic<bool> gInited(false);
 
+// Note: be careful of races!  Called from multiple threads
 already_AddRefed<nsIDNSService> GetOrInitDNSService() {
   if (gInited) {
     return nsDNSService::GetXPCOMSingleton();
   }
 
   nsCOMPtr<nsIDNSService> dns = nullptr;
-  auto initTask = [&dns]() { dns = do_GetService(NS_DNSSERVICE_CID); };
+  auto initTask = [&dns]() {
+    // In case someone inited it while we were waiting
+    if (gInited) {
+      dns = nsDNSService::GetXPCOMSingleton();
+      return;
+    }
+    dns = do_GetService(NS_DNSSERVICE_CID);
+  };
   if (!NS_IsMainThread()) {
     // Forward to the main thread synchronously.
     RefPtr<nsIThread> mainThread = do_GetMainThread();
@@ -811,6 +846,7 @@ void nsDNSService::ReadPrefs(const char* name) {
     }
   }
   if (!name || !strcmp(name, kPrefIPv4OnlyDomains)) {
+    MutexAutoLock lock(mLock);
     Preferences::GetCString(kPrefIPv4OnlyDomains, mIPv4OnlyDomains);
   }
   if (!name || !strcmp(name, kPrefDnsLocalDomains)) {
@@ -838,14 +874,13 @@ void nsDNSService::ReadPrefs(const char* name) {
     } else {
       mHasMockHTTPSRRDomainSet = true;
       MutexAutoLock lock(mLock);
-      mMockHTTPSRRDomain = mockHTTPSRRDomain;
+      mMockHTTPSRRDomain = std::move(mockHTTPSRRDomain);
     }
   }
 }
 
 NS_IMETHODIMP
 nsDNSService::Init() {
-  MOZ_ASSERT(!mResolver);
   MOZ_ASSERT(NS_IsMainThread());
 
   ReadPrefs(nullptr);
@@ -863,6 +898,7 @@ nsDNSService::Init() {
   if (NS_SUCCEEDED(rv)) {
     // now, set all of our member variables while holding the lock
     MutexAutoLock lock(mLock);
+    MOZ_ASSERT(!mResolver);
     mResolver = res;
   }
 
@@ -870,6 +906,9 @@ nsDNSService::Init() {
   if (prefs) {
     // register as prefs observer
     prefs->AddObserver(kPrefDnsCacheEntries, this, false);
+    // [pref-trie-audit] "network.dnsCacheExpiration" is an ambiguous prefix of
+    // "network.dnsCacheExpirationGracePeriod"; triggers only for the exact pref
+    // (grace period has its own AddObserver on the next line).
     prefs->AddObserver(kPrefDnsCacheExpiration, this, false);
     prefs->AddObserver(kPrefDnsCacheGrace, this, false);
     prefs->AddObserver(kPrefIPv4OnlyDomains, this, false);
@@ -888,8 +927,17 @@ nsDNSService::Init() {
       do_GetService("@mozilla.org/network/oblivious-http-service;1"));
 
   mTrrService = new TRRService();
-  if (NS_FAILED(mTrrService->Init(mResolver->IsNativeHTTPSEnabled()))) {
+  bool httpsEnabled;
+  {
+    MutexAutoLock lock(mLock);
+    httpsEnabled = mResolver->IsNativeHTTPSEnabled();
+  }
+  if (NS_FAILED(mTrrService->Init(httpsEnabled))) {
     mTrrService = nullptr;
+  }
+
+  if (mTrrService && httpsEnabled) {
+    mTrrService->ReadEtcHostsFile();
   }
 
   return NS_OK;
@@ -951,10 +999,17 @@ already_AddRefed<nsHostResolver> nsDNSService::GetResolverLocked() {
 nsresult nsDNSService::PreprocessHostname(bool aLocalDomain,
                                           const nsACString& aInput,
                                           nsACString& aACE) {
-  // Enforce RFC 7686
-  if (StaticPrefs::network_dns_blockDotOnion() &&
-      StringEndsWith(aInput, ".onion"_ns)) {
-    return NS_ERROR_UNKNOWN_HOST;
+  // Enforce RFC 7686, whatever the case of the name, and with or without the
+  // trailing dot of its fully qualified form.
+  if (StaticPrefs::network_dns_blockDotOnion()) {
+    uint32_t length = aInput.Length();
+    while (length && aInput[length - 1] == '.') {
+      --length;
+    }
+    if (StringEndsWith(Substring(aInput, 0, length), ".onion"_ns,
+                       nsCaseInsensitiveCStringComparator)) {
+      return NS_ERROR_UNKNOWN_HOST;
+    }
   }
 
   if (aLocalDomain) {
@@ -1126,6 +1181,7 @@ nsDNSService::AsyncResolve(const nsACString& aHostname,
                            nsICancelable** result) {
   OriginAttributes attrs;
 
+  LOG(("DNSService::AsyncResolve %s", PromiseFlatCString(aHostname).get()));
   if (aArgc == 1) {
     if (!aOriginAttributes.isObject() || !attrs.Init(aCx, aOriginAttributes)) {
       return NS_ERROR_INVALID_ARG;
@@ -1185,22 +1241,6 @@ nsDNSService::CancelAsyncResolveNative(
 }
 
 NS_IMETHODIMP
-nsDNSService::Resolve(const nsACString& aHostname,
-                      nsIDNSService::DNSFlags flags,
-                      JS::Handle<JS::Value> aOriginAttributes, JSContext* aCx,
-                      uint8_t aArgc, nsIDNSRecord** result) {
-  OriginAttributes attrs;
-
-  if (aArgc == 1) {
-    if (!aOriginAttributes.isObject() || !attrs.Init(aCx, aOriginAttributes)) {
-      return NS_ERROR_INVALID_ARG;
-    }
-  }
-
-  return ResolveNative(aHostname, flags, attrs, result);
-}
-
-NS_IMETHODIMP
 nsDNSService::ResolveNative(const nsACString& aHostname,
                             nsIDNSService::DNSFlags flags,
                             const OriginAttributes& aOriginAttributes,
@@ -1212,12 +1252,6 @@ nsDNSService::ResolveNative(const nsACString& aHostname,
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  return ResolveInternal(aHostname, flags, aOriginAttributes, result);
-}
-
-nsresult nsDNSService::DeprecatedSyncResolve(
-    const nsACString& aHostname, nsIDNSService::DNSFlags flags,
-    const OriginAttributes& aOriginAttributes, nsIDNSRecord** result) {
   return ResolveInternal(aHostname, flags, aOriginAttributes, result);
 }
 
@@ -1263,7 +1297,8 @@ nsresult nsDNSService::ResolveInternal(
     rv = res->ResolveHost(hostname, ""_ns, -1, RESOLVE_TYPE_DEFAULT,
                           aOriginAttributes, flags, af, req);
     if (NS_SUCCEEDED(rv)) {
-      RefPtr<nsDNSRecord> rec = new nsDNSRecord(req->mHostRecord);
+      RefPtr<nsDNSRecord> rec =
+          new nsDNSRecord(req->mHostRecord, req->mFromStaleCache);
       rec.forget(result);
     }
     return rv;
@@ -1307,7 +1342,8 @@ nsresult nsDNSService::ResolveInternal(
       rv = syncReq->mStatus;
     } else {
       NS_ASSERTION(syncReq->mHostRecord, "no host record");
-      RefPtr<nsDNSRecord> rec = new nsDNSRecord(syncReq->mHostRecord);
+      RefPtr<nsDNSRecord> rec =
+          new nsDNSRecord(syncReq->mHostRecord, syncReq->mFromStaleCache);
       rec.forget(result);
     }
   }
@@ -1430,7 +1466,7 @@ NS_IMETHODIMP
 nsDNSService::ClearCache(bool aTrrToo) {
   RefPtr<nsHostResolver> resolver = GetResolverLocked();
   NS_ENSURE_TRUE(resolver, NS_ERROR_NOT_INITIALIZED);
-  resolver->FlushCache(aTrrToo);
+  resolver->FlushCache(aTrrToo, true);
   return NS_OK;
 }
 
@@ -1523,14 +1559,22 @@ nsresult nsDNSService::GetTRRDomainKey(nsACString& aTRRDomain) {
   return NS_OK;
 }
 
-size_t nsDNSService::SizeOfIncludingThis(
-    mozilla::MallocSizeOf mallocSizeOf) const {
+NS_IMETHODIMP
+nsDNSService::SetHttp3FirstForServer(const nsACString& aServer, bool aEnabled) {
+  if (mTrrService) {
+    mTrrService->SetHttp3FirstForServer(aServer, aEnabled);
+  }
+  return NS_OK;
+}
+
+size_t nsDNSService::SizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) {
   // Measurement of the following members may be added later if DMD finds it
   // is worthwhile:
   // - mIDN
   // - mLock
 
   size_t n = mallocSizeOf(this);
+  MutexAutoLock lock(mLock);
   n += mResolver ? mResolver->SizeOfIncludingThis(mallocSizeOf) : 0;
   n += mIPv4OnlyDomains.SizeOfExcludingThisIfUnshared(mallocSizeOf);
   n += mLocalDomains.SizeOfExcludingThis(mallocSizeOf);
@@ -1665,6 +1709,7 @@ nsresult GetTRRSkipReasonName(TRRSkippedReason aReason, nsACString& aName) {
   static_assert(TRRSkippedReason::TRR_HEURISTIC_TRIPPED_NRPT == 47);
   static_assert(TRRSkippedReason::TRR_BAD_URL == 48);
   static_assert(TRRSkippedReason::TRR_SYSTEM_SLEEP_MODE == 49);
+  static_assert(TRRSkippedReason::TRR_HEURISTIC_TRIPPED_PRIVATE_DNS == 50);
 
   switch (aReason) {
     case TRRSkippedReason::TRR_UNSET:
@@ -1816,6 +1861,9 @@ nsresult GetTRRSkipReasonName(TRRSkippedReason aReason, nsACString& aName) {
       break;
     case TRRSkippedReason::TRR_SYSTEM_SLEEP_MODE:
       aName = "TRR_SYSTEM_SLEEP_MODE"_ns;
+      break;
+    case TRRSkippedReason::TRR_HEURISTIC_TRIPPED_PRIVATE_DNS:
+      aName = "TRR_HEURISTIC_TRIPPED_PRIVATE_DNS"_ns;
       break;
     default:
       MOZ_ASSERT(false, "Unknown value");

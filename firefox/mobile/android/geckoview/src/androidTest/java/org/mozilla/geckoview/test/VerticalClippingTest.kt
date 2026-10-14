@@ -1,6 +1,5 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 4; indent-tabs-mode: nil; -*-
- * Any copyright is dedicated to the Public Domain.
-   http://creativecommons.org/publicdomain/zero/1.0/ */
+/* Any copyright is dedicated to the Public Domain.
+http://creativecommons.org/publicdomain/zero/1.0/ */
 
 package org.mozilla.geckoview.test
 
@@ -75,11 +74,11 @@ class VerticalClippingTest : BaseSessionTest() {
     fun verticalClippingSucceeds() {
         sessionRule.display?.setVerticalClipping(45)
         mainSession.loadTestPath(FIXED_BOTTOM)
-        sessionRule.waitUntilCalled(object : ContentDelegate {
-            @AssertCalled(count = 1)
-            override fun onFirstContentfulPaint(session: GeckoSession) {
+        sessionRule.waitUntilCalled(
+            object : ContentDelegate {
+                @AssertCalled(count = 1) override fun onFirstContentfulPaint(session: GeckoSession) {}
             }
-        })
+        )
 
         sessionRule.display?.let {
             assertScreenshotResult(it.capturePixels(), getComparisonScreenshot(45))

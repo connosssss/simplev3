@@ -37,19 +37,16 @@ class ManifestUpdateFeature(
     private val storage: ManifestStorage,
     private val sessionId: String,
     private var initialManifest: WebAppManifest,
+    private val mainScope: CoroutineScope = MainScope(),
 ) : LifecycleAwareFeature {
 
     private var scope: CoroutineScope? = null
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    internal var updateJob: Job? = null
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE) internal var updateJob: Job? = null
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    internal var updateUsageJob: Job? = null
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE) internal var updateUsageJob: Job? = null
 
-    /**
-     * Updates the manifest on disk then updates the pinned shortcut to reflect changes.
-     */
+    /** Updates the manifest on disk then updates the pinned shortcut to reflect changes. */
     @VisibleForTesting
     internal suspend fun updateStoredManifest(manifest: WebAppManifest) {
         storage.updateManifest(manifest)
@@ -58,7 +55,7 @@ class ManifestUpdateFeature(
     }
 
     override fun start() {
-        scope = MainScope().also { observeManifestChanges(it) }
+        scope = mainScope.also { observeManifestChanges(it) }
         updateUsageJob?.cancel()
 
         updateUsageJob = scope?.launch {
@@ -67,7 +64,8 @@ class ManifestUpdateFeature(
     }
 
     private fun observeManifestChanges(scope: CoroutineScope) = scope.launch {
-        store.flow()
+        store
+            .flow()
             .mapNotNull { state -> state.findCustomTab(sessionId) }
             .map { tab -> tab.content.webAppManifest }
             .distinctUntilChanged()
@@ -79,9 +77,8 @@ class ManifestUpdateFeature(
     }
 
     /**
-     * When the manifest is changed, compare it to the existing manifest.
-     * If it is different, update the disk and shortcut. Ignore if called with a null
-     * manifest or a manifest with a different start URL.
+     * When the manifest is changed, compare it to the existing manifest. If it is different, update the disk and
+     * shortcut. Ignore if called with a null manifest or a manifest with a different start URL.
      */
     private fun onWebAppManifestChanged(manifest: WebAppManifest?) {
         if (manifest?.startUrl == initialManifest.startUrl && manifest != initialManifest) {

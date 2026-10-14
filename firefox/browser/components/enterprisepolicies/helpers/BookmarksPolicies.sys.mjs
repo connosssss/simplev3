@@ -41,6 +41,7 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  PolicyFailures: "resource://gre/modules/PoliciesHelpers.sys.mjs",
 });
 
 const PREF_LOGLEVEL = "browser.policies.loglevel";
@@ -58,43 +59,64 @@ ChromeUtils.defineLazyGetter(lazy, "log", () => {
   });
 });
 
+/**
+ * Reports an operation of a policy that failed, so that the policy is flagged
+ * as only partially applied in about:policies.
+ *
+ * @param {string} message A description of what failed.
+ */
+function reportFailure(message) {
+  lazy.log.error(message);
+  lazy.PolicyFailures.report("Bookmarks", message);
+}
+
 export const BookmarksPolicies = {
   // These prefixes must only contain characters
   // allowed by PlacesUtils.isValidGuid
   BOOKMARK_GUID_PREFIX: "PolB-",
   FOLDER_GUID_PREFIX: "PolF-",
 
-  /*
+  /**
    * Process the bookmarks specified by the policy engine.
    *
-   * @param param
+   * @param {object[]} param
    *        This will be an array of bookmarks objects, as
    *        described on the top of this file.
    */
   processBookmarks(param) {
-    calculateLists(param).then(async function addRemoveBookmarks(results) {
-      for (let bookmark of results.add.values()) {
-        await insertBookmark(bookmark).catch(lazy.log.error);
-      }
-      for (let bookmark of results.remove.values()) {
-        await lazy.PlacesUtils.bookmarks.remove(bookmark).catch(lazy.log.error);
-      }
-      for (let bookmark of results.emptyFolders.values()) {
-        await lazy.PlacesUtils.bookmarks.remove(bookmark).catch(lazy.log.error);
-      }
+    // Returned so that the caller can report a failure of the whole
+    // operation against the policy.
+    return calculateLists(param).then(
+      async function addRemoveBookmarks(results) {
+        for (let bookmark of results.add.values()) {
+          await insertBookmark(bookmark).catch(e =>
+            reportFailure(`Unable to add bookmark "${bookmark.Title}": ${e}`)
+          );
+        }
+        for (let bookmark of results.remove.values()) {
+          await lazy.PlacesUtils.bookmarks
+            .remove(bookmark)
+            .catch(e => reportFailure(`Unable to remove a bookmark: ${e}`));
+        }
+        for (let bookmark of results.emptyFolders.values()) {
+          await lazy.PlacesUtils.bookmarks
+            .remove(bookmark)
+            .catch(e => reportFailure(`Unable to remove a folder: ${e}`));
+        }
 
-      lazy.gFoldersMapPromise.then(map => map.clear());
-    });
+        lazy.gFoldersMapPromise.then(map => map.clear());
+      }
+    );
   },
 };
 
-/*
+/**
  * This function calculates the differences between the existing bookmarks
  * that are managed by the policy engine (which are known through a guid
  * prefix) and the specified bookmarks in the policy file.
  * They can differ if the policy file has changed.
  *
- * @param specifiedBookmarks
+ * @param {object[]} specifiedBookmarks
  *        This will be an array of bookmarks objects, as
  *        described on the top of this file.
  */
@@ -205,7 +227,7 @@ async function insertBookmark(bookmark) {
 
 function setFaviconForBookmark(bookmark) {
   if (bookmark.Favicon.protocol != "data:") {
-    lazy.log.error(
+    reportFailure(
       `Pass a valid data: URI for favicon on bookmark "${bookmark.Title}", instead of "${bookmark.Favicon.URI.spec}"`
     );
     return;
@@ -217,7 +239,11 @@ function setFaviconForBookmark(bookmark) {
       Services.io.newURI("fake-favicon-uri:" + bookmark.URL.href),
       bookmark.Favicon.URI
     )
-    .catch(lazy.log.error);
+    .catch(e =>
+      reportFailure(
+        `Unable to set the favicon on bookmark "${bookmark.Title}": ${e}`
+      )
+    );
 }
 
 // Cache of folder names to guids to be used by the getParentGuid

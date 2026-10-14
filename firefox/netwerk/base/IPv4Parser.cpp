@@ -1,39 +1,38 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "IPv4Parser.h"
+
 #include "mozilla/EndianUtils.h"
-#include "nsPrintfCString.h"
-#include "nsTArray.h"
 
 namespace mozilla::net::IPv4Parser {
 
 // https://url.spec.whatwg.org/#ends-in-a-number-checker
 bool EndsInANumber(const nsCString& input) {
   // 1. Let parts be the result of strictly splitting input on U+002E (.).
-  nsTArray<nsDependentCSubstring> parts;
-  for (const nsDependentCSubstring& part : input.Split('.')) {
-    parts.AppendElement(part);
-  }
-
-  if (parts.Length() == 0) {
+  // Only the last part is ever used, so rather than materializing parts we
+  // scan back from the end of input for the final separator.
+  if (input.IsEmpty()) {
     return false;
   }
 
   // 2.If the last item in parts is the empty string, then:
   //    1. If parts’s size is 1, then return false.
   //    2. Remove the last item from parts.
-  if (parts.LastElement().IsEmpty()) {
-    if (parts.Length() == 1) {
-      return false;
-    }
-    Unused << parts.PopLastElement();
+  // A trailing separator is the only way for the last part to be empty, and
+  // it is dropped exactly once.
+  uint32_t length = input.Length();
+  if (input.Last() == '.') {
+    length--;
   }
+  nsDependentCSubstring remaining(input, 0, length);
 
-  // 3. Let last be the last item in parts.
-  const nsDependentCSubstring& last = parts.LastElement();
+  // 3. Let last be the last item in parts. An input of just "." leaves an
+  // empty last, which steps 4 and 5 then reject.
+  int32_t separator = remaining.RFindChar('.');
+  const nsDependentCSubstring last =
+      separator < 0 ? remaining : Substring(remaining, separator + 1);
 
   // 4. If last is non-empty and contains only ASCII digits, then return true.
   // The erroneous input "09" will be caught by the IPv4 parser at a later
@@ -66,6 +65,12 @@ nsresult ParseIPv4Number10(const nsACString& input, uint32_t& number,
     MOZ_ASSERT(c >= '0' && c <= '9');
     value *= 10;
     value += c - '0';
+    // Any IPv4 number must fit in 32 bits. Bail out as soon as we exceed
+    // that to avoid silently wrapping the uint64_t accumulator.
+    if (value > 0xffffffffu) {
+      number = 0;
+      return NS_ERROR_FAILURE;
+    }
   }
   if (value <= maxNumber) {
     number = value;
@@ -106,6 +111,12 @@ nsresult ParseIPv4Number(const nsACString& input, int32_t base,
       value += c - 'a' + 10;
     } else if (c >= 'A' && c <= 'F') {
       value += c - 'A' + 10;
+    }
+    // Any IPv4 number must fit in 32 bits. Bail out as soon as we exceed
+    // that to avoid silently wrapping the uint64_t accumulator.
+    if (value > 0xffffffffu) {
+      number = 0;
+      return NS_ERROR_FAILURE;
     }
   }
 
@@ -186,8 +197,14 @@ nsresult NormalizeIPv4(const nsACString& host, nsCString& result) {
 
   uint8_t ipSegments[4];
   NetworkEndian::writeUint32(ipSegments, ipv4);
-  result = nsPrintfCString("%d.%d.%d.%d", ipSegments[0], ipSegments[1],
-                           ipSegments[2], ipSegments[3]);
+  result.Truncate();
+  result.AppendInt(ipSegments[0]);
+  result.Append('.');
+  result.AppendInt(ipSegments[1]);
+  result.Append('.');
+  result.AppendInt(ipSegments[2]);
+  result.Append('.');
+  result.AppendInt(ipSegments[3]);
   return NS_OK;
 }
 

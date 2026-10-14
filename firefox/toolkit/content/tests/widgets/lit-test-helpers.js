@@ -97,6 +97,68 @@ class LitTestHelpers {
     await this.renderTarget.firstElementChild.updateComplete;
     return this.renderTarget;
   }
+
+  /**
+   * Verifies that arrow keys pressed with a modifier are ignored, then that a
+   * bare ArrowDown still navigates so the first checks cannot pass trivially.
+   *
+   * Keydown events are dispatched directly instead of synthesized. Browser
+   * shortcuts such as Alt+Left (Back) fire on keypress, which a dispatched
+   * keydown does not produce, so no combination navigates the test harness.
+   *
+   * @param {object} options
+   * @param {Element} options.target - Focused element to dispatch keydowns at.
+   *     Every arrow direction must navigate away from it when unmodified.
+   * @param {Function} options.getState - Returns the state arrow navigation
+   *     changes, e.g. the selected value.
+   * @param {Function} [options.afterKeydown] - Awaited after each keydown so
+   *     the element can update. Defaults to waiting for an animation frame.
+   */
+  async verifyModifiedArrowKeysIgnored({
+    target,
+    getState,
+    afterKeydown = () => new Promise(r => requestAnimationFrame(r)),
+  }) {
+    const sendKeydown = async (key, modifiers = {}) => {
+      let notPrevented = target.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key,
+          ...modifiers,
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        })
+      );
+      await afterKeydown();
+      return notPrevented;
+    };
+
+    let initialState = getState();
+    let keys = ["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"];
+    let modifierSets = [
+      { altKey: true },
+      { ctrlKey: true },
+      { metaKey: true },
+      { shiftKey: true },
+      { altKey: true, metaKey: true },
+    ];
+    for (let key of keys) {
+      for (let modifiers of modifierSets) {
+        let description = `${key} with ${Object.keys(modifiers).join("+")}`;
+        ok(
+          await sendKeydown(key, modifiers),
+          `${description} is not default prevented.`
+        );
+        is(getState(), initialState, `${description} does not navigate.`);
+      }
+    }
+
+    ok(
+      !(await sendKeydown("ArrowDown")),
+      "Bare ArrowDown is default prevented."
+    );
+    isnot(getState(), initialState, "Bare ArrowDown still navigates.");
+  }
 }
 
 /**
@@ -163,10 +225,14 @@ class InputTestHelpers extends LitTestHelpers {
    * all reusable moz- input elements.
    *
    * @param {string} elementName - HTML tag of the element under test.
+   * @param {object} options - Custom properties to assert. Currently only type is supported.
+   * @param {string} options.type - The input type to verify. Defaults to "text".
    */
-  async testCommonInputProperties(elementName) {
+  async testCommonInputProperties(elementName, { type = "text" } = {}) {
     await this.verifyLabel(elementName);
     await this.verifyAriaLabel(elementName);
+    await this.verifyAriaDescription(elementName);
+    await this.verifyTitle(elementName);
     await this.verifyName(elementName);
     await this.verifyValue(elementName);
     await this.verifyIcon(elementName);
@@ -175,6 +241,7 @@ class InputTestHelpers extends LitTestHelpers {
     await this.verifySupportPage(elementName);
     await this.verifyAccesskey(elementName);
     await this.verifyNoWhitespace(elementName);
+    await this.verifyType(elementName, type);
     if (this.activatedProperty) {
       await this.verifyActivated(elementName);
       await this.verifyNestedFields(elementName);
@@ -253,6 +320,83 @@ class InputTestHelpers extends LitTestHelpers {
     firstInput.value = NEW_VALUE;
     await firstInput.updateComplete;
     is(firstInput.inputEl.value, NEW_VALUE, "Input value is updated.");
+  }
+
+  /**
+   * Verifies input value property remains in sync with its inner HTMLInputElement's value in both directions.
+   *
+   * @param {string} selector - HTML tag of the element under test.
+   */
+  async verifyValueSync(selector) {
+    const INITIAL_VALUE = "value";
+    const USER_INPUT = "new value";
+    const UNIQUE_INPUT = "unique value";
+
+    const valueTemplate = this.templateFn({
+      label: "Testing value",
+      value: INITIAL_VALUE,
+    });
+    const renderTarget = await this.renderTemplate(valueTemplate);
+
+    const wrapper = renderTarget.querySelector(selector);
+    ok(wrapper, `Found ${selector} wrapper`);
+
+    const innerInput = wrapper.inputEl;
+    ok(
+      HTMLInputElement.isInstance(innerInput),
+      "Wrapper inner element is an <input>"
+    );
+
+    is(
+      innerInput.value,
+      INITIAL_VALUE,
+      "Inner input starts with the initial template value."
+    );
+    is(
+      wrapper.value,
+      INITIAL_VALUE,
+      "Wrapper value starts with the initial template value."
+    );
+
+    wrapper.value = INITIAL_VALUE;
+    await wrapper.updateComplete;
+    is(
+      innerInput.value,
+      INITIAL_VALUE,
+      "Inner input value is in sync with wrapper value (after direct set)."
+    );
+
+    wrapper.value = "";
+    await wrapper.updateComplete;
+
+    innerInput.focus();
+    sendString(USER_INPUT);
+    innerInput.blur();
+    await TestUtils.waitForTick();
+
+    is(
+      wrapper.value,
+      USER_INPUT,
+      "Wrapper value is updated after typing into inner input."
+    );
+    is(
+      innerInput.value,
+      USER_INPUT,
+      "Inner input value is updated after typing into inner input."
+    );
+
+    wrapper.value = UNIQUE_INPUT;
+    await wrapper.updateComplete;
+    is(
+      wrapper.value,
+      UNIQUE_INPUT,
+      "Wrapper value is updated to unique value."
+    );
+    is(
+      innerInput.value,
+      UNIQUE_INPUT,
+      "Inner input value is in sync with unique wrapper value."
+    );
   }
 
   /**
@@ -644,7 +788,7 @@ class InputTestHelpers extends LitTestHelpers {
     let renderTarget = await this.renderTemplate(whitespaceTemplate);
     let firstInput = renderTarget.querySelector(selector);
 
-    if (!firstInput.isInlineLayout) {
+    if (firstInput.inputLayout == "block") {
       return;
     }
 
@@ -689,6 +833,12 @@ class InputTestHelpers extends LitTestHelpers {
     );
   }
 
+  async verifyType(selector, type) {
+    let renderTarget = await this.renderTemplate();
+    let firstInput = renderTarget.querySelector(selector);
+    is(firstInput.inputEl.type, type, `The input type is ${type}`);
+  }
+
   async testTextBasedInputEvents(selector) {
     let { trackEvent, verifyEvents } = this.getInputEventHelpers();
     let target = await this.renderTemplate();
@@ -717,6 +867,11 @@ class InputTestHelpers extends LitTestHelpers {
     ]);
   }
 
+  /**
+   * Verifies that the aria-label attribute is applied to the input element.
+   *
+   * @param {string} selector - HTML tag of the element under test.
+   */
   async verifyAriaLabel(selector) {
     const ARIA_LABEL = "I'm not visible";
     let ariaLabelTemplate = this.templateFn({
@@ -736,6 +891,61 @@ class InputTestHelpers extends LitTestHelpers {
       input.inputEl.getAttribute("aria-label"),
       ARIA_LABEL,
       "The aria-label is set on the input element."
+    );
+  }
+
+  /**
+   * Verifies that the aria-description attribute is applied to the input element.
+   *
+   * @param {string} selector - HTML tag of the element under test.
+   */
+  async verifyAriaDescription(selector) {
+    const ARIA_DESCRIPTION = "I'm not visible";
+    let ariaDescriptionTemplate = this.templateFn({
+      value: "default",
+      "aria-description": ARIA_DESCRIPTION,
+    });
+    let renderTarget = await this.renderTemplate(ariaDescriptionTemplate);
+    let input = renderTarget.querySelector(selector);
+
+    ok(!input.hasDescription, "No visible description text is rendered.");
+    ok(
+      !input.getAttribute("aria-description"),
+      "aria-description is not set on the outer element."
+    );
+    is(
+      input.inputEl.getAttribute("aria-description"),
+      ARIA_DESCRIPTION,
+      "The aria-description is set on the input element."
+    );
+  }
+
+  /**
+   * Verifies that the title attribute is applied to the input element.
+   *
+   * @param {string} selector - HTML tag of the element under test.
+   */
+  async verifyTitle(selector) {
+    const TITLE = "More information about this control";
+    let titleTemplate = this.templateFn({
+      value: "default",
+      title: TITLE,
+    });
+    let renderTarget = await this.renderTemplate(titleTemplate);
+    let input = renderTarget.querySelector(selector);
+
+    ok(!input.hasAttribute("title"), "title is not set on the outer element.");
+    is(
+      input.inputEl.getAttribute("title"),
+      TITLE,
+      "The title is set on the input element."
+    );
+
+    input.title = null;
+    await input.updateComplete;
+    ok(
+      !input.inputEl.hasAttribute("title"),
+      "title is cleared from the input element when unset."
     );
   }
 
@@ -1000,5 +1210,47 @@ class InputTestHelpers extends LitTestHelpers {
       "Input has a readonly property set to false again."
     );
     ok(!firstInput.inputEl.readOnly, "Readonly state is propagated.");
+  }
+
+  /**
+   * Verifies it is possible to set the required attribute on the input
+   * element and that the indicator is shown next to the label.
+   *
+   * @param {string} selector - HTML tag of the element under test.
+   */
+  async verifyRequired(selector) {
+    let requiredTemplate = this.templateFn({ label: "Label" });
+    let renderTarget = await this.renderTemplate(requiredTemplate);
+    let firstInput = renderTarget.querySelector(selector);
+
+    ok(!firstInput.required, "Input is not required by default.");
+    ok(
+      !firstInput.inputEl.required,
+      "Inner element is not required by default either."
+    );
+    ok(
+      !firstInput.labelEl.querySelector(".required-indicator"),
+      "No required indicator is present."
+    );
+
+    firstInput.required = true;
+    await firstInput.updateComplete;
+
+    ok(firstInput.required, "Input is required.");
+    ok(firstInput.inputEl.required, "Required state is propagated.");
+    ok(
+      firstInput.labelEl.querySelector(".required-indicator"),
+      "Required indicator is shown next to the label."
+    );
+
+    firstInput.required = false;
+    await firstInput.updateComplete;
+
+    ok(!firstInput.required, "Input is not required again.");
+    ok(!firstInput.inputEl.required, "Required state is propagated.");
+    ok(
+      !firstInput.labelEl.querySelector(".required-indicator"),
+      "Required indicator is removed."
+    );
   }
 }

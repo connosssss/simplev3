@@ -1,12 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "LockManagerParent.h"
-#include "LockRequestParent.h"
 
+#include "LockRequestParent.h"
 #include "mozilla/PrincipalHashKey.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StaticPtr.h"
@@ -124,7 +122,8 @@ IPCResult LockManagerParent::RecvQuery(QueryResolver&& aResolver) {
       info.mMode.Construct(request->Data().lockMode());
       info.mName.Construct(request->Data().name());
       info.mClientId.Construct(
-          static_cast<LockManagerParent*>(request->Manager())->mClientId);
+          mozilla::ipc::ActorCast<LockManagerParent>(request->Manager())
+              ->mClientId);
       if (!snapshot.mPending.Value().AppendElement(info, mozilla::fallible)) {
         return IPC_FAIL(this, "Out of memory");
       };
@@ -135,7 +134,8 @@ IPCResult LockManagerParent::RecvQuery(QueryResolver&& aResolver) {
     info.mMode.Construct(request->Data().lockMode());
     info.mName.Construct(request->Data().name());
     info.mClientId.Construct(
-        static_cast<LockManagerParent*>(request->Manager())->mClientId);
+        mozilla::ipc::ActorCast<LockManagerParent>(request->Manager())
+            ->mClientId);
     if (!snapshot.mHeld.Value().AppendElement(info, mozilla::fallible)) {
       return IPC_FAIL(this, "Out of memory");
     };

@@ -6,8 +6,10 @@
 #define MP4_DEMUXER_H264_H_
 
 #include <stdint.h>
+
 #include "ErrorList.h"
 #include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/Result.h"
 #include "mozilla/Span.h"
 #include "mozilla/gfx/Point.h"
@@ -25,6 +27,7 @@ enum H264_PROFILE {
   H264_PROFILE_MAIN = 0x4D,
   H264_PROFILE_EXTENDED = 0x58,
   H264_PROFILE_HIGH = 0x64,
+  // Keep in sync with H264ProfileValidator.
 };
 
 enum class H264_LEVEL {
@@ -48,6 +51,7 @@ enum class H264_LEVEL {
   H264_LEVEL_6 = 60,
   H264_LEVEL_6_1 = 61,
   H264_LEVEL_6_2 = 62
+  // Keep in sync with H264LevelValidator.
 };
 
 // Spec 7.4.2.1
@@ -286,6 +290,26 @@ struct SPSData {
     specified in subclause A.3.1 or A.3.2), inclusive.
    */
   uint32_t max_num_ref_frames = {};
+
+  /*
+    max_num_reorder_frames from the VUI bitstream-restriction parameters
+    (Annex E.1.2) specifies the maximum number of frames, complementary
+    field pairs, or non-paired fields that precede any frame, complementary
+    field pair, or non-paired field in decoding order and follow it in
+    output order. A non-zero value means decode order can differ from
+    presentation order (B-frames). Inferred as 0 for intra-only profiles
+    (or MaxDpbFrames otherwise) when the restriction parameters are absent.
+   */
+  uint32_t max_num_reorder_frames = {};
+
+  /*
+    max_dec_frame_buffering from the VUI bitstream-restriction parameters
+    (Annex E.1.2) specifies the required size of the decoded picture buffer.
+    max_num_reorder_frames shall be in the range of 0 to
+    max_dec_frame_buffering, inclusive. Stays 0 when the restriction
+    parameters are absent.
+   */
+  uint32_t max_dec_frame_buffering = {};
 
   /*
     gaps_in_frame_num_value_allowed_flag specifies the allowed
@@ -527,6 +551,12 @@ class H264 {
   static uint32_t ComputeMaxRefFrames(
       const mozilla::MediaByteBuffer* aExtraData);
 
+  // Return max_num_reorder_frames from a valid SPS in the extradata,
+  // otherwise return 0. A non-zero value means decode order can differ from
+  // presentation order (B-frames).
+  static uint32_t ComputeMaxNumReorderFrames(
+      const mozilla::MediaByteBuffer* aExtraData);
+
   enum class FrameType {
     // IDR is a special iframe, according to the spec T-REC-H.264-202408, 3.69 :
     // "An IDR picture causes the decoding process to mark all reference
@@ -572,7 +602,7 @@ class H264 {
       const uint8_t* aNAL, size_t aLength);
   static bool vui_parameters(mozilla::BitReader& aBr, SPSData& aDest);
   // Read HRD parameters, all data is ignored.
-  static void hrd_parameters(mozilla::BitReader& aBr);
+  static bool hrd_parameters(mozilla::BitReader& aBr);
   static uint8_t NumSPS(const mozilla::MediaByteBuffer* aExtraData);
   // Decode SEI payload and return true if the SEI NAL indicates a recovery
   // point.

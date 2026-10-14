@@ -1,38 +1,36 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/FileUtils.h"
 
+#include "mozilla/BaseProfilerMarkers.h"
+#include "mozilla/MemUtils.h"
 #include "nscore.h"
 #include "private/pprio.h"
 #include "prmem.h"
-#include "mozilla/BaseProfilerMarkers.h"
-#include "mozilla/MemUtils.h"
 
 #if defined(XP_MACOSX)
 #  include <fcntl.h>
-#  include <unistd.h>
-#  include <mach/machine.h>
+#  include <limits.h>
 #  include <mach-o/fat.h>
 #  include <mach-o/loader.h>
+#  include <mach/machine.h>
 #  include <sys/mman.h>
 #  include <sys/stat.h>
-#  include <limits.h>
+#  include <unistd.h>
 #elif defined(XP_UNIX)
 #  include <fcntl.h>
 #  include <unistd.h>
 #  if defined(LINUX)
 #    include <elf.h>
 #  endif
-#  include <sys/types.h>
 #  include <sys/stat.h>
+#  include <sys/types.h>
 #elif defined(XP_WIN)
-#  include <nsWindowsHelpers.h>
 #  include <mozilla/NativeNt.h>
 #  include <mozilla/ScopeExit.h>
+#  include <nsWindowsHelpers.h>
 #endif
 
 // Functions that are not to be used in standalone glue must be implemented
@@ -171,7 +169,7 @@ mozilla::PathString mozilla::GetLibraryName(mozilla::pathstr_t aDirectory,
   if (!strstr(aLib, ".dll")) {
     fullName.AppendLiteral(".dll");
   }
-  return std::move(fullName);
+  return fullName;
 #  else
   char* temp = PR_GetLibraryName(aDirectory, aLib);
   if (!temp) {
@@ -179,7 +177,7 @@ mozilla::PathString mozilla::GetLibraryName(mozilla::pathstr_t aDirectory,
   }
   nsAutoCString libname(temp);
   PR_FreeLibraryName(temp);
-  return std::move(libname);
+  return libname;
 #  endif
 }
 
@@ -200,7 +198,7 @@ mozilla::PathString mozilla::GetLibraryFilePathname(mozilla::pathstr_t aName,
   }
 
   path.SetLength(len);
-  return std::move(path);
+  return path;
 #  else
   char* temp = PR_GetLibraryFilePathname(aName, aAddr);
   if (!temp) {
@@ -208,7 +206,7 @@ mozilla::PathString mozilla::GetLibraryFilePathname(mozilla::pathstr_t aName,
   }
   nsAutoCString path(temp);
   PR_Free(temp);  // PR_GetLibraryFilePathname() uses PR_Malloc().
-  return std::move(path);
+  return path;
 #  endif
 }
 
@@ -341,9 +339,9 @@ void mozilla::ReadAhead(mozilla::filedesc_t aFd, const size_t aOffset,
   // Restore the file pointer
   SetFilePointerEx(aFd, fpOriginal, nullptr, FILE_BEGIN);
 
-#elif defined(LINUX) && !defined(ANDROID)
+#elif defined(LINUX)
 
-  readahead(aFd, aOffset, aCount);
+  posix_fadvise(aFd, aOffset, aCount, POSIX_FADV_WILLNEED);
 
 #elif defined(XP_MACOSX)
 
@@ -435,14 +433,17 @@ void mozilla::ReadAheadLib(mozilla::pathstr_t aFilePath) {
   // We check that the ELF magic is found, that the ELF class matches
   // our own, and that the program header table as defined in the ELF
   // headers fits in the buffer we read.
-  if ((read(fd, elf.buf, bufsize) <= 0) || (memcmp(elf.buf, ELFMAG, 4)) ||
+  ssize_t bytesRead = read(fd, elf.buf, bufsize);
+  if ((bytesRead < static_cast<ssize_t>(sizeof(Elf_Ehdr))) ||
+      (memcmp(elf.buf, ELFMAG, 4)) ||
       (elf.ehdr.e_ident[EI_CLASS] != ELFCLASS) ||
       // Upcast e_phentsize so the multiplication is done in the same precision
       // as the subsequent addition, to satisfy static analyzers and avoid
-      // issues with abnormally large program header tables.
+      // issues with abnormally large program header tables. The program header
+      // table must lie within the bytes we actually read, not just the buffer.
       (elf.ehdr.e_phoff +
            (static_cast<Elf_Off>(elf.ehdr.e_phentsize) * elf.ehdr.e_phnum) >=
-       bufsize)) {
+       static_cast<Elf_Off>(bytesRead))) {
     close(fd);
     return;
   }

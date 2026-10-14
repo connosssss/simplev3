@@ -4,29 +4,31 @@
 
 package org.mozilla.fenix.translations.preferences.automatic
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.tooling.preview.PreviewLightDark
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
+import java.util.Locale
+import mozilla.components.compose.base.InfoCard
+import mozilla.components.compose.base.InfoType
+import mozilla.components.compose.base.theme.PreviewThemeProvider
+import mozilla.components.compose.base.theme.Theme
 import mozilla.components.concept.engine.translate.Language
 import org.mozilla.fenix.R
-import org.mozilla.fenix.compose.InfoCard
-import org.mozilla.fenix.compose.InfoType
 import org.mozilla.fenix.compose.list.TextListItem
 import org.mozilla.fenix.theme.FirefoxTheme
-import java.util.Locale
 
 /**
  * Automatic Translate preference screen.
@@ -41,23 +43,16 @@ fun AutomaticTranslationPreference(
     hasLanguageError: Boolean = false,
     onItemClick: (AutomaticTranslationItemPreference) -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .background(
-                color = FirefoxTheme.colors.layer1,
-            ),
-    ) {
+    Surface {
         LazyColumn {
             item {
                 TextListItem(
                     label = stringResource(R.string.automatic_translation_header_preference),
-                    modifier = Modifier
-                        .padding(
-                            start = 56.dp,
-                        )
-                        .semantics { heading() }
-                        .defaultMinSize(minHeight = 76.dp)
-                        .wrapContentHeight(),
+                    modifier =
+                        Modifier.padding(start = 56.dp)
+                            .semantics { heading() }
+                            .defaultMinSize(minHeight = 76.dp)
+                            .wrapContentHeight(),
                     maxLabelLines = Int.MAX_VALUE,
                 )
             }
@@ -70,20 +65,20 @@ fun AutomaticTranslationPreference(
             items(automaticTranslationListPreferences) { item: AutomaticTranslationItemPreference ->
                 var description: String? = null
                 if (
-                    item.automaticTranslationOptionPreference !is
-                    AutomaticTranslationOptionPreference.OfferToTranslate
+                    item.automaticTranslationOptionPreference !is AutomaticTranslationOptionPreference.OfferToTranslate
                 ) {
                     description = stringResource(item.automaticTranslationOptionPreference.titleId)
                 }
+
                 item.language.localizedDisplayName?.let {
                     TextListItem(
                         label = it,
                         description = description,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 56.dp)
-                            .defaultMinSize(minHeight = 56.dp)
-                            .wrapContentHeight(),
+                        modifier =
+                            Modifier.fillMaxWidth()
+                                .padding(start = 56.dp)
+                                .defaultMinSize(minHeight = 56.dp)
+                                .wrapContentHeight(),
                         onClick = {
                             onItemClick(item)
                         },
@@ -96,11 +91,11 @@ fun AutomaticTranslationPreference(
 
 @Composable
 private fun CouldNotLoadLanguagesErrorWarning() {
-    val modifier = Modifier
-        .fillMaxWidth()
-        .padding(start = 72.dp, end = 16.dp, bottom = 16.dp, top = 16.dp)
-        .defaultMinSize(minHeight = 56.dp)
-        .wrapContentHeight()
+    val modifier =
+        Modifier.fillMaxWidth()
+            .padding(start = 72.dp, end = 16.dp, bottom = 16.dp, top = 16.dp)
+            .defaultMinSize(minHeight = 56.dp)
+            .wrapContentHeight()
 
     InfoCard(
         description = stringResource(id = R.string.automatic_translation_error_warning_text),
@@ -117,35 +112,47 @@ internal fun getAutomaticTranslationListPreferences(): List<AutomaticTranslation
             AutomaticTranslationItemPreference(
                 language = Language(Locale.ENGLISH.toLanguageTag(), Locale.ENGLISH.displayLanguage),
                 automaticTranslationOptionPreference = AutomaticTranslationOptionPreference.AlwaysTranslate(),
-            ),
+            )
         )
         add(
             AutomaticTranslationItemPreference(
                 language = Language(Locale.FRANCE.toLanguageTag(), Locale.FRANCE.displayLanguage),
                 automaticTranslationOptionPreference = AutomaticTranslationOptionPreference.OfferToTranslate(),
-            ),
+            )
         )
         add(
             AutomaticTranslationItemPreference(
                 language = Language(Locale.GERMAN.toLanguageTag(), Locale.GERMAN.displayLanguage),
                 automaticTranslationOptionPreference = AutomaticTranslationOptionPreference.NeverTranslate(),
-            ),
+            )
         )
         add(
             AutomaticTranslationItemPreference(
                 language = Language(Locale.ITALIAN.toLanguageTag(), Locale.ITALIAN.displayLanguage),
                 automaticTranslationOptionPreference = AutomaticTranslationOptionPreference.AlwaysTranslate(),
-            ),
+            )
         )
     }
 }
 
+@Preview
 @Composable
-@PreviewLightDark
-private fun AutomaticTranslationPreferencePreview() {
-    FirefoxTheme {
+private fun AutomaticTranslationPreferencePreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
         AutomaticTranslationPreference(
             automaticTranslationListPreferences = getAutomaticTranslationListPreferences(),
+            onItemClick = {},
+        )
+    }
+}
+
+@Preview
+@Composable
+private fun AutomaticTranslationPreferenceErrorPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
+        AutomaticTranslationPreference(
+            automaticTranslationListPreferences = getAutomaticTranslationListPreferences(),
+            hasLanguageError = true,
             onItemClick = {},
         )
     }

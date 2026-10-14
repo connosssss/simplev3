@@ -15,6 +15,12 @@ const tests = [
     output: {dataType: 'float32', shape: [3, 2, 5]}
   },
   {
+    name: '[cumulativeSum] Test with integer input',
+    input: {dataType: 'int32', shape: [3, 2, 5]},
+    axis: 0,
+    output: {dataType: 'int32', shape: [3, 2, 5]}
+  },
+  {
     name: '[cumulativeSum] Test with axis=1',
     input: {dataType: 'float32', shape: [3, 2, 5]},
     axis: 1,
@@ -79,3 +85,7 @@ multi_builder_test(async (t, builder, otherBuilder) => {
   assert_throws_js(
       TypeError, () => builder.cumulativeSum(inputFromOtherBuilder, 0));
 }, '[cumulativeSum] throw if input is from another builder');
+
+validateOperandRank('cumulativeSum', 'input', (builder, input) => {
+  return builder.cumulativeSum(input, 0);
+});

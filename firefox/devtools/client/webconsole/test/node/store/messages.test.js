@@ -63,15 +63,51 @@ describe("Message reducer:", () => {
       const packet2 = clonePacket(packet);
 
       // Repeat ID must be the same even if the timestamp is different.
-      packet.timeStamp = 1;
-      packet2.timeStamp = 2;
+      packet.timeStamp += 1;
+      packet2.timeStamp += 2;
       dispatch(actions.messagesAdd([packet, packet2]));
 
-      const messages = getMutableMessagesById(getState());
+      let messages = getMutableMessagesById(getState());
 
       expect(messages.size).toBe(1);
-      const repeat = getAllRepeatById(getState());
+      let repeat = getAllRepeatById(getState());
+      expect(Object.keys(repeat).length).toBe(1);
       expect(repeat[getFirstMessage(getState()).id]).toBe(4);
+
+      // Disable repeating messages
+      dispatch(actions.groupSimilarMessagesToggle());
+      const packet3 = clonePacket(packet);
+      const packet4 = clonePacket(packet);
+      packet3.timeStamp += 3;
+      packet4.timeStamp += 4;
+      dispatch(actions.messagesAdd([packet3, packet4]));
+
+      messages = getMutableMessagesById(getState());
+      // The 2 new messages were properly added
+      expect(messages.size).toBe(3);
+      repeat = getAllRepeatById(getState());
+      // repeat didn't changed
+      expect(Object.keys(repeat).length).toBe(1);
+      expect(repeat[getFirstMessage(getState()).id]).toBe(4);
+
+      // Re-enable repeating messages
+      dispatch(actions.groupSimilarMessagesToggle());
+      const packet5 = clonePacket(packet);
+      const packet6 = clonePacket(packet);
+      packet3.timeStamp += 5;
+      packet4.timeStamp += 6;
+      dispatch(actions.messagesAdd([packet5, packet6]));
+
+      messages = getMutableMessagesById(getState());
+      // The 2 new messages weren't added, we still have 3 messages
+      expect(messages.size).toBe(3);
+      repeat = getAllRepeatById(getState());
+      // we now have 2 items in repeat
+      expect(Object.keys(repeat).length).toBe(2);
+      // the first one didn't change
+      expect(repeat[getFirstMessage(getState()).id]).toBe(4);
+      // another one was added for packet4, which is repeated 3 times (packet4, packet5 and packet6)
+      expect(repeat[getLastMessage(getState()).id]).toBe(3);
     });
 
     it("doesn't increment repeat on same log message with different locations", () => {
@@ -389,7 +425,7 @@ describe("Message reducer:", () => {
         dispatch(actions.messagesAdd([packet]));
       }
 
-      const messages = getMutableMessagesById(getState());
+      let messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(logLimit);
       expect(getFirstMessage(getState()).parameters[0]).toBe(`message num 3`);
       expect(getLastMessage(getState()).parameters[0]).toBe(
@@ -398,6 +434,20 @@ describe("Message reducer:", () => {
 
       const { mutableMessagesOrder } = getState().messages;
       expect(mutableMessagesOrder.length).toBe(logLimit);
+
+      // dispatching a network update matching no existing message shouldn't count in the
+      // total list
+      const updatePacket = clonePacket(stubPackets.get("GET request update"));
+      updatePacket.actor = "messagenetwork";
+      dispatch(actions.networkMessageUpdates([updatePacket]));
+
+      packet.arguments = [`last message`];
+      dispatch(actions.messagesAdd([packet]));
+
+      messages = getMutableMessagesById(getState());
+      expect(messages.size).toBe(logLimit);
+      expect(getFirstMessage(getState()).parameters[0]).toBe(`message num 4`);
+      expect(getLastMessage(getState()).parameters[0]).toBe(`last message`);
     });
 
     it("properly limits number of messages when there are nested groups", () => {
@@ -1010,7 +1060,7 @@ describe("Message reducer:", () => {
       packet.actor = "message1";
       updatePacket.actor = "message1";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(actions.networkMessageUpdates([updatePacket], null));
+      dispatch(actions.networkMessageUpdates([updatePacket]));
 
       let networkUpdates = getAllNetworkMessagesUpdateById(getState());
       expect(Object.keys(networkUpdates)).toEqual(["message1"]);
@@ -1020,7 +1070,7 @@ describe("Message reducer:", () => {
       packet.actor = "message2";
       updatePacket.actor = "message2";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(actions.networkMessageUpdates([updatePacket], null));
+      dispatch(actions.networkMessageUpdates([updatePacket]));
 
       networkUpdates = getAllNetworkMessagesUpdateById(getState());
       expect(Object.keys(networkUpdates)).toEqual(["message1", "message2"]);
@@ -1030,7 +1080,7 @@ describe("Message reducer:", () => {
       const { dispatch, getState } = setupStore(["XHR GET request"]);
 
       const updatePacket = stubPackets.get("XHR GET request update");
-      dispatch(actions.networkMessageUpdates([updatePacket], null));
+      dispatch(actions.networkMessageUpdates([updatePacket]));
 
       let networkUpdates = getAllNetworkMessagesUpdateById(getState());
       expect(!!Object.keys(networkUpdates).length).toBe(true);
@@ -1056,17 +1106,17 @@ describe("Message reducer:", () => {
       packet.actor = "message1";
       updatePacket.actor = "message1";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(actions.networkMessageUpdates([updatePacket], null));
+      dispatch(actions.networkMessageUpdates([updatePacket]));
 
       packet.actor = "message2";
       updatePacket.actor = "message2";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(actions.networkMessageUpdates([updatePacket], null));
+      dispatch(actions.networkMessageUpdates([updatePacket]));
 
       packet.actor = "message3";
       updatePacket.actor = "message3";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(actions.networkMessageUpdates([updatePacket], null));
+      dispatch(actions.networkMessageUpdates([updatePacket]));
 
       // Check that we have the expected data.
       const messages = getMutableMessagesById(getState());
@@ -1150,7 +1200,7 @@ describe("Message reducer:", () => {
       dispatch(
         actions.messagesAdd([
           stubPackets.get(
-            `Error in parsing value for ‘padding-top’.  Declaration dropped.`
+            `Error in parsing value for ‘padding-top: invalid value;’.  Declaration dropped.`
           ),
         ])
       );

@@ -1,18 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "PaymentRequestParent.h"
+
+#include "PaymentRequestData.h"
+#include "PaymentRequestService.h"
 #include "mozilla/ipc/InputStreamUtils.h"
 #include "nsArrayUtils.h"
 #include "nsCOMPtr.h"
 #include "nsIPaymentRequestService.h"
 #include "nsISupportsPrimitives.h"
 #include "nsServiceManagerUtils.h"
-#include "PaymentRequestData.h"
-#include "PaymentRequestParent.h"
-#include "PaymentRequestService.h"
 
 namespace mozilla::dom {
 
@@ -190,7 +189,8 @@ nsresult PaymentRequestParent::ChangeShippingAddress(
     nsAutoString requestId(aRequestId);
     nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
         "dom::PaymentRequestParent::ChangeShippingAddress",
-        [self, requestId, address]() {
+        [self, requestId = std::move(requestId),
+         address = std::move(address)]() {
           self->ChangeShippingAddress(requestId, address);
         });
     return NS_DispatchToMainThread(r);
@@ -218,7 +218,7 @@ nsresult PaymentRequestParent::ChangeShippingOption(const nsAString& aRequestId,
     nsAutoString option(aOption);
     nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
         "dom::PaymentRequestParent::ChangeShippingOption",
-        [self, requestId, option]() {
+        [self, requestId = std::move(requestId), option = std::move(option)]() {
           self->ChangeShippingOption(requestId, option);
         });
     return NS_DispatchToMainThread(r);
@@ -246,7 +246,9 @@ nsresult PaymentRequestParent::ChangePayerDetail(const nsAString& aRequestId,
     RefPtr<PaymentRequestParent> self = this;
     nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
         "dom::PaymentRequestParent::ChangePayerDetail",
-        [self, requestId, payerName, payerEmail, payerPhone]() {
+        [self, requestId = std::move(requestId),
+         payerName = std::move(payerName), payerEmail = std::move(payerEmail),
+         payerPhone = std::move(payerPhone)]() {
           self->ChangePayerDetail(requestId, payerName, payerEmail, payerPhone);
         });
     return NS_DispatchToMainThread(r);
@@ -270,7 +272,9 @@ nsresult PaymentRequestParent::ChangePaymentMethod(
     RefPtr<PaymentRequestParent> self = this;
     nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
         "dom::PaymentRequestParent::ChangePaymentMethod",
-        [self, requestId, methodName, methodDetails]() {
+        [self, requestId = std::move(requestId),
+         methodName = std::move(methodName),
+         methodDetails = std::move(methodDetails)]() {
           self->ChangePaymentMethod(requestId, methodName, methodDetails);
         });
     return NS_DispatchToMainThread(r);
@@ -430,7 +434,7 @@ nsresult PaymentRequestParent::SerializeResponseData(
       MOZ_ASSERT(response);
       IPCGeneralResponse data;
       NS_ENSURE_SUCCESS(response->GetData(data.data()), NS_ERROR_FAILURE);
-      aIPCData = data;
+      aIPCData = std::move(data);
       break;
     }
     case nsIPaymentResponseData::BASICCARD_RESPONSE: {
@@ -454,7 +458,7 @@ nsresult PaymentRequestParent::SerializeResponseData(
       NS_ENSURE_SUCCESS(SerializeAddress(ipcAddress, address),
                         NS_ERROR_FAILURE);
       data.billingAddress() = ipcAddress;
-      aIPCData = data;
+      aIPCData = std::move(data);
       break;
     }
     default: {

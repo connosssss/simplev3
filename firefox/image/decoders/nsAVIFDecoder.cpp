@@ -1,24 +1,21 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
-#include "ImageLogging.h"  // Must appear first
 
 #include "nsAVIFDecoder.h"
 
 #include <aom/aomdx.h>
 
 #include "DAV1DDecoder.h"
-#include "gfxPlatform.h"
-#include "YCbCrUtils.h"
-#include "libyuv.h"
-
+#include "ImageLogging.h"  // Must appear first
 #include "SurfacePipeFactory.h"
-
-#include "mozilla/glean/ImageDecodersMetrics.h"
+#include "YCbCrUtils.h"
+#include "gfxPlatform.h"
+#include "libyuv.h"
 #include "mozilla/UniquePtrExtensions.h"
+#include "mozilla/glean/ImageDecodersMetrics.h"
+#include "nsThreadUtils.h"
 
 using namespace mozilla::gfx;
 
@@ -137,17 +134,23 @@ Orientation GetImageOrientation(const Mp4parseAvifInfo& aInfo) {
            static_cast<int>(mozRot), static_cast<int>(mozFlip)));
   return Orientation{mozRot, mozFlip};
 }
-bool AVIFDecoderStream::ReadAt(int64_t offset, void* data, size_t size,
-                               size_t* bytes_read) {
-  size = std::min(size, size_t(mBuffer->length() - offset));
-
-  if (size <= 0) {
-    return false;
+nsresult AVIFDecoderStream::ReadAt(int64_t offset, void* data, size_t size,
+                                   size_t* bytes_read) {
+  CheckedInt<size_t> checkedOffset(offset);
+  if (!checkedOffset.isValid() || offset < 0 ||
+      checkedOffset.value() >= mBuffer->length()) {
+    return NS_ERROR_DOM_MEDIA_RANGE_ERR;
+  }
+  CheckedInt<size_t> endPoint = checkedOffset + size;
+  if (!endPoint.isValid() || endPoint.value() > mBuffer->length()) {
+    return NS_ERROR_DOM_MEDIA_RANGE_ERR;
   }
 
-  memcpy(data, mBuffer->begin() + offset, size);
+  size = std::min<size_t>(size, mBuffer->length() - checkedOffset.value());
+
+  memcpy(data, mBuffer->begin() + checkedOffset.value(), size);
   *bytes_read = size;
-  return true;
+  return NS_OK;
 }
 
 bool AVIFDecoderStream::Length(int64_t* size) {
@@ -158,11 +161,14 @@ bool AVIFDecoderStream::Length(int64_t* size) {
 
 const uint8_t* AVIFDecoderStream::GetContiguousAccess(int64_t aOffset,
                                                       size_t aSize) {
-  if (aOffset + aSize >= mBuffer->length()) {
+  CheckedInt<size_t> checkedOffset(aOffset);
+  CheckedInt<size_t> endPoint = checkedOffset + aSize;
+  if (!checkedOffset.isValid() || !endPoint.isValid() ||
+      endPoint.value() > mBuffer->length()) {
     return nullptr;
   }
 
-  return mBuffer->begin() + aOffset;
+  return mBuffer->begin() + checkedOffset.value();
 }
 
 AVIFParser::~AVIFParser() {
@@ -170,14 +176,12 @@ AVIFParser::~AVIFParser() {
 }
 
 Mp4parseStatus AVIFParser::Create(const Mp4parseIo* aIo, ByteStream* aBuffer,
-                                  UniquePtr<AVIFParser>& aParserOut,
-                                  bool aAllowSequences,
-                                  bool aAnimateAVIFMajor) {
+                                  UniquePtr<AVIFParser>& aParserOut) {
   MOZ_ASSERT(aIo);
   MOZ_ASSERT(!aParserOut);
 
   UniquePtr<AVIFParser> p(new AVIFParser(aIo));
-  Mp4parseStatus status = p->Init(aBuffer, aAllowSequences, aAnimateAVIFMajor);
+  Mp4parseStatus status = p->Init(aBuffer);
 
   if (status == MP4PARSE_STATUS_OK) {
     MOZ_ASSERT(p->mParser);
@@ -224,7 +228,7 @@ nsAVIFDecoder::DecodeResult AVIFParser::GetImage(AVIFImage& aImage) {
 
   // If the AVIF is animated, get next frame and yield if sequence is not done.
   if (IsAnimated()) {
-    aImage.mColorImage = mColorSampleIter->GetNext();
+    aImage.mColorImage = mColorSampleIter->GetNext().unwrapOr(nullptr);
 
     if (!aImage.mColorImage) {
       return AsVariant(nsAVIFDecoder::NonDecoderResult::NoSamples);
@@ -236,7 +240,7 @@ nsAVIFDecoder::DecodeResult AVIFParser::GetImage(AVIFImage& aImage) {
         static_cast<int32_t>(std::min<int64_t>(durationMs, INT32_MAX)));
 
     if (mAlphaSampleIter) {
-      aImage.mAlphaImage = mAlphaSampleIter->GetNext();
+      aImage.mAlphaImage = mAlphaSampleIter->GetNext().unwrapOr(nullptr);
       if (!aImage.mAlphaImage) {
         return AsVariant(nsAVIFDecoder::NonDecoderResult::NoSamples);
       }
@@ -277,13 +281,13 @@ nsAVIFDecoder::DecodeResult AVIFParser::GetImage(AVIFImage& aImage) {
     return AsVariant(nsAVIFDecoder::NonDecoderResult::NoSamples);
   }
 
-  RefPtr<MediaRawData> colorImage =
-      new MediaRawData(image.primary_image.data, image.primary_image.length);
+  auto colorImage = MakeRefPtr<MediaRawData>(image.primary_image.data,
+                                             image.primary_image.length);
   RefPtr<MediaRawData> alphaImage = nullptr;
 
   if (image.alpha_image.length) {
-    alphaImage =
-        new MediaRawData(image.alpha_image.data, image.alpha_image.length);
+    alphaImage = MakeRefPtr<MediaRawData>(image.alpha_image.data,
+                                          image.alpha_image.length);
   }
 
   aImage.mFrameNum = 0;
@@ -312,14 +316,13 @@ static Mp4parseStatus CreateSampleIterator(
   }
 
   UniquePtr<IndiceWrapper> wrapper = MakeUnique<IndiceWrapper>(data);
-  RefPtr<MP4SampleIndex> index = new MP4SampleIndex(
-      *wrapper, aBuffer, trackID, false, AssertedCast<int32_t>(timescale));
+  auto index = MakeRefPtr<MP4SampleIndex>(*wrapper, aBuffer, trackID, false,
+                                          AssertedCast<uint32_t>(timescale));
   aIteratorOut = MakeUnique<SampleIterator>(index);
   return MP4PARSE_STATUS_OK;
 }
 
-Mp4parseStatus AVIFParser::Init(ByteStream* aBuffer, bool aAllowSequences,
-                                bool aAnimateAVIFMajor) {
+Mp4parseStatus AVIFParser::Init(ByteStream* aBuffer) {
 #define CHECK_MP4PARSE_STATUS(v)     \
   do {                               \
     if ((v) != MP4PARSE_STATUS_OK) { \
@@ -346,12 +349,14 @@ Mp4parseStatus AVIFParser::Init(ByteStream* aBuffer, bool aAllowSequences,
 
   bool useSequence = mInfo.has_sequence;
   if (useSequence) {
-    if (!aAllowSequences) {
+    if (!StaticPrefs::image_avif_sequence_enabled_AtStartup()) {
       MOZ_LOG(sAVIFLog, LogLevel::Debug,
               ("[this=%p] AVIF sequences disabled", this));
       useSequence = false;
-    } else if (!aAnimateAVIFMajor &&
-               !!memcmp(mInfo.major_brand, "avis", sizeof(mInfo.major_brand))) {
+    } else if (
+        !StaticPrefs::
+            image_avif_sequence_animate_avif_major_branded_images_AtStartup() &&
+        !!memcmp(mInfo.major_brand, "avis", sizeof(mInfo.major_brand))) {
       useSequence = false;
       MOZ_LOG(sAVIFLog, LogLevel::Debug,
               ("[this=%p] AVIF prefers still image", this));
@@ -497,6 +502,19 @@ void AVIFDecodedData::SetCicpValues(
   mMatrixCoefficients = mc;
 }
 
+// dav1d's default of one worker thread per logical CPU is too much overhead.
+// Scale with image size the same way the AV1 video path does at
+// https://searchfox.org/firefox-main/rev/7d5b291d2351f7d04c504b03fa22ec3dcdf81b54/dom/media/platforms/agnostic/DAV1DDecoder.cpp#86
+static int GetDav1dThreadCount(int32_t aWidth) {
+  size_t decoderThreads = 2;
+  if (aWidth >= 2048) {
+    decoderThreads = 8;
+  } else if (aWidth >= 1024) {
+    decoderThreads = 4;
+  }
+  return static_cast<int>(std::min(decoderThreads, GetNumberOfProcessors()));
+}
+
 class Dav1dDecoder final : AVIFDecoderInterface {
  public:
   ~Dav1dDecoder() {
@@ -514,9 +532,9 @@ class Dav1dDecoder final : AVIFDecoderInterface {
   }
 
   static DecodeResult Create(UniquePtr<AVIFDecoderInterface>& aDecoder,
-                             bool aHasAlpha) {
+                             bool aHasAlpha, int32_t aWidth) {
     UniquePtr<Dav1dDecoder> d(new Dav1dDecoder());
-    Dav1dResult r = d->Init(aHasAlpha);
+    Dav1dResult r = d->Init(aHasAlpha, aWidth);
     if (r == 0) {
       aDecoder.reset(d.release());
     }
@@ -577,7 +595,7 @@ class Dav1dDecoder final : AVIFDecoderInterface {
     MOZ_LOG(sAVIFLog, LogLevel::Verbose, ("Create Dav1dDecoder=%p", this));
   }
 
-  Dav1dResult Init(bool aHasAlpha) {
+  Dav1dResult Init(bool aHasAlpha, int32_t aWidth) {
     MOZ_ASSERT(!mColorContext);
     MOZ_ASSERT(!mAlphaContext);
 
@@ -585,7 +603,7 @@ class Dav1dDecoder final : AVIFDecoderInterface {
     dav1d_default_settings(&settings);
     settings.all_layers = 0;
     settings.max_frame_delay = 1;
-    // TODO: tune settings a la DAV1DDecoder for AV1 (Bug 1681816)
+    settings.n_threads = GetDav1dThreadCount(aWidth);
 
     Dav1dResult r = dav1d_open(&mColorContext, &settings);
     if (r != 0) {
@@ -604,15 +622,14 @@ class Dav1dDecoder final : AVIFDecoderInterface {
     return 0;
   }
 
-  static Dav1dResult GetPicture(Dav1dContext& aContext,
-                                const MediaRawData& aBytes,
+  static Dav1dResult GetPicture(Dav1dContext& aContext, MediaRawData& aBytes,
                                 Dav1dPicture* aPicture,
                                 bool aShouldSendTelemetry) {
     MOZ_ASSERT(aPicture);
 
     Dav1dData dav1dData;
     Dav1dResult r = dav1d_data_wrap(&dav1dData, aBytes.Data(), aBytes.Size(),
-                                    Dav1dFreeCallback_s, nullptr);
+                                    Dav1dFreeCallback_s, &aBytes);
 
     MOZ_LOG(
         sAVIFLog, r == 0 ? LogLevel::Verbose : LogLevel::Error,
@@ -622,12 +639,22 @@ class Dav1dDecoder final : AVIFDecoderInterface {
       return r;
     }
 
+    // After a successful dav1d_data_wrap call, dav1d effectively owns a
+    // reference to the buffer that aBytes holds until dav1d calls the passed in
+    // free callback Dav1dFreeCallback_s. We handle this with an AddRef here and
+    // a Release in Dav1dFreeCallback_s.
+    aBytes.AddRef();
+
     r = dav1d_send_data(&aContext, &dav1dData);
 
     MOZ_LOG(sAVIFLog, r == 0 ? LogLevel::Debug : LogLevel::Error,
             ("dav1d_send_data -> %d", r));
 
     if (r != 0) {
+      // On failure dav1d leaves the caller's reference to the data intact;
+      // drop it (this invokes Dav1dFreeCallback_s once dav1d holds no other
+      // references).
+      dav1d_data_unref(&dav1dData);
       return r;
     }
 
@@ -651,10 +678,9 @@ class Dav1dDecoder final : AVIFDecoderInterface {
     return r;
   }
 
-  // A dummy callback for dav1d_data_wrap
   static void Dav1dFreeCallback_s(const uint8_t* aBuf, void* aCookie) {
-    // The buf is managed by the mParser inside Dav1dDecoder itself. Do
-    // nothing here.
+    MOZ_ASSERT(aCookie);
+    static_cast<MediaRawData*>(aCookie)->Release();
   }
 
   static UniquePtr<AVIFDecodedData> Dav1dPictureToDecodedData(
@@ -681,16 +707,19 @@ bool OwnedAOMImage::CloneFrom(aom_image_t* aImage, bool aIsAlpha) {
   uint8_t* srcY = aImage->planes[AOM_PLANE_Y];
   int yStride = aImage->stride[AOM_PLANE_Y];
   int yHeight = aom_img_plane_height(aImage, AOM_PLANE_Y);
-  size_t yBufSize = yStride * yHeight;
+  auto yBufSize = CheckedInt<size_t>(yStride) * yHeight;
+  if (!yBufSize.isValid()) {
+    return false;
+  }
 
   // If aImage is alpha plane. The data is located in Y channel.
   if (aIsAlpha) {
-    mBuffer = MakeUniqueFallible<uint8_t[]>(yBufSize);
+    mBuffer = MakeUniqueFallible<uint8_t[]>(yBufSize.value());
     if (!mBuffer) {
       return false;
     }
     uint8_t* destY = mBuffer.get();
-    memcpy(destY, srcY, yBufSize);
+    memcpy(destY, srcY, yBufSize.value());
     mImage.emplace(*aImage);
     mImage->planes[AOM_PLANE_Y] = destY;
 
@@ -700,25 +729,32 @@ bool OwnedAOMImage::CloneFrom(aom_image_t* aImage, bool aIsAlpha) {
   uint8_t* srcCb = aImage->planes[AOM_PLANE_U];
   int cbStride = aImage->stride[AOM_PLANE_U];
   int cbHeight = aom_img_plane_height(aImage, AOM_PLANE_U);
-  size_t cbBufSize = cbStride * cbHeight;
+  auto cbBufSize = CheckedInt<size_t>(cbStride) * cbHeight;
+  if (!cbBufSize.isValid()) {
+    return false;
+  }
 
   uint8_t* srcCr = aImage->planes[AOM_PLANE_V];
   int crStride = aImage->stride[AOM_PLANE_V];
   int crHeight = aom_img_plane_height(aImage, AOM_PLANE_V);
-  size_t crBufSize = crStride * crHeight;
+  auto crBufSize = CheckedInt<size_t>(crStride) * crHeight;
+  if (!crBufSize.isValid()) {
+    return false;
+  }
 
-  mBuffer = MakeUniqueFallible<uint8_t[]>(yBufSize + cbBufSize + crBufSize);
+  mBuffer = MakeUniqueFallible<uint8_t[]>(yBufSize.value() + cbBufSize.value() +
+                                          crBufSize.value());
   if (!mBuffer) {
     return false;
   }
 
   uint8_t* destY = mBuffer.get();
-  uint8_t* destCb = destY + yBufSize;
-  uint8_t* destCr = destCb + cbBufSize;
+  uint8_t* destCb = destY + yBufSize.value();
+  uint8_t* destCr = destCb + cbBufSize.value();
 
-  memcpy(destY, srcY, yBufSize);
-  memcpy(destCb, srcCb, cbBufSize);
-  memcpy(destCr, srcCr, crBufSize);
+  memcpy(destY, srcY, yBufSize.value());
+  memcpy(destCb, srcCb, cbBufSize.value());
+  memcpy(destCr, srcCr, crBufSize.value());
 
   mImage.emplace(*aImage);
   mImage->planes[AOM_PLANE_Y] = destY;
@@ -982,8 +1018,8 @@ UniquePtr<AVIFDecodedData> Dav1dDecoder::Dav1dPictureToDecodedData(
     OwnedDav1dPicture aAlphaPlane, bool aPremultipliedAlpha) {
   MOZ_ASSERT(aPicture);
 
-  static_assert(std::is_same<int, decltype(aPicture->p.w)>::value);
-  static_assert(std::is_same<int, decltype(aPicture->p.h)>::value);
+  static_assert(std::is_same_v<int, decltype(aPicture->p.w)>);
+  static_assert(std::is_same_v<int, decltype(aPicture->p.h)>);
 
   UniquePtr<AVIFDecodedData> data = MakeUnique<AVIFDecodedData>();
 
@@ -1249,10 +1285,8 @@ Mp4parseStatus nsAVIFDecoder::CreateParser() {
     Mp4parseIo io = {nsAVIFDecoder::ReadSource, this};
     mBufferStream = new AVIFDecoderStream(&mBufferedData);
 
-    Mp4parseStatus status = AVIFParser::Create(
-        &io, mBufferStream.get(), mParser,
-        bool(GetDecoderFlags() & DecoderFlags::AVIF_SEQUENCES_ENABLED),
-        bool(GetDecoderFlags() & DecoderFlags::AVIF_ANIMATE_AVIF_MAJOR));
+    Mp4parseStatus status =
+        AVIFParser::Create(&io, mBufferStream.get(), mParser);
 
     if (status != MP4PARSE_STATUS_OK) {
       return status;
@@ -1268,8 +1302,12 @@ Mp4parseStatus nsAVIFDecoder::CreateParser() {
 
 nsAVIFDecoder::DecodeResult nsAVIFDecoder::CreateDecoder() {
   if (!mDecoder) {
+    // The parser may not have been able to determine the image size in rare
+    // cases (telemetry suggests 0.03% of all avifs) fall back to the minimum
+    // thread count.
+    int32_t width = HasSize() ? Size().width : 0;
     DecodeResult r = StaticPrefs::image_avif_use_dav1d()
-                         ? Dav1dDecoder::Create(mDecoder, mHasAlpha)
+                         ? Dav1dDecoder::Create(mDecoder, mHasAlpha, width)
                          : AOMDecoder::Create(mDecoder, mHasAlpha);
 
     MOZ_LOG(sAVIFLog, LogLevel::Debug,

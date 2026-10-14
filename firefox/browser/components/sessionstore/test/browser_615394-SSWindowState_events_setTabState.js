@@ -14,7 +14,7 @@ const testState = {
 };
 
 function test() {
-  /** Test for Bug 615394 - Session Restore should notify when it is beginning and ending a restore **/
+  /** Test for Bug 615394 - Session Restore should notify when it is beginning and ending a restore */
   waitForExplicitFinish();
 
   waitForBrowserState(testState, test_setTabState);
@@ -56,6 +56,6 @@ function test_setTabState() {
   window.addEventListener("SSWindowStateReady", onSSWindowStateReady);
   tab.addEventListener("SSTabRestoring", onSSTabRestoring, { once: true });
   // Browser must be inserted in order to restore.
-  gBrowser._insertBrowser(tab);
+  gBrowser.insertBrowser(tab);
   ss.setTabState(tab, newTabState);
 }

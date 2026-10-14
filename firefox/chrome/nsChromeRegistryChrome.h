@@ -1,12 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef nsChromeRegistryChrome_h
 #define nsChromeRegistryChrome_h
-
-#include <utility>
 
 #include "nsCOMArray.h"
 #include "nsChromeRegistry.h"
@@ -67,8 +64,8 @@ class nsChromeRegistryChrome : public nsChromeRegistry {
 
   class nsProviderArray {
    public:
-    nsProviderArray() : mArray(1) {}
-    ~nsProviderArray() {}
+    nsProviderArray() = default;
+    ~nsProviderArray() = default;
 
     // When looking up locales and skins, the "selected" locale is not always
     // available. This enum identifies what kind of match is desired/found.
@@ -87,12 +84,12 @@ class nsChromeRegistryChrome : public nsChromeRegistry {
    private:
     ProviderEntry* GetProvider(const nsACString& aPreferred, MatchType aType);
 
-    nsTArray<ProviderEntry> mArray;
+    AutoTArray<ProviderEntry, 1> mArray;
   };
 
   struct PackageEntry : public PLDHashEntryHdr {
     PackageEntry() : flags(0) {}
-    ~PackageEntry() {}
+    ~PackageEntry() = default;
 
     nsCOMPtr<nsIURI> baseURI;
     uint32_t flags;

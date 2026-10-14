@@ -2,9 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MockHttpAuth_h__
-#define MockHttpAuth_h__
+#ifndef MockHttpAuth_h_
+#define MockHttpAuth_h_
 
+#include "nsCOMPtr.h"
 #include "nsIHttpAuthenticator.h"
 
 namespace mozilla::net {
@@ -28,4 +29,4 @@ class MockHttpAuth : public nsIHttpAuthenticator {
 
 }  // namespace mozilla::net
 
-#endif  // MockHttpAuth_h__
+#endif  // MockHttpAuth_h_

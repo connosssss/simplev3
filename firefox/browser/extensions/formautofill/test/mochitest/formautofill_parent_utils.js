@@ -1,5 +1,3 @@
-/* eslint-env mozilla/chrome-script */
-
 "use strict";
 
 const { FormAutofill } = ChromeUtils.importESModule(
@@ -149,7 +147,7 @@ var ParentUtils = {
   },
 
   async cleanUpCreditCards() {
-    if (!FormAutofill.isAutofillCreditCardsAvailable) {
+    if (!FormAutofill.isAutofillTypeAvailable("creditCard")) {
       return;
     }
     const guids = (await this._getRecords(CREDITCARDS_COLLECTION_NAME)).map(

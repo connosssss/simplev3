@@ -4,7 +4,11 @@
 
 //! Specified types for CSS values related to borders.
 
+use crate::Zero;
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
+use crate::typed_om::{ToTyped, TypedValue};
+use crate::values::computed::border::BorderSideWidth as ComputedBorderSideWidth;
 use crate::values::computed::{Context, ToComputedValue};
 use crate::values::generics::border::{
     GenericBorderCornerRadius, GenericBorderImageSideWidth, GenericBorderImageSlice,
@@ -13,24 +17,23 @@ use crate::values::generics::border::{
 use crate::values::generics::rect::Rect;
 use crate::values::generics::size::Size2D;
 use crate::values::specified::length::{Length, NonNegativeLength, NonNegativeLengthPercentage};
-use crate::values::specified::Color;
 use crate::values::specified::{AllowQuirks, NonNegativeNumber, NonNegativeNumberOrPercentage};
-use crate::Zero;
 use app_units::Au;
 use cssparser::Parser;
 use std::fmt::{self, Write};
-use style_traits::{values::SequenceWriter, CssWriter, ParseError, ToCss};
+use style_traits::{CssWriter, ParseError, ToCss};
+use thin_vec::ThinVec;
 
 /// A specified value for a single side of a `border-style` property.
 ///
 /// The order here corresponds to the integer values from the border conflict
 /// resolution rules in CSS 2.1 § 17.6.2.1. Higher values override lower values.
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
     FromPrimitive,
     MallocSizeOf,
@@ -38,11 +41,13 @@ use style_traits::{values::SequenceWriter, CssWriter, ParseError, ToCss};
     Parse,
     PartialEq,
     PartialOrd,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum BorderStyle {
@@ -69,12 +74,46 @@ impl BorderStyle {
 /// A specified value for the `border-image-width` property.
 pub type BorderImageWidth = Rect<BorderImageSideWidth>;
 
+impl ToTyped for BorderImageWidth {
+    // Note: The specification does not currently define how border image width
+    // should be reified into Typed OM. The current behavior follows existing
+    // WPT coverage (border-image-width.html). Syncing spec with UA/WPT
+    // behavior tracked in https://github.com/w3c/csswg-drafts/issues/13907
+    fn to_typed(&self, dest: &mut ThinVec<TypedValue>) -> Result<(), ()> {
+        if !self.all_sides_equal() {
+            return Err(());
+        }
+
+        self.0.to_typed(dest)
+    }
+}
+
 /// A specified value for a single side of a `border-image-width` property.
 pub type BorderImageSideWidth =
     GenericBorderImageSideWidth<NonNegativeLengthPercentage, NonNegativeNumber>;
 
 /// A specified value for the `border-image-slice` property.
 pub type BorderImageSlice = GenericBorderImageSlice<NonNegativeNumberOrPercentage>;
+
+impl ToTyped for BorderImageSlice {
+    // Note: The specification does not currently define how border image slice
+    // should be reified into Typed OM. The current behavior follows existing
+    // WPT coverage (border-image-slice.html). Syncing spec with UA/WPT
+    // behavior tracked in https://github.com/w3c/csswg-drafts/issues/13907
+    fn to_typed(&self, dest: &mut ThinVec<TypedValue>) -> Result<(), ()> {
+        if self.fill {
+            return Err(());
+        }
+
+        let offsets = &self.offsets;
+
+        if !offsets.all_sides_equal() {
+            return Err(());
+        }
+
+        offsets.0.to_typed(dest)
+    }
+}
 
 /// A specified value for the `border-radius` property.
 pub type BorderRadius = GenericBorderRadius<NonNegativeLengthPercentage>;
@@ -97,7 +136,7 @@ impl BorderImageSlice {
 }
 
 /// https://drafts.csswg.org/css-backgrounds-3/#typedef-line-width
-#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped)]
 pub enum LineWidth {
     /// `thin`
     Thin,
@@ -116,11 +155,11 @@ impl LineWidth {
         Self::Length(NonNegativeLength::zero())
     }
 
-    fn parse_quirky<'i, 't>(
+    fn parse_quirky(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
+        input: &mut Parser,
         allow_quirks: AllowQuirks,
-    ) -> Result<Self, ParseError<'i>> {
+    ) -> Result<Self, ParseError> {
         if let Ok(length) =
             input.try_parse(|i| NonNegativeLength::parse_quirky(context, i, allow_quirks))
         {
@@ -135,16 +174,13 @@ impl LineWidth {
 }
 
 impl Parse for LineWidth {
-    fn parse<'i>(
-        context: &ParserContext,
-        input: &mut Parser<'i, '_>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Self::parse_quirky(context, input, AllowQuirks::No)
     }
 }
 
 impl ToComputedValue for LineWidth {
-    type ComputedValue = app_units::Au;
+    type ComputedValue = Au;
 
     #[inline]
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
@@ -165,7 +201,7 @@ impl ToComputedValue for LineWidth {
 
 /// A specified value for a single side of the `border-width` property. The difference between this
 /// and LineWidth is whether we snap to device pixels or not.
-#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped)]
 pub struct BorderSideWidth(LineWidth);
 
 impl BorderSideWidth {
@@ -180,46 +216,82 @@ impl BorderSideWidth {
     }
 
     /// Parses, with quirks.
-    pub fn parse_quirky<'i, 't>(
+    pub fn parse_quirky(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
+        input: &mut Parser,
         allow_quirks: AllowQuirks,
-    ) -> Result<Self, ParseError<'i>> {
+    ) -> Result<Self, ParseError> {
         Ok(Self(LineWidth::parse_quirky(context, input, allow_quirks)?))
     }
 }
 
 impl Parse for BorderSideWidth {
-    fn parse<'i>(
-        context: &ParserContext,
-        input: &mut Parser<'i, '_>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Self::parse_quirky(context, input, AllowQuirks::No)
     }
 }
 
+// https://drafts.csswg.org/css-values-4/#snap-a-length-as-a-border-width
+fn snap_as_border_width(len: Au, context: &Context) -> Au {
+    debug_assert!(len >= Au(0));
+
+    // Round `width` down to the nearest device pixel, but any non-zero value that would round
+    // down to zero is clamped to 1 device pixel.
+    if len == Au(0) {
+        return len;
+    }
+
+    let au_per_dev_px = context.device().app_units_per_device_pixel();
+    std::cmp::max(Au(au_per_dev_px), Au(len.0 / au_per_dev_px * au_per_dev_px))
+}
+
 impl ToComputedValue for BorderSideWidth {
-    type ComputedValue = app_units::Au;
+    type ComputedValue = ComputedBorderSideWidth;
 
     #[inline]
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
-        let width = self.0.to_computed_value(context);
-        // Round `width` down to the nearest device pixel, but any non-zero value that would round
-        // down to zero is clamped to 1 device pixel.
-        if width == Au(0) {
-            return width;
-        }
-
-        let au_per_dev_px = context.device().app_units_per_device_pixel();
-        std::cmp::max(
-            Au(au_per_dev_px),
-            Au(width.0 / au_per_dev_px * au_per_dev_px),
-        )
+        ComputedBorderSideWidth(snap_as_border_width(
+            self.0.to_computed_value(context),
+            context,
+        ))
     }
 
     #[inline]
     fn from_computed_value(computed: &Self::ComputedValue) -> Self {
-        Self(LineWidth::from_computed_value(computed))
+        Self(LineWidth::from_computed_value(&computed.0))
+    }
+}
+
+/// A specified value for outline-offset.
+#[derive(
+    Clone, Debug, MallocSizeOf, PartialEq, Parse, SpecifiedValueInfo, ToCss, ToShmem, ToTyped,
+)]
+pub struct BorderSideOffset(Length);
+
+impl ToComputedValue for BorderSideOffset {
+    type ComputedValue = Au;
+
+    #[inline]
+    fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
+        let offset = Au::from_f32_px(self.0.to_computed_value(context).px());
+        let should_snap = match crate::pref!("layout.css.outline-offset.snapping") {
+            1 => true,
+            2 => context.device().chrome_rules_enabled_for_document(),
+            _ => false,
+        };
+        if !should_snap {
+            return offset;
+        }
+        if offset < Au(0) {
+            -snap_as_border_width(-offset, context)
+        } else {
+            snap_as_border_width(offset, context)
+        }
+    }
+
+    #[inline]
+    fn from_computed_value(computed: &Au) -> Self {
+        Self(Length::from_px(computed.to_f32_px()))
     }
 }
 
@@ -232,10 +304,7 @@ impl BorderImageSideWidth {
 }
 
 impl Parse for BorderImageSlice {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let mut fill = input.try_parse(|i| i.expect_ident_matching("fill")).is_ok();
         let offsets = Rect::parse_with(context, input, NonNegativeNumberOrPercentage::parse)?;
         if !fill {
@@ -246,10 +315,7 @@ impl Parse for BorderImageSlice {
 }
 
 impl Parse for BorderRadius {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let widths = Rect::parse_with(context, input, NonNegativeLengthPercentage::parse)?;
         let heights = if input.try_parse(|i| i.expect_delim('/')).is_ok() {
             Rect::parse_with(context, input, NonNegativeLengthPercentage::parse)?
@@ -267,20 +333,14 @@ impl Parse for BorderRadius {
 }
 
 impl Parse for BorderCornerRadius {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Size2D::parse_with(context, input, NonNegativeLengthPercentage::parse)
             .map(GenericBorderCornerRadius)
     }
 }
 
 impl Parse for BorderSpacing {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Size2D::parse_with(context, input, |context, input| {
             NonNegativeLength::parse_quirky(context, input, AllowQuirks::Yes)
         })
@@ -290,15 +350,16 @@ impl Parse for BorderSpacing {
 
 /// A single border-image-repeat keyword.
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
     MallocSizeOf,
     Parse,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
@@ -326,8 +387,10 @@ pub enum BorderImageRepeatKeyword {
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(C)]
+#[typed(todo_derive_fields)]
 pub struct BorderImageRepeat(pub BorderImageRepeatKeyword, pub BorderImageRepeatKeyword);
 
 impl ToCss for BorderImageRepeat {
@@ -356,10 +419,7 @@ impl BorderImageRepeat {
 }
 
 impl Parse for BorderImageRepeat {
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let horizontal = BorderImageRepeatKeyword::parse(input)?;
         let vertical = input.try_parse(BorderImageRepeatKeyword::parse).ok();
         Ok(BorderImageRepeat(
@@ -369,31 +429,56 @@ impl Parse for BorderImageRepeat {
     }
 }
 
-/// Serializes a border shorthand value composed of width/style/color.
-pub fn serialize_directional_border<W>(
-    dest: &mut CssWriter<W>,
-    width: &BorderSideWidth,
-    style: &BorderStyle,
-    color: &Color,
-) -> fmt::Result
-where
-    W: Write,
-{
-    let has_style = *style != BorderStyle::None;
-    let has_color = *color != Color::CurrentColor;
-    let has_width = *width != BorderSideWidth::medium();
-    if !has_style && !has_color && !has_width {
-        return width.to_css(dest);
-    }
-    let mut writer = SequenceWriter::new(dest, " ");
-    if has_width {
-        writer.item(width)?;
-    }
-    if has_style {
-        writer.item(style)?;
-    }
-    if has_color {
-        writer.item(color)?;
-    }
-    Ok(())
+/// https://drafts.csswg.org/css-break/#propdef-box-decoration-break
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum BoxDecorationBreak {
+    Slice,
+    Clone,
+}
+
+/// Nonstandard (https://developer.mozilla.org/en-US/docs/Web/CSS/-moz-float-edge)
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FloatEdge {
+    ContentBox,
+    MarginBox,
 }

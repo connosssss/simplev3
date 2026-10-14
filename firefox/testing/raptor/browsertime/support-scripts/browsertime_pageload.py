@@ -147,9 +147,9 @@ class PageloadSupport(BasePythonSupport):
 
         power_vals = raw_result.get("android").get("power", {})
         if power_vals:
-            bt_result["measurements"].setdefault("powerUsage", []).extend(
-                [round(vals["powerUsage"] * (1 * 10**-6), 2) for vals in power_vals]
-            )
+            bt_result["measurements"].setdefault("powerUsage", []).extend([
+                round(vals["powerUsage"] * (1 * 10**-6), 2) for vals in power_vals
+            ])
 
     def _process_measurements(self, suite, test, measurement_name, replicates):
         subtest = {}
@@ -179,8 +179,8 @@ class PageloadSupport(BasePythonSupport):
         if self.subtest_alert_on is not None:
             if measurement_name in self.subtest_alert_on:
                 LOG.info(
-                    "turning on subtest alerting for measurement type: %s"
-                    % measurement_name
+                    "turning on subtest alerting for measurement type: "
+                    f"{measurement_name}"
                 )
                 subtest["shouldAlert"] = True
                 if self.app in (
@@ -194,8 +194,8 @@ class PageloadSupport(BasePythonSupport):
                 # Explicitly set `shouldAlert` to False so that the measurement
                 # is not alerted on. Otherwise Perfherder defaults to alerting.
                 LOG.info(
-                    "turning off subtest alerting for measurement type: %s"
-                    % measurement_name
+                    "turning off subtest alerting for measurement type: "
+                    f"{measurement_name}"
                 )
                 subtest["shouldAlert"] = False
 
@@ -281,6 +281,6 @@ class PageloadSupport(BasePythonSupport):
             LOG.critical(
                 "TEST-UNEXPECTED-FAIL | Some visual metrics have an erroneous value of 0."
             )
-            LOG.info("Visual metric tests failed: %s" % str(self.failed_vismets))
+            LOG.info(f"Visual metric tests failed: {self.failed_vismets}")
             return False
         return True

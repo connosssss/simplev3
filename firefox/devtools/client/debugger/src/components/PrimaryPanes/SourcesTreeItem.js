@@ -8,17 +8,18 @@ import PropTypes from "devtools/client/shared/vendor/react-prop-types";
 import { connect } from "devtools/client/shared/vendor/react-redux";
 
 import SourceIcon from "../shared/SourceIcon";
-import AccessibleImage from "../shared/AccessibleImage";
+import DebuggerImage from "devtools/client/shared/components/DebuggerImage";
 
 import {
-  getGeneratedSourceByURL,
   getHideIgnoredSources,
   isSourceOverridden,
+  getGeneratedSourceByURL,
 } from "../../selectors/index";
 import actions from "../../actions/index";
 
 import { sourceTypes } from "../../utils/source";
 import { createLocation } from "../../utils/location";
+import { sourceTree } from "../../constants";
 
 const classnames = require("resource://devtools/client/shared/classnames.js");
 
@@ -51,7 +52,7 @@ class SourceTreeItemContents extends Component {
     const { item, focusItem, selectSourceItem } = this.props;
 
     focusItem(item);
-    if (item.type == "source") {
+    if (item.type == sourceTree.itemTypes.SOURCE) {
       selectSourceItem(item);
     }
   };
@@ -70,43 +71,44 @@ class SourceTreeItemContents extends Component {
   };
 
   renderIcon(item) {
-    if (item.type == "thread") {
+    if (item.type == sourceTree.itemTypes.THREAD) {
       const icon = item.thread.targetType.includes("worker")
         ? "worker"
         : "window";
-      return React.createElement(AccessibleImage, {
-        className: classnames(icon),
+      return React.createElement(DebuggerImage, {
+        name: icon,
       });
     }
-    if (item.type == "group") {
+    if (item.type == sourceTree.itemTypes.GROUP) {
       if (item.groupName === "Webpack") {
-        return React.createElement(AccessibleImage, {
-          className: "webpack",
+        return React.createElement(DebuggerImage, {
+          name: "webpack",
         });
       } else if (item.groupName === "Angular") {
-        return React.createElement(AccessibleImage, {
-          className: "angular",
+        return React.createElement(DebuggerImage, {
+          name: "angular",
         });
       }
       // Check if the group relates to an extension.
       // This happens when a webextension injects a content script.
       if (item.isForExtensionSource) {
-        return React.createElement(AccessibleImage, {
-          className: "extension",
+        return React.createElement(DebuggerImage, {
+          name: "extension",
         });
       }
-      return React.createElement(AccessibleImage, {
-        className: "globe-small",
+      return React.createElement(DebuggerImage, {
+        name: "globe-small",
       });
     }
-    if (item.type == "directory") {
-      return React.createElement(AccessibleImage, {
-        className: "folder",
+    if (item.type == sourceTree.itemTypes.DIRECTORY) {
+      return React.createElement(DebuggerImage, {
+        name: "folder",
       });
     }
-    if (item.type == "source") {
+    if (item.type == sourceTree.itemTypes.SOURCE) {
       const { source, sourceActor } = item;
       return React.createElement(SourceIcon, {
+        className: this.props.isSourceOverridden ? " has-network-override" : "",
         location: createLocation({
           source,
           sourceActor,
@@ -117,10 +119,7 @@ class SourceTreeItemContents extends Component {
           if (icon === "extension") {
             return sourceTypes[source.displayURL.fileExtension] || "javascript";
           }
-          return (
-            icon +
-            (this.props.isSourceOverridden ? " has-network-override" : "")
-          );
+          return icon;
         },
       });
     }
@@ -129,21 +128,21 @@ class SourceTreeItemContents extends Component {
   renderItemName() {
     const { item } = this.props;
 
-    if (item.type == "thread") {
+    if (item.type == sourceTree.itemTypes.THREAD) {
       const { thread } = item;
       return (
         thread.name +
         (thread.serviceWorkerStatus ? ` (${thread.serviceWorkerStatus})` : "")
       );
     }
-    if (item.type == "group") {
+    if (item.type == sourceTree.itemTypes.GROUP) {
       return item.groupName;
     }
-    if (item.type == "directory") {
+    if (item.type == sourceTree.itemTypes.DIRECTORY) {
       const parentItem = this.props.getParent(item);
       return item.path.replace(parentItem.path, "").replace(/^\//, "");
     }
-    if (item.type == "source") {
+    if (item.type == sourceTree.itemTypes.SOURCE) {
       return item.source.longName;
     }
 
@@ -153,16 +152,16 @@ class SourceTreeItemContents extends Component {
   renderItemTooltip() {
     const { item } = this.props;
 
-    if (item.type == "thread") {
+    if (item.type == sourceTree.itemTypes.THREAD) {
       return item.thread.name;
     }
-    if (item.type == "group") {
+    if (item.type == sourceTree.itemTypes.GROUP) {
       return item.groupName;
     }
-    if (item.type == "directory") {
+    if (item.type == sourceTree.itemTypes.DIRECTORY) {
       return item.path;
     }
-    if (item.type == "source") {
+    if (item.type == sourceTree.itemTypes.SOURCE) {
       return item.source.url;
     }
 
@@ -188,7 +187,8 @@ class SourceTreeItemContents extends Component {
       {
         className: classnames("node", {
           focused,
-          blackboxed: item.type == "source" && item.isBlackBoxed,
+          blackboxed:
+            item.type == sourceTree.itemTypes.SOURCE && item.isBlackBoxed,
         }),
         key: item.path,
         onClick: this.onClick,
@@ -267,7 +267,7 @@ class SourcesTreeItem extends Component {
 
 const mapStateToProps = (state, props) => {
   const { item } = props;
-  if (item.type == "source") {
+  if (item.type == sourceTree.itemTypes.SOURCE) {
     const { source } = item;
     return {
       hasMatchingGeneratedSource: getHasMatchingGeneratedSource(state, source),

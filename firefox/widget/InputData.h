@@ -1,35 +1,38 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef InputData_h__
-#define InputData_h__
+#ifndef InputData_h_
+#define InputData_h_
 
-#include "nsDebug.h"
-#include "nsPoint.h"
-#include "nsTArray.h"
 #include "Units.h"
-#include "mozilla/ScrollTypes.h"
 #include "mozilla/DefineEnum.h"
 #include "mozilla/EventForwards.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/MouseEvents.h"  // for WidgetPointerHelper::Angle
+#include "mozilla/ScrollTypes.h"
+#include "mozilla/TextEvents.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/WheelHandlingHelper.h"  // for WheelDeltaAdjustmentStrategy
 #include "mozilla/gfx/MatrixFwd.h"
+#include "mozilla/ipc/IPCForwards.h"
 #include "mozilla/layers/APZPublicUtils.h"
 #include "mozilla/layers/KeyboardScrollAction.h"
-#include "mozilla/TextEvents.h"
-#include "mozilla/ipc/IPCForwards.h"
+#include "nsDebug.h"
+#include "nsPoint.h"
+#include "nsTArray.h"
 
 template <class E>
 struct already_AddRefed;
 class nsIWidget;
 
+enum TouchPointerState : uint8_t;
+
 namespace mozilla {
 
 namespace layers {
-class APZInputBridgeChild;
-class PAPZInputBridgeParent;
+class APZBridgeChild;
+class PAPZBridgeParent;
 }  // namespace layers
 
 namespace dom {
@@ -89,6 +92,13 @@ class InputData {
   // should be dispatched to.
   layers::LayersId mLayersId;
 
+  /**
+   * An optional identifier for the callback associated with this input event.
+   * This ID is used to reference a specific callback for a synthesized event,
+   * if one is present. If no callback is associated, this value will be empty.
+   */
+  Maybe<uint64_t> mCallbackId;
+
   Modifiers modifiers;
 
   INPUTDATA_AS_CHILD_TYPE(MultiTouchInput, MULTITOUCH_INPUT)
@@ -104,6 +114,8 @@ class InputData {
 
  protected:
   InputData(InputType aInputType, TimeStamp aTimeStamp, Modifiers aModifiers);
+  InputData(InputType aInputType, TimeStamp aTimeStamp,
+            const Maybe<uint64_t>& aCallback, Modifiers aModifiers);
 };
 
 /**
@@ -193,6 +205,11 @@ class SingleTouchData {
   int32_t mTiltX = 0;
   int32_t mTiltY = 0;
   int32_t mTwist = 0;
+
+  // Altitude and azimuth angles of the touch, mirroring dom::Touch's mAngle. A
+  // touch carries either these angles or mTiltX/mTiltY, not both; when set they
+  // take precedence over the tilt values.
+  Maybe<WidgetPointerHelper::Angle> mAngle;
 };
 
 /**
@@ -254,8 +271,8 @@ class MultiTouchInput : public InputData {
 
 class MouseInput : public InputData {
  protected:
-  friend mozilla::layers::APZInputBridgeChild;
-  friend mozilla::layers::PAPZInputBridgeParent;
+  friend mozilla::layers::APZBridgeChild;
+  friend mozilla::layers::PAPZBridgeParent;
   ALLOW_DEPRECATED_READPARAM
 
   MouseInput();
@@ -293,7 +310,7 @@ class MouseInput : public InputData {
   MouseInput(MouseType aType, ButtonType aButtonType, uint16_t aInputSource,
              int16_t aButtons, const ScreenPoint& aPoint, TimeStamp aTimeStamp,
              Modifiers aModifiers);
-  explicit MouseInput(const WidgetMouseEventBase& aMouseEvent);
+  explicit MouseInput(const WidgetMouseEvent& aMouseEvent);
 
   bool IsLeftButton() const;
 
@@ -306,6 +323,7 @@ class MouseInput : public InputData {
   // fields must be reflected in its ParamTraits<>, in nsGUIEventIPC.h
   MouseType mType;
   ButtonType mButtonType;
+  uint32_t mClickCount = 0;
   uint16_t mInputSource;
   int16_t mButtons;
   ScreenPoint mOrigin;
@@ -328,8 +346,8 @@ class PanGestureInput : public InputData {
   friend struct IPC::ParamTraits<PanGestureInput>;
 
  protected:
-  friend mozilla::layers::APZInputBridgeChild;
-  friend mozilla::layers::PAPZInputBridgeParent;
+  friend mozilla::layers::APZBridgeChild;
+  friend mozilla::layers::PAPZBridgeParent;
   ALLOW_DEPRECATED_READPARAM
 
   PanGestureInput();
@@ -438,10 +456,6 @@ class PanGestureInput : public InputData {
     return mMayTriggerSwipe && mOverscrollBehaviorAllowsSwipe;
   }
 
-  // Similar to above AllowsSwipe() but this doesn't care the
-  // overscroll-behavior property, this function should be only used for cases
-  // where APZ isn't involved.
-  bool MayTriggerSwipe() const { return mMayTriggerSwipe; }
   bool RequiresContentResponseIfCannotScrollHorizontallyInStartDirection();
 
   static gfx::IntPoint GetIntegerDeltaForEvent(bool aIsStart, float x, float y);
@@ -507,8 +521,8 @@ class PanGestureInput : public InputData {
  */
 class PinchGestureInput : public InputData {
  protected:
-  friend mozilla::layers::APZInputBridgeChild;
-  friend mozilla::layers::PAPZInputBridgeParent;
+  friend mozilla::layers::APZBridgeChild;
+  friend mozilla::layers::PAPZBridgeParent;
   ALLOW_DEPRECATED_READPARAM
 
   PinchGestureInput();
@@ -607,9 +621,9 @@ class PinchGestureInput : public InputData {
   // don't need a mLineOrPageDeltaX. This field is used to dispatch legacy mouse
   // events which are only dispatched when the corresponding field on
   // WidgetWheelEvent is non-zero.
-  int32_t mLineOrPageDeltaY;
+  int32_t mLineOrPageDeltaY = 0;
 
-  bool mHandledByAPZ;
+  bool mHandledByAPZ = false;
 };
 
 /**
@@ -619,8 +633,8 @@ class PinchGestureInput : public InputData {
  */
 class TapGestureInput : public InputData {
  protected:
-  friend mozilla::layers::APZInputBridgeChild;
-  friend mozilla::layers::PAPZInputBridgeParent;
+  friend mozilla::layers::APZBridgeChild;
+  friend mozilla::layers::PAPZBridgeParent;
   ALLOW_DEPRECATED_READPARAM
 
   TapGestureInput();
@@ -670,8 +684,8 @@ class TapGestureInput : public InputData {
 // scroll gestures.
 class ScrollWheelInput : public InputData {
  protected:
-  friend mozilla::layers::APZInputBridgeChild;
-  friend mozilla::layers::PAPZInputBridgeParent;
+  friend mozilla::layers::APZBridgeChild;
+  friend mozilla::layers::PAPZBridgeParent;
   ALLOW_DEPRECATED_READPARAM
 
   typedef mozilla::layers::APZWheelAction APZWheelAction;
@@ -785,11 +799,12 @@ class ScrollWheelInput : public InputData {
 
   bool mMayHaveMomentum;
   bool mIsMomentum;
-  bool mAllowToOverrideSystemScrollSpeed;
+  bool mAllowToOverrideSystemScrollSpeed = false;
 
   // Sometimes a wheel event input's wheel delta should be adjusted. This member
   // specifies how to adjust the wheel delta.
-  WheelDeltaAdjustmentStrategy mWheelDeltaAdjustmentStrategy;
+  WheelDeltaAdjustmentStrategy mWheelDeltaAdjustmentStrategy =
+      WheelDeltaAdjustmentStrategy::eNone;
 
   APZWheelAction mAPZAction;
 };
@@ -830,13 +845,25 @@ class KeyboardInput : public InputData {
   KeyboardScrollAction mAction;
 
  protected:
-  friend mozilla::layers::APZInputBridgeChild;
-  friend mozilla::layers::PAPZInputBridgeParent;
+  friend mozilla::layers::APZBridgeChild;
+  friend mozilla::layers::PAPZBridgeParent;
   ALLOW_DEPRECATED_READPARAM
 
   KeyboardInput();
 };
 
+/**
+ * For widgets that support synthesizing native touch events, this function
+ * can be used to manage the current state of synthetic pointers. Each widget
+ * must maintain its own MultiTouchInput instance and pass it in as the state,
+ * along with the desired parameters for the changes. This function returns
+ * a new MultiTouchInput object that is ready to be dispatched.
+ */
+MultiTouchInput UpdateSynthesizedTouchState(
+    MultiTouchInput* aState, TimeStamp aTimeStamp, uint32_t aPointerId,
+    TouchPointerState aPointerState, LayoutDeviceIntPoint aPoint,
+    double aPointerPressure, uint32_t aPointerOrientation);
+
 }  // namespace mozilla
 
-#endif  // InputData_h__
+#endif  // InputData_h_

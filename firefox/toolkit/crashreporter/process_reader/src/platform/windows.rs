@@ -98,12 +98,10 @@ impl ProcessReader {
 
             module_num = required_buffer_size as usize / size_of::<HMODULE>();
 
-            if res == 0 {
-                if required_buffer_size > buffer_size {
-                    module_array = Vec::<HMODULE>::with_capacity(module_num);
-                } else {
-                    return Err(ProcessReaderError::EnumProcessModulesError);
-                }
+            if required_buffer_size > buffer_size {
+                module_array = Vec::<HMODULE>::with_capacity(module_num);
+            } else if res == 0 {
+                return Err(ProcessReaderError::EnumProcessModulesError);
             } else {
                 break;
             }
@@ -175,8 +173,11 @@ impl ProcessReader {
     }
 
     pub fn copy_array<T>(&self, src: usize, num: usize) -> Result<Vec<T>, ReadError> {
+        let mut array: Vec<T> = Vec::new();
+        array
+            .try_reserve_exact(num)
+            .map_err(|_| ReadError::TooLarge)?;
         let num_of_bytes = num * size_of::<T>();
-        let mut array: Vec<T> = Vec::with_capacity(num);
         let res = unsafe {
             ReadProcessMemory(
                 self.process,

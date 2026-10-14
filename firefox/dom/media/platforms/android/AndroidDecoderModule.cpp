@@ -1,34 +1,31 @@
-//* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <jni.h>
 
-#ifdef MOZ_AV1
-#  include "AOMDecoder.h"
-#endif
+#include "AOMDecoder.h"
 #include "MediaInfo.h"
 #include "RemoteDataDecoder.h"
 #include "VPXDecoder.h"
-#include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Components.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/gfx/gfxVars.h"
+#include "mozilla/java/GeckoAppShellWrappers.h"
 #include "mozilla/java/HardwareCodecCapabilityUtilsWrappers.h"
+#include "nsCharSeparatedTokenizer.h"
 #include "nsIGfxInfo.h"
 #include "nsPromiseFlatString.h"
 #include "prlog.h"
 
 #undef LOG
-#define LOG(arg, ...)                                     \
-  MOZ_LOG(                                                \
-      sAndroidDecoderModuleLog, mozilla::LogLevel::Debug, \
-      ("AndroidDecoderModule(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
-#define SLOG(arg, ...)                                        \
-  MOZ_LOG(sAndroidDecoderModuleLog, mozilla::LogLevel::Debug, \
-          ("%s: " arg, __func__, ##__VA_ARGS__))
+#define LOG(arg, ...)                                                         \
+  MOZ_LOG_FMT(sAndroidDecoderModuleLog, mozilla::LogLevel::Debug,             \
+              "AndroidDecoderModule({})::{}: " arg, fmt::ptr(this), __func__, \
+              ##__VA_ARGS__)
+#define SLOG(arg, ...)                                                        \
+  MOZ_LOG_FMT(sAndroidDecoderModuleLog, mozilla::LogLevel::Debug, "{}: " arg, \
+              __func__, ##__VA_ARGS__)
 
 using namespace mozilla;
 using media::DecodeSupport;
@@ -63,31 +60,24 @@ AndroidDecoderModule::AndroidDecoderModule(CDMProxy* aProxy) {
   mProxy = static_cast<MediaDrmCDMProxy*>(aProxy);
 }
 
-/* static */ bool AndroidDecoderModule::AreSupportedMimeTypesReady() {
-  StaticMutexAutoLock lock(sMutex);
-  return sSupportedSwMimeTypes && sSupportedHwMimeTypes;
-}
-
-/* static */ bool AndroidDecoderModule::IsSupportedCodecsReady() {
-  StaticMutexAutoLock lock(sMutex);
-  return sSupportedCodecs;
-}
-
 /* static */
 media::MediaCodecsSupported AndroidDecoderModule::GetSupportedCodecs() {
-  if (!AreSupportedMimeTypesReady() || !IsSupportedCodecsReady()) {
-    SetSupportedMimeTypes();
+  return MCSInfo::GetDecodeSupported(
+      gfx::gfxVars::PlatformMediaCodecsSupported());
+}
+
+static bool ContainsMimeType(const nsACString& aList,
+                             const nsACString& aMimeType) {
+  for (const auto& token : nsCCharSeparatedTokenizer(aList, ',').ToRange()) {
+    if (token.Equals(aMimeType)) {
+      return true;
+    }
   }
-  StaticMutexAutoLock lock(sMutex);
-  return *sSupportedCodecs;
+  return false;
 }
 
 DecodeSupportSet AndroidDecoderModule::SupportsMimeType(
     const nsACString& aMimeType) {
-  if (!AreSupportedMimeTypesReady()) {
-    SetSupportedMimeTypes();
-  }
-
   // Handle per-codec logic if the codec type can be determined from
   // the MIME type string. GetMediaCodecFromMimeType should handle every
   // type string that was hardcoded in this function previously.
@@ -118,7 +108,7 @@ DecodeSupportSet AndroidDecoderModule::SupportsMimeType(
     case MediaCodec::Wave:
       [[fallthrough]];
     case MediaCodec::FLAC:
-      SLOG("Rejecting audio of type %s", aMimeType.Data());
+      SLOG("Rejecting audio of type {}", PromiseFlatCString(aMimeType).get());
       return media::DecodeSupportSet{};
 
     // H264 always reports software decode
@@ -139,132 +129,34 @@ DecodeSupportSet AndroidDecoderModule::SupportsMimeType(
     case MediaCodec::SENTINEL:
       [[fallthrough]];
     default:
-      SLOG("Support check using default logic for %s", aMimeType.Data());
+      SLOG("Support check using default logic for {}",
+           PromiseFlatCString(aMimeType).get());
       break;
   }
 
-  // If a codec has no special handling or can't be determined from the
-  // MIME type string, check if the MIME type string itself is supported.
-  {
-    StaticMutexAutoLock lock(sMutex);
-    if (sSupportedHwMimeTypes &&
-        sSupportedHwMimeTypes->Contains(TranslateMimeType(aMimeType))) {
+  // If the codec can't be determined from the MIME type string, check if the
+  // MIME type string itself is supported.
+  if (codec == MediaCodec::SENTINEL) {
+    const nsCString mimeType = TranslateMimeType(aMimeType);
+    if (ContainsMimeType(gfx::gfxVars::PlatformUnmappedHwDecodeMimeTypes(),
+                         mimeType)) {
       return DecodeSupport::HardwareDecode;
     }
-    if (sSupportedSwMimeTypes &&
-        sSupportedSwMimeTypes->Contains(TranslateMimeType(aMimeType))) {
+    if (ContainsMimeType(gfx::gfxVars::PlatformUnmappedSwDecodeMimeTypes(),
+                         mimeType)) {
       return DecodeSupport::SoftwareDecode;
     }
+    return media::DecodeSupportSet{};
+  }
+
+  auto supported = gfx::gfxVars::PlatformMediaCodecsSupported();
+  if (MCSInfo::SupportsHardwareDecode(supported, codec)) {
+    return DecodeSupport::HardwareDecode;
+  }
+  if (MCSInfo::SupportsSoftwareDecode(supported, codec)) {
+    return DecodeSupport::SoftwareDecode;
   }
   return media::DecodeSupportSet{};
-}
-
-nsTArray<nsCString> AndroidDecoderModule::GetSupportedMimeTypes() {
-  mozilla::jni::ObjectArray::LocalRef supportedTypes = mozilla::java::
-      HardwareCodecCapabilityUtils::GetDecoderSupportedMimeTypes();
-
-  nsTArray<nsCString> st = nsTArray<nsCString>();
-  for (size_t i = 0; i < supportedTypes->Length(); i++) {
-    st.AppendElement(
-        jni::String::LocalRef(supportedTypes->GetElement(i))->ToCString());
-  }
-
-  return st;
-}
-
-nsTArray<nsCString> AndroidDecoderModule::GetSupportedMimeTypesPrefixed() {
-  mozilla::jni::ObjectArray::LocalRef supportedTypes = mozilla::java::
-      HardwareCodecCapabilityUtils::GetDecoderSupportedMimeTypesWithAccelInfo();
-
-  nsTArray<nsCString> st = nsTArray<nsCString>();
-  for (size_t i = 0; i < supportedTypes->Length(); i++) {
-    st.AppendElement(
-        jni::String::LocalRef(supportedTypes->GetElement(i))->ToCString());
-  }
-
-  return st;
-}
-
-void AndroidDecoderModule::SetSupportedMimeTypes() {
-  SetSupportedMimeTypes(GetSupportedMimeTypesPrefixed());
-}
-
-// Inbound MIME types prefixed with SW/HW need to be processed
-void AndroidDecoderModule::SetSupportedMimeTypes(
-    nsTArray<nsCString>&& aSupportedTypes) {
-  StaticMutexAutoLock lock(sMutex);
-  // Return if support is already cached
-  if (sSupportedSwMimeTypes && sSupportedHwMimeTypes && sSupportedCodecs) {
-    return;
-  }
-  if (!sSupportedSwMimeTypes) {
-    sSupportedSwMimeTypes = new nsTArray<nsCString>;
-    if (NS_IsMainThread()) {
-      ClearOnShutdown(&sSupportedSwMimeTypes);
-    } else {
-      Unused << NS_DispatchToMainThread(NS_NewRunnableFunction(__func__, []() {
-        StaticMutexAutoLock lock(sMutex);
-        ClearOnShutdown(&sSupportedSwMimeTypes);
-      }));
-    }
-  }
-  if (!sSupportedHwMimeTypes) {
-    sSupportedHwMimeTypes = new nsTArray<nsCString>;
-    if (NS_IsMainThread()) {
-      ClearOnShutdown(&sSupportedHwMimeTypes);
-    } else {
-      Unused << NS_DispatchToMainThread(NS_NewRunnableFunction(__func__, []() {
-        StaticMutexAutoLock lock(sMutex);
-        ClearOnShutdown(&sSupportedHwMimeTypes);
-      }));
-    }
-  }
-  if (!sSupportedCodecs) {
-    sSupportedCodecs = new MediaCodecsSupported();
-    if (NS_IsMainThread()) {
-      ClearOnShutdown(&sSupportedCodecs);
-    } else {
-      Unused << NS_DispatchToMainThread(NS_NewRunnableFunction(__func__, []() {
-        StaticMutexAutoLock lock(sMutex);
-        ClearOnShutdown(&sSupportedCodecs);
-      }));
-    }
-  }
-
-  // Process each MIME type string
-  for (const auto& s : aSupportedTypes) {
-    // Verify MIME type string present
-    if (s.Length() < 4) {
-      SLOG("No SW/HW support prefix found in codec string %s", s.Data());
-      continue;
-    }
-    const auto mimeType = Substring(s, 3);
-    if (mimeType.Length() == 0) {
-      SLOG("No MIME type information found in codec string %s", s.Data());
-      continue;
-    }
-
-    // Extract SW/HW support prefix
-    const auto caps = Substring(s, 0, 2);
-    DecodeSupport support{};
-    if (caps == "SW"_ns) {
-      sSupportedSwMimeTypes->AppendElement(mimeType);
-      support = DecodeSupport::SoftwareDecode;
-    } else if (caps == "HW"_ns) {
-      sSupportedHwMimeTypes->AppendElement(mimeType);
-      support = DecodeSupport::HardwareDecode;
-    } else {
-      SLOG("Error parsing acceleration info from JNI codec string %s",
-           s.Data());
-      continue;
-    }
-    const MediaCodec codec = MCSInfo::GetMediaCodecFromMimeType(mimeType);
-    if (codec == MediaCodec::SENTINEL) {
-      SLOG("Did not parse string %s to specific codec", s.Data());
-      continue;
-    }
-    *sSupportedCodecs += MCSInfo::GetMediaCodecsSupportEnum(codec, support);
-  }
 }
 
 DecodeSupportSet AndroidDecoderModule::SupportsMimeType(
@@ -293,14 +185,12 @@ media::DecodeSupportSet AndroidDecoderModule::Supports(
     return support;
   }
 
-#ifdef MOZ_AV1
   // For AV1, only allow HW decoder.
   if (AOMDecoder::IsAV1(aParams.MimeType()) &&
       (!StaticPrefs::media_av1_enabled() ||
        !support.contains(media::DecodeSupport::HardwareDecode))) {
     return media::DecodeSupportSet{};
   }
-#endif
 
   // Check 10-bit video.
   const TrackInfo& trackInfo = aParams.mConfig;
@@ -315,16 +205,6 @@ media::DecodeSupportSet AndroidDecoderModule::Supports(
              : media::DecodeSupportSet{};
 }
 
-static bool IsAV1MainProfile(const MediaByteBuffer* aBox) {
-  if (!aBox || aBox->IsEmpty()) {
-    return false;
-  }
-  AOMDecoder::AV1SequenceInfo av1Info;
-  MediaResult seqHdrResult;
-  AOMDecoder::TryReadAV1CBox(aBox, av1Info, seqHdrResult);
-  return seqHdrResult.Code() == NS_OK && av1Info.mProfile == 0;
-}
-
 already_AddRefed<MediaDataDecoder> AndroidDecoderModule::CreateVideoDecoder(
     const CreateDecoderParams& aParams) {
   // Temporary - forces use of VPXDecoder when alpha is present.
@@ -336,7 +216,17 @@ already_AddRefed<MediaDataDecoder> AndroidDecoderModule::CreateVideoDecoder(
   }
 
   if (AOMDecoder::IsAV1(aParams.mConfig.mMimeType) &&
-      !IsAV1MainProfile(aParams.VideoConfig().mExtraData)) {
+      !AOMDecoder::IsMainProfile(aParams.VideoConfig().mExtraData)) {
+    return nullptr;
+  }
+
+  // Don't use SW VPX MediaCodecs. Prefering VPXDecoder over MediaCodec SW
+  // decoder implementation allow us to have more consistent cross-platform VPX
+  // playback experience and be able to get upstream bug fixes/improvements more
+  // frequently.
+  if (VPXDecoder::IsVPX(aParams.VideoConfig().mMimeType) &&
+      !SupportsMimeType(aParams.VideoConfig().mMimeType)
+           .contains(DecodeSupport::HardwareDecode)) {
     return nullptr;
   }
 
@@ -350,11 +240,17 @@ already_AddRefed<MediaDataDecoder> AndroidDecoderModule::CreateVideoDecoder(
   return decoder.forget();
 }
 
+// static
+bool AndroidDecoderModule::IsJavaDecoderModuleAllowed() {
+  return StaticPrefs::media_android_media_codec_enabled() &&
+         !java::GeckoAppShell::IsIsolatedProcess();
+}
+
 already_AddRefed<MediaDataDecoder> AndroidDecoderModule::CreateAudioDecoder(
     const CreateDecoderParams& aParams) {
   const AudioInfo& config = aParams.AudioConfig();
-  LOG("CreateAudioFormat with mimeType=%s, mRate=%d, channels=%d",
-      config.mMimeType.Data(), config.mRate, config.mChannels);
+  LOG("CreateAudioFormat with mimeType={}, mRate={}, channels={}",
+      config.mMimeType.get(), config.mRate, config.mChannels);
 
   nsString drmStubId;
   if (mProxy) {

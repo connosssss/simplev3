@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "CanvasManagerChild.h"
+
 #include "mozilla/AppShutdown.h"
 #include "mozilla/dom/CanvasRenderingContext2D.h"
 #include "mozilla/dom/WorkerPrivate.h"
@@ -18,10 +17,9 @@
 #include "mozilla/layers/CompositorManagerChild.h"
 #include "mozilla/webgpu/WebGPUChild.h"
 
-using namespace mozilla::dom;
-using namespace mozilla::layers;
-
 namespace mozilla::gfx {
+
+using namespace layers;
 
 // The IPDL actor holds a strong reference to CanvasManagerChild which we use
 // to keep it alive. The owning thread will tell us to close when it is
@@ -31,7 +29,7 @@ MOZ_THREAD_LOCAL(CanvasManagerChild*) CanvasManagerChild::sLocalManager;
 
 Atomic<uint32_t> CanvasManagerChild::sNextId(1);
 
-CanvasManagerChild::CanvasManagerChild(ThreadSafeWorkerRef* aWorkerRef,
+CanvasManagerChild::CanvasManagerChild(dom::ThreadSafeWorkerRef* aWorkerRef,
                                        uint32_t aId)
     : mWorkerRef(aWorkerRef), mId(aId) {}
 
@@ -46,11 +44,6 @@ void CanvasManagerChild::ActorDestroy(ActorDestroyReason aReason) {
 }
 
 void CanvasManagerChild::DestroyInternal() {
-  if (mActiveResourceTracker) {
-    mActiveResourceTracker->AgeAllGenerations();
-    mActiveResourceTracker.reset();
-  }
-
   if (mCanvasChild) {
     mCanvasChild->Destroy();
     mCanvasChild = nullptr;
@@ -58,6 +51,11 @@ void CanvasManagerChild::DestroyInternal() {
 
   if (auto* shutdownManager = CanvasShutdownManager::Get()) {
     shutdownManager->OnRemoteCanvasLost();
+  }
+
+  if (mActiveResourceTracker) {
+    mActiveResourceTracker->AgeAllGenerations();
+    mActiveResourceTracker.reset();
   }
 }
 
@@ -106,7 +104,7 @@ void CanvasManagerChild::Destroy() {
   }
 
   // We are only used on the main thread, or on worker threads.
-  WorkerPrivate* worker = GetCurrentThreadWorkerPrivate();
+  dom::WorkerPrivate* worker = dom::GetCurrentThreadWorkerPrivate();
   MOZ_ASSERT_IF(!worker, NS_IsMainThread());
 
   ipc::Endpoint<PCanvasManagerParent> parentEndpoint;
@@ -223,7 +221,7 @@ RefPtr<webgpu::WebGPUChild> CanvasManagerChild::GetWebGPUChild() {
 layers::ActiveResourceTracker* CanvasManagerChild::GetActiveResourceTracker() {
   if (!mActiveResourceTracker) {
     mActiveResourceTracker = MakeUnique<ActiveResourceTracker>(
-        1000, "CanvasManagerChild", GetCurrentSerialEventTarget());
+        1000, "CanvasManagerChild"_ns, GetCurrentSerialEventTarget());
   }
   return mActiveResourceTracker.get();
 }
@@ -231,15 +229,15 @@ layers::ActiveResourceTracker* CanvasManagerChild::GetActiveResourceTracker() {
 already_AddRefed<DataSourceSurface> CanvasManagerChild::GetSnapshot(
     uint32_t aManagerId, ActorId aProtocolId,
     const Maybe<RemoteTextureOwnerId>& aOwnerId,
-    const Maybe<RawId>& aCommandEncoderId, SurfaceFormat aFormat,
-    bool aPremultiply, bool aYFlip) {
+    const Maybe<RawId>& aCommandEncoderId, const Maybe<RawId>& aCommandBufferId,
+    SurfaceFormat aFormat, bool aPremultiply, bool aYFlip) {
   if (!CanSend()) {
     return nullptr;
   }
 
   webgl::FrontBufferSnapshotIpc res;
   if (!SendGetSnapshot(aManagerId, aProtocolId, aOwnerId, aCommandEncoderId,
-                       &res)) {
+                       aCommandBufferId, &res)) {
     return nullptr;
   }
 

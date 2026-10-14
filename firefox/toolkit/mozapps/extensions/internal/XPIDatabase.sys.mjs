@@ -29,6 +29,10 @@ ChromeUtils.defineESModuleGetters(lazy, {
   PermissionsUtils: "resource://gre/modules/PermissionsUtils.sys.mjs",
   QuarantinedDomains: "resource://gre/modules/ExtensionPermissions.sys.mjs",
   ExtensionPermissions: "resource://gre/modules/ExtensionPermissions.sys.mjs",
+  getL10nThemeString:
+    "resource://gre/modules/addons/ThemesBundledLocalization.sys.mjs",
+  hasThemeIdBundledLocalization:
+    "resource://gre/modules/addons/ThemesBundledLocalization.sys.mjs",
 });
 
 // A temporary hidden pref just meant to be used as a last resort, in case
@@ -154,7 +158,8 @@ const PROP_JSON_FIELDS = [
   "rootURI",
 ];
 
-const SIGNED_TYPES = new Set(["extension", "locale", "theme"]);
+// Keep in sync with ALL_XPI_TYPES in XPIProvider.sys.mjs.
+const SIGNED_TYPES = new Set(["extension", "locale", "theme", "dictionary"]);
 
 // Time to wait before async save of XPI JSON database, in milliseconds
 const ASYNC_SAVE_DELAY_MS = 20;
@@ -226,7 +231,7 @@ async function getRepositoryAddon(aAddon) {
  *        An array of properties to be copied
  * @param {object?} [aTarget]
  *        An optional target object to copy the properties to
- * @returns {Object}
+ * @returns {object}
  *        The object that the properties were copied onto
  */
 function copyProperties(aObject, aProperties, aTarget) {
@@ -330,23 +335,15 @@ export class AddonInternal {
     );
   }
 
-  get isBuiltinColorwayTheme() {
-    return (
-      this.type === "theme" &&
-      this.location.isBuiltin &&
-      this.id.endsWith("-colorway@mozilla.org")
-    );
-  }
-
   /**
    * Validate a list of origins are contained in the installOrigins array (defined in manifest.json).
    *
    * SitePermission addons are a special case, where the triggering install site may be a subdomain
    * of a valid xpi origin.
    *
-   * @param {Object}  origins             Object containing URIs related to install.
-   * @params {nsIURI} origins.installFrom The nsIURI of the website that has triggered the install flow.
-   * @params {nsIURI} origins.source      The nsIURI where the xpi is hosted.
+   * @param {object} origins             Object containing URIs related to install.
+   * @param {nsIURI} origins.installFrom The nsIURI of the website that has triggered the install flow.
+   * @param {nsIURI} origins.source      The nsIURI where the xpi is hosted.
    * @returns {boolean}
    */
   validInstallOrigins({ installFrom, source }) {
@@ -708,6 +705,15 @@ export class AddonInternal {
       if (this.location.isSystem && !allowSystemAddons) {
         throw new Error(`Cannot disable system add-on ${this.id}`);
       }
+      if (
+        val &&
+        Services.policies &&
+        !Services.policies.isAllowed(`disable-extension:${this.id}`)
+      ) {
+        throw new Error(
+          `Cannot disable add-on ${this.id}: disallowed by enterprise policy`
+        );
+      }
       await XPIDatabase.updateAddonDisabledState(this, { userDisabled: val });
     } else {
       this.userDisabled = val;
@@ -759,7 +765,7 @@ export class AddonInternal {
    * This method reads particular properties of that metadata that may be newer
    * than that in the extension manifest, like compatibility information.
    *
-   * @param {Object} aObj
+   * @param {object} aObj
    *        A JS object containing the cached metadata
    */
   importMetadata(aObj) {
@@ -850,7 +856,10 @@ export class AddonInternal {
       if (!Services.policies.isAllowed(`disable-extension:${this.id}`)) {
         permissions &= ~lazy.AddonManager.PERM_CAN_DISABLE;
       }
-      if (Services.policies.getExtensionSettings(this.id)?.updates_disabled) {
+      const updatesDisabled = Services.policies.getExtensionSettings(
+        this.id
+      )?.updates_disabled;
+      if (updatesDisabled === true) {
         permissions &= ~lazy.AddonManager.PERM_CAN_UPGRADE;
       }
     }
@@ -1094,10 +1103,27 @@ export class AddonWrapper {
     );
   }
 
+  get isApplyBackgroundUpdatesControlledByPolicies() {
+    const { updates_disabled } =
+      Services.policies?.getExtensionSettings(this.id) ?? {};
+    return typeof updates_disabled === "boolean";
+  }
+
   get applyBackgroundUpdates() {
+    if (this.isApplyBackgroundUpdatesControlledByPolicies) {
+      const { updates_disabled } = Services.policies.getExtensionSettings(
+        this.id
+      );
+      return updates_disabled
+        ? lazy.AddonManager.AUTOUPDATE_DISABLE
+        : lazy.AddonManager.AUTOUPDATE_ENABLE;
+    }
     return addonFor(this).applyBackgroundUpdates;
   }
   set applyBackgroundUpdates(val) {
+    if (this.isApplyBackgroundUpdatesControlledByPolicies) {
+      return;
+    }
     let addon = addonFor(this);
     if (
       val != lazy.AddonManager.AUTOUPDATE_DEFAULT &&
@@ -1368,23 +1394,6 @@ export class AddonWrapper {
   }
 
   /**
-   * Returns true if the addon is configured to be installed
-   * by enterprise policy.
-   *
-   * Should be kept in sync with Extension.sys.mjs
-   */
-  get isInstalledByEnterprisePolicy() {
-    const policySettings = Services.policies?.getExtensionSettings(this.id);
-    const legacyLockedSettings =
-      Services.policies?.getActivePolicies()?.Extensions?.Locked ?? [];
-    return (
-      ["force_installed", "normal_installed"].includes(
-        policySettings?.installation_mode
-      ) || legacyLockedSettings.includes(this.id)
-    );
-  }
-
-  /**
    * Required permissions that extension has access to based on its manifest.
    * In mv3 this doesn't include host_permissions.
    */
@@ -1418,9 +1427,12 @@ export class AddonWrapper {
     let perms = {
       origins: required.origins.concat(requested?.origins ?? []),
       permissions: required.permissions.concat(requested?.permissions ?? []),
-      data_collection: required.data_collection.concat(
-        requested?.data_collection ?? []
-      ),
+      data_collection: [
+        // These fields can be missing if read from extensions.json that was
+        // generated before support for data_collection was introduced.
+        ...(required?.data_collection ?? []),
+        ...(requested?.data_collection ?? []),
+      ],
     };
     return perms;
   }
@@ -1446,6 +1458,13 @@ export class AddonWrapper {
 
     // De-dup the normalized host permission patterns.
     return [...new Set(origins)];
+  }
+
+  get hasDataCollectionPermissions() {
+    return !!(
+      this.installPermissions?.data_collection?.length ||
+      this.optionalPermissions?.data_collection?.length
+    );
   }
 
   isCompatibleWith(aAppVersion, aPlatformVersion) {
@@ -1574,7 +1593,6 @@ function defineAddonWrapperProperty(name, getter) {
   "signedState",
   "signedTypes",
   "isCorrectlySigned",
-  "isBuiltinColorwayTheme",
 ].forEach(function (aProp) {
   defineAddonWrapperProperty(aProp, function () {
     let addon = addonFor(this);
@@ -1643,32 +1661,23 @@ defineAddonWrapperProperty("signedDate", function () {
   });
 });
 
-// Add to this Map if you need to change an addon's Fluent ID. Keep it in sync
-// with the list in browser_verify_l10n_strings.js
-const updatedAddonFluentIds = new Map([
-  ["extension-default-theme-name", "extension-default-theme-name-auto"],
-]);
-
 ["name", "description", "creator", "homepageURL"].forEach(function (aProp) {
   defineAddonWrapperProperty(aProp, function () {
     let addon = addonFor(this);
 
-    let formattedMessage;
+    let formattedValue;
     // We want to make sure that all built-in themes that are localizable can
-    // actually localized, particularly those for thunderbird and desktop.
+    // be actually localized, particularly those for thunderbird and desktop, as
+    // well as curated AMO-hosted themes with bundled Fluent localization (e.g.
+    // Nova themes).
     if (
       (aProp === "name" || aProp === "description") &&
-      addon.location.name === KEY_APP_BUILTINS &&
-      addon.type === "theme"
+      addon.type === "theme" &&
+      (addon.location.name === KEY_APP_BUILTINS ||
+        lazy.hasThemeIdBundledLocalization(addon.id))
     ) {
-      // Built-in themes are localized with Fluent instead of the WebExtension API.
-      let addonIdPrefix = addon.id.replace("@mozilla.org", "");
-      let defaultFluentId = `extension-${addonIdPrefix}-${aProp}`;
-      let fluentId =
-        updatedAddonFluentIds.get(defaultFluentId) || defaultFluentId;
       try {
-        const l10n = new Localization(["browser/appExtensionFields.ftl"], true);
-        [formattedMessage] = l10n.formatMessagesSync([{ id: fluentId }]);
+        formattedValue = lazy.getL10nThemeString(addon.id, aProp);
       } catch (e) {
         // Log a warning when no fluent string was found, but fallback to the value set
         // in the manifest field or values got from AMO and stored in the AddonRepository.
@@ -1679,8 +1688,8 @@ const updatedAddonFluentIds = new Map([
       }
     }
 
-    if (formattedMessage) {
-      return formattedMessage.value;
+    if (formattedValue) {
+      return formattedValue;
     }
 
     let [result, usedRepository] = chooseValue(
@@ -1843,10 +1852,9 @@ export const XPIDatabase = {
       // use an Error here so we get a stack trace.
       let err = new Error("XPI database modified after shutdown began");
       logger.warn(err);
-      lazy.AddonManagerPrivate.recordSimpleMeasure(
-        "XPIDB_late_stack",
-        Log.stackTrace(err)
-      );
+      const stack = Log.stackTrace(err);
+      lazy.AddonManagerPrivate.recordSimpleMeasure("XPIDB_late_stack", stack);
+      Glean.xpiDatabase.lateStack.set(stack);
     }
 
     if (!this._saveTask) {
@@ -1872,7 +1880,7 @@ export const XPIDatabase = {
    * Converts the current internal state of the XPI addon database to
    * a JSON.stringify()-ready structure
    *
-   * @returns {Object}
+   * @returns {object}
    */
   toJSON() {
     if (!this.addonDB) {
@@ -1902,10 +1910,9 @@ export const XPIDatabase = {
   syncLoadDB(aRebuildOnError) {
     let err = new Error("Synchronously loading the add-ons database");
     logger.debug(err.message);
-    lazy.AddonManagerPrivate.recordSimpleMeasure(
-      "XPIDB_sync_stack",
-      Log.stackTrace(err)
-    );
+    const stack = Log.stackTrace(err);
+    lazy.AddonManagerPrivate.recordSimpleMeasure("XPIDB_sync_stack", stack);
+    Glean.xpiDatabase.syncStack.set(stack);
     try {
       this.syncLoadingDB = true;
       XPIExports.XPIInternal.awaitPromise(this.asyncLoadDB(aRebuildOnError));
@@ -1916,6 +1923,7 @@ export const XPIDatabase = {
 
   _recordStartupError(reason) {
     lazy.AddonManagerPrivate.recordSimpleMeasure("XPIDB_startupError", reason);
+    Glean.xpiDatabase.startupError.set(reason);
   },
 
   /**
@@ -1927,8 +1935,10 @@ export const XPIDatabase = {
    *        If true, synchronously reconstruct the database from installed add-ons
    */
   async parseDB(aInputAddons, aRebuildOnError) {
+    let timerId;
     try {
       let parseTimer = lazy.AddonManagerPrivate.simpleTimer("XPIDB_parseDB_MS");
+      timerId = Glean.xpiDatabase.parses.start();
 
       if (!("schemaVersion" in aInputAddons) || !("addons" in aInputAddons)) {
         let error = new Error("Bad JSON file contents");
@@ -1975,6 +1985,11 @@ export const XPIDatabase = {
             );
           }
         }
+
+        // The `location` property in the XPIStates entry data is set to the
+        // string representing the location name, and we are converting it
+        // to the corresponding XPIStateLocation class instance (as expected
+        // by the AddonInternal constructor).
         loadedAddon.location = XPIExports.XPIInternal.XPIStates.getLocation(
           loadedAddon.location
         );
@@ -1988,11 +2003,15 @@ export const XPIDatabase = {
         }
       });
 
+      Glean.xpiDatabase.parses.stopAndAccumulate(timerId);
       parseTimer.done();
       this.addonDB = addonDB;
       logger.debug("Successfully read XPI database");
       this.initialized = true;
     } catch (e) {
+      if (timerId) {
+        Glean.xpiDatabase.parses.cancel(timerId);
+      }
       if (e.name == "SyntaxError") {
         logger.error("Syntax error parsing saved XPI JSON data");
         this._recordStartupError("syntax");
@@ -2039,10 +2058,9 @@ export const XPIDatabase = {
         "XPIDatabase.asyncLoadDB attempt after XPIProvider shutdown."
       );
       logger.warn("Fail to load AddonDB: ${error}", { error: err });
-      lazy.AddonManagerPrivate.recordSimpleMeasure(
-        "XPIDB_late_load",
-        Log.stackTrace(err)
-      );
+      const stack = Log.stackTrace(err);
+      lazy.AddonManagerPrivate.recordSimpleMeasure("XPIDB_late_load", stack);
+      Glean.xpiDatabase.lateLoad.set(stack);
       this._dbPromise = Promise.reject(err);
 
       XPIExports.XPIInternal.resolveDBReady(this._dbPromise);
@@ -2085,7 +2103,12 @@ export const XPIDatabase = {
 
   timeRebuildDatabase(timerName, rebuildOnError) {
     lazy.AddonManagerPrivate.recordTiming(timerName, () => {
-      return this.rebuildDatabase(rebuildOnError);
+      const timerId = Glean.xpiDatabase.rebuilds[timerName].start();
+      try {
+        return this.rebuildDatabase(rebuildOnError);
+      } finally {
+        Glean.xpiDatabase.rebuilds[timerName].stopAndAccumulate(timerId);
+      }
     });
   },
 
@@ -2667,7 +2690,7 @@ export const XPIDatabase = {
     if (
       this.mustSign(aAddon.type) &&
       aAddon.adminInstallOnly &&
-      !aAddon.wrapper.isInstalledByEnterprisePolicy
+      !Services.policies?.isAddonRequiredByPolicy(aAddon.id)
     ) {
       logger.warn(
         `Add-on ${aAddon.id} is installable only from policies, but no policy extension settings have been found.`
@@ -2737,7 +2760,14 @@ export const XPIDatabase = {
       return true;
     }
 
-    if (Services.policies && !Services.policies.mayInstallAddon(aAddon)) {
+    if (
+      Services.policies &&
+      !Services.policies.mayInstallAddon({
+        id: aAddon.id,
+        type: aAddon.type,
+        permissions: aAddon.userPermissions?.permissions,
+      })
+    ) {
       return false;
     }
 
@@ -2876,7 +2906,7 @@ export const XPIDatabase = {
    *
    * @param {AddonInternal} aAddon
    *        The AddonInternal being updated
-   * @param {Object} aProperties
+   * @param {object} aProperties
    *        A dictionary of properties to set
    */
   setAddonProperties(aAddon, aProperties) {
@@ -2957,7 +2987,7 @@ export const XPIDatabase = {
    *
    * @param {AddonInternal} aAddon
    *        The AddonInternal to update
-   * @param {Object} properties - Properties to set on the addon
+   * @param {object} properties - Properties to set on the addon
    * @param {boolean?} [properties.userDisabled]
    *        Value for the userDisabled property. If undefined the value will
    *        not change
@@ -3162,7 +3192,7 @@ export const XPIDatabaseReconcile = {
    * Returns a map of ID -> add-on. When the same add-on ID exists in multiple
    * install locations the highest priority location is chosen.
    *
-   * @param {Map<String, AddonInternal>} addonMap
+   * @param {Map<string, AddonInternal>} addonMap
    *        The add-on map to flatten.
    * @param {function(string, string): boolean} [hideAddonCb]
    *        An optional callback used to determine if any of the addons
@@ -3197,7 +3227,7 @@ export const XPIDatabaseReconcile = {
   /**
    * Finds the visible add-ons from the map.
    *
-   * @param {Map<String, AddonInternal>} addonMap
+   * @param {Map<string, AddonInternal>} addonMap
    *        The add-on map to filter.
    * @returns {Map<string, AddonInternal>}
    */
@@ -3696,7 +3726,7 @@ export const XPIDatabaseReconcile = {
    * Always called after XPIDatabase.sys.mjs and extensions.json have been
    * loaded.
    *
-   * @param {Object} aManifests
+   * @param {object} aManifests
    *        A dictionary of cached AddonInstalls for add-ons that have been
    *        installed
    * @param {boolean} aUpdateCompatibility

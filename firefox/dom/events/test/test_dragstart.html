@@ -160,7 +160,8 @@ function doDragStartSelection(event)
   checkTypes(dt, ["text/_moz_htmlcontext", "text/_moz_htmlinfo", "text/html", "text/plain"], 0, "initial selection");
 
   is(dt.getData("text/plain"), "This is a draggable bit of text.", "initial selection text/plain");
-  is(dt.getData("text/html"), "<div id=\"draggable\" ondragstart=\"doDragStartSelection(event)\">This is a <em>draggable</em> bit of text.</div>",
+  is(dt.getData("text/html"),
+     `This is a <em>draggable</em> bit of text.`,
      "initial selection text/html");
 
   // text/plain and Text are available for compatibility. They retrieve the

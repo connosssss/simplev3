@@ -1,10 +1,10 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * The origin of this IDL file is
- * http://www.w3.org/TR/WebCryptoAPI/
+ * https://w3c.github.io/webcrypto/
+ * https://wicg.github.io/webcrypto-modern-algos/
  */
 
 typedef DOMString KeyType;
@@ -217,7 +217,7 @@ interface SubtleCrypto {
   [NewObject]
   Promise<any> deriveBits(AlgorithmIdentifier algorithm,
                           CryptoKey baseKey,
-                          optional unsigned long? length = null);
+                          optional [EnforceRange] unsigned long? length = null);
 
   [NewObject]
   Promise<any> importKey(KeyFormat format,
@@ -242,4 +242,41 @@ interface SubtleCrypto {
                          AlgorithmIdentifier unwrappedKeyAlgorithm,
                          boolean extractable,
                          sequence<KeyUsage> keyUsages );
+};
+
+// https://wicg.github.io/webcrypto-modern-algos/
+
+[GenerateConversionToJS]
+dictionary EncapsulatedKey {
+  required CryptoKey sharedKey;
+  required ArrayBuffer ciphertext;
+};
+
+[GenerateConversionToJS]
+dictionary EncapsulatedBits {
+  required ArrayBuffer sharedKey;
+  required ArrayBuffer ciphertext;
+};
+
+partial interface SubtleCrypto {
+  [NewObject, Pref="dom.webcrypto.encapsulation.enabled"]
+  Promise<EncapsulatedKey> encapsulateKey(AlgorithmIdentifier encapsulationAlgorithm,
+                                          CryptoKey encapsulationKey,
+                                          AlgorithmIdentifier sharedKeyAlgorithm,
+                                          boolean extractable,
+                                          sequence<KeyUsage> keyUsages );
+  [NewObject, Pref="dom.webcrypto.encapsulation.enabled"]
+  Promise<EncapsulatedBits> encapsulateBits(AlgorithmIdentifier encapsulationAlgorithm,
+                                            CryptoKey encapsulationKey);
+  [NewObject, Pref="dom.webcrypto.encapsulation.enabled"]
+  Promise<CryptoKey> decapsulateKey(AlgorithmIdentifier decapsulationAlgorithm,
+                                    CryptoKey decapsulationKey,
+                                    BufferSource ciphertext,
+                                    AlgorithmIdentifier sharedKeyAlgorithm,
+                                    boolean extractable,
+                                    sequence<KeyUsage> keyUsages );
+  [NewObject, Pref="dom.webcrypto.encapsulation.enabled"]
+  Promise<ArrayBuffer> decapsulateBits(AlgorithmIdentifier decapsulationAlgorithm,
+                                       CryptoKey decapsulationKey,
+                                       BufferSource ciphertext);
 };

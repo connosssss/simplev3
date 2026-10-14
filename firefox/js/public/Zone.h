@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -13,7 +11,8 @@
 
 #include <stddef.h>  // size_t
 
-#include "jstypes.h"        // JS_PUBLIC_API
+#include "jstypes.h"  // JS_PUBLIC_API
+
 #include "js/RootingAPI.h"  // JS::Handle
 #include "js/TypeDecls.h"  // JSContext, JSObject, jsid, JS::Compartment, JS::GCContext, JS::Value, JS::Zone
 
@@ -67,20 +66,5 @@ extern JS_PUBLIC_API void* JS_GetZoneUserData(JS::Zone* zone);
 
 extern JS_PUBLIC_API bool JS_RefreshCrossCompartmentWrappers(
     JSContext* cx, JS::Handle<JSObject*> obj);
-
-/**
- * Mark a jsid after entering a new compartment. Different zones separately
- * mark the ids in a runtime, and this must be used any time an id is obtained
- * from one compartment and then used in another compartment, unless the two
- * compartments are guaranteed to be in the same zone.
- */
-extern JS_PUBLIC_API void JS_MarkCrossZoneId(JSContext* cx, jsid id);
-
-/**
- * If value stores a jsid (an atomized string or symbol), mark that id as for
- * JS_MarkCrossZoneId.
- */
-extern JS_PUBLIC_API void JS_MarkCrossZoneIdValue(JSContext* cx,
-                                                  const JS::Value& value);
 
 #endif  // js_Zone_h

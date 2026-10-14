@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,20 +7,17 @@
 #ifndef mozilla_image_SVGDocumentWrapper_h
 #define mozilla_image_SVGDocumentWrapper_h
 
-#include "mozilla/Attributes.h"
-
+#include "Units.h"
 #include "nsCOMPtr.h"
-#include "nsIStreamListener.h"
-#include "nsIObserver.h"
 #include "nsIDocumentViewer.h"
-#include "nsWeakReference.h"
+#include "nsIObserver.h"
+#include "nsIStreamListener.h"
 #include "nsSize.h"
+#include "nsWeakReference.h"
 
 class nsIRequest;
 class nsILoadGroup;
 class nsIFrame;
-
-#define OBSERVER_SVC_CID "@mozilla.org/observer-service;1"
 
 namespace mozilla {
 class PresShell;
@@ -49,25 +45,25 @@ class SVGDocumentWrapper final : public nsIStreamListener,
   /**
    * Returns the wrapped document, or nullptr on failure. (No AddRef.)
    */
-  mozilla::dom::SVGDocument* GetDocument();
+  mozilla::dom::SVGDocument* GetDocument() const;
 
   /**
    * Returns the root <svg> element for the wrapped document, or nullptr on
    * failure.
    */
-  mozilla::dom::SVGSVGElement* GetRootSVGElem();
+  mozilla::dom::SVGSVGElement* GetSVGRootElement() const;
 
   /**
    * Returns the root nsIFrame* for the wrapped document, or nullptr on failure.
    *
    * @return the root nsIFrame* for the wrapped document, or nullptr on failure.
    */
-  nsIFrame* GetRootLayoutFrame();
+  nsIFrame* GetRootLayoutFrame() const;
 
   /**
    * Returns the mozilla::PresShell for the wrapped document.
    */
-  inline mozilla::PresShell* GetPresShell() { return mViewer->GetPresShell(); }
+  mozilla::PresShell* GetPresShell() const { return mViewer->GetPresShell(); }
 
   /**
    * Modifier to update the viewport dimensions of the wrapped document. This
@@ -76,7 +72,7 @@ class SVGDocumentWrapper final : public nsIStreamListener,
    *
    * @param aViewportSize The new viewport dimensions.
    */
-  void UpdateViewportBounds(const nsIntSize& aViewportSize);
+  void UpdateViewportBounds(const CSSSize& aViewportSize);
 
   /**
    * If an SVG image's helper document has a pending notification for an
@@ -92,7 +88,7 @@ class SVGDocumentWrapper final : public nsIStreamListener,
    *
    * @return true if the document has any SMIL animations. Else, false.
    */
-  bool IsAnimated();
+  bool IsAnimated() const;
 
   /**
    * Indicates whether we should currently ignore rendering invalidations sent
@@ -100,7 +96,7 @@ class SVGDocumentWrapper final : public nsIStreamListener,
    *
    * @return true if we should ignore invalidations sent from this SVG doc.
    */
-  bool ShouldIgnoreInvalidation() { return mIgnoreInvalidation; }
+  bool ShouldIgnoreInvalidation() const { return mIgnoreInvalidation; }
 
   /**
    * Returns a bool indicating whether the document is currently drawing.
@@ -115,7 +111,7 @@ class SVGDocumentWrapper final : public nsIStreamListener,
   void StartAnimation();
   void StopAnimation();
   void ResetAnimation();
-  float GetCurrentTimeAsFloat();
+  float GetCurrentTimeAsFloat() const;
   void SetCurrentTime(float aTime);
   void TickRefreshDriver();
 
@@ -127,11 +123,11 @@ class SVGDocumentWrapper final : public nsIStreamListener,
  private:
   friend class AutoRestoreSVGState;
 
-  ~SVGDocumentWrapper();
+  MOZ_CAN_RUN_SCRIPT ~SVGDocumentWrapper();
 
   nsresult SetupViewer(nsIRequest* aRequest, nsIDocumentViewer** aViewer,
                        nsILoadGroup** aLoadGroup);
-  void DestroyViewer();
+  MOZ_CAN_RUN_SCRIPT void DestroyViewer();
   void RegisterForXPCOMShutdown();
   void UnregisterForXPCOMShutdown();
 

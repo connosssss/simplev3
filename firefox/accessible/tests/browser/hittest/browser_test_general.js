@@ -4,12 +4,6 @@
 
 "use strict";
 
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
-
 async function runTests(browser, accDoc) {
   const dpr = await getContentDPR(browser);
 
@@ -507,7 +501,15 @@ addAccessibleTask(
   async function testChangeDisplayContents(browser, docAcc) {
     const detailsOpen = findAccessibleChildByID(docAcc, "detailsOpen");
     const detailsOpenP = findAccessibleChildByID(docAcc, "detailsOpenP");
-    await hitTest(browser, detailsOpen, detailsOpenP, detailsOpenP.firstChild);
+    // Between the details element and its <p> exists
+    // a pseudoelement, ::details-content. Use this as
+    // our expected target for direct-child hittesting.
+    await hitTest(
+      browser,
+      detailsOpen,
+      detailsOpenP.parent,
+      detailsOpenP.firstChild
+    );
 
     info("Opening details");
     let shown = waitForEvent(EVENT_SHOW, "detailsP");

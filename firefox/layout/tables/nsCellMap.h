@@ -1,17 +1,18 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#ifndef nsCellMap_h__
-#define nsCellMap_h__
+#ifndef nsCellMap_h_
+#define nsCellMap_h_
 
-#include "nscore.h"
+#include <algorithm>
+
+#include "TableArea.h"
 #include "celldata.h"
-#include "nsTArray.h"
+#include "mozilla/UniquePtr.h"
 #include "nsCOMPtr.h"
 #include "nsRect.h"
-#include <algorithm>
-#include "TableArea.h"
+#include "nsTArray.h"
+#include "nscore.h"
 
 #undef DEBUG_TABLE_CELLMAP
 
@@ -200,13 +201,12 @@ class nsTableCellMap {
    * of rowgroups once OrderRowGroups has been called
    */
   void InsertGroupCellMap(nsCellMap* aPrevMap, nsCellMap& aNewMap);
-  void DeleteIEndBEndBorders();
 
   nsTableFrame& mTableFrame;
   AutoTArray<nsColInfo, 8> mCols;
-  nsCellMap* mFirstMap;
+  nsCellMap* mFirstMap = nullptr;
   // border collapsing info
-  BCInfo* mBCInfo;
+  mozilla::UniquePtr<BCInfo> mBCInfo;
 };
 
 /**

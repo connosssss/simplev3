@@ -12,9 +12,9 @@ use webrender::api::units::*;
 use crate::wrench::{Wrench, WrenchThing};
 use crate::yaml_frame_reader::YamlFrameReader;
 
+#[derive(Copy, Clone)]
 pub enum ReadSurface {
     Screen,
-    GpuCache,
 }
 
 pub struct SaveSettings {
@@ -45,8 +45,11 @@ pub fn save<P: Clone + AsRef<Path>>(
         if let Ok(existing_image) = image::open(path.clone()) {
             let old_dims = existing_image.dimensions();
             println!("Crop from {:?} to {:?}", size, old_dims);
-            width = old_dims.0;
-            height = old_dims.1;
+            // Cropping can only shrink: image::imageops::crop clamps the crop
+            // rect to the source buffer, so trusting a larger existing image
+            // would make the dimensions disagree with the pixel data.
+            width = old_dims.0.min(width);
+            height = old_dims.1.min(height);
             buffer = image::imageops::crop(
                 &mut buffer,
                 0,
@@ -79,7 +82,7 @@ pub fn png(
     surface: ReadSurface,
     window: &mut WindowWrapper,
     mut reader: YamlFrameReader,
-    rx: Receiver<NotifierEvent>,
+    rx: &Receiver<NotifierEvent>,
     out_path: Option<PathBuf>,
 ) {
     reader.do_frame(wrench);
@@ -96,14 +99,6 @@ pub fn png(
             (dim, data, SaveSettings {
                 flip_vertical: true,
                 try_crop: true,
-            })
-        }
-        ReadSurface::GpuCache => {
-            let (size, data) = wrench.renderer
-                .read_gpu_cache();
-            (size, data, SaveSettings {
-                flip_vertical: false,
-                try_crop: false,
             })
         }
     };

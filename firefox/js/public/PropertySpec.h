@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -71,8 +70,6 @@ struct JSPropertySpec {
     };
 
    private:
-    ValueWrapper() = delete;
-
     explicit constexpr ValueWrapper(int32_t n) : type(Type::Int32), int32(n) {}
 
     explicit constexpr ValueWrapper(const char* s)
@@ -83,6 +80,7 @@ struct JSPropertySpec {
 
    public:
     ValueWrapper(const ValueWrapper& other) = default;
+    ValueWrapper() = delete;
 
     static constexpr ValueWrapper int32Value(int32_t n) {
       return ValueWrapper(n);
@@ -102,14 +100,13 @@ struct JSPropertySpec {
     SelfHostedWrapper selfHosted;
 
    private:
-    Accessor() = delete;
-
     constexpr Accessor(JSNative op, const JSJitInfo* info) : native(op, info) {}
 
     explicit constexpr Accessor(const char* funname) : selfHosted(funname) {}
 
    public:
     Accessor(const Accessor& other) = default;
+    Accessor() = delete;
 
     static constexpr Accessor nativeAccessor(JSNative op,
                                              const JSJitInfo* info = nullptr) {
@@ -136,8 +133,6 @@ struct JSPropertySpec {
     ValueWrapper value;
 
    private:
-    AccessorsOrValue() = delete;
-
     constexpr AccessorsOrValue(Accessor getter, Accessor setter)
         : accessors(getter, setter) {}
 
@@ -145,6 +140,7 @@ struct JSPropertySpec {
 
    public:
     AccessorsOrValue(const AccessorsOrValue& other) = default;
+    AccessorsOrValue() = delete;
 
     static constexpr AccessorsOrValue fromAccessors(Accessor getter,
                                                     Accessor setter) {
@@ -197,9 +193,6 @@ struct JSPropertySpec {
  public:
   AccessorsOrValue u;
 
- private:
-  JSPropertySpec() = delete;
-
   constexpr JSPropertySpec(const char* name, uint8_t attributes, Kind kind,
                            AccessorsOrValue u)
       : name(name), attributes_(attributes), kind_(kind), u(u) {}
@@ -209,6 +202,7 @@ struct JSPropertySpec {
 
  public:
   JSPropertySpec(const JSPropertySpec& other) = default;
+  JSPropertySpec() = delete;
 
   static constexpr JSPropertySpec nativeAccessors(
       const char* name, uint8_t attributes, JSNative getter,
@@ -366,6 +360,9 @@ constexpr uint8_t CheckAccessorAttrs() {
 #define JS_PSG(name, getter, attributes)                                  \
   JSPropertySpec::nativeAccessors(name, CheckAccessorAttrs<attributes>(), \
                                   getter, nullptr)
+#define JS_INLINABLE_PSG(name, getter, attributes, native)                \
+  JSPropertySpec::nativeAccessors(name, CheckAccessorAttrs<attributes>(), \
+                                  getter, &js::jit::JitInfo_##native)
 #define JS_PSGS(name, getter, setter, attributes)                         \
   JSPropertySpec::nativeAccessors(name, CheckAccessorAttrs<attributes>(), \
                                   getter, nullptr, setter, nullptr)

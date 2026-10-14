@@ -23,6 +23,14 @@
         }
     }
 
+    function assertTestIsTentative(){
+        const testPath = location.pathname;
+        const tentative = testPath.includes('.tentative.') || testPath.includes('/tentative/');
+        if (!tentative) {
+            throw new Error("Method in testdriver.js intended for tentative tests used in non-tentative test");
+        }
+    }
+
     function getInViewCenterPoint(rect) {
         var left = Math.max(0, rect.left);
         var right = Math.min(window.innerWidth, rect.right);
@@ -526,8 +534,8 @@
                      * event will be subscribed to globally. If omitted, the
                      * event will be subscribed to on the current browsing
                      * context.
-                     * @returns {Promise<void>} Resolves when the subscription
-                     * is successfully done.
+                     * @returns {Promise<(function(): Promise<void>)>} Callback
+                     * for unsubscribing from the created subscription.
                      */
                     subscribe: async function(params = {}) {
                         assertBidiIsEnabled();
@@ -593,8 +601,8 @@
                      * event will be subscribed to globally. If omitted, the
                      * event will be subscribed to on the current browsing
                      * context.
-                     * @returns {Promise<void>} Resolves when the subscription
-                     * is successfully done.
+                     * @returns {Promise<(function(): Promise<void>)>} Callback
+                     * for unsubscribing from the created subscription.
                      */
                     subscribe: async function(params = {}) {
                         assertBidiIsEnabled();
@@ -660,8 +668,8 @@
                      * event will be subscribed to globally. If omitted, the
                      * event will be subscribed to on the current browsing
                      * context.
-                     * @returns {Promise<void>} Resolves when the subscription
-                     * is successfully done.
+                     * @returns {Promise<(function(): Promise<void>)>} Callback
+                     * for unsubscribing from the created subscription.
                      */
                     subscribe: async function(params = {}) {
                         assertBidiIsEnabled();
@@ -727,8 +735,8 @@
                      * event will be subscribed to globally. If omitted, the
                      * event will be subscribed to on the current browsing
                      * context.
-                     * @returns {Promise<void>} Resolves when the subscription
-                     * is successfully done.
+                     * @returns {Promise<(function(): Promise<void>)>} Callback
+                     * for unsubscribing from the created subscription.
                      */
                     subscribe: async function(params = {}) {
                         assertBidiIsEnabled();
@@ -767,6 +775,78 @@
                                 });
                         });
                     },
+                }
+            },
+            /**
+             * `speculation <https://wicg.github.io/nav-speculation/prefetch.html>`_ module.
+             */
+            speculation: {
+                /**
+                 * `speculation.PrefetchStatusUpdated <https://wicg.github.io/nav-speculation/prefetch.html#speculation-prefetchstatusupdated-event>`_
+                 * event.
+                 */
+                prefetch_status_updated: {
+                    /**
+                     * @typedef {object} PrefetchStatusUpdated
+                     * `speculation.PrefetchStatusUpdatedParameters <https://wicg.github.io/nav-speculation/prefetch.html#cddl-type-speculationprefetchstatusupdatedparameters>`_
+                     * event.
+                     */
+
+                    /**
+                     * Subscribes to the event. Events will be emitted only if
+                     * there is a subscription for the event. This method does
+                     * not add actual listeners. To listen to the event, use the
+                     * `on` or `once` methods. The buffered events will be
+                     * emitted before the command promise is resolved.
+                     *
+                     * @param {object} [params] Parameters for the subscription.
+                     * @param {null|Array.<(Context)>} [params.contexts] The
+                     * optional contexts parameter specifies which browsing
+                     * contexts to subscribe to the event on. It should be
+                     * either an array of Context objects, or null. If null, the
+                     * event will be subscribed to globally. If omitted, the
+                     * event will be subscribed to on the current browsing
+                     * context.
+                     * @returns {Promise<(function(): Promise<void>)>} Callback
+                     * for unsubscribing from the created subscription.
+                     */
+                    subscribe: async function(params = {}) {
+                        assertBidiIsEnabled();
+                        return window.test_driver_internal.bidi.speculation
+                            .prefetch_status_updated.subscribe(params);
+                    },
+                    /**
+                     * Adds an event listener for the event.
+                     *
+                     * @param {function(PrefetchStatusUpdated): void} callback The
+                     * callback to be called when the event is emitted. The
+                     * callback is called with the event object as a parameter.
+                     * @returns {function(): void} A function that removes the
+                     * added event listener when called.
+                     */
+                    on: function(callback) {
+                        assertBidiIsEnabled();
+                        return window.test_driver_internal.bidi.speculation
+                            .prefetch_status_updated.on(callback);
+                    },
+                    /**
+                     * Adds an event listener for the event that is only called
+                     * once and removed afterward.
+                     *
+                     * @return {Promise<PrefetchStatusUpdated>} The promise which
+                     * is resolved with the event object when the event is emitted.
+                     */
+                    once: function() {
+                        assertBidiIsEnabled();
+                        return new Promise(resolve => {
+                            const remove_handler =
+                                window.test_driver_internal.bidi.speculation
+                                    .prefetch_status_updated.on(event => {
+                                    resolve(event);
+                                    remove_handler();
+                                });
+                        });
+                    }
                 }
             },
             /**
@@ -819,6 +899,155 @@
                     return window.test_driver_internal.bidi.emulation.set_geolocation_override(
                         params);
                 },
+                /**
+                 * Overrides the locale for the specified browsing contexts.
+                 * Matches the `emulation.setLocaleOverride
+                 * <https://www.w3.org/TR/webdriver-bidi/#commands-emulationsetlocaleoverride>`_
+                 * WebDriver BiDi command.
+                 *
+                 * @example
+                 * await test_driver.bidi.emulation.set_locale_override({
+                 *     locale: 'de-DE'
+                 * });
+                 *
+                 * @param {object} params - Parameters for the command.
+                 * @param {null|string} params.locale - The optional
+                 * locale to set.
+                 * @param {null|Array.<(Context)>} [params.contexts] The
+                 * optional contexts parameter specifies which browsing contexts
+                 * to set the locale override on. It should be either an array
+                 * of Context objects (window or browsing context id), or null.
+                 * If null or omitted, the override will be set on the current
+                 * browsing context.
+                 * @returns {Promise<void>} Resolves when the locale override
+                 * is successfully set.
+                 */
+                set_locale_override: function (params) {
+                    assertBidiIsEnabled();
+                    return window.test_driver_internal.bidi.emulation.set_locale_override(
+                        params);
+                },
+                /**
+                 * Overrides the screen orientation for the specified browsing
+                 * contexts.
+                 * Matches the `emulation.setScreenOrientationOverride
+                 * <https://www.w3.org/TR/webdriver-bidi/#commands-emulationsetscreenorientationoverride>`_
+                 * WebDriver BiDi command.
+                 *
+                 * @example
+                 * await test_driver.bidi.emulation.set_screen_orientation_override({
+                 *     screenOrientation: {
+                 *         natural: 'portrait',
+                 *         type: 'landscape-secondary'
+                 *     }
+                 * });
+                 *
+                 * @param {object} params - Parameters for the command.
+                 * @param {null|object} params.screenOrientation - The optional
+                 * screen orientation. Matches the
+                 * `emulation.ScreenOrientation <https://www.w3.org/TR/webdriver-bidi/#cddl-type-emulationscreenorientation>`_
+                 * type. If null or omitted, the override will be removed.
+                 * @param {null|Array.<(Context)>} [params.contexts] The
+                 * optional contexts parameter specifies which browsing contexts
+                 * to set the screen orientation override on. It should be
+                 * either an array of Context objects (window or browsing
+                 * context id), or null. If null or omitted, the override will
+                 * be set on the current browsing context.
+                 * @returns {Promise<void>} Resolves when the screen orientation
+                 * override is successfully set.
+                 */
+                set_screen_orientation_override: function (params) {
+                    // Ensure the bidi feature is enabled before calling the internal method
+                    assertBidiIsEnabled();
+                    return window.test_driver_internal.bidi.emulation.set_screen_orientation_override(
+                        params);
+                },
+                /**
+                 * Overrides the touch configuration for the specified browsing
+                 * contexts.
+                 * Matches the `emulation.setTouchOverride
+                 * <https://w3c.github.io/webdriver-bidi/#command-emulation-setTouchOverride>`_
+                 * WebDriver BiDi command.
+                 *
+                 * @example
+                 * await test_driver.bidi.emulation.set_touch_override({
+                 *     maxTouchPoints: 5
+                 * });
+                 *
+                 * @param {object} params - Parameters for the command.
+                 * @param {null|number} params.maxTouchPoints - The
+                 * maximum number of simultaneous touch points to support.
+                 * If null or omitted, the override will be removed.
+                 * @param {null|Array.<(Context)>} [params.contexts] The
+                 * optional contexts parameter specifies which browsing contexts
+                 * to set the touch override on. It should be either an array of
+                 * Context objects (window or browsing context id), or null. If
+                 * null or omitted, the override will be set on the current
+                 * browsing context.
+                 * @returns {Promise<void>} Resolves when the touch
+                 * override is successfully set.
+                 */
+                set_touch_override: function (params) {
+                    assertBidiIsEnabled();
+                    return window.test_driver_internal.bidi.emulation.set_touch_override(
+                        params);
+                },
+                /**
+                 * Overrides whether the browser respects the
+                 * `<meta name=viewport>` tag for the specified browsing
+                 * contexts.
+                 * Matches the `emulation.setViewportMetaOverride
+                 * <https://w3c.github.io/webdriver-bidi/#command-emulation-setViewportMetaOverride>`_
+                 * WebDriver BiDi command.
+                 *
+                 * @example
+                 * await test_driver.bidi.emulation.set_viewport_meta_override({
+                 *     viewportMeta: true
+                 * });
+                 *
+                 * @param {object} params - Parameters for the command.
+                 * @param {null|true} params.viewportMeta - Whether to enable
+                 * viewport meta tag parsing (`true`). If `null` or omitted, the
+                 * override will be removed.
+                 * @param {null|Array.<(Context)>} [params.contexts] The
+                 * optional contexts parameter specifies which browsing contexts
+                 * to set the viewport meta override on. It should be either an
+                 * array of Context objects (window or browsing context id), or
+                 * null. If null or omitted, the override will be set on the
+                 * current browsing context.
+                 * @returns {Promise<void>} Resolves when the viewport meta
+                 * override is successfully set.
+                 */
+                set_viewport_meta_override: function (params) {
+                    assertBidiIsEnabled();
+                    return window.test_driver_internal.bidi.emulation.set_viewport_meta_override(
+                        params);
+                },
+            },
+            /**
+             * `user_agent_client_hints <https://wicg.github.io/ua-client-hints/#automation>`_ module.
+             */
+            user_agent_client_hints: {
+                /**
+                 * Overrides the user agent client hints configuration for the specified browsing
+                 * contexts. Matches the `userAgentClientHints.setClientHintsOverride
+                 * <https://wicg.github.io/ua-client-hints/#emulation-setclienthintsoverride>`_
+                 * WebDriver BiDi command.
+                 *
+                 * @param {object} params - Parameters for the command.
+                 * @param {null|object} params.clientHints - The client hints to override.
+                 * Matches the `userAgentClientHints.ClientHints` type.
+                 * If null or omitted, the override will be removed.
+                 * @param {null|Array.<(Context)>} [params.contexts] The
+                 * optional contexts parameter specifies which browsing contexts
+                 * to set the override on.
+                 * @returns {Promise<void>} Resolves when the override is successfully set.
+                 */
+                set_client_hints_override: function (params) {
+                    assertBidiIsEnabled();
+                    return window.test_driver_internal.bidi.user_agent_client_hints.set_client_hints_override(
+                        params);
+                }
             },
             /**
              * `log <https://www.w3.org/TR/webdriver-bidi/#module-log>`_ module.
@@ -844,8 +1073,8 @@
                      * event will be subscribed to globally. If omitted, the
                      * event will be subscribed to on the current browsing
                      * context.
-                     * @returns {Promise<void>} Resolves when the subscription
-                     * is successfully done.
+                     * @returns {Promise<(function(): Promise<void>)>} Callback
+                     * for unsubscribing from the created subscription.
                      */
                     subscribe: async function (params = {}) {
                         assertBidiIsEnabled();
@@ -910,9 +1139,12 @@
                  * @param {PermissionState} params.state - a `PermissionState
                  *                          <https://w3c.github.io/permissions/#dom-permissionstate>`_
                  *                          value.
-                 * @param {string} [params.origin] - an optional `origin` string to set the
+                 * @param {string} [params.origin] - an optional top-level `origin` string to set the
                  *                 permission for. If omitted, the permission is set for the
                  *                 current window's origin.
+                 * @param {string} [params.embeddedOrigin] - an optional embedded `origin` string to set the
+                 *                 permission for. If omitted, the top-level `origin` is used as the
+                 *                 embedded origin.
                  * @returns {Promise} fulfilled after the permission is set, or rejected if setting
                  *                    the permission fails.
                  */
@@ -1129,6 +1361,34 @@
         },
 
         /**
+         * Get accessibility properties for a DOM element.
+         *
+         * @param {Element} element
+         * @returns {Promise} fulfilled after the accessibility properties are
+         *                    returned, or rejected in the cases the WebDriver
+         *                    command errors
+         */
+        get_accessibility_properties_for_element: async function(element) {
+            assertTestIsTentative();
+            let acc = await window.test_driver_internal.get_accessibility_properties_for_element(element);
+            return acc;
+        },
+
+        /**
+         * Get properties for an accessibility node.
+         *
+         * @param {String} accId
+         * @returns {Promise} fulfilled after the accessibility properties are
+         *                    returned, or rejected in the cases the WebDriver
+         *                    command errors
+         */
+        get_accessibility_properties_for_accessibility_node: async function(accId) {
+            assertTestIsTentative();
+            let acc = await window.test_driver_internal.get_accessibility_properties_for_accessibility_node(accId);
+            return acc;
+        },
+
+        /**
          * Send keys to an element.
          *
          * If ``element`` isn't inside the
@@ -1194,6 +1454,33 @@
         },
 
         /**
+         * Creates a new top-level browsing context, as if the user requested
+         * a new tab or window from the browser.
+         *
+         * Matches the behaviour of the `New Window
+         * <https://www.w3.org/TR/webdriver/#new-window>`_
+         * WebDriver command.
+         *
+         * The new window is opened with `about:blank`,
+         * the test does not get a ``WindowProxy`` for it,
+         * and the returned WebDriver window handle is its only identifier.
+         *
+         * @param {String} type - Type hint for the new browsing context,
+         *                        either "tab" or "window" or null for the
+         *                        implementation default.
+         * @param {WindowProxy} context - Browsing context in which
+         *                                to run the call, or null to use the current
+         *                                browsing context.
+         *
+         * @returns {Promise} fulfilled with the WebDriver window handle
+         *                    (a string) of the new browsing context, or
+         *                    rejected if the WebDriver command errors.
+         */
+        create_window: function(type=null, context=null) {
+            return window.test_driver_internal.create_window(type, context);
+        },
+
+        /**
          * Minimizes the browser window.
          *
          * Matches the behaviour of the `Minimize
@@ -1248,6 +1535,33 @@
          */
         get_window_rect: function(context=null) {
             return window.test_driver_internal.get_window_rect(context);
+        },
+
+        /**
+         * Navigates the top-level browsing context to the given absolute URL.
+         *
+         * Matches the behaviour of the `Navigate To
+         * <https://www.w3.org/TR/webdriver/#navigate-to>`_
+         * WebDriver command.
+         *
+         * Navigating the browsing context in which the
+         * test is running will unload the test.
+         *
+         * @param {String} url - The URL to navigate to. This must be absolute.
+         * @param {(String|WindowProxy)} context - Browsing context in which
+         *                                         to run the call: a
+         *                                         ``WindowProxy``, a WebDriver
+         *                                         window handle as returned by
+         *                                         :js:func:`create_window`, or
+         *                                         null to use the current
+         *                                         browsing context.
+         *
+         * @returns {Promise} fulfilled when the WebDriver command returns, which
+         *                    depends on the session's page load strategy, or
+         *                    rejected if the WebDriver command errors.
+         */
+        navigate: function(url, context=null) {
+            return window.test_driver_internal.navigate(url, context);
         },
 
         /**
@@ -1504,6 +1818,24 @@
         },
 
         /**
+         * Sets credential properties on an authenticator.
+         *
+         * Matches the `Set Credential Properties
+         * <https://w3c.github.io/webauthn/#sctn-automation-set-credential-properties>`_
+         * WebDriver command.
+         *
+         * @param {String} authenticator_id - the ID of the authenticator
+         * @param {String} credential_id - the ID of the credential (base64url encoded)
+         * @param {Object} props - the credential properties to set
+         * @param {WindowProxy} context - Browsing context in which
+         *                                to run the call, or null for the current
+         *                                browsing context.
+         */
+        set_credential_properties: function(authenticator_id, credential_id, props, context=null) {
+            return window.test_driver_internal.set_credential_properties(authenticator_id, credential_id, props, context);
+        },
+
+        /**
          * Sets the storage access rule for an origin when embedded
          * in a third-party context.
          *
@@ -1755,6 +2087,25 @@
         reset_fedcm_cooldown: function(context=null) {
           return window.test_driver_internal.reset_fedcm_cooldown(context);
         },
+
+        /**
+         * Sets the behavior for the virtual wallet.
+         *
+         * Matches the `Set Virtual Wallet Behavior
+         * <https://w3c-fedid.github.io/digital-credentials/#automated-testing>`_
+         * WebDriver command.
+         *
+         * @param {String} action - The action to take ("decline", "respond", "wait", "clear").
+         * @param {String} [protocol=null] - The protocol requested (required for "respond").
+         * @param {Object} [response=null] - The response data (optional for "respond").
+         * @param {WindowProxy} [context=null] - Browsing context in which to run the call.
+         *
+         * @returns {Promise} Fulfilled after the behavior has been set.
+         */
+        set_virtual_wallet_behavior: function(action, protocol=null, response=null, context=null) {
+          return window.test_driver_internal.set_virtual_wallet_behavior(action, protocol, response, context);
+        },
+
 
         /**
          * Creates a virtual sensor for use with the Generic Sensors APIs.
@@ -2106,6 +2457,77 @@
          */
         clear_display_features: function(context=null) {
             return window.test_driver_internal.clear_display_features(context);
+        },
+
+        /**
+         * Gets the current globally-applied privacy control status
+         *
+         * Matches the `Get Global Privacy Control
+         * <https://www.w3.org/TR/gpc/#get-global-privacy-control>`_
+         * WebDriver command.
+         *
+         * @returns {Promise} Fulfils with an object with boolean property `gpc`
+         *                    that encodes the current "do not sell or share"
+         *                    signal the browser is configured to convey.
+         */
+        get_global_privacy_control: function() {
+            return window.test_driver_internal.get_global_privacy_control();
+        },
+
+        /**
+         * Sets and then gets the current globally-applied privacy control status
+         *
+         * Matches the `Set Global Privacy Control
+         * <https://www.w3.org/TR/gpc/#set-global-privacy-control>`_
+         * WebDriver command.
+         *
+         * @param {boolean} newValue - A boolean that is true if the browser
+         *                             should convey a "do not sell or share" signal
+         *                             and false otherwise
+         *
+         * @returns {Promise} Fulfils with an object with boolean property `gpc`
+         *                    that encodes the new "do not sell or share"
+         *                    after applying the new value.
+         */
+        set_global_privacy_control: function(newValue) {
+            return window.test_driver_internal.set_global_privacy_control(newValue);
+        },
+
+        /**
+         * Installs a WebExtension.
+         *
+         * Matches the `Install WebExtension
+         * <https://github.com/w3c/webextensions/blob/main/specification/webdriver-classic.bs>`_
+         * WebDriver command.
+         *
+         * @param {Object} params - Parameters for loading the extension.
+         * @param {String} params.type - A type such as "path", "archivePath", or "base64".
+         *
+         * @param {String} params.path - The path to the extension's resources if type "path" or "archivePath" is specified.
+         *
+         * @param {String} params.value - The base64 encoded value of the extension's resources if type "base64" is specified.
+         *
+         * @returns {Promise} Returns the extension identifier as defined in the spec.
+         *                    Rejected if the extension fails to load.
+         */
+        install_web_extension: function(params) {
+            return window.test_driver_internal.install_web_extension(params);
+        },
+
+        /**
+         * Uninstalls a WebExtension.
+         *
+         * Matches the `Uninstall WebExtension
+         * <https://github.com/w3c/webextensions/blob/main/specification/webdriver-classic.bs>`_
+         * WebDriver command.
+         *
+         * @param {String} extension_id - The extension identifier.
+         *
+         * @returns {Promise} Fulfilled after the extension has been removed.
+         *                    Rejected in case the WebDriver command errors out.
+         */
+        uninstall_web_extension: function(extension_id) {
+            return window.test_driver_internal.uninstall_web_extension(extension_id);
         }
     };
 
@@ -2181,6 +2603,28 @@
                 set_geolocation_override: function (params) {
                     throw new Error(
                         "bidi.emulation.set_geolocation_override is not implemented by testdriver-vendor.js");
+                },
+                set_locale_override: function (params) {
+                    throw new Error(
+                        "bidi.emulation.set_locale_override is not implemented by testdriver-vendor.js");
+                },
+                set_screen_orientation_override: function (params) {
+                    throw new Error(
+                        "bidi.emulation.set_screen_orientation_override is not implemented by testdriver-vendor.js");
+                },
+                set_touch_override: function (params) {
+                    throw new Error(
+                        "bidi.emulation.set_touch_override is not implemented by testdriver-vendor.js");
+                },
+                set_viewport_meta_override: function (params) {
+                    throw new Error(
+                        "bidi.emulation.set_viewport_meta_override is not implemented by testdriver-vendor.js");
+                }
+            },
+            user_agent_client_hints: {
+                set_client_hints_override: function (params) {
+                    throw new Error(
+                        "bidi.user_agent_client_hints.set_client_hints_override is not implemented by testdriver-vendor.js");
                 }
             },
             log: {
@@ -2200,6 +2644,18 @@
                     throw new Error(
                         "bidi.permissions.set_permission() is not implemented by testdriver-vendor.js");
                 }
+            },
+            speculation: {
+                prefetch_status_updated: {
+                    async subscribe() {
+                        throw new Error(
+                            'bidi.speculation.prefetch_status_updated.subscribe is not implemented by testdriver-vendor.js');
+                    },
+                    on() {
+                        throw new Error(
+                            'bidi.speculation.prefetch_status_updated.on is not implemented by testdriver-vendor.js');
+                    }
+                },
             }
         },
 
@@ -2231,6 +2687,14 @@
 
         async get_computed_name(element) {
             throw new Error("get_computed_name is a testdriver.js function which cannot be run in this context.");
+        },
+
+        async get_accessibility_properties_for_element(element) {
+            throw new Error("get_accessibility_properties_for_element is a testdriver.js function which cannot be run in this context.");
+        },
+
+        async get_accessibility_properties_for_accessibility_node(accId) {
+            throw new Error("get_accessibility_properties_for_accessibility_node is a testdriver.js function which cannot be run in this context.");
         },
 
         async send_keys(element, keys) {
@@ -2267,6 +2731,14 @@
 
         async freeze(context=null) {
             throw new Error("freeze() is not implemented by testdriver-vendor.js");
+        },
+
+        async create_window(type=null, context=null) {
+            throw new Error("create_window() is not implemented by testdriver-vendor.js");
+        },
+
+        async navigate(url, context=null) {
+            throw new Error("navigate() is not implemented by testdriver-vendor.js");
         },
 
         async minimize_window(context=null) {
@@ -2321,6 +2793,10 @@
             throw new Error("set_user_verified() is not implemented by testdriver-vendor.js");
         },
 
+        async set_credential_properties(authenticator_id, credential_id, props, context=null) {
+            throw new Error("set_credential_properties() is not implemented by testdriver-vendor.js");
+        },
+
         async set_storage_access(origin, embedding_origin, blocked, context=null) {
             throw new Error("set_storage_access() is not implemented by testdriver-vendor.js");
         },
@@ -2364,6 +2840,11 @@
         async reset_fedcm_cooldown(context=null) {
             throw new Error("reset_fedcm_cooldown() is not implemented by testdriver-vendor.js");
         },
+
+        async set_virtual_wallet_behavior(action, protocol=null, response=null, context=null) {
+            throw new Error("set_virtual_wallet_behavior() is not implemented by testdriver-vendor.js");
+        },
+
 
         async create_virtual_sensor(sensor_type, sensor_params, context=null) {
             throw new Error("create_virtual_sensor() is not implemented by testdriver-vendor.js");
@@ -2415,6 +2896,14 @@
 
         async clear_display_features(context=null) {
             throw new Error("clear_display_features() is not implemented by testdriver-vendor.js");
+        },
+
+        async set_global_privacy_control(newValue) {
+            throw new Error("set_global_privacy_control() is not implemented by testdriver-vendor.js");
+        },
+
+        async get_global_privacy_control() {
+            throw new Error("get_global_privacy_control() is not implemented by testdriver-vendor.js");
         }
     };
 })();

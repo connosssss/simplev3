@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# vim:sw=4:ts=4:et:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -12,6 +11,7 @@ import os
 import platform
 import re
 import sys
+import threading
 from subprocess import PIPE, Popen
 
 # Matches lines produced by MozFormatCodeAddress(), e.g.
@@ -19,6 +19,8 @@ from subprocess import PIPE, Popen
 line_re = re.compile(r"#\d+: .+\[.+ \+0x[0-9A-Fa-f]+\]")
 
 fix_stacks = None
+# Serializes requests to `fix_stacks`, which harnesses share across threads.
+fix_stacks_lock = threading.Lock()
 
 
 def autobootstrap():
@@ -105,9 +107,6 @@ def fixSymbols(
     if line_re.search(line_str) is None:
         return line
 
-    if not fix_stacks:
-        initFixStacks(jsonMode, slowWarning, breakpadSymsDir, hide_errors)
-
     # Sometimes `line` is lacking a trailing newline. If we pass such a `line`
     # to `fix-stacks` it will wait until it receives a newline, causing this
     # script to hang. So we add a newline if one is missing and then remove it
@@ -115,9 +114,13 @@ def fixSymbols(
     is_missing_newline = not line_str.endswith("\n")
     if is_missing_newline:
         line_str = line_str + "\n"
-    fix_stacks.stdin.write(line_str)
-    fix_stacks.stdin.flush()
-    out = fix_stacks.stdout.readline()
+
+    with fix_stacks_lock:
+        if not fix_stacks:
+            initFixStacks(jsonMode, slowWarning, breakpadSymsDir, hide_errors)
+        fix_stacks.stdin.write(line_str)
+        fix_stacks.stdin.flush()
+        out = fix_stacks.stdout.readline()
     if is_missing_newline:
         out = out[:-1]
 

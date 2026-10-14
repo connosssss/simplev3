@@ -1,40 +1,38 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "AccessibleWrap.h"
 
-#include "JavaBuiltins.h"
-#include "LocalAccessible-inl.h"
-#include "HyperTextAccessible-inl.h"
 #include "AccAttributes.h"
 #include "AccEvent.h"
 #include "AndroidInputType.h"
 #include "DocAccessibleWrap.h"
-#include "SessionAccessibility.h"
-#include "TextLeafAccessible.h"
-#include "TraversalRule.h"
+#include "HyperTextAccessible-inl.h"
+#include "JavaBuiltins.h"
+#include "LocalAccessible-inl.h"
 #include "Pivot.h"
 #include "Platform.h"
+#include "RootAccessible.h"
+#include "SessionAccessibility.h"
+#include "TextLeafAccessible.h"
+#include "TextLeafRange.h"
+#include "TraversalRule.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/a11y/DocAccessibleParent.h"
+#include "mozilla/a11y/PDocAccessibleChild.h"
+#include "mozilla/jni/GeckoBundleUtils.h"
+#include "nsAccUtils.h"
 #include "nsAccessibilityService.h"
 #include "nsEventShell.h"
 #include "nsIAccessibleAnnouncementEvent.h"
 #include "nsIAccessiblePivot.h"
-#include "nsAccUtils.h"
 #include "nsTextEquivUtils.h"
 #include "nsWhitespaceTokenizer.h"
-#include "RootAccessible.h"
-#include "TextLeafRange.h"
-
-#include "mozilla/a11y/PDocAccessibleChild.h"
-#include "mozilla/jni/GeckoBundleUtils.h"
-#include "mozilla/a11y/DocAccessibleParent.h"
-#include "mozilla/Maybe.h"
 
 // icu TRUE conflicting with java::sdk::Boolean::TRUE()
 // https://searchfox.org/mozilla-central/rev/ce02064d8afc8673cef83c92896ee873bd35e7ae/intl/icu/source/common/unicode/umachine.h#265
-// https://searchfox.org/mozilla-central/source/__GENERATED__/widget/android/bindings/JavaBuiltins.h#78
+// https://searchfox.org/firefox-main/source/__GENERATED__/widget/android/bindings/JavaBuiltins.h#78
 #ifdef TRUE
 #  undef TRUE
 #endif
@@ -57,18 +55,6 @@ AccessibleWrap::AccessibleWrap(nsIContent* aContent, DocAccessible* aDoc)
 // destruction
 //-----------------------------------------------------
 AccessibleWrap::~AccessibleWrap() {}
-
-nsresult AccessibleWrap::HandleAccEvent(AccEvent* aEvent) {
-  auto accessible = static_cast<AccessibleWrap*>(aEvent->GetAccessible());
-  NS_ENSURE_TRUE(accessible, NS_ERROR_FAILURE);
-
-  nsresult rv = LocalAccessible::HandleAccEvent(aEvent);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  accessible->HandleLiveRegionEvent(aEvent);
-
-  return NS_OK;
-}
 
 void AccessibleWrap::Shutdown() {
   if (!IPCAccessibilityActive()) {
@@ -180,8 +166,8 @@ Maybe<std::pair<int32_t, int32_t>> AccessibleWrap::NavigateText(
   uint16_t endBoundaryType = nsIAccessibleText::BOUNDARY_LINE_END;
   switch (aGranularity) {
     case 1:  // MOVEMENT_GRANULARITY_CHARACTER
-      startBoundaryType = nsIAccessibleText::BOUNDARY_CHAR;
-      endBoundaryType = nsIAccessibleText::BOUNDARY_CHAR;
+      startBoundaryType = nsIAccessibleText::BOUNDARY_CLUSTER;
+      endBoundaryType = nsIAccessibleText::BOUNDARY_CLUSTER;
       break;
     case 2:  // MOVEMENT_GRANULARITY_WORD
       startBoundaryType = nsIAccessibleText::BOUNDARY_WORD_START;
@@ -234,67 +220,80 @@ Maybe<std::pair<int32_t, int32_t>> AccessibleWrap::NavigateText(
   return Some(std::make_pair(startOffset, endOffset));
 }
 
-uint32_t AccessibleWrap::GetFlags(role aRole, uint64_t aState,
-                                  uint8_t aActionCount) {
+uint32_t AccessibleWrap::GetFlags(Accessible* aAccessible) {
   uint32_t flags = 0;
-  if (aState & states::CHECKABLE) {
+  uint64_t state = aAccessible->State();
+  role role = aAccessible->Role();
+  if (aAccessible->IsScrollable()) {
+    flags |= java::SessionAccessibility::FLAG_SCROLLABLE;
+  }
+
+  if (state & states::CHECKABLE) {
     flags |= java::SessionAccessibility::FLAG_CHECKABLE;
   }
 
-  if (aState & states::CHECKED) {
+  if (state & states::CHECKED) {
     flags |= java::SessionAccessibility::FLAG_CHECKED;
   }
 
-  if (aState & states::INVALID) {
+  if (state & states::MIXED) {
+    flags |= java::SessionAccessibility::FLAG_MIXED;
+  }
+
+  if (state & states::INVALID) {
     flags |= java::SessionAccessibility::FLAG_CONTENT_INVALID;
   }
 
-  if (aState & states::EDITABLE) {
+  if (state & states::EDITABLE) {
     flags |= java::SessionAccessibility::FLAG_EDITABLE;
   }
 
-  if (aActionCount && aRole != roles::TEXT_LEAF) {
+  if (aAccessible->ActionCount() && role != roles::TEXT_LEAF) {
     flags |= java::SessionAccessibility::FLAG_CLICKABLE;
   }
 
-  if (aState & states::ENABLED) {
+  if (state & states::ENABLED) {
     flags |= java::SessionAccessibility::FLAG_ENABLED;
   }
 
-  if (aState & states::FOCUSABLE) {
+  if (state & states::FOCUSABLE) {
     flags |= java::SessionAccessibility::FLAG_FOCUSABLE;
   }
 
-  if (aState & states::FOCUSED) {
+  if (state & states::FOCUSED) {
     flags |= java::SessionAccessibility::FLAG_FOCUSED;
   }
 
-  if (aState & states::MULTI_LINE) {
+  if (state & states::MULTI_LINE) {
     flags |= java::SessionAccessibility::FLAG_MULTI_LINE;
   }
 
-  if (aState & states::SELECTABLE) {
+  if (state & states::SELECTABLE) {
     flags |= java::SessionAccessibility::FLAG_SELECTABLE;
   }
 
-  if (aState & states::SELECTED) {
+  if (state & states::SELECTED) {
     flags |= java::SessionAccessibility::FLAG_SELECTED;
   }
 
-  if (aState & states::EXPANDABLE) {
+  if (state & states::EXPANDABLE) {
     flags |= java::SessionAccessibility::FLAG_EXPANDABLE;
   }
 
-  if (aState & states::EXPANDED) {
+  if (state & states::EXPANDED) {
     flags |= java::SessionAccessibility::FLAG_EXPANDED;
   }
 
-  if ((aState & (states::INVISIBLE | states::OFFSCREEN)) == 0) {
+  if ((state & (states::INVISIBLE | states::OFFSCREEN)) == 0) {
     flags |= java::SessionAccessibility::FLAG_VISIBLE_TO_USER;
   }
 
-  if (aRole == roles::PASSWORD_TEXT) {
+  if (role == roles::PASSWORD_TEXT) {
     flags |= java::SessionAccessibility::FLAG_PASSWORD;
+  }
+
+  if (state & states::REQUIRED) {
+    flags |= java::SessionAccessibility::FLAG_REQUIRED;
   }
 
   return flags;
@@ -328,7 +327,9 @@ void AccessibleWrap::GetRoleDescription(role aRole, AccAttributes* aAttributes,
   }
 
   GetAccService()->GetStringRole(aRole, aGeckoRole);
-  LocalizeString(aGeckoRole, aRoleDescription);
+  nsAutoString stringRoleToken(aGeckoRole);
+  stringRoleToken.StripWhitespace();
+  LocalizeString(stringRoleToken, aRoleDescription);
 }
 
 int32_t AccessibleWrap::AndroidClass(Accessible* aAccessible) {
@@ -362,7 +363,7 @@ int32_t AccessibleWrap::GetAndroidClass(role aRole) {
     return androidClass;
 
   switch (aRole) {
-#include "RoleMap.h"
+#include "RoleMap.inc"
     default:
       return java::SessionAccessibility::CLASSNAME_VIEW;
   }
@@ -400,83 +401,4 @@ int32_t AccessibleWrap::GetInputType(const nsString& aInputTypeAttr) {
   }
 
   return 0;
-}
-
-void AccessibleWrap::GetTextEquiv(nsString& aText) {
-  // 1. Start with the name, since it might have been explicitly specified.
-  if (Name(aText) != eNameFromSubtree) {
-    // 2. If the name didn't come from the subtree, add the text from the
-    // subtree.
-    if (aText.IsEmpty()) {
-      nsTextEquivUtils::GetTextEquivFromSubtree(this, aText);
-    } else {
-      nsAutoString subtree;
-      nsTextEquivUtils::GetTextEquivFromSubtree(this, subtree);
-      if (!subtree.IsEmpty()) {
-        aText.Append(' ');
-        aText.Append(subtree);
-      }
-    }
-  }
-}
-
-bool AccessibleWrap::HandleLiveRegionEvent(AccEvent* aEvent) {
-  auto eventType = aEvent->GetEventType();
-  if (eventType != nsIAccessibleEvent::EVENT_TEXT_INSERTED &&
-      eventType != nsIAccessibleEvent::EVENT_NAME_CHANGE) {
-    // XXX: Right now only announce text inserted events. aria-relevant=removals
-    // is potentially on the chopping block[1]. We also don't support editable
-    // text because we currently can't descern the source of the change[2].
-    // 1. https://github.com/w3c/aria/issues/712
-    // 2. https://bugzilla.mozilla.org/show_bug.cgi?id=1531189
-    return false;
-  }
-
-  if (aEvent->IsFromUserInput()) {
-    return false;
-  }
-
-  RefPtr<AccAttributes> attributes = new AccAttributes();
-  nsAccUtils::SetLiveContainerAttributes(attributes, this);
-  nsString live;
-  if (!attributes->GetAttribute(nsGkAtoms::containerLive, live)) {
-    return false;
-  }
-
-  uint16_t priority = live.EqualsIgnoreCase("assertive")
-                          ? nsIAccessibleAnnouncementEvent::ASSERTIVE
-                          : nsIAccessibleAnnouncementEvent::POLITE;
-
-  Maybe<bool> atomic =
-      attributes->GetAttribute<bool>(nsGkAtoms::containerAtomic);
-  LocalAccessible* announcementTarget = this;
-  nsAutoString announcement;
-  if (atomic && *atomic) {
-    LocalAccessible* atomicAncestor = nullptr;
-    for (LocalAccessible* parent = announcementTarget; parent;
-         parent = parent->LocalParent()) {
-      dom::Element* element = parent->Elm();
-      if (element &&
-          nsAccUtils::ARIAAttrValueIs(element, nsGkAtoms::aria_atomic,
-                                      nsGkAtoms::_true, eCaseMatters)) {
-        atomicAncestor = parent;
-        break;
-      }
-    }
-
-    if (atomicAncestor) {
-      announcementTarget = atomicAncestor;
-      static_cast<AccessibleWrap*>(atomicAncestor)->GetTextEquiv(announcement);
-    }
-  } else {
-    GetTextEquiv(announcement);
-  }
-
-  announcement.CompressWhitespace();
-  if (announcement.IsEmpty()) {
-    return false;
-  }
-
-  announcementTarget->Announce(announcement, priority);
-  return true;
 }

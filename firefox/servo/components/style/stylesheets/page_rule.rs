@@ -6,21 +6,21 @@
 //!
 //! [page]: https://drafts.csswg.org/css2/page.html#page-box
 
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::properties::PropertyDeclarationBlock;
 use crate::shared_lock::{
     DeepCloneWithLock, Locked, SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard,
 };
-use crate::str::CssStringWriter;
 use crate::stylesheets::{CssRules, style_or_page_rule_to_css};
 use crate::values::{AtomIdent, CustomIdent};
-use cssparser::{Parser, SourceLocation, Token};
+use cssparser::{Parser, SourceLocation, Token, match_ignore_ascii_case};
 #[cfg(feature = "gecko")]
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps, MallocUnconditionalShallowSizeOf};
 use servo_arc::Arc;
 use smallvec::SmallVec;
 use std::fmt::{self, Write};
-use style_traits::{CssWriter, ParseError, ToCss};
+use style_traits::{CssStringWriter, CssWriter, ParseError, ToCss};
 
 macro_rules! page_pseudo_classes {
     ($($(#[$($meta:tt)+])* $id:ident => $val:literal,)+) => {
@@ -33,23 +33,22 @@ macro_rules! page_pseudo_classes {
             $($(#[$($meta)+])* $id,)+
         }
         impl PagePseudoClass {
-            fn parse<'i, 't>(
-                input: &mut Parser<'i, 't>,
-            ) -> Result<Self, ParseError<'i>> {
-                let loc = input.current_source_location();
+            fn parse(
+                input: &mut Parser,
+            ) -> Result<Self, ParseError> {
                 let colon = input.next_including_whitespace()?;
                 if *colon != Token::Colon {
-                    return Err(loc.new_unexpected_token_error(colon.clone()));
+                    return Err(ParseError::unexpected_token());
                 }
 
                 let ident = input.next_including_whitespace()?;
                 if let Token::Ident(s) = ident {
                     return match_ignore_ascii_case! { &**s,
                         $($val => Ok(PagePseudoClass::$id),)+
-                        _ => Err(loc.new_unexpected_token_error(Token::Ident(s.clone()))),
+                        _ => Err(ParseError::unexpected_token()),
                     };
                 }
-                Err(loc.new_unexpected_token_error(ident.clone()))
+                Err(ParseError::unexpected_token())
             }
             #[inline]
             fn to_str(&self) -> &'static str {
@@ -150,11 +149,7 @@ pub struct PageSelector {
 fn selector_specificity(g: usize, h: usize, f: bool) -> u32 {
     let h = h.min(0xFFFF) as u32;
     let g = (g.min(0x7FFF) as u32) << 16;
-    let f = if f {
-        0x80000000
-    } else {
-        0
-    };
+    let f = if f { 0x80000000 } else { 0 };
     h + g + f
 }
 
@@ -225,16 +220,13 @@ impl ToCss for PageSelector {
     }
 }
 
-fn parse_page_name<'i, 't>(input: &mut Parser<'i, 't>) -> Result<AtomIdent, ParseError<'i>> {
+fn parse_page_name(input: &mut Parser) -> Result<AtomIdent, ParseError> {
     let s = input.expect_ident()?;
     Ok(AtomIdent::from(&**s))
 }
 
 impl Parse for PageSelector {
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let name = input.try_parse(parse_page_name);
         let mut pseudos = PagePseudoClasses::default();
         while let Ok(pc) = input.try_parse(PagePseudoClass::parse) {
@@ -271,15 +263,12 @@ impl PageSelectors {
     /// Get the underlying PageSelector data as a slice
     #[inline]
     pub fn as_slice(&self) -> &[PageSelector] {
-        &*self.0
+        &self.0
     }
 }
 
 impl Parse for PageSelectors {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Ok(PageSelectors::new(input.parse_comma_separated(|i| {
             PageSelector::parse(context, i)
         })?))
@@ -310,11 +299,11 @@ impl PageRule {
     #[cfg(feature = "gecko")]
     pub fn size_of(&self, guard: &SharedRwLockReadGuard, ops: &mut MallocSizeOfOps) -> usize {
         // Measurement of other fields may be added later.
-        self.rules.unconditional_shallow_size_of(ops) +
-            self.rules.read_with(guard).size_of(guard, ops) +
-            self.block.unconditional_shallow_size_of(ops) +
-            self.block.read_with(guard).size_of(ops) +
-            self.selectors.size_of(ops)
+        self.rules.unconditional_shallow_size_of(ops)
+            + self.rules.read_with(guard).size_of(guard, ops)
+            + self.block.unconditional_shallow_size_of(ops)
+            + self.block.read_with(guard).size_of(ops)
+            + self.selectors.size_of(ops)
     }
     /// Computes the specificity of this page rule when matched with flags.
     ///
@@ -353,17 +342,13 @@ impl ToCssWithGuard for PageRule {
 }
 
 impl DeepCloneWithLock for PageRule {
-    fn deep_clone_with_lock(
-        &self,
-        lock: &SharedRwLock,
-        guard: &SharedRwLockReadGuard,
-    ) -> Self {
-        let rules = self.rules.read_with(&guard);
+    fn deep_clone_with_lock(&self, lock: &SharedRwLock, guard: &SharedRwLockReadGuard) -> Self {
+        let rules = self.rules.read_with(guard);
         PageRule {
             selectors: self.selectors.clone(),
-            block: Arc::new(lock.wrap(self.block.read_with(&guard).clone())),
+            block: Arc::new(lock.wrap(self.block.read_with(guard).clone())),
             rules: Arc::new(lock.wrap(rules.deep_clone_with_lock(lock, guard))),
-            source_location: self.source_location.clone(),
+            source_location: self.source_location,
         }
     }
 }

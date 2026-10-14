@@ -3,10 +3,10 @@ package org.mozilla.geckoview.test
 import android.os.Parcel
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.MediumTest
+import kotlin.test.assertNotNull
 import org.hamcrest.Matchers.endsWith
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.not
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeThat
 import org.junit.Before
@@ -19,25 +19,36 @@ import org.mozilla.geckoview.WebNotification
 import org.mozilla.geckoview.WebNotificationDelegate
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule
 
-const val VERY_LONG_IMAGE_URL = "https://example.com/this/is/a/very/long/address/that/is/meant/to/be/longer/than/is/one/hundred/and/fifth/characters/long/for/testing/imageurl/length.ico"
+const val VERY_LONG_IMAGE_URL =
+    "https://example.com/this/is/a/very/long/address/that/is/meant/to/be/longer/than/is/one/hundred/and/fifth/characters/long/for/testing/imageurl/length.ico"
 
 @RunWith(AndroidJUnit4::class)
 @MediumTest
 class WebNotificationTest : BaseSessionTest() {
 
-    @Before fun setup() {
+    @Before
+    fun setup() {
         mainSession.loadTestPath(HELLO_HTML_PATH)
         mainSession.waitForPageStop()
 
         sessionRule.setPrefsUntilTestEnd(mapOf("dom.webnotifications.requireuserinteraction" to false))
 
         // Grant "desktop notification" permission
-        mainSession.delegateUntilTestEnd(object : PermissionDelegate {
-            override fun onContentPermissionRequest(session: GeckoSession, perm: PermissionDelegate.ContentPermission): GeckoResult<Int>? {
-                assertThat("Should grant DESKTOP_NOTIFICATIONS permission", perm.permission, equalTo(PermissionDelegate.PERMISSION_DESKTOP_NOTIFICATION))
-                return GeckoResult.fromValue(PermissionDelegate.ContentPermission.VALUE_ALLOW)
+        mainSession.delegateUntilTestEnd(
+            object : PermissionDelegate {
+                override fun onContentPermissionRequest(
+                    session: GeckoSession,
+                    perm: PermissionDelegate.ContentPermission,
+                ): GeckoResult<Int>? {
+                    assertThat(
+                        "Should grant DESKTOP_NOTIFICATIONS permission",
+                        perm.permission,
+                        equalTo(PermissionDelegate.PERMISSION_DESKTOP_NOTIFICATION),
+                    )
+                    return GeckoResult.fromValue(PermissionDelegate.ContentPermission.VALUE_ALLOW)
+                }
             }
-        })
+        )
 
         val result = mainSession.waitForJS("Notification.requestPermission()")
         assertThat(
@@ -47,28 +58,32 @@ class WebNotificationTest : BaseSessionTest() {
         )
     }
 
-    @Test fun onSilentNotification() {
+    @Test
+    fun onSilentNotification() {
         sessionRule.setPrefsUntilTestEnd(mapOf("dom.webnotifications.silent.enabled" to true))
-        val notificationResult = GeckoResult<Void>()
 
-        sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
-            @GeckoSessionTestRule.AssertCalled
-            override fun onShowNotification(notification: WebNotification) {
-                assertThat("Title should match", notification.title, equalTo("The Title"))
-                assertThat("Silent should match", notification.silent, equalTo(true))
-                assertThat("Vibrate should match", notification.vibrate, equalTo(intArrayOf()))
-                assertThat("Source should match", notification.source, equalTo(createTestUrl(HELLO_HTML_PATH)))
-                notificationResult.complete(null)
+        sessionRule.delegateDuringNextWait(
+            object : WebNotificationDelegate {
+                @GeckoSessionTestRule.AssertCalled
+                override fun onShowNotification(notification: WebNotification) {
+                    assertThat("Title should match", notification.title, equalTo("The Title"))
+                    assertThat("Silent should match", notification.silent, equalTo(true))
+                    assertThat("Vibrate should match", notification.vibrate, equalTo(intArrayOf()))
+                    assertThat("Source should match", notification.source, equalTo(createTestUrl(HELLO_HTML_PATH)))
+                    assertThat("Origin should match", notification.origin, equalTo(GeckoSessionTestRule.TEST_ENDPOINT))
+                    notification.show()
+                }
             }
-        })
+        )
 
         mainSession.evaluateJS(
             """
             new Notification('The Title', { body: 'The Text', silent: true });
-            """.trimIndent(),
+            """
+                .trimIndent()
         )
 
-        sessionRule.waitForResult(notificationResult)
+        sessionRule.waitUntilCalled(WebNotificationDelegate::class, "onShowNotification")
     }
 
     fun assertNotificationData(notification: WebNotification, requireInteraction: Boolean) {
@@ -85,64 +100,70 @@ class WebNotificationTest : BaseSessionTest() {
         assertThat("Vibrate should match", notification.vibrate, equalTo(intArrayOf(1, 2, 3, 4)))
         assertThat("Silent should match", notification.silent, equalTo(false))
         assertThat("Source should match", notification.source, equalTo(createTestUrl(HELLO_HTML_PATH)))
+
+        val origin =
+            if (notification.privateBrowsing) {
+                GeckoSessionTestRule.TEST_ENDPOINT + "^privateBrowsingId=1"
+            } else {
+                GeckoSessionTestRule.TEST_ENDPOINT
+            }
+        assertThat("Origin should match", notification.origin, equalTo(origin))
     }
 
     @GeckoSessionTestRule.Setting.List(
         GeckoSessionTestRule.Setting(
             key = GeckoSessionTestRule.Setting.Key.USE_PRIVATE_MODE,
             value = "true",
-        ),
+        )
     )
     @Test
     fun onShowNotification() {
         sessionRule.setPrefsUntilTestEnd(mapOf("dom.webnotifications.vibrate.enabled" to true))
-        val notificationResult = GeckoResult<Void>()
-        val requireInteraction =
-            sessionRule.getPrefs("dom.webnotifications.requireinteraction.enabled")[0] as Boolean
+        val requireInteraction = sessionRule.getPrefs("dom.webnotifications.requireinteraction.enabled")[0] as Boolean
 
-        sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
-            @GeckoSessionTestRule.AssertCalled
-            override fun onShowNotification(notification: WebNotification) {
-                assertNotificationData(notification, requireInteraction)
-                assertThat("privateBrowsing should match", notification.privateBrowsing, equalTo(true))
-                notificationResult.complete(null)
+        sessionRule.delegateDuringNextWait(
+            object : WebNotificationDelegate {
+                @GeckoSessionTestRule.AssertCalled
+                override fun onShowNotification(notification: WebNotification) {
+                    assertNotificationData(notification, requireInteraction)
+                    assertThat("privateBrowsing should match", notification.privateBrowsing, equalTo(true))
+                    notification.show()
+                }
             }
-        })
+        )
 
         mainSession.evaluateJS(
             """
             new Notification('The Title', { body: 'The Text', cookie: 'Cookie',
                 icon: 'icon.png', tag: 'Tag', dir: 'ltr', lang: 'en-US',
                 requireInteraction: true, vibrate: [1,2,3,4] });
-            """.trimIndent(),
+            """
+                .trimIndent()
         )
 
-        sessionRule.waitForResult(notificationResult)
+        sessionRule.waitUntilCalled(WebNotificationDelegate::class, "onShowNotification")
     }
 
     @Test
     fun onShowNotificationSameTag() {
         val tags = mutableListOf<String>()
-        val notificationResult = GeckoResult<Void>()
-
-        sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
-            @GeckoSessionTestRule.AssertCalled
-            override fun onShowNotification(notification: WebNotification) {
-                tags += notification.tag
-                if (tags.size == 2) {
-                    notificationResult.complete(null)
-                }
-            }
-        })
 
         mainSession.evaluateJS(
             """
             new Notification('The Title', { tag: 'Tag' });
             new Notification('The Title', { tag: 'Tag' });
-            """.trimIndent(),
+            """
+                .trimIndent()
         )
 
-        sessionRule.waitForResult(notificationResult)
+        sessionRule.waitUntilCalled(
+            object : WebNotificationDelegate {
+                @GeckoSessionTestRule.AssertCalled(count = 2)
+                override fun onShowNotification(notification: WebNotification) {
+                    tags += notification.tag
+                }
+            }
+        )
 
         assertThat("tags should be same", tags[0], equalTo(tags[1]))
     }
@@ -150,82 +171,83 @@ class WebNotificationTest : BaseSessionTest() {
     @Test
     fun onShowNotificationDifferentTag() {
         val tags = mutableListOf<String>()
-        val notificationResult = GeckoResult<Void>()
-
-        sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
-            @GeckoSessionTestRule.AssertCalled
-            override fun onShowNotification(notification: WebNotification) {
-                tags += notification.tag
-                if (tags.size == 2) {
-                    notificationResult.complete(null)
-                }
-            }
-        })
 
         mainSession.evaluateJS(
             """
             new Notification('The Title', { tag: 'Tag1' });
             new Notification('The Title', { tag: 'Tag2' });
-            """.trimIndent(),
+            """
+                .trimIndent()
         )
 
-        sessionRule.waitForResult(notificationResult)
+        sessionRule.waitUntilCalled(
+            object : WebNotificationDelegate {
+                @GeckoSessionTestRule.AssertCalled(count = 2)
+                override fun onShowNotification(notification: WebNotification) {
+                    tags += notification.tag
+                }
+            }
+        )
 
         assertThat("tags should be different", tags[0], not(equalTo(tags[1])))
     }
 
-    @Test fun onCloseNotification() {
-        val closeCalled = GeckoResult<Void>()
-
-        sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
-            @GeckoSessionTestRule.AssertCalled
-            override fun onCloseNotification(notification: WebNotification) {
-                closeCalled.complete(null)
+    @Test
+    fun onCloseNotification() {
+        sessionRule.delegateDuringNextWait(
+            object : WebNotificationDelegate {
+                @GeckoSessionTestRule.AssertCalled override fun onCloseNotification(notification: WebNotification) {}
             }
-        })
+        )
 
         mainSession.evaluateJS(
             """
             const notification = new Notification('The Title', { body: 'The Text'});
             notification.close();
-            """.trimIndent(),
+            """
+                .trimIndent()
         )
 
-        sessionRule.waitForResult(closeCalled)
+        sessionRule.waitUntilCalled(WebNotificationDelegate::class, "onCloseNotification")
     }
 
-    @Test fun clickNotificationParceled() {
+    @Test
+    fun clickNotificationParceled() {
         sessionRule.setPrefsUntilTestEnd(mapOf("dom.webnotifications.vibrate.enabled" to true))
         val notificationResult = GeckoResult<WebNotification>()
-        val requireInteraction =
-            sessionRule.getPrefs("dom.webnotifications.requireinteraction.enabled")[0] as Boolean
+        val requireInteraction = sessionRule.getPrefs("dom.webnotifications.requireinteraction.enabled")[0] as Boolean
 
-        sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
-            @GeckoSessionTestRule.AssertCalled
-            override fun onShowNotification(notification: WebNotification) {
-                notificationResult.complete(notification)
-            }
-        })
-
-        val promiseResult = mainSession.evaluatePromiseJS(
-            """
-            new Promise(resolve => {
-                const notification = new Notification('The Title', {
-                   body: 'The Text',
-                   cookie: 'Cookie',
-                   icon: 'icon.png',
-                   tag: 'Tag',
-                   dir: 'ltr',
-                   lang: 'en-US',
-                   requireInteraction: true,
-                   vibrate: [1,2,3,4]
-                });
-                notification.onclick = function() {
-                    resolve(1);
+        sessionRule.delegateDuringNextWait(
+            object : WebNotificationDelegate {
+                @GeckoSessionTestRule.AssertCalled
+                override fun onShowNotification(notification: WebNotification) {
+                    notification.show()
+                    notificationResult.complete(notification)
                 }
-            });
-            """.trimIndent(),
+            }
         )
+
+        val promiseResult =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve => {
+                    const notification = new Notification('The Title', {
+                       body: 'The Text',
+                       cookie: 'Cookie',
+                       icon: 'icon.png',
+                       tag: 'Tag',
+                       dir: 'ltr',
+                       lang: 'en-US',
+                       requireInteraction: true,
+                       vibrate: [1,2,3,4]
+                    });
+                    notification.onclick = function() {
+                        resolve(1);
+                    }
+                });
+                """
+                    .trimIndent()
+            )
 
         val notification = sessionRule.waitForResult(notificationResult)
         assertNotificationData(notification, requireInteraction)
@@ -249,41 +271,45 @@ class WebNotificationTest : BaseSessionTest() {
         GeckoSessionTestRule.Setting(
             key = GeckoSessionTestRule.Setting.Key.USE_PRIVATE_MODE,
             value = "true",
-        ),
+        )
     )
     @Test
     fun clickPrivateNotificationParceled() {
         sessionRule.setPrefsUntilTestEnd(mapOf("dom.webnotifications.vibrate.enabled" to true))
         val notificationResult = GeckoResult<WebNotification>()
-        val requireInteraction =
-            sessionRule.getPrefs("dom.webnotifications.requireinteraction.enabled")[0] as Boolean
+        val requireInteraction = sessionRule.getPrefs("dom.webnotifications.requireinteraction.enabled")[0] as Boolean
 
-        sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
-            @GeckoSessionTestRule.AssertCalled
-            override fun onShowNotification(notification: WebNotification) {
-                notificationResult.complete(notification)
-            }
-        })
-
-        val promiseResult = mainSession.evaluatePromiseJS(
-            """
-            new Promise(resolve => {
-                const notification = new Notification('The Title', {
-                   body: 'The Text',
-                   cookie: 'Cookie',
-                   icon: 'icon.png',
-                   tag: 'Tag',
-                   dir: 'ltr',
-                   lang: 'en-US',
-                   requireInteraction: true,
-                   vibrate: [1,2,3,4]
-                });
-                notification.onclick = function() {
-                    resolve(1);
+        sessionRule.delegateDuringNextWait(
+            object : WebNotificationDelegate {
+                @GeckoSessionTestRule.AssertCalled
+                override fun onShowNotification(notification: WebNotification) {
+                    notification.show()
+                    notificationResult.complete(notification)
                 }
-            });
-            """.trimIndent(),
+            }
         )
+
+        val promiseResult =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve => {
+                    const notification = new Notification('The Title', {
+                       body: 'The Text',
+                       cookie: 'Cookie',
+                       icon: 'icon.png',
+                       tag: 'Tag',
+                       dir: 'ltr',
+                       lang: 'en-US',
+                       requireInteraction: true,
+                       vibrate: [1,2,3,4]
+                    });
+                    notification.onclick = function() {
+                        resolve(1);
+                    }
+                });
+                """
+                    .trimIndent()
+            )
 
         val notification = sessionRule.waitForResult(notificationResult)
         assertNotificationData(notification, requireInteraction)
@@ -302,84 +328,98 @@ class WebNotificationTest : BaseSessionTest() {
         assertThat("Promise should have been resolved.", promiseResult.value as Double, equalTo(1.0))
     }
 
-    @Test fun clickNotification() {
-        val notificationResult = GeckoResult<Void>()
+    @Test
+    fun clickNotification() {
         var notificationShown: WebNotification? = null
 
-        sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
-            @GeckoSessionTestRule.AssertCalled
-            override fun onShowNotification(notification: WebNotification) {
-                notificationShown = notification
-                notificationResult.complete(null)
-            }
-        })
-
-        val promiseResult = mainSession.evaluatePromiseJS(
-            """
-            new Promise(resolve => {
-                const notification = new Notification('The Title', { body: 'The Text' });
-                notification.onclick = function() {
-                    resolve(1);
+        sessionRule.delegateDuringNextWait(
+            object : WebNotificationDelegate {
+                @GeckoSessionTestRule.AssertCalled
+                override fun onShowNotification(notification: WebNotification) {
+                    notificationShown = notification
+                    notification.show()
                 }
-            });
-            """.trimIndent(),
+            }
         )
 
-        sessionRule.waitForResult(notificationResult)
+        val promiseResult =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve => {
+                    const notification = new Notification('The Title', { body: 'The Text' });
+                    notification.onclick = function() {
+                        resolve(1);
+                    }
+                });
+                """
+                    .trimIndent()
+            )
+
+        sessionRule.waitUntilCalled(WebNotificationDelegate::class, "onShowNotification")
         notificationShown!!.click()
 
         assertThat("Promise should have been resolved.", promiseResult.value as Double, equalTo(1.0))
     }
 
-    @Test fun dismissNotification() {
-        val notificationResult = GeckoResult<Void>()
+    @Test
+    fun dismissNotification() {
         var notificationShown: WebNotification? = null
 
-        sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
-            @GeckoSessionTestRule.AssertCalled
-            override fun onShowNotification(notification: WebNotification) {
-                notificationShown = notification
-                notificationResult.complete(null)
-            }
-        })
-
-        val promiseResult = mainSession.evaluatePromiseJS(
-            """
-            new Promise(resolve => {
-                const notification = new Notification('The Title', { body: 'The Text'});
-                notification.onclose = function() {
-                    resolve(1);
+        sessionRule.delegateDuringNextWait(
+            object : WebNotificationDelegate {
+                @GeckoSessionTestRule.AssertCalled
+                override fun onShowNotification(notification: WebNotification) {
+                    notificationShown = notification
+                    notification.show()
                 }
-            });
-            """.trimIndent(),
+            }
         )
 
-        sessionRule.waitForResult(notificationResult)
+        val promiseResult =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve => {
+                    const notification = new Notification('The Title', { body: 'The Text'});
+                    notification.onclose = function() {
+                        resolve(1);
+                    }
+                });
+                """
+                    .trimIndent()
+            )
+
+        sessionRule.waitUntilCalled(WebNotificationDelegate::class, "onShowNotification")
         notificationShown!!.dismiss()
 
         assertThat("Promise should have been resolved", promiseResult.value as Double, equalTo(1.0))
     }
 
-    @Test fun writeToParcel() {
+    @Test
+    fun writeToParcel() {
         val notificationResult = GeckoResult<WebNotification>()
 
-        sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
-            @GeckoSessionTestRule.AssertCalled
-            override fun onShowNotification(notification: WebNotification) {
-                notificationResult.complete(notification)
-            }
-        })
-
-        val promiseResult = mainSession.evaluatePromiseJS(
-            """
-            new Promise(resolve => {
-                const notification = new Notification('The Title', { body: 'The Text' });
-                notification.onclose = function() {
-                    resolve(1);
+        sessionRule.delegateDuringNextWait(
+            object : WebNotificationDelegate {
+                @GeckoSessionTestRule.AssertCalled
+                override fun onShowNotification(notification: WebNotification) {
+                    notification.show()
+                    notificationResult.complete(notification)
                 }
-            });
-            """.trimIndent(),
+            }
         )
+
+        val promiseResult =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve => {
+                    const notification = new Notification('The Title', { body: 'The Text' });
+                    notification.onclose = function() {
+                        resolve(1);
+                    }
+                });
+                """
+                    .trimIndent()
+            )
 
         val notification = sessionRule.waitForResult(notificationResult)
         notification.dismiss()
@@ -391,25 +431,30 @@ class WebNotificationTest : BaseSessionTest() {
         val parcel = Parcel.obtain()
         notification.writeToParcel(
             parcel,
-            /* ignored */
+            // ignored
             -1,
         )
 
         assertThat("Promise should have been resolved.", promiseResult.value as Double, equalTo(1.0))
     }
 
-    @Test fun writeToParcelLongImageUrl() {
+    @Test
+    fun writeToParcelLongImageUrl() {
         val notificationResult = GeckoResult<WebNotification>()
 
-        sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
-            @GeckoSessionTestRule.AssertCalled
-            override fun onShowNotification(notification: WebNotification) {
-                notificationResult.complete(notification)
+        sessionRule.delegateDuringNextWait(
+            object : WebNotificationDelegate {
+                @GeckoSessionTestRule.AssertCalled
+                override fun onShowNotification(notification: WebNotification) {
+                    notification.show()
+                    notificationResult.complete(notification)
+                }
             }
-        })
+        )
 
-        val promiseResult = mainSession.evaluatePromiseJS(
-            """
+        val promiseResult =
+            mainSession.evaluatePromiseJS(
+                """
             new Promise(resolve => {
                 const notification = new Notification('The Title',
                     {
@@ -420,8 +465,9 @@ class WebNotificationTest : BaseSessionTest() {
                     resolve(1);
                 }
             });
-            """.trimIndent(),
-        )
+            """
+                    .trimIndent()
+            )
 
         val notification = sessionRule.waitForResult(notificationResult)
         notification.dismiss()
@@ -434,7 +480,7 @@ class WebNotificationTest : BaseSessionTest() {
         val parcel = Parcel.obtain()
         notification.writeToParcel(
             parcel,
-            /* ignored */
+            // ignored
             -1,
         )
         parcel.setDataPosition(0)
@@ -451,17 +497,20 @@ class WebNotificationTest : BaseSessionTest() {
 
         val notificationResult = GeckoResult<WebNotification>()
 
-        sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
-            @GeckoSessionTestRule.AssertCalled
-            override fun onShowNotification(notification: WebNotification) {
-                notificationResult.complete(notification)
+        sessionRule.delegateDuringNextWait(
+            object : WebNotificationDelegate {
+                @GeckoSessionTestRule.AssertCalled
+                override fun onShowNotification(notification: WebNotification) {
+                    notificationResult.complete(notification)
+                }
             }
-        })
+        )
 
         return notificationResult
     }
 
-    @Test fun openWithActionsAndClickAction() {
+    @Test
+    fun openWithActionsAndClickAction() {
         assumeThat(sessionRule.env.isNightly, equalTo(true))
 
         val notificationResult = openNotificationAction()
@@ -473,7 +522,8 @@ class WebNotificationTest : BaseSessionTest() {
         assertThat("Promise should have been resolved.", promiseResult.value as String, equalTo("action1"))
     }
 
-    @Test fun openWithActionsAndClickTitle() {
+    @Test
+    fun openWithActionsAndClickTitle() {
         assumeThat(sessionRule.env.isNightly, equalTo(true))
 
         val notificationResult = openNotificationAction()
@@ -485,7 +535,8 @@ class WebNotificationTest : BaseSessionTest() {
         assertThat("Promise should have been resolved.", promiseResult.value as String, equalTo(""))
     }
 
-    @Test fun openWithActionsAndClickUnknownAction() {
+    @Test
+    fun openWithActionsAndClickUnknownAction() {
         assumeThat(sessionRule.env.isNightly, equalTo(true))
 
         val notificationResult = openNotificationAction()

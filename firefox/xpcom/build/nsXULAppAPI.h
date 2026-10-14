@@ -1,14 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _nsXULAppAPI_h__
-#define _nsXULAppAPI_h__
+#ifndef _nsXULAppAPI_h_
+#define _nsXULAppAPI_h_
 
 #include "js/TypeDecls.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/ProcessType.h"
 #include "mozilla/TimeStamp.h"
 #include "nscore.h"
@@ -205,6 +202,7 @@ struct BootstrapConfig;
  * @note           If the binary is linked against the standalone XPCOM glue,
  *                 XPCOMGlueStartup() should be called before this method.
  */
+MOZ_CAN_RUN_SCRIPT_BOUNDARY
 int XRE_main(int argc, char* argv[], const mozilla::BootstrapConfig& aConfig);
 
 /**
@@ -294,7 +292,7 @@ bool XRE_IsE10sParentProcess();
                            process_bin_type, procinfo_typename,               \
                            webidl_typename, allcaps_name)                     \
   bool XRE_Is##proc_typename##Process();
-#include "mozilla/GeckoProcessTypes.h"
+#include "mozilla/GeckoProcessTypes.inc"
 #undef GECKO_PROCESS_TYPE
 
 bool XRE_IsSocketProcess();
@@ -354,4 +352,4 @@ int XRE_ForkServer(int* aArgc, char*** aArgv);
 
 #endif  // MOZ_ENABLE_FORKSERVER
 
-#endif  // _nsXULAppAPI_h__
+#endif  // _nsXULAppAPI_h_

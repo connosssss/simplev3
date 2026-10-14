@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -103,8 +102,8 @@ interface WebGLShaderPrecisionFormat {
     readonly attribute GLint precision;
 };
 
-typedef ([AllowShared] Float32Array or sequence<GLfloat>) Float32List;
-typedef ([AllowShared] Int32Array or sequence<GLint>) Int32List;
+typedef ([AllowShared, AllowLarge] Float32Array or sequence<GLfloat>) Float32List;
+typedef ([AllowShared, AllowLarge] Int32Array or sequence<GLint>) Int32List;
 
 // Shared mixin for the things that WebGLRenderingContext and
 // WebGL2RenderingContext have in common.  This doesn't have all the things they
@@ -719,32 +718,32 @@ interface mixin WebGLRenderingContextBase {
 interface WebGLRenderingContext {
     // bufferData has WebGL2 overloads.
     undefined bufferData(GLenum target, GLsizeiptr size, GLenum usage);
-    undefined bufferData(GLenum target, [AllowShared] ArrayBuffer? data, GLenum usage);
-    undefined bufferData(GLenum target, [AllowShared] ArrayBufferView data, GLenum usage);
+    undefined bufferData(GLenum target, [AllowShared, AllowLarge] ArrayBuffer? data, GLenum usage);
+    undefined bufferData(GLenum target, [AllowShared, AllowLarge] ArrayBufferView data, GLenum usage);
     // bufferSubData has WebGL2 overloads.
     undefined bufferSubData(GLenum target, GLintptr offset, AllowSharedBufferSource data);
 
     // compressedTexImage2D has WebGL2 overloads.
     undefined compressedTexImage2D(GLenum target, GLint level, GLenum internalformat,
                                    GLsizei width, GLsizei height, GLint border,
-                                   [AllowShared] ArrayBufferView data);
+                                   [AllowShared, AllowLarge] ArrayBufferView data);
     // compressedTexSubImage2D has WebGL2 overloads.
     undefined compressedTexSubImage2D(GLenum target, GLint level,
                                       GLint xoffset, GLint yoffset,
                                       GLsizei width, GLsizei height, GLenum format,
-                                      [AllowShared] ArrayBufferView data);
+                                      [AllowShared, AllowLarge] ArrayBufferView data);
 
     // readPixels has WebGL2 overloads.
     [Throws, NeedsCallerType]
     undefined readPixels(GLint x, GLint y, GLsizei width, GLsizei height,
-                    GLenum format, GLenum type, [AllowShared] ArrayBufferView? pixels);
+                    GLenum format, GLenum type, [AllowShared, AllowLarge] ArrayBufferView? pixels);
 
     // texImage2D has WebGL2 overloads.
     // Overloads must share [Throws].
     [Throws] // Can't actually throw.
     undefined texImage2D(GLenum target, GLint level, GLint internalformat,
                          GLsizei width, GLsizei height, GLint border, GLenum format,
-                         GLenum type, [AllowShared] ArrayBufferView? pixels);
+                         GLenum type, [AllowShared, AllowLarge] ArrayBufferView? pixels);
     [Throws] // Can't actually throw.
     undefined texImage2D(GLenum target, GLint level, GLint internalformat,
                          GLenum format, GLenum type, ImageBitmap pixels);
@@ -771,7 +770,7 @@ interface WebGLRenderingContext {
     [Throws] // Can't actually throw.
     undefined texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
                             GLsizei width, GLsizei height,
-                            GLenum format, GLenum type, [AllowShared] ArrayBufferView? pixels);
+                            GLenum format, GLenum type, [AllowShared, AllowLarge] ArrayBufferView? pixels);
     [Throws] // Can't actually throw.
     undefined texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
                             GLenum format, GLenum type, ImageBitmap pixels);
@@ -821,6 +820,31 @@ WebGLRenderingContext includes WebGLRenderingContextBase;
 ////////////////////////////////////////
 // specific extension interfaces
 
+// https://registry.khronos.org/webgl/extensions/EXT_clip_control/
+[LegacyNoInterfaceObject,
+ Exposed=(Window,Worker)]
+interface EXT_clip_control {
+    const GLenum LOWER_LEFT_EXT = 0x8CA1;
+    const GLenum UPPER_LEFT_EXT = 0x8CA2;
+
+    const GLenum NEGATIVE_ONE_TO_ONE_EXT = 0x935E;
+    const GLenum ZERO_TO_ONE_EXT         = 0x935F;
+
+    const GLenum CLIP_ORIGIN_EXT     = 0x935C;
+    const GLenum CLIP_DEPTH_MODE_EXT = 0x935D;
+
+    undefined clipControlEXT(GLenum origin, GLenum depth);
+};
+
+// https://registry.khronos.org/webgl/extensions/EXT_polygon_offset_clamp/
+[LegacyNoInterfaceObject,
+ Exposed=(Window,Worker)]
+interface EXT_polygon_offset_clamp {
+    const GLenum POLYGON_OFFSET_CLAMP_EXT = 0x8E1B;
+
+    undefined polygonOffsetClampEXT(GLfloat factor, GLfloat units, GLfloat clamp);
+};
+
 [LegacyNoInterfaceObject,
  Exposed=(Window,Worker)]
 interface EXT_texture_compression_bptc {
@@ -837,6 +861,13 @@ interface EXT_texture_compression_rgtc {
     const GLenum COMPRESSED_SIGNED_RED_RGTC1_EXT = 0x8DBC;
     const GLenum COMPRESSED_RED_GREEN_RGTC2_EXT = 0x8DBD;
     const GLenum COMPRESSED_SIGNED_RED_GREEN_RGTC2_EXT = 0x8DBE;
+};
+
+// https://registry.khronos.org/webgl/extensions/EXT_texture_mirror_clamp_to_edge/
+[LegacyNoInterfaceObject,
+ Exposed=(Window,Worker)]
+interface EXT_texture_mirror_clamp_to_edge {
+    const GLenum MIRROR_CLAMP_TO_EDGE_EXT = 0x8743;
 };
 
 // https://www.khronos.org/registry/webgl/extensions/EXT_texture_norm16/

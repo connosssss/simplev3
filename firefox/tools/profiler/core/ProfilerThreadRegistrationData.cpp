@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,7 +5,7 @@
 #include "mozilla/ProfilerThreadRegistrationData.h"
 
 #include "mozilla/CycleCollectedJSContext.h"
-#include "mozilla/FOGIPC.h"
+#include "mozilla/FlowMarkers.h"
 #include "mozilla/ProfilerMarkers.h"
 #include "js/AllocationRecording.h"
 #include "js/ProfilingStack.h"
@@ -16,6 +14,9 @@
 #  include <windows.h>
 #elif defined(XP_DARWIN)
 #  include <pthread.h>
+#elif defined(XP_LINUX) && !defined(ANDROID)
+#  include "mozilla/ScopeExit.h"
+#  include <pthread.h>
 #endif
 
 #ifdef NIGHTLY_BUILD
@@ -23,29 +24,41 @@ namespace geckoprofiler::markers {
 
 using namespace mozilla;
 
-struct ThreadCpuUseMarker {
-  static constexpr Span<const char> MarkerTypeName() {
-    return MakeStringSpan("ThreadCpuUse");
-  }
+struct ThreadCpuUseMarker : public BaseMarkerType<ThreadCpuUseMarker> {
+  static constexpr const char* Name = "ThreadCpuUse";
+
+  using MS = MarkerSchema;
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"threadId", MS::InputType::Int64, nullptr, MS::Format::Integer,
+       MS::PayloadFlags::Hidden},
+      {"time", MS::InputType::Int64, "CPU Time", MS::Format::Milliseconds},
+      {"wakeups", MS::InputType::Int64, "Wake ups", MS::Format::Integer},
+      {"label", MS::InputType::CString, nullptr, MS::Format::String,
+       MS::PayloadFlags::Hidden},
+  };
+  static constexpr MS::Location Locations[] = {MS::Location::MarkerChart,
+                                               MS::Location::MarkerTable};
+  static constexpr const char* TooltipLabel =
+      "{marker.name} - {marker.data.label}";
+  static constexpr const char* TableLabel =
+      "{marker.data.label}: {marker.data.time} of CPU time, "
+      "{marker.data.wakeups} wake ups";
+
   static void StreamJSONMarkerData(baseprofiler::SpliceableJSONWriter& aWriter,
                                    ProfilerThreadId aThreadId,
                                    int64_t aCpuTimeMs, int64_t aWakeUps,
                                    const ProfilerString8View& aThreadName) {
-    aWriter.IntProperty("threadId", static_cast<int64_t>(aThreadId.ToNumber()));
-    aWriter.IntProperty("time", aCpuTimeMs);
-    aWriter.IntProperty("wakeups", aWakeUps);
-    aWriter.StringProperty("label", aThreadName);
+    StreamJSONMarkerDataImpl(aWriter,
+                             static_cast<int64_t>(aThreadId.ToNumber()),
+                             aCpuTimeMs, aWakeUps, aThreadName);
   }
-  static MarkerSchema MarkerTypeDisplay() {
-    using MS = MarkerSchema;
-    MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
-    schema.AddKeyLabelFormat("time", "CPU Time", MS::Format::Milliseconds);
-    schema.AddKeyLabelFormat("wakeups", "Wake ups", MS::Format::Integer);
-    schema.SetTooltipLabel("{marker.name} - {marker.data.label}");
-    schema.SetTableLabel(
-        "{marker.name} - {marker.data.label}: {marker.data.time} of CPU time, "
-        "{marker.data.wakeups} wake ups");
-    return schema;
+
+  static void TranslateMarkerInputToSchema(
+      void* aContext, ProfilerThreadId aThreadId, int64_t aCpuTimeMs,
+      int64_t aWakeUps, const ProfilerString8View& aThreadName) {
+    ETW::OutputMarkerSchema(aContext, ThreadCpuUseMarker{},
+                            static_cast<int64_t>(aThreadId.ToNumber()),
+                            aCpuTimeMs, aWakeUps, aThreadName);
   }
 };
 
@@ -53,6 +66,27 @@ struct ThreadCpuUseMarker {
 #endif
 
 namespace mozilla::profiler {
+
+#if defined(XP_LINUX) && !defined(ANDROID)
+static const void* pthread_get_stacktop_linux(const void* aStackTop) {
+  pthread_attr_t attr;
+  if (pthread_getattr_np(pthread_self(), &attr) != 0) {
+    return aStackTop;
+  }
+  auto attrGuard = MakeScopeExit([&]() { pthread_attr_destroy(&attr); });
+  void* stackBase = nullptr;
+  size_t stackSize = 0;
+  if (pthread_attr_getstack(&attr, &stackBase, &stackSize) != 0 ||
+      !(stackBase && stackSize > 0)) {
+    return aStackTop;
+  }
+  // > The base (lowest addressable byte) of the storage shall be
+  // > stackaddr, and the size of the storage shall be stacksize
+  // > bytes.
+  // <https://www.man7.org/linux/man-pages/man3/pthread_attr_getstack.3p.html>
+  return static_cast<const char*>(stackBase) + stackSize;
+}
+#endif
 
 ThreadRegistrationData::ThreadRegistrationData(const char* aName,
                                                const void* aStackTop)
@@ -67,6 +101,9 @@ ThreadRegistrationData::ThreadRegistrationData(const char* aName,
           // We don't have to guess on Mac/Darwin.
           reinterpret_cast<const void*>(
               pthread_get_stackaddr_np(pthread_self()))
+#elif defined(XP_LINUX) && !defined(ANDROID)
+          // We don't have to guess on non-Android Linux.
+          pthread_get_stacktop_linux(aStackTop)
 #else
           // Otherwise use the given guess.
           aStackTop
@@ -79,63 +116,92 @@ ThreadRegistrationData::ThreadRegistrationData(const char* aName,
 static void profiler_add_js_marker(mozilla::MarkerCategory aCategory,
                                    const char* aMarkerName,
                                    const char* aMarkerText) {
-#ifdef MOZ_GECKO_PROFILER
   AUTO_PROFILER_STATS(js_marker);
   profiler_add_marker(
       mozilla::ProfilerString8View::WrapNullTerminatedString(aMarkerName),
       aCategory, {}, ::geckoprofiler::markers::TextMarker{},
       mozilla::ProfilerString8View::WrapNullTerminatedString(aMarkerText));
-#endif
 }
 
 static void profiler_add_js_interval(mozilla::MarkerCategory aCategory,
                                      const char* aMarkerName,
                                      mozilla::TimeStamp aStartTime,
                                      const char* aMarkerText) {
-#ifdef MOZ_GECKO_PROFILER
   AUTO_PROFILER_STATS(js_interval);
   profiler_add_marker(
       mozilla::ProfilerString8View::WrapNullTerminatedString(aMarkerName),
       aCategory, mozilla::MarkerTiming::IntervalUntilNowFrom(aStartTime),
       ::geckoprofiler::markers::TextMarker{},
       mozilla::ProfilerString8View::WrapNullTerminatedString(aMarkerText));
-#endif
 }
+
+static void profiler_add_js_flow(mozilla::MarkerCategory aCategory,
+                                 const char* aMarkerName, uint64_t aFlowId) {
+  if (!profiler_feature_active(ProfilerFeature::Flows)) {
+    return;
+  }
+  AUTO_PROFILER_STATS(js_flow);
+  profiler_add_marker(
+      mozilla::ProfilerString8View::WrapNullTerminatedString(aMarkerName),
+      aCategory, {}, ::geckoprofiler::markers::FlowMarker{},
+      Flow::ProcessScoped(aFlowId));
+}
+
+static void profiler_add_js_terminating_flow(mozilla::MarkerCategory aCategory,
+                                             const char* aMarkerName,
+                                             uint64_t aFlowId) {
+  if (!profiler_feature_active(ProfilerFeature::Flows)) {
+    return;
+  }
+  AUTO_PROFILER_STATS(js_terminating_flow);
+  profiler_add_marker(
+      mozilla::ProfilerString8View::WrapNullTerminatedString(aMarkerName),
+      aCategory, {}, ::geckoprofiler::markers::TerminatingFlowMarker{},
+      Flow::ProcessScoped(aFlowId));
+}
+
+struct JsAllocationMarker : public mozilla::BaseMarkerType<JsAllocationMarker> {
+  static constexpr const char* Name = "JS allocation";
+  static constexpr bool UseSpecialFrontendLocation = true;
+
+  using MS = mozilla::MarkerSchema;
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"typeName", MS::InputType::String, nullptr, MS::Format::String},
+      {"className", MS::InputType::CString, nullptr, MS::Format::String},
+      {"descriptiveTypeName", MS::InputType::String, nullptr,
+       MS::Format::String},
+      {"coarseType", MS::InputType::CString, nullptr, MS::Format::String},
+      {"size", MS::InputType::Uint64, nullptr, MS::Format::Bytes},
+      {"inNursery", MS::InputType::Boolean, nullptr, MS::Format::Integer},
+  };
+
+  static void StreamJSONMarkerData(
+      mozilla::baseprofiler::SpliceableJSONWriter& aWriter,
+      const mozilla::ProfilerString16View& aTypeName,
+      const mozilla::ProfilerString8View& aClassName,
+      const mozilla::ProfilerString16View& aDescriptiveTypeName,
+      const mozilla::ProfilerString8View& aCoarseType, uint64_t aSize,
+      bool aInNursery) {
+    if (aClassName.Length() != 0) {
+      aWriter.StringProperty("className", aClassName);
+    }
+    if (aTypeName.Length() != 0) {
+      aWriter.StringProperty("typeName", NS_ConvertUTF16toUTF8(aTypeName));
+    }
+    if (aDescriptiveTypeName.Length() != 0) {
+      aWriter.StringProperty("descriptiveTypeName",
+                             NS_ConvertUTF16toUTF8(aDescriptiveTypeName));
+    }
+    aWriter.StringProperty("coarseType", aCoarseType);
+    aWriter.IntProperty("size", aSize);
+    aWriter.BoolProperty("inNursery", aInNursery);
+  }
+};
 
 static void profiler_add_js_allocation_marker(JS::RecordAllocationInfo&& info) {
   if (!profiler_thread_is_being_profiled_for_markers()) {
     return;
   }
-
-  struct JsAllocationMarker {
-    static constexpr mozilla::Span<const char> MarkerTypeName() {
-      return mozilla::MakeStringSpan("JS allocation");
-    }
-    static void StreamJSONMarkerData(
-        mozilla::baseprofiler::SpliceableJSONWriter& aWriter,
-        const mozilla::ProfilerString16View& aTypeName,
-        const mozilla::ProfilerString8View& aClassName,
-        const mozilla::ProfilerString16View& aDescriptiveTypeName,
-        const mozilla::ProfilerString8View& aCoarseType, uint64_t aSize,
-        bool aInNursery) {
-      if (aClassName.Length() != 0) {
-        aWriter.StringProperty("className", aClassName);
-      }
-      if (aTypeName.Length() != 0) {
-        aWriter.StringProperty("typeName", NS_ConvertUTF16toUTF8(aTypeName));
-      }
-      if (aDescriptiveTypeName.Length() != 0) {
-        aWriter.StringProperty("descriptiveTypeName",
-                               NS_ConvertUTF16toUTF8(aDescriptiveTypeName));
-      }
-      aWriter.StringProperty("coarseType", aCoarseType);
-      aWriter.IntProperty("size", aSize);
-      aWriter.BoolProperty("inNursery", aInNursery);
-    }
-    static mozilla::MarkerSchema MarkerTypeDisplay() {
-      return mozilla::MarkerSchema::SpecialFrontendLocation{};
-    }
-  };
 
   profiler_add_marker(
       "JS allocation", geckoprofiler::category::JS,
@@ -239,9 +305,13 @@ void ThreadRegistrationLockedRWOnThread::ClearCycleCollectedJSContext() {
              !!mJsFrameBuffer);
 }
 
-void ThreadRegistrationLockedRWOnThread::PollJSSampling() {
+ThreadRegistrationLockedRWOnThread::JSSamplingChange
+ThreadRegistrationLockedRWOnThread::TakeJSSamplingChange() {
+  JSSamplingChange change;
   // We can't start/stop profiling until we have the thread's JSContext.
   if (mCCJSContext) {
+    change.mContext = mCCJSContext->Context();
+    change.mAllocationsEnabled = JSAllocationsEnabled();
     // It is possible for mJSSampling to go through the following sequences.
     //
     // - INACTIVE, ACTIVE_REQUESTED, INACTIVE_REQUESTED, INACTIVE
@@ -251,41 +321,57 @@ void ThreadRegistrationLockedRWOnThread::PollJSSampling() {
     // Therefore, the if and else branches here aren't always interleaved.
     // This is ok because the JS engine can handle that.
     //
-    JSContext* cx = mCCJSContext->Context();
     if (mJSSampling == ACTIVE_REQUESTED) {
       mJSSampling = ACTIVE;
-      js::EnableContextProfilingStack(cx, true);
-
-      if (JSAllocationsEnabled()) {
-        // TODO - This probability should not be hardcoded. See Bug 1547284.
-        JS::EnableRecordingAllocations(cx, profiler_add_js_allocation_marker,
-                                       0.01);
-      }
-      js::RegisterContextProfilingEventMarker(cx, profiler_add_js_marker,
-                                              profiler_add_js_interval);
-
+      change.mAction = JSSamplingChange::Action::Start;
     } else if (mJSSampling == INACTIVE_REQUESTED) {
       mJSSampling = INACTIVE;
-      js::EnableContextProfilingStack(cx, false);
+      change.mAction = JSSamplingChange::Action::Stop;
+    }
+  }
+  return change;
+}
 
-      if (JSAllocationsEnabled()) {
-        JS::DisableRecordingAllocations(cx);
-      }
+/* static */ void ThreadRegistrationLockedRWOnThread::ApplyJSSamplingChange(
+    const JSSamplingChange& aChange) {
+  JSContext* cx = aChange.mContext;
+  if (aChange.mAction == JSSamplingChange::Action::Start) {
+    js::EnableContextProfilingStack(cx, true);
+
+    if (aChange.mAllocationsEnabled) {
+      // TODO - This probability should not be hardcoded. See Bug 1547284.
+      JS::EnableRecordingAllocations(cx, profiler_add_js_allocation_marker,
+                                     0.01);
+    }
+    js::RegisterContextProfilerMarkers(
+        cx, profiler_add_js_marker, profiler_add_js_interval,
+        profiler_add_js_flow, profiler_add_js_terminating_flow);
+
+  } else if (aChange.mAction == JSSamplingChange::Action::Stop) {
+    js::EnableContextProfilingStack(cx, false);
+
+    if (aChange.mAllocationsEnabled) {
+      JS::DisableRecordingAllocations(cx);
     }
   }
 }
 
+void ThreadRegistrationLockedRWOnThread::PollJSSampling() {
+  ApplyJSSamplingChange(TakeJSSamplingChange());
+}
+
 #ifdef NIGHTLY_BUILD
-void ThreadRegistrationUnlockedConstReaderAndAtomicRW::RecordWakeCount() const {
+bool ThreadRegistrationUnlockedConstReaderAndAtomicRW::RecordWakeCount(
+    nsACString& aThreadName, uint64_t& aCpuTimeMs, uint64_t& aWakeCount) const {
   baseprofiler::detail::BaseProfilerAutoLock lock(mRecordWakeCountMutex);
 
-  uint64_t newWakeCount = mWakeCount - mAlreadyRecordedWakeCount;
-  if (newWakeCount == 0 && mSleep != AWAKE) {
+  aWakeCount = mWakeCount - mAlreadyRecordedWakeCount;
+  if (aWakeCount == 0 && mSleep != AWAKE) {
     // If no new wake-up was counted, and the thread is not marked awake,
     // we can be pretty sure there is no CPU activity to record.
     // Threads that are never annotated as asleep/awake (typically rust threads)
     // start as awake.
-    return;
+    return false;
   }
 
   uint64_t cpuTimeNs;
@@ -296,37 +382,37 @@ void ThreadRegistrationUnlockedConstReaderAndAtomicRW::RecordWakeCount() const {
   constexpr uint64_t NS_PER_MS = 1'000'000;
   uint64_t cpuTimeMs = cpuTimeNs / NS_PER_MS;
 
-  uint64_t newCpuTimeMs = MOZ_LIKELY(cpuTimeMs > mAlreadyRecordedCpuTimeInMs)
-                              ? cpuTimeMs - mAlreadyRecordedCpuTimeInMs
-                              : 0;
+  aCpuTimeMs = MOZ_LIKELY(cpuTimeMs > mAlreadyRecordedCpuTimeInMs)
+                   ? cpuTimeMs - mAlreadyRecordedCpuTimeInMs
+                   : 0;
 
-  if (!newWakeCount && !newCpuTimeMs) {
+  if (!aWakeCount && !aCpuTimeMs) {
     // Nothing to report, avoid computing the Glean friendly thread name.
-    return;
+    return false;
   }
 
-  nsAutoCString threadName(mInfo.Name());
+  aThreadName.Assign(mInfo.Name());
   // Trim the trailing number of threads that are part of a thread pool.
-  for (size_t length = threadName.Length(); length > 0; --length) {
-    const char c = threadName.CharAt(length - 1);
+  for (size_t length = aThreadName.Length(); length > 0; --length) {
+    const char c = aThreadName.CharAt(length - 1);
     if ((c < '0' || c > '9') && c != '#' && c != ' ') {
-      if (length != threadName.Length()) {
-        threadName.SetLength(length);
+      if (length != aThreadName.Length()) {
+        aThreadName.SetLength(length);
       }
       break;
     }
   }
-
-  mozilla::glean::RecordThreadCpuUse(threadName, newCpuTimeMs, newWakeCount);
 
   // The thread id is provided as part of the payload because this call is
   // inside a ThreadRegistration data function, which could be invoked with
   // the ThreadRegistry locked. We cannot call any function/option that could
   // attempt to lock the ThreadRegistry again, like MarkerThreadId.
   PROFILER_MARKER("Thread CPU use", OTHER, {}, ThreadCpuUseMarker,
-                  mInfo.ThreadId(), newCpuTimeMs, newWakeCount, threadName);
+                  mInfo.ThreadId(), aCpuTimeMs, aWakeCount, aThreadName);
   mAlreadyRecordedCpuTimeInMs = cpuTimeMs;
-  mAlreadyRecordedWakeCount += newWakeCount;
+  mAlreadyRecordedWakeCount += aWakeCount;
+
+  return true;
 }
 #endif
 

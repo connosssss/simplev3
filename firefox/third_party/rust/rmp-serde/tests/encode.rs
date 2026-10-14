@@ -159,7 +159,6 @@ fn pass_i64_most_effective() {
     assert_eq!([0xcc, 0x80], buf);
 }
 
-
 #[test]
 fn pass_f32() {
     let mut buf = [0x00, 0x00, 0x00, 0x00, 0x00];
@@ -235,7 +234,7 @@ fn pass_hash_array_bytes() {
     use std::collections::HashSet;
     let mut buf = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
-    let val = [[255u8; 3], [1u8; 3]].into_iter().collect::<HashSet<[u8;3]>>();
+    let val = [[255u8; 3], [1u8; 3]].into_iter().collect::<HashSet<[u8; 3]>>();
     val.serialize(&mut Serializer::new(&mut &mut buf[..]).with_bytes(BytesMode::ForceAll)).ok().unwrap();
 }
 
@@ -341,8 +340,10 @@ fn pass_bin() {
 #[test]
 fn pass_to_vec() {
     assert_eq!(vec![0xc0], encode::to_vec(&()).unwrap());
-    assert_eq!(vec![0xaa, 0x6c, 0x65, 0x20, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65],
-        encode::to_vec("le message").unwrap());
+    assert_eq!(
+        vec![0xaa, 0x6c, 0x65, 0x20, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65],
+        encode::to_vec("le message").unwrap()
+    );
 }
 
 #[test]

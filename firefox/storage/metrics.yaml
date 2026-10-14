@@ -14,16 +14,16 @@ sqlite_store:
   open:
     type: dual_labeled_counter
     description: >
-      The result of attempting to open a sqlite file.
+      The result of attempting to open a SQLite file.
 
-      This metric was generated to correspond to the Legacy Telemetry
-      categorical histogram SQLITE_STORE_OPEN.
+      Initially this metric also recorded the "success" category, but due
+      to the high volume of recording those, only failure categories are
+      now tracked.
     dual_labels:
       key:
         description: No static keys unfortunately.
       category:
         labels:
-          - success
           - failure
           - access
           - diskio
@@ -31,31 +31,31 @@ sqlite_store:
           - busy
           - misuse
           - diskspace
-        description: Labels of the keyed categorical legacy telemetry histogram
-          SQLITE_STORE_OPEN.
+        description: The result type when opening a SQLite file.
     bugs:
       - https://bugzilla.mozilla.org/show_bug.cgi?id=1635489
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=1977614
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2046474
     data_reviews:
       - https://bugzilla.mozilla.org/show_bug.cgi?id=1635489
     notification_emails:
       - dtownsend@mozilla.com
       - mbonardo@mozilla.com
     expires: never
-    telemetry_mirror: SQLITE_STORE_OPEN
 
   query:
     type: dual_labeled_counter
     description: >
-      The result of attempting to query a sqlite file.
+      The result of attempting to query a SQLite file.
 
-      This metric was generated to correspond to the Legacy Telemetry
-      categorical histogram SQLITE_STORE_QUERY.
+      Initially this metric also recorded the "success" category, but due
+      to the high volume of recording those, only failure categories are
+      now tracked.
     dual_labels:
       key:
         description: No static keys unfortunately.
       category:
         labels:
-          - success
           - failure
           - access
           - diskio
@@ -63,14 +63,14 @@ sqlite_store:
           - busy
           - misuse
           - diskspace
-        description: Labels of the keyed categorical legacy telemetry histogram
-          SQLITE_STORE_QUERY.
+        description: The result type when querying a SQLite file.
     bugs:
       - https://bugzilla.mozilla.org/show_bug.cgi?id=1635489
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=1977614
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2046474
     data_reviews:
       - https://bugzilla.mozilla.org/show_bug.cgi?id=1635489
     notification_emails:
       - dtownsend@mozilla.com
       - mbonardo@mozilla.com
     expires: never
-    telemetry_mirror: SQLITE_STORE_QUERY

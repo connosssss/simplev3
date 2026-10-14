@@ -19,13 +19,15 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -34,46 +36,39 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.PreviewLightDark
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import mozilla.components.compose.base.button.PrimaryButton
-import mozilla.components.compose.base.button.SecondaryButton
+import mozilla.components.compose.base.button.FilledButton
+import mozilla.components.compose.base.button.OutlinedButton
 import org.mozilla.fenix.R
 import org.mozilla.fenix.theme.FirefoxTheme
 
 /**
- * The ratio of the content height to screen height. This was determined from the designs in figma
- * taking the top and bottom padding to be 10% of screen height.
+ * The ratio of the content height to screen height. This was determined from the designs in figma taking the top and
+ * bottom padding to be 10% of screen height.
  */
 private const val FULLSCREEN_HEIGHT = 0.8f
 
 /**
- * The ratio of the button width to screen width. This was determined from the designs in figma
- * taking the horizontal button paddings to be 5% of the screen width.
+ * The ratio of the button width to screen width. This was determined from the designs in figma taking the horizontal
+ * button paddings to be 5% of the screen width.
  */
 private const val BUTTON_WIDTH = 0.9f
 
-/**
- * Values used in slide in animation.
- * These values were confirmed through demo builds and UX review.
- */
+/** Values used in slide in animation. These values were confirmed through demo builds and UX review. */
 private const val INITIAL_OFFSET = 1000
 private const val ANIMATION_DURATION_MS = 500
 
 @Composable
-private fun SlideInFromBottomAnimation(
-    content: @Composable () -> Unit,
-) {
-    var offsetY by remember { mutableStateOf(INITIAL_OFFSET) }
-    val offsetState by animateDpAsState(
-        targetValue = offsetY.dp,
-        animationSpec = tween(durationMillis = ANIMATION_DURATION_MS),
-    )
+private fun SlideInFromBottomAnimation(content: @Composable () -> Unit) {
+    var offsetY by remember { mutableIntStateOf(INITIAL_OFFSET) }
+    val offsetState by
+        animateDpAsState(
+            targetValue = offsetY.dp,
+            animationSpec = tween(durationMillis = ANIMATION_DURATION_MS),
+        )
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .offset(y = offsetState),
-    ) {
+    Box(modifier = Modifier.fillMaxSize().offset { IntOffset(x = 0, y = offsetState.roundToPx()) }) {
         content()
     }
 
@@ -100,52 +95,55 @@ fun ResearchSurfaceSurvey(
     onAccept: () -> Unit,
 ) {
     SlideInFromBottomAnimation {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding(),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxHeight(FULLSCREEN_HEIGHT)
-                    .align(Alignment.Center)
-                    .verticalScroll(rememberScrollState()),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Spacer(Modifier)
+        Surface {
+            Box(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 16.dp),
+                    modifier =
+                        Modifier.fillMaxHeight(FULLSCREEN_HEIGHT)
+                            .align(Alignment.Center)
+                            .verticalScroll(rememberScrollState()),
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Image(
-                        painter = painterResource(R.drawable.ic_firefox),
-                        contentDescription = null,
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = messageText,
-                        color = FirefoxTheme.colors.textPrimary,
-                        textAlign = TextAlign.Center,
-                        style = FirefoxTheme.typography.headline6,
-                    )
-                }
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxWidth(BUTTON_WIDTH),
-                ) {
-                    PrimaryButton(
-                        text = onAcceptButtonText,
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = onAccept,
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    SecondaryButton(
-                        text = onDismissButtonText,
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = onDismiss,
-                    )
+                    Spacer(Modifier)
+
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Image(
+                            painter = painterResource(R.drawable.ic_firefox),
+                            contentDescription = null,
+                            modifier = Modifier.height(112.dp).width(108.dp),
+                        )
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Text(
+                            text = messageText,
+                            textAlign = TextAlign.Center,
+                            style = FirefoxTheme.typography.headline6,
+                        )
+                    }
+
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth(BUTTON_WIDTH),
+                    ) {
+                        FilledButton(
+                            text = onAcceptButtonText,
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = onAccept,
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        OutlinedButton(
+                            text = onDismissButtonText,
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = onDismiss,
+                        )
+                    }
                 }
             }
         }

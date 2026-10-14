@@ -186,6 +186,45 @@ const TEST_DATA = [
       },
     ],
   },
+  // Test empty custom property with priority.
+  {
+    input: "--x: !important;",
+    expected: [
+      {
+        name: "--x",
+        value: "",
+        priority: "important",
+        offsets: [0, 16],
+        isCustomProperty: true,
+      },
+    ],
+  },
+  // Test empty custom property with priority without terminating ";".
+  {
+    input: "--x: !important",
+    expected: [
+      {
+        name: "--x",
+        value: "",
+        priority: "important",
+        offsets: [0, 15],
+        isCustomProperty: true,
+      },
+    ],
+  },
+  // Test uppercase priority
+  {
+    input: "p1: v1 !IMPORTANT;",
+    expected: [
+      {
+        name: "p1",
+        value: "v1",
+        priority: "important",
+        offsets: [0, 18],
+        declarationText: "p1: v1 !IMPORTANT;",
+      },
+    ],
+  },
   // Test trailing "!" without terminating ";".
   {
     input: "p1: v1 !",
@@ -837,7 +876,9 @@ const TEST_DATA = [
             rotate(-270deg);
         }
       }
-    );`,
+    );
+    --bar: [a b];
+    color: blue;`,
     expected: [
       {
         name: "--foo",
@@ -855,6 +896,42 @@ const TEST_DATA = [
           "scale(1) rotate(-270deg); } } )",
         priority: "",
         offsets: [0, 1036],
+        isCustomProperty: true,
+      },
+      {
+        name: "--bar",
+        value: "[a b]",
+        priority: "",
+        offsets: [1041, 1054],
+        isCustomProperty: true,
+      },
+      {
+        name: "color",
+        value: "blue",
+        priority: "",
+        offsets: [1059, 1071],
+      },
+    ],
+  },
+
+  // Regression test for bug 2077906 (which is a variant of the previous test case) - take
+  // CSS blocks into consideration before handling ; and : (i.e. don't advance to the
+  // property name or value automatically).
+  {
+    input: `--foo: { a: b; c: d }; color: red;`,
+    expected: [
+      {
+        name: "--foo",
+        value: "{ a: b; c: d }",
+        priority: "",
+        offsets: [0, 22],
+        isCustomProperty: true,
+      },
+      {
+        name: "color",
+        value: "red",
+        priority: "",
+        offsets: [23, 34],
       },
     ],
   },
@@ -1439,6 +1516,101 @@ const TEST_DATA = [
       },
     ],
   },
+
+  /***** Testing Custom Properties rules *****/
+  {
+    input: `
+      --foo: 1;
+      --bar: 2;
+      --foobar: calc( var(--foo, 3) * var(--bar, 4));
+      --empty: ;
+      width: var(--foobar, var(--fallback));
+      -moz-appearance: none;
+      --: 5;
+      --prio-parenthesis: token(!important);
+      --prio-square-bracket: [!important];
+      --prio-curly-bracket: {foo !important};
+    `,
+    expected: [
+      {
+        name: "--foo",
+        value: "1",
+        priority: "",
+        offsets: [7, 16],
+        declarationText: "--foo: 1;",
+        isCustomProperty: true,
+      },
+      {
+        name: "--bar",
+        value: "2",
+        priority: "",
+        offsets: [23, 32],
+        declarationText: "--bar: 2;",
+        isCustomProperty: true,
+      },
+      {
+        name: "--foobar",
+        value: "calc( var(--foo, 3) * var(--bar, 4))",
+        priority: "",
+        offsets: [39, 86],
+        declarationText: "--foobar: calc( var(--foo, 3) * var(--bar, 4));",
+        isCustomProperty: true,
+      },
+      {
+        name: "--empty",
+        value: "",
+        priority: "",
+        offsets: [93, 103],
+        declarationText: "--empty: ;",
+        isCustomProperty: true,
+      },
+      {
+        name: "width",
+        value: "var(--foobar, var(--fallback))",
+        priority: "",
+        offsets: [110, 148],
+        declarationText: "width: var(--foobar, var(--fallback));",
+      },
+      {
+        name: "-moz-appearance",
+        value: "none",
+        priority: "",
+        offsets: [155, 177],
+        declarationText: "-moz-appearance: none;",
+      },
+      {
+        name: "--",
+        value: "5",
+        priority: "",
+        offsets: [184, 190],
+        declarationText: "--: 5;",
+      },
+      {
+        name: "--prio-parenthesis",
+        value: "token(!important)",
+        priority: "",
+        offsets: [197, 235],
+        declarationText: "--prio-parenthesis: token(!important);",
+        isCustomProperty: true,
+      },
+      {
+        name: "--prio-square-bracket",
+        value: "[!important]",
+        priority: "",
+        offsets: [242, 278],
+        declarationText: "--prio-square-bracket: [!important];",
+        isCustomProperty: true,
+      },
+      {
+        name: "--prio-curly-bracket",
+        value: "{foo !important}",
+        priority: "",
+        offsets: [285, 324],
+        declarationText: "--prio-curly-bracket: {foo !important};",
+        isCustomProperty: true,
+      },
+    ],
+  },
 ];
 
 function run_test() {
@@ -1471,7 +1643,7 @@ function run_basic_tests() {
       }
     }
     if (output) {
-      assertOutput(test.input, output, test.expected);
+      assertDeclarations(test.input, output, test.expected);
     }
   }
 }
@@ -1545,40 +1717,42 @@ function run_named_tests() {
   }
 }
 
-function assertOutput(input, actual, expected) {
-  if (actual.length === expected.length) {
-    for (let i = 0; i < expected.length; i++) {
-      Assert.ok(!!actual[i]);
+function assertDeclarations(input, actualDeclarations, expectedDeclarations) {
+  if (actualDeclarations.length === expectedDeclarations.length) {
+    for (let i = 0; i < expectedDeclarations.length; i++) {
+      const actual = actualDeclarations[i];
+      const expected = expectedDeclarations[i];
+      Assert.ok(!!actual);
       info(
-        "Check that the output item has the expected name, " +
-          "value and priority"
+        `Check that the output item has the expected name, value and priority for '${input}'`
       );
-      Assert.equal(actual[i].name, expected[i].name, "Expected name");
-      Assert.equal(actual[i].value, expected[i].value, "Expected value");
-      Assert.equal(
-        actual[i].priority,
-        expected[i].priority,
-        "Expected priority"
-      );
-      deepEqual(actual[i].offsets, expected[i].offsets, "Expected offsets");
-      if ("commentOffsets" in expected[i]) {
+      Assert.equal(actual.name, expected.name, "Expected name");
+      Assert.equal(actual.value, expected.value, "Expected value");
+      Assert.equal(actual.priority, expected.priority, "Expected priority");
+      deepEqual(actual.offsets, expected.offsets, "Expected offsets");
+      if ("commentOffsets" in expected) {
         deepEqual(
-          actual[i].commentOffsets,
-          expected[i].commentOffsets,
+          actual.commentOffsets,
+          expected.commentOffsets,
           "Expected commentOffsets"
         );
       }
 
-      if (expected[i].declarationText) {
+      if (expected.declarationText) {
         Assert.equal(
-          input.substring(expected[i].offsets[0], expected[i].offsets[1]),
-          expected[i].declarationText,
+          input.substring(expected.offsets[0], expected.offsets[1]),
+          expected.declarationText,
           "Expected declarationText"
         );
       }
+      Assert.equal(
+        actual.isCustomProperty,
+        expected.isCustomProperty,
+        "Expected isCustomProperty"
+      );
     }
   } else {
-    for (const prop of actual) {
+    for (const prop of actualDeclarations) {
       info(
         "Actual output contained: {name: " +
           prop.name +
@@ -1589,6 +1763,10 @@ function assertOutput(input, actual, expected) {
           "}"
       );
     }
-    Assert.equal(actual.length, expected.length);
+    Assert.equal(
+      actualDeclarations.length,
+      expectedDeclarations.length,
+      `Got expected number of declarations when parsing "${input}"`
+    );
   }
 }

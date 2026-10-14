@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,10 +6,8 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/Casting.h"
-#include "mozilla/EnumSet.h"
 
 #include <algorithm>
-#include <utility>
 
 #include "jspubtd.h"
 #include "NamespaceImports.h"
@@ -36,6 +32,7 @@
 #include "gc/AllocKind.h"
 #include "gc/Barrier.h"
 #include "gc/GCEnum.h"
+#include "jit/InlinableNatives.h"
 #include "js/CallArgs.h"
 #include "js/CallNonGenericMethod.h"
 #include "js/Class.h"
@@ -132,15 +129,15 @@ static PlainDateTimeObject* CreateTemporalDateTime(
   // Step 4.
   auto packedDate = PackedDate::pack(isoDateTime.date);
   auto packedTime = PackedTime::pack(isoDateTime.time);
-  object->setFixedSlot(PlainDateTimeObject::PACKED_DATE_SLOT,
-                       PrivateUint32Value(packedDate.value));
-  object->setFixedSlot(
+  object->initFixedSlotTyped(PlainDateTimeObject::PACKED_DATE_SLOT,
+                             PrivateUint32Value(packedDate.value));
+  object->initFixedSlotTyped(
       PlainDateTimeObject::PACKED_TIME_SLOT,
       DoubleValue(mozilla::BitwiseCast<double>(packedTime.value)));
 
   // Step 5.
-  object->setFixedSlot(PlainDateTimeObject::CALENDAR_SLOT,
-                       calendar.toSlotValue());
+  object->initFixedSlotTyped(PlainDateTimeObject::CALENDAR_SLOT,
+                             calendar.toSlotValue());
 
   // Step 6.
   return object;
@@ -170,15 +167,15 @@ PlainDateTimeObject* js::temporal::CreateTemporalDateTime(
   // Step 4.
   auto packedDate = PackedDate::pack(isoDateTime.date);
   auto packedTime = PackedTime::pack(isoDateTime.time);
-  object->setFixedSlot(PlainDateTimeObject::PACKED_DATE_SLOT,
-                       PrivateUint32Value(packedDate.value));
-  object->setFixedSlot(
+  object->initFixedSlotTyped(PlainDateTimeObject::PACKED_DATE_SLOT,
+                             PrivateUint32Value(packedDate.value));
+  object->initFixedSlotTyped(
       PlainDateTimeObject::PACKED_TIME_SLOT,
       DoubleValue(mozilla::BitwiseCast<double>(packedTime.value)));
 
   // Step 5.
-  object->setFixedSlot(PlainDateTimeObject::CALENDAR_SLOT,
-                       calendar.toSlotValue());
+  object->initFixedSlotTyped(PlainDateTimeObject::CALENDAR_SLOT,
+                             calendar.toSlotValue());
 
   // Step 6.
   return object;
@@ -562,7 +559,8 @@ ISODateTime js::temporal::RoundISODateTime(const ISODateTime& isoDateTime,
   MOZ_ASSERT(0 <= roundedTime.days && roundedTime.days <= 1);
 
   // Step 3.
-  auto balanceResult = BalanceISODate(isoDateTime.date, roundedTime.days);
+  auto balanceResult =
+      BalanceISODate(isoDateTime.date, static_cast<int32_t>(roundedTime.days));
 
   // Step 4.
   return {balanceResult, roundedTime.time};
@@ -576,9 +574,6 @@ bool js::temporal::DifferencePlainDateTimeWithRounding(
     JSContext* cx, const ISODateTime& isoDateTime1,
     const ISODateTime& isoDateTime2, Handle<CalendarValue> calendar,
     const DifferenceSettings& settings, InternalDuration* result) {
-  MOZ_ASSERT(ISODateTimeWithinLimits(isoDateTime1));
-  MOZ_ASSERT(ISODateTimeWithinLimits(isoDateTime2));
-
   // Step 1.
   if (isoDateTime1 == isoDateTime2) {
     // Step 1.a.
@@ -586,7 +581,13 @@ bool js::temporal::DifferencePlainDateTimeWithRounding(
     return true;
   }
 
-  // Step 2. (Not applicable in our implementation.)
+  // Step 2.
+  if (!ISODateTimeWithinLimits(isoDateTime1) ||
+      !ISODateTimeWithinLimits(isoDateTime2)) {
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                              JSMSG_TEMPORAL_PLAIN_DATE_TIME_INVALID);
+    return false;
+  }
 
   // Step 3.
   InternalDuration diff;
@@ -603,12 +604,15 @@ bool js::temporal::DifferencePlainDateTimeWithRounding(
   }
 
   // Step 5.
-  auto destEpochNs = GetUTCEpochNanoseconds(isoDateTime2);
+  auto originEpochNs = GetUTCEpochNanoseconds(isoDateTime1);
 
   // Step 6.
+  auto destEpochNs = GetUTCEpochNanoseconds(isoDateTime2);
+
+  // Step 7.
   Rooted<TimeZoneValue> timeZone(cx, TimeZoneValue{});
   return RoundRelativeDuration(
-      cx, diff, destEpochNs, isoDateTime1, timeZone, calendar,
+      cx, diff, originEpochNs, destEpochNs, isoDateTime1, timeZone, calendar,
       settings.largestUnit, settings.roundingIncrement, settings.smallestUnit,
       settings.roundingMode, result);
 }
@@ -621,9 +625,6 @@ bool js::temporal::DifferencePlainDateTimeWithTotal(
     JSContext* cx, const ISODateTime& isoDateTime1,
     const ISODateTime& isoDateTime2, Handle<CalendarValue> calendar,
     TemporalUnit unit, double* result) {
-  MOZ_ASSERT(ISODateTimeWithinLimits(isoDateTime1));
-  MOZ_ASSERT(ISODateTimeWithinLimits(isoDateTime2));
-
   // Step 1.
   if (isoDateTime1 == isoDateTime2) {
     // Step 1.a.
@@ -631,7 +632,13 @@ bool js::temporal::DifferencePlainDateTimeWithTotal(
     return true;
   }
 
-  // Step 2. (Not applicable in our implementation.)
+  // Step 2.
+  if (!ISODateTimeWithinLimits(isoDateTime1) ||
+      !ISODateTimeWithinLimits(isoDateTime2)) {
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                              JSMSG_TEMPORAL_PLAIN_DATE_TIME_INVALID);
+    return false;
+  }
 
   // Step 3.
   InternalDuration diff;
@@ -649,7 +656,8 @@ bool js::temporal::DifferencePlainDateTimeWithTotal(
     // TotalRelativeDuration, step 3.
     *result = TotalTimeDuration(diff.time, unit);
     return true;
-  } else if (unit == TemporalUnit::Day) {
+  }
+  if (unit == TemporalUnit::Day) {
     // TotalRelativeDuration, step 1. (Not applicable)
 
     // TotalRelativeDuration, step 2.
@@ -662,12 +670,15 @@ bool js::temporal::DifferencePlainDateTimeWithTotal(
   }
 
   // Step 5.
-  auto destEpochNs = GetUTCEpochNanoseconds(isoDateTime2);
+  auto originEpochNs = GetUTCEpochNanoseconds(isoDateTime1);
 
   // Step 6.
+  auto destEpochNs = GetUTCEpochNanoseconds(isoDateTime2);
+
+  // Step 7.
   Rooted<TimeZoneValue> timeZone(cx, TimeZoneValue{});
-  return TotalRelativeDuration(cx, diff, destEpochNs, isoDateTime1, timeZone,
-                               calendar, unit, result);
+  return TotalRelativeDuration(cx, diff, originEpochNs, destEpochNs,
+                               isoDateTime1, timeZone, calendar, unit, result);
 }
 
 /**
@@ -1721,8 +1732,8 @@ static bool PlainDateTime_round(JSContext* cx, const CallArgs& args) {
   auto dateTime = temporalDateTime->dateTime();
   Rooted<CalendarValue> calendar(cx, temporalDateTime->calendar());
 
-  // Steps 3-12.
-  auto smallestUnit = TemporalUnit::Auto;
+  // Steps 3-13.
+  auto smallestUnit = TemporalUnit::Unset;
   auto roundingMode = TemporalRoundingMode::HalfExpand;
   auto roundingIncrement = Increment{1};
   if (args.get(0).isString()) {
@@ -1731,15 +1742,19 @@ static bool PlainDateTime_round(JSContext* cx, const CallArgs& args) {
     // Step 9.
     Rooted<JSString*> paramString(cx, args[0].toString());
     if (!GetTemporalUnitValuedOption(
-            cx, paramString, TemporalUnitKey::SmallestUnit,
-            TemporalUnitGroup::DayTime, &smallestUnit)) {
+            cx, paramString, TemporalUnitKey::SmallestUnit, &smallestUnit)) {
       return false;
     }
 
+    // Step 10.
+    if (!ValidateTemporalUnitValue(cx, TemporalUnitKey::SmallestUnit,
+                                   smallestUnit, TemporalUnitGroup::DayTime)) {
+      return false;
+    }
     MOZ_ASSERT(TemporalUnit::Day <= smallestUnit &&
                smallestUnit <= TemporalUnit::Nanosecond);
 
-    // Steps 6-8 and 10-12. (Implicit)
+    // Steps 6-8 and 11-13. (Implicit)
   } else {
     // Steps 3 and 5.
     Rooted<JSObject*> roundTo(
@@ -1760,21 +1775,25 @@ static bool PlainDateTime_round(JSContext* cx, const CallArgs& args) {
 
     // Step 9.
     if (!GetTemporalUnitValuedOption(cx, roundTo, TemporalUnitKey::SmallestUnit,
-                                     TemporalUnitGroup::DayTime,
                                      &smallestUnit)) {
       return false;
     }
 
-    if (smallestUnit == TemporalUnit::Auto) {
+    if (smallestUnit == TemporalUnit::Unset) {
       JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                                 JSMSG_TEMPORAL_MISSING_OPTION, "smallestUnit");
       return false;
     }
 
+    // Step 10.
+    if (!ValidateTemporalUnitValue(cx, TemporalUnitKey::SmallestUnit,
+                                   smallestUnit, TemporalUnitGroup::DayTime)) {
+      return false;
+    }
     MOZ_ASSERT(TemporalUnit::Day <= smallestUnit &&
                smallestUnit <= TemporalUnit::Nanosecond);
 
-    // Steps 10-11.
+    // Steps 11-12.
     auto maximum = Increment{1};
     bool inclusive = true;
     if (smallestUnit > TemporalUnit::Day) {
@@ -1782,14 +1801,14 @@ static bool PlainDateTime_round(JSContext* cx, const CallArgs& args) {
       inclusive = false;
     }
 
-    // Step 12.
+    // Step 13.
     if (!ValidateTemporalRoundingIncrement(cx, roundingIncrement, maximum,
                                            inclusive)) {
       return false;
     }
   }
 
-  // Step 13.
+  // Step 14.
   if (smallestUnit == TemporalUnit::Nanosecond &&
       roundingIncrement == Increment{1}) {
     auto* obj = CreateTemporalDateTime(cx, dateTime, calendar);
@@ -1801,11 +1820,11 @@ static bool PlainDateTime_round(JSContext* cx, const CallArgs& args) {
     return true;
   }
 
-  // Step 14.
+  // Step 15.
   auto result =
       RoundISODateTime(dateTime, roundingIncrement, smallestUnit, roundingMode);
 
-  // Step 15.
+  // Step 16.
   auto* obj = CreateTemporalDateTime(cx, result, calendar);
   if (!obj) {
     return false;
@@ -1892,13 +1911,19 @@ static bool PlainDateTime_toString(JSContext* cx, const CallArgs& args) {
     }
 
     // Step 8.
-    auto smallestUnit = TemporalUnit::Auto;
+    auto smallestUnit = TemporalUnit::Unset;
     if (!GetTemporalUnitValuedOption(cx, options, TemporalUnitKey::SmallestUnit,
-                                     TemporalUnitGroup::Time, &smallestUnit)) {
+                                     &smallestUnit)) {
       return false;
     }
 
     // Step 9.
+    if (!ValidateTemporalUnitValue(cx, TemporalUnitKey::SmallestUnit,
+                                   smallestUnit, TemporalUnitGroup::Time)) {
+      return false;
+    }
+
+    // Step 10.
     if (smallestUnit == TemporalUnit::Hour) {
       JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                                 JSMSG_TEMPORAL_INVALID_UNIT_OPTION, "hour",
@@ -1906,22 +1931,22 @@ static bool PlainDateTime_toString(JSContext* cx, const CallArgs& args) {
       return false;
     }
 
-    // Step 10.
+    // Step 11.
     precision = ToSecondsStringPrecision(smallestUnit, digits);
   }
 
-  // Step 11.
+  // Step 12.
   auto result =
       RoundISODateTime(dt, precision.increment, precision.unit, roundingMode);
 
-  // Step 12.
+  // Step 13.
   if (!ISODateTimeWithinLimits(result)) {
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                               JSMSG_TEMPORAL_PLAIN_DATE_TIME_INVALID);
     return false;
   }
 
-  // Step 13.
+  // Step 14.
   JSString* str = ISODateTimeToString(cx, result, calendar, precision.precision,
                                       showCalendar);
   if (!str) {
@@ -2155,12 +2180,15 @@ static const JSPropertySpec PlainDateTime_prototype_properties[] = {
     JS_PSG("month", PlainDateTime_month, 0),
     JS_PSG("monthCode", PlainDateTime_monthCode, 0),
     JS_PSG("day", PlainDateTime_day, 0),
-    JS_PSG("hour", PlainDateTime_hour, 0),
-    JS_PSG("minute", PlainDateTime_minute, 0),
-    JS_PSG("second", PlainDateTime_second, 0),
-    JS_PSG("millisecond", PlainDateTime_millisecond, 0),
-    JS_PSG("microsecond", PlainDateTime_microsecond, 0),
-    JS_PSG("nanosecond", PlainDateTime_nanosecond, 0),
+    JS_INLINABLE_PSG("hour", PlainDateTime_hour, 0, PlainDateTimeHour),
+    JS_INLINABLE_PSG("minute", PlainDateTime_minute, 0, PlainDateTimeMinute),
+    JS_INLINABLE_PSG("second", PlainDateTime_second, 0, PlainDateTimeSecond),
+    JS_INLINABLE_PSG("millisecond", PlainDateTime_millisecond, 0,
+                     PlainDateTimeMillisecond),
+    JS_INLINABLE_PSG("microsecond", PlainDateTime_microsecond, 0,
+                     PlainDateTimeMicrosecond),
+    JS_INLINABLE_PSG("nanosecond", PlainDateTime_nanosecond, 0,
+                     PlainDateTimeNanosecond),
     JS_PSG("dayOfWeek", PlainDateTime_dayOfWeek, 0),
     JS_PSG("dayOfYear", PlainDateTime_dayOfYear, 0),
     JS_PSG("weekOfYear", PlainDateTime_weekOfYear, 0),

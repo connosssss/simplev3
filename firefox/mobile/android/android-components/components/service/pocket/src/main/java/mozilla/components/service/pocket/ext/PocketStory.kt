@@ -4,80 +4,36 @@
 
 package mozilla.components.service.pocket.ext
 
-import mozilla.components.service.pocket.PocketStory.PocketSponsoredStory
-import mozilla.components.service.pocket.PocketStory.PocketSponsoredStoryCaps
+import java.util.concurrent.TimeUnit
 import mozilla.components.service.pocket.PocketStory.SponsoredContent
 import mozilla.components.service.pocket.PocketStory.SponsoredContentFrequencyCaps
-import java.util.concurrent.TimeUnit
 
 /**
- * Get a list of all story impressions (expressed in seconds from Epoch) in the period between
- * `now` down to [PocketSponsoredStoryCaps.flightPeriod].
+ * Returns a list of all sponsored content impressions (expressed in seconds from Epoch) in the period between `now`
+ * down to [SponsoredContentFrequencyCaps.flightPeriod].
  */
-fun PocketSponsoredStory.getCurrentFlightImpressions(): List<Long> {
-    val now = TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis())
+fun SponsoredContent.getCurrentFlightImpressions(currentTimeMillis: Long = System.currentTimeMillis()): List<Long> {
+    val now = TimeUnit.MILLISECONDS.toSeconds(currentTimeMillis)
     return caps.currentImpressions.filter {
         now - it < caps.flightPeriod
     }
 }
 
 /**
- * Get if this story was already shown for the maximum number of times available in it's lifetime.
- */
-fun PocketSponsoredStory.hasLifetimeImpressionsLimitReached(): Boolean {
-    return caps.currentImpressions.size >= caps.lifetimeCount
-}
-
-/**
- * Get if this story was already shown for the maximum number of times available in the period
- * specified by [PocketSponsoredStoryCaps.flightPeriod].
- */
-fun PocketSponsoredStory.hasFlightImpressionsLimitReached(): Boolean {
-    return getCurrentFlightImpressions().size >= caps.flightCount
-}
-
-/**
- * Record a new impression at this instant time and get this story back with updated impressions details.
- * This only updates the in-memory data.
- *
- * It's recommended to use this method anytime a new impression needs to be recorded for a `PocketSponsoredStory`
- * to ensure values consistency.
- */
-fun PocketSponsoredStory.recordNewImpression(): PocketSponsoredStory {
-    return this.copy(
-        caps = caps.copy(
-            currentImpressions = caps.currentImpressions + TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis()),
-        ),
-    )
-}
-
-/**
- * Returns a list of all sponsored content impressions (expressed in seconds from Epoch) in the
- * period between `now` down to [SponsoredContentFrequencyCaps.flightPeriod].
- */
-fun SponsoredContent.getCurrentFlightImpressions(): List<Long> {
-    val now = TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis())
-    return caps.currentImpressions.filter {
-        now - it < caps.flightPeriod
-    }
-}
-
-/**
- * Returns true if sponsored content has reached the maximum number of impressions in the period
- * specified by [SponsoredContentFrequencyCaps.flightPeriod] and false otherwise.
+ * Returns true if sponsored content has reached the maximum number of impressions in the period specified by
+ * [SponsoredContentFrequencyCaps.flightPeriod] and false otherwise.
  */
 fun SponsoredContent.hasFlightImpressionsLimitReached(): Boolean {
     return getCurrentFlightImpressions().size >= caps.flightCount
 }
 
 /**
- * Records a new impression and returns the [SponsoredContent] with the updated impressions
- * details. This only updates the in-memory data.
+ * Records a new impression and returns the [SponsoredContent] with the updated impressions details. This only updates
+ * the in-memory data.
  */
-fun SponsoredContent.recordNewImpression(): SponsoredContent {
+fun SponsoredContent.recordNewImpression(currentTimeMillis: Long = System.currentTimeMillis()): SponsoredContent {
     return this.copy(
-        caps = caps.copy(
-            currentImpressions = caps.currentImpressions + TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis()),
-        ),
+        caps =
+            caps.copy(currentImpressions = caps.currentImpressions + TimeUnit.MILLISECONDS.toSeconds(currentTimeMillis))
     )
 }

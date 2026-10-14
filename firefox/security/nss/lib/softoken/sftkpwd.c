@@ -42,7 +42,7 @@ getPBEIterationCount(void)
     int c = NSS_MP_PBE_ITERATION_COUNT;
 
     char *val = getenv("NSS_MIN_MP_PBE_ITERATION_COUNT");
-    if (val) {
+    if (val && *val) {
         int minimum = atoi(val);
         if (c < minimum) {
             c = minimum;
@@ -50,13 +50,17 @@ getPBEIterationCount(void)
     }
 
     val = getenv("NSS_MAX_MP_PBE_ITERATION_COUNT");
-    if (val) {
+    if (val && *val) {
         int maximum = atoi(val);
         if (c > maximum) {
             c = maximum;
         }
     }
-
+    /* never let c be less than one, no matter what the environment
+     * variable is set to */
+    if (c < 1) {
+        c = 1;
+    }
     return c;
 }
 
@@ -89,35 +93,40 @@ static SECStatus
 sftkdb_passwordToKey(SFTKDBHandle *keydb, SECItem *salt,
                      const char *pw, SECItem *key)
 {
-    SHA1Context *cx = NULL;
+    HASH_HashType hType;
+    const SECHashObject *hashObj;
+    void *ctx = NULL;
     SECStatus rv = SECFailure;
+
+    hType = salt->len == SHA384_LENGTH ? HASH_AlgSHA384 : HASH_AlgSHA1;
+    hashObj = HASH_GetRawHashObject(hType);
 
     if (!pw) {
         PORT_SetError(SEC_ERROR_INVALID_ARGS);
         return SECFailure;
     }
 
-    key->data = PORT_Alloc(SHA1_LENGTH);
+    key->data = PORT_Alloc(hashObj->length);
     if (key->data == NULL) {
         goto loser;
     }
-    key->len = SHA1_LENGTH;
+    key->len = hashObj->length;
 
-    cx = SHA1_NewContext();
-    if (cx == NULL) {
+    ctx = hashObj->create();
+    if (ctx == NULL) {
         goto loser;
     }
-    SHA1_Begin(cx);
+    hashObj->begin(ctx);
     if (salt && salt->data) {
-        SHA1_Update(cx, salt->data, salt->len);
+        hashObj->update(ctx, salt->data, salt->len);
     }
-    SHA1_Update(cx, (unsigned char *)pw, PORT_Strlen(pw));
-    SHA1_End(cx, key->data, &key->len, key->len);
+    hashObj->update(ctx, (unsigned char *)pw, PORT_Strlen(pw));
+    hashObj->end(ctx, key->data, &key->len, key->len);
     rv = SECSuccess;
 
 loser:
-    if (cx) {
-        SHA1_DestroyContext(cx, PR_TRUE);
+    if (ctx) {
+        hashObj->destroy(ctx, PR_TRUE);
     }
     if (rv != SECSuccess) {
         if (key->data != NULL) {
@@ -464,7 +473,6 @@ sftkdb_pbehash(SECOidTag sigOid, SECItem *passKey,
     HASH_HashType hashType = HASH_AlgNULL;
     const SECHashObject *hashObj;
     unsigned char addressData[SDB_ULONG_SIZE];
-
     hashType = HASH_FromHMACOid(param->encAlg);
     if (hashType == HASH_AlgNULL) {
         PORT_SetError(SEC_ERROR_INVALID_ALGORITHM);
@@ -651,7 +659,7 @@ sftkdb_switchKeys(SFTKDBHandle *keydb, SECItem *passKey, int iterationCount)
     }
 
     /* an atomic pointer set would be nice */
-    SKIP_AFTER_FORK(PZ_Lock(keydb->passwordLock));
+    SKIP_AFTER_FORK(PR_Lock(keydb->passwordLock));
     data = keydb->passwordKey.data;
     len = keydb->passwordKey.len;
     keydb->passwordKey.data = passKey->data;
@@ -659,7 +667,7 @@ sftkdb_switchKeys(SFTKDBHandle *keydb, SECItem *passKey, int iterationCount)
     keydb->defaultIterationCount = iterationCount;
     passKey->data = data;
     passKey->len = len;
-    SKIP_AFTER_FORK(PZ_Unlock(keydb->passwordLock));
+    SKIP_AFTER_FORK(PR_Unlock(keydb->passwordLock));
 }
 
 /*
@@ -705,11 +713,11 @@ sftkdb_GetUpdatePasswordKey(SFTKDBHandle *handle)
         return NULL;
     }
 
-    PZ_Lock(handle->passwordLock);
+    PR_Lock(handle->passwordLock);
     if (handle->updatePasswordKey) {
         key = SECITEM_DupItem(handle->updatePasswordKey);
     }
-    PZ_Unlock(handle->passwordLock);
+    PR_Unlock(handle->passwordLock);
 
     return key;
 }
@@ -732,12 +740,12 @@ sftkdb_FreeUpdatePasswordKey(SFTKDBHandle *handle)
         return;
     }
 
-    PZ_Lock(handle->passwordLock);
+    PR_Lock(handle->passwordLock);
     if (handle->updatePasswordKey) {
         key = handle->updatePasswordKey;
         handle->updatePasswordKey = NULL;
     }
-    PZ_Unlock(handle->passwordLock);
+    PR_Unlock(handle->passwordLock);
 
     if (key) {
         SECITEM_ZfreeItem(key, PR_TRUE);
@@ -811,10 +819,14 @@ sftkdb_HasPasswordSet(SFTKDBHandle *keydb)
 }
 
 /* pull out the common final part of checking a password */
-SECStatus
+static SECStatus
 sftkdb_finishPasswordCheck(SFTKDBHandle *keydb, SECItem *key,
                            const char *pw, SECItem *value,
-                           PRBool *tokenRemoved);
+                           PRBool *tokenRemoved, PRBool allowKDFUpgrade);
+static SECStatus sftkdb_checkPassword(SFTKDBHandle *keydb, const char *pw,
+                                      PRBool *tokenRemoved,
+                                      PRBool allowKDFUpgrade);
+static SECStatus sftkdb_upgradeKDF(SFTKDBHandle *keydb, const char *pw);
 
 /*
  * check to see if we have the NULL password set.
@@ -879,7 +891,8 @@ sftkdb_CheckPasswordNull(SFTKDBHandle *keydb, PRBool *tokenRemoved)
         goto done;
     }
 
-    rv = sftkdb_finishPasswordCheck(keydb, &key, "", &value, tokenRemoved);
+    rv = sftkdb_finishPasswordCheck(keydb, &key, "", &value, tokenRemoved,
+                                    PR_FALSE);
 
 done:
     if (key.data) {
@@ -898,10 +911,14 @@ done:
 #define SFTK_PW_CHECK_LEN 14
 
 /*
- * check if the supplied password is valid
+ * Check if the supplied password is valid.  allowKDFUpgrade is PR_FALSE when
+ * the caller is already re-encrypting the database: sftkdb_reencryptDatabase
+ * verifies the old password from inside its own SDB transaction, and the
+ * silent upgrade must not re-enter it from there.
  */
-SECStatus
-sftkdb_CheckPassword(SFTKDBHandle *keydb, const char *pw, PRBool *tokenRemoved)
+static SECStatus
+sftkdb_checkPassword(SFTKDBHandle *keydb, const char *pw, PRBool *tokenRemoved,
+                     PRBool allowKDFUpgrade)
 {
     SECStatus rv;
     SECItem salt, value;
@@ -943,7 +960,8 @@ sftkdb_CheckPassword(SFTKDBHandle *keydb, const char *pw, PRBool *tokenRemoved)
         goto done;
     }
 
-    rv = sftkdb_finishPasswordCheck(keydb, &key, pw, &value, tokenRemoved);
+    rv = sftkdb_finishPasswordCheck(keydb, &key, pw, &value, tokenRemoved,
+                                    allowKDFUpgrade);
 
 done:
     if (key.data) {
@@ -952,11 +970,21 @@ done:
     return rv;
 }
 
+/*
+ * check if the supplied password is valid
+ */
+SECStatus
+sftkdb_CheckPassword(SFTKDBHandle *keydb, const char *pw, PRBool *tokenRemoved)
+{
+    return sftkdb_checkPassword(keydb, pw, tokenRemoved, PR_TRUE);
+}
+
 /* we need to pass iterationCount in case we are updating a new database
  * and from an old one. */
-SECStatus
+static SECStatus
 sftkdb_finishPasswordCheck(SFTKDBHandle *keydb, SECItem *key, const char *pw,
-                           SECItem *value, PRBool *tokenRemoved)
+                           SECItem *value, PRBool *tokenRemoved,
+                           PRBool allowKDFUpgrade)
 {
     SECItem *result = NULL;
     SECStatus rv;
@@ -1004,7 +1032,7 @@ sftkdb_finishPasswordCheck(SFTKDBHandle *keydb, SECItem *key, const char *pw,
          *         update, as we now have both required passwords.
          *
          */
-        PZ_Lock(keydb->passwordLock);
+        PR_Lock(keydb->passwordLock);
         if (sftkdb_NeedUpdateDBPassword(keydb)) {
             /* Squirrel this special key away.
              * This has the side effect of turning sftkdb_NeedLegacyPW off,
@@ -1012,7 +1040,7 @@ sftkdb_finishPasswordCheck(SFTKDBHandle *keydb, SECItem *key, const char *pw,
              * SFTK_GET_PW_DB (thus effecting both sftkdb_CheckPassword()
              * and sftkdb_HasPasswordSet()) */
             keydb->updatePasswordKey = SECITEM_DupItem(key);
-            PZ_Unlock(keydb->passwordLock);
+            PR_Unlock(keydb->passwordLock);
             if (keydb->updatePasswordKey == NULL) {
                 /* PORT_Error set by SECITEM_DupItem */
                 rv = SECFailure;
@@ -1077,7 +1105,7 @@ sftkdb_finishPasswordCheck(SFTKDBHandle *keydb, SECItem *key, const char *pw,
                  * update case. */
             }
         } else {
-            PZ_Unlock(keydb->passwordLock);
+            PR_Unlock(keydb->passwordLock);
         }
         /* load the keys, so the keydb can parse it's key set */
         sftkdb_switchKeys(keydb, key, iterationCount);
@@ -1089,6 +1117,30 @@ sftkdb_finishPasswordCheck(SFTKDBHandle *keydb, SECItem *key, const char *pw,
                 sftkdb_Update(keydb->peerDB, key);
             }
             sftkdb_Update(keydb, key);
+        }
+
+        /* Silently re-encrypt with the current iteration count if the stored
+         * count is below the minimum. Only for non-null passwords on writable
+         * non-legacy databases not undergoing a DB migration, and never when
+         * the caller is already re-encrypting the database. */
+        if (allowKDFUpgrade && *pw != 0 && !keydb->usesLegacyStorage &&
+            !(keydb->db->sdb_flags & SDB_RDONLY) && !keydb->update) {
+            sftkCipherValue cipherValue;
+            cipherValue.param = NULL;
+            cipherValue.arena = NULL;
+            if (sftkdb_decodeCipherText(value, &cipherValue) == SECSuccess &&
+                cipherValue.param->iter < iterationCount) {
+                if (sftkdb_upgradeKDF(keydb, pw) != SECSuccess) {
+                    /* Upgrade is best-effort; login already succeeded. */
+                    PORT_SetError(0);
+                }
+            }
+            if (cipherValue.param) {
+                nsspkcs5_DestroyPBEParameter(cipherValue.param);
+            }
+            if (cipherValue.arena) {
+                PORT_FreeArena(cipherValue.arena, PR_FALSE);
+            }
         }
     } else {
         rv = SECFailure;
@@ -1109,9 +1161,9 @@ SECStatus
 sftkdb_PWCached(SFTKDBHandle *keydb)
 {
     SECStatus rv;
-    PZ_Lock(keydb->passwordLock);
+    PR_Lock(keydb->passwordLock);
     rv = keydb->passwordKey.data ? SECSuccess : SECFailure;
-    PZ_Unlock(keydb->passwordLock);
+    PR_Unlock(keydb->passwordLock);
     return rv;
 }
 
@@ -1138,13 +1190,19 @@ sftk_updateMacs(PLArenaPool *arena, SFTKDBHandle *handle,
     CK_ATTRIBUTE_TYPE authAttrTypes[] = {
         CKA_MODULUS,
         CKA_PUBLIC_EXPONENT,
-        CKA_CERT_SHA1_HASH,
-        CKA_CERT_MD5_HASH,
-        CKA_TRUST_SERVER_AUTH,
-        CKA_TRUST_CLIENT_AUTH,
-        CKA_TRUST_EMAIL_PROTECTION,
-        CKA_TRUST_CODE_SIGNING,
-        CKA_TRUST_STEP_UP_APPROVED,
+        CKA_NSS_CERT_SHA1_HASH,
+        CKA_NSS_CERT_MD5_HASH,
+        CKA_NAME_HASH_ALGORITHM,
+        CKA_HASH_OF_CERTIFICATE,
+        CKA_PKCS_TRUST_SERVER_AUTH,
+        CKA_PKCS_TRUST_CLIENT_AUTH,
+        CKA_PKCS_TRUST_EMAIL_PROTECTION,
+        CKA_PKCS_TRUST_CODE_SIGNING,
+        CKA_NSS_TRUST_SERVER_AUTH,
+        CKA_NSS_TRUST_CLIENT_AUTH,
+        CKA_NSS_TRUST_EMAIL_PROTECTION,
+        CKA_NSS_TRUST_CODE_SIGNING,
+        CKA_NSS_TRUST_STEP_UP_APPROVED,
         CKA_NSS_OVERRIDE_EXTENSIONS,
     };
     const CK_ULONG authAttrTypeCount = sizeof(authAttrTypes) / sizeof(authAttrTypes[0]);
@@ -1204,6 +1262,7 @@ sftk_updateEncrypted(PLArenaPool *arena, SFTKDBHandle *keydb,
 {
     CK_ATTRIBUTE_TYPE privAttrTypes[] = {
         CKA_VALUE,
+        CKA_SEED,
         CKA_PRIVATE_EXPONENT,
         CKA_PRIME_1,
         CKA_PRIME_2,
@@ -1337,11 +1396,17 @@ sftkdb_convertObjects(SFTKDBHandle *handle, CK_ATTRIBUTE *template,
 }
 
 /*
- * change the database password.
+ * Re-encrypt the database with a new key derived from newPin.  When
+ * skipOldPinCheck is PR_FALSE this is a normal password change: the old
+ * password is verified before proceeding.  When skipOldPinCheck is PR_TRUE
+ * the caller has already verified the password (used by sftkdb_upgradeKDF to
+ * avoid infinite recursion through sftkdb_finishPasswordCheck) and a fresh
+ * salt is always generated.
  */
-SECStatus
-sftkdb_ChangePassword(SFTKDBHandle *keydb,
-                      char *oldPin, char *newPin, PRBool *tokenRemoved)
+static SECStatus
+sftkdb_reencryptDatabase(SFTKDBHandle *keydb, const char *oldPin,
+                         const char *newPin, PRBool *tokenRemoved,
+                         PRBool skipOldPinCheck)
 {
     SECStatus rv = SECSuccess;
     SECItem plainText;
@@ -1352,6 +1417,7 @@ sftkdb_ChangePassword(SFTKDBHandle *keydb,
     unsigned char saltData[SDB_MAX_META_DATA_LEN];
     unsigned char valueData[SDB_MAX_META_DATA_LEN];
     int iterationCount = getPBEIterationCount();
+    int preferred_salt_length;
     CK_RV crv;
     SDB *db;
 
@@ -1366,7 +1432,6 @@ sftkdb_ChangePassword(SFTKDBHandle *keydb,
 
     newKey.data = NULL;
 
-    /* make sure we have a valid old pin */
     crv = (*keydb->db->sdb_Begin)(keydb->db);
     if (crv != CKR_OK) {
         rv = SECFailure;
@@ -1376,14 +1441,31 @@ sftkdb_ChangePassword(SFTKDBHandle *keydb,
     salt.len = sizeof(saltData);
     value.data = valueData;
     value.len = sizeof(valueData);
-    crv = (*db->sdb_GetMetaData)(db, "password", &salt, &value);
-    if (crv == CKR_OK) {
-        rv = sftkdb_CheckPassword(keydb, oldPin, tokenRemoved);
-        if (rv == SECFailure) {
-            goto loser;
-        }
+
+    if (skipOldPinCheck) {
+        /* Password already verified by caller; always generate a fresh salt. */
+        salt.len = 0;
     } else {
-        salt.len = SHA1_LENGTH;
+        crv = (*db->sdb_GetMetaData)(db, "password", &salt, &value);
+        if (crv == CKR_OK) {
+            rv = sftkdb_checkPassword(keydb, oldPin, tokenRemoved, PR_FALSE);
+            if (rv == SECFailure) {
+                goto loser;
+            }
+        } else {
+            salt.len = 0;
+        }
+    }
+
+    preferred_salt_length = SHA384_LENGTH;
+    /* Prefer SHA-1 salt for empty passwords (iter=1 path) */
+    if (!newPin || *newPin == 0) {
+        preferred_salt_length = SHA1_LENGTH;
+    }
+
+    PORT_Assert(preferred_salt_length <= SDB_MAX_META_DATA_LEN);
+    if (salt.len != preferred_salt_length) {
+        salt.len = preferred_salt_length;
         RNG_GenerateGlobalRandomBytes(salt.data, salt.len);
     }
 
@@ -1398,9 +1480,6 @@ sftkdb_ChangePassword(SFTKDBHandle *keydb,
         goto loser;
     }
 
-    /*
-     * convert encrypted entries here.
-     */
     crv = sftkdb_convertObjects(keydb, NULL, 0, &newKey, iterationCount);
     if (crv != CKR_OK) {
         rv = SECFailure;
@@ -1420,6 +1499,13 @@ sftkdb_ChangePassword(SFTKDBHandle *keydb,
             goto loser;
         }
         myClass = CKO_PUBLIC_KEY;
+        crv = sftkdb_convertObjects(certdb, &objectType, 1, &newKey,
+                                    iterationCount);
+        if (crv != CKR_OK) {
+            rv = SECFailure;
+            goto loser;
+        }
+        myClass = CKO_TRUST;
         crv = sftkdb_convertObjects(certdb, &objectType, 1, &newKey,
                                     iterationCount);
         if (crv != CKR_OK) {
@@ -1451,7 +1537,6 @@ sftkdb_ChangePassword(SFTKDBHandle *keydb,
     }
 
     keydb->newKey = NULL;
-
     sftkdb_switchKeys(keydb, &newKey, iterationCount);
 
 loser:
@@ -1464,8 +1549,31 @@ loser:
     if (rv != SECSuccess) {
         (*keydb->db->sdb_Abort)(keydb->db);
     }
-
     return rv;
+}
+
+/*
+ * Silently upgrade the KDF iteration count on login when it is below the
+ * current minimum (bug 1719827).  The password has already been verified by
+ * sftkdb_finishPasswordCheck; passing skipOldPinCheck=PR_TRUE avoids the
+ * recursive call back into sftkdb_CheckPassword.
+ */
+static SECStatus
+sftkdb_upgradeKDF(SFTKDBHandle *keydb, const char *pw)
+{
+    PRBool tokenRemoved = PR_FALSE;
+    return sftkdb_reencryptDatabase(keydb, pw, pw, &tokenRemoved, PR_TRUE);
+}
+
+/*
+ * change the database password.
+ */
+SECStatus
+sftkdb_ChangePassword(SFTKDBHandle *keydb,
+                      char *oldPin, char *newPin, PRBool *tokenRemoved)
+{
+    return sftkdb_reencryptDatabase(keydb, oldPin, newPin, tokenRemoved,
+                                    PR_FALSE);
 }
 
 /*

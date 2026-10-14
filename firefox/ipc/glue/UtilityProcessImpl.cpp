@@ -1,18 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "UtilityProcessImpl.h"
 
 #include "mozilla/GeckoArgs.h"
-#include "mozilla/ProcInfo.h"
 
 #if defined(XP_WIN)
 #  include "nsExceptionHandler.h"
 #endif
 
 #if defined(XP_WIN) && defined(MOZ_SANDBOX)
+#  include "mozilla/CpuInfo.h"
+#  include "mozilla/llama/LlamaRuntimeLinker.h"
 #  include "mozilla/sandboxTarget.h"
 #  include "WMF.h"
 #  include "WMFDecoderModule.h"
@@ -96,7 +95,7 @@ bool UtilityProcessImpl::Init(int aArgc, char* aArgv[]) {
 
   if (*sandboxingKind == SandboxingKind::GENERIC_UTILITY) {
     // Preload audio generic libraries required for ffmpeg only
-    UtilityAudioDecoderParent::GenericPreloadForSandbox();
+    UtilityMediaServiceParent::GenericPreloadForSandbox();
   }
 
   if (*sandboxingKind == SandboxingKind::UTILITY_AUDIO_DECODING_WMF
@@ -104,7 +103,11 @@ bool UtilityProcessImpl::Init(int aArgc, char* aArgv[]) {
       || *sandboxingKind == SandboxingKind::MF_MEDIA_ENGINE_CDM
 #  endif
   ) {
-    UtilityAudioDecoderParent::WMFPreloadForSandbox();
+    UtilityMediaServiceParent::WMFPreloadForSandbox();
+  }
+
+  if (*sandboxingKind == SandboxingKind::HW_INFERENCE) {
+    mozilla::llama::LlamaRuntimeLinker::Init();
   }
 
   // Go for it
@@ -145,7 +148,7 @@ bool UtilityProcessImpl::Init(int aArgc, char* aArgv[]) {
 #endif
 
   return mUtility->Init(TakeInitialEndpoint(), nsCString(*parentBuildID),
-                        *sandboxingKind);
+                        SandboxingKind(*sandboxingKind));
 }
 
 void UtilityProcessImpl::CleanUp() { NS_ShutdownXPCOM(nullptr); }

@@ -10,6 +10,7 @@ window.onunload = function () {
   Search.uninit();
   Provider.uninit();
   Cache.uninit();
+  ContentClassifier.uninit();
   Debug.uninit();
 };
 
@@ -17,6 +18,7 @@ window.onload = function () {
   Search.init();
   Provider.init();
   Cache.init();
+  ContentClassifier.init();
   Debug.init();
 };
 
@@ -52,6 +54,8 @@ var Search = {
     let list = document.getElementById("search-features");
     list.appendChild(fragment);
 
+    let input = document.getElementById("search-input");
+    input.addEventListener("keydown", this.onKeydown);
     let btn = document.getElementById("search-button");
     btn.addEventListener("click", this.search);
 
@@ -65,22 +69,35 @@ var Search = {
       list.firstChild.remove();
     }
 
+    let input = document.getElementById("search-input");
+    input.removeEventListener("keydown", this.onKeydown);
     let btn = document.getElementById("search-button");
     btn.removeEventListener("click", this.search);
+  },
+
+  onKeydown(event) {
+    if (event.key === "Enter") {
+      Search.search();
+    }
   },
 
   search() {
     Search.hideError();
     Search.hideResults();
 
-    let input = document.getElementById("search-input").value;
+    let searchInput = document.getElementById("search-input");
+    let input = searchInput.value;
 
     let uri;
     try {
-      uri = Services.io.newURI(input);
+      uri = Services.uriFixup.getFixupURIInfo(input).preferredURI;
       if (!uri) {
         Search.reportError("url-classifier-search-error-invalid-url");
         return;
+      }
+      // default to https
+      if (uri.schemeIs("http") && !input.startsWith("http:")) {
+        uri = uri.mutate().setScheme("https").finalize();
       }
     } catch (ex) {
       Search.reportError("url-classifier-search-error-invalid-url");
@@ -111,11 +128,10 @@ var Search = {
       document.getElementById("search-listtype").value == 0
         ? Ci.nsIUrlClassifierFeature.blocklist
         : Ci.nsIUrlClassifierFeature.entitylist;
-    classifier.asyncClassifyLocalWithFeatures(uri, features, listType, list =>
-      Search.showResults(list)
-    );
-
-    Search.hideError();
+    classifier.asyncClassifyLocalWithFeatures(uri, features, listType, list => {
+      searchInput.value = uri.spec;
+      Search.showResults(list);
+    });
   },
 
   hideError() {
@@ -138,6 +154,12 @@ var Search = {
   },
 
   showResults(results) {
+    let resultTitle = document.getElementById("result-title");
+    resultTitle.style.display = "";
+    if (!results.length) {
+      Search.reportError("url-classifier-search-error-no-results");
+      return;
+    }
     let fragment = document.createDocumentFragment();
     results.forEach(result => {
       let tr = document.createElement("tr");
@@ -172,9 +194,6 @@ var Search = {
 
     resultTable.appendChild(fragment);
     resultTable.style.display = "";
-
-    let resultTitle = document.getElementById("result-title");
-    resultTitle.style.display = "";
   },
 };
 
@@ -346,6 +365,15 @@ var Provider = {
   // the provider is active. This is used to filter out google v2 provider
   // without changing the preference.
   isActiveProvider(provider) {
+    if (
+      provider === "google5" &&
+      !Services.prefs.getBoolPref(
+        "browser.safebrowsing.provider.google5.enabled"
+      )
+    ) {
+      return false;
+    }
+
     let listmanager = Cc[
       "@mozilla.org/url-classifier/listmanager;1"
     ].getService(Ci.nsIUrlListManager);
@@ -544,6 +572,249 @@ var Cache = {
     let entries_div = document.getElementById("cache-entries");
     entries_div.style.display =
       this.showCacheEnties.size == 0 ? "none" : "block";
+  },
+};
+
+/*
+ * ContentClassifier
+ */
+var ContentClassifier = {
+  enabled: false,
+
+  init() {
+    let section = document.getElementById("content-classifier");
+    ContentClassifier.enabled =
+      Services.prefs.getBoolPref(
+        "privacy.trackingprotection.content.protection.enabled",
+        false
+      ) ||
+      Services.prefs.getBoolPref(
+        "privacy.trackingprotection.content.annotation.enabled",
+        false
+      );
+    if (!ContentClassifier.enabled) {
+      section.style.display = "none";
+      return;
+    }
+
+    let featureSelect = document.getElementById("content-classifier-feature");
+    for (let name of ContentClassifier.getService().getFeatureNames()) {
+      let option = document.createElement("option");
+      option.value = name;
+      option.appendChild(document.createTextNode(name));
+      featureSelect.appendChild(option);
+    }
+
+    document
+      .getElementById("content-classifier-probe-blocking")
+      .addEventListener("click", ContentClassifier.onProbeBlocking);
+    document
+      .getElementById("content-classifier-probe-annotate")
+      .addEventListener("click", ContentClassifier.onProbeAnnotate);
+    document
+      .getElementById("content-classifier-probe-feature")
+      .addEventListener("click", ContentClassifier.onProbeFeature);
+    document
+      .getElementById("content-classifier-loading-url-enabled")
+      .addEventListener("change", ContentClassifier.onLoadingUrlEnabledChanged);
+    document
+      .getElementById("content-classifier-top-window-url-enabled")
+      .addEventListener(
+        "change",
+        ContentClassifier.onTopWindowUrlEnabledChanged
+      );
+
+    // Sync input disabled state to whatever the checkbox got restored to.
+    ContentClassifier.onLoadingUrlEnabledChanged();
+    ContentClassifier.onTopWindowUrlEnabledChanged();
+  },
+
+  uninit() {
+    if (!ContentClassifier.enabled) {
+      return;
+    }
+    document
+      .getElementById("content-classifier-probe-blocking")
+      .removeEventListener("click", ContentClassifier.onProbeBlocking);
+    document
+      .getElementById("content-classifier-probe-annotate")
+      .removeEventListener("click", ContentClassifier.onProbeAnnotate);
+    document
+      .getElementById("content-classifier-probe-feature")
+      .removeEventListener("click", ContentClassifier.onProbeFeature);
+    document
+      .getElementById("content-classifier-loading-url-enabled")
+      .removeEventListener(
+        "change",
+        ContentClassifier.onLoadingUrlEnabledChanged
+      );
+    document
+      .getElementById("content-classifier-top-window-url-enabled")
+      .removeEventListener(
+        "change",
+        ContentClassifier.onTopWindowUrlEnabledChanged
+      );
+  },
+
+  onLoadingUrlEnabledChanged() {
+    let checkbox = document.getElementById(
+      "content-classifier-loading-url-enabled"
+    );
+    document.getElementById("content-classifier-loading-url").disabled =
+      !checkbox.checked;
+  },
+
+  onTopWindowUrlEnabledChanged() {
+    let checkbox = document.getElementById(
+      "content-classifier-top-window-url-enabled"
+    );
+    document.getElementById("content-classifier-top-window-url").disabled =
+      !checkbox.checked;
+  },
+
+  getService() {
+    return Cc["@mozilla.org/content-classifier-service;1"].getService(
+      Ci.nsIContentClassifierService
+    );
+  },
+
+  probeRequest() {
+    let loadingUrlEnabled = document.getElementById(
+      "content-classifier-loading-url-enabled"
+    ).checked;
+    let topWindowUrlEnabled = document.getElementById(
+      "content-classifier-top-window-url-enabled"
+    ).checked;
+    return {
+      url: document.getElementById("content-classifier-url").value,
+      sourceUrl: loadingUrlEnabled
+        ? document.getElementById("content-classifier-loading-url").value
+        : "",
+      topWindowUrl: topWindowUrlEnabled
+        ? document.getElementById("content-classifier-top-window-url").value
+        : "",
+      requestType: document.getElementById("content-classifier-request-type")
+        .value,
+      privateBrowsing: document.getElementById("content-classifier-pbm")
+        .checked,
+      forceThirdPartyToTop: document.getElementById(
+        "content-classifier-force-third-party"
+      ).checked,
+      isNonRecommendedAddon: document.getElementById(
+        "content-classifier-non-recommended-addon"
+      ).checked,
+    };
+  },
+
+  async onProbeBlocking() {
+    try {
+      let report = await ContentClassifier.getService().probeBlocking(
+        ContentClassifier.probeRequest()
+      );
+      ContentClassifier.render(report.results, report.status);
+    } catch (ex) {
+      ContentClassifier.reportError(ex);
+    }
+  },
+
+  async onProbeAnnotate() {
+    try {
+      let report = await ContentClassifier.getService().probeAnnotate(
+        ContentClassifier.probeRequest()
+      );
+      ContentClassifier.render(report.results, report.status);
+    } catch (ex) {
+      ContentClassifier.reportError(ex);
+    }
+  },
+
+  async onProbeFeature() {
+    try {
+      let featureName = document.getElementById(
+        "content-classifier-feature"
+      ).value;
+      let result = await ContentClassifier.getService().probeFeature(
+        featureName,
+        ContentClassifier.probeRequest()
+      );
+      let status;
+      if (result.exception) {
+        status = result.important
+          ? Ci.nsIContentClassifierService.ImportantException
+          : Ci.nsIContentClassifierService.Exception;
+      } else if (result.matched) {
+        status = result.important
+          ? Ci.nsIContentClassifierService.ImportantHit
+          : Ci.nsIContentClassifierService.Hit;
+      } else {
+        status = Ci.nsIContentClassifierService.Miss;
+      }
+      ContentClassifier.render([result], status);
+    } catch (ex) {
+      ContentClassifier.reportError(ex);
+    }
+  },
+
+  reportError(ex) {
+    let code =
+      ex && typeof ex.result === "number" ? ex.result : Cr.NS_ERROR_FAILURE;
+    let el = document.getElementById("content-classifier-verdict");
+    document.l10n.setAttributes(
+      el,
+      "url-classifier-content-classifier-verdict-error-with-code",
+      { code: ChromeUtils.getXPCOMErrorName(code) }
+    );
+    ContentClassifier.clearResults();
+  },
+
+  clearResults() {
+    let tbody = document.getElementById("content-classifier-results-body");
+    while (tbody.firstChild) {
+      tbody.firstChild.remove();
+    }
+  },
+
+  setVerdict(verdictL10nId) {
+    let el = document.getElementById("content-classifier-verdict");
+    document.l10n.setAttributes(el, verdictL10nId);
+  },
+
+  computeVerdict(results, status) {
+    switch (status) {
+      case Ci.nsIContentClassifierService.Hit:
+      case Ci.nsIContentClassifierService.ImportantHit:
+        return "url-classifier-content-classifier-verdict-hit";
+      case Ci.nsIContentClassifierService.Exception:
+      case Ci.nsIContentClassifierService.ImportantException:
+        return "url-classifier-content-classifier-verdict-exception";
+      default:
+        return "url-classifier-content-classifier-verdict-miss";
+    }
+  },
+
+  render(results, status) {
+    ContentClassifier.setVerdict(
+      ContentClassifier.computeVerdict(results, status)
+    );
+
+    ContentClassifier.clearResults();
+    let tbody = document.getElementById("content-classifier-results-body");
+    for (let r of results) {
+      let tr = document.createElement("tr");
+      let cells = [
+        r.featureName,
+        String(r.matched),
+        String(r.exception),
+        String(r.important),
+        ChromeUtils.getXPCOMErrorName(r.engineResult),
+      ];
+      for (let value of cells) {
+        let td = document.createElement("td");
+        td.textContent = value;
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
   },
 };
 

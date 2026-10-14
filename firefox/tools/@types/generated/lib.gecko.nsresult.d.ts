@@ -228,6 +228,9 @@ interface nsIXPCComponents_Results {
   /** Factory already exists */
   NS_ERROR_FACTORY_EXISTS: 0xc1f30100;
 
+  /** Invalid signature */
+  NS_ERROR_INVALID_SIGNATURE: 0x804b003a;
+
   // added from nsError.h on Feb 28 2001...
 
   /** Stream closed */
@@ -365,9 +368,6 @@ interface nsIXPCComponents_Results {
 
   /** The connection was refused */
   NS_ERROR_CONNECTION_REFUSED: 0x804b000d;
-
-  /** User refused navigation to potentially unsafe URL with embedded credentials/superfluos authentication */
-  NS_ERROR_SUPERFLUOS_AUTH: 0x804b005b;
 
   /** User attempted basic HTTP authentication when it is disabled */
   NS_ERROR_BASIC_HTTP_AUTH_DISABLED: 0x804b005c;
@@ -568,6 +568,20 @@ interface nsIXPCComponents_Results {
   /** The PKCS#7 information is not signed. */
   NS_ERROR_CMS_VERIFY_NOT_SIGNED: 0x805a0400;
 
+  // Codes related to pdf signature verification
+
+  /** The PKCS#7 parsing has failed. */
+  NS_ERROR_CMS_VERIFY_ERROR_PROCESSING: 0x805a0408;
+
+  /** The PKCS#7 certificate verification was cancelled. */
+  NS_ERROR_CMS_VERIFY_NOT_YET_ATTEMPTED: 0x805a040f;
+
+  /** Invalid signature. */
+  NS_ERROR_CMS_VERIFY_BAD_SIGNATURE: 0x805a0409;
+
+  /** No certificate was found. */
+  NS_ERROR_CMS_VERIFY_NOCERT: 0x805a0404;
+
   // Codes related to signed manifests
 
   /** The signed app manifest or signature file is invalid. */
@@ -620,6 +634,9 @@ interface nsIXPCComponents_Results {
 
   // Codes defined in WebIDL https://heycam.github.io/webidl/#idl-DOMException-error-names
 
+  /** A network error occurred. */
+  NS_ERROR_DOM_NETWORK_ERR: 0x80530013;
+
   /** The object can not be found here. */
   NS_ERROR_DOM_NOT_FOUND_ERR: 0x80530008;
 
@@ -658,6 +675,12 @@ interface nsIXPCComponents_Results {
   /** The URI is email tracking */
   NS_ERROR_EMAILTRACKING_URI: 0x805d002c;
 
+  /** The URI is not available for add-ons */
+  NS_ERROR_HARMFULADDON_URI: 0x805d002e;
+
+  /** Save Link As failed to see the headers early enough to choose a filename */
+  NS_ERROR_SAVE_LINK_AS_TIMEOUT: 0x805d0020;
+
   // Profile manager error codes
 
   /** Flushing the profiles to disk would have overwritten changes made elsewhere. */
@@ -687,6 +710,11 @@ interface nsIXPCComponents_Results {
 
   /** Client initialization attempted before origin has been initialized. */
   NS_ERROR_DOM_QM_CLIENT_INIT_ORIGIN_UNINITIALIZED: 0x80730001;
+
+  // Codes related to IndexedDB
+
+  /** A mutation operation was attempted on a database that did not allow mutations. */
+  NS_ERROR_DOM_INDEXEDDB_NOT_ALLOWED_ERR: 0x80660006;
 }
 
 type nsIXPCComponents_Values = nsIXPCComponents_Results[keyof nsIXPCComponents_Results];

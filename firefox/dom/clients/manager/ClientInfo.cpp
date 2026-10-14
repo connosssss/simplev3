@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -111,12 +109,14 @@ Result<nsCOMPtr<nsIPrincipal>, nsresult> ClientInfo::GetPrincipal() const {
   return PrincipalInfoToPrincipal(PrincipalInfo());
 }
 
-const Maybe<mozilla::ipc::CSPInfo>& ClientInfo::GetCspInfo() const {
-  return mData->cspInfo();
+const Maybe<mozilla::ipc::PolicyContainerArgs>&
+ClientInfo::GetPolicyContainerArgs() const {
+  return mData->policyContainerArgs();
 }
 
-void ClientInfo::SetCspInfo(const mozilla::ipc::CSPInfo& aCSPInfo) {
-  mData->cspInfo() = Some(aCSPInfo);
+void ClientInfo::SetPolicyContainerArgs(
+    const mozilla::ipc::PolicyContainerArgs& aPolicyContainer) {
+  mData->policyContainerArgs() = Some(aPolicyContainer);
 }
 
 const Maybe<mozilla::ipc::CSPInfo>& ClientInfo::GetPreloadCspInfo() const {

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -150,6 +148,10 @@ struct EnhancedModuleLoadInfo final {
 class DllServices : public detail::DllServicesBase {
  public:
   void DispatchDllLoadNotification(ModuleLoadInfo&& aModLoadInfo) final {
+    if (!aModLoadInfo.HasCompatibleLayout()) {
+      return;
+    }
+
     // We only notify one blocked DLL load event per blocked DLL for the main
     // thread, because dispatching a notification can trigger a new blocked
     // DLL load if the DLL is registered as a WH_GETMESSAGE hook. In that case,
@@ -176,6 +178,10 @@ class DllServices : public detail::DllServicesBase {
 
   void DispatchModuleLoadBacklogNotification(
       ModuleLoadInfoVec&& aEvents) final {
+    if (!aEvents.empty() && !aEvents.begin()->HasCompatibleLayout()) {
+      return;
+    }
+
     nsCOMPtr<nsIRunnable> runnable(
         NewRunnableMethod<StoreCopyPassByRRef<ModuleLoadInfoVec>>(
             "DllServices::NotifyModuleLoadBacklog", this,

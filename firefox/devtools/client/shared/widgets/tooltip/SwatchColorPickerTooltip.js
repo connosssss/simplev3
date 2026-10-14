@@ -100,6 +100,22 @@ class SwatchColorPickerTooltip extends SwatchBasedEditorTooltip {
     this.tooltip.container.addEventListener("keydown", this._onTooltipKeydown);
   }
 
+  static COLOR_MODIFYING_FUNCTIONS = new Set([
+    "color-mix",
+    "contrast-color",
+    // color functions can take a relative color after `from`
+    "color",
+    "hsl",
+    "hwb",
+    "lab",
+    "lch",
+    "oklab",
+    "oklch",
+    "rgb",
+    // alpha() takes a relative color after `from`
+    "alpha",
+  ]);
+
   /**
    * Fill the tooltip with a new instance of the spectrum color picker widget
    * initialized with the given color, and return the instance of spectrum
@@ -143,7 +159,8 @@ class SwatchColorPickerTooltip extends SwatchBasedEditorTooltip {
     // Only enable contrast if the type of property is color
     // and its value isn't inside a color-modifying function (e.g. color-mix()).
     this.spectrum.contrastEnabled =
-      name === "color" && colorFunction !== "color-mix";
+      name === "color" &&
+      !SwatchColorPickerTooltip.COLOR_MODIFYING_FUNCTIONS.has(colorFunction);
     if (this.spectrum.contrastEnabled) {
       const { nodeFront } = this.inspector.selection;
       const { pageStyle } = nodeFront.inspectorFront;
@@ -179,16 +196,14 @@ class SwatchColorPickerTooltip extends SwatchBasedEditorTooltip {
       eyeButton.title = L10N.getStr("eyedropper.disabled.title");
     }
 
-    const learnMoreButton =
-      this.tooltip.container.querySelector("#learn-more-button");
-    if (learnMoreButton) {
-      learnMoreButton.addEventListener("click", this._openDocLink);
-      learnMoreButton.addEventListener("keydown", e => e.stopPropagation());
+    const learnMoreLinks =
+      this.tooltip.container.querySelectorAll(".learn-more-link");
+    for (const learnMoreLink of learnMoreLinks) {
+      learnMoreLink.href = A11Y_CONTRAST_LEARN_MORE_LINK;
+      learnMoreLink.addEventListener("click", this._openDocLink);
+      learnMoreLink.addEventListener("keydown", e => e.stopPropagation());
     }
 
-    // Add focus to the first focusable element in the tooltip and attach keydown
-    // event listener to tooltip
-    this.focusableElements[0].focus();
     this.tooltip.container.addEventListener(
       "keydown",
       this._onTooltipKeydown,
@@ -300,7 +315,8 @@ class SwatchColorPickerTooltip extends SwatchBasedEditorTooltip {
     });
   }
 
-  _openDocLink() {
+  _openDocLink(event) {
+    event.preventDefault();
     openDocLink(A11Y_CONTRAST_LEARN_MORE_LINK);
     this.hide();
   }

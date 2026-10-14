@@ -4,7 +4,7 @@
 
 /* eslint-disable no-console */
 
-import { addDebuggerToGlobal } from "resource://gre/modules/jsdebugger.sys.mjs";
+import { addDebuggerToGlobal } from "moz-src:///devtools/platform/jsdebugger.sys.mjs";
 
 // Exclude frames from the test harness.
 const hiddenSourceURLs = [
@@ -268,12 +268,12 @@ function serializeFrame(frame) {
 
 /**
  * @typedef JSONFrame
- * @property {String} frame
+ * @property {string} frame
  *     The frame location represented as a string built from the original script
  *     url, the line number and the column number
  * @property {JSONFrameDetails} details
  *     Same information as in frame, but as an object.
- * @property {Object} scope
+ * @property {object} scope
  */
 
 /**

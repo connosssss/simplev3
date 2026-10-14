@@ -168,6 +168,15 @@ function rursh_object(i) {
     return i;
 }
 
+var uceFault_rotate_number = eval(`(${uceFault})`.replace('uceFault', 'uceFault_rotate_number'));
+function rrotate_number(i) {
+    var x = i >>> 1 | i << 31;
+    if (uceFault_rotate_number(i) || uceFault_rotate_number(i))
+        assertEq(x, -2147483599);
+    assertRecoveredOnBailout(x, true);
+    return i;
+}
+
 var uceFault_signextend8_1 = eval(`(${uceFault})`.replace('uceFault', 'uceFault_signextend8_1'));
 function rsignextend8_1(i) {
     var x = (i << 24) >> 24;
@@ -2010,6 +2019,26 @@ function rint32tobigint(i) {
     return i;
 }
 
+let uceFault_int32tobigint_nonnegative = eval(`(${uceFault})`.replace('uceFault', 'uceFault_int32tobigint_nonnegative'));
+function rint32tobigint_nonnegative(i) {
+    i = Math.max(i, 0);
+    var x = BigInt(i);
+    if (uceFault_int32tobigint_nonnegative(i) || uceFault_int32tobigint_nonnegative(i))
+        assertEq(x, 99n);
+    assertRecoveredOnBailout(x, true);
+    return i;
+}
+
+let uceFault_int32tobigint_asuintn = eval(`(${uceFault})`.replace('uceFault', 'uceFault_int32tobigint_asuintn'));
+function rint32tobigint_asuintn(i) {
+    i = Math.max(i, 0);
+    var x = BigInt.asUintN(64, BigInt(i));
+    if (uceFault_int32tobigint_asuintn(i) || uceFault_int32tobigint_asuintn(i))
+        assertEq(x, 99n);
+    assertRecoveredOnBailout(x, true);
+    return i;
+}
+
 let uceFault_nantozero_nan = eval(`(${uceFault})`.replace('uceFault', 'uceFault_nantozero_nan'));
 function rnantozero_nan(i) {
     // Note: |x| must be Double-typed.
@@ -2063,6 +2092,53 @@ function ratomicsislockfree_false(i) {
     return i;
 }
 
+let uceFault_rstrictconstantcompareint32_eq = eval(`(${uceFault})`.replace('uceFault', 'uceFault_rstrictconstantcompareint32_eq'));
+function rstrictconstantcompareint32_eq(i) {
+    var x = i === 0;
+    if (uceFault_rstrictconstantcompareint32_eq(i) || uceFault_rstrictconstantcompareint32_eq(i))
+        assertEq(x, false /* = 0 === 99 */);
+    assertRecoveredOnBailout(x, true);
+    return i;
+}
+
+let uceFault_rstrictconstantcompareint32_ne = eval(`(${uceFault})`.replace('uceFault', 'uceFault_rstrictconstantcompareint32_ne'));
+function rstrictconstantcompareint32_ne(i) {
+    var x = i !== 0;
+    if (uceFault_rstrictconstantcompareint32_ne(i) || uceFault_rstrictconstantcompareint32_ne(i))
+        assertEq(x, true /* = 0 !== 99 */);
+    assertRecoveredOnBailout(x, true);
+    return i;
+}
+
+let uceFault_rstrictconstantcompareboolean_eq = eval(`(${uceFault})`.replace('uceFault', 'uceFault_rstrictconstantcompareboolean_eq'));
+function rstrictconstantcompareboolean_eq(i) {
+    var value = [null, true][i & 1];
+    var x = value === true;
+    if (uceFault_rstrictconstantcompareboolean_eq(i) || uceFault_rstrictconstantcompareboolean_eq(i))
+        assertEq(x, true /* true === [null, true][99 & 1] */);
+    assertRecoveredOnBailout(x, true);
+    return i;
+}
+
+let uceFault_rstrictconstantcompareboolean_ne = eval(`(${uceFault})`.replace('uceFault', 'uceFault_rstrictconstantcompareboolean_ne'));
+function rstrictconstantcompareboolean_ne(i) {
+    var value = [null, true][i & 1];
+    var x = value !== true;
+    if (uceFault_rstrictconstantcompareboolean_ne(i) || uceFault_rstrictconstantcompareboolean_ne(i))
+        assertEq(x, false /* true === [null, true][99 & 1] */);
+    assertRecoveredOnBailout(x, true);
+    return i;
+}
+
+let uceFault_new_date_object = eval(`(${uceFault})`.replace('uceFault', 'uceFault_new_date_object'));
+function rnew_date_object(i) {
+    var x = new Date(i);
+    if (uceFault_new_date_object(i) || uceFault_new_date_object(i))
+        assertEq(x.getTime(), i);
+    assertRecoveredOnBailout(x, true);
+    return i;
+}
+
 for (j = 100 - max; j < 100; j++) {
     with({}){} // Do not Ion-compile this loop.
     let i = j < 2 ? (Math.abs(j) % 50) + 2 : j;
@@ -2080,6 +2156,7 @@ for (j = 100 - max; j < 100; j++) {
     rrsh_object(i);
     rursh_number(i);
     rursh_object(i);
+    rrotate_number(i);
     rsignextend8_1(i);
     rsignextend8_2(i);
     rsignextend16_1(i);
@@ -2267,11 +2344,18 @@ for (j = 100 - max; j < 100; j++) {
     rbigintasint(BigInt(i));
     rbigintasuint(BigInt(i));
     rint32tobigint(i);
+    rint32tobigint_nonnegative(i);
+    rint32tobigint_asuintn(i);
     rnantozero_nan(i);
     rnantozero_poszero(i);
     rnantozero_negzero(i);
     ratomicsislockfree_true(i);
     ratomicsislockfree_false(i);
+    rstrictconstantcompareint32_eq(i);
+    rstrictconstantcompareint32_ne(i);
+    rstrictconstantcompareboolean_eq(i);
+    rstrictconstantcompareboolean_ne(i);
+    rnew_date_object(i);
 }
 
 // Test that we can refer multiple time to the same recover instruction, as well

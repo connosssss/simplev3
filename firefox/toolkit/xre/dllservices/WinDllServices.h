@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -11,6 +9,7 @@
 #include "mozilla/Maybe.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/RefPtr.h"
+#include "nsTArray.h"
 
 namespace mozilla {
 
@@ -20,7 +19,10 @@ class UntrustedModulesProcessor;
 using UntrustedModulesPromise =
     MozPromise<Maybe<UntrustedModulesData>, nsresult, true>;
 
-struct ModulePaths;
+namespace ipc {
+class FileDescriptor;
+}  // namespace ipc
+
 class ModulesMapResult;
 
 using ModulesTrustPromise = MozPromise<ModulesMapResult, nsresult, true>;
@@ -39,8 +41,8 @@ class DllServices final : public glue::DllServices {
 
   RefPtr<UntrustedModulesPromise> GetUntrustedModulesData();
 
-  RefPtr<ModulesTrustPromise> GetModulesTrust(ModulePaths&& aModPaths,
-                                              bool aRunAtNormalPriority);
+  RefPtr<ModulesTrustPromise> GetModulesTrust(
+      nsTArray<ipc::FileDescriptor>&& aModIdents, bool aRunAtNormalPriority);
 
  private:
   DllServices() = default;

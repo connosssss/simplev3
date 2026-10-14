@@ -3,6 +3,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { Log } from "resource://gre/modules/Log.sys.mjs";
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
 import { RESTRequest } from "resource://services-common/rest.sys.mjs";
 import { CommonUtils } from "resource://services-common/utils.sys.mjs";
@@ -11,8 +12,26 @@ import { Credentials } from "resource://gre/modules/Credentials.sys.mjs";
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  CryptoUtils: "resource://services-crypto/utils.sys.mjs",
+  CryptoUtils: "moz-src:///services/crypto/modules/utils.sys.mjs",
 });
+
+// When enabled, FxA token-authenticated requests use the auth-server's typed
+// Bearer scheme (`Bearer <prefix>_<tokenId>`) instead of Hawk. Remotely
+// flippable so it can be disabled without a client release.
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "useBearerAuth",
+  "identity.fxaccounts.auth.useBearer",
+  true
+);
+
+// FxA token kind -> auth-server Bearer prefix (KIND_PREFIXES in the
+// auth-server's bearer-fxa-token scheme). Kinds absent here keep using Hawk.
+// See https://mozilla.github.io/ecosystem-platform/reference/tokens
+const BEARER_TOKEN_PREFIXES = {
+  sessionToken: "fxs",
+  keyFetchToken: "fxk",
+};
 
 /**
  * Single-use HAWK-authenticated HTTP requests to RESTish resources.
@@ -68,19 +87,28 @@ HAWKAuthenticatedRESTRequest.prototype = {
       contentType = "application/json";
     }
     if (this.credentials) {
-      let options = {
-        now: this.now,
-        localtimeOffsetMsec: this.localtimeOffsetMsec,
-        credentials: this.credentials,
-        payload: (data && JSON.stringify(data)) || "",
-        contentType,
-      };
-      let header = await lazy.CryptoUtils.computeHAWK(
-        this.uri,
-        method,
-        options
-      );
-      this.setHeader("Authorization", header.field);
+      if (lazy.useBearerAuth && this.credentials.bearerPrefix) {
+        // Typed Bearer: the token id is the same value Hawk used as `id=`.
+        // No MAC, nonce, or payload hash.
+        this.setHeader(
+          "Authorization",
+          `Bearer ${this.credentials.bearerPrefix}_${this.credentials.id}`
+        );
+      } else {
+        let options = {
+          now: this.now,
+          localtimeOffsetMsec: this.localtimeOffsetMsec,
+          credentials: this.credentials,
+          payload: (data && JSON.stringify(data)) || "",
+          contentType,
+        };
+        let header = await lazy.CryptoUtils.computeHAWK(
+          this.uri,
+          method,
+          options
+        );
+        this.setHeader("Authorization", header.field);
+      }
     }
 
     for (let header in this.extraHeaders) {
@@ -120,6 +148,8 @@ Object.setPrototypeOf(
  *          id: the Hawk id (from the first 32 bytes derived)
  *          key: the Hawk key (from bytes 32 to 64)
  *          extra: size - 64 extra bytes (if size > 64)
+ *          bearerPrefix: typed-Bearer prefix for this token kind
+ *                        (only for sessionToken/keyFetchToken)
  *        }
  */
 export async function deriveHawkCredentials(tokenHex, context, size = 96) {
@@ -138,6 +168,12 @@ export async function deriveHawkCredentials(tokenHex, context, size = 96) {
   if (size > 64) {
     result.extra = out.slice(64);
   }
+  // Tag the credentials with their Bearer prefix so the request layer can emit
+  // the typed-Bearer header. The id above is exactly the Bearer token id.
+  let bearerPrefix = BEARER_TOKEN_PREFIXES[context];
+  if (bearerPrefix) {
+    result.bearerPrefix = bearerPrefix;
+  }
 
   return result;
 }
@@ -146,52 +182,44 @@ export async function deriveHawkCredentials(tokenHex, context, size = 96) {
 // To keep the number of times we read this pref at a minimum, maintain the
 // preference in a stateful object that notices and updates itself when the
 // pref is changed.
-function Intl() {
+class HawkIntl {
   // We won't actually query the pref until the first time we need it
-  this._accepted = "";
-  this._everRead = false;
-  this.init();
-}
+  #accepted = "";
+  #everRead = false;
 
-Intl.prototype = {
-  init() {
+  constructor() {
     Services.prefs.addObserver("intl.accept_languages", this);
-  },
+  }
 
   uninit() {
     Services.prefs.removeObserver("intl.accept_languages", this);
-  },
+  }
 
   observe() {
     this.readPref();
-  },
+  }
 
   readPref() {
-    this._everRead = true;
+    this.#everRead = true;
     try {
-      this._accepted = Services.prefs.getComplexValue(
-        "intl.accept_languages",
-        Ci.nsIPrefLocalizedString
-      ).data;
+      this.#accepted = Services.locale.acceptLanguages;
     } catch (err) {
       let log = Log.repository.getLogger("Services.Common.RESTRequest");
-      log.error("Error reading intl.accept_languages pref", err);
+      log.error("Error reading Services.locale.acceptLanguages", err);
     }
-  },
+  }
 
   get accept_languages() {
-    if (!this._everRead) {
+    if (!this.#everRead) {
       this.readPref();
     }
-    return this._accepted;
-  },
-};
+    return this.#accepted;
+  }
+}
 
 // Singleton getter for Intl, creating an instance only when we first need it.
 var intl = null;
 function getIntl() {
-  if (!intl) {
-    intl = new Intl();
-  }
+  intl ??= new HawkIntl();
   return intl;
 }

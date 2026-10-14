@@ -17,8 +17,12 @@ HERE = Path(__file__).parent
 ROOT = Path(HERE, "..", "..", "..", "..").resolve()
 EXAMPLE_TESTS_DIR = os.path.join(HERE, "data", "samples")
 EXAMPLE_TEST = os.path.join(EXAMPLE_TESTS_DIR, "perftest_example.js")
+EXAMPLE_DYNAMIC_TEST = os.path.join(EXAMPLE_TESTS_DIR, "perftest_example_dynamic.js")
 EXAMPLE_XPCSHELL_TEST = Path(EXAMPLE_TESTS_DIR, "test_xpcshell.js")
 EXAMPLE_XPCSHELL_TEST2 = Path(EXAMPLE_TESTS_DIR, "test_xpcshell_flavor2.js")
+EXAMPLE_XPCSHELL_DESTRUCTURED_TEST = Path(
+    EXAMPLE_TESTS_DIR, "test_xpcshell_destructured.js"
+)
 EXAMPLE_MOCHITEST_TEST = Path(EXAMPLE_TESTS_DIR, "test_mochitest.html")
 EXAMPLE_MOCHITEST_TEST2 = Path(EXAMPLE_TESTS_DIR, "test_mochitest_multiscript.html")
 EXAMPLE_WPT_TEST = Path(EXAMPLE_TESTS_DIR, "test_perftest_WPT_init_file.js")
@@ -101,8 +105,7 @@ def requests_content(chunks=None):
     def _content(*args, **kw):
         class Resp:
             def iter_content(self, **kw):
-                for chunk in chunks:
-                    yield chunk
+                yield from chunks
 
         return Resp()
 

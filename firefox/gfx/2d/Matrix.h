@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,20 +5,25 @@
 #ifndef MOZILLA_GFX_MATRIX_H_
 #define MOZILLA_GFX_MATRIX_H_
 
-#include "Types.h"
-#include "Triangle.h"
-#include "Rect.h"
+#include <math.h>
+
+#include <iosfwd>
+
 #include "Point.h"
 #include "Quaternion.h"
-#include <iosfwd>
-#include <math.h>
+#include "Rect.h"
+#include "Triangle.h"
+#include "Types.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/FloatingPoint.h"
-#include "mozilla/gfx/ScaleFactors2D.h"
 #include "mozilla/Span.h"
+#include "mozilla/gfx/ScaleFactors2D.h"
 
 namespace mozilla {
+
+constexpr double kRadPerDegree = 2.0 * M_PI / 360.0;
+
 namespace gfx {
 
 static inline bool FuzzyEqual(Float aV1, Float aV2) {
@@ -605,6 +608,8 @@ class Matrix4x4Typed {
     };
     T components[16];
   };
+
+  auto MutTiedFields() { return std::tie(components); }
 
   friend std::ostream& operator<<(std::ostream& aStream,
                                   const Matrix4x4Typed& aMatrix) {
@@ -1956,7 +1961,6 @@ class Matrix4x4TypedFlagged
     : protected Matrix4x4Typed<SourceUnits, TargetUnits> {
  public:
   using Parent = Matrix4x4Typed<SourceUnits, TargetUnits>;
-  using TargetPoint = PointTyped<TargetUnits>;
   using Parent::_11;
   using Parent::_12;
   using Parent::_13;
@@ -2099,9 +2103,11 @@ class Matrix4x4TypedFlagged
       F min_y = std::min(std::min(std::min(p1.y, p2.y), p3.y), p4.y);
       F max_y = std::max(std::max(std::max(p1.y, p2.y), p3.y), p4.y);
 
-      TargetPoint topLeft(std::max(min_x, aClip.x), std::max(min_y, aClip.y));
-      F width = std::min(max_x, aClip.XMost()) - topLeft.x;
-      F height = std::min(max_y, aClip.YMost()) - topLeft.y;
+      PointTyped<TargetUnits, F> topLeft(
+          std::min(std::max(min_x, aClip.x), aClip.XMost()),
+          std::min(std::max(min_y, aClip.y), aClip.YMost()));
+      F width = std::min(std::max(max_x, aClip.x), aClip.XMost()) - topLeft.x;
+      F height = std::min(std::max(max_y, aClip.y), aClip.YMost()) - topLeft.y;
 
       return RectTyped<TargetUnits, F>(topLeft.x, topLeft.y, width, height);
     }
@@ -2183,7 +2189,7 @@ class Matrix4x4TypedFlagged
     }
 
     if (mType == MatrixType::Simple) {
-      TargetPoint point = TransformPointSimple(aPoint);
+      PointTyped<TargetUnits, F> point = TransformPointSimple(aPoint);
       return Point4DTyped<TargetUnits, F>(point.x, point.y, 0, 1);
     }
 
@@ -2424,8 +2430,8 @@ class Matrix4x4TypedFlagged
   PointTyped<TargetUnits, F> TransformPointSimple(
       const PointTyped<SourceUnits, F>& aPoint) const {
     PointTyped<SourceUnits, F> temp;
-    temp.x = aPoint.x * _11 + aPoint.y * +_21 + _41;
-    temp.y = aPoint.x * _12 + aPoint.y * +_22 + _42;
+    temp.x = aPoint.x * _11 + aPoint.y * _21 + _41;
+    temp.y = aPoint.x * _12 + aPoint.y * _22 + _42;
     return temp;
   }
 

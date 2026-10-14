@@ -1,8 +1,9 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+with Files("**"):
+    SCHEDULES.exclusive = ["macosx"]
 
 EXPORTS += [
     "mozAccessibleProtocol.h",
@@ -28,12 +29,10 @@ UNIFIED_SOURCES += [
     "mozAccessible.mm",
     "mozActionElements.mm",
     "mozHTMLAccessible.mm",
-    "mozRootAccessible.mm",
     "mozSelectableElements.mm",
     "mozTableAccessible.mm",
     "mozTextAccessible.mm",
     "Platform.mm",
-    "RootAccessibleWrap.mm",
     "RotorRules.mm",
 ]
 
@@ -69,3 +68,25 @@ GeneratedFile(
 FINAL_LIBRARY = "xul"
 
 include("/ipc/chromium/chromium-config.mozbuild")
+
+SOURCE_HEADERS += [
+    "ApplicationAccessibleWrap.h",
+    "DocAccessibleWrap.h",
+    "GeckoTextMarker.h",
+    "MacUtils.h",
+    "MOXAccessibleBase.h",
+    "MOXLandmarkAccessibles.h",
+    "MOXMathAccessibles.h",
+    "MOXOuterDoc.h",
+    "MOXSearchInfo.h",
+    "MOXTextMarkerDelegate.h",
+    "MOXWebAreaAccessible.h",
+    "mozAccessible.h",
+    "mozActionElements.h",
+    "mozHTMLAccessible.h",
+    "mozSelectableElements.h",
+    "mozTableAccessible.h",
+    "mozTextAccessible.h",
+    "RootAccessibleWrap.h",
+    "RotorRules.h",
+]

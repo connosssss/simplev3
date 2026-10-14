@@ -1,4 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -11,6 +10,13 @@ ChromeUtils.defineLazyGetter(lazy, "console", () => {
     maxLogLevelPref: "toolkit.telemetry.user_characteristics_ping.logLevel",
   });
 });
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  NetUtil: "resource://gre/modules/NetUtil.sys.mjs",
+});
+
+const BUNDLED_FONT_URL =
+  "chrome://global/content/usercharacteristics/usercharacteristics.woff";
 
 /* This actor is responsible for rendering the canvas elements defined in
  * recipes. It renders with both hardware and software rendering.
@@ -75,13 +81,33 @@ export class UserCharacteristicsCanvasRenderingChild extends JSWindowActorChild 
         };
       }
 
-      return sha1Uint8Array(
-        ctx.getImageData(0, 0, canvas.width, canvas.height).data
-      ).catch(stringifyError);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const hash = await sha1Uint8Array(imageData.data).catch(stringifyError);
+      const raw = btoa(String.fromCharCode.apply(null, imageData.data));
+
+      return { hash, raw };
     };
 
     const errors = [];
     const renderings = new Map();
+
+    // The text recipes (canvasdata9/10) draw in the bundled font so that
+    // glyph outlines and metrics are identical on every client and the hash
+    // varies only with the text rasterization stack. This actor renders in
+    // an arbitrary content window picked by UserCharacteristicsPageService,
+    // so the FontFace registered by usercharacteristics.html is NOT visible
+    // here — it must be added to this document explicitly. A load failure is
+    // recorded but rendering continues (with the platform fallback font).
+    let bundledFont = null;
+    try {
+      bundledFont = await this.loadBundledFont();
+    } catch (e) {
+      lazy.console.error(
+        "Error loading bundled font: ",
+        await stringifyError(e)
+      );
+      errors.push({ name: "bundledFont", error: await stringifyError(e) });
+    }
 
     // Run HW renderings
     // Attempt HW rendering regardless of the expected rendering mode.
@@ -105,7 +131,8 @@ export class UserCharacteristicsCanvasRenderingChild extends JSWindowActorChild 
         });
         continue;
       }
-      renderings.set(name, result);
+      renderings.set(name, result.hash);
+      renderings.set(name + "Raw", result.raw);
     }
 
     // Run SW renderings
@@ -114,13 +141,26 @@ export class UserCharacteristicsCanvasRenderingChild extends JSWindowActorChild 
       const result = await runRecipe(false, recipe);
       if (result.error) {
         errors.push({
-          name: name + "software",
+          name: name + "Software",
           error: result.error,
           originalError: result.originalError,
         });
         continue;
       }
-      renderings.set(name + "software", result);
+      renderings.set(name + "Software", result.hash);
+      renderings.set(name + "SoftwareRaw", result.raw);
+    }
+
+    // Don't leave a page-observable font behind in the user's document.
+    if (bundledFont) {
+      try {
+        this.document.fonts.delete(bundledFont);
+      } catch (e) {
+        lazy.console.error(
+          "Error removing bundled font: ",
+          await stringifyError(e)
+        );
+      }
     }
 
     const data = new Map();
@@ -129,6 +169,51 @@ export class UserCharacteristicsCanvasRenderingChild extends JSWindowActorChild 
     data.set("dpr", this.contentWindow.devicePixelRatio.toString());
 
     return data;
+  }
+
+  /* Loads the bundled font (a small subset of Fira Sans Italic, see
+   * usercharacteristics.woff) into this actor's document and returns the
+   * FontFace, so the text canvas recipes resolve "LocalFiraSans" instead of
+   * silently falling back to the platform default font. The bytes are read
+   * from the chrome URL by privileged code and handed to a buffer-backed
+   * FontFace constructed in the content window — the content principal never
+   * loads a chrome:// URL, and page CSP does not apply to buffer fonts.
+   */
+  async loadBundledFont() {
+    const win = this.contentWindow;
+
+    const bytes = await new Promise((resolve, reject) => {
+      lazy.NetUtil.asyncFetch(
+        {
+          uri: BUNDLED_FONT_URL,
+          loadUsingSystemPrincipal: true,
+        },
+        (stream, status) => {
+          if (!Components.isSuccessCode(status)) {
+            reject(
+              new Error(`Reading bundled font failed: 0x${status.toString(16)}`)
+            );
+            return;
+          }
+          try {
+            resolve(lazy.NetUtil.readInputStream(stream, stream.available()));
+          } catch (e) {
+            reject(e);
+          }
+        }
+      );
+    });
+
+    // The bundled face is a true italic; declare it so the italic-style
+    // recipes match it directly instead of synthesizing an oblique.
+    const font = new win.FontFace(
+      "LocalFiraSans",
+      Cu.cloneInto(bytes, win),
+      Cu.cloneInto({ style: "italic" }, win)
+    );
+    await font.load();
+    this.document.fonts.add(font);
+    return font;
   }
 
   async getDebugInfo() {
@@ -286,6 +371,11 @@ ChromeUtils.defineLazyGetter(lazy, "recipes", () => {
       },
       size: [250, 250],
     },
+    // NOTE for canvasdata9/10: the drawn text must only use glyphs covered
+    // by the bundled LocalFiraSans subset (a-z, T, A, space — see
+    // usercharacteristics.woff). Any character outside that set silently
+    // falls back per-glyph to a platform font and reintroduces the
+    // per-platform font variance these canvases are meant to exclude.
     canvasdata9: {
       func: (window, canvas, ctx) => {
         ctx.fillStyle = "green";

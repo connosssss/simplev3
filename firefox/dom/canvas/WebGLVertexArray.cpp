@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,19 +5,19 @@
 #include "WebGLVertexArray.h"
 
 #include "GLContext.h"
-#include "mozilla/dom/WebGLRenderingContextBinding.h"
 #include "WebGLBuffer.h"
 #include "WebGLContext.h"
-#include "WebGLVertexArrayGL.h"
 #include "WebGLVertexArrayFake.h"
+#include "WebGLVertexArrayGL.h"
+#include "mozilla/dom/WebGLRenderingContextBinding.h"
 
 namespace mozilla {
 
-WebGLVertexArray* WebGLVertexArray::Create(WebGLContext* webgl) {
+RefPtr<WebGLVertexArray> WebGLVertexArray::Create(WebGLContext* webgl) {
   if (webgl->gl->IsSupported(gl::GLFeature::vertex_array_object)) {
-    return new WebGLVertexArrayGL(webgl);
+    return MakeRefPtr<WebGLVertexArrayGL>(webgl);
   }
-  return new WebGLVertexArrayFake(webgl);
+  return MakeRefPtr<WebGLVertexArrayFake>(webgl);
 }
 
 WebGLVertexArray::WebGLVertexArray(WebGLContext* const webgl)
@@ -65,6 +64,23 @@ Maybe<double> WebGLVertexArray::GetVertexAttrib(const uint32_t index,
     default:
       return {};
   }
+}
+
+void WebGLVertexArray::AttribPointer(
+    const uint32_t index, WebGLBuffer* const buffer,
+    const webgl::VertAttribPointerDesc& desc,
+    const webgl::VertAttribPointerCalculated& calc) {
+  mDescs[index] = desc;
+
+  auto& binding = mBindings.at(index);
+  binding.buffer = buffer;
+  binding.layout.byteSize = calc.byteSize;
+  binding.layout.byteStride = calc.byteStride;
+  binding.layout.baseType = calc.baseType;
+  binding.layout.byteOffset = desc.byteOffset;
+
+  mAttribIsArrayWithNullBuffer[index] =
+      binding.layout.isArray && !binding.buffer;
 }
 
 }  // namespace mozilla

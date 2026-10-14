@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,7 +5,19 @@
 #ifndef SECURITY_RLBOX_UTILS_H_
 #define SECURITY_RLBOX_UTILS_H_
 
+#include <cstddef>
+
+// rlbox headers are not self-contained, order matters.
+// clang-format off
+#include "mozilla/rlbox/rlbox_helpers.hpp"
+#include "mozilla/rlbox/rlbox_app_pointer.hpp"
+#include "mozilla/rlbox/rlbox_policy_types.hpp"
 #include "mozilla/rlbox/rlbox_types.hpp"
+#include "mozilla/rlbox/rlbox_range.hpp"
+#include "mozilla/rlbox/rlbox_stdlib.hpp"
+// clang-format on
+
+#include "mozilla/Attributes.h"
 
 namespace mozilla {
 
@@ -21,7 +31,7 @@ class MOZ_STACK_CLASS RLBoxTransferBufferToSandbox {
  public:
   RLBoxTransferBufferToSandbox() = delete;
   RLBoxTransferBufferToSandbox(rlbox::rlbox_sandbox<S>* aSandbox, const T* aBuf,
-                               const size_t aLen)
+                               const std::size_t aLen)
       : mSandbox(aSandbox), mCopied(false), mBuf(nullptr) {
     if (aBuf) {
       mBuf = rlbox::copy_memory_or_grant_access(*mSandbox, aBuf, aLen, false,

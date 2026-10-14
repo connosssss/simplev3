@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,8 +6,7 @@
 
 #include <new>
 
-#include "jsnum.h"
-
+#include "builtin/Number.h"
 #include "frontend/CompilationStencil.h"  // ScopeStencilRef, CompilationStencil, CompilationState, CompilationAtomCache
 #include "frontend/ParserAtom.h"  // frontend::ParserAtomsTable, frontend::ParserAtom
 #include "frontend/ScriptIndex.h"  // ScriptIndex
@@ -21,6 +18,8 @@
 #include "wasm/WasmDebug.h"
 #include "wasm/WasmInstance.h"
 
+#include "gc/Allocator-inl.h"
+#include "gc/BufferAllocator-inl.h"
 #include "gc/GCContext-inl.h"
 #include "gc/ObjectKind-inl.h"
 #include "gc/TraceMethods-inl.h"
@@ -48,10 +47,8 @@ const char* js::BindingKindString(BindingKind kind) {
       return "synthetic";
     case BindingKind::PrivateMethod:
       return "private method";
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
     case BindingKind::Using:
       return "using";
-#endif
   }
   MOZ_CRASH("Bad BindingKind");
 }
@@ -112,6 +109,7 @@ static bool AddToEnvironmentMap(JSContext* cx, const JSClass* clasp,
   PropertyFlags propFlags = {PropertyFlag::Enumerable};
   switch (bindKind) {
     case BindingKind::Const:
+    case BindingKind::Using:
     case BindingKind::NamedLambdaCallee:
       // Non-writable.
       break;
@@ -135,7 +133,7 @@ SharedShape* js::CreateEnvironmentShape(JSContext* cx, BindingIter& bi,
     BindingLocation loc = bi.location();
     if (loc.kind() == BindingLocation::Kind::Environment) {
       JSAtom* name = bi.name();
-      MOZ_ASSERT(AtomIsMarked(cx->zone(), name));
+      MOZ_ASSERT(ZoneHasRef(cx->zone(), name));
       id = NameToId(name->asPropertyName());
       if (!AddToEnvironmentMap(cx, cls, id, bi.kind(), loc.slot(), &map,
                                &mapLength, &objectFlags)) {
@@ -161,11 +159,22 @@ SharedShape* js::CreateEnvironmentShapeForSyntheticModule(
 
   RootedId id(cx);
   uint32_t slotIndex = numSlots;
+
+  auto addProperty = [&](PropertyName* name) {
+    id = NameToId(name);
+    return SharedPropMap::addPropertyWithKnownSlot(
+        cx, cls, &map, &mapLength, id, propFlags, slotIndex, &objectFlags);
+  };
+
+  // Add internal *namespace* property.
+  if (!addProperty(cx->names().star_namespace_star_)) {
+    return nullptr;
+  }
+  slotIndex++;
+
+  // Add synthetic exports.
   for (JSAtom* exportName : module->syntheticExportNames()) {
-    id = NameToId(exportName->asPropertyName());
-    if (!SharedPropMap::addPropertyWithKnownSlot(cx, cls, &map, &mapLength, id,
-                                                 propFlags, slotIndex,
-                                                 &objectFlags)) {
+    if (!addProperty(exportName->asPropertyName())) {
       return nullptr;
     }
     slotIndex++;
@@ -232,22 +241,23 @@ static typename ConcreteScope::ParserData* NewEmptyParserScopeData(
   return new (raw) Data(length);
 }
 
-template <typename ConcreteScope, typename AtomT>
-static UniquePtr<AbstractScopeData<ConcreteScope, AtomT>> NewEmptyScopeData(
+template <typename ConcreteScope>
+static typename ConcreteScope::RuntimeData* NewEmptyScopeData(
     JSContext* cx, uint32_t length = 0) {
-  using Data = AbstractScopeData<ConcreteScope, AtomT>;
+  using Data = typename ConcreteScope::RuntimeData;
 
   size_t dataSize = SizeOfScopeData<Data>(length);
-  uint8_t* bytes = cx->pod_malloc<uint8_t>(dataSize);
-  auto data = reinterpret_cast<Data*>(bytes);
-  if (data) {
-    new (data) Data(length);
+  Data* data = gc::NewSizedBuffer<Data>(cx->zone(), dataSize, false, length);
+  if (!data) {
+    ReportOutOfMemory(cx);
+    return nullptr;
   }
-  return UniquePtr<Data>(data);
+
+  return data;
 }
 
 template <typename ConcreteScope>
-static UniquePtr<typename ConcreteScope::RuntimeData> LiftParserScopeData(
+static typename ConcreteScope::RuntimeData* LiftParserScopeData(
     JSContext* cx, frontend::CompilationAtomCache& atomCache,
     BaseParserScopeData* baseData) {
   using ConcreteData = typename ConcreteScope::RuntimeData;
@@ -271,21 +281,20 @@ static UniquePtr<typename ConcreteScope::RuntimeData> LiftParserScopeData(
   }
 
   // Allocate a new scope-data of the right kind.
-  UniquePtr<ConcreteData> scopeData(
-      NewEmptyScopeData<ConcreteScope, JSAtom>(cx, data->length));
+  ConcreteData* scopeData = NewEmptyScopeData<ConcreteScope>(cx, data->length);
   if (!scopeData) {
     return nullptr;
   }
 
   // NOTE: There shouldn't be any fallible operation or GC between setting
   //       `length` and filling `trailingNames`.
-  scopeData.get()->length = data->length;
+  scopeData->length = data->length;
 
-  memcpy(&scopeData.get()->slotInfo, &data->slotInfo,
+  memcpy(&scopeData->slotInfo, &data->slotInfo,
          sizeof(typename ConcreteScope::SlotInfo));
 
   // Initialize new scoped names.
-  auto namesOut = GetScopeDataTrailingNames(scopeData.get());
+  auto namesOut = GetScopeDataTrailingNames(scopeData);
   MOZ_ASSERT(data->length == namesOut.size());
   for (size_t i = 0; i < namesOut.size(); i++) {
     namesOut[i] = names[i].copyWithNewAtom(jsatoms[i].get());
@@ -305,7 +314,7 @@ template <typename ConcreteScope>
 ConcreteScope* Scope::create(
     JSContext* cx, ScopeKind kind, Handle<Scope*> enclosing,
     Handle<SharedShape*> envShape,
-    MutableHandle<UniquePtr<typename ConcreteScope::RuntimeData>> data) {
+    HandleBuffer<typename ConcreteScope::RuntimeData> data) {
   Scope* scope = create(cx, kind, enclosing, envShape);
   if (!scope) {
     return nullptr;
@@ -321,13 +330,11 @@ ConcreteScope* Scope::create(
 
 template <typename ConcreteScope>
 inline void Scope::initData(
-    MutableHandle<UniquePtr<typename ConcreteScope::RuntimeData>> data) {
+    HandleBuffer<typename ConcreteScope::RuntimeData> data) {
+  MOZ_ASSERT(is<ConcreteScope>());
   MOZ_ASSERT(!rawData());
 
-  AddCellMemory(this, SizeOfAllocatedData(data.get().get()),
-                MemoryUse::ScopeData);
-
-  setHeaderPtr(data.get().release());
+  setHeaderPtr(data);
 }
 
 void Scope::updateEnvShapeIfRequired(mozilla::Maybe<uint32_t>* envShape,
@@ -387,17 +394,9 @@ uint32_t Scope::environmentChainLength() const {
   return length;
 }
 
-void Scope::finalize(JS::GCContext* gcx) {
-  MOZ_ASSERT(CurrentThreadIsGCFinalizing());
-  applyScopeDataTyped([this, gcx](auto data) {
-    gcx->delete_(this, data, SizeOfAllocatedData(data), MemoryUse::ScopeData);
-  });
-  setHeaderPtr(nullptr);
-}
-
-size_t Scope::sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
+size_t Scope::sizeOfExcludingThis() const {
   if (rawData()) {
-    return mallocSizeOf(rawData());
+    return gc::GetAllocSize(zone(), rawData());
   }
   return 0;
 }
@@ -617,18 +616,17 @@ void VarScope::prepareForScopeCreation(ScopeKind kind,
 }
 
 GlobalScope* GlobalScope::createEmpty(JSContext* cx, ScopeKind kind) {
-  Rooted<UniquePtr<RuntimeData>> data(
-      cx, NewEmptyScopeData<GlobalScope, JSAtom>(cx));
+  RootedBuffer<RuntimeData> data(cx, NewEmptyScopeData<GlobalScope>(cx));
   if (!data) {
     return nullptr;
   }
 
-  return createWithData(cx, kind, &data);
+  return createWithData(cx, kind, data);
 }
 
 /* static */
-GlobalScope* GlobalScope::createWithData(
-    JSContext* cx, ScopeKind kind, MutableHandle<UniquePtr<RuntimeData>> data) {
+GlobalScope* GlobalScope::createWithData(JSContext* cx, ScopeKind kind,
+                                         HandleBuffer<RuntimeData> data) {
   MOZ_ASSERT(data);
 
   // The global scope has no environment shape. Its environment is the
@@ -654,22 +652,6 @@ void EvalScope::prepareForScopeCreation(ScopeKind scopeKind,
     PrepareScopeData<EvalScope, VarEnvironmentObject>(bi, data, firstFrameSlot,
                                                       envShape);
   }
-}
-
-/* static */
-Scope* EvalScope::nearestVarScopeForDirectEval(Scope* scope) {
-  for (ScopeIter si(scope); si; si++) {
-    switch (si.kind()) {
-      case ScopeKind::Function:
-      case ScopeKind::FunctionBodyVar:
-      case ScopeKind::Global:
-      case ScopeKind::NonSyntactic:
-        return scope;
-      default:
-        break;
-    }
-  }
-  return nullptr;
 }
 
 ModuleScope::RuntimeData::RuntimeData(size_t length) {
@@ -711,9 +693,9 @@ static void InitializeTrailingName(AbstractBindingName<JSAtom>* trailingNames,
 }
 
 template <class DataT>
-static void InitializeNextTrailingName(const Rooted<UniquePtr<DataT>>& data,
+static void InitializeNextTrailingName(RootedBuffer<DataT>& data,
                                        JSAtom* name) {
-  InitializeTrailingName(GetScopeDataTrailingNamesPointer(data.get().get()),
+  InitializeTrailingName(GetScopeDataTrailingNamesPointer(data.get()),
                          data->length, name);
   data->length++;
 }
@@ -723,8 +705,8 @@ WasmInstanceScope::RuntimeData::RuntimeData(size_t length) {
 }
 
 /* static */
-WasmInstanceScope* WasmInstanceScope::create(JSContext* cx,
-                                             WasmInstanceObject* instance) {
+WasmInstanceScope* WasmInstanceScope::create(
+    JSContext* cx, Handle<WasmInstanceObject*> instance) {
   size_t namesCount = 0;
 
   size_t memoriesStart = namesCount;
@@ -735,13 +717,19 @@ WasmInstanceScope* WasmInstanceScope::create(JSContext* cx,
   size_t globalsCount = instance->instance().codeMeta().globals.length();
   namesCount += globalsCount;
 
-  Rooted<UniquePtr<RuntimeData>> data(
-      cx, NewEmptyScopeData<WasmInstanceScope, JSAtom>(cx, namesCount));
+  Rooted<Scope*> enclosing(cx, &cx->global()->emptyGlobalScope());
+  Rooted<Scope*> scope(cx, Scope::create(cx, ScopeKind::WasmInstance, enclosing,
+                                         /* envShape = */ nullptr));
+  if (!scope) {
+    return nullptr;
+  }
+
+  RootedBuffer<RuntimeData> data(
+      cx, NewEmptyScopeData<WasmInstanceScope>(cx, namesCount));
   if (!data) {
     return nullptr;
   }
 
-  Rooted<WasmInstanceObject*> rootedInstance(cx, instance);
   for (size_t i = 0; i < memoriesCount; i++) {
     JSAtom* wasmName = GenerateWasmName(cx, "memory", i);
     if (!wasmName) {
@@ -762,14 +750,13 @@ WasmInstanceScope* WasmInstanceScope::create(JSContext* cx,
 
   MOZ_ASSERT(data->length == namesCount);
 
-  data->instance.init(rootedInstance);
+  data->instance.init(instance);
   data->slotInfo.memoriesStart = memoriesStart;
   data->slotInfo.globalsStart = globalsStart;
 
-  Rooted<Scope*> enclosing(cx, &cx->global()->emptyGlobalScope());
-  return Scope::create<WasmInstanceScope>(cx, ScopeKind::WasmInstance,
-                                          enclosing,
-                                          /* envShape = */ nullptr, &data);
+  WasmInstanceScope* concreteScope = &scope->as<WasmInstanceScope>();
+  concreteScope->initData<WasmInstanceScope>(data);
+  return concreteScope;
 }
 
 /* static */
@@ -789,12 +776,13 @@ WasmFunctionScope* WasmFunctionScope::create(JSContext* cx,
   wasm::StackResults unusedStackResults;
   if (!instance->instance().debug().debugGetLocalTypes(
           funcIndex, &locals, &argsLength, &unusedStackResults)) {
+    ReportOutOfMemory(cx);
     return nullptr;
   }
   uint32_t namesCount = locals.length();
 
-  Rooted<UniquePtr<RuntimeData>> data(
-      cx, NewEmptyScopeData<WasmFunctionScope, JSAtom>(cx, namesCount));
+  RootedBuffer<RuntimeData> data(
+      cx, NewEmptyScopeData<WasmFunctionScope>(cx, namesCount));
   if (!data) {
     return nullptr;
   }
@@ -811,7 +799,7 @@ WasmFunctionScope* WasmFunctionScope::create(JSContext* cx,
 
   return Scope::create<WasmFunctionScope>(cx, ScopeKind::WasmFunction,
                                           enclosing,
-                                          /* envShape = */ nullptr, &data);
+                                          /* envShape = */ nullptr, data);
 }
 
 ScopeIter::ScopeIter(JSScript* script) : scope_(script->bodyScope()) {}
@@ -889,7 +877,7 @@ AbstractBindingIter<frontend::TaggedParserAtomIndex>::AbstractBindingIter(
     const frontend::ScopeStencilRef& ref)
     : Base() {
   const ScopeStencil& scope = ref.scope();
-  BaseParserScopeData* data = ref.context_.scopeNames[ref.scopeIndex_];
+  BaseParserScopeData* data = ref.context()->scopeNames[ref.scopeIndex_];
   switch (scope.kind()) {
     case ScopeKind::Lexical:
     case ScopeKind::SimpleCatch:
@@ -961,9 +949,7 @@ void BaseAbstractBindingIter<NameT>::init(
          /* varStart= */ 0,
          /* letStart= */ 0,
          /* constStart= */ 0,
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
          /* usingStart= */ data.length,
-#endif
          /* syntheticStart= */ data.length,
          /* privageMethodStart= */ data.length,
          /* flags= */ CanHaveEnvironmentSlots | flags,
@@ -981,8 +967,7 @@ void BaseAbstractBindingIter<NameT>::init(
     //          synthetic - [data.length, data.length)
     //    private methods - [data.length, data.length)
     //
-    // If ENABLE_EXPLICIT_RESOURCE_MANAGEMENT is set, the consts range is split
-    // into the following:
+    // The consts range is further split into the following:
     //             consts - [slotInfo.constStart, slotInfo.usingStart)
     //             usings - [slotInfo.usingStart, data.length)
     init(/* positionalFormalStart= */ 0,
@@ -990,9 +975,7 @@ void BaseAbstractBindingIter<NameT>::init(
          /* varStart= */ 0,
          /* letStart= */ 0,
          /* constStart= */ slotInfo.constStart,
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
          /* usingStart= */ slotInfo.usingStart,
-#endif
          /* syntheticStart= */ data.length,
          /* privateMethodStart= */ data.length,
          /* flags= */ CanHaveFrameSlots | CanHaveEnvironmentSlots | flags,
@@ -1027,9 +1010,7 @@ void BaseAbstractBindingIter<NameT>::init(
        /* varStart= */ 0,
        /* letStart= */ 0,
        /* constStart= */ 0,
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
        /* usingStart= */ 0,
-#endif
        /* syntheticStart= */ 0,
        /* privateMethodStart= */ slotInfo.privateMethodStart,
        /* flags= */ CanHaveFrameSlots | CanHaveEnvironmentSlots,
@@ -1068,9 +1049,7 @@ void BaseAbstractBindingIter<NameT>::init(
        /* varStart= */ slotInfo.varStart,
        /* letStart= */ length,
        /* constStart= */ length,
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
        /* usingStart= */ length,
-#endif
        /* syntheticStart= */ length,
        /* privateMethodStart= */ length,
        /* flags= */ flags,
@@ -1101,9 +1080,7 @@ void BaseAbstractBindingIter<NameT>::init(VarScope::AbstractData<NameT>& data,
        /* varStart= */ 0,
        /* letStart= */ length,
        /* constStart= */ length,
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
        /* usingStart= */ length,
-#endif
        /* syntheticStart= */ length,
        /* privateMethodStart= */ length,
        /* flags= */ CanHaveFrameSlots | CanHaveEnvironmentSlots,
@@ -1134,9 +1111,7 @@ void BaseAbstractBindingIter<NameT>::init(
        /* varStart= */ 0,
        /* letStart= */ slotInfo.letStart,
        /* constStart= */ slotInfo.constStart,
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
        /* usingStart= */ data.length,
-#endif
        /* syntheticStart= */ data.length,
        /* privateMethoodStart= */ data.length,
        /* flags= */ CannotHaveSlots,
@@ -1180,9 +1155,7 @@ void BaseAbstractBindingIter<NameT>::init(EvalScope::AbstractData<NameT>& data,
        /* varStart= */ 0,
        /* letStart= */ length,
        /* constStart= */ length,
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
        /* usingStart= */ length,
-#endif
        /* syntheticStart= */ length,
        /* privateMethodStart= */ length,
        /* flags= */ flags,
@@ -1209,8 +1182,7 @@ void BaseAbstractBindingIter<NameT>::init(
   //          synthetic - [data.length, data.length)
   //    private methods - [data.length, data.length)
   //
-  // If ENABLE_EXPLICIT_RESOURCE_MANAGEMENT is set, the consts range is split
-  // into the following:
+  // The consts range is further split into the following:
   //             consts - [slotInfo.constStart, slotInfo.usingStart)
   //             usings - [slotInfo.usingStart, data.length)
   init(
@@ -1219,9 +1191,7 @@ void BaseAbstractBindingIter<NameT>::init(
       /* varStart= */ slotInfo.varStart,
       /* letStart= */ slotInfo.letStart,
       /* constStart= */ slotInfo.constStart,
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
       /* usingStart= */ slotInfo.usingStart,
-#endif
       /* syntheticStart= */ data.length,
       /* privateMethodStart= */ data.length,
       /* flags= */ CanHaveFrameSlots | CanHaveEnvironmentSlots,
@@ -1252,9 +1222,7 @@ void BaseAbstractBindingIter<NameT>::init(
        /* varStart= */ 0,
        /* letStart= */ length,
        /* constStart= */ length,
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
        /* usingStart= */ length,
-#endif
        /* syntheticStart= */ length,
        /* privateMethodStart= */ length,
        /* flags= */ CanHaveFrameSlots | CanHaveEnvironmentSlots,
@@ -1285,9 +1253,7 @@ void BaseAbstractBindingIter<NameT>::init(
        /* varStart= */ 0,
        /* letStart= */ length,
        /* constStart= */ length,
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
        /* usingStart= */ length,
-#endif
        /* syntheticStart= */ length,
        /* privateMethodStart= */ length,
        /* flags= */ CanHaveFrameSlots | CanHaveEnvironmentSlots,
@@ -1404,7 +1370,7 @@ JSAtom* js::FrameSlotName(JSScript* script, jsbytecode* pc) {
 JS::ubi::Node::Size JS::ubi::Concrete<Scope>::size(
     mozilla::MallocSizeOf mallocSizeOf) const {
   return js::gc::Arena::thingSize(get().asTenured().getAllocKind()) +
-         get().sizeOfExcludingThis(mallocSizeOf);
+         get().sizeOfExcludingThis();
 }
 
 template <typename... Args>
@@ -1657,41 +1623,27 @@ bool ScopeStencil::createForWithScope(FrontendContext* fc,
 }
 
 template <typename SpecificScopeT>
-UniquePtr<typename SpecificScopeT::RuntimeData>
-ScopeStencil::createSpecificScopeData(JSContext* cx,
-                                      CompilationAtomCache& atomCache,
-                                      BaseParserScopeData* baseData) const {
+typename SpecificScopeT::RuntimeData* ScopeStencil::createSpecificScopeData(
+    JSContext* cx, CompilationAtomCache& atomCache,
+    BaseParserScopeData* baseData) const {
   return LiftParserScopeData<SpecificScopeT>(cx, atomCache, baseData);
 }
 
 template <>
-UniquePtr<FunctionScope::RuntimeData>
+FunctionScope::RuntimeData*
 ScopeStencil::createSpecificScopeData<FunctionScope>(
     JSContext* cx, CompilationAtomCache& atomCache,
     BaseParserScopeData* baseData) const {
   // Allocate a new vm function-scope.
-  UniquePtr<FunctionScope::RuntimeData> data =
-      LiftParserScopeData<FunctionScope>(cx, atomCache, baseData);
-  if (!data) {
-    return nullptr;
-  }
-
-  return data;
+  return LiftParserScopeData<FunctionScope>(cx, atomCache, baseData);
 }
 
 template <>
-UniquePtr<ModuleScope::RuntimeData>
-ScopeStencil::createSpecificScopeData<ModuleScope>(
+ModuleScope::RuntimeData* ScopeStencil::createSpecificScopeData<ModuleScope>(
     JSContext* cx, CompilationAtomCache& atomCache,
     BaseParserScopeData* baseData) const {
   // Allocate a new vm module-scope.
-  UniquePtr<ModuleScope::RuntimeData> data =
-      LiftParserScopeData<ModuleScope>(cx, atomCache, baseData);
-  if (!data) {
-    return nullptr;
-  }
-
-  return data;
+  return LiftParserScopeData<ModuleScope>(cx, atomCache, baseData);
 }
 
 // WithScope does not use binding data.
@@ -1707,9 +1659,9 @@ template <>
 Scope* ScopeStencil::createSpecificScope<GlobalScope, std::nullptr_t>(
     JSContext* cx, CompilationAtomCache& atomCache,
     Handle<Scope*> enclosingScope, BaseParserScopeData* baseData) const {
-  Rooted<UniquePtr<GlobalScope::RuntimeData>> rootedData(
+  RootedBuffer<GlobalScope::RuntimeData> data(
       cx, createSpecificScopeData<GlobalScope>(cx, atomCache, baseData));
-  if (!rootedData) {
+  if (!data) {
     return nullptr;
   }
 
@@ -1717,7 +1669,7 @@ Scope* ScopeStencil::createSpecificScope<GlobalScope, std::nullptr_t>(
   MOZ_ASSERT(!enclosingScope);
 
   // Because we already baked the data here, we needn't do it again.
-  return Scope::create<GlobalScope>(cx, kind(), nullptr, nullptr, &rootedData);
+  return Scope::create<GlobalScope>(cx, kind(), nullptr, nullptr, data);
 }
 
 template <typename SpecificScopeT, typename SpecificEnvironmentT>
@@ -1725,21 +1677,19 @@ Scope* ScopeStencil::createSpecificScope(JSContext* cx,
                                          CompilationAtomCache& atomCache,
                                          Handle<Scope*> enclosingScope,
                                          BaseParserScopeData* baseData) const {
-  Rooted<UniquePtr<typename SpecificScopeT::RuntimeData>> rootedData(
+  RootedBuffer<typename SpecificScopeT::RuntimeData> data(
       cx, createSpecificScopeData<SpecificScopeT>(cx, atomCache, baseData));
-  if (!rootedData) {
+  if (!data) {
     return nullptr;
   }
 
   Rooted<SharedShape*> shape(cx);
-  if (!createSpecificShape<SpecificEnvironmentT>(
-          cx, kind(), rootedData.get().get(), &shape)) {
+  if (!createSpecificShape<SpecificEnvironmentT>(cx, kind(), data, &shape)) {
     return nullptr;
   }
 
   // Because we already baked the data here, we needn't do it again.
-  return Scope::create<SpecificScopeT>(cx, kind(), enclosingScope, shape,
-                                       &rootedData);
+  return Scope::create<SpecificScopeT>(cx, kind(), enclosingScope, shape, data);
 }
 
 template Scope* ScopeStencil::createSpecificScope<FunctionScope, CallObject>(

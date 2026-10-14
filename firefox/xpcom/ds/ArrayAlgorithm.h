@@ -1,16 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef ArrayAlgorithm_h___
-#define ArrayAlgorithm_h___
-
-#include "nsTArray.h"
+#ifndef ArrayAlgorithm_h_
+#define ArrayAlgorithm_h_
 
 #include "mozilla/Algorithm.h"
 #include "mozilla/ResultExtensions.h"
+#include "nsTArray.h"
 
 namespace mozilla {
 
@@ -106,4 +103,4 @@ auto TransformIntoNewArray(SrcRange& aRange, Transform aTransform) {
 
 }  // namespace mozilla
 
-#endif  // !defined(ArrayAlgorithm_h___)
+#endif  // !defined(ArrayAlgorithm_h_)

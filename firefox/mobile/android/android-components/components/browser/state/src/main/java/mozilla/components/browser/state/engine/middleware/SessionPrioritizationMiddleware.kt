@@ -22,13 +22,13 @@ import mozilla.components.concept.engine.EngineSession
 import mozilla.components.concept.engine.EngineSession.SessionPriority.DEFAULT
 import mozilla.components.concept.engine.EngineSession.SessionPriority.HIGH
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
-import mozilla.components.support.base.log.logger.Logger
+import mozilla.components.lib.state.Store
 import mozilla.components.support.base.coroutines.Dispatchers as MozillaDispatchers
+import mozilla.components.support.base.log.logger.Logger
 
 /**
- * [Middleware] implementation responsible for updating the priority of the selected [EngineSession]
- * to [HIGH] and the rest to [DEFAULT].
+ * [Middleware] implementation responsible for updating the priority of the selected [EngineSession] to [HIGH] and the
+ * rest to [DEFAULT].
  *
  * @property updatePriorityAfterMillis Update priority to default after timeout.
  */
@@ -41,18 +41,17 @@ class SessionPrioritizationMiddleware(
     private val logger = Logger("SessionPrioritizationMiddleware")
     private var updatePriorityToDefaultJobs = mutableMapOf<String, Job>()
 
-    @VisibleForTesting
-    internal var previousHighestPriorityTabId = ""
+    @VisibleForTesting internal var previousHighestPriorityTabId = ""
 
     @Suppress("NestedBlockDepth")
     override fun invoke(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         next: (BrowserAction) -> Unit,
         action: BrowserAction,
     ) {
         when (action) {
             is EngineAction.UnlinkEngineSessionAction -> {
-                val activeTab = context.state.findTab(action.tabId)
+                val activeTab = store.state.findTab(action.tabId)
                 activeTab?.engineState?.engineSession?.updateSessionPriority(DEFAULT)
                 if (previousHighestPriorityTabId == action.tabId) {
                     previousHighestPriorityTabId = ""
@@ -61,12 +60,12 @@ class SessionPrioritizationMiddleware(
             }
             is ContentAction.UpdateHasFormDataAction -> {
                 if (action.adjustPriority) {
-                    val tab = context.state.findTab(action.tabId)
+                    val tab = store.state.findTab(action.tabId)
                     if (action.containsFormData) {
                         tab?.engineState?.engineSession?.updateSessionPriority(HIGH)
                         logger.info("Update the tab ${tab?.id} priority to ${HIGH.name}")
                         tab?.let {
-                            updatePriorityToDefault(context, it.id, updatePriorityAfterMillis)
+                            updatePriorityToDefault(store, it.id, updatePriorityAfterMillis)
                         }
                     } else {
                         tab?.engineState?.engineSession?.updateSessionPriority(DEFAULT)
@@ -76,7 +75,7 @@ class SessionPrioritizationMiddleware(
             }
             is ContentAction.UpdatePriorityToDefaultAfterTimeoutAction -> {
                 // remove finished job from map
-                val tab = context.state.findTab(action.tabId)
+                val tab = store.state.findTab(action.tabId)
                 tab?.engineState?.engineSession?.updateSessionPriority(DEFAULT)
                 logger.info("Update the tab ${tab?.id} priority back to ${DEFAULT.name}")
                 updatePriorityToDefaultJobs.remove(action.tabId)
@@ -85,7 +84,7 @@ class SessionPrioritizationMiddleware(
             is AppLifecycleAction.PauseAction -> {
                 // Check for form data for the selected tab when the app is backgrounded.
                 mainScope.launch {
-                    context.state.selectedTab?.engineState?.engineSession?.checkForFormData(adjustPriority = false)
+                    store.state.selectedTab?.engineState?.engineSession?.checkForFormData(adjustPriority = false)
                 }
             }
             else -> {
@@ -97,10 +96,9 @@ class SessionPrioritizationMiddleware(
 
         when (action) {
             is TabListAction,
-            is EngineAction.LinkEngineSessionAction,
-            -> {
+            is EngineAction.LinkEngineSessionAction -> {
                 // if it exists in the map of high priority tabs to be cleared, cancel the job and remove it
-                val state = context.state
+                val state = store.state
                 updatePriorityToDefaultJobs[state.selectedTabId]?.cancel()
                 updatePriorityToDefaultJobs.remove(state.selectedTabId)
 
@@ -136,14 +134,14 @@ class SessionPrioritizationMiddleware(
     }
 
     private fun updatePriorityToDefault(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         tabId: String,
         updatePriorityAfterMillis: Long,
     ) {
         // store and launch the new job related to the tabId
         var updateJob: Job = waitScope.launch {
             delay(updatePriorityAfterMillis)
-            context.store.dispatch(ContentAction.UpdatePriorityToDefaultAfterTimeoutAction(tabId))
+            store.dispatch(ContentAction.UpdatePriorityToDefaultAfterTimeoutAction(tabId))
         }
         updatePriorityToDefaultJobs[tabId] = updateJob
         logger.info("Tab $tabId will return to ${DEFAULT.name} priority after $updatePriorityAfterMillis ms")

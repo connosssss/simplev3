@@ -14,12 +14,12 @@ use crate::{
     client::MlsError,
     client_config::ClientConfig,
     extension::RatchetTreeExt,
+    group::proposal_filter::path_update_required,
     identity::SigningIdentity,
     protocol_version::ProtocolVersion,
     signer::Signable,
-    tree_kem::{
-        kem::TreeKem, node::LeafIndex, path_secret::PathSecret, TreeKemPrivate, UpdatePath,
-    },
+    time::MlsTime,
+    tree_kem::{kem::TreeKem, path_secret::PathSecret, TreeKemPrivate, UpdatePath},
     ExtensionList, MlsRules,
 };
 
@@ -42,7 +42,7 @@ use super::{
     framing::{Content, MlsMessage, MlsMessagePayload, Sender},
     key_schedule::{KeySchedule, WelcomeSecret},
     message_hash::MessageHash,
-    message_processor::{path_update_required, MessageProcessor},
+    message_processor::MessageProcessor,
     message_signature::AuthenticatedContent,
     mls_rules::CommitDirection,
     proposal::{Proposal, ProposalOrRef},
@@ -78,10 +78,6 @@ pub(crate) struct PendingCommit {
     pub(crate) commit_message_hash: MessageHash,
 }
 
-#[cfg_attr(
-    all(feature = "ffi", not(test)),
-    safer_ffi_gen::ffi_type(clone, opaque)
-)]
 #[derive(Clone)]
 pub struct CommitSecrets(pub(crate) PendingCommitSnapshot);
 
@@ -97,10 +93,6 @@ impl CommitSecrets {
     }
 }
 
-#[cfg_attr(
-    all(feature = "ffi", not(test)),
-    safer_ffi_gen::ffi_type(clone, opaque)
-)]
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 /// Result of MLS commit operation using
@@ -131,16 +123,13 @@ pub struct CommitOutput {
     pub contains_update_path: bool,
 }
 
-#[cfg_attr(all(feature = "ffi", not(test)), ::safer_ffi_gen::safer_ffi_gen)]
 impl CommitOutput {
     /// Commit message to send to other group members.
-    #[cfg(feature = "ffi")]
     pub fn commit_message(&self) -> &MlsMessage {
         &self.commit_message
     }
 
     /// Welcome message to send to new group members.
-    #[cfg(feature = "ffi")]
     pub fn welcome_messages(&self) -> &[MlsMessage] {
         &self.welcome_messages
     }
@@ -148,7 +137,6 @@ impl CommitOutput {
     /// Ratchet tree that can be sent out of band if
     /// `ratchet_tree_extension` is not used according to
     /// [`MlsRules::commit_options`].
-    #[cfg(feature = "ffi")]
     pub fn ratchet_tree(&self) -> Option<&ExportedTree<'static>> {
         self.ratchet_tree.as_ref()
     }
@@ -156,13 +144,12 @@ impl CommitOutput {
     /// A group info that can be provided to new members in order to enable external commit
     /// functionality. This value is set if [`MlsRules::commit_options`] returns
     /// `allow_external_commit` set to true.
-    #[cfg(feature = "ffi")]
     pub fn external_commit_group_info(&self) -> Option<&MlsMessage> {
         self.external_commit_group_info.as_ref()
     }
 
     /// Proposals that were received in the prior epoch but not included in the following commit.
-    #[cfg(all(feature = "ffi", feature = "by_ref_proposal"))]
+    #[cfg(feature = "by_ref_proposal")]
     pub fn unused_proposals(&self) -> &[crate::mls_rules::ProposalInfo<Proposal>] {
         &self.unused_proposals
     }
@@ -186,6 +173,7 @@ where
     new_signer: Option<SignatureSecretKey>,
     new_signing_identity: Option<SigningIdentity>,
     new_leaf_node_extensions: Option<ExtensionList>,
+    commit_time: Option<MlsTime>,
 }
 
 impl<'a, C> CommitBuilder<'a, C>
@@ -342,6 +330,14 @@ where
         }
     }
 
+    /// Add a time to associate with the commit creation.
+    pub fn commit_time(self, commit_time: MlsTime) -> Self {
+        Self {
+            commit_time: Some(commit_time),
+            ..self
+        }
+    }
+
     /// Finalize the commit to send.
     ///
     /// # Errors
@@ -362,6 +358,7 @@ where
                 self.new_signer,
                 self.new_signing_identity,
                 self.new_leaf_node_extensions,
+                self.commit_time,
             )
             .await?;
 
@@ -386,6 +383,7 @@ where
                 self.new_signer,
                 self.new_signing_identity,
                 self.new_leaf_node_extensions,
+                self.commit_time,
             )
             .await?;
 
@@ -467,7 +465,7 @@ where
 
     /// Create a new commit builder that can include proposals
     /// by-value.
-    pub fn commit_builder(&mut self) -> CommitBuilder<C> {
+    pub fn commit_builder(&mut self) -> CommitBuilder<'_, C> {
         CommitBuilder {
             group: self,
             proposals: Default::default(),
@@ -476,6 +474,7 @@ where
             new_signer: Default::default(),
             new_signing_identity: Default::default(),
             new_leaf_node_extensions: Default::default(),
+            commit_time: None,
         }
     }
 
@@ -492,6 +491,7 @@ where
         new_signer: Option<SignatureSecretKey>,
         new_signing_identity: Option<SigningIdentity>,
         new_leaf_node_extensions: Option<ExtensionList>,
+        commit_time: Option<MlsTime>,
     ) -> Result<(CommitOutput, PendingCommit), MlsError> {
         if !self.pending_commit.is_none() {
             return Err(MlsError::ExistingPendingCommit);
@@ -522,6 +522,12 @@ where
 
         #[cfg(not(feature = "std"))]
         let time = None;
+
+        let time = if commit_time.is_some() {
+            commit_time
+        } else {
+            time
+        };
 
         #[cfg(feature = "by_ref_proposal")]
         let proposals = self.state.proposals.prepare_commit(sender, proposals);
@@ -567,7 +573,7 @@ where
             .map_err(|e| MlsError::MlsRulesError(e.into_any_error()))?;
 
         let perform_path_update = commit_options.path_required
-            || path_update_required(&provisional_state.applied_proposals);
+            || path_update_required(&provisional_state.applied_proposals, &mls_rules);
 
         let (update_path, path_secrets, commit_secret) = if perform_path_update {
             // If populating the path field: Create an UpdatePath using the new tree. Any new
@@ -586,6 +592,12 @@ where
                 None => self.current_user_leaf_node()?.ungreased_extensions(),
             };
 
+            #[cfg(feature = "tree_index")]
+            let old_committer_leaf = provisional_state
+                .public_tree
+                .get_leaf_node(provisional_private_tree.self_index)?
+                .clone();
+
             let encap_gen = TreeKem::new(
                 &mut provisional_state.public_tree,
                 &mut provisional_private_tree,
@@ -601,6 +613,19 @@ where
                 &self.commit_modifiers,
             )
             .await?;
+
+            provisional_state
+                .public_tree
+                .update_committer_leaf(
+                    &self.config.identity_provider(),
+                    &provisional_state.group_context.extensions,
+                    provisional_private_tree.self_index,
+                    #[cfg(feature = "tree_index")]
+                    &old_committer_leaf,
+                    #[cfg(test)]
+                    !self.commit_modifiers.skip_committer_self_update_validation,
+                )
+                .await?;
 
             (
                 Some(encap_gen.update_path),
@@ -716,7 +741,9 @@ where
                 })?;
 
                 if let Some(ref ratchet_tree_ext) = ratchet_tree_ext {
-                    extensions.set_from(ratchet_tree_ext.clone())?;
+                    if !commit_options.always_out_of_band_ratchet_tree {
+                        extensions.set_from(ratchet_tree_ext.clone())?;
+                    }
                 }
 
                 let info = self
@@ -822,7 +849,8 @@ where
         let commit_message = self.format_for_wire(auth_content.clone()).await?;
 
         // TODO is it necessary to clone the tree here? or can we just output serialized bytes?
-        let ratchet_tree = (!commit_options.ratchet_tree_extension)
+        let ratchet_tree = (!commit_options.ratchet_tree_extension
+            || commit_options.always_out_of_band_ratchet_tree)
             .then(|| ExportedTree::new(provisional_state.public_tree.nodes.clone()));
 
         let pending_reinit = provisional_state
@@ -892,7 +920,7 @@ where
             group_context: group_context.clone(),
             extensions,
             confirmation_tag: confirmation_tag.clone(), // The confirmation_tag from the MlsPlaintext object
-            signer: LeafIndex(self.current_member_index()),
+            signer: self.current_member_leaf_index(),
             signature: vec![],
         };
 
@@ -936,6 +964,7 @@ pub(crate) mod test_utils {
         pub modify_leaf: fn(&mut LeafNode, &SignatureSecretKey) -> Option<SignatureSecretKey>,
         pub modify_tree: fn(&mut TreeKemPublic),
         pub modify_path: fn(Vec<UpdatePathNode>) -> Vec<UpdatePathNode>,
+        pub skip_committer_self_update_validation: bool,
     }
 
     impl Default for CommitModifiers {
@@ -944,6 +973,7 @@ pub(crate) mod test_utils {
                 modify_leaf: |_, _| None,
                 modify_tree: |_| (),
                 modify_path: |a| a,
+                skip_committer_self_update_validation: false,
             }
         }
     }
@@ -1100,7 +1130,10 @@ mod tests {
             .welcome_messages
             .remove(0);
 
-        let (_, context) = bob_client.join_group(None, &welcome_message).await.unwrap();
+        let (_, context) = bob_client
+            .join_group(None, &welcome_message, None)
+            .await
+            .unwrap();
 
         assert_eq!(
             context
@@ -1329,7 +1362,7 @@ mod tests {
                 .find(|w| w.welcome_key_package_references().contains(&&kp_ref))
                 .unwrap();
 
-            client.join_group(None, welcome).await.unwrap();
+            client.join_group(None, welcome, None).await.unwrap();
 
             assert_eq!(welcome.clone().into_welcome().unwrap().secrets.len(), 1);
         }
@@ -1488,16 +1521,73 @@ mod tests {
     }
 
     #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
+    async fn commit_includes_tree_out_of_bounds_and_not_in_external_group_info_if_requested_tree_ext_off(
+    ) {
+        let mut group = test_group_custom(
+            TEST_PROTOCOL_VERSION,
+            TEST_CIPHER_SUITE,
+            Default::default(),
+            None,
+            Some(
+                CommitOptions::new()
+                    .with_always_out_of_band_ratchet_tree(true)
+                    .with_ratchet_tree_extension(false)
+                    .with_allow_external_commit(true),
+            ),
+        )
+        .await;
+
+        let commit = group.commit(vec![]).await.unwrap();
+
+        assert!(commit.ratchet_tree.is_some());
+
+        let info = commit
+            .external_commit_group_info
+            .unwrap()
+            .into_group_info()
+            .unwrap();
+
+        assert!(!info.extensions.has_extension(ExtensionType::RATCHET_TREE));
+    }
+
+    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
+    async fn commit_includes_tree_out_of_bounds_and_not_in_external_group_info_if_requested_tree_ext_on(
+    ) {
+        let mut group = test_group_custom(
+            TEST_PROTOCOL_VERSION,
+            TEST_CIPHER_SUITE,
+            Default::default(),
+            None,
+            Some(
+                CommitOptions::new()
+                    .with_always_out_of_band_ratchet_tree(true)
+                    .with_ratchet_tree_extension(true)
+                    .with_allow_external_commit(true),
+            ),
+        )
+        .await;
+
+        let commit = group.commit(vec![]).await.unwrap();
+
+        assert!(commit.ratchet_tree.is_some());
+
+        let info = commit
+            .external_commit_group_info
+            .unwrap()
+            .into_group_info()
+            .unwrap();
+
+        assert!(!info.extensions.has_extension(ExtensionType::RATCHET_TREE));
+    }
+
+    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
     async fn member_identity_is_validated_against_new_extensions() {
         let alice = client_with_test_extension(b"alice").await;
-        let mut alice = alice
-            .create_group(ExtensionList::new(), Default::default())
-            .await
-            .unwrap();
+        let mut alice = alice.group_builder().unwrap().build().await.unwrap();
 
         let bob = client_with_test_extension(b"bob").await;
         let bob_kp = bob
-            .generate_key_package_message(Default::default(), Default::default())
+            .generate_key_package_message(Default::default(), Default::default(), None)
             .await
             .unwrap();
 
@@ -1521,7 +1611,7 @@ mod tests {
         alice
             .commit_builder()
             .add_member(
-                alex.generate_key_package_message(Default::default(), Default::default())
+                alex.generate_key_package_message(Default::default(), Default::default(), None)
                     .await
                     .unwrap(),
             )
@@ -1537,10 +1627,7 @@ mod tests {
     #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
     async fn server_identity_is_validated_against_new_extensions() {
         let alice = client_with_test_extension(b"alice").await;
-        let mut alice = alice
-            .create_group(ExtensionList::new(), Default::default())
-            .await
-            .unwrap();
+        let mut alice = alice.group_builder().unwrap().build().await.unwrap();
 
         let mut extension_list = ExtensionList::new();
         let extension = TestExtension { foo: b'a' };
@@ -1699,5 +1786,30 @@ mod tests {
         assert!(group.pending_commit.is_none());
         group.apply_detached_commit(secrets).await.unwrap();
         assert_eq!(group.context().epoch, 1);
+    }
+
+    #[cfg(feature = "tree_index")]
+    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
+    async fn tree_index_consistent_after_committer_self_update() {
+        use crate::identity::basic::BasicIdentityProvider;
+        use crate::tree_kem::TreeKemPublic;
+
+        let mut group = test_group(TEST_PROTOCOL_VERSION, TEST_CIPHER_SUITE).await;
+
+        group.commit(vec![]).await.unwrap();
+        group.process_pending_commit().await.unwrap();
+
+        let mut rebuilt = TreeKemPublic::import_node_data(
+            group.state.public_tree.nodes.clone(),
+            &BasicIdentityProvider,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+
+        let cs = test_cipher_suite_provider(TEST_CIPHER_SUITE);
+        rebuilt.tree_hash(&cs).await.unwrap();
+
+        assert!(group.state.public_tree.equal_internals(&rebuilt));
     }
 }

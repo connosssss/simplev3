@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=4 sw=2 sts=2 et cin: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,6 +9,7 @@
 */
 
 #include "nsChromeProtocolHandler.h"
+#include "mozilla/Components.h"
 #include "nsChromeRegistry.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
@@ -70,7 +69,7 @@ nsChromeProtocolHandler::AllowPort(int32_t port, const char* scheme,
   // and "chrome://navigator/content/navigator.xul".
 
   rv = nsChromeRegistry::Canonify(surl);
-  mozilla::Unused << NS_WARN_IF(NS_FAILED(rv));
+  (void)NS_WARN_IF(NS_FAILED(rv));
 
   surl.forget(result);
   return NS_OK;
@@ -95,7 +94,8 @@ nsChromeProtocolHandler::NewChannel(nsIURI* aURI, nsILoadInfo* aLoadInfo,
   if (!nsChromeRegistry::gChromeRegistry) {
     // We don't actually want this ref, we just want the service to
     // initialize if it hasn't already.
-    nsCOMPtr<nsIChromeRegistry> reg = mozilla::services::GetChromeRegistry();
+    nsCOMPtr<nsIChromeRegistry> reg =
+        mozilla::components::ChromeRegistry::Service();
     NS_ENSURE_TRUE(nsChromeRegistry::gChromeRegistry, NS_ERROR_FAILURE);
   }
 

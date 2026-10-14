@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,24 @@
 #ifndef MOZILLA_DOM_MEDIA_WEBRTC_JSAPI_RTCENCODEDAUDIOFRAME_H_
 #define MOZILLA_DOM_MEDIA_WEBRTC_JSAPI_RTCENCODEDAUDIOFRAME_H_
 
-#include "mozilla/RefPtr.h"
-#include "nsIGlobalObject.h"
-#include "jsapi/RTCEncodedFrameBase.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/dom/RTCEncodedAudioFrameBinding.h"
+#include "mozilla/dom/RTCEncodedFrameBase.h"
+#include "nsIGlobalObject.h"
 
 namespace mozilla::dom {
+
+class RTCStatsTimestampMaker;
+class StructuredCloneHolder;
+struct RTCEncodedAudioFrameOptions;
+
+// Everything a copy of an RTCEncodedAudioFrame carries apart from the data
+// buffer itself, which travels in the clone stream (see
+// RTCEncodedFrameBase::WriteData). Used only to ferry a copy to the new frame,
+// either while structured cloning, or while copy constructing.
+struct RTCEncodedAudioFrameData {
+  RTCEncodedAudioFrameMetadata mMetadata;
+};
 
 // Wraps a libwebrtc frame, allowing the frame buffer to be modified, and
 // providing read-only access to various metadata. After the libwebrtc frame is
@@ -23,28 +33,42 @@ class RTCEncodedAudioFrame final : public RTCEncodedFrameBase {
   explicit RTCEncodedAudioFrame(
       nsIGlobalObject* aGlobal,
       std::unique_ptr<webrtc::TransformableFrameInterface> aFrame,
-      uint64_t aCounter, RTCRtpScriptTransformer* aOwner);
+      uint64_t aCounter, RTCRtpScriptTransformer* aOwner,
+      const Maybe<RTCStatsTimestampMaker>& aTimestampMaker);
 
-  // nsISupports
-  NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(RTCEncodedAudioFrame,
-                                           RTCEncodedFrameBase)
+  // For structured clone and copy construction. JS engine supplies the buffer.
+  RTCEncodedAudioFrame(nsIGlobalObject* aGlobal, RTCEncodedAudioFrameData aData,
+                       JS::Handle<JSObject*> aBuffer);
 
-  // webidl (timestamp and data accessors live in base class)
+  // webidl (data accessors live in base class)
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
 
-  nsIGlobalObject* GetParentObject() const;
+  static already_AddRefed<RTCEncodedAudioFrame> Constructor(
+      const GlobalObject& aGlobal, const RTCEncodedAudioFrame& aOriginalFrame,
+      const RTCEncodedAudioFrameOptions& aOptions, ErrorResult& aRv);
+
+  // legacy name for the rtpTimestamp in the metadata
+  unsigned long Timestamp() const;
 
   void GetMetadata(RTCEncodedAudioFrameMetadata& aMetadata) const;
 
-  bool CheckOwner(RTCRtpScriptTransformer* aOwner) const override;
-
-  bool IsVideo() const override { return false; }
+  static JSObject* ReadStructuredClone(JSContext* aCx, nsIGlobalObject* aGlobal,
+                                       JSStructuredCloneReader* aReader,
+                                       RTCEncodedAudioFrameData aData);
+  bool WriteStructuredClone(JSContext* aCx, JSStructuredCloneWriter* aWriter,
+                            StructuredCloneHolder* aHolder) const;
 
  private:
-  virtual ~RTCEncodedAudioFrame();
-  RefPtr<RTCRtpScriptTransformer> mOwner;
+  virtual ~RTCEncodedAudioFrame() = default;
+
+  RTCEncodedAudioFrameData CloneMetadata() const;
+
+  // RTCEncodedAudioFrame can run on either main thread or worker thread.
+  void AssertIsOnOwningThread() const {
+    NS_ASSERT_OWNINGTHREAD(RTCEncodedAudioFrame);
+  }
+
   RTCEncodedAudioFrameMetadata mMetadata;
 };
 

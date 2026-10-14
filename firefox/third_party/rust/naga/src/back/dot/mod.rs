@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// Configuration options for the dot backend
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Options {
     /// Only emit function bodies
     pub cfg_only: bool,
@@ -305,6 +305,7 @@ impl StatementGraph {
                             "RayQueryConfirmIntersection"
                         }
                         crate::RayQueryFunction::Terminate => "RayQueryTerminate",
+                        crate::RayQueryFunction::Begin => "RayQueryVariableUsageBegins",
                     }
                 }
                 S::SubgroupBallot { result, predicate } => {
@@ -402,6 +403,41 @@ impl StatementGraph {
                             crate::Direction::Diagonal => "SubgroupQuadSwapDiagonal",
                         },
                     }
+                }
+                S::CooperativeStore { target, data } => {
+                    self.dependencies.push((id, target, "target"));
+                    self.dependencies.push((id, data.pointer, "pointer"));
+                    self.dependencies.push((id, data.stride, "stride"));
+                    if data.row_major {
+                        "CoopStoreT"
+                    } else {
+                        "CoopStore"
+                    }
+                }
+                S::RayPipelineFunction(func) => match func {
+                    crate::RayPipelineFunction::TraceRay {
+                        acceleration_structure,
+                        descriptor,
+                        payload,
+                    } => {
+                        self.dependencies.push((
+                            id,
+                            acceleration_structure,
+                            "acceleration_structure",
+                        ));
+                        self.dependencies.push((id, descriptor, "descriptor"));
+                        self.dependencies.push((id, payload, "payload"));
+                        "TraceRay"
+                    }
+                },
+                S::DebugPrintf {
+                    format: _,
+                    ref arguments,
+                } => {
+                    for &expr in arguments {
+                        self.dependencies.push((id, expr, "arg"));
+                    }
+                    "DebugPrintf"
                 }
             };
             // Set the last node to the merge node
@@ -740,7 +776,19 @@ fn write_function_expressions(
             E::RayQueryVertexPositions { query, committed } => {
                 edges.insert("", query);
                 let ty = if committed { "Committed" } else { "Candidate" };
-                (format!("get{}HitVertexPositions", ty).into(), 4)
+                (format!("get{ty}HitVertexPositions").into(), 4)
+            }
+            E::CooperativeLoad { ref data, .. } => {
+                edges.insert("pointer", data.pointer);
+                edges.insert("stride", data.stride);
+                let suffix = if data.row_major { "T " } else { "" };
+                (format!("coopLoad{suffix}").into(), 4)
+            }
+            E::CooperativeMultiplyAdd { a, b, c } => {
+                edges.insert("a", a);
+                edges.insert("b", b);
+                edges.insert("c", c);
+                ("cooperativeMultiplyAdd".into(), 4)
             }
         };
 

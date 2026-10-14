@@ -1,13 +1,24 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/ClearOnShutdown.h"
 
+#include "mozilla/ProfilerMarkers.h"
+
 namespace mozilla {
 namespace ClearOnShutdown_Internal {
+
+// The recorded path is absolute, only the leaf is useful in a marker.
+static const char* LeafName(const char* aPath) {
+  const char* leaf = aPath;
+  for (const char* c = aPath; *c; ++c) {
+    if (*c == '/' || *c == '\\') {
+      leaf = c + 1;
+    }
+  }
+  return leaf;
+}
 
 Array<StaticAutoPtr<ShutdownList>,
       static_cast<size_t>(ShutdownPhase::ShutdownPhase_Length)>
@@ -52,6 +63,11 @@ void KillClearOnShutdown(ShutdownPhase aPhase) {
     if (sShutdownObservers[static_cast<size_t>(phase)]) {
       while (ShutdownObserver* observer =
                  sShutdownObservers[static_cast<size_t>(phase)]->popLast()) {
+        AUTO_PROFILER_MARKER_FMT("ClearOnShutdownEntry", OTHER, {},
+                                 "{} ({}:{})",
+                                 observer->mLocation.function_name(),
+                                 LeafName(observer->mLocation.file_name()),
+                                 observer->mLocation.line());
         observer->Shutdown();
         delete observer;
       }

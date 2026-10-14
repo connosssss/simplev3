@@ -5,11 +5,10 @@
 #include "xpcAccessibilityService.h"
 
 #include "mozilla/dom/Document.h"
-
-#include "xpcAccessiblePivot.h"
 #include "nsAccessibilityService.h"
 #include "xpcAccessibleApplication.h"
 #include "xpcAccessibleDocument.h"
+#include "xpcAccessiblePivot.h"
 #include "xpcAccessibleTextLeafRange.h"
 
 #ifdef A11Y_LOG
@@ -90,7 +89,7 @@ xpcAccessibilityService::Release(void) {
   if (count == 1 && !mShutdownTimer) {
     NS_NewTimerWithFuncCallback(
         getter_AddRefs(mShutdownTimer), ShutdownCallback, this, 100,
-        nsITimer::TYPE_ONE_SHOT, "xpcAccessibilityService::Release");
+        nsITimer::TYPE_ONE_SHOT, "xpcAccessibilityService::Release"_ns);
   }
 
   return count;
@@ -261,8 +260,7 @@ xpcAccessibilityService::CreateTextLeafPoint(
   NS_ENSURE_ARG(aAccessible);
   *aPoint = nullptr;
 
-  RefPtr<xpcAccessibleTextLeafPoint> point =
-      new xpcAccessibleTextLeafPoint(aAccessible, aOffset);
+  auto point = MakeRefPtr<xpcAccessibleTextLeafPoint>(aAccessible, aOffset);
   point.forget(aPoint);
 
   return NS_OK;

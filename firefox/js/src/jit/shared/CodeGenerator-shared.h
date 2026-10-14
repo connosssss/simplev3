@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -59,6 +57,13 @@ class CodeGeneratorShared : public LElementVisitor {
 
   // Label for the common return path.
   NonAssertingLabel returnLabel_;
+
+  // Label for the common non-table-based bailout path.
+  NonAssertingLabel deoptLabel_;
+
+  // Whether the out-of-line path just generated ends with a jump to
+  // deoptLabel_ that has not been emitted yet. See jumpToDeoptLabel.
+  bool deoptJumpPending_ = false;
 
   // Amount of bytes allocated for incoming args. Used for Wasm return calls.
   uint32_t inboundStackArgBytes_;
@@ -143,8 +148,7 @@ class CodeGeneratorShared : public LElementVisitor {
   inline Address ToAddress(const LInt64Allocation& a) const;
 
   static inline Address ToAddress(Register elements, const LAllocation* index,
-                                  Scalar::Type type,
-                                  int32_t offsetAdjustment = 0);
+                                  Scalar::Type type);
 
   uint32_t frameSize() const { return frameDepth_; }
 
@@ -156,6 +160,7 @@ class CodeGeneratorShared : public LElementVisitor {
  public:
   MIRGenerator& mirGen() const { return *gen; }
   const wasm::CodeMetadata* wasmCodeMeta() const { return wasmCodeMeta_; }
+  IonPerfSpewer& perfSpewer() const { return mirGen().perfSpewer(); }
 
   // When appending to runtimeData_, the vector might realloc, leaving pointers
   // int the origianl vector stale and unusable. DataPtr acts like a pointer,
@@ -243,8 +248,8 @@ class CodeGeneratorShared : public LElementVisitor {
   void emitTruncateDouble(FloatRegister src, Register dest, MInstruction* mir);
   void emitTruncateFloat32(FloatRegister src, Register dest, MInstruction* mir);
 
-  void emitPreBarrier(Register elements, const LAllocation* index);
   void emitPreBarrier(Address address);
+  void emitPreBarrier(BaseObjectElementIndex address);
 
   // We don't emit code for trivial blocks, so if we want to branch to the
   // given block, and it's trivial, return the ultimate block we should
@@ -261,17 +266,38 @@ class CodeGeneratorShared : public LElementVisitor {
   // Test whether the given block can be reached via fallthrough from the
   // current block.
   inline bool isNextBlock(LBlock* block) {
-    uint32_t target = skipTrivialBlocks(block->mir())->id();
-    uint32_t i = current->mir()->id() + 1;
-    if (target < i) {
+    uint32_t targetId = skipTrivialBlocks(block->mir())->id();
+
+    // If the target is before next, then it's not next.
+    if (targetId < current->mir()->id() + 1) {
       return false;
     }
-    // Trivial blocks can be crossed via fallthrough.
-    for (; i != target; ++i) {
-      if (!graph.getBlock(i)->isTrivial()) {
-        return false;
-      }
+
+    if (current->isOutOfLine() != graph.getBlock(targetId)->isOutOfLine()) {
+      return false;
     }
+
+    // Scan through blocks until the target to see if we can fallthrough them.
+    for (uint32_t nextId = current->mir()->id() + 1; nextId != targetId;
+         ++nextId) {
+      LBlock* nextBlock = graph.getBlock(nextId);
+
+      // If the next block is generated in a different section than this
+      // one, then we don't need to consider it for fallthrough.
+      if (nextBlock->isOutOfLine() != graph.getBlock(targetId)->isOutOfLine()) {
+        continue;
+      }
+
+      // If the next block is trivial, no code will be generated and we don't
+      // need to consider it for fallthrough.
+      if (nextBlock->isTrivial()) {
+        continue;
+      }
+
+      // Otherwise this is a real block that will prevent fallthrough.
+      return false;
+    }
+
     return true;
   }
 
@@ -375,6 +401,51 @@ class CodeGeneratorShared : public LElementVisitor {
   void addOutOfLineCode(OutOfLineCode* code, const BytecodeSite* site);
   bool generateOutOfLineCode();
 
+  // Jump to deoptLabel_ at the end of an out-of-line path. The jump is only
+  // emitted once another out-of-line path follows, so the last one may fall
+  // through to deoptLabel_, which is bound right after the out-of-line code.
+  void jumpToDeoptLabel() {
+    MOZ_ASSERT(!deoptJumpPending_);
+    deoptJumpPending_ = true;
+  }
+  bool needsDeoptLabel() const {
+    return deoptLabel_.used() || deoptJumpPending_;
+  }
+
+  // Pushes the snapshot offset and jumps to deoptLabel_.
+  void emitBailoutOOL(LSnapshot* snapshot);
+
+// MIPS64, Loong64, and RISC-V64 have no flags register and can't implement
+// this with a condition code.
+#if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64) || \
+    defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_ARM64)
+  void bailoutIf(Assembler::Condition condition, LSnapshot* snapshot);
+#endif
+  void bailoutFrom(Label* label, LSnapshot* snapshot);
+  void bailout(LSnapshot* snapshot);
+
+  template <typename T1, typename T2>
+  void bailoutCmpPtr(Assembler::Condition c, T1 lhs, T2 rhs,
+                     LSnapshot* snapshot) {
+    Label bail;
+    masm.branchPtr(c, lhs, rhs, &bail);
+    bailoutFrom(&bail, snapshot);
+  }
+  template <typename T1, typename T2>
+  void bailoutCmp32(Assembler::Condition c, T1 lhs, T2 rhs,
+                    LSnapshot* snapshot) {
+    Label bail;
+    masm.branch32(c, lhs, rhs, &bail);
+    bailoutFrom(&bail, snapshot);
+  }
+  template <typename T1, typename T2>
+  void bailoutTest32(Assembler::Condition c, T1 lhs, T2 rhs,
+                     LSnapshot* snapshot) {
+    Label bail;
+    masm.branchTest32(c, lhs, rhs, &bail);
+    bailoutFrom(&bail, snapshot);
+  }
+
   Label* getJumpLabelForBranch(MBasicBlock* block);
 
   // Generate a jump to the start of the specified block. Use this in place of
@@ -397,7 +468,8 @@ class CodeGeneratorShared : public LElementVisitor {
  public:
   void visitOutOfLineTruncateSlow(OutOfLineTruncateSlow* ool);
 
-  bool omitOverRecursedCheck() const;
+  bool omitOverRecursedStackCheck() const;
+  bool omitOverRecursedInterruptCheck() const;
 
  public:
   bool isGlobalObject(JSObject* object);
@@ -429,6 +501,12 @@ class OutOfLineCode : public TempObject,
 // should have the signature (OutOfLineCode& ool) -> void.
 template <typename Func>
 class LambdaOutOfLineCode : public OutOfLineCode {
+  // Enforce a void return so a fallible lambda's bool result cannot be
+  // silently discarded here; signal failure via masm.setOOM() instead.
+  static_assert(std::is_void_v<std::invoke_result_t<Func, OutOfLineCode&>>,
+                "LambdaOutOfLineCode lambda must return void; use "
+                "masm.setOOM() to report failure");
+
   Func generateFunc_;
 
  public:

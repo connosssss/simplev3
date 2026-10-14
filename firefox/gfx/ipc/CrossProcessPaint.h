@@ -1,23 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #ifndef _include_mozilla_gfx_ipc_CrossProcessPaint_h_
 #define _include_mozilla_gfx_ipc_CrossProcessPaint_h_
 
-#include "nsISupportsImpl.h"
-
+#include "mozilla/MozPromise.h"
 #include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/gfx/Point.h"
-#include "mozilla/gfx/RecordedEvent.h"
 #include "mozilla/gfx/Rect.h"
-#include "mozilla/MozPromise.h"
 #include "mozilla/ipc/ByteBuf.h"
 #include "nsColor.h"
-#include "nsTHashMap.h"
 #include "nsHashKeys.h"
+#include "nsISupportsImpl.h"
 #include "nsRefPtrHashtable.h"
+#include "nsTHashMap.h"
 #include "nsTHashSet.h"
 
 class nsIDocShell;
@@ -39,13 +35,17 @@ class WindowGlobalParent;
 namespace gfx {
 
 class CrossProcessPaint;
+class SourceSurface;
 
 enum class CrossProcessPaintFlags {
   None = 0,
   DrawView = 1 << 1,
   ResetScrollPosition = 1 << 2,
   UseHighQualityScaling = 1 << 3,
+  ForPrinting = 1 << 4,
 };
+constexpr auto kAllCrossProcessPaintFlags =
+    CrossProcessPaintFlags((1 << 5) - 1);
 
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(CrossProcessPaintFlags)
 
@@ -84,7 +84,7 @@ class PaintFragment final {
   PaintFragment& operator=(PaintFragment&&) = default;
 
  protected:
-  friend struct mozilla::ipc::IPDLParamTraits<PaintFragment>;
+  friend struct IPC::ParamTraits<PaintFragment>;
   friend CrossProcessPaint;
 
   typedef mozilla::ipc::ByteBuf ByteBuf;
@@ -96,6 +96,8 @@ class PaintFragment final {
   nsTHashSet<uint64_t> mDependencies;
 };
 
+struct RecordedDependentSurface;
+
 /**
  * An object for painting a cross process document tree.
  */
@@ -106,6 +108,12 @@ class CrossProcessPaint final {
   typedef nsRefPtrHashtable<nsUint64HashKey, RecordedDependentSurface>
       ResolvedFragmentMap;
   typedef MozPromise<ResolvedFragmentMap, nsresult, true> ResolvePromise;
+
+  /**
+   * A target for a screenshot, alternative to dom::ImageBitmap
+   */
+  typedef MozPromise<RefPtr<SourceSurface>, nsresult, true> SnapshotPromise;
+
   /**
    * Begin an asynchronous paint of a cross process document tree starting at
    * a WindowGlobalParent. A maybe-async paint for the root WGP will be done,
@@ -121,15 +129,25 @@ class CrossProcessPaint final {
    *   at least kMinPaintScale. See the implementation for the current
    *   minimum value.
    * @param aBackgroundColor The background color to use.
-   * @param aPromise The promise to resolve with a dom::ImageBitmap.
-   *
-   * @returns Whether the paint was able to be initiated or not.
+   * @param aPromise The promise to resolve with a dom::ImageBitmap, or reject
+   *   if the paint could not be completed.
    */
-  static bool Start(dom::WindowGlobalParent* aRoot, const dom::DOMRect* aRect,
+  static void Start(dom::WindowGlobalParent* aRoot, const dom::DOMRect* aRect,
                     float aScale, nscolor aBackgroundColor,
                     CrossProcessPaintFlags aFlags, dom::Promise* aPromise);
 
-  static RefPtr<ResolvePromise> Start(nsTHashSet<uint64_t>&& aDependencies);
+  static RefPtr<ResolvePromise> Start(
+      dom::TabId aRootTabId, uint64_t aRootWindowContextId,
+      nsTHashSet<uint64_t>&& aDependencies,
+      CrossProcessPaintFlags aFlags = CrossProcessPaintFlags::None);
+
+  /**
+   * For obtaining full page screenshots on mobile
+   */
+  static RefPtr<SnapshotPromise> Start(dom::WindowGlobalParent* aRoot,
+                                       const Maybe<IntRect>& aRect,
+                                       float aScale, nscolor aBackgroundColor,
+                                       CrossProcessPaintFlags aFlags);
 
   void ReceiveFragment(dom::WindowGlobalParent* aWGP,
                        PaintFragment&& aFragment);
@@ -138,7 +156,8 @@ class CrossProcessPaint final {
  private:
   typedef nsTHashMap<nsUint64HashKey, PaintFragment> ReceivedFragmentMap;
 
-  CrossProcessPaint(float aScale, dom::TabId aRoot,
+  CrossProcessPaint(float aScale, dom::TabId aRootTabId,
+                    uint64_t aRootWindowContextId,
                     CrossProcessPaintFlags aFlags);
   ~CrossProcessPaint();
 
@@ -168,15 +187,18 @@ class CrossProcessPaint final {
     return mPromise.Ensure(__func__);
   }
 
-  // UseHighQualityScaling is the only flag that dependencies inherit, and we
-  // always want to use DrawView for dependencies.
+  // Dependencies inherit only a small subset of flags and we always want to use
+  // DrawView for dependencies.
   CrossProcessPaintFlags GetFlagsForDependencies() const {
-    return (mFlags & CrossProcessPaintFlags::UseHighQualityScaling) |
+    return (mFlags & (CrossProcessPaintFlags::UseHighQualityScaling |
+                      CrossProcessPaintFlags::ForPrinting)) |
            CrossProcessPaintFlags::DrawView;
   }
 
   MozPromiseHolder<ResolvePromise> mPromise;
-  dom::TabId mRoot;
+  // The tab id of the root page, or TabId(0) for in-process pages.
+  const dom::TabId mRootTabId;
+  const uint64_t mRootWindowContextId;
   float mScale;
   uint32_t mPendingFragments;
   ReceivedFragmentMap mReceivedFragments;

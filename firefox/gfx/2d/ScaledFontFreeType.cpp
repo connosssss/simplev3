@@ -1,16 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ScaledFontFreeType.h"
-#include "UnscaledFontFreeType.h"
-#include "NativeFontResourceFreeType.h"
+
 #include "Logging.h"
+#include "NativeFontResourceFreeType.h"
+#include "UnscaledFontFreeType.h"
 #include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/webrender/WebRenderTypes.h"
-
 #include "skia/include/ports/SkTypeface_cairo.h"
 
 #include FT_MULTIPLE_MASTERS_H
@@ -70,7 +68,7 @@ cairo_font_face_t* ScaledFontFreeType::CreateCairoFontFace(
 
 bool ScaledFontFreeType::GetFontInstanceData(FontInstanceDataOutput aCb,
                                              void* aBaton) {
-  std::vector<FontVariation> variations;
+  std::vector<wr::FontVariation> variations;
   if (HasVariationSettings()) {
     UnscaledFontFreeType::GetVariationSettingsFromFace(&variations,
                                                        mFace->GetFace());
@@ -85,7 +83,7 @@ bool ScaledFontFreeType::GetFontInstanceData(FontInstanceDataOutput aCb,
 bool ScaledFontFreeType::GetWRFontInstanceOptions(
     Maybe<wr::FontInstanceOptions>* aOutOptions,
     Maybe<wr::FontInstancePlatformOptions>* aOutPlatformOptions,
-    std::vector<FontVariation>* aOutVariations) {
+    std::vector<wr::FontVariation>* aOutVariations) {
   wr::FontInstanceOptions options = {};
   options.render_mode = wr::FontRenderMode::Alpha;
   options.flags = wr::FontInstanceFlags{0};
@@ -103,6 +101,11 @@ bool ScaledFontFreeType::GetWRFontInstanceOptions(
   wr::FontInstancePlatformOptions platformOptions;
   platformOptions.lcd_filter = wr::FontLCDFilter::None;
   platformOptions.hinting = wr::FontHinting::None;
+
+  platformOptions.gamma =
+      int16_t(StaticPrefs::gfx_font_rendering_freetype_gamma());
+  platformOptions.enhanced_contrast =
+      int16_t(StaticPrefs::gfx_font_rendering_freetype_enhanced_contrast());
 
   *aOutOptions = Some(options);
   *aOutPlatformOptions = Some(platformOptions);

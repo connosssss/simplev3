@@ -1,16 +1,15 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#ifndef nsCRT_h___
-#define nsCRT_h___
+#ifndef nsCRT_h_
+#define nsCRT_h_
 
-#include <stdlib.h>
 #include <ctype.h>
-#include "plstr.h"
-#include "nscore.h"
+#include <stdlib.h>
+
 #include "nsCRTGlue.h"
+#include "nscore.h"
+#include "plstr.h"
 
 #if defined(XP_WIN)
 #  define NS_LINEBREAK "\015\012"
@@ -116,4 +115,4 @@ inline bool NS_IS_SPACE(char16_t aChar) {
   return ((int(aChar) & 0x7f) == int(aChar)) && isspace(int(aChar));
 }
 
-#endif /* nsCRT_h___ */
+#endif /* nsCRT_h_ */

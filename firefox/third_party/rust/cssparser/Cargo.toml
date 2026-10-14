@@ -10,10 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
-rust-version = "1.63"
+edition = "2024"
+rust-version = "1.85"
 name = "cssparser"
-version = "0.34.1"
+version = "0.38.0"
 authors = ["Simon Sapin <simon.sapin@exyr.org>"]
 build = false
 exclude = [
@@ -38,7 +38,12 @@ repository = "https://github.com/servo/rust-cssparser"
 
 [features]
 bench = []
-dummy_match_byte = []
+default = [
+    "fast_match_byte",
+    "fast_match_color",
+]
+fast_match_byte = ["dep:cssparser-macros"]
+fast_match_color = ["dep:phf"]
 skip_long_tests = []
 
 [lib]
@@ -51,8 +56,9 @@ itoa = "1.0"
 smallvec = "1.0"
 
 [dependencies.cssparser-macros]
-version = "0.6.1"
+version = "0.7.0"
 path = "./macros"
+optional = true
 
 [dependencies.malloc_size_of]
 version = "0.1"
@@ -60,8 +66,9 @@ optional = true
 default-features = false
 
 [dependencies.phf]
-version = "0.11.2"
+version = "0.14.0"
 features = ["macros"]
+optional = true
 
 [dependencies.serde]
 version = "1.0"
@@ -75,6 +82,11 @@ serde_json = "1.0.25"
 
 [workspace]
 members = [
+    ".",
+    "./macros",
+    "./color",
+]
+default-members = [
     ".",
     "./macros",
     "./color",

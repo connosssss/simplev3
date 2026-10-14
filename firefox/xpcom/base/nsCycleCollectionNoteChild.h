@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,11 +6,13 @@
 // classes in order to specialize CC helpers such as ImplCycleCollectionTraverse
 // for them.
 
-#ifndef nsCycleCollectionNoteChild_h__
-#define nsCycleCollectionNoteChild_h__
+#ifndef nsCycleCollectionNoteChild_h_
+#define nsCycleCollectionNoteChild_h_
 
-#include "nsCycleCollectionTraversalCallback.h"
+#include <type_traits>
+
 #include "mozilla/Likely.h"
+#include "nsCycleCollectionTraversalCallback.h"
 
 enum { CycleCollectionEdgeNameArrayFlag = 1 };
 
@@ -41,13 +41,13 @@ MOZ_ALWAYS_INLINE void CycleCollectionNoteEdgeName(
 
 template <typename T>
 nsISupports* ToSupports(
-    T* aPtr, typename T::NS_CYCLE_COLLECTION_INNERCLASS* aDummy = 0) {
+    T* aPtr, typename T::NS_CYCLE_COLLECTION_INNERCLASS* aDummy = nullptr) {
   return T::NS_CYCLE_COLLECTION_INNERCLASS::Upcast(aPtr);
 }
 
 // The default implementation of this class template is empty, because it
 // should never be used: see the partial specializations below.
-template <typename T, bool IsXPCOM = std::is_base_of<nsISupports, T>::value>
+template <typename T, bool IsXPCOM = std::is_base_of_v<nsISupports, T>>
 struct CycleCollectionNoteChildImpl {};
 
 template <typename T>
@@ -82,4 +82,4 @@ inline void CycleCollectionNoteChild(
   CycleCollectionNoteChild(aCallback, aChild, aName, 0);
 }
 
-#endif  // nsCycleCollectionNoteChild_h__
+#endif  // nsCycleCollectionNoteChild_h_

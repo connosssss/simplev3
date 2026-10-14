@@ -14,7 +14,6 @@ sys.path.insert(1, os.path.dirname(sys.path[0]))
 from mozharness.base.errors import BaseErrorList, TarErrorList
 from mozharness.base.log import INFO
 from mozharness.base.script import PreScriptAction
-from mozharness.base.transfer import TransferMixin
 from mozharness.base.vcs.vcsbase import MercurialScript
 from mozharness.mozilla.structuredlog import StructuredOutputParser
 from mozharness.mozilla.testing.codecoverage import (
@@ -24,9 +23,10 @@ from mozharness.mozilla.testing.codecoverage import (
 from mozharness.mozilla.testing.errors import HarnessErrorList, LogcatErrorList
 from mozharness.mozilla.testing.testbase import TestingMixin, testing_config_options
 from mozharness.mozilla.testing.unittest import TestSummaryOutputParserHelper
+from mozharness.mozilla.testing.video_test_recorder import VideoTestRecorder
 
 
-class MarionetteTest(TestingMixin, MercurialScript, TransferMixin, CodeCoverageMixin):
+class MarionetteTest(TestingMixin, MercurialScript, CodeCoverageMixin):
     config_options = (
         [
             [
@@ -81,10 +81,11 @@ class MarionetteTest(TestingMixin, MercurialScript, TransferMixin, CodeCoverageM
             [
                 ["--tag"],
                 {
-                    "action": "store",
-                    "dest": "test_tag",
-                    "default": "",
-                    "help": "Tag that identifies how to filter which tests to run.",
+                    "action": "append",
+                    "default": [],
+                    "dest": "test_tags",
+                    "help": "Filter out tests that don't have the given tag. Can be used multiple "
+                    "times in which case the test must contain at least one of the given tags.",
                 },
             ],
             [
@@ -163,7 +164,7 @@ class MarionetteTest(TestingMixin, MercurialScript, TransferMixin, CodeCoverageM
                 {
                     "action": "store",
                     "dest": "subsuite",
-                    "default": "marionette",
+                    "default": "marionette-integration",
                     "help": "Selects test paths from test-manifests.active",
                 },
             ],
@@ -175,7 +176,7 @@ class MarionetteTest(TestingMixin, MercurialScript, TransferMixin, CodeCoverageM
     repos = []
 
     def __init__(self, require_config_file=False):
-        super(MarionetteTest, self).__init__(
+        super().__init__(
             config_options=self.config_options,
             all_actions=[
                 "clobber",
@@ -216,7 +217,7 @@ class MarionetteTest(TestingMixin, MercurialScript, TransferMixin, CodeCoverageM
             self.parser_class = TestSummaryOutputParserHelper
 
     def _pre_config_lock(self, rw_config):
-        super(MarionetteTest, self)._pre_config_lock(rw_config)
+        super()._pre_config_lock(rw_config)
         if not self.config.get("emulator") and not self.config.get(
             "marionette_address"
         ):
@@ -234,7 +235,7 @@ class MarionetteTest(TestingMixin, MercurialScript, TransferMixin, CodeCoverageM
     def query_abs_dirs(self):
         if self.abs_dirs:
             return self.abs_dirs
-        abs_dirs = super(MarionetteTest, self).query_abs_dirs()
+        abs_dirs = super().query_abs_dirs()
         dirs = {}
         dirs["abs_test_install_dir"] = os.path.join(abs_dirs["abs_work_dir"], "tests")
         dirs["abs_marionette_dir"] = os.path.join(
@@ -286,7 +287,7 @@ class MarionetteTest(TestingMixin, MercurialScript, TransferMixin, CodeCoverageM
         return f"{testsuite}_{platform}"
 
     def download_and_extract(self):
-        super(MarionetteTest, self).download_and_extract()
+        super().download_and_extract()
 
         if self.config.get("emulator"):
             dirs = self.query_abs_dirs()
@@ -305,7 +306,7 @@ class MarionetteTest(TestingMixin, MercurialScript, TransferMixin, CodeCoverageM
         if self.config.get("emulator"):
             self.info("Emulator tests; skipping.")
         else:
-            super(MarionetteTest, self).install()
+            super().install()
 
     def run_tests(self):
         """
@@ -344,8 +345,8 @@ class MarionetteTest(TestingMixin, MercurialScript, TransferMixin, CodeCoverageM
 
         cmd = [python, "-u", os.path.join(dirs["abs_marionette_dir"], "runtests.py")]
 
-        if self.config.get("test_tag", ""):
-            cmd.extend(["--tag", self.config["test_tag"]])
+        if self.config.get("test_tags"):
+            cmd.extend([f"--tag={t}" for t in self.config["test_tags"]])
 
         manifest = os.path.join(
             dirs["abs_marionette_tests_dir"], self.config["test_manifest"]
@@ -389,9 +390,6 @@ class MarionetteTest(TestingMixin, MercurialScript, TransferMixin, CodeCoverageM
         else:
             cmd.append(manifest)
 
-        try_options, try_tests = self.try_args("marionette")
-        cmd.extend(self.query_tests_args(try_tests, str_format_values=config_fmt_args))
-
         env = {}
         if self.query_minidump_stackwalk():
             env["MINIDUMP_STACKWALK"] = self.minidump_stackwalk_path
@@ -431,9 +429,16 @@ class MarionetteTest(TestingMixin, MercurialScript, TransferMixin, CodeCoverageM
             error_list=BaseErrorList + HarnessErrorList,
             strict=False,
         )
-        return_code = self.run_command(
-            cmd, cwd=cwd, output_timeout=1000, output_parser=marionette_parser, env=env
-        )
+
+        with VideoTestRecorder(self.test_suite, self):
+            return_code = self.run_command(
+                cmd,
+                cwd=cwd,
+                output_timeout=1000,
+                output_parser=marionette_parser,
+                env=env,
+            )
+
         level = INFO
         tbpl_status, log_level, summary = marionette_parser.evaluate_parser(
             return_code=return_code

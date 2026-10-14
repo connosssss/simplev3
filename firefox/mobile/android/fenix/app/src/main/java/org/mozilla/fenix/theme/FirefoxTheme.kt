@@ -4,23 +4,29 @@
 
 package org.mozilla.fenix.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ReadOnlyComposable
 import mozilla.components.compose.base.theme.AcornColors
+import mozilla.components.compose.base.theme.AcornGradientScheme
 import mozilla.components.compose.base.theme.AcornTheme
 import mozilla.components.compose.base.theme.AcornTypography
+import mozilla.components.compose.base.theme.Theme
 import mozilla.components.compose.base.theme.acornDarkColorScheme
 import mozilla.components.compose.base.theme.acornLightColorScheme
+import mozilla.components.compose.base.theme.acornOledColorScheme
 import mozilla.components.compose.base.theme.acornPrivateColorScheme
+import mozilla.components.compose.base.theme.darkAcornGradientScheme
 import mozilla.components.compose.base.theme.darkColorPalette
 import mozilla.components.compose.base.theme.layout.AcornLayout
 import mozilla.components.compose.base.theme.layout.AcornWindowSize
+import mozilla.components.compose.base.theme.lightAcornGradientScheme
 import mozilla.components.compose.base.theme.lightColorPalette
+import mozilla.components.compose.base.theme.oledAcornGradientScheme
+import mozilla.components.compose.base.theme.oledColorPalette
+import mozilla.components.compose.base.theme.privateAcornGradientScheme
 import mozilla.components.compose.base.theme.privateColorPalette
-import mozilla.components.compose.base.utils.inComposePreview
-import org.mozilla.fenix.ext.settings
 
 /**
  * The theme for Mozilla Firefox for Android (Fenix).
@@ -30,76 +36,79 @@ import org.mozilla.fenix.ext.settings
  */
 @Composable
 fun FirefoxTheme(
-    theme: Theme = Theme.getTheme(),
+    theme: Theme = getThemeProvider().provideTheme(),
     content: @Composable () -> Unit,
 ) {
-    val colors: AcornColors = when (theme) {
-        Theme.Light -> lightColorPalette
-        Theme.Dark -> darkColorPalette
-        Theme.Private -> privateColorPalette
-    }
+    val colors: AcornColors =
+        when (theme) {
+            Theme.Light -> lightColorPalette
+            Theme.Dark -> darkColorPalette
+            Theme.Oled -> oledColorPalette
+            Theme.Private -> privateColorPalette
+        }
 
-    val colorScheme: ColorScheme = when (theme) {
-        Theme.Light -> acornLightColorScheme()
-        Theme.Dark -> acornDarkColorScheme()
-        Theme.Private -> acornPrivateColorScheme()
-    }
+    val colorScheme: ColorScheme =
+        when (theme) {
+            Theme.Light -> acornLightColorScheme()
+            Theme.Dark -> acornDarkColorScheme()
+            Theme.Oled -> acornOledColorScheme()
+            Theme.Private -> acornPrivateColorScheme()
+        }
 
-    AcornTheme(
-        colors = colors,
-        colorScheme = colorScheme,
+    val gradients: AcornGradientScheme =
+        when (theme) {
+            Theme.Light -> lightAcornGradientScheme
+            Theme.Dark -> darkAcornGradientScheme
+            Theme.Oled -> oledAcornGradientScheme
+            Theme.Private -> privateAcornGradientScheme
+        }
+
+    val tabGroupColors: TabGroupColorPalette =
+        when (theme) {
+            Theme.Light -> TabGroupColorPalette.lightPalette
+            Theme.Dark -> TabGroupColorPalette.darkPalette
+            Theme.Oled -> TabGroupColorPalette.oledPalette
+            Theme.Private -> TabGroupColorPalette.privatePalette
+        }
+
+    ProvideFirefoxTokens(tabGroupColors = tabGroupColors) {
+        AcornTheme(
+            colors = colors,
+            colorScheme = colorScheme,
+            gradients = gradients,
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun ProvideFirefoxTokens(
+    tabGroupColors: TabGroupColorPalette,
+    content: @Composable () -> Unit,
+) {
+    CompositionLocalProvider(
+        localTabGroupColors provides tabGroupColors,
         content = content,
     )
 }
 
-/**
- * Indicates the theme that is displayed.
- */
-enum class Theme {
-    Light,
-    Dark,
-    Private,
-    ;
-
-    companion object {
-        /**
-         * Returns the current [Theme] that is displayed.
-         *
-         * @param allowPrivateTheme Boolean used to control whether [Theme.Private] is an option
-         * for [FirefoxTheme] colors.
-         * @return the current [Theme] that is displayed.
-         */
-        @Composable
-        fun getTheme(allowPrivateTheme: Boolean = true) =
-            if (allowPrivateTheme &&
-                !inComposePreview &&
-                LocalContext.current.settings().lastKnownMode.isPrivate
-            ) {
-                Private
-            } else if (isSystemInDarkTheme()) {
-                Dark
-            } else {
-                Light
-            }
-    }
-}
-
-/**
- * Provides access to the Firefox design system tokens.
- */
+/** Provides access to the Firefox design system tokens. */
 object FirefoxTheme {
     val colors: AcornColors
-        @Composable
-        get() = AcornTheme.colors
+        @Composable @ReadOnlyComposable get() = AcornTheme.colors
 
     val typography: AcornTypography
         get() = AcornTheme.typography
 
     val layout: AcornLayout
-        @Composable
-        get() = AcornTheme.layout
+        @Composable @ReadOnlyComposable get() = AcornTheme.layout
 
     val windowSize: AcornWindowSize
-        @Composable
-        get() = AcornTheme.windowSize
+        @Composable @ReadOnlyComposable get() = AcornTheme.windowSize
+
+    val gradients: AcornGradientScheme
+        @Composable @ReadOnlyComposable get() = AcornTheme.gradients
+
+    val tabGroupColors: TabGroupColorPalette
+        @Composable @ReadOnlyComposable get() = localTabGroupColors.current
 }

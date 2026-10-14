@@ -4,7 +4,6 @@
 
 package org.mozilla.fenix.onboarding
 
-import android.annotation.SuppressLint
 import android.app.Dialog
 import android.content.DialogInterface
 import android.content.pm.ActivityInfo
@@ -13,10 +12,11 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.platform.ComposeView
+import androidx.fragment.compose.content
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
 import com.google.android.material.bottomsheet.BottomSheetBehavior
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import kotlinx.coroutines.launch
 import mozilla.components.lib.state.ext.observeAsComposableState
@@ -29,15 +29,12 @@ import org.mozilla.fenix.compose.snackbar.Snackbar
 import org.mozilla.fenix.compose.snackbar.SnackbarState
 import org.mozilla.fenix.ext.components
 import org.mozilla.fenix.ext.requireComponents
-import org.mozilla.fenix.ext.settings
 import org.mozilla.fenix.settings.wallpaper.getWallpapersForOnboarding
 import org.mozilla.fenix.theme.FirefoxTheme
 import org.mozilla.fenix.wallpapers.Wallpaper
 import org.mozilla.fenix.wallpapers.WallpaperOnboarding
 
-/**
- * Dialog displaying the wallpapers onboarding.
- */
+/** Dialog displaying the wallpapers onboarding. */
 class WallpaperOnboardingDialogFragment : BottomSheetDialogFragment() {
     private val appStore by lazy {
         requireComponents.appStore
@@ -48,16 +45,12 @@ class WallpaperOnboardingDialogFragment : BottomSheetDialogFragment() {
     }
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog =
-        super.onCreateDialog(savedInstanceState).apply {
+        (super.onCreateDialog(savedInstanceState) as BottomSheetDialog).apply {
             setOnShowListener {
-                val bottomSheet = findViewById<View?>(R.id.design_bottom_sheet)
-                BottomSheetBehavior.from(bottomSheet).apply {
-                    state = BottomSheetBehavior.STATE_EXPANDED
-                }
+                behavior.state = BottomSheetBehavior.STATE_EXPANDED
             }
         }
 
-    @SuppressLint("SourceLockedOrientationActivity")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setStyle(STYLE_NO_TITLE, R.style.WallpaperOnboardingDialogStyle)
@@ -74,15 +67,13 @@ class WallpaperOnboardingDialogFragment : BottomSheetDialogFragment() {
 
         val currentWallpaper = requireContext().components.appStore.state.wallpaperState.currentWallpaper
         Wallpapers.onboardingClosed.record(
-            Wallpapers.OnboardingClosedExtra(
-                isSelected = currentWallpaper.name != Wallpaper.DEFAULT,
-            ),
+            Wallpapers.OnboardingClosedExtra(isSelected = currentWallpaper.name != Wallpaper.DEFAULT)
         )
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        requireContext().settings().showWallpaperOnboarding = false
+        requireComponents.settings.showWallpaperOnboarding = false
         Wallpapers.onboardingOpened.record(NoExtras())
     }
 
@@ -90,17 +81,22 @@ class WallpaperOnboardingDialogFragment : BottomSheetDialogFragment() {
         inflater: LayoutInflater,
         container: ViewGroup?,
         savedInstanceState: Bundle?,
-    ): View = ComposeView(requireContext()).apply {
-        this@WallpaperOnboardingDialogFragment.dialog?.setCanceledOnTouchOutside(true)
-
-        setContent {
+    ): View {
+        dialog?.setCanceledOnTouchOutside(true)
+        return content {
             FirefoxTheme {
-                val wallpapers = appStore.observeAsComposableState { state ->
-                    state.wallpaperState.availableWallpapers.getWallpapersForOnboarding()
-                }.value ?: listOf()
-                val currentWallpaper = appStore.observeAsComposableState { state ->
-                    state.wallpaperState.currentWallpaper
-                }.value ?: Wallpaper.Default
+                val wallpapers =
+                    appStore
+                        .observeAsComposableState { state ->
+                            state.wallpaperState.availableWallpapers.getWallpapersForOnboarding()
+                        }
+                        .value
+                val currentWallpaper =
+                    appStore
+                        .observeAsComposableState { state ->
+                            state.wallpaperState.currentWallpaper
+                        }
+                        .value
 
                 val coroutineScope = rememberCoroutineScope()
 
@@ -113,7 +109,7 @@ class WallpaperOnboardingDialogFragment : BottomSheetDialogFragment() {
                         findNavController().navigate(directions)
                         Wallpapers.onboardingExploreMoreClick.record(NoExtras())
                     },
-                    loadWallpaperResource = { wallpaperUseCases.loadThumbnail(it) },
+                    loadWallpaperResource = { wallpaper, size -> wallpaperUseCases.loadThumbnail(wallpaper, size) },
                     onSelectWallpaper = {
                         coroutineScope.launch {
                             val result = wallpaperUseCases.selectWallpaper(it)
@@ -137,27 +133,32 @@ class WallpaperOnboardingDialogFragment : BottomSheetDialogFragment() {
                         name = wallpaper.name,
                         source = "onboarding",
                         themeCollection = wallpaper.collection.name,
-                    ),
+                    )
                 )
             }
             Wallpaper.ImageFileState.Error -> {
                 Snackbar.make(
-                    snackBarParentView = view,
-                    snackbarState = SnackbarState(
-                        message = getString(R.string.wallpaper_download_error_snackbar_message),
-                        action = Action(
-                            label = getString(R.string.wallpaper_download_error_snackbar_action),
-                            onClick = {
-                                viewLifecycleOwner.lifecycleScope.launch {
-                                    val retryResult = wallpaperUseCases.selectWallpaper(wallpaper)
-                                    onWallpaperSelected(wallpaper, retryResult, view)
-                                }
-                            },
-                        ),
-                    ),
-                ).show()
+                        snackBarParentView = view,
+                        snackbarState =
+                            SnackbarState(
+                                message = getString(R.string.wallpaper_download_error_snackbar_message),
+                                action =
+                                    Action(
+                                        label = getString(R.string.wallpaper_download_error_snackbar_action),
+                                        onClick = {
+                                            viewLifecycleOwner.lifecycleScope.launch {
+                                                val retryResult = wallpaperUseCases.selectWallpaper(wallpaper)
+                                                onWallpaperSelected(wallpaper, retryResult, view)
+                                            }
+                                        },
+                                    ),
+                            ),
+                    )
+                    .show()
             }
-            else -> { /* noop */ }
+            else -> {
+                /* noop */
+            }
         }
     }
 
@@ -167,8 +168,5 @@ class WallpaperOnboardingDialogFragment : BottomSheetDialogFragment() {
 
         // The desired amount of seasonal wallpapers inside of the selector.
         const val SEASONAL_WALLPAPERS_COUNT = 3
-
-        // The desired amount of seasonal wallpapers inside of the selector.
-        const val CLASSIC_WALLPAPERS_COUNT = 2
     }
 }

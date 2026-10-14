@@ -122,7 +122,12 @@ const MERINO_SPONSORED_SUGGESTION = {
   click_url: "https://example.com/click",
   impression_url: "https://example.com/impression",
   advertiser: "TestAdvertiser",
-  icon: "1234",
+  icon: "https://example.com/icon",
+  custom_details: {
+    amp: {
+      suggestion_id: "amp-suggestion-id",
+    },
+  },
 };
 
 const MERINO_ADDON_SUGGESTION = {
@@ -142,8 +147,11 @@ const MERINO_ADDON_SUGGESTION = {
   },
 };
 
-const MERINO_UNKNOWN_SUGGESTION = {
-  provider: "some_unknown_provider",
+// A unmanaged Merino suggestion is a suggestion that isn't managed by a
+// `SuggestFeature`. Suggestions from the "top_picks" Merino provider are the
+// only recognized unmanaged suggestions.
+const MERINO_UNMANAGED_SUGGESTION = {
+  provider: "top_picks",
   score: DEFAULT_SUGGESTION_SCORE,
   keywords: ["test"],
   url: "https://example.com/merino-unknown",
@@ -157,8 +165,8 @@ add_setup(async function init() {
     remoteSettingsRecords: REMOTE_SETTINGS_RECORDS,
     merinoSuggestions: [],
     prefs: [
+      ["suggest.quicksuggest.all", true],
       ["suggest.quicksuggest.sponsored", true],
-      ["suggest.quicksuggest.nonsponsored", true],
       ["quicksuggest.ampTopPickCharThreshold", 0],
     ],
   });
@@ -468,12 +476,12 @@ add_task(async function merino_sponsored_addon_addonWins() {
   await QuickSuggestTestUtils.setRemoteSettingsRecords(REMOTE_SETTINGS_RECORDS);
 });
 
-add_task(async function merino_sponsored_unknown_sponsoredWins() {
+add_task(async function merino_sponsored_unmanaged_sponsoredWins() {
   await QuickSuggestTestUtils.setRemoteSettingsRecords([]);
 
   MerinoTestUtils.server.response.body.suggestions = [
     MERINO_SPONSORED_SUGGESTION,
-    MERINO_UNKNOWN_SUGGESTION,
+    MERINO_UNMANAGED_SUGGESTION,
   ];
 
   let score = 10 * DEFAULT_SUGGESTION_SCORE;
@@ -496,24 +504,24 @@ add_task(async function merino_sponsored_unknown_sponsoredWins() {
   await QuickSuggestTestUtils.setRemoteSettingsRecords(REMOTE_SETTINGS_RECORDS);
 });
 
-add_task(async function merino_sponsored_unknown_unknownWins() {
+add_task(async function merino_sponsored_unmanaged_unmanagedWins() {
   await QuickSuggestTestUtils.setRemoteSettingsRecords([]);
 
   MerinoTestUtils.server.response.body.suggestions = [
     MERINO_SPONSORED_SUGGESTION,
-    MERINO_UNKNOWN_SUGGESTION,
+    MERINO_UNMANAGED_SUGGESTION,
   ];
 
   let score = 10 * DEFAULT_SUGGESTION_SCORE;
   await doTest({
     keyword: "test",
     scoreMap: {
-      [MERINO_UNKNOWN_SUGGESTION.provider]: score,
+      [MERINO_UNMANAGED_SUGGESTION.provider]: score,
     },
     expectedFeatureName: null,
     expectedScore: score,
     expectedResult: makeExpectedDefaultMerinoResult({
-      suggestion: MERINO_UNKNOWN_SUGGESTION,
+      suggestion: MERINO_UNMANAGED_SUGGESTION,
     }),
   });
 
@@ -551,7 +559,7 @@ add_task(async function stringValue() {
  * @param {string} options.expectedFeatureName
  *   The name of the `BaseFeature` instance that is expected to create the
  *   `UrlbarResult` that's shown. If the suggestion is intentionally from an
- *   unknown Merino provider and therefore the quick suggest provider is
+ *   unmanaged Merino provider and therefore the quick suggest provider is
  *   expected to create a default result for it, set this to null.
  * @param {UrlbarResultstring} options.expectedResult
  *   The `UrlbarResult` that's expected to be shown.
@@ -634,7 +642,10 @@ function makeExpectedAmpResult({
     clickUrl: suggestion.click_url,
     blockId: suggestion.id,
     advertiser: suggestion.advertiser,
-    icon: suggestion.icon,
+    icon: UrlbarTestUtils.makeMozRemoteImageUrl(suggestion.icon),
+    // Expect index -1 for amp results because we test
+    // without the search suggestions provider.
+    suggestedIndex: -1,
   });
 }
 
@@ -658,14 +669,14 @@ function makeExpectedAddonResult({ suggestion, source, provider }) {
     description: suggestion.description,
     url: suggestion.url,
     originalUrl: suggestion.url,
-    icon: suggestion.icon,
+    icon: UrlbarTestUtils.makeMozRemoteImageUrl(suggestion.icon),
   });
 }
 
 function makeExpectedDefaultMerinoResult({ suggestion }) {
   return {
-    type: UrlbarUtils.RESULT_TYPE.URL,
-    source: UrlbarUtils.RESULT_SOURCE.SEARCH,
+    type: UrlbarShared.RESULT_TYPE.URL,
+    source: UrlbarShared.RESULT_SOURCE.SEARCH,
     heuristic: false,
     payload: {
       source: "merino",
@@ -674,8 +685,7 @@ function makeExpectedDefaultMerinoResult({ suggestion }) {
       isSponsored: !!suggestion.is_sponsored,
       title: suggestion.title,
       url: suggestion.url,
-      displayUrl: suggestion.url.replace(/^https:\/\//, ""),
-      icon: suggestion.icon,
+      icon: UrlbarTestUtils.makeMozRemoteImageUrl(suggestion.icon),
       descriptionL10n: suggestion.is_sponsored
         ? { id: "urlbar-result-action-sponsored" }
         : undefined,

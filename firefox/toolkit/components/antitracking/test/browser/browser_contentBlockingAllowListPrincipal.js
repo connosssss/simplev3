@@ -13,9 +13,10 @@ const TEST_SANDBOX_URL =
 
 /**
  * Tests the contentBlockingAllowListPrincipal.
+ *
  * @param {Browser} browser - Browser to test.
  * @param {("content"|"system")} type - Expected principal type.
- * @param {String} [origin] - Expected origin of principal. Defaults to the
+ * @param {string} [origin] - Expected origin of principal. Defaults to the
  * origin of the browsers content principal.
  */
 function checkAllowListPrincipal(
@@ -46,16 +47,17 @@ function checkAllowListPrincipal(
 
 /**
  * Runs a given test in a normal window and in a private browsing window.
- * @param {String} initialUrl - URL to load in the initial test tab.
+ *
+ * @param {string} initialUrl - URL to load in the initial test tab.
  * @param {Function} testCallback - Test function to run in both windows.
  */
 async function runTestInNormalAndPrivateMode(initialUrl, testCallback) {
   for (let i = 0; i < 2; i++) {
     let isPrivateBrowsing = !!i;
     info("Running test. Private browsing: " + !!i);
-    let win = await BrowserTestUtils.openNewBrowserWindow({
-      private: isPrivateBrowsing,
-    });
+    let win = isPrivateBrowsing
+      ? await BrowserTestUtils.openNewBrowserWindow({ private: true })
+      : window;
     let tab = BrowserTestUtils.addTab(win.gBrowser, initialUrl);
     let browser = tab.linkedBrowser;
 
@@ -63,16 +65,20 @@ async function runTestInNormalAndPrivateMode(initialUrl, testCallback) {
 
     await testCallback(browser, isPrivateBrowsing);
 
-    await BrowserTestUtils.closeWindow(win);
+    BrowserTestUtils.removeTab(tab);
+    if (isPrivateBrowsing) {
+      await BrowserTestUtils.closeWindow(win);
+    }
   }
 }
 
 /**
  * Creates an iframe in the passed browser and waits for it to load.
+ *
  * @param {Browser} browser - Browser to create the frame in.
- * @param {String} src - Frame source url.
- * @param {String} id - Frame id.
- * @param {String} [sandboxAttr] - Optional list of sandbox attributes to set
+ * @param {string} src - Frame source url.
+ * @param {string} id - Frame id.
+ * @param {string} [sandboxAttr] - Optional list of sandbox attributes to set
  * for the iframe. Defaults to no sandbox.
  * @returns {Promise} - Resolves once the frame has loaded.
  */
@@ -178,7 +184,7 @@ add_task(async () => {
     checkAllowListPrincipal(browser, "content");
 
     let promiseTabOpened = BrowserTestUtils.waitForNewTab(
-      browser.ownerGlobal.gBrowser,
+      browser.documentGlobal.gBrowser,
       "https://example.org/",
       true
     );
@@ -217,7 +223,7 @@ add_task(async () => {
       let [frameBrowsingContext] = browser.browsingContext.children;
 
       let promiseTabOpened = BrowserTestUtils.waitForNewTab(
-        browser.ownerGlobal.gBrowser,
+        browser.documentGlobal.gBrowser,
         "https://example.org/",
         true
       );

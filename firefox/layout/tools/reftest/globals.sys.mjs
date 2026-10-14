@@ -50,6 +50,7 @@ export const globals = {
   g: {
     loadTimeout: 0,
     timeoutHook: null,
+    focusTimeout: null,
     remote: false,
     ignoreWindowSize: false,
     shuffle: false,
@@ -133,6 +134,7 @@ export const globals = {
     failedOpaqueLayerMessages: [],
     failedAssignedLayer: false,
     failedAssignedLayerMessages: [],
+    failedNoWRRaster: false,
 
     startAfter: undefined,
     suiteStarted: false,
@@ -153,5 +155,7 @@ export const globals = {
     // Only dump the sandbox once, because it doesn't depend on the
     // manifest URL (yet!).
     dumpedConditionSandbox: false,
+
+    currentTestStatus: "PASS",
   },
 };

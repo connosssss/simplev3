@@ -45,6 +45,13 @@ const BackgroundFileSaverStreamListener = Components.Constructor(
   "nsIBackgroundFileSaver"
 );
 
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "enableDeletePrivateFeature",
+  "browser.download.enableDeletePrivate",
+  false
+);
+
 /**
  * Returns true if the given value is a primitive string or a String object.
  */
@@ -87,9 +94,7 @@ function deserializeUnknownProperties(aObject, aSerializable, aFilterFn) {
 /**
  * Check if the file is a placeholder.
  *
- * @return {Promise}
- * @resolves {boolean}
- * @rejects Never.
+ * @returns {Promise<boolean>}
  */
 async function isPlaceholder(path) {
   try {
@@ -203,7 +208,7 @@ Download.prototype = {
    * Progress percent, from 0 to 100.  Intermediate values are reported only if
    * hasProgress is true.
    *
-   * @note You shouldn't rely on this property being equal to 100 to determine
+   * Note: You shouldn't rely on this property being equal to 100 to determine
    *       whether the download is completed.  You should use the individual
    *       state properties instead.
    */
@@ -215,7 +220,7 @@ Download.prototype = {
    *
    * When hasProgress is false, this property is always zero.
    *
-   * @note This property may be different than the final file size on disk for
+   * Note: This property may be different than the final file size on disk for
    *       downloads that are encoded during the network transfer.  You can use
    *       the "size" property of the DownloadTarget object to get the actual
    *       size on disk once the download succeeds.
@@ -226,7 +231,7 @@ Download.prototype = {
    * Number of bytes currently transferred.  This value starts at zero, and may
    * be updated regardless of the value of hasProgress.
    *
-   * @note You shouldn't rely on this property being equal to totalBytes to
+   * Note: You shouldn't rely on this property being equal to totalBytes to
    *       determine whether the download is completed.  You should use the
    *       individual state properties instead.  This property may not be
    *       updated during the last part of the download.
@@ -362,12 +367,12 @@ Download.prototype = {
    * finished yet, this method waits for the cancellation to finish, then
    * restarts the download immediately.
    *
-   * @note If you need to start a new download from the same source, rather than
+   * Note: If you need to start a new download from the same source, rather than
    *       restarting a failed or canceled one, you should create a separate
    *       Download object with the same source as the current one.
    *
-   * @return {Promise}
-   * @resolves When the download has finished successfully.
+   * @returns {Promise<void>}
+   *   Resolves when the download has finished successfully.
    * @rejects JavaScript exception if the download failed.
    */
   start: function D_start() {
@@ -430,6 +435,7 @@ Download.prototype = {
 
     // Restart the progress and speed calculations from scratch.
     this._lastProgressTimeMs = 0;
+    this._progressThrottleTimer?.cancel();
 
     // This function propagates progress from the DownloadSaver object, unless
     // it comes in late from a download attempt that was replaced by a new one.
@@ -610,6 +616,7 @@ Download.prototype = {
           // Update the status properties, unless a new attempt already started.
           if (this._currentAttempt == currentAttempt || !this._currentAttempt) {
             this._currentAttempt = null;
+            this._progressThrottleTimer?.cancel();
             this.stopped = true;
             this.speed = 0;
             if (!this._batch || Download._updateBatch(this._batch)) {
@@ -631,8 +638,8 @@ Download.prototype = {
   /**
    * Perform the actions necessary when a Download succeeds.
    *
-   * @return {Promise}
-   * @resolves When the steps to take after success have completed.
+   * @returns {Promise<void>}
+   *   Resolves when the steps to take after success have completed.
    * @rejects  JavaScript exception if any of the operations failed.
    */
   async _succeed() {
@@ -643,11 +650,20 @@ Download.prototype = {
     if (this.launchWhenSucceeded) {
       this.launch().catch(console.error);
 
-      if (this.source.isPrivate) {
+      // If the "have users choose whether to delete private downloads" feature
+      // is not enabled, we should delete the temporary file once the private
+      // browsing session ends. Otherwise, we'll decide whether to delete the
+      // file further down, for all downloads (not just the ones that have
+      // `launchWhenSucceeded` set to true).
+      // Once we complete rollout of `enableDeletePrivateFeature`, we can
+      // remove this block.
+      if (!lazy.enableDeletePrivateFeature && this.source.isPrivate) {
         lazy.gExternalAppLauncher.deleteTemporaryPrivateFileWhenPossible(
           new lazy.FileUtils.File(this.target.path)
         );
-      } else if (
+      }
+      if (
+        !this.source.isPrivate &&
         Services.prefs.getBoolPref("browser.helperApps.deleteTempFileOnExit") &&
         Services.prefs.getBoolPref(
           "browser.download.start_downloads_in_tmp_dir",
@@ -661,10 +677,7 @@ Download.prototype = {
     }
 
     if (
-      Services.prefs.getBoolPref(
-        "browser.download.enableDeletePrivate",
-        false
-      ) &&
+      lazy.enableDeletePrivateFeature &&
       Services.prefs.getBoolPref("browser.download.deletePrivate", false) &&
       this.source.isPrivate
     ) {
@@ -695,8 +708,8 @@ Download.prototype = {
    * The file will be moved out of quarantine and the download will be
    * marked as succeeded.
    *
-   * @return {Promise}
-   * @resolves When the Download has been unblocked and succeeded.
+   * @returns {Promise<void>}
+   *   Resolves when the Download has been unblocked and succeeded.
    * @rejects  JavaScript exception if any of the operations failed.
    */
   unblock() {
@@ -826,8 +839,8 @@ Download.prototype = {
    * If a download was blocked but retained on disk this method can be used
    * to remove the file.
    *
-   * @return {Promise}
-   * @resolves When the Download's data has been removed.
+   * @returns {Promise<void>}
+   *   Resolves when the Download's data has been removed.
    * @rejects  JavaScript exception if any of the operations failed.
    */
   confirmBlock() {
@@ -842,10 +855,6 @@ Download.prototype = {
     }
 
     if (this.error?.becauseBlockedByReputationCheck) {
-      // We have to record the telemetry in both DownloadsCommon.deleteDownload
-      // and confirmBlock here. The former is for cases where users click
-      // "Remove file" in the download panel and the latter is when
-      // users click "X" button in about:downloads.
       Glean.downloads.userActionOnBlockedDownload[
         this.error.reputationCheckVerdict
       ].accumulateSingleSample(1); // confirm block
@@ -867,6 +876,7 @@ Download.prototype = {
       // data remains stored on disk in the ".part" file.
       await this.saver.removeData();
 
+      this.deleted = true;
       this.hasBlockedData = false;
       this._notifyChange();
     })();
@@ -874,7 +884,7 @@ Download.prototype = {
     return this._promiseConfirmBlock;
   },
 
-  /*
+  /**
    * Launches the file after download has completed. This can open
    * the file with the default application for the target MIME type
    * or file extension, or with a custom application if launcherPath
@@ -886,8 +896,8 @@ Download.prototype = {
    * @param options.useSystemDefault
    *                           Optional value indicating how to handle launching this download,
    *                           this time only. Will override the associated mimeInfo.preferredAction
-   * @return {Promise}
-   * @resolves When the instruction to launch the file has been
+   * @returns {Promise<void>}
+   *   Resolves when the instruction to launch the file has been
    *           successfully given to the operating system. Note that
    *           the OS might still take a while until the file is actually
    *           launched.
@@ -908,13 +918,13 @@ Download.prototype = {
     return lazy.DownloadIntegration.launchDownload(this, options);
   },
 
-  /*
+  /**
    * Shows the folder containing the target file, or where the target file
    * will be saved. This may be called at any time, even if the download
    * failed or is currently in progress.
    *
-   * @return {Promise}
-   * @resolves When the instruction to open the containing folder has been
+   * @returns {Promise<void>}
+   *   Resolves when the instruction to open the containing folder has been
    *           successfully given to the operating system. Note that
    *           the OS might still take a while until the folder is actually
    *           opened.
@@ -956,8 +966,8 @@ Download.prototype = {
    * to "cancel" happens asynchronously, and is consistent with the case where
    * the cancellation request could not be processed in time.
    *
-   * @return {Promise}
-   * @resolves When the cancellation process has finished.
+   * @returns {Promise<void>}
+   *   Resolves when the cancellation process has finished.
    * @rejects Never.
    */
   cancel: function D_cancel() {
@@ -1030,8 +1040,8 @@ Download.prototype = {
    * still true when the download is restarted, partial data will be retained
    * during the new download attempt.
    *
-   * @return {Promise}
-   * @resolves When the partial data has been successfully removed.
+   * @returns {Promise<void>}
+   *   Resolves when the partial data has been successfully removed.
    * @rejects JavaScript exception if the operation could not be completed.
    */
   removePartialData() {
@@ -1099,8 +1109,8 @@ Download.prototype = {
    * download is not controlled interactively, you should use the promise
    * returned by the "start" method instead, to check for success or failure.
    *
-   * @return {Promise}
-   * @resolves When the download has finished successfully.
+   * @returns {Promise<void>}
+   *   Resolves when the download has finished successfully.
    * @rejects Never.
    */
   whenSucceeded: function D_whenSucceeded() {
@@ -1116,8 +1126,8 @@ Download.prototype = {
    * This allows the properties of the download to be updated in case the user
    * moved or deleted the target file or its associated ".part" file.
    *
-   * @return {Promise}
-   * @resolves When the operation has completed.
+   * @returns {Promise<void>}
+   *   Resolves when the operation has completed.
    * @rejects Never.
    */
   refresh() {
@@ -1209,8 +1219,8 @@ Download.prototype = {
    *        Whether any partially downloaded data should be removed after the
    *        download has been stopped.
    *
-   * @return {Promise}
-   * @resolves When the operation has finished successfully.
+   * @returns {Promise<void>}
+   *   Resolves when the operation has finished successfully.
    * @rejects JavaScript exception if an error occurred while removing the
    *          partially downloaded data.
    */
@@ -1218,6 +1228,8 @@ Download.prototype = {
     // Prevents the download from starting again after having been stopped.
     this._finalized = true;
     let promise;
+
+    this._progressThrottleTimer?.cancel();
 
     if (aRemovePartialData) {
       // Cancel the download, in case it is currently in progress, then remove
@@ -1275,6 +1287,18 @@ Download.prototype = {
   _lastProgressTimeMs: 0,
 
   /**
+   * A timer that activates when the throttle would run out, ensuring that progress
+   * events aren't dropped. Should be null if no timers are currently pending.
+   */
+  _progressThrottleTimer: null,
+
+  /**
+   * The number of bytes that should be indicated by the throttle timer when it
+   * wakes up.
+   */
+  _throttledCurrentBytes: 0,
+
+  /**
    * Updates progress notifications based on the number of bytes transferred.
    *
    * The number of bytes transferred is not updated unless enough time passed
@@ -1313,6 +1337,9 @@ Download.prototype = {
     let currentTimeMs = Date.now();
     let intervalMs = currentTimeMs - this._lastProgressTimeMs;
     if (intervalMs >= kProgressUpdateIntervalMs) {
+      this._progressThrottleTimer?.cancel();
+      this._progressThrottleTimer = null;
+
       // Don't compute the speed unless we started throttling notifications.
       if (this._lastProgressTimeMs != 0) {
         // Calculate the speed in bytes per second.
@@ -1348,6 +1375,28 @@ Download.prototype = {
 
       if (this.hasProgress && this.target && !this.target.partFileExists) {
         this.target.refreshPartFileState();
+      }
+    } else if (this.hasProgress) {
+      this._throttledCurrentBytes = aCurrentBytes;
+      if (this._progressThrottleTimer == null) {
+        // Make sure that the progress is updated even if no more bytes
+        // arrive for a while.
+        this._progressThrottleTimer = Cc["@mozilla.org/timer;1"].createInstance(
+          Ci.nsITimer
+        );
+        this._progressThrottleTimer.initWithCallback(
+          () => {
+            if (!this._finalized) {
+              this._setBytes(
+                this._throttledCurrentBytes,
+                this.totalBytes,
+                this.hasPartialData
+              );
+            }
+          },
+          kProgressUpdateIntervalMs - intervalMs,
+          Ci.nsITimer.TYPE_ONE_SHOT
+        );
       }
     }
 
@@ -1434,6 +1483,7 @@ Download.prototype = {
 const kPlainSerializableDownloadProperties = [
   "succeeded",
   "canceled",
+  "deleted",
   "totalBytes",
   "hasPartialData",
   "hasBlockedData",
@@ -1558,9 +1608,21 @@ DownloadSource.prototype = {
   url: null,
 
   /**
+   * True if the body of a large data URI was stripped from url after the
+   * download completed, to avoid holding a large string in memory.
+   */
+  isDataURICleared: false,
+
+  /**
    * String containing the original URL for the download source.
    */
   originalUrl: null,
+
+  /**
+   * Indicates whether the download was triggered by the request
+   * with `Content-Disposition` header.
+   */
+  triggeredByContentDispositionHeader: false,
 
   /**
    * Indicates whether the download originated from a private window.  This
@@ -1580,14 +1642,14 @@ DownloadSource.prototype = {
    * can adjust the network channel before it is opened, for example to change
    * the HTTP headers or to upload a stream as POST data.
    *
-   * @note If this is defined this object will not be serializable, thus the
+   * Note: If this is defined this object will not be serializable, thus the
    *       Download object will not be persisted across sessions.
    *
    * @param aChannel
    *        The nsIChannel to be adjusted.
    *
-   * @return {Promise}
-   * @resolves When the channel has been adjusted and can be opened.
+   * @returns {Promise<void>}
+   *   Resolves when the channel has been adjusted and can be opened.
    * @rejects JavaScript exception that will cause the download to fail.
    */
   adjustChannel: null,
@@ -1597,7 +1659,7 @@ DownloadSource.prototype = {
    * will determine, if provided, if a download can progress or has to be
    * cancelled based on the HTTP status code of the network channel.
    *
-   * @note If this is defined this object will not be serializable, thus the
+   * Note: If this is defined this object will not be serializable, thus the
    *       Download object will not be persisted across sessions.
    *
    * @param aDownload
@@ -1605,7 +1667,7 @@ DownloadSource.prototype = {
    * @param aStatus
    *        The HTTP status in question
    *
-   * @return {Boolean} Download can progress
+   * @return {boolean} Download can progress
    */
   allowHttpStatus: null,
 
@@ -1632,6 +1694,10 @@ DownloadSource.prototype = {
    * @return A JavaScript object that can be serialized to JSON.
    */
   toSerializable() {
+    if (this.isDataURICleared) {
+      return null;
+    }
+
     if (this.adjustChannel) {
       // If the callback was used, we can't reproduce this across sessions.
       return null;
@@ -1667,6 +1733,10 @@ DownloadSource.prototype = {
         : lazy.E10SUtils.serializeCookieJarSettings(this.cookieJarSettings);
     }
 
+    if (this.triggeredByContentDispositionHeader) {
+      serializable.triggeredByContentDispositionHeader = true;
+    }
+
     serializeUnknownProperties(this, serializable);
 
     // Simplify the representation if we don't have other details.
@@ -1689,6 +1759,9 @@ DownloadSource.prototype = {
  *          url: String containing the URI for the download source.
  *          isPrivate: Indicates whether the download originated from a private
  *                     window.  If omitted, the download is public.
+ *          triggeredByContentDispositionHeader: Indicates whether the download
+ *                                               was triggered by the request
+ *                                               with `Content-Disposition` header.
  *          referrerInfo: represents the referrerInfo of the download source.
  *                        Can be omitted or null for example if the download
  *                        source is not HTTP.
@@ -1718,7 +1791,12 @@ DownloadSource.fromSerializable = function (aSerializable) {
   } else {
     // Convert String objects to primitive strings at this point.
     source.url = aSerializable.url.toString();
-    for (let propName of ["isPrivate", "userContextId", "browsingContextId"]) {
+    for (let propName of [
+      "isPrivate",
+      "userContextId",
+      "browsingContextId",
+      "triggeredByContentDispositionHeader",
+    ]) {
       if (propName in aSerializable) {
         source[propName] = aSerializable[propName];
       }
@@ -1806,6 +1884,14 @@ DownloadTarget.prototype = {
   partFilePath: null,
 
   /**
+   * String containing the path of the directory holding the additional files
+   * of a download that involves multiple files, like a complete web page saved
+   * to disk, or null if the download has no such directory. When the data of
+   * the download is removed, this directory is removed as well.
+   */
+  filesFolderPath: null,
+
+  /**
    * Indicates whether the target file exists.
    *
    * This is a dynamic property updated when the download finishes or when the
@@ -1845,8 +1931,8 @@ DownloadTarget.prototype = {
   /**
    * Sets the "exists" and "size" properties based on the actual file on disk.
    *
-   * @return {Promise}
-   * @resolves When the operation has finished successfully.
+   * @returns {Promise<void>}
+   *   Resolves when the operation has finished successfully.
    * @rejects JavaScript exception.
    */
   async refresh() {
@@ -1886,11 +1972,19 @@ DownloadTarget.prototype = {
    */
   toSerializable() {
     // Simplify the representation if we don't have other details.
-    if (!this.partFilePath && !this._unknownProperties) {
+    if (
+      !this.partFilePath &&
+      !this.filesFolderPath &&
+      !this._unknownProperties
+    ) {
       return this.path;
     }
 
-    let serializable = { path: this.path, partFilePath: this.partFilePath };
+    let serializable = {
+      path: this.path,
+      partFilePath: this.partFilePath,
+      filesFolderPath: this.filesFolderPath,
+    };
     serializeUnknownProperties(this, serializable);
     return serializable;
   },
@@ -1906,6 +2000,9 @@ DownloadTarget.prototype = {
  *        {
  *          path: String containing the path of the target file.
  *          partFilePath: optional string containing the part file path.
+ *          filesFolderPath: optional string containing the path of the
+ *                           directory holding the additional files of the
+ *                           download.
  *        }
  *
  * @return The newly created DownloadTarget object.
@@ -1925,11 +2022,17 @@ DownloadTarget.fromSerializable = function (aSerializable) {
     if ("partFilePath" in aSerializable) {
       target.partFilePath = aSerializable.partFilePath;
     }
+    if ("filesFolderPath" in aSerializable) {
+      target.filesFolderPath = aSerializable.filesFolderPath;
+    }
 
     deserializeUnknownProperties(
       target,
       aSerializable,
-      property => property != "path" && property != "partFilePath"
+      property =>
+        property != "path" &&
+        property != "partFilePath" &&
+        property != "filesFolderPath"
     );
   }
   return target;
@@ -2020,7 +2123,7 @@ export var DownloadError = function (aProperties) {
  * These constants are used by the reputationCheckVerdict property and indicate
  * the detailed reason why a download is blocked.
  *
- * @note These values should not be changed because they can be serialized.
+ * Note: These values should not be changed because they can be serialized.
  */
 DownloadError.BLOCK_VERDICT_MALWARE = "Malware";
 DownloadError.BLOCK_VERDICT_POTENTIALLY_UNWANTED = "PotentiallyUnwanted";
@@ -2174,8 +2277,8 @@ DownloadSaver.prototype = {
    *        the names of the properties to set, and the value represents the
    *        value to set.
    *
-   * @return {Promise}
-   * @resolves When the download has finished successfully.
+   * @returns {Promise<void>}
+   *   Resolves when the download has finished successfully.
    * @rejects JavaScript exception if the download failed.
    */
   async execute() {
@@ -2199,8 +2302,8 @@ DownloadSaver.prototype = {
    *
    * @param canRemoveFinalTarget
    *        True if can remove target file regardless of it being a placeholder.
-   * @return {Promise}
-   * @resolves When the operation has finished successfully.
+   * @returns {Promise<void>}
+   *   Resolves when the operation has finished successfully.
    * @rejects Never.
    */
   async removeData() {},
@@ -2232,6 +2335,15 @@ DownloadSaver.prototype = {
    */
   getSha256Hash() {
     throw new Error("Not implemented.");
+  },
+
+  /**
+   * Returns the SHA-256 hash of the downloaded file as a lowercase hex string,
+   * or an empty string if the hash isn't available.
+   */
+  getSha256HashHex() {
+    const hash = this.getSha256Hash();
+    return hash ? Uint8Array.from(hash, c => c.charCodeAt(0)).toHex() : "";
   },
 
   getSignatureInfo() {
@@ -2704,8 +2816,8 @@ DownloadCopySaver.prototype = {
    * @param aSetPropertiesFn
    *        Function provided to the "execute" method.
    *
-   * @return {Promise}
-   * @resolves When the reputation check and cleanup is complete.
+   * @returns {Promise<void>}
+   *   Resolves when the reputation check and cleanup is complete.
    * @rejects DownloadError if the download should be blocked.
    */
   async _checkReputationAndMove(aSetPropertiesFn) {
@@ -2876,9 +2988,9 @@ DownloadCopySaver.prototype = {
    */
   async removeData(canRemoveFinalTarget = false) {
     // Defined inline so removeData can be shared with DownloadLegacySaver.
-    async function _tryToRemoveFile(path) {
+    async function _tryToRemoveFile(path, recursive = false) {
       try {
-        await IOUtils.remove(path);
+        await IOUtils.remove(path, { recursive });
       } catch (ex) {
         // On Windows we may get an access denied error instead of a no such
         // file error if the file existed before, and was recently deleted. This
@@ -2900,6 +3012,12 @@ DownloadCopySaver.prototype = {
         (await isPlaceholder(this.download.target.path))
       ) {
         await _tryToRemoveFile(this.download.target.path);
+        // A download that saved a complete web page also created a directory
+        // holding the additional files of the page, that has to be removed
+        // along with the main file.
+        if (this.download.target.filesFolderPath) {
+          await _tryToRemoveFile(this.download.target.filesFolderPath, true);
+        }
       }
       this.download.target.exists = false;
       this.download.target.size = 0;

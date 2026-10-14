@@ -55,6 +55,8 @@ function triggerClickOn(target, options) {
   return promise;
 }
 
+enableFirefoxViewButton(window);
+
 add_task(async function aria_attributes() {
   let win = await BrowserTestUtils.openNewBrowserWindow();
   is(
@@ -89,7 +91,7 @@ add_task(async function aria_attributes() {
 
 add_task(async function load_opens_new_tab() {
   await withFirefoxView({ openNewWindow: true }, async browser => {
-    let win = browser.ownerGlobal;
+    let win = browser.documentGlobal;
     ok(win.FirefoxViewHandler.tab.selected, "Firefox View tab is selected");
     win.gURLBar.focus();
     win.gURLBar.value = "https://example.com";
@@ -112,7 +114,7 @@ add_task(async function load_opens_new_tab() {
 
 add_task(async function homepage_new_tab() {
   await withFirefoxView({ openNewWindow: true }, async browser => {
-    let win = browser.ownerGlobal;
+    let win = browser.documentGlobal;
     ok(win.FirefoxViewHandler.tab.selected, "Firefox View tab is selected");
     let newTabOpened = BrowserTestUtils.waitForEvent(
       win.gBrowser.tabContainer,
@@ -131,7 +133,7 @@ add_task(async function homepage_new_tab() {
 
 add_task(async function number_tab_select_shortcut() {
   await withFirefoxView({}, async browser => {
-    let win = browser.ownerGlobal;
+    let win = browser.documentGlobal;
     EventUtils.synthesizeKey(
       "1",
       AppConstants.MOZ_WIDGET_GTK ? { altKey: true } : { accelKey: true },
@@ -196,21 +198,50 @@ add_task(async function undo_close_tab() {
   await BrowserTestUtils.closeWindow(win);
 });
 
-add_task(async function test_firefoxview_view_count() {
-  const startViews = 2;
+add_task(async function test_firefoxview_button_clicks_older_than_30_days() {
+  const PREF_NAME = "browser.firefox-view.button-clicks";
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  const oldTimestamp = Math.round(Date.now()) - 31 * MS_PER_DAY;
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.firefox-view.view-count", startViews]],
+    set: [
+      [PREF_NAME, JSON.stringify({ count: 5, lastCountTime: oldTimestamp })],
+    ],
   });
 
   let tab = await openFirefoxViewTab(window);
 
+  let data = JSON.parse(Services.prefs.getStringPref(PREF_NAME));
   Assert.strictEqual(
-    SpecialPowers.getIntPref("browser.firefox-view.view-count"),
-    startViews + 1,
-    "View count pref value is incremented when tab is selected"
+    data.count,
+    0,
+    "Count resets to 0 when lastCountTime is older than 30 days"
   );
 
   BrowserTestUtils.removeTab(tab);
+  await SpecialPowers.popPrefEnv();
+});
+
+add_task(async function test_firefoxview_button_clicks_within_30_days() {
+  const PREF_NAME = "browser.firefox-view.button-clicks";
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  const recentTimestamp = Math.round(Date.now()) - 1 * MS_PER_DAY;
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      [PREF_NAME, JSON.stringify({ count: 5, lastCountTime: recentTimestamp })],
+    ],
+  });
+
+  let tab = await openFirefoxViewTab(window);
+
+  let data = JSON.parse(Services.prefs.getStringPref(PREF_NAME));
+  Assert.strictEqual(
+    data.count,
+    6,
+    "Count increments when lastCountTime is within the last 30 days"
+  );
+
+  BrowserTestUtils.removeTab(tab);
+  await SpecialPowers.popPrefEnv();
 });
 
 add_task(async function test_add_ons_cant_unhide_fx_view() {
@@ -240,7 +271,7 @@ add_task(async function test_add_ons_cant_unhide_fx_view() {
 // Firefox View button is present and active.
 add_task(async function testFirstTabFocusableWhenFxViewOpen() {
   await withFirefoxView({}, async browser => {
-    let win = browser.ownerGlobal;
+    let win = browser.documentGlobal;
     ok(win.FirefoxViewHandler.tab.selected, "Firefox View tab is selected");
     let fxViewBtn = win.document.getElementById("firefox-view-button");
     forceFocus(fxViewBtn);
@@ -260,20 +291,17 @@ add_task(async function testFirstTabFocusableWhenFxViewOpen() {
 // Test that Firefox View tab is not multiselectable
 add_task(async function testFxViewNotMultiselect() {
   await withFirefoxView({}, async browser => {
-    let win = browser.ownerGlobal;
+    let win = browser.documentGlobal;
     Assert.ok(
       win.FirefoxViewHandler.tab.selected,
       "Firefox View tab is selected"
     );
-    let tab2 = await add_new_tab("https://www.mozilla.org");
+    let tab2 = await add_new_tab("https://www.mozilla.org/");
     let fxViewBtn = win.document.getElementById("firefox-view-button");
 
     info("We multi-select a visible tab with ctrl key down");
     await triggerClickOn(tab2, { ctrlKey: true });
-    Assert.ok(
-      tab2.multiselected && gBrowser._multiSelectedTabsSet.has(tab2),
-      "Second visible tab is (multi) selected"
-    );
+    Assert.ok(tab2.multiselected, "Second visible tab is (multi) selected");
     Assert.equal(gBrowser.multiSelectedTabsCount, 1, "One tab is selected.");
     Assert.notEqual(
       fxViewBtn,
@@ -286,10 +314,7 @@ add_task(async function testFxViewNotMultiselect() {
 
     info("We multi-select visible tabs with shift key down");
     await triggerClickOn(tab2, { shiftKey: true });
-    Assert.ok(
-      tab2.multiselected && gBrowser._multiSelectedTabsSet.has(tab2),
-      "Second visible tab is (multi) selected"
-    );
+    Assert.ok(tab2.multiselected, "Second visible tab is (multi) selected");
     Assert.equal(gBrowser.multiSelectedTabsCount, 2, "Two tabs are selected.");
     Assert.notEqual(
       fxViewBtn,
@@ -361,4 +386,21 @@ add_task(async function testFxViewEntryPointsInPrivateBrowsing() {
   });
   await checkEntryPointsInWindow(privateWin, false);
   await BrowserTestUtils.closeWindow(privateWin);
+});
+
+add_task(async function click_opens_a_single_tab() {
+  let win = await BrowserTestUtils.openNewBrowserWindow();
+  let openedTabs = 0;
+  win.gBrowser.tabContainer.addEventListener("TabOpen", () => openedTabs++);
+  EventUtils.synthesizeMouseAtCenter(win.FirefoxViewHandler.button, {}, win);
+  let tab = win.FirefoxViewHandler.tab;
+  Assert.equal(openedTabs, 1, "The click opened a single tab");
+  Assert.ok(tab.selected, "Firefox View tab is selected");
+  await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
+  Assert.equal(
+    win.FirefoxViewHandler.tab,
+    tab,
+    "The Firefox View tab wasn't replaced"
+  );
+  await BrowserTestUtils.closeWindow(win);
 });

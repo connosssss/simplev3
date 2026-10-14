@@ -1,6 +1,7 @@
 ChromeUtils.defineESModuleGetters(this, {
   Downloads: "resource://gre/modules/Downloads.sys.mjs",
-  DownloadsCommon: "resource:///modules/DownloadsCommon.sys.mjs",
+  DownloadsCommon:
+    "moz-src:///browser/components/downloads/DownloadsCommon.sys.mjs",
 });
 
 const HandlerService = Cc[
@@ -60,6 +61,7 @@ const downloadMonitoringView = {
  * will simply be saved, so resolve when the view is notified of the new
  * download. Otherwise, it waits until a prompt is shown, selects the choosen
  * <action>, then accepts the dialog
+ *
  * @param [action] Which action to select, either:
  *        "handleInternally", "save" or "open".
  * @returns {Promise} Resolved once done.
@@ -286,7 +288,12 @@ add_task(async function test_unblock_download_visible() {
         await Promise.all([shouldTriggerDownload(), shouldNotifyDownloadUI()]);
         info("awaiting that the Download list shows itself");
         await panelHasOpened;
+        let panelHidden = BrowserTestUtils.waitForPopupEvent(
+          DownloadsPanel.panel,
+          "hidden"
+        );
         DownloadsPanel.hidePanel();
+        await panelHidden;
         ok(true, "The Download Panel should have opened on blocked download");
       },
       "A Blocked Download Should open the Download Panel"
@@ -336,6 +343,16 @@ add_task(async function download_open_insecure_SVG() {
     },
     "A Blocked SVG can be opened internally"
   );
+
+  // A blocked download notifies an "error" download event, which opens the
+  // downloads panel whatever browser.download.alwaysOpenPanel is set to.
+  await BrowserTestUtils.waitForPopupEvent(DownloadsPanel.panel, "shown");
+  let panelHidden = BrowserTestUtils.waitForPopupEvent(
+    DownloadsPanel.panel,
+    "hidden"
+  );
+  DownloadsPanel.hidePanel();
+  await panelHidden;
 
   HandlerService.remove(mimeInfo);
 });

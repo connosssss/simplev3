@@ -4,14 +4,18 @@
 
 /**
  * Redux actions for the sources state
+ *
  * @module actions/sources
  */
 import { insertSourceActors } from "../../actions/source-actors";
+import { setStyleSheetAtRules } from "./stylesheets";
 import {
-  makeSourceId,
+  makeScriptSourceId,
   createGeneratedSource,
   createSourceMapOriginalSource,
-  createSourceActor,
+  createStyleSheet,
+  createScriptSourceActor,
+  createStyleSheetActor,
 } from "../../client/firefox/create";
 import { toggleBlackBox } from "./blackbox";
 import { syncPendingBreakpoint } from "../breakpoints/index";
@@ -25,9 +29,7 @@ import { createLocation } from "../../utils/location";
 import {
   getBlackBoxRanges,
   getSource,
-  getSourceFromId,
   hasSourceActor,
-  getSourceByActorId,
   getPendingSelectedLocation,
   getPendingBreakpointsForSource,
   getSelectedLocation,
@@ -70,17 +72,16 @@ function loadSourceMap(sourceActor) {
     try {
       // Ignore sourceMapURL on scripts that are part of HTML files, since
       // we currently treat sourcemaps as Source-wide, not SourceActor-specific.
-      const source = getSourceByActorId(getState(), sourceActor.id);
-      if (source) {
+      if (sourceActor.sourceObject) {
         ({ sources, ignoreListUrls, resolvedSourceMapURL, exception } =
           await sourceMapLoader.loadSourceMap({
             // Using source ID here is historical and eventually we'll want to
             // switch to all of this being per-source-actor.
-            id: source.id,
-            url: sourceActor.url || "",
+            id: sourceActor.sourceObject.id,
+            url: sourceActor.sourceObject.url || "",
             sourceMapBaseURL: sourceActor.sourceMapBaseURL || "",
             sourceMapURL: sourceActor.sourceMapURL || "",
-            isWasm: sourceActor.introductionType === "wasm",
+            isWasm: sourceActor.sourceObject.isWasm,
           }));
       }
     } catch (e) {
@@ -107,7 +108,7 @@ function loadSourceMap(sourceActor) {
       const message = L10N.getFormatStr(
         "toolbox.sourceMapFailure",
         exception,
-        sourceActor.url,
+        sourceActor.sourceObject.url,
         sourceActor.sourceMapURL
       );
       panel.toolbox.commands.targetCommand.targetFront.logWarningInPage(
@@ -251,9 +252,8 @@ export function newOriginalSources(originalSourcesInfo) {
         actors.push(sourceActor);
         actorsSources[sourceActor.actor] = [];
       }
-
       actorsSources[sourceActor.actor].push(
-        createSourceMapOriginalSource(id, url)
+        createSourceMapOriginalSource(id, url, sourceActor.sourceObject)
       );
     }
 
@@ -286,21 +286,12 @@ export function newOriginalSources(originalSourcesInfo) {
   };
 }
 
-// Wrapper around newGeneratedSources, only used by tests
-export function newGeneratedSource(sourceInfo) {
-  return async ({ dispatch }) => {
-    const sources = await dispatch(newGeneratedSources([sourceInfo]));
-    return sources[0];
-  };
-}
-
 export function newGeneratedSources(sourceResources) {
   return async ({ dispatch, getState }) => {
     if (!sourceResources.length) {
-      return [];
+      return;
     }
 
-    const resultIds = [];
     const newSourcesObj = {};
     const newSourceActors = [];
 
@@ -312,7 +303,7 @@ export function newGeneratedSources(sourceResources) {
       if (sourceResource.targetFront.isDestroyed()) {
         continue;
       }
-      const id = makeSourceId(sourceResource);
+      const id = makeScriptSourceId(sourceResource);
 
       if (!getSource(getState(), id) && !newSourcesObj[id]) {
         newSourcesObj[id] = createGeneratedSource(sourceResource);
@@ -324,14 +315,12 @@ export function newGeneratedSources(sourceResources) {
       // request a new source list and also get a source event from the server.
       if (!hasSourceActor(getState(), actorId)) {
         newSourceActors.push(
-          createSourceActor(
+          createScriptSourceActor(
             sourceResource,
             getSource(getState(), id) || newSourcesObj[id]
           )
         );
       }
-
-      resultIds.push(id);
     }
 
     const newSources = Object.values(newSourcesObj);
@@ -350,9 +339,16 @@ export function newGeneratedSources(sourceResources) {
       // the breakable lines for any late coming inline <script> tag.
       const selectedLocation = getSelectedLocation(getState());
       for (const sourceActor of newSourceActors) {
+        // Loading the source maps is asynchronous, so a navigation may have
+        // destroyed this target in the meantime. Its source text can no longer
+        // be fetched and its sources are about to be destroyed.
+        if (sourceActor.targetFront.isDestroyed()) {
+          continue;
+        }
         if (
           selectedLocation?.source == sourceActor.sourceObject &&
-          sourceActor.sourceObject.isHTML
+          sourceActor.sourceObject.isHTML &&
+          !sourceActor.sourceObject.isStyleSheet
         ) {
           await dispatch(
             setBreakableLines(
@@ -366,13 +362,55 @@ export function newGeneratedSources(sourceResources) {
       // loading source maps as sometimes generated and original
       // files share the same paths.
       for (const sourceActor of newSourceActors) {
+        if (sourceActor.targetFront.isDestroyed()) {
+          continue;
+        }
         dispatch(
           checkPendingBreakpoints(sourceActor.sourceObject, sourceActor)
         );
       }
     })();
+  };
+}
 
-    return resultIds.map(id => getSourceFromId(getState(), id));
+export function newStyleSheetSources(styleSheetResources) {
+  return async ({ dispatch }) => {
+    if (!styleSheetResources.length) {
+      return;
+    }
+    const styleSheets = [];
+    const styleSheetActors = [];
+    for (const styleSheetResource of styleSheetResources) {
+      // By the time we process the sources, the related target
+      // might already have been destroyed. It means that the sources
+      // are also about to be destroyed, so ignore them.
+      // (This is covered by browser_toolbox_backward_forward_navigation.js)
+      if (
+        styleSheetResource.targetFront.isDestroyed() ||
+        // Currently hide inline sources. Should remove in Bug 2037006
+        styleSheetResource.href == null
+      ) {
+        continue;
+      }
+      const stylesheet = createStyleSheet(styleSheetResource);
+      styleSheets.push(stylesheet);
+      styleSheetActors.push(
+        createStyleSheetActor(styleSheetResource, stylesheet)
+      );
+      dispatch(
+        setStyleSheetAtRules(
+          styleSheetResource.resourceId,
+          styleSheetResource.atRules
+        )
+      );
+    }
+    if (!styleSheets.length) {
+      return;
+    }
+    dispatch({ type: "ADD_SOURCES", sources: styleSheets });
+    dispatch(insertSourceActors(styleSheetActors));
+    await dispatch(checkNewSources(styleSheets));
+    await dispatch(loadSourceMapsForSourceActors(styleSheetActors));
   };
 }
 

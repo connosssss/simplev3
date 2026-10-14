@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,13 +5,13 @@
 #ifndef MOZILLA_A11Y_HTMLFormControlAccessible_H_
 #define MOZILLA_A11Y_HTMLFormControlAccessible_H_
 
+#include "AccAttributes.h"
 #include "FormControlAccessible.h"
 #include "HyperTextAccessible.h"
+#include "Relation.h"
 #include "mozilla/a11y/AccTypes.h"
 #include "mozilla/dom/Element.h"
-#include "AccAttributes.h"
 #include "nsAccUtils.h"
-#include "Relation.h"
 
 namespace mozilla {
 class EditorBase;
@@ -25,9 +24,6 @@ class HTMLRadioButtonAccessible : public RadioButtonAccessible {
  public:
   HTMLRadioButtonAccessible(nsIContent* aContent, DocAccessible* aDoc)
       : RadioButtonAccessible(aContent, aDoc) {
-    // Ignore "RadioStateChange" DOM event in lieu of document observer
-    // state change notification.
-    mStateFlags |= eIgnoreDOMUIEvent;
     mType = eHTMLRadioButtonType;
   }
 
@@ -40,7 +36,7 @@ class HTMLRadioButtonAccessible : public RadioButtonAccessible {
                                      int32_t* aSetSize) override;
 
   virtual void DOMAttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                                   int32_t aModType,
+                                   AttrModType aModType,
                                    const nsAttrValue* aOldValue,
                                    uint64_t aOldState) override;
 
@@ -75,7 +71,7 @@ class HTMLButtonAccessible : public HyperTextAccessible {
   virtual ENameValueFlag NativeName(nsString& aName) const override;
 
   virtual void DOMAttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                                   int32_t aModType,
+                                   AttrModType aModType,
                                    const nsAttrValue* aOldValue,
                                    uint64_t aOldState) override;
 };
@@ -98,7 +94,6 @@ class HTMLTextFieldAccessible : public HyperTextAccessible {
       const override;
 
   // LocalAccessible
-  virtual void Value(nsString& aValue) const override;
   virtual void ApplyARIAState(uint64_t* aState) const override;
   virtual mozilla::a11y::role NativeRole() const override;
   virtual uint64_t NativeState() const override;
@@ -115,13 +110,13 @@ class HTMLTextFieldAccessible : public HyperTextAccessible {
   virtual LocalAccessible* ContainerWidget() const override;
 
  protected:
-  virtual ~HTMLTextFieldAccessible() {}
+  virtual ~HTMLTextFieldAccessible() = default;
 
   // LocalAccessible
-  virtual ENameValueFlag Name(nsString& aName) const override;
+  virtual ENameValueFlag DirectName(nsString& aName) const override;
 
   virtual void DOMAttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                                   int32_t aModType,
+                                   AttrModType aModType,
                                    const nsAttrValue* aOldValue,
                                    uint64_t aOldState) override;
 };
@@ -136,7 +131,7 @@ class HTMLFileInputAccessible : public HyperTextAccessible {
   // LocalAccessible
   virtual mozilla::a11y::role NativeRole() const override;
   virtual bool IsAcceptableChild(nsIContent* aEl) const override;
-  virtual ENameValueFlag Name(nsString& aName) const override;
+  virtual ENameValueFlag DirectName(nsString& aName) const override;
   virtual bool HasPrimaryAction() const override;
   virtual void ActionNameAt(uint8_t aIndex, nsAString& aName) override;
   virtual bool IsWidget() const override;
@@ -149,6 +144,7 @@ class HTMLSpinnerAccessible final : public HTMLTextFieldAccessible {
  public:
   HTMLSpinnerAccessible(nsIContent* aContent, DocAccessible* aDoc)
       : HTMLTextFieldAccessible(aContent, aDoc) {
+    mType = eHTMLSpinnerType;
     mGenericTypes |= eNumericValue;
   }
 
@@ -170,6 +166,7 @@ class HTMLRangeAccessible : public LeafAccessible {
  public:
   HTMLRangeAccessible(nsIContent* aContent, DocAccessible* aDoc)
       : LeafAccessible(aContent, aDoc) {
+    mType = eHTMLRangeType;
     mGenericTypes |= eNumericValue;
   }
 
@@ -262,7 +259,7 @@ class HTMLFormAccessible : public HyperTextAccessible {
 
  protected:
   virtual void DOMAttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                                   int32_t aModType,
+                                   AttrModType aModType,
                                    const nsAttrValue* aOldValue,
                                    uint64_t aOldState) override;
 
@@ -300,10 +297,10 @@ class HTMLProgressAccessible : public LeafAccessible {
   virtual bool IsWidget() const override;
 
  protected:
-  virtual ~HTMLProgressAccessible() {}
+  virtual ~HTMLProgressAccessible() = default;
 
   virtual void DOMAttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                                   int32_t aModType,
+                                   AttrModType aModType,
                                    const nsAttrValue* aOldValue,
                                    uint64_t aOldState) override;
 };
@@ -348,10 +345,10 @@ class HTMLMeterAccessible : public LeafAccessible {
   int32_t ValueRegion() const;
 
  protected:
-  virtual ~HTMLMeterAccessible() {}
+  virtual ~HTMLMeterAccessible() = default;
 
   virtual void DOMAttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                                   int32_t aModType,
+                                   AttrModType aModType,
                                    const nsAttrValue* aOldValue,
                                    uint64_t aOldState) override;
 };
@@ -390,7 +387,7 @@ class HTMLDateTimeAccessible : public HyperTextAccessible {
   virtual bool IsWidget() const override { return true; }
 
  protected:
-  virtual ~HTMLDateTimeAccessible() {}
+  virtual ~HTMLDateTimeAccessible() = default;
 };
 
 }  // namespace a11y

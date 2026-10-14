@@ -4,22 +4,18 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #define GTEST_HAS_RTTI 0
-#include "gtest/gtest.h"
-
-#include "nss.h"
-
 #include "Canonicals.h"
 #include "ImageContainer.h"
-#include "VideoConduit.h"
-#include "VideoFrameConverter.h"
-#include "RtpRtcpConfig.h"
-
-#include "api/video/i420_buffer.h"
-#include "api/video/video_sink_interface.h"
-#include "media/base/media_constants.h"
-
 #include "MockCall.h"
 #include "MockConduit.h"
+#include "RtpRtcpConfig.h"
+#include "VideoConduit.h"
+#include "VideoFrameConverter.h"
+#include "api/video/i420_buffer.h"
+#include "api/video/video_sink_interface.h"
+#include "gtest/gtest.h"
+#include "media/base/media_constants.h"
+#include "nss.h"
 
 using namespace mozilla;
 using namespace mozilla::layers;
@@ -28,7 +24,7 @@ using namespace webrtc;
 
 namespace test {
 
-class MockVideoSink : public rtc::VideoSinkInterface<webrtc::VideoFrame> {
+class MockVideoSink : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
  public:
   MockVideoSink() : mVideoFrame(nullptr, kVideoRotation_0, 0) {}
 
@@ -46,8 +42,8 @@ class MockVideoSink : public rtc::VideoSinkInterface<webrtc::VideoFrame> {
 struct TestRTCStatsTimestampState : public dom::RTCStatsTimestampState {
   TestRTCStatsTimestampState()
       : dom::RTCStatsTimestampState(
-            TimeStamp::Now() + TimeDuration::FromMilliseconds(10),
-            webrtc::Timestamp::Micros(0)) {}
+            0, TimeStamp::Now() + TimeDuration::FromMilliseconds(10),
+            webrtc::Timestamp::Micros(0), RTPCallerType::Normal, 0) {}
 };
 
 class TestRTCStatsTimestampMaker : public dom::RTCStatsTimestampMaker {
@@ -63,7 +59,8 @@ class DirectVideoFrameConverter : public VideoFrameConverter {
                             TestRTCStatsTimestampMaker(), aLockScaling) {}
 
   void SendVideoFrame(PlanarYCbCrImage* aImage, TimeStamp aTime) {
-    FrameToProcess frame(aImage, aTime, aImage->GetSize(), false);
+    FrameToProcess frame(aImage, aTime, aImage->GetSize(), false,
+                         mozilla::VideoRotation::kDegree_0);
     ProcessVideoFrame(frame);
   }
 };
@@ -99,7 +96,7 @@ class VideoConduitTest : public Test {
 
   ~VideoConduitTest() override {
     mVideoFrameConverter->RemoveSink(mVideoSink.get());
-    mozilla::Unused << WaitFor(mVideoConduit->Shutdown());
+    (void)WaitFor(mVideoConduit->Shutdown());
     mCallWrapper->Destroy();
   }
 
@@ -107,7 +104,7 @@ class VideoConduitTest : public Test {
 
   void SendVideoFrame(unsigned short width, unsigned short height,
                       int64_t capture_time_ms) {
-    rtc::scoped_refptr<webrtc::I420Buffer> buffer =
+    webrtc::scoped_refptr<webrtc::I420Buffer> buffer =
         webrtc::I420Buffer::Create(width, height);
     memset(buffer->MutableDataY(), 0x10, buffer->StrideY() * buffer->height());
     memset(buffer->MutableDataU(), 0x80,
@@ -166,7 +163,7 @@ TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecs) {
 
   // empty codec name
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codec(120, "", EncodingConstraints());
+    VideoCodecConfig codec(120, "", VideoEncodingConstraints());
     aControl.mVideoRecvCodecs = {codec};
   });
   ASSERT_TRUE(Call()->mVideoReceiveConfig);
@@ -174,7 +171,7 @@ TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecs) {
 
   // Defaults
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codec(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codec(120, "VP8", VideoEncodingConstraints());
     aControl.mVideoRecvCodecs = {codec};
     aControl.mVideoRecvRtpRtcpConfig =
         Some(RtpRtcpConfig(webrtc::RtcpMode::kCompound, true));
@@ -200,11 +197,11 @@ TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecs) {
 
 TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsFEC) {
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mFECFbSet = true;
     aControl.mVideoRecvCodecs = {
-        codecConfig, VideoCodecConfig(1, "ulpfec", EncodingConstraints()),
-        VideoCodecConfig(2, "red", EncodingConstraints())};
+        codecConfig, VideoCodecConfig(1, "ulpfec", VideoEncodingConstraints()),
+        VideoCodecConfig(2, "red", VideoEncodingConstraints())};
     aControl.mVideoRecvRtpRtcpConfig =
         Some(RtpRtcpConfig(webrtc::RtcpMode::kCompound, true));
     aControl.mReceiving = true;
@@ -232,7 +229,7 @@ TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsH264) {
   mControl.Update([&](auto& aControl) {
     aControl.mReceiving = true;
     aControl.mVideoRecvCodecs = {
-        VideoCodecConfig(120, "H264", EncodingConstraints())};
+        VideoCodecConfig(120, "H264", VideoEncodingConstraints())};
     aControl.mVideoRecvRtpRtcpConfig =
         Some(RtpRtcpConfig(webrtc::RtcpMode::kCompound, true));
   });
@@ -259,11 +256,11 @@ TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsMultipleH264) {
   mControl.Update([&](auto& aControl) {
     // Insert two H264 codecs to test that the receive stream knows about both.
     aControl.mReceiving = true;
-    VideoCodecConfig h264_b(126, "H264", EncodingConstraints());
+    VideoCodecConfig h264_b(126, "H264", VideoEncodingConstraints());
     h264_b.mProfile = 0x42;
     h264_b.mConstraints = 0xE0;
     h264_b.mLevel = 0x01;
-    VideoCodecConfig h264_h(105, "H264", EncodingConstraints());
+    VideoCodecConfig h264_h(105, "H264", VideoEncodingConstraints());
     h264_h.mProfile = 0x64;
     h264_h.mConstraints = 0xE0;
     h264_h.mLevel = 0x01;
@@ -295,7 +292,7 @@ TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsMultipleH264) {
 TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsKeyframeRequestType) {
   // PLI should be preferred to FIR, same codec.
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mNackFbTypes.push_back("pli");
     codecConfig.mCcmFbTypes.push_back("fir");
     aControl.mReceiving = true;
@@ -310,7 +307,7 @@ TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsKeyframeRequestType) {
 
   // Just FIR
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mCcmFbTypes.push_back("fir");
     aControl.mVideoRecvCodecs = {codecConfig};
   });
@@ -321,9 +318,9 @@ TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsKeyframeRequestType) {
 
   // PLI should be preferred to FIR, multiple codecs.
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig pliCodec(120, "VP8", EncodingConstraints());
+    VideoCodecConfig pliCodec(120, "VP8", VideoEncodingConstraints());
     pliCodec.mNackFbTypes.push_back("pli");
-    VideoCodecConfig firCodec(120, "VP8", EncodingConstraints());
+    VideoCodecConfig firCodec(120, "VP8", VideoEncodingConstraints());
     firCodec.mCcmFbTypes.push_back("fir");
     aControl.mVideoRecvCodecs = {pliCodec, firCodec};
   });
@@ -336,7 +333,7 @@ TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsKeyframeRequestType) {
 TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsNack) {
   mControl.Update([&](auto& aControl) {
     aControl.mReceiving = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mNackFbTypes.push_back("");
     aControl.mVideoRecvCodecs = {codecConfig};
     aControl.mVideoRecvRtpRtcpConfig =
@@ -364,7 +361,7 @@ TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsNack) {
 TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsRemb) {
   mControl.Update([&](auto& aControl) {
     aControl.mReceiving = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mRembFbSet = true;
     aControl.mVideoRecvCodecs = {codecConfig};
     aControl.mVideoRecvRtpRtcpConfig =
@@ -392,7 +389,7 @@ TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsRemb) {
 TEST_F(VideoConduitTest, TestConfigureReceiveMediaCodecsTmmbr) {
   mControl.Update([&](auto& aControl) {
     aControl.mReceiving = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mCcmFbTypes.push_back("tmmbr");
     aControl.mVideoRecvCodecs = {codecConfig};
     aControl.mVideoRecvRtpRtcpConfig =
@@ -421,7 +418,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodec) {
   // defaults
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -432,17 +429,20 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodec) {
   ASSERT_EQ(Call()->mVideoSendConfig->rtp.payload_type, 120);
   ASSERT_EQ(Call()->mVideoSendConfig->rtp.rtcp_mode,
             webrtc::RtcpMode::kCompound);
-  ASSERT_EQ(Call()->mVideoSendConfig->rtp.max_packet_size, kVideoMtu);
+  ASSERT_EQ(Call()->mVideoSendConfig->rtp.max_packet_size, mozilla::kVideoMtu);
   ASSERT_EQ(Call()->mVideoSendEncoderConfig->content_type,
             VideoEncoderConfig::ContentType::kRealtimeVideo);
   ASSERT_EQ(Call()->mVideoSendEncoderConfig->min_transmit_bitrate_bps, 0);
   ASSERT_EQ(Call()->mVideoSendEncoderConfig->max_bitrate_bps, KBPS(10000));
   ASSERT_EQ(Call()->mVideoSendEncoderConfig->number_of_streams, 1U);
+  ASSERT_EQ(
+      Call()->mVideoSendEncoderConfig->simulcast_layers[0].max_bitrate_bps,
+      KBPS(10000));
 
   // empty codec name
   mControl.Update([&](auto& aControl) {
     aControl.mVideoSendCodec =
-        Some(VideoCodecConfig(120, "", EncodingConstraints()));
+        Some(VideoCodecConfig(120, "", VideoEncodingConstraints()));
   });
   // Bad codec gets ignored
   ASSERT_EQ(Call()->mVideoSendConfig->rtp.payload_name, "VP8");
@@ -451,7 +451,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodec) {
 TEST_F(VideoConduitTest, TestConfigureSendMediaCodecMaxFps) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    EncodingConstraints constraints;
+    VideoEncodingConstraints constraints;
     VideoCodecConfig codecConfig(120, "VP8", constraints);
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
@@ -465,7 +465,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecMaxFps) {
   ASSERT_EQ(videoStreams[0].max_framerate, 30);  // DEFAULT_VIDEO_MAX_FRAMERATE
 
   mControl.Update([&](auto& aControl) {
-    EncodingConstraints constraints;
+    VideoEncodingConstraints constraints;
     constraints.maxFps = Some(42);
     VideoCodecConfig codecConfig(120, "VP8", constraints);
     codecConfig.mEncodings.emplace_back();
@@ -480,7 +480,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecMaxFps) {
 TEST_F(VideoConduitTest, TestConfigureSendMediaCodecMaxMbps) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    EncodingConstraints constraints;
+    VideoEncodingConstraints constraints;
     constraints.maxMbps = 0;
     VideoCodecConfig codecConfig(120, "VP8", constraints);
     codecConfig.mEncodings.emplace_back();
@@ -496,7 +496,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecMaxMbps) {
   ASSERT_EQ(videoStreams[0].max_framerate, 30);  // DEFAULT_VIDEO_MAX_FRAMERATE
 
   mControl.Update([&](auto& aControl) {
-    EncodingConstraints constraints;
+    VideoEncodingConstraints constraints;
     constraints.maxMbps = 10000;
     VideoCodecConfig codecConfig(120, "VP8", constraints);
     codecConfig.mEncodings.emplace_back();
@@ -512,7 +512,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecMaxMbps) {
 TEST_F(VideoConduitTest, TestConfigureSendMediaCodecDefaults) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -545,16 +545,20 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecTias) {
   // TIAS
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfigTias(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfigTias(120, "VP8", VideoEncodingConstraints());
     codecConfigTias.mEncodings.emplace_back();
     codecConfigTias.mTias = 2000000;
     aControl.mVideoSendCodec = Some(codecConfigTias);
     aControl.mVideoSendRtpRtcpConfig =
         Some(RtpRtcpConfig(webrtc::RtcpMode::kCompound, true));
   });
-  ASSERT_EQ(Call()->mVideoSendEncoderConfig->max_bitrate_bps, 2000000);
   {
     ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
+    ASSERT_EQ(Call()->mVideoSendEncoderConfig->max_bitrate_bps, 2000000);
+    ASSERT_EQ(Call()->mVideoSendEncoderConfig->number_of_streams, 1U);
+    ASSERT_EQ(
+        Call()->mVideoSendEncoderConfig->simulcast_layers[0].max_bitrate_bps,
+        2000000);
     SendVideoFrame(1280, 720, 1);
     const std::vector<webrtc::VideoStream> videoStreams =
         Call()->CreateEncoderStreams(1280, 720);
@@ -566,14 +570,18 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecTias) {
 
   // TIAS (too low)
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfigTiasLow(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfigTiasLow(120, "VP8", VideoEncodingConstraints());
     codecConfigTiasLow.mEncodings.emplace_back();
     codecConfigTiasLow.mTias = 1000;
     aControl.mVideoSendCodec = Some(codecConfigTiasLow);
   });
-  ASSERT_EQ(Call()->mVideoSendEncoderConfig->max_bitrate_bps, 1000);
   {
     ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
+    ASSERT_EQ(Call()->mVideoSendEncoderConfig->max_bitrate_bps, 1000);
+    ASSERT_EQ(Call()->mVideoSendEncoderConfig->number_of_streams, 1U);
+    ASSERT_EQ(
+        Call()->mVideoSendEncoderConfig->simulcast_layers[0].max_bitrate_bps,
+        1000);
     SendVideoFrame(1280, 720, 2);
     const std::vector<webrtc::VideoStream> videoStreams =
         Call()->CreateEncoderStreams(1280, 720);
@@ -587,7 +595,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecTias) {
 TEST_F(VideoConduitTest, TestConfigureSendMediaCodecMaxBr) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     auto& encoding = codecConfig.mEncodings.emplace_back();
     encoding.constraints.maxBr = 50000;
     aControl.mVideoSendCodec = Some(codecConfig);
@@ -595,6 +603,11 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecMaxBr) {
         Some(RtpRtcpConfig(webrtc::RtcpMode::kCompound, true));
   });
   ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
+  ASSERT_EQ(Call()->mVideoSendEncoderConfig->max_bitrate_bps, 50000);
+  ASSERT_EQ(Call()->mVideoSendEncoderConfig->number_of_streams, 1U);
+  ASSERT_EQ(
+      Call()->mVideoSendEncoderConfig->simulcast_layers[0].max_bitrate_bps,
+      50000);
   SendVideoFrame(1280, 720, 1);
   const std::vector<webrtc::VideoStream> videoStreams =
       Call()->CreateEncoderStreams(1280, 720);
@@ -607,7 +620,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecMaxBr) {
 TEST_F(VideoConduitTest, TestConfigureSendMediaCodecScaleResolutionBy) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     {
       auto& encoding = codecConfig.mEncodings.emplace_back();
       encoding.constraints.scaleDownBy = 2;
@@ -638,7 +651,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecScaleResolutionBy) {
 TEST_F(VideoConduitTest, TestConfigureSendMediaCodecCodecMode) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -655,7 +668,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecFEC) {
     // H264 + FEC
     mControl.Update([&](auto& aControl) {
       aControl.mTransmitting = true;
-      VideoCodecConfig codecConfig(120, "H264", EncodingConstraints());
+      VideoCodecConfig codecConfig(120, "H264", VideoEncodingConstraints());
       codecConfig.mEncodings.emplace_back();
       codecConfig.mFECFbSet = true;
       codecConfig.mULPFECPayloadType = 1;
@@ -674,7 +687,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecFEC) {
   {
     // H264 + FEC + Nack
     mControl.Update([&](auto& aControl) {
-      VideoCodecConfig codecConfig(120, "H264", EncodingConstraints());
+      VideoCodecConfig codecConfig(120, "H264", VideoEncodingConstraints());
       codecConfig.mEncodings.emplace_back();
       codecConfig.mFECFbSet = true;
       codecConfig.mNackFbTypes.push_back("");
@@ -692,7 +705,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecFEC) {
   {
     // VP8 + FEC + Nack
     mControl.Update([&](auto& aControl) {
-      VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+      VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
       codecConfig.mEncodings.emplace_back();
       codecConfig.mFECFbSet = true;
       codecConfig.mNackFbTypes.push_back("");
@@ -711,7 +724,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecFEC) {
 TEST_F(VideoConduitTest, TestConfigureSendMediaCodecNack) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -732,7 +745,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecNack) {
 TEST_F(VideoConduitTest, TestConfigureSendMediaCodecRids) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -742,7 +755,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecRids) {
   ASSERT_EQ(Call()->mVideoSendConfig->rtp.rids.size(), 0U);
 
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     {
       auto& encoding = codecConfig.mEncodings.emplace_back();
       encoding.rid = "1";
@@ -764,7 +777,7 @@ TEST_F(VideoConduitTest, TestConfigureSendMediaCodecRids) {
 TEST_F(VideoConduitTest, TestOnSinkWantsChanged) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     codecConfig.mEncodingConstraints.maxFs = 0;
     aControl.mVideoSendCodec = Some(codecConfig);
@@ -772,7 +785,7 @@ TEST_F(VideoConduitTest, TestOnSinkWantsChanged) {
         Some(RtpRtcpConfig(webrtc::RtcpMode::kCompound, true));
   });
   ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
-  rtc::VideoSinkWants wants;
+  webrtc::VideoSinkWants wants;
   wants.max_pixel_count = 256000;
   mVideoFrameConverter->AddOrUpdateSink(mVideoSink.get(), wants);
   SendVideoFrame(1920, 1080, 1);
@@ -852,7 +865,7 @@ class VideoConduitTestScalingLocked : public VideoConduitTest {
 TEST_F(VideoConduitTestScalingLocked, TestOnSinkWantsChanged) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodingConstraints.maxFs = 0;
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
@@ -860,7 +873,7 @@ TEST_F(VideoConduitTestScalingLocked, TestOnSinkWantsChanged) {
         Some(RtpRtcpConfig(webrtc::RtcpMode::kCompound, true));
   });
   ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
-  rtc::VideoSinkWants wants;
+  webrtc::VideoSinkWants wants;
   wants.max_pixel_count = 256000;
   mVideoFrameConverter->AddOrUpdateSink(mVideoSink.get(), wants);
   SendVideoFrame(1920, 1080, 1);
@@ -898,7 +911,7 @@ TEST_P(VideoConduitCodecModeTest,
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
     {
-      VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+      VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
       codecConfig.mEncodings.emplace_back();
       {
         auto& encoding = codecConfig.mEncodings.emplace_back();
@@ -956,7 +969,7 @@ TEST_P(VideoConduitCodecModeTest,
        TestConfigureSendMediaCodecSimulcastAllScaling) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     {
       auto& encoding = codecConfig.mEncodings.emplace_back();
       encoding.constraints.scaleDownBy = 2;
@@ -1048,7 +1061,7 @@ TEST_F(VideoConduitTest, TestReconfigureReceiveMediaCodecs) {
   mControl.Update([&](auto& aControl) {
     aControl.mReceiving = true;
     aControl.mVideoRecvCodecs = {
-        VideoCodecConfig(120, "VP8", EncodingConstraints())};
+        VideoCodecConfig(120, "VP8", VideoEncodingConstraints())};
     aControl.mVideoRecvRtpRtcpConfig =
         Some(RtpRtcpConfig(webrtc::RtcpMode::kCompound, true));
   });
@@ -1072,10 +1085,10 @@ TEST_F(VideoConduitTest, TestReconfigureReceiveMediaCodecs) {
 
   // FEC
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfigFecFb(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfigFecFb(120, "VP8", VideoEncodingConstraints());
     codecConfigFecFb.mFECFbSet = true;
-    VideoCodecConfig codecConfigFEC(1, "ulpfec", EncodingConstraints());
-    VideoCodecConfig codecConfigRED(2, "red", EncodingConstraints());
+    VideoCodecConfig codecConfigFEC(1, "ulpfec", VideoEncodingConstraints());
+    VideoCodecConfig codecConfigRED(2, "red", VideoEncodingConstraints());
     aControl.mVideoRecvCodecs = {codecConfigFecFb, codecConfigFEC,
                                  codecConfigRED};
   });
@@ -1100,7 +1113,7 @@ TEST_F(VideoConduitTest, TestReconfigureReceiveMediaCodecs) {
   // H264
   mControl.Update([&](auto& aControl) {
     aControl.mVideoRecvCodecs = {
-        VideoCodecConfig(120, "H264", EncodingConstraints())};
+        VideoCodecConfig(120, "H264", VideoEncodingConstraints())};
   });
   ASSERT_TRUE(Call()->mVideoReceiveConfig);
   ASSERT_EQ(Call()->mVideoReceiveConfig->decoders.size(), 1U);
@@ -1122,7 +1135,7 @@ TEST_F(VideoConduitTest, TestReconfigureReceiveMediaCodecs) {
 
   // Nack
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfigNack(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfigNack(120, "VP8", VideoEncodingConstraints());
     codecConfigNack.mNackFbTypes.push_back("");
     aControl.mVideoRecvCodecs = {codecConfigNack};
   });
@@ -1146,7 +1159,7 @@ TEST_F(VideoConduitTest, TestReconfigureReceiveMediaCodecs) {
 
   // Remb
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfigRemb(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfigRemb(120, "VP8", VideoEncodingConstraints());
     codecConfigRemb.mRembFbSet = true;
     aControl.mVideoRecvCodecs = {codecConfigRemb};
   });
@@ -1170,7 +1183,7 @@ TEST_F(VideoConduitTest, TestReconfigureReceiveMediaCodecs) {
 
   // Tmmbr
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfigTmmbr(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfigTmmbr(120, "VP8", VideoEncodingConstraints());
     codecConfigTmmbr.mCcmFbTypes.push_back("tmmbr");
     aControl.mVideoRecvCodecs = {codecConfigTmmbr};
   });
@@ -1195,7 +1208,7 @@ TEST_F(VideoConduitTest, TestReconfigureReceiveMediaCodecs) {
 
 TEST_P(VideoConduitCodecModeTest, TestReconfigureSendMediaCodec) {
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -1211,7 +1224,7 @@ TEST_P(VideoConduitCodecModeTest, TestReconfigureSendMediaCodec) {
   EXPECT_EQ(Call()->mVideoSendConfig->rtp.payload_type, 120);
   EXPECT_EQ(Call()->mVideoSendConfig->rtp.rtcp_mode,
             webrtc::RtcpMode::kCompound);
-  EXPECT_EQ(Call()->mVideoSendConfig->rtp.max_packet_size, kVideoMtu);
+  EXPECT_EQ(Call()->mVideoSendConfig->rtp.max_packet_size, mozilla::kVideoMtu);
   EXPECT_EQ(Call()->mVideoSendEncoderConfig->content_type,
             GetParam() == webrtc::VideoCodecMode::kRealtimeVideo
                 ? VideoEncoderConfig::ContentType::kRealtimeVideo
@@ -1224,7 +1237,7 @@ TEST_P(VideoConduitCodecModeTest, TestReconfigureSendMediaCodec) {
   // FEC
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfigFEC(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfigFEC(120, "VP8", VideoEncodingConstraints());
     codecConfigFEC.mEncodings.emplace_back();
     codecConfigFEC.mFECFbSet = true;
     codecConfigFEC.mNackFbTypes.push_back("");
@@ -1242,7 +1255,7 @@ TEST_P(VideoConduitCodecModeTest, TestReconfigureSendMediaCodec) {
   // H264
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfigH264(120, "H264", EncodingConstraints());
+    VideoCodecConfig codecConfigH264(120, "H264", VideoEncodingConstraints());
     codecConfigH264.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfigH264);
   });
@@ -1254,13 +1267,17 @@ TEST_P(VideoConduitCodecModeTest, TestReconfigureSendMediaCodec) {
   // TIAS
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfigTias(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfigTias(120, "VP8", VideoEncodingConstraints());
     codecConfigTias.mEncodings.emplace_back();
     codecConfigTias.mTias = 2000000;
     aControl.mVideoSendCodec = Some(codecConfigTias);
   });
   ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
   EXPECT_EQ(Call()->mVideoSendEncoderConfig->max_bitrate_bps, 2000000);
+  ASSERT_EQ(Call()->mVideoSendEncoderConfig->number_of_streams, 1U);
+  EXPECT_EQ(
+      Call()->mVideoSendEncoderConfig->simulcast_layers[0].max_bitrate_bps,
+      2000000);
   SendVideoFrame(1280, 720, 1);
 
   {
@@ -1276,7 +1293,7 @@ TEST_P(VideoConduitCodecModeTest, TestReconfigureSendMediaCodec) {
   // MaxBr
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     VideoCodecConfig::Encoding encoding;
     {
       auto& encoding = codecConfig.mEncodings.emplace_back();
@@ -1285,6 +1302,11 @@ TEST_P(VideoConduitCodecModeTest, TestReconfigureSendMediaCodec) {
     aControl.mVideoSendCodec = Some(codecConfig);
   });
   ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
+  EXPECT_EQ(Call()->mVideoSendEncoderConfig->max_bitrate_bps, 50000);
+  ASSERT_EQ(Call()->mVideoSendEncoderConfig->number_of_streams, 1U);
+  EXPECT_EQ(
+      Call()->mVideoSendEncoderConfig->simulcast_layers[0].max_bitrate_bps,
+      50000);
   SendVideoFrame(1280, 720, 2);
   {
     const std::vector<webrtc::VideoStream> videoStreams =
@@ -1299,7 +1321,7 @@ TEST_P(VideoConduitCodecModeTest, TestReconfigureSendMediaCodec) {
   // MaxFs
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfigMaxFs(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfigMaxFs(120, "VP8", VideoEncodingConstraints());
     codecConfigMaxFs.mEncodingConstraints.maxFs = 3600;
     VideoCodecConfig::Encoding encoding;
     encoding.constraints.maxBr = 0;
@@ -1345,7 +1367,7 @@ TEST_P(VideoConduitCodecModeTest, TestReconfigureSendMediaCodec) {
 TEST_P(VideoConduitCodecModeTest,
        TestReconfigureSendMediaCodecWhileTransmitting) {
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -1361,7 +1383,7 @@ TEST_P(VideoConduitCodecModeTest,
   EXPECT_EQ(Call()->mVideoSendConfig->rtp.payload_type, 120);
   EXPECT_EQ(Call()->mVideoSendConfig->rtp.rtcp_mode,
             webrtc::RtcpMode::kCompound);
-  EXPECT_EQ(Call()->mVideoSendConfig->rtp.max_packet_size, kVideoMtu);
+  EXPECT_EQ(Call()->mVideoSendConfig->rtp.max_packet_size, mozilla::kVideoMtu);
   EXPECT_EQ(Call()->mVideoSendEncoderConfig->content_type,
             GetParam() == webrtc::VideoCodecMode::kRealtimeVideo
                 ? VideoEncoderConfig::ContentType::kRealtimeVideo
@@ -1375,13 +1397,17 @@ TEST_P(VideoConduitCodecModeTest,
 
   // TIAS
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfigTias(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfigTias(120, "VP8", VideoEncodingConstraints());
     codecConfigTias.mEncodings.emplace_back();
     codecConfigTias.mTias = 2000000;
     aControl.mVideoSendCodec = Some(codecConfigTias);
   });
   ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
   ASSERT_EQ(Call()->mVideoSendEncoderConfig->max_bitrate_bps, 2000000);
+  ASSERT_EQ(Call()->mVideoSendEncoderConfig->number_of_streams, 1U);
+  EXPECT_EQ(
+      Call()->mVideoSendEncoderConfig->simulcast_layers[0].max_bitrate_bps,
+      2000000);
   SendVideoFrame(1280, 720, 1);
 
   {
@@ -1395,7 +1421,7 @@ TEST_P(VideoConduitCodecModeTest,
 
   // MaxBr
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     {
       auto& encoding = codecConfig.mEncodings.emplace_back();
       encoding.constraints.maxBr = 50000;
@@ -1403,6 +1429,10 @@ TEST_P(VideoConduitCodecModeTest,
     aControl.mVideoSendCodec = Some(codecConfig);
   });
   ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
+  ASSERT_EQ(Call()->mVideoSendEncoderConfig->number_of_streams, 1U);
+  EXPECT_EQ(
+      Call()->mVideoSendEncoderConfig->simulcast_layers[0].max_bitrate_bps,
+      50000);
   SendVideoFrame(1280, 720, 2);
   {
     const std::vector<webrtc::VideoStream> videoStreams =
@@ -1415,7 +1445,7 @@ TEST_P(VideoConduitCodecModeTest,
 
   // MaxFs
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodingConstraints.maxFs = 3600;
     {
       auto& encoding = codecConfig.mEncodings.emplace_back();
@@ -1460,7 +1490,7 @@ TEST_P(VideoConduitCodecModeTest,
 
   // ScaleResolutionDownBy
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     {
       auto& encoding = codecConfig.mEncodings.emplace_back();
       encoding.constraints.maxFs = 0;
@@ -1503,7 +1533,7 @@ TEST_P(VideoConduitCodecModeTest,
 TEST_P(VideoConduitCodecModeTest, TestVideoEncode) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -1534,7 +1564,7 @@ TEST_P(VideoConduitCodecModeTest, TestVideoEncode) {
 TEST_P(VideoConduitCodecModeTest, TestVideoEncodeMaxFs) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodingConstraints.maxFs = 3600;
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
@@ -1579,7 +1609,7 @@ TEST_P(VideoConduitCodecModeTest, TestVideoEncodeMaxFs) {
 
   // maxFs should not force pixel count above what a mVideoSink has requested.
   // We set 3600 macroblocks (16x16 pixels), so we request 3500 here.
-  rtc::VideoSinkWants wants;
+  webrtc::VideoSinkWants wants;
   wants.max_pixel_count = 3500 * 16 * 16;
   mVideoFrameConverter->AddOrUpdateSink(mVideoSink.get(), wants);
 
@@ -1620,7 +1650,7 @@ TEST_P(VideoConduitCodecModeTest, TestVideoEncodeMaxFs) {
 TEST_P(VideoConduitCodecModeTest, TestVideoEncodeMaxFsNegotiatedThenSinkWants) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     codecConfig.mEncodingConstraints.maxFs = 3500;
     aControl.mVideoSendCodec = Some(codecConfig);
@@ -1643,7 +1673,7 @@ TEST_P(VideoConduitCodecModeTest, TestVideoEncodeMaxFsNegotiatedThenSinkWants) {
     ASSERT_EQ(mVideoSink->mOnFrameCount, frame);
   }
 
-  rtc::VideoSinkWants wants;
+  webrtc::VideoSinkWants wants;
   wants.max_pixel_count = 3600 * 16 * 16;
   mVideoFrameConverter->AddOrUpdateSink(mVideoSink.get(), wants);
 
@@ -1662,7 +1692,7 @@ TEST_P(VideoConduitCodecModeTest, TestVideoEncodeMaxFsNegotiatedThenSinkWants) {
 TEST_P(VideoConduitCodecModeTest, TestVideoEncodeMaxFsCodecChange) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     codecConfig.mEncodingConstraints.maxFs = 3500;
     aControl.mVideoSendCodec = Some(codecConfig);
@@ -1686,7 +1716,7 @@ TEST_P(VideoConduitCodecModeTest, TestVideoEncodeMaxFsCodecChange) {
   }
 
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(121, "VP9", EncodingConstraints());
+    VideoCodecConfig codecConfig(121, "VP9", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     codecConfig.mEncodingConstraints.maxFs = 3500;
     aControl.mVideoSendCodec = Some(codecConfig);
@@ -1709,7 +1739,7 @@ TEST_P(VideoConduitCodecModeTest,
        TestVideoEncodeMaxFsSinkWantsThenCodecChange) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -1718,7 +1748,7 @@ TEST_P(VideoConduitCodecModeTest,
   });
   ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
 
-  rtc::VideoSinkWants wants;
+  webrtc::VideoSinkWants wants;
   wants.max_pixel_count = 3500 * 16 * 16;
   mVideoFrameConverter->AddOrUpdateSink(mVideoSink.get(), wants);
 
@@ -1734,7 +1764,7 @@ TEST_P(VideoConduitCodecModeTest,
   ASSERT_EQ(mVideoSink->mOnFrameCount, frame);
 
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(121, "VP9", EncodingConstraints());
+    VideoCodecConfig codecConfig(121, "VP9", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
   });
@@ -1755,7 +1785,7 @@ TEST_P(VideoConduitCodecModeTest,
 TEST_P(VideoConduitCodecModeTest, TestVideoEncodeMaxFsNegotiated) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -1808,7 +1838,7 @@ TEST_P(VideoConduitCodecModeTest, TestVideoEncodeMaxFsNegotiated) {
 TEST_P(VideoConduitCodecModeTest, TestVideoEncodeMaxWidthAndHeight) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodingConstraints.maxWidth = 1280;
     codecConfig.mEncodingConstraints.maxHeight = 720;
     codecConfig.mEncodings.emplace_back();
@@ -1846,7 +1876,7 @@ TEST_P(VideoConduitCodecModeTest, TestVideoEncodeMaxWidthAndHeight) {
 TEST_P(VideoConduitCodecModeTest, TestVideoEncodeScaleResolutionBy) {
   mControl.Update([&](auto& aControl) {
     aControl.mTransmitting = true;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodingConstraints.maxFs = 3600;
     auto& encoding = codecConfig.mEncodings.emplace_back();
     encoding.constraints.scaleDownBy = 2;
@@ -1882,7 +1912,7 @@ TEST_P(VideoConduitCodecModeTest, TestVideoEncodeScaleResolutionBy) {
 
 TEST_P(VideoConduitCodecModeTest, TestVideoEncodeSimulcastScaleResolutionBy) {
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     {
       auto& encoding = codecConfig.mEncodings.emplace_back();
       encoding.constraints.scaleDownBy = 2;
@@ -1938,7 +1968,7 @@ TEST_P(VideoConduitCodecModeTest,
     const auto& scales = scalesList[i];
     mControl.Update([&](auto& aControl) {
       aControl.mTransmitting = true;
-      VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+      VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
       for (const auto& scale : scales) {
         auto& encoding = codecConfig.mEncodings.emplace_back();
         encoding.constraints.scaleDownBy = scale;
@@ -2020,7 +2050,7 @@ TEST_P(VideoConduitCodecModeTest,
        {std::vector{200U}, std::vector{200U, 300U}, std::vector{300U, 200U}}) {
     mControl.Update([&](auto& aControl) {
       aControl.mTransmitting = true;
-      VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+      VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
       for (const auto& scale : scales) {
         auto& encoding = codecConfig.mEncodings.emplace_back();
         encoding.constraints.scaleDownBy = scale;
@@ -2115,7 +2145,7 @@ TEST_P(VideoConduitCodecModeTest, TestVideoEncodeResolutionAlignment) {
   for (const auto& scales : {std::vector{1U}, std::vector{1U, 9U}}) {
     mControl.Update([&](auto& aControl) {
       aControl.mTransmitting = true;
-      VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+      VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
       for (const auto& scale : scales) {
         auto& encoding = codecConfig.mEncodings.emplace_back();
         encoding.constraints.scaleDownBy = scale;
@@ -2154,7 +2184,7 @@ TEST_P(VideoConduitCodecModeTest, TestVideoEncodeResolutionAlignment) {
 
 TEST_F(VideoConduitTest, TestSettingRtpRtcpRsize) {
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     RtpRtcpConfig rtcpConf(webrtc::RtcpMode::kReducedSize, true);
 
@@ -2177,7 +2207,7 @@ TEST_F(VideoConduitTest, TestRemoteSsrcDefault) {
   mControl.Update([&](auto& aControl) {
     aControl.mRemoteSsrc = 0;
     aControl.mLocalSsrcs = {1};
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -2198,7 +2228,7 @@ TEST_F(VideoConduitTest, TestRemoteSsrcCollision) {
   mControl.Update([&](auto& aControl) {
     aControl.mRemoteSsrc = 1;
     aControl.mLocalSsrcs = {1};
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -2219,7 +2249,7 @@ TEST_F(VideoConduitTest, TestLocalSsrcDefault) {
   mControl.Update([&](auto& aControl) {
     aControl.mRemoteSsrc = 1;
     aControl.mLocalSsrcs = {};
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -2240,7 +2270,7 @@ TEST_F(VideoConduitTest, TestLocalSsrcCollision) {
   mControl.Update([&](auto& aControl) {
     aControl.mRemoteSsrc = 1;
     aControl.mLocalSsrcs = {2, 2};
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
@@ -2262,7 +2292,7 @@ TEST_F(VideoConduitTest, TestLocalSsrcUnorderedCollision) {
   mControl.Update([&](auto& aControl) {
     aControl.mRemoteSsrc = 1;
     aControl.mLocalSsrcs = {2, 3, 2};
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     for (int i = 0; i < 3; ++i) {
       codecConfig.mEncodings.emplace_back();
     }
@@ -2285,7 +2315,7 @@ TEST_F(VideoConduitTest, TestLocalAndRemoteSsrcCollision) {
   mControl.Update([&](auto& aControl) {
     aControl.mRemoteSsrc = 1;
     aControl.mLocalSsrcs = {1, 2, 2};
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     for (int i = 0; i < 3; ++i) {
       codecConfig.mEncodings.emplace_back();
     }
@@ -2327,7 +2357,7 @@ TEST_F(VideoConduitTest, TestExternalRemoteSsrcCollision) {
   EXPECT_TRUE(Call()->mVideoReceiveConfig);
   EXPECT_EQ(Call()->mVideoReceiveConfig->rtp.remote_ssrc, 1U);
 
-  mozilla::Unused << WaitFor(InvokeAsync(
+  (void)WaitFor(InvokeAsync(
       GetCurrentSerialEventTarget(), __func__, [wrapper = mCallWrapper] {
         wrapper->UnsetRemoteSSRC(1);
         return GenericPromise::CreateAndResolve(true, __func__);
@@ -2357,8 +2387,8 @@ TEST_F(VideoConduitTest, TestVideoConfigurationH264) {
       h264.profile_level_id = profileLevelId1;
       strncpy(h264.sprop_parameter_sets, sprop1,
               sizeof(h264.sprop_parameter_sets) - 1);
-      auto codecConfig =
-          VideoCodecConfig::CreateH264Config(97, EncodingConstraints(), h264);
+      auto codecConfig = VideoCodecConfig::CreateH264Config(
+          97, VideoEncodingConstraints(), h264);
       codecConfig.mEncodings.emplace_back();
       aControl.mVideoSendCodec = Some(codecConfig);
       aControl.mVideoSendRtpRtcpConfig =
@@ -2367,9 +2397,9 @@ TEST_F(VideoConduitTest, TestVideoConfigurationH264) {
 
     ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
     auto& params = Call()->mVideoSendEncoderConfig->video_format.parameters;
-    EXPECT_EQ(params[cricket::kH264FmtpPacketizationMode], "0");
-    EXPECT_EQ(params[cricket::kH264FmtpProfileLevelId], "42e01f");
-    EXPECT_EQ(params[cricket::kH264FmtpSpropParameterSets], sprop1);
+    EXPECT_EQ(params[webrtc::kH264FmtpPacketizationMode], "0");
+    EXPECT_EQ(params[webrtc::kH264FmtpProfileLevelId], "42e01f");
+    EXPECT_EQ(params[std::string(webrtc::kH264FmtpSpropParameterSets)], sprop1);
   }
 
   {
@@ -2379,17 +2409,17 @@ TEST_F(VideoConduitTest, TestVideoConfigurationH264) {
       h264.profile_level_id = profileLevelId2;
       strncpy(h264.sprop_parameter_sets, sprop2,
               sizeof(h264.sprop_parameter_sets) - 1);
-      auto codecConfig =
-          VideoCodecConfig::CreateH264Config(126, EncodingConstraints(), h264);
+      auto codecConfig = VideoCodecConfig::CreateH264Config(
+          126, VideoEncodingConstraints(), h264);
       codecConfig.mEncodings.emplace_back();
       aControl.mVideoSendCodec = Some(codecConfig);
     });
 
     ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
     auto& params = Call()->mVideoSendEncoderConfig->video_format.parameters;
-    EXPECT_EQ(params[cricket::kH264FmtpPacketizationMode], "1");
-    EXPECT_EQ(params[cricket::kH264FmtpProfileLevelId], "64000c");
-    EXPECT_EQ(params[cricket::kH264FmtpSpropParameterSets], sprop2);
+    EXPECT_EQ(params[webrtc::kH264FmtpPacketizationMode], "1");
+    EXPECT_EQ(params[webrtc::kH264FmtpProfileLevelId], "64000c");
+    EXPECT_EQ(params[std::string(webrtc::kH264FmtpSpropParameterSets)], sprop2);
   }
 }
 
@@ -2404,7 +2434,7 @@ TEST_F(VideoConduitTest, TestVideoConfigurationAV1) {
       av1Config.mLevelIdx = Some(4);
       av1Config.mTier = Some(1);
       auto codecConfig = VideoCodecConfig::CreateAv1Config(
-          99, EncodingConstraints(), av1Config);
+          99, VideoEncodingConstraints(), av1Config);
       codecConfig.mEncodings.emplace_back();
       aControl.mVideoSendCodec = Some(codecConfig);
       aControl.mVideoSendRtpRtcpConfig =
@@ -2413,9 +2443,9 @@ TEST_F(VideoConduitTest, TestVideoConfigurationAV1) {
 
     ASSERT_TRUE(Call()->mVideoSendEncoderConfig);
     auto& params = Call()->mVideoSendEncoderConfig->video_format.parameters;
-    EXPECT_EQ(params[cricket::kAv1FmtpProfile], "2");
-    EXPECT_EQ(params[cricket::kAv1FmtpLevelIdx], "4");
-    EXPECT_EQ(params[cricket::kAv1FmtpTier], "1");
+    EXPECT_EQ(params[std::string(webrtc::kAv1FmtpProfile)], "2");
+    EXPECT_EQ(params[std::string(webrtc::kAv1FmtpLevelIdx)], "4");
+    EXPECT_EQ(params[std::string(webrtc::kAv1FmtpTier)], "1");
   }
 }
 
@@ -2428,7 +2458,7 @@ TEST_F(VideoConduitTest, TestDegradationPreferences) {
   mControl.Update([&](auto& aControl) {
     aControl.mVideoDegradationPreference =
         webrtc::DegradationPreference::MAINTAIN_RESOLUTION;
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoSendCodec = Some(codecConfig);
     aControl.mVideoSendRtpRtcpConfig =
@@ -2550,7 +2580,7 @@ TEST_F(VideoConduitTest, TestDegradationPreferences) {
 TEST_F(VideoConduitTest, TestRemoteRtxSsrc) {
   // Verify RTX is configured.
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     codecConfig.mRTXPayloadType = 121;
     aControl.mVideoRecvCodecs = {codecConfig};
@@ -2569,8 +2599,8 @@ TEST_F(VideoConduitTest, TestRemoteRtxSsrc) {
   // Bug 1956426 verify, if the recv codecs change but signaled SSRC has not,
   // that RTX is still configured.
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
-    VideoCodecConfig codecConfig264(96, "H264", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
+    VideoCodecConfig codecConfig264(96, "H264", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     codecConfig.mRTXPayloadType = 121;
     codecConfig264.mRTXPayloadType = 97;
@@ -2589,8 +2619,8 @@ TEST_F(VideoConduitTest, TestRemoteRtxSsrc) {
 
   // Verify, if there is no RTX PT, we will unset the SSRC.
   mControl.Update([&](auto& aControl) {
-    VideoCodecConfig codecConfig(120, "VP8", EncodingConstraints());
-    VideoCodecConfig codecConfig264(96, "H264", EncodingConstraints());
+    VideoCodecConfig codecConfig(120, "VP8", VideoEncodingConstraints());
+    VideoCodecConfig codecConfig264(96, "H264", VideoEncodingConstraints());
     codecConfig.mEncodings.emplace_back();
     aControl.mVideoRecvCodecs = {codecConfig, codecConfig264};
     aControl.mVideoRecvRtpRtcpConfig =

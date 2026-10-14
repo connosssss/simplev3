@@ -93,13 +93,51 @@ async function nextTest()
   popup.openPopupAtScreen(100, y, false);
 }
 
+async function assertItemsOcclusionState(popup) {
+  info("Checking intersection state");
+  let items = popup.querySelectorAll("menuitem");
+  isnot(items.length, 0, "Should have items");
+  let {promise, resolve} = Promise.withResolvers();
+  let io = new IntersectionObserver(function(entries) {
+    resolve(entries)
+  });
+  for (let item of items) {
+    io.observe(item);
+  }
+  let entries = await promise;
+  io.disconnect();
+  is(entries.length, items.length, "Should have an entry per element");
+
+  let scrollbox = popup.scrollBox.scrollbox;
+  let scrollBoxRect = scrollbox.getBoundingClientRect();
+  let borderTop = parseFloat(getComputedStyle(scrollbox).borderTop);
+  let borderBottom = parseFloat(getComputedStyle(scrollbox).borderBottom);
+
+  for (let entry of entries) {
+    let itemRect = entry.boundingClientRect;
+    // Importantly, we don't consider the page's viewport.
+    let shouldIntersect = itemRect.bottom >= scrollBoxRect.top + borderTop && itemRect.top <= scrollBoxRect.bottom - borderBottom;
+    is(entry.isIntersecting, shouldIntersect, `${entry.target.outerHTML} intersection state matches`);
+  }
+}
+
 async function popupShown() {
   // This is needed for overflow events to run.
   await nextFrame();
   startTest();
 }
 
-function startTest()
+// The menu is anchored at the vertical center of the screen: it opens downward
+// or flips upward when it wouldn't fit below. Accept either.
+function isAnchoredAtScreenCenter(rect, marginTop, marginBottom, label) {
+  var anchor = Math.floor(screen.height / 2);
+  var top = Math.round(rect.top - marginTop) + gScreenY;
+  var bottom = Math.round(rect.bottom - marginBottom) + gScreenY;
+  ok(top == anchor || bottom == anchor,
+     `${label} top (anchor=${anchor}, top=${top}, bottom=${bottom})`);
+}
+
+async function startTest()
 {
   if (gTests[gTestIndex] == "menu movement")
     return testPopupMovement();
@@ -114,13 +152,12 @@ function startTest()
   var scrollbox = popup.scrollBox.scrollbox;
   var expectedScrollPos = 0;
 
+  await assertItemsOcclusionState(popup);
+
   info(`${gTests[gTestIndex]}: ${JSON.stringify(rect)} | ${screen.width}x${screen.height} | ${gScreenY}`);
   if (gTestIndex == 0) {
-    // the popup should be in the center of the screen
-    // note that if the height is odd, the y-offset will have been rounded
-    // down when we pass the fractional value to openPopupAtScreen above.
-    is(Math.round(rect.top - marginTop) + gScreenY, Math.floor(screen.height / 2),
-                              gTests[gTestIndex] + " top");
+    // the popup should be centered vertically on the screen
+    isAnchoredAtScreenCenter(rect, marginTop, marginBottom, gTests[gTestIndex]);
     ok(Math.round(rect.bottom - marginBottom) + gScreenY < screen.height,
                   gTests[gTestIndex] + " bottom");
     ok(!gOverflowed && !gUnderflowed, gTests[gTestIndex] + " overflow")
@@ -163,10 +200,7 @@ function startTest()
     }
   }
   else if (gTestIndex == 4) {
-    // note that if the height is odd, the y-offset will have been rounded
-    // down when we pass the fractional value to openPopupAtScreen above.
-    is(Math.round(rect.top - marginTop) + gScreenY, Math.floor(screen.height / 2),
-                              gTests[gTestIndex] + " top");
+    isAnchoredAtScreenCenter(rect, marginTop, marginBottom, gTests[gTestIndex]);
     ok(Math.round(rect.bottom) + gScreenY < screen.height,
                                 gTests[gTestIndex] + " bottom");
     ok(!gOverflowed && gUnderflowed, gTests[gTestIndex] + " overflow");
@@ -413,7 +447,8 @@ function platformIsMac()
 
 function canOverlapOSChrome()
 {
-  return navigator.platform.startsWith("Win");
+  // Bug 1251981: no platform allows popups to overlap OS chrome anymore
+  return false;
 }
 
 window.arguments[0].SimpleTest.waitForFocus(runTests, window);

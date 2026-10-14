@@ -16,6 +16,15 @@ $(error Do not include functions.mk twice!)
 endif
 INCLUDED_FUNCTIONS_MK = 1
 
+ifdef MACH
+ifndef NO_BUILDSTATUS_MESSAGES
+define BUILDSTATUS
+@echo 'BUILDSTATUS@$(relativesrcdir) $1'
+
+endef
+endif
+endif
+
 core_abspath = $(error core_abspath is unsupported, use $$(abspath) instead)
 core_realpath = $(error core_realpath is unsupported)
 
@@ -33,9 +42,14 @@ core_winabspath = $(error core_winabspath is unsupported)
 #   libs::
 #       $(call py_action,purge_manifests foo.manifest,_build_manifests/purge/foo.manifest)
 # This optional name will be displayed in build profiles.
+#
+# The optional third argument changes the working directory before running.
+#
+# The optional fourth argument is a command wrapper (e.g. $(CCACHE)) that will
+# be prepended to the Python invocation.
 define py_action
 $(call BUILDSTATUS,START_$(firstword $(1)) $(or $(word 2,$(1)),$(2)))
-$(if $(3),cd $(3) && )$(PYTHON3) -m mozbuild.action.$(firstword $(1)) $(2)
+$(if $(3),cd $(3) && )$(4) $(PYTHON3) -m mozbuild.action.$(firstword $(1)) $(2)
 $(call BUILDSTATUS,END_$(firstword $(1)) $(or $(word 2,$(1)),$(2)))
 
 endef

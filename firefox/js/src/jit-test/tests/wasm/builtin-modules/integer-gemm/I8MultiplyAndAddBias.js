@@ -14,23 +14,23 @@ function testInvalidSize() {
 
   // rowsA: 0
   invalidSize = 0;
-  assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, VALID.inputB, VALID.scaleB, VALID.zeroPointB, VALID.inputBiasPrepared, VALID.unquantMultiplier, invalidSize, VALID.width, VALID.colsB, VALID.output), WebAssembly.RuntimeError, /unreachable/);
+  assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, VALID.inputB, VALID.scaleB, VALID.zeroPointB, VALID.inputBiasPrepared, VALID.unquantMultiplier, invalidSize, VALID.width, VALID.colsB, VALID.output), WebAssembly.RuntimeError, /index out of bounds/);
 
   // width: 0
   invalidSize = 0;
-  assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, VALID.inputB, VALID.scaleB, VALID.zeroPointB, VALID.inputBiasPrepared, VALID.unquantMultiplier, VALID.rowsA, invalidSize, VALID.colsB, VALID.output), WebAssembly.RuntimeError, /unreachable/);
+  assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, VALID.inputB, VALID.scaleB, VALID.zeroPointB, VALID.inputBiasPrepared, VALID.unquantMultiplier, VALID.rowsA, invalidSize, VALID.colsB, VALID.output), WebAssembly.RuntimeError, /index out of bounds/);
 
   // width: Not an integral multiple of ROWS_B_MULTIPLIER
   invalidSize = ROWS_B_MULTIPLIER + 1;
-  assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, VALID.inputB, VALID.scaleB, VALID.zeroPointB, VALID.inputBiasPrepared, VALID.unquantMultiplier, VALID.rowsA, invalidSize, VALID.colsB, VALID.output), WebAssembly.RuntimeError, /unreachable/);
+  assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, VALID.inputB, VALID.scaleB, VALID.zeroPointB, VALID.inputBiasPrepared, VALID.unquantMultiplier, VALID.rowsA, invalidSize, VALID.colsB, VALID.output), WebAssembly.RuntimeError, /index out of bounds/);
 
   // colB: 0
   invalidSize = 0;
-  assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, VALID.inputB, VALID.scaleB, VALID.zeroPointB, VALID.inputBiasPrepared, VALID.unquantMultiplier, VALID.rowsA, VALID.width, invalidSize, VALID.output), WebAssembly.RuntimeError, /unreachable/);
+  assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, VALID.inputB, VALID.scaleB, VALID.zeroPointB, VALID.inputBiasPrepared, VALID.unquantMultiplier, VALID.rowsA, VALID.width, invalidSize, VALID.output), WebAssembly.RuntimeError, /index out of bounds/);
 
   // colB: Not an integral multiple of COLUMNS_B_MULTIPLIER
   invalidSize = COLUMNS_B_MULTIPLIER + 1;
-  assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, VALID.inputB, VALID.scaleB, VALID.zeroPointB, VALID.inputBiasPrepared, VALID.unquantMultiplier, VALID.rowsA, VALID.width, invalidSize, VALID.output), WebAssembly.RuntimeError, /unreachable/);
+  assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, VALID.inputB, VALID.scaleB, VALID.zeroPointB, VALID.inputBiasPrepared, VALID.unquantMultiplier, VALID.rowsA, VALID.width, invalidSize, VALID.output), WebAssembly.RuntimeError, /index out of bounds/);
 }
 
 function testInvalidAlignment() {
@@ -41,6 +41,12 @@ function testInvalidAlignment() {
 
   // inputB: Not an integral multiple of ARRAY_ALIGNMENT
   assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, invalidAlignment, VALID.scaleB, VALID.zeroPointB, VALID.inputBiasPrepared, VALID.unquantMultiplier, VALID.rowsA, VALID.width, VALID.colsB, VALID.output), WebAssembly.RuntimeError, /index out of bounds/);
+
+  // inputBiasPrepared: Not an integral multiple of ARRAY_ALIGNMENT (read via aligned SIMD load)
+  assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, VALID.inputB, VALID.scaleB, VALID.zeroPointB, invalidAlignment, VALID.unquantMultiplier, VALID.rowsA, VALID.width, VALID.colsB, VALID.output), WebAssembly.RuntimeError, /index out of bounds/);
+
+  // output: Not an integral multiple of ARRAY_ALIGNMENT (written via aligned SIMD store)
+  assertErrorMessage(() => int8_multiply_and_add_bias(VALID.inputA, VALID.scaleA, VALID.zeroPointA, VALID.inputB, VALID.scaleB, VALID.zeroPointB, VALID.inputBiasPrepared, VALID.unquantMultiplier, VALID.rowsA, VALID.width, VALID.colsB, invalidAlignment), WebAssembly.RuntimeError, /index out of bounds/);
 }
 
 function testOutOfBounds() {

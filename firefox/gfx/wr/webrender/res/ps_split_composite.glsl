@@ -4,7 +4,7 @@
 
 #define WR_FEATURE_TEXTURE_2D
 
-#include shared,prim_shared
+#include shared,prim_shared,image_source
 
 // interpolated UV coordinates to sample.
 varying highp vec2 vUv;
@@ -21,17 +21,14 @@ struct SplitGeometry {
 };
 
 SplitGeometry fetch_split_geometry(int address) {
-    ivec2 uv = get_gpu_cache_uv(address);
-
-    vec4 data0 = TEXEL_FETCH(sGpuCache, uv, 0, ivec2(0, 0));
-    vec4 data1 = TEXEL_FETCH(sGpuCache, uv, 0, ivec2(1, 0));
+    vec4[2] data = fetch_from_gpu_buffer_2f(address);
 
     SplitGeometry geo;
     geo.local = vec2[4](
-        data0.xy,
-        data0.zw,
-        data1.xy,
-        data1.zw
+        data[0].xy,
+        data[0].zw,
+        data[1].xy,
+        data[1].zw
     );
 
     return geo;
@@ -76,16 +73,16 @@ void main(void) {
     vec2 local_pos = bilerp(geometry.local[0], geometry.local[1],
                             geometry.local[3], geometry.local[2],
                             aPosition.y, aPosition.x);
-    vec4 world_pos = transform.m * vec4(local_pos, 0.0, 1.0);
+    vec4 raster_pos = transform.m * vec4(local_pos, 0.0, 1.0);
 
     vec4 final_pos = vec4(
-        dest_origin * world_pos.w + world_pos.xy * dest_task.device_pixel_scale,
-        world_pos.w * ci.z,
-        world_pos.w
+        dest_origin * raster_pos.w + raster_pos.xy * dest_task.device_pixel_scale,
+        raster_pos.w * ci.z,
+        raster_pos.w
     );
 
     write_clip(
-        world_pos,
+        raster_pos,
         clip_area,
         dest_task
     );
@@ -104,10 +101,10 @@ void main(void) {
         max_uv - vec2(0.5)
     ) / texture_size.xyxy;
 
-    vec2 f = (local_pos - ph.local_rect.p0) / rect_size(ph.local_rect);
+    vec2 f = (local_pos - ph.pattern_rect.p0) / rect_size(ph.pattern_rect);
     f = get_image_quad_uv(ph.user_data.x, f);
     vec2 uv = mix(uv0, uv1, f);
-    float perspective_interpolate = float(ph.user_data.y);
+    float perspective_interpolate = 1.0;
 
     vUv = uv / texture_size * mix(gl_Position.w, 1.0, perspective_interpolate);
     vPerspective.x = perspective_interpolate;

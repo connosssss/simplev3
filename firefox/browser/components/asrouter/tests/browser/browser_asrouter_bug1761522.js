@@ -39,17 +39,18 @@ async function serveRemoteSettings() {
       JSON.stringify({
         capabilities: {
           attachments: {
-            base_url: `${baseURL}cdn`,
+            base_url: `${baseURL}cdn/`,
           },
         },
       })
     );
   });
 
-  // Serve the ms-language-packs record for cfr-v1-ja-JP-mac, pointing to an attachment.
+  // Serve the ms-language-packs records, with cfr-v1-ja-JP-mac pointing to an attachment.
   server.registerPathHandler(
-    "/v1/buckets/main/collections/ms-language-packs/records/cfr-v1-ja-JP-mac",
+    "/v1/buckets/main/collections/ms-language-packs/changeset",
     (request, response) => {
+      const now = Date.now();
       response.setStatusLine(null, 200, "OK");
       response.setHeader(
         "Content-type",
@@ -58,17 +59,20 @@ async function serveRemoteSettings() {
       );
       response.write(
         JSON.stringify({
-          permissions: {},
-          data: {
-            attachment: {
-              hash: "f9aead2693c4ff95c2764df72b43fdf5b3490ed06414588843848f991136040b",
-              size: attachment.buffer.byteLength,
-              filename: "asrouter.ftl",
-              location: `main-workspace/ms-language-packs/${attachmentUuid}`,
+          metadata: {},
+          timestamp: now,
+          changes: [
+            {
+              attachment: {
+                hash: "f9aead2693c4ff95c2764df72b43fdf5b3490ed06414588843848f991136040b",
+                size: attachment.buffer.byteLength,
+                filename: "asrouter.ftl",
+                location: `main-workspace/ms-language-packs/${attachmentUuid}`,
+              },
+              id: "cfr-v1-ja-JP-mac",
+              last_modified: now,
             },
-            id: "cfr-v1-ja-JP-mac",
-            last_modified: Date.now(),
-          },
+          ],
         })
       );
     }
@@ -120,7 +124,7 @@ async function serveRemoteSettings() {
   );
 
   const message = await PanelTestProvider.getMessages().then(msgs =>
-    msgs.find(msg => msg.id === "PERSONALIZED_CFR_MESSAGE")
+    msgs.find(msg => msg.id === "INFOBAR_ACTION_86")
   );
 
   // Serve the "changed" cfr entries. If there are no changes, then ASRouter
@@ -179,15 +183,23 @@ add_task(async function test_asrouter() {
     ],
   });
   const localeService = Services.locale;
-  RemoteSettings("cfr").verifySignature = false;
+  const cfrRSClient = RemoteSettings("cfr");
+  const msgRSClient = RemoteSettings("ms-language-packs");
+  cfrRSClient.verifySignature = false;
+  msgRSClient.verifySignature = false;
 
   registerCleanupFunction(async () => {
-    RemoteSettings("cfr").verifySignature = true;
+    cfrRSClient.verifySignature = true;
+    msgRSClient.verifySignature = true;
+    await cfrRSClient.db.clear();
+    await msgRSClient.db.clear();
+
     Services.locale = localeService;
     await SpecialPowers.popPrefEnv();
     await stop();
     sandbox.restore();
     await IOUtils.remove(MS_LANGUAGE_PACKS_DIR, { recursive: true });
+    Services.prefs.clearUserPref("services.settings.base_attachments_url");
     RemoteL10n.reloadL10n();
   });
 

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,9 +9,10 @@
 #include "mozilla/dom/ClientIPCTypes.h"
 #include "mozilla/dom/ClientOpenWindowUtils.h"
 #include "mozilla/dom/DOMTypes.h"
-#include "mozilla/dom/Promise.h"
 #include "mozilla/dom/Promise-inl.h"
+#include "mozilla/dom/Promise.h"
 #include "mozilla/dom/ServiceWorkerManager.h"
+#include "mozilla/dom/ServiceWorkerUtils.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "xpcprivate.h"
 
@@ -22,6 +21,25 @@ namespace mozilla::dom::notification {
 nsresult RespondOnClick(nsIPrincipal* aPrincipal, const nsAString& aScope,
                         const IPCNotification& aNotification,
                         const nsAString& aActionName) {
+  if (StaticPrefs::dom_webnotifications_navigate_enabled()) {
+    nsIURI* navigate = nullptr;
+    if (aActionName.IsEmpty()) {
+      navigate = aNotification.options().navigate();
+    } else {
+      for (const IPCNotificationAction& action :
+           aNotification.options().actions()) {
+        if (action.name() == aActionName) {
+          navigate = action.navigate();
+          break;
+        }
+      }
+    }
+    if (navigate) {
+      nsAutoCString spec;
+      navigate->GetSpec(spec);
+      return OpenWindowFor(aPrincipal, spec);
+    }
+  }
   RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
   if (!swm) {
     return NS_ERROR_FAILURE;
@@ -41,16 +59,25 @@ nsresult RespondOnClick(nsIPrincipal* aPrincipal, const nsAString& aScope,
   return NS_OK;
 }
 
-nsresult OpenWindowFor(nsIPrincipal* aPrincipal) {
+nsresult OpenWindowFor(nsIPrincipal* aPrincipal, const nsCString& aURL) {
   nsAutoCString origin;
   MOZ_TRY(aPrincipal->GetOriginNoSuffix(origin));
+  if (!aPrincipal->GetIsOriginPotentiallyTrustworthy()) {
+    // We expect only secure context origins for web notifications.
+    return NS_ERROR_INVALID_ARG;
+  }
 
   // XXX: We should be able to just pass nsIPrincipal directly
   mozilla::ipc::PrincipalInfo info{};
   MOZ_TRY(PrincipalToPrincipalInfo(aPrincipal, &info));
 
-  (void)ClientOpenWindow(nullptr,
-                         ClientOpenWindowArgs(info, Nothing(), ""_ns, origin));
+  NS_DispatchToCurrentThread(NS_NewRunnableFunction(
+      "OpenWindowFor",
+      [info = std::move(info), url = aURL, origin = std::move(origin)]()
+          MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA {
+            (void)ClientOpenWindow(
+                nullptr, ClientOpenWindowArgs(info, Nothing(), url, origin));
+          }));
   return NS_OK;
 }
 
@@ -84,13 +111,6 @@ NS_IMETHODIMP NotificationHandler::RespondOnClick(
 
   nsAutoCString origin;
   MOZ_TRY(aPrincipal->GetOrigin(origin));
-  if (!StringBeginsWith(origin, "https://"_ns)) {
-    // We expect only secure context origins for web notifications.
-    // (Simple https check is sufficient for this case, as we do not expect
-    // chrome script nor webextensions to hit this path as they are expected to
-    // use different APIs that do not involve service workers.)
-    return NS_ERROR_INVALID_ARG;
-  }
 
   bool isPrivate = aPrincipal->GetIsInPrivateBrowsing();
   nsCOMPtr<nsINotificationStorage> storage = GetNotificationStorage(isPrivate);
@@ -133,6 +153,14 @@ NS_IMETHODIMP NotificationHandler::RespondOnClick(
           nsAutoString scope;
           MOZ_TRY(entry->GetServiceWorkerRegistrationScope(scope));
 
+          nsCOMPtr<nsIURI> scopeURI;
+          MOZ_TRY(NS_NewURI(getter_AddRefs(scopeURI), scope));
+
+          ServiceWorkerScopeIsValid(principal, scopeURI, aRv);
+          if (aRv.Failed()) {
+            return NS_OK;
+          }
+
           IPCNotification notification =
               MOZ_TRY(NotificationStorageEntry::ToIPC(*entry));
 
@@ -158,7 +186,9 @@ NS_IMETHODIMP NotificationHandler::RespondOnClick(
         return nullptr;
       }));
 
-  result.forget(aResult);
+  if (aResult) {
+    result.forget(aResult);
+  }
 
   return NS_OK;
 }

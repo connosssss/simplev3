@@ -4,10 +4,9 @@
 
 package org.mozilla.fenix.webcompat.middleware
 
-import mozilla.components.support.test.ext.joinBlocking
+import kotlin.test.assertNotNull
 import mozilla.components.support.test.robolectric.testContext
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
@@ -21,15 +20,14 @@ import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class WebCompatReporterTelemetryMiddlewareTest {
-    @get:Rule
-    val gleanTestRule = FenixGleanTestRule(testContext)
+    @get:Rule val gleanTestRule = FenixGleanTestRule(testContext)
 
     @Test
     fun `WHEN dropdown value for reason has changed THEN record reason dropdown telemetry`() {
         val store = createStore()
         assertNull(Webcompatreporting.reasonDropdown.testGetValue())
 
-        store.dispatch(WebCompatReporterAction.ReasonChanged(WebCompatReporterState.BrokenSiteReason.Media)).joinBlocking()
+        store.dispatch(WebCompatReporterAction.ReasonChanged(WebCompatReporterState.BrokenSiteReason.Media))
 
         assertNotNull(Webcompatreporting.reasonDropdown.testGetValue())
         val snapshot = Webcompatreporting.reasonDropdown.testGetValue()!!
@@ -37,27 +35,39 @@ class WebCompatReporterTelemetryMiddlewareTest {
     }
 
     @Test
-    fun `WHEN send more info button is clicked THEN record send more info button telemetry`() {
-        val store = createStore()
-        assertNull(Webcompatreporting.sendMoreInfo.testGetValue())
-
-        store.dispatch(WebCompatReporterAction.SendMoreInfoClicked).joinBlocking()
-
-        val snapshot = Webcompatreporting.sendMoreInfo.testGetValue()!!
-        assertEquals(1, snapshot.size)
-        assertEquals("send_more_info", snapshot.single().name)
-    }
-
-    @Test
     fun `WHEN send report button is clicked THEN record send report button telemetry`() {
         val store = createStore()
         assertNull(Webcompatreporting.send.testGetValue())
 
-        store.dispatch(WebCompatReporterAction.SendReportClicked).joinBlocking()
+        store.dispatch(WebCompatReporterAction.SendReportClicked)
 
         val snapshot = Webcompatreporting.send.testGetValue()!!
         assertEquals(1, snapshot.size)
         assertEquals("send", snapshot.single().name)
+    }
+
+    @Test
+    fun `WHEN send report button is clicked and ETP checkbox is unchecked THEN record telemetry`() {
+        val store = createStore()
+        assertNull(Webcompatreporting.send.testGetValue())
+
+        store.dispatch(WebCompatReporterAction.SendReportClicked)
+
+        val snapshot = Webcompatreporting.send.testGetValue()!!
+        assertEquals(1, snapshot.size)
+        assertEquals("send", snapshot.single().name)
+        assertEquals("false", snapshot.single().extra?.get("sent_with_blocked_trackers"))
+    }
+
+    @Test
+    fun `WHEN send report button is clicked and checkbox is checked THEN record telemetry`() {
+        val store = createStore()
+        store.dispatch(WebCompatReporterAction.IncludeEtpBlockedUrlsChanged(true))
+
+        store.dispatch(WebCompatReporterAction.SendReportClicked)
+
+        val snapshot = Webcompatreporting.send.testGetValue()!!.single()
+        assertEquals("true", snapshot.extra?.get("sent_with_blocked_trackers"))
     }
 
     @Test
@@ -72,12 +82,9 @@ class WebCompatReporterTelemetryMiddlewareTest {
         assertEquals("learn_more", snapshot.single().name)
     }
 
-    private fun createStore(
-        webCompatReporterState: WebCompatReporterState = WebCompatReporterState(),
-    ) = WebCompatReporterStore(
-        initialState = webCompatReporterState,
-        middleware = listOf(
-            WebCompatReporterTelemetryMiddleware(),
-        ),
-    )
+    private fun createStore(webCompatReporterState: WebCompatReporterState = WebCompatReporterState()) =
+        WebCompatReporterStore(
+            initialState = webCompatReporterState,
+            middleware = listOf(WebCompatReporterTelemetryMiddleware()),
+        )
 }

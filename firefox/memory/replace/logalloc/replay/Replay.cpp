@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,10 +13,8 @@ typedef intptr_t ssize_t;
 #  include <sys/mman.h>
 #  include <unistd.h>
 #endif
-#ifdef XP_LINUX
-#  include <fcntl.h>
-#  include <stdlib.h>
-#endif
+#include <fcntl.h>
+#include <stdlib.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -287,14 +283,22 @@ class FdReader {
         mData(&mRawBuf, 0),
         mBuf(&mRawBuf, sizeof(mRawBuf)) {
     memcpy(mRawBuf, aOther.mRawBuf, sizeof(mRawBuf));
-    aOther.mFd = -1;
-    aOther.mNeedClose = false;
-    aOther.mData = Buffer();
-    aOther.mBuf = Buffer();
+    aOther.forget();
   }
 
   FdReader& operator=(const FdReader&) = delete;
   FdReader(const FdReader&) = delete;
+
+  FdReader& operator=(FdReader&& aOther) {
+    mFd = aOther.mFd;
+    mNeedClose = aOther.mNeedClose;
+    mData = aOther.mData;
+    mBuf = aOther.mBuf;
+
+    aOther.forget();
+
+    return *this;
+  }
 
   ~FdReader() {
     if (mNeedClose) {
@@ -302,6 +306,15 @@ class FdReader {
     }
   }
 
+ private:
+  void forget() {
+    mFd = -1;
+    mNeedClose = false;
+    mData = Buffer();
+    mBuf = Buffer();
+  }
+
+ public:
   /* Read a line from the file descriptor and returns it as a Buffer instance */
   Buffer ReadLine() {
     while (true) {
@@ -380,17 +393,6 @@ MOZ_BEGIN_EXTERN_C
 #define MALLOC_DECL(name, return_type, ...) return_type name(__VA_ARGS__);
 #define MALLOC_FUNCS MALLOC_FUNCS_JEMALLOC
 #include "malloc_decls.h"
-
-#ifdef ANDROID
-
-/* mozjemalloc and jemalloc use pthread_atfork, which Android doesn't have.
- * While gecko has one in libmozglue, the replay program can't use that.
- * Since we're not going to fork anyways, make it a dummy function. */
-int pthread_atfork(void (*aPrepare)(void), void (*aParent)(void),
-                   void (*aChild)(void)) {
-  return 0;
-}
-#endif
 
 MOZ_END_EXTERN_C
 
@@ -1081,7 +1083,7 @@ MOZ_RUNINIT static Replay replay;
 
 int main(int argc, const char* argv[]) {
   size_t first_pid = 0;
-  FdReader reader(0);
+  const char* filename = nullptr;
 
   for (int i = 1; i < argc; i++) {
     const char* option = argv[i];
@@ -1091,13 +1093,30 @@ int main(int argc, const char* argv[]) {
     } else if (strcmp(option, "-c") == 0) {
       // Touch memory as we allocate it.
       replay.enableMemset();
+    } else if (!filename) {
+      // Assume the only other possiability is a single file name.
+      filename = option;
     } else {
       fprintf(stderr, "Unknown command line option: %s\n", option);
       return EXIT_FAILURE;
     }
   }
 
-  /* Read log from stdin and dispatch function calls to the Replay instance.
+  FdReader reader(0);
+  if (filename) {
+#ifdef XP_WIN
+    int fd = _open(filename, _O_RDONLY);
+#else
+    int fd = open(filename, O_RDONLY);
+#endif
+    if (fd < 0) {
+      perror(filename);
+      exit(1);
+    }
+    reader = FdReader(fd, true);
+  }
+
+  /* Read log from reader and dispatch function calls to the Replay instance.
    * The log format is essentially:
    *   <pid> <tid> <function>([<args>])[=<result>]
    * <args> is a comma separated list of arguments.

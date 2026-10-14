@@ -5,8 +5,11 @@
 add_task(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
-      ["browser.search.separatePrivateDefault", true],
-      ["browser.search.separatePrivateDefault.ui.enabled", true],
+      ["browser.search.separatePrivateDefault.enabled", true],
+      ["browser.search.separatePrivateDefault.featureGate", true],
+      // Right-clicking text selects the word under the cursor on macOS, which
+      // would add a selection to the cases here that expect none.
+      ["ui.mouse.right_click.select_under_cursor", false],
     ],
   });
 
@@ -20,9 +23,9 @@ add_task(async function () {
     "contentAreaContextMenu"
   );
 
-  const originalPrivateDefault = await Services.search.getDefaultPrivate();
+  const originalPrivateDefault = await SearchService.getDefaultPrivate();
   let otherPrivateDefault;
-  for (let engine of await Services.search.getVisibleEngines()) {
+  for (let engine of await SearchService.getVisibleEngines()) {
     if (engine.name != originalPrivateDefault.name) {
       otherPrivateDefault = engine;
       break;
@@ -138,9 +141,9 @@ add_task(async function () {
 
   for (let test of tests) {
     if (test.changePrivateDefaultEngine) {
-      await Services.search.setDefaultPrivate(
+      await SearchService.setDefaultPrivate(
         otherPrivateDefault,
-        Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+        SearchService.CHANGE_REASON.UNKNOWN
       );
     }
 
@@ -218,9 +221,9 @@ add_task(async function () {
     await popupHiddenPromise;
 
     if (test.changePrivateDefaultEngine) {
-      await Services.search.setDefaultPrivate(
+      await SearchService.setDefaultPrivate(
         originalPrivateDefault,
-        Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+        SearchService.CHANGE_REASON.UNKNOWN
       );
     }
   }

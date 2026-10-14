@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -24,6 +22,8 @@
 #    include "jit/arm/disasm/Disasm-arm.h"  // js::jit::disasm::*
 #  elif defined(JS_CODEGEN_RISCV64)
 #    include "jit/riscv64/disasm/Disasm-riscv64.h"  // js::jit::disasm::*
+#  elif defined(JS_CODEGEN_LOONG64)
+#    include "jit/loong64/disasm/Disasm-loong64.h"  // js::jit::disasm::*
 #  endif
 #endif
 
@@ -70,9 +70,21 @@ void Disassemble(uint8_t* code, size_t length, InstrCallback callback) {
   uint8_t* end = code + length;
 
   while (instr < end) {
-    decoder.Decode(reinterpret_cast<vixl::Instruction*>(instr));
+    auto* ins = reinterpret_cast<vixl::Instruction*>(instr);
 
-    instr += sizeof(vixl::Instr);
+    decoder.Decode(ins);
+
+    // Check for constant pool.
+    const auto* skipped = ins->skipPool();
+    if (ins == skipped) {
+      // No constant pool, proceed to the next instruction.
+      instr += sizeof(vixl::Instr);
+    } else {
+      // Skip over constant pool entries, because they don't encode valid
+      // instructions.
+      callback("*** constant pool ***");
+      instr = const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(skipped));
+    }
   }
 }
 
@@ -113,16 +125,38 @@ void Disassemble(uint8_t* code, size_t length, InstrCallback callback) {
   uint8_t* end = code + length;
 
   while (instr < end) {
-    EmbeddedVector<char, ReasonableBufferSize> buffer;
+    EmbeddedVector<char, disasm::ReasonableBufferSize> buffer;
     buffer[0] = '\0';
     uint8_t* next_instr = instr + d.InstructionDecode(buffer, instr);
 
-    JS::UniqueChars formatted =
-        JS_smprintf("0x%p  %08x  %s", instr, *reinterpret_cast<int32_t*>(instr),
-                    buffer.start());
+    JS::UniqueChars formatted = JS_smprintf("0x%p  %s", instr, buffer.start());
     callback(formatted.get());
 
     instr = next_instr;
+  }
+}
+
+#elif defined(JS_JITSPEW) && defined(JS_CODEGEN_LOONG64)
+
+bool HasDisassembler() { return true; }
+
+void Disassemble(uint8_t* code, size_t length, InstrCallback callback) {
+  disasm::NameConverter converter;
+  disasm::Disassembler disassembler(converter);
+
+  uint8_t* instr = code;
+  uint8_t* end = code + length;
+
+  while (instr < end) {
+    char buffer[disasm::ReasonableBufferSize];
+    buffer[0] = '\0';
+    uint8_t* nextInstr =
+        instr + disassembler.disassemble(mozilla::Span<char>(buffer), instr);
+
+    JS::UniqueChars formatted = JS_smprintf("0x%p  %s", instr, buffer);
+    callback(formatted.get());
+
+    instr = nextInstr;
   }
 }
 

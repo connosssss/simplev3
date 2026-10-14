@@ -313,7 +313,8 @@ void TlsConnectTestBase::SetupEch(std::shared_ptr<TlsAgent>& client,
                                   std::shared_ptr<TlsAgent>& server,
                                   HpkeKemId kem_id, bool expect_ech,
                                   bool set_client_config,
-                                  bool set_server_config, int max_name_len) {
+                                  bool set_server_config, int max_name_len,
+                                  bool compress_xtns) {
   EXPECT_TRUE(set_server_config || set_client_config);
   ScopedSECKEYPublicKey pub;
   ScopedSECKEYPrivateKey priv;
@@ -334,6 +335,10 @@ void TlsConnectTestBase::SetupEch(std::shared_ptr<TlsAgent>& client,
   if (set_client_config) {
     rv = SSL_SetClientEchConfigs(client->ssl_fd(), record.data(), record.len());
     ASSERT_EQ(SECSuccess, rv);
+    if (!compress_xtns) {
+      rv = SSLInt_SetEnableEchXtnCompression(client->ssl_fd(), PR_FALSE);
+      ASSERT_EQ(SECSuccess, rv);
+    }
   }
 
   /* Filter expect_ech, which typically defaults to true. Parameterized tests
@@ -448,12 +453,18 @@ void TlsConnectTestBase::ConnectWithCipherSuite(uint16_t cipher_suite) {
 }
 
 void TlsConnectTestBase::CheckConnected() {
-  // Have the client read handshake twice to make sure we get the
-  // NST and the ACK.
+  // Read until the client processes the ACK and releases its handshake cipher
+  // specs.  If the server retransmits its HS flight (e.g. due to timer expiry),
+  // out-of-epoch epoch2 records precede the NST+ACK in the client's buffer and
+  // are silently dropped one per Handshake() call.  The server flight has 5
+  // records, so 10 iterations is enough to handle one retransmit with margin.
   if (client_->version() >= SSL_LIBRARY_VERSION_TLS_1_3 &&
       variant_ == ssl_variant_datagram) {
-    client_->Handshake();
-    client_->Handshake();
+    static const int kMaxDtlsHandshakeDrainIterations = 10;
+    for (int i = 0; i < kMaxDtlsHandshakeDrainIterations; i++) {
+      client_->Handshake();
+      if (SSLInt_CountCipherSpecs(client_->ssl_fd()) == 2) break;
+    }
     auto suites = SSLInt_CountCipherSpecs(client_->ssl_fd());
     // Verify that we dropped the client's retransmission cipher suites.
     EXPECT_EQ(2, suites) << "Client has the wrong number of suites";
@@ -505,21 +516,24 @@ void TlsConnectTestBase::CheckEarlyDataLimit(
   EXPECT_EQ(expected_size, static_cast<size_t>(preinfo.maxEarlyDataSize));
 }
 
-void TlsConnectTestBase::CheckKeys(SSLKEAType kea_type, SSLNamedGroup kea_group,
-                                   SSLAuthType auth_type,
-                                   SSLSignatureScheme sig_scheme) const {
-  if (kea_group != ssl_grp_none) {
-    client_->CheckKEA(kea_type, kea_group);
-    server_->CheckKEA(kea_type, kea_group);
+SSLKEAType TlsConnectTestBase::GetDefaultKEA(void) const {
+  if (version_ >= SSL_LIBRARY_VERSION_TLS_1_3) {
+    return ssl_kea_ecdh_hybrid;
   }
-  server_->CheckAuthType(auth_type, sig_scheme);
-  client_->CheckAuthType(auth_type, sig_scheme);
+  return ssl_kea_ecdh;
 }
 
-void TlsConnectTestBase::CheckKeys(SSLKEAType kea_type,
-                                   SSLAuthType auth_type) const {
+SSLAuthType TlsConnectTestBase::GetDefaultAuth(void) const {
+  return ssl_auth_rsa_sign;
+}
+
+SSLNamedGroup TlsConnectTestBase::GetDefaultGroupFromKEA(
+    SSLKEAType kea_type) const {
   SSLNamedGroup group;
   switch (kea_type) {
+    case ssl_kea_ecdh_hybrid:
+      group = ssl_grp_kem_mlkem768x25519;
+      break;
     case ssl_kea_ecdh:
       group = ssl_grp_ec_curve25519;
       break;
@@ -534,7 +548,11 @@ void TlsConnectTestBase::CheckKeys(SSLKEAType kea_type,
       group = ssl_grp_none;
       break;
   }
+  return group;
+}
 
+SSLSignatureScheme TlsConnectTestBase::GetDefaultSchemeFromAuth(
+    SSLAuthType auth_type) const {
   SSLSignatureScheme scheme;
   switch (auth_type) {
     case ssl_auth_rsa_decrypt:
@@ -561,11 +579,56 @@ void TlsConnectTestBase::CheckKeys(SSLKEAType kea_type,
       scheme = static_cast<SSLSignatureScheme>(0x0100);
       break;
   }
+  return scheme;
+}
+
+void TlsConnectTestBase::CheckKeys(SSLKEAType kea_type, SSLNamedGroup kea_group,
+                                   SSLAuthType auth_type,
+                                   SSLSignatureScheme sig_scheme) const {
+  if (kea_group != ssl_grp_none) {
+    client_->CheckKEA(kea_type, kea_group);
+    server_->CheckKEA(kea_type, kea_group);
+  }
+  server_->CheckAuthType(auth_type, sig_scheme);
+  client_->CheckAuthType(auth_type, sig_scheme);
+}
+
+void TlsConnectTestBase::CheckKeys(SSLKEAType kea_type,
+                                   SSLNamedGroup kea_group) const {
+  SSLAuthType auth_type = GetDefaultAuth();
+  SSLSignatureScheme scheme = GetDefaultSchemeFromAuth(auth_type);
+  CheckKeys(kea_type, kea_group, auth_type, scheme);
+}
+
+void TlsConnectTestBase::CheckKeys(SSLAuthType auth_type,
+                                   SSLSignatureScheme sig_scheme) const {
+  SSLKEAType kea_type = GetDefaultKEA();
+  SSLNamedGroup group = GetDefaultGroupFromKEA(kea_type);
+  CheckKeys(kea_type, group, auth_type, sig_scheme);
+}
+
+void TlsConnectTestBase::CheckKeys(SSLKEAType kea_type,
+                                   SSLAuthType auth_type) const {
+  SSLNamedGroup group = GetDefaultGroupFromKEA(kea_type);
+  SSLSignatureScheme scheme = GetDefaultSchemeFromAuth(auth_type);
+
   CheckKeys(kea_type, group, auth_type, scheme);
 }
 
+void TlsConnectTestBase::CheckKeys(SSLKEAType kea_type) const {
+  SSLAuthType auth_type = GetDefaultAuth();
+  CheckKeys(kea_type, auth_type);
+}
+
+void TlsConnectTestBase::CheckKeys(SSLAuthType auth_type) const {
+  SSLKEAType kea_type = GetDefaultKEA();
+  CheckKeys(kea_type, auth_type);
+}
+
 void TlsConnectTestBase::CheckKeys() const {
-  CheckKeys(ssl_kea_ecdh, ssl_auth_rsa_sign);
+  SSLKEAType kea_type = GetDefaultKEA();
+  SSLAuthType auth_type = GetDefaultAuth();
+  CheckKeys(kea_type, auth_type);
 }
 
 void TlsConnectTestBase::CheckKeysResumption(SSLKEAType kea_type,

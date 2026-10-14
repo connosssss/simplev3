@@ -6,33 +6,15 @@
 // This should be applied by the configuration before any other test
 // configurations.
 
+import noUnsanitizedPlugin from "eslint-plugin-no-unsanitized";
+
 export default {
   name: "mozilla/general-test",
-  plugins: ["mozilla", "@microsoft/sdl", "no-unsanitized"],
+  plugins: {
+    "no-unsanitized": noUnsanitizedPlugin,
+  },
 
   rules: {
-    // No using of insecure url, so no http urls.
-    // Note: This is turned off for xpcshell-tests as it is not considered
-    // necessary for xpcshell level tests.
-    "@microsoft/sdl/no-insecure-url": [
-      "error",
-      {
-        exceptions: [
-          "^http:\\/\\/mochi\\.test?.*",
-          "^http:\\/\\/mochi\\.xorigin-test?.*",
-          "^http:\\/\\/localhost?.*",
-          "^http:\\/\\/127\\.0\\.0\\.1?.*",
-          // Exempt xmlns urls
-          "^http:\\/\\/www\\.w3\\.org?.*",
-          "^http:\\/\\/www\\.mozilla\\.org\\/keymaster\\/gatekeeper?.*",
-          // Exempt urls that start with ftp or ws.
-          "^ws:?.*",
-          "^ftp:?.*",
-        ],
-        varExceptions: ["insecure?.*"],
-      },
-    ],
-
     "mozilla/import-content-task-globals": "error",
     "mozilla/import-headjs-globals": "error",
     "mozilla/mark-test-function-used": "error",

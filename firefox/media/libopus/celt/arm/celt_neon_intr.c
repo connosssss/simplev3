@@ -39,6 +39,7 @@
 #include "../float_cast.h"
 #include "../mathops.h"
 #include "../pitch.h"
+#include <stddef.h>
 #if defined(OPUS_CHECK_ASM)
 #include <stdlib.h>
 #endif
@@ -385,7 +386,7 @@ void celt_pitch_xcorr_float_neon(const opus_val16 *_x, const opus_val16 *_y,
    int i;
    (void)arch;
    celt_assert(max_pitch > 0);
-   celt_sig_assert((((unsigned char *)_x-(unsigned char *)NULL)&3)==0);
+   celt_sig_assert((((size_t)_x)&3)==0);
 
    for (i = 0; i < (max_pitch-3); i += 4) {
       xcorr_kernel_neon_float((const float32_t *)_x, (const float32_t *)_y+i,
@@ -397,4 +398,10 @@ void celt_pitch_xcorr_float_neon(const opus_val16 *_x, const opus_val16 *_y,
       xcorr[i] = celt_inner_prod_neon(_x, _y+i, len);
    }
 }
+
+/* comb_filter_const_neon, celt_deemphasis_neon (mono) and
+   deemphasis_stereo_simple_neon live in celt_neon_aarch64.S (float,
+   aarch64 only); arm_celt_map.c dispatches them via the
+   COMB_FILTER_CONST_IMPL, CELT_DEEMPHASIS_IMPL and
+   DEEMPHASIS_STEREO_SIMPLE_IMPL tables. */
 #endif

@@ -832,7 +832,7 @@ process_common_toolchain() {
         tgt_isa=x86_64
         tgt_os=`echo $gcctarget | sed 's/.*\(darwin1[0-9]\).*/\1/'`
         ;;
-      *darwin2[0-4]*)
+      *darwin2[0-5]*)
         tgt_isa=`uname -m`
         tgt_os=`echo $gcctarget | sed 's/.*\(darwin2[0-9]\).*/\1/'`
         ;;
@@ -991,7 +991,7 @@ EOF
       add_cflags  "-mmacosx-version-min=10.15"
       add_ldflags "-mmacosx-version-min=10.15"
       ;;
-    *-darwin2[0-4]-*)
+    *-darwin2[0-5]-*)
       add_cflags  "-arch ${toolchain%%-*}"
       add_ldflags "-arch ${toolchain%%-*}"
       ;;
@@ -1229,8 +1229,8 @@ EOF
                 ;;
             esac
 
-            if [ "$(show_darwin_sdk_major_version iphoneos)" -gt 8 \
-               && [ "$(show_xcode_version)" -lt 16 ]; then
+            if [ "$(show_darwin_sdk_major_version iphoneos)" -gt 8 ] \
+               && [ "$(show_xcode_version | cut -d. -f1)" -lt 16 ]; then
               check_add_cflags -fembed-bitcode
               check_add_asflags -fembed-bitcode
               check_add_ldflags -fembed-bitcode
@@ -1363,6 +1363,7 @@ EOF
       fi
       ;;
     x86*)
+      soft_enable x86_asm
       case  ${tgt_os} in
         android)
           soft_enable realtime_only
@@ -1381,6 +1382,10 @@ EOF
           AS=${AS:-nasm}
           add_ldflags -Zhigh-mem
           ;;
+        darwin*)
+          enabled x86 && darwin_arch="-arch i386" || darwin_arch="-arch x86_64"
+          add_cflags  ${darwin_arch}
+          add_ldflags ${darwin_arch}
       esac
 
       AS="${alt_as:-${AS:-auto}}"
@@ -1503,9 +1508,6 @@ EOF
           ;;
         darwin*)
           add_asflags -f macho${bits}
-          enabled x86 && darwin_arch="-arch i386" || darwin_arch="-arch x86_64"
-          add_cflags  ${darwin_arch}
-          add_ldflags ${darwin_arch}
           # -mdynamic-no-pic is still a bit of voodoo -- it was required at
           # one time, but does not seem to be now, and it breaks some of the
           # code that still relies on inline assembly.
@@ -1601,10 +1603,6 @@ EOF
   # shared objects
   enabled gcc && enabled pic && check_add_cflags -fPIC
 
-  # Work around longjmp interception on glibc >= 2.11, to improve binary
-  # compatibility. See http://code.google.com/p/webm/issues/detail?id=166
-  enabled linux && check_add_cflags -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
-
   # Check for strip utility variant
   ${STRIP} -V 2>/dev/null | grep GNU >/dev/null && enable_feature gnu_strip
 
@@ -1627,12 +1625,22 @@ EOF
         ;;
       *-android-gcc)
         # bionic includes basic pthread functionality, obviating -lpthread.
+        soft_enable pthread_setname_np
         ;;
       *)
         check_header pthread.h && check_lib -lpthread <<EOF && add_extralibs -lpthread || disable_feature pthread_h
 #include <pthread.h>
 #include <stddef.h>
 int main(void) { return pthread_create(NULL, NULL, NULL, NULL); }
+EOF
+
+        enabled pthread_h && check_lib -lpthread <<EOF && enable_feature pthread_setname_np
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#include <pthread.h>
+int main(void) { return &pthread_setname_np != 0; }
 EOF
         ;;
     esac

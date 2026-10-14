@@ -10,13 +10,6 @@ const TEST_URL =
   "data:text/html;charset=utf-8," + encodeURIComponent(`<div id="test"></div>`);
 
 add_task(async function () {
-  // Do not run this test when both fission and EFT is disabled as it changes
-  // the number of targets
-  if (!isFissionEnabled() && !isEveryFrameTargetEnabled()) {
-    ok(true, "Don't go further is both Fission and EFT are disabled");
-    return;
-  }
-
   // Disable the preloaded process as it gets created lazily and may interfere
   // with process count assertions
   await pushPref("dom.ipc.processPrelaunch.enabled", false);
@@ -25,6 +18,8 @@ add_task(async function () {
 
   // Start with multiprocess debugging enabled
   await pushPref("devtools.browsertoolbox.scope", "everything");
+  // We use a commands object for the main process
+  await pushPref("devtools.chrome.enabled", true);
 
   const commands = await CommandsFactory.forMainProcess();
   const targetCommand = commands.targetCommand;

@@ -1,13 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "PathSkia.h"
+
 #include "HelpersSkia.h"
 #include "PathHelpers.h"
-#include "mozilla/UniquePtr.h"
 #include "skia/include/core/SkPathUtils.h"
 #include "skia/src/core/SkGeometry.h"
 
@@ -17,63 +15,69 @@ already_AddRefed<PathBuilder> PathBuilderSkia::Create(FillRule aFillRule) {
   return MakeAndAddRef<PathBuilderSkia>(aFillRule);
 }
 
-PathBuilderSkia::PathBuilderSkia(SkPath&& aPath, FillRule aFillRule,
-                                 const Point& aCurrentPoint,
+inline void PathBuilderSkia::SetSkiaFillType() {
+  if (GetFillRule() == FillRule::FILL_WINDING) {
+    mPathBuilder.setFillType(SkPathFillType::kWinding);
+  } else {
+    mPathBuilder.setFillType(SkPathFillType::kEvenOdd);
+  }
+}
+
+PathBuilderSkia::PathBuilderSkia(SkPathBuilder&& aPathBuilder,
+                                 FillRule aFillRule, const Point& aCurrentPoint,
                                  const Point& aBeginPoint)
-    : mPath(aPath) {
-  SetFillRule(aFillRule);
+    : PathBuilder(aFillRule), mPathBuilder(aPathBuilder) {
+  SetSkiaFillType();
   SetCurrentPoint(aCurrentPoint);
   SetBeginPoint(aBeginPoint);
 }
 
-PathBuilderSkia::PathBuilderSkia(FillRule aFillRule) { SetFillRule(aFillRule); }
+PathBuilderSkia::PathBuilderSkia(FillRule aFillRule) : PathBuilder(aFillRule) {
+  SetSkiaFillType();
+}
 
 void PathBuilderSkia::SetFillRule(FillRule aFillRule) {
-  mFillRule = aFillRule;
-  if (mFillRule == FillRule::FILL_WINDING) {
-    mPath.setFillType(SkPathFillType::kWinding);
-  } else {
-    mPath.setFillType(SkPathFillType::kEvenOdd);
-  }
+  PathBuilder::SetFillRule(aFillRule);
+  SetSkiaFillType();
 }
 
 void PathBuilderSkia::MoveTo(const Point& aPoint) {
-  mPath.moveTo(SkFloatToScalar(aPoint.x), SkFloatToScalar(aPoint.y));
+  mPathBuilder.moveTo(SkFloatToScalar(aPoint.x), SkFloatToScalar(aPoint.y));
   mCurrentPoint = aPoint;
   mBeginPoint = aPoint;
 }
 
 void PathBuilderSkia::LineTo(const Point& aPoint) {
-  if (!mPath.countPoints()) {
+  if (!mPathBuilder.countPoints()) {
     MoveTo(aPoint);
   } else {
-    mPath.lineTo(SkFloatToScalar(aPoint.x), SkFloatToScalar(aPoint.y));
+    mPathBuilder.lineTo(SkFloatToScalar(aPoint.x), SkFloatToScalar(aPoint.y));
   }
   mCurrentPoint = aPoint;
 }
 
 void PathBuilderSkia::BezierTo(const Point& aCP1, const Point& aCP2,
                                const Point& aCP3) {
-  if (!mPath.countPoints()) {
+  if (!mPathBuilder.countPoints()) {
     MoveTo(aCP1);
   }
-  mPath.cubicTo(SkFloatToScalar(aCP1.x), SkFloatToScalar(aCP1.y),
-                SkFloatToScalar(aCP2.x), SkFloatToScalar(aCP2.y),
-                SkFloatToScalar(aCP3.x), SkFloatToScalar(aCP3.y));
+  mPathBuilder.cubicTo(SkFloatToScalar(aCP1.x), SkFloatToScalar(aCP1.y),
+                       SkFloatToScalar(aCP2.x), SkFloatToScalar(aCP2.y),
+                       SkFloatToScalar(aCP3.x), SkFloatToScalar(aCP3.y));
   mCurrentPoint = aCP3;
 }
 
 void PathBuilderSkia::QuadraticBezierTo(const Point& aCP1, const Point& aCP2) {
-  if (!mPath.countPoints()) {
+  if (!mPathBuilder.countPoints()) {
     MoveTo(aCP1);
   }
-  mPath.quadTo(SkFloatToScalar(aCP1.x), SkFloatToScalar(aCP1.y),
-               SkFloatToScalar(aCP2.x), SkFloatToScalar(aCP2.y));
+  mPathBuilder.quadTo(SkFloatToScalar(aCP1.x), SkFloatToScalar(aCP1.y),
+                      SkFloatToScalar(aCP2.x), SkFloatToScalar(aCP2.y));
   mCurrentPoint = aCP2;
 }
 
 void PathBuilderSkia::Close() {
-  mPath.close();
+  mPathBuilder.close();
   mCurrentPoint = mBeginPoint;
 }
 
@@ -85,45 +89,42 @@ void PathBuilderSkia::Arc(const Point& aOrigin, float aRadius,
 }
 
 already_AddRefed<Path> PathBuilderSkia::Finish() {
-  RefPtr<Path> path =
-      MakeAndAddRef<PathSkia>(mPath, mFillRule, mCurrentPoint, mBeginPoint);
-  mCurrentPoint = Point(0.0, 0.0);
-  mBeginPoint = Point(0.0, 0.0);
+  RefPtr<Path> path = MakeAndAddRef<PathSkia>(mPathBuilder.detach(), mFillRule,
+                                              mCurrentPoint, mBeginPoint);
   return path.forget();
 }
 
-void PathBuilderSkia::AppendPath(const SkPath& aPath) { mPath.addPath(aPath); }
+void PathBuilderSkia::Reset(FillRule aFillRule) {
+  mPathBuilder.reset();
+  SetFillRule(aFillRule);
+  mCurrentPoint = Point();
+  mBeginPoint = Point();
+}
+
+void PathBuilderSkia::Transform(const Matrix& aTransform) {
+  SkMatrix matrix;
+  GfxMatrixToSkiaMatrix(aTransform, matrix);
+  mPathBuilder.transform(matrix);
+  mCurrentPoint = aTransform.TransformPoint(mCurrentPoint);
+  mBeginPoint = aTransform.TransformPoint(mBeginPoint);
+}
+
+void PathBuilderSkia::AppendPath(const SkPath& aPath) {
+  mPathBuilder.addPath(aPath);
+}
 
 already_AddRefed<PathBuilder> PathSkia::CopyToBuilder(
-    FillRule aFillRule) const {
-  return MakeAndAddRef<PathBuilderSkia>(SkPath(mPath), aFillRule, mCurrentPoint,
-                                        mBeginPoint);
-}
-
-already_AddRefed<PathBuilder> PathSkia::TransformedCopyToBuilder(
-    const Matrix& aTransform, FillRule aFillRule) const {
-  SkMatrix matrix;
-  GfxMatrixToSkiaMatrix(aTransform, matrix);
-  SkPath path(mPath);
-  path.transform(matrix);
-  return MakeAndAddRef<PathBuilderSkia>(
-      std::move(path), aFillRule, aTransform.TransformPoint(mCurrentPoint),
-      aTransform.TransformPoint(mBeginPoint));
-}
-
-already_AddRefed<PathBuilder> PathSkia::MoveToBuilder(FillRule aFillRule) {
-  return MakeAndAddRef<PathBuilderSkia>(std::move(mPath), aFillRule,
+    FillRule aFillRule, already_AddRefed<PathBuilder> aBuilder) const {
+  RefPtr builder(aBuilder.downcast<PathBuilderSkia>());
+  if (builder) {
+    builder->mPathBuilder = mPath;
+    builder->SetFillRule(aFillRule);
+    builder->mCurrentPoint = mCurrentPoint;
+    builder->mBeginPoint = mBeginPoint;
+    return builder.forget();
+  }
+  return MakeAndAddRef<PathBuilderSkia>(SkPathBuilder(mPath), aFillRule,
                                         mCurrentPoint, mBeginPoint);
-}
-
-already_AddRefed<PathBuilder> PathSkia::TransformedMoveToBuilder(
-    const Matrix& aTransform, FillRule aFillRule) {
-  SkMatrix matrix;
-  GfxMatrixToSkiaMatrix(aTransform, matrix);
-  mPath.transform(matrix);
-  return MakeAndAddRef<PathBuilderSkia>(
-      std::move(mPath), aFillRule, aTransform.TransformPoint(mCurrentPoint),
-      aTransform.TransformPoint(mBeginPoint));
 }
 
 static bool SkPathContainsPoint(const SkPath& aPath, const Point& aPoint,
@@ -162,8 +163,14 @@ bool PathSkia::GetFillPath(const StrokeOptions& aStrokeOptions,
     cullRect = Some(RectToSkRect(aClipRect.ref()));
   }
 
-  return skpathutils::FillPathWithPaint(mPath, paint, &aFillPath,
-                                        cullRect.ptrOr(nullptr), skiaMatrix);
+  SkPathBuilder builder;
+  if (!skpathutils::FillPathWithPaint(mPath, paint, &builder,
+                                      cullRect.ptrOr(nullptr), skiaMatrix)) {
+    return false;
+  }
+
+  aFillPath = builder.detach();
+  return true;
 }
 
 bool PathSkia::StrokeContainsPoint(const StrokeOptions& aStrokeOptions,

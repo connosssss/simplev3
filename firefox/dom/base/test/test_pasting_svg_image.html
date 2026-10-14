@@ -19,7 +19,7 @@
       function validatorFn(aData) {
         const testContent = document.getElementById(kTestContentId);
 
-        let expectedData = testContent.outerHTML;
+        let expectedData = testContent.innerHTML;
         if (navigator.platform.includes(kPlatformWindows)) {
           expectedData = kTextHtmlPrefixClipboardDataWindows +
             expectedData + kTextHtmlSuffixClipboardDataWindows;
@@ -58,7 +58,7 @@
       // ids.
       const expectedPastedInnerHTML =
         SimpleTest.stripLinebreaksAndWhitespaceAfterTags(
-          document.getElementById(kTestContentId).outerHTML);
+          document.getElementById(kTestContentId).innerHTML);
 
       const pasteTargetElement = document.getElementById(kPasteTargetId);
       await pasteTo(pasteTargetElement);

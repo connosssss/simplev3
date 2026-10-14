@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,32 +7,29 @@
 
 #include <bitset>
 #include <memory>
-#include <stdarg.h>
 
 #include "Colorspaces.h"
 #include "GLContextTypes.h"
 #include "GLDefs.h"
 #include "GLScreenBuffer.h"
+#include "ScopedGLHelpers.h"
+#include "SurfaceTypes.h"
+#include "TexUnpackBlob.h"
 #include "js/ScalarType.h"  // js::Scalar::Type
-#include "mozilla/Attributes.h"
 #include "mozilla/Atomics.h"
-#include "mozilla/CheckedInt.h"
-#include "mozilla/dom/ipc/IdType.h"
-#include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/dom/HTMLCanvasElement.h"
-#include "mozilla/dom/Nullable.h"
-#include "mozilla/dom/TypedArray.h"
 #include "mozilla/EnumeratedArray.h"
-#include "mozilla/gfx/2D.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPrefs_webgl.h"
 #include "mozilla/WeakPtr.h"
+#include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/HTMLCanvasElement.h"
+#include "mozilla/dom/Nullable.h"
+#include "mozilla/dom/TypedArray.h"
+#include "mozilla/dom/ipc/IdType.h"
+#include "mozilla/gfx/2D.h"
 #include "nsICanvasRenderingContextInternal.h"
 #include "nsTArray.h"
-#include "SurfaceTypes.h"
-#include "ScopedGLHelpers.h"
-#include "TexUnpackBlob.h"
 
 // Local
 #include "CacheInvalidator.h"
@@ -44,10 +40,10 @@
 #include "WebGLTypes.h"
 
 // Generated
-#include "mozilla/dom/WebGLRenderingContextBinding.h"
-#include "mozilla/dom/WebGL2RenderingContextBinding.h"
-
 #include <list>
+
+#include "mozilla/dom/WebGL2RenderingContextBinding.h"
+#include "mozilla/dom/WebGLRenderingContextBinding.h"
 
 class nsIDocShell;
 
@@ -78,6 +74,7 @@ class WebGLSync;
 class WebGLTexture;
 class WebGLTransformFeedback;
 class WebGLVertexArray;
+class WebGL2Context;
 
 namespace dom {
 class Document;
@@ -126,51 +123,9 @@ struct UniformBlockInfo;
 struct VertAttribPointerDesc;
 }  // namespace webgl
 
-struct WebGLTexImageData {
-  TexImageTarget mTarget;
-  int32_t mRowLength;
-  uint32_t mWidth;
-  uint32_t mHeight;
-  uint32_t mDepth;
-  gfxAlphaType mSrcAlphaType;
-};
-
-struct WebGLTexPboOffset {
-  TexImageTarget mTarget;
-  uint32_t mWidth;
-  uint32_t mHeight;
-  uint32_t mDepth;
-  WebGLsizeiptr mPboOffset;
-  bool mHasExpectedImageSize;
-  GLsizei mExpectedImageSize;
-};
-
 WebGLTexelFormat GetWebGLTexelFormat(TexInternalFormat format);
 
 void AssertUintParamCorrect(gl::GLContext* gl, GLenum pname, GLuint shadow);
-
-// From WebGLContextUtils
-TexTarget TexImageTargetToTexTarget(TexImageTarget texImageTarget);
-
-struct WebGLIntOrFloat {
-  const enum { Int, Float, Uint } mType;
-
-  union {
-    GLint i;
-    GLfloat f;
-    GLuint u;
-  } mValue;
-
-  explicit WebGLIntOrFloat(GLint i) : mType(Int) { mValue.i = i; }
-  explicit WebGLIntOrFloat(GLfloat f) : mType(Float) { mValue.f = f; }
-
-  GLint AsInt() const {
-    return (mType == Int) ? mValue.i : NS_lroundf(mValue.f);
-  }
-  GLfloat AsFloat() const {
-    return (mType == Float) ? mValue.f : GLfloat(mValue.i);
-  }
-};
 
 ////////////////////////////////////
 
@@ -247,11 +202,6 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   class LruPosition final {
     std::list<WebGLContext*>::iterator mItr;
 
-    LruPosition(const LruPosition&) = delete;
-    LruPosition(LruPosition&&) = delete;
-    LruPosition& operator=(const LruPosition&) = delete;
-    LruPosition& operator=(LruPosition&&) = delete;
-
    public:
     void AssignLocked(WebGLContext& aContext) MOZ_REQUIRES(sLruMutex);
     void Reset();
@@ -262,6 +212,11 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
     explicit LruPosition(WebGLContext&);
 
     ~LruPosition() { Reset(); }
+
+    LruPosition(const LruPosition&) = delete;
+    LruPosition(LruPosition&&) = delete;
+    LruPosition& operator=(const LruPosition&) = delete;
+    LruPosition& operator=(LruPosition&&) = delete;
   };
 
   mutable LruPosition mLruPosition MOZ_GUARDED_BY(sLruMutex);
@@ -292,6 +247,7 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   WebGLContextOptions mOptions;
   const uint32_t mPrincipalKey;
   Maybe<webgl::Limits> mLimits;
+  webgl::EnumMask<layers::SurfaceDescriptor::Type> mUploadableSdTypes;
   const uint32_t mMaxVertIdsPerDraw =
       StaticPrefs::webgl_max_vert_ids_per_draw();
 
@@ -340,6 +296,7 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   webgl::OptionalRenderableFormatBits mOptionalRenderableFormatBits =
       webgl::OptionalRenderableFormatBits{0};
   void FinishInit();
+  void InitUploadableSdTypes();
 
  protected:
   WebGLContext(HostWebGLContext*, const webgl::InitContextDesc&);
@@ -401,7 +358,7 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   };
 
   void GenerateErrorImpl(const GLenum err, const nsACString& text) const {
-    GenerateErrorImpl(err, std::string(text.BeginReading()));
+    GenerateErrorImpl(err, std::string(text.View()));
   }
   void GenerateErrorImpl(const GLenum err, const std::string& text) const;
 
@@ -464,15 +421,13 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
         "https://bugzilla.mozilla.org/"
         "enter_bug.cgi?product=Core&component=Canvas%3A+WebGL",
         fmt);
-    GenerateError(LOCAL_GL_OUT_OF_MEMORY, newFmt.BeginReading(), args...);
+    GenerateError(LOCAL_GL_OUT_OF_MEMORY, newFmt.get(), args...);
     MOZ_ASSERT(false, "WebGLContext::ErrorImplementationBug");
     NS_ERROR("WebGLContext::ErrorImplementationBug");
   }
 
   void ErrorInvalidEnumInfo(const char* info, GLenum enumValue) const;
   void ErrorInvalidEnumArg(const char* argName, GLenum val) const;
-
-  static const char* ErrorName(GLenum error);
 
   void JsWarning(const std::string& text) const;
 
@@ -536,17 +491,21 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   void EndOfFrame();
   RefPtr<gfx::DataSourceSurface> GetFrontBufferSnapshot();
   Maybe<uvec2> FrontBufferSnapshotInto(
-      const Maybe<Range<uint8_t>> dest,
+      const Maybe<mozilla::Range<uint8_t>> dest,
       const Maybe<size_t> destStride = Nothing());
   Maybe<uvec2> FrontBufferSnapshotInto(
       const std::shared_ptr<gl::SharedSurface>& front,
-      const Maybe<Range<uint8_t>> dest,
+      const Maybe<mozilla::Range<uint8_t>> dest,
       const Maybe<size_t> destStride = Nothing());
   Maybe<uvec2> SnapshotInto(GLuint srcFb, const gfx::IntSize& size,
-                            const Range<uint8_t>& dest,
+                            const mozilla::Range<uint8_t>& dest,
                             const Maybe<size_t> destStride = Nothing());
   already_AddRefed<gfx::SourceSurface> GetBackBufferSnapshot(
       const bool requireAlphaPremult);
+  std::shared_ptr<gl::SharedSurface> GetBackBufferSnapshotSharedSurface(
+      layers::TextureType texType, bool bgra = false, bool yFlip = false,
+      bool requireAlphaPremult = false);
+  void RecycleSnapshotSharedSurface(std::shared_ptr<gl::SharedSurface>);
   gl::SwapChain* GetSwapChain(WebGLFramebuffer*, const bool webvr);
   Maybe<layers::SurfaceDescriptor> GetFrontBuffer(WebGLFramebuffer*,
                                                   const bool webvr);
@@ -664,6 +623,8 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   void LineWidth(GLfloat width);
   void LinkProgram(WebGLProgram& prog);
   void PolygonOffset(GLfloat factor, GLfloat units);
+  void PolygonOffsetClampEXT(GLfloat factor, GLfloat units, GLfloat clamp);
+  void ClipControlEXT(GLenum origin, GLenum depth);
   void ProvokingVertex(webgl::ProvokingVertex) const;
 
   ////
@@ -681,7 +642,7 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
  public:
   void ReadPixelsPbo(const webgl::ReadPixelsDesc&, uint64_t offset);
   webgl::ReadPixelsResult ReadPixelsInto(const webgl::ReadPixelsDesc&,
-                                         const Range<uint8_t>& dest);
+                                         const mozilla::Range<uint8_t>& dest);
 
   ////
 
@@ -818,8 +779,6 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
 
   void OnDataAllocCall() const { mDataAllocGLCallCount++; }
 
-  uint64_t GetNumGLDataAllocCalls() const { return mDataAllocGLCallCount; }
-
   void OnEndOfFrame();
 
   // -----------------------------------------------------------------------------
@@ -841,7 +800,7 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   // CompressedTexSubImage if `sub`
   void CompressedTexImage(bool sub, GLenum imageTarget, uint32_t level,
                           GLenum format, uvec3 offset, uvec3 size,
-                          const Range<const uint8_t>& src,
+                          const mozilla::Range<const uint8_t>& src,
                           const uint32_t pboImageSize,
                           const Maybe<uint64_t>& pboOffset) const;
 
@@ -857,12 +816,6 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
 
   void TexStorage(GLenum texTarget, uint32_t levels, GLenum sizedFormat,
                   uvec3 size) const;
-
-  std::unique_ptr<webgl::TexUnpackBlob> ToTexUnpackBytes(
-      const WebGLTexImageData& imageData);
-
-  std::unique_ptr<webgl::TexUnpackBytes> ToTexUnpackBytes(
-      WebGLTexPboOffset& aPbo);
 
   ////////////////////////////////////
   // WebGLTextureUpload.cpp
@@ -936,14 +889,10 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   bool mOptionsFrozen = false;
   bool mIsMesa = false;
   bool mLoseContextOnMemoryPressure = false;
-  bool mCanLoseContextInForeground = true;
   bool mShouldPresent = false;
   bool mDisableFragHighP = false;
   bool mForceResizeOnPresent = false;
   bool mVRReady = false;
-
-  template <typename WebGLObjectType>
-  void DeleteWebGLObjectsArray(nsTArray<WebGLObjectType>& array);
 
   GLuint mActiveTexture = 0;
   GLenum mDefaultFB_DrawBuffer0 = LOCAL_GL_BACK;
@@ -962,11 +911,11 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
 
   uint32_t mGLMaxVertexTextureImageUnits = 0;
   uint32_t mGLMaxFragmentTextureImageUnits = 0;
-  uint32_t mGLMaxCombinedTextureImageUnits = 0;
-
   // ES3:
   uint32_t mGLMinProgramTexelOffset = 0;
   uint32_t mGLMaxProgramTexelOffset = 0;
+  uint32_t mGLMaxVertexUniformBlocks = 0;
+  uint32_t mGLMaxFragmentUniformBlocks = 0;
 
  public:
   auto GLMaxDrawBuffers() const { return mLimits->maxColorDrawBuffers; }
@@ -995,6 +944,8 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
 
   bool IsFormatValidForFB(TexInternalFormat format) const;
 
+  bool IsUploadableSdType(const layers::SurfaceDescriptor& sd) const;
+
  protected:
   // -------------------------------------------------------------------------
   // WebGL extensions (implemented in WebGLContextExtensions.cpp)
@@ -1020,6 +971,8 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   // WebGL 2 specifics (implemented in WebGL2Context.cpp)
  public:
   virtual bool IsWebGL2() const { return false; }
+
+  virtual WebGL2Context* AsWebGL2() { return nullptr; }
 
   struct FailureReason {
     nsCString key;  // For reporting.
@@ -1112,7 +1065,7 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
 
  public:
   bool ValidateNonNegative(const char* argName, int64_t val) const {
-    if (MOZ_UNLIKELY(val < 0)) {
+    if (val < 0) [[unlikely]] {
       ErrorInvalidValue("`%s` must be non-negative.", argName);
       return false;
     }
@@ -1143,27 +1096,6 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
                     size_t dstTexelSize);
 
   //////
- public:
-  template <typename T>
-  bool ValidateObject(const char* const argName, const T& object) const {
-    // Todo: Remove all callers.
-    return true;
-  }
-
-  template <typename T>
-  bool ValidateObject(const char* const argName, const T* const object) const {
-    // Todo: Remove most (all?) callers.
-    if (!object) {
-      ErrorInvalidOperation(
-          "%s: Object argument cannot have been marked for"
-          " deletion.",
-          argName);
-      return false;
-    }
-    return true;
-  }
-
-  ////
 
  private:
   void LoseContextLruLocked(webgl::ContextLossReason reason)
@@ -1301,6 +1233,7 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
 
   gl::SwapChain mSwapChain;
   gl::SwapChain mWebVRSwapChain;
+  gl::SwapChain mSnapshotSwapChain;
 
   RefPtr<layers::RemoteTextureOwnerClient> mRemoteTextureOwner;
 
@@ -1336,7 +1269,8 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   void BlitBackbufferToCurDriverFB(
       WebGLFramebuffer* const srcAsWebglFb = nullptr,
       const gl::MozFramebuffer* const srcAsMozFb = nullptr,
-      bool srcIsBGRA = false) const;
+      bool srcIsBGRA = false, bool yFlip = false,
+      Maybe<gfxAlphaType> convertAlpha = {}) const;
 
   struct GetDefaultFBForReadDesc {
     bool endOfFrame = false;
@@ -1359,7 +1293,9 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
 
   template <typename... Args>
   void GeneratePerfWarning(const char* const fmt, const Args&... args) const {
-    GenerateError(webgl::kErrorPerfWarning, fmt, args...);
+    if (ShouldGeneratePerfWarnings()) {
+      GenerateError(webgl::kErrorPerfWarning, fmt, args...);
+    }
   }
 
  public:
@@ -1375,7 +1311,6 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   friend class ScopedResolveTexturesForDraw;
   friend class webgl::TexUnpackBlob;
   friend class webgl::TexUnpackBytes;
-  friend class webgl::TexUnpackImage;
   friend class webgl::TexUnpackSurface;
   friend struct webgl::UniformInfo;
   friend class WebGLTexture;
@@ -1445,7 +1380,7 @@ bool Intersect(int32_t srcSize, int32_t read0, int32_t readSize,
                int32_t* out_intRead0, int32_t* out_intWrite0,
                int32_t* out_intSize);
 
-uint64_t AvailGroups(uint64_t totalAvailItems, uint64_t firstItemOffset,
+uint64_t AvailGroups(uint64_t totalAvailItemBytes, uint64_t firstItemOffset,
                      uint32_t groupSize, uint32_t groupStride);
 
 ////

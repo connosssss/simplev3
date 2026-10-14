@@ -1,17 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <vector>
-#include "mozilla/RefPtr.h"
-#include "gtest/gtest.h"
-#include "nsRegion.h"
-#include "nsRect.h"
+
 #include "TreeTraversal.h"
-#include <stack>
-#include <queue>
+#include "gtest/gtest.h"
+#include "mozilla/RefPtr.h"
+#include "nsRegion.h"
 
 using namespace mozilla::layers;
 using namespace mozilla;
@@ -213,7 +209,7 @@ nsRegion TestNodeBase<T>::GetRegion() {
 
 template <class T>
 void TestNodeBase<T>::SetRegion(nsRegion aRegion) {
-  mRegion = aRegion;
+  mRegion = std::move(aRegion);
 }
 
 template <class T>
@@ -1206,203 +1202,4 @@ TEST(TreeTraversal, ForEachNodeLambdaReturnsVoid)
               nodeList[i]->GetActualTraversalRank())
         << "Node at index " << i << " was hit out of order.";
   }
-}
-
-struct AssignSearchNodeTypesWithLastLeafAsNeedle {
-  RefPtr<SearchTestNodeForward>& node;
-  void operator()(SearchTestNodeForward* aNode) {
-    aNode->SetType(SearchNodeType::Hay);
-    if (aNode->IsLeaf()) {
-      node = aNode;
-    }
-  }
-};
-
-struct AssignSearchNodeTypesAllHay {
-  void operator()(SearchTestNode* aNode) {
-    aNode->SetType(SearchNodeType::Hay);
-  }
-};
-
-struct AssignSearchNodeTypesWithFirstLeafAsNeedle {
-  RefPtr<SearchTestNodeReverse>& needleNode;
-  void operator()(SearchTestNodeReverse* aNode) {
-    if (!needleNode && aNode->IsLeaf()) {
-      needleNode = aNode;
-    }
-    aNode->SetType(SearchNodeType::Hay);
-  }
-};
-
-struct AssignSearchNodeValuesAllFalseValuesReverse {
-  int falseValue;
-  RefPtr<SearchTestNodeReverse>& needleNode;
-  void operator()(SearchTestNodeReverse* aNode) {
-    aNode->SetValue(falseValue);
-    if (!needleNode && aNode->IsLeaf()) {
-      needleNode = aNode;
-    }
-  }
-};
-
-struct AssignSearchNodeValuesAllFalseValuesForward {
-  int falseValue;
-  RefPtr<SearchTestNodeForward>& needleNode;
-  void operator()(SearchTestNodeForward* aNode) {
-    aNode->SetValue(falseValue);
-    needleNode = aNode;
-  }
-};
-
-struct AllocateUnitRegionsToLeavesOnly {
-  int& xWrap;
-  int& squareCount;
-  void operator()(ForEachTestNode* aNode) {
-    if (aNode->IsLeaf()) {
-      int x = squareCount % xWrap;
-      int y = squareCount / xWrap;
-      aNode->SetRegion(nsRegion(nsRect(x, y, 1, 1)));
-      squareCount++;
-    }
-  }
-};
-
-template <typename Node>
-static RefPtr<Node> DepthFirstSearchForwardRecursive(RefPtr<Node> aNode) {
-  if (aNode->GetType() == SearchNodeType::Needle) {
-    return aNode;
-  }
-  for (RefPtr<Node> node = aNode->GetFirstChild(); node != nullptr;
-       node = node->GetNextSibling()) {
-    if (RefPtr<Node> foundNode = DepthFirstSearchForwardRecursive(node)) {
-      return foundNode;
-    }
-  }
-  return nullptr;
-}
-
-template <typename Node>
-static RefPtr<Node> DepthFirstSearchCaptureVariablesForwardRecursive(
-    RefPtr<Node> aNode, int a, int b, int c, int d, int e, int f, int g, int h,
-    int i, int j, int k, int l, int m, int& n, int& o, int& p, int& q, int& r,
-    int& s, int& t, int& u, int& v, int& w, int& x, int& y, int& z) {
-  if (aNode->GetValue() == a + b + c + d + e + f + g + h + i + j + k + l + m +
-                               n + o + p + q + r + s + t + u + v + w + x + y +
-                               z) {
-    return aNode;
-  }
-  for (RefPtr<Node> node = aNode->GetFirstChild(); node != nullptr;
-       node = node->GetNextSibling()) {
-    if (RefPtr<Node> foundNode =
-            DepthFirstSearchCaptureVariablesForwardRecursive(
-                node, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s,
-                t, u, v, w, x, y, z)) {
-      return foundNode;
-    }
-  }
-  return nullptr;
-}
-
-template <typename Node>
-static RefPtr<Node> DepthFirstSearchPostOrderForwardRecursive(
-    RefPtr<Node> aNode) {
-  for (RefPtr<Node> node = aNode->GetFirstChild(); node != nullptr;
-       node = node->GetNextSibling()) {
-    if (RefPtr<Node> foundNode =
-            DepthFirstSearchPostOrderForwardRecursive(node)) {
-      return foundNode;
-    }
-  }
-  if (aNode->GetType() == SearchNodeType::Needle) {
-    return aNode;
-  }
-  return nullptr;
-}
-
-template <typename Node>
-static RefPtr<Node> BreadthFirstSearchForwardQueue(RefPtr<Node> aNode) {
-  std::queue<RefPtr<Node>> nodes;
-  nodes.push(aNode);
-  while (!nodes.empty()) {
-    RefPtr<Node> node = nodes.front();
-    nodes.pop();
-    if (node->GetType() == SearchNodeType::Needle) {
-      return node;
-    }
-    for (RefPtr<Node> childNode = node->GetFirstChild(); childNode != nullptr;
-         childNode = childNode->GetNextSibling()) {
-      nodes.push(childNode);
-    }
-  }
-  return nullptr;
-}
-
-template <typename Node>
-static RefPtr<Node> DepthFirstSearchReverseRecursive(RefPtr<Node> aNode) {
-  if (aNode->GetType() == SearchNodeType::Needle) {
-    return aNode;
-  }
-  for (RefPtr<Node> node = aNode->GetLastChild(); node != nullptr;
-       node = node->GetPrevSibling()) {
-    if (RefPtr<Node> foundNode = DepthFirstSearchReverseRecursive(node)) {
-      return foundNode;
-    }
-  }
-  return nullptr;
-}
-
-template <typename Node>
-static RefPtr<Node> DepthFirstSearchCaptureVariablesReverseRecursive(
-    RefPtr<Node> aNode, int a, int b, int c, int d, int e, int f, int g, int h,
-    int i, int j, int k, int l, int m, int& n, int& o, int& p, int& q, int& r,
-    int& s, int& t, int& u, int& v, int& w, int& x, int& y, int& z) {
-  if (aNode->GetValue() == a + b + c + d + e + f + g + h + i + j + k + l + m +
-                               n + o + p + q + r + s + t + u + v + w + x + y +
-                               z) {
-    return aNode;
-  }
-  for (RefPtr<Node> node = aNode->GetLastChild(); node != nullptr;
-       node = node->GetPrevSibling()) {
-    if (RefPtr<Node> foundNode =
-            DepthFirstSearchCaptureVariablesReverseRecursive(
-                node, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s,
-                t, u, v, w, x, y, z)) {
-      return foundNode;
-    }
-  }
-  return nullptr;
-}
-
-template <typename Node>
-static RefPtr<Node> DepthFirstSearchPostOrderReverseRecursive(
-    RefPtr<Node> aNode) {
-  for (RefPtr<Node> node = aNode->GetLastChild(); node != nullptr;
-       node = node->GetPrevSibling()) {
-    if (RefPtr<Node> foundNode =
-            DepthFirstSearchPostOrderReverseRecursive(node)) {
-      return foundNode;
-    }
-  }
-  if (aNode->GetType() == SearchNodeType::Needle) {
-    return aNode;
-  }
-  return nullptr;
-}
-
-template <typename Node>
-static RefPtr<Node> BreadthFirstSearchReverseQueue(RefPtr<Node> aNode) {
-  std::queue<RefPtr<Node>> nodes;
-  nodes.push(aNode);
-  while (!nodes.empty()) {
-    RefPtr<Node> node = nodes.front();
-    nodes.pop();
-    if (node->GetType() == SearchNodeType::Needle) {
-      return node;
-    }
-    for (RefPtr<Node> childNode = node->GetLastChild(); childNode != nullptr;
-         childNode = childNode->GetPrevSibling()) {
-      nodes.push(childNode);
-    }
-  }
-  return nullptr;
 }

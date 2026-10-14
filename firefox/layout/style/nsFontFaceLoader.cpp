@@ -1,31 +1,26 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* code for loading in @font-face defined font data */
 
-#include "mozilla/IntegerPrintfMacros.h"
-#include "mozilla/Logging.h"
-
 #include "nsFontFaceLoader.h"
 
-#include "nsError.h"
+#include "FontFaceSet.h"
 #include "mozilla/AutoRestore.h"
+#include "mozilla/IntegerPrintfMacros.h"
+#include "mozilla/Logging.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/TaskQueue.h"
+#include "mozilla/gfx/2D.h"
 #include "mozilla/glean/GfxMetrics.h"
-#include "mozilla/Unused.h"
-#include "FontFaceSet.h"
-#include "nsPresContext.h"
+#include "nsContentPolicyUtils.h"
+#include "nsError.h"
 #include "nsIHttpChannel.h"
 #include "nsIThreadRetargetableRequest.h"
-#include "nsContentPolicyUtils.h"
 #include "nsNetCID.h"
-
-#include "mozilla/gfx/2D.h"
+#include "nsPresContext.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -103,7 +98,7 @@ void nsFontFaceLoader::StartedLoading(nsIStreamLoader* aStreamLoader) {
   if (loadTimeout > 0) {
     NS_NewTimerWithFuncCallback(getter_AddRefs(mLoadTimer), LoadTimerCallback,
                                 static_cast<void*>(this), loadTimeout,
-                                nsITimer::TYPE_ONE_SHOT, "LoadTimerCallback",
+                                nsITimer::TYPE_ONE_SHOT, "LoadTimerCallback"_ns,
                                 GetMainThreadSerialEventTarget());
   } else {
     mUserFontEntry->mFontDataLoadingState = gfxUserFontEntry::LOADING_SLOWLY;
@@ -157,7 +152,8 @@ void nsFontFaceLoader::LoadTimerCallback(nsITimer* aTimer, void* aClosure) {
           loader->mLoadTimer->GetDelay(&delay);
           loader->mLoadTimer->InitWithNamedFuncCallback(
               LoadTimerCallback, static_cast<void*>(loader), delay >> 1,
-              nsITimer::TYPE_ONE_SHOT, "nsFontFaceLoader::LoadTimerCallback");
+              nsITimer::TYPE_ONE_SHOT,
+              "nsFontFaceLoader::LoadTimerCallback"_ns);
           updateUserFontSet = false;
           LOG(("userfonts (%p) 75%% done, resetting timer\n", loader));
         }
@@ -196,7 +192,8 @@ void nsFontFaceLoader::LoadTimerCallback(nsITimer* aTimer, void* aClosure) {
     AutoTArray<RefPtr<gfxUserFontSet>, 4> fontSets;
     ufe->GetUserFontSets(fontSets);
     for (gfxUserFontSet* fontSet : fontSets) {
-      if (nsPresContext* ctx = FontFaceSetImpl::GetPresContextFor(fontSet)) {
+      if (FontVisibilityProvider* ctx =
+              FontFaceSetImpl::GetFontVisibilityProviderFor(fontSet)) {
         fontSet->IncrementGeneration();
         ctx->UserFontSetUpdated(ufe);
         LOG(("userfonts (%p) timeout reflow for pres context %p display %d\n",
@@ -290,8 +287,8 @@ nsFontFaceLoader::OnStreamComplete(nsIStreamLoader* aLoader,
 
   // FontDataDownloadComplete will load the platform font on a worker thread,
   // and will call FontLoadComplete when it has finished its work.
-  mUserFontEntry->FontDataDownloadComplete(mSrcIndex, aString, aStringLen,
-                                           aStatus, this);
+  mUserFontEntry->FontDataDownloadComplete(mSrcIndex, std::move(aString),
+                                           aStringLen, aStatus, this);
   return NS_SUCCESS_ADOPTED_DATA;
 }
 
@@ -327,7 +324,7 @@ nsFontFaceLoader::OnStartRequest(nsIRequest* aRequest) {
         do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID);
     RefPtr<TaskQueue> queue =
         TaskQueue::Create(sts.forget(), "nsFontFaceLoader STS Delivery Queue");
-    Unused << NS_WARN_IF(NS_FAILED(req->RetargetDeliveryTo(queue)));
+    (void)NS_WARN_IF(NS_FAILED(req->RetargetDeliveryTo(queue)));
   }
   return NS_OK;
 }
@@ -350,6 +347,9 @@ void nsFontFaceLoader::Cancel() {
   if (doc) {
     doc->UnblockOnload(false);
   }
+  // Remove ourselves from the set that registered us, so it never holds a
+  // dangling raw pointer to us after we're freed.
+  mFontFaceSet->RemoveLoader(this);
   mFontFaceSet = nullptr;
   if (mLoadTimer) {
     mLoadTimer->Cancel();

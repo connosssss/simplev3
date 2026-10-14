@@ -6,22 +6,21 @@
 // Callback interface FfiValueClasses
 //
 // These need to come first so they're defined for the scaffolding call code
-{%- for (preprocessor_condition, callback_interfaces, preprocessor_condition_end) in callback_interfaces.iter() %}
-{{ preprocessor_condition }}
+{%- for lib in root.libraries() %}
+{{ lib.ifdef_start() }}
 
-{%- for cbi in callback_interfaces %}
+{%- for cbi in lib.callback_interfaces %}
 {%- if let Some(ffi_value_class) = cbi.ffi_value_class %}
 
 // Forward declare the free function, which is defined later on in `CallbackInterfaces.cpp`
 extern "C" void {{ cbi.free_fn }}(uint64_t uniffiHandle);
 
-// FfiValue class for these callback interface handles.  This works like the
-// `FfiValueInt<uint64_t>`, except it has extra code to cleanup the callback handles.
+// FfiValue class for {{ cbi.name }} callback interface handles
+//
+// This works like the `FfiValueInt<uint64_t>`, except it has extra code to
+// cleanup the callback handles.
 class {{ ffi_value_class }} {
  private:
-  // Was this value lowered?  If so, that means we own the handle and are responsible for cleaning
-  // it up if we don't pass it to Rust because other values failed to lower
-  bool mLowered = false;
   uint64_t mValue = 0;
 
  public:
@@ -43,20 +42,17 @@ class {{ ffi_value_class }} {
     }
     ReleaseHandleIfSet();
     mValue = intValue;
-    mLowered = true;
   }
 
   void Lift(JSContext* aContext, dom::OwningUniFFIScaffoldingValue* aDest,
             ErrorResult& aError) {
     aDest->SetAsDouble() = mValue;
     mValue = 0;
-    mLowered = false;
   }
 
   uint64_t IntoRust() {
     auto handle = mValue;
     mValue = 0;
-    mLowered = false;
     return handle;
   }
 
@@ -64,11 +60,10 @@ class {{ ffi_value_class }} {
 
   void ReleaseHandleIfSet() {
     // A non-zero value indicates that we own a callback handle that was never passed to Rust or
-    // lifted to JS and needs to be freed.
-    if (mValue != 0 && mLowered) {
+    // lifted to JS.  Call the free function to decrease the refcount.
+    if (mValue != 0) {
         {{ cbi.free_fn }}(mValue);
         mValue = 0;
-        mLowered = false;
     }
   }
 
@@ -79,5 +74,5 @@ class {{ ffi_value_class }} {
 
 {%- endif %}
 {%- endfor %}
-{{ preprocessor_condition_end }}
+{{ lib.ifdef_end() }}
 {%- endfor %}

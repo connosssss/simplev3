@@ -1,19 +1,16 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ops::Range;
 
-#[cfg(feature = "trace")]
-use crate::device::trace::Command as TraceCommand;
 use crate::{
     api_log,
-    command::EncoderStateError,
-    device::DeviceError,
-    get_lowest_common_denom,
-    global::Global,
-    id::{BufferId, CommandEncoderId, TextureId},
+    command::{encoder::EncodingState, ArcCommand, EncoderStateError},
+    device::{DeviceError, MissingFeatures},
+    get_lowest_common_denom, hal_label,
     init_tracker::{MemoryInitKind, TextureInitRange},
     resource::{
-        DestroyedResourceError, InvalidResourceError, Labeled, MissingBufferUsageError,
-        ParentDevice, ResourceErrorIdent, Texture, TextureClearMode,
+        Buffer, DestroyedResourceError, InvalidOrDestroyedResourceError, InvalidResourceError,
+        Labeled, MissingBufferUsageError, ParentDevice, RawResourceAccess, ResourceErrorIdent,
+        Texture, TextureClearMode,
     },
     snatch::SnatchGuard,
     track::TextureTrackerSetSingle,
@@ -30,10 +27,10 @@ use wgt::{
 #[derive(Clone, Debug, Error)]
 #[non_exhaustive]
 pub enum ClearError {
-    #[error("To use clear_texture the CLEAR_TEXTURE feature needs to be enabled")]
-    MissingClearTextureFeature,
     #[error(transparent)]
     DestroyedResource(#[from] DestroyedResourceError),
+    #[error(transparent)]
+    MissingFeatures(#[from] MissingFeatures),
     #[error("{0} can not be cleared")]
     NoValidTextureClearMode(ResourceErrorIdent),
     #[error("Buffer clear size {0:?} is not a multiple of `COPY_BUFFER_ALIGNMENT`")]
@@ -80,226 +77,261 @@ whereas subesource range specified start {subresource_base_array_layer} and coun
     InvalidResource(#[from] InvalidResourceError),
 }
 
+impl From<InvalidOrDestroyedResourceError> for ClearError {
+    fn from(value: InvalidOrDestroyedResourceError) -> Self {
+        match value {
+            InvalidOrDestroyedResourceError::InvalidResource(e) => Self::InvalidResource(e),
+            InvalidOrDestroyedResourceError::DestroyedResource(e) => Self::DestroyedResource(e),
+        }
+    }
+}
+
 impl WebGpuError for ClearError {
     fn webgpu_error_type(&self) -> ErrorType {
-        let e: &dyn WebGpuError = match self {
-            Self::DestroyedResource(e) => e,
-            Self::MissingBufferUsage(e) => e,
-            Self::Device(e) => e,
-            Self::EncoderState(e) => e,
-            Self::InvalidResource(e) => e,
+        match self {
+            Self::DestroyedResource(e) => e.webgpu_error_type(),
+            Self::MissingFeatures(e) => e.webgpu_error_type(),
+            Self::MissingBufferUsage(e) => e.webgpu_error_type(),
+            Self::Device(e) => e.webgpu_error_type(),
+            Self::EncoderState(e) => e.webgpu_error_type(),
+            Self::InvalidResource(e) => e.webgpu_error_type(),
             Self::NoValidTextureClearMode(..)
-            | Self::MissingClearTextureFeature
             | Self::UnalignedFillSize(..)
             | Self::UnalignedBufferOffset(..)
             | Self::OffsetPlusSizeExceeds64BitBounds { .. }
             | Self::BufferOverrun { .. }
             | Self::MissingTextureAspect { .. }
             | Self::InvalidTextureLevelRange { .. }
-            | Self::InvalidTextureLayerRange { .. } => return ErrorType::Validation,
-        };
-        e.webgpu_error_type()
+            | Self::InvalidTextureLayerRange { .. } => ErrorType::Validation,
+        }
     }
 }
 
-impl Global {
-    pub fn command_encoder_clear_buffer(
-        &self,
-        command_encoder_id: CommandEncoderId,
-        dst: BufferId,
+impl super::CommandEncoder {
+    fn clear_buffer_inner(
+        self: &Arc<Self>,
+        dst: Arc<Buffer>,
         offset: BufferAddress,
         size: Option<BufferAddress>,
     ) -> Result<(), EncoderStateError> {
         profiling::scope!("CommandEncoder::clear_buffer");
-        api_log!("CommandEncoder::clear_buffer {dst:?}");
+        api_log!("CommandEncoder::clear_buffer {:?}", Arc::as_ptr(&dst));
 
-        let hub = &self.hub;
+        let mut cmd_buf_data = self.data.lock();
 
-        let cmd_buf = hub
-            .command_buffers
-            .get(command_encoder_id.into_command_buffer_id());
-        let mut cmd_buf_data = cmd_buf.data.lock();
-        cmd_buf_data.record_with(|cmd_buf_data| -> Result<(), ClearError> {
-            #[cfg(feature = "trace")]
-            if let Some(ref mut list) = cmd_buf_data.commands {
-                list.push(TraceCommand::ClearBuffer { dst, offset, size });
-            }
-
-            cmd_buf.device.check_is_valid()?;
-
-            let dst_buffer = hub.buffers.get(dst).get()?;
-
-            dst_buffer.same_device_as(cmd_buf.as_ref())?;
-
-            let dst_pending = cmd_buf_data
-                .trackers
-                .buffers
-                .set_single(&dst_buffer, wgt::BufferUses::COPY_DST);
-
-            let snatch_guard = dst_buffer.device.snatchable_lock.read();
-            let dst_raw = dst_buffer.try_raw(&snatch_guard)?;
-            dst_buffer.check_usage(BufferUsages::COPY_DST)?;
-
-            // Check if offset & size are valid.
-            if offset % wgt::COPY_BUFFER_ALIGNMENT != 0 {
-                return Err(ClearError::UnalignedBufferOffset(offset));
-            }
-
-            let size = size.unwrap_or(dst_buffer.size.saturating_sub(offset));
-            if size % wgt::COPY_BUFFER_ALIGNMENT != 0 {
-                return Err(ClearError::UnalignedFillSize(size));
-            }
-            let end_offset =
-                offset
-                    .checked_add(size)
-                    .ok_or(ClearError::OffsetPlusSizeExceeds64BitBounds {
-                        start_offset: offset,
-                        requested_size: size,
-                    })?;
-            if end_offset > dst_buffer.size {
-                return Err(ClearError::BufferOverrun {
-                    start_offset: offset,
-                    end_offset,
-                    buffer_size: dst_buffer.size,
-                });
-            }
-
-            if offset == end_offset {
-                log::trace!("Ignoring fill_buffer of size 0");
-                return Ok(());
-            }
-
-            // Mark dest as initialized.
-            cmd_buf_data.buffer_memory_init_actions.extend(
-                dst_buffer.initialization_status.read().create_action(
-                    &dst_buffer,
-                    offset..end_offset,
-                    MemoryInitKind::ImplicitlyInitialized,
-                ),
-            );
-
-            // actual hal barrier & operation
-            let dst_barrier =
-                dst_pending.map(|pending| pending.into_hal(&dst_buffer, &snatch_guard));
-            let cmd_buf_raw = cmd_buf_data.encoder.open()?;
-            unsafe {
-                cmd_buf_raw.transition_buffers(dst_barrier.as_slice());
-                cmd_buf_raw.clear_buffer(dst_raw, offset..end_offset);
-            }
-
-            Ok(())
+        cmd_buf_data.push_with(|| -> Result<_, ClearError> {
+            dst.check_is_valid()?;
+            Ok(ArcCommand::ClearBuffer { dst, offset, size })
         })
     }
 
-    pub fn command_encoder_clear_texture(
-        &self,
-        command_encoder_id: CommandEncoderId,
-        dst: TextureId,
+    pub fn clear_buffer(
+        self: &Arc<Self>,
+        dst: Arc<Buffer>,
+        offset: BufferAddress,
+        size: Option<BufferAddress>,
+    ) {
+        if let Err(err) = self.clear_buffer_inner(dst, offset, size) {
+            self.device
+                .handle_error(err, Some(self.label()), "CommandEncoder::clear_buffer");
+        }
+    }
+
+    fn clear_texture_inner(
+        self: &Arc<Self>,
+        dst: Arc<Texture>,
         subresource_range: &ImageSubresourceRange,
     ) -> Result<(), EncoderStateError> {
         profiling::scope!("CommandEncoder::clear_texture");
-        api_log!("CommandEncoder::clear_texture {dst:?}");
+        api_log!("CommandEncoder::clear_texture {:?}", Arc::as_ptr(&dst));
 
-        let hub = &self.hub;
+        let mut cmd_buf_data = self.data.lock();
 
-        let cmd_buf = hub
-            .command_buffers
-            .get(command_encoder_id.into_command_buffer_id());
-        let mut cmd_buf_data = cmd_buf.data.lock();
-        cmd_buf_data.record_with(|cmd_buf_data| -> Result<(), ClearError> {
-            #[cfg(feature = "trace")]
-            if let Some(ref mut list) = cmd_buf_data.commands {
-                list.push(TraceCommand::ClearTexture {
-                    dst,
-                    subresource_range: *subresource_range,
-                });
-            }
-
-            cmd_buf.device.check_is_valid()?;
-
-            if !cmd_buf.support_clear_texture {
-                return Err(ClearError::MissingClearTextureFeature);
-            }
-
-            let dst_texture = hub.textures.get(dst).get()?;
-
-            dst_texture.same_device_as(cmd_buf.as_ref())?;
-
-            // Check if subresource aspects are valid.
-            let clear_aspects =
-                hal::FormatAspects::new(dst_texture.desc.format, subresource_range.aspect);
-            if clear_aspects.is_empty() {
-                return Err(ClearError::MissingTextureAspect {
-                    texture_format: dst_texture.desc.format,
-                    subresource_range_aspects: subresource_range.aspect,
-                });
-            };
-
-            // Check if subresource level range is valid
-            let subresource_mip_range =
-                subresource_range.mip_range(dst_texture.full_range.mips.end);
-            if dst_texture.full_range.mips.start > subresource_mip_range.start
-                || dst_texture.full_range.mips.end < subresource_mip_range.end
-            {
-                return Err(ClearError::InvalidTextureLevelRange {
-                    texture_level_range: dst_texture.full_range.mips.clone(),
-                    subresource_base_mip_level: subresource_range.base_mip_level,
-                    subresource_mip_level_count: subresource_range.mip_level_count,
-                });
-            }
-            // Check if subresource layer range is valid
-            let subresource_layer_range =
-                subresource_range.layer_range(dst_texture.full_range.layers.end);
-            if dst_texture.full_range.layers.start > subresource_layer_range.start
-                || dst_texture.full_range.layers.end < subresource_layer_range.end
-            {
-                return Err(ClearError::InvalidTextureLayerRange {
-                    texture_layer_range: dst_texture.full_range.layers.clone(),
-                    subresource_base_array_layer: subresource_range.base_array_layer,
-                    subresource_array_layer_count: subresource_range.array_layer_count,
-                });
-            }
-
-            let device = &cmd_buf.device;
-            device.check_is_valid()?;
-            let (encoder, tracker) = cmd_buf_data.open_encoder_and_tracker()?;
-
-            let snatch_guard = device.snatchable_lock.read();
-            clear_texture(
-                &dst_texture,
-                TextureInitRange {
-                    mip_range: subresource_mip_range,
-                    layer_range: subresource_layer_range,
-                },
-                encoder,
-                &mut tracker.textures,
-                &device.alignments,
-                device.zero_buffer.as_ref(),
-                &snatch_guard,
-            )?;
-
-            Ok(())
+        cmd_buf_data.push_with(|| -> Result<_, ClearError> {
+            dst.check_valid()?;
+            Ok(ArcCommand::ClearTexture {
+                dst,
+                subresource_range: *subresource_range,
+            })
         })
+    }
+
+    pub fn clear_texture(
+        self: &Arc<Self>,
+        dst: Arc<Texture>,
+        subresource_range: &ImageSubresourceRange,
+    ) {
+        if let Err(err) = self.clear_texture_inner(dst, subresource_range) {
+            self.device
+                .handle_error(err, Some(self.label()), "CommandEncoder::clear_texture");
+        }
     }
 }
 
+pub(super) fn clear_buffer(
+    state: &mut EncodingState,
+    dst_buffer: Arc<Buffer>,
+    offset: BufferAddress,
+    size: Option<BufferAddress>,
+) -> Result<(), ClearError> {
+    dst_buffer.same_device(state.device)?;
+
+    let dst_pending = state
+        .tracker
+        .buffers
+        .set_single(&dst_buffer, wgt::BufferUses::COPY_DST);
+
+    let dst_raw = dst_buffer.try_raw(state.snatch_guard)?;
+    dst_buffer.check_usage(BufferUsages::COPY_DST)?;
+
+    // Check if offset & size are valid.
+    if !offset.is_multiple_of(wgt::COPY_BUFFER_ALIGNMENT) {
+        return Err(ClearError::UnalignedBufferOffset(offset));
+    }
+
+    let size = size.unwrap_or(dst_buffer.size.saturating_sub(offset));
+    if !size.is_multiple_of(wgt::COPY_BUFFER_ALIGNMENT) {
+        return Err(ClearError::UnalignedFillSize(size));
+    }
+    let end_offset =
+        offset
+            .checked_add(size)
+            .ok_or(ClearError::OffsetPlusSizeExceeds64BitBounds {
+                start_offset: offset,
+                requested_size: size,
+            })?;
+    if end_offset > dst_buffer.size {
+        return Err(ClearError::BufferOverrun {
+            start_offset: offset,
+            end_offset,
+            buffer_size: dst_buffer.size,
+        });
+    }
+
+    // This must happen after parameter validation (so that errors are reported
+    // as required by the spec), but before any side effects.
+    if offset == end_offset {
+        log::trace!("Ignoring fill_buffer of size 0");
+        return Ok(());
+    }
+
+    // Mark dest as initialized.
+    state
+        .buffer_memory_init_actions
+        .extend(dst_buffer.initialization_status.read().create_action(
+            &dst_buffer,
+            offset..end_offset,
+            MemoryInitKind::ImplicitlyInitialized,
+        ));
+
+    // actual hal barrier & operation
+    let dst_barrier = dst_pending.map(|pending| pending.into_hal(&dst_buffer, state.snatch_guard));
+    unsafe {
+        state.raw_encoder.transition_buffers(dst_barrier.as_slice());
+        state.raw_encoder.clear_buffer(dst_raw, offset..end_offset);
+    }
+
+    Ok(())
+}
+
+/// Validate and encode a "Clear Texture" command.
+///
+/// This function implements `CommandEncoder::clear_texture` when invoked via
+/// the command encoder APIs or trace playback. It has the suffix `_cmd` to
+/// distinguish it from [`clear_texture`]. [`clear_texture`], used internally by
+/// this function, is a lower-level function that encodes a texture clear
+/// operation without validating it.
+pub(super) fn clear_texture_cmd(
+    state: &mut EncodingState,
+    dst_texture: Arc<Texture>,
+    subresource_range: &ImageSubresourceRange,
+) -> Result<(), ClearError> {
+    dst_texture.same_device(state.device)?;
+    state
+        .device
+        .require_features(wgt::Features::CLEAR_TEXTURE)?;
+
+    // Check if subresource aspects are valid.
+    let clear_aspects = hal::FormatAspects::new(dst_texture.desc.format, subresource_range.aspect);
+    if clear_aspects.is_empty() {
+        return Err(ClearError::MissingTextureAspect {
+            texture_format: dst_texture.desc.format,
+            subresource_range_aspects: subresource_range.aspect,
+        });
+    };
+
+    // Check if subresource level range is valid
+    let subresource_mip_range = subresource_range.mip_range(dst_texture.full_range.mips.end);
+    if dst_texture.full_range.mips.start > subresource_mip_range.start
+        || dst_texture.full_range.mips.end < subresource_mip_range.end
+    {
+        return Err(ClearError::InvalidTextureLevelRange {
+            texture_level_range: dst_texture.full_range.mips.clone(),
+            subresource_base_mip_level: subresource_range.base_mip_level,
+            subresource_mip_level_count: subresource_range.mip_level_count,
+        });
+    }
+    // Check if subresource layer range is valid
+    let subresource_layer_range = subresource_range.layer_range(dst_texture.full_range.layers.end);
+    if dst_texture.full_range.layers.start > subresource_layer_range.start
+        || dst_texture.full_range.layers.end < subresource_layer_range.end
+    {
+        return Err(ClearError::InvalidTextureLayerRange {
+            texture_layer_range: dst_texture.full_range.layers.clone(),
+            subresource_base_array_layer: subresource_range.base_array_layer,
+            subresource_array_layer_count: subresource_range.array_layer_count,
+        });
+    }
+
+    clear_texture(
+        &dst_texture,
+        TextureInitRange {
+            mip_range: subresource_mip_range,
+            layer_range: subresource_layer_range,
+        },
+        None,
+        state.raw_encoder,
+        &mut state.tracker.textures,
+        &state.device.alignments,
+        state.device.zero_buffer.as_ref(),
+        state.snatch_guard,
+        state.device.instance_flags,
+    )?;
+
+    Ok(())
+}
+
+/// Encode a texture clear operation.
+///
+/// This function encodes a texture clear operation without validating it.
+/// Texture clears requested via the API call this function via
+/// [`clear_texture_cmd`], which does the validation. This function is also
+/// called directly from various places within wgpu that need to clear a
+/// texture.
+///
+/// For a 3D texture:
+/// - If `depth_slice` is `Some`, clear only that depth slice (in this case,
+///   `range.mip_range` must be a single mip level).
+/// - If `depth_slice` is `None`, clear entire mip level(s).
 pub(crate) fn clear_texture<T: TextureTrackerSetSingle>(
     dst_texture: &Arc<Texture>,
     range: TextureInitRange,
+    depth_slice: Option<u32>,
     encoder: &mut dyn hal::DynCommandEncoder,
     texture_tracker: &mut T,
     alignments: &hal::Alignments,
     zero_buffer: &dyn hal::DynBuffer,
     snatch_guard: &SnatchGuard<'_>,
+    instance_flags: wgt::InstanceFlags,
 ) -> Result<(), ClearError> {
-    let dst_raw = dst_texture.try_raw(snatch_guard)?;
+    let dst_raw = dst_texture.try_inner(snatch_guard)?.raw();
 
     // Issue the right barrier.
     let clear_usage = match *dst_texture.clear_mode.read() {
         TextureClearMode::BufferCopy => wgt::TextureUses::COPY_DST,
         TextureClearMode::RenderPass {
             is_color: false, ..
-        } => wgt::TextureUses::DEPTH_STENCIL_WRITE,
+        } => wgt::TextureUses::DEPTH_WRITE | wgt::TextureUses::STENCIL_WRITE,
         TextureClearMode::Surface { .. } | TextureClearMode::RenderPass { is_color: true, .. } => {
             wgt::TextureUses::COLOR_TARGET
         }
@@ -344,16 +376,17 @@ pub(crate) fn clear_texture<T: TextureTrackerSetSingle>(
             alignments,
             zero_buffer,
             range,
+            depth_slice,
             encoder,
             dst_raw,
         ),
         TextureClearMode::Surface { .. } => {
             drop(clear_mode);
-            clear_texture_via_render_passes(dst_texture, range, true, encoder)?
+            clear_texture_via_render_passes(dst_texture, range, true, encoder, instance_flags)?
         }
         TextureClearMode::RenderPass { is_color, .. } => {
             drop(clear_mode);
-            clear_texture_via_render_passes(dst_texture, range, is_color, encoder)?
+            clear_texture_via_render_passes(dst_texture, range, is_color, encoder, instance_flags)?
         }
         TextureClearMode::None => {
             return Err(ClearError::NoValidTextureClearMode(
@@ -365,17 +398,30 @@ pub(crate) fn clear_texture<T: TextureTrackerSetSingle>(
 }
 
 fn clear_texture_via_buffer_copies(
-    texture_desc: &wgt::TextureDescriptor<(), Vec<wgt::TextureFormat>>,
+    texture_desc: &wgt::TextureDescriptor<String, Vec<wgt::TextureFormat>>,
     alignments: &hal::Alignments,
     zero_buffer: &dyn hal::DynBuffer, // Buffer of size device::ZERO_BUFFER_SIZE
     range: TextureInitRange,
+    depth_slice: Option<u32>,
     encoder: &mut dyn hal::DynCommandEncoder,
     dst_raw: &dyn hal::DynTexture,
 ) {
+    // These preconditions should apply to `clear_texture` as a whole, but since they're
+    // currently only serving this function, seems clearer to keep them here.
     assert!(!texture_desc.format.is_depth_stencil_format());
+    assert!(
+        depth_slice.is_none() || texture_desc.dimension == wgt::TextureDimension::D3,
+        "depth_slice is only applicable to 3D textures",
+    );
+    assert!(
+        depth_slice.is_none() || range.mip_range.len() == 1,
+        "must target a single depth slice when clearing a mip level",
+    );
 
-    if texture_desc.format == wgt::TextureFormat::NV12 {
-        // TODO: Currently COPY_DST for NV12 textures is unsupported.
+    if texture_desc.format == wgt::TextureFormat::NV12
+        || texture_desc.format == wgt::TextureFormat::P010
+    {
+        // TODO: Currently COPY_DST for NV12 and P010 textures is unsupported.
         return;
     }
 
@@ -409,11 +455,13 @@ fn clear_texture_via_buffer_copies(
             texture_desc.size
         );
 
-        let z_range = 0..(if texture_desc.dimension == wgt::TextureDimension::D3 {
-            mip_size.depth_or_array_layers
+        let z_range = if let Some(depth_slice) = depth_slice {
+            depth_slice..depth_slice + 1
+        } else if texture_desc.dimension == wgt::TextureDimension::D3 {
+            0..mip_size.depth_or_array_layers
         } else {
-            1
-        });
+            0..1
+        };
 
         for array_layer in range.layer_range.clone() {
             // TODO: Only doing one layer at a time for volume textures right now.
@@ -463,6 +511,7 @@ fn clear_texture_via_render_passes(
     range: TextureInitRange,
     is_color: bool,
     encoder: &mut dyn hal::DynCommandEncoder,
+    instance_flags: wgt::InstanceFlags,
 ) -> Result<(), ClearError> {
     assert_eq!(dst_texture.desc.dimension, wgt::TextureDimension::D2);
 
@@ -491,7 +540,7 @@ fn clear_texture_via_render_passes(
                     },
                     depth_slice: None,
                     resolve_target: None,
-                    ops: hal::AttachmentOps::STORE,
+                    ops: hal::AttachmentOps::STORE | hal::AttachmentOps::LOAD_CLEAR,
                     clear_value: wgt::Color::TRANSPARENT,
                 })];
                 (&color_attachments_tmp[..], None)
@@ -506,23 +555,28 @@ fn clear_texture_via_render_passes(
                                 mip_level,
                                 depth_or_layer,
                             ),
-                            usage: wgt::TextureUses::DEPTH_STENCIL_WRITE,
+                            usage: wgt::TextureUses::DEPTH_WRITE | wgt::TextureUses::STENCIL_WRITE,
                         },
-                        depth_ops: hal::AttachmentOps::STORE,
-                        stencil_ops: hal::AttachmentOps::STORE,
+                        depth_ops: hal::AttachmentOps::STORE | hal::AttachmentOps::LOAD_CLEAR,
+                        stencil_ops: hal::AttachmentOps::STORE | hal::AttachmentOps::LOAD_CLEAR,
                         clear_value: (0.0, 0),
+                        depth_read_only: false,
+                        stencil_read_only: false,
                     }),
                 )
             };
             unsafe {
                 encoder
                     .begin_render_pass(&hal::RenderPassDescriptor {
-                        label: Some("(wgpu internal) clear_texture clear pass"),
+                        label: hal_label(
+                            Some("(wgpu internal) clear_texture clear pass"),
+                            instance_flags,
+                        ),
                         extent,
                         sample_count: dst_texture.desc.sample_count,
                         color_attachments,
                         depth_stencil_attachment,
-                        multiview: None,
+                        multiview_mask: None,
                         timestamp_writes: None,
                         occlusion_query_set: None,
                     })

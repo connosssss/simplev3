@@ -5,41 +5,32 @@
 package org.mozilla.fenix.splashscreen
 
 import androidx.annotation.VisibleForTesting
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 import mozilla.components.service.nimbus.NimbusApi
 import org.mozilla.experiments.nimbus.NimbusInterface
 import org.mozilla.experiments.nimbus.internal.EnrolledExperiment
 import org.mozilla.fenix.utils.Settings
-import kotlin.coroutines.Continuation
-import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 
-/**
- * An async operation performed during the splash screen.
- */
+/** An async operation performed during the splash screen. */
 interface SplashScreenOperation {
-    /**
-     * The type of the splash screen operation.
-     */
+    /** The type of the splash screen operation. */
     val type: String
 
-    /**
-     * Indicates whether data was fetched during the operation.
-     */
+    /** Indicates whether data was fetched during the operation. */
     val dataFetched: Boolean
 
-    /**
-     * Executes the splash screen operation.
-     */
+    /** Executes the splash screen operation. */
     suspend fun run()
+
+    /** Releases any observers associated with the operation. */
+    fun dispose()
 }
 
-/**
- * Interface for accessing the state of nimbus experiment data.
- */
+/** Interface for accessing the state of nimbus experiment data. */
 interface ExperimentsOperationStorage {
-    /**
-     * Indicates whether Nimbus experiments have been fetched.
-     */
+    /** Indicates whether Nimbus experiments have been fetched. */
     val nimbusExperimentsFetched: Boolean
 }
 
@@ -48,9 +39,7 @@ interface ExperimentsOperationStorage {
  *
  * @property settings The settings object used to access the experiment data state.
  */
-class DefaultExperimentsOperationStorage(
-    val settings: Settings,
-) : ExperimentsOperationStorage {
+class DefaultExperimentsOperationStorage(val settings: Settings) : ExperimentsOperationStorage {
     override val nimbusExperimentsFetched
         get() = settings.nimbusExperimentsFetched
 }
@@ -70,21 +59,31 @@ class FetchExperimentsOperation(
     override var dataFetched: Boolean = false
         private set
 
-    @VisibleForTesting
-    internal var fetchNimbusObserver: NimbusInterface.Observer? = null
+    @VisibleForTesting internal var fetchNimbusObserver: NimbusInterface.Observer? = null
 
     override suspend fun run() {
-        suspendCoroutine { continuation ->
+        suspendCancellableCoroutine { continuation ->
             if (storage.nimbusExperimentsFetched) {
                 dataFetched = true
                 continuation.resume(Unit)
             } else {
-                fetchNimbusObserver = FetchNimbusObserver { dataFetched = true }.apply {
-                    fetchContinuation = continuation
-                    nimbus.register(this)
+                val observer = FetchNimbusObserver {
+                    dataFetched = true
                 }
+                    .also {
+                        it.fetchContinuation = continuation
+                    }
+                fetchNimbusObserver = observer
+                continuation.invokeOnCancellation {
+                    nimbus.unregister(observer)
+                    fetchNimbusObserver = null
+                }
+                nimbus.register(observer)
             }
         }
+    }
+
+    override fun dispose() {
         fetchNimbusObserver?.let { nimbus.unregister(it) }
     }
 }
@@ -101,48 +100,61 @@ class ApplyExperimentsOperation(
 ) : SplashScreenOperation {
     override val type = "apply"
 
-    @VisibleForTesting
-    internal var isDataApplied = false
+    @VisibleForTesting internal var isDataApplied = false
     override var dataFetched: Boolean = false
         private set
 
-    @VisibleForTesting
-    internal var fetchNimbusObserver: NimbusInterface.Observer? = null
+    @VisibleForTesting internal var fetchNimbusObserver: NimbusInterface.Observer? = null
 
-    @VisibleForTesting
-    internal var applyNimbusObserver: NimbusInterface.Observer? = null
+    @VisibleForTesting internal var applyNimbusObserver: NimbusInterface.Observer? = null
 
     override suspend fun run() {
-        suspendCoroutine { continuation ->
+        suspendCancellableCoroutine { continuation ->
             if (storage.nimbusExperimentsFetched) {
                 dataFetched = true
                 continuation.resume(Unit)
             } else {
-                fetchNimbusObserver = FetchNimbusObserver { dataFetched = true }.apply {
-                    fetchContinuation = continuation
-                    nimbus.register(this)
+                val observer = FetchNimbusObserver {
+                    dataFetched = true
                 }
+                    .also {
+                        it.fetchContinuation = continuation
+                    }
+                fetchNimbusObserver = observer
+                continuation.invokeOnCancellation {
+                    nimbus.unregister(observer)
+                    fetchNimbusObserver = null
+                }
+                nimbus.register(observer)
             }
         }
 
-        suspendCoroutine { continuation ->
+        suspendCancellableCoroutine { continuation ->
             nimbus.applyPendingExperiments()
 
-            applyNimbusObserver = ApplyNimbusObserver { isDataApplied = true }.apply {
-                applyContinuation = continuation
-                nimbus.register(this)
+            val observer = ApplyNimbusObserver {
+                isDataApplied = true
             }
+                .also {
+                    it.applyContinuation = continuation
+                }
+            applyNimbusObserver = observer
+            continuation.invokeOnCancellation {
+                nimbus.unregister(observer)
+                applyNimbusObserver = null
+            }
+            nimbus.register(observer)
         }
+    }
 
+    override fun dispose() {
         fetchNimbusObserver?.let { nimbus.unregister(it) }
         applyNimbusObserver?.let { nimbus.unregister(it) }
     }
 }
 
 @VisibleForTesting
-internal class FetchNimbusObserver(
-    private val onDataFetched: () -> Unit,
-) : NimbusInterface.Observer {
+internal class FetchNimbusObserver(private val onDataFetched: () -> Unit) : NimbusInterface.Observer {
     var fetchContinuation: Continuation<Unit>? = null
 
     override fun onExperimentsFetched() {
@@ -153,9 +165,7 @@ internal class FetchNimbusObserver(
 }
 
 @VisibleForTesting
-internal class ApplyNimbusObserver(
-    private val onDataApplied: () -> Unit,
-) : NimbusInterface.Observer {
+internal class ApplyNimbusObserver(private val onDataApplied: () -> Unit) : NimbusInterface.Observer {
     var applyContinuation: Continuation<Unit>? = null
 
     override fun onUpdatesApplied(updated: List<EnrolledExperiment>) {

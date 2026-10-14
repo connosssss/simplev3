@@ -1,27 +1,25 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "SandboxTest.h"
 
+#include "GMPService.h"
+#include "SandboxTestingChild.h"
+#include "SandboxTestingParent.h"
 #include "mozilla/Components.h"
 #include "mozilla/Preferences.h"
-#include "SandboxTestingParent.h"
-#include "SandboxTestingChild.h"
-#include "mozilla/dom/ContentParent.h"
-#include "mozilla/gfx/GPUProcessManager.h"
-#include "mozilla/gfx/GPUChild.h"
-#include "mozilla/net/SocketProcessParent.h"
-#include "mozilla/RDDProcessManager.h"
 #include "mozilla/RDDChild.h"
+#include "mozilla/RDDProcessManager.h"
+#include "mozilla/dom/ContentParent.h"
+#include "mozilla/gfx/GPUChild.h"
+#include "mozilla/gfx/GPUProcessManager.h"
+#include "mozilla/gmp/GMPTypes.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/UtilityProcessManager.h"
 #include "mozilla/ipc/UtilityProcessParent.h"
 #include "mozilla/ipc/UtilityProcessSandboxing.h"
-#include "GMPService.h"
-#include "mozilla/gmp/GMPTypes.h"
-#include "mozilla/ipc/Endpoint.h"
+#include "mozilla/net/SocketProcessParent.h"
 #include "nsIOService.h"
 
 #ifdef XP_WIN
@@ -77,7 +75,7 @@ void InitializeSandboxTestingActors(
 
   // GMPlugin binds us to the GMP Thread, so we need IPC's Send to be done on
   // the same thread
-  Unused << aActor->SendInitSandboxTesting(std::move(sandboxTestingChildEnd));
+  (void)aActor->SendInitSandboxTesting(std::move(sandboxTestingChildEnd));
   // But then the SandboxTestingParent::Create() call needs to be on the main
   // thread
   NS_DispatchToMainThread(NS_NewRunnableFunction(
@@ -259,10 +257,12 @@ SandboxTest::StartTests(const nsTArray<nsCString>& aProcessesList) {
             ->Then(
                 GetMainThreadSerialEventTarget(), __func__,
                 [processPromise, utilityProc, sandboxingKind]() {
-                  RefPtr<UtilityProcessParent> utilityParent =
+                  RefPtr<UtilityProcessKeepAlive> keepAlive =
                       utilityProc
-                          ? utilityProc->GetProcessParent(sandboxingKind)
+                          ? utilityProc->GetSharedKeepAlive(sandboxingKind)
                           : nullptr;
+                  RefPtr<UtilityProcessParent> utilityParent =
+                      keepAlive ? keepAlive->GetProcessParent() : nullptr;
                   if (utilityParent) {
                     return InitializeSandboxTestingActors(utilityParent.get(),
                                                           processPromise);

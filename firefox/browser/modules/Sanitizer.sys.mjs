@@ -1,27 +1,22 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  AIWindow:
+    "moz-src:///browser/components/aiwindow/ui/modules/AIWindow.sys.mjs",
+  ChatStore:
+    "moz-src:///browser/components/aiwindow/ui/modules/ChatStore.sys.mjs",
   ContextualIdentityService:
-    "resource://gre/modules/ContextualIdentityService.sys.mjs",
+    "moz-src:///toolkit/components/contextualidentity/ContextualIdentityService.sys.mjs",
   FormHistory: "resource://gre/modules/FormHistory.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
   PrincipalsCollector: "resource://gre/modules/PrincipalsCollector.sys.mjs",
 });
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  lazy,
-  "useOldClearHistoryDialog",
-  "privacy.sanitize.useOldClearHistoryDialog",
-  false
-);
 
 var logConsole;
 function log(...msgs) {
@@ -58,15 +53,7 @@ export var Sanitizer = {
    * Pref branches to fetch sanitization options from.
    */
   PREF_CPD_BRANCH: "privacy.cpd.",
-  /*
-   * We need to choose between two branches for shutdown since there are separate prefs for the new
-   * clear history dialog
-   */
-  get PREF_SHUTDOWN_BRANCH() {
-    return lazy.useOldClearHistoryDialog
-      ? "privacy.clearOnShutdown."
-      : "privacy.clearOnShutdown_v2.";
-  },
+  PREF_SHUTDOWN_BRANCH: "privacy.clearOnShutdown_v2.",
 
   /**
    * The fallback timestamp used when no argument is given to
@@ -130,10 +117,11 @@ export var Sanitizer = {
    * @param {string} mode - flag to let the dialog know if it is opened
    *        using the clear on shutdown (clearOnShutdown) settings option
    *        in about:preferences or in a clear site data context (clearSiteData)
+   * @returns {"accept" | "cancel"} - The selected dialog box option.
    *
    * @throws if parentWindow is undefined or doesn't have a gDialogBox.
    */
-  showUI(parentWindow, mode) {
+  async showUI(parentWindow, mode) {
     // Treat the hidden window as not being a parent window:
     if (
       parentWindow?.document.documentURI ==
@@ -142,14 +130,15 @@ export var Sanitizer = {
       parentWindow = null;
     }
 
-    let dialogFile = lazy.useOldClearHistoryDialog
-      ? "sanitize.xhtml"
-      : "sanitize_v2.xhtml";
+    let dialogFile = "sanitize_v2.xhtml";
+    let deferred = Promise.withResolvers();
 
     if (parentWindow?.gDialogBox) {
       parentWindow.gDialogBox.open(`chrome://browser/content/${dialogFile}`, {
         inBrowserWindow: true,
         mode,
+        onAccept: () => deferred.resolve("accept"),
+        onCancel: () => deferred.resolve("cancel"),
       });
     } else {
       Services.ww.openWindow(
@@ -157,9 +146,16 @@ export var Sanitizer = {
         `chrome://browser/content/${dialogFile}`,
         "Sanitize",
         "chrome,titlebar,dialog,centerscreen,modal",
-        { needNativeUI: true, mode }
+        {
+          needNativeUI: true,
+          mode,
+          onAccept: () => deferred.resolve("accept"),
+          onCancel: () => deferred.resolve("cancel"),
+        }
       );
     }
+
+    return deferred.promise;
   },
 
   /**
@@ -522,7 +518,6 @@ export var Sanitizer = {
             progress,
             principalsForShutdownClearing,
             Ci.nsIClearDataService.CLEAR_COOKIES |
-              Ci.nsIClearDataService.CLEAR_COOKIE_BANNER_EXECUTED_RECORD |
               Ci.nsIClearDataService.CLEAR_FINGERPRINTING_PROTECTION_STATE |
               Ci.nsIClearDataService.CLEAR_BOUNCE_TRACKING_PROTECTION_STATE
           );
@@ -531,7 +526,6 @@ export var Sanitizer = {
           await clearData(
             range,
             Ci.nsIClearDataService.CLEAR_COOKIES |
-              Ci.nsIClearDataService.CLEAR_COOKIE_BANNER_EXECUTED_RECORD |
               Ci.nsIClearDataService.CLEAR_FINGERPRINTING_PROTECTION_STATE |
               Ci.nsIClearDataService.CLEAR_BOUNCE_TRACKING_PROTECTION_STATE
           );
@@ -553,7 +547,6 @@ export var Sanitizer = {
             progress,
             principalsForShutdownClearing,
             Ci.nsIClearDataService.CLEAR_DOM_STORAGES |
-              Ci.nsIClearDataService.CLEAR_COOKIE_BANNER_EXECUTED_RECORD |
               Ci.nsIClearDataService.CLEAR_FINGERPRINTING_PROTECTION_STATE
           );
         } else {
@@ -561,7 +554,6 @@ export var Sanitizer = {
           await clearData(
             range,
             Ci.nsIClearDataService.CLEAR_DOM_STORAGES |
-              Ci.nsIClearDataService.CLEAR_COOKIE_BANNER_EXECUTED_RECORD |
               Ci.nsIClearDataService.CLEAR_FINGERPRINTING_PROTECTION_STATE
           );
         }
@@ -635,8 +627,7 @@ export var Sanitizer = {
                 tabBrowser.getCachedFindBar(tab).clear();
               }
             }
-            // Clear any saved find value
-            tabBrowser._lastFindValue = "";
+            tabBrowser.clearLastFindValue();
           }
         } catch (ex) {
           seenException = ex;
@@ -682,17 +673,23 @@ export var Sanitizer = {
     },
 
     siteSettings: {
-      async clear(range) {
+      async clear(range, _options, clearHonoringExceptions) {
         let timerId = Glean.browserSanitizer.sitesettings.start();
+        // On shutdown, use CLEAR_SITE_PERMISSIONS so PermissionsCleaner
+        // keeps persist-data-on-shutdown exceptions intact. For a manual
+        // Clear Now the user has explicitly asked to wipe everything, so
+        // fall through to CLEAR_PERMISSIONS which clears that type too.
+        let permissionsFlag = clearHonoringExceptions
+          ? Ci.nsIClearDataService.CLEAR_SITE_PERMISSIONS
+          : Ci.nsIClearDataService.CLEAR_PERMISSIONS;
         await clearData(
           range,
-          Ci.nsIClearDataService.CLEAR_SITE_PERMISSIONS |
+          permissionsFlag |
             Ci.nsIClearDataService.CLEAR_CONTENT_PREFERENCES |
             Ci.nsIClearDataService.CLEAR_DOM_PUSH_NOTIFICATIONS |
             Ci.nsIClearDataService.CLEAR_CLIENT_AUTH_REMEMBER_SERVICE |
             Ci.nsIClearDataService.CLEAR_CERT_EXCEPTIONS |
             Ci.nsIClearDataService.CLEAR_CREDENTIAL_MANAGER_STATE |
-            Ci.nsIClearDataService.CLEAR_COOKIE_BANNER_EXCEPTION |
             Ci.nsIClearDataService.CLEAR_FINGERPRINTING_PROTECTION_STATE
         );
         Glean.browserSanitizer.sitesettings.stopAndAccumulate(timerId);
@@ -881,6 +878,8 @@ export var Sanitizer = {
         timerId = Glean.browserSanitizer.downloads.start();
         await clearData(range, Ci.nsIClearDataService.CLEAR_DOWNLOADS);
         Glean.browserSanitizer.downloads.stopAndAccumulate(timerId);
+
+        await clearChatConversations(range, progress);
       },
     },
 
@@ -907,10 +906,32 @@ export var Sanitizer = {
         }
         await clearData(range, Ci.nsIClearDataService.CLEAR_MEDIA_DEVICES);
         Glean.browserSanitizer.cookies.stopAndAccumulate(timerId);
+
+        await clearChatConversations(range, progress);
       },
     },
   },
 };
+
+// Clear chat conversations if AI Window is enabled.
+// (ChatStore uses milliseconds.)
+async function clearChatConversations(range, progress) {
+  if (!lazy.AIWindow.isEnabled) {
+    return;
+  }
+  progress.step = "clearing Smart Window chat conversations";
+  try {
+    if (range) {
+      let startDate = new Date(range[0] / 1000);
+      let endDate = new Date(range[1] / 1000);
+      await lazy.ChatStore.deleteConversationsByDateRange(startDate, endDate);
+    } else {
+      await lazy.ChatStore.deleteAllConversations();
+    }
+  } catch (ex) {
+    log("Failed to clear chat conversations", ex);
+  }
+}
 
 async function sanitizeInternal(items, aItemsToClear, options) {
   let { ignoreTimespan = true, range, progress } = options;
@@ -1020,66 +1041,31 @@ async function sanitizeInternal(items, aItemsToClear, options) {
 
 async function sanitizeOnShutdown(progress) {
   log("Sanitizing on shutdown");
-  if (lazy.useOldClearHistoryDialog) {
-    progress.sanitizationPrefs = {
-      privacy_sanitize_sanitizeOnShutdown: Services.prefs.getBoolPref(
-        "privacy.sanitize.sanitizeOnShutdown"
-      ),
-      privacy_clearOnShutdown_cookies: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown.cookies"
-      ),
-      privacy_clearOnShutdown_history: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown.history"
-      ),
-      privacy_clearOnShutdown_formdata: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown.formdata"
-      ),
-      privacy_clearOnShutdown_downloads: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown.downloads"
-      ),
-      privacy_clearOnShutdown_cache: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown.cache"
-      ),
-      privacy_clearOnShutdown_sessions: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown.sessions"
-      ),
-      privacy_clearOnShutdown_offlineApps: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown.offlineApps"
-      ),
-      privacy_clearOnShutdown_siteSettings: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown.siteSettings"
-      ),
-      privacy_clearOnShutdown_openWindows: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown.openWindows"
-      ),
-    };
-  } else {
-    // Perform a migration if this is the first time sanitizeOnShutdown is
-    // running for the user with the new dialog
-    Sanitizer.maybeMigratePrefs("clearOnShutdown");
+  // Perform a migration if this is the first time sanitizeOnShutdown is
+  // running for the user with the new dialog
+  Sanitizer.maybeMigratePrefs("clearOnShutdown");
 
-    progress.sanitizationPrefs = {
-      privacy_sanitize_sanitizeOnShutdown: Services.prefs.getBoolPref(
-        "privacy.sanitize.sanitizeOnShutdown"
+  progress.sanitizationPrefs = {
+    privacy_sanitize_sanitizeOnShutdown: Services.prefs.getBoolPref(
+      "privacy.sanitize.sanitizeOnShutdown"
+    ),
+    privacy_clearOnShutdown_v2_cookiesAndStorage: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown_v2.cookiesAndStorage"
+    ),
+    privacy_clearOnShutdown_v2_browsingHistoryAndDownloads:
+      Services.prefs.getBoolPref(
+        "privacy.clearOnShutdown_v2.browsingHistoryAndDownloads"
       ),
-      privacy_clearOnShutdown_v2_cookiesAndStorage: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown_v2.cookiesAndStorage"
-      ),
-      privacy_clearOnShutdown_v2_browsingHistoryAndDownloads:
-        Services.prefs.getBoolPref(
-          "privacy.clearOnShutdown_v2.browsingHistoryAndDownloads"
-        ),
-      privacy_clearOnShutdown_v2_cache: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown_v2.cache"
-      ),
-      privacy_clearOnShutdown_v2_formdata: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown_v2.formdata"
-      ),
-      privacy_clearOnShutdown_v2_siteSettings: Services.prefs.getBoolPref(
-        "privacy.clearOnShutdown_v2.siteSettings"
-      ),
-    };
-  }
+    privacy_clearOnShutdown_v2_cache: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown_v2.cache"
+    ),
+    privacy_clearOnShutdown_v2_formdata: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown_v2.formdata"
+    ),
+    privacy_clearOnShutdown_v2_siteSettings: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown_v2.siteSettings"
+    ),
+  };
 
   let needsSyncSavePrefs = false;
   if (Sanitizer.shouldSanitizeOnShutdown) {
@@ -1176,9 +1162,11 @@ function extractMatchingPrincipals(principals, matchHost) {
   });
 }
 
-/**  This method receives a list of principals and it checks if some of them or
+/**
+ * This method receives a list of principals and it checks if some of them or
  * some of their sub-domain need to be sanitize.
- * @param {Object} progress - Object to keep track of the sanitization progress, prefs and mode
+ *
+ * @param {object} progress - Object to keep track of the sanitization progress, prefs and mode
  * @param {nsIPrincipal[]} principals - The principals generated by the PrincipalsCollector
  * @param {int} flags - The cleaning categories that need to be cleaned for the principals.
  * @returns {Promise} - Resolves once the clearing of the principals to be cleared is done
@@ -1187,20 +1175,49 @@ async function maybeSanitizeSessionPrincipals(progress, principals, flags) {
   log("Sanitizing " + principals.length + " principals");
 
   let promises = [];
-  let permissions = new Map();
-  Services.perms.getAllWithTypePrefix("cookie").forEach(perm => {
-    permissions.set(perm.principal.origin, perm);
-  });
+  let exceptionPartitionSites = new Set();
+  let shutdownExceptionHosts = [];
+  for (let perm of Services.perms.getAllByTypes(["persist-data-on-shutdown"])) {
+    // persist-data-on-shutdown only has one meaningful state: ALLOW, set via the
+    // "Manage Exceptions…" dialog. Anything else means no exception is in effect.
+    if (
+      perm.capability == Ci.nsIPermissionManager.ALLOW_ACTION &&
+      isSupportedPrincipal(perm.principal)
+    ) {
+      exceptionPartitionSites.add(perm.principal.baseDomain);
+      shutdownExceptionHosts.push(perm.principal.host);
+    }
+  }
 
   principals.forEach(principal => {
     progress.step = "checking-principal";
-    let cookieAllowed = cookiesAllowedForDomainOrSubDomain(
-      principal,
-      permissions
-    );
-    progress.step = "principal-checked:" + cookieAllowed;
+    // Both isCookieSession and isShutdownExceptionAllowed use
+    // testPermissionFromPrincipal, which walks from the principal up to its
+    // base domain, so each predicate finds a permission set on the principal
+    // itself or on any ancestor.
+    //
+    // Decision order:
+    //   1. A cookie SESSION found on the principal or any ancestor forces
+    //      clearing. The user has explicitly asked for session-only cookies;
+    //      this takes priority over a shutdown exception.
+    //   2. A shutdown exception found on the principal or any ancestor (via
+    //      the same walk) preserves first-party data. For partitioned data,
+    //      the exception is matched against the partitionKey's base domain,
+    //      so only the excepted site's own cookie jar is protected.
+    //   3. Otherwise clear.
+    let preserve;
+    if (isCookieSession(principal)) {
+      preserve = false;
+    } else {
+      preserve = isShutdownExceptionApplicable(
+        principal,
+        exceptionPartitionSites,
+        shutdownExceptionHosts
+      );
+    }
+    progress.step = "principal-checked:" + preserve;
 
-    if (!cookieAllowed) {
+    if (!preserve) {
       promises.push(sanitizeSessionPrincipal(progress, principal, flags));
     }
   });
@@ -1212,69 +1229,44 @@ async function maybeSanitizeSessionPrincipals(progress, principals, flags) {
   progress.step = "promises resolved";
 }
 
-function cookiesAllowedForDomainOrSubDomain(principal, permissions) {
-  log("Checking principal: " + principal.asciiSpec);
-
-  // If we have the 'cookie' permission for this principal, let's return
-  // immediately.
-  let cookiePermission = checkIfCookiePermissionIsSet(principal);
-  if (cookiePermission != null) {
-    return cookiePermission;
+// Returns true if a shutdown exception applies to this principal:
+// - for first-party data (no partitionKey): a persist-data-on-shutdown ALLOW
+//   permission exists on the principal host, any ancestor domain or any subdomain
+// - for partitioned data: the partitionKey's base domain is in exceptionPartitionSites,
+//   meaning the top-level site that owns this cookie jar has an exception.
+function isShutdownExceptionApplicable(
+  principal,
+  exceptionPartitionSites,
+  shutdownExceptionHosts
+) {
+  let { partitionKey } = principal.originAttributes;
+  if (!partitionKey) {
+    if (
+      Services.perms.testPermissionFromPrincipal(
+        principal,
+        "persist-data-on-shutdown"
+      ) == Ci.nsIPermissionManager.ALLOW_ACTION
+    ) {
+      return true;
+    }
+    return shutdownExceptionHosts.some(host =>
+      Services.eTLD.hasRootDomain(host, principal.host)
+    );
   }
-
-  for (let perm of permissions.values()) {
-    if (perm.type != "cookie") {
-      permissions.delete(perm.principal.origin);
-      continue;
-    }
-    // We consider just permissions set for http, https and file URLs.
-    if (!isSupportedPrincipal(perm.principal)) {
-      permissions.delete(perm.principal.origin);
-      continue;
-    }
-
-    // We don't care about scheme, port, and anything else.
-    if (Services.eTLD.hasRootDomain(perm.principal.host, principal.host)) {
-      log("Cookie check on principal: " + perm.principal.asciiSpec);
-      let rootDomainCookiePermission = checkIfCookiePermissionIsSet(
-        perm.principal
-      );
-      if (rootDomainCookiePermission != null) {
-        return rootDomainCookiePermission;
-      }
-    }
+  let baseDomain;
+  try {
+    baseDomain = ChromeUtils.getBaseDomainFromPartitionKey(partitionKey);
+  } catch {
+    return false;
   }
-
-  log("Cookie not allowed.");
-  return false;
+  return exceptionPartitionSites.has(baseDomain);
 }
 
-/**
- * Checks if a cookie permission is set for a given principal
- * @returns {boolean} - true: cookie permission "ACCESS_ALLOW", false: cookie permission "ACCESS_DENY"/"ACCESS_SESSION"
- * @returns {null} - No cookie permission is set for this principal
- */
-function checkIfCookiePermissionIsSet(principal) {
-  let p = Services.perms.testPermissionFromPrincipal(principal, "cookie");
-
-  if (p == Ci.nsICookiePermission.ACCESS_ALLOW) {
-    log("Cookie allowed!");
-    return true;
-  }
-
-  if (
-    p == Ci.nsICookiePermission.ACCESS_DENY ||
-    p == Ci.nsICookiePermission.ACCESS_SESSION
-  ) {
-    log("Cookie denied or session!");
-    return false;
-  }
-  // This is an old profile with unsupported permission values
-  if (p != Ci.nsICookiePermission.ACCESS_DEFAULT) {
-    log("Not supported cookie permission: " + p);
-    return false;
-  }
-  return null;
+function isCookieSession(principal) {
+  return (
+    Services.perms.testPermissionFromPrincipal(principal, "cookie") ==
+    Ci.nsICookiePermission.ACCESS_SESSION
+  );
 }
 
 async function sanitizeSessionPrincipal(progress, principal, flags) {
@@ -1305,6 +1297,7 @@ function sanitizeNewTabSegregation() {
 
 /**
  * Gets an array of items to clear from the given pref branch.
+ *
  * @param branch The pref branch to fetch.
  * @return Array of items to clear
  */
@@ -1322,6 +1315,7 @@ function getItemsToClearFromPrefBranch(branch) {
 /**
  * These functions are used to track pending sanitization on the next startup
  * in case of a crash before a sanitization could happen.
+ *
  * @param id A unique id identifying the sanitization
  * @param itemsToClear The items to clear
  * @param options The Sanitize options

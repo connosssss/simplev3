@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <initializer_list>
+
 #include "APZCTreeManagerTester.h"
 #include "APZTestCommon.h"
 #include "InputUtils.h"
@@ -18,13 +17,11 @@ class APZCFlingAccelerationTester : public APZCTreeManagerTester {
         LayerIntRect(0, 0, 800, 1000),
     };
     CreateScrollData(treeShape, layerVisibleRect);
-    SetScrollableFrameMetrics(root, ScrollableLayerGuid::START_SCROLL_ID,
-                              CSSRect(0, 0, 800, 50000));
+    SetScrollableFrameMetrics(root, START_SCROLL_ID, CSSRect(0, 0, 800, 50000));
     // Scroll somewhere into the middle of the scroll range, so that we have
     // lots of space to scroll in both directions.
     ModifyFrameMetrics(root, [](ScrollMetadata& aSm, FrameMetrics& aMetrics) {
-      aMetrics.SetVisualScrollUpdateType(
-          FrameMetrics::ScrollOffsetUpdateType::eMainThread);
+      aMetrics.SetVisualScrollUpdateType(ScrollOffsetUpdateType::MainThread);
       aMetrics.SetVisualDestination(CSSPoint(0, 25000));
     });
 
@@ -36,12 +33,7 @@ class APZCFlingAccelerationTester : public APZCTreeManagerTester {
 
   void ExecutePanGesture100Hz(const ScreenIntPoint& aStartPoint,
                               std::initializer_list<int32_t> aYDeltas) {
-    APZEventResult result = TouchDown(apzc, aStartPoint, mcc->Time());
-
-    // Allowed touch behaviours must be set after sending touch-start.
-    if (result.GetStatus() != nsEventStatus_eConsumeNoDefault) {
-      SetDefaultAllowedTouchBehavior(apzc, result.mInputBlockId);
-    }
+    TouchDown(apzc, aStartPoint, mcc->Time());
 
     const TimeDuration kTouchTimeDelta100Hz =
         TimeDuration::FromMilliseconds(10);
@@ -51,11 +43,11 @@ class APZCFlingAccelerationTester : public APZCTreeManagerTester {
       mcc->AdvanceBy(kTouchTimeDelta100Hz);
       if (delta != 0) {
         currentLocation.y += delta;
-        Unused << TouchMove(apzc, currentLocation, mcc->Time());
+        (void)TouchMove(apzc, currentLocation, mcc->Time());
       }
     }
 
-    Unused << TouchUp(apzc, currentLocation, mcc->Time());
+    (void)TouchUp(apzc, currentLocation, mcc->Time());
   }
 
   void ExecuteWait(const TimeDuration& aDuration) {

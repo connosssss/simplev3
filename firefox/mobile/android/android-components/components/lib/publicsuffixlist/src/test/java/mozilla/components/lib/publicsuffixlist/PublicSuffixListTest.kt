@@ -5,7 +5,6 @@
 package mozilla.components.lib.publicsuffixlist
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import mozilla.components.support.test.robolectric.testContext
 import org.junit.Assert.assertEquals
@@ -15,7 +14,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
-@ExperimentalCoroutinesApi // for runTest
 @RunWith(AndroidJUnit4::class)
 class PublicSuffixListTest {
 
@@ -166,10 +164,7 @@ class PublicSuffixListTest {
         )
     }
 
-    /**
-     * Short set of test data from:
-     * https://raw.githubusercontent.com/publicsuffix/list/master/tests/test_psl.txt
-     */
+    /** Short set of test data from: https://raw.githubusercontent.com/publicsuffix/list/master/tests/test_psl.txt */
     @Test
     fun `Verify getPublicSuffixPlusOne against official test data`() = runTest {
         // empty input
@@ -187,7 +182,8 @@ class PublicSuffixListTest {
         )
 
         // Leading dot.
-        // ArrayIndexOutOfBoundsException: assertEquals("", publicSuffixList.getPublicSuffixPlusOne(".example.com").await())
+        // ArrayIndexOutOfBoundsException: assertEquals("",
+        // publicSuffixList.getPublicSuffixPlusOne(".example.com").await())
 
         // TLD with only 1 rule.
         assertNull(publicSuffixList.getPublicSuffixPlusOne("biz").await())
@@ -419,9 +415,10 @@ class PublicSuffixListTest {
         }
 
         run {
-            val publicSuffixList = PublicSuffixList(testContext).apply {
-                prefetch().await()
-            }
+            val publicSuffixList =
+                PublicSuffixList(testContext).apply {
+                    prefetch().await()
+                }
             assertEquals("org", publicSuffixList.getPublicSuffix("mozilla.org").await())
         }
     }
@@ -439,7 +436,7 @@ class PublicSuffixListTest {
         assertTrue(publicSuffixList.isPublicSuffix("chirurgiens-dentistes.fr").await())
         assertTrue(publicSuffixList.isPublicSuffix("trani-andria-barletta.it").await())
         assertTrue(publicSuffixList.isPublicSuffix("yabuki.fukushima.jp").await())
-        assertTrue(publicSuffixList.isPublicSuffix("research.museum").await())
+        assertTrue(publicSuffixList.isPublicSuffix("researched.cx").await())
         assertTrue(publicSuffixList.isPublicSuffix("lamborghini").await())
         assertTrue(publicSuffixList.isPublicSuffix("reisen").await())
         assertTrue(publicSuffixList.isPublicSuffix("github.io").await())

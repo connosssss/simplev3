@@ -6,12 +6,10 @@ package mozilla.components.feature.autofill.ui
 
 import android.app.assist.AssistStructure
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 import android.view.autofill.AutofillManager
 import android.widget.EditText
 import android.widget.inline.InlinePresentationSpec
-import androidx.annotation.RequiresApi
 import androidx.core.widget.doOnTextChanged
 import androidx.fragment.app.FragmentActivity
 import androidx.recyclerview.widget.DividerItemDecoration
@@ -39,10 +37,8 @@ import mozilla.components.support.ktx.android.view.showKeyboard
 import mozilla.components.support.utils.ext.getParcelableExtraCompat
 
 /**
- * Activity responsible for letting the user manually search and pick credentials for auto-filling a
- * third-party app.
+ * Activity responsible for letting the user manually search and pick credentials for auto-filling a third-party app.
  */
-@RequiresApi(Build.VERSION_CODES.O)
 abstract class AbstractAutofillSearchActivity : FragmentActivity() {
     abstract val configuration: AutofillConfiguration
 
@@ -117,13 +113,10 @@ abstract class AbstractAutofillSearchActivity : FragmentActivity() {
         val logins = loginsDeferred.await()
 
         val filteredLogins = logins.filter { login ->
-            login.username.contains(text) ||
-                login.origin.contains(text)
+            login.username.contains(text) || login.origin.contains(text)
         }
 
-        if (filteredLogins.isNotEmpty() &&
-            filteredLogins[0].password.isNotEmpty()
-        ) {
+        if (filteredLogins.isNotEmpty() && filteredLogins[0].password.isNotEmpty()) {
             emitLoginPasswordDetectedFact()
         }
 

@@ -14,7 +14,6 @@ add_setup(async function () {
         "privacy.bounceTrackingProtection.mode",
         Ci.nsIBounceTrackingProtection.MODE_ENABLED,
       ],
-      ["privacy.bounceTrackingProtection.requireStatefulBounces", false],
       ["privacy.bounceTrackingProtection.bounceTrackingGracePeriodSec", 0],
     ],
   });
@@ -95,6 +94,86 @@ add_task(async function test_bounce_chain() {
           .sort(),
         [SITE_A, SITE_B].sort(),
         "Should only have user activation for sites where we clicked links."
+      );
+
+      let purgedHosts =
+        await bounceTrackingProtection.testRunPurgeBounceTrackers();
+      Assert.deepEqual(
+        purgedHosts.sort(),
+        [SITE_TRACKER, SITE_TRACKER_B].sort(),
+        "Should purge state for both bounce trackers in the chain."
+      );
+
+      let purgeLog = bounceTrackingProtection.testGetRecentlyPurgedTrackers({});
+      Assert.equal(
+        purgeLog.length,
+        2,
+        "Should have two entries in the purge log."
+      );
+      for (let entry of purgeLog) {
+        let record = entry.bounceTrackingRecord;
+        Assert.ok(
+          record,
+          `Purge log entry for ${entry.siteHost} should have a bounceTrackingRecord.`
+        );
+        Assert.equal(
+          record.initialHost,
+          SITE_A,
+          "Each record should have initialHost = SITE_A."
+        );
+        Assert.equal(
+          record.finalHost,
+          SITE_B,
+          "Each record should have finalHost = SITE_B."
+        );
+        Assert.ok(
+          record.bounceHosts.includes(SITE_TRACKER),
+          `Record for ${entry.siteHost} should include ${SITE_TRACKER} in bounce hosts.`
+        );
+        Assert.ok(
+          record.bounceHosts.includes(SITE_TRACKER_B),
+          `Record for ${entry.siteHost} should include ${SITE_TRACKER_B} in bounce hosts.`
+        );
+      }
+
+      // Test getRecentPurgedChainEntriesForSite: initial host
+      let entriesForA =
+        bounceTrackingProtection.getRecentPurgedChainEntriesForSite(SITE_A);
+      Assert.equal(
+        entriesForA.length,
+        2,
+        "getRecentPurgedChainEntriesForSite should return 2 entries for the initial host."
+      );
+
+      // Test getRecentPurgedChainEntriesForSite: final host
+      let entriesForB =
+        bounceTrackingProtection.getRecentPurgedChainEntriesForSite(SITE_B);
+      Assert.equal(
+        entriesForB.length,
+        2,
+        "getRecentPurgedChainEntriesForSite should return 2 entries for the final host."
+      );
+
+      // Test getRecentPurgedChainEntriesForSite: purged site / bounce host
+      let entriesForTracker =
+        bounceTrackingProtection.getRecentPurgedChainEntriesForSite(
+          SITE_TRACKER
+        );
+      Assert.equal(
+        entriesForTracker.length,
+        2,
+        "getRecentPurgedChainEntriesForSite should return 2 entries for a purged/bounce host."
+      );
+
+      // Test getRecentPurgedChainEntriesForSite: unrelated host
+      let entriesForUnrelated =
+        bounceTrackingProtection.getRecentPurgedChainEntriesForSite(
+          "unrelated.example.com"
+        );
+      Assert.equal(
+        entriesForUnrelated.length,
+        0,
+        "getRecentPurgedChainEntriesForSite should return no entries for an unrelated host."
       );
 
       bounceTrackingProtection.clearAll();

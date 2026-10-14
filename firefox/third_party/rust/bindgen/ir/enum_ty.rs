@@ -59,13 +59,16 @@ impl Enum {
         ctx: &mut BindgenContext,
     ) -> Result<Self, ParseError> {
         use clang_sys::*;
-        debug!("Enum::from_ty {:?}", ty);
+        debug!("Enum::from_ty {ty:?}");
 
         if ty.kind() != CXType_Enum {
             return Err(ParseError::Continue);
         }
 
-        let declaration = ty.declaration().canonical();
+        // Use the enum decl instead of the canonical destination. The
+        // cursor location of the first declaration may be the forward
+        // declaration.
+        let declaration = ty.declaration();
         let repr = declaration
             .enum_type()
             .and_then(|et| Item::from_ty(&et, declaration, None, ctx).ok());
@@ -73,13 +76,13 @@ impl Enum {
 
         let variant_ty =
             repr.and_then(|r| ctx.resolve_type(r).safe_canonical_type(ctx));
-        let is_bool = variant_ty.map_or(false, Type::is_bool);
+        let is_bool = variant_ty.is_some_and(Type::is_bool);
 
         // Assume signedness since the default type by the C standard is an int.
         let is_signed = variant_ty.map_or(true, |ty| match *ty.kind() {
             TypeKind::Int(ref int_kind) => int_kind.is_signed(),
             ref other => {
-                panic!("Since when enums can be non-integers? {:?}", other)
+                panic!("Since when enums can be non-integers? {other:?}")
             }
         });
 
@@ -302,22 +305,27 @@ impl EnumVariant {
         self.val
     }
 
-    /// Get this variant's documentation.
-    pub(crate) fn comment(&self) -> Option<&str> {
-        self.comment.as_deref()
+    /// Get this variant's documentation comment, if it has any, already preprocessed
+    /// and with the right indentation. Returns `None` if comment generation is disabled.
+    pub(crate) fn doc_comment(&self, ctx: &BindgenContext) -> Option<String> {
+        if !ctx.options().generate_comments {
+            return None;
+        }
+
+        self.comment
+            .as_ref()
+            .map(|comment| ctx.options().process_comment(comment))
     }
 
     /// Returns whether this variant should be enforced to be a constant by code
     /// generation.
     pub(crate) fn force_constification(&self) -> bool {
-        self.custom_behavior
-            .map_or(false, |b| b == EnumVariantCustomBehavior::Constify)
+        self.custom_behavior == Some(EnumVariantCustomBehavior::Constify)
     }
 
     /// Returns whether the current variant should be hidden completely from the
     /// resulting rust enum.
     pub(crate) fn hidden(&self) -> bool {
-        self.custom_behavior
-            .map_or(false, |b| b == EnumVariantCustomBehavior::Hide)
+        self.custom_behavior == Some(EnumVariantCustomBehavior::Hide)
     }
 }

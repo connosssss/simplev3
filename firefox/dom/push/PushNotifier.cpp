@@ -1,33 +1,27 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "PushNotifier.h"
 
-#include "nsContentUtils.h"
+#include "mozilla/BasePrincipal.h"
+#include "mozilla/ErrorResult.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/Services.h"
+#include "mozilla/dom/BodyUtil.h"
+#include "mozilla/dom/Declarative.h"
+#include "mozilla/dom/ServiceWorkerManager.h"
 #include "nsCOMPtr.h"
+#include "nsContentUtils.h"
 #include "nsICategoryManager.h"
 #include "nsIPushService.h"
 #include "nsIXULRuntime.h"
 #include "nsNetUtil.h"
+#include "nsThreadUtils.h"
 #include "nsXPCOM.h"
-#include "mozilla/dom/ServiceWorkerManager.h"
-#include "mozilla/BasePrincipal.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/Services.h"
-#include "mozilla/Unused.h"
-
-#include "mozilla/dom/BodyUtil.h"
-#include "mozilla/dom/ContentChild.h"
-#include "mozilla/dom/ContentParent.h"
+#include "xpcpublic.h"
 
 namespace mozilla::dom {
-
-PushNotifier::PushNotifier() = default;
-
-PushNotifier::~PushNotifier() = default;
 
 NS_IMPL_CYCLE_COLLECTION_0(PushNotifier)
 
@@ -43,8 +37,35 @@ NS_IMETHODIMP
 PushNotifier::NotifyPushWithData(const nsACString& aScope,
                                  nsIPrincipal* aPrincipal,
                                  const nsAString& aMessageId,
-                                 const nsTArray<uint8_t>& aData) {
+                                 const nsTArray<uint8_t>& aData, JSContext* aCx,
+                                 Promise** aResult) {
   NS_ENSURE_ARG(aPrincipal);
+
+  nsIGlobalObject* global = xpc::CurrentNativeGlobal(aCx);
+  MOZ_ASSERT(global);
+  RefPtr<Promise> promise = Promise::CreateInfallible(global);
+
+  // Check for Declarative Web Push
+  if (StaticPrefs::dom_push_declarative_enabled()) {
+    RefPtr declarativePushPromise = ParseDeclarativePushAndShowNotification(
+        Span(aData), aPrincipal, aScope);
+    if (declarativePushPromise) {
+      declarativePushPromise->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [messageId = nsString(aMessageId),
+           promise](DeclarativePushPromise::ResolveOrRejectValue&& aResult) {
+            if (aResult.IsReject()) {
+              promise->MaybeReject(aResult.RejectValue());
+            } else {
+              promise->MaybeResolveWithUndefined();
+            }
+            NotifyPushMessageHandled(messageId);
+          });
+      promise.forget(aResult);
+      return NS_OK;
+    }
+  }
+
   // We still need to do this copying business, if we want the copy to be
   // fallible.  Just passing Some(aData) would do an infallible copy at the
   // point where the Some() call happens.
@@ -53,16 +74,27 @@ PushNotifier::NotifyPushWithData(const nsACString& aScope,
     return NS_ERROR_OUT_OF_MEMORY;
   }
   PushMessageDispatcher dispatcher(aScope, aPrincipal, aMessageId,
-                                   Some(std::move(data)));
-  return Dispatch(dispatcher);
+                                   Some(std::move(data)), promise);
+  nsresult rv = Dispatch(dispatcher);
+  promise.forget(aResult);
+  return rv;
 }
 
 NS_IMETHODIMP
 PushNotifier::NotifyPush(const nsACString& aScope, nsIPrincipal* aPrincipal,
-                         const nsAString& aMessageId) {
+                         const nsAString& aMessageId, JSContext* aCx,
+                         Promise** aResult) {
   NS_ENSURE_ARG(aPrincipal);
-  PushMessageDispatcher dispatcher(aScope, aPrincipal, aMessageId, Nothing());
-  return Dispatch(dispatcher);
+
+  nsIGlobalObject* global = xpc::CurrentNativeGlobal(aCx);
+  MOZ_ASSERT(global);
+  RefPtr<Promise> promise = Promise::CreateInfallible(global);
+
+  PushMessageDispatcher dispatcher(aScope, aPrincipal, aMessageId, Nothing(),
+                                   promise);
+  nsresult rv = Dispatch(dispatcher);
+  promise.forget(aResult);
+  return rv;
 }
 
 NS_IMETHODIMP
@@ -91,28 +123,24 @@ PushNotifier::NotifyError(const nsACString& aScope, nsIPrincipal* aPrincipal,
   return Dispatch(dispatcher);
 }
 
+void PushNotifier::NotifyPushMessageHandled(const nsAString& aMessageId) {
+  nsCOMPtr<nsIObserverService> observerService{
+      mozilla::services::GetObserverService()};
+  if (NS_WARN_IF(!observerService)) {
+    return;
+  }
+  observerService->NotifyObservers(nullptr, OBSERVER_TOPIC_PUSH_MESSAGE_HANDLED,
+                                   PromiseFlatString(aMessageId).get());
+}
+
 nsresult PushNotifier::Dispatch(PushDispatcher& aDispatcher) {
-  if (XRE_IsParentProcess()) {
-    // Always notify XPCOM observers in the parent process.
-    Unused << NS_WARN_IF(NS_FAILED(aDispatcher.NotifyObservers()));
+  MOZ_ASSERT(XRE_IsParentProcess());
 
-    // e10s is disabled; notify workers in the parent.
-    return aDispatcher.NotifyWorkers();
-  }
+  // Always notify XPCOM observers in the parent process.
+  (void)NS_WARN_IF(NS_FAILED(aDispatcher.NotifyObservers()));
 
-  // Otherwise, we're in the content process, so e10s must be enabled. Notify
-  // observers and workers, then send a message to notify observers in the
-  // parent.
-  MOZ_ASSERT(XRE_IsContentProcess());
-
-  nsresult rv = aDispatcher.NotifyObserversAndWorkers();
-
-  ContentChild* parentActor = ContentChild::GetSingleton();
-  if (!NS_WARN_IF(!parentActor)) {
-    Unused << NS_WARN_IF(!aDispatcher.SendToParent(parentActor));
-  }
-
-  return rv;
+  // notify workers in the parent.
+  return aDispatcher.NotifyWorkers();
 }
 
 PushData::PushData(const nsTArray<uint8_t>& aData) : mData(aData.Clone()) {}
@@ -209,10 +237,8 @@ PushDispatcher::PushDispatcher(const nsACString& aScope,
 
 PushDispatcher::~PushDispatcher() = default;
 
-nsresult PushDispatcher::HandleNoChildProcesses() { return NS_OK; }
-
 nsresult PushDispatcher::NotifyObserversAndWorkers() {
-  Unused << NS_WARN_IF(NS_FAILED(NotifyObservers()));
+  (void)NS_WARN_IF(NS_FAILED(NotifyObservers()));
   return NotifyWorkers();
 }
 
@@ -222,21 +248,14 @@ bool PushDispatcher::ShouldNotifyWorkers() {
   }
 
   // System subscriptions use observer notifications instead of service worker
-  // events. The `testing.notifyWorkers` pref disables worker events for
-  // non-system subscriptions.
-  if (mPrincipal->IsSystemPrincipal() ||
-      !Preferences::GetBool("dom.push.testing.notifyWorkers", true)) {
+  // events.
+  if (mPrincipal->IsSystemPrincipal()) {
     return false;
   }
 
-  // If e10s is off, no need to worry about processes.
-  if (!BrowserTabsRemoteAutostart()) {
-    return true;
-  }
-
-  // We only want to notify in the parent process.
-  bool isContentProcess = XRE_GetProcessType() == GeckoProcessType_Content;
-  return !isContentProcess;
+  // The `testing.notifyWorkers` pref controls worker events for non-system
+  // subscriptions.
+  return Preferences::GetBool("dom.push.testing.notifyWorkers", true);
 }
 
 nsresult PushDispatcher::DoNotifyObservers(nsISupports* aSubject,
@@ -265,10 +284,12 @@ nsresult PushDispatcher::DoNotifyObservers(nsISupports* aSubject,
 
 PushMessageDispatcher::PushMessageDispatcher(
     const nsACString& aScope, nsIPrincipal* aPrincipal,
-    const nsAString& aMessageId, const Maybe<nsTArray<uint8_t>>& aData)
+    const nsAString& aMessageId, const Maybe<nsTArray<uint8_t>>& aData,
+    Promise* aPromise)
     : PushDispatcher(aScope, aPrincipal),
       mMessageId(aMessageId),
-      mData(aData ? Some(aData->Clone()) : Nothing()) {}
+      mData(aData ? Some(aData->Clone()) : Nothing()),
+      mPromise(aPromise) {}
 
 PushMessageDispatcher::~PushMessageDispatcher() = default;
 
@@ -281,36 +302,42 @@ nsresult PushMessageDispatcher::NotifyObservers() {
   return DoNotifyObservers(message, OBSERVER_TOPIC_PUSH, mScope);
 }
 
-nsresult PushMessageDispatcher::NotifyWorkers() {
+RefPtr<PushHandledPromise> PushMessageDispatcher::SendPushEvent() {
+  // System subscriptions are handled by their observers alone
   if (!ShouldNotifyWorkers()) {
-    return NS_OK;
+    return PushHandledPromise::CreateAndResolve(Ok(), __func__);
   }
+
   RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
   if (!swm) {
-    return NS_ERROR_FAILURE;
+    return PushHandledPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
+
   nsAutoCString originSuffix;
-  nsresult rv = mPrincipal->GetOriginSuffix(originSuffix);
+  nsresult rv{mPrincipal->GetOriginSuffix(originSuffix)};
   if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
+    return PushHandledPromise::CreateAndReject(rv, __func__);
   }
+
   return swm->SendPushEvent(originSuffix, mScope, mMessageId, mData);
 }
 
-bool PushMessageDispatcher::SendToParent(ContentChild* aParentActor) {
-  if (mData) {
-    return aParentActor->SendNotifyPushObserversWithData(
-        mScope, mPrincipal, mMessageId, mData.ref());
-  }
-  return aParentActor->SendNotifyPushObservers(mScope, mPrincipal, mMessageId);
-}
+nsresult PushMessageDispatcher::NotifyWorkers() {
+  // The dispatcher is destroyed before this lambda runs, so copy what it
+  // needs
+  SendPushEvent()->Then(
+      GetMainThreadSerialEventTarget(), __func__,
+      [promise = mPromise, messageId = nsString(mMessageId)](
+          const PushHandledPromise::ResolveOrRejectValue& aResult) {
+        if (aResult.IsReject()) {
+          promise->MaybeReject(aResult.RejectValue());
+        } else {
+          promise->MaybeResolveWithUndefined();
+        }
+        PushNotifier::NotifyPushMessageHandled(messageId);
+      });
 
-bool PushMessageDispatcher::SendToChild(ContentParent* aContentActor) {
-  if (mData) {
-    return aContentActor->SendPushWithData(mScope, mPrincipal, mMessageId,
-                                           mData.ref());
-  }
-  return aContentActor->SendPush(mScope, mPrincipal, mMessageId);
+  return NS_OK;
 }
 
 PushSubscriptionChangeDispatcher::PushSubscriptionChangeDispatcher(
@@ -342,16 +369,6 @@ nsresult PushSubscriptionChangeDispatcher::NotifyWorkers() {
                                               mOldSubscription);
 }
 
-bool PushSubscriptionChangeDispatcher::SendToParent(
-    ContentChild* aParentActor) {
-  return true;
-}
-
-bool PushSubscriptionChangeDispatcher::SendToChild(
-    ContentParent* aContentActor) {
-  return true;
-}
-
 PushSubscriptionModifiedDispatcher::PushSubscriptionModifiedDispatcher(
     const nsACString& aScope, nsIPrincipal* aPrincipal)
     : PushDispatcher(aScope, aPrincipal) {}
@@ -365,18 +382,6 @@ nsresult PushSubscriptionModifiedDispatcher::NotifyObservers() {
 }
 
 nsresult PushSubscriptionModifiedDispatcher::NotifyWorkers() { return NS_OK; }
-
-bool PushSubscriptionModifiedDispatcher::SendToParent(
-    ContentChild* aParentActor) {
-  return aParentActor->SendNotifyPushSubscriptionModifiedObservers(mScope,
-                                                                   mPrincipal);
-}
-
-bool PushSubscriptionModifiedDispatcher::SendToChild(
-    ContentParent* aContentActor) {
-  return aContentActor->SendNotifyPushSubscriptionModifiedObservers(mScope,
-                                                                    mPrincipal);
-}
 
 PushErrorDispatcher::PushErrorDispatcher(const nsACString& aScope,
                                          nsIPrincipal* aPrincipal,
@@ -407,26 +412,6 @@ nsresult PushErrorDispatcher::NotifyWorkers() {
                             mFlags);
   }
   return NS_OK;
-}
-
-bool PushErrorDispatcher::SendToParent(ContentChild* aContentActor) {
-  return aContentActor->SendPushError(mScope, mPrincipal, mMessage, mFlags);
-}
-
-bool PushErrorDispatcher::SendToChild(ContentParent* aContentActor) {
-  return aContentActor->SendPushError(mScope, mPrincipal, mMessage, mFlags);
-}
-
-nsresult PushErrorDispatcher::HandleNoChildProcesses() {
-  // Report to the console if no content processes are active.
-  nsCOMPtr<nsIURI> scopeURI;
-  nsresult rv = NS_NewURI(getter_AddRefs(scopeURI), mScope);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  return nsContentUtils::ReportToConsoleNonLocalized(
-      mMessage, mFlags, "Push"_ns, /* aDocument = */ nullptr,
-      SourceLocation(scopeURI.get()));
 }
 
 }  // namespace mozilla::dom

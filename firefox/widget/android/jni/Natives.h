@@ -1,21 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_jni_Natives_h__
-#define mozilla_jni_Natives_h__
+#ifndef mozilla_jni_Natives_h_
+#define mozilla_jni_Natives_h_
 
 #include <jni.h>
+
 #include <tuple>
 #include <type_traits>
 #include <utility>
 
-#include "mozilla/RefPtr.h"
 #include "mozilla/RWLock.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
 #include "mozilla/WeakPtr.h"
 #include "mozilla/jni/Accessors.h"
 #include "mozilla/jni/Refs.h"
@@ -34,12 +32,12 @@ struct NativeException {
 };
 
 template <class T>
-static NativeException NullHandle() {
+inline NativeException NullHandle() {
   return {FUNCTION_SIGNATURE};
 }
 
 template <class T>
-static NativeException NullWeakPtr() {
+inline NativeException NullWeakPtr() {
   return {FUNCTION_SIGNATURE};
 }
 
@@ -1122,6 +1120,7 @@ class ProxyNativeCall {
       const typename Owner::LocalRef& inst,
       std::index_sequence<Indices...>) const {
     auto impl = NativePtrTraits<Impl>::Access(NativePtrTraits<Impl>::Get(inst));
+    MOZ_ASSERT(impl);
     MOZ_CATCH_JNI_EXCEPTION(inst.Env());
     (impl->*mNativeCall)(inst, std::get<Indices>(mArgs)...);
   }
@@ -1131,6 +1130,7 @@ class ProxyNativeCall {
       const typename Owner::LocalRef& inst,
       std::index_sequence<Indices...>) const {
     auto impl = NativePtrTraits<Impl>::Access(NativePtrTraits<Impl>::Get(inst));
+    MOZ_ASSERT(impl);
     MOZ_CATCH_JNI_EXCEPTION(inst.Env());
     (impl->*mNativeCall)(std::get<Indices>(mArgs)...);
   }
@@ -1139,7 +1139,7 @@ class ProxyNativeCall {
   void Clear(JNIEnv* env, std::index_sequence<Indices...>) {
     int dummy[] = {
         (ProxyArg<Args>::Clear(env, std::get<Indices>(mArgs)), 0)...};
-    mozilla::Unused << dummy;
+    (void)dummy;
   }
 
   static decltype(auto) GetNativeObject(Class::Param thisArg) {
@@ -1537,4 +1537,4 @@ bool NativeImpl<C, I>::sInited;
 }  // namespace jni
 }  // namespace mozilla
 
-#endif  // mozilla_jni_Natives_h__
+#endif  // mozilla_jni_Natives_h_

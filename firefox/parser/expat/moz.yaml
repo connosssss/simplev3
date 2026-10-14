@@ -9,8 +9,8 @@ origin:
   name: libexpat
   description: Expat is an XML parser.
   url: https://github.com/libexpat/libexpat
-  release: R_2_6_4 (2024-11-07T02:31:34+01:00).
-  revision: R_2_6_4
+  release: R_2_8_4 (2026-08-31T15:24:26+02:00).
+  revision: R_2_8_4
   license: MIT
   license-file: COPYING
 
@@ -27,18 +27,23 @@ vendoring:
     - "**"
     - expat/lib/Makefile.am
     - expat/lib/libexpat.def.cmake
+    - expat/lib/libexpat.map.in
+    - expat/lib/memory_sanitizer.h
+    - expat/lib/random_*.c
+    - expat/lib/random_*.h
 
   include:
-    - AUTHORS
-    - Changes
     - COPYING
-    - README.md
+    - expat/AUTHORS
+    - expat/Changes
+    - expat/README.md
     - expat/lib/*
 
   keep:
     - expat_config.h
     - expat_config_moz.h
     - expat_config_rlbox.h
+    - README_MOZILLA
     - rlbox_expat.h
     - rlbox_expat_types.h
     - sources.mozbuild
@@ -48,17 +53,14 @@ vendoring:
 
   patches:
     - 00_xmlchar.patch
-    - 01_noslop.patch
-    - 02_report_mismatched_tag.patch
-    - 03_dont_generate_salt.patch
-    - 04_always_set_eventptrs.patch
-    - 05_getcurrentbyteindex.patch
-    - 06_report_processing_entity.patch
-    - 07_always_store_rawnames.patch
-    - 08_dont_ignore_undeclared_entity.patch
-    - 09_include_xmlns.patch
-    - 10_internalsubset.patch
-    - 11_nested_entities.patch
-    - 12_version_limit.patch
-    - 13_no_debug_report.patch
-    - 14_unused.patch
+    - 01_report_mismatched_tag.patch
+    - 02_dont_generate_salt.patch
+    - 03_always_set_eventptrs.patch
+    - 04_getcurrentbyteindex.patch
+    - 05_always_store_rawnames.patch
+    - 06_dont_ignore_undeclared_entity.patch
+    - 07_include_xmlns.patch
+    - 08_internalsubset.patch
+    - 09_version_limit.patch
+    - 10_no_debug_report.patch
+    - 11_unused.patch

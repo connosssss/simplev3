@@ -1,4 +1,3 @@
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -8,6 +7,7 @@ DIRS += [
 ]
 
 DevToolsModules(
+    "build-query.js",
     "context-menu-utils.js",
     "doc-utils.js",
     "filter-autocomplete-provider.js",
@@ -16,7 +16,6 @@ DevToolsModules(
     "format-utils.js",
     "headers-provider.js",
     "l10n.js",
-    "open-request-in-tab.js",
     "powershell.js",
     "prefs.js",
     "request-blocking.js",
@@ -25,3 +24,8 @@ DevToolsModules(
     "sort-utils.js",
     "tooltips.js",
 )
+
+LICENSED_UNDER += ["google-bsd"]
+LICENSED_UNDER["google-bsd"].paths = [
+    "filter-text-utils.js",
+]

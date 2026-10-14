@@ -9,6 +9,9 @@ transforms:
     - gecko_taskgraph.transforms.task:transforms
 
 
+task-defaults:
+    run-on-repo-type: [hg]
+
 tasks:
     merge-automation:
         name: merge-automation
@@ -36,19 +39,17 @@ tasks:
                     try:
                         by-behavior:
                             main-to-beta: staging-firefox-beta
-                            early-to-late-beta: staging-firefox-beta
                             beta-to-release: staging-firefox-release
-                            release-to-esr: staging-firefox-esr140
+                            release-to-esr: staging-firefox-esr153
                             bump-main: staging-firefox-main
-                            bump-esr140: staging-firefox-esr140
+                            bump-esr153: staging-firefox-esr153
                     default:
                         by-behavior:
                             main-to-beta: firefox-beta
-                            early-to-late-beta: firefox-beta
                             beta-to-release: firefox-release
-                            release-to-esr: firefox-esr140
+                            release-to-esr: firefox-esr153
                             bump-main: firefox-main
-                            bump-esr140: firefox-esr140
+                            bump-esr153: firefox-esr153
             dontbuild: false
             actions:
                 by-behavior:
@@ -81,9 +82,15 @@ tasks:
                                   - - "browser/extensions/newtab/manifest.json"
                                     - '"version": "[0-9]+.[0-9]+.0"'
                                     - '"version": "{next_major_version}.0.0"'
+                                  # Start the next Fenix nightly development cycle: open a new
+                                  # changelog section for the upcoming version and demote the
+                                  # current "In Development" heading to a released section.
+                                  - - "mobile/android/android-components/docs/changelog.md"
+                                    - '# {current_major_version}\.0 \(In Development\)'
+                                    - '# {next_major_version}.0 (In Development)\n\n# {current_major_version}.0'
                               end-tag: 'FIREFOX_NIGHTLY_{major_version}_END'
                               to-branch: 'main'
-                    bump-esr140:
+                    bump-esr153:
                         - esr-bump:
                               fetch-version-from: "browser/config/version.txt"
                               version-files:
@@ -94,15 +101,7 @@ tasks:
                                   - filename: "browser/config/version_display.txt"
                                     version-bump: "minor"
                                     new-suffix: "esr"
-                              to-branch: 'esr140'
-                    early-to-late-beta:
-                        - early-to-late-beta:
-                              fetch-version-from: "browser/config/version.txt"
-                              replacements:
-                                  - - build/defines.sh
-                                    - EARLY_BETA_OR_EARLIER=1
-                                    - EARLY_BETA_OR_EARLIER=
-                              to-branch: 'beta'
+                              to-branch: 'esr153'
                     main-to-beta:
                         - uplift:
                               fetch-version-from: "browser/config/version.txt"
@@ -116,9 +115,6 @@ tasks:
                                   - filename: "mobile/android/version.txt"
                                     new-suffix: 'b1'
                               replacements:
-                                  - - browser/config/mozconfigs/linux32/l10n-mozconfig
-                                    - ac_add_options --with-branding=browser/branding/nightly
-                                    - ac_add_options --enable-official-branding
                                   - - browser/config/mozconfigs/linux64/l10n-mozconfig
                                     - ac_add_options --with-branding=browser/branding/nightly
                                     - ac_add_options --enable-official-branding
@@ -151,8 +147,6 @@ tasks:
                                             - macosx64
                                             - macosx64-devedition
                                         ja-JP-mac:
-                                            - linux
-                                            - linux-devedition
                                             - linux64
                                             - linux64-aarch64
                                             - linux64-devedition
@@ -165,8 +159,6 @@ tasks:
                                             - win64-aarch64-devedition
                                     platform-configs: [{
                                         "platforms": [
-                                            "linux",
-                                            "linux-devedition",
                                             "linux64",
                                             "linux64-aarch64",
                                             "linux64-devedition",
@@ -214,7 +206,7 @@ tasks:
                               from-branch: 'beta'
                               to-branch: 'release'
                     release-to-esr:
-                        - uplift:
+                        - merge-day:
                               fetch-version-from: "browser/config/version.txt"
                               version-files:
                                   - filename: "browser/config/version_display.txt"
@@ -222,9 +214,9 @@ tasks:
                               replacements:
                                   - - .arcconfig
                                     - FIREFOXRELEASE
-                                    - FIREFOXESRONEFOURZERO
+                                    - FIREFOXESRONEFIVETHREE
                               end-tag: "FIREFOX_ESR_{major_version}_BASE"
-                              to-branch: 'esr140'
+                              to-branch: 'esr153'
         run-on-projects: []
         expiration-policy: long
         extra:

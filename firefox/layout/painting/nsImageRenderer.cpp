@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,26 +11,26 @@
 #ifdef MOZ_WIDGET_GTK
 #  include "nsIconChannel.h"
 #endif
-#include "gfxContext.h"
-#include "gfxDrawable.h"
 #include "ImageOps.h"
 #include "ImageRegion.h"
+#include "gfxContext.h"
+#include "gfxDrawable.h"
+#include "mozilla/ISVGDisplayableFrame.h"
+#include "mozilla/SVGIntegrationUtils.h"
+#include "mozilla/SVGObserverUtils.h"
+#include "mozilla/SVGPaintServerFrame.h"
+#include "mozilla/StaticPrefs_image.h"
 #include "mozilla/image/WebRenderImageProvider.h"
 #include "mozilla/layers/RenderRootStateManager.h"
 #include "mozilla/layers/StackingContextHelper.h"
 #include "mozilla/layers/WebRenderLayerManager.h"
-#include "nsContentUtils.h"
 #include "nsCSSRendering.h"
 #include "nsCSSRenderingGradients.h"
+#include "nsContentUtils.h"
 #include "nsDeviceContext.h"
 #include "nsIFrame.h"
 #include "nsLayoutUtils.h"
 #include "nsStyleStructInlines.h"
-#include "mozilla/StaticPrefs_image.h"
-#include "mozilla/ISVGDisplayableFrame.h"
-#include "mozilla/SVGIntegrationUtils.h"
-#include "mozilla/SVGPaintServerFrame.h"
-#include "mozilla/SVGObserverUtils.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -56,7 +54,7 @@ nsImageRenderer::nsImageRenderer(nsIFrame* aForFrame, const StyleImage* aImage,
                                  uint32_t aFlags)
     : mForFrame(aForFrame),
       mImage(&aImage->FinalImage()),
-      mImageResolution(aImage->GetResolution(*aForFrame->Style())),
+      mImageResolution(aImage->GetResolution(aForFrame->Style())),
       mType(mImage->tag),
       mImageContainer(nullptr),
       mGradientData(nullptr),
@@ -65,7 +63,11 @@ nsImageRenderer::nsImageRenderer(nsIFrame* aForFrame, const StyleImage* aImage,
       mSize(0, 0),
       mFlags(aFlags),
       mExtendMode(ExtendMode::CLAMP),
-      mMaskOp(StyleMaskMode::MatchSource) {}
+      mMaskOp(StyleMaskMode::MatchSource) {
+  if (aForFrame->UsedImageDecoding() == StyleImageDecoding::Sync) {
+    mFlags |= FLAG_SYNC_DECODE_IMAGES;
+  }
+}
 
 using SymbolicImageKey = std::tuple<RefPtr<nsAtom>, int, nscolor>;
 struct SymbolicImageEntry {
@@ -74,7 +76,8 @@ struct SymbolicImageEntry {
 };
 struct SymbolicImageCache final
     : public mozilla::MruCache<SymbolicImageKey, SymbolicImageEntry,
-                               SymbolicImageCache, 5> {
+                               SymbolicImageCache, 8> {
+  static bool IsEmpty(const ValueType& aVal) { return !std::get<0>(aVal.mKey); }
   static HashNumber Hash(const KeyType& aKey) {
     return AddToHash(std::get<0>(aKey)->hash(),
                      HashGeneric(std::get<1>(aKey), std::get<2>(aKey)));
@@ -94,11 +97,7 @@ static already_AddRefed<imgIContainer> GetSymbolicIconImage(nsAtom* aName,
   }
   const auto fg = aFrame->StyleText()->mColor.ToColor();
   auto key = std::make_tuple(aName, aScale, fg);
-  auto* cache = aFrame->GetProperty(SymbolicImageCacheProp());
-  if (!cache) {
-    cache = new SymbolicImageCache();
-    aFrame->SetProperty(SymbolicImageCacheProp(), cache);
-  }
+  auto* cache = aFrame->GetOrCreateDeletableProperty(SymbolicImageCacheProp());
   auto lookup = cache->Lookup(key);
   if (lookup) {
     return do_AddRef(lookup.Data().mImage);
@@ -111,7 +110,7 @@ static already_AddRefed<imgIContainer> GetSymbolicIconImage(nsAtom* aName,
   if (NS_WARN_IF(!surface)) {
     return nullptr;
   }
-  RefPtr drawable = new gfxSurfaceDrawable(surface, surface->GetSize());
+  auto drawable = MakeRefPtr<gfxSurfaceDrawable>(surface, surface->GetSize());
   nsCOMPtr<imgIContainer> container = ImageOps::CreateFromDrawable(drawable);
   MOZ_ASSERT(container);
   lookup.Set(SymbolicImageEntry{std::move(key), std::move(container)});
@@ -253,6 +252,8 @@ bool nsImageRenderer::PrepareImage() {
     // on.
     mPrepareResult = ImgDrawResult::BAD_IMAGE;
     return false;
+  } else if (mImage->IsImage()) {
+    mPrepareResult = ImgDrawResult::SUCCESS;
   } else {
     MOZ_ASSERT(mImage->IsNone(), "Unknown image type?");
   }
@@ -333,6 +334,7 @@ CSSSizeOrRatio nsImageRenderer::ComputeIntrinsicSize() {
     // Per <http://dev.w3.org/csswg/css3-images/#gradients>, gradients have no
     // intrinsic dimensions.
     case StyleImage::Tag::Gradient:
+    case StyleImage::Tag::Image:
     case StyleImage::Tag::None:
       break;
   }
@@ -527,24 +529,19 @@ ImgDrawResult nsImageRenderer::Draw(nsPresContext* aPresContext,
   ImgDrawResult result = ImgDrawResult::SUCCESS;
   gfxContext* ctx = &aRenderingContext;
   Maybe<gfxContext> tempCtx;
-  IntRect tmpDTRect;
+  CompositionOp savedCompositionOp = CompositionOp::OP_OVER;
 
-  if (ctx->CurrentOp() != CompositionOp::OP_OVER ||
-      mMaskOp == StyleMaskMode::Luminance) {
-    gfxRect clipRect = ctx->GetClipExtents(gfxContext::eDeviceSpace);
-    tmpDTRect = RoundedOut(ToRect(clipRect));
-    if (tmpDTRect.IsEmpty()) {
-      return ImgDrawResult::SUCCESS;
-    }
-    RefPtr<DrawTarget> tempDT = ctx->GetDrawTarget()->CreateSimilarDrawTarget(
-        tmpDTRect.Size(), SurfaceFormat::B8G8R8A8);
+  if (mMaskOp == StyleMaskMode::Luminance) {
+    savedCompositionOp = ctx->CurrentOp();
+    ctx->SetOp(CompositionOp::OP_OVER);
+
+    RefPtr<DrawTarget> tempDT = ctx->GetDrawTarget()->CreateClippedDrawTarget(
+        Rect(), SurfaceFormat::B8G8R8A8);
     if (!tempDT || !tempDT->IsValid()) {
       gfxDevCrash(LogReason::InvalidContext)
           << "ImageRenderer::Draw problem " << gfx::hexa(tempDT);
       return ImgDrawResult::TEMPORARY_ERROR;
     }
-    tempDT->SetTransform(ctx->GetDrawTarget()->GetTransform() *
-                         Matrix::Translation(-tmpDTRect.TopLeft()));
     tempCtx.emplace(tempDT, /* aPreserveTransform */ true);
     ctx = &tempCtx.ref();
     if (!ctx) {
@@ -552,6 +549,15 @@ ImgDrawResult nsImageRenderer::Draw(nsPresContext* aPresContext,
           << "ImageRenderer::Draw problem " << gfx::hexa(tempDT);
       return ImgDrawResult::TEMPORARY_ERROR;
     }
+  } else if (ctx->CurrentOp() != CompositionOp::OP_OVER) {
+    savedCompositionOp = ctx->CurrentOp();
+    ctx->SetOp(CompositionOp::OP_OVER);
+
+    IntRect clipRect =
+        RoundedOut(ToRect(ctx->GetClipExtents(gfxContext::eDeviceSpace)));
+    ctx->GetDrawTarget()->PushLayerWithBlend(false, 1.0, nullptr,
+                                             mozilla::gfx::Matrix(), clipRect,
+                                             false, savedCompositionOp);
   }
 
   switch (mType) {
@@ -561,6 +567,17 @@ ImgDrawResult nsImageRenderer::Draw(nsPresContext* aPresContext,
           *ctx, mForFrame, aPresContext, mImageContainer, samplingFilter, aDest,
           aFill, aRepeatSize, aAnchor, aDirtyRect,
           ConvertImageRendererToDrawFlags(mFlags), mExtendMode, aOpacity);
+      break;
+    }
+    case StyleImage::Tag::Image: {
+      const auto fill = LayoutDeviceRect::FromAppUnits(
+          aFill, aPresContext->AppUnitsPerDevPixel());
+      nscolor color = mImage->AsImage()->CalcColor(mForFrame);
+      if (NS_GET_A(color)) {
+        ctx->GetDrawTarget()->FillRect(fill.ToUnknownRect(),
+                                       ColorPattern(ToDeviceColor(color)),
+                                       DrawOptions(/* aAlpha = */ aOpacity));
+      }
       break;
     }
     case StyleImage::Tag::Gradient: {
@@ -596,27 +613,19 @@ ImgDrawResult nsImageRenderer::Draw(nsPresContext* aPresContext,
       break;
   }
 
-  if (!tmpDTRect.IsEmpty()) {
+  if (mMaskOp == StyleMaskMode::Luminance) {
+    RefPtr<SourceSurface> surf = ctx->GetDrawTarget()->IntoLuminanceSource(
+        LuminanceType::LUMINANCE, 1.0f);
     DrawTarget* dt = aRenderingContext.GetDrawTarget();
     Matrix oldTransform = dt->GetTransform();
     dt->SetTransform(Matrix());
-    if (mMaskOp == StyleMaskMode::Luminance) {
-      RefPtr<SourceSurface> surf = ctx->GetDrawTarget()->IntoLuminanceSource(
-          LuminanceType::LUMINANCE, 1.0f);
-      dt->MaskSurface(ColorPattern(DeviceColor(0, 0, 0, 1.0f)), surf,
-                      tmpDTRect.TopLeft(),
-                      DrawOptions(1.0f, aRenderingContext.CurrentOp()));
-    } else {
-      RefPtr<SourceSurface> surf = ctx->GetDrawTarget()->Snapshot();
-      dt->DrawSurface(
-          surf,
-          Rect(tmpDTRect.x, tmpDTRect.y, tmpDTRect.width, tmpDTRect.height),
-          Rect(0, 0, tmpDTRect.width, tmpDTRect.height),
-          DrawSurfaceOptions(SamplingFilter::POINT),
-          DrawOptions(1.0f, aRenderingContext.CurrentOp()));
-    }
-
+    dt->MaskSurface(ColorPattern(DeviceColor(0, 0, 0, 1.0f)), surf, Point(0, 0),
+                    DrawOptions(1.0f, savedCompositionOp));
     dt->SetTransform(oldTransform);
+    aRenderingContext.SetOp(savedCompositionOp);
+  } else if (savedCompositionOp != CompositionOp::OP_OVER) {
+    aRenderingContext.GetDrawTarget()->PopLayer();
+    aRenderingContext.SetOp(savedCompositionOp);
   }
 
   if (!mImage->IsComplete()) {
@@ -671,25 +680,21 @@ ImgDrawResult nsImageRenderer::BuildWebRenderDisplayItems(
         containerFlags |= imgIContainer::FLAG_RECORD_BLOB;
       }
 
-      CSSIntSize destCSSSize{
-          nsPresContext::AppUnitsToIntCSSPixels(aDest.width),
-          nsPresContext::AppUnitsToIntCSSPixels(aDest.height)};
-
-      SVGImageContext svgContext(Some(destCSSSize));
+      SVGImageContext svgContext(Some(CSSSize::FromAppUnits(aDest.Size())));
       Maybe<ImageIntRegion> region;
 
-      const int32_t appUnitsPerDevPixel =
-          mForFrame->PresContext()->AppUnitsPerDevPixel();
-      LayoutDeviceRect destRect =
+      const int32_t appUnitsPerDevPixel = aPresContext->AppUnitsPerDevPixel();
+      const auto destRect =
           LayoutDeviceRect::FromAppUnits(aDest, appUnitsPerDevPixel);
-      LayoutDeviceRect clipRect =
+      const auto clipRect =
           LayoutDeviceRect::FromAppUnits(aFill, appUnitsPerDevPixel);
       auto stretchSize = wr::ToLayoutSize(destRect.Size());
 
+      bool rasterizedForDest = false;
       gfx::IntSize decodeSize =
           nsLayoutUtils::ComputeImageContainerDrawingParameters(
-              mImageContainer, mForFrame, destRect, clipRect, aSc,
-              containerFlags, svgContext, region);
+              mImageContainer, mForFrame, destRect, clipRect, aBuilder, aSc,
+              containerFlags, svgContext, region, &rasterizedForDest);
 
       RefPtr<image::WebRenderImageProvider> provider;
       drawResult = mImageContainer->GetImageProvider(
@@ -715,7 +720,8 @@ ImgDrawResult nsImageRenderer::BuildWebRenderDisplayItems(
         // The image is not repeating. Just push as a regular image.
         aBuilder.PushImage(dest, clip, !aItem->BackfaceIsHidden(), false,
                            rendering, key.value(), true,
-                           wr::ColorF{1.0f, 1.0f, 1.0f, aOpacity});
+                           wr::ColorF{1.0f, 1.0f, 1.0f, aOpacity}, false, false,
+                           rasterizedForDest);
       } else {
         nsPoint firstTilePos = nsLayoutUtils::GetBackgroundFirstTilePos(
             aDest.TopLeft(), aFill.TopLeft(), aRepeatSize);
@@ -748,6 +754,19 @@ ImgDrawResult nsImageRenderer::BuildWebRenderDisplayItems(
                                     stretchSize, wr::ToLayoutSize(gapSize),
                                     rendering, key.value(), true,
                                     wr::ColorF{1.0f, 1.0f, 1.0f, aOpacity});
+      }
+      break;
+    }
+    case StyleImage::Tag::Image: {
+      nscolor color = mImage->AsImage()->CalcColor(mForFrame);
+      if (NS_GET_A(color)) {
+        const int32_t appUnitsPerDevPixel = aPresContext->AppUnitsPerDevPixel();
+        auto fillRect = wr::ToLayoutRect(
+            LayoutDeviceRect::FromAppUnits(aFill, appUnitsPerDevPixel));
+        aBuilder.PushRect(fillRect, fillRect, !aItem->BackfaceIsHidden(),
+                          /* aFoceAntiAliasing = */ false,
+                          /* aIsCheckerboard = */ false,
+                          wr::ToColorF(ToDeviceColor(color)));
       }
       break;
     }
@@ -787,17 +806,16 @@ already_AddRefed<gfxDrawable> nsImageRenderer::DrawableForElement(
       drawable = SVGIntegrationUtils::DrawableFromPaintServer(
           mPaintServerFrame, mForFrame, mSize, imageSize,
           aContext.GetDrawTarget(), aContext.CurrentMatrixDouble(),
-          SVGIntegrationUtils::FLAG_SYNC_DECODE_IMAGES);
+          SVGIntegrationUtils::DecodeFlag::SyncDecodeImages);
     }
 
     return drawable.forget();
   }
   NS_ASSERTION(mImageElementSurface.GetSourceSurface(),
                "Surface should be ready.");
-  RefPtr<gfxDrawable> drawable =
-      new gfxSurfaceDrawable(mImageElementSurface.GetSourceSurface().get(),
-                             mImageElementSurface.mSize);
-  return drawable.forget();
+  return MakeAndAddRef<gfxSurfaceDrawable>(
+      mImageElementSurface.GetSourceSurface().get(),
+      mImageElementSurface.mSize);
 }
 
 ImgDrawResult nsImageRenderer::DrawLayer(
@@ -945,7 +963,7 @@ ImgDrawResult nsImageRenderer::DrawBorderImageComponent(
     const nsRect& aDirtyRect, const nsRect& aFill, const CSSIntRect& aSrc,
     StyleBorderImageRepeatKeyword aHFill, StyleBorderImageRepeatKeyword aVFill,
     const nsSize& aUnitSize, uint8_t aIndex,
-    const Maybe<nsSize>& aSVGViewportSize, const bool aHasIntrinsicRatio) {
+    const Maybe<CSSSize>& aSVGViewportSize, const bool aHasIntrinsicRatio) {
   if (!IsReady()) {
     MOZ_ASSERT_UNREACHABLE(
         "Ensure PrepareImage() has returned true before "
@@ -1006,9 +1024,14 @@ ImgDrawResult nsImageRenderer::DrawBorderImageComponent(
         nsLayoutUtils::GetSamplingFilterForFrame(mForFrame);
 
     if (!RequiresScaling(aFill, aHFill, aVFill, aUnitSize)) {
+      SVGImageContext svgContext;
+      SVGImageContext::MaybeStoreContextPaint(svgContext, mForFrame, subImage);
+      if (aSVGViewportSize) {
+        svgContext.SetViewportSize(aSVGViewportSize);
+      }
       ImgDrawResult result = nsLayoutUtils::DrawSingleImage(
           aRenderingContext, aPresContext, subImage, samplingFilter, aFill,
-          aDirtyRect, SVGImageContext(), drawFlags);
+          aDirtyRect, svgContext, drawFlags);
 
       if (!mImage->IsComplete()) {
         result &= ImgDrawResult::SUCCESS_NOT_COMPLETE;

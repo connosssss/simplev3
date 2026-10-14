@@ -1,14 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "CompositableTransactionParent.h"
+
 #include "CompositableHost.h"        // for CompositableParent, etc
 #include "CompositorBridgeParent.h"  // for CompositorBridgeParent
 #include "mozilla/Assertions.h"      // for MOZ_ASSERT, etc
-#include "mozilla/RefPtr.h"          // for RefPtr
+#include "mozilla/Logging.h"
+#include "mozilla/RefPtr.h"  // for RefPtr
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/ImageBridgeParent.h"  // for ImageBridgeParent
 #include "mozilla/layers/LayersSurfaces.h"     // for SurfaceDescriptor
@@ -16,12 +16,15 @@
 #include "mozilla/layers/TextureHost.h"        // for TextureHost
 #include "mozilla/layers/WebRenderImageHost.h"
 #include "mozilla/mozalloc.h"  // for operator delete
-#include "mozilla/Unused.h"
-#include "nsDebug.h"   // for NS_WARNING, NS_ASSERTION
-#include "nsRegion.h"  // for nsIntRegion
+#include "nsDebug.h"           // for NS_WARNING, NS_ASSERTION
+#include "nsRegion.h"          // for nsIntRegion
+#include "nsTHashSet.h"
 
 namespace mozilla {
 namespace layers {
+
+mozilla::LazyLogModule gCompositableTextureParentLog(
+    "CompositableTextureParent");
 
 bool CompositableParentManager::ReceiveCompositableUpdate(
     const CompositableOperation& aEdit) {
@@ -62,6 +65,9 @@ bool CompositableParentManager::ReceiveCompositableUpdate(
 
       AutoTArray<CompositableHost::TimedTexture, 4> textures;
       for (auto& timedTexture : op.textures()) {
+        MOZ_LOG_FMT(gCompositableTextureParentLog, LogLevel::Debug,
+                    "ReceiveCompositableUpdate:TOpUseTexture id={}",
+                    timedTexture.frameID());
         CompositableHost::TimedTexture* t = textures.AppendElement();
         t->mTexture =
             TextureHost::AsTextureHost(timedTexture.texture().AsParent());
@@ -98,7 +104,7 @@ bool CompositableParentManager::ReceiveCompositableUpdate(
       host->PushPendingRemoteTexture(op.textureId(), op.ownerId(),
                                      GetChildProcessId(), op.size(),
                                      op.textureFlags());
-      host->UseRemoteTexture();
+      host->UseRemoteTexture(/* aCalledInCallback */ false);
       break;
     }
     default: {
@@ -123,6 +129,21 @@ void CompositableParentManager::DestroyActor(const OpDestroy& aOp) {
     default: {
       MOZ_ASSERT(false, "unsupported type");
     }
+  }
+}
+
+void CompositableParentManager::DestroyActors(
+    const nsTArray<OpDestroy>& aToDestroy) {
+  nsTHashSet<PTextureParent*> seenTextureParents;
+  for (const auto& op : aToDestroy) {
+    if (op.type() == OpDestroy::TPTexture) {
+      PTextureParent* textureParent = op.get_PTexture().AsParent();
+      if (!seenTextureParents.EnsureInserted(textureParent)) {
+        // Already destroyed this one in the current batch; skip.
+        continue;
+      }
+    }
+    DestroyActor(op);
   }
 }
 

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -7,8 +5,6 @@
 #include "LoaderPrivateAPI.h"
 
 #include "mozilla/Assertions.h"
-#include "mozilla/Types.h"
-#include "mozilla/Unused.h"
 #include "../DllBlocklistInit.h"
 #include "../ErrorHandler.h"
 #include "SharedSection.h"
@@ -129,7 +125,8 @@ void DefaultLoaderObserver::OnEndDllLoad(void* aContext, NTSTATUS aNtStatus,
                                          ModuleLoadInfo&& aModuleLoadInfo) {
   // If the DLL load failed, or if the DLL was loaded by a previous request
   // and thus was not mapped by this request, we do not save the ModuleLoadInfo.
-  if (!NT_SUCCESS(aNtStatus) || !aModuleLoadInfo.WasMapped()) {
+  if (!aModuleLoadInfo.HasCompatibleLayout() || !NT_SUCCESS(aNtStatus) ||
+      !aModuleLoadInfo.WasMapped()) {
     return;
   }
 
@@ -141,7 +138,7 @@ void DefaultLoaderObserver::OnEndDllLoad(void* aContext, NTSTATUS aNtStatus,
     }
   }
 
-  Unused << mModuleLoads->emplaceBack(
+  (void)mModuleLoads->emplaceBack(
       std::forward<ModuleLoadInfo>(aModuleLoadInfo));
 }
 
@@ -192,10 +189,15 @@ bool LoaderPrivateAPIImp::SubstituteForLSP(PCUNICODE_STRING aLSPLeafName,
 void LoaderPrivateAPIImp::NotifyEndDllLoad(void* aContext,
                                            NTSTATUS aLoadNtStatus,
                                            ModuleLoadInfo&& aModuleLoadInfo) {
-  aModuleLoadInfo.SetEndLoadTimeStamp();
+  // If the ModuleLoadInfo came from an incompatible mozglue.dll then don't use
+  // it.  Note that the OnEndDllLoad method is in the mozglue's DLL, so using
+  // it there is fine.
+  if (aModuleLoadInfo.HasCompatibleLayout()) {
+    aModuleLoadInfo.SetEndLoadTimeStamp();
 
-  if (NT_SUCCESS(aLoadNtStatus)) {
-    aModuleLoadInfo.CaptureBacktrace();
+    if (NT_SUCCESS(aLoadNtStatus)) {
+      aModuleLoadInfo.CaptureBacktrace();
+    }
   }
 
   // This method should only be called after a matching call to

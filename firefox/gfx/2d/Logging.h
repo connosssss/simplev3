@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +5,10 @@
 #ifndef MOZILLA_GFX_LOGGING_H_
 #define MOZILLA_GFX_LOGGING_H_
 
-#include <string>
-#include <sstream>
 #include <stdio.h>
+
+#include <sstream>
+#include <string>
 #include <vector>
 
 #ifdef MOZ_LOGGING
@@ -20,12 +19,11 @@
 #  include "nsDebug.h"
 #endif
 #include "2D.h"
-#include "mozilla/Atomics.h"
-#include "mozilla/StaticPrefs_gfx.h"
-#include "Point.h"
 #include "BaseRect.h"
-#include "Matrix.h"
 #include "LoggingConstants.h"
+#include "Matrix.h"
+#include "Point.h"
+#include "mozilla/StaticPrefs_gfx.h"
 
 #if defined(MOZ_LOGGING)
 extern GFX2D_API mozilla::LogModule* GetGFX2DLog();
@@ -92,15 +90,12 @@ enum class LogReason : int {
   D3D11FinalizeFrame,
   D3D10SyncLock,
   D3D11SyncLock,
-  D2D1NoWriteMap,
   JobStatusError,
   FilterInputError,
   FilterInputData,  // 10
   FilterInputRect,
   FilterInputSet,
   FilterInputFormat,
-  FilterNodeD2D1Target,
-  FilterNodeD2D1Backend,
   SourceSurfaceIncompatible,
   GlyphAllocFailedCairo,
   GlyphAllocFailedCG,
@@ -615,35 +610,14 @@ class Log final {
   }
   Log& operator<<(SurfaceFormat aFormat) {
     if (MOZ_UNLIKELY(LogIt())) {
-      switch (aFormat) {
-        case SurfaceFormat::B8G8R8A8:
-          mMessage << "SurfaceFormat::B8G8R8A8";
-          break;
-        case SurfaceFormat::B8G8R8X8:
-          mMessage << "SurfaceFormat::B8G8R8X8";
-          break;
-        case SurfaceFormat::R8G8B8A8:
-          mMessage << "SurfaceFormat::R8G8B8A8";
-          break;
-        case SurfaceFormat::R8G8B8X8:
-          mMessage << "SurfaceFormat::R8G8B8X8";
-          break;
-        case SurfaceFormat::R5G6B5_UINT16:
-          mMessage << "SurfaceFormat::R5G6B5_UINT16";
-          break;
-        case SurfaceFormat::A8:
-          mMessage << "SurfaceFormat::A8";
-          break;
-        case SurfaceFormat::YUV420:
-          mMessage << "SurfaceFormat::YUV420";
-          break;
-        case SurfaceFormat::UNKNOWN:
-          mMessage << "SurfaceFormat::UNKNOWN";
-          break;
-        default:
-          mMessage << "Invalid SurfaceFormat (" << (int)aFormat << ")";
-          break;
-      }
+      mMessage << aFormat;
+    }
+    return *this;
+  }
+
+  Log& operator<<(ColorDepth aColorDepth) {
+    if (MOZ_UNLIKELY(LogIt())) {
+      mMessage << aColorDepth;
     }
     return *this;
   }
@@ -653,12 +627,6 @@ class Log final {
       switch (aType) {
         case SurfaceType::DATA:
           mMessage << "SurfaceType::DATA";
-          break;
-        case SurfaceType::D2D1_BITMAP:
-          mMessage << "SurfaceType::D2D1_BITMAP";
-          break;
-        case SurfaceType::D2D1_DRAWTARGET:
-          mMessage << "SurfaceType::D2D1_DRAWTARGET";
           break;
         case SurfaceType::CAIRO:
           mMessage << "SurfaceType::CAIRO";
@@ -675,11 +643,11 @@ class Log final {
         case SurfaceType::SKIA:
           mMessage << "SurfaceType::SKIA";
           break;
-        case SurfaceType::D2D1_1_IMAGE:
-          mMessage << "SurfaceType::D2D1_1_IMAGE";
-          break;
         case SurfaceType::RECORDING:
           mMessage << "SurfaceType::RECORDING";
+          break;
+        case SurfaceType::CANVAS_RECORDING:
+          mMessage << "SurfaceType::CANVAS_RECORDING";
           break;
         case SurfaceType::DATA_SHARED:
           mMessage << "SurfaceType::DATA_SHARED";

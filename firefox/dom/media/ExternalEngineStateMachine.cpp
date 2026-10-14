@@ -4,22 +4,28 @@
 
 #include "ExternalEngineStateMachine.h"
 
+#include <memory>
+
 #include "PerformanceRecorder.h"
 #ifdef MOZ_WMF_MEDIA_ENGINE
 #  include "MFMediaEngineDecoderModule.h"
 #  include "mozilla/MFMediaEngineChild.h"
 #  include "mozilla/StaticPrefs_media.h"
 #endif
+#ifdef MOZ_WMF_CDM
+#  include "mozilla/EMEUtils.h"
+#endif
+#include "VideoUtils.h"
 #include "mozilla/AppShutdown.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/ProfilerLabels.h"
-#include "mozilla/UniquePtr.h"
 #include "mozilla/StaticMutex.h"
+#include "mozilla/UniquePtr.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/glean/DomMediaPlatformsWmfMetrics.h"
 #include "nsPrintfCString.h"
 #include "nsThreadUtils.h"
-#include "VideoUtils.h"
 
 namespace mozilla {
 
@@ -27,12 +33,13 @@ extern LazyLogModule gMediaDecoderLog;
 
 #define FMT(x, ...) \
   "Decoder=%p, State=%s, " x, mDecoderID, GetStateStr(), ##__VA_ARGS__
-#define LOG(x, ...)                                                        \
-  DDMOZ_LOG(gMediaDecoderLog, LogLevel::Debug, "Decoder=%p, State=%s, " x, \
-            mDecoderID, GetStateStr(), ##__VA_ARGS__)
-#define LOGV(x, ...)                                                         \
-  DDMOZ_LOG(gMediaDecoderLog, LogLevel::Verbose, "Decoder=%p, State=%s, " x, \
-            mDecoderID, GetStateStr(), ##__VA_ARGS__)
+#define LOG(x, ...)                                                            \
+  DDMOZ_LOG_FMT(gMediaDecoderLog, LogLevel::Debug, "Decoder={}, State={}, " x, \
+                fmt::ptr(mDecoderID), GetStateStr(), ##__VA_ARGS__)
+#define LOGV(x, ...)                                              \
+  DDMOZ_LOG_FMT(gMediaDecoderLog, LogLevel::Verbose,              \
+                "Decoder={}, State={}, " x, fmt::ptr(mDecoderID), \
+                GetStateStr(), ##__VA_ARGS__)
 #define LOGW(x, ...) NS_WARNING(nsPrintfCString(FMT(x, ##__VA_ARGS__)).get())
 #define LOGE(x, ...)                                                   \
   NS_DebugBreak(NS_DEBUG_WARNING,                                      \
@@ -98,6 +105,8 @@ class ProcessCrashMonitor final {
     }
     return monitor->mCrashNums <= monitor->mMaxCrashes;
   }
+  ProcessCrashMonitor(const ProcessCrashMonitor&) = delete;
+  ProcessCrashMonitor& operator=(const ProcessCrashMonitor&) = delete;
 
  private:
   ProcessCrashMonitor() : mCrashNums(0) {
@@ -107,8 +116,6 @@ class ProcessCrashMonitor final {
     mMaxCrashes = 0;
 #endif
   };
-  ProcessCrashMonitor(const ProcessCrashMonitor&) = delete;
-  ProcessCrashMonitor& operator=(const ProcessCrashMonitor&) = delete;
 
   static ProcessCrashMonitor* EnsureInstance() {
     if (sIsShutdown) {
@@ -130,13 +137,17 @@ class ProcessCrashMonitor final {
     return sCrashMonitor.get();
   }
 
-  static inline StaticMutex sMutex;
-  static inline MOZ_RUNINIT UniquePtr<ProcessCrashMonitor> sCrashMonitor;
-  static inline Atomic<bool> sIsShutdown{false};
+  static StaticMutex sMutex;
+  static UniquePtr<ProcessCrashMonitor> sCrashMonitor;
+  static Atomic<bool> sIsShutdown;
 
   uint32_t mCrashNums;
   uint32_t mMaxCrashes;
 };
+
+StaticMutex ProcessCrashMonitor::sMutex;
+constinit UniquePtr<ProcessCrashMonitor> ProcessCrashMonitor::sCrashMonitor;
+Atomic<bool> ProcessCrashMonitor::sIsShutdown{false};
 
 /* static */
 const char* ExternalEngineStateMachine::StateToStr(State aNextState) {
@@ -171,7 +182,7 @@ void ExternalEngineStateMachine::ChangeStateTo(State aNextState) {
     nsPrintfCString msg("Change state : '%s' -> '%s' (play-state=%d)",
                         StateToStr(mState.mName), StateToStr(aNextState),
                         mPlayState.Ref());
-    LOG("%s", msg.get());
+    LOG("{}", msg.get());
     PROFILER_MARKER_TEXT("EESM::ChangeStateTo", MEDIA_PLAYBACK, {}, msg);
   }
   // Assert the possible state transitions.
@@ -230,7 +241,7 @@ void ExternalEngineStateMachine::InitEngine() {
     if (IsBeingProfiledOrLogEnabled()) {
       nsPrintfCString msg{"mMinimizePreroll %d IsEncryptedCustomIdent %d",
                           mMinimizePreroll, mReader->IsEncryptedCustomIdent()};
-      LOG("Init engine, %s", msg.get());
+      LOG("Init engine, {}", msg.get());
       PROFILER_MARKER_TEXT("EESM::InitEngine", MEDIA_PLAYBACK, {}, msg);
     }
     auto* state = mState.AsInitEngine();
@@ -258,18 +269,20 @@ void ExternalEngineStateMachine::OnEngineInitSuccess() {
   if (IsBeingProfiledOrLogEnabled()) {
     nsPrintfCString msg("Initialized the external playback engine %" PRIu64,
                         mEngine->Id());
-    LOG("%s", msg.get());
+    LOG("{}", msg.get());
     PROFILER_MARKER_TEXT("EESM::OnEngineInitSuccess", MEDIA_PLAYBACK, {}, msg);
   }
   auto* state = mState.AsInitEngine();
   state->mEngineInitRequest.Complete();
   mReader->UpdateMediaEngineId(mEngine->Id());
   state->mInitPromise = nullptr;
+  mIsEngineReady = true;
   if (mState.IsInitEngine()) {
     StartRunningEngine();
     return;
   }
   // We just recovered from CDM process crash, seek to previous position.
+  ReportRecoveryTelemetry(true);
   SeekTarget target(mCurrentPosition.Ref(), SeekTarget::Type::Accurate);
   Seek(target);
 }
@@ -279,6 +292,10 @@ void ExternalEngineStateMachine::OnEngineInitFailure() {
   MOZ_ASSERT(mState.IsInitEngine() || mState.IsRecoverEngine());
   LOGE("Failed to initialize the external playback engine");
   PROFILER_MARKER_UNTYPED("EESM::OnEngineInitFailure", MEDIA_PLAYBACK);
+  mIsEngineReady = false;
+  if (mState.IsRecoverEngine()) {
+    ReportRecoveryTelemetry(false);
+  }
   auto* state = mState.AsInitEngine();
   state->mEngineInitRequest.Complete();
   state->mInitPromise = nullptr;
@@ -294,7 +311,7 @@ void ExternalEngineStateMachine::ReadMetadata() {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mState.IsReadingMetadata());
   PROFILER_MARKER_UNTYPED("EESM::ReadMetadata", MEDIA_PLAYBACK);
-  Unused << OwnerThread()->Dispatch(NS_NewRunnableFunction(
+  (void)OwnerThread()->Dispatch(NS_NewRunnableFunction(
       "ExternalEngineStateMachine::ReadMetadata",
       [self = RefPtr<ExternalEngineStateMachine>{this}, this] {
         mReader->ReadMetadata()
@@ -319,9 +336,15 @@ void ExternalEngineStateMachine::OnMetadataRead(MetadataHolder&& aMetadata) {
       Info().mMediaSeekableOnlyInBufferedRanges;
 
   if (!IsFormatSupportedByExternalEngine(*mInfo)) {
+    // Only record it when a CDM is waiting for the engine, because clear
+    // playback falls back here on every machine without hardware video
+    // decoding.
+    if (mPendingCDMProxy) {
+      ReportTelemetry(NS_ERROR_DOM_MEDIA_EXTERNAL_ENGINE_NOT_SUPPORTED_ERR);
+    }
     // The external engine doesn't support the type, try to notify the decoder
     // to use our own state machine again. Not a real "error", because it would
-    // fallback to another state machine.
+    // fallback to another state machine, unless a CDM is pending.
     DecodeError(
         MediaResult(NS_ERROR_DOM_MEDIA_EXTERNAL_ENGINE_NOT_SUPPORTED_ERR));
     return;
@@ -360,14 +383,14 @@ void ExternalEngineStateMachine::OnMetadataRead(MetadataHolder&& aMetadata) {
 
   if (IsBeingProfiledOrLogEnabled()) {
     nsPrintfCString msg(
-        "a=%s, v=%s, size=[%dx%d], duration=%s, encrypted=%d, "
+        "a=%s, v=%s, size=[%dx%d], image=[%dx%d], duration=%s, encrypted=%d, "
         "IsEncryptedCustomIdent=%d",
         mInfo->HasAudio() ? mInfo->mAudio.mMimeType.get() : "none",
         mInfo->HasVideo() ? mInfo->mVideo.mMimeType.get() : "none",
-        mVideoDisplay.width, mVideoDisplay.height,
-        mDuration.Ref()->ToString().get(), mInfo->IsEncrypted(),
-        mReader->IsEncryptedCustomIdent());
-    LOG("Metadata loaded : %s", msg.get());
+        mVideoDisplay.width, mVideoDisplay.height, mInfo->mVideo.mImage.width,
+        mInfo->mVideo.mImage.height, mDuration.Ref()->ToString().get(),
+        mInfo->IsEncrypted(), mReader->IsEncryptedCustomIdent());
+    LOG("Metadata loaded : {}", msg.get());
     PROFILER_MARKER_TEXT("EESM::OnMetadataRead", MEDIA_PLAYBACK, {}, msg);
   }
 
@@ -399,7 +422,7 @@ bool ExternalEngineStateMachine::IsFormatSupportedByExternalEngine(
   const bool videoSupported =
       !aInfo.HasVideo() ||
       MFMediaEngineDecoderModule::SupportsConfig(aInfo.mVideo);
-  LOG("audio=%s (supported=%d), video=%s(supported=%d)",
+  LOG("audio={} (supported={}), video={}(supported={})",
       aInfo.HasAudio() ? aInfo.mAudio.mMimeType.get() : "none", audioSupported,
       aInfo.HasVideo() ? aInfo.mVideo.mMimeType.get() : "none", videoSupported);
   return audioSupported && videoSupported;
@@ -415,8 +438,11 @@ RefPtr<MediaDecoder::SeekPromise> ExternalEngineStateMachine::InvokeSeek(
       [self = RefPtr<ExternalEngineStateMachine>(this), this,
        target = aTarget]() -> RefPtr<MediaDecoder::SeekPromise> {
         AssertOnTaskQueue();
-        if (!mEngine || !mEngine->IsInited()) {
-          LOG("Can't perform seek (%" PRId64 ") now, add a pending seek task",
+        if (mState.IsShutdownEngine()) {
+          return MediaDecoder::SeekPromise::CreateAndReject(true, __func__);
+        }
+        if (!mIsEngineReady) {
+          LOG("Can't perform seek ({}) now, add a pending seek task",
               target.GetTime().ToMicroseconds());
           // We haven't added any pending seek before
           if (mPendingSeek.mPromise.IsEmpty()) {
@@ -476,7 +502,7 @@ RefPtr<MediaDecoder::SeekPromise> ExternalEngineStateMachine::Seek(
   if (IsBeingProfiledOrLogEnabled()) {
     nsPrintfCString msg("Start seeking to %" PRId64,
                         aTarget.GetTime().ToMicroseconds());
-    LOG("%s", msg.get());
+    LOG("{}", msg.get());
     PROFILER_MARKER_TEXT("EESM::Seek", MEDIA_PLAYBACK, {}, msg);
   }
   auto* state = mState.AsSeekingData();
@@ -511,7 +537,7 @@ void ExternalEngineStateMachine::SeekReader() {
   if (IsBeingProfiledOrLogEnabled()) {
     nsPrintfCString msg("Seek reader to %" PRId64,
                         state->GetTargetTime().ToMicroseconds());
-    LOG("%s", msg.get());
+    LOG("{}", msg.get());
     PROFILER_MARKER_TEXT("EESM::SeekReader", MEDIA_PLAYBACK, {}, msg);
   }
   mReader->Seek(state->mSeekJob.mTarget.ref())
@@ -540,6 +566,9 @@ void ExternalEngineStateMachine::OnSeekResolved(const media::TimeUnit& aUnit) {
   }
   if (HasVideo()) {
     mHasEnoughVideo = false;
+#ifdef MOZ_WMF_CDM
+    mVideoEOSSentToEngine = false;
+#endif
     OnRequestVideo();
   }
   CheckIfSeekCompleted();
@@ -557,7 +586,7 @@ void ExternalEngineStateMachine::OnSeekRejected(
   PROFILER_MARKER_UNTYPED("EESM::OnReaderSeekRejected", MEDIA_PLAYBACK);
   state->mSeekRequest.Complete();
   if (aReject.mError == NS_ERROR_DOM_MEDIA_WAITING_FOR_DATA) {
-    LOG("OnSeekRejected reason=WAITING_FOR_DATA type=%s",
+    LOG("OnSeekRejected reason=WAITING_FOR_DATA type={}",
         MediaData::EnumValueToString(aReject.mType));
     MOZ_ASSERT_IF(aReject.mType == MediaData::Type::AUDIO_DATA,
                   !IsRequestingAudioData());
@@ -598,8 +627,8 @@ void ExternalEngineStateMachine::CheckIfSeekCompleted() {
   MOZ_ASSERT(mState.IsSeekingData());
   auto* state = mState.AsSeekingData();
   if (state->mWaitingEngineSeeked || state->mWaitingReaderSeeked) {
-    LOG("Seek hasn't been completed yet, waitEngineSeeked=%d, "
-        "waitReaderSeeked=%d",
+    LOG("Seek hasn't been completed yet, waitEngineSeeked={}, "
+        "waitReaderSeeked={}",
         state->mWaitingEngineSeeked, state->mWaitingReaderSeeked);
     return;
   }
@@ -609,8 +638,7 @@ void ExternalEngineStateMachine::CheckIfSeekCompleted() {
   // so that the updated HTMLMediaElement.currentTime will always be the seek
   // target.
   if (state->GetTargetTime() != mCurrentPosition) {
-    LOG("Force adjusting current time (%" PRId64
-        ") to match to target (%" PRId64 ")",
+    LOG("Force adjusting current time ({}) to match to target ({})",
         mCurrentPosition.Ref().ToMicroseconds(),
         state->GetTargetTime().ToMicroseconds());
     mCurrentPosition = state->GetTargetTime();
@@ -663,6 +691,7 @@ RefPtr<ShutdownPromise> ExternalEngineStateMachine::Shutdown() {
   }
 
   LOG("Shutdown");
+  mIsEngineReady = false;
   ChangeStateTo(State::ShutdownEngine);
   ResetDecode();
 
@@ -677,7 +706,7 @@ RefPtr<ShutdownPromise> ExternalEngineStateMachine::Shutdown() {
 
   mMetadataManager.Disconnect();
 
-  mSetCDMProxyPromise.RejectIfExists(NS_ERROR_DOM_MEDIA_ABORT_ERR, __func__);
+  mPendingCDMProxy = nullptr;
   mSetCDMProxyRequest.DisconnectIfExists();
 
   mPendingSeek.RejectIfExists(__func__);
@@ -734,9 +763,8 @@ void ExternalEngineStateMachine::BufferedRangeUpdated() {
         AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) { \
       return;                                                             \
     }                                                                     \
-    /* Initialzation is not done yet, postpone the operation */           \
-    if (!mEngine || !mEngine->IsInited()) {                               \
-      LOG("%s is called before init", __func__);                          \
+    if (!mIsEngineReady) {                                                \
+      LOG("{} is called before init", __func__);                          \
       mPendingTasks.AppendElement(NewRunnableMethod(                      \
           __func__, this, &ExternalEngineStateMachine::Func));            \
       return;                                                             \
@@ -810,6 +838,11 @@ void ExternalEngineStateMachine::EndOfStream(MediaData::Type aType) {
     }
     return TrackInfo::TrackType::kUndefinedTrack;
   };
+#ifdef MOZ_WMF_CDM
+  if (aType == MediaData::Type::VIDEO_DATA) {
+    mVideoEOSSentToEngine = true;
+  }
+#endif
   mEngine->NotifyEndOfStream(DataTypeToTrackType(aType));
 }
 
@@ -877,7 +910,7 @@ void ExternalEngineStateMachine::MaybeFinishWaitForData() {
   bool isWaitingForAudio = HasAudio() && mAudioWaitRequest.Exists();
   bool isWaitingForVideo = HasVideo() && mVideoWaitRequest.Exists();
   if (isWaitingForAudio || isWaitingForVideo) {
-    LOG("Still waiting for data (waitAudio=%d, waitVideo=%d)",
+    LOG("Still waiting for data (waitAudio={}, waitVideo={})",
         isWaitingForAudio, isWaitingForVideo);
     return;
   }
@@ -911,7 +944,7 @@ void ExternalEngineStateMachine::StartRunningEngine() {
   // Run tasks which was called before the engine is ready.
   if (!mPendingTasks.IsEmpty()) {
     for (auto& task : mPendingTasks) {
-      Unused << OwnerThread()->Dispatch(task.forget());
+      (void)OwnerThread()->Dispatch(task.forget());
     }
     mPendingTasks.Clear();
   }
@@ -923,7 +956,11 @@ void ExternalEngineStateMachine::RunningEngineUpdate(MediaData::Type aType) {
   if (aType == MediaData::Type::AUDIO_DATA && !mHasEnoughAudio) {
     OnRequestAudio();
   }
-  if (aType == MediaData::Type::VIDEO_DATA && !mHasEnoughVideo) {
+  if (aType == MediaData::Type::VIDEO_DATA && !mHasEnoughVideo
+#ifdef MOZ_WMF_CDM
+      && !mVideoEOSSentToEngine
+#endif
+  ) {
     OnRequestVideo();
   }
 }
@@ -938,8 +975,8 @@ void ExternalEngineStateMachine::OnRequestAudio() {
 
   if (IsRequestingAudioData() || mAudioWaitRequest.Exists() || IsSeeking()) {
     LOGV(
-        "No need to request audio, isRequesting=%d, waitingAudio=%d, "
-        "isSeeking=%d",
+        "No need to request audio, isRequesting={}, waitingAudio={}, "
+        "isSeeking={}",
         IsRequestingAudioData(), mAudioWaitRequest.Exists(), IsSeeking());
     return;
   }
@@ -964,7 +1001,7 @@ void ExternalEngineStateMachine::OnRequestAudio() {
             AUTO_PROFILER_LABEL(
                 "ExternalEngineStateMachine::OnRequestAudio:Rejected",
                 MEDIA_PLAYBACK);
-            LOG("OnRequestAudio ErrorName=%s Message=%s",
+            LOG("OnRequestAudio ErrorName={} Message={}",
                 aError.ErrorName().get(), aError.Message().get());
             switch (aError.Code()) {
               case NS_ERROR_DOM_MEDIA_WAITING_FOR_DATA:
@@ -999,8 +1036,8 @@ void ExternalEngineStateMachine::OnRequestVideo() {
 
   if (IsTrackingVideoData() || IsSeeking()) {
     LOGV(
-        "No need to request video, isRequesting=%d, waitingVideo=%d, "
-        "isSeeking=%d",
+        "No need to request video, isRequesting={}, waitingVideo={}, "
+        "isSeeking={}",
         IsRequestingVideoData(), mVideoWaitRequest.Exists(), IsSeeking());
     return;
   }
@@ -1040,7 +1077,7 @@ void ExternalEngineStateMachine::OnRequestVideo() {
             AUTO_PROFILER_LABEL(
                 "ExternalEngineStateMachine::OnRequestVideo:Rejected",
                 MEDIA_PLAYBACK);
-            LOG("OnRequestVideo ErrorName=%s Message=%s",
+            LOG("OnRequestVideo ErrorName={} Message={}",
                 aError.ErrorName().get(), aError.Message().get());
             switch (aError.Code()) {
               case NS_ERROR_DOM_MEDIA_WAITING_FOR_DATA:
@@ -1068,7 +1105,14 @@ void ExternalEngineStateMachine::OnRequestVideo() {
 void ExternalEngineStateMachine::OnLoadedFirstFrame() {
   AssertOnTaskQueue();
   // We will wait until receive the first video frame.
-  if (mInfo->HasVideo() && !mHasReceivedFirstDecodedVideoFrame) {
+  if (mInfo->HasVideo() &&
+      !mHasReceivedFirstDecodedVideoFrame
+#ifdef MOZ_WMF_CDM
+      // In frame server mode no decoded frame is ever delivered to us, so we
+      // must not gate the first-frame-loaded event on receiving one.
+      && !mIsFrameServerMode
+#endif
+  ) {
     LOG("Hasn't received first decoded video frame");
     return;
   }
@@ -1077,7 +1121,7 @@ void ExternalEngineStateMachine::OnLoadedFirstFrame() {
       mSentFirstFrameLoadedEvent ? MediaDecoderEventVisibility::Suppressed
                                  : MediaDecoderEventVisibility::Observable;
   mSentFirstFrameLoadedEvent = true;
-  mFirstFrameLoadedEvent.Notify(UniquePtr<MediaInfo>(new MediaInfo(Info())),
+  mFirstFrameLoadedEvent.Notify(std::make_unique<MediaInfo>(Info()),
                                 visibility);
   mOnNextFrameStatus.Notify(MediaDecoderOwner::NEXT_FRAME_AVAILABLE);
 }
@@ -1114,13 +1158,18 @@ void ExternalEngineStateMachine::OnSeeked() {
   }
   MOZ_ASSERT(mState.IsSeekingData());
 
-  const auto currentTime = mEngine->GetCurrentPosition();
   auto* state = mState.AsSeekingData();
+  if (!state->mSeekJob.Exists()) {
+    LOG("Seeking has been rejected, ignore the event");
+    return;
+  }
+
+  const auto currentTime = mEngine->GetCurrentPosition();
   if (IsBeingProfiledOrLogEnabled()) {
     nsPrintfCString msg("target=%" PRId64 ", currentTime=%" PRId64,
                         state->GetTargetTime().ToMicroseconds(),
                         currentTime.ToMicroseconds());
-    LOG("OnEngineSeeked : %s", msg.get());
+    LOG("OnEngineSeeked : {}", msg.get());
     PROFILER_MARKER_TEXT("EESM::OnEngineSeeked", MEDIA_PLAYBACK, {}, msg);
   }
   // It's possible to receive multiple seeked event if we seek the engine
@@ -1144,7 +1193,7 @@ void ExternalEngineStateMachine::OnBufferingStarted() {
   }
   if (IsBeingProfiledOrLogEnabled()) {
     nsPrintfCString msg("hasAudio=%d, hasVideo=%d", HasAudio(), HasVideo());
-    LOG("OnBufferingStarted : %s", msg.get());
+    LOG("OnBufferingStarted : {}", msg.get());
     PROFILER_MARKER_TEXT("EESM::OnBufferingStarted", MEDIA_PLAYBACK, {}, msg);
   }
 }
@@ -1181,7 +1230,7 @@ void ExternalEngineStateMachine::OnTimeupdate() {
     nsPrintfCString msg("current time=%" PRId64 ", duration=%" PRId64,
                         mCurrentPosition.Ref().ToMicroseconds(),
                         mDuration.Ref()->ToMicroseconds());
-    LOG("OnTimeupdate, %s", msg.get());
+    LOG("OnTimeupdate, {}", msg.get());
     PROFILER_MARKER_TEXT("EESM::OnTimeupdate", MEDIA_PLAYBACK, {}, msg);
   }
 }
@@ -1265,9 +1314,16 @@ bool ExternalEngineStateMachine::ShouldRunEngineUpdateForRequest() {
 void ExternalEngineStateMachine::NotifyErrorInternal(
     const MediaResult& aError) {
   AssertOnTaskQueue();
-  LOG("Engine error: %s", aError.Description().get());
+  LOG("Engine error: {}", aError.Description().get());
   PROFILER_MARKER_TEXT("EESM::NotifyErrorInternal", MEDIA_PLAYBACK, {},
                        aError.Description());
+  if (mState.IsRecoverEngine()) {
+    // Suppress errors that arrive during engine recovery to avoid
+    // interrupting the in-progress reinit sequence.
+    LOG("Ignoring error during hardware reset recovery: {}",
+        aError.Description().get());
+    return;
+  }
   if (aError == NS_ERROR_DOM_MEDIA_NOT_SUPPORTED_ERR) {
     // The external engine doesn't support the type, try to notify the decoder
     // to use our own state machine again.
@@ -1300,16 +1356,32 @@ void ExternalEngineStateMachine::NotifyResizingInternal(uint32_t aWidth,
     nsPrintfCString msg("video resize from [%d,%d] to [%d,%d]",
                         mVideoDisplay.width, mVideoDisplay.height, aWidth,
                         aHeight);
-    LOG("%s", msg.get());
+    LOG("{}", msg.get());
     PROFILER_MARKER_TEXT("EESM::NotifyResizingInternal", MEDIA_PLAYBACK, {},
                          msg);
   }
   mVideoDisplay = gfx::IntSize{aWidth, aHeight};
 }
 
+#ifdef MOZ_WMF_CDM
+void ExternalEngineStateMachine::NotifyFrameServerModeInternal() {
+  AssertOnTaskQueue();
+  LOG("NotifyFrameServerModeInternal: engine is in frame server mode");
+  MOZ_ASSERT(IsWMFClearKeySystemAndSupported(NS_ConvertUTF8toUTF16(mKeySystem)),
+             "Frame server mode is only for WMFClearKey");
+  mIsFrameServerMode = true;
+  mOnPlaybackEvent.Notify(MediaPlaybackEvent::FrameServerMode);
+  mHasReceivedFirstDecodedVideoFrame = true;
+  if (!mSentFirstFrameLoadedEvent) {
+    OnLoadedFirstFrame();
+  }
+}
+#endif
+
 void ExternalEngineStateMachine::RecoverFromCDMProcessCrashIfNeeded() {
   AssertOnTaskQueue();
   if (mState.IsRecoverEngine()) {
+    LOG("In the recover state already");
     return;
   }
   ProcessCrashMonitor::NotifyCrash();
@@ -1332,10 +1404,11 @@ void ExternalEngineStateMachine::RecoverFromCDMProcessCrashIfNeeded() {
     nsPrintfCString msg(
         "CDM process crashed, recover the engine again (last time=%" PRId64 ")",
         mCurrentPosition.Ref().ToMicroseconds());
-    LOG("%s", msg.get());
+    LOG("{}", msg.get());
     PROFILER_MARKER_TEXT("EESM::RecoverFromCDMProcessCrashIfNeeded",
                          MEDIA_PLAYBACK, {}, msg);
   }
+  mIsEngineReady = false;
   ChangeStateTo(State::RecoverEngine);
   if (HasVideo()) {
     mVideoDataRequest.DisconnectIfExists();
@@ -1351,6 +1424,44 @@ void ExternalEngineStateMachine::RecoverFromCDMProcessCrashIfNeeded() {
   InitEngine();
 }
 
+void ExternalEngineStateMachine::RecoverFromHardwareReset() {
+  AssertOnTaskQueue();
+  if (mState.IsRecoverEngine()) {
+    LOG("In the recover state already");
+    return;
+  }
+  mRecoveryAttempts++;
+  if (IsBeingProfiledOrLogEnabled()) {
+    nsPrintfCString msg(
+        "Hardware context reset, recovering engine (pos=%" PRId64 ")",
+        mCurrentPosition.Ref().ToMicroseconds());
+    LOG("{}", msg.get());
+    PROFILER_MARKER_TEXT("EESM::RecoverFromHardwareReset", MEDIA_PLAYBACK, {},
+                         msg);
+  }
+  mIsEngineReady = false;
+  ChangeStateTo(State::RecoverEngine);
+  if (HasVideo()) {
+    mVideoDataRequest.DisconnectIfExists();
+    mVideoWaitRequest.DisconnectIfExists();
+  }
+  if (HasAudio()) {
+    mAudioDataRequest.DisconnectIfExists();
+    mAudioWaitRequest.DisconnectIfExists();
+  }
+  MOZ_ASSERT(mEngine);
+  mEngine->Shutdown();
+  mReader->ReleaseResources();
+  InitEngine();
+}
+
+#ifdef MOZ_WMF_CDM
+void ExternalEngineStateMachine::NotifyWaitingForKeyInternal() {
+  AssertOnTaskQueue();
+  mReader->NotifyWaitingForKey();
+}
+#endif
+
 media::TimeUnit ExternalEngineStateMachine::GetVideoThreshold() {
   AssertOnTaskQueue();
   if (auto* state = mState.AsSeekingData()) {
@@ -1361,45 +1472,62 @@ media::TimeUnit ExternalEngineStateMachine::GetVideoThreshold() {
 
 void ExternalEngineStateMachine::UpdateSecondaryVideoContainer() {
   AssertOnTaskQueue();
-  LOG("UpdateSecondaryVideoContainer=%p", mSecondaryVideoContainer.Ref().get());
+  LOG("UpdateSecondaryVideoContainer={}",
+      fmt::ptr(mSecondaryVideoContainer.Ref().get()));
   mOnSecondaryVideoContainerInstalled.Notify(mSecondaryVideoContainer.Ref());
 }
 
 RefPtr<SetCDMPromise> ExternalEngineStateMachine::SetCDMProxy(
     CDMProxy* aProxy) {
+  if (!OnTaskQueue()) {
+    return InvokeAsync(OwnerThread(), __func__,
+                       [self = RefPtr{this}, proxy = RefPtr{aProxy}, this]() {
+                         return SetCDMProxy(proxy);
+                       });
+  }
+  AssertOnTaskQueue();
   if (mState.IsShutdownEngine()) {
     return SetCDMPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
 
-  if (!mEngine || !mEngine->IsInited()) {
+  if (!aProxy) {
+    // A null proxy means the CDM is being cleared. The EESM-specific path
+    // below requires a valid WMFCDMProxy to obtain its ID and register with
+    // the engine, so it cannot handle null. Delegate to the base class, which
+    // clears the CDM state on the reader via mReader->SetCDMProxy(null).
+    // For WMFClearKey, failing to clear the CDM state would leave the reader
+    // holding a stale reference to the old proxy, causing use-after-free or
+    // silent decryption failures on subsequent playback.
+    mPendingCDMProxy = nullptr;
+    return MediaDecoderStateMachineBase::SetCDMProxy(aProxy);
+  }
+
+  if (!mIsEngineReady) {
     LOG("SetCDMProxy is called before init");
     mReader->SetEncryptedCustomIdent();
-    mPendingTasks.AppendElement(NS_NewRunnableFunction(
-        "ExternalEngineStateMachine::SetCDMProxy",
-        [self = RefPtr{this}, proxy = RefPtr{aProxy}, this] {
-          SetCDMProxy(proxy)
-              ->Then(OwnerThread(), __func__,
-                     [self = RefPtr{this},
-                      this](const SetCDMPromise::ResolveOrRejectValue& aVal) {
-                       mSetCDMProxyRequest.Complete();
-                       if (aVal.IsResolve()) {
-                         mSetCDMProxyPromise.Resolve(true, __func__);
-                       } else {
-                         mSetCDMProxyPromise.Reject(NS_ERROR_DOM_MEDIA_CDM_ERR,
-                                                    __func__);
-                       }
-                     })
-              ->Track(mSetCDMProxyRequest);
-        }));
-    return mSetCDMProxyPromise.Ensure(__func__);
+    if (!mPendingCDMProxy) {
+      mPendingTasks.AppendElement(NS_NewRunnableFunction(
+          "ExternalEngineStateMachine::ApplyPendingCDMProxy",
+          [self = RefPtr{this}, this] { ApplyPendingCDMProxy(); }));
+    }
+    mPendingCDMProxy = aProxy;
+    LOG("Pending CDM proxy {} until the engine is ready", fmt::ptr(aProxy));
+    // EME 7.2 step 5.3.1: "Associate the CDM instance represented by mediaKeys
+    // with the media element for decrypting media data." That does not depend
+    // on the engine, so the promise settles here. If the engine refuses the
+    // stream or cannot take the CDM, that is reported as a media error.
+    // https://w3c.github.io/encrypted-media/#dom-htmlmediaelement-setmediakeys
+    return SetCDMPromise::CreateAndResolve(true, __func__);
   }
 
   // TODO : set CDM proxy again if we recreate the media engine after crash.
+  // A proxy set while the engine was not ready is replaced by this one.
+  mPendingCDMProxy = nullptr;
   mKeySystem = NS_ConvertUTF16toUTF8(aProxy->KeySystem());
   if (IsBeingProfiledOrLogEnabled()) {
     nsPrintfCString msg("SetCDMProxy=%p (key-system=%s)", aProxy,
                         mKeySystem.get());
-    LOG("%s", msg.get());
+    LOG("{}", msg.get());
     PROFILER_MARKER_TEXT("EESM::SetCDMProxy", MEDIA_PLAYBACK, {}, msg);
   }
   MOZ_DIAGNOSTIC_ASSERT(mEngine);
@@ -1409,6 +1537,37 @@ RefPtr<SetCDMPromise> ExternalEngineStateMachine::SetCDMProxy(
     return SetCDMPromise::CreateAndReject(NS_ERROR_DOM_MEDIA_CDM_ERR, __func__);
   }
   return MediaDecoderStateMachineBase::SetCDMProxy(aProxy);
+}
+
+void ExternalEngineStateMachine::ApplyPendingCDMProxy() {
+  AssertOnTaskQueue();
+  RefPtr<CDMProxy> proxy = std::move(mPendingCDMProxy);
+  if (!proxy) {
+    LOG("No pending CDM proxy to apply");
+    return;
+  }
+  // A proxy applied before the engine was recreated is replaced by this one.
+  mSetCDMProxyRequest.DisconnectIfExists();
+  SetCDMProxy(proxy)
+      ->Then(OwnerThread(), __func__,
+             [self = RefPtr{this},
+              this](const SetCDMPromise::ResolveOrRejectValue& aVal) {
+               mSetCDMProxyRequest.Complete();
+               if (aVal.IsResolve()) {
+                 LOG("Applied the pending CDM proxy");
+                 return;
+               }
+               // The reader rejects with an invalid state error when a newer
+               // proxy replaces this one or when it shuts down, and neither is
+               // a playback failure.
+               if (aVal.RejectValue() == NS_ERROR_DOM_INVALID_STATE_ERR) {
+                 LOG("The pending CDM proxy was replaced or the reader shut "
+                     "down");
+                 return;
+               }
+               DecodeError(aVal.RejectValue());
+             })
+      ->Track(mSetCDMProxyRequest);
 }
 
 nsresult ExternalEngineStateMachine::IsCDMProxySupported(CDMProxy* aProxy) {
@@ -1421,7 +1580,7 @@ nsresult ExternalEngineStateMachine::IsCDMProxySupported(CDMProxy* aProxy) {
     return NS_ERROR_DOM_MEDIA_NOT_SUPPORTED_ERR;
   }
 
-  // 1=enabled encrypted and clear, 2=enabled encrytped
+  // 1=enabled encrypted and clear, 2=enabled encrypted
   if (StaticPrefs::media_wmf_media_engine_enabled() != 1 &&
       StaticPrefs::media_wmf_media_engine_enabled() != 2) {
     return NS_ERROR_DOM_MEDIA_NOT_ALLOWED_ERR;
@@ -1454,6 +1613,17 @@ void ExternalEngineStateMachine::ReportTelemetry(const MediaResult& aError) {
   if (auto platformErrorCode = aError.GetPlatformErrorCode()) {
     extraData.platformError = platformErrorCode;
   }
+  // These gfxVars are populated once in the parent process before any content
+  // process starts and are not modified afterwards. This runs on the state
+  // machine task queue rather than the main thread, so copy the values out
+  // instead of holding a reference into the gfxVars singleton.
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+  const nsCString adapterVendorID = gfx::gfxVars::AdapterVendorID();
+  if (!adapterVendorID.IsEmpty()) {
+    extraData.adapterVendorId = Some(adapterVendorID);
+    extraData.adapterDeviceId = Some(gfx::gfxVars::AdapterDeviceID());
+    extraData.adapterDriverVersion = Some(gfx::gfxVars::AdapterDriverVersion());
+  }
   glean::mfcdm::error.Record(Some(extraData));
   if (MOZ_LOG_TEST(gMediaDecoderLog, LogLevel::Debug)) {
     nsPrintfCString logMessage{"MFCDM Error event, error=%s",
@@ -1475,11 +1645,42 @@ void ExternalEngineStateMachine::ReportTelemetry(const MediaResult& aError) {
     if (!mKeySystem.IsEmpty()) {
       logMessage.Append(nsPrintfCString{", keySystem=%s", mKeySystem.get()});
     }
-    LOG("%s", logMessage.get());
+    LOG("{}", logMessage.get());
   }
 }
 
+void ExternalEngineStateMachine::ReportRecoveryTelemetry(bool aRecovered) {
+  glean::mfcdm::RecoveryExtra extraData;
+  extraData.recovered = Some(aRecovered);
+  extraData.attempts = Some(mRecoveryAttempts);
+  if (mHardwareResetError) {
+    extraData.platformError = mHardwareResetError;
+  }
+  if (!mKeySystem.IsEmpty()) {
+    extraData.keySystem = Some(mKeySystem);
+  }
+  extraData.currentState = Some(nsAutoCString{StateToStr(mState.mName)});
+  glean::mfcdm::recovery.Record(Some(extraData));
+  LOG("MFCDM Recovery event, recovered={}, attempts={}", aRecovered,
+      mRecoveryAttempts);
+
+  mRecoveryAttempts = 0;
+  mHardwareResetError = Nothing();
+}
+
 void ExternalEngineStateMachine::DecodeError(const MediaResult& aError) {
+  // The normal state machine cannot use a Media Foundation CDM, so falling back
+  // to it with one pending would leave playback waiting for a key forever.
+  if (aError == NS_ERROR_DOM_MEDIA_EXTERNAL_ENGINE_NOT_SUPPORTED_ERR &&
+      mPendingCDMProxy) {
+    LOG("Cannot fall back to another state machine with a pending CDM proxy");
+    nsAutoCString message("The media engine cannot play this stream");
+    if (!aError.Message().IsEmpty()) {
+      message.AppendPrintf(": %s", aError.Message().get());
+    }
+    DecodeError(MediaResult(NS_ERROR_DOM_MEDIA_NOT_SUPPORTED_ERR, message));
+    return;
+  }
   if (aError != NS_ERROR_DOM_MEDIA_WAITING_FOR_DATA ||
       aError != NS_ERROR_DOM_MEDIA_CANCELED) {
     mHasFatalError = true;

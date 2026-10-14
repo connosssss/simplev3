@@ -12,29 +12,26 @@ import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.feature.search.telemetry.ads.AdsTelemetry
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
+import mozilla.components.lib.state.Store
 import mozilla.components.support.base.log.logger.Logger
 
 /**
- * [BrowserStore] middleware to be used alongside with [AdsTelemetry] to check when an ad shown
- * in search results is clicked.
+ * [BrowserStore] middleware to be used alongside with [AdsTelemetry] to check when an ad shown in search results is
+ * clicked.
  */
-class AdsTelemetryMiddleware(
-    private val adsTelemetry: AdsTelemetry,
-) : Middleware<BrowserState, BrowserAction> {
-    @VisibleForTesting
-    internal val redirectChain = mutableMapOf<String, RedirectChain>()
+class AdsTelemetryMiddleware(private val adsTelemetry: AdsTelemetry) : Middleware<BrowserState, BrowserAction> {
+    @VisibleForTesting internal val redirectChain = mutableMapOf<String, RedirectChain>()
     private val logger = Logger("AdsTelemetryMiddleware")
 
     @Suppress("TooGenericExceptionCaught")
     override fun invoke(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         next: (BrowserAction) -> Unit,
         action: BrowserAction,
     ) {
         when (action) {
             is ContentAction.UpdateLoadRequestAction -> {
-                context.state.findTab(action.sessionId)?.let { tab ->
+                store.state.findTab(action.sessionId)?.let { tab ->
                     // Collect all load requests in between location changes
                     if (!redirectChain.containsKey(action.sessionId) && action.loadRequest.url != tab.content.url) {
                         redirectChain[action.sessionId] = RedirectChain(tab.content.url)
@@ -64,9 +61,7 @@ class AdsTelemetryMiddleware(
     }
 }
 
-/**
- * Utility to collect URLs / load requests in between location changes.
- */
+/** Utility to collect URLs / load requests in between location changes. */
 @VisibleForTesting
 internal class RedirectChain(val root: String) {
     val chain = mutableListOf<String>()

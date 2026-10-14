@@ -1,13 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef DataMutex_h__
-#define DataMutex_h__
+#ifndef DataMutex_h_
+#define DataMutex_h_
 
 #include <utility>
+
 #include "mozilla/Mutex.h"
 #include "mozilla/StaticMutex.h"
 
@@ -71,10 +70,10 @@ class DataMutexBase {
       }
     }
 
+    AutoLockBase(const AutoLockBase& aOther) = delete;
+
    private:
     friend class DataMutexBase;
-
-    AutoLockBase(const AutoLockBase& aOther) = delete;
 
     explicit AutoLockBase(DataMutexBase<T, MutexType>* aDataMutex)
         : mOwner(aDataMutex) {
@@ -88,9 +87,9 @@ class DataMutexBase {
   using AutoLock = AutoLockBase<T>;
   using ConstAutoLock = AutoLockBase<const T>;
 
-  explicit DataMutexBase(const char* aName) : mMutex(aName) {}
+  constexpr explicit DataMutexBase(const char* aName) : mMutex(aName) {}
 
-  DataMutexBase(T&& aValue, const char* aName)
+  constexpr DataMutexBase(T&& aValue, const char* aName)
       : mMutex(aName), mValue(std::move(aValue)) {}
 
   AutoLock Lock() { return AutoLock(this); }
@@ -108,7 +107,7 @@ class DataMutexBase {
 // char* aName in its ctor.
 class StaticMutexNameless : public StaticMutex {
  public:
-  explicit StaticMutexNameless(const char* aName) : StaticMutex() {}
+  constexpr explicit StaticMutexNameless(const char* aName) : StaticMutex() {}
 
  private:
   // Disallow copy construction, `=`, `new`, and `delete` like BaseStaticMutex.
@@ -127,4 +126,4 @@ using StaticDataMutex = DataMutexBase<T, StaticMutexNameless>;
 
 }  // namespace mozilla
 
-#endif  // DataMutex_h__
+#endif  // DataMutex_h_

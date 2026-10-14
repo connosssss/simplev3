@@ -208,17 +208,18 @@ cert_CopyOneGeneralName(PLArenaPool *arena, CERTGeneralName *dest,
 void
 CERT_DestroyGeneralNameList(CERTGeneralNameList *list)
 {
-    PZLock *lock;
+    PRLock *lock;
 
     if (list != NULL) {
         lock = list->lock;
-        PZ_Lock(lock);
-        if (--list->refCount <= 0 && list->arena != NULL) {
+        PR_Lock(lock);
+        PORT_ReleaseAssert(list->refCount > 0);
+        if (--list->refCount == 0 && list->arena != NULL) {
             PORT_FreeArena(list->arena, PR_FALSE);
-            PZ_Unlock(lock);
-            PZ_DestroyLock(lock);
+            PR_Unlock(lock);
+            PR_DestroyLock(lock);
         } else {
-            PZ_Unlock(lock);
+            PR_Unlock(lock);
         }
     }
     return;
@@ -246,7 +247,7 @@ CERT_CreateGeneralNameList(CERTGeneralName *name)
         if (rv != SECSuccess)
             goto loser;
     }
-    list->lock = PZ_NewLock(nssILockList);
+    list->lock = PR_NewLock();
     if (!list->lock)
         goto loser;
     list->arena = arena;
@@ -827,17 +828,6 @@ loser:
     return SECFailure;
 }
 
-CERTGeneralNameList *
-CERT_DupGeneralNameList(CERTGeneralNameList *list)
-{
-    if (list != NULL) {
-        PZ_Lock(list->lock);
-        list->refCount++;
-        PZ_Unlock(list->lock);
-    }
-    return list;
-}
-
 /* Allocate space and copy CERTNameConstraint from src to dest */
 CERTNameConstraint *
 CERT_CopyNameConstraint(PLArenaPool *arena, CERTNameConstraint *dest,
@@ -1069,8 +1059,8 @@ cert_ExtractDNEmailAddrs(CERTGeneralName *name, PLArenaPool *arena)
                     goto loser;
                 nameList = cert_CombineNamesLists(nameList, newName);
             } /* handle one email AVA */
-        }     /* loop over AVAs */
-    }         /* loop over RDNs */
+        } /* loop over AVAs */
+    } /* loop over RDNs */
     /* combine new names with old one. */
     (void)cert_CombineNamesLists(name, nameList);
     /* TODO: unmark arena */
@@ -1510,51 +1500,6 @@ cert_CompareNameWithConstraints(const CERTGeneralName *name,
     return SECFailure;
 }
 
-/* Add and link a CERTGeneralName to a CERTNameConstraint list. Most
-** likely the CERTNameConstraint passed in is either the permitted
-** list or the excluded list of a CERTNameConstraints.
-*/
-SECStatus
-CERT_AddNameConstraintByGeneralName(PLArenaPool *arena,
-                                    CERTNameConstraint **constraints,
-                                    CERTGeneralName *name)
-{
-    SECStatus rv;
-    CERTNameConstraint *current = NULL;
-    CERTNameConstraint *first = *constraints;
-    void *mark = NULL;
-
-    mark = PORT_ArenaMark(arena);
-
-    current = PORT_ArenaZNew(arena, CERTNameConstraint);
-    if (current == NULL) {
-        rv = SECFailure;
-        goto done;
-    }
-
-    rv = cert_CopyOneGeneralName(arena, &current->name, name);
-    if (rv != SECSuccess) {
-        goto done;
-    }
-
-    current->name.l.prev = current->name.l.next = &(current->name.l);
-
-    if (first == NULL) {
-        *constraints = current;
-        PR_INIT_CLIST(&current->l);
-    } else {
-        PR_INSERT_BEFORE(&current->l, &first->l);
-    }
-
-done:
-    if (rv == SECFailure) {
-        PORT_ArenaRelease(arena, mark);
-    } else {
-        PORT_ArenaUnmark(arena, mark);
-    }
-    return rv;
-}
-
 /*
  * Here we define a list of name constraints to be imposed on
  * certain certificates, most importantly root certificates.
@@ -1581,11 +1526,10 @@ done:
         siBuffer, (unsigned char *)str, sizeof(str) - 1 \
     }
 
-#define NAME_CONSTRAINTS_ENTRY(CA)                   \
-    {                                                \
-        STRING_TO_SECITEM(CA##_SUBJECT_DN)           \
-        ,                                            \
-            STRING_TO_SECITEM(CA##_NAME_CONSTRAINTS) \
+#define NAME_CONSTRAINTS_ENTRY(CA)               \
+    {                                            \
+        STRING_TO_SECITEM(CA##_SUBJECT_DN),      \
+        STRING_TO_SECITEM(CA##_NAME_CONSTRAINTS) \
     }
 
 /* clang-format off */
@@ -1884,11 +1828,11 @@ CERT_CompareGeneralNameLists(CERTGeneralNameList *a, CERTGeneralNameList *b)
 	return SECSuccess;
     }
     if (a != NULL && b != NULL) {
-	PZ_Lock(a->lock);
-	PZ_Lock(b->lock);
+	PR_Lock(a->lock);
+	PR_Lock(b->lock);
 	rv = CERT_CompareGeneralName(a->name, b->name);
-	PZ_Unlock(a->lock);
-	PZ_Unlock(b->lock);
+	PR_Unlock(a->lock);
+	PR_Unlock(b->lock);
     } else {
 	rv = SECFailure;
     }
@@ -1912,7 +1856,7 @@ CERT_GetGeneralNameFromListByType(CERTGeneralNameList *list,
     OtherName *tmpOther = NULL;
     void *data;
 
-    PZ_Lock(list->lock);
+    PR_Lock(list->lock);
     data = CERT_GetGeneralNameByType(list->name, type, PR_FALSE);
     if (data != NULL) {
 	switch (type) {
@@ -1931,7 +1875,7 @@ XXX		    SECITEM_CopyItem(arena, item, (SECItem *) data);
 	    } else {
 		item = SECITEM_DupItem((SECItem *) data);
 	    }
-	    PZ_Unlock(list->lock);
+	    PR_Unlock(list->lock);
 	    return item;
 	  case certOtherName:
 	    other = (OtherName *) data;
@@ -1944,7 +1888,7 @@ XXX		    SECITEM_CopyItem(arena, item, (SECItem *) data);
 XXX		SECITEM_CopyItem(arena, &tmpOther->oid, &other->oid);
 XXX		SECITEM_CopyItem(arena, &tmpOther->name, &other->name);
 	    }
-	    PZ_Unlock(list->lock);
+	    PR_Unlock(list->lock);
 	    return tmpOther;
 	  case certDirectoryName:
 	    if (arena) {
@@ -1953,11 +1897,11 @@ XXX		SECITEM_CopyItem(arena, &tmpOther->name, &other->name);
 XXX		    CERT_CopyName(arena, name, (CERTName *) data);
 		}
 	    }
-	    PZ_Unlock(list->lock);
+	    PR_Unlock(list->lock);
 	    return name;
 	}
     }
-    PZ_Unlock(list->lock);
+    PR_Unlock(list->lock);
     return NULL;
 }
 #endif
@@ -1976,7 +1920,7 @@ CERT_AddGeneralNameToList(CERTGeneralNameList *list,
     CERTGeneralName *name;
 
     if (list != NULL && data != NULL) {
-	PZ_Lock(list->lock);
+	PR_Lock(list->lock);
 	name = CERT_NewGeneralName(list->arena, type);
 	if (!name)
 	    goto done;
@@ -2004,7 +1948,7 @@ XXX	    CERT_CopyName(list->arena, &name->name.directoryName,
 	list->name = cert_CombineNamesLists(list->name, name);
 	list->len++;
 done:
-	PZ_Unlock(list->lock);
+	PR_Unlock(list->lock);
     }
     return;
 }

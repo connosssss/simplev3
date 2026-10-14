@@ -1,14 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "WebGL2Context.h"
-
 #include "GLContext.h"
+#include "WebGL2Context.h"
 #include "WebGLBuffer.h"
-#include "WebGLContextUtils.h"
 #include "WebGLFramebuffer.h"
 #include "WebGLSampler.h"
 #include "WebGLTransformFeedback.h"
@@ -91,11 +87,17 @@ Maybe<double> WebGL2Context::GetParameter(GLenum pname) {
       [[fallthrough]];
 
     case LOCAL_GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS:
-    case LOCAL_GL_MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS:
-    case LOCAL_GL_MAX_UNIFORM_BLOCK_SIZE: {
+    case LOCAL_GL_MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS: {
       GLint64 val;
       gl->fGetInteger64v(pname, &val);
       return Some(static_cast<double>(val));
+    }
+
+    case LOCAL_GL_MAX_UNIFORM_BLOCK_SIZE: {
+      GLint64 val;
+      gl->fGetInteger64v(pname, &val);
+      return Some(static_cast<double>(
+          std::min(val, GLint64{webgl::kMaxUniformBlockSize})));
     }
 
     /* GLuint64 */

@@ -49,10 +49,6 @@
 //
 // Arithmetic overflows/underflows to +/- infinity and saturates.
 
-#if defined(_MSC_VER)
-#include <winsock2.h>  // for timeval
-#endif
-
 #include <algorithm>
 #include <cassert>
 #include <chrono>  // NOLINT(build/c++11)
@@ -72,6 +68,10 @@
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
 #include "absl/time/time.h"
+
+#if defined(_MSC_VER)
+#include <winsock2.h>  // for timeval
+#endif
 
 namespace absl {
 ABSL_NAMESPACE_BEGIN
@@ -202,7 +202,8 @@ inline bool SafeAddRepHi(double a_hi, double b_hi, Duration* d) {
     *d = -InfiniteDuration();
     return false;
   }
-  *d = time_internal::MakeDuration(c, time_internal::GetRepLo(*d));
+  *d = time_internal::MakeDuration(static_cast<int64_t>(c),
+                                   time_internal::GetRepLo(*d));
   return true;
 }
 
@@ -239,8 +240,8 @@ inline Duration ScaleFixed(Duration d, int64_t r) {
 template <template <typename> class Operation>
 inline Duration ScaleDouble(Duration d, double r) {
   Operation<double> op;
-  double hi_doub = op(time_internal::GetRepHi(d), r);
-  double lo_doub = op(time_internal::GetRepLo(d), r);
+  double hi_doub = op(static_cast<double>(time_internal::GetRepHi(d)), r);
+  double lo_doub = op(static_cast<double>(time_internal::GetRepLo(d)), r);
 
   double hi_int = 0;
   double hi_frac = std::modf(hi_doub, &hi_int);
@@ -253,12 +254,15 @@ inline Duration ScaleDouble(Duration d, double r) {
   double lo_frac = std::modf(lo_doub, &lo_int);
 
   // Rolls lo into hi if necessary.
-  int64_t lo64 = std::round(lo_frac * kTicksPerSecond);
+  int64_t lo64 = static_cast<int64_t>(std::round(lo_frac * kTicksPerSecond));
 
   Duration ans;
   if (!SafeAddRepHi(hi_int, lo_int, &ans)) return ans;
   int64_t hi64 = time_internal::GetRepHi(ans);
-  if (!SafeAddRepHi(hi64, lo64 / kTicksPerSecond, &ans)) return ans;
+  if (!SafeAddRepHi(static_cast<double>(hi64),
+                    static_cast<double>(lo64 / kTicksPerSecond), &ans)) {
+    return ans;
+  }
   hi64 = time_internal::GetRepHi(ans);
   lo64 %= kTicksPerSecond;
   NormalizeTicks(&hi64, &lo64);
@@ -465,7 +469,7 @@ Duration& Duration::operator*=(int64_t r) {
 
 Duration& Duration::operator*=(double r) {
   if (time_internal::IsInfiniteDuration(*this) || !IsFinite(r)) {
-    const bool is_neg = std::signbit(r) != (rep_hi_.Get() < 0);
+    const bool is_neg = std::isnan(r) || std::signbit(r) != (rep_hi_.Get() < 0);
     return *this = is_neg ? -InfiniteDuration() : InfiniteDuration();
   }
   return *this = ScaleDouble<std::multiplies>(*this, r);
@@ -481,7 +485,7 @@ Duration& Duration::operator/=(int64_t r) {
 
 Duration& Duration::operator/=(double r) {
   if (time_internal::IsInfiniteDuration(*this) || !IsValidDivisor(r)) {
-    const bool is_neg = std::signbit(r) != (rep_hi_.Get() < 0);
+    const bool is_neg = std::isnan(r) || std::signbit(r) != (rep_hi_.Get() < 0);
     return *this = is_neg ? -InfiniteDuration() : InfiniteDuration();
   }
   return *this = ScaleDouble<std::divides>(*this, r);
@@ -549,50 +553,6 @@ Duration DurationFromTimeval(timeval tv) {
 //
 // Conversion to other duration types.
 //
-
-int64_t ToInt64Nanoseconds(Duration d) {
-  if (time_internal::GetRepHi(d) >= 0 &&
-      time_internal::GetRepHi(d) >> 33 == 0) {
-    return (time_internal::GetRepHi(d) * 1000 * 1000 * 1000) +
-           (time_internal::GetRepLo(d) / kTicksPerNanosecond);
-  }
-  return d / Nanoseconds(1);
-}
-int64_t ToInt64Microseconds(Duration d) {
-  if (time_internal::GetRepHi(d) >= 0 &&
-      time_internal::GetRepHi(d) >> 43 == 0) {
-    return (time_internal::GetRepHi(d) * 1000 * 1000) +
-           (time_internal::GetRepLo(d) / (kTicksPerNanosecond * 1000));
-  }
-  return d / Microseconds(1);
-}
-int64_t ToInt64Milliseconds(Duration d) {
-  if (time_internal::GetRepHi(d) >= 0 &&
-      time_internal::GetRepHi(d) >> 53 == 0) {
-    return (time_internal::GetRepHi(d) * 1000) +
-           (time_internal::GetRepLo(d) / (kTicksPerNanosecond * 1000 * 1000));
-  }
-  return d / Milliseconds(1);
-}
-int64_t ToInt64Seconds(Duration d) {
-  int64_t hi = time_internal::GetRepHi(d);
-  if (time_internal::IsInfiniteDuration(d)) return hi;
-  if (hi < 0 && time_internal::GetRepLo(d) != 0) ++hi;
-  return hi;
-}
-int64_t ToInt64Minutes(Duration d) {
-  int64_t hi = time_internal::GetRepHi(d);
-  if (time_internal::IsInfiniteDuration(d)) return hi;
-  if (hi < 0 && time_internal::GetRepLo(d) != 0) ++hi;
-  return hi / 60;
-}
-int64_t ToInt64Hours(Duration d) {
-  int64_t hi = time_internal::GetRepHi(d);
-  if (time_internal::IsInfiniteDuration(d)) return hi;
-  if (hi < 0 && time_internal::GetRepLo(d) != 0) ++hi;
-  return hi / (60 * 60);
-}
-
 double ToDoubleNanoseconds(Duration d) {
   return FDivDuration(d, Nanoseconds(1));
 }
@@ -743,8 +703,9 @@ void AppendNumberUnit(std::string* out, double n, DisplayUnit unit) {
   char buf[kBufferSize];  // also large enough to hold integer part
   char* ep = buf + sizeof(buf);
   double d = 0;
-  int64_t frac_part = std::round(std::modf(n, &d) * unit.pow10);
-  int64_t int_part = d;
+  int64_t frac_part =
+      static_cast<int64_t>(std::round(std::modf(n, &d) * unit.pow10));
+  int64_t int_part = static_cast<int64_t>(d);
   if (int_part != 0 || frac_part != 0) {
     char* bp = Format64(ep, 0, int_part);  // always < 1000
     out->append(bp, static_cast<size_t>(ep - bp));
@@ -873,7 +834,7 @@ bool ConsumeDurationUnit(const char** start, const char* end, Duration* unit) {
         default:
           break;
       }
-      ABSL_FALLTHROUGH_INTENDED;
+      [[fallthrough]];
     case 1:
       switch (**start) {
         case 's':
@@ -936,7 +897,16 @@ bool ParseDuration(absl::string_view dur_sv, Duration* d) {
       return false;
     }
     if (int_part != 0) dur += sign * int_part * unit;
-    if (frac_part != 0) dur += sign * frac_part * unit / frac_scale;
+    if (frac_part != 0) {
+      // Scale the unit's tick count directly rather than forming
+      // frac_part * unit as a Duration first: for a long fraction of a large
+      // unit (e.g. "0.3000000000000000h") that product saturates to infinity
+      // before the division by frac_scale can bring it back into range.
+      const uint128 ticks = MakeU128Ticks(unit) *
+                            static_cast<uint64_t>(frac_part) /
+                            static_cast<uint64_t>(frac_scale);
+      dur += MakeDurationFromU128(ticks, sign < 0);
+    }
   }
   *d = dur;
   return true;

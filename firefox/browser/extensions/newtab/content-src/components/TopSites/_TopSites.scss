@@ -3,11 +3,9 @@
 /* stylelint-disable max-nesting-depth */
 
 $top-sites-size: $grid-unit-small;
-$top-sites-border-radius: var(--border-radius-medium);
-$top-sites-icon-border-radius: var(--border-radius-small);
 $rich-icon-size: 96px;
-$default-icon-wrapper-size: 32px;
-$default-icon-size: 32px;
+$default-icon-wrapper-size: 40px;
+$default-icon-size: 40px;
 $default-icon-offset: 6px;
 $half-base-gutter: math.div($base-gutter, 2);
 $hover-transition-duration: 150ms;
@@ -19,44 +17,72 @@ $calculated-max-width-widest: $break-point-widest + $card-width;
 $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
 
 .top-sites-list {
-  list-style: none;
-  margin: 0 calc(var(--space-large) * -1);
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  row-gap: var(--space-xlarge);
-
-  @media (min-width: $break-point-layout-variant) {
-    grid-template-columns: repeat(6, 1fr);
-  }
-
-  @media (min-width: $break-point-widest) {
-    grid-template-columns: repeat(8, 1fr);
-  }
-
-  .shortcuts-refresh & {
-    row-gap: var(--space-small);
-  }
-
-  a {
-    text-decoration: none;
+  // Positioned ancestor for the drag-time drop overlay. Scoped to when the
+  // overlay is actually present (a grouped-pins drag) via :has(), so the classic
+  // layout stays identical to main rather than gaining a positioned context it
+  // never needs.
+  &:has(.pinned-drag-overlay) {
+    position: relative;
   }
 
   &:not(.dnd-active) {
-    .top-site-outer:is(.active, :focus, :hover) {
-      background: var(--newtab-element-hover-color);
+    // Reveal on keyboard focus, not any :focus-within. A pointer click can
+    // leave focus on the menu button, and :focus-within would then keep the
+    // tile showing hover once the pointer leaves.
+    .top-site-outer:is(
+    .active,
+    :has(.top-site-inner:hover),
+    :has(.top-site-inner :focus-visible)
+  ) {
+      @include wallpaper-contrast-fix;
 
-      // Bug 1908010 - This overwrites the design system color because of a
-      // known transparency issue with color-mix syntax when a wallpaper is set
+      // Ideally this would just match button --button-background-color-hover.
+      // However, --button-background-color-hover uses currentColor.
+      // We cannot change the shortcut's color to match,
+      // so we just use --button-text-color-hover directly.
+      background: color-mix(in srgb, var(--button-text-color-hover) 14%, transparent);
+
+      .tile {
+        box-shadow: 0 2px 8px 0 var(--newtab-section-card-box-shadow-color);
+      }
+
+      .icon-pin-small {
+        opacity: 1;
+      }
+
       .lightWallpaper &,
       .darkWallpaper & {
-        background-color: var(--newtab-weather-background-color);
+        background: color-mix(in srgb, var(--button-text-color-hover) 14%, transparent);
 
         @media (prefers-contrast) {
           background-color: var(--background-color-box);
         }
       }
     }
+  }
+
+  list-style: none;
+  margin: 0 calc(var(--space-large) * -1);
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  justify-content: center; // Center shortcuts when fewer than max number of sites per row
+  row-gap: var(--space-small);
+
+  @media (min-width: $break-point-layout-variant) {
+    grid-template-columns: repeat(6, auto);
+  }
+
+  @media (min-width: $break-point-widest) {
+    grid-template-columns: repeat(8, auto);
+  }
+
+  @media (min-width: $break-point-sections-variant) {
+    grid-template-columns: repeat(var(--top-sites-max-per-row, 8), auto);
+  }
+
+  a {
+    text-decoration: none;
   }
 
   // Two columns
@@ -130,16 +156,86 @@ $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
       display: inline-block;
     }
   }
+
+  .hide-for-small {
+    display: none;
+  }
+
+  @media (min-width: $break-point-sections-variant) {
+    .hide-for-small {
+      display: inline-block;
+    }
+  }
+}
+
+.discovery-stream.ds-layout.ds-layout-topsites {
+  display: flex;
+  justify-content: center;
+
+  .top-sites-list {
+    padding-block-start: 0;
+  }
+
+  // @nova-cleanup(remove-conditional): Remove .nova-enabled selector, make default behavior
+  .nova-enabled & {
+    display: contents;
+  }
+}
+
+// Drag wrapper around all shortcuts.
+.pinned-drag-overlay {
+  position: absolute;
+  inset: 0;
+  // Behind the tiles, so the drop highlight reads under them rather than
+  // tinting the tile faces.
+  z-index: -1;
+
+  // A visual area around each row to signal a droppable area.
+  .pinned-drop-box {
+    position: absolute;
+
+    // Extend the highlight a bit past the element so the drop area reads larger.
+    &::before {
+      content: '';
+      position: absolute;
+      inset-block-start: 0;
+      inset-block-end: calc(-1 * var(--space-small));
+      inset-inline: calc(-1 * var(--space-small));
+      border-radius: var(--border-radius-large);
+      background: color-mix(
+        in srgb,
+        var(--border-color-selected) 15%,
+        transparent
+      );
+      outline: 1px dashed var(--border-color-selected);
+    }
+
+    @include wallpaper-contrast-fix;
+
+    .pinned-area-label {
+      position: absolute;
+      inset-block-end: 100%;
+      inset-inline-start: 0;
+      margin-block-end: var(--space-small);
+      display: flex;
+      align-items: center;
+      gap: var(--space-small);
+      white-space: nowrap;
+      font-size: var(--font-size-small);
+      color: var(--newtab-text-primary-color);
+    }
+  }
 }
 
 // container for drop zone
 .top-site-outer {
-  width: calc(var(--size-item-large) * 3);
-  border-radius: var(--border-radius-medium);
+  width: 120px;
+  // Compact layout spacing migrated from .thumbs-ui-compact
+  margin-block-end: var(--space-medium);
+  border-radius: var(--border-radius-large);
   display: inline-block;
-  margin-block-end: var(--space-large);
+  position: relative;
 
-  // container for context menu
   .top-site-inner {
     position: relative;
 
@@ -151,45 +247,110 @@ $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
     }
   }
 
-  &:is(:hover) {
+  // Gated to :not(.dnd-active) so a drag never shows hover chrome — macOS
+  // freezes :hover on the dragged tile and we can't use pointer-events (the
+  // placeholder is the drop target). Keep new tile-hover styling behind this.
+  // Keyboard focus rather than :focus-within, so focus left on the menu button
+  // by a pointer click doesn't leave the "..." button stuck visible.
+  .top-sites-list:not(.dnd-active) &:is(:has(.top-site-inner:hover), :has(.top-site-inner :focus-visible)) {
     .context-menu-button {
       opacity: 1;
-      transition: opacity 200ms;
+
+      @media (prefers-reduced-motion: no-preference) {
+        transition: opacity 200ms;
+      }
+    }
+
+    .tile {
+      background-color: var(--newtab-background-color-secondary);
+    }
+
+    .icon-pin-small {
+      opacity: 1;
     }
   }
 
-  // Contrast fix for users who have wallpapers set
   &:not(:hover, :active, .active) {
     @include wallpaper-contrast-fix;
   }
 
-  // Necessary for when navigating by a keyboard, having the context
-  // menu open should display the "…" button. This style is a clone
-  // of the `:active` state for `.context-menu-button`
-  &.active {
-    .context-menu-button {
-      opacity: 1;
-      background-color: var(--newtab-button-active-background);
+  .tile {
+    color-scheme: initial;
+  }
+
+  &.active .context-menu-button {
+    opacity: 1;
+    background-color: var(--newtab-button-active-background);
+  }
+
+  // Hide the hover state pin icon and menu button on the drag ghost.
+  &.drag-ghost :is(.context-menu-button, .icon-pin-small) {
+    display: none;
+  }
+
+  .tile {
+    background: var(--newtab-background-card);
+    border-radius: var(--border-radius-large);
+    box-shadow: $shadow-card;
+    height: calc(var(--size-item-large) * 2);
+    width: calc(var(--size-item-large) * 2);
+    margin: 0 auto;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-transform: uppercase;
+    font-size: var(--font-size-xxlarge);
+    color: var(--newtab-contextual-text-secondary-color);
+    cursor: pointer;
+
+    .icon-wrapper {
+      border-radius: var(--border-radius-small);
+      width: $default-icon-wrapper-size;
+      height: $default-icon-wrapper-size;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      position: relative;
+
+      &.letter-fallback {
+        border-radius: var(--border-radius-circle);
+
+        &::before {
+          content: attr(data-fallback);
+          font-size: var(--font-size-xlarge);
+          transform: none;
+          position: static;
+        }
+      }
+    }
+
+    .top-site-icon {
+      background-color: transparent;
+      border-radius: var(--border-radius-medium);
+      background-position: center;
+      background-repeat: no-repeat;
+      position: absolute;
     }
   }
 
+  // The "..." menu trigger stays a plain button while Bug 2062844 is pending,
+  // so it carries its own icon and hover/focus styling rather than inheriting
+  // moz-button's. See the comment on the button in TopSite.jsx.
   .context-menu-button {
     background-image: url('chrome://global/skin/icons/more.svg');
-    background-color: var(--newtab-button-background);
     border: 0;
     border-radius: var(--border-radius-small);
     cursor: pointer;
     fill: var(--newtab-button-text);
     -moz-context-properties: fill;
-    height: 20px;
-    width: 20px;
-    inset-inline-end: var(--space-xsmall);
-    opacity: 0;
+    height: var(--size-item-medium);
+    width: var(--size-item-medium);
+    inset-inline-end: 0;
+    inset-block-start: var(--space-medium);
     position: absolute;
-    inset-block-start: calc(var(--space-large) * -1);
-
-    // Contrast fix for users who have wallpapers set
-    @include wallpaper-contrast-fix;
+    opacity: 0;
 
     &:hover {
       background-color: var(--newtab-button-hover-background);
@@ -201,127 +362,46 @@ $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
 
     &:focus-visible {
       background-color: var(--newtab-button-focus-background);
-      border-color: var(--newtab-button-focus-border);
+      outline: var(--focus-outline); // Backup for when wallpaper is not set
       opacity: 1;
-    }
-  }
 
-  .tile {
-    border-radius: var(--border-radius-medium);
-    box-shadow: $shadow-card;
-    background-color: var(--newtab-background-color-secondary);
-    justify-content: center;
-    margin: 0 auto;
-    height: calc(var(--size-item-large) * 2);
-    width: calc(var(--size-item-large) * 2);
-    cursor: pointer;
-    position: relative;
-
-    // For letter fallback
-    align-items: center;
-    color: var(--newtab-contextual-text-secondary-color);
-    display: flex;
-    font-size: var(--font-size-xxlarge);
-    text-transform: uppercase;
-
-    .icon-wrapper {
-      border-radius: var(--border-radius-small);
-      width: var(--size-item-large);
-      height: var(--size-item-large);
-      overflow: hidden;
-      position: relative;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-
-      &.letter-fallback::before {
-        content: attr(data-fallback);
-        text-transform: uppercase;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 64px; // stylelint-disable-line declaration-property-value-disallowed-list
-        font-weight: var(--font-weight-bold);
-        transform: rotate(-10deg);
-        inset-block-start: var(--space-xsmall);
-        position: relative;
-        color: $letter-fallback-color;
+      .lightWallpaper &,
+      .darkWallpaper & {
+        &::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: var(--border-radius-small);
+          outline: var(--focus-outline);
+          color-scheme: initial; // Override wallpaper-contrast-fix for focus outline color
+        }
       }
     }
   }
 
-  // Some common styles for all icons (rich and default) in top sites
-  .top-site-icon {
-    background-color: var(--newtab-background-color-secondary);
-    background-position: center center;
-    background-repeat: no-repeat;
-    border-radius: var(--border-radius-small);
+  .context-menu {
+    inset-block-start: calc(var(--space-large) + var(--space-xlarge));
+  }
+
+  .icon-pin-small {
+    inset-block-start: var(--space-small);
+    inset-inline-start: var(--space-small);
+    opacity: 0;
     position: absolute;
   }
 
-  .rich-icon {
-    background-size: cover;
-    height: 100%;
-    inset-inline-start: 0;
-    inset-block-start: 0;
-    width: 100%;
-  }
+  .top-site-button {
+    padding: var(--space-large) var(--space-large) var(--space-small);
 
-  .default-icon,
-  .search-topsite {
-    background-size: $default-icon-size;
-    height: $default-icon-wrapper-size;
-    width: $default-icon-wrapper-size;
-
-    // for corner letter fallback
-    align-items: center;
-    display: flex;
-    font-size: var(--font-size-xlarge);
-    justify-content: center;
-
-    &[data-fallback]::before {
-      content: attr(data-fallback);
+    &:focus + div .context-menu-button {
+      opacity: 1;
     }
-  }
 
-  .search-topsite {
-    background-image: url('chrome://global/skin/icons/search-glass.svg');
-    background-size: 16px;
-    background-color: var(--newtab-primary-action-background);
-    border-radius: var(--border-radius-circle);
-    -moz-context-properties: fill;
-    fill: var(--newtab-primary-element-text-color);
-    box-shadow: $shadow-card;
-    transition-duration: $hover-transition-duration;
-    transition-property: background-size, bottom, inset-inline-end, height, width;
-    height: 32px;
-    width: 32px;
-    // Bug 1967304 - $variable
-    inset-block-end: -$default-icon-offset; // stylelint-disable-line declaration-property-value-disallowed-list
-    inset-inline-end: -$default-icon-offset; // stylelint-disable-line declaration-property-value-disallowed-list
-  }
-
-  &.placeholder {
-    .tile {
-      box-shadow: $shadow-card;
-      cursor: default;
-    }
-  }
-
-  &.add-button {
-    .tile {
-      background-color: var(--button-background-color);
-      box-shadow: $shadow-card;
-      cursor: default;
-
-      .icon-wrapper {
-        background-image: url('chrome://global/skin/icons/plus-20.svg');
-        background-size: cover;
-        background-repeat: no-repeat;
-        height: 20px;
-        width: 20px;
-        fill: var(--icon-color);
-        -moz-context-properties: fill;
+    &:focus .tile {
+      .lightWallpaper &,
+      .darkWallpaper & {
+        outline: var(--focus-outline);
+        color-scheme: initial;
       }
     }
   }
@@ -340,15 +420,80 @@ $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
 
     .sponsored-label {
       color: var(--newtab-contextual-text-secondary-color);
-      font-size: var(--font-size-xsmall);
+      font-size: var(--newtab-font-size-xsmall);
     }
 
     &:not(.sponsored) .sponsored-label {
       display: none;
     }
+
+    .search-topsite {
+      margin-inline-end: var(--space-xxsmall);
+      fill: currentColor;
+      background-size: var(--icon-size-xsmall);
+      height: var(--icon-size-xsmall);
+      width: var(--icon-size-xsmall);
+      background-position: center;
+      background-repeat: no-repeat;
+      background-color: transparent;
+      position: static;
+      display: inline-block;
+      color: var(--icon-color);
+      box-shadow: none;
+    }
   }
 
-  // We want all search shortcuts to have a white background in case they have transparency.
+  .rich-icon {
+    background-size: cover;
+    height: 100%;
+    width: 100%;
+    position: absolute;
+    inset-inline-start: 0;
+    inset-block-start: 0;
+  }
+
+  .default-icon,
+  .search-topsite {
+    background-size: $default-icon-size;
+    height: $default-icon-wrapper-size;
+    width: $default-icon-wrapper-size;
+    align-items: center;
+    display: flex;
+    justify-content: center;
+    font-size: var(--font-size-xlarge);
+
+    &[data-fallback]::before {
+      content: attr(data-fallback);
+    }
+  }
+
+  .search-topsite {
+    background-image: url('chrome://global/skin/icons/search-glass.svg');
+    background-size: 16px;
+    background-color: var(--newtab-primary-action-background);
+    border-radius: var(--border-radius-circle);
+    -moz-context-properties: fill;
+    fill: var(--newtab-primary-element-text-color);
+    box-shadow: $shadow-card;
+    transition: background-size $hover-transition-duration,
+      bottom $hover-transition-duration,
+      inset-inline-end $hover-transition-duration,
+      height $hover-transition-duration,
+      width $hover-transition-duration;
+    height: 32px;
+    width: 32px;
+    // Bug 1967304 - $variable
+    inset-block-end: -$default-icon-offset; // stylelint-disable-line declaration-property-value-disallowed-list
+    inset-inline-end: -$default-icon-offset; // stylelint-disable-line declaration-property-value-disallowed-list
+  }
+
+  &.placeholder {
+    .tile {
+      box-shadow: $shadow-card;
+      cursor: default;
+    }
+  }
+
   &.search-shortcut {
     .rich-icon {
       background-color: $white;
@@ -357,6 +502,27 @@ $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
 
   .edit-button {
     background-image: url('chrome://global/skin/icons/edit.svg');
+  }
+
+  // Source tile during a zero-pin drag: taken out of grid flow (so adding the
+  // pin-area placeholder nets zero cells) while staying rendered, so the native
+  // drag isn't aborted and dragend still fires. Not display:none, which can do
+  // both.
+  &.collapsed {
+    position: absolute;
+    visibility: hidden;
+  }
+
+  // Zero-pin drop placeholder keeps its slot but stays invisible until the drag
+  // is over the drop zone. opacity (not visibility) so it stays hit-testable:
+  // when it's the only cell on a new row, visibility:hidden drops it from
+  // hit-testing and dragover never lands on it, so it never reveals.
+  &.zero-pin-placeholder {
+    opacity: 0;
+
+    &.over {
+      opacity: 1;
+    }
   }
 
   &.dragged {
@@ -371,156 +537,99 @@ $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
       visibility: hidden;
     }
   }
+}
 
-  .shortcuts-refresh & {
-    width: 120px;
-    margin-block-end: 0;
-    border-radius: var(--border-radius-large);
+.add-button {
+  @include wallpaper-contrast-fix;
+}
 
-    &:hover {
-      .context-menu-button {
-        @include wallpaper-contrast-fix;
-      }
+// For a full row, the button is hidden until the last tile is hovered.
+.add-button-hidden {
+  position: absolute;
+  inset-block-start: calc(var(--space-large) + var(--size-item-large));
+  inset-inline-start: 100%;
+  width: var(--col-width);
+  display: flex;
+  justify-content: center;
+  // Transparent block padding enlarges the button's hover hit-area.
+  padding-block: var(--space-xxlarge);
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 200ms ease-out;
 
-      .tile {
-        background-color: var(--newtab-background-color-secondary);
-      }
+  @media (prefers-reduced-motion: reduce) {
+    transition: opacity 100ms;
+  }
 
-      .icon-pin-small {
-        opacity: 1;
-      }
-    }
+  .top-site-outer:hover & {
+    opacity: 1;
+    transition-delay: 200ms;
+  }
 
-    .top-site-button {
-      padding: var(--space-large) var(--space-large) var(--space-small);
+  // Show it when someone tabs through the row. We can't just use :focus-within,
+  // since a mouse click leaves focus behind and the button would stay visible.
+  // The second line is for the add button itself: it's a moz-button, and
+  // :focus-visible can't see inside those (Bug 2062844).
+  .top-sites-list:has(:focus-visible) &,
+  &:focus-within {
+    opacity: 1;
+  }
 
-      &:focus + div .context-menu-button {
-        opacity: 1;
-      }
-    }
-
-    .icon-wrapper {
-      width: 40px;
-      height: 40px;
-    }
-
-    .tile {
-      background: var(--newtab-background-card);
-      border-radius: var(--border-radius-large);
-
-      .top-site-icon {
-        // Remove the white background colors on icons,
-        // fully rely on the icon itself to make the decision on the background.
-        background-color: transparent;
-        border-radius: var(--border-radius-medium);
-      }
-
-      .icon-wrapper.letter-fallback {
-        border-radius: var(--border-radius-circle);
-
-        &::before {
-          transform: none;
-          position: static;
-          font-size: var(--font-size-xlarge);
-        }
-      }
-    }
-
-    .title {
-      .search-topsite {
-        margin-inline-end: var(--space-xxsmall);
-        fill: currentColor;
-        background-size: 12px;
-        height: 12px;
-        width: 12px;
-        background-position: center center;
-        background-repeat: no-repeat;
-        background-color: transparent;
-        position: static;
-        display: inline-block;
-        color: var(--icon-color);
-        box-shadow: none;
-      }
-    }
-
-    .context-menu-button {
-      inset-inline-end: 0;
-      inset-block-start: var(--space-medium);
-      height: 24px;
-      width: 24px;
-      background-color: unset;
-
-      &:hover {
-        background-color: var(--newtab-button-hover-background);
-      }
-    }
-
-    .context-menu {
-      // Bug 1967304 - Custom number (40px)
-      inset-block-start: calc(var(--space-large) + var(--space-xlarge));
-    }
-
-    .icon-pin-small {
-      inset-block-start: var(--space-small);
-      inset-inline-start: var(--space-small);
-      opacity: 0;
-      position: absolute;
-    }
+  // Keep it hidden while a context menu is open (the open tile gets .active):
+  // the menu taking focus would otherwise trigger the reveal.
+  .top-sites-list:has(.top-site-outer.active) & {
+    opacity: 0;
   }
 }
 
-.shortcuts-refresh {
-  .discovery-stream.ds-layout.ds-layout-topsites {
-    display: flex;
-    justify-content: center;
+// In-grid variant: center the button on its own tile. Horizontal centering uses
+// auto inline margins so it stays centered in RTL.
+.add-button-tile .add-button {
+  position: absolute;
+  inset-block-start: calc(var(--space-large) + var(--size-item-large));
+  inset-inline: 0;
+  margin-inline: auto;
+  transform: translateY(-50%);
+}
 
-    .top-sites {
-      padding-block-start: 0;
-    }
+// Sole item (no shortcuts): span the full row so the button stays centered
+// despite the column gaps, and reserve tile height so the row doesn't collapse
+// around the absolutely-positioned button.
+.add-button-tile:only-child {
+  grid-column: 1 / -1;
+  // Reserves the height of a shortcut tile + label
+  min-height: calc(96px + var(--space-small) * 7);
+}
+
+// @nova-cleanup(remove-conditional): Make default behavior, remove .nova-enabled selector
+.nova-enabled {
+  .add-button-hidden,
+  .add-button-tile .add-button {
+    inset-block-start: calc(var(--col-width) - var(--size-item-large));
   }
 
-  .top-sites-list {
-    &:not(.dnd-active) {
-      .top-site-outer:is(.active, :focus, :hover) {
-        @include wallpaper-contrast-fix;
+  .add-button-tile:only-child {
+    // Reserves the height of a shortcut tile (75px) + label (32px) + padding
+    min-height: calc(107px + var(--space-small));
+  }
+}
 
-        // Ideally this would just match button --button-background-color-hover.
-        // However, --button-background-color-hover uses currentColor.
-        // We cannot change the shortcut's color to match,
-        // so we just use --button-text-color-hover directly.
-        background: color-mix(in srgb, var(--button-text-color-hover) 14%, transparent);
-
-        .tile {
-          box-shadow: 0 2px 8px 0 var(--newtab-section-card-box-shadow-color);
-        }
-
-        .lightWallpaper &,
-        .darkWallpaper & {
-          background: color-mix(in srgb, var(--button-text-color-hover) 14%, transparent);
-
-          @media (prefers-contrast) {
-            background-color: var(--background-color-box);
-          }
-        }
-      }
-    }
+// Preserve shortcuts-refresh variant from compact thumbs UI
+.shortcuts-refresh {
+  .top-site-outer {
+    margin-block-end: 0;
   }
 }
 
 .edit-topsites-wrapper {
   .top-site-inner > .top-site-button > .tile {
-    border: 1px solid var(--newtab-border-color);
+    border: 1px solid var(--border-color);
   }
 
   .modal {
-    box-shadow: $shadow-secondary;
-    inset-inline-start: 0;
-    margin: 0 auto;
-    max-height: calc(100% - 40px);
-    position: fixed;
-    inset-inline-end: 0;
+    border: 0;
+    min-height: fit-content;
     inset-block-start: var(--space-xxlarge);
-    width: $wrapper-default-width;
 
     @media (min-width: $break-point-medium) {
       width: $wrapper-max-width-medium;
@@ -604,16 +713,9 @@ $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
 
         &:not(:placeholder-shown) {
           direction: ltr;
-          text-align: right;
+          text-align: end;
         }
       }
-    }
-
-    .enable-custom-image-input {
-      display: inline-block;
-      font-size: var(--font-size-small);
-      margin-block-start: var(--space-xsmall);
-      cursor: pointer;
     }
 
     .custom-image-input-container {
@@ -656,7 +758,7 @@ $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
     input {
       &[type='text'] {
         background-color: var(--newtab-background-color-secondary);
-        border: $input-border;
+        border: 1px solid var(--border-color-interactive);
         margin: var(--space-small) 0;
         padding: 0 var(--space-small);
         height: 32px;
@@ -664,7 +766,7 @@ $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
         font-size: inherit;
 
         &[disabled] {
-          border: $input-border;
+          border: 1px solid var(--border-color-interactive-disabled);
           box-shadow: none;
           opacity: 0.4;
         }
@@ -674,7 +776,7 @@ $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
     .invalid {
       input {
         &[type='text'] {
-          border: $input-error-border;
+          border: 1px solid var(--border-color-error);
           box-shadow: $input-error-boxshadow;
         }
       }
@@ -711,10 +813,19 @@ $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
 
   .actions {
     justify-content: flex-end;
+    padding: var(--space-large) var(--space-xlarge);
+  }
 
-    button {
-      margin-inline-start: var(--space-small);
-      margin-inline-end: 0;
+  // "Use a custom image" and the action buttons share one padded row.
+  .topsite-form-footer {
+    display: flex;
+    align-items: center;
+    padding: var(--space-large) var(--space-xlarge);
+
+    .actions {
+      margin-inline-start: auto;
+      padding: 0;
+      border-block-start: none;
     }
   }
 
@@ -752,7 +863,7 @@ $calculated-max-width-twice-widest: $break-point-widest + 2 * $card-width;
   [type='checkbox']:not(:checked) + label::before,
   [type='checkbox']:checked + label::before {
     background: var(--newtab-background-color);
-    border: $input-border;
+    border: 1px solid var(--border-color);
     border-radius: var(--border-radius-small);
     content: '';
     height: 21px;

@@ -9,7 +9,6 @@ const { debug, warn } = GeckoViewUtils.initLogging("GeckoViewPush");
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  EventDispatcher: "resource://gre/modules/Messaging.sys.mjs",
   PushCrypto: "resource://gre/modules/PushCrypto.sys.mjs",
 });
 
@@ -17,6 +16,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 // changes. These are duplicated and used in `nsIPushNotifier`. They're exposed
 // on `nsIPushService` so that JS callers only need to import this service.
 const OBSERVER_TOPIC_PUSH = "push-message";
+const OBSERVER_TOPIC_PUSH_MESSAGE_HANDLED = "push-message-handled";
 const OBSERVER_TOPIC_SUBSCRIPTION_CHANGE = "push-subscription-change";
 const OBSERVER_TOPIC_SUBSCRIPTION_MODIFIED = "push-subscription-modified";
 
@@ -53,6 +53,7 @@ export class PushService {
   }
 
   pushTopic = OBSERVER_TOPIC_PUSH;
+  pushMessageHandledTopic = OBSERVER_TOPIC_PUSH_MESSAGE_HANDLED;
   subscriptionChangeTopic = OBSERVER_TOPIC_SUBSCRIPTION_CHANGE;
   subscriptionModifiedTopic = OBSERVER_TOPIC_SUBSCRIPTION_MODIFIED;
 
@@ -79,17 +80,16 @@ export class PushService {
     }
 
     try {
-      const response = await lazy.EventDispatcher.instance.sendRequestForResult(
-        {
-          type: "GeckoView:PushSubscribe",
-          scope: scopeWithAttrs(scope, principal.originAttributes),
-          appServerKey: appServerKey
-            ? ChromeUtils.base64URLEncode(keyView, {
-                pad: true,
-              })
-            : null,
-        }
-      );
+      const appServerKeyArg = appServerKey
+        ? ChromeUtils.base64URLEncode(keyView, { pad: true })
+        : null;
+
+      const actor = ChromeUtils.domProcessChild.getActor("GeckoViewPush");
+
+      const response = await actor.sendQuery("GeckoView:PushSubscribe", {
+        scope: scopeWithAttrs(scope, principal.originAttributes),
+        appServerKey: appServerKeyArg,
+      });
 
       let subscription = null;
       if (response) {
@@ -109,8 +109,9 @@ export class PushService {
 
   async unsubscribe(scope, principal, callback) {
     try {
-      await lazy.EventDispatcher.instance.sendRequestForResult({
-        type: "GeckoView:PushUnsubscribe",
+      const actor = ChromeUtils.domProcessChild.getActor("GeckoViewPush");
+
+      await actor.sendQuery("GeckoView:PushUnsubscribe", {
         scope: scopeWithAttrs(scope, principal.originAttributes),
       });
 
@@ -122,12 +123,11 @@ export class PushService {
 
   async getSubscription(scope, principal, callback) {
     try {
-      const response = await lazy.EventDispatcher.instance.sendRequestForResult(
-        {
-          type: "GeckoView:PushGetSubscription",
-          scope: scopeWithAttrs(scope, principal.originAttributes),
-        }
-      );
+      const actor = ChromeUtils.domProcessChild.getActor("GeckoViewPush");
+
+      const response = await actor.sendQuery("GeckoView:PushGetSubscription", {
+        scope: scopeWithAttrs(scope, principal.originAttributes),
+      });
 
       let subscription = null;
       if (response) {

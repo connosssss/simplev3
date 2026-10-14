@@ -340,6 +340,9 @@ include table-width/reftest.list
 
 include ../tables/reftests/reftest.list
 
+# target-text/
+include target-text/reftest.list
+
 # text/
 include text/reftest.list
 
@@ -442,3 +445,4 @@ include display-list/reftest.list
 include ../../dom/media/test/reftest/reftest.list
 include ../../dom/media/test/reftest/color_quads/reftest.list
 include ../../dom/media/webvtt/test/reftest/reftest.list
+include ../../dom/media/webrtc/tests/reftest/reftest.list

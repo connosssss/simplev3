@@ -10,7 +10,8 @@
 "use strict";
 
 ChromeUtils.defineESModuleGetters(this, {
-  UrlbarProviderAutofill: "resource:///modules/UrlbarProviderAutofill.sys.mjs",
+  UrlbarProviderAutofill:
+    "moz-src:///browser/components/urlbar/UrlbarProviderAutofill.sys.mjs",
 });
 
 add_setup(async function () {
@@ -22,7 +23,13 @@ add_setup(async function () {
     0
   );
   Services.prefs.setBoolPref(
-    "browser.search.separatePrivateDefault.ui.enabled",
+    "browser.search.separatePrivateDefault.featureGate",
+    false
+  );
+  // The test seeds the engine domain via an unvisited bookmark; bookmark-
+  // driven autofill is disabled when adaptive autofill is on.
+  Services.prefs.setBoolPref(
+    "browser.urlbar.autoFill.adaptiveHistory.enabled",
     false
   );
 
@@ -30,10 +37,13 @@ add_setup(async function () {
     Services.prefs.clearUserPref("browser.urlbar.suggest.searches");
     Services.prefs.clearUserPref("browser.urlbar.suggest.quickactions");
     Services.prefs.clearUserPref(
-      "browser.search.separatePrivateDefault.ui.enabled"
+      "browser.search.separatePrivateDefault.featureGate"
     );
     Services.prefs.clearUserPref(
       "browser.urlbar.tabToSearch.onboard.interactionsLeft"
+    );
+    Services.prefs.clearUserPref(
+      "browser.urlbar.autoFill.adaptiveHistory.enabled"
     );
   });
 });
@@ -64,17 +74,17 @@ add_task(async function test() {
       context,
       matches: [
         makeSearchResult(context, {
-          engineName: Services.search.defaultEngine.name,
-          providerName: "HeuristicFallback",
+          engineName: SearchService.defaultEngine.name,
+          providerName: "UrlbarProviderHeuristicFallback",
           heuristic: true,
         }),
         makeSearchResult(context, {
           engineName: "TestEngine",
-          engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+          engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
           searchUrlDomainWithoutSuffix: "en.example.",
           providesSearchMode: true,
           query: "",
-          providerName: "TabToSearch",
+          providerName: "UrlbarProviderTabToSearch",
           satisfiesAutofillThreshold: true,
         }),
         makeBookmarkResult(context, {
@@ -92,7 +102,7 @@ add_task(async function test() {
     search_url: url2,
   });
 
-  let engine2 = Services.search.getEngineByName("TestEngine2");
+  let engine2 = SearchService.getEngineByName("TestEngine2");
   // Make sure the engine domain would be autofilled.
   await PlacesUtils.bookmarks.insert({
     url: url2,
@@ -107,17 +117,17 @@ add_task(async function test() {
       context,
       matches: [
         makeSearchResult(context, {
-          engineName: Services.search.defaultEngine.name,
-          providerName: "HeuristicFallback",
+          engineName: SearchService.defaultEngine.name,
+          providerName: "UrlbarProviderHeuristicFallback",
           heuristic: true,
         }),
         makeSearchResult(context, {
           engineName: engine2.name,
-          engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+          engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
           searchUrlDomainWithoutSuffix: "www.it.mochi.",
           providesSearchMode: true,
           query: "",
-          providerName: "TabToSearch",
+          providerName: "UrlbarProviderTabToSearch",
           satisfiesAutofillThreshold: true,
         }),
         makeBookmarkResult(context, {
@@ -157,15 +167,15 @@ add_task(async function test() {
           uri: "https://foo.com/",
           title: "bookmark",
           heuristic: true,
-          providerName: "Autofill",
+          providerName: "UrlbarProviderAutofill",
         }),
         makeSearchResult(context, {
           engineName: "TestEngine3",
-          engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+          engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
           searchUrlDomainWithoutSuffix: "search.foo.",
           providesSearchMode: true,
           query: "",
-          providerName: "TabToSearch",
+          providerName: "UrlbarProviderTabToSearch",
           satisfiesAutofillThreshold: true,
         }),
       ],
@@ -174,15 +184,16 @@ add_task(async function test() {
 
   info("Test non-matching cases");
 
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
   for (let searchStr of ["www.en", "www.ex", "https://ex"]) {
     info("Searching for " + searchStr);
     let context = createContext(searchStr, { isPrivate: false });
     // We don't want to generate all the possible results here, just check
     // the heuristic result is not autofill.
-    let controller = UrlbarTestUtils.newMockController();
-    await UrlbarProvidersManager.startQuery(context, controller);
+    let { parentController } = UrlbarTestUtils.mockChildController();
+    await providersManager.startQuery(context, parentController);
     Assert.ok(context.results[0].heuristic, "Check heuristic result");
-    Assert.notEqual(context.results[0].providerName, "Autofill");
+    Assert.notEqual(context.results[0].providerName, "UrlbarProviderAutofill");
   }
 
   info("Tab-to-search is not shown when an unrelated site is autofilled.");
@@ -191,7 +202,7 @@ add_task(async function test() {
     name: "FakeWikipedia",
     search_url: url,
   });
-  let wikiEngine = Services.search.getEngineByName("TestEngine");
+  let wikiEngine = SearchService.getEngineByName("TestEngine");
 
   // Make sure that wikiUrl will pass getTopHostOverThreshold.
   await PlacesUtils.bookmarks.insert({
@@ -211,7 +222,7 @@ add_task(async function test() {
   let searchStr = "w";
   let context = createContext(searchStr, {
     isPrivate: false,
-    sources: [UrlbarUtils.RESULT_SOURCE.BOOKMARKS],
+    sources: [UrlbarShared.RESULT_SOURCE.BOOKMARKS],
   });
   let host = await UrlbarProviderAutofill.getTopHostOverThreshold(context, [
     wikiEngine.searchUrlDomain,
@@ -230,7 +241,7 @@ add_task(async function test() {
         uri: `${wwwUrl}/`,
         title: "Example",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
       // Note that tab-to-search is not shown.
       makeBookmarkResult(context, {
@@ -247,12 +258,12 @@ add_task(async function test() {
   info("Restricting to history should not autofill our bookmark");
   context = createContext("ex", {
     isPrivate: false,
-    sources: [UrlbarUtils.RESULT_SOURCE.HISTORY],
+    sources: [UrlbarShared.RESULT_SOURCE.HISTORY],
   });
-  let controller = UrlbarTestUtils.newMockController();
-  await UrlbarProvidersManager.startQuery(context, controller);
+  let { parentController } = UrlbarTestUtils.mockChildController();
+  await providersManager.startQuery(context, parentController);
   Assert.ok(context.results[0].heuristic, "Check heuristic result");
-  Assert.notEqual(context.results[0].providerName, "Autofill");
+  Assert.notEqual(context.results[0].providerName, "UrlbarProviderAutofill");
 
   await cleanupPlaces();
 });

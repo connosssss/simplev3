@@ -9,7 +9,8 @@ ChromeUtils.defineESModuleGetters(lazy, {
 });
 
 export function LoginManagerCrypto_SDR() {
-  this.init();
+  // Ensure NSS is initialized.
+  Cc["@mozilla.org/psm;1"].getService(Ci.nsISupports);
 }
 
 LoginManagerCrypto_SDR.prototype = {
@@ -42,20 +43,6 @@ LoginManagerCrypto_SDR.prototype = {
   },
 
   _uiBusy: false,
-
-  init() {
-    // Check to see if the internal PKCS#11 token has been initialized.
-    // If not, set a blank password.
-    let tokenDB = Cc["@mozilla.org/security/pk11tokendb;1"].getService(
-      Ci.nsIPK11TokenDB
-    );
-
-    let token = tokenDB.getInternalKeyToken();
-    if (token.needsUserInit) {
-      this.log("Initializing key3.db with default blank password.");
-      token.initPassword("");
-    }
-  },
 
   /*
    * encrypt
@@ -94,12 +81,7 @@ LoginManagerCrypto_SDR.prototype = {
       }
     } finally {
       this._uiBusy = false;
-      // If we triggered a primary password prompt, notify observers.
-      if (!wasLoggedIn && this.isLoggedIn) {
-        this._notifyObservers("passwordmgr-crypto-login");
-      } else if (canceledMP) {
-        this._notifyObservers("passwordmgr-crypto-loginCanceled");
-      }
+      this._primaryPasswordPromptFinished(wasLoggedIn, canceledMP, "encrypt");
     }
     return cipherText;
   },
@@ -146,12 +128,7 @@ LoginManagerCrypto_SDR.prototype = {
       }
     } finally {
       this._uiBusy = false;
-      // If we triggered a primary password prompt, notify observers.
-      if (!wasLoggedIn && this.isLoggedIn) {
-        this._notifyObservers("passwordmgr-crypto-login");
-      } else if (canceledMP) {
-        this._notifyObservers("passwordmgr-crypto-loginCanceled");
-      }
+      this._primaryPasswordPromptFinished(wasLoggedIn, canceledMP, "encrypt");
     }
     return cipherTexts;
   },
@@ -201,12 +178,7 @@ LoginManagerCrypto_SDR.prototype = {
       }
     } finally {
       this._uiBusy = false;
-      // If we triggered a primary password prompt, notify observers.
-      if (!wasLoggedIn && this.isLoggedIn) {
-        this._notifyObservers("passwordmgr-crypto-login");
-      } else if (canceledMP) {
-        this._notifyObservers("passwordmgr-crypto-loginCanceled");
-      }
+      this._primaryPasswordPromptFinished(wasLoggedIn, canceledMP, "decrypt");
     }
 
     return plainText;
@@ -215,11 +187,12 @@ LoginManagerCrypto_SDR.prototype = {
   /**
    * Decrypts the specified strings, using the SecretDecoderRing.
    *
-   * @resolve {string[]} The decrypted strings. If a string cannot
-   * be decrypted, the empty string is returned for that instance.
-   * Callers will need to use decrypt() to determine if the encrypted
-   * string is invalid or intentionally empty. Throws/reject with
-   * an error if there was a problem.
+   * @returns {Promise<string[]>}
+   *   Resolved to the decrypted strings. If a string cannot be decrypted, the
+   *   empty string is returned for that instance. Callers will need to use
+   *   decrypt() to determine if the encrypted string is invalid or intentionally
+   *   empty.
+   *   Throws/rejects with an error if there was a problem.
    */
   async decryptMany(cipherTexts) {
     if (!Array.isArray(cipherTexts) || !cipherTexts.length) {
@@ -257,12 +230,7 @@ LoginManagerCrypto_SDR.prototype = {
       }
     } finally {
       this._uiBusy = false;
-      // If we triggered a primary password prompt, notify observers.
-      if (!wasLoggedIn && this.isLoggedIn) {
-        this._notifyObservers("passwordmgr-crypto-login");
-      } else if (canceledMP) {
-        this._notifyObservers("passwordmgr-crypto-loginCanceled");
-      }
+      this._primaryPasswordPromptFinished(wasLoggedIn, canceledMP, "decrypt");
     }
     return plainTexts;
   },
@@ -278,11 +246,10 @@ LoginManagerCrypto_SDR.prototype = {
    * isLoggedIn
    */
   get isLoggedIn() {
-    let tokenDB = Cc["@mozilla.org/security/pk11tokendb;1"].getService(
-      Ci.nsIPK11TokenDB
+    let token = Cc["@mozilla.org/security/internalkeytoken;1"].createInstance(
+      Ci.nsIPKCS11Token
     );
-    let token = tokenDB.getInternalKeyToken();
-    return !token.hasPassword || token.isLoggedIn();
+    return !token.hasPassword || token.isLoggedIn;
   },
 
   /*
@@ -290,6 +257,49 @@ LoginManagerCrypto_SDR.prototype = {
    */
   get defaultEncType() {
     return Ci.nsILoginManagerCrypto.ENCTYPE_SDR;
+  },
+
+  /**
+   * Wraps up an SDR operation that may have prompted the user for their
+   * primary password, notifying observers and recording telemetry if it did.
+   *
+   * @param {boolean} wasLoggedIn
+   *        Whether the token was already unlocked when the operation started.
+   * @param {boolean} canceledMP
+   *        Whether the operation failed because the user dismissed the prompt.
+   * @param {string} operation
+   *        The operation that needed the key, "encrypt" or "decrypt".
+   */
+  _primaryPasswordPromptFinished(wasLoggedIn, canceledMP, operation) {
+    // A locked token always prompts, and a cancellation can only come from a
+    // prompt. NSS retries a wrong password without telling us, so a single
+    // event can stand for more than one dialog. Returning here also keeps the
+    // unlocked path from asking the token for its state.
+    if (wasLoggedIn && !canceledMP) {
+      return;
+    }
+
+    let isLoggedIn = this.isLoggedIn;
+
+    // If we triggered a primary password prompt, notify observers.
+    if (!wasLoggedIn && isLoggedIn) {
+      this._notifyObservers("passwordmgr-crypto-login");
+    } else if (canceledMP) {
+      this._notifyObservers("passwordmgr-crypto-loginCanceled");
+    }
+
+    let result = "error";
+    if (isLoggedIn) {
+      result = "success";
+    } else if (canceledMP) {
+      result = "cancel";
+    }
+
+    Glean.pwmgr.primaryPasswordPrompt.record({
+      source: "crypto_sdr",
+      trigger: operation,
+      result,
+    });
   },
 
   /*

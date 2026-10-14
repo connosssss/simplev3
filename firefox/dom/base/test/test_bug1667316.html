@@ -14,7 +14,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=1667316
 <div id="content" style="display: none"></div>
 <script class="testbody" type="text/javascript">
 
-/** Test for Bug 1667316 **/
+/** Test for Bug 1667316 */
 
 function testPreloadEvent(url, crossorigin, expectLoad) {
   return new Promise((resolve) => {
@@ -66,9 +66,9 @@ function testChangePrefetchToPreload(url) {
 };
 
 const SJS_PATH = window.location.pathname.replace(/[^/]+$/, "file_bug1268962.sjs");
-// eslint-disable-next-line @microsoft/sdl/no-insecure-url
+// eslint-disable-next-line sdl/no-insecure-url
 const SAME_ORIGIN = "http://mochi.test:8888" + SJS_PATH;
-// eslint-disable-next-line @microsoft/sdl/no-insecure-url
+// eslint-disable-next-line sdl/no-insecure-url
 const CROSS_ORIGIN = "http://example.com" + SJS_PATH;
 
 SimpleTest.waitForExplicitFinish();

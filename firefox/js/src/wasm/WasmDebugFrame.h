@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- *
+/*
  * Copyright 2021 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -54,7 +52,7 @@ class DebugFrame {
     int64_t i64_;
     float f32_;
     double f64_;
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
     V128 v128_;
 #endif
     AnyRef anyref_;
@@ -110,7 +108,7 @@ class DebugFrame {
   // alignment.
   uint32_t padding_;
 #endif
-#if defined(ENABLE_WASM_SIMD) && defined(JS_CODEGEN_ARM64)
+#if defined(ENABLE_JIT_SIMD) && defined(JS_CODEGEN_ARM64)
   uint64_t padding_;
 #endif
 

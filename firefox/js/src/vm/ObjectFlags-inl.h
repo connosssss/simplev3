@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -28,7 +26,7 @@ GetObjectFlagsForNewProperty(const JSClass* clasp, ObjectFlags flags, jsid id,
   }
 
   if ((!propFlags.isDataProperty() || !propFlags.writable()) &&
-      clasp == &PlainObject::class_ && !id.isAtom(cx->names().proto_)) {
+      !id.isAtom(cx->names().proto_)) {
     flags.setFlag(ObjectFlag::HasNonWritableOrAccessorPropExclProto);
   }
 
@@ -40,7 +38,7 @@ GetObjectFlagsForNewProperty(const JSClass* clasp, ObjectFlags flags, jsid id,
     // class has a resolve hook which could lazily define a non-configurable
     // non-writable property. We can just look this up directly though in the
     // JIT.
-    if (propFlags.isDataProperty() && !propFlags.writable()) {
+    if (propFlags.isDataDescriptor() && !propFlags.writable()) {
       flags.setFlag(ObjectFlag::NeedsProxyGetSetResultValidation);
     } else if (propFlags.isAccessorProperty()) {
       // This will cover us for both get trap validation and set trap

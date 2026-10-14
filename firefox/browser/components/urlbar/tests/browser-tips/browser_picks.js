@@ -1,7 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-// Tests clicks and enter key presses on UrlbarUtils.RESULT_TYPE.TIP results.
+// Tests clicks and enter key presses on UrlbarShared.RESULT_TYPE.TIP results.
 
 "use strict";
 
@@ -41,14 +41,16 @@ add_task(async function mouse_help() {
 
 // Clicks inside a tip but not on any button.
 add_task(async function mouse_insideTipButNotOnButtons() {
-  let results = [makeTipResult({ buttonUrl: TIP_URL, helpUrl: HELP_URL })];
-  let provider = new UrlbarTestUtils.TestProvider({ results, priority: 1 });
-  UrlbarProvidersManager.registerProvider(provider);
-
   // Click inside the tip but outside the buttons.  Nothing should happen.  Make
   // the result the heuristic to check that the selection on the main button
   // isn't lost.
-  results[0].heuristic = true;
+  let results = [
+    makeTipResult({ buttonUrl: TIP_URL, helpUrl: HELP_URL, heuristic: true }),
+  ];
+  let provider = new UrlbarTestUtils.TestProvider({ results, priority: 1 });
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  providersManager.registerProvider(provider);
+
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     value: "test",
     window,
@@ -65,7 +67,10 @@ add_task(async function mouse_insideTipButNotOnButtons() {
     row._buttons.get("0"),
     "The main button element should be selected initially"
   );
+  // XXX: See bug 2016839
+  AccessibilityUtils.setEnv({ labelRule: false });
   EventUtils.synthesizeMouseAtCenter(row, {});
+  AccessibilityUtils.resetEnv();
   // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
   await new Promise(r => setTimeout(r, 500));
   Assert.ok(gURLBar.view.isOpen, "The view should remain open");
@@ -81,7 +86,7 @@ add_task(async function mouse_insideTipButNotOnButtons() {
   );
 
   await UrlbarTestUtils.promisePopupClose(window);
-  UrlbarProvidersManager.unregisterProvider(provider);
+  providersManager.unregisterProvider(provider);
 });
 
 /**
@@ -117,7 +122,8 @@ async function doTest({ click, buttonUrl = undefined, helpUrl = undefined }) {
     priority: 1,
     onEngagement: () => deferred.resolve(),
   });
-  UrlbarProvidersManager.registerProvider(provider);
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  providersManager.registerProvider(provider);
 
   // Do a search to show our tip result.
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
@@ -127,7 +133,7 @@ async function doTest({ click, buttonUrl = undefined, helpUrl = undefined }) {
   });
   let row = await UrlbarTestUtils.waitForAutocompleteResultAt(window, 0);
   let mainButton = row._buttons.get("0");
-  let target = helpUrl ? row._buttons.get("menu") : mainButton;
+  let target = helpUrl ? row._buttons.get("result-menu") : mainButton;
 
   // If we're picking the tip with the keyboard, TAB to select the proper
   // target.
@@ -141,17 +147,19 @@ async function doTest({ click, buttonUrl = undefined, helpUrl = undefined }) {
   }
 
   // Done.
-  UrlbarProvidersManager.unregisterProvider(provider);
+  await UrlbarTestUtils.promisePopupClose(window);
+  providersManager.unregisterProvider(provider);
   if (tab) {
     BrowserTestUtils.removeTab(tab);
   }
 }
 
-function makeTipResult({ buttonUrl, helpUrl }) {
-  return new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.TIP,
-    UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-    {
+function makeTipResult({ buttonUrl, helpUrl, heuristic }) {
+  return new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.TIP,
+    source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+    heuristic,
+    payload: {
       type: "test",
       titleL10n: { id: "urlbar-search-tips-confirm" },
       buttons: [
@@ -162,8 +170,8 @@ function makeTipResult({ buttonUrl, helpUrl }) {
       ],
       helpUrl,
       helpL10n: {
-        id: "urlbar-result-menu-tip-get-help",
+        id: "urlbar-result-menu-tip-get-help2",
       },
-    }
-  );
+    },
+  });
 }

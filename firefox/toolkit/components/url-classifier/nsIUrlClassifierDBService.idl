@@ -53,10 +53,16 @@ interface nsIUrlClassifierUpdateObserver : nsISupports {
   /**
    * The update has completed successfully.
    *
-   * @param requestedTimeout The number of seconds that the caller should
-   *                         wait before trying to update again.
-   **/
-  void updateSuccess(in unsigned long requestedTimeout);
+   * @param tables The tables that the server returned a minimum wait
+   *        duration for.
+   * @param waitSeconds The number of seconds the client should wait before
+   *        requesting the table at the same index in |tables| again. Protocols
+   *        that carry a single response-level duration (V2 and V4) report the
+   *        same value for every requested table, while V5 reports the
+   *        per-list duration the server sent for each hash list.
+   */
+  void updateSuccess(in Array<ACString> tables,
+                     in Array<unsigned long> waitSeconds);
 };
 
 /**
@@ -139,9 +145,11 @@ interface nsIUrlClassifierDBService : nsISupports
    *
    * @param updater The update observer tied to this update.
    * @param tables A comma-separated list of tables included in this update.
+   * @param provider The provider of the update.
    */
   void beginUpdate(in nsIUrlClassifierUpdateObserver updater,
-                   in ACString tables);
+                   in ACString tables,
+                   in ACString provider);
 
   /**
    * Begin a stream update.  This should be called once per url being
@@ -204,6 +212,18 @@ interface nsIUrlClassifierDBService : nsISupports
    * Empty all the caches.
    */
   void clearCache();
+
+  /**
+   * Clean the simulated cache in RealTimeRequestSimulator.
+   * For testing purposes only.
+   */
+  void cleanRealTimeSimulatorCache();
+
+  /**
+   * Force-expire all cache entries in RealTimeRequestSimulator.
+   * For testing purposes only.
+   */
+  void expireRealTimeSimulatorCache();
 };
 
 /**

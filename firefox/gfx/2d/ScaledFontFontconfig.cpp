@@ -1,19 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ScaledFontFontconfig.h"
-#include "UnscaledFontFreeType.h"
-#include "Logging.h"
-#include "mozilla/StaticPrefs_gfx.h"
-#include "mozilla/webrender/WebRenderTypes.h"
-
-#include "skia/include/ports/SkTypeface_cairo.h"
-#include "HelpersSkia.h"
 
 #include <fontconfig/fcfreetype.h>
+
+#include "HelpersSkia.h"
+#include "Logging.h"
+#include "UnscaledFontFreeType.h"
+#include "mozilla/StaticPrefs_gfx.h"
+#include "mozilla/webrender/WebRenderTypes.h"
+#include "skia/include/ports/SkTypeface_cairo.h"
 
 #include FT_LCD_FILTER_H
 #include FT_MULTIPLE_MASTERS_H
@@ -48,14 +46,7 @@ bool ScaledFontFontconfig::UseSubpixelPosition() const {
 }
 
 SkTypeface* ScaledFontFontconfig::CreateSkTypeface() {
-  SkPixelGeometry geo = mInstanceData.mFlags & InstanceData::SUBPIXEL_BGR
-                            ? (mInstanceData.mFlags & InstanceData::LCD_VERTICAL
-                                   ? kBGR_V_SkPixelGeometry
-                                   : kBGR_H_SkPixelGeometry)
-                            : (mInstanceData.mFlags & InstanceData::LCD_VERTICAL
-                                   ? kRGB_V_SkPixelGeometry
-                                   : kRGB_H_SkPixelGeometry);
-  return SkCreateTypefaceFromCairoFTFont(mFace->GetFace(), mFace.get(), geo,
+  return SkCreateTypefaceFromCairoFTFont(mFace->GetFace(), mFace.get(),
                                          mInstanceData.mLcdFilter);
 }
 
@@ -381,7 +372,7 @@ void ScaledFontFontconfig::InstanceData::SetupFontOptions(
 
 bool ScaledFontFontconfig::GetFontInstanceData(FontInstanceDataOutput aCb,
                                                void* aBaton) {
-  std::vector<FontVariation> variations;
+  std::vector<wr::FontVariation> variations;
   if (HasVariationSettings()) {
     UnscaledFontFreeType::GetVariationSettingsFromFace(&variations,
                                                        mFace->GetFace());
@@ -395,7 +386,7 @@ bool ScaledFontFontconfig::GetFontInstanceData(FontInstanceDataOutput aCb,
 bool ScaledFontFontconfig::GetWRFontInstanceOptions(
     Maybe<wr::FontInstanceOptions>* aOutOptions,
     Maybe<wr::FontInstancePlatformOptions>* aOutPlatformOptions,
-    std::vector<FontVariation>* aOutVariations) {
+    std::vector<wr::FontVariation>* aOutVariations) {
   wr::FontInstanceOptions options = {};
   options.render_mode = wr::FontRenderMode::Alpha;
   options.flags = wr::FontInstanceFlags{0};
@@ -471,6 +462,11 @@ bool ScaledFontFontconfig::GetWRFontInstanceOptions(
     }
   }
 
+  platformOptions.gamma =
+      int16_t(StaticPrefs::gfx_font_rendering_freetype_gamma());
+  platformOptions.enhanced_contrast =
+      int16_t(StaticPrefs::gfx_font_rendering_freetype_enhanced_contrast());
+
   *aOutOptions = Some(options);
   *aOutPlatformOptions = Some(platformOptions);
 
@@ -484,7 +480,7 @@ bool ScaledFontFontconfig::GetWRFontInstanceOptions(
 
 already_AddRefed<ScaledFont> UnscaledFontFontconfig::CreateScaledFont(
     Float aSize, const uint8_t* aInstanceData, uint32_t aInstanceDataLength,
-    const FontVariation* aVariations, uint32_t aNumVariations) {
+    const wr::FontVariation* aVariations, uint32_t aNumVariations) {
   if (aInstanceDataLength < sizeof(ScaledFontFontconfig::InstanceData)) {
     gfxWarning() << "Fontconfig scaled font instance data is truncated.";
     return nullptr;
@@ -520,7 +516,7 @@ already_AddRefed<ScaledFont> UnscaledFontFontconfig::CreateScaledFont(
 already_AddRefed<ScaledFont> UnscaledFontFontconfig::CreateScaledFontFromWRFont(
     Float aGlyphSize, const wr::FontInstanceOptions* aOptions,
     const wr::FontInstancePlatformOptions* aPlatformOptions,
-    const FontVariation* aVariations, uint32_t aNumVariations) {
+    const wr::FontVariation* aVariations, uint32_t aNumVariations) {
   ScaledFontFontconfig::InstanceData instanceData(aOptions, aPlatformOptions);
   return CreateScaledFont(aGlyphSize, reinterpret_cast<uint8_t*>(&instanceData),
                           sizeof(instanceData), aVariations, aNumVariations);
@@ -540,10 +536,40 @@ already_AddRefed<UnscaledFont> UnscaledFontFontconfig::CreateFromFontDescriptor(
     gfxWarning() << "Fontconfig font descriptor is truncated.";
     return nullptr;
   }
-  const char* path = reinterpret_cast<const char*>(aData);
-  RefPtr<UnscaledFont> unscaledFont =
-      new UnscaledFontFontconfig(std::string(path, aDataLength), aIndex);
-  return unscaledFont.forget();
+  nsCString path((const char*)aData, aDataLength);
+
+  // Use the given pathname/index in a fontconfig lookup to confirm this is a
+  // known font file; if not, we'll use whatever fallback it provides instead.
+  FcPattern* pattern = FcPatternCreate();
+  FcPatternAddString(pattern, FC_FILE, (const FcChar8*)path.BeginReading());
+  FcPatternAddInteger(pattern, FC_INDEX, aIndex);
+  FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
+  FcDefaultSubstitute(pattern);
+  FcResult result = FcResultMatch;
+  FcPattern* match = FcFontMatch(nullptr, pattern, &result);
+  FcPatternDestroy(pattern);
+  if (!match || result != FcResultMatch) {
+    gfxWarning() << "FcFontMatch failed.";
+    return nullptr;
+  }
+
+  // Get the file that fontconfig returned.
+  // If it didn't use the requested file, log a warning and update path/index.
+  char* file = nullptr;
+  result = FcPatternGetString(match, FC_FILE, 0, (FcChar8**)&file);
+  if (result == FcResultMatch && !path.Equals(file)) {
+    gfxWarning() << "Font path " << path.get() << " invalid, using " << file;
+    path = file;
+    int index = 0;
+    result = FcPatternGetInteger(match, FC_INDEX, 0, &index);
+    if (result == FcResultMatch) {
+      // Mask out possible variation-instance index stashed by fontconfig; we
+      // just want the face index within a collection file.
+      aIndex = index & 0xffff;
+    }
+  }
+
+  return MakeAndAddRef<UnscaledFontFontconfig>(path.BeginReading(), aIndex);
 }
 
 }  // namespace mozilla::gfx

@@ -3,7 +3,7 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 import { showMenu } from "../../context-menu/menu";
-
+import { sourceTree } from "../../constants";
 import {
   isSourceMapIgnoreListEnabled,
   isSourceOnSourceMapIgnoreList,
@@ -59,7 +59,7 @@ export function showSourceTreeItemContextMenu(
       isSourceOnSourceMapIgnoreList(state, item.source);
     const projectRoot = getProjectDirectoryRoot(state);
 
-    if (item.type == "source") {
+    if (item.type == sourceTree.itemTypes.SOURCE) {
       const { source } = item;
       const copySourceUri2 = {
         id: "node-menu-copy-source",
@@ -107,7 +107,7 @@ export function showSourceTreeItemContextMenu(
     }
 
     // All other types other than source are folder-like
-    if (item.type != "source") {
+    if (item.type != sourceTree.itemTypes.SOURCE) {
       addCollapseExpandAllOptions(menuOptions, item, setExpanded);
 
       if (projectRoot == item.uniquePath) {
@@ -118,9 +118,6 @@ export function showSourceTreeItemContextMenu(
           click: () => dispatch(clearProjectDirectoryRoot()),
         });
       } else {
-        const itemFullName = item.thread
-          ? item.thread.name
-          : `${item.url} on ${getThreadName(item)}`;
         menuOptions.push({
           id: "node-set-directory-root",
           label: setDirectoryRootLabel,
@@ -128,7 +125,11 @@ export function showSourceTreeItemContextMenu(
           disabled: false,
           click: () =>
             dispatch(
-              setProjectDirectoryRoot(item.uniquePath, itemName, itemFullName)
+              setProjectDirectoryRoot(
+                item.uniquePath,
+                itemName,
+                getItemProjectDirectoryRootName(item)
+              )
             ),
         });
       }
@@ -136,12 +137,31 @@ export function showSourceTreeItemContextMenu(
       addBlackboxAllOption(dispatch, state, menuOptions, item, depth);
     }
 
-    showMenu(event, menuOptions);
+    showMenu(event, menuOptions, { accesskeyConflictsBug: 2073896 });
   };
 }
 
-function getThreadName(item) {
-  return item.thread ? item.thread.name : getThreadName(item.parent);
+/**
+ * Compute the string which will be displayed as tooltip on the project directory root header
+ */
+function getItemProjectDirectoryRootName(item) {
+  if (item.thread) {
+    return item.thread.name;
+  }
+
+  // Go up the source tree to get to the group item
+  let groupItem = item;
+  while (!groupItem.groupName) {
+    groupItem = groupItem.parent;
+  }
+
+  // Group's origin is the base URL
+  const origin = groupItem.origin;
+  const path = item != groupItem ? item.path : "";
+  // The group item's parent is always a thread item
+  const threadName = groupItem.parent.thread.name;
+
+  return `${origin}${path} on ${threadName}`;
 }
 
 async function saveLocalFile(dispatch, source) {
@@ -275,7 +295,7 @@ function getBlackBoxSourcesGroups(state, item) {
     if (_item.children) {
       _item.children.forEach(i => collectAllSources(list, i));
     }
-    if (_item.type == "source") {
+    if (_item.type == sourceTree.itemTypes.SOURCE) {
       list.push(_item.source);
     }
   }

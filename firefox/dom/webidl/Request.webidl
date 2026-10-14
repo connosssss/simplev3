@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 1; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -9,6 +8,7 @@
 
 
 interface Principal;
+interface nsICookieJarSettings;
 
 typedef (Request or UTF8String) RequestInfo;
 typedef unsigned long nsContentPolicyType;
@@ -47,6 +47,15 @@ interface Request {
 
   [BinaryName="getOrCreateSignal"]
   readonly attribute AbortSignal signal;
+
+  [Pref="dom.fetch.streaming_upload"]
+  readonly attribute RequestDuplex duplex;
+
+  // Spec-wise this belongs to the Body mixin, but Response's copy ships
+  // unconditionally while this one is pref-gated, so the two are declared
+  // separately. See Response.webidl.
+  [GetterThrows, Pref="dom.fetch.streaming_upload"]
+  readonly attribute ReadableStream? body;
 
   [Throws,
    NewObject] Request clone();
@@ -95,7 +104,18 @@ dictionary RequestInit {
   [ChromeOnly]
   boolean neverTaint;
 
+  // This allows setting the cookieJarSettings for the request. We might not
+  // be able to acquire the cookieJarSettings from the global object if the
+  // global object is not a window global nor a worker global. This can happen
+  // if the request is made from the reporting API. In this case, we can this
+  // field to set the cookieJarSettings for the request.
+  [ChromeOnly]
+  nsICookieJarSettings cookieJarSettings;
+
   AbortSignal? signal;
+
+  [Pref="dom.fetch.streaming_upload"]
+  RequestDuplex duplex;
 
   [Pref="network.fetchpriority.enabled"]
   RequestPriority priority;
@@ -108,7 +128,7 @@ enum RequestDestination {
   "",
   "audio", "audioworklet", "document", "embed", "font", "frame", "iframe",
   "image", "json", "manifest", "object", "paintworklet", "report", "script",
-  "sharedworker", "style",  "track", "video", "worker", "xslt"
+  "sharedworker", "style", "text", "track", "video", "worker", "xslt"
 };
 
 enum RequestMode { "same-origin", "no-cors", "cors", "navigate" };
@@ -116,3 +136,4 @@ enum RequestCredentials { "omit", "same-origin", "include" };
 enum RequestCache { "default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached" };
 enum RequestRedirect { "follow", "error", "manual" };
 enum RequestPriority { "high" , "low" , "auto" };
+enum RequestDuplex { "half" };

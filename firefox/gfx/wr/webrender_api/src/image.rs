@@ -21,7 +21,7 @@ pub const DEFAULT_TILE_SIZE: TileSize = 512;
 /// This is used as a handle to reference images, and is used as the
 /// hash map key for the actual image storage in the `ResourceCache`.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize, PeekPoke)]
+#[derive(Clone, Copy, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize, PeekPoke)]
 pub struct ImageKey(pub IdNamespace, pub u32);
 
 impl Default for ImageKey {
@@ -39,6 +39,17 @@ impl ImageKey {
         ImageKey(namespace, key)
     }
 }
+
+impl std::fmt::Debug for ImageKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if *self == Self::DUMMY {
+            write!(f, "<none>")
+        } else {
+            write!(f, "#{}:{}", self.0.0, self.1)
+        }
+    }
+}
+
 
 /// An opaque identifier describing a blob image registered with WebRender.
 /// This is used as a handle to reference blob images, and can be used as an
@@ -81,12 +92,19 @@ impl Default for SnapshotImageKey {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct ExternalImageId(pub u64);
 
+/// An opaque handle to a GPU texture owned by the application. Its meaning
+/// depends on the graphics API the renderer runs on; with OpenGL it is the
+/// texture name.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct ExternalTextureHandle(pub u64);
+
 /// The source for an external image.
 pub enum ExternalImageSource<'a> {
     /// A raw pixel buffer.
     RawData(&'a [u8]),
-    /// A gl::GLuint texture handle.
-    NativeTexture(u32),
+    /// A texture created by the application.
+    NativeTexture(ExternalTextureHandle),
     /// An invalid source.
     Invalid,
 }
@@ -114,7 +132,7 @@ pub trait ExternalImageHandler {
     /// Lock the external image. Then, WR could start to read the image content.
     /// The WR client should not change the image content until the unlock()
     /// call.
-    fn lock(&mut self, key: ExternalImageId, channel_index: u8) -> ExternalImage;
+    fn lock(&mut self, key: ExternalImageId, channel_index: u8, is_composited: bool) -> ExternalImage;
     /// Unlock the external image. WR should not read the image content
     /// after this call.
     fn unlock(&mut self, key: ExternalImageId, channel_index: u8);

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* Copyright (c) 2011, The WebRTC project authors. All rights reserved.
  * Copyright (c) 2014, Mozilla
  *
@@ -34,18 +33,17 @@
 #ifndef GMP_VIDEO_ENCODE_h_
 #define GMP_VIDEO_ENCODE_h_
 
-#include <vector>
 #include <stdint.h>
 
 #include "gmp-errors.h"
-#include "gmp-video-frame-i420.h"
-#include "gmp-video-frame-encoded.h"
 #include "gmp-video-codec.h"
+#include "gmp-video-frame-encoded.h"
+#include "gmp-video-frame-i420.h"
 
 // ALL METHODS MUST BE CALLED ON THE MAIN THREAD
 class GMPVideoEncoderCallback {
  public:
-  virtual ~GMPVideoEncoderCallback() {}
+  virtual ~GMPVideoEncoderCallback() = default;
 
   virtual void Encoded(GMPVideoEncodedFrame* aEncodedFrame,
                        const uint8_t* aCodecSpecificInfo,
@@ -67,7 +65,7 @@ class GMPVideoEncoderCallback {
 // ALL METHODS MUST BE CALLED ON THE MAIN THREAD
 class GMPVideoEncoder {
  public:
-  virtual ~GMPVideoEncoder() {}
+  virtual ~GMPVideoEncoder() = default;
 
   // Initialize the encoder with the information from the VideoCodec.
   //

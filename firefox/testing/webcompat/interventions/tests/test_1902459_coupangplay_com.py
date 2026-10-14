@@ -2,11 +2,12 @@ import pytest
 
 URL = "https://www.coupangplay.com/"
 LOGIN_CSS = "a[href*=login]"
-UNSUPPORTED_TEXT = "서비스 이용에 불편을 드려 죄송합니다"
+UNSUPPORTED_TEXT = "Firefox is not supported"
 VPN_TEXT = "not available in your region"
 
 
 async def check_can_login(client):
+    await client.make_preload_script("delete navigator.__proto__.webdriver")
     await client.navigate(URL)
     login, unsupported, need_vpn = client.await_first_element_of(
         [client.css(LOGIN_CSS), client.text(UNSUPPORTED_TEXT), client.text(VPN_TEXT)],

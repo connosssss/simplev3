@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,28 +6,30 @@
 #define GFX_FRAMEMETRICS_H
 
 #include <stdint.h>  // for uint8_t, uint32_t, uint64_t
+
 #include <iosfwd>
 
-#include "Units.h"                  // for CSSRect, CSSPixel, etc
+#include "PLDHashTable.h"           // for PLDHashNumber
 #include "UnitTransforms.h"         // for ViewAs
+#include "Units.h"                  // for CSSRect, CSSPixel, etc
 #include "mozilla/DefineEnum.h"     // for MOZ_DEFINE_ENUM
 #include "mozilla/HashFunctions.h"  // for HashGeneric
 #include "mozilla/Maybe.h"
-#include "mozilla/dom/InteractiveWidget.h"
-#include "mozilla/gfx/BasePoint.h"               // for BasePoint
-#include "mozilla/gfx/Rect.h"                    // for RoundedIn
-#include "mozilla/gfx/ScaleFactor.h"             // for ScaleFactor
-#include "mozilla/gfx/Logging.h"                 // for Log
-#include "mozilla/layers/LayersTypes.h"          // for ScrollDirection
-#include "mozilla/layers/ScrollableLayerGuid.h"  // for ScrollableLayerGuid
-#include "mozilla/ScrollPositionUpdate.h"        // for ScrollPositionUpdate
+#include "mozilla/ScrollPositionUpdate.h"  // for ScrollPositionUpdate
 #include "mozilla/ScrollSnapInfo.h"
 #include "mozilla/ScrollSnapTargetId.h"
 #include "mozilla/StaticPtr.h"  // for StaticAutoPtr
 #include "mozilla/TimeStamp.h"  // for TimeStamp
-#include "nsTHashMap.h"         // for nsTHashMap
+#include "mozilla/WritingModes.h"
+#include "mozilla/dom/InteractiveWidget.h"
+#include "mozilla/gfx/BasePoint.h"               // for BasePoint
+#include "mozilla/gfx/Logging.h"                 // for Log
+#include "mozilla/gfx/Rect.h"                    // for RoundedIn
+#include "mozilla/gfx/ScaleFactor.h"             // for ScaleFactor
+#include "mozilla/layers/LayersTypes.h"          // for ScrollDirection
+#include "mozilla/layers/ScrollableLayerGuid.h"  // for ScrollableLayerGuid
 #include "nsString.h"
-#include "PLDHashTable.h"  // for PLDHashNumber
+#include "nsTHashMap.h"  // for nsTHashMap
 
 struct nsStyleDisplay;
 namespace mozilla {
@@ -43,6 +43,19 @@ struct ParamTraits;
 
 namespace mozilla {
 namespace layers {
+
+// clang-format off
+MOZ_DEFINE_ENUM_CLASS_WITH_BASE(
+  ScrollOffsetUpdateType, uint8_t, (
+    None,          // The default; the scroll offset was not updated
+    MainThread,    // The scroll offset was updated by the main thread.
+    Restore        // The scroll offset was updated by the main thread, but
+                   // as a restore from history or after a frame
+                   // reconstruction.  In this case, APZ can ignore the
+                   // offset change if the user has done an APZ scroll
+                   // already.
+));
+// clang-format on
 
 /**
  * Metrics about a scroll frame that are sent to the compositor and used
@@ -69,19 +82,6 @@ struct FrameMetrics {
   typedef ScrollableLayerGuid::ViewID ViewID;
 
  public:
-  // clang-format off
-  MOZ_DEFINE_ENUM_WITH_BASE_AT_CLASS_SCOPE(
-    ScrollOffsetUpdateType, uint8_t, (
-      eNone,          // The default; the scroll offset was not updated
-      eMainThread,    // The scroll offset was updated by the main thread.
-      eRestore        // The scroll offset was updated by the main thread, but
-                      // as a restore from history or after a frame
-                      // reconstruction.  In this case, APZ can ignore the
-                      // offset change if the user has done an APZ scroll
-                      // already.
-  ));
-  // clang-format on
-
   FrameMetrics()
       : mScrollId(ScrollableLayerGuid::NULL_SCROLL_ID),
         mPresShellResolution(1),
@@ -95,11 +95,14 @@ struct FrameMetrics {
         mPresShellId(-1),
         mLayoutViewport(0, 0, 0, 0),
         mVisualDestination(0, 0),
-        mVisualScrollUpdateType(eNone),
+        mVisualScrollUpdateType(ScrollOffsetUpdateType::None),
+        mInteractiveWidget(
+            dom::InteractiveWidgetUtils::DefaultInteractiveWidgetMode()),
         mIsRootContent(false),
         mIsScrollInfoLayer(false),
         mHasNonZeroDisplayPortMargins(false),
-        mMinimalDisplayPort(false) {}
+        mMinimalDisplayPort(false),
+        mIsSoftwareKeyboardVisible(false) {}
 
   // Default copy ctor and operator= are fine
 
@@ -124,6 +127,7 @@ struct FrameMetrics {
            mPaintRequestTime == aOther.mPaintRequestTime &&
            mVisualDestination == aOther.mVisualDestination &&
            mVisualScrollUpdateType == aOther.mVisualScrollUpdateType &&
+           mInteractiveWidget == aOther.mInteractiveWidget &&
            mIsRootContent == aOther.mIsRootContent &&
            mIsScrollInfoLayer == aOther.mIsScrollInfoLayer &&
            mHasNonZeroDisplayPortMargins ==
@@ -131,7 +135,8 @@ struct FrameMetrics {
            mMinimalDisplayPort == aOther.mMinimalDisplayPort &&
            mFixedLayerMargins == aOther.mFixedLayerMargins &&
            mCompositionSizeWithoutDynamicToolbar ==
-               aOther.mCompositionSizeWithoutDynamicToolbar;
+               aOther.mCompositionSizeWithoutDynamicToolbar &&
+           mIsSoftwareKeyboardVisible == aOther.mIsSoftwareKeyboardVisible;
   }
 
   bool operator!=(const FrameMetrics& aOther) const {
@@ -234,16 +239,6 @@ struct FrameMetrics {
   void ZoomBy(float aScale) { mZoom.scale *= aScale; }
 
   /*
-   * Compares an APZ frame metrics with an incoming content frame metrics
-   * to see if APZ has a scroll offset that has not been incorporated into
-   * the content frame metrics.
-   */
-  bool HasPendingScroll(const FrameMetrics& aContentFrameMetrics) const {
-    return GetVisualScrollOffset() !=
-           aContentFrameMetrics.GetVisualScrollOffset();
-  }
-
-  /*
    * Returns true if the layout scroll offset or visual scroll offset changed.
    */
   bool ApplyScrollUpdateFrom(const ScrollPositionUpdate& aUpdate);
@@ -255,12 +250,19 @@ struct FrameMetrics {
    *
    * @returns The clamped scroll offset delta that was applied
    */
-  CSSPoint ApplyRelativeScrollUpdateFrom(const ScrollPositionUpdate& aUpdate);
+  enum class IsDefaultApzc {
+    No,
+    Yes,
+  };
+  CSSPoint ApplyRelativeScrollUpdateFrom(const ScrollPositionUpdate& aUpdate,
+                                         IsDefaultApzc aIsDefaultApzc);
 
   CSSPoint ApplyPureRelativeScrollUpdateFrom(
       const ScrollPositionUpdate& aUpdate);
 
   void UpdatePendingScrollInfo(const ScrollPositionUpdate& aInfo);
+
+  bool ScrollLayoutViewportTo(const CSSPoint& aDestination);
 
  public:
   void SetPresShellResolution(float aPresShellResolution) {
@@ -385,6 +387,15 @@ struct FrameMetrics {
                    CalculateCompositedSizeInCssPixels());
   }
 
+  // TODO Bug 2003420: This function should eventually be able to supercede
+  // GetVisualViewport and drop the default argument for
+  // |aFixedLayerBottomMargin|. The difference from GetVisualViewport is this
+  // function handles the current dynamic toolbar state. In other words
+  // GetVisualViewport always handles the toolbar state as if the dynamic
+  // toolbar is completely hidden.
+  CSSRect GetVisualViewportForLayoutViewportContainment(
+      ScreenCoord aFixedLayerBottomMargin = 0) const;
+
   void SetTransformToAncestorScale(
       const ParentLayerToScreenScale2D& aTransformToAncestorScale) {
     mTransformToAncestorScale = aTransformToAncestorScale;
@@ -431,6 +442,18 @@ struct FrameMetrics {
   }
   bool IsMinimalDisplayPort() const { return mMinimalDisplayPort; }
 
+  void SetIsSoftwareKeyboardVisible(bool aValue) {
+    mIsSoftwareKeyboardVisible = aValue;
+  }
+  bool IsSoftwareKeyboardVisible() const { return mIsSoftwareKeyboardVisible; }
+
+  void SetInteractiveWidget(dom::InteractiveWidget aInteractiveWidget) {
+    mInteractiveWidget = aInteractiveWidget;
+  }
+  dom::InteractiveWidget GetInteractiveWidget() const {
+    return mInteractiveWidget;
+  }
+
   void SetVisualDestination(const CSSPoint& aVisualDestination) {
     mVisualDestination = aVisualDestination;
   }
@@ -448,7 +471,7 @@ struct FrameMetrics {
   // allow APZ to async-scroll the layout viewport.
   //
   // This is a no-op if mIsRootContent is false.
-  void RecalculateLayoutViewportOffset();
+  void RecalculateLayoutViewportOffset(ScreenCoord aFixedLayerBottomMargin = 0);
 
   void SetFixedLayerMargins(const ScreenMargin& aFixedLayerMargins) {
     mFixedLayerMargins = aFixedLayerMargins;
@@ -524,8 +547,8 @@ struct FrameMetrics {
   // For RCD-RSF this is the width of the composition bounds ignoring
   // scrollbars. For everything else this will be the same as the width of the
   // composition bounds. Only needed for the "resolution changed" check in
-  // NotifyLayersUpdated, once that switches to using IsResolutionUpdated we can
-  // remove this.
+  // NotifyMainThreadTransaction, once that switches to using
+  // IsResolutionUpdated we can remove this.
   ParentLayerCoord mCompositionBoundsWidthIgnoringScrollbars;
 
   // The area of a scroll frame's contents that has been painted, relative to
@@ -607,21 +630,27 @@ struct FrameMetrics {
 
   uint32_t mPresShellId;
 
-  // For a root scroll frame (RSF), the document's layout viewport
-  // (sometimes called "CSS viewport" in older code).
+  // The scroll frame's layout viewport.
   //
-  // Its size is the dimensions we're using to constrain the <html> element
-  // of the document (i.e. the initial containing block (ICB) size).
+  // Its origin is the scroll frame's layout scroll position, i.e. the
+  // scroll position exposed to web content via window.scrollX/Y.
+  // Its size is the dimensions we're using to constrain the allowed values
+  // of window.scrollX/Y (e.g. the maximum possible value of scrollY is)
+  // the one that makes the bottom of the layout viewport line up with the
+  // bottom of the scrollable rect). This size is also called the "scroll port
+  // size" in layout code.
   //
-  // Its origin is the RSF's layout scroll position, i.e. the scroll position
-  // exposed to web content via window.scrollX/Y.
+  // For scroll frames other than the root content document's root scroll frame
+  // (RCD-RSF), this should be the same as mVisualViewport.
   //
-  // Note that only the root content document's RSF has a layout viewport
-  // that's distinct from the visual viewport. For an iframe RSF, the two
-  // are the same.
-  //
-  // For a scroll frame that is not an RSF, this metric is meaningless and
-  // invalid.
+  // For the RCD-RSF, the layout and visual viewports can diverge. On desktop
+  // platforms, the size of the layout viewport matches the size of the
+  // document's initial containing block (ICB), which in turn is derived from
+  // the size of the content viewer. On mobile platforms, the size of the
+  // layout viewport (also called "fixed viewport", because it serves as the
+  // containing block for position:fixed content) is the "minimum scale size",
+  // as discussed in more detail at
+  // https://github.com/bokand/bokand.github.io/blob/master/web_viewports_explainer.md#minimum-scale-size.
   CSSRect mLayoutViewport;
 
   // The scale induced by css transforms and presshell resolution in this
@@ -639,7 +668,7 @@ struct FrameMetrics {
 
   // These fields are used when the main thread wants to set a visual viewport
   // offset that's distinct from the layout viewport offset.
-  // In this case, mVisualScrollUpdateType is set to eMainThread, and
+  // In this case, mVisualScrollUpdateType is set to MainThread, and
   // mVisualDestination is set to desired visual destination (relative
   // to the document, like mScrollOffset).
   CSSPoint mVisualDestination;
@@ -654,6 +683,12 @@ struct FrameMetrics {
   // If we are not using a dynamic toolbar, this has the same value as
   // mCompositionBounds.Size().
   ParentLayerSize mCompositionSizeWithoutDynamicToolbar;
+
+  // The interactive-widget of the root-content document.
+  // This is only applicable to the root-content scroll frame, it's stored in
+  // APZTreeManager as APZTreeManager::mInteractiveWidget so that it should not
+  // be checked on AsyncPanZoomController::mScrollMetadata.
+  dom::InteractiveWidget mInteractiveWidget;
 
   // Whether or not this is the root scroll frame for the root content document.
   bool mIsRootContent : 1;
@@ -673,6 +708,12 @@ struct FrameMetrics {
   // boundaries are used that could potentially expand the size.
   bool mMinimalDisplayPort : 1;
 
+  // Whether the software keyboard is currently visible.
+  // This is only applicable to the root-content scroll frame, it's stored in
+  // APZTreeManager as APZTreeManager::mIsSoftwareKeyboardVisible so that it
+  // should not be checked on AsyncPanZoomController::mScrollMetadata.
+  bool mIsSoftwareKeyboardVisible : 1;
+
   // WARNING!!!!
   //
   // When adding a new field:
@@ -683,23 +724,14 @@ struct FrameMetrics {
   //  - Otherwise, the following places should be updated to include them
   //    (as needed):
   //      FrameMetrics::operator ==
-  //      AsyncPanZoomController::NotifyLayersUpdated
+  //      AsyncPanZoomController::NotifyMainThreadTransaction
   //      The ParamTraits specialization in LayersMessageUtils.h
   //
   // Please add new fields above this comment.
 };
 
-// clang-format off
-MOZ_DEFINE_ENUM_CLASS_WITH_BASE(
-  OverscrollBehavior, uint8_t, (
-    Auto,
-    Contain,
-    None
-));
-// clang-format on
-
 std::ostream& operator<<(std::ostream& aStream,
-                         const OverscrollBehavior& aBehavior);
+                         const StyleOverscrollBehavior& aBehavior);
 
 struct OverscrollBehaviorInfo final {
   OverscrollBehaviorInfo();
@@ -714,8 +746,8 @@ struct OverscrollBehaviorInfo final {
 
   auto MutTiedFields() { return std::tie(mBehaviorX, mBehaviorY); }
 
-  OverscrollBehavior mBehaviorX;
-  OverscrollBehavior mBehaviorY;
+  StyleOverscrollBehavior mBehaviorX;
+  StyleOverscrollBehavior mBehaviorY;
 };
 
 struct OverflowInfo final {
@@ -750,8 +782,6 @@ struct ScrollMetadata {
       : mScrollParentId(ScrollableLayerGuid::NULL_SCROLL_ID),
         mLineScrollAmount(0, 0),
         mPageScrollAmount(0, 0),
-        mInteractiveWidget(
-            dom::InteractiveWidgetUtils::DefaultInteractiveWidgetMode()),
         mIsLayersIdRoot(false),
         mIsAutoDirRootContentRTL(false),
         mForceDisableApz(false),
@@ -760,8 +790,7 @@ struct ScrollMetadata {
         mDidContentGetPainted(true),
         mForceMousewheelAutodir(false),
         mForceMousewheelAutodirHonourRoot(false),
-        mIsPaginatedPresentation(false),
-        mIsSoftwareKeyboardVisible(false) {}
+        mIsPaginatedPresentation(false) {}
 
   bool operator==(const ScrollMetadata& aOther) const {
     return mMetrics == aOther.mMetrics && mSnapInfo == aOther.mSnapInfo &&
@@ -769,7 +798,6 @@ struct ScrollMetadata {
            // don't compare mContentDescription
            mLineScrollAmount == aOther.mLineScrollAmount &&
            mPageScrollAmount == aOther.mPageScrollAmount &&
-           mInteractiveWidget == aOther.mInteractiveWidget &&
            mIsLayersIdRoot == aOther.mIsLayersIdRoot &&
            mIsAutoDirRootContentRTL == aOther.mIsAutoDirRootContentRTL &&
            mForceDisableApz == aOther.mForceDisableApz &&
@@ -780,11 +808,12 @@ struct ScrollMetadata {
            mForceMousewheelAutodirHonourRoot ==
                aOther.mForceMousewheelAutodirHonourRoot &&
            mIsPaginatedPresentation == aOther.mIsPaginatedPresentation &&
-           mIsSoftwareKeyboardVisible == aOther.mIsSoftwareKeyboardVisible &&
            mDisregardedDirection == aOther.mDisregardedDirection &&
            mOverscrollBehavior == aOther.mOverscrollBehavior &&
            mOverflow == aOther.mOverflow &&
-           mScrollUpdates == aOther.mScrollUpdates;
+           mScrollUpdates == aOther.mScrollUpdates &&
+           mWritingMode == aOther.mWritingMode &&
+           mScrollGenerationOnApz == aOther.mScrollGenerationOnApz;
   }
 
   bool operator!=(const ScrollMetadata& aOther) const {
@@ -862,18 +891,6 @@ struct ScrollMetadata {
   }
   bool IsPaginatedPresentation() const { return mIsPaginatedPresentation; }
 
-  void SetIsSoftwareKeyboardVisible(bool aValue) {
-    mIsSoftwareKeyboardVisible = aValue;
-  }
-  bool IsSoftwareKeyboardVisible() const { return mIsSoftwareKeyboardVisible; }
-
-  void SetInteractiveWidget(dom::InteractiveWidget aInteractiveWidget) {
-    mInteractiveWidget = aInteractiveWidget;
-  }
-  dom::InteractiveWidget GetInteractiveWidget() const {
-    return mInteractiveWidget;
-  }
-
   bool DidContentGetPainted() const { return mDidContentGetPainted; }
 
  private:
@@ -907,6 +924,18 @@ struct ScrollMetadata {
 
   const nsTArray<ScrollPositionUpdate>& GetScrollUpdates() const {
     return mScrollUpdates;
+  }
+
+  void SetWritingMode(const WritingMode aWritingMode) {
+    mWritingMode = aWritingMode;
+  }
+  const WritingMode GetWritingMode() const { return mWritingMode; }
+
+  void SetScrollGenerationOnApz(const APZScrollGeneration& aGeneration) {
+    mScrollGenerationOnApz = aGeneration;
+  }
+  const APZScrollGeneration& GetScrollGenerationOnApz() const {
+    return mScrollGenerationOnApz;
   }
 
   void UpdatePendingScrollInfo(nsTArray<ScrollPositionUpdate>&& aUpdates) {
@@ -944,12 +973,6 @@ struct ScrollMetadata {
 
   // The value of GetPageScrollAmount(), for scroll frames.
   LayoutDeviceIntSize mPageScrollAmount;
-
-  // The interactive-widget of the root-content document.
-  // This is only applicable to the root-content scroll frame, it's stored in
-  // APZTreeManager as APZTreeManager::mInteractiveWidget so that it should not
-  // be checked on AsyncPanZoomController::mScrollMetadata.
-  dom::InteractiveWidget mInteractiveWidget;
 
   // Whether these framemetrics are for the root scroll frame (root element if
   // we don't have a root scroll frame) for its layers id.
@@ -1000,12 +1023,6 @@ struct ScrollMetadata {
   // to different transforms, which constrains the assumptions APZ can make.
   bool mIsPaginatedPresentation : 1;
 
-  // Whether the software keyboard is currently visible.
-  // This is only applicable to the root-content scroll frame, it's stored in
-  // APZTreeManager as APZTreeManager::mIsSoftwareKeyboardVisible so that it
-  // should not be checked on AsyncPanZoomController::mScrollMetadata.
-  bool mIsSoftwareKeyboardVisible : 1;
-
   // The disregarded direction means the direction which is disregarded anyway,
   // even if the scroll frame overflows in that direction and the direction is
   // specified as scrollable. This could happen in some scenarios, for instance,
@@ -1026,12 +1043,21 @@ struct ScrollMetadata {
   // the last transaction.
   CopyableTArray<ScrollPositionUpdate> mScrollUpdates;
 
+  // The writing-mode of this scroll container.
+  WritingMode mWritingMode;
+
+  // The APZ scroll generation associated with the last APZ scroll offset for
+  // which the main thread processed a repaint request. This is relayed back to
+  // APZ so it can tell which of its own generations the main-thread state in
+  // this transaction reflects.
+  APZScrollGeneration mScrollGenerationOnApz;
+
   // WARNING!!!!
   //
   // When adding new fields to ScrollMetadata, the following places should be
   // updated to include them (as needed):
   //    1. ScrollMetadata::operator ==
-  //    2. AsyncPanZoomController::NotifyLayersUpdated
+  //    2. AsyncPanZoomController::NotifyMainThreadTransaction
   //    3. The ParamTraits specialization in LayersMessageUtils.h
   //
   // Please add new fields above this comment.

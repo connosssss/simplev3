@@ -1,46 +1,41 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 sw=2 et tw=78: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "HyperTextAccessible-inl.h"
-
-#include "nsAccessibilityService.h"
-#include "nsIAccessibleTypes.h"
 #include "AccAttributes.h"
 #include "HTMLListAccessible.h"
+#include "HyperTextAccessible-inl.h"
 #include "LocalAccessible-inl.h"
 #include "Relation.h"
-#include "mozilla/a11y/Role.h"
 #include "States.h"
 #include "TextAttrs.h"
 #include "TextLeafRange.h"
 #include "TextRange.h"
 #include "TreeWalker.h"
-
-#include "nsCaret.h"
-#include "nsContentUtils.h"
-#include "nsDebug.h"
-#include "nsFocusManager.h"
-#include "nsIEditingSession.h"
-#include "nsContainerFrame.h"
-#include "nsFrameSelection.h"
-#include "nsILineIterator.h"
-#include "nsIMathMLFrame.h"
-#include "nsLayoutUtils.h"
-#include "nsRange.h"
+#include "gfxSkipChars.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/EditorBase.h"
 #include "mozilla/HTMLEditor.h"
-#include "mozilla/IntegerRange.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/ScrollContainerFrame.h"
 #include "mozilla/SelectionMovementUtils.h"
+#include "mozilla/a11y/Role.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLBRElement.h"
+#include "mozilla/dom/Range.h"
 #include "mozilla/dom/Selection.h"
-#include "gfxSkipChars.h"
+#include "nsAccessibilityService.h"
+#include "nsCaret.h"
+#include "nsContainerFrame.h"
+#include "nsContentUtils.h"
+#include "nsDebug.h"
+#include "nsFocusManager.h"
+#include "nsFrameSelection.h"
+#include "nsIAccessibleTypes.h"
+#include "nsIEditingSession.h"
+#include "nsILineIterator.h"
+#include "nsIMathMLFrame.h"
+#include "nsLayoutUtils.h"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
@@ -77,20 +72,17 @@ uint64_t HyperTextAccessible::NativeState() const {
   }
 
   nsIFrame* frame = GetFrame();
-  if ((states & states::EDITABLE) || (frame && frame->IsSelectable(nullptr))) {
+  if (!frame) {
+    frame = FindNearestAccessibleAncestorFrame();
+  }
+
+  if ((states & states::EDITABLE) || (frame && frame->IsSelectable())) {
     // If the accessible is editable the layout selectable state only disables
     // mouse selection, but keyboard (shift+arrow) selection is still possible.
     states |= states::SELECTABLE_TEXT;
   }
 
   return states;
-}
-
-bool HyperTextAccessible::IsEditable() const {
-  if (!mContent) {
-    return false;
-  }
-  return mContent->AsElement()->State().HasState(dom::ElementState::READWRITE);
 }
 
 uint32_t HyperTextAccessible::DOMPointToOffset(nsINode* aNode,
@@ -289,7 +281,7 @@ DOMPoint HyperTextAccessible::OffsetToDOMPoint(int32_t aOffset) const {
 }
 
 already_AddRefed<AccAttributes> HyperTextAccessible::DefaultTextAttributes() {
-  RefPtr<AccAttributes> attributes = new AccAttributes();
+  auto attributes = MakeRefPtr<AccAttributes>();
 
   TextAttrsMgr textAttrsMgr(this);
   textAttrsMgr.GetAttributes(attributes);
@@ -317,7 +309,7 @@ void HyperTextAccessible::SetMathMLXMLRoles(AccAttributes* aAttributes) {
           if (mathMLFrame) {
             nsEmbellishData embellishData;
             mathMLFrame->GetEmbellishData(embellishData);
-            if (NS_MATHML_EMBELLISH_IS_FENCE(embellishData.flags)) {
+            if (embellishData.flags.contains(MathMLEmbellishFlag::Fence)) {
               if (!LocalPrevSibling()) {
                 aAttributes->SetAttribute(nsGkAtoms::xmlroles,
                                           nsGkAtoms::open_fence);
@@ -326,7 +318,7 @@ void HyperTextAccessible::SetMathMLXMLRoles(AccAttributes* aAttributes) {
                                           nsGkAtoms::close_fence);
               }
             }
-            if (NS_MATHML_EMBELLISH_IS_SEPARATOR(embellishData.flags)) {
+            if (embellishData.flags.contains(MathMLEmbellishFlag::Separator)) {
               aAttributes->SetAttribute(nsGkAtoms::xmlroles,
                                         nsGkAtoms::separator);
             }
@@ -609,18 +601,20 @@ int32_t HyperTextAccessible::CaretOffset() const {
   return DOMPointToOffset(focusNode, focusOffset);
 }
 
-LayoutDeviceIntRect HyperTextAccessible::GetCaretRect(nsIWidget** aWidget) {
-  *aWidget = nullptr;
-
-  RefPtr<nsCaret> caret = mDoc->PresShellPtr()->GetCaret();
-  NS_ENSURE_TRUE(caret, LayoutDeviceIntRect());
+std::pair<LayoutDeviceIntRect, nsIWidget*> HyperTextAccessible::GetCaretRect() {
+  RefPtr<nsCaret> caret = mDoc->PresShellPtr()->GetOriginalCaret();
+  NS_ENSURE_TRUE(caret, {});
 
   bool isVisible = caret->IsVisible();
-  if (!isVisible) return LayoutDeviceIntRect();
+  if (!isVisible) {
+    return {};
+  }
 
   nsRect rect;
   nsIFrame* frame = caret->GetGeometry(&rect);
-  if (!frame || rect.IsEmpty()) return LayoutDeviceIntRect();
+  if (!frame || rect.IsEmpty()) {
+    return {};
+  }
 
   PresShell* presShell = mDoc->PresShellPtr();
   // Transform rect to be relative to the root frame.
@@ -652,16 +646,22 @@ LayoutDeviceIntRect HyperTextAccessible::GetCaretRect(nsIWidget** aWidget) {
     // the DOM node contaning the caret might be focused, but the Accessible
     // might not be; e.g. due to an autocomplete popup suggestion having a11y
     // focus.
-    return LayoutDeviceIntRect();
+    return {};
   }
-  LayoutDeviceIntRect charRect = CharBounds(
-      caretOffset, nsIAccessibleCoordinateType::COORDTYPE_SCREEN_RELATIVE);
+
+  // Vertically align the caret to the top of the line.
+  TextLeafPoint caretPoint = TextLeafPoint::GetCaret(this);
+  if (caretPoint.mIsEndOfLineInsertionPoint) {
+    caretPoint =
+        caretPoint.FindBoundary(nsIAccessibleText::BOUNDARY_CHAR, eDirPrevious);
+  }
+
+  LayoutDeviceIntRect charRect = caretPoint.CharBounds();
   if (!charRect.IsEmpty()) {
     caretRect.SetTopEdge(charRect.Y());
   }
 
-  *aWidget = frame->GetNearestWidget();
-  return caretRect;
+  return {caretRect, frame->GetNearestWidget()};
 }
 
 bool HyperTextAccessible::RemoveFromSelection(int32_t aSelectionNum) {
@@ -678,7 +678,7 @@ bool HyperTextAccessible::RemoveFromSelection(int32_t aSelectionNum) {
     return false;
   }
 
-  const RefPtr<nsRange> range{
+  const RefPtr<mozilla::dom::Range> range{
       domSel->GetRangeAt(static_cast<uint32_t>(aSelectionNum))};
   domSel->RemoveRangeAndUnselectFramesAndNotifyListeners(*range,
                                                          IgnoreErrors());
@@ -695,7 +695,7 @@ void HyperTextAccessible::ScrollSubstringToPoint(int32_t aStartOffset,
   LayoutDeviceIntPoint coords =
       nsAccUtils::ConvertToScreenCoords(aX, aY, aCoordinateType, this);
 
-  RefPtr<nsRange> domRange = nsRange::Create(mContent);
+  RefPtr<mozilla::dom::Range> domRange = mozilla::dom::Range::Create(mContent);
   TextRange range(this, this, aStartOffset, this, aEndOffset);
   if (!range.AssignDOMRange(domRange)) {
     return;
@@ -727,8 +727,8 @@ void HyperTextAccessible::ScrollSubstringToPoint(int32_t aStartOffset,
 
         nsresult rv = nsCoreUtils::ScrollSubstringTo(
             frame, domRange,
-            ScrollAxis(WhereToScroll(vPercent), WhenToScroll::Always),
-            ScrollAxis(WhereToScroll(hPercent), WhenToScroll::Always));
+            AxisScrollParams(WhereToScroll(vPercent), WhenToScroll::Always),
+            AxisScrollParams(WhereToScroll(hPercent), WhenToScroll::Always));
         if (NS_FAILED(rv)) return;
 
         initialScrolled = true;
@@ -773,16 +773,15 @@ void HyperTextAccessible::ReplaceText(const nsAString& aText) {
     return;
   }
 
+  RefPtr<EditorBase> editorBase = GetEditor();
+
   SetSelectionBoundsAt(TextLeafRange::kRemoveAllExistingSelectedRanges, 0,
                        CharacterCount());
 
-  RefPtr<EditorBase> editorBase = GetEditor();
-  if (!editorBase) {
-    return;
+  if (editorBase) {
+    DebugOnly<nsresult> rv = editorBase->InsertTextAsAction(aText);
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Failed to insert the new text");
   }
-
-  DebugOnly<nsresult> rv = editorBase->InsertTextAsAction(aText);
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Failed to insert the new text");
 }
 
 void HyperTextAccessible::InsertText(const nsAString& aText,
@@ -853,18 +852,7 @@ ENameValueFlag HyperTextAccessible::NativeName(nsString& aName) const {
     if (!aName.IsEmpty()) return eNameOK;
   }
 
-  ENameValueFlag nameFlag = AccessibleWrap::NativeName(aName);
-  if (!aName.IsEmpty()) return nameFlag;
-
-  // Get name from title attribute for HTML abbr and acronym elements making it
-  // a valid name from markup. Otherwise their name isn't picked up by recursive
-  // name computation algorithm. See NS_OK_NAME_FROM_TOOLTIP.
-  if (IsAbbreviation() && mContent->AsElement()->GetAttr(
-                              kNameSpaceID_None, nsGkAtoms::title, aName)) {
-    aName.CompressWhitespace();
-  }
-
-  return eNameOK;
+  return AccessibleWrap::NativeName(aName);
 }
 
 void HyperTextAccessible::Shutdown() {
@@ -888,6 +876,16 @@ bool HyperTextAccessible::InsertChildAt(uint32_t aIndex,
   }
 
   return AccessibleWrap::InsertChildAt(aIndex, aChild);
+}
+
+void HyperTextAccessible::RelocateChild(uint32_t aNewIndex,
+                                        LocalAccessible* aChild) {
+  const int32_t smallestChildIndex =
+      std::min(aChild->IndexInParent(), static_cast<int32_t>(aNewIndex));
+  if (smallestChildIndex < static_cast<int32_t>(mOffsets.Length())) {
+    mOffsets.RemoveLastElements(mOffsets.Length() - smallestChildIndex);
+  }
+  AccessibleWrap::RelocateChild(aNewIndex, aChild);
 }
 
 Relation HyperTextAccessible::RelationByType(RelationType aType) const {

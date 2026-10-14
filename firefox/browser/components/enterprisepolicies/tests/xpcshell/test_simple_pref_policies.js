@@ -81,6 +81,8 @@ const POLICIES_TESTS = [
         Fingerprinting: true,
         EmailTracking: true,
         SuspectedFingerprinting: true,
+        BaselineExceptions: true,
+        ConvenienceExceptions: true,
         Locked: true,
       },
     },
@@ -91,6 +93,8 @@ const POLICIES_TESTS = [
       "privacy.trackingprotection.emailtracking.pbmode.enabled": true,
       "privacy.fingerprintingProtection": true,
       "privacy.fingerprintingProtection.pbmode": true,
+      "privacy.trackingprotection.allow_list.baseline.enabled": true,
+      "privacy.trackingprotection.allow_list.convenience.enabled": true,
     },
   },
 
@@ -171,18 +175,6 @@ const POLICIES_TESTS = [
     },
   },
 
-  // POLICY: Certificates (true)
-  {
-    policies: {
-      Certificates: {
-        ImportEnterpriseRoots: true,
-      },
-    },
-    lockedPrefs: {
-      "security.enterprise_roots.enabled": true,
-    },
-  },
-
   // POLICY: Certificates (false)
   {
     policies: {
@@ -206,6 +198,8 @@ const POLICIES_TESTS = [
       "xpinstall.enabled": false,
       "browser.newtabpage.activity-stream.asrouter.userprefs.cfr.addons": false,
       "browser.newtabpage.activity-stream.asrouter.userprefs.cfr.features": false,
+      "extensions.getAddons.showPane": false,
+      "extensions.htmlaboutaddons.recommendations.enabled": false,
     },
   },
 
@@ -639,9 +633,83 @@ const POLICIES_TESTS = [
       },
     },
     lockedPrefs: {
-      "browser.newtabpage.activity-stream.feeds.system.topstories": false,
       "browser.newtabpage.activity-stream.feeds.section.topstories": false,
       "browser.newtabpage.activity-stream.showSponsored": false,
+    },
+  },
+
+  // POLICY: FirefoxHome (Weather sets both the legacy and Nova prefs)
+  {
+    policies: {
+      FirefoxHome: {
+        Weather: false,
+        Locked: true,
+      },
+    },
+    lockedPrefs: {
+      "browser.newtabpage.activity-stream.showWeather": false,
+      "browser.newtabpage.activity-stream.widgets.weather.enabled": false,
+    },
+  },
+
+  // POLICY: FirefoxHome (locking both sponsored settings locks the parent
+  // "Support Firefox" toggle to their combined value)
+  {
+    policies: {
+      FirefoxHome: {
+        SponsoredTopSites: false,
+        SponsoredStories: false,
+        Locked: true,
+      },
+    },
+    lockedPrefs: {
+      "browser.newtabpage.activity-stream.showSponsoredCheckboxes": false,
+    },
+  },
+
+  // POLICY: FirefoxHome->Widgets (Enabled honors Locked)
+  // Must run before the Locked entry below, which locks the same prefs.
+  {
+    policies: {
+      FirefoxHome: {
+        Widgets: {
+          Enabled: false,
+        },
+      },
+    },
+    unlockedPrefs: {
+      "browser.newtabpage.activity-stream.widgets.enabled": false,
+    },
+  },
+
+  // POLICY: FirefoxHome->Widgets
+  {
+    policies: {
+      FirefoxHome: {
+        Widgets: {
+          Enabled: true,
+          Blocked: ["crossword"],
+        },
+        Locked: true,
+      },
+    },
+    lockedPrefs: {
+      "browser.newtabpage.activity-stream.widgets.enabled": true,
+      "browser.newtabpage.activity-stream.widgets.crossword.enabled": false,
+    },
+  },
+
+  // POLICY: FirefoxHome->Widgets (Blocked locks even without Locked)
+  {
+    policies: {
+      FirefoxHome: {
+        Widgets: {
+          Blocked: ["stocks"],
+        },
+      },
+    },
+    lockedPrefs: {
+      "browser.newtabpage.activity-stream.widgets.stocks.enabled": false,
     },
   },
 
@@ -783,6 +851,29 @@ const POLICIES_TESTS = [
     },
   },
 
+  // POLICY: LocalNetworkAccess
+  {
+    policies: {
+      LocalNetworkAccess: {
+        Enabled: true,
+      },
+    },
+    unlockedPrefs: {
+      "network.lna.enabled": true,
+    },
+  },
+  {
+    policies: {
+      LocalNetworkAccess: {
+        Enabled: false,
+        Locked: true,
+      },
+    },
+    lockedPrefs: {
+      "network.lna.enabled": false,
+    },
+  },
+
   // POLICY: EncryptedMediaExtensions
 
   {
@@ -846,6 +937,7 @@ const POLICIES_TESTS = [
       },
     },
     lockedPrefs: {
+      "media.videocontrols.picture-in-picture.enabled": false,
       "media.videocontrols.picture-in-picture.video-toggle.enabled": false,
     },
   },
@@ -1043,6 +1135,33 @@ const POLICIES_TESTS = [
 
   {
     policies: {
+      Cookies: {
+        Behavior: "reject-tracker",
+        BehaviorPrivateBrowsing: "partition-foreign",
+        Locked: true,
+      },
+    },
+    lockedPrefs: {
+      "network.cookie.cookieBehavior": 4,
+      "network.cookie.cookieBehavior.pbmode": 5,
+    },
+  },
+  {
+    policies: {
+      Cookies: {
+        Behavior: "partition-foreign",
+        BehaviorPrivateBrowsing: "accept",
+        Locked: true,
+      },
+    },
+    lockedPrefs: {
+      "network.cookie.cookieBehavior": 5,
+      "network.cookie.cookieBehavior.pbmode": 0,
+    },
+  },
+
+  {
+    policies: {
       UseSystemPrintDialog: true,
     },
     lockedPrefs: {
@@ -1144,6 +1263,16 @@ const POLICIES_TESTS = [
     },
   },
 
+  // POLICY: CNSA2KeyAgreementEnabled
+  {
+    policies: {
+      CNSA2KeyAgreementEnabled: true,
+    },
+    lockedPrefs: {
+      "security.tls.enable_mlkem1024": true,
+    },
+  },
+
   // POLICY: HttpsOnlyMode
   {
     policies: {
@@ -1178,10 +1307,126 @@ const POLICIES_TESTS = [
       SkipTermsOfUse: true,
     },
     lockedPrefs: {
-      "datareporting.policy.dataSubmissionPolicyAcceptedVersion": 999,
-      // "datareporting.policy.dataSubmissionPolicyNotifiedTime" is a string of
-      // the timestamp at which the policy was set, this is tested in
-      // browser/components/enterprisepolicies/tests/browser/browser_policy_usermessaging.js
+      "termsofuse.acceptedVersion": 999,
+      // "termsofuse.acceptedVersion" is a string of
+      // the timestamp at which the policy was set
+    },
+  },
+
+  // POLICY: VisualSearchEnabled
+  {
+    policies: {
+      VisualSearchEnabled: false,
+    },
+    lockedPrefs: {
+      "browser.search.visualSearch.featureGate": false,
+    },
+  },
+
+  // Bug 1981587
+  {
+    policies: {
+      Preferences: {
+        "security.webauthn.always_allow_direct_attestation": {
+          Value: true,
+          Status: "locked",
+        },
+      },
+    },
+    lockedPrefs: {
+      "security.webauthn.always_allow_direct_attestation": true,
+    },
+  },
+
+  // POLICY: XSLTEnabled
+  {
+    policies: {
+      XSLTEnabled: true,
+    },
+    lockedPrefs: {
+      "dom.xslt.enabled": true,
+    },
+  },
+  {
+    policies: {
+      XSLTEnabled: false,
+    },
+    lockedPrefs: {
+      "dom.xslt.enabled": false,
+    },
+  },
+
+  // AIControls - all features locked via Default.Locked
+  {
+    policies: {
+      AIControls: {
+        Default: { Value: "blocked", Locked: true },
+        Translations: { Value: "available" },
+        PDFAltText: { Value: "available" },
+        SmartTabGroups: { Value: "blocked" },
+        LinkPreviewKeyPoints: { Value: "available" },
+        SidebarChatbot: { Value: "blocked" },
+        SpeechRecognition: { Value: "available" },
+      },
+    },
+    lockedPrefs: {
+      "browser.ai.control.default": "blocked",
+      "browser.ai.control.translations": "available",
+      "browser.translations.enable": true,
+      "browser.ai.control.pdfjsAltText": "available",
+      "pdfjs.enableAltText": true,
+      "browser.ai.control.smartTabGroups": "blocked",
+      "browser.tabs.groups.smart.userEnabled": false,
+      "browser.ai.control.linkPreviewKeyPoints": "available",
+      "browser.ml.linkPreview.enabled": true,
+      "browser.ai.control.sidebarChatbot": "blocked",
+      "browser.ml.chat.enabled": false,
+      "browser.ml.chat.page": false,
+      "browser.ai.control.speechRecognition": "available",
+    },
+  },
+
+  // AIControls - per-feature locked override
+  {
+    policies: {
+      AIControls: {
+        Default: { Value: "blocked", Locked: true },
+        Translations: { Value: "available", Locked: false },
+      },
+    },
+    lockedPrefs: {
+      "browser.ai.control.default": "blocked",
+      "browser.ai.control.pdfjsAltText": "blocked",
+      "pdfjs.enableAltText": false,
+      "browser.ai.control.smartTabGroups": "blocked",
+      "browser.tabs.groups.smart.userEnabled": false,
+      "browser.ai.control.linkPreviewKeyPoints": "blocked",
+      "browser.ml.linkPreview.enabled": false,
+      "browser.ai.control.sidebarChatbot": "blocked",
+      "browser.ml.chat.enabled": false,
+      "browser.ml.chat.page": false,
+      "browser.ai.control.speechRecognition": "blocked",
+    },
+    unlockedPrefs: {
+      "browser.ai.control.translations": "available",
+      "browser.translations.enable": true,
+    },
+  },
+
+  // GenerativeAI
+  {
+    policies: {
+      GenerativeAI: {
+        Enabled: false,
+        Chatbot: true,
+        Locked: true,
+      },
+    },
+    lockedPrefs: {
+      "browser.ml.chat.enabled": true,
+      "browser.ml.chat.page": true,
+      "browser.ml.linkPreview.optin": false,
+      "browser.tabs.groups.smart.userEnabled": false,
     },
   },
 ];

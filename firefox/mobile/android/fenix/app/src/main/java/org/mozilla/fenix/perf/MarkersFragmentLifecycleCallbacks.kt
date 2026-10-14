@@ -9,22 +9,17 @@ import android.os.Bundle
 import android.view.View
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import mozilla.components.concept.engine.Engine
 import org.mozilla.fenix.browser.BaseBrowserFragment
 import org.mozilla.fenix.home.HomeFragment
 
 /**
- * Adds a profiler marker for each fragment lifecycle callbacks. The callbacks are called by the
- * super method (e.g. [Fragment.onCreate] so the markers occur sometime during the execution of
- * our implementation (e.g. [org.mozilla.fenix.home.HomeFragment.onCreate]) rather than at the
- * beginning or end of that method.
+ * Adds a profiler marker for each fragment lifecycle callbacks. The callbacks are called by the super method (e.g.
+ * [Fragment.onCreate] so the markers occur sometime during the execution of our implementation (e.g.
+ * [org.mozilla.fenix.home.HomeFragment.onCreate]) rather than at the beginning or end of that method.
  */
-@ExperimentalCoroutinesApi // reference to HomeFragment causes cascade.
 @Suppress("TooManyFunctions") // it's the interface so we don't have a choice
-class MarkersFragmentLifecycleCallbacks(
-    private val engine: Engine,
-) : FragmentManager.FragmentLifecycleCallbacks() {
+class MarkersFragmentLifecycleCallbacks(private val engine: Engine) : FragmentManager.FragmentLifecycleCallbacks() {
 
     private fun shouldSkip(): Boolean {
         return engine.profiler?.isProfilerActive() != true
@@ -71,9 +66,10 @@ class MarkersFragmentLifecycleCallbacks(
     }
 
     override fun onFragmentCreated(fm: FragmentManager, f: Fragment, savedInstanceState: Bundle?) {
-        if (shouldSkip() ||
-            // These methods are manually instrumented with duration.
-            f is HomeFragment
+        if (
+            shouldSkip() ||
+                // These methods are manually instrumented with duration.
+                f is HomeFragment
         ) {
             return
         }
@@ -82,10 +78,11 @@ class MarkersFragmentLifecycleCallbacks(
     }
 
     override fun onFragmentViewCreated(fm: FragmentManager, f: Fragment, v: View, savedInstanceState: Bundle?) {
-        if (shouldSkip() ||
-            // These methods are manually instrumented with duration.
-            f is HomeFragment ||
-            f is BaseBrowserFragment
+        if (
+            shouldSkip() ||
+                // These methods are manually instrumented with duration.
+                f is HomeFragment ||
+                f is BaseBrowserFragment
         ) {
             return
         }

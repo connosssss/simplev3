@@ -10,7 +10,7 @@ import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "eslint"))
 from eslint import setup_helper
-from mozbuild.nodeutil import find_node_executable
+from mozbuild.nodeutil import check_node_executables_valid, find_node_executable
 from mozlint import result
 from mozlint.pathutils import expand_exclusions
 
@@ -36,7 +36,7 @@ and try again.
 def setup(root, **lintargs):
     setup_helper.set_project_root(root)
 
-    if not setup_helper.check_node_executables_valid():
+    if not check_node_executables_valid():
         return 1
 
     return setup_helper.eslint_maybe_setup()
@@ -61,10 +61,13 @@ def lint(paths, config, binary=None, skip_reinstall=False, **lintargs):
         # - When the package is the top-level package.json, because the top level
         #   node_modules is looked after by the setup, and we don't want to be
         #   removing it from underneath ourselves.
+        # - When a pnpm-lock.yaml shows that pnpm owns the node_modules, which
+        #   npm cannot safely reinstall.
         if (
             not skip_reinstall
             and not os.environ.get("MOZ_AUTOMATION")
             and dirname != lintargs["root"]
+            and not os.path.exists(os.path.join(dirname, "pnpm-lock.yaml"))
         ):
             status = setup_helper.package_setup(
                 dirname, os.path.basename(dirname), skip_logging=True
@@ -77,9 +80,23 @@ def lint(paths, config, binary=None, skip_reinstall=False, **lintargs):
                             "path": path,
                             "message": "Unable to install node_modules for this package, try running 'npm ci' in the directory to debug",
                             "level": "error",
-                        }
+                        },
                     )
                 )
+        elif not skip_reinstall and not os.path.isdir(
+            os.path.join(dirname, "node_modules")
+        ):
+            issues.append(
+                result.from_config(
+                    config,
+                    **{
+                        "path": path,
+                        "message": "No node_modules to check for this package, so no dependency was checked",
+                        "level": "error",
+                    },
+                )
+            )
+            continue
 
         output = run_license_checker(binary, path, lintargs)
         if output == 1:
@@ -146,7 +163,12 @@ def run_license_checker(binary, path, lintargs):
     orig = signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     proc = subprocess.run(
-        cmd_args, shell=shell, capture_output=True, text=True, check=False
+        cmd_args,
+        shell=shell,
+        capture_output=True,
+        text=True,
+        check=False,
+        encoding="utf-8",
     )
 
     signal.signal(signal.SIGINT, orig)

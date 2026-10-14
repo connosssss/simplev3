@@ -4,11 +4,13 @@
    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/sign_out_fragment"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="?attr/layer1"
-    android:padding="8dp">
+    android:background="?attr/colorSurface"
+    android:padding="8dp"
+    tools:ignore="Overdraw">
 
     <TextView
         android:id="@+id/sign_out_message"
@@ -18,7 +20,8 @@
         android:layout_marginTop="12dp"
         android:text="@string/sign_out_confirmation_message_2"
         android:textSize="16sp"
-        app:drawableStartCompat="@drawable/ic_info"
+        app:drawableStartCompat="@drawable/mozac_ic_information_24"
+        app:drawableTint="?attr/colorOnSurface"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
@@ -29,12 +32,12 @@
         android:layout_width="wrap_content"
         android:layout_height="0dp"
         android:letterSpacing="0"
-        android:padding="10dp"
+        android:paddingHorizontal="12dp"
         android:scrollbars="none"
         android:text="@string/sign_out_cancel"
         android:textAlignment="center"
         android:textAllCaps="false"
-        android:textColor="?attr/textPrimary"
+        android:textColor="?attr/colorOnSurface"
         android:textStyle="bold"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toStartOf="@id/signOutDisconnect"

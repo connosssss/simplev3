@@ -31,10 +31,7 @@ internal class LoginPanelTextInputLayout(
             defStyleAttr,
             0,
         ) {
-
-            defaultHintTextColor = ColorStateList.valueOf(
-                context.getColorFromAttr(android.R.attr.textColorPrimary),
-            )
+            defaultHintTextColor = ColorStateList.valueOf(context.getColorFromAttr(android.R.attr.textColorPrimary))
 
             getColorOrNull(R.styleable.LoginPanelTextInputLayout_mozacInputLayoutErrorTextColor)?.let { color ->
                 setErrorTextColor(ColorStateList.valueOf(color))

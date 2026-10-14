@@ -4,7 +4,6 @@
 
 package mozilla.components.feature.customtabs.verify
 
-import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.annotation.VisibleForTesting
 import androidx.browser.customtabs.CustomTabsService.RELATION_HANDLE_ALL_URLS
@@ -18,18 +17,19 @@ import mozilla.components.service.digitalassetlinks.AssetDescriptor
 import mozilla.components.service.digitalassetlinks.Relation.HANDLE_ALL_URLS
 import mozilla.components.service.digitalassetlinks.Relation.USE_AS_ORIGIN
 import mozilla.components.service.digitalassetlinks.RelationChecker
+import mozilla.components.support.utils.ext.PackageManagerCompatHelper
 
 /**
  * Used to verify postMessage origin for a designated package name.
  *
- * Uses Digital Asset Links to confirm that the given origin is associated with the package name.
- * It caches any origin that has been verified during the current application
- * lifecycle and reuses that without making any new network requests.
+ * Uses Digital Asset Links to confirm that the given origin is associated with the package name. It caches any origin
+ * that has been verified during the current application lifecycle and reuses that without making any new network
+ * requests.
  */
 class OriginVerifier(
     private val packageName: String,
     @param:Relation private val relation: Int,
-    packageManager: PackageManager,
+    packageManager: PackageManagerCompatHelper,
     private val relationChecker: RelationChecker,
 ) {
 
@@ -39,8 +39,8 @@ class OriginVerifier(
     }
 
     /**
-     * Verify the claimed origin for the cached package name asynchronously. This will end up
-     * making a network request for non-cached origins with a HTTP [Client].
+     * Verify the claimed origin for the cached package name asynchronously. This will end up making a network request
+     * for non-cached origins with a HTTP [Client].
      *
      * @param origin The postMessage origin the application is claiming to have. Can't be null.
      */
@@ -52,17 +52,19 @@ class OriginVerifier(
         if (cachedOrigin == origin) return true
 
         if (origin.scheme != "https") return false
-        val relationship = when (relation) {
-            RELATION_USE_AS_ORIGIN -> USE_AS_ORIGIN
-            RELATION_HANDLE_ALL_URLS -> HANDLE_ALL_URLS
-            else -> return false
-        }
+        val relationship =
+            when (relation) {
+                RELATION_USE_AS_ORIGIN -> USE_AS_ORIGIN
+                RELATION_HANDLE_ALL_URLS -> HANDLE_ALL_URLS
+                else -> return false
+            }
 
-        val originVerified = relationChecker.checkRelationship(
-            source = AssetDescriptor.Web(site = origin.toString()),
-            target = androidAsset ?: return false,
-            relation = relationship,
-        )
+        val originVerified =
+            relationChecker.checkRelationship(
+                source = AssetDescriptor.Web(site = origin.toString()),
+                target = androidAsset ?: return false,
+                relation = relationship,
+            )
 
         if (originVerified && packageName !in cachedOriginMap) {
             cachedOriginMap[packageName] = origin

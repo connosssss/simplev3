@@ -19,11 +19,11 @@ origin:
 
   # Human-readable identifier for this version/release
   # Generally "version NNN", "tag SSS", "bookmark SSS"
-  release: "master (2022-06-22 00:11:49)"
+  release: 9456b062277d2809c97f4633c116ffa8d485afdd (Wed Oct 07 23:10:15 2026).
 
   # Revision to pull in
   # Must be a long or short commit SHA (long preferred)
-  revision: 0fd4581a511be84feb08ecd902d43ddab84435c3
+  revision: 9456b062277d2809c97f4633c116ffa8d485afdd
 
   # The package's license, where possible using the mnemonic from
   # https://spdx.org/licenses/
@@ -49,12 +49,12 @@ vendoring:
 
   exclude:
     - ".*"
+    - "vpython.*"
 
   patches:
     - 00_fix_build_errors.patch
     - 01_make_mjpeg_printfs_optional.patch
     - 02_update_gyp.patch
     - 03_add_neon64_and_sve_gyp_targets.patch
-    - 04_fix_loongarch_build.patch
-    - 05_disable_sme.patch
+    - 04_disable_sme.patch
 

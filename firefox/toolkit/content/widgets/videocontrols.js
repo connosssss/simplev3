@@ -126,11 +126,11 @@ this.VideoControlsWidget = class {
    * media.videocontrols.picture-in-picture.video-toggle.always-show pref, which
    * is mostly used for testing.
    *
-   * @param {Object} prefs
+   * @param {object} prefs
    *   The preferences set that was passed to the UAWidget.
    * @param {Element} someVideo
    *   The <video> to test.
-   * @param {Object} reflowedDimensions
+   * @param {object} reflowedDimensions
    *   An object representing the reflowed dimensions of the <video>. Properties
    *   are:
    *
@@ -140,7 +140,7 @@ this.VideoControlsWidget = class {
    *     videoHeight (Number):
    *       The height of the video in pixels.
    *
-   * @return {Boolean}
+   * @return {boolean}
    */
   static shouldShowPictureInPictureToggle(
     prefs,
@@ -193,13 +193,13 @@ this.VideoControlsWidget = class {
    * that they're being used. It also will enable the appropriate stylesheet for
    * the preferred toggle experiment.
    *
-   * @param {Object} prefs
+   * @param {object} prefs
    *   The preferences set that was passed to the UAWidget.
    * @param {ShadowRoot} shadowRoot
    *   The shadowRoot of the <video> element where the video controls are.
    * @param {Element} toggle
    *   The toggle element.
-   * @param {Object} reflowedDimensions
+   * @param {object} reflowedDimensions
    *   An object representing the reflowed dimensions of the <video>. Properties
    *   are:
    *
@@ -898,9 +898,6 @@ this.VideoControlsImplWidget = class {
               case this.muteButton:
                 this.toggleMute();
                 break;
-              case this.castingButton:
-                this.toggleCasting();
-                break;
               case this.closedCaptionButton:
                 this.toggleClosedCaption();
                 break;
@@ -912,11 +909,12 @@ this.VideoControlsImplWidget = class {
               case this.controlsSpacer:
                 this.clickToPlayClickHandler(aEvent);
                 break;
-              case this.textTrackList:
+              case this.textTrackList: {
                 const index = +aEvent.originalTarget.getAttribute("index");
                 this.changeTextTrack(index);
                 this.closedCaptionButton.focus();
                 break;
+              }
               case this.videocontrols:
                 // Prevent any click event within media controls from dispatching through to video.
                 aEvent.stopPropagation();
@@ -926,7 +924,7 @@ this.VideoControlsImplWidget = class {
           case "dblclick":
             this.toggleFullscreen();
             break;
-          case "resizevideocontrols":
+          case "resizevideocontrols": {
             // Since this event come from the layout, this is the only place
             // we are sure of that probing into layout won't trigger or force
             // reflow.
@@ -951,6 +949,7 @@ this.VideoControlsImplWidget = class {
             }
             this.updatePictureInPictureToggleDisplay();
             break;
+          }
           case "fullscreenchange":
             this.onFullscreenChange();
             break;
@@ -990,9 +989,6 @@ this.VideoControlsImplWidget = class {
             break;
           case "removetrack":
             this.onTextTrackRemove(aEvent);
-            break;
-          case "media-videoCasting":
-            this.updateCasting(aEvent.detail);
             break;
           case "focusin":
             // Show the controls to highlight the focused control, but only
@@ -1205,7 +1201,9 @@ this.VideoControlsImplWidget = class {
         this.scrubber.isDragging = false;
 
         if (this.isPausedByDragging) {
-          this.video.play();
+          this.video.play().catch(() => {
+            /* Do nothing on rejection */
+          });
           this.isPausedByDragging = false;
         }
       },
@@ -1671,7 +1669,9 @@ this.VideoControlsImplWidget = class {
       startPlay() {
         this._triggeredByControls = true;
         this.hideClickToPlay();
-        this.video.play();
+        this.video.play().catch(() => {
+          /* Do nothing on rejection */
+        });
       },
 
       togglePause() {
@@ -1989,10 +1989,6 @@ this.VideoControlsImplWidget = class {
         return textTrack.kind == "subtitles" || textTrack.kind == "captions";
       },
 
-      get isCastingAvailable() {
-        return !this.isAudioOnly && this.video.mozAllowCasting;
-      },
-
       get isClosedCaptionAvailable() {
         // There is no rendering area, no need to show the caption.
         if (this.isAudioOnly) {
@@ -2015,27 +2011,6 @@ this.VideoControlsImplWidget = class {
 
         // fallback to off button if there's no showing track.
         return showingTT ? showingTT.index : 0;
-      },
-
-      get isCastingOn() {
-        return this.isCastingAvailable && this.video.mozIsCasting;
-      },
-
-      setCastingButtonState() {
-        this.castingButton.toggleAttribute("enabled", this.isCastingOn);
-        this.adjustControlSize();
-      },
-
-      updateCasting(eventDetail) {
-        let castingData = JSON.parse(eventDetail);
-        if ("allow" in castingData) {
-          this.video.mozAllowCasting = !!castingData.allow;
-        }
-
-        if ("active" in castingData) {
-          this.video.mozIsCasting = !!castingData.active;
-        }
-        this.setCastingButtonState();
       },
 
       get isClosedCaptionOn() {
@@ -2111,16 +2086,12 @@ this.VideoControlsImplWidget = class {
 
       onControlBarAnimationFinished() {
         this.hideClosedCaptionMenu();
-        this.video.dispatchEvent(
+        this.video.updateCueDisplay();
+        // Note this is useful only for testing.
+        this.controlBar.dispatchEvent(
           new this.window.CustomEvent("controlbarchange")
         );
         this.adjustControlSize();
-      },
-
-      toggleCasting() {
-        this.videocontrols.dispatchEvent(
-          new this.window.CustomEvent("VideoBindingCast")
-        );
       },
 
       hideClosedCaptionMenu() {
@@ -2343,7 +2314,6 @@ this.VideoControlsImplWidget = class {
         this.fullscreenButton.isWanted = !this.controlBar.hasAttribute(
           "fullscreen-unavailable"
         );
-        this.castingButton.isWanted = this.isCastingAvailable;
         this.closedCaptionButton.isWanted = this.isClosedCaptionAvailable;
         this.volumeStack.isWanted = !this.muteButton.hasAttribute("noAudio");
 
@@ -2519,7 +2489,6 @@ this.VideoControlsImplWidget = class {
         this.clickToPlay = this.shadowRoot.getElementById("clickToPlay");
         this.fullscreenButton =
           this.shadowRoot.getElementById("fullscreenButton");
-        this.castingButton = this.shadowRoot.getElementById("castingButton");
         this.closedCaptionButton = this.shadowRoot.getElementById(
           "closedCaptionButton"
         );
@@ -2554,7 +2523,6 @@ this.VideoControlsImplWidget = class {
           this.playButton,
           this.muteButton,
           this.fullscreenButton,
-          this.castingButton,
           this.closedCaptionButton,
           this.positionDurationBox,
           this.scrubberStack,
@@ -2580,7 +2548,6 @@ this.VideoControlsImplWidget = class {
 
         this.controlsEvents = [
           { el: this.muteButton, type: "click" },
-          { el: this.castingButton, type: "click" },
           { el: this.closedCaptionButton, type: "click" },
           { el: this.fullscreenButton, type: "click" },
           { el: this.playButton, type: "click" },
@@ -2613,8 +2580,6 @@ this.VideoControlsImplWidget = class {
           { el: this.video.textTracks, type: "addtrack" },
           { el: this.video.textTracks, type: "removetrack" },
           { el: this.video.textTracks, type: "change" },
-
-          { el: this.video, type: "media-videoCasting", touchOnly: true },
 
           { el: this.controlBar, type: "focusin" },
           { el: this.scrubber, type: "mousedown" },
@@ -2719,7 +2684,9 @@ this.VideoControlsImplWidget = class {
           case "mouseup":
             if (aEvent.originalTarget == this.Utils.controlsSpacer) {
               if (this.firstShow) {
-                this.Utils.video.play();
+                this.Utils.video.play().catch(() => {
+                  /* Do nothing on rejection */
+                });
                 this.firstShow = false;
               }
               this.toggleControls();
@@ -2863,8 +2830,6 @@ this.VideoControlsImplWidget = class {
                 <input type="range" id="volumeControl" class="volumeControl" min="0" max="100" step="1" tabindex="-1"
                        data-l10n-id="videocontrols-volume-control"/>
               </div>
-              <button id="castingButton" class="button castingButton"
-                      data-l10n-id="videocontrols-casting-button-label"/>
               <button id="closedCaptionButton" class="button closedCaptionButton" aria-controls="textTrackList"
                       aria-haspopup="menu" aria-expanded="false" data-l10n-id="videocontrols-closed-caption-button"/>
               <div id="textTrackListContainer" class="textTrackListContainer" hidden="true" role="presentation">
@@ -2902,6 +2867,7 @@ this.VideoControlsImplWidget = class {
 
   onchange() {
     this.Utils.updatePictureInPictureMessage();
+    this.Utils.updateVolumeControls();
     this.shadowRoot.firstChild.removeAttribute("flipped");
   }
 
@@ -3015,7 +2981,9 @@ this.NoControlsMobileImplWidget = class {
         }
 
         this.noControlsOverlay.hidden = true;
-        this.video.play();
+        this.video.play().catch(() => {
+          /* Do nothing on rejection */
+        });
       },
 
       init(shadowRoot) {

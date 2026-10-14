@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,20 +7,26 @@
 #include <functional>
 
 #include "GPUVideoImage.h"
+#include "MediaCodecsSupport.h"
 #include "PDMFactory.h"
 #include "PlatformEncoderModule.h"
 #include "ipc/EnumSerializer.h"
-#include "mozilla/EnumTypeTraits.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/PRemoteMediaManagerChild.h"
-#include "mozilla/layers/VideoBridgeUtils.h"
 #include "mozilla/ipc/UtilityProcessSandboxing.h"
+#include "mozilla/layers/VideoBridgeUtils.h"
 
 namespace mozilla {
 
+namespace dom {
+class MediaKeys;
+}
+
 class PMFCDMChild;
 class PMFMediaEngineChild;
+class RemoteCDMProxy;
 class RemoteDecoderChild;
-class RemoteMediaDataEncoderChild;
+class RemoteMediaDataEncoder;
 
 enum class RemoteMediaIn {
   Unspecified,
@@ -60,23 +64,40 @@ class RemoteMediaManagerChild final
   static void SetSupported(RemoteMediaIn aLocation,
                            const media::MediaCodecsSupported& aSupported);
 
+  // Resolves with true once codec support for a location is known. The actual
+  // MediaCodecsSupported snapshot is read separately via the synchronous
+  // Supports() once this has resolved.
+  using CodecSupportPromise = GenericNonExclusivePromise;
+
   // Can be called from any thread.
-  static bool Supports(RemoteMediaIn aLocation,
-                       const SupportDecoderParams& aParams,
-                       DecoderDoctorDiagnostics* aDiagnostics);
+  static media::DecodeSupportSet Supports(
+      RemoteMediaIn aLocation, const SupportDecoderParams& aParams,
+      DecoderDoctorDiagnostics* aDiagnostics);
   static RefPtr<PlatformDecoderModule::CreateDecoderPromise> CreateAudioDecoder(
       const CreateDecoderParams& aParams, RemoteMediaIn aLocation);
   static RefPtr<PlatformDecoderModule::CreateDecoderPromise> CreateVideoDecoder(
       const CreateDecoderParams& aParams, RemoteMediaIn aLocation);
+  static RefPtr<RemoteCDMProxy> CreateCDM(RemoteMediaIn aLocation,
+                                          dom::MediaKeys* aKeys,
+                                          const nsAString& aKeySystem,
+                                          bool aDistinctiveIdentifierRequired,
+                                          bool aPersistentStateRequired);
 
   static media::EncodeSupportSet Supports(RemoteMediaIn aLocation,
                                           CodecType aCodec);
+
+  // Resolves immediately if codec support for aLocation is already cached;
+  // otherwise resolves once SetSupported() fires for that location.
+  // Pass aForceRefresh=true to wait for the next update even when the cache
+  // is populated (the cache itself is not cleared, so sync callers are
+  // unaffected).
+  static RefPtr<CodecSupportPromise> EnsureCodecSupportFor(
+      RemoteMediaIn aLocation, bool aForceRefresh = false);
   static RefPtr<PlatformEncoderModule::CreateEncoderPromise> InitializeEncoder(
-      RefPtr<RemoteMediaDataEncoderChild>&& aEncoder,
-      const EncoderConfig& aConfig);
+      RefPtr<RemoteMediaDataEncoder>&& aEncoder, const EncoderConfig& aConfig);
 
   // Can be called from any thread.
-  static nsISerialEventTarget* GetManagerThread();
+  static nsCOMPtr<nsISerialEventTarget> GetManagerThread();
 
   // Return the track support information based on the location of the remote
   // process. Thread-safe.
@@ -93,6 +114,9 @@ class RemoteMediaManagerChild final
       gfx::ColorRange aColorRange) override;
   void DeallocateSurfaceDescriptor(
       const SurfaceDescriptorGPUVideo& aSD) override;
+
+  void OnSetCurrent(const SurfaceDescriptorGPUVideo& aSD) override;
+
   bool AllocShmem(size_t aSize, mozilla::ipc::Shmem* aShmem) override {
     return PRemoteMediaManagerChild::AllocShmem(aSize, aShmem);
   }
@@ -135,25 +159,12 @@ class RemoteMediaManagerChild final
  protected:
   void HandleFatalError(const char* aMsg) override;
 
-  PRemoteDecoderChild* AllocPRemoteDecoderChild(
-      const RemoteDecoderInfoIPDL& aRemoteDecoderInfo,
-      const CreateDecoderParams::OptionSet& aOptions,
-      const Maybe<layers::TextureFactoryIdentifier>& aIdentifier,
-      const Maybe<uint64_t>& aMediaEngineId,
-      const Maybe<TrackingId>& aTrackingId);
-  bool DeallocPRemoteDecoderChild(PRemoteDecoderChild* actor);
-
-  PMFMediaEngineChild* AllocPMFMediaEngineChild();
-  bool DeallocPMFMediaEngineChild(PMFMediaEngineChild* actor);
-
-  PMFCDMChild* AllocPMFCDMChild(const nsAString& aKeySystem);
-  bool DeallocPMFCDMChild(PMFCDMChild* actor);
-
  private:
   explicit RemoteMediaManagerChild(RemoteMediaIn aLocation);
   ~RemoteMediaManagerChild() = default;
   static RefPtr<PlatformDecoderModule::CreateDecoderPromise> Construct(
-      RefPtr<RemoteDecoderChild>&& aChild, RemoteMediaIn aLocation);
+      RefPtr<RemoteDecoderChild>&& aChild,
+      CreateDecoderParamsForAsync&& aParams, RemoteMediaIn aLocation);
 
   static void OpenRemoteMediaManagerChildForProcess(
       Endpoint<PRemoteMediaManagerChild>&& aEndpoint, RemoteMediaIn aLocation);

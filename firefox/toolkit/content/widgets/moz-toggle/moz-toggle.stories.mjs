@@ -13,6 +13,7 @@ export default {
     l10nId: {
       options: [
         "moz-toggle-label",
+        "moz-toggle-only",
         "moz-toggle-aria-label",
         "moz-toggle-description",
         "moz-toggle-long-label",
@@ -27,7 +28,10 @@ export default {
     },
     fluent: `
 moz-toggle-aria-label =
+  .label = This is the label
   .aria-label = This is the aria-label
+moz-toggle-only =
+  .aria-label = This is the toggle-only aria-label
 moz-toggle-label =
   .label = This is the label
 moz-toggle-description =
@@ -48,10 +52,12 @@ const Template = ({
   l10nId,
   supportPage,
   accessKey,
+  title,
   iconSrc,
   hasSlottedSupportLink,
   nestedFields,
   ellipsized,
+  inputLayout,
 }) => {
   let toggleTemplate = html`
     <moz-toggle
@@ -62,8 +68,10 @@ const Template = ({
       aria-label=${ifDefined(ariaLabel)}
       data-l10n-id=${ifDefined(l10nId)}
       accesskey=${ifDefined(accessKey)}
+      title=${ifDefined(title || null)}
       support-page=${ifDefined(supportPage)}
       iconsrc=${ifDefined(iconSrc)}
+      inputlayout=${ifDefined(inputLayout)}
       class=${classMap({ "text-truncated-ellipsis": ellipsized })}
     >
       ${hasSlottedSupportLink
@@ -93,10 +101,12 @@ Default.args = {
   l10nId: "moz-toggle-label",
   hasSupportLink: false,
   accessKey: "",
+  title: "",
   supportPage: "",
   iconSrc: "",
   hasSlottedSupportLink: false,
   nestedFields: false,
+  inputLayout: null,
 };
 
 export const Disabled = Template.bind({});
@@ -108,13 +118,14 @@ Disabled.args = {
 export const ToggleOnly = Template.bind({});
 ToggleOnly.args = {
   ...Default.args,
-  l10nId: "moz-toggle-aria-label",
+  l10nId: "moz-toggle-only",
 };
 
 export const WithAccesskey = Template.bind({});
 WithAccesskey.args = {
   ...Default.args,
   accessKey: "h",
+  l10nId: "moz-toggle-aria-label",
 };
 
 export const WithDescription = Template.bind({});
@@ -152,4 +163,39 @@ WithEllipsizedLabel.args = {
   ...Default.args,
   ellipsized: true,
   l10nId: "moz-toggle-long-label",
+};
+
+export const InlineEndLayout = Template.bind({});
+InlineEndLayout.args = {
+  ...Default.args,
+  inputLayout: "inline-end",
+};
+
+export const InlineEndWithDescription = Template.bind({});
+InlineEndWithDescription.args = {
+  ...Default.args,
+  inputLayout: "inline-end",
+  l10nId: "moz-toggle-description",
+};
+
+export const InlineEndWithSupportLink = Template.bind({});
+InlineEndWithSupportLink.args = {
+  ...Default.args,
+  inputLayout: "inline-end",
+  l10nId: "moz-toggle-description",
+  supportPage: "addons",
+};
+
+export const InlineEndDisabled = Template.bind({});
+InlineEndDisabled.args = {
+  ...Default.args,
+  inputLayout: "inline-end",
+  disabled: true,
+};
+
+export const InlineEndWithNestedFields = Template.bind({});
+InlineEndWithNestedFields.args = {
+  ...Default.args,
+  inputLayout: "inline-end",
+  nestedFields: true,
 };

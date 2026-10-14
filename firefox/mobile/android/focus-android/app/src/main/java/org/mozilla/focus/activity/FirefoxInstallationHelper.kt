@@ -9,18 +9,17 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import androidx.core.net.toUri
 import mozilla.components.support.utils.Browsers
-import mozilla.components.support.utils.ext.resolveActivityCompat
+import mozilla.components.support.utils.ext.packageManagerCompatHelper
 import mozilla.telemetry.glean.private.NoExtras
 import org.mozilla.focus.GleanMetrics.OpenWith
 
-/**
- * Helper for opening the Google Play store to install Firefox.
- */
+/** Helper for opening the Google Play store to install Firefox. */
 object FirefoxInstallationHelper {
-    val storeIntent = Intent(
-        Intent.ACTION_VIEW,
-        ("market://details?id=" + Browsers.KnownBrowser.FIREFOX.packageName).toUri(),
-    )
+    val storeIntent =
+        Intent(
+            Intent.ACTION_VIEW,
+            ("market://details?id=" + Browsers.KnownBrowser.FIREFOX.packageName).toUri(),
+        )
 
     /**
      * Resolves the activity information for the app store installed on the device.
@@ -29,8 +28,7 @@ object FirefoxInstallationHelper {
      * @return The ActivityInfo of the app store activity if found and exported, null otherwise.
      */
     fun resolveAppStore(context: Context): ActivityInfo? {
-        val resolveInfo =
-            context.packageManager.resolveActivityCompat(storeIntent, 0) ?: return null
+        val resolveInfo = context.packageManagerCompatHelper.resolveActivityCompat(storeIntent, 0) ?: return null
 
         return if (resolveInfo.activityInfo.exported) {
             resolveInfo.activityInfo
@@ -50,7 +48,7 @@ object FirefoxInstallationHelper {
         context.startActivity(
             storeIntent.apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            },
+            }
         )
         OpenWith.installFirefox.record(NoExtras())
     }

@@ -4,14 +4,14 @@
 "use strict";
 
 add_task(async function test_filtering_disable_only_source() {
-  let match = new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
-    UrlbarUtils.RESULT_SOURCE.TABS,
-    { url: "http://mozilla.org/foo/" }
-  );
+  let match = new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.TAB_SWITCH,
+    source: UrlbarShared.RESULT_SOURCE.TABS,
+    payload: { url: "http://mozilla.org/foo/" },
+  });
   let provider = registerBasicTestProvider([match]);
   let context = createContext(undefined, { providers: [provider.name] });
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
 
   info("Disable the only available source, should get no matches");
   Services.prefs.setBoolPref("browser.urlbar.suggest.openpage", false);
@@ -22,25 +22,27 @@ add_task(async function test_filtering_disable_only_source() {
   await controller.startQuery(context);
   await promise;
   Services.prefs.clearUserPref("browser.urlbar.suggest.openpage");
-  UrlbarProvidersManager.unregisterProvider({ name: provider.name });
+  ProvidersManager.getInstanceForSap("urlbar").unregisterProvider({
+    name: provider.name,
+  });
 });
 
 add_task(async function test_filtering_disable_one_source() {
   let matches = [
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
-      UrlbarUtils.RESULT_SOURCE.TABS,
-      { url: "http://mozilla.org/foo/" }
-    ),
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
-      UrlbarUtils.RESULT_SOURCE.HISTORY,
-      { url: "http://mozilla.org/foo/" }
-    ),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.TAB_SWITCH,
+      source: UrlbarShared.RESULT_SOURCE.TABS,
+      payload: { url: "http://mozilla.org/foo/" },
+    }),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.TAB_SWITCH,
+      source: UrlbarShared.RESULT_SOURCE.HISTORY,
+      payload: { url: "http://mozilla.org/foo/" },
+    }),
   ];
   let provider = registerBasicTestProvider(matches);
   let context = createContext(undefined, { providers: [provider.name] });
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
 
   info("Disable one of the sources, should get a single match");
   Services.prefs.setBoolPref("browser.urlbar.suggest.history", false);
@@ -52,27 +54,27 @@ add_task(async function test_filtering_disable_one_source() {
   await promise;
   Assert.deepEqual(context.results, matches.slice(0, 1));
   Services.prefs.clearUserPref("browser.urlbar.suggest.history");
-  UrlbarProvidersManager.unregisterProvider(provider);
+  ProvidersManager.getInstanceForSap("urlbar").unregisterProvider(provider);
 });
 
 add_task(async function test_filtering_restriction_token() {
   let matches = [
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
-      UrlbarUtils.RESULT_SOURCE.TABS,
-      { url: "http://mozilla.org/foo/" }
-    ),
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
-      UrlbarUtils.RESULT_SOURCE.HISTORY,
-      { url: "http://mozilla.org/foo/" }
-    ),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.TAB_SWITCH,
+      source: UrlbarShared.RESULT_SOURCE.TABS,
+      payload: { url: "http://mozilla.org/foo/" },
+    }),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.TAB_SWITCH,
+      source: UrlbarShared.RESULT_SOURCE.HISTORY,
+      payload: { url: "http://mozilla.org/foo/" },
+    }),
   ];
   let provider = registerBasicTestProvider(matches);
-  let context = createContext(`foo ${UrlbarTokenizer.RESTRICT.OPENPAGE}`, {
+  let context = createContext(`foo ${UrlbarShared.RESTRICT_TOKENS.OPENPAGE}`, {
     providers: [provider.name],
   });
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
 
   info("Use a restriction character, should get a single match");
   let promise = Promise.all([
@@ -82,23 +84,23 @@ add_task(async function test_filtering_restriction_token() {
   await controller.startQuery(context, controller);
   await promise;
   Assert.deepEqual(context.results, matches.slice(0, 1));
-  UrlbarProvidersManager.unregisterProvider(provider);
+  ProvidersManager.getInstanceForSap("urlbar").unregisterProvider(provider);
 });
 
 add_task(async function test_filter_javascript() {
-  let match = new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
-    UrlbarUtils.RESULT_SOURCE.TABS,
-    { url: "http://mozilla.org/foo/" }
-  );
-  let jsMatch = new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
-    UrlbarUtils.RESULT_SOURCE.HISTORY,
-    { url: "javascript:foo" }
-  );
+  let match = new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.TAB_SWITCH,
+    source: UrlbarShared.RESULT_SOURCE.TABS,
+    payload: { url: "http://mozilla.org/foo/" },
+  });
+  let jsMatch = new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.TAB_SWITCH,
+    source: UrlbarShared.RESULT_SOURCE.HISTORY,
+    payload: { url: "javascript:foo" },
+  });
   let provider = registerBasicTestProvider([match, jsMatch]);
   let context = createContext(undefined, { providers: [provider.name] });
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
 
   info("By default javascript should be filtered out");
   let promise = promiseControllerNotification(controller, "onQueryResults");
@@ -107,9 +109,10 @@ add_task(async function test_filter_javascript() {
   Assert.deepEqual(context.results, [match]);
 
   info("Except when the user explicitly starts the search with javascript:");
-  context = createContext(`javascript: ${UrlbarTokenizer.RESTRICT.HISTORY}`, {
-    providers: [provider.name],
-  });
+  context = createContext(
+    `javascript: ${UrlbarShared.RESTRICT_TOKENS.HISTORY}`,
+    { providers: [provider.name] }
+  );
   promise = promiseControllerNotification(controller, "onQueryResults");
   await controller.startQuery(context, controller);
   await promise;
@@ -123,30 +126,30 @@ add_task(async function test_filter_javascript() {
   await promise;
   Assert.deepEqual(context.results, [match, jsMatch]);
   Services.prefs.clearUserPref("browser.urlbar.filter.javascript");
-  UrlbarProvidersManager.unregisterProvider(provider);
+  ProvidersManager.getInstanceForSap("urlbar").unregisterProvider(provider);
 });
 
 add_task(async function test_filter_isActive() {
   let goodMatches = [
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
-      UrlbarUtils.RESULT_SOURCE.TABS,
-      { url: "http://mozilla.org/foo/" }
-    ),
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.URL,
-      UrlbarUtils.RESULT_SOURCE.HISTORY,
-      { url: "http://mozilla.org/foo/" }
-    ),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.TAB_SWITCH,
+      source: UrlbarShared.RESULT_SOURCE.TABS,
+      payload: { url: "http://mozilla.org/foo/" },
+    }),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.URL,
+      source: UrlbarShared.RESULT_SOURCE.HISTORY,
+      payload: { url: "http://mozilla.org/foo/" },
+    }),
   ];
   let provider = registerBasicTestProvider(goodMatches);
 
   let badMatches = [
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.URL,
-      UrlbarUtils.RESULT_SOURCE.BOOKMARKS,
-      { url: "http://mozilla.org/foo/" }
-    ),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.URL,
+      source: UrlbarShared.RESULT_SOURCE.BOOKMARKS,
+      payload: { url: "http://mozilla.org/foo/" },
+    }),
   ];
   /**
    * A test provider that should not be invoked.
@@ -156,11 +159,11 @@ add_task(async function test_filter_isActive() {
       return "BadProvider";
     }
     get type() {
-      return UrlbarUtils.PROVIDER_TYPE.PROFILE;
+      return UrlbarShared.PROVIDER_TYPE.PROFILE;
     }
     async isActive(context) {
       info("Acceptable sources: " + context.sources);
-      return context.sources.includes(UrlbarUtils.RESULT_SOURCE.BOOKMARKS);
+      return context.sources.includes(UrlbarShared.RESULT_SOURCE.BOOKMARKS);
     }
     async startQuery(context, add) {
       Assert.ok(false, "Provider should no be invoked");
@@ -170,13 +173,14 @@ add_task(async function test_filter_isActive() {
     }
   }
   let badProvider = new NoInvokeProvider();
-  UrlbarProvidersManager.registerProvider(badProvider);
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  providersManager.registerProvider(badProvider);
 
   let context = createContext(undefined, {
-    sources: [UrlbarUtils.RESULT_SOURCE.TABS],
+    sources: [UrlbarShared.RESULT_SOURCE.TABS],
     providers: [provider.name, "BadProvider"],
   });
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
 
   info("Only tabs should be returned");
   let promise = promiseControllerNotification(controller, "onQueryResults");
@@ -185,11 +189,11 @@ add_task(async function test_filter_isActive() {
   Assert.deepEqual(context.results.length, 1, "Should find only one match");
   Assert.deepEqual(
     context.results[0].source,
-    UrlbarUtils.RESULT_SOURCE.TABS,
+    UrlbarShared.RESULT_SOURCE.TABS,
     "Should find only a tab match"
   );
-  UrlbarProvidersManager.unregisterProvider(provider);
-  UrlbarProvidersManager.unregisterProvider(badProvider);
+  providersManager.unregisterProvider(provider);
+  providersManager.unregisterProvider(badProvider);
 });
 
 add_task(async function test_filter_queryContext() {
@@ -203,7 +207,7 @@ add_task(async function test_filter_queryContext() {
       return "BadProvider";
     }
     get type() {
-      return UrlbarUtils.PROVIDER_TYPE.PROFILE;
+      return UrlbarShared.PROVIDER_TYPE.PROFILE;
     }
     async isActive(_context) {
       return true;
@@ -213,16 +217,17 @@ add_task(async function test_filter_queryContext() {
     }
   }
   let badProvider = new NoInvokeProvider();
-  UrlbarProvidersManager.registerProvider(badProvider);
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  providersManager.registerProvider(badProvider);
 
   let context = createContext(undefined, {
     providers: [provider.name],
   });
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
 
   await controller.startQuery(context, controller);
-  UrlbarProvidersManager.unregisterProvider(provider);
-  UrlbarProvidersManager.unregisterProvider(badProvider);
+  providersManager.unregisterProvider(provider);
+  providersManager.unregisterProvider(badProvider);
 });
 
 add_task(async function test_nofilter_heuristic() {
@@ -230,29 +235,29 @@ add_task(async function test_nofilter_heuristic() {
   // it will still be invoked if it's of type heuristic, and only the heuristic
   // result is returned.
   let matches = [
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
-      UrlbarUtils.RESULT_SOURCE.TABS,
-      { url: "http://mozilla.org/foo/" }
-    ),
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
-      UrlbarUtils.RESULT_SOURCE.TABS,
-      { url: "http://mozilla.org/foo2/" }
-    ),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.TAB_SWITCH,
+      source: UrlbarShared.RESULT_SOURCE.TABS,
+      heuristic: true,
+      payload: { url: "http://mozilla.org/foo/" },
+    }),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.TAB_SWITCH,
+      source: UrlbarShared.RESULT_SOURCE.TABS,
+      payload: { url: "http://mozilla.org/foo2/" },
+    }),
   ];
-  matches[0].heuristic = true;
   let provider = registerBasicTestProvider(
     matches,
     undefined,
-    UrlbarUtils.PROVIDER_TYPE.HEURISTIC
+    UrlbarShared.PROVIDER_TYPE.HEURISTIC
   );
 
   let context = createContext(undefined, {
-    sources: [UrlbarUtils.RESULT_SOURCE.SEARCH],
+    sources: [UrlbarShared.RESULT_SOURCE.SEARCH],
     providers: [provider.name],
   });
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
 
   // Disable search matches through prefs.
   Services.prefs.setBoolPref("browser.urlbar.suggest.openpage", false);
@@ -264,36 +269,36 @@ add_task(async function test_nofilter_heuristic() {
   Assert.deepEqual(context.results.length, 1, "Should find only one match");
   Assert.deepEqual(
     context.results[0].source,
-    UrlbarUtils.RESULT_SOURCE.TABS,
+    UrlbarShared.RESULT_SOURCE.TABS,
     "Should find only a tab match"
   );
-  UrlbarProvidersManager.unregisterProvider(provider);
+  ProvidersManager.getInstanceForSap("urlbar").unregisterProvider(provider);
 });
 
 add_task(async function test_nofilter_restrict() {
   // Checks that even if a pref is disabled, we still return results on a
   // restriction token.
   let matches = [
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
-      UrlbarUtils.RESULT_SOURCE.TABS,
-      { url: "http://mozilla.org/foo_tab/" }
-    ),
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.URL,
-      UrlbarUtils.RESULT_SOURCE.BOOKMARKS,
-      { url: "http://mozilla.org/foo_bookmark/" }
-    ),
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.URL,
-      UrlbarUtils.RESULT_SOURCE.HISTORY,
-      { url: "http://mozilla.org/foo_history/" }
-    ),
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.SEARCH,
-      UrlbarUtils.RESULT_SOURCE.SEARCH,
-      { engine: "noengine" }
-    ),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.TAB_SWITCH,
+      source: UrlbarShared.RESULT_SOURCE.TABS,
+      payload: { url: "http://mozilla.org/foo_tab/" },
+    }),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.URL,
+      source: UrlbarShared.RESULT_SOURCE.BOOKMARKS,
+      payload: { url: "http://mozilla.org/foo_bookmark/" },
+    }),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.URL,
+      source: UrlbarShared.RESULT_SOURCE.HISTORY,
+      payload: { url: "http://mozilla.org/foo_history/" },
+    }),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.SEARCH,
+      source: UrlbarShared.RESULT_SOURCE.SEARCH,
+      payload: { engine: "noengine" },
+    }),
   ];
 
   /**
@@ -313,7 +318,8 @@ add_task(async function test_nofilter_restrict() {
   }
 
   let provider = new TestProvider();
-  UrlbarProvidersManager.registerProvider(provider);
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  providersManager.registerProvider(provider);
 
   let typeToPropertiesMap = new Map([
     ["HISTORY", { source: "HISTORY", pref: "history" }],
@@ -321,7 +327,7 @@ add_task(async function test_nofilter_restrict() {
     ["OPENPAGE", { source: "TABS", pref: "openpage" }],
     ["SEARCH", { source: "SEARCH", pref: "searches" }],
   ]);
-  for (let [type, token] of Object.entries(UrlbarTokenizer.RESTRICT)) {
+  for (let [type, token] of Object.entries(UrlbarShared.RESTRICT_TOKENS)) {
     let properties = typeToPropertiesMap.get(type);
     if (!properties) {
       continue;
@@ -330,7 +336,7 @@ add_task(async function test_nofilter_restrict() {
     let context = createContext(token + " foo", {
       providers: ["MyProvider"],
     });
-    let controller = UrlbarTestUtils.newMockController();
+    let controller = UrlbarTestUtils.mockChildController();
     // Disable the corresponding pref.
     const pref = "browser.urlbar.suggest." + properties.pref;
     info("Disabling " + pref);
@@ -339,12 +345,12 @@ add_task(async function test_nofilter_restrict() {
     Assert.equal(context.results.length, 1, "Should find one result");
     Assert.equal(
       context.results[0].source,
-      UrlbarUtils.RESULT_SOURCE[properties.source],
+      UrlbarShared.RESULT_SOURCE[properties.source],
       "Check result source"
     );
     Services.prefs.clearUserPref(pref);
   }
-  UrlbarProvidersManager.unregisterProvider(provider);
+  providersManager.unregisterProvider(provider);
 });
 
 add_task(async function test_filter_priority() {
@@ -369,16 +375,17 @@ add_task(async function test_filter_priority() {
     new TestProvider(2, true, "a"),
     new TestProvider(2, true, "b"),
   ]);
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
   for (let providers of providerPerms) {
     for (let provider of providers) {
-      UrlbarProvidersManager.registerProvider(provider);
+      providersManager.registerProvider(provider);
     }
     let providerNames = providers.map(p => p.name);
     let context = createContext(undefined, { providers: providerNames });
-    let controller = UrlbarTestUtils.newMockController();
+    let controller = UrlbarTestUtils.mockChildController();
     await controller.startQuery(context, controller);
     for (let name of providerNames) {
-      UrlbarProvidersManager.unregisterProvider({ name });
+      providersManager.unregisterProvider({ name });
     }
   }
 });

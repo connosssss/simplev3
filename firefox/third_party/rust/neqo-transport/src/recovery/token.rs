@@ -9,14 +9,17 @@ use crate::{
     cid::ConnectionIdEntry,
     crypto::CryptoRecoveryToken,
     quic_datagrams::DatagramTracking,
-    send_stream::SendStreamRecoveryToken,
+    send_stream,
+    stateless_reset::Token as Srt,
     stream_id::{StreamId, StreamType},
-    tracking::AckToken,
+    tracking::PacketRange,
 };
+
+pub type Tokens = Vec<Token>;
 
 #[derive(Debug, Clone)]
 pub enum StreamRecoveryToken {
-    Stream(SendStreamRecoveryToken),
+    Stream(send_stream::RecoveryToken),
     ResetStream {
         stream_id: StreamId,
     },
@@ -47,17 +50,23 @@ pub enum StreamRecoveryToken {
 }
 
 #[derive(Debug, Clone)]
-pub enum RecoveryToken {
+pub enum Token {
     Stream(StreamRecoveryToken),
-    Ack(AckToken),
+    Ack(Box<[PacketRange]>),
     Crypto(CryptoRecoveryToken),
     HandshakeDone,
     KeepAlive, // Special PING.
+    #[expect(
+        clippy::enum_variant_names,
+        reason = "This is how it is called in the spec."
+    )]
     NewToken(usize),
-    NewConnectionId(ConnectionIdEntry<[u8; 16]>),
+    NewConnectionId(Box<ConnectionIdEntry<Srt>>), // Boxed, because largest by far & rarely used.
     RetireConnectionId(u64),
     AckFrequency(AckRate),
     Datagram(DatagramTracking),
-    /// A packet marked with [`neqo_common::IpTosEcn::Ect0`].
+    /// A packet marked with [`neqo_common::Ecn::Ect0`].
     EcnEct0,
+    /// A PMTUD probe packet.
+    PmtudProbe,
 }

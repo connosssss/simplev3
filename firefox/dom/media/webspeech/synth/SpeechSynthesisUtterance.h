@@ -1,18 +1,15 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SpeechSynthesisUtterance_h
-#define mozilla_dom_SpeechSynthesisUtterance_h
+#ifndef DOM_MEDIA_WEBSPEECH_SYNTH_SPEECHSYNTHESISUTTERANCE_H_
+#define DOM_MEDIA_WEBSPEECH_SYNTH_SPEECHSYNTHESISUTTERANCE_H_
 
+#include "js/TypeDecls.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "nsCOMPtr.h"
-#include "nsString.h"
-#include "js/TypeDecls.h"
-
 #include "nsSpeechTask.h"
+#include "nsString.h"
 
 namespace mozilla::dom {
 
@@ -69,7 +66,7 @@ class SpeechSynthesisUtterance final : public DOMEventTargetHelper {
 
   void GetChosenVoiceURI(nsString& aResult) const;
 
-  bool IsPaused() { return mPaused; }
+  bool IsPaused() const { return mPaused; }
 
   bool ShouldResistFingerprinting() const {
     return mShouldResistFingerprinting;
@@ -112,4 +109,4 @@ class SpeechSynthesisUtterance final : public DOMEventTargetHelper {
 
 }  // namespace mozilla::dom
 
-#endif
+#endif  // DOM_MEDIA_WEBSPEECH_SYNTH_SPEECHSYNTHESISUTTERANCE_H_

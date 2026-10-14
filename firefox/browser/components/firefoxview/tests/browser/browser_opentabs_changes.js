@@ -89,7 +89,7 @@ async function setup(tabChangeEventName) {
   info("setup,waiting for both private and nonPrivateListener to be called");
   await TestUtils.waitForCondition(() => {
     return nonPrivateListener.called && privateListener.called;
-  });
+  }, "Wait for both the non-private and private listeners to be called");
   nonPrivateListener.resetHistory();
   privateListener.resetHistory();
 
@@ -101,12 +101,6 @@ async function setup(tabChangeEventName) {
   };
   return { windows: [win0, win1, privateWin], cleanup };
 }
-
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
 
 add_task(async function test_TabChanges() {
   const { windows, cleanup } = await setup("TabChange");
@@ -139,11 +133,9 @@ add_task(async function test_TabChanges() {
     );
     const navigateUrl = "https://example.org/";
     BrowserTestUtils.startLoadingURIString(newTab.linkedBrowser, navigateUrl);
-    await BrowserTestUtils.browserLoaded(
-      newTab.linkedBrowser,
-      null,
-      navigateUrl
-    );
+    await BrowserTestUtils.browserLoaded(newTab.linkedBrowser, {
+      wantLoad: navigateUrl,
+    });
     // navigation in a tab changes the label which should produce a change event
     changeEvent = await tabChangeRaised;
     Assert.deepEqual(
@@ -443,7 +435,7 @@ add_task(async function test_tabNavigations() {
   info("waiting for the load into win1 tab to complete");
   await loaded;
   info("waiting for listeners to be called");
-  await BrowserTestUtils.waitForCondition(() => {
+  await TestUtils.waitForCondition(() => {
     return nonPrivateListener.called && nonPrivateRecencyListener.called;
   });
   ok(!privateListener.called, "The private TabChange listener was not called");
@@ -476,7 +468,7 @@ add_task(async function test_tabNavigations() {
   info("waiting for the load into privateWin tab to complete");
   await loaded;
   info("waiting for the privateListeners to be called");
-  await BrowserTestUtils.waitForCondition(() => {
+  await TestUtils.waitForCondition(() => {
     return privateListener.called && privateRecencyListener.called;
   });
   ok(
@@ -517,7 +509,7 @@ add_task(async function test_tabsFromPrivateWindows() {
     "getTabsTargetForWindow creates a distinct instance for a different private window"
   );
 
-  await BrowserTestUtils.waitForCondition(() => private2Listener.called);
+  await TestUtils.waitForCondition(() => private2Listener.called);
 
   ok(
     !privateListener.called,
@@ -527,7 +519,7 @@ add_task(async function test_tabsFromPrivateWindows() {
   private2Listener.resetHistory();
 
   BrowserTestUtils.addTab(private2Win.gBrowser, tabURL1);
-  await BrowserTestUtils.waitForCondition(() => private2Listener.called);
+  await TestUtils.waitForCondition(() => private2Listener.called);
   ok(
     !privateListener.called,
     "No TabChange event was raised by adding tab to a different private window"

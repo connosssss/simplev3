@@ -48,13 +48,14 @@ class OriginViewTest {
     fun `scrollToShowRegistrableDomain scrolls when domain exceeds width`() {
         val view = spy(OriginView(testContext))
         val url = "https://www.really-long-example-domain.com/"
-        val spannedUrl = SpannableStringBuilder(url).apply {
-            applyUrlColors(
-                urlColor = Color.GREEN,
-                registrableDomainColor = Color.RED,
-                registrableDomainOrHostSpan = 8 to 42,
-            )
-        }
+        val spannedUrl =
+            SpannableStringBuilder(url).apply {
+                applyUrlColors(
+                    urlColor = Color.GREEN,
+                    registrableDomainColor = Color.RED,
+                    registrableDomainOrHostSpan = 8 to 42,
+                )
+            }
 
         // Long domain wouldn't fit in the view
         doReturn(500f).`when`(view).measureUrlTextWidh(any())
@@ -62,20 +63,23 @@ class OriginViewTest {
 
         view.url = spannedUrl
 
-        assertEquals(300, view.urlView.scrollX)
+        val halfFadingEdgeSize = view.urlView.horizontalFadingEdgeLength / 2
+
+        assertEquals(300 + halfFadingEdgeSize, view.urlView.scrollX)
     }
 
     @Test
     fun `scrollToShowRegistrableDomain does not scroll when domain fits in view`() {
         val view = spy(OriginView(testContext))
         val url = "https://mozilla.org/"
-        val spannedUrl = SpannableStringBuilder(url).apply {
-            applyUrlColors(
-                urlColor = Color.GREEN,
-                registrableDomainColor = Color.RED,
-                registrableDomainOrHostSpan = 8 to 19,
-            )
-        }
+        val spannedUrl =
+            SpannableStringBuilder(url).apply {
+                applyUrlColors(
+                    urlColor = Color.GREEN,
+                    registrableDomainColor = Color.RED,
+                    registrableDomainOrHostSpan = 8 to 19,
+                )
+            }
 
         doReturn(50f).`when`(view).measureUrlTextWidh(any())
         view.urlView.layout(0, 0, 200, 100)

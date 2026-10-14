@@ -5,11 +5,8 @@
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  LayoutUtils: "resource://gre/modules/LayoutUtils.sys.mjs",
-
   accessibility:
     "chrome://remote/content/shared/webdriver/Accessibility.sys.mjs",
-  AnimationFramePromise: "chrome://remote/content/shared/Sync.sys.mjs",
   assertTargetInViewPort:
     "chrome://remote/content/shared/webdriver/Actions.sys.mjs",
   atom: "chrome://remote/content/marionette/atom.sys.mjs",
@@ -17,7 +14,6 @@ ChromeUtils.defineESModuleGetters(lazy, {
   error: "chrome://remote/content/shared/webdriver/Errors.sys.mjs",
   evaluate: "chrome://remote/content/marionette/evaluate.sys.mjs",
   event: "chrome://remote/content/shared/webdriver/Event.sys.mjs",
-  executeSoon: "chrome://remote/content/shared/Sync.sys.mjs",
   interaction: "chrome://remote/content/marionette/interaction.sys.mjs",
   json: "chrome://remote/content/marionette/json.sys.mjs",
   Log: "chrome://remote/content/shared/Log.sys.mjs",
@@ -87,15 +83,15 @@ export class MarionetteCommandsChild extends JSWindowActorChild {
           lazy.event.sendKeyUp(details.eventData, win);
           break;
         case "synthesizeMouseAtPoint":
-          lazy.event.synthesizeMouseAtPoint(
+          await lazy.event.synthesizeMouseAtPoint(
             details.x,
             details.y,
             details.eventData,
             win
           );
           break;
-        case "synthesizeMultiTouch":
-          lazy.event.synthesizeMultiTouch(details.eventData, win);
+        case "synthesizeTouchAtPoint":
+          await lazy.event.synthesizeTouchAtPoint(details.eventData, win);
           break;
         case "synthesizeWheelAtPoint":
           await lazy.event.synthesizeWheelAtPoint(
@@ -111,11 +107,16 @@ export class MarionetteCommandsChild extends JSWindowActorChild {
           );
       }
     } catch (e) {
-      if (e.message.includes("NS_ERROR_FAILURE")) {
+      // An XPCOM exception reports the result code via "name" and can have an
+      // empty message, so both properties have to be checked.
+      if (
+        e.name === "NS_ERROR_FAILURE" ||
+        e.message?.includes("NS_ERROR_FAILURE")
+      ) {
         // Event dispatch failed. Re-throwing as AbortError to allow retrying
         // to dispatch the event.
         throw new DOMException(
-          `Failed to dispatch event "${eventName}": ${e.message}`,
+          `Failed to dispatch event "${eventName}": ${e.message || e.name}`,
           "AbortError"
         );
       }
@@ -127,13 +128,17 @@ export class MarionetteCommandsChild extends JSWindowActorChild {
   }
 
   async #finalizeAction() {
+    if (!this.contentWindow) {
+      return;
+    }
+
     // Terminate the current wheel transaction if there is one. Wheel
     // transactions should not live longer than a single action chain.
     await ChromeUtils.endWheelTransaction(this.contentWindow);
 
-    // Wait for the next animation frame to make sure the page's content
-    // was updated.
-    await lazy.AnimationFramePromise(this.contentWindow);
+    // Wait until the main thread has processed all already queued-up
+    // runnables to ensure that dispatched input events have been handled.
+    await new Promise(resolve => Services.tm.dispatchToMainThread(resolve));
   }
 
   #getClientRects(options, _context) {
@@ -151,17 +156,12 @@ export class MarionetteCommandsChild extends JSWindowActorChild {
   #toBrowserWindowCoordinates(options, _context) {
     const { position } = options;
 
-    const [x, y] = position;
-    const dpr = this.contentWindow.devicePixelRatio;
-
-    const val = lazy.LayoutUtils.rectToTopLevelWidgetRect(this.contentWindow, {
-      left: x,
-      top: y,
-      height: 0,
-      width: 0,
-    });
-
-    return [val.x / dpr, val.y / dpr];
+    return this.contentWindow.windowUtils.toTopLevelWidgetRect(
+      position[0],
+      position[1],
+      0,
+      0
+    );
   }
 
   // eslint-disable-next-line complexity
@@ -197,7 +197,7 @@ export class MarionetteCommandsChild extends JSWindowActorChild {
           result = this.#getInViewCentrePoint(data);
           break;
         case "MarionetteCommandsParent:_finalizeAction":
-          this.#finalizeAction();
+          await this.#finalizeAction();
           break;
         case "MarionetteCommandsParent:_toBrowserWindowCoordinates":
           result = this.#toBrowserWindowCoordinates(data);
@@ -219,6 +219,16 @@ export class MarionetteCommandsChild extends JSWindowActorChild {
           break;
         case "MarionetteCommandsParent:findElements":
           result = await this.findElements(data);
+          break;
+        case "MarionetteCommandsParent:generateTestReport":
+          result = await this.generateTestReport(data);
+          break;
+        case "MarionetteCommandsParent:getAccessibilityPropertiesForAccessibilityNode":
+          result =
+            await this.getAccessibilityPropertiesForAccessibilityNode(data);
+          break;
+        case "MarionetteCommandsParent:getAccessibilityPropertiesForElement":
+          result = await this.getAccessibilityPropertiesForElement(data);
           break;
         case "MarionetteCommandsParent:getActiveElement":
           result = await this.getActiveElement();
@@ -282,7 +292,7 @@ export class MarionetteCommandsChild extends JSWindowActorChild {
       // Inform the content process that the command has completed. It allows
       // it to process async follow-up tasks before the reply is sent.
       if (waitForNextTick) {
-        await new Promise(resolve => lazy.executeSoon(resolve));
+        await new Promise(resolve => Services.tm.dispatchToMainThread(resolve));
       }
 
       const { seenNodeIds, serializedValue, hasSerializedWindows } =
@@ -307,7 +317,8 @@ export class MarionetteCommandsChild extends JSWindowActorChild {
 
   // Implementation of WebDriver commands
 
-  /** Clear the text of an element.
+  /**
+   * Clear the text of an element.
    *
    * @param {object} options
    * @param {Element} options.elem
@@ -386,6 +397,37 @@ export class MarionetteCommandsChild extends JSWindowActorChild {
   }
 
   /**
+   * Generates and sends a test report to be observed by any registered reporting observers
+   */
+  async generateTestReport(options = {}) {
+    const { message, group } = options;
+    return this.browsingContext.window.TestReportGenerator.generateReport({
+      message,
+      group,
+    });
+  }
+
+  /**
+   * Return the properties for the accessibility node with the given id.
+   */
+  async getAccessibilityPropertiesForAccessibilityNode(options = {}) {
+    const { id } = options;
+
+    return lazy.accessibility.getAccessibilityPropertiesForAccessibilityNode(
+      id
+    );
+  }
+
+  /**
+   * Return the accessibility properties for a given element.
+   */
+  async getAccessibilityPropertiesForElement(options = {}) {
+    const { elem } = options;
+
+    return lazy.accessibility.getAccessibilityPropertiesForElement(elem);
+  }
+
+  /**
    * Return the active element in the document.
    */
   async getActiveElement() {
@@ -446,23 +488,27 @@ export class MarionetteCommandsChild extends JSWindowActorChild {
    */
   async getElementRect(options = {}) {
     const { elem } = options;
-
-    const rect = elem.getBoundingClientRect();
-    return {
-      x: rect.x + this.document.defaultView.pageXOffset,
-      y: rect.y + this.document.defaultView.pageYOffset,
-      width: rect.width,
-      height: rect.height,
-    };
+    return lazy.dom.getElementRect(elem);
   }
 
   /**
-   * Get the tagName for the given element.
+   * Get the qualified name of the given element.
+   *
+   * Elements without a namespace prefix are represented by their local name.
+   * For elements with a namespace prefix, return the qualified name in the
+   * form `prefix:localName`.
+   *
+   * This preserves the casing of local names, such as for SVG and XML
+   * elements.
    */
   async getElementTagName(options = {}) {
     const { elem } = options;
 
-    return elem.tagName.toLowerCase();
+    if (elem.prefix === null) {
+      return elem.localName;
+    }
+
+    return `${elem.prefix}:${elem.localName}`;
   }
 
   /**
@@ -529,10 +575,40 @@ export class MarionetteCommandsChild extends JSWindowActorChild {
     let rect;
 
     if (elem) {
+      // Throw an error if 'full' is passed with an element, as this is an invalid state.
+      if (full) {
+        throw new Error(
+          "Full screenshot is not supported when an element is provided."
+        );
+      }
+
       if (scroll) {
         lazy.dom.scrollIntoView(elem);
       }
-      rect = this.getElementRect({ elem });
+
+      rect = lazy.dom.getElementRect(elem);
+
+      // Calculate the intersection between the element's bounding client rect
+      // and the visual viewport to draw a bounding box from the framebuffer.
+      // Spec: https://w3c.github.io/webdriver/#dfn-draw-a-bounding-box-from-the-framebuffer
+      const viewport = win.visualViewport;
+
+      const viewportX = viewport.pageLeft;
+      const viewportY = viewport.pageTop;
+
+      const viewportWidth = win.innerWidth;
+      const viewportHeight = win.innerHeight;
+
+      const left = Math.max(rect.x, viewportX);
+      const top = Math.max(rect.y, viewportY);
+
+      const right = Math.min(rect.x + rect.width, viewportX + viewportWidth);
+      const bottom = Math.min(rect.y + rect.height, viewportY + viewportHeight);
+
+      const width = Math.max(right - left, 0);
+      const height = Math.max(bottom - top, 0);
+
+      rect = new DOMRect(left, top, width, height);
     } else if (full) {
       const docEl = win.document.documentElement;
       rect = new DOMRect(0, 0, docEl.scrollWidth, docEl.scrollHeight);
@@ -541,8 +617,10 @@ export class MarionetteCommandsChild extends JSWindowActorChild {
       rect = new DOMRect(
         win.pageXOffset,
         win.pageYOffset,
-        win.innerWidth,
-        win.innerHeight
+        // Bug 2055445 made system calls to innerWidth/innerHeight return non-rounded
+        // values. So round them up again to keep the behavior the same as it was before.
+        Math.round(win.innerWidth),
+        Math.round(win.innerHeight)
       );
     }
 

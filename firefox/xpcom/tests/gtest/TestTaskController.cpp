@@ -1,20 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "gtest/gtest.h"
-
 #include <stdint.h>  // uint32_t
 
-#include "nsString.h"                // nsACString
-#include "nsThreadUtils.h"           // NS_ProcessNextEvent
+#include "gtest/gtest.h"
 #include "mozilla/Atomics.h"         // Atomic
 #include "mozilla/EventQueue.h"      // EventQueuePriority
 #include "mozilla/Mutex.h"           // Mutex, MutexAutoLock
 #include "mozilla/RefPtr.h"          // RefPtr, do_AddRef
 #include "mozilla/TaskController.h"  // TaskController, Task
+#include "nsString.h"                // nsACString
+#include "nsThreadUtils.h"           // NS_ProcessNextEvent
 #include "prthread.h"                // PR_Sleep
 
 using namespace mozilla;
@@ -38,12 +35,19 @@ class Logger {
   Mutex mMutex;
 };
 
+class CountingTaskManager : public TaskManager {
+ public:
+  bool IsSuspended(const MutexAutoLock& aProofOfLock) override { return false; }
+};
+
 class ReschedulingTask : public Task {
   static constexpr uint32_t LoopCount = 3;
 
  public:
-  explicit ReschedulingTask(Kind aKind, Logger* aLogger, const char* aName)
-      : Task(aKind, EventQueuePriority::Normal),
+  explicit ReschedulingTask(
+      Kind aKind, Logger* aLogger, const char* aName,
+      EventQueuePriority aPriority = EventQueuePriority::Normal)
+      : Task(aKind, aPriority),
         mCount(0),
         mIsDone(false),
         mLogger(aLogger),
@@ -85,8 +89,8 @@ TEST(TaskController, RescheduleOnMainThread)
 {
   Logger logger;
 
-  RefPtr<ReschedulingTask> mainThreadTask =
-      new ReschedulingTask(Task::Kind::MainThreadOnly, &logger, "1");
+  RefPtr mainThreadTask =
+      MakeRefPtr<ReschedulingTask>(Task::Kind::MainThreadOnly, &logger, "1");
 
   TaskController::Get()->AddTask(do_AddRef(mainThreadTask));
 
@@ -98,12 +102,107 @@ TEST(TaskController, RescheduleOnMainThread)
   ASSERT_TRUE(logger.GetLog() == "111");
 }
 
+TEST(TaskController, RescheduleManagedOnMainThread)
+{
+  Logger logger;
+
+  RefPtr manager = MakeRefPtr<CountingTaskManager>();
+  RefPtr mainThreadTask =
+      MakeRefPtr<ReschedulingTask>(Task::Kind::MainThreadOnly, &logger, "1");
+  mainThreadTask->SetManager(manager);
+
+  TaskController::Get()->AddTask(do_AddRef(mainThreadTask));
+  ASSERT_EQ(manager->PendingTaskCount(), 1u);
+
+  while (NS_ProcessNextEvent(nullptr, false)) {
+  }
+
+  ASSERT_TRUE(mainThreadTask->IsDone());
+  ASSERT_TRUE(logger.GetLog() == "111");
+  // A task that reschedules itself is pending again, so the count must not run
+  // below zero on the way.
+  ASSERT_EQ(manager->PendingTaskCount(), 0u);
+}
+
+TEST(TaskController, LowestPriorityRunsLast)
+{
+  Logger logger;
+
+  LowestTaskManager* manager = TaskController::Get()->GetLowestTaskManager();
+  RefPtr lowestTask = MakeRefPtr<ReschedulingTask>(
+      Task::Kind::MainThreadOnly, &logger, "1", EventQueuePriority::Lowest);
+  lowestTask->SetManager(manager);
+  RefPtr normalTask =
+      MakeRefPtr<ReschedulingTask>(Task::Kind::MainThreadOnly, &logger, "2");
+
+  TaskController::Get()->AddTask(do_AddRef(lowestTask));
+  TaskController::Get()->AddTask(do_AddRef(normalTask));
+  ASSERT_EQ(manager->PendingTaskCount(), 1u);
+
+  while (NS_ProcessNextEvent(nullptr, false)) {
+  }
+
+  ASSERT_TRUE(lowestTask->IsDone());
+  ASSERT_TRUE(normalTask->IsDone());
+  // Although it was queued first, the lowest priority task runs only once the
+  // normal priority task is done.
+  ASSERT_TRUE(logger.GetLog() == "222111");
+  ASSERT_EQ(manager->PendingTaskCount(), 0u);
+}
+
+TEST(TaskController, LowestPriorityDoesNotStarveIdle)
+{
+  IdleTaskManager* idleManager = TaskController::Get()->GetIdleTaskManager();
+  ASSERT_TRUE(idleManager);
+
+  // A lowest priority task keeps the main thread from ever running out of
+  // tasks, which is what the idle task manager normally waits for before it
+  // asks for a deadline. Check first that this environment grants idle time at
+  // all, so that a failure below cannot be mistaken for one.
+  {
+    Logger logger;
+    RefPtr aloneTask = MakeRefPtr<ReschedulingTask>(
+        Task::Kind::MainThreadOnly, &logger, "I", EventQueuePriority::Idle);
+    aloneTask->SetManager(idleManager);
+    TaskController::Get()->AddTask(do_AddRef(aloneTask));
+    while (NS_ProcessNextEvent(nullptr, false)) {
+    }
+    ASSERT_TRUE(aloneTask->IsDone())
+    << "no idle time available here";
+  }
+
+  Logger logger;
+  RefPtr lowestTask = MakeRefPtr<ReschedulingTask>(
+      Task::Kind::MainThreadOnly, &logger, "L", EventQueuePriority::Lowest);
+  lowestTask->SetManager(TaskController::Get()->GetLowestTaskManager());
+  RefPtr idleTask = MakeRefPtr<ReschedulingTask>(
+      Task::Kind::MainThreadOnly, &logger, "I", EventQueuePriority::Idle);
+  idleTask->SetManager(idleManager);
+
+  TaskController::Get()->AddTask(do_AddRef(lowestTask));
+  TaskController::Get()->AddTask(do_AddRef(idleTask));
+
+  while (NS_ProcessNextEvent(nullptr, false)) {
+  }
+
+  ASSERT_TRUE(idleTask->IsDone());
+  ASSERT_TRUE(lowestTask->IsDone());
+
+  // The lowest priority task may win the first turn, because the idle task
+  // manager is suspended until someone asks for a deadline. It must not win
+  // all of them: an idle task that was already queued has to overtake it
+  // rather than wait for it to finish.
+  const nsAutoCString& log = logger.GetLog();
+  ASSERT_LT(log.RFindChar('I'), log.RFindChar('L'))
+      << "idle task starved by a lowest priority task, log was " << log.get();
+}
+
 TEST(TaskController, RescheduleOffMainThread)
 {
   Logger logger;
 
-  RefPtr<ReschedulingTask> offThreadTask =
-      new ReschedulingTask(Task::Kind::OffMainThreadOnly, &logger, "1");
+  RefPtr offThreadTask =
+      MakeRefPtr<ReschedulingTask>(Task::Kind::OffMainThreadOnly, &logger, "1");
 
   TaskController::Get()->AddTask(do_AddRef(offThreadTask));
 
@@ -121,10 +220,10 @@ TEST(TaskController, RescheduleMainAndOffMainThreads)
 {
   Logger logger;
 
-  RefPtr<ReschedulingTask> offThreadTask =
-      new ReschedulingTask(Task::Kind::OffMainThreadOnly, &logger, "1");
-  RefPtr<ReschedulingTask> mainThreadTask =
-      new ReschedulingTask(Task::Kind::MainThreadOnly, &logger, "2");
+  RefPtr offThreadTask =
+      MakeRefPtr<ReschedulingTask>(Task::Kind::OffMainThreadOnly, &logger, "1");
+  RefPtr mainThreadTask =
+      MakeRefPtr<ReschedulingTask>(Task::Kind::MainThreadOnly, &logger, "2");
 
   mainThreadTask->AddDependency(offThreadTask.get());
 
@@ -153,12 +252,12 @@ TEST(TaskController, RescheduleOrder)
 {
   Logger logger;
 
-  RefPtr<ReschedulingTask> mainThreadTask1 =
-      new ReschedulingTask(Task::Kind::MainThreadOnly, &logger, "1");
-  RefPtr<ReschedulingTask> mainThreadTask2 =
-      new ReschedulingTask(Task::Kind::MainThreadOnly, &logger, "2");
-  RefPtr<ReschedulingTask> mainThreadTask3 =
-      new ReschedulingTask(Task::Kind::MainThreadOnly, &logger, "3");
+  RefPtr mainThreadTask1 =
+      MakeRefPtr<ReschedulingTask>(Task::Kind::MainThreadOnly, &logger, "1");
+  RefPtr mainThreadTask2 =
+      MakeRefPtr<ReschedulingTask>(Task::Kind::MainThreadOnly, &logger, "2");
+  RefPtr mainThreadTask3 =
+      MakeRefPtr<ReschedulingTask>(Task::Kind::MainThreadOnly, &logger, "3");
 
   TaskController::Get()->AddTask(do_AddRef(mainThreadTask1));
   TaskController::Get()->AddTask(do_AddRef(mainThreadTask2));
@@ -181,12 +280,12 @@ TEST(TaskController, RescheduleOrderOffMainThread)
   Logger logger2;
   Logger logger3;
 
-  RefPtr<ReschedulingTask> offThreadTask1 =
-      new ReschedulingTask(Task::Kind::OffMainThreadOnly, &logger1, "1");
-  RefPtr<ReschedulingTask> offThreadTask2 =
-      new ReschedulingTask(Task::Kind::OffMainThreadOnly, &logger2, "2");
-  RefPtr<ReschedulingTask> offThreadTask3 =
-      new ReschedulingTask(Task::Kind::OffMainThreadOnly, &logger3, "3");
+  RefPtr offThreadTask1 = MakeRefPtr<ReschedulingTask>(
+      Task::Kind::OffMainThreadOnly, &logger1, "1");
+  RefPtr offThreadTask2 = MakeRefPtr<ReschedulingTask>(
+      Task::Kind::OffMainThreadOnly, &logger2, "2");
+  RefPtr offThreadTask3 = MakeRefPtr<ReschedulingTask>(
+      Task::Kind::OffMainThreadOnly, &logger3, "3");
 
   TaskController::Get()->AddTask(do_AddRef(offThreadTask1));
   TaskController::Get()->AddTask(do_AddRef(offThreadTask2));

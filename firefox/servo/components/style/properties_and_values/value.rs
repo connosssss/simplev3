@@ -4,30 +4,34 @@
 
 //! Parsing for registered custom properties.
 
-use std::fmt::{self, Write};
-
 use super::{
-    registry::PropertyRegistrationData,
+    rule::Descriptors as PropertyDescriptors,
     syntax::{
-        data_type::DataType, Component as SyntaxComponent, ComponentName, Descriptor, Multiplier,
+        Component as SyntaxComponent, ComponentName, Descriptor, Multiplier, data_type::DataType,
     },
 };
-use crate::custom_properties::ComputedValue as ComputedPropertyValue;
+use crate::FxHashMap;
+use crate::custom_properties::{AttrTaint, ComputedValue as ComputedPropertyValue};
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::properties;
+use crate::properties::{CSSWideKeyword, CustomDeclarationValue, PropertyIdRef};
 use crate::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use crate::values::{
+    CustomIdent,
     animated::{self, Animate, Procedure},
     computed::{self, ToComputedValue},
-    specified, CustomIdent,
+    specified,
 };
+use crate::{Namespace, Prefix};
 use cssparser::{BasicParseErrorKind, ParseErrorKind, Parser as CSSParser, TokenSerializationType};
 use selectors::matching::QuirksMode;
 use servo_arc::Arc;
 use smallvec::SmallVec;
+use std::fmt::{self, Write};
 use style_traits::{
-    owned_str::OwnedStr, CssWriter, ParseError as StyleParseError, ParsingMode,
-    PropertySyntaxParseError, StyleParseErrorKind, ToCss,
+    CssWriter, ParseError as StyleParseError, ParsingMode, PropertySyntaxParseError,
+    StyleParseErrorKind, ToCss, owned_str::OwnedStr,
 };
 
 /// A single component of the computed value.
@@ -72,11 +76,11 @@ impl<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform>
             },
             Self::Number(_) | Self::Integer(_) => TokenSerializationType::Number,
             Self::Percentage(_) | Self::LengthPercentage(_) => TokenSerializationType::Percentage,
-            Self::Color(_) |
-            Self::Image(_) |
-            Self::Url(_) |
-            Self::TransformFunction(_) |
-            Self::TransformList(_) => TokenSerializationType::Function,
+            Self::Color(_)
+            | Self::Image(_)
+            | Self::Url(_)
+            | Self::TransformFunction(_)
+            | Self::TransformList(_) => TokenSerializationType::Function,
             Self::CustomIdent(_) => TokenSerializationType::Ident,
             Self::String(_) => TokenSerializationType::Other,
         };
@@ -91,7 +95,7 @@ impl<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform>
 
 /// A generic enum used for both specified value components and computed value components.
 #[derive(
-    Animate, Clone, ToCss, ToComputedValue, ToResolvedValue, Debug, MallocSizeOf, PartialEq, ToShmem
+    Animate, Clone, ToCss, ToComputedValue, ToResolvedValue, Debug, MallocSizeOf, PartialEq, ToShmem,
 )]
 #[animation(no_bound(Image, Url))]
 pub enum GenericValueComponent<
@@ -199,8 +203,9 @@ impl<Component: ToCss> ToCss for ComponentList<Component> {
 }
 
 /// A struct for a single specified registered custom property value that includes its original URL
-// data so the value can be uncomputed later.
-#[derive(Clone, Debug, MallocSizeOf, PartialEq, ToCss, ToComputedValue, ToResolvedValue, ToShmem)]
+/// data so the value can be uncomputed later.
+#[derive(Clone, Debug, MallocSizeOf, ToCss, ToComputedValue, ToResolvedValue, ToShmem, ToTyped)]
+#[typed(todo_derive_fields)]
 pub struct Value<Component> {
     /// The registered custom property value.
     pub(crate) v: ValueInner<Component>,
@@ -208,6 +213,16 @@ pub struct Value<Component> {
     /// necessary to uncompute registered custom properties.
     #[css(skip)]
     url_data: UrlExtraData,
+    /// Flag indicating whether this value is tainted by an attr().
+    #[css(skip)]
+    pub attr_tainted: bool,
+}
+
+impl<Component: PartialEq> PartialEq for Value<Component> {
+    // Ignore the url_data and tainting fields when comparing values for equality.
+    fn eq(&self, other: &Self) -> bool {
+        self.v == other.v
+    }
 }
 
 impl<Component: Animate> Animate for Value<Component> {
@@ -216,6 +231,7 @@ impl<Component: Animate> Animate for Value<Component> {
         Ok(Value {
             v,
             url_data: self.url_data.clone(),
+            attr_tainted: self.attr_tainted,
         })
     }
 }
@@ -223,14 +239,54 @@ impl<Component: Animate> Animate for Value<Component> {
 impl<Component> Value<Component> {
     /// Creates a new registered custom property value.
     pub fn new(v: ValueInner<Component>, url_data: UrlExtraData) -> Self {
-        Self { v, url_data }
+        Self {
+            v,
+            url_data,
+            attr_tainted: Default::default(),
+        }
     }
 
     /// Creates a new registered custom property value presumed to have universal syntax.
     pub fn universal(var: Arc<ComputedPropertyValue>) -> Self {
+        let attr_tainted = var.is_attr_tainted();
         let url_data = var.url_data.clone();
         let v = ValueInner::Universal(var);
-        Self { v, url_data }
+        Self {
+            v,
+            url_data,
+            attr_tainted,
+        }
+    }
+}
+
+impl<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform>
+    Value<GenericValueComponent<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform>>
+where
+    Self: ToCss,
+{
+    fn serialization_types(&self) -> (TokenSerializationType, TokenSerializationType) {
+        match &self.v {
+            ValueInner::Component(component) => component.serialization_types(),
+            ValueInner::Universal(_) => unreachable!(),
+            ValueInner::List(list) => list
+                .components
+                .first()
+                .map_or(Default::default(), |f| f.serialization_types()),
+        }
+    }
+
+    /// Convert to an untyped variable value.
+    pub fn to_variable_value(&self) -> ComputedPropertyValue {
+        if let ValueInner::Universal(ref value) = self.v {
+            return (**value).clone();
+        }
+        let serialization_types = self.serialization_types();
+        ComputedPropertyValue::new(
+            self.to_css_string(),
+            &self.url_data,
+            serialization_types.0,
+            serialization_types.1,
+        )
     }
 }
 
@@ -258,19 +314,28 @@ pub type ComputedValue = Value<ComputedValueComponent>;
 impl SpecifiedValue {
     /// Convert a registered custom property to a Computed custom property value, given input and a
     /// property registration.
-    pub fn compute<'i, 't>(
-        input: &mut CSSParser<'i, 't>,
-        registration: &PropertyRegistrationData,
+    pub fn compute(
+        input: &mut CSSParser,
+        registration: &PropertyDescriptors,
+        namespaces: Option<&FxHashMap<Prefix, Namespace>>,
         url_data: &UrlExtraData,
         context: &computed::Context,
         allow_computationally_dependent: AllowComputationallyDependent,
+        attr_taint: AttrTaint,
+        property_id: Option<PropertyIdRef>,
     ) -> Result<ComputedValue, ()> {
-        debug_assert!(!registration.syntax.is_universal(), "Shouldn't be needed");
+        debug_assert!(!registration.is_universal(), "Shouldn't be needed");
+        let Some(ref syntax) = registration.syntax else {
+            return Err(());
+        };
         let Ok(value) = Self::parse(
             input,
-            &registration.syntax,
+            syntax,
             url_data,
+            namespaces,
             allow_computationally_dependent,
+            attr_taint,
+            property_id,
         ) else {
             return Err(());
         };
@@ -280,25 +345,34 @@ impl SpecifiedValue {
 
     /// Parse and validate a registered custom property value according to its syntax descriptor,
     /// and check for computational independence.
-    pub fn parse<'i, 't>(
-        mut input: &mut CSSParser<'i, 't>,
+    pub fn parse(
+        input: &mut CSSParser,
         syntax: &Descriptor,
         url_data: &UrlExtraData,
+        namespaces: Option<&FxHashMap<Prefix, Namespace>>,
         allow_computationally_dependent: AllowComputationallyDependent,
-    ) -> Result<Self, StyleParseError<'i>> {
+        attr_taint: AttrTaint,
+        property_id: Option<PropertyIdRef>,
+    ) -> Result<Self, StyleParseError> {
         if syntax.is_universal() {
-            let parsed = ComputedPropertyValue::parse(&mut input, url_data)?;
-            return Ok(SpecifiedValue {
-                v: ValueInner::Universal(Arc::new(parsed)),
-                url_data: url_data.clone(),
-            });
+            let parsed = ComputedPropertyValue::parse(input, namespaces, url_data)?;
+            return Ok(Self::new(
+                ValueInner::Universal(Arc::new(parsed)),
+                url_data.clone(),
+            ));
         }
 
         let mut values = SmallComponentVec::new();
         let mut multiplier = None;
         {
             let mut parser = Parser::new(syntax, &mut values, &mut multiplier);
-            parser.parse(&mut input, url_data, allow_computationally_dependent)?;
+            parser.parse(
+                input,
+                url_data,
+                allow_computationally_dependent,
+                attr_taint,
+                property_id,
+            )?;
         }
         let v = if let Some(multiplier) = multiplier {
             ValueInner::List(ComponentList {
@@ -308,30 +382,31 @@ impl SpecifiedValue {
         } else {
             ValueInner::Component(values[0].clone())
         };
-        Ok(Self {
-            v,
-            url_data: url_data.clone(),
-        })
+        Ok(Self::new(v, url_data.clone()))
     }
 }
 
 impl ComputedValue {
-    fn serialization_types(&self) -> (TokenSerializationType, TokenSerializationType) {
-        match &self.v {
-            ValueInner::Component(component) => component.serialization_types(),
-            ValueInner::Universal(_) => unreachable!(),
-            ValueInner::List(list) => list
-                .components
-                .first()
-                .map_or(Default::default(), |f| f.serialization_types()),
-        }
-    }
-
-    fn to_declared_value(&self) -> properties::CustomDeclarationValue {
+    /// Uncomputes the value so that it can go back into the cascade.
+    pub fn to_declared_value(&self) -> properties::CustomDeclarationValue {
         if let ValueInner::Universal(ref var) = self.v {
+            // The attr()-taint of the wrapper must survive the round-trip through the declared
+            // value, otherwise re-cascading the reference-free inner value
+            // would launder the taint and allow attribute-derived URLs to be fetched.
+            // This is necessary because we currently reimplement the cascade for animations in
+            // Servo_GetComputedKeyframeValues. We should instead just use the 'normal' path for
+            // animated values. For more information see Bug 1883255.
+            // https://drafts.csswg.org/css-values-5/#attr-security
+            if self.attr_tainted && !var.is_attr_tainted() {
+                let mut tainted = (**var).clone();
+                tainted.explicitly_attr_tainted = true;
+                return properties::CustomDeclarationValue::Unparsed(Arc::new(tainted));
+            }
             return properties::CustomDeclarationValue::Unparsed(Arc::clone(var));
         }
-        properties::CustomDeclarationValue::Parsed(Arc::new(ToComputedValue::from_computed_value(self)))
+        properties::CustomDeclarationValue::Parsed(Arc::new(ToComputedValue::from_computed_value(
+            self,
+        )))
     }
 
     /// Returns the contained variable value if it exists, otherwise `None`.
@@ -341,20 +416,6 @@ impl ComputedValue {
         } else {
             None
         }
-    }
-
-    /// Convert to an untyped variable value.
-    pub fn to_variable_value(&self) -> ComputedPropertyValue {
-        if let ValueInner::Universal(ref value) = self.v {
-            return (**value).clone();
-        }
-        let serialization_types = self.serialization_types();
-        ComputedPropertyValue::new(
-            self.to_css_string(),
-            &self.url_data,
-            serialization_types.0,
-            serialization_types.1,
-        )
     }
 }
 
@@ -390,18 +451,20 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse<'i, 't>(
+    fn parse(
         &mut self,
-        input: &mut CSSParser<'i, 't>,
+        input: &mut CSSParser,
         url_data: &UrlExtraData,
         allow_computationally_dependent: AllowComputationallyDependent,
-    ) -> Result<(), StyleParseError<'i>> {
+        attr_taint: AttrTaint,
+        property_id: Option<PropertyIdRef>,
+    ) -> Result<(), StyleParseError> {
         use self::AllowComputationallyDependent::*;
         let parsing_mode = match allow_computationally_dependent {
             No => ParsingMode::DISALLOW_COMPUTATIONALLY_DEPENDENT,
             Yes => ParsingMode::DEFAULT,
         };
-        let ref context = ParserContext::new(
+        let mut context = ParserContext::new(
             Origin::Author,
             url_data,
             Some(CssRuleType::Style),
@@ -410,29 +473,39 @@ impl<'a> Parser<'a> {
             /* namespaces = */ Default::default(),
             None,
             None,
+            attr_taint,
         );
-        for component in self.syntax.components.iter() {
-            let result = input.try_parse(|input| {
-                input.parse_entirely(|input| {
-                    Self::parse_value(context, input, &component.unpremultiplied())
-                })
-            });
-            let Ok(values) = result else { continue };
-            self.output.extend(values);
-            *self.output_multiplier = component.multiplier();
-            break;
+
+        let mut parse_components = |context: &ParserContext| {
+            for component in self.syntax.components.iter() {
+                let result = input.try_parse(|input| {
+                    input.parse_entirely(|input| {
+                        Self::parse_value(context, input, &component.unpremultiplied())
+                    })
+                });
+                let Ok(values) = result else { continue };
+                self.output.extend(values);
+                *self.output_multiplier = component.multiplier();
+                break;
+            }
+        };
+        match property_id {
+            Some(id) => context.with_property_declaration(id, parse_components),
+            None => parse_components(&context),
         }
         if self.output.is_empty() {
-            return Err(input.new_error(BasicParseErrorKind::EndOfInput));
+            return Err(StyleParseError::from_basic_kind(
+                BasicParseErrorKind::EndOfInput,
+            ));
         }
         Ok(())
     }
 
-    fn parse_value<'i, 't>(
+    fn parse_value(
         context: &ParserContext,
-        input: &mut CSSParser<'i, 't>,
+        input: &mut CSSParser,
         component: &SyntaxComponent,
-    ) -> Result<SmallComponentVec, StyleParseError<'i>> {
+    ) -> Result<SmallComponentVec, StyleParseError> {
         let mut values = SmallComponentVec::new();
         values.push(Self::parse_component_without_multiplier(
             context, input, component,
@@ -453,17 +526,19 @@ impl<'a> Parser<'a> {
         Ok(values)
     }
 
-    fn parse_component_without_multiplier<'i, 't>(
+    fn parse_component_without_multiplier(
         context: &ParserContext,
-        input: &mut CSSParser<'i, 't>,
+        input: &mut CSSParser,
         component: &SyntaxComponent,
-    ) -> Result<SpecifiedValueComponent, StyleParseError<'i>> {
+    ) -> Result<SpecifiedValueComponent, StyleParseError> {
         let data_type = match component.name() {
             ComponentName::DataType(ty) => ty,
-            ComponentName::Ident(ref name) => {
+            ComponentName::Ident(name) => {
                 let ident = CustomIdent::parse(input, &[])?;
                 if ident != *name {
-                    return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                    return Err(StyleParseError::custom(
+                        StyleParseErrorKind::UnspecifiedError,
+                    ));
                 }
                 return Ok(SpecifiedValueComponent::CustomIdent(ident));
             },
@@ -486,7 +561,7 @@ impl<'a> Parser<'a> {
                 SpecifiedValueComponent::Color(specified::Color::parse(context, input)?)
             },
             DataType::Image => {
-                SpecifiedValueComponent::Image(specified::Image::parse(context, input)?)
+                SpecifiedValueComponent::Image(specified::Image::parse_forbid_none(context, input)?)
             },
             DataType::Url => {
                 SpecifiedValueComponent::Url(specified::url::SpecifiedUrl::parse(context, input)?)
@@ -514,13 +589,13 @@ impl<'a> Parser<'a> {
                 let mut values = vec![];
                 let Some(multiplier) = component.unpremultiplied().multiplier() else {
                     debug_assert!(false, "Unpremultiplied <transform-list> had no multiplier?");
-                    return Err(
-                        input.new_custom_error(StyleParseErrorKind::PropertySyntaxField(
+                    return Err(StyleParseError::custom(
+                        StyleParseErrorKind::PropertySyntaxField(
                             PropertySyntaxParseError::UnexpectedEOF,
-                        )),
-                    );
+                        ),
+                    ));
                 };
-                debug_assert_matches!(multiplier, Multiplier::Space);
+                debug_assert_eq!(multiplier, Multiplier::Space);
                 loop {
                     values.push(SpecifiedValueComponent::TransformFunction(
                         specified::Transform::parse(context, input)?,
@@ -545,7 +620,7 @@ impl<'a> Parser<'a> {
         Ok(value)
     }
 
-    fn expect_multiplier_yielded_eof_error<'i>(result: &Result<(), StyleParseError<'i>>) -> bool {
+    fn expect_multiplier_yielded_eof_error(result: &Result<(), StyleParseError>) -> bool {
         matches!(
             result,
             Err(StyleParseError {
@@ -555,16 +630,18 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn expect_multiplier<'i, 't>(
-        input: &mut CSSParser<'i, 't>,
+    fn expect_multiplier(
+        input: &mut CSSParser,
         multiplier: &Multiplier,
-    ) -> Result<(), StyleParseError<'i>> {
+    ) -> Result<(), StyleParseError> {
         match multiplier {
             Multiplier::Space => {
                 input.expect_whitespace()?;
                 if input.is_exhausted() {
                     // If there was trailing whitespace, do not interpret it as a multiplier
-                    return Err(input.new_error(BasicParseErrorKind::EndOfInput));
+                    return Err(StyleParseError::from_basic_kind(
+                        BasicParseErrorKind::EndOfInput,
+                    ));
                 }
                 Ok(())
             },
@@ -579,7 +656,8 @@ pub struct CustomAnimatedValue {
     /// The name of the custom property.
     pub(crate) name: crate::custom_properties::Name,
     /// The computed value of the custom property.
-    value: ComputedValue,
+    /// `None` represents the guaranteed-invalid value.
+    pub(crate) value: Option<ComputedValue>,
 }
 
 impl Animate for CustomAnimatedValue {
@@ -598,21 +676,20 @@ impl Animate for CustomAnimatedValue {
 impl CustomAnimatedValue {
     pub(crate) fn from_computed(
         name: &crate::custom_properties::Name,
-        value: &ComputedValue,
+        value: Option<&ComputedValue>,
     ) -> Self {
         Self {
             name: name.clone(),
-            value: value.clone(),
+            value: value.cloned(),
         }
     }
 
     pub(crate) fn from_declaration(
         declaration: &properties::CustomDeclaration,
         context: &mut computed::Context,
-        _initial: &properties::ComputedValues,
     ) -> Option<Self> {
         let computed_value = match declaration.value {
-            properties::CustomDeclarationValue::Unparsed(ref value) => {
+            properties::CustomDeclarationValue::Unparsed(ref value) => Some({
                 debug_assert!(
                     context.builder.stylist.is_some(),
                     "Need a Stylist to get property registration!"
@@ -622,33 +699,63 @@ impl CustomAnimatedValue {
                     .stylist
                     .unwrap()
                     .get_custom_property_registration(&declaration.name);
-                if registration.syntax.is_universal() {
+                if registration.is_universal() {
                     // FIXME: Do we need to perform substitution here somehow?
-                    ComputedValue {
-                        v: ValueInner::Universal(Arc::clone(value)),
-                        url_data: value.url_data.clone(),
-                    }
+                    ComputedValue::universal(Arc::clone(value))
                 } else {
-                    let mut input = cssparser::ParserInput::new(&value.css);
-                    let mut input = CSSParser::new(&mut input);
+                    let mut input = CSSParser::new(&value.css);
                     SpecifiedValue::compute(
                         &mut input,
                         registration,
+                        None,
                         &value.url_data,
                         context,
                         AllowComputationallyDependent::Yes,
-                    ).unwrap_or_else(|_| {
-                        ComputedValue {
-                            v: ValueInner::Universal(Arc::clone(value)),
-                            url_data: value.url_data.clone(),
-                        }
-                    })
+                        /* attr_taint */ Default::default(),
+                        Some(PropertyIdRef::from(&declaration.name)),
+                    )
+                    .unwrap_or_else(|_| ComputedValue::universal(Arc::clone(value)))
                 }
-            }
-            properties::CustomDeclarationValue::Parsed(ref v) => v.to_computed_value(context),
-            // FIXME: This should be made to work to the extent possible like for non-custom
-            // properties (using `initial` at least to handle unset / inherit).
-            properties::CustomDeclarationValue::CSSWideKeyword(..) => return None,
+            }),
+            properties::CustomDeclarationValue::Parsed(ref v) => Some(v.to_computed_value(context)),
+            properties::CustomDeclarationValue::CSSWideKeyword(keyword) => {
+                let stylist = context.builder.stylist.unwrap();
+                let registration = stylist.get_custom_property_registration(&declaration.name);
+                match keyword {
+                    CSSWideKeyword::Initial => stylist
+                        .get_custom_property_initial_values()
+                        .get(registration, &declaration.name),
+                    CSSWideKeyword::Inherit => context
+                        .builder
+                        .inherited_custom_properties()
+                        .get(registration, &declaration.name),
+                    CSSWideKeyword::Unset => {
+                        if registration.inherits() {
+                            context
+                                .builder
+                                .inherited_custom_properties()
+                                .get(registration, &declaration.name)
+                        } else {
+                            stylist
+                                .get_custom_property_initial_values()
+                                .get(registration, &declaration.name)
+                        }
+                    },
+                    // FIXME(emilio, bug 1533327): I think revert (and
+                    // revert-layer) handling is not fine here, but what to
+                    // do instead?
+                    //
+                    // Seems we'd need the computed value as if it was
+                    // revert, somehow. Returning `None` seems fine for now...
+                    //
+                    // Note that once this is fixed, this method should be
+                    // able to return `Self` instead of Option<Self>`.
+                    CSSWideKeyword::Revert
+                    | CSSWideKeyword::RevertRule
+                    | CSSWideKeyword::RevertLayer => return None,
+                }
+                .cloned()
+            },
         };
         Some(Self {
             name: declaration.name.clone(),
@@ -659,7 +766,10 @@ impl CustomAnimatedValue {
     pub(crate) fn to_declaration(&self) -> properties::PropertyDeclaration {
         properties::PropertyDeclaration::Custom(properties::CustomDeclaration {
             name: self.name.clone(),
-            value: self.value.to_declared_value(),
+            value: match &self.value {
+                Some(value) => value.to_declared_value(),
+                None => CustomDeclarationValue::CSSWideKeyword(CSSWideKeyword::Initial),
+            },
         })
     }
 }

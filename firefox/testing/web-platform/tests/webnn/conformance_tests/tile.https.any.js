@@ -18,6 +18,28 @@
 
 const tileTests = [
   {
+    'name': 'tile float32 0D scalar tensor by repetitions=[]',
+    'graph': {
+      'inputs': {
+        'tileInput': {
+          'data': [0.5],
+          'descriptor': {shape: [], dataType: 'float32'}
+        }
+      },
+      'operators': [{
+        'name': 'tile',
+        'arguments': [{'input': 'tileInput'}, {'repetitions': []}],
+        'outputs': 'tileOutput'
+      }],
+      'expectedOutputs': {
+        'tileOutput': {
+          'data': [0.5],
+          'descriptor': {shape: [], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
     'name': 'tile float32 1D constant tensor',
     'graph': {
       'inputs': {
@@ -41,13 +63,36 @@ const tileTests = [
     }
   },
   {
-    'name': 'tile float16 1D constant tensor',
+    'name': 'tile float32 1D tensor',
+    'graph': {
+      'inputs': {
+        'tileInput': {
+          'data': [1, 2, 3, 4],
+          'descriptor': {shape: [4], dataType: 'float32'},
+          'constant': false
+        }
+      },
+      'operators': [{
+        'name': 'tile',
+        'arguments': [{'input': 'tileInput'}, {'repetitions': [2]}],
+        'outputs': 'tileOutput'
+      }],
+      'expectedOutputs': {
+        'tileOutput': {
+          'data': [1, 2, 3, 4, 1, 2, 3, 4],
+          'descriptor': {shape: [8], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name': 'tile float16 1D tensor',
     'graph': {
       'inputs': {
         'tileInput': {
           'data': [1, 2, 3, 4],
           'descriptor': {shape: [4], dataType: 'float16'},
-          'constant': true
+          'constant': false
         }
       },
       'operators': [{
@@ -70,7 +115,7 @@ const tileTests = [
         'tileInput': {
           'data': [1, 2, 3, 4],
           'descriptor': {shape: [2, 2], dataType: 'float16'},
-          'constant': true
+          'constant': false
         }
       },
       'operators': [{
@@ -96,7 +141,7 @@ const tileTests = [
         'tileInput': {
           'data': [1, 2, 3, 4],
           'descriptor': {shape: [2, 2], dataType: 'uint32'},
-          'constant': true
+          'constant': false
         }
       },
       'operators': [{
@@ -122,7 +167,7 @@ const tileTests = [
         'tileInput': {
           'data': [1, 2, 3, 4],
           'descriptor': {shape: [1, 1, 2, 2], dataType: 'int32'},
-          'constant': true
+          'constant': false
         }
       },
       'operators': [{
@@ -140,10 +185,4 @@ const tileTests = [
   },
 ];
 
-if (navigator.ml) {
-  tileTests.forEach((test) => {
-    webnn_conformance_test(buildAndExecuteGraph, getZeroULPTolerance, test);
-  });
-} else {
-  test(() => assert_implements(navigator.ml, 'missing navigator.ml'));
-}
+webnn_conformance_test(tileTests, buildAndExecuteGraph, getZeroULPTolerance);

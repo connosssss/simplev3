@@ -12,13 +12,13 @@ import android.content.IntentFilter
 import androidx.core.app.NotificationManagerCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import mozilla.components.browser.state.action.ContentAction
+import mozilla.components.browser.state.action.CustomTabListAction
 import mozilla.components.browser.state.state.BrowserState
+import mozilla.components.browser.state.state.createCustomTab
 import mozilla.components.browser.state.state.createTab
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.engine.media.RecordingDevice
 import mozilla.components.support.base.android.NotificationsDelegate
-import mozilla.components.support.test.ext.joinBlocking
-import mozilla.components.support.test.libstate.ext.waitUntilIdle
 import mozilla.components.support.test.robolectric.testContext
 import mozilla.components.support.test.whenever
 import org.junit.Assert.assertEquals
@@ -45,11 +45,8 @@ class RecordingDevicesMiddlewareTest {
             IntentFilter(Intent.ACTION_MAIN).apply { addCategory(Intent.CATEGORY_INFO) },
         )
 
-        val notificationManagerCompat: NotificationManagerCompat = Mockito.spy(
-            NotificationManagerCompat.from(
-                testContext,
-            ),
-        )
+        val notificationManagerCompat: NotificationManagerCompat =
+            Mockito.spy(NotificationManagerCompat.from(testContext))
 
         notificationsDelegate = NotificationsDelegate(notificationManagerCompat)
 
@@ -58,8 +55,7 @@ class RecordingDevicesMiddlewareTest {
 
     @Test
     fun `updateNotification should show notification once when recording`() {
-        val realNotificationManager = testContext.getSystemService(Context.NOTIFICATION_SERVICE)
-            as NotificationManager
+        val realNotificationManager = testContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val notificationManager = Shadows.shadowOf(realNotificationManager)
 
         assertEquals(0, notificationManager.size())
@@ -78,8 +74,7 @@ class RecordingDevicesMiddlewareTest {
 
     @Test
     fun `updateNotification hides notification when it has shown notification`() {
-        val realNotificationManager = testContext.getSystemService(Context.NOTIFICATION_SERVICE)
-            as NotificationManager
+        val realNotificationManager = testContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val notificationManager = Shadows.shadowOf(realNotificationManager)
 
         assertEquals(0, notificationManager.size())
@@ -97,32 +92,24 @@ class RecordingDevicesMiddlewareTest {
 
     @Test
     fun `middleware shows notification when tab has a recording device then hides when recording devices become inactive`() {
-        val realNotificationManager = testContext.getSystemService(Context.NOTIFICATION_SERVICE)
-            as NotificationManager
+        val realNotificationManager = testContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val notificationManager = Shadows.shadowOf(realNotificationManager)
 
         val middleware = RecordingDevicesMiddleware(testContext, notificationsDelegate)
-        val store = BrowserStore(
-            initialState = BrowserState(
-                tabs = listOf(
-                    createTab("https://www.mozilla.org", id = "mozilla"),
-                ),
-            ),
-            middleware = listOf(middleware),
-        )
-
-        store.waitUntilIdle()
+        val store =
+            BrowserStore(
+                initialState = BrowserState(tabs = listOf(createTab("https://www.mozilla.org", id = "mozilla"))),
+                middleware = listOf(middleware),
+            )
 
         assertEquals(0, notificationManager.size())
 
         store.dispatch(
             ContentAction.SetRecordingDevices(
                 sessionId = "mozilla",
-                devices = listOf(
-                    RecordingDevice(RecordingDevice.Type.CAMERA, RecordingDevice.Status.RECORDING),
-                ),
-            ),
-        ).joinBlocking()
+                devices = listOf(RecordingDevice(RecordingDevice.Type.CAMERA, RecordingDevice.Status.RECORDING)),
+            )
+        )
 
         assertEquals(1, notificationManager.size())
 
@@ -130,8 +117,69 @@ class RecordingDevicesMiddlewareTest {
             ContentAction.SetRecordingDevices(
                 sessionId = "mozilla",
                 devices = emptyList(),
-            ),
-        ).joinBlocking()
+            )
+        )
+
+        assertEquals(0, notificationManager.size())
+    }
+
+    @Test
+    fun `middleware shows notification when custom tab has a recording device then hides when recording devices become inactive`() {
+        val realNotificationManager = testContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val notificationManager = Shadows.shadowOf(realNotificationManager)
+
+        val middleware = RecordingDevicesMiddleware(testContext, notificationsDelegate)
+        val store =
+            BrowserStore(
+                initialState =
+                    BrowserState(customTabs = listOf(createCustomTab("https://www.mozilla.org", id = "mozilla"))),
+                middleware = listOf(middleware),
+            )
+
+        assertEquals(0, notificationManager.size())
+
+        store.dispatch(
+            ContentAction.SetRecordingDevices(
+                sessionId = "mozilla",
+                devices = listOf(RecordingDevice(RecordingDevice.Type.MICROPHONE, RecordingDevice.Status.RECORDING)),
+            )
+        )
+
+        assertEquals(1, notificationManager.size())
+
+        store.dispatch(
+            ContentAction.SetRecordingDevices(
+                sessionId = "mozilla",
+                devices = emptyList(),
+            )
+        )
+
+        assertEquals(0, notificationManager.size())
+    }
+
+    @Test
+    fun `middleware hides notification when a recording custom tab is removed`() {
+        val realNotificationManager = testContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val notificationManager = Shadows.shadowOf(realNotificationManager)
+
+        val middleware = RecordingDevicesMiddleware(testContext, notificationsDelegate)
+        val store =
+            BrowserStore(
+                initialState =
+                    BrowserState(customTabs = listOf(createCustomTab("https://www.mozilla.org", id = "mozilla"))),
+                middleware = listOf(middleware),
+            )
+
+        store.dispatch(
+            ContentAction.SetRecordingDevices(
+                sessionId = "mozilla",
+                devices = listOf(RecordingDevice(RecordingDevice.Type.MICROPHONE, RecordingDevice.Status.RECORDING)),
+            )
+        )
+
+        assertEquals(1, notificationManager.size())
+
+        store.dispatch(CustomTabListAction.RemoveCustomTabAction(tabId = "mozilla"))
 
         assertEquals(0, notificationManager.size())
     }

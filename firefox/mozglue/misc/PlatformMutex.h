@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,15 @@
 #ifndef mozilla_PlatformMutex_h
 #define mozilla_PlatformMutex_h
 
-#include <utility>
+#if defined(XP_WIN)
+#  include <atomic>
+#endif
 
-#include "mozilla/Attributes.h"
 #include "mozilla/Types.h"
 
-#if !defined(XP_WIN) && !defined(__wasi__)
+#if defined(XP_WIN)
+#  include "mozilla/Futex.h"
+#elif !defined(__wasi__)
 #  include <pthread.h>
 #endif
 
@@ -24,10 +25,18 @@ class ConditionVariableImpl;
 
 class MutexImpl {
  public:
-  struct PlatformData;
-
+#if defined(XP_WIN)
+  constexpr MutexImpl() = default;
+#else
   explicit MFBT_API MutexImpl();
+#endif
   MFBT_API ~MutexImpl();
+
+  MutexImpl(const MutexImpl&) = delete;
+  void operator=(const MutexImpl&) = delete;
+  MutexImpl(MutexImpl&&) = delete;
+  void operator=(MutexImpl&&) = delete;
+  bool operator==(const MutexImpl& rhs) = delete;
 
  protected:
   MFBT_API void lock();
@@ -36,25 +45,20 @@ class MutexImpl {
   // through the PLT.
   MFBT_API bool tryLock();
 
- private:
-  MutexImpl(const MutexImpl&) = delete;
-  void operator=(const MutexImpl&) = delete;
-  MutexImpl(MutexImpl&&) = delete;
-  void operator=(MutexImpl&&) = delete;
-  bool operator==(const MutexImpl& rhs) = delete;
+#if defined(XP_WIN)
+  void reset() { mFutex.mValue.store(0, std::memory_order_relaxed); }
+#endif
 
+ private:
   void mutexLock();
   bool mutexTryLock();
 
-  PlatformData* platformData();
-
-#if !defined(XP_WIN) && !defined(__wasi__)
-  void* platformData_[sizeof(pthread_mutex_t) / sizeof(void*)];
-  static_assert(sizeof(pthread_mutex_t) / sizeof(void*) != 0 &&
-                    sizeof(pthread_mutex_t) % sizeof(void*) == 0,
-                "pthread_mutex_t must have pointer alignment");
-#else
-  void* platformData_[6];
+#if defined(XP_WIN)
+  SmallFutex mFutex;
+  static_assert(std::atomic<uint8_t>::is_always_lock_free);
+  static_assert(sizeof(std::atomic<uint8_t>) == sizeof(uint8_t));
+#elif !defined(__wasi__)
+  pthread_mutex_t mMutex;
 #endif
 
   friend class mozilla::detail::ConditionVariableImpl;

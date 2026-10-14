@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,29 +10,30 @@
 #include "FocusState.h"          // for FocusState
 #include "HitTestingTreeNode.h"  // for HitTestingTreeNodeAutoLock
 #include "IAPZHitTester.h"       // for IAPZHitTester::HitTestResult
-#include "gfxPoint.h"            // for gfxPoint
-#include "mozilla/Assertions.h"  // for MOZ_ASSERT_HELPER2
-#include "mozilla/DataMutex.h"   // for DataMutex
-#include "mozilla/gfx/CompositorHitTestInfo.h"
-#include "mozilla/gfx/Logging.h"            // for gfx::TreeLog
-#include "mozilla/gfx/Matrix.h"             // for Matrix4x4
-#include "mozilla/layers/APZInputBridge.h"  // for APZInputBridge
-#include "mozilla/layers/APZTestData.h"     // for APZTestData
-#include "mozilla/layers/APZUtils.h"        // for AsyncTransformComponents
-#include "mozilla/layers/CompositorScrollUpdate.h"  // for CompositorScrollUpdate
-#include "mozilla/layers/IAPZCTreeManager.h"        // for IAPZCTreeManager
-#include "mozilla/layers/PWebRenderBridgeParent.h"
-#include "mozilla/layers/ScrollbarData.h"
-#include "mozilla/layers/LayersTypes.h"
-#include "mozilla/layers/KeyboardMap.h"      // for KeyboardMap
-#include "mozilla/layers/TouchCounter.h"     // for TouchCounter
-#include "mozilla/layers/ZoomConstraints.h"  // for ZoomConstraints
-#include "mozilla/webrender/webrender_ffi.h"
+#include "Units.h"
+#include "VsyncSource.h"
+#include "gfxPoint.h"                // for gfxPoint
+#include "mozilla/Assertions.h"      // for MOZ_ASSERT_HELPER2
+#include "mozilla/DataMutex.h"       // for DataMutex
 #include "mozilla/RecursiveMutex.h"  // for RecursiveMutex
 #include "mozilla/RefPtr.h"          // for RefPtr
 #include "mozilla/TimeStamp.h"       // for mozilla::TimeStamp
 #include "mozilla/UniquePtr.h"       // for UniquePtr
-#include "nsCOMPtr.h"                // for already_AddRefed
+#include "mozilla/gfx/CompositorHitTestInfo.h"
+#include "mozilla/gfx/Logging.h"       // for gfx::TreeLog
+#include "mozilla/gfx/Matrix.h"        // for Matrix4x4
+#include "mozilla/layers/APZBridge.h"  // for APZBridge
+#include "mozilla/layers/APZUtils.h"   // for AsyncTransformComponents
+#include "mozilla/layers/CompositorScrollUpdate.h"  // for CompositorScrollUpdate
+#include "mozilla/layers/IAPZCTreeManager.h"        // for IAPZCTreeManager
+#include "mozilla/layers/KeyboardMap.h"             // for KeyboardMap
+#include "mozilla/layers/LayersTypes.h"
+#include "mozilla/layers/PWebRenderBridgeParent.h"
+#include "mozilla/layers/ScrollbarData.h"
+#include "mozilla/layers/TouchCounter.h"     // for TouchCounter
+#include "mozilla/layers/ZoomConstraints.h"  // for ZoomConstraints
+#include "mozilla/webrender/webrender_ffi.h"
+#include "nsCOMPtr.h"  // for already_AddRefed
 #include "nsTArray.h"
 
 namespace mozilla {
@@ -55,8 +54,10 @@ class Layer;
 class AsyncPanZoomController;
 class APZCTreeManagerParent;
 class APZSampler;
+class APZTestData;
 class APZUpdater;
 class CompositorBridgeParent;
+class MatrixMessage;
 class OverscrollHandoffChain;
 struct OverscrollHandoffState;
 class FocusTarget;
@@ -110,7 +111,7 @@ struct ZoomTarget;
  * Behaviour of APZ is controlled by a number of preferences shown
  * \ref APZCPrefs "here".
  */
-class APZCTreeManager : public IAPZCTreeManager, public APZInputBridge {
+class APZCTreeManager : public IAPZCTreeManager, public APZBridge {
   typedef mozilla::layers::AllowedTouchBehavior AllowedTouchBehavior;
   typedef mozilla::layers::AsyncDragMetrics AsyncDragMetrics;
   using HitTestResult = IAPZHitTester::HitTestResult;
@@ -132,10 +133,13 @@ class APZCTreeManager : public IAPZCTreeManager, public APZInputBridge {
   struct TreeBuildingState;
 
  public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(APZCTreeManager, final);
+
   static mozilla::LazyLogModule sLog;
 
   static already_AddRefed<APZCTreeManager> Create(
-      LayersId aRootLayersId, UniquePtr<IAPZHitTester> aHitTester = nullptr);
+      LayersId aRootLayersId, CSSToLayoutDeviceScale aWidgetScale = {},
+      UniquePtr<IAPZHitTester> aHitTester = nullptr);
   void SetSampler(APZSampler* aSampler);
   void SetUpdater(APZUpdater* aUpdater);
 
@@ -205,7 +209,7 @@ class APZCTreeManager : public IAPZCTreeManager, public APZInputBridge {
                           const SampleTime& aSampleTime);
 
   /**
-   * Refer to the documentation of APZInputBridge::ReceiveInputEvent() and
+   * Refer to the documentation of APZBridge::ReceiveInputEvent() and
    * APZEventResult.
    */
   APZEventResult ReceiveInputEvent(
@@ -287,6 +291,11 @@ class APZCTreeManager : public IAPZCTreeManager, public APZInputBridge {
    * Returns the current dpi value in use.
    */
   float GetDPI() const;
+
+  /**
+   * Returns the Widget scale value in use.
+   */
+  CSSToLayoutDeviceScale GetWidgetScale() const;
 
   /**
    * Find the hit testing node for the scrollbar thumb that matches these
@@ -408,7 +417,7 @@ class APZCTreeManager : public IAPZCTreeManager, public APZInputBridge {
   void StartScrollbarDrag(const ScrollableLayerGuid& aGuid,
                           const AsyncDragMetrics& aDragMetrics) override;
 
-  bool StartAutoscroll(const ScrollableLayerGuid& aGuid,
+  void StartAutoscroll(const ScrollableLayerGuid& aGuid,
                        const ScreenPoint& aAnchorLocation) override;
 
   void StopAutoscroll(const ScrollableLayerGuid& aGuid) override;
@@ -428,7 +437,25 @@ class APZCTreeManager : public IAPZCTreeManager, public APZInputBridge {
    */
   void SetLongTapEnabled(bool aTapGestureEnabled) override;
 
-  APZInputBridge* InputBridge() override { return this; }
+  /**
+   * Fast-path notification that a non-passive APZ-aware event listener has
+   * just been registered in the content process, with |aGuid| identifying
+   * the nearest scroll container ancestor of the listener target. While
+   * |aGuid| is in the recorded set, hit-test results whose target APZC
+   * matches it or descends from it (within the same layers id) will have
+   * eApzAwareListeners ORed in.
+   */
+  void NotifyApzAwareListenerAdded(const ScrollableLayerGuid& aGuid) override;
+
+  /**
+   * Returns true if the APZC tree chain rooted at the APZC identified by
+   * |aHitGuid| (i.e. itself or any ancestor with the same layers id)
+   * has been the target of a fast-path APZ-aware listener notification.
+   * Safe to call from the sampler thread; acquires mMapLock.
+   */
+  bool ChainHasFastPathApzAwareListener(const ScrollableLayerGuid& aHitGuid);
+
+  APZBridge* Bridge() override { return this; }
 
   /**
    * Add a callback to be invoked when |aInputBlockId| is ready for handling.
@@ -512,7 +539,8 @@ class APZCTreeManager : public IAPZCTreeManager, public APZInputBridge {
   already_AddRefed<wr::WebRenderAPI> GetWebRenderAPI() const;
 
  protected:
-  APZCTreeManager(LayersId aRootLayersId, UniquePtr<IAPZHitTester> aHitTester);
+  APZCTreeManager(LayersId aRootLayersId, CSSToLayoutDeviceScale aScale,
+                  UniquePtr<IAPZHitTester> aHitTester);
 
   void Init();
 
@@ -537,6 +565,9 @@ class APZCTreeManager : public IAPZCTreeManager, public APZInputBridge {
   // Protected hooks for gtests subclass
   virtual already_AddRefed<AsyncPanZoomController> NewAPZCInstance(
       LayersId aLayersId, GeckoContentController* aController);
+
+  void SetFixedLayerMarginsOnRootContentApzcs(
+      const RecursiveMutexAutoLock& aProofOfTreeLock) MOZ_REQUIRES(mTreeLock);
 
  public:
   // Public hook for gtests subclass
@@ -858,6 +889,15 @@ class APZCTreeManager : public IAPZCTreeManager, public APZInputBridge {
       MOZ_REQUIRES(mMapLock) {
     mInteractiveWidget = aInteractiveWidgetMode;
   }
+  // The compositor-side counterpart of
+  // nsPresContext::IsKeyboardVisibleOnOverlaysContent; the two need to be kept
+  // consistent.
+  bool IsKeyboardVisibleOnOverlaysContent(
+      const MutexAutoLock& aProofOfMapLock) const MOZ_REQUIRES(mMapLock) {
+    return IsSoftwareKeyboardVisible(aProofOfMapLock) &&
+           InteractiveWidgetMode(aProofOfMapLock) ==
+               dom::InteractiveWidget::OverlaysContent;
+  }
 
  protected:
   /* The input queue where input events are held until we know enough to
@@ -930,6 +970,19 @@ class APZCTreeManager : public IAPZCTreeManager, public APZInputBridge {
                      ScrollableLayerGuid::HashIgnoringPresShellFn,
                      ScrollableLayerGuid::EqualIgnoringPresShellFn>
       mApzcMap MOZ_GUARDED_BY(mMapLock);
+
+  /**
+   * Set of ScrollableLayerGuids that have been notified by content as
+   * having a non-passive APZ-aware event listener registered in their
+   * subtree. Populated via NotifyApzAwareListenerAdded() and read on the
+   * sampler thread during hit-testing via
+   * ChainHasFastPathApzAwareListener(). mMapLock must be acquired while
+   * accessing or modifying.
+   */
+  std::unordered_set<ScrollableLayerGuid,
+                     ScrollableLayerGuid::HashIgnoringPresShellFn,
+                     ScrollableLayerGuid::EqualIgnoringPresShellFn>
+      mFastPathApzAwareGuids MOZ_GUARDED_BY(mMapLock);
   /**
    * A helper structure to store all the information needed to compute the
    * async transform for a scrollthumb on the sampler thread.
@@ -1128,8 +1181,13 @@ class APZCTreeManager : public IAPZCTreeManager, public APZInputBridge {
   // This must only be touched on the controller thread.
   float mDPI;
 
+  CSSToLayoutDeviceScale mWidgetScale;
+
   friend class IAPZHitTester;
   UniquePtr<IAPZHitTester> mHitTester;
+
+  // An array of root content APZCs in this tree.
+  nsTArray<AsyncPanZoomController*> mRootContentApzcs MOZ_GUARDED_BY(mTreeLock);
 
   // NOTE: This ScrollGenerationCounter needs to be per APZCTreeManager since
   // the generation is bumped up on the sampler theread which is per

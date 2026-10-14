@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -26,26 +24,16 @@
 //
 // # Request queue
 //
-// When next/return/throw is called on the async generator object,
-// js::AsyncGeneratorEnqueue performs the following:
-//   * Create a new AsyncGeneratorRequest and enqueue it in the generator
-//     object's request queue.
-//   * Resume the generator with the oldest request, if the generator is
-//     suspended (see "Resume" section below)
-//   * Return the promise for the request
-//
-// This is done in js::AsyncGeneratorEnqueue, which corresponds to
-// AsyncGeneratorEnqueue in the spec,
-// and js::AsyncGeneratorResumeNext corresponds to the following:
-//   * AsyncGeneratorResolve
-//   * AsyncGeneratorReject
-//   * AsyncGeneratorResumeNext
+// When next/return/throw is called on the async generator object:
+//   * AsyncGeneratorEnqueue creates a new AsyncGeneratorRequest and enqueues
+//     it in the generator object's request queue.
+//   * AsyncGeneratorResume resumes the generator with the oldest request,
+//     if the generator is suspended (see "Resume" section below)
 //
 // The returned promise is resolved when the resumption for the request
-// completes with yield/throw/return, in js::AsyncGeneratorResolve and
-// js::AsyncGeneratorReject.
-// They correspond to AsyncGeneratorResolve and AsyncGeneratorReject in the
-// spec.
+// completes with yield/throw/return, in AsyncGeneratorCompleteStepNormal and
+// AsyncGeneratorCompleteStepThrow.
+// They correspond to AsyncGeneratorCompleteStep in the spec.
 //
 //
 // # Await
@@ -59,17 +47,17 @@
 // ```
 //   (operand here)                  # VALUE
 //   GetAliasedVar ".generator"      # VALUE .generator
-//   Await 0                         # RVAL GENERATOR RESUMEKIND
+//   Await 0                         # RVAL RESUMEKIND
 //
-//   AfterYield                      # RVAL GENERATOR RESUMEKIND
-//   CheckResumeKind                 # RVAL
+//   AfterYield                      # RVAL RESUMEKIND
+//   [resume-kind check]             # RVAL
 // ```
 //
 // Async generators don't use JSOp::AsyncAwait, and that part is handled
-// in js::AsyncGeneratorResume, and js::AsyncGeneratorAwait called there.
+// in AsyncGeneratorResume, and AsyncGeneratorAwait called there.
 //
 // Both JSOp::Await and JSOp::Yield behave in the exactly same way,
-// and js::AsyncGeneratorResume checks the last opcode and branches for
+// and AsyncGeneratorResume checks the last opcode and branches for
 // await/yield/return cases.
 //
 //
@@ -78,8 +66,8 @@
 // This is almost same as for async functions (see AsyncFunction.h).
 //
 // The reaction record for the job is marked as "this is for async generator"
-// (see js::AsyncGeneratorAwait), and handled specially in
-// js::PromiseReactionJob, which calls js::AsyncGeneratorPromiseReactionJob.
+// (see AsyncGeneratorAwait), and handled specially in
+// PromiseReactionJob, which calls js::AsyncGeneratorPromiseReactionJob.
 //
 //
 // # Yield
@@ -90,62 +78,75 @@
 // ```
 //   (operand here)                  # VALUE
 //   GetAliasedVar ".generator"      # VALUE .generator
-//   Await 1                         # RVAL GENERATOR RESUMEKIND
-//   AfterYield                      # RVAL GENERATOR RESUMEKIND
-//   CheckResumeKind                 # RVAL
+//   Await 1                         # RVAL RESUMEKIND
+//   AfterYield                      # RVAL RESUMEKIND
+//   [resume-kind check]             # RVAL
 //
 //   GetAliasedVar ".generator"      # RVAL .generator
-//   Yield 2                         # RVAL2 GENERATOR RESUMEKIND
+//   Yield 2                         # RVAL2 RESUMEKIND
 //
-//   AfterYield                      # RVAL2 GENERATOR RESUMEKIND
-//   CheckResumeKind                 # RVAL2
+//   AfterYield                      # RVAL2 RESUMEKIND
+//   [resume-kind check]             # RVAL2
 // ```
 //
-// The 1st part (JSOp::Await + JSOp::CheckResumeKind) performs an implicit
-// `await`, as specified in AsyncGeneratorYield step 5.
+// The 1st part (JSOp::Await + the resume-kind check) performs an implicit
+// `await`, as specified in Yield step 2.
 //
-// AsyncGeneratorYield ( value )
-// https://tc39.es/ecma262/#sec-asyncgeneratoryield
+//   Yield ( value )
+//   https://tc39.es/ecma262/#sec-yield
 //
-//   5. Set value to ? Await(value).
+//     2. If generatorKind is async, return
+//        ? AsyncGeneratorYield(? Await(value)).
 //
 // The 2nd part (JSOp::Yield) suspends execution and yields the result of
-// `await`, as specified in AsyncGeneratorYield steps 1-4, 6-7, 9-10.
+// `await`, as specified in AsyncGeneratorYield.
 //
-// AsyncGeneratorYield ( value )
-// https://tc39.es/ecma262/#sec-asyncgeneratoryield
+//   AsyncGeneratorYield ( value )
+//   https://tc39.es/ecma262/#sec-asyncgeneratoryield
 //
-//   1. Let genContext be the running execution context.
-//   2. Assert: genContext is the execution context of a generator.
-//   3. Let generator be the value of the Generator component of genContext.
-//   4. Assert: GetGeneratorKind() is async.
-//   ..
-//   6. Set generator.[[AsyncGeneratorState]] to suspendedYield.
-//   7. Remove genContext from the execution context stack and restore the
-//      execution context that is at the top of the execution context stack as
-//      the running execution context.
-//   8. ...
-//   9. Return ! AsyncGeneratorResolve(generator, value, false).
-//   10. NOTE: This returns to the evaluation of the operation that had most
-//       previously resumed evaluation of genContext.
+//     1. Let genContext be the running execution context.
+//     2. Assert: genContext is the execution context of a generator.
+//     3. Let generator be the value of the Generator component of genContext.
+//     4. Assert: GetGeneratorKind() is async.
+//     5. Let completion be NormalCompletion(value).
+//     6. Assert: The execution context stack has at least two elements.
+//     7. Let previousContext be the second to top element of the execution
+//        context stack.
+//     8. Let previousRealm be previousContext's Realm.
+//     9. Perform AsyncGeneratorCompleteStep(generator, completion, false,
+//        previousRealm).
+//     10. Let queue be generator.[[AsyncGeneratorQueue]].
+//     11. If queue is not empty, then
+//       a. NOTE: Execution continues without suspending the generator.
+//       b. Let toYield be the first element of queue.
+//       c. Let resumptionValue be Completion(toYield.[[Completion]]).
+//       d. Return ? AsyncGeneratorUnwrapYieldResumption(resumptionValue).
+//     12. Else,
+//       a. Set generator.[[AsyncGeneratorState]] to suspended-yield.
+//       b. Remove genContext from the execution context stack and restore the
+//          execution context that is at the top of the execution context stack
+//          as the running execution context.
+//       c. Let callerContext be the running execution context.
+//       d. Resume callerContext passing undefined. If genContext is ever
+//          resumed again, let resumptionValue be the Completion Record with
+//          which it is resumed.
+//       e. Assert: If control reaches here, then genContext is the running
+//          execution context again.
+//       f. Return ? AsyncGeneratorUnwrapYieldResumption(resumptionValue).
 //
-// The last part (JSOp::CheckResumeKind) checks the resumption type and
-// resumes/throws/returns the execution, as specified in AsyncGeneratorYield
-// step 8.
+// The last part (the resume-kind check) checks the resumption type and
+// resumes/throws/returns the execution, as specified in
+// AsyncGeneratorUnwrapYieldResumption
 //
-//   8. Set the code evaluation state of genContext such that when evaluation is
-//      resumed with a Completion resumptionValue the following steps will be
-//      performed:
-//     a. If resumptionValue.[[Type]] is not return, return
-//        Completion(resumptionValue).
-//     b. Let awaited be Await(resumptionValue.[[Value]]).
-//     c. If awaited.[[Type]] is throw, return Completion(awaited).
-//     d. Assert: awaited.[[Type]] is normal.
-//     e. Return Completion { [[Type]]: return, [[Value]]: awaited.[[Value]],
-//        [[Target]]: empty }.
-//     f. NOTE: When one of the above steps returns, it returns to the
-//        evaluation of the YieldExpression production that originally called
-//        this abstract operation.
+//   AsyncGeneratorUnwrapYieldResumption ( resumptionValue )
+//   https://tc39.es/ecma262/#sec-asyncgeneratorunwrapyieldresumption
+//
+//     1. If resumptionValue is not a return completion,
+//        return ? resumptionValue.
+//     2. Let awaited be Completion(Await(resumptionValue.[[Value]])).
+//     3. If awaited is a throw completion, return ? awaited.
+//     4. Assert: awaited is a normal completion.
+//     5. Return ReturnCompletion(awaited.[[Value]]).
 //
 // Resumption with `AsyncGenerator.prototype.return` is handled differently.
 // See "Resumption with return" section below.
@@ -159,41 +160,39 @@
 // ```
 //   (operand here)                  # VALUE
 //   GetAliasedVar ".generator"      # VALUE .generator
-//   Await 0                         # RVAL GENERATOR RESUMEKIND
-//   AfterYield                      # RVAL GENERATOR RESUMEKIND
-//   CheckResumeKind                 # RVAL
+//   Await 0                         # RVAL RESUMEKIND
+//   AfterYield                      # RVAL RESUMEKIND
+//   [resume-kind check]             # RVAL
 //
 //   SetRval                         #
 //   GetAliasedVar ".generator"      # .generator
 //   FinalYieldRval                  #
 // ```
 //
-// The 1st part (JSOp::Await + JSOp::CheckResumeKind) performs implicit
+// The 1st part (JSOp::Await + the resume-kind check) performs implicit
 // `await`, as specified in ReturnStatement's Evaluation step 3.
 //
-// ReturnStatement: return Expression;
-// https://tc39.es/ecma262/#sec-return-statement-runtime-semantics-evaluation
+//   ReturnStatement: return Expression;
+//   https://tc39.es/ecma262/#sec-return-statement-runtime-semantics-evaluation
 //
-//   3. If ! GetGeneratorKind() is async, set exprValue to ? Await(exprValue).
+//     3. If GetGeneratorKind() is async, set exprValue to ? Await(exprValue).
 //
-// And the 2nd part corresponds to AsyncGeneratorStart steps 5.a-e, 5.g.
+// And the 2nd part corresponds to AsyncGeneratorStart steps 4.g-l.
 //
-// AsyncGeneratorStart ( generator, generatorBody )
-// https://tc39.es/ecma262/#sec-asyncgeneratorstart
+//   AsyncGeneratorStart ( generator, generatorBody )
+//   https://tc39.es/ecma262/#sec-asyncgeneratorstart
 //
-//   5. Set the code evaluation state of genContext such that when evaluation
-//      is resumed for that execution context the following steps will be
-//      performed:
-//     a. Let result be the result of evaluating generatorBody.
-//     b. Assert: If we return here, the async generator either threw an
-//        exception or performed either an implicit or explicit return.
-//     c. Remove genContext from the execution context stack and restore the
-//        execution context that is at the top of the execution context stack
-//        as the running execution context.
-//     d. Set generator.[[AsyncGeneratorState]] to completed.
-//     e. If result is a normal completion, let resultValue be undefined.
-//     ...
-//     g. Return ! AsyncGeneratorResolve(generator, resultValue, true).
+//     4. Let closure be a new Abstract Closure with no parameters that captures
+//        generatorBody and performs the following steps when called:
+//       ...
+//       g. Set acGenerator.[[AsyncGeneratorState]] to draining-queue.
+//       h. If result is a normal completion, set result to
+//          NormalCompletion(undefined).
+//       i. If result is a return completion, set result to
+//          NormalCompletion(result.[[Value]]).
+//       j. Perform AsyncGeneratorCompleteStep(acGenerator, result, true).
+//       k. Perform AsyncGeneratorDrainQueue(acGenerator).
+//       l. Return undefined.
 //
 // `return` without operand or implicit return is implicit with the following
 // bytecode sequence:
@@ -205,79 +204,69 @@
 //   FinalYieldRval                  #
 // ```
 //
-// This is also AsyncGeneratorStart steps 5.a-e, 5.g.
+// This is also AsyncGeneratorStart steps 4.g-l.
 //
 //
 // # Throw
 //
 // Unlike async function, async generator doesn't use implicit try-catch,
-// but the throw completion is handled by js::AsyncGeneratorResume,
-// and js::AsyncGeneratorThrown is called there.
+// but the throw completion is handled by AsyncGeneratorResume,
+// and AsyncGeneratorThrown is called there.
 //
-//   5. ...
-//     f. Else,
-//       i. Let resultValue be result.[[Value]].
-//       ii. If result.[[Type]] is not return, then
-//         1. Return ! AsyncGeneratorReject(generator, resultValue).
+//   AsyncGeneratorStart ( generator, generatorBody )
+//   https://tc39.es/ecma262/#sec-asyncgeneratorstart
+//
+//     4. Let closure be a new Abstract Closure with no parameters that captures
+//        generatorBody and performs the following steps when called:
+//       ...
+//       g. Set acGenerator.[[AsyncGeneratorState]] to draining-queue.
+//       h. If result is a normal completion, set result to
+//          NormalCompletion(undefined).
+//       i. If result is a return completion, set result to
+//          NormalCompletion(result.[[Value]]).
+//       j. Perform AsyncGeneratorCompleteStep(acGenerator, result, true).
+//       k. Perform AsyncGeneratorDrainQueue(acGenerator).
+//       l. Return undefined.
+//
+//   AsyncGeneratorCompleteStep ( generator, completion, done [ , realm ] )
+//   https://tc39.es/ecma262/#sec-asyncgeneratorcompletestep
+//
+//     1. Assert: generator.[[AsyncGeneratorQueue]] is not empty.
+//     2. Let next be the first element of generator.[[AsyncGeneratorQueue]].
+//     3. Remove the first element from generator.[[AsyncGeneratorQueue]].
+//     4. Let promiseCapability be next.[[Capability]].
+//     5. Let value be completion.[[Value]].
+//     6. If completion is a throw completion, then
+//       a. Perform ! Call(promiseCapability.[[Reject]], undefined, « value »).
 //
 //
 // # Resumption with return
 //
-// Resumption with return completion is handled in js::AsyncGeneratorResumeNext.
-//
-// If the generator is suspended, it doesn't immediately resume the generator
-// script itself, but handles implicit `await` it in
-// js::AsyncGeneratorResumeNext.
-// (See PromiseHandlerAsyncGeneratorYieldReturnAwaitedFulfilled and
-// PromiseHandlerAsyncGeneratorYieldReturnAwaitedRejected), and resumes the
+// If the generator is in "suspended-yield" state, it doesn't immediately
+// resume the generator script itself, but it handles implicit `await` it in
+// AsyncGeneratorUnwrapYieldResumption.
+// (See PromiseHandler::AsyncGeneratorYieldReturnAwaitedFulfilled and
+// PromiseHandler::AsyncGeneratorYieldReturnAwaitedRejected), and resumes the
 // generator with the result of await.
-// And the return completion is finally handled in JSOp::CheckResumeKind
+//
+// The return completion is finally handled by the resume-kind check
 // after JSOp::Yield.
 //
-// This corresponds to AsyncGeneratorYield step 8.
+//   AsyncGeneratorUnwrapYieldResumption ( resumptionValue )
+//   https://tc39.es/ecma262/#sec-asyncgeneratorunwrapyieldresumption
 //
-// AsyncGeneratorYield ( value )
-// https://tc39.es/ecma262/#sec-asyncgeneratoryield
+//     1. If resumptionValue is not a return completion, return ?
+//        resumptionValue.
+//     2. Let awaited be Completion(Await(resumptionValue.[[Value]])).
+//     3. If awaited is a throw completion, return ? awaited.
+//     4. Assert: awaited is a normal completion.
+//     5. Return ReturnCompletion(awaited.[[Value]]).
 //
-//   8. Set the code evaluation state of genContext such that when evaluation
-//      is resumed with a Completion resumptionValue the following steps will
-//      be performed:
-//     ..
-//     b. Let awaited be Await(resumptionValue.[[Value]]).
-//     c. If awaited.[[Type]] is throw, return Completion(awaited).
-//     d. Assert: awaited.[[Type]] is normal.
-//     e. Return Completion { [[Type]]: return, [[Value]]: awaited.[[Value]],
-//        [[Target]]: empty }.
-//
-// If the generator is already completed, it awaits on the return value,
-// (See PromiseHandlerAsyncGeneratorResumeNextReturnFulfilled and
-//  PromiseHandlerAsyncGeneratorResumeNextReturnRejected), and resolves the
+// If the generator is already completed, it awaits on the return value in
+// AsyncGeneratorAwaitReturn.
+// (See PromiseHandler::AsyncGeneratorAwaitReturnFulfilled and
+//  PromiseHandler::AsyncGeneratorAwaitReturnRejected), and resolves the
 // request's promise with the value.
-//
-// It corresponds to AsyncGeneratorResumeNext step 10.b.i.
-//
-// AsyncGeneratorResumeNext ( generator )
-// https://tc39.es/ecma262/#sec-asyncgeneratorresumenext
-//
-//   10. If completion is an abrupt completion, then
-//     ..
-//     b. If state is completed, then
-//       i. If completion.[[Type]] is return, then
-//         1. Set generator.[[AsyncGeneratorState]] to awaiting-return.
-//         2. Let promise be ? PromiseResolve(%Promise%, completion.[[Value]]).
-//         3. Let stepsFulfilled be the algorithm steps defined in
-//            AsyncGeneratorResumeNext Return Processor Fulfilled Functions.
-//         4. Let onFulfilled be ! CreateBuiltinFunction(stepsFulfilled, «
-//            [[Generator]] »).
-//         5. Set onFulfilled.[[Generator]] to generator.
-//         6. Let stepsRejected be the algorithm steps defined in
-//            AsyncGeneratorResumeNext Return Processor Rejected Functions.
-//         7. Let onRejected be ! CreateBuiltinFunction(stepsRejected, «
-//            [[Generator]] »).
-//         8. Set onRejected.[[Generator]] to generator.
-//         9. Perform ! PerformPromiseThen(promise, onFulfilled, onRejected).
-//         10. Return undefined.
-//
 
 namespace js {
 
@@ -301,34 +290,32 @@ bool AsyncGeneratorThrow(JSContext* cx, unsigned argc, Value* vp);
 // stored in the Slot_CachedRequest slot.
 class AsyncGeneratorRequest : public NativeObject {
  private:
-  enum AsyncGeneratorRequestSlots {
-    // Int32 value with CompletionKind.
-    //   Normal: next
-    //   Return: return
-    //   Throw:  throw
-    Slot_CompletionKind = 0,
+  // Int32 value with CompletionKind.
+  //   Normal: next
+  //   Return: return
+  //   Throw:  throw
+  JS_DEFINE_TYPED_SLOT(0, Slot_CompletionKind, Int32, Undefined);
 
-    // The value passed to AsyncGenerator#{next,return,throw}.
-    Slot_CompletionValue,
+  // The value passed to AsyncGenerator#{next,return,throw}.
+  JS_DEFINE_UNTYPED_SLOT(1, Slot_CompletionValue);
 
-    // The promise returned by AsyncGenerator#{next,return,throw}.
-    Slot_Promise,
+  // The promise returned by AsyncGenerator#{next,return,throw}.
+  JS_DEFINE_TYPED_SLOT(2, Slot_Promise, Object, Null, Undefined);
 
-    Slots,
-  };
+  static constexpr uint32_t Slots = 3;
 
   void init(CompletionKind completionKind, const Value& completionValue,
             PromiseObject* promise) {
-    setFixedSlot(Slot_CompletionKind,
-                 Int32Value(static_cast<int32_t>(completionKind)));
+    setFixedSlotTyped(Slot_CompletionKind,
+                      Int32Value(static_cast<int32_t>(completionKind)));
     setFixedSlot(Slot_CompletionValue, completionValue);
-    setFixedSlot(Slot_Promise, ObjectValue(*promise));
+    setFixedSlotTyped(Slot_Promise, ObjectValue(*promise));
   }
 
   // Clear the request data for reuse.
   void clearData() {
     setFixedSlot(Slot_CompletionValue, NullValue());
-    setFixedSlot(Slot_Promise, NullValue());
+    setFixedSlotTyped(Slot_Promise, NullValue());
   }
 
   friend AsyncGeneratorObject;
@@ -343,41 +330,42 @@ class AsyncGeneratorRequest : public NativeObject {
 
   CompletionKind completionKind() const {
     return static_cast<CompletionKind>(
-        getFixedSlot(Slot_CompletionKind).toInt32());
+        getFixedSlotTyped(Slot_CompletionKind).toInt32());
   }
   JS::Value completionValue() const {
     return getFixedSlot(Slot_CompletionValue);
   }
   PromiseObject* promise() const {
-    return &getFixedSlot(Slot_Promise).toObject().as<PromiseObject>();
+    return &getFixedSlotTyped(Slot_Promise).toObject().as<PromiseObject>();
   }
 };
 
 class AsyncGeneratorObject : public AbstractGeneratorObject {
  private:
-  enum AsyncGeneratorObjectSlots {
-    // Int32 value containing one of the |State| fields from below.
-    Slot_State = AbstractGeneratorObject::RESERVED_SLOTS,
+  // Int32 value containing one of the |State| fields from below.
+  JS_DEFINE_TYPED_SLOT(AbstractGeneratorObject::RESERVED_SLOTS, Slot_State,
+                       Int32, Undefined);
 
-    // * null value if this async generator has no requests
-    // * AsyncGeneratorRequest if this async generator has only one request
-    // * list object if this async generator has 2 or more requests
-    Slot_QueueOrRequest,
+  // * null value if this async generator has no requests
+  // * AsyncGeneratorRequest if this async generator has only one request
+  // * list object if this async generator has 2 or more requests
+  JS_DEFINE_TYPED_SLOT(AbstractGeneratorObject::RESERVED_SLOTS + 1,
+                       Slot_QueueOrRequest, Object, Null, Undefined);
 
-    // Cached AsyncGeneratorRequest for later use.
-    // undefined if there's no cache.
-    Slot_CachedRequest,
+  // Cached AsyncGeneratorRequest for later use.
+  // undefined if there's no cache.
+  JS_DEFINE_TYPED_SLOT(AbstractGeneratorObject::RESERVED_SLOTS + 2,
+                       Slot_CachedRequest, Object, Null, Undefined);
 
-    Slots
-  };
+  static constexpr uint32_t Slots = AbstractGeneratorObject::RESERVED_SLOTS + 3;
 
  public:
   enum State {
-    // "suspendedStart" in the spec.
+    // "suspended-start" in the spec.
     // Suspended after invocation.
     State_SuspendedStart,
 
-    // "suspendedYield" in the spec
+    // "suspended-yield" in the spec
     // Suspended with `yield` expression.
     State_SuspendedYield,
 
@@ -389,12 +377,16 @@ class AsyncGeneratorObject : public AbstractGeneratorObject {
     // Part of "executing" in the spec.
     // Awaiting on the value passed by AsyncGenerator#return which is called
     // while executing.
-    State_AwaitingYieldReturn,
+    State_Executing_AwaitingYieldReturn,
 
-    // "awaiting-return" in the spec.
+    // "draining-queue" in the spec.
+    // It's performing AsyncGeneratorDrainQueue.
+    State_DrainingQueue,
+
+    // Part of "draining-queue" in the spec.
     // Awaiting on the value passed by AsyncGenerator#return which is called
     // after completed.
-    State_AwaitingReturn,
+    State_DrainingQueue_AwaitingReturn,
 
     // "completed" in the spec.
     // The generator is completed.
@@ -402,9 +394,11 @@ class AsyncGeneratorObject : public AbstractGeneratorObject {
   };
 
   State state() const {
-    return static_cast<State>(getFixedSlot(Slot_State).toInt32());
+    return static_cast<State>(getFixedSlotTyped(Slot_State).toInt32());
   }
-  void setState(State state_) { setFixedSlot(Slot_State, Int32Value(state_)); }
+  void setState(State state_) {
+    setFixedSlotTyped(Slot_State, Int32Value(state_));
+  }
 
  private:
   // Queue is implemented in 2 ways.  If only one request is queued ever,
@@ -413,31 +407,31 @@ class AsyncGeneratorObject : public AbstractGeneratorObject {
   // stored to the slot.
 
   bool isSingleQueue() const {
-    return getFixedSlot(Slot_QueueOrRequest).isNull() ||
-           getFixedSlot(Slot_QueueOrRequest)
+    return getFixedSlotTyped(Slot_QueueOrRequest).isNull() ||
+           getFixedSlotTyped(Slot_QueueOrRequest)
                .toObject()
                .is<AsyncGeneratorRequest>();
   }
   bool isSingleQueueEmpty() const {
-    return getFixedSlot(Slot_QueueOrRequest).isNull();
+    return getFixedSlotTyped(Slot_QueueOrRequest).isNull();
   }
   void setSingleQueueRequest(AsyncGeneratorRequest* request) {
-    setFixedSlot(Slot_QueueOrRequest, ObjectValue(*request));
+    setFixedSlotTyped(Slot_QueueOrRequest, ObjectValue(*request));
   }
   void clearSingleQueueRequest() {
-    setFixedSlot(Slot_QueueOrRequest, NullValue());
+    setFixedSlotTyped(Slot_QueueOrRequest, NullValue());
   }
   AsyncGeneratorRequest* singleQueueRequest() const {
-    return &getFixedSlot(Slot_QueueOrRequest)
+    return &getFixedSlotTyped(Slot_QueueOrRequest)
                 .toObject()
                 .as<AsyncGeneratorRequest>();
   }
 
   ListObject* queue() const {
-    return &getFixedSlot(Slot_QueueOrRequest).toObject().as<ListObject>();
+    return &getFixedSlotTyped(Slot_QueueOrRequest).toObject().as<ListObject>();
   }
   void setQueue(ListObject* queue_) {
-    setFixedSlot(Slot_QueueOrRequest, ObjectValue(*queue_));
+    setFixedSlotTyped(Slot_QueueOrRequest, ObjectValue(*queue_));
   }
 
  public:
@@ -449,17 +443,25 @@ class AsyncGeneratorObject : public AbstractGeneratorObject {
   bool isSuspendedStart() const { return state() == State_SuspendedStart; }
   bool isSuspendedYield() const { return state() == State_SuspendedYield; }
   bool isExecuting() const { return state() == State_Executing; }
-  bool isAwaitingYieldReturn() const {
-    return state() == State_AwaitingYieldReturn;
+  bool isExecuting_AwaitingYieldReturn() const {
+    return state() == State_Executing_AwaitingYieldReturn;
   }
-  bool isAwaitingReturn() const { return state() == State_AwaitingReturn; }
+  bool isDrainingQueue() const { return state() == State_DrainingQueue; }
+  bool isDrainingQueue_AwaitingReturn() const {
+    return state() == State_DrainingQueue_AwaitingReturn;
+  }
   bool isCompleted() const { return state() == State_Completed; }
 
   void setSuspendedStart() { setState(State_SuspendedStart); }
   void setSuspendedYield() { setState(State_SuspendedYield); }
   void setExecuting() { setState(State_Executing); }
-  void setAwaitingYieldReturn() { setState(State_AwaitingYieldReturn); }
-  void setAwaitingReturn() { setState(State_AwaitingReturn); }
+  void setExecuting_AwaitingYieldReturn() {
+    setState(State_Executing_AwaitingYieldReturn);
+  }
+  void setDrainingQueue() { setState(State_DrainingQueue); }
+  void setDrainingQueue_AwaitingReturn() {
+    setState(State_DrainingQueue_AwaitingReturn);
+  }
   void setCompleted() { setState(State_Completed); }
 
   [[nodiscard]] static bool enqueueRequest(
@@ -479,6 +481,15 @@ class AsyncGeneratorObject : public AbstractGeneratorObject {
     return queue()->getDenseInitializedLength() == 0;
   }
 
+#ifdef DEBUG
+  bool isQueueLengthOne() const {
+    if (isSingleQueue()) {
+      return !isSingleQueueEmpty();
+    }
+    return queue()->getDenseInitializedLength() == 1;
+  }
+#endif
+
   // This function does either of the following:
   //   * return a cached request object with the slots updated
   //   * create a new request object with the slots set
@@ -496,23 +507,25 @@ class AsyncGeneratorObject : public AbstractGeneratorObject {
     }
 
     request->clearData();
-    setFixedSlot(Slot_CachedRequest, ObjectValue(*request));
+    setFixedSlotTyped(Slot_CachedRequest, ObjectValue(*request));
   }
 
  private:
   bool hasCachedRequest() const {
-    return getFixedSlot(Slot_CachedRequest).isObject();
+    return getFixedSlotTyped(Slot_CachedRequest).isObject();
   }
 
   AsyncGeneratorRequest* takeCachedRequest() {
-    auto request = &getFixedSlot(Slot_CachedRequest)
+    auto request = &getFixedSlotTyped(Slot_CachedRequest)
                         .toObject()
                         .as<AsyncGeneratorRequest>();
     clearCachedRequest();
     return request;
   }
 
-  void clearCachedRequest() { setFixedSlot(Slot_CachedRequest, NullValue()); }
+  void clearCachedRequest() {
+    setFixedSlotTyped(Slot_CachedRequest, NullValue());
+  }
 };
 
 JSObject* CreateAsyncFromSyncIterator(JSContext* cx, HandleObject iter,
@@ -520,18 +533,16 @@ JSObject* CreateAsyncFromSyncIterator(JSContext* cx, HandleObject iter,
 
 class AsyncFromSyncIteratorObject : public NativeObject {
  private:
-  enum AsyncFromSyncIteratorObjectSlots {
-    // Object that implements the sync iterator protocol.
-    Slot_Iterator = 0,
+  // Object that implements the sync iterator protocol.
+  JS_DEFINE_TYPED_SLOT(0, Slot_Iterator, Object, Undefined);
 
-    // The `next` property of the iterator object.
-    Slot_NextMethod = 1,
+  // The `next` property of the iterator object.
+  JS_DEFINE_UNTYPED_SLOT(1, Slot_NextMethod);
 
-    Slots
-  };
+  static constexpr uint32_t Slots = 2;
 
   void init(JSObject* iterator, const Value& nextMethod) {
-    setFixedSlot(Slot_Iterator, ObjectValue(*iterator));
+    setFixedSlotTyped(Slot_Iterator, ObjectValue(*iterator));
     setFixedSlot(Slot_NextMethod, nextMethod);
   }
 
@@ -541,7 +552,9 @@ class AsyncFromSyncIteratorObject : public NativeObject {
   static JSObject* create(JSContext* cx, HandleObject iter,
                           HandleValue nextMethod);
 
-  JSObject* iterator() const { return &getFixedSlot(Slot_Iterator).toObject(); }
+  JSObject* iterator() const {
+    return &getFixedSlotTyped(Slot_Iterator).toObject();
+  }
 
   const Value& nextMethod() const { return getFixedSlot(Slot_NextMethod); }
 };

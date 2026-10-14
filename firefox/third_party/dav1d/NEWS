@@ -1,3 +1,43 @@
+Changes for 1.5.4 'Sonic':
+--------------------------
+
+1.5.4 is a minor release of dav1d, focused on optimizations and maintenance:
+ - Support for OS/2, including API exports and assembly
+ - Switch to external checkasm
+ - Add Armv9.3-A GCS (Guarded Control Stack) support
+ - AArch64: optimize ipred_v, ipred_h and ipred_smooth_* 8bpc functions, and
+   reduce .text size
+ - ARM32: optimize prep_neon
+ - RISC-V: ipred_(dc, h, v, pal) optimizations for 8 and 16bpc,
+   generate_grain_y for 8bpc, and optimizations (prep/put_8tap, 6-tap and copy paths)
+ - Portability improvements for non-POSIX systems (signal() fallback)
+ - Schedule tile tasks for all passes at once, improving threading
+ - Precompute the quantization matrix tables at build time
+ - Move loop-invariant computations out of hot loops
+
+
+Changes for 1.5.3 'Sonic':
+--------------------------
+
+1.5.3 is a minor release of dav1d, focused on RISC-V and maintenance:
+ - Misc small optimizations
+ - RISC-V assembly optimizations for ipred, emu_edge and w_mask,
+   and VLEN 512 for blend functions
+ - Fix issue with ivf files with 0 frames in tools
+
+
+Changes for 1.5.2 'Sonic':
+--------------------------
+
+1.5.2 is a minor release of dav1d, focused on maintenance:
+ - minor speed improvement in recon
+ - improvements on loongarch symboles visibility and asm
+ - mark C globals with small code model
+ - reduce the code size of the frame header parsing (OBU)
+ - minor fixes on tools and CI
+ - fix compilation with nasm 3.00
+
+
 Changes for 1.5.1 'Sonic':
 --------------------------
 
@@ -29,7 +69,7 @@ Changes for 1.5.0 'Sonic':
  - picture: copy HDR10+ and T35 metadata only to visible frames
  - SSSE3 new optimizations for 6-tap (8bit and hbd)
  - AArch64/SVE: Add HBD subpel filters using 128-bit SVE2
- - AArch64: Add USMMLA implempentation for 6-tap H/HV
+ - AArch64: Add USMMLA Implementation for 6-tap H/HV
  - AArch64: Optimize Armv8.0 NEON for HBD horizontal filters and 6-tap filters
  - Power9: Optimized ITX till 16x4.
  - Loongarch: numerous optimizations

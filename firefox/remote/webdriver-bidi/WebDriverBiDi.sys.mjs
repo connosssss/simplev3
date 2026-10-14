@@ -7,6 +7,10 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   cleanupCacheBypassState:
     "chrome://remote/content/shared/NetworkCacheManager.sys.mjs",
+  ConnectionPrompt:
+    "chrome://remote/content/shared/webdriver/ConnectionPrompt.sys.mjs",
+  ConnectionPromptResult:
+    "chrome://remote/content/shared/webdriver/ConnectionPrompt.sys.mjs",
   error: "chrome://remote/content/shared/webdriver/Errors.sys.mjs",
   Log: "chrome://remote/content/shared/Log.sys.mjs",
   RecommendedPreferences:
@@ -14,6 +18,8 @@ ChromeUtils.defineESModuleGetters(lazy, {
   WebDriverNewSessionHandler:
     "chrome://remote/content/webdriver-bidi/NewSessionHandler.sys.mjs",
   WebDriverSession: "chrome://remote/content/shared/webdriver/Session.sys.mjs",
+  UserPromptHandlerManager:
+    "chrome://remote/content/webdriver-bidi/UserPromptHandlerManager.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "logger", () =>
@@ -25,12 +31,6 @@ const RECOMMENDED_PREFS = new Map([
   // Enables permission isolation by user context.
   // It should be enabled by default in Nightly in the scope of the bug 1641584.
   ["permissions.isolateBy.userContext", true],
-  // Enables race-cache-with-network, which avoids issues with requests
-  // intercepted in the responseStarted phase. Without this preference, any
-  // subsequent request to the same URL as a suspended request hangs as well.
-  // Bug 1966494: should allow to unblock subsequent request, but might do so
-  // with a timer, slowing down tests. Should be reconsidered once fixed.
-  ["network.http.rcwn.enabled", true],
 ]);
 
 /**
@@ -43,7 +43,9 @@ export class WebDriverBiDi {
   #bidiServerPath;
   #running;
   #session;
+  #sessionCreationPending;
   #sessionlessConnections;
+  #userPromptHandlerManager;
 
   /**
    * Creates a new instance of the WebDriverBiDi class.
@@ -57,6 +59,9 @@ export class WebDriverBiDi {
 
     this.#bidiServerPath;
     this.#session = null;
+    // Set when creating sessions for dynamic non-automation servers, while we
+    // wait for the user to accept or deny the connection.
+    this.#sessionCreationPending = false;
     this.#sessionlessConnections = new Set();
   }
 
@@ -129,11 +134,30 @@ export class WebDriverBiDi {
       );
     }
 
-    this.#session = new lazy.WebDriverSession(
-      capabilities,
-      flags,
-      sessionlessConnection
-    );
+    if (this.#sessionCreationPending) {
+      throw new lazy.error.SessionNotCreatedError(
+        "Maximum number of active sessions (session creation in progress)"
+      );
+    }
+
+    if (!this.#agent.isBrowserAutomationRunning) {
+      this.#sessionCreationPending = true;
+      try {
+        const promptResult = await lazy.ConnectionPrompt.show();
+        if (promptResult === lazy.ConnectionPromptResult.DENY) {
+          throw new lazy.error.SessionNotCreatedError(
+            "The connection was denied by the user"
+          );
+        }
+      } finally {
+        this.#sessionCreationPending = false;
+      }
+    }
+
+    this.#session = new lazy.WebDriverSession(capabilities, flags, {
+      connection: sessionlessConnection,
+      useDedicatedContainer: this.#agent.isDynamicStartRunning,
+    });
 
     // Run new session steps for WebDriver BiDi.
     this.#newSessionAlgorithm(this.#session, flags);
@@ -144,6 +168,10 @@ export class WebDriverBiDi {
     }
 
     if (this.#session.bidi) {
+      this.#userPromptHandlerManager = new lazy.UserPromptHandlerManager(
+        this.#session.userPromptHandler
+      );
+
       // Creating a WebDriver BiDi session too early can cause issues with
       // clients in not being able to find any available browsing context.
       // Also when closing the application while it's still starting up can
@@ -176,6 +204,10 @@ export class WebDriverBiDi {
 
     // For multiple session check first if the last session was closed.
     lazy.cleanupCacheBypassState();
+
+    if (this.#userPromptHandlerManager) {
+      this.#userPromptHandlerManager.destroy();
+    }
 
     this.#session.destroy();
     this.#session = null;
@@ -215,7 +247,12 @@ export class WebDriverBiDi {
 
     this.#running = true;
 
-    lazy.RecommendedPreferences.applyPreferences(RECOMMENDED_PREFS);
+    // Only apply the recommended preferences when using WebDriver BiDi for
+    // regular browser automation. Dynamically starting the server for tooling
+    // or ai remote control should not modify the preferences of the profile.
+    if (this.#agent.isBrowserAutomationRunning) {
+      lazy.RecommendedPreferences.applyPreferences(RECOMMENDED_PREFS);
+    }
 
     // Install a HTTP handler for direct WebDriver BiDi connection requests.
     this.#agent.server.registerPathHandler(

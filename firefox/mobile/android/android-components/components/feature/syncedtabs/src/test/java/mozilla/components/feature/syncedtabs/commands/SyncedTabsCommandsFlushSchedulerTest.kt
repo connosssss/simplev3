@@ -13,25 +13,21 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkRequest
 import androidx.work.testing.WorkManagerTestInitHelper
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
 import mozilla.components.support.test.mock
 import mozilla.components.support.test.robolectric.testContext
-import mozilla.components.support.test.rule.MainCoroutineRule
-import mozilla.components.support.test.rule.runTestOnMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
-import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import kotlin.time.Duration.Companion.minutes
-import kotlin.time.Duration.Companion.seconds
 
 @RunWith(AndroidJUnit4::class)
 class SyncedTabsCommandsFlushSchedulerTest {
-    @get:Rule
-    val coroutinesTestRule = MainCoroutineRule()
 
     private lateinit var workManager: WorkManager
 
@@ -52,7 +48,7 @@ class SyncedTabsCommandsFlushSchedulerTest {
     }
 
     @Test
-    fun `GIVEN a scheduler WHEN a flush is requested THEN work should be enqueued`() = runTestOnMain {
+    fun `GIVEN a scheduler WHEN a flush is requested THEN work should be enqueued`() = runTest {
         val scheduler = SyncedTabsCommandsFlushScheduler(testContext)
 
         scheduler.requestFlush()
@@ -63,7 +59,7 @@ class SyncedTabsCommandsFlushSchedulerTest {
     }
 
     @Test
-    fun `GIVEN a scheduler WHEN a flush is cancelled THEN work should be cancelled`() = runTestOnMain {
+    fun `GIVEN a scheduler WHEN a flush is cancelled THEN work should be cancelled`() = runTest {
         val scheduler = SyncedTabsCommandsFlushScheduler(testContext)
         scheduler.requestFlush()
 
@@ -75,37 +71,42 @@ class SyncedTabsCommandsFlushSchedulerTest {
     }
 
     @Test
-    fun `GIVEN a scheduler without a flush delay WHEN a flush work request is created THEN the request should be configured`() = runTestOnMain {
-        val scheduler = SyncedTabsCommandsFlushScheduler(testContext)
-        val workRequest = scheduler.createFlushWorkRequest()
+    fun `GIVEN a scheduler without a flush delay WHEN a flush work request is created THEN the request should be configured`() =
+        runTest {
+            val scheduler = SyncedTabsCommandsFlushScheduler(testContext)
+            val workRequest = scheduler.createFlushWorkRequest()
 
-        assertFalse(workRequest.workSpec.isPeriodic)
-        assertTrue(workRequest.tags.contains(SyncedTabsCommandsFlushWorker.WORK_TAG))
-        assertEquals(NetworkType.CONNECTED, workRequest.workSpec.constraints.requiredNetworkType)
-        assertEquals(BackoffPolicy.EXPONENTIAL, workRequest.workSpec.backoffPolicy)
-        assertEquals(0, workRequest.workSpec.initialDelay)
-        assertEquals(WorkRequest.MIN_BACKOFF_MILLIS, workRequest.workSpec.backoffDelayDuration)
-    }
-
-    @Test
-    fun `GIVEN a scheduler with a flush delay WHEN a flush work request is created THEN the request should be configured`() = runTestOnMain {
-        val scheduler = SyncedTabsCommandsFlushScheduler(
-            testContext,
-            flushDelay = 5.minutes,
-        )
-        val workRequest = scheduler.createFlushWorkRequest()
-
-        assertEquals(5.minutes.inWholeMilliseconds, workRequest.workSpec.initialDelay)
-    }
+            assertFalse(workRequest.workSpec.isPeriodic)
+            assertTrue(workRequest.tags.contains(SyncedTabsCommandsFlushWorker.WORK_TAG))
+            assertEquals(NetworkType.CONNECTED, workRequest.workSpec.constraints.requiredNetworkType)
+            assertEquals(BackoffPolicy.EXPONENTIAL, workRequest.workSpec.backoffPolicy)
+            assertEquals(0, workRequest.workSpec.initialDelay)
+            assertEquals(WorkRequest.MIN_BACKOFF_MILLIS, workRequest.workSpec.backoffDelayDuration)
+        }
 
     @Test
-    fun `GIVEN a scheduler with a retry delay WHEN a flush work request is created THEN the request should be configured`() = runTestOnMain {
-        val scheduler = SyncedTabsCommandsFlushScheduler(
-            testContext,
-            retryDelay = 45.seconds,
-        )
-        val workRequest = scheduler.createFlushWorkRequest()
+    fun `GIVEN a scheduler with a flush delay WHEN a flush work request is created THEN the request should be configured`() =
+        runTest {
+            val scheduler =
+                SyncedTabsCommandsFlushScheduler(
+                    testContext,
+                    flushDelay = 5.minutes,
+                )
+            val workRequest = scheduler.createFlushWorkRequest()
 
-        assertEquals(45.seconds.inWholeMilliseconds, workRequest.workSpec.backoffDelayDuration)
-    }
+            assertEquals(5.minutes.inWholeMilliseconds, workRequest.workSpec.initialDelay)
+        }
+
+    @Test
+    fun `GIVEN a scheduler with a retry delay WHEN a flush work request is created THEN the request should be configured`() =
+        runTest {
+            val scheduler =
+                SyncedTabsCommandsFlushScheduler(
+                    testContext,
+                    retryDelay = 45.seconds,
+                )
+            val workRequest = scheduler.createFlushWorkRequest()
+
+            assertEquals(45.seconds.inWholeMilliseconds, workRequest.workSpec.backoffDelayDuration)
+        }
 }

@@ -1,16 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_IOUtils__
-#define mozilla_dom_IOUtils__
+#ifndef mozilla_dom_IOUtils_
+#define mozilla_dom_IOUtils_
 
 #include "js/Utility.h"
 #include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/Buffer.h"
 #include "mozilla/DataMutex.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/Result.h"
@@ -29,6 +26,10 @@
 #include "prio.h"
 
 class nsFileRandomAccessStream;
+
+namespace mozilla::security::lockstore {
+class LockstoreService;
+}
 
 namespace mozilla {
 
@@ -97,7 +98,7 @@ class IOUtils final {
 
   static already_AddRefed<dom::Promise> WriteJSON(
       dom::GlobalObject& aGlobal, const nsAString& aPath,
-      JS::Handle<JS::Value> aValue, const dom::WriteOptions& aOptions,
+      JS::Handle<JS::Value> aValue, const dom::WriteJSONOptions& aOptions,
       ErrorResult& aError);
 
   static already_AddRefed<dom::Promise> Move(dom::GlobalObject& aGlobal,
@@ -189,7 +190,8 @@ class IOUtils final {
 
   static already_AddRefed<dom::Promise> SetWindowsAttributes(
       dom::GlobalObject& aGlobal, const nsAString& aPath,
-      const mozilla::dom::WindowsFileAttributes& aAttrs, ErrorResult& aError);
+      const mozilla::dom::WindowsFileAttributes& aAttrs, bool aRecursive,
+      ErrorResult& aError);
 #elif defined(XP_MACOSX)
   static already_AddRefed<dom::Promise> HasMacXAttr(dom::GlobalObject& aGlobal,
                                                     const nsAString& aPath,
@@ -249,6 +251,26 @@ class IOUtils final {
     Uint8Array,
   };
 
+  /**
+   * Attempts to remove the file located at |aFile|.
+   *
+   * Must be called off the main thread.
+   *
+   * @param aFile          The location of the file.
+   * @param aIgnoreAbsent  If true, suppress errors due to an absent target
+   * file.
+   * @param aRecursive     If true, attempt to recursively remove descendant
+   *                       files. This option is safe to use even if the target
+   *                       is not a directory.
+   * @param aRetryReadonly Retry a delete that failed with a NotAllowedError by
+   *                       first removing the readonly attribute. Only has an
+   *                       effect on Windows.
+   *
+   * @return Ok if the file was removed successfully, or an error.
+   */
+  static Result<Ok, IOError> RemoveSync(nsIFile* aFile, bool aIgnoreAbsent,
+                                        bool aRecursive, bool aRetryReadonly);
+
  private:
   ~IOUtils() = default;
 
@@ -259,6 +281,7 @@ class IOUtils final {
   struct InternalFileInfo;
   struct InternalWriteOpts;
   class MozLZ4;
+  class Encryption;
   class EventQueue;
   class State;
 
@@ -301,31 +324,42 @@ class IOUtils final {
    * @param aOffset     The offset to start reading from.
    * @param aMaxBytes   If |Some|, then only read up this this number of bytes,
    *                    otherwise attempt to read the whole file.
-   * @param aDecompress If true, decompress the bytes read from disk before
-   *                    returning the result to the caller.
-   * @param aBufferKind The kind of buffer to allocate.
+   * @param aDecompress    If true, decompress the bytes read from disk before
+   *                       returning the result to the caller.
+   * @param aDecryptKeyId If non-empty, decrypt the bytes read from disk
+   *                       (before decompression) using the Keystore DEK
+   *                       named by this string. A file lacking the
+   *                       encryption header is returned unchanged.
+   * @param aLockstore     The Keystore service, obtained on the calling
+   *                       thread. May be null when |aDecryptKeyId| is empty.
+   * @param aBufferKind    The kind of buffer to allocate.
    *
    * @return A buffer containing the entire (decompressed) file contents, or an
    *         error.
    */
-  static Result<JsBuffer, IOError> ReadSync(nsIFile* aFile,
-                                            const uint64_t aOffset,
-                                            const Maybe<uint32_t> aMaxBytes,
-                                            const bool aDecompress,
-                                            BufferKind aBufferKind);
+  static Result<JsBuffer, IOError> ReadSync(
+      nsIFile* aFile, const uint64_t aOffset, const Maybe<uint32_t> aMaxBytes,
+      const bool aDecompress, const nsCString& aDecryptKeyId,
+      security::lockstore::LockstoreService* aLockstore,
+      BufferKind aBufferKind);
 
   /**
    * Attempts to read the entire file at |aPath| as a UTF-8 string.
    *
-   * @param aFile       The location of the file.
-   * @param aDecompress If true, decompress the bytes read from disk before
-   *                    returning the result to the caller.
+   * @param aFile          The location of the file.
+   * @param aDecompress    If true, decompress the bytes read from disk before
+   *                       returning the result to the caller.
+   * @param aDecryptKeyId If non-empty, decrypt using the Keystore DEK
+   *                       named by this string.
+   * @param aLockstore     The Keystore service. May be null when
+   *                       |aDecryptKeyId| is empty.
    *
    * @return The (decompressed) contents of the file re-encoded as a UTF-16
    *         string.
    */
-  static Result<JsBuffer, IOError> ReadUTF8Sync(nsIFile* aFile,
-                                                const bool aDecompress);
+  static Result<JsBuffer, IOError> ReadUTF8Sync(
+      nsIFile* aFile, const bool aDecompress, const nsCString& aDecryptKeyId,
+      security::lockstore::LockstoreService* aLockstore);
 
   /**
    * Attempt to write the entirety of |aByteArray| to the file at |aPath|.
@@ -335,13 +369,17 @@ class IOUtils final {
    * @param aFile  The location of the file.
    * @param aByteArray The data to write to the file.
    * @param aOptions   Options to modify the way the write is completed.
+   * @param aLockstore The Keystore service to encrypt with when
+   *                   |aOptions.mEncrypt| is set, obtained on the calling
+   *                   thread by the entry point. May be null otherwise.
    *
    * @return The number of bytes written to the file, or an error if the write
    *         failed or was incomplete.
    */
   static Result<uint32_t, IOError> WriteSync(
       nsIFile* aFile, const Span<const uint8_t>& aByteArray,
-      const InternalWriteOpts& aOptions);
+      const InternalWriteOpts& aOptions,
+      security::lockstore::LockstoreService* aLockstore);
 
   /**
    * Attempts to move the file located at |aSourceFile| to |aDestFile|.
@@ -387,24 +425,6 @@ class IOUtils final {
                                             const char* aMethodName,
                                             nsIFile* aSource, nsIFile* aDest,
                                             bool aNoOverwrite);
-
-  /**
-   * Attempts to remove the file located at |aFile|.
-   *
-   * @param aFile          The location of the file.
-   * @param aIgnoreAbsent  If true, suppress errors due to an absent target
-   * file.
-   * @param aRecursive     If true, attempt to recursively remove descendant
-   *                       files. This option is safe to use even if the target
-   *                       is not a directory.
-   * @param aRetryReadonly Retry a delete that failed with a NotAllowedError by
-   *                       first removing the readonly attribute. Only has an
-   *                       effect on Windows.
-   *
-   * @return Ok if the file was removed successfully, or an error.
-   */
-  static Result<Ok, IOError> RemoveSync(nsIFile* aFile, bool aIgnoreAbsent,
-                                        bool aRecursive, bool aRetryReadonly);
 
   /**
    * Attempts to create a new directory at |aFile|.
@@ -539,13 +559,17 @@ class IOUtils final {
   /**
    * Set the Windows-specific attributes of the file.
    *
-   * @param aFile  The location of the file.
-   * @param aAttrs The attributes to set on the file.
+   * @param aFile       The location of the file.
+   * @param aSetAttrs   The attributes to set on the file.
+   * @param aClearAttrs The attributes to clear on the file.
+   * @param aRecursive  Whether or not to apply the change to folder contents
+   *                    recursively.
    *
    * @return |Ok| if the attributes were successfully set, or an error.
    */
   static Result<Ok, IOError> SetWindowsAttributesSync(
-      nsIFile* aFile, const uint32_t aSetAttrs, const uint32_t aClearAttrs);
+      nsIFile* aFile, const uint32_t aSetAttrs, const uint32_t aClearAttrs,
+      bool aRecursive);
 #elif defined(XP_MACOSX)
   static Result<bool, IOError> HasMacXAttrSync(nsIFile* aFile,
                                                const nsCString& aAttr);
@@ -734,9 +758,13 @@ struct IOUtils::InternalWriteOpts {
   dom::WriteMode mMode;
   bool mFlush = false;
   bool mCompress = false;
+  nsCString mEncryptKeyId;
+  size_t mLengthHint = 0;
 
   static Result<InternalWriteOpts, IOUtils::IOError> FromBinding(
       const dom::WriteOptions& aOptions);
+  static Result<InternalWriteOpts, IOUtils::IOError> FromBinding(
+      const dom::WriteJSONOptions& aOptions);
 };
 
 /**
@@ -771,6 +799,49 @@ class IOUtils::MozLZ4 {
    */
   static Result<IOUtils::JsBuffer, IOError> Decompress(
       Span<const uint8_t> aFileContents, IOUtils::BufferKind);
+};
+
+/**
+ * Whole-file encryption transform, composing with |MozLZ4| compression
+ * (compress-then-encrypt on write, decrypt-then-decompress on read).
+ *
+ * The crypto and key material are owned by the in-tree Keystore
+ * (security/lockstore); this class only frames the ciphertext and routes
+ * to the Keystore's synchronous C++ tier. The on-disk layout is:
+ *
+ *  - MAGIC_NUMBER (8 bytes)
+ *  - the self-describing blob returned by the Keystore's encrypt
+ *    ([cipher_suite_id][nonce][ciphertext+tag])
+ *
+ * A LocalKey KEK and a fixed DEK are created on first use.
+ */
+class IOUtils::Encryption {
+ public:
+  static constexpr std::array<uint8_t, 8> MAGIC_NUMBER{
+      {'m', 'o', 'z', 'E', 'n', 'c', '0', '\0'}};
+  static constexpr size_t VERSION_OFFSET = 6;
+  static constexpr uint8_t CURRENT_VERSION = '0';
+
+  static bool IsEncrypted(Span<const uint8_t> aData);
+
+  /**
+   * Encrypts |aPlaintext| and returns a byte array (magic header + Keystore
+   * blob) whose contents may be written to disk.
+   */
+  static Result<nsTArray<uint8_t>, IOError> Encrypt(
+      Span<const uint8_t> aPlaintext,
+      security::lockstore::LockstoreService* aLockstore,
+      const nsACString& aKeyId);
+
+  /**
+   * If |aFileContents| carries the encryption header, strips it and returns
+   * the decrypted content. If the header is absent, returns the contents
+   * unchanged (so unencrypted/legacy files read transparently).
+   */
+  static Result<IOUtils::JsBuffer, IOError> Decrypt(
+      Span<const uint8_t> aFileContents,
+      security::lockstore::LockstoreService* aLockstore,
+      const nsACString& aKeyId, IOUtils::BufferKind);
 };
 
 class IOUtilsShutdownBlocker : public nsIAsyncShutdownBlocker,

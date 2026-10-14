@@ -1,54 +1,65 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.fenix.ui
 
-import androidx.compose.ui.test.junit4.AndroidComposeTestRule
+import androidx.compose.ui.test.junit4.v2.AndroidComposeTestRule as AndroidComposeTestRuleV2
+import androidx.test.espresso.Espresso.closeSoftKeyboard
+import mozilla.components.feature.prompts.R as promptsR
 import org.junit.Rule
 import org.junit.Test
-import org.mozilla.fenix.R
-import org.mozilla.fenix.customannotations.SmokeTest
 import org.mozilla.fenix.helpers.DataGenerationHelper.getStringResource
+import org.mozilla.fenix.helpers.FenixTestRule
 import org.mozilla.fenix.helpers.HomeActivityTestRule
 import org.mozilla.fenix.helpers.MatcherHelper
 import org.mozilla.fenix.helpers.MatcherHelper.itemContainingText
-import org.mozilla.fenix.helpers.TestAssetHelper
-import org.mozilla.fenix.helpers.TestSetup
+import org.mozilla.fenix.helpers.TestAssetHelper.getGenericAsset
+import org.mozilla.fenix.helpers.TestAssetHelper.promptAsset
+import org.mozilla.fenix.helpers.TestHelper.waitForAppWindowToBeUpdated
 import org.mozilla.fenix.helpers.perf.DetectMemoryLeaksRule
 import org.mozilla.fenix.ui.robots.clickPageObject
 import org.mozilla.fenix.ui.robots.navigationToolbar
 
 /**
- *  Tests for verifying basic functionality of prompts
+ * Tests for verifying basic functionality of prompts
  *
- *  Including:
- *  - beforeunload prompt
+ * Including:
+ * - beforeunload prompt
  */
+class PromptTest {
+    @get:Rule(order = 0) val fenixTestRule: FenixTestRule = FenixTestRule()
 
-class PromptTest : TestSetup() {
-    @get:Rule
-    val composeTestRule =
-        AndroidComposeTestRule(
-            HomeActivityTestRule.withDefaultSettingsOverrides(),
-        ) { it.activity }
+    private val mockWebServer
+        get() = fenixTestRule.mockWebServer
 
-    @get:Rule
-    val memoryLeaksRule = DetectMemoryLeaksRule()
+    @get:Rule(order = 1)
+    val composeTestRule = AndroidComposeTestRuleV2(HomeActivityTestRule.withDefaultSettingsOverrides()) { it.activity }
 
-    @SmokeTest
+    @get:Rule(order = 2) val memoryLeaksRule = DetectMemoryLeaksRule(composeTestRule = { composeTestRule })
+
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/4025097
     @Test
     fun verifyBeforeUnloadPrompt() {
-        val defaultWebPage = TestAssetHelper.getGenericAsset(mockWebServer, 1)
-        val promptWebPage = TestAssetHelper.getPromptAsset(mockWebServer)
+        val defaultWebPage = mockWebServer.getGenericAsset(1)
+        val promptWebPage = mockWebServer.promptAsset
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(promptWebPage.url) {
-            clickPageObject(MatcherHelper.itemWithResId("nameInput"))
-        }
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(promptWebPage.url) {
+                clickPageObject(composeTestRule, MatcherHelper.itemWithResId("nameInput"))
+            }
 
-        navigationToolbar {
-        }.enterURL(defaultWebPage.url) {
-            verifyBeforeUnloadPromptExists()
-        }
+        navigationToolbar(composeTestRule) {
+                closeSoftKeyboard()
+                waitForAppWindowToBeUpdated()
+            }
+            .enterURLAndEnterToBrowser(defaultWebPage.url) {
+                verifyBeforeUnloadPromptExists()
+            }
     }
 }
 
 private fun verifyBeforeUnloadPromptExists() =
-    MatcherHelper.assertUIObjectExists(itemContainingText(getStringResource(R.string.mozac_feature_prompt_before_unload_dialog_body)))
+    MatcherHelper.assertUIObjectExists(
+        itemContainingText(getStringResource(promptsR.string.mozac_feature_prompt_before_unload_dialog_body))
+    )

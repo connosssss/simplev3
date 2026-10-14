@@ -1,7 +1,65 @@
 "use strict";
 
-// This test checks whether the sidebar color properties work.
+// Nova being enabled changes some of the styling that is being tested here.
+const novaEnabled = Services.prefs.getBoolPref(
+  "browser.nova.enabled",
+  true // If the pref isn't set to false assume Nova styles are enabled by default.
+);
 
+info(`Run with Nova browser styles ${novaEnabled ? "enabled" : "disabled"}`);
+
+// This test checks whether the sidebar color properties work.
+const LIGHT_SALMON = "#ffa07a";
+
+// Schedule reset to the initial sidebar state after the test.
+const { SidebarTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/SidebarTestUtils.sys.mjs"
+);
+SidebarTestUtils.init(this);
+SidebarTestUtils.restoreStateAtCleanup(window);
+
+registerCleanupFunction(() => {
+  Services.prefs.clearUserPref(
+    "browser.toolbarbuttons.introduced.sidebar-button"
+  );
+});
+
+async function mouseOverSidebarToExpand(reversedPosition = false) {
+  EventUtils.synthesizeMouse(
+    SidebarController.sidebarContainer,
+    reversedPosition ? window.innerWidth : 1,
+    150,
+    {
+      type: "mousemove",
+    }
+  );
+
+  info(
+    `Waiting for the sidebar launcher to be expanded and have the correct border-${reversedPosition ? "start" : "end"} color`
+  );
+
+  await BrowserTestUtils.waitForMutationCondition(
+    SidebarController.sidebarContainer,
+    { attributes: true },
+    async () => {
+      await SidebarController.waitUntilStable();
+      let sidebarLauncherCS = window.getComputedStyle(
+        SidebarController.sidebarMain
+      );
+      let sidebarLauncherBorder = reversedPosition
+        ? sidebarLauncherCS.borderInlineStartColor
+        : sidebarLauncherCS.borderInlineEndColor;
+      return (
+        SidebarController.sidebarContainer.hasAttribute(
+          "sidebar-launcher-expanded"
+        ) &&
+        SidebarController.sidebarMain.expanded &&
+        SidebarController._state.launcherExpanded &&
+        sidebarLauncherBorder == hexToCSS(LIGHT_SALMON)
+      );
+    }
+  );
+}
 /**
  * Test whether the selected browser has the sidebar theme applied
  *
@@ -15,6 +73,7 @@ async function test_sidebar_theme(theme, isBrightText) {
     },
   });
 
+  const sidebarBrowser = document.getElementById("sidebar");
   const sidebarBox = document.getElementById("sidebar-box");
   const browserRoot = document.documentElement;
   const content = SidebarController.browser.contentWindow;
@@ -115,7 +174,9 @@ async function test_sidebar_theme(theme, isBrightText) {
   );
 
   if (isCustomSidebar) {
-    const sidebarBoxCS = window.getComputedStyle(sidebarBox);
+    const sidebarBoxCS = window.getComputedStyle(
+      Services.prefs.getBoolPref("sidebar.revamp") ? sidebarBrowser : sidebarBox
+    );
     is(
       sidebarBoxCS.backgroundColor,
       actualBackground,
@@ -179,7 +240,7 @@ async function test_sidebar_theme(theme, isBrightText) {
   );
 }
 
-add_task(async function test_support_sidebar_colors() {
+async function check_themes() {
   for (let command of ["viewBookmarksSidebar", "viewHistorySidebar"]) {
     info("Executing command: " + command);
 
@@ -227,10 +288,27 @@ add_task(async function test_support_sidebar_colors() {
       false
     );
   }
+}
+add_task(async function test_old_sidebar_colors() {
+  if (novaEnabled) {
+    info("SKIP unsupported old sidebar when Nova is enabled");
+    return;
+  }
+  await SpecialPowers.pushPrefEnv({
+    set: [["sidebar.revamp", false]],
+  });
+  await check_themes();
+  await SpecialPowers.popPrefEnv();
 });
 
-add_task(async function test_support_sidebar_border_color() {
-  const LIGHT_SALMON = "#ffa07a";
+add_task(async function test_old_sidebar_border_color() {
+  if (novaEnabled) {
+    info("SKIP unsupported old sidebar when Nova is enabled");
+    return;
+  }
+  await SpecialPowers.pushPrefEnv({
+    set: [["sidebar.revamp", false]],
+  });
   const extension = ExtensionTestUtils.loadExtension({
     manifest: {
       theme: {
@@ -274,4 +352,70 @@ add_task(async function test_support_sidebar_border_color() {
   }
 
   await extension.unload();
+  await SpecialPowers.popPrefEnv();
+});
+
+add_task(async function test_support_sidebar_colors() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["sidebar.revamp", true]],
+  });
+  await check_themes();
+  await SpecialPowers.popPrefEnv();
+});
+
+add_task(async function test_support_sidebar_border_color() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["sidebar.revamp", true]],
+  });
+  const command = "viewHistorySidebar";
+  info("Executing command: " + command);
+
+  await SidebarController.show(command);
+
+  const extension = ExtensionTestUtils.loadExtension({
+    manifest: {
+      theme: {
+        colors: {
+          sidebar_border: LIGHT_SALMON,
+        },
+      },
+    },
+  });
+
+  await extension.startup();
+
+  const sidebarPanel = document.getElementById(
+    novaEnabled ? "sidebar-box" : "sidebar"
+  );
+  const sidebarPanelCS = window.getComputedStyle(sidebarPanel);
+
+  // Nova draws the panel's separator as a border, everything else as an outline.
+  is(
+    novaEnabled
+      ? sidebarPanelCS.borderBlockStartColor
+      : sidebarPanelCS.outlineColor,
+    hexToCSS(LIGHT_SALMON),
+    "The card border of the history sidebar panel should be colored properly"
+  );
+
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["sidebar.verticalTabs", true],
+      ["sidebar.visibility", "expand-on-hover"],
+    ],
+  });
+
+  // We only apply the border color to the launcher for expand on hover since it can overlap an open
+  // sidebar panel making it difficult to distinguish where one surface ends and the other begins.
+  await mouseOverSidebarToExpand();
+
+  // Move sidebar to the right and wait for the correct conditions (expanded and border)
+  SidebarController.reversePosition();
+  await mouseOverSidebarToExpand(true);
+
+  // cleanup
+  SidebarController.reversePosition();
+  await extension.unload();
+  await SpecialPowers.popPrefEnv();
+  await SpecialPowers.popPrefEnv();
 });

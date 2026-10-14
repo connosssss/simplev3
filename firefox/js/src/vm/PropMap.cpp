@@ -1,10 +1,6 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
-#include "vm/PropMap-inl.h"
 
 #include "gc/HashUtil.h"
 #include "js/GCVector.h"
@@ -16,6 +12,7 @@
 #include "gc/Marking-inl.h"
 #include "vm/JSContext-inl.h"
 #include "vm/ObjectFlags-inl.h"
+#include "vm/PropMap-inl.h"
 
 using namespace js;
 
@@ -135,13 +132,6 @@ DictionaryPropMap* SharedPropMap::toDictionaryMap(JSContext* cx,
 static MOZ_ALWAYS_INLINE SharedPropMap* PropMapChildReadBarrier(
     SharedPropMap* parent, SharedPropMap* child) {
   JS::Zone* zone = child->zone();
-  if (zone->needsIncrementalBarrier()) {
-    // We need a read barrier for the map tree, since these are weak
-    // pointers.
-    ReadBarrier(child);
-    return child;
-  }
-
   if (MOZ_UNLIKELY(zone->isGCSweeping() &&
                    IsAboutToBeFinalizedUnbarriered(child))) {
     // The map we've found is unreachable and due to be finalized, so
@@ -151,9 +141,9 @@ static MOZ_ALWAYS_INLINE SharedPropMap* PropMapChildReadBarrier(
     return nullptr;
   }
 
-  // We don't yield to the mutator when the zone is in this state so we don't
-  // need to account for it here.
-  MOZ_ASSERT(!zone->isGCCompacting());
+  // We need a read barrier for the map tree, since these are weak
+  // pointers.
+  ReadBarrier(child);
 
   return child;
 }
@@ -837,11 +827,11 @@ void SharedPropMap::fixupAfterMovingGC() {
   }
 
   SharedChildrenSet* set = childrenRef.toChildrenSet();
-  for (SharedChildrenSet::Enum e(*set); !e.empty(); e.popFront()) {
-    SharedPropMapAndIndex child = e.front();
+  for (auto iter = set->modIter(); !iter.done(); iter.next()) {
+    SharedPropMapAndIndex child = iter.get();
     if (IsForwarded(child.map())) {
       child = SharedPropMapAndIndex(Forwarded(child.map()), child.index());
-      e.mutableFront() = child;
+      iter.getMutable() = child;
     }
   }
 }
@@ -877,8 +867,7 @@ void SharedPropMap::removeChild(JS::GCContext* gcx, SharedPropMap* child) {
 
   if (set->count() == 1) {
     // Convert from set form back to single child form.
-    SharedChildrenSet::Range r = set->all();
-    SharedPropMapAndIndex remainingChild = r.front();
+    SharedPropMapAndIndex remainingChild = set->iter().get();
     childrenRef.setSingleChild(remainingChild);
     clearHasChildrenSet();
     gcx->delete_(this, set, MemoryUse::PropMapChildren);
@@ -937,11 +926,11 @@ bool PropMapTable::init(JSContext* cx, LinkedPropMap* map) {
 void PropMapTable::trace(JSTracer* trc) {
   purgeCache();
 
-  for (Set::Enum e(set_); !e.empty(); e.popFront()) {
-    PropMap* map = e.front().map();
+  for (auto iter = set_.modIter(); !iter.done(); iter.next()) {
+    PropMap* map = iter.get().map();
     TraceManuallyBarrieredEdge(trc, &map, "PropMapTable map");
-    if (map != e.front().map()) {
-      e.mutableFront() = PropMapAndIndex(map, e.front().index());
+    if (map != iter.get().map()) {
+      iter.getMutable() = PropMapAndIndex(map, iter.get().index());
     }
   }
 }
@@ -1097,18 +1086,13 @@ void PropMap::forEachPropMapFlag(uintptr_t flags, KnownF known,
 }
 
 const char* PropMapTypeToString(const js::PropMap* map) {
-  if (map->isLinked()) {
-    return "js::LinkedPropMap";
+  if (map->isDictionary()) {
+    return "js::DictionaryPropMap";
   }
-
-  if (map->isShared()) {
-    if (map->isCompact()) {
-      return "js::CompactPropMap";
-    }
-    return "js::NormalPropMap";
+  if (map->isCompact()) {
+    return "js::CompactPropMap";
   }
-
-  return "js::DictionaryPropMap";
+  return "js::NormalPropMap";
 }
 
 void PropMap::dumpFields(js::JSONPrinter& json) const {

@@ -14,6 +14,7 @@
   var test;
   runNetworkTest(async function (options) {
     await pushPrefs(["media.navigator.video.use_transport_cc", true]);
+    await pushPrefs(["media.navigator.audio.use_transport_cc", true]);
 
     test = new PeerConnectionTest(options);
     test.setMediaConstraints([{audio: true}, {video: true}],
@@ -31,6 +32,7 @@
           ["1", "urn:ietf:params:rtp-hdrext:ssrc-audio-level", ""],
           ["2", "urn:ietf:params:rtp-hdrext:csrc-audio-level", "recvonly"],
           ["3", "urn:ietf:params:rtp-hdrext:sdes:mid", ""],
+          ["7", "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01", ""],
         ];
         // *Ugh* ...
         ok(JSON.stringify(audio) ===
@@ -47,6 +49,8 @@
           ["5", "urn:ietf:params:rtp-hdrext:toffset", ""],
           ["6", "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay", "recvonly"],
           ["7", "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01", ""],
+          ["8", "urn:3gpp:video-orientation", ""],
+          ["9", "https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension", "recvonly"],
         ];
         // *Ugh* ...
         ok(JSON.stringify(video) ===
@@ -67,6 +71,7 @@
           extensions. */
           ["1", "urn:ietf:params:rtp-hdrext:ssrc-audio-level",""],
           ["3", "urn:ietf:params:rtp-hdrext:sdes:mid",""],
+          ["7", "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01", ""],
         ];
         // *Ugh* ...
         ok(JSON.stringify(audio) ===
@@ -82,6 +87,7 @@
           ["4", "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",""],
           ["5", "urn:ietf:params:rtp-hdrext:toffset",""],
           ["7", "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01", ""],
+          ["8", "urn:3gpp:video-orientation", ""],
         ];
         ok(JSON.stringify(video) ===
            JSON.stringify(expected_video),

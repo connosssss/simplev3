@@ -1,9 +1,10 @@
 # This test environment is copied from "browser/components/tests/browser/whats_new_page/".
 
 [DEFAULT]
-run-if = ["!msix"] # Updater is disabled in MSIX builds
-skip-if = ["verify"]
-reason = "This is a startup test. Verify runs tests multiple times after startup."
+tags = "urlbar"
+run-if = [
+  "!msix", # Updater is disabled in MSIX builds
+]
 support-files = [
   "../head.js",
   "active-update.xml",
@@ -20,3 +21,6 @@ prefs = [
 ]
 
 ["browser_suppressTips.js"]
+skip-if = [
+  "verify", # This is a startup test. Verify runs tests multiple times after startup.
+]

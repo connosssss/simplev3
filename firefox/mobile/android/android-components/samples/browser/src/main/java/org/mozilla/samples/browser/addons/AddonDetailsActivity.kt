@@ -13,25 +13,23 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
 import androidx.core.text.HtmlCompat
-import kotlinx.coroutines.CoroutineScope
+import androidx.lifecycle.lifecycleScope
+import java.text.DateFormat
+import java.text.SimpleDateFormat
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import mozilla.components.feature.addons.Addon
+import mozilla.components.feature.addons.R as addonsR
 import mozilla.components.feature.addons.ui.showInformationDialog
 import mozilla.components.feature.addons.ui.translateDescription
 import mozilla.components.feature.addons.ui.translateName
 import mozilla.components.feature.addons.update.DefaultAddonUpdater
 import mozilla.components.support.utils.ext.getParcelableExtraCompat
 import org.mozilla.samples.browser.R
-import java.text.DateFormat
-import java.text.SimpleDateFormat
-import java.util.Locale
-import mozilla.components.feature.addons.R as addonsR
 
-/**
- * An activity to show the details of an add-on.
- */
+/** An activity to show the details of an add-on. */
 class AddonDetailsActivity : AppCompatActivity() {
 
     private val updateAttemptStorage: DefaultAddonUpdater.UpdateAttemptStorage by lazy {
@@ -66,9 +64,7 @@ class AddonDetailsActivity : AppCompatActivity() {
             val ratingView = findViewById<RatingBar>(R.id.rating_view)
             val reviewCountView = findViewById<TextView>(R.id.users_count)
 
-            val ratingContentDescription = getString(
-                addonsR.string.mozac_feature_addons_rating_content_description_2,
-            )
+            val ratingContentDescription = getString(addonsR.string.mozac_feature_addons_rating_content_description_2)
             ratingView.contentDescription = String.format(ratingContentDescription, it.average)
             ratingView.rating = it.average
 
@@ -78,8 +74,7 @@ class AddonDetailsActivity : AppCompatActivity() {
 
     private fun bindWebsite(addon: Addon) {
         findViewById<View>(R.id.home_page_text).setOnClickListener {
-            val intent =
-                Intent(Intent.ACTION_VIEW).setData(addon.homepageUrl.toUri())
+            val intent = Intent(Intent.ACTION_VIEW).setData(addon.homepageUrl.toUri())
             startActivity(intent)
         }
     }
@@ -103,14 +98,14 @@ class AddonDetailsActivity : AppCompatActivity() {
 
     private fun showUpdaterDialog(addon: Addon) {
         val context = this@AddonDetailsActivity
-        val scope = CoroutineScope(Dispatchers.IO)
-        scope.launch {
-            val updateAttempt = updateAttemptStorage.findUpdateAttemptBy(addon.id)
-            updateAttempt?.let {
-                withContext(Dispatchers.Main) {
-                    it.showInformationDialog(context)
+
+        lifecycleScope.launch {
+            val updateAttempt =
+                withContext(Dispatchers.IO) {
+                    updateAttemptStorage.findUpdateAttemptBy(addon.id)
                 }
-            }
+
+            updateAttempt?.showInformationDialog(context)
         }
     }
 

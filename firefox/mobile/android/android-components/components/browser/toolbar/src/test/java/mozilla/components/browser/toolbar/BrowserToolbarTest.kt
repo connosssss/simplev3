@@ -6,7 +6,6 @@ package mozilla.components.browser.toolbar
 
 import android.content.Context
 import android.graphics.drawable.Drawable
-import android.util.AttributeSet
 import android.view.View
 import android.view.ViewParent
 import android.view.accessibility.AccessibilityEvent
@@ -17,10 +16,12 @@ import androidx.core.view.inputmethod.EditorInfoCompat
 import androidx.core.view.isGone
 import androidx.core.view.isVisible
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlin.test.assertNotNull
 import mozilla.components.browser.toolbar.display.DisplayToolbar
 import mozilla.components.browser.toolbar.display.DisplayToolbarViews
 import mozilla.components.browser.toolbar.display.MenuButton
 import mozilla.components.browser.toolbar.edit.EditToolbar
+import mozilla.components.concept.engine.EngineView
 import mozilla.components.concept.toolbar.AutocompleteDelegate
 import mozilla.components.concept.toolbar.Toolbar
 import mozilla.components.concept.toolbar.Toolbar.SiteInfo
@@ -30,12 +31,11 @@ import mozilla.components.support.test.argumentCaptor
 import mozilla.components.support.test.mock
 import mozilla.components.support.test.robolectric.testContext
 import mozilla.components.support.test.whenever
-import mozilla.components.ui.widgets.behavior.EngineViewScrollingBehavior
-import mozilla.components.ui.widgets.behavior.ViewPosition
+import mozilla.components.ui.widgets.behavior.DependencyGravity.Bottom
+import mozilla.components.ui.widgets.behavior.EngineViewScrollingGesturesBehavior
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -43,6 +43,7 @@ import org.junit.runner.RunWith
 import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers
 import org.mockito.Mockito.any
+import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.spy
@@ -50,7 +51,6 @@ import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoMoreInteractions
 import org.mockito.Mockito.`when`
-import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
 
 @RunWith(AndroidJUnit4::class)
@@ -126,7 +126,13 @@ class BrowserToolbarTest {
         toolbar.url = "https://www.mozilla.org"
 
         verify(display).url = "https://www.mozilla.org"
-        verify(edit, never()).updateUrl(ArgumentMatchers.anyString(), ArgumentMatchers.anyBoolean(), ArgumentMatchers.anyBoolean(), ArgumentMatchers.anyBoolean())
+        verify(edit, never())
+            .updateUrl(
+                ArgumentMatchers.anyString(),
+                ArgumentMatchers.anyBoolean(),
+                ArgumentMatchers.anyBoolean(),
+                ArgumentMatchers.anyBoolean(),
+            )
     }
 
     @Test
@@ -205,7 +211,8 @@ class BrowserToolbarTest {
         shadowOf(toolbar).setMyParent(root)
         `when`(root.requestSendAccessibilityEvent(any(), any())).thenReturn(false)
 
-        val shadowAccessibilityManager = shadowOf(testContext.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager)
+        val shadowAccessibilityManager =
+            shadowOf(testContext.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager)
         shadowAccessibilityManager.setEnabled(true)
         shadowAccessibilityManager.setTouchExplorationEnabled(true)
 
@@ -220,9 +227,11 @@ class BrowserToolbarTest {
 
         verify(root, times(5)).requestSendAccessibilityEvent(any(), captor.capture())
 
-        @Suppress("DEPRECATION")
-        assertEquals(AccessibilityEvent.TYPE_ANNOUNCEMENT, captor.allValues[0].eventType)
-        assertEquals(testContext.getString(R.string.mozac_browser_toolbar_progress_loading), captor.allValues[0].text[0])
+        @Suppress("DEPRECATION") assertEquals(AccessibilityEvent.TYPE_ANNOUNCEMENT, captor.allValues[0].eventType)
+        assertEquals(
+            testContext.getString(R.string.mozac_browser_toolbar_progress_loading),
+            captor.allValues[0].text[0],
+        )
 
         assertEquals(AccessibilityEvent.TYPE_VIEW_SCROLLED, captor.allValues[1].eventType)
         assertEquals(10, captor.allValues[1].scrollY)
@@ -248,7 +257,8 @@ class BrowserToolbarTest {
         shadowOf(toolbar).setMyParent(root)
         `when`(root.requestSendAccessibilityEvent(any(), any())).thenReturn(false)
 
-        val shadowAccessibilityManager = shadowOf(testContext.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager)
+        val shadowAccessibilityManager =
+            shadowOf(testContext.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager)
         shadowAccessibilityManager.setEnabled(true)
         shadowAccessibilityManager.setTouchExplorationEnabled(false)
 
@@ -263,9 +273,11 @@ class BrowserToolbarTest {
 
         verify(root, times(1)).requestSendAccessibilityEvent(any(), captor.capture())
 
-        @Suppress("DEPRECATION")
-        assertEquals(AccessibilityEvent.TYPE_ANNOUNCEMENT, captor.allValues[0].eventType)
-        assertEquals(testContext.getString(R.string.mozac_browser_toolbar_progress_loading), captor.allValues[0].text[0])
+        @Suppress("DEPRECATION") assertEquals(AccessibilityEvent.TYPE_ANNOUNCEMENT, captor.allValues[0].eventType)
+        assertEquals(
+            testContext.getString(R.string.mozac_browser_toolbar_progress_loading),
+            captor.allValues[0].text[0],
+        )
     }
 
     @Test
@@ -292,16 +304,17 @@ class BrowserToolbarTest {
     fun `internal onUrlEntered callback will be forwarded to urlChangeListener`() {
         val toolbar = BrowserToolbar(testContext)
 
-        val mockedListener = object {
-            var called = false
-            var url: String? = null
+        val mockedListener =
+            object {
+                var called = false
+                var url: String? = null
 
-            fun invoke(url: String): Boolean {
-                this.called = true
-                this.url = url
-                return true
+                fun invoke(url: String): Boolean {
+                    this.called = true
+                    this.url = url
+                    return true
+                }
             }
-        }
 
         toolbar.setOnUrlCommitListener(mockedListener::invoke)
         toolbar.onUrlEntered("https://www.mozilla.org")
@@ -422,9 +435,10 @@ class BrowserToolbarTest {
 
         toolbar.display = display
 
-        val action = BrowserToolbar.Button(mock(), "Hello") {
-            // Do nothing
-        }
+        val action =
+            BrowserToolbar.Button(mock(), "Hello") {
+                // Do nothing
+            }
 
         toolbar.addBrowserAction(action)
 
@@ -438,9 +452,10 @@ class BrowserToolbarTest {
 
         toolbar.display = display
 
-        val action = BrowserToolbar.Button(mock(), "Hello") {
-            // Do nothing
-        }
+        val action =
+            BrowserToolbar.Button(mock(), "Hello") {
+                // Do nothing
+            }
 
         toolbar.removeBrowserAction(action)
 
@@ -454,9 +469,10 @@ class BrowserToolbarTest {
 
         toolbar.display = display
 
-        val action = BrowserToolbar.Button(mock(), "Hello") {
-            // Do nothing
-        }
+        val action =
+            BrowserToolbar.Button(mock(), "Hello") {
+                // Do nothing
+            }
 
         toolbar.removeNavigationAction(action)
 
@@ -470,9 +486,10 @@ class BrowserToolbarTest {
 
         toolbar.display = display
 
-        val action = BrowserToolbar.Button(mock(), "Hello") {
-            // Do nothing
-        }
+        val action =
+            BrowserToolbar.Button(mock(), "Hello") {
+                // Do nothing
+            }
 
         toolbar.removePageAction(action)
 
@@ -487,9 +504,10 @@ class BrowserToolbarTest {
 
         toolbar.display = display
 
-        val action = BrowserToolbar.Button(mock(), "World") {
-            // Do nothing
-        }
+        val action =
+            BrowserToolbar.Button(mock(), "World") {
+                // Do nothing
+            }
 
         toolbar.addPageAction(action)
 
@@ -503,9 +521,10 @@ class BrowserToolbarTest {
         val edit: EditToolbar = mock()
         toolbar.edit = edit
 
-        val action = BrowserToolbar.Button(mock(), "QR code scanner") {
-            // Do nothing
-        }
+        val action =
+            BrowserToolbar.Button(mock(), "QR code scanner") {
+                // Do nothing
+            }
 
         toolbar.addEditActionStart(action)
 
@@ -519,9 +538,10 @@ class BrowserToolbarTest {
         val edit: EditToolbar = mock()
         toolbar.edit = edit
 
-        val action = BrowserToolbar.Button(mock(), "QR code scanner") {
-            // Do nothing
-        }
+        val action =
+            BrowserToolbar.Button(mock(), "QR code scanner") {
+                // Do nothing
+            }
 
         toolbar.addEditActionEnd(action)
 
@@ -535,9 +555,10 @@ class BrowserToolbarTest {
         val edit: EditToolbar = mock()
         toolbar.edit = edit
 
-        val action = BrowserToolbar.Button(mock(), "QR code scanner") {
-            // Do nothing
-        }
+        val action =
+            BrowserToolbar.Button(mock(), "QR code scanner") {
+                // Do nothing
+            }
 
         toolbar.removeEditActionEnd(action)
 
@@ -623,9 +644,10 @@ class BrowserToolbarTest {
         val display: DisplayToolbar = mock()
         toolbar.display = display
 
-        val action = BrowserToolbar.Button(mock(), "Back") {
-            // Do nothing
-        }
+        val action =
+            BrowserToolbar.Button(mock(), "Back") {
+                // Do nothing
+            }
 
         toolbar.addNavigationAction(action)
 
@@ -759,9 +781,7 @@ class BrowserToolbarTest {
 
     @Test
     fun `titleView fading is set properly with non-null attrs`() {
-        val attributeSet: AttributeSet = Robolectric.buildAttributeSet().build()
-
-        val toolbar = BrowserToolbar(testContext, attributeSet)
+        val toolbar = BrowserToolbar(testContext, null)
         val titleView = toolbar.display.views.origin.titleView
         val edgeLength = testContext.resources.getDimensionPixelSize(R.dimen.mozac_browser_toolbar_url_fading_edge_size)
 
@@ -784,19 +804,19 @@ class BrowserToolbarTest {
 
     @Test
     fun `ToggleButton constructor with drawable`() {
-        val buttonDefault =
-            BrowserToolbar.ToggleButton(mock(), mock(), "imageDrawable", "imageSelectedDrawable") {}
+        val buttonDefault = BrowserToolbar.ToggleButton(mock(), mock(), "imageDrawable", "imageSelectedDrawable") {}
 
         assertEquals(true, buttonDefault.visible())
         assertEquals(BrowserToolbar.DEFAULT_PADDING, buttonDefault.padding)
 
-        val button = BrowserToolbar.ToggleButton(
-            mock(),
-            mock(),
-            "imageDrawable",
-            "imageSelectedDrawable",
-            visible = { false },
-        ) {}
+        val button =
+            BrowserToolbar.ToggleButton(
+                mock(),
+                mock(),
+                "imageDrawable",
+                "imageSelectedDrawable",
+                visible = { false },
+            ) {}
 
         assertEquals(false, button.visible())
     }
@@ -851,8 +871,7 @@ class BrowserToolbarTest {
         // By default "private mode" is off.
         assertEquals(
             0,
-            edit.views.url.imeOptions and
-                EditorInfoCompat.IME_FLAG_NO_PERSONALIZED_LEARNING,
+            edit.views.url.imeOptions and EditorInfoCompat.IME_FLAG_NO_PERSONALIZED_LEARNING,
         )
         assertEquals(false, toolbar.private)
 
@@ -860,8 +879,7 @@ class BrowserToolbarTest {
         toolbar.private = true
         assertNotEquals(
             0,
-            edit.views.url.imeOptions and
-                EditorInfoCompat.IME_FLAG_NO_PERSONALIZED_LEARNING,
+            edit.views.url.imeOptions and EditorInfoCompat.IME_FLAG_NO_PERSONALIZED_LEARNING,
         )
         assertTrue(toolbar.private)
 
@@ -869,8 +887,7 @@ class BrowserToolbarTest {
         toolbar.private = false
         assertEquals(
             0,
-            edit.views.url.imeOptions and
-                EditorInfoCompat.IME_FLAG_NO_PERSONALIZED_LEARNING,
+            edit.views.url.imeOptions and EditorInfoCompat.IME_FLAG_NO_PERSONALIZED_LEARNING,
         )
         assertEquals(false, toolbar.private)
     }
@@ -928,10 +945,13 @@ class BrowserToolbarTest {
     fun `enable scrolling is forwarded to the toolbar behavior`() {
         // Seems like real instances are needed for things to be set properly
         val toolbar = BrowserToolbar(testContext)
-        val behavior = spy(EngineViewScrollingBehavior(testContext, null, ViewPosition.BOTTOM))
-        val params = CoordinatorLayout.LayoutParams(10, 10).apply {
-            this.behavior = behavior
-        }
+        val engineView: EngineView = mock()
+        doReturn(View(testContext)).`when`(engineView).asView()
+        val behavior = spy(EngineViewScrollingGesturesBehavior(engineView, toolbar, Bottom))
+        val params =
+            CoordinatorLayout.LayoutParams(10, 10).apply {
+                this.behavior = behavior
+            }
         toolbar.layoutParams = params
 
         toolbar.enableScrolling()
@@ -943,10 +963,13 @@ class BrowserToolbarTest {
     fun `disable scrolling is forwarded to the toolbar behavior`() {
         // Seems like real instances are needed for things to be set properly
         val toolbar = BrowserToolbar(testContext)
-        val behavior = spy(EngineViewScrollingBehavior(testContext, null, ViewPosition.BOTTOM))
-        val params = CoordinatorLayout.LayoutParams(10, 10).apply {
-            this.behavior = behavior
-        }
+        val engineView: EngineView = mock()
+        doReturn(View(testContext)).`when`(engineView).asView()
+        val behavior = spy(EngineViewScrollingGesturesBehavior(engineView, toolbar, Bottom))
+        val params =
+            CoordinatorLayout.LayoutParams(10, 10).apply {
+                this.behavior = behavior
+            }
         toolbar.layoutParams = params
 
         toolbar.disableScrolling()
@@ -958,30 +981,36 @@ class BrowserToolbarTest {
     fun `expand is forwarded to the toolbar behavior`() {
         // Seems like real instances are needed for things to be set properly
         val toolbar = BrowserToolbar(testContext)
-        val behavior = spy(EngineViewScrollingBehavior(testContext, null, ViewPosition.BOTTOM))
-        val params = CoordinatorLayout.LayoutParams(10, 10).apply {
-            this.behavior = behavior
-        }
+        val engineView: EngineView = mock()
+        doReturn(View(testContext)).`when`(engineView).asView()
+        val behavior = spy(EngineViewScrollingGesturesBehavior(engineView, toolbar, Bottom))
+        val params =
+            CoordinatorLayout.LayoutParams(10, 10).apply {
+                this.behavior = behavior
+            }
         toolbar.layoutParams = params
 
         toolbar.expand()
 
-        verify(behavior).forceExpand(toolbar)
+        verify(behavior).forceExpand()
     }
 
     @Test
     fun `collapse is forwarded to the toolbar behavior`() {
         // Seems like real instances are needed for things to be set properly
         val toolbar = BrowserToolbar(testContext)
-        val behavior = spy(EngineViewScrollingBehavior(testContext, null, ViewPosition.BOTTOM))
-        val params = CoordinatorLayout.LayoutParams(10, 10).apply {
-            this.behavior = behavior
-        }
+        val engineView: EngineView = mock()
+        doReturn(View(testContext)).`when`(engineView).asView()
+        val behavior = spy(EngineViewScrollingGesturesBehavior(engineView, toolbar, Bottom))
+        val params =
+            CoordinatorLayout.LayoutParams(10, 10).apply {
+                this.behavior = behavior
+            }
         toolbar.layoutParams = params
 
         toolbar.collapse()
 
-        verify(behavior).forceCollapse(toolbar)
+        verify(behavior).forceCollapse()
     }
 
     @Test

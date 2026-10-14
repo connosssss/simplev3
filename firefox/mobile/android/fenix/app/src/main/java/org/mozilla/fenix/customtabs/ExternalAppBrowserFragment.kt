@@ -31,29 +31,25 @@ import org.mozilla.fenix.browser.BaseBrowserFragment
 import org.mozilla.fenix.browser.ContextMenuSnackbarDelegate
 import org.mozilla.fenix.browser.CustomTabColorsBinding
 import org.mozilla.fenix.browser.CustomTabContextMenuCandidate
-import org.mozilla.fenix.components.toolbar.BrowserToolbarComposable
-import org.mozilla.fenix.components.toolbar.BrowserToolbarView
 import org.mozilla.fenix.customtabs.ext.updateCustomTabsColors
+import org.mozilla.fenix.e2e.SystemInsetsPaddedFragment
 import org.mozilla.fenix.ext.components
 import org.mozilla.fenix.ext.nav
 import org.mozilla.fenix.ext.requireComponents
 import org.mozilla.fenix.ext.runIfFragmentIsAttached
-import org.mozilla.fenix.ext.settings
-import org.mozilla.fenix.settings.quicksettings.protections.cookiebanners.getCookieBannerUIMode
 
-/**
- * Fragment used for browsing the web within external apps.
- */
-class ExternalAppBrowserFragment : BaseBrowserFragment() {
+/** Fragment used for browsing the web within external apps. */
+class ExternalAppBrowserFragment : BaseBrowserFragment(), SystemInsetsPaddedFragment {
 
     private val args by navArgs<ExternalAppBrowserFragmentArgs>()
 
-    private val customTabsIntegration = ViewBoundFeatureWrapper<CustomTabsIntegration>()
+    override val isSandboxCustomTab: Boolean
+        get() = args.isSandboxCustomTab
+
     private val customTabColorsBinding = ViewBoundFeatureWrapper<CustomTabColorsBinding>()
     private val windowFeature = ViewBoundFeatureWrapper<CustomTabWindowFeature>()
-    private val hideToolbarFeature = ViewBoundFeatureWrapper<WebAppHideToolbarFeature>()
 
-    @Suppress("LongMethod", "ComplexMethod")
+    @Suppress("LongMethod")
     override fun initializeUI(view: View, tab: SessionState) {
         super.initializeUI(view, tab)
 
@@ -61,54 +57,33 @@ class ExternalAppBrowserFragment : BaseBrowserFragment() {
         val activity = requireActivity()
         val components = activity.components
 
-        val manifest = args.webAppManifestUrl?.ifEmpty { null }?.let { url ->
-            requireComponents.core.webAppManifestStorage.getManifestCache(url)
-        }
-
-        val browserToolbarView = browserToolbarView
-        when (browserToolbarView) {
-            is BrowserToolbarView -> {
-                customTabsIntegration.set(
-                    feature = CustomTabsIntegration(
-                        context = requireContext(),
-                        store = requireComponents.core.store,
-                        useCases = requireComponents.useCases.customTabsUseCases,
-                        browserToolbar = browserToolbarView.toolbar,
-                        sessionId = customTabSessionId,
-                        activity = activity,
-                        interactor = browserToolbarInteractor,
-                        isPrivate = tab.content.private,
-                        shouldReverseItems = !activity.settings().shouldUseBottomToolbar,
-                        isSandboxCustomTab = args.isSandboxCustomTab,
-                        isMenuRedesignEnabled = requireContext().settings().enableMenuRedesign,
-                    ),
-                    owner = this,
-                    view = view,
-                )
-            }
-
-            is BrowserToolbarComposable -> {
-                val browserStore = requireComponents.core.store
-                if (browserStore.state.findCustomTab(customTabSessionId)?.content?.private == false) {
-                    val settings = requireContext().settings()
-                    browserScreenStore.updateCustomTabsColors(
-                        context = requireContext(),
-                        customTab = (tab as? CustomTabSessionState),
-                        deviceUIMode = requireContext().resources.configuration.uiMode,
-                        shouldFollowDeviceTheme = settings.shouldFollowDeviceTheme,
-                        shouldUseLightTheme = settings.shouldUseLightTheme,
-                    )
-
-                    customTabColorsBinding.set(
-                        feature = CustomTabColorsBinding(
-                            browserScreenStore = browserScreenStore,
-                            window = requireActivity().window,
-                        ),
-                        owner = this,
-                        view = view,
-                    )
+        val manifest =
+            args.webAppManifestUrl
+                ?.ifEmpty { null }
+                ?.let { url ->
+                    requireComponents.core.webAppManifestStorage.getManifestCache(url)
                 }
-            }
+
+        val browserStore = requireComponents.core.store
+        if (browserStore.state.findCustomTab(customTabSessionId)?.content?.private == false) {
+            val settings = requireComponents.settings
+            browserScreenStore.updateCustomTabsColors(
+                context = requireContext(),
+                customTab = (tab as? CustomTabSessionState),
+                deviceUIMode = requireContext().resources.configuration.uiMode,
+                shouldFollowDeviceTheme = settings.shouldFollowDeviceTheme,
+                shouldUseLightTheme = settings.shouldUseLightTheme,
+            )
+
+            customTabColorsBinding.set(
+                feature =
+                    CustomTabColorsBinding(
+                        browserScreenStore = browserScreenStore,
+                        window = requireActivity().window,
+                    ),
+                owner = this,
+                view = view,
+            )
         }
 
         windowFeature.set(
@@ -118,24 +93,27 @@ class ExternalAppBrowserFragment : BaseBrowserFragment() {
         )
 
         val customTabSession = (tab as? CustomTabSessionState)
-        val isPwaTabOrTwaTab = customTabSession?.config?.externalAppType == ExternalAppType.PROGRESSIVE_WEB_APP ||
-            customTabSession?.config?.externalAppType == ExternalAppType.TRUSTED_WEB_ACTIVITY
+        val isPwaTabOrTwaTab =
+            customTabSession?.config?.externalAppType == ExternalAppType.PROGRESSIVE_WEB_APP ||
+                customTabSession?.config?.externalAppType == ExternalAppType.TRUSTED_WEB_ACTIVITY
 
         // Only set hideToolbarFeature if isPwaTabOrTwaTab
         if (isPwaTabOrTwaTab) {
             hideToolbarFeature.set(
-                feature = WebAppHideToolbarFeature(
-                    store = requireComponents.core.store,
-                    customTabsStore = requireComponents.core.customTabsStore,
-                    tabId = customTabSessionId,
-                    manifest = manifest,
-                ) { toolbarVisible ->
-                    webAppToolbarShouldBeVisible = toolbarVisible
-                    when (toolbarVisible) {
-                        true -> collapseBrowserView()
-                        false -> expandBrowserView()
-                    }
-                },
+                feature =
+                    WebAppHideToolbarFeature(
+                        store = requireComponents.core.store,
+                        customTabsStore = requireComponents.core.customTabsStore,
+                        tabId = customTabSessionId,
+                        manifest = manifest,
+                        scope = viewLifecycleOwner.lifecycleScope,
+                    ) { toolbarVisible ->
+                        webAppToolbarShouldBeVisible = toolbarVisible
+                        when (toolbarVisible) {
+                            true -> collapseBrowserView()
+                            false -> expandBrowserView()
+                        }
+                    },
                 owner = this,
                 view = view,
             )
@@ -176,7 +154,7 @@ class ExternalAppBrowserFragment : BaseBrowserFragment() {
                         manifest,
                     ),
                     notificationsDelegate = requireComponents.notificationsDelegate,
-                ),
+                )
             )
         } else {
             viewLifecycleOwner.lifecycle.addObserver(
@@ -185,7 +163,7 @@ class ExternalAppBrowserFragment : BaseBrowserFragment() {
                     requireComponents.core.store,
                     customTabSessionId,
                     requireComponents.notificationsDelegate,
-                ),
+                )
             )
         }
     }
@@ -193,27 +171,19 @@ class ExternalAppBrowserFragment : BaseBrowserFragment() {
     override fun navToQuickSettingsSheet(tab: SessionState, sitePermissions: SitePermissions?) {
         requireComponents.useCases.trackingProtectionUseCases.containsException(tab.id) { contains ->
             lifecycleScope.launch {
-                val cookieBannersStorage = requireComponents.core.cookieBannersStorage
-                val cookieBannerUIMode = cookieBannersStorage.getCookieBannerUIMode(
-                    tab = tab,
-                    isFeatureEnabledInPrivateMode = requireContext().settings().shouldUseCookieBannerPrivateMode,
-                    publicSuffixList = requireComponents.publicSuffixList,
-                )
                 withContext(Dispatchers.Main) {
                     runIfFragmentIsAttached {
-                        val directions = ExternalAppBrowserFragmentDirections
-                            .actionGlobalQuickSettingsSheetDialogFragment(
+                        val directions =
+                            ExternalAppBrowserFragmentDirections.actionGlobalTrustPanelFragment(
                                 sessionId = tab.id,
                                 url = tab.content.url,
                                 title = tab.content.title,
                                 isLocalPdf = tab.content.url.isContentUrl(),
-                                isSecured = tab.content.securityInfo.secure,
+                                isSecured = tab.content.securityInfo.isSecure,
                                 sitePermissions = sitePermissions,
-                                gravity = getAppropriateLayoutGravity(),
-                                certificateName = tab.content.securityInfo.issuer,
+                                certificate = tab.content.securityInfo.certificate,
                                 permissionHighlights = tab.content.permissionHighlights,
                                 isTrackingProtectionEnabled = tab.trackingProtection.enabled && !contains,
-                                cookieBannerUIMode = cookieBannerUIMode,
                             )
                         nav(R.id.externalAppBrowserFragment, directions)
                     }
@@ -223,16 +193,17 @@ class ExternalAppBrowserFragment : BaseBrowserFragment() {
     }
 
     override fun onBackPressed(): Boolean {
-        return super.onBackPressed() || customTabsIntegration.onBackPressed()
+        return super.onBackPressed()
     }
 
     override fun getContextMenuCandidates(
         context: Context,
         view: View,
-    ): List<ContextMenuCandidate> = CustomTabContextMenuCandidate.defaultCandidates(
-        context,
-        context.components.useCases.contextMenuUseCases,
-        view,
-        ContextMenuSnackbarDelegate(),
-    )
+    ): List<ContextMenuCandidate> =
+        CustomTabContextMenuCandidate.defaultCandidates(
+            context,
+            context.components.useCases.contextMenuUseCases,
+            view,
+            ContextMenuSnackbarDelegate(),
+        )
 }

@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "builtin/FinalizationRegistryObject.h"
+#include "debugger/Debugger.h"
 #include "gc/GC.h"
 #include "gc/PublicIterators.h"
 #include "js/friend/WindowProxy.h"  // js::IsWindow, js::IsWindowProxy
@@ -34,14 +33,15 @@ using namespace js;
 
 #define NOTHING (true)
 
-static bool MarkAtoms(JSContext* cx, jsid id) {
-  cx->markId(id);
-  return true;
+static bool WrapOrRecordRefs(JSContext* cx, MutableHandleId id) {
+  return cx->wrapOrRecordRefToId(id);
 }
 
-static bool MarkAtoms(JSContext* cx, HandleIdVector ids) {
+static bool WrapOrRecordRefs(JSContext* cx, MutableHandleIdVector ids) {
   for (size_t i = 0; i < ids.length(); i++) {
-    cx->markId(ids[i]);
+    if (!cx->wrapOrRecordRefToId(ids[i])) {
+      return false;
+    }
   }
   return true;
 }
@@ -49,8 +49,9 @@ static bool MarkAtoms(JSContext* cx, HandleIdVector ids) {
 bool CrossCompartmentWrapper::getOwnPropertyDescriptor(
     JSContext* cx, HandleObject wrapper, HandleId id,
     MutableHandle<mozilla::Maybe<PropertyDescriptor>> desc) const {
-  PIERCE(cx, wrapper, MarkAtoms(cx, id),
-         Wrapper::getOwnPropertyDescriptor(cx, wrapper, id, desc),
+  Rooted<jsid> idCopy(cx, id);
+  PIERCE(cx, wrapper, WrapOrRecordRefs(cx, &idCopy),
+         Wrapper::getOwnPropertyDescriptor(cx, wrapper, idCopy, desc),
          cx->compartment()->wrap(cx, desc));
 }
 
@@ -58,22 +59,25 @@ bool CrossCompartmentWrapper::defineProperty(JSContext* cx,
                                              HandleObject wrapper, HandleId id,
                                              Handle<PropertyDescriptor> desc,
                                              ObjectOpResult& result) const {
+  Rooted<jsid> idCopy(cx, id);
   Rooted<PropertyDescriptor> desc2(cx, desc);
-  PIERCE(cx, wrapper, MarkAtoms(cx, id) && cx->compartment()->wrap(cx, &desc2),
-         Wrapper::defineProperty(cx, wrapper, id, desc2, result), NOTHING);
+  PIERCE(cx, wrapper,
+         WrapOrRecordRefs(cx, &idCopy) && cx->compartment()->wrap(cx, &desc2),
+         Wrapper::defineProperty(cx, wrapper, idCopy, desc2, result), NOTHING);
 }
 
 bool CrossCompartmentWrapper::ownPropertyKeys(
     JSContext* cx, HandleObject wrapper, MutableHandleIdVector props) const {
   PIERCE(cx, wrapper, NOTHING, Wrapper::ownPropertyKeys(cx, wrapper, props),
-         MarkAtoms(cx, props));
+         WrapOrRecordRefs(cx, props));
 }
 
 bool CrossCompartmentWrapper::delete_(JSContext* cx, HandleObject wrapper,
                                       HandleId id,
                                       ObjectOpResult& result) const {
-  PIERCE(cx, wrapper, MarkAtoms(cx, id),
-         Wrapper::delete_(cx, wrapper, id, result), NOTHING);
+  Rooted<jsid> idCopy(cx, id);
+  PIERCE(cx, wrapper, WrapOrRecordRefs(cx, &idCopy),
+         Wrapper::delete_(cx, wrapper, idCopy, result), NOTHING);
 }
 
 bool CrossCompartmentWrapper::getPrototype(JSContext* cx, HandleObject wrapper,
@@ -137,14 +141,16 @@ bool CrossCompartmentWrapper::isExtensible(JSContext* cx, HandleObject wrapper,
 
 bool CrossCompartmentWrapper::has(JSContext* cx, HandleObject wrapper,
                                   HandleId id, bool* bp) const {
-  PIERCE(cx, wrapper, MarkAtoms(cx, id), Wrapper::has(cx, wrapper, id, bp),
-         NOTHING);
+  Rooted<jsid> idCopy(cx, id);
+  PIERCE(cx, wrapper, WrapOrRecordRefs(cx, &idCopy),
+         Wrapper::has(cx, wrapper, idCopy, bp), NOTHING);
 }
 
 bool CrossCompartmentWrapper::hasOwn(JSContext* cx, HandleObject wrapper,
                                      HandleId id, bool* bp) const {
-  PIERCE(cx, wrapper, MarkAtoms(cx, id), Wrapper::hasOwn(cx, wrapper, id, bp),
-         NOTHING);
+  Rooted<jsid> idCopy(cx, id);
+  PIERCE(cx, wrapper, WrapOrRecordRefs(cx, &idCopy),
+         Wrapper::hasOwn(cx, wrapper, idCopy, bp), NOTHING);
 }
 
 static bool WrapReceiver(JSContext* cx, HandleObject wrapper,
@@ -170,13 +176,15 @@ bool CrossCompartmentWrapper::get(JSContext* cx, HandleObject wrapper,
                                   HandleValue receiver, HandleId id,
                                   MutableHandleValue vp) const {
   RootedValue receiverCopy(cx, receiver);
+  Rooted<jsid> idCopy(cx, id);
   {
     AutoRealm call(cx, wrappedObject(wrapper));
-    if (!MarkAtoms(cx, id) || !WrapReceiver(cx, wrapper, &receiverCopy)) {
+    if (!WrapOrRecordRefs(cx, &idCopy) ||
+        !WrapReceiver(cx, wrapper, &receiverCopy)) {
       return false;
     }
 
-    if (!Wrapper::get(cx, wrapper, receiverCopy, id, vp)) {
+    if (!Wrapper::get(cx, wrapper, receiverCopy, idCopy, vp)) {
       return false;
     }
   }
@@ -187,25 +195,28 @@ bool CrossCompartmentWrapper::set(JSContext* cx, HandleObject wrapper,
                                   HandleId id, HandleValue v,
                                   HandleValue receiver,
                                   ObjectOpResult& result) const {
+  Rooted<jsid> idCopy(cx, id);
   RootedValue valCopy(cx, v);
   RootedValue receiverCopy(cx, receiver);
   PIERCE(cx, wrapper,
-         MarkAtoms(cx, id) && cx->compartment()->wrap(cx, &valCopy) &&
+         WrapOrRecordRefs(cx, &idCopy) &&
+             cx->compartment()->wrap(cx, &valCopy) &&
              WrapReceiver(cx, wrapper, &receiverCopy),
-         Wrapper::set(cx, wrapper, id, valCopy, receiverCopy, result), NOTHING);
+         Wrapper::set(cx, wrapper, idCopy, valCopy, receiverCopy, result),
+         NOTHING);
 }
 
 bool CrossCompartmentWrapper::getOwnEnumerablePropertyKeys(
     JSContext* cx, HandleObject wrapper, MutableHandleIdVector props) const {
   PIERCE(cx, wrapper, NOTHING,
          Wrapper::getOwnEnumerablePropertyKeys(cx, wrapper, props),
-         MarkAtoms(cx, props));
+         WrapOrRecordRefs(cx, props));
 }
 
 bool CrossCompartmentWrapper::enumerate(JSContext* cx, HandleObject wrapper,
                                         MutableHandleIdVector props) const {
   PIERCE(cx, wrapper, NOTHING, Wrapper::enumerate(cx, wrapper, props),
-         MarkAtoms(cx, props));
+         WrapOrRecordRefs(cx, props));
 }
 
 bool CrossCompartmentWrapper::call(JSContext* cx, HandleObject wrapper,
@@ -258,11 +269,12 @@ bool CrossCompartmentWrapper::construct(JSContext* cx, HandleObject wrapper,
 bool CrossCompartmentWrapper::nativeCall(JSContext* cx, IsAcceptableThis test,
                                          NativeImpl impl,
                                          const CallArgs& srcArgs) const {
-  RootedObject wrapper(cx, &srcArgs.thisv().toObject());
+  RootedTuple<JSObject*, JSObject*, Value, JSObject*> roots(cx);
+  RootedField<JSObject*, 0> wrapper(roots, &srcArgs.thisv().toObject());
   MOZ_ASSERT(srcArgs.thisv().isMagic(JS_IS_CONSTRUCTING) ||
              !UncheckedUnwrap(wrapper)->is<CrossCompartmentWrapperObject>());
 
-  RootedObject wrapped(cx, wrappedObject(wrapper));
+  RootedField<JSObject*, 1> wrapped(roots, wrappedObject(wrapper));
   {
     AutoRealm call(cx, wrapped);
     InvokeArgs dstArgs(cx);
@@ -274,7 +286,7 @@ bool CrossCompartmentWrapper::nativeCall(JSContext* cx, IsAcceptableThis test,
     Value* srcend = srcArgs.array() + srcArgs.length();
     Value* dst = dstArgs.base();
 
-    RootedValue source(cx);
+    RootedField<Value, 2> source(roots);
     for (; src < srcend; ++src, ++dst) {
       source = *src;
       if (!cx->compartment()->wrap(cx, &source)) {
@@ -287,7 +299,7 @@ bool CrossCompartmentWrapper::nativeCall(JSContext* cx, IsAcceptableThis test,
       // will stymie this whole process. If that happens, unwrap the wrapper.
       // This logic can go away when same-compartment security wrappers go away.
       if ((src == srcArgs.base() + 1) && dst->isObject()) {
-        RootedObject thisObj(cx, &dst->toObject());
+        RootedField<JSObject*, 3> thisObj(roots, &dst->toObject());
         if (thisObj->is<WrapperObject>() &&
             Wrapper::wrapperHandler(thisObj)->hasSecurityPolicy()) {
           MOZ_ASSERT(!thisObj->is<CrossCompartmentWrapperObject>());
@@ -341,7 +353,7 @@ RegExpShared* CrossCompartmentWrapper::regexp_toShared(
 
   // Get an equivalent RegExpShared associated with the current compartment.
   Rooted<JSAtom*> source(cx, re->getSource());
-  cx->markAtom(source);
+  cx->recordRef(source);
   return cx->zone()->regExps().get(cx, source, re->getFlags());
 }
 
@@ -354,13 +366,19 @@ bool CrossCompartmentWrapper::boxedValue_unbox(JSContext* cx,
 
 const CrossCompartmentWrapper CrossCompartmentWrapper::singleton(0u);
 
-JS_PUBLIC_API void js::NukeCrossCompartmentWrapper(JSContext* cx,
-                                                   JSObject* wrapper) {
+void js::NukeCrossCompartmentWrapper(JSContext* cx, JSObject* wrapper) {
+  MOZ_ASSERT(IsCrossCompartmentWrapper(wrapper));
+
   JS::Compartment* comp = wrapper->compartment();
   auto ptr = comp->lookupWrapper(Wrapper::wrappedObject(wrapper));
   if (ptr) {
     comp->removeWrapper(ptr);
   }
+
+  JSObject* target = UncheckedUnwrapWithoutExpose(wrapper);
+  MOZ_ASSERT(target);
+  gc::GCRuntime::clearWeakRefTargets(comp, ObjectValue(*target));
+
   NukeRemovedCrossCompartmentWrapper(cx, wrapper);
 }
 
@@ -424,19 +442,16 @@ JS_PUBLIC_API bool js::NukeCrossCompartmentWrappers(
          target->compartment() == c.get() && NukedAllRealms(c.get()));
 
     // Iterate only the wrappers that have target compartment matched unless
-    // |nukeAll| is true. Use Maybe to avoid copying from conditionally
-    // initializing ObjectWrapperEnum.
-    mozilla::Maybe<Compartment::ObjectWrapperEnum> e;
-    if (MOZ_LIKELY(!nukeAll)) {
-      e.emplace(c, target->compartment());
-    } else {
-      e.emplace(c);
+    // |nukeAll| is true.
+    auto iter = !nukeAll ? c->objectWrapperMappingsTo(target->compartment())
+                         : c->objectWrapperMappings();
+    if (nukeAll) {
       c.get()->nukedOutgoingWrappers = true;
     }
-    for (; !e->empty(); e->popFront()) {
-      JSObject* key = e->front().key();
+    for (; !iter.done(); iter.next()) {
+      JSObject* key = iter.get().key();
 
-      AutoWrapperRooter wobj(cx, WrapperValue(*e));
+      AutoWrapperRooter wobj(cx, WrapperValue(iter));
 
       // Unwrap from the wrapped object in key instead of the wrapper, this
       // could save us a bit of time.
@@ -449,6 +464,12 @@ JS_PUBLIC_API bool js::NukeCrossCompartmentWrappers(
         continue;
       }
 
+      // Don't nuke wrappers for debugger objects. These are used in Breakpoints
+      // and nuking them breaks debugger invariants.
+      if (MOZ_UNLIKELY(wrapped->is<DebuggerInstanceObject>())) {
+        continue;
+      }
+
       // We only skip nuking window references that point to a target
       // compartment, not the ones that belong to it.
       if (nukeReferencesToWindow == DontNukeWindowReferences &&
@@ -457,10 +478,15 @@ JS_PUBLIC_API bool js::NukeCrossCompartmentWrappers(
       }
 
       // Now this is the wrapper we want to nuke.
-      e->removeFront();
+      iter.remove();
       NukeRemovedCrossCompartmentWrapper(cx, wobj);
     }
   }
+
+  // Clear WeakRef targets that match the filters otherwise we would still be
+  // able to see into the target realm. WeakRefs are cross compartment weak
+  // edges but are not implemented with CCWs.
+  gc::GCRuntime::clearWeakRefTargets(sourceFilter, target);
 
   return true;
 }
@@ -470,6 +496,12 @@ JS_PUBLIC_API bool js::AllowNewWrapper(JS::Compartment* target, JSObject* obj) {
   // compartment.
 
   MOZ_ASSERT(obj->compartment() != target);
+
+  // Wrappers for debugger objects are not nuked and we must continue to allow
+  // them to be created or we will break the invariants in Compartment::wrap.
+  if (MOZ_UNLIKELY(obj->is<DebuggerInstanceObject>())) {
+    return true;
+  }
 
   if (target->nukedOutgoingWrappers ||
       obj->nonCCWRealm()->nukedIncomingWrappers) {
@@ -501,6 +533,9 @@ void js::RemapWrapper(JSContext* cx, JSObject* wobjArg,
 
   AutoDisableProxyCheck adpc;
 
+  // This can't GC (and RemapDeadWrapper suppresses it).
+  JS::AutoAssertNoGC nogc(cx);
+
   // If we're mapping to a different target (as opposed to just recomputing
   // for the same target), we must not have an existing wrapper for the new
   // target, otherwise this will break.
@@ -510,12 +545,12 @@ void js::RemapWrapper(JSContext* cx, JSObject* wobjArg,
   // The old value should still be in the cross-compartment wrapper map, and
   // the lookup should return wobj.
   ObjectWrapperMap::Ptr p = wcompartment->lookupWrapper(origTarget);
-  MOZ_ASSERT(*p->value().unsafeGet() == wobj);
+  MOZ_ASSERT(p->value().unbarrieredGet() == wobj);
   wcompartment->removeWrapper(p);
 
   // When we remove origv from the wrapper map, its wrapper, wobj, must
   // immediately cease to be a cross-compartment wrapper. Nuke it.
-  NukeCrossCompartmentWrapper(cx, wobj);
+  NukeRemovedCrossCompartmentWrapper(cx, wobj);
 
   // If the target is a dead wrapper, and we're just fixing wrappers for
   // it, then we're done now that the CCW is a dead wrapper.
@@ -541,6 +576,11 @@ void js::RemapDeadWrapper(JSContext* cx, HandleObject wobj,
   MOZ_ASSERT(!newTarget->is<FinalizationRecordObject>());
 
   AutoDisableProxyCheck adpc;
+  AutoTouchingGrayThings atgt;
+
+  // Suppress GC while we manipulate the wrapper map so that it can't observe
+  // intervening state.
+  gc::AutoSuppressGC nogc(cx);
 
   // wobj is not a cross-compartment wrapper, so we can use nonCCWRealm.
   Realm* wrealm = wobj->nonCCWRealm();
@@ -564,7 +604,8 @@ void js::RemapDeadWrapper(JSContext* cx, HandleObject wobj,
     // Now, because we need to maintain object identity, we do a brain
     // transplant on the old object so that it contains the contents of the
     // new one.
-    JSObject::swap(cx, wobj, tobj, oomUnsafe);
+    ProxyObject::swap(cx, wobj.as<ProxyObject>(), tobj.as<ProxyObject>(),
+                      oomUnsafe);
   }
 
   if (!wobj->is<WrapperObject>()) {
@@ -625,17 +666,17 @@ JS_PUBLIC_API bool js::RecomputeWrappers(
     }
 
     // Iterate over object wrappers, filtering appropriately.
-    for (Compartment::ObjectWrapperEnum e(c, targetFilter); !e.empty();
-         e.popFront()) {
+    for (auto iter = c->objectWrapperMappings(targetFilter); !iter.done();
+         iter.next()) {
       // Don't remap wrappers to finalization record objects. These are used
       // internally and are not exposed.
-      JSObject* wrapper = *e.front().value().unsafeGet();
+      JSObject* wrapper = iter.get().value().unbarrieredGet();
       if (Wrapper::wrappedObject(wrapper)->is<FinalizationRecordObject>()) {
         continue;
       }
 
       // Add the wrapper to the list.
-      if (!toRecompute.append(WrapperValue(e))) {
+      if (!toRecompute.append(WrapperValue(iter))) {
         return false;
       }
     }

@@ -1,15 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_saferefptr_h__
-#define mozilla_saferefptr_h__
+#ifndef mozilla_saferefptr_h_
+#define mozilla_saferefptr_h_
 
 #include "mozilla/ArrayAlgorithm.h"
 #include "mozilla/Maybe.h"
-#include "mozilla/NotNull.h"
 #include "mozilla/RefCounted.h"
 #include "mozilla/RefPtr.h"
 #include "nsCOMPtr.h"
@@ -106,7 +103,7 @@ class SafeRefCounted
     : public detail::SafeRefCounted<T, detail::NonAtomicRefCount> {
  public:
   ~SafeRefCounted() {
-    static_assert(std::is_base_of<SafeRefCounted, T>::value,
+    static_assert(std::is_base_of_v<SafeRefCounted, T>,
                   "T must derive from SafeRefCounted<T>");
   }
 };
@@ -116,21 +113,12 @@ class AtomicSafeRefCounted
     : public detail::SafeRefCounted<T, detail::AtomicRefCount> {
  public:
   ~AtomicSafeRefCounted() {
-    static_assert(std::is_base_of<AtomicSafeRefCounted, T>::value,
+    static_assert(std::is_base_of_v<AtomicSafeRefCounted, T>,
                   "T must derive from AtomicSafeRefCounted<T>");
   }
 };
 
 struct AcquireStrongRefFromRawPtr {};
-
-// XXX for Apple, clang::trivial_abi is probably also supported, but we need to
-// find out the correct version number
-#if defined(__clang__) && !defined(__apple_build_version__) && \
-    __clang_major__ >= 7
-#  define MOZ_TRIVIAL_ABI [[clang::trivial_abi]]
-#else
-#  define MOZ_TRIVIAL_ABI
-#endif
 
 // A restricted variant of mozilla::RefPtr<T>, which prohibits some unsafe or
 // unperformant misuses, in particular:
@@ -267,13 +255,7 @@ class MOZ_IS_REFPTR MOZ_TRIVIAL_ABI SafeRefPtr {
     return dont_AddRef(res);
   }
 
-  bool operator==(const SafeRefPtr<T>& aOther) const {
-    return mRawPtr == aOther.mRawPtr;
-  }
-
-  bool operator!=(const SafeRefPtr<T>& aOther) const {
-    return mRawPtr != aOther.mRawPtr;
-  }
+  bool operator==(const SafeRefPtr<T>& aOther) const = default;
 
   template <typename U, typename = std::enable_if_t<std::is_base_of_v<T, U>>>
   SafeRefPtr<U> downcast() && {

@@ -8,7 +8,6 @@ import mozilla.components.browser.state.action.ExtensionsProcessAction
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.engine.Engine
-import mozilla.components.support.test.ext.joinBlocking
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito
@@ -20,15 +19,16 @@ class ExtensionsProcessMiddlewareTest {
     @Before
     fun setUp() {
         engine = Mockito.mock()
-        store = BrowserStore(
-            middleware = listOf(ExtensionsProcessMiddleware(engine)),
-            initialState = BrowserState(),
-        )
+        store =
+            BrowserStore(
+                middleware = listOf(ExtensionsProcessMiddleware(engine)),
+                initialState = BrowserState(),
+            )
     }
 
     @Test
     fun `WHEN EnabledAction is dispatched THEN enable the process spawning`() {
-        store.dispatch(ExtensionsProcessAction.EnabledAction).joinBlocking()
+        store.dispatch(ExtensionsProcessAction.EnabledAction)
 
         Mockito.verify(engine).enableExtensionProcessSpawning()
         Mockito.verify(engine, Mockito.never()).disableExtensionProcessSpawning()
@@ -36,7 +36,7 @@ class ExtensionsProcessMiddlewareTest {
 
     @Test
     fun `WHEN DisabledAction is dispatched THEN disable the process spawning`() {
-        store.dispatch(ExtensionsProcessAction.DisabledAction).joinBlocking()
+        store.dispatch(ExtensionsProcessAction.DisabledAction)
 
         Mockito.verify(engine).disableExtensionProcessSpawning()
         Mockito.verify(engine, Mockito.never()).enableExtensionProcessSpawning()

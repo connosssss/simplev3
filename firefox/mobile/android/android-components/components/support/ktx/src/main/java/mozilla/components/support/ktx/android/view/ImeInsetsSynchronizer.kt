@@ -15,33 +15,36 @@ import androidx.core.view.WindowInsetsCompat.Type.ime
 import androidx.core.view.WindowInsetsCompat.Type.systemBars
 
 /**
- * Helper class allowing to easily synchronize a [View] with the keyboard insets leading to a
- * smooth animation for both of these when showing or hiding the keyboard.
+ * Helper class allowing to easily synchronize a [View] with the keyboard insets leading to a smooth animation for both
+ * of these when showing or hiding the keyboard.
  *
- * This only handles the IME insets and allows for a smooth resizing animation while it
- * assumes that persistent insets - for system bars are handled separately.
+ * This only handles the IME insets and allows for a smooth resizing animation while it assumes that persistent insets -
+ * for system bars are handled separately.
  *
- * @param targetView The view which will be shown on top of the keyboard while this is animated to be
- * showing or to be hidden.
- * @param synchronizeViewWithIME Whether to automatically apply the needed margins to [targetView]
- * to ensure it will be animated together with the keyboard or not. As an alternative integrators can use
- * the [onIMEAnimationStarted] and [onIMEAnimationFinished] callbacks to resize the layout on their own.
- * @param onIMEAnimationStarted Callback for when the IME animation starts.
- * It will inform whether the keyboard is showing or hiding and the height of the keyboard.
- * @param onIMEAnimationFinished Callback for when the IME animation finishes.
- * It will inform whether the keyboard is showing or hiding and the height of the keyboard.
+ * @param targetView The view which will be shown on top of the keyboard while this is animated to be showing or to be
+ *   hidden.
+ * @param insetsSource The view providing insets data. Using [ComposeView] is not recommended as this is not guaranteed
+ *   to provide the correct insets data.
+ * @param synchronizeViewWithIME Whether to automatically apply the needed margins to [targetView] to ensure it will be
+ *   animated together with the keyboard or not. As an alternative integrators can use the [onIMEAnimationStarted] and
+ *   [onIMEAnimationFinished] callbacks to resize the layout on their own.
+ * @param onIMEAnimationStarted Callback for when the IME animation starts. It will inform whether the keyboard is
+ *   showing or hiding and the height of the keyboard.
+ * @param onIMEAnimationFinished Callback for when the IME animation finishes. It will inform whether the keyboard is
+ *   showing or hiding and the height of the keyboard.
  */
-class ImeInsetsSynchronizer private constructor(
+class ImeInsetsSynchronizer
+private constructor(
     private val targetView: View,
+    private val insetsSource: View,
     private val synchronizeViewWithIME: Boolean,
     private val onIMEAnimationStarted: (Boolean, Int) -> Unit,
     private val onIMEAnimationFinished: (Boolean, Int) -> Unit,
-) : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_CONTINUE_ON_SUBTREE),
-    OnApplyWindowInsetsListener {
+) : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_CONTINUE_ON_SUBTREE), OnApplyWindowInsetsListener {
 
     init {
-        ViewCompat.setWindowInsetsAnimationCallback(targetView, this)
-        ViewCompat.setOnApplyWindowInsetsListener(targetView, this)
+        ViewCompat.setWindowInsetsAnimationCallback(insetsSource, this)
+        ViewCompat.setOnApplyWindowInsetsListener(insetsSource, this)
     }
 
     private lateinit var lastWindowInsets: WindowInsetsCompat
@@ -58,11 +61,11 @@ class ImeInsetsSynchronizer private constructor(
         isKeyboardShowingUp = windowInsets.isKeyboardShowingUp
 
         if (!areKeyboardInsetsDeferred) {
-            view.updateBottomMargin(
+            updateTargetBottomMargin(
                 calculateBottomMargin(
                     windowInsets.keyboardInsets.bottom,
                     getNavbarHeight(),
-                ),
+                )
             )
 
             onIMEAnimationFinished(
@@ -118,21 +121,24 @@ class ImeInsetsSynchronizer private constructor(
     ): WindowInsetsCompat {
         if (!keyboardAnimationInProgress) return insets
 
-        runningAnimations.firstOrNull { it.typeMask and ime() != 0 }?.let { imeAnimation ->
-            // Ensure the IME animation fraction is growing when the keyboard is showing up
-            // and shrinking otherwise.
-            val imeAnimationFractionBasedOnDirection = when (isKeyboardShowingUp) {
-                true -> imeAnimation.interpolatedFraction
-                false -> 1 - imeAnimation.interpolatedFraction
-            }
+        runningAnimations
+            .firstOrNull { it.typeMask and ime() != 0 }
+            ?.let { imeAnimation ->
+                // Ensure the IME animation fraction is growing when the keyboard is showing up
+                // and shrinking otherwise.
+                val imeAnimationFractionBasedOnDirection =
+                    when (isKeyboardShowingUp) {
+                        true -> imeAnimation.interpolatedFraction
+                        false -> 1 - imeAnimation.interpolatedFraction
+                    }
 
-            targetView.updateBottomMargin(
-                calculateBottomMargin(
-                    (keyboardHeight * imeAnimationFractionBasedOnDirection).toInt(),
-                    getNavbarHeight(),
-                ),
-            )
-        }
+                updateTargetBottomMargin(
+                    calculateBottomMargin(
+                        (keyboardHeight * imeAnimationFractionBasedOnDirection).toInt(),
+                        getNavbarHeight(),
+                    )
+                )
+            }
 
         return insets
     }
@@ -149,7 +155,7 @@ class ImeInsetsSynchronizer private constructor(
             // Ideally we would just call view.requestApplyInsets() and let the normal dispatch
             // cycle happen, but this happens too late resulting in a visual flicker.
             // Instead we manually dispatch the most recent WindowInsets to the view.
-            ViewCompat.dispatchApplyWindowInsets(targetView, currentInsets)
+            ViewCompat.dispatchApplyWindowInsets(insetsSource, currentInsets)
         }
     }
 
@@ -160,28 +166,33 @@ class ImeInsetsSynchronizer private constructor(
         get() = isVisible(ime())
 
     private val WindowInsetsCompat.navigationBarInsetHeight
-        get() = when (isKeyboardShowingUp) {
-            true -> getInsets(systemBars()).bottom
-            false -> 0
+        get() =
+            when (isKeyboardShowingUp) {
+                true -> getInsets(systemBars()).bottom
+                false -> 0
+            }
+
+    private fun getNavbarHeight() =
+        ViewCompat.getRootWindowInsets(insetsSource)?.getInsets(systemBars())?.bottom
+            ?: lastWindowInsets.navigationBarInsetHeight
+
+    private fun getCurrentInsets() =
+        when (::lastWindowInsets.isInitialized) {
+            true -> lastWindowInsets
+            false -> ViewCompat.getRootWindowInsets(insetsSource)
         }
-
-    private fun getNavbarHeight() = ViewCompat.getRootWindowInsets(targetView)
-        ?.getInsets(systemBars())?.bottom ?: lastWindowInsets.navigationBarInsetHeight
-
-    private fun getCurrentInsets() = when (::lastWindowInsets.isInitialized) {
-        true -> lastWindowInsets
-        false -> ViewCompat.getRootWindowInsets(targetView)
-    }
 
     private fun calculateBottomMargin(
         keyboardHeight: Int,
         navigationBarHeight: Int,
     ) = (keyboardHeight - navigationBarHeight).coerceAtLeast(0)
 
-    private fun View.updateBottomMargin(bottom: Int) {
+    private fun updateTargetBottomMargin(bottom: Int) {
         if (synchronizeViewWithIME) {
-            (layoutParams as ViewGroup.MarginLayoutParams).setMargins(0, 0, 0, bottom)
-            requestLayout()
+            with(targetView) {
+                (layoutParams as ViewGroup.MarginLayoutParams).setMargins(0, 0, 0, bottom)
+                requestLayout()
+            }
         }
     }
 
@@ -190,28 +201,34 @@ class ImeInsetsSynchronizer private constructor(
          * Setup animating [targetView] as always on top of the keyboard while also respecting all system bars insets.
          * This works only on Android 13+, otherwise the dynamic padding based on the keyboard is not reliable.
          *
-         * @param targetView The root view to add paddings to for accounting the visible keyboard height.
-         * @param synchronizeViewWithIME Whether to automatically apply the needed margins to [targetView]
-         * to ensure it will be animated together with the keyboard or not. As an alternative integrators can use
-         * the [onIMEAnimationStarted] and [onIMEAnimationFinished] callbacks to resize the layout on their own.
-         * @param onIMEAnimationStarted Callback for when the IME animation starts.
-         * It will inform whether the keyboard is showing or hiding and the height of the keyboard.
-         * @param onIMEAnimationFinished Callback for when the IME animation finishes.
-         * It will inform whether the keyboard is showing or hiding and the height of the keyboard.
+         * @param targetView The view to add paddings to for accounting the visible keyboard height.
+         * @param insetsSource The view providing insets data. Using [ComposeView] is not recommended as this is not
+         *   guaranteed to provide the correct insets data.
+         * @param synchronizeViewWithIME Whether to automatically apply the needed margins to [targetView] to ensure it
+         *   will be animated together with the keyboard or not. As an alternative integrators can use the
+         *   [onIMEAnimationStarted] and [onIMEAnimationFinished] callbacks to resize the layout on their own.
+         * @param onIMEAnimationStarted Callback for when the IME animation starts. It will inform whether the keyboard
+         *   is showing or hiding and the height of the keyboard.
+         * @param onIMEAnimationFinished Callback for when the IME animation finishes. It will inform whether the
+         *   keyboard is showing or hiding and the height of the keyboard.
          */
         fun setup(
             targetView: View,
+            insetsSource: View = targetView,
             synchronizeViewWithIME: Boolean = true,
             onIMEAnimationStarted: (Boolean, Int) -> Unit = { _, _ -> },
             onIMEAnimationFinished: (Boolean, Int) -> Unit = { _, _ -> },
-        ) = when (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            true -> ImeInsetsSynchronizer(
-                targetView,
-                synchronizeViewWithIME,
-                onIMEAnimationStarted,
-                onIMEAnimationFinished,
-            )
-            false -> null
-        }
+        ) =
+            when (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                true ->
+                    ImeInsetsSynchronizer(
+                        targetView,
+                        insetsSource,
+                        synchronizeViewWithIME,
+                        onIMEAnimationStarted,
+                        onIMEAnimationFinished,
+                    )
+                false -> null
+            }
     }
 }

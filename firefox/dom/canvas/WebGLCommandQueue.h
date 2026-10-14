@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,11 +6,10 @@
 #define WEBGLCOMMANDQUEUE_H_
 
 #include <type_traits>
-#include "mozilla/FunctionTypeTraits.h"
-#include "mozilla/gfx/Logging.h"
-#include "mozilla/ipc/IPDLParamTraits.h"
+
 #include "QueueParamTraits.h"
 #include "WebGLTypes.h"
+#include "mozilla/gfx/Logging.h"
 
 namespace mozilla {
 
@@ -24,14 +22,14 @@ class RangeConsumerView final : public webgl::ConsumerView<RangeConsumerView> {
  public:
   auto Remaining() const { return *MaybeAs<size_t>(mSrcEnd - mSrcItr); }
 
-  explicit RangeConsumerView(const Range<const uint8_t> range)
+  explicit RangeConsumerView(const mozilla::Range<const uint8_t> range)
       : ConsumerView(this), mSrcItr(range.begin()), mSrcEnd(range.end()) {
     (void)Remaining();  // assert size non-negative
   }
 
   void AlignTo(const size_t alignment) {
     const auto padToAlign = AlignmentOffset(alignment, mSrcItr.get());
-    if (MOZ_UNLIKELY(padToAlign > Remaining())) {
+    if (padToAlign > Remaining()) [[unlikely]] {
       mSrcItr = mSrcEnd;
       return;
     }
@@ -39,7 +37,7 @@ class RangeConsumerView final : public webgl::ConsumerView<RangeConsumerView> {
   }
 
   template <typename T>
-  Maybe<Range<const T>> ReadRange(const size_t elemCount) {
+  Maybe<mozilla::Range<const T>> ReadRange(const size_t elemCount) {
     constexpr auto alignment = alignof(T);
     AlignTo(alignment);
 
@@ -49,11 +47,13 @@ class RangeConsumerView final : public webgl::ConsumerView<RangeConsumerView> {
     const auto& byteSize = byteSizeChecked.value();
 
     const auto remaining = Remaining();
-    if (MOZ_UNLIKELY(byteSize > remaining)) return {};
+    if (byteSize > remaining) [[unlikely]] {
+      return {};
+    }
 
     const auto begin = reinterpret_cast<const T*>(mSrcItr.get());
     mSrcItr += byteSize;
-    return Some(Range<const T>{begin, elemCount});
+    return Some(mozilla::Range<const T>{begin, elemCount});
   }
 };
 
@@ -73,7 +73,7 @@ class SizeOnlyProducerView final
   SizeOnlyProducerView() : ProducerView(this) {}
 
   template <typename T>
-  bool WriteFromRange(const Range<const T>& src) {
+  bool WriteFromRange(const mozilla::Range<const T>& src) {
     constexpr auto alignment = alignof(T);
     const size_t byteSize = ByteSize(src);
     // printf_stderr("SizeOnlyProducerView: @%zu +%zu\n", alignment, byteSize);
@@ -99,7 +99,7 @@ class RangeProducerView final : public webgl::ProducerView<RangeProducerView> {
  public:
   auto Remaining() const { return *MaybeAs<size_t>(mDestEnd - mDestItr); }
 
-  explicit RangeProducerView(const Range<uint8_t> range)
+  explicit RangeProducerView(const mozilla::Range<uint8_t> range)
       : ProducerView(this),
         mDestBegin(range.begin()),
         mDestEnd(range.end()),
@@ -108,7 +108,7 @@ class RangeProducerView final : public webgl::ProducerView<RangeProducerView> {
   }
 
   template <typename T>
-  bool WriteFromRange(const Range<const T>& src) {
+  bool WriteFromRange(const mozilla::Range<const T>& src) {
     // uint32_t/float data may masquerade as a Range<uint8_t>.
     constexpr auto alignment = alignof(T);
     const size_t byteSize = ByteSize(src);
@@ -118,7 +118,7 @@ class RangeProducerView final : public webgl::ProducerView<RangeProducerView> {
     mDestItr += padToAlign;
 
     MOZ_ASSERT(byteSize <= Remaining());
-    if (MOZ_LIKELY(byteSize)) {
+    if (byteSize) [[likely]] {
       memcpy(mDestItr.get(), src.begin().get(), byteSize);
     }
     mDestItr += byteSize;
@@ -150,7 +150,7 @@ auto SerializationInfo(const Args&... args) {
 }
 
 template <typename... Args>
-void Serialize(Range<uint8_t> dest, const Args&... args) {
+void Serialize(mozilla::Range<uint8_t> dest, const Args&... args) {
   webgl::details::RangeProducerView view(dest);
   webgl::details::Serialize(view, args...);
 }
@@ -214,15 +214,15 @@ class EmptyMethodDispatcher {
 // -
 
 template <typename ReturnT, typename ObjectT, typename... Args>
-std::tuple<std::remove_cv_t<std::remove_reference_t<Args>>...> ArgsTuple(
+std::tuple<std::remove_cvref_t<Args>...> ArgsTuple(
     ReturnT (ObjectT::*)(Args... args)) {
-  return std::tuple<std::remove_cv_t<std::remove_reference_t<Args>>...>{};
+  return std::tuple<std::remove_cvref_t<Args>...>{};
 }
 
 template <typename ReturnT, typename ObjectT, typename... Args>
-std::tuple<std::remove_cv_t<std::remove_reference_t<Args>>...> ArgsTuple(
+std::tuple<std::remove_cvref_t<Args>...> ArgsTuple(
     ReturnT (ObjectT::*)(Args... args) const) {
-  return std::tuple<std::remove_cv_t<std::remove_reference_t<Args>>...>{};
+  return std::tuple<std::remove_cvref_t<Args>...>{};
 }
 
 // Derived type must be parameterized by the ID.
@@ -261,6 +261,16 @@ class MethodDispatcher {
           argsTuple);
     };
   }
+};
+
+struct WebGLMethodInfo {
+  enum Flags : uint8_t {};
+
+  size_t id = 0;
+  uint8_t flags = 0;
+
+  template <typename MethodT, MethodT Method>
+  static WebGLMethodInfo Get();
 };
 
 }  // namespace mozilla

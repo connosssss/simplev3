@@ -1,20 +1,24 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/dom/WebGPUBinding.h"
 #include "Adapter.h"
 
 #include <algorithm>
+#include <bit>
+
 #include "Device.h"
 #include "Instance.h"
 #include "SupportedFeatures.h"
 #include "SupportedLimits.h"
 #include "ipc/WebGPUChild.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/ErrorResult.h"
+#include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/dom/WebGPUBinding.h"
 #include "mozilla/webgpu/ffi/wgpu.h"
+#include "nsDebug.h"
 
 namespace mozilla::webgpu {
 
@@ -104,8 +108,6 @@ void AdapterInfo::GetWgpuDeviceType(nsString& s) const {
     case ffi::WGPUDeviceType_Other:
       s.AssignLiteral("Other");
       return;
-    case ffi::WGPUDeviceType_Sentinel:
-      break;
   }
   MOZ_CRASH("Bad `ffi::WGPUDeviceType`");
 }
@@ -135,17 +137,16 @@ void AdapterInfo::GetWgpuBackend(nsString& s) const {
     case ffi::WGPUBackend_Gl:
       s.AssignLiteral("Gl");
       return;
-    case ffi::WGPUBackend_BrowserWebGpu:  // This should never happen, because
-                                          // we _are_ the browser.
-    case ffi::WGPUBackend_Sentinel:
-      break;
+    case ffi::WGPUBackend_BrowserWebGpu:
+      break;  // This should never happen, because
+              // we _are_ the browser.
   }
   MOZ_CRASH("Bad `ffi::WGPUBackend`");
 }
 
 // -
 
-GPU_IMPL_CYCLE_COLLECTION(Adapter, mParent, mBridge, mFeatures, mLimits, mInfo)
+GPU_IMPL_CYCLE_COLLECTION(Adapter, mParent, mFeatures, mLimits, mInfo)
 GPU_IMPL_JS_WRAP(Adapter)
 
 enum class FeatureImplementationStatusTag {
@@ -225,22 +226,23 @@ struct FeatureImplementationStatus {
         return implemented(WGPUWEBGPU_FEATURE_FLOAT32_FILTERABLE);
 
       case dom::GPUFeatureName::Float32_blendable:
-        return unimplemented(
-            "https://bugzilla.mozilla.org/show_bug.cgi?id=1931630");
+        return implemented(WGPUWEBGPU_FEATURE_FLOAT32_BLENDABLE);
 
       case dom::GPUFeatureName::Clip_distances:
-        return unimplemented(
-            "https://bugzilla.mozilla.org/show_bug.cgi?id=1931629");
+        return implemented(WGPUWEBGPU_FEATURE_CLIP_DISTANCES);
 
       case dom::GPUFeatureName::Dual_source_blending:
-        // return implemented(WGPUWEBGPU_FEATURE_DUAL_SOURCE_BLENDING);
-        return unimplemented(
-            "https://bugzilla.mozilla.org/show_bug.cgi?id=1924328");
+        return implemented(WGPUWEBGPU_FEATURE_DUAL_SOURCE_BLENDING);
 
       case dom::GPUFeatureName::Subgroups:
         // return implemented(WGPUWEBGPU_FEATURE_SUBGROUPS);
         return unimplemented(
             "https://bugzilla.mozilla.org/show_bug.cgi?id=1955417");
+
+      case dom::GPUFeatureName::Primitive_index:
+        // return implemented(WGPUWEBGPU_FEATURE_PRIMITIVE_INDEX);
+        return unimplemented(
+            "https://bugzilla.mozilla.org/show_bug.cgi?id=1989116");
 
       case dom::GPUFeatureName::Core_features_and_limits:
         // NOTE: `0` means that no bits are set in calling code, but this is on
@@ -253,56 +255,32 @@ struct FeatureImplementationStatus {
   }
 };
 
-double GetLimitDefault(Limit aLimit) {
-  switch (aLimit) {
-      // clang-format off
-      case Limit::MaxTextureDimension1D: return 8192;
-      case Limit::MaxTextureDimension2D: return 8192;
-      case Limit::MaxTextureDimension3D: return 2048;
-      case Limit::MaxTextureArrayLayers: return 256;
-      case Limit::MaxBindGroups: return 4;
-      case Limit::MaxBindGroupsPlusVertexBuffers: return 24;
-      case Limit::MaxBindingsPerBindGroup: return 1000;
-      case Limit::MaxDynamicUniformBuffersPerPipelineLayout: return 8;
-      case Limit::MaxDynamicStorageBuffersPerPipelineLayout: return 4;
-      case Limit::MaxSampledTexturesPerShaderStage: return 16;
-      case Limit::MaxSamplersPerShaderStage: return 16;
-      case Limit::MaxStorageBuffersPerShaderStage: return 8;
-      case Limit::MaxStorageTexturesPerShaderStage: return 4;
-      case Limit::MaxUniformBuffersPerShaderStage: return 12;
-      case Limit::MaxUniformBufferBindingSize: return 65536;
-      case Limit::MaxStorageBufferBindingSize: return 134217728;
-      case Limit::MinUniformBufferOffsetAlignment: return 256;
-      case Limit::MinStorageBufferOffsetAlignment: return 256;
-      case Limit::MaxVertexBuffers: return 8;
-      case Limit::MaxBufferSize: return 268435456;
-      case Limit::MaxVertexAttributes: return 16;
-      case Limit::MaxVertexBufferArrayStride: return 2048;
-      case Limit::MaxInterStageShaderVariables: return 16;
-      case Limit::MaxColorAttachments: return 8;
-      case Limit::MaxColorAttachmentBytesPerSample: return 32;
-      case Limit::MaxComputeWorkgroupStorageSize: return 16384;
-      case Limit::MaxComputeInvocationsPerWorkgroup: return 256;
-      case Limit::MaxComputeWorkgroupSizeX: return 256;
-      case Limit::MaxComputeWorkgroupSizeY: return 256;
-      case Limit::MaxComputeWorkgroupSizeZ: return 64;
-      case Limit::MaxComputeWorkgroupsPerDimension: return 65535;
-      // clang-format on
-  }
-  MOZ_CRASH("Bad Limit");
-}
-
-Adapter::Adapter(Instance* const aParent, WebGPUChild* const aBridge,
+Adapter::Adapter(Instance* const aParent, WebGPUChild* const aChild,
                  const std::shared_ptr<ffi::WGPUAdapterInformation>& aInfo)
-    : ChildOf(aParent),
-      mBridge(aBridge),
-      mId(aInfo->id),
+    : ObjectBase(aChild, aInfo->id, ffi::wgpu_client_drop_adapter),
+      ChildOf(aParent),
       mFeatures(new SupportedFeatures(this)),
       mLimits(new SupportedLimits(this, aInfo->limits)),
       mInfo(new AdapterInfo(this, aInfo)),
       mInfoInner(aInfo) {
-  ErrorResult ignoredRv;  // It's onerous to plumb this in from outside in this
-                          // case, and we don't really need to.
+  // It's onerous to plumb an `ErrorResult` in from outside in this case, and we
+  // don't really need to. `NS_ERROR_UNEXPECTED` means the JS scope we need is
+  // unavailable, which content can provoke by exhausting the JS stack; see
+  // bug 2074842.
+  const auto addFeature = [&](const dom::GPUFeatureName aFeature) {
+    IgnoredErrorResult rv;
+    mFeatures->Add(aFeature, rv);
+    if (rv.Failed()) {
+      if (rv.ErrorCodeIs(NS_ERROR_UNEXPECTED)) {
+        NS_WARNING(
+            "`Adapter::Adapter`: failed to add feature: got "
+            "`NS_ERROR_UNEXPECTED`");
+      } else {
+        MOZ_CRASH_UNSAFE_PRINTF("`Adapter::Adapter`: failed to add feature: %d",
+                                rv.ErrorCodeAsInt());
+      }
+    }
+  };
 
   static const auto FEATURE_BY_BIT = []() {
     auto ret =
@@ -339,7 +317,7 @@ Adapter::Adapter(Instance* const aParent, WebGPUChild* const aBridge,
 
     const auto featureForBit = FEATURE_BY_BIT.find(bit);
     if (featureForBit != FEATURE_BY_BIT.end()) {
-      mFeatures->Add(featureForBit->second, ignoredRv);
+      addFeature(featureForBit->second);
     } else {
       // One of two cases:
       //
@@ -360,32 +338,17 @@ Adapter::Adapter(Instance* const aParent, WebGPUChild* const aBridge,
   // > Core-defaulting adapters *always* support the
   // > `"core-features-and-limits"` feature. It is *automatically enabled* on
   // > devices created from such adapters.
-  mFeatures->Add(dom::GPUFeatureName::Core_features_and_limits, ignoredRv);
+  addFeature(dom::GPUFeatureName::Core_features_and_limits);
 
   // We clamp limits to defaults when requestDevice is called, but
   // we return the actual limits when only requestAdapter is called.
   // So, we should clamp the limits here too if we should RFP.
   if (GetParentObject()->ShouldResistFingerprinting(RFPTarget::WebGPULimits)) {
-    for (const auto limit : MakeInclusiveEnumeratedRange(Limit::_LAST)) {
-      SetLimit(mLimits->mFfi.get(), limit, GetLimitDefault(limit));
-    }
+    ffi::wgpu_client_fill_default_limits(mLimits->mFfi.get());
   }
 }
 
-Adapter::~Adapter() { Cleanup(); }
-
-void Adapter::Cleanup() {
-  if (!mValid) {
-    return;
-  }
-  mValid = false;
-
-  if (!mBridge) {
-    return;
-  }
-
-  ffi::wgpu_client_drop_adapter(mBridge->GetClient(), mId);
-}
+Adapter::~Adapter() = default;
 
 const RefPtr<SupportedFeatures>& Adapter::Features() const { return mFeatures; }
 const RefPtr<SupportedLimits>& Adapter::Limits() const { return mLimits; }
@@ -419,8 +382,16 @@ static std::string_view ToJsKey(const Limit limit) {
       return "maxSampledTexturesPerShaderStage";
     case Limit::MaxSamplersPerShaderStage:
       return "maxSamplersPerShaderStage";
+    case Limit::MaxStorageBuffersInVertexStage:
+      return "maxStorageBuffersInVertexStage";
+    case Limit::MaxStorageBuffersInFragmentStage:
+      return "maxStorageBuffersInFragmentStage";
     case Limit::MaxStorageBuffersPerShaderStage:
       return "maxStorageBuffersPerShaderStage";
+    case Limit::MaxStorageTexturesInVertexStage:
+      return "maxStorageTexturesInVertexStage";
+    case Limit::MaxStorageTexturesInFragmentStage:
+      return "maxStorageTexturesInFragmentStage";
     case Limit::MaxStorageTexturesPerShaderStage:
       return "maxStorageTexturesPerShaderStage";
     case Limit::MaxUniformBuffersPerShaderStage:
@@ -508,11 +479,14 @@ already_AddRefed<dom::Promise> Adapter::RequestDevice(
   if (NS_WARN_IF(aRv.Failed())) {
     return nullptr;
   }
-
-  ffi::WGPULimits deviceLimits = *mLimits->mFfi;
-  for (const auto limit : MakeInclusiveEnumeratedRange(Limit::_LAST)) {
-    SetLimit(&deviceLimits, limit, GetLimitDefault(limit));
+  RefPtr<dom::Promise> lost_promise =
+      dom::Promise::Create(GetParentObject(), aRv);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return nullptr;
   }
+
+  ffi::WGPULimits deviceLimits = {};
+  ffi::wgpu_client_fill_default_limits(&deviceLimits);
 
   // -
 
@@ -532,7 +506,7 @@ already_AddRefed<dom::Promise> Adapter::RequestDevice(
           (void)featureStr;
           nsPrintfCString msg(
               "`GPUAdapter.requestDevice`: '%s' was requested in "
-              "`requiredFeatures`, but it is not supported by Firefox."
+              "`requiredFeatures`, but it is not supported by Firefox. "
               "Follow <%s> for updates.",
               featureStr.get(), status.value.unimplemented.bugzillaUrlAscii);
           promise->MaybeRejectWithTypeError(msg);
@@ -605,7 +579,7 @@ already_AddRefed<dom::Promise> Adapter::RequestDevice(
             return;
           }
           if (StringEndsWith(keyU8, "Alignment"_ns)) {
-            if (!IsPowerOfTwo(requestedValue)) {
+            if (!std::has_single_bit(requestedValue)) {
               nsPrintfCString msg(
                   "requestDevice: Request for limit '%s' must be a power of "
                   "two, "
@@ -646,23 +620,22 @@ already_AddRefed<dom::Promise> Adapter::RequestDevice(
     // > devices created from such adapters.
     features->Add(dom::GPUFeatureName::Core_features_and_limits, aRv);
 
+    // Only a fallback for `WebGPUChild::ClearActorState`, which has no
+    // response to read the created device's limits from. Otherwise
+    // `wgpu_child_resolve_request_device_promise` builds them from the
+    // response, since wgpu-core may adjust what we ask for here.
     RefPtr<SupportedLimits> limits = new SupportedLimits(this, deviceLimits);
-
-    ffi::WGPUDeviceQueueId ids =
-        ffi::wgpu_client_make_device_queue_id(mBridge->GetClient());
 
     ffi::WGPUFfiDeviceDescriptor ffiDesc = {};
     ffiDesc.required_features = featureBits;
     ffiDesc.required_limits = deviceLimits;
 
-    ffi::wgpu_client_request_device(mBridge->GetClient(), mId, ids.device,
-                                    ids.queue, &ffiDesc);
+    ffi::WGPUDeviceQueueId ids =
+        ffi::wgpu_client_request_device(GetClient(), GetId(), &ffiDesc);
 
-    auto pending_promise = WebGPUChild::PendingRequestDevicePromise{
-        RefPtr(promise), ids.device, ids.queue, aDesc.mLabel,
-        RefPtr(this),    features,   limits,    mInfo};
-    mBridge->mPendingRequestDevicePromises.push_back(
-        std::move(pending_promise));
+    GetChild()->EnqueueRequestDevicePromise(PendingRequestDevicePromise{
+        promise, ids.device, ids.queue, aDesc.mLabel, this, std::move(features),
+        std::move(limits), mInfo, std::move(lost_promise)});
 
   }();
 

@@ -1,4 +1,4 @@
-# Testing
+# Marionette testing
 
 We verify and test Marionette in a couple of different ways, using
 a combination of unit tests and functional tests.  There are three
@@ -36,7 +36,7 @@ chatty, it can sometimes be useful to run the tests sequentially:
 
 These unit tests run as part of the `X` jobs on Treeherder.
 
-[xpcshell]: https://developer.mozilla.org/en-US/docs/Mozilla/QA/Writing_xpcshell-based_unit_tests
+[xpcshell]: /testing/xpcshell/index.md
 
 ## Marionette functional tests
 
@@ -153,7 +153,7 @@ Marionette when you connect manually:
 
 You should see output like `{"applicationType":"gecko","marionetteProtocol":3}`
 
-[geckodriver]: /testing/geckodriver/index.rst
+[geckodriver]: /testing/geckodriver/index.md
 
 ## WPT functional tests
 
@@ -212,7 +212,7 @@ possibly to run the Marionette tests _without_ a local build and
 with a downloaded test archive from [Taskcluster](Taskcluster.md)
 
 If you want to run tests from a downloaded test archive, you will
-need to download the `target.common.tests.tar.gz` artifact attached to
+need to download the `target.common.tests.tar.zst` artifact attached to
 Treeherder [build jobs] `B` for your system.  Extract the archive
 and set up the Python Marionette client and harness by executing
 the following command in a virtual environment:

@@ -2,6 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import annotations
+
 import shutil
 import subprocess
 import tempfile
@@ -28,9 +30,8 @@ class MissingUVError(Exception):
 
 
 class GeneratePythonLockfiles(MozbuildObject):
-
     def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, virtualenv_name="vendor", **kwargs)
+        super().__init__(*args, virtualenv_name="uv", **kwargs)
 
         self.keep_lockfiles = False
         self.output_dir = None

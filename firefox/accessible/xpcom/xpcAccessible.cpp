@@ -1,21 +1,18 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "AccAttributes.h"
+#include "Relation.h"
+#include "RootAccessible.h"
 #include "nsAccUtils.h"
+#include "nsAccessibleRelation.h"
 #include "nsComponentManagerUtils.h"
 #include "nsIAccessibleRelation.h"
 #include "nsIAccessibleRole.h"
-#include "nsAccessibleRelation.h"
-#include "Relation.h"
-#include "RootAccessible.h"
-#include "xpcAccessibleDocument.h"
-
 #include "nsIMutableArray.h"
 #include "nsPersistentProperties.h"
+#include "xpcAccessibleDocument.h"
 
 #ifdef MOZ_WIDGET_COCOA
 #  include "xpcAccessibleMacInterface.h"
@@ -308,7 +305,7 @@ xpcAccessible::GetAttributes(nsIPersistentProperties** aAttributes) {
     return NS_ERROR_FAILURE;
   }
 
-  RefPtr<nsPersistentProperties> props = new nsPersistentProperties();
+  auto props = MakeRefPtr<nsPersistentProperties>();
 
   RefPtr<AccAttributes> attributes = acc->Attributes();
   nsAccUtils::SetAccGroupAttrs(attributes, acc);
@@ -337,7 +334,7 @@ xpcAccessible::GetCache(nsIPersistentProperties** aCachedFields) {
     return NS_ERROR_FAILURE;
   }
 
-  RefPtr<nsPersistentProperties> props = new nsPersistentProperties();
+  auto props = MakeRefPtr<nsPersistentProperties>();
   if (RemoteAccessible* remoteAcc = IntlGeneric()->AsRemote()) {
     if (RefPtr<AccAttributes> cachedFields = remoteAcc->mCachedFields) {
       nsAutoString unused;
@@ -616,10 +613,11 @@ xpcAccessible::DoAction(uint8_t aIndex) {
 
 NS_IMETHODIMP
 xpcAccessible::ScrollTo(uint32_t aHow) {
-  if (!IntlGeneric()) return NS_ERROR_FAILURE;
-
-  IntlGeneric()->ScrollTo(aHow);
-  return NS_OK;
+  if (RefPtr<Accessible> acc = IntlGeneric()) {
+    acc->ScrollTo(aHow);
+    return NS_OK;
+  }
+  return NS_ERROR_FAILURE;
 }
 
 NS_IMETHODIMP
@@ -633,18 +631,10 @@ xpcAccessible::ScrollToPoint(uint32_t aCoordinateType, int32_t aX, int32_t aY) {
 
 NS_IMETHODIMP
 xpcAccessible::Announce(const nsAString& aAnnouncement, uint16_t aPriority) {
-  RemoteAccessible* proxy = IntlGeneric()->AsRemote();
-  if (proxy) {
-#if defined(XP_WIN)
+  if (IntlGeneric()->IsRemote()) {
     return NS_ERROR_NOT_IMPLEMENTED;
-#else
-    nsString announcement(aAnnouncement);
-    proxy->Announce(announcement, aPriority);
-#endif
-  } else {
-    Intl()->Announce(aAnnouncement, aPriority);
   }
-
+  Intl()->Announce(aAnnouncement, aPriority);
   return NS_OK;
 }
 

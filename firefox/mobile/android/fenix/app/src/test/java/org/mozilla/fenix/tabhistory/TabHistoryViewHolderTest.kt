@@ -10,6 +10,7 @@ import io.mockk.MockKAnnotations
 import io.mockk.Runs
 import io.mockk.every
 import io.mockk.impl.annotations.MockK
+import io.mockk.impl.annotations.RelaxedMockK
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.slot
@@ -22,8 +23,7 @@ import org.junit.Test
 
 class TabHistoryViewHolderTest {
 
-    @MockK(relaxed = true)
-    private lateinit var view: WidgetSiteItemView
+    @RelaxedMockK private lateinit var view: WidgetSiteItemView
 
     @MockK private lateinit var interactor: TabHistoryViewInteractor
 
@@ -31,18 +31,20 @@ class TabHistoryViewHolderTest {
     private lateinit var holder: TabHistoryViewHolder
     private lateinit var onClick: CapturingSlot<View.OnClickListener>
 
-    private val selectedItem = TabHistoryItem(
-        title = "Mozilla",
-        url = "https://mozilla.org",
-        index = 0,
-        isSelected = true,
-    )
-    private val unselectedItem = TabHistoryItem(
-        title = "Firefox",
-        url = "https://firefox.com",
-        index = 1,
-        isSelected = false,
-    )
+    private val selectedItem =
+        TabHistoryItem(
+            title = "Mozilla",
+            url = "https://mozilla.org",
+            index = 0,
+            isSelected = true,
+        )
+    private val unselectedItem =
+        TabHistoryItem(
+            title = "Firefox",
+            url = "https://firefox.com",
+            index = 1,
+            isSelected = false,
+        )
 
     @Before
     fun setup() {

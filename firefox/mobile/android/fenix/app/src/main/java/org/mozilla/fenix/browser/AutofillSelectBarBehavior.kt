@@ -13,9 +13,7 @@ import androidx.core.view.isVisible
 import org.mozilla.fenix.R
 import org.mozilla.fenix.components.toolbar.ToolbarPosition
 
-/**
- * Custom [CoordinatorLayout.Behavior] for ensuring autofill select bars are shown on top of the bottom toolbar.
- */
+/** Custom [CoordinatorLayout.Behavior] for ensuring autofill select bars are shown on top of the bottom toolbar. */
 class AutofillSelectBarBehavior<V : View>(
     context: Context,
     toolbarPosition: ToolbarPosition,
@@ -23,9 +21,10 @@ class AutofillSelectBarBehavior<V : View>(
 
     // Priority list of possible anchors for the autofill bars.
     private val dependenciesIds = buildList {
-        add(R.id.toolbar_navbar_container)
+        add(R.id.navigation_bar)
         if (toolbarPosition == ToolbarPosition.BOTTOM) {
             add(R.id.toolbar)
+            add(R.id.composable_toolbar)
         }
     }
 
@@ -36,9 +35,8 @@ class AutofillSelectBarBehavior<V : View>(
         child: V,
         dependency: View,
     ): Boolean {
-        val anchorId = dependenciesIds
-            .intersect(parent.children.filter { it.isVisible }.map { it.id }.toSet())
-            .firstOrNull()
+        val anchorId =
+            dependenciesIds.intersect(parent.children.filter { it.isVisible }.map { it.id }.toSet()).firstOrNull()
 
         // It is possible that previous anchor's visibility is changed.
         // We have to check here if a new anchor is available and reparent the logins bar.
@@ -60,9 +58,7 @@ class AutofillSelectBarBehavior<V : View>(
         }
     }
 
-    /**
-     * Place the autofill bar at the bottom of the screen.
-     */
+    /** Place the autofill bar at the bottom of the screen. */
     fun placeAtBottom(autofillBar: View) {
         val params = autofillBar.layoutParams as CoordinatorLayout.LayoutParams
 
@@ -72,9 +68,7 @@ class AutofillSelectBarBehavior<V : View>(
         autofillBar.layoutParams = params
     }
 
-    /**
-     * Place the autofill bar above the given anchor.
-     */
+    /** Place the autofill bar above the given anchor. */
     fun placeAboveAnchor(autofillBar: View, anchor: View) {
         val params = autofillBar.layoutParams as CoordinatorLayout.LayoutParams
 

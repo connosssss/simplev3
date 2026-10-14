@@ -1,4 +1,6 @@
-requestLongerTimeout(4);
+// Two full runTestInNormalAndPrivateMode() passes in one file; the timeout is
+// armed once per file, so coverage builds need the headroom.
+requestLongerTimeout(5);
 
 AntiTracking.runTestInNormalAndPrivateMode(
   "IndexedDB",
@@ -18,17 +20,8 @@ AntiTracking.runTestInNormalAndPrivateMode(
     ok(true, "IDB should be allowed");
   },
   // Cleanup callback
-  async _ => {
-    await new Promise(resolve => {
-      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
-        resolve()
-      );
-    });
-  },
-  [
-    ["dom.indexedDB.hide_in_pbmode.enabled", false],
-    ["network.lna.block_trackers", false],
-  ]
+  clearSiteTestData,
+  [["network.lna.block_trackers", false]]
 );
 
 AntiTracking.runTestInNormalAndPrivateMode(
@@ -92,17 +85,8 @@ AntiTracking.runTestInNormalAndPrivateMode(
     ok(true, "IDB should be allowed");
   },
   // Cleanup callback
-  async _ => {
-    await new Promise(resolve => {
-      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
-        resolve()
-      );
-    });
-  },
-  [
-    ["dom.indexedDB.hide_in_pbmode.enabled", false],
-    ["network.lna.block_trackers", false],
-  ],
+  clearSiteTestData,
+  [["network.lna.block_trackers", false]],
   false,
   false
 );

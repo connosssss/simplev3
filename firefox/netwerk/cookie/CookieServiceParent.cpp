@@ -1,24 +1,25 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "CookieServiceParent.h"
+
 #include "CookieCommons.h"
 #include "CookieLogging.h"
-#include "CookieServiceParent.h"
+#include "mozIThirdPartyUtil.h"
+#include "mozilla/BasePrincipal.h"
+#include "mozilla/StaticPrefs_network.h"
+#include "mozilla/StoragePrincipalHelper.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/ipc/URIUtils.h"
 #include "mozilla/net/CookieService.h"
 #include "mozilla/net/CookieServiceParent.h"
-
-#include "mozilla/ipc/URIUtils.h"
-#include "mozilla/StoragePrincipalHelper.h"
-#include "mozIThirdPartyUtil.h"
+#include "mozilla/net/PNeckoParent.h"
 #include "nsArrayUtils.h"
 #include "nsIChannel.h"
-#include "mozilla/StaticPrefs_network.h"
 #include "nsIEffectiveTLDService.h"
-#include "nsNetCID.h"
 #include "nsMixedContentBlocker.h"
+#include "nsNetCID.h"
 
 using namespace mozilla::ipc;
 
@@ -71,10 +72,10 @@ void CookieServiceParent::RemoveBatchDeletedCookies(nsIArray* aCookieList) {
     cookieStructList.AppendElement(cookieStruct);
     attrsList.AppendElement(attrs);
   }
-  Unused << SendRemoveBatchDeletedCookies(cookieStructList, attrsList);
+  (void)SendRemoveBatchDeletedCookies(cookieStructList, attrsList);
 }
 
-void CookieServiceParent::RemoveAll() { Unused << SendRemoveAll(); }
+void CookieServiceParent::RemoveAll() { (void)SendRemoveAll(); }
 
 void CookieServiceParent::RemoveCookie(const Cookie& cookie,
                                        const nsID* aOperationID) {
@@ -86,8 +87,8 @@ void CookieServiceParent::RemoveCookie(const Cookie& cookie,
   if (cookie.IsHttpOnly() || !InsecureCookieOrSecureOrigin(cookie)) {
     cookieStruct.value() = "";
   }
-  Unused << SendRemoveCookie(cookieStruct, attrs,
-                             aOperationID ? Some(*aOperationID) : Nothing());
+  (void)SendRemoveCookie(cookieStruct, attrs,
+                         aOperationID ? Some(*aOperationID) : Nothing());
 }
 
 void CookieServiceParent::AddCookie(const Cookie& cookie,
@@ -100,8 +101,8 @@ void CookieServiceParent::AddCookie(const Cookie& cookie,
   if (cookie.IsHttpOnly() || !InsecureCookieOrSecureOrigin(cookie)) {
     cookieStruct.value() = "";
   }
-  Unused << SendAddCookie(cookieStruct, attrs,
-                          aOperationID ? Some(*aOperationID) : Nothing());
+  (void)SendAddCookie(cookieStruct, attrs,
+                      aOperationID ? Some(*aOperationID) : Nothing());
 }
 
 bool CookieServiceParent::ContentProcessHasCookie(const Cookie& cookie) {
@@ -109,10 +110,10 @@ bool CookieServiceParent::ContentProcessHasCookie(const Cookie& cookie) {
 }
 
 bool CookieServiceParent::ContentProcessHasCookie(
-    const nsACString& aHost, const OriginAttributes& aOriginAttributes) {
+    const nsACString& aBaseDomain, const OriginAttributes& aOriginAttributes) {
   nsCString baseDomain;
   if (NS_WARN_IF(NS_FAILED(CookieCommons::GetBaseDomainFromHost(
-          mTLDService, aHost, baseDomain)))) {
+          mTLDService, aBaseDomain, baseDomain)))) {
     return false;
   }
 
@@ -122,9 +123,13 @@ bool CookieServiceParent::ContentProcessHasCookie(
 
 bool CookieServiceParent::InsecureCookieOrSecureOrigin(const Cookie& cookie) {
   nsCString baseDomain;
-  // CookieStorage notifications triggering this won't fail to get base domain
-  MOZ_ALWAYS_SUCCEEDS(CookieCommons::GetBaseDomainFromHost(
-      mTLDService, cookie.Host(), baseDomain));
+  if (NS_FAILED(CookieCommons::GetBaseDomainFromHost(mTLDService, cookie.Host(),
+                                                     baseDomain))) {
+    MOZ_ASSERT(false,
+               "CookieServiceParent::InsecureCookieOrSecureOrigin - "
+               "GetBaseDomainFromHost shouldn't fail");
+    return false;
+  }
 
   // cookie is insecure or cookie is associated with a secure-origin process
   CookieKey cookieKey(baseDomain, cookie.OriginAttributesRef());
@@ -203,7 +208,7 @@ void CookieServiceParent::TrackCookieLoad(nsIChannel* aChannel) {
       foundCookieList);
   nsTArray<CookieStructTable> matchingCookiesListTable;
   SerializeCookieListTable(foundCookieList, matchingCookiesListTable, uri);
-  Unused << SendTrackCookiesLoad(matchingCookiesListTable);
+  (void)SendTrackCookiesLoad(matchingCookiesListTable);
 }
 
 // we append outgoing cookie info into a list here so the ContentParent can
@@ -274,10 +279,26 @@ IPCResult CookieServiceParent::RecvGetCookieList(
     return IPC_FAIL(this, "aHost must not be null");
   }
 
-  // we append outgoing cookie info into a list here so the ContentParent can
-  // filter cookies that do not need to go to certain ContentProcesses
+  auto* contentParent = static_cast<dom::ContentParent*>(Manager()->Manager());
+  if (!contentParent) {
+    return IPC_FAIL(this, "Missing ContentParent in GetCookieList");
+  }
+
+  // Reads are non-mutating, and GetCookieList requests can race content
+  // process teardown, so a failed authorization fails closed (no cookies are
+  // served or registered for that principal) rather than killing the process.
+  nsTArray<OriginAttributes> authorizedAttrsList;
   for (const auto& attrs : aAttrsList) {
+    nsCOMPtr<nsIPrincipal> principal =
+        BasePrincipal::CreateContentPrincipal(aHost, attrs);
+    if (!contentParent->ValidatePrincipal(principal)) {
+      continue;
+    }
+
+    // Register the key so the parent can filter proactive cookie pushes to
+    // this content process.
     UpdateCookieInContentList(aHost, attrs);
+    authorizedAttrsList.AppendElement(attrs);
   }
 
   nsTArray<RefPtr<Cookie>> foundCookieList;
@@ -288,7 +309,8 @@ IPCResult CookieServiceParent::RecvGetCookieList(
       aHost, nullptr, aIsForeign, aIsThirdPartyTrackingResource,
       aIsThirdPartySocialTrackingResource, aStorageAccessPermissionGranted,
       aRejectedReason, aIsSafeTopLevelNav, aIsSameSiteForeign,
-      aHadCrossSiteRedirects, false, true, aAttrsList, foundCookieList);
+      aHadCrossSiteRedirects, false, true, authorizedAttrsList,
+      foundCookieList);
 
   nsTArray<CookieStructTable> matchingCookiesListTable;
   SerializeCookieListTable(foundCookieList, matchingCookiesListTable, aHost);
@@ -305,20 +327,29 @@ void CookieServiceParent::ActorDestroy(ActorDestroyReason aWhy) {
 
 IPCResult CookieServiceParent::RecvSetCookies(
     const nsCString& aBaseDomain, const OriginAttributes& aOriginAttributes,
-    nsIURI* aHost, bool aFromHttp, bool aIsThirdParty,
-    const nsTArray<CookieStruct>& aCookies) {
-  if (!ContentProcessHasCookie(aBaseDomain, aOriginAttributes)) {
+    nsIURI* aHost, bool aIsThirdParty, const nsTArray<CookieStruct>& aCookies) {
+  if (!aHost) {
+    return IPC_FAIL(this, "aHost must not be null");
+  }
+
+  // Authorize the write if the process has already loaded this cookie key, or
+  // could legitimately load this principal. The latter covers documents with no
+  // channel registration (e.g. file://), which never populate the key set.
+  auto* contentParent = static_cast<dom::ContentParent*>(Manager()->Manager());
+  nsCOMPtr<nsIPrincipal> principal =
+      BasePrincipal::CreateContentPrincipal(aHost, aOriginAttributes);
+  if (!ContentProcessHasCookie(aBaseDomain, aOriginAttributes) &&
+      !(contentParent && contentParent->ValidatePrincipal(principal))) {
     return IPC_FAIL(this, "Invalid set-cookie request from content process");
   }
 
-  return SetCookies(aBaseDomain, aOriginAttributes, aHost, aFromHttp,
-                    aIsThirdParty, aCookies);
+  return SetCookies(aBaseDomain, aOriginAttributes, aHost, aIsThirdParty,
+                    aCookies);
 }
 
 IPCResult CookieServiceParent::SetCookies(
     const nsCString& aBaseDomain, const OriginAttributes& aOriginAttributes,
-    nsIURI* aHost, bool aFromHttp, bool aIsThirdParty,
-    const nsTArray<CookieStruct>& aCookies,
+    nsIURI* aHost, bool aIsThirdParty, const nsTArray<CookieStruct>& aCookies,
     dom::BrowsingContext* aBrowsingContext) {
   if (!mCookieService) {
     return IPC_OK();
@@ -330,15 +361,22 @@ IPCResult CookieServiceParent::SetCookies(
     return IPC_FAIL(this, "aHost must not be null");
   }
 
-  // We set this to true while processing this cookie update, to make sure
-  // we don't send it back to the same content process.
-  mProcessingCookie = true;
+  // We set the cookie processing flag to true while processing this cookie
+  // update, to make sure we don't send it back to the same content process.
+  CookieProcessingGuard guard(this);
 
-  bool ok = mCookieService->SetCookiesFromIPC(aBaseDomain, aOriginAttributes,
-                                              aHost, aFromHttp, aIsThirdParty,
-                                              aCookies, aBrowsingContext);
-  mProcessingCookie = false;
-  return ok ? IPC_OK() : IPC_FAIL(this, "Invalid cookie received.");
+  nsICookieValidation::ValidationError error =
+      mCookieService->SetCookiesFromIPC(aBaseDomain, aOriginAttributes, aHost,
+                                        aIsThirdParty, aCookies,
+                                        aBrowsingContext);
+  MOZ_DIAGNOSTIC_ASSERT(error == nsICookieValidation::eOK);
+
+  if (error != nsICookieValidation::eOK) {
+    MOZ_LOG(gCookieLog, LogLevel::Warning,
+            ("Invalid cookie submission from the content process: %d", error));
+  }
+
+  return IPC_OK();
 }
 
 }  // namespace net

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,20 +6,18 @@
 #define nsCoreUtils_h_
 
 #include "AttrArray.h"
+#include "Units.h"
 #include "mozilla/EventForwards.h"
+#include "mozilla/FlushType.h"
+#include "mozilla/PresShellForwards.h"
 #include "nsCaseTreatment.h"
 #include "nsIAccessibleEvent.h"
 #include "nsIContent.h"
-#include "mozilla/FlushType.h"
-#include "mozilla/PresShellForwards.h"
-
 #include "nsPoint.h"
 #include "nsTArray.h"
-#include "Units.h"
 
 class nsAttrValue;
 class nsGenericHTMLElement;
-class nsRange;
 class nsTreeColumn;
 class nsIFrame;
 class nsIDocShell;
@@ -31,6 +28,7 @@ class PresShell;
 namespace dom {
 class Document;
 class Element;
+class Range;
 class XULTreeElement;
 }  // namespace dom
 }  // namespace mozilla
@@ -152,7 +150,7 @@ class nsCoreUtils {
    * @param aScrollType   the place a range should be scrolled to
    */
   MOZ_CAN_RUN_SCRIPT_BOUNDARY static nsresult ScrollSubstringTo(
-      nsIFrame* aFrame, nsRange* aRange, uint32_t aScrollType);
+      nsIFrame* aFrame, mozilla::dom::Range* aRange, uint32_t aScrollType);
 
   /** Helper method to scroll range into view, used for implementation of
    * nsIAccessibleText::scrollSubstringTo[Point]().
@@ -165,8 +163,9 @@ class nsCoreUtils {
    * and when.
    */
   MOZ_CAN_RUN_SCRIPT_BOUNDARY static nsresult ScrollSubstringTo(
-      nsIFrame* aFrame, nsRange* aRange, mozilla::ScrollAxis aVertical,
-      mozilla::ScrollAxis aHorizontal);
+      nsIFrame* aFrame, mozilla::dom::Range* aRange,
+      mozilla::AxisScrollParams aVertical,
+      mozilla::AxisScrollParams aHorizontal);
 
   /**
    * Scrolls the given frame to the point, used for implememntation of
@@ -184,9 +183,9 @@ class nsCoreUtils {
    * Converts scroll type constant defined in nsIAccessibleScrollType to
    * vertical and horizontal parameters.
    */
-  static void ConvertScrollTypeToPercents(uint32_t aScrollType,
-                                          mozilla::ScrollAxis* aVertical,
-                                          mozilla::ScrollAxis* aHorizontal);
+  static void ConvertScrollTypeToPercents(
+      uint32_t aScrollType, mozilla::AxisScrollParams* aVertical,
+      mozilla::AxisScrollParams* aHorizontal);
 
   /**
    * Return document shell for the given DOM node.
@@ -319,7 +318,17 @@ class nsCoreUtils {
   static void DispatchAccEvent(RefPtr<nsIAccessibleEvent> aEvent);
 
   static bool IsDisplayContents(nsIContent* aContent);
-  static bool CanCreateAccessibleWithoutFrame(nsIContent* aContent);
+
+  /**
+   * If this returns false and aIsSubtreeHidden is passed, it is set to true
+   * only if nothing in aContent's subtree could ever be exposed regardless of
+   * its own state (e.g. display: none or content-visibility: hidden). It is
+   * left unchanged if a descendant might still be exposed despite aContent
+   * itself not being creatable (e.g. an inert ancestor with a descendant which
+   * is not inert, such as an open modal dialog).
+   */
+  static bool CanCreateAccessibleWithoutFrame(nsIContent* aContent,
+                                              bool* aIsSubtreeHidden = nullptr);
 
   /**
    * Return whether the document and all its in-process ancestors are visible in
@@ -347,6 +356,31 @@ class nsCoreUtils {
    * will return true for the latter node.
    */
   static bool IsTrimmedWhitespaceBeforeHardLineBreak(nsIFrame* aFrame);
+
+  static bool IsPseudoElement(nsIContent* aContent) {
+    return aContent->IsGeneratedContentContainerForBefore() ||
+           aContent->IsGeneratedContentContainerForAfter() ||
+           aContent->IsGeneratedContentContainerForMarker();
+  }
+
+  /**
+   * Return the anchor frame for the given CSS positioned frame, or null if:
+   * 1. there is none,
+   * 2. there is more than one anchor,
+   * 3. or, there is one or more anchor used for sizing/margin only.
+   */
+  static const nsIFrame* GetAnchorForPositionedFrame(
+      const PresShell* aPresShell, const nsIFrame* aPositionedFrame);
+
+  /**
+   * Return the CSS positioned frame for the given anchor frame, or null if:
+   * 1. there is none,
+   * 2. the anchor has more than one positioned frame,
+   * 3. or, there is one or more positioned frame using this anchor for
+   * sizing/margin only.
+   */
+  static nsIFrame* GetPositionedFrameForAnchor(const PresShell* aPresShell,
+                                               const nsIFrame* aAnchorFrame);
 };
 
 #endif

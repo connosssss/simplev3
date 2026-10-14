@@ -12,10 +12,9 @@ import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  BreachAlertsData:
+    "moz-src:///toolkit/components/passwordmgr/BreachAlertsData.sys.mjs",
   LoginHelper: "resource://gre/modules/LoginHelper.sys.mjs",
-  RemoteSettings: "resource://services-settings/remote-settings.sys.mjs",
-  RemoteSettingsClient:
-    "resource://services-settings/RemoteSettingsClient.sys.mjs",
 });
 
 XPCOMUtils.defineLazyPreferenceGetter(
@@ -26,11 +25,26 @@ XPCOMUtils.defineLazyPreferenceGetter(
 );
 
 export const LoginBreaches = {
-  REMOTE_SETTINGS_COLLECTION: "fxmonitor-breaches",
+  _cachedBreachAlertsData: null,
+
+  get breachAlertsData() {
+    if (!this._cachedBreachAlertsData) {
+      this._cachedBreachAlertsData = new lazy.BreachAlertsData();
+    }
+    return this._cachedBreachAlertsData;
+  },
 
   async update(breaches = null) {
     const logins = await lazy.LoginHelper.getAllUserFacingLogins();
     await this.getPotentialBreachesByLoginGUID(logins, breaches);
+  },
+
+  /**
+   * Start watching for Remote Settings breach data updates and
+   * recompute potentially breached logins whenever new data syncs in.
+   */
+  subscribeToBreachUpdates() {
+    return this.breachAlertsData.subscribe(breaches => this.update(breaches));
   },
 
   /**
@@ -49,21 +63,14 @@ export const LoginBreaches = {
    */
   async getPotentialBreachesByLoginGUID(logins, breaches = null) {
     const breachesByLoginGUID = new Map();
+    // With no logins to check there is nothing to report
+    if (!logins.length) {
+      return breachesByLoginGUID;
+    }
     if (!breaches) {
-      try {
-        breaches = await lazy
-          .RemoteSettings(this.REMOTE_SETTINGS_COLLECTION)
-          .get();
-      } catch (ex) {
-        if (ex instanceof lazy.RemoteSettingsClient.UnknownCollectionError) {
-          lazy.log.warn(
-            "Could not get Remote Settings collection.",
-            this.REMOTE_SETTINGS_COLLECTION,
-            ex
-          );
-          return breachesByLoginGUID;
-        }
-        throw ex;
+      breaches = await this.breachAlertsData.getAllBreaches();
+      if (breaches.length === 0) {
+        return breachesByLoginGUID;
       }
     }
     const BREACH_ALERT_URL = Services.prefs.getStringPref(
@@ -72,9 +79,11 @@ export const LoginBreaches = {
     const baseBreachAlertURL = new URL(BREACH_ALERT_URL);
 
     await Services.logins.initializationPromise;
-    const storageJSON = Services.logins.wrappedJSObject._storage;
     const dismissedBreachAlertsByLoginGUID =
-      storageJSON.getBreachAlertDismissalsByLoginGUID();
+      await Services.logins.getBreachAlertDismissalsByLoginGUID();
+    const potentiallyVulnerablePasswords = new Set(
+      await Services.logins.arePotentiallyVulnerablePasswords(logins)
+    );
 
     // Determine potentially breached logins by checking their origin and the last time
     // they were changed. It's important to note here that we are NOT considering the
@@ -97,8 +106,8 @@ export const LoginBreaches = {
           continue;
         }
 
-        if (!storageJSON.isPotentiallyVulnerablePassword(login)) {
-          storageJSON.addPotentiallyVulnerablePassword(login);
+        if (!potentiallyVulnerablePasswords.has(login.guid)) {
+          await Services.logins.addPotentiallyVulnerablePassword(login);
         }
 
         if (
@@ -127,41 +136,33 @@ export const LoginBreaches = {
   /**
    * Return information about logins using passwords that were potentially in a
    * breach.
+   *
    * @see the caveats in the documentation for `getPotentialBreachesByLoginGUID`.
    *
    * @param {nsILoginInfo[]} logins to check the passwords of.
    * @returns {Map} from login GUID to `true` for logins that have a password
    *                that may be vulnerable.
    */
-  getPotentiallyVulnerablePasswordsByLoginGUID(logins) {
+  async getPotentiallyVulnerablePasswordsByLoginGUID(logins) {
     const vulnerablePasswordsByLoginGUID = new Map();
-    const storageJSON = Services.logins.wrappedJSObject._storage;
-    for (const login of logins) {
-      if (storageJSON.isPotentiallyVulnerablePassword(login)) {
-        vulnerablePasswordsByLoginGUID.set(login.guid, true);
-      }
+    if (!lazy.VULNERABLE_PASSWORDS_ENABLED) {
+      return vulnerablePasswordsByLoginGUID;
+    }
+    const vulnerableGUIDs =
+      await Services.logins.arePotentiallyVulnerablePasswords(logins);
+    for (const guid of vulnerableGUIDs) {
+      vulnerablePasswordsByLoginGUID.set(guid, true);
     }
     return vulnerablePasswordsByLoginGUID;
   },
 
-  recordBreachAlertDismissal(loginGuid) {
-    const storageJSON = Services.logins.wrappedJSObject._storage;
-    return storageJSON.recordBreachAlertDismissal(loginGuid);
-  },
-
-  isVulnerablePassword(login) {
-    if (!lazy.VULNERABLE_PASSWORDS_ENABLED) {
-      return false;
-    }
-
-    const storageJSON = Services.logins.wrappedJSObject._storage;
-    return storageJSON.isPotentiallyVulnerablePassword(login);
+  async recordBreachAlertDismissal(loginGuid) {
+    return Services.logins.recordBreachAlertDismissal(loginGuid);
   },
 
   async clearAllPotentiallyVulnerablePasswords() {
     await Services.logins.initializationPromise;
-    const storageJSON = Services.logins.wrappedJSObject._storage;
-    storageJSON.clearAllPotentiallyVulnerablePasswords();
+    await Services.logins.clearAllPotentiallyVulnerablePasswords();
   },
 
   _breachAlertIsDismissed(login, breach, dismissedBreachAlerts) {
@@ -185,7 +186,3 @@ export const LoginBreaches = {
     return login.timePasswordChanged < breachDate;
   },
 };
-
-ChromeUtils.defineLazyGetter(lazy, "log", () => {
-  return lazy.LoginHelper.createLogger("LoginBreaches");
-});

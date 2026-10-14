@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -15,13 +13,17 @@
 #include "vm/PortableBaselineInterpret.h"
 
 #include "mozilla/Maybe.h"
+
 #include <algorithm>
+#include <bit>
+#include <cmath>
 
 #include "fdlibm.h"
 #include "jsapi.h"
 
 #include "builtin/DataViewObject.h"
 #include "builtin/MapObject.h"
+#include "builtin/ModuleObject.h"
 #include "builtin/Object.h"
 #include "builtin/RegExp.h"
 #include "builtin/String.h"
@@ -50,6 +52,7 @@
 #include "vm/JitActivation.h"
 #include "vm/JSObject.h"
 #include "vm/JSScript.h"
+#include "vm/ObjectFuse.h"
 #include "vm/Opcodes.h"
 #include "vm/PlainObject.h"
 #include "vm/Shape.h"
@@ -63,6 +66,7 @@
 #include "vm/Interpreter-inl.h"
 #include "vm/JSScript-inl.h"
 #include "vm/PlainObject-inl.h"
+#include "vm/Realm-inl.h"
 
 namespace js {
 namespace pbl {
@@ -540,8 +544,9 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
 #  define CACHEOP_CASE(name) cacheop_##name : CACHEOP_TRACE(name)
 #  define CACHEOP_CASE_FALLTHROUGH(name) CACHEOP_CASE(name)
 
-#  define DISPATCH_CACHEOP()          \
-    cacheop = cacheIRReader.readOp(); \
+#  define DISPATCH_CACHEOP()                                                \
+    cacheop =                                                               \
+        cacheIRReader.more() ? cacheIRReader.readOp() : CacheOp::PblReturn; \
     goto* addresses[long(cacheop)];
 
 #else  // ENABLE_COMPUTED_GOTO_DISPATCH
@@ -553,8 +558,9 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
     [[fallthrough]];                     \
     CACHEOP_CASE(name)
 
-#  define DISPATCH_CACHEOP()          \
-    cacheop = cacheIRReader.readOp(); \
+#  define DISPATCH_CACHEOP()                                                \
+    cacheop =                                                               \
+        cacheIRReader.more() ? cacheIRReader.readOp() : CacheOp::PblReturn; \
     goto dispatch;
 
 #endif  // !ENABLE_COMPUTED_GOTO_DISPATCH
@@ -573,7 +579,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
     ctx.icregs.icTags[(index)] = 0;                   \
   } while (0)
 
-    DECLARE_CACHEOP_CASE(ReturnFromIC);
+    DECLARE_CACHEOP_CASE(PblReturn);
     DECLARE_CACHEOP_CASE(GuardToObject);
     DECLARE_CACHEOP_CASE(GuardIsNullOrUndefined);
     DECLARE_CACHEOP_CASE(GuardIsNull);
@@ -593,6 +599,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
     DECLARE_CACHEOP_CASE(GuardNonDoubleType);
     DECLARE_CACHEOP_CASE(GuardShape);
     DECLARE_CACHEOP_CASE(GuardFuse);
+    DECLARE_CACHEOP_CASE(GuardObjectFuseProperty);
     DECLARE_CACHEOP_CASE(GuardProto);
     DECLARE_CACHEOP_CASE(GuardNullProto);
     DECLARE_CACHEOP_CASE(GuardClass);
@@ -605,7 +612,6 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
     DECLARE_CACHEOP_CASE(GuardIsProxy);
     DECLARE_CACHEOP_CASE(GuardIsNotProxy);
     DECLARE_CACHEOP_CASE(GuardIsNotArrayBufferMaybeShared);
-    DECLARE_CACHEOP_CASE(GuardIsTypedArray);
     DECLARE_CACHEOP_CASE(GuardHasProxyHandler);
     DECLARE_CACHEOP_CASE(GuardIsNotDOMProxy);
     DECLARE_CACHEOP_CASE(GuardSpecificObject);
@@ -628,7 +634,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
     DECLARE_CACHEOP_CASE(GuardDynamicSlotValue);
     DECLARE_CACHEOP_CASE(LoadFixedSlot);
     DECLARE_CACHEOP_CASE(LoadDynamicSlot);
-    DECLARE_CACHEOP_CASE(GuardNoAllocationMetadataBuilder);
+    DECLARE_CACHEOP_CASE(AssertNoAllocationMetadataBuilder);
     DECLARE_CACHEOP_CASE(GuardFunctionHasJitEntry);
     DECLARE_CACHEOP_CASE(GuardFunctionHasNoJitEntry);
     DECLARE_CACHEOP_CASE(GuardFunctionIsNonBuiltinCtor);
@@ -662,7 +668,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
     DECLARE_CACHEOP_CASE(CallInt32ToString);
     DECLARE_CACHEOP_CASE(CallScriptedFunction);
     DECLARE_CACHEOP_CASE(CallNativeFunction);
-    DECLARE_CACHEOP_CASE(MetaScriptedThisShape);
+    DECLARE_CACHEOP_CASE(MetaCreateThis);
     DECLARE_CACHEOP_CASE(LoadFixedSlotResult);
     DECLARE_CACHEOP_CASE(LoadDynamicSlotResult);
     DECLARE_CACHEOP_CASE(LoadDenseElementResult);
@@ -744,7 +750,6 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
     DECLARE_CACHEOP_CASE(ArrayBufferViewByteOffsetDoubleResult);
     DECLARE_CACHEOP_CASE(TypedArrayByteLengthInt32Result);
     DECLARE_CACHEOP_CASE(TypedArrayByteLengthDoubleResult);
-    DECLARE_CACHEOP_CASE(TypedArrayElementSizeResult);
     DECLARE_CACHEOP_CASE(NewStringIteratorResult);
     DECLARE_CACHEOP_CASE(NewRegExpStringIteratorResult);
     DECLARE_CACHEOP_CASE(ObjectCreateResult);
@@ -865,15 +870,16 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
 #define BOUNDSCHECK(resultId) \
   if (resultId.id() >= ICRegs::kMaxICVals) FAIL_IC();
 
-#define PREDICT_NEXT(name)                       \
-  if (cacheIRReader.peekOp() == CacheOp::name) { \
-    cacheIRReader.readOp();                      \
-    cacheop = CacheOp::name;                     \
-    goto cacheop_##name;                         \
+#define PREDICT_NEXT(name)                            \
+  static_assert(CacheOp::name != CacheOp::PblReturn); \
+  if (cacheIRReader.peekOp() == CacheOp::name) {      \
+    cacheIRReader.readOp();                           \
+    cacheop = CacheOp::name;                          \
+    goto cacheop_##name;                              \
   }
 
 #define PREDICT_RETURN()                                 \
-  if (cacheIRReader.peekOp() == CacheOp::ReturnFromIC) { \
+  if (!cacheIRReader.more()) {                           \
     TRACE_PRINTF("stub successful, predicted return\n"); \
     return retValue;                                     \
   }
@@ -896,7 +902,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
 #endif
     {
 
-      CACHEOP_CASE(ReturnFromIC) {
+      CACHEOP_CASE(PblReturn) {
         TRACE_PRINTF("stub successful!\n");
         return retValue;
       }
@@ -1160,6 +1166,30 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         DISPATCH_CACHEOP();
       }
 
+      CACHEOP_CASE(GuardObjectFuseProperty) {
+        auto args = cacheIRReader.argsForGuardObjectFuseProperty();
+#ifdef DEBUG
+        JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(args.objId.id()));
+        uintptr_t objFuseOwner =
+            stubInfo->getStubRawWord(cstub, args.objFuseOwnerOffset);
+        MOZ_ASSERT(uintptr_t(obj) == objFuseOwner);
+#endif
+        auto* objFuse = reinterpret_cast<ObjectFuse*>(
+            stubInfo->getStubRawWord(cstub, args.objFuseOffset));
+        uint32_t generation =
+            stubInfo->getStubRawInt32(cstub, args.expectedGenerationOffset);
+        uint32_t propIndex =
+            stubInfo->getStubRawInt32(cstub, args.propIndexOffset);
+        uint32_t propMask =
+            stubInfo->getStubRawInt32(cstub, args.propMaskOffset);
+        uint32_t propSlot =
+            ObjectFuse::propertySlotFromIndexAndMask(propIndex, propMask);
+        if (!objFuse->checkPropertyIsConstant(generation, propSlot)) {
+          FAIL_IC();
+        }
+        DISPATCH_CACHEOP();
+      }
+
       CACHEOP_CASE(GuardProto) {
         ObjOperandId objId = cacheIRReader.objOperandId();
         uint32_t protoOffset = cacheIRReader.stubOffset();
@@ -1203,6 +1233,13 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
           case GuardClassKind::Map:
           case GuardClassKind::BoundFunction:
           case GuardClassKind::Date:
+          case GuardClassKind::Duration:
+          case GuardClassKind::PlainTime:
+          case GuardClassKind::PlainDateTime:
+          case GuardClassKind::Instant:
+          case GuardClassKind::ZonedDateTime:
+          case GuardClassKind::WeakMap:
+          case GuardClassKind::WeakSet:
             if (object->getClass() != jit::ClassFor(kind)) {
               FAIL_IC();
             }
@@ -1316,19 +1353,12 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         ObjOperandId objId = cacheIRReader.objOperandId();
         JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(objId.id()));
         const JSClass* clasp = obj->getClass();
+        // This should match MacroAssembler::branchIfIsArrayBufferMaybeShared
         if (clasp == &FixedLengthArrayBufferObject::class_ ||
             clasp == &FixedLengthSharedArrayBufferObject::class_ ||
             clasp == &ResizableArrayBufferObject::class_ ||
-            clasp == &GrowableSharedArrayBufferObject::class_) {
-          FAIL_IC();
-        }
-        DISPATCH_CACHEOP();
-      }
-
-      CACHEOP_CASE(GuardIsTypedArray) {
-        ObjOperandId objId = cacheIRReader.objOperandId();
-        JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(objId.id()));
-        if (!IsTypedArrayClass(obj->getClass())) {
+            clasp == &GrowableSharedArrayBufferObject::class_ ||
+            clasp == &ImmutableArrayBufferObject::class_) {
           FAIL_IC();
         }
         DISPATCH_CACHEOP();
@@ -1390,12 +1420,10 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(GuardSpecificFunction) {
-        ObjOperandId funId = cacheIRReader.objOperandId();
-        uint32_t expectedOffset = cacheIRReader.stubOffset();
-        uint32_t nargsAndFlagsOffset = cacheIRReader.stubOffset();
-        (void)nargsAndFlagsOffset;  // Unused.
-        uintptr_t expected = stubInfo->getStubRawWord(cstub, expectedOffset);
-        if (expected != READ_REG(funId.id())) {
+        auto args = cacheIRReader.argsForGuardSpecificFunction();
+        uintptr_t expected =
+            stubInfo->getStubRawWord(cstub, args.expectedOffset);
+        if (expected != READ_REG(args.funId.id())) {
           FAIL_IC();
         }
         PREDICT_NEXT(LoadArgumentFixedSlot);
@@ -1403,13 +1431,10 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(GuardFunctionScript) {
-        ObjOperandId objId = cacheIRReader.objOperandId();
-        uint32_t expectedOffset = cacheIRReader.stubOffset();
-        uint32_t nargsAndFlagsOffset = cacheIRReader.stubOffset();
-        JSFunction* fun = reinterpret_cast<JSFunction*>(READ_REG(objId.id()));
+        auto args = cacheIRReader.argsForGuardFunctionScript();
+        auto* fun = reinterpret_cast<JSFunction*>(READ_REG(args.objId.id()));
         BaseScript* expected = reinterpret_cast<BaseScript*>(
-            stubInfo->getStubRawWord(cstub, expectedOffset));
-        (void)nargsAndFlagsOffset;
+            stubInfo->getStubRawWord(cstub, args.expectedOffset));
 
         if (!fun->hasBaseScript() || fun->baseScript() != expected) {
           FAIL_IC();
@@ -1538,8 +1563,9 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         uint32_t getterSetterOffset = cacheIRReader.stubOffset();
         JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(objId.id()));
         jsid id = jsid::fromRawBits(stubInfo->getStubRawWord(cstub, idOffset));
-        GetterSetter* getterSetter = reinterpret_cast<GetterSetter*>(
-            stubInfo->getStubRawWord(cstub, getterSetterOffset));
+        Value getterSetterVal = Value::fromRawBits(
+            stubInfo->getStubRawInt64(cstub, getterSetterOffset));
+        auto* getterSetter = getterSetterVal.toGCThing()->as<GetterSetter>();
         if (!ObjectHasGetterSetterPure(ctx.frameMgr.cxForLocalUseOnly(), obj,
                                        id, getterSetter)) {
           FAIL_IC();
@@ -1655,13 +1681,13 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         DISPATCH_CACHEOP();
       }
 
-      CACHEOP_CASE(GuardNoAllocationMetadataBuilder) {
+      CACHEOP_CASE(AssertNoAllocationMetadataBuilder) {
         uint32_t builderAddrOffset = cacheIRReader.stubOffset();
         uintptr_t builderAddr =
             stubInfo->getStubRawWord(cstub, builderAddrOffset);
-        if (*reinterpret_cast<uintptr_t*>(builderAddr) != 0) {
-          FAIL_IC();
-        }
+        (void)builderAddr;
+        MOZ_ASSERT(*reinterpret_cast<uintptr_t*>(builderAddr) == 0,
+                   "unexpected allocation metadata builder");
         DISPATCH_CACHEOP();
       }
 
@@ -1742,13 +1768,10 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(LoadProtoObject) {
-        ObjOperandId resultId = cacheIRReader.objOperandId();
-        BOUNDSCHECK(resultId);
-        uint32_t protoObjOffset = cacheIRReader.stubOffset();
-        ObjOperandId receiverObjId = cacheIRReader.objOperandId();
-        (void)receiverObjId;
-        intptr_t obj = stubInfo->getStubRawWord(cstub, protoObjOffset);
-        WRITE_REG(resultId.id(), obj, OBJECT);
+        auto args = cacheIRReader.argsForLoadProtoObject();
+        BOUNDSCHECK(args.resultId);
+        intptr_t obj = stubInfo->getStubRawWord(cstub, args.protoObjOffset);
+        WRITE_REG(args.resultId.id(), obj, OBJECT);
         PREDICT_NEXT(GuardShape);
         DISPATCH_CACHEOP();
       }
@@ -1867,19 +1890,17 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(MegamorphicSetElement) {
-        ObjOperandId objId = cacheIRReader.objOperandId();
-        ValOperandId idId = cacheIRReader.valOperandId();
-        ValOperandId rhsId = cacheIRReader.valOperandId();
-        bool strict = cacheIRReader.readBool();
-        JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(objId.id()));
-        Value id = READ_VALUE_REG(idId.id());
-        Value rhs = READ_VALUE_REG(rhsId.id());
+        auto args = cacheIRReader.argsForMegamorphicSetElement();
+        JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(args.objId.id()));
+        Value id = READ_VALUE_REG(args.idId.id());
+        Value rhs = READ_VALUE_REG(args.rhsId.id());
         {
           PUSH_IC_FRAME();
           ReservedRooted<JSObject*> obj0(&ctx.state.obj0, obj);
           ReservedRooted<Value> value0(&ctx.state.value0, id);
           ReservedRooted<Value> value1(&ctx.state.value1, rhs);
-          if (!SetElementMegamorphic<false>(cx, obj0, value0, value1, strict)) {
+          if (!SetElementMegamorphic<false>(cx, obj0, value0, value1,
+                                            args.strict)) {
             ctx.error = PBIResult::Error;
             return IC_ERROR_SENTINEL();
           }
@@ -1923,7 +1944,12 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         uint32_t offsetOffset = cacheIRReader.stubOffset();
         ValOperandId rhsId = cacheIRReader.valOperandId();
         uint32_t newShapeOffset = cacheIRReader.stubOffset();
+        bool preserveWrapper = cacheIRReader.readBool();
         JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(objId.id()));
+        if (preserveWrapper &&
+            !PreserveWrapper(ctx.frameMgr.cxForLocalUseOnly(), obj)) {
+          FAIL_IC();
+        }
         int32_t offset = stubInfo->getStubRawInt32(cstub, offsetOffset);
         Value rhs = READ_VALUE_REG(rhsId.id());
         Shape* newShape = reinterpret_cast<Shape*>(
@@ -1941,7 +1967,12 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         uint32_t offsetOffset = cacheIRReader.stubOffset();
         ValOperandId rhsId = cacheIRReader.valOperandId();
         uint32_t newShapeOffset = cacheIRReader.stubOffset();
+        bool preserveWrapper = cacheIRReader.readBool();
         JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(objId.id()));
+        if (preserveWrapper &&
+            !PreserveWrapper(ctx.frameMgr.cxForLocalUseOnly(), obj)) {
+          FAIL_IC();
+        }
         int32_t offset = stubInfo->getStubRawInt32(cstub, offsetOffset);
         Value rhs = READ_VALUE_REG(rhsId.id());
         Shape* newShape = reinterpret_cast<Shape*>(
@@ -1962,7 +1993,12 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         ValOperandId rhsId = cacheIRReader.valOperandId();
         uint32_t newShapeOffset = cacheIRReader.stubOffset();
         uint32_t numNewSlotsOffset = cacheIRReader.stubOffset();
+        bool preserveWrapper = cacheIRReader.readBool();
         JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(objId.id()));
+        if (preserveWrapper &&
+            !PreserveWrapper(ctx.frameMgr.cxForLocalUseOnly(), obj)) {
+          FAIL_IC();
+        }
         int32_t offset = stubInfo->getStubRawInt32(cstub, offsetOffset);
         Value rhs = READ_VALUE_REG(rhsId.id());
         Shape* newShape = reinterpret_cast<Shape*>(
@@ -2100,26 +2136,20 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(StoreTypedArrayElement) {
-        ObjOperandId objId = cacheIRReader.objOperandId();
-        Scalar::Type elementType = cacheIRReader.scalarType();
-        IntPtrOperandId indexId = cacheIRReader.intPtrOperandId();
-        uint32_t rhsId = cacheIRReader.rawOperandId();
-        bool handleOOB = cacheIRReader.readBool();
-        ArrayBufferViewKind kind = cacheIRReader.arrayBufferViewKind();
-        (void)kind;
-        JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(objId.id()));
-        uintptr_t index = uintptr_t(READ_REG(indexId.id()));
-        uint64_t rhs = READ_REG(rhsId);
+        auto args = cacheIRReader.argsForStoreTypedArrayElement();
+        JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(args.objId.id()));
+        uintptr_t index = uintptr_t(READ_REG(args.indexId.id()));
+        uint64_t rhs = READ_REG(args.rhsId);
         if (obj->as<TypedArrayObject>().length().isNothing()) {
           FAIL_IC();
         }
         if (index >= obj->as<TypedArrayObject>().length().value()) {
-          if (!handleOOB) {
+          if (!args.handleOOB) {
             FAIL_IC();
           }
         } else {
           Value v;
-          switch (elementType) {
+          switch (args.elementType) {
             case Scalar::Int8:
             case Scalar::Uint8:
             case Scalar::Int16:
@@ -2155,7 +2185,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
                                              &obj->as<TypedArrayObject>());
           FakeRooted<Value> value0(nullptr, v);
           ObjectOpResult result;
-          MOZ_ASSERT(elementType == obj0->type());
+          MOZ_ASSERT(args.elementType == obj0->type());
           MOZ_ALWAYS_TRUE(SetTypedArrayElement(ctx.frameMgr.cxForLocalUseOnly(),
                                                obj0, index, value0, result));
           MOZ_ALWAYS_TRUE(result.ok());
@@ -2164,12 +2194,9 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(LoadTypedArrayElementExistsResult) {
-        ObjOperandId objId = cacheIRReader.objOperandId();
-        IntPtrOperandId indexId = cacheIRReader.intPtrOperandId();
-        ArrayBufferViewKind kind = cacheIRReader.arrayBufferViewKind();
-        (void)kind;
-        JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(objId.id()));
-        uintptr_t index = uintptr_t(READ_REG(indexId.id()));
+        auto args = cacheIRReader.argsForLoadTypedArrayElementExistsResult();
+        JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(args.objId.id()));
+        uintptr_t index = uintptr_t(READ_REG(args.indexId.id()));
         if (obj->as<TypedArrayObject>().length().isNothing()) {
           FAIL_IC();
         }
@@ -2180,17 +2207,9 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(LoadTypedArrayElementResult) {
-        ObjOperandId objId = cacheIRReader.objOperandId();
-        IntPtrOperandId indexId = cacheIRReader.intPtrOperandId();
-        Scalar::Type elementType = cacheIRReader.scalarType();
-        bool handleOOB = cacheIRReader.readBool();
-        bool forceDoubleForUint32 = cacheIRReader.readBool();
-        ArrayBufferViewKind kind = cacheIRReader.arrayBufferViewKind();
-        (void)kind;
-        (void)elementType;
-        (void)handleOOB;
-        JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(objId.id()));
-        uintptr_t index = uintptr_t(READ_REG(indexId.id()));
+        auto args = cacheIRReader.argsForLoadTypedArrayElementResult();
+        JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(args.objId.id()));
+        uintptr_t index = uintptr_t(READ_REG(args.indexId.id()));
         if (obj->as<TypedArrayObject>().length().isNothing()) {
           FAIL_IC();
         }
@@ -2201,7 +2220,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         if (!obj->as<TypedArrayObject>().getElementPure(index, &v)) {
           FAIL_IC();
         }
-        if (forceDoubleForUint32) {
+        if (args.forceDoubleForUint32) {
           if (v.isInt32()) {
             v.setNumber(v.toInt32());
           }
@@ -2285,7 +2304,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         {
           PUSH_IC_FRAME();
 
-          if (!ctx.stack.check(sp, sizeof(StackVal) * (totalArgs + 6))) {
+          if (!ctx.stack.check(sp, sizeof(StackVal) * (totalArgs + 7))) {
             ReportOverRecursed(ctx.frameMgr.cxForLocalUseOnly());
             ctx.error = PBIResult::Error;
             return IC_ERROR_SENTINEL();
@@ -2308,8 +2327,11 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
               ReservedRooted<JSObject*> calleeObj(&ctx.state.obj0, callee);
               ReservedRooted<JSObject*> newTargetRooted(
                   &ctx.state.obj1, &origArgs[0].asValue().toObject());
-              ReservedRooted<Value> result(&ctx.state.value0);
-              if (!CreateThisFromIC(cx, calleeObj, newTargetRooted, &result)) {
+              ReservedRooted<Value> result(&ctx.state.value0,
+                                           MagicValue(JS_IS_CONSTRUCTING));
+              HandleFunction fun = calleeObj.as<JSFunction>();
+              if (!js::CreateThis(cx, fun, newTargetRooted, GenericObject,
+                                  &result)) {
                 ctx.error = PBIResult::Error;
                 return IC_ERROR_SENTINEL();
               }
@@ -2352,6 +2374,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
           Value* args = reinterpret_cast<Value*>(sp);
 
           if (isNative) {
+            PUSHNATIVE(StackValNative(callee));
             PUSHNATIVE(StackValNative(argc));
             PUSHNATIVE(
                 StackValNative(MakeFrameDescriptor(FrameType::BaselineStub)));
@@ -2593,11 +2616,10 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         DISPATCH_CACHEOP();
       }
 
-      CACHEOP_CASE(MetaScriptedThisShape) {
-        uint32_t thisShapeOffset = cacheIRReader.stubOffset();
+      CACHEOP_CASE(MetaCreateThis) {
         // This op is only metadata for the Warp Transpiler and should be
         // ignored.
-        (void)thisShapeOffset;
+        cacheIRReader.argsForMetaCreateThis();
         PREDICT_NEXT(CallScriptedFunction);
         DISPATCH_CACHEOP();
       }
@@ -3545,13 +3567,10 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(CompareObjectResult) {
-        JSOp op = cacheIRReader.jsop();
-        ObjOperandId lhsId = cacheIRReader.objOperandId();
-        ObjOperandId rhsId = cacheIRReader.objOperandId();
-        (void)op;
-        JSObject* lhs = reinterpret_cast<JSObject*>(READ_REG(lhsId.id()));
-        JSObject* rhs = reinterpret_cast<JSObject*>(READ_REG(rhsId.id()));
-        switch (op) {
+        auto args = cacheIRReader.argsForCompareObjectResult();
+        auto* lhs = reinterpret_cast<JSObject*>(READ_REG(args.lhsId.id()));
+        auto* rhs = reinterpret_cast<JSObject*>(READ_REG(args.rhsId.id()));
+        switch (args.op) {
           case JSOp::Eq:
           case JSOp::StrictEq:
             retValue = BooleanValue(lhs == rhs).asRawBits();
@@ -3568,13 +3587,10 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(CompareSymbolResult) {
-        JSOp op = cacheIRReader.jsop();
-        SymbolOperandId lhsId = cacheIRReader.symbolOperandId();
-        SymbolOperandId rhsId = cacheIRReader.symbolOperandId();
-        (void)op;
-        JS::Symbol* lhs = reinterpret_cast<JS::Symbol*>(READ_REG(lhsId.id()));
-        JS::Symbol* rhs = reinterpret_cast<JS::Symbol*>(READ_REG(rhsId.id()));
-        switch (op) {
+        auto args = cacheIRReader.argsForCompareSymbolResult();
+        auto* lhs = reinterpret_cast<JS::Symbol*>(READ_REG(args.lhsId.id()));
+        auto* rhs = reinterpret_cast<JS::Symbol*>(READ_REG(args.rhsId.id()));
+        switch (args.op) {
           case JSOp::Eq:
           case JSOp::StrictEq:
             retValue = BooleanValue(lhs == rhs).asRawBits();
@@ -3591,13 +3607,8 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(AssertPropertyLookup) {
-        ObjOperandId objId = cacheIRReader.objOperandId();
-        uint32_t idOffset = cacheIRReader.stubOffset();
-        uint32_t slotOffset = cacheIRReader.stubOffset();
         // Debug-only assertion; we can ignore.
-        (void)objId;
-        (void)idOffset;
-        (void)slotOffset;
+        cacheIRReader.argsForAssertPropertyLookup();
         DISPATCH_CACHEOP();
       }
 
@@ -3633,9 +3644,8 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
 
       CACHEOP_CASE(MathClz32Result) {
         Int32OperandId inputId = cacheIRReader.int32OperandId();
-        int32_t input = int32_t(READ_REG(inputId.id()));
-        int32_t result =
-            (input == 0) ? 32 : mozilla::CountLeadingZeroes32(input);
+        uint32_t input = uint32_t(READ_REG(inputId.id()));
+        int32_t result = std::countl_zero(input);
         retValue = Int32Value(result).asRawBits();
         PREDICT_RETURN();
         DISPATCH_CACHEOP();
@@ -3766,7 +3776,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       CACHEOP_CASE(MathFloorNumberResult) {
         NumberOperandId inputId = cacheIRReader.numberOperandId();
         double input = READ_VALUE_REG(inputId.id()).toNumber();
-        double result = fdlibm_floor(input);
+        double result = std::floor(input);
         retValue = DoubleValue(result).asRawBits();
         PREDICT_RETURN();
         DISPATCH_CACHEOP();
@@ -3775,7 +3785,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       CACHEOP_CASE(MathCeilNumberResult) {
         NumberOperandId inputId = cacheIRReader.numberOperandId();
         double input = READ_VALUE_REG(inputId.id()).toNumber();
-        double result = fdlibm_ceil(input);
+        double result = std::ceil(input);
         retValue = DoubleValue(result).asRawBits();
         PREDICT_RETURN();
         DISPATCH_CACHEOP();
@@ -3784,7 +3794,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       CACHEOP_CASE(MathTruncNumberResult) {
         NumberOperandId inputId = cacheIRReader.numberOperandId();
         double input = READ_VALUE_REG(inputId.id()).toNumber();
-        double result = fdlibm_trunc(input);
+        double result = std::trunc(input);
         retValue = DoubleValue(result).asRawBits();
         PREDICT_RETURN();
         DISPATCH_CACHEOP();
@@ -3796,7 +3806,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         if (input == 0.0 && std::signbit(input)) {
           FAIL_IC();
         }
-        double result = fdlibm_floor(input);
+        double result = std::floor(input);
         int32_t intResult = int32_t(result);
         if (double(intResult) != result) {
           FAIL_IC();
@@ -3812,7 +3822,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         if (input > -1.0 && std::signbit(input)) {
           FAIL_IC();
         }
-        double result = fdlibm_ceil(input);
+        double result = std::ceil(input);
         int32_t intResult = int32_t(result);
         if (double(intResult) != result) {
           FAIL_IC();
@@ -3828,7 +3838,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         if (input == 0.0 && std::signbit(input)) {
           FAIL_IC();
         }
-        double result = fdlibm_trunc(input);
+        double result = std::trunc(input);
         int32_t intResult = int32_t(result);
         if (double(intResult) != result) {
           FAIL_IC();
@@ -3854,26 +3864,20 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(NumberMinMax) {
-        bool isMax = cacheIRReader.readBool();
-        NumberOperandId firstId = cacheIRReader.numberOperandId();
-        NumberOperandId secondId = cacheIRReader.numberOperandId();
-        NumberOperandId resultId = cacheIRReader.numberOperandId();
-        BOUNDSCHECK(resultId);
-        double first = READ_VALUE_REG(firstId.id()).toNumber();
-        double second = READ_VALUE_REG(secondId.id()).toNumber();
-        double result = DoubleMinMax(isMax, first, second);
-        WRITE_VALUE_REG(resultId.id(), DoubleValue(result));
+        auto args = cacheIRReader.argsForNumberMinMax();
+        BOUNDSCHECK(args.resultId);
+        double first = READ_VALUE_REG(args.firstId.id()).toNumber();
+        double second = READ_VALUE_REG(args.secondId.id()).toNumber();
+        double result = DoubleMinMax(args.isMax, first, second);
+        WRITE_VALUE_REG(args.resultId.id(), DoubleValue(result));
         DISPATCH_CACHEOP();
       }
 
       CACHEOP_CASE(Int32MinMaxArrayResult) {
         ObjOperandId arrayId = cacheIRReader.objOperandId();
         bool isMax = cacheIRReader.readBool();
-        // ICs that use this opcode depend on implicit unboxing due to
-        // type-overload on ObjOperandId when a value is loaded
-        // directly from an argument slot. We explicitly unbox here.
-        NativeObject* nobj = reinterpret_cast<NativeObject*>(
-            &READ_VALUE_REG(arrayId.id()).toObject());
+        NativeObject* nobj =
+            reinterpret_cast<NativeObject*>(READ_REG(arrayId.id()));
         uint32_t len = nobj->getDenseInitializedLength();
         if (len == 0) {
           FAIL_IC();
@@ -3902,11 +3906,8 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       CACHEOP_CASE(NumberMinMaxArrayResult) {
         ObjOperandId arrayId = cacheIRReader.objOperandId();
         bool isMax = cacheIRReader.readBool();
-        // ICs that use this opcode depend on implicit unboxing due to
-        // type-overload on ObjOperandId when a value is loaded
-        // directly from an argument slot. We explicitly unbox here.
-        NativeObject* nobj = reinterpret_cast<NativeObject*>(
-            &READ_VALUE_REG(arrayId.id()).toObject());
+        NativeObject* nobj =
+            reinterpret_cast<NativeObject*>(READ_REG(arrayId.id()));
         uint32_t len = nobj->getDenseInitializedLength();
         if (len == 0) {
           FAIL_IC();
@@ -3991,12 +3992,9 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(GuardNumberToIntPtrIndex) {
-        NumberOperandId inputId = cacheIRReader.numberOperandId();
-        bool supportOOB = cacheIRReader.readBool();
-        (void)supportOOB;
-        IntPtrOperandId resultId = cacheIRReader.intPtrOperandId();
-        BOUNDSCHECK(resultId);
-        double input = READ_VALUE_REG(inputId.id()).toNumber();
+        auto args = cacheIRReader.argsForGuardNumberToIntPtrIndex();
+        BOUNDSCHECK(args.resultId);
+        double input = READ_VALUE_REG(args.inputId.id()).toNumber();
         // For simplicity, support only uint32 range for now. This
         // covers 32-bit and 64-bit systems.
         if (input < 0.0 || input >= (uint64_t(1) << 32)) {
@@ -4008,7 +4006,7 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         if (static_cast<double>(result) != input) {
           FAIL_IC();
         }
-        WRITE_REG(resultId.id(), uint64_t(result), OBJECT);
+        WRITE_REG(args.resultId.id(), uint64_t(result), OBJECT);
         DISPATCH_CACHEOP();
       }
 
@@ -4218,22 +4216,16 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(NewPlainObjectResult) {
-        uint32_t numFixedSlots = cacheIRReader.uint32Immediate();
-        uint32_t numDynamicSlots = cacheIRReader.uint32Immediate();
-        gc::AllocKind allocKind = cacheIRReader.allocKind();
-        uint32_t shapeOffset = cacheIRReader.stubOffset();
-        uint32_t siteOffset = cacheIRReader.stubOffset();
-        (void)numFixedSlots;
-        (void)numDynamicSlots;
+        auto args = cacheIRReader.argsForNewPlainObjectResult();
         SharedShape* shape = reinterpret_cast<SharedShape*>(
-            stubInfo->getStubRawWord(cstub, shapeOffset));
+            stubInfo->getStubRawWord(cstub, args.shapeOffset));
         gc::AllocSite* site = reinterpret_cast<gc::AllocSite*>(
-            stubInfo->getStubRawWord(cstub, siteOffset));
+            stubInfo->getStubRawWord(cstub, args.siteOffset));
         {
           PUSH_IC_FRAME();
           Rooted<SharedShape*> rootedShape(cx, shape);
-          auto* result =
-              NewPlainObjectBaselineFallback(cx, rootedShape, allocKind, site);
+          auto* result = NewPlainObjectBaselineFallback(cx, rootedShape,
+                                                        args.allocKind, site);
           if (!result) {
             ctx.error = PBIResult::Error;
             return IC_ERROR_SENTINEL();
@@ -4767,13 +4759,15 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
 
       CACHEOP_CASE(StringToAtom) {
         StringOperandId strId = cacheIRReader.stringOperandId();
+        StringOperandId resultId = cacheIRReader.stringOperandId();
+        BOUNDSCHECK(resultId);
         JSString* str = reinterpret_cast<JSString*>(READ_REG(strId.id()));
         JSAtom* result =
             AtomizeStringNoGC(ctx.frameMgr.cxForLocalUseOnly(), str);
         if (!result) {
           FAIL_IC();
         }
-        WRITE_REG(strId.id(), reinterpret_cast<uint64_t>(result), STRING);
+        WRITE_REG(resultId.id(), reinterpret_cast<uint64_t>(result), STRING);
         DISPATCH_CACHEOP();
       }
 
@@ -4962,15 +4956,6 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
         DISPATCH_CACHEOP();
       }
 
-      CACHEOP_CASE(TypedArrayElementSizeResult) {
-        ObjOperandId objId = cacheIRReader.objOperandId();
-        TypedArrayObject* tao =
-            reinterpret_cast<TypedArrayObject*>(READ_REG(objId.id()));
-        retValue = Int32Value(int32_t(tao->bytesPerElement())).asRawBits();
-        PREDICT_RETURN();
-        DISPATCH_CACHEOP();
-      }
-
       CACHEOP_CASE(MegamorphicStoreSlot) {
         ObjOperandId objId = cacheIRReader.objOperandId();
         uint32_t nameOffset = cacheIRReader.stubOffset();
@@ -5062,7 +5047,8 @@ uint64_t ICInterpretOps(uint64_t arg0, uint64_t arg1, ICStub* stub,
       }
 
       CACHEOP_CASE(ObjectKeysResult) {
-        ObjOperandId objId = cacheIRReader.objOperandId();
+        auto args = cacheIRReader.argsForObjectKeysResult();
+        ObjOperandId objId = args.objId;
         JSObject* obj = reinterpret_cast<JSObject*>(READ_REG(objId.id()));
         {
           PUSH_IC_FRAME();
@@ -5616,7 +5602,7 @@ DEFINE_IC(NewObject, 0, {
 DEFINE_IC(GetProp, 1, {
   IC_LOAD_VAL(value0, 0);
   PUSH_FALLBACK_IC_FRAME();
-  if (!DoGetPropFallback(cx, ctx.frame, fallback, &value0, &ctx.state.res)) {
+  if (!DoGetPropFallback(cx, ctx.frame, fallback, value0, &ctx.state.res)) {
     goto error;
   }
 });
@@ -5625,7 +5611,7 @@ DEFINE_IC(GetPropSuper, 2, {
   IC_LOAD_VAL(value0, 1);
   IC_LOAD_VAL(value1, 0);
   PUSH_FALLBACK_IC_FRAME();
-  if (!DoGetPropSuperFallback(cx, ctx.frame, fallback, value0, &value1,
+  if (!DoGetPropSuperFallback(cx, ctx.frame, fallback, value0, value1,
                               &ctx.state.res)) {
     goto error;
   }
@@ -7075,6 +7061,7 @@ PBIResult PortableBaselineInterpret(
 
       CASE(DynamicImport) {
         {
+          ImportPhase phase = ImportPhase(GET_UINT8(pc));
           ReservedRooted<Value> value0(&state.value0,
                                        VIRTPOP().asValue());  // options
           ReservedRooted<Value> value1(&state.value1,
@@ -7083,7 +7070,8 @@ PBIResult PortableBaselineInterpret(
           {
             PUSH_EXIT_FRAME();
             ReservedRooted<JSScript*> script0(&state.script0, frame->script());
-            promise = StartDynamicModuleImport(cx, script0, value1, value0);
+            promise =
+                StartDynamicModuleImport(cx, script0, value1, value0, phase);
             if (!promise) {
               GOTO_ERROR();
             }
@@ -8064,7 +8052,7 @@ PBIResult PortableBaselineInterpret(
       }
 
       CASE(InitialYield) {
-        // gen => rval, gen, resumeKind
+        // gen => rval, resumeKind
         ReservedRooted<JSObject*> obj0(&state.obj0,
                                        &VIRTSP(0).asValue().toObject());
         uint32_t frameSize = ctx.stack.frameSize(sp, frame);
@@ -8080,7 +8068,7 @@ PBIResult PortableBaselineInterpret(
 
       CASE(Await)
       CASE(Yield) {
-        // rval1, gen => rval2, gen, resumeKind
+        // rval1, gen => rval2, resumeKind
         ReservedRooted<JSObject*> obj0(&state.obj0,
                                        &VIRTPOP().asValue().toObject());
         uint32_t frameSize = ctx.stack.frameSize(sp, frame);
@@ -8105,12 +8093,6 @@ PBIResult PortableBaselineInterpret(
           }
         }
         goto do_return;
-      }
-
-      CASE(IsGenClosing) {
-        bool result = VIRTSP(0).asValue() == MagicValue(JS_GENERATOR_CLOSING);
-        VIRTPUSH(StackVal(BooleanValue(result)));
-        END_OP(IsGenClosing);
       }
 
       CASE(AsyncAwait) {
@@ -8178,7 +8160,9 @@ PBIResult PortableBaselineInterpret(
       CASE(CanSkipAwait) {
         // value => value, can_skip
         bool result = false;
-        {
+        // The await can only be skipped when this is the first frame of its
+        // activation. See js::CanSkipAwait.
+        if (frame->framePrefix()->prevType() == FrameType::CppToJSJit) {
           ReservedRooted<Value> value0(&state.value0, VIRTSP(0).asValue());
           PUSH_EXIT_FRAME();
           if (!CanSkipAwait(cx, value0, &result)) {
@@ -8213,43 +8197,27 @@ PBIResult PortableBaselineInterpret(
         END_OP(ResumeKind);
       }
 
-      CASE(CheckResumeKind) {
+      CASE(Resume) {
         // rval, gen, resumeKind => rval
         {
           GeneratorResumeKind resumeKind =
-              IntToResumeKind(VIRTPOP().asValue().toInt32());
-          ReservedRooted<JSObject*> obj0(
-              &state.obj0,
-              &VIRTPOP().asValue().toObject());  // gen
-          ReservedRooted<Value> value0(&state.value0,
-                                       VIRTSP(0).asValue());  // rval
-          if (resumeKind != GeneratorResumeKind::Next) {
-            PUSH_EXIT_FRAME();
-            MOZ_ALWAYS_FALSE(GeneratorThrowOrReturn(
-                cx, frame, obj0.as<AbstractGeneratorObject>(), value0,
-                resumeKind));
-            GOTO_ERROR();
-          }
-        }
-        END_OP(CheckResumeKind);
-      }
-
-      CASE(Resume) {
-        SYNCSP();
-        Value gen = VIRTSP(2).asValue();
-        Value* callerSP = reinterpret_cast<Value*>(sp);
-        {
-          ReservedRooted<Value> value0(&state.value0);
-          ReservedRooted<JSObject*> obj0(&state.obj0, &gen.toObject());
+              IntToResumeKind(VIRTSP(0).asValue().toInt32());
+          ReservedRooted<Value> value0(&state.value0, VIRTSP(1).asValue());
+          ReservedRooted<JSObject*> obj0(&state.obj0,
+                                         &VIRTSP(2).asValue().toObject());
+          ReservedRooted<Value> value1(&state.value1);
           {
             PUSH_EXIT_FRAME();
             TRACE_PRINTF("Going to C++ interp for Resume\n");
-            if (!InterpretResume(cx, obj0, callerSP, &value0)) {
+            Handle<AbstractGeneratorObject*> genObj =
+                obj0.as<AbstractGeneratorObject>();
+            AutoRealm ar(cx, genObj);
+            if (!ResumeGenerator(cx, genObj, value0, resumeKind, &value1)) {
               GOTO_ERROR();
             }
           }
           VIRTPOPN(2);
-          VIRTSPWRITE(0, StackVal(value0));
+          VIRTSPWRITE(0, StackVal(value1));
         }
         END_OP(Resume);
       }
@@ -8280,12 +8248,6 @@ PBIResult PortableBaselineInterpret(
         if (frame->script()->isDebuggee()) {
           TRACE_PRINTF("doing DebugAfterYield\n");
           PUSH_EXIT_FRAME();
-          ReservedRooted<JSScript*> script0(&state.script0, frame->script());
-          if (DebugAPI::hasAnyBreakpointsOrStepMode(script0) &&
-              !HandleDebugTrap(cx, frame, pc)) {
-            TRACE_PRINTF("HandleDebugTrap returned error\n");
-            GOTO_ERROR();
-          }
           if (!DebugAfterYield(cx, frame)) {
             TRACE_PRINTF("DebugAfterYield returned error\n");
             GOTO_ERROR();
@@ -8692,7 +8654,7 @@ PBIResult PortableBaselineInterpret(
       }
 
       CASE(EnvCallee) {
-        uint8_t numHops = GET_UINT8(pc);
+        uint16_t numHops = GET_ENVCOORD_HOPS(pc);
         JSObject* env = &frame->environmentChain()->as<EnvironmentObject>();
         for (unsigned i = 0; i < numHops; i++) {
           env = &env->as<EnvironmentObject>().enclosingEnvironment();
@@ -8888,7 +8850,6 @@ PBIResult PortableBaselineInterpret(
         frame->popOffEnvironmentChain<WithEnvironmentObject>();
         END_OP(LeaveWith);
       }
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
       CASE(AddDisposable) {
         {
           ReservedRooted<JSObject*> env(&state.obj0, frame->environmentChain());
@@ -8941,7 +8902,6 @@ PBIResult PortableBaselineInterpret(
         VIRTPUSH(StackVal(ObjectValue(*errorObj)));
         END_OP(CreateSuppressedError);
       }
-#endif
       CASE(BindVar) {
         JSObject* varObj;
         {
@@ -9079,7 +9039,6 @@ PBIResult PortableBaselineInterpret(
       }
       CASE(Lineno) { END_OP(Lineno); }
       CASE(NopDestructuring) { END_OP(NopDestructuring); }
-      CASE(ForceInterpreter) { END_OP(ForceInterpreter); }
       CASE(Debugger) {
         {
           PUSH_EXIT_FRAME();
@@ -9264,9 +9223,8 @@ debug:;
  */
 
 bool PortableBaselineTrampoline(JSContext* cx, size_t argc, Value* argv,
-                                size_t numFormals, size_t numActuals,
-                                CalleeToken calleeToken, JSObject* envChain,
-                                Value* result) {
+                                size_t numFormals, CalleeToken calleeToken,
+                                JSObject* envChain, Value* result) {
   State state(cx);
   Stack stack(cx->portableBaselineStack());
   StackVal* sp = stack.top;
@@ -9282,10 +9240,10 @@ bool PortableBaselineTrampoline(JSContext* cx, size_t argc, Value* argv,
   // - descriptor
   // - "return address" (nullptr for top frame)
 
-  // `argc` is the number of args *including* `this` (`N + 1`
-  // above). `numFormals` is the minimum `N`; if less, we need to push
-  // `UndefinedValue`s above. We need to pass an argc (including
-  // `this`) accoundint for the extra undefs in the descriptor's argc.
+  // `argc` is the number of args *excluding* `this` (`N` above).
+  // `numFormals` is the minimum `N`; if less, we need to push
+  // `UndefinedValue`s above. The argc in the frame descriptor does
+  // not include `this` or any undefs.
   //
   // If constructing, there is an additional `newTarget` at the end.
   //
@@ -9293,28 +9251,30 @@ bool PortableBaselineTrampoline(JSContext* cx, size_t argc, Value* argv,
   // JSOp, does *not* appear in this count: it is separately passed in
   // the `calleeToken`.
 
-  bool constructing = CalleeTokenIsConstructing(calleeToken);
-  size_t numCalleeActuals = std::max(numActuals, numFormals);
-  size_t numUndefs = numCalleeActuals - numActuals;
+  if (CalleeTokenIsFunction(calleeToken)) {
+    bool constructing = CalleeTokenIsConstructing(calleeToken);
+    size_t numCalleeActuals = std::max(argc, numFormals);
+    size_t numUndefs = numCalleeActuals - argc;
 
-  // N.B.: we already checked the stack in
-  // PortableBaselineInterpreterStackCheck; we don't do it here
-  // because we can't push an exit frame if we don't have an entry
-  // frame, and we need a full activation to produce the backtrace
-  // from ReportOverRecursed.
+    // N.B.: we already checked the stack in
+    // PortableBaselineInterpreterStackCheck; we don't do it here
+    // because we can't push an exit frame if we don't have an entry
+    // frame, and we need a full activation to produce the backtrace
+    // from ReportOverRecursed.
 
-  if (constructing) {
-    PUSH(StackVal(argv[argc]));
-  }
-  for (size_t i = 0; i < numUndefs; i++) {
-    PUSH(StackVal(UndefinedValue()));
-  }
-  for (size_t i = 0; i < argc; i++) {
-    PUSH(StackVal(argv[argc - 1 - i]));
+    if (constructing) {
+      PUSH(StackVal(argv[argc]));
+    }
+    for (size_t i = 0; i < numUndefs; i++) {
+      PUSH(StackVal(UndefinedValue()));
+    }
+    for (size_t i = 0; i < argc + 1; i++) {
+      PUSH(StackVal(argv[argc - 1 - i]));
+    }
   }
   PUSHNATIVE(StackValNative(calleeToken));
   PUSHNATIVE(StackValNative(
-      MakeFrameDescriptorForJitCall(FrameType::CppToJSJit, numActuals)));
+      MakeFrameDescriptorForJitCall(FrameType::CppToJSJit, argc)));
 
   JSScript* script = ScriptFromCalleeToken(calleeToken);
   jsbytecode* pc = script->code();
@@ -9342,14 +9302,14 @@ bool PortableBaselineTrampoline(JSContext* cx, size_t argc, Value* argv,
 
 MethodStatus CanEnterPortableBaselineInterpreter(JSContext* cx,
                                                  RunState& state) {
+  // Resuming a suspended generator or async function/module is not supported.
+  MOZ_ASSERT(!state.isGeneratorResume());
+
   if (!JitOptions.portableBaselineInterpreter) {
     return MethodStatus::Method_CantCompile;
   }
   if (state.script()->hasJitScript()) {
     return MethodStatus::Method_Compiled;
-  }
-  if (state.script()->hasForceInterpreterOp()) {
-    return MethodStatus::Method_CantCompile;
   }
   if (state.script()->isAsync() || state.script()->isGenerator()) {
     return MethodStatus::Method_CantCompile;
@@ -9390,7 +9350,10 @@ bool PortablebaselineInterpreterStackCheck(JSContext* cx, RunState& state,
   StackVal* base = reinterpret_cast<StackVal*>(pbs.base);
   StackVal* top = reinterpret_cast<StackVal*>(pbs.top);
   ssize_t margin = kStackMargin / sizeof(StackVal);
-  ssize_t needed = numActualArgs + state.script()->nslots() + margin;
+  size_t numFormals =
+      state.isInvoke() ? state.script()->function()->nargs() : 0;
+  ssize_t needed =
+      std::max(numActualArgs, numFormals) + state.script()->nslots() + margin;
   return (top - base) >= needed;
 }
 

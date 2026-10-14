@@ -1,26 +1,36 @@
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-{%- call swift::docstring(e, 0) %}
+{%- call swift::docstring(e, 0) %}{% endcall %}
+{%- let uniffi_trait_methods = e.uniffi_trait_methods() %}
 {% match e.variant_discr_type() %}
 {% when None %}
-public enum {{ type_name }} {
+public {% if ci.is_recursive(e.name()) %}indirect {% endif %}
+{%- if config.enum_has_conformances(e, contains_object_references) -%}
+enum {{ type_name }}: {{ config.conformance_list_for_enum(e, contains_object_references) }} {
+{%- else -%}
+enum {{ type_name }} {
+{%- endif %}
     {% for variant in e.variants() %}
-    {%- call swift::docstring(variant, 4) %}
+    {%- call swift::docstring(variant, 4) %}{% endcall %}
     case {{ variant.name()|enum_variant_swift_quoted }}{% if variant.fields().len() > 0 %}(
-        {%- call swift::field_list_decl(variant, variant.has_nameless_fields()) %}
+        {%- call swift::field_list_decl(variant, variant.has_nameless_fields()) %}{% endcall %}
     ){% endif -%}
     {% endfor %}
-}
 {% when Some(variant_discr_type) %}
-public enum {{ type_name }} : {{ variant_discr_type|type_name }} {
+public {% if ci.is_recursive(e.name()) %}indirect {% endif -%}
+enum {{ type_name }}: {{ variant_discr_type|type_name }}, {{ config.conformance_list_for_enum(e, contains_object_references) }} {
     {% for variant in e.variants() %}
-    {%- call swift::docstring(variant, 4) %}
+    {%- call swift::docstring(variant, 4) %}{% endcall %}
     case {{ variant.name()|enum_variant_swift_quoted }} = {{ e|variant_discr_literal(loop.index0) }}{% if variant.fields().len() > 0 %}(
-        {%- call swift::field_list_decl(variant, variant.has_nameless_fields()) %}
+        {%- call swift::field_list_decl(variant, variant.has_nameless_fields()) %}{% endcall %}
     ){% endif -%}
     {% endfor %}
-}
 {% endmatch %}
+
+{% for meth in e.methods() -%}
+{%- call swift::func_decl("public func", meth, 4) %}{% endcall %}
+{% endfor %}
+
+{% call swift::uniffi_trait_impls(uniffi_trait_methods) %}{% endcall %}
+}
 
 #if compiler(>=6)
 extension {{ type_name }}: Sendable {}
@@ -55,10 +65,10 @@ public struct {{ ffi_converter_name }}: FfiConverterRustBuffer {
         switch value {
         {% for variant in e.variants() %}
         {% if variant.has_fields() %}
-        case let .{{ variant.name()|enum_variant_swift_quoted }}({% for field in variant.fields() %}{%- call swift::field_name(field, loop.index) -%}{%- if loop.last -%}{%- else -%},{%- endif -%}{% endfor %}):
+        case let .{{ variant.name()|enum_variant_swift_quoted }}({% for field in variant.fields() %}{%- call swift::field_name(field, loop.index) %}{% endcall -%}{%- if loop.last -%}{%- else -%},{%- endif -%}{% endfor %}):
             writeInt(&buf, Int32({{ loop.index }}))
             {% for field in variant.fields() -%}
-            {{ field|write_fn }}({% call swift::field_name(field, loop.index) %}, into: &buf)
+            {{ field|write_fn }}({% call swift::field_name(field, loop.index) %}{% endcall %}, into: &buf)
             {% endfor -%}
         {% else %}
         case .{{ variant.name()|enum_variant_swift_quoted }}:
@@ -86,14 +96,3 @@ public func {{ ffi_converter_name }}_lift(_ buf: RustBuffer) throws -> {{ type_n
 public func {{ ffi_converter_name }}_lower(_ value: {{ type_name }}) -> RustBuffer {
     return {{ ffi_converter_name }}.lower(value)
 }
-
-{% if !contains_object_references %}
-extension {{ type_name }}: Equatable, Hashable {}
-{% if config.generate_codable_conformance() %}
-extension {{ type_name }}: Codable {}
-{% endif %}
-{% endif %}
-
-{% if config.generate_case_iterable_conformance() && !e.contains_variant_fields() %}
-extension {{ type_name }}: CaseIterable {}
-{% endif %}

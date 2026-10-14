@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -27,18 +25,13 @@
 #include "mozilla/mozalloc.h"
 #include "nsDebug.h"
 #include "nsError.h"
+#include "nsGlobalWindowInner.h"
 #include "nsIRunnable.h"
 #include "nsIScriptObjectPrincipal.h"
 #include "nsMimeTypes.h"
 #include "nsPIDOMWindow.h"
-#include "nsGlobalWindowInner.h"
 #include "nsString.h"
 #include "nsThreadUtils.h"
-
-#ifdef MOZ_WIDGET_ANDROID
-#  include "AndroidBridge.h"
-#  include "mozilla/java/HardwareCodecCapabilityUtilsWrappers.h"
-#endif
 
 struct JSContext;
 class JSObject;
@@ -53,12 +46,12 @@ mozilla::LogModule* GetMediaSourceAPILog() {
   return sLogModule;
 }
 
-#define MSE_DEBUG(arg, ...)                                              \
-  DDMOZ_LOG(GetMediaSourceLog(), mozilla::LogLevel::Debug, "::%s: " arg, \
-            __func__, ##__VA_ARGS__)
-#define MSE_API(arg, ...)                                                   \
-  DDMOZ_LOG(GetMediaSourceAPILog(), mozilla::LogLevel::Debug, "::%s: " arg, \
-            __func__, ##__VA_ARGS__)
+#define MSE_DEBUG(arg, ...)                                                  \
+  DDMOZ_LOG_FMT(GetMediaSourceLog(), mozilla::LogLevel::Debug, "::{}: " arg, \
+                __func__, ##__VA_ARGS__)
+#define MSE_API(arg, ...)                                         \
+  DDMOZ_LOG_FMT(GetMediaSourceAPILog(), mozilla::LogLevel::Debug, \
+                "::{}: " arg, __func__, ##__VA_ARGS__)
 
 // Arbitrary limit.
 static const unsigned int MAX_SOURCE_BUFFERS = 16;
@@ -67,20 +60,16 @@ namespace mozilla {
 
 // Returns true if we should enable MSE webm regardless of preferences.
 // 1. If MP4/H264 isn't supported:
-//   * Windows XP
-//   * Windows Vista and Server 2008 without the optional "Platform Update
-//   Supplement"
-//   * N/KN editions (Europe and Korea) of Windows 7/8/8.1/10 without the
-//     optional "Windows Media Feature Pack"
+//   * N/KN editions (Europe and Korea) of Windows 10/11 without the optional
+//     "Windows Media Feature Pack"
+//   * Some Linux Desktop.
 // 2. If H264 hardware acceleration is not available.
-// 3. The CPU is considered to be fast enough
 static bool IsVP9Forced(DecoderDoctorDiagnostics* aDiagnostics) {
   bool mp4supported = MP4Decoder::IsSupportedType(
       MediaContainerType(MEDIAMIMETYPE(VIDEO_MP4)), aDiagnostics);
   bool hwsupported = gfx::gfxVars::CanUseHardwareVideoDecoding();
 #ifdef MOZ_WIDGET_ANDROID
-  return !mp4supported || !hwsupported ||
-         java::HardwareCodecCapabilityUtils::HasHWVP9(false /* aIsEncoder */);
+  return !mp4supported || !hwsupported || gfx::gfxVars::UseVP9HwDecode();
 #else
   return !mp4supported || !hwsupported;
 #endif
@@ -179,12 +168,6 @@ void MediaSource::IsTypeSupported(const nsAString& aType,
   const MediaMIMEType& mimeType = containerType->Type();
   if (mimeType == MEDIAMIMETYPE("video/mp4") ||
       mimeType == MEDIAMIMETYPE("audio/mp4")) {
-    if (!StaticPrefs::media_mediasource_mp4_enabled() &&
-        !shouldResistFingerprinting) {
-      // Don't leak information about the fact that it's pref-disabled; just act
-      // like we can't play it.  Or should this throw "Unknown type"?
-      return aRv.ThrowNotSupportedError("Can't play type");
-    }
     if (!StaticPrefs::media_mediasource_vp9_enabled() && hasVP9 &&
         !IsVP9Forced(aDiagnostics) && !shouldResistFingerprinting) {
       // Don't leak information about the fact that it's pref-disabled; just act
@@ -195,12 +178,6 @@ void MediaSource::IsTypeSupported(const nsAString& aType,
     return;
   }
   if (mimeType == MEDIAMIMETYPE("video/webm")) {
-    if (!StaticPrefs::media_mediasource_webm_enabled() &&
-        !shouldResistFingerprinting) {
-      // Don't leak information about the fact that it's pref-disabled; just act
-      // like we can't play it.  Or should this throw "Unknown type"?
-      return aRv.ThrowNotSupportedError("Can't play type");
-    }
     if (!StaticPrefs::media_mediasource_vp9_enabled() && hasVP9 &&
         !IsVP9Forced(aDiagnostics) && !shouldResistFingerprinting) {
       // Don't leak information about the fact that it's pref-disabled; just act
@@ -210,12 +187,6 @@ void MediaSource::IsTypeSupported(const nsAString& aType,
     return;
   }
   if (mimeType == MEDIAMIMETYPE("audio/webm")) {
-    if (!StaticPrefs::media_mediasource_webm_enabled() &&
-        !shouldResistFingerprinting) {
-      // Don't leak information about the fact that it's pref-disabled; just act
-      // like we can't play it.  Or should this throw "Unknown type"?
-      return aRv.ThrowNotSupportedError("Can't play type");
-    }
     return;
   }
 
@@ -276,24 +247,24 @@ void MediaSource::SetDuration(double aDuration, ErrorResult& aRv) {
   MOZ_ASSERT(NS_IsMainThread());
   if (aDuration < 0 || std::isnan(aDuration)) {
     nsPrintfCString error("Invalid duration value %f", aDuration);
-    MSE_API("SetDuration(aDuration=%f, invalid value)", aDuration);
+    MSE_API("SetDuration(aDuration={:f}, invalid value)", aDuration);
     aRv.ThrowTypeError(error);
     return;
   }
   if (mReadyState != MediaSourceReadyState::Open ||
       mSourceBuffers->AnyUpdating()) {
-    MSE_API("SetDuration(aDuration=%f, invalid state)", aDuration);
+    MSE_API("SetDuration(aDuration={:f}, invalid state)", aDuration);
     aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
     return;
   }
   DurationChange(aDuration, aRv);
-  MSE_API("SetDuration(aDuration=%f, errorCode=%d)", aDuration,
+  MSE_API("SetDuration(aDuration={:f}, errorCode={})", aDuration,
           aRv.ErrorCodeAsInt());
 }
 
 void MediaSource::SetDuration(const media::TimeUnit& aDuration) {
   MOZ_ASSERT(NS_IsMainThread());
-  MSE_API("SetDuration(aDuration=%f)", aDuration.ToSeconds());
+  MSE_API("SetDuration(aDuration={:f})", aDuration.ToSeconds());
   mDecoder->SetMediaSourceDuration(aDuration);
 }
 
@@ -310,7 +281,7 @@ already_AddRefed<SourceBuffer> MediaSource::AddSourceBuffer(
   RecordTypeForTelemetry(aType, window);
   bool supported = !aRv.Failed();
   diagnostics.StoreFormatDiagnostics(doc, aType, supported, __func__);
-  MSE_API("AddSourceBuffer(aType=%s)%s", NS_ConvertUTF16toUTF8(aType).get(),
+  MSE_API("AddSourceBuffer(aType={}){}", NS_ConvertUTF16toUTF8(aType).get(),
           supported ? "" : " [not supported]");
   if (!supported) {
     return nullptr;
@@ -331,7 +302,7 @@ already_AddRefed<SourceBuffer> MediaSource::AddSourceBuffer(
   RefPtr<SourceBuffer> sourceBuffer = new SourceBuffer(this, *containerType);
   mSourceBuffers->Append(sourceBuffer);
   DDLINKCHILD("sourcebuffer[]", sourceBuffer.get());
-  MSE_DEBUG("sourceBuffer=%p", sourceBuffer.get());
+  MSE_DEBUG("sourceBuffer={}", fmt::ptr(sourceBuffer.get()));
   return sourceBuffer.forget();
 }
 
@@ -370,7 +341,7 @@ RefPtr<MediaSource::ActiveCompletionPromise> MediaSource::SourceBufferIsActive(
 
 void MediaSource::CompletePendingTransactions() {
   MOZ_ASSERT(NS_IsMainThread());
-  MSE_DEBUG("Resolving %u promises", unsigned(mCompletionPromises.Length()));
+  MSE_DEBUG("Resolving {} promises", unsigned(mCompletionPromises.Length()));
   for (auto& promise : mCompletionPromises) {
     promise.Resolve(true, __func__);
   }
@@ -381,7 +352,7 @@ void MediaSource::RemoveSourceBuffer(SourceBuffer& aSourceBuffer,
                                      ErrorResult& aRv) {
   MOZ_ASSERT(NS_IsMainThread());
   SourceBuffer* sourceBuffer = &aSourceBuffer;
-  MSE_API("RemoveSourceBuffer(aSourceBuffer=%p)", sourceBuffer);
+  MSE_API("RemoveSourceBuffer(aSourceBuffer={})", fmt::ptr(sourceBuffer));
   if (!mSourceBuffers->Contains(sourceBuffer)) {
     aRv.Throw(NS_ERROR_DOM_NOT_FOUND_ERR);
     return;
@@ -409,7 +380,7 @@ void MediaSource::RemoveSourceBuffer(SourceBuffer& aSourceBuffer,
 void MediaSource::EndOfStream(
     const Optional<MediaSourceEndOfStreamError>& aError, ErrorResult& aRv) {
   MOZ_ASSERT(NS_IsMainThread());
-  MSE_API("EndOfStream(aError=%d)",
+  MSE_API("EndOfStream(aError={})",
           aError.WasPassed() ? uint32_t(aError.Value()) : 0);
   if (mReadyState != MediaSourceReadyState::Open ||
       mSourceBuffers->AnyUpdating()) {
@@ -442,7 +413,7 @@ void MediaSource::EndOfStream(
 
 void MediaSource::EndOfStream(const MediaResult& aError) {
   MOZ_ASSERT(NS_IsMainThread());
-  MSE_API("EndOfStream(aError=%s)", aError.ErrorName().get());
+  MSE_API("EndOfStream(aError={})", aError.ErrorName().get());
 
   SetReadyState(MediaSourceReadyState::Ended);
   mSourceBuffers->SetEnded(Optional(MediaSourceEndOfStreamError::Decode));
@@ -465,10 +436,10 @@ bool MediaSource::IsTypeSupported(const GlobalObject& aOwner,
   bool supported = !rv.Failed();
   RecordTypeForTelemetry(aType, window);
   diagnostics.StoreFormatDiagnostics(doc, aType, supported, __func__);
-  MOZ_LOG(GetMediaSourceAPILog(), mozilla::LogLevel::Debug,
-          ("MediaSource::%s: IsTypeSupported(aType=%s) %s", __func__,
-           NS_ConvertUTF16toUTF8(aType).get(),
-           supported ? "OK" : "[not supported]"));
+  MOZ_LOG_FMT(GetMediaSourceAPILog(), mozilla::LogLevel::Debug,
+              "MediaSource::{}: IsTypeSupported(aType={}) {}", __func__,
+              NS_ConvertUTF16toUTF8(aType).get(),
+              supported ? "OK" : "[not supported]");
   return supported;
 }
 
@@ -513,7 +484,8 @@ void MediaSource::ClearLiveSeekableRange(ErrorResult& aRv) {
 
 bool MediaSource::Attach(MediaSourceDecoder* aDecoder) {
   MOZ_ASSERT(NS_IsMainThread());
-  MSE_DEBUG("Attach(aDecoder=%p) owner=%p", aDecoder, aDecoder->GetOwner());
+  MSE_DEBUG("Attach(aDecoder={}) owner={}", fmt::ptr(aDecoder),
+            fmt::ptr(aDecoder->GetOwner()));
   MOZ_ASSERT(aDecoder);
   MOZ_ASSERT(aDecoder->GetOwner());
   if (mReadyState != MediaSourceReadyState::Closed) {
@@ -531,8 +503,8 @@ bool MediaSource::Attach(MediaSourceDecoder* aDecoder) {
 void MediaSource::Detach() {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_RELEASE_ASSERT(mCompletionPromises.IsEmpty());
-  MSE_DEBUG("mDecoder=%p owner=%p", mDecoder.get(),
-            mDecoder ? mDecoder->GetOwner() : nullptr);
+  MSE_DEBUG("mDecoder={} owner={}", fmt::ptr(mDecoder.get()),
+            fmt::ptr(mDecoder ? mDecoder->GetOwner() : nullptr));
   if (!mDecoder) {
     MOZ_ASSERT(mReadyState == MediaSourceReadyState::Closed);
     MOZ_ASSERT(mActiveSourceBuffers->IsEmpty() && mSourceBuffers->IsEmpty());
@@ -565,14 +537,15 @@ MediaSource::MediaSource(nsPIDOMWindowInner* aWindow)
     mPrincipal = sop->GetPrincipal();
   }
 
-  MSE_API("MediaSource(aWindow=%p) mSourceBuffers=%p mActiveSourceBuffers=%p",
-          aWindow, mSourceBuffers.get(), mActiveSourceBuffers.get());
+  MSE_API("MediaSource(aWindow={}) mSourceBuffers={} mActiveSourceBuffers={}",
+          fmt::ptr(aWindow), fmt::ptr(mSourceBuffers.get()),
+          fmt::ptr(mActiveSourceBuffers.get()));
 }
 
 void MediaSource::SetReadyState(MediaSourceReadyState aState) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aState != mReadyState);
-  MSE_DEBUG("SetReadyState(aState=%" PRIu32 ") mReadyState=%" PRIu32,
+  MSE_DEBUG("SetReadyState(aState={}) mReadyState={}",
             static_cast<uint32_t>(aState), static_cast<uint32_t>(mReadyState));
 
   MediaSourceReadyState oldState = mReadyState;
@@ -607,12 +580,12 @@ void MediaSource::SetReadyState(MediaSourceReadyState aState) {
 
 void MediaSource::DispatchSimpleEvent(const char* aName) {
   MOZ_ASSERT(NS_IsMainThread());
-  MSE_API("Dispatch event '%s'", aName);
+  MSE_API("Dispatch event '{}'", aName);
   DispatchTrustedEvent(NS_ConvertUTF8toUTF16(aName));
 }
 
 void MediaSource::QueueAsyncSimpleEvent(const char* aName) {
-  MSE_DEBUG("Queuing event '%s'", aName);
+  MSE_DEBUG("Queuing event '{}'", aName);
   nsCOMPtr<nsIRunnable> event = new AsyncEventRunner<MediaSource>(this, aName);
   mAbstractMainThread->Dispatch(event.forget());
 }
@@ -643,7 +616,16 @@ void MediaSource::DurationChangeOnEndOfStream() {
   // SourceBuffer.buffered getter.  Do this before comparison because
   // mDecoder->GetDuration() may have been similarly truncated.
   media::TimeUnit newDuration = highestEndTime.ToBase(USECS_PER_S);
-  MSE_DEBUG("DurationChangeOnEndOfStream(newDuration=%s)",
+  // highestEndTime may carry a near-INT64_MAX timestamp from a crafted
+  // segment; ToBase(USECS_PER_S) overflows in that case. Skip setting the
+  // duration rather than crashing — the clip is malformed anyway.
+  if (!newDuration.IsValid()) {
+    MSE_DEBUG(
+        "DurationChangeOnEndOfStream: duration overflow (highestEndTime=%s)",
+        highestEndTime.ToString().get());
+    return;
+  }
+  MSE_DEBUG("DurationChangeOnEndOfStream(newDuration={})",
             newDuration.ToString().get());
   if (mDecoder->GetDuration() == newDuration.ToSeconds()) {
     return;
@@ -656,7 +638,7 @@ void MediaSource::DurationChangeOnEndOfStream() {
 
 void MediaSource::DurationChange(double aNewDuration, ErrorResult& aRv) {
   MOZ_ASSERT(NS_IsMainThread());
-  MSE_DEBUG("DurationChange(aNewDuration=%f)", aNewDuration);
+  MSE_DEBUG("DurationChange(aNewDuration={:f})", aNewDuration);
 
   // 1. If the current value of duration is equal to new duration, then return.
   if (mDecoder->GetDuration() == aNewDuration) {

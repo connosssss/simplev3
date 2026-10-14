@@ -7,20 +7,22 @@ import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  JsonSchemaValidator:
-    "resource://gre/modules/components-utils/JsonSchemaValidator.sys.mjs",
   Policies: "resource:///modules/policies/Policies.sys.mjs",
+  PolicyFailures: "resource://gre/modules/PoliciesHelpers.sys.mjs",
+  PolicySchemaValidator:
+    "resource://gre/modules/policies/PolicySchemaValidator.sys.mjs",
   WindowsGPOParser: "resource://gre/modules/policies/WindowsGPOParser.sys.mjs",
   macOSPoliciesParser:
     "resource://gre/modules/policies/macOSPoliciesParser.sys.mjs",
+  SitePolicyUtils: "resource://gre/modules/SitePolicyUtils.sys.mjs",
 });
 
 // This is the file that will be searched for in the
 // ${InstallDir}/distribution folder.
 const POLICIES_FILENAME = "policies.json";
 
-// When true browser policy is loaded per-user from
-// /run/user/$UID/appname
+// Load browser policy per-user from /run/user/$UID/appname for
+// testing only.
 const PREF_PER_USER_DIR = "toolkit.policies.perUserDir";
 // For easy testing, modify the helpers/sample.json file,
 // and set PREF_ALTERNATE_PATH in firefox.js as:
@@ -54,12 +56,19 @@ ChromeUtils.defineLazyGetter(lazy, "log", () => {
   });
 });
 
-const isXpcshell = Services.env.exists("XPCSHELL_TEST_PROFILE_DIR");
+// Testing escapes in this file must key on Cu.isInAutomation.
+
+// On Nightly in automation, ignore real system/user policies so a developer's
+// local policies.json or registry entries don't leak into tests.
+function shouldIgnoreLocalPolicies() {
+  return AppConstants.NIGHTLY_BUILD && Cu.isInAutomation;
+}
 
 // We're only testing for empty objects, not
 // empty strings or empty arrays.
 function isEmptyObject(obj) {
-  if (typeof obj != "object" || Array.isArray(obj)) {
+  // typeof null == "object", so null has to be rejected before Object.keys().
+  if (obj === null || typeof obj != "object" || Array.isArray(obj)) {
     return false;
   }
   for (let key of Object.keys(obj)) {
@@ -86,7 +95,12 @@ EnterprisePoliciesManager.prototype = {
   ]),
 
   _initialize() {
-    if (Services.prefs.getBoolPref(PREF_POLICIES_APPLIED, false)) {
+    let previouslyApplied = Services.prefs.getBoolPref(
+      PREF_POLICIES_APPLIED,
+      false
+    );
+
+    if (previouslyApplied) {
       if ("_cleanup" in lazy.Policies) {
         let policyImpl = lazy.Policies._cleanup;
 
@@ -95,6 +109,7 @@ EnterprisePoliciesManager.prototype = {
           if (policyCallback) {
             this._schedulePolicyCallback(
               timing,
+              null,
               policyCallback.bind(
                 policyImpl,
                 this /* the EnterprisePoliciesManager */
@@ -106,21 +121,49 @@ EnterprisePoliciesManager.prototype = {
       Services.prefs.clearUserPref(PREF_POLICIES_APPLIED);
     }
 
-    let provider = this._chooseProvider();
+    let provider = this._buildProvider();
 
     if (provider.failed) {
+      if (previouslyApplied) {
+        this._runMissingPolicyCallbacks();
+      }
       this.status = Ci.nsIEnterprisePolicies.FAILED;
       return;
     }
 
     if (!provider.hasPolicies) {
+      if (previouslyApplied) {
+        this._runMissingPolicyCallbacks();
+      }
+      this.status = Ci.nsIEnterprisePolicies.INACTIVE;
+      return;
+    }
+
+    // Because security.enterprise_roots.enabled is true by default, we can
+    // ignore attempts by Antivirus to try to set it via policy.
+    // We have to explicitly check for true or 1 because this happens before
+    // policy is parsed against the schema, so the value could be coming
+    // from the registry.
+    if (
+      Object.keys(provider.policies).length === 1 &&
+      provider.policies.Certificates &&
+      Object.keys(provider.policies.Certificates).length === 1 &&
+      (provider.policies.Certificates.ImportEnterpriseRoots === true ||
+        provider.policies.Certificates.ImportEnterpriseRoots === 1)
+    ) {
       this.status = Ci.nsIEnterprisePolicies.INACTIVE;
       return;
     }
 
     this.status = Ci.nsIEnterprisePolicies.ACTIVE;
+
+    // Make Web Serial support be opt-in for enterprise policies.
+    Services.prefs
+      .getDefaultBranch("")
+      .setBoolPref("dom.webserial.enabled", false);
+
     this._parsedPolicies = {};
-    this._activatePolicies(provider.policies);
+    this._activatePolicies(provider.policies, previouslyApplied);
 
     Services.prefs.setBoolPref(PREF_POLICIES_APPLIED, true);
   },
@@ -130,51 +173,82 @@ EnterprisePoliciesManager.prototype = {
     Glean.policies.isEnterprise.set(this.isEnterprise);
   },
 
-  _chooseProvider() {
-    let platformProvider = null;
-    if (AppConstants.platform == "win" && AppConstants.MOZ_SYSTEM_POLICIES) {
-      platformProvider = new WindowsGPOPoliciesProvider();
-    } else if (
-      AppConstants.platform == "macosx" &&
-      AppConstants.MOZ_SYSTEM_POLICIES
-    ) {
-      platformProvider = new macOSPoliciesProvider();
-    }
-    let jsonProvider = new JSONPoliciesProvider();
-    if (platformProvider && platformProvider.hasPolicies) {
-      if (jsonProvider.hasPolicies) {
-        return new CombinedProvider(platformProvider, jsonProvider);
+  /**
+   * Build the policies provider. Every available source (JSON, platform)
+   * is added to a single CombinedProvider, in increasing order of precedence.
+   *
+   * @returns {CombinedProvider} the combined policies provider
+   */
+  _buildProvider() {
+    const provider = new CombinedProvider();
+
+    // Providers are added from lowest to highest precedence; each one takes
+    // precedence over those added before it when top-level policies conflict.
+    lazy.log.debug("Adding JSON provider.");
+    provider.push(new JSONPoliciesProvider());
+
+    if (AppConstants.MOZ_SYSTEM_POLICIES) {
+      if (AppConstants.platform == "win") {
+        lazy.log.debug("Adding Windows GPO platform provider.");
+        provider.push(new WindowsGPOPoliciesProvider());
+      } else if (AppConstants.platform == "macosx") {
+        lazy.log.debug("Adding macOS platform provider.");
+        provider.push(new macOSPoliciesProvider());
       }
-      return platformProvider;
     }
-    return jsonProvider;
+
+    provider.mergePolicies();
+    return provider;
   },
 
-  _activatePolicies(unparsedPolicies) {
+  _activatePolicies(unparsedPolicies, previouslyApplied) {
     let { schema } = ChromeUtils.importESModule(
       "resource:///modules/policies/schema.sys.mjs"
     );
+
+    if (previouslyApplied) {
+      // Allow a policy to provide a default for when the provider did not set a policy.
+      for (let policyName of Object.keys(lazy.Policies)) {
+        let policyImpl = lazy.Policies[policyName];
+        if (policyImpl.onMissing && !(policyName in unparsedPolicies)) {
+          unparsedPolicies[policyName] = policyImpl.onMissing();
+        }
+      }
+    }
 
     for (let policyName of Object.keys(unparsedPolicies)) {
       let policySchema = schema.properties[policyName];
       let policyParameters = unparsedPolicies[policyName];
 
       if (!policySchema) {
-        lazy.log.error(`Unknown policy: ${policyName}`);
-        continue;
-      }
-
-      let { valid: parametersAreValid, parsedValue: parsedParameters } =
-        lazy.JsonSchemaValidator.validate(policyParameters, policySchema, {
-          allowAdditionalProperties: true,
-        });
-
-      if (!parametersAreValid) {
-        lazy.log.error(`Invalid parameters specified for ${policyName}.`);
+        this._reportPolicyError(policyName, `Unknown policy: ${policyName}`);
         continue;
       }
 
       let policyImpl = lazy.Policies[policyName];
+
+      // A few policies still accept an old syntax that the schema can't
+      // describe. Convert it before we validate.
+      if (policyImpl?.migrateLegacySyntax) {
+        policyParameters = policyImpl.migrateLegacySyntax(policyParameters);
+      }
+
+      let {
+        valid: parametersAreValid,
+        parsedValue: parsedParameters,
+        error: validationError,
+      } = lazy.PolicySchemaValidator.validate(policyParameters, policySchema, {
+        allowAdditionalProperties: true,
+        policyName,
+      });
+
+      if (!parametersAreValid) {
+        this._reportPolicyError(
+          policyName,
+          `Invalid parameters specified for ${policyName}: ${validationError.message}`
+        );
+        continue;
+      }
 
       if (!policyImpl) {
         // This means there is an entry in the schema, but no implementaton.
@@ -184,24 +258,47 @@ EnterprisePoliciesManager.prototype = {
       }
 
       if (policyImpl.validate && !policyImpl.validate(parsedParameters)) {
-        lazy.log.error(
+        this._reportPolicyError(
+          policyName,
           `Parameters for ${policyName} did not validate successfully.`
         );
         continue;
       }
 
       this._parsedPolicies[policyName] = parsedParameters;
+      lazy.PolicyFailures.clear(policyName);
 
       for (let timing of Object.keys(this._callbacks)) {
         let policyCallback = policyImpl[timing];
         if (policyCallback) {
           this._schedulePolicyCallback(
             timing,
+            policyName,
             policyCallback.bind(
               policyImpl,
               this /* the EnterprisePoliciesManager */,
               parsedParameters
             )
+          );
+        }
+      }
+    }
+  },
+
+  _runMissingPolicyCallbacks() {
+    for (let policyName of Object.keys(lazy.Policies)) {
+      let policyImpl = lazy.Policies[policyName];
+      if (!policyImpl.onMissing) {
+        continue;
+      }
+      let params = policyImpl.onMissing();
+      for (let timing of Object.keys(this._callbacks)) {
+        let policyCallback = policyImpl[timing];
+        if (policyCallback) {
+          this._schedulePolicyCallback(
+            timing,
+            policyName,
+            policyCallback.bind(policyImpl, this, params)
           );
         }
       }
@@ -229,30 +326,55 @@ EnterprisePoliciesManager.prototype = {
     onAllWindowsRestored: [],
   },
 
-  _schedulePolicyCallback(timing, callback) {
-    this._callbacks[timing].push(callback);
+  _schedulePolicyCallback(timing, policyName, callback) {
+    this._callbacks[timing].push({ policyName, callback });
   },
 
   _runPoliciesCallbacks(timing) {
     let callbacks = this._callbacks[timing];
     while (callbacks.length) {
-      let callback = callbacks.shift();
+      let { policyName, callback } = callbacks.shift();
       try {
-        callback();
+        const result = callback();
+        // An async callback rejects long after it returned, so its failure
+        // can only be recorded when it happens.
+        if (typeof result?.then == "function") {
+          result.then(null, ex =>
+            this._reportCallbackFailure(policyName, timing, ex)
+          );
+        }
       } catch (ex) {
-        lazy.log.error("Error running ", callback, `for ${timing}:`, ex);
+        this._reportCallbackFailure(policyName, timing, ex);
       }
+    }
+  },
+
+  _reportPolicyError(policyName, message) {
+    lazy.log.error(message);
+    lazy.PolicyFailures.report(policyName, message);
+  },
+
+  _reportCallbackFailure(policyName, timing, ex) {
+    const message = policyName
+      ? `Error running ${timing} callback for policy ${policyName}: ${ex}`
+      : `Error running ${timing} callback: ${ex}`;
+    lazy.log.error(message, ex);
+    if (policyName) {
+      lazy.PolicyFailures.report(policyName, message);
     }
   },
 
   async _restart() {
     DisallowedFeatures = {};
+    SitePolicies = [];
 
     Services.ppmm.sharedData.delete("EnterprisePolicies:Status");
     Services.ppmm.sharedData.delete("EnterprisePolicies:DisallowedFeatures");
+    Services.ppmm.sharedData.delete("EnterprisePolicies:SitePolicies");
 
     this._status = Ci.nsIEnterprisePolicies.UNINITIALIZED;
     this._parsedPolicies = undefined;
+    lazy.PolicyFailures.clearAll();
     for (let timing of Object.keys(this._callbacks)) {
       this._callbacks[timing] = [];
     }
@@ -329,6 +451,18 @@ EnterprisePoliciesManager.prototype = {
     }
   },
 
+  updateSitePolicies(policies) {
+    SitePolicies = policies;
+
+    let clonable = policies.map(policy => ({
+      match: policy.match.patterns.map(p => p.pattern),
+      exceptions: policy.exceptions.patterns.map(p => p.pattern),
+      features: policy.features,
+    }));
+
+    Services.ppmm.sharedData.set("EnterprisePolicies:SitePolicies", clonable);
+  },
+
   // ------------------------------
   // public nsIEnterprisePolicies members
   // ------------------------------
@@ -346,8 +480,42 @@ EnterprisePoliciesManager.prototype = {
     return this._status;
   },
 
-  isAllowed: function BG_sanitize(feature) {
+  isAllowed(feature) {
     return !(feature in DisallowedFeatures);
+  },
+
+  isAllowedForURI(feature, uri) {
+    return lazy.SitePolicyUtils.isAllowedForURI(
+      this,
+      SitePolicies,
+      feature,
+      uri
+    );
+  },
+
+  getContainerForURI(uri) {
+    let normalized = lazy.SitePolicyUtils.normalizeURI(uri);
+
+    for (let policies of SitePolicies) {
+      if (
+        policies.exceptions.matches(normalized) ||
+        policies.exceptions.matchesAllWebUrls
+      ) {
+        continue;
+      }
+
+      if (
+        !policies.match.matches(normalized) &&
+        !policies.match.matchesAllWebUrls
+      ) {
+        continue;
+      }
+
+      if ("container" in policies.features) {
+        return policies.features.container;
+      }
+    }
+    return 0;
   },
 
   getActivePolicies() {
@@ -374,7 +542,37 @@ EnterprisePoliciesManager.prototype = {
   },
 
   setExtensionSettings(extensionSettings) {
-    ExtensionSettings = extensionSettings;
+    // Filter blocked_permissions entries to the same shape Chrome's policy
+    // schema enforces:
+    //   "items": { "pattern": "^[a-z][a-zA-Z0-9._]*$", "type": "string" }
+    // This excludes:
+    //   - "internal:"-prefixed permissions (reserved, must not be controlled
+    //     via enterprise policy)
+    //   - match patterns and "<all_urls>" (host permissions are out of scope
+    //     for blocked_permissions; in Firefox, "<all_urls>" is stored under
+    //     the ExtensionPermissions "permissions" key so an unfiltered entry
+    //     would erroneously affect host permission semantics)
+    // Copies the input rather than mutating the caller's object.
+    // toolkit/components/extensions/test/xpcshell/test_ext_permissions.js
+    // asserts every API permission name matches this regex.
+    // allowed_permissions needs no filtering: it only ever subtracts from the
+    // already-filtered blocked_permissions, so an out-of-shape entry can never
+    // match and has no effect.
+    const VALID_PERM = /^[a-z][a-zA-Z0-9._]*$/;
+    const sanitized = {};
+    for (const [key, entry] of Object.entries(extensionSettings)) {
+      if (Array.isArray(entry?.blocked_permissions)) {
+        sanitized[key] = {
+          ...entry,
+          blocked_permissions: entry.blocked_permissions.filter(perm =>
+            VALID_PERM.test(perm)
+          ),
+        };
+      } else {
+        sanitized[key] = entry;
+      }
+    }
+    ExtensionSettings = sanitized;
     if (
       "*" in extensionSettings &&
       "install_sources" in extensionSettings["*"]
@@ -386,31 +584,71 @@ EnterprisePoliciesManager.prototype = {
   },
 
   getExtensionSettings(extensionID) {
-    let settings = null;
-    if (ExtensionSettings) {
-      if (extensionID in ExtensionSettings) {
-        settings = ExtensionSettings[extensionID];
-      } else if ("*" in ExtensionSettings) {
-        settings = ExtensionSettings["*"];
-      }
+    if (!ExtensionSettings) {
+      return null;
     }
-    return settings;
+    const perIdEntry =
+      extensionID in ExtensionSettings ? ExtensionSettings[extensionID] : null;
+    let settings = perIdEntry ?? ExtensionSettings["*"];
+    if (!settings) {
+      return null;
+    }
+    if (
+      perIdEntry &&
+      settings.installation_mode === "force_installed" &&
+      !("updates_disabled" in settings)
+    ) {
+      settings = { ...settings, updates_disabled: false };
+    }
+    // Resolve the effective blocked_permissions. Per-id replaces "*";
+    // per-id allowed_permissions unblocks its own; "*"-level is inert.
+    let blocked = settings.blocked_permissions ?? [];
+    if (perIdEntry && Array.isArray(perIdEntry.allowed_permissions)) {
+      const allowedSet = new Set(perIdEntry.allowed_permissions);
+      blocked = blocked.filter(perm => !allowedSet.has(perm));
+    }
+    return { ...settings, blocked_permissions: blocked };
   },
 
-  mayInstallAddon(addon) {
+  isAddonRequiredByPolicy(addonID) {
+    const policySettings = this.getExtensionSettings(addonID);
+    const legacyLockedSettings =
+      this.getActivePolicies()?.Extensions?.Locked ?? [];
+    return (
+      ["force_installed", "normal_installed"].includes(
+        policySettings?.installation_mode
+      ) || legacyLockedSettings.includes(addonID)
+    );
+  },
+
+  /**
+   * @param {object} addon
+   * @param {string} addon.id
+   * @param {string} addon.type
+   * @param {string[]} [addon.permissions]
+   *   Required permissions; omit when unavailable (treated as none).
+   * @returns {boolean} Whether policy permits installing the add-on.
+   */
+  mayInstallAddon({ id, type, permissions = [] }) {
     // See https://dev.chromium.org/administrators/policy-list-3/extension-settings-full
     if (!ExtensionSettings) {
       return true;
     }
-    if (addon.id in ExtensionSettings) {
-      if ("installation_mode" in ExtensionSettings[addon.id]) {
-        switch (ExtensionSettings[addon.id].installation_mode) {
-          case "blocked":
-            return false;
-          default:
-            return true;
-        }
+    // blocked_permissions takes precedence over installation_mode; the
+    // effective list (which accounts for allowed_permissions) is resolved by
+    // getExtensionSettings. Optional permissions are gated at
+    // permissions.request time instead.
+    let blockedPerms = this.getExtensionSettings(id)?.blocked_permissions ?? [];
+    if (blockedPerms.some(perm => permissions.includes(perm))) {
+      return false;
+    }
+    // Match Chrome: any per-id ExtensionSettings entry (even empty) shadows
+    // the "*" defaults entirely.
+    if (id in ExtensionSettings) {
+      if (ExtensionSettings[id].installation_mode === "blocked") {
+        return false;
       }
+      return true;
     }
     if ("*" in ExtensionSettings) {
       if (
@@ -420,7 +658,7 @@ EnterprisePoliciesManager.prototype = {
         return false;
       }
       if ("allowed_types" in ExtensionSettings["*"]) {
-        return ExtensionSettings["*"].allowed_types.includes(addon.type);
+        return ExtensionSettings["*"].allowed_types.includes(type);
       }
     }
     return true;
@@ -470,21 +708,41 @@ EnterprisePoliciesManager.prototype = {
       // As we migrate folks to ESR for other reasons (deprecating an OS),
       // we need to add checks here for distribution IDs.
       (AppConstants.IS_ESR && !excludedDistributionIDs.includes(distroId)) ||
-      // If there are multiple policies then its enterprise.
-      policiesLength > 1 ||
-      // If ImportEnterpriseRoots isn't the only policy then it's enterprise.
-      (!!policiesLength &&
-        !this._parsedPolicies.Certificates?.ImportEnterpriseRoots);
+      // If there are policies then its enterprise.
+      policiesLength > 0;
 
     return isEnterprise;
   },
 };
 
 let DisallowedFeatures = {};
+let SitePolicies = [];
 let SupportMenu = null;
 let ExtensionPolicies = null;
 let ExtensionSettings = null;
 let InstallSources = null;
+
+/**
+ * Basic policies provider
+ */
+class PoliciesProvider {
+  constructor() {
+    this._policies = null;
+    this._failed = false;
+  }
+
+  get policies() {
+    return this._policies;
+  }
+
+  get hasPolicies() {
+    return this._policies !== null && !isEmptyObject(this._policies);
+  }
+
+  get failed() {
+    return this._failed;
+  }
+}
 
 /*
  * JSON PROVIDER OF POLICIES
@@ -494,26 +752,16 @@ let InstallSources = null;
  * in the installation's distribution folder.
  */
 
-class JSONPoliciesProvider {
+class JSONPoliciesProvider extends PoliciesProvider {
   constructor() {
-    this._policies = null;
+    super();
     this._readData();
   }
 
-  get hasPolicies() {
-    return this._policies !== null && !isEmptyObject(this._policies);
-  }
-
-  get policies() {
-    return this._policies;
-  }
-
-  get failed() {
-    return this._failed;
-  }
-
-  _getConfigurationFile() {
-    let configFile = null;
+  _getLocalConfigurationFile() {
+    if (shouldIgnoreLocalPolicies()) {
+      return null;
+    }
 
     if (AppConstants.platform == "linux" && AppConstants.MOZ_SYSTEM_POLICIES) {
       let systemConfigFile = Services.dirsvc.get("SysConfD", Ci.nsIFile);
@@ -525,17 +773,26 @@ class JSONPoliciesProvider {
     }
 
     try {
-      let perUserPath = Services.prefs.getBoolPref(PREF_PER_USER_DIR, false);
+      let configFile;
+      let perUserPath =
+        Cu.isInAutomation &&
+        Services.prefs.getBoolPref(PREF_PER_USER_DIR, false);
       if (perUserPath) {
         configFile = Services.dirsvc.get("XREUserRunTimeDir", Ci.nsIFile);
       } else {
         configFile = Services.dirsvc.get("XREAppDist", Ci.nsIFile);
       }
       configFile.append(POLICIES_FILENAME);
+      return configFile;
     } catch (ex) {
       // Getting the correct directory will fail in xpcshell tests. This should
       // be handled the same way as if the configFile simply does not exist.
+      return null;
     }
+  }
+
+  _getConfigurationFile() {
+    let configFile = this._getLocalConfigurationFile();
 
     let alternatePath = Services.prefs.getStringPref(PREF_ALTERNATE_PATH, "");
 
@@ -547,7 +804,7 @@ class JSONPoliciesProvider {
     // work as expected.
     if (
       alternatePath &&
-      (Cu.isInAutomation || AppConstants.NIGHTLY_BUILD || isXpcshell) &&
+      (Cu.isInAutomation || AppConstants.NIGHTLY_BUILD) &&
       (!configFile || !configFile.exists())
     ) {
       if (alternatePath.startsWith(MAGIC_TEST_ROOT_PREFIX)) {
@@ -586,6 +843,7 @@ class JSONPoliciesProvider {
 
         if (!this._policies) {
           lazy.log.error("Policies file doesn't contain a 'policies' object");
+          this._policies = null;
           this._failed = true;
         }
       }
@@ -606,9 +864,9 @@ class JSONPoliciesProvider {
   }
 }
 
-class WindowsGPOPoliciesProvider {
+class WindowsGPOPoliciesProvider extends PoliciesProvider {
   constructor() {
-    this._policies = null;
+    super();
 
     let wrk = Cc["@mozilla.org/windows-registry-key;1"].createInstance(
       Ci.nsIWindowsRegKey
@@ -618,30 +876,21 @@ class WindowsGPOPoliciesProvider {
     // user policies first and then replace them if necessary.
     this._readData(wrk, wrk.ROOT_KEY_CURRENT_USER);
     // We don't access machine policies in testing
-    if (!Cu.isInAutomation && !isXpcshell) {
+    if (!Cu.isInAutomation) {
       this._readData(wrk, wrk.ROOT_KEY_LOCAL_MACHINE);
     }
-  }
-
-  get hasPolicies() {
-    return this._policies !== null && !isEmptyObject(this._policies);
-  }
-
-  get policies() {
-    return this._policies;
-  }
-
-  get failed() {
-    return this._failed;
   }
 
   _readData(wrk, root) {
     try {
       let regLocation = "SOFTWARE\\Policies";
-      if (Cu.isInAutomation || isXpcshell) {
-        try {
-          regLocation = Services.prefs.getStringPref(PREF_ALTERNATE_GPO);
-        } catch (e) {}
+      if (Cu.isInAutomation) {
+        let altLocation = Services.prefs.getStringPref(PREF_ALTERNATE_GPO, "");
+        if (altLocation) {
+          regLocation = altLocation;
+        } else if (shouldIgnoreLocalPolicies()) {
+          return;
+        }
       }
       wrk.open(root, regLocation, wrk.ACCESS_READ);
       if (wrk.hasChild("Mozilla\\" + Services.appinfo.name)) {
@@ -664,9 +913,9 @@ class WindowsGPOPoliciesProvider {
   }
 }
 
-class macOSPoliciesProvider {
+class macOSPoliciesProvider extends PoliciesProvider {
   constructor() {
-    this._policies = null;
+    super();
     let prefReader = Cc["@mozilla.org/mac-preferences-reader;1"].createInstance(
       Ci.nsIMacPreferencesReader
     );
@@ -675,43 +924,34 @@ class macOSPoliciesProvider {
     }
     this._policies = lazy.macOSPoliciesParser.readPolicies(prefReader);
   }
-
-  get hasPolicies() {
-    return this._policies !== null && Object.keys(this._policies).length;
-  }
-
-  get policies() {
-    return this._policies;
-  }
-
-  get failed() {
-    return this._failed;
-  }
 }
 
-class CombinedProvider {
-  constructor(primaryProvider, secondaryProvider) {
-    // Combine policies with primaryProvider taking precedence.
-    // We only do this for top level policies.
-    this._policies = primaryProvider._policies;
-    for (let policyName of Object.keys(secondaryProvider.policies)) {
-      if (!(policyName in this._policies)) {
-        this._policies[policyName] = secondaryProvider.policies[policyName];
-      }
-    }
+export class CombinedProvider extends PoliciesProvider {
+  constructor() {
+    super();
+    this._providers = [];
   }
 
-  get hasPolicies() {
-    // Combined provider always has policies.
-    return true;
+  /**
+   * Add a provider. It takes precedence over any previously added providers
+   * when merging conflicting top-level policies.
+   *
+   * @param {PoliciesProvider} provider provider to add
+   */
+  push(provider) {
+    this._providers.push(provider);
   }
 
-  get policies() {
-    return this._policies;
+  mergePolicies() {
+    // Combine the top-level policies of every provider, with providers added
+    // later taking precedence over those added earlier.
+    this._policies = Object.assign({}, ...this._providers.map(p => p.policies));
   }
 
   get failed() {
-    // Combined provider never fails.
-    return false;
+    // A failed provider only fails the engine if it left us without any
+    // policies to apply. If any provider supplied policies we proceed
+    // and ignore the failed source.
+    return this._providers.some(p => p.failed) && !this.hasPolicies;
   }
 }

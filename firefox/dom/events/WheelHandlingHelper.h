@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -171,8 +169,24 @@ class WheelTransaction {
   static void MayEndTransaction();
 
   static LayoutDeviceIntPoint GetScreenPoint(WidgetGUIEvent* aEvent);
-  static void OnFailToScrollTarget();
-  static void OnTimeout(nsITimer* aTimer, void* aClosure);
+  /**
+   * NOTE: This is marked as MOZ_CAN_RUN_SCRIPT_BOUNDARY because this may
+   * dispatch a chrome only event for some automated tests. However, it's
+   * enabled only with a pref and the content cannot listen to the event.
+   * Therefore, this may run script, but shouldn't cause any problems except
+   * when the specific tests do something tricky.
+   */
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY static void OnFailToScrollTarget();
+  /**
+   * NOTE: This is marked as MOZ_CAN_RUN_SCRIPT_BOUNDARY because this may
+   * dispatch a chrome only event for some automated tests. However, it's
+   * enabled only with a pref and the content cannot listen to the event.
+   * Therefore, this may run script, but shouldn't cause any problems except
+   * when the specific tests do something tricky.
+   */
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY static void OnTimeout(nsITimer* aTimer,
+                                                    void* aClosure);
+
   static void SetTimeout();
   static DeltaValues OverrideSystemScrollSpeed(WidgetWheelEvent* aEvent);
   static double ComputeAcceleratedWheelDelta(double aDelta, int32_t aFactor);
@@ -190,9 +204,6 @@ class WheelTransaction {
    *
    * See https://w3c.github.io/uievents/#topmost-event-target and
    * https://w3c.github.io/uievents/#event-type-wheel for details.
-   *
-   * Note: this is only populated if dom.event.wheel-event-groups.enabled is
-   * set.
    */
   static AutoWeakFrame sEventTargetFrame;
   /**

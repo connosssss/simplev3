@@ -2,7 +2,7 @@
 // download occurs but not when a user manually saves a page.
 
 let MockFilePicker = SpecialPowers.MockFilePicker;
-MockFilePicker.init(window.browsingContext);
+MockFilePicker.init();
 
 function openTestPage() {
   return BrowserTestUtils.openNewForegroundTab(
@@ -15,12 +15,6 @@ function openTestPage() {
     `
   );
 }
-
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
 
 add_task(async function download_saveas_file() {
   let tab = await openTestPage();

@@ -5,7 +5,6 @@
 package mozilla.components.service.pocket.recommendations
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import mozilla.components.service.pocket.ext.toContentRecommendation
 import mozilla.components.service.pocket.ext.toContentRecommendationEntity
@@ -22,7 +21,6 @@ import org.mockito.Mockito.spy
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 
-@ExperimentalCoroutinesApi // for runTest
 @RunWith(AndroidJUnit4::class)
 class ContentRecommendationsRepositoryTest {
 
@@ -58,13 +56,13 @@ class ContentRecommendationsRepositoryTest {
     }
 
     @Test
-    fun `GIVEN a content recommendations response WHEN content recommendations are updated THEN persist the provided content recommendations in storage`() = runTest {
-        val response = PocketTestResources.contentRecommendationsResponse
-        val recommendationEntities =
-            response.data.map { it.toContentRecommendationEntity(response.recommendedAt) }
+    fun `GIVEN a content recommendations response WHEN content recommendations are updated THEN persist the provided content recommendations in storage`() =
+        runTest {
+            val response = PocketTestResources.contentRecommendationsResponse
+            val recommendationEntities = response.data.map { it.toContentRecommendationEntity(response.recommendedAt) }
 
-        repository.updateContentRecommendations(response)
+            repository.updateContentRecommendations(response)
 
-        verify(dao).cleanAndUpdateContentRecommendations(recommendationEntities)
-    }
+            verify(dao).cleanAndUpdateContentRecommendations(recommendationEntities)
+        }
 }

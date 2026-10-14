@@ -15,14 +15,15 @@ raptor_dir = os.path.join(os.path.dirname(here), "raptor")
 sys.path.insert(0, raptor_dir)
 
 
-from browsertime import BrowsertimeAndroid, BrowsertimeDesktop
+from browsertime import Browsertime, BrowsertimeAndroid, BrowsertimeDesktop
+from perftest import Perftest, PerftestAndroid
 
 DEFAULT_TIMEOUT = 125
 
 
 class TestBrowserThread(threading.Thread):
     def __init__(self, raptor_instance, tests, names):
-        super(TestBrowserThread, self).__init__()
+        super().__init__()
         self.raptor_instance = raptor_instance
         self.tests = tests
         self.names = names
@@ -42,6 +43,81 @@ class TestBrowserThread(threading.Thread):
 
 
 # Perftest tests
+def test_direct_playback_sets_firefox_origin_overrides():
+    perftest = mock.Mock()
+    perftest.config = {"app": "firefox"}
+    perftest.playback = mock.Mock(
+        playback_mode="direct",
+        host="127.0.0.1",
+        http_port=18080,
+        https_port=18443,
+    )
+
+    Perftest.run_test_setup(perftest, {"name": "nav-bench", "preferences": {}})
+
+    perftest.set_browser_test_prefs.assert_called_with({
+        "network.dns.forceResolve": "127.0.0.1",
+        "network.socket.forcePort": "80=18080;443=18443",
+    })
+
+
+def test_direct_playback_sets_desktop_chrome_origin_overrides():
+    perftest = object.__new__(BrowsertimeDesktop)
+    perftest.config = {"host": "127.0.0.1"}
+    perftest.debug_mode = False
+    perftest.playback = mock.Mock(
+        playback_mode="direct",
+        host="127.0.0.1",
+        http_port=18080,
+        https_port=18443,
+    )
+
+    args = perftest.desktop_chrome_args({"playback": "mitmproxy"})
+
+    assert (
+        "--host-resolver-rules=MAP *:80 127.0.0.1:18080,"
+        "MAP *:443 127.0.0.1:18443,EXCLUDE localhost"
+    ) in args
+    assert not any(arg.startswith("--proxy-server=") for arg in args)
+
+
+def test_direct_playback_forwards_both_android_ports():
+    perftest = mock.Mock()
+    perftest.is_localhost = True
+    perftest.benchmark = None
+    perftest.playback = mock.Mock(
+        playback_mode="direct",
+        http_port=18080,
+        https_port=18443,
+    )
+
+    PerftestAndroid.set_reverse_ports(perftest)
+
+    assert perftest.set_reverse_port.call_args_list == [
+        mock.call(18080),
+        mock.call(18443),
+    ]
+
+
+@pytest.mark.parametrize(
+    "playback_mode, expected_proxy_calls", [("direct", 0), ("proxy", 1)]
+)
+def test_android_firefox_proxy_depends_on_playback_mode(
+    playback_mode, expected_proxy_calls
+):
+    perftest = object.__new__(BrowsertimeAndroid)
+    perftest.config = {"app": "fenix"}
+    perftest.playback = mock.Mock(playback_mode=playback_mode)
+    perftest.set_reverse_ports = mock.Mock()
+    perftest.turn_on_android_app_proxy = mock.Mock()
+    perftest.remove_mozprofile_delimiters_from_profile = mock.Mock()
+
+    with mock.patch.object(Browsertime, "run_test_setup"):
+        perftest.run_test_setup({"name": "pageload"})
+
+    assert perftest.turn_on_android_app_proxy.call_count == expected_proxy_calls
+
+
 @patch("logger.logger.RaptorLogger.info")
 @patch("logger.logger.RaptorLogger.critical")
 @pytest.mark.parametrize(
@@ -69,22 +145,19 @@ def test_build_profile(
     if app_name != "firefox":
         return
 
-    # These prefs are set in mozprofile
+    # These prefs are set by merging testing/profiles
     firefox_prefs = [
         'user_pref("app.update.checkInstallTime", false);',
         'user_pref("app.update.disabledForTesting", true);',
         'user_pref("'
         'security.turn_off_all_security_so_that_viruses_can_take_over_this_computer", true);',
     ]
-    # This pref is set in raptor
-    raptor_pref = 'user_pref("security.enable_java", false);'
 
     prefs_file = os.path.join(perftest_instance.profile.profile, "user.js")
     with open(prefs_file) as fh:
         prefs = fh.read()
         for firefox_pref in firefox_prefs:
             assert firefox_pref in prefs
-        assert raptor_pref in prefs
 
 
 @patch("logger.logger.RaptorLogger.info")
@@ -200,7 +273,7 @@ def test_post_startup_delay(
         debug_mode=debug_mode,
         post_startup_delay=post_startup_delay,
         conditioned_profile=conditioned_profile,
-        **options
+        **options,
     )
 
     assert perftest.post_startup_delay == expected_post_startup_delay
@@ -276,6 +349,42 @@ def test_cmd_arguments(
     cmd = browsertime._compose_cmd(mock_test, DEFAULT_TIMEOUT)
 
     assert expected_cmd.issubset(set(cmd))
+
+
+@patch("logger.logger.RaptorLogger.info")
+@patch("logger.logger.RaptorLogger.critical")
+@pytest.mark.parametrize(
+    "app, expected",
+    [
+        ("chrome", True),
+        ("custom-car", True),
+        ("firefox", False),
+        ("safari-tp", False),
+    ],
+)
+def test_per_test_chrome_arguments(
+    mock_info, mock_critical, browsertime_options, mock_test, app, expected
+):
+    browsertime_options["app"] = app
+    browsertime_options["run_local"] = True
+    mock_test["chrome_args"] = (
+        "--use-fake-device-for-media-stream\n--use-fake-ui-for-media-stream"
+    )
+    expected_args = {
+        "--chrome.args=--use-fake-device-for-media-stream",
+        "--chrome.args=--use-fake-ui-for-media-stream",
+    }
+
+    with patch.object(
+        BrowsertimeDesktop, "get_browser_meta", return_value=(app, "100")
+    ):
+        browsertime = BrowsertimeDesktop(
+            post_startup_delay=DEFAULT_TIMEOUT, **browsertime_options
+        )
+    browsertime.run_test_setup(mock_test)
+    cmd = browsertime._compose_cmd(mock_test, DEFAULT_TIMEOUT)
+
+    assert expected_args.intersection(cmd) == (expected_args if expected else set())
 
 
 def extract_arg_value(cmd, arg):

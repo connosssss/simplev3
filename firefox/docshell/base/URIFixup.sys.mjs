@@ -1,6 +1,4 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
- * vim: sw=2 ts=2 sts=2 expandtab
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -22,25 +20,29 @@ import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 
 const lazy = {};
 
+ChromeUtils.defineESModuleGetters(lazy, {
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
+});
+
 XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "externalProtocolService",
   "@mozilla.org/uriloader/external-protocol-service;1",
-  "nsIExternalProtocolService"
+  Ci.nsIExternalProtocolService
 );
 
 XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "defaultProtocolHandler",
   "@mozilla.org/network/protocol;1?name=default",
-  "nsIProtocolHandler"
+  Ci.nsIProtocolHandler
 );
 
 XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "fileProtocolHandler",
   "@mozilla.org/network/protocol;1?name=file",
-  "nsIFileProtocolHandler"
+  Ci.nsIFileProtocolHandler
 );
 
 XPCOMUtils.defineLazyPreferenceGetter(
@@ -81,6 +83,7 @@ const {
   FIXUP_FLAGS_MAKE_ALTERNATE_URI,
   FIXUP_FLAG_PRIVATE_CONTEXT,
   FIXUP_FLAG_FIX_SCHEME_TYPOS,
+  FIXUP_FLAG_FORCE_KEYWORD_LOOKUP,
 } = Ci.nsIURIFixup;
 
 const COMMON_PROTOCOLS = ["http", "https", "file"];
@@ -335,7 +338,7 @@ URIFixup.prototype = {
     // instead of FIXUP_FLAG_FIX_SCHEME_TYPOS.
     if (
       info.fixedURI &&
-      lazy.keywordEnabled &&
+      keywordFixupEnabled(fixupFlags) &&
       fixupFlags & FIXUP_FLAG_FIX_SCHEME_TYPOS &&
       scheme &&
       !canHandleProtocol
@@ -394,16 +397,22 @@ URIFixup.prototype = {
           fixupConsecutiveDotsHost(info);
           return info;
         }
+        // " and * are accepted by the URL parser but are not valid DNS name
+        // characters. When keyword search is available, prefer it over
+        // attempting a connection that will fail at DNS resolution.
+        if (
+          keywordLookupRequested(fixupFlags) &&
+          /["*]/.test(info.fixedURI.host) &&
+          tryKeywordFixupForURIInfo(info.originalInput, info, isPrivateContext)
+        ) {
+          fixupConsecutiveDotsHost(info);
+          return info;
+        }
       }
     }
 
     // Handle "www.<something>" as a URI.
-    const asciiHost = info.fixedURI?.asciiHost;
-    if (
-      asciiHost?.length > 4 &&
-      asciiHost?.startsWith("www.") &&
-      asciiHost?.lastIndexOf(".") == 3
-    ) {
+    if (isWwwOnlyHostname(info.fixedURI?.asciiHost)) {
       return info;
     }
 
@@ -419,8 +428,7 @@ URIFixup.prototype = {
 
     // See if it is a keyword and whether a keyword must be fixed up.
     if (
-      lazy.keywordEnabled &&
-      fixupFlags & FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP &&
+      keywordLookupRequested(fixupFlags) &&
       !inputHadDuffProtocol &&
       !checkSuffix(info).suffix &&
       keywordURIFixup(uriString, info, isPrivateContext)
@@ -439,7 +447,7 @@ URIFixup.prototype = {
 
     // If we still haven't been able to construct a valid URI, try to force a
     // keyword match.
-    if (lazy.keywordEnabled && fixupFlags & FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP) {
+    if (keywordLookupRequested(fixupFlags)) {
       tryKeywordFixupForURIInfo(info.originalInput, info, isPrivateContext);
     }
 
@@ -493,7 +501,7 @@ URIFixup.prototype = {
     }
     keyword = keyword.trim();
 
-    if (!Services.search.hasSuccessfullyInitialized) {
+    if (!lazy.SearchService.hasSuccessfullyInitialized) {
       return info;
     }
 
@@ -501,8 +509,8 @@ URIFixup.prototype = {
     // We must use an appropriate search engine depending on the private
     // context.
     let engine = isPrivateContext
-      ? Services.search.defaultPrivateEngine
-      : Services.search.defaultEngine;
+      ? lazy.SearchService.defaultPrivateEngine
+      : lazy.SearchService.defaultEngine;
 
     // We allow default search plugins to specify alternate parameters that are
     // specific to keyword searches.
@@ -510,7 +518,7 @@ URIFixup.prototype = {
     if (engine.supportsResponseType("application/x-moz-keywordsearch")) {
       responseType = "application/x-moz-keywordsearch";
     }
-    let submission = engine.getSubmission(keyword, responseType, "keyword");
+    let submission = engine.getSubmission(keyword, responseType);
     if (
       !submission ||
       // For security reasons (avoid redirecting to file, data, or other unsafe
@@ -527,7 +535,7 @@ URIFixup.prototype = {
       info.postData = submissionPostDataStream;
     }
 
-    info.keywordProviderName = engine.name;
+    info.keywordProviderId = engine.id;
     info.keywordAsSent = keyword;
     info.preferredURI = submission.uri;
     return info;
@@ -668,11 +676,11 @@ URIFixupInfo.prototype = {
     return this._fixedURI || null;
   },
 
-  set keywordProviderName(name) {
-    this._keywordProviderName = name;
+  set keywordProviderId(id) {
+    this._keywordProviderId = id;
   },
-  get keywordProviderName() {
-    return this._keywordProviderName || "";
+  get keywordProviderId() {
+    return this._keywordProviderId || "";
   },
 
   set keywordAsSent(keyword) {
@@ -726,6 +734,7 @@ URIFixupInfo.prototype = {
 /**
  * Implementation of isDomainKnown, so we don't have to go through the
  * service.
+ *
  * @param {string} asciiHost
  * @returns {boolean} whether the domain is known
  */
@@ -762,10 +771,11 @@ function isDomainKnown(asciiHost) {
 }
 
 /**
- * Checks the suffix of info.fixedURI against the Public Suffix List.
- * If the suffix is unknown due to a typo this will try to fix it up.
+ * Checks the suffix of ``info.fixedURI`` against the Public Suffix List.
+ * If the suffix is unknown due to a typo this will try to fix it up in-place,
+ * by modifying the public suffix of ``info.fixedURI``.
+ *
  * @param {URIFixupInfo} info about the uri to check.
- * @note this may modify the public suffix of info.fixedURI.
  * @returns {object} result The lookup result.
  * @returns {string} result.suffix The public suffix if one can be identified.
  * @returns {boolean} result.hasUnknownSuffix True when the suffix is not in the
@@ -854,7 +864,7 @@ function tryKeywordFixupForURIInfo(uriString, fixupInfo, isPrivateContext) {
       uriString,
       isPrivateContext
     );
-    fixupInfo.keywordProviderName = keywordInfo.keywordProviderName;
+    fixupInfo.keywordProviderId = keywordInfo.keywordProviderId;
     fixupInfo.keywordAsSent = keywordInfo.keywordAsSent;
     fixupInfo.preferredURI = keywordInfo.preferredURI;
     return true;
@@ -866,6 +876,7 @@ function tryKeywordFixupForURIInfo(uriString, fixupInfo, isPrivateContext) {
  * This generates an alternate fixedURI, by adding a prefix and a suffix to
  * the fixedURI host, if and only if the protocol is http. It should _never_
  * modify URIs with other protocols.
+ *
  * @param {URIFixupInfo} info an URIInfo object
  * @param {integer} fixupFlags the fixup flags
  * @returns {boolean} Whether an alternate uri was generated
@@ -905,9 +916,9 @@ function maybeSetAlternateFixedURI(info, fixupFlags) {
 
 /**
  * Try to fixup a file URI.
+ *
  * @param {string} uriString The file URI to fix.
- * @returns {nsIURI} a fixed uri or null.
- * @note FileURIFixup only returns a URI if it has to add the file: protocol.
+ * @returns {?nsIURI} a fixed uri if it has to add the file: protocol or null.
  */
 function fileURIFixup(uriString) {
   let attemptFixup = false;
@@ -952,7 +963,7 @@ function fileURIFixup(uriString) {
  *    user:pass@no-scheme.com
  *
  * @param {string} uriString The string to fixup.
- * @param {Number} fixupFlags The fixup flags to use.
+ * @param {number} fixupFlags The fixup flags to use.
  * @returns {nsIURI} an nsIURI built adding the default protocol to the string,
  *          or null if fixing was not possible.
  */
@@ -978,7 +989,7 @@ function fixupURIProtocol(uriString, fixupFlags) {
  * user typos and/or "broken" links output by commandline tools.
  *
  * @param {string} uriString The string to make into a URI.
- * @param {Number} fixupFlags The fixup flags to use.
+ * @param {number} fixupFlags The fixup flags to use.
  * @throws NS_ERROR_MALFORMED_URI if the uri is invalid.
  */
 function makeURIWithFixedLocalHosts(uriString, fixupFlags) {
@@ -1000,8 +1011,38 @@ function makeURIWithFixedLocalHosts(uriString, fixupFlags) {
   return uri;
 }
 
+function keywordLookupRequested(fixupFlags) {
+  return (
+    keywordFixupEnabled(fixupFlags) &&
+    !!(
+      fixupFlags &
+      (FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP | FIXUP_FLAG_FORCE_KEYWORD_LOOKUP)
+    )
+  );
+}
+
+function isWwwOnlyHostname(host) {
+  return (
+    host?.length > 4 && host.startsWith("www.") && host.lastIndexOf(".") == 3
+  );
+}
+
+/**
+ * Whether keyword lookup is enabled, either by the keyword.enabled pref or
+ * because it's forced via fixup flags.
+ *
+ * @param {number} fixupFlags The fixup flags.
+ * @returns {boolean} Whether keyword lookup is enabled.
+ */
+function keywordFixupEnabled(fixupFlags) {
+  return (
+    lazy.keywordEnabled || !!(fixupFlags & FIXUP_FLAG_FORCE_KEYWORD_LOOKUP)
+  );
+}
+
 /**
  * Tries to fixup a string to a search url.
+ *
  * @param {string} uriString the string to fixup.
  * @param {URIFixupInfo} fixupInfo The fixup info object, modified in-place.
  * @param {boolean} isPrivateContext Whether this happens in a private context.
@@ -1083,6 +1124,7 @@ function keywordURIFixup(uriString, fixupInfo, isPrivateContext) {
 /**
  * Mimics the logic in Services.io.extractScheme, but avoids crossing XPConnect.
  * This also tries to fixup the scheme if it was clearly mistyped.
+ *
  * @param {string} uriString the string to examine
  * @param {integer} fixupFlags The original fixup flags
  * @returns {object}
@@ -1155,6 +1197,7 @@ function extractScheme(uriString, fixupFlags = FIXUP_FLAG_NONE) {
  * View-source is a pseudo scheme. We're interested in fixing up the stuff
  * after it. The easiest way to do that is to call this method again with
  * the "view-source:" lopped off and then prepend it again afterwards.
+ *
  * @param {string} uriString The original string to fixup
  * @param {integer} fixupFlags The original fixup flags
  * @param {nsIInputStream} postData Optional POST data for the search
@@ -1164,7 +1207,9 @@ function extractScheme(uriString, fixupFlags = FIXUP_FLAG_NONE) {
 function fixupViewSource(uriString, fixupFlags) {
   // We disable keyword lookup and alternate URIs so that small typos don't
   // cause us to look at very different domains.
-  let newFixupFlags = fixupFlags & ~FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP;
+  let newFixupFlags =
+    fixupFlags &
+    ~(FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP | FIXUP_FLAG_FORCE_KEYWORD_LOOKUP);
   let innerURIString = uriString.substring(12).trim();
 
   // Prevent recursion.
@@ -1191,6 +1236,7 @@ function fixupViewSource(uriString, fixupFlags) {
 
 /**
  * Fixup the host of fixedURI if it contains consecutive dots.
+ *
  * @param {URIFixupInfo} info an URIInfo object
  */
 function fixupConsecutiveDotsHost(fixupInfo) {
@@ -1229,6 +1275,7 @@ function fixupConsecutiveDotsHost(fixupInfo) {
  * - "localhost:8080" (if given host is "localhost")
  * - "/foo?bar"
  * - "/foo#bar"
+ *
  * @param {string} uriString.
  * @param {string} host.
  * @param {boolean} true if uri like.
@@ -1263,17 +1310,14 @@ function isURILike(uriString, host) {
  * If no changes were made, it returns an empty string.
  *
  * @param {string} oldHost.
- * @return {String} Fixed up hostname or an empty string.
+ * @return {string} Fixed up hostname or an empty string.
  */
 function maybeAddPrefixAndSuffix(oldHost) {
   let prefix = Services.prefs.getCharPref(
     "browser.fixup.alternate.prefix",
     "www."
   );
-  let suffix = Services.prefs.getCharPref(
-    "browser.fixup.alternate.suffix",
-    ".com"
-  );
+  let suffix = Services.locale.urlFixupSuffix;
   let newHost = "";
   let numDots = (oldHost.match(/\./g) || []).length;
   if (numDots == 0) {

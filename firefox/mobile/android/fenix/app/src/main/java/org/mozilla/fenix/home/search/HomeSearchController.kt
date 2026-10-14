@@ -5,15 +5,11 @@
 package org.mozilla.fenix.home.search
 
 import org.mozilla.fenix.components.AppStore
-import org.mozilla.fenix.components.appstate.AppAction.UpdateSearchBeingActiveState
+import org.mozilla.fenix.components.appstate.AppAction.SearchAction.SearchEnded
 
-/**
- * Delegate for handling all search related interactions while on the homescreen.
- */
+/** Delegate for handling all search related interactions while on the homescreen. */
 interface HomeSearchController {
-    /**
-     * Handle the home content being focused while a browser search is in progress.
-     */
+    /** Handle the home content being focused while a browser search is in progress. */
     fun handleHomeContentFocusedWhileSearchIsActive()
 }
 
@@ -22,10 +18,8 @@ interface HomeSearchController {
  *
  * @param appStore [AppStore] to integrate search related updates with.
  */
-class DefaultHomeSearchController(
-    private val appStore: AppStore,
-) : HomeSearchController {
+class DefaultHomeSearchController(private val appStore: AppStore) : HomeSearchController {
     override fun handleHomeContentFocusedWhileSearchIsActive() {
-        appStore.dispatch(UpdateSearchBeingActiveState(false))
+        appStore.dispatch(SearchEnded)
     }
 }

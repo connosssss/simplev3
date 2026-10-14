@@ -131,11 +131,25 @@ place-database-stats-efficiency-perc = Efficiency (%)
 place-database-stats-sequentiality-perc = Sequentiality (%)
 place-database-integrity = Integrity
 place-database-verify-integrity = Verify Integrity
+place-database-last-idle-maintenance-data = Last Idle Maintenance Date
+# Vacuum refers to a type of database maintenance process
+place-database-last-vacuum-date = Last Vacuum Date
+place-database-last-integrity-corruption-date = Last Integrity Corruption Date
 a11y-title = Accessibility
 a11y-activated = Activated
 a11y-force-disabled = Prevent Accessibility
 a11y-handler-used = Accessible Handler Used
 a11y-instantiator = Accessibility Instantiator
+pdfjs-title = PDF Viewer
+# PDF.js is the name of the project, leave it unchanged.
+pdfjs-version = PDF.js Version
+pdfjs-enabled = Enabled
+# The annotation editor is the set of PDF editing tools (draw, add image, add
+# text, signature).
+pdfjs-enabled-annotation-editor = Annotation Editor Enabled
+# XFA (XML Form Architecture) refers to Adobe’s technology for forms.
+pdfjs-enabled-xfa = XFA Forms Enabled
+pdfjs-open-attachments-inline = Open PDF Attachments Inline
 library-version-title = Library Versions
 copy-text-to-clipboard-label = Copy text to clipboard
 copy-raw-data-to-clipboard-label = Copy raw data to clipboard
@@ -204,9 +218,6 @@ media-cdm-capabilities = Capabilities
 # are not encrypted. It allows playback to start without having to wait for
 # license response, improving video start time and user experience.
 media-cdm-clear-lead = Clear Lead
-# We choose 2.2 as this is the version which the video provider usually want to have in order to stream 4K video securely
-# HDCP version https://w3c.github.io/encrypted-media/#idl-def-hdcpversion
-media-hdcp-22-compatible = HDCP 2.2 Compatible
 
 ##
 

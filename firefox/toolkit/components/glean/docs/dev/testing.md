@@ -1,4 +1,4 @@
-# Testing
+# Testing Glean
 
 ```{admonition} This documentation is about testing FOG itself
 This document contains information about how FOG tests itself,
@@ -19,7 +19,7 @@ To run all the things, here's the tl;dr:
 && ./mach rusttests && ./mach gtest "FOG*"
 && python3 ./mach python-test toolkit/components/glean/tests/pytest
 && ./mach test toolkit/components/glean/tests/xpcshell
-&& ./mach telemetry-tests-client toolkit/components/telemetry/tests/marionette/tests/client/test_fog* --gecko-log "-"
+&& ./mach telemetry-tests-client --tag client --gecko-log "-"
 && ./mach test toolkit/components/glean/tests/browser --headless
 `
 
@@ -137,16 +137,16 @@ in `toolkit/components/glean/tests/gtest/`.
 You can write the actual test code in Rust.
 It needs to be accompanied by a C++ GTest that calls a C FFI-exported Rust function.
 See [Testing & Debugging Rust Code](/testing-rust-code/index.md) for more.
-See [`toolkit/components/glean/tests/gtest/TestFog.cpp`](https://searchfox.org/mozilla-central/source/toolkit/components/glean/tests/gtest/TestFog.cpp)
-and [`toolkit/components/glean/tests/gtest/test.rs`](https://searchfox.org/mozilla-central/source/toolkit/components/glean/tests/gtest/test.rs)
+See [`toolkit/components/glean/tests/gtest/TestFog.cpp`](https://searchfox.org/firefox-main/source/toolkit/components/glean/tests/gtest/TestFog.cpp)
+and [`toolkit/components/glean/tests/gtest/test.rs`](https://searchfox.org/firefox-main/source/toolkit/components/glean/tests/gtest/test.rs)
 for an example.
 
 By necessity these can only be integration tests against the compiled crate.
 
 **Note:** When adding a new test file, don't forget to add it to
 `toolkit/components/glean/tests/gtest/moz.build` and use the
-`FOG` prefix in your test names
-(e.g. `TEST(FOG, YourTestName) { ... }`).
+`FOGFixture` fixture
+(e.g. `TEST_F(FOGFixture, YourTestName) { ... }`).
 
 To run FOG's Rust `gtest` suite use `mach gtest FOG.*`
 
@@ -182,7 +182,8 @@ If you add a new file, remember to add it to the
 [`moz.build`](https://hg.mozilla.org/mozilla-central/file/tip/toolkit/components/glean/tests/gtest/moz.build))
 or the test runner won't be able to find it.
 
-All tests should start with `FOG` so that all tests are run with
+All tests should use the `FOGFixture` fixture where possible.
+If not possible, prefix your test name with `FOG` so that all tests are run with
 `./mach gtest FOG*`.
 
 ## JS (Treeherder symbol `X(Xn)` for some number `n`)
@@ -194,8 +195,8 @@ FOG's `xpcshell` tests are in
 [`xpcshell/`](https://hg.mozilla.org/mozilla-central/file/tip/toolkit/components/glean/tests/xpcshell).
 
 You can either add a test case to an existing file or add a new file.
-If you add a new file, remember to add it to the
-[`xpcshell.ini`](https://hg.mozilla.org/mozilla-central/file/tip/toolkit/components/glean/tests/xpcshell/xpcshell.ini)
+If you add a new file, remember to add it to
+{searchfox}`toolkit/components/glean/tests/xpcshell/xpcshell.toml`
 or the test runner will not be able to find it.
 
 To run FOG's JS tests, run:
@@ -209,9 +210,9 @@ To test that and have access to privileged JS (i.e. `Glean` and `FOG` APIs),
 we use browser-chrome-flavoured mochitests you can find in
 [`browser/`](https://hg.mozilla.org/mozilla-central/file/tip/toolkit/components/glean/tests/browser).
 
-If you need to add a new test file, remember to add it to the
-[`browser.ini`](https://hg.mozilla.org/mozilla-central/file/tip/toolkit/components/glean/tests/browser/browser.ini)
-manifest, or the test runner will not be able to find it.
+If you need to add a new test file, remember to add it to
+{searchfox}`toolkit/components/glean/tests/browser/browser.toml`
+or the test runner will not be able to find it.
 
 To run FOG's browser chrome tests, run:
 `./mach test toolkit/components/glean/tests/browser`
@@ -221,23 +222,22 @@ To run FOG's browser chrome tests, run:
 To test pings (See [bug 1681742](https://bugzilla.mozilla.org/show_bug.cgi?id=1681742))
 or anything that requires one or more full browsers running,
 we use the `telemetry-tests-client` suite in
-[`toolkit/components/telemetry/tests/marionette/tests/client/`](https://hg.mozilla.org/mozilla-central/file/tip/toolkit/components/telemetry/tests/marionette/tests/client/).
+{searchfox}`toolkit/components/telemetry/tests/marionette/tests/client/`.
 
 For more information on this suite, look to
-[Firefox Telemetry's Test Documentation](https://firefox-source-docs.mozilla.org/toolkit/components/telemetry/internals/tests.html#integration-tests-telemetry-tests-client-and-telemetry-integration-tests)
+[the telemetry-tests-client documentation](/toolkit/components/telemetry/internals/integration_tests/index.md)
 and
-[Marionette's Documentation](/testing/marionette/Testing.md).
+[Marionette's Documentation](/remote/marionette/Testing.md).
 
 To run these integration tests, run:
-`./mach telemetry-tests-client toolkit/components/telemetry/tests/marionette/tests/client/`
+`./mach telemetry-tests-client --tag client`
 
-To capture the Firefox under test's logs, use the `--gecko-log` parameter.
-For example, to echo to stdout:
-`./mach telemetry-tests-client toolkit/components/telemetry/tests/marionette/tests/client/test_fog* --gecko-log "-"`
+There is no FOG-specific manifest tag, so this runs the complete client suite.
+To narrow the run to FOG test files, use:
+`./mach telemetry-tests-client toolkit/components/telemetry/tests/marionette/tests/client/test_fog*`
 
-**Note:** Running the `tt(c)` suite in this way ignored skip directives in the manifest.
-This means that you might run tests that are not expected to succeed on your platform.
-Check `toolkit/components/telemetry/tests/marionette/tests/client/manifest.ini` for details.
+Passing test files directly bypasses manifest skip conditions. See the suite
+documentation linked above for details and other runner options.
 
 ## Artifact-build-only failures -- testing JOG
 

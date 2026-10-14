@@ -1,11 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jit/ValueNumbering.h"
 
+#include "jit/BranchPruning.h"
 #include "jit/IonAnalysis.h"
 #include "jit/JitSpewer.h"
 #include "jit/MIRGenerator.h"
@@ -123,10 +122,50 @@ static void ReplaceAllUsesWith(MDefinition* from, MDefinition* to) {
   MOZ_ASSERT(!to->isDiscarded(),
              "GVN replaces an instruction by a removed instruction");
 
-  // Update the node's wasm ref type to the LUB of the two nodes being combined.
+  // Update the node's wasm ref type to the GLB of the two nodes being combined.
   // This ensures that any type-based optimizations downstream remain correct.
-  to->setWasmRefType(wasm::MaybeRefType::leastUpperBound(from->wasmRefType(),
-                                                         to->wasmRefType()));
+  //
+  // We use the GLB instead of the LUB because if two nodes have different ref
+  // types, but are determined to represent the same value, then it is safe to
+  // choose the most precise type available, which is the GLB.
+  //
+  // By comparison, consider MPhi::computeWasmRefType, which takes the LUB of
+  // all operands. This is necessary because each operand is a different value,
+  // and we must conservatively choose a type that can represent all values.
+  // However, this case is different: when two nodes are congruentTo each other,
+  // they are the *same value*, and anything we know to be true of one is true
+  // of the other. Therefore, we can safely choose the GLB.
+  //
+  // For example, if we had two WasmNullConstants with types (ref null i31) and
+  // (ref null struct), it would still be valid to mark these nulls as
+  // congruent. The type of the resulting null constant could safely be (ref
+  // null none), the GLB, rather than (ref null eq), the LUB. (This example is
+  // somewhat moot because we directly set WasmNullConstants to have type (ref
+  // null none) anyway, but it demonstrates the principle.)
+  //
+  // It is possible for stranger situations to happen downstream if the GLB is
+  // applied naively. For example, consider the following:
+  //
+  // ```
+  // ref.null $s1         ;; (ref null none)
+  // struct.get $s1 0     ;; (ref i31)
+  // ref.null $s2         ;; (ref null none)
+  // struct.get $s2 0     ;; (ref struct)
+  // ```
+  //
+  // The nulls may be combined by GVN (as they both have type (ref null none)),
+  // and then the struct.gets could theoretically also be combined because they
+  // have the same input and offset. However, what ref type would the resulting
+  // struct.get have? The GLB tells us (ref none), which is technically correct,
+  // but this type is uninhabitable: there is no value that matches it. An
+  // uninhabitably-typed MIR value is an oxymoron, and while this case can arise
+  // by construction in some cases, we don't want GVN to produce it. Therefore,
+  // we guard this case from happening upstream, and here assert that the GLB is
+  // always inhabitable.
+  wasm::MaybeRefType glb = wasm::MaybeRefType::greatestLowerBound(
+      from->wasmRefType(), to->wasmRefType());
+  MOZ_RELEASE_ASSERT(glb.isNothing() || glb.value().isInhabitable());
+  to->setWasmRefType(glb);
 
   // We don't need the extra setting of ImplicitlyUsed flags that the regular
   // replaceAllUsesWith does because we do it ourselves.
@@ -180,7 +219,7 @@ static bool BlockHasInterestingDefs(MBasicBlock* block) {
 // which look potentially interesting to GVN.
 static bool ScanDominatorsForDefs(MBasicBlock* block) {
   for (MBasicBlock* i = block;;) {
-    if (BlockHasInterestingDefs(block)) {
+    if (BlockHasInterestingDefs(i)) {
       return true;
     }
 
@@ -757,20 +796,23 @@ bool ValueNumberer::visitDefinition(MDefinition* def) {
       return false;
     }
 
+    wasm::MaybeRefType glb = wasm::MaybeRefType::greatestLowerBound(
+        def->wasmRefType(), sim->wasmRefType());
+    if (glb.isSome() && !glb.value().isInhabitable()) {
+      // If the simplified version of a node would have an uninhabitable wasm
+      // ref type, then we are in a sufficiently weird situation that we should
+      // not mess with this value. (This can happen with e.g. (ref none) params
+      // or struct fields.) See the comment in ReplaceAllUsesWith.
+      return true;
+    }
+
     bool isNewInstruction = sim->block() == nullptr;
 
     // If |sim| doesn't belong to a block, insert it next to |def|.
     if (isNewInstruction) {
 #ifdef DEBUG
-      if (sim->isObjectKeysLength() && def->isArrayLength()) {
-        // /!\ Exception: MArrayLength::foldsTo replaces a sequence of
-        // instructions containing an effectful instruction by an effectful
-        // instruction.
-      } else {
-        // Otherwise, a new |sim| node mustn't be effectful when |def| wasn't
-        // effectful.
-        MOZ_ASSERT_IF(sim->isEffectful(), def->isEffectful());
-      }
+      // A new |sim| node mustn't be effectful when |def| wasn't effectful.
+      MOZ_ASSERT_IF(sim->isEffectful(), def->isEffectful());
 #endif
 
       // If both instructions are effectful, |sim| must have stolen the resume
@@ -858,6 +900,16 @@ bool ValueNumberer::visitDefinition(MDefinition* def) {
   if (rep != def) {
     if (rep == nullptr) {
       return false;
+    }
+
+    wasm::MaybeRefType glb = wasm::MaybeRefType::greatestLowerBound(
+        def->wasmRefType(), rep->wasmRefType());
+    if (glb.isSome() && !glb.value().isInhabitable()) {
+      // If two definitions would combine to produce an uninhabitable wasm ref
+      // type, then we are in a weird dead code situation where mysterious type
+      // things are happening. In this case it is better not to do anything
+      // further. See the comment in ReplaceAllUsesWith.
+      return true;
     }
 
     if (rep->isPhi()) {

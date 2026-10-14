@@ -34,6 +34,12 @@ LintGenerator = Generator[str, None, None]
 NitGenerator = Generator["GlinterNit", None, None]
 
 
+def noop(*args):
+    """A noop `LintGenerator`. Never yields a GlinterNit."""
+    return
+    yield
+
+
 class CheckType(enum.Enum):
     warning = 0
     error = 1
@@ -76,34 +82,6 @@ def _hamming_distance(str1: str, str2: str) -> int:
         if ch1 != ch2:
             diffs += 1
     return diffs
-
-
-def check_common_prefix(
-    category_name: str, metrics: Iterable[metrics.Metric]
-) -> LintGenerator:
-    """
-    Check if all metrics begin with a common prefix.
-    """
-    metric_words = sorted([_split_words(metric.name) for metric in metrics])
-
-    if len(metric_words) < 2:
-        return
-
-    first = metric_words[0]
-    last = metric_words[-1]
-
-    for i in range(min(len(first), len(last))):
-        if first[i] != last[i]:
-            break
-
-    if i > 0:
-        common_prefix = "_".join(first[:i])
-        yield (
-            f"Within category '{category_name}', all metrics begin with "
-            f"prefix '{common_prefix}'."
-            "Remove the prefixes on the metric names and (possibly) "
-            "rename the category."
-        )
 
 
 def check_unit_in_name(
@@ -294,6 +272,25 @@ def check_metric_on_events_lifetime(
         )
 
 
+def check_event_on_non_events_ping(
+    metric: metrics.Metric, parser_config: Dict[str, Any]
+) -> LintGenerator:
+    """
+    An event metric should usually go on the `events` ping or a custom ping,
+    not on a builtin ping.
+    """
+    disallowed_pings = set(pings.RESERVED_PING_NAMES) - {"default", "events"} | {
+        "health"
+    }
+    if metric.type == "event" and any(
+        [ping in disallowed_pings for ping in metric.send_in_pings]
+    ):
+        yield (
+            "An event metric should usually go on the `events` ping or a custom ping, "
+            + "not on a builtin ping."
+        )
+
+
 def check_unexpected_unit(
     metric: metrics.Metric, parser_config: Dict[str, Any]
 ) -> LintGenerator:
@@ -313,11 +310,41 @@ def check_unexpected_unit(
 def check_empty_datareview(
     metric: metrics.Metric, parser_config: Dict[str, Any]
 ) -> LintGenerator:
-    disallowed_datareview = ["", "todo"]
+    disallowed_datareview = ["", "todo", "tbd"]
     data_reviews = [dr.lower() in disallowed_datareview for dr in metric.data_reviews]
 
     if any(data_reviews):
         yield "List of data reviews should not contain empty strings or TODO markers."
+
+
+def check_event_extras_potential_data_sensitivity_required(
+    metric: metrics.Metric, parser_config: Dict[str, Any]
+) -> LintGenerator:
+    # Only looking at event metrics
+    if not isinstance(metric, metrics.Event):
+        return
+
+    # TODO(bug 1890648): Not all metrics have `data_sensitivity` defined.
+    has_data_sensitivity = hasattr(metric, "data_sensitivity")
+    # If already marked as "highly sensitive" no need for further checks
+    if has_data_sensitivity and any(
+        [
+            sensitivity == metrics.DataSensitivity.highly_sensitive
+            for sensitivity in metric.data_sensitivity
+        ]
+    ):
+        return
+
+    # List of potentially sensitive extra key names we want to flag.
+    potential_sensitive_names = ["url", "uri"]
+    name_list = ", ".join(potential_sensitive_names)
+
+    for extra_key in metric.extra_keys.keys():
+        if extra_key in potential_sensitive_names:
+            yield (
+                f"`{extra_key}` could potentially be used to collect sensitive data. Increase the metric's data sensitivity or disable the lint."
+                + f" (This lint applies for the following extra key names: {name_list})"
+            )
 
 
 def check_redundant_ping(
@@ -410,7 +437,8 @@ def check_name_too_similar(
 CATEGORY_CHECKS: Dict[
     str, Tuple[Callable[[str, Iterable[metrics.Metric]], LintGenerator], CheckType]
 ] = {
-    "COMMON_PREFIX": (check_common_prefix, CheckType.error),
+    # Keeping it to not break when it is listed in `no_lint`
+    "COMMON_PREFIX": (noop, CheckType.error),
     "CATEGORY_GENERIC": (check_category_generic, CheckType.error),
 }
 
@@ -430,8 +458,15 @@ METRIC_CHECKS: Dict[
     "EXPIRED": (check_expired_metric, CheckType.warning),
     "OLD_EVENT_API": (check_old_event_api, CheckType.warning),
     "METRIC_ON_EVENTS_LIFETIME": (check_metric_on_events_lifetime, CheckType.error),
+    "EVENT_ON_NON_EVENTS_PING": (check_event_on_non_events_ping, CheckType.warning),
     "UNEXPECTED_UNIT": (check_unexpected_unit, CheckType.warning),
     "EMPTY_DATAREVIEW": (check_empty_datareview, CheckType.warning),
+    "HIGHER_DATA_SENSITIVITY_REQUIRED": (
+        check_event_extras_potential_data_sensitivity_required,
+        CheckType.warning,
+    ),
+    # Implemented inline, listed here so that `UNKNOWN_LINT` knows about it.
+    "UNUSED_NO_LINT": (noop, CheckType.warning),
 }
 
 
@@ -627,8 +662,44 @@ def lint_metrics(
             )
 
         for _metric_name, metric in sorted(list(category_metrics.items())):
+            check_unused_lints = "UNUSED_NO_LINT" not in metric.no_lint
+            check_unknown_lint = "UNKNOWN_LINT" not in metric.no_lint
+
+            if check_unknown_lint and metric.no_lint:
+                known_lint_names = (
+                    set(METRIC_CHECKS.keys())
+                    | set(ALL_OBJECT_CHECKS.keys())
+                    | set(CATEGORY_CHECKS.keys())
+                )
+                unknown_lints = [
+                    lint for lint in metric.no_lint if lint not in known_lint_names
+                ]
+                if unknown_lints:
+                    nits.append(
+                        GlinterNit(
+                            "UNKNOWN_LINT",
+                            ".".join([metric.category, metric.name]),
+                            f"Metric contains unknown no_lints: {unknown_lints}. Please remove the `no_lint` entry.",
+                            CheckType.warning,
+                        )
+                    )
+
             for check_name, (check_func, check_type) in METRIC_CHECKS.items():
                 new_nits = list(check_func(metric, parser_config))
+                if (
+                    check_unused_lints
+                    and check_name in metric.no_lint
+                    and not len(new_nits)
+                ):
+                    nits.append(
+                        GlinterNit(
+                            "UNUSED_NO_LINT",
+                            ".".join([metric.category, metric.name]),
+                            f"Metric contains a no_lint: {check_name}, but {check_name} does not apply. Please remove the `no_lint` entry.",
+                            CheckType.warning,
+                        )
+                    )
+
                 if len(new_nits):
                     if check_name not in metric.no_lint:
                         nits.extend(

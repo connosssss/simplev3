@@ -19,22 +19,25 @@ import org.mozilla.fenix.R
 import org.mozilla.fenix.helpers.Constants.TAG
 import org.mozilla.fenix.helpers.MatcherHelper.assertUIObjectExists
 import org.mozilla.fenix.helpers.MatcherHelper.itemContainingText
+import org.mozilla.fenix.helpers.MatcherHelper.itemWithResId
 import org.mozilla.fenix.helpers.MatcherHelper.itemWithText
 import org.mozilla.fenix.helpers.TestAssetHelper.waitingTime
 import org.mozilla.fenix.helpers.TestHelper.mDevice
 import org.mozilla.fenix.helpers.TestHelper.packageName
 import org.mozilla.fenix.helpers.click
 
-/**
- * Implementation of Robot Pattern for the settings Enhanced Tracking Protection Exceptions sub menu.
- */
+/** Implementation of Robot Pattern for the settings Enhanced Tracking Protection Exceptions sub menu. */
 class SettingsSubMenuEnhancedTrackingProtectionExceptionsRobot {
 
     fun verifyTPExceptionsDefaultView() {
-        assertUIObjectExists(
-            itemWithText("Exceptions let you disable tracking protection for selected sites."),
+        Log.i(TAG, "verifyTPExceptionsDefaultView: Waiting for default ETP exceptions text to appear")
+        itemWithResId("$packageName:id/exceptions_empty_message").waitForExists(waitingTime)
+
+        assertUIObjectExists(itemWithText("Exceptions let you disable tracking protection for selected sites."))
+        Log.i(
+            TAG,
+            "verifyTPExceptionsDefaultView: Trying to verify that the ETP exceptions learn more link is displayed",
         )
-        Log.i(TAG, "verifyTPExceptionsDefaultView: Trying to verify that the ETP exceptions learn more link is displayed")
         learnMoreLink().check(matches(isDisplayed()))
         Log.i(TAG, "verifyTPExceptionsDefaultView: Verified that the ETP exceptions learn more link is displayed")
     }
@@ -46,23 +49,25 @@ class SettingsSubMenuEnhancedTrackingProtectionExceptionsRobot {
     }
 
     fun removeOneSiteException(siteHost: String) {
-        Log.i(TAG, "removeOneSiteException: Waiting for $waitingTime ms for exceptions list to exist to exist")
+        Log.i(TAG, "removeOneSiteException: Waiting for $waitingTime ms for exceptions list to exist")
         exceptionsList().waitForExists(waitingTime)
-        Log.i(TAG, "removeOneSiteException: Waited for $waitingTime ms for exceptions list to exist to exist")
+        Log.i(TAG, "removeOneSiteException: Waited for $waitingTime ms for exceptions list to exist")
         Log.i(TAG, "removeOneSiteException: Trying to click the delete site exception button")
         removeSiteExceptionButton(siteHost).click()
         Log.i(TAG, "removeOneSiteException: Clicked the delete site exception button")
     }
 
     fun verifySiteExceptionExists(siteUrl: String, shouldExist: Boolean) {
-        Log.i(TAG, "verifySiteExceptionExists: Waiting for $waitingTime ms for exceptions list to exist to exist")
+        Log.i(TAG, "verifySiteExceptionExists: Waiting for $waitingTime ms for exceptions list to exist")
         exceptionsList().waitForExists(waitingTime)
-        Log.i(TAG, "verifySiteExceptionExists: Waited for $waitingTime ms for exceptions list to exist to exist")
+        Log.i(TAG, "verifySiteExceptionExists: Waited for $waitingTime ms for exceptions list to exist")
         assertUIObjectExists(itemContainingText(siteUrl), exists = shouldExist)
     }
 
     class Transition {
-        fun goBack(interact: SettingsSubMenuEnhancedTrackingProtectionRobot.() -> Unit): SettingsSubMenuEnhancedTrackingProtectionRobot.Transition {
+        fun goBack(
+            interact: SettingsSubMenuEnhancedTrackingProtectionRobot.() -> Unit
+        ): SettingsSubMenuEnhancedTrackingProtectionRobot.Transition {
             Log.i(TAG, "goBack: Trying to click the navigate up toolbar button")
             goBackButton().click()
             Log.i(TAG, "goBack: Clicked the navigate up toolbar button")
@@ -71,10 +76,18 @@ class SettingsSubMenuEnhancedTrackingProtectionExceptionsRobot {
             return SettingsSubMenuEnhancedTrackingProtectionRobot.Transition()
         }
 
-        fun disableExceptions(interact: SettingsSubMenuEnhancedTrackingProtectionExceptionsRobot.() -> Unit): Transition {
+        fun disableExceptions(
+            interact: SettingsSubMenuEnhancedTrackingProtectionExceptionsRobot.() -> Unit
+        ): Transition {
             Log.i(TAG, "disableExceptions: Trying to click the \"Turn on for all sites\" button")
             disableAllExceptionsButton().click()
             Log.i(TAG, "disableExceptions: Clicked the \"Turn on for all sites\" button")
+
+            if (itemWithResId("$packageName:id/removeAllExceptions").exists()) {
+                Log.i(TAG, "disableExceptions: Retrying to click the \"Turn on for all sites\" button")
+                disableAllExceptionsButton().click()
+                Log.i(TAG, "disableExceptions: Retried clicking on  the \"Turn on for all sites\" button")
+            }
 
             SettingsSubMenuEnhancedTrackingProtectionExceptionsRobot().interact()
             return Transition()
@@ -82,8 +95,7 @@ class SettingsSubMenuEnhancedTrackingProtectionExceptionsRobot {
     }
 }
 
-private fun goBackButton() =
-    onView(allOf(withContentDescription("Navigate up")))
+private fun goBackButton() = onView(allOf(withContentDescription("Navigate up")))
 
 private fun learnMoreLink() = onView(withText("Learn more"))
 
@@ -94,8 +106,7 @@ private fun removeSiteExceptionButton(siteHost: String) =
         allOf(
             withContentDescription("Delete"),
             hasSibling(withText(containsString(siteHost))),
-        ),
+        )
     )
 
-private fun exceptionsList() =
-    mDevice.findObject(UiSelector().resourceId("$packageName:id/exceptions_list"))
+private fun exceptionsList() = mDevice.findObject(UiSelector().resourceId("$packageName:id/exceptions_list"))

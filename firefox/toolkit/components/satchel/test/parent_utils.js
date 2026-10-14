@@ -1,5 +1,3 @@
-/* eslint-env mozilla/chrome-script */
-
 const { FormHistory } = ChromeUtils.importESModule(
   "resource://gre/modules/FormHistory.sys.mjs"
 );
@@ -106,8 +104,9 @@ var ParentUtils = {
         return false;
       }
 
-      let win = el.ownerGlobal;
-      return win.customElements.getName(el.constructor) == is;
+      // Rows are now uniform <richlistitem class="autocomplete-row-item">
+      // elements; the result style is exposed via the originaltype attribute.
+      return el.getAttribute("originaltype") == is;
     }, "Testing menu entry").then(() => {
       sendAsyncMessage("menuEntryTested");
     });

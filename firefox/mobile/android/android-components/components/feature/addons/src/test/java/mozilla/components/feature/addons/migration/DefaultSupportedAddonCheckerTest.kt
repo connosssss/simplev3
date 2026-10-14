@@ -13,50 +13,44 @@ import androidx.work.Configuration
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.testing.WorkManagerTestInitHelper
+import java.util.concurrent.TimeUnit
 import junit.framework.TestCase.assertEquals
 import junit.framework.TestCase.assertFalse
 import junit.framework.TestCase.assertTrue
+import kotlinx.coroutines.test.runTest
 import mozilla.components.feature.addons.migration.DefaultSupportedAddonsChecker.Companion.CHECKER_UNIQUE_PERIODIC_WORK_NAME
 import mozilla.components.feature.addons.migration.DefaultSupportedAddonsChecker.Companion.WORK_TAG_PERIODIC
 import mozilla.components.support.base.worker.Frequency
 import mozilla.components.support.test.mock
 import mozilla.components.support.test.robolectric.testContext
-import mozilla.components.support.test.rule.MainCoroutineRule
-import mozilla.components.support.test.rule.runTestOnMain
 import org.junit.Before
-import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.ArgumentMatchers
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.spy
-import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class DefaultSupportedAddonCheckerTest {
-
-    @get:Rule
-    val coroutinesTestRule = MainCoroutineRule()
 
     lateinit var context: Context
 
     @Before
     fun setUp() {
         val configuration = Configuration.Builder().build()
-        context = spy(testContext).also {
-            val packageManager: PackageManager = mock()
-            doReturn(Intent()).`when`(packageManager).getLaunchIntentForPackage(
-                ArgumentMatchers.anyString(),
-            )
-            doReturn(packageManager).`when`(it).packageManager
-        }
+        context =
+            spy(testContext).also {
+                val packageManager: PackageManager = mock()
+                doReturn(Intent()).`when`(packageManager).getLaunchIntentForPackage(ArgumentMatchers.anyString())
+                doReturn(packageManager).`when`(it).packageManager
+            }
 
         // Initialize WorkManager (early) for instrumentation tests.
         WorkManagerTestInitHelper.initializeTestWorkManager(testContext, configuration)
     }
 
     @Test
-    fun `registerForChecks - schedule work for future checks`() = runTestOnMain {
+    fun `registerForChecks - schedule work for future checks`() = runTest {
         val frequency = Frequency(1, TimeUnit.DAYS)
         val checker = DefaultSupportedAddonsChecker(context, frequency)
 
@@ -75,7 +69,7 @@ class DefaultSupportedAddonCheckerTest {
     }
 
     @Test
-    fun `unregisterForChecks - will remove scheduled work for future checks`() = runTestOnMain {
+    fun `unregisterForChecks - will remove scheduled work for future checks`() = runTest {
         val frequency = Frequency(1, TimeUnit.DAYS)
         val checker = DefaultSupportedAddonsChecker(context, frequency)
 

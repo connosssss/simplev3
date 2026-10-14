@@ -380,7 +380,8 @@ impl FontTransform {
             // The X axis has been swapped with the Y axis
             SubpixelDirection::Vertical
         } else {
-            // Use subpixel precision on all axes
+            // Both axes are projected onto each other (rotation / skew), so no
+            // single axis can carry the sub-pixel offset.
             SubpixelDirection::Mixed
         }
     }
@@ -1032,6 +1033,10 @@ pub enum SubpixelDirection {
     None = 0,
     Horizontal,
     Vertical,
+    /// A rotated or skewed transform, where neither axis alone can carry the
+    /// sub-pixel offset. Both axes get quarter-pixel positioning, so the run
+    /// snaps to a quarter-pixel grid rather than popping a whole device pixel at
+    /// a time (bug 2063377). Costs 16 raster variants per glyph.
     Mixed,
 }
 
@@ -1099,10 +1104,26 @@ impl Into<f64> for SubpixelOffset {
     }
 }
 
+impl SubpixelOffset {
+    fn to_f32(self) -> f32 {
+        match self {
+            SubpixelOffset::Zero => 0.0,
+            SubpixelOffset::Quarter => 0.25,
+            SubpixelOffset::Half => 0.5,
+            SubpixelOffset::ThreeQuarters => 0.75,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Hash, PartialEq, Eq, Debug, Ord, PartialOrd)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct GlyphKey(u32);
+
+#[derive(Copy, Clone, Hash, PartialEq, Eq, Debug, Ord, PartialOrd)]
+#[cfg_attr(feature = "capture", derive(Serialize))]
+#[cfg_attr(feature = "replay", derive(Deserialize))]
+pub struct GlyphCacheKey(u32);
 
 impl GlyphKey {
     pub fn new(
@@ -1118,20 +1139,47 @@ impl GlyphKey {
         };
         let sox = SubpixelOffset::quantize(dx);
         let soy = SubpixelOffset::quantize(dy);
-        assert_eq!(0, index & 0xF0000000);
+        assert_eq!(0, index & 0xFC000000);
 
-        GlyphKey(index | (sox as u32) << 28 | (soy as u32) << 30)
+        GlyphKey(index | (sox as u32) << 26 | (soy as u32) << 28 | (subpx_dir as u32) << 30)
     }
 
     pub fn index(&self) -> GlyphIndex {
-        self.0 & 0x0FFFFFFF
+        self.0 & 0x03FFFFFF
     }
 
-    fn subpixel_offset(&self) -> (SubpixelOffset, SubpixelOffset) {
-        let x = (self.0 >> 28) as u8 & 3;
-        let y = (self.0 >> 30) as u8 & 3;
+    pub fn subpixel_offset(&self) -> (SubpixelOffset, SubpixelOffset) {
+        let x = (self.0 >> 26) as u8 & 3;
+        let y = (self.0 >> 28) as u8 & 3;
         unsafe {
             (mem::transmute(x), mem::transmute(y))
+        }
+    }
+
+    pub fn subpixel_dir(&self) -> SubpixelDirection {
+        let dir = (self.0 >> 30) as u8 & 3;
+        unsafe {
+            mem::transmute(dir as u32)
+        }
+    }
+
+    pub fn cache_key(&self) -> GlyphCacheKey {
+        let index = self.index();
+        let subpx_dir = self.subpixel_dir();
+        assert_eq!(0, index & 0xFC000000);
+        GlyphCacheKey(index | (subpx_dir as u32) << 30)
+    }
+}
+
+impl GlyphCacheKey {
+    pub fn index(&self) -> GlyphIndex {
+        self.0 & 0x03FFFFFF
+    }
+
+    pub fn subpixel_dir(&self) -> SubpixelDirection {
+        let dir = ((self.0 >> 30) & 3) as u32;
+        unsafe {
+            mem::transmute(dir)
         }
     }
 }
@@ -1292,6 +1340,7 @@ pub struct RasterizedGlyph {
     pub scale: f32,
     pub format: GlyphFormat,
     pub bytes: Vec<u8>,
+    pub is_packed_glyph: bool,
 }
 
 impl RasterizedGlyph {
@@ -1569,6 +1618,15 @@ impl GlyphRasterizer {
         self.fonts.contains(&font_key)
     }
 
+    /// Returns whether the font `template` contains embedded bitmap strikes.
+    /// Intended to be called once per font at add time on the render backend
+    /// thread so the result can be cached for lock-free lookup during frame
+    /// building. The detection consults the shared font cache directly rather
+    /// than a worker `FontContext`, so it does not take a worker mutex.
+    pub fn template_has_bitmap_strikes(&self, template: &FontTemplate) -> bool {
+        FontContext::has_bitmap_strikes(template)
+    }
+
     pub fn get_glyph_dimensions(
         &mut self,
         font: &FontInstance,
@@ -1669,6 +1727,106 @@ pub type GlyphRasterResult = Result<RasterizedGlyph, GlyphRasterError>;
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct GpuGlyphCacheKey(pub u32);
 
+/// Rasterized glyphs larger than this in either dimension are dropped.
+///
+/// `FONT_SIZE_LIMIT` bounds the size the backends are *asked* for, but not what
+/// comes back. A near-degenerate transform passes `has_2d_inverse` - which tests
+/// the determinant against exactly zero, while `FontTransform::quantize` puts it
+/// on a 1/1024 grid - and decomposes into a tiny minor axis scale. The glyph size
+/// handed to the backend is quantized, so that tiny scale rounds away while the
+/// compensating shape matrix keeps its full magnitude, and the rasterized glyph
+/// grows roughly as the reciprocal of the determinant: at a determinant of
+/// 9.8e-4, a 148.5px font rasterizes 1140px wide.
+///
+/// A glyph rasterized at `FONT_SIZE_LIMIT` under a transform the device path
+/// admits measures a few hundred pixels a side, so this leaves a wide margin. It
+/// also keeps a packed entry - up to 16 slots of one glyph, see
+/// `pack_glyph_variants_horizontal` - well inside the i32 its dimensions are
+/// computed in, which is what used to overflow (bug 2072715).
+const GLYPH_DIMENSION_LIMIT: i32 = 2048;
+
+/// Rasterize a glyph, treating one that comes back above `GLYPH_DIMENSION_LIMIT`
+/// as a glyph that could not be rasterized at all.
+fn rasterize_glyph_bounded(
+    context: &mut FontContext,
+    font: &FontInstance,
+    key: &GlyphKey,
+) -> GlyphRasterResult {
+    let glyph = context.rasterize_glyph(font, key)?;
+
+    if glyph.width > GLYPH_DIMENSION_LIMIT || glyph.height > GLYPH_DIMENSION_LIMIT {
+        return Err(GlyphRasterError::LoadFailed);
+    }
+
+    Ok(glyph)
+}
+
+fn pack_glyph_variants_horizontal(variants: &[RasterizedGlyph]) -> RasterizedGlyph {
+    // Pack the glyph variants horizontally into a single texture (4 for a single
+    // sub-pixel axis, 16 for a mixed transform's 4x4 grid).
+    // Normalize both left and top offsets via padding so all variants can use the same base offsets.
+    // The arithmetic below stays in i32: every variant is within
+    // `GLYPH_DIMENSION_LIMIT`, which bounds the packed entry well inside i32.
+
+    let min_left = variants.iter().map(|v| v.left.floor()).fold(f32::INFINITY, f32::min);
+    let max_top = variants.iter().map(|v| v.top.floor()).fold(f32::NEG_INFINITY, f32::max);
+
+    // Slot width must accommodate the widest variant plus left padding
+    let slot_width = variants.iter()
+        .map(|v| v.width + (v.left.floor() - min_left) as i32)
+        .max().unwrap();
+
+    // Slot height must accommodate the tallest variant plus top padding
+    let slot_height = variants.iter()
+        .map(|v| v.height + (max_top - v.top.floor()) as i32)
+        .max().unwrap();
+
+    let packed_width = slot_width * variants.len() as i32;
+    let bpp = 4;
+
+    let mut packed_bytes = vec![0u8; (packed_width * slot_height * bpp) as usize];
+
+    for (variant_idx, variant) in variants.iter().enumerate() {
+        // Compute padding needed to normalize both left and top offsets
+        let left_pad = (variant.left.floor() - min_left) as i32;
+        let top_pad = (max_top - variant.top.floor()) as i32;
+        let slot_x = variant_idx as i32 * slot_width;
+
+        for src_y in 0..variant.height {
+            let dst_y = src_y + top_pad;
+            if dst_y >= slot_height {
+                break;
+            }
+
+            let dst_x = slot_x + left_pad;
+            if dst_x < 0 {
+                continue;
+            }
+
+            let src_row_start = (src_y * variant.width * bpp) as usize;
+            let src_row_end = src_row_start + (variant.width * bpp) as usize;
+            let dst_row_start = (dst_y * packed_width * bpp + dst_x * bpp) as usize;
+            let dst_row_end = dst_row_start + (variant.width * bpp) as usize;
+
+            if dst_row_end <= packed_bytes.len() && src_row_end <= variant.bytes.len() {
+                packed_bytes[dst_row_start..dst_row_end]
+                    .copy_from_slice(&variant.bytes[src_row_start..src_row_end]);
+            }
+        }
+    }
+
+    RasterizedGlyph {
+        top: max_top,
+        left: min_left,
+        width: packed_width,
+        height: slot_height,
+        scale: variants[0].scale,
+        format: variants[0].format,
+        bytes: packed_bytes,
+        is_packed_glyph: true,
+    }
+}
+
 fn process_glyph(
     context: &mut FontContext,
     can_use_r8_format: bool,
@@ -1676,7 +1834,51 @@ fn process_glyph(
     key: GlyphKey,
 ) -> GlyphRasterJob {
     profile_scope!("glyph-raster");
-    let result = context.rasterize_glyph(&font, &key);
+
+    let subpx_dir = key.subpixel_dir();
+
+    let result = if subpx_dir == SubpixelDirection::None {
+        rasterize_glyph_bounded(context, &font, &key)
+    } else {
+        let offsets = [
+            SubpixelOffset::Zero,
+            SubpixelOffset::Quarter,
+            SubpixelOffset::Half,
+            SubpixelOffset::ThreeQuarters,
+        ];
+
+        // A mixed transform varies on both axes, so it needs the full 4x4 grid
+        // of offsets. The shader indexes it as `offset_y * 4 + offset_x`.
+        let points: Vec<DevicePoint> = match subpx_dir {
+            SubpixelDirection::Horizontal =>
+                offsets.iter().map(|o| DevicePoint::new(o.to_f32(), 0.0)).collect(),
+            SubpixelDirection::Vertical =>
+                offsets.iter().map(|o| DevicePoint::new(0.0, o.to_f32())).collect(),
+            SubpixelDirection::Mixed => offsets.iter()
+                .flat_map(|oy| offsets.iter().map(move |ox| {
+                    DevicePoint::new(ox.to_f32(), oy.to_f32())
+                }))
+                .collect(),
+            SubpixelDirection::None => vec![DevicePoint::zero()],
+        };
+
+        let mut variants = Vec::with_capacity(points.len());
+        for point in points {
+            let variant_key = GlyphKey::new(key.index(), point, subpx_dir);
+
+            match rasterize_glyph_bounded(context, &font, &variant_key) {
+                Ok(glyph) => variants.push(glyph),
+                Err(e) => return GlyphRasterJob {
+                    font: font,
+                    key: key.clone(),
+                    result: Err(e),
+                },
+            }
+        }
+
+        Ok(pack_glyph_variants_horizontal(&variants))
+    };
+
     let mut job = GlyphRasterJob {
         font: font,
         key: key.clone(),
@@ -1931,6 +2133,71 @@ mod test_glyph_rasterizer {
             |_, _| {},
             &mut Profiler,
         );
+    }
+
+    #[test]
+    fn test_oversized_glyph_is_dropped() {
+        // A glyph that comes back from the backend larger than
+        // `GLYPH_DIMENSION_LIMIT` must be dropped rather than rasterized, so
+        // that packing its sub-pixel variants cannot overflow (bug 2072715).
+        use std::fs::File;
+        use std::io::Read;
+        use api::{FontKey, FontInstanceKey, IdNamespace};
+        use api::units::DevicePoint;
+        use std::sync::Arc;
+        use crate::rasterizer::{BaseFontInstance, FontInstance, GlyphKey, GlyphRasterError,
+                                SubpixelDirection, rasterize_glyph_bounded,
+                                GLYPH_DIMENSION_LIMIT};
+        use crate::platform::font::FontContext;
+
+        let mut font_file =
+            File::open("../wrench/reftests/text/VeraBd.ttf").expect("Couldn't open font file");
+        let mut font_data = vec![];
+        font_file.read_to_end(&mut font_data).unwrap();
+
+        let font_key = FontKey::new(IdNamespace(0), 0);
+        let mut context = FontContext::new();
+        context.add_raw_font(&font_key, Arc::new(font_data), 0);
+
+        let instance = |size: f32| {
+            FontInstance::from_base(Arc::new(BaseFontInstance::new(
+                FontInstanceKey::new(IdNamespace(0), 0),
+                font_key,
+                size,
+                None,
+                None,
+                Vec::new(),
+            )))
+        };
+        let key = GlyphKey::new(36, DevicePoint::zero(), SubpixelDirection::None);
+
+        // An ordinary glyph is unaffected.
+        let ordinary = rasterize_glyph_bounded(&mut context, &instance(32.0), &key).unwrap();
+        assert!(ordinary.width <= GLYPH_DIMENSION_LIMIT);
+        assert!(ordinary.height <= GLYPH_DIMENSION_LIMIT);
+
+        // Control: the backend does rasterize this size, so the error below is
+        // the limit talking and not a rasterization failure.
+        let oversized = instance(4000.0);
+        let raw = context.rasterize_glyph(&oversized, &key)
+                         .expect("backend should rasterize an oversized glyph");
+        assert!(raw.width > GLYPH_DIMENSION_LIMIT || raw.height > GLYPH_DIMENSION_LIMIT);
+
+        assert!(matches!(
+            rasterize_glyph_bounded(&mut context, &oversized, &key),
+            Err(GlyphRasterError::LoadFailed),
+        ));
+    }
+
+    #[test]
+    fn test_packed_glyph_entry_fits_i32() {
+        // `pack_glyph_variants_horizontal` sizes the packed entry in i32. The
+        // largest entry it can be handed is a 4x4 sub-pixel grid of glyphs at
+        // `GLYPH_DIMENSION_LIMIT`, plus a pixel each way of normalizing padding.
+        use crate::rasterizer::GLYPH_DIMENSION_LIMIT;
+
+        let slot = GLYPH_DIMENSION_LIMIT as i64 + 1;
+        assert!(slot * 16 * slot * 4 < i32::MAX as i64);
     }
 
     #[test]

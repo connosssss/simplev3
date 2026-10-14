@@ -21,7 +21,6 @@ var prefs = [
 ];
 
 var wheel_transaction_prefs = [
-  ["dom.event.wheel-event-groups.enabled", true],
   ["mousewheel.transaction.timeout", 10000],
   ["apz.test.mac.synth_wheel_input", true],
   ...getSmoothScrollPrefs("wheel"),
@@ -38,6 +37,11 @@ scrollbar_prefs.push(["layout.scrollbars.always-layerize-track", true]);
 // response timeout to 0, so we exercise the fallback codepath.
 var timeout_prefs = prefs.slice(); // make a copy
 timeout_prefs.push(["apz.content_response_timeout", 0]);
+
+// For helper_zero_delta_pan_with_wheel_listener, we need a long APZ content
+// response timeout, so that a stalled input queue is not unstalled by the
+// timeout before the test checks for it.
+var long_timeout_prefs = [["apz.content_response_timeout", 600000]];
 
 var smoothness_prefs = getSmoothScrollPrefs("wheel");
 
@@ -64,7 +68,22 @@ var subtests = [
   {"file": "helper_custom_scrolling_bug1932985.html?touchpad", prefs: [
     ["general.smoothScroll", true],
     ...smoothness_prefs
-  ]}
+  ]},
+  {"file": "helper_clamp_scroll_during_wheel_animation_with_iframe.html", prefs: [
+    ["general.smoothScroll", true],
+    ...smoothness_prefs
+  ]},
+  {"file": "helper_clamp_scroll_during_wheel_animation.html", prefs: [
+    ["general.smoothScroll", true],
+    ...smoothness_prefs
+  ]},
+  // apz.axis_lock.mode=1 (STANDARD) ensures HandlePanning() is called from
+  // OnPanBegin() and that the initial lock cannot be broken by subsequent
+  // events, making the axis lock direction detection observable.
+  {"file": "helper_axis_lock_parent_layer_coords.html",
+   "prefs": [["apz.axis_lock.mode", 1]]},
+  {"file": "helper_zero_delta_pan_with_wheel_listener.html",
+   "prefs": long_timeout_prefs},
 ];
 
 subtests.push(...buildRelativeScrollSmoothnessVariants("wheel", ["scrollBy", "scrollTo", "scrollTop"]));

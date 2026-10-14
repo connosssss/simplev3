@@ -1,24 +1,23 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsNameSpaceManager.h"
-#include "nsGkAtoms.h"
-#include "nsTreeUtils.h"
 #include "nsTreeContentView.h"
+
 #include "ChildIterator.h"
-#include "nsError.h"
-#include "nsXULSortService.h"
-#include "nsTreeBodyFrame.h"
-#include "nsTreeColumns.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/TreeContentViewBinding.h"
 #include "mozilla/dom/XULTreeElement.h"
+#include "nsError.h"
+#include "nsGkAtoms.h"
+#include "nsNameSpaceManager.h"
 #include "nsServiceManagerUtils.h"
-#include "mozilla/dom/Document.h"
+#include "nsTreeBodyFrame.h"
+#include "nsTreeColumns.h"
+#include "nsTreeUtils.h"
+#include "nsXULSortService.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -724,7 +723,8 @@ int32_t nsTreeContentView::GetIndexOfItem(Element* aItem) {
 
 void nsTreeContentView::AttributeChanged(dom::Element* aElement,
                                          int32_t aNameSpaceID,
-                                         nsAtom* aAttribute, int32_t aModType,
+                                         nsAtom* aAttribute,
+                                         AttrModType aModType,
                                          const nsAttrValue* aOldValue) {
   // Lots of codepaths under here that do all sorts of stuff, so be safe.
   nsCOMPtr<nsIMutationObserver> kungFuDeathGrip(this);
@@ -763,11 +763,10 @@ void nsTreeContentView::AttributeChanged(dom::Element* aElement,
 
   // Handle changes of the hidden attribute.
   if (aAttribute == nsGkAtoms::hidden &&
+      aModType != AttrModType::Modification &&
       aElement->IsAnyOfXULElements(nsGkAtoms::treeitem,
                                    nsGkAtoms::treeseparator)) {
-    bool hidden = aElement->AttrValueIs(kNameSpaceID_None, nsGkAtoms::hidden,
-                                        nsGkAtoms::_true, eCaseMatters);
-
+    bool hidden = aElement->GetBoolAttr(nsGkAtoms::hidden);
     int32_t index = FindContent(aElement);
     if (hidden && index >= 0) {
       // Hide this row along with its children.
@@ -1045,8 +1044,7 @@ void nsTreeContentView::Serialize(nsIContent* aContent, int32_t aParentIndex,
 void nsTreeContentView::SerializeItem(Element* aContent, int32_t aParentIndex,
                                       int32_t* aIndex,
                                       nsTArray<UniquePtr<Row>>& aRows) {
-  if (aContent->AttrValueIs(kNameSpaceID_None, nsGkAtoms::hidden,
-                            nsGkAtoms::_true, eCaseMatters)) {
+  if (aContent->GetBoolAttr(nsGkAtoms::hidden)) {
     return;
   }
 
@@ -1081,8 +1079,7 @@ void nsTreeContentView::SerializeSeparator(Element* aContent,
                                            int32_t aParentIndex,
                                            int32_t* aIndex,
                                            nsTArray<UniquePtr<Row>>& aRows) {
-  if (aContent->AttrValueIs(kNameSpaceID_None, nsGkAtoms::hidden,
-                            nsGkAtoms::_true, eCaseMatters)) {
+  if (aContent->GetBoolAttr(nsGkAtoms::hidden)) {
     return;
   }
 
@@ -1105,9 +1102,7 @@ void nsTreeContentView::GetIndexInSubtree(nsIContent* aContainer,
     }
 
     if (content->IsXULElement(nsGkAtoms::treeitem)) {
-      if (!content->AsElement()->AttrValueIs(kNameSpaceID_None,
-                                             nsGkAtoms::hidden,
-                                             nsGkAtoms::_true, eCaseMatters)) {
+      if (!content->AsElement()->GetBoolAttr(nsGkAtoms::hidden)) {
         (*aIndex)++;
         if (content->AsElement()->AttrValueIs(kNameSpaceID_None,
                                               nsGkAtoms::container,
@@ -1123,9 +1118,7 @@ void nsTreeContentView::GetIndexInSubtree(nsIContent* aContainer,
         }
       }
     } else if (content->IsXULElement(nsGkAtoms::treeseparator)) {
-      if (!content->AsElement()->AttrValueIs(kNameSpaceID_None,
-                                             nsGkAtoms::hidden,
-                                             nsGkAtoms::_true, eCaseMatters)) {
+      if (!content->AsElement()->GetBoolAttr(nsGkAtoms::hidden)) {
         (*aIndex)++;
       }
     }

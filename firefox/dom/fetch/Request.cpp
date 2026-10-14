@@ -1,30 +1,33 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Request.h"
 
+#include <memory>
+
 #include "js/Value.h"
+#include "mozilla/ErrorResult.h"
+#include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/StaticPrefs_network.h"
+#include "mozilla/dom/BodyExtractor.h"
+#include "mozilla/dom/Fetch.h"
+#include "mozilla/dom/FetchUtil.h"
+#include "mozilla/dom/Headers.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/ReadableStreamBinding.h"
+#include "mozilla/dom/ReadableStreamDefaultReader.h"
+#include "mozilla/dom/TransformStream.h"
+#include "mozilla/dom/TransformStreamBinding.h"
+#include "mozilla/dom/URL.h"
+#include "mozilla/dom/WindowContext.h"
+#include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/dom/WorkerRunnable.h"
+#include "mozilla/dom/WritableStream.h"
+#include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "nsIURI.h"
 #include "nsNetUtil.h"
 #include "nsPIDOMWindow.h"
-
-#include "mozilla/ErrorResult.h"
-#include "mozilla/StaticPrefs_network.h"
-#include "mozilla/dom/Headers.h"
-#include "mozilla/dom/Fetch.h"
-#include "mozilla/dom/FetchUtil.h"
-#include "mozilla/dom/Promise.h"
-#include "mozilla/dom/URL.h"
-#include "mozilla/dom/WorkerPrivate.h"
-#include "mozilla/dom/WorkerRunnable.h"
-#include "mozilla/dom/WindowContext.h"
-#include "mozilla/ipc/PBackgroundSharedTypes.h"
-#include "mozilla/Unused.h"
-
-#include "mozilla/dom/ReadableStreamDefaultReader.h"
 
 namespace mozilla::dom {
 
@@ -35,7 +38,7 @@ NS_IMPL_RELEASE_INHERITED(Request, FetchBody<Request>)
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Request)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(Request, FetchBody<Request>)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mOwner)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mGlobal)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mHeaders)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSignal)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mFetchStreamReader)
@@ -43,7 +46,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(Request, FetchBody<Request>)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(Request, FetchBody<Request>)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mOwner)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mGlobal)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mHeaders)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSignal)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFetchStreamReader)
@@ -53,9 +56,9 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(Request)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
 NS_INTERFACE_MAP_END_INHERITING(FetchBody<Request>)
 
-Request::Request(nsIGlobalObject* aOwner, SafeRefPtr<InternalRequest> aRequest,
+Request::Request(nsIGlobalObject* aGlobal, SafeRefPtr<InternalRequest> aRequest,
                  AbortSignal* aSignal)
-    : FetchBody<Request>(aOwner), mRequest(std::move(aRequest)) {
+    : FetchBody<Request>(aGlobal), mRequest(std::move(aRequest)) {
   MOZ_ASSERT(mRequest->Headers()->Guard() == HeadersGuardEnum::Immutable ||
              mRequest->Headers()->Guard() == HeadersGuardEnum::Request ||
              mRequest->Headers()->Guard() == HeadersGuardEnum::Request_no_cors);
@@ -63,7 +66,7 @@ Request::Request(nsIGlobalObject* aOwner, SafeRefPtr<InternalRequest> aRequest,
     // If we don't have a signal as argument, we will create it when required by
     // content, otherwise the Request's signal must follow what has been passed.
     AutoTArray<OwningNonNull<AbortSignal>, 1> array{OwningNonNull(*aSignal)};
-    mSignal = AbortSignal::Any(aOwner, array, [](nsIGlobalObject* aGlobal) {
+    mSignal = AbortSignal::Any(aGlobal, array, [](nsIGlobalObject* aGlobal) {
       return AbortSignal::Create(aGlobal, SignalAborted::No,
                                  JS::UndefinedHandleValue);
     });
@@ -77,6 +80,7 @@ SafeRefPtr<InternalRequest> Request::GetInternalRequest() {
 }
 
 namespace {
+
 already_AddRefed<nsIURI> ParseURL(nsIGlobalObject* aGlobal,
                                   const nsACString& aInput, ErrorResult& aRv) {
   nsCOMPtr<nsIURI> baseURI;
@@ -98,7 +102,7 @@ already_AddRefed<nsIURI> ParseURL(nsIGlobalObject* aGlobal,
 }
 
 void GetRequestURL(nsIGlobalObject* aGlobal, const nsACString& aInput,
-                   nsACString& aRequestURL, nsACString& aURLfragment,
+                   nsIURI** aRequestURL, nsACString& aURLfragment,
                    ErrorResult& aRv) {
   nsCOMPtr<nsIURI> resolvedURI = ParseURL(aGlobal, aInput, aRv);
   if (aRv.Failed()) {
@@ -107,18 +111,13 @@ void GetRequestURL(nsIGlobalObject* aGlobal, const nsACString& aInput,
   // This fails with URIs with weird protocols, even when they are valid,
   // so we ignore the failure
   nsAutoCString credentials;
-  Unused << resolvedURI->GetUserPass(credentials);
+  (void)resolvedURI->GetUserPass(credentials);
   if (!credentials.IsEmpty()) {
     aRv.ThrowTypeError<MSG_URL_HAS_CREDENTIALS>(aInput);
     return;
   }
 
-  nsCOMPtr<nsIURI> resolvedURIClone;
-  aRv = NS_GetURIWithoutRef(resolvedURI, getter_AddRefs(resolvedURIClone));
-  if (NS_WARN_IF(aRv.Failed())) {
-    return;
-  }
-  aRv = resolvedURIClone->GetSpec(aRequestURL);
+  aRv = NS_GetURIWithoutRef(resolvedURI, aRequestURL);
   if (NS_WARN_IF(aRv.Failed())) {
     return;
   }
@@ -150,6 +149,11 @@ SafeRefPtr<Request> Request::Constructor(
 
   RefPtr<AbortSignal> signal;
   bool bodyFromInit = false;
+  RefPtr<FetchStreamReader> temporaryStreamReader;
+  // The spec keeps the exact ReadableStream object passed as init["body"], so
+  // that request.body is reference-equal to it. Remember it here and attach it
+  // to the Request once that has been constructed.
+  RefPtr<ReadableStream> temporaryStreamBody;
 
   if (aInput.IsRequest()) {
     RefPtr<Request> inputReq = &aInput.GetAsRequest();
@@ -160,7 +164,7 @@ SafeRefPtr<Request> Request::Constructor(
       hasCopiedBody = true;
     } else {
       inputReq->GetBody(getter_AddRefs(body));
-      if (inputReq->BodyUsed()) {
+      if (inputReq->IsBodyUnusable()) {
         aRv.ThrowTypeError<MSG_FETCH_BODY_CONSUMED_ERROR>();
         return nullptr;
       }
@@ -177,13 +181,14 @@ SafeRefPtr<Request> Request::Constructor(
     // aInput is UTF8String.
     // We need to get url before we create a InternalRequest.
     const nsACString& input = aInput.GetAsUTF8String();
-    nsAutoCString requestURL;
+    nsCOMPtr<nsIURI> requestURL;
     nsCString fragment;
-    GetRequestURL(aGlobal, input, requestURL, fragment, aRv);
+    GetRequestURL(aGlobal, input, getter_AddRefs(requestURL), fragment, aRv);
     if (aRv.Failed()) {
       return nullptr;
     }
-    request = MakeSafeRefPtr<InternalRequest>(requestURL, fragment);
+    request = MakeSafeRefPtr<InternalRequest>(WrapNotNull(requestURL.get()),
+                                              fragment);
   }
   request = request->GetRequestConstructorCopy(aGlobal, aRv);
   if (NS_WARN_IF(aRv.Failed())) {
@@ -287,7 +292,7 @@ SafeRefPtr<Request> Request::Constructor(
       if (doc) {
         request->SetEnvironmentReferrerPolicy(doc->GetReferrerPolicy());
 
-        principalInfo.reset(new mozilla::ipc::PrincipalInfo());
+        principalInfo = std::make_unique<mozilla::ipc::PrincipalInfo>();
         nsresult rv =
             PrincipalToPrincipalInfo(doc->NodePrincipal(), principalInfo.get());
         if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -366,6 +371,11 @@ SafeRefPtr<Request> Request::Constructor(
     request->SetNeverTaint(aInit.mNeverTaint.Value());
   }
 
+  if (aInit.mCookieJarSettings.WasPassed() &&
+      aInit.mCookieJarSettings.Value()) {
+    request->SetCookieJarSettings(aInit.mCookieJarSettings.Value());
+  }
+
   // Request constructor step 14.
   if (aInit.mMethod.WasPassed()) {
     nsAutoCString method(aInit.mMethod.Value());
@@ -386,18 +396,6 @@ SafeRefPtr<Request> Request::Constructor(
 
   RefPtr<InternalHeaders> requestHeaders = request->Headers();
 
-  RefPtr<InternalHeaders> headers;
-  if (aInit.mHeaders.WasPassed()) {
-    RefPtr<Headers> h = Headers::Create(aGlobal, aInit.mHeaders.Value(), aRv);
-    if (aRv.Failed()) {
-      return nullptr;
-    }
-    headers = h->GetInternalHeaders();
-  } else {
-    headers = new InternalHeaders(*requestHeaders);
-  }
-
-  requestHeaders->Clear();
   // From "Let r be a new Request object associated with request and a new
   // Headers object whose guard is "request"."
   requestHeaders->SetGuard(HeadersGuardEnum::Request, aRv);
@@ -417,9 +415,24 @@ SafeRefPtr<Request> Request::Constructor(
     }
   }
 
-  requestHeaders->Fill(*headers, aRv);
-  if (aRv.Failed()) {
-    return nullptr;
+  // Step 33. Remove privileged no-CORS request-headers, if any member presented
+  // in aInit.
+  if (aInit.IsAnyMemberPresent()) {
+    RefPtr<InternalHeaders> headers;
+    if (aInit.mHeaders.WasPassed()) {
+      RefPtr<Headers> h = Headers::Create(aGlobal, aInit.mHeaders.Value(), aRv);
+      if (aRv.Failed()) {
+        return nullptr;
+      }
+      headers = h->GetInternalHeaders();
+    } else {
+      headers = new InternalHeaders(*requestHeaders);
+    }
+    requestHeaders->Clear();
+    requestHeaders->Fill(*headers, aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
   }
 
   if ((aInit.mBody.WasPassed() && !aInit.mBody.Value().IsNull()) ||
@@ -434,6 +447,28 @@ SafeRefPtr<Request> Request::Constructor(
     }
   }
 
+  // Step 39: validate a body whose source is null. With the pref off, stream
+  // bodies are stringified instead.
+  const bool hasInitBody =
+      aInit.mBody.WasPassed() && !aInit.mBody.Value().IsNull();
+  const bool hasStreamBody =
+      hasInitBody ? StaticPrefs::dom_fetch_streaming_upload() &&
+                        aInit.mBody.Value().Value().IsReadableStream()
+                  : request->HasStreamBody();
+  if (hasStreamBody) {
+    if (hasInitBody && !aInit.mDuplex.WasPassed()) {
+      aRv.ThrowTypeError(
+          "duplex parameter is required when body is a ReadableStream");
+      return nullptr;
+    }
+    if (request->Mode() != RequestMode::Same_origin &&
+        request->Mode() != RequestMode::Cors) {
+      aRv.ThrowTypeError(
+          "ReadableStream bodies require same-origin or cors mode");
+      return nullptr;
+    }
+  }
+
   if (aInit.mBody.WasPassed()) {
     const Nullable<fetch::OwningBodyInit>& bodyInitNullable =
         aInit.mBody.Value();
@@ -441,11 +476,80 @@ SafeRefPtr<Request> Request::Constructor(
       const fetch::OwningBodyInit& bodyInit = bodyInitNullable.Value();
       nsCOMPtr<nsIInputStream> stream;
       nsAutoCString contentTypeWithCharset;
-      uint64_t contentLength = 0;
-      aRv = ExtractByteStreamFromBody(bodyInit, getter_AddRefs(stream),
-                                      contentTypeWithCharset, contentLength);
-      if (NS_WARN_IF(aRv.Failed())) {
-        return nullptr;
+      uint64_t extractedLength = 0;
+      int64_t contentLength = 0;
+
+      // ReadableStream is in the BodyInit union unconditionally, because WebIDL
+      // typedefs cannot be pref-gated. Until the feature ships, keep converting
+      // it to a USVString, which is what the union used to do.
+      const bool streamBodyDisabled =
+          bodyInit.IsReadableStream() &&
+          !StaticPrefs::dom_fetch_streaming_upload();
+
+      // Handle ReadableStream bodies separately
+      if (streamBodyDisabled) {
+        nsAutoString stringified(u"[object ReadableStream]"_ns);
+        nsAutoCString charset;
+        BodyExtractor<const nsAString> body(&stringified);
+        aRv = body.GetAsStream(getter_AddRefs(stream), &extractedLength,
+                               contentTypeWithCharset, charset);
+        if (NS_WARN_IF(aRv.Failed())) {
+          return nullptr;
+        }
+        contentLength = static_cast<int64_t>(extractedLength);
+      } else if (bodyInit.IsReadableStream()) {
+        aRv.MightThrowJSException();
+
+        ReadableStream& readableStream = bodyInit.GetAsReadableStream();
+
+        // https://fetch.spec.whatwg.org/#concept-bodyinit-extract step 10,
+        // ReadableStream case: extract is invoked with the request's keepalive,
+        // and a streaming body cannot be combined with it.
+        if (request->GetKeepalive()) {
+          aRv.ThrowTypeError(
+              "keepalive cannot be used with a ReadableStream body");
+          return nullptr;
+        }
+
+        if (readableStream.Locked() || readableStream.Disturbed()) {
+          aRv.ThrowTypeError<MSG_FETCH_BODY_CONSUMED_ERROR>();
+          return nullptr;
+        }
+
+        temporaryStreamBody = &readableStream;
+
+        // If this is a DOM generated ReadableStream, extract the inputStream
+        if (nsIInputStream* underlyingSource =
+                readableStream.MaybeGetInputStreamIfUnread()) {
+          stream = underlyingSource;
+        } else {
+          // For JS-created streams, use FetchStreamReader
+          RefPtr<FetchStreamReader> streamReader;
+          nsCOMPtr<nsIInputStream> pipeInputStream;
+          aRv = FetchStreamReader::Create(aCx, aGlobal,
+                                          getter_AddRefs(streamReader),
+                                          getter_AddRefs(pipeInputStream));
+          if (NS_WARN_IF(aRv.Failed())) {
+            return nullptr;
+          }
+
+          stream = pipeInputStream.forget();
+
+          // Store stream reader to keep it alive
+          temporaryStreamReader = streamReader.forget();
+        }
+
+        // The length is only known once the stream ends.
+        contentLength = -1;
+        contentTypeWithCharset.SetIsVoid(true);
+      } else {
+        aRv =
+            ExtractByteStreamFromBody(bodyInit, getter_AddRefs(stream),
+                                      contentTypeWithCharset, extractedLength);
+        if (NS_WARN_IF(aRv.Failed())) {
+          return nullptr;
+        }
+        contentLength = static_cast<int64_t>(extractedLength);
       }
 
       nsCOMPtr<nsIInputStream> temporaryBody = stream;
@@ -464,17 +568,61 @@ SafeRefPtr<Request> Request::Constructor(
       }
 
       request->SetBody(temporaryBody, contentLength);
+      request->SetHasStreamBody(hasStreamBody);
     }
   }
 
   auto domRequest =
       MakeSafeRefPtr<Request>(aGlobal, std::move(request), signal);
 
+  if (temporaryStreamReader) {
+    domRequest->mFetchStreamReader = temporaryStreamReader.forget();
+  }
+
+  if (temporaryStreamBody) {
+    domRequest->SetReadableStreamBody(aCx, temporaryStreamBody);
+  }
+
   if (aInput.IsRequest() && !bodyFromInit) {
     RefPtr<Request> inputReq = &aInput.GetAsRequest();
     nsCOMPtr<nsIInputStream> body;
     inputReq->GetBody(getter_AddRefs(body));
     if (body) {
+      if (inputReq->mFetchStreamReader) {
+        // Step 41: proxy the JS stream with a single consumer and preserve
+        // backpressure until the new Request is consumed.
+        JS::Rooted<JSObject*> globalObject(aCx, aGlobal->GetGlobalJSObject());
+        GlobalObject global(aCx, globalObject);
+        RefPtr<TransformStream> transform = TransformStream::Constructor(
+            global, Optional<JS::Handle<JSObject*>>(), QueuingStrategy(),
+            QueuingStrategy(), aRv);
+        if (aRv.Failed()) {
+          return nullptr;
+        }
+        ReadableWritablePair pair;
+        pair.mReadable = transform->Readable();
+        pair.mWritable = transform->Writable();
+        RefPtr<ReadableStream> source = inputReq->mReadableStreamBody;
+        // PipeThrough() locks the source, which is what leaves inputReq
+        // unusable. SetBodyUsed() must not be called on it: that would start
+        // its reader consuming a stream the pipe already holds.
+        RefPtr<ReadableStream> proxy =
+            source->PipeThrough(pair, StreamPipeOptions(), aRv);
+        if (aRv.Failed()) {
+          return nullptr;
+        }
+        nsCOMPtr<nsIInputStream> proxyInput;
+        aRv = FetchStreamReader::Create(
+            aCx, aGlobal, getter_AddRefs(domRequest->mFetchStreamReader),
+            getter_AddRefs(proxyInput));
+        if (aRv.Failed()) {
+          return nullptr;
+        }
+        domRequest->SetBody(nullptr, 0);
+        domRequest->SetBody(proxyInput, -1);
+        domRequest->SetReadableStreamBody(aCx, proxy);
+        return domRequest;
+      }
       inputReq->SetBody(nullptr, 0);
       inputReq->SetBodyUsed(aCx, aRv);
       if (NS_WARN_IF(aRv.Failed())) {
@@ -485,9 +633,19 @@ SafeRefPtr<Request> Request::Constructor(
   return domRequest;
 }
 
-SafeRefPtr<Request> Request::Clone(ErrorResult& aRv) {
-  if (BodyUsed()) {
+SafeRefPtr<Request> Request::Clone(JSContext* aCx, ErrorResult& aRv) {
+  if (IsBodyUnusable()) {
     aRv.ThrowTypeError<MSG_FETCH_BODY_CONSUMED_ERROR>();
+    return nullptr;
+  }
+
+  RefPtr<ReadableStream> body;
+  RefPtr<FetchStreamReader> streamReader;
+  nsCOMPtr<nsIInputStream> inputStream;
+  MaybeTeeReadableStreamBody(aCx, getter_AddRefs(body),
+                             getter_AddRefs(streamReader),
+                             getter_AddRefs(inputStream), aRv);
+  if (aRv.Failed()) {
     return nullptr;
   }
 
@@ -497,12 +655,55 @@ SafeRefPtr<Request> Request::Clone(ErrorResult& aRv) {
     return nullptr;
   }
 
-  return MakeSafeRefPtr<Request>(mOwner, std::move(ir), GetOrCreateSignal());
+  auto clone =
+      MakeSafeRefPtr<Request>(mGlobal, std::move(ir), GetOrCreateSignal());
+  if (body) {
+    clone->SetBody(nullptr, 0);
+    clone->SetBody(inputStream, -1);
+    clone->mFetchStreamReader = streamReader.forget();
+    clone->SetReadableStreamBody(aCx, body);
+  } else {
+    // Rebind a native stream if cloning replaced its underlying input stream.
+    MaybeRebindReadableStreamBody();
+  }
+  return clone;
+}
+
+already_AddRefed<nsIInputStream> Request::TakeBodyForServiceWorker(
+    JSContext* aCx, ErrorResult& aRv) {
+  MOZ_ASSERT(HasStreamBody());
+  MOZ_ASSERT(!IsBodyUnusable());
+  RefPtr<ReadableStream> body = FetchBody<Request>::GetBody(aCx, aRv);
+  if (aRv.Failed() || NS_WARN_IF(!body)) {
+    return nullptr;
+  }
+  nsCOMPtr<nsIInputStream> stream;
+  GetBody(getter_AddRefs(stream));
+  // Close the worker's JS body without cancelling the stream returned to Necko:
+  // NonAsyncInputToReadableStreamAlgorithms::ReleaseObjects() only closes its
+  // mInput, so detaching the input stream first leaves ours open. The
+  // !mAsyncAlgorithms assertion in SetInputStreamIfUnread() holds because a
+  // pull would have disturbed the stream and failed IsBodyUnusable() above.
+  body->SetInputStreamIfUnread(nullptr);
+  SetBody(nullptr, 0);
+  CancelBody(aCx, aRv);
+  return stream.forget();
+}
+
+void Request::FollowBodySignal() {
+  if (!mSignal) {
+    return;
+  }
+  if (mFetchStreamReader) {
+    mFetchStreamReader->FollowSignal(mSignal);
+  } else if (mReadableStreamBody) {
+    Follow(mSignal);
+  }
 }
 
 Headers* Request::Headers_() {
   if (!mHeaders) {
-    mHeaders = new Headers(mOwner, mRequest->Headers());
+    mHeaders = new Headers(mGlobal, mRequest->Headers());
   }
 
   return mHeaders;
@@ -510,7 +711,7 @@ Headers* Request::Headers_() {
 
 AbortSignal* Request::GetOrCreateSignal() {
   if (!mSignal) {
-    mSignal = AbortSignal::Create(mOwner, SignalAborted::No,
+    mSignal = AbortSignal::Create(mGlobal, SignalAborted::No,
                                   JS::UndefinedHandleValue);
   }
 
@@ -520,7 +721,7 @@ AbortSignal* Request::GetOrCreateSignal() {
 AbortSignalImpl* Request::GetSignalImpl() const { return mSignal; }
 
 AbortSignalImpl* Request::GetSignalImplToConsumeBody() const {
-  // This is a hack, see Response::GetSignalImplToConsumeBody.
+  // The signal controls fetch(), not consumption of an unused Request's body.
   return nullptr;
 }
 

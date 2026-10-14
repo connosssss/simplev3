@@ -10,6 +10,7 @@ import posixpath
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from argparse import Namespace
@@ -21,6 +22,7 @@ import mozfile
 import mozinfo
 import runxpcshelltests as xpcshell
 from mozdevice import ADBDevice, ADBDeviceFactory, ADBTimeoutError
+from mozinfo.platforminfo import android_api_to_os_version
 from mozlog import commandline
 from xpcshellcommandline import parser_remote
 
@@ -29,6 +31,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 
 class RemoteProcessMonitor:
     processStatus = []
+    _launchLock = threading.Lock()
 
     def __init__(self, package, device, log, remoteLogFile):
         self.package = package
@@ -54,27 +57,28 @@ class RemoteProcessMonitor:
         self.device.pkill(self.process_name, sig=9, attempts=1)
 
     def launch_service(self, extra_args, env, selectedProcess, test_name=None):
-        if not self.device.process_exist(self.package):
-            # Make sure the main app is running, this should help making the
-            # tests get foreground priority scheduling.
-            self.device.launch_activity(
-                self.package,
-                intent="org.mozilla.geckoview.test_runner.XPCSHELL_TEST_MAIN",
-                activity_name="TestRunnerActivity",
-            )
-            # Newer Androids require that background services originate from
-            # active apps, so wait here until the test runner is the top
-            # activity.
-            retries = 20
-            top = self.device.get_top_activity(timeout=60)
-            while top != self.package and retries > 0:
-                self.log.info(
-                    "%s | Checking that %s is the top activity."
-                    % (test_name, self.package)
+        with self._launchLock:
+            if not self.device.process_exist(self.package):
+                # Make sure the main app is running, this should help making the
+                # tests get foreground priority scheduling.
+                self.device.launch_activity(
+                    self.package,
+                    intent="org.mozilla.geckoview.test_runner.XPCSHELL_TEST_MAIN",
+                    activity_name="TestRunnerActivity",
                 )
+                # Newer Androids require that background services originate from
+                # active apps, so wait here until the test runner is the top
+                # activity.
+                retries = 20
                 top = self.device.get_top_activity(timeout=60)
-                time.sleep(1)
-                retries -= 1
+                while top != self.package and retries > 0:
+                    self.log.info(
+                        "%s | Checking that %s is the top activity."
+                        % (test_name, self.package)
+                    )
+                    top = self.device.get_top_activity(timeout=60)
+                    time.sleep(1)
+                    retries -= 1
 
         self.process_name = self.package + (":xpcshell%d" % selectedProcess)
 
@@ -386,8 +390,6 @@ class XPCShellRemote(xpcshell.XPCShellTests):
     def __init__(self, options, log):
         xpcshell.XPCShellTests.__init__(self, log)
 
-        options["threadCount"] = min(options["threadCount"] or 4, 4)
-
         self.options = options
         verbose = False
         if options["log_tbpl_level"] == "debug" or options["log_mach_level"] == "debug":
@@ -400,10 +402,16 @@ class XPCShellRemote(xpcshell.XPCShellTests):
         )
         self.remoteTestRoot = posixpath.join(self.device.test_root, "xpc")
         self.remoteLogFolder = posixpath.join(self.remoteTestRoot, "logs")
-        # Add Android version (SDK level) to mozinfo so that manifest entries
-        # can be conditional on android_version.
-        mozinfo.info["android_version"] = str(self.device.version)
+        # Use Android version (SDK level) to get os_version for mozinfo
+        # so that manifest entries can be conditional on os_version.
+        android_version = str(self.device.version)
+        os_version = android_api_to_os_version(android_version)
+        self.log.info(
+            f"Android sdk version '{android_version}' corresponds to os_version '{os_version}'; use os_version to filter manifests"
+        )
+        mozinfo.info["os_version"] = os_version
         mozinfo.info["is_emulator"] = self.device._device_serial.startswith("emulator-")
+        mozinfo.info["isolated_process"] = options["isolated_process"]
 
         self.localBin = options["localBin"]
         self.pathMapping = []
@@ -426,6 +434,7 @@ class XPCShellRemote(xpcshell.XPCShellTests):
         self.remoteDebugger = options["debugger"]
         self.remoteDebuggerArgs = options["debuggerArgs"]
         self.testingModulesDir = options["testingModulesDir"]
+        self.isolatedProcess = options["isolated_process"]
 
         self.initDir(self.remoteTmpDir)
         self.initDir(self.profileDir)
@@ -508,15 +517,13 @@ class XPCShellRemote(xpcshell.XPCShellTests):
             f.write("#!/system/bin/sh\n")
             for envkey, envval in self.env.items():
                 f.write("export %s=%s\n" % (envkey, envval))
-            f.writelines(
-                [
-                    "cd $1\n",
-                    "echo xpcw: cd $1\n",
-                    "shift\n",
-                    'echo xpcw: xpcshell "$@"\n',
-                    '%s/xpcshell "$@"\n' % self.remoteBinDir,
-                ]
-            )
+            f.writelines([
+                "cd $1\n",
+                "echo xpcw: cd $1\n",
+                "shift\n",
+                'echo xpcw: xpcshell "$@"\n',
+                '%s/xpcshell "$@"\n' % self.remoteBinDir,
+            ])
         remoteWrapper = posixpath.join(self.remoteBinDir, "xpcw")
         self.device.push(localWrapper, remoteWrapper)
         self.device.chmod(remoteWrapper)
@@ -526,8 +533,7 @@ class XPCShellRemote(xpcshell.XPCShellTests):
         test.selectedProcess = RemoteProcessMonitor.pickUnusedProcess()
         if test.selectedProcess == -1:
             self.log.error(
-                "TEST-UNEXPECTED-FAIL | remotexpcshelltests.py | "
-                "no more free processes"
+                "TEST-UNEXPECTED-FAIL | remotexpcshelltests.py | no more free processes"
             )
         test.start()
 
@@ -535,7 +541,7 @@ class XPCShellRemote(xpcshell.XPCShellTests):
         RemoteProcessMonitor.freeProcess(test.selectedProcess)
 
     def buildPrefsFile(self, extraPrefs):
-        prefs = super(XPCShellRemote, self).buildPrefsFile(extraPrefs)
+        prefs = super().buildPrefsFile(extraPrefs)
         remotePrefsFile = posixpath.join(self.remoteTestRoot, "user.js")
         self.device.push(self.prefsFile, remotePrefsFile)
         self.device.chmod(remotePrefsFile)
@@ -555,6 +561,9 @@ class XPCShellRemote(xpcshell.XPCShellTests):
         self.env["XPCSHELL_TEST_TEMP_DIR"] = self.remoteTmpDir
         self.env["MOZ_ANDROID_DATA_DIR"] = self.remoteBinDir
         self.env["MOZ_IN_AUTOMATION"] = "1"
+
+        if self.isolatedProcess:
+            self.env["MOZ_ANDROID_CONTENT_SERVICE_ISOLATED_PROCESS"] = "1"
 
         # Guard against intermittent failures to retrieve abi property;
         # without an abi, xpcshell cannot find greprefs.js and crashes.
@@ -624,6 +633,7 @@ class XPCShellRemote(xpcshell.XPCShellTests):
             "OCSPStaplingServer",
             "GenerateOCSPResponse",
             "SanctionsTestServer",
+            "ZeroRttAcceptServer",
         ]
         for fname in binaries:
             local = os.path.join(self.localBin, fname)
@@ -687,8 +697,19 @@ class XPCShellRemote(xpcshell.XPCShellTests):
         self.device.push(self.xpcDir, self.remoteScriptsDir, timeout=600)
         self.device.chmod(self.remoteScriptsDir, recursive=True)
 
+    def buildNodeEnvironment(self):
+        """
+        Filter self.env to avoid passing device-specific variables like HOME or
+        LD_LIBRARY_PATH to the host node process.
+        """
+        node_env = dict(os.environ)
+        for key, value in self.env.items():
+            if key.startswith("MOZ"):
+                node_env[key] = value
+        return node_env
+
     def trySetupNode(self):
-        super(XPCShellRemote, self).trySetupNode()
+        super().trySetupNode()
         # make node host ports visible to device
         if "MOZHTTP2_PORT" in self.env:
             port = "tcp:{}".format(self.env["MOZHTTP2_PORT"])
@@ -704,7 +725,7 @@ class XPCShellRemote(xpcshell.XPCShellTests):
             self.log.info("reversed MOZNODE_EXEC_PORT connection for port " + port)
 
     def shutdownNode(self):
-        super(XPCShellRemote, self).shutdownNode()
+        super().shutdownNode()
 
         if "MOZHTTP2_PORT" in self.env:
             port = "tcp:{}".format(self.env["MOZHTTP2_PORT"])
@@ -762,7 +783,7 @@ def main():
     options = parser.parse_args()
 
     options = verifyRemoteOptions(parser, options)
-    log = commandline.setup_logging("Remote XPCShell", options, {"tbpl": sys.stdout})
+    log = commandline.setup_logging("Remote XPCShell", options, {"raw": sys.stdout})
 
     if options["interactive"] and not options["testPath"]:
         print(

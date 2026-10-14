@@ -40,13 +40,13 @@ add_task(async function changeSelectionUsingKeyboard() {
 
   await BrowserTestUtils.switchTab(gBrowser, tab3);
   info("Move focus to location bar using the keyboard");
-  await synthesizeKeyAndWaitForFocus(gURLBar, "l", { accelKey: true });
+  await synthesizeKeyAndWaitForFocus(gURLBar.inputField, "l", {
+    accelKey: true,
+  });
   is(document.activeElement, gURLBar.inputField, "urlbar should be focused");
 
   info("Move focus to the selected tab using the keyboard");
-  let unifiedSearchButton = document.querySelector(
-    "#urlbar-searchmode-switcher"
-  );
+  let unifiedSearchButton = gURLBar.querySelector(".searchmode-switcher");
   await synthesizeKeyAndWaitForFocus(unifiedSearchButton, "VK_TAB", {
     shiftKey: true,
   });
@@ -55,11 +55,25 @@ add_task(async function changeSelectionUsingKeyboard() {
     unifiedSearchButton,
     "Unified Search Button should be focused"
   );
-  await synthesizeKeyAndWaitForFocus(
-    document.getElementById("reload-button"),
-    "VK_TAB",
-    { shiftKey: true }
-  );
+  if (Services.prefs.getBoolPref("sidebar.revamp", false)) {
+    // when sidebar.revamp is enabled, the sidebar-button is placed by default at the
+    // start of the #nav-bar and will receive focus.
+    info("Move focus to the sidebar-button using the keyboard");
+    await synthesizeKeyAndWaitForFocus(
+      document.getElementById("sidebar-button"),
+      "VK_TAB",
+      { shiftKey: true }
+    );
+  } else {
+    info("Move focus to the reload-button using the keyboard");
+    await synthesizeKeyAndWaitForFocus(
+      document.getElementById("reload-button"),
+      "VK_TAB",
+      { shiftKey: true }
+    );
+  }
+
+  info("Move focus to the tabs-newtab-button using the keyboard");
   await synthesizeKeyAndWaitForFocus(
     document.getElementById("tabs-newtab-button"),
     "VK_TAB",
@@ -105,18 +119,9 @@ add_task(async function changeSelectionUsingKeyboard() {
   EventUtils.synthesizeKey("VK_SPACE", { accelKey: true });
   ok(tab5.multiselected, "Tab5 should be multiselected");
 
-  ok(
-    tab1.multiselected && gBrowser._multiSelectedTabsSet.has(tab1),
-    "Tab1 is (multi) selected"
-  );
-  ok(
-    tab3.multiselected && gBrowser._multiSelectedTabsSet.has(tab3),
-    "Tab3 is (multi) selected"
-  );
-  ok(
-    tab5.multiselected && gBrowser._multiSelectedTabsSet.has(tab5),
-    "Tab5 is (multi) selected"
-  );
+  ok(tab1.multiselected, "Tab1 is (multi) selected");
+  ok(tab3.multiselected, "Tab3 is (multi) selected");
+  ok(tab5.multiselected, "Tab5 is (multi) selected");
   is(gBrowser.multiSelectedTabsCount, 3, "Three tabs (multi) selected");
   is(tab3, gBrowser.selectedTab, "Tab3 is still the selected tab");
 
@@ -130,7 +135,7 @@ add_task(async function changeSelectionUsingKeyboard() {
   is(tab4.previousElementSibling, tab3, "tab4 should be after tab3");
   is(tab4.nextElementSibling, tab5, "tab4 should be before tab5");
 
-  let tabsReordered = BrowserTestUtils.waitForCondition(() => {
+  let tabsReordered = TestUtils.waitForCondition(() => {
     return (
       tab4.previousElementSibling == tab2 && tab4.nextElementSibling == tab3
     );

@@ -7,24 +7,22 @@ package org.mozilla.focus.fragment.about
 import android.content.Context
 import android.widget.Toast
 import org.mozilla.focus.R
-import org.mozilla.focus.ext.components
-import org.mozilla.focus.state.AppAction
 
-/**
- * Triggers the "secret" debug menu when logoView is tapped 5 times.
- */
-class SecretSettingsUnlocker(private val context: Context) {
+/** Triggers the "secret" debug menu when logoView is tapped 5 times. */
+class SecretSettingsUnlocker(
+    private val context: Context,
+    private val onLogoClicked: () -> Unit,
+) {
 
     private var secretSettingsClicks = 0
     private var lastDebugMenuToast: Toast? = null
 
-    /**
-     * Reset the [secretSettingsClicks] counter.
-     */
+    /** Reset the [secretSettingsClicks] counter. */
     fun resetCounter() {
         secretSettingsClicks = 0
     }
 
+    /** Increments the secret settings tap counter. */
     fun increment() {
         // Because the user will mostly likely tap the logo in rapid succession,
         // we ensure only 1 toast is shown at any given time.
@@ -33,21 +31,23 @@ class SecretSettingsUnlocker(private val context: Context) {
         when (secretSettingsClicks) {
             in 2 until SECRET_DEBUG_MENU_CLICKS -> {
                 val clicksLeft = SECRET_DEBUG_MENU_CLICKS - secretSettingsClicks
-                val toast = Toast.makeText(
-                    context,
-                    context.getString(R.string.about_debug_menu_toast_progress, clicksLeft),
-                    Toast.LENGTH_SHORT,
-                )
+                val toast =
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.about_debug_menu_toast_progress, clicksLeft),
+                        Toast.LENGTH_SHORT,
+                    )
                 toast.show()
                 lastDebugMenuToast = toast
             }
             SECRET_DEBUG_MENU_CLICKS -> {
                 Toast.makeText(
-                    context,
-                    R.string.about_debug_menu_toast_done,
-                    Toast.LENGTH_LONG,
-                ).show()
-                context.components.appStore.dispatch(AppAction.SecretSettingsStateChange(true))
+                        context,
+                        R.string.about_debug_menu_toast_done,
+                        Toast.LENGTH_LONG,
+                    )
+                    .show()
+                onLogoClicked()
             }
         }
     }

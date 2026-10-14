@@ -7,7 +7,8 @@ package org.mozilla.focus.settings.advanced
 import android.content.SharedPreferences
 import android.os.Bundle
 import androidx.preference.Preference
-import androidx.preference.SwitchPreferenceCompat
+import androidx.preference.SwitchPreference
+import kotlin.system.exitProcess
 import org.mozilla.focus.R
 import org.mozilla.focus.ext.components
 import org.mozilla.focus.ext.getPreferenceKey
@@ -16,47 +17,54 @@ import org.mozilla.focus.ext.requirePreference
 import org.mozilla.focus.ext.settings
 import org.mozilla.focus.ext.showToolbar
 import org.mozilla.focus.settings.BaseSettingsFragment
-import kotlin.system.exitProcess
 
-class SecretSettingsFragment :
-    BaseSettingsFragment(),
-    SharedPreferences.OnSharedPreferenceChangeListener {
+/** Settings fragment for secret/debug options. */
+class SecretSettingsFragment : BaseSettingsFragment(), SharedPreferences.OnSharedPreferenceChangeListener {
 
-    override fun onStart() {
-        super.onStart()
+    override fun onResume() {
+        super.onResume()
         showToolbar(getString(R.string.preference_secret_settings))
         preferenceManager.sharedPreferences?.registerOnSharedPreferenceChangeListener(this)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        preferenceManager.sharedPreferences?.unregisterOnSharedPreferenceChangeListener(this)
     }
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         addPreferencesFromResource(R.xml.secret_settings)
 
-        requirePreference<SwitchPreferenceCompat>(R.string.pref_key_remote_server_prod).apply {
+        requirePreference<SwitchPreference>(R.string.pref_key_remote_server_prod).apply {
             isVisible = true
             isChecked = context.settings.useProductionRemoteSettingsServer
             onPreferenceChangeListener = SharedPreferenceUpdater()
         }
 
-        requirePreference<SwitchPreferenceCompat>(R.string.pref_key_use_remote_search_configuration).apply {
+        requirePreference<SwitchPreference>(R.string.pref_key_use_remote_search_configuration).apply {
             isVisible = true
             isChecked = context.settings.useRemoteSearchConfiguration
-            onPreferenceChangeListener = object : SharedPreferenceUpdater() {
-                override fun onPreferenceChange(preference: Preference, newValue: Any?): Boolean {
-                    if (newValue as? Boolean == true) {
-                        context.components.remoteSettingsSyncScheduler.registerForSync()
-                    } else {
-                        context.components.remoteSettingsSyncScheduler.unregisterForSync()
+            onPreferenceChangeListener =
+                object : SharedPreferenceUpdater() {
+                    override fun onPreferenceChange(preference: Preference, newValue: Any?): Boolean {
+                        if (newValue as? Boolean == true) {
+                            context.components.remoteSettingsSyncScheduler.registerForSync()
+                        } else {
+                            context.components.remoteSettingsSyncScheduler.unregisterForSync()
+                        }
+                        return super.onPreferenceChange(preference, newValue)
                     }
-                    return super.onPreferenceChange(preference, newValue)
                 }
-            }
         }
     }
 
     override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences, key: String?) {
-        findPreference<SwitchPreferenceCompat>(
-            getPreferenceKey(R.string.pref_key_use_nimbus_preview),
-        )?.let { nimbusPreviewPref ->
+        if (!isAdded) {
+            return
+        }
+
+        findPreference<SwitchPreference>(getPreferenceKey(R.string.pref_key_use_nimbus_preview))?.let {
+            nimbusPreviewPref ->
             if (key == nimbusPreviewPref.key) {
                 requireComponents.settings.shouldUseNimbusPreview = nimbusPreviewPref.isChecked
                 quitTheApp()

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,13 +5,13 @@
 #ifndef DOM_SVG_SVGAELEMENT_H_
 #define DOM_SVG_SVGAELEMENT_H_
 
-#include "Link.h"
-#include "nsDOMTokenList.h"
 #include "SVGAnimatedString.h"
+#include "mozilla/dom/Link.h"
 #include "mozilla/dom/SVGGraphicsElement.h"
+#include "nsDOMTokenList.h"
 
-nsresult NS_NewSVGAElement(
-    nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+nsresult NS_NewSVGAElement(nsIContent** aResult,
+                           already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
 
 namespace mozilla {
 
@@ -26,12 +24,12 @@ using SVGAElementBase = SVGGraphicsElement;
 
 class SVGAElement final : public SVGAElementBase, public Link {
  protected:
-  using Element::GetText;
+  using Element::GetCharacterDataBuffer;
 
-  explicit SVGAElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
-  friend nsresult(::NS_NewSVGAElement(
-      nsIContent** aResult,
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
+  explicit SVGAElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
+  friend nsresult(
+      ::NS_NewSVGAElement(nsIContent** aResult,
+                          already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo));
   JSObject* WrapNode(JSContext* cx, JS::Handle<JSObject*> aGivenProto) override;
 
  public:
@@ -56,11 +54,14 @@ class SVGAElement final : public SVGAElementBase, public Link {
   already_AddRefed<nsIURI> GetHrefURI() const override;
   bool HasHref() const;
 
-  virtual void AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
-                            const nsAttrValue* aValue,
-                            const nsAttrValue* aOldValue,
-                            nsIPrincipal* aMaybeScriptedPrincipal,
-                            bool aNotify) override;
+  bool ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
+                      const nsAString& aValue,
+                      nsIPrincipal* aMaybeScriptedPrincipal,
+                      nsAttrValue& aResult) override;
+  void AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
+                    const nsAttrValue* aValue, const nsAttrValue* aOldValue,
+                    nsIPrincipal* aMaybeScriptedPrincipal,
+                    bool aNotify) override;
 
   // WebIDL
   already_AddRefed<DOMSVGAnimatedString> Href();
@@ -78,8 +79,6 @@ class SVGAElement final : public SVGAElementBase, public Link {
   void SetHreflang(const nsAString& aHreflang, mozilla::ErrorResult& rv);
   void GetType(nsAString& aType);
   void SetType(const nsAString& aType, mozilla::ErrorResult& rv);
-  void GetText(nsAString& aText, mozilla::ErrorResult& rv) const;
-  void SetText(const nsAString& aText, mozilla::ErrorResult& rv);
 
   void NodeInfoChanged(Document* aOldDoc) final {
     ClearHasPendingLinkUpdate();

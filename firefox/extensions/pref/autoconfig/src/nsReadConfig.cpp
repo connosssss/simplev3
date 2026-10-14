@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +7,8 @@
 
 #include "mozilla/Logging.h"
 #include "mozilla/Components.h"
+#include "mozilla/HelperMacros.h"
+#include "mozilla/Preferences.h"
 #include "nsAppDirectoryServiceDefs.h"
 #include "nsIAppStartup.h"
 #include "nsIChannel.h"
@@ -25,10 +26,6 @@
 #include "nsCRT.h"
 #include "nspr.h"
 #include "nsXULAppAPI.h"
-
-#if defined(MOZ_WIDGET_GTK)
-#  include "mozilla/WidgetUtilsGtk.h"
-#endif  // defined(MOZ_WIDGET_GTK)
 
 using namespace mozilla;
 
@@ -109,8 +106,7 @@ NS_IMETHODIMP nsReadConfig::Observe(nsISupports* aSubject, const char* aTopic,
           nsCOMPtr<nsIAppStartup> appStartup =
               components::AppStartup::Service();
           if (appStartup) {
-            bool userAllowedQuit = true;
-            appStartup->Quit(nsIAppStartup::eAttemptQuit, 0, &userAllowedQuit);
+            appStartup->Quit(nsIAppStartup::eAttemptQuit, 0);
           }
         }
       }
@@ -124,11 +120,23 @@ NS_IMETHODIMP nsReadConfig::Observe(nsISupports* aSubject, const char* aTopic,
  */
 static const char* gBlockedConfigs[] = {"dsengine.cfg"};
 
+/**
+ * AutoConfig reads its inputs from the installation, not from the profile, so
+ * the user values of these prefs are cleared before the .cfg is evaluated.
+ * prefs.js and user.js have already been parsed at this point (see the
+ * InitializeUserPrefs, UpdateCurrentProfile, InitializeJSContext and
+ * FinishInitializingUserPrefs call chain in XREMain::XRE_mainRun). The .cfg
+ * can still set them with pref().
+ */
+static const char* const gAutoConfigInputPrefs[] = {
+    "general.config.filename",    "autoadmin.global_config_url",
+    "autoadmin.offline_failover", "autoadmin.append_emailaddr",
+    "autoadmin.refresh_interval", "autoadmin.failover_to_cached",
+};
+
 nsresult nsReadConfig::readConfigFile() {
   nsresult rv = NS_OK;
   nsAutoCString lockFileName;
-  nsAutoCString lockVendor;
-  uint32_t fileNameLen = 0;
 
   nsCOMPtr<nsIPrefBranch> defaultPrefBranch;
   nsCOMPtr<nsIPrefService> prefService =
@@ -144,8 +152,8 @@ nsresult nsReadConfig::readConfigFile() {
   bool sandboxEnabled =
       channel.EqualsLiteral("beta") || channel.EqualsLiteral("release");
 
-  mozilla::Unused << defaultPrefBranch->GetBoolPref(
-      "general.config.sandbox_enabled", &sandboxEnabled);
+  (void)defaultPrefBranch->GetBoolPref("general.config.sandbox_enabled",
+                                       &sandboxEnabled);
 
   rv = defaultPrefBranch->GetCharPref("general.config.filename", lockFileName);
 
@@ -153,6 +161,10 @@ nsresult nsReadConfig::readConfigFile() {
 
   MOZ_LOG(MCD, LogLevel::Debug,
           ("general.config.filename = %s\n", lockFileName.get()));
+
+  for (const char* prefName : gAutoConfigInputPrefs) {
+    Preferences::ClearUser(prefName);
+  }
 
   for (size_t index = 0, len = std::size(gBlockedConfigs); index < len;
        ++index) {
@@ -178,11 +190,6 @@ nsresult nsReadConfig::readConfigFile() {
   }
   // If the lockFileName is nullptr return ok, because no lockFile will be used
 
-  // Once the config file is read, we should check that the vendor name
-  // is consistent By checking for the vendor name after reading the config
-  // file we allow for the preference to be set (and locked) by the creator
-  // of the cfg file meaning the file can not be renamed (successfully).
-
   nsCOMPtr<nsIPrefBranch> prefBranch;
   rv = prefService->GetBranch(nullptr, getter_AddRefs(prefBranch));
   NS_ENSURE_SUCCESS(rv, rv);
@@ -199,26 +206,6 @@ nsresult nsReadConfig::readConfigFile() {
             ("error evaluating .cfg file %s %" PRIx32 "\n", lockFileName.get(),
              static_cast<uint32_t>(rv)));
     return rv;
-  }
-
-  rv = prefBranch->GetCharPref("general.config.filename", lockFileName);
-  if (NS_FAILED(rv))
-    // There is NO REASON we should ever get here. This is POST reading
-    // of the config file.
-    return NS_ERROR_FAILURE;
-
-  rv = prefBranch->GetCharPref("general.config.vendor", lockVendor);
-  // If vendor is not nullptr, do this check
-  if (NS_SUCCEEDED(rv)) {
-    fileNameLen = strlen(lockFileName.get());
-
-    // lockVendor and lockFileName should be the same with the addtion of
-    // .cfg to the filename by checking this post reading of the cfg file
-    // this value can be set within the cfg file adding a level of security.
-
-    if (strncmp(lockFileName.get(), lockVendor.get(), fileNameLen - 4) != 0) {
-      return NS_ERROR_FAILURE;
-    }
   }
 
   // get the value of the autoconfig url
@@ -247,20 +234,29 @@ nsresult nsReadConfig::openAndEvaluateJSFile(const char* aFileName,
   nsCOMPtr<nsIInputStream> inStr;
   if (isBinDir) {
     nsCOMPtr<nsIFile> jsFile;
-#if defined(MOZ_WIDGET_GTK)
-    if (!mozilla::widget::IsRunningUnderFlatpakOrSnap()) {
-#endif  // defined(MOZ_WIDGET_GTK)
-      rv = NS_GetSpecialDirectory(NS_GRE_DIR, getter_AddRefs(jsFile));
-#if defined(MOZ_WIDGET_GTK)
-    } else {
-      rv = NS_GetSpecialDirectory(NS_OS_SYSTEM_CONFIG_DIR,
-                                  getter_AddRefs(jsFile));
-    }
-#endif  // defined(MOZ_WIDGET_GTK)
+#if defined(MOZ_WIDGET_GTK) && defined(MOZ_SYSTEM_PREFERENCES)
+    bool exists;
+
+    rv =
+        NS_GetSpecialDirectory(NS_OS_SYSTEM_CONFIG_DIR, getter_AddRefs(jsFile));
     if (NS_FAILED(rv)) return rv;
 
     rv = jsFile->AppendNative(nsDependentCString(aFileName));
     if (NS_FAILED(rv)) return rv;
+
+    rv = jsFile->Exists(&exists);
+    if (NS_FAILED(rv)) return rv;
+
+    if (!exists) {
+#endif  // defined(MOZ_WIDGET_GTK) && defined(MOZ_SYSTEM_PREFERENCES)
+      rv = NS_GetSpecialDirectory(NS_GRE_DIR, getter_AddRefs(jsFile));
+      if (NS_FAILED(rv)) return rv;
+
+      rv = jsFile->AppendNative(nsDependentCString(aFileName));
+      if (NS_FAILED(rv)) return rv;
+#if defined(MOZ_WIDGET_GTK) && defined(MOZ_SYSTEM_PREFERENCES)
+    }
+#endif  // defined(MOZ_WIDGET_GTK) && defined(MOZ_SYSTEM_PREFERENCES)
 
     rv = NS_NewLocalFileInputStream(getter_AddRefs(inStr), jsFile);
     if (NS_FAILED(rv)) return rv;

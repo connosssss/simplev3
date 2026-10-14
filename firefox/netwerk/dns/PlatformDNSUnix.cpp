@@ -1,29 +1,27 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=4 sw=2 sts=2 et cin: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <netinet/in.h>
+#include <resolv.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <memory>
+
 #include "GetAddrInfo.h"
-#include "mozilla/glean/NetwerkMetrics.h"
-#include "mozilla/net/DNSPacket.h"
-#include "nsIDNSService.h"
-#include "mozilla/Maybe.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/StaticPrefs_network.h"
 #include "mozilla/ThreadLocal.h"
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <netinet/in.h>
-#include <resolv.h>
+#include "mozilla/glean/NetwerkMetrics.h"
+#include "mozilla/net/DNSPacket.h"
+#include "nsIDNSService.h"
 
 namespace mozilla::net {
 
 #if defined(HAVE_RES_NINIT)
 MOZ_THREAD_LOCAL(struct __res_state*) sThreadRes;
-mozilla::StaticMutex sMutex MOZ_UNANNOTATED;
+mozilla::StaticMutex sMutex MOZ_ANNOTATED;
 #endif
 
 #define LOG(msg, ...) \
@@ -31,7 +29,8 @@ mozilla::StaticMutex sMutex MOZ_UNANNOTATED;
 
 nsresult ResolveHTTPSRecordImpl(const nsACString& aHost,
                                 nsIDNSService::DNSFlags aFlags,
-                                TypeRecordResultType& aResult, uint32_t& aTTL) {
+                                TypeRecordResultType& aResult, uint32_t& aTTL,
+                                HTTPSAliasTarget& aAlias) {
   DNSPacket packet;
   nsAutoCString host(aHost);
   nsAutoCString cname;
@@ -44,7 +43,8 @@ nsresult ResolveHTTPSRecordImpl(const nsACString& aHost,
 
 #if defined(HAVE_RES_NINIT)
   if (!sThreadRes.get()) {
-    UniquePtr<struct __res_state> resState(new struct __res_state);
+    UniquePtr<struct __res_state> resState =
+        std::make_unique<struct __res_state>();
     memset(resState.get(), 0, sizeof(struct __res_state));
     {
       StaticMutexAutoLock lock(sMutex);
@@ -81,10 +81,10 @@ nsresult ResolveHTTPSRecordImpl(const nsACString& aHost,
         return len;
       });
   if (NS_FAILED(rv)) {
-    return rv;
+    return NS_ERROR_UNKNOWN_HOST;
   }
 
-  return ParseHTTPSRecord(host, packet, aResult, aTTL);
+  return ParseHTTPSRecord(host, packet, aResult, aTTL, aAlias);
 }
 
 void DNSThreadShutdown() {

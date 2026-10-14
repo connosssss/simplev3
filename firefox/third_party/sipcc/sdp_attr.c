@@ -913,6 +913,8 @@ sdp_result_e sdp_parse_attr_fmtp (sdp_t *sdp_p, sdp_attr_t *attr_p,
 
             fmtp_p->fmtp_format = SDP_FMTP_CODEC_INFO;
             fmtp_p->profile = (short) strtoul_result;
+            fmtp_p->av1_has_profile = TRUE;
+            fmtp_p->av1_profile = (uint8_t) strtoul_result;
             codec_info_found = TRUE;
 
         } else if (cpr_strncasecmp(tmp,sdp_fmtp_codec_param[15].name,
@@ -1337,6 +1339,30 @@ sdp_result_e sdp_parse_attr_fmtp (sdp_t *sdp_p, sdp_attr_t *attr_p,
             fmtp_p->fmtp_format = SDP_FMTP_CODEC_INFO;
             fmtp_p->av1_has_tier = TRUE;
             fmtp_p->av1_tier = (uint8_t)strtoul_result;
+            codec_info_found = TRUE;
+        } else if (cpr_strncasecmp(tmp, sdp_fmtp_codec_param[55].name,
+                                   sdp_fmtp_codec_param[55].strlen) == 0) {
+            result1 = sdp_get_fmtp_tok_val(sdp_p, &fmtp_ptr, "ptime", tmp, sizeof(tmp),
+                                           &tok, &strtoul_result, 0, -1, UINT_MAX);
+            if (result1 != SDP_SUCCESS) { SDP_FREE(temp_ptr); return result1; }
+            fmtp_p->fmtp_format = SDP_FMTP_CODEC_INFO;
+            fmtp_p->opus_ptime = (uint32_t)strtoul_result;
+            codec_info_found = TRUE;
+        } else if (cpr_strncasecmp(tmp, sdp_fmtp_codec_param[56].name,
+                                   sdp_fmtp_codec_param[56].strlen) == 0) {
+            result1 = sdp_get_fmtp_tok_val(sdp_p, &fmtp_ptr, "minptime", tmp, sizeof(tmp),
+                                           &tok, &strtoul_result, 0, -1, UINT_MAX);
+            if (result1 != SDP_SUCCESS) { SDP_FREE(temp_ptr); return result1; }
+            fmtp_p->fmtp_format = SDP_FMTP_CODEC_INFO;
+            fmtp_p->opus_minptime = (uint32_t)strtoul_result;
+            codec_info_found = TRUE;
+        } else if (cpr_strncasecmp(tmp, sdp_fmtp_codec_param[57].name,
+                                   sdp_fmtp_codec_param[57].strlen) == 0) {
+            result1 = sdp_get_fmtp_tok_val(sdp_p, &fmtp_ptr, "maxptime", tmp, sizeof(tmp),
+                                           &tok, &strtoul_result, 0, -1, UINT_MAX);
+            if (result1 != SDP_SUCCESS) { SDP_FREE(temp_ptr); return result1; }
+            fmtp_p->fmtp_format = SDP_FMTP_CODEC_INFO;
+            fmtp_p->opus_maxptime = (uint32_t)strtoul_result;
             codec_info_found = TRUE;
         } else if (strchr(tmp, '/')) {
             // XXX Note that because RFC 5109 so conveniently specified

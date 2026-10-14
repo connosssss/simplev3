@@ -144,7 +144,7 @@ class IMEStateOnFocusMoveTester {
             }, IME should receive a focus notification after IME state is updated`
           );
           break;
-        case "notify-blur":
+        case "notify-blur": {
           info(aNotificationType);
           const changingStatus = !(
             aExpectedData.containerIsEditable &&
@@ -178,6 +178,7 @@ class IMEStateOnFocusMoveTester {
             );
           }
           break;
+        }
       }
     };
 
@@ -1568,7 +1569,7 @@ class IMEStateOnFocusMoveTester {
       description: "designMode editor",
       createElement: aDocument => {
         const iframe = aDocument.createElement("iframe");
-        iframe.srcdoc = "<!doctype html><html><body></body></html>";
+        iframe.src = "about:blank";
         iframe.addEventListener(
           "load",
           () => (iframe.contentDocument.designMode = "on"),

@@ -321,8 +321,7 @@ class ShowTab extends Control {
   }
 
   onClick() {
-    const globalBrowser =
-      window.ownerGlobal.browsingContext.topChromeWindow.gBrowser;
+    const globalBrowser = window.browsingContext.topChromeWindow.gBrowser;
     for (const tab of globalBrowser.visibleTabs) {
       if (tab.linkedBrowser && tab.linkedBrowser.browserId == this.browserId) {
         globalBrowser.selectedTab = tab;
@@ -1658,6 +1657,8 @@ function candidateToString({
     candidateType = `${candidateType}-${relayProtocol}`;
   }
   proxied = type == "local-candidate" ? ` [${proxied}]` : "";
+  // Addresses that must not be exposed to content are reported as null.
+  address ??= "(redacted)";
   return `${address}:${port}/${protocol}(${candidateType})${proxied}`;
 }
 

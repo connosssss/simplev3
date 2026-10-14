@@ -8,9 +8,8 @@ import android.content.Intent
 import androidx.test.internal.runner.junit4.AndroidJUnit4ClassRunner
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Until
-import okhttp3.mockwebserver.MockWebServer
+import kotlin.test.assertNotNull
 import org.junit.After
-import org.junit.Assert
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -20,8 +19,8 @@ import org.mozilla.focus.activity.robots.homeScreen
 import org.mozilla.focus.activity.robots.notificationTray
 import org.mozilla.focus.activity.robots.searchScreen
 import org.mozilla.focus.helpers.FeatureSettingsHelper
+import org.mozilla.focus.helpers.FocusTestRule
 import org.mozilla.focus.helpers.MainActivityFirstrunTestRule
-import org.mozilla.focus.helpers.MockWebServerHelper
 import org.mozilla.focus.helpers.RetryTestRule
 import org.mozilla.focus.helpers.TestAssetHelper.getGenericTabAsset
 import org.mozilla.focus.helpers.TestHelper.getStringResource
@@ -29,66 +28,60 @@ import org.mozilla.focus.helpers.TestHelper.mDevice
 import org.mozilla.focus.helpers.TestHelper.pressHomeKey
 import org.mozilla.focus.helpers.TestHelper.restartApp
 import org.mozilla.focus.helpers.TestHelper.verifySnackBarText
-import org.mozilla.focus.helpers.TestSetup
 import org.mozilla.focus.testAnnotations.SmokeTest
 
 // These tests verify interaction with the browsing notification and erasing browsing data
 @RunWith(AndroidJUnit4ClassRunner::class)
-class EraseBrowsingDataTest : TestSetup() {
-    private lateinit var webServer: MockWebServer
+class EraseBrowsingDataTest {
     private val featureSettingsHelper = FeatureSettingsHelper()
 
-    @get:Rule
-    val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
+    @get:Rule(order = 0) val focusTestRule: FocusTestRule = FocusTestRule()
 
-    @Rule
-    @JvmField
-    val retryTestRule = RetryTestRule(3)
+    private val webServerRule
+        get() = focusTestRule.mockWebServerRule
+
+    @get:Rule val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
+
+    @Rule @JvmField val retryTestRule = RetryTestRule(3)
 
     @Before
-    override fun setUp() {
-        super.setUp()
-        webServer = MockWebServer().apply {
-            dispatcher = MockWebServerHelper.AndroidAssetDispatcher()
-            start()
-        }
+    fun setUp() {
         featureSettingsHelper.setCfrForTrackingProtectionEnabled(false)
         featureSettingsHelper.setSearchWidgetDialogEnabled(false)
     }
 
     @After
     fun tearDown() {
-        webServer.shutdown()
         featureSettingsHelper.resetAllFeatureFlags()
     }
 
     @SmokeTest
     @Test
     fun trashButtonTest() {
-        val testPage = getGenericTabAsset(webServer, 1)
+        val testPage = webServerRule.server.getGenericTabAsset(1)
 
-        searchScreen {
-        }.loadPage(testPage.url) {
-            verifyPageContent(testPage.content)
-            // Press erase button, and check for message and return to the main page
-        }.clearBrowsingData {
-            verifySnackBarText(getStringResource(R.string.feedback_erase2))
-            verifyEmptySearchBar()
-        }
+        searchScreen {}
+            .loadPage(testPage.url) {
+                verifyPageContent(testPage.content)
+                // Press erase button, and check for message and return to the main page
+            }
+            .clearBrowsingData {
+                verifySnackBarText(getStringResource(R.string.feedback_erase2))
+                verifyEmptySearchBar()
+            }
     }
 
     @SmokeTest
     @Test
     fun notificationEraseAndOpenButtonTest() {
-        val testPage = getGenericTabAsset(webServer, 1)
+        val testPage = webServerRule.server.getGenericTabAsset(1)
 
         notificationTray {
             mDevice.openNotification()
             clearNotifications()
         }
 
-        searchScreen {
-        }.loadPage(testPage.url) { }
+        searchScreen {}.loadPage(testPage.url) {}
         // Send app to background
         pressHomeKey()
         // Pull down system bar and select Erase and Open
@@ -97,19 +90,19 @@ class EraseBrowsingDataTest : TestSetup() {
             verifySystemNotificationExists("Erase browsing history?")
             verifySystemNotificationExists(getStringResource(R.string.notification_erase_text_android_14_1))
             expandEraseBrowsingNotification()
-        }.clickEraseAndOpenNotificationButton {
-            verifySnackBarText(getStringResource(R.string.feedback_erase2))
-            verifyEmptySearchBar()
         }
+            .clickEraseAndOpenNotificationButton {
+                verifySnackBarText(getStringResource(R.string.feedback_erase2))
+                verifyEmptySearchBar()
+            }
     }
 
     @SmokeTest
     @Test
     fun deleteHistoryOnRestartTest() {
-        val testPage = getGenericTabAsset(webServer, 1)
+        val testPage = webServerRule.server.getGenericTabAsset(1)
 
-        searchScreen {
-        }.loadPage(testPage.url) {}
+        searchScreen {}.loadPage(testPage.url) {}
         restartApp(mActivityTestRule)
         homeScreen {
             verifyEmptySearchBar()
@@ -119,7 +112,7 @@ class EraseBrowsingDataTest : TestSetup() {
     @SmokeTest
     @Test
     fun systemBarHomeViewTest() {
-        val testPage = getGenericTabAsset(webServer, 1)
+        val testPage = webServerRule.server.getGenericTabAsset(1)
         val launcherLoadTimeoutMillis = 5000
         val launcherPackage = mDevice.launcherPackageName
 
@@ -129,35 +122,35 @@ class EraseBrowsingDataTest : TestSetup() {
         }
 
         // Leave Focus open, delete browsing history and check the app is still running
-        searchScreen {
-        }.loadPage(testPage.url) { }
+        searchScreen {}.loadPage(testPage.url) {}
         mDevice.openNotification()
         notificationTray {
             verifySystemNotificationExists("Erase browsing history?")
             expandEraseBrowsingNotification()
-        }.clickNotificationMessage {
-            verifyEmptySearchBar()
         }
+            .clickNotificationMessage {
+                verifyEmptySearchBar()
+            }
 
         // Switch out of Focus, delete browsing history and check the app is killed
-        searchScreen {
-        }.loadPage(testPage.url) { }
+        searchScreen {}.loadPage(testPage.url) {}
         pressHomeKey()
         mDevice.openNotification()
         notificationTray {
             verifySystemNotificationExists("Erase browsing history?")
             expandEraseBrowsingNotification()
-        }.clickNotificationMessage {
-            // Wait for launcher
-            Assert.assertNotNull(launcherPackage)
-            mDevice.wait(
-                Until.hasObject(By.pkg(launcherPackage).depth(0)),
-                launcherLoadTimeoutMillis.toLong(),
-            )
-
-            // Re-launch the app, verify it's not showing the previous browsing session
-            mActivityTestRule.launchActivity(Intent(Intent.ACTION_MAIN))
-            verifyEmptySearchBar()
         }
+            .clickNotificationMessage {
+                // Wait for launcher
+                assertNotNull(launcherPackage)
+                mDevice.wait(
+                    Until.hasObject(By.pkg(launcherPackage).depth(0)),
+                    launcherLoadTimeoutMillis.toLong(),
+                )
+
+                // Re-launch the app, verify it's not showing the previous browsing session
+                mActivityTestRule.launchActivity(Intent(Intent.ACTION_MAIN))
+                verifyEmptySearchBar()
+            }
     }
 }

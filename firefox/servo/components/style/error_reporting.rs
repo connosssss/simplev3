@@ -8,10 +8,10 @@
 
 use crate::selector_parser::SelectorImpl;
 use crate::stylesheets::UrlExtraData;
-use cssparser::{BasicParseErrorKind, ParseErrorKind, SourceLocation, Token};
-use selectors::parser::{Component, RelativeSelector, Selector};
-use selectors::visitor::{SelectorListKind, SelectorVisitor};
+use cssparser::{BasicParseErrorKind, ParseErrorKind, SourceLocation};
 use selectors::SelectorList;
+use selectors::parser::{Combinator, Component, RelativeSelector, Selector};
+use selectors::visitor::{SelectorListKind, SelectorVisitor};
 use std::fmt;
 use style_traits::ParseError;
 
@@ -19,27 +19,27 @@ use style_traits::ParseError;
 #[derive(Debug)]
 pub enum ContextualParseError<'a> {
     /// A property declaration was not recognized.
-    UnsupportedPropertyDeclaration(&'a str, ParseError<'a>, &'a [SelectorList<SelectorImpl>]),
+    UnsupportedPropertyDeclaration(&'a str, ParseError, &'a [SelectorList<SelectorImpl>]),
     /// A property descriptor was not recognized.
-    UnsupportedPropertyDescriptor(&'a str, ParseError<'a>),
+    UnsupportedPropertyDescriptor(&'a str, ParseError),
     /// A font face descriptor was not recognized.
-    UnsupportedFontFaceDescriptor(&'a str, ParseError<'a>),
+    UnsupportedFontFaceDescriptor(&'a str, ParseError),
     /// A font feature values descriptor was not recognized.
-    UnsupportedFontFeatureValuesDescriptor(&'a str, ParseError<'a>),
+    UnsupportedFontFeatureValuesDescriptor(&'a str, ParseError),
     /// A font palette values descriptor was not recognized.
-    UnsupportedFontPaletteValuesDescriptor(&'a str, ParseError<'a>),
+    UnsupportedFontPaletteValuesDescriptor(&'a str, ParseError),
     /// A keyframe rule was not valid.
-    InvalidKeyframeRule(&'a str, ParseError<'a>),
+    InvalidKeyframeRule(&'a str, ParseError),
     /// A font feature values rule was not valid.
-    InvalidFontFeatureValuesRule(&'a str, ParseError<'a>),
+    InvalidFontFeatureValuesRule(&'a str, ParseError),
     /// A rule was invalid for some reason.
-    InvalidRule(&'a str, ParseError<'a>),
+    InvalidRule(&'a str, ParseError),
     /// A rule was not recognized.
-    UnsupportedRule(&'a str, ParseError<'a>),
+    UnsupportedRule(&'a str, ParseError),
     /// A viewport descriptor declaration was not recognized.
-    UnsupportedViewportDescriptorDeclaration(&'a str, ParseError<'a>),
+    UnsupportedViewportDescriptorDeclaration(&'a str, ParseError),
     /// A counter style descriptor declaration was not recognized.
-    UnsupportedCounterStyleDescriptorDeclaration(&'a str, ParseError<'a>),
+    UnsupportedCounterStyleDescriptorDeclaration(&'a str, ParseError),
     /// A counter style rule had no symbols.
     InvalidCounterStyleWithoutSymbols(String),
     /// A counter style rule had less than two symbols.
@@ -51,72 +51,30 @@ pub enum ContextualParseError<'a> {
     /// A counter style rule had extends with additive-symbols.
     InvalidCounterStyleExtendsWithAdditiveSymbols,
     /// A media rule was invalid for some reason.
-    InvalidMediaRule(&'a str, ParseError<'a>),
+    InvalidMediaRule(&'a str, ParseError),
     /// A value was not recognized.
-    UnsupportedValue(&'a str, ParseError<'a>),
+    UnsupportedValue(&'a str, ParseError),
     /// A never-matching `:host` selector was found.
     NeverMatchingHostSelector(String),
+    /// A view-transition declaration was not recognized.
+    UnsupportedViewTransitionDescriptor(&'a str, ParseError),
 }
 
 impl<'a> fmt::Display for ContextualParseError<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fn token_to_str(t: &Token, f: &mut fmt::Formatter) -> fmt::Result {
-            match *t {
-                Token::Ident(ref i) => write!(f, "identifier {}", i),
-                Token::AtKeyword(ref kw) => write!(f, "keyword @{}", kw),
-                Token::Hash(ref h) => write!(f, "hash #{}", h),
-                Token::IDHash(ref h) => write!(f, "id selector #{}", h),
-                Token::QuotedString(ref s) => write!(f, "quoted string \"{}\"", s),
-                Token::UnquotedUrl(ref u) => write!(f, "url {}", u),
-                Token::Delim(ref d) => write!(f, "delimiter {}", d),
-                Token::Number {
-                    int_value: Some(i), ..
-                } => write!(f, "number {}", i),
-                Token::Number { value, .. } => write!(f, "number {}", value),
-                Token::Percentage {
-                    int_value: Some(i), ..
-                } => write!(f, "percentage {}", i),
-                Token::Percentage { unit_value, .. } => {
-                    write!(f, "percentage {}", unit_value * 100.)
-                },
-                Token::Dimension {
-                    value, ref unit, ..
-                } => write!(f, "dimension {}{}", value, unit),
-                Token::WhiteSpace(_) => write!(f, "whitespace"),
-                Token::Comment(_) => write!(f, "comment"),
-                Token::Colon => write!(f, "colon (:)"),
-                Token::Semicolon => write!(f, "semicolon (;)"),
-                Token::Comma => write!(f, "comma (,)"),
-                Token::IncludeMatch => write!(f, "include match (~=)"),
-                Token::DashMatch => write!(f, "dash match (|=)"),
-                Token::PrefixMatch => write!(f, "prefix match (^=)"),
-                Token::SuffixMatch => write!(f, "suffix match ($=)"),
-                Token::SubstringMatch => write!(f, "substring match (*=)"),
-                Token::CDO => write!(f, "CDO (<!--)"),
-                Token::CDC => write!(f, "CDC (-->)"),
-                Token::Function(ref name) => write!(f, "function {}", name),
-                Token::ParenthesisBlock => write!(f, "parenthesis ("),
-                Token::SquareBracketBlock => write!(f, "square bracket ["),
-                Token::CurlyBracketBlock => write!(f, "curly bracket {{"),
-                Token::BadUrl(ref _u) => write!(f, "bad url parse error"),
-                Token::BadString(ref _s) => write!(f, "bad string parse error"),
-                Token::CloseParenthesis => write!(f, "unmatched close parenthesis"),
-                Token::CloseSquareBracket => write!(f, "unmatched close square bracket"),
-                Token::CloseCurlyBracket => write!(f, "unmatched close curly bracket"),
-            }
-        }
-
         fn parse_error_to_str(err: &ParseError, f: &mut fmt::Formatter) -> fmt::Result {
             match err.kind {
-                ParseErrorKind::Basic(BasicParseErrorKind::UnexpectedToken(ref t)) => {
-                    write!(f, "found unexpected ")?;
-                    token_to_str(t, f)
+                ParseErrorKind::Basic(BasicParseErrorKind::UnexpectedToken) => {
+                    write!(f, "found unexpected token")
+                },
+                ParseErrorKind::Basic(BasicParseErrorKind::TooManyNestedBlocks) => {
+                    write!(f, "too many nested blocks")
                 },
                 ParseErrorKind::Basic(BasicParseErrorKind::EndOfInput) => {
                     write!(f, "unexpected end of input")
                 },
-                ParseErrorKind::Basic(BasicParseErrorKind::AtRuleInvalid(ref i)) => {
-                    write!(f, "@ rule invalid: {}", i)
+                ParseErrorKind::Basic(BasicParseErrorKind::AtRuleInvalid) => {
+                    write!(f, "@ rule invalid")
                 },
                 ParseErrorKind::Basic(BasicParseErrorKind::AtRuleBodyInvalid) => {
                     write!(f, "@ rule invalid")
@@ -227,6 +185,14 @@ impl<'a> fmt::Display for ContextualParseError<'a> {
             ContextualParseError::NeverMatchingHostSelector(ref selector) => {
                 write!(f, ":host selector is not featureless: {}", selector)
             },
+            ContextualParseError::UnsupportedViewTransitionDescriptor(decl, ref err) => {
+                write!(
+                    f,
+                    "Unsupported @view-transition descriptor declaration: '{}', ",
+                    decl
+                )?;
+                parse_error_to_str(err, f)
+            },
         }
     }
 }
@@ -235,8 +201,8 @@ impl<'a> fmt::Display for ContextualParseError<'a> {
 pub trait ParseErrorReporter {
     /// Called when the style engine detects an error.
     ///
-    /// Returns the current input being parsed, the source location it was
-    /// reported from, and a message.
+    /// Returns the current input being parsed, an approximate source location
+    /// for the error, and a message.
     fn report_error(
         &self,
         url: &UrlExtraData,
@@ -282,6 +248,9 @@ pub enum SelectorWarningKind {
     /// Relative Selector with not enough constraint, either outside or inside the selector. e.g. `*:has(.a)`, `.a:has(*)`.
     /// May cause expensive invalidations for every element inserted and/or removed.
     UnconstraintedRelativeSelector,
+    /// `:scope` can have 3 meanings, but in all cases, the relationship is defined strictly by an ancestor-descendant
+    /// relationship. This means that any presence of sibling selectors to its right would make it never match.
+    SiblingCombinatorAfterScopeSelector,
 }
 
 impl SelectorWarningKind {
@@ -290,6 +259,9 @@ impl SelectorWarningKind {
         let mut result = vec![];
         if UnconstrainedRelativeSelectorVisitor::has_warning(selector, 0, false) {
             result.push(SelectorWarningKind::UnconstraintedRelativeSelector);
+        }
+        if SiblingCombinatorAfterScopeSelectorVisitor::has_warning(selector) {
+            result.push(SelectorWarningKind::SiblingCombinatorAfterScopeSelector);
         }
         result
     }
@@ -353,9 +325,9 @@ impl UnconstrainedRelativeSelectorVisitor {
                 s.visit(&mut visitor);
             }
 
-            if (visitor.compound_state.relative_selector_found ||
-                visitor.compound_state.in_relative_selector) &&
-                !visitor.compound_state.constrained
+            if (visitor.compound_state.relative_selector_found
+                || visitor.compound_state.in_relative_selector)
+                && !visitor.compound_state.constrained
             {
                 return true;
             }
@@ -374,10 +346,10 @@ impl SelectorVisitor for UnconstrainedRelativeSelectorVisitor {
     fn visit_simple_selector(&mut self, c: &Component<Self::Impl>) -> bool {
         match c {
             // Deferred to visit_selector_list
-            Component::Is(..) |
-            Component::Where(..) |
-            Component::Negation(..) |
-            Component::Has(..) => (),
+            Component::Is(..)
+            | Component::Where(..)
+            | Component::Negation(..)
+            | Component::Has(..) => (),
             Component::ExplicitUniversalType => (),
             _ => self.compound_state.constrained |= true,
         };
@@ -404,7 +376,7 @@ impl SelectorVisitor for UnconstrainedRelativeSelectorVisitor {
 
                     let c = iter.next_sequence();
                     offset += 1;
-                    if c.map_or(true, |c| !c.is_pseudo_element()) {
+                    if c.is_none_or(|c| !c.is_pseudo_element()) {
                         break;
                     }
                 }
@@ -445,4 +417,68 @@ impl SelectorVisitor for UnconstrainedRelativeSelectorVisitor {
         }
         true
     }
+}
+
+struct SiblingCombinatorAfterScopeSelectorVisitor {
+    right_combinator_is_sibling: bool,
+    found: bool,
+}
+
+impl SiblingCombinatorAfterScopeSelectorVisitor {
+    fn new(right_combinator_is_sibling: bool) -> Self {
+        Self {
+            right_combinator_is_sibling,
+            found: false,
+        }
+    }
+    fn has_warning(selector: &Selector<SelectorImpl>) -> bool {
+        if !selector.has_scope_selector() {
+            return false;
+        }
+        let visitor = SiblingCombinatorAfterScopeSelectorVisitor::new(false);
+        visitor.find_never_matching_scope_selector(selector)
+    }
+
+    fn find_never_matching_scope_selector(mut self, selector: &Selector<SelectorImpl>) -> bool {
+        selector.visit(&mut self);
+        self.found
+    }
+}
+
+impl SelectorVisitor for SiblingCombinatorAfterScopeSelectorVisitor {
+    type Impl = SelectorImpl;
+
+    fn visit_simple_selector(&mut self, c: &Component<Self::Impl>) -> bool {
+        if !matches!(c, Component::Scope | Component::ImplicitScope) {
+            return true;
+        }
+        // e.g. `:scope ~ .a` will never match.
+        if self.right_combinator_is_sibling {
+            self.found = true;
+        }
+        true
+    }
+
+    fn visit_selector_list(
+        &mut self,
+        _list_kind: SelectorListKind,
+        list: &[Selector<Self::Impl>],
+    ) -> bool {
+        for s in list {
+            let list_visitor = Self::new(self.right_combinator_is_sibling);
+            self.found |= list_visitor.find_never_matching_scope_selector(s);
+        }
+        true
+    }
+
+    fn visit_complex_selector(&mut self, combinator_to_right: Option<Combinator>) -> bool {
+        if let Some(c) = combinator_to_right {
+            // Subject compounds' state is determined by the outer visitor. e.g: When there's `:is(.a .b) ~ .c`,
+            // the inner visitor is assumed to be constructed with right_combinator_is_sibling == true.
+            self.right_combinator_is_sibling = c.is_sibling();
+        }
+        true
+    }
+
+    // It's harder to discern if use of :scope <sibling-combinator> is invalid - at least for now, defer.
 }

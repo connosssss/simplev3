@@ -1,10 +1,7 @@
-@file:Suppress("ktlint:standard:no-wildcard-imports")
-
 package org.mozilla.geckoview.test
 
 import android.content.Context
 import android.graphics.Matrix
-import android.os.Build
 import android.os.Bundle
 import android.os.LocaleList
 import android.os.ParcelFileDescriptor
@@ -17,7 +14,6 @@ import android.view.autofill.AutofillValue
 import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
-import androidx.test.filters.SdkSuppress
 import androidx.test.platform.app.InstrumentationRegistry
 import org.hamcrest.Matchers.equalTo
 import org.junit.*
@@ -37,8 +33,7 @@ class GeckoViewTest : BaseSessionTest() {
     val activityRule = ActivityScenarioRule(GeckoViewTestActivity::class.java)
     private val uiAutomation = InstrumentationRegistry.getInstrumentation().uiAutomation
 
-    @get:Rule
-    override val rules = RuleChain.outerRule(activityRule).around(sessionRule)
+    @get:Rule override val rules = RuleChain.outerRule(activityRule).around(sessionRule)
 
     @Before
     fun setup() {
@@ -111,26 +106,37 @@ class GeckoViewTest : BaseSessionTest() {
         highPids: Collection<Int>,
         lowPids: Collection<Int>,
     ) {
-        UiThreadUtils.waitForCondition({
-            val shouldBeHighPri = getContentProcessesOomScore(highPids)
-            val shouldBeLowPri = getContentProcessesOomScore(lowPids)
-            // Note that higher oom score means less priority
-            shouldBeHighPri.count { it > 100 } == 0 &&
-                shouldBeLowPri.count { it < 300 } == 0
-        }, env.defaultTimeoutMillis)
+        UiThreadUtils.waitForCondition(
+            {
+                val shouldBeHighPri = getContentProcessesOomScoreAdj(highPids)
+                val shouldBeLowPri = getContentProcessesOomScoreAdj(lowPids)
+
+                // Smaller oom_score_adj indicates higher priority, with 0 indicating foreground visibility.
+                // Larger oom_score_adj indicates lower priority, with 900 indicating background visibility
+                // and the process may be killed.
+                shouldBeHighPri.count { it == 0 } == shouldBeHighPri.size &&
+                    shouldBeLowPri.count { it >= 900 } == shouldBeLowPri.size
+            },
+            env.defaultTimeoutMillis,
+        )
     }
 
-    fun getContentProcessesOomScore(pids: Collection<Int>): List<Int> =
-        pids.map { pid ->
-            val shellCommand = uiAutomation.executeShellCommand("cat /proc/$pid/oom_score")
-            ParcelFileDescriptor.AutoCloseInputStream(shellCommand).use { inputStream ->
-                inputStream
-                    .bufferedReader(Charsets.UTF_8)
-                    .readText()
-                    .trim()
-                    .toInt()
-            }
+    /**
+     * Helper function reads oom_score_adj. oom_score_adj is set by Android based on some criteria to manage process
+     * priority.
+     *
+     * Background on oom_score_adj:
+     * https://cs.android.com/android/platform/superproject/+/android-latest-release:frameworks/base/services/core/java/com/android/server/am/OomAdjuster.md
+     *
+     * oom_score_adj constants:
+     * https://cs.android.com/android/platform/superproject/+/android-latest-release:frameworks/base/services/core/java/com/android/server/am/ProcessList.java
+     */
+    fun getContentProcessesOomScoreAdj(pids: Collection<Int>): List<Int> = pids.map { pid ->
+        val shellCommand = uiAutomation.executeShellCommand("cat /proc/$pid/oom_score_adj")
+        ParcelFileDescriptor.AutoCloseInputStream(shellCommand).use { inputStream ->
+            inputStream.bufferedReader(Charsets.UTF_8).readText().trim().toInt()
         }
+    }
 
     fun setupPriorityTest(): GeckoSession {
         // This makes the test a little bit faster
@@ -138,7 +144,7 @@ class GeckoViewTest : BaseSessionTest() {
             mapOf(
                 "dom.ipc.processPriorityManager.backgroundGracePeriodMS" to 0,
                 "dom.ipc.processPriorityManager.backgroundPerceivableGracePeriodMS" to 0,
-            ),
+            )
         )
 
         val otherSession = sessionRule.createOpenSession()
@@ -259,7 +265,7 @@ class GeckoViewTest : BaseSessionTest() {
                 "dom.ipc.processPriorityManager.backgroundGracePeriodMS" to 0,
                 "dom.ipc.processPriorityManager.backgroundPerceivableGracePeriodMS" to 0,
                 "fission.webContentIsolationStrategy" to 1,
-            ),
+            )
         )
 
         // Can't use getSessionPid until the session is loaded,
@@ -267,7 +273,7 @@ class GeckoViewTest : BaseSessionTest() {
         val initialPids = sessionRule.getAllSessionPids()
         assertTrue("Only one session PID detected on startup", initialPids.size == 1)
         val initialPid = initialPids.first()
-        val initialOomScore = getContentProcessesOomScore(listOf(initialPid)).first()
+        val initialOomScoreAdj = getContentProcessesOomScoreAdj(listOf(initialPid)).first()
 
         mainSession.setActive(true)
         mainSession.setActive(false)
@@ -275,30 +281,26 @@ class GeckoViewTest : BaseSessionTest() {
         mainSession.loadTestPath(HELLO_HTML_PATH)
         mainSession.waitForPageStop()
         val loadedPid = sessionRule.getSessionPid(mainSession)
-        val loadedOomScore = getContentProcessesOomScore(listOf(loadedPid)).first()
+        val loadedOomScoreAdj = getContentProcessesOomScoreAdj(listOf(loadedPid)).first()
 
         val isLoadedActive = sessionRule.getActive(mainSession)
         assertFalse("The session was set to inactive.", isLoadedActive)
 
-        if (env.isFission) {
-            assertTrue("A process switch did occur for fission, so the PIDs are different.", initialPid != loadedPid)
+        assertTrue("A process switch did occur for fission, so the PIDs are different.", initialPid != loadedPid)
 
-            // Note that higher oom score means less priority
-            assertTrue(
-                "The initial oom score has more priority than the loaded oom score because it was backgrounded.",
-                loadedOomScore > initialOomScore,
-            )
-            assertTrue("The initial oom score indicates higher priority because it started in the foreground.", initialOomScore < 300)
-            assertTrue("The loaded oom score indicates lower priority because it is backgrounded.", loadedOomScore > 300)
-        } else {
-            assertTrue("A process switch did not occur.", initialPid == loadedPid)
-
-            // setActive(false) occurred on this PID, give time for it to settle
-            UiThreadUtils.waitForCondition({
-                getContentProcessesOomScore(listOf(loadedPid)).first() > 100
-            }, env.defaultTimeoutMillis)
-            assertTrue("The loaded oom score indicates low priority.", true)
-        }
+        // Note that higher oom score means less priority
+        assertTrue(
+            "The initial oom score adj has more priority than the loaded oom score because it was backgrounded.",
+            loadedOomScoreAdj > initialOomScoreAdj,
+        )
+        assertTrue(
+            "The initial oom score adj indicates higher priority because it started in the foreground.",
+            initialOomScoreAdj == 0,
+        )
+        assertTrue(
+            "The loaded oom score adj indicates lower priority because it is backgrounded.",
+            loadedOomScoreAdj == 900,
+        )
     }
 
     private fun visit(
@@ -316,7 +318,6 @@ class GeckoViewTest : BaseSessionTest() {
 
     @Test
     @NullDelegate(Autofill.Delegate::class)
-    @SdkSuppress(minSdkVersion = Build.VERSION_CODES.O)
     fun autofillWithNoSession() {
         mainSession.loadTestPath(FORMS_XORIGIN_HTML_PATH)
         mainSession.waitForPageStop()
@@ -324,21 +325,24 @@ class GeckoViewTest : BaseSessionTest() {
         val autofills =
             mapOf(
                 "#user1" to "username@example.com",
-                "#user2" to "username@example.com",
                 "#pass1" to "test-password",
-                "#pass2" to "test-password",
             )
+        val notFilled = listOf("#user2", "#pass2")
 
-        // Set up promises to monitor the values changing.
-        val promises =
-            autofills.map { entry ->
-                // Repeat each test with both the top document and the iframe document.
-                mainSession.evaluatePromiseJS(
-                    """
-                window.getDataForAllFrames('${entry.key}', '${entry.value}')
-                """,
-                )
-            }
+        // Only the form containing the focused field is filled.
+        val promises = autofills.map { entry ->
+            mainSession.evaluatePromiseJS(
+                """
+                getData('${entry.key}', '${entry.value}')
+                """
+            )
+        }
+
+        mainSession.evaluateJS("document.querySelector('#user1').focus()")
+        UiThreadUtils.waitForCondition(
+            { mainSession.autofillSession.focused != null },
+            env.defaultTimeoutMillis,
+        )
 
         activityRule.scenario.onActivity {
             val root = MockViewStructure(View.NO_ID)
@@ -362,18 +366,32 @@ class GeckoViewTest : BaseSessionTest() {
             it.view.setSession(session)
 
             // Wait on the promises and check for correct values.
-            for (values in promises.map { p -> p.value.asJsonArray() }) {
-                for (i in 0 until values.length()) {
-                    val (key, actual, expected, eventInterface) = values.get(i).asJSList<String>()
+            for (values in promises.map { p -> p.value.asJSList<String>() }) {
+                val (key, actual, expected, eventInterface) = values
 
-                    assertThat("Auto-filled value must match ($key)", actual, equalTo(expected))
-                    assertThat(
-                        "input event should be dispatched with InputEvent interface",
-                        eventInterface,
-                        equalTo("InputEvent"),
-                    )
-                }
+                assertThat("Auto-filled value must match ($key)", actual, equalTo(expected))
+                assertThat(
+                    "input event should be dispatched with InputEvent interface",
+                    eventInterface,
+                    equalTo("InputEvent"),
+                )
             }
+        }
+
+        for (key in autofills.keys + notFilled) {
+            assertThat(
+                "Field in the unfocused iframe must not be filled ($key)",
+                mainSession.evaluatePromiseJS("window.getIframeValue('$key')").value as String,
+                equalTo("foo"),
+            )
+        }
+
+        for (key in notFilled) {
+            assertThat(
+                "Field outside the focused form must not be filled ($key)",
+                mainSession.evaluateJS("document.querySelector('$key').value") as String,
+                equalTo("foo"),
+            )
         }
     }
 
@@ -549,8 +567,7 @@ class GeckoViewTest : BaseSessionTest() {
 
         override fun newHtmlInfoBuilder(p0: String): HtmlInfo.Builder = MockHtmlInfoBuilder()
 
-        override fun setHtmlInfo(p0: HtmlInfo) {
-        }
+        override fun setHtmlInfo(p0: HtmlInfo) {}
     }
 
     class MockHtmlInfoBuilder : ViewStructure.HtmlInfo.Builder() {

@@ -1,28 +1,28 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsCSPService.h"
+
 #include "mozilla/Logging.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_security.h"
-#include "nsString.h"
+#include "mozilla/dom/PolicyContainer.h"
+#include "mozilla/net/DocumentChannel.h"
+#include "mozilla/net/DocumentLoadListener.h"
+#include "nsAsyncRedirectVerifyHelper.h"
 #include "nsCOMPtr.h"
-#include "nsIURI.h"
-#include "nsIContent.h"
-#include "nsCSPService.h"
-#include "nsIContentSecurityPolicy.h"
+#include "nsContentPolicyUtils.h"
+#include "nsContentUtils.h"
 #include "nsError.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
-#include "nsAsyncRedirectVerifyHelper.h"
-#include "nsContentUtils.h"
-#include "nsContentPolicyUtils.h"
-#include "nsNetUtil.h"
+#include "nsIContent.h"
+#include "nsIContentSecurityPolicy.h"
 #include "nsIProtocolHandler.h"
+#include "nsIURI.h"
+#include "nsNetUtil.h"
 #include "nsQueryObject.h"
-#include "mozilla/net/DocumentLoadListener.h"
-#include "mozilla/net/DocumentChannel.h"
+#include "nsString.h"
 
 using namespace mozilla;
 
@@ -105,6 +105,11 @@ static bool SubjectToCSP(nsILoadInfo* aLoadInfo, nsIURI* aURI,
             "chrome://global/content/TopLevelVideoDocument.js")) {
       return false;
     }
+    // Treat chrome: scripts loaded by pdf.js like resource://pdf.js/ scripts.
+    if (contentType == ExtContentPolicyType::TYPE_SCRIPT &&
+        nsContentUtils::IsPDFJS(aLoadInfo->GetLoadingPrincipal())) {
+      return false;
+    }
     if (!isImgOrStyleOrDTD) {
       return true;
     }
@@ -181,32 +186,15 @@ static bool SubjectToCSP(nsILoadInfo* aLoadInfo, nsIURI* aURI,
   // the csp should be overruled (e.g. by an ExpandedPrincipal)
   // then loadinfo->GetCsp() returns that CSP instead of the
   // document's CSP.
-  nsCOMPtr<nsIContentSecurityPolicy> csp = aLoadInfo->GetCsp();
+  nsCOMPtr<nsIPolicyContainer> policyContainer =
+      aLoadInfo->GetPolicyContainer();
+  nsCOMPtr<nsIContentSecurityPolicy> csp =
+      PolicyContainer::GetCSP(policyContainer);
 
   if (csp) {
-    // Generally aOriginalURI denotes the URI before a redirect and hence
-    // will always be a nullptr here. Only exception are frame navigations
-    // which we want to treat as a redirect for the purpose of CSP reporting
-    // and in particular the `blocked-uri` in the CSP report where we want
-    // to report the prePath information.
-    nsCOMPtr<nsIURI> originalURI = nullptr;
-    ExtContentPolicyType extType =
-        nsContentUtils::InternalContentPolicyTypeToExternal(contentType);
-    if (extType == ExtContentPolicy::TYPE_SUBDOCUMENT &&
-        !aLoadInfo->GetOriginalFrameSrcLoad() &&
-        mozilla::StaticPrefs::
-            security_csp_truncate_blocked_uri_for_frame_navigations()) {
-      nsAutoCString prePathStr;
-      nsresult rv = aContentLocation->GetPrePath(prePathStr);
-      NS_ENSURE_SUCCESS(rv, rv);
-      rv = NS_NewURI(getter_AddRefs(originalURI), prePathStr);
-      NS_ENSURE_SUCCESS(rv, rv);
-    }
-
-    // obtain the enforcement decision
     rv = csp->ShouldLoad(
         contentType, cspEventListener, aLoadInfo, aContentLocation,
-        originalURI,  // no redirect, unless it's a frame navigation.
+        /* aOriginalURIIfRedirect */ nullptr,
         !isPreload && aLoadInfo->GetSendCSPViolationEvents(), aDecision);
 
     if (NS_CP_REJECTED(*aDecision)) {
@@ -374,7 +362,10 @@ nsresult CSPService::ConsultCSPForRedirect(nsIURI* aOriginalURI,
   }
 
   // 2) Apply actual CSP to all loads
-  nsCOMPtr<nsIContentSecurityPolicy> csp = aLoadInfo->GetCsp();
+  nsCOMPtr<nsIPolicyContainer> policyContainer =
+      aLoadInfo->GetPolicyContainer();
+  nsCOMPtr<nsIContentSecurityPolicy> csp =
+      PolicyContainer::GetCSP(policyContainer);
   if (csp) {
     // Pass  originalURI to indicate the redirect
     csp->ShouldLoad(policyType,  // load type per nsIContentPolicy (uint32_t)

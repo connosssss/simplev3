@@ -125,6 +125,34 @@ add_task(async function testGetSites() {
   await SiteDataTestUtils.clear();
 });
 
+add_task(async function testHasSiteData() {
+  Assert.equal(
+    await SiteDataManager.hasSiteData("www.example.com"),
+    false,
+    "hasSiteData returns false with no data"
+  );
+
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN,
+    name: "foo",
+    value: "bar",
+  });
+
+  Assert.equal(
+    await SiteDataManager.hasSiteData("www.example.com"),
+    true,
+    "hasSiteData returns true once a cookie exists"
+  );
+
+  Assert.equal(
+    await SiteDataManager.hasSiteData("no-data.example"),
+    false,
+    "hasSiteData returns false for a host with no data"
+  );
+
+  await SiteDataTestUtils.clear();
+});
+
 add_task(async function testGetTotalUsage() {
   await SiteDataManager.updateSites();
   let sites = await SiteDataManager.getSites();
@@ -200,7 +228,7 @@ add_task(async function testRemove() {
   let usage = await SiteDataTestUtils.getQuotaUsage(EXAMPLE_ORIGIN);
   Assert.equal(usage, 0, "Has cleared quota usage for example.com");
 
-  let cookies = Services.cookies.countCookiesFromHost("example.com");
+  let cookies = Services.cookies.getCookiesFromHost("example.com", {}).length;
   Assert.equal(cookies, 0, "Has cleared cookies for example.com");
 
   let perm = PermissionTestUtils.testPermission(uri, "persistent-storage");
@@ -269,7 +297,7 @@ add_task(async function testRemoveSiteData() {
   usage = await SiteDataTestUtils.getQuotaUsage(EXAMPLE_ORIGIN_2);
   Assert.equal(usage, 0, "Has cleared quota usage for example.org");
 
-  let cookies = Services.cookies.countCookiesFromHost("example.org");
+  let cookies = Services.cookies.getCookiesFromHost("example.org", {}).length;
   Assert.equal(cookies, 0, "Has cleared cookies for example.org");
 
   // removeSiteData only clears storage and cookies, not cache.
@@ -356,7 +384,7 @@ add_task(async function testRemove() {
   usage = await SiteDataTestUtils.getQuotaUsage(EXAMPLE_ORIGIN_2);
   Assert.equal(usage, 0, "Has cleared quota usage for example.org");
 
-  let cookies = Services.cookies.countCookiesFromHost("example.org");
+  let cookies = Services.cookies.getCookiesFromHost("example.org", {}).length;
   Assert.equal(cookies, 0, "Has cleared cookies for example.org");
 
   Assert.equal(

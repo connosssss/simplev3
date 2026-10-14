@@ -1,5 +1,5 @@
 // META: title=test WebNN API subgraph with multiple operations
-// META: global=window,worker
+// META: global=window
 // META: variant=?cpu
 // META: variant=?gpu
 // META: variant=?npu
@@ -156,6 +156,65 @@ const subgraphTests = [
             1.4716796875, 1.0791015625, 1.1552734375, 1.6572265625
           ],
           'descriptor': {shape: [9], dataType: 'float16'}
+        }
+      }
+    }
+  },
+  {
+    'name': 'conv2d default + gather / float16',
+    'graph': {
+      'inputs': {
+        'conv2dInput': {
+          'data': [
+            0.6123046875,    0.8857421875,      0.13671875,
+            0.564453125,     0.896484375,       0.367919921875,
+            0.68115234375,   0.047943115234375, 0.33349609375,
+            0.1988525390625, 0.41162109375,     0.079345703125,
+            0.42724609375,   0.53564453125,     0.59130859375,
+            0.2841796875,    0.414794921875,    0.0269012451171875,
+            0.362060546875,  0.99462890625,     0.07183837890625,
+            0.1220703125,    0.84228515625,     0.453857421875,
+            0.21533203125
+          ],
+          'descriptor': {shape: [1, 1, 5, 5], dataType: 'float16'}
+        },
+        'conv2dFilter': {
+          'data': [
+            0.38037109375, 0.52783203125, 0.219482421875, 0.366943359375,
+            0.33984375, 0.419921875, 0.380615234375, 0.1944580078125,
+            0.56884765625
+          ],
+          'descriptor': {shape: [1, 1, 3, 3], dataType: 'float16'},
+        },
+        'gatherIndices': {
+          'data': [2, 0, 1],
+          'descriptor': {shape: [3], dataType: 'int32'},
+          'constant': true
+        }
+      },
+      'operators': [
+        {
+          'name': 'conv2d',
+          'arguments': [{'input': 'conv2dInput'}, {'filter': 'conv2dFilter'}],
+          'outputs': 'conv2dOutput'
+        },
+        {
+          'name': 'gather',
+          'arguments': [
+            {'input': 'conv2dOutput'}, {'indices': 'gatherIndices'},
+            {'options': {'axis': 2}}
+          ],
+          'outputs': 'output'
+        },
+      ],
+      'expectedOutputs': {
+        'output': {
+          'data': [
+            1.0791015625, 1.1552734375, 1.6572265625,
+            1.5322265625, 1.357421875, 1.3642578125,
+            1.0712890625, 1.1259765625, 1.4716796875
+          ],
+          'descriptor': {shape: [1, 1, 3, 3], dataType: 'float16'}
         }
       }
     }
@@ -2345,7 +2404,7 @@ const subgraphTests = [
         },
         {
           'name': 'softmax',
-          'arguments': [{'input': 'convTranspose2dOutput'}, , {'axis': 1}],
+          'arguments': [{'input': 'convTranspose2dOutput'}, {'axis': 1}],
           'outputs': 'output'
         },
       ],
@@ -2394,7 +2453,7 @@ const subgraphTests = [
         },
         {
           'name': 'softmax',
-          'arguments': [{'input': 'convTranspose2dOutput'}, , {'axis': 1}],
+          'arguments': [{'input': 'convTranspose2dOutput'}, {'axis': 1}],
           'outputs': 'output'
         },
       ],
@@ -2524,6 +2583,58 @@ const subgraphTests = [
     }
   },
   {
+    'name': 'gatherElements + matmul',
+    'graph': {
+      'inputs': {
+        'gatherElementsInput': {
+          'data': [
+            -66.05901336669922, -68.9197006225586, -77.02045440673828,
+            -26.158037185668945, 89.0337142944336, -45.89653396606445,
+            43.84803771972656, 48.81806945800781, 51.79948425292969
+          ],
+          'descriptor': {shape: [3, 3], dataType: 'float32'}
+        },
+        'gatherElementsIndices': {
+          'data': [1, 0, 2, 2, 1, 0],
+          'descriptor': {shape: [2, 3], dataType: 'int32'},
+          'constant': true
+        },
+        'matmulB': {
+          'data': [
+            56.46701431274414,  99.86045837402344,  71.054931640625,
+            32.454383850097656, 17.310747146606445, 2.586275100708008,
+          ],
+          'descriptor': {shape: [3, 2], dataType: 'float32'}
+        },
+      },
+      'operators': [
+        {
+          'name': 'gatherElements',
+          'arguments': [
+            {'input': 'gatherElementsInput'}, {'indices': 'gatherElementsIndices'}
+          ],
+          'outputs': 'gatherElementsOutput'
+        },
+        {
+          'name': 'matmul',
+          'arguments': [
+            {'a': 'gatherElementsOutput'}, {'b': 'matmulB'}
+          ],
+          'outputs': 'matmulOutput'
+        }
+      ],
+      'expectedOutputs': {
+        'matmulOutput': {
+          'data': [
+            -5477.462890625, -4714.93212890625,
+            7468.97021484375, 7069.02294921875
+          ],
+          'descriptor': {shape: [2, 2], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
     'name': 'float16 graph with float32 input and output',
     'graph': {
       'inputs': {
@@ -2562,12 +2673,65 @@ const subgraphTests = [
       }
     }
   },
+  {
+    'name': 'identity + relu',
+    'graph': {
+      'inputs': {
+        'identityInput': {
+          'data': [-4, -1, 1, 4],
+          'descriptor': {shape: [4], dataType: 'float32'}
+        }
+      },
+      'operators': [
+        {
+          'name': 'identity',
+          'arguments': [{'input': 'identityInput'}],
+          'outputs': 'identityOutput'
+        },
+        {
+          'name': 'relu',
+          'arguments': [{'input': 'identityOutput'}],
+          'outputs': 'output'
+        },
+      ],
+      'expectedOutputs': {
+        'output': {
+          'data': [0, 0, 1, 4],
+          'descriptor': {shape: [4], dataType: 'float32'}
+        }
+      }
+    }
+  },
+  {
+    'name': 'identity + relu / float16',
+    'graph': {
+      'inputs': {
+        'identityInput': {
+          'data': [-4, -1, 1, 4],
+          'descriptor': {shape: [4], dataType: 'float16'}
+        }
+      },
+      'operators': [
+        {
+          'name': 'identity',
+          'arguments': [{'input': 'identityInput'}],
+          'outputs': 'identityOutput'
+        },
+        {
+          'name': 'relu',
+          'arguments': [{'input': 'identityOutput'}],
+          'outputs': 'output'
+        },
+      ],
+      'expectedOutputs': {
+        'output': {
+          'data': [0, 0, 1, 4],
+          'descriptor': {shape: [4], dataType: 'float16'}
+        }
+      }
+    }
+  },
 ];
 
-if (navigator.ml) {
-  subgraphTests.forEach((test) => {
-    webnn_conformance_test(buildAndExecuteGraph, getPrecisionTolerance, test);
-  });
-} else {
-  test(() => assert_implements(navigator.ml, 'missing navigator.ml'));
-}
+webnn_conformance_test(
+    subgraphTests, buildAndExecuteGraph, getPrecisionTolerance);

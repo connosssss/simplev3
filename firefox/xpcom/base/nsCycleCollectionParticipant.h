@@ -1,13 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsCycleCollectionParticipant_h__
-#define nsCycleCollectionParticipant_h__
+#ifndef nsCycleCollectionParticipant_h_
+#define nsCycleCollectionParticipant_h_
 
 #include <type_traits>
+
 #include "js/HeapAPI.h"
 #include "js/TypeDecls.h"
 #include "mozilla/MacroForEach.h"
@@ -412,15 +411,15 @@ class NS_NO_VTABLE nsCycleCollectionParticipant {
   }
 
  protected:
-  NS_IMETHOD_(bool) CanSkipReal(void* aPtr, bool aRemovingAllowed) {
+  NS_IMETHOD_(bool) CanSkipReal(void* /*aPtr*/, bool /*aRemovingAllowed*/) {
     NS_ASSERTION(false, "Forgot to implement CanSkipReal?");
     return false;
   }
-  NS_IMETHOD_(bool) CanSkipInCCReal(void* aPtr) {
+  NS_IMETHOD_(bool) CanSkipInCCReal(void* /*aPtr*/) {
     NS_ASSERTION(false, "Forgot to implement CanSkipInCCReal?");
     return false;
   }
-  NS_IMETHOD_(bool) CanSkipThisReal(void* aPtr) {
+  NS_IMETHOD_(bool) CanSkipThisReal(void* /*aPtr*/) {
     NS_ASSERTION(false, "Forgot to implement CanSkipThisReal?");
     return false;
   }
@@ -543,7 +542,7 @@ class NS_NO_VTABLE nsXPCOMCycleCollectionParticipant
 
 // The default implementation of this class template is empty, because it
 // should never be used: see the partial specializations below.
-template <typename T, bool IsXPCOM = std::is_base_of<nsISupports, T>::value>
+template <typename T, bool IsXPCOM = std::is_base_of_v<nsISupports, T>>
 struct DowncastCCParticipantImpl {};
 
 // Specialization for XPCOM CC participants
@@ -576,10 +575,10 @@ T* DowncastCCParticipant(void* aPtr) {
 
 // See documentation for nsCycleCollectionParticipant::CanSkip for documentation
 // about this method.
-#define NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_BEGIN(_class)                       \
-  NS_IMETHODIMP_(bool)                                                        \
-  NS_CYCLE_COLLECTION_CLASSNAME(_class)::CanSkipReal(void* p,                 \
-                                                     bool aRemovingAllowed) { \
+#define NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_BEGIN(_class)  \
+  NS_IMETHODIMP_(bool)                                   \
+  NS_CYCLE_COLLECTION_CLASSNAME(_class)::CanSkipReal(    \
+      void* p, [[maybe_unused]] bool aRemovingAllowed) { \
     _class* tmp = DowncastCCParticipant<_class>(p);
 
 #define NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_END \
@@ -698,9 +697,10 @@ T* DowncastCCParticipant(void* aPtr) {
 // Helpers for implementing nsScriptObjectTracer::Trace
 ///////////////////////////////////////////////////////////////////////////////
 
-#define NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(_class)               \
-  void NS_CYCLE_COLLECTION_CLASSNAME(_class)::Trace(               \
-      void* p, const TraceCallbacks& aCallbacks, void* aClosure) { \
+#define NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(_class)              \
+  void NS_CYCLE_COLLECTION_CLASSNAME(_class)::Trace(              \
+      void* p, [[maybe_unused]] const TraceCallbacks& aCallbacks, \
+      [[maybe_unused]] void* aClosure) {                          \
     _class* tmp = DowncastCCParticipant<_class>(p);
 
 #define NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(_class, _base_class) \
@@ -725,10 +725,23 @@ T* DowncastCCParticipant(void* aPtr) {
 // If a class defines a participant, then QIing an instance of that class to
 // nsXPCOMCycleCollectionParticipant should produce that participant.
 #ifdef DEBUG
+#  ifdef __clang__
+/* clang-format off */
+#    define IGNORE_UNNECESSARY_VIRTUAL_SPECIFIER(...)                         \
+      _Pragma("clang diagnostic push")                                        \
+      _Pragma("clang diagnostic ignored \"-Wunnecessary-virtual-specifier\"") \
+      __VA_ARGS__                                                             \
+      _Pragma("clang diagnostic pop")
+/* clang-format on */
+#  else
+#    define IGNORE_UNNECESSARY_VIRTUAL_SPECIFIER(...) __VA_ARGS__
+#  endif
 #  define NS_CHECK_FOR_RIGHT_PARTICIPANT_BASE \
-    virtual void CheckForRightParticipant()
+    IGNORE_UNNECESSARY_VIRTUAL_SPECIFIER(     \
+        virtual void CheckForRightParticipant())
 #  define NS_CHECK_FOR_RIGHT_PARTICIPANT_DERIVED \
-    virtual void CheckForRightParticipant() override
+    IGNORE_UNNECESSARY_VIRTUAL_SPECIFIER(        \
+        virtual void CheckForRightParticipant() override)
 #  define NS_CHECK_FOR_RIGHT_PARTICIPANT_BODY(_class)             \
     {                                                             \
       nsXPCOMCycleCollectionParticipant* p;                       \
@@ -750,22 +763,20 @@ T* DowncastCCParticipant(void* aPtr) {
 #define NS_DECL_CYCLE_COLLECTION_CLASS_NAME_METHOD(_class) \
   NS_IMETHOD_(const char*) ClassName() override { return #_class; };
 
-#define NS_DECL_CYCLE_COLLECTION_CLASS_BODY(_class, _base)                     \
- public:                                                                       \
-  NS_IMETHOD TraverseNative(void* p, nsCycleCollectionTraversalCallback& cb)   \
-      override;                                                                \
-  NS_DECL_CYCLE_COLLECTION_CLASS_NAME_METHOD(_class)                           \
-  NS_IMETHOD_(void) DeleteCycleCollectable(void* p) override {                 \
-    DowncastCCParticipant<_class>(p)->DeleteCycleCollectable();                \
-  }                                                                            \
-  static _class* Downcast(nsISupports* s) {                                    \
-    return static_cast<_class*>(static_cast<_base*>(s));                       \
-  }                                                                            \
-  static nsISupports* Upcast(_class* p) {                                      \
-    return NS_ISUPPORTS_CAST(_base*, p);                                       \
-  }                                                                            \
-  template <typename T>                                                        \
-  friend nsISupports* ToSupports(T* p, NS_CYCLE_COLLECTION_INNERCLASS* dummy); \
+#define NS_DECL_CYCLE_COLLECTION_CLASS_BODY(_class, _base)                   \
+ public:                                                                     \
+  NS_IMETHOD TraverseNative(void* p, nsCycleCollectionTraversalCallback& cb) \
+      override;                                                              \
+  NS_DECL_CYCLE_COLLECTION_CLASS_NAME_METHOD(_class)                         \
+  NS_IMETHOD_(void) DeleteCycleCollectable(void* p) override {               \
+    DowncastCCParticipant<_class>(p)->DeleteCycleCollectable();              \
+  }                                                                          \
+  static _class* Downcast(nsISupports* s) {                                  \
+    return static_cast<_class*>(static_cast<_base*>(s));                     \
+  }                                                                          \
+  static nsISupports* Upcast(_class* p) {                                    \
+    return NS_ISUPPORTS_CAST(_base*, p);                                     \
+  }                                                                          \
   NS_IMETHOD_(void) Unlink(void* p) override;
 
 #define NS_PARTICIPANT_AS(type, participant) \
@@ -783,8 +794,9 @@ T* DowncastCCParticipant(void* aPtr) {
  * builds.
  */
 #ifdef DEBUG
-#  define NOT_INHERITED_CANT_OVERRIDE \
-    virtual void BaseCycleCollectable() final {}
+#  define NOT_INHERITED_CANT_OVERRIDE                                        \
+    IGNORE_UNNECESSARY_VIRTUAL_SPECIFIER(virtual void BaseCycleCollectable() \
+                                             final{})
 #else
 #  define NOT_INHERITED_CANT_OVERRIDE
 #endif
@@ -1193,4 +1205,4 @@ inline void ImplCycleCollectionTraverse(
       aField);
 }
 
-#endif  // nsCycleCollectionParticipant_h__
+#endif  // nsCycleCollectionParticipant_h_

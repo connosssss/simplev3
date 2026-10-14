@@ -6,31 +6,23 @@
 const { AddonTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/AddonTestUtils.sys.mjs"
 );
+const { SearchService } = ChromeUtils.importESModule(
+  "moz-src:///toolkit/components/search/SearchService.sys.mjs"
+);
 const { SearchTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/SearchTestUtils.sys.mjs"
 );
-const { TelemetryTestUtils } = ChromeUtils.importESModule(
-  "resource://testing-common/TelemetryTestUtils.sys.mjs"
-);
 
 SearchTestUtils.init(this);
-
-const TELEMETRY_EVENTS_FILTERS = {
-  category: "addonsSearchDetection",
-  method: "etld_change",
-};
-
-// The search-detection built-in add-on records events in the parent process.
-const TELEMETRY_TEST_UTILS_OPTIONS = { clear: true, process: "parent" };
 
 async function testClientSideRedirect({
   background,
   permissions,
   telemetryExpected = false,
   redirectingAppProvidedEngine = false,
+  sameSiteParamChanged = null,
 }) {
   Services.fog.testResetFOG();
-  Services.telemetry.clearEvents();
 
   // Load an extension that does a client-side redirect. We expect this
   // extension to be reported in a Telemetry event when `telemetryExpected` is
@@ -56,7 +48,7 @@ async function testClientSideRedirect({
     {
       gBrowser,
       url: redirectingAppProvidedEngine
-        ? "https://example.org/default?q=babar"
+        ? "https://example.org/default?pc=MOZ&q=babar"
         : "https://example.com/search?q=babar",
     },
     () => {}
@@ -64,40 +56,47 @@ async function testClientSideRedirect({
 
   await extension.unload();
 
-  TelemetryTestUtils.assertEvents(
-    telemetryExpected
-      ? [
-          {
-            object: "webrequest",
-            value: "extension",
-            extra: {
-              addonId,
-              addonVersion,
-              from: redirectingAppProvidedEngine
-                ? "example.org"
-                : "example.com",
-              to: "mochi.test",
-            },
-          },
-        ]
-      : [],
-    TELEMETRY_EVENTS_FILTERS,
-    TELEMETRY_TEST_UTILS_OPTIONS
-  );
-
   let events = Glean.addonsSearchDetection.etldChangeWebrequest.testGetValue();
   if (!telemetryExpected) {
-    Assert.equal(null, events);
+    Assert.equal(events, null, "expected no etldChangeWebrequest events");
   } else {
-    Assert.equal(1, events.length);
-    Assert.equal("extension", events[0].extra.value);
-    Assert.equal(addonId, events[0].extra.addonId);
-    Assert.equal(addonVersion, events[0].extra.addonVersion);
-    Assert.equal(
-      redirectingAppProvidedEngine ? "example.org" : "example.com",
-      events[0].extra.from
+    Assert.deepEqual(
+      events[0]?.extra,
+      {
+        value: "extension",
+        addonId,
+        addonVersion,
+        from: redirectingAppProvidedEngine ? "example.org" : "example.com",
+        to: "mochi.test",
+      },
+      "etldChangeWebrequest event has the expected extra properties"
     );
-    Assert.equal("mochi.test", events[0].extra.to);
+    Assert.equal(
+      events.length,
+      1,
+      "got the expected number of etldChangeWebrequest events"
+    );
+  }
+
+  let ssr = Glean.addonsSearchDetection.sameSiteRedirect.testGetValue();
+  if (sameSiteParamChanged == null) {
+    Assert.equal(ssr, null, "expected no sameSiteRedirect events");
+  } else {
+    Assert.deepEqual(
+      ssr[0]?.extra,
+      {
+        addonId,
+        addonVersion,
+        origin: "example.org",
+        paramChanged: String(sameSiteParamChanged),
+      },
+      "sameSiteRedirect event has the expected extra properties"
+    );
+    Assert.equal(
+      ssr.length,
+      1,
+      "got the expected number of sameSiteRedirect events"
+    );
   }
 }
 
@@ -108,10 +107,12 @@ add_setup(async function () {
     {
       identifier: "default",
       base: {
+        partnerCode: "MOZ",
         urls: {
           search: {
             base: "https://example.org/default",
             searchTermParamName: "q",
+            params: [{ name: "pc", value: "{partnerCode}" }],
           },
         },
       },
@@ -125,7 +126,7 @@ add_setup(async function () {
   });
 
   Assert.ok(
-    !!Services.search.getEngineByName(searchEngineName),
+    !!SearchService.getEngineByName(searchEngineName),
     "test search engine registered"
   );
 });
@@ -255,5 +256,56 @@ add_task(function test_onHeadersReceived_url_not_monitored() {
     },
     permissions: ["webRequest", "webRequestBlocking", "*://google.com/*"],
     telemetryExpected: false,
+  });
+});
+
+add_task(function test_sameSiteRedirect_paramUnchanged() {
+  // This test extension redirects searches within the same domain
+  // without touching the `paramName`.  We don't expect normal
+  // telemetry but expect the sameSiteRedirect Glean event.
+  return testClientSideRedirect({
+    background() {
+      browser.webRequest.onBeforeRequest.addListener(
+        () => {
+          return {
+            redirectUrl: "https://example.org/default?noise=13&pc=MOZ&q=blah",
+          };
+        },
+        { urls: ["*://example.org/default?pc=MOZ*"] },
+        ["blocking"]
+      );
+
+      browser.test.sendMessage("ready");
+    },
+    permissions: ["webRequest", "webRequestBlocking", "*://example.org/*"],
+    redirectingAppProvidedEngine: true,
+    telemetryExpected: false,
+    sameSiteParamChanged: false,
+  });
+});
+
+add_task(function test_sameSiteRedirect_paramChanged() {
+  // This test extension redirects searches within the same domain
+  // while also changing the `paramName`. We don't expect normal
+  // telemetry but expect the sameSiteRedirect Glean event,
+  // with paramChange value set to true.
+  return testClientSideRedirect({
+    background() {
+      browser.webRequest.onBeforeRequest.addListener(
+        () => {
+          return {
+            redirectUrl: "https://example.org/default?pc=BNG&q=blah",
+          };
+        },
+        { urls: ["*://example.org/default?pc=MOZ*"] },
+        ["blocking"]
+      );
+
+      browser.test.sendMessage("ready");
+    },
+    permissions: ["webRequest", "webRequestBlocking", "*://example.org/*"],
+    redirectingAppProvidedEngine: true,
+    telemetryExpected: false,
+    sameSiteParamChanged: true,
   });
 });

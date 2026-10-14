@@ -25,7 +25,6 @@ const { AppConstants } = ChromeUtils.importESModule(
 );
 ChromeUtils.defineESModuleGetters(this, {
   ObjectUtils: "resource://gre/modules/ObjectUtils.sys.mjs",
-  Preferences: "resource://gre/modules/Preferences.sys.mjs",
 });
 
 const Telemetry = Services.telemetry;
@@ -36,9 +35,6 @@ const MAX_BAR_CHARS = 25;
 const PREF_TELEMETRY_SERVER_OWNER = "toolkit.telemetry.server_owner";
 const PREF_TELEMETRY_ENABLED = "toolkit.telemetry.enabled";
 const PREF_DEBUG_SLOW_SQL = "toolkit.telemetry.debugSlowSql";
-const PREF_SYMBOL_SERVER_URI = "profiler.symbolicationUrl";
-const DEFAULT_SYMBOL_SERVER_URI =
-  "https://symbolication.services.mozilla.com/symbolicate/v4";
 const PREF_FHR_UPLOAD_ENABLED = "datareporting.healthreport.uploadEnabled";
 
 // ms idle before applying the filter (allow uninterrupted typing)
@@ -175,8 +171,7 @@ var Settings = {
             var { EventDispatcher } = ChromeUtils.importESModule(
               "resource://gre/modules/Messaging.sys.mjs"
             );
-            EventDispatcher.instance.sendRequest({
-              type: "Settings:Show",
+            EventDispatcher.instance.sendRequest("Settings:Show", {
               resource: "preferences_privacy",
             });
           } else {
@@ -622,83 +617,8 @@ var EnvironmentData = {
       return;
     }
 
-    let ignore = ["addons"];
-    let env = filterObject(ping.environment, ignore);
-    let sections = sectionalizeObject(env);
+    let sections = sectionalizeObject(ping.environment);
     GenericSubsection.render(sections, dataDiv, "environment-data-section");
-
-    // We use specialized rendering here to make the addon and plugin listings
-    // more readable.
-    this.createAddonSection(dataDiv, ping);
-  },
-
-  renderAddonsObject(addonObj, addonSection, sectionTitle) {
-    let table = document.createElement("table");
-    table.setAttribute("id", sectionTitle);
-    this.appendAddonSubsectionTitle(sectionTitle, table);
-
-    for (let id of Object.keys(addonObj)) {
-      let addon = addonObj[id];
-      this.appendHeadingName(table, addon.name || id);
-      this.appendAddonID(table, id);
-      let data = explodeObject(addon);
-
-      for (let [key, value] of data) {
-        this.appendRow(table, key, value);
-      }
-    }
-
-    addonSection.appendChild(table);
-  },
-
-  renderKeyValueObject(addonObj, addonSection, sectionTitle) {
-    let data = explodeObject(addonObj);
-    let table = GenericTable.render(data);
-    table.setAttribute("class", sectionTitle);
-    this.appendAddonSubsectionTitle(sectionTitle, table);
-    addonSection.appendChild(table);
-  },
-
-  appendAddonID(table, addonID) {
-    this.appendRow(table, "id", addonID);
-  },
-
-  appendHeadingName(table, name) {
-    let headings = document.createElement("tr");
-    this.appendColumn(headings, "th", name);
-    headings.cells[0].colSpan = 2;
-    table.appendChild(headings);
-  },
-
-  appendAddonSubsectionTitle(section, table) {
-    let caption = document.createElement("caption");
-    caption.appendChild(document.createTextNode(section));
-    table.appendChild(caption);
-  },
-
-  createAddonSection(dataDiv, ping) {
-    if (!ping || !("environment" in ping) || !("addons" in ping.environment)) {
-      return;
-    }
-    let addonSection = document.createElement("div");
-    addonSection.setAttribute("class", "subsection-data subdata");
-    let addons = ping.environment.addons;
-    this.renderAddonsObject(addons.activeAddons, addonSection, "activeAddons");
-    this.renderKeyValueObject(addons.theme, addonSection, "theme");
-    this.renderAddonsObject(
-      addons.activeGMPlugins,
-      addonSection,
-      "activeGMPlugins"
-    );
-
-    let hasAddonData = !!Object.keys(ping.environment.addons).length;
-    let s = GenericSubsection.renderSubsectionHeader(
-      "addons",
-      hasAddonData,
-      "environment-data-section"
-    );
-    s.appendChild(addonSection);
-    dataDiv.appendChild(s);
   },
 
   appendRow(table, id, value) {
@@ -736,7 +656,7 @@ var SlowSQL = {
 
     let debugSlowSql =
       PingPicker.viewCurrentPingData &&
-      Preferences.get(PREF_DEBUG_SLOW_SQL, false);
+      Services.prefs.getBoolPref(PREF_DEBUG_SLOW_SQL, false);
     let slowSql = debugSlowSql ? Telemetry.debugSlowSQL : aPing.payload.slowSQL;
     if (!slowSql) {
       setHasData("slow-sql-section", false);
@@ -977,89 +897,6 @@ var RawPayloadData = {
       });
   },
 };
-
-function SymbolicationRequest(
-  aPrefix,
-  aRenderHeader,
-  aMemoryMap,
-  aStacks,
-  aDurations = null
-) {
-  this.prefix = aPrefix;
-  this.renderHeader = aRenderHeader;
-  this.memoryMap = aMemoryMap;
-  this.stacks = aStacks;
-  this.durations = aDurations;
-}
-/**
- * A callback for onreadystatechange. It replaces the numeric stack with
- * the symbolicated one returned by the symbolication server.
- */
-SymbolicationRequest.prototype.handleSymbolResponse =
-  async function SymbolicationRequest_handleSymbolResponse() {
-    if (this.symbolRequest.readyState != 4) {
-      return;
-    }
-
-    let fetchElement = document.getElementById(this.prefix + "-fetch-symbols");
-    fetchElement.hidden = true;
-    let hideElement = document.getElementById(this.prefix + "-hide-symbols");
-    hideElement.hidden = false;
-    let div = document.getElementById(this.prefix);
-    removeAllChildNodes(div);
-    let errorMessage = await document.l10n.formatValue(
-      "about-telemetry-error-fetching-symbols"
-    );
-
-    if (this.symbolRequest.status != 200) {
-      div.appendChild(document.createTextNode(errorMessage));
-      return;
-    }
-
-    let jsonResponse = {};
-    try {
-      jsonResponse = JSON.parse(this.symbolRequest.responseText);
-    } catch (e) {
-      div.appendChild(document.createTextNode(errorMessage));
-      return;
-    }
-
-    for (let i = 0; i < jsonResponse.length; ++i) {
-      let stack = jsonResponse[i];
-      this.renderHeader(i, this.durations);
-
-      for (let symbol of stack) {
-        div.appendChild(document.createTextNode(symbol));
-        div.appendChild(document.createElement("br"));
-      }
-      div.appendChild(document.createElement("br"));
-    }
-  };
-/**
- * Send a request to the symbolication server to symbolicate this stack.
- */
-SymbolicationRequest.prototype.fetchSymbols =
-  function SymbolicationRequest_fetchSymbols() {
-    let symbolServerURI = Preferences.get(
-      PREF_SYMBOL_SERVER_URI,
-      DEFAULT_SYMBOL_SERVER_URI
-    );
-    let request = {
-      memoryMap: this.memoryMap,
-      stacks: this.stacks,
-      version: 3,
-    };
-    let requestJSON = JSON.stringify(request);
-
-    this.symbolRequest = new XMLHttpRequest();
-    this.symbolRequest.open("POST", symbolServerURI, true);
-    this.symbolRequest.setRequestHeader("Content-type", "application/json");
-    this.symbolRequest.setRequestHeader("Content-length", requestJSON.length);
-    this.symbolRequest.setRequestHeader("Connection", "close");
-    this.symbolRequest.onreadystatechange =
-      this.handleSymbolResponse.bind(this);
-    this.symbolRequest.send(requestJSON);
-  };
 
 var Histogram = {
   /**
@@ -1528,9 +1365,10 @@ var Search = {
   },
 };
 
-/*
+/**
  * Helper function to render JS objects with white space between top level elements
  * so that they look better in the browser
+ *
  * @param   aObject JavaScript object or array to render
  * @return  String
  */
@@ -1622,6 +1460,7 @@ var GenericTable = {
 
   /**
    * Returns a n-column table.
+   *
    * @param rows An array of arrays, each containing data to render
    *             for one row.
    * @param headings The column header strings.
@@ -1710,6 +1549,7 @@ var KeyedHistogram = {
 var AddonDetails = {
   /**
    * Render the addon details section as a series of headers followed by key/value tables
+   *
    * @param aPing A ping object to render the data from.
    */
   render(aPing) {
@@ -1840,6 +1680,7 @@ class Scalars extends Section {
 
   /**
    * Render the scalar data - if present - from the payload in a simple key-value table.
+   *
    * @param aPayload A payload object to render the data from.
    */
   static render(aPayload) {
@@ -1890,6 +1731,7 @@ class KeyedScalars extends Section {
 
   /**
    * Render the keyed scalar data - if present - from the payload in a simple key-value table.
+   *
    * @param aPayload A payload object to render the data from.
    */
   static render(aPayload) {
@@ -1902,6 +1744,7 @@ class KeyedScalars extends Section {
 var Events = {
   /**
    * Render the event data - if present - from the payload in a simple table.
+   *
    * @param aPayload A payload object to render the data from.
    */
   render(aPayload) {
@@ -1985,7 +1828,10 @@ function setHasData(aSectionID, aHasData) {
  * Sets l10n attributes based on the Telemetry Server Owner pref.
  */
 function setupServerOwnerBranding() {
-  let serverOwner = Preferences.get(PREF_TELEMETRY_SERVER_OWNER, "Mozilla");
+  let serverOwner = Services.prefs.getStringPref(
+    PREF_TELEMETRY_SERVER_OWNER,
+    "Mozilla"
+  );
   const elements = [
     [document.getElementById("page-subtitle"), "about-telemetry-page-subtitle"],
   ];
@@ -2198,33 +2044,6 @@ function setupListeners() {
 
   let search = document.getElementById("search");
   search.addEventListener("input", Search.searchHandler);
-
-  document
-    .getElementById("late-writes-fetch-symbols")
-    .addEventListener("click", function () {
-      if (!gPingData) {
-        return;
-      }
-
-      let lateWrites = gPingData.payload.lateWrites;
-      let req = new SymbolicationRequest(
-        "late-writes",
-        LateWritesSingleton.renderHeader,
-        lateWrites.memoryMap,
-        lateWrites.stacks
-      );
-      req.fetchSymbols();
-    });
-
-  document
-    .getElementById("late-writes-hide-symbols")
-    .addEventListener("click", function () {
-      if (!gPingData) {
-        return;
-      }
-
-      LateWritesSingleton.renderLateWrites(gPingData.payload.lateWrites);
-    });
 }
 
 // Restores the sections states
@@ -2293,37 +2112,6 @@ function onLoad() {
     await PingPicker.update();
   });
 }
-
-var LateWritesSingleton = {
-  renderHeader: function LateWritesSingleton_renderHeader(aIndex) {
-    StackRenderer.renderHeader(
-      "late-writes",
-      "about-telemetry-late-writes-title",
-      { lateWriteCount: aIndex + 1 }
-    );
-  },
-
-  renderLateWrites: function LateWritesSingleton_renderLateWrites(lateWrites) {
-    let hasData = !!(
-      lateWrites &&
-      lateWrites.stacks &&
-      lateWrites.stacks.length
-    );
-    setHasData("late-writes-section", hasData);
-    if (!hasData) {
-      return;
-    }
-
-    let stacks = lateWrites.stacks;
-    let memoryMap = lateWrites.memoryMap;
-    StackRenderer.renderStacks(
-      "late-writes",
-      stacks,
-      memoryMap,
-      LateWritesSingleton.renderHeader
-    );
-  },
-};
 
 class HistogramSection extends Section {
   /**
@@ -2614,8 +2402,6 @@ function displayRichPingData(ping, updatePayloadList) {
 
   // Show event data.
   Events.render(payload);
-
-  LateWritesSingleton.renderLateWrites(payload.lateWrites);
 
   // Show simple measurements
   SimpleMeasurements.render(payload);

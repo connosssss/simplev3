@@ -13,7 +13,6 @@ AntiTracking.runTest(
     try {
       // We load the test script in the parent process to check permissions.
       let chromeScript = SpecialPowers.loadChromeScript(_ => {
-        /* eslint-env mozilla/chrome-script */
         addMessageListener("go", _ => {
           function ok(what, msg) {
             sendAsyncMessage("ok", { what: !!what, msg });
@@ -95,13 +94,7 @@ AntiTracking.runTest(
   },
 
   // Cleanup callback
-  async _ => {
-    await new Promise(resolve => {
-      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
-        resolve()
-      );
-    });
-  },
+  clearSiteTestData,
   [], // extra prefs
   true, // run the window.open() test
   true, // run the user interaction test

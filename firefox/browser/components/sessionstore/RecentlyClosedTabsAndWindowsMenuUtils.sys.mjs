@@ -4,33 +4,24 @@
 
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
-const lazy = {};
-
-ChromeUtils.defineESModuleGetters(lazy, {
+const lazy = XPCOMUtils.declareLazy({
+  closedTabsFromAllWindowsEnabled: {
+    pref: "browser.sessionstore.closedTabsFromAllWindows",
+  },
+  closedTabsFromClosedWindowsEnabled: {
+    pref: "browser.sessionstore.closedTabsFromClosedWindows",
+  },
+  l10n: () => new Localization(["browser/recentlyClosed.ftl"], true),
   PlacesUIUtils: "moz-src:///browser/components/places/PlacesUIUtils.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
-  SessionStore: "resource:///modules/sessionstore/SessionStore.sys.mjs",
-  SessionWindowUI: "resource:///modules/sessionstore/SessionWindowUI.sys.mjs",
+  SessionStore:
+    "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
+  SessionWindowUI:
+    "moz-src:///browser/components/sessionstore/SessionWindowUI.sys.mjs",
 });
-
-ChromeUtils.defineLazyGetter(lazy, "l10n", () => {
-  return new Localization(["browser/recentlyClosed.ftl"], true);
-});
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  lazy,
-  "closedTabsFromAllWindowsEnabled",
-  "browser.sessionstore.closedTabsFromAllWindows"
-);
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  lazy,
-  "closedTabsFromClosedWindowsEnabled",
-  "browser.sessionstore.closedTabsFromClosedWindows"
-);
 
 /**
- * @returns {Map<string, TabGroupStateData>}
+ * @returns {Map<TabGroupId, ClosedTabGroupStateData>}
  *   Map of closed tab groups keyed by tab group ID
  */
 function getClosedTabGroupsById() {
@@ -45,6 +36,7 @@ function getClosedTabGroupsById() {
 export var RecentlyClosedTabsAndWindowsMenuUtils = {
   /**
    * Builds up a document fragment of UI items for the recently closed tabs.
+   *
    * @param   {Window} aWindow
    *          The window that the tabs were closed in.
    * @param   {"menuitem"|"toolbarbutton"} aTagName
@@ -141,6 +133,7 @@ export var RecentlyClosedTabsAndWindowsMenuUtils = {
 
   /**
    * Builds up a document fragment of UI items for the recently closed windows.
+   *
    * @param   {Window} aWindow
    *          A window that can be used to create the elements and document fragment.
    * @param   {"menuitem"|"toolbarbutton"} aTagName
@@ -156,11 +149,31 @@ export var RecentlyClosedTabsAndWindowsMenuUtils = {
         const { selected, tabs, title } = closedWindowData[i];
         const selectedTab = tabs[selected - 1];
         if (selectedTab) {
+          const closedAt = closedWindowData[i].closedAt;
+          const tabCount = tabs.length;
+          const labelArgs = {
+            tabCount,
+            winTitle: title,
+            closedAt,
+          };
           const menuLabel = lazy.l10n.formatValueSync(
-            "recently-closed-undo-close-window-label",
-            { tabCount: tabs.length - 1, winTitle: title }
+            "recently-closed-window-panel-tooltip",
+            labelArgs
           );
-          createEntry(aTagName, true, i, selectedTab, doc, menuLabel, fragment);
+          let tooltipText = null;
+          if (aTagName == "toolbarbutton") {
+            tooltipText = menuLabel;
+          }
+          createEntry(
+            aTagName,
+            true,
+            i,
+            selectedTab,
+            doc,
+            menuLabel,
+            fragment,
+            tooltipText
+          );
         }
       }
 
@@ -179,11 +192,12 @@ export var RecentlyClosedTabsAndWindowsMenuUtils = {
 
   /**
    * Handle a command event to re-open all closed tabs
+   *
    * @param aEvent
    *        The command event when the user clicks the restore all menu item
    */
   onRestoreAllTabsCommand(aEvent) {
-    const currentWindow = aEvent.target.ownerGlobal;
+    const currentWindow = aEvent.target.documentGlobal;
     const browserWindows = lazy.closedTabsFromAllWindowsEnabled
       ? lazy.SessionStore.getWindows(currentWindow)
       : [currentWindow];
@@ -227,7 +241,7 @@ export var RecentlyClosedTabsAndWindowsMenuUtils = {
       undoAllInTabData(
         tabData,
         tab => {
-          lazy.SessionStore.undoCloseTabFromClosedWindow(
+          lazy.SessionStore.undoClosedTabFromClosedWindow(
             { sourceClosedId: tab.sourceClosedId },
             tab.closedId,
             currentWindow
@@ -246,6 +260,7 @@ export var RecentlyClosedTabsAndWindowsMenuUtils = {
 
   /**
    * Handle a command event to re-open all closed windows
+   *
    * @param aEvent
    *        The command event when the user clicks the restore all menu item
    */
@@ -259,6 +274,7 @@ export var RecentlyClosedTabsAndWindowsMenuUtils = {
   /**
    * Re-open a closed tab and put it to the end of the tab strip.
    * Used for a middle click.
+   *
    * @param aEvent
    *        The event when the user clicks the menu item
    */
@@ -290,21 +306,25 @@ export var RecentlyClosedTabsAndWindowsMenuUtils = {
 };
 
 /**
- * @param {Element} element
+ * @param {XULElement} element
  * @param {TabGroupStateData} tabGroup
  */
 function setTabGroupColorProperties(element, tabGroup) {
   element.style.setProperty(
     "--tab-group-color",
-    `var(--tab-group-color-${tabGroup.color})`
+    `var(--tab-group-${tabGroup.color})`
   );
   element.style.setProperty(
     "--tab-group-color-invert",
-    `var(--tab-group-color-${tabGroup.color}-invert)`
+    `var(--tab-group-${tabGroup.color}-invert)`
   );
   element.style.setProperty(
     "--tab-group-color-pale",
-    `var(--tab-group-color-${tabGroup.color}-pale)`
+    `var(--tab-group-${tabGroup.color}-pale)`
+  );
+  element.style.setProperty(
+    "--tab-group-background-color",
+    `var(--tab-group-${tabGroup.color})`
   );
 }
 
@@ -312,7 +332,7 @@ function setTabGroupColorProperties(element, tabGroup) {
  * Creates a `menuitem` for the tab group that will expand to a newly
  * created submenu of the tab group's tab contents when selected.
  *
- * @param {TabGroupStateData} aTabGroup
+ * @param {ClosedTabGroupStateData} aTabGroup
  *        Session store state for the closed tab group.
  * @param {number} aIndex
  *        The index of the first tab in the tab group, relative to the tab strip.
@@ -375,7 +395,7 @@ function createTabGroupSubmenu(
  * Creates a `toolbarbutton` for the tab group that will navigate to a newly
  * created subpanel of the tab group's tab contents when selected.
  *
- * @param {TabGroupStateData} aTabGroup
+ * @param {ClosedTabGroupStateData} aTabGroup
  *        Session store state for the closed tab group.
  * @param {number} aIndex
  *        The index of the first tab in the tab group, relative to the tab strip.
@@ -456,7 +476,7 @@ function createTabGroupSubpanel(
   panelview.appendChild(reopenTabGroupItem);
 
   element.addEventListener("command", () => {
-    aDocument.ownerGlobal.PanelUI.showSubView(panelview.id, element);
+    aDocument.documentGlobal.PanelUI.showSubView(panelview.id, element);
   });
 
   aFragment.appendChild(panelview);
@@ -465,20 +485,24 @@ function createTabGroupSubpanel(
 
 /**
  * Create a UI entry for a recently closed tab, tab group, or window.
+ *
  * @param {"menuitem"|"toolbarbutton"} aTagName
  *        the tag name that will be used when creating the UI entry
  * @param {boolean} aIsWindowsFragment
  *        whether or not this entry will represent a closed window
  * @param {number} aIndex
  *        the index of the closed tab
- * @param {TabStateData} aClosedTab
- *        the closed tab
+ * @param {ClosedTabStateData|TabStateData} aClosedTab
+ *        the closed tab, or the selected tab of the closed window when
+ *        `aIsWindowsFragment` is set
  * @param {Document} aDocument
  *        a document that can be used to create the entry
  * @param {string} aMenuLabel
  *        the label the created entry will have
- * @param {DocumentFragment} aFragment
- *        the fragment the created entry will be in
+ * @param {DocumentFragment|XULElement} aParent
+ *        the fragment or element the created entry will be appended to
+ * @param {string} [aTooltipText]
+ *        optional tooltip text for the created entry
  */
 function createEntry(
   aTagName,
@@ -487,47 +511,55 @@ function createEntry(
   aClosedTab,
   aDocument,
   aMenuLabel,
-  aFragment
+  aParent,
+  aTooltipText
 ) {
   let element = aDocument.createXULElement(aTagName);
 
   element.setAttribute("label", aMenuLabel);
+  if (aTooltipText) {
+    element.setAttribute("tooltiptext", aTooltipText);
+    element.setAttribute("aria-description", aTooltipText);
+  }
   if (aClosedTab.image) {
     const iconURL = lazy.PlacesUIUtils.getImageURL(aClosedTab.image);
-    element.setAttribute("image", iconURL);
+    element.setAttribute("image", ChromeUtils.encodeURIForSrcset(iconURL));
   }
 
   if (aIsWindowsFragment) {
     element.addEventListener("command", () =>
       lazy.SessionWindowUI.undoCloseWindow(aIndex)
     );
-  } else if (typeof aClosedTab.sourceClosedId == "number") {
-    // sourceClosedId is used to look up the closed window to remove it when the tab is restored
-    let sourceClosedId = aClosedTab.sourceClosedId;
-    element.setAttribute("source-closed-id", sourceClosedId);
-    element.setAttribute("value", aClosedTab.closedId);
-    element.addEventListener(
-      "command",
-      () => {
-        lazy.SessionStore.undoClosedTabFromClosedWindow(
-          { sourceClosedId },
-          aClosedTab.closedId
-        );
-      },
-      { once: true }
-    );
   } else {
-    // sourceWindowId is used to look up the closed tab entry to remove it when it is restored
-    let sourceWindowId = aClosedTab.sourceWindowId;
-    element.setAttribute("value", aIndex);
-    element.setAttribute("source-window-id", sourceWindowId);
-    element.addEventListener("command", event =>
-      lazy.SessionWindowUI.undoCloseTab(
-        event.target.ownerGlobal,
-        aIndex,
-        sourceWindowId
-      )
-    );
+    const closedTab = /** @type {ClosedTabStateData} */ (aClosedTab);
+    if (typeof closedTab.sourceClosedId == "number") {
+      // sourceClosedId is used to look up the closed window to remove it when the tab is restored
+      let sourceClosedId = closedTab.sourceClosedId;
+      element.setAttribute("source-closed-id", String(sourceClosedId));
+      element.setAttribute("value", String(closedTab.closedId));
+      element.addEventListener(
+        "command",
+        () => {
+          lazy.SessionStore.undoClosedTabFromClosedWindow(
+            { sourceClosedId },
+            closedTab.closedId
+          );
+        },
+        { once: true }
+      );
+    } else {
+      // sourceWindowId is used to look up the closed tab entry to remove it when it is restored
+      let sourceWindowId = closedTab.sourceWindowId;
+      element.setAttribute("value", String(aIndex));
+      element.setAttribute("source-window-id", sourceWindowId);
+      element.addEventListener("command", event =>
+        lazy.SessionWindowUI.undoCloseTab(
+          /** @type {Node} */ (event.target).documentGlobal,
+          aIndex,
+          sourceWindowId
+        )
+      );
+    }
   }
 
   if (aTagName == "menuitem") {
@@ -543,10 +575,10 @@ function createEntry(
   }
 
   // Set the targetURI attribute so it will be shown in tooltip.
-  // SessionStore uses one-based indexes, so we need to normalize them.
-  let tabData;
-  tabData = aIsWindowsFragment ? aClosedTab : aClosedTab.state;
-  let activeIndex = (tabData.index || tabData.entries.length) - 1;
+  let tabData = aIsWindowsFragment
+    ? /** @type {TabStateData} */ (aClosedTab)
+    : /** @type {ClosedTabStateData} */ (aClosedTab).state;
+  let activeIndex = lazy.SessionStore.historyIndex(tabData);
   if (activeIndex >= 0 && tabData.entries[activeIndex]) {
     element.setAttribute("targetURI", tabData.entries[activeIndex].url);
   }
@@ -570,7 +602,7 @@ function createEntry(
     );
   }
 
-  aFragment.appendChild(element);
+  aParent.appendChild(element);
 }
 
 /**

@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/// <reference path="./moz-reorderable-list.tagmap.d.ts" />
+
 import { html } from "../vendor/lit.all.mjs";
 import { MozLitElement } from "../lit-utils.mjs";
 
@@ -23,6 +25,11 @@ const REORDER_PROP = "__mozReorderableIndex";
  * - `targetElement`: The element over which the dragged element was dropped.
  * - `position`: The position of the drop relative to the target element. -1
  *   means before, 0 means after.
+ * - `draggedIndex`: The original index of the dragged element.
+ * - `targetIndex`: The index of the target element.
+ * - `insertAt`: The index at which the dragged element should be inserted after
+ *   it has been removed from its original position (i.e. accounting for the
+ *   left-shift caused by splicing it out).
  *
  * Which children are reorderable is determined by the `itemSelector` property.
  *
@@ -36,13 +43,16 @@ const REORDER_PROP = "__mozReorderableIndex";
  *   sufficient.
  *
  * @tagname moz-reorderable-list
- * @property {string} itemSelector - Selector for elements that should be
- *   reorderable.
+ * @property {string} itemSelector
+ *   Selector for elements that should be reorderable.
+ * @property {string} dragSelector
+ *   Selector used when only part of the reorderable element should be draggable,
+ *   e.g. we use a button or an icon as a "handle" to drag the element.
  * @fires reorder - Fired when an item is dropped in a new position.
  * @fires dragstarted - Fired when an item is dragged.
  * @fires dragended - Fired when an item is dropped.
  */
-export default class MozReorderableList extends MozLitElement {
+export class MozReorderableList extends MozLitElement {
   static queries = {
     slotEl: "slot",
     indicatorEl: ".indicator",
@@ -50,6 +60,7 @@ export default class MozReorderableList extends MozLitElement {
 
   static properties = {
     itemSelector: { type: String },
+    dragSelector: { type: String },
   };
 
   #draggedElement = null;
@@ -84,7 +95,6 @@ export default class MozReorderableList extends MozLitElement {
   firstUpdated() {
     super.firstUpdated();
     this.getItems();
-    this.addDraggableAttribute();
   }
 
   connectedCallback() {
@@ -106,30 +116,31 @@ export default class MozReorderableList extends MozLitElement {
     for (const mutation of mutationList) {
       if (mutation.addedNodes.length || mutation.removedNodes.length) {
         needsUpdate = true;
-      }
-
-      for (const addedNode of mutation.addedNodes) {
-        if (addedNode.nodeType === Node.ELEMENT_NODE) {
-          this.addDraggableAttribute(addedNode);
-        }
+        break;
       }
     }
 
     if (needsUpdate) {
-      this.getItems();
+      // Defer re-querying for items until the next paint to ensure any
+      // asynchronously rendered (i.e. Lit-based) elements are in the DOM.
+      requestAnimationFrame(() => {
+        this.getItems();
+      });
     }
   }
 
   /**
-   * Add the draggable attribute to all items that match the selector.
-   *
-   * @see getItems for information about the root parameter.
+   * Add the draggable attribute non-XUL elements.
    */
-  addDraggableAttribute(root) {
-    let items = root
-      ? this.getAssignedElementsBySelector(this.itemSelector, root)
-      : this.#items;
-    for (const item of items) {
+  addDraggableAttribute(items) {
+    let draggableItems = items;
+    if (this.dragSelector) {
+      draggableItems = this.getAssignedElementsBySelector(
+        this.dragSelector,
+        items
+      );
+    }
+    for (const item of draggableItems) {
       // Unlike XUL elements, HTML elements are not draggable by default.
       // So we need to set the draggable attribute on all items that match the selector.
       if (!this.isXULElement(item)) {
@@ -139,7 +150,7 @@ export default class MozReorderableList extends MozLitElement {
   }
 
   onDragStart(event) {
-    let draggedElement = event.target.closest(this.itemSelector);
+    let draggedElement = this.getTargetItemFromEvent(event);
     if (!draggedElement) {
       return;
     }
@@ -154,6 +165,30 @@ export default class MozReorderableList extends MozLitElement {
     this.emitEvent(DRAGSTART_EVENT, {
       draggedElement,
     });
+
+    // In privileged documents, use a canvas element combined with the
+    // drawWindow API to create a more accurate drag image. This is especially
+    // useful when dragging composite custom elements.
+    if (window.document.nodePrincipal?.isSystemPrincipal) {
+      let rect = this.getBounds(draggedElement);
+      let scale = window.devicePixelRatio || 1;
+
+      let canvas = document.createElement("canvas");
+      canvas.width = rect.width * scale;
+      canvas.height = rect.height * scale;
+
+      let context = canvas.getContext("2d");
+      context.scale(scale, scale);
+      context.drawWindow(
+        window,
+        rect.left,
+        rect.top,
+        rect.width,
+        rect.height,
+        "rgb(255,255,255)"
+      );
+      event.dataTransfer.setDragImage(canvas, 0, 0);
+    }
 
     // XUL elements need dataTransfer values to be set for drag and drop to work.
     if (this.isXULElement(draggedElement)) {
@@ -192,14 +227,20 @@ export default class MozReorderableList extends MozLitElement {
 
     this.indicatorEl.hidden = false;
     if (position < 0) {
-      this.indicatorEl.style.top = `${itemRect.top - containerRect.top}px`;
+      const top = itemRect.top - containerRect.top;
+      // Ensure the indicator is rendered inside the container when moving an
+      // item to the top of the list. This cancels out the negative margin based
+      // on the indicator height set in the css, see Bug 2033867 for details.
+      this.indicatorEl.style.top = `${Math.max(this.indicatorEl.offsetHeight, top)}px`;
     } else {
       this.indicatorEl.style.top = `${itemRect.bottom - containerRect.top}px`;
     }
   }
 
   onDragLeave(event) {
-    if (!event.target.matches(this.itemSelector)) {
+    let path = event.composedPath();
+    let draggedEl = path.find(el => el.matches?.(this.itemSelector));
+    if (!draggedEl) {
       return;
     }
     let target = event.relatedTarget;
@@ -242,9 +283,14 @@ export default class MozReorderableList extends MozLitElement {
     this.emitEvent(REORDER_EVENT, {
       draggedElement: this.#draggedElement,
       targetElement: this.#dropTargetInfo.targetElement,
-      position: this.#dropTargetInfo.position,
+      position,
       draggedIndex,
       targetIndex,
+      // +1 to insert after target; subtract 1 when draggedIndex < targetIndex
+      // to compensate for the left-shift after splice.
+      insertAt:
+        (position < 0 ? targetIndex : targetIndex + 1) -
+        (draggedIndex < targetIndex ? 1 : 0),
     });
     this.onDragEnd();
   }
@@ -286,10 +332,17 @@ export default class MozReorderableList extends MozLitElement {
       return undefined;
     }
 
+    let targetIndex = fromIndex + direction;
     return {
       draggedElement: fromEl,
       targetElement: items[fromIndex + direction],
       position: Math.min(direction, 0),
+      draggedIndex: fromIndex,
+      targetIndex,
+      // Keyboard moves are always single-step, whereas drag-n-drop has more
+      // flexibility. With a keyboard move, the drop position equals the target
+      // index, so the post-splice insertion index is simply the target index.
+      insertAt: targetIndex,
     };
   }
 
@@ -297,7 +350,7 @@ export default class MozReorderableList extends MozLitElement {
    * Creates a CustomEvent and dispatches it on the element.
    *
    * @param {string} eventName The name of the event
-   * @param {Object} [detail] The detail object to pass to the event
+   * @param {object} [detail] The detail object to pass to the event
    */
   emitEvent(eventName, detail) {
     const customEvent = new CustomEvent(eventName, {
@@ -307,13 +360,17 @@ export default class MozReorderableList extends MozLitElement {
   }
 
   /**
-   * Returns all draggable items based on the itemSelector
+   * Returns all draggable items based on the itemSelector. Adds reorderable
+   * indices and ensures elements are draggable.
    *
    * @see getAssignedElementsBySelector for parameters
    */
   getItems() {
     let items = this.getAssignedElementsBySelector(this.itemSelector);
-    items.forEach((item, i) => (item[REORDER_PROP] = i));
+    this.addDraggableAttribute(items);
+    items.forEach((item, i) => {
+      item[REORDER_PROP] = i;
+    });
     this.#items = items;
   }
 
@@ -332,14 +389,26 @@ export default class MozReorderableList extends MozLitElement {
       root = [root];
     }
 
-    return root.reduce((acc, item) => {
-      if (item.matches(selector)) {
-        acc.push(item);
-      } else {
-        acc.push(...item.querySelectorAll(selector));
-      }
-      return acc;
-    }, []);
+    const collectEls = items => {
+      return items.flatMap(item => {
+        if (item.matches(selector)) {
+          return item;
+        }
+
+        let nestedEls =
+          item.shadowRoot?.querySelectorAll(selector) ??
+          item.querySelectorAll(selector);
+        if (nestedEls.length) {
+          return [...nestedEls];
+        }
+
+        let nextEls =
+          item.localName == "slot" ? item.assignedElements() : item.children;
+        return collectEls([...(nextEls ?? [])]);
+      });
+    };
+
+    return collectEls(root);
   }
 
   /**
@@ -381,8 +450,9 @@ export default class MozReorderableList extends MozLitElement {
    * target
    */
   getTargetItemFromEvent(event) {
-    const target = event.target;
-    const targetItem = target.closest(this.itemSelector);
+    const targetItem =
+      event.target.closest(this.itemSelector) ||
+      event.originalTarget.closest(this.itemSelector);
     return targetItem;
   }
 

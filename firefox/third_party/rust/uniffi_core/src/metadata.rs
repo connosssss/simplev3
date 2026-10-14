@@ -39,7 +39,6 @@ pub mod codes {
     pub const TRAIT_METHOD: u8 = 10;
     pub const UNIFFI_TRAIT: u8 = 11;
     pub const TRAIT_INTERFACE: u8 = 12;
-    pub const CALLBACK_TRAIT_INTERFACE: u8 = 13;
     pub const OBJECT_TRAIT_IMPL: u8 = 14;
     pub const CUSTOM_TYPE: u8 = 15;
 
@@ -69,8 +68,14 @@ pub mod codes {
     pub const TYPE_CUSTOM: u8 = 22;
     pub const TYPE_RESULT: u8 = 23;
     pub const TYPE_TRAIT_INTERFACE: u8 = 24;
-    pub const TYPE_CALLBACK_TRAIT_INTERFACE: u8 = 25;
+    pub const TYPE_BOX: u8 = 26;
+    pub const TYPE_HASH_SET: u8 = 27;
     pub const TYPE_UNIT: u8 = 255;
+
+    // TraitKind sub-codes.
+    pub const TRAIT_KIND_RUST_ONLY: u8 = 0;
+    pub const TRAIT_KIND_BOTH: u8 = 1;
+    pub const TRAIT_KIND_FOREIGN_ONLY: u8 = 2;
 
     // Literal codes for LiteralMetadata
     pub const LIT_STR: u8 = 0;
@@ -81,12 +86,18 @@ pub mod codes {
     pub const LIT_SOME: u8 = 5;
     pub const LIT_EMPTY_SEQ: u8 = 6;
     pub const LIT_EMPTY_MAP: u8 = 7;
+    pub const LIT_EMPTY_SET: u8 = 8;
+
+    // DefaultValue codes
+    pub const DEFVALUE_DEFAULT: u8 = 0;
+    pub const DEFVALUE_LITERAL: u8 = 1;
 }
 
-// For large errors (e.g. enums) a buffer size of ~4k - ~8k
-// is not enough. See issues on Github: #1968 and #2041 and
-// for an example see fixture/large-error
-const BUF_SIZE: usize = 16384;
+// For large enums and small items with large docstrings we want this to be
+// large - but not so large the compiler's memory becomes a problem.
+// See eg, #1968, #2041, 2531, fixtures/large-error
+// I guess we keep doubling this until morale improves :)
+const BUF_SIZE: usize = 32768;
 
 // This struct is a kludge around the fact that Rust const generic support doesn't quite handle our
 // needs.

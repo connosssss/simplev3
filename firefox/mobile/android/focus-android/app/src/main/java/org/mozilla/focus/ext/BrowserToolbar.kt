@@ -9,19 +9,19 @@ import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.core.view.isVisible
 import mozilla.components.browser.toolbar.BrowserToolbar
 import mozilla.components.concept.engine.EngineView
+import mozilla.components.ui.widgets.behavior.DependencyGravity.Top
 import mozilla.components.ui.widgets.behavior.EngineViewClippingBehavior
-import mozilla.components.ui.widgets.behavior.EngineViewScrollingBehavior
+import mozilla.components.ui.widgets.behavior.EngineViewScrollingGesturesBehavior
 import org.mozilla.focus.R
-import mozilla.components.ui.widgets.behavior.ViewPosition as browserToolbarPosition
 
 private const val BOTTOM_TOOLBAR_HEIGHT = 0
 
 /**
- * Collapse the toolbar and block it from appearing until calling [enableDynamicBehavior].
- * Useful in situations like entering fullscreen.
+ * Collapse the toolbar and block it from appearing until calling [enableDynamicBehavior]. Useful in situations like
+ * entering fullscreen.
  *
- * @param engineView [EngineView] previously set to react to toolbar's dynamic behavior.
- * Will now go through a bit of cleanup to ensure everything will be displayed nicely even without a toolbar.
+ * @param engineView [EngineView] previously set to react to toolbar's dynamic behavior. Will now go through a bit of
+ *   cleanup to ensure everything will be displayed nicely even without a toolbar.
  */
 fun BrowserToolbar.disableDynamicBehavior(engineView: EngineView) {
     (layoutParams as? CoordinatorLayout.LayoutParams)?.behavior = null
@@ -32,30 +32,32 @@ fun BrowserToolbar.disableDynamicBehavior(engineView: EngineView) {
 }
 
 /**
- * Expand the toolbar and reenable the dynamic behavior.
- * Useful after [disableDynamicBehavior] for situations like exiting fullscreen.
+ * Expand the toolbar and reenable the dynamic behavior. Useful after [disableDynamicBehavior] for situations like
+ * exiting fullscreen.
  *
  * @param context [Context] used in setting up the dynamic behavior.
  * @param engineView [EngineView] that should react to toolbar's dynamic behavior.
  */
 fun BrowserToolbar.enableDynamicBehavior(context: Context, engineView: EngineView) {
-    (layoutParams as? CoordinatorLayout.LayoutParams)?.behavior = EngineViewScrollingBehavior(
-        context,
-        null,
-        browserToolbarPosition.TOP,
-    )
+    (layoutParams as? CoordinatorLayout.LayoutParams)?.behavior =
+        EngineViewScrollingGesturesBehavior(
+            engineView = engineView,
+            dependency = this,
+            dependencyGravity = Top,
+        )
 
     val toolbarHeight = context.resources.getDimension(R.dimen.browser_toolbar_height).toInt()
     engineView.setDynamicToolbarMaxHeight(toolbarHeight)
     (engineView.asView().layoutParams as? CoordinatorLayout.LayoutParams)?.apply {
         topMargin = 0
-        behavior = EngineViewClippingBehavior(
-            context,
-            null,
-            engineView.asView(),
-            toolbarHeight,
-            BOTTOM_TOOLBAR_HEIGHT,
-        )
+        behavior =
+            EngineViewClippingBehavior(
+                context,
+                null,
+                engineView.asView(),
+                toolbarHeight,
+                BOTTOM_TOOLBAR_HEIGHT,
+            )
     }
 }
 

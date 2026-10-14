@@ -10,7 +10,7 @@ XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "MediaManagerService",
   "@mozilla.org/mediaManagerService;1",
-  "nsIMediaManagerService"
+  Ci.nsIMediaManagerService
 );
 
 const kBrowserURL = AppConstants.BROWSER_CHROME_URL;
@@ -386,7 +386,7 @@ function prompt(
   // Note that we basically do the permission delegate check in
   // nsIContentPermissionRequest, but because webrtc uses their own prompting
   // system, we should manually apply the delegate policy here. Permission
-  // should be delegated using Feature Policy and top principal
+  // should be delegated using Permissions Policy and top principal
   const permDelegateHandler =
     aContentWindow.document.permDelegateHandler.QueryInterface(
       Ci.nsIPermissionDelegateHandler

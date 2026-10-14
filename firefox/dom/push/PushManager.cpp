@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,10 +5,11 @@
 #include "mozilla/dom/PushManager.h"
 
 #include "mozilla/Base64.h"
-#include "mozilla/Preferences.h"
 #include "mozilla/Components.h"
-#include "mozilla/Unused.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/dom/PermissionStatusBinding.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/PromiseWorkerProxy.h"
 #include "mozilla/dom/PushManagerBinding.h"
 #include "mozilla/dom/PushSubscription.h"
 #include "mozilla/dom/PushSubscriptionOptionsBinding.h"
@@ -18,17 +17,14 @@
 #include "mozilla/dom/ServiceWorker.h"
 #include "mozilla/dom/WorkerRunnable.h"
 #include "mozilla/dom/WorkerScope.h"
-
-#include "mozilla/dom/Promise.h"
-#include "mozilla/dom/PromiseWorkerProxy.h"
-
+#include "mozilla/dom/notification/NotificationUtils.h"
+#include "nsComponentManagerUtils.h"
+#include "nsContentUtils.h"
 #include "nsIGlobalObject.h"
 #include "nsIPermissionManager.h"
 #include "nsIPrincipal.h"
 #include "nsIPushService.h"
-
-#include "nsComponentManagerUtils.h"
-#include "nsContentUtils.h"
+#include "nsPIDOMWindowInlines.h"
 #include "nsServiceManagerUtils.h"
 
 namespace mozilla::dom {
@@ -191,7 +187,7 @@ class GetSubscriptionCallback final : public nsIPushSubscriptionCallback {
 
   // Convenience method for use in this file.
   void OnPushSubscriptionError(nsresult aStatus) {
-    Unused << NS_WARN_IF(NS_FAILED(OnPushSubscription(aStatus, nullptr)));
+    (void)NS_WARN_IF(NS_FAILED(OnPushSubscription(aStatus, nullptr)));
   }
 
  protected:
@@ -221,6 +217,7 @@ class GetSubscriptionRunnable final : public Runnable {
     AssertIsOnMainThread();
 
     nsCOMPtr<nsIPrincipal> principal;
+    nsCOMPtr<nsIPrincipal> effectiveStoragePrincipal;
 
     {
       // Bug 1228723: If permission is revoked or an error occurs, the
@@ -232,6 +229,8 @@ class GetSubscriptionRunnable final : public Runnable {
         return NS_OK;
       }
       principal = mProxy->GetWorkerPrivate()->GetPrincipal();
+      effectiveStoragePrincipal =
+          mProxy->GetWorkerPrivate()->GetEffectiveStoragePrincipal();
     }
 
     MOZ_ASSERT(principal);
@@ -239,11 +238,14 @@ class GetSubscriptionRunnable final : public Runnable {
     RefPtr<GetSubscriptionCallback> callback =
         new GetSubscriptionCallback(mProxy, mScope);
 
-    PermissionState state;
-    nsresult rv = GetPermissionState(principal, state);
-    if (NS_FAILED(rv)) {
-      callback->OnPushSubscriptionError(NS_ERROR_FAILURE);
-      return NS_OK;
+    PermissionState state = PermissionState::Denied;
+
+    if (effectiveStoragePrincipal->OriginAttributesRef()
+            .mPartitionKey.IsEmpty()) {
+      if (NS_FAILED(GetPermissionState(principal, state))) {
+        callback->OnPushSubscriptionError(NS_ERROR_FAILURE);
+        return NS_OK;
+      }
     }
 
     if (state != PermissionState::Granted) {
@@ -262,6 +264,7 @@ class GetSubscriptionRunnable final : public Runnable {
       return NS_OK;
     }
 
+    nsresult rv;
     if (mAction == PushManager::SubscribeAction) {
       if (mAppServerKey.IsEmpty()) {
         rv = service->Subscribe(mScope, principal, callback);
@@ -350,7 +353,7 @@ class PermissionStateRunnable final : public Runnable {
 
     // This can fail if the worker thread is already shutting down, but there's
     // nothing we can do in that case.
-    Unused << NS_WARN_IF(!r->Dispatch(mProxy->GetWorkerPrivate()));
+    (void)NS_WARN_IF(!r->Dispatch(mProxy->GetWorkerPrivate()));
 
     return NS_OK;
   }
@@ -395,9 +398,9 @@ JSObject* PushManager::WrapObject(JSContext* aCx,
 }
 
 // static
-already_AddRefed<PushManager> PushManager::Constructor(GlobalObject& aGlobal,
-                                                       const nsAString& aScope,
-                                                       ErrorResult& aRv) {
+already_AddRefed<PushManager> PushManager::Create(GlobalObject& aGlobal,
+                                                  const nsAString& aScope,
+                                                  ErrorResult& aRv) {
   if (!NS_IsMainThread()) {
     RefPtr<PushManager> ret = new PushManager(aScope);
     return ret.forget();
@@ -413,6 +416,38 @@ already_AddRefed<PushManager> PushManager::Constructor(GlobalObject& aGlobal,
   RefPtr<PushManager> ret = new PushManager(global, impl);
 
   return ret.forget();
+}
+
+// static
+already_AddRefed<PushManager> PushManager::Create(JSContext* aCx,
+                                                  nsGlobalWindowInner* aWindow,
+                                                  ErrorResult& aRv) {
+  // https://w3c.github.io/push-api/#subscribe-method
+  // Step 5: If this's service worker registration is null:
+  //         1. Set scope to the result of running the basic URL parser given
+  //            "/" and global's associated Document's URL.
+  // (See also similar step in getSubscription())
+  // However, we keep store the scope URL in the push manager
+  // instead of the service worker registration, so we get the scope URL here.
+  nsIURI* documentURI = aWindow->GetDocumentURI();
+  if (NS_WARN_IF(!documentURI)) {
+    aRv.Throw(NS_ERROR_FAILURE);
+    return nullptr;
+  }
+  nsCOMPtr<nsIURI> scopeURI;
+  nsresult rv = NS_NewURI(getter_AddRefs(scopeURI), "/", documentURI);
+  if (NS_FAILED(rv)) {
+    aRv.Throw(rv);
+    return nullptr;
+  }
+  nsAutoCString scopeURL;
+  rv = scopeURI->GetSpec(scopeURL);
+  if (NS_FAILED(rv)) {
+    aRv.Throw(rv);
+    return nullptr;
+  }
+  GlobalObject global(aCx, aWindow->GetGlobalJSObject());
+  return Create(global, NS_ConvertUTF8toUTF16(scopeURL), aRv);
 }
 
 bool PushManager::IsEnabled(JSContext* aCx, JSObject* aGlobal) {
@@ -454,8 +489,61 @@ void PushManager::GetSupportedContentEncodings(
   aEncodings.set(object);
 }
 
+static bool IsPushSubscriptionDenied(nsIGlobalObject* aGlobal) {
+  nsCOMPtr<nsIPrincipal> principal;
+  nsCOMPtr<nsIPrincipal> effectiveStoragePrincipal;
+  nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(aGlobal);
+  if (window) {
+    principal = nsGlobalWindowInner::Cast(window)->GetPrincipal();
+    effectiveStoragePrincipal =
+        nsGlobalWindowInner::Cast(window)->GetEffectiveStoragePrincipal();
+  } else if (WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate()) {
+    principal = workerPrivate->GetPrincipal();
+    effectiveStoragePrincipal = workerPrivate->GetEffectiveStoragePrincipal();
+  }
+  if (!principal || !effectiveStoragePrincipal) {
+    return true;
+  }
+
+  bool denied = notification::IsNotificationForbiddenFor(
+      principal, effectiveStoragePrincipal, true,
+      notification::PermissionCheckPurpose::PushSubscribe);
+  if (denied || !window) {
+    return denied;
+  }
+
+  nsCOMPtr<nsIPrincipal> topLevelPrincipal;
+  BrowsingContext* top = window->GetBrowsingContext()->Top();
+  if (nsPIDOMWindowOuter* outer = top->GetDOMWindow()) {
+    if (nsPIDOMWindowInner* inner = outer->GetCurrentInnerWindow()) {
+      topLevelPrincipal = nsGlobalWindowInner::Cast(inner)->GetPrincipal();
+    }
+  }
+  return !topLevelPrincipal || !principal->Subsumes(topLevelPrincipal);
+}
+
 already_AddRefed<Promise> PushManager::Subscribe(
     const PushSubscriptionOptionsInit& aOptions, ErrorResult& aRv) {
+  // XXX(krosylight): Step 11 should happen in parallel per the spec, and after
+  // step 10's applicationServerKey check.
+
+  // Step 11.4: Let permission be request permission to use "push".
+  // NOTE(krosylight): Before requesting, we check whether this principal
+  // can request push permission, as we want to reject requests from third party
+  // iframes.
+
+  // Step 11.5: If permission is "denied", queue a global task on the user
+  // interaction task source using global to reject promise with a
+  // "NotAllowedError" DOMException and terminate these steps.
+  //
+  // NOTE: This check will happen again in Subscribe impl below after asking
+  // permission.
+  if (IsPushSubscriptionDenied(mGlobal)) {
+    aRv.ThrowNotAllowedError(
+        "Permission to create push subscription is denied.");
+    return nullptr;
+  }
+
   if (mImpl) {
     MOZ_ASSERT(NS_IsMainThread());
     return mImpl->Subscribe(aOptions, aRv);

@@ -1,14 +1,28 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et ft=cpp : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VideoFrameUtils.h"
+
 #include "api/video/video_frame.h"
 #include "mozilla/ShmemPool.h"
 
 namespace mozilla {
+
+static VideoRotation ToVideoRotation(webrtc::VideoRotation aRotation) {
+  switch (aRotation) {
+    case webrtc::kVideoRotation_0:
+      return VideoRotation::kDegree_0;
+    case webrtc::kVideoRotation_90:
+      return VideoRotation::kDegree_90;
+    case webrtc::kVideoRotation_180:
+      return VideoRotation::kDegree_180;
+    case webrtc::kVideoRotation_270:
+      return VideoRotation::kDegree_270;
+  }
+  MOZ_ASSERT_UNREACHABLE("Bad webrtc::VideoRotation value");
+  return VideoRotation::kDegree_0;
+}
 
 uint32_t VideoFrameUtils::TotalRequiredBufferSize(
     const webrtc::VideoFrame& aVideoFrame) {
@@ -23,6 +37,7 @@ uint32_t VideoFrameUtils::TotalRequiredBufferSize(
 
 void VideoFrameUtils::InitFrameBufferProperties(
     const webrtc::VideoFrame& aVideoFrame,
+    webrtc::VideoRotation aOriginalRotationRequired, bool aRotationApplied,
     camera::VideoFrameProperties& aDestProps) {
   aDestProps.captureTime() = TimeStamp::Now();
 
@@ -33,7 +48,9 @@ void VideoFrameUtils::InitFrameBufferProperties(
   aDestProps.rtpTimeStamp() = aVideoFrame.rtp_timestamp();
   aDestProps.ntpTimeMs() = aVideoFrame.ntp_time_ms();
   aDestProps.renderTimeMs() = aVideoFrame.render_time_ms();
-  aDestProps.rotation() = aVideoFrame.rotation();
+  aDestProps.originalRotationRequired() =
+      ToVideoRotation(aOriginalRotationRequired);
+  aDestProps.rotationApplied() = aRotationApplied;
 
   auto i420 = aVideoFrame.video_frame_buffer()->ToI420();
   auto height = i420->height();

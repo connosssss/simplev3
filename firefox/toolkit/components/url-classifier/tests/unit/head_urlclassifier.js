@@ -1,4 +1,3 @@
-//* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- *
 function dumpn(s) {
   dump(s + "\n");
 }
@@ -34,7 +33,7 @@ var {
   HttpServer,
 } = ChromeUtils.importESModule("resource://testing-common/httpd.sys.mjs");
 
-do_get_profile();
+do_get_profile(true);
 
 // Ensure PSM is initialized before the test
 Cc["@mozilla.org/psm;1"].getService(Ci.nsISupports);
@@ -191,12 +190,12 @@ function doSimpleUpdate(updateText, success, failure) {
     updateError(errorCode) {
       failure(errorCode);
     },
-    updateSuccess(requestedTimeout) {
-      success(requestedTimeout);
+    updateSuccess(tables, waitSeconds) {
+      success(tables, waitSeconds);
     },
   };
 
-  dbservice.beginUpdate(listener, allTables);
+  dbservice.beginUpdate(listener, allTables, "");
   dbservice.beginStream("", "");
   dbservice.updateStream(updateText);
   dbservice.finishStream();
@@ -215,12 +214,12 @@ function doErrorUpdate(tables, success, failure) {
     updateError(errorCode) {
       success(errorCode);
     },
-    updateSuccess(requestedTimeout) {
-      failure(requestedTimeout);
+    updateSuccess(tables, waitSeconds) {
+      failure(tables, waitSeconds);
     },
   };
 
-  dbservice.beginUpdate(listener, tables, null);
+  dbservice.beginUpdate(listener, tables, "");
   dbservice.beginStream("", "");
   dbservice.cancelUpdate();
 }
@@ -239,7 +238,9 @@ function doStreamUpdate(updateText, success, failure, downloadFailure) {
   streamUpdater.downloadUpdates(
     allTables,
     "",
+    "",
     true,
+    "test",
     dataUpdate,
     success,
     failure,

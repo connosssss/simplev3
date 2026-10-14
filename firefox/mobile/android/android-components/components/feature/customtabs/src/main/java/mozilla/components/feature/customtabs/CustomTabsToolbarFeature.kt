@@ -16,7 +16,9 @@ import androidx.appcompat.app.AppCompatDelegate.NightMode
 import androidx.appcompat.content.res.AppCompatResources.getDrawable
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.graphics.scale
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.mapNotNull
 import mozilla.components.browser.menu.BrowserMenuBuilder
@@ -35,8 +37,7 @@ import mozilla.components.support.base.feature.LifecycleAwareFeature
 import mozilla.components.support.base.feature.UserInteractionHandler
 import mozilla.components.support.ktx.android.content.share
 import mozilla.components.support.ktx.android.util.dpToPx
-import mozilla.components.support.ktx.android.view.setNavigationBarTheme
-import mozilla.components.support.ktx.android.view.setStatusBarTheme
+import mozilla.components.support.ktx.android.view.setSystemBarsBackground
 import mozilla.components.support.ktx.kotlinx.coroutines.flow.ifAnyChanged
 import mozilla.components.support.utils.ext.resizeMaintainingAspectRatio
 import mozilla.components.ui.icons.R as iconsR
@@ -55,8 +56,8 @@ private const val MENU_WEIGHT = Int.MAX_VALUE
  * @property menuItemIndex Location to insert any custom menu options into the predefined menu list.
  * @property window Reference to the [Window] so the navigation bar color can be set.
  * @property appNightMode The [NightMode] used in the app. Defaults to [MODE_NIGHT_FOLLOW_SYSTEM].
- * @property forceActionButtonTinting When set to true the [toolbar] action button will always be tinted
- * based on the [toolbar] background, ignoring the value of [CustomTabActionButtonConfig.tint].
+ * @property forceActionButtonTinting When set to true the [toolbar] action button will always be tinted based on the
+ *   [toolbar] background, ignoring the value of [CustomTabActionButtonConfig.tint].
  * @property customTabsToolbarButtonConfig Holds button configurations for the toolbar.
  * @property customTabsColorsConfig Contains the color configurations for styling the application and system UI.
  * @property customTabsToolbarListeners Holds click listeners for buttons on the toolbar.
@@ -73,44 +74,41 @@ class CustomTabsToolbarFeature(
     private val window: Window? = null,
     @param:NightMode private val appNightMode: Int = MODE_NIGHT_FOLLOW_SYSTEM,
     private val forceActionButtonTinting: Boolean = false,
-    private val customTabsToolbarButtonConfig: CustomTabsToolbarButtonConfig =
-        CustomTabsToolbarButtonConfig(),
+    private val customTabsToolbarButtonConfig: CustomTabsToolbarButtonConfig = CustomTabsToolbarButtonConfig(),
     private val customTabsColorsConfig: CustomTabsColorsConfig = CustomTabsColorsConfig(),
     private val customTabsToolbarListeners: CustomTabsToolbarListeners = CustomTabsToolbarListeners(),
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
     private val closeListener: () -> Unit,
 ) : LifecycleAwareFeature, UserInteractionHandler {
     private var initialized: Boolean = false
     private val titleObserver = CustomTabSessionTitleObserver(toolbar)
-    private val context get() = toolbar.context
+    private val context
+        get() = toolbar.context
+
     private var scope: CoroutineScope? = null
     private var menuButton: Toolbar.ActionButton? = null
     private var menuDrawableIcon: Drawable? = null
 
-    /**
-     * Gets the current custom tab session.
-     */
+    /** Gets the current custom tab session. */
     private val session: CustomTabSessionState?
         get() = sessionId?.let { store.state.findCustomTab(it) }
 
-    @ColorInt
-    private val fallbackIconColor: Int = toolbar.display.colors.menu
+    @ColorInt private val fallbackIconColor: Int = toolbar.display.colors.menu
 
-    @ColorInt
-    var iconColor: Int = fallbackIconColor
+    @ColorInt var iconColor: Int = fallbackIconColor
 
-    /**
-     * Initializes the feature and registers the [CustomTabSessionTitleObserver].
-     */
+    /** Initializes the feature and registers the [CustomTabSessionTitleObserver]. */
     override fun start() {
         val tabId = sessionId ?: return
         val tab = store.state.findCustomTab(tabId) ?: return
 
-        scope = store.flowScoped { flow ->
-            flow
-                .mapNotNull { state -> state.findCustomTab(tabId) }
-                .ifAnyChanged { tab -> arrayOf(tab.content.title, tab.content.url) }
-                .collect { tab -> titleObserver.onTab(tab) }
-        }
+        scope =
+            store.flowScoped(dispatcher = mainDispatcher) { flow ->
+                flow
+                    .mapNotNull { state -> state.findCustomTab(tabId) }
+                    .ifAnyChanged { tab -> arrayOf(tab.content.title, tab.content.url) }
+                    .collect { tab -> titleObserver.onTab(tab) }
+            }
 
         if (!initialized) {
             initialized = true
@@ -118,9 +116,7 @@ class CustomTabsToolbarFeature(
         }
     }
 
-    /**
-     * Unregisters the [CustomTabSessionTitleObserver].
-     */
+    /** Unregisters the [CustomTabSessionTitleObserver]. */
     override fun stop() {
         scope?.cancel()
     }
@@ -130,18 +126,22 @@ class CustomTabsToolbarFeature(
         // Don't allow clickable toolbar so a custom tab can't switch to edit mode.
         toolbar.display.onUrlClicked = { false }
 
-        val colorSchemeParams = config.getConfiguredColorSchemeParams(
-            currentNightMode = context.resources.configuration.uiMode,
-            preferredNightMode = appNightMode,
-        )
+        val colorSchemeParams =
+            config.getConfiguredColorSchemeParams(
+                currentNightMode = context.resources.configuration.uiMode,
+                preferredNightMode = appNightMode,
+            )
 
-        val readableColor = colorSchemeParams.getToolbarContrastColor(
-            context = context,
-            shouldUpdateTheme = customTabsColorsConfig.updateToolbarsColor,
-            fallbackColor = fallbackIconColor,
-        ).also {
-            iconColor = it
-        }
+        val readableColor =
+            colorSchemeParams
+                .getToolbarContrastColor(
+                    context = context,
+                    shouldUpdateTheme = customTabsColorsConfig.updateToolbarsColor,
+                    fallbackColor = fallbackIconColor,
+                )
+                .also {
+                    iconColor = it
+                }
 
         if (customTabsColorsConfig.isAnyColorUpdateAllowed()) {
             colorSchemeParams.let {
@@ -156,10 +156,11 @@ class CustomTabsToolbarFeature(
 
         // Add navigation close action
         if (config.showCloseButton) {
-            val closeIcon = when {
-                customTabsToolbarButtonConfig.allowCustomizingCloseButton -> config.closeButtonIcon
-                else -> null
-            }
+            val closeIcon =
+                when {
+                    customTabsToolbarButtonConfig.allowCustomizingCloseButton -> config.closeButtonIcon
+                    else -> null
+                }
             addCloseButton(readableColor, closeIcon)
         }
 
@@ -171,9 +172,7 @@ class CustomTabsToolbarFeature(
             addShareButton(readableColor)
         }
 
-        if (customTabsToolbarButtonConfig.showRefreshButton &&
-            customTabsToolbarListeners.refreshListener != null
-        ) {
+        if (customTabsToolbarButtonConfig.showRefreshButton && customTabsToolbarListeners.refreshListener != null) {
             addRefreshButton(readableColor)
         }
 
@@ -202,53 +201,64 @@ class CustomTabsToolbarFeature(
         if (customTabsColorsConfig.updateToolbarsColor && toolbarColor != null) {
             toolbar.setBackgroundColor(toolbarColor)
 
-            toolbar.display.colors = toolbar.display.colors.copy(
-                text = readableColor,
-                title = readableColor,
-                siteInfoIconSecure = readableColor,
-                siteInfoIconInsecure = readableColor,
-                trackingProtection = readableColor,
-                menu = readableColor,
-            )
+            toolbar.display.colors =
+                toolbar.display.colors.copy(
+                    text = readableColor,
+                    title = readableColor,
+                    siteInfoIconSecure = readableColor,
+                    siteInfoIconInsecure = readableColor,
+                    trackingProtection = readableColor,
+                    menu = readableColor,
+                )
         }
 
-        if (customTabsColorsConfig.updateStatusBarColor && toolbarColor != null) {
-            window?.setStatusBarTheme(toolbarColor)
-        }
-
-        val areNavigationBarColorsAvailable = navigationBarColor != null || navigationBarDividerColor != null
-        if (customTabsColorsConfig.updateSystemNavigationBarColor && areNavigationBarColorsAvailable) {
-            window?.setNavigationBarTheme(navigationBarColor, navigationBarDividerColor)
-        }
+        window?.setSystemBarsBackground(
+            statusBarColor =
+                when (customTabsColorsConfig.updateStatusBarColor) {
+                    true -> toolbarColor
+                    false -> null
+                },
+            navigationBarColor =
+                when (customTabsColorsConfig.updateSystemNavigationBarColor) {
+                    true -> navigationBarColor
+                    false -> null
+                },
+            navigationBarDividerColor =
+                when (customTabsColorsConfig.updateSystemNavigationBarColor) {
+                    true -> navigationBarDividerColor
+                    false -> null
+                },
+        )
     }
 
-    /**
-     * Display a close button at the start of the toolbar.
-     * When clicked, it calls [closeListener].
-     */
+    /** Display a close button at the start of the toolbar. When clicked, it calls [closeListener]. */
     @VisibleForTesting
-    internal fun addCloseButton(@ColorInt readableColor: Int, bitmap: Bitmap?) {
-        val drawableIcon = bitmap?.toDrawable(context.resources)
-            ?: getDrawable(context, iconsR.drawable.mozac_ic_cross_24)!!.mutate()
+    internal fun addCloseButton(
+        @ColorInt readableColor: Int,
+        bitmap: Bitmap?,
+    ) {
+        val drawableIcon =
+            bitmap?.toDrawable(context.resources) ?: getDrawable(context, iconsR.drawable.mozac_ic_cross_24)!!.mutate()
 
         drawableIcon.setTint(readableColor)
 
-        val button = Toolbar.ActionButton(
-            drawableIcon,
-            context.getString(R.string.mozac_feature_customtabs_exit_button),
-        ) {
-            emitCloseFact()
-            session?.let {
-                useCases.remove(it.id)
+        val button =
+            Toolbar.ActionButton(
+                drawableIcon,
+                context.getString(R.string.mozac_feature_customtabs_exit_button),
+            ) {
+                emitCloseFact()
+                session?.let {
+                    useCases.remove(it.id)
+                }
+                closeListener.invoke()
             }
-            closeListener.invoke()
-        }
         toolbar.addNavigationAction(button)
     }
 
     /**
-     * Display an action button from the custom tab config on the toolbar.
-     * When clicked, it activates the corresponding [PendingIntent].
+     * Display an action button from the custom tab config on the toolbar. When clicked, it activates the corresponding
+     * [PendingIntent].
      */
     @VisibleForTesting
     internal fun addActionButton(
@@ -258,105 +268,105 @@ class CustomTabsToolbarFeature(
         buttonConfig?.let { config ->
             val icon = config.icon
             val scaledIconSize = icon.resizeMaintainingAspectRatio(ACTION_BUTTON_MAX_DRAWABLE_DP_SIZE)
-            val drawableIcon = icon
-                .scale(
-                    scaledIconSize.width.dpToPx(context.resources.displayMetrics),
-                    scaledIconSize.height.dpToPx(context.resources.displayMetrics),
-                    filter = true,
-                )
-                .toDrawable(context.resources)
+            val drawableIcon =
+                icon
+                    .scale(
+                        scaledIconSize.width.dpToPx(context.resources.displayMetrics),
+                        scaledIconSize.height.dpToPx(context.resources.displayMetrics),
+                        filter = true,
+                    )
+                    .toDrawable(context.resources)
 
             if (config.tint || forceActionButtonTinting) {
                 drawableIcon.setTint(readableColor)
             }
 
-            val button = Toolbar.ActionButton(
-                drawableIcon,
-                config.description,
-            ) {
-                emitActionButtonFact()
-                session?.let {
-                    config.pendingIntent.sendWithUrl(context, it.content.url)
+            val button =
+                Toolbar.ActionButton(
+                    drawableIcon,
+                    config.description,
+                ) {
+                    emitActionButtonFact()
+                    session?.let {
+                        config.pendingIntent.sendWithUrl(context, it.content.url)
+                    }
                 }
-            }
 
             toolbar.addBrowserAction(button)
         }
     }
 
     /**
-     * Display a refresh button as a button on the toolbar.
-     * When clicked, it activates [CustomTabsToolbarListeners.refreshListener].
+     * Display a refresh button as a button on the toolbar. When clicked, it activates
+     * [CustomTabsToolbarListeners.refreshListener].
      */
     @VisibleForTesting
     internal fun addRefreshButton(@ColorInt readableColor: Int) {
         val drawableIcon = getDrawable(context, iconsR.drawable.mozac_ic_arrow_clockwise_24)
         drawableIcon?.setTint(readableColor)
 
-        val button = Toolbar.ActionButton(
-            drawableIcon,
-            context.getString(R.string.mozac_feature_customtabs_refresh_button),
-        ) {
-            emitActionButtonFact()
-            customTabsToolbarListeners.refreshListener?.invoke()
-        }
+        val button =
+            Toolbar.ActionButton(
+                drawableIcon,
+                context.getString(R.string.mozac_feature_customtabs_refresh_button),
+            ) {
+                emitActionButtonFact()
+                customTabsToolbarListeners.refreshListener?.invoke()
+            }
 
         toolbar.addBrowserAction(button)
     }
 
     /**
-     * Display a share button as a button on the toolbar.
-     * When clicked, it activates [CustomTabsToolbarListeners.shareListener]
-     * and defaults to the [share] KTX helper.
+     * Display a share button as a button on the toolbar. When clicked, it activates
+     * [CustomTabsToolbarListeners.shareListener] and defaults to the [share] KTX helper.
      */
     @VisibleForTesting
     internal fun addShareButton(@ColorInt readableColor: Int) {
         val drawableIcon = getDrawable(context, iconsR.drawable.mozac_ic_share_android_24)!!
         drawableIcon.setTint(readableColor)
 
-        val button = Toolbar.ActionButton(
-            drawableIcon,
-            context.getString(R.string.mozac_feature_customtabs_share_link),
-        ) {
-            val listener = customTabsToolbarListeners.shareListener ?: {
-                session?.let {
-                    context.share(it.content.url)
-                }
+        val button =
+            Toolbar.ActionButton(
+                drawableIcon,
+                context.getString(R.string.mozac_feature_customtabs_share_link),
+            ) {
+                val listener =
+                    customTabsToolbarListeners.shareListener
+                        ?: {
+                            session?.let {
+                                context.share(it.content.url)
+                            }
+                        }
+                emitActionButtonFact()
+                listener.invoke()
             }
-            emitActionButtonFact()
-            listener.invoke()
-        }
 
         toolbar.addBrowserAction(button)
     }
 
-    /**
-     * Display a menu button on the toolbar. When clicked, it activates
-     * [CustomTabsToolbarListeners.menuListener].
-     */
+    /** Display a menu button on the toolbar. When clicked, it activates [CustomTabsToolbarListeners.menuListener]. */
     @VisibleForTesting
     internal fun addMenuButton() {
-        menuButton = Toolbar.ActionButton(
-            imageDrawable = menuDrawableIcon,
-            contentDescription = context.getString(R.string.mozac_feature_customtabs_menu_button),
-            weight = { MENU_WEIGHT },
-        ) {
-            customTabsToolbarListeners.menuListener?.invoke()
-        }.also {
-            toolbar.addBrowserAction(it)
-        }
+        menuButton =
+            Toolbar.ActionButton(
+                    imageDrawable = menuDrawableIcon,
+                    contentDescription = context.getString(R.string.mozac_feature_customtabs_menu_button),
+                    weight = { MENU_WEIGHT },
+                ) {
+                    customTabsToolbarListeners.menuListener?.invoke()
+                }
+                .also {
+                    toolbar.addBrowserAction(it)
+                }
     }
 
-    /**
-     * Helper to check if menu button should be displayed.
-     */
+    /** Helper to check if menu button should be displayed. */
     private fun isMenuAvailable(): Boolean {
         return menuBuilder == null && customTabsToolbarListeners.menuListener != null && menuButton == null
     }
 
-    /**
-     * Updates the visibility of the menu in the toolbar.
-     */
+    /** Updates the visibility of the menu in the toolbar. */
     fun updateMenuVisibility(isVisible: Boolean) {
         if (isVisible && isMenuAvailable()) {
             addMenuButton()
@@ -368,18 +378,15 @@ class CustomTabsToolbarFeature(
         }
     }
 
-    /**
-     * Build the menu items displayed when the 3-dot overflow menu is opened.
-     */
+    /** Build the menu items displayed when the 3-dot overflow menu is opened. */
     @VisibleForTesting
     internal fun addMenuItems() {
         toolbar.display.menuBuilder = menuBuilder?.addCustomMenuItems(context, store, sessionId, menuItemIndex)
     }
 
     /**
-     * When the back button is pressed if not initialized returns false,
-     * when initialized removes the current Custom Tabs session and returns true.
-     * Should be called when the back button is pressed.
+     * When the back button is pressed if not initialized returns false, when initialized removes the current Custom
+     * Tabs session and returns true. Should be called when the back button is pressed.
      */
     override fun onBackPressed(): Boolean {
         return if (!initialized) {
@@ -424,11 +431,8 @@ data class CustomTabsColorsConfig(
     val updateSystemNavigationBarColor: Boolean = true,
     val updateToolbarsColor: Boolean = true,
 ) {
-    /**
-     * Get if any color customisation is allowed for application's UI elements.
-     */
-    fun isAnyColorUpdateAllowed() =
-        updateStatusBarColor || updateSystemNavigationBarColor || updateToolbarsColor
+    /** Get if any color customisation is allowed for application's UI elements. */
+    fun isAnyColorUpdateAllowed() = updateStatusBarColor || updateSystemNavigationBarColor || updateToolbarsColor
 }
 
 /**

@@ -1,20 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef SubstitutingProtocolHandler_h___
-#define SubstitutingProtocolHandler_h___
+#ifndef SubstitutingProtocolHandler_h_
+#define SubstitutingProtocolHandler_h_
 
-#include "nsISubstitutingProtocolHandler.h"
-
-#include "nsTHashMap.h"
-#include "nsStandardURL.h"
-#include "nsJARURI.h"
-#include "mozilla/chrome/RegistryMessageUtils.h"
-#include "mozilla/Maybe.h"
 #include "mozilla/RWLock.h"
+#include "mozilla/chrome/RegistryMessageUtils.h"
+#include "nsISubstitutingProtocolHandler.h"
+#include "nsJARURI.h"
+#include "nsStandardURL.h"
+#include "nsTHashMap.h"
 
 class nsIIOService;
 
@@ -126,4 +122,4 @@ class SubstitutingProtocolHandler {
 }  // namespace net
 }  // namespace mozilla
 
-#endif /* SubstitutingProtocolHandler_h___ */
+#endif /* SubstitutingProtocolHandler_h_ */

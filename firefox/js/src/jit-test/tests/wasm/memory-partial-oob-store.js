@@ -1,3 +1,5 @@
+// |jit-test| test-also=--setpref=wasm_baseline_debug=true; skip-variant-if: --setpref=wasm_baseline_debug=true, wasmCompileMode() == "ion"
+
 // Cloned from memory.js but kept separate because it may have to be disabled on
 // some devices until bugs are fixed.
 
@@ -7,7 +9,8 @@
 var excluded = getBuildConfiguration("arm64") ||
                getBuildConfiguration("arm64-simulator") ||
                getBuildConfiguration("arm") ||
-               getBuildConfiguration("arm-simulator");
+               getBuildConfiguration("arm-simulator") ||
+               getBuildConfiguration("riscv64");
 var thirtytwobit = getBuildConfiguration("pointer-byte-size") == 4;
 
 const RuntimeError = WebAssembly.RuntimeError;

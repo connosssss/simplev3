@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -24,6 +22,8 @@ LOCAL_INCLUDES += [
     '/media/libwebp',
 ]
 
+include('/media/libwebp/libwebp-config.mozbuild')
+
 # Add libFuzzer configuration directives
 include('/tools/fuzzing/libfuzzer-config.mozbuild')
 
@@ -31,3 +31,21 @@ FINAL_LIBRARY = 'xul'
 
 # We allow warnings for third-party code that can be updated from upstream.
 AllowCompilerWarnings()
+
+SOURCE_HEADERS += [
+	"bit_reader_inl_utils.h",
+	"bit_reader_utils.h",
+	"bit_writer_utils.h",
+	"color_cache_utils.h",
+	"endian_inl_utils.h",
+	"filters_utils.h",
+	"huffman_encode_utils.h",
+	"huffman_utils.h",
+	"palette.h",
+	"quant_levels_dec_utils.h",
+	"quant_levels_utils.h",
+	"random_utils.h",
+	"rescaler_utils.h",
+	"thread_utils.h",
+	"utils.h",
+]

@@ -4,8 +4,12 @@
 
 import { CryptoWrapper } from "resource://services-sync/record.sys.mjs";
 
-import { SCORE_INCREMENT_XLARGE } from "resource://services-sync/constants.sys.mjs";
+import {
+  MASTER_PASSWORD_LOCKED,
+  SCORE_INCREMENT_XLARGE,
+} from "resource://services-sync/constants.sys.mjs";
 import { CollectionValidator } from "resource://services-sync/collection_validator.sys.mjs";
+import { BridgedEngine } from "resource://services-sync/bridged_engine.sys.mjs";
 import {
   Changeset,
   Store,
@@ -39,6 +43,11 @@ const VALID_LOGIN_FIELDS = [
 ];
 
 import { LoginManagerStorage } from "resource://passwordmgr/passwordstorage.sys.mjs";
+
+const lazy = {};
+ChromeUtils.defineESModuleGetters(lazy, {
+  setupLoggerForTarget: "resource://gre/modules/AppServicesTracing.sys.mjs",
+});
 
 // Sync and many tests rely on having an time that is rounded to the nearest
 // 100th of a second otherwise tests can fail intermittently.
@@ -90,6 +99,11 @@ PasswordEngine.prototype = {
     return new PasswordsChangeset();
   },
 
+  async initialize() {
+    await SyncEngine.prototype.initialize.call(this);
+    await Services.logins.initializationPromise;
+  },
+
   async ensureCurrentSyncID(newSyncID) {
     return Services.logins.ensureCurrentSyncID(newSyncID);
   },
@@ -137,7 +151,7 @@ PasswordEngine.prototype = {
         changes[login.guid] = {
           counter: login.syncCounter, // record the initial counter value
           modified: roundTimeForSync(login.timePasswordChanged),
-          deleted: this._store.storage.loginIsDeleted(login.guid),
+          deleted: await this._store.storage.loginIsDeletedAsync(login.guid),
         };
       }
     }
@@ -188,6 +202,60 @@ PasswordEngine.prototype = {
 };
 Object.setPrototypeOf(PasswordEngine.prototype, SyncEngine.prototype);
 
+// Needs to be kept in-sync with the Rust logins storage version.
+const STORAGE_VERSION = 1;
+
+// A "bridged engine" backed by the Rust logins component. Used instead of
+// PasswordEngine when `signon.storage.rust.active` is set.
+// Uses RustPasswordTracker for change scoring.
+export function RustPasswordEngine(service) {
+  BridgedEngine.call(this, "Passwords", service);
+}
+
+RustPasswordEngine.prototype = {
+  _trackerObj: RustPasswordTracker,
+
+  syncPriority: 2,
+
+  // Distinguishes the Rust-backed engine from the legacy JS engine in telemetry.
+  overrideTelemetryName: "rust-logins",
+
+  async initialize() {
+    await SyncEngine.prototype.initialize.call(this);
+    await Services.logins.initializationPromise;
+
+    // Forward the Rust logins component's tracing output to this engine's log.
+    lazy.setupLoggerForTarget("logins", this._log);
+
+    this._rustStore = LoginManagerStorage.getActiveStore();
+    this._bridge = await this._rustStore.bridgedEngine();
+
+    this._bridge.storageVersion = STORAGE_VERSION;
+    this._bridge.allowSkippedRecord = true;
+    this._bridge.getSyncId = async () => this._bridge.syncId();
+
+    this._log.info("Got a bridged engine!");
+    this._tracker.modified = true;
+  },
+
+  // A background sync must never trigger an interactive Primary Password prompt
+  // from the Rust logins store. When the Primary Password is locked, record the
+  // master-password-locked login state so the scheduler backs off (matching the
+  // legacy PasswordEngine) and skip this sync without prompting. Syncing resumes
+  // automatically once the Primary Password is unlocked.
+  async _sync() {
+    if (!Services.logins.isLoggedIn) {
+      this._log.info(
+        "Skipping passwords sync because the Primary Password is locked."
+      );
+      this.service.status.login = MASTER_PASSWORD_LOCKED;
+      return;
+    }
+    await super._sync();
+  },
+};
+Object.setPrototypeOf(RustPasswordEngine.prototype, BridgedEngine.prototype);
+
 function PasswordStore(name, engine) {
   Store.call(this, name, engine);
   this._nsLoginInfo = new Components.Constructor(
@@ -195,7 +263,6 @@ function PasswordStore(name, engine) {
     Ci.nsILoginInfo,
     "init"
   );
-  this.storage = LoginManagerStorage.create();
 }
 PasswordStore.prototype = {
   _newPropertyBag() {
@@ -333,19 +400,20 @@ PasswordStore.prototype = {
     prop.setPropertyAsAUTF8String("guid", newID);
 
     let oldLogin = await this._getLoginFromGUID(oldID);
-    this.storage.modifyLogin(oldLogin, prop, true);
+    await this.storage.modifyLoginAsync(oldLogin, prop, true);
   },
 
   async itemExists(id) {
     let login = await this._getLoginFromGUID(id);
-    return login && !this.storage.loginIsDeleted(id);
+    let isDeleted = await this.storage.loginIsDeletedAsync(id);
+    return login && !isDeleted;
   },
 
   async createRecord(id, collection) {
     let record = new LoginRec(collection, id);
     let login = await this._getLoginFromGUID(id);
 
-    if (!login || this.storage.loginIsDeleted(id)) {
+    if (!login || (await this.storage.loginIsDeletedAsync(id))) {
       record.deleted = true;
       return record;
     }
@@ -407,12 +475,12 @@ PasswordStore.prototype = {
       return;
     }
 
-    this.storage.removeLogin(loginItem, sourceSync);
+    await this.storage.removeLoginAsync(loginItem, sourceSync);
   },
 
   async update(record) {
     let loginItem = await this._getLoginFromGUID(record.id);
-    if (!loginItem || this.storage.loginIsDeleted(record.id)) {
+    if (!loginItem || (await this.storage.loginIsDeletedAsync(record.id))) {
       this._log.trace("Skipping update for unknown item: " + record.hostname);
       return;
     }
@@ -425,14 +493,19 @@ PasswordStore.prototype = {
 
     loginItem.everSynced = true;
 
-    this.storage.modifyLogin(loginItem, newinfo, true);
+    await this.storage.modifyLoginAsync(loginItem, newinfo, true);
   },
 
   async wipe() {
-    this.storage.removeAllUserFacingLogins(true);
+    await this.storage.removeAllUserFacingLoginsAsync(true);
   },
 };
 Object.setPrototypeOf(PasswordStore.prototype, Store.prototype);
+Object.defineProperty(PasswordStore.prototype, "storage", {
+  get() {
+    return LoginManagerStorage.getActiveStore();
+  },
+});
 
 function PasswordTracker(name, engine) {
   Tracker.call(this, name, engine);
@@ -478,6 +551,35 @@ PasswordTracker.prototype = {
   },
 };
 Object.setPrototypeOf(PasswordTracker.prototype, Tracker.prototype);
+
+// Tracker for the Rust-backed engine. Change detection happens in Rust, so this
+// only bumps the score to schedule syncs.
+function RustPasswordTracker(name, engine) {
+  PasswordTracker.call(this, name, engine);
+}
+RustPasswordTracker.prototype = {
+  async observe(subject, topic, data) {
+    if (this.ignoreAll) {
+      return;
+    }
+
+    switch (data) {
+      case "modifyLogin":
+      case "addLogin":
+      case "removeLogin":
+      case "importLogins":
+        this.score += SCORE_INCREMENT_XLARGE;
+        break;
+
+      case "removeAllLogins":
+        this.score +=
+          SCORE_INCREMENT_XLARGE *
+          (subject.QueryInterface(Ci.nsIArrayExtensions).Count() + 1);
+        break;
+    }
+  },
+};
+Object.setPrototypeOf(RustPasswordTracker.prototype, PasswordTracker.prototype);
 
 export class PasswordValidator extends CollectionValidator {
   constructor() {

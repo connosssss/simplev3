@@ -18,11 +18,10 @@ import sys
 
 from mozsystemmonitor.resourcemonitor import SystemResourceMonitor
 
-import mozharness
 from mozharness.base.config import parse_config_file
 from mozharness.base.errors import PythonErrorList
 from mozharness.base.log import CRITICAL, DEBUG, ERROR, INFO, WARNING, OutputParser
-from mozharness.base.python import Python3Virtualenv
+from mozharness.base.python import perfherder_schema_path
 from mozharness.base.vcs.vcsbase import MercurialScript
 from mozharness.mozilla.automation import (
     TBPL_FAILURE,
@@ -38,9 +37,6 @@ from mozharness.mozilla.testing.codecoverage import (
 from mozharness.mozilla.testing.errors import TinderBoxPrintRe
 from mozharness.mozilla.testing.testbase import TestingMixin, testing_config_options
 from mozharness.mozilla.tooltool import TooltoolMixin
-
-scripts_path = os.path.abspath(os.path.dirname(os.path.dirname(mozharness.__file__)))
-external_tools_path = os.path.join(scripts_path, "external_tools")
 
 TalosErrorList = PythonErrorList + [
     {"regex": re.compile(r"""run-as: Package '.*' is unknown"""), "level": DEBUG},
@@ -79,7 +75,7 @@ class TalosOutputParser(OutputParser):
     worst_tbpl_status = TBPL_SUCCESS
 
     def __init__(self, **kwargs):
-        super(TalosOutputParser, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.minidump_output = None
         self.found_perf_data = []
 
@@ -122,12 +118,10 @@ class TalosOutputParser(OutputParser):
         elif line.startswith("Running cycle ") or line.startswith("PROCESS-CRASH "):
             SystemResourceMonitor.record_event(line)
 
-        super(TalosOutputParser, self).parse_single_line(line)
+        super().parse_single_line(line)
 
 
-class Talos(
-    TestingMixin, MercurialScript, TooltoolMixin, Python3Virtualenv, CodeCoverageMixin
-):
+class Talos(TestingMixin, MercurialScript, TooltoolMixin, CodeCoverageMixin):
     """
     install and run Talos tests
     """
@@ -321,7 +315,7 @@ class Talos(
             ],
         )
         kwargs.setdefault("config", {})
-        super(Talos, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self.workdir = self.query_abs_dirs()["abs_work_dir"]  # convenience
 
@@ -374,7 +368,7 @@ class Talos(
     def query_abs_dirs(self):
         if self.abs_dirs:
             return self.abs_dirs
-        abs_dirs = super(Talos, self).query_abs_dirs()
+        abs_dirs = super().query_abs_dirs()
         abs_dirs["abs_blob_upload_dir"] = os.path.join(
             abs_dirs["abs_work_dir"], "blobber_upload_dir"
         )
@@ -655,39 +649,31 @@ class Talos(
         webextension_dest = os.path.join(self.talos_path, "talos", "webextensions")
 
         if self.query_pagesets_name():
-            tooltool_artifacts.append(
-                {
-                    "name": self.pagesets_name,
-                    "manifest": self.pagesets_name_manifest,
-                    "dest": src_talos_pageset_dest,
-                }
-            )
-            tooltool_artifacts.append(
-                {
-                    "name": self.pagesets_name,
-                    "manifest": self.pagesets_name_manifest,
-                    "dest": src_talos_pageset_multidomain_dest,
-                    "postprocess": self.replace_relative_iframe_paths,
-                }
-            )
+            tooltool_artifacts.append({
+                "name": self.pagesets_name,
+                "manifest": self.pagesets_name_manifest,
+                "dest": src_talos_pageset_dest,
+            })
+            tooltool_artifacts.append({
+                "name": self.pagesets_name,
+                "manifest": self.pagesets_name_manifest,
+                "dest": src_talos_pageset_multidomain_dest,
+                "postprocess": self.replace_relative_iframe_paths,
+            })
 
         if self.query_benchmark_zip():
-            tooltool_artifacts.append(
-                {
-                    "name": self.benchmark_zip,
-                    "manifest": self.benchmark_zip_manifest,
-                    "dest": src_talos_pageset_dest,
-                }
-            )
+            tooltool_artifacts.append({
+                "name": self.benchmark_zip,
+                "manifest": self.benchmark_zip_manifest,
+                "dest": src_talos_pageset_dest,
+            })
 
         if self.query_webextensions_zip():
-            tooltool_artifacts.append(
-                {
-                    "name": self.webextensions_zip,
-                    "manifest": self.webextensions_zip_manifest,
-                    "dest": webextension_dest,
-                }
-            )
+            tooltool_artifacts.append({
+                "name": self.webextensions_zip,
+                "manifest": self.webextensions_zip_manifest,
+                "dest": webextension_dest,
+            })
 
         # now that have the suite name, check if artifact is required, if so download it
         # the --no-download option will override this
@@ -704,9 +690,7 @@ class Talos(
                         output_dir=artifact["dest"],
                         cache=self.config.get("tooltool_cache"),
                     )
-                    unzip = self.query_exe("unzip")
-                    unzip_cmd = [unzip, "-q", "-o", archive, "-d", artifact["dest"]]
-                    self.run_command(unzip_cmd, halt_on_failure=True)
+                    self.unzip(archive, artifact["dest"])
 
                     if "postprocess" in artifact:
                         for subdir, dirs, files in os.walk(output_dir_path):
@@ -754,7 +738,7 @@ class Talos(
             "tools/wpt_third_party/h2/*",
             "tools/wpt_third_party/pywebsocket3/*",
         ]
-        return super(Talos, self).download_and_extract(
+        return super().download_and_extract(
             extract_dirs=extract_dirs, suite_categories=["common", "talos"]
         )
 
@@ -809,7 +793,7 @@ class Talos(
             requirements=[mozbase_requirements],
             editable=True,
         )
-        super(Talos, self).create_virtualenv()
+        super().create_virtualenv()
         # talos in harness requires what else is
         # listed in talos requirements.txt file.
         self.install_module(requirements=[talos_requirements])
@@ -826,9 +810,7 @@ class Talos(
             parser.update_worst_log_and_tbpl_levels(WARNING, TBPL_WARNING)
             return
 
-        schema_path = os.path.join(
-            external_tools_path, "performance-artifact-schema.json"
-        )
+        schema_path = perfherder_schema_path()
         self.info("Validating PERFHERDER_DATA against %s" % schema_path)
         try:
             with open(schema_path) as f:

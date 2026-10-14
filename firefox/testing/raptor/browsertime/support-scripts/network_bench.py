@@ -18,6 +18,7 @@ from base_python_support import BasePythonSupport
 from logger.logger import RaptorLogger
 
 LOG = RaptorLogger(component="raptor-browsertime")
+NETPERF_TC = "/usr/local/bin/netperf-tc"
 
 
 class NetworkBench(BasePythonSupport):
@@ -42,7 +43,7 @@ class NetworkBench(BasePythonSupport):
     def setup_test(self, test, args):
         from cmdline import CHROME_ANDROID_APPS, CHROMIUM_DISTROS
 
-        LOG.info("setup_test: '%s'" % test)
+        LOG.info(f"setup_test: '{test}'")
 
         self._is_chrome = (
             args.app in CHROMIUM_DISTROS or args.app in CHROME_ANDROID_APPS
@@ -62,11 +63,12 @@ class NetworkBench(BasePythonSupport):
         try:
             result = subprocess.run(
                 ["caddy", "version"],
+                check=False,
                 capture_output=True,
                 text=True,
             )
             if result.returncode == 0:
-                LOG.info("Caddy is installed. Version: %s" % result.stdout.strip())
+                LOG.info(f"Caddy is installed. Version: {result.stdout.strip()}")
                 return True
             else:
                 LOG.error("Caddy is not installed.")
@@ -78,12 +80,12 @@ class NetworkBench(BasePythonSupport):
         if self.browsertime_node is None or not self.browsertime_node.exists():
             return None
 
-        LOG.info("node bin: %s" % self.browsertime_node)
+        LOG.info(f"node bin: {self.browsertime_node}")
 
         server_path = (
             Path(__file__).parent / ".." / ".." / "browsertime" / "utils" / path
         )
-        LOG.info("server_path: %s" % server_path)
+        LOG.info(f"server_path: {server_path}")
 
         if not server_path.exists():
             return None
@@ -97,11 +99,11 @@ class NetworkBench(BasePythonSupport):
             start_new_session=True,
         )
         msg = process.stdout.readline()
-        LOG.info("server msg: %s" % msg)
+        LOG.info(f"server msg: {msg}")
         match = re.search(r"Server is running on http://[^:]+:(\d+)", msg)
         if match:
             self.backend_port = match.group(1)
-            LOG.info("backend port: %s" % self.backend_port)
+            LOG.info(f"backend port: {self.backend_port}")
             return process
         return None
 
@@ -123,12 +125,12 @@ class NetworkBench(BasePythonSupport):
             return None
 
         key_path = utils_path / "http2-cert.key"
-        LOG.info("key_path: %s" % key_path)
+        LOG.info(f"key_path: {key_path}")
         if not key_path.exists():
             return None
 
         pem_path = utils_path / "http2-cert.pem"
-        LOG.info("pem_path: %s" % pem_path)
+        LOG.info(f"pem_path: {pem_path}")
         if not pem_path.exists():
             return None
 
@@ -219,7 +221,7 @@ class NetworkBench(BasePythonSupport):
             },
         }
 
-        LOG.info("caddyfile_content: %s" % caddyfile_content)
+        LOG.info(f"caddyfile_content: {caddyfile_content}")
 
         with tempfile.NamedTemporaryFile(
             mode="w", delete=False, suffix=".json"
@@ -227,7 +229,7 @@ class NetworkBench(BasePythonSupport):
             json.dump(caddyfile_content, temp_json_file, indent=2)
             temp_json_file_path = temp_json_file.name
 
-        LOG.info("temp_json_file_path: %s" % temp_json_file_path)
+        LOG.info(f"temp_json_file_path: {temp_json_file_path}")
         command = ["caddy", "run", "--config", temp_json_file_path]
 
         def read_output(pipe, log_func):
@@ -255,33 +257,35 @@ class NetworkBench(BasePythonSupport):
     def check_tc_command(self):
         try:
             result = subprocess.run(
-                ["sudo", "tc", "-help"],
+                ["sudo", "-n", NETPERF_TC, "check"],
+                check=False,
                 capture_output=True,
                 text=True,
             )
             if result.returncode == 0:
-                LOG.info("tc can be executed as root")
+                LOG.info("netperf-tc can be executed as root")
                 return True
             else:
-                LOG.error("tc is not available")
+                LOG.error("netperf-tc is not available")
         except Exception as e:
-            LOG.error(f"Error executing tc: {str(e)}")
+            LOG.error(f"Error executing netperf-tc: {str(e)}")
         return False
 
     def run_command(self, command):
         try:
             result = subprocess.run(
                 command,
-                shell=True,
                 check=True,
                 capture_output=True,
             )
             LOG.info(command)
             LOG.info(f"Output: {result.stdout.decode().strip()}")
             return True
-        except subprocess.CalledProcessError as e:
+        except (OSError, subprocess.CalledProcessError) as e:
             LOG.info(f"Error executing command: {command}")
-            LOG.info(f"Error: {e.stderr.decode()}")
+            LOG.info(f"Error: {e}")
+            if isinstance(e, subprocess.CalledProcessError) and e.stderr:
+                LOG.info(e.stderr.decode(errors="replace"))
             return False
 
     def network_type_to_bandwidth_rtt(self, network_type):
@@ -304,83 +308,31 @@ class NetworkBench(BasePythonSupport):
     def apply_network_throttling(
         self, interface, network_type, loss, protocol_and_port
     ):
-        def calculate_bdp(bandwidth_mbit, rtt_ms):
-            bandwidth_kbps = bandwidth_mbit * 1_000
-            bdp_bits = bandwidth_kbps * rtt_ms
-            bdp_bytes = bdp_bits / 8
-            if bdp_bytes < 1500:
-                bdp_bytes = 1500
-            return int(bdp_bytes)
+        if interface != "lo":
+            raise ValueError("netperf-tc only supports the loopback interface")
 
         bandwidth_str, rtt_ms = self.network_type_to_bandwidth_rtt(network_type)
         # The delay used in netem is applied before sending,
         # so the delay value should be rtt_ms / 2.
         delay_ms = rtt_ms / 2
-        bandwidth_mbit = float(bandwidth_str.replace("Mbit", ""))
-        bdp_bytes = calculate_bdp(bandwidth_mbit, rtt_ms)
+        command = [
+            "sudo",
+            "-n",
+            NETPERF_TC,
+            "apply",
+            bandwidth_str.removesuffix("Mbit"),
+            str(delay_ms),
+            str(loss or "0"),
+            protocol_and_port[0],
+            str(protocol_and_port[1]),
+        ]
 
-        LOG.info(
-            f"apply_network_throttling: bandwidth={bandwidth_str} delay={delay_ms}ms loss={loss}"
-        )
+        def reset():
+            return self.run_command(["sudo", "-n", NETPERF_TC, "reset"])
 
-        self.run_command(f"sudo tc qdisc del dev {interface} root")
-        if not self.run_command(
-            f"sudo tc qdisc add dev {interface} root handle 1: htb default 12"
-        ):
-            return False
-        else:
-            LOG.info("Register cleanup function")
-            self.cleanup.append(
-                lambda: self.run_command(f"sudo tc qdisc del dev {self.interface} root")
-            )
-
-        if not self.run_command(
-            f"sudo tc class add dev {interface} parent 1: classid 1:1 htb rate {bandwidth_str}"
-        ):
-            return False
-
-        delay_str = f"{delay_ms}ms"
-        if not loss or loss == "0":
-            if not self.run_command(
-                f"sudo tc qdisc add dev {interface} parent 1:1 handle 10: netem delay {delay_str} limit {bdp_bytes}"
-            ):
-                return False
-        elif not self.run_command(
-            f"sudo tc qdisc add dev {interface} parent 1:1 handle 10: netem delay {delay_str} loss {loss}% limit {bdp_bytes}"
-        ):
-            return False
-
-        protocol = 6 if protocol_and_port[0] == "tcp" else 17
-        port = protocol_and_port[1]
-        # Add a filter to match TCP/UDP traffic on the specified port for IPv4
-        if not self.run_command(
-            f"sudo tc filter add dev {interface} protocol ip parent 1:0 u32 "
-            f"match ip protocol {protocol} 0xff "
-            f"match ip dport {port} 0xffff "
-            f"flowid 1:1"
-        ):
-            return False
-        if not self.run_command(
-            f"sudo tc filter add dev {interface} protocol ip parent 1:0 u32 "
-            f"match ip protocol {protocol} 0xff "
-            f"match ip sport {port} 0xffff "
-            f"flowid 1:1"
-        ):
-            return False
-        # Add a filter to match TCP/UDP traffic on the specified port for IPv6
-        if not self.run_command(
-            f"sudo tc filter add dev {interface} parent 1:0 protocol ipv6 u32 "
-            f"match ip6 protocol {protocol} 0xff "
-            f"match ip6 dport {port} 0xffff "
-            f"flowid 1:1"
-        ):
-            return False
-        if not self.run_command(
-            f"sudo tc filter add dev {interface} parent 1:0 protocol ipv6 u32 "
-            f"match ip6 protocol {protocol} 0xff "
-            f"match ip6 sport {port} 0xffff "
-            f"flowid 1:1"
-        ):
+        self.cleanup.append(reset)
+        if not self.run_command(command):
+            reset()
             return False
         return True
 
@@ -559,13 +511,13 @@ class NetworkBench(BasePythonSupport):
         server_stderr.join()
 
     def iperf3_baseline(self):
-        self.run_command("sysctl net.ipv4.tcp_rmem")
-        self.run_command("sysctl net.ipv4.tcp_wmem")
+        self.run_command(["sysctl", "net.ipv4.tcp_rmem"])
+        self.run_command(["sysctl", "net.ipv4.tcp_wmem"])
         tcp_port = self.find_free_port(socket.SOCK_STREAM)
         LOG.info(f"iperf3_baseline on port:{tcp_port}")
 
         if not self.check_tc_command():
-            raise Exception("tc is not available")
+            raise Exception("netperf-tc is not available")
 
         if not self.apply_network_throttling(
             self.interface,
@@ -630,14 +582,14 @@ class NetworkBench(BasePythonSupport):
             )
             if not temp_file_path:
                 raise Exception("Failed to generate temporary file")
-            self.cleanup.append(lambda: temp_file_path.unlink())
+            self.cleanup.append(temp_file_path.unlink)
 
             download_html = self.generate_download_test_html(
                 tempfile.gettempdir(), temp_file_path.name
             )
             if not download_html:
                 raise Exception("Failed to generate file for download test")
-            self.cleanup.append(lambda: download_html.unlink())
+            self.cleanup.append(download_html.unlink)
             cmd += [
                 "--browsertime.server_url",
                 f"https://localhost:{self.caddy_port}/{download_html.name}",
@@ -645,7 +597,7 @@ class NetworkBench(BasePythonSupport):
                 str(file_size),
             ]
 
-        LOG.info("modify_command: %s" % cmd)
+        LOG.info(f"modify_command: {cmd}")
 
         # We know that cmd[0] is the path to nodejs.
         self.browsertime_node = Path(cmd[0])
@@ -657,7 +609,7 @@ class NetworkBench(BasePythonSupport):
 
         if self.network_type != "unthrottled":
             if not self.check_tc_command():
-                raise Exception("tc is not available")
+                raise Exception("netperf-tc is not available")
             if not self.apply_network_throttling(
                 self.interface,
                 self.network_type,
@@ -701,7 +653,7 @@ class NetworkBench(BasePythonSupport):
             "alertThreshold": float(test.get("alert_threshold", 2.0)),
             "unit": unit,
             "replicates": replicates,
-            "shouldAlert": False,
+            "shouldAlert": True,
             "value": round(filters.mean(replicates), 3),
         }
 
@@ -729,11 +681,11 @@ class NetworkBench(BasePythonSupport):
                 item["extraOptions"].append(loss_str)
 
     def shutdown_process(self, name, proc):
-        LOG.info("%s server shutting down ..." % name)
+        LOG.info(f"{name} server shutting down ...")
         if proc.poll() is not None:
-            LOG.info("server already dead %s" % proc.poll())
+            LOG.info(f"server already dead {proc.poll()}")
         else:
-            LOG.info("server pid is %s" % str(proc.pid))
+            LOG.info(f"server pid is {proc.pid}")
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
             except Exception as e:

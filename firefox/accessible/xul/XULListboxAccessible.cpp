@@ -1,23 +1,21 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "XULListboxAccessible.h"
 
-#include "LocalAccessible-inl.h"
-#include "nsAccessibilityService.h"
-#include "nsAccUtils.h"
 #include "DocAccessible.h"
-#include "mozilla/a11y/Role.h"
+#include "LocalAccessible-inl.h"
 #include "States.h"
-
+#include "mozilla/a11y/Role.h"
+#include "mozilla/dom/NodeList.h"
+#include "nsAccUtils.h"
+#include "nsAccessibilityService.h"
 #include "nsComponentManagerUtils.h"
 #include "nsIAutoCompletePopup.h"
 #include "nsIDOMXULMenuListElement.h"
 #include "nsIDOMXULMultSelectCntrlEl.h"
 #include "nsIDOMXULSelectCntrlItemEl.h"
-#include "nsINodeList.h"
 
 using namespace mozilla::a11y;
 
@@ -60,6 +58,7 @@ void XULColumnItemAccessible::ActionNameAt(uint8_t aIndex, nsAString& aName) {
 XULListboxAccessible::XULListboxAccessible(nsIContent* aContent,
                                            DocAccessible* aDoc)
     : XULSelectControlAccessible(aContent, aDoc) {
+  mType = eXULListboxType;
   dom::Element* parentEl = mContent->GetParentElement();
   if (parentEl) {
     nsCOMPtr<nsIAutoCompletePopup> autoCompletePopupElm =
@@ -172,7 +171,7 @@ uint32_t XULListboxAccessible::SelectedCellCount() {
   NS_ASSERTION(control,
                "Doesn't implement nsIDOMXULMultiSelectControlElement.");
 
-  nsCOMPtr<nsINodeList> selectedItems;
+  RefPtr<dom::NodeList> selectedItems;
   control->GetSelectedItems(getter_AddRefs(selectedItems));
   if (!selectedItems) return 0;
 
@@ -216,7 +215,7 @@ void XULListboxAccessible::SelectedCells(nsTArray<Accessible*>* aCells) {
   NS_ASSERTION(control,
                "Doesn't implement nsIDOMXULMultiSelectControlElement.");
 
-  nsCOMPtr<nsINodeList> selectedItems;
+  RefPtr<dom::NodeList> selectedItems;
   control->GetSelectedItems(getter_AddRefs(selectedItems));
   if (!selectedItems) return;
 
@@ -242,7 +241,7 @@ void XULListboxAccessible::SelectedCellIndices(nsTArray<uint32_t>* aCells) {
   NS_ASSERTION(control,
                "Doesn't implement nsIDOMXULMultiSelectControlElement.");
 
-  nsCOMPtr<nsINodeList> selectedItems;
+  RefPtr<dom::NodeList> selectedItems;
   control->GetSelectedItems(getter_AddRefs(selectedItems));
   if (!selectedItems) return;
 
@@ -285,7 +284,7 @@ void XULListboxAccessible::SelectedRowIndices(nsTArray<uint32_t>* aRows) {
   NS_ASSERTION(control,
                "Doesn't implement nsIDOMXULMultiSelectControlElement.");
 
-  nsCOMPtr<nsINodeList> selectedItems;
+  RefPtr<dom::NodeList> selectedItems;
   control->GetSelectedItems(getter_AddRefs(selectedItems));
   if (!selectedItems) return;
 
@@ -362,7 +361,7 @@ XULListitemAccessible::XULListitemAccessible(nsIContent* aContent,
   mType = eXULListItemType;
 }
 
-XULListitemAccessible::~XULListitemAccessible() {}
+XULListitemAccessible::~XULListitemAccessible() = default;
 
 LocalAccessible* XULListitemAccessible::GetListAccessible() const {
   if (IsDefunct()) return nullptr;
@@ -381,8 +380,9 @@ LocalAccessible* XULListitemAccessible::GetListAccessible() const {
 ////////////////////////////////////////////////////////////////////////////////
 // XULListitemAccessible LocalAccessible
 
-void XULListitemAccessible::Description(nsString& aDesc) const {
-  AccessibleWrap::Description(aDesc);
+EDescriptionValueFlag XULListitemAccessible::Description(
+    nsString& aDesc) const {
+  return AccessibleWrap::Description(aDesc);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

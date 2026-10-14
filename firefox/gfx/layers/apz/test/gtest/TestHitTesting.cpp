@@ -1,12 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "APZCTreeManagerTester.h"
 #include "APZTestCommon.h"
-
 #include "InputUtils.h"
 
 class APZHitTestingTester : public APZCTreeManagerTester {
@@ -55,18 +52,13 @@ class APZHitTestingTester : public APZCTreeManagerTester {
                      100),  // layer(9) in bottom-right (below (8))
     };
     CreateScrollData(treeShape, layerVisibleRect);
-    SetScrollableFrameMetrics(layers[1], ScrollableLayerGuid::START_SCROLL_ID);
-    SetScrollableFrameMetrics(layers[2], ScrollableLayerGuid::START_SCROLL_ID);
-    SetScrollableFrameMetrics(layers[4],
-                              ScrollableLayerGuid::START_SCROLL_ID + 1);
-    SetScrollableFrameMetrics(layers[6],
-                              ScrollableLayerGuid::START_SCROLL_ID + 1);
-    SetScrollableFrameMetrics(layers[7],
-                              ScrollableLayerGuid::START_SCROLL_ID + 2);
-    SetScrollableFrameMetrics(layers[8],
-                              ScrollableLayerGuid::START_SCROLL_ID + 1);
-    SetScrollableFrameMetrics(layers[9],
-                              ScrollableLayerGuid::START_SCROLL_ID + 3);
+    SetScrollableFrameMetrics(layers[1], START_SCROLL_ID);
+    SetScrollableFrameMetrics(layers[2], START_SCROLL_ID);
+    SetScrollableFrameMetrics(layers[4], START_SCROLL_ID + 1);
+    SetScrollableFrameMetrics(layers[6], START_SCROLL_ID + 1);
+    SetScrollableFrameMetrics(layers[7], START_SCROLL_ID + 2);
+    SetScrollableFrameMetrics(layers[8], START_SCROLL_ID + 1);
+    SetScrollableFrameMetrics(layers[9], START_SCROLL_ID + 3);
   }
 
   void CreateBug1148350LayerTree() {
@@ -77,7 +69,7 @@ class APZHitTestingTester : public APZCTreeManagerTester {
         LayerIntRect(0, 0, 200, 200),
     };
     CreateScrollData(treeShape, layerVisibleRect);
-    SetScrollableFrameMetrics(layers[1], ScrollableLayerGuid::START_SCROLL_ID);
+    SetScrollableFrameMetrics(layers[1], START_SCROLL_ID);
   }
 };
 

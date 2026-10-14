@@ -1,21 +1,20 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "XULComboboxAccessible.h"
 
-#include "LocalAccessible-inl.h"
-#include "nsAccessibilityService.h"
 #include "DocAccessible.h"
-#include "nsCoreUtils.h"
-#include "nsFocusManager.h"
-
+#include "LocalAccessible-inl.h"
+#include "States.h"
 #include "mozilla/a11y/DocAccessibleParent.h"
 #include "mozilla/a11y/Role.h"
-#include "States.h"
-
+#include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/WindowContext.h"
+#include "nsAccessibilityService.h"
+#include "nsCoreUtils.h"
+#include "nsFocusManager.h"
 #include "nsIDOMXULMenuListElement.h"
 
 using namespace mozilla::a11y;
@@ -59,18 +58,23 @@ bool XULComboboxAccessible::IsAcceptableChild(nsIContent* aContent) const {
   return AccessibleWrap::IsAcceptableChild(aContent) && !aContent->IsText();
 }
 
-void XULComboboxAccessible::Description(nsString& aDescription) const {
+EDescriptionValueFlag XULComboboxAccessible::Description(
+    nsString& aDescription) const {
   aDescription.Truncate();
   // Use description of currently focused option
   nsCOMPtr<nsIDOMXULMenuListElement> menuListElm = Elm()->AsXULMenuList();
-  if (!menuListElm) return;
+  if (!menuListElm) return eDescriptionOK;
 
   nsCOMPtr<dom::Element> focusedOptionItem;
   menuListElm->GetSelectedItem(getter_AddRefs(focusedOptionItem));
   if (focusedOptionItem && mDoc) {
     LocalAccessible* focusedOptionAcc = mDoc->GetAccessible(focusedOptionItem);
-    if (focusedOptionAcc) focusedOptionAcc->Description(aDescription);
+    if (focusedOptionAcc) {
+      return focusedOptionAcc->Description(aDescription);
+    }
   }
+
+  return eDescriptionOK;
 }
 
 void XULComboboxAccessible::Value(nsString& aValue) const {
@@ -167,9 +171,11 @@ Accessible* XULContentSelectDropdownAccessible::Parent() const {
     nsFocusManager* focusManagerDOM = nsFocusManager::GetFocusManager();
     dom::BrowsingContext* focusedContext =
         focusManagerDOM->GetFocusedBrowsingContextInChrome();
+    dom::WindowContext* focusedWindow =
+        focusedContext ? focusedContext->GetCurrentWindowContext() : nullptr;
 
     DocAccessibleParent* focusedDoc =
-        DocAccessibleParent::GetFrom(focusedContext);
+        DocAccessibleParent::GetFrom(focusedWindow);
     if (NS_WARN_IF(!focusedDoc)) {
       // We can fail to get a document here if a user is
       // performing a drag-and-drop selection with mouse. See

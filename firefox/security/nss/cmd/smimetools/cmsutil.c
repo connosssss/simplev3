@@ -736,10 +736,17 @@ loser:
     return NULL;
 }
 
+/* The CMS layer takes ownership of the key this returns, so hand out a
+ * new reference rather than the caller's. */
 PK11SymKey *
 dkcb(void *arg, SECAlgorithmID *algid)
 {
-    return (PK11SymKey *)arg;
+    PK11SymKey *bulkkey = (PK11SymKey *)arg;
+
+    if (bulkkey == NULL) {
+        return NULL;
+    }
+    return PK11_ReferenceSymKey(bulkkey);
 }
 
 static SECStatus
@@ -1080,22 +1087,15 @@ SECOidTag
 CMSU_FindTagFromString(const char *cipherString)
 {
     SECOidTag tag;
-    SECOidData *oid;
     size_t slen;
 
     /* future enhancement: accept dotted oid spec? */
-
-    for (tag = 1; (oid = SECOID_FindOIDByTag(tag)) != NULL; tag++) {
-        /* only interested in oids that we actually understand */
-        if (oid->mechanism == CKM_INVALID_MECHANISM) {
-            continue;
-        }
-        if (PORT_Strcasecmp(oid->desc, cipherString) != 0) {
-            continue;
-        }
+    slen = PORT_Strlen(cipherString);
+    tag = SECOID_FindOIDTagFromDescripton(cipherString, slen, PR_TRUE);
+    if (tag != SEC_OID_UNKNOWN) {
         return tag;
     }
-    slen = PORT_Strlen(cipherString);
+
     if ((slen > 3) && (PORT_Strncasecmp(cipherString, "SHA", 3) == 0) &&
         (cipherString[3] != '-')) {
         int i;
@@ -1576,10 +1576,6 @@ main(int argc, char **argv)
                 SECU_PrintError(progName, "problem encrypting");
                 exitstatus = 1;
             }
-            if (encryptOptions.bulkkey) {
-                PK11_FreeSymKey(encryptOptions.bulkkey);
-                encryptOptions.bulkkey = NULL;
-            }
             break;
         case ENVELOPE: /* -E */
             envelopeOptions.options = &options;
@@ -1677,6 +1673,10 @@ main(int argc, char **argv)
 loser:
     if (cmsg)
         NSS_CMSMessage_Destroy(cmsg);
+    if (encryptOptions.bulkkey) {
+        PK11_FreeSymKey(encryptOptions.bulkkey);
+        encryptOptions.bulkkey = NULL;
+    }
     if (outFile != stdout)
         fclose(outFile);
 

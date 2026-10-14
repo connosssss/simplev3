@@ -10,7 +10,6 @@
 #define _SECMODTI_H_ 1
 #include "prmon.h"
 #include "prtypes.h"
-#include "nssilckt.h"
 #include "secmodt.h"
 #include "pkcs11t.h"
 
@@ -51,7 +50,7 @@ struct PK11SlotInfoStr {
     CK_FLAGS flags; /* flags from PKCS #11 token Info */
     /* a default session handle to do quick and dirty functions */
     CK_SESSION_HANDLE session;
-    PZLock *sessionLock; /* lock for this session */
+    PRLock *sessionLock; /* lock for this session */
     /* our ID */
     CK_SLOT_ID slotID;
     /* persistant flags saved from startup to startup */
@@ -59,18 +58,20 @@ struct PK11SlotInfoStr {
     /* keep track of who is using us so we don't accidently get freed while
      * still in use */
     PRInt32 refCount; /* to be in/decremented by atomic calls ONLY! */
-    PZLock *freeListLock;
+
+    // freeListLock protects freeSymKeysWithSessionHead, freeSymKeysHead,
+    // keyCount, and maxKeyCount.
+    PRLock *freeListLock;
     PK11SymKey *freeSymKeysWithSessionHead;
     PK11SymKey *freeSymKeysHead;
     int keyCount;
     int maxKeyCount;
+
     /* Password control functions for this slot. many of these are only
      * active if the appropriate flag is on in defaultFlags */
     int askpw;           /* what our password options are */
     int timeout;         /* If we're ask_timeout, what is our timeout time is
                           * seconds */
-    int authTransact;    /* allow multiple authentications off one password if
-                          * they are all part of the same transaction */
     PRTime authTime;     /* when were we last authenticated */
     int minPassword;     /* smallest legal password */
     int maxPassword;     /* largest legal password */
@@ -103,17 +104,20 @@ struct PK11SlotInfoStr {
     CK_FLAGS RSAInfoFlags;
     PRBool protectedAuthPath;
     PRBool isActiveCard;
-    PRIntervalTime lastLoginCheck;
     unsigned int lastState;
-    /* for Stan */
+
+    /* nssTokenLock protects nssToken and lastLoginCheck */
+    PRLock *nssTokenLock;
     NSSToken *nssToken;
-    PZLock *nssTokenLock;
+    PRIntervalTime lastLoginCheck;
+
     /* the tokeninfo struct */
     CK_TOKEN_INFO tokenInfo;
     /* fast mechanism lookup */
     char mechanismBits[256];
     CK_PROFILE_ID *profileList;
     int profileCount;
+    CK_FLAGS validationFIPSFlags;
 };
 
 /* Symetric Key structure. Reference Counted */
@@ -153,7 +157,7 @@ struct PK11ContextStr {
     CK_OBJECT_HANDLE objectID;            /* object handle to key */
     PK11SlotInfo *slot;                   /* slot this context is using */
     CK_SESSION_HANDLE session;            /* session this context is using */
-    PZLock *sessionLock;                  /* lock before accessing a PKCS #11
+    PRLock *sessionLock;                  /* lock before accessing a PKCS #11
                                            * session */
     PRBool ownSession;                    /* do we own the session? */
     void *pwArg;                          /* applicaton specific passwd arg */

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,13 +5,13 @@
 #ifndef VIDEOFRAMECONTAINER_H_
 #define VIDEOFRAMECONTAINER_H_
 
-#include "mozilla/Mutex.h"
-#include "mozilla/TimeStamp.h"
-#include "gfxPoint.h"
-#include "nsCOMPtr.h"
 #include "ImageContainer.h"
 #include "MediaSegment.h"
 #include "VideoSegment.h"
+#include "gfxPoint.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/TimeStamp.h"
+#include "nsCOMPtr.h"
 
 namespace mozilla {
 
@@ -123,6 +121,11 @@ class VideoFrameContainer {
     // size on the element, request a frame reflow and then reset this to
     // Nothing.
     Maybe<gfx::IntSize> mNewIntrinsicSize;
+    // The main thread mirror of mRotation below, in case it has changed.
+    // Set to some rotation when the rotation has changed since the last
+    // call to Invalidate(). The next call to Invalidate() will consume this
+    // to update the rotation on the element and then reset this to Nothing.
+    Maybe<VideoRotation> mNewRotation;
   } mMainThreadState;
 
   Mutex mMutex;
@@ -132,6 +135,9 @@ class VideoFrameContainer {
   // specifies that the Image should be stretched to have the correct aspect
   // ratio.
   Maybe<gfx::IntSize> mIntrinsicSize MOZ_GUARDED_BY(mMutex);
+  // The rotation of the last image passed to SetCurrentFramesLocked(), used
+  // to detect a change since the previous call.
+  Maybe<VideoRotation> mRotation MOZ_GUARDED_BY(mMutex);
   // We maintain our own mFrameID which is auto-incremented at every
   // SetCurrentFrame() or NewFrameID() call.
   ImageContainer::FrameID mFrameID;

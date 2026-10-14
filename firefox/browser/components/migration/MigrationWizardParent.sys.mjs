@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
-import { MigrationUtils } from "resource:///modules/MigrationUtils.sys.mjs";
+import { MigrationUtils } from "moz-src:///browser/components/migration/MigrationUtils.sys.mjs";
 import { E10SUtils } from "resource://gre/modules/E10SUtils.sys.mjs";
 
 const lazy = {};
@@ -16,18 +16,22 @@ ChromeUtils.defineLazyGetter(lazy, "gFluentStrings", function () {
 });
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  FirefoxProfileMigrator: "resource:///modules/FirefoxProfileMigrator.sys.mjs",
+  FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
+  FirefoxProfileMigrator:
+    "moz-src:///browser/components/migration/FirefoxProfileMigrator.sys.mjs",
   InternalTestingProfileMigrator:
-    "resource:///modules/InternalTestingProfileMigrator.sys.mjs",
+    "moz-src:///browser/components/migration/InternalTestingProfileMigrator.sys.mjs",
   LoginCSVImport: "resource://gre/modules/LoginCSVImport.sys.mjs",
   MigrationWizardConstants:
     "chrome://browser/content/migration/migration-wizard-constants.mjs",
-  PasswordFileMigrator: "resource:///modules/FileMigrators.sys.mjs",
+  PasswordFileMigrator:
+    "moz-src:///browser/components/migration/FileMigrators.sys.mjs",
 });
 
 if (AppConstants.platform == "macosx") {
   ChromeUtils.defineESModuleGetters(lazy, {
-    SafariProfileMigrator: "resource:///modules/SafariProfileMigrator.sys.mjs",
+    SafariProfileMigrator:
+      "moz-src:///browser/components/migration/SafariProfileMigrator.sys.mjs",
   });
 }
 
@@ -62,9 +66,8 @@ export class MigrationWizardParent extends JSWindowActorParent {
     // make sure that any messages from content are coming from the privileged
     // about content process type.
     if (
-      !this.browsingContext.currentWindowGlobal.isInProcess &&
-      this.browsingContext.currentRemoteType !=
-        E10SUtils.PRIVILEGEDABOUT_REMOTE_TYPE
+      !this.manager.isInProcess &&
+      this.manager.remoteType != E10SUtils.PRIVILEGEDABOUT_REMOTE_TYPE
     ) {
       throw new Error(
         "MigrationWizardParent: received message from the wrong content process type."
@@ -156,8 +159,8 @@ export class MigrationWizardParent extends JSWindowActorParent {
       }
 
       case "OpenAboutAddons": {
-        let browser = this.browsingContext.topChromeWindow;
-        this.#openAboutAddons(browser);
+        let window = this.browsingContext.topChromeWindow;
+        this.#openAboutAddons(window);
         break;
       }
 
@@ -169,6 +172,16 @@ export class MigrationWizardParent extends JSWindowActorParent {
       case "OpenURL": {
         let browser = this.browsingContext.topChromeWindow;
         this.#openURL(browser, message.data.url, message.data.where);
+        break;
+      }
+
+      case "LaunchMacOSPasswordsApp": {
+        let pwAppFile = lazy.FileUtils.File(
+          "/System/Applications/Passwords.app"
+        );
+        if (await IOUtils.exists(pwAppFile.path)) {
+          pwAppFile.launch();
+        }
         break;
       }
     }
@@ -815,11 +828,10 @@ export class MigrationWizardParent extends JSWindowActorParent {
    * Opens the about:addons page in a new background tab in the same window
    * as the passed browser.
    *
-   * @param {Element} browser
-   *   The browser element requesting that about:addons opens.
+   * @param {ChromeWindow} window
+   *   The window requesting that about:addons opens.
    */
-  #openAboutAddons(browser) {
-    let window = browser.ownerGlobal;
+  #openAboutAddons(window) {
     window.openTrustedLinkIn("about:addons", "tab", { inBackground: true });
   }
 
@@ -835,7 +847,7 @@ export class MigrationWizardParent extends JSWindowActorParent {
    *   Where the URL will be opened. Defaults to current tab.
    */
   #openURL(browser, url, where) {
-    let window = browser.ownerGlobal;
+    let window = browser.documentGlobal;
     window.openLinkIn(
       Services.urlFormatter.formatURL(url),
       where || "current",
@@ -844,7 +856,6 @@ export class MigrationWizardParent extends JSWindowActorParent {
         triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal(
           {}
         ),
-        csp: null,
       }
     );
   }

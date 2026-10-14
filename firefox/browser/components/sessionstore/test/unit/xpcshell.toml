@@ -1,4 +1,7 @@
 [DEFAULT]
+run-if = [
+  "os != 'android'",
+]
 head = "head.js"
 tags = "condprof"
 firefox-appdir = "browser"
@@ -10,21 +13,36 @@ support-files = [
 
 ["test_backup_once.js"]
 skip-if = [
-  "os == 'linux' && os_version == '18.04' && processor == 'x86_64' && opt && condprof", # Bug 1769154
-  "os == 'linux' && os_version == '24.04' && processor == 'x86_64' && display == 'x11' && opt && condprof",
-  "os == 'win' && os_version == '11.26100' && processor == 'x86_64' && opt && condprof", # Bug 1769154
+  "condprof", # Bug 1769154
 ]
 
+["test_encryption.js"]
+skip-if = [
+  "condprof",
+]
+
+["test_encryption_pref_locked.js"]
+
 ["test_final_write_cleanup.js"]
+
+["test_format_tab_state_for_saved_group.js"]
+
+["test_glean_backup_can_be_loaded.js"]
 
 ["test_histogram_corrupt_files.js"]
 
 ["test_migration_lz4compression.js"]
 skip-if = [
-  "os == 'linux' && os_version == '18.04' && processor == 'x86_64' && opt && condprof", # Bug 1769154
-  "os == 'linux' && os_version == '24.04' && processor == 'x86_64' && display == 'x11' && opt && condprof",
-  "os == 'win' && os_version == '11.26100' && processor == 'x86_64' && opt && condprof", # Bug 1769154
+  "condprof", # Bug 1769154
 ]
+
+["test_restore_session_suggestion_count.js"]
+
+["test_session_availability.js"]
+
+["test_session_migration_encryption.js"]
+
+["test_session_migration_show_reason.js"]
 
 ["test_session_schema.js"]
 support-files = [
@@ -33,16 +51,16 @@ support-files = [
 
 ["test_startup_invalid_session.js"]
 skip-if = [
-  "os == 'linux' && os_version == '18.04' && processor == 'x86_64' && opt && condprof", # Bug 1769154
-  "os == 'linux' && os_version == '24.04' && processor == 'x86_64' && display == 'x11' && opt && condprof",
-  "os == 'win' && os_version == '11.26100' && processor == 'x86_64' && opt && condprof", # Bug 1769154
+  "condprof", # Bug 1769154
 ]
 
 ["test_startup_nosession_async.js"]
 skip-if = [
-  "os == 'linux' && os_version == '18.04' && processor == 'x86_64' && opt && condprof", # Bug 1769154
-  "os == 'linux' && os_version == '24.04' && processor == 'x86_64' && display == 'x11' && opt && condprof",
-  "os == 'win' && os_version == '11.26100' && processor == 'x86_64' && opt && condprof", # Bug 1769154
+  "condprof", # Bug 1769154
 ]
 
 ["test_startup_session_async.js"]
+
+["test_tab_group_state.js"]
+
+["test_write_outcome.js"]

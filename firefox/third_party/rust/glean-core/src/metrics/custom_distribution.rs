@@ -5,13 +5,12 @@
 use std::mem;
 use std::sync::Arc;
 
-use crate::common_metric_data::{CommonMetricDataInternal, DynamicLabelType};
+use crate::common_metric_data::{CommonMetricDataInternal, MetricLabel};
 use crate::error_recording::{record_error, test_get_num_recorded_errors, ErrorType};
 use crate::histogram::{Bucketing, Histogram, HistogramType, LinearOrExponential};
 use crate::metrics::{DistributionData, Metric, MetricType};
-use crate::storage::StorageManager;
-use crate::CommonMetricData;
 use crate::Glean;
+use crate::{CommonMetricData, TestGetValue};
 
 /// A custom distribution metric.
 #[derive(Clone, Debug)]
@@ -55,9 +54,9 @@ impl MetricType for CustomDistributionMetric {
         }
     }
 
-    fn with_dynamic_label(&self, label: DynamicLabelType) -> Self {
+    fn with_label(&self, label: MetricLabel) -> Self {
         let mut meta = (*self.meta).clone();
-        meta.inner.dynamic_label = Some(label);
+        meta.inner.label = Some(label);
         Self {
             meta: Arc::new(meta),
             range_min: self.range_min,
@@ -123,7 +122,7 @@ impl CustomDistributionMetric {
     /// ## Notes
     ///
     /// Discards any negative value of `sample` and reports an
-    /// [`ErrorType::InvalidValue`](crate::ErrorType::InvalidValue).
+    /// [`ErrorType::InvalidValue`].
     pub fn accumulate_single_sample(&self, sample: i64) {
         let metric = self.clone();
         crate::launch_with_glean(move |glean| metric.accumulate_samples_sync(glean, &[sample]))
@@ -218,36 +217,16 @@ impl CustomDistributionMetric {
             .into()
             .unwrap_or_else(|| &self.meta().inner.send_in_pings[0]);
 
-        match StorageManager.snapshot_metric_for_test(
-            glean.storage(),
+        match glean.storage().get_metric(
+            #[cfg(not(feature = "sqlite"))]
+            glean,
+            self.meta(),
             queried_ping_name,
-            &self.meta.identifier(glean),
-            self.meta.inner.lifetime,
         ) {
-            // Boxing the value, in order to return either of the possible buckets
             Some(Metric::CustomDistributionExponential(hist)) => Some(snapshot(&hist)),
             Some(Metric::CustomDistributionLinear(hist)) => Some(snapshot(&hist)),
             _ => None,
         }
-    }
-
-    /// **Test-only API (exported for FFI purposes).**
-    ///
-    /// Gets the currently stored value as an integer.
-    ///
-    /// This doesn't clear the stored value.
-    ///
-    /// # Arguments
-    ///
-    /// * `ping_name` - the optional name of the ping to retrieve the metric
-    ///                 for. Defaults to the first value in `send_in_pings`.
-    ///
-    /// # Returns
-    ///
-    /// The stored value or `None` if nothing stored.
-    pub fn test_get_value(&self, ping_name: Option<String>) -> Option<DistributionData> {
-        crate::block_on_dispatcher();
-        crate::core::with_glean(|glean| self.get_value(glean, ping_name.as_deref()))
     }
 
     /// **Exported for test purposes.**
@@ -319,6 +298,29 @@ impl CustomDistributionMetric {
                     }
                 });
         });
+    }
+}
+
+impl TestGetValue for CustomDistributionMetric {
+    type Output = DistributionData;
+
+    /// **Test-only API (exported for FFI purposes).**
+    ///
+    /// Gets the currently stored value as an integer.
+    ///
+    /// This doesn't clear the stored value.
+    ///
+    /// # Arguments
+    ///
+    /// * `ping_name` - the optional name of the ping to retrieve the metric
+    ///                 for. Defaults to the first value in `send_in_pings`.
+    ///
+    /// # Returns
+    ///
+    /// The stored value or `None` if nothing stored.
+    fn test_get_value(&self, ping_name: Option<String>) -> Option<DistributionData> {
+        crate::block_on_dispatcher();
+        crate::core::with_glean(|glean| self.get_value(glean, ping_name.as_deref()))
     }
 }
 

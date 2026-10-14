@@ -7,8 +7,8 @@
  * for similar heuristics for xpcshell.
  *
  * Many of the storage-related helpers in this file come from:
- * https://searchfox.org/mozilla-central/source/dom/localstorage/test/unit/head.js
- **/
+ * https://searchfox.org/firefox-main/source/dom/localstorage/test/unit/head.js
+ */
 
 // To use this file, explicitly import it via:
 //
@@ -111,6 +111,40 @@ function swm_lookup_reg(swDesc) {
   const reg = SWM.getRegistrationByPrincipal(principal, fullScope);
 
   return reg;
+}
+
+/**
+ * Count the ServiceWorker registrations whose principal matches `origin`, which
+ * must not have a trailing slash.  Useful to assert that a data-clearing or
+ * purging operation removed an origin's registrations, or spared them.
+ *
+ * Origin attributes are ignored: partitioned and container registrations for
+ * the origin count too, which callers asserting a full clear depend on.
+ */
+function countRegistrationsForOrigin(origin) {
+  let count = 0;
+  let regs = SWM.getAllRegistrations();
+  for (let i = 0; i < regs.length; i++) {
+    let reg = regs.queryElementAt(i, Ci.nsIServiceWorkerRegistrationInfo);
+    if (reg.principal.originNoSuffix === origin) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Return the names of an origin's chrome-namespace Cache API caches, which is
+ * where ServiceWorkerScriptCache stores worker scripts.  A script cache is not
+ * visible to the quota-usage helpers above: it stays under the
+ * is_minimum_origin_usage() threshold, so asserting that a clear removed it
+ * takes looking it up by name.
+ *
+ * The caller has to read nsIServiceWorkerInfo.cacheName before clearing, since
+ * the registration's activeWorker is gone afterwards.
+ */
+async function get_sw_script_cache_names(origin) {
+  return new CacheStorage("chrome", getPrincipal(origin)).keys();
 }
 
 /**
@@ -258,9 +292,17 @@ async function consume_storage(origin, storageDesc) {
 }
 
 // Check if the origin is effectively empty, but allowing for the minimum size
-// Cache API database to be present.
+// Cache API database to be present. When SQLite at-rest encryption is on,
+// obfsvfs forces an 8192-byte page size with 32 reserved bytes per page, so the
+// "empty" Cache API databases are larger on disk; allow more headroom then.
 function is_minimum_origin_usage(originUsageBytes) {
-  return originUsageBytes <= kMinimumOriginUsageBytes;
+  const limit = Services.prefs.getBoolPref(
+    "security.storage.encryption.sqlite.enabled",
+    false
+  )
+    ? 2 * kMinimumOriginUsageBytes
+    : kMinimumOriginUsageBytes;
+  return originUsageBytes <= limit;
 }
 
 /**

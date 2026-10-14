@@ -7,22 +7,9 @@ import { LogManager } from "resource://normandy/lib/LogManager.sys.mjs";
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  AddonRollbackAction:
-    "resource://normandy/actions/AddonRollbackAction.sys.mjs",
-  AddonRolloutAction: "resource://normandy/actions/AddonRolloutAction.sys.mjs",
   BaseAction: "resource://normandy/actions/BaseAction.sys.mjs",
-  BranchedAddonStudyAction:
-    "resource://normandy/actions/BranchedAddonStudyAction.sys.mjs",
-  ConsoleLogAction: "resource://normandy/actions/ConsoleLogAction.sys.mjs",
-  PreferenceExperimentAction:
-    "resource://normandy/actions/PreferenceExperimentAction.sys.mjs",
-  PreferenceRollbackAction:
-    "resource://normandy/actions/PreferenceRollbackAction.sys.mjs",
-  PreferenceRolloutAction:
-    "resource://normandy/actions/PreferenceRolloutAction.sys.mjs",
   ShowHeartbeatAction:
     "resource://normandy/actions/ShowHeartbeatAction.sys.mjs",
-  Uptake: "resource://normandy/lib/Uptake.sys.mjs",
 });
 
 const log = LogManager.getLogger("recipe-runner");
@@ -43,13 +30,6 @@ export class ActionsManager {
   }
 
   static actionConstructors = {
-    "addon-rollback": lazy.AddonRollbackAction,
-    "addon-rollout": lazy.AddonRolloutAction,
-    "branched-addon-study": lazy.BranchedAddonStudyAction,
-    "console-log": lazy.ConsoleLogAction,
-    "multi-preference-experiment": lazy.PreferenceExperimentAction,
-    "preference-rollback": lazy.PreferenceRollbackAction,
-    "preference-rollout": lazy.PreferenceRolloutAction,
     "show-heartbeat": lazy.ShowHeartbeatAction,
   };
 
@@ -79,7 +59,6 @@ export class ActionsManager {
         `Could not execute recipe ${recipe.name}:`,
         `Action ${recipe.action} is either missing or invalid.`
       );
-      await lazy.Uptake.reportRecipe(recipe, lazy.Uptake.RECIPE_INVALID_ACTION);
     }
   }
 

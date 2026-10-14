@@ -1,36 +1,42 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-// Tests keyboard selection within UrlbarUtils.RESULT_TYPE.TIP results.
+// Tests keyboard selection within UrlbarShared.RESULT_TYPE.TIP results.
 
 "use strict";
 
 const HELP_URL = "about:mozilla";
 const TIP_URL = "about:about";
-
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.scotchBonnet.enableOverride", false]],
-  });
-});
+const LEARN_MORE_TOPIC = "test-learn-more";
+const LEARN_MORE_URL =
+  Services.urlFormatter.formatURLPref("app.support.baseURL") + LEARN_MORE_TOPIC;
 
 add_task(async function tipIsSecondResult() {
   let results = [
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.URL,
-      UrlbarUtils.RESULT_SOURCE.HISTORY,
-      {
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.URL,
+      source: UrlbarShared.RESULT_SOURCE.HISTORY,
+      payload: {
         url: "http://mozilla.org/a",
         helpUrl: "http://example.com/",
         isBlockable: true,
-        blockL10n: { id: "urlbar-result-menu-remove-from-history" },
-      }
-    ),
-    makeTipResult({ buttonUrl: TIP_URL, helpUrl: HELP_URL }),
+        blockL10n: { id: "urlbar-result-menu-remove-from-history2" },
+      },
+    }),
+    makeTipResult({
+      buttonUrl: TIP_URL,
+      helpUrl: HELP_URL,
+      descriptionL10n: {
+        id: "urlbar-result-market-opt-in-description",
+        parseMarkup: true,
+      },
+      descriptionLearnMoreTopic: LEARN_MORE_TOPIC,
+    }),
   ];
 
   let provider = new UrlbarTestUtils.TestProvider({ results, priority: 1 });
-  UrlbarProvidersManager.registerProvider(provider);
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  providersManager.registerProvider(provider);
 
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     value: "test",
@@ -45,7 +51,7 @@ add_task(async function tipIsSecondResult() {
   let secondResult = await UrlbarTestUtils.getDetailsOfResultAt(window, 1);
   Assert.equal(
     secondResult.type,
-    UrlbarUtils.RESULT_TYPE.TIP,
+    UrlbarShared.RESULT_TYPE.TIP,
     "The second result should be a tip."
   );
 
@@ -53,7 +59,7 @@ add_task(async function tipIsSecondResult() {
   Assert.equal(
     UrlbarTestUtils.getSelectedElementIndex(window),
     0,
-    "The first element should be selected."
+    "The first result's row element should be selected."
   );
 
   EventUtils.synthesizeKey("KEY_ArrowDown");
@@ -68,11 +74,16 @@ add_task(async function tipIsSecondResult() {
     2,
     "Selected element index"
   );
+  Assert.equal(
+    gURLBar.value,
+    TIP_URL,
+    "Input value should be the button's URL"
+  );
 
   EventUtils.synthesizeKey("KEY_Tab");
   Assert.ok(
     UrlbarTestUtils.getSelectedElement(window).classList.contains(
-      "urlbarView-button-menu"
+      "urlbarView-button-result-menu"
     ),
     "The selected element should be the tip menu button."
   );
@@ -87,45 +98,63 @@ add_task(async function tipIsSecondResult() {
     "Selected element index"
   );
 
-  // If this test is running alone, the one-offs will rebuild themselves when
-  // the view is opened above, and they may not be visible yet.  Wait for the
-  // first one to become visible before trying to select it.
-  await TestUtils.waitForCondition(() => {
-    return (
-      gURLBar.view.oneOffSearchButtons.buttons.firstElementChild &&
-      BrowserTestUtils.isVisible(
-        gURLBar.view.oneOffSearchButtons.buttons.firstElementChild
-      )
-    );
-  }, "Waiting for first one-off to become visible.");
+  EventUtils.synthesizeKey("KEY_Tab");
+  Assert.equal(
+    UrlbarTestUtils.getSelectedElement(window).dataset.l10nName,
+    "learn-more-link",
+    "The selected element should be the learn-more link."
+  );
+  Assert.equal(
+    UrlbarTestUtils.getSelectedRowIndex(window),
+    1,
+    "getSelectedRowIndex should return 1 when the learn-more link is selected."
+  );
+  Assert.equal(
+    gURLBar.value,
+    LEARN_MORE_URL,
+    "Input value should be the learn-more URL"
+  );
+
+  // Don't check `UrlbarTestUtils.getSelectedElementIndex(window)`. The link
+  // won't have an `elementIndex`, so `getSelectedElementIndex()` will return
+  // undefined. It won't have an `elementIndex` because the `<a>` is created
+  // lazily when the Fluent `descriptionL10n` string is fetched, and element
+  // indexes are assigned before that, when the view updates row indices.
 
   EventUtils.synthesizeKey("KEY_ArrowDown");
-  await TestUtils.waitForCondition(() => {
-    return gURLBar.view.oneOffSearchButtons.selectedButton;
-  }, "Waiting for one-off to become selected.");
-  Assert.equal(
-    UrlbarTestUtils.getSelectedElementIndex(window),
-    -1,
-    "No results should be selected."
-  );
-
-  EventUtils.synthesizeKey("KEY_Tab", { shiftKey: true });
+  EventUtils.synthesizeKey("KEY_ArrowUp");
   Assert.ok(
     UrlbarTestUtils.getSelectedElement(window).classList.contains(
-      "urlbarView-button-menu"
+      "urlbarView-button-0"
     ),
-    "The selected element should be the tip menu button."
+    "The selected element should be the tip button."
+  );
+  Assert.equal(
+    gURLBar.value,
+    TIP_URL,
+    "Input value should be the button's URL"
   );
 
-  gURLBar.view.close();
-  UrlbarProvidersManager.unregisterProvider(provider);
+  await UrlbarTestUtils.promisePopupClose(window);
+  providersManager.unregisterProvider(provider);
 });
 
 add_task(async function tipIsOnlyResult() {
-  let results = [makeTipResult({ buttonUrl: TIP_URL, helpUrl: HELP_URL })];
+  let results = [
+    makeTipResult({
+      buttonUrl: TIP_URL,
+      helpUrl: HELP_URL,
+      descriptionL10n: {
+        id: "urlbar-result-market-opt-in-description",
+        parseMarkup: true,
+      },
+      descriptionLearnMoreTopic: LEARN_MORE_TOPIC,
+    }),
+  ];
 
   let provider = new UrlbarTestUtils.TestProvider({ results, priority: 1 });
-  UrlbarProvidersManager.registerProvider(provider);
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  providersManager.registerProvider(provider);
 
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     value: "test",
@@ -140,7 +169,7 @@ add_task(async function tipIsOnlyResult() {
   let firstResult = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
   Assert.equal(
     firstResult.type,
-    UrlbarUtils.RESULT_TYPE.TIP,
+    UrlbarShared.RESULT_TYPE.TIP,
     "The first and only result should be a tip."
   );
 
@@ -156,11 +185,16 @@ add_task(async function tipIsOnlyResult() {
     0,
     "The first element should be selected."
   );
+  Assert.equal(
+    gURLBar.value,
+    TIP_URL,
+    "Input value should be the button's URL"
+  );
 
   EventUtils.synthesizeKey("KEY_Tab");
   Assert.ok(
     UrlbarTestUtils.getSelectedElement(window).classList.contains(
-      "urlbarView-button-menu"
+      "urlbarView-button-result-menu"
     ),
     "The selected element should be the tip menu button."
   );
@@ -168,6 +202,18 @@ add_task(async function tipIsOnlyResult() {
     UrlbarTestUtils.getSelectedElementIndex(window),
     1,
     "The second element should be selected."
+  );
+
+  EventUtils.synthesizeKey("KEY_Tab");
+  Assert.equal(
+    UrlbarTestUtils.getSelectedElement(window).dataset.l10nName,
+    "learn-more-link",
+    "The selected element should be the learn-more link."
+  );
+  Assert.equal(
+    gURLBar.value,
+    LEARN_MORE_URL,
+    "Input value should be the learn-more URL"
   );
 
   EventUtils.synthesizeKey("KEY_ArrowDown");
@@ -178,34 +224,48 @@ add_task(async function tipIsOnlyResult() {
   );
 
   EventUtils.synthesizeKey("KEY_Tab", { shiftKey: true });
-  Assert.ok(
-    UrlbarTestUtils.getSelectedElement(window).classList.contains(
-      "urlbarView-button-menu"
-    ),
-    "The selected element should be the tip menu button."
+  Assert.equal(
+    UrlbarTestUtils.getSelectedElement(window).dataset.l10nName,
+    "learn-more-link",
+    "The selected element should be the learn-more link."
+  );
+  Assert.equal(
+    gURLBar.value,
+    LEARN_MORE_URL,
+    "Input value should be the learn-more URL"
   );
 
-  gURLBar.view.close();
-  UrlbarProvidersManager.unregisterProvider(provider);
+  await UrlbarTestUtils.promisePopupClose(window);
+  providersManager.unregisterProvider(provider);
 });
 
-add_task(async function tipHasNoHelpButton() {
+add_task(async function tipHasNoResultMenuButton() {
   let results = [
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.URL,
-      UrlbarUtils.RESULT_SOURCE.HISTORY,
-      {
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.URL,
+      source: UrlbarShared.RESULT_SOURCE.HISTORY,
+      payload: {
         url: "http://mozilla.org/a",
         helpUrl: "http://example.com/",
         isBlockable: true,
-        blockL10n: { id: "urlbar-result-menu-remove-from-history" },
-      }
-    ),
-    makeTipResult({ buttonUrl: TIP_URL }),
+        blockL10n: { id: "urlbar-result-menu-remove-from-history2" },
+      },
+    }),
+
+    // No `helpUrl` means no result-menu button.
+    makeTipResult({
+      buttonUrl: TIP_URL,
+      descriptionL10n: {
+        id: "urlbar-result-market-opt-in-description",
+        parseMarkup: true,
+      },
+      descriptionLearnMoreTopic: LEARN_MORE_TOPIC,
+    }),
   ];
 
   let provider = new UrlbarTestUtils.TestProvider({ results, priority: 1 });
-  UrlbarProvidersManager.registerProvider(provider);
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  providersManager.registerProvider(provider);
 
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     value: "test",
@@ -220,7 +280,7 @@ add_task(async function tipHasNoHelpButton() {
   let secondResult = await UrlbarTestUtils.getDetailsOfResultAt(window, 1);
   Assert.equal(
     secondResult.type,
-    UrlbarUtils.RESULT_TYPE.TIP,
+    UrlbarShared.RESULT_TYPE.TIP,
     "The second result should be a tip."
   );
 
@@ -228,7 +288,7 @@ add_task(async function tipHasNoHelpButton() {
   Assert.equal(
     UrlbarTestUtils.getSelectedElementIndex(window),
     0,
-    "The first element should be selected."
+    "The first result's row element should be selected."
   );
 
   EventUtils.synthesizeKey("KEY_ArrowDown");
@@ -243,17 +303,25 @@ add_task(async function tipHasNoHelpButton() {
     2,
     "Selected element index"
   );
-
-  EventUtils.synthesizeKey("KEY_ArrowDown");
-  await TestUtils.waitForCondition(() => {
-    return gURLBar.view.oneOffSearchButtons.selectedButton;
-  }, "Waiting for one-off to become selected.");
   Assert.equal(
-    UrlbarTestUtils.getSelectedElementIndex(window),
-    -1,
-    "No results should be selected."
+    gURLBar.value,
+    TIP_URL,
+    "Input value should be the button's URL"
   );
 
+  EventUtils.synthesizeKey("KEY_Tab");
+  Assert.equal(
+    UrlbarTestUtils.getSelectedElement(window).dataset.l10nName,
+    "learn-more-link",
+    "The selected element should be the learn-more link."
+  );
+  Assert.equal(
+    gURLBar.value,
+    LEARN_MORE_URL,
+    "Input value should be the learn-more URL"
+  );
+
+  EventUtils.synthesizeKey("KEY_ArrowDown");
   EventUtils.synthesizeKey("KEY_ArrowUp");
   Assert.ok(
     UrlbarTestUtils.getSelectedElement(window).classList.contains(
@@ -261,7 +329,12 @@ add_task(async function tipHasNoHelpButton() {
     ),
     "The selected element should be the tip button."
   );
+  Assert.equal(
+    gURLBar.value,
+    TIP_URL,
+    "Input value should be the button's URL"
+  );
 
-  gURLBar.view.close();
-  UrlbarProvidersManager.unregisterProvider(provider);
+  await UrlbarTestUtils.promisePopupClose(window);
+  providersManager.unregisterProvider(provider);
 });

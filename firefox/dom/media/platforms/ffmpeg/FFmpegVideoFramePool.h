@@ -1,16 +1,16 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __FFmpegVideoFramePool_h__
-#define __FFmpegVideoFramePool_h__
+#ifndef FFmpegVideoFramePool_h_
+#define FFmpegVideoFramePool_h_
+
+#include <va/va.h>
 
 #include "FFmpegLibWrapper.h"
 #include "FFmpegLibs.h"
 #include "FFmpegLog.h"
-
+#include "libavutil/hwcontext_drm.h"
 #include "mozilla/layers/DMABUFSurfaceImage.h"
 #include "mozilla/widget/DMABufDevice.h"
 #include "mozilla/widget/DMABufSurface.h"
@@ -82,6 +82,15 @@ class VideoFrameSurface<LIBAV_VER> {
   void SetTransferFunction(mozilla::gfx::TransferFunction aTransferFunction) {
     mSurface->GetAsDMABufSurfaceYUV()->SetTransferFunction(aTransferFunction);
   }
+  void SetWPChromaLocation(uint32_t aWPChromaLocation) {
+    mSurface->GetAsDMABufSurfaceYUV()->SetWPChromaLocation(aWPChromaLocation);
+  }
+  void SetVulkanCopySlotIndex(int32_t aSlotIndex) {
+    mVulkanCopySlotIndex = aSlotIndex;
+  }
+  void SetHDRMetadata(mozilla::gfx::HDRMetadata aHDRMetadata) {
+    mSurface->GetAsDMABufSurfaceYUV()->SetHDRMetadata(aHDRMetadata);
+  }
 
   RefPtr<DMABufSurfaceYUV> GetDMABufSurface() {
     return mSurface->GetAsDMABufSurfaceYUV();
@@ -100,14 +109,16 @@ class VideoFrameSurface<LIBAV_VER> {
  protected:
   // Lock VAAPI related data
   void LockVAAPIData(AVCodecContext* aAVCodecContext, AVFrame* aAVFrame,
-                     FFmpegLibWrapper* aLib);
+                     const FFmpegLibWrapper* aLib);
   // Release VAAPI related data, DMABufSurface can be reused
   // for another frame.
   void ReleaseVAAPIData(bool aForFrameRecycle = true);
 
   // Check if DMABufSurface is used by any gecko rendering process
   // (WebRender or GL compositor) or by DMABUFSurfaceImage/VideoData.
-  bool IsUsedByRenderer() const { return mSurface->IsGlobalRefSet(); }
+  //
+  // It's set by VideoFramePool::UpdateRendererUsageLocked().
+  bool IsUsedByRenderer() const { return mUsedByRenderer; }
 
   // Surface points to dmabuf memmory owned by ffmpeg.
   bool IsFFMPEGSurface() const { return !!mLib; }
@@ -121,6 +132,8 @@ class VideoFrameSurface<LIBAV_VER> {
   AVBufferRef* mHWAVBuffer;
   VASurfaceID mFFMPEGSurfaceID;
   bool mHoldByFFmpeg;
+  bool mUsedByRenderer;
+  int32_t mVulkanCopySlotIndex;
 };
 
 // VideoFramePool class is thread-safe.
@@ -133,42 +146,46 @@ class VideoFramePool<LIBAV_VER> {
   RefPtr<VideoFrameSurface<LIBAV_VER>> GetVideoFrameSurface(
       VADRMPRIMESurfaceDescriptor& aVaDesc, int aWidth, int aHeight,
       AVCodecContext* aAVCodecContext, AVFrame* aAVFrame,
-      FFmpegLibWrapper* aLib);
+      const FFmpegLibWrapper* aLib);
   RefPtr<VideoFrameSurface<LIBAV_VER>> GetVideoFrameSurface(
       AVDRMFrameDescriptor& aDesc, int aWidth, int aHeight,
       AVCodecContext* aAVCodecContext, AVFrame* aAVFrame,
-      FFmpegLibWrapper* aLib);
-  RefPtr<VideoFrameSurface<LIBAV_VER>> GetVideoFrameSurface(
-      const layers::PlanarYCbCrData& aData, AVCodecContext* aAVCodecContext);
+      const FFmpegLibWrapper* aLib);
 
   void ReleaseUnusedVAAPIFrames();
   void FlushFFmpegFrames();
+  bool IsVulkanFrameSlotInUseByRenderer(int32_t aSlotIndex);
 
  private:
+  // Refresh VideoFrameSurface::IsUsedByRenderer() of all pooled surfaces.
+  // It's a single poll() call for the whole pool, so it's meant to be called
+  // once per decoded frame rather than per surface.
+  void UpdateRendererUsageLocked() MOZ_REQUIRES(mSurfaceLock);
   RefPtr<VideoFrameSurface<LIBAV_VER>> GetTargetVideoFrameSurfaceLocked(
-      const MutexAutoLock& aProofOfLock, VASurfaceID aFFmpegSurfaceID,
-      bool aRecycleSurface);
+      VASurfaceID aFFmpegSurfaceID, bool aRecycleSurface)
+      MOZ_REQUIRES(mSurfaceLock);
   RefPtr<VideoFrameSurface<LIBAV_VER>> GetFFmpegVideoFrameSurfaceLocked(
-      const MutexAutoLock& aProofOfLock, VASurfaceID aFFMPEGSurfaceID);
-  RefPtr<VideoFrameSurface<LIBAV_VER>> GetFreeVideoFrameSurfaceLocked(
-      const MutexAutoLock& aProofOfLock);
-  bool ShouldCopySurface();
+      VASurfaceID aFFMPEGSurfaceID) MOZ_REQUIRES(mSurfaceLock);
+  RefPtr<VideoFrameSurface<LIBAV_VER>> GetFreeVideoFrameSurfaceLocked()
+      MOZ_REQUIRES(mSurfaceLock);
+  bool ShouldCopySurfaceLocked() MOZ_REQUIRES(mSurfaceLock);
 
  private:
   // Protect mDMABufSurfaces pool access
-  Mutex mSurfaceLock MOZ_UNANNOTATED;
-  nsTArray<RefPtr<VideoFrameSurface<LIBAV_VER>>> mDMABufSurfaces;
+  Mutex mSurfaceLock;
+  nsTArray<RefPtr<VideoFrameSurface<LIBAV_VER>>> mDMABufSurfaces
+      MOZ_GUARDED_BY(mSurfaceLock);
   // Maximal number of dmabuf surfaces allocated by ffmpeg for decoded video
   // frames. Can be adjusted by extra_hw_frames at InitVAAPICodecContext().
   // Zero meand unlimited / dynamically allocated pool.
-  int mMaxFFMPEGPoolSize;
+  int mMaxFFMPEGPoolSize MOZ_GUARDED_BY(mSurfaceLock);
   // We may fail to create texture over DMABuf memory due to driver bugs so
   // check that before we export first DMABuf video frame.
-  Maybe<bool> mTextureCreationWorks;
+  Maybe<bool> mTextureCreationWorks MOZ_GUARDED_BY(mSurfaceLock);
   // We may fail to copy DMABuf memory on NVIDIA drivers.
-  bool mTextureCopyWorks = true;
+  bool mTextureCopyWorks MOZ_GUARDED_BY(mSurfaceLock) = true;
 };
 
 }  // namespace mozilla
 
-#endif  // __FFmpegVideoFramePool_h__
+#endif  // FFmpegVideoFramePool_h_

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -430,42 +428,11 @@ JS_PUBLIC_API void* JS_GetArrayBufferViewData(JSObject* obj,
       /*safe - caller sees isSharedMemory flag*/);
 }
 
-JS_PUBLIC_API uint8_t* JS_GetArrayBufferViewFixedData(JSObject* obj,
-                                                      uint8_t* buffer,
-                                                      size_t bufSize) {
-  ArrayBufferViewObject* view = obj->maybeUnwrapAs<ArrayBufferViewObject>();
-  if (!view) {
-    return nullptr;
-  }
-
-  // Disallow shared memory until it is needed.
-  if (view->isSharedMemory()) {
-    return nullptr;
-  }
-
-  // TypedArrays (but not DataViews) can have inline data, in which case we
-  // need to copy into the given buffer.
-  if (view->is<FixedLengthTypedArrayObject>()) {
-    auto* ta = &view->as<FixedLengthTypedArrayObject>();
-    if (ta->hasInlineElements()) {
-      size_t bytes = ta->byteLength();
-      if (bytes > bufSize) {
-        return nullptr;  // Does not fit.
-      }
-      memcpy(buffer, view->dataPointerUnshared(), bytes);
-      return buffer;
-    }
-  }
-
-  return static_cast<uint8_t*>(view->dataPointerUnshared());
-}
-
 JS_PUBLIC_API JSObject* JS_GetArrayBufferViewBuffer(JSContext* cx,
                                                     HandleObject obj,
                                                     bool* isSharedMemory) {
   AssertHeapIsIdle();
   CHECK_THREAD(cx);
-  cx->check(obj);
 
   Rooted<ArrayBufferViewObject*> unwrappedView(
       cx, obj->maybeUnwrapAs<ArrayBufferViewObject>());

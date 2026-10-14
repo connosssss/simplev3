@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,8 +6,8 @@
 #define VideoUtils_h
 
 #include "AudioSampleFormat.h"
-#include "MediaInfo.h"
 #include "MediaCodecsSupport.h"
+#include "MediaInfo.h"
 #include "VideoLimits.h"
 #include "mozilla/AbstractThread.h"
 #include "mozilla/Attributes.h"
@@ -153,6 +151,12 @@ uint32_t DecideAudioPlaybackSampleRate(const AudioInfo& info,
 
 bool IsDefaultPlaybackDeviceMono();
 
+// Record on an Opus config how many channels the audio will be rendered as.
+void SetOpusOutputChannels(AudioInfo& aInfo);
+
+// The number of channels the audio will be rendered as.
+uint32_t AudioPlaybackChannels(const AudioInfo& aInfo);
+
 bool IsVideoContentType(const nsCString& aContentType);
 
 // Returns true if it's safe to use aPicture as the picture to be
@@ -162,6 +166,12 @@ bool IsVideoContentType(const nsCString& aContentType);
 bool IsValidVideoRegion(const gfx::IntSize& aFrame,
                         const gfx::IntRect& aPicture,
                         const gfx::IntSize& aDisplay);
+
+// Returns true if aDisplay is a valid display size for a video frame: each
+// dimension is positive and within the maximum image dimension, and the total
+// area does not exceed MAX_VIDEO_WIDTH * MAX_VIDEO_HEIGHT. This is the display
+// predicate used by IsValidVideoRegion.
+bool IsValidVideoDisplaySize(const gfx::IntSize& aDisplay);
 
 // Template to automatically set a variable to a value on scope exit.
 // Useful for unsetting flags, etc.
@@ -214,13 +224,7 @@ struct VideoColorSpace {
   gfx::CICP::MatrixCoefficients mMatrix = gfx::CICP::MC_BT709;
   gfx::ColorRange mRange = gfx::ColorRange::LIMITED;
 
-  bool operator==(const VideoColorSpace& aOther) const {
-    return mPrimaries == aOther.mPrimaries && mTransfer == aOther.mTransfer &&
-           mMatrix == aOther.mMatrix && mRange == aOther.mRange;
-  }
-  bool operator!=(const VideoColorSpace& aOther) const {
-    return !(*this == aOther);
-  }
+  bool operator==(const VideoColorSpace& aOther) const = default;
 };
 
 // Extracts the VPX codecs parameter string.
@@ -251,7 +255,7 @@ nsresult GenerateRandomName(nsCString& aOutSalt, uint32_t aLength);
 // path. This is based on code from nsExternalAppHandler::SetUpTempFile.
 nsresult GenerateRandomPathName(nsCString& aOutSalt, uint32_t aLength);
 
-already_AddRefed<TaskQueue> CreateMediaDecodeTaskQueue(const char* aName);
+already_AddRefed<TaskQueue> CreateMediaDecodeTaskQueue(StaticString aName);
 
 // Iteratively invokes aWork until aCondition returns true, or aWork returns
 // false. Use this rather than a while loop to avoid bogarting the task queue.
@@ -319,6 +323,7 @@ bool ParseCodecsString(const nsAString& aCodecs,
                        nsTArray<nsString>& aOutCodecs);
 
 bool IsH264CodecString(const nsAString& aCodec);
+bool IsAllowedH264Codec(const nsAString& aCodec);
 
 bool IsH265CodecString(const nsAString& aCodec);
 
@@ -523,8 +528,7 @@ StringListRange<String, empties> MakeStringListRange(const String& aList) {
 
 template <StringListRangeEmptyItems empties = StringListRangeEmptyItems::Skip,
           typename ListString, typename ItemString>
-static bool StringListContains(const ListString& aList,
-                               const ItemString& aItem) {
+bool StringListContains(const ListString& aList, const ItemString& aItem) {
   for (const auto& listItem : MakeStringListRange<empties>(aList)) {
     if (listItem.Equals(aItem)) {
       return true;

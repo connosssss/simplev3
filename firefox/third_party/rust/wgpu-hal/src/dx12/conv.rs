@@ -48,9 +48,12 @@ pub fn map_texture_usage_to_resource_flags(
     if usage.contains(wgt::TextureUses::COLOR_TARGET) {
         flags |= Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     }
-    if usage
-        .intersects(wgt::TextureUses::DEPTH_STENCIL_READ | wgt::TextureUses::DEPTH_STENCIL_WRITE)
-    {
+    if usage.intersects(
+        wgt::TextureUses::DEPTH_READ
+            | wgt::TextureUses::DEPTH_WRITE
+            | wgt::TextureUses::STENCIL_READ
+            | wgt::TextureUses::STENCIL_WRITE,
+    ) {
         flags |= Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
         if !usage.contains(wgt::TextureUses::RESOURCE) {
             flags |= Direct3D12::D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
@@ -82,6 +85,13 @@ pub fn map_filter_mode(mode: wgt::FilterMode) -> Direct3D12::D3D12_FILTER_TYPE {
     match mode {
         wgt::FilterMode::Nearest => Direct3D12::D3D12_FILTER_TYPE_POINT,
         wgt::FilterMode::Linear => Direct3D12::D3D12_FILTER_TYPE_LINEAR,
+    }
+}
+
+pub fn map_mipmap_filter_mode(mode: wgt::MipmapFilterMode) -> Direct3D12::D3D12_FILTER_TYPE {
+    match mode {
+        wgt::MipmapFilterMode::Nearest => Direct3D12::D3D12_FILTER_TYPE_POINT,
+        wgt::MipmapFilterMode::Linear => Direct3D12::D3D12_FILTER_TYPE_LINEAR,
     }
 }
 
@@ -135,7 +145,10 @@ pub fn map_binding_type(ty: &wgt::BindingType) -> Direct3D12::D3D12_DESCRIPTOR_R
         }
         | Bt::StorageTexture { .. } => Direct3D12::D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
         Bt::AccelerationStructure { .. } => Direct3D12::D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-        Bt::ExternalTexture => unimplemented!(),
+        // External textures require multiple bindings and therefore cannot
+        // be mapped to a single descriptor range type. They must be handled
+        // separately by the caller.
+        Bt::ExternalTexture => unreachable!("External textures must be handled separately"),
     }
 }
 
@@ -192,10 +205,10 @@ pub fn map_texture_usage_to_state(usage: wgt::TextureUses) -> Direct3D12::D3D12_
     if usage.intersects(Tu::COLOR_TARGET) {
         state |= Direct3D12::D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
-    if usage.intersects(Tu::DEPTH_STENCIL_READ) {
+    if usage.intersects(Tu::DEPTH_READ | Tu::STENCIL_READ) {
         state |= Direct3D12::D3D12_RESOURCE_STATE_DEPTH_READ;
     }
-    if usage.intersects(Tu::DEPTH_STENCIL_WRITE) {
+    if usage.intersects(wgt::TextureUses::DEPTH_WRITE | wgt::TextureUses::STENCIL_WRITE) {
         state |= Direct3D12::D3D12_RESOURCE_STATE_DEPTH_WRITE;
     }
     if usage.intersects(Tu::STORAGE_READ_ONLY | Tu::STORAGE_WRITE_ONLY | Tu::STORAGE_READ_WRITE) {
@@ -363,12 +376,12 @@ fn map_stencil_face(face: &wgt::StencilFaceState) -> Direct3D12::D3D12_DEPTH_STE
 pub fn map_depth_stencil(ds: &wgt::DepthStencilState) -> Direct3D12::D3D12_DEPTH_STENCIL_DESC {
     Direct3D12::D3D12_DEPTH_STENCIL_DESC {
         DepthEnable: ds.is_depth_enabled().into(),
-        DepthWriteMask: if ds.depth_write_enabled {
+        DepthWriteMask: if ds.depth_write_enabled.unwrap_or_default() {
             Direct3D12::D3D12_DEPTH_WRITE_MASK_ALL
         } else {
             Direct3D12::D3D12_DEPTH_WRITE_MASK_ZERO
         },
-        DepthFunc: map_comparison(ds.depth_compare),
+        DepthFunc: map_comparison(ds.depth_compare.unwrap_or_default()),
         StencilEnable: ds.stencil.is_enabled().into(),
         StencilReadMask: ds.stencil.read_mask as u8,
         StencilWriteMask: ds.stencil.write_mask as u8,
@@ -436,4 +449,54 @@ pub(crate) fn map_acceleration_structure_copy_mode(
             Direct3D12::D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT
         }
     }
+}
+
+pub(crate) const fn make_shader_component_mapping(
+    src0: Direct3D12::D3D12_SHADER_COMPONENT_MAPPING,
+    src1: Direct3D12::D3D12_SHADER_COMPONENT_MAPPING,
+    src2: Direct3D12::D3D12_SHADER_COMPONENT_MAPPING,
+    src3: Direct3D12::D3D12_SHADER_COMPONENT_MAPPING,
+) -> Direct3D12::D3D12_SHADER_COMPONENT_MAPPING {
+    const M: i32 = Direct3D12::D3D12_SHADER_COMPONENT_MAPPING_MASK as i32;
+    const S: i32 = Direct3D12::D3D12_SHADER_COMPONENT_MAPPING_SHIFT as i32;
+    Direct3D12::D3D12_SHADER_COMPONENT_MAPPING(
+        (src0.0 & M)
+            | (src1.0 & M) << S
+            | (src2.0 & M) << (S * 2)
+            | (src3.0 & M) << (S * 3)
+            | Direct3D12::D3D12_SHADER_COMPONENT_MAPPING_ALWAYS_SET_BIT_AVOIDING_ZEROMEM_MISTAKES
+                as i32,
+    )
+}
+
+pub(crate) fn map_component_swizzle(
+    swizzle: wgt::ComponentSwizzle,
+) -> Direct3D12::D3D12_SHADER_COMPONENT_MAPPING {
+    match swizzle {
+        wgt::ComponentSwizzle::Zero => Direct3D12::D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0,
+        wgt::ComponentSwizzle::One => Direct3D12::D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1,
+        wgt::ComponentSwizzle::R => {
+            Direct3D12::D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0
+        }
+        wgt::ComponentSwizzle::G => {
+            Direct3D12::D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1
+        }
+        wgt::ComponentSwizzle::B => {
+            Direct3D12::D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2
+        }
+        wgt::ComponentSwizzle::A => {
+            Direct3D12::D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3
+        }
+    }
+}
+
+pub(crate) fn map_texture_component_swizzle(
+    swizzle: wgt::TextureComponentSwizzle,
+) -> Direct3D12::D3D12_SHADER_COMPONENT_MAPPING {
+    make_shader_component_mapping(
+        map_component_swizzle(swizzle.r),
+        map_component_swizzle(swizzle.g),
+        map_component_swizzle(swizzle.b),
+        map_component_swizzle(swizzle.a),
+    )
 }

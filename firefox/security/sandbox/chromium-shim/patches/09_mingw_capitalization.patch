@@ -1,74 +1,87 @@
 # HG changeset patch
-# User Tom Ritter <tom@mozilla.com>
-# Date 1516825559 21600
-#      Wed Jan 24 14:25:59 2018 -0600
-# Node ID 9ce534c9f572dfb5abd3e409d9cfec069ccee0cd
-# Parent  6413cb580dccd986c61e6dbdc72fc370765b8f10
-Bug 1431797 Correct the capitalization of headers inside the chromium code so MinGW can compile
+Remove incorrectly capitalized headers inside the chromium code so MinGW can compile
 
-diff --git a/base/rand_util_win.cc b/base/rand_util_win.cc
---- a/base/rand_util_win.cc
-+++ b/base/rand_util_win.cc
-@@ -7,17 +7,17 @@
- #include <windows.h>
- #include <stddef.h>
- #include <stdint.h>
+diff --git a/base/base_paths_win.cc b/base/base_paths_win.cc
+--- a/base/base_paths_win.cc
++++ b/base/base_paths_win.cc
+@@ -1,17 +1,17 @@
+ // Copyright 2012 The Chromium Authors
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
  
- // #define needed to link in RtlGenRandom(), a.k.a. SystemFunction036.  See the
- // "Community Additions" comment on MSDN here:
- // http://msdn.microsoft.com/en-us/library/windows/desktop/aa387694.aspx
- #define SystemFunction036 NTAPI SystemFunction036
--#include <NTSecAPI.h>
-+#include <ntsecapi.h>
- #undef SystemFunction036
+ #include "base/base_paths.h"
+ 
+ #include <windows.h>
+ 
+-#include <KnownFolders.h>
++#include <knownfolders.h>
+ #include <shlobj.h>
+ 
+ #include "base/environment.h"
+ #include "base/files/file_path.h"
+ #include "base/files/file_util.h"
+ #include "base/path_service.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+diff --git a/sandbox/win/src/handle_closer_agent.cc b/sandbox/win/src/handle_closer_agent.cc
+--- a/sandbox/win/src/handle_closer_agent.cc
++++ b/sandbox/win/src/handle_closer_agent.cc
+@@ -1,15 +1,15 @@
+ // Copyright 2012 The Chromium Authors
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+ #include "sandbox/win/src/handle_closer_agent.h"
+ 
+-#include <Windows.h>
++#include <windows.h>
+ 
+ #include <stddef.h>
+ #include <winnls.h>
+ 
+ #include "base/check.h"
+ #include "base/containers/heap_array.h"
+ #include "base/containers/span.h"
+ #include "base/logging.h"
+diff --git a/sandbox/win/src/startup_information_helper.cc b/sandbox/win/src/startup_information_helper.cc
+--- a/sandbox/win/src/startup_information_helper.cc
++++ b/sandbox/win/src/startup_information_helper.cc
+@@ -1,16 +1,16 @@
+ // Copyright 2020 The Chromium Authors
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+ 
+ #include "sandbox/win/src/startup_information_helper.h"
+ 
+-#include <Windows.h>
++#include <windows.h>
  
  #include <algorithm>
- #include <limits>
+ #include <vector>
  
- #include "base/logging.h"
+ #include "base/check.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/win/startup_information.h"
+ #include "base/win/windows_handle_util.h"
+diff --git a/sandbox/win/src/startup_information_helper.h b/sandbox/win/src/startup_information_helper.h
+--- a/sandbox/win/src/startup_information_helper.h
++++ b/sandbox/win/src/startup_information_helper.h
+@@ -1,16 +1,16 @@
+ // Copyright 2020 The Chromium Authors
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
  
- namespace base {
-diff --git a/base/win/pe_image.h b/base/win/pe_image.h
---- a/base/win/pe_image.h
-+++ b/base/win/pe_image.h
-@@ -14,17 +14,17 @@
- #include <windows.h>
+ #ifndef SANDBOX_WIN_SRC_STARTUP_INFORMATION_HELPER_H_
+ #define SANDBOX_WIN_SRC_STARTUP_INFORMATION_HELPER_H_
  
- #include <stdint.h>
+-#include <Windows.h>
++#include <windows.h>
  
- #if defined(_WIN32_WINNT_WIN8)
- // The Windows 8 SDK defines FACILITY_VISUALCPP in winerror.h.
- #undef FACILITY_VISUALCPP
- #endif
--#include <DelayIMP.h>
-+#include <delayimp.h>
+ #include <vector>
  
- namespace base {
- namespace win {
- 
- // This class is a wrapper for the Portable Executable File Format (PE).
- // Its main purpose is to provide an easy way to work with imports and exports
- // from a file, mapped in memory as image.
- class PEImage {
-diff --git a/sandbox/win/src/sandbox_rand.cc b/sandbox/win/src/sandbox_rand.cc
---- a/sandbox/win/src/sandbox_rand.cc
-+++ b/sandbox/win/src/sandbox_rand.cc
-@@ -5,17 +5,17 @@
- #include "sandbox/win/src/sandbox_rand.h"
- 
- #include <windows.h>
- 
- // #define needed to link in RtlGenRandom(), a.k.a. SystemFunction036.  See the
- // "Community Additions" comment on MSDN here:
- // http://msdn.microsoft.com/en-us/library/windows/desktop/aa387694.aspx
- #define SystemFunction036 NTAPI SystemFunction036
--#include <NTSecAPI.h>
-+#include <ntsecapi.h>
- #undef SystemFunction036
- 
- namespace sandbox {
- 
- bool GetRandom(unsigned int* random_value) {
-   return RtlGenRandom(random_value, sizeof(unsigned int)) != false;
- }
- 
+ #include "base/memory/scoped_refptr.h"
+ #include "base/win/startup_information.h"
+ #include "sandbox/win/src/app_container_base.h"
+ #include "sandbox/win/src/process_mitigations.h"
+ #include "sandbox/win/src/security_capabilities.h"

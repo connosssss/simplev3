@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,24 +6,25 @@
 
 #include "mozilla/css/ErrorReporter.h"
 
-#include "mozilla/StaticPrefs_layout.h"
-#include "mozilla/StyleSheetInlines.h"
-#include "mozilla/css/Loader.h"
+#include "mozilla/Components.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/SchedulerGroup.h"
-#include "mozilla/Components.h"
-#include "nsIConsoleService.h"
+#include "mozilla/StaticPrefs_layout.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/StyleSheetInlines.h"
+#include "mozilla/css/Loader.h"
 #include "mozilla/dom/Document.h"
 #include "nsComponentManagerUtils.h"
-#include "nsIDocShell.h"
+#include "nsDocShell.h"
+#include "nsIConsoleService.h"
 #include "nsIFactory.h"
 #include "nsINode.h"
 #include "nsIScriptError.h"
 #include "nsIStringBundle.h"
+#include "nsNetUtil.h"
 #include "nsServiceManagerUtils.h"
 #include "nsStyleUtil.h"
 #include "nsThreadUtils.h"
-#include "nsNetUtil.h"
 
 using namespace mozilla;
 using namespace mozilla::css;
@@ -70,10 +69,9 @@ class ShortTermURISpecCache : public Runnable {
 
 bool ErrorReporter::sInitialized = false;
 
-static nsIConsoleService* sConsoleService;
-static nsIFactory* sScriptErrorFactory;
-static nsIStringBundle* sStringBundle;
-static ShortTermURISpecCache* sSpecCache;
+static StaticRefPtr<nsIConsoleService> sConsoleService;
+static StaticRefPtr<nsIStringBundle> sStringBundle;
+static StaticRefPtr<ShortTermURISpecCache> sSpecCache;
 
 void ErrorReporter::InitGlobals() {
   MOZ_RELEASE_ASSERT(NS_IsMainThread());
@@ -83,11 +81,6 @@ void ErrorReporter::InitGlobals() {
 
   nsCOMPtr<nsIConsoleService> cs = do_GetService(NS_CONSOLESERVICE_CONTRACTID);
   if (!cs) {
-    return;
-  }
-
-  nsCOMPtr<nsIFactory> sf = do_GetClassObject(NS_SCRIPTERROR_CONTRACTID);
-  if (!sf) {
     return;
   }
 
@@ -103,9 +96,8 @@ void ErrorReporter::InitGlobals() {
     return;
   }
 
-  cs.forget(&sConsoleService);
-  sf.forget(&sScriptErrorFactory);
-  sb.forget(&sStringBundle);
+  sConsoleService = cs.forget();
+  sStringBundle = sb.forget();
 }
 
 namespace mozilla {
@@ -113,10 +105,9 @@ namespace css {
 
 /* static */
 void ErrorReporter::ReleaseGlobals() {
-  NS_IF_RELEASE(sConsoleService);
-  NS_IF_RELEASE(sScriptErrorFactory);
-  NS_IF_RELEASE(sStringBundle);
-  NS_IF_RELEASE(sSpecCache);
+  sConsoleService = nullptr;
+  sStringBundle = nullptr;
+  sSpecCache = nullptr;
 }
 
 uint64_t ErrorReporter::FindInnerWindowId(const StyleSheet* aSheet,
@@ -158,14 +149,8 @@ ErrorReporter::~ErrorReporter() {
 
 bool ErrorReporter::ShouldReportErrors(const Document& aDoc) {
   MOZ_ASSERT(NS_IsMainThread());
-  nsIDocShell* shell = aDoc.GetDocShell();
-  if (!shell) {
-    return false;
-  }
-
-  bool report = false;
-  shell->GetCssErrorReportingEnabled(&report);
-  return report;
+  nsDocShell* shell = nsDocShell::Cast(aDoc.GetDocShell());
+  return shell && shell->CSSErrorReportingEnabled();
 }
 
 static nsINode* SheetOwner(const StyleSheet& aSheet) {
@@ -215,8 +200,7 @@ void ErrorReporter::OutputError(const nsACString& aSelectors,
   nsAutoCString fileName;
   if (aURI) {
     if (!sSpecCache) {
-      sSpecCache = new ShortTermURISpecCache;
-      NS_ADDREF(sSpecCache);
+      sSpecCache = MakeRefPtr<ShortTermURISpecCache>();
     }
     fileName = sSpecCache->GetSpec(aURI);
   } else {
@@ -224,8 +208,7 @@ void ErrorReporter::OutputError(const nsACString& aSelectors,
   }
 
   nsresult rv;
-  nsCOMPtr<nsIScriptError> errorObject =
-      do_CreateInstance(sScriptErrorFactory, &rv);
+  nsCOMPtr<nsIScriptError> errorObject = components::ScriptError::Create(&rv);
 
   if (NS_SUCCEEDED(rv)) {
     // It is safe to used InitWithSanitizedSource because fileName is

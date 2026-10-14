@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,8 +6,8 @@
 #define mozilla_dom_QueueWithSizes_h
 
 #include <cmath>
-#include "js/TypeDecls.h"
-#include "js/Value.h"
+
+#include "jsapi.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/UniquePtr.h"
 #include "nsTArray.h"
@@ -25,6 +23,8 @@ struct ValueWithSize : LinkedListElement<ValueWithSize> {
 
   JS::Heap<JS::Value> mValue;
   double mSize = 0.0f;
+
+  void trace(JSTracer* aTrc) { TraceEdge(aTrc, &mValue, "value-with-size"); }
 };
 
 // This type is a little tricky lifetime wise: Despite the fact that we're
@@ -83,15 +83,17 @@ inline void EnqueueValueWithSize(QueueContainingClass aContainer,
 
 // https://streams.spec.whatwg.org/#dequeue-value
 template <class QueueContainingClass>
-inline void DequeueValue(QueueContainingClass aContainer,
-                         JS::MutableHandle<JS::Value> aResultValue) {
+inline void DequeueValue(JSContext* aCx, QueueContainingClass aContainer,
+                         JS::MutableHandle<JS::Value> aResultValue,
+                         ErrorResult& aRv) {
   // Step 1. Implicit via template instantiation.
   // Step 2.
-  MOZ_ASSERT(!aContainer->Queue().isEmpty());
+  MOZ_RELEASE_ASSERT(!aContainer->Queue().isEmpty());
 
   // Step 3+4
   // UniquePtr to ensure memory is freed.
-  UniquePtr<ValueWithSize> valueWithSize(aContainer->Queue().popFirst());
+  JS::Rooted<UniquePtr<ValueWithSize>> valueWithSize(
+      aCx, aContainer->Queue().popFirst());
 
   // Step 5.
   aContainer->SetQueueTotalSize(aContainer->QueueTotalSize() -
@@ -104,22 +106,31 @@ inline void DequeueValue(QueueContainingClass aContainer,
 
   // Step 7.
   aResultValue.set(valueWithSize->mValue);
+  if (!JS_WrapValue(aCx, aResultValue)) {
+    aResultValue.setUndefined();
+    aRv.StealExceptionFromJSContext(aCx);
+  }
 }
 
 // https://streams.spec.whatwg.org/#peek-queue-value
 template <class QueueContainingClass>
-inline void PeekQueueValue(QueueContainingClass aContainer,
-                           JS::MutableHandle<JS::Value> aResultValue) {
+inline void PeekQueueValue(JSContext* aCx, QueueContainingClass aContainer,
+                           JS::MutableHandle<JS::Value> aResultValue,
+                           ErrorResult& aRv) {
   // Step 1. Assert: container has [[queue]] and [[queueTotalSize]] internal
   // slots.
   // Step 2. Assert: container.[[queue]] is not empty.
-  MOZ_ASSERT(!aContainer->Queue().isEmpty());
+  MOZ_RELEASE_ASSERT(!aContainer->Queue().isEmpty());
 
   // Step 3. Let valueWithSize be container.[[queue]][0].
   ValueWithSize* valueWithSize = aContainer->Queue().getFirst();
 
   // Step 4. Return valueWithSize’s value.
   aResultValue.set(valueWithSize->mValue);
+  if (!JS_WrapValue(aCx, aResultValue)) {
+    aResultValue.setUndefined();
+    aRv.StealExceptionFromJSContext(aCx);
+  }
 }
 
 // https://streams.spec.whatwg.org/#reset-queue

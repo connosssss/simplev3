@@ -31,7 +31,7 @@ let chromeScript = runChecksAfterCommonInit();
 <pre id="test">
 <script class="testbody" type="text/javascript">
 
-/** Test for Login Manager: contextual insecure password warning without saved logins. **/
+/** Test for Login Manager: contextual insecure password warning without saved logins. */
 
 let uname = getFormElementByName(1, "uname");
 let pword = getFormElementByName(1, "pword");
@@ -45,6 +45,13 @@ function restoreForm() {
 
 function spinEventLoop() {
   return Promise.resolve();
+}
+
+function closeCurrentTab() {
+  runInParent(function cleanUpWindow() {
+    let window = Services.wm.getMostRecentWindow("navigator:browser");
+    window.gBrowser.removeTab(window.gBrowser.selectedTab);
+  });
 }
 
 add_setup(async () => {
@@ -62,6 +69,14 @@ add_task(async function test_form1_initial_empty() {
 
 add_task(async function test_form1_warning_entry() {
   await SimpleTest.promiseFocus(window);
+
+  // Drain any autocomplete "show" telemetry events left over from a previous
+  // run of this test. Activating the insecure warning below re-shows the popup
+  // and records an extra event after the assertion's clear; under test-verify
+  // chaos mode that event can flush into the next iteration and inflate the
+  // count, so start from a clean slate.
+  await getTelemetryEvents({ process: "parent", filterProps: TelemetryFilterPropsAC, clear: true });
+
   // Trigger autocomplete popup
   restoreForm();
   await popupBy();
@@ -83,6 +98,10 @@ add_task(async function test_form1_warning_entry() {
   synthesizeKey("KEY_Enter");
   await spinEventLoop(); // let focus happen
   checkLoginForm(uname, "", pword, "");
+
+  // Activating the insecure warning opens the support page in a new tab;
+  // close it so it doesn't steal focus from later tests in the same run.
+  closeCurrentTab();
 });
 
 </script>

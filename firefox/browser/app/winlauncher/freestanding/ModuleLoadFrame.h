@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -9,7 +7,6 @@
 
 #include "mozilla/LoaderAPIInterfaces.h"
 #include "mozilla/NativeNt.h"
-#include "mozilla/ThreadLocal.h"
 
 #include "SafeThreadLocal.h"
 
@@ -33,12 +30,16 @@ class MOZ_RAII ModuleLoadFrame final {
   static void NotifyLSPSubstitutionRequired(PCUNICODE_STRING aLeafName);
 
   /**
-   * This static method is called by the NtMapViewOfSection hook.
+   * Helper for the NtMapViewOfSection hook.
+   *
+   * Ownership of aFileHandle is transfered to this function.
+   * The file handle may be null, in which case the parent simply cannot
+   * evaluate this module.
    */
   static void NotifySectionMap(nt::AllocatedUnicodeString&& aSectionName,
                                const void* aMapBaseAddr, NTSTATUS aMapNtStatus,
                                ModuleLoadInfo::Status aLoadStatus,
-                               bool aIsDependent);
+                               bool aIsDependent, nt::AutoHandle&& aFileHandle);
   static bool ExistsTopFrame();
 
   /**
@@ -58,12 +59,14 @@ class MOZ_RAII ModuleLoadFrame final {
    */
   ModuleLoadFrame(nt::AllocatedUnicodeString&& aSectionName,
                   const void* aMapBaseAddr, NTSTATUS aNtStatus,
-                  ModuleLoadInfo::Status aLoadStatus, bool aIsDependent);
+                  ModuleLoadInfo::Status aLoadStatus, bool aIsDependent,
+                  nt::AutoHandle&& aFileHandle);
 
   void SetLSPSubstitutionRequired(PCUNICODE_STRING aLeafName);
   void OnSectionMap(nt::AllocatedUnicodeString&& aSectionName,
                     const void* aMapBaseAddr, NTSTATUS aMapNtStatus,
-                    ModuleLoadInfo::Status aLoadStatus, bool aIsDependent);
+                    ModuleLoadInfo::Status aLoadStatus, bool aIsDependent,
+                    nt::AutoHandle&& aFileHandle);
 
   /**
    * A "bare" section mapping is one that was mapped without the code passing
@@ -73,7 +76,7 @@ class MOZ_RAII ModuleLoadFrame final {
   static void OnBareSectionMap(nt::AllocatedUnicodeString&& aSectionName,
                                const void* aMapBaseAddr, NTSTATUS aMapNtStatus,
                                ModuleLoadInfo::Status aLoadStatus,
-                               bool aIsDependent);
+                               bool aIsDependent, nt::AutoHandle&& aFileHandle);
 
  private:
   // Link to the previous frame

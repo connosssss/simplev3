@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,27 +6,29 @@
 
 #include <CoreVideo/CVPixelBufferIOSurface.h>
 #include <IOSurface/IOSurfaceRef.h>
+
 #include <limits>
 
 #include "AOMDecoder.h"
 #include "AppleDecoderModule.h"
+#include "AppleVTColorSpace.h"
 #include "CallbackThreadRegistry.h"
 #include "H264.h"
 #include "H265.h"
+#include "HDRUtils.h"
 #include "MP4Decoder.h"
 #include "MacIOSurfaceImage.h"
 #include "MediaData.h"
 #include "VPXDecoder.h"
 #include "VideoUtils.h"
 #include "gfxMacUtils.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/Logging.h"
 #include "mozilla/TaskQueue.h"
 #include "mozilla/gfx/gfxVars.h"
 
-#define LOG(...) DDMOZ_LOG(sPDMLog, mozilla::LogLevel::Debug, __VA_ARGS__)
+#define LOG(...) DDMOZ_LOG_FMT(sPDMLog, mozilla::LogLevel::Debug, __VA_ARGS__)
 #define LOGEX(_this, ...) \
-  DDMOZ_LOGEX(_this, sPDMLog, mozilla::LogLevel::Debug, __VA_ARGS__)
+  DDMOZ_LOGEX_FMT(_this, sPDMLog, mozilla::LogLevel::Debug, __VA_ARGS__)
 
 namespace mozilla {
 
@@ -54,6 +54,7 @@ AppleVTDecoder::AppleVTDecoder(const VideoInfo& aConfig,
                             : gfx::TransferFunction::BT709),
       mColorRange(aConfig.mColorRange),
       mColorDepth(aConfig.mColorDepth),
+      mHDRMetadata(aConfig.mHDRMetadata),
       mStreamType(AppleVTDecoder::GetStreamType(aConfig.mMimeType)),
       mTaskQueue(TaskQueue::Create(
           GetMediaThreadPool(MediaThreadType::PLATFORM_DECODER),
@@ -83,7 +84,7 @@ AppleVTDecoder::AppleVTDecoder(const VideoInfo& aConfig,
       mIsHardwareAccelerated(false) {
   MOZ_COUNT_CTOR(AppleVTDecoder);
   MOZ_ASSERT(mStreamType != StreamType::Unknown);
-  LOG("Creating AppleVTDecoder for %dx%d %s video, mMaxRefFrames=%u",
+  LOG("Creating AppleVTDecoder for {}x{} {} video, mMaxRefFrames={}",
       mDisplayWidth, mDisplayHeight, EnumValueToString(mStreamType),
       mMaxRefFrames);
 }
@@ -91,6 +92,25 @@ AppleVTDecoder::AppleVTDecoder(const VideoInfo& aConfig,
 AppleVTDecoder::~AppleVTDecoder() { MOZ_COUNT_DTOR(AppleVTDecoder); }
 
 RefPtr<MediaDataDecoder::InitPromise> AppleVTDecoder::Init() {
+  AUTO_PROFILER_LABEL("AppleVTDecoder::Init", MEDIA_PLAYBACK);
+  if (mSession) {
+    MOZ_ASSERT_UNREACHABLE(
+        "Cannot initialize decoder again without shutting down");
+    return InitPromise::CreateAndReject(
+        MediaResult(NS_ERROR_ALREADY_INITIALIZED,
+                    RESULT_DETAIL("Decoder initialization already attempted")),
+        __func__);
+  }
+
+  if (mFormat) {
+    MOZ_ASSERT_UNREACHABLE(
+        "Cannot initialize decoder again after previous initialization failed");
+    return InitPromise::CreateAndReject(
+        MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
+                    RESULT_DETAIL("Previous decoder initialization failed")),
+        __func__);
+  }
+
   MediaResult rv = InitializeSession();
 
   if (NS_SUCCEEDED(rv)) {
@@ -102,7 +122,7 @@ RefPtr<MediaDataDecoder::InitPromise> AppleVTDecoder::Init() {
 
 RefPtr<MediaDataDecoder::DecodePromise> AppleVTDecoder::Decode(
     MediaRawData* aSample) {
-  LOG("mp4 input sample %p pts %lld duration %lld us%s %zu bytes", aSample,
+  LOG("mp4 input sample {} pts {} duration {} us{} {} bytes", fmt::ptr(aSample),
       aSample->mTime.ToMicroseconds(), aSample->mDuration.ToMicroseconds(),
       aSample->mKeyframe ? " keyframe" : "", aSample->Size());
 
@@ -115,6 +135,24 @@ RefPtr<MediaDataDecoder::DecodePromise> AppleVTDecoder::Decode(
       p = mPromise.Ensure(__func__);
     }
     ProcessDecode(sample);
+    // While skipping the keyframe->target run after a seek, do not block this
+    // Decode on its own VideoToolbox callback. Resolve it immediately with
+    // whatever frames are already buffered (often none early on) so the reader
+    // keeps feeding the next sample and VideoToolbox decodes the run with
+    // several frames in flight instead of one at a time. Decoded frames still
+    // arrive in composition order via the reorder queue and are returned on
+    // later Decode() calls. The seek threshold is only set during this skip
+    // window, so outside a seek behaviour is unchanged.
+    {
+      MonitorAutoLock mon(mMonitor);
+      if (mSeekTargetThreshold.isSome() && !mPromise.IsEmpty()) {
+        DecodedData results;
+        while (mReorderQueue.Length() > mMaxRefFrames) {
+          results.AppendElement(mReorderQueue.Pop());
+        }
+        mPromise.Resolve(std::move(results), __func__);
+      }
+    }
     return p;
   });
 }
@@ -151,6 +189,7 @@ static CMSampleTimingInfo TimingInfoFromSample(MediaRawData* aSample) {
 }
 
 void AppleVTDecoder::ProcessDecode(MediaRawData* aSample) {
+  AUTO_PROFILER_LABEL("AppleVTDecoder::ProcessDecode", MEDIA_PLAYBACK);
   AssertOnTaskQueue();
   PROCESS_DECODE_LOG(aSample);
 
@@ -199,7 +238,7 @@ void AppleVTDecoder::ProcessDecode(MediaRawData* aSample) {
       kCFAllocatorDefault,  // Struct allocator.
       const_cast<uint8_t*>(aSample->Data()), aSample->Size(),
       kCFAllocatorNull,  // Block allocator.
-      NULL,              // Block source.
+      nullptr,           // Block source.
       0,                 // Data offset.
       aSample->Size(), false, block.Receive());
   if (rv != noErr) {
@@ -213,8 +252,9 @@ void AppleVTDecoder::ProcessDecode(MediaRawData* aSample) {
   }
 
   CMSampleTimingInfo timestamp = TimingInfoFromSample(aSample);
-  rv = CMSampleBufferCreate(kCFAllocatorDefault, block, true, 0, 0, mFormat, 1,
-                            1, &timestamp, 0, NULL, sample.Receive());
+  rv = CMSampleBufferCreate(kCFAllocatorDefault, block, true, nullptr, nullptr,
+                            mFormat, 1, 1, &timestamp, 0, nullptr,
+                            sample.Receive());
   if (rv != noErr) {
     NS_ERROR("Couldn't create CMSampleBuffer");
     MonitorAutoLock mon(mMonitor);
@@ -226,6 +266,21 @@ void AppleVTDecoder::ProcessDecode(MediaRawData* aSample) {
 
   VTDecodeFrameFlags decodeFlags =
       kVTDecodeFrame_EnableAsynchronousDecompression;
+  // During the post-seek skip window, frames whose presentation interval ends
+  // before the seek target are decoded only to satisfy reference dependencies
+  // and are then dropped (see the matching threshold check in OutputFrame). Ask
+  // VideoToolbox to decode them for reference without producing an output
+  // image, which skips per-frame surface production for the bulk of a seek's
+  // re-decode.
+  {
+    MonitorAutoLock mon(mMonitor);
+    if (mSeekTargetThreshold.isSome() &&
+        (aSample->mTime + aSample->mDuration) < mSeekTargetThreshold.ref()) {
+      decodeFlags |= kVTDecodeFrame_DoNotOutputFrame;
+      LOG("seek skip: decoding pts {} for reference only (no output)",
+          aSample->mTime.ToMicroseconds());
+    }
+  }
   rv = VTDecompressionSessionDecodeFrame(
       mSession, sample, decodeFlags, CreateAppleFrameRef(aSample), &infoFlags);
   if (infoFlags & kVTDecodeInfo_FrameDropped) {
@@ -237,7 +292,7 @@ void AppleVTDecoder::ProcessDecode(MediaRawData* aSample) {
   }
 
   if (rv != noErr) {
-    LOG("AppleVTDecoder: Error %d VTDecompressionSessionDecodeFrame", rv);
+    LOG("AppleVTDecoder: Error {} VTDecompressionSessionDecodeFrame", rv);
     NS_WARNING("Couldn't pass frame to decoder");
     // It appears that even when VTDecompressionSessionDecodeFrame returned a
     // failure. Decoding sometimes actually get processed.
@@ -251,18 +306,20 @@ void AppleVTDecoder::ProcessDecode(MediaRawData* aSample) {
 }
 
 void AppleVTDecoder::ProcessShutdown() {
+  AUTO_PROFILER_LABEL("AppleVTDecoder::ProcessShutdown", MEDIA_PLAYBACK);
   if (mSession) {
-    LOG("%s: cleaning up session", __func__);
+    LOG("{}: cleaning up session", __func__);
     VTDecompressionSessionInvalidate(mSession);
     mSession.Reset();
   }
   if (mFormat) {
-    LOG("%s: releasing format", __func__);
+    LOG("{}: releasing format", __func__);
     mFormat.Reset();
   }
 }
 
 RefPtr<MediaDataDecoder::FlushPromise> AppleVTDecoder::ProcessFlush() {
+  AUTO_PROFILER_LABEL("AppleVTDecoder::ProcessFlush", MEDIA_PLAYBACK);
   AssertOnTaskQueue();
   nsresult rv = WaitForAsynchronousFrames();
   if (NS_FAILED(rv)) {
@@ -275,12 +332,12 @@ RefPtr<MediaDataDecoder::FlushPromise> AppleVTDecoder::ProcessFlush() {
     mReorderQueue.Pop();
   }
   mPerformanceRecorder.Record(std::numeric_limits<int64_t>::max());
-  mSeekTargetThreshold.reset();
   mIsFlushing = false;
   return FlushPromise::CreateAndResolve(true, __func__);
 }
 
 RefPtr<MediaDataDecoder::DecodePromise> AppleVTDecoder::ProcessDrain() {
+  AUTO_PROFILER_LABEL("AppleVTDecoder::ProcessDrain", MEDIA_PLAYBACK);
   AssertOnTaskQueue();
   nsresult rv = WaitForAsynchronousFrames();
   if (NS_FAILED(rv)) {
@@ -301,6 +358,7 @@ AppleVTDecoder::AppleFrameRef* AppleVTDecoder::CreateAppleFrameRef(
 }
 
 void AppleVTDecoder::SetSeekThreshold(const media::TimeUnit& aTime) {
+  MonitorAutoLock mon(mMonitor);
   if (aTime.IsValid()) {
     mSeekTargetThreshold = Some(aTime);
   } else {
@@ -323,8 +381,8 @@ static void PlatformCallback(void* decompressionOutputRefCon,
                              CMTime presentationDuration) {
   AppleVTDecoder* decoder =
       static_cast<AppleVTDecoder*>(decompressionOutputRefCon);
-  LOGEX(decoder, "AppleVideoDecoder %s status %d flags %d", __func__,
-        static_cast<int>(status), flags);
+  LOGEX(decoder, "AppleVideoDecoder {} status {} flags {}", __func__,
+        static_cast<int>(status), static_cast<int>(flags));
 
   UniquePtr<AppleVTDecoder::AppleFrameRef> frameRef(
       static_cast<AppleVTDecoder::AppleFrameRef*>(sourceFrameRefCon));
@@ -375,6 +433,40 @@ nsCString AppleVTDecoder::GetCodecName() const {
   return nsCString(EnumValueToString(mStreamType));
 }
 
+CFStringRef CGColorSpaceNameForFrame(gfx::TransferFunction aTransferFunction,
+                                     gfx::ColorSpace2 aColorPrimaries) {
+  if (__builtin_available(macOS 11.0, *)) {
+    if (aTransferFunction == gfx::TransferFunction::PQ) {
+      return kCGColorSpaceITUR_2100_PQ;
+    }
+    if (aTransferFunction == gfx::TransferFunction::HLG) {
+      return kCGColorSpaceITUR_2100_HLG;
+    }
+  }
+  if (aColorPrimaries == gfx::ColorSpace2::BT2020) {
+    return kCGColorSpaceITUR_2020;
+  }
+  return nullptr;
+}
+
+bool MaybeAttachCGColorSpace(CVImageBufferRef aImage,
+                             gfx::TransferFunction aTransferFunction,
+                             gfx::ColorSpace2 aColorPrimaries) {
+  CFStringRef colorSpaceName =
+      CGColorSpaceNameForFrame(aTransferFunction, aColorPrimaries);
+  if (!colorSpaceName) {
+    return false;
+  }
+  AutoCFTypeRef<CGColorSpaceRef> colorSpace(
+      CGColorSpaceCreateWithName(colorSpaceName));
+  if (!colorSpace) {
+    return false;
+  }
+  CVBufferSetAttachment(aImage, kCVImageBufferCGColorSpaceKey, colorSpace,
+                        kCVAttachmentMode_ShouldPropagate);
+  return true;
+}
+
 // Copy and return a decoded frame.
 void AppleVTDecoder::OutputFrame(CVPixelBufferRef aImage,
                                  AppleVTDecoder::AppleFrameRef aFrameRef) {
@@ -385,7 +477,7 @@ void AppleVTDecoder::OutputFrame(CVPixelBufferRef aImage,
     return;
   }
 
-  LOG("mp4 output frame %lld dts %lld pts %lld duration %lld us%s",
+  LOG("mp4 output frame {} dts {} pts {} duration {} us{}",
       aFrameRef.byte_offset, aFrameRef.decode_timestamp.ToMicroseconds(),
       aFrameRef.composition_timestamp.ToMicroseconds(),
       aFrameRef.duration.ToMicroseconds(),
@@ -400,12 +492,15 @@ void AppleVTDecoder::OutputFrame(CVPixelBufferRef aImage,
   }
 
   bool useNullSample = false;
-  if (mSeekTargetThreshold.isSome()) {
-    if ((aFrameRef.composition_timestamp + aFrameRef.duration) <
-        mSeekTargetThreshold.ref()) {
-      useNullSample = true;
-    } else {
-      mSeekTargetThreshold.reset();
+  {
+    MonitorAutoLock mon(mMonitor);
+    if (mSeekTargetThreshold.isSome()) {
+      if ((aFrameRef.composition_timestamp + aFrameRef.duration) <
+          mSeekTargetThreshold.ref()) {
+        useNullSample = true;
+      } else {
+        mSeekTargetThreshold.reset();
+      }
     }
   }
 
@@ -414,6 +509,8 @@ void AppleVTDecoder::OutputFrame(CVPixelBufferRef aImage,
   // Bounds.
   VideoInfo info;
   info.mDisplay = gfx::IntSize(mDisplayWidth, mDisplayHeight);
+  info.mTransferFunction = Some(mTransferFunction);
+  info.mHDRMetadata = mHDRMetadata;
 
   if (useNullSample) {
     data = new NullData(aFrameRef.byte_offset, aFrameRef.composition_timestamp,
@@ -512,12 +609,46 @@ void AppleVTDecoder::OutputFrame(CVPixelBufferRef aImage,
         gfxMacUtils::CFStringForTransferFunction(mTransferFunction),
         kCVAttachmentMode_ShouldPropagate);
 
+    if (mHDRMetadata && mHDRMetadata->mSmpte2086) {
+      nsTArray<uint8_t> buf;
+      if (EncodeSmpte2086Payload(*mHDRMetadata->mSmpte2086, buf)) {
+        AutoCFTypeRef<CFDataRef> data(
+            CFDataCreate(kCFAllocatorDefault, buf.Elements(), buf.Length()));
+        if (data) {
+          CVBufferSetAttachment(aImage,
+                                kCVImageBufferMasteringDisplayColorVolumeKey,
+                                data, kCVAttachmentMode_ShouldPropagate);
+        }
+      }
+    }
+    if (mHDRMetadata && mHDRMetadata->mContentLightLevel) {
+      nsTArray<uint8_t> buf;
+      if (EncodeContentLightLevelPayload(*mHDRMetadata->mContentLightLevel,
+                                         buf)) {
+        AutoCFTypeRef<CFDataRef> data(
+            CFDataCreate(kCFAllocatorDefault, buf.Elements(), buf.Length()));
+        if (data) {
+          CVBufferSetAttachment(aImage, kCVImageBufferContentLightLevelInfoKey,
+                                data, kCVAttachmentMode_ShouldPropagate);
+        }
+      }
+    }
+
+    // Attach a CGColorSpace built from the relevant color information, for the
+    // wide gamut and HDR cases where the buffer may otherwise have a
+    // non-matching colorspace. BT.709 buffers keep the colorspace VideoToolbox
+    // gave them: forcing kCGColorSpaceITUR_709 on those replaces the EOTF the
+    // frame already had and shifts the gamma of ordinary SDR video.
+    MaybeAttachCGColorSpace(aImage, mTransferFunction, mColorPrimaries);
+
     CFTypeRefPtr<IOSurfaceRef> surface =
         CFTypeRefPtr<IOSurfaceRef>::WrapUnderGetRule(
             CVPixelBufferGetIOSurface(aImage));
     MOZ_ASSERT(surface, "Decoder didn't return an IOSurface backed buffer");
 
-    RefPtr<MacIOSurface> macSurface = new MacIOSurface(std::move(surface));
+    RefPtr<MacIOSurface> macSurface =
+        new MacIOSurface(std::move(surface), mColorSpace, mTransferFunction,
+                         MacIOSurface::AllowAlpha::Yes);
     macSurface->SetYUVColorSpace(mColorSpace);
     macSurface->mColorPrimaries = mColorPrimaries;
 
@@ -568,7 +699,7 @@ void AppleVTDecoder::OutputFrame(CVPixelBufferRef aImage,
   mReorderQueue.Push(std::move(data));
   MaybeResolveBufferedFrames();
 
-  LOG("%llu decoded frames queued",
+  LOG("{} decoded frames queued",
       static_cast<unsigned long long>(mReorderQueue.Length()));
 }
 
@@ -627,7 +758,7 @@ MediaResult AppleVTDecoder::InitializeSession() {
                                    &cb, mSession.Receive());
 
   if (rv != noErr) {
-    LOG("AppleVTDecoder: VTDecompressionSessionCreate failed: %d", rv);
+    LOG("AppleVTDecoder: VTDecompressionSessionCreate failed: {}", rv);
     return MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
                        RESULT_DETAIL("Couldn't create decompression session!"));
   }
@@ -639,11 +770,11 @@ MediaResult AppleVTDecoder::InitializeSession() {
       kCFAllocatorDefault, &isUsingHW);
   if (rv == noErr) {
     mIsHardwareAccelerated = isUsingHW == kCFBooleanTrue;
-    LOG("AppleVTDecoder: %s hardware accelerated decoding",
+    LOG("AppleVTDecoder: {} hardware accelerated decoding",
         mIsHardwareAccelerated ? "using" : "not using");
   } else {
     LOG("AppleVTDecoder: maybe hardware accelerated decoding "
-        "(VTSessionCopyProperty query failed %d)",
+        "(VTSessionCopyProperty query failed {})",
         static_cast<int>(rv));
   }
   if (isUsingHW) {

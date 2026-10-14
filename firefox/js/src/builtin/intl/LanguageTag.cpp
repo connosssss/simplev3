@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -9,14 +7,20 @@
 #include "mozilla/intl/Locale.h"
 #include "mozilla/Span.h"
 
+#include "builtin/intl/CommonFunctions.h"
+#include "builtin/intl/FormatBuffer.h"
 #include "builtin/intl/StringAsciiChars.h"
 #include "gc/Tracer.h"
+#include "vm/JSAtomState.h"
 #include "vm/JSContext.h"
+
+#include "vm/JSObject-inl.h"
+#include "vm/ObjectOperations-inl.h"
 
 bool js::intl::ParseLocale(JSContext* cx, Handle<JSLinearString*> str,
                            mozilla::intl::Locale& result) {
   if (StringIsAscii(str)) {
-    intl::StringAsciiChars chars(str);
+    StringAsciiChars chars(str);
     if (!chars.init(cx)) {
       return false;
     }
@@ -185,7 +189,7 @@ static bool IsAsciiAlpha(const JSLinearString* str) {
   return IsAsciiAlpha<char16_t>(str->twoByteRange(nogc));
 }
 
-JS::Result<JSString*> js::intl::ParseStandaloneISO639LanguageTag(
+JS::Result<JSLinearString*> js::intl::ParseStandaloneISO639LanguageTag(
     JSContext* cx, Handle<JSLinearString*> str) {
   // ISO-639 language codes contain either two or three characters.
   size_t length = str->length();
@@ -223,7 +227,7 @@ JS::Result<JSString*> js::intl::ParseStandaloneISO639LanguageTag(
   }
 
   // Take care to replace deprecated subtags with their preferred values.
-  JSString* result;
+  JSLinearString* result;
   if (mozilla::intl::Locale::LanguageMapping(languageTag) || !isLowerCase) {
     result = NewStringCopy<CanGC>(cx, languageTag.Span());
   } else {
@@ -233,6 +237,30 @@ JS::Result<JSString*> js::intl::ParseStandaloneISO639LanguageTag(
     return cx->alreadyReportedOOM();
   }
   return result;
+}
+
+JS::UniqueChars js::intl::FormatLocale(
+    JSContext* cx, JS::Handle<JSLinearString*> locale,
+    JS::HandleVector<UnicodeExtensionKeyword> keywords) {
+  mozilla::intl::Locale tag;
+  if (!ParseLocale(cx, locale, tag)) {
+    return nullptr;
+  }
+
+  // |ApplyUnicodeExtensionToTag| applies the new keywords to the front of
+  // the Unicode extension subtag. We're then relying on ICU to follow RFC
+  // 6067, which states that any trailing keywords using the same key
+  // should be ignored.
+  if (!ApplyUnicodeExtensionToTag(cx, tag, keywords)) {
+    return nullptr;
+  }
+
+  FormatBuffer<char> buffer(cx);
+  if (auto result = tag.ToString(buffer); result.isErr()) {
+    ReportInternalError(cx, result.unwrapErr());
+    return nullptr;
+  }
+  return buffer.extractStringZ();
 }
 
 void js::intl::UnicodeExtensionKeyword::trace(JSTracer* trc) {

@@ -1,5 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,7 +19,8 @@ let internalContentAnalysisService = undefined;
 ChromeUtils.defineESModuleGetters(lazy, {
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
   clearTimeout: "resource://gre/modules/Timer.sys.mjs",
-  PanelMultiView: "resource:///modules/PanelMultiView.sys.mjs",
+  PanelMultiView:
+    "moz-src:///browser/components/customizableui/PanelMultiView.sys.mjs",
   setTimeout: "resource://gre/modules/Timer.sys.mjs",
 });
 
@@ -387,7 +386,7 @@ export const ContentAnalysis = {
         element.ownerDocument,
         "content-analysis-panel-description"
       ),
-      "content-analysis-panel-text-styled",
+      "content-analysis-panel-text-styled2",
       { agentName: lazy.agentName }
     );
     panelUI.showSubView("content-analysis-panel", element);
@@ -415,13 +414,13 @@ export const ContentAnalysis = {
         // If we're showing a dialog in the sidebar, the dialog is managed
         // by the embedderElement.
         let isSidebar =
-          browser?.ownerGlobal?.browsingContext?.embedderElement?.id ==
+          browser?.documentGlobal?.browsingContext?.embedderElement?.id ==
           "sidebar";
         if (isSidebar) {
-          browser = browser.ownerGlobal.browsingContext.embedderElement;
+          browser = browser.documentGlobal.browsingContext.embedderElement;
         }
         // browser will be null if the tab was closed
-        let win = browser?.ownerGlobal;
+        let win = browser?.documentGlobal;
         if (win) {
           let dialogBox = win.gBrowser.getTabDialogBox(browser);
           // Just close the dialog associated with this CA request.
@@ -467,7 +466,9 @@ export const ContentAnalysis = {
         aBrowsingContext?.topChromeWindow ??
         aBrowsingContext?.embedderWindowGlobal.browsingContext
           .topChromeWindow ??
-        lazy.BrowserWindowTracker.getTopWindow();
+        lazy.BrowserWindowTracker.getTopWindow({
+          allowFromInactiveWorkspace: true,
+        });
       if (!topWindow) {
         console.error(
           "Unable to get window to show Content Analysis notification for."
@@ -514,8 +515,11 @@ export const ContentAnalysis = {
     if (!nameOrOperationType.name) {
       let l10nId = undefined;
       switch (nameOrOperationType.operationType) {
-        case Ci.nsIContentAnalysisRequest.eClipboard:
+        case Ci.nsIContentAnalysisRequest.ePasteClipboard:
           l10nId = "contentanalysis-operationtype-clipboard";
+          break;
+        case Ci.nsIContentAnalysisRequest.eCopyClipboard:
+          l10nId = "contentanalysis-operationtype-clipboard-copy";
           break;
         case Ci.nsIContentAnalysisRequest.eDroppedText:
           l10nId = "contentanalysis-operationtype-dropped-text";
@@ -715,8 +719,11 @@ export const ContentAnalysis = {
     }
     let l10nId = undefined;
     switch (aResourceNameOrOperationType.operationType) {
-      case Ci.nsIContentAnalysisRequest.eClipboard:
+      case Ci.nsIContentAnalysisRequest.ePasteClipboard:
         l10nId = "contentanalysis-slow-agent-dialog-body-clipboard";
+        break;
+      case Ci.nsIContentAnalysisRequest.eCopyClipboard:
+        l10nId = "contentanalysis-slow-agent-dialog-body-clipboard-copy";
         break;
       case Ci.nsIContentAnalysisRequest.eDroppedText:
         l10nId = "contentanalysis-slow-agent-dialog-body-dropped-text";
@@ -750,8 +757,11 @@ export const ContentAnalysis = {
     }
     let l10nId = undefined;
     switch (aResourceNameOrOperationType.operationType) {
-      case Ci.nsIContentAnalysisRequest.eClipboard:
+      case Ci.nsIContentAnalysisRequest.ePasteClipboard:
         l10nId = "contentanalysis-error-message-clipboard";
+        break;
+      case Ci.nsIContentAnalysisRequest.eCopyClipboard:
+        l10nId = "contentanalysis-error-message-clipboard-copy";
         break;
       case Ci.nsIContentAnalysisRequest.eDroppedText:
         l10nId = "contentanalysis-error-message-dropped-text";
@@ -941,13 +951,24 @@ export const ContentAnalysis = {
           let bodyId = undefined;
           let bodyHasContent = false;
           switch (aResourceNameOrOperationType.operationType) {
-            case Ci.nsIContentAnalysisRequest.eClipboard: {
+            case Ci.nsIContentAnalysisRequest.ePasteClipboard: {
               // Unlike the cases below, this can be shown when the DLP
               // agent is not available.  We use a different message for that.
               const caInfo = await this.contentAnalysis.getDiagnosticInfo();
               titleId = "contentanalysis-block-dialog-title-clipboard";
               bodyId = caInfo.connectedToAgent
                 ? "contentanalysis-block-dialog-body-clipboard"
+                : "contentanalysis-no-agent-connected-message-content";
+              bodyHasContent = true;
+              break;
+            }
+            case Ci.nsIContentAnalysisRequest.eCopyClipboard: {
+              // Unlike the cases below, this can be shown when the DLP
+              // agent is not available.  We use a different message for that.
+              const caInfo = await this.contentAnalysis.getDiagnosticInfo();
+              titleId = "contentanalysis-block-dialog-title-clipboard-copy";
+              bodyId = caInfo.connectedToAgent
+                ? "contentanalysis-block-dialog-body-clipboard-copy"
                 : "contentanalysis-no-agent-connected-message-content";
               bodyHasContent = true;
               break;
@@ -987,7 +1008,7 @@ export const ContentAnalysis = {
           // So instead, try to find the browser that this print preview dialog is on top of
           // and show the dialog there.
           let printPreviewBrowser = aBrowsingContext.embedderElement;
-          let win = printPreviewBrowser.ownerGlobal;
+          let win = printPreviewBrowser.documentGlobal;
           for (let browser of win.gBrowser.browsers) {
             if (
               win.PrintUtils.getPreviewBrowser(browser)?.browserId ===

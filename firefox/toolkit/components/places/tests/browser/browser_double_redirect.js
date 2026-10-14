@@ -2,20 +2,16 @@
 // When a page redirects multiple times, from_visit should point to the
 // previous visit in the chain, not to the first visit in the chain.
 
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
-
 add_task(async function () {
   await PlacesUtils.history.clear();
 
   const BASE_URL =
     "https://example.com/tests/toolkit/components/places/tests/browser/";
-  const TEST_URI = NetUtil.newURI(BASE_URL + "begin.html");
-  const FIRST_REDIRECTING_URI = NetUtil.newURI(BASE_URL + "redirect_twice.sjs");
-  const FINAL_URI = NetUtil.newURI(
+  const TEST_URI = Services.io.newURI(BASE_URL + "begin.html");
+  const FIRST_REDIRECTING_URI = Services.io.newURI(
+    BASE_URL + "redirect_twice.sjs"
+  );
+  const FINAL_URI = Services.io.newURI(
     "https://test1.example.com/tests/toolkit/components/places/tests/browser/final.html"
   );
 

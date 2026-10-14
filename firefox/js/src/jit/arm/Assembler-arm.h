@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -11,7 +9,6 @@
 #include "mozilla/MathAlgorithms.h"
 
 #include <algorithm>
-#include <iterator>
 #include <type_traits>
 
 #include "jit/arm/Architecture-arm.h"
@@ -90,7 +87,6 @@ static constexpr Register IntArgReg0 = r0;
 static constexpr Register IntArgReg1 = r1;
 static constexpr Register IntArgReg2 = r2;
 static constexpr Register IntArgReg3 = r3;
-static constexpr Register HeapReg = r10;
 static constexpr Register CallTempNonArgRegs[] = {r5, r6, r7, r8};
 static const uint32_t NumCallTempNonArgRegs = std::size(CallTempNonArgRegs);
 
@@ -167,32 +163,29 @@ class ABIArgGenerator : public ABIArgGeneratorShared {
 
 bool IsUnaligned(const wasm::MemoryAccessDesc& access);
 
-// These registers may be volatile or nonvolatile.
+// See "ABI special registers" in Assembler-shared.h for more information.
 static constexpr Register ABINonArgReg0 = r4;
 static constexpr Register ABINonArgReg1 = r5;
 static constexpr Register ABINonArgReg2 = r6;
 static constexpr Register ABINonArgReg3 = r7;
 
-// This register may be volatile or nonvolatile. Avoid d15 which is the
-// ScratchDoubleReg_.
+// See "ABI special registers" in Assembler-shared.h for more information.
+// Avoid d15 which is the ScratchDoubleReg_.
 static constexpr FloatRegister ABINonArgDoubleReg{FloatRegisters::d8,
                                                   VFPRegister::Double};
 
-// These registers may be volatile or nonvolatile.
-// Note: these three registers are all guaranteed to be different
+// See "ABI special registers" in Assembler-shared.h for more information.
 static constexpr Register ABINonArgReturnReg0 = r4;
 static constexpr Register ABINonArgReturnReg1 = r5;
 static constexpr Register ABINonVolatileReg = r6;
 
-// This register is guaranteed to be clobberable during the prologue and
-// epilogue of an ABI call which must preserve both ABI argument, return
-// and non-volatile registers.
+// See "ABI special registers" in Assembler-shared.h for more information.
 static constexpr Register ABINonArgReturnVolatileReg = lr;
 
-// Instance pointer argument register for WebAssembly functions. This must not
-// alias any other register used for passing function arguments or return
-// values. Preserved by WebAssembly functions.
+// See "ABI special registers" in Assembler-shared.h, and "The WASM ABIs" in
+// WasmFrame.h for more information.
 static constexpr Register InstanceReg = r9;
+static constexpr Register HeapReg = r10;
 
 // Registers used for wasm table calls. These registers must be disjoint
 // from the ABI argument registers, InstanceReg and each other.
@@ -228,6 +221,7 @@ static constexpr Register JSReturnReg_Type = r3;
 static constexpr Register JSReturnReg_Data = r2;
 static constexpr Register StackPointer = sp;
 static constexpr Register FramePointer = r11;
+static constexpr Register LinkRegister = lr;
 static constexpr Register ReturnReg = r0;
 static constexpr Register64 ReturnReg64(r1, r0);
 
@@ -281,6 +275,10 @@ static constexpr Register RegExpExecTestStringReg = CallTempReg1;
 static constexpr Register RegExpSearcherRegExpReg = CallTempReg0;
 static constexpr Register RegExpSearcherStringReg = CallTempReg1;
 static constexpr Register RegExpSearcherLastIndexReg = CallTempReg2;
+
+// Register used by the bailout tail and bailout stubs during stack
+// reconstruction.
+static constexpr Register BailoutStubHandlerReg = CallTempReg0;
 
 static constexpr FloatRegister d0 = {FloatRegisters::d0, VFPRegister::Double};
 static constexpr FloatRegister d1 = {FloatRegisters::d1, VFPRegister::Double};
@@ -1093,8 +1091,21 @@ class InstructionIterator {
 };
 
 class Assembler;
-using ARMBuffer =
-    js::jit::AssemblerBufferWithConstantPools<1024, 4, Instruction, Assembler>;
+
+using ARMBuffer = js::jit::AssemblerBufferWithConstantPools<
+    Instruction, Assembler,
+    js::jit::AssemblerBufferSettings{
+        .instSize = 4,
+        .guardSize = 1,
+        .headerSize = 1,
+        .veneerSize = 1,
+        .pcBias = 8,
+        // For the alignment fill use NOP: 0x0320f000 or (Always |
+        // InstNOP::NopInst).
+        .alignFillInst = 0xe320f000,
+        // For the nopFill use a branch to the next instruction: 0xeaffffff.
+        .nopFillInst = 0xeaffffff,
+    }>;
 
 class Assembler : public AssemblerShared {
  public:
@@ -1198,8 +1209,7 @@ class Assembler : public AssemblerShared {
   // Shim around AssemblerBufferWithConstantPools::allocEntry.
   BufferOffset allocLiteralLoadEntry(size_t numInst, unsigned numPoolEntries,
                                      PoolHintPun& php, uint8_t* data,
-                                     const LiteralDoc& doc = LiteralDoc(),
-                                     ARMBuffer::PoolEntry* pe = nullptr,
+                                     const LiteralDoc& doc,
                                      bool loadToPC = false);
 
   Instruction* editSrc(BufferOffset bo) { return m_buffer.getInst(bo); }
@@ -1213,10 +1223,10 @@ class Assembler : public AssemblerShared {
 
   void initDisassembler();
   void finishDisassembler();
-  void spew(Instruction* i);
-  void spewBranch(Instruction* i, const LabelDoc& target);
-  void spewLiteralLoad(PoolHintPun& php, bool loadToPC, const Instruction* offs,
-                       const LiteralDoc& doc);
+  void spew(Instruction* i, BufferOffset offs);
+  void spewBranch(Instruction* i, BufferOffset offs, const LabelDoc& target);
+  void spewLiteralLoad(PoolHintPun& php, bool loadToPC, const Instruction* i,
+                       BufferOffset offs, const LiteralDoc& doc);
 #endif
 
  public:
@@ -1254,11 +1264,8 @@ class Assembler : public AssemblerShared {
 #endif
 
  public:
-  // For the alignment fill use NOP: 0x0320f000 or (Always | InstNOP::NopInst).
-  // For the nopFill use a branch to the next instruction: 0xeaffffff.
   Assembler()
-      : m_buffer(1, 1, 8, GetPoolMaxOffset(), 8, 0xe320f000, 0xeaffffff,
-                 GetNopFill()),
+      : m_buffer(GetPoolMaxOffset(), GetNopFill()),
         isFinished(false),
         dtmActive(false),
         dtmCond(Always) {
@@ -1340,6 +1347,10 @@ class Assembler : public AssemblerShared {
 
   // Size of the instruction stream, in bytes, after pools are flushed.
   size_t size() const;
+  // Returns the size of the buffer we can currently read, hence ignoring any
+  // un-flushed data in currently-under-construction constant pool(s).
+  size_t readableSize() const;
+
   // Size of the jump relocation table, in bytes.
   size_t jumpRelocationTableBytes() const;
   size_t dataRelocationTableBytes() const;
@@ -1353,7 +1364,7 @@ class Assembler : public AssemblerShared {
     MOZ_ASSERT(hasCreator());
     BufferOffset offs = m_buffer.putInt(x);
 #ifdef JS_DISASM_ARM
-    spew(m_buffer.getInstOrNull(offs));
+    spew(m_buffer.getInstOrNull(offs), offs);
 #endif
     return offs;
   }
@@ -1364,7 +1375,7 @@ class Assembler : public AssemblerShared {
   writeBranchInst(uint32_t x, const LabelDoc& documentation) {
     BufferOffset offs = m_buffer.putInt(x);
 #ifdef JS_DISASM_ARM
-    spewBranch(m_buffer.getInstOrNull(offs), documentation);
+    spewBranch(m_buffer.getInstOrNull(offs), offs, documentation);
 #endif
     return offs;
   }
@@ -2264,7 +2275,6 @@ class DoubleEncoder {
 
 // Forbids nop filling for testing purposes. Not nestable.
 class AutoForbidNops {
- protected:
   Assembler* masm_;
 
  public:
@@ -2274,7 +2284,9 @@ class AutoForbidNops {
   ~AutoForbidNops() { masm_->leaveNoNops(); }
 };
 
-class AutoForbidPoolsAndNops : public AutoForbidNops {
+class AutoForbidPoolsAndNops {
+  Assembler* masm_;
+
  public:
   // The maxInst argument is the maximum number of word sized instructions
   // that will be allocated within this context. It is used to determine if
@@ -2283,12 +2295,15 @@ class AutoForbidPoolsAndNops : public AutoForbidNops {
   //
   // Allocation of pool entries is not supported within this content so the
   // code can not use large integers or float constants etc.
-  AutoForbidPoolsAndNops(Assembler* masm, size_t maxInst)
-      : AutoForbidNops(masm) {
+  AutoForbidPoolsAndNops(Assembler* masm, size_t maxInst) : masm_(masm) {
     masm_->enterNoPool(maxInst);
+    masm_->enterNoNops();
   }
 
-  ~AutoForbidPoolsAndNops() { masm_->leaveNoPool(); }
+  ~AutoForbidPoolsAndNops() {
+    masm_->leaveNoNops();
+    masm_->leaveNoPool();
+  }
 };
 
 }  // namespace jit

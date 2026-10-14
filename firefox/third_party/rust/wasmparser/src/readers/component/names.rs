@@ -1,8 +1,8 @@
-use crate::{BinaryReader, BinaryReaderError, NameMap, Result, Subsection, Subsections};
+use crate::{BinaryReader, Error, NameMap, Result, Subsection, Subsections};
 use core::ops::Range;
 
 /// Type used to iterate and parse the contents of the `component-name` custom
-/// section in compnents, similar to the `name` section of core modules.
+/// section in components, similar to the `name` section of core modules.
 pub type ComponentNameSectionReader<'a> = Subsections<'a, ComponentName<'a>>;
 
 /// Represents a name read from the names custom section.
@@ -11,12 +11,13 @@ pub type ComponentNameSectionReader<'a> = Subsections<'a, ComponentName<'a>>;
 pub enum ComponentName<'a> {
     Component {
         name: &'a str,
-        name_range: Range<usize>,
+        name_range: Range<u64>,
     },
     CoreFuncs(NameMap<'a>),
     CoreGlobals(NameMap<'a>),
     CoreMemories(NameMap<'a>),
     CoreTables(NameMap<'a>),
+    CoreTags(NameMap<'a>),
     CoreModules(NameMap<'a>),
     CoreInstances(NameMap<'a>),
     CoreTypes(NameMap<'a>),
@@ -34,19 +35,18 @@ pub enum ComponentName<'a> {
         data: &'a [u8],
         /// The range of bytes, relative to the start of the original data
         /// stream, that the contents of this subsection reside in.
-        range: Range<usize>,
+        range: Range<u64>,
     },
 }
 
 impl<'a> Subsection<'a> for ComponentName<'a> {
     fn from_reader(id: u8, mut reader: BinaryReader<'a>) -> Result<Self> {
-        let data = reader.remaining_buffer();
-        let offset = reader.original_position();
         Ok(match id {
             0 => {
-                let name = reader.read_string()?;
+                let offset = reader.original_position();
+                let name = reader.read_unlimited_string()?;
                 if !reader.eof() {
-                    return Err(BinaryReaderError::new(
+                    return Err(Error::new(
                         "trailing data at the end of a name",
                         reader.original_position(),
                     ));
@@ -63,14 +63,15 @@ impl<'a> Subsection<'a> for ComponentName<'a> {
                         0x01 => ComponentName::CoreTables,
                         0x02 => ComponentName::CoreMemories,
                         0x03 => ComponentName::CoreGlobals,
+                        0x04 => ComponentName::CoreTags,
                         0x10 => ComponentName::CoreTypes,
                         0x11 => ComponentName::CoreModules,
                         0x12 => ComponentName::CoreInstances,
                         _ => {
                             return Ok(ComponentName::Unknown {
                                 ty: 1,
-                                data,
-                                range: offset..offset + data.len(),
+                                data: reader.remaining_buffer(),
+                                range: reader.remaining_range(),
                             });
                         }
                     },
@@ -82,8 +83,8 @@ impl<'a> Subsection<'a> for ComponentName<'a> {
                     _ => {
                         return Ok(ComponentName::Unknown {
                             ty: 1,
-                            data,
-                            range: offset..offset + data.len(),
+                            data: reader.remaining_buffer(),
+                            range: reader.remaining_range(),
                         });
                     }
                 };
@@ -91,8 +92,8 @@ impl<'a> Subsection<'a> for ComponentName<'a> {
             }
             ty => ComponentName::Unknown {
                 ty,
-                data,
-                range: offset..offset + data.len(),
+                data: reader.remaining_buffer(),
+                range: reader.remaining_range(),
             },
         })
     }

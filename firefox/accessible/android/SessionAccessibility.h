@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -49,6 +48,7 @@ class SessionAccessibility final
   int GetNodeClassName(int32_t aID);
   void SetText(int32_t aID, jni::String::Param aText);
   void Click(int32_t aID);
+  void ChangeValueBySteps(int32_t aID, double aSteps);
   bool Pivot(int32_t aID, int32_t aGranularity, bool aForward, bool aInclusive);
   void ExploreByTouch(int32_t aID, float aX, float aY);
   bool NavigateText(int32_t aID, int32_t aGranularity, int32_t aStartOffset,
@@ -77,11 +77,17 @@ class SessionAccessibility final
                             bool aFromUser);
   void SendSelectedEvent(Accessible* aAccessible, bool aSelected);
   void SendClickedEvent(Accessible* aAccessible, uint32_t aFlags);
-  void SendWindowContentChangedEvent();
+  void SendWindowContentChangedEvent(Accessible* aAccessible = nullptr);
   void SendWindowStateChangedEvent(Accessible* aAccessible);
   void SendAnnouncementEvent(Accessible* aAccessible,
                              const nsAString& aAnnouncement,
                              uint16_t aPriority);
+  void SendValueChangedEvent(Accessible* aAccessible);
+
+  static const int32_t kLiveRegionContentChangedLimit = 10;
+  void MaybeSendLiveRegionEvents(Accessible* aAccessible,
+                                 int32_t aStartTextOffset = -1,
+                                 int32_t aEndTextOffset = -1);
 
   Accessible* GetAccessibleByID(int32_t aID) const;
 

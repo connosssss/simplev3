@@ -6,7 +6,15 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   NetworkUtils:
     "resource://devtools/shared/network-observer/NetworkUtils.sys.mjs",
+
+  NetworkDataBytes: "chrome://remote/content/shared/NetworkDataBytes.sys.mjs",
 });
+
+const NEWLINE_MERGED_HEADERS = [
+  "proxy-authenticate",
+  "set-cookie",
+  "www-authenticate",
+];
 
 /**
  * The NetworkResponse class is a wrapper around the internal channel which
@@ -14,14 +22,17 @@ ChromeUtils.defineESModuleGetters(lazy, {
  * (https://fetch.spec.whatwg.org/#concept-response).
  */
 export class NetworkResponse {
+  #cachedResponseBody;
   #channel;
   #decodedBodySize;
   #encodedBodySize;
   #fromCache;
   #fromServiceWorker;
+  #hasCachedResponseBody;
+  #headersTransmittedSize;
   #isCachedResource;
   #isDataURL;
-  #headersTransmittedSize;
+  #responseBodyReady;
   #status;
   #statusMessage;
   #totalTransmittedSize;
@@ -36,8 +47,13 @@ export class NetworkResponse {
    *     Whether the response was read from the cache or not.
    * @param {boolean} params.fromServiceWorker
    *     Whether the response is coming from a service worker or not.
+   * @param {boolean} params.hasResponseCollector
+   *     Whether there is an active response collector for the context which
+   *     owns this request.
    * @param {boolean} params.isCachedResource
    *     Whether the response is served by the stencil (image/CSS/JS) cache.
+   * @param {string?} params.memoryCacheKey
+   *     The cache key of the in-memory cached response.
    * @param {string=} params.rawHeaders
    *     The response's raw (ie potentially compressed) headers
    */
@@ -46,19 +62,38 @@ export class NetworkResponse {
     const {
       fromCache,
       fromServiceWorker,
+      hasResponseCollector = false,
       isCachedResource,
+      memoryCacheKey = undefined,
       rawHeaders = "",
     } = params;
     this.#fromCache = fromCache;
     this.#fromServiceWorker = fromServiceWorker;
     this.#isCachedResource = isCachedResource;
     this.#isDataURL = this.#channel instanceof Ci.nsIDataChannel;
+    this.#responseBodyReady = Promise.withResolvers();
     this.#wrappedChannel = ChannelWrapper.get(channel);
 
     this.#decodedBodySize = 0;
     this.#encodedBodySize = 0;
     this.#headersTransmittedSize = rawHeaders.length;
     this.#totalTransmittedSize = rawHeaders.length;
+
+    // We use two separate fields to distinguish the "no response body" vs
+    // "response is empty" in toJSON.
+    this.#hasCachedResponseBody = false;
+    this.#cachedResponseBody = "";
+
+    if (memoryCacheKey && hasResponseCollector) {
+      const text = ChromeUtils.getCachedJavaScriptSource(
+        memoryCacheKey,
+        channel.URI.spec
+      );
+      if (text !== undefined) {
+        this.#cachedResponseBody = text;
+        this.#hasCachedResponseBody = true;
+      }
+    }
 
     // See https://github.com/w3c/webdriver-bidi/issues/761
     // For 304 responses, the response will be replaced by the cached response
@@ -74,12 +109,20 @@ export class NetworkResponse {
         : this.#channel.responseStatusText;
   }
 
+  get cachedResponseBody() {
+    return this.#cachedResponseBody;
+  }
+
   get decodedBodySize() {
     return this.#decodedBodySize;
   }
 
   get encodedBodySize() {
     return this.#encodedBodySize;
+  }
+
+  get hasCachedResponseBody() {
+    return this.#hasCachedResponseBody;
   }
 
   get headers() {
@@ -96,6 +139,10 @@ export class NetworkResponse {
 
   get fromServiceWorker() {
     return this.#fromServiceWorker;
+  }
+
+  get isDataURL() {
+    return this.#isDataURL;
   }
 
   get mimeType() {
@@ -123,6 +170,21 @@ export class NetworkResponse {
   }
 
   /**
+   * Check if this response will lead to a redirect.
+   */
+  get willRedirect() {
+    // See static helper on nsHttpChannel:WillRedirect
+    // https://searchfox.org/mozilla-central/rev/6b4cb595d05ac38e2cfc493e3b81fe4c97a71f12/netwerk/protocol/http/nsHttpChannel.cpp#283-288
+    const isRedirectStatus =
+      this.#status == 301 ||
+      this.#status == 302 ||
+      this.#status == 303 ||
+      this.#status == 307 ||
+      this.#status == 308;
+    return isRedirectStatus && this.#channel.getResponseHeader("Location");
+  }
+
+  /**
    * Clear a response header from the responses's headers list.
    *
    * @param {string} name
@@ -134,6 +196,39 @@ export class NetworkResponse {
       "", // aValue="" as an empty value
       false // aMerge=false to force clearing the header
     );
+  }
+
+  /**
+   * Returns the NetworkDataBytes instance representing the response body for
+   * this response.
+   *
+   * @returns {NetworkDataBytes}
+   */
+  readAndProcessResponseBody = async () => {
+    const responseContent = await this.#responseBodyReady.promise;
+
+    return new lazy.NetworkDataBytes({
+      getBytesValue: async () => {
+        if (responseContent.isContentEncoded) {
+          return lazy.NetworkUtils.decodeResponseChunks(
+            responseContent.encodedData,
+            {
+              // Should always attempt to decode as UTF-8.
+              charset: "UTF-8",
+              compressionEncodings: responseContent.compressionEncodings,
+              encodedBodySize: responseContent.encodedBodySize,
+              encoding: responseContent.encoding,
+            }
+          );
+        }
+        return responseContent.text;
+      },
+      isBase64: responseContent.encoding === "base64",
+    });
+  };
+
+  setResponseContent(responseContent) {
+    this.#responseBodyReady.resolve(responseContent);
   }
 
   /**
@@ -199,17 +294,21 @@ export class NetworkResponse {
    */
   toJSON() {
     return {
+      cachedResponseBody: this.cachedResponseBody,
       decodedBodySize: this.decodedBodySize,
-      headers: this.headers,
-      headersTransmittedSize: this.headersTransmittedSize,
       encodedBodySize: this.encodedBodySize,
       fromCache: this.fromCache,
+      hasCachedResponseBody: this.hasCachedResponseBody,
+      headers: this.headers,
+      headersTransmittedSize: this.headersTransmittedSize,
+      isDataURL: this.isDataURL,
       mimeType: this.mimeType,
       protocol: this.protocol,
       serializedURL: this.serializedURL,
       status: this.status,
       statusMessage: this.statusMessage,
       totalTransmittedSize: this.totalTransmittedSize,
+      willRedirect: this.willRedirect,
     };
   }
 
@@ -248,7 +347,16 @@ export class NetworkResponse {
     } else {
       this.#channel.visitResponseHeaders({
         visitHeader(name, value) {
-          headers.push([name, value]);
+          // nsHttpHeaderArray merges some headers as a \n-separated value.
+          // Bug 1943266: Remove this once nsHttpHeaderArray keeps these headers
+          // separate.
+          if (NEWLINE_MERGED_HEADERS.includes(name.toLowerCase())) {
+            for (const v of value.split("\n")) {
+              headers.push([name, v]);
+            }
+          } else {
+            headers.push([name, value]);
+          }
         },
       });
     }

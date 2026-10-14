@@ -1,14 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _MOZILLA_GFX_DRAWTARGETWEBGL_INTERNAL_H
-#define _MOZILLA_GFX_DRAWTARGETWEBGL_INTERNAL_H
+#ifndef MOZILLA_GFX_DRAWTARGETWEBGL_INTERNAL_H
+#define MOZILLA_GFX_DRAWTARGETWEBGL_INTERNAL_H
 
 #include "DrawTargetWebgl.h"
-
 #include "mozilla/HashFunctions.h"
 #include "mozilla/WeakPtr.h"
 #include "mozilla/gfx/Etagere.h"
@@ -164,7 +161,7 @@ class TextureHandle : public RefCounted<TextureHandle>,
 
   virtual void Cleanup(SharedContextWebgl& aContext) {}
 
-  virtual ~TextureHandle() {}
+  virtual ~TextureHandle() = default;
 
   bool IsValid() const { return mValid; }
   void Invalidate() { mValid = false; }
@@ -223,7 +220,8 @@ class SharedTexture : public RefCounted<SharedTexture>, public BackingTexture {
   MOZ_DECLARE_REFCOUNTED_TYPENAME(SharedTexture)
 
   SharedTexture(const IntSize& aSize, SurfaceFormat aFormat,
-                const RefPtr<WebGLTexture>& aTexture);
+                const RefPtr<WebGLTexture>& aTexture,
+                const dom::ContentParentId& aContentId);
   ~SharedTexture();
 
   already_AddRefed<SharedTextureHandle> Allocate(const IntSize& aSize);
@@ -234,8 +232,11 @@ class SharedTexture : public RefCounted<SharedTexture>, public BackingTexture {
                                   mAtlasAllocator) > 0;
   }
 
+  const dom::ContentParentId& GetContentId() const { return mContentId; }
+
  private:
   Etagere::AtlasAllocator* mAtlasAllocator = nullptr;
+  dom::ContentParentId mContentId;
 };
 
 // SharedTextureHandle is an allocated region within a large SharedTexture page
@@ -475,4 +476,4 @@ class PathCache : public CacheImpl<PathCacheEntry, true> {
 
 }  // namespace mozilla::gfx
 
-#endif  // _MOZILLA_GFX_DRAWTARGETWEBGL_INTERNAL_H
+#endif  // MOZILLA_GFX_DRAWTARGETWEBGL_INTERNAL_H

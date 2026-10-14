@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -16,7 +14,6 @@ EXPORTS += [
 
 LIBRARY_DEFINES["MOZ_HAS_MOZGLUE"] = True
 DEFINES["MOZ_MEMORY_IMPL"] = True
-DEFINES["MOZ_SUPPORT_LEAKCHECKING"] = True
 
 if CONFIG["MOZ_BUILD_APP"] == "memory":
     DEFINES["IMPL_MFBT"] = True
@@ -33,6 +30,9 @@ if CONFIG["MOZ_PHC"]:
         "FdPrintf.cpp",
         # PHC.cpp is #included in mozjemalloc.cpp
     ]
+    SOURCE_HEADERS += [
+        "FdPrintf.h",
+    ]
 
 if CONFIG["MOZ_MEMORY"]:
     UNIFIED_SOURCES += [
@@ -43,6 +43,14 @@ if CONFIG["MOZ_MEMORY"]:
         "mozmemory_wrap.cpp",
         "Mutex.cpp",
         "Utils.cpp",
+    ]
+    SOURCE_HEADERS += [
+        "BaseAlloc.h",
+        "Chunk.h",
+        "Globals.h",
+        "mozjemalloc.h",
+        "Mutex.h",
+        "Utils.h",
     ]
 else:
     UNIFIED_SOURCES += [
@@ -55,6 +63,18 @@ if CONFIG["OS_TARGET"] == "Darwin" and (
     SOURCES += [
         "Zone.c",
     ]
+
+SOURCE_HEADERS += [
+    "Arena.h",
+    "ArenaAvailRuns.h",
+    "BaseAllocInternals.h",
+    "BaseArray.h",
+    "Constants.h",
+    "Extent.h",
+    "RadixTree.h",
+    "RedBlackTree.h",
+    "Zero.h",
+]
 
 Library("memory")
 
@@ -77,5 +97,16 @@ if CONFIG["CC_TYPE"] == "clang-cl":
 TEST_DIRS += ["test"]
 
 if CONFIG["NIGHTLY_BUILD"]:
-    DEFINES["NON_RANDOM_ARENA_IDS"] = True
     DEFINES["MOZJEMALLOC_PROFILING_CALLBACKS"] = True
+
+LICENSES += ["jemalloc"]
+LICENSES["jemalloc"].title = "jemalloc License"
+LICENSES["jemalloc"].text = "LICENSE-NOTICE.txt"
+LICENSES["jemalloc"].spdx = "BSD-2-Clause"
+LICENSES["jemalloc"].notice = """
+<p>This license applies to portions of the files in the directory <code>memory/build/</code>.</p>
+"""
+
+LICENSED_UNDER += [
+    "jemalloc",
+]

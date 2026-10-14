@@ -2,6 +2,12 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
+#[cfg(all(
+    feature = "by_ref_proposal",
+    feature = "custom_proposal",
+    feature = "self_remove_proposal"
+))]
+use super::SelfRemoveProposal;
 use super::{
     commit_sender,
     confirmation_tag::ConfirmationTag,
@@ -18,6 +24,7 @@ use super::{
 };
 use crate::{
     client::MlsError,
+    group::proposal_filter::path_update_required,
     key_package::validate_key_package_properties,
     time::MlsTime,
     tree_kem::{
@@ -62,31 +69,6 @@ pub(crate) struct ProvisionalState {
     pub(crate) unused_proposals: Vec<ProposalInfo<Proposal>>,
 }
 
-//By default, the path field of a Commit MUST be populated. The path field MAY be omitted if
-//(a) it covers at least one proposal and (b) none of the proposals covered by the Commit are
-//of "path required" types. A proposal type requires a path if it cannot change the group
-//membership in a way that requires the forward secrecy and post-compromise security guarantees
-//that an UpdatePath provides. The only proposal types defined in this document that do not
-//require a path are:
-
-// add
-// psk
-// reinit
-pub(crate) fn path_update_required(proposals: &ProposalBundle) -> bool {
-    let res = !proposals.external_init_proposals().is_empty();
-
-    #[cfg(feature = "by_ref_proposal")]
-    let res = res || !proposals.update_proposals().is_empty();
-
-    res || proposals.length() == 0
-        || proposals.group_context_extensions_proposal().is_some()
-        || !proposals.remove_proposals().is_empty()
-}
-
-#[cfg_attr(
-    all(feature = "ffi", not(test)),
-    safer_ffi_gen::ffi_type(clone, opaque)
-)]
 #[derive(Clone, Debug, PartialEq, MlsSize, MlsEncode, MlsDecode)]
 #[non_exhaustive]
 pub struct NewEpoch {
@@ -111,8 +93,6 @@ impl NewEpoch {
     }
 }
 
-#[cfg(all(feature = "ffi", not(test)))]
-#[safer_ffi_gen::safer_ffi_gen]
 impl NewEpoch {
     pub fn epoch(&self) -> u64 {
         self.epoch
@@ -131,10 +111,6 @@ impl NewEpoch {
     }
 }
 
-#[cfg_attr(
-    all(feature = "ffi", not(test)),
-    safer_ffi_gen::ffi_type(clone, opaque)
-)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum CommitEffect {
     NewEpoch(Box<NewEpoch>),
@@ -194,10 +170,6 @@ impl MlsDecode for CommitEffect {
     }
 }
 
-// #[cfg_attr(
-//     all(feature = "ffi", not(test)),
-//     safer_ffi_gen::ffi_type(clone, opaque)
-// )]
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 /// An event generated as a result of processing a message for a group with
@@ -255,10 +227,6 @@ impl From<KeyPackage> for ReceivedMessage {
     }
 }
 
-// #[cfg_attr(
-//     all(feature = "ffi", not(test)),
-//     safer_ffi_gen::ffi_type(clone, opaque)
-// )]
 #[derive(Clone, PartialEq, Eq)]
 /// Description of a MLS application message.
 pub struct ApplicationMessageDescription {
@@ -268,32 +236,36 @@ pub struct ApplicationMessageDescription {
     data: ApplicationData,
     /// Plaintext authenticated data in the received MLS packet.
     pub authenticated_data: Vec<u8>,
+    /// Unauthenticated key generation used to decrypt the message. See documentation for
+    /// [`Group::peek_next_key_generation`] for usage.
+    #[cfg(all(feature = "export_key_generation", feature = "private_message"))]
+    pub unauthenticated_key_generation: Option<u32>,
 }
 
 impl Debug for ApplicationMessageDescription {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ApplicationMessageDescription")
-            .field("sender_index", &self.sender_index)
+        let mut res = f.debug_struct("ApplicationMessageDescription");
+        res.field("sender_index", &self.sender_index)
             .field("data", &self.data)
             .field(
                 "authenticated_data",
                 &mls_rs_core::debug::pretty_bytes(&self.authenticated_data),
-            )
-            .finish()
+            );
+        #[cfg(all(feature = "export_key_generation", feature = "private_message"))]
+        res.field(
+            "unauthenticated_key_generation",
+            &self.unauthenticated_key_generation,
+        );
+        res.finish()
     }
 }
 
-// #[cfg_attr(all(feature = "ffi", not(test)), safer_ffi_gen::safer_ffi_gen)]
 impl ApplicationMessageDescription {
     pub fn data(&self) -> &[u8] {
         self.data.as_bytes()
     }
 }
 
-// #[cfg_attr(
-//     all(feature = "ffi", not(test)),
-//     safer_ffi_gen::ffi_type(clone, opaque)
-// )]
 #[derive(Clone, PartialEq, MlsSize, MlsEncode, MlsDecode)]
 #[non_exhaustive]
 /// Description of a processed MLS commit message.
@@ -353,10 +325,6 @@ impl TryFrom<Sender> for ProposalSender {
 }
 
 #[cfg(feature = "by_ref_proposal")]
-// #[cfg_attr(
-//     all(feature = "ffi", not(test)),
-//     safer_ffi_gen::ffi_type(clone, opaque)
-// )]
 #[derive(Clone, MlsEncode, MlsDecode, MlsSize, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -406,6 +374,21 @@ impl CachedProposal {
     pub fn to_bytes(&self) -> Result<Vec<u8>, MlsError> {
         Ok(self.mls_encode_to_vec()?)
     }
+
+    /// The proposal content.
+    pub fn proposal(&self) -> &Proposal {
+        &self.proposal
+    }
+
+    /// The proposal reference (hash-based identifier).
+    pub fn proposal_ref(&self) -> &ProposalRef {
+        &self.proposal_ref
+    }
+
+    /// The sender of the proposal.
+    pub fn sender(&self) -> &Sender {
+        &self.sender
+    }
 }
 
 #[cfg(feature = "by_ref_proposal")]
@@ -444,10 +427,6 @@ impl ProposalMessageDescription {
 }
 
 #[cfg(not(feature = "by_ref_proposal"))]
-// #[cfg_attr(
-//     all(feature = "ffi", not(test)),
-//     safer_ffi_gen::ffi_type(clone, opaque)
-// )]
 #[derive(Debug, Clone)]
 /// Description of a processed MLS proposal message.
 pub struct ProposalMessageDescription {}
@@ -502,12 +481,29 @@ pub(crate) trait MessageProcessor: Send + Sync {
         #[cfg(feature = "by_ref_proposal")] cache_proposal: bool,
         time_sent: Option<MlsTime>,
     ) -> Result<Self::OutputType, MlsError> {
-        let event_or_content = self.get_event_from_incoming_message(message).await?;
+        #[cfg(all(feature = "export_key_generation", feature = "private_message"))]
+        // For encrypted application messages, retrieve the unauthenticated key
+        // generation used to decrypt the message and return it with the plaintext. Does
+        // not return an error on failure, allowing `get_event_from_incoming_message` to
+        // continue owning that task.
+        // Note that this decrypts the SenderData twice, which is not ideal.
+        let unauthn_key_gen_in_app_msg: Option<u32> = match message.payload {
+            MlsMessagePayload::Cipher(ref cipher_text) => self
+                .get_unauthenticated_key_generation_from_sender_data(cipher_text)
+                .unwrap_or_default(),
+            _ => None,
+        };
+
+        let event_or_content = self
+            .get_event_from_incoming_message(message, time_sent)
+            .await?;
 
         self.process_event_or_content(
             event_or_content,
             #[cfg(feature = "by_ref_proposal")]
             cache_proposal,
+            #[cfg(all(feature = "export_key_generation", feature = "private_message"))]
+            unauthn_key_gen_in_app_msg,
             time_sent,
         )
         .await
@@ -516,6 +512,7 @@ pub(crate) trait MessageProcessor: Send + Sync {
     async fn get_event_from_incoming_message(
         &mut self,
         message: MlsMessage,
+        time: Option<MlsTime>,
     ) -> Result<EventOrContent<Self::OutputType>, MlsError> {
         self.check_metadata(&message)?;
 
@@ -542,7 +539,7 @@ pub(crate) trait MessageProcessor: Send + Sync {
                 Ok(EventOrContent::Event(welcome.into()))
             }
             MlsMessagePayload::KeyPackage(key_package) => {
-                self.validate_key_package(&key_package, message.version)
+                self.validate_key_package(&key_package, message.version, time)
                     .await?;
 
                 Ok(EventOrContent::Event(key_package.into()))
@@ -554,6 +551,8 @@ pub(crate) trait MessageProcessor: Send + Sync {
         &mut self,
         event_or_content: EventOrContent<Self::OutputType>,
         #[cfg(feature = "by_ref_proposal")] cache_proposal: bool,
+        #[cfg(all(feature = "export_key_generation", feature = "private_message"))]
+        unauthn_key_gen_in_app_msg: Option<u32>,
         time_sent: Option<MlsTime>,
     ) -> Result<Self::OutputType, MlsError> {
         let msg = match event_or_content {
@@ -563,6 +562,8 @@ pub(crate) trait MessageProcessor: Send + Sync {
                     content,
                     #[cfg(feature = "by_ref_proposal")]
                     cache_proposal,
+                    #[cfg(all(feature = "export_key_generation", feature = "private_message"))]
+                    unauthn_key_gen_in_app_msg,
                     time_sent,
                 )
                 .await?
@@ -576,6 +577,8 @@ pub(crate) trait MessageProcessor: Send + Sync {
         &mut self,
         auth_content: AuthenticatedContent,
         #[cfg(feature = "by_ref_proposal")] cache_proposal: bool,
+        #[cfg(all(feature = "export_key_generation", feature = "private_message"))]
+        unauthn_key_gen_in_app_msg: Option<u32>,
         time_sent: Option<MlsTime>,
     ) -> Result<Self::OutputType, MlsError> {
         let event = match auth_content.content.content {
@@ -584,8 +587,14 @@ pub(crate) trait MessageProcessor: Send + Sync {
                 let authenticated_data = auth_content.content.authenticated_data;
                 let sender = auth_content.content.sender;
 
-                self.process_application_message(data, sender, authenticated_data)
-                    .and_then(Self::OutputType::try_from)
+                self.process_application_message(
+                    data,
+                    sender,
+                    authenticated_data,
+                    #[cfg(all(feature = "export_key_generation", feature = "private_message"))]
+                    unauthn_key_gen_in_app_msg,
+                )
+                .and_then(Self::OutputType::try_from)
             }
             Content::Commit(_) => self
                 .process_commit(auth_content, time_sent)
@@ -607,6 +616,8 @@ pub(crate) trait MessageProcessor: Send + Sync {
         data: ApplicationData,
         sender: Sender,
         authenticated_data: Vec<u8>,
+        #[cfg(all(feature = "export_key_generation", feature = "private_message"))]
+        unauthenticated_key_generation: Option<u32>,
     ) -> Result<ApplicationMessageDescription, MlsError> {
         let Sender::Member(sender_index) = sender else {
             return Err(MlsError::InvalidSender);
@@ -616,6 +627,8 @@ pub(crate) trait MessageProcessor: Send + Sync {
             authenticated_data,
             sender_index,
             data,
+            #[cfg(all(feature = "export_key_generation", feature = "private_message"))]
+            unauthenticated_key_generation,
         })
     }
 
@@ -702,12 +715,27 @@ pub(crate) trait MessageProcessor: Send + Sync {
 
         //Verify that the path value is populated if the proposals vector contains any Update
         // or Remove proposals, or if it's empty. Otherwise, the path value MAY be omitted.
-        if path_update_required(&provisional_state.applied_proposals) && commit.path.is_none() {
+        if path_update_required(&provisional_state.applied_proposals, &self.mls_rules())
+            && commit.path.is_none()
+        {
             return Err(MlsError::CommitMissingPath);
         }
 
         let self_removed = self.removal_proposal(&provisional_state);
+        #[cfg(all(
+            feature = "by_ref_proposal",
+            feature = "custom_proposal",
+            feature = "self_remove_proposal"
+        ))]
+        let self_removed_by_self = self.self_removal_proposal(&provisional_state);
+
         let is_self_removed = self_removed.is_some();
+        #[cfg(all(
+            feature = "by_ref_proposal",
+            feature = "custom_proposal",
+            feature = "self_remove_proposal"
+        ))]
+        let is_self_removed = is_self_removed || self_removed_by_self.is_some();
 
         let update_path = match commit.path {
             Some(update_path) => Some(
@@ -741,6 +769,21 @@ pub(crate) trait MessageProcessor: Send + Sync {
                     &provisional_state,
                 )))
             };
+
+        #[cfg(all(
+            feature = "by_ref_proposal",
+            feature = "custom_proposal",
+            feature = "self_remove_proposal"
+        ))]
+        let commit_effect = if let Some(self_remove_proposal) = self_removed_by_self {
+            let new_epoch = NewEpoch::new(self.group_state().clone(), &provisional_state);
+            CommitEffect::Removed {
+                remover: self_remove_proposal.sender,
+                new_epoch: Box::new(new_epoch),
+            }
+        } else {
+            commit_effect
+        };
 
         let new_secrets = match update_path {
             Some(update_path) if !is_self_removed => {
@@ -776,7 +819,6 @@ pub(crate) trait MessageProcessor: Send + Sync {
                 )
                 .await?;
             }
-
             Ok(CommitMessageDescription {
                 is_external: matches!(auth_content.content.sender, Sender::NewMemberCommit),
                 authenticated_data: auth_content.content.authenticated_data,
@@ -799,6 +841,16 @@ pub(crate) trait MessageProcessor: Send + Sync {
         &self,
         provisional_state: &ProvisionalState,
     ) -> Option<ProposalInfo<RemoveProposal>>;
+
+    #[cfg(all(
+        feature = "by_ref_proposal",
+        feature = "custom_proposal",
+        feature = "self_remove_proposal"
+    ))]
+    fn self_removal_proposal(
+        &self,
+        provisional_state: &ProvisionalState,
+    ) -> Option<ProposalInfo<SelfRemoveProposal>>;
 
     #[cfg(feature = "private_message")]
     fn min_epoch_available(&self) -> Option<u64>;
@@ -897,11 +949,12 @@ pub(crate) trait MessageProcessor: Send + Sync {
         &self,
         key_package: &KeyPackage,
         version: ProtocolVersion,
+        time: Option<MlsTime>,
     ) -> Result<(), MlsError> {
         let cs = self.cipher_suite_provider();
         let id = self.identity_provider();
 
-        validate_key_package(key_package, version, cs, &id).await
+        validate_key_package(key_package, version, cs, &id, time).await
     }
 
     #[cfg(feature = "private_message")]
@@ -914,6 +967,13 @@ pub(crate) trait MessageProcessor: Send + Sync {
         &self,
         message: PublicMessage,
     ) -> Result<EventOrContent<Self::OutputType>, MlsError>;
+
+    #[cfg(all(feature = "export_key_generation", feature = "private_message"))]
+    /// Returns the unauthenticated key generation used to decrypt the private message.
+    async fn get_unauthenticated_key_generation_from_sender_data(
+        &mut self,
+        cipher_text: &PrivateMessage,
+    ) -> Result<Option<u32>, MlsError>;
 
     async fn apply_update_path(
         &mut self,
@@ -949,6 +1009,7 @@ pub(crate) async fn validate_key_package<C: CipherSuiteProvider, I: IdentityProv
     version: ProtocolVersion,
     cs: &C,
     id: &I,
+    time: Option<MlsTime>,
 ) -> Result<(), MlsError> {
     let validator = LeafNodeValidator::new(cs, id, MemberValidationContext::None);
 
@@ -957,6 +1018,8 @@ pub(crate) async fn validate_key_package<C: CipherSuiteProvider, I: IdentityProv
 
     #[cfg(not(feature = "std"))]
     let context = None;
+
+    let context = if time.is_some() { time } else { context };
 
     let context = ValidationContext::Add(context);
 

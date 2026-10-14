@@ -1,23 +1,22 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsWrapperCache_h___
-#define nsWrapperCache_h___
+#ifndef nsWrapperCache_h_
+#define nsWrapperCache_h_
 
-#include "nsCycleCollectionParticipant.h"
-#include "mozilla/Assertions.h"
-#include "mozilla/ServoUtils.h"
-#include "mozilla/RustCell.h"
+#include <type_traits>
+
 #include "js/HeapAPI.h"
 #include "js/RootingAPI.h"
 #include "js/TracingAPI.h"
 #include "js/TypeDecls.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/RustCell.h"
+#include "mozilla/ServoUtils.h"
+#include "nsCycleCollectionParticipant.h"
 #include "nsISupports.h"
 #include "nsISupportsUtils.h"
-#include <type_traits>
 
 namespace mozilla::dom::binding_detail {
 class CastableToWrapperCacheHelper;
@@ -170,11 +169,7 @@ class JS_HAZ_ROOTED nsWrapperCache {
     }
   }
 
-  /**
-   * Update the wrapper when the object moves between globals.
-   */
-  template <typename T>
-  void UpdateWrapperForNewGlobal(T* aScriptObjectHolder, JSObject* aNewWrapper);
+  void ClearWrapperOnWrapFailure();
 
   /**
    * Update the wrapper if the object it contains is moved.
@@ -321,6 +316,10 @@ class JS_HAZ_ROOTED nsWrapperCache {
 
   void ReleaseWrapper(void* aScriptObjectHolder);
 
+  // Special case version of ReleaseWrapper. For use by
+  // Rule::UnlinkDeclarationWrapper only.
+  void ReleaseWrapperWithoutDrop();
+
   void TraceWrapper(JSTracer* aTrc, const char* name) {
     if (mWrapper) {
       js::UnsafeTraceManuallyBarrieredEdge(aTrc, &mWrapper, name);
@@ -338,6 +337,8 @@ class JS_HAZ_ROOTED nsWrapperCache {
 
  private:
   void SetWrapperJSObject(JSObject* aWrapper);
+
+  void ReleaseWrapperAndMaybeDropHolder(void* aScriptObjectHolderToDrop);
 
   // We'd like to assert that these aren't used from servo threads, but we don't
   // have a great way to do that because:
@@ -548,7 +549,7 @@ enum { WRAPPER_CACHE_FLAGS_BITS_USED = 1 };
   tmp->ReleaseWrapper(p);
 
 #define NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(_class)        \
-  static_assert(std::is_base_of<nsWrapperCache, _class>::value,    \
+  static_assert(std::is_base_of_v<nsWrapperCache, _class>,         \
                 "Class should inherit nsWrapperCache");            \
   NS_IMPL_CYCLE_COLLECTION_SINGLE_ZONE_SCRIPT_HOLDER_CLASS(_class) \
   NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(_class)                     \
@@ -603,7 +604,7 @@ enum { WRAPPER_CACHE_FLAGS_BITS_USED = 1 };
 // This is used for wrapper cached classes that inherit from cycle
 // collected non-wrapper cached classes.
 #define NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_INHERITED(_class, _base, ...)   \
-  static_assert(!std::is_base_of<nsWrapperCache, _base>::value,               \
+  static_assert(!std::is_base_of_v<nsWrapperCache, _base>,                    \
                 "Base class should not inherit nsWrapperCache");              \
   NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(_class)                         \
   NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(_class, _base)              \
@@ -623,7 +624,7 @@ enum { WRAPPER_CACHE_FLAGS_BITS_USED = 1 };
 // declaration.
 #define NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_WITH_JS_MEMBERS(              \
     class_, native_members_, js_members_)                                   \
-  static_assert(std::is_base_of<nsWrapperCache, class_>::value,             \
+  static_assert(std::is_base_of_v<nsWrapperCache, class_>,                  \
                 "Class should inherit nsWrapperCache");                     \
   NS_IMPL_CYCLE_COLLECTION_CLASS(class_)                                    \
   NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(class_)                             \
@@ -643,4 +644,4 @@ enum { WRAPPER_CACHE_FLAGS_BITS_USED = 1 };
     NS_IMPL_CYCLE_COLLECTION_TRACE_PRESERVED_WRAPPER                        \
   NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
-#endif /* nsWrapperCache_h___ */
+#endif /* nsWrapperCache_h_ */

@@ -30,6 +30,7 @@ export class MigrationWizard extends HTMLElement {
   #expandedDetails = false;
   #extensionsSuccessLink = null;
   #supportTextLinks = null;
+  #safariPasswordImportInstructions = null;
 
   static get markup() {
     return `
@@ -49,16 +50,16 @@ export class MigrationWizard extends HTMLElement {
             </moz-button-group>
           </div>
 
-          <div name="page-selection">
+          <div name="page-selection" part="page-selection">
             <h1 class="migration-wizard-header" data-l10n-id="migration-wizard-selection-header" part="header"></h1>
             <p class="migration-wizard-subheader" part="subheader" hidden=""></p>
-            <button id="browser-profile-selector" aria-haspopup="menu" aria-labelledby="migrator-name profile-name">
-              <span class="migrator-icon" role="img"></span>
+            <button id="browser-profile-selector" part="profile-selector" aria-haspopup="menu" aria-labelledby="migrator-name profile-name">
+              <span class="migrator-icon" role="presentation"></span>
               <div class="migrator-description" role="presentation">
                 <div id="migrator-name">&nbsp;</div>
-                <div id="profile-name" class="deemphasized-text"></div>
+                <div id="profile-name" class="text-deemphasized" part="profile-name"></div>
               </div>
-              <span class="dropdown-icon" role="img"></span>
+              <span class="dropdown-icon" role="presentation"></span>
             </button>
             <div class="no-resources-found error-message">
               <span class="error-icon" role="img"></span>
@@ -78,14 +79,14 @@ export class MigrationWizard extends HTMLElement {
               </ol>
             </div>
 
-            <div data-l10n-id="migration-wizard-selection-list" class="resource-selection-preamble deemphasized-text hide-on-error"></div>
-            <details class="resource-selection-details hide-on-error">
+            <div id="migration-wizard-selection-list" data-l10n-id="migration-wizard-selection-list" class="resource-selection-preamble text-deemphasized hide-on-error"></div>
+            <details class="resource-selection-details hide-on-error" part="resource-selection-details">
               <summary id="resource-selection-summary">
                 <div class="selected-data-header" data-l10n-id="migration-all-available-data-label"></div>
-                <div class="selected-data deemphasized-text">&nbsp;</div>
+                <div class="selected-data text-deemphasized">&nbsp;</div>
                 <span class="expand-collapse-icon" role="img"></span>
               </summary>
-              <fieldset id="resource-type-list">
+              <fieldset id="resource-type-list" part="resource-type-list" aria-labelledby="migration-wizard-selection-list">
                 <label id="select-all">
                   <input type="checkbox" class="select-all-checkbox"/><span data-l10n-id="migration-select-all-option-label"></span>
                 </label>
@@ -118,82 +119,82 @@ export class MigrationWizard extends HTMLElement {
             <moz-button-group class="buttons" part="buttons">
               <button class="cancel-close" data-l10n-id="migration-cancel-button-label"></button>
               <button id="import-from-file" class="primary" data-l10n-id="migration-import-from-file-button-label"></button>
-              <button id="import" class="primary migration-import-button" data-l10n-id="migration-import-button-label"></button>
+              <button id="import" part="import-primary" class="primary migration-import-button" data-l10n-id="migration-import-button-label"></button>
               <button id="get-permissions" class="primary" data-l10n-id="migration-continue-button-label"></button>
             </moz-button-group>
           </div>
 
-          <div name="page-progress">
+          <div name="page-progress" part="page-progress">
             <h1 id="progress-header" data-l10n-id="migration-wizard-progress-header" part="header"></h1>
             <div class="resource-progress">
               <div data-resource-type="BOOKMARKS" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span default-data-l10n-id="migration-bookmarks-option-label" ie-edge-data-l10n-id="migration-favorites-option-label"></span>
-                <span class="message-text deemphasized-text">&nbsp;</span>
-                <a class="support-text deemphasized-text"></a>
+                <span class="message-text text-deemphasized">&nbsp;</span>
+                <a class="support-text text-deemphasized"></a>
               </div>
 
               <div data-resource-type="PASSWORDS" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span data-l10n-id="migration-passwords-option-label"></span>
-                <span class="message-text deemphasized-text">&nbsp;</span>
-                <a class="support-text deemphasized-text"></a>
+                <span class="message-text text-deemphasized">&nbsp;</span>
+                <a class="support-text text-deemphasized"></a>
               </div>
 
               <div data-resource-type="HISTORY" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span data-l10n-id="migration-history-option-label"></span>
-                <span class="message-text deemphasized-text">&nbsp;</span>
-                <a class="support-text deemphasized-text"></a>
+                <span class="message-text text-deemphasized">&nbsp;</span>
+                <a class="support-text text-deemphasized"></a>
               </div>
 
               <div data-resource-type="EXTENSIONS" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span data-l10n-id="migration-extensions-option-label"></span>
-                <a id="extensions-success-link" href="about:addons" class="message-text deemphasized-text"></a>
-                <span class="message-text deemphasized-text"></span>
-                <a class="support-text deemphasized-text"></a>
+                <a id="extensions-success-link" href="about:addons" class="message-text text-deemphasized"></a>
+                <span class="message-text text-deemphasized"></span>
+                <a class="support-text text-deemphasized"></a>
               </div>
 
               <div data-resource-type="FORMDATA" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span data-l10n-id="migration-form-autofill-option-label"></span>
-                <span class="message-text deemphasized-text">&nbsp;</span>
-                <a class="support-text deemphasized-text"></a>
+                <span class="message-text text-deemphasized">&nbsp;</span>
+                <a class="support-text text-deemphasized"></a>
               </div>
 
               <div data-resource-type="PAYMENT_METHODS" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span data-l10n-id="migration-payment-methods-option-label"></span>
-                <span class="message-text deemphasized-text">&nbsp;</span>
-                <a class="support-text deemphasized-text"></a>
+                <span class="message-text text-deemphasized">&nbsp;</span>
+                <a class="support-text text-deemphasized"></a>
               </div>
 
               <div data-resource-type="COOKIES" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span data-l10n-id="migration-cookies-option-label"></span>
-                <span class="message-text deemphasized-text">&nbsp;</span>
-                <a class="support-text deemphasized-text"></a>
+                <span class="message-text text-deemphasized">&nbsp;</span>
+                <a class="support-text text-deemphasized"></a>
               </div>
 
               <div data-resource-type="SESSION" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span data-l10n-id="migration-session-option-label"></span>
-                <span class="message-text deemphasized-text">&nbsp;</span>
-                <a class="support-text deemphasized-text"></a>
+                <span class="message-text text-deemphasized">&nbsp;</span>
+                <a class="support-text text-deemphasized"></a>
               </div>
 
               <div data-resource-type="OTHERDATA" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span data-l10n-id="migration-otherdata-option-label"></span>
-                <span class="message-text deemphasized-text">&nbsp;</span>
-                <a class="support-text deemphasized-text"></a>
+                <span class="message-text text-deemphasized">&nbsp;</span>
+                <a class="support-text text-deemphasized"></a>
               </div>
             </div>
             <moz-button-group class="buttons" part="buttons">
               <button class="cancel-close" data-l10n-id="migration-cancel-button-label" disabled></button>
               <button class="primary finish-button done-button" data-l10n-id="migration-done-button-label"></button>
-              <button class="primary finish-button continue-button" data-l10n-id="migration-continue-button-label"></button>
+              <button class="primary finish-button continue-button" part="continue-primary" data-l10n-id="migration-continue-button-label"></button>
             </moz-button-group>
           </div>
 
@@ -203,35 +204,35 @@ export class MigrationWizard extends HTMLElement {
               <div data-resource-type="PASSWORDS_FROM_FILE" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span data-l10n-id="migration-passwords-from-file"></span>
-                <span class="message-text deemphasized-text">&nbsp;</span>
+                <span class="message-text text-deemphasized">&nbsp;</span>
               </div>
 
               <div data-resource-type="PASSWORDS_NEW" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span data-l10n-id="migration-passwords-new"></span>
-                <span class="message-text deemphasized-text">&nbsp;</span>
+                <span class="message-text text-deemphasized">&nbsp;</span>
               </div>
 
               <div data-resource-type="PASSWORDS_UPDATED" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span data-l10n-id="migration-passwords-updated"></span>
-                <span class="message-text deemphasized-text">&nbsp;</span>
+                <span class="message-text text-deemphasized">&nbsp;</span>
               </div>
 
               <div data-resource-type="BOOKMARKS_FROM_FILE" class="resource-progress-group">
                 <span class="progress-icon-parent"><span class="progress-icon" role="img"></span></span>
                 <span data-l10n-id="migration-bookmarks-from-file"></span>
-                <span class="message-text deemphasized-text">&nbsp;</span>
+                <span class="message-text text-deemphasized">&nbsp;</span>
               </div>
             </div>
             <moz-button-group class="buttons" part="buttons">
               <button class="cancel-close" data-l10n-id="migration-cancel-button-label" disabled></button>
               <button class="primary finish-button done-button" data-l10n-id="migration-done-button-label"></button>
-              <button class="primary finish-button continue-button" data-l10n-id="migration-continue-button-label"></button>
+              <button class="primary finish-button continue-button" part="continue-primary" data-l10n-id="migration-continue-button-label"></button>
             </moz-button-group>
           </div>
 
-          <div name="page-safari-password-permission">
+          <div name="page-safari-password-permission-pre-sequoia">
             <h1 data-l10n-id="migration-safari-password-import-header" part="header"></h1>
             <span data-l10n-id="migration-safari-password-import-steps-header"></span>
             <ol>
@@ -245,6 +246,20 @@ export class MigrationWizard extends HTMLElement {
             </ol>
             <moz-button-group class="buttons" part="buttons">
               <button class="manual-password-import-skip" data-l10n-id="migration-manual-password-import-skip-button"></button>
+              <button class="manual-password-import-select primary" data-l10n-id="migration-manual-password-import-select-button"></button>
+            </moz-button-group>
+          </div>
+
+          <div name="page-safari-password-permission">
+            <h1 data-l10n-id="migration-safari-password-import-header" part="header"></h1>
+            <ol id="migration-safari-password-import-instructions">
+              <li data-l10n-id="migration-safari-password-import-post-sequoia-step1"><a id="launch-macos-passwords-app" data-l10n-name="macos-passwords-app"></a></li>
+              <li data-l10n-id="migration-safari-password-import-post-sequoia-step2"></li>
+              <li data-l10n-id="migration-safari-password-import-post-sequoia-step3"></li>
+              <li data-l10n-id="migration-safari-password-import-post-sequoia-step4"></li>
+            </ol>
+            <moz-button-group class="buttons" part="buttons">
+              <button class="manual-password-import-skip" data-l10n-id="migration-manual-password-import-cancel-button"></button>
               <button class="manual-password-import-select primary" data-l10n-id="migration-manual-password-import-select-button"></button>
             </moz-button-group>
           </div>
@@ -384,6 +399,14 @@ export class MigrationWizard extends HTMLElement {
       link.addEventListener("click", this)
     );
 
+    // We put the click event listener on the instructions list rather than
+    // directly on the launch-macos-passwords-app node, since Fluent will
+    // replace that node after this constructor has run.
+    this.#safariPasswordImportInstructions = shadow.querySelector(
+      "#migration-safari-password-import-instructions"
+    );
+    this.#safariPasswordImportInstructions.addEventListener("click", this);
+
     this.#shadowRoot = shadow;
   }
 
@@ -484,6 +507,16 @@ export class MigrationWizard extends HTMLElement {
    */
   #onBrowserProfileSelectionChanged(panelItem) {
     this.#browserProfileSelector.selectedPanelItem = panelItem;
+    if (this.#browserProfileSelectorList.selectedPanelItem) {
+      this.#browserProfileSelectorList.selectedPanelItem.classList.remove(
+        "selected"
+      );
+    }
+    this.#browserProfileSelectorList.selectedPanelItem = panelItem;
+    this.#browserProfileSelectorList.selectedPanelItem.classList.add(
+      "selected"
+    );
+
     this.#browserProfileSelector.querySelector("#migrator-name").textContent =
       panelItem.displayName;
     this.#browserProfileSelector.querySelector("#profile-name").textContent =
@@ -1473,6 +1506,12 @@ export class MigrationWizard extends HTMLElement {
           detail: {
             allowOnlyFileMigrators: true,
           },
+        })
+      );
+    } else if (event.target.id == "launch-macos-passwords-app") {
+      this.dispatchEvent(
+        new CustomEvent("MigrationWizard:LaunchMacOSPasswordsApp", {
+          bubbles: true,
         })
       );
     } else if (event.target.classList.contains("manual-password-import-skip")) {

@@ -12,15 +12,21 @@ Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/toolkit/mozapps/update/tests/browser/head.js",
   this
 );
+Services.scriptloader.loadSubScript(
+  "chrome://mochitests/content/browser/browser/components/profiles/tests/browser/head.js",
+  this
+);
 
 ChromeUtils.defineESModuleGetters(this, {
   HttpServer: "resource://testing-common/httpd.sys.mjs",
   ResetProfile: "resource://gre/modules/ResetProfile.sys.mjs",
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
   TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.sys.mjs",
   UrlbarProviderInterventions:
-    "resource:///modules/UrlbarProviderInterventions.sys.mjs",
-  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.sys.mjs",
-  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
+    "moz-src:///browser/components/urlbar/UrlbarProviderInterventions.sys.mjs",
+  ProvidersManager:
+    "moz-src:///browser/components/urlbar/UrlbarProvidersManager.sys.mjs",
+  UrlbarResult: "chrome://browser/content/urlbar/UrlbarResult.mjs",
 });
 
 ChromeUtils.defineLazyGetter(this, "UrlbarTestUtils", () => {
@@ -109,7 +115,7 @@ function adjustGeneralPaths() {
 
 /**
  * Initializes a mock app update.  Adapted from runAboutDialogUpdateTest:
- * https://searchfox.org/mozilla-central/source/toolkit/mozapps/update/tests/browser/head.js
+ * https://searchfox.org/firefox-main/source/toolkit/mozapps/update/tests/browser/head.js
  *
  * @param {object} params
  *   See the files in toolkit/mozapps/update/tests/browser.
@@ -173,7 +179,7 @@ async function initUpdate(params) {
 
 /**
  * Performs steps in a mock update.  Adapted from runAboutDialogUpdateTest:
- * https://searchfox.org/mozilla-central/source/toolkit/mozapps/update/tests/browser/head.js
+ * https://searchfox.org/firefox-main/source/toolkit/mozapps/update/tests/browser/head.js
  *
  * @param {Array} steps
  *   See the files in toolkit/mozapps/update/tests/browser.
@@ -186,7 +192,7 @@ async function processUpdateSteps(steps) {
 
 /**
  * Performs a step in a mock update.  Adapted from runAboutDialogUpdateTest:
- * https://searchfox.org/mozilla-central/source/toolkit/mozapps/update/tests/browser/head.js
+ * https://searchfox.org/firefox-main/source/toolkit/mozapps/update/tests/browser/head.js
  *
  * @param {object} step
  *   See the files in toolkit/mozapps/update/tests/browser.
@@ -329,7 +335,7 @@ async function doUpdateTest({
     Assert.ok(button.test(actualButton), "Button regexp");
   }
 
-  Assert.ok(element._buttons.has("menu"), "Tip has a menu button");
+  Assert.ok(element._buttons.has("result-menu"), "Tip has a menu button");
 
   // Pick the tip and wait for the action.
   let values = await Promise.all([awaitCallback(), pickTip()]);
@@ -360,7 +366,7 @@ async function awaitTip(searchString, win = window) {
     "Number of results is greater than or equal to 2"
   );
   let result = context.results[1];
-  Assert.equal(result.type, UrlbarUtils.RESULT_TYPE.TIP, "Result type");
+  Assert.equal(result.type, UrlbarShared.RESULT_TYPE.TIP, "Result type");
   let element = await UrlbarTestUtils.waitForAutocompleteResultAt(win, 1);
   return [result, element];
 }
@@ -397,29 +403,12 @@ async function awaitAppRestartRequest() {
 /**
  * Sets up the profile so that it can be reset.
  */
-function makeProfileResettable() {
-  // Make reset possible.
-  let profileService = Cc["@mozilla.org/toolkit/profile-service;1"].getService(
-    Ci.nsIToolkitProfileService
-  );
-  let currentProfileDir = Services.dirsvc.get("ProfD", Ci.nsIFile);
-  let profileName = "mochitest-test-profile-temp-" + Date.now();
-  let tempProfile = profileService.createProfile(
-    currentProfileDir,
-    profileName
-  );
+async function makeProfileResettable() {
+  await initGroupDatabase();
   Assert.ok(
-    ResetProfile.resetSupported(),
-    "Should be able to reset from mochitest's temporary profile once it's in the profile manager."
+    SelectableProfileService.currentProfile,
+    "Should have a profile now"
   );
-
-  registerCleanupFunction(() => {
-    tempProfile.remove(false);
-    Assert.ok(
-      !ResetProfile.resetSupported(),
-      "Shouldn't be able to reset from mochitest's temporary profile once removed from the profile manager."
-    );
-  });
 }
 
 /**
@@ -473,7 +462,7 @@ function checkIntervention({
       Assert.ok(button.test(actualButton), "Button regexp");
     }
 
-    let menuButton = element._buttons.get("menu");
+    let menuButton = element._buttons.get("result-menu");
     Assert.ok(menuButton, "Menu button exists");
     Assert.ok(BrowserTestUtils.isVisible(menuButton), "Menu button is visible");
 
@@ -503,7 +492,7 @@ async function awaitNoTip(searchString, win = window) {
     fireInputEvent: true,
   });
   for (let result of context.results) {
-    Assert.notEqual(result.type, UrlbarUtils.RESULT_TYPE.TIP);
+    Assert.notEqual(result.type, UrlbarShared.RESULT_TYPE.TIP);
   }
 }
 
@@ -513,7 +502,7 @@ async function awaitNoTip(searchString, win = window) {
  *
  * @param {window} win
  *   A browser window.
- * @param {UrlbarProviderSearchTips.TIP_TYPE} expectedTip
+ * @param {Values<typeof UrlbarShared.SEARCH_TIP_TYPE>} expectedTip
  *   The expected search tip.  Pass a falsey value (like zero) for none.
  * @param {boolean} closeView
  *   If true, this function closes the urlbar view before returning.
@@ -532,18 +521,18 @@ async function checkTip(win, expectedTip, closeView = true) {
   Assert.ok(true, "View opened");
   Assert.equal(UrlbarTestUtils.getResultCount(win), 1, "Number of results");
   let result = await UrlbarTestUtils.getDetailsOfResultAt(win, 0);
-  Assert.equal(result.type, UrlbarUtils.RESULT_TYPE.TIP, "Result type");
+  Assert.equal(result.type, UrlbarShared.RESULT_TYPE.TIP, "Result type");
   let heuristic;
   let title;
-  let name = Services.search.defaultEngine.name;
+  let name = SearchService.defaultEngine.name;
   switch (expectedTip) {
-    case UrlbarProviderSearchTips.TIP_TYPE.ONBOARD:
+    case UrlbarShared.SEARCH_TIP_TYPE.ONBOARD:
       heuristic = true;
       title =
         `Type less, find more: Search ${name} right from your ` +
         `address bar.`;
       break;
-    case UrlbarProviderSearchTips.TIP_TYPE.REDIRECT:
+    case UrlbarShared.SEARCH_TIP_TYPE.REDIRECT:
       heuristic = false;
       title =
         `Start your search in the address bar to see suggestions from ` +
@@ -572,12 +561,19 @@ async function checkTip(win, expectedTip, closeView = true) {
   }
 }
 
-function makeTipResult({ buttonUrl, helpUrl = undefined }) {
-  return new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.TIP,
-    UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-    {
+function makeTipResult({
+  buttonUrl,
+  helpUrl = undefined,
+  descriptionL10n = undefined,
+  descriptionLearnMoreTopic = undefined,
+}) {
+  return new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.TIP,
+    source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+    payload: {
       helpUrl,
+      descriptionL10n,
+      descriptionLearnMoreTopic,
       type: "test",
       titleL10n: { id: "urlbar-search-tips-confirm" },
       buttons: [
@@ -586,8 +582,8 @@ function makeTipResult({ buttonUrl, helpUrl = undefined }) {
           l10n: { id: "urlbar-search-tips-confirm" },
         },
       ],
-    }
-  );
+    },
+  });
 }
 
 /**
@@ -598,7 +594,7 @@ function makeTipResult({ buttonUrl, helpUrl = undefined }) {
  *   A browser window.
  * @param {string} url
  *   The URL to load in a new foreground tab.
- * @param {UrlbarProviderSearchTips.TIP_TYPE} expectedTip
+ * @param {Values<typeof UrlbarShared.SEARCH_TIP_TYPE>} expectedTip
  *   The expected search tip.  Pass a falsey value (like zero) for none.
  * @param {boolean} reset
  *   If true, the search tips provider will be reset before this function
@@ -693,19 +689,18 @@ async function withDNSRedirect(domain, path, callback) {
 
 function resetSearchTipsProvider() {
   Services.prefs.clearUserPref(
-    `browser.urlbar.tipShownCount.${UrlbarProviderSearchTips.TIP_TYPE.ONBOARD}`
+    `browser.urlbar.tipShownCount.${UrlbarShared.SEARCH_TIP_TYPE.ONBOARD}`
   );
   Services.prefs.clearUserPref(
-    `browser.urlbar.tipShownCount.${UrlbarProviderSearchTips.TIP_TYPE.REDIRECT}`
+    `browser.urlbar.tipShownCount.${UrlbarShared.SEARCH_TIP_TYPE.REDIRECT}`
   );
-  UrlbarProviderSearchTips.disableTipsForCurrentSession = false;
+  ProvidersManager.getInstanceForSap("urlbar").getProvider(
+    "UrlbarProviderSearchTips"
+  ).disableTipsForCurrentSession = false;
 }
 
 async function setDefaultEngine(name) {
-  let engine = (await Services.search.getEngines()).find(e => e.name == name);
+  let engine = (await SearchService.getEngines()).find(e => e.name == name);
   Assert.ok(engine);
-  await Services.search.setDefault(
-    engine,
-    Ci.nsISearchService.CHANGE_REASON_UNKNOWN
-  );
+  await SearchService.setDefault(engine, SearchService.CHANGE_REASON.UNKNOWN);
 }

@@ -160,7 +160,7 @@ def tests(create_tests):
     return create_tests(
         "test0",
         ("test1", {"skip-if": "foo == 'bar'\nintermittent&&!debug"}),
-        ("test2", {"run-if": "foo == 'bar'"}),
+        ("test2", {"run-if": "foo == 'bar'\nfoo == 'baz'\ndebug"}),
         ("test3", {"fail-if": "foo == 'bar'"}),
         ("test4", {"disabled": "some reason"}),
         ("test5", {"subsuite": "baz"}),
@@ -182,16 +182,37 @@ def test_skip_if(tests):
     tests = list(skip_if(tests, {"foo": "bar"}))
     assert "disabled" in tests[1]
     assert "disabled" in tests[8]
+    # Verify only the matching condition is shown, not all conditions
+    assert tests[1]["disabled"] == "skip-if: foo == 'bar'"
+    assert tests[8]["disabled"] == "skip-if: foo == 'bar'"
 
 
 def test_run_if(tests):
     ref = deepcopy(tests)
     tests = list(run_if(tests, {}))
     assert "disabled" in tests[2]
+    # For run-if, all conditions are shown since none matched
+    assert tests[2]["disabled"] == "run-if: foo == 'bar'\nfoo == 'baz'\ndebug"
 
     tests = deepcopy(ref)
     tests = list(run_if(tests, {"foo": "bar"}))
     assert "disabled" not in tests[2]
+
+
+def test_run_if_multiple_conditions(create_tests):
+    """The conditions of a single run-if are OR'd, not AND'd."""
+    # Shaped like a real manifest entry: run on linux or win, nowhere else.
+    ref = create_tests((
+        "browser_history_recently_closed_tabs.js",
+        {"run-if": "os == 'linux'\nos == 'win'"},
+    ))
+
+    for values in ({"os": "linux"}, {"os": "win"}):
+        test = list(run_if(deepcopy(ref), values))[0]
+        assert "disabled" not in test, f"should run with {values}"
+
+    test = list(run_if(deepcopy(ref), {"os": "mac"}))[0]
+    assert test["disabled"] == "run-if: os == 'linux'\nos == 'win'"
 
 
 def test_fail_if(tests):

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,12 +6,12 @@
 #define mozilla_dom_CryptoKey_h
 
 #include <cstdint>
+
 #include "ErrorList.h"
 #include "ScopedNSSTypes.h"
 #include "js/RootingAPI.h"
 #include "keythi.h"
 #include "mozilla/AlreadyAddRefed.h"
-#include "mozilla/Assertions.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/CryptoBuffer.h"
@@ -50,15 +48,15 @@ Bits  Usage
 0     Extractable
 1-7   [reserved]
 8-15  KeyType
-16-23 KeyUsage
-24-31 [reserved]
+16-27 KeyUsage
+28-31 [reserved]
 
 In the order of a hex value for a uint32_t
 
    3                   2                   1                   0
  1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|~~~~~~~~~~~~~~~|     Usage     |     Type      |~~~~~~~~~~~~~|E|
+|~~~~~~~|         Usage         |     Type      |~~~~~~~~~~~~~|E|
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
 Thus, internally, a key has the following fields:
@@ -72,7 +70,7 @@ struct JsonWebKey;
 
 class CryptoKey final : public nsISupports, public nsWrapperCache {
  public:
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(CryptoKey)
 
   static const uint32_t CLEAR_EXTRACTABLE = 0xFFFFFFE;
@@ -87,8 +85,8 @@ class CryptoKey final : public nsISupports, public nsWrapperCache {
     PRIVATE = 0x00000300
   };
 
-  static const uint32_t CLEAR_USAGES = 0xFF00FFFF;
-  static const uint32_t USAGES_MASK = 0x00FF0000;
+  static const uint32_t CLEAR_USAGES = 0xF000FFFF;
+  static const uint32_t USAGES_MASK = 0x0FFF0000;
   enum KeyUsage {
     ENCRYPT = 0x00010000,
     DECRYPT = 0x00020000,
@@ -97,7 +95,11 @@ class CryptoKey final : public nsISupports, public nsWrapperCache {
     DERIVEKEY = 0x00100000,
     DERIVEBITS = 0x00200000,
     WRAPKEY = 0x00400000,
-    UNWRAPKEY = 0x00800000
+    UNWRAPKEY = 0x00800000,
+    ENCAPSULATEKEY = 0x01000000,
+    ENCAPSULATEBITS = 0x02000000,
+    DECAPSULATEKEY = 0x04000000,
+    DECAPSULATEBITS = 0x08000000
   };
 
   explicit CryptoKey(nsIGlobalObject* aWindow);
@@ -174,6 +176,16 @@ class CryptoKey final : public nsISupports, public nsWrapperCache {
 
   static UniqueSECKEYPublicKey PublicOKPKeyFromRaw(CryptoBuffer& aKeyData,
                                                    const nsString& aNamedCurve);
+
+  static UniqueSECKEYPublicKey PublicMLKEMKeyFromRaw(
+      CryptoBuffer& aKeyData, const MLKEMParams& aMLKEMParams);
+  static nsresult PublicMLKEMKeyToRaw(SECKEYPublicKey* aPubKey,
+                                      CryptoBuffer& aRetVal);
+
+  static UniqueSECKEYPrivateKey PrivateMLKEMKeyFromSeed(
+      const CryptoBuffer& aSeed, const MLKEMParams& aMLKEMParams);
+  static nsresult PrivateMLKEMKeyToSeed(SECKEYPrivateKey* aPrivKey,
+                                        CryptoBuffer& aRetVal);
 
   static bool PublicKeyValid(SECKEYPublicKey* aPubKey);
 

@@ -5,7 +5,7 @@
 loader: taskgraph.loader.transform:loader
 
 transforms:
-    - gecko_taskgraph.transforms.test_apk:transforms
+    - taskgraph.transforms.task_context
     - gecko_taskgraph.transforms.job:transforms
     - gecko_taskgraph.transforms.task:transforms
 
@@ -13,11 +13,19 @@ kind-dependencies:
     - signing-apk
 
 task-defaults:
+    run-on-repo-type: [hg]
     description: Runs UI tests for sanity checking startup on Nightly
+    task-context:
+        from-parameters:
+            level: level
+        substitution-fields:
+            - routes
+            - scopes
+            - extra.notify
     treeherder:
         kind: test
         tier: 1
-    worker-type: t-linux-docker
+    worker-type: t-linux-docker-amd
     worker:
         docker-image: {in-tree: android-ui-tests}
         max-run-time: 7200
@@ -29,6 +37,7 @@ task-defaults:
               type: directory
         retry-exit-status: [20]
     run:
+        clone-with: hg
         using: run-commands
     run-on-projects: []
     routes:
@@ -46,62 +55,65 @@ task-defaults:
         notify:
             by-level:
                 '3':
-                    slackText: '${rootUrl}/tasks/${status.taskId} | ${task.metadata.name} | ${task.metadata.source}'
+                    slackText: '${{rootUrl}}/tasks/${{status.taskId}} | ${{task.metadata.name}} | ${{task.metadata.source}}'
                     slackBlocks: |
                         [
-                          {
+                          {{
                             "type": "header",
-                            "text": {
+                            "text": {{
                               "type": "plain_text",
-                              "text": "firefox-android :firefox: ${task.metadata.name} :x:\n "
-                            }
-                          },
-                          {
+                              "text": "firefox-android :firefox: ${{task.metadata.name}} :x:\n "
+                            }}
+                          }},
+                          {{
                             "type": "divider"
-                          },
-                          {
+                          }},
+                          {{
                              "type": "section",
-                             "text": {
+                             "text": {{
                                  "type": "mrkdwn",
-                                 "text": "*Task*: <${rootUrl}/tasks/${status.taskId}|Taskcluster>"
-                            }
-                          },
-                          {
+                                 "text": "*Task*: <${{rootUrl}}/tasks/${{status.taskId}}|Taskcluster>"
+                            }}
+                          }},
+                          {{
                             "type": "section",
-                            "text": {
+                            "text": {{
                               "type": "mrkdwn",
-                              "text": "*Owner*: ${task.metadata.owner}"
-                            }
-                          },
-                          {
+                              "text": "*Owner*: ${{task.metadata.owner}}"
+                            }}
+                          }},
+                          {{
                             "type": "section",
-                            "text": {
+                            "text": {{
                               "type": "mrkdwn",
-                              "text": "*Source*: <${task.payload.env.GECKO_BASE_REPOSITORY}/rev/${task.payload.env.GECKO_HEAD_REV}|Commit> :hg:"
-                            }
-                          },
-                          {
+                              "text": "*Source*: <${{task.payload.env.GECKO_BASE_REPOSITORY}}/rev/${{task.payload.env.GECKO_HEAD_REV}}|Commit> :hg:"
+                            }}
+                          }},
+                          {{
                             "type": "divider"
-                          },
-                          {
+                          }},
+                          {{
                             "type": "context",
                             "elements": [
-                                {
+                                {{
                                     "type": "mrkdwn",
                                     "text": ":testops-notify: created by <https://mozilla-hub.atlassian.net/wiki/spaces/MTE/overview|Mobile Test Engineering>"
-                                }
+                                }}
                             ]
-                          }
+                          }}
                         ]
                 'default': {}
 tasks:
     fenix-arm64-v8a-nightly-robo-opt:
         attributes:
             build-type: fenix-nightly
-            shipping-product: fenix
         description: Fenix Nightly Opt Robo Test (arm64-v8a)
         dependencies:
             signing: signing-apk-fenix-nightly
+        fetches:
+            signing:
+                - artifact: target.arm64-v8a.apk
+                  extract: false
         run:
             secrets:
                 - name: project/gecko/level-any/firefox-android/fenix/firebase
@@ -109,8 +121,7 @@ tasks:
                   path: mobile/android/test_infra/.firebase_token.json
                   json: true
             commands:
-                - [wget, {artifact-reference: '<signing/public/build/target.arm64-v8a.apk>'}, '-O', app.apk]
-                - [python3, taskcluster/scripts/tests/test-lab.py, fenix/arm-start-test-robo.yml, app.apk]
+                - [python3, taskcluster/scripts/tests/test-lab.py, fenix/arm-start-test-robo.yml, /builds/worker/fetches/target.arm64-v8a.apk]
         treeherder:
             platform: fenix-android-all/opt
             symbol: fenix-nightly(startup-arm64-robo-opt)
@@ -121,10 +132,16 @@ tasks:
     fenix-arm64-v8a-nightly:
         attributes:
             build-type: fenix-nightly-firebase
-            shipping-product: fenix
         dependencies:
             signing: signing-apk-fenix-nightly-firebase
             signing-android-test: signing-apk-fenix-android-test-nightly
+        fetches:
+            signing:
+                - artifact: target.arm64-v8a.apk
+                  extract: false
+            signing-android-test:
+                - artifact: target.noarch.apk
+                  extract: false
         run:
             secrets:
                 - name: project/gecko/level-any/firefox-android/fenix/firebase
@@ -132,9 +149,7 @@ tasks:
                   path: mobile/android/test_infra/.firebase_token.json
                   json: true
             commands:
-                - [wget, {artifact-reference: '<signing/public/build/target.arm64-v8a.apk>'}, '-O', app.apk]
-                - [wget, {artifact-reference: '<signing-android-test/public/build/target.noarch.apk>'}, '-O', android-test.apk]
-                - [python3, taskcluster/scripts/tests/test-lab.py, fenix/arm-start-test.yml, app.apk, --apk_test, android-test.apk]
+                - [python3, taskcluster/scripts/tests/test-lab.py, fenix/arm-start-test.yml, /builds/worker/fetches/target.arm64-v8a.apk, --apk_test, /builds/worker/fetches/target.noarch.apk]
         treeherder:
             platform: fenix-android-all/opt
             symbol: fenix-nightly(startup-arm64-v8a)
@@ -145,10 +160,16 @@ tasks:
     fenix-armeabi-v7a-nightly:
         attributes:
             build-type: fenix-nightly-firebase
-            shipping-product: fenix
         dependencies:
             signing: signing-apk-fenix-nightly-firebase
             signing-android-test: signing-apk-fenix-android-test-nightly
+        fetches:
+            signing:
+                - artifact: target.armeabi-v7a.apk
+                  extract: false
+            signing-android-test:
+                - artifact: target.noarch.apk
+                  extract: false
         run:
             secrets:
                 - name: project/gecko/level-any/firefox-android/fenix/firebase
@@ -156,9 +177,7 @@ tasks:
                   path: mobile/android/test_infra/.firebase_token.json
                   json: true
             commands:
-                - [wget, {artifact-reference: '<signing/public/build/target.armeabi-v7a.apk>'}, '-O', app.apk]
-                - [wget, {artifact-reference: '<signing-android-test/public/build/target.noarch.apk>'}, '-O', android-test.apk]
-                - [python3, taskcluster/scripts/tests/test-lab.py, fenix/armeabi-v7a-start-test.yml, app.apk, --apk_test, android-test.apk]
+                - [python3, taskcluster/scripts/tests/test-lab.py, fenix/armeabi-v7a-start-test.yml, /builds/worker/fetches/target.armeabi-v7a.apk, --apk_test, /builds/worker/fetches/target.noarch.apk]
         treeherder:
             platform: fenix-android-all/opt
             symbol: fenix-nightly(startup-armeabi-v7a)
@@ -169,10 +188,16 @@ tasks:
     focus-arm64-v8a-nightly:
         attributes:
             build-type: focus-nightly-firebase
-            shipping-product: focus
         dependencies:
             signed-apk-debug-apk: signing-apk-focus-nightly-firebase
             signed-apk-android-test: signing-apk-focus-android-test-nightly
+        fetches:
+            signed-apk-debug-apk:
+                - artifact: target.arm64-v8a.apk
+                  extract: false
+            signed-apk-android-test:
+                - artifact: target.noarch.apk
+                  extract: false
         run:
             secrets:
                 - name: project/gecko/level-any/firefox-android/focus-android/firebase
@@ -180,9 +205,7 @@ tasks:
                   path: mobile/android/test_infra/.firebase_token.json
                   json: true
             commands:
-                - [wget, {artifact-reference: '<signed-apk-debug-apk/public/build/target.arm64-v8a.apk>'}, '-O', app.apk]
-                - [wget, {artifact-reference: '<signed-apk-android-test/public/build/target.noarch.apk>'}, '-O', android-test.apk]
-                - [python3, taskcluster/scripts/tests/test-lab.py, focus/arm-start-test.yml, app.apk, --apk_test, android-test.apk]
+                - [python3, taskcluster/scripts/tests/test-lab.py, focus/arm-start-test.yml, /builds/worker/fetches/target.arm64-v8a.apk, --apk_test, /builds/worker/fetches/target.noarch.apk]
         treeherder:
             platform: focus-android-all/opt
             symbol: focus-nightly(startup-arm64-v8a)
@@ -193,10 +216,16 @@ tasks:
     focus-armeabi-v7a-nightly:
         attributes:
             build-type: focus-nightly-firebase
-            shipping-product: focus
         dependencies:
             signed-apk-debug-apk: signing-apk-focus-nightly-firebase
             signed-apk-android-test: signing-apk-focus-android-test-nightly
+        fetches:
+            signed-apk-debug-apk:
+                - artifact: target.armeabi-v7a.apk
+                  extract: false
+            signed-apk-android-test:
+                - artifact: target.noarch.apk
+                  extract: false
         run:
             secrets:
                 - name: project/gecko/level-any/firefox-android/focus-android/firebase
@@ -204,9 +233,7 @@ tasks:
                   path: mobile/android/test_infra/.firebase_token.json
                   json: true
             commands:
-                - [wget, {artifact-reference: '<signed-apk-debug-apk/public/build/target.armeabi-v7a.apk>'}, '-O', app.apk]
-                - [wget, {artifact-reference: '<signed-apk-android-test/public/build/target.noarch.apk>'}, '-O', android-test.apk]
-                - [python3, taskcluster/scripts/tests/test-lab.py, focus/armeabi-v7a-start-test.yml, app.apk, --apk_test, android-test.apk]
+                - [python3, taskcluster/scripts/tests/test-lab.py, focus/armeabi-v7a-start-test.yml, /builds/worker/fetches/target.armeabi-v7a.apk, --apk_test, /builds/worker/fetches/target.noarch.apk]
         treeherder:
             platform: focus-android-all/opt
             symbol: focus-nightly(startup-armeabi-v7a)
@@ -217,10 +244,13 @@ tasks:
     focus-arm64-v8a-nightly-robo-opt:
         attributes:
             build-type: focus-nightly
-            shipping-product: focus
         description: Focus Nightly Opt Robo Test (ARM)
         dependencies:
             signing: signing-apk-focus-nightly
+        fetches:
+            signing:
+                - artifact: target.arm64-v8a.apk
+                  extract: false
         run:
             secrets:
                 - name: project/gecko/level-any/firefox-android/focus-android/firebase
@@ -228,8 +258,7 @@ tasks:
                   path: mobile/android/test_infra/.firebase_token.json
                   json: true
             commands:
-                - [wget, {artifact-reference: '<signing/public/build/target.arm64-v8a.apk>'}, '-O', app.apk]
-                - [python3, taskcluster/scripts/tests/test-lab.py, focus/arm-start-test-robo.yml, app.apk]
+                - [python3, taskcluster/scripts/tests/test-lab.py, focus/arm-start-test-robo.yml, /builds/worker/fetches/target.arm64-v8a.apk]
         treeherder:
             symbol: focus-nightly(startup-arm64-robo-opt)
             platform: focus-android-all/opt

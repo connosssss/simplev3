@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,32 +5,36 @@
 #ifndef mozilla_ServoStyleSet_h
 #define mozilla_ServoStyleSet_h
 
+#include "MainThreadUtils.h"
 #include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/AnonymousContentKey.h"
 #include "mozilla/AtomArray.h"
 #include "mozilla/EnumeratedArray.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/PostTraversalTask.h"
+#include "mozilla/PseudoStyleRequest.h"
+#include "mozilla/PseudoStyleType.h"
 #include "mozilla/ServoBindingTypes.h"
 #include "mozilla/ServoUtils.h"
-#include "mozilla/dom/RustTypes.h"
 #include "mozilla/UniquePtr.h"
-#include "MainThreadUtils.h"
-#include "nsCSSPseudoElements.h"
-#include "nsCSSAnonBoxes.h"
+#include "mozilla/dom/RustTypes.h"
+#include "nsAtom.h"
 #include "nsChangeHint.h"
 #include "nsCoord.h"
-#include "nsAtom.h"
 #include "nsIMemoryReporter.h"
-#include "nsTArray.h"
 #include "nsSize.h"
+#include "nsTArray.h"
 
 namespace mozilla {
 enum class MediaFeatureChangeReason : uint8_t;
+enum class StyleAnimationComposition : uint8_t;
 enum class StylePageSizeOrientation : uint8_t;
 enum class StyleRuleChangeKind : uint32_t;
 enum class StyleRelativeSelectorNthEdgeInvalidateFor : uint8_t;
+enum class StyleContainerAttributeDependencyKind;
+union StylePositionTryFallbacksItem;
 struct StyleRuleChange;
+struct StyleCascadeLevel;
 
 class ErrorResult;
 
@@ -165,6 +167,8 @@ class ServoStyleSet {
 
   bool UsesFontMetrics() const;
 
+  bool UsesRootFontMetrics() const;
+
   void SetAuthorStyleDisabled(bool aStyleDisabled);
 
   // Get a CopmutedStyle for a text node (which no rules will match).
@@ -255,12 +259,12 @@ class ServoStyleSet {
       const nsAtom* aPageName, const StylePagePseudoClassFlags& aPseudo);
 
   already_AddRefed<ComputedStyle> ResolveXULTreePseudoStyle(
-      dom::Element* aParentElement, nsCSSAnonBoxPseudoStaticAtom* aPseudoTag,
+      dom::Element* aParentElement, PseudoStyleType aType,
       ComputedStyle* aParentStyle, const AtomArray& aInputWord);
 
-  // Try to resolve the staring style for a given element. Please call this
-  // function after checking if it may have rules inside @starting-style.
-  already_AddRefed<ComputedStyle> ResolveStartingStyle(dom::Element& aElement);
+  already_AddRefed<ComputedStyle> ResolvePositionTry(
+      StyleCascadeLevel aScope, dom::Element& aElement,
+      const ComputedStyle& aStyle, const StylePositionTryFallbacksItem&);
 
   size_t SheetCount(Origin) const;
   StyleSheet* SheetAt(Origin, size_t aIndex) const;
@@ -392,6 +396,8 @@ class ServoStyleSet {
 
   void AppendFontFaceRules(nsTArray<nsFontFaceRuleContainer>& aArray);
 
+  already_AddRefed<StyleViewTransitionRule> GetLastViewTransitionRule();
+
   const StyleLockedCounterStyleRule* CounterStyleRuleForName(nsAtom* aName);
 
   // Get all the currently-active font feature values set.
@@ -425,7 +431,7 @@ class ServoStyleSet {
     // synchronization measures.
     AssertIsMainThreadOrServoFontMetricsLocked();
 
-    mPostTraversalTasks.AppendElement(aTask);
+    mPostTraversalTasks.AppendElement(std::move(aTask));
   }
 
   // Returns true if a restyle of the document is needed due to cloning
@@ -445,6 +451,17 @@ class ServoStyleSet {
    */
   bool MightHaveAttributeDependency(const dom::Element&,
                                     nsAtom* aAttribute) const;
+
+  /**
+   * Returns the ContainerAttributeDependencyKind for invalidating descendants.
+   * None if the attribute does not depend on attr() being used inside of a
+   * style container query. UnnamedContainer if the rule we're matching is not
+   * inside a named container query and would only affect direct children.
+   * NamedContainer if the rule we are matching for is a named container and
+   * therefore could affect elements further down the tree.
+   */
+  StyleContainerAttributeDependencyKind MightHaveAttributeDependencyInContainer(
+      const dom::Element&, nsAtom* aAttribute) const;
 
   /**
    * Returns true if a modification to an attribute with the specified local
@@ -705,8 +722,8 @@ class ServoStyleSet {
 
   // Stores pointers to our cached ComputedStyles for non-inheriting anonymous
   // boxes.
-  EnumeratedArray<nsCSSAnonBoxes::NonInheriting, RefPtr<ComputedStyle>,
-                  size_t(nsCSSAnonBoxes::NonInheriting::_Count)>
+  EnumeratedArray<NonInheritingAnonBox, RefPtr<ComputedStyle>,
+                  size_t(NonInheritingAnonBox::_Count)>
       mNonInheritingComputedStyles;
 
  public:

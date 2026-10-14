@@ -459,6 +459,12 @@ class ThreadActor extends Actor {
 
     const { window } = this.targetActor;
 
+    if (Cu && Cu.isRemoteProxy(window)) {
+      // Do not try to access any property on window if it is a remote proxy,
+      // it would throw a security error.
+      return false;
+    }
+
     // The CanvasFrameAnonymousContentHelper class we're using to create the paused overlay
     // need to have access to a documentElement.
     // We might have access to a non-chrome window getter that is a Sandox (e.g. in the
@@ -611,7 +617,7 @@ class ThreadActor extends Actor {
   /**
    * Add event breakpoints to the list of active event breakpoints
    *
-   * @param {Array<String>} ids: events to add (e.g. ["event.mouse.click","event.mouse.mousedown"])
+   * @param {Array<string>} ids: events to add (e.g. ["event.mouse.click","event.mouse.mousedown"])
    */
   addEventBreakpoints(ids) {
     this.setActiveEventBreakpoints(
@@ -622,7 +628,7 @@ class ThreadActor extends Actor {
   /**
    * Remove event breakpoints from the list of active event breakpoints
    *
-   * @param {Array<String>} ids: events to remove (e.g. ["event.mouse.click","event.mouse.mousedown"])
+   * @param {Array<string>} ids: events to remove (e.g. ["event.mouse.click","event.mouse.mousedown"])
    */
   removeEventBreakpoints(ids) {
     this.setActiveEventBreakpoints(
@@ -633,7 +639,7 @@ class ThreadActor extends Actor {
   /**
    * Set the the list of active event breakpoints
    *
-   * @param {Array<String>} ids: events to add breakpoint for (e.g. ["event.mouse.click","event.mouse.mousedown"])
+   * @param {Array<string>} ids: events to add breakpoint for (e.g. ["event.mouse.click","event.mouse.mousedown"])
    */
   setActiveEventBreakpoints(ids) {
     this._activeEventBreakpoints = new Set(ids);
@@ -707,11 +713,11 @@ class ThreadActor extends Actor {
     // fall back to whatever we can find.
     let meta = bps.find(bp => bp.isStepStart) || bps[0];
     if (!meta) {
-      // We've tried to avoid using `getAllColumnOffsets()` because the set of
-      // locations included in this list is very under-defined, but for this
-      // usecase it's not the end of the world. Maybe one day we could have an
-      // "onEnterFrame" that was scoped to a specific script to avoid this.
-      meta = script.getAllColumnOffsets()[0];
+      // There are no recommended breakpoint locations, e.g. when the file
+      // only contains function declarations. Fall back to the script's main
+      // entry offset so the first-statement breakpoint still fires when
+      // top-level execution begins.
+      meta = { offset: script.mainOffset };
     }
 
     if (!meta) {
@@ -811,14 +817,18 @@ class ThreadActor extends Actor {
     }
     this._options = { ...this._options, ...options };
 
-    if ("observeAsmJS" in options) {
-      this.dbg.allowUnobservedAsmJS = !options.observeAsmJS;
-    }
     if ("observeWasm" in options) {
       this.dbg.allowUnobservedWasm = !options.observeWasm;
     }
     if ("pauseOverlay" in options) {
       this._shouldShowPauseOverlay = !!options.pauseOverlay;
+      if (this.isPaused()) {
+        if (!this._shouldShowPauseOverlay) {
+          this.hideOverlay();
+        } else {
+          this.showOverlay();
+        }
+      }
     }
 
     if (
@@ -1364,7 +1374,7 @@ class ThreadActor extends Actor {
    *
    * Note that this is also called when evaluating conditional breakpoints.
    *
-   * @param {Boolean} doPause
+   * @param {boolean} doPause
    *        Should watch for pause or not. `_onExceptionUnwind` function will
    *        then be notified about new caught or uncaught exception being fired.
    */
@@ -1382,7 +1392,7 @@ class ThreadActor extends Actor {
    * Note that the thread actor will pause on exception by default.
    * This method has to be called with a falsy value to disable it.
    *
-   * @param {Boolean} doPause
+   * @param {boolean} doPause
    *        Controls whether we should or should not pause on debugger statement.
    */
   setPauseOnDebuggerStatement(doPause) {
@@ -1513,24 +1523,15 @@ class ThreadActor extends Actor {
     // only resurrect the GC-ed inline <script> and not the one which are still
     // active.
     //
-    // # asm.js / wasm
+    // # wasm
     //
-    // DevTools toggles Debugger API `allowUnobservedAsmJS` and
-    // `allowUnobservedWasm` to false on opening. This changes how asm.js and
-    // Wasm sources are compiled. But only to sources created after DevTools
-    // are opened. This typically requires to reload the page.
+    // DevTools toggles Debugger API `allowUnobservedWasm` to false on opening.
+    // This changes how Wasm sources are compiled. But only to sources created
+    // after DevTools are opened. This typically requires to reload the page.
     //
-    // Before DevTools are opened, the asm.js functions are compiled into wasm
-    // instances, and they are visible as "wasm" sources in `findSources()`.
     // The wasm instance doesn't keep the top-level normal JS script and the
     // corresponding JS source alive. If only the "wasm" source is found for
     // certain URL, the source needs to be re-compiled.
-    //
-    // Here, we should be careful to re-compile these sources the way they were
-    // compiled before DevTools opening. Otherwise the re-compilation will
-    // create Debugger.Script instances backed by normal JS functions for those
-    // asm.js functions, which results in an inconsistency between what's
-    // running in the debuggee and what's shown in DevTools.
     //
     // We are using `urlMap`'s `hasWasm` to flag them and instruct
     // `resurrectSource()` to re-compile the sources as if DevTools was off and
@@ -1574,7 +1575,7 @@ class ThreadActor extends Actor {
     // Resurrect any URLs for which not all sources are accounted for.
     for (const [url, data] of Object.entries(urlMap)) {
       if (data.count > 0) {
-        this._resurrectSource(url, data.sources, data.hasWasm);
+        this._resurrectSource(url, data.sources);
       }
     }
   }
@@ -1777,6 +1778,7 @@ class ThreadActor extends Actor {
   /**
    * Create and return an environment actor that corresponds to the provided
    * Debugger.Environment.
+   *
    * @param Debugger.Environment environment
    *        The lexical environment we want to extract.
    * @param object pool
@@ -2150,7 +2152,7 @@ class ThreadActor extends Actor {
     }
 
     // Preloaded WebExtension content scripts may be cached internally by
-    // ExtensionContent.jsm and ThreadActor would ignore them on a page reload
+    // ExtensionContent.sys.mjs and ThreadActor would ignore them on a page reload
     // because it finds them in the _debuggerSourcesSeen WeakSet,
     // and so we also need to be sure that there is still a source actor for the source.
     let sourceActor;
@@ -2201,11 +2203,8 @@ class ThreadActor extends Actor {
    * @param existingInlineSources The inline sources for the URL the debugger knows about
    *                              already, and that we shouldn't re-create (only used when
    *                              url content type is text/html).
-   * @param forceEnableAsmJS A boolean to force enable the asm.js feature.
-   *                         See the comment inside addAllSources for more
-   *                         details.
    */
-  async _resurrectSource(url, existingInlineSources, forceEnableAsmJS) {
+  async _resurrectSource(url, existingInlineSources) {
     let { content, contentType, sourceMapURL } =
       await this.sourcesManager.urlContents(
         url,
@@ -2295,7 +2294,6 @@ class ThreadActor extends Actor {
               startLine,
               startColumn,
               isScriptElement: true,
-              forceEnableAsmJS,
             })
           );
         } catch (e) {
@@ -2321,7 +2319,6 @@ class ThreadActor extends Actor {
           url,
           startLine: 1,
           sourceMapURL,
-          forceEnableAsmJS,
         })
       );
     } catch (e) {
@@ -2358,16 +2355,16 @@ exports.ThreadActor = ThreadActor;
  *
  * PauseActors exist for the lifetime of a given debuggee pause.  Used to
  * scope pause-lifetime grips.
- *
- * @param {Pool} pool: The actor pool created for this pause.
  */
-function PauseActor(pool) {
-  this.pool = pool;
+class PauseActor {
+  /**
+   * @param {Pool} pool: The actor pool created for this pause.
+   */
+  constructor(pool) {
+    this.pool = pool;
+  }
+  typeName = "pause";
 }
-
-PauseActor.prototype = {
-  typeName: "pause",
-};
 
 // Utility functions.
 
@@ -2378,7 +2375,7 @@ PauseActor.prototype = {
  * @param Debugger.Object wrappedGlobal
  *        The |Debugger.Object| which wraps a global.
  *
- * @returns {Object|undefined}
+ * @returns {object | undefined}
  *          Returns the unwrapped global object or |undefined| if unwrapping
  *          failed.
  */

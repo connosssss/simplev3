@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -17,7 +15,6 @@ interfaces = [
     "storage",
     "geolocation",
     "notification",
-    "push",
     "payments",
 ]
 
@@ -36,10 +33,12 @@ DIRS += [
     "clients",
     "closewatcher",
     "commandhandler",
+    "compression",
     "cookiestore",
     "credentialmanagement",
     "crypto",
     "debugger",
+    "documentpip",
     "encoding",
     "events",
     "fetch",
@@ -57,6 +56,7 @@ DIRS += [
     "media",
     "midi",
     "mls",
+    "modelcontext",
     "notification",
     "power",
     "push",
@@ -76,7 +76,6 @@ DIRS += [
     "audiochannel",
     "broadcastchannel",
     "messagechannel",
-    "privateattribution",
     "promise",
     "smil",
     "streams",
@@ -84,6 +83,7 @@ DIRS += [
     "urlpattern",
     "webauthn",
     "webidl",
+    "webserial",
     "webshare",
     "webtransport",
     "xml",
@@ -121,3 +121,8 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("gtk", "cocoa", "windows"):
     TEST_DIRS += ["plugins/test"]
 
 SPHINX_TREES["/dom"] = "docs"
+
+LICENSED_UNDER += ["chromium"]
+LICENSED_UNDER["chromium"].paths = [
+    "plugins",
+]

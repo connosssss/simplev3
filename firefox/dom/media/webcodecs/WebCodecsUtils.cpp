@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,19 +5,22 @@
 #include "WebCodecsUtils.h"
 
 #include "DecoderTypes.h"
+#include "EncoderTypes.h"
 #include "PlatformEncoderModule.h"
 #include "VideoUtils.h"
 #include "js/experimental/TypedData.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StaticPrefs_media.h"
-#include "mozilla/dom/BufferSourceBinding.h"
+#include "mozilla/ToString.h"
+#include "mozilla/dom/EncoderTypes.h"
 #include "mozilla/dom/ImageBitmapBinding.h"
 #include "mozilla/dom/UnionTypes.h"
 #include "mozilla/dom/VideoColorSpaceBinding.h"
 #include "mozilla/dom/VideoFrameBinding.h"
 #include "mozilla/gfx/Types.h"
 #include "nsDebug.h"
+#include "nsIGlobalObject.h"
 #include "nsString.h"
 
 extern mozilla::LazyLogModule gWebCodecsLog;
@@ -28,11 +29,15 @@ extern mozilla::LazyLogModule gWebCodecsLog;
 #  undef LOG_INTERNAL
 #endif  // LOG_INTERNAL
 #define LOG_INTERNAL(level, msg, ...) \
-  MOZ_LOG(gWebCodecsLog, LogLevel::level, (msg, ##__VA_ARGS__))
+  MOZ_LOG_FMT(gWebCodecsLog, LogLevel::level, msg, ##__VA_ARGS__)
 #ifdef LOG
 #  undef LOG
 #endif  // LOG
 #define LOG(msg, ...) LOG_INTERNAL(Debug, msg, ##__VA_ARGS__)
+#ifdef LOGW
+#  undef LOGW
+#endif  // LOGW
+#define LOGW(msg, ...) LOG_INTERNAL(Warning, msg, ##__VA_ARGS__)
 
 namespace mozilla {
 std::atomic<WebCodecsId> sNextId = 0;
@@ -217,17 +222,14 @@ VideoColorSpaceInit VideoColorSpaceInternal::ToColorSpaceInit() const {
 }
 
 nsCString VideoColorSpaceInternal::ToString() const {
-  nsCString rv("VideoColorSpace");
-  rv.AppendPrintf(" range: %s",
-                  mFullRange ? mFullRange.value() ? "true" : "false" : "none");
-  rv.AppendPrintf(" matrix: %s",
-                  mMatrix ? GetEnumString(mMatrix.value()).get() : "none");
-  rv.AppendPrintf(
-      " primaries: %s",
-      mPrimaries ? GetEnumString(mPrimaries.value()).get() : "none");
-  rv.AppendPrintf(" transfer: %s",
-                  mTransfer ? GetEnumString(mTransfer.value()).get() : "none");
-
+  nsCString rv;
+  rv.AppendFmt(
+      "VideoColorSpace {{ range={}, matrix={}, primaries={}, transfer={} }}",
+      mFullRange ? mozilla::ToString(mFullRange.value()) : "none",
+      mMatrix ? mozilla::ToString(GetEnumString(mMatrix.value())) : "none",
+      mPrimaries ? mozilla::ToString(GetEnumString(mPrimaries.value()))
+                 : "none",
+      mTransfer ? mozilla::ToString(GetEnumString(mTransfer.value())) : "none");
   return rv;
 }
 
@@ -318,6 +320,8 @@ Maybe<VideoTransferCharacteristics> ToTransferCharacteristics(
       return Some(VideoTransferCharacteristics::Pq);
     case gfx::TransferFunction::HLG:
       return Some(VideoTransferCharacteristics::Hlg);
+    case gfx::TransferFunction::LINEAR:
+      return Some(VideoTransferCharacteristics::Linear);
   }
   MOZ_ASSERT_UNREACHABLE("unsupported gfx::TransferFunction");
   return Nothing();
@@ -547,7 +551,7 @@ WebCodecsConfigurationChangeList::ToPEMChangeList() const {
 RefPtr<TaskQueue> GetWebCodecsEncoderTaskQueue() {
   return TaskQueue::Create(
       GetMediaThreadPool(MediaThreadType::PLATFORM_ENCODER),
-      "WebCodecs encoding", false);
+      "WebCodecs encoding", TailDispatchPolicy::NoTailDispatch);
 }
 
 VideoColorSpaceInternal FallbackColorSpaceForVideoContent() {
@@ -600,7 +604,7 @@ nsCString ConfigToString(const VideoDecoderConfig& aConfig) {
 }
 
 bool IsSupportedVideoCodec(const nsAString& aCodec) {
-  LOG("IsSupportedVideoCodec: %s", NS_ConvertUTF16toUTF8(aCodec).get());
+  LOG("IsSupportedVideoCodec: {}", NS_ConvertUTF16toUTF8(aCodec).get());
   // The only codec string accepted for vp8 is "vp8"
   if (!IsVP9CodecString(aCodec) && !IsH264CodecString(aCodec) &&
       !IsAV1CodecString(aCodec) && !aCodec.EqualsLiteral("vp8")) {
@@ -644,7 +648,7 @@ nsCString ConvertCodecName(const nsCString& aContainer,
 }
 
 bool IsSupportedAudioCodec(const nsAString& aCodec) {
-  LOG("IsSupportedAudioCodec: %s", NS_ConvertUTF16toUTF8(aCodec).get());
+  LOG("IsSupportedAudioCodec: {}", NS_ConvertUTF16toUTF8(aCodec).get());
   return aCodec.EqualsLiteral("flac") || aCodec.EqualsLiteral("mp3") ||
          IsAACCodecString(aCodec) || aCodec.EqualsLiteral("vorbis") ||
          aCodec.EqualsLiteral("opus") || aCodec.EqualsLiteral("ulaw") ||
@@ -669,6 +673,34 @@ uint32_t BytesPerSamples(const mozilla::dom::AudioSampleFormat& aFormat) {
   }
   MOZ_ASSERT_UNREACHABLE("Invalid enum value");
   return 0;
+}
+
+template <typename T>
+void ApplyResistFingerprintingImpl(const RefPtr<T>& aConfig,
+                                   nsIGlobalObject* aGlobal) {
+  // When resisting fingerprinting, don't reveal information about the host
+  // hardware.
+  if (nsContentUtils::ShouldResistFingerprinting(
+          aGlobal, RFPTarget::MediaCapabilities)) {
+    if (aConfig->mHardwareAcceleration != HardwareAcceleration::No_preference) {
+      LOGW(
+          "Resist fingerprinting (MediaCapabilities) enabled, overriding "
+          "hardware preference");
+      aConfig->mHardwareAcceleration = HardwareAcceleration::No_preference;
+    }
+  }
+}
+
+void ApplyResistFingerprintingIfNeeded(
+    const RefPtr<VideoEncoderConfigInternal>& aConfig,
+    nsIGlobalObject* aGlobal) {
+  ApplyResistFingerprintingImpl(aConfig, aGlobal);
+}
+
+void ApplyResistFingerprintingIfNeeded(
+    const RefPtr<VideoDecoderConfigInternal>& aConfig,
+    nsIGlobalObject* aGlobal) {
+  ApplyResistFingerprintingImpl(aConfig, aGlobal);
 }
 
 }  // namespace mozilla::dom

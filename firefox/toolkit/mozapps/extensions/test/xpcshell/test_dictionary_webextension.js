@@ -7,7 +7,7 @@ XPCOMUtils.defineLazyServiceGetter(
   this,
   "spellCheck",
   "@mozilla.org/spellchecker/engine;1",
-  "mozISpellCheckingEngine"
+  Ci.mozISpellCheckingEngine
 );
 
 add_setup(async function setup() {
@@ -25,9 +25,6 @@ add_setup(async function setup() {
     "Expect en-US builtin dictionary to be registered"
   );
 
-  // Starts collecting the Addon Manager Telemetry events.
-  AddonTestUtils.hookAMTelemetryEvents();
-
   do_get_profile();
   Services.fog.initializeFOG();
 });
@@ -39,36 +36,48 @@ add_task(
     pref_set: [["extensions.install_origins.enabled", true]],
   },
   async function test_validation() {
-    await Assert.rejects(
-      promiseInstallWebExtension({
-        manifest: {
-          browser_specific_settings: {
-            gecko: { id: "en-US-no-dic@dictionaries.mozilla.org" },
+    let { messages } = await promiseConsoleOutput(async () => {
+      await Assert.rejects(
+        promiseInstallWebExtension({
+          manifest: {
+            browser_specific_settings: {
+              gecko: { id: "en-US-no-dic@dictionaries.mozilla.org" },
+            },
+            dictionaries: {
+              "en-US": "subdir/en-US.dic",
+            },
           },
-          dictionaries: {
-            "en-US": "en-US.dic",
-          },
-        },
-      }),
-      /Expected file to be downloaded for install/
-    );
+        }),
+        /Expected file to be downloaded for install/
+      );
 
-    await Assert.rejects(
-      promiseInstallWebExtension({
-        manifest: {
-          browser_specific_settings: {
-            gecko: { id: "en-US-no-aff@dictionaries.mozilla.org" },
+      await Assert.rejects(
+        promiseInstallWebExtension({
+          manifest: {
+            browser_specific_settings: {
+              gecko: { id: "en-US-no-aff@dictionaries.mozilla.org" },
+            },
+            dictionaries: {
+              "en-US": "en-US.dic",
+            },
           },
-          dictionaries: {
-            "en-US": "en-US.dic",
-          },
-        },
 
-        files: {
-          "en-US.dic": "",
-        },
-      }),
-      /Expected file to be downloaded for install/
+          files: {
+            "en-US.dic": "",
+          },
+        }),
+        /Expected file to be downloaded for install/
+      );
+    });
+    const expectedErrorPatterns = [
+      /Loading extension 'en-US-no-dic@dictionaries.mozilla.org': Reading manifest: Invalid dictionary path specified for 'en-US': subdir\/en-US.dic/,
+      /Loading extension 'en-US-no-dic@dictionaries.mozilla.org': Reading manifest: Invalid dictionary path specified for 'en-US': Missing affix file: subdir\/en-US.aff/,
+      /Loading extension 'en-US-no-aff@dictionaries.mozilla.org': Reading manifest: Invalid dictionary path specified for 'en-US': Missing affix file: en-US.aff/,
+    ];
+    AddonTestUtils.checkMessages(
+      messages,
+      { expected: expectedErrorPatterns.map(pat => ({ message: pat })) },
+      "Got expected error messages in the console"
     );
 
     let addon = await promiseInstallWebExtension({
@@ -106,35 +115,11 @@ add_task(
     await addon.uninstall();
     await addon2.uninstall();
 
-    let amEvents = AddonTestUtils.getAMTelemetryEvents();
-
-    let amInstallEvents = amEvents
-      .filter(evt => evt.method === "install")
-      .map(evt => {
-        const { object, extra } = evt;
-        return { object, extra };
-      });
-
     const errorExtra = {
       step: "started",
       error: "ERROR_CORRUPT_FILE",
       install_origins: "0",
     };
-
-    Assert.deepEqual(
-      amInstallEvents.filter(evt => evt.object === "unknown"),
-      [
-        {
-          object: "unknown",
-          extra: errorExtra,
-        },
-        {
-          object: "unknown",
-          extra: errorExtra,
-        },
-      ],
-      "Got the expected install telemetry events for the corrupted dictionaries"
-    );
 
     Assert.deepEqual(
       AddonTestUtils.getAMGleanEvents("install", { addon_type: "unknown" }),
@@ -147,21 +132,6 @@ add_task(
 
     const extra1 = { addon_id: addon.id, install_origins: "0" };
     Assert.deepEqual(
-      amInstallEvents.filter(evt => evt.extra.addon_id === addon.id),
-      [
-        {
-          object: "dictionary",
-          extra: { step: "started", ...extra1 },
-        },
-        {
-          object: "dictionary",
-          extra: { step: "completed", ...extra1 },
-        },
-      ],
-      "Got the expected install telemetry events for the first installed dictionary"
-    );
-
-    Assert.deepEqual(
       AddonTestUtils.getAMGleanEvents("install", { addon_id: addon.id }),
       [
         { addon_type: "dictionary", step: "started", ...extra1 },
@@ -172,21 +142,6 @@ add_task(
 
     const extra2 = { addon_id: addon2.id, install_origins: "0" };
     Assert.deepEqual(
-      amInstallEvents.filter(evt => evt.extra.addon_id === addon2.id),
-      [
-        {
-          object: "dictionary",
-          extra: { step: "started", ...extra2 },
-        },
-        {
-          object: "dictionary",
-          extra: { step: "completed", ...extra2 },
-        },
-      ],
-      "Got the expected install telemetry events for the second installed dictionary"
-    );
-
-    Assert.deepEqual(
       AddonTestUtils.getAMGleanEvents("install", { addon_id: addon2.id }),
       [
         { addon_type: "dictionary", step: "started", ...extra2 },
@@ -194,27 +149,7 @@ add_task(
       ]
     );
 
-    let amUninstallEvents = amEvents
-      .filter(evt => evt.method === "uninstall")
-      .map(evt => {
-        const { object, value, extra } = evt;
-        return {
-          object,
-          value,
-          extra: { blocklist_state: extra.blocklist_state },
-        };
-      });
-
     const blocklist_state = `${Ci.nsIBlocklistService.STATE_NOT_BLOCKED}`;
-
-    Assert.deepEqual(
-      amUninstallEvents,
-      [
-        { object: "dictionary", value: addon.id, extra: { blocklist_state } },
-        { object: "dictionary", value: addon2.id, extra: { blocklist_state } },
-      ],
-      "Got the expected uninstall telemetry events"
-    );
 
     const baseGleanExtra = {
       addon_type: "dictionary",
@@ -279,9 +214,4 @@ SFX A   0       en         [^elr]
     !spellCheck.check(WORD),
     "Word should not pass check after add-on unloads"
   );
-});
-
-add_task(function teardown_telemetry_events() {
-  // Ignore any additional telemetry events collected in this file.
-  AddonTestUtils.getAMTelemetryEvents();
 });

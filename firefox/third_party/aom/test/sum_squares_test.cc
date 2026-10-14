@@ -38,9 +38,9 @@ const int kNumIterations = 10000;
 
 static const int16_t kInt13Max = (1 << 12) - 1;
 
-typedef uint64_t (*SSI16Func)(const int16_t *src, int stride, int width,
-                              int height);
-typedef libaom_test::FuncParam<SSI16Func> TestFuncs;
+using SSI16Func = uint64_t (*)(const int16_t *src, int stride, int width,
+                               int height);
+using TestFuncs = libaom_test::FuncParam<SSI16Func>;
 
 class SumSquaresTest : public ::testing::TestWithParam<TestFuncs> {
  public:
@@ -53,7 +53,7 @@ class SumSquaresTest : public ::testing::TestWithParam<TestFuncs> {
   }
 
   void TearDown() override { aom_free(src_); }
-  void RunTest(bool is_random);
+  void RunTest(bool is_random, bool multiple_of_4);
   void RunSpeedTest();
 
   void GenRandomData(int width, int height, int stride) {
@@ -84,13 +84,15 @@ class SumSquaresTest : public ::testing::TestWithParam<TestFuncs> {
 };
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(SumSquaresTest);
 
-void SumSquaresTest::RunTest(bool is_random) {
+void SumSquaresTest::RunTest(bool is_random, bool multiple_of_4) {
   int failed = 0;
   for (int k = 0; k < kNumIterations; k++) {
-    const int width = 4 * (rnd_(31) + 1);   // Up to 128x128
-    const int height = 4 * (rnd_(31) + 1);  // Up to 128x128
-    int stride = 4 << rnd_(7);              // Up to 256 stride
-    while (stride < width) {                // Make sure it's valid
+    // Up to 128x128
+    const int width = multiple_of_4 ? 4 * (rnd_(31) + 1) : rnd_(127) + 1;
+    // Up to 128x128
+    const int height = multiple_of_4 ? 4 * (rnd_(31) + 1) : rnd_(127) + 1;
+    int stride = 4 << rnd_(7);  // Up to 256 stride
+    while (stride < width) {    // Make sure it's valid
       stride = 4 << rnd_(7);
     }
     if (is_random) {
@@ -145,11 +147,16 @@ void SumSquaresTest::RunSpeedTest() {
 }
 
 TEST_P(SumSquaresTest, OperationCheck) {
-  RunTest(true);  // GenRandomData
+  RunTest(true, true);  // GenRandomData, width and height multiple of 4
 }
 
 TEST_P(SumSquaresTest, ExtremeValues) {
-  RunTest(false);  // GenExtremeData
+  RunTest(false, true);  // GenExtremeData, width and height multiple of 4
+}
+
+TEST_P(SumSquaresTest, ArbitraryWidthAndHeight) {
+  // GenRandomData, width and height not necessarily multiple of 4
+  RunTest(true, false);
 }
 
 TEST_P(SumSquaresTest, DISABLED_Speed) { RunSpeedTest(); }
@@ -191,8 +198,8 @@ INSTANTIATE_TEST_SUITE_P(
 // 1D version
 //////////////////////////////////////////////////////////////////////////////
 
-typedef uint64_t (*F1D)(const int16_t *src, uint32_t n);
-typedef libaom_test::FuncParam<F1D> TestFuncs1D;
+using F1D = uint64_t (*)(const int16_t *src, uint32_t n);
+using TestFuncs1D = libaom_test::FuncParam<F1D>;
 
 class SumSquares1DTest : public FunctionEquivalenceTest<F1D> {
  protected:
@@ -261,11 +268,11 @@ INSTANTIATE_TEST_SUITE_P(SVE, SumSquares1DTest,
 
 #endif  // HAVE_SVE
 
-typedef int64_t (*SSEFunc)(const uint8_t *a, int a_stride, const uint8_t *b,
-                           int b_stride, int width, int height);
-typedef libaom_test::FuncParam<SSEFunc> TestSSEFuncs;
+using SSEFunc = int64_t (*)(const uint8_t *a, int a_stride, const uint8_t *b,
+                            int b_stride, int width, int height);
+using TestSSEFuncs = libaom_test::FuncParam<SSEFunc>;
 
-typedef std::tuple<TestSSEFuncs, int> SSETestParam;
+using SSETestParam = std::tuple<TestSSEFuncs, int>;
 
 class SSETest : public ::testing::TestWithParam<SSETestParam> {
  public:
@@ -471,11 +478,11 @@ INSTANTIATE_TEST_SUITE_P(SVE, SSETest,
 // get_blk sum squares test functions
 //////////////////////////////////////////////////////////////////////////////
 
-typedef void (*sse_sum_func)(const int16_t *data, int stride, int bw, int bh,
-                             int *x_sum, int64_t *x2_sum);
-typedef libaom_test::FuncParam<sse_sum_func> TestSSE_SumFuncs;
+using sse_sum_func = void (*)(const int16_t *data, int stride, int bw, int bh,
+                              int *x_sum, int64_t *x2_sum);
+using TestSSE_SumFuncs = libaom_test::FuncParam<sse_sum_func>;
 
-typedef std::tuple<TestSSE_SumFuncs, TX_SIZE> SSE_SumTestParam;
+using SSE_SumTestParam = std::tuple<TestSSE_SumFuncs, TX_SIZE>;
 
 class SSE_Sum_Test : public ::testing::TestWithParam<SSE_SumTestParam> {
  public:
@@ -631,8 +638,8 @@ INSTANTIATE_TEST_SUITE_P(SVE, SSE_Sum_Test,
 // 2D Variance test functions
 //////////////////////////////////////////////////////////////////////////////
 
-typedef uint64_t (*Var2DFunc)(uint8_t *src, int stride, int width, int height);
-typedef libaom_test::FuncParam<Var2DFunc> TestFuncVar2D;
+using Var2DFunc = uint64_t (*)(uint8_t *src, int stride, int width, int height);
+using TestFuncVar2D = libaom_test::FuncParam<Var2DFunc>;
 
 const uint16_t test_block_size[2] = { 128, 256 };
 
@@ -793,7 +800,7 @@ class Highbd2dVarTest : public ::testing::TestWithParam<TestFuncVar2D> {
   }
 
   void TearDown() override { aom_free(src_); }
-  void RunTest(bool is_random);
+  void RunTest(bool is_random, bool multiple_of_4);
   void RunSpeedTest();
 
   void GenRandomData(int width, int height, int stride) {
@@ -824,13 +831,15 @@ class Highbd2dVarTest : public ::testing::TestWithParam<TestFuncVar2D> {
 };
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(Highbd2dVarTest);
 
-void Highbd2dVarTest::RunTest(bool is_random) {
+void Highbd2dVarTest::RunTest(bool is_random, bool multiple_of_4) {
   int failed = 0;
   for (int k = 0; k < kNumIterations; k++) {
-    const int width = 4 * (rnd_(63) + 1);   // Up to 256x256
-    const int height = 4 * (rnd_(63) + 1);  // Up to 256x256
-    int stride = 4 << rnd_(8);              // Up to 512 stride
-    while (stride < width) {                // Make sure it's valid
+    // Up to 256x256
+    const int width = multiple_of_4 ? 4 * (rnd_(63) + 1) : rnd_(255) + 1;
+    // Up to 256x256
+    const int height = multiple_of_4 ? 4 * (rnd_(63) + 1) : rnd_(255) + 1;
+    int stride = 4 << rnd_(8);  // Up to 512 stride
+    while (stride < width) {    // Make sure it's valid
       stride = 4 << rnd_(8);
     }
     if (is_random) {
@@ -886,11 +895,16 @@ void Highbd2dVarTest::RunSpeedTest() {
 }
 
 TEST_P(Highbd2dVarTest, OperationCheck) {
-  RunTest(true);  // GenRandomData
+  RunTest(true, true);  // GenRandomData, width and height multiple of 4
 }
 
 TEST_P(Highbd2dVarTest, ExtremeValues) {
-  RunTest(false);  // GenExtremeData
+  RunTest(false, true);  // GenExtremeData, width and height multiple of 4
+}
+
+TEST_P(Highbd2dVarTest, ArbitraryWidthAndHeight) {
+  // GenRandomData, width and height not necessarily multiple of 4
+  RunTest(true, false);
 }
 
 TEST_P(Highbd2dVarTest, DISABLED_Speed) { RunSpeedTest(); }

@@ -15,7 +15,6 @@ AddonTestUtils.createAppInfo(
 );
 
 add_task(async function setup() {
-  AddonTestUtils.overrideCertDB();
   await ExtensionTestUtils.startAddonManager();
 });
 
@@ -93,7 +92,9 @@ let fooExperimentFiles = {
   "child.js": () => {
     this.foo = class extends ExtensionAPI {
       getAPI(context) {
-        const EventManagerWithAssertions = class extends ExtensionCommon.EventManager {
+        const EventManagerWithAssertions = class
+          extends ExtensionCommon.EventManager
+        {
           constructor(...args) {
             super(...args);
             this.assertResetOnIdleOnEvent();

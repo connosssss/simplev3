@@ -3,10 +3,10 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import importlib
+import os
 from pathlib import Path
 
 from docutils import nodes
-from docutils.parsers.rst import Directive
 from mots.config import FileConfig
 from mots.directory import Directory
 from mots.export import export_to_format
@@ -14,25 +14,27 @@ from sphinx.util.docstrings import prepare_docstring
 from sphinx.util.docutils import ReferenceRole
 
 
-def function_reference(f, attr, args, doc):
-    lines = []
+def as_rst(lines):
+    """Embed rst in the generated Markdown.
 
-    lines.extend(
-        [
-            f,
-            "-" * len(f),
-            "",
-        ]
-    )
+    Docstrings that ``sphinx.ext.autodoc`` also renders have to stay rst, so
+    hand them to the rst parser rather than converting them.
+    """
+    return ["```{eval-rst}", *lines, "```", ""]
+
+
+def function_reference(f, attr, args, doc):
+    lines = [
+        f"### {f}",
+        "",
+    ]
 
     docstring = prepare_docstring(doc)
 
-    lines.extend(
-        [
-            docstring[0],
-            "",
-        ]
-    )
+    lines.extend([
+        docstring[0],
+        "",
+    ])
 
     arg_types = []
 
@@ -44,14 +46,12 @@ def function_reference(f, attr, args, doc):
 
         arg_types.append(t.__name__)
 
-    arg_s = "(%s)" % ", ".join(arg_types)
+    arg_s = f"({', '.join(arg_types)})"
 
-    lines.extend(
-        [
-            ":Arguments: %s" % arg_s,
-            "",
-        ]
-    )
+    lines.extend([
+        f":Arguments: {arg_s}",
+        "",
+    ])
 
     lines.extend(docstring[1:])
     lines.append("")
@@ -61,27 +61,22 @@ def function_reference(f, attr, args, doc):
 
 def variable_reference(v, st_type, in_type, doc):
     lines = [
-        v,
-        "-" * len(v),
+        f"### {v}",
         "",
     ]
 
     docstring = prepare_docstring(doc)
 
-    lines.extend(
-        [
-            docstring[0],
-            "",
-        ]
-    )
+    lines.extend([
+        docstring[0],
+        "",
+    ])
 
-    lines.extend(
-        [
-            ":Storage Type: ``%s``" % st_type.__name__,
-            ":Input Type: ``%s``" % in_type.__name__,
-            "",
-        ]
-    )
+    lines.extend([
+        f":Storage Type: `{st_type.__name__}`",
+        f":Input Type: `{in_type.__name__}`",
+        "",
+    ])
 
     lines.extend(docstring[1:])
     lines.append("")
@@ -91,21 +86,18 @@ def variable_reference(v, st_type, in_type, doc):
 
 def special_reference(v, func, typ, doc):
     lines = [
-        v,
-        "-" * len(v),
+        f"### {v}",
         "",
     ]
 
     docstring = prepare_docstring(doc)
 
-    lines.extend(
-        [
-            docstring[0],
-            "",
-            ":Type: ``%s``" % typ.__name__,
-            "",
-        ]
-    )
+    lines.extend([
+        docstring[0],
+        "",
+        f":Type: `{typ.__name__}`",
+        "",
+    ])
 
     lines.extend(docstring[1:])
     lines.append("")
@@ -114,63 +106,54 @@ def special_reference(v, func, typ, doc):
 
 
 def format_module(m):
-    lines = []
-
-    lines.extend(
-        [
-            ".. note::",
-            "   moz.build files' implementation includes a ``Path`` class.",
-        ]
-    )
+    lines = [
+        "(mozbuild_symbols)=",
+        "",
+        "# mozbuild Sandbox Symbols",
+        "",
+        ":::{note}",
+        "moz.build files' implementation includes a `Path` class.",
+        "",
+    ]
     path_docstring_minus_summary = prepare_docstring(m.Path.__doc__)[2:]
-    lines.extend(["   " + line for line in path_docstring_minus_summary])
+    lines.extend(as_rst(path_docstring_minus_summary))
+    lines.extend([
+        ":::",
+        "",
+    ])
 
     for subcontext, cls in sorted(m.SUBCONTEXTS.items()):
-        lines.extend(
-            [
-                ".. _mozbuild_subcontext_%s:" % subcontext,
-                "",
-                "Sub-Context: %s" % subcontext,
-                "=============" + "=" * len(subcontext),
-                "",
-            ]
-        )
-        lines.extend(prepare_docstring(cls.__doc__))
-        if lines[-1]:
-            lines.append("")
+        lines.extend([
+            f"(mozbuild_subcontext_{subcontext})=",
+            "",
+            f"## Sub-Context: {subcontext}",
+            "",
+        ])
+        lines.extend(as_rst(prepare_docstring(cls.__doc__)))
 
         for k, v in sorted(cls.VARIABLES.items()):
             lines.extend(variable_reference(k, *v))
 
-    lines.extend(
-        [
-            "Variables",
-            "=========",
-            "",
-        ]
-    )
+    lines.extend([
+        "## Variables",
+        "",
+    ])
 
     for v in sorted(m.VARIABLES):
         lines.extend(variable_reference(v, *m.VARIABLES[v]))
 
-    lines.extend(
-        [
-            "Functions",
-            "=========",
-            "",
-        ]
-    )
+    lines.extend([
+        "## Functions",
+        "",
+    ])
 
     for func in sorted(m.FUNCTIONS):
         lines.extend(function_reference(func, *m.FUNCTIONS[func]))
 
-    lines.extend(
-        [
-            "Special Variables",
-            "=================",
-            "",
-        ]
-    )
+    lines.extend([
+        "## Special Variables",
+        "",
+    ])
 
     for v in sorted(m.SPECIAL_VARIABLES):
         lines.extend(special_reference(v, *m.SPECIAL_VARIABLES[v]))
@@ -204,30 +187,54 @@ def export_mots(config_path):
     # Create export directory if it does not exist.
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Remove stale exports left over from a previous format (e.g. an
+    # index.rst from before the switch to Markdown). Sphinx would otherwise
+    # treat both as the same document and fail with a "multiple files found"
+    # warning.
+    for stale in path.parent.glob(f"{path.stem}.*"):
+        if stale != path:
+            stale.unlink()
+
     # Write changes to disk.
     with path.open("w", encoding="utf-8") as f:
         f.write(output)
 
 
-class MozbuildSymbols(Directive):
-    """Directive to insert mozbuild sandbox symbol information."""
+# Source directory of the documentation tree the reference belongs to, as
+# registered in ``SPHINX_TREES``.
+MOZBUILD_SYMBOLS_TREE = os.path.join("build", "docs")
 
-    required_arguments = 1
 
-    def run(self):
-        module = importlib.import_module(self.arguments[0])
-        fname = module.__file__
-        if fname.endswith(".pyc"):
-            fname = fname[0:-1]
+def export_mozbuild_symbols(manager):
+    """Write the mozbuild sandbox symbol reference to the staging directory.
 
-        self.state.document.settings.record_dependencies.add(fname)
+    The page is generated rather than checked in, so it is written where the
+    documentation is staged instead of in the source tree.
+    """
+    dest = next(
+        (d for d, source in manager.trees.items() if source == MOZBUILD_SYMBOLS_TREE),
+        None,
+    )
+    if dest is None:
+        # The tree the reference belongs to isn't part of this build.
+        return
 
-        # We simply format out the documentation as rst then feed it back
-        # into the parser for conversion. We don't even emit ourselves, so
-        # there's no record of us.
-        self.state_machine.insert_input(format_module(module), fname)
+    module = importlib.import_module("mozbuild.frontend.context")
+    path = Path(manager.staging_dir) / dest / "mozbuild-symbols.md"
+    output = "\n".join(format_module(module)) + "\n"
 
-        return []
+    # The staged documentation is a tree of symlinks into the source tree, so
+    # a leftover link from an earlier build would be written through.
+    if path.is_symlink():
+        path.unlink()
+
+    # Leave the file alone when nothing changed, so that Sphinx, which looks at
+    # the modification time, doesn't rebuild the page on every run.
+    if path.exists() and path.read_text(encoding="utf-8") == output:
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(output, encoding="utf-8")
 
 
 class Searchfox(ReferenceRole):
@@ -238,7 +245,7 @@ class Searchfox(ReferenceRole):
         See :searchfox:`browser/base/content/browser-places.js` for more details.
 
     Will generate a link to
-    ``https://searchfox.org/mozilla-central/source/browser/base/content/browser-places.js``
+    ``https://searchfox.org/firefox-main/source/browser/base/content/browser-places.js``
 
     The example above will use the path as the text, to use custom text:
 
@@ -247,20 +254,26 @@ class Searchfox(ReferenceRole):
 
     To specify a different source tree:
 
-        See :searchfox:`mozilla-beta:browser/base/content/browser-places.js`
+        See :searchfox:`firefox-beta:browser/base/content/browser-places.js`
+        for more details.
+
+    To pin to a specific revision, include ``/rev/<sha>`` in the source:
+
+        See :searchfox:`firefox-main/rev/<sha>:browser/components/BrowserGlue.sys.mjs#42`
         for more details.
     """
 
     def run(self):
-        base = "https://searchfox.org/{source}/source/{path}"
-
         if ":" in self.target:
             source, path = self.target.split(":", 1)
         else:
-            source = "mozilla-central"
+            source = "firefox-main"
             path = self.target
 
-        url = base.format(source=source, path=path)
+        if "/rev/" not in source:
+            source = f"{source}/source"
+
+        url = f"https://searchfox.org/{source}/{path}"
 
         if self.has_explicit_title:
             title = self.title
@@ -274,7 +287,6 @@ class Searchfox(ReferenceRole):
 def setup(app):
     from moztreedocs import manager
 
-    app.add_directive("mozbuildsymbols", MozbuildSymbols)
     app.add_role("searchfox", Searchfox())
 
     # Unlike typical Sphinx installs, our documentation is assembled from
@@ -290,4 +302,9 @@ def setup(app):
         export_mots(config_path)
 
     manager.generate_docs(app)
+
+    # Write the mozbuild sandbox symbol reference to the staging directory,
+    # after the static documentation has been staged there.
+    export_mozbuild_symbols(manager)
+
     app.srcdir = Path(manager.staging_dir)

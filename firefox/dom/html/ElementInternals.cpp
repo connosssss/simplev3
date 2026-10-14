@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,13 +12,15 @@
 #include "mozilla/dom/FormData.h"
 #include "mozilla/dom/HTMLElement.h"
 #include "mozilla/dom/HTMLFieldSetElement.h"
-#include "mozilla/dom/MutationEventBinding.h"
+#include "mozilla/dom/LifecycleCallbackArgs.h"
 #include "mozilla/dom/MutationObservers.h"
+#include "mozilla/dom/NodeBinding.h"
 #include "mozilla/dom/ShadowRoot.h"
 #include "mozilla/dom/ValidityState.h"
 #include "nsContentUtils.h"
 #include "nsDebug.h"
 #include "nsGenericHTMLElement.h"
+#include "nsIMutationObserver.h"
 
 #ifdef ACCESSIBILITY
 #  include "nsAccessibilityService.h"
@@ -56,6 +56,7 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(ElementInternals)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
   NS_INTERFACE_MAP_ENTRY(nsIFormControl)
   NS_INTERFACE_MAP_ENTRY(nsIConstraintValidation)
+  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIFormControl)
 NS_INTERFACE_MAP_END
 
 ElementInternals::ElementInternals(HTMLElement* aTarget)
@@ -149,7 +150,7 @@ void ElementInternals::SetFormValue(
 }
 
 // https://html.spec.whatwg.org/#dom-elementinternals-form
-HTMLFormElement* ElementInternals::GetForm(ErrorResult& aRv) const {
+Element* ElementInternals::GetFormForBindings(ErrorResult& aRv) const {
   MOZ_ASSERT(mTarget);
 
   if (!mTarget->IsFormAssociatedElement()) {
@@ -157,7 +158,8 @@ HTMLFormElement* ElementInternals::GetForm(ErrorResult& aRv) const {
         "Target element is not a form-associated custom element");
     return nullptr;
   }
-  return GetForm();
+
+  return GetFormForBindings();
 }
 
 // https://html.spec.whatwg.org/commit-snapshots/3ad5159be8f27e110a70cefadcb50fc45ec21b05/#dom-elementinternals-setvalidity
@@ -218,23 +220,22 @@ void ElementInternals::SetValidity(
   mValidationMessage =
       (!aMessage.WasPassed() || IsValid()) ? EmptyString() : aMessage.Value();
 
-  /**
-   * 7. Set element's validation anchor to null if anchor is not given.
-   *    Otherwise, if anchor is not a shadow-including descendant of element,
-   *    then throw a "NotFoundError" DOMException. Otherwise, set element's
-   *    validation anchor to anchor.
-   */
-  nsGenericHTMLElement* anchor =
-      aAnchor.WasPassed() ? &aAnchor.Value() : nullptr;
-  // TODO: maybe create something like IsShadowIncludingDescendantOf if there
-  //       are other places also need such check.
-  if (anchor && (anchor == mTarget ||
-                 !anchor->IsShadowIncludingInclusiveDescendantOf(mTarget))) {
-    aRv.ThrowNotFoundError(
-        "Validation anchor is not a shadow-including descendant of target"
-        "element");
-    return;
+  nsGenericHTMLElement* anchor;
+  if (!aAnchor.WasPassed()) {
+    // 7. If anchor is not given, then set it to element.
+    anchor = mTarget;
+  } else {
+    anchor = &aAnchor.Value();
+    // 8. Otherwise, if anchor is not a shadow-including inclusive
+    //    descendant of element, then throw a "NotFoundError" DOMException.
+    if (!anchor->IsShadowIncludingInclusiveDescendantOf(mTarget)) {
+      aRv.ThrowNotFoundError(
+          "Validation anchor is not a shadow-including inclusive "
+          "descendant of target element");
+      return;
+    }
   }
+  // 9. Set element's validation anchor to anchor.
   mValidationAnchor = anchor;
 }
 
@@ -284,7 +285,8 @@ bool ElementInternals::CheckValidity(ErrorResult& aRv) {
         "Target element is not a form-associated custom element");
     return false;
   }
-  return nsIConstraintValidation::CheckValidity(*mTarget);
+  const OwningNonNull<HTMLElement> target = *mTarget;
+  return nsIConstraintValidation::CheckValidity(target);
 }
 
 // https://html.spec.whatwg.org/#dom-elementinternals-reportvalidity
@@ -298,7 +300,8 @@ bool ElementInternals::ReportValidity(ErrorResult& aRv) {
   }
 
   bool defaultAction = true;
-  if (nsIConstraintValidation::CheckValidity(*mTarget, &defaultAction)) {
+  const OwningNonNull<HTMLElement> target = *mTarget;
+  if (nsIConstraintValidation::CheckValidity(target, &defaultAction)) {
     return true;
   }
 
@@ -307,10 +310,10 @@ bool ElementInternals::ReportValidity(ErrorResult& aRv) {
   }
 
   AutoTArray<RefPtr<Element>, 1> invalidElements;
-  invalidElements.AppendElement(mTarget);
+  invalidElements.AppendElement(target);
 
   AutoJSAPI jsapi;
-  if (!jsapi.Init(mTarget->GetOwnerGlobal())) {
+  if (!jsapi.Init(target->GetRelevantGlobal())) {
     return false;
   }
   JS::Rooted<JS::Value> detail(jsapi.cx());
@@ -319,20 +322,19 @@ bool ElementInternals::ReportValidity(ErrorResult& aRv) {
   }
 
   RefPtr<CustomEvent> event =
-      NS_NewDOMCustomEvent(mTarget->OwnerDoc(), nullptr, nullptr);
+      NS_NewDOMCustomEvent(target->OwnerDoc(), nullptr, nullptr);
   event->InitCustomEvent(jsapi.cx(), u"MozInvalidForm"_ns,
                          /* CanBubble */ true,
                          /* Cancelable */ true, detail);
   event->SetTrusted(true);
   event->WidgetEventPtr()->mFlags.mOnlyChromeDispatch = true;
-  mTarget->DispatchEvent(*event);
+  target->DispatchEvent(*event);
 
   return false;
 }
 
 // https://html.spec.whatwg.org/#dom-elementinternals-labels
-already_AddRefed<nsINodeList> ElementInternals::GetLabels(
-    ErrorResult& aRv) const {
+already_AddRefed<NodeList> ElementInternals::GetLabels(ErrorResult& aRv) const {
   MOZ_ASSERT(mTarget);
 
   if (!mTarget->IsFormAssociatedElement()) {
@@ -340,7 +342,7 @@ already_AddRefed<nsINodeList> ElementInternals::GetLabels(
         "Target element is not a form-associated custom element");
     return nullptr;
   }
-  return mTarget->Labels();
+  return mTarget->LabelsInternal();
 }
 
 nsGenericHTMLElement* ElementInternals::GetValidationAnchor(
@@ -361,6 +363,10 @@ CustomStateSet* ElementInternals::States() {
   }
   return mCustomStateSet;
 }
+
+Element* ElementInternals::GetFormForBindings() const {
+  return GetFormInternal();
+};
 
 void ElementInternals::SetForm(HTMLFormElement* aForm) { mForm = aForm; }
 
@@ -453,11 +459,13 @@ nsresult ElementInternals::SetAttr(nsAtom* aName, const nsAString& aValue) {
   Document* document = mTarget->GetComposedDoc();
   mozAutoDocUpdate updateBatch(document, true);
 
-  uint8_t modType = mAttrs.HasAttr(aName) ? MutationEvent_Binding::MODIFICATION
-                                          : MutationEvent_Binding::ADDITION;
-
-  MutationObservers::NotifyARIAAttributeDefaultWillChange(mTarget, aName,
-                                                          modType);
+#ifdef ACCESSIBILITY
+  const AttrModType modType =
+      mAttrs.HasAttr(aName) ? AttrModType::Modification : AttrModType::Addition;
+  if (auto* accService = GetAccService()) {
+    accService->NotifyARIAAttributeDefaultWillChange(mTarget, aName, modType);
+  }
+#endif
 
   nsAttrValue attrValue(aValue);
   nsresult rs = NS_OK;
@@ -468,12 +476,16 @@ nsresult ElementInternals::SetAttr(nsAtom* aName, const nsAString& aValue) {
     }
   } else {
     bool attrHadValue = false;
-    rs = mAttrs.SetAndSwapAttr(aName, attrValue, &attrHadValue);
+    rs = mAttrs.SetAndSwapAttr(aName, attrValue, &attrHadValue,
+                               mozilla::dom::IsKnownNewAttr::No);
   }
   nsMutationGuard::DidMutate();
 
-  MutationObservers::NotifyARIAAttributeDefaultChanged(mTarget, aName, modType);
-
+#ifdef ACCESSIBILITY
+  if (auto* accService = GetAccService()) {
+    accService->NotifyARIAAttributeDefaultChanged(mTarget, aName, modType);
+  }
+#endif
   return rs;
 }
 
@@ -481,7 +493,8 @@ nsresult ElementInternals::SetAttrInternal(nsAtom* aName,
                                            const nsAString& aValue) {
   bool attrHadValue;
   nsAttrValue attrValue(aValue);
-  return mAttrs.SetAndSwapAttr(aName, attrValue, &attrHadValue);
+  return mAttrs.SetAndSwapAttr(aName, attrValue, &attrHadValue,
+                               mozilla::dom::IsKnownNewAttr::No);
 }
 
 nsresult ElementInternals::UnsetAttrInternal(nsAtom* aName) {
@@ -555,9 +568,25 @@ void ElementInternals::SetAttrElement(nsAtom* aAttr, Element* aElement) {
 #endif
 }
 
+// ElementInternals can refer to any element that has the same shadow-including
+// root as the target element, as proposed in
+// https://github.com/whatwg/html/pull/8932. The current spec only accepts
+// elements in the tree of the target element or in the trees of its
+// shadow-including ancestors. Thus it rejects elements in the shadow tree of
+// the target element and in other shadow trees:
+// https://html.spec.whatwg.org/#attr-associated-element
+static bool HasSameShadowIncludingRoot(Element& aTarget, Element& aOther) {
+  GetRootNodeOptions options;
+  options.mComposed = true;
+  return aTarget.GetRootNode(options) == aOther.GetRootNode(options);
+}
+
 Element* ElementInternals::GetAttrElement(nsAtom* aAttr) const {
   nsWeakPtr weakAttrEl = mAttrElementMap.Get(aAttr);
   nsCOMPtr<Element> attrEl = do_QueryReferent(weakAttrEl);
+  if (attrEl && !HasSameShadowIncludingRoot(*mTarget, *attrEl)) {
+    return nullptr;
+  }
   return attrEl;
 }
 
@@ -614,14 +643,19 @@ void ElementInternals::GetAttrElements(
   aElements.SetValue(nsTArray<RefPtr<Element>>());
   auto& [attrElements, cachedAttrElements] = attrElementsMaybeEntry.Data();
 
+  // https://html.spec.whatwg.org/#attr-associated-elements, with the
+  // shadow-including root check of https://github.com/whatwg/html/pull/8932.
   auto getAttrAssociatedElements = [&, &attrElements = attrElements]() {
     CopyableTArray<RefPtr<Element>> elements;
 
     for (const nsWeakPtr& weakEl : attrElements) {
       // For each attrElement in reflectedTarget's explicitly set attr-elements:
-      if (nsCOMPtr<Element> attrEl = do_QueryReferent(weakEl)) {
+      if (RefPtr<Element> attrEl = do_QueryReferent(weakEl)) {
+        if (!HasSameShadowIncludingRoot(*mTarget, *attrEl)) {
+          continue;
+        }
         // Append attrElement to elements.
-        elements.AppendElement(attrEl);
+        elements.AppendElement(std::move(attrEl));
       }
     }
 
@@ -634,7 +668,11 @@ void ElementInternals::GetAttrElements(
   // elements.
   auto elements = getAttrAssociatedElements();
 
-  if (elements == cachedAttrElements) {
+  // aUseCachedValue is null when the binding has no cached attr-associated
+  // elements object to reuse yet (e.g. the first getter call). In that case we
+  // must return the freshly computed elements below rather than signalling a
+  // cache hit, otherwise we would dereference a null pointer.
+  if (aUseCachedValue && elements == cachedAttrElements) {
     // 2. If the contents of elements is equal to the contents of this's cached
     // attr-associated elements, then return this's cached attr-associated
     // elements object.
@@ -655,22 +693,23 @@ void ElementInternals::GetAttrElements(
   cachedAttrElements = std::move(elements);
 }
 
-bool ElementInternals::GetAttrElements(nsAtom* aAttr,
-                                       nsTArray<Element*>& aElements) {
-  aElements.Clear();
+Maybe<nsTArray<RefPtr<Element>>> ElementInternals::GetAttrElements(
+    nsAtom* aAttr) {
   auto attrElementsMaybeEntry = mAttrElementsMap.Lookup(aAttr);
   if (!attrElementsMaybeEntry) {
-    return false;
+    return Nothing();
   }
 
+  nsTArray<RefPtr<Element>> elements;
   auto& [attrElements, cachedAttrElements] = attrElementsMaybeEntry.Data();
   for (const nsWeakPtr& weakEl : attrElements) {
-    if (nsCOMPtr<Element> attrEl = do_QueryReferent(weakEl)) {
-      aElements.AppendElement(attrEl);
+    RefPtr<Element> attrEl = do_QueryReferent(weakEl);
+    if (attrEl && HasSameShadowIncludingRoot(*mTarget, *attrEl)) {
+      elements.AppendElement(std::move(attrEl));
     }
   }
 
-  return true;
+  return Some(std::move(elements));
 }
 
 }  // namespace mozilla::dom

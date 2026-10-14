@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -24,6 +22,7 @@
 #include "jit/CalleeToken.h"
 #include "jit/Ion.h"
 #include "jit/IonOptimizationLevels.h"
+#include "jit/JitcodeMap.h"
 #include "jit/JitCommon.h"
 #include "jit/JitRuntime.h"
 #include "jit/JitSpewer.h"
@@ -33,6 +32,7 @@
 
 #include "debugger/DebugAPI-inl.h"
 #include "gc/GC-inl.h"
+#include "gc/WeakMap-inl.h"
 #include "jit/JitHints-inl.h"
 #include "jit/JitScript-inl.h"
 #include "vm/GeckoProfiler-inl.h"
@@ -99,6 +99,8 @@ struct EnterJitData {
   RootedValue result;
 
   bool constructing;
+
+  Value& thisv() const { return maxArgv[-1]; }
 };
 
 static JitExecStatus EnterBaseline(JSContext* cx, EnterJitData& data) {
@@ -128,8 +130,8 @@ static JitExecStatus EnterBaseline(JSContext* cx, EnterJitData& data) {
 
   // Caller must construct |this| before invoking the function.
   MOZ_ASSERT_IF(data.constructing,
-                data.maxArgv[0].isObject() ||
-                    data.maxArgv[0].isMagic(JS_UNINITIALIZED_LEXICAL));
+                data.thisv().isObject() ||
+                    data.thisv().isMagic(JS_UNINITIALIZED_LEXICAL));
 
   data.result.setInt32(data.numActualArgs);
   {
@@ -153,15 +155,14 @@ static JitExecStatus EnterBaseline(JSContext* cx, EnterJitData& data) {
   // class constructors, which are forced to do it themselves.
   if (!data.result.isMagic() && data.constructing &&
       data.result.isPrimitive()) {
-    MOZ_ASSERT(data.maxArgv[0].isObject());
-    data.result = data.maxArgv[0];
+    MOZ_ASSERT(data.thisv().isObject());
+    data.result = data.thisv();
   }
 
   // Release temporary buffer used for OSR into Ion.
   cx->runtime()->jitRuntime()->freeIonOsrTempData();
 
-  MOZ_ASSERT_IF(data.result.isMagic(), data.result.isMagic(JS_ION_ERROR));
-  return data.result.isMagic() ? JitExec_Error : JitExec_Ok;
+  return data.result.isMagic(JS_ION_ERROR) ? JitExec_Error : JitExec_Ok;
 }
 
 JitExecStatus jit::EnterBaselineInterpreterAtBranch(JSContext* cx,
@@ -184,9 +185,8 @@ JitExecStatus jit::EnterBaselineInterpreterAtBranch(JSContext* cx,
   if (fp->isFunctionFrame()) {
     data.constructing = fp->isConstructing();
     data.numActualArgs = fp->numActualArgs();
-    data.maxArgc = std::max(fp->numActualArgs(), fp->numFormalArgs()) +
-                   1;               // +1 = include |this|
-    data.maxArgv = fp->argv() - 1;  // -1 = include |this|
+    data.maxArgc = std::max(fp->numActualArgs(), fp->numFormalArgs());
+    data.maxArgv = fp->argv();
     data.envChain = nullptr;
     data.calleeToken = CalleeToToken(&fp->callee(), data.constructing);
   } else {
@@ -207,9 +207,9 @@ JitExecStatus jit::EnterBaselineInterpreterAtBranch(JSContext* cx,
   return JitExec_Ok;
 }
 
-static bool OffThreadBaselineCompilationAvailable(JSContext* cx,
-                                                  JSScript* script) {
-  if (!cx->runtime()->canUseOffthreadBaselineCompilation()) {
+bool BaselineCompileTask::OffThreadBaselineCompilationAvailable(
+    JSContext* cx, JSScript* script, bool isEager) {
+  if (!isEager && !cx->runtime()->canUseOffthreadBaselineCompilation()) {
     return false;
   }
   // TODO: Support off-thread scriptcounts?
@@ -222,13 +222,17 @@ static bool OffThreadBaselineCompilationAvailable(JSContext* cx,
   if (script->isDebuggee()) {
     return false;
   }
+  if (IsRealmIndependentBaselineCode(script)) {
+    return false;
+  }
   return CanUseExtraThreads();
 }
 
 static bool DispatchOffThreadBaselineCompile(JSContext* cx,
                                              BaselineSnapshot& snapshot) {
   JSScript* script = snapshot.script();
-  MOZ_ASSERT(OffThreadBaselineCompilationAvailable(cx, script));
+  MOZ_ASSERT(
+      BaselineCompileTask::OffThreadBaselineCompilationAvailable(cx, script));
 
   auto alloc = cx->make_unique<LifoAlloc>(TempAllocator::PreferredLifoChunkSize,
                                           js::BackgroundMallocArena);
@@ -248,7 +252,10 @@ static bool DispatchOffThreadBaselineCompile(JSContext* cx,
   BaselineCompileTask* task = alloc->new_<BaselineCompileTask>(
       realm, alloc.get(), std::move(snapshots));
   if (!task) {
-    snapshots.clear();
+    // The allocation failed, so the constructor never ran and the snapshot is
+    // still linked into |snapshots|. Unlink it to satisfy the LinkedList
+    // destructor's "list must be empty" assertion.
+    snapshotCopy->remove();
     ReportOutOfMemory(cx);
     return false;
   }
@@ -268,13 +275,33 @@ static bool DispatchOffThreadBaselineCompile(JSContext* cx,
   return true;
 }
 
-bool jit::DispatchOffThreadBaselineBatch(JSContext* cx) {
-  BaselineCompileQueue& queue = cx->realm()->baselineCompileQueue();
+// Off thread baseline batching can be called from two different locations.
+// Either through stencil instantiation where we perform eager baseline
+// compilations speculatively based on Jit Hints, or on demand through the JIT.
+static bool DispatchOffThreadBaselineBatchImpl(JSContext* cx, bool isEager) {
+  BaselineCompileQueue& queue = cx->realm()->jitRealm().baselineCompileQueue();
   MOZ_ASSERT(queue.numQueued() > 0);
+
+  // We maintain the invariant that there's always room to push an entry into
+  // the queue. This requires code that inserts entries into the queue to call
+  // this function when it fills up, and it requires this function to always
+  // remove at least one entry when the queue is full.
+#ifdef DEBUG
+  auto queueIsNotFullOnExit = mozilla::MakeScopeExit([&]() {
+    MOZ_ASSERT(queue.numQueued() < JitOptions.baselineQueueCapacity);
+  });
+#endif
 
   auto alloc = cx->make_unique<LifoAlloc>(TempAllocator::PreferredLifoChunkSize,
                                           js::BackgroundMallocArena);
   if (!alloc) {
+    // Maintain our invariant; the queue must not be full.
+    if (queue.numQueued() == JitOptions.baselineQueueCapacity) {
+      JSScript* script = queue.pop();
+      if (script->hasJitScript()) {
+        script->jitScript()->clearIsBaselineQueued(script);
+      }
+    }
     ReportOutOfMemory(cx);
     return false;
   }
@@ -291,7 +318,9 @@ bool jit::DispatchOffThreadBaselineBatch(JSContext* cx) {
   Rooted<JSScript*> script(cx);
   while (!queue.isEmpty()) {
     script = queue.pop();
-    script->jitScript()->clearIsBaselineQueued(script);
+    if (script->hasJitScript()) {
+      script->jitScript()->clearIsBaselineQueued(script);
+    }
 
     MOZ_ASSERT(cx->realm() == script->realm());
 
@@ -300,7 +329,8 @@ bool jit::DispatchOffThreadBaselineBatch(JSContext* cx) {
       continue;
     }
 
-    if (!OffThreadBaselineCompilationAvailable(cx, script)) {
+    if (!BaselineCompileTask::OffThreadBaselineCompilationAvailable(cx, script,
+                                                                    isEager)) {
       BaselineOptions options({BaselineOption::ForceMainThreadCompilation});
       MethodStatus status = BaselineCompile(cx, script, options);
       if (status != Method_Compiled) {
@@ -356,6 +386,14 @@ bool jit::DispatchOffThreadBaselineBatch(JSContext* cx) {
   return true;
 }
 
+bool jit::DispatchOffThreadBaselineBatchEager(JSContext* cx) {
+  return DispatchOffThreadBaselineBatchImpl(cx, /* isEager = */ true);
+}
+
+bool jit::DispatchOffThreadBaselineBatch(JSContext* cx) {
+  return DispatchOffThreadBaselineBatchImpl(cx, /* isEager = */ false);
+}
+
 MethodStatus jit::BaselineCompile(JSContext* cx, JSScript* script,
                                   BaselineOptions options) {
   cx->check(script);
@@ -395,7 +433,8 @@ MethodStatus jit::BaselineCompile(JSContext* cx, JSScript* script,
                             baseWarmUpThreshold, isIonCompileable,
                             compileDebugInstrumentation);
 
-  if (OffThreadBaselineCompilationAvailable(cx, script) && !forceMainThread) {
+  if (BaselineCompileTask::OffThreadBaselineCompilationAvailable(cx, script) &&
+      !forceMainThread) {
     if (!DispatchOffThreadBaselineCompile(cx, snapshot)) {
       ReportOutOfMemory(cx);
       return Method_Error;
@@ -405,6 +444,11 @@ MethodStatus jit::BaselineCompile(JSContext* cx, JSScript* script,
 
   TempAllocator temp(&cx->tempLifoAlloc());
 
+  mozilla::Maybe<JSAutoNullableRealm> ar;
+  if (IsRealmIndependentBaselineCode(script)) {
+    // realm-independent scripts should not have a realm set
+    ar.emplace(cx, nullptr);
+  }
   StackMacroAssembler masm(cx, temp);
 
   BaselineCompiler compiler(temp, CompileRuntime::get(cx->runtime()), masm,
@@ -428,16 +472,6 @@ MethodStatus jit::BaselineCompile(JSContext* cx, JSScript* script,
 
 static MethodStatus CanEnterBaselineJIT(JSContext* cx, HandleScript script,
                                         AbstractFramePtr osrSourceFrame) {
-  // Skip if the script has been disabled.
-  if (!script->canBaselineCompile()) {
-    return Method_Skipped;
-  }
-
-  if (!IsBaselineJitEnabled(cx)) {
-    script->disableBaselineCompile();
-    return Method_CantCompile;
-  }
-
   // This check is needed in the following corner case. Consider a function h,
   //
   //   function h(x) {
@@ -463,18 +497,12 @@ static MethodStatus CanEnterBaselineJIT(JSContext* cx, HandleScript script,
     return Method_Error;
   }
 
-  if (script->length() > BaselineMaxScriptLength) {
-    script->disableBaselineCompile();
-    return Method_CantCompile;
-  }
-
-  if (script->nslots() > BaselineMaxScriptSlots) {
-    script->disableBaselineCompile();
-    return Method_CantCompile;
-  }
-
   if (script->hasBaselineScript()) {
     return Method_Compiled;
+  }
+
+  if (!CanBaselineCompileScript(cx, script)) {
+    return Method_CantCompile;
   }
 
   if (script->isBaselineCompilingOffThread()) {
@@ -509,11 +537,6 @@ static MethodStatus CanEnterBaselineJIT(JSContext* cx, HandleScript script,
     return Method_Error;
   }
 
-  if (script->hasForceInterpreterOp()) {
-    script->disableBaselineCompile();
-    return Method_CantCompile;
-  }
-
   // Frames can be marked as debuggee frames independently of its underlying
   // script being a debuggee script, e.g., when performing
   // Debugger.Frame.prototype.eval.
@@ -527,10 +550,6 @@ static MethodStatus CanEnterBaselineJIT(JSContext* cx, HandleScript script,
 bool jit::CanBaselineInterpretScript(JSScript* script) {
   MOZ_ASSERT(IsBaselineInterpreterEnabled());
 
-  if (script->hasForceInterpreterOp()) {
-    return false;
-  }
-
   if (script->nslots() > BaselineMaxScriptSlots) {
     // Avoid overrecursion exceptions when the script has a ton of stack slots
     // by forcing such scripts to run in the C++ interpreter with heap-allocated
@@ -541,31 +560,54 @@ bool jit::CanBaselineInterpretScript(JSScript* script) {
   return true;
 }
 
+bool jit::CanBaselineCompileScript(JSContext* cx, JSScript* script) {
+  if (!script->canBaselineCompile()) {
+    return false;
+  }
+  if (!IsBaselineJitEnabled(cx)) {
+    script->disableBaselineCompile();
+    return false;
+  }
+  if (!CanBaselineInterpretScript(script)) {
+    script->disableBaselineCompile();
+    return false;
+  }
+  if (script->length() > BaselineMaxScriptLength) {
+    script->disableBaselineCompile();
+    return false;
+  }
+  MOZ_RELEASE_ASSERT(script->nslots() <= BaselineMaxScriptSlots,
+                     "nslots is checked in CanBaselineInterpretScript");
+  return true;
+}
+
 static bool MaybeCreateBaselineInterpreterEntryScript(JSContext* cx,
                                                       JSScript* script) {
   MOZ_ASSERT(script->hasJitScript());
+
+  Zone* zone = script->zone();
+  EntryTrampolineMap* map =
+      zone->jitZone()->getOrCreateInterpreterEntryMap(zone);
+  if (!map) {
+    return false;
+  }
 
   JitRuntime* jitRuntime = cx->runtime()->jitRuntime();
   if (script->jitCodeRaw() != jitRuntime->baselineInterpreter().codeRaw()) {
     // script already has an updated interpreter trampoline.
 #ifdef DEBUG
-    auto p = jitRuntime->getInterpreterEntryMap()->lookup(script);
-    MOZ_ASSERT(p);
-    MOZ_ASSERT(p->value().raw() == script->jitCodeRaw());
+    auto ptr = map->lookup(script);
+    MOZ_ASSERT(ptr);
+    MOZ_ASSERT(ptr->value()->raw() == script->jitCodeRaw());
 #endif
     return true;
   }
 
-  auto p = jitRuntime->getInterpreterEntryMap()->lookupForAdd(script);
-  if (!p) {
+  auto ptr = map->lookupForAdd(script);
+  if (!ptr) {
     Rooted<JitCode*> code(
         cx, jitRuntime->generateEntryTrampolineForScript(cx, script));
-    if (!code) {
-      return false;
-    }
-
-    EntryTrampoline entry(cx, code);
-    if (!jitRuntime->getInterpreterEntryMap()->add(p, script, entry)) {
+    if (!code || !map->relookupOrAdd(ptr, script, code)) {
       return false;
     }
   }
@@ -601,8 +643,15 @@ static MethodStatus CanEnterBaselineInterpreter(JSContext* cx,
     return Method_Error;
   }
 
+  if (!JitOptions.disableJitHints &&
+      cx->runtime()->jitRuntime()->hasJitHintsMap()) {
+    JitHintsMap* jitHints = cx->runtime()->jitRuntime()->getJitHintsMap();
+    jitHints->setEagerBaselineInterpreterHint(script);
+  }
+
   if (JitOptions.emitInterpreterEntryTrampoline) {
     if (!MaybeCreateBaselineInterpreterEntryScript(cx, script)) {
+      ReportOutOfMemory(cx);
       return Method_Error;
     }
   }
@@ -696,11 +745,49 @@ bool jit::BaselineCompileFromBaselineInterpreter(JSContext* cx,
   MOZ_CRASH("Unexpected status");
 }
 
+#ifdef DEBUG
+void BaselineCompileQueue::assertInvariants() const {
+  // The queue always contains |numQueued| JSScript* pointers,
+  // followed by |Capacity - numQueued| null pointers.
+  MOZ_ASSERT(numQueued_ <= JitOptions.baselineQueueCapacity);
+  MOZ_ASSERT(JitOptions.baselineQueueCapacity <= MaxCapacity);
+  for (uint32_t i = 0; i < numQueued_; i++) {
+    MOZ_ASSERT(queue_[i]);
+    if (queue_[i]->hasJitScript()) {
+      MOZ_ASSERT(queue_[i]->jitScript()->isBaselineQueued());
+    }
+  }
+  for (uint32_t i = numQueued_; i < MaxCapacity; i++) {
+    MOZ_ASSERT(!queue_[i]);
+  }
+}
+#endif
+
 void BaselineCompileQueue::trace(JSTracer* trc) {
-  assertInvariants();
   for (uint32_t i = 0; i < numQueued_; i++) {
     TraceEdge(trc, &queue_[i], "baseline_compile_queue");
   }
+}
+
+JSScript* BaselineCompileQueue::pop() {
+  // To keep our invariants simple, we pop from the end of the queue.
+  MOZ_ASSERT(!isEmpty());
+  assertInvariants();
+  numQueued_--;
+  JSScript* result = queue_[numQueued_];
+  queue_[numQueued_] = nullptr;
+  assertInvariants();
+  return result;
+}
+
+bool BaselineCompileQueue::enqueue(JSScript* script) {
+  if (numQueued_ >= JitOptions.baselineQueueCapacity) {
+    return false;  // Queue is full
+  }
+  queue_[numQueued_] = script;
+  numQueued_++;
+  assertInvariants();
+  return true;
 }
 
 void BaselineCompileQueue::remove(JSScript* script) {
@@ -818,6 +905,9 @@ void BaselineScript::trace(JSTracer* trc) {
 
 void BaselineScript::Destroy(JS::GCContext* gcx, BaselineScript* script) {
   MOZ_ASSERT(!script->hasPendingIonCompileTask());
+
+  // Trigger write barrier since we are destroying this outside GC.
+  script->method_ = nullptr;
 
   // This allocation is tracked by JSScript::setBaselineScriptImpl.
   gcx->deleteUntracked(script);
@@ -1124,6 +1214,8 @@ static void ToggleProfilerInstrumentation(JitCode* code,
                                         CodeOffset(profilerEnterToggleOffset));
   CodeLocationLabel exitToggleLocation(code,
                                        CodeOffset(profilerExitToggleOffset));
+
+  code->setProfilerInstrumented(enable);
   if (enable) {
     Assembler::ToggleToCmp(enterToggleLocation);
     Assembler::ToggleToCmp(exitToggleLocation);
@@ -1134,21 +1226,11 @@ static void ToggleProfilerInstrumentation(JitCode* code,
 }
 
 void BaselineScript::toggleProfilerInstrumentation(bool enable) {
-  if (enable == isProfilerInstrumentationOn()) {
-    return;
-  }
-
   JitSpew(JitSpew_BaselineIC, "  toggling profiling %s for BaselineScript %p",
           enable ? "on" : "off", this);
 
   ToggleProfilerInstrumentation(method_, profilerEnterToggleOffset_,
                                 profilerExitToggleOffset_, enable);
-
-  if (enable) {
-    flags_ |= uint32_t(PROFILER_INSTRUMENTATION_ON);
-  } else {
-    flags_ &= ~uint32_t(PROFILER_INSTRUMENTATION_ON);
-  }
 }
 
 void BaselineInterpreter::toggleProfilerInstrumentation(bool enable) {
@@ -1236,6 +1318,28 @@ void jit::AddSizeOfBaselineData(JSScript* script,
   }
 }
 
+// Baseline scripts compiled while the profiler was disabled don't have a
+// JitcodeGlobalTable entry. Register one so the profiler can resolve frames
+// for baseline code that is still on the stack. This is best-effort: on
+// failure the sampler simply won't resolve frames for this code.
+static void EnsureBaselineJitcodeGlobalEntry(JSContext* cx, JSScript* script) {
+  JitRuntime* jrt = cx->runtime()->jitRuntime();
+  if (!jrt->hasJitcodeGlobalTable()) {
+    return;
+  }
+  JitcodeGlobalTable* table = jrt->getJitcodeGlobalTable();
+
+  JitCode* code = script->baselineScript()->method();
+  JitcodeGlobalEntry* existing = table->lookup(code->raw());
+  if (existing && existing->jitcode() == code) {
+    return;
+  }
+
+  if (!AddBaselineJitcodeGlobalEntry(cx, script, code)) {
+    cx->recoverFromOutOfMemory();
+  }
+}
+
 void jit::ToggleBaselineProfiling(JSContext* cx, bool enable) {
   JitRuntime* jrt = cx->runtime()->jitRuntime();
   if (!jrt) {
@@ -1252,42 +1356,48 @@ void jit::ToggleBaselineProfiling(JSContext* cx, bool enable) {
       JSScript* script = jitScript->owningScript();
       if (enable) {
         jitScript->ensureProfileString(cx, script);
+        jitScript->ensureProfilerScriptSource(cx, script);
       }
       if (script->hasBaselineScript()) {
-        AutoWritableJitCode awjc(script->baselineScript()->method());
-        script->baselineScript()->toggleProfilerInstrumentation(enable);
+        if (enable) {
+          EnsureBaselineJitcodeGlobalEntry(cx, script);
+        }
+        BaselineScript* baselineScript = script->baselineScript();
+        if (baselineScript->isProfilerInstrumentationOn() != enable) {
+          AutoWritableJitCode awjc(baselineScript->method());
+          baselineScript->toggleProfilerInstrumentation(enable);
+        }
       }
     });
   }
 }
 
-void BaselineInterpreter::init(JitCode* code, uint32_t interpretOpOffset,
-                               uint32_t interpretOpNoDebugTrapOffset,
-                               uint32_t bailoutPrologueOffset,
-                               uint32_t profilerEnterToggleOffset,
-                               uint32_t profilerExitToggleOffset,
-                               uint32_t debugTrapHandlerOffset,
-                               CodeOffsetVector&& debugInstrumentationOffsets,
-                               CodeOffsetVector&& debugTrapOffsets,
-                               CodeOffsetVector&& codeCoverageOffsets,
-                               ICReturnOffsetVector&& icReturnOffsets,
-                               const CallVMOffsets& callVMOffsets) {
+void BaselineInterpreter::init(
+    JitCode* code, uint32_t interpretOpOffset,
+    uint32_t interpretOpNoDebugTrapOffset, uint32_t bailoutPrologueOffset,
+    uint32_t bailoutResumePrologueOffset, uint32_t profilerEnterToggleOffset,
+    uint32_t profilerExitToggleOffset, uint32_t debugTrapHandlerOffset,
+    CodeOffsetVector&& debugInstrumentationOffsets,
+    CodeOffsetVector&& debugTrapOffsets, CodeOffsetVector&& codeCoverageOffsets,
+    ICBailoutStubOffsetVector&& icBailoutStubOffsets,
+    const CallVMOffsets& callVMOffsets) {
   code_ = code;
   interpretOpOffset_ = interpretOpOffset;
   interpretOpNoDebugTrapOffset_ = interpretOpNoDebugTrapOffset;
   bailoutPrologueOffset_ = bailoutPrologueOffset;
+  bailoutResumePrologueOffset_ = bailoutResumePrologueOffset;
   profilerEnterToggleOffset_ = profilerEnterToggleOffset;
   profilerExitToggleOffset_ = profilerExitToggleOffset;
   debugTrapHandlerOffset_ = debugTrapHandlerOffset;
   debugInstrumentationOffsets_ = std::move(debugInstrumentationOffsets);
   debugTrapOffsets_ = std::move(debugTrapOffsets);
   codeCoverageOffsets_ = std::move(codeCoverageOffsets);
-  icReturnOffsets_ = std::move(icReturnOffsets);
+  icBailoutStubOffsets_ = std::move(icBailoutStubOffsets);
   callVMOffsets_ = callVMOffsets;
 }
 
-uint8_t* BaselineInterpreter::retAddrForIC(JSOp op) const {
-  for (const ICReturnOffset& entry : icReturnOffsets_) {
+uint8_t* BaselineInterpreter::bailoutStubAddrForIC(JSOp op) const {
+  for (const ICBailoutStubOffset& entry : icBailoutStubOffsets_) {
     if (entry.op == op) {
       return codeAtOffset(entry.offset);
     }

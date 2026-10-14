@@ -19,6 +19,8 @@
     clippy::new_without_default,
     clippy::empty_docs,
     clippy::manual_range_contains,
+    unknown_lints,
+    mismatched_lifetime_syntaxes,
 )]
 
 
@@ -36,30 +38,47 @@ extern crate malloc_size_of_derive;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
-extern crate time;
 
 extern crate malloc_size_of;
 extern crate peek_poke;
 
 pub mod channel;
 mod color;
+#[cfg(feature = "debugger")]
+pub mod debugger;
 mod display_item;
-mod display_item_cache;
 mod display_list;
 mod font;
 mod gradient_builder;
 mod image;
+/// Internal: hashable building blocks for interning keys, shared with the
+/// `webrender` crate. Not part of the public API surface.
+#[doc(hidden)]
+pub mod key_types;
+/// Internal: interned primitive scene-description structs, shared with the
+/// `webrender` crate. Not part of the public API surface.
+#[doc(hidden)]
+pub mod interned_prims;
+/// Internal: content-side interning for the display list builder. Not part of
+/// the public API surface.
+#[doc(hidden)]
+pub mod interning;
+/// Internal: primitive geometry simplification / gradient optimization helpers,
+/// shared with the `webrender` crate. Not part of the public API surface.
+#[doc(hidden)]
+pub mod prim_geometry;
+mod fast_transform;
 mod tile_pool;
 pub mod units;
 
 pub use crate::color::*;
 pub use crate::display_item::*;
-pub use crate::display_item_cache::DisplayItemCache;
 pub use crate::display_list::*;
 pub use crate::font::*;
 pub use crate::gradient_builder::*;
 pub use crate::image::*;
 pub use crate::tile_pool::*;
+pub use crate::fast_transform::*;
 
 use crate::units::*;
 use crate::channel::Receiver;
@@ -100,7 +119,7 @@ impl Default for QualitySettings {
 /// This is mostly used as a synchronization mechanism to observe how/when particular pipeline
 /// updates propagate through WebRender and are applied at various stages.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Epoch(pub u32);
 
 impl Epoch {
@@ -117,6 +136,20 @@ impl Epoch {
 #[derive(Clone, Copy, Debug, Default, Eq, MallocSizeOf, PartialEq, Hash, Ord, PartialOrd, PeekPoke)]
 #[derive(Deserialize, Serialize)]
 pub struct IdNamespace(pub u32);
+
+impl IdNamespace {
+    pub const DEBUGGER: IdNamespace = IdNamespace(!0);
+}
+
+/// Identifies a window registered on a render backend thread.
+///
+/// Currently every render backend thread serves a single window, so each
+/// backend has exactly one `RenderBackendId`. The indirection is in place
+/// so that a future step can let multiple windows share a single render
+/// backend thread, with messages routed to the right window via this id.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Ord, PartialOrd)]
+pub struct RenderBackendId(pub u32);
 
 /// A key uniquely identifying a WebRender document.
 ///
@@ -707,8 +740,6 @@ bitflags! {
         const TEXTURE_CACHE_DBG_CLEAR_EVICTED = 1 << 10;
         /// Show picture caching debug overlay
         const PICTURE_CACHING_DBG   = 1 << 11;
-        /// Highlight all primitives with colors based on kind.
-        const PRIMITIVE_DBG = 1 << 12;
         /// Draw a zoom widget showing part of the framebuffer zoomed in.
         const ZOOM_DBG = 1 << 13;
         /// Scale the debug renderer down for a smaller screen. This will disrupt
@@ -754,6 +785,36 @@ bitflags! {
         const MISSING_SNAPSHOT_PINK     = (1 as u64) << 32;
         /// Highlight backdrop filters
         const HIGHLIGHT_BACKDROP_FILTERS = (1 as u64) << 33;
+        /// Show external composite border rects in debug overlay.
+        /// TODO: Add native compositor support
+        const EXTERNAL_COMPOSITE_BORDERS = (1 as u64) << 34;
+        /// Dump the frame spatial tree to stderr.
+        const DUMP_SPATIAL_TREE = (1 as u64) << 35;
+        /// Initialize the pixels of color render targets with an opaque pink
+        /// color, to help spot when unitialized pixels are sampled.
+        const COLOR_TARGET_INIT = (1 as u64) << 36;
+        /// Disable promoting fixed-position rounded-rect clips to compositor
+        /// clips, the "fast path" that applies the clip when compositing a tile
+        /// cache slice. Such clips are instead applied via the quad shader,
+        /// which is useful for testing the quad-shader clip path directly.
+        ///
+        /// This suppresses both halves of the promotion: the skipped
+        /// intermediate surface in scene building, and the hoisting of a rounded
+        /// clip into a tile cache slice's shared clips. Suppressing only the
+        /// former still leaves the clip applied during compositing whenever it
+        /// happens to be shared by every primitive in the slice.
+        ///
+        /// It does not affect the clip applied to an overlay compositor surface,
+        /// which has no quad-shader path to fall back to: dropping that clip
+        /// would not reroute it, it would lose it.
+        const DISABLE_COMPOSITOR_CLIPS = (1 as u64) << 37;
+        /// Never draw frames: Renderer::render only applies pending resource
+        /// updates, and frames that are replaced or rendered offscreen are
+        /// dropped. The persistent targets (texture cache render tasks and
+        /// picture cache tiles) are left with stale content, so rendering is
+        /// incorrect after the flag is cleared until they are invalidated.
+        /// Useful to benchmark frame building on its own.
+        const SKIP_RENDERING = (1 as u64) << 38;
     }
 }
 
@@ -765,19 +826,6 @@ impl core::fmt::Debug for DebugFlags {
             bitflags::parser::to_writer(self, f)
         }
     }
-}
-
-/// Information specific to a primitive type that
-/// uniquely identifies a primitive template by key.
-#[derive(Debug, Clone, Eq, MallocSizeOf, PartialEq, Hash, Serialize, Deserialize)]
-pub enum PrimitiveKeyKind {
-    /// Clear an existing rect, used for special effects on some platforms.
-    Clear,
-    ///
-    Rectangle {
-        ///
-        color: PropertyBinding<ColorU>,
-    },
 }
 
 ///
@@ -797,6 +845,7 @@ pub enum ScrollLocation {
 pub enum CrashAnnotation {
     CompileShader = 0,
     DrawShader = 1,
+    FontFile = 2,
 }
 
 /// Handler to expose support for annotating crash reports.
@@ -840,4 +889,24 @@ impl<'a> Drop for CrashAnnotatorGuard<'a> {
             annotator.clear(self.annotation);
         }
     }
+}
+
+/// A little bit of extra information to make memory reports more useful
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(Serialize))]
+#[cfg_attr(feature = "deserialize", derive(Deserialize))]
+pub enum TextureCacheCategory {
+    Atlas,
+    Standalone,
+    PictureTile,
+    RenderTarget,
+}
+
+/// For debugging purposes
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serialize", derive(Serialize))]
+#[cfg_attr(feature = "deserialize", derive(Deserialize))]
+pub enum RenderCommandInfo {
+    RenderTarget { kind: String, size: DeviceIntSize },
+    DrawCall { shader: String, instances: u32 },
 }

@@ -5,14 +5,15 @@ const gEMPTY_PAGE_URL = GetTestWebBasedURL("file_empty.html");
 
 /**
  * Return a web-based URL for a given file based on the testing directory.
- * @param {String} fileName
+ *
+ * @param {string} fileName
  *        file that caller wants its web-based url
- * @param {Boolean} cors [optional]
+ * @param {boolean} cors [optional]
  *        if set, then return a url with different origin
  */
 function GetTestWebBasedURL(fileName, cors = false) {
-  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
-  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+  // eslint-disable-next-line sdl/no-insecure-url
+  // eslint-disable-next-line sdl/no-insecure-url
   const origin = cors ? "http://example.org" : "http://example.com";
   return (
     getRootDirectory(gTestPath).replace("chrome://mochitests/content", origin) +
@@ -22,6 +23,7 @@ function GetTestWebBasedURL(fileName, cors = false) {
 
 /**
  * Wait until tab sound indicator appears on the given tab.
+ *
  * @param {tabbrowser} tab
  *        given tab where tab sound indicator should appear
  */
@@ -42,6 +44,7 @@ async function waitForTabSoundIndicatorAppears(tab) {
 
 /**
  * Wait until tab sound indicator disappears on the given tab.
+ *
  * @param {tabbrowser} tab
  *        given tab where tab sound indicator should disappear
  */
@@ -62,6 +65,7 @@ async function waitForTabSoundIndicatorDisappears(tab) {
 
 /**
  * Return a new foreground tab loading with an empty file.
+ *
  * @param {boolean} needObserver
  *        If true, sets an observer property on the returned tab. This property
  *        exposes `hasEverUpdated()` which will return a bool indicating if the
@@ -98,6 +102,7 @@ function createSoundIndicatorObserver(tab) {
  * Sythesize mouse hover on the given icon, which would sythesize `mouseover`
  * and `mousemove` event on that. Return a promise that will be resolved when
  * the tooptip element shows.
+ *
  * @param {tab icon} icon
  *        the icon on which we want to mouse hover
  * @param {tooltip element} tooltip
@@ -121,6 +126,7 @@ function hoverIcon(icon, tooltip) {
 /**
  * Leave mouse from the given icon, which would sythesize `mouseout`
  * and `mousemove` event on that.
+ *
  * @param {tab icon} icon
  *        the icon on which we want to mouse hover
  * @param {tooltip element} tooltip
@@ -143,6 +149,7 @@ function leaveIcon(icon) {
 
 /**
  * Sythesize mouse click on the given icon.
+ *
  * @param {tab icon} icon
  *        the icon on which we want to mouse hover
  */
@@ -155,4 +162,53 @@ async function clickIcon(icon) {
 function disableNonTestMouse(disable) {
   let utils = window.windowUtils;
   utils.disableNonTestMouseEvents(disable);
+}
+
+/**
+ * Create a media element in the given tab and point it at fileName. The element
+ * is stored on the content window as `content.media` for playMedia/pauseMedia.
+ */
+function initMediaPlaybackDocument(
+  tab,
+  fileName,
+  { preload, createVideo, muted = false, volume = 1.0 } = {}
+) {
+  return SpecialPowers.spawn(
+    tab.linkedBrowser,
+    [fileName, preload, createVideo, muted, volume],
+    // eslint-disable-next-line no-shadow
+    async (fileName, preload, createVideo, muted, volume) => {
+      if (createVideo) {
+        content.media = content.document.createElement("video");
+      } else {
+        content.media = content.document.createElement("audio");
+      }
+      if (preload) {
+        content.media.preload = preload;
+      }
+      content.media.muted = muted;
+      content.media.volume = volume;
+      content.media.src = fileName;
+    }
+  );
+}
+
+function playMedia(tab, { resolveOnTimeupdate } = {}) {
+  return SpecialPowers.spawn(
+    tab.linkedBrowser,
+    [resolveOnTimeupdate],
+    // eslint-disable-next-line no-shadow
+    async resolveOnTimeupdate => {
+      await content.media.play();
+      if (resolveOnTimeupdate) {
+        await new Promise(r => (content.media.ontimeupdate = r));
+      }
+    }
+  );
+}
+
+function pauseMedia(tab) {
+  return SpecialPowers.spawn(tab.linkedBrowser, [], async _ => {
+    content.media.pause();
+  });
 }

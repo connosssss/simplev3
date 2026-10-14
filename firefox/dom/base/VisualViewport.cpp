@@ -1,20 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VisualViewport.h"
 
+#include "DocumentInlines.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/ScrollContainerFrame.h"
 #include "mozilla/ToString.h"
-#include "nsIDocShell.h"
 #include "nsGlobalWindowInner.h"
+#include "nsIDocShell.h"
+#include "nsPIDOMWindowInlines.h"
 #include "nsPresContext.h"
 #include "nsRefreshDriver.h"
-#include "DocumentInlines.h"
 
 static mozilla::LazyLogModule sVvpLog("visualviewport");
 #define VVP_LOG(...) MOZ_LOG(sVvpLog, LogLevel::Debug, (__VA_ARGS__))
@@ -22,14 +21,43 @@ static mozilla::LazyLogModule sVvpLog("visualviewport");
 using namespace mozilla;
 using namespace mozilla::dom;
 
+class VisualViewport::VisualViewportScrollEndEvent : public Runnable {
+ public:
+  NS_DECL_NSIRUNNABLE
+  explicit VisualViewportScrollEndEvent(VisualViewport* aViewport);
+
+ protected:
+  RefPtr<VisualViewport> mViewport;
+};
+
+class VisualViewport::VisualViewportScrollEvent
+    : public VisualViewportScrollEndEvent {
+ public:
+  NS_DECL_NSIRUNNABLE
+  VisualViewportScrollEvent(VisualViewport* aViewport,
+                            const nsPoint& aPrevVisualOffset,
+                            const nsPoint& aPrevLayoutOffset);
+  const nsPoint& PrevVisualOffset() const { return mPrevVisualOffset; }
+  const nsPoint& PrevLayoutOffset() const { return mPrevLayoutOffset; }
+
+ private:
+  // The VisualViewport "scroll" event is supposed to be fired only when the
+  // *relative* offset between visual and layout viewport changes. The two
+  // viewports are updated independently from each other, though, so the only
+  // thing we can do is note the fact that one of the inputs into the relative
+  // visual viewport offset changed and then check the offset again at the
+  // next refresh driver tick, just before the event is going to fire.
+  // Hopefully, at this point both visual and layout viewport positions have
+  // been updated, so that we're able to tell whether the relative offset did
+  // in fact change or not.
+  const nsPoint mPrevVisualOffset;
+  const nsPoint mPrevLayoutOffset;
+};
+
 VisualViewport::VisualViewport(nsPIDOMWindowInner* aWindow)
     : DOMEventTargetHelper(aWindow) {}
 
-VisualViewport::~VisualViewport() {
-  if (mScrollEvent) {
-    mScrollEvent->Revoke();
-  }
-}
+VisualViewport::~VisualViewport() = default;
 
 /* virtual */
 JSObject* VisualViewport::WrapObject(JSContext* aCx,
@@ -68,12 +96,7 @@ CSSSize VisualViewport::VisualViewportSize() const {
   // Fetch the pres shell after the layout flush, as it might have destroyed it.
   if (PresShell* presShell = GetPresShell()) {
     if (presShell->IsVisualViewportSizeSet()) {
-      DynamicToolbarState state = presShell->GetDynamicToolbarState();
-      size = CSSRect::FromAppUnits(
-          (state == DynamicToolbarState::InTransition ||
-           state == DynamicToolbarState::Collapsed)
-              ? presShell->GetVisualViewportSizeUpdatedByDynamicToolbar()
-              : presShell->GetVisualViewportSize());
+      size = CSSRect::FromAppUnits(presShell->GetVisualViewportSize());
     } else {
       ScrollContainerFrame* sf = presShell->GetRootScrollContainerFrame();
       if (sf) {
@@ -184,96 +207,98 @@ void VisualViewport::FireResizeEvent() {
 
 void VisualViewport::PostScrollEvent(const nsPoint& aPrevVisualOffset,
                                      const nsPoint& aPrevLayoutOffset) {
-  VVP_LOG("%p: PostScrollEvent, prevRelativeOffset=%s (pre-existing: %d)\n",
-          this, ToString(aPrevVisualOffset - aPrevLayoutOffset).c_str(),
-          !!mScrollEvent);
-  nsPresContext* presContext = GetPresContext();
-  if (mScrollEvent && mScrollEvent->HasPresContext(presContext)) {
+  VVP_LOG("%p: PostScrollEvent, prevRelativeOffset=%s\n", this,
+          ToString(aPrevVisualOffset - aPrevLayoutOffset).c_str());
+  nsPresContext* pc = GetPresContext();
+  if (!pc) {
     return;
   }
-
-  if (mScrollEvent) {
-    // prescontext changed, so discard the old scroll event and queue a new one
-    mScrollEvent->Revoke();
-    mScrollEvent = nullptr;
+  auto* ps = pc->PresShell();
+  if (mScrollEventGeneration == ps->GetScrollEventGeneration()) {
+    return;
   }
-
-  // The event constructor will register itself with the refresh driver.
-  if (presContext) {
-    mScrollEvent = new VisualViewportScrollEvent(
-        this, presContext, aPrevVisualOffset, aPrevLayoutOffset);
-    VVP_LOG("%p: PostScrollEvent, created new event\n", this);
-  }
+  RefPtr event =
+      new VisualViewportScrollEvent(this, aPrevVisualOffset, aPrevLayoutOffset);
+  VVP_LOG("%p: Registering PostScroll on %p %p\n", this, pc,
+          pc->RefreshDriver());
+  mScrollEventGeneration = ps->PostScrollEvent(event);
 }
 
 VisualViewport::VisualViewportScrollEvent::VisualViewportScrollEvent(
-    VisualViewport* aViewport, nsPresContext* aPresContext,
-    const nsPoint& aPrevVisualOffset, const nsPoint& aPrevLayoutOffset)
-    : Runnable("VisualViewport::VisualViewportScrollEvent"),
-      mViewport(aViewport),
-      mPresContext(aPresContext),
+    VisualViewport* aViewport, const nsPoint& aPrevVisualOffset,
+    const nsPoint& aPrevLayoutOffset)
+    : VisualViewportScrollEndEvent(aViewport),
       mPrevVisualOffset(aPrevVisualOffset),
-      mPrevLayoutOffset(aPrevLayoutOffset) {
-  VVP_LOG("%p: Registering PostScroll on %p %p\n", aViewport, aPresContext,
-          aPresContext->RefreshDriver());
-  aPresContext->PresShell()->PostScrollEvent(this);
-}
-
-bool VisualViewport::VisualViewportScrollEvent::HasPresContext(
-    nsPresContext* aContext) const {
-  return mPresContext.get() == aContext;
-}
-
-void VisualViewport::VisualViewportScrollEvent::Revoke() {
-  mViewport = nullptr;
-  mPresContext = nullptr;
-}
+      mPrevLayoutOffset(aPrevLayoutOffset) {}
 
 // TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230, bug 1535398)
 MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHODIMP
 VisualViewport::VisualViewportScrollEvent::Run() {
-  if (RefPtr<VisualViewport> viewport = mViewport) {
-    viewport->FireScrollEvent();
+  nsPoint prevVisualOffset = PrevVisualOffset();
+  nsPoint prevLayoutOffset = PrevLayoutOffset();
+  RefPtr pc = mViewport->GetPresContext();
+  if (!pc) {
+    return NS_OK;
+  }
+
+  RefPtr ps = pc->PresShell();
+  if (ps->GetVisualViewportOffset() != prevVisualOffset) {
+    // The internal event will be fired whenever the visual viewport's
+    // *absolute* offset changed, i.e. relative to the page.
+    VVP_LOG("%p: FireScrollEvent, fire mozvisualscroll\n", mViewport.get());
+    WidgetEvent mozEvent(true, eMozVisualScroll);
+    mozEvent.mFlags.mOnlySystemGroupDispatch = true;
+    EventDispatcher::Dispatch(MOZ_KnownLive(mViewport), pc, &mozEvent);
+  }
+
+  // Check whether the relative visual viewport offset actually changed -
+  // maybe both visual and layout viewport scrolled together and there was no
+  // change after all.
+  nsPoint curRelativeOffset =
+      ps->GetVisualViewportOffsetRelativeToLayoutViewport();
+  nsPoint prevRelativeOffset = prevVisualOffset - prevLayoutOffset;
+  VVP_LOG(
+      "%p: FireScrollEvent, curRelativeOffset %s, "
+      "prevRelativeOffset %s\n",
+      mViewport.get(), ToString(curRelativeOffset).c_str(),
+      ToString(prevRelativeOffset).c_str());
+  if (curRelativeOffset != prevRelativeOffset) {
+    VVP_LOG("%p, FireScrollEvent, fire VisualViewport scroll\n",
+            mViewport.get());
+    WidgetGUIEvent event(true, eScroll, nullptr);
+    event.mFlags.mBubbles = false;
+    event.mFlags.mCancelable = false;
+    EventDispatcher::Dispatch(MOZ_KnownLive(mViewport), pc, &event);
   }
   return NS_OK;
 }
 
-void VisualViewport::FireScrollEvent() {
-  MOZ_ASSERT(mScrollEvent);
-  nsPoint prevVisualOffset = mScrollEvent->PrevVisualOffset();
-  nsPoint prevLayoutOffset = mScrollEvent->PrevLayoutOffset();
-  mScrollEvent->Revoke();
-  mScrollEvent = nullptr;
+/* ================= ScrollEnd event handling ================= */
 
-  if (RefPtr<PresShell> presShell = GetPresShell()) {
-    RefPtr<nsPresContext> presContext = GetPresContext();
-
-    if (presShell->GetVisualViewportOffset() != prevVisualOffset) {
-      // The internal event will be fired whenever the visual viewport's
-      // *absolute* offset changed, i.e. relative to the page.
-      VVP_LOG("%p: FireScrollEvent, fire mozvisualscroll\n", this);
-      WidgetEvent mozEvent(true, eMozVisualScroll);
-      mozEvent.mFlags.mOnlySystemGroupDispatch = true;
-      EventDispatcher::Dispatch(this, presContext, &mozEvent);
-    }
-
-    // Check whether the relative visual viewport offset actually changed -
-    // maybe both visual and layout viewport scrolled together and there was no
-    // change after all.
-    nsPoint curRelativeOffset =
-        presShell->GetVisualViewportOffsetRelativeToLayoutViewport();
-    nsPoint prevRelativeOffset = prevVisualOffset - prevLayoutOffset;
-    VVP_LOG(
-        "%p: FireScrollEvent, curRelativeOffset %s, "
-        "prevRelativeOffset %s\n",
-        this, ToString(curRelativeOffset).c_str(),
-        ToString(prevRelativeOffset).c_str());
-    if (curRelativeOffset != prevRelativeOffset) {
-      VVP_LOG("%p, FireScrollEvent, fire VisualViewport scroll\n", this);
-      WidgetGUIEvent event(true, eScroll, nullptr);
-      event.mFlags.mBubbles = false;
-      event.mFlags.mCancelable = false;
-      EventDispatcher::Dispatch(this, presContext, &event);
-    }
+void VisualViewport::PostScrollEndEvent() {
+  if (nsPresContext* pc = GetPresContext()) {
+    RefPtr event = new VisualViewportScrollEndEvent(this);
+    // NOTE(emilio): Unlike the scroll event, scrollend is only posted by a
+    // caller which also has its own generation tracking, so we can avoid
+    // tracking the generation ourselves.
+    (void)pc->PresShell()->PostScrollEvent(event);
   }
+}
+
+VisualViewport::VisualViewportScrollEndEvent::VisualViewportScrollEndEvent(
+    VisualViewport* aViewport)
+    : Runnable("VisualViewport::VisualViewportScrollEvent"),
+      mViewport(aViewport) {}
+
+// TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230, bug 1535398)
+MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHODIMP
+VisualViewport::VisualViewportScrollEndEvent::Run() {
+  VVP_LOG("%p, FireScrollEndEvent, fire VisualViewport scrollend\n",
+          mViewport.get());
+  RefPtr<nsPresContext> presContext = mViewport->GetPresContext();
+  WidgetEvent event(true, eScrollend);
+  event.mFlags.mBubbles = false;
+  event.mFlags.mCancelable = false;
+  EventDispatcher::Dispatch(MOZ_KnownLive(mViewport), presContext, &event);
+  return NS_OK;
 }

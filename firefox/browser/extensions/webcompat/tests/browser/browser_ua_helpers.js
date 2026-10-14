@@ -4,6 +4,7 @@
 
 const ORIG_UA = navigator.userAgent;
 const ORIG_UA_VER = ORIG_UA.match("Firefox/((\d|\.)+)")[1];
+const CURRENT_CHROME_VER = "Chrome/148.0.0.0";
 
 let UA = ORIG_UA;
 
@@ -18,132 +19,132 @@ const WEBKIT = "AppleWebKit/537.36 (KHTML, like Gecko)";
 const SAFARI = " Safari/537.36";
 
 const PREFIX_WIN = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
-const PREFIX_LIN = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64)";
+const PREFIX_LIN = "Mozilla/5.0 (X11; Linux x86_64)";
 const PREFIX_MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)";
-const PREFIX_AND = "Mozilla/5.0 (Linux; Android 6.0; Nexus 7 Build/JSS15Q)";
+const PREFIX_AND = "Mozilla/5.0 (Linux; Android 10; K)";
 
-const PHONE = "Nexus 5 Build/MRA58N";
-const TABLET = "Nexus 7 Build/JSS15Q";
+const PHONE = "K";
+const TABLET = "K";
 
 const DEVICE_APPROPRIATE_TESTS = [
   // test that the OS is carried over if none is specified in the config
   {
     ua: "Linux",
     config: { noFxQuantum: true },
-    expected: `${PREFIX_LIN} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_LIN} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Android",
     config: { noFxQuantum: true },
-    expected: `${PREFIX_AND} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_AND} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Macintosh",
     config: { noFxQuantum: true },
-    expected: `${PREFIX_MAC} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_MAC} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
 
   // test OS overrides
   {
     ua: "Windows",
     config: { OS: "android", noFxQuantum: true },
-    expected: `${PREFIX_AND} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_AND} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Windows",
     config: { OS: "linux", noFxQuantum: true },
-    expected: `${PREFIX_LIN} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_LIN} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Windows",
     config: { OS: "macOS", noFxQuantum: true },
-    expected: `${PREFIX_MAC} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_MAC} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Linux",
     config: { OS: "android", noFxQuantum: true },
-    expected: `${PREFIX_AND} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_AND} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Linux",
     config: { OS: "windows", noFxQuantum: true },
-    expected: `${PREFIX_WIN} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_WIN} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Linux",
     config: { OS: "macOS", noFxQuantum: true },
-    expected: `${PREFIX_MAC} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_MAC} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Macintosh",
     config: { OS: "android", noFxQuantum: true },
-    expected: `${PREFIX_AND} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_AND} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Macintosh",
     config: { OS: "windows", noFxQuantum: true },
-    expected: `${PREFIX_WIN} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_WIN} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Macintosh",
     config: { OS: "linux", noFxQuantum: true },
-    expected: `${PREFIX_LIN} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_LIN} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Android",
     config: { OS: "windows", noFxQuantum: true },
-    expected: `${PREFIX_WIN} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_WIN} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Android",
     config: { OS: "macOS", noFxQuantum: true },
-    expected: `${PREFIX_MAC} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_MAC} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Android",
     config: { OS: "linux", noFxQuantum: true },
-    expected: `${PREFIX_LIN} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_LIN} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
 
   // test that if we don't know what the OS is, we just use Windows
   {
     ua: "X",
     config: {},
-    expected: `${PREFIX_WIN} FxQuantum/58.0 ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_WIN} FxQuantum/58.0 ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
 
   // test noFxQuantum config option
   {
     ua: "X",
     config: { noFxQuantum: false },
-    expected: `${PREFIX_WIN} FxQuantum/58.0 ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_WIN} FxQuantum/58.0 ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "X",
     config: { noFxQuantum: true },
-    expected: `${PREFIX_WIN} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_WIN} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
 
   // test OS=nonLinux
   {
     ua: "Linux",
     config: { OS: "nonLinux", noFxQuantum: true },
-    expected: `${PREFIX_WIN} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_WIN} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Android",
     config: { OS: "nonLinux", noFxQuantum: true },
-    expected: `${PREFIX_AND} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_AND} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Macintosh",
     config: { OS: "nonLinux", noFxQuantum: true },
-    expected: `${PREFIX_MAC} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_MAC} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Windows",
     config: { OS: "nonLinux", noFxQuantum: true },
-    expected: `${PREFIX_WIN} ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `${PREFIX_WIN} ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
 
   // test version config option
@@ -157,80 +158,96 @@ const DEVICE_APPROPRIATE_TESTS = [
   {
     ua: "Windows",
     config: { OS: "android", phone: "PHONE", noFxQuantum: true },
-    expected: `Mozilla/5.0 (Linux; Android 6.0; PHONE) ${WEBKIT} Chrome/130.0.0.0 Mobile${SAFARI}`,
+    expected: `Mozilla/5.0 (Linux; Android 10; PHONE) ${WEBKIT} ${CURRENT_CHROME_VER} Mobile${SAFARI}`,
   },
   {
     ua: "Windows",
     config: { OS: "android", tablet: "TABLET", noFxQuantum: true },
-    expected: `Mozilla/5.0 (Linux; Android 6.0; TABLET) ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `Mozilla/5.0 (Linux; Android 10; TABLET) ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
 
   // test an android phone spoofing a tablet and vice versa
   {
     ua: "Android 8.8.8 Mobile",
     config: { noFxQuantum: true, tablet: "TABLET" },
-    expected: `Mozilla/5.0 (Linux; Android 8.8.8; TABLET) ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `Mozilla/5.0 (Linux; Android 10; TABLET) ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Android 8.8.8 Mobile",
     config: { noFxQuantum: true, tablet: true },
-    expected: `Mozilla/5.0 (Linux; Android 8.8.8; ${TABLET}) ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `Mozilla/5.0 (Linux; Android 10; ${TABLET}) ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
   {
     ua: "Android 8.8.8",
     config: { noFxQuantum: true, phone: "PHONE" },
-    expected: `Mozilla/5.0 (Linux; Android 8.8.8; PHONE) ${WEBKIT} Chrome/130.0.0.0 Mobile${SAFARI}`,
+    expected: `Mozilla/5.0 (Linux; Android 10; PHONE) ${WEBKIT} ${CURRENT_CHROME_VER} Mobile${SAFARI}`,
   },
   {
     ua: "Android 8.8.8",
     config: { noFxQuantum: true, phone: true },
-    expected: `Mozilla/5.0 (Linux; Android 8.8.8; ${PHONE}) ${WEBKIT} Chrome/130.0.0.0 Mobile${SAFARI}`,
+    expected: `Mozilla/5.0 (Linux; Android 10; ${PHONE}) ${WEBKIT} ${CURRENT_CHROME_VER} Mobile${SAFARI}`,
   },
 
   // test that accidentally spoofing both phone and tablet just picks a phone
   {
     ua: "Android 8.8.8",
     config: { noFxQuantum: true, phone: true, tablet: true },
-    expected: `Mozilla/5.0 (Linux; Android 8.8.8; ${PHONE}) ${WEBKIT} Chrome/130.0.0.0 Mobile${SAFARI}`,
+    expected: `Mozilla/5.0 (Linux; Android 10; ${PHONE}) ${WEBKIT} ${CURRENT_CHROME_VER} Mobile${SAFARI}`,
   },
 
   // test android version number option
   {
     ua: "Android 5.0 Mobile",
     config: { OS: "android", androidVersion: "VER", noFxQuantum: true },
-    expected: `Mozilla/5.0 (Linux; Android VER; ${PHONE}) ${WEBKIT} Chrome/130.0.0.0 Mobile${SAFARI}`,
+    expected: `Mozilla/5.0 (Linux; Android VER; ${PHONE}) ${WEBKIT} ${CURRENT_CHROME_VER} Mobile${SAFARI}`,
   },
   {
     ua: "Android 5.0",
     config: { OS: "android", androidVersion: "VER", noFxQuantum: true },
-    expected: `Mozilla/5.0 (Linux; Android VER; ${TABLET}) ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    expected: `Mozilla/5.0 (Linux; Android VER; ${TABLET}) ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
 
-  // test android version numbers are detected if not given
+  // test phone and tablet device-string overrides
   {
-    ua: "Android 8.8.8",
-    config: { OS: "android", phone: "DEV", noFxQuantum: true },
-    expected: `Mozilla/5.0 (Linux; Android 8.8.8; DEV) ${WEBKIT} Chrome/130.0.0.0 Mobile${SAFARI}`,
+    ua: "Android 8.8.8 (Tablet)",
+    config: { OS: "android", phone: true, noFxQuantum: true },
+    expected: `Mozilla/5.0 (Linux; Android 10; K) ${WEBKIT} ${CURRENT_CHROME_VER} Mobile${SAFARI}`,
   },
   {
-    ua: "Android 8.8.8 (tablet)",
-    config: { OS: "android", noFxQuantum: true },
-    expected: `Mozilla/5.0 (Linux; Android 8.8.8; ${TABLET}) ${WEBKIT} Chrome/130.0.0.0${SAFARI}`,
+    ua: "Android 8.8.8 (Tablet)",
+    config: { OS: "android", phone: "DEV", noFxQuantum: true },
+    expected: `Mozilla/5.0 (Linux; Android 10; DEV) ${WEBKIT} ${CURRENT_CHROME_VER} Mobile${SAFARI}`,
+  },
+  {
+    ua: "Android 8.8.8",
+    config: { OS: "android", tablet: true, noFxQuantum: true },
+    expected: `Mozilla/5.0 (Linux; Android 10; K) ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
+  },
+  {
+    ua: "Android 8.8.8",
+    config: { OS: "android", tablet: "DEV", noFxQuantum: true },
+    expected: `Mozilla/5.0 (Linux; Android 10; DEV) ${WEBKIT} ${CURRENT_CHROME_VER}${SAFARI}`,
   },
 ];
 
 const TESTS = {
   addChrome(helper) {
     UA = "X";
-    is(helper(), `X ${WEBKIT} Chrome/130.0.0.0 Safari/537.36`);
+    is(helper(), `X ${WEBKIT} ${CURRENT_CHROME_VER} Safari/537.36`);
     is(helper(UA, "VER"), `X ${WEBKIT} Chrome/VER Safari/537.36`);
 
     UA = "X Mobile";
-    is(helper(), `X Mobile ${WEBKIT} Chrome/130.0.0.0 Mobile Safari/537.36`);
+    is(
+      helper(),
+      `X Mobile ${WEBKIT} ${CURRENT_CHROME_VER} Mobile Safari/537.36`
+    );
     is(helper(UA, "VER"), `X Mobile ${WEBKIT} Chrome/VER Mobile Safari/537.36`);
 
     UA = "X Tablet";
-    is(helper(), `X Tablet ${WEBKIT} Chrome/130.0.0.0 Mobile Safari/537.36`);
+    is(
+      helper(),
+      `X Tablet ${WEBKIT} ${CURRENT_CHROME_VER} Mobile Safari/537.36`
+    );
     is(helper(UA, "VER"), `X Tablet ${WEBKIT} Chrome/VER Mobile Safari/537.36`);
   },
   addGecko(helper) {
@@ -384,17 +401,109 @@ const TESTS = {
     UA = "Firefox/1.0";
     is(
       helper(),
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Firefox/1.0 AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15"
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Safari/605.1.15"
     );
     is(
       helper({ osVersion: "1.2", version: "VER", webkitVersion: "WKVER" }),
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 1_2) AppleWebKit/WKVER (KHTML, like Gecko) Version/VER Safari/WKVER"
+    );
+    is(
+      helper({
+        osVersion: "1.2",
+        version: "VER",
+        webkitVersion: "WKVER",
+        withFirefox: true,
+      }),
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 1_2) Firefox/1.0 AppleWebKit/WKVER (KHTML, like Gecko) Version/VER Safari/WKVER"
+    );
+    is(
+      helper({
+        osVersion: "1.2",
+        version: "VER",
+        webkitVersion: "WKVER",
+        withFxQuantum: true,
+      }),
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 1_2) FxQuantum/1.0 AppleWebKit/WKVER (KHTML, like Gecko) Version/VER Safari/WKVER"
     );
   },
   windows(helper) {
     UA = "X rv:1.1 Y";
     is(helper("X () Y"), "X () Y");
     is(helper("X (x) Y"), "X (Windows NT 10.0; Win64; x64; rv:1.1) Y");
+  },
+  changeBrowserVersion(helper) {
+    UA = ORIG_UA.replaceAll(ORIG_UA_VER, "995.5");
+
+    is(helper(), undefined, "No-op");
+    is(helper(UA), UA, "No-op 2");
+    is(helper(UA, {}), UA, "No-op 3");
+    is(
+      helper(UA, { browser: "", version: "1" }),
+      UA,
+      "No-op 4 (Missing browser/ver)"
+    );
+    is(
+      helper(UA, { browser: "FireFox", version: "140" }),
+      UA,
+      "No-op 5 Missing browser/ver)"
+    );
+
+    is(helper(UA, { browser: "Firefox", version: null }), UA, "Invalid 1");
+    is(helper(UA, { browser: "Firefox", version: undefined }), UA, "Invalid 2");
+    is(helper(UA, { browser: undefined, version: "1" }), UA, "Invalid 4");
+    is(helper(UA, { browser: null, version: "1" }), UA, "Invalid 5");
+    is(helper(UA, { browser: "Chrome", version: "140" }), UA, "Invalid 6");
+
+    is(
+      helper(UA, { browser: "Firefox", version: "" }),
+      UA.replaceAll("995.5", ""),
+      "Firefox/(empty string)"
+    );
+    is(
+      helper(UA, { browser: "Firefox", version: "XXX" }),
+      UA.replaceAll("995.5", "XXX"),
+      "Firefox/XXX"
+    );
+    is(
+      helper(UA, { browser: "Firefox", version: "140" }),
+      UA.replaceAll("995.5", "140"),
+      "Firefox/140"
+    );
+    is(
+      helper(UA, { browser: "Firefox", version: "+2.2" }),
+      UA.replaceAll("995.5", "997.7"),
+      "Firefox/+2.2"
+    );
+    is(
+      helper(UA, { browser: "Firefox", version: "-2.2" }),
+      UA.replaceAll("995.5", "993.3"),
+      "Firefox/+2.2"
+    );
+
+    is(
+      helper("rv:123.0.0.0 Chrome/123.0.0.0", {
+        browser: "Chrome",
+        version: "140.2",
+      }),
+      "rv:140.2 Chrome/140.2",
+      "Chrome/140.2"
+    );
+    is(
+      helper("rv:3.2.1.0 Chrome/3.2.1.0", {
+        browser: "Chrome",
+        version: "+1.2.3.4",
+      }),
+      "rv:4.4.4.4 Chrome/4.4.4.4",
+      "Chrome/+1.2.3.4"
+    );
+    is(
+      helper("rv:3.2.1.0 Chrome/3.2.1.0", {
+        browser: "Chrome",
+        version: "-3.2.1.0",
+      }),
+      "rv:0.0.0.0 Chrome/0.0.0.0",
+      "Chrome/-3.2.1.0"
+    );
   },
 };
 

@@ -3,6 +3,10 @@ head = ""
 
 ["test_assert.js"]
 
+["test_mochia.js"]
+
 ["test_mockRegistrar.js"]
 
 ["test_structuredlog.js"]
+
+["test_structuredlog_markers.js"]

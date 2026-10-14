@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,6 +9,8 @@
 #include "CommonSocketControl.h"
 #include "TLSClientAuthCertSelection.h"
 #include "mozilla/Casting.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/Span.h"
 #include "nsNSSIOLayer.h"
 #include "nsThreadUtils.h"
 
@@ -156,26 +157,6 @@ class NSSSocketControl final : public CommonSocketControl {
     return mEchExtensionStatus;
   }
 
-  void WillSendMlkemShare() {
-    COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
-    mSentMlkemShare = true;
-  }
-
-  bool SentMlkemShare() {
-    COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
-    return mSentMlkemShare;
-  }
-
-  void SetHasTls13HandshakeSecrets() {
-    COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
-    mHasTls13HandshakeSecrets = true;
-  }
-
-  bool HasTls13HandshakeSecrets() {
-    COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
-    return mHasTls13HandshakeSecrets;
-  }
-
   bool GetJoined() {
     COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
     return mJoined;
@@ -205,6 +186,7 @@ class NSSSocketControl final : public CommonSocketControl {
     COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
     return mCertVerificationState == WaitingForCertVerification;
   }
+
   void AddPlaintextBytesRead(uint64_t val) {
     COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
     mPlaintextBytesRead += val;
@@ -234,89 +216,79 @@ class NSSSocketControl final : public CommonSocketControl {
     mMACAlgorithmUsed = mac;
   }
 
-  void SetShortWritePending(int32_t amount, unsigned char data) {
+  void SetShortWritePending(const void* data, size_t amount) {
     COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
-    mIsShortWritePending = true;
-    mShortWriteOriginalAmount = amount;
-    mShortWritePendingByte = data;
+    MOZ_ASSERT(mMaybeShortWrite.isNothing());
+    nsTArray<uint8_t> shortWrite(amount);
+    shortWrite.AppendElements(
+        reinterpret_cast<uint8_t*>(const_cast<void*>(data)), amount);
+    mMaybeShortWrite.emplace(std::move(shortWrite));
   }
 
   bool IsShortWritePending() {
     COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
-    return mIsShortWritePending;
+    return mMaybeShortWrite.isSome();
   }
 
-  unsigned char const* GetShortWritePendingByteRef() {
+  size_t ResetShortWritePending() {
     COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
-    return &mShortWritePendingByte;
+    MOZ_ASSERT(mMaybeShortWrite.isSome());
+    size_t shortWriteLength = mMaybeShortWrite->Length();
+    mMaybeShortWrite.reset();
+    return shortWriteLength;
   }
 
-  int32_t ResetShortWritePending() {
+  // Ensure that the caller is trying to send the same data as it was
+  // previously when we hit the short-write. To do otherwise would be an error.
+  const void* CheckShortWriteBuffer(const void* data, int32_t amount) {
     COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
-    mIsShortWritePending = false;
-    return mShortWriteOriginalAmount;
+    MOZ_ASSERT(mMaybeShortWrite.isSome());
+    if (mMaybeShortWrite.isNothing()) {
+      return nullptr;
+    }
+    MOZ_ASSERT(amount > 0);
+    if (amount <= 0) {
+      return nullptr;
+    }
+    if (static_cast<size_t>(amount) < mMaybeShortWrite->Length()) {
+      return nullptr;
+    }
+    if (mozilla::Span(*mMaybeShortWrite) !=
+        mozilla::Span(reinterpret_cast<uint8_t*>(const_cast<void*>(data)),
+                      mMaybeShortWrite->Length())) {
+      return nullptr;
+    }
+    // Return a pointer to the byte that has yet to be written.
+    return static_cast<const uint8_t*>(data) + mMaybeShortWrite->Length() - 1;
   }
-
-#ifdef DEBUG
-  // These helpers assert that the caller does try to send the same data
-  // as it was previously when we hit the short-write.  This is a measure
-  // to make sure we communicate correctly to the consumer.
-  void RememberShortWrittenBuffer(const unsigned char* data) {
-    COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
-    mShortWriteBufferCheck =
-        mozilla::MakeUnique<char[]>(mShortWriteOriginalAmount);
-    memcpy(mShortWriteBufferCheck.get(), data, mShortWriteOriginalAmount);
-  }
-  void CheckShortWrittenBuffer(const unsigned char* data, int32_t amount) {
-    COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
-    if (!mShortWriteBufferCheck) return;
-    MOZ_ASSERT(amount >= mShortWriteOriginalAmount,
-               "unexpected amount length after short write");
-    MOZ_ASSERT(
-        !memcmp(mShortWriteBufferCheck.get(), data, mShortWriteOriginalAmount),
-        "unexpected buffer content after short write");
-    mShortWriteBufferCheck = nullptr;
-  }
-#endif
 
   nsresult SetResumptionTokenFromExternalCache(PRFileDesc* fd);
 
   void SetPreliminaryHandshakeInfo(const SSLChannelInfo& channelInfo,
                                    const SSLCipherSuiteInfo& cipherInfo);
 
-  void SetPendingSelectClientAuthCertificate(
-      nsCOMPtr<nsIRunnable>&& selectClientAuthCertificate) {
+  // Cancels an unclaimed (i.e. speculative) connection.
+  bool CancelIfNotClaimed() {
     COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
-    MOZ_LOG(
-        gPIPNSSLog, mozilla::LogLevel::Debug,
-        ("[%p] setting pending select client auth certificate", (void*)mFd));
-    // If the connection corresponding to this socket hasn't been claimed, it
-    // is a speculative connection. The connection will block until the "choose
-    // a client auth certificate" dialog has been shown. The dialog will only
-    // be shown when this connection gets claimed. However, necko will never
-    // claim the connection as long as it is blocking. Thus, this connection
-    // can't proceed, so it's best to cancel it. Necko will create a new,
-    // non-speculative connection instead.
     if (!mClaimed) {
       SetCanceled(PR_CONNECT_RESET_ERROR);
-    } else {
-      mPendingSelectClientAuthCertificate =
-          std::move(selectClientAuthCertificate);
+    }
+    return !mClaimed;
+  }
+
+  void SetClientAuthCertificateRequest(
+      mozilla::UniqueCERTCertificate&& serverCertificate,
+      nsTArray<nsTArray<uint8_t>>&& caNames) {
+    COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
+    mClientAuthCertificateRequest.emplace(ClientAuthCertificateRequest{
+        std::move(serverCertificate), std::move(caNames)});
+    // Let HE pause other racers before PSM may show a cert dialog.
+    if (mTlsHandshakeCallback) {
+      (void)mTlsHandshakeCallback->ClientAuthCertificateRequested();
     }
   }
 
-  void MaybeDispatchSelectClientAuthCertificate() {
-    COMMON_SOCKET_CONTROL_ASSERT_ON_OWNING_THREAD();
-    if (!IsWaitingForCertVerification() && mClaimed &&
-        mPendingSelectClientAuthCertificate) {
-      MOZ_LOG(gPIPNSSLog, mozilla::LogLevel::Debug,
-              ("[%p] dispatching pending select client auth certificate",
-               (void*)mFd));
-      mozilla::Unused << NS_DispatchToMainThread(
-          mPendingSelectClientAuthCertificate);
-      mPendingSelectClientAuthCertificate = nullptr;
-    }
-  }
+  void MaybeSelectClientAuthCertificate();
 
  private:
   ~NSSSocketControl() = default;
@@ -340,28 +312,14 @@ class NSSSocketControl final : public CommonSocketControl {
   bool mFalseStartCallbackCalled;
   bool mFalseStarted;
   bool mIsFullHandshake;
+  bool mDrewResumptionToken;
   bool mNotedTimeUntilReady;
   EchExtensionStatus mEchExtensionStatus;  // Currently only used for telemetry.
-  bool mSentMlkemShare;
-  bool mHasTls13HandshakeSecrets;
 
-  // True when SSL layer has indicated an "SSL short write", i.e. need
-  // to call on send one or more times to push all pending data to write.
-  bool mIsShortWritePending;
-
-  // These are only valid if mIsShortWritePending is true.
-  //
-  // Value of the last byte pending from the SSL short write that needs
-  // to be passed to subsequent calls to send to perform the flush.
-  unsigned char mShortWritePendingByte;
-
-  // Original amount of data the upper layer has requested to write to
-  // return after the successful flush.
-  int32_t mShortWriteOriginalAmount;
-
-#ifdef DEBUG
-  mozilla::UniquePtr<char[]> mShortWriteBufferCheck;
-#endif
+  // If libssl has indicated a "short write", the layer above PSM must retry
+  // sending the exact same data. If this is Some, all but the last byte has
+  // already been written to libssl.
+  mozilla::Maybe<nsTArray<uint8_t>> mMaybeShortWrite;
 
   // mKEA* are used in false start and http/2 detetermination
   // Values are from nsITLSSocketControl
@@ -373,8 +331,19 @@ class NSSSocketControl final : public CommonSocketControl {
   mozilla::TimeStamp mSocketCreationTimestamp;
   uint64_t mPlaintextBytesRead;
 
+  // Whether or not this connection has been claimed. If it has not been
+  // claimed, this is a speculative connection.
   bool mClaimed;
-  nsCOMPtr<nsIRunnable> mPendingSelectClientAuthCertificate;
+  // When a server requests a client authentication certificate, the server's
+  // certificate may not have been verified yet. In order to prevent any
+  // certificate dialogs from appearing before verification succeeds (and to
+  // prevent them altogether if it fails), stash the information relevant to
+  // selecting a certificate until it has succeeded.
+  struct ClientAuthCertificateRequest {
+    mozilla::UniqueCERTCertificate mServerCertificate;
+    nsTArray<nsTArray<uint8_t>> mCANames;
+  };
+  mozilla::Maybe<ClientAuthCertificateRequest> mClientAuthCertificateRequest;
 
   // Regarding the client certificate message in the TLS handshake, RFC 5246
   // (TLS 1.2) says:

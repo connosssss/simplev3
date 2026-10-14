@@ -3,25 +3,20 @@
 #name: newssite-applink-startup
 #owner: perftest
 #description: Runs the newssite applink startup(cvne) test for chrome/fenix
+#options: {"default": {"hooks": "testing/performance/mobile-startup/hooks_opencv.py"}}
 
-# Path to the Python script
 SCRIPT_PATH="testing/performance/mobile-startup/android_startup_videoapplink.py"
 
-# Start up a local http server.
-$PYTHON_PATH_SHELL_SCRIPT -m http.server --directory testing/performance/mobile-startup/newssite-nuxt \
-    > $TESTING_DIR/server.log 2>&1 &
-SERVER_PID=$!
+source testing/performance/mobile-startup/newssite-setup.sh
 
-echo "HTTP server started with PID $SERVER_PID, logs are in server.log"
-
-# Reroute localhost:8000 on the device to the host.
-adb reverse tcp:8000 tcp:8000
+start_newssite_server
 
 # Run the Python script
-$PYTHON_PATH_SHELL_SCRIPT $SCRIPT_PATH $APP cold_view_nav_end http://localhost:8000
+$PYTHON_PATH_SHELL_SCRIPT $SCRIPT_PATH $APP cold_view_nav_end $TEST_URL
+TEST_STATUS=$?
 
-# Remove all reverse rules
-adb reverse --remove-all
+stop_newssite_server
 
-# Kill python server
-kill $SERVER_PID
+# Propagate the test status so the harness reports the script failure instead
+# of a missing metrics error.
+exit $TEST_STATUS

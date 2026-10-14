@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,11 +5,11 @@
 #include "mozilla/TimingParams.h"
 
 #include "mozilla/AnimationUtils.h"
+#include "mozilla/ServoCSSParser.h"
 #include "mozilla/dom/AnimatableBinding.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/KeyframeAnimationOptionsBinding.h"
 #include "mozilla/dom/KeyframeEffectBinding.h"
-#include "mozilla/ServoCSSParser.h"
 
 namespace mozilla {
 
@@ -80,7 +78,7 @@ TimingParams TimingParams::FromEffectTiming(
   TimingParams result;
 
   Maybe<StickyTimeDuration> duration =
-      TimingParams::ParseDuration(aEffectTiming.mDuration, aRv);
+      TimingParams::CheckedDuration(aEffectTiming.mDuration, aRv);
   if (aRv.Failed()) {
     return result;
   }
@@ -98,7 +96,7 @@ TimingParams TimingParams::FromEffectTiming(
     return result;
   }
 
-  result.mDuration = duration;
+  result.mDuration = std::move(duration);
   result.mDelay = TimeDuration::FromMilliseconds(aEffectTiming.mDelay);
   result.mEndDelay = TimeDuration::FromMilliseconds(aEffectTiming.mEndDelay);
   result.mIterations = aEffectTiming.mIterations;
@@ -125,7 +123,7 @@ TimingParams TimingParams::MergeOptionalEffectTiming(
   Maybe<StickyTimeDuration> duration;
   if (aEffectTiming.mDuration.WasPassed()) {
     duration =
-        TimingParams::ParseDuration(aEffectTiming.mDuration.Value(), aRv);
+        TimingParams::CheckedDuration(aEffectTiming.mDuration.Value(), aRv);
     if (aRv.Failed()) {
       return result;
     }
@@ -157,7 +155,7 @@ TimingParams TimingParams::MergeOptionalEffectTiming(
   // Assign values
 
   if (aEffectTiming.mDuration.WasPassed()) {
-    result.mDuration = duration;
+    result.mDuration = std::move(duration);
   }
   if (aEffectTiming.mDelay.WasPassed()) {
     result.mDelay =
@@ -180,7 +178,7 @@ TimingParams TimingParams::MergeOptionalEffectTiming(
     result.mFill = aEffectTiming.mFill.Value();
   }
   if (aEffectTiming.mEasing.WasPassed()) {
-    result.mFunction = easing;
+    result.mFunction = std::move(easing);
   }
 
   result.Update();
@@ -220,18 +218,41 @@ bool TimingParams::operator==(const TimingParams& aOther) const {
 // implementation here ignores the case of percentage of start delay, end delay,
 // and duration because Gecko doesn't support them.
 //
-// FIXME: Bug 1804775. We may have to update the calculation here after we
-// introduce animaiton ranges.
-//
 // [1]
-// https://drafts.csswg.org/web-animations-2/#time-based-animation-to-a-proportional-animation
+// https://drafts.csswg.org/web-animations-2/#normalize-specified-timing
 // [2] https://chromium-review.googlesource.com/c/chromium/src/+/2992387
 TimingParams TimingParams::Normalize(
     const TimeDuration& aTimelineDuration) const {
-  MOZ_ASSERT(aTimelineDuration,
-             "the timeline duration of scroll-timeline is always non-zero now");
-
   TimingParams normalizedTiming(*this);
+
+  auto ComputeIntrinsicIterationDuration = [&](const TimeDuration& aStartDelay,
+                                               const TimeDuration& aEndDelay) {
+    // https://drafts.csswg.org/web-animations-2/#intrinsic-iteration-duration
+    // If the animation effect is a group effect,
+    //   ...
+    // If the animation effect is a sequence effect,
+    //   ...
+    // If timeline duration is unresolved or iteration count is zero,
+    //   Return 0
+    // Otherwise
+    //   Return (100% - start delay - end delay) / iteration count
+    // Note: The caller makes sure the timeline duration is resolved.
+    if (std::isnan(mIterations) || std::isinf(mIterations) ||
+        mIterations == 0.0) {
+      // Since mIteration could be NaN (from JS) or +/-Infinity, so we set it to
+      // 0 for all edge cases.
+      // Note that WebKit also set 0% duration for the infinity iteration count.
+      return TimeDuration();
+    }
+    // Note: |aTimelineDuration| should be always 100% since this function gets
+    // called only for finite timelines. However, |aTimelineDuration| is not a
+    // percentage type (i.e. we use an integer value to represent 100%), and it
+    // is adjusted by animation ranges, so it could be 0. This should be fine
+    // since it is possible to have a zero active duration after applying the
+    // animation ranges.
+    return (aTimelineDuration - aStartDelay - aEndDelay)
+        .MultDouble(1.0 / mIterations);
+  };
 
   // Handle iteration duration value of "auto" first.
   if (!mDuration) {
@@ -240,10 +261,9 @@ TimingParams TimingParams::Normalize(
     //   and proportions.
     normalizedTiming.mDelay = TimeDuration();
     normalizedTiming.mEndDelay = TimeDuration();
-    // FIXME: Bug 1804775. We may have to tweak here once we introduce timeline
-    // range (e.g. animation-range-{start|end}). For now, we use the default
-    // timeline duration as the normalized duration of this timing.
-    normalizedTiming.mDuration.emplace(aTimelineDuration);
+    // Use intrinsic iteration duration.
+    normalizedTiming.mDuration = Some(ComputeIntrinsicIterationDuration(
+        normalizedTiming.mDelay, normalizedTiming.mEndDelay));
     normalizedTiming.Update();
     return normalizedTiming;
   }
@@ -254,6 +274,7 @@ TimingParams TimingParams::Normalize(
     // FIXME: The spec doesn't mention this case, so we might have to update
     // this based on the spec issue,
     // https://github.com/w3c/csswg-drafts/issues/7459.
+    // https://github.com/w3c/csswg-drafts/issues/11276
     normalizedTiming.mDelay = TimeDuration();
     normalizedTiming.mEndDelay = TimeDuration();
     normalizedTiming.mDuration = Some(TimeDuration());
@@ -270,19 +291,30 @@ TimingParams TimingParams::Normalize(
     // FIXME: The spec doesn't mention this case, so we might have to update
     // this based on the spec issue,
     // https://github.com/w3c/csswg-drafts/issues/7459.
+    // https://github.com/w3c/csswg-drafts/issues/11276
     normalizedTiming.mDelay = TimeDuration();
     normalizedTiming.mEndDelay = TimeDuration();
-    normalizedTiming.mDuration =
-        Some(aTimelineDuration.MultDouble(1.0 / mIterations));
+    normalizedTiming.mDuration = Some(ComputeIntrinsicIterationDuration(
+        normalizedTiming.mDelay, normalizedTiming.mEndDelay));
   } else {
     // Convert to percentages then multiply by the timeline duration.
     const double endTimeInSec = mEndTime.ToSeconds();
-    normalizedTiming.mDelay =
-        aTimelineDuration.MultDouble(mDelay.ToSeconds() / endTimeInSec);
-    normalizedTiming.mEndDelay =
-        aTimelineDuration.MultDouble(mEndDelay.ToSeconds() / endTimeInSec);
     normalizedTiming.mDuration = Some(StickyTimeDuration(
         aTimelineDuration.MultDouble(mDuration->ToSeconds() / endTimeInSec)));
+
+    if (*normalizedTiming.mDuration == StickyTimeDuration::Forever()) {
+      // The multiplication above overflowed, so the normalized iteration
+      // duration is effectively infinite. As in the mEndTime == Forever() case
+      // above, the start and end delays are strictly finite and so normalize to
+      // zero in this limit.
+      normalizedTiming.mDelay = TimeDuration();
+      normalizedTiming.mEndDelay = TimeDuration();
+    } else {
+      normalizedTiming.mDelay =
+          aTimelineDuration.MultDouble(mDelay.ToSeconds() / endTimeInSec);
+      normalizedTiming.mEndDelay =
+          aTimelineDuration.MultDouble(mEndDelay.ToSeconds() / endTimeInSec);
+    }
   }
 
   normalizedTiming.Update();

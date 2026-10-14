@@ -21,7 +21,7 @@ class MissingVCSExtension(MissingVCSInfo):
     def __init__(self, ext):
         self.ext = ext
         msg = f"Could not detect required extension '{self.ext}'"
-        super(MissingVCSExtension, self).__init__(msg)
+        super().__init__(msg)
 
 
 class InvalidRepoPath(Exception):
@@ -35,3 +35,10 @@ class MissingUpstreamRepo(Exception):
 class CannotDeleteFromRootOfRepositoryException(Exception):
     """Represents that the code attempted to delete all files from the root of
     the repository, which is not permitted."""
+
+
+class StaleWorkspaceError(Exception):
+    """Raised when the jj working copy is out of sync with its operation log
+    and must be updated (e.g. via `jj workspace update-stale`) before further
+    jj commands can succeed.
+    """

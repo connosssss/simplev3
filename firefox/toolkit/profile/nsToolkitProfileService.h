@@ -1,6 +1,3 @@
-
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -25,6 +22,7 @@ struct CurrentProfileData {
   nsCString mPath;
   nsCString mStoreID;
   bool mShowSelector;
+  bool mIsRelative;
 };
 
 struct IniData {
@@ -94,8 +92,10 @@ class nsToolkitProfileService final : public nsIToolkitProfileService {
                                 bool* aWasDefaultSelection);
   nsresult CreateResetProfile(nsIToolkitProfile** aNewProfile);
   nsresult ApplyResetProfile(nsIToolkitProfile* aOldProfile);
+  bool HasShowProfileSelector();
   void UpdateCurrentProfile();
   void CompleteStartup();
+  const nsACString& ProfileSelectionReason();
 
   using AsyncFlushPromise =
       mozilla::MozPromise<bool /* ignored */, nsresult, false>;
@@ -110,31 +110,29 @@ class nsToolkitProfileService final : public nsIToolkitProfileService {
 
   nsresult Init();
 
-  nsresult CreateTimesInternal(nsIFile* profileDir);
+  nsresult CreateTimesInternal(nsIFile* profileDir, const nsACString& aSource);
   void GetProfileByDir(nsIFile* aRootDir, nsIFile* aLocalDir,
                        nsToolkitProfile** aResult);
   already_AddRefed<nsToolkitProfile> GetProfileByStoreID(
       const nsACString& aStoreID);
-
-  nsresult GetProfileDescriptor(nsIFile* aRootDir, nsACString& aDescriptor,
-                                bool* aIsRelative);
-  nsresult GetProfileDescriptor(nsToolkitProfile* aProfile,
-                                nsACString& aDescriptor, bool* aIsRelative);
+  nsresult GetProfileDescriptor(nsToolkitProfile* aProfile, bool* aIsRelative,
+                                nsACString& aDescriptor);
   bool IsProfileForCurrentInstall(nsToolkitProfile* aProfile);
   void ClearProfileFromOtherInstalls(nsToolkitProfile* aProfile);
   nsresult MaybeMakeDefaultDedicatedProfile(nsToolkitProfile* aProfile,
                                             bool* aResult);
   bool IsSnapEnvironment();
   bool UseLegacyProfiles();
-  nsresult CreateDefaultProfile(nsToolkitProfile** aResult);
+  nsresult CreateDefaultProfile(const nsACString& aSource,
+                                nsToolkitProfile** aResult);
   nsresult CreateUniqueProfile(nsIFile* aRootDir, const nsACString& aNamePrefix,
+                               const nsACString& aSource,
                                nsToolkitProfile** aResult);
   nsresult CreateProfile(nsIFile* aRootDir, const nsACString& aName,
-                         nsToolkitProfile** aResult);
+                         const nsACString& aSource, nsToolkitProfile** aResult);
   already_AddRefed<nsToolkitProfile> GetProfileByName(const nsACString& aName);
   void SetNormalDefault(nsToolkitProfile* aProfile);
   already_AddRefed<nsToolkitProfile> GetDefaultProfile();
-  nsresult GetLocalDirFromRootDir(nsIFile* aRootDir, nsIFile** aResult);
   void FlushProfileData(
       const nsMainThreadPtrHandle<nsStartupLock>& aStartupLock,
       const CurrentProfileData* aProfileInfo);
@@ -194,8 +192,10 @@ class nsToolkitProfileService final : public nsIToolkitProfileService {
   // Keep track of some attributes of the databases so we can tell if another
   // process has changed them.
   bool mProfileDBExists;
+  bool mProfileDBReadFailed;
   int64_t mProfileDBFileSize;
   PRTime mProfileDBModifiedTime;
+  nsCString mIniStatus;
 
   // A background task queue for the async flushing operations.
   nsCOMPtr<nsISerialEventTarget> mAsyncQueue;

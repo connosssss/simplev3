@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -23,20 +21,20 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "mozilla/RoundedMulDiv.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/Uptime.h"
 
-// Estimate of the smallest duration of time we can measure.
-static uint64_t sResolution;
-static uint64_t sResolutionSigDigs;
-
-static const uint64_t kNsPerMs = 1000000;
 static const uint64_t kUsPerSec = 1000000;
 static const double kNsPerMsd = 1000000.0;
 static const double kNsPerSecd = 1000000000.0;
 
 static bool gInitialized = false;
-static double sNsPerTick;
+static double sNsPerTickd;
+// Exact mach timebase ratio (nanoseconds = ticks * sNumer / sDenom), kept
+// alongside the precomputed double so ToTicksAtRate can avoid float rounding.
+static uint32_t sNumer = 0;
+static uint32_t sDenom = 0;
 
 static uint64_t ClockTime() {
   // mach_absolute_time is it when it comes to ticks on the Mac.  Other calls
@@ -49,53 +47,17 @@ static uint64_t ClockTime() {
   return mach_absolute_time();
 }
 
-static uint64_t ClockResolutionNs() {
-  uint64_t start = ClockTime();
-  uint64_t end = ClockTime();
-  uint64_t minres = (end - start);
-
-  // 10 total trials is arbitrary: what we're trying to avoid by
-  // looping is getting unlucky and being interrupted by a context
-  // switch or signal, or being bitten by paging/cache effects
-  for (int i = 0; i < 9; ++i) {
-    start = ClockTime();
-    end = ClockTime();
-
-    uint64_t candidate = (start - end);
-    if (candidate < minres) {
-      minres = candidate;
-    }
-  }
-
-  if (0 == minres) {
-    // measurable resolution is either incredibly low, ~1ns, or very
-    // high.  fall back on NSPR's resolution assumption
-    minres = 1 * kNsPerMs;
-  }
-
-  return minres;
-}
-
 namespace mozilla {
 
 double BaseTimeDurationPlatformUtils::ToSeconds(int64_t aTicks) {
   MOZ_ASSERT(gInitialized, "calling TimeDuration too early");
-  return (aTicks * sNsPerTick) / kNsPerSecd;
-}
-
-double BaseTimeDurationPlatformUtils::ToSecondsSigDigits(int64_t aTicks) {
-  MOZ_ASSERT(gInitialized, "calling TimeDuration too early");
-  // don't report a value < mResolution ...
-  int64_t valueSigDigs = sResolution * (aTicks / sResolution);
-  // and chop off insignificant digits
-  valueSigDigs = sResolutionSigDigs * (valueSigDigs / sResolutionSigDigs);
-  return (valueSigDigs * sNsPerTick) / kNsPerSecd;
+  return (aTicks * sNsPerTickd) / kNsPerSecd;
 }
 
 int64_t BaseTimeDurationPlatformUtils::TicksFromMilliseconds(
     double aMilliseconds) {
   MOZ_ASSERT(gInitialized, "calling TimeDuration too early");
-  double result = (aMilliseconds * kNsPerMsd) / sNsPerTick;
+  double result = (aMilliseconds * kNsPerMsd) / sNsPerTickd;
   // NOTE: this MUST be a >= test, because int64_t(double(INT64_MAX))
   // overflows and gives INT64_MIN.
   if (result >= double(INT64_MAX)) {
@@ -107,9 +69,13 @@ int64_t BaseTimeDurationPlatformUtils::TicksFromMilliseconds(
   return result;
 }
 
-int64_t BaseTimeDurationPlatformUtils::ResolutionInTicks() {
+int64_t BaseTimeDurationPlatformUtils::ToTicksAtRate(int64_t aTicks,
+                                                     uint32_t aRate) {
   MOZ_ASSERT(gInitialized, "calling TimeDuration too early");
-  return static_cast<int64_t>(sResolution);
+  // aRate ticks = aTicks mach-ticks * (sNumer/sDenom ns/tick) * (aRate / 1e9),
+  // rounded to nearest with integer arithmetic (no floating point).
+  return RoundedMulDiv(aTicks, static_cast<uint64_t>(sNumer) * aRate,
+                       static_cast<uint64_t>(sDenom) * 1000000000u);
 }
 
 void TimeStamp::Startup() {
@@ -126,15 +92,9 @@ void TimeStamp::Startup() {
     MOZ_RELEASE_ASSERT(false, "mach_timebase_info failed");
   }
 
-  sNsPerTick = double(timebaseInfo.numer) / timebaseInfo.denom;
-
-  sResolution = ClockResolutionNs();
-
-  // find the number of significant digits in sResolution, for the
-  // sake of ToSecondsSigDigits()
-  for (sResolutionSigDigs = 1; !(sResolutionSigDigs == sResolution ||
-                                 10 * sResolutionSigDigs > sResolution);
-       sResolutionSigDigs *= 10);
+  sNsPerTickd = double(timebaseInfo.numer) / timebaseInfo.denom;
+  sNumer = timebaseInfo.numer;
+  sDenom = timebaseInfo.denom;
 
   gInitialized = true;
 }
@@ -146,7 +106,7 @@ TimeStamp TimeStamp::Now(bool aHighResolution) {
 }
 
 uint64_t TimeStamp::RawMachAbsoluteTimeNanoseconds() const {
-  return static_cast<uint64_t>(double(mValue) * sNsPerTick);
+  return static_cast<uint64_t>(double(mValue) * sNsPerTickd);
 }
 
 // Computes and returns the process uptime in microseconds.

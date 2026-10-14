@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -52,6 +50,19 @@ BEGIN_FRONTEND_TEST(testFrontendContextCompileGlobalScriptToStencil) {
     JS::SourceText<char16_t> srcBuf;
     CHECK(srcBuf.init(fc, source, std::char_traits<char16_t>::length(source),
                       JS::SourceOwnership::Borrowed));
+    RefPtr<JS::Stencil> stencil =
+        JS::CompileGlobalScriptToStencil(fc, options, srcBuf);
+    CHECK(stencil);
+  }
+
+  {
+    // Constant folding of division and modulo must work without a JSContext
+    // (and without TlsContext being initialized).
+    const char source[] = "var a = 1 / 3; var b = 7 % 3; var c = 1 % 0.5;";
+
+    JS::SourceText<mozilla::Utf8Unit> srcBuf;
+    CHECK(
+        srcBuf.init(fc, source, strlen(source), JS::SourceOwnership::Borrowed));
     RefPtr<JS::Stencil> stencil =
         JS::CompileGlobalScriptToStencil(fc, options, srcBuf);
     CHECK(stencil);

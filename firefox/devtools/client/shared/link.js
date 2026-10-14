@@ -29,10 +29,11 @@ function _getTopWindow() {
  * Opens a |url| that does not require trusted access, such as a documentation page, in a
  * new tab.
  *
- * @param {String} url
+ * @param {string} url
  *        The url to open.
- * @param {Object} options
- *        Optional parameters, see documentation for openUILinkIn in utilityOverlay.js
+ * @param {object} options
+ *        Optional parameters, see documentation for openWebLinkIn
+ *        in browser/modules/URILoadingHelper.sys.mjs#openWebLinkIn
  */
 exports.openDocLink = async function (url, options) {
   const top = _getTopWindow();
@@ -49,10 +50,11 @@ exports.openDocLink = async function (url, options) {
  * `triggeringPrincipal` of the link using the tab's `contentPrincipal`.  This is only an
  * approximation, so bug 1467945 hopes to improve this.
  *
- * @param {String} url
+ * @param {string} url
  *        The url to open.
- * @param {Object} options
- *        Optional parameters, see documentation for openUILinkIn in utilityOverlay.js
+ * @param {object} options
+ *        Optional parameters, see documentation for openWebLinkIn
+ *        in browser/modules/URILoadingHelper.sys.mjs#openWebLinkIn
  */
 exports.openContentLink = async function (url, options = {}) {
   const top = _getTopWindow();
@@ -63,7 +65,7 @@ exports.openContentLink = async function (url, options = {}) {
     const tab = top.gBrowser.selectedTab;
     if (gDevTools.hasToolboxForTab(tab)) {
       options.triggeringPrincipal = tab.linkedBrowser.contentPrincipal;
-      options.csp = tab.linkedBrowser.csp;
+      options.policyContainer = tab.linkedBrowser.policyContainer;
     }
   }
   top.openWebLinkIn(url, "tab", options);
@@ -72,10 +74,11 @@ exports.openContentLink = async function (url, options = {}) {
 /**
  * Open a trusted |url| in a new tab using the SystemPrincipal.
  *
- * @param {String} url
+ * @param {string} url
  *        The url to open.
- * @param {Object} options
- *        Optional parameters, see documentation for openUILinkIn in utilityOverlay.js
+ * @param {object} options
+ *        Optional parameters, see documentation for openTrustedLinkIn in
+ *        browser/modules/URILoadingHelper.sys.mjs#openTrustedLinkIn
  */
 exports.openTrustedLink = async function (url, options) {
   const top = _getTopWindow();

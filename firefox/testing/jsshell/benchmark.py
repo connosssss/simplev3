@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import sys
+import pathlib
 from abc import ABCMeta, abstractmethod, abstractproperty
 from argparse import ArgumentParser
 from collections import defaultdict
@@ -302,13 +303,11 @@ class WebToolingBenchmark(Benchmark):
                 test_name = "{}-{}".format(self.name, score_name)
                 # pylint --py3k W1619
                 mean = sum(values) / len(values)
-                self.suite["subtests"].append(
-                    {
-                        "lowerIsBetter": self.subtests_lower_is_better,
-                        "name": test_name,
-                        "value": mean,
-                    }
-                )
+                self.suite["subtests"].append({
+                    "lowerIsBetter": self.subtests_lower_is_better,
+                    "name": test_name,
+                    "value": mean,
+                })
                 if score_name == "mean":
                     bench_mean = mean
         self.suite["value"] = bench_mean
@@ -395,6 +394,15 @@ def run(benchmark, binary=None, extra_args=None, perfherder=None):
 
     if perfherder:
         print("PERFHERDER_DATA: {}".format(json.dumps(bench.perfherder_data)))
+        if "MOZ_AUTOMATION" in os.environ:
+            fetches_dir = pathlib.Path(os.environ.get("MOZ_FETCHES_DIR"))
+            upload_path = (
+                fetches_dir.parent / "artifacts" / "perfherder-data-jsshell.json"
+            )
+            upload_path.parent.mkdir(parents=True, exist_ok=True)
+            with upload_path.open("w", encoding="utf-8") as f:
+                json.dump(bench.perfherder_data, f)
+
     return res
 
 

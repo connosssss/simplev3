@@ -21,7 +21,7 @@ Version
 7.1)](http://www.microsoft.com/downloads/details.aspx?FamilyID=6b6c21d2-2006-4afa-9702-529fa782d63b&displaylang=en "http://www.microsoft.com/downloads/details.aspx?FamilyID=6b6c21d2-2006-4afa-9702-529fa782d63b&displaylang=en"){.external}.
 Use the web installer to install at least the \"Win32 Development
 Tools\". Once the SDK installs, execute either `wpt_x86.msi` or
-`wpt_x64.msi` in the `Redist/Windows Performance Toolkit `folder of the
+`wpt_x64.msi` in the `Redist/Windows Performance Toolkit` folder of the
 SDK's install location (typically Program Files/Microsoft
 SDKs/Windows/v7.1/Redist/Windows Performance Toolkit) to actually
 install the Windows Performance Toolkit tools.
@@ -144,18 +144,18 @@ selected time range, but the free event happened inside.
 
 ## Tips
 
--   In the summary views, the yellow bar can be dragged left and right
-    to change the grouping \-- for example, drag it to the left of the
-    Module column to have grouping happen only by process (stuff that's
-    to the left), so that you get symbols in order of weight, regardless
-    of what module they're in.
--   Dragging the columns around will change grouping in various ways;
-    experiment to get the data that you're looking for. Also experiment
-    with turning columns on and off; removing a column will allow data
-    to be aggregated without considering that column's contributions.
--   Disabling all but one core will make the numbers add up to 100%.
-    This can be done by running 'msconfig' and going to Advance
-    Options from the \"Boot\" tab.
+- In the summary views, the yellow bar can be dragged left and right
+  to change the grouping \-- for example, drag it to the left of the
+  Module column to have grouping happen only by process (stuff that's
+  to the left), so that you get symbols in order of weight, regardless
+  of what module they're in.
+- Dragging the columns around will change grouping in various ways;
+  experiment to get the data that you're looking for. Also experiment
+  with turning columns on and off; removing a column will allow data
+  to be aggregated without considering that column's contributions.
+- Disabling all but one core will make the numbers add up to 100%.
+  This can be done by running 'msconfig' and going to Advance
+  Options from the \"Boot\" tab.
 
 ## Building Firefox
 

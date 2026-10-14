@@ -1,19 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Axis.h"
 
-#include <math.h>     // for fabsf, pow, powf
+#include <math.h>  // for fabsf, pow, powf
+
 #include <algorithm>  // for max
 
 #include "APZCTreeManager.h"                // for APZCTreeManager
 #include "AsyncPanZoomController.h"         // for AsyncPanZoomController
 #include "FrameMetrics.h"                   // for FrameMetrics
 #include "SimpleVelocityTracker.h"          // for FrameMetrics
-#include "mozilla/Attributes.h"             // for final
 #include "mozilla/Preferences.h"            // for Preferences
 #include "mozilla/gfx/Rect.h"               // for RoundedIn
 #include "mozilla/layers/APZThreadUtils.h"  // for AssertOnControllerThread
@@ -32,6 +30,11 @@ namespace layers {
 bool FuzzyEqualsCoordinate(CSSCoord aValue1, CSSCoord aValue2) {
   return FuzzyEqualsAdditive(aValue1, aValue2, COORDINATE_EPSILON) ||
          FuzzyEqualsMultiplicative(aValue1, aValue2);
+}
+
+bool FuzzyEqualsPoint(const CSSPoint& aValue1, const CSSPoint& aValue2) {
+  return FuzzyEqualsCoordinate(aValue1.x, aValue2.x) &&
+         FuzzyEqualsCoordinate(aValue1.y, aValue2.y);
 }
 
 Axis::Axis(AsyncPanZoomController* aAsyncPanZoomController)
@@ -510,14 +513,16 @@ const ScrollMetadata& Axis::GetScrollMetadata() const {
 
 bool Axis::OverscrollBehaviorAllowsHandoff() const {
   // Scroll handoff is a "non-local" overscroll behavior, so it's allowed
-  // with "auto" and disallowed with "contain" and "none".
-  return GetOverscrollBehavior() == OverscrollBehavior::Auto;
+  // with "auto" and "chain" and disallowed with "contain" and "none".
+  return GetOverscrollBehavior() == StyleOverscrollBehavior::Auto ||
+         GetOverscrollBehavior() == StyleOverscrollBehavior::Chain;
 }
 
 bool Axis::OverscrollBehaviorAllowsOverscrollEffect() const {
   // An overscroll effect is a "local" overscroll behavior, so it's allowed
-  // with "auto" and "contain" and disallowed with "none".
-  return GetOverscrollBehavior() != OverscrollBehavior::None;
+  // with "auto" and "contain" and disallowed with "chain" and "none".
+  return GetOverscrollBehavior() == StyleOverscrollBehavior::Auto ||
+         GetOverscrollBehavior() == StyleOverscrollBehavior::Contain;
 }
 
 AxisX::AxisX(AsyncPanZoomController* aAsyncPanZoomController)
@@ -605,7 +610,7 @@ SideBits AxisX::ScrollableDirections() const {
   return directions;
 }
 
-OverscrollBehavior AxisX::GetOverscrollBehavior() const {
+StyleOverscrollBehavior AxisX::GetOverscrollBehavior() const {
   return GetScrollMetadata().GetOverscrollBehavior().mBehaviorX;
 }
 
@@ -731,7 +736,7 @@ bool AxisY::CanVerticalScrollWithDynamicToolbar() const {
                    GetCompositionLengthWithoutDynamicToolbar());
 }
 
-OverscrollBehavior AxisY::GetOverscrollBehavior() const {
+StyleOverscrollBehavior AxisY::GetOverscrollBehavior() const {
   return GetScrollMetadata().GetOverscrollBehavior().mBehaviorY;
 }
 

@@ -23,9 +23,19 @@ function verifySignatures() {
   });
 }
 
+async function writeCorruptedXPIFile(extensionId) {
+  let file = AddonTestUtils.getFileForAddon(profileDir, extensionId);
+  // Clear any handles to the file before replacing it; Windows is very picky.
+  Services.obs.notifyObservers(file, "flush-cache-entry");
+  await IOUtils.writeUTF8(file.path, "not a XPI file anymore");
+}
+
 createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "4", "48");
 
 add_setup(async () => {
+  do_get_profile();
+  Services.fog.initializeFOG();
+
   await promiseStartupManager();
 });
 
@@ -345,6 +355,12 @@ add_task(async function test_signedTypes_stored_in_addonDB() {
     /* aAppChanged */ true
   );
 
+  // checkForChanges forces a sync db load.
+  Assert.ok(
+    Glean.xpiDatabase.syncStack.testGetValue(),
+    "sync db load is reported."
+  );
+
   Assert.deepEqual(
     addonAfterAppUpgrade.signedTypes?.sort(),
     expectedSignedTypes.sort(),
@@ -581,3 +597,182 @@ add_task(async function test_xpi_signed_in_or_before_feb_2018() {
 
   ExtensionTestUtils.failOnSchemaWarnings(true);
 });
+
+add_task(
+  {
+    ...useAMOStageCert(),
+    // This test verifies a behavior that is only hit on builds where the
+    // enterprise policies are enabled (and skipped in build where enterprise
+    // policies are disabled, like in mobile builds).
+    skip_if: () => !Services.policies,
+  },
+  async function test_adminInstallOnly_on_verify_with_invalid_manifest() {
+    const { sinon } = ChromeUtils.importESModule(
+      "resource://testing-common/Sinon.sys.mjs"
+    );
+    const sandbox = sinon.createSandbox();
+
+    const { addon: addon1 } = await promiseInstallFile(
+      do_get_file(`${DATA}/signed1.xpi`)
+    );
+    const { addon: addon2 } = await promiseInstallFile(
+      do_get_file(`${DATA}/long.xpi`)
+    );
+
+    const { XPIExports } = ChromeUtils.importESModule(
+      "resource://gre/modules/addons/XPIExports.sys.mjs"
+    );
+    sinon
+      .stub(XPIExports.XPIInstall, "loadManifestFromFile")
+      .callsFake((_sourceBundle, _location) => {
+        throw new Error("FAKE invalid manifest error");
+      });
+
+    const { messages } = await AddonTestUtils.promiseConsoleOutput(async () => {
+      await verifySignatures();
+    });
+    sandbox.restore();
+
+    // Expect a logged warning for each of the two extensions.
+    AddonTestUtils.checkMessages(messages, {
+      expected: [
+        {
+          message:
+            /XPI_verifySignature Warning on 'test@somewhere.com': Error: FAKE invalid manifest error/,
+        },
+        {
+          message:
+            /XPI_verifySignature Warning on '123456789.*@somewhere.com': Error: FAKE invalid manifest error/,
+        },
+      ],
+    });
+
+    await addon1.uninstall();
+    await addon2.uninstall();
+  }
+);
+
+add_task(useAMOStageCert(), async function test_broken_file() {
+  await promiseInstallFile(do_get_file(`${DATA}/signed1.xpi`));
+
+  let addon = await promiseAddonByID(ID);
+  Assert.notEqual(addon, null);
+  Assert.equal(addon.appDisabled, false);
+  Assert.equal(addon.isActive, true);
+  Assert.equal(addon.signedState, AddonManager.SIGNEDSTATE_SIGNED);
+
+  await writeCorruptedXPIFile(ID);
+
+  let changedProperties = [];
+  let listener = {
+    onPropertyChanged(addon, properties) {
+      changedProperties.push(...properties);
+    },
+  };
+
+  AddonManager.addAddonListener(listener);
+
+  const disablePromise = promiseAddonEvent("onDisabling");
+  let changes;
+  const { messages } = await AddonTestUtils.promiseConsoleOutput(async () => {
+    changes = await verifySignatures();
+  });
+  await disablePromise;
+
+  Assert.equal(changes.enabled.length, 0);
+  Assert.equal(changes.disabled.length, 1);
+  Assert.equal(changes.disabled[0], ID);
+
+  Assert.deepEqual(
+    changedProperties,
+    ["signedState", "signedTypes", "appDisabled"],
+    "Got onPropertyChanged events for signedState and appDisabled"
+  );
+
+  Assert.ok(addon.appDisabled);
+  Assert.ok(!addon.isActive);
+  Assert.equal(addon.signedState, AddonManager.SIGNEDSTATE_BROKEN);
+
+  await addon.uninstall();
+  AddonManager.removeAddonListener(listener);
+
+  AddonTestUtils.checkMessages(messages, {
+    expected: [
+      { message: /verifyBundleSignedState failed for test@somewhere.com/ },
+    ],
+  });
+});
+
+// Verify that verifySignatures() does not change signedState for addons that
+// do not require signatures, even if the underlying file got corrupted.
+// All extensions require signatures (after dictionary type in bug 1753276), so
+// realistically the main way to hit this scenario is if MOZ_UNSIGNED_SCOPES is
+// set (when the build-time --with-unsigned-addon-scopes flag is used):
+// https://searchfox.org/firefox-main/rev/4452e9a17a29f762c5af6326f45c000dcf3117bb/toolkit/mozapps/extensions/internal/XPIInstall.sys.mjs#914
+//
+// The purpose of this test is to verify that when Package.get() throws, that
+// we still return SIGNEDSTATE_NOT_REQUIRED instead of SIGNEDSTATE_BROKEN at
+// https://searchfox.org/firefox-main/rev/4452e9a17a29f762c5af6326f45c000dcf3117bb/toolkit/mozapps/extensions/internal/XPIInstall.sys.mjs#939,951-954
+add_task(
+  {
+    ...useAMOStageCert(),
+    // # Non-extension add-ons are not supported on Android.
+    skip_if: () => AppConstants.platform == "android",
+  },
+  async function test_broken_file_not_requiring_signatures() {
+    // This test predates when dictionaries required signatures (bug 1753276).
+    // To keep the test working we temporarily make dictionaries an unsigned
+    // type again, such that shouldVerifySignedState returns false at the end:
+    // https://searchfox.org/firefox-main/rev/4452e9a17a29f762c5af6326f45c000dcf3117bb/toolkit/mozapps/extensions/internal/XPIInstall.sys.mjs#914,920
+    const { SIGNED_TYPES } = AddonTestUtils.getXPIExports().XPIDatabase;
+    Assert.ok(SIGNED_TYPES.delete("dictionary"), "SIGNED_TYPES had dictionary");
+    let addon = await promiseInstallWebExtension({
+      useAddonManager: true,
+      manifest: {
+        browser_specific_settings: { gecko: { id: "broken@dict" } },
+        dictionaries: { "en-US": "en-US.dic" },
+      },
+      files: { "en-US.dic": "", "en-US.aff": "" },
+    });
+    Assert.equal(addon.signedState, AddonManager.SIGNEDSTATE_NOT_REQUIRED);
+
+    await writeCorruptedXPIFile(addon.id);
+
+    let listener = {
+      onPropertyChanged(_addon) {
+        Assert.ok(false, `Got unexpected onPropertyChanged for ${_addon.id}`);
+      },
+    };
+
+    AddonManager.addAddonListener(listener);
+
+    let changes;
+    const { messages } = await AddonTestUtils.promiseConsoleOutput(async () => {
+      changes = await verifySignatures();
+    });
+    Assert.equal(changes.enabled.length, 0);
+    Assert.equal(changes.disabled.length, 0);
+
+    Assert.equal(addon.appDisabled, false);
+    Assert.equal(addon.isActive, true);
+    Assert.equal(addon.signedState, AddonManager.SIGNEDSTATE_NOT_REQUIRED);
+
+    AddonManager.removeAddonListener(listener);
+
+    AddonTestUtils.checkMessages(messages, {
+      expected: [{ message: /verifyBundleSignedState failed for broken@dict/ }],
+    });
+
+    // Restore to make implementation more realistic.
+    SIGNED_TYPES.add("dictionary");
+    // ... and confirm that we do indeed flag broken dictionaries.
+    // test_broken_file already covers this, but test just in case.
+    changes = await verifySignatures();
+    Assert.equal(changes.disabled.length, 1);
+    Assert.ok(addon.appDisabled);
+    Assert.ok(!addon.isActive);
+    Assert.equal(addon.signedState, AddonManager.SIGNEDSTATE_BROKEN);
+
+    await addon.uninstall();
+  }
+);

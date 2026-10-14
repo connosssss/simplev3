@@ -8,10 +8,11 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.widget.FrameLayout
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlin.test.assertIs
+import kotlinx.coroutines.flow.flowOf
 import mozilla.components.concept.engine.selection.SelectionActionDelegate
 import mozilla.components.support.test.mock
 import mozilla.components.support.test.robolectric.testContext
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mockito.spy
@@ -26,7 +27,7 @@ class EngineViewTest {
 
         val view = engineView.asView()
 
-        assertTrue(view is FrameLayout)
+        assertIs<FrameLayout>(view)
     }
 
     @Test(expected = ClassCastException::class)
@@ -62,33 +63,55 @@ class EngineViewTest {
     private fun createDummyEngineView(context: Context): EngineView = DummyEngineView(context)
 
     open class DummyEngineView(context: Context) : FrameLayout(context), EngineView {
+        override val verticalScrollPosition = flowOf(0f)
+        override val verticalScrollDelta = flowOf(0f)
+
         override fun setVerticalClipping(clippingHeight: Int) {}
+
         override fun setDynamicToolbarMaxHeight(height: Int) {}
+
         override fun setActivityContext(context: Context?) {}
+
         override fun captureThumbnail(onFinish: (Bitmap?) -> Unit) = Unit
+
         override fun render(session: EngineSession) {}
+
         override fun release() {}
+
         override var selectionActionDelegate: SelectionActionDelegate? = null
+
         override fun addWindowInsetsListener(
             key: String,
             listener: androidx.core.view.OnApplyWindowInsetsListener?,
         ) {}
+
         override fun removeWindowInsetsListener(key: String) {}
     }
 
     // Class it not actually a View!
     open class BrokenEngineView : EngineView {
+        override val verticalScrollPosition = flowOf(0f)
+        override val verticalScrollDelta = flowOf(0f)
+
         override fun setVerticalClipping(clippingHeight: Int) {}
+
         override fun setDynamicToolbarMaxHeight(height: Int) {}
+
         override fun setActivityContext(context: Context?) {}
+
         override fun captureThumbnail(onFinish: (Bitmap?) -> Unit) = Unit
+
         override fun render(session: EngineSession) {}
+
         override fun release() {}
+
         override var selectionActionDelegate: SelectionActionDelegate? = null
+
         override fun addWindowInsetsListener(
             key: String,
             listener: androidx.core.view.OnApplyWindowInsetsListener?,
         ) {}
+
         override fun removeWindowInsetsListener(key: String) {}
     }
 }

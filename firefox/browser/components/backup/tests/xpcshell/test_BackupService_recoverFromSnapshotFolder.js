@@ -3,15 +3,17 @@ https://creativecommons.org/publicdomain/zero/1.0/ */
 
 "use strict";
 
-const { AppConstants } = ChromeUtils.importESModule(
-  "resource://gre/modules/AppConstants.sys.mjs"
-);
 const { ArchiveUtils } = ChromeUtils.importESModule(
-  "resource:///modules/backup/ArchiveUtils.sys.mjs"
+  "moz-src:///browser/components/backup/ArchiveUtils.sys.mjs"
 );
 const { JsonSchema } = ChromeUtils.importESModule(
   "resource://gre/modules/JsonSchema.sys.mjs"
 );
+
+let currentProfile;
+add_setup(() => {
+  currentProfile = setupProfile();
+});
 
 /**
  * Tests that if the backup-manifest.json provides an appName different from
@@ -98,4 +100,145 @@ add_task(async function test_newer_appVersion() {
   );
 
   await IOUtils.remove(testRecoveryPath, { recursive: true });
+});
+
+add_task(async function test_profile_naming() {
+  let testRecoveryPath = await IOUtils.createUniqueDirectory(
+    PathUtils.tempDir,
+    "testProfileNaming"
+  );
+
+  let meta = Object.assign({}, FAKE_METADATA);
+  let manifest = {
+    version: ArchiveUtils.SCHEMA_VERSION,
+    meta,
+    resources: {},
+  };
+  let schema = await BackupService.MANIFEST_SCHEMA;
+  let validationResult = JsonSchema.validate(manifest, schema);
+  Assert.ok(validationResult.valid, "Schema matches manifest");
+
+  await IOUtils.writeJSON(
+    PathUtils.join(testRecoveryPath, BackupService.MANIFEST_FILE_NAME),
+    manifest
+  );
+
+  let currentName = `original-profile-that-was-backed-up`;
+  currentProfile.name = currentName;
+
+  let bs = new BackupService();
+
+  await bs.recoverFromSnapshotFolder(testRecoveryPath, false);
+
+  Assert.equal(
+    currentProfile.name,
+    `old-${currentName}`,
+    "The old profile prefix was added"
+  );
+  currentName = currentProfile.name;
+
+  // Let's make sure that we don't end up chaining the prefix
+  await bs.recoverFromSnapshotFolder(testRecoveryPath, false);
+  Assert.notEqual(
+    currentProfile.name,
+    `old-${currentName}`,
+    "The old profile prefix was not added again"
+  );
+  Assert.equal(
+    currentProfile.name,
+    currentName,
+    "The name of the profile did not change"
+  );
+
+  await IOUtils.remove(testRecoveryPath, { recursive: true });
+});
+
+/**
+ * Tests that resources whose requiresEncryption is true are skipped when
+ * recovering from an unencrypted archive, and recovered when the archive was
+ * encrypted.
+ */
+add_task(async function test_skip_encrypted_resource_when_unencrypted() {
+  let sandbox = sinon.createSandbox();
+
+  sandbox.stub(FakeBackupResource1, "requiresEncryption").get(() => true);
+  sandbox.stub(FakeBackupResource2, "requiresEncryption").get(() => false);
+  sandbox.stub(FakeBackupResource3, "requiresEncryption").get(() => false);
+
+  let recover1 = sandbox
+    .stub(FakeBackupResource1.prototype, "recover")
+    .resolves();
+  let recover2 = sandbox
+    .stub(FakeBackupResource2.prototype, "recover")
+    .resolves();
+  let recover3 = sandbox
+    .stub(FakeBackupResource3.prototype, "recover")
+    .resolves();
+
+  let bs = new BackupService({
+    FakeBackupResource1,
+    FakeBackupResource2,
+    FakeBackupResource3,
+  });
+
+  let testRecoveryPath = await IOUtils.createUniqueDirectory(
+    PathUtils.tempDir,
+    "testSkipEncrypted"
+  );
+  let profileRootPath = await IOUtils.createUniqueDirectory(
+    PathUtils.tempDir,
+    "testSkipEncryptedProfiles"
+  );
+
+  let manifest = {
+    version: ArchiveUtils.SCHEMA_VERSION,
+    meta: Object.assign({}, FAKE_METADATA),
+    resources: { fake1: {}, fake2: {}, fake3: {} },
+  };
+
+  // Unencrypted archive: the encryption-requiring resource must be skipped.
+  await bs.recoverFromSnapshotFolder(
+    testRecoveryPath,
+    false,
+    profileRootPath,
+    manifest,
+    false
+  );
+
+  Assert.ok(
+    recover1.notCalled,
+    "Resource requiring encryption is skipped for an unencrypted archive."
+  );
+  Assert.ok(
+    recover2.calledOnce,
+    "Resource not requiring encryption is recovered."
+  );
+  Assert.ok(
+    recover3.calledOnce,
+    "Resource not requiring encryption is recovered."
+  );
+
+  recover1.resetHistory();
+  recover2.resetHistory();
+  recover3.resetHistory();
+
+  // Encrypted archive: every resource is recovered.
+  await bs.recoverFromSnapshotFolder(
+    testRecoveryPath,
+    false,
+    profileRootPath,
+    manifest,
+    true
+  );
+
+  Assert.ok(
+    recover1.calledOnce,
+    "Resource requiring encryption is recovered for an encrypted archive."
+  );
+  Assert.ok(recover2.calledOnce, "Non-encryption resource recovered again.");
+  Assert.ok(recover3.calledOnce, "Non-encryption resource recovered again.");
+
+  sandbox.restore();
+  await IOUtils.remove(testRecoveryPath, { recursive: true });
+  await IOUtils.remove(profileRootPath, { recursive: true });
 });

@@ -30,7 +30,7 @@ add_task(
         // open AC popup by pressing arrow down key
         await BrowserTestUtils.synthesizeKey("VK_DOWN", {}, browser);
         // wait for AC popup to open
-        await BrowserTestUtils.waitForCondition(() => {
+        await TestUtils.waitForCondition(() => {
           return browser.autoCompletePopup.popupOpen;
         });
         // select first address by pressing arrow down key
@@ -48,7 +48,7 @@ add_task(
         // open AC popup again by pressing arrow down key
         await BrowserTestUtils.synthesizeKey("VK_DOWN", {}, browser);
         // wait for AC popup to open again
-        await BrowserTestUtils.waitForCondition(() => {
+        await TestUtils.waitForCondition(() => {
           return browser.autoCompletePopup.popupOpen;
         });
 
@@ -58,7 +58,7 @@ add_task(
             "@mozilla.org/satchel/form-fill-controller;1"
           ].getService(Ci.nsIFormFillController);
           Assert.equal(
-            formFillController.focusedElement?.id,
+            formFillController.controlledElement?.id,
             "address-level1",
             "formFillController has correct focusedInput"
           );

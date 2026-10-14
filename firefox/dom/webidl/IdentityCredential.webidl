@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -14,6 +13,8 @@ interface IdentityCredential : Credential {
  [Throws]
  static Promise<undefined> disconnect(optional IdentityCredentialDisconnectOptions options = {});
  readonly attribute UTF8String? token;
+ readonly attribute boolean isAutoSelected;
+ readonly attribute UTF8String configURL;
 };
 
 enum IdentityCredentialRequestOptionsMode {
@@ -84,8 +85,10 @@ dictionary IdentityProviderAPIConfig {
 // https://w3c-fedid.github.io/FedCM/#dictdef-identityprovideraccount
 dictionary IdentityProviderAccount {
   required USVString id;
-  required USVString name;
-  required USVString email;
+  USVString name;
+  USVString email;
+  USVString tel;
+  USVString username;
   USVString given_name;
   USVString picture;
   sequence<USVString> approved_clients;

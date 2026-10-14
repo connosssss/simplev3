@@ -4,36 +4,13 @@
 
 use crate::api::TileSize;
 use crate::api::units::*;
-use crate::segment::EdgeAaSegmentMask;
+use crate::segment::EdgeMask;
 use euclid::{point2, size2};
-use std::i32;
 use std::ops::Range;
-
-/// If repetitions are far enough apart that only one is within
-/// the primitive rect, then we can simplify the parameters and
-/// treat the primitive as not repeated.
-/// This can let us avoid unnecessary work later to handle some
-/// of the parameters.
-pub fn simplify_repeated_primitive(
-    stretch_size: &LayoutSize,
-    tile_spacing: &mut LayoutSize,
-    prim_rect: &mut LayoutRect,
-) {
-    let stride = *stretch_size + *tile_spacing;
-
-    if stride.width >= prim_rect.width() {
-        tile_spacing.width = 0.0;
-        prim_rect.max.x = f32::min(prim_rect.min.x + stretch_size.width, prim_rect.max.x);
-    }
-    if stride.height >= prim_rect.height() {
-        tile_spacing.height = 0.0;
-        prim_rect.max.y = f32::min(prim_rect.min.y + stretch_size.height, prim_rect.max.y);
-    }
-}
 
 pub struct Repetition {
     pub origin: LayoutPoint,
-    pub edge_flags: EdgeAaSegmentMask,
+    pub edge_flags: EdgeMask,
 }
 
 pub struct RepetitionIterator {
@@ -41,32 +18,26 @@ pub struct RepetitionIterator {
     x_count: i32,
     current_y: i32,
     y_count: i32,
-    row_flags: EdgeAaSegmentMask,
+    row_flags: EdgeMask,
     current_origin: LayoutPoint,
     initial_origin: LayoutPoint,
     stride: LayoutSize,
-}
-
-impl RepetitionIterator {
-    pub fn num_repetitions(&self) -> usize {
-        (self.y_count * self.x_count) as usize
-    }
 }
 
 impl Iterator for RepetitionIterator {
     type Item = Repetition;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current_x == self.x_count {
+        if self.current_x >= self.x_count {
             self.current_y += 1;
             if self.current_y >= self.y_count {
                 return None;
             }
             self.current_x = 0;
 
-            self.row_flags = EdgeAaSegmentMask::empty();
+            self.row_flags = EdgeMask::empty();
             if self.current_y == self.y_count - 1 {
-                self.row_flags |= EdgeAaSegmentMask::BOTTOM;
+                self.row_flags |= EdgeMask::BOTTOM;
             }
 
             self.current_origin.x = self.initial_origin.x;
@@ -75,11 +46,11 @@ impl Iterator for RepetitionIterator {
 
         let mut edge_flags = self.row_flags;
         if self.current_x == 0 {
-            edge_flags |= EdgeAaSegmentMask::LEFT;
+            edge_flags |= EdgeMask::LEFT;
         }
 
         if self.current_x == self.x_count - 1 {
-            edge_flags |= EdgeAaSegmentMask::RIGHT;
+            edge_flags |= EdgeMask::RIGHT;
         }
 
         let repetition = Repetition {
@@ -94,63 +65,76 @@ impl Iterator for RepetitionIterator {
     }
 }
 
+/// Enumerate the repetitions of a pattern that cover `coverage_rect`.
 pub fn repetitions(
-    prim_rect: &LayoutRect,
-    visible_rect: &LayoutRect,
+    pattern_rect: &LayoutRect,
+    coverage_rect: &LayoutRect,
     stride: LayoutSize,
 ) -> RepetitionIterator {
-    let visible_rect = match prim_rect.intersection(&visible_rect) {
-        Some(rect) => rect,
-        None => {
-            return RepetitionIterator {
-                current_origin: LayoutPoint::zero(),
-                initial_origin: LayoutPoint::zero(),
-                current_x: 0,
-                current_y: 0,
-                x_count: 0,
-                y_count: 0,
-                stride,
-                row_flags: EdgeAaSegmentMask::empty(),
-            }
+    if coverage_rect.is_empty() {
+        return RepetitionIterator {
+            current_origin: LayoutPoint::zero(),
+            initial_origin: LayoutPoint::zero(),
+            current_x: 0,
+            current_y: 0,
+            x_count: 0,
+            y_count: 0,
+            stride,
+            row_flags: EdgeMask::empty(),
         }
-    };
+    }
 
     assert!(stride.width > 0.0);
     assert!(stride.height > 0.0);
 
-    let nx = if visible_rect.min.x > prim_rect.min.x {
-        f32::floor((visible_rect.min.x - prim_rect.min.x) / stride.width)
+    let nx = if coverage_rect.min.x > pattern_rect.min.x {
+        f32::floor((coverage_rect.min.x - pattern_rect.min.x) / stride.width)
     } else {
         0.0
     };
 
-    let ny = if visible_rect.min.y > prim_rect.min.y {
-        f32::floor((visible_rect.min.y - prim_rect.min.y) / stride.height)
+    let ny = if coverage_rect.min.y > pattern_rect.min.y {
+        f32::floor((coverage_rect.min.y - pattern_rect.min.y) / stride.height)
     } else {
         0.0
     };
 
-    let x0 = prim_rect.min.x + nx * stride.width;
-    let y0 = prim_rect.min.y + ny * stride.height;
+    let x0 = pattern_rect.min.x + nx * stride.width;
+    let y0 = pattern_rect.min.y + ny * stride.height;
 
-    let x_most = visible_rect.max.x;
-    let y_most = visible_rect.max.y;
+    let x_most = coverage_rect.max.x;
+    let y_most = coverage_rect.max.y;
 
-    let x_count = f32::ceil((x_most - x0) / stride.width) as i32;
-    let y_count = f32::ceil((y_most - y0) / stride.height) as i32;
+    // The coverage rect can lie entirely before the anchor, which yields a
+    // negative count.
+    let mut x_count = f32::ceil((x_most - x0) / stride.width).max(0.0);
+    let mut y_count = f32::ceil((y_most - y0) / stride.height).max(0.0);
 
-    let mut row_flags = EdgeAaSegmentMask::TOP;
-    if y_count == 1 {
-        row_flags |= EdgeAaSegmentMask::BOTTOM;
+    // Sanity-check that we don't have anything that may cause the iterator
+    // to run indefinitely.
+    let valid = x_count.is_finite()
+        & y_count.is_finite()
+        & stride.is_finite();
+
+    if !valid {
+        x_count = 0.0;
+        y_count = 0.0;
     }
+
+
+    let mut row_flags = EdgeMask::TOP;
+    if y_count as i32 == 1 {
+        row_flags |= EdgeMask::BOTTOM;
+    }
+
 
     RepetitionIterator {
         current_origin: LayoutPoint::new(x0, y0),
         initial_origin: LayoutPoint::new(x0, y0),
         current_x: 0,
         current_y: 0,
-        x_count,
-        y_count,
+        x_count: x_count as i32,
+        y_count: y_count as i32,
         row_flags,
         stride,
     }
@@ -160,7 +144,7 @@ pub fn repetitions(
 pub struct Tile {
     pub rect: LayoutRect,
     pub offset: TileOffset,
-    pub edge_flags: EdgeAaSegmentMask,
+    pub edge_flags: EdgeMask,
 }
 
 #[derive(Debug)]
@@ -213,27 +197,27 @@ impl Iterator for TileIterator {
             self.regular_tile_size,
         );
 
-        let mut edge_flags = EdgeAaSegmentMask::empty();
+        let mut edge_flags = EdgeMask::empty();
 
         if tile_offset.x == self.x.image_tiles.start {
-            edge_flags |= EdgeAaSegmentMask::LEFT;
+            edge_flags |= EdgeMask::LEFT;
             segment_rect.min.x = self.x.layout_prim_start;
             // TODO(nical) we may not need to do this.
             segment_rect.max.x = segment_rect.min.x + self.x.first_tile_layout_size;
         }
         if tile_offset.x == self.x.image_tiles.end - 1 {
-            edge_flags |= EdgeAaSegmentMask::RIGHT;
+            edge_flags |= EdgeMask::RIGHT;
             segment_rect.max.x = segment_rect.min.x + self.x.last_tile_layout_size;
         }
 
         if tile_offset.y == self.y.image_tiles.start {
             segment_rect.min.y = self.y.layout_prim_start;
             segment_rect.max.y = segment_rect.min.y + self.y.first_tile_layout_size;
-            edge_flags |= EdgeAaSegmentMask::TOP;
+            edge_flags |= EdgeMask::TOP;
         }
         if tile_offset.y == self.y.image_tiles.end - 1 {
             segment_rect.max.y = segment_rect.min.y + self.y.last_tile_layout_size;
-            edge_flags |= EdgeAaSegmentMask::BOTTOM;
+            edge_flags |= EdgeMask::BOTTOM;
         }
 
         assert!(tile_offset.y < self.y.tile_range.end);
@@ -647,7 +631,7 @@ mod tests {
         visible_rect: &LayoutRect,
         device_image_rect: &DeviceIntRect,
         device_tile_size: i32,
-        callback: &mut dyn FnMut(&LayoutRect, TileOffset, EdgeAaSegmentMask),
+        callback: &mut dyn FnMut(&LayoutRect, TileOffset, EdgeMask),
     ) {
         let mut coverage = LayoutRect::zero();
         let mut seen_tiles = HashSet::new();

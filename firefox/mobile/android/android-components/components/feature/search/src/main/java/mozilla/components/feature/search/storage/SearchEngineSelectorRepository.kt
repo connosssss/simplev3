@@ -4,7 +4,11 @@
 
 package mozilla.components.feature.search.storage
 
+import android.content.Context
 import android.graphics.Bitmap
+import java.util.Locale
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.withContext
 import mozilla.appservices.remotesettings.RemoteSettingsClient
 import mozilla.appservices.remotesettings.RemoteSettingsRecord
 import mozilla.appservices.search.RefinedSearchConfig
@@ -20,27 +24,32 @@ import mozilla.components.feature.search.icons.SearchConfigIconsParser
 import mozilla.components.feature.search.icons.SearchConfigIconsUpdateService
 import mozilla.components.feature.search.into
 import mozilla.components.feature.search.middleware.SearchExtraParams
-import mozilla.components.feature.search.middleware.SearchMiddleware
+import mozilla.components.feature.search.middleware.SearchMiddleware.BundleStorage.Bundle
+import mozilla.components.feature.search.middleware.SearchMiddleware.SearchEngineRepository
 import mozilla.components.support.base.log.logger.Logger
 import mozilla.components.support.remotesettings.RemoteSettingsService
-import java.util.Locale
-import kotlin.coroutines.CoroutineContext
 
 /**
  * A repository implementation for loading and reading [SearchEngineDefinition]s from RemoteSettings.
  *
+ * @param context [Context] used by [SearchEngineReader] to resolve the current locale.
  * @param searchEngineSelectorConfig [SearchEngineSelectorConfig] holds configuration options for
- *          [SearchUserEnvironment]
+ *   [SearchUserEnvironment].
+ * @param defaultSearchEngineIcon The [Bitmap] to use as the fallback icon for any search engine when a specific remote
+ *   icon cannot be found or loaded.
+ * @param client Optional [RemoteSettingsClient] for fetching search engine definitions.
+ * @param selector The [SearchEngineSelector] which manages and applies search configuration
  */
 class SearchEngineSelectorRepository(
+    context: Context,
     private val searchEngineSelectorConfig: SearchEngineSelectorConfig,
     private val defaultSearchEngineIcon: Bitmap,
     client: RemoteSettingsClient?,
     private val selector: SearchEngineSelector = SearchEngineSelector(),
-) : SearchMiddleware.SearchEngineRepository {
+) : SearchEngineRepository {
 
     private val searchConfigIconsUpdateService: SearchConfigIconsUpdateService = SearchConfigIconsUpdateService(client)
-    private val reader: SearchEngineReader = SearchEngineReader(type = SearchEngine.Type.BUNDLED)
+    private val reader: SearchEngineReader = SearchEngineReader(context = context, type = SearchEngine.Type.BUNDLED)
     private val logger = Logger("SearchEngineSelectorRepository")
     private val parser = SearchConfigIconsParser()
 
@@ -55,9 +64,16 @@ class SearchEngineSelectorRepository(
         }
     }
 
-    /**
-     * Load the [RefinedSearchConfig] for the given [region] and [locale].
-     */
+    override fun computeNewSearchEnvironmentId(
+        region: RegionState,
+        locale: Locale,
+        distribution: String?,
+    ): Int {
+        val searchEnvironment = buildEnvironment(region, locale, distribution)
+        return computeNewSearchEnvironmentId(searchEnvironment)
+    }
+
+    /** Load the [RefinedSearchConfig] for the given [region] and [locale]. */
     @SuppressWarnings("TooGenericExceptionCaught")
     override suspend fun load(
         region: RegionState,
@@ -65,39 +81,51 @@ class SearchEngineSelectorRepository(
         distribution: String?,
         searchExtraParams: SearchExtraParams?,
         coroutineContext: CoroutineContext,
-    ): SearchMiddleware.BundleStorage.Bundle {
-        try {
-            val config = SearchUserEnvironment(
-                locale = locale.languageTag,
-                region = region.home,
-                experiment = searchEngineSelectorConfig.experiment,
-                version = searchEngineSelectorConfig.appVersion,
-                updateChannel = searchEngineSelectorConfig.updateChannel.into(),
-                distributionId = distribution ?: "",
-                appName = searchEngineSelectorConfig.appName.into(),
-                deviceType = searchEngineSelectorConfig.deviceType.into(),
+    ): Bundle =
+        withContext(coroutineContext) {
+            try {
+                val config = buildEnvironment(region, locale, distribution)
+                val searchConfig = selector.filterEngineConfiguration(config)
+                val iconsList = searchConfigIconsUpdateService.fetchIconsRecords(searchEngineSelectorConfig.service)
+                val searchEngineList =
+                    buildSearchEngineList(
+                        searchConfig = searchConfig,
+                        iconsList = iconsList,
+                    )
+                val defaultEngineId = searchConfig.appDefaultEngineId ?: searchConfig.engines.first().identifier
+
+                return@withContext Bundle(
+                    list = searchEngineList,
+                    defaultSearchEngineId = defaultEngineId,
+                    searchEnvironmentId = computeNewSearchEnvironmentId(config),
+                )
+            } catch (_: Exception) {
+                logger.error("exception in SearchEngineSelectorRepository.load")
+            }
+            return@withContext Bundle(
+                list = emptyList(),
+                defaultSearchEngineId = "",
+                searchEnvironmentId = null,
             )
-            val searchConfig = selector.filterEngineConfiguration(config)
-
-            val iconsList = searchConfigIconsUpdateService.fetchIconsRecords(searchEngineSelectorConfig.service)
-
-            val searchEngineList = buildSearchEngineList(
-                searchConfig = searchConfig,
-                iconsList = iconsList,
-            )
-
-            val defaultEngineId = searchConfig.appDefaultEngineId
-                ?: searchConfig.engines.first().identifier
-
-            return SearchMiddleware.BundleStorage.Bundle(
-                searchEngineList,
-                defaultEngineId,
-            )
-        } catch (exception: Exception) {
-            logger.error("exception in SearchEngineSelectorRepository.load")
         }
-        return SearchMiddleware.BundleStorage.Bundle(emptyList(), "")
-    }
+
+    private fun buildEnvironment(
+        region: RegionState,
+        locale: Locale,
+        distribution: String?,
+    ) =
+        SearchUserEnvironment(
+            locale = locale.languageTag,
+            region = region.home,
+            experiment = searchEngineSelectorConfig.experiment,
+            version = searchEngineSelectorConfig.appVersion,
+            updateChannel = searchEngineSelectorConfig.updateChannel.into(),
+            distributionId = distribution ?: "",
+            appName = searchEngineSelectorConfig.appName.into(),
+            deviceType = searchEngineSelectorConfig.deviceType.into(),
+        )
+
+    private fun computeNewSearchEnvironmentId(searchEnvironment: SearchUserEnvironment) = searchEnvironment.hashCode()
 
     private fun buildSearchEngineList(
         searchConfig: RefinedSearchConfig,
@@ -106,16 +134,17 @@ class SearchEngineSelectorRepository(
         val searchEngineList = mutableListOf<SearchEngine>()
         searchConfig.engines.forEach { engine ->
             val iconAttachmentModel = findMatchingIcon(engine.identifier, iconsList)
-            val searchEngine = try {
-                reader.loadStreamAPI(
-                    engineDefinition = engine,
-                    attachmentModel = searchConfigIconsUpdateService.fetchIconAttachment(iconAttachmentModel),
-                    mimetype = iconAttachmentModel?.attachment?.mimetype ?: "",
-                    defaultIcon = defaultSearchEngineIcon,
-                )
-            } catch (exception: IllegalArgumentException) {
-                return@forEach
-            }
+            val searchEngine =
+                try {
+                    reader.loadStreamAPI(
+                        engineDefinition = engine,
+                        attachmentModel = searchConfigIconsUpdateService.fetchIconAttachment(iconAttachmentModel),
+                        mimetype = iconAttachmentModel?.attachment?.mimetype ?: "",
+                        defaultIcon = defaultSearchEngineIcon,
+                    )
+                } catch (_: IllegalArgumentException) {
+                    return@forEach
+                }
             searchEngineList.add(searchEngine)
         }
         return searchEngineList
@@ -128,11 +157,12 @@ class SearchEngineSelectorRepository(
         iconsList.forEach { icon ->
             val parsedIcon = parser.parseRecord(icon)
             parsedIcon?.engineIdentifier?.forEach {
-                val prefix = if (it.endsWith("*", true)) {
-                    it.removeSuffix("*")
-                } else {
-                    it
-                }
+                val prefix =
+                    if (it.endsWith("*", true)) {
+                        it.removeSuffix("*")
+                    } else {
+                        it
+                    }
                 if (engineIdentifier.startsWith(prefix)) {
                     return icon
                 }

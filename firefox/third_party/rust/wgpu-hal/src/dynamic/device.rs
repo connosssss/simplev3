@@ -4,24 +4,24 @@ use crate::{
     AccelerationStructureBuildSizes, AccelerationStructureDescriptor, Api, BindGroupDescriptor,
     BindGroupLayoutDescriptor, BufferDescriptor, BufferMapping, CommandEncoderDescriptor,
     ComputePipelineDescriptor, Device, DeviceError, FenceValue,
-    GetAccelerationStructureBuildSizesDescriptor, Label, MemoryRange, MeshPipelineDescriptor,
-    PipelineCacheDescriptor, PipelineCacheError, PipelineError, PipelineLayoutDescriptor,
-    RenderPipelineDescriptor, SamplerDescriptor, ShaderError, ShaderInput, ShaderModuleDescriptor,
-    TextureDescriptor, TextureViewDescriptor, TlasInstance,
+    GetAccelerationStructureBuildSizesDescriptor, Label, MemoryRange, PipelineCacheDescriptor,
+    PipelineCacheError, PipelineError, PipelineLayoutDescriptor, RayObjectIntersectionState,
+    RayTracingPipelineDescriptor, RenderPipelineDescriptor, SamplerDescriptor, ShaderError,
+    ShaderInput, ShaderModuleDescriptor, TextureDescriptor, TextureViewDescriptor, TlasInstance,
 };
 
 use super::{
     DynAccelerationStructure, DynBindGroup, DynBindGroupLayout, DynBuffer, DynCommandEncoder,
     DynComputePipeline, DynFence, DynPipelineCache, DynPipelineLayout, DynQuerySet, DynQueue,
-    DynRenderPipeline, DynResource, DynResourceExt as _, DynSampler, DynShaderModule, DynTexture,
-    DynTextureView,
+    DynRayTracingPipeline, DynRenderPipeline, DynResource, DynResourceExt as _, DynSampler,
+    DynShaderModule, DynTexture, DynTextureView,
 };
 
 pub trait DynDevice: DynResource {
     unsafe fn create_buffer(
         &self,
         desc: &BufferDescriptor,
-    ) -> Result<Box<dyn DynBuffer>, DeviceError>;
+    ) -> Result<(Box<dyn DynBuffer>, wgt::BufferAddress), DeviceError>;
 
     unsafe fn destroy_buffer(&self, buffer: Box<dyn DynBuffer>);
     unsafe fn add_raw_buffer(&self, buffer: &dyn DynBuffer);
@@ -100,14 +100,6 @@ pub trait DynDevice: DynResource {
             dyn DynPipelineCache,
         >,
     ) -> Result<Box<dyn DynRenderPipeline>, PipelineError>;
-    unsafe fn create_mesh_pipeline(
-        &self,
-        desc: &MeshPipelineDescriptor<
-            dyn DynPipelineLayout,
-            dyn DynShaderModule,
-            dyn DynPipelineCache,
-        >,
-    ) -> Result<Box<dyn DynRenderPipeline>, PipelineError>;
     unsafe fn destroy_render_pipeline(&self, pipeline: Box<dyn DynRenderPipeline>);
 
     unsafe fn create_compute_pipeline(
@@ -119,6 +111,21 @@ pub trait DynDevice: DynResource {
         >,
     ) -> Result<Box<dyn DynComputePipeline>, PipelineError>;
     unsafe fn destroy_compute_pipeline(&self, pipeline: Box<dyn DynComputePipeline>);
+
+    unsafe fn create_ray_tracing_pipeline(
+        &self,
+        desc: &RayTracingPipelineDescriptor<
+            dyn DynPipelineLayout,
+            dyn DynShaderModule,
+            dyn DynPipelineCache,
+        >,
+    ) -> Result<Box<dyn DynRayTracingPipeline>, PipelineError>;
+    unsafe fn destroy_ray_tracing_pipeline(&self, pipeline: Box<dyn DynRayTracingPipeline>);
+    unsafe fn get_raytracing_pipeline_group_data(
+        &self,
+        pipeline: &dyn DynRayTracingPipeline,
+        groups: core::ops::Range<u32>,
+    ) -> Result<Vec<u8>, DeviceError>;
 
     unsafe fn create_pipeline_cache(
         &self,
@@ -143,7 +150,7 @@ pub trait DynDevice: DynResource {
         &self,
         fence: &dyn DynFence,
         value: FenceValue,
-        timeout_ms: u32,
+        timeout: Option<core::time::Duration>,
     ) -> Result<bool, DeviceError>;
 
     unsafe fn start_graphics_debugger_capture(&self) -> bool;
@@ -167,7 +174,7 @@ pub trait DynDevice: DynResource {
         &self,
         acceleration_structure: Box<dyn DynAccelerationStructure>,
     );
-    fn tlas_instance_to_bytes(&self, instance: TlasInstance) -> Vec<u8>;
+    fn tlas_instance_to_bytes(&self, instance: TlasInstance, to_extend: &mut Vec<u8>);
 
     fn get_internal_counters(&self) -> wgt::HalCounters;
     fn generate_allocator_report(&self) -> Option<wgt::AllocatorReport>;
@@ -179,8 +186,9 @@ impl<D: Device + DynResource> DynDevice for D {
     unsafe fn create_buffer(
         &self,
         desc: &BufferDescriptor,
-    ) -> Result<Box<dyn DynBuffer>, DeviceError> {
-        unsafe { D::create_buffer(self, desc) }.map(|b| -> Box<dyn DynBuffer> { Box::new(b) })
+    ) -> Result<(Box<dyn DynBuffer>, wgt::BufferAddress), DeviceError> {
+        unsafe { D::create_buffer(self, desc) }
+            .map(|(b, size)| -> (Box<dyn DynBuffer>, _) { (Box::new(b), size) })
     }
 
     unsafe fn destroy_buffer(&self, buffer: Box<dyn DynBuffer>) {
@@ -298,12 +306,12 @@ impl<D: Device + DynResource> DynDevice for D {
         let bind_group_layouts: Vec<_> = desc
             .bind_group_layouts
             .iter()
-            .map(|bgl| bgl.expect_downcast_ref())
+            .map(|bgl| bgl.map(|bgl| bgl.expect_downcast_ref()))
             .collect();
         let desc = PipelineLayoutDescriptor {
             label: desc.label,
             bind_group_layouts: &bind_group_layouts,
-            push_constant_ranges: desc.push_constant_ranges,
+            immediate_size: desc.immediate_size,
             flags: desc.flags,
         };
 
@@ -345,6 +353,11 @@ impl<D: Device + DynResource> DynDevice for D {
             .iter()
             .map(|a| a.expect_downcast_ref())
             .collect();
+        let external_textures: Vec<_> = desc
+            .external_textures
+            .iter()
+            .map(|et| et.clone().expect_downcast())
+            .collect();
 
         let desc = BindGroupDescriptor {
             label: desc.label.to_owned(),
@@ -354,6 +367,7 @@ impl<D: Device + DynResource> DynDevice for D {
             textures: &textures,
             entries: desc.entries,
             acceleration_structures: &acceleration_structures,
+            external_textures: &external_textures,
         };
 
         unsafe { D::create_bind_group(self, &desc) }
@@ -388,44 +402,32 @@ impl<D: Device + DynResource> DynDevice for D {
         let desc = RenderPipelineDescriptor {
             label: desc.label,
             layout: desc.layout.expect_downcast_ref(),
-            vertex_buffers: desc.vertex_buffers,
-            vertex_stage: desc.vertex_stage.clone().expect_downcast(),
+            vertex_processor: match &desc.vertex_processor {
+                crate::VertexProcessor::Standard {
+                    vertex_buffers,
+                    vertex_stage,
+                } => crate::VertexProcessor::Standard {
+                    vertex_buffers,
+                    vertex_stage: vertex_stage.clone().expect_downcast(),
+                },
+                crate::VertexProcessor::Mesh {
+                    task_stage: task,
+                    mesh_stage: mesh,
+                } => crate::VertexProcessor::Mesh {
+                    task_stage: task.as_ref().map(|a| a.clone().expect_downcast()),
+                    mesh_stage: mesh.clone().expect_downcast(),
+                },
+            },
             primitive: desc.primitive,
             depth_stencil: desc.depth_stencil.clone(),
             multisample: desc.multisample,
             fragment_stage: desc.fragment_stage.clone().map(|f| f.expect_downcast()),
             color_targets: desc.color_targets,
-            multiview: desc.multiview,
+            multiview_mask: desc.multiview_mask,
             cache: desc.cache.map(|c| c.expect_downcast_ref()),
         };
 
         unsafe { D::create_render_pipeline(self, &desc) }
-            .map(|b| -> Box<dyn DynRenderPipeline> { Box::new(b) })
-    }
-
-    unsafe fn create_mesh_pipeline(
-        &self,
-        desc: &MeshPipelineDescriptor<
-            dyn DynPipelineLayout,
-            dyn DynShaderModule,
-            dyn DynPipelineCache,
-        >,
-    ) -> Result<Box<dyn DynRenderPipeline>, PipelineError> {
-        let desc = MeshPipelineDescriptor {
-            label: desc.label,
-            layout: desc.layout.expect_downcast_ref(),
-            task_stage: desc.task_stage.clone().map(|f| f.expect_downcast()),
-            mesh_stage: desc.mesh_stage.clone().expect_downcast(),
-            primitive: desc.primitive,
-            depth_stencil: desc.depth_stencil.clone(),
-            multisample: desc.multisample,
-            fragment_stage: desc.fragment_stage.clone().map(|f| f.expect_downcast()),
-            color_targets: desc.color_targets,
-            multiview: desc.multiview,
-            cache: desc.cache.map(|c| c.expect_downcast_ref()),
-        };
-
-        unsafe { D::create_mesh_pipeline(self, &desc) }
             .map(|b| -> Box<dyn DynRenderPipeline> { Box::new(b) })
     }
 
@@ -454,6 +456,55 @@ impl<D: Device + DynResource> DynDevice for D {
 
     unsafe fn destroy_compute_pipeline(&self, pipeline: Box<dyn DynComputePipeline>) {
         unsafe { D::destroy_compute_pipeline(self, pipeline.unbox()) };
+    }
+
+    unsafe fn create_ray_tracing_pipeline(
+        &self,
+        desc: &RayTracingPipelineDescriptor<
+            dyn DynPipelineLayout,
+            dyn DynShaderModule,
+            dyn DynPipelineCache,
+        >,
+    ) -> Result<Box<dyn DynRayTracingPipeline>, PipelineError> {
+        let ray_intersection: Vec<_> = desc
+            .intersection
+            .iter()
+            .map(|stage| RayObjectIntersectionState {
+                closest_hit: stage.closest_hit.clone().expect_downcast(),
+                any_hit: stage
+                    .any_hit
+                    .as_ref()
+                    .map(|stage| stage.clone().expect_downcast()),
+            })
+            .collect();
+
+        let desc = RayTracingPipelineDescriptor {
+            label: desc.label,
+            layout: desc.layout.expect_downcast_ref(),
+            ray_generation: desc.ray_generation.clone().expect_downcast(),
+            miss: desc.miss.clone().expect_downcast(),
+            intersection: &ray_intersection,
+            max_recursion_depth: desc.max_recursion_depth,
+            cache: desc.cache.as_ref().map(|c| c.expect_downcast_ref()),
+        };
+
+        unsafe { D::create_ray_tracing_pipeline(self, &desc) }
+            .map(|b| -> Box<dyn DynRayTracingPipeline> { Box::new(b) })
+    }
+
+    unsafe fn destroy_ray_tracing_pipeline(&self, pipeline: Box<dyn DynRayTracingPipeline>) {
+        unsafe {
+            D::destroy_ray_tracing_pipeline(self, pipeline.unbox());
+        };
+    }
+    unsafe fn get_raytracing_pipeline_group_data(
+        &self,
+        pipeline: &dyn DynRayTracingPipeline,
+        groups: core::ops::Range<u32>,
+    ) -> Result<Vec<u8>, DeviceError> {
+        unsafe {
+            D::get_raytracing_pipeline_group_data(self, pipeline.expect_downcast_ref(), groups)
+        }
     }
 
     unsafe fn create_pipeline_cache(
@@ -500,10 +551,10 @@ impl<D: Device + DynResource> DynDevice for D {
         &self,
         fence: &dyn DynFence,
         value: FenceValue,
-        timeout_ms: u32,
+        timeout: Option<core::time::Duration>,
     ) -> Result<bool, DeviceError> {
         let fence = fence.expect_downcast_ref();
-        unsafe { D::wait(self, fence, value, timeout_ms) }
+        unsafe { D::wait(self, fence, value, timeout) }
     }
 
     unsafe fn start_graphics_debugger_capture(&self) -> bool {
@@ -554,8 +605,8 @@ impl<D: Device + DynResource> DynDevice for D {
         unsafe { D::destroy_acceleration_structure(self, acceleration_structure.unbox()) }
     }
 
-    fn tlas_instance_to_bytes(&self, instance: TlasInstance) -> Vec<u8> {
-        D::tlas_instance_to_bytes(self, instance)
+    fn tlas_instance_to_bytes(&self, instance: TlasInstance, to_extend: &mut Vec<u8>) {
+        D::tlas_instance_to_bytes(self, instance, to_extend)
     }
 
     fn get_internal_counters(&self) -> wgt::HalCounters {

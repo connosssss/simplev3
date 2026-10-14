@@ -58,11 +58,11 @@ function runTest(t, i, desc) {
           assert_equals(element.nodeType, element.ELEMENT_NODE)
           assert_equals(element.nodeValue, null)
           assert_equals(element.ownerDocument, doc)
-          var qualified = String(qualifiedName), names = []
+          var qualified = String(qualifiedName)
+          var names = [];
           var firstColonIndex = qualified.indexOf(":")
           if (firstColonIndex >= 0) {
-            names.push(qualified.substring(0, firstColonIndex));
-            names.push(qualified.substring(firstColonIndex + 1));
+            names = [qualified.substring(0, firstColonIndex), qualified.substring(firstColonIndex + 1)];
           } else {
             names = [null, qualified]
           }

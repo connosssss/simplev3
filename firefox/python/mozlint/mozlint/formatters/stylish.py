@@ -17,19 +17,19 @@ class StylishFormatter:
     # doesn't support colors earlier in the list.
     # See http://www.calmar.ws/vim/256-xterm-24bit-rgb-color-chart.html
     _colors = {
-        "grey": [247, 8, 7],
-        "red": [1],
-        "green": [2],
-        "yellow": [3],
+        "blue": [4],
         "brightred": [9, 1],
         "brightyellow": [11, 3],
+        "darkgrey": [247, 8],
+        "green": [2],
+        "grey": [7],
+        "red": [1],
+        "yellow": [3],
     }
 
     fmt = """
-  {c1}{lineno}{column}  {c2}{level}{normal}  {message}  {c1}{rule}({linter}){normal}
-{diff}""".lstrip(
-        "\n"
-    )
+  {c1}{lineno}{column}  {c2}{level}{normal}  {message}  {c1}{rule}({linter}){source}{normal}
+{diff}{hint}""".lstrip("\n")
     fmt_summary = (
         "{t.bold}{c}\u2716 {problem} ({error}, {warning}{failure}, {fixed}){t.normal}"
     )
@@ -73,6 +73,34 @@ class StylishFormatter:
             new_diff += self._indent_ + line + "\n"
         return new_diff
 
+    def _get_colored_source(self, source):
+        if not source:
+            return ""
+
+        new_source = "\n"
+        for line in source.split("\n"):
+            divpos = 0
+            new_source += self._indent_ * 2
+            if "|" in line:
+                new_source += self.color("blue")
+                divpos = line.index("|") + 1
+                new_source += line[:divpos]
+
+            if line[divpos:].strip().startswith("^"):
+                new_source += self.color("red")
+            else:
+                new_source += self.color("grey")
+
+            new_source += line[divpos:] + "\n"
+        return new_source.rstrip("\n")
+
+    def _get_hint(self, hint):
+        if not hint:
+            return ""
+        return (
+            f"{self._indent_}{self.color('darkgrey')}Hint: {hint}{self.term.normal}\n"
+        )
+
     def __call__(self, result):
         message = []
         failed = result.failed
@@ -80,6 +108,9 @@ class StylishFormatter:
         num_errors = 0
         num_warnings = 0
         num_fixed = result.fixed
+        # Repeating the same hint on every issue that shares it is noisy, so
+        # only show each distinct hint text the first time it's seen.
+        seen_hints = set()
         for path, errors in sorted(result.issues.items()):
             self._reset_max()
 
@@ -101,9 +132,14 @@ class StylishFormatter:
                 else:
                     col = "".ljust(self.max_column + 1)
 
+                hint = None
+                if err.hint and err.hint not in seen_hints:
+                    hint = err.hint
+                    seen_hints.add(hint)
+
                 args = {
                     "normal": self.term.normal,
-                    "c1": self.color("grey"),
+                    "c1": self.color("darkgrey"),
                     "c2": (
                         self.color("red")
                         if err.level == "error"
@@ -115,7 +151,9 @@ class StylishFormatter:
                     "rule": f"{err.rule} " if err.rule else "",
                     "linter": err.linter.lower(),
                     "message": err.message.ljust(self.max_message),
-                    "diff": self._get_colored_diff(err.diff).ljust(self.max_message),
+                    "diff": self._get_colored_diff(err.diff),
+                    "source": self._get_colored_source(err.source),
+                    "hint": self._get_hint(hint),
                 }
                 message.append(self.fmt.format(**args).rstrip().rstrip("\n"))
 
@@ -153,7 +191,7 @@ class StylishFormatter:
         if result.total_suppressed_warnings > 0 and num_errors == 0:
             message.append(
                 "(pass {c1}-W/--warnings{c2} to see warnings.)".format(
-                    c1=self.color("grey"), c2=self.term.normal
+                    c1=self.color("darkgrey"), c2=self.term.normal
                 )
             )
 

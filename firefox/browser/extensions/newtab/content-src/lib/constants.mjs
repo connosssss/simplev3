@@ -36,3 +36,23 @@ export const NEWTAB_DARK_THEME = {
     a: 1,
   },
 };
+
+// Wallpaper category ids. These must match the `category` values the
+// wallpaper feed provides; prefer this map over bare category strings.
+export const WALLPAPER_CATEGORIES = {
+  Abstracts: "abstracts",
+  Celestial: "celestial",
+  Photographs: "photographs",
+  SolidColors: "solid-colors",
+  Firefox: "firefox",
+  CustomWallpaper: "custom-wallpaper",
+};
+
+// Ids of the customize panel's subpanels. New Tab telemetry records them as
+// its `panel` value (Bug 2066344), so keep them stable.
+export const CUSTOMIZE_SUBPANELS = Object.freeze({
+  SECTIONS: "sections_management",
+  WIDGETS: "widgets_management",
+  THEMES: "themes_management",
+  WALLPAPERS: "wallpaper_categories",
+});

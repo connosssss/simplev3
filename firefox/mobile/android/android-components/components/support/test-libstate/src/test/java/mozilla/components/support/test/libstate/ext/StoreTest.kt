@@ -14,30 +14,31 @@ class StoreTest {
 
     @Test
     fun `waitUntilIdle blocks and returns once reducers were executed`() {
-        val store = Store(
-            TestState(counter = 23),
-            ::reducer,
-        )
+        val store =
+            Store(
+                TestState(counter = 23),
+                ::reducer,
+            )
 
         store.dispatch(TestAction.IncrementAction)
-        store.waitUntilIdle()
         assertEquals(24, store.state.counter)
 
         store.dispatch(TestAction.DecrementAction)
         store.dispatch(TestAction.DecrementAction)
-        store.waitUntilIdle()
         assertEquals(22, store.state.counter)
     }
 }
 
-fun reducer(state: TestState, action: TestAction): TestState = when (action) {
-    is TestAction.IncrementAction -> state.copy(counter = state.counter + 1)
-    is TestAction.DecrementAction -> state.copy(counter = state.counter - 1)
-}
+fun reducer(state: TestState, action: TestAction): TestState =
+    when (action) {
+        is TestAction.IncrementAction -> state.copy(counter = state.counter + 1)
+        is TestAction.DecrementAction -> state.copy(counter = state.counter - 1)
+    }
 
 data class TestState(val counter: Int) : State
 
 sealed class TestAction : Action {
     object IncrementAction : TestAction()
+
     object DecrementAction : TestAction()
 }

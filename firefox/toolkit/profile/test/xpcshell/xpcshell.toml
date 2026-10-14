@@ -1,10 +1,21 @@
 [DEFAULT]
 head = "head.js"
-skip-if = ["os == 'android'"]
+run-if = [
+  "os != 'android'",
+]
+
+["test_appgroup_profile.js"]
+run-if = ["os == 'mac'"]
 
 ["test_async_flush.js"]
 
+["test_async_flush_cp_path.js"]
+
+["test_async_flush_cp_storeID.js"]
+
 ["test_async_flush_current_profile.js"]
+
+["test_bad_ini.js"]
 
 ["test_check_backup.js"]
 
@@ -19,6 +30,8 @@ skip-if = ["os == 'android'"]
 ["test_create_default.js"]
 
 ["test_delete_dirs.js"]
+
+["test_encrypted_databases_marker.js"]
 
 ["test_find_currentProfile.js"]
 
@@ -40,7 +53,42 @@ skip-if = ["os == 'android'"]
 
 ["test_new_default.js"]
 
+["test_new_profile_ping_sent.js"]
+
+["test_new_profile_ping_skipped.js"]
+
+["test_profile_metrics.js"]
+
+["test_profile_metrics_after_submission.js"]
+
+["test_profile_metrics_time_since_install.js"]
+run-if = ["os == 'win' && !msix"]
+run-sequentially = ["true"]
+
+["test_profile_metrics_time_since_no_files.js"]
+run-sequentially = ["true"]
+
+["test_profile_metrics_time_since_update.js"]
+run-if = ["!msix"]
+run-sequentially = ["true"]
+
+["test_profile_metrics_excludes_current.js"]
+
+["test_profile_metrics_no_compat.js"]
+
+["test_profile_metrics_no_prefs.js"]
+
+["test_profile_metrics_other_install.js"]
+
+["test_profile_metrics_store_id_match.js"]
+
+["test_profile_metrics_store_id_mismatch.js"]
+
+["test_profile_metrics_store_id_null.js"]
+
 ["test_previous_dedicated.js"]
+
+["test_profile_descriptor_and_localdir.js"]
 
 ["test_profile_reset.js"]
 
@@ -77,22 +125,34 @@ skip-if = ["os == 'android'"]
 ["test_showselector.js"]
 
 ["test_single_profile_selected.js"]
-skip-if = ["devedition"]
+skip-if = [
+  "devedition",
+]
 
 ["test_single_profile_unselected.js"]
-skip-if = ["devedition"]
+skip-if = [
+  "devedition",
+]
 
 ["test_skip_locked_environment.js"]
 
 ["test_snap.js"]
 environment = ["SNAP_NAME=firefox", "SNAP_INSTANCE_NAME=firefox"]
-run-if = ["os == 'linux'"]
-skip-if = ["appname == 'thunderbird'"]
+run-if = [
+  "os == 'linux'",
+]
+skip-if = [
+  "appname == 'thunderbird'",
+]
 
 ["test_snap_empty.js"]
 environment = ["SNAP_NAME=firefox", "SNAP_INSTANCE_NAME=firefox"]
-run-if = ["os == 'linux'"]
-skip-if = ["appname == 'thunderbird'"]
+run-if = [
+  "os == 'linux' && os_version == '24.04' && arch == 'x86_64' && display == 'x11'",
+]
+skip-if = [
+  "appname == 'thunderbird'",
+]
 
 ["test_snatch_environment.js"]
 
@@ -103,6 +163,16 @@ skip-if = ["appname == 'thunderbird'"]
 ["test_steal_inuse.js"]
 
 ["test_storeid.js"]
+
+["test_unreadable_ini.js"]
+
+["test_unreadable_ini_createprofile.js"]
+
+["test_unreadable_ini_no_profile.js"]
+
+["test_unreadable_ini_p.js"]
+
+["test_unreadable_ini_profilemanager.js"]
 
 ["test_update_paths.js"]
 

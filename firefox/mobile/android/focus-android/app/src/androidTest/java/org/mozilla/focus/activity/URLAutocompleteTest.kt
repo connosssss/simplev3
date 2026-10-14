@@ -9,22 +9,23 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.focus.activity.robots.homeScreen
 import org.mozilla.focus.activity.robots.searchScreen
+import org.mozilla.focus.helpers.FocusTestRule
 import org.mozilla.focus.helpers.MainActivityFirstrunTestRule
 import org.mozilla.focus.helpers.TestHelper.exitToTop
 import org.mozilla.focus.helpers.TestHelper.mDevice
-import org.mozilla.focus.helpers.TestSetup
 import org.mozilla.focus.testAnnotations.SmokeTest
 
 // Tests url autocompletion and adding custom autocomplete urls
 @RunWith(AndroidJUnit4ClassRunner::class)
-class URLAutocompleteTest : TestSetup() {
+class URLAutocompleteTest {
     private val searchTerm = "mozilla"
     private val autocompleteSuggestion = "mozilla.org"
     private val pageUrl = "https://www.mozilla.org/"
     private val customURL = "680news.com"
 
-    @get:Rule
-    val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
+    @get:Rule(order = 0) val focusTestRule: FocusTestRule = FocusTestRule()
+
+    @get:Rule val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
 
     // Test the url autocomplete feature with default settings
     @SmokeTest
@@ -44,14 +45,14 @@ class URLAutocompleteTest : TestSetup() {
     @SmokeTest
     @Test
     fun disableTopSitesAutocompleteTest() {
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openSearchSettingsMenu {
-            openUrlAutocompleteSubMenu()
-            toggleTopSitesAutocomplete()
-            exitToTop()
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openSearchSettingsMenu {
+                openUrlAutocompleteSubMenu()
+                toggleTopSitesAutocomplete()
+                exitToTop()
+            }
 
         searchScreen {
             typeInSearchBar(searchTerm)
@@ -62,19 +63,19 @@ class URLAutocompleteTest : TestSetup() {
     // Add custom Url, verify it works, then remove it and check it is no longer autocompleted
     @Test
     fun customUrlAutoCompletionTest() {
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openSearchSettingsMenu {
-            // Add custom autocomplete url
-            openUrlAutocompleteSubMenu()
-            openManageSitesSubMenu()
-            openAddCustomUrlDialog()
-            enterCustomUrl(customURL)
-            saveCustomUrl()
-            verifySavedCustomURL(customURL)
-            exitToTop()
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openSearchSettingsMenu {
+                // Add custom autocomplete url
+                openUrlAutocompleteSubMenu()
+                openManageSitesSubMenu()
+                openAddCustomUrlDialog()
+                enterCustomUrl(customURL)
+                saveCustomUrl()
+                verifySavedCustomURL(customURL)
+                exitToTop()
+            }
         // verify the custom url auto-completes
         searchScreen {
             typeInSearchBar(customURL.substring(0, 1))
@@ -82,16 +83,16 @@ class URLAutocompleteTest : TestSetup() {
             clearSearchBar()
         }
 
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openSearchSettingsMenu {
-            // remove custom Url
-            openUrlAutocompleteSubMenu()
-            openManageSitesSubMenu()
-            removeCustomUrl()
-            exitToTop()
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openSearchSettingsMenu {
+                // remove custom Url
+                openUrlAutocompleteSubMenu()
+                openManageSitesSubMenu()
+                removeCustomUrl()
+                exitToTop()
+            }
         // verify it is no longer auto-completed
         searchScreen {
             typeInSearchBar(customURL.substring(0, 3))
@@ -103,20 +104,20 @@ class URLAutocompleteTest : TestSetup() {
     // Add custom autocompletion site, then disable autocomplete
     @Test
     fun disableAutocompleteForCustomSiteTest() {
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openSearchSettingsMenu {
-            openUrlAutocompleteSubMenu()
-            openManageSitesSubMenu()
-            openAddCustomUrlDialog()
-            enterCustomUrl(customURL)
-            saveCustomUrl()
-            verifySavedCustomURL(customURL)
-            mDevice.pressBack()
-            toggleCustomAutocomplete()
-            exitToTop()
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openSearchSettingsMenu {
+                openUrlAutocompleteSubMenu()
+                openManageSitesSubMenu()
+                openAddCustomUrlDialog()
+                enterCustomUrl(customURL)
+                saveCustomUrl()
+                verifySavedCustomURL(customURL)
+                mDevice.pressBack()
+                toggleCustomAutocomplete()
+                exitToTop()
+            }
 
         searchScreen {
             typeInSearchBar(customURL.substring(0, 3))
@@ -128,21 +129,21 @@ class URLAutocompleteTest : TestSetup() {
     // Verifies the custom Url can't be added twice
     @Test
     fun duplicateCustomUrlNotAllowedTest() {
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openSearchSettingsMenu {
-            openUrlAutocompleteSubMenu()
-            openManageSitesSubMenu()
-            openAddCustomUrlDialog()
-            enterCustomUrl(customURL)
-            saveCustomUrl()
-            verifySavedCustomURL(customURL)
-            openAddCustomUrlDialog()
-            enterCustomUrl(customURL)
-            saveCustomUrl()
-            verifyCustomUrlDialogNotClosed()
-            exitToTop()
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openSearchSettingsMenu {
+                openUrlAutocompleteSubMenu()
+                openManageSitesSubMenu()
+                openAddCustomUrlDialog()
+                enterCustomUrl(customURL)
+                saveCustomUrl()
+                verifySavedCustomURL(customURL)
+                openAddCustomUrlDialog()
+                enterCustomUrl(customURL)
+                saveCustomUrl()
+                verifyCustomUrlDialogNotClosed()
+                exitToTop()
+            }
     }
 }

@@ -29,10 +29,8 @@ class TestOutput:
         if self.timed_out:
             return "Timeout"
         lines = self.err.splitlines()
-        for line in lines:
-            # Skip the asm.js compilation success message.
-            if "Successfully compiled asm.js code" not in line:
-                return line
+        if lines:
+            return lines[0]
         return "Unknown"
 
 
@@ -121,14 +119,12 @@ class TestResult:
                     test_output += "expected %s, found %s" % (expected, test.status)
                     if test.message:
                         test_output += ' (with message: "%s")' % (test.message,)
-                subtests.append(
-                    {
-                        "test": output.test.wpt.id,
-                        "subtest": test.name,
-                        "status": test.status,
-                        "expected": expected,
-                    }
-                )
+                subtests.append({
+                    "test": output.test.wpt.id,
+                    "subtest": test.name,
+                    "status": test.status,
+                    "expected": expected,
+                })
                 results.append(test_result)
                 stdout.append(test_output)
 
@@ -172,8 +168,7 @@ class TestResult:
                 results.append((cls.PASS, msg))
             else:
                 m = re.match(
-                    "--- NOTE: IN THIS TESTCASE, WE EXPECT EXIT CODE"
-                    " ((?:-|\\d)+) ---",
+                    "--- NOTE: IN THIS TESTCASE, WE EXPECT EXIT CODE ((?:-|\\d)+) ---",
                     line,
                 )
                 if m:
@@ -190,11 +185,10 @@ class TestResult:
                 result = cls.FAIL
             else:
                 result = cls.CRASH
+        elif (rc or passes > 0) and failures == 0:
+            result = cls.PASS
         else:
-            if (rc or passes > 0) and failures == 0:
-                result = cls.PASS
-            else:
-                result = cls.FAIL
+            result = cls.FAIL
 
         return cls(test, result, results)
 
@@ -455,7 +449,7 @@ class ResultsSink:
         result += " | " + test.path
         args = []
         if self.options.shell_args:
-            args.append(self.options.shell_args)
+            args.extend(self.options.shell_args)
         args += test.jitflags
         result += ' | (args: "{}")'.format(" ".join(args))
         if message:
@@ -469,7 +463,7 @@ class ResultsSink:
 
         details = {"extra": extra.copy() if extra else {}}
         if self.options.shell_args:
-            details["extra"]["shell_args"] = self.options.shell_args
+            details["extra"]["shell_args"] = shlex.join(self.options.shell_args)
         details["extra"]["jitflags"] = test.jitflags
         if message:
             details["message"] = message

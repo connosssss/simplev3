@@ -39,25 +39,6 @@ task-defaults:
     use-python: default
 
 tasks:
-    linux32:
-        dependencies:
-            build-signing: build-signing-linux-shippable/opt
-        run:
-            using: run-task
-            cwd: "{checkout}"
-        extra-config:
-            upstream_kind: build-signing
-            upstream_artifact: target.tar.xz
-            binary: firefox
-        worker-type: t-linux-docker
-        worker:
-            docker-image: {in-tree: ubuntu2404-test}
-        shipping-product: firefox
-        attributes:
-            build_platform: linux-shippable
-        treeherder:
-            platform: linux-shippable/opt
-
     linux64:
         dependencies:
             build-signing: build-signing-linux64-shippable/opt
@@ -68,7 +49,7 @@ tasks:
             upstream_kind: build-signing
             upstream_artifact: target.tar.xz
             binary: firefox
-        worker-type: t-linux-docker
+        worker-type: t-linux-docker-amd
         worker:
             docker-image: {in-tree: ubuntu2404-test}
         shipping-product: firefox
@@ -101,7 +82,6 @@ tasks:
             repackage: repackage-macosx64-shippable/opt
         run:
             using: mach
-            python-version: 3
         extra-config:
             upstream_kind: repackage
             upstream_artifact: target.dmg
@@ -112,18 +92,21 @@ tasks:
             build_platform: macosx64-shippable
         treeherder:
             platform: macosx64-shippable/opt
+        priority:
+            by-project:
+                mozilla-central: high
+                default: null
 
     win32:
         dependencies:
             repackage-signing: repackage-signing-win32-shippable/opt
         run:
             using: mach
-            python-version: 3
         extra-config:
             upstream_kind: repackage-signing
             upstream_artifact: target.installer.exe
             binary: core/firefox.exe
-        worker-type: win11-64-24h2-source
+        worker-type: win11-64-25h2-source
         shipping-product: firefox
         attributes:
             build_platform: win32-shippable
@@ -135,12 +118,11 @@ tasks:
             repackage-signing: repackage-signing-win64-shippable/opt
         run:
             using: mach
-            python-version: 3
         extra-config:
             upstream_kind: repackage-signing
             upstream_artifact: target.installer.exe
             binary: core/firefox.exe
-        worker-type: win11-64-24h2-source
+        worker-type: win11-64-25h2-source
         shipping-product: firefox
         attributes:
             build_platform: win64-shippable
@@ -152,12 +134,11 @@ tasks:
             repackage-signing: repackage-signing-win64-aarch64-shippable/opt
         run:
             using: mach
-            python-version: 3
         extra-config:
             upstream_kind: repackage-signing
             upstream_artifact: target.installer.exe
             binary: core/firefox.exe
-        worker-type: win11-a64-24h2
+        worker-type: win11-a64-25h2
         shipping-product: firefox
         attributes:
             build_platform: win64-aarch64-shippable

@@ -10,6 +10,7 @@ const CERTDB_CONTRACTID = "@mozilla.org/security/x509certdb;1";
 import {
   AddonManager,
   AddonManagerPrivate,
+  AMTelemetry,
 } from "resource://gre/modules/AddonManager.sys.mjs";
 import { AsyncShutdown } from "resource://gre/modules/AsyncShutdown.sys.mjs";
 import { FileUtils } from "resource://gre/modules/FileUtils.sys.mjs";
@@ -36,7 +37,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 XPCOMUtils.defineLazyServiceGetters(lazy, {
   aomStartup: [
     "@mozilla.org/addons/addon-manager-startup;1",
-    "amIAddonManagerStartup",
+    Ci.amIAddonManagerStartup,
   ],
 });
 
@@ -611,7 +612,14 @@ export var AddonTestUtils = {
     }
   },
 
+  _calledOverrideCertDB: false,
+
   overrideCertDB() {
+    if (this._calledOverrideCertDB) {
+      throw new Error("Don't call overrideCertDB more than once.");
+    }
+    this._calledOverrideCertDB = true;
+
     let verifyCert = async (file, result, signatureInfos, callback) => {
       if (
         result == Cr.NS_ERROR_SIGNED_JAR_NOT_SIGNED &&
@@ -679,6 +687,8 @@ export var AddonTestUtils = {
     };
 
     let FakeCertDB = {
+      _genuine: Cc[CERTDB_CONTRACTID].createInstance(Ci.nsIX509CertDB),
+
       init() {
         for (let property of Object.keys(
           this._genuine.QueryInterface(Ci.nsIX509CertDB)
@@ -807,7 +817,7 @@ export var AddonTestUtils = {
   /**
    * Starts up the add-on manager as if it was started by the application.
    *
-   * @param {Object} params
+   * @param {object} params
    *        The new params are in an object and new code should use that.
    * @param {boolean} params.earlyStartup
    *        Notifies early startup phase. default is true
@@ -861,6 +871,10 @@ export var AddonTestUtils = {
           }
         }
       };
+
+    // Make sure AMTelemetry.onStartup to be called as it would happen
+    // on a real application startup.
+    AddonManager.addManagerListener(AMTelemetry);
 
     this.addonIntegrationService = Cc[
       "@mozilla.org/addons/integration;1"
@@ -962,6 +976,10 @@ export var AddonTestUtils = {
 
     lazy.ExtensionTestCommon.resetStartupPromises();
 
+    // Uninitialize AMTelemetry to ensure that it can be properly re-initialized
+    // as a side-effect of AddonTestUtils.promiseStartupManager.
+    await AMTelemetry.uninit();
+
     if (shutdownError) {
       throw shutdownError;
     }
@@ -974,7 +992,7 @@ export var AddonTestUtils = {
    * simulate an application upgrade (or downgrade) where the version
    * is changed to newVersion when re-started.
    *
-   * @param {Object} params
+   * @param {object} params
    *        The new params are in an object and new code should use that.
    *        See promiseStartupManager for param details.
    */
@@ -1021,7 +1039,7 @@ export var AddonTestUtils = {
    *
    * @param {string|nsIFile} zipFile
    *        The zip file to write to.
-   * @param {Object} files
+   * @param {object} files
    *        An object containing filenames and the data to write to the
    *        corresponding paths in the zip file.
    * @param {integer} [flags = 0]
@@ -1144,7 +1162,7 @@ export var AddonTestUtils = {
    * Creates an XPI file for some WebExtension data in the temporary directory and
    * returns the nsIFile for it. The file will be deleted when the test completes.
    *
-   * @param {Object} data
+   * @param {object} data
    *        The object holding data about the add-on, as expected by
    *        |ExtensionTestCommon.generateXPI|.
    * @return {nsIFile} A file pointing to the created XPI file
@@ -1159,7 +1177,7 @@ export var AddonTestUtils = {
    * Creates an XPI with the given files and installs it.
    *
    * @param {object} files
-   *        A files object as would be passed to {@see #createTempXPI}.
+   *        A files object as would be passed to {@link createTempXPIFile()}.
    * @returns {Promise}
    *        A promise which resolves when the add-on is installed.
    */
@@ -1478,7 +1496,7 @@ export var AddonTestUtils = {
    * @param {boolean} [ignoreIncompatible = false]
    *        Optional parameter to ignore add-ons that are incompatible
    *        with the application
-   * @param {Object} [installTelemetryInfo = undefined]
+   * @param {object} [installTelemetryInfo = undefined]
    *        Optional parameter to set the install telemetry info for the
    *        installed addon
    * @returns {Promise}
@@ -1537,8 +1555,8 @@ export var AddonTestUtils = {
 
   /**
    * @property {number} updateReason
-   *        The default update reason for {@see promiseFindAddonUpdates}
-   *        calls. May be overwritten by tests which primarily check for
+   *        The default update reason for {@link promiseFindAddonUpdates()} calls.
+   *        May be overwritten by tests which primarily check for
    *        updates with a particular reason.
    */
   updateReason: AddonManager.UPDATE_WHEN_PERIODIC_UPDATE,
@@ -1748,7 +1766,7 @@ export var AddonTestUtils = {
    *
    * @param {AddonWrapper|AddonInstall} addonOrInstall
    *        The addon or addonInstall object to check.
-   * @param {Object} expectedInstallInfo
+   * @param {object} expectedInstallInfo
    *        The expected installTelemetryInfo properties
    *        (every property can be a primitive value or a regular expression).
    * @param {string} [msg]
@@ -1880,42 +1898,38 @@ export var AddonTestUtils = {
   // AMTelemetry events helpers.
 
   /**
-   * Formerly this function re-routed telemetry events. Now it just ensures
-   * that there are no unexamined events after the test file is exiting.
-   */
-  hookAMTelemetryEvents() {
-    this.testScope.registerCleanupFunction(() => {
-      this.testScope.Assert.deepEqual(
-        [],
-        this.getAMTelemetryEvents(),
-        "No unexamined telemetry events after test is finished"
-      );
-    });
-  },
-
-  /**
-   * Retrive any AMTelemetry event collected and clears _all_ telemetry events.
+   * Assert that the expected "sitepermission" addon install telemetry steps
+   * were recorded, then optionally reset FOG so that a subsequent call only
+   * sees events recorded after the previous call to this helper.
    *
-   * @returns {Array<Object>}
-   *          The array of the collected telemetry data.
+   * @param {object} options
+   * @param {Array<string>} options.expectedSteps
+   *        The expected step extra var values for install events.
+   * @param {boolean} [options.resetFOG]
+   *        Whether to reset FOG after the assertion. Defaults to false.
+   * @param {Function} [options.onEvent]
+   *        If provided, called once per matched event (extra object), e.g. to
+   *        accumulate values across several calls within the same test task.
    */
-  getAMTelemetryEvents() {
-    // This duplicates some logic from TelemetryTestUtils.
-    let snapshots = Services.telemetry.snapshotEvents(
-      Ci.nsITelemetry.DATASET_PRERELEASE_CHANNELS,
-      /* clear = */ true
+  assertSitePermissionInstallSteps({
+    expectedSteps,
+    resetFOG = false,
+    onEvent,
+  }) {
+    let amInstallEvents = this.getAMGleanEvents("install", {
+      addon_type: "sitepermission",
+    });
+    this.testScope.Assert.deepEqual(
+      amInstallEvents.map(evt => evt.step),
+      expectedSteps,
+      "got expected sitepermission install telemetry events"
     );
-    let events = (snapshots.parent ?? [])
-      .filter(entry => entry[1] == "addonsManager")
-      .map(entry => ({
-        // The callers don't expect the timestamp or the category.
-        method: entry[2],
-        object: entry[3],
-        value: entry[4],
-        extra: entry[5],
-      }));
-
-    return events;
+    if (resetFOG) {
+      Services.fog.testResetFOG();
+    }
+    if (onEvent) {
+      amInstallEvents.forEach(onEvent);
+    }
   },
 
   /**

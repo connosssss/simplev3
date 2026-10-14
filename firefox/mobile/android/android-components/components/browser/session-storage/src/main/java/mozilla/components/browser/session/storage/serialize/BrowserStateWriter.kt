@@ -12,34 +12,23 @@ import mozilla.components.browser.state.state.TabSessionState
 import mozilla.components.concept.engine.EngineSessionState
 import mozilla.components.support.ktx.util.streamJSON
 
-/**
- * Writes a [BrowserState] or a single [TabSessionState] to disk to be restored later using
- * [BrowserStateReader].
- */
+/** Writes a [BrowserState] or a single [TabSessionState] to disk to be restored later using [BrowserStateReader]. */
 class BrowserStateWriter {
-    /**
-     * Writes the [BrowserState] to [file] as JSON.
-     */
+    /** Writes the [BrowserState] to [file] as JSON. */
     fun write(
         state: BrowserState,
         file: AtomicFile,
     ): Boolean = file.streamJSON { state(state) }
 
-    /**
-     * Writes a single [TabSessionState] to [file] in JSON format.
-     */
+    /** Writes a single [TabSessionState] to [file] in JSON format. */
     fun writeTab(
         tab: TabSessionState,
         file: AtomicFile,
     ): Boolean = file.streamJSON { tab(tab) }
 }
 
-/**
- * Writes [BrowserState] to [JsonWriter].
- */
-private fun JsonWriter.state(
-    state: BrowserState,
-) {
+/** Writes [BrowserState] to [JsonWriter]. */
+private fun JsonWriter.state(state: BrowserState) {
     beginObject()
 
     name(Keys.VERSION_KEY)
@@ -48,25 +37,28 @@ private fun JsonWriter.state(
     name(Keys.SELECTED_TAB_ID_KEY)
     value(state.selectedTabId)
 
+    state.translationEngine.isEngineSupported?.let { isEngineSupported ->
+        name(Keys.TRANSLATIONS_ENGINE_IS_SUPPORTED_KEY)
+        value(isEngineSupported)
+    }
+
     name(Keys.SESSION_STATE_TUPLES_KEY)
 
     beginArray()
 
-    state.tabs.filter { !it.content.private }.forEachIndexed { _, tab ->
-        tab(tab)
-    }
+    state.tabs
+        .filter { !it.content.private }
+        .forEachIndexed { _, tab ->
+            tab(tab)
+        }
 
     endArray()
 
     endObject()
 }
 
-/**
- * Writes a [TabSessionState] to [JsonWriter].
- */
-private fun JsonWriter.tab(
-    tab: TabSessionState,
-) {
+/** Writes a [TabSessionState] to [JsonWriter]. */
+private fun JsonWriter.tab(tab: TabSessionState) {
     beginObject()
 
     name(Keys.SESSION_KEY)
@@ -97,6 +89,9 @@ private fun JsonWriter.tab(
 
         name(Keys.SESSION_CREATED_AT)
         value(tab.createdAt)
+
+        name(Keys.SESSION_LAST_VISIBLE_AT)
+        value(tab.lastVisibleAt)
 
         name(Keys.SESSION_LAST_MEDIA_URL)
         value(tab.lastMediaAccessState.lastMediaUrl)
@@ -154,9 +149,7 @@ private fun JsonWriter.tab(
     endObject()
 }
 
-/**
- * Writes a (nullable) [EngineSessionState] to [JsonWriter].
- */
+/** Writes a (nullable) [EngineSessionState] to [JsonWriter]. */
 private fun JsonWriter.engineSession(engineSessionState: EngineSessionState?) {
     if (engineSessionState == null) {
         beginObject()

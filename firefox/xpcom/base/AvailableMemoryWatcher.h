@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,15 +5,51 @@
 #ifndef mozilla_AvailableMemoryWatcher_h
 #define mozilla_AvailableMemoryWatcher_h
 
-#include "mozilla/ipc/CrashReporterHost.h"
-#include "mozilla/UniquePtr.h"
-#include "MemoryPressureLevelMac.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/TimeStamp.h"
 #include "nsCOMPtr.h"
 #include "nsIAvailableMemoryWatcherBase.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
 
+#if defined(XP_DARWIN)
+#  include "MemoryPressureLevelMac.h"
+#  include "mozilla/UniquePtr.h"
+#endif  // defined(XP_DARWIN)
+
 namespace mozilla {
+
+namespace ipc {
+class CrashReporterHost;
+}
+
+#if defined(XP_LINUX) && !defined(ANDROID)
+// PSIInfo struct holds parsed data from /proc/pressure/memory
+//
+// The values in /proc/pressure/memory are floating point numbers, but
+// PSIInfo has integer members (truncated values).
+struct PSIInfo {
+  unsigned long some_avg10 = 0;
+  unsigned long some_avg60 = 0;
+  unsigned long some_avg300 = 0;
+  unsigned long some_total = 0;
+  unsigned long full_avg10 = 0;
+  unsigned long full_avg60 = 0;
+  unsigned long full_avg300 = 0;
+  unsigned long full_total = 0;
+  bool psi_available = false;
+};
+
+// Get PSI (Pressure Stall Information) data from the last periodic update.
+// This function can be called from any thread and returns the most recently
+// captured PSI values from /proc/pressure/memory.
+// Returns NS_OK if successful, NS_ERROR_FAILURE if PSI is not available
+// or the file format is invalid.
+nsresult GetLastPSISnapshot(PSIInfo& aResult);
+
+// Start sampling PSI data for non-OOM scenario once
+void StartNonOOMPSISampling();
+#endif
 
 // This class implements a platform-independent part to watch the system's
 // memory situation and invoke the registered callbacks when we detect

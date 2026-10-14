@@ -6,7 +6,6 @@ package org.mozilla.fenix.webcompat.middleware
 
 import androidx.annotation.VisibleForTesting
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
 import mozilla.components.lib.state.Store
 import org.mozilla.fenix.components.AppStore
 import org.mozilla.fenix.components.appstate.AppAction.WebCompatAction
@@ -20,19 +19,18 @@ import org.mozilla.fenix.webcompat.store.WebCompatReporterState
  *
  * @property appStore [AppStore] used to persist the [WebCompatState].
  */
-class WebCompatReporterStorageMiddleware(
-    val appStore: AppStore,
-) : Middleware<WebCompatReporterState, WebCompatReporterAction> {
+class WebCompatReporterStorageMiddleware(val appStore: AppStore) :
+    Middleware<WebCompatReporterState, WebCompatReporterAction> {
 
     override fun invoke(
-        context: MiddlewareContext<WebCompatReporterState, WebCompatReporterAction>,
+        store: Store<WebCompatReporterState, WebCompatReporterAction>,
         next: (WebCompatReporterAction) -> Unit,
         action: WebCompatReporterAction,
     ) {
         next(action)
 
         when (action) {
-            is WebCompatReporterStorageAction -> processStorageAction(store = context.store, action = action)
+            is WebCompatReporterStorageAction -> processStorageAction(store = store, action = action)
             else -> {} // no-op
         }
     }
@@ -52,31 +50,29 @@ class WebCompatReporterStorageMiddleware(
                     }
                 }
             }
-            WebCompatReporterAction.BackPressed,
-            WebCompatReporterAction.SendMoreInfoClicked,
-            WebCompatReporterAction.LearnMoreClicked,
-            -> appStore.dispatch(
-                WebCompatAction.WebCompatStateUpdated(
-                    newState = store.state.toPersistedState(),
-                ),
-            )
+            WebCompatReporterAction.LearnMoreClicked ->
+                appStore.dispatch(WebCompatAction.WebCompatStateUpdated(newState = store.state.toPersistedState()))
             WebCompatReporterAction.CancelClicked -> appStore.dispatch(WebCompatAction.WebCompatStateReset)
         }
     }
 }
 
 @VisibleForTesting
-internal fun WebCompatState.toReporterState() = WebCompatReporterState(
-    tabUrl = tabUrl,
-    enteredUrl = enteredUrl,
-    reason = reason?.let { WebCompatReporterState.BrokenSiteReason.valueOf(it) },
-    problemDescription = problemDescription,
-)
+internal fun WebCompatState.toReporterState() =
+    WebCompatReporterState(
+        tabUrl = tabUrl,
+        enteredUrl = enteredUrl,
+        reason = reason?.let { WebCompatReporterState.BrokenSiteReason.valueOf(it) },
+        problemDescription = problemDescription,
+        includeEtpBlockedUrls = includeEtpBlockedUrls,
+    )
 
 @VisibleForTesting
-internal fun WebCompatReporterState.toPersistedState() = WebCompatState(
-    tabUrl = tabUrl,
-    enteredUrl = enteredUrl.ifEmpty { tabUrl }, // do not save the URL is the text field is empty
-    reason = reason?.name,
-    problemDescription = problemDescription,
-)
+internal fun WebCompatReporterState.toPersistedState() =
+    WebCompatState(
+        tabUrl = tabUrl,
+        enteredUrl = enteredUrl.ifEmpty { tabUrl }, // do not save the URL is the text field is empty
+        reason = reason?.name,
+        problemDescription = problemDescription,
+        includeEtpBlockedUrls = includeEtpBlockedUrls,
+    )

@@ -6,10 +6,11 @@ task-defaults:
     description: "Node repack toolchain build"
     attributes:
         local-toolchain: true
-    worker-type: b-linux-gcp
+    worker-type: b-linux-docker-amd
     worker:
         max-run-time: 1800
     run:
+        clone-with: hg
         script: repack-node.sh
         toolchain-artifact: public/build/node.tar.zst
 
@@ -26,7 +27,7 @@ linux64-node-22:
     description: "Node toolchain build"
     treeherder:
         symbol: TL(node-22)
-    worker-type: b-linux-large-gcp
+    worker-type: b-linux-docker-large-amd
     run:
         script: build-nodejs.sh
         toolchain-alias:
@@ -36,7 +37,14 @@ linux64-node-22:
             - nodejs-22-source
         toolchain:
             - linux64-gcc-11
-            - linux64-toolchain-sysroot-gcc10
+            - linux64-toolchain-sysroot-gcc11
+
+linux64-node-24:
+    treeherder:
+        symbol: TL(node-24)
+    fetches:
+        fetch:
+            - nodejs-24-linux64
 
 linux64-aarch64-node-22:
     treeherder:
@@ -79,9 +87,21 @@ win64-node-22:
         fetch:
             - nodejs-22-win64
 
+win64-aarch64-node-22:
+    treeherder:
+        symbol: TWA64(node-22)
+    run:
+        toolchain-alias:
+            - win64-aarch64-node
+    fetches:
+        fetch:
+            - nodejs-22-win-arm64
+
 win32-node-22:
     treeherder:
         symbol: TW32(node-22)
+    attributes:
+        local-toolchain: false
     run:
         toolchain-alias:
             - win32-node

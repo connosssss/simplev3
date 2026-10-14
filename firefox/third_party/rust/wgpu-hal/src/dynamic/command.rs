@@ -4,8 +4,9 @@ use core::ops::Range;
 use crate::{
     AccelerationStructureBarrier, Api, Attachment, BufferBarrier, BufferBinding, BufferCopy,
     BufferTextureCopy, BuildAccelerationStructureDescriptor, ColorAttachment, CommandEncoder,
-    ComputePassDescriptor, DepthStencilAttachment, DeviceError, Label, MemoryRange,
-    PassTimestampWrites, Rect, RenderPassDescriptor, TextureBarrier, TextureCopy,
+    ComputePassDescriptor, DepthStencilAttachment, DeviceError, DynRayTracingPipeline, Label,
+    MemoryRange, PassTimestampWrites, RayTracingPassDescriptor, Rect, RenderPassDescriptor,
+    TextureBarrier, TextureCopy,
 };
 
 use super::{
@@ -62,14 +63,13 @@ pub trait DynCommandEncoder: DynResource + core::fmt::Debug {
         &mut self,
         layout: &dyn DynPipelineLayout,
         index: u32,
-        group: Option<&dyn DynBindGroup>,
+        group: &dyn DynBindGroup,
         dynamic_offsets: &[wgt::DynamicOffset],
     );
 
-    unsafe fn set_push_constants(
+    unsafe fn set_immediates(
         &mut self,
         layout: &dyn DynPipelineLayout,
-        stages: wgt::ShaderStages,
         offset_bytes: u32,
         data: &[u32],
     );
@@ -101,14 +101,14 @@ pub trait DynCommandEncoder: DynResource + core::fmt::Debug {
 
     unsafe fn set_index_buffer<'a>(
         &mut self,
-        binding: BufferBinding<'a, dyn DynBuffer>,
+        binding: BufferBinding<'a, dyn DynBuffer, wgt::BufferAddress>,
         format: wgt::IndexFormat,
     );
 
     unsafe fn set_vertex_buffer<'a>(
         &mut self,
         index: u32,
-        binding: BufferBinding<'a, dyn DynBuffer>,
+        binding: BufferBinding<'a, dyn DynBuffer, wgt::BufferAddress>,
     );
     unsafe fn set_viewport(&mut self, rect: &Rect<f32>, depth_range: Range<f32>);
     unsafe fn set_scissor_rect(&mut self, rect: &Rect<u32>);
@@ -184,8 +184,25 @@ pub trait DynCommandEncoder: DynResource + core::fmt::Debug {
 
     unsafe fn set_compute_pipeline(&mut self, pipeline: &dyn DynComputePipeline);
 
-    unsafe fn dispatch(&mut self, count: [u32; 3]);
-    unsafe fn dispatch_indirect(&mut self, buffer: &dyn DynBuffer, offset: wgt::BufferAddress);
+    unsafe fn dispatch_workgroups(&mut self, count: [u32; 3]);
+    unsafe fn dispatch_workgroups_indirect(
+        &mut self,
+        buffer: &dyn DynBuffer,
+        offset: wgt::BufferAddress,
+    );
+
+    unsafe fn begin_ray_tracing_pass(&mut self, desc: &RayTracingPassDescriptor);
+    unsafe fn end_ray_tracing_pass(&mut self);
+
+    unsafe fn trace_rays(
+        &mut self,
+        count: [u32; 3],
+        ray_generation_group_data: crate::PipelineGroupData<dyn DynBuffer>,
+        miss_group_data: crate::PipelineGroupData<dyn DynBuffer>,
+        intersection_group_data: crate::PipelineGroupData<dyn DynBuffer>,
+    );
+
+    unsafe fn set_ray_tracing_pipeline(&mut self, pipeline: &dyn DynRayTracingPipeline);
 
     unsafe fn build_acceleration_structures<'a>(
         &mut self,
@@ -195,12 +212,10 @@ pub trait DynCommandEncoder: DynResource + core::fmt::Debug {
             dyn DynAccelerationStructure,
         >],
     );
-
     unsafe fn place_acceleration_structure_barrier(
         &mut self,
         barrier: AccelerationStructureBarrier,
     );
-
     unsafe fn copy_acceleration_structure_to_acceleration_structure(
         &mut self,
         src: &dyn DynAccelerationStructure,
@@ -211,6 +226,11 @@ pub trait DynCommandEncoder: DynResource + core::fmt::Debug {
         &mut self,
         acceleration_structure: &dyn DynAccelerationStructure,
         buf: &dyn DynBuffer,
+    );
+    unsafe fn set_acceleration_structure_dependencies(
+        &self,
+        command_buffers: &[Box<dyn DynCommandBuffer>],
+        dependencies: &[&dyn DynAccelerationStructure],
     );
 }
 
@@ -248,6 +268,7 @@ impl<C: CommandEncoder + DynResource> DynCommandEncoder for C {
             texture: barrier.texture.expect_downcast_ref(),
             usage: barrier.usage.clone(),
             range: barrier.range,
+            queue_family_ownership_transfer: barrier.queue_family_ownership_transfer,
         });
         unsafe { self.transition_textures(barriers) };
     }
@@ -315,29 +336,22 @@ impl<C: CommandEncoder + DynResource> DynCommandEncoder for C {
         &mut self,
         layout: &dyn DynPipelineLayout,
         index: u32,
-        group: Option<&dyn DynBindGroup>,
+        group: &dyn DynBindGroup,
         dynamic_offsets: &[wgt::DynamicOffset],
     ) {
-        if group.is_none() {
-            // TODO: Handle group None correctly.
-            return;
-        }
-        let group = group.unwrap();
-
         let layout = layout.expect_downcast_ref();
         let group = group.expect_downcast_ref();
         unsafe { C::set_bind_group(self, layout, index, group, dynamic_offsets) };
     }
 
-    unsafe fn set_push_constants(
+    unsafe fn set_immediates(
         &mut self,
         layout: &dyn DynPipelineLayout,
-        stages: wgt::ShaderStages,
         offset_bytes: u32,
         data: &[u32],
     ) {
         let layout = layout.expect_downcast_ref();
-        unsafe { C::set_push_constants(self, layout, stages, offset_bytes, data) };
+        unsafe { C::set_immediates(self, layout, offset_bytes, data) };
     }
 
     unsafe fn insert_debug_marker(&mut self, label: &str) {
@@ -415,7 +429,7 @@ impl<C: CommandEncoder + DynResource> DynCommandEncoder for C {
                     .depth_stencil_attachment
                     .as_ref()
                     .map(|ds| ds.expect_downcast()),
-                multiview: desc.multiview,
+                multiview_mask: desc.multiview_mask,
                 timestamp_writes: desc
                     .timestamp_writes
                     .as_ref()
@@ -611,13 +625,17 @@ impl<C: CommandEncoder + DynResource> DynCommandEncoder for C {
         unsafe { C::set_compute_pipeline(self, pipeline) };
     }
 
-    unsafe fn dispatch(&mut self, count: [u32; 3]) {
-        unsafe { C::dispatch(self, count) };
+    unsafe fn dispatch_workgroups(&mut self, count: [u32; 3]) {
+        unsafe { C::dispatch_workgroups(self, count) };
     }
 
-    unsafe fn dispatch_indirect(&mut self, buffer: &dyn DynBuffer, offset: wgt::BufferAddress) {
+    unsafe fn dispatch_workgroups_indirect(
+        &mut self,
+        buffer: &dyn DynBuffer,
+        offset: wgt::BufferAddress,
+    ) {
         let buffer = buffer.expect_downcast_ref();
-        unsafe { C::dispatch_indirect(self, buffer, offset) };
+        unsafe { C::dispatch_workgroups_indirect(self, buffer, offset) };
     }
 
     unsafe fn set_render_pipeline(&mut self, pipeline: &dyn DynRenderPipeline) {
@@ -627,7 +645,7 @@ impl<C: CommandEncoder + DynResource> DynCommandEncoder for C {
 
     unsafe fn set_index_buffer<'a>(
         &mut self,
-        binding: BufferBinding<'a, dyn DynBuffer>,
+        binding: BufferBinding<'a, dyn DynBuffer, wgt::BufferAddress>,
         format: wgt::IndexFormat,
     ) {
         let binding = binding.expect_downcast();
@@ -637,10 +655,50 @@ impl<C: CommandEncoder + DynResource> DynCommandEncoder for C {
     unsafe fn set_vertex_buffer<'a>(
         &mut self,
         index: u32,
-        binding: BufferBinding<'a, dyn DynBuffer>,
+        binding: BufferBinding<'a, dyn DynBuffer, wgt::BufferAddress>,
     ) {
         let binding = binding.expect_downcast();
         unsafe { self.set_vertex_buffer(index, binding) };
+    }
+
+    unsafe fn begin_ray_tracing_pass(&mut self, desc: &RayTracingPassDescriptor) {
+        let desc = RayTracingPassDescriptor { label: desc.label };
+        unsafe { C::begin_ray_tracing_pass(self, &desc) };
+    }
+
+    unsafe fn end_ray_tracing_pass(&mut self) {
+        unsafe { C::end_ray_tracing_pass(self) };
+    }
+
+    unsafe fn set_ray_tracing_pipeline(&mut self, pipeline: &dyn DynRayTracingPipeline) {
+        let pipeline = pipeline.expect_downcast_ref();
+        unsafe { C::set_ray_tracing_pipeline(self, pipeline) };
+    }
+
+    unsafe fn trace_rays<'a>(
+        &mut self,
+        count: [u32; 3],
+        ray_generation_group_data: crate::PipelineGroupData<'a, dyn DynBuffer>,
+        miss_group_data: crate::PipelineGroupData<'a, dyn DynBuffer>,
+        intersection_group_data: crate::PipelineGroupData<'a, dyn DynBuffer>,
+    ) {
+        let downcast_group_data =
+            |data: crate::PipelineGroupData<'a, dyn DynBuffer>| crate::PipelineGroupData {
+                buffer: data.buffer.expect_downcast_ref(),
+                offset: data.offset,
+                stride: data.stride,
+                count: data.count,
+            };
+
+        unsafe {
+            C::trace_rays(
+                self,
+                count,
+                downcast_group_data(ray_generation_group_data),
+                downcast_group_data(miss_group_data),
+                downcast_group_data(intersection_group_data),
+            );
+        }
     }
 
     unsafe fn build_acceleration_structures<'a>(
@@ -705,6 +763,22 @@ impl<C: CommandEncoder + DynResource> DynCommandEncoder for C {
         let buf = buf.expect_downcast_ref();
         unsafe { C::read_acceleration_structure_compact_size(self, acceleration_structure, buf) }
     }
+
+    unsafe fn set_acceleration_structure_dependencies(
+        &self,
+        command_buffers: &[Box<dyn DynCommandBuffer>],
+        dependencies: &[&dyn DynAccelerationStructure],
+    ) {
+        let command_buffers: Vec<&<C::A as Api>::CommandBuffer> = command_buffers
+            .iter()
+            .map(|command_buffer| command_buffer.expect_downcast_ref())
+            .collect();
+        let dependencies: Vec<&<C::A as Api>::AccelerationStructure> = dependencies
+            .iter()
+            .map(|dependency| dependency.expect_downcast_ref())
+            .collect();
+        unsafe { C::set_acceleration_structure_dependencies(&command_buffers, &dependencies) }
+    }
 }
 
 impl<'a> PassTimestampWrites<'a, dyn DynQuerySet> {
@@ -745,6 +819,8 @@ impl<'a> DepthStencilAttachment<'a, dyn DynTextureView> {
             depth_ops: self.depth_ops,
             stencil_ops: self.stencil_ops,
             clear_value: self.clear_value,
+            depth_read_only: self.depth_read_only,
+            stencil_read_only: self.stencil_read_only,
         }
     }
 }

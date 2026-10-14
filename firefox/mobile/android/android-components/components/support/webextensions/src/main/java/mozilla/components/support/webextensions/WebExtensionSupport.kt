@@ -5,9 +5,13 @@
 package mozilla.components.support.webextensions
 
 import androidx.annotation.VisibleForTesting
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -40,26 +44,23 @@ import mozilla.components.support.ktx.kotlin.isExtensionUrl
 import mozilla.components.support.ktx.kotlinx.coroutines.flow.filterChanged
 import mozilla.components.support.webextensions.WebExtensionSupport.initialize
 import mozilla.components.support.webextensions.facts.emitWebExtensionsInitializedFact
-import java.util.concurrent.ConcurrentHashMap
+
+/** Function to relay the permission request to the app / user. */
+typealias onUpdatePermissionRequest =
+    (
+        extension: WebExtension,
+        newPermissions: List<String>,
+        newOrigins: List<String>,
+        newDataCollectionPermissions: List<String>,
+        onPermissionsGranted: ((Boolean) -> Unit),
+    ) -> Unit
 
 /**
- * Function to relay the permission request to the app / user.
- */
-typealias onUpdatePermissionRequest = (
-    current: WebExtension,
-    updated: WebExtension,
-    newPermissions: List<String>,
-    onPermissionsGranted: ((Boolean) -> Unit),
-) -> Unit
-
-/**
- * Provides functionality to make sure web extension related events in the
- * [WebExtensionRuntime] are reflected in the browser state by dispatching the
- * corresponding actions to the [BrowserStore].
+ * Provides functionality to make sure web extension related events in the [WebExtensionRuntime] are reflected in the
+ * browser state by dispatching the corresponding actions to the [BrowserStore].
  *
- * Note that this class can be removed once the browser-state migration
- * is completed and the [WebExtensionRuntime] (engine) has direct access to the
- * [BrowserStore]: https://github.com/orgs/mozilla-mobile/projects/31
+ * Note that this class can be removed once the browser-state migration is completed and the [WebExtensionRuntime]
+ * (engine) has direct access to the [BrowserStore]: https://github.com/orgs/mozilla-mobile/projects/31
  */
 object WebExtensionSupport {
     private val logger = Logger("mozac-webextensions")
@@ -70,16 +71,10 @@ object WebExtensionSupport {
 
     val installedExtensions = ConcurrentHashMap<String, WebExtension>()
 
-    /**
-     * A [Deferred] completed during [initialize] once the state of all
-     * installed extensions is known.
-     */
+    /** A [Deferred] completed during [initialize] once the state of all installed extensions is known. */
     private val initializationResult = CompletableDeferred<Unit>()
 
-    /**
-     * [ActionHandler] for session-specific overrides. Forwards actions to the
-     * the provided [store].
-     */
+    /** [ActionHandler] for session-specific overrides. Forwards actions to the the provided [store]. */
     private class SessionActionHandler(
         private val store: BrowserStore,
         private val sessionId: String,
@@ -94,10 +89,7 @@ object WebExtensionSupport {
         }
     }
 
-    /**
-     * [TabHandler] for session-specific tab events. Forwards actions to the
-     * the provided [store].
-     */
+    /** [TabHandler] for session-specific tab events. Forwards actions to the the provided [store]. */
     private class SessionTabHandler(
         private val store: BrowserStore,
         private val sessionId: String,
@@ -138,44 +130,42 @@ object WebExtensionSupport {
     }
 
     /**
-     * Registers a listener for web extension related events on the provided
-     * [WebExtensionRuntime] and reacts by dispatching the corresponding actions to the
-     * provided [BrowserStore].
+     * Registers a listener for web extension related events on the provided [WebExtensionRuntime] and reacts by
+     * dispatching the corresponding actions to the provided [BrowserStore].
      *
      * @param runtime the browser [WebExtensionRuntime] to use.
      * @param store the application's [BrowserStore].
-     * @param openPopupInTab (optional) flag to determine whether a browser or page action would
-     * display a web extension popup in a tab or not. Defaults to false.
-     * @param onNewTabOverride (optional) override of behaviour that should
-     * be triggered when web extensions open a new tab e.g. when dispatching
-     * to the store isn't sufficient while migrating from browser-session
-     * to browser-state. This is a lambda accepting the [WebExtension], the
-     * [EngineSession] to use, as well as the URL to load, return the ID of
-     * the created session.
-     * @param onCloseTabOverride (optional) override of behaviour that should
-     * be triggered when web extensions close tabs e.g. when dispatching
-     * to the store isn't sufficient while migrating from browser-session
-     * to browser-state. This is a lambda accepting the [WebExtension] and
-     * the session/tab ID to close.
-     * @param onSelectTabOverride (optional) override of behaviour that should
-     * be triggered when a tab is selected to display a web extension popup.
-     * This is a lambda accepting the [WebExtension] and the session/tab ID to
-     * select.
-     * @param onUpdatePermissionRequest (optional) Invoked when a web extension has changed its
-     * permissions while trying to update to a new version. This requires user interaction as
-     * the updated extension will not be installed, until the user grants the new permissions.
-     * @param onExtensionsLoaded (optional) callback invoked when the extensions are loaded by the
-     * engine. Note that the UI (browser/page actions etc.) may not be initialized at this point.
-     * System add-ons (built-in extensions) will not be passed along.
+     * @param openPopupInTab (optional) flag to determine whether a browser or page action would display a web extension
+     *   popup in a tab or not. Defaults to false.
+     * @param isInPrivateBrowsingMode (optional) override to express the preferred private browsing mode for a new tab
+     *   when it is about to open.
+     * @param onNewTabOverride (optional) override of behaviour that should be triggered when web extensions open a new
+     *   tab e.g. when dispatching to the store isn't sufficient while migrating from browser-session to browser-state.
+     *   This is a lambda accepting the [WebExtension], the [EngineSession] to use, the URL to load, and whether the new
+     *   tab should be selected/active, returning the ID of the created session.
+     * @param onCloseTabOverride (optional) override of behaviour that should be triggered when web extensions close
+     *   tabs e.g. when dispatching to the store isn't sufficient while migrating from browser-session to browser-state.
+     *   This is a lambda accepting the [WebExtension] and the session/tab ID to close.
+     * @param onSelectTabOverride (optional) override of behaviour that should be triggered when a tab is selected to
+     *   display a web extension popup. This is a lambda accepting the [WebExtension] and the session/tab ID to select.
+     * @param onUpdatePermissionRequest (optional) Invoked when a web extension has changed its permissions while trying
+     *   to update to a new version. This requires user interaction as the updated extension will not be installed,
+     *   until the user grants the new permissions.
+     * @param onExtensionsLoaded (optional) callback invoked when the extensions are loaded by the engine. Note that the
+     *   UI (browser/page actions etc.) may not be initialized at this point. System add-ons (built-in extensions) will
+     *   not be passed along.
      */
+    @Suppress("CognitiveComplexMethod")
     fun initialize(
         runtime: WebExtensionRuntime,
         store: BrowserStore,
         openPopupInTab: Boolean = false,
-        onNewTabOverride: ((WebExtension?, EngineSession, String) -> String)? = null,
+        mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
+        isInPrivateBrowsingMode: () -> Boolean = { false },
+        onNewTabOverride: ((WebExtension?, EngineSession, String, Boolean, Boolean) -> String)? = null,
         onCloseTabOverride: ((WebExtension?, String) -> Unit)? = null,
         onSelectTabOverride: ((WebExtension?, String) -> Unit)? = null,
-        onUpdatePermissionRequest: onUpdatePermissionRequest? = { _, _, _, _ -> },
+        onUpdatePermissionRequest: onUpdatePermissionRequest? = { _, _, _, _, _ -> },
         onExtensionsLoaded: ((List<WebExtension>) -> Unit)? = null,
     ) {
         this.onUpdatePermissionRequest = onUpdatePermissionRequest
@@ -184,20 +174,32 @@ object WebExtensionSupport {
         this.onSelectTabOverride = onSelectTabOverride
 
         // Queries the runtime for installed extensions and adds them to the store
-        registerInstalledExtensions(store, runtime)
+        registerInstalledExtensions(store, runtime, mainDispatcher)
 
         // Observes the store and registers action and tab handlers for newly added engine sessions
-        registerHandlersForNewSessions(store)
+        registerHandlersForNewSessions(store, mainDispatcher)
 
         runtime.registerWebExtensionDelegate(
             object : WebExtensionDelegate {
+                override fun isInPrivateBrowsing(): Boolean = isInPrivateBrowsingMode()
+
                 override fun onNewTab(
                     extension: WebExtension,
                     engineSession: EngineSession,
                     active: Boolean,
                     url: String,
+                    isPrivate: Boolean,
                 ) {
-                    openTab(store, onNewTabOverride, onSelectTabOverride, extension, engineSession, url, active)
+                    openTab(
+                        store,
+                        onNewTabOverride,
+                        onSelectTabOverride,
+                        extension,
+                        engineSession,
+                        url,
+                        active,
+                        isPrivate,
+                    )
                 }
 
                 override fun onBrowserActionDefined(extension: WebExtension, action: Action) {
@@ -208,10 +210,28 @@ object WebExtensionSupport {
                     store.dispatch(WebExtensionAction.UpdatePageAction(extension.id, action))
                 }
 
+                override fun onOpenOptionsPage(extension: WebExtension) {
+                    val metaData = extension.getMetadata() ?: return
+                    if (metaData.openOptionsPageInTab) {
+                        logger.error("The case where |open_in_tab| is true should be handled in the API script.")
+                    } else {
+                        val optionsPageUrl = metaData.optionsPageUrl ?: return
+                        store.dispatch(
+                            WebExtensionAction.UpdateOptionsPageSessionAction(
+                                extensionId = extension.id,
+                                optionsPageInstanceId = UUID.randomUUID().toString(),
+                                optionsPageUrl = optionsPageUrl,
+                                extensionTranslatedName = metaData.name ?: "",
+                            )
+                        )
+                    }
+                }
+
                 override fun onToggleActionPopup(
                     extension: WebExtension,
                     engineSession: EngineSession,
                     action: Action,
+                    isPrivate: Boolean,
                 ): EngineSession? {
                     return if (!openPopupInTab) {
                         store.dispatch(WebExtensionAction.UpdatePopupSessionAction(extension.id, null, engineSession))
@@ -227,13 +247,15 @@ object WebExtensionSupport {
                             }
                             null
                         } else {
-                            val sessionId = openTab(
-                                store,
-                                onNewTabOverride,
-                                onSelectTabOverride,
-                                extension,
-                                engineSession,
-                            )
+                            val sessionId =
+                                openTab(
+                                    store,
+                                    onNewTabOverride,
+                                    onSelectTabOverride,
+                                    extension,
+                                    engineSession,
+                                    isPrivate = isPrivate,
+                                )
                             store.dispatch(WebExtensionAction.UpdatePopupSessionAction(extension.id, sessionId))
                             engineSession
                         }
@@ -251,8 +273,8 @@ object WebExtensionSupport {
                     if (shouldDispatchAction) {
                         store.dispatch(
                             WebExtensionAction.UpdatePromptRequestWebExtensionAction(
-                                WebExtensionPromptRequest.AfterInstallation.PostInstallation(extension),
-                            ),
+                                WebExtensionPromptRequest.AfterInstallation.PostInstallation(extension)
+                            )
                         )
                     }
                 }
@@ -267,8 +289,8 @@ object WebExtensionSupport {
                             WebExtensionPromptRequest.BeforeInstallation.InstallationFailed(
                                 extension,
                                 exception,
-                            ),
-                        ),
+                            )
+                        )
                     )
                 }
 
@@ -301,7 +323,7 @@ object WebExtensionSupport {
                         WebExtensionAction.UpdateWebExtensionAllowedInPrivateBrowsingAction(
                             extension.id,
                             extension.isAllowedInPrivateBrowsing(),
-                        ),
+                        )
                     )
                 }
 
@@ -320,21 +342,23 @@ object WebExtensionSupport {
                                 origins,
                                 dataCollectionPermissions,
                                 onConfirm,
-                            ),
-                        ),
+                            )
+                        )
                     )
                 }
 
                 override fun onUpdatePermissionRequest(
-                    current: WebExtension,
-                    updated: WebExtension,
+                    extension: WebExtension,
                     newPermissions: List<String>,
+                    newOrigins: List<String>,
+                    newDataCollectionPermissions: List<String>,
                     onPermissionsGranted: ((Boolean) -> Unit),
                 ) {
                     this@WebExtensionSupport.onUpdatePermissionRequest?.invoke(
-                        current,
-                        updated,
+                        extension,
                         newPermissions,
+                        newOrigins,
+                        newDataCollectionPermissions,
                         onPermissionsGranted,
                     )
                 }
@@ -354,39 +378,41 @@ object WebExtensionSupport {
                                 origins,
                                 dataCollectionPermissions,
                                 onPermissionsGranted,
-                            ),
-                        ),
+                            )
+                        )
                     )
                 }
 
                 override fun onExtensionListUpdated() {
                     installedExtensions.clear()
                     store.dispatch(WebExtensionAction.UninstallAllWebExtensionsAction)
-                    registerInstalledExtensions(store, runtime)
+                    registerInstalledExtensions(store, runtime, mainDispatcher)
                 }
 
                 override fun onDisabledExtensionProcessSpawning() {
                     store.dispatch(ExtensionsProcessAction.ShowPromptAction(show = true))
                 }
-            },
+            }
         )
     }
 
     /**
-     * Awaits for completion of the initialization process (completes when the
-     * state of all installed extensions is known).
+     * Awaits for completion of the initialization process (completes when the state of all installed extensions is
+     * known).
      */
     suspend fun awaitInitialization() = initializationResult.await()
 
-    /**
-     * Queries the [WebExtensionRuntime] for installed web extensions and adds them to the [store].
-     */
-    private fun registerInstalledExtensions(store: BrowserStore, runtime: WebExtensionRuntime) {
+    /** Queries the [WebExtensionRuntime] for installed web extensions and adds them to the [store]. */
+    private fun registerInstalledExtensions(
+        store: BrowserStore,
+        runtime: WebExtensionRuntime,
+        mainDispatcher: CoroutineDispatcher,
+    ) {
         runtime.listInstalledWebExtensions(
             onSuccess = { extensions ->
                 extensions.forEach { registerInstalledExtension(store, it) }
                 emitWebExtensionsInitializedFact(extensions)
-                closeUnsupportedTabs(store, extensions)
+                closeUnsupportedTabs(store, extensions, mainDispatcher)
                 initializationResult.complete(Unit)
                 onExtensionsLoaded?.invoke(extensions.filter { !it.isBuiltIn() })
             },
@@ -397,9 +423,7 @@ object WebExtensionSupport {
         )
     }
 
-    /**
-     * Marks the provided [webExtension] as installed by adding it to the [store].
-     */
+    /** Marks the provided [webExtension] as installed by adding it to the [store]. */
     private fun registerInstalledExtension(store: BrowserStore, webExtension: WebExtension) {
         installedExtensions[webExtension.id] = webExtension
         store.dispatch(WebExtensionAction.InstallWebExtensionAction(webExtension.toState()))
@@ -407,51 +431,51 @@ object WebExtensionSupport {
         // Register action handler for all existing engine sessions on the new extension,
         // an issue was filed to get us an API, so we don't have to do this per extension:
         // https://bugzilla.mozilla.org/show_bug.cgi?id=1603559
-        store.state.allTabs
-            .forEach { tab ->
-                tab.engineState.engineSession?.let { session ->
-                    registerSessionHandlers(webExtension, store, session, tab.id)
-                }
+        store.state.allTabs.forEach { tab ->
+            tab.engineState.engineSession?.let { session ->
+                registerSessionHandlers(webExtension, store, session, tab.id)
             }
+        }
     }
 
     /**
-     * Closes any leftover extensions tabs from extensions that are no longer
-     * installed/registered. When an extension is uninstalled, all extension
-     * pages will be closed. So, in theory, there should never be any
-     * leftover tabs. However, since we support temporary registered
-     * extensions and also recently migrated built-in extensions from the
-     * transient registerWebExtensions to the persistent installBuiltIn, we
-     * should handle this case to make sure we don't have any unloadable tabs
-     * around.
+     * Closes any leftover extensions tabs from extensions that are no longer installed/registered. When an extension is
+     * uninstalled, all extension pages will be closed. So, in theory, there should never be any leftover tabs. However,
+     * since we support temporary registered extensions and also recently migrated built-in extensions from the
+     * transient registerWebExtensions to the persistent installBuiltIn, we should handle this case to make sure we
+     * don't have any unloadable tabs around.
      */
-    private fun closeUnsupportedTabs(store: BrowserStore, extensions: List<WebExtension>) {
+    private fun closeUnsupportedTabs(
+        store: BrowserStore,
+        extensions: List<WebExtension>,
+        mainDispatcher: CoroutineDispatcher,
+    ) {
         val supportedUrls = extensions.mapNotNull { it.getMetadata()?.baseUrl }
 
         // We only need to do this a single time, once tabs are restored. We need to observe the
         // store (instead of querying it directly), as tabs can be restored asynchronously on
         // startup and might not be ready yet.
         var scope: CoroutineScope? = null
-        scope = store.flowScoped { flow ->
-            flow.map { state -> state.tabs.filter { it.restored }.size }
-                .distinctUntilChanged()
-                .collect { size ->
-                    if (size > 0) {
-                        store.state.tabs.forEach { tab ->
-                            val tabUrl = tab.content.url
-                            if (tabUrl.isExtensionUrl() && supportedUrls.none { tabUrl.startsWith(it) }) {
-                                closeTab(tab.id, false, store, onCloseTabOverride)
+        scope =
+            store.flowScoped(dispatcher = mainDispatcher) { flow ->
+                flow
+                    .map { state -> state.tabs.filter { it.restored }.size }
+                    .distinctUntilChanged()
+                    .collect { size ->
+                        if (size > 0) {
+                            store.state.tabs.forEach { tab ->
+                                val tabUrl = tab.content.url
+                                if (tabUrl.isExtensionUrl() && supportedUrls.none { tabUrl.startsWith(it) }) {
+                                    closeTab(tab.id, false, store, onCloseTabOverride)
+                                }
                             }
+                            scope?.cancel()
                         }
-                        scope?.cancel()
                     }
-                }
-        }
+            }
     }
 
-    /**
-     * Marks the provided [updatedExtension] as updated in the [store].
-     */
+    /** Marks the provided [updatedExtension] as updated in the [store]. */
     fun markExtensionAsUpdated(store: BrowserStore, updatedExtension: WebExtension) {
         installedExtensions[updatedExtension.id] = updatedExtension
         store.dispatch(WebExtensionAction.UpdateWebExtensionAction(updatedExtension.toState()))
@@ -465,14 +489,15 @@ object WebExtensionSupport {
     }
 
     /**
-     * Observes the provided store to register session-specific [ActionHandler]s
-     * for all installed extensions on newly added sessions.
+     * Observes the provided store to register session-specific [ActionHandler]s for all installed extensions on newly
+     * added sessions.
      */
-    private fun registerHandlersForNewSessions(store: BrowserStore) {
+    private fun registerHandlersForNewSessions(store: BrowserStore, mainDispatcher: CoroutineDispatcher) {
         // We need to observe for the entire lifetime of the application,
         // as web extension support is not tied to any particular view.
-        store.flowScoped { flow ->
-            flow.mapNotNull { state -> state.allTabs }
+        store.flowScoped(dispatcher = mainDispatcher) { flow ->
+            flow
+                .mapNotNull { state -> state.allTabs }
                 .filterChanged {
                     it.engineState.engineSession
                 }
@@ -505,21 +530,22 @@ object WebExtensionSupport {
 
     private fun openTab(
         store: BrowserStore,
-        onNewTabOverride: ((WebExtension?, EngineSession, String) -> String)? = null,
+        onNewTabOverride: ((WebExtension?, EngineSession, String, Boolean, Boolean) -> String)? = null,
         onSelectTabOverride: ((WebExtension?, String) -> Unit)? = null,
         webExtension: WebExtension?,
         engineSession: EngineSession,
         url: String = "",
         selected: Boolean = true,
+        isPrivate: Boolean = false,
     ): String {
         return if (onNewTabOverride != null) {
-            val sessionId = onNewTabOverride.invoke(webExtension, engineSession, url)
+            val sessionId = onNewTabOverride.invoke(webExtension, engineSession, url, selected, isPrivate)
             if (selected) {
                 onSelectTabOverride?.invoke(webExtension, sessionId)
             }
             sessionId
         } else {
-            val tab = createTab(url)
+            val tab = createTab(url, private = isPrivate)
             store.dispatch(TabListAction.AddTabAction(tab, selected))
             store.dispatch(EngineAction.LinkEngineSessionAction(tab.id, engineSession))
             tab.id
@@ -536,11 +562,12 @@ object WebExtensionSupport {
         if (onCloseTabOverride != null) {
             onCloseTabOverride.invoke(webExtension, id)
         } else {
-            val action = if (customTab) {
-                CustomTabListAction.RemoveCustomTabAction(id)
-            } else {
-                TabListAction.RemoveTabAction(id)
-            }
+            val action =
+                if (customTab) {
+                    CustomTabListAction.RemoveCustomTabAction(id)
+                } else {
+                    TabListAction.RemoveTabAction(id)
+                }
 
             store.dispatch(action)
         }

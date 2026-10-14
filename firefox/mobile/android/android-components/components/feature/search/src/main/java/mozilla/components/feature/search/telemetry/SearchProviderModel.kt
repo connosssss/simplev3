@@ -9,9 +9,9 @@ package mozilla.components.feature.search.telemetry
  *
  * @property taggedCodes array of partner codes to match against the partner code parameters in the url.
  * @property telemetryId provider name e.g. "google", "duckduckgo".
- * @property organicCodes array of partner codes to match against the parameters in the url.
- * Matching these codes will report the SERP as organic:<partner code>, which means the search
- * was performed organically rather than through a SAP.
+ * @property organicCodes array of partner codes to match against the parameters in the url. Matching these codes will
+ *   report the SERP as organic:<partner code>, which means the search was performed organically rather than through a
+ *   SAP.
  * @property codeParamName name of the query parameter for the partner code.
  * @property followOnCookies array of cookie details that are used to identify follow-on searches.
  * @property queryParamNames list of names of the query parameters for the user's search string.
@@ -19,9 +19,9 @@ package mozilla.components.feature.search.telemetry
  * @property adServerAttributes an array of strings that potentially match data-attribute keys of anchors.
  * @property followOnParamNames array of query parameter names that are used when a follow-on search occurs.
  * @property extraAdServersRegexps array of regular expressions that match URLs of potential ad servers.
- * @property expectedOrganicCodes array of partner codes to match against the parameters in the url.
- * Matching these codes will report the SERP as organic:none which means the user has done a search
- * through the search engine's website rather than through SAP.
+ * @property expectedOrganicCodes array of partner codes to match against the parameters in the url. Matching these
+ *   codes will report the SERP as organic:none which means the user has done a search through the search engine's
+ *   website rather than through SAP.
  */
 data class SearchProviderModel(
     val schema: Long,
@@ -36,7 +36,6 @@ data class SearchProviderModel(
     val followOnParamNames: List<String>?,
     val extraAdServersRegexps: List<Regex>,
     val expectedOrganicCodes: List<String>?,
-
 ) {
 
     constructor(
@@ -52,7 +51,6 @@ data class SearchProviderModel(
         followOnParamNames: List<String>? = emptyList(),
         extraAdServersRegexps: List<String> = emptyList(),
         expectedOrganicCodes: List<String>? = emptyList(),
-
     ) : this(
         schema = schema,
         taggedCodes = taggedCodes,
@@ -66,15 +64,13 @@ data class SearchProviderModel(
         followOnParamNames = followOnParamNames,
         extraAdServersRegexps = extraAdServersRegexps.map { it.toRegex() },
         expectedOrganicCodes = expectedOrganicCodes,
-
     )
 
     /**
-     * Checks if any of the given URLs represent an ad from the search engine.
-     * Used to check if a clicked link was for an ad.
+     * Checks if any of the given URLs represent an ad from the search engine. Used to check if a clicked link was for
+     * an ad.
      */
     fun containsAdLinks(urlList: List<String>) = urlList.any { url -> isAd(url) }
 
-    private fun isAd(url: String) =
-        extraAdServersRegexps.any { adsRegex -> adsRegex.containsMatchIn(url) }
+    private fun isAd(url: String) = extraAdServersRegexps.any { adsRegex -> adsRegex.containsMatchIn(url) }
 }

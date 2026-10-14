@@ -20,10 +20,7 @@ class TestProxyCapabilities(MarionetteTestCase):
         with self.marionette.using_context("chrome"):
             self.marionette.execute_script(
                 """
-                const { Preferences } = ChromeUtils.importESModule(
-                  "resource://gre/modules/Preferences.sys.mjs"
-                );
-                Preferences.resetBranch("network.proxy");
+                Services.prefs.clearUserBranch("network.proxy");
             """
             )
 
@@ -146,9 +143,9 @@ class TestProxyCapabilities(MarionetteTestCase):
             self.marionette.start_session({"proxy": {"proxyType": "pac"}})
 
         with self.assertRaises(errors.SessionNotCreatedException):
-            self.marionette.start_session(
-                {"proxy": {"proxyType": "pac", "proxyAutoconfigUrl": None}}
-            )
+            self.marionette.start_session({
+                "proxy": {"proxyType": "pac", "proxyAutoconfigUrl": None}
+            })
 
     def test_missing_socks_version_for_manual(self):
         capabilities = {

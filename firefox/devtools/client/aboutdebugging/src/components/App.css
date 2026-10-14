@@ -31,10 +31,6 @@
   display: grid;
   grid-column-gap: 40px;
   grid-template-columns: var(--sidebar-width) auto;
-
-  font-size: var(--base-font-size);
-  font-weight: var(--base-font-weight);
-  line-height: var(--base-line-height);
 }
 
 .app__sidebar {
@@ -49,8 +45,8 @@
 
   /* padding will give space for card shadow to appear and
      margin will correct the alignment */
-  margin-inline-start: calc(var(--card-shadow-blur-radius) * -1);
-  padding-inline: var(--card-shadow-blur-radius);
+  margin-inline-start: calc(var(--base-unit) * -1);
+  padding-inline: var(--base-unit);
   padding-block-start: var(--app-top-padding);
 }
 
@@ -65,7 +61,5 @@
 .page {
   max-width: var(--page-main-content-width);
   min-width: min-content;
-  font-size: var(--body-20-font-size);
-  font-weight: var(--body-20-font-weight);
   padding-inline-end: var(--app-right-padding);
 }

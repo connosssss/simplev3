@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,8 +6,6 @@
 #define MOZILLA_GFX_SCALEFACTOR_H_
 
 #include <ostream>
-
-#include "mozilla/Attributes.h"
 
 #include "gfxPoint.h"
 
@@ -30,37 +26,14 @@ struct ScaleFactor {
   float scale;
 
   constexpr ScaleFactor() : scale(1.0) {}
-  constexpr ScaleFactor(const ScaleFactor<Src, Dst>& aCopy)
-      : scale(aCopy.scale) {}
+  constexpr ScaleFactor(const ScaleFactor<Src, Dst>& aCopy) = default;
   explicit constexpr ScaleFactor(float aScale) : scale(aScale) {}
 
   ScaleFactor<Dst, Src> Inverse() { return ScaleFactor<Dst, Src>(1 / scale); }
 
   ScaleFactor<Src, Dst>& operator=(const ScaleFactor<Src, Dst>&) = default;
 
-  bool operator==(const ScaleFactor<Src, Dst>& aOther) const {
-    return scale == aOther.scale;
-  }
-
-  bool operator!=(const ScaleFactor<Src, Dst>& aOther) const {
-    return !(*this == aOther);
-  }
-
-  bool operator<(const ScaleFactor<Src, Dst>& aOther) const {
-    return scale < aOther.scale;
-  }
-
-  bool operator<=(const ScaleFactor<Src, Dst>& aOther) const {
-    return scale <= aOther.scale;
-  }
-
-  bool operator>(const ScaleFactor<Src, Dst>& aOther) const {
-    return scale > aOther.scale;
-  }
-
-  bool operator>=(const ScaleFactor<Src, Dst>& aOther) const {
-    return scale >= aOther.scale;
-  }
+  auto operator<=>(const ScaleFactor<Src, Dst>& aOther) const = default;
 
   template <class Other>
   ScaleFactor<Other, Dst> operator/(
@@ -90,6 +63,8 @@ struct ScaleFactor {
                                   const ScaleFactor<Src, Dst>& aSF) {
     return aStream << aSF.scale;
   }
+
+  auto MutTiedFields() { return std::tie(scale); }
 };
 
 }  // namespace gfx

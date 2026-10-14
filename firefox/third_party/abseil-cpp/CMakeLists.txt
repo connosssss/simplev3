@@ -46,7 +46,7 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
 set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
 
 option(ABSL_PROPAGATE_CXX_STD
-  "Use CMake C++ standard meta features (e.g. cxx_std_14) that propagate to targets that link to Abseil"
+  "Use CMake C++ standard meta features (e.g. cxx_std_17) that propagate to targets that link to Abseil"
   ON)
 
 option(ABSL_USE_SYSTEM_INCLUDES
@@ -227,7 +227,7 @@ if(ABSL_ENABLE_INSTALL)
 
   # Handle features that require at least C++20.
   if (ABSL_INTERNAL_AT_LEAST_CXX20)
-    foreach(FEATURE "ORDERING")
+    foreach(FEATURE "ORDERING" "SOURCE_LOCATION")
       string(REPLACE
       "#define ABSL_OPTION_USE_STD_${FEATURE} 2"
       "#define ABSL_OPTION_USE_STD_${FEATURE} 1"

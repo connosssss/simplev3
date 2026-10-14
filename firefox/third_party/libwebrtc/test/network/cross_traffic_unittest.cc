@@ -54,7 +54,7 @@ struct TrafficCounterFixture {
   TaskQueueForTest task_queue_;
   EmulatedEndpointImpl endpoint{EmulatedEndpointImpl::Options{
                                     /*id=*/1,
-                                    rtc::IPAddress(kTestIpAddress),
+                                    IPAddress(kTestIpAddress),
                                     EmulatedEndpointConfig(),
                                     EmulatedNetworkStatsGatheringMode::kDefault,
                                 },
@@ -87,12 +87,12 @@ TEST(CrossTrafficTest, PulsedPeaksCrossTraffic) {
   PulsedPeaksCrossTraffic pulsed_peaks(config, &traffic);
   const auto kRunTime = TimeDelta::Seconds(1);
   while (fixture.clock.TimeInMilliseconds() < kRunTime.ms()) {
-    pulsed_peaks.Process(Timestamp::Millis(fixture.clock.TimeInMilliseconds()));
+    pulsed_peaks.Process(fixture.clock.CurrentTime());
     fixture.clock.AdvanceTimeMilliseconds(1);
   }
 
-  RTC_LOG(LS_INFO) << fixture.counter.packets_count_ << " packets; "
-                   << fixture.counter.total_packets_size_ << " bytes";
+  RTC_LOG(LS_INFO) << fixture.counter.packets_count_.load() << " packets; "
+                   << fixture.counter.total_packets_size_.load() << " bytes";
   // Using 50% duty cycle.
   const auto kExpectedDataSent = kRunTime * config.peak_rate * 0.5;
   EXPECT_NEAR(fixture.counter.total_packets_size_, kExpectedDataSent.bytes(),
@@ -115,12 +115,12 @@ TEST(CrossTrafficTest, RandomWalkCrossTraffic) {
   RandomWalkCrossTraffic random_walk(config, &traffic);
   const auto kRunTime = TimeDelta::Seconds(1);
   while (fixture.clock.TimeInMilliseconds() < kRunTime.ms()) {
-    random_walk.Process(Timestamp::Millis(fixture.clock.TimeInMilliseconds()));
+    random_walk.Process(fixture.clock.CurrentTime());
     fixture.clock.AdvanceTimeMilliseconds(1);
   }
 
-  RTC_LOG(LS_INFO) << fixture.counter.packets_count_ << " packets; "
-                   << fixture.counter.total_packets_size_ << " bytes";
+  RTC_LOG(LS_INFO) << fixture.counter.packets_count_.load() << " packets; "
+                   << fixture.counter.total_packets_size_.load() << " bytes";
   // Sending at peak rate since bias = 1.
   const auto kExpectedDataSent = kRunTime * config.peak_rate;
   EXPECT_NEAR(fixture.counter.total_packets_size_, kExpectedDataSent.bytes(),

@@ -7,9 +7,12 @@ import { Module } from "chrome://remote/content/shared/messagehandler/Module.sys
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  NavigableManager: "chrome://remote/content/shared/NavigableManager.sys.mjs",
   processExtraData:
     "chrome://remote/content/webdriver-bidi/modules/Intercept.sys.mjs",
   TabManager: "chrome://remote/content/shared/TabManager.sys.mjs",
+  UserContextManager:
+    "chrome://remote/content/shared/UserContextManager.sys.mjs",
 });
 
 class ScriptModule extends Module {
@@ -25,9 +28,15 @@ class ScriptModule extends Module {
 
       // Resolve browsing context to a Navigable id.
       payload.source.context =
-        lazy.TabManager.getIdForBrowsingContext(browsingContext);
+        lazy.NavigableManager.getIdForBrowsingContext(browsingContext);
+      // Resolve the user context id for the browsing context.
+      payload.source.userContext =
+        lazy.UserContextManager.getIdByBrowsingContext(browsingContext);
 
-      payload = lazy.processExtraData(this.messageHandler.sessionId, payload);
+      payload = lazy.processExtraData(
+        this.messageHandler.internalSessionId,
+        payload
+      );
     }
 
     return payload;

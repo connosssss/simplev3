@@ -41,6 +41,20 @@ function assertFilenameLength(path, maxFilenameLength) {
   );
 }
 
+add_task(async function missing_document_title() {
+  await BrowserTestUtils.withNewTab(
+    {
+      gBrowser,
+      url: MISSING_TITLE_TEST_PAGE,
+    },
+    async browser => {
+      const documentTitle = "";
+      const result = await getFilename(documentTitle, browser);
+      Assert.strictEqual(result.filename.endsWith(" .png"), false, "");
+    }
+  );
+});
+
 add_task(async function filename_exceeds_max_length() {
   await BrowserTestUtils.withNewTab(
     {
@@ -110,6 +124,58 @@ add_task(async function file_saved_to_screenshots_folder() {
         AppConstants.platform === "macosx"
           ? Services.dirsvc.get("Scrnshts", Ci.nsIFile).path
           : Services.dirsvc.get("DfltDwnld", Ci.nsIFile).path;
+
+      info(`expectedDir: ${expectedDir}`);
+
+      let documentTitle = "MyScreenshot";
+
+      let result = await getFilename(documentTitle, browser);
+      Assert.stringContains(result.filename, expectedDir);
+    }
+  );
+});
+
+add_task(async function file_saved_to_preferred_downloads_folder_downloads() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["browser.screenshots.folderList", 4],
+      ["browser.download.folderList", 1],
+    ],
+  });
+
+  await BrowserTestUtils.withNewTab(
+    {
+      gBrowser,
+      url: TEST_PAGE,
+    },
+    async browser => {
+      const expectedDir = Services.dirsvc.get("DfltDwnld", Ci.nsIFile).path;
+
+      info(`expectedDir: ${expectedDir}`);
+
+      let documentTitle = "MyScreenshot";
+
+      let result = await getFilename(documentTitle, browser);
+      Assert.stringContains(result.filename, expectedDir);
+    }
+  );
+});
+
+add_task(async function file_saved_to_preferred_downloads_folder_desktop() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["browser.screenshots.folderList", 4],
+      ["browser.download.folderList", 0],
+    ],
+  });
+
+  await BrowserTestUtils.withNewTab(
+    {
+      gBrowser,
+      url: TEST_PAGE,
+    },
+    async browser => {
+      const expectedDir = Services.dirsvc.get("Desk", Ci.nsIFile).path;
 
       info(`expectedDir: ${expectedDir}`);
 

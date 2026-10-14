@@ -1,14 +1,14 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-*/
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "OpusTrackEncoder.h"
-#include "nsString.h"
-#include "mozilla/CheckedInt.h"
-#include "mozilla/ProfilerLabels.h"
-#include "VideoUtils.h"
 
 #include <opus/opus.h>
+
+#include "VideoUtils.h"
+#include "mozilla/CheckedInt.h"
+#include "mozilla/ProfilerLabels.h"
+#include "nsString.h"
 
 #define LOG(args, ...)
 
@@ -240,8 +240,7 @@ already_AddRefed<TrackMetadataBase> OpusTrackEncoder::GetMetadata() {
   vendor.AppendASCII(opus_get_version_string());
 
   nsTArray<nsCString> comments;
-  comments.AppendElement(
-      nsLiteralCString("ENCODER=Mozilla" MOZ_APP_UA_VERSION));
+  comments.AppendElement(nsLiteralCString("ENCODER=Mozilla" MOZILLA_UAVERSION));
 
   SerializeOpusCommentHeader(vendor, comments, &meta->mCommentHeader);
 
@@ -405,7 +404,7 @@ nsresult OpusTrackEncoder::Encode(AudioSegment* aSegment) {
     frameData->SetLength(result >= 0 ? result : 0);
 
     if (result < 0) {
-      LOG("[Opus] Fail to encode data! Result: %s.", opus_strerror(result));
+      LOG("[Opus] Fail to encode data! Result: {}.", opus_strerror(result));
     }
     if (isFinalPacket) {
       if (mResampler) {
@@ -424,7 +423,7 @@ nsresult OpusTrackEncoder::Encode(AudioSegment* aSegment) {
         std::move(frameData)));
 
     mNumOutputFrames += NumOutputFramesPerPacket();
-    LOG("[Opus] mOutputTimeStamp %.3f.",
+    LOG("[Opus] mOutputTimeStamp {:.3f}.",
         media::TimeUnit(mNumOutputFrames, mOutputSampleRate).ToSeconds());
 
     if (isFinalPacket) {

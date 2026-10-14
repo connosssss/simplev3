@@ -6,7 +6,9 @@ package mozilla.components.support.ktx.android.net
 
 import android.content.ContentResolver
 import android.database.Cursor
-import android.webkit.MimeTypeMap
+import android.database.MatrixCursor
+import android.database.StaleDataException
+import android.provider.OpenableColumns
 import androidx.core.net.toUri
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import mozilla.components.support.test.mock
@@ -19,7 +21,7 @@ import org.junit.runner.RunWith
 import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.Mockito.any
 import org.mockito.Mockito.doReturn
-import org.robolectric.Shadows
+import org.mockito.Mockito.doThrow
 
 @RunWith(AndroidJUnit4::class)
 class UriTest {
@@ -139,64 +141,113 @@ class UriTest {
         val resolver = mock<ContentResolver>()
         val uri = "content://media/external/file/37162".toUri()
 
-        Shadows.shadowOf(MimeTypeMap.getSingleton()).addExtensionMimeTypeMapping("txt", "text/plain")
-
         doReturn("text/plain").`when`(resolver).getType(any())
 
         assertEquals("txt", uri.getFileExtension(resolver))
     }
 
     @Test
-    fun `getFileNameForContentUris for urls with DISPLAY_NAME`() {
+    fun `GIVEN an available display name WHEN getFileNameForContentUris is called THEN that name is used`() {
         val resolver = mock<ContentResolver>()
         val uri = "content://media/external/file/37162".toUri()
-        val cursor = mock<Cursor>()
+        val cursor =
+            MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME)).apply {
+                addRow(arrayOf("myFile.txt"))
+            }
 
-        Shadows.shadowOf(MimeTypeMap.getSingleton()).addExtensionMimeTypeMapping("txt", "text/plain")
         doReturn("text/plain").`when`(resolver).getType(any())
-
         doReturn(cursor).`when`(resolver).query(any(), any(), any(), any(), any())
-        doReturn(1).`when`(cursor).getColumnIndex(any())
-        doReturn("myFile.txt").`when`(cursor).getString(anyInt())
 
         assertEquals("myFile.txt", uri.getFileNameForContentUris(resolver))
     }
 
     @Test
-    fun `getFileNameForContentUris for urls without DISPLAY_NAME`() {
+    fun `GIVEN a missing DISPLAY_NAME column WHEN getFileNameForContentUris is called THEN a name is generated`() {
         val resolver = mock<ContentResolver>()
         val uri = "content://media/external/file/37162".toUri()
         val cursor = mock<Cursor>()
 
-        Shadows.shadowOf(MimeTypeMap.getSingleton()).addExtensionMimeTypeMapping("txt", "text/plain")
         doReturn("text/plain").`when`(resolver).getType(any())
-
         doReturn(cursor).`when`(resolver).query(any(), any(), any(), any(), any())
         doReturn(-1).`when`(cursor).getColumnIndex(any())
 
         val fileName = uri.getFileNameForContentUris(resolver)
 
-        assertTrue(fileName.contains(".txt"))
-        assertTrue(fileName.isNotEmpty())
+        assertTrue(fileName.endsWith(".txt"))
     }
 
     @Test
-    fun `getFileNameForContentUris for urls with null DISPLAY_NAME`() {
+    fun `GIVEN a null display name WHEN getFileNameForContentUris is called THEN a name is generated`() {
+        val resolver = mock<ContentResolver>()
+        val uri = "content://media/external/file/37162".toUri()
+        val cursor =
+            MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME)).apply {
+                addRow(arrayOf(null))
+            }
+
+        doReturn("text/plain").`when`(resolver).getType(any())
+        doReturn(cursor).`when`(resolver).query(any(), any(), any(), any(), any())
+
+        val fileName = uri.getFileNameForContentUris(resolver)
+
+        assertTrue(fileName.endsWith(".txt"))
+    }
+
+    @Test
+    fun `GIVEN an empty cursor WHEN getFileNameForContentUris is called THEN a name is generated`() {
+        val resolver = mock<ContentResolver>()
+        val uri = "content://media/external/file/37162".toUri()
+        val cursor = MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME))
+
+        doReturn("text/plain").`when`(resolver).getType(any())
+        doReturn(cursor).`when`(resolver).query(any(), any(), any(), any(), any())
+
+        val fileName = uri.getFileNameForContentUris(resolver)
+
+        assertTrue(fileName.endsWith(".txt"))
+    }
+
+    @Test
+    fun `GIVEN a failing query WHEN getFileNameForContentUris is called THEN a name is generated`() {
+        val resolver = mock<ContentResolver>()
+        val uri = "content://media/external/file/37162".toUri()
+
+        doReturn("text/plain").`when`(resolver).getType(any())
+        doThrow(IllegalArgumentException("Invalid URI")).`when`(resolver).query(any(), any(), any(), any(), any())
+
+        val fileName = uri.getFileNameForContentUris(resolver)
+
+        assertTrue(fileName.endsWith(".txt"))
+    }
+
+    @Test
+    fun `GIVEN a failing cursor read WHEN getFileNameForContentUris is called THEN a name is generated`() {
         val resolver = mock<ContentResolver>()
         val uri = "content://media/external/file/37162".toUri()
         val cursor = mock<Cursor>()
 
-        Shadows.shadowOf(MimeTypeMap.getSingleton()).addExtensionMimeTypeMapping("txt", "text/plain")
         doReturn("text/plain").`when`(resolver).getType(any())
-
         doReturn(cursor).`when`(resolver).query(any(), any(), any(), any(), any())
-        doReturn(1).`when`(cursor).getColumnIndex(any())
-        doReturn(null).`when`(cursor).getString(anyInt())
+        doReturn(0).`when`(cursor).getColumnIndex(any())
+        doReturn(true).`when`(cursor).moveToFirst()
+        doThrow(StaleDataException("Attempting to access a closed CursorWindow.")).`when`(cursor).getString(anyInt())
 
         val fileName = uri.getFileNameForContentUris(resolver)
 
-        assertTrue(fileName.contains(".txt"))
-        assertTrue(fileName.isNotEmpty())
+        assertTrue(fileName.endsWith(".txt"))
+    }
+
+    @Test
+    fun `GIVEN a null cursor WHEN getFileNameForContentUris is called THEN a name is generated`() {
+        val resolver = mock<ContentResolver>()
+        val uri = "content://media/external/file/37162".toUri()
+
+        doReturn("text/plain").`when`(resolver).getType(any())
+        doReturn(null).`when`(resolver).query(any(), any(), any(), any(), any())
+
+        val fileName = uri.getFileNameForContentUris(resolver)
+
+        assertTrue(fileName.endsWith(".txt"))
     }
 
     @Test
@@ -213,7 +264,6 @@ class UriTest {
         val uri = "content://media/external/file/37162".toUri()
         val cursor = mock<Cursor>()
 
-        Shadows.shadowOf(MimeTypeMap.getSingleton()).addExtensionMimeTypeMapping("txt", "text/plain")
         doReturn("text/plain").`when`(resolver).getType(any())
 
         doReturn(cursor).`when`(resolver).query(any(), any(), any(), any(), any())
@@ -231,12 +281,89 @@ class UriTest {
         val resolver = mock<ContentResolver>()
         val uri = "UNKNOWN://media/external/file/37162".toUri()
 
-        Shadows.shadowOf(MimeTypeMap.getSingleton()).addExtensionMimeTypeMapping("txt", "text/plain")
         doReturn("text/plain").`when`(resolver).getType(any())
 
         val fileName = uri.getFileName(resolver)
 
         assertTrue(fileName.contains(".txt"))
         assertTrue(fileName.isNotEmpty())
+    }
+
+    @Test
+    fun `GIVEN content resolver finds a result WHEN checking readability THEN returns true`() {
+        val resolver = mock<ContentResolver>()
+        val uri = "content://media/external/file/37162".toUri()
+        val cursor = mock<Cursor>()
+
+        doReturn(cursor).`when`(resolver).query(any(), any(), any(), any(), any())
+
+        val result = uri.isReadable(resolver)
+        assertTrue(result)
+    }
+
+    @Test
+    fun `GIVEN content resolver query returns null WHEN checking readability THEN returns false`() {
+        val resolver = mock<ContentResolver>()
+        val uri = "content://media/external/file/37162".toUri()
+
+        doReturn(null).`when`(resolver).query(any(), any(), any(), any(), any())
+
+        val result = uri.isReadable(resolver)
+        assertFalse(result)
+    }
+
+    @Test
+    fun `GIVEN content resolver query throws SecurityException WHEN checking readability THEN returns false`() {
+        val resolver = mock<ContentResolver>()
+        val uri = "content://media/external/file/37162".toUri()
+
+        doThrow(SecurityException("Permission denied"))
+            .`when`(resolver)
+            .query(any(), any<Array<String>>(), any(), any(), any())
+
+        val result = uri.isReadable(resolver)
+        assertFalse(result)
+    }
+
+    @Test
+    fun `GIVEN content resolver query throws IllegalStateException WHEN checking readability THEN return false`() {
+        val resolver = mock<ContentResolver>()
+        val uri = "content://media/external/file/37162".toUri()
+
+        doThrow(IllegalStateException("Must call PhenotypeContext.setContext() first"))
+            .`when`(resolver)
+            .query(any(), any<Array<String>>(), any(), any(), any())
+
+        val result = uri.isReadable(resolver)
+
+        assertFalse(result)
+    }
+
+    @Test
+    fun `GIVEN content resolver query throws IllegalArgumentException WHEN checking readability THEN return false`() {
+        val resolver = mock<ContentResolver>()
+        val uri = "content://media/external/file/37162".toUri()
+
+        doThrow(IllegalArgumentException("Unknown URL"))
+            .`when`(resolver)
+            .query(any(), any<Array<String>>(), any(), any(), any())
+
+        val result = uri.isReadable(resolver)
+
+        assertFalse(result)
+    }
+
+    @Test
+    fun `GIVEN content resolver query throws NullPointerException WHEN checking readability THEN return false`() {
+        val resolver = mock<ContentResolver>()
+        val uri = "content://media/external/file/37162".toUri()
+
+        doThrow(NullPointerException("Attempt to invoke interface method on a null object reference"))
+            .`when`(resolver)
+            .query(any(), any<Array<String>>(), any(), any(), any())
+
+        val result = uri.isReadable(resolver)
+
+        assertFalse(result)
     }
 }

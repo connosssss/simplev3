@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,11 @@
 #ifndef mozilla_JSEventHandler_h_
 #define mozilla_JSEventHandler_h_
 
-#include "mozilla/Attributes.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/EventHandlerBinding.h"
+#include "nsAtom.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsAtom.h"
 #include "nsIDOMEventListener.h"
 #include "nsIScriptContext.h"
 
@@ -57,6 +54,8 @@ class TypedEventHandler {
   }
 
   ~TypedEventHandler() { ReleaseHandler(); }
+
+  void operator=(const TypedEventHandler&) = delete;
 
   HandlerType Type() const { return HandlerType(mBits & eTypeBits); }
 
@@ -120,8 +119,6 @@ class TypedEventHandler {
   }
 
  private:
-  void operator=(const TypedEventHandler&) = delete;
-
   void ReleaseHandler() {
     nsISupports* ptr = Ptr();
     NS_IF_RELEASE(ptr);

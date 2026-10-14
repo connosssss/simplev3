@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,11 +9,12 @@
 
 // Global includes
 #include <cstdint>
-#include <cstdlib>
 #include <new>
 #include <utility>
+
 #include "ErrorList.h"
 #include "MainThreadUtils.h"
+#include "NotifyUtils.h"
 #include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Atomics.h"
@@ -28,8 +27,6 @@
 #include "mozilla/ResultExtensions.h"
 #include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/StaticPtr.h"
-#include "mozilla/Unused.h"
-#include "mozilla/Variant.h"
 #include "mozilla/dom/PBackgroundSDBConnection.h"
 #include "mozilla/dom/PBackgroundSDBConnectionParent.h"
 #include "mozilla/dom/PBackgroundSDBRequestParent.h"
@@ -38,6 +35,7 @@
 #include "mozilla/dom/quota/ClientDirectoryLock.h"
 #include "mozilla/dom/quota/ClientDirectoryLockHandle.h"
 #include "mozilla/dom/quota/ClientImpl.h"
+#include "mozilla/dom/quota/ConditionalCompilation.h"
 #include "mozilla/dom/quota/FileStreams.h"
 #include "mozilla/dom/quota/PrincipalUtils.h"
 #include "mozilla/dom/quota/QuotaCommon.h"
@@ -50,7 +48,6 @@
 #include "mozilla/ipc/PBackgroundParent.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "mozilla/ipc/ProtocolUtils.h"
-#include "NotifyUtils.h"
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
 #include "nsError.h"
@@ -453,7 +450,7 @@ class CloseOp final : public ConnectionOperationBase {
  ******************************************************************************/
 
 class QuotaClient final : public mozilla::dom::quota::Client {
-  static QuotaClient* sInstance;
+  DEBUGONLY(static QuotaClient* sInstance);
 
  public:
   QuotaClient();
@@ -630,7 +627,7 @@ void StreamHelper::RunOnIOThread() {
   MOZ_ASSERT(inputStream);
 
   nsresult rv = inputStream->Close();
-  Unused << NS_WARN_IF(NS_FAILED(rv));
+  (void)NS_WARN_IF(NS_FAILED(rv));
 
   MOZ_ALWAYS_SUCCEEDS(mOwningEventTarget->Dispatch(this, NS_DISPATCH_NORMAL));
 }
@@ -741,7 +738,7 @@ void Connection::OnClose() {
   }
 
   if (mAllowedToClose && !mActorDestroyed) {
-    Unused << SendClosed();
+    (void)SendClosed();
   }
 }
 
@@ -755,7 +752,7 @@ void Connection::AllowToClose() {
   mAllowedToClose = true;
 
   if (!mActorDestroyed) {
-    Unused << SendAllowToClose();
+    (void)SendAllowToClose();
   }
 
   MaybeCloseStream();
@@ -780,6 +777,15 @@ bool Connection::VerifyRequestParams(const SDBRequestParams& aParams) const {
 
   switch (aParams.type()) {
     case SDBRequestParams::TSDBRequestOpenParams: {
+      const auto& name = aParams.get_SDBRequestOpenParams().name();
+
+      // The name becomes part of a path passed to NUL-terminated OS APIs.
+      // Reject embedded NULs before they can truncate the on-disk leaf name.
+      if (NS_WARN_IF(name.Contains(u'\0'))) {
+        MOZ_CRASH_UNLESS_FUZZING();
+        return false;
+      }
+
       if (NS_WARN_IF(mOpen)) {
         MOZ_CRASH_UNLESS_FUZZING();
         return false;
@@ -996,7 +1002,7 @@ void ConnectionOperationBase::SendResults() {
       response = mResultCode;
     }
 
-    Unused << PBackgroundSDBRequestParent::Send__delete__(this, response);
+    (void)PBackgroundSDBRequestParent::Send__delete__(this, response);
   }
 
   Cleanup();
@@ -1645,20 +1651,20 @@ void CloseOp::OnSuccess() {
  * QuotaClient
  ******************************************************************************/
 
-QuotaClient* QuotaClient::sInstance = nullptr;
+DEBUGONLY(QuotaClient* QuotaClient::sInstance = nullptr);
 
 QuotaClient::QuotaClient() {
   AssertIsOnBackgroundThread();
   MOZ_ASSERT(!sInstance, "We expect this to be a singleton!");
 
-  sInstance = this;
+  DEBUGONLY(sInstance = this);
 }
 
 QuotaClient::~QuotaClient() {
   AssertIsOnBackgroundThread();
   MOZ_ASSERT(sInstance == this, "We expect this to be a singleton!");
 
-  sInstance = nullptr;
+  DEBUGONLY(sInstance = nullptr);
 }
 
 mozilla::dom::quota::Client::Type QuotaClient::GetType() {
@@ -1712,7 +1718,7 @@ Result<UsageInfo, nsresult> QuotaClient::GetUsageForOrigin(
                        MOZ_TO_RESULT_INVOKE_MEMBER(file, IsDirectory));
 
         if (isDirectory) {
-          Unused << WARN_IF_FILE_IS_UNKNOWN(*file);
+          (void)WARN_IF_FILE_IS_UNKNOWN(*file);
           return usageInfo;
         }
 
@@ -1729,7 +1735,7 @@ Result<UsageInfo, nsresult> QuotaClient::GetUsageForOrigin(
                  UsageInfo{DatabaseUsageType(Some(uint64_t(fileSize)))};
         }
 
-        Unused << WARN_IF_FILE_IS_UNKNOWN(*file);
+        (void)WARN_IF_FILE_IS_UNKNOWN(*file);
 
         return usageInfo;
       }));

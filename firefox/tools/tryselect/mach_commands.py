@@ -4,13 +4,15 @@
 
 
 import argparse
+import functools
 import importlib
 import os
 import sys
 
 from mach.decorators import Command, SubCommand
 from mach.util import get_state_dir
-from mozbuild.util import memoize
+
+from tryselect import TRYSELECT_METRICS_PATH
 
 CONFIG_ENVIRONMENT_NOT_FOUND = """
 No config environment detected. This means we are unable to properly
@@ -40,14 +42,20 @@ def generic_parser():
 
 
 def init(command_context):
-    from tryselect import lando, push
+    from tryselect import lando, push, task_config
 
     mach_context = command_context._mach_context
     lando.LAUNCH_BROWSER = not mach_context.settings["try"]["nobrowser"]
     push.MAX_HISTORY = mach_context.settings["try"]["maxhistory"]
+    push.MACH_TRY_REMOTE = mach_context.settings["try"]["pushremote"]
+    if "GIT_BACKING_ENABLED" in os.environ:
+        push.GIT_BACKING_ENABLED = os.environ.get("GIT_BACKING_ENABLED") == "1"
+    else:
+        push.GIT_BACKING_ENABLED = mach_context.settings["try"]["gitbacking"]
+    task_config.SKIP_ARTIFACT_BUILD_CHECK = mach_context.settings["try"]["noartifact"]
 
 
-@memoize
+@functools.cache
 def presets(command_context):
     from tryselect.preset import MergedHandler
 
@@ -107,13 +115,12 @@ def handle_presets(
 
     if preset:
         if preset not in presets(command_context):
-            command_context._mach_context.parser.error(
-                f"preset '{preset}' does not exist"
-            )
+            parser.error(f"preset '{preset}' does not exist")
 
         name = preset
         preset = presets(command_context)[name]
         selector = preset.pop("selector")
+        kwargs["preset_id"] = name
         preset.pop("description", None)  # description isn't used by any selectors
 
         if not subcommand:
@@ -170,7 +177,18 @@ def run(command_context, **kwargs):
     mod = importlib.import_module(
         f"tryselect.selectors.{command_context._mach_context.handler.subcommand}"
     )
-    return mod.run(**kwargs)
+    result = mod.run(**kwargs, metrics=command_context.metrics)
+
+    # NOTE: Selectors have a mixed return pattern (legacy design):
+    # - None on success (most common)
+    # - job_id (int > 1) on successful lando push
+    # - 1 on validation errors
+    # We normalize to proper exit codes: 0 for success, 1 for errors.
+    # This assumes that only 1 indicates an error. If selectors start returning
+    # other error codes (e.g., 2, 3), this logic will need to be updated.
+    if result == 1:
+        return 1
+    return 0
 
 
 @Command(
@@ -179,6 +197,7 @@ def run(command_context, **kwargs):
     description="Push selected tasks to the try server",
     parser=generic_parser,
     virtualenv_name="try",
+    metrics_path=TRYSELECT_METRICS_PATH,
 )
 def try_default(command_context, argv=None, **kwargs):
     """Push selected tests to the try server.
@@ -222,6 +241,7 @@ def try_default(command_context, argv=None, **kwargs):
     description="Select tasks on try using a fuzzy finder",
     parser=get_parser("fuzzy"),
     virtualenv_name="try",
+    metrics_path=TRYSELECT_METRICS_PATH,
 )
 def try_fuzzy(command_context, **kwargs):
     """Select which tasks to run with a fuzzy finding interface (fzf).
@@ -337,6 +357,7 @@ def try_fuzzy(command_context, **kwargs):
     description="Schedule tasks by selecting them from a web interface.",
     parser=get_parser("chooser"),
     virtualenv_name="try",
+    metrics_path=TRYSELECT_METRICS_PATH,
 )
 def try_chooser(command_context, **kwargs):
     """Push tasks selected from a web interface to try.
@@ -360,6 +381,7 @@ def try_chooser(command_context, **kwargs):
     "selector is EXPERIMENTAL.",
     parser=get_parser("auto"),
     virtualenv_name="try",
+    metrics_path=TRYSELECT_METRICS_PATH,
 )
 def try_auto(command_context, **kwargs):
     init(command_context)
@@ -372,6 +394,7 @@ def try_auto(command_context, **kwargs):
     description="Schedule a previously generated push again.",
     parser=get_parser("again"),
     virtualenv_name="try",
+    metrics_path=TRYSELECT_METRICS_PATH,
 )
 def try_again(command_context, **kwargs):
     init(command_context)
@@ -384,6 +407,7 @@ def try_again(command_context, **kwargs):
     description="Push to try without scheduling any tasks.",
     parser=get_parser("empty"),
     virtualenv_name="try",
+    metrics_path=TRYSELECT_METRICS_PATH,
 )
 def try_empty(command_context, **kwargs):
     """Push to try, running no builds or tests
@@ -404,6 +428,7 @@ def try_empty(command_context, **kwargs):
     description="Select tasks on try using coverage data",
     parser=get_parser("coverage"),
     virtualenv_name="try",
+    metrics_path=TRYSELECT_METRICS_PATH,
 )
 def try_coverage(command_context, **kwargs):
     """Select which tasks to use using coverage data."""
@@ -417,6 +442,7 @@ def try_coverage(command_context, **kwargs):
     description="Push the current tree to try, configured for a staging release.",
     parser=get_parser("release"),
     virtualenv_name="try",
+    metrics_path=TRYSELECT_METRICS_PATH,
 )
 def try_release(command_context, **kwargs):
     """Push the current tree to try, configured for a staging release."""
@@ -430,6 +456,7 @@ def try_release(command_context, **kwargs):
     description="Run scriptworker tasks against a recent release.",
     parser=get_parser("scriptworker"),
     virtualenv_name="try",
+    metrics_path=TRYSELECT_METRICS_PATH,
 )
 def try_scriptworker(command_context, **kwargs):
     """Run scriptworker tasks against a recent release.
@@ -446,6 +473,7 @@ def try_scriptworker(command_context, **kwargs):
     description="Push two try jobs, one on your current commit and another on the one you specify",
     parser=get_parser("compare"),
     virtualenv_name="try",
+    metrics_path=TRYSELECT_METRICS_PATH,
 )
 def try_compare(command_context, **kwargs):
     init(command_context)
@@ -458,6 +486,7 @@ def try_compare(command_context, **kwargs):
     description="Try selector for running performance tests.",
     parser=get_parser("perf"),
     virtualenv_name="try",
+    metrics_path=TRYSELECT_METRICS_PATH,
 )
 def try_perf(command_context, **kwargs):
     init(command_context)

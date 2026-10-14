@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -16,6 +14,13 @@
 
 #include "jstypes.h"
 
+namespace js {
+class GCMarker;
+namespace gcstats {
+struct Statistics;
+}  // namespace gcstats
+}  // namespace js
+
 namespace JS {
 
 struct JS_PUBLIC_API TimeBudget {
@@ -23,16 +28,18 @@ struct JS_PUBLIC_API TimeBudget {
   mozilla::TimeStamp deadline;  // Calculated when SliceBudget is constructed.
 
   explicit TimeBudget(mozilla::TimeDuration duration) : budget(duration) {}
-  explicit TimeBudget(int64_t milliseconds)
-      : budget(mozilla::TimeDuration::FromMilliseconds(milliseconds)) {}
 
   void setDeadlineFromNow();
+  double progress(mozilla::TimeStamp t) const {
+    return (t - (deadline - budget)) / budget;
+  }
 };
 
 struct JS_PUBLIC_API WorkBudget {
   const int64_t budget;
 
   explicit WorkBudget(int64_t work) : budget(work) {}
+  double progress(int64_t work) const { return double(work) / double(budget); }
 };
 
 struct UnlimitedBudget {};
@@ -72,27 +79,34 @@ class JS_PUBLIC_API SliceBudget {
   // This SliceBudget is considered interrupted from the time isOverBudget()
   // finds the interrupt flag set.
   bool interrupted = false;
+  friend struct js::gcstats::Statistics;
 
  public:
-  // Whether this slice is running in (predicted to be) idle time.
-  // Only used for recording in the profile.
+  // Whether this slice is running in (predicted to be) idle time. This can be
+  // used by the GC to end slices early when not running in idle time.
   bool idle = false;
 
   // Whether this slice was given an extended budget, larger than
   // the predicted idle time.
   bool extended = false;
 
- private:
-  explicit SliceBudget(InterruptRequestFlag* irqPtr)
-      : counter(irqPtr ? StepsPerExpensiveCheck : UnlimitedCounter),
-        interruptRequested(irqPtr),
-        budget(UnlimitedBudget()) {}
+  // Temporarily allow going over budget. (isOverBudget() will return false,
+  // though step() will still have an effect and will matter once this is set
+  // back to false.)
+  bool keepGoing = false;
 
+ private:
   bool checkOverBudget();
 
  public:
   // Use to create an unlimited budget.
-  static SliceBudget unlimited() { return SliceBudget(nullptr); }
+  static SliceBudget unlimited() { return SliceBudget(UnlimitedBudget()); }
+
+  explicit SliceBudget(UnlimitedBudget unlimited,
+                       InterruptRequestFlag* irqPtr = nullptr)
+      : counter(irqPtr ? StepsPerExpensiveCheck : UnlimitedCounter),
+        interruptRequested(irqPtr),
+        budget(unlimited) {}
 
   // Instantiate as SliceBudget(TimeBudget(n)).
   explicit SliceBudget(TimeBudget time,
@@ -100,7 +114,7 @@ class JS_PUBLIC_API SliceBudget {
 
   explicit SliceBudget(mozilla::TimeDuration duration,
                        InterruptRequestFlag* interrupt = nullptr)
-      : SliceBudget(TimeBudget(duration.ToMilliseconds()), interrupt) {}
+      : SliceBudget(TimeBudget(duration), interrupt) {}
 
   // Instantiate as SliceBudget(WorkBudget(n)).
   explicit SliceBudget(WorkBudget work);
@@ -121,23 +135,52 @@ class JS_PUBLIC_API SliceBudget {
     }
   }
 
-  bool isOverBudget() { return counter <= 0 && checkOverBudget(); }
+  bool isOverBudget() {
+    return counter <= 0 && !keepGoing && checkOverBudget();
+  }
+
+  // Return the fraction of progress towards the deadline. Note that this can
+  // return values outside of the range [0,1].
+  double progress() const {
+    if (isUnlimited()) {
+      return 0.0;
+    }
+    if (isTimeBudget()) {
+      return budget.as<TimeBudget>().progress(mozilla::TimeStamp::Now());
+    }
+    return budget.as<WorkBudget>().progress(workBudget() - counter);
+  }
 
   bool isWorkBudget() const { return budget.is<WorkBudget>(); }
   bool isTimeBudget() const { return budget.is<TimeBudget>(); }
   bool isUnlimited() const { return budget.is<UnlimitedBudget>(); }
 
-  mozilla::TimeDuration timeBudgetDuration() const {
+  mozilla::TimeDuration timeBudget() const {
     return budget.as<TimeBudget>().budget;
   }
-  int64_t timeBudget() const { return timeBudgetDuration().ToMilliseconds(); }
   int64_t workBudget() const { return budget.as<WorkBudget>().budget; }
 
   mozilla::TimeStamp deadline() const {
     return budget.as<TimeBudget>().deadline;
   }
 
+  int64_t workRemaining() const {
+    MOZ_ASSERT(isWorkBudget());
+    return std::max(counter, int64_t(0));
+  }
+
+  InterruptRequestFlag* interruptRequestFlag() const {
+    return interruptRequested;
+  }
+
+  void clearInterrupted() { interrupted = false; }
+
   int describe(char* buffer, size_t maxlen) const;
+
+ private:
+  // Interrupt the budget from inside the GC.
+  void setInterrupted() { interrupted = true; }
+  friend class js::GCMarker;
 };
 
 }  // namespace JS

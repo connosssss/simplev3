@@ -1,5 +1,4 @@
 [DEFAULT]
-skip-if = ["os == 'android'"] # bug 1730213
 support-files = [
   "../head.js",
   "../../fixtures/**",
@@ -16,7 +15,6 @@ support-files = [
 ["browser_basic.js"]
 
 ["browser_capture_name.js"]
-skip-if = ["os == 'mac' && os_version == '11.20' && arch == 'aarch64' && !debug"]
 
 ["browser_cc_exp.js"]
 
@@ -36,6 +34,8 @@ skip-if = ["os == 'mac' && os_version == '11.20' && arch == 'aarch64' && !debug"
 
 ["browser_multiple_section.js"]
 
+["browser_nl_fields.js"]
+
 ["browser_parse_address_fields.js"]
 
 ["browser_parse_creditcard_expiry_fields.js"]
@@ -48,7 +48,11 @@ skip-if = ["os == 'mac' && os_version == '11.20' && arch == 'aarch64' && !debug"
 
 ["browser_parse_tel_fields.js"]
 
+["browser_passport_fields.js"]
+
 ["browser_section_validation_address.js"]
+
+["browser_section_validation_passport.js"]
 
 ["browser_sections_by_name.js"]
 

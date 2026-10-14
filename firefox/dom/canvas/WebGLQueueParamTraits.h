@@ -1,5 +1,3 @@
-
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,11 +5,10 @@
 #ifndef WEBGLQUEUEPARAMTRAITS_H_
 #define WEBGLQUEUEPARAMTRAITS_H_
 
-#include <type_traits>
-
-#include "ipc/EnumSerializer.h"
+#include "QueueParamTraits.h"
 #include "TexUnpackBlob.h"
 #include "WebGLTypes.h"
+#include "ipc/EnumSerializer.h"
 
 namespace mozilla {
 namespace webgl {
@@ -61,32 +58,27 @@ struct QueueParamTraits<avec3<T>> : QueueParamTraits_TiedFields<avec3<T>> {};
 // ---------------------------------------------------------------------
 // Enums!
 
-}  // namespace webgl
+template <>
+struct QueueParamTraits<AttribBaseType>
+    : public ContiguousEnumSerializerInclusive<
+          AttribBaseType, AttribBaseType(0), kHighestAttribBaseType> {};
 
-inline constexpr bool IsEnumCase(const webgl::AttribBaseType raw) {
-  switch (raw) {
-    case webgl::AttribBaseType::Boolean:
-    case webgl::AttribBaseType::Float:
-    case webgl::AttribBaseType::Int:
-    case webgl::AttribBaseType::Uint:
-      return true;
+struct ProvokingVertexValidator {
+  using IntegralType = std::underlying_type_t<ProvokingVertex>;
+
+  static bool IsLegalValue(const IntegralType e) {
+    switch (static_cast<ProvokingVertex>(e)) {
+      case ProvokingVertex::FirstVertex:
+      case ProvokingVertex::LastVertex:
+        return true;
+    }
+    return false;
   }
-  return false;
-}
-static_assert(IsEnumCase(webgl::AttribBaseType(3)));
-static_assert(!IsEnumCase(webgl::AttribBaseType(4)));
-static_assert(!IsEnumCase(webgl::AttribBaseType(5)));
+};
 
-namespace webgl {
-
-#define USE_IS_ENUM_CASE(T) \
-  template <>               \
-  struct QueueParamTraits<T> : QueueParamTraits_IsEnumCase<T> {};
-
-USE_IS_ENUM_CASE(webgl::AttribBaseType)
-USE_IS_ENUM_CASE(webgl::ProvokingVertex)
-
-#undef USE_IS_ENUM_CASE
+template <>
+struct QueueParamTraits<ProvokingVertex>
+    : public EnumSerializer<ProvokingVertex, ProvokingVertexValidator> {};
 
 // ---------------------------------------------------------------------
 // Custom QueueParamTraits
@@ -100,7 +92,7 @@ struct QueueParamTraits<Span<T>> {
     if (!status) return status;
 
     if (!elemCount) return status;
-    status = view.WriteFromRange(Range<const T>{in});
+    status = view.WriteFromRange(mozilla::Range<const T>{in});
 
     return status;
   }
@@ -173,7 +165,8 @@ struct QueueParamTraits<std::string> {
     const auto size = aArg.size();
     auto status = aProducerView.WriteParam(size);
     if (!status) return status;
-    status = aProducerView.WriteFromRange(Range<const char>{aArg.data(), size});
+    status = aProducerView.WriteFromRange(
+        mozilla::Range<const char>{aArg.data(), size});
     return status;
   }
 

@@ -1,21 +1,20 @@
-#include "gtest/gtest.h"
-#include "gtest/MozGTestBench.h"  // For MOZ_GTEST_BENCH
-
-#include "nsCOMPtr.h"
-#include "nsNetCID.h"
-#include "nsIURL.h"
-#include "nsIStandardURL.h"
-#include "nsString.h"
-#include "nsPrintfCString.h"
-#include "nsComponentManagerUtils.h"
-#include "nsIURIMutator.h"
-#include "mozilla/ipc/URIUtils.h"
-#include "mozilla/Unused.h"
-#include "nsSerializationHelper.h"
-#include "mozilla/Base64.h"
-#include "nsEscape.h"
-#include "nsURLHelper.h"
 #include "IPv4Parser.h"
+#include "gtest/MozGTestBench.h"  // For MOZ_GTEST_BENCH
+#include "gtest/gtest.h"
+#include "mozilla/Base64.h"
+#include "mozilla/Encoding.h"
+#include "mozilla/ipc/URIUtils.h"
+#include "nsCOMPtr.h"
+#include "nsComponentManagerUtils.h"
+#include "nsEscape.h"
+#include "nsIStandardURL.h"
+#include "nsIURIMutator.h"
+#include "nsIURL.h"
+#include "nsNetCID.h"
+#include "nsPrintfCString.h"
+#include "nsSerializationHelper.h"
+#include "nsString.h"
+#include "nsURLHelper.h"
 
 using namespace mozilla;
 
@@ -271,24 +270,21 @@ MOZ_GTEST_BENCH(TestStandardURL, DISABLED_Perf, [] {
               NS_OK);
     ASSERT_EQ(url->GetSpec(out), NS_OK);
     url->Resolve("foo.html?q=45"_ns, out);
-    mozilla::Unused << NS_MutateURI(url).SetScheme("foo"_ns).Finalize(url);
+    (void)NS_MutateURI(url).SetScheme("foo"_ns).Finalize(url);
     url->GetScheme(out);
-    mozilla::Unused
-        << NS_MutateURI(url).SetHost("www.yahoo.com"_ns).Finalize(url);
+    (void)NS_MutateURI(url).SetHost("www.yahoo.com"_ns).Finalize(url);
     url->GetHost(out);
-    mozilla::Unused
-        << NS_MutateURI(url)
-               .SetPathQueryRef(nsLiteralCString(
-                   "/some-path/one-the-net/about.html?with-a-query#for-you"))
-               .Finalize(url);
+    (void)NS_MutateURI(url)
+        .SetPathQueryRef(nsLiteralCString(
+            "/some-path/one-the-net/about.html?with-a-query#for-you"))
+        .Finalize(url);
     url->GetPathQueryRef(out);
-    mozilla::Unused << NS_MutateURI(url)
-                           .SetQuery(nsLiteralCString(
-                               "a=b&d=c&what-ever-you-want-to-be-called=45"))
-                           .Finalize(url);
+    (void)NS_MutateURI(url)
+        .SetQuery(
+            nsLiteralCString("a=b&d=c&what-ever-you-want-to-be-called=45"))
+        .Finalize(url);
     url->GetQuery(out);
-    mozilla::Unused
-        << NS_MutateURI(url).SetRef("#some-book-mark"_ns).Finalize(url);
+    (void)NS_MutateURI(url).SetRef("#some-book-mark"_ns).Finalize(url);
     url->GetRef(out);
   }
 });
@@ -372,6 +368,57 @@ TEST(TestStandardURL, Deserialize_Bug1392739)
   ASSERT_EQ(mutator->Deserialize(params), NS_ERROR_FAILURE);
 }
 
+TEST(TestStandardURL, Deserialize_Bug2027976)
+{
+  mozilla::ipc::StandardURLParams params;
+
+  nsAutoCString evilSpec;
+  evilSpec.AssignLiteral("http://127.0.0.1:8888/");
+  for (int i = 0; i < 500; i++) {
+    evilSpec.Append('x');
+  }
+  evilSpec.Append('/');
+
+  uint32_t specLen = evilSpec.Length();
+  uint32_t pathPos = specLen - 1;
+
+  params.spec() = evilSpec;
+  params.urlType() = nsIStandardURL::URLTYPE_AUTHORITY;
+  params.port() = 8888;
+  params.defaultPort() = 80;
+  params.supportsFileURL() = false;
+  params.isSubstituting() = false;
+
+  params.scheme() = mozilla::ipc::StandardURLSegment(0, 4);
+  params.authority() = mozilla::ipc::StandardURLSegment(7, 14);
+  params.username() = mozilla::ipc::StandardURLSegment(0, -1);
+  params.password() = mozilla::ipc::StandardURLSegment(0, -1);
+  params.host() = mozilla::ipc::StandardURLSegment(7, 9);
+  params.path() = mozilla::ipc::StandardURLSegment(pathPos, 1);
+  params.filePath() = mozilla::ipc::StandardURLSegment(pathPos, 1);
+  params.directory() = mozilla::ipc::StandardURLSegment(21, 1);
+  params.baseName() = mozilla::ipc::StandardURLSegment(0, -1);
+  params.extension() = mozilla::ipc::StandardURLSegment(0, -1);
+  params.query() = mozilla::ipc::StandardURLSegment(0, -1);
+  params.ref() = mozilla::ipc::StandardURLSegment(0, -1);
+
+  mozilla::ipc::URIParams uriParams(params);
+
+  nsCOMPtr<nsIURIMutator> mutator =
+      do_CreateInstance(NS_STANDARDURLMUTATOR_CID);
+  nsresult rv = mutator->Deserialize(uriParams);
+  ASSERT_EQ(rv, NS_ERROR_FAILURE);
+  if (NS_FAILED(rv)) {
+    return;
+  }
+  // The following code should not normally be reachable.
+  nsCOMPtr<nsIURI> uri;
+  rv = mutator->Finalize(getter_AddRefs(uri));
+  ASSERT_EQ(rv, NS_OK);
+  nsAutoCString spec;
+  uri->Resolve("foo"_ns, spec);
+}
+
 TEST(TestStandardURL, CorruptSerialization)
 {
   auto spec = "http://user:pass@example.com/path/to/file.ext?query#hash"_ns;
@@ -393,7 +440,7 @@ TEST(TestStandardURL, CorruptSerialization)
                                         getter_AddRefs(deserializedObject)));
 
   nsAutoCString canonicalBin;
-  Unused << Base64Decode(serialization, canonicalBin);
+  (void)Base64Decode(serialization, canonicalBin);
 
 // The spec serialization begins at byte 49
 // If the implementation of nsStandardURL::Write changes, this test will need
@@ -405,7 +452,7 @@ TEST(TestStandardURL, CorruptSerialization)
   nsAutoCString corruptedBin = canonicalBin;
   // change mScheme.mPos
   corruptedBin.BeginWriting()[SPEC_OFFSET + spec.Length()] = 1;
-  Unused << Base64Encode(corruptedBin, serialization);
+  (void)Base64Encode(corruptedBin, serialization);
   ASSERT_EQ(
       NS_ERROR_MALFORMED_URI,
       NS_DeserializeObject(serialization, getter_AddRefs(deserializedObject)));
@@ -413,7 +460,7 @@ TEST(TestStandardURL, CorruptSerialization)
   corruptedBin = canonicalBin;
   // change mScheme.mLen
   corruptedBin.BeginWriting()[SPEC_OFFSET + spec.Length() + 4] = 127;
-  Unused << Base64Encode(corruptedBin, serialization);
+  (void)Base64Encode(corruptedBin, serialization);
   ASSERT_EQ(
       NS_ERROR_MALFORMED_URI,
       NS_DeserializeObject(serialization, getter_AddRefs(deserializedObject)));
@@ -437,6 +484,23 @@ TEST(TestStandardURL, ParseIPv4Num)
   uint32_t number;
   mozilla::net::IPv4Parser::ParseIPv4Number("0x10"_ns, 16, number, 255);
   ASSERT_EQ(number, (uint32_t)16);
+
+  // Inputs whose mathematical value exceeds 0xFFFFFFFF must be rejected,
+  // even when they wrap modulo 2^64 back into the valid uint32_t range.
+  // 18446744073709551616 == 2^64             => wraps to 0
+  // 18446744075840258049 == 2^64 + 0x7F000001 => wraps to 127.0.0.1
+  nsCString wrapResult;
+  ASSERT_EQ(NS_ERROR_FAILURE,
+            Test_NormalizeIPv4("18446744073709551616"_ns, wrapResult));
+  ASSERT_EQ(NS_ERROR_FAILURE,
+            Test_NormalizeIPv4("18446744075840258049"_ns, wrapResult));
+
+  ASSERT_EQ(NS_ERROR_FAILURE,
+            mozilla::net::IPv4Parser::ParseIPv4Number10(
+                "18446744075840258049"_ns, number, 0xffffffffu));
+  ASSERT_EQ(NS_ERROR_FAILURE,
+            mozilla::net::IPv4Parser::ParseIPv4Number("18446744075840258049"_ns,
+                                                      10, number, 0xffffffffu));
 }
 
 TEST(TestStandardURL, CoalescePath)
@@ -586,4 +650,41 @@ TEST(TestStandardURL, bug1911529)
 
   ASSERT_EQ(uri->Equals(uri2, &equals), NS_OK);
   ASSERT_TRUE(equals);
+}
+
+// The setters take nsACString, so nothing guarantees the bytes are UTF-8.
+// SetQueryWithEncoding reaches nsSegmentEncoder with a non-null encoding,
+// where invalid sequences must be replaced rather than treated as impossible.
+TEST(TestStandardURL, NonUtf8QueryWithEncoding)
+{
+  nsCOMPtr<nsIURI> uri;
+  ASSERT_EQ(NS_MutateURI(NS_STANDARDURLMUTATOR_CONTRACTID)
+                .SetSpec("http://example.com/"_ns)
+                .Finalize(uri),
+            NS_OK);
+
+  // A lone continuation byte, a truncated sequence and a byte that can never
+  // appear in UTF-8 at all.
+  nsAutoCString badQuery(
+      "a\xA7"
+      "b\xF9"
+      "c\xFE");
+
+  const auto* encoding = mozilla::Encoding::ForLabelNoReplacement(
+      mozilla::MakeStringSpan("Shift_JIS"));
+  ASSERT_TRUE(encoding);
+
+  nsCOMPtr<nsIURI> out;
+  ASSERT_EQ(
+      NS_MutateURI(uri).SetQueryWithEncoding(badQuery, encoding).Finalize(out),
+      NS_OK);
+
+  nsAutoCString spec;
+  ASSERT_EQ(out->GetSpec(spec), NS_OK);
+
+  // Each invalid byte became U+FFFD, which Shift_JIS cannot represent, so it
+  // is emitted as a numeric character reference and then percent-escaped.
+  ASSERT_EQ(
+      spec,
+      "http://example.com/?a%26%2365533%3Bb%26%2365533%3Bc%26%2365533%3B"_ns);
 }

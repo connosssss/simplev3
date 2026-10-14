@@ -16,11 +16,14 @@ kind-dependencies:
     - build-signing
     # We're not going to generate tasks based on these.  But we are going to `depend` on and fetch
     # langpacks from these.
-    - shippable-l10n-signing
+    - l10n-signing
     - toolchain
 
 not-for-kind-dependencies:
-    - shippable-l10n-signing
+    - l10n-signing
+
+task-defaults:
+    run-on-repo-type: [hg]
 
 only-for-build-platforms:
     - win32-shippable/opt
@@ -35,7 +38,7 @@ tasks:
         from-deps:
             group-by: platform
             unique-kinds: false
-        worker-type: b-linux-gcp
+        worker-type: b-linux
         worker:
             max-run-time: 2700
         mozharness:
@@ -65,7 +68,7 @@ tasks:
                     default:
                         by-release-type:
                             beta.*: beta
-                            release.*: official
+                            release: official
                             esr.*: official
                             default: nightly
             identity-name:
@@ -79,13 +82,13 @@ tasks:
                             msix:
                                 by-release-type:
                                     beta.*: MozillaFirefoxBeta
-                                    release.*: MozillaFirefox
+                                    release: MozillaFirefox
                                     esr.*: MozillaFirefox
                                     default: MozillaFirefoxNightly
                             msix-store:
                                 by-release-type:
                                     beta.*: FirefoxBeta
-                                    release.*: Firefox
+                                    release: Firefox
                                     esr.*: Firefox
                                     default: FirefoxNightly
             publisher:

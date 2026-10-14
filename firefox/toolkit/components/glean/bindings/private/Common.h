@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18,6 +17,7 @@ namespace mozilla::glean {
  * @param aMsg The text message to print to the console.
  */
 void LogToBrowserConsole(uint32_t aLogLevel, const nsAString& aMsg);
+bool IsCamelCase(const nsAString& aStr);
 
 }  // namespace mozilla::glean
 

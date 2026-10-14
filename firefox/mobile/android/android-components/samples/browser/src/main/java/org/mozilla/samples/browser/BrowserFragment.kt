@@ -8,9 +8,16 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
+import mozilla.components.browser.storage.sync.PlacesHistoryStorage
 import mozilla.components.browser.thumbnails.BrowserThumbnails
+import mozilla.components.concept.awesomebar.AwesomeBar
+import mozilla.components.concept.awesomebar.AwesomeBar.GroupedSuggestion
 import mozilla.components.feature.awesomebar.AwesomeBarFeature
 import mozilla.components.feature.awesomebar.provider.SearchSuggestionProvider
+import mozilla.components.feature.awesomebar.provider.SearchTermSuggestionsProvider
 import mozilla.components.feature.media.fullscreen.MediaSessionFullscreenFeature
 import mozilla.components.feature.search.SearchFeature
 import mozilla.components.feature.session.FullScreenFeature
@@ -25,17 +32,14 @@ import mozilla.components.support.ktx.android.view.exitImmersiveMode
 import org.mozilla.samples.browser.ext.components
 import org.mozilla.samples.browser.integration.ReaderViewIntegration
 
-/**
- * Fragment used for browsing the web within the main app.
- */
+/** Fragment used for browsing the web within the main app. */
 class BrowserFragment : BaseBrowserFragment(), UserInteractionHandler {
     private val thumbnailsFeature = ViewBoundFeatureWrapper<BrowserThumbnails>()
     private val readerViewFeature = ViewBoundFeatureWrapper<ReaderViewIntegration>()
     private val webExtToolbarFeature = ViewBoundFeatureWrapper<WebExtensionToolbarFeature>()
     private val searchFeature = ViewBoundFeatureWrapper<SearchFeature>()
     private val fullScreenFeature = ViewBoundFeatureWrapper<FullScreenFeature>()
-    private val mediaSessionFullscreenFeature =
-        ViewBoundFeatureWrapper<MediaSessionFullscreenFeature>()
+    private val mediaSessionFullscreenFeature = ViewBoundFeatureWrapper<MediaSessionFullscreenFeature>()
 
     @Suppress("LongMethod")
     override fun onCreateView(
@@ -62,6 +66,9 @@ class BrowserFragment : BaseBrowserFragment(), UserInteractionHandler {
         )
 
         AwesomeBarFeature(binding.awesomeBar, binding.toolbar, binding.engineView, components.icons)
+            .addRemoveButtonListener {
+                deleteHistoryEntry(it, components.historyStorage)
+            }
             .addHistoryProvider(
                 components.historyStorage,
                 components.sessionUseCases.loadUrl,
@@ -77,7 +84,6 @@ class BrowserFragment : BaseBrowserFragment(), UserInteractionHandler {
                 searchUseCase = components.searchUseCases.defaultSearch,
             )
             .addSearchProvider(
-                requireContext(),
                 components.store,
                 components.searchUseCases.defaultSearch,
                 fetchClient = components.client,
@@ -92,40 +98,44 @@ class BrowserFragment : BaseBrowserFragment(), UserInteractionHandler {
             )
 
         readerViewFeature.set(
-            feature = ReaderViewIntegration(
-                requireContext(),
-                components.engine,
-                components.store,
-                binding.toolbar,
-                binding.readerViewBar,
-                binding.readerViewAppearanceButton,
-            ),
+            feature =
+                ReaderViewIntegration(
+                    requireContext(),
+                    components.engine,
+                    components.store,
+                    binding.toolbar,
+                    binding.readerViewBar,
+                    binding.readerViewAppearanceButton,
+                ),
             owner = this,
             view = binding.root,
         )
 
         fullScreenFeature.set(
-            feature = FullScreenFeature(
-                components.store,
-                components.sessionUseCases,
-                sessionId,
-            ) { inFullScreen ->
-                if (inFullScreen) {
-                    activity?.enterImmersiveMode()
-                } else {
-                    activity?.exitImmersiveMode()
-                }
-            },
+            feature =
+                FullScreenFeature(
+                    components.store,
+                    components.sessionUseCases,
+                    sessionId,
+                    fullScreenChanged = { inFullScreen ->
+                        if (inFullScreen) {
+                            activity?.enterImmersiveMode()
+                        } else {
+                            activity?.exitImmersiveMode()
+                        }
+                    },
+                ),
             owner = this,
             view = binding.root,
         )
 
         mediaSessionFullscreenFeature.set(
-            feature = MediaSessionFullscreenFeature(
-                requireActivity(),
-                components.store,
-                sessionId,
-            ),
+            feature =
+                MediaSessionFullscreenFeature(
+                    requireActivity(),
+                    components.store,
+                    sessionId,
+                ),
             owner = this,
             view = binding.root,
         )
@@ -137,22 +147,24 @@ class BrowserFragment : BaseBrowserFragment(), UserInteractionHandler {
         )
 
         webExtToolbarFeature.set(
-            feature = WebExtensionToolbarFeature(
-                binding.toolbar,
-                components.store,
-            ),
+            feature =
+                WebExtensionToolbarFeature(
+                    binding.toolbar,
+                    components.store,
+                ),
             owner = this,
             view = binding.root,
         )
 
         searchFeature.set(
-            feature = SearchFeature(components.store) { request, _ ->
-                if (request.isPrivate) {
-                    components.searchUseCases.newPrivateTabSearch.invoke(request.query)
-                } else {
-                    components.searchUseCases.newTabSearch.invoke(request.query)
-                }
-            },
+            feature =
+                SearchFeature(components.store) { request, _ ->
+                    if (request.isPrivate) {
+                        components.searchUseCases.newPrivateTabSearch.invoke(request.query)
+                    } else {
+                        components.searchUseCases.newTabSearch.invoke(request.query)
+                    }
+                },
             owner = this,
             view = binding.root,
         )
@@ -162,6 +174,30 @@ class BrowserFragment : BaseBrowserFragment(), UserInteractionHandler {
 
         return binding.root
     }
+
+    private fun deleteHistoryEntry(
+        entry: GroupedSuggestion,
+        historyStorage: PlacesHistoryStorage,
+    ) =
+        MainScope().launch(Dispatchers.IO) {
+            when (entry.suggestion.provider is SearchTermSuggestionsProvider) {
+                true -> {
+                    if (entry.suggestion is AwesomeBar.Suggestion) {
+                        (entry.suggestion as AwesomeBar.Suggestion).title?.let {
+                            historyStorage.deleteHistoryMetadata(it)
+                        }
+                    }
+                }
+
+                false -> {
+                    if (entry.suggestion is AwesomeBar.Suggestion) {
+                        (entry.suggestion as AwesomeBar.Suggestion).description?.let {
+                            historyStorage.deleteVisitsFor(it)
+                        }
+                    }
+                }
+            }
+        }
 
     private fun showTabs() {
         // For now we are performing manual fragment transactions here. Once we can use the new
@@ -181,10 +217,12 @@ class BrowserFragment : BaseBrowserFragment(), UserInteractionHandler {
     }
 
     companion object {
-        fun create(sessionId: String? = null) = BrowserFragment().apply {
-            arguments = Bundle().apply {
-                putSessionId(sessionId)
+        fun create(sessionId: String? = null) =
+            BrowserFragment().apply {
+                arguments =
+                    Bundle().apply {
+                        putSessionId(sessionId)
+                    }
             }
-        }
     }
 }

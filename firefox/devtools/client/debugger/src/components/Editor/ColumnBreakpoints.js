@@ -13,7 +13,6 @@ import {
   isSourceBlackBoxed,
 } from "../../selectors/index";
 import actions from "../../actions/index";
-import { markerTypes } from "../../constants";
 import { connect } from "devtools/client/shared/vendor/react-redux";
 
 const breakpointButton = document.createElement("button");
@@ -55,12 +54,14 @@ class ColumnBreakpoints extends Component {
     }
 
     if (!columnBreakpoints.length) {
-      editor.removePositionContentMarker(markerTypes.COLUMN_BREAKPOINT_MARKER);
+      editor.removePositionContentMarker(
+        editor.markerTypes.COLUMN_BREAKPOINT_MARKER
+      );
       return;
     }
 
     editor.setPositionContentMarker({
-      id: markerTypes.COLUMN_BREAKPOINT_MARKER,
+      id: editor.markerTypes.COLUMN_BREAKPOINT_MARKER,
       positions: columnBreakpoints.map(cbp => {
         return {
           line: cbp.location.line,
@@ -74,13 +75,21 @@ class ColumnBreakpoints extends Component {
         isFirstNonSpaceColumn,
         positionData
       ) => {
+        const isActive =
+          !!positionData.breakpoint && !positionData.breakpoint.disabled;
         const breakpointNode = breakpointButton.cloneNode(true);
         breakpointNode.className = classnames("column-breakpoint", {
           "has-condition": positionData.breakpoint?.options.condition,
           "has-log": positionData.breakpoint?.options.logValue,
-          active: positionData.breakpoint && !positionData.breakpoint.disabled,
+          active: isActive,
           disabled: positionData.breakpoint?.disabled,
         });
+        // Note that line is 1-based while column is 0-based.
+        breakpointNode.setAttribute(
+          "aria-label",
+          L10N.getFormatStr("columnBreakpoint.label", line, column + 1)
+        );
+        breakpointNode.setAttribute("aria-pressed", isActive);
         breakpointNode.addEventListener("click", event =>
           this.onClick(event, positionData)
         );

@@ -1,17 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "IdleTaskRunner.h"
+
+#include "mozilla/AppShutdown.h"
 #include "mozilla/TaskController.h"
 #include "nsRefreshDriver.h"
 
 namespace mozilla {
 
 already_AddRefed<IdleTaskRunner> IdleTaskRunner::Create(
-    const CallbackType& aCallback, const char* aRunnableName,
+    const CallbackType& aCallback, const nsACString& aRunnableName,
     TimeDuration aStartDelay, TimeDuration aMaxDelay,
     TimeDuration aMinimumUsefulBudget, bool aRepeating,
     const MayStopProcessingCallbackType& aMayStopProcessing,
@@ -59,7 +59,7 @@ class IdleTaskRunnerTask : public Task {
     if (mRunner) {
       aName.Assign(mRunner->GetName());
     } else {
-      aName.Assign("ExpiredIdleTaskRunner");
+      aName = "ExpiredIdleTaskRunner"_ns;
     }
     return true;
   }
@@ -79,7 +79,7 @@ class IdleTaskRunnerTask : public Task {
 };
 
 IdleTaskRunner::IdleTaskRunner(
-    const CallbackType& aCallback, const char* aRunnableName,
+    const CallbackType& aCallback, const nsACString& aRunnableName,
     TimeDuration aStartDelay, TimeDuration aMaxDelay,
     TimeDuration aMinimumUsefulBudget, bool aRepeating,
     const MayStopProcessingCallbackType& aMayStopProcessing,
@@ -137,8 +137,9 @@ void IdleTaskRunner::Run() {
   }
 }
 
-static void TimedOut(nsITimer* aTimer, void* aClosure) {
+void IdleTaskRunner::TimedOut(nsITimer* /*aTimer*/, void* aClosure) {
   RefPtr<IdleTaskRunner> runner = static_cast<IdleTaskRunner*>(aClosure);
+  runner->mTimerActive = false;
   runner->Run();
 }
 
@@ -166,17 +167,23 @@ void IdleTaskRunner::Cancel() {
   mCallback = nullptr;
 }
 
-static void ScheduleTimedOut(nsITimer* aTimer, void* aClosure) {
+static void ScheduleTimedOut(nsITimer* /*aTimer*/, void* aClosure) {
   RefPtr<IdleTaskRunner> runnable = static_cast<IdleTaskRunner*>(aClosure);
   runnable->Schedule(true);
 }
 
 void IdleTaskRunner::Schedule(bool aAllowIdleDispatch) {
+  MOZ_ASSERT(NS_IsMainThread());
   if (!mCallback) {
     return;
   }
 
   if (mMayStopProcessing && mMayStopProcessing()) {
+    Cancel();
+    return;
+  }
+
+  if (AppShutdown::IsInOrBeyond(ShutdownPhase::XPCOMShutdownThreads)) {
     Cancel();
     return;
   }
@@ -232,9 +239,18 @@ void IdleTaskRunner::Schedule(bool aAllowIdleDispatch) {
       // mStartTime.
       waitToSchedule = (mStartTime - now).ToMilliseconds() + 1;
     }
-    mScheduleTimer->InitWithNamedFuncCallback(
+    // We rely on timers that target the main thread to be infallible (except
+    // for very late shutdown edge cases that should not occur, normally).
+    DebugOnly<nsresult> rv = mScheduleTimer->InitWithNamedFuncCallback(
         ScheduleTimedOut, this, waitToSchedule,
         nsITimer::TYPE_ONE_SHOT_LOW_PRIORITY, mName);
+#ifdef DEBUG
+    if (NS_FAILED(rv)) {
+      NS_WARNING(nsCString("Failed to set IdleTaskRunner timer for:"_ns + mName)
+                     .get());
+    }
+#endif
+    MOZ_ASSERT(NS_SUCCEEDED(rv));
   }
 }
 
@@ -263,6 +279,7 @@ void IdleTaskRunner::SetTimerInternal(TimeDuration aDelay) {
 }
 
 void IdleTaskRunner::ResetTimer(TimeDuration aDelay) {
+  MOZ_ASSERT(NS_IsMainThread());
   mTimerActive = false;
 
   if (!mTimer) {
@@ -272,9 +289,20 @@ void IdleTaskRunner::ResetTimer(TimeDuration aDelay) {
   }
 
   if (mTimer) {
-    mTimer->InitWithNamedFuncCallback(TimedOut, this, aDelay.ToMilliseconds(),
-                                      nsITimer::TYPE_ONE_SHOT, mName);
-    mTimerActive = true;
+    nsresult rv = mTimer->InitWithNamedFuncCallback(
+        TimedOut, this, aDelay.ToMilliseconds(), nsITimer::TYPE_ONE_SHOT,
+        mName);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      if (AppShutdown::IsInOrBeyond(ShutdownPhase::XPCOMShutdownThreads)) {
+        Cancel();
+      } else {
+        MOZ_ASSERT_UNREACHABLE(
+            "We rely on timers that target the main thread to be infallible "
+            "before shutdown.");
+      }
+    } else {
+      mTimerActive = true;
+    }
   }
 }
 

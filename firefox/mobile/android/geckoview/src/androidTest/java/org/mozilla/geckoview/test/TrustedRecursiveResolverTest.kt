@@ -1,6 +1,5 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 4; indent-tabs-mode: nil; -*-
- * Any copyright is dedicated to the Public Domain.
-   http://creativecommons.org/publicdomain/zero/1.0/ */
+/* Any copyright is dedicated to the Public Domain.
+http://creativecommons.org/publicdomain/zero/1.0/ */
 
 package org.mozilla.geckoview.test
 
@@ -15,7 +14,8 @@ import org.mozilla.geckoview.GeckoRuntimeSettings
 @MediumTest
 class TrustedRecursiveResolverTest : BaseSessionTest() {
 
-    @Test fun trustedRecursiveResolverMode() {
+    @Test
+    fun trustedRecursiveResolverMode() {
         val settings = sessionRule.runtime.settings
         val trustedRecursiveResolverModePerf = "network.trr.mode"
 
@@ -63,7 +63,8 @@ class TrustedRecursiveResolverTest : BaseSessionTest() {
         )
     }
 
-    @Test fun trustedRecursiveResolverUrl() {
+    @Test
+    fun trustedRecursiveResolverUrl() {
         val settings = sessionRule.runtime.settings
         val trustedRecursiveResolverUriPerf = "network.trr.uri"
 
@@ -84,7 +85,8 @@ class TrustedRecursiveResolverTest : BaseSessionTest() {
         )
     }
 
-    @Test fun defaultRecursiveResolverUrl() {
+    @Test
+    fun defaultRecursiveResolverUrl() {
         val settings = sessionRule.runtime.settings
         val defaultRecursiveResolverUriPerf = "network.trr.default_provider_uri"
 
@@ -98,7 +100,8 @@ class TrustedRecursiveResolverTest : BaseSessionTest() {
         )
     }
 
-    @Test fun excludedDomains() {
+    @Test
+    fun excludedDomains() {
         val settings = sessionRule.runtime.settings
         val excludedDomainsPref = "network.trr.excluded-domains"
 

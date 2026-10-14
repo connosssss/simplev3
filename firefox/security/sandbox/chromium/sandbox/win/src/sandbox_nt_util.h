@@ -1,16 +1,21 @@
-// Copyright (c) 2010 The Chromium Authors. All rights reserved.
+// Copyright 2010 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef SANDBOX_SRC_SANDBOX_NT_UTIL_H_
-#define SANDBOX_SRC_SANDBOX_NT_UTIL_H_
+#ifndef SANDBOX_WIN_SRC_SANDBOX_NT_UTIL_H_
+#define SANDBOX_WIN_SRC_SANDBOX_NT_UTIL_H_
 
 #include <intrin.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <memory>
 
-#include "base/macros.h"
+#include <memory>
+#include <optional>
+#include <string_view>
+
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "sandbox/win/src/nt_internals.h"
 #include "sandbox/win/src/sandbox_nt_types.h"
 
@@ -103,7 +108,17 @@ struct NtAllocDeleter {
 void* GetGlobalIPCMemory();
 
 // Returns a pointer to the Policy shared memory.
-void* GetGlobalPolicyMemory();
+void* GetGlobalPolicyMemoryForTesting();
+
+// Returns a view of the shared delegate data, or nullopt if none was provided.
+std::optional<base::span<const uint8_t>> GetGlobalDelegateData();
+
+// Returns a reference to imported NT functions.
+const NtExports* GetNtExports();
+
+// Returns whether AllocateNearTo would find space for `size` above `source`,
+// which is where a module's interception thunks have to be allocated.
+bool CanAllocateNearTo(void* source, size_t size);
 
 enum RequiredAccess { READ, WRITE };
 
@@ -115,17 +130,29 @@ bool ValidParameter(void* buffer, size_t size, RequiredAccess intent);
 // Copies data from a user buffer to our buffer. Returns the operation status.
 NTSTATUS CopyData(void* destination, const void* source, size_t bytes);
 
-// Copies the name from an object attributes.
-NTSTATUS AllocAndCopyName(const OBJECT_ATTRIBUTES* in_object,
-                          std::unique_ptr<wchar_t, NtAllocDeleter>* out_name,
-                          uint32_t* attributes,
-                          HANDLE* root);
+// A simple immutable wide string allocated from the sandbox's private heap,
+// built from a list of string_view parts. Intended for constructing NT object
+// path strings in interception code where standard allocators are unavailable.
+class NtHeapWString {
+ public:
+  NtHeapWString() = default;
+  explicit NtHeapWString(std::initializer_list<std::wstring_view> parts);
 
-// Determine full path name from object root and path.
-NTSTATUS AllocAndGetFullPath(
-    HANDLE root,
-    const wchar_t* path,
-    std::unique_ptr<wchar_t, NtAllocDeleter>* full_path);
+  bool is_valid() const;
+  std::wstring_view view() const;
+
+ private:
+  std::unique_ptr<wchar_t, NtAllocDeleter> data_;
+  size_t length_ = 0;
+};
+
+// Resolves a function name in NTDLL to a function pointer. The second parameter
+// is a pointer to the function pointer.
+void ResolveNTFunctionPtr(const char* name, void* ptr);
+
+// Determine full path name from object root and path. Returns an invalid
+// NtHeapWString on failure.
+NtHeapWString AllocAndGetFullPath(HANDLE root, const std::wstring_view& path);
 
 // Initializes our ntdll level heap
 bool InitHeap();
@@ -182,15 +209,22 @@ bool IsValidImageSection(HANDLE section,
 // Converts an ansi string to an UNICODE_STRING.
 UNICODE_STRING* AnsiToUnicode(const char* string);
 
-// Resolves a handle to an nt path. Returns true if the handle can be resolved.
-bool NtGetPathFromHandle(HANDLE handle,
-                         std::unique_ptr<wchar_t, NtAllocDeleter>* path);
+// Use the RtlCompareUnicodeString API to compares two strings for equality. The
+// comparison always ignores case.
+// Returns true if equal. Returns std::nullopt if either string is too large to
+// be represented as a UNICODE_STRING. This has the advantage of working inside
+// function hooks where calling the standard library could be impossible.
+std::optional<bool> EqualUnicodeString(std::wstring_view left,
+                                       std::wstring_view right);
 
 // Provides a simple way to temporarily change the protection of a memory page.
 class AutoProtectMemory {
  public:
   AutoProtectMemory()
       : changed_(false), address_(nullptr), bytes_(0), old_protect_(0) {}
+
+  AutoProtectMemory(const AutoProtectMemory&) = delete;
+  AutoProtectMemory& operator=(const AutoProtectMemory&) = delete;
 
   ~AutoProtectMemory() { RevertProtection(); }
 
@@ -202,11 +236,10 @@ class AutoProtectMemory {
 
  private:
   bool changed_;
-  void* address_;
+  // RAW_PTR_EXCLUSION: not managed by PartitionAlloc.
+  RAW_PTR_EXCLUSION void* address_;
   size_t bytes_;
   ULONG old_protect_;
-
-  DISALLOW_COPY_AND_ASSIGN(AutoProtectMemory);
 };
 
 // Returns true if the file_rename_information structure is supported by our
@@ -215,14 +248,17 @@ bool IsSupportedRenameCall(FILE_RENAME_INFORMATION* file_info,
                            DWORD length,
                            uint32_t file_info_class);
 
+// Get the CLIENT_ID from the current TEB.
+CLIENT_ID GetCurrentClientId();
+
 // Version of memset that can be called before the CRT is initialized.
 __forceinline void Memset(void* ptr, int value, size_t num_bytes) {
   unsigned char* byte_ptr = static_cast<unsigned char*>(ptr);
   while (num_bytes--) {
-    *byte_ptr++ = static_cast<unsigned char>(value);
+    *UNSAFE_TODO(byte_ptr++) = static_cast<unsigned char>(value);
   }
 }
 
 }  // namespace sandbox
 
-#endif  // SANDBOX_SRC_SANDBOX_NT_UTIL_H__
+#endif  // SANDBOX_WIN_SRC_SANDBOX_NT_UTIL_H_

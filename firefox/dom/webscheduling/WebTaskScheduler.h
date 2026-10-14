@@ -1,6 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:expandtab:shiftwidth=2:tabstop=2:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,30 +5,33 @@
 #ifndef mozilla_dom_WebTaskScheduler_h
 #define mozilla_dom_WebTaskScheduler_h
 
-#include "nsThreadUtils.h"
-#include "nsPIDOMWindow.h"
-#include "nsWrapperCache.h"
-#include "nsClassHashtable.h"
-
 #include "TaskSignal.h"
 #include "mozilla/Variant.h"
-#include "mozilla/dom/Promise.h"
 #include "mozilla/dom/AbortFollower.h"
+#include "mozilla/dom/Promise.h"
 #include "mozilla/dom/TimeoutHandler.h"
 #include "mozilla/dom/WebTaskSchedulingBinding.h"
+#include "nsClassHashtable.h"
+#include "nsPIDOMWindow.h"
+#include "nsThreadUtils.h"
+#include "nsWrapperCache.h"
 
 namespace mozilla::dom {
 
 // Keep tracks of the number of same-event-loop-high-priority-queues
 // (User_blocking or User_visible) that have at least one task scheduled.
-MOZ_CONSTINIT extern uint32_t
+constinit extern uint32_t
     gNumNormalOrHighPriorityQueuesHaveTaskScheduledMainThread;
 
 // https://wicg.github.io/scheduling-apis/#scheduling-state
-class WebTaskSchedulingState {
+//
+// An nsISupports so that the JS object that carries this state along promise
+// reactions (CycleCollectedJSContext.cpp) can report its reference to the
+// cycle collector.
+class WebTaskSchedulingState final : public nsISupports {
  public:
-  NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(WebTaskSchedulingState)
-  NS_DECL_CYCLE_COLLECTION_NATIVE_CLASS(WebTaskSchedulingState)
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
+  NS_DECL_CYCLE_COLLECTION_CLASS(WebTaskSchedulingState)
 
   void Reset() {
     mAbortSource = nullptr;
@@ -321,8 +321,8 @@ class WebTaskScheduler : public nsWrapperCache,
                                         const Optional<TaskPriority>& aPriority,
                                         const bool aIsContinuation);
 
-  virtual nsresult SetTimeoutForDelayedTask(WebTask* aTask, uint64_t aDelay,
-                                            EventQueuePriority aPriority) = 0;
+  virtual nsresult SetTimeoutForDelayedTask(WebTask* aTask,
+                                            uint64_t aDelay) = 0;
   virtual bool DispatchEventLoopRunnable(EventQueuePriority aPriority) = 0;
 
   EventQueuePriority GetEventQueuePriority(const TaskPriority& aPriority,
@@ -338,16 +338,19 @@ class WebTaskScheduler : public nsWrapperCache,
 class DelayedWebTaskHandler final : public TimeoutHandler {
  public:
   DelayedWebTaskHandler(JSContext* aCx, WebTaskScheduler* aScheduler,
-                        WebTask* aTask, EventQueuePriority aPriority)
+                        WebTask* aTask)
       : TimeoutHandler(aCx), mScheduler(aScheduler), mWebTask(aTask) {}
 
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_CLASS(DelayedWebTaskHandler)
 
   MOZ_CAN_RUN_SCRIPT bool Call(const char* /* unused */) override {
     if (mScheduler && mWebTask && mWebTask->isInList()) {
       MOZ_ASSERT(!mWebTask->HasScheduled());
-      if (!mScheduler->DispatchTask(mWebTask, mPriority)) {
+      if (!mScheduler->DispatchTask(
+              mWebTask,
+              mScheduler->GetEventQueuePriority(mWebTask->Priority(),
+                                                false /* aIsContinuation */))) {
         return false;
       }
     }
@@ -359,7 +362,6 @@ class DelayedWebTaskHandler final : public TimeoutHandler {
   WeakPtr<WebTaskScheduler> mScheduler;
   // WebTask gets added to WebTaskQueue, and WebTaskQueue keeps its alive.
   WeakPtr<WebTask> mWebTask;
-  EventQueuePriority mPriority;
 };
 }  // namespace mozilla::dom
 #endif

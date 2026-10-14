@@ -2,8 +2,7 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
-"""Python usage, esp. virtualenv.
-"""
+"""Python usage, esp. virtualenv."""
 
 import errno
 import json
@@ -11,7 +10,6 @@ import os
 import shutil
 import site
 import socket
-import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -32,10 +30,24 @@ from mozharness.base.script import (
     ScriptMixin,
 )
 
-external_tools_path = os.path.join(
-    os.path.abspath(os.path.dirname(os.path.dirname(mozharness.__file__))),
-    "external_tools",
+PERFHERDER_SCHEMA_RELPATH = os.path.join(
+    "testing",
+    "performance",
+    "common",
+    "performance-artifact-schema.json",
 )
+
+
+def perfherder_schema_path():
+    mozharness_root = os.path.abspath(
+        os.path.dirname(os.path.dirname(mozharness.__file__))
+    )
+    topsrcdir = os.path.dirname(os.path.dirname(mozharness_root))
+    for root in (topsrcdir, mozharness_root):
+        path = os.path.join(root, PERFHERDER_SCHEMA_RELPATH)
+        if os.path.exists(path):
+            return path
+    return os.path.join(topsrcdir, PERFHERDER_SCHEMA_RELPATH)
 
 
 class MultipleWheelMatchError(Exception):
@@ -137,11 +149,10 @@ class VirtualenvMixin:
     """
 
     python_paths = {}
-    site_packages_path = None
 
     def __init__(self, *args, **kwargs):
         self._virtualenv_modules = []
-        super(VirtualenvMixin, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def register_virtualenv_module(
         self,
@@ -160,9 +171,14 @@ class VirtualenvMixin:
         See the documentation for install_module for how the arguments are
         applied.
         """
-        self._virtualenv_modules.append(
-            (name, url, method, requirements, optional, editable)
-        )
+        self._virtualenv_modules.append((
+            name,
+            url,
+            method,
+            requirements,
+            optional,
+            editable,
+        ))
 
     def query_virtualenv_path(self):
         """Determine the absolute path to the virtualenv."""
@@ -174,7 +190,7 @@ class VirtualenvMixin:
         p = self.config["virtualenv_path"]
         if not p:
             self.fatal(
-                "virtualenv_path config option not set; " "this should never happen"
+                "virtualenv_path config option not set; this should never happen"
             )
 
         if os.path.isabs(p):
@@ -197,19 +213,6 @@ class VirtualenvMixin:
             )
 
         return self.python_paths[binary]
-
-    def query_python_site_packages_path(self):
-        if self.site_packages_path:
-            return self.site_packages_path
-        python = self.query_python_path()
-        self.site_packages_path = self.get_output_from_command(
-            [
-                python,
-                "-c",
-                "from sysconfig; print(sysconfig.get_paths()['purelib'])",
-            ]
-        )
-        return self.site_packages_path
 
     def package_versions(
         self, pip_freeze_output=None, error_level=WARNING, log_output=False
@@ -563,17 +566,18 @@ class VirtualenvMixin:
             if uv_executable := get_uv_executable():
                 self.run_command([uv_executable, "--version"])
 
-                # MOZ_PYTHON_HOME is only set in CI, but this code can execute locally for testing
-                # (e.g.: `./mach raptor`), so let's fall back to the sys.executable path in that case.
-                python_path = os.environ.get(
-                    "MOZ_PYTHON_HOME", Path(sys.executable).parents[1]
-                )
-                uv_venv_creation_command = [
-                    "uv",
-                    "venv",
-                    venv_path,
-                    "--relocatable",
-                    f"--python={python_path}",
+                uv_venv_creation_command = ["uv", "venv", venv_path]
+                # `uv venv --relocatable` rewrites console-script shebangs into
+                # a /bin/sh trampoline that shells out to `realpath` to locate
+                # the venv. macOS workers (10.15) don't ship `realpath`, so
+                # those scripts fail to run there. Their task paths are short
+                # enough that plain absolute-path shebangs stay well under the
+                # length limit, whereas the long device-pool paths on other
+                # platforms overflow it and genuinely need a relative shebang.
+                if not self._is_darwin():
+                    uv_venv_creation_command.append("--relocatable")
+                uv_venv_creation_command += [
+                    f"--python={sys.executable}",
                     "--no-project",
                 ]
                 self.run_command(
@@ -626,26 +630,6 @@ class VirtualenvMixin:
                 cwd=dirs["abs_work_dir"],
                 error_list=VirtualenvErrorList,
                 halt_on_failure=True,
-            )
-
-        self.info(self.platform_name())
-        if self.platform_name().startswith("macos"):
-            tmp_path = f"{venv_path}/bin/bak"
-            self.info(
-                f"Copying venv python binaries to {tmp_path} to clear for re-sign"
-            )
-            subprocess.call(f"mkdir -p {tmp_path}", shell=True)
-            subprocess.call(f"cp {venv_path}/bin/python* {tmp_path}/", shell=True)
-            self.info("Replacing venv python binaries with reset copies")
-            subprocess.call(f"mv -f {tmp_path}/* {venv_path}/bin/", shell=True)
-            self.info(
-                "codesign -s - --preserve-metadata=identifier,entitlements,flags,runtime "
-                f"-f {venv_path}/bin/*"
-            )
-            subprocess.call(
-                "codesign -s - --preserve-metadata=identifier,entitlements,flags,runtime -f "
-                f"{venv_path}/bin/python*",
-                shell=True,
             )
 
         if not modules:
@@ -816,7 +800,7 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
     """
 
     def __init__(self, *args, **kwargs):
-        super(ResourceMonitoringMixin, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.register_virtualenv_module("psutil>=5.9.0", method="pip", optional=True)
         self.register_virtualenv_module("jsonschema==2.5.1", method="pip")
@@ -854,6 +838,13 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
                 poll_interval=0.1, metadata=metadata
             )
             self._resource_monitor.start()
+
+            upload_dir = self.query_abs_dirs()["abs_blob_upload_dir"]
+            os.makedirs(upload_dir, exist_ok=True)
+            self._resource_profile_path = os.path.join(
+                upload_dir, "profile_resource-usage.json"
+            )
+            self._resource_monitor.start_streaming(self._resource_profile_path)
         except Exception:
             self.warning(
                 "Unable to start resource monitor: %s" % traceback.format_exc()
@@ -880,28 +871,30 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
         if not self._resource_monitor:
             return
 
-        self._resource_monitor.stop()
+        # Get upload directory to pass to stop() for artifact markers
+        upload_dir = self.query_abs_dirs()["abs_blob_upload_dir"]
+
+        self._resource_monitor.stop(upload_dir=upload_dir)
         self._log_resource_usage()
 
-        # Upload a JSON file containing the raw resource data.
+        # Write the full profile to a temp file first, then rename over the
+        # streamed file. This way if serialization fails mid-write, the
+        # streamed JSON lines file is preserved.
+        tmp_path = self._resource_profile_path + ".tmp"
         try:
-            upload_dir = self.query_abs_dirs()["abs_blob_upload_dir"]
-            if not os.path.exists(upload_dir):
-                os.makedirs(upload_dir)
-            with open(os.path.join(upload_dir, "resource-usage.json"), "w") as fh:
-                json.dump(
-                    self._resource_monitor.as_dict(), fh, sort_keys=True, indent=4
-                )
-            with open(
-                os.path.join(upload_dir, "profile_resource-usage.json"), "w"
-            ) as fh:
+            with open(tmp_path, "w") as fh:
                 json.dump(
                     self._resource_monitor.as_profile(),
                     fh,
                     separators=(",", ":"),
                 )
-        except (AttributeError, KeyError):
+            os.replace(tmp_path, self._resource_profile_path)
+        except Exception:
             self.exception("could not upload resource usage JSON", level=WARNING)
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
     def _log_resource_usage(self):
         # Delay import because not available until virtualenv is populated.
@@ -966,30 +959,23 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
             overall = []
 
             if cpu_percent:
-                overall.append(
-                    {
-                        "name": "cpu_percent",
-                        "value": cpu_percent,
-                    }
-                )
+                overall.append({
+                    "name": "cpu_percent",
+                    "value": cpu_percent,
+                })
 
-            overall.extend(
-                [
-                    {"name": "io_write_bytes", "value": io.write_bytes},
-                    {"name": "io.read_bytes", "value": io.read_bytes},
-                    {"name": "io_write_time", "value": io.write_time},
-                    {"name": "io_read_time", "value": io.read_time},
-                ]
-            )
+            overall.extend([
+                {"name": "io_write_bytes", "value": io.write_bytes},
+                {"name": "io.read_bytes", "value": io.read_bytes},
+                {"name": "io_write_time", "value": io.write_time},
+                {"name": "io_read_time", "value": io.read_time},
+            ])
 
-            suites.append(
-                {
-                    "name": "%s.overall" % perfherder_name,
-                    "extraOptions": perfherder_options
-                    + self.perfherder_resource_options(),
-                    "subtests": overall,
-                }
-            )
+            suites.append({
+                "name": "%s.overall" % perfherder_name,
+                "extraOptions": perfherder_options + self.perfherder_resource_options(),
+                "subtests": overall,
+            })
 
             for phase in rm.phases.keys():
                 phase_duration = rm.phases[phase][1] - rm.phases[phase][0]
@@ -1001,33 +987,25 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
                 ]
                 cpu_percent = rm.aggregate_cpu_percent(phase=phase, per_cpu=False)
                 if cpu_percent is not None:
-                    subtests.append(
-                        {
-                            "name": "cpu_percent",
-                            "value": rm.aggregate_cpu_percent(
-                                phase=phase, per_cpu=False
-                            ),
-                        }
-                    )
+                    subtests.append({
+                        "name": "cpu_percent",
+                        "value": rm.aggregate_cpu_percent(phase=phase, per_cpu=False),
+                    })
 
                 # We don't report I/O during each step because measured I/O
                 # is system I/O and that I/O can be delayed (e.g. writes will
                 # buffer before being flushed and recorded in our metrics).
-                suites.append(
-                    {
-                        "name": "%s.%s" % (perfherder_name, phase),
-                        "subtests": subtests,
-                    }
-                )
+                suites.append({
+                    "name": "%s.%s" % (perfherder_name, phase),
+                    "subtests": subtests,
+                })
 
             data = {
                 "framework": {"name": "job_resource_usage"},
                 "suites": suites,
             }
 
-            schema_path = os.path.join(
-                external_tools_path, "performance-artifact-schema.json"
-            )
+            schema_path = perfherder_schema_path()
             with open(schema_path, "rb") as fh:
                 schema = json.load(fh)
 
@@ -1038,6 +1016,12 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
             self.info("Validating Perfherder data against %s" % schema_path)
             jsonschema.validate(data, schema)
             self.info("PERFHERDER_DATA: %s" % json.dumps(data))
+            if "MOZ_AUTOMATION" in os.environ:
+                upload_dir = Path(self.query_abs_dirs()["abs_blob_upload_dir"])
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                upload_path = upload_dir / "perfherder-data-resource-usage.json"
+                with upload_path.open("w", encoding="utf-8") as f:
+                    json.dump(data, f)
 
         log_usage("Total resource usage", duration, cpu_percent, cpu_times, io)
 
@@ -1085,151 +1069,6 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
 
     def _tinderbox_print(self, message):
         self.info("TinderboxPrint: %s" % message)
-
-
-# This needs to be inherited only if you have already inherited ScriptMixin
-class Python3Virtualenv:
-    """Support Python3.5+ virtualenv creation."""
-
-    py3_initialized_venv = False
-
-    def py3_venv_configuration(self, python_path, venv_path):
-        """We don't use __init__ to allow integrating with other mixins.
-
-        python_path - Path to Python 3 binary.
-        venv_path - Path to virtual environment to be created.
-        """
-        self.py3_initialized_venv = True
-        self.py3_python_path = os.path.abspath(python_path)
-        version = self.get_output_from_command(
-            [self.py3_python_path, "--version"], env=self.query_env()
-        ).split()[-1]
-        # Using -m venv is only used on 3.5+ versions
-        assert version > "3.5.0"
-        self.py3_venv_path = os.path.abspath(venv_path)
-        self.py3_pip_path = os.path.join(self.py3_path_to_executables(), "pip")
-
-    def py3_path_to_executables(self):
-        platform = self.platform_name()
-        if platform.startswith("win"):
-            return os.path.join(self.py3_venv_path, "Scripts")
-        else:
-            return os.path.join(self.py3_venv_path, "bin")
-
-    def py3_venv_initialized(func):
-        def call(self, *args, **kwargs):
-            if not self.py3_initialized_venv:
-                raise Exception(
-                    "You need to call py3_venv_configuration() "
-                    "before using this method."
-                )
-            func(self, *args, **kwargs)
-
-        return call
-
-    @py3_venv_initialized
-    def py3_create_venv(self):
-        """Create Python environment with python3 -m venv /path/to/venv."""
-        if os.path.exists(self.py3_venv_path):
-            self.info(
-                "Virtualenv %s appears to already exist; skipping "
-                "virtualenv creation." % self.py3_venv_path
-            )
-        else:
-            self.info("Running command...")
-            self.run_command(
-                "%s -m venv %s" % (self.py3_python_path, self.py3_venv_path),
-                error_list=VirtualenvErrorList,
-                halt_on_failure=True,
-                env=self.query_env(),
-            )
-
-    @py3_venv_initialized
-    def py3_install_modules(self, modules, use_mozharness_pip_config=True):
-        if not os.path.exists(self.py3_venv_path):
-            raise Exception("You need to call py3_create_venv() first.")
-
-        for m in modules:
-            pip_install_command_args = []
-            pip_install_non_uv_args = []
-            if use_mozharness_pip_config:
-                pip_args, pip_install_non_uv_args = self._mozharness_pip_args()
-                pip_install_command_args += pip_args
-            pip_install_command_args += [m]
-
-            pip_install_command = (
-                pip_command(
-                    python_executable=self.py3_python_path,
-                    subcommand="install",
-                    args=pip_install_command_args,
-                    non_uv_args=pip_install_non_uv_args,
-                ),
-            )
-            self.run_command(pip_install_command, env=self.query_env())
-
-    def _mozharness_pip_args(self):
-        """We have information in Mozharness configs that apply to pip"""
-        c = self.config
-        pip_args = []
-        # To avoid timeouts with our pypi server, increase default timeout:
-        # https://bugzilla.mozilla.org/show_bug.cgi?id=1007230#c802
-        non_uv_pip_args = ["--timeout", str(c.get("pip_timeout", 120))]
-
-        if c.get("find_links") and not c["pip_index"]:
-            pip_args += ["--no-index"]
-
-        non_uv_pip_args += ["--no-use-pep517"]
-
-        # Add --find-links pages to look at. Add --trusted-host automatically if
-        # the host isn't secure. This allows modern versions of pip to connect
-        # without requiring an override.
-        trusted_hosts = set()
-        for link in c.get("find_links", []):
-            parsed = urlparse.urlparse(link)
-
-            try:
-                socket.gethostbyname(parsed.hostname)
-            except socket.gaierror as e:
-                self.info("error resolving %s (ignoring): %s" % (parsed.hostname, e))
-                continue
-
-            pip_args += ["--find-links", link]
-            if parsed.scheme != "https":
-                trusted_hosts.add(parsed.hostname)
-
-        for host in sorted(trusted_hosts):
-            pip_args += ["--trusted-host", host]
-
-        return pip_args, non_uv_pip_args
-
-    @py3_venv_initialized
-    def py3_install_requirement_files(
-        self, requirements, pip_args=[], use_mozharness_pip_config=True
-    ):
-        """
-        requirements - You can specify multiple requirements paths
-        """
-        pip_install_command_args = []
-        pip_install_command_args += pip_args
-        pip_install_non_uv_args = []
-
-        if use_mozharness_pip_config:
-            pip_args, pip_install_non_uv_args = self._mozharness_pip_args()
-            pip_install_command_args += pip_args
-
-        for requirement_path in requirements:
-            pip_install_command_args += ["-r", requirement_path]
-
-        pip_install_command = (
-            pip_command(
-                python_executable=self.py3_python_path,
-                subcommand="install",
-                args=pip_install_command_args,
-                non_uv_args=pip_install_non_uv_args,
-            ),
-        )
-
-        self.run_command(pip_install_command, env=self.query_env())
 
 
 if __name__ == "__main__":

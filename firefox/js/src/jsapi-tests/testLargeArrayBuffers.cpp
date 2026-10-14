@@ -1,6 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,7 +6,6 @@
 #include "js/ArrayBufferMaybeShared.h"
 #include "js/experimental/TypedData.h"
 #include "js/SharedArrayBuffer.h"
-
 #include "jsapi-tests/tests.h"
 
 using namespace js;
@@ -58,13 +54,13 @@ BEGIN_TEST(testLargeArrayBuffers) {
     CHECK_EQUAL(length, nbytes);
 
     length = 0;
-    js::GetUint8ArrayLengthAndData(tarr, &length, &isShared, &data);
-    CHECK_EQUAL(length, nbytes);
-
-    length = 0;
     JS::AutoCheckCannotGC nogc(cx);
-    mozilla::Span<uint8_t> span =
-        JS::TypedArray<Scalar::Uint8>::unwrap(tarr).getData(&isShared, nogc);
+    auto ta = JS::Uint8Array::fromObject(tarr);
+    CHECK(!ta.isDetached());
+    CHECK(!ta.isResizable());
+    CHECK(!ta.isImmutable());
+    mozilla::Span<uint8_t> span = ta.getData(&isShared, nogc);
+    CHECK_EQUAL(span.data(), reinterpret_cast<uint8_t*>(data));
     CHECK_EQUAL(span.Length(), nbytes);
 
     length = 0;
@@ -88,14 +84,13 @@ BEGIN_TEST(testLargeArrayBuffers) {
     CHECK_EQUAL(length, nbytes);
 
     length = 0;
-    int16_t* int16Data;
-    js::GetInt16ArrayLengthAndData(tarr, &length, &isShared, &int16Data);
-    CHECK_EQUAL(length, nbytes / 2);
-
-    length = 0;
     JS::AutoCheckCannotGC nogc(cx);
-    mozilla::Span<short> span =
-        JS::TypedArray<Scalar::Int16>::unwrap(tarr).getData(&isShared, nogc);
+    auto ta = JS::Int16Array::fromObject(tarr);
+    CHECK(!ta.isDetached());
+    CHECK(!ta.isResizable());
+    CHECK(!ta.isImmutable());
+    mozilla::Span<short> span = ta.getData(&isShared, nogc);
+    CHECK_EQUAL(span.data(), reinterpret_cast<short*>(data));
     CHECK_EQUAL(span.Length(), nbytes / 2);
 
     length = 0;

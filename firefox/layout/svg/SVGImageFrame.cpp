@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,29 +5,31 @@
 #include "SVGImageFrame.h"
 
 // Keep in (case-insensitive) order:
+#include "ImageRegion.h"
+#include "SVGGeometryProperty.h"
 #include "gfxContext.h"
 #include "gfxPlatform.h"
-#include "mozilla/ComputedStyleInlines.h"
-#include "mozilla/image/WebRenderImageProvider.h"
-#include "mozilla/layers/RenderRootStateManager.h"
-#include "mozilla/layers/WebRenderLayerManager.h"
 #include "imgIContainer.h"
-#include "ImageRegion.h"
-#include "nsContainerFrame.h"
-#include "nsIImageLoadingContent.h"
-#include "nsLayoutUtils.h"
 #include "imgINotificationObserver.h"
-#include "SVGGeometryProperty.h"
+#include "mozilla/ComputedStyleInlines.h"
 #include "mozilla/PresShell.h"
-#include "mozilla/StaticPrefs_image.h"
 #include "mozilla/SVGContentUtils.h"
 #include "mozilla/SVGImageContext.h"
 #include "mozilla/SVGObserverUtils.h"
 #include "mozilla/SVGUtils.h"
-#include "mozilla/dom/MutationEventBinding.h"
-#include "mozilla/dom/SVGImageElement.h"
+#include "mozilla/StaticPrefs_gfx.h"
+#include "mozilla/StaticPrefs_image.h"
 #include "mozilla/dom/LargestContentfulPaint.h"
+#include "mozilla/dom/PerformanceContainerTiming.h"
+#include "mozilla/dom/SVGImageElement.h"
+#include "mozilla/image/WebRenderImageProvider.h"
+#include "mozilla/layers/RenderRootStateManager.h"
+#include "mozilla/layers/WebRenderLayerManager.h"
+#include "nsContainerFrame.h"
+#include "nsIImageLoadingContent.h"
+#include "nsIMutationObserver.h"
 #include "nsIReflowCallback.h"
+#include "nsLayoutUtils.h"
 
 using namespace mozilla::dom;
 using namespace mozilla::gfx;
@@ -179,7 +179,8 @@ bool SVGImageFrame::DoGetParentSVGTransforms(
 // nsIFrame methods:
 
 nsresult SVGImageFrame::AttributeChanged(int32_t aNameSpaceID,
-                                         nsAtom* aAttribute, int32_t aModType) {
+                                         nsAtom* aAttribute,
+                                         AttrModType aModType) {
   if (aNameSpaceID == kNameSpaceID_None) {
     if (aAttribute == nsGkAtoms::preserveAspectRatio) {
       // We don't paint the content of the image using display lists, therefore
@@ -190,7 +191,7 @@ nsresult SVGImageFrame::AttributeChanged(int32_t aNameSpaceID,
       return NS_OK;
     }
   }
-  if (aModType == dom::MutationEvent_Binding::REMOVAL &&
+  if (aModType == AttrModType::Removal &&
       (aNameSpaceID == kNameSpaceID_None ||
        aNameSpaceID == kNameSpaceID_XLink) &&
       aAttribute == nsGkAtoms::href) {
@@ -361,7 +362,7 @@ void SVGImageFrame::PaintSVG(gfxContext& aContext, const gfxMatrix& aTransform,
 
     nscoord appUnitsPerDevPx = PresContext()->AppUnitsPerDevPixel();
     uint32_t flags = aImgParams.imageFlags;
-    if (mForceSyncDecoding) {
+    if (mForceSyncDecoding || UsedImageDecoding() == StyleImageDecoding::Sync) {
       flags |= imgIContainer::FLAG_SYNC_DECODE;
     }
 
@@ -373,7 +374,7 @@ void SVGImageFrame::PaintSVG(gfxContext& aContext, const gfxMatrix& aTransform,
       // of the SVG image's internal document that is visible, in combination
       // with preserveAspectRatio and viewBox.
       const SVGImageContext context(
-          Some(CSSIntSize::Ceil(width, height)),
+          Some(CSSSize(width, height)),
           Some(imgElem->mPreserveAspectRatio.GetAnimValue()));
 
       // For the actual draw operation to draw crisply (and at the right size),
@@ -383,9 +384,13 @@ void SVGImageFrame::PaintSVG(gfxContext& aContext, const gfxMatrix& aTransform,
                                      devPxSize, appUnitsPerDevPx));
       nsCOMPtr<imgIRequest> currentRequest = GetCurrentRequest();
       if (currentRequest) {
+        Element* element = GetContent()->AsElement();
+
+        ContainerTimingHelpers::MaybeProcessPaintForContainer(element, this,
+                                                              destRect);
         LCPHelpers::FinalizeLCPEntryForImage(
-            GetContent()->AsElement(),
-            static_cast<imgRequestProxy*>(currentRequest.get()), destRect);
+            element, static_cast<imgRequestProxy*>(currentRequest.get()),
+            destRect);
       }
 
       // Note: Can't use DrawSingleUnscaledImage for the TYPE_VECTOR case.
@@ -437,7 +442,7 @@ bool SVGImageFrame::IsInvisible() const {
          SVGUtils::CanOptimizeOpacity(this);
 }
 
-bool SVGImageFrame::CreateWebRenderCommands(
+WebRenderCommandsResult SVGImageFrame::CreateWebRenderCommands(
     mozilla::wr::DisplayListBuilder& aBuilder,
     mozilla::wr::IpcResourceUpdateQueue& aResources,
     const mozilla::layers::StackingContextHelper& aSc,
@@ -445,21 +450,24 @@ bool SVGImageFrame::CreateWebRenderCommands(
     nsDisplayListBuilder* aDisplayListBuilder, DisplaySVGImage* aItem,
     bool aDryRun) {
   if (!StyleVisibility()->IsVisible()) {
-    return true;
+    return Ok();
   }
 
+  // fill-opacity doesn't affect <image>, so if we're allowed to optimize group
+  // opacity, the opacity used for compositing the image is just the group
+  // opacity, which WebRender applies as the image's color multiplier.
   float opacity = 1.0f;
   if (SVGUtils::CanOptimizeOpacity(this)) {
     opacity = StyleEffects()->mOpacity;
   }
 
-  if (opacity != 1.0f) {
-    // FIXME: not implemented, might be trivial
-    return false;
+  if (opacity != 1.0f && !StaticPrefs::gfx_webrender_svg_images_opacity()) {
+    return Err("opacity is not supported");
   }
-  if (StyleEffects()->HasMixBlendMode()) {
-    // FIXME: not implemented
-    return false;
+  // The blend itself is performed by the enclosing nsDisplayBlendMode item.
+  if (StyleEffects()->HasMixBlendMode() &&
+      !StaticPrefs::gfx_webrender_svg_shapes_blend()) {
+    return Err("mix-blend-mode is not supported");
   }
 
   // try to setup the image
@@ -472,11 +480,11 @@ bool SVGImageFrame::CreateWebRenderCommands(
 
   if (!mImageContainer) {
     // nothing to draw (yet)
-    return true;
+    return Ok();
   }
 
   uint32_t flags = aDisplayListBuilder->GetImageDecodeFlags();
-  if (mForceSyncDecoding) {
+  if (mForceSyncDecoding || UsedImageDecoding() == StyleImageDecoding::Sync) {
     flags |= imgIContainer::FLAG_SYNC_DECODE;
   }
 
@@ -513,7 +521,7 @@ bool SVGImageFrame::CreateWebRenderCommands(
           NS_FAILED(mImageContainer->GetHeight(&nativeHeight)) ||
           nativeWidth == 0 || nativeHeight == 0) {
         // Image has no size; nothing to draw
-        return true;
+        return Ok();
       }
 
       mImageContainer->GetResolution().ApplyTo(nativeWidth, nativeHeight);
@@ -613,22 +621,29 @@ bool SVGImageFrame::CreateWebRenderCommands(
       flags |= imgIContainer::FLAG_RECORD_BLOB;
     }
     // Forward preserveAspectRatio to inner SVGs
-    svgContext.SetViewportSize(Some(CSSIntSize::Ceil(width, height)));
+    svgContext.SetViewportSize(Some(CSSSize(width, height)));
     svgContext.SetPreserveAspectRatio(
         Some(imgElem->mPreserveAspectRatio.GetAnimValue()));
   }
 
   Maybe<ImageIntRegion> region;
+  bool rasterizedForDest = false;
   IntSize decodeSize = nsLayoutUtils::ComputeImageContainerDrawingParameters(
-      mImageContainer, this, destRect, clipRect, aSc, flags, svgContext,
-      region);
+      mImageContainer, this, destRect, clipRect, aBuilder, aSc, flags,
+      svgContext, region, &rasterizedForDest);
 
   if (nsCOMPtr<imgIRequest> currentRequest = GetCurrentRequest()) {
-    LCPHelpers::FinalizeLCPEntryForImage(
-        GetContent()->AsElement(),
-        static_cast<imgRequestProxy*>(currentRequest.get()),
+    Element* element = GetContent()->AsElement();
+    nsRect rectRelativeToSelf =
         LayoutDeviceRect::ToAppUnits(destRect, appUnitsPerDevPx) -
-            toReferenceFrame);
+        toReferenceFrame;
+
+    ContainerTimingHelpers::MaybeProcessPaintForContainer(element, this,
+                                                          rectRelativeToSelf);
+
+    LCPHelpers::FinalizeLCPEntryForImage(
+        element, static_cast<imgRequestProxy*>(currentRequest.get()),
+        rectRelativeToSelf);
   }
 
   RefPtr<image::WebRenderImageProvider> provider;
@@ -643,10 +658,10 @@ bool SVGImageFrame::CreateWebRenderCommands(
     case ImgDrawResult::NOT_READY:
     case ImgDrawResult::TEMPORARY_ERROR:
       // nothing to draw (yet)
-      return true;
+      return Ok();
     case ImgDrawResult::NOT_SUPPORTED:
       // things we haven't implemented for WR yet
-      return false;
+      return Err("image provider is not supported");
     default:
       // image is ready to draw
       break;
@@ -659,13 +674,13 @@ bool SVGImageFrame::CreateWebRenderCommands(
     // failure will be due to resource constraints and fallback is unlikely to
     // help us. Hence we can ignore the return value from PushImage.
     if (provider) {
-      aManager->CommandBuilder().PushImageProvider(aItem, provider, drawResult,
-                                                   aBuilder, aResources,
-                                                   destRect, clipRect);
+      aManager->CommandBuilder().PushImageProvider(
+          aItem, provider, drawResult, aBuilder, aResources, destRect, clipRect,
+          rasterizedForDest && !region, opacity);
     }
   }
 
-  return true;
+  return Ok();
 }
 
 nsIFrame* SVGImageFrame::GetFrameForPoint(const gfxPoint& aPoint) {
@@ -825,27 +840,42 @@ bool SVGImageFrame::IgnoreHitTest() const {
   return true;
 }
 
-void SVGImageFrame::NotifySVGChanged(uint32_t aFlags) {
-  MOZ_ASSERT(aFlags & (TRANSFORM_CHANGED | COORD_CONTEXT_CHANGED),
+void SVGImageFrame::NotifySVGChanged(ChangeFlags aFlags) {
+  MOZ_ASSERT(aFlags.contains(ChangeFlag::TransformChanged) ||
+                 aFlags.contains(ChangeFlag::CoordContextChanged),
              "Invalidation logic may need adjusting");
+  if (aFlags.contains(ChangeFlag::CoordContextChanged) &&
+      SVGIntegrationUtils::UsingEffectsForFrame(this)) {
+    // Effects may have percentage dependent units.
+    SVGUtils::ScheduleReflowSVG(this);
+  }
 }
 
 SVGBBox SVGImageFrame::GetBBoxContribution(const Matrix& aToBBoxUserspace,
-                                           uint32_t aFlags) {
+                                           SVGBBoxFlags aFlags) {
   if (aToBBoxUserspace.IsSingular()) {
     // XXX ReportToConsole
     return {};
   }
 
-  if ((aFlags & SVGUtils::eForGetClientRects) &&
+  if (aFlags.contains(SVGBBoxFlag::ForGetClientRects) &&
       aToBBoxUserspace.PreservesAxisAlignedRectangles()) {
-    Rect rect = NSRectToRect(mRect, AppUnitsPerCSSPixel());
-    return aToBBoxUserspace.TransformBounds(rect);
+    if (!mRect.IsEmpty()) {
+      Rect rect = NSRectToRect(mRect, AppUnitsPerCSSPixel());
+      return aToBBoxUserspace.TransformBounds(rect);
+    }
+    return {};
   }
 
   auto* element = static_cast<SVGImageElement*>(GetContent());
 
-  return element->GeometryBounds(aToBBoxUserspace);
+  Rect rect = element->GeometryBounds(aToBBoxUserspace);
+
+  if (aFlags.contains(SVGBBoxFlag::DisregardCSSZoom)) {
+    rect.Scale(1 / Style()->EffectiveZoom().ToFloat());
+  }
+
+  return rect;
 }
 
 //----------------------------------------------------------------------

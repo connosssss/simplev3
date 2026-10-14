@@ -12,19 +12,30 @@ use process_reader::ProcessReader;
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use mozannotation_client::ANNOTATION_SECTION;
-use mozannotation_client::{Annotation, AnnotationContents, AnnotationMutex};
+use mozannotation_client::{
+    Annotation, AnnotationMutex, ANNOTATION_CONTENTS_BYTEBUFFER, ANNOTATION_CONTENTS_CSTRING,
+    ANNOTATION_CONTENTS_CSTRINGPOINTER, ANNOTATION_CONTENTS_EMPTY,
+    ANNOTATION_CONTENTS_NSCSTRINGPOINTER, ANNOTATION_CONTENTS_OWNEDBYTEBUFFER,
+};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use mozannotation_client::{MozAnnotationNote, ANNOTATION_NOTE_NAME, ANNOTATION_TYPE};
 use std::cmp::min;
 use std::ffi::CString;
 use std::mem::{size_of, ManuallyDrop};
 
+// No annotation comes close to this size. The lengths are read from the crashed
+// process, which may have been updating its annotations at the time, so a
+// larger value means the entry is garbage.
+const MAX_ANNOTATION_SIZE: usize = 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum AnnotationData {
     Empty,
     ByteBuffer(Vec<u8>),
     String(CString),
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct CAnnotation {
     #[allow(dead_code)] // This is implicitly stored to and used externally
     pub id: u32,
@@ -56,8 +67,8 @@ pub fn retrieve_annotations(
     }
 
     let vec_pointer = annotation_table.get_ptr();
-    let length = annotation_table.len();
-    let mut annotations = Vec::<CAnnotation>::with_capacity(min(max_annotations, length));
+    let length = min(annotation_table.len(), max_annotations);
+    let mut annotations = Vec::<CAnnotation>::with_capacity(length);
 
     for i in 0..length {
         let annotation_address = unsafe { vec_pointer.add(i) };
@@ -110,7 +121,7 @@ fn find_annotations(reader: &ProcessReader) -> Result<usize, AnnotationsRetrieva
 fn read_annotation(
     reader: &ProcessReader,
     address: usize,
-) -> Result<CAnnotation, process_reader::error::ReadError> {
+) -> Result<CAnnotation, AnnotationsRetrievalError> {
     let raw_annotation = ManuallyDrop::new(reader.copy_object::<Annotation>(address)?);
     let mut annotation = CAnnotation {
         id: raw_annotation.id,
@@ -122,23 +133,36 @@ fn read_annotation(
     }
 
     match raw_annotation.contents {
-        AnnotationContents::Empty => {}
-        AnnotationContents::NSCStringPointer => {
+        ANNOTATION_CONTENTS_EMPTY => {}
+        ANNOTATION_CONTENTS_NSCSTRINGPOINTER => {
             let string = copy_nscstring(reader, raw_annotation.address)?;
-            annotation.data = AnnotationData::String(string);
+            if !string.is_empty() {
+                annotation.data = AnnotationData::String(string);
+            }
         }
-        AnnotationContents::CStringPointer => {
+        ANNOTATION_CONTENTS_CSTRINGPOINTER => {
             let string = copy_null_terminated_string_pointer(reader, raw_annotation.address)?;
-            annotation.data = AnnotationData::String(string);
+            if !string.is_empty() {
+                annotation.data = AnnotationData::String(string);
+            }
         }
-        AnnotationContents::CString => {
-            annotation.data =
-                AnnotationData::String(reader.copy_null_terminated_string(raw_annotation.address)?);
+        ANNOTATION_CONTENTS_CSTRING => {
+            let string = reader.copy_null_terminated_string(raw_annotation.address)?;
+            if !string.is_empty() {
+                annotation.data = AnnotationData::String(string);
+            }
         }
-        AnnotationContents::ByteBuffer(size) | AnnotationContents::OwnedByteBuffer(size) => {
-            let buffer = copy_bytebuffer(reader, raw_annotation.address, size)?;
-            annotation.data = AnnotationData::ByteBuffer(buffer);
+        ANNOTATION_CONTENTS_BYTEBUFFER | ANNOTATION_CONTENTS_OWNEDBYTEBUFFER => {
+            if raw_annotation.len > MAX_ANNOTATION_SIZE {
+                return Err(AnnotationsRetrievalError::InvalidData);
+            }
+
+            if raw_annotation.len > 0 {
+                let buffer = copy_bytebuffer(reader, raw_annotation.address, raw_annotation.len)?;
+                annotation.data = AnnotationData::ByteBuffer(buffer);
+            }
         }
+        _ => return Err(AnnotationsRetrievalError::InvalidData),
     };
 
     Ok(annotation)
@@ -159,6 +183,10 @@ fn copy_nscstring(
     // HACK: This assumes the layout of the nsCString object
     let length_address = address + size_of::<usize>();
     let length = reader.copy_object::<u32>(length_address)?;
+
+    if length as usize > MAX_ANNOTATION_SIZE {
+        return Err(process_reader::error::ReadError::TooLarge);
+    }
 
     if length > 0 {
         let data_address = reader.copy_object::<usize>(address)?;
@@ -183,7 +211,7 @@ fn copy_nscstring(
 fn copy_bytebuffer(
     reader: &ProcessReader,
     address: usize,
-    size: u32,
+    size: usize,
 ) -> Result<Vec<u8>, process_reader::error::ReadError> {
-    reader.copy_array::<u8>(address, size as _)
+    reader.copy_array::<u8>(address, size)
 }

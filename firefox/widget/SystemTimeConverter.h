@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,8 +5,12 @@
 #ifndef SystemTimeConverter_h
 #define SystemTimeConverter_h
 
+#include <cinttypes>
 #include <limits>
 #include <type_traits>
+
+#include "mozilla/RWLock.h"
+#include "mozilla/ThreadSafety.h"
 #include "mozilla/TimeStamp.h"
 
 namespace mozilla {
@@ -31,6 +34,7 @@ class SystemTimeConverter {
   SystemTimeConverter()
       : mReferenceTime(Time(0)),
         mLastBackwardsSkewCheck(Time(0)),
+        mReferenceTimeLock("SystemTimeConverter::mReferenceTimeLock"),
         kTimeRange(std::numeric_limits<Time>::max()),
         kTimeHalfRange(kTimeRange / 2),
         kBackwardsSkewCheckInterval(Time(2000)) {
@@ -44,7 +48,20 @@ class SystemTimeConverter {
 
     // If the reference time is not set, use the current time value to fill
     // it in.
-    if (mReferenceTimeStamp.IsNull()) {
+    bool referenceTimeStampIsNull;
+    {
+      // This is awkward. We need a read lock to check mReferenceTimeStamp,
+      // but mReferenceTimeLock isn't upgradable, and per the documentation it's
+      // not safe to hold a read lock while acquiring a write lock on this
+      // thread.
+      //
+      // On the other hand, if two threads get here at the same time it's OK if
+      // they both end up calling UpdateReferenceTime(); the values will be
+      // coherent.
+      AutoReadLock lock(mReferenceTimeLock);
+      referenceTimeStampIsNull = mReferenceTimeStamp.IsNull();
+    }
+    if (referenceTimeStampIsNull) {
       // This sometimes happens when ::GetMessageTime returns 0 for the first
       // message on Windows.
       if (!aTime) return roughlyNow;
@@ -183,12 +200,26 @@ class SystemTimeConverter {
 
   void UpdateReferenceTime(Time aReferenceTime,
                            const TimeStamp& aReferenceTimeStamp) {
+    // If two threads try to do this at the same time, taking either set
+    // of values is fine, but we need to make sure they are coherent.
+    AutoWriteLock lock(mReferenceTimeLock);
     mReferenceTime = aReferenceTime;
     mReferenceTimeStamp = aReferenceTimeStamp;
   }
 
   bool IsTimeNewerThanTimestamp(Time aTime, TimeStamp aTimeStamp,
                                 TimeStamp* aTimeAsTimeStamp) {
+    AutoReadLock lock(mReferenceTimeLock);
+    if (mReferenceTimeStamp.IsNull()) {
+      // This should never happen, but it seems to (see bug 1989314)
+      MOZ_ASSERT_UNREACHABLE("mReferenceTimeStamp should have been set by now");
+      // Do our best here. Since we have no mReferenceTimeStamp,
+      // assume there is no skewing.
+      if (aTimeAsTimeStamp) {
+        *aTimeAsTimeStamp = aTimeStamp;
+      }
+      return false;
+    }
     Time timeDelta = aTime - mReferenceTime;
 
     // Cast the result to signed 64-bit integer first since that should be
@@ -200,9 +231,17 @@ class SystemTimeConverter {
     TimeDuration timeStampDelta = (aTimeStamp - mReferenceTimeStamp);
     int64_t wholeMillis = static_cast<int64_t>(timeStampDelta.ToMilliseconds());
     Time wrappedTimeStampDelta = wholeMillis;  // truncate to unsigned
+    // Half of the valid range of Time
+    const Time shift = (static_cast<Time>(0) - static_cast<Time>(1)) / 2;
+    // Shift/move origin (0) of the value by UINT32_MAX / 2 and shift
+    // it back later in order to support negative deltas. With this
+    // approach we can support deltas before shifting in the range
+    // [UINT32_MAX / 2 + 1, -UINT32_MAX / 2].
+    Time wrappedTimeStampDeltaShifted = wrappedTimeStampDelta + shift;
 
-    int64_t timeToTimeStamp = static_cast<int64_t>(wrappedTimeStampDelta) -
-                              static_cast<int64_t>(timeDelta);
+    int64_t timeToTimeStamp =
+        static_cast<int64_t>(wrappedTimeStampDeltaShifted) -
+        static_cast<int64_t>(timeDelta) - static_cast<int64_t>(shift);
     bool isNewer = false;
     if (timeToTimeStamp == 0) {
       // wholeMillis needs no adjustment
@@ -229,9 +268,10 @@ class SystemTimeConverter {
     return isNewer;
   }
 
-  Time mReferenceTime;
-  TimeStamp mReferenceTimeStamp;
+  Time mReferenceTime MOZ_GUARDED_BY(mReferenceTimeLock);
+  TimeStamp mReferenceTimeStamp MOZ_GUARDED_BY(mReferenceTimeLock);
   Time mLastBackwardsSkewCheck;
+  mozilla::RWLock mReferenceTimeLock;
 
   const Time kTimeRange;
   const Time kTimeHalfRange;

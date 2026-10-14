@@ -8,7 +8,9 @@
 #include "unicode/uenum.h"
 #include "unicode/utypes.h"
 #include "mozilla/Buffer.h"
+#include "mozilla/CheckedInt.h"
 #include "mozilla/DebugOnly.h"
+#include "mozilla/Likely.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/Result.h"
 #include "mozilla/Span.h"
@@ -159,8 +161,8 @@ class ICUPointer {
  * over to the buffer.
  */
 template <typename ICUStringFunction, typename Buffer>
-static ICUResult FillBufferWithICUCall(Buffer& buffer,
-                                       const ICUStringFunction& strFn) {
+ICUResult FillBufferWithICUCall(Buffer& buffer,
+                                const ICUStringFunction& strFn) {
   static_assert(std::is_same_v<typename Buffer::CharType, char16_t> ||
                 std::is_same_v<typename Buffer::CharType, char> ||
                 std::is_same_v<typename Buffer::CharType, uint8_t>);
@@ -217,8 +219,8 @@ class VectorToBufferAdaptor {
  * than a Buffer.
  */
 template <typename ICUStringFunction, size_t InlineSize, typename CharType>
-static ICUResult FillBufferWithICUCall(Vector<CharType, InlineSize>& vector,
-                                       const ICUStringFunction& strFn) {
+ICUResult FillBufferWithICUCall(Vector<CharType, InlineSize>& vector,
+                                const ICUStringFunction& strFn) {
   VectorToBufferAdaptor buffer(vector);
   return FillBufferWithICUCall(buffer, strFn);
 }
@@ -287,15 +289,15 @@ class AutoTArrayToBufferAdapter : public nsTArrayToBufferAdapter<T> {
  * An overload of FillBufferWithICUCall that accepts a nsTArray.
  */
 template <typename ICUStringFunction, typename CharType>
-static ICUResult FillBufferWithICUCall(nsTArray<CharType>& array,
-                                       const ICUStringFunction& strFn) {
+ICUResult FillBufferWithICUCall(nsTArray<CharType>& array,
+                                const ICUStringFunction& strFn) {
   nsTArrayToBufferAdapter<CharType> buffer(array);
   return FillBufferWithICUCall(buffer, strFn);
 }
 
 template <typename ICUStringFunction, typename CharType, size_t N>
-static ICUResult FillBufferWithICUCall(AutoTArray<CharType, N>& array,
-                                       const ICUStringFunction& strFn) {
+ICUResult FillBufferWithICUCall(AutoTArray<CharType, N>& array,
+                                const ICUStringFunction& strFn) {
   AutoTArrayToBufferAdapter<CharType, N> buffer(array);
   return FillBufferWithICUCall(buffer, strFn);
 }
@@ -315,12 +317,9 @@ template <typename Buffer>
 
   if constexpr (std::is_same_v<typename Buffer::CharType, char> ||
                 std::is_same_v<typename Buffer::CharType, unsigned char>) {
-    if (utf16Span.Length() & mozilla::tl::MulOverflowMask<3>::value) {
-      // Tripling the size of the buffer overflows the size_t.
-      return false;
-    }
-
-    if (!targetBuffer.reserve(3 * utf16Span.Length())) {
+    auto targetSize = CheckedInt<size_t>(utf16Span.Length()) * 3;
+    if (MOZ_UNLIKELY(!targetSize.isValid() ||
+                     !targetBuffer.reserve(targetSize.value()))) {
       return false;
     }
 
@@ -390,7 +389,7 @@ template <typename Buffer>
  * null terminated.
  */
 template <size_t StackSize>
-[[nodiscard]] static bool FillUTF16Vector(
+[[nodiscard]] bool FillUTF16Vector(
     Span<const char> utf8Span,
     mozilla::Vector<char16_t, StackSize>& utf16TargetVec) {
   // Per ConvertUtf8toUtf16: The length of aDest must be at least one greater
@@ -569,7 +568,7 @@ class AvailableLocalesEnumeration final {
    public:
     // std::iterator traits.
     using iterator_category = std::input_iterator_tag;
-    using value_type = const char*;
+    using value_type = mozilla::Span<const char>;
     using difference_type = ptrdiff_t;
     using pointer = value_type*;
     using reference = value_type&;
@@ -592,14 +591,17 @@ class AvailableLocalesEnumeration final {
       return result;
     }
 
-    bool operator==(const Iterator& aOther) const {
-      return mLocalesPos == aOther.mLocalesPos;
+    bool operator==(const Iterator& aOther) const = default;
+
+    value_type operator*() const {
+      return mozilla::MakeStringSpan(GetAvailable(mLocalesPos));
     }
-
-    bool operator!=(const Iterator& aOther) const { return !(*this == aOther); }
-
-    value_type operator*() const { return GetAvailable(mLocalesPos); }
   };
+
+  /**
+   * Return the total number of available locales.
+   */
+  int32_t Count() const { return mLocalesCount; }
 
   // std::iterator begin() and end() methods.
 
@@ -612,6 +614,91 @@ class AvailableLocalesEnumeration final {
    * Return an iterator pointing to one past the last available locale.
    */
   Iterator end() const { return Iterator(mLocalesCount); }
+};
+
+/**
+ * An iterable class that wraps calls to collator_glue.
+ */
+template <class T, uintptr_t(Len)(T*),
+          const char*(Item)(T*, uintptr_t, uintptr_t*), T*(New)(),
+          void(Free)(T*)>
+class ICU4XEnumeration final {
+  T* mDelegate = nullptr;
+  uintptr_t mLen = 0;
+
+ public:
+  ICU4XEnumeration() {
+    mDelegate = New();
+    mLen = Len(mDelegate);
+  }
+  ~ICU4XEnumeration() {
+    if (mDelegate) {
+      Free(mDelegate);
+      mDelegate = nullptr;
+    }
+  }
+  ICU4XEnumeration(const ICU4XEnumeration&) = delete;
+  ICU4XEnumeration& operator=(const ICU4XEnumeration&) = delete;
+  ICU4XEnumeration(ICU4XEnumeration&& aOther)
+      : mDelegate(aOther.mDelegate), mLen(aOther.mLen) {
+    aOther.mDelegate = nullptr;
+  }
+  ICU4XEnumeration& operator=(ICU4XEnumeration&& aOther) = delete;
+
+  class Iterator {
+   public:
+    // std::iterator traits.
+    using iterator_category = std::input_iterator_tag;
+    using value_type = mozilla::Span<const char>;
+    using difference_type = ptrdiff_t;
+    using pointer = value_type*;
+    using reference = value_type&;
+
+   private:
+    // The current position in the list.
+    uintptr_t mPos = 0;
+    T* mDelegate = nullptr;
+
+   public:
+    explicit Iterator(uintptr_t aPos, T* aDelegate)
+        : mPos(aPos), mDelegate(aDelegate) {}
+
+    Iterator& operator++() {
+      mPos++;
+      return *this;
+    }
+
+    Iterator operator++(int) {
+      Iterator result = *this;
+      ++(*this);
+      return result;
+    }
+
+    bool operator==(const Iterator& aOther) const = default;
+
+    value_type operator*() const {
+      uintptr_t len;
+      const char* ptr = Item(mDelegate, mPos, &len);
+      return mozilla::Span<const char>{ptr, len};
+    }
+  };
+
+  /**
+   * Return the total number of entries.
+   */
+  uintptr_t Count() const { return mLen; }
+
+  // std::iterator begin() and end() methods.
+
+  /**
+   * Return an iterator pointing to the first available locale.
+   */
+  Iterator begin() const { return Iterator(0, mDelegate); }
+
+  /**
+   * Return an iterator pointing to one past the last available locale.
+   */
+  Iterator end() const { return Iterator(mLen, mDelegate); }
 };
 
 /**

@@ -1,4 +1,4 @@
-# Debugging
+# Debugging Marionette
 
 ## Redirecting the Gecko output
 
@@ -56,7 +56,7 @@ whenever the `WebDriver:GetPageSource` command is called:
 ```javascript
     GeckoDriver.prototype.getPageSource = async function() {
       debugger;
-      …
+      // ...
     }
 ```
 
@@ -93,4 +93,4 @@ remote connections.
   Allows a remote debugger to connect, which is necessary for
   debugging chrome code.
 
-[Browser Toolbox]: /devtools-user/browser_toolbox/index.rst
+[Browser Toolbox]: /devtools-user/browser_toolbox/index.md

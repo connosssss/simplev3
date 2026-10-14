@@ -1,37 +1,41 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SocketProcessParent.h"
-#include "SocketProcessLogging.h"
 
 #include "AltServiceParent.h"
 #include "HttpTransactionParent.h"
+#include "SSLTokensCache.h"
 #include "SocketProcessHost.h"
+#include "SocketProcessLogging.h"
 #include "TLSClientAuthCertSelection.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Components.h"
-#include "mozilla/dom/MemoryReportRequest.h"
 #include "mozilla/FOGIPC.h"
-#include "mozilla/net/DNSRequestParent.h"
-#include "mozilla/net/ProxyConfigLookupParent.h"
-#include "mozilla/net/SocketProcessBackgroundParent.h"
+#include "mozilla/GeckoTrace.h"
 #include "mozilla/RemoteLazyInputStreamParent.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TelemetryIPC.h"
+#include "mozilla/dom/MemoryReportRequest.h"
+#include "mozilla/glean/NetwerkMetrics.h"
+#include "mozilla/net/DNSRequestParent.h"
+#include "mozilla/net/ProxyConfigLookupParent.h"
+#include "mozilla/net/SocketProcessBackgroundParent.h"
+#include "mozilla/net/neqo_glue_ffi_generated.h"
+#include "nsHttpConnectionInfo.h"
+#include "nsHttpHandler.h"
 #include "nsIConsoleService.h"
 #include "nsIHttpActivityObserver.h"
+#include "nsIOService.h"
 #include "nsIObserverService.h"
 #include "nsNSSCertificate.h"
 #include "nsNSSComponent.h"
-#include "nsIOService.h"
-#include "nsHttpHandler.h"
-#include "nsHttpConnectionInfo.h"
+#include "nsSocketTransportService2.h"
 #include "secerr.h"
 #ifdef MOZ_WEBRTC
-#  include "mozilla/dom/ContentProcessManager.h"
 #  include "mozilla/dom/BrowserParent.h"
+#  include "mozilla/dom/ContentProcessManager.h"
 #  include "mozilla/net/WebrtcTCPSocketParent.h"
 #endif
 #if defined(MOZ_WIDGET_ANDROID)
@@ -84,8 +88,9 @@ void SocketProcessParent::ActorDestroy(ActorDestroyReason aWhy) {
 #endif  // defined(MOZ_WIDGET_ANDROID)
 
   if (aWhy == AbnormalShutdown) {
-    GenerateCrashReport();
-    MaybeTerminateProcess();
+    nsAutoString dumpID;
+    GenerateCrashReport(&dumpID);
+    MaybeTerminateProcess(dumpID);
   }
 
   if (mHost) {
@@ -99,33 +104,37 @@ bool SocketProcessParent::SendRequestMemoryReport(
     const Maybe<ipc::FileDescriptor>& aDMDFile) {
   mMemoryReportRequest = MakeUnique<dom::MemoryReportRequestHost>(aGeneration);
 
-  PSocketProcessParent::SendRequestMemoryReport(
-      aGeneration, aAnonymize, aMinimizeMemoryUsage, aDMDFile,
-      [&](const uint32_t& aGeneration2) {
-        MOZ_ASSERT(gIOService);
-        if (!gIOService->SocketProcess()) {
-          return;
-        }
-        SocketProcessParent* actor = gIOService->SocketProcess()->GetActor();
-        if (!actor) {
-          return;
-        }
-        if (actor->mMemoryReportRequest) {
-          actor->mMemoryReportRequest->Finish(aGeneration2);
-          actor->mMemoryReportRequest = nullptr;
-        }
-      },
-      [&](mozilla::ipc::ResponseRejectReason) {
-        MOZ_ASSERT(gIOService);
-        if (!gIOService->SocketProcess()) {
-          return;
-        }
-        SocketProcessParent* actor = gIOService->SocketProcess()->GetActor();
-        if (!actor) {
-          return;
-        }
-        actor->mMemoryReportRequest = nullptr;
-      });
+  PSocketProcessParent::SendRequestMemoryReport(aGeneration, aAnonymize,
+                                                aMinimizeMemoryUsage, aDMDFile)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [](uint32_t aGeneration2) {
+            MOZ_ASSERT(gIOService);
+            if (!gIOService->SocketProcess()) {
+              return;
+            }
+            SocketProcessParent* actor =
+                gIOService->SocketProcess()->GetActor();
+            if (!actor) {
+              return;
+            }
+            if (actor->mMemoryReportRequest) {
+              actor->mMemoryReportRequest->Finish(aGeneration2);
+              actor->mMemoryReportRequest = nullptr;
+            }
+          },
+          [](mozilla::ipc::ResponseRejectReason) {
+            MOZ_ASSERT(gIOService);
+            if (!gIOService->SocketProcess()) {
+              return;
+            }
+            SocketProcessParent* actor =
+                gIOService->SocketProcess()->GetActor();
+            if (!actor) {
+              return;
+            }
+            actor->mMemoryReportRequest = nullptr;
+          });
 
   return true;
 }
@@ -179,24 +188,13 @@ mozilla::ipc::IPCResult SocketProcessParent::RecvRecordDiscardedData(
   return IPC_OK();
 }
 
-PWebrtcTCPSocketParent* SocketProcessParent::AllocPWebrtcTCPSocketParent(
-    const Maybe<TabId>& aTabId) {
+already_AddRefed<PWebrtcTCPSocketParent>
+SocketProcessParent::AllocPWebrtcTCPSocketParent(const Maybe<TabId>& aTabId) {
 #ifdef MOZ_WEBRTC
-  WebrtcTCPSocketParent* parent = new WebrtcTCPSocketParent(aTabId);
-  parent->AddRef();
-  return parent;
+  return do_AddRef(new WebrtcTCPSocketParent(aTabId));
 #else
   return nullptr;
 #endif
-}
-
-bool SocketProcessParent::DeallocPWebrtcTCPSocketParent(
-    PWebrtcTCPSocketParent* aActor) {
-#ifdef MOZ_WEBRTC
-  WebrtcTCPSocketParent* parent = static_cast<WebrtcTCPSocketParent*>(aActor);
-  parent->Release();
-#endif
-  return true;
 }
 
 already_AddRefed<PDNSRequestParent> SocketProcessParent::AllocPDNSRequestParent(
@@ -213,7 +211,8 @@ mozilla::ipc::IPCResult SocketProcessParent::RecvPDNSRequestConstructor(
     const nsACString& aTrrServer, const int32_t& port, const uint16_t& aType,
     const OriginAttributes& aOriginAttributes,
     const nsIDNSService::DNSFlags& aFlags) {
-  RefPtr<DNSRequestParent> actor = static_cast<DNSRequestParent*>(aActor);
+  RefPtr<DNSRequestParent> actor =
+      mozilla::ipc::ActorCast<DNSRequestParent>(aActor);
   RefPtr<DNSRequestHandler> handler =
       actor->GetDNSRequest()->AsDNSRequestHandler();
   handler->DoAsyncResolve(aHost, aTrrServer, port, aType, aOriginAttributes,
@@ -229,7 +228,7 @@ mozilla::ipc::IPCResult SocketProcessParent::RecvObserveHttpActivity(
       components::HttpActivityDistributor::Service();
   MOZ_ASSERT(activityDistributor);
 
-  Unused << activityDistributor->ObserveActivityWithArgs(
+  (void)activityDistributor->ObserveActivityWithArgs(
       aArgs, aActivityType, aActivitySubtype, aTimestamp, aExtraSizeData,
       aExtraStringData);
   return IPC_OK();
@@ -265,16 +264,17 @@ SocketProcessParent::AllocPAltServiceParent() {
 
 already_AddRefed<PProxyConfigLookupParent>
 SocketProcessParent::AllocPProxyConfigLookupParent(
-    nsIURI* aURI, const uint32_t& aProxyResolveFlags) {
-  RefPtr<ProxyConfigLookupParent> actor =
-      new ProxyConfigLookupParent(aURI, aProxyResolveFlags);
+    nsIURI* aURI, const uint32_t& aProxyResolveFlags,
+    const bool& aIsTRRServiceChannel) {
+  RefPtr<ProxyConfigLookupParent> actor = new ProxyConfigLookupParent(
+      aURI, aProxyResolveFlags, aIsTRRServiceChannel);
   return actor.forget();
 }
 
 mozilla::ipc::IPCResult SocketProcessParent::RecvPProxyConfigLookupConstructor(
     PProxyConfigLookupParent* aActor, nsIURI* aURI,
-    const uint32_t& aProxyResolveFlags) {
-  static_cast<ProxyConfigLookupParent*>(aActor)->DoProxyLookup();
+    const uint32_t& aProxyResolveFlags, const bool& aIsTRRServiceChannel) {
+  mozilla::ipc::ActorCast<ProxyConfigLookupParent>(aActor)->DoProxyLookup();
   return IPC_OK();
 }
 
@@ -330,12 +330,44 @@ mozilla::ipc::IPCResult SocketProcessParent::RecvFOGData(ByteBuf&& aBuf) {
   return IPC_OK();
 }
 
+#if defined(XP_MACOSX) || defined(XP_IOS)
+mozilla::ipc::IPCResult SocketProcessParent::RecvAppleFastDatapathProbeResult(
+    const bool& aAvailable) {
+  if (mHost) {
+    mHost->mAppleFastDatapathProbeResultReceived = true;
+  }
+  glean::network::apple_fast_datapath_used.Set(aAvailable);
+  // When neqo runs in the parent (socket process not used for I/O), enable
+  // the fast path here so parent-side QUIC sockets benefit from it too.
+  if (aAvailable && !nsIOService::UseSocketProcess() &&
+      gSocketTransportService) {
+    gSocketTransportService->Dispatch(
+        NS_NewRunnableFunction("net::EnableAppleFastPath",
+                               []() { neqo_glue_enable_apple_fast_path(); }),
+        NS_DISPATCH_NORMAL);
+  }
+  return IPC_OK();
+}
+#endif
+
+mozilla::ipc::IPCResult SocketProcessParent::RecvGeckoTraceExport(
+    ByteBuf&& aBuf) {
+  recv_gecko_trace_export(aBuf.mData, aBuf.mLen);
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult SocketProcessParent::RecvSSLTokensCacheData(
+    nsTArray<SSLTokensCacheRecordInfo>&& aRecords) {
+  SSLTokensCache::ReplaceAllRecords(std::move(aRecords));
+  return IPC_OK();
+}
+
 #if defined(XP_WIN)
 mozilla::ipc::IPCResult SocketProcessParent::RecvGetModulesTrust(
-    ModulePaths&& aModPaths, bool aRunAtNormalPriority,
+    ModuleIdentifiers&& aModIdents, bool aRunAtNormalPriority,
     GetModulesTrustResolver&& aResolver) {
   RefPtr<DllServices> dllSvc(DllServices::Get());
-  dllSvc->GetModulesTrust(std::move(aModPaths), aRunAtNormalPriority)
+  dllSvc->GetModulesTrust(std::move(aModIdents), aRunAtNormalPriority)
       ->Then(
           GetMainThreadSerialEventTarget(), __func__,
           [aResolver](ModulesMapResult&& aResult) {

@@ -37,7 +37,9 @@ add_task(async function test_replaceTabsWithWindow() {
 
   const windowOpenedPromise = BrowserTestUtils.waitForNewWindow();
   const win2 = gBrowser.replaceTabsWithWindow(selectedTab);
-  await BrowserTestUtils.waitForEvent(win2, "DOMContentLoaded");
+  // BrowserTestUtils.waitForEvent will resolve the next tick, by which point
+  // we'll already have adopted nonAdoptableTab
+  await new Promise(res => win2.addEventListener("DOMContentLoaded", res));
   const gBrowser2 = win2.gBrowser;
   makeAdoptTabFailOnceFor(gBrowser2, nonAdoptableTab);
   await windowOpenedPromise;
@@ -71,7 +73,7 @@ add_task(async function test_on_drop() {
   is(gBrowser2.tabs[1].label, "selectedTab", "selectedTab became tab 1");
   is(gBrowser2.tabs[2], initialTab, "initialTab became tab 2");
   is(gBrowser2.selectedTab, gBrowser2.tabs[1], "Tab 1 is selected");
-  is(gBrowser2.multiSelectedTabsCount, 2, "Three multiselected tabs");
+  is(gBrowser2.multiSelectedTabsCount, 2, "Two multiselected tabs");
   ok(gBrowser2.tabs[0].multiselected, "Tab 0 is multiselected");
   ok(gBrowser2.tabs[1].multiselected, "Tab 1 is multiselected");
   ok(!gBrowser2.tabs[2].multiselected, "Tab 2 is not multiselected");

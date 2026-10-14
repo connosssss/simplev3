@@ -1,39 +1,21 @@
-macro_rules! ready {
-    ($e:expr) => {
-        match $e {
-            std::task::Poll::Ready(v) => v,
-            std::task::Poll::Pending => return std::task::Poll::Pending,
-        }
-    };
-}
-
+#[cfg(all(any(feature = "client", feature = "server"), feature = "http1"))]
 pub(crate) mod buf;
 #[cfg(all(feature = "server", any(feature = "http1", feature = "http2")))]
 pub(crate) mod date;
-#[cfg(all(feature = "server", any(feature = "http1", feature = "http2")))]
-pub(crate) mod drain;
-#[cfg(any(feature = "http1", feature = "http2", feature = "server"))]
-pub(crate) mod exec;
-pub(crate) mod io;
-#[cfg(all(feature = "client", any(feature = "http1", feature = "http2")))]
-mod lazy;
-mod never;
+#[cfg(all(feature = "client", feature = "http2"))]
+pub(crate) mod either;
 #[cfg(any(
-    feature = "stream",
-    all(feature = "client", any(feature = "http1", feature = "http2"))
+    all(feature = "client", any(feature = "http1", feature = "http2")),
+    all(feature = "server", feature = "http1"),
 ))]
-pub(crate) mod sync_wrapper;
+pub(crate) mod future;
+pub(crate) mod io;
+#[cfg(all(any(feature = "client", feature = "server"), feature = "http1"))]
 pub(crate) mod task;
+#[cfg(any(
+    all(feature = "server", feature = "http1"),
+    all(any(feature = "client", feature = "server"), feature = "http2"),
+))]
+pub(crate) mod time;
+#[cfg(all(any(feature = "client", feature = "server"), feature = "http1"))]
 pub(crate) mod watch;
-
-#[cfg(all(feature = "client", any(feature = "http1", feature = "http2")))]
-pub(crate) use self::lazy::{lazy, Started as Lazy};
-#[cfg(any(feature = "http1", feature = "http2", feature = "runtime"))]
-pub(crate) use self::never::Never;
-pub(crate) use self::task::Poll;
-
-// group up types normally needed for `Future`
-cfg_proto! {
-    pub(crate) use std::marker::Unpin;
-}
-pub(crate) use std::{future::Future, pin::Pin};

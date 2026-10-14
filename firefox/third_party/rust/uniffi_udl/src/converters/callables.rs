@@ -11,8 +11,8 @@ use crate::InterfaceCollector;
 use anyhow::{bail, Result};
 
 use uniffi_meta::{
-    ConstructorMetadata, FieldMetadata, FnMetadata, FnParamMetadata, MethodMetadata,
-    TraitMethodMetadata,
+    ConstructorMetadata, DefaultValueMetadata, FieldMetadata, FnMetadata, FnParamMetadata,
+    MethodMetadata, TraitMethodMetadata,
 };
 
 impl APIConverter<FieldMetadata> for weedle::argument::Argument<'_> {
@@ -35,6 +35,7 @@ impl APIConverter<FieldMetadata> for weedle::argument::SingleArgument<'_> {
         }
         Ok(FieldMetadata {
             name: self.identifier.0.to_string(),
+            orig_name: None,
             ty: type_,
             default: None,
             docstring: None,
@@ -56,7 +57,9 @@ impl APIConverter<FnParamMetadata> for weedle::argument::SingleArgument<'_> {
         let type_ = ci.resolve_type_expression(&self.type_)?;
         let default = match self.default {
             None => None,
-            Some(v) => Some(convert_default_value(&v.value, &type_)?),
+            Some(v) => Some(DefaultValueMetadata::Literal(convert_default_value(
+                &v.value, &type_,
+            )?)),
         };
         let by_ref = ArgumentAttributes::try_from(self.attributes.as_ref())?.by_ref();
         Ok(FnParamMetadata {
@@ -97,6 +100,7 @@ impl APIConverter<FnMetadata> for weedle::namespace::OperationNamespaceMember<'_
         Ok(FnMetadata {
             module_path: ci.module_path(),
             name,
+            orig_name: None,
             is_async,
             return_type,
             inputs: self.args.body.list.convert(ci)?,
@@ -119,6 +123,7 @@ impl APIConverter<ConstructorMetadata> for weedle::interface::ConstructorInterfa
         Ok(ConstructorMetadata {
             module_path: ci.module_path(),
             name: String::from(attributes.get_name().unwrap_or("new")),
+            orig_name: None,
             // We don't know the name of the containing `Object` at this point, fill it in later.
             self_name: Default::default(),
             is_async: attributes.is_async(),
@@ -154,6 +159,8 @@ impl APIConverter<MethodMetadata> for weedle::interface::OperationInterfaceMembe
         let takes_self_by_arc = attributes.get_self_by_arc();
         Ok(MethodMetadata {
             module_path: ci.module_path(),
+            // We don't know the name of the containing `Object` at this point, fill it in later.
+            self_name: Default::default(),
             name: match self.identifier {
                 None => bail!("anonymous methods are not supported {:?}", self),
                 Some(id) => {
@@ -164,8 +171,7 @@ impl APIConverter<MethodMetadata> for weedle::interface::OperationInterfaceMembe
                     name
                 }
             },
-            // We don't know the name of the containing `Object` at this point, fill it in later.
-            self_name: Default::default(),
+            orig_name: None,
             is_async,
             inputs: self.args.body.list.convert(ci)?,
             return_type,
@@ -212,6 +218,7 @@ impl APIConverter<TraitMethodMetadata> for weedle::interface::OperationInterface
                     name
                 }
             },
+            orig_name: None,
             is_async,
             inputs: self.args.body.list.convert(ci)?,
             return_type,

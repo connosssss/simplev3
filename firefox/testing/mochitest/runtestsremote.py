@@ -17,6 +17,7 @@ import mozcrash
 import mozinfo
 from mochitest_options import MochitestArgumentParser, build_obj
 from mozdevice import ADBDeviceFactory, ADBTimeoutError, RemoteProcessMonitor
+from mozinfo.platforminfo import android_api_to_os_version
 from mozscreenshot import dump_device_screen, dump_screen
 from runtests import MessageLogger, MochitestDesktop
 
@@ -97,16 +98,18 @@ class MochiRemote(MochitestDesktop):
         self.appName = options.remoteappname
         self.appActivity = options.appActivity
         self.device.stop_application(self.appName)
+        self.isolatedProcess = options.isolated_process
         if self.device.process_exist(self.appName):
             self.log.warning("unable to kill %s before running tests!" % self.appName)
 
+        android_version = str(self.device.version)
+        os_version = android_api_to_os_version(android_version)
         # Add Android version (SDK level) to mozinfo so that manifest entries
         # can be conditional on android_version.
         self.log.info(
-            "Android sdk version '%s'; will use this to filter manifests"
-            % str(self.device.version)
+            f"Android sdk version '{android_version}' corresponds to os_version '{os_version}'; use os_version to filter manifests"
         )
-        mozinfo.info["android_version"] = str(self.device.version)
+        mozinfo.info["os_version"] = os_version
         mozinfo.info["is_emulator"] = self.device._device_serial.startswith("emulator-")
 
     def cleanup(self, options, final=False):
@@ -123,6 +126,11 @@ class MochiRemote(MochitestDesktop):
         self.localProfile = None
 
     def dumpScreen(self, utilityPath):
+        if self.message_logger.retry_mode:
+            self.log.info(
+                "Not taking screenshot here: screenshot will be taken on retry if the test still fails"
+            )
+            return
         if self.haveDumpedScreen:
             self.log.info(
                 "Not taking screenshot here: see the one that was previously logged"
@@ -208,8 +216,9 @@ class MochiRemote(MochitestDesktop):
     def startServers(self, options, debuggerInfo, public=None):
         """Create the servers on the host and start them up"""
         restoreRemotePaths = self.switchToLocalPaths(options)
-        MochitestDesktop.startServers(self, options, debuggerInfo, public=True)
+        result = MochitestDesktop.startServers(self, options, debuggerInfo, public=True)
         restoreRemotePaths()
+        return result
 
     def buildProfile(self, options):
         restoreRemotePaths = self.switchToLocalPaths(options)
@@ -255,7 +264,7 @@ class MochiRemote(MochitestDesktop):
         return retVal
 
     def getChromeTestDir(self, options):
-        local = super(MochiRemote, self).getChromeTestDir(options)
+        local = super().getChromeTestDir(options)
         remote = self.remoteChromeTestDir
         if options.flavor == "chrome" and not self.chromePushed:
             self.log.info("pushing %s to %s on device..." % (local, remote))
@@ -319,6 +328,10 @@ class MochiRemote(MochitestDesktop):
         # MOZ_UPLOAD_DIR available to the browser environment so that tests
         # can use it as though they were running on the host.
         browserEnv["MOZ_UPLOAD_DIR"] = self.remoteMozLog
+
+        if self.isolatedProcess:
+            browserEnv["MOZ_ANDROID_CONTENT_SERVICE_ISOLATED_PROCESS"] = "1"
+
         return browserEnv
 
     def runApp(
@@ -388,7 +401,9 @@ class MochiRemote(MochitestDesktop):
             % str(datetime.datetime.now() - startTime)
         )
 
-        lastTestSeen = currentManifest or "Main app process exited normally"
+        # mozcrash records this verbatim as the crash's `test`, so it has to be the
+        # test that was running; a manifest path can never be matched back to one.
+        lastTestSeen = rpm.test_in_flight or currentManifest
 
         crashed = self.check_for_crashes(symbolsPath, lastTestSeen)
         if crashed:
@@ -398,7 +413,7 @@ class MochiRemote(MochitestDesktop):
         self.countfail += rpm.counts["fail"]
         self.counttodo += rpm.counts["todo"]
 
-        return status, lastTestSeen
+        return status, lastTestSeen or "Main app process exited normally"
 
     def check_for_crashes(self, symbols_path, last_test_seen):
         """

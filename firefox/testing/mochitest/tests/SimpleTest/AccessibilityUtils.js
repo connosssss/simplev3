@@ -4,6 +4,9 @@
 
 "use strict";
 
+// Loaded into this scope by browser-test.js before this file.
+const ClickChecks = this.ClickChecks;
+
 /**
  * Accessible states used to check node's state from the accessiblity API
  * perspective.
@@ -59,8 +62,19 @@ this.AccessibilityUtils = (function () {
     Ci.nsIAccessibleRole.ROLE_RICH_OPTION,
   ]);
 
+  // Roles which, when focusable, are operated by changing their value rather
+  // than by being activated, so they do not expose an accessible action. The
+  // same roles also cover decorations that are never focusable, like a toolbar
+  // spring or an <hr>, so test them with isFocusableValueRole rather than with
+  // this set directly.
+  const FOCUSABLE_VALUE_ROLES = new Set([
+    Ci.nsIAccessibleRole.ROLE_SCROLLBAR,
+    Ci.nsIAccessibleRole.ROLE_SEPARATOR,
+  ]);
+
   // Roles that are considered interactive when they are focusable.
   const INTERACTIVE_IF_FOCUSABLE_ROLES = new Set([
+    ...FOCUSABLE_VALUE_ROLES,
     // If article is focusable, we can assume it is inside a feed.
     Ci.nsIAccessibleRole.ROLE_ARTICLE,
     // Column header can be focusable.
@@ -71,8 +85,6 @@ this.AccessibilityUtils = (function () {
     Ci.nsIAccessibleRole.ROLE_PAGETABLIST,
     // Row header can be focusable.
     Ci.nsIAccessibleRole.ROLE_ROWHEADER,
-    Ci.nsIAccessibleRole.ROLE_SCROLLBAR,
-    Ci.nsIAccessibleRole.ROLE_SEPARATOR,
     Ci.nsIAccessibleRole.ROLE_TOOLBAR,
   ]);
 
@@ -123,18 +135,22 @@ this.AccessibilityUtils = (function () {
     ...DEFAULT_ENV,
   };
 
+  // The node the test clicked, while the checks are running on a different
+  // node. See assertCanBeClicked.
+  let gClickedNode = null;
+
   // This is set by AccessibilityUtils.init so that we always have a reference
   // to SimpleTest regardless of changes to the global scope.
   let SimpleTest = null;
 
   /**
    * Get role attribute for an accessible object if specified for its
-   * corresponding {@code DOMNode}.
+   * corresponding ``DOMNode``.
    *
    * @param   {nsIAccessible} accessible
    *          Accessible for which to determine its role attribute value.
    *
-   * @returns {String}
+   * @returns {string}
    *          Role attribute value if specified.
    */
   function getAriaRoles(accessible) {
@@ -151,6 +167,7 @@ this.AccessibilityUtils = (function () {
   /**
    * Get related accessible objects that are targets of labelled by relation e.g.
    * labels.
+   *
    * @param   {nsIAccessible} accessible
    *          Accessible objects to get labels for.
    *
@@ -165,13 +182,13 @@ this.AccessibilityUtils = (function () {
   }
 
   /**
-   * Test if an accessible has a {@code hidden} attribute.
+   * Test if an accessible has a ``hidden`` attribute.
    *
    * @param  {nsIAccessible} accessible
    *         Accessible object.
    *
    * @return {boolean}
-   *         True if the accessible object has a {@code hidden} attribute, false
+   *         True if the accessible object has a ``hidden`` attribute, false
    *         otherwise.
    */
   function hasHiddenAttribute(accessible) {
@@ -227,6 +244,50 @@ this.AccessibilityUtils = (function () {
   }
 
   /**
+   * Determine if an accessible has a role that is interactive only while
+   * focusable, and is currently focusable.
+   *
+   * @param {nsIAccessible} accessible
+   *        Accessible object for a node.
+   */
+  function isFocusableValueRole(accessible) {
+    return (
+      FOCUSABLE_VALUE_ROLES.has(accessible.role) &&
+      matchState(accessible, STATE_FOCUSABLE)
+    );
+  }
+
+  /**
+   * Determine if an accessible is a button that is purposefully non-focusable.
+   *
+   * The Go button in the Url Bar is an example of a purposefully
+   * non-focusable image toolbar button that provides an mouse/touch-only
+   * control for the search query submission, while a keyboard user could
+   * press `Enter` to do it. Similarly, two scroll buttons that appear when
+   * toolbar is overflowing, and keyboard-only users would actually scroll
+   * tabs in the toolbar while trying to navigate to these controls. When
+   * toolbarbuttons are redundant for keyboard users, we do not want to
+   * create an extra tab stop for such controls, thus we are expecting the
+   * button markup to include `keyNav="false"` attribute to flag it.
+   */
+  function isNoKeyNavButton(accessible) {
+    const node = accessible.DOMNode;
+    if (
+      !node ||
+      !node.documentGlobal ||
+      node.getAttribute("keyNav") != "false"
+    ) {
+      return false;
+    }
+
+    const ariaRoles = getAriaRoles(accessible);
+    return (
+      ariaRoles.includes("button") ||
+      accessible.role == Ci.nsIAccessibleRole.ROLE_PUSHBUTTON
+    );
+  }
+
+  /**
    * Determine if an accessible is a keyboard focusable browser toolbar button.
    * Browser toolbar buttons aren't keyboard focusable in the usual way.
    * Instead, focus is managed by JS code which sets tabindex on a single
@@ -235,7 +296,7 @@ this.AccessibilityUtils = (function () {
    */
   function isKeyboardFocusableBrowserToolbarButton(accessible) {
     const node = accessible.DOMNode;
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     const toolbar =
@@ -244,23 +305,7 @@ this.AccessibilityUtils = (function () {
     if (!toolbar || toolbar.getAttribute("keyNav") != "true") {
       return false;
     }
-    // The Go button in the Url Bar is an example of a purposefully
-    // non-focusable image toolbar button that provides an mouse/touch-only
-    // control for the search query submission, while a keyboard user could
-    // press `Enter` to do it. Similarly, two scroll buttons that appear when
-    // toolbar is overflowing, and keyboard-only users would actually scroll
-    // tabs in the toolbar while trying to navigate to these controls. When
-    // toolbarbuttons are redundant for keyboard users, we do not want to
-    // create an extra tab stop for such controls, thus we are expecting the
-    // button markup to include `keyNav="false"` attribute to flag it.
-    if (node.getAttribute("keyNav") == "false") {
-      const ariaRoles = getAriaRoles(accessible);
-      return (
-        ariaRoles.includes("button") ||
-        accessible.role == Ci.nsIAccessibleRole.ROLE_PUSHBUTTON
-      );
-    }
-    return node.ownerGlobal.ToolbarKeyboardNavigator._isButton(node);
+    return node.documentGlobal.ToolbarKeyboardNavigator._isButton(node);
   }
 
   /**
@@ -273,7 +318,7 @@ this.AccessibilityUtils = (function () {
    */
   function isKeyboardFocusableFxviewControlInApplication(accessible) {
     const node = accessible.DOMNode;
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     // Firefox View application rows currently include only buttons and links:
@@ -346,7 +391,7 @@ this.AccessibilityUtils = (function () {
    */
   function isKeyboardFocusableOption(accessible) {
     const node = accessible.DOMNode;
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     const urlbarListbox = node.closest(".urlbarView-results");
@@ -364,7 +409,7 @@ this.AccessibilityUtils = (function () {
    */
   function isKeyboardFocusablePanelMultiViewControl(accessible) {
     const node = accessible.DOMNode;
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     const panelview = node.closest("panelview");
@@ -372,10 +417,44 @@ this.AccessibilityUtils = (function () {
       return false;
     }
     return (
-      node.ownerGlobal.PanelView.forNode(panelview)._tabNavigableWalker.filter(
-        node
-      ) == NodeFilter.FILTER_ACCEPT
+      node.documentGlobal.PanelView.forNode(
+        panelview
+      )._tabNavigableWalker.filter(node) == NodeFilter.FILTER_ACCEPT
     );
+  }
+
+  /**
+   * Determine if an accessible is a button that is excluded from a focus
+   * order, because its adjacent sibling is a focusable spinner. Controls with
+   * role="spinbutton" are often placed between two buttons that could
+   * increase ("^") or decrease ("v") the value of this spinner. Those buttons
+   * are not expected to be focusable, because their functionality for keyboard
+   * users is redundant to the spinner. But they are exposed to assistive
+   * technology for touch, mouse, switch, and speech-to-text users. Thus, we
+   * need to special case the focusable check for these buttons adjacent to
+   * a spinner.
+   */
+  function isKeyboardFocusableSpinbuttonSibling(accessible) {
+    const node = accessible.DOMNode;
+    if (!node || !node.documentGlobal) {
+      return false;
+    }
+
+    // The control itself is a button:
+    if (accessible.role != Ci.nsIAccessibleRole.ROLE_PUSHBUTTON) {
+      return false;
+    }
+
+    // At least one sibling is a keyboard-focusable spinbutton:
+    for (const sibling of [
+      node.previousElementSibling,
+      node.nextElementSibling,
+    ]) {
+      if (sibling && sibling.tabIndex >= 0 && sibling.role == "spinbutton") {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -387,7 +466,7 @@ this.AccessibilityUtils = (function () {
    */
   function isKeyboardFocusableTabInTablist(accessible) {
     const node = accessible.DOMNode;
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     if (accessible.role != Ci.nsIAccessibleRole.ROLE_PAGETAB) {
@@ -412,7 +491,10 @@ this.AccessibilityUtils = (function () {
       }
       // Use tabIndex rather than a11y focusable state because all tabs might
       // have tabindex="-1".
-      if (tab.DOMNode.tabIndex == 0) {
+      if (
+        tab.DOMNode.tabIndex == 0 &&
+        hasFocusableShadowAncestors(tab.DOMNode)
+      ) {
         if (foundFocusable) {
           // Only one tab within a tablist should be focusable.
           // ToDo: Fine-tune the a11y-check error message generated in this case.
@@ -432,6 +514,27 @@ this.AccessibilityUtils = (function () {
   }
 
   /**
+   * Determine if a node is keyboard focusable by ensuring none of its shadow
+   * host ancestors have a negative tabindex.
+   *
+   * @param {Node} node
+   *   The node to check within the shadow tree.
+   * @returns {boolean}
+   *   `true` if the node is not trapped behind an unfocusable shadow host.
+   */
+  function hasFocusableShadowAncestors(node) {
+    let root = node.getRootNode();
+    while (ShadowRoot.isInstance(root)) {
+      const host = root.host;
+      if (host.hasAttribute("tabindex") && host.tabIndex < 0) {
+        return false;
+      }
+      root = host.getRootNode();
+    }
+    return true;
+  }
+
+  /**
    * Determine if an accessible is a keyboard focusable button in the url bar.
    * Url bar buttons aren't keyboard focusable in the usual way. Instead,
    * focus is managed by JS code which sets tabindex on a single button at a
@@ -440,7 +543,7 @@ this.AccessibilityUtils = (function () {
    */
   function isKeyboardFocusableUrlbarButton(accessible) {
     const node = accessible.DOMNode;
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     const isUrlBar =
@@ -480,7 +583,7 @@ this.AccessibilityUtils = (function () {
    * accessible created. We need to special case the check for these gridcells.
    */
   function isAccessibleGridcell(node) {
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     const accessible = getAccessible(node);
@@ -541,7 +644,7 @@ this.AccessibilityUtils = (function () {
    * ToDo: We should remove this exception after this is fixed in bug 1848397.
    */
   function isInaccessibleXulTreecol(node) {
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     const listheader = node.flattenedTreeParentNode;
@@ -562,16 +665,13 @@ this.AccessibilityUtils = (function () {
    * the input. Thus, we need to special case the label check for this control.
    */
   function isUnlabeledUrlBarCombobox(node) {
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     let ariaRole = node.getAttribute("role");
-    // There are only two cases of this pattern: <moz-input-box> and <searchbar>
-    const isMozInputBox =
-      node.tagName == "moz-input-box" &&
-      node.classList.contains("urlbar-input-box");
+    // <searchbar> is the only case of this pattern.
     const isSearchbar = node.tagName == "searchbar" && node.id == "searchbar";
-    return (isMozInputBox || isSearchbar) && ariaRole == "combobox";
+    return isSearchbar && ariaRole == "combobox";
   }
 
   /**
@@ -582,7 +682,7 @@ this.AccessibilityUtils = (function () {
    * need to special case the label check for these controls.
    */
   function isUnlabeledUrlBarOption(node) {
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     const role = getAccessible(node)?.role;
@@ -608,7 +708,7 @@ this.AccessibilityUtils = (function () {
    * case the label check for these controls.
    */
   function isUnlabeledMenuitem(node) {
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     const hasLabel = node.querySelector("label, description");
@@ -643,7 +743,7 @@ this.AccessibilityUtils = (function () {
    * Thus, we need to special case the label check for these controls.
    */
   function isUnlabeledImageButton(node) {
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     const isShowAllButton = node.id == "show-all";
@@ -669,7 +769,7 @@ this.AccessibilityUtils = (function () {
    * the label check for these controls.
    */
   function isUnlabeledXulButton(node) {
-    if (!node || !node.ownerGlobal) {
+    if (!node || !node.documentGlobal) {
       return false;
     }
     const hasLabel = node.querySelector("label, xul\\:label");
@@ -698,7 +798,7 @@ this.AccessibilityUtils = (function () {
    * @param   {nsIAccessible} accessible
    *          Accessible for which to determine if it is keyboard focusable.
    *
-   * @returns {Boolean}
+   * @returns {boolean}
    *          True if focusable with the keyboard.
    */
   function isKeyboardFocusable(accessible) {
@@ -709,7 +809,8 @@ this.AccessibilityUtils = (function () {
       isKeyboardFocusableUrlbarButton(accessible) ||
       isKeyboardFocusableXULTab(accessible) ||
       isKeyboardFocusableTabInTablist(accessible) ||
-      isKeyboardFocusableFxviewControlInApplication(accessible)
+      isKeyboardFocusableFxviewControlInApplication(accessible) ||
+      isKeyboardFocusableSpinbuttonSibling(accessible)
     ) {
       return true;
     }
@@ -730,17 +831,35 @@ this.AccessibilityUtils = (function () {
         ((role == Ci.nsIAccessibleRole.ROLE_PUSHBUTTON ||
           role == Ci.nsIAccessibleRole.ROLE_TOGGLE_BUTTON) &&
           node.closest('[role="toolbar"]')) ||
-        // <moz-radio-group> also uses a roving tabindex.
+        // <moz-radio-group> and <moz-visual-picker> also use a roving tabindex.
         (role === Ci.nsIAccessibleRole.ROLE_RADIOBUTTON &&
           node.getRootNode().host?.localName === "moz-radio") ||
+        (role === Ci.nsIAccessibleRole.ROLE_RADIOBUTTON &&
+          node.getRootNode().host?.localName === "moz-visual-picker-item") ||
+        // Sidebar lists also use a roving tabindex.
+        ((role === Ci.nsIAccessibleRole.ROLE_SUMMARY ||
+          role === Ci.nsIAccessibleRole.ROLE_OUTLINEITEM) &&
+          node.getRootNode().host?.localName === "sidebar-bookmark-list") ||
+        (role === Ci.nsIAccessibleRole.ROLE_OUTLINEITEM &&
+          node.getRootNode().host?.localName === "moz-card" &&
+          node.getRootNode().host.getRootNode().host?.localName ===
+            "sidebar-history") ||
         shouldIgnoreTabIndex(node))
     );
   }
 
+  function describeNode({ id, tagName, className }) {
+    return `id: ${id}, tagName: ${tagName}, className: ${className}`;
+  }
+
   function buildMessage(message, DOMNode) {
     if (DOMNode) {
-      const { id, tagName, className } = DOMNode;
-      message += `: id: ${id}, tagName: ${tagName}, className: ${className}`;
+      message += `: ${describeNode(DOMNode)}`;
+      if (gClickedNode) {
+        message +=
+          `. The checks fell back to this node from the one the test ` +
+          `clicked: ${describeNode(gClickedNode)}`;
+      }
     }
 
     return message;
@@ -752,7 +871,7 @@ this.AccessibilityUtils = (function () {
    * accessibility failure that prevents UI from being accessible to keyboard/AT
    * users.
    *
-   * @param {String} message
+   * @param {string} message
    * @param {nsIAccessible} accessible
    *        Accessible to log along with the failure message.
    */
@@ -761,11 +880,34 @@ this.AccessibilityUtils = (function () {
   }
 
   /**
+   * Find the closest popup ancestor of an accessible, if the accessible is
+   * invisible because that popup is not open.
+   *
+   * A popup that is still opening keeps its accessibles: the accessibility
+   * service only skips the subtree once it is closed or hiding. They are
+   * invisible and not focusable, which is why this is reached from the
+   * focusable check and not from the "not accessible" one.
+   *
+   * @param {nsIAccessible} accessible
+   * @returns {?Element} the popup, or null if there is none, it is open, or the
+   *   accessible is visible.
+   */
+  function notOpenPopupAncestor(accessible) {
+    if (!matchState(accessible, STATE_INVISIBLE)) {
+      return null;
+    }
+
+    const popup = ClickChecks.popupAncestor(accessible.DOMNode);
+    return popup && popup.state != "open" ? popup : null;
+  }
+
+  /**
    * Log a todo statement with a given message because of an issue with a given
    * accessible object. This is used for cases where accessibility best
    * practices are not followed or for something that is not as severe to be
    * considered a failure.
-   * @param {String} message
+   *
+   * @param {string} message
    * @param {nsIAccessible} accessible
    *        Accessible to log along with the todo message.
    */
@@ -799,12 +941,20 @@ this.AccessibilityUtils = (function () {
     if (
       gEnv.mustBeEnabled &&
       gEnv.focusableRule &&
+      !isNoKeyNavButton(accessible) &&
       !isKeyboardFocusable(accessible)
     ) {
       const ariaRoles = getAriaRoles(accessible);
       // Do not force ARIA combobox or listbox to be focusable.
       if (!ariaRoles.includes("combobox") && !ariaRoles.includes("listbox")) {
-        a11yFail("Node is not focusable via the accessibility API", accessible);
+        const notOpenPopup = notOpenPopupAncestor(accessible);
+        a11yFail(
+          notOpenPopup
+            ? `Node is inside ${ClickChecks.describePopup(notOpenPopup)}, ` +
+                `so it is not focusable`
+            : "Node is not focusable via the accessibility API",
+          accessible
+        );
       }
 
       return;
@@ -837,10 +987,13 @@ this.AccessibilityUtils = (function () {
    *        Accessible object for a node.
    */
   function assertInteractive(accessible) {
+    const focusableValueRole = isFocusableValueRole(accessible);
+
     if (
       gEnv.mustBeEnabled &&
       gEnv.actionCountRule &&
-      accessible.actionCount === 0
+      accessible.actionCount === 0 &&
+      !focusableValueRole
     ) {
       a11yFail("Node does not support any accessible actions", accessible);
 
@@ -850,7 +1003,8 @@ this.AccessibilityUtils = (function () {
     if (
       gEnv.mustBeEnabled &&
       gEnv.interactiveRule &&
-      !INTERACTIVE_ROLES.has(accessible.role)
+      !INTERACTIVE_ROLES.has(accessible.role) &&
+      !focusableValueRole
     ) {
       if (
         // Labels that have a label for relation with their target are clickable.
@@ -1018,6 +1172,7 @@ this.AccessibilityUtils = (function () {
 
   /**
    * Walk node ancestry and force refresh driver tick in every document.
+   *
    * @param {DOMNode} node
    *        Node for traversing the ancestry.
    */
@@ -1103,7 +1258,7 @@ this.AccessibilityUtils = (function () {
         const targetAcc = relation.getTarget(0);
         return targetAcc;
       }
-      if (INTERACTIVE_ROLES.has(acc.role)) {
+      if (INTERACTIVE_ROLES.has(acc.role) || isFocusableValueRole(acc)) {
         return acc;
       }
     }
@@ -1156,6 +1311,15 @@ this.AccessibilityUtils = (function () {
    */
   const AccessibilityUtils = {
     assertCanBeClicked(node) {
+      if (node.frameLoader?.isRemoteFrame) {
+        // The click landed in a document of another process, which is what
+        // the user clicks, not the frame element itself. Remote documents
+        // aren't supported by these checks.
+        a11yWarn("Unable to perform a11y checks in a remote document", {
+          DOMNode: node,
+        });
+        return;
+      }
       // Click events might fire on an inaccessible or non-interactive
       // descendant, even if the test author targeted them at an interactive
       // element. For example, if there's a button with an image inside it,
@@ -1174,11 +1338,22 @@ this.AccessibilityUtils = (function () {
         return;
       }
 
-      assertInteractive(acc);
-      assertFocusable(acc);
-      assertVisible(acc);
-      assertEnabled(acc);
-      assertLabelled(acc);
+      // acc is not necessarily the node the test clicked. Remember that node
+      // so that buildMessage can name it: a failure reported on a node the
+      // test never touched is otherwise hard to make sense of.
+      if (acc.DOMNode != node) {
+        gClickedNode = node;
+      }
+
+      try {
+        assertInteractive(acc);
+        assertFocusable(acc);
+        assertVisible(acc);
+        assertEnabled(acc);
+        assertLabelled(acc);
+      } finally {
+        gClickedNode = null;
+      }
     },
 
     setEnv(env = DEFAULT_ENV) {
@@ -1252,13 +1427,17 @@ this.AccessibilityUtils = (function () {
         composedTarget = composedTarget.flattenedTreeParentNode;
       }
       const bounds =
-        composedTarget.ownerGlobal?.windowUtils?.getBoundsWithoutFlushing(
+        composedTarget.documentGlobal?.windowUtils?.getBoundsWithoutFlushing(
           composedTarget
         );
       if (bounds && (bounds.width == 0 || bounds.height == 0)) {
         // Some tests click hidden nodes. These clearly aren't testing the UI
         // for the node itself (and presumably there is a test somewhere else
         // that does). Therefore, we can't (and shouldn't) do a11y checks.
+        a11yWarn(
+          "handleEvent() was unable to perform a11y checks on hidden node",
+          { DOMNode: composedTarget }
+        );
         return;
       }
       this.assertCanBeClicked(composedTarget);

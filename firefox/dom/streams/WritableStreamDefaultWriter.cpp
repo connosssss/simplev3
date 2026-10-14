@@ -1,10 +1,10 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/dom/WritableStreamDefaultWriter.h"
+#include "WritableStreamAbstract.h"
+#include "WritableStreamDefaultControllerAbstract.h"
+#include "WritableStreamDefaultWriterAbstract.h"
 #include "js/Array.h"
 #include "js/TypeDecls.h"
 #include "js/Value.h"
@@ -13,11 +13,9 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/HoldDropJSObjects.h"
-#include "mozilla/dom/WritableStream.h"
+#include "mozilla/dom/Promise-inl.h"
 #include "mozilla/dom/WritableStreamDefaultWriterBinding.h"
 #include "nsCOMPtr.h"
-
-#include "mozilla/dom/Promise-inl.h"
 #include "nsIGlobalObject.h"
 #include "nsISupports.h"
 
@@ -56,6 +54,14 @@ WritableStreamDefaultWriter::WritableStreamDefaultWriter(
 
 WritableStreamDefaultWriter::~WritableStreamDefaultWriter() {
   mozilla::DropJSObjects(this);
+}
+
+WritableStream* WritableStreamDefaultWriter::GetStream() const {
+  return mStream;
+}
+
+void WritableStreamDefaultWriter::SetStream(WritableStream* aStream) {
+  mStream = aStream;
 }
 
 void WritableStreamDefaultWriter::SetReadyPromise(Promise* aPromise) {
@@ -302,7 +308,11 @@ already_AddRefed<Promise> WritableStreamDefaultWriterWrite(
   // Step 7. If state is "errored", return a promise rejected with
   // stream.[[storedError]].
   if (state == WritableStream::WriterState::Errored) {
-    JS::Rooted<JS::Value> error(aCx, stream->StoredError());
+    JS::Rooted<JS::Value> error(aCx);
+    stream->GetStoredError(aCx, &error, aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
     return Promise::CreateRejected(aWriter->GetParentObject(), error, aRv);
   }
 
@@ -318,7 +328,11 @@ already_AddRefed<Promise> WritableStreamDefaultWriterWrite(
   // Step 9. If state is "erroring", return a promise rejected with
   // stream.[[storedError]].
   if (state == WritableStream::WriterState::Erroring) {
-    JS::Rooted<JS::Value> error(aCx, stream->StoredError());
+    JS::Rooted<JS::Value> error(aCx);
+    stream->GetStoredError(aCx, &error, aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
     return Promise::CreateRejected(aWriter->GetParentObject(), error, aRv);
   }
 
@@ -402,7 +416,9 @@ void SetUpWritableStreamDefaultWriter(WritableStreamDefaultWriter* aWriter,
 
     // Step 6.1. Set writer.[[readyPromise]] to a promise rejected with
     // stream.[[storedError]].
-    JS::Rooted<JS::Value> storedError(RootingCx(), aStream->StoredError());
+    // MaybeReject will wrap the value.
+    JS::Rooted<JS::Value> storedError(RootingCx(),
+                                      aStream->UnsafeStoredError());
     RefPtr<Promise> readyPromise =
         Promise::CreateInfallible(aWriter->GetParentObject());
     readyPromise->MaybeReject(storedError);
@@ -440,7 +456,9 @@ void SetUpWritableStreamDefaultWriter(WritableStreamDefaultWriter* aWriter,
     MOZ_ASSERT(state == WritableStream::WriterState::Errored);
 
     // Step 8.2. Step Let storedError be stream.[[storedError]].
-    JS::Rooted<JS::Value> storedError(RootingCx(), aStream->StoredError());
+    // MaybeReject will wrap the value.
+    JS::Rooted<JS::Value> storedError(RootingCx(),
+                                      aStream->UnsafeStoredError());
 
     // Step 8.3. Set writer.[[readyPromise]] to a promise rejected with
     // storedError.
@@ -527,7 +545,11 @@ already_AddRefed<Promise> WritableStreamDefaultWriterCloseWithErrorPropagation(
   // Step 5. If state is "errored",
   // return a promise rejected with stream.[[storedError]].
   if (state == WritableStream::WriterState::Errored) {
-    JS::Rooted<JS::Value> error(aCx, stream->StoredError());
+    JS::Rooted<JS::Value> error(aCx);
+    stream->GetStoredError(aCx, &error, aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
     return Promise::CreateRejected(aWriter->GetParentObject(), error, aRv);
   }
 

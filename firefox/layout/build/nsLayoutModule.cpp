@@ -1,63 +1,49 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsLayoutModule.h"
 
-#include "base/basictypes.h"
-
+#include "ThirdPartyUtil.h"
 #include "XPCModule.h"
+#include "base/basictypes.h"
+#include "gfxPlatform.h"
 #include "mozilla/Components.h"
 #include "mozilla/ModuleUtils.h"
-#include "nsImageModule.h"
-#include "nsLayoutStatics.h"
+#include "mozilla/dom/quota/QuotaManagerService.h"
+#include "mozilla/gfx/gfxVars.h"
+#include "mozilla/ipc/IOThread.h"
 #include "nsContentDLF.h"
-#include "nsContentPolicyUtils.h"
-#include "nsDataDocumentContentPolicy.h"
-#include "nsNoDataProtocolContentPolicy.h"
 #include "nsDOMCID.h"
+#include "nsDataDocumentContentPolicy.h"
+#include "nsFocusManager.h"
 #include "nsFrameMessageManager.h"
 #include "nsHTMLContentSerializer.h"
 #include "nsHTMLParts.h"
 #include "nsIContentSerializer.h"
 #include "nsIDocumentViewer.h"
-#include "nsPlainTextSerializer.h"
-#include "nsXMLContentSerializer.h"
-#include "nsXHTMLContentSerializer.h"
-#include "nsFocusManager.h"
-#include "ThirdPartyUtil.h"
-#include "gfxPlatform.h"
-#include "mozilla/gfx/gfxVars.h"
-#include "mozilla/dom/quota/QuotaManagerService.h"
-
 #include "nsIEventListenerService.h"
+#include "nsImageModule.h"
+#include "nsLayoutStatics.h"
+#include "nsNoDataProtocolContentPolicy.h"
+#include "nsPlainTextSerializer.h"
+#include "nsXHTMLContentSerializer.h"
+#include "nsXMLContentSerializer.h"
 
 // view stuff
-#include "nsContentCreatorFunctions.h"
-
 #include "mozilla/dom/LocalStorageCommon.h"
 #include "mozilla/dom/LocalStorageManager.h"
 #include "mozilla/dom/LocalStorageManager2.h"
-#include "mozilla/dom/SessionStorageManager.h"
-
-#ifdef MOZ_WEBSPEECH
-#  include "mozilla/dom/nsSynthVoiceRegistry.h"
-#  include "mozilla/dom/OnlineSpeechRecognitionService.h"
-#endif
-
 #include "mozilla/dom/PushNotifier.h"
+#include "mozilla/dom/SessionStorageManager.h"
+#include "nsContentCreatorFunctions.h"
 using mozilla::dom::PushNotifier;
 #define PUSHNOTIFIER_CID \
   {0x2fc2d3e3, 0x020f, 0x404e, {0xb0, 0x6a, 0x6e, 0xcf, 0x3e, 0xa2, 0x33, 0x4a}}
 
-#include "nsScriptSecurityManager.h"
 #include "nsNetCID.h"
-#if defined(MOZ_WIDGET_ANDROID)
-#  include "nsHapticFeedback.h"
-#endif
 #include "nsParserUtils.h"
+#include "nsScriptSecurityManager.h"
 
 class nsIDocumentLoaderFactory;
 
@@ -90,6 +76,8 @@ void nsLayoutModuleInitialize() {
 
   gInitialized = true;
 
+  mozilla::ipc::IOThread::Startup();
+
   if (NS_FAILED(xpcModuleCtor())) {
     MOZ_CRASH("xpcModuleCtor failed");
   }
@@ -116,7 +104,6 @@ void Shutdown() {
 
 already_AddRefed<nsIDocumentViewer> NS_NewDocumentViewer();
 nsresult NS_NewContentDocumentLoaderFactory(nsIDocumentLoaderFactory** aResult);
-nsresult NS_NewContentPolicy(nsIContentPolicy** aResult);
 
 nsresult NS_NewEventListenerService(nsIEventListenerService** aResult);
 nsresult NS_NewGlobalMessageManager(nsISupports** aResult);
@@ -157,7 +144,6 @@ MAKE_CTOR(CreateXHTMLContentSerializer, nsIContentSerializer,
           NS_NewXHTMLContentSerializer)
 MAKE_CTOR(CreatePlainTextSerializer, nsIContentSerializer,
           NS_NewPlainTextSerializer)
-MAKE_CTOR(CreateContentPolicy, nsIContentPolicy, NS_NewContentPolicy)
 
 MAKE_GENERIC_CTOR(nsIDocumentLoaderFactory, NS_NewContentDocumentLoaderFactory)
 MAKE_GENERIC_CTOR(nsIEventListenerService, NS_NewEventListenerService)

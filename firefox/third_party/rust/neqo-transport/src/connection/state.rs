@@ -6,11 +6,14 @@
 
 use std::{cmp::min, rc::Rc, time::Instant};
 
-use neqo_common::Encoder;
+use neqo_common::{Buffer, Encoder};
 
 use crate::{
-    frame::FrameType, packet::PacketBuilder, path::PathRef, recovery::RecoveryToken, CloseReason,
-    Error,
+    CloseReason, Error,
+    frame::{FrameEncoder as _, FrameType},
+    packet,
+    path::PathRef,
+    recovery,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -106,7 +109,7 @@ impl ClosingFrame {
             // error code needs to be sent in an Initial or Handshake packet.
             Some(Self {
                 path: Rc::clone(&self.path),
-                error: CloseReason::Transport(Error::ApplicationError),
+                error: CloseReason::Transport(Error::Application),
                 frame_type: FrameType::Padding,
                 reason_phrase: Vec::new(),
             })
@@ -120,20 +123,9 @@ impl ClosingFrame {
     /// the value.
     pub const MIN_LENGTH: usize = 1 + 8 + 8 + 2 + 8;
 
-    pub fn write_frame(&self, builder: &mut PacketBuilder) {
+    pub fn write_frame<B: Buffer>(&self, builder: &mut packet::Builder<B>) {
         if builder.remaining() < Self::MIN_LENGTH {
             return;
-        }
-        match &self.error {
-            CloseReason::Transport(e) => {
-                builder.encode_varint(FrameType::ConnectionCloseTransport);
-                builder.encode_varint(e.code());
-                builder.encode_varint(self.frame_type);
-            }
-            CloseReason::Application(code) => {
-                builder.encode_varint(FrameType::ConnectionCloseApplication);
-                builder.encode_varint(*code);
-            }
         }
         // Truncate the reason phrase if it doesn't fit.  As we send this frame in
         // multiple packet number spaces, limit the overall size to 256.
@@ -143,7 +135,21 @@ impl ClosingFrame {
         } else {
             &self.reason_phrase
         };
-        builder.encode_vvec(reason);
+        match &self.error {
+            CloseReason::Transport(e) => {
+                builder.encode_frame(FrameType::ConnectionCloseTransport, |b| {
+                    b.encode_varint(e.code());
+                    b.encode_varint(self.frame_type);
+                    b.encode_vvec(reason);
+                });
+            }
+            CloseReason::Application(code) => {
+                builder.encode_frame(FrameType::ConnectionCloseApplication, |b| {
+                    b.encode_varint(*code);
+                    b.encode_vvec(reason);
+                });
+            }
+        }
     }
 }
 
@@ -176,32 +182,35 @@ impl StateSignaling {
         *self = Self::HandshakeDone;
     }
 
-    pub fn write_done(&mut self, builder: &mut PacketBuilder) -> Option<RecoveryToken> {
+    pub fn write_done<B: Buffer>(
+        &mut self,
+        builder: &mut packet::Builder<B>,
+    ) -> Option<recovery::Token> {
         (matches!(self, Self::HandshakeDone) && builder.remaining() >= 1).then(|| {
             *self = Self::Idle;
-            builder.encode_varint(FrameType::HandshakeDone);
-            RecoveryToken::HandshakeDone
+            builder.encode_frame(FrameType::HandshakeDone, |_| {});
+            recovery::Token::HandshakeDone
         })
     }
 
-    pub fn close(
+    pub fn close<A: AsRef<str>>(
         &mut self,
         path: PathRef,
         error: CloseReason,
         frame_type: FrameType,
-        message: impl AsRef<str>,
+        message: A,
     ) {
         if !matches!(self, Self::Reset) {
             *self = Self::Closing(ClosingFrame::new(path, error, frame_type, message));
         }
     }
 
-    pub fn drain(
+    pub fn drain<A: AsRef<str>>(
         &mut self,
         path: PathRef,
         error: CloseReason,
         frame_type: FrameType,
-        message: impl AsRef<str>,
+        message: A,
     ) {
         if !matches!(self, Self::Reset) {
             *self = Self::Draining(ClosingFrame::new(path, error, frame_type, message));
@@ -237,5 +246,51 @@ impl StateSignaling {
     /// We just got a stateless reset.  Terminate.
     pub fn reset(&mut self) {
         *self = Self::Reset;
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::{State, StateSignaling};
+    use crate::{CloseReason, Error};
+
+    #[test]
+    fn closing_frame_min_length() {
+        // 1 (type) + 8 (error code) + 8 (frame type) + 2 (reason prefix) + 8 (reason capacity).
+        assert_eq!(super::ClosingFrame::MIN_LENGTH, 1 + 8 + 8 + 2 + 8);
+    }
+
+    fn assert_resets_to_reset(mut ss: StateSignaling) {
+        ss.reset();
+        assert!(matches!(ss, StateSignaling::Reset));
+    }
+
+    #[test]
+    fn state_signaling_reset_transitions() {
+        assert_resets_to_reset(StateSignaling::Idle);
+        assert_resets_to_reset(StateSignaling::HandshakeDone);
+    }
+
+    #[test]
+    fn state_predicates() {
+        let now = test_fixture::now();
+        let err = CloseReason::Transport(Error::None);
+        let closing = State::Closing {
+            error: err.clone(),
+            timeout: now,
+        };
+        let draining = State::Draining {
+            error: err.clone(),
+            timeout: now,
+        };
+        let closed = State::Closed(err);
+
+        assert!(!State::Init.connected() && !State::Init.closed() && !State::Init.closing());
+        assert!(!State::WaitInitial.connected() && !State::Handshaking.connected());
+        assert!(State::Connected.connected() && State::Confirmed.connected());
+        assert!(closing.closing() && closing.closed() && closing.error().is_some());
+        assert!(draining.closing() && draining.closed());
+        assert!(!closed.closing() && closed.closed() && closed.error().is_some());
     }
 }

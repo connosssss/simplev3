@@ -1,30 +1,26 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_workerscope_h__
-#define mozilla_dom_workerscope_h__
+#ifndef mozilla_dom_workerscope_h_
+#define mozilla_dom_workerscope_h_
 
 #include "js/TypeDecls.h"
-#include "js/loader/ModuleLoaderBase.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/Maybe.h"
-#include "mozilla/NotNull.h"
 #include "mozilla/RefPtr.h"
-#include "mozilla/UniquePtr.h"
 #include "mozilla/TimeStamp.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/AnimationFrameProvider.h"
 #include "mozilla/dom/ImageBitmapBinding.h"
 #include "mozilla/dom/ImageBitmapSource.h"
 #include "mozilla/dom/PerformanceWorker.h"
 #include "mozilla/dom/SafeRefPtr.h"
+#include "mozilla/dom/TimeoutManager.h"
 #include "mozilla/dom/TrustedTypePolicyFactory.h"
 #include "mozilla/dom/WorkerPrivate.h"
-#include "mozilla/dom/TimeoutManager.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsIGlobalObject.h"
@@ -37,6 +33,10 @@
 
 class nsAtom;
 class nsISerialEventTarget;
+
+namespace JS::loader {
+class ModuleLoaderBase;
+}  // namespace JS::loader
 
 namespace mozilla {
 class ErrorResult;
@@ -79,6 +79,7 @@ class ServiceWorkerDescriptor;
 class ServiceWorkerRegistration;
 class ServiceWorkerRegistrationDescriptor;
 struct StructuredSerializeOptions;
+class TimeoutManager;
 class WorkerDocumentListener;
 class WorkerLocation;
 class WorkerNavigator;
@@ -148,7 +149,7 @@ class WorkerGlobalScopeBase : public DOMEventTargetHelper,
   virtual void Control(const ServiceWorkerDescriptor& aServiceWorker);
 
   // DispatcherTrait implementation
-  nsresult Dispatch(already_AddRefed<nsIRunnable>&& aRunnable) const final;
+  nsresult Dispatch(already_AddRefed<nsIRunnable> aRunnable) const final;
   nsISerialEventTarget* SerialEventTarget() const final;
 
   MOZ_CAN_RUN_SCRIPT
@@ -165,11 +166,7 @@ class WorkerGlobalScopeBase : public DOMEventTargetHelper,
 
   Console* GetConsoleIfExists() const { return mConsole; }
 
-  void InitModuleLoader(JS::loader::ModuleLoaderBase* aModuleLoader) {
-    if (!mModuleLoader) {
-      mModuleLoader = aModuleLoader;
-    }
-  }
+  void InitModuleLoader(JS::loader::ModuleLoaderBase* aModuleLoader);
 
   // The nullptr here is not used, but is required to make the override method
   // have the same signature as other GetModuleLoader methods on globals.
@@ -323,8 +320,7 @@ class WorkerGlobalScope : public WorkerGlobalScopeBase {
   bool IsEligibleForMessaging() final;
 
   void ReportToConsole(uint32_t aErrorFlags, const nsCString& aCategory,
-                       nsContentUtils::PropertiesFile aFile,
-                       const nsCString& aMessageName,
+                       PropertiesFile aFile, const nsCString& aMessageName,
                        const nsTArray<nsString>& aParams,
                        const mozilla::SourceLocation& aLocation) final;
 
@@ -343,7 +339,7 @@ class WorkerGlobalScope : public WorkerGlobalScopeBase {
   MOZ_CAN_RUN_SCRIPT void ImportScripts(
       JSContext* aCx,
       const Sequence<OwningTrustedScriptURLOrString>& aScriptURLs,
-      ErrorResult& aRv);
+      nsIPrincipal* aSubjectPrincipal, ErrorResult& aRv);
 
   OnErrorEventHandlerNonNull* GetOnerror();
 
@@ -419,12 +415,7 @@ class WorkerGlobalScope : public WorkerGlobalScopeBase {
 
   WebTaskScheduler* Scheduler();
   WebTaskScheduler* GetExistingScheduler() const;
-  void SetWebTaskSchedulingState(WebTaskSchedulingState* aState) override;
   bool HasScheduledNormalOrHighPriorityWebTasks() const override;
-
-  WebTaskSchedulingState* GetWebTaskSchedulingState() const override {
-    return mWebTaskSchedulingState;
-  }
 
   bool WindowInteractionAllowed() const;
 
@@ -460,7 +451,6 @@ class WorkerGlobalScope : public WorkerGlobalScopeBase {
   RefPtr<cache::CacheStorage> mCacheStorage;
   RefPtr<DebuggerNotificationManager> mDebuggerNotificationManager;
   RefPtr<WebTaskSchedulerWorker> mWebTaskScheduler;
-  RefPtr<WebTaskSchedulingState> mWebTaskSchedulingState;
   RefPtr<TrustedTypePolicyFactory> mTrustedTypePolicyFactory;
   uint32_t mWindowInteractionsAllowed = 0;
   bool mIsEligibleForMessaging{true};
@@ -645,4 +635,4 @@ inline nsISupports* ToSupports(mozilla::dom::WorkerGlobalScope* aScope) {
   return static_cast<mozilla::dom::EventTarget*>(aScope);
 }
 
-#endif /* mozilla_dom_workerscope_h__ */
+#endif /* mozilla_dom_workerscope_h_ */

@@ -57,12 +57,28 @@ let mockedInternal = {
 
 add_setup(async function () {
   const getSignedInUser = FxAccounts.config.getSignedInUser;
+
   FxAccounts.config.getSignedInUser = async () =>
     Promise.resolve({ uid: "uid", email: "foo@bar.com" });
+
   Services.prefs.setCharPref(
     "identity.fxaccounts.remote.root",
     "https://example.com/"
   );
+
+  // Mock the global fxAccounts object used by gSync
+  const origWindowFxAccounts = window.fxAccounts;
+  window.fxAccounts = {
+    getSignedInUser: async () => ({ uid: "uid", email: "foo@bar.com" }),
+    hasLocalSession: async () => true,
+    keys: {
+      canGetKeyForScope: async () => true,
+    },
+    device: {
+      getLocalName: () => "Test Device",
+      recentDeviceList: null,
+    },
+  };
 
   let oldInternal = SyncedTabs._internal;
   SyncedTabs._internal = mockedInternal;
@@ -78,6 +94,7 @@ add_setup(async function () {
     FxAccounts.config.getSignedInUser = getSignedInUser;
     Services.prefs.clearUserPref("identity.fxaccounts.remote.root");
     UIState._internal.notifyStateUpdated = origNotifyStateUpdated;
+    window.fxAccounts = origWindowFxAccounts;
     SyncedTabs._internal = oldInternal;
   });
 });
@@ -146,12 +163,6 @@ async function openPrefsFromMenuPanel(expectedPanelId, entryPoint) {
   if (isOverflowOpen()) {
     await hideOverflow();
   }
-}
-
-function hideOverflow() {
-  let panelHidePromise = promiseOverflowHidden(window);
-  PanelUI.overflowPanel.hidePopup();
-  return panelHidePromise;
 }
 
 async function asyncCleanup() {
@@ -320,6 +331,7 @@ add_task(async function () {
         tabs: [
           {
             title: "http://example.com/6",
+            icon: "http://example.com/favicon.ico",
             lastUsed: 6,
           },
         ],
@@ -338,10 +350,10 @@ add_task(async function () {
   node = node.firstElementChild;
   is(node.getAttribute("itemtype"), "client", "node is a client entry");
   is(node.textContent, "My Desktop", "correct client");
-  // Next node is an hbox, that contains the tab and potentially
+  // Next node is a toolbaritem, that contains the tab and potentially
   // a button for closing the tab remotely
   node = node.nextElementSibling;
-  is(node.nodeName, "hbox");
+  is(node.nodeName, "toolbaritem");
   // Next entry is the most-recent tab
   let childNode = node.firstElementChild;
   is(childNode.getAttribute("itemtype"), "tab", "node is a tab");
@@ -349,14 +361,14 @@ add_task(async function () {
 
   // Next entry is the next-most-recent tab
   node = node.nextElementSibling;
-  is(node.nodeName, "hbox");
+  is(node.nodeName, "toolbaritem");
   childNode = node.firstElementChild;
   is(childNode.getAttribute("itemtype"), "tab", "node is a tab");
   is(childNode.getAttribute("label"), "http://example.com/5");
 
   // Next entry is the least-recent tab from the first client.
   node = node.nextElementSibling;
-  is(node.nodeName, "hbox");
+  is(node.nodeName, "toolbaritem");
   childNode = node.firstElementChild;
   is(childNode.getAttribute("itemtype"), "tab", "node is a tab");
   is(childNode.getAttribute("label"), "http://example.com/1");
@@ -378,10 +390,17 @@ add_task(async function () {
   is(node.textContent, "My Other Desktop", "correct client");
   // Its single tab
   node = node.nextElementSibling;
-  is(node.nodeName, "hbox");
+  is(node.nodeName, "toolbaritem");
   childNode = node.firstElementChild;
   is(childNode.getAttribute("itemtype"), "tab", "node is a tab");
   is(childNode.getAttribute("label"), "http://example.com/6");
+  // In the browser the URL will have been re-written to a "moz-remote-image:" URL - however, the way we
+  // mock the remote tabs bypasses that. Tests for that functionality are in sync's test_syncedtabs.js test.
+  is(
+    childNode.getAttribute("image"),
+    "http://example.com/favicon.ico",
+    "image url is correct"
+  );
   node = node.nextElementSibling;
   is(node, null, "no more siblings");
 
@@ -435,6 +454,8 @@ add_task(async function () {
   ok(didSync, "clicking the button called the correct function");
 
   await hideOverflow();
+
+  await SpecialPowers.popPrefEnv();
 });
 
 // Test the pagination capabilities (Show More/All tabs)
@@ -491,7 +512,7 @@ add_task(async function () {
     is(node.textContent, "My Desktop", "correct client");
     for (let i = 0; i < tabsShownCount; i++) {
       node = node.nextElementSibling;
-      is(node.nodeName, "hbox");
+      is(node.nodeName, "toolbaritem");
       let childNode = node.firstElementChild;
       is(childNode.getAttribute("itemtype"), "tab", "node is a tab");
       is(

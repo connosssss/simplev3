@@ -157,11 +157,7 @@ async function testScriptOverrideWithOptions(options) {
     monitor,
     scriptRequest,
     overrideFileName,
-    OVERRIDDEN_SCRIPT,
-    // If cache is used and the navigation cache is enabled, the response is
-    // not available.
-    Services.prefs.getBoolPref("dom.script_loader.navigation_cache") &&
-      options.enableCache
+    OVERRIDDEN_SCRIPT
   );
 
   // Assert override column is checked but disabled in context menu
@@ -317,7 +313,7 @@ add_task(async function testStylesheetOverrideWithCache() {
 });
 
 async function assertOverriddenResponseTab(doc, request, overrideFileName) {
-  EventUtils.sendMouseEvent({ type: "mousedown" }, request);
+  clickOnRequestRow(request);
   await waitFor(
     () => doc.querySelector("#response-tab"),
     "Wait for the response tab to be displayed"

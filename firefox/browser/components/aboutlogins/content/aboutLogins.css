@@ -3,9 +3,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 :root {
-  --logins-dialog-shadow: var(--box-shadow-popup);
-  --logins-dialog-border: 1px solid var(--border-color-card);
-  --logins-dialog-border-radius: var(--border-radius-medium);
+  --logins-dialog-shadow: var(--dialog-box-shadow);
+  --logins-dialog-border: var(--border-width) solid var(--dialog-border-color);
+  --logins-dialog-border-radius: var(--dialog-border-radius);
+  --logins-dialog-background-color: var(--dialog-background-color);
 }
 
 html {
@@ -34,7 +35,7 @@ header {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  background-color: var(--in-content-page-background);
+  background-color: var(--background-color-canvas);
   padding-block: 9px;
   padding-inline-start: 16px;
   padding-inline-end: 23px;
@@ -72,7 +73,7 @@ login-item[data-editing="true"] + login-intro,
   display: flex;
   justify-content: center;
   width: var(--sidebar-width);
-  font-weight: 600;
+  font-weight: var(--font-weight-heading);
 }
 
 :root:not(.primary-password-auth-required) #primary-password-required-overlay {
@@ -90,7 +91,7 @@ login-item[data-editing="true"] + login-intro,
   position: fixed;
   width: 100vw;
   height: 100vh;
-  background-color: rgba(0, 0, 0, 0.2);
+  background-color: var(--background-color-overlay);
 }
 
 body > section {

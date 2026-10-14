@@ -1,20 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsTreeSelection.h"
+
+#include "XULTreeElement.h"
 #include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/dom/Element.h"
 #include "nsCOMPtr.h"
-#include "nsTreeSelection.h"
-#include "XULTreeElement.h"
-#include "nsITreeView.h"
-#include "nsString.h"
-#include "nsIContent.h"
-#include "nsNameSpaceManager.h"
-#include "nsGkAtoms.h"
 #include "nsComponentManagerUtils.h"
+#include "nsGkAtoms.h"
+#include "nsIContent.h"
+#include "nsITreeView.h"
+#include "nsNameSpaceManager.h"
+#include "nsString.h"
 #include "nsTreeColumns.h"
 
 using namespace mozilla;
@@ -346,7 +345,7 @@ NS_IMETHODIMP nsTreeSelection::TimedSelect(int32_t aIndex, int32_t aMsec) {
       nsIEventTarget* target = GetMainThreadSerialEventTarget();
       NS_NewTimerWithFuncCallback(getter_AddRefs(mSelectTimer), SelectCallback,
                                   this, aMsec, nsITimer::TYPE_ONE_SHOT,
-                                  "nsTreeSelection::SelectCallback", target);
+                                  "nsTreeSelection::SelectCallback"_ns, target);
     }
   }
 
@@ -654,7 +653,7 @@ NS_IMETHODIMP nsTreeSelection::SetCurrentIndex(int32_t aIndex) {
   constexpr auto DOMMenuItemActive = u"DOMMenuItemActive"_ns;
   constexpr auto DOMMenuItemInactive = u"DOMMenuItemInactive"_ns;
 
-  RefPtr<AsyncEventDispatcher> asyncDispatcher = new AsyncEventDispatcher(
+  auto asyncDispatcher = MakeRefPtr<AsyncEventDispatcher>(
       mTree, (aIndex != -1 ? DOMMenuItemActive : DOMMenuItemInactive),
       CanBubble::eYes, ChromeOnlyDispatch::eNo);
   return asyncDispatcher->PostDOMEvent();

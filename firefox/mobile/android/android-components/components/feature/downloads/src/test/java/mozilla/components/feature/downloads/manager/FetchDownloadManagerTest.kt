@@ -13,8 +13,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Looper.getMainLooper
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlin.test.assertNotNull
 import mozilla.components.browser.state.state.content.DownloadState
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.fetch.Client
@@ -22,17 +22,20 @@ import mozilla.components.feature.downloads.AbstractFetchDownloadService
 import mozilla.components.feature.downloads.AbstractFetchDownloadService.Companion.EXTRA_DOWNLOAD_STATUS
 import mozilla.components.feature.downloads.DownloadEstimator
 import mozilla.components.feature.downloads.FileSizeFormatter
-import mozilla.components.feature.downloads.fake.FakeDateTimeProvider
+import mozilla.components.feature.downloads.fake.FakeDownloadFileWriter
 import mozilla.components.feature.downloads.fake.FakeFileSizeFormatter
+import mozilla.components.feature.downloads.fake.FakePackageNameProvider
+import mozilla.components.feature.downloads.filewriter.DownloadFileWriter
 import mozilla.components.support.base.android.NotificationsDelegate
 import mozilla.components.support.test.any
-import mozilla.components.support.test.libstate.ext.waitUntilIdle
 import mozilla.components.support.test.mock
 import mozilla.components.support.test.robolectric.grantPermission
 import mozilla.components.support.test.robolectric.testContext
+import mozilla.components.support.utils.DownloadFileUtils
+import mozilla.components.support.utils.FakeDateTimeProvider
+import mozilla.components.support.utils.FakeDownloadFileUtils
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -47,7 +50,6 @@ import org.robolectric.Shadows.shadowOf
 @RunWith(AndroidJUnit4::class)
 class FetchDownloadManagerTest {
 
-    private lateinit var broadcastManager: LocalBroadcastManager
     private lateinit var service: MockDownloadService
     private lateinit var download: DownloadState
     private lateinit var downloadManager: FetchDownloadManager<MockDownloadService>
@@ -56,23 +58,25 @@ class FetchDownloadManagerTest {
 
     @Before
     fun setup() {
-        broadcastManager = LocalBroadcastManager.getInstance(testContext)
         service = MockDownloadService()
         store = BrowserStore()
         notificationsDelegate = mock()
-        download = DownloadState(
-            "http://ipv4.download.thinkbroadband.com/5MB.zip",
-            "",
-            "application/zip",
-            5242880,
-            userAgent = "Mozilla/5.0 (Linux; Android 7.1.1) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Focus/8.0 Chrome/69.0.3497.100 Mobile Safari/537.36",
-        )
-        downloadManager = FetchDownloadManager(
-            testContext,
-            store,
-            MockDownloadService::class,
-            notificationsDelegate = notificationsDelegate,
-        )
+        download =
+            DownloadState(
+                "http://ipv4.download.thinkbroadband.com/5MB.zip",
+                "",
+                "application/zip",
+                5242880,
+                userAgent =
+                    "Mozilla/5.0 (Linux; Android 7.1.1) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Focus/8.0 Chrome/69.0.3497.100 Mobile Safari/537.36",
+            )
+        downloadManager =
+            FetchDownloadManager(
+                testContext,
+                store,
+                MockDownloadService::class,
+                notificationsDelegate = notificationsDelegate,
+            )
     }
 
     @Test(expected = SecurityException::class)
@@ -90,7 +94,6 @@ class FetchDownloadManagerTest {
 
         assertTrue(store.state.downloads.isEmpty())
         val id = downloadManager.download(download)!!
-        store.waitUntilIdle()
         assertEquals(download, store.state.downloads[download.id])
 
         notifyDownloadCompleted(id)
@@ -109,7 +112,6 @@ class FetchDownloadManagerTest {
 
         assertTrue(store.state.downloads.isEmpty())
         val id = downloadManager.download(download)!!
-        store.waitUntilIdle()
         assertEquals(download, store.state.downloads[download.id])
 
         // Excluding the EXTRA_DOWNLOAD_STATUS
@@ -126,12 +128,13 @@ class FetchDownloadManagerTest {
     @Test
     fun `calling tryAgain starts the download again`() {
         val context = spy(testContext)
-        downloadManager = FetchDownloadManager(
-            context,
-            store,
-            MockDownloadService::class,
-            notificationsDelegate = notificationsDelegate,
-        )
+        downloadManager =
+            FetchDownloadManager(
+                context,
+                store,
+                MockDownloadService::class,
+                notificationsDelegate = notificationsDelegate,
+            )
         var downloadStopped = false
 
         downloadManager.onDownloadStopped = { _, _, _ -> downloadStopped = true }
@@ -139,7 +142,6 @@ class FetchDownloadManagerTest {
         grantPermissions()
 
         val id = downloadManager.download(download)!!
-        store.waitUntilIdle()
         notifyDownloadFailed(id)
         shadowOf(getMainLooper()).idle()
         assertTrue(downloadStopped)
@@ -178,12 +180,13 @@ class FetchDownloadManagerTest {
     @Test
     fun `try again should not crash when download does not exist`() {
         val context: Context = mock()
-        downloadManager = FetchDownloadManager(
-            context,
-            store,
-            MockDownloadService::class,
-            notificationsDelegate = notificationsDelegate,
-        )
+        downloadManager =
+            FetchDownloadManager(
+                context,
+                store,
+                MockDownloadService::class,
+                notificationsDelegate = notificationsDelegate,
+            )
         grantPermissions()
         val id = downloadManager.download(download)!!
 
@@ -202,8 +205,7 @@ class FetchDownloadManagerTest {
 
     @Test
     fun `trying to download a file with a blob scheme should trigger a download`() {
-        val validBlobDownload =
-            download.copy(url = "blob:https://ipv4.download.thinkbroadband.com/5MB.zip")
+        val validBlobDownload = download.copy(url = "blob:https://ipv4.download.thinkbroadband.com/5MB.zip")
         grantPermissions()
 
         val id = downloadManager.download(validBlobDownload)!!
@@ -213,7 +215,10 @@ class FetchDownloadManagerTest {
     @Test
     fun `trying to download a file with a moz-extension scheme should trigger a download`() {
         val validBlobDownload =
-            download.copy(url = "moz-extension://db84fb8b-909c-4270-8567-0e947ffe379f/readerview.html?id=1&url=https%3A%2F%2Fmozilla.org")
+            download.copy(
+                url =
+                    "moz-extension://db84fb8b-909c-4270-8567-0e947ffe379f/readerview.html?id=1&url=https%3A%2F%2Fmozilla.org"
+            )
         grantPermissions()
 
         val id = downloadManager.download(validBlobDownload)!!
@@ -233,11 +238,11 @@ class FetchDownloadManagerTest {
             downloadStopped = true
         }
 
-        val id = downloadManager.download(
-            downloadWithFileName,
-            cookie = "yummy_cookie=choco",
-        )!!
-        store.waitUntilIdle()
+        val id =
+            downloadManager.download(
+                downloadWithFileName,
+                cookie = "yummy_cookie=choco",
+            )!!
 
         notifyDownloadCompleted(id)
         shadowOf(getMainLooper()).idle()
@@ -256,17 +261,16 @@ class FetchDownloadManagerTest {
             downloadStatus = status
         }
 
-        val id = downloadManager.download(
-            downloadWithFileName,
-            cookie = "yummy_cookie=choco",
-        )!!
-        store.waitUntilIdle()
+        val id =
+            downloadManager.download(
+                downloadWithFileName,
+                cookie = "yummy_cookie=choco",
+            )!!
         assertEquals(downloadWithFileName, store.state.downloads[downloadWithFileName.id])
 
         notifyDownloadCompleted(id)
         shadowOf(getMainLooper()).idle()
 
-        store.waitUntilIdle()
         assertEquals(DownloadState.Status.COMPLETED, downloadStatus)
     }
 
@@ -288,7 +292,6 @@ class FetchDownloadManagerTest {
         }
 
         val id = downloadManager.download(downloadWithFileName)!!
-        store.waitUntilIdle()
         notifyDownloadCompleted(id)
         shadowOf(getMainLooper()).idle()
 
@@ -320,11 +323,12 @@ class FetchDownloadManagerTest {
 
     class MockDownloadService : AbstractFetchDownloadService() {
         override val httpClient: Client = mock()
-        override val store: BrowserStore = mock()
+        override val store: BrowserStore = BrowserStore()
         override val notificationsDelegate: NotificationsDelegate = mock()
         override val fileSizeFormatter: FileSizeFormatter = FakeFileSizeFormatter()
-        override val downloadEstimator: DownloadEstimator = DownloadEstimator(
-            FakeDateTimeProvider(),
-        )
+        override val downloadEstimator: DownloadEstimator = DownloadEstimator(FakeDateTimeProvider())
+        override val downloadFileUtils: DownloadFileUtils = FakeDownloadFileUtils()
+        override val packageNameProvider = FakePackageNameProvider("org.mozilla.fenix.test")
+        override val downloadFileWriter: DownloadFileWriter = FakeDownloadFileWriter()
     }
 }

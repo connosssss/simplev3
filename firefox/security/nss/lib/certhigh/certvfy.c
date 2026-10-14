@@ -157,6 +157,17 @@ checkKeyParams(const SECAlgorithmID *sigAlgorithm, const SECKEYPublicKey *key)
             }
 
             return SECSuccess;
+        case SEC_OID_ML_DSA_44:
+        case SEC_OID_ML_DSA_65:
+        case SEC_OID_ML_DSA_87:
+            if (key->keyType != mldsaKey) {
+                PORT_SetError(SEC_ERROR_INVALID_ALGORITHM);
+                return SECFailure;
+            }
+            if (key->u.mldsa.paramSet != sigAlg) {
+                PORT_SetError(SEC_ERROR_INVALID_ALGORITHM);
+                return SECFailure;
+            }
         default:
             return SECSuccess;
     }
@@ -736,7 +747,7 @@ cert_VerifyCertChainOld(CERTCertDBHandle *handle, CERTCertificate *cert,
                 certsList = tmpCertsList;
             }
             for (i = 0; i < subjectNameListLen; i++) {
-                certsList[namesCount + i] = subjectCert;
+                certsList[namesCount + i] = CERT_DupCertificate(subjectCert);
             }
             namesCount += subjectNameListLen;
             namesList = cert_CombineNamesLists(namesList, subjectNameList);
@@ -993,6 +1004,11 @@ loser:
     rv = SECFailure;
 done:
     if (certsList != NULL) {
+        for (int i = 0; i < namesCount; i++) {
+            if (certsList[i]) {
+                CERT_DestroyCertificate(certsList[i]);
+            }
+        }
         PORT_Free(certsList);
     }
     if (issuerCert) {
@@ -1712,116 +1728,6 @@ CERT_VerifyCertNow(CERTCertDBHandle *handle, CERTCertificate *cert,
                             certUsage, PR_Now(), wincx, NULL));
 }
 
-/* [ FROM pcertdb.c ] */
-/*
- * Supported usage values and types:
- *  certUsageSSLClient
- *  certUsageSSLServer
- *  certUsageSSLServerWithStepUp
- *  certUsageIPsec
- *  certUsageEmailSigner
- *  certUsageEmailRecipient
- *  certUsageObjectSigner
- */
-
-CERTCertificate *
-CERT_FindMatchingCert(CERTCertDBHandle *handle, SECItem *derName,
-                      CERTCertOwner owner, SECCertUsage usage,
-                      PRBool preferTrusted, PRTime validTime, PRBool validOnly)
-{
-    CERTCertList *certList = NULL;
-    CERTCertificate *cert = NULL;
-    CERTCertTrust certTrust;
-    unsigned int requiredTrustFlags;
-    SECTrustType requiredTrustType;
-    unsigned int flags;
-
-    PRBool lookingForCA = PR_FALSE;
-    SECStatus rv;
-    CERTCertListNode *node;
-    CERTCertificate *saveUntrustedCA = NULL;
-
-    /* if preferTrusted is set, must be a CA cert */
-    PORT_Assert(!(preferTrusted && (owner != certOwnerCA)));
-
-    if (owner == certOwnerCA) {
-        lookingForCA = PR_TRUE;
-        if (preferTrusted) {
-            rv = CERT_TrustFlagsForCACertUsage(usage, &requiredTrustFlags,
-                                               &requiredTrustType);
-            if (rv != SECSuccess) {
-                goto loser;
-            }
-            requiredTrustFlags |= CERTDB_VALID_CA;
-        }
-    }
-
-    certList = CERT_CreateSubjectCertList(NULL, handle, derName, validTime,
-                                          validOnly);
-    if (certList != NULL) {
-        rv = CERT_FilterCertListByUsage(certList, usage, lookingForCA);
-        if (rv != SECSuccess) {
-            goto loser;
-        }
-
-        node = CERT_LIST_HEAD(certList);
-
-        while (!CERT_LIST_END(node, certList)) {
-            cert = node->cert;
-
-            /* looking for a trusted CA cert */
-            if ((owner == certOwnerCA) && preferTrusted &&
-                (requiredTrustType != trustTypeNone)) {
-
-                if (CERT_GetCertTrust(cert, &certTrust) != SECSuccess) {
-                    flags = 0;
-                } else {
-                    flags = SEC_GET_TRUST_FLAGS(&certTrust, requiredTrustType);
-                }
-
-                if ((flags & requiredTrustFlags) != requiredTrustFlags) {
-                    /* cert is not trusted */
-                    /* if this is the first cert to get this far, then save
-                     * it, so we can use it if we can't find a trusted one
-                     */
-                    if (saveUntrustedCA == NULL) {
-                        saveUntrustedCA = cert;
-                    }
-                    goto endloop;
-                }
-            }
-            /* if we got this far, then this cert meets all criteria */
-            break;
-
-        endloop:
-            node = CERT_LIST_NEXT(node);
-            cert = NULL;
-        }
-
-        /* use the saved one if we have it */
-        if (cert == NULL) {
-            cert = saveUntrustedCA;
-        }
-
-        /* if we found one then bump the ref count before freeing the list */
-        if (cert != NULL) {
-            /* bump the ref count */
-            cert = CERT_DupCertificate(cert);
-        }
-
-        CERT_DestroyCertList(certList);
-    }
-
-    return (cert);
-
-loser:
-    if (certList != NULL) {
-        CERT_DestroyCertList(certList);
-    }
-
-    return (NULL);
-}
-
 /* [ From certdb.c ] */
 /*
  * Filter a list of certificates, removing those certs that do not have
@@ -2065,70 +1971,6 @@ loser:
     return (NULL);
 }
 
-/*
- * Extract the nickname from a nickmake string that may have either
- * expiredString or notYetGoodString appended.
- *
- * Args:
- *  "namestring" - the string containing the nickname, and possibly
- *      one of the validity label strings
- *  "expiredString" - the expired validity label string
- *  "notYetGoodString" - the not yet good validity label string
- *
- * Returns the raw nickname
- */
-char *
-CERT_ExtractNicknameString(char *namestring, char *expiredString,
-                           char *notYetGoodString)
-{
-    int explen, nyglen, namelen;
-    int retlen;
-    char *retstr;
-
-    namelen = PORT_Strlen(namestring);
-    explen = PORT_Strlen(expiredString);
-    nyglen = PORT_Strlen(notYetGoodString);
-
-    if (namelen > explen) {
-        if (PORT_Strcmp(expiredString, &namestring[namelen - explen]) == 0) {
-            retlen = namelen - explen;
-            retstr = (char *)PORT_Alloc(retlen + 1);
-            if (retstr == NULL) {
-                goto loser;
-            }
-
-            PORT_Memcpy(retstr, namestring, retlen);
-            retstr[retlen] = '\0';
-            goto done;
-        }
-    }
-
-    if (namelen > nyglen) {
-        if (PORT_Strcmp(notYetGoodString, &namestring[namelen - nyglen]) == 0) {
-            retlen = namelen - nyglen;
-            retstr = (char *)PORT_Alloc(retlen + 1);
-            if (retstr == NULL) {
-                goto loser;
-            }
-
-            PORT_Memcpy(retstr, namestring, retlen);
-            retstr[retlen] = '\0';
-            goto done;
-        }
-    }
-
-    /* if name string is shorter than either invalid string, then it must
-     * be a raw nickname
-     */
-    retstr = PORT_Strdup(namestring);
-
-done:
-    return (retstr);
-
-loser:
-    return (NULL);
-}
-
 CERTCertList *
 CERT_GetCertChainFromCert(CERTCertificate *cert, PRTime time, SECCertUsage usage)
 {
@@ -2147,6 +1989,7 @@ CERT_GetCertChainFromCert(CERTCertificate *cert, PRTime time, SECCertUsage usage
 
     chain = CERT_NewCertList();
     if (NULL == chain) {
+        CERT_DestroyCertificate(cert);
         PORT_SetError(SEC_ERROR_NO_MEMORY);
         return NULL;
     }
@@ -2154,6 +1997,7 @@ CERT_GetCertChainFromCert(CERTCertificate *cert, PRTime time, SECCertUsage usage
     while (cert != NULL && ++count <= CERT_MAX_CERT_CHAIN) {
         if (SECSuccess != CERT_AddCertToListTail(chain, cert)) {
             /* return partial chain */
+            CERT_DestroyCertificate(cert);
             PORT_SetError(SEC_ERROR_NO_MEMORY);
             return chain;
         }
@@ -2167,6 +2011,7 @@ CERT_GetCertChainFromCert(CERTCertificate *cert, PRTime time, SECCertUsage usage
     }
 
     /* return partial chain */
+    CERT_DestroyCertificate(cert);
     PORT_SetError(SEC_ERROR_UNKNOWN_ISSUER);
     return chain;
 }

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-// vim:cindent:ai:sw=4:ts=4:et:
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,11 +7,10 @@
 #ifndef nsCounterManager_h_
 #define nsCounterManager_h_
 
-#include "mozilla/Attributes.h"
-#include "nsGenConList.h"
-#include "nsClassHashtable.h"
-#include "mozilla/Likely.h"
 #include "CounterStyleManager.h"
+#include "mozilla/Likely.h"
+#include "nsClassHashtable.h"
+#include "nsGenConList.h"
 
 class nsCounterList;
 struct nsCounterUseNode;
@@ -290,6 +287,9 @@ class nsCounterManager {
  public:
   explicit nsCounterManager(mozilla::ContainStyleScope* scope)
       : mScope(scope) {}
+
+  // Whether aFrame resets, increments or sets any counter.
+  static bool HasCounterChanges(const nsIFrame* aFrame);
 
   // Returns true if dirty
   bool AddCounterChanges(nsIFrame* aFrame);

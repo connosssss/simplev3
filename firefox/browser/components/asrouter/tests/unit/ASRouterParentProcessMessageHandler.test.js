@@ -107,14 +107,14 @@ describe("ASRouterParentProcessMessageHandler", () => {
           type: msg.USER_ACTION,
           data: { id: 1 },
         },
-        { ownerGlobal: {} }
+        { documentGlobal: {} }
       );
       assert.notCalled(config.sendTelemetry);
       assert.calledOnce(config.specialMessageActions.handleAction);
       assert.calledWith(
         config.specialMessageActions.handleAction,
         { id: 1 },
-        { ownerGlobal: {} }
+        { documentGlobal: {} }
       );
     });
     [
@@ -176,13 +176,13 @@ describe("ASRouterParentProcessMessageHandler", () => {
           {
             type: "SOMETHING",
           },
-          { browser: { ownerGlobal: {} } }
+          { browser: { documentGlobal: {} } }
         );
         assert.calledOnce(config.specialMessageActions.handleAction);
         assert.calledWith(
           config.specialMessageActions.handleAction,
           { type: "SOMETHING" },
-          { ownerGlobal: {} }
+          { documentGlobal: {} }
         );
       });
     });
@@ -201,12 +201,12 @@ describe("ASRouterParentProcessMessageHandler", () => {
           {
             trigger: { stuff: {} },
           },
-          { id: 100, browser: { ownerGlobal: {} } }
+          { id: 100, browser: { documentGlobal: {} } }
         );
         assert.calledOnce(config.router.sendTriggerMessage);
         assert.calledWith(config.router.sendTriggerMessage, {
           stuff: {},
-          browser: { ownerGlobal: {} },
+          browser: { documentGlobal: {} },
         });
         assert.deepEqual(result, { value: 1 });
       });
@@ -310,10 +310,10 @@ describe("ASRouterParentProcessMessageHandler", () => {
         handler.handleMessage(
           msg.FORCE_PRIVATE_BROWSING_WINDOW,
           {},
-          { browser: { ownerGlobal: {} } }
+          { browser: { documentGlobal: {} } }
         );
         assert.calledOnce(config.router.forcePBWindow);
-        assert.calledWith(config.router.forcePBWindow, { ownerGlobal: {} });
+        assert.calledWith(config.router.forcePBWindow, { documentGlobal: {} });
       });
     });
     describe("MODIFY_MESSAGE_JSON action", () => {
@@ -325,13 +325,13 @@ describe("ASRouterParentProcessMessageHandler", () => {
               text: "something",
             },
           },
-          { browser: { ownerGlobal: {} }, id: 100 }
+          { browser: { documentGlobal: {} }, id: 100 }
         );
         assert.calledOnce(config.router.routeCFRMessage);
         assert.calledWith(
           config.router.routeCFRMessage,
           { text: "something" },
-          { ownerGlobal: {} },
+          { documentGlobal: {} },
           { content: { text: "something" } },
           true
         );
@@ -345,11 +345,11 @@ describe("ASRouterParentProcessMessageHandler", () => {
           {
             id: 1,
           },
-          { id: 100, browser: { ownerGlobal: {} } }
+          { id: 100, browser: { documentGlobal: {} } }
         );
         assert.calledOnce(config.router.setMessageById);
         assert.calledWith(config.router.setMessageById, { id: 1 }, true, {
-          ownerGlobal: {},
+          documentGlobal: {},
         });
         assert.deepEqual(result, { value: 1 });
       });
@@ -396,6 +396,20 @@ describe("ASRouterParentProcessMessageHandler", () => {
       it("default calls editState with correct args", () => {
         handler.handleMessage(msg.EDIT_STATE, { property: "value" });
         assert.calledWith(config.router.editState, "property", "value");
+      });
+    });
+    describe("AW_GET_ACTIVE_THEME_ID action", () => {
+      it("default returns the active theme id from prefs", async () => {
+        sandbox
+          .stub(global.Services.prefs, "getStringPref")
+          .returns("nova-flare@mozilla.org");
+        const result = await handler.handleMessage(msg.AW_GET_ACTIVE_THEME_ID);
+        assert.calledWith(
+          global.Services.prefs.getStringPref,
+          "extensions.activeThemeID",
+          ""
+        );
+        assert.equal(result, "nova-flare@mozilla.org");
       });
     });
   });

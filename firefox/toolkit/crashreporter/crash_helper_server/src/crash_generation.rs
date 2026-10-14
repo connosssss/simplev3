@@ -2,48 +2,52 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-pub mod crash_annotations {
-    include!(concat!(env!("OUT_DIR"), "/crash_annotations.rs"));
-}
+use super::{
+    breakpad_crash_generator::{BreakpadCrashGenerator, BreakpadProcessId},
+    phc::{self, StackTrace},
+};
+
+#[cfg(any(target_os = "android", target_os = "linux"))]
+mod linux;
+#[cfg(any(target_os = "android", target_os = "linux"))]
+pub(crate) use linux::get_auxv_info;
+#[cfg(any(target_os = "android", target_os = "linux"))]
+use linux::create_platform_specific_annotations;
+
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+mod macos;
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+use macos::create_platform_specific_annotations;
 
 #[cfg(target_os = "windows")]
 mod windows;
+#[cfg(target_os = "windows")]
+use windows::create_platform_specific_annotations;
 
-use anyhow::{bail, Result};
-use crash_annotations::{
-    should_include_annotation, type_of_annotation, CrashAnnotation, CrashAnnotationType,
-};
+use anyhow::{Context, Result};
 use crash_helper_common::{
-    messages::{self, Message},
-    AncillaryData, BreakpadChar, BreakpadData, BreakpadString, IPCConnector, Pid,
+    ApplicationInfo, AsRawProcessHandle, AsRawThreadHandle, BreakpadChar, BreakpadString,
+    ExtraCrashData, GeckoChildId, Pid, ProcessHandle, RawProcessHandle, ThreadHandle,
+    crash_annotations::{
+        CrashAnnotation, CrashAnnotationType, should_include_annotation, type_of_annotation,
+    },
 };
-#[cfg(any(target_os = "android", target_os = "linux"))]
-use minidump_writer::minidump_writer::DirectAuxvDumpInfo;
-use mozannotation_server::{AnnotationData, CAnnotation};
+use mozannotation_server::{AnnotationData, CAnnotation, errors::AnnotationsRetrievalError};
 use num_traits::FromPrimitive;
-use once_cell::sync::Lazy;
 use std::{
     collections::HashMap,
     convert::TryInto,
-    ffi::{c_char, CStr, CString, OsStr, OsString},
+    ffi::{c_void, CString, OsStr, OsString},
     fs::File,
     io::{Seek, SeekFrom, Write},
     mem::size_of,
     path::{Path, PathBuf},
-    process,
-    sync::Mutex,
-};
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::Foundation::HANDLE;
-
-use crate::{
-    breakpad_crash_generator::BreakpadCrashGenerator,
-    phc::{self, StackTrace},
+    sync::{Mutex, OnceLock},
 };
 
-struct CrashReport {
-    path: OsString,
-    error: Option<CString>,
+pub(crate) struct CrashReport {
+    pub(crate) path: OsString,
+    pub(crate) error: Option<CString>,
 }
 
 impl CrashReport {
@@ -55,169 +59,202 @@ impl CrashReport {
     }
 }
 
-// Table holding all the crash reports we've generated. It's indexed by PID and
-// new crash reports are insterted in the corresponding vector in order of
-// arrival. When crashes are retrieved they're similarly pulled out in the
-// order they've arrived.
-static CRASH_REPORTS: Lazy<Mutex<HashMap<Pid, Vec<CrashReport>>>> = Lazy::new(Default::default);
-
-// Table holding the information about the auxiliary vector of potentially
-// every process registered with the crash helper.
-#[cfg(any(target_os = "android", target_os = "linux"))]
-static AUXV_INFO_MAP: Lazy<Mutex<HashMap<Pid, DirectAuxvDumpInfo>>> = Lazy::new(Default::default);
-
 /******************************************************************************
  * Crash generator                                                            *
  ******************************************************************************/
 
 #[derive(PartialEq)]
-enum MinidumpOrigin {
-    Breakpad,
-    WindowsErrorReporting,
+enum ProcessType {
+    Parent,
+    Child,
 }
 
-pub(crate) enum MessageResult {
-    None,
-    Reply(Box<dyn Message>),
-    Connection(IPCConnector),
-}
-
-pub(crate) struct CrashGenerator {
-    // This will be used for generating hangs
-    _minidump_path: OsString,
-    breakpad_server: BreakpadCrashGenerator,
+pub(crate) struct CrashGenerator
+where
+    // A reference to the `CrashGenerator` object is stored in the
+    // `BreakpadContext` object and transferred in turn to the Breakpad crash
+    // generation thread, so it needs to be `Send`.
+    Self: Send,
+{
+    main_process_handle: ProcessHandle,
+    minidump_path: PathBuf,
+    reports_by_pid: HashMap<Pid, Vec<CrashReport>>,
+    reports_by_id: HashMap<GeckoChildId, CrashReport>,
 }
 
 impl CrashGenerator {
     pub(crate) fn new(
-        breakpad_data: BreakpadData,
+        main_process_handle: ProcessHandle,
         minidump_path: OsString,
-    ) -> Result<CrashGenerator> {
-        let breakpad_server = BreakpadCrashGenerator::new(
-            breakpad_data,
-            minidump_path.clone(),
-            finalize_breakpad_minidump,
-            #[cfg(any(target_os = "android", target_os = "linux"))]
-            get_auxv_info,
-        )?;
-
-        Ok(CrashGenerator {
-            _minidump_path: minidump_path,
-            breakpad_server,
-        })
-    }
-
-    // Process a message received from the parent process. Return an optional
-    // reply that will be sent back to the parent.
-    pub(crate) fn parent_message(
-        &mut self,
-        kind: messages::Kind,
-        data: &[u8],
-        ancillary_data: Option<AncillaryData>,
-    ) -> Result<MessageResult> {
-        match kind {
-            messages::Kind::SetCrashReportPath => {
-                let message = messages::SetCrashReportPath::decode(data, ancillary_data)?;
-                self.set_path(message.path);
-                Ok(MessageResult::None)
-            }
-            messages::Kind::TransferMinidump => {
-                let message = messages::TransferMinidump::decode(data, ancillary_data)?;
-                Ok(MessageResult::Reply(Box::new(
-                    self.transfer_minidump(message.pid),
-                )))
-            }
-            messages::Kind::GenerateMinidump => {
-                todo!("Implement all messages");
-            }
-            #[cfg(any(target_os = "android", target_os = "linux"))]
-            messages::Kind::RegisterAuxvInfo => {
-                let message = messages::RegisterAuxvInfo::decode(data, ancillary_data)?;
-                let map = &mut AUXV_INFO_MAP.lock().unwrap();
-                map.insert(message.pid, message.auxv_info);
-
-                Ok(MessageResult::None)
-            }
-            #[cfg(any(target_os = "android", target_os = "linux"))]
-            messages::Kind::UnregisterAuxvInfo => {
-                let message = messages::UnregisterAuxvInfo::decode(data, ancillary_data)?;
-                let map = &mut AUXV_INFO_MAP.lock().unwrap();
-                map.remove(&message.pid);
-
-                Ok(MessageResult::None)
-            }
-            messages::Kind::RegisterChildProcess => {
-                let message = messages::RegisterChildProcess::decode(data, ancillary_data)?;
-                let connector = IPCConnector::from_ancillary(message.ipc_endpoint)?;
-                connector
-                    .send_message(&messages::ChildProcessRegistered::new(process::id() as Pid))?;
-                Ok(MessageResult::Connection(connector))
-            }
-            kind => {
-                bail!("Unexpected message {kind:?} from parent process");
-            }
+    ) -> CrashGenerator {
+        CrashGenerator {
+            main_process_handle,
+            minidump_path: PathBuf::from(minidump_path),
+            reports_by_pid: HashMap::<Pid, Vec<CrashReport>>::new(),
+            reports_by_id: HashMap::<GeckoChildId, CrashReport>::new(),
         }
     }
 
-    // Process a message received from a child process. Return an optional
-    // reply that will be sent back to the child.
-    pub(crate) fn child_message(
-        &mut self,
-        kind: messages::Kind,
-        _data: &[u8],
-        _ancillary_data: Option<AncillaryData>,
-    ) -> Result<MessageResult> {
-        bail!("Unexpected message {kind:?} from child process");
+    pub(crate) fn set_path(&mut self, path: OsString) {
+        self.minidump_path = PathBuf::from(path);
     }
 
-    // Process a message received from an external process. Return an optional
-    // reply that will be sent back.
-    pub(crate) fn external_message(
-        &mut self,
-        kind: messages::Kind,
-        #[allow(unused_variables)] data: &[u8],
-        #[allow(unused_variables)] ancillary_data: Option<AncillaryData>,
-    ) -> Result<MessageResult> {
-        match kind {
-            #[cfg(target_os = "windows")]
-            messages::Kind::WindowsErrorReporting => {
-                let message =
-                    messages::WindowsErrorReportingMinidump::decode(data, ancillary_data)?;
-                let _ = self.generate_wer_minidump(message);
-                Ok(MessageResult::Reply(Box::new(
-                    messages::WindowsErrorReportingMinidumpReply::new(),
-                )))
-            }
-            kind => {
-                bail!("Unexpected message {kind:?} from external process");
-            }
+    pub(crate) fn move_report_to_id(&mut self, pid: Pid, id: GeckoChildId) {
+        if let Some(crash_report) = self.retrieve_minidump_by_pid(pid) {
+            self.reports_by_id.insert(id, crash_report);
         }
     }
 
-    fn set_path(&mut self, path: OsString) {
-        self.breakpad_server.set_path(path);
-    }
-
-    fn transfer_minidump(&self, pid: Pid) -> messages::TransferMinidumpReply {
-        let mut map = CRASH_REPORTS.lock().unwrap();
-        if let Some(mut entry) = map.remove(&pid) {
+    pub(crate) fn retrieve_minidump_by_pid(&mut self, pid: Pid) -> Option<CrashReport> {
+        if let Some(mut entry) = self.reports_by_pid.remove(&pid) {
             let crash_report = entry.remove(0);
 
             if !entry.is_empty() {
-                map.insert(pid, entry);
+                self.reports_by_pid.insert(pid, entry);
             }
 
-            messages::TransferMinidumpReply::new(crash_report.path, crash_report.error)
-        } else {
-            // Report not found, reply with a zero length path
-            messages::TransferMinidumpReply::new(OsString::new(), None)
+            return Some(crash_report);
         }
+
+        None
+    }
+
+    pub(crate) fn retrieve_minidump_by_id(&mut self, id: GeckoChildId) -> Option<CrashReport> {
+        self.reports_by_id.remove(&id)
+    }
+
+    pub(crate) fn generate_minidump(
+        &mut self,
+        id: GeckoChildId,
+        target_process: &ProcessHandle,
+        target_thread: &ThreadHandle,
+    ) -> Option<CrashReport> {
+        let path = BreakpadCrashGenerator::generate_minidump(
+            id,
+            AsRawProcessHandle::as_raw_handle(target_process),
+            AsRawThreadHandle::as_raw_handle(target_thread),
+            self.minidump_path.clone(),
+        );
+
+        if let Some(path) = path {
+            let error = self.finalize_crash_report(
+                AsRawProcessHandle::as_raw_handle(target_process),
+                /* extra_data */ None,
+                &path,
+                if id == 0 { ProcessType::Parent } else { ProcessType::Child },
+            );
+            Some(CrashReport::new(path.as_os_str(), &error))
+        } else {
+            None
+        }
+    }
+
+    fn finalize_crash_report(
+        &self,
+        process: RawProcessHandle,
+        extra_data: Option<&ExtraCrashData>,
+        minidump_path: &Path,
+        process_type: ProcessType,
+    ) -> Option<CString> {
+        let mut extra_path = PathBuf::from(minidump_path);
+        extra_path.set_extension("extra");
+
+        let (error, extra_annotations) = extra_data
+            .map(|d| (d.error.clone(), d.annotations.clone()))
+            .unwrap_or_default();
+        let global_annotations = self.retrieve_main_process_annotations();
+        let annotations = retrieve_annotations(process, process_type);
+        let annotations = [
+            STATIC_ANNOTATIONS.get().cloned().context("MissingStaticAnnotations"),
+            global_annotations.context("MissingMainProcessAnnotations"),
+            annotations.context("MissingChildProcessAnnotations"),
+            Ok(extra_annotations),
+        ]
+        .into_iter()
+        .fold(HashMap::new(), fold_annotations);
+        let extra_file_written = write_extra_file(annotations, &extra_path).is_ok();
+
+        if !extra_file_written {
+            Some(c"MissingAnnotations".to_owned())
+        } else {
+            error
+        }
+    }
+
+    fn insert_crash_report(
+        &mut self,
+        process_id: &BreakpadProcessId,
+        path: &Path,
+        error: Option<CString>,
+    ) {
+        let path = path.as_os_str();
+        let entry = self.reports_by_pid.entry(process_id.pid);
+        entry
+            .and_modify(|entry| entry.push(CrashReport::new(path, &error)))
+            .or_insert_with(|| vec![CrashReport::new(path, &error)]);
+    }
+
+    fn retrieve_main_process_annotations(
+        &self,
+    ) -> Result<Vec<CAnnotation>, AnnotationsRetrievalError> {
+        mozannotation_server::retrieve_annotations(
+            AsRawProcessHandle::as_raw_handle(&self.main_process_handle),
+            CrashAnnotation::Count as usize,
+        )
     }
 }
 
 /******************************************************************************
  * Crash annotations                                                          *
  ******************************************************************************/
+
+fn make_annotation(id: CrashAnnotation, data: &str) -> CAnnotation {
+    CAnnotation {
+        id: id as u32,
+        data: AnnotationData::String(CString::new(data).expect("Should be a valid C string")),
+    }
+}
+
+fn make_error_annotation(error: impl std::fmt::Display) -> CAnnotation {
+    make_annotation(CrashAnnotation::DumperError, &format!("{}", error))
+}
+
+static STATIC_ANNOTATIONS: OnceLock<Vec<CAnnotation>> = OnceLock::new();
+
+/// Initialize if needed the static annotations that will get included in every crash report.
+///
+/// Any potential error will be recorded as an annotation rather than returned.
+pub(crate) fn initialize_static_annotations(app_info: &ApplicationInfo) {
+    let _ = STATIC_ANNOTATIONS.get_or_init(|| {
+        let mut annotations = required_annotations(app_info);
+        match create_platform_specific_annotations(app_info) {
+            Ok(mut platform_annotations) => annotations.append(&mut platform_annotations),
+            Err(error) => annotations.push(make_error_annotation(error)),
+        }
+        annotations
+    });
+}
+
+fn required_annotations(app_info: &ApplicationInfo) -> Vec<CAnnotation> {
+    let install_time = app_info.get_install_time().to_string();
+
+    vec![
+        make_annotation(CrashAnnotation::BuildID, app_info.get_buildid()),
+        make_annotation(CrashAnnotation::InstallTime, &install_time),
+        make_annotation(CrashAnnotation::ProductID, app_info.get_app_id()),
+        make_annotation(CrashAnnotation::ProductName, app_info.get_app_name()),
+        make_annotation(
+            CrashAnnotation::ReleaseChannel,
+            app_info.get_release_channel(),
+        ),
+        make_annotation(
+            CrashAnnotation::ServerURL,
+            app_info.get_server_url().as_ref(),
+        ),
+        make_annotation(CrashAnnotation::Vendor, app_info.get_vendor()),
+        make_annotation(CrashAnnotation::Version, app_info.get_version()),
+    ]
+}
 
 macro_rules! read_numeric_annotation {
     ($t:ty,$d:expr) => {
@@ -239,7 +276,7 @@ macro_rules! read_numeric_annotation {
 
 fn write_phc_annotations(file: &mut File, buff: &[u8]) -> Result<()> {
     let addr_info = phc::AddrInfo::from_bytes(buff)?;
-    if addr_info.kind == phc::Kind::Unknown {
+    if addr_info.kind == phc::PHC_KIND_UNKNOWN {
         return Ok(());
     }
 
@@ -283,156 +320,139 @@ fn serialize_phc_stack(stack_trace: &StackTrace) -> String {
     string
 }
 
-#[repr(C)]
-pub struct BreakpadProcessId {
-    pub pid: Pid,
-    #[cfg(target_os = "macos")]
-    pub task: u32,
-    #[cfg(target_os = "windows")]
-    pub handle: HANDLE,
-}
-
 /// This reads the crash annotations, writes them to the .extra file and
 /// finally stores the resulting minidump in the global hash table.
-extern "C" fn finalize_breakpad_minidump(
+///
+/// # Safety
+///
+/// The caller must guarantee that the `generator` parameter points to a
+/// Mutex<CrashGenerator> object and that `extra_data` and `minidump_path_ptr`
+/// point to valid objects or are null. The ownership remains to the caller for
+/// those two objects.
+pub(crate) unsafe extern "C" fn finalize_breakpad_minidump(
+    generator: *const c_void,
     process_id: BreakpadProcessId,
-    error_ptr: *const c_char,
+    extra_data: Option<&ExtraCrashData>,
     minidump_path_ptr: *const BreakpadChar,
 ) {
-    let minidump_path =
-        PathBuf::from(unsafe { <OsString as BreakpadString>::from_ptr(minidump_path_ptr) });
-    let error = if !error_ptr.is_null() {
-        // SAFETY: The string is a valid C string we passed in ourselves.
-        Some(unsafe { CStr::from_ptr(error_ptr) }.to_owned())
-    } else {
-        None
-    };
+    let generator = generator as *const Mutex<CrashGenerator>;
+    let minidump_path = PathBuf::from(<OsString as BreakpadString>::from_ptr(minidump_path_ptr));
 
-    finalize_crash_report(process_id, error, &minidump_path, MinidumpOrigin::Breakpad);
-}
-
-fn finalize_crash_report(
-    process_id: BreakpadProcessId,
-    error: Option<CString>,
-    minidump_path: &Path,
-    origin: MinidumpOrigin,
-) {
-    let mut extra_path = PathBuf::from(minidump_path);
-    extra_path.set_extension("extra");
-
-    let annotations = retrieve_annotations(&process_id, origin);
-    let extra_file_written = annotations
-        .map(|annotations| write_extra_file(&annotations, &extra_path))
-        .is_ok();
-
-    let path = minidump_path.as_os_str();
-    let error = if !extra_file_written {
-        Some(CString::new("MissingAnnotations").unwrap())
-    } else {
-        error
-    };
-
-    let map = &mut CRASH_REPORTS.lock().unwrap();
-    let entry = map.entry(process_id.pid);
-    entry
-        .and_modify(|entry| entry.push(CrashReport::new(path, &error)))
-        .or_insert_with(|| vec![CrashReport::new(path, &error)]);
-}
-
-#[cfg(any(target_os = "android", target_os = "linux"))]
-extern "C" fn get_auxv_info(pid: Pid, auxv_info_ptr: *mut DirectAuxvDumpInfo) -> bool {
-    let map = &mut AUXV_INFO_MAP.lock().unwrap();
-
-    if let Some(auxv_info) = map.get(&pid) {
-        // SAFETY: The auxv_info_ptr is guaranteed to be valid by the caller.
-        unsafe { auxv_info_ptr.write(auxv_info.to_owned()) };
-        true
-    } else {
-        false
-    }
+    let mut generator = generator.as_ref().unwrap().lock().unwrap();
+    let error = generator.finalize_crash_report(
+        process_id.get_native(),
+        extra_data,
+        &minidump_path,
+        ProcessType::Child,
+    );
+    generator.insert_crash_report(&process_id, &minidump_path, error);
 }
 
 fn retrieve_annotations(
-    process_id: &BreakpadProcessId,
-    origin: MinidumpOrigin,
+    process: RawProcessHandle,
+    process_type: ProcessType,
 ) -> Result<Vec<CAnnotation>> {
-    #[cfg(target_os = "windows")]
-    let res = mozannotation_server::retrieve_annotations(
-        process_id.handle,
-        CrashAnnotation::Count as usize,
-    );
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let res =
-        mozannotation_server::retrieve_annotations(process_id.pid, CrashAnnotation::Count as usize);
-    #[cfg(target_os = "macos")]
-    let res = mozannotation_server::retrieve_annotations(
-        process_id.task,
-        CrashAnnotation::Count as usize,
-    );
-
-    let mut annotations = res?;
-    if origin == MinidumpOrigin::WindowsErrorReporting {
-        annotations.push(CAnnotation {
-            id: CrashAnnotation::WindowsErrorReporting as u32,
-            data: AnnotationData::ByteBuffer(vec![1]),
-        });
+    if process_type == ProcessType::Parent {
+        return Ok(vec![]);
     }
+
+    let mut annotations = mozannotation_server::retrieve_annotations(process, CrashAnnotation::Count as usize)?;
+
+    // Add a unique identifier for this crash event.
+    let crash_event_id = uuid::Uuid::new_v4()
+        .as_hyphenated()
+        .encode_lower(&mut uuid::Uuid::encode_buffer())
+        .to_string();
+    annotations.push(CAnnotation {
+        id: CrashAnnotation::CrashEventID as u32,
+        data: AnnotationData::String(
+            CString::new(crash_event_id).context("uuid contains nul byte")?,
+        ),
+    });
 
     Ok(annotations)
 }
 
-fn write_extra_file(annotations: &Vec<CAnnotation>, path: &Path) -> Result<()> {
+/// Helper function to merge a vector of annotations retrieved from a process memory into
+/// a more malleable data format. This function is intended to be used through fold()ing, hence
+/// the peculiar form of its arguments.
+///
+/// Notably, the second member of the `to_merge` argument is the error message that should be recorded
+/// *as the `DumperError` annotation* should the source not be available.
+fn fold_annotations(
+    mut merged: HashMap<u32, AnnotationData>,
+    to_merge: Result<Vec<CAnnotation>>,
+) -> HashMap<u32, AnnotationData> {
+
+    let mut merge_annotation = |annotation: CAnnotation| {
+        let _ = merged.insert(annotation.id, annotation.data);
+    };
+
+    match to_merge {
+        Ok(annotations) => annotations
+            .into_iter()
+            .filter(|annotation| !matches!(annotation.data, AnnotationData::Empty))
+            .for_each(merge_annotation),
+        Err(err) => merge_annotation(make_error_annotation(err)),
+    }
+    merged
+}
+
+fn prepare_annotation_data(id: CrashAnnotation, data: &AnnotationData) -> Option<Vec<u8>> {
+    match type_of_annotation(id) {
+        CrashAnnotationType::String => match data {
+            AnnotationData::String(string) => Some(escape_value(string.as_bytes())),
+            AnnotationData::ByteBuffer(buffer) => Some(escape_value(buffer)),
+            _ => None,
+        },
+        CrashAnnotationType::Boolean => {
+            if let AnnotationData::ByteBuffer(buff) = data {
+                if buff.len() == 1 {
+                    Some(vec![if buff[0] != 0 { b'1' } else { b'0' }])
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        CrashAnnotationType::U32 => {
+            read_numeric_annotation!(u32, data)
+        }
+        CrashAnnotationType::U64 => {
+            read_numeric_annotation!(u64, data)
+        }
+        CrashAnnotationType::USize => {
+            read_numeric_annotation!(usize, data)
+        }
+        CrashAnnotationType::Object => None, // This cannot be found in memory
+    }
+}
+
+fn write_extra_file(annotations: HashMap<u32, AnnotationData>, path: &Path) -> Result<()> {
     let mut annotations_written: usize = 0;
     let mut file = File::create(path)?;
     write!(&mut file, "{{")?;
 
-    for annotation in annotations {
-        if let Some(annotation_id) = CrashAnnotation::from_u32(annotation.id) {
-            if annotation_id == CrashAnnotation::PHCBaseAddress {
-                if let AnnotationData::ByteBuffer(buff) = &annotation.data {
-                    write_phc_annotations(&mut file, buff)?;
-                }
-
-                continue;
+    for (id, value) in annotations {
+        let Some(annotation_id) = CrashAnnotation::from_u32(id) else {
+            continue;
+        };
+        if annotation_id == CrashAnnotation::PHCBaseAddress {
+            if let AnnotationData::ByteBuffer(buff) = &value {
+                write_phc_annotations(&mut file, buff)?;
             }
 
-            let value = match type_of_annotation(annotation_id) {
-                CrashAnnotationType::String => match &annotation.data {
-                    AnnotationData::String(string) => Some(escape_value(string.as_bytes())),
-                    AnnotationData::ByteBuffer(buffer) => Some(escape_value(buffer)),
-                    _ => None,
-                },
-                CrashAnnotationType::Boolean => {
-                    if let AnnotationData::ByteBuffer(buff) = &annotation.data {
-                        if buff.len() == 1 {
-                            Some(vec![if buff[0] != 0 { b'1' } else { b'0' }])
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                }
-                CrashAnnotationType::U32 => {
-                    read_numeric_annotation!(u32, &annotation.data)
-                }
-                CrashAnnotationType::U64 => {
-                    read_numeric_annotation!(u64, &annotation.data)
-                }
-                CrashAnnotationType::USize => {
-                    read_numeric_annotation!(usize, &annotation.data)
-                }
-                CrashAnnotationType::Object => None, // This cannot be found in memory
-            };
-
-            if let Some(value) = value {
-                if !value.is_empty() && should_include_annotation(annotation_id, &value) {
-                    write!(&mut file, "\"{annotation_id:}\":\"")?;
-                    file.write_all(&value)?;
-                    write!(&mut file, "\",")?;
-                    annotations_written += 1;
-                }
-            }
+            continue;
+        }
+        let Some(value) = prepare_annotation_data(annotation_id, &value) else {
+            continue;
+        };
+        if !value.is_empty() && should_include_annotation(annotation_id, &value) {
+            write!(&mut file, "\"{annotation_id:}\":\"")?;
+            file.write_all(&value)?;
+            write!(&mut file, "\",")?;
+            annotations_written += 1;
         }
     }
 
@@ -468,5 +488,43 @@ fn hex_digit_as_ascii_char(value: u8) -> u8 {
         b'0' + value
     } else {
         b'a' + (value - 10)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fold_annotations_trivial() {
+        let annotations = vec![
+            make_annotation(CrashAnnotation::ProductName, "Firefox"),
+            make_annotation(CrashAnnotation::Vendor, "Mozilla"),
+        ];
+
+        let merged = fold_annotations(HashMap::new(), Ok(annotations));
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(
+            merged.get(&(CrashAnnotation::ProductName as u32)),
+            Some(&AnnotationData::String(CString::new("Firefox").unwrap()))
+        );
+        assert_eq!(
+            merged.get(&(CrashAnnotation::Vendor as u32)),
+            Some(&AnnotationData::String(CString::new("Mozilla").unwrap()))
+        );
+    }
+
+    #[test]
+    fn fold_annotations_error() {
+        let merged = fold_annotations(HashMap::new(), None.context("MissingMainProcessAnnotations"));
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged.get(&(CrashAnnotation::DumperError as u32)),
+            Some(&AnnotationData::String(
+                CString::new("MissingMainProcessAnnotations").unwrap()
+            ))
+        );
     }
 }

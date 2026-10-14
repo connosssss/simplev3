@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,15 +5,18 @@
 #ifndef MOZILLA_GFX_RECT_H_
 #define MOZILLA_GFX_RECT_H_
 
-#include "BaseRect.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <iterator>
+
 #include "BaseMargin.h"
+#include "BaseRect.h"
 #include "NumericTools.h"
 #include "Point.h"
 #include "Tools.h"
+#include "fmt/ostream.h"
 #include "mozilla/Maybe.h"
-
-#include <cmath>
-#include <cstdint>
 
 namespace mozilla {
 
@@ -29,7 +30,7 @@ struct RectTyped;
 
 template <class Units>
 struct MOZ_EMPTY_BASES IntMarginTyped
-    : public BaseMargin<int32_t, IntMarginTyped<Units>, IntCoordTyped<Units> >,
+    : public BaseMargin<int32_t, IntMarginTyped<Units>, IntCoordTyped<Units>>,
       public Units {
   static_assert(IsPixel<Units>::value,
                 "'Units' must be a coordinate system tag");
@@ -37,10 +38,8 @@ struct MOZ_EMPTY_BASES IntMarginTyped
   typedef IntCoordTyped<Units> Coord;
   typedef BaseMargin<int32_t, IntMarginTyped<Units>, Coord> Super;
 
-  IntMarginTyped() : Super() {
-    static_assert(sizeof(IntMarginTyped) == sizeof(int32_t) * 4,
-                  "Would be unfortunate otherwise!");
-  }
+  IntMarginTyped() = default;
+
   constexpr IntMarginTyped(Coord aTop, Coord aRight, Coord aBottom, Coord aLeft)
       : Super(aTop, aRight, aBottom, aLeft) {}
 
@@ -59,10 +58,12 @@ struct MOZ_EMPTY_BASES IntMarginTyped
   }
 };
 typedef IntMarginTyped<UnknownUnits> IntMargin;
+static_assert(sizeof(IntMargin) == sizeof(int32_t) * 4,
+              "Would be unfortunate otherwise!");
 
 template <class Units, class F = Float>
-struct MarginTyped
-    : public BaseMargin<F, MarginTyped<Units, F>, CoordTyped<Units, F> >,
+struct MOZ_EMPTY_BASES MarginTyped
+    : public BaseMargin<F, MarginTyped<Units, F>, CoordTyped<Units, F>>,
       public Units {
   static_assert(IsPixel<Units>::value,
                 "'Units' must be a coordinate system tag");
@@ -70,7 +71,7 @@ struct MarginTyped
   typedef CoordTyped<Units, F> Coord;
   typedef BaseMargin<F, MarginTyped<Units, F>, Coord> Super;
 
-  MarginTyped() : Super() {}
+  MarginTyped() = default;
   MarginTyped(Coord aTop, Coord aRight, Coord aBottom, Coord aLeft)
       : Super(aTop, aRight, aBottom, aLeft) {}
   explicit MarginTyped(const IntMarginTyped<Units>& aMargin)
@@ -90,6 +91,11 @@ struct MarginTyped
                                  int32_t(std::floor(this->bottom + 0.5f)),
                                  int32_t(std::floor(this->left + 0.5f)));
   }
+
+  MarginTyped<UnknownUnits, F> ToUnknownMargin() const {
+    return MarginTyped<UnknownUnits, F>(this->top.value, this->right.value,
+                                        this->bottom.value, this->left.value);
+  }
 };
 typedef MarginTyped<UnknownUnits> Margin;
 typedef MarginTyped<UnknownUnits, double> MarginDouble;
@@ -102,21 +108,19 @@ IntMarginTyped<Units> RoundedToInt(const MarginTyped<Units>& aMargin) {
 template <class Units>
 struct MOZ_EMPTY_BASES IntRectTyped
     : public BaseRect<int32_t, IntRectTyped<Units>, IntPointTyped<Units>,
-                      IntSizeTyped<Units>, IntMarginTyped<Units> >,
+                      IntSizeTyped<Units>, IntMarginTyped<Units>>,
       public Units {
   static_assert(IsPixel<Units>::value,
                 "'Units' must be a coordinate system tag");
 
   typedef BaseRect<int32_t, IntRectTyped<Units>, IntPointTyped<Units>,
-                   IntSizeTyped<Units>, IntMarginTyped<Units> >
+                   IntSizeTyped<Units>, IntMarginTyped<Units>>
       Super;
   typedef IntRectTyped<Units> Self;
   typedef IntParam<int32_t> ToInt;
 
-  IntRectTyped() : Super() {
-    static_assert(sizeof(IntRectTyped) == sizeof(int32_t) * 4,
-                  "Would be unfortunate otherwise!");
-  }
+  IntRectTyped() = default;
+
   IntRectTyped(const IntPointTyped<Units>& aPos,
                const IntSizeTyped<Units>& aSize)
       : Super(aPos, aSize) {}
@@ -167,6 +171,11 @@ struct MOZ_EMPTY_BASES IntRectTyped
   static IntRectTyped<Units> Truncate(const RectTyped<Units, float>& aRect) {
     return IntRectTyped::Truncate(aRect.X(), aRect.Y(), aRect.Width(),
                                   aRect.Height());
+  }
+
+  static IntRectTyped<Units> Truncate(const RectTyped<Units, double>& aRect) {
+    return IntRectTyped(int32_t(aRect.X()), int32_t(aRect.Y()),
+                        int32_t(aRect.Width()), int32_t(aRect.Height()));
   }
 
   // Rounding isn't meaningful on an integer rectangle.
@@ -251,23 +260,23 @@ struct MOZ_EMPTY_BASES IntRectTyped
   }
 };
 typedef IntRectTyped<UnknownUnits> IntRect;
+static_assert(sizeof(IntRect) == sizeof(int32_t) * 4,
+              "Would be unfortunate otherwise!");
 
 template <class Units, class F = Float>
 struct MOZ_EMPTY_BASES RectTyped
     : public BaseRect<F, RectTyped<Units, F>, PointTyped<Units, F>,
-                      SizeTyped<Units, F>, MarginTyped<Units, F> >,
+                      SizeTyped<Units, F>, MarginTyped<Units, F>>,
       public Units {
   static_assert(IsPixel<Units>::value,
                 "'Units' must be a coordinate system tag");
 
   typedef BaseRect<F, RectTyped<Units, F>, PointTyped<Units, F>,
-                   SizeTyped<Units, F>, MarginTyped<Units, F> >
+                   SizeTyped<Units, F>, MarginTyped<Units, F>>
       Super;
 
-  RectTyped() : Super() {
-    static_assert(sizeof(RectTyped) == sizeof(F) * 4,
-                  "Would be unfortunate otherwise!");
-  }
+  RectTyped() = default;
+
   RectTyped(const PointTyped<Units, F>& aPos, const SizeTyped<Units, F>& aSize)
       : Super(aPos, aSize) {}
   RectTyped(F _x, F _y, F _width, F _height) : Super(_x, _y, _width, _height) {}
@@ -317,6 +326,10 @@ struct MOZ_EMPTY_BASES RectTyped
 };
 typedef RectTyped<UnknownUnits> Rect;
 typedef RectTyped<UnknownUnits, double> RectDouble;
+static_assert(sizeof(Rect) == sizeof(float) * 4,
+              "Would be unfortunate otherwise!");
+static_assert(sizeof(RectDouble) == sizeof(double) * 4,
+              "Would be unfortunate otherwise!");
 
 template <class Units, class D>
 RectTyped<Units> NarrowToFloat(const RectTyped<Units, D>& aRect) {
@@ -338,10 +351,10 @@ IntRectTyped<Units> RoundedToInt(const RectTyped<Units>& aRect) {
                              int32_t(copy.Width()), int32_t(copy.Height()));
 }
 
-template <class Units>
-bool RectIsInt32Safe(const RectTyped<Units>& aRect) {
-  float min = (float)std::numeric_limits<std::int32_t>::min();
-  float max = (float)std::numeric_limits<std::int32_t>::max();
+template <class Units, class F>
+bool RectIsInt32Safe(const RectTyped<Units, F>& aRect) {
+  F min = (F)std::numeric_limits<int32_t>::min();
+  F max = (F)std::numeric_limits<int32_t>::max();
   return aRect.x > min && aRect.y > min && aRect.width < max &&
          aRect.height < max && aRect.XMost() < max && aRect.YMost() < max;
 }
@@ -356,8 +369,8 @@ IntRectTyped<Units> RoundedOut(const RectTyped<Units>& aRect) {
   return IntRectTyped<Units>::RoundOut(aRect);
 }
 
-template <class Units>
-IntRectTyped<Units> TruncatedToInt(const RectTyped<Units>& aRect) {
+template <class Units, class F>
+IntRectTyped<Units> TruncatedToInt(const RectTyped<Units, F>& aRect) {
   return IntRectTyped<Units>::Truncate(aRect);
 }
 
@@ -389,46 +402,66 @@ Maybe<Rect> UnionMaybeRects(const Maybe<Rect>& a, const Maybe<Rect>& b) {
   }
 }
 
-struct RectCornerRadii final {
+template <typename Coord, typename Size, typename Margin>
+struct BaseRectCornerRadii {
   Size radii[eCornerCount];
+  float mShapeK[eCornerCount] = {1.0f, 1.0f, 1.0f, 1.0f};
 
-  RectCornerRadii() = default;
+  BaseRectCornerRadii() = default;
 
-  explicit RectCornerRadii(Float radius) {
+  explicit BaseRectCornerRadii(Coord radius) {
     for (const auto i : mozilla::AllPhysicalCorners()) {
       radii[i].SizeTo(radius, radius);
     }
   }
 
-  RectCornerRadii(Float radiusX, Float radiusY) {
+  BaseRectCornerRadii(Coord radiusX, Coord radiusY) {
     for (const auto i : mozilla::AllPhysicalCorners()) {
       radii[i].SizeTo(radiusX, radiusY);
     }
   }
 
-  RectCornerRadii(Float tl, Float tr, Float br, Float bl) {
+  BaseRectCornerRadii(Coord tl, Coord tr, Coord br, Coord bl) {
     radii[eCornerTopLeft].SizeTo(tl, tl);
     radii[eCornerTopRight].SizeTo(tr, tr);
     radii[eCornerBottomRight].SizeTo(br, br);
     radii[eCornerBottomLeft].SizeTo(bl, bl);
   }
 
-  RectCornerRadii(const Size& tl, const Size& tr, const Size& br,
-                  const Size& bl) {
+  BaseRectCornerRadii(const Size& tl, const Size& tr, const Size& br,
+                      const Size& bl) {
     radii[eCornerTopLeft] = tl;
     radii[eCornerTopRight] = tr;
     radii[eCornerBottomRight] = br;
     radii[eCornerBottomLeft] = bl;
   }
 
-  const Size& operator[](size_t aCorner) const { return radii[aCorner]; }
+  const Size& operator[](Corner aCorner) const { return radii[aCorner]; }
+  Size& operator[](Corner aCorner) { return radii[aCorner]; }
 
-  Size& operator[](size_t aCorner) { return radii[aCorner]; }
+  const Coord& operator[](HalfCorner aCorner) const {
+    return reinterpret_cast<const Coord*>(&radii)[aCorner];
+  }
+  Coord& operator[](HalfCorner aCorner) {
+    return reinterpret_cast<Coord*>(&radii)[aCorner];
+  }
 
-  bool operator==(const RectCornerRadii& aOther) const {
+  bool operator!=(const BaseRectCornerRadii& aOther) const {
+    return !(*this == aOther);
+  }
+
+  bool operator==(const BaseRectCornerRadii& aOther) const {
     return TopLeft() == aOther.TopLeft() && TopRight() == aOther.TopRight() &&
            BottomRight() == aOther.BottomRight() &&
-           BottomLeft() == aOther.BottomLeft();
+           BottomLeft() == aOther.BottomLeft() &&
+           std::equal(std::begin(mShapeK), std::end(mShapeK),
+                      std::begin(aOther.mShapeK));
+  }
+
+  // True if every corner uses the default round (K=1) shape.
+  bool AreShapesAllRound() const {
+    return std::all_of(std::begin(mShapeK), std::end(mShapeK),
+                       [](float k) { return k == 1.0f; });
   }
 
   bool AreRadiiSame() const {
@@ -437,27 +470,64 @@ struct RectCornerRadii final {
   }
 
   void Scale(Float aXScale, Float aYScale) {
-    for (const auto i : mozilla::AllPhysicalCorners()) {
-      radii[i].Scale(aXScale, aYScale);
+    for (auto& corner : radii) {
+      corner.Scale(aXScale, aYScale);
     }
   }
 
-  const Size TopLeft() const { return radii[eCornerTopLeft]; }
+  const Size& TopLeft() const { return radii[eCornerTopLeft]; }
   Size& TopLeft() { return radii[eCornerTopLeft]; }
 
-  const Size TopRight() const { return radii[eCornerTopRight]; }
+  const Size& TopRight() const { return radii[eCornerTopRight]; }
   Size& TopRight() { return radii[eCornerTopRight]; }
 
-  const Size BottomRight() const { return radii[eCornerBottomRight]; }
+  const Size& BottomRight() const { return radii[eCornerBottomRight]; }
   Size& BottomRight() { return radii[eCornerBottomRight]; }
 
-  const Size BottomLeft() const { return radii[eCornerBottomLeft]; }
+  const Size& BottomLeft() const { return radii[eCornerBottomLeft]; }
   Size& BottomLeft() { return radii[eCornerBottomLeft]; }
 
   bool IsEmpty() const {
     return TopLeft().IsEmpty() && TopRight().IsEmpty() &&
            BottomRight().IsEmpty() && BottomLeft().IsEmpty();
   }
+
+  void AdjustOutwards(const Margin& aMargin) { return Adjust<true>(aMargin); }
+  void AdjustInwards(const Margin& aMargin) { return Adjust<false>(-aMargin); }
+
+ private:
+  template <bool aOut>
+  void Adjust(const Margin& aMargin) {
+    constexpr Coord kZero(0);
+    constexpr auto C_TL = eCornerTopLeft;
+    constexpr auto C_TR = eCornerTopRight;
+    constexpr auto C_BL = eCornerBottomLeft;
+    constexpr auto C_BR = eCornerBottomRight;
+    // round the edges that have radii > 0.0 to start with
+    if (!aOut || (radii[C_TL].width > kZero && radii[C_TL].height > kZero)) {
+      radii[C_TL].width = std::max(kZero, radii[C_TL].width + aMargin.left);
+      radii[C_TL].height = std::max(kZero, radii[C_TL].height + aMargin.top);
+    }
+
+    if (!aOut || (radii[C_TR].width > kZero && radii[C_TR].height > kZero)) {
+      radii[C_TR].width = std::max(kZero, radii[C_TR].width + aMargin.right);
+      radii[C_TR].height = std::max(kZero, radii[C_TR].height + aMargin.top);
+    }
+
+    if (!aOut || (radii[C_BR].width > kZero && radii[C_BR].height > kZero)) {
+      radii[C_BR].width = std::max(kZero, radii[C_BR].width + aMargin.right);
+      radii[C_BR].height = std::max(kZero, radii[C_BR].height + aMargin.bottom);
+    }
+
+    if (!aOut || (radii[C_BL].width > kZero && radii[C_BL].height > kZero)) {
+      radii[C_BL].width = std::max(kZero, radii[C_BL].width + aMargin.left);
+      radii[C_BL].height = std::max(kZero, radii[C_BL].height + aMargin.bottom);
+    }
+  }
+};
+
+struct RectCornerRadii final : public BaseRectCornerRadii<Float, Size, Margin> {
+  using BaseRectCornerRadii::BaseRectCornerRadii;
 };
 
 /* A rounded rectangle abstraction.
@@ -470,8 +540,14 @@ struct RectCornerRadii final {
 struct RoundedRect {
   typedef mozilla::gfx::RectCornerRadii RectCornerRadii;
 
+  RoundedRect() = default;
+
   RoundedRect(const Rect& aRect, const RectCornerRadii& aCorners)
       : rect(aRect), corners(aCorners) {}
+
+  void Deflate(const Margin& aMargin) {
+    Deflate(aMargin.top, aMargin.bottom, aMargin.left, aMargin.right);
+  }
 
   void Deflate(Float aTopWidth, Float aBottomWidth, Float aLeftWidth,
                Float aRightWidth) {
@@ -511,5 +587,18 @@ struct RoundedRect {
 
 }  // namespace gfx
 }  // namespace mozilla
+
+template <class Units>
+struct fmt::formatter<mozilla::gfx::IntMarginTyped<Units>>
+    : fmt::ostream_formatter {};
+template <class Units, class F>
+struct fmt::formatter<mozilla::gfx::MarginTyped<Units, F>>
+    : fmt::ostream_formatter {};
+template <class Units>
+struct fmt::formatter<mozilla::gfx::IntRectTyped<Units>>
+    : fmt::ostream_formatter {};
+template <class Units, class F>
+struct fmt::formatter<mozilla::gfx::RectTyped<Units, F>>
+    : fmt::ostream_formatter {};
 
 #endif /* MOZILLA_GFX_RECT_H_ */

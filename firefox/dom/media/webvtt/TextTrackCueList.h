@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 et tw=78: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +5,10 @@
 #ifndef mozilla_dom_TextTrackCueList_h
 #define mozilla_dom_TextTrackCueList_h
 
-#include "nsTArray.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
+#include "nsTArray.h"
+#include "nsTHashSet.h"
 #include "nsWrapperCache.h"
 
 namespace mozilla {
@@ -21,7 +20,7 @@ class TextTrackCue;
 
 class TextTrackCueList final : public nsISupports, public nsWrapperCache {
  public:
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(TextTrackCueList)
 
   // TextTrackCueList WebIDL
@@ -40,6 +39,7 @@ class TextTrackCueList final : public nsISupports, public nsWrapperCache {
   TextTrackCue* operator[](uint32_t aIndex);
   TextTrackCue* GetCueById(const nsAString& aId);
   TextTrackCueList& operator=(const TextTrackCueList& aOther);
+
   // Adds a cue to mList by performing an insertion sort on mList.
   // We expect most files to already be sorted, so an insertion sort starting
   // from the end of the current array should be more efficient than a general
@@ -47,14 +47,12 @@ class TextTrackCueList final : public nsISupports, public nsWrapperCache {
   void AddCue(TextTrackCue& aCue);
   void RemoveCue(TextTrackCue& aCue);
   void RemoveCue(TextTrackCue& aCue, ErrorResult& aRv);
-  void RemoveCueAt(uint32_t aIndex);
-  void RemoveAll();
   void GetArray(nsTArray<RefPtr<TextTrackCue>>& aCues);
 
   void SetCuesInactive();
 
   void NotifyCueUpdated(TextTrackCue* aCue);
-  bool IsCueExist(TextTrackCue* aCue);
+  bool IsCueExist(TextTrackCue* aCue) const;
   nsTArray<RefPtr<TextTrackCue>>& GetCuesArray();
 
  private:
@@ -65,6 +63,9 @@ class TextTrackCueList final : public nsISupports, public nsWrapperCache {
   // A sorted list of TextTrackCues sorted by earliest start time. If the start
   // times are equal then it will be sorted by end time, earliest first.
   nsTArray<RefPtr<TextTrackCue>> mList;
+
+  // Utilized for rapid cue existence verification.
+  nsTHashSet<TextTrackCue*> mCueSet;
 };
 
 }  // namespace dom

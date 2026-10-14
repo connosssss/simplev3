@@ -5,10 +5,10 @@
 Transform the signing task into an actual task description.
 """
 
+from mozilla_taskgraph.util.attributes import copy_attributes_from_dependent_job
 from taskgraph.transforms.base import TransformSequence
 from taskgraph.util.dependencies import get_primary_dependency
 
-from gecko_taskgraph.util.attributes import copy_attributes_from_dependent_job
 from gecko_taskgraph.util.partners import get_partner_config_by_kind
 from gecko_taskgraph.util.signed_artifacts import (
     generate_specifications_of_artifacts_to_sign,
@@ -24,9 +24,9 @@ def set_mac_label(config, jobs):
         if "mac-notarization" in config.kind:
             default_label = dep_job.label.replace("mac-signing", "mac-notarization")
             job.setdefault("label", default_label)
-        assert (
-            job["label"] != dep_job.label
-        ), f"Unable to determine label for {config.kind}"
+        assert job["label"] != dep_job.label, (
+            f"Unable to determine label for {config.kind}"
+        )
         yield job
 
 

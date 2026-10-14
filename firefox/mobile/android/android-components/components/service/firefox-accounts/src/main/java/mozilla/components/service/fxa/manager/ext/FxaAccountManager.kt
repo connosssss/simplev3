@@ -8,10 +8,8 @@ import mozilla.components.concept.sync.DeviceConstellation
 import mozilla.components.concept.sync.OAuthAccount
 import mozilla.components.service.fxa.manager.FxaAccountManager
 
-/**
- * Executes [block] and provides the [DeviceConstellation] of an [OAuthAccount] if present.
- */
-inline fun FxaAccountManager.withConstellation(block: DeviceConstellation.() -> Unit) {
+/** Executes [block] and provides the [DeviceConstellation] of an [OAuthAccount] if present. */
+inline fun FxaAccountManager.withConstellationIfExists(block: DeviceConstellation.() -> Unit) {
     authenticatedAccount()?.let {
         block(it.deviceConstellation())
     }

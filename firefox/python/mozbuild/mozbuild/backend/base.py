@@ -110,7 +110,7 @@ class BuildBackend(LoggingMixin):
         )
         backend_output_list = set()
         if os.path.exists(list_file):
-            with open(list_file) as fh:
+            with open(list_file, encoding="utf-8") as fh:
                 backend_output_list.update(
                     mozpath.normsep(p) for p in fh.read().splitlines()
                 )
@@ -164,11 +164,10 @@ class BuildBackend(LoggingMixin):
         if backend_output_list != self._backend_output_files:
             with self._write_file(list_file) as fh:
                 fh.write("\n".join(sorted(self._backend_output_files)))
-        else:
-            # Always update its mtime if we're not in dry-run mode.
-            if not self.dry_run:
-                with open(list_file, "a"):
-                    os.utime(list_file, None)
+        # Always update its mtime if we're not in dry-run mode.
+        elif not self.dry_run:
+            with open(list_file, "a"):
+                os.utime(list_file, None)
 
         # Write out the list of input files for the backend
         with self._write_file("%s.in" % list_file) as fh:
@@ -187,8 +186,11 @@ class BuildBackend(LoggingMixin):
     def consume_finished(self):
         """Called when consume() has completed handling all objects."""
 
-    def build(self, config, output, jobs, verbose, what=None):
+    def build(self, config, output, jobs, verbose, what=None, append_env=None):
         """Called when 'mach build' is executed.
+
+        ``append_env`` holds environment variables every command of the build
+        runs with, such as the PGO mode.
 
         This should return the status value of a subprocess, where 0 denotes
         success and any other value is an error code. A return value of None
@@ -306,12 +308,10 @@ class BuildBackend(LoggingMixin):
         in the current environment."""
         pp = Preprocessor()
         srcdir = mozpath.dirname(obj.input_path)
-        pp.context.update(
-            {
-                k: " ".join(v) if isinstance(v, list) else v
-                for k, v in obj.config.substs.items()
-            }
-        )
+        pp.context.update({
+            k: " ".join(v) if isinstance(v, list) else v
+            for k, v in obj.config.substs.items()
+        })
         pp.context.update(
             top_srcdir=obj.topsrcdir,
             topobjdir=obj.topobjdir,
@@ -349,7 +349,7 @@ def HybridBackend(*backends):
     class TheHybridBackend(BuildBackend):
         def __init__(self, environment):
             self._backends = [b(environment) for b in backends]
-            super(TheHybridBackend, self).__init__(environment)
+            super().__init__(environment)
 
         def consume_object(self, obj):
             return any(b.consume_object(obj) for b in self._backends)

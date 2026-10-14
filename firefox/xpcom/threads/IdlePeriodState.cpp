@@ -1,14 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/AppShutdown.h"
 #include "mozilla/IdlePeriodState.h"
+
+#include "mozilla/AppShutdown.h"
 #include "mozilla/StaticPrefs_idle_period.h"
-#include "mozilla/ipc/IdleSchedulerChild.h"
 #include "mozilla/dom/ContentChild.h"
+#include "mozilla/ipc/IdleSchedulerChild.h"
 #include "nsIIdlePeriod.h"
 #include "nsThreadManager.h"
 #include "nsXPCOM.h"
@@ -18,7 +17,7 @@ static uint64_t sIdleRequestCounter = 0;
 
 namespace mozilla {
 
-IdlePeriodState::IdlePeriodState(already_AddRefed<nsIIdlePeriod>&& aIdlePeriod)
+IdlePeriodState::IdlePeriodState(already_AddRefed<nsIIdlePeriod> aIdlePeriod)
     : mIdlePeriod(aIdlePeriod) {
   MOZ_ASSERT(NS_IsMainThread(),
              "Why are we touching idle state off the main thread?");
@@ -101,7 +100,7 @@ TimeStamp IdlePeriodState::GetIdleDeadlineInternal(
 }
 
 TimeStamp IdlePeriodState::GetLocalIdleDeadline(
-    bool& aShuttingDown, const MutexAutoUnlock& aProofOfUnlock) {
+    bool& aShuttingDown, const MutexAutoUnlock& /*aProofOfUnlock*/) {
   MOZ_ASSERT(NS_IsMainThread(),
              "Why are we touching idle state off the main thread?");
   // If we are shutting down, we won't honor the idle period, and we will
@@ -144,8 +143,8 @@ TimeStamp IdlePeriodState::GetLocalIdleDeadline(
   return idleDeadline;
 }
 
-TimeStamp IdlePeriodState::GetIdleToken(TimeStamp aLocalIdlePeriodHint,
-                                        const MutexAutoUnlock& aProofOfUnlock) {
+TimeStamp IdlePeriodState::GetIdleToken(
+    TimeStamp aLocalIdlePeriodHint, const MutexAutoUnlock& /*aProofOfUnlock*/) {
   MOZ_ASSERT(NS_IsMainThread(),
              "Why are we touching idle state off the main thread?");
 
@@ -198,7 +197,7 @@ void IdlePeriodState::SetIdleToken(uint64_t aId, TimeDuration aDuration) {
   MOZ_ASSERT(NS_IsMainThread(),
              "Why are we touching idle state off the main thread?");
 
-  // We check the request ID.  It's possible that the server may be granting a
+  // We check the request ID.  It's possible that the server may be granting
   // an ealier request that the client has since cancelled and re-requested.
   if (mIdleRequestId == aId) {
     mIdleToken = TimeStamp::Now() + aDuration;
@@ -215,7 +214,7 @@ void IdlePeriodState::SetActive() {
   mActive = true;
 }
 
-void IdlePeriodState::SetPaused(const MutexAutoUnlock& aProofOfUnlock) {
+void IdlePeriodState::SetPaused(const MutexAutoUnlock& /*aProofOfUnlock*/) {
   MOZ_ASSERT(NS_IsMainThread(),
              "Why are we touching idle state off the main thread?");
   MOZ_ASSERT(mActive);
@@ -249,8 +248,7 @@ void IdlePeriodState::ClearIdleToken() {
 }
 
 bool IdlePeriodState::ShouldGetIdleToken() {
-  return StaticPrefs::idle_period_cross_process_scheduling() &&
-         dom::ContentChild::GetSingleton() &&
+  return dom::ContentChild::GetSingleton() &&
          dom::ContentChild::GetSingleton()->GetProcessPriority() <
              hal::ProcessPriority::PROCESS_PRIORITY_FOREGROUND;
 }

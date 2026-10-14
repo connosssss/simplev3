@@ -1,40 +1,45 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsAppShell.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <gdk/gdk.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <gdk/gdk.h>
-#include "nsAppShell.h"
-#include "nsBaseAppShell.h"
-#include "nsWindow.h"
-#include "mozilla/Logging.h"
-#include "prenv.h"
+
 #include "mozilla/BackgroundHangMonitor.h"
+#include "mozilla/GRefPtr.h"
+#include "mozilla/GUniquePtr.h"
 #include "mozilla/Hal.h"
+#include "mozilla/Logging.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/ProfilerLabels.h"
 #include "mozilla/ProfilerThreadSleep.h"
-#include "mozilla/Unused.h"
-#include "mozilla/GUniquePtr.h"
 #include "mozilla/StaticPrefs_widget.h"
 #include "mozilla/WidgetUtils.h"
+#include "nsAppShell.h"
+#include "nsBaseAppShell.h"
+#include "nsCRT.h"
+#include "nsIObserverService.h"
 #include "nsIPowerManagerService.h"
+#include "nsWindow.h"
+#include "prenv.h"
 #ifdef MOZ_ENABLE_DBUS
 #  include <gio/gio.h>
-#  include "nsIObserverService.h"
+#endif
+#if defined(MOZ_ENABLE_DBUS) || defined(MOZ_WAYLAND)
 #  include "WidgetUtilsGtk.h"
 #endif
+#include "HeadlessScreenHelper.h"
+#include "ScreenHelperGTK.h"
 #include "WakeLockListener.h"
 #include "gfxPlatform.h"
-#include "nsAppRunner.h"
 #include "mozilla/XREAppData.h"
-#include "ScreenHelperGTK.h"
-#include "HeadlessScreenHelper.h"
 #include "mozilla/widget/ScreenManager.h"
+#include "nsAppRunner.h"
 #ifdef MOZ_WAYLAND
 #  include "nsWaylandDisplay.h"
 #endif
@@ -56,9 +61,16 @@ LazyLogModule gWidgetVsync("WidgetVSync");
 LazyLogModule gDmabufLog("Dmabuf");
 LazyLogModule gWidgetCompositorLog("WidgetCompositor");
 
+#undef LOGW
+#ifdef MOZ_LOGGING
+#  define LOGW(...) MOZ_LOG(gWidgetLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
+#else
+#  define LOGW(...)
+#endif
+
 static GPollFunc sPollFunc;
 
-nsAppShell* sAppShell = nullptr;
+nsAppShell* nsAppShell::sAppShell = nullptr;
 
 // Wrapper function to disable hang monitoring while waiting in poll().
 static gint PollWrapper(GPollFD* aUfds, guint aNfsd, gint aTimeout) {
@@ -145,7 +157,7 @@ gboolean nsAppShell::EventProcessorCallback(GIOChannel* source,
   nsAppShell* self = static_cast<nsAppShell*>(data);
 
   unsigned char c;
-  Unused << read(self->mPipeFDs[0], &c, 1);
+  [[maybe_unused]] ssize_t _ = read(self->mPipeFDs[0], &c, 1);
   switch (c) {
     case NOTIFY_TOKEN:
       self->NativeEventCallback();
@@ -171,6 +183,12 @@ nsAppShell::~nsAppShell() {
   if (mTag) g_source_remove(mTag);
   if (mPipeFDs[0]) close(mPipeFDs[0]);
   if (mPipeFDs[1]) close(mPipeFDs[1]);
+
+  nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
+  if (obs) {
+    obs->RemoveObserver(this, "sessionstore-restoring-on-startup");
+    obs->RemoveObserver(this, "sessionstore-windows-restored");
+  }
 }
 
 mozilla::StaticRefPtr<WakeLockListener> sWakeLockListener;
@@ -278,6 +296,32 @@ void nsAppShell::DBusConnectClientResponse(GObject* aObject,
   }
 }
 
+void nsAppShell::DBusConnectionCheck() {
+  if (sAppShell && sAppShell->mDBusConnectionSession &&
+      sAppShell->mDBusConnectionSystem) {
+    MOZ_DIAGNOSTIC_ASSERT(
+        ((GObject*)sAppShell->mDBusConnectionSession.get())->ref_count > 1,
+        "Released mDBusConnectionSession connection?!");
+    MOZ_DIAGNOSTIC_ASSERT(
+        ((GObject*)sAppShell->mDBusConnectionSystem.get())->ref_count > 1,
+        "Released mDBusConnectionSystem connection?!");
+  }
+}
+
+void nsAppShell::SetSessionDBus(GDBusConnection* aDBusConnectionSession) {
+  if (sAppShell) {
+    sAppShell->mDBusConnectionSession = aDBusConnectionSession;
+    DBusConnectionCheck();
+  }
+}
+
+void nsAppShell::SetSystemDBus(GDBusConnection* aDBusConnectionSystem) {
+  if (sAppShell) {
+    sAppShell->mDBusConnectionSystem = aDBusConnectionSystem;
+    DBusConnectionCheck();
+  }
+}
+
 // Based on
 // https://github.com/lcp/NetworkManager/blob/240f47c892b4e935a3e92fc09eb15163d1fa28d8/src/nm-sleep-monitor-systemd.c
 // Use login1 to signal sleep and wake notifications.
@@ -301,6 +345,52 @@ void nsAppShell::StartDBusListening() {
       "org.freedesktop.timedate1", "/org/freedesktop/timedate1",
       "org.freedesktop.DBus.Properties", mTimedate1ProxyCancellable,
       reinterpret_cast<GAsyncReadyCallback>(DBusConnectClientResponse), this);
+
+  // Don't grab reference to DBus connect from xpcshell, it fails
+  // to release nsAppShell singleton and causes test timeout.
+  if (!g_getenv("XPCSHELL_TEST")) {
+    // Obtain session DBus connection
+    mDBusGetCancellableSession = dont_AddRef(g_cancellable_new());
+    g_bus_get(
+        G_BUS_TYPE_SESSION, mDBusGetCancellableSession,
+        [](GObject* aSourceObject, GAsyncResult* aRes, gpointer aUserData) {
+          GUniquePtr<GError> error;
+          GDBusConnection* conn =
+              g_bus_get_finish(aRes, getter_Transfers(error));
+          if (!conn) {
+            if (!IsCancelledGError(error.get())) {
+              NS_WARNING(
+                  nsPrintfCString("Failure at g_bus_get_finish: %s",
+                                  error ? error->message : "Unknown Error")
+                      .get());
+            }
+            return;
+          }
+          nsAppShell::SetSessionDBus(conn);
+        },
+        this);
+
+    // Obtain system-wide DBus connection
+    mDBusGetCancellableSystem = dont_AddRef(g_cancellable_new());
+    g_bus_get(
+        G_BUS_TYPE_SYSTEM, mDBusGetCancellableSystem,
+        [](GObject* aSourceObject, GAsyncResult* aRes, gpointer aUserData) {
+          GUniquePtr<GError> error;
+          GDBusConnection* conn =
+              g_bus_get_finish(aRes, getter_Transfers(error));
+          if (!conn) {
+            if (!IsCancelledGError(error.get())) {
+              NS_WARNING(
+                  nsPrintfCString("Failure at g_bus_get_finish: %s",
+                                  error ? error->message : "Unknown Error")
+                      .get());
+            }
+            return;
+          }
+          nsAppShell::SetSystemDBus(conn);
+        },
+        this);
+  }
 }
 
 void nsAppShell::StopDBusListening() {
@@ -323,6 +413,18 @@ void nsAppShell::StopDBusListening() {
     mTimedate1ProxyCancellable = nullptr;
   }
   mTimedate1Proxy = nullptr;
+
+  DBusConnectionCheck();
+  if (mDBusGetCancellableSession) {
+    g_cancellable_cancel(mDBusGetCancellableSession);
+    mDBusGetCancellableSession = nullptr;
+  }
+  if (mDBusGetCancellableSystem) {
+    g_cancellable_cancel(mDBusGetCancellableSystem);
+    mDBusGetCancellableSystem = nullptr;
+  }
+  mDBusConnectionSession = nullptr;
+  mDBusConnectionSystem = nullptr;
 }
 #endif
 
@@ -355,6 +457,7 @@ void nsAppShell::InstallTermSignalHandler() {
 }
 
 nsresult nsAppShell::Init() {
+  MOZ_ASSERT(!sAppShell);
   mozilla::hal::Init();
 
 #ifdef MOZ_ENABLE_DBUS
@@ -387,6 +490,13 @@ nsresult nsAppShell::Init() {
       if (gAppData) {
         gdk_set_program_class(gAppData->remotingName);
       }
+    }
+
+    nsCOMPtr<nsIObserverService> obsServ =
+        mozilla::services::GetObserverService();
+    if (obsServ) {
+      obsServ->AddObserver(this, "sessionstore-restoring-on-startup", false);
+      obsServ->AddObserver(this, "sessionstore-windows-restored", false);
     }
   }
 
@@ -478,12 +588,12 @@ NS_IMETHODIMP nsAppShell::Run() {
 
 void nsAppShell::ScheduleNativeEventCallback() {
   unsigned char buf[] = {NOTIFY_TOKEN};
-  Unused << write(mPipeFDs[1], buf, 1);
+  [[maybe_unused]] ssize_t _ = write(mPipeFDs[1], buf, 1);
 }
 
 void nsAppShell::ScheduleQuitEvent() {
   unsigned char buf[] = {QUIT_TOKEN};
-  Unused << write(mPipeFDs[1], buf, 1);
+  [[maybe_unused]] ssize_t _ = write(mPipeFDs[1], buf, 1);
 }
 
 bool nsAppShell::ProcessNextNativeEvent(bool mayWait) {
@@ -492,4 +602,98 @@ bool nsAppShell::ProcessNextNativeEvent(bool mayWait) {
   }
   bool didProcessEvent = g_main_context_iteration(nullptr, mayWait);
   return didProcessEvent;
+}
+
+void nsAppShell::InitSessionRestore() {
+#ifdef MOZ_WAYLAND
+  if (WaylandDisplayGet()) {
+    WaylandDisplayGet()->SessionManagerInit();
+  }
+#endif
+}
+
+// We can't query widget_wayland_session_management_enabled_AtStartup()
+// from nsAppShell::Init() as it's too early and we don't have profile loaded.
+bool nsAppShell::IsSessionRestoreSupported() {
+#ifdef MOZ_WAYLAND
+  static bool isSupported = []() {
+    if (!WaylandDisplayGet() || !WaylandDisplayGet()->GetSessionManager()) {
+      LOGW(
+          "nsAppShell::IsSessionRestoreSupported(): SessionManager is "
+          "missing.");
+      return false;
+    }
+    if (!StaticPrefs::widget_wayland_session_management_enabled_AtStartup()) {
+      LOGW("nsAppShell::IsSessionRestoreSupported(): disabled by pref.");
+      return false;
+    }
+    if (IsGnomeDesktopEnvironment()) {
+      LOGW(
+          "nsAppShell::IsSessionRestoreSupported(): disabled due to Bug "
+          "2064100.");
+      return false;
+    }
+
+    GType waylandWindowType = g_type_from_name("GdkWaylandWindow");
+    bool supported =
+        waylandWindowType &&
+        g_signal_lookup("xdg-toplevel-realized", waylandWindowType);
+    if (!supported) {
+      LOGW(
+          "nsAppShell::IsSessionRestoreSupported(): xdg-toplevel-realized is "
+          "missing.");
+    }
+    return supported;
+  }();
+  return isSupported;
+#else
+  return false;
+#endif
+}
+
+SessionRestoreState nsAppShell::UpdateAndGetSessionState() {
+  if (!sAppShell) {
+    return eSessionRestoreFinished;
+  }
+
+  // If session restore is not supported or disabled,
+  // report 'finished' as we don't want to block window creation.
+  if (!IsSessionRestoreSupported()) {
+    sAppShell->mSessionRestoreState = eSessionRestoreFinished;
+    return eSessionRestoreFinished;
+  }
+
+  // Check for browser.startup.page / re-open previous windows and tabs (session
+  // restore enabled).
+  if (sAppShell->mSessionRestoreState == eSessionDefault &&
+      Preferences::GetInt("browser.startup.page", 0) == 3) {
+    LOGW(
+        "nsAppShell::UpdateAndGetSessionState(): session restore enabled, "
+        "restoring...");
+    sAppShell->mSessionRestoreState = eSessionRestoring;
+  }
+  LOGW("nsAppShell::GetSessionState() state %d",
+       int(sAppShell->mSessionRestoreState));
+  return sAppShell->mSessionRestoreState;
+}
+
+NS_IMETHODIMP
+nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
+                    const char16_t* aData) {
+  LOGW("nsAppShell::Observe() topic %s", aTopic);
+  if (!nsCRT::strcmp(aTopic, "sessionstore-restoring-on-startup")) {
+    if (IsSessionRestoreSupported()) {
+      LOGW("  mSessionRestoreState = eSessionRestoring");
+      mSessionRestoreState = eSessionRestoring;
+    }
+  } else if (!nsCRT::strcmp(aTopic, "sessionstore-windows-restored")) {
+    if (IsSessionRestoreSupported()) {
+      LOGW("  mSessionRestoreState = eSessionRestoreFinished");
+      mSessionRestoreState = eSessionRestoreFinished;
+      nsWindow::SessionRestoreFinished();
+    }
+  } else {
+    return nsBaseAppShell::Observe(aSubject, aTopic, aData);
+  }
+  return NS_OK;
 }

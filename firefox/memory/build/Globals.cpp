@@ -16,7 +16,7 @@ namespace mozilla {
 #ifndef MALLOC_STATIC_PAGESIZE
 #  define GLOBAL(type, name, value) type name;
 #  define GLOBAL_ASSERT(...)
-#  include "Globals_inc.h"
+#  include "Globals.inc"
 #  undef GLOBAL_ASSERT
 #  undef GLOBAL
 
@@ -28,7 +28,7 @@ void DefineGlobals() {
 #  define GLOBAL_LOG2 mozilla::FloorLog2
 #  define GLOBAL_ASSERT MOZ_RELEASE_ASSERT
 #  define GLOBAL_CONSTEXPR
-#  include "Globals_inc.h"
+#  include "Globals.inc"
 #  undef GLOBAL_CONSTEXPR
 #  undef GLOBAL_ASSERT
 #  undef GLOBAL_LOG2
@@ -55,7 +55,8 @@ static char* getenv(const char* name) {
 // *****************************
 // Runtime configuration options.
 
-size_t opt_dirty_max = DIRTY_MAX_DEFAULT;
+// Set in malloc_init_hard() once the page size is known.
+size_t opt_dirty_max;
 
 #ifdef MALLOC_RUNTIME_CONFIG
 bool opt_junk = OPT_JUNK_DEFAULT;

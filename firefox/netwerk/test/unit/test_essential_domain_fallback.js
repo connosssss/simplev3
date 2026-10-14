@@ -2,6 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+const lazy = {};
+ChromeUtils.defineESModuleGetters(lazy, {
+  AddonSettings: "resource://gre/modules/addons/AddonSettings.sys.mjs",
+  CertUtils: "resource://gre/modules/CertUtils.sys.mjs",
+  ServiceRequest: "resource://gre/modules/ServiceRequest.sys.mjs",
+});
+
+const { NodeHTTPSServer } = ChromeUtils.importESModule(
+  "resource://testing-common/NodeServer.sys.mjs"
+);
+
 function waitForNotificationPromise(notification) {
   return new Promise(resolve => {
     function observer(aSubject, _aTopic, _aData) {
@@ -85,6 +96,53 @@ add_task(async function test_fallback_on_dns_failure() {
   );
 });
 
+add_task(async function test_dns_xhr() {
+  Services.dns.clearCache(true);
+  override.clearOverrides();
+  override.addIPOverride("aus5.mozilla.org", "N/A");
+  override.addIPOverride("foo.example.com", "127.0.0.1");
+
+  let text = await new Promise((resolve, reject) => {
+    let request = new XMLHttpRequest({ mozAnon: true, mozSystem: true });
+    request.open("GET", `https://aus5.mozilla.org/stuff`, true);
+    request.channel.loadFlags |= Ci.nsIRequest.LOAD_BYPASS_CACHE;
+    // Prevent the request from writing to cache.
+    request.channel.loadFlags |= Ci.nsIRequest.INHIBIT_CACHING;
+    request.overrideMimeType("text/plain");
+    request.timeout = 5000;
+    request.addEventListener("load", () => resolve(request.responseText));
+    request.addEventListener("error", reject);
+    request.addEventListener("timeout", reject);
+    request.send(null);
+  });
+  equal(text, "Good stuff");
+});
+
+add_task(async function test_dns_service_request() {
+  Services.dns.clearCache(true);
+  override.clearOverrides();
+  override.addIPOverride("aus5.mozilla.org", "N/A");
+  override.addIPOverride("foo.example.com", "127.0.0.1");
+
+  let text = await new Promise((resolve, reject) => {
+    let request = new lazy.ServiceRequest({ mozAnon: true });
+    request.open("GET", `https://aus5.mozilla.org/stuff`, true);
+    request.channel.notificationCallbacks = new lazy.CertUtils.BadCertHandler(
+      !lazy.AddonSettings.UPDATE_REQUIREBUILTINCERTS
+    );
+    request.channel.loadFlags |= Ci.nsIRequest.LOAD_BYPASS_CACHE;
+    // Prevent the request from writing to cache.
+    request.channel.loadFlags |= Ci.nsIRequest.INHIBIT_CACHING;
+    request.overrideMimeType("text/plain");
+    request.timeout = 5000;
+    request.addEventListener("load", () => resolve(request.responseText));
+    request.addEventListener("error", reject);
+    request.addEventListener("timeout", reject);
+    request.send(null);
+  });
+  equal(text, "Good stuff");
+});
+
 add_task(async function test_fallback_on_tls_failure() {
   Services.obs.notifyObservers(null, "net:cancel-all-connections");
   Services.dns.clearCache(true);
@@ -111,6 +169,26 @@ add_task(async function test_no_fallback_with_content_principal() {
   });
   // "NS_ERROR_GENERATE_FAILURE(NS_ERROR_MODULE_SECURITY, SSL_ERROR_BAD_CERT_DOMAIN)"
   equal(req.status, 0x805a2ff4);
+});
+
+// A top level navigation started from the browser UI or from a privileged page
+// (the address bar, a link in about:addons) has a system triggering principal,
+// but it is still an ordinary content load and must not be redirected to the
+// fallback domain.
+add_task(async function test_no_fallback_for_document_load() {
+  Services.obs.notifyObservers(null, "net:cancel-all-connections");
+  Services.dns.clearCache(true);
+
+  override.clearOverrides();
+  override.addIPOverride("aus5.mozilla.org", "N/A");
+  override.addIPOverride("foo.example.com", "127.0.0.1");
+
+  let { req } = await openChannelPromise("https://aus5.mozilla.org/stuff", {
+    loadUsingSystemPrincipal: true,
+    contentPolicyType: Ci.nsIContentPolicy.TYPE_DOCUMENT,
+    expectFailure: true,
+  });
+  equal(req.status, Cr.NS_ERROR_UNKNOWN_HOST);
 });
 
 add_task(async function test_fallback_on_connection_failure() {

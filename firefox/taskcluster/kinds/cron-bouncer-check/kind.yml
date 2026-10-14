@@ -5,6 +5,7 @@
 loader: taskgraph.loader.transform:loader
 
 transforms:
+    - taskgraph.transforms.task_context
     - gecko_taskgraph.transforms.bouncer_check:transforms
     - gecko_taskgraph.transforms.job:transforms
     - gecko_taskgraph.transforms.task:transforms
@@ -12,14 +13,20 @@ transforms:
 task-defaults:
     name: bouncer-check
     description: bouncer check
-    worker-type: b-linux-gcp
+    task-context:
+        from-parameters:
+            project: project
+            release-type: release_type
+        substitution-fields:
+            - run.config
+            - run.product-field
+    worker-type: b-linux
     worker:
         max-run-time: 1200
         docker-image: {in-tree: "update-verify"}
     run:
-        sparse-profile: mozharness
-        extra-config:
-            bouncer_prefix: "https://download.mozilla.org/"
+        sparse-profile: mach
+        bouncer-prefix: "https://download.mozilla.org/"
     attributes:
         build_platform: linux64
         build_type: opt
@@ -38,22 +45,17 @@ tasks:
         run:
             config:
                 by-release-type:
-                    nightly:
-                        - releases/bouncer_firefox_nightly.py
-                    beta:
-                        - releases/bouncer_firefox_beta.py
-                    release:
-                        - releases/bouncer_firefox_release.py
-                    esr.*:
-                        - releases/bouncer_firefox_esr.py
-                    default:
-                        - releases/bouncer_firefox_beta.py
+                    nightly: python/mozrelease/mozrelease/bouncer/firefox_nightly.yml
+                    beta: python/mozrelease/mozrelease/bouncer/firefox_beta.yml
+                    release: python/mozrelease/mozrelease/bouncer/firefox_release.yml
+                    esr.*: python/mozrelease/mozrelease/bouncer/firefox_esr.yml
+                    default: python/mozrelease/mozrelease/bouncer/firefox_beta.yml
             product-field:
                 by-project:
                     mozilla-central: FIREFOX_NIGHTLY
                     mozilla-beta: LATEST_FIREFOX_RELEASED_DEVEL_VERSION
                     mozilla-release: LATEST_FIREFOX_VERSION
-                    mozilla-esr140: FIREFOX_ESR_NEXT
+                    mozilla-esr153: FIREFOX_ESR_NEXT
                     default: LATEST_FIREFOX_DEVEL_VERSION
             products-url: https://product-details.mozilla.org/1.0/firefox_versions.json
         treeherder:
@@ -66,16 +68,8 @@ tasks:
             product: devedition
             job-name: devedition-bouncer-check
         run:
-            config:
-                by-project:
-                    mozilla-beta:
-                        - releases/bouncer_firefox_devedition.py
-                    default:
-                        - releases/dev_bouncer_firefox_devedition.py
-            product-field:
-                by-project:
-                    mozilla-beta: LATEST_FIREFOX_RELEASED_DEVEL_VERSION
-                    default: LATEST_FIREFOX_DEVEL_VERSION
+            config: python/mozrelease/mozrelease/bouncer/firefox_devedition.yml
+            product-field: FIREFOX_DEVEDITION
             products-url: https://product-details.mozilla.org/1.0/firefox_versions.json
         treeherder:
             platform: devedition-release/opt

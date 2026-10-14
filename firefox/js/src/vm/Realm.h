@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -11,7 +9,6 @@
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/Variant.h"
 #include "mozilla/XorShift128PlusRNG.h"
 
 #include <stddef.h>
@@ -20,11 +17,12 @@
 #include "ds/IdValuePair.h"
 #include "gc/Barrier.h"
 #include "gc/WeakMap.h"
-#include "jit/BaselineCompileQueue.h"
+#include "jit/JitRealm.h"
 #include "js/GCVariant.h"
 #include "js/RealmOptions.h"
 #include "js/TelemetryTimers.h"
 #include "js/UniquePtr.h"
+#include "util/LanguageId.h"
 #include "vm/ArrayBufferObject.h"
 #include "vm/GuardFuse.h"
 #include "vm/InvalidatingFuse.h"
@@ -39,11 +37,8 @@ namespace coverage {
 class LCovRealm;
 }  // namespace coverage
 
-namespace jit {
-class BaselineCompileQueue;
-}  // namespace jit
-
 class AutoRestoreRealmDebugMode;
+class DateTimeInfo;
 class Debugger;
 class GlobalObject;
 class GlobalObjectData;
@@ -60,8 +55,8 @@ struct NativeIterator;
  * is erroneously included in the measurement; see bug 562553.
  */
 class DtoaCache {
-  double dbl;
-  int base;
+  double dbl = 0.0;
+  int base = 0;
   JSLinearString* str;  // if str==nullptr, dbl and base are not valid
 
  public:
@@ -145,18 +140,18 @@ class NewPlainObjectWithPropsCache {
   }
 };
 
-// Cache for Object.assign's fast path for two plain objects. It's used to
-// optimize:
+// Cache used to optimize the following operations for plain objects:
 //
 //   Object.assign(to, from)
+//   to = {...from}
 //
 // If the |to| object has shape |emptyToShape_| (shape with no properties) and
 // the |from| object has shape |fromShape_|, we can use |newToShape_| for |to|
-// and copy all (data)) properties from the |from| object.
+// and copy all (data) properties from the |from| object.
 //
-// This is a one-entry cache for now. It has a hit rate of > 90% on both
-// Speedometer 2 and Speedometer 3.
-class MOZ_NON_TEMPORARY_CLASS PlainObjectAssignCache {
+// This is a one-entry cache for now. The Object.assign cache has a hit rate of
+// > 90% on both Speedometer 2 and Speedometer 3.
+class MOZ_NON_TEMPORARY_CLASS PlainObjectCopyPropsCache {
   SharedShape* emptyToShape_ = nullptr;
   SharedShape* fromShape_ = nullptr;
   SharedShape* newToShape_ = nullptr;
@@ -168,9 +163,9 @@ class MOZ_NON_TEMPORARY_CLASS PlainObjectAssignCache {
 #endif
 
  public:
-  PlainObjectAssignCache() = default;
-  PlainObjectAssignCache(const PlainObjectAssignCache&) = delete;
-  void operator=(const PlainObjectAssignCache&) = delete;
+  PlainObjectCopyPropsCache() = default;
+  PlainObjectCopyPropsCache(const PlainObjectCopyPropsCache&) = delete;
+  void operator=(const PlainObjectCopyPropsCache&) = delete;
 
   SharedShape* lookup(Shape* emptyToShape, Shape* fromShape) const {
     if (emptyToShape_ == emptyToShape && fromShape_ == fromShape) {
@@ -215,13 +210,18 @@ class PropertyIteratorObject;
 
 struct IteratorHashPolicy {
   struct Lookup {
-    Shape** shapes;
-    size_t numShapes;
+    Shape* objShape;
+    Shape** protoShapes;
+    size_t numProtoShapes;
     HashNumber shapesHash;
 
-    Lookup(Shape** shapes, size_t numShapes, HashNumber shapesHash)
-        : shapes(shapes), numShapes(numShapes), shapesHash(shapesHash) {
-      MOZ_ASSERT(numShapes > 0);
+    Lookup(Shape* objShape, Shape** protoShapes, size_t numProtoShapes,
+           HashNumber shapesHash)
+        : objShape(objShape),
+          protoShapes(protoShapes),
+          numProtoShapes(numProtoShapes),
+          shapesHash(shapesHash) {
+      MOZ_ASSERT(objShape);
     }
   };
   static HashNumber hash(const Lookup& lookup) { return lookup.shapesHash; }
@@ -230,6 +230,7 @@ struct IteratorHashPolicy {
 
 class DebugEnvironments;
 class NonSyntacticVariablesObject;
+class ScriptSourceObject;
 class WithEnvironmentObject;
 
 // ObjectRealm stores various tables and other state associated with particular
@@ -239,18 +240,27 @@ class ObjectRealm {
   // All non-syntactic lexical environments in the realm. These are kept in a
   // map because when loading scripts into a non-syntactic environment, we
   // need to use the same lexical environment to persist lexical bindings.
-  js::UniquePtr<js::ObjectWeakMap> nonSyntacticLexicalEnvironments_;
-
-  ObjectRealm(const ObjectRealm&) = delete;
-  void operator=(const ObjectRealm&) = delete;
+  using NonSyntacticLexialEnvironmentsMap =
+      WeakMap<JSObject*, JSObject*, ZoneAllocPolicy>;
+  js::UniquePtr<NonSyntacticLexialEnvironmentsMap>
+      nonSyntacticLexicalEnvironments_;
 
  public:
   // Map from array buffers to views sharing that storage.
   JS::WeakCache<js::InnerViewTable> innerViews;
 
+  // ScriptSourceObjects of the module scripts in this realm. Used by
+  // Debugger::findSources to locate the script sources.
+  using ModuleScriptSourceSet =
+      JS::GCHashSet<js::WeakHeapPtr<ScriptSourceObject*>,
+                    js::StableCellHasher<js::WeakHeapPtr<ScriptSourceObject*>>,
+                    js::ZoneAllocPolicy>;
+  JS::WeakCache<ModuleScriptSourceSet> moduleScriptSources;
+
   // Keep track of the metadata objects which can be associated with each JS
   // object. Both keys and values are in this realm.
-  js::UniquePtr<js::ObjectWeakMap> objectMetadataTable;
+  using ObjectMetadataTable = WeakMap<JSObject*, JSObject*, ZoneAllocPolicy>;
+  js::UniquePtr<ObjectMetadataTable> objectMetadataTable;
 
   using IteratorCache =
       js::HashSet<js::PropertyIteratorObject*, js::IteratorHashPolicy,
@@ -261,9 +271,16 @@ class ObjectRealm {
 
   explicit ObjectRealm(JS::Zone* zone);
 
+  ObjectRealm(const ObjectRealm&) = delete;
+  void operator=(const ObjectRealm&) = delete;
+
   void finishRoots();
   void trace(JSTracer* trc);
   void sweepAfterMinorGC(JSTracer* trc);
+
+#ifdef JSGC_HASH_TABLE_CHECKS
+  void checkModuleScriptSourcesAfterMovingGC(JS::Zone* zone);
+#endif
 
   void addSizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf,
                               size_t* innerViewsArg,
@@ -326,7 +343,7 @@ class JS::Realm : public JS::shadow::Realm {
 
   JSPrincipals* principals_ = nullptr;
 
-  js::jit::BaselineCompileQueue baselineCompileQueue_;
+  js::jit::JitRealm jitRealm_;
 
   // Bookkeeping information for debug scope objects.
   js::UniquePtr<js::DebugEnvironments> debugEnvs_;
@@ -338,6 +355,14 @@ class JS::Realm : public JS::shadow::Realm {
 
   const js::AllocationMetadataBuilder* allocationMetadataBuilder_ = nullptr;
   void* realmPrivate_ = nullptr;
+
+  // Default locale for realms with non-default locales.
+  js::LanguageId localeId_ = js::LanguageId::und();
+
+#if JS_HAS_INTL_API
+  // Date-time info for realms with non-default time zones.
+  js::UniquePtr<js::DateTimeInfo> dateTimeInfo_;
+#endif
 
   // There are two ways to enter a realm:
   //
@@ -387,12 +412,11 @@ class JS::Realm : public JS::shadow::Realm {
   enum {
     IsDebuggee = 1 << 0,
     DebuggerObservesAllExecution = 1 << 1,
-    DebuggerObservesAsmJS = 1 << 2,
-    DebuggerObservesCoverage = 1 << 3,
-    DebuggerObservesWasm = 1 << 4,
-    DebuggerObservesNativeCall = 1 << 5,
+    DebuggerObservesCoverage = 1 << 2,
+    DebuggerObservesWasm = 1 << 3,
+    DebuggerObservesNativeCall = 1 << 4,
   };
-  unsigned debugModeBits_ = 0;
+  uint32_t debugModeBits_ = 0;
   friend class js::AutoRestoreRealmDebugMode;
 
   bool isSystem_ = false;
@@ -405,6 +429,9 @@ class JS::Realm : public JS::shadow::Realm {
   // happens.
   bool isTracingExecution_ = false;
 
+  // Set when the embedder hinted that this realm is dying.
+  bool isDyingHint_ = false;
+
   js::UniquePtr<js::coverage::LCovRealm> lcovRealm_ = nullptr;
 
  public:
@@ -414,7 +441,12 @@ class JS::Realm : public JS::shadow::Realm {
   js::DtoaCache dtoaCache;
   js::NewProxyCache newProxyCache;
   js::NewPlainObjectWithPropsCache newPlainObjectWithPropsCache;
-  js::PlainObjectAssignCache plainObjectAssignCache;
+  js::PlainObjectCopyPropsCache plainObjectAssignCache;
+
+  // Same, for object spread. Separate because spread defines own properties
+  // while Object.assign uses [[Set]], so Object.assign must not reuse a shape
+  // derived from a |from| with an own __proto__ property.
+  js::PlainObjectCopyPropsCache plainObjectSpreadCache;
 
   // Last time at which an animation was played for this realm.
   js::MainThreadData<mozilla::TimeStamp> lastAnimationTime;
@@ -464,13 +496,14 @@ class JS::Realm : public JS::shadow::Realm {
 
  private:
   void updateDebuggerObservesFlag(unsigned flag);
-
-  Realm(const Realm&) = delete;
-  void operator=(const Realm&) = delete;
+  void restoreDebugModeBitsOnOOM(uint32_t bits);
 
  public:
   Realm(JS::Compartment* comp, const JS::RealmOptions& options);
   ~Realm();
+
+  Realm(const Realm&) = delete;
+  void operator=(const Realm&) = delete;
 
   void init(JSContext* cx, JSPrincipals* principals);
   void destroy(JS::GCContext* gcx);
@@ -480,7 +513,8 @@ class JS::Realm : public JS::shadow::Realm {
                               size_t* innerViewsArg,
                               size_t* objectMetadataTablesArg,
                               size_t* savedStacksSet,
-                              size_t* nonSyntacticLexicalEnvironmentsArg);
+                              size_t* nonSyntacticLexicalEnvironmentsArg,
+                              size_t* cacheIRStubs);
 
   JS::Zone* zone() { return zone_; }
   const JS::Zone* zone() const { return zone_; }
@@ -542,6 +576,8 @@ class JS::Realm : public JS::shadow::Realm {
    */
   void traceGlobalData(JSTracer* trc);
 
+  void traceGlobalRoot(JSTracer* trc, const char* name);
+
   void traceWeakGlobalEdge(JSTracer* trc);
 
   /*
@@ -564,6 +600,10 @@ class JS::Realm : public JS::shadow::Realm {
   void purge();
 
   void fixupAfterMovingGC(JSTracer* trc);
+
+#ifdef JSGC_HASH_TABLE_CHECKS
+  void checkModuleScriptSourcesAfterMovingGC();
+#endif
 
   void enter() { enterRealmDepthIgnoringJit_++; }
   void leave() {
@@ -671,7 +711,7 @@ class JS::Realm : public JS::shadow::Realm {
   //    parsing are disabled.
   //
   //    Whether AOT wasm is disabled is togglable by the Debugger API. By
-  //    default it is disabled. See debuggerObservesAsmJS below.
+  //    default it is disabled. See debuggerObservesWasm below.
   //
   // 2. When a realm's debuggerObservesAllExecution() == true, all of
   //    the realm's scripts are considered debuggee scripts.
@@ -745,16 +785,6 @@ class JS::Realm : public JS::shadow::Realm {
   }
 
   // True if this realm's global is a debuggee of some Debugger object
-  // whose allowUnobservedAsmJS flag is false.
-  bool debuggerObservesAsmJS() const {
-    static const unsigned Mask = IsDebuggee | DebuggerObservesAsmJS;
-    return (debugModeBits_ & Mask) == Mask;
-  }
-  void updateDebuggerObservesAsmJS() {
-    updateDebuggerObservesFlag(DebuggerObservesAsmJS);
-  }
-
-  // True if this realm's global is a debuggee of some Debugger object
   // whose allowUnobservedWasm flag is false.
   //
   // Note that since AOT wasm functions cannot bail out, this flag really
@@ -796,8 +826,24 @@ class JS::Realm : public JS::shadow::Realm {
 
   bool shouldCaptureStackForThrow();
 
-  // Returns the locale for this realm. (Pointer must NOT be freed!)
-  const char* getLocale() const;
+  // Returns the locale for this realm.
+  //
+  // The returned locale is canonicalized, but not necessarily an available
+  // locale for the ECMA-402 Intl API. `intl::GlobalIntlData::defaultLocale()`
+  // returns the *actual* default locale used for `Intl` objects.
+  js::LanguageId getLocale();
+
+  // Set the locale for this realm. Reset to the system default locale when the
+  // input is |nullptr|.
+  void setLocaleOverride(const char* locale);
+
+  // Returns the date-time info for this realm. Returns nullptr unless a time
+  // zone override was specified in the realm creation options.
+  js::DateTimeInfo* getDateTimeInfo();
+
+  // Set the time zone for this realm. Reset to the system default time zone
+  // when the input is |nullptr|.
+  void setTimeZoneOverride(const char* timeZone);
 
   // Initializes randomNumberGenerator if needed.
   mozilla::non_crypto::XorShift128PlusRNG& getOrCreateRandomNumberGenerator();
@@ -809,18 +855,20 @@ class JS::Realm : public JS::shadow::Realm {
 
   mozilla::HashCodeScrambler randomHashCodeScrambler();
 
-  js::jit::BaselineCompileQueue& baselineCompileQueue() {
-    return baselineCompileQueue_;
-  }
+  js::jit::JitRealm& jitRealm() { return jitRealm_; }
+
   static constexpr size_t offsetOfBaselineCompileQueue() {
-    return offsetof(Realm, baselineCompileQueue_);
+    return offsetof(Realm, jitRealm_) +
+           js::jit::JitRealm::offsetOfBaselineCompileQueue();
   }
-  void removeFromCompileQueue(JSScript* script);
 
   js::DebugEnvironments* debugEnvs() { return debugEnvs_.get(); }
   js::UniquePtr<js::DebugEnvironments>& debugEnvsRef() { return debugEnvs_; }
 
   js::SavedStacks& savedStacks() { return savedStacks_; }
+
+  void setIsDyingHint() { isDyingHint_ = true; }
+  bool isDyingHint() const { return isDyingHint_; }
 
   // Recompute the probability with which this realm should record
   // profiling data (stack traces, allocations log, etc.) about each
@@ -890,9 +938,9 @@ class MOZ_RAII AssertRealmUnchanged {
   JS::Realm* const oldRealm;
 };
 
-// AutoRealm can be used to enter the realm of a JSObject, JSScript or
-// ObjectGroup. It must not be used with cross-compartment wrappers, because
-// CCWs are not associated with a single realm.
+// AutoRealm can be used to enter the realm of a JSObject or JSScript. It must
+// not be used with cross-compartment wrappers, because CCWs are not associated
+// with a single realm.
 class AutoRealm {
   JSContext* const cx_;
   JS::Realm* const origin_;
@@ -902,40 +950,38 @@ class AutoRealm {
   inline AutoRealm(JSContext* cx, const T& target);
   inline ~AutoRealm();
 
+  AutoRealm(const AutoRealm&) = delete;
+  AutoRealm& operator=(const AutoRealm&) = delete;
+
   JSContext* context() const { return cx_; }
   JS::Realm* origin() const { return origin_; }
 
  protected:
   inline AutoRealm(JSContext* cx, JS::Realm* target);
-
- private:
-  AutoRealm(const AutoRealm&) = delete;
-  AutoRealm& operator=(const AutoRealm&) = delete;
 };
 
 class MOZ_RAII AutoAllocInAtomsZone {
   JSContext* const cx_;
   JS::Realm* const origin_;
-  AutoAllocInAtomsZone(const AutoAllocInAtomsZone&) = delete;
-  AutoAllocInAtomsZone& operator=(const AutoAllocInAtomsZone&) = delete;
 
  public:
   inline explicit AutoAllocInAtomsZone(JSContext* cx);
   inline ~AutoAllocInAtomsZone();
+  AutoAllocInAtomsZone(const AutoAllocInAtomsZone&) = delete;
+  AutoAllocInAtomsZone& operator=(const AutoAllocInAtomsZone&) = delete;
 };
 
 // During GC we sometimes need to enter a realm when we may have been allocating
-// in the the atoms zone. This leaves the atoms zone temporarily. This happens
-// in embedding callbacks and when we need to mark object groups as pretenured.
+// in the the atoms zone. This leaves the atoms zone temporarily.
 class MOZ_RAII AutoMaybeLeaveAtomsZone {
   JSContext* const cx_;
   bool wasInAtomsZone_;
-  AutoMaybeLeaveAtomsZone(const AutoMaybeLeaveAtomsZone&) = delete;
-  AutoMaybeLeaveAtomsZone& operator=(const AutoMaybeLeaveAtomsZone&) = delete;
 
  public:
   inline explicit AutoMaybeLeaveAtomsZone(JSContext* cx);
   inline ~AutoMaybeLeaveAtomsZone();
+  AutoMaybeLeaveAtomsZone(const AutoMaybeLeaveAtomsZone&) = delete;
+  AutoMaybeLeaveAtomsZone& operator=(const AutoMaybeLeaveAtomsZone&) = delete;
 };
 
 // Enter a realm directly. Only use this where there's no target GC thing
@@ -959,7 +1005,6 @@ class AutoFunctionOrCurrentRealm {
   inline AutoFunctionOrCurrentRealm(JSContext* cx, js::HandleObject fun);
   ~AutoFunctionOrCurrentRealm() = default;
 
- private:
   AutoFunctionOrCurrentRealm(const AutoFunctionOrCurrentRealm&) = delete;
   AutoFunctionOrCurrentRealm& operator=(const AutoFunctionOrCurrentRealm&) =
       delete;
@@ -982,9 +1027,6 @@ class ErrorCopier {
 class MOZ_RAII AutoSetNewObjectMetadata {
   JSContext* cx_;
 
-  AutoSetNewObjectMetadata(const AutoSetNewObjectMetadata& aOther) = delete;
-  void operator=(const AutoSetNewObjectMetadata& aOther) = delete;
-
   void setPendingMetadata();
 
  public:
@@ -1002,6 +1044,9 @@ class MOZ_RAII AutoSetNewObjectMetadata {
       setPendingMetadata();
     }
   }
+
+  AutoSetNewObjectMetadata(const AutoSetNewObjectMetadata& aOther) = delete;
+  void operator=(const AutoSetNewObjectMetadata& aOther) = delete;
 };
 
 } /* namespace js */

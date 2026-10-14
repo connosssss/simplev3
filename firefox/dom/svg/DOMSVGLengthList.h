@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,13 +6,12 @@
 #define DOM_SVG_DOMSVGLENGTHLIST_H_
 
 #include "DOMSVGAnimatedLengthList.h"
+#include "SVGLengthList.h"
 #include "mozAutoDocUpdate.h"
+#include "mozilla/Attributes.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsDebug.h"
 #include "nsTArray.h"
-#include "SVGLengthList.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/Unused.h"
 
 // {cbecb7a4-d6f3-47b5-b5a3-3e5bdbf5b2f9}
 #define MOZILLA_DOMSVGLENGTHLIST_IID \
@@ -38,13 +35,11 @@ class MOZ_RAII AutoChangeLengthListNotifier : public mozAutoDocUpdate {
       : mozAutoDocUpdate(aValue->Element()->GetComposedDoc(), true),
         mValue(aValue) {
     MOZ_ASSERT(aValue, "Expecting non-null value");
-    mEmptyOrOldValue =
-        mValue->Element()->WillChangeLengthList(mValue->AttrEnum(), *this);
+    mValue->Element()->WillChangeLengthList(mValue->AttrEnum(), *this);
   }
 
   ~AutoChangeLengthListNotifier() {
-    mValue->Element()->DidChangeLengthList(mValue->AttrEnum(), mEmptyOrOldValue,
-                                           *this);
+    mValue->Element()->DidChangeLengthList(mValue->AttrEnum(), *this);
     if (mValue->IsAnimating()) {
       mValue->Element()->AnimationNeedsResample();
     }
@@ -52,7 +47,6 @@ class MOZ_RAII AutoChangeLengthListNotifier : public mozAutoDocUpdate {
 
  private:
   T* const mValue;
-  nsAttrValue mEmptyOrOldValue;
 };
 
 /**
@@ -88,7 +82,7 @@ class DOMSVGLengthList final : public nsISupports, public nsWrapperCache {
 
  public:
   NS_INLINE_DECL_STATIC_IID(MOZILLA_DOMSVGLENGTHLIST_IID)
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DOMSVGLengthList)
 
   DOMSVGLengthList(DOMSVGAnimatedLengthList* aAList,
@@ -109,12 +103,12 @@ class DOMSVGLengthList final : public nsISupports, public nsWrapperCache {
 
   /**
    * This will normally be the same as InternalList().Length(), except if we've
-   * hit OOM in which case our length will be zero.
+   * hit OOM in which case our length will be zero or we've hit the maximum
+   * list length for the DOM list at some point in which case it may be smaller.
    */
   uint32_t LengthNoFlush() const {
-    MOZ_ASSERT(
-        mItems.Length() == 0 || mItems.Length() == InternalList().Length(),
-        "DOM wrapper's list length is out of sync");
+    MOZ_ASSERT(mItems.IsEmpty() || mItems.Length() <= InternalList().Length(),
+               "DOM wrapper's list length is out of sync");
     return mItems.Length();
   }
 
@@ -133,12 +127,6 @@ class DOMSVGLengthList final : public nsISupports, public nsWrapperCache {
     return mAList->mAnimVal && !mAList->IsAnimating();
   }
 
-  uint32_t NumberOfItems() const {
-    if (IsAnimValList()) {
-      Element()->FlushAnimations();
-    }
-    return LengthNoFlush();
-  }
   void Clear(ErrorResult& aError);
   already_AddRefed<DOMSVGLength> Initialize(DOMSVGLength& newItem,
                                             ErrorResult& aRv);
@@ -155,15 +143,21 @@ class DOMSVGLengthList final : public nsISupports, public nsWrapperCache {
                                             ErrorResult& aRv) {
     return InsertItemBefore(newItem, LengthNoFlush(), aRv);
   }
-  void IndexedSetter(uint32_t index, DOMSVGLength& newValue, ErrorResult& aRv);
-  uint32_t Length() const { return NumberOfItems(); }
+  void IndexedSetter(uint32_t aIndex, DOMSVGLength& aNewValue,
+                     ErrorResult& aRv);
+  uint32_t Length() const {
+    if (IsAnimValList()) {
+      Element()->FlushAnimations();
+    }
+    return LengthNoFlush();
+  }
 
  private:
   dom::SVGElement* Element() const { return mAList->mElement; }
 
   uint8_t AttrEnum() const { return mAList->mAttrEnum; }
 
-  uint8_t Axis() const { return mAList->mAxis; }
+  SVGLength::Axis Axis() const { return mAList->mAxis; }
 
   /// Used to determine if this list is the baseVal or animVal list.
   bool IsAnimValList() const {
@@ -185,7 +179,7 @@ class DOMSVGLengthList final : public nsISupports, public nsWrapperCache {
   /// Returns the DOMSVGLength at aIndex, creating it if necessary.
   already_AddRefed<DOMSVGLength> GetItemAt(uint32_t aIndex);
 
-  void MaybeInsertNullInAnimValListAt(uint32_t aIndex);
+  bool MaybeInsertNullInAnimValListAt(uint32_t aIndex);
   void MaybeRemoveItemFromAnimValListAt(uint32_t aIndex);
 
   // Weak refs to our DOMSVGLength items. The items are friends and take care

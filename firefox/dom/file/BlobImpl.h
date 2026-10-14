@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,14 @@
 #ifndef mozilla_dom_BlobImpl_h
 #define mozilla_dom_BlobImpl_h
 
+#include "mozilla/ThreadSafeWeakPtr.h"
 #include "nsISupports.h"
 #include "nsString.h"
 
 #define BLOBIMPL_IID \
   {0xbccb3275, 0x6778, 0x4ac5, {0xaf, 0x03, 0x90, 0xed, 0x37, 0xad, 0xdf, 0x5d}}
 
+class nsIHandleReportCallback;
 class nsIInputStream;
 
 namespace mozilla {
@@ -24,12 +24,18 @@ class SystemCallerGuarantee;
 template <typename T>
 class Optional;
 
-// This is the abstract class for any File backend. It must be nsISupports
-// because this class must be ref-counted and it has to work with IPC.
-class BlobImpl : public nsISupports {
+// This is the abstract class for any File backend. It must be ref-counted and
+// implement nsISupports so it can be used with IPC. It also supports
+// thread-safe weak references, allowing BlobImpl instances to be used as weak
+// keys without keeping them alive (e.g. for IndexedDB blob sharing/dedup).
+class BlobImpl : public SupportsThreadSafeWeakPtr<BlobImpl>,
+                 public nsISupports {
  public:
   NS_INLINE_DECL_STATIC_IID(BLOBIMPL_IID)
-  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_INLINE_DECL_REFCOUNTING_INHERITED(BlobImpl,
+                                       SupportsThreadSafeWeakPtr<BlobImpl>);
+  NS_IMETHOD QueryInterface(REFNSIID aIID, void** aInstancePtr) override;
+  MOZ_DECLARE_REFCOUNTED_TYPENAME(BlobImpl);
 
   BlobImpl() = default;
 
@@ -98,7 +104,14 @@ class BlobImpl : public nsISupports {
   // file is a directory.
   virtual bool IsDirectory() const { return false; }
 
+  virtual nsresult CollectReports(nsIHandleReportCallback* aHandleReport,
+                                  nsISupports* aData, bool aAnonymize) {
+    return NS_OK;
+  }
+
  protected:
+  friend SupportsThreadSafeWeakPtr<BlobImpl>;
+
   virtual ~BlobImpl() = default;
 };
 

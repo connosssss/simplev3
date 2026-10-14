@@ -9,9 +9,8 @@ import os
 import re
 import sys
 import types
-from collections import OrderedDict
 from contextlib import contextmanager
-from functools import wraps
+from functools import cache, cached_property, wraps
 
 import mozpack.path as mozpath
 
@@ -28,8 +27,6 @@ from mozbuild.configure.util import ConfigureOutputHandler, LineIO, getpreferred
 from mozbuild.util import (
     ReadOnlyDict,
     ReadOnlyNamespace,
-    memoize,
-    memoized_property,
 )
 
 # TRACE logging level, below (thus more verbose than) DEBUG
@@ -149,7 +146,7 @@ class DependsFunction:
             for d in self.dependencies
         ]
 
-    @memoize
+    @cache
     def result(self):
         if self.when and not self.sandbox._value_for(self.when):
             return None
@@ -203,7 +200,7 @@ class DependsFunction:
 
     def __getattr__(self, key):
         if key.startswith("_"):
-            return super(DependsFunction, self).__getattr__(key)
+            return super().__getattr__(key)
         # Our function may return None or an object that simply doesn't have
         # the wanted key. In that case, just return None.
         return TrivialDependsFunction(
@@ -227,9 +224,9 @@ class CombinedDependsFunction(DependsFunction):
             elif d not in flatten_deps:
                 flatten_deps.append(d)
 
-        super(CombinedDependsFunction, self).__init__(sandbox, func, flatten_deps)
+        super().__init__(sandbox, func, flatten_deps)
 
-    @memoize
+    @cache
     def result(self):
         resolved_args = (self.sandbox._value_for(d) for d in self.dependencies)
         return self._func(resolved_args)
@@ -292,6 +289,8 @@ class ConfigureSandbox(dict):
         do_stuff(config)
     """
 
+    __hash__ = object.__hash__
+
     # The default set of builtins. We expose unicode as str to make sandboxed
     # files more python3-ready.
     BUILTINS = ReadOnlyDict(
@@ -330,22 +329,20 @@ class ConfigureSandbox(dict):
 
     # Expose a limited set of functions from os.path
     OS = ReadOnlyNamespace(
-        path=ReadOnlyNamespace(
-            **{
-                k: getattr(mozpath, k, getattr(os.path, k))
-                for k in (
-                    "abspath",
-                    "basename",
-                    "dirname",
-                    "isabs",
-                    "join",
-                    "normcase",
-                    "normpath",
-                    "realpath",
-                    "relpath",
-                )
-            }
-        )
+        path=ReadOnlyNamespace(**{
+            k: getattr(mozpath, k, getattr(os.path, k))
+            for k in (
+                "abspath",
+                "basename",
+                "dirname",
+                "isabs",
+                "join",
+                "normcase",
+                "normpath",
+                "realpath",
+                "relpath",
+            )
+        })
     )
 
     def __init__(
@@ -365,14 +362,14 @@ class ConfigureSandbox(dict):
         self._all_paths = set()
         self._templates = set()
         # Associate SandboxDependsFunctions to DependsFunctions.
-        self._depends = OrderedDict()
+        self._depends = {}
         self._seen = set()
         # Store the @imports added to a given function.
         self._imports = {}
 
-        self._options = OrderedDict()
+        self._options = {}
         # Store raw option (as per command line or environment) for each Option
-        self._raw_options = OrderedDict()
+        self._raw_options = {}
 
         # Store options added with `imply_option`, and the reason they were
         # added (which can either have been given to `imply_option`, or
@@ -391,6 +388,7 @@ class ConfigureSandbox(dict):
         # A list of conditions to apply as a default `when` for every *_impl()
         self._default_conditions = []
 
+        self._resolved_options = {}
         self._helper = CommandLineHelper(environ, argv)
 
         assert isinstance(config, dict)
@@ -500,7 +498,7 @@ class ConfigureSandbox(dict):
         self._paths.pop(-1)
 
     @staticmethod
-    @memoize
+    @cache
     def get_compiled_source(source, path):
         return compile(source, path, "exec")
 
@@ -582,7 +580,7 @@ class ConfigureSandbox(dict):
         if func:
             return func
 
-        return super(ConfigureSandbox, self).__getitem__(key)
+        return super().__getitem__(key)
 
     def __setitem__(self, key, value):
         if (
@@ -608,7 +606,7 @@ class ConfigureSandbox(dict):
         if isinstance(value, SandboxDependsFunction):
             self._depends[value].name = key
 
-        return super(ConfigureSandbox, self).__setitem__(key, value)
+        return super().__setitem__(key, value)
 
     def _resolve(self, arg):
         if isinstance(arg, SandboxDependsFunction):
@@ -628,13 +626,13 @@ class ConfigureSandbox(dict):
 
         assert False
 
-    @memoize
+    @cache
     def _value_for_depends(self, obj):
         value = obj.result()
         self._logger.log(TRACE, "%r = %r", obj, value)
         return value
 
-    @memoize
+    @cache
     def _value_for_option(self, option):
         implied = {}
         matching_implied_options = [
@@ -671,8 +669,7 @@ class ConfigureSandbox(dict):
             )
 
         if value.origin == "implied":
-            recursed_value = getattr(self, "__value_for_option").get((option,))
-            if recursed_value is not None:
+            if self._resolved_options.get(option) is not None:
                 filename, line = implied[value.format(option.option)].caller
                 raise ConfigureError(
                     "'%s' appears somewhere in the direct or indirect dependencies when "
@@ -696,9 +693,11 @@ class ConfigureSandbox(dict):
                     % option_string.split("=", 1)[0]
                 )
             self._logger.log(TRACE, "%r = None", option)
+            self._resolved_options[option] = None
             return None
 
         self._logger.log(TRACE, "%r = %r", option, value)
+        self._resolved_options[option] = value
         return value
 
     def _dependency(self, arg, callee_name, arg_name=None):
@@ -708,7 +707,7 @@ class ConfigureSandbox(dict):
                 raise ConfigureError("Option must not contain an '='")
             if name not in self._options:
                 raise ConfigureError(
-                    "'%s' is not a known option. " "Maybe it's declared too late?" % arg
+                    "'%s' is not a known option. Maybe it's declared too late?" % arg
                 )
             arg = self._options[name]
             self._seen.add(arg)
@@ -833,8 +832,7 @@ class ConfigureSandbox(dict):
         for c in conditions:
             if c != when:
                 raise ConfigureError(
-                    "@depends function needs the same `when` "
-                    "as options it depends on"
+                    "@depends function needs the same `when` as options it depends on"
                 )
 
         def decorator(func):
@@ -1016,7 +1014,7 @@ class ConfigureSandbox(dict):
             wrapped = getattr(wrapped, attr)
         return wrapped
 
-    @memoized_property
+    @cached_property
     def _wrapped_os(self):
         wrapped_os = {}
         exec("from os import *", {}, wrapped_os)
@@ -1030,7 +1028,7 @@ class ConfigureSandbox(dict):
         wrapped_os["path"] = ReadOnlyNamespace(**wrapped_path)
         return ReadOnlyNamespace(**wrapped_os)
 
-    @memoized_property
+    @cached_property
     def _wrapped_subprocess(self):
         wrapped_subprocess = {}
         exec("from subprocess import *", {}, wrapped_subprocess)
@@ -1088,7 +1086,7 @@ class ConfigureSandbox(dict):
             raise TypeError("Unexpected type: '%s'" % type(name).__name__)
         if name in data:
             raise ConfigureError(
-                "Cannot add '%s' to configuration: Key already " "exists" % name
+                "Cannot add '%s' to configuration: Key already exists" % name
             )
         value = self._resolve(value)
         if value is not None:
@@ -1108,9 +1106,10 @@ class ConfigureSandbox(dict):
         """
         when = self._normalize_when(when, "set_config")
 
-        self._execution_queue.append(
-            (self._resolve_and_set, (self._config, name, value, when))
-        )
+        self._execution_queue.append((
+            self._resolve_and_set,
+            (self._config, name, value, when),
+        ))
 
     def set_define_impl(self, name, value, when=None):
         """Implementation of set_define().
@@ -1123,9 +1122,10 @@ class ConfigureSandbox(dict):
         when = self._normalize_when(when, "set_define")
 
         defines = self._config.setdefault("DEFINES", {})
-        self._execution_queue.append(
-            (self._resolve_and_set, (defines, name, value, when))
-        )
+        self._execution_queue.append((
+            self._resolve_and_set,
+            (defines, name, value, when),
+        ))
 
     def imply_option_impl(self, option, value, reason=None, when=None):
         """Implementation of imply_option().

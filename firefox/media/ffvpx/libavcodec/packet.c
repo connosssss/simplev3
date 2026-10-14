@@ -24,7 +24,6 @@
 #include "libavutil/avassert.h"
 #include "libavutil/avutil.h"
 #include "libavutil/container_fifo.h"
-#include "libavutil/intreadwrite.h"
 #include "libavutil/mathematics.h"
 #include "libavutil/mem.h"
 #include "libavutil/rational.h"
@@ -302,17 +301,22 @@ const char *av_packet_side_data_name(enum AVPacketSideDataType type)
     case AV_PKT_DATA_DOVI_CONF:                  return "DOVI configuration record";
     case AV_PKT_DATA_S12M_TIMECODE:              return "SMPTE ST 12-1:2014 timecode";
     case AV_PKT_DATA_DYNAMIC_HDR10_PLUS:         return "HDR10+ Dynamic Metadata (SMPTE 2094-40)";
+    case AV_PKT_DATA_DYNAMIC_HDR_SMPTE_2094_APP5:return "HDR Dynamic Metadata (SMPTE 2094-50)";
     case AV_PKT_DATA_AMBIENT_VIEWING_ENVIRONMENT:return "Ambient viewing environment";
     case AV_PKT_DATA_IAMF_MIX_GAIN_PARAM:        return "IAMF Mix Gain Parameter Data";
     case AV_PKT_DATA_IAMF_DEMIXING_INFO_PARAM:   return "IAMF Demixing Info Parameter Data";
     case AV_PKT_DATA_IAMF_RECON_GAIN_INFO_PARAM: return "IAMF Recon Gain Info Parameter Data";
     case AV_PKT_DATA_FRAME_CROPPING:             return "Frame Cropping";
     case AV_PKT_DATA_LCEVC:                      return "LCEVC NAL data";
+    case AV_PKT_DATA_3D_REFERENCE_DISPLAYS:      return "3D Reference Displays Info";
+    case AV_PKT_DATA_RTCP_SR:                    return "RTCP Sender Report";
+    case AV_PKT_DATA_EXIF:                       return "EXIF metadata";
+    case AV_PKT_DATA_HEVC_CONF:                  return "HEVC enhancement-layer decoder configuration";
     }
     return NULL;
 }
 
-uint8_t *av_packet_pack_dictionary(AVDictionary *dict, size_t *size)
+uint8_t *av_packet_pack_dictionary(const AVDictionary *dict, size_t *size)
 {
     uint8_t *data = NULL;
     *size = 0;
@@ -356,7 +360,7 @@ int av_packet_unpack_dictionary(const uint8_t *data, size_t size,
     if (!dict || !data || !size)
         return 0;
     end = data + size;
-    if (size && end[-1])
+    if (end[-1])
         return AVERROR_INVALIDDATA;
     while (data < end) {
         const uint8_t *key = data;
@@ -390,6 +394,32 @@ int av_packet_shrink_side_data(AVPacket *pkt, enum AVPacketSideDataType type,
     return AVERROR(ENOENT);
 }
 
+static void av_packet_free_moz_crypto_info(AVPacket *pkt) {
+  if (pkt->moz_crypto_info_release && pkt->moz_crypto_info) {
+    (*pkt->moz_crypto_info_release)(pkt->moz_crypto_info);
+  }
+  pkt->moz_ndk_crypto_info        = NULL;
+  pkt->moz_crypto_info            = NULL;
+  pkt->moz_crypto_info_addref     = NULL;
+  pkt->moz_crypto_info_release    = NULL;
+}
+
+static int av_packet_copy_moz_crypto_info(AVPacket *dst, const AVPacket *src) {
+  av_packet_free_moz_crypto_info(dst);
+  if (!src->moz_ndk_crypto_info) {
+    return 0;
+  }
+  if (!src->moz_crypto_info || !src->moz_crypto_info_addref || !src->moz_crypto_info_release) {
+    return AVERROR(EINVAL);
+  }
+  dst->moz_ndk_crypto_info        = src->moz_ndk_crypto_info;
+  dst->moz_crypto_info            = src->moz_crypto_info;
+  dst->moz_crypto_info_addref     = src->moz_crypto_info_addref;
+  dst->moz_crypto_info_release    = src->moz_crypto_info_release;
+  (*dst->moz_crypto_info_addref)(dst->moz_crypto_info);
+  return 0;
+}
+
 int av_packet_copy_props(AVPacket *dst, const AVPacket *src)
 {
     int i, ret;
@@ -406,9 +436,15 @@ int av_packet_copy_props(AVPacket *dst, const AVPacket *src)
     dst->side_data            = NULL;
     dst->side_data_elems      = 0;
 
-    ret = av_buffer_replace(&dst->opaque_ref, src->opaque_ref);
+    ret = av_packet_copy_moz_crypto_info(dst, src);
     if (ret < 0)
         return ret;
+
+    ret = av_buffer_replace(&dst->opaque_ref, src->opaque_ref);
+    if (ret < 0) {
+        av_packet_free_moz_crypto_info(dst);
+        return ret;
+    }
 
     for (i = 0; i < src->side_data_elems; i++) {
         enum AVPacketSideDataType type = src->side_data[i].type;
@@ -417,6 +453,7 @@ int av_packet_copy_props(AVPacket *dst, const AVPacket *src)
         uint8_t *dst_data = av_packet_new_side_data(dst, type, size);
 
         if (!dst_data) {
+            av_packet_free_moz_crypto_info(dst);
             av_buffer_unref(&dst->opaque_ref);
             av_packet_free_side_data(dst);
             return AVERROR(ENOMEM);
@@ -429,6 +466,7 @@ int av_packet_copy_props(AVPacket *dst, const AVPacket *src)
 
 void av_packet_unref(AVPacket *pkt)
 {
+    av_packet_free_moz_crypto_info(pkt);
     av_packet_free_side_data(pkt);
     av_buffer_unref(&pkt->opaque_ref);
     av_buffer_unref(&pkt->buf);
@@ -539,97 +577,6 @@ void av_packet_rescale_ts(AVPacket *pkt, AVRational src_tb, AVRational dst_tb)
         pkt->dts = av_rescale_q(pkt->dts, src_tb, dst_tb);
     if (pkt->duration > 0)
         pkt->duration = av_rescale_q(pkt->duration, src_tb, dst_tb);
-}
-
-int avpriv_packet_list_put(PacketList *packet_buffer,
-                           AVPacket      *pkt,
-                           int (*copy)(AVPacket *dst, const AVPacket *src),
-                           int flags)
-{
-    PacketListEntry *pktl = av_malloc(sizeof(*pktl));
-    int ret;
-
-    if (!pktl)
-        return AVERROR(ENOMEM);
-
-    if (copy) {
-        get_packet_defaults(&pktl->pkt);
-        ret = copy(&pktl->pkt, pkt);
-        if (ret < 0) {
-            av_free(pktl);
-            return ret;
-        }
-    } else {
-        ret = av_packet_make_refcounted(pkt);
-        if (ret < 0) {
-            av_free(pktl);
-            return ret;
-        }
-        av_packet_move_ref(&pktl->pkt, pkt);
-    }
-
-    pktl->next = NULL;
-
-    if (packet_buffer->head)
-        packet_buffer->tail->next = pktl;
-    else
-        packet_buffer->head = pktl;
-
-    /* Add the packet in the buffered packet list. */
-    packet_buffer->tail = pktl;
-    return 0;
-}
-
-int avpriv_packet_list_get(PacketList *pkt_buffer,
-                           AVPacket      *pkt)
-{
-    PacketListEntry *pktl = pkt_buffer->head;
-    if (!pktl)
-        return AVERROR(EAGAIN);
-    *pkt        = pktl->pkt;
-    pkt_buffer->head = pktl->next;
-    if (!pkt_buffer->head)
-        pkt_buffer->tail = NULL;
-    av_freep(&pktl);
-    return 0;
-}
-
-void avpriv_packet_list_free(PacketList *pkt_buf)
-{
-    PacketListEntry *tmp = pkt_buf->head;
-
-    while (tmp) {
-        PacketListEntry *pktl = tmp;
-        tmp = pktl->next;
-        av_packet_unref(&pktl->pkt);
-        av_freep(&pktl);
-    }
-    pkt_buf->head = pkt_buf->tail = NULL;
-}
-
-int ff_side_data_set_encoder_stats(AVPacket *pkt, int quality, int64_t *error, int error_count, int pict_type)
-{
-    uint8_t *side_data;
-    size_t side_data_size;
-    int i;
-
-    side_data = av_packet_get_side_data(pkt, AV_PKT_DATA_QUALITY_STATS, &side_data_size);
-    if (!side_data) {
-        side_data_size = 4+4+8*error_count;
-        side_data = av_packet_new_side_data(pkt, AV_PKT_DATA_QUALITY_STATS,
-                                            side_data_size);
-    }
-
-    if (!side_data || side_data_size < 4+4+8*error_count)
-        return AVERROR(ENOMEM);
-
-    AV_WL32(side_data   , quality  );
-    side_data[4] = pict_type;
-    side_data[5] = error_count;
-    for (i = 0; i<error_count; i++)
-        AV_WL64(side_data+8 + 8*i , error[i]);
-
-    return 0;
 }
 
 int ff_side_data_set_prft(AVPacket *pkt, int64_t timestamp)

@@ -25,6 +25,11 @@ const size_t kMaxCharStringLength = 65535;
 const size_t kMaxNumberOfStemHints = 96;
 const size_t kMaxSubrNesting = 10;
 
+// We reject the table if any charstring results in executing too many ops.
+// This should be more than enough for any realistic use case; only a malicious
+// font would run millions of ops for a single glyph.
+const uint32_t kMaxCharStringOps = 1024 * 1024 * 64;
+
 // |dummy_result| should be a huge positive integer so callsubr and callgsubr
 // will fail with the dummy value.
 const int32_t dummy_result = INT_MAX;
@@ -195,7 +200,7 @@ bool ReadNextNumberFromCharString(ots::Buffer *char_string,
       return OTS_FAILURE();
     }
     result += v;
-    *out_number = result;
+    *out_number = static_cast<int16_t>(result);
   } else if (v <= 31) {
     *out_number = v;
     *out_is_operator = true;
@@ -405,6 +410,16 @@ bool ExecuteCharStringOperator(ots::OpenTypeCFF& cff,
     if (stack_size < 2) {
       return OTS_FAILURE();
     }
+    if (op == ots::kHStem || op == ots::kHStemHm) {
+      if (cs_ctx.hint_state > ots::kHs) {
+        return OTS_FAILURE();
+      }
+    } else {
+      if (cs_ctx.hint_state > ots::kVs) {
+        return OTS_FAILURE();
+      }
+      cs_ctx.hint_state = ots::kVs;
+    }
     if ((stack_size % 2) == 0) {
       successful = true;
     } else if ((!(cs_ctx.width_seen)) && (((stack_size - 1) % 2) == 0)) {
@@ -432,6 +447,7 @@ bool ExecuteCharStringOperator(ots::OpenTypeCFF& cff,
     while (!argument_stack->empty())
       argument_stack->pop();
     cs_ctx.width_seen = true;
+    cs_ctx.hint_state = ots::kHm;
     return successful ? true : OTS_FAILURE();
   }
 
@@ -446,6 +462,7 @@ bool ExecuteCharStringOperator(ots::OpenTypeCFF& cff,
     while (!argument_stack->empty())
       argument_stack->pop();
     cs_ctx.width_seen = true;
+    cs_ctx.hint_state = ots::kHm;
     return successful ? true : OTS_FAILURE();
   }
 
@@ -470,7 +487,14 @@ bool ExecuteCharStringOperator(ots::OpenTypeCFF& cff,
     if (!successful) {
        return OTS_FAILURE();
     }
-
+    if (op == ots::kHintMask) {
+      cs_ctx.hint_state = ots::kHm;
+    } else {
+      if (cs_ctx.hint_state > ots::kCm) {
+        return OTS_FAILURE();
+      }
+      cs_ctx.hint_state = ots::kCm;
+    }
     if ((cs_ctx.num_stems) == 0) {
       return OTS_FAILURE();
     }
@@ -868,6 +892,11 @@ bool ExecuteCharString(ots::OpenTypeCFF& cff,
         return OTS_FAILURE();
       }
       continue;
+    }
+
+    if (++cs_ctx.num_ops > kMaxCharStringOps) {
+      ots::Font* font = cff.GetFont();
+      return OTS_FAILURE_MSG("charstring executes too many ops");
     }
 
     // An operator is found. Execute it.

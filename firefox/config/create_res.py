@@ -61,7 +61,7 @@ def generate_res():
             if verbose:
                 print("Executing:", " ".join(command))
             with os.fdopen(fd, "wb") as fh:
-                retcode = subprocess.run(command, stdout=fh).returncode
+                retcode = subprocess.run(command, check=False, stdout=fh).returncode
                 if retcode:
                     # Rely on the subprocess printing out any relevant error
                     return retcode
@@ -70,7 +70,7 @@ def generate_res():
 
         command = [buildconfig.substs["RC"]]
         if is_windres:
-            command.extend(("-O", "coff"))
+            command.extend(("-O", "coff", "--use-temp-file"))
 
         # Even though llvm-rc doesn't preprocess, we still need to pass at least
         # the -I flags.
@@ -87,7 +87,7 @@ def generate_res():
 
         if verbose:
             print("Executing:", " ".join(command))
-        retcode = subprocess.run(command).returncode
+        retcode = subprocess.run(command, check=False).returncode
         if retcode:
             # Rely on the subprocess printing out any relevant error
             return retcode

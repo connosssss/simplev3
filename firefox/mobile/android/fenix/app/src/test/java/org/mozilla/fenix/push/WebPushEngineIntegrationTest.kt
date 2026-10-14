@@ -4,21 +4,20 @@
 
 package org.mozilla.fenix.push
 
-import android.util.Base64
 import io.mockk.Called
 import io.mockk.CapturingSlot
 import io.mockk.MockKAnnotations
 import io.mockk.Runs
 import io.mockk.every
 import io.mockk.impl.annotations.MockK
+import io.mockk.impl.annotations.RelaxedMockK
 import io.mockk.just
 import io.mockk.mockk
-import io.mockk.mockkStatic
 import io.mockk.slot
-import io.mockk.unmockkStatic
 import io.mockk.verify
+import kotlin.test.assertNotNull
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import mozilla.components.concept.engine.Engine
 import mozilla.components.concept.engine.webpush.WebPushDelegate
@@ -26,10 +25,8 @@ import mozilla.components.concept.engine.webpush.WebPushHandler
 import mozilla.components.concept.engine.webpush.WebPushSubscription
 import mozilla.components.feature.push.AutoPushFeature
 import mozilla.components.feature.push.AutoPushSubscription
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -39,51 +36,56 @@ import org.mozilla.fenix.helpers.MockkRetryTestRule
 
 class WebPushEngineIntegrationTest {
 
-    private val scope = TestScope(UnconfinedTestDispatcher())
+    private val scope = TestScope(StandardTestDispatcher())
 
     @MockK private lateinit var engine: Engine
 
     @MockK private lateinit var pushFeature: AutoPushFeature
 
-    @MockK(relaxed = true)
-    private lateinit var handler: WebPushHandler
+    @RelaxedMockK private lateinit var handler: WebPushHandler
     private lateinit var delegate: CapturingSlot<WebPushDelegate>
     private lateinit var integration: WebPushEngineIntegration
 
-    @get:Rule
-    val mockkRule = MockkRetryTestRule()
+    @get:Rule val mockkRule = MockkRetryTestRule()
 
     @Before
     fun setup() {
         MockKAnnotations.init(this)
-        mockkStatic(Base64::class)
         delegate = slot()
 
         every { engine.registerWebPushDelegate(capture(delegate)) } returns handler
         every { pushFeature.register(any()) } just Runs
         every { pushFeature.unregister(any()) } just Runs
-        every { Base64.decode(any<ByteArray>(), any()) } answers { firstArg() }
 
-        integration = WebPushEngineIntegration(engine, pushFeature, scope)
-    }
-
-    @After
-    fun teardown() {
-        unmockkStatic(Base64::class)
+        integration =
+            WebPushEngineIntegration(
+                engine,
+                pushFeature,
+                scope,
+                stringDecoder = { s -> s.toByteArray() },
+                byteArrayEncoder = { ba -> String(ba) },
+            )
     }
 
     @Test
     fun `methods are no-op before calling start`() = scope.runTest {
         integration.onMessageReceived("push", null)
         integration.onSubscriptionChanged("push")
+
+        testScheduler.advanceUntilIdle()
         verify { handler wasNot Called }
 
         integration.start()
+        testScheduler.advanceUntilIdle()
 
         integration.onMessageReceived("push", null)
+        testScheduler.advanceUntilIdle()
+
         verify { handler.onPushMessage("push", null) }
 
         integration.onSubscriptionChanged("push")
+        testScheduler.advanceUntilIdle()
+
         verify { handler.onSubscriptionChanged("push") }
     }
 
@@ -100,9 +102,10 @@ class WebPushEngineIntegrationTest {
     fun `delegate calls getSubscription`() {
         integration.start()
         var subscribeFn: ((AutoPushSubscription?) -> Unit)? = null
-        every { pushFeature.getSubscription("scope", block = any()) } answers {
-            subscribeFn = thirdArg()
-        }
+        every { pushFeature.getSubscription("scope", block = any()) } answers
+            {
+                subscribeFn = thirdArg()
+            }
 
         var actualSubscription: WebPushSubscription? = null
         delegate.captured.onGetSubscription(
@@ -122,16 +125,17 @@ class WebPushEngineIntegrationTest {
                 endpoint = "def",
                 authKey = "xyz",
                 appServerKey = null,
-            ),
+            )
         )
 
-        val expectedSubscription = WebPushSubscription(
-            scope = "scope",
-            publicKey = "abc".toByteArray(),
-            endpoint = "def",
-            authSecret = "xyz".toByteArray(),
-            appServerKey = null,
-        )
+        val expectedSubscription =
+            WebPushSubscription(
+                scope = "scope",
+                publicKey = "abc".toByteArray(),
+                endpoint = "def",
+                authSecret = "xyz".toByteArray(),
+                appServerKey = null,
+            )
         assertEquals(expectedSubscription, actualSubscription)
     }
 
@@ -147,10 +151,11 @@ class WebPushEngineIntegrationTest {
                 onSubscribeError = any(),
                 onSubscribe = any(),
             )
-        } answers {
-            onSubscribeErrorFn = thirdArg()
-            onSubscribeFn = lastArg()
-        }
+        } answers
+            {
+                onSubscribeErrorFn = thirdArg()
+                onSubscribeFn = lastArg()
+            }
 
         var actualSubscription: WebPushSubscription? = null
         var onSubscribeInvoked = false
@@ -166,6 +171,7 @@ class WebPushEngineIntegrationTest {
         assertTrue(onSubscribeInvoked)
         assertNull(actualSubscription)
 
+        onSubscribeInvoked = false // Reset for next callback
         assertNotNull(onSubscribeFn)
         onSubscribeFn!!(
             AutoPushSubscription(
@@ -174,16 +180,18 @@ class WebPushEngineIntegrationTest {
                 endpoint = "def",
                 authKey = "xyz",
                 appServerKey = null,
-            ),
+            )
         )
+        assertTrue(onSubscribeInvoked)
 
-        val expectedSubscription = WebPushSubscription(
-            scope = "scope",
-            publicKey = "abc".toByteArray(),
-            endpoint = "def",
-            authSecret = "xyz".toByteArray(),
-            appServerKey = null,
-        )
+        val expectedSubscription =
+            WebPushSubscription(
+                scope = "scope",
+                publicKey = "abc".toByteArray(),
+                endpoint = "def",
+                authSecret = "xyz".toByteArray(),
+                appServerKey = null,
+            )
 
         assertEquals(expectedSubscription, actualSubscription)
     }
@@ -199,28 +207,33 @@ class WebPushEngineIntegrationTest {
                 onUnsubscribeError = any(),
                 onUnsubscribe = any(),
             )
-        } answers {
-            onUnsubscribeErrorFn = secondArg()
-            onUnsubscribeFn = thirdArg()
-        }
+        } answers
+            {
+                onUnsubscribeErrorFn = secondArg()
+                onUnsubscribeFn = thirdArg()
+            }
 
-        var onSubscribeInvoked = false
+        var onUnsubscribeInvoked = false
         var unsubscribeSuccess: Boolean? = null
         delegate.captured.onUnsubscribe("scope") {
-            onSubscribeInvoked = true
+            onUnsubscribeInvoked = true
             unsubscribeSuccess = it
         }
 
-        assertFalse(onSubscribeInvoked)
+        assertFalse(onUnsubscribeInvoked)
         assertNull(unsubscribeSuccess)
 
         assertNotNull(onUnsubscribeErrorFn)
         onUnsubscribeErrorFn!!(mockk())
+        assertTrue(onUnsubscribeInvoked)
         assertNotNull(unsubscribeSuccess)
-        assertFalse(unsubscribeSuccess!!)
+        assertFalse(unsubscribeSuccess)
 
+        onUnsubscribeInvoked = false // Reset for next callback
+        unsubscribeSuccess = null
         assertNotNull(onUnsubscribeFn)
         onUnsubscribeFn!!(true)
+        assertTrue(onUnsubscribeInvoked)
         assertNotNull(unsubscribeSuccess)
         assertTrue(unsubscribeSuccess!!)
     }

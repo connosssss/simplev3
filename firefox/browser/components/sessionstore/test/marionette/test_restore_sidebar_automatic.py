@@ -21,18 +21,16 @@ class TestSessionRestore(SessionStoreTestCase):
     """
 
     def setUp(self):
-        super(TestSessionRestore, self).setUp(
+        super().setUp(
             startup_page=3,
             include_private=False,
             restore_on_demand=False,
-            test_windows=set(
-                [
-                    (
-                        inline("lorem ipsom"),
-                        inline("dolor"),
-                    ),
-                ]
-            ),
+            test_windows=set([
+                (
+                    inline("lorem ipsom"),
+                    inline("dolor"),
+                ),
+            ]),
         )
 
     def test_restore(self):
@@ -97,7 +95,7 @@ class TestSessionRestore(SessionStoreTestCase):
                 """
                 const lazy = {};
                 ChromeUtils.defineESModuleGetters(lazy, {
-                    SessionStore: "resource:///modules/sessionstore/SessionStore.sys.mjs",
+                    SessionStore: "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
                 });
                 let state = SessionStore.getCurrentState();
                 return state.windows[0].sidebar.command;

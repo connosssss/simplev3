@@ -6,9 +6,11 @@ http://creativecommons.org/publicdomain/zero/1.0/ */
 ChromeUtils.defineESModuleGetters(this, {
   sinon: "resource://testing-common/Sinon.sys.mjs",
   Subprocess: "resource://gre/modules/Subprocess.sys.mjs",
-  TaskbarTabs: "resource:///modules/taskbartabs/TaskbarTabs.sys.mjs",
-  TaskbarTabsPin: "resource:///modules/taskbartabs/TaskbarTabsPin.sys.mjs",
-  TaskbarTabsUtils: "resource:///modules/taskbartabs/TaskbarTabsUtils.sys.mjs",
+  TaskbarTabs: "moz-src:///browser/components/taskbartabs/TaskbarTabs.sys.mjs",
+  TaskbarTabsPin:
+    "moz-src:///browser/components/taskbartabs/TaskbarTabsPin.sys.mjs",
+  TaskbarTabsUtils:
+    "moz-src:///browser/components/taskbartabs/TaskbarTabsUtils.sys.mjs",
 });
 
 sinon.stub(TaskbarTabsPin, "pinTaskbarTab");
@@ -23,7 +25,7 @@ let taskbarTab1;
 add_setup(async () => {
   const url1 = Services.io.newURI("https://example.com");
   const userContextId1 = 0;
-  taskbarTab1 = await TaskbarTabs.findOrCreateTaskbarTab(url1, userContextId1);
+  taskbarTab1 = await createTaskbarTab(TaskbarTabs, url1, userContextId1);
 
   // Reset memory of pinning being called.
   sinon.resetHistory();
@@ -97,19 +99,27 @@ add_task(async function test_commandline_handling() {
   );
 
   let windowId = TaskbarTabsUtils.getTaskbarTabIdFromWindow(winReconstruct);
-  isnot(
-    windowId,
-    taskbarTab1.id,
-    "The existing Taskbar Tab ID should be used."
-  );
+  isnot(windowId, taskbarTab1.id, "A new Taskbar Tab ID should be used.");
 
   let registered = await TaskbarTabs.getTaskbarTab(windowId);
   ok(registered, "A new Taskbar Tab should have been registered.");
 
   ok(
     TaskbarTabsPin.pinTaskbarTab.called,
-    "Pinning should not be attempted when launching an existing Taskbar Tab."
+    "Pinning should be attempted when reconstructing a Taskbar Tab."
   );
+
+  is(
+    registered.startUrl,
+    "https://www.subdomain.example.com",
+    "The start URL should be correct."
+  );
+  Assert.deepEqual(
+    registered.scopes,
+    [{ hostname: "www.subdomain.example.com" }],
+    "The scope should match the URL."
+  );
+  is(registered.userContextId, 1, "The container ID should be correct.");
 
   await Promise.all([
     BrowserTestUtils.closeWindow(winExisting),

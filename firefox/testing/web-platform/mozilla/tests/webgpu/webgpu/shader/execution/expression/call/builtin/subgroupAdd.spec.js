@@ -305,7 +305,6 @@ fn(async (t) => {
 enable subgroups;
 
 diagnostic(off, subgroup_uniformity);
-diagnostic(off, subgroup_branching);
 
 @group(0) @binding(0)
 var<storage> input : array<u32>;
@@ -483,10 +482,7 @@ combineWithParams([{ format: 'rgba32uint' }])
 ).
 fn(async (t) => {
   t.skipIfDeviceDoesNotHaveFeature('subgroups');
-
-
-
-  const { subgroupMinSize } = t.device.adapterInfo;
+  const subgroupMinSize = t.device.adapterInfo.subgroupMinSize;
   const innerTexels = (t.params.size[0] - 1) * (t.params.size[1] - 1);
   t.skipIf(innerTexels < subgroupMinSize, 'Too few texels to be reliable');
 

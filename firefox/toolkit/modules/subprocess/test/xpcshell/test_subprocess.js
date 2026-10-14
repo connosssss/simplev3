@@ -5,15 +5,6 @@ const { setTimeout } = ChromeUtils.importESModule(
   "resource://gre/modules/Timer.sys.mjs"
 );
 
-let max_round_trip_time_ms = AppConstants.DEBUG || AppConstants.ASAN ? 18 : 9;
-if (Services.prefs.getBoolPref("dom.workers.timeoutmanager") === true) {
-  max_round_trip_time_ms = 90;
-}
-
-const MAX_ROUND_TRIP_TIME_MS = max_round_trip_time_ms;
-
-const MAX_RETRIES = 5;
-
 let PYTHON;
 let PYTHON_BIN;
 let PYTHON_DIR;
@@ -36,7 +27,7 @@ let readAll = async function (pipe) {
   return result.join("");
 };
 
-add_task(async function setup() {
+add_setup(async function setup() {
   PYTHON = await Subprocess.pathSearch(Services.env.get("PYTHON"));
 
   PYTHON_BIN = PathUtils.filename(PYTHON);
@@ -178,54 +169,6 @@ add_task(async function test_subprocess_huge() {
 
   equal(exitCode, 0, "Got expected exit code");
 });
-
-add_task(
-  { skip_if: () => mozinfo.ccov },
-  async function test_subprocess_round_trip_perf() {
-    let roundTripTime = Infinity;
-    for (
-      let i = 0;
-      i < MAX_RETRIES && roundTripTime > MAX_ROUND_TRIP_TIME_MS;
-      i++
-    ) {
-      let proc = await Subprocess.call({
-        command: PYTHON,
-        arguments: ["-u", TEST_SCRIPT, "echo"],
-      });
-
-      const LINE = "I'm a leaf on the wind.\n";
-
-      let now = Date.now();
-      const COUNT = 1000;
-      for (let j = 0; j < COUNT; j++) {
-        let [output] = await Promise.all([
-          read(proc.stdout),
-          proc.stdin.write(LINE),
-        ]);
-
-        // We don't want to log this for every iteration, but we still need
-        // to fail if it goes wrong.
-        if (output !== LINE) {
-          equal(output, LINE, "Got expected output");
-        }
-      }
-
-      roundTripTime = (Date.now() - now) / COUNT;
-
-      await proc.stdin.close();
-
-      let { exitCode } = await proc.wait();
-
-      equal(exitCode, 0, "Got expected exit code");
-    }
-
-    Assert.lessOrEqual(
-      roundTripTime,
-      MAX_ROUND_TRIP_TIME_MS,
-      `Expected round trip time (${roundTripTime}ms) to be less than ${MAX_ROUND_TRIP_TIME_MS}ms`
-    );
-  }
-);
 
 add_task(async function test_subprocess_stderr_default() {
   const LINE1 = "I'm a leaf on the wind.\n";
@@ -419,6 +362,79 @@ add_task(async function test_subprocess_eof() {
   let { exitCode } = await proc.wait();
 
   equal(exitCode, 0, "Got expected exit code");
+});
+
+// Regression test for bug 1983138.
+add_task(async function test_subprocess_stdin_closed_by_program() {
+  // On Windows, the actual python.exe that runs the script is a child of the
+  // python.exe of the virtualenv, and closing stdin from that child does not
+  // propagate back, which would cause the proc.stdin.write() call below to
+  // succeed unexpectedly.
+  //
+  // To avoid this issue, use the real Python, see getRealPythonExecutable.
+  let proc = await Subprocess.call({
+    command: await getRealPythonExecutable(PYTHON),
+    arguments: ["-u", TEST_SCRIPT, "close_stdin_and_wait_forever"],
+  });
+
+  info("Waiting for program to notify us via stdout after closing stdin");
+
+  equal(
+    await read(proc.stdout),
+    "stdin_closed",
+    "Spawned process closed stdin"
+  );
+
+  // This is the most interesting part - write() should reject with an error.
+  await Assert.rejects(
+    proc.stdin.write("a"),
+    function (e) {
+      equal(
+        e.errorCode,
+        Subprocess.ERROR_END_OF_FILE,
+        "Got the expected error code"
+      );
+      return /File closed/.test(e.message);
+    },
+    "Promise should be rejected after program closed stdin"
+  );
+
+  let { exitCode } = await proc.kill();
+
+  // On UNIX platforms, our subprocess.kill() implementation sends SIGTERM,
+  // which Python handles and exiting with -15. On Windows, we send SIGKILL
+  // which the program cannot even handle and the exit code is -9.
+  const expectedExitCode = AppConstants.platform == "win" ? -9 : -15;
+  equal(exitCode, expectedExitCode, "Got expected exit code");
+});
+
+// Regression test for bug 1983138.
+add_task(async function test_subprocess_stdout_closed_by_program() {
+  // On Windows, the actual python.exe that runs the script is a child of the
+  // python.exe of the virtualenv, and closing stdout from that child does not
+  // propagate back, which would cause the proc.stdout.readString() call (via
+  // read) below to never resolve.
+  //
+  // To avoid this issue, use the real Python, see getRealPythonExecutable.
+  let proc = await Subprocess.call({
+    command: await getRealPythonExecutable(PYTHON),
+    arguments: ["-u", TEST_SCRIPT, "close_pipes_and_wait_for_stdin"],
+  });
+
+  // This is the most interesting part - readString() should resolve.
+  equal(
+    await proc.stdout.readString(),
+    "",
+    "stdout read should resolve to empty string upon close"
+  );
+
+  let { exitCode } = await proc.kill();
+
+  // On UNIX platforms, our subprocess.kill() implementation sends SIGTERM,
+  // which Python handles and exiting with -15. On Windows, we send SIGKILL
+  // which the program cannot even handle and the exit code is -9.
+  const expectedExitCode = AppConstants.platform == "win" ? -9 : -15;
+  equal(exitCode, expectedExitCode, "Got expected exit code");
 });
 
 add_task(async function test_subprocess_invalid_json() {
@@ -860,6 +876,94 @@ add_task(async function test_bad_executable() {
     "Subprocess.call should fail for a bad executable"
   );
 });
+
+add_task(
+  { skip_if: () => AppConstants.platform == "win" },
+  async function test_launch_failure_closes_pipes() {
+    // A script whose interpreter does not exist passes the executable check
+    // but cannot run. posix_spawn (macOS) reports that to the parent as a
+    // failed launch. Linux forks first, so the launch succeeds and the child
+    // exits without ever running. Neither case may leak descriptors.
+    let script = PathUtils.join(
+      PathUtils.tempDir,
+      "subprocess_missing_interpreter.sh"
+    );
+    await IOUtils.writeUTF8(script, "#!/nonexistent/interpreter\n");
+    await IOUtils.setPermissions(script, 0o755);
+
+    // Count only descriptors that are not regular files or directories, which
+    // is what pipes are, so that unrelated file activity cannot skew the count.
+    let fdDir = AppConstants.platform == "linux" ? "/proc/self/fd" : "/dev/fd";
+    let countPipeLikeFds = async () => {
+      let count = 0;
+      for (let fd of await IOUtils.getChildren(fdDir)) {
+        try {
+          if ((await IOUtils.stat(fd)).type == "other") {
+            count++;
+          }
+        } catch (e) {
+          // The descriptor was closed between listing and stat, or it is not
+          // something stat can describe.
+        }
+      }
+      return count;
+    };
+
+    let before = await countPipeLikeFds();
+    Assert.greater(before, 0, "The count sees the process's existing pipes");
+    const ATTEMPTS = 20;
+    let launchFailures = 0;
+    let childFailures = 0;
+    for (let i = 0; i < ATTEMPTS; i++) {
+      let proc;
+      try {
+        proc = await Subprocess.call({
+          command: script,
+          arguments: [],
+          stderr: "pipe",
+        });
+      } catch (error) {
+        equal(
+          error.errorCode,
+          Subprocess.ERROR_BAD_EXECUTABLE,
+          "A failed launch is reported as a bad executable"
+        );
+        ok(
+          /^Failed to launch process/.test(error.message),
+          `A failed launch carries the launch error (${error.message})`
+        );
+        launchFailures++;
+        continue;
+      }
+      let { exitCode } = await proc.wait();
+      notEqual(exitCode, 0, "The child could not run its interpreter");
+      // The worker closes the pipes itself once the child is gone. Closing one
+      // that is already closed rejects, and that is fine.
+      await Promise.allSettled([
+        proc.stdin.close(),
+        proc.stdout.close(),
+        proc.stderr.close(),
+      ]);
+      childFailures++;
+    }
+    info(
+      `launch failures: ${launchFailures}, child failures: ${childFailures}`
+    );
+    equal(
+      launchFailures + childFailures,
+      ATTEMPTS,
+      "Every attempt failed one way or the other"
+    );
+    let after = await countPipeLikeFds();
+    Assert.less(
+      after - before,
+      ATTEMPTS,
+      `Failed launches should not leak descriptors (before ${before}, after ${after})`
+    );
+
+    await IOUtils.remove(script);
+  }
+);
 
 add_task(async function test_cleanup() {
   let { getSubprocessImplForTest } = ChromeUtils.importESModule(

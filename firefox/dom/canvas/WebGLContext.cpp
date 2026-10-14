@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,17 +7,11 @@
 #include <algorithm>
 #include <array>
 #include <bitset>
-#include <queue>
-#include <regex>
+#include <cctype>
+#include <memory>
 
 #include "AccessCheck.h"
 #include "CompositableHost.h"
-#include "gfxConfig.h"
-#include "gfxContext.h"
-#include "gfxCrashReporterUtils.h"
-#include "gfxEnv.h"
-#include "gfxPattern.h"
-#include "MozFramebuffer.h"
 #include "GLBlitHelper.h"
 #include "GLContext.h"
 #include "GLContextProvider.h"
@@ -27,6 +20,23 @@
 #include "ImageContainer.h"
 #include "ImageEncoder.h"
 #include "LayerUserData.h"
+#include "MozFramebuffer.h"
+#include "ScopedGLHelpers.h"
+#include "SharedSurfaceGL.h"
+#include "VRManagerChild.h"
+#include "gfxConfig.h"
+#include "gfxContext.h"
+#include "gfxCrashReporterUtils.h"
+#include "gfxEnv.h"
+#include "gfxPattern.h"
+#include "mozilla/EnumeratedArrayCycleCollection.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/ProcessPriorityManager.h"
+#include "mozilla/ResultVariant.h"
+#include "mozilla/SVGObserverUtils.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/Services.h"
+#include "mozilla/StaticPrefs_webgl.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/Document.h"
@@ -34,34 +44,22 @@
 #include "mozilla/dom/HTMLVideoElement.h"
 #include "mozilla/dom/ImageData.h"
 #include "mozilla/dom/WebGLContextEvent.h"
-#include "mozilla/EnumeratedArrayCycleCollection.h"
-#include "mozilla/EnumeratedRange.h"
+#include "mozilla/gfx/Swizzle.h"
 #include "mozilla/gfx/gfxVars.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/ProcessPriorityManager.h"
-#include "mozilla/ResultVariant.h"
-#include "mozilla/ScopeExit.h"
-#include "mozilla/Services.h"
-#include "mozilla/StaticPrefs_webgl.h"
-#include "mozilla/SVGObserverUtils.h"
 #include "mozilla/glean/DomCanvasMetrics.h"
+#include "mozilla/layers/BufferTexture.h"
+#include "mozilla/layers/CompositorBridgeChild.h"
+#include "mozilla/layers/ImageBridgeChild.h"
+#include "mozilla/layers/RemoteTextureMap.h"
+#include "mozilla/layers/WebRenderCanvasRenderer.h"
+#include "mozilla/layers/WebRenderUserData.h"
 #include "nsContentUtils.h"
 #include "nsDisplayList.h"
 #include "nsError.h"
 #include "nsIClassInfoImpl.h"
 #include "nsIWidget.h"
 #include "nsServiceManagerUtils.h"
-#include "SharedSurfaceGL.h"
 #include "prenv.h"
-#include "ScopedGLHelpers.h"
-#include "VRManagerChild.h"
-#include "mozilla/gfx/Swizzle.h"
-#include "mozilla/layers/BufferTexture.h"
-#include "mozilla/layers/RemoteTextureMap.h"
-#include "mozilla/layers/CompositorBridgeChild.h"
-#include "mozilla/layers/ImageBridgeChild.h"
-#include "mozilla/layers/WebRenderUserData.h"
-#include "mozilla/layers/WebRenderCanvasRenderer.h"
 
 // Local
 #include "CanvasUtils.h"
@@ -70,7 +68,6 @@
 #include "WebGLBuffer.h"
 #include "WebGLChild.h"
 #include "WebGLContextLossHandler.h"
-#include "WebGLContextUtils.h"
 #include "WebGLExtensions.h"
 #include "WebGLFormats.h"
 #include "WebGLFramebuffer.h"
@@ -245,14 +242,7 @@ void ClientWebGLContext::MarkCanvasDirty() {
 }
 
 void WebGLContext::OnMemoryPressure() {
-  bool shouldLoseContext = mLoseContextOnMemoryPressure;
-
-  if (!mCanLoseContextInForeground &&
-      ProcessPriorityManager::CurrentProcessIsForeground()) {
-    shouldLoseContext = false;
-  }
-
-  if (shouldLoseContext) LoseContext();
+  if (mLoseContextOnMemoryPressure) LoseContext();
 }
 
 // --
@@ -268,7 +258,7 @@ bool WebGLContext::CreateAndInitGL(
       reason.info =
           "AllowWebgl2:false restricts context creation on this system.";
       out_failReasons->push_back(reason);
-      GenerateWarning("%s", reason.info.BeginReading());
+      GenerateWarning("%s", reason.info.get());
       return false;
     }
   }
@@ -303,7 +293,7 @@ bool WebGLContext::CreateAndInitGL(
     FailureReason reason;
     reason.info = "Both hardware and software were forbidden by config.";
     out_failReasons->push_back(reason);
-    GenerateWarning("%s", reason.info.BeginReading());
+    GenerateWarning("%s", reason.info.get());
     return false;
   }
 
@@ -319,10 +309,6 @@ bool WebGLContext::CreateAndInitGL(
     if (StaticPrefs::webgl_1_request_es2()) {
       // Request and prefer ES2 context for WebGL1.
       flags |= gl::CreateContextFlags::PREFER_EXACT_VERSION;
-    }
-
-    if (!StaticPrefs::webgl_1_allow_core_profiles()) {
-      flags |= gl::CreateContextFlags::REQUIRE_COMPAT_PROFILE;
     }
   }
 
@@ -370,6 +356,15 @@ bool WebGLContext::CreateAndInitGL(
     tryNativeGL = true;
     tryANGLE = false;
   }
+#elif defined(XP_MACOSX)
+  if (gfx::gfxVars::AllowMetalAngleWebGL() &&
+      !StaticPrefs::webgl_disable_angle() &&
+      // Metal does not expose a software renderer. Fall back to native (CGL) if
+      // a hardware context is forbidden.
+      !(flags & gl::CreateContextFlags::FORBID_HARDWARE)) {
+    tryNativeGL = false;
+    tryANGLE = true;
+  }
 #endif
 
   if (tryNativeGL && !forceEnabled) {
@@ -381,7 +376,7 @@ bool WebGLContext::CreateAndInitGL(
 
       out_failReasons->push_back(reason);
 
-      GenerateWarning("%s", reason.info.BeginReading());
+      GenerateWarning("%s", reason.info.get());
       tryNativeGL = false;
     }
   }
@@ -439,7 +434,7 @@ bool WebGLContext::CreateAndInitGL(
 
   const auto val = StaticPrefs::webgl_debug_incomplete_tex_color();
   if (val) {
-    mIncompleteTexOverride.reset(new gl::Texture(*gl));
+    mIncompleteTexOverride = std::make_unique<gl::Texture>(*gl);
     const gl::ScopedBindTexture autoBind(gl, mIncompleteTexOverride->name);
     const auto heapVal = std::make_unique<uint32_t>(val);
     gl->fTexImage2D(LOCAL_GL_TEXTURE_2D, 0, LOCAL_GL_RGBA, 1, 1, 0,
@@ -457,7 +452,6 @@ bool WebGLContext::EnsureDefaultFB() {
     return true;
   }
 
-  const bool depthStencil = mOptions.depth || mOptions.stencil;
   auto attemptSize = gfx::IntSize{mRequestedSize.x, mRequestedSize.y};
 
   while (attemptSize.width || attemptSize.height) {
@@ -467,14 +461,15 @@ bool WebGLContext::EnsureDefaultFB() {
     [&]() {
       if (mOptions.antialias) {
         MOZ_ASSERT(!mDefaultFB);
-        mDefaultFB = gl::MozFramebuffer::Create(gl, attemptSize, mMsaaSamples,
-                                                depthStencil);
+        mDefaultFB = gl::MozFramebuffer::Create(
+            gl, attemptSize, mMsaaSamples, mOptions.depth, mOptions.stencil);
         if (mDefaultFB) return;
         if (mOptionsFrozen) return;
       }
 
       MOZ_ASSERT(!mDefaultFB);
-      mDefaultFB = gl::MozFramebuffer::Create(gl, attemptSize, 0, depthStencil);
+      mDefaultFB = gl::MozFramebuffer::Create(gl, attemptSize, 0,
+                                              mOptions.depth, mOptions.stencil);
     }();
 
     if (mDefaultFB) break;
@@ -514,6 +509,7 @@ void WebGLContext::Resize(uvec2 requestedSize) {
   // Kill our current default fb(s), for later lazy allocation.
   mRequestedSize = requestedSize;
   mDefaultFB = nullptr;
+  mResolvedDefaultFB = nullptr;
   mResetLayer = true;  // New size means new Layer.
 }
 
@@ -569,12 +565,12 @@ RefPtr<WebGLContext> WebGLContext::Create(HostWebGLContext* host,
           glean::canvas::webgl_failure_id.Get(cur.key).Add(1);
         }
 
-        const auto str = nsPrintfCString("\n* %s (%s)", cur.info.BeginReading(),
-                                         cur.key.BeginReading());
+        const auto str =
+            nsPrintfCString("\n* %s (%s)", cur.info.get(), cur.key.get());
         text.Append(str);
       }
       failureId = "FEATURE_FAILURE_REASON"_ns;
-      return Err(text.BeginReading());
+      return Err(std::string{text.View()});
     }
     MOZ_ASSERT(webgl->gl);
 
@@ -628,50 +624,6 @@ RefPtr<WebGLContext> WebGLContext::Create(HostWebGLContext* host,
 
   // -
 
-  const auto UploadableSdTypes = [&]() {
-    webgl::EnumMask<layers::SurfaceDescriptor::Type> types;
-    types[layers::SurfaceDescriptor::TSurfaceDescriptorBuffer] = true;
-    // Only support canvas surface interchange if using AC2D. This guarantees
-    // that WebGL and AC2D commands are sequenced and processed on the same
-    // thread, so that there is no mal-ordering between AC2D and WebGL
-    // processing. We can flush out AC2D commands to produce a surface in time
-    // for WebGL to use without requiring any blocking to occur.
-    types[layers::SurfaceDescriptor::TSurfaceDescriptorCanvasSurface] =
-        gfx::gfxVars::UseAcceleratedCanvas2D();
-    // This is conditional on not using the Compositor thread because we may
-    // need to synchronize with the RDD process over the PVideoBridge protocol
-    // to wait for the texture to be available in the compositor process. We
-    // cannot block on the Compositor thread, so in that configuration, we would
-    // prefer to do the readback from the RDD which is guaranteed to work, and
-    // only block the owning thread for WebGL.
-    const bool offCompositorThread = gfx::gfxVars::UseCanvasRenderThread() ||
-                                     !gfx::gfxVars::SupportsThreadsafeGL();
-    types[layers::SurfaceDescriptor::TSurfaceDescriptorGPUVideo] =
-        offCompositorThread;
-    // Similarly to the PVideoBridge protocol, we may need to synchronize with
-    // the content process over the PCompositorManager protocol to wait for the
-    // shared surface to be available in the compositor process, and we cannot
-    // block on the Compositor thread.
-    types[layers::SurfaceDescriptor::TSurfaceDescriptorExternalImage] =
-        offCompositorThread;
-    if (webgl->gl->IsANGLE()) {
-      types[layers::SurfaceDescriptor::TSurfaceDescriptorD3D10] = true;
-      types[layers::SurfaceDescriptor::TSurfaceDescriptorDXGIYCbCr] = true;
-    }
-    if (kIsMacOS) {
-      types[layers::SurfaceDescriptor::TSurfaceDescriptorMacIOSurface] = true;
-    }
-    if (kIsAndroid) {
-      types[layers::SurfaceDescriptor::TSurfaceTextureDescriptor] = true;
-    }
-    if (kIsLinux) {
-      types[layers::SurfaceDescriptor::TSurfaceDescriptorDMABuf] = true;
-    }
-    return types;
-  };
-
-  // -
-
   constexpr GLenum SHADER_TYPES[] = {
       LOCAL_GL_VERTEX_SHADER,
       LOCAL_GL_FRAGMENT_SHADER,
@@ -707,7 +659,7 @@ RefPtr<WebGLContext> WebGLContext::Create(HostWebGLContext* host,
 
   out->options = webgl->mOptions;
   out->limits = *webgl->mLimits;
-  out->uploadableSdTypes = UploadableSdTypes();
+  out->uploadableSdTypes = webgl->mUploadableSdTypes;
   out->vendor = webgl->gl->Vendor();
   out->optionalRenderableFormatBits = webgl->mOptionalRenderableFormatBits;
 
@@ -809,6 +761,59 @@ void WebGLContext::FinishInit() {
 
   gl->ResetSyncCallCount("WebGLContext Initialization");
   LoseLruContextIfLimitExceeded();
+
+  InitUploadableSdTypes();
+}
+
+void WebGLContext::InitUploadableSdTypes() {
+  webgl::EnumMask<layers::SurfaceDescriptor::Type> types;
+  types[layers::SurfaceDescriptor::TSurfaceDescriptorBuffer] = true;
+  // Only support canvas surface interchange if using AC2D. This guarantees
+  // that WebGL and AC2D commands are sequenced and processed on the same
+  // thread, so that there is no mal-ordering between AC2D and WebGL
+  // processing. We can flush out AC2D commands to produce a surface in time
+  // for WebGL to use without requiring any blocking to occur.
+  types[layers::SurfaceDescriptor::TSurfaceDescriptorCanvasSurface] =
+      gfx::gfxVars::UseAcceleratedCanvas2D();
+  // This is conditional on not using the Compositor thread because we may
+  // need to synchronize with the RDD process over the PVideoBridge protocol
+  // to wait for the texture to be available in the compositor process. We
+  // cannot block on the Compositor thread, so in that configuration, we would
+  // prefer to do the readback from the RDD which is guaranteed to work, and
+  // only block the owning thread for WebGL.
+  const bool offCompositorThread = gfx::gfxVars::UseCanvasRenderThread() ||
+                                   !gfx::gfxVars::SupportsThreadsafeGL();
+  types[layers::SurfaceDescriptor::TSurfaceDescriptorGPUVideo] =
+      offCompositorThread;
+  // Similarly to the PVideoBridge protocol, we may need to synchronize with
+  // the content process over the PCompositorManager protocol to wait for the
+  // shared surface to be available in the compositor process, and we cannot
+  // block on the Compositor thread.
+  types[layers::SurfaceDescriptor::TSurfaceDescriptorExternalImage] =
+      offCompositorThread;
+  if (gl->IsANGLE()) {
+    types[layers::SurfaceDescriptor::TSurfaceDescriptorD3D10] = true;
+    types[layers::SurfaceDescriptor::TSurfaceDescriptorDXGIYCbCr] = true;
+  }
+  if (kIsMacOS) {
+    types[layers::SurfaceDescriptor::TSurfaceDescriptorMacIOSurface] = true;
+  }
+  if (kIsAndroid) {
+    types[layers::SurfaceDescriptor::TAndroidImageReaderImageDescriptor] = true;
+    types[layers::SurfaceDescriptor::TSurfaceTextureDescriptor] = true;
+  }
+  if (kIsLinux) {
+    types[layers::SurfaceDescriptor::TSurfaceDescriptorDMABuf] = true;
+  }
+
+  mUploadableSdTypes = types;
+}
+
+bool WebGLContext::IsUploadableSdType(
+    const layers::SurfaceDescriptor& sd) const {
+  // If the WebGLContext is remote, then validate that the SD is an allowed
+  // type.
+  return !bool(mHost) || mUploadableSdTypes[sd.type()];
 }
 
 void WebGLContext::SetCompositableHost(
@@ -951,7 +956,8 @@ void WebGLContext::OnEndOfFrame() {
 
 void WebGLContext::BlitBackbufferToCurDriverFB(
     WebGLFramebuffer* const srcAsWebglFb,
-    const gl::MozFramebuffer* const srcAsMozFb, bool srcIsBGRA) const {
+    const gl::MozFramebuffer* const srcAsMozFb, bool srcIsBGRA, bool yFlip,
+    Maybe<gfxAlphaType> convertAlpha) const {
   // BlitFramebuffer ignores ColorMask().
 
   if (mScissorTestEnabled) {
@@ -982,9 +988,9 @@ void WebGLContext::BlitBackbufferToCurDriverFB(
 
   // If no format conversion is necessary, then attempt to directly blit
   // between framebuffers. Otherwise, if we need to convert to RGBA from
-  // the source format, then we will need to use the texture blit path
-  // below.
-  if (!srcIsBGRA) {
+  // the source format or do other conversions, then we will need to use
+  // the texture blit path below.
+  if (!srcIsBGRA && !yFlip && !convertAlpha) {
     if (gl->IsSupported(gl::GLFeature::framebuffer_blit)) {
       gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, fbo);
       gl->fBlitFramebuffer(0, 0, size.width, size.height, 0, 0, size.width,
@@ -1011,8 +1017,9 @@ void WebGLContext::BlitBackbufferToCurDriverFB(
   }
 
   // DrawBlit handles ColorMask itself.
-  gl->BlitHelper()->DrawBlitTextureToFramebuffer(
-      colorTex, size, size, LOCAL_GL_TEXTURE_2D, srcIsBGRA);
+  gl->BlitHelper()->DrawBlitTextureToFramebuffer(colorTex, size, size,
+                                                 LOCAL_GL_TEXTURE_2D, srcIsBGRA,
+                                                 yFlip, convertAlpha);
 }
 
 // -
@@ -1061,11 +1068,13 @@ bool WebGLContext::PresentInto(gl::SwapChain& swapChain) {
 
   const auto error = [&]() -> std::optional<std::string> {
     const auto canvasCspace = ToColorSpace2ForOutput(mDrawingBufferColorSpace);
-    auto presenter = swapChain.Acquire(size, canvasCspace);
+    const auto canvasTF = gfx::TransferFunction::SRGB;
+    auto presenter = swapChain.Acquire(size, canvasCspace, canvasTF);
     if (!presenter) {
       return "Swap chain surface creation failed.";
     }
     const auto outputCspace = presenter->BackBuffer()->mDesc.colorSpace;
+    const auto outputTF = presenter->BackBuffer()->mDesc.transferFunction;
     const auto destFb = presenter->Fb();
 
     // -
@@ -1082,8 +1091,10 @@ bool WebGLContext::PresentInto(gl::SwapChain& swapChain) {
     auto colorLut = std::shared_ptr<gl::Texture>{};
     if (colorManage) {
       MOZ_ASSERT(canvasCspace != gfx::ColorSpace2::Display);
-      colorLut = gl->BlitHelper()->GetColorLutTex(gl::GLBlitHelper::ColorLutKey{
-          .src = canvasCspace, .dst = outputCspace});
+      const gl::GLBlitHelper::CSTF src{.cs = canvasCspace, .tf = canvasTF};
+      const gl::GLBlitHelper::CSTF dst{.cs = outputCspace, .tf = outputTF};
+      colorLut = gl->BlitHelper()->GetColorLutTex(
+          gl::GLBlitHelper::ColorLutKey{.src = src, .dst = dst});
       if (!colorLut) {
         NS_WARNING("GetColorLutTex() -> nullptr => colorManage = false.");
         colorManage = false;
@@ -1135,7 +1146,7 @@ bool WebGLContext::PresentInto(gl::SwapChain& swapChain) {
     blitter.Draw({
         .texMatrix0 = gl::Mat3::I(),
         .yFlip = false,
-        .destSize = size,
+        .fbSize = size,
         .destRect = {},
     });
 
@@ -1161,7 +1172,8 @@ bool WebGLContext::PresentIntoXR(gl::SwapChain& swapChain,
   OnEndOfFrame();
 
   const auto colorSpace = ToColorSpace2ForOutput(mDrawingBufferColorSpace);
-  auto presenter = swapChain.Acquire(fb.mSize, colorSpace);
+  const auto transferFunction = gfx::TransferFunction::SRGB;
+  auto presenter = swapChain.Acquire(fb.mSize, colorSpace, transferFunction);
   if (!presenter) {
     GenerateWarning("Swap chain surface creation failed.");
     LoseContext();
@@ -1265,7 +1277,7 @@ bool WebGLContext::CopyToSwapChain(
 
   OnEndOfFrame();
 
-  if (!srcFb) {
+  if (!srcFb || !srcFb->IsCheckFramebufferStatusComplete()) {
     return false;
   }
   const auto* info = srcFb->GetCompletenessInfo();
@@ -1292,7 +1304,9 @@ bool WebGLContext::CopyToSwapChain(
   {
     // TODO: ColorSpace will need to be part of SwapChainOptions for DTWebgl.
     const auto colorSpace = ToColorSpace2ForOutput(mDrawingBufferColorSpace);
-    auto presenter = srcFb->mSwapChain.Acquire(size, colorSpace);
+    const auto transferFunction = gfx::TransferFunction::SRGB;
+    auto presenter =
+        srcFb->mSwapChain.Acquire(size, colorSpace, transferFunction);
     if (!presenter) {
       GenerateWarning("Swap chain surface creation failed.");
       LoseContext();
@@ -1333,12 +1347,10 @@ bool WebGLContext::PushRemoteTexture(
   if (!ownerClient) {
     if (!mRemoteTextureOwner) {
       // Ensure we have a remote texture owner client for WebGLParent.
-      const auto* outOfProcess =
-          mHost ? mHost->mOwnerData.outOfProcess : nullptr;
-      if (!outOfProcess) {
+      if (!mHost) {
         return onFailure();
       }
-      auto pid = outOfProcess->OtherPid();
+      auto pid = mHost->mOwner->OtherPid();
       mRemoteTextureOwner = MakeRefPtr<layers::RemoteTextureOwnerClient>(pid);
     }
     ownerClient = mRemoteTextureOwner;
@@ -1371,6 +1383,7 @@ bool WebGLContext::PushRemoteTexture(
 
   const auto surfaceFormat = mOptions.alpha ? gfx::SurfaceFormat::B8G8R8A8
                                             : gfx::SurfaceFormat::B8G8R8X8;
+
   Maybe<layers::SurfaceDescriptor> desc;
   if (surf) {
     desc = surf->ToSurfaceDescriptor();
@@ -1460,11 +1473,10 @@ void WebGLContext::EnsureContextLostRemoteTextureOwner(
 
   if (!mRemoteTextureOwner) {
     // Ensure we have a remote texture owner client for WebGLParent.
-    const auto* outOfProcess = mHost ? mHost->mOwnerData.outOfProcess : nullptr;
-    if (!outOfProcess) {
+    if (!mHost) {
       return;
     }
-    auto pid = outOfProcess->OtherPid();
+    auto pid = mHost->mOwner->OtherPid();
     mRemoteTextureOwner = MakeRefPtr<layers::RemoteTextureOwnerClient>(pid);
   }
 
@@ -1517,13 +1529,8 @@ Maybe<uvec2> WebGLContext::FrontBufferSnapshotInto(
 
   // -
 
-  front->WaitForBufferOwnership();
-  front->LockProd();
-  front->ProducerReadAcquire();
-  auto reset = MakeScopeExit([&] {
-    front->ProducerReadRelease();
-    front->UnlockProd();
-  });
+  front->BeginRead();
+  auto reset = MakeScopeExit([&] { front->EndRead(); });
 
   // -
 
@@ -1589,6 +1596,12 @@ Maybe<uvec2> WebGLContext::SnapshotInto(GLuint srcFb, const gfx::IntSize& size,
                        << " > dstByteCount:" << dstByteCount;
     return {};
   }
+
+  // Ensure pending GL commands are submitted before readback. Some drivers
+  // (NVIDIA proprietary on X11/GLX) may not properly synchronize in-flight
+  // rendering when reading from a recently-written framebuffer. (Bug 2014363)
+  gl->fFlush();
+
   uint8_t* dstPtr = dest.begin().get();
   gl->fReadPixels(0, 0, size.width, size.height, LOCAL_GL_RGBA,
                   LOCAL_GL_UNSIGNED_BYTE, dstPtr);
@@ -1676,17 +1689,59 @@ already_AddRefed<gfx::SourceSurface> WebGLContext::GetBackBufferSnapshot(
   return dataSurf.forget();
 }
 
+std::shared_ptr<gl::SharedSurface>
+WebGLContext::GetBackBufferSnapshotSharedSurface(layers::TextureType texType,
+                                                 bool bgra, bool yFlip,
+                                                 bool requireAlphaPremult) {
+  const FuncScope funcScope(*this, "<GetBackBufferSnapshotSharedSurface>");
+  if (IsContextLost()) {
+    return nullptr;
+  }
+
+  const auto surfSize = DrawingBufferSize();
+  if (surfSize.x <= 0 || surfSize.y <= 0) {
+    return nullptr;
+  }
+
+  InitSwapChain(*gl, mSnapshotSwapChain, texType, true);
+
+  {
+    // TODO: ColorSpace will need to be part of SwapChainOptions for DTWebgl.
+    // TODO: TransferFunction will need to be part of SwapChainOptions for
+    // DTWebgl.
+    const auto colorSpace = ToColorSpace2ForOutput(mDrawingBufferColorSpace);
+    const auto transferFunction = gfx::TransferFunction::SRGB;
+    auto presenter = mSnapshotSwapChain.Acquire(
+        gfx::IntSize(surfSize.x, surfSize.y), colorSpace, transferFunction);
+    if (!presenter) {
+      GenerateWarning("Swap chain surface creation failed.");
+      return nullptr;
+    }
+
+    const ScopedFBRebinder saveFB(this);
+    const auto srcFb = GetDefaultFBForRead();
+
+    const auto destFb = presenter->Fb();
+    gl->fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, destFb);
+
+    BlitBackbufferToCurDriverFB(
+        nullptr, srcFb, bgra, yFlip,
+        requireAlphaPremult && mOptions.alpha && !mOptions.premultipliedAlpha
+            ? Some(gfxAlphaType::Premult)
+            : Nothing());
+  }
+
+  return mSnapshotSwapChain.FrontBuffer();
+}
+
+void WebGLContext::RecycleSnapshotSharedSurface(
+    std::shared_ptr<gl::SharedSurface> sharedSurface) {
+  mSnapshotSwapChain.StoreRecycledSurface(sharedSurface);
+}
+
 void WebGLContext::ClearVRSwapChain() { mWebVRSwapChain.ClearPool(); }
 
 // ------------------------
-
-RefPtr<gfx::DataSourceSurface> GetTempSurface(const gfx::IntSize& aSize,
-                                              gfx::SurfaceFormat& aFormat) {
-  uint32_t stride =
-      gfx::GetAlignedStride<8>(aSize.width, BytesPerPixel(aFormat));
-  return gfx::Factory::CreateDataSourceSurfaceWithStride(aSize, aFormat,
-                                                         stride);
-}
 
 void WebGLContext::DummyReadFramebufferOperation() {
   if (!mBoundReadFramebuffer) return;  // Infallible.
@@ -1698,22 +1753,18 @@ void WebGLContext::DummyReadFramebufferOperation() {
 }
 
 layers::SharedSurfacesHolder* WebGLContext::GetSharedSurfacesHolder() const {
-  const auto* outOfProcess = mHost ? mHost->mOwnerData.outOfProcess : nullptr;
-  if (outOfProcess) {
-    return outOfProcess->mSharedSurfacesHolder;
+  if (mHost) {
+    return mHost->mOwner->mSharedSurfacesHolder;
   }
-  MOZ_ASSERT_UNREACHABLE("Unexpected use of SharedSurfacesHolder in process!");
+  MOZ_ASSERT_UNREACHABLE("Unexpected missing host!");
   return nullptr;
 }
 
 dom::ContentParentId WebGLContext::GetContentId() const {
-  const auto* outOfProcess = mHost ? mHost->mOwnerData.outOfProcess : nullptr;
-  if (outOfProcess) {
-    return outOfProcess->mContentId;
+  if (mHost) {
+    return mHost->mOwner->mContentId;
   }
-  if (XRE_IsContentProcess()) {
-    return dom::ContentChild::GetSingleton()->GetID();
-  }
+  MOZ_ASSERT_UNREACHABLE("Unexpected missing host!");
   return dom::ContentParentId();
 }
 
@@ -1921,7 +1972,7 @@ const gl::MozFramebuffer* WebGLContext::GetDefaultFBForRead(
 
   if (!mResolvedDefaultFB) {
     mResolvedDefaultFB =
-        gl::MozFramebuffer::Create(gl, mDefaultFB->mSize, 0, false);
+        gl::MozFramebuffer::Create(gl, mDefaultFB->mSize, 0, false, false);
     if (!mResolvedDefaultFB) {
       gfxCriticalNote << FuncName() << ": Failed to create mResolvedDefaultFB.";
       return nullptr;
@@ -2097,28 +2148,28 @@ bool Intersect(const int32_t srcSize, const int32_t read0,
 
 // --
 
-uint64_t AvailGroups(const uint64_t totalAvailItems,
+uint64_t AvailGroups(const uint64_t totalAvailItemBytes,
                      const uint64_t firstItemOffset, const uint32_t groupSize,
                      const uint32_t groupStride) {
   MOZ_ASSERT(groupSize && groupStride);
-  MOZ_ASSERT(groupSize <= groupStride);
 
-  if (totalAvailItems <= firstItemOffset) return 0;
-  const size_t availItems = totalAvailItems - firstItemOffset;
-
-  size_t availGroups = availItems / groupStride;
-  const size_t tailItems = availItems % groupStride;
-  if (tailItems >= groupSize) {
-    availGroups += 1;
+  if (totalAvailItemBytes <= firstItemOffset) {
+    return 0;
   }
-  return availGroups;
+
+  const size_t availItemBytes = totalAvailItemBytes - firstItemOffset;
+  if (availItemBytes < groupSize) {
+    return 0;
+  }
+
+  return (availItemBytes - groupSize) / groupStride + 1;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 const char* WebGLContext::FuncName() const {
   const char* ret;
-  if (MOZ_LIKELY(mFuncScope)) {
+  if (mFuncScope) [[likely]] {
     ret = mFuncScope->mFuncName;
   } else {
     ret = "<unknown function>";
@@ -2331,7 +2382,7 @@ Maybe<std::string> WebGLContext::GetString(const GLenum pname) const {
     case dom::MOZ_debug_Binding::WSI_INFO: {
       nsCString info;
       gl->GetWSIInfo(&info);
-      return Some(std::string(info.BeginReading()));
+      return Some(std::string(info.View()));
     }
 
     case dom::MOZ_debug_Binding::CONTEXT_TYPE: {
@@ -2362,30 +2413,59 @@ Maybe<std::string> WebGLContext::GetString(const GLenum pname) const {
 // ---------------------------------
 
 Maybe<webgl::IndexedName> webgl::ParseIndexed(const std::string& str) {
-  static const std::regex kRegex("(.*)\\[([0-9]+)\\]");
+  // Check if the string ends with a close bracket
+  if (str.size() < 2 || str.back() != ']') {
+    return {};
+  }
+  // Search for the open bracket, only allow digits between brackets
+  const size_t closeBracket = str.size() - 1;
+  size_t openBracket = closeBracket;
+  for (;;) {
+    char c = str[--openBracket];
+    if (isdigit(c)) {
+      if (openBracket <= 0) {
+        // At the beginning of string without an open bracket
+        return {};
+      }
+    } else if (c == '[') {
+      // Found the open bracket
+      break;
+    } else {
+      // Found a non-digit
+      return {};
+    }
+  }
 
-  std::smatch match;
-  if (!std::regex_match(str, match, kRegex)) return {};
-
-  const auto index = std::stoull(match[2]);
-  return Some(webgl::IndexedName{match[1], index});
+  // Ensure non-empty digit sequence
+  size_t firstDigit = openBracket + 1;
+  if (firstDigit >= closeBracket) {
+    return {};
+  }
+  const auto index =
+      std::stoull(str.substr(firstDigit, closeBracket - firstDigit));
+  std::string name = str.substr(0, openBracket);
+  return Some(webgl::IndexedName{std::move(name), index});
 }
 
 // ExplodeName("foo.bar[3].x") -> ["foo", ".", "bar", "[", "3", "]", ".", "x"]
 static std::vector<std::string> ExplodeName(const std::string& str) {
   std::vector<std::string> ret;
-
-  static const std::regex kSep("[.[\\]]");
-
-  auto itr = std::regex_token_iterator<decltype(str.begin())>(
-      str.begin(), str.end(), kSep, {-1, 0});
-  const auto end = decltype(itr)();
-
-  for (; itr != end; ++itr) {
-    const auto& part = itr->str();
-    if (part.size()) {
-      ret.push_back(part);
+  size_t curPos = 0;
+  while (curPos < str.size()) {
+    // Find the next separator
+    size_t nextPos = str.find_first_of(".[]", curPos);
+    if (nextPos == std::string::npos) {
+      // If no separator found, add remaining substring
+      ret.push_back(str.substr(curPos));
+      break;
     }
+    // Add string between separators, if not empty
+    if (curPos < nextPos) {
+      ret.push_back(str.substr(curPos, nextPos - curPos));
+    }
+    // Add the separator
+    ret.push_back(str.substr(nextPos, 1));
+    curPos = nextPos + 1;
   }
   return ret;
 }
@@ -2460,7 +2540,7 @@ webgl::LinkActiveInfo GetLinkActiveInfo(
         const auto userName = fnUnmapName(mappedName);
 
         auto loc = gl.fGetAttribLocation(prog, mappedName.c_str());
-        if (mappedName.find("gl_") == 0) {
+        if (mappedName.starts_with("gl_")) {
           // Bug 1328559: Appears problematic on ANGLE and OSX, but not Linux or
           // Win+GL.
           loc = -1;
@@ -2734,7 +2814,7 @@ GLint WebGLContext::GetFragDataLocation(const WebGLProgram& prog,
 
   if (gl->WorkAroundDriverBugs() && gl->IsMesa()) {
     // Mesa incorrectly generates INVALID_OPERATION for gl_ prefixes here.
-    if (mappedName.find("gl_") == 0) {
+    if (mappedName.starts_with("gl_")) {
       return -1;
     }
   }
@@ -2756,6 +2836,23 @@ webgl::ExplicitPixelPackingState::ForUseWith(
     const Maybe<size_t> bytesPerRowStrideOverride) {
   auto state = stateOrZero;
 
+  // Enforce the GLES alignmentInTypeElems invariant. ElemsPerRowStride below
+  // assumes a in {1,2,4,8}. Callers at IPC entry points validate this but
+  // alignmentInTypeElems is deserialized from IPC, so guard it here too.
+  switch (state.alignmentInTypeElems) {
+    case 1:
+    case 2:
+    case 4:
+    case 8:
+      break;
+    default: {
+      const auto text = nsPrintfCString(
+          "PACK/UNPACK_ALIGNMENT must be one of [1,2,4,8], was %u.",
+          state.alignmentInTypeElems);
+      return Err(mozilla::ToString(text));
+    }
+  }
+
   if (!IsTexTarget3D(target)) {
     state.skipImages = 0;
     state.imageHeight = 0;
@@ -2765,6 +2862,14 @@ webgl::ExplicitPixelPackingState::ForUseWith(
   }
   if (!state.imageHeight) {
     state.imageHeight = subrectSize.y;
+  }
+
+  if (!std::in_range<GLint>(state.rowLength) ||
+      !std::in_range<GLint>(state.imageHeight) ||
+      !std::in_range<GLint>(state.skipPixels) ||
+      !std::in_range<GLint>(state.skipRows) ||
+      !std::in_range<GLint>(state.skipImages)) {
+    return Err("pixelStorei params must be GLint.");
   }
 
   // -
@@ -2854,13 +2959,16 @@ webgl::ExplicitPixelPackingState::ForUseWith(
   auto metrics = Metrics{};
 
   metrics.usedSize = subrectSize;
+  metrics.usedPixelsPerRow = usedPixelsPerRow.value();
   metrics.bytesPerPixel = BytesPerPixel(pi);
 
   // -
 
   const auto elemsPerRowStride = ElemsPerRowStride();
   const auto bytesPerRowStride = pii.bytesPerElement * elemsPerRowStride;
-  if (!bytesPerRowStride.isValid()) {
+  const auto maxBytesPerRow = StaticPrefs::webgl_max_bytes_per_row();
+  if (!bytesPerRowStride.isValid() ||
+      (maxBytesPerRow > 0 && bytesPerRowStride.value() > maxBytesPerRow)) {
     return Err("ROW_LENGTH or width too large for packing.");
   }
   metrics.bytesPerRowStride = bytesPerRowStride.value();

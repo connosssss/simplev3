@@ -1,26 +1,28 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "base/basictypes.h"
-
-#include "mozilla/PresShell.h"
-#include "mozilla/dom/ContentParent.h"
-#include "mozilla/dom/BrowserParent.h"
-#include "mozilla/layers/CompositorBridgeParent.h"
-#include "mozilla/layers/CompositorTypes.h"
-#include "nsFrameLoader.h"
-#include "nsStyleStructInlines.h"
-#include "nsSubDocumentFrame.h"
 #include "RemoteLayerTreeOwner.h"
+
+#include "base/basictypes.h"
+#include "mozilla/PresShell.h"
+#include "mozilla/dom/BrowserParent.h"
+#include "mozilla/dom/CanonicalBrowsingContext.h"
+#include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/EffectsInfo.h"
+#include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/gfx/GPUProcessManager.h"
 #include "mozilla/layers/CompositorBridgeChild.h"
+#include "mozilla/layers/CompositorBridgeParent.h"
+#include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/WebRenderLayerManager.h"
 #include "mozilla/layers/WebRenderScrollData.h"
 #include "mozilla/webrender/WebRenderAPI.h"
-#include "mozilla/dom/EffectsInfo.h"
+#include "nsContentUtils.h"
+#include "nsFrameLoader.h"
+#include "nsIWidget.h"
+#include "nsStyleStructInlines.h"
+#include "nsSubDocumentFrame.h"
 
 using namespace mozilla::dom;
 using namespace mozilla::gfx;
@@ -53,12 +55,32 @@ RemoteLayerTreeOwner::RemoteLayerTreeOwner()
 
 RemoteLayerTreeOwner::~RemoteLayerTreeOwner() = default;
 
+// The LayersId of the pipeline that embeds aBrowserParent: the parent
+// document's LayersId if aBrowserParent is a nested remote frame, or the
+// LayersId of the chrome window hosting it otherwise. The latter only exists
+// once that window's widget has a CompositorSession, so callers must have
+// obtained its WindowRenderer first.
+static LayersId GetEmbedderLayersId(BrowserParent* aBrowserParent) {
+  if (WindowGlobalParent* embedderWindow =
+          aBrowserParent->GetBrowsingContext()->GetParentWindowContext()) {
+    if (BrowserParent* embedder = embedderWindow->GetBrowserParent()) {
+      return embedder->GetLayersId();
+    }
+  }
+  if (RefPtr<nsIWidget> widget = aBrowserParent->GetWidget()) {
+    return widget->GetLayersId();
+  }
+  return LayersId{};
+}
+
 bool RemoteLayerTreeOwner::Initialize(BrowserParent* aBrowserParent) {
   if (mInitialized || !aBrowserParent) {
     return false;
   }
 
   mBrowserParent = aBrowserParent;
+  // Note that this may be what creates the embedding widget's
+  // CompositorSession, which GetEmbedderLayersId() below relies on.
   RefPtr<WindowRenderer> renderer = GetWindowRenderer(mBrowserParent);
   PCompositorBridgeChild* compositor =
       renderer ? renderer->GetCompositorBridgeChild() : nullptr;
@@ -68,7 +90,8 @@ bool RemoteLayerTreeOwner::Initialize(BrowserParent* aBrowserParent) {
   // and we'll keep an indirect reference to that tree.
   GPUProcessManager* gpm = GPUProcessManager::Get();
   mLayersConnected = gpm->AllocateAndConnectLayerTreeId(
-      compositor, mTabProcessId, &mLayersId, &mCompositorOptions);
+      compositor, mTabProcessId, GetEmbedderLayersId(mBrowserParent),
+      &mLayersId, &mCompositorOptions);
 
   mInitialized = true;
   return true;
@@ -84,20 +107,17 @@ void RemoteLayerTreeOwner::Destroy() {
 }
 
 void RemoteLayerTreeOwner::EnsureLayersConnected(
-    CompositorOptions* aCompositorOptions) {
+    Maybe<CompositorOptions>& aCompositorOptions) {
   RefPtr<WindowRenderer> renderer = GetWindowRenderer(mBrowserParent);
-  if (!renderer) {
-    return;
-  }
-
-  if (!renderer->GetCompositorBridgeChild()) {
+  if (!renderer || !renderer->GetCompositorBridgeChild()) {
+    aCompositorOptions = Nothing();
     return;
   }
 
   mLayersConnected =
       renderer->GetCompositorBridgeChild()->SendNotifyChildRecreated(
-          mLayersId, &mCompositorOptions);
-  *aCompositorOptions = mCompositorOptions;
+          mLayersId, GetEmbedderLayersId(mBrowserParent), &mCompositorOptions);
+  aCompositorOptions = Some(mCompositorOptions);
 }
 
 bool RemoteLayerTreeOwner::AttachWindowRenderer() {
@@ -109,8 +129,8 @@ bool RemoteLayerTreeOwner::AttachWindowRenderer() {
   // Perhaps the document containing this frame currently has no presentation?
   if (renderer && renderer->GetCompositorBridgeChild() &&
       renderer != mWindowRenderer) {
-    mLayersConnected =
-        renderer->GetCompositorBridgeChild()->SendAdoptChild(mLayersId);
+    mLayersConnected = renderer->GetCompositorBridgeChild()->SendAdoptChild(
+        mLayersId, GetEmbedderLayersId(mBrowserParent));
   }
 
   mWindowRenderer = std::move(renderer);
@@ -118,7 +138,7 @@ bool RemoteLayerTreeOwner::AttachWindowRenderer() {
 }
 
 void RemoteLayerTreeOwner::OwnerContentChanged() {
-  Unused << AttachWindowRenderer();
+  (void)AttachWindowRenderer();
 }
 
 void RemoteLayerTreeOwner::GetTextureFactoryIdentifier(

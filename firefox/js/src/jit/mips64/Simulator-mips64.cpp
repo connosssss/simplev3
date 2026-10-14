@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80: */
 // Copyright 2011 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
@@ -30,11 +28,9 @@
 #include "jit/mips64/Simulator-mips64.h"
 
 #include "mozilla/Casting.h"
-#include "mozilla/FloatingPoint.h"
 #include "mozilla/IntegerPrintfMacros.h"
-#include "mozilla/Likely.h"
-#include "mozilla/MathAlgorithms.h"
 
+#include <cmath>
 #include <float.h>
 #include <limits>
 
@@ -569,8 +565,9 @@ class MipsDebugger {
 
  private:
   // We set the breakpoint code to 0xfffff to easily recognize it.
-  static const Instr kBreakpointInstr = op_special | ff_break | 0xfffff << 6;
-  static const Instr kNopInstr = op_special | ff_sll;
+  static const Instr kBreakpointInstr =
+      static_cast<uint32_t>(op_special) | ff_break | 0xfffff << 6;
+  static const Instr kNopInstr = static_cast<uint32_t>(op_special) | ff_sll;
 
   Simulator* sim_;
 
@@ -1162,11 +1159,13 @@ void SimulatorProcess::checkICacheLocked(SimInstruction* instr) {
   char* cached_line = cache_page->cachedData(offset & ~CachePage::kLineMask);
 
   if (cache_hit) {
+#ifdef DEBUG
     // Check that the data in memory matches the contents of the I-cache.
     int cmpret =
         memcmp(reinterpret_cast<void*>(instr), cache_page->cachedData(offset),
                SimInstruction::kInstrSize);
     MOZ_ASSERT(cmpret == 0);
+#endif
   } else {
     // Cache miss.  Load memory into the cache.
     memcpy(cached_line, line, CachePage::kLineLength);
@@ -1490,8 +1489,11 @@ bool Simulator::setFCSRRoundError(double original, double rounded) {
     ret = true;
   }
 
-  if ((long double)rounded > (long double)std::numeric_limits<T>::max() ||
-      (long double)rounded < (long double)std::numeric_limits<T>::min()) {
+  // When T is int64_t, the true value of max(T) is not representable as double,
+  // but max(T)+1 is. Construct it with ldexp to avoid overflow. min(T) is
+  // always representable as double, so simply cast it.
+  if (rounded >= std::ldexp(1.0, std::numeric_limits<T>::digits) ||
+      rounded < static_cast<double>(std::numeric_limits<T>::min())) {
     setFCSRBit(kFCSROverflowFlagBit, true);
     setFCSRBit(kFCSROverflowCauseBit, true);
     // The reference is not really clear but it seems this is required:
@@ -1925,9 +1927,6 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
 
   // We first check if we met a call_rt_redirected.
   if (instr->instructionBits() == kCallRedirInstr) {
-#if !defined(USES_N64_ABI)
-    MOZ_CRASH("Only N64 ABI supported.");
-#else
     Redirection* redirection = Redirection::FromSwiInstruction(instr);
     uintptr_t nativeFn =
         reinterpret_cast<uintptr_t>(redirection->nativeFunction());
@@ -1983,7 +1982,6 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
 
     setRegister(ra, saved_ra);
     set_pc(getRegister(ra));
-#endif
   } else if (func == ff_break && code <= kMaxStopCode) {
     if (isWatchpoint(code)) {
       printWatchpoint(code);
@@ -2286,7 +2284,7 @@ void Simulator::configureTypeRegister(SimInstruction* instr, int64_t& alu_out,
           u128hilo = U64(U32(I32_CHECK(rs))) * U64(U32(I32_CHECK(rt)));
           break;
         case ff_dmultu:
-          u128hilo = U128(rs) * U128(rt);
+          u128hilo = U128(U64(rs)) * U128(U64(rt));
           break;
         case ff_add:
           alu_out = I32_CHECK(rs) + I32_CHECK(rt);
@@ -3772,7 +3770,7 @@ void Simulator::branchDelayInstructionDecode(SimInstruction* instr) {
   }
 
   if (instr->isForbiddenInBranchDelay()) {
-    MOZ_CRASH("Eror:Unexpected opcode in a branch delay slot.");
+    MOZ_CRASH("Error: Unexpected opcode in a branch delay slot.");
   }
   instructionDecode(instr);
 }

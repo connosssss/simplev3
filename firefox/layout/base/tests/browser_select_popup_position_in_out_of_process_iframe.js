@@ -4,7 +4,7 @@ Services.scriptloader.loadSubScript(
 );
 
 Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/browser/base/content/test/forms/head.js",
+  "chrome://mochitests/content/browser/browser/base/content/test/browser-forms/head.js",
   this
 );
 
@@ -26,6 +26,14 @@ function openSelectPopup(x, y, win) {
   });
   return popupShownPromise;
 }
+
+add_setup(async () => {
+  if (AppConstants.platform == "macosx") {
+    await SpecialPowers.pushPrefEnv({
+      set: [["widget.macos.allow-native-select", false]],
+    });
+  }
+});
 
 add_task(async function () {
   const pageUrl = "data:text/html," + escape(PAGECONTENT_TRANSLATED);

@@ -15,8 +15,8 @@ import androidx.fragment.app.DialogFragment
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.navArgs
 import mozilla.components.lib.state.ext.consumeFrom
+import mozilla.components.lib.state.helpers.StoreProvider.Companion.storeProvider
 import org.mozilla.fenix.R
-import org.mozilla.fenix.components.StoreProvider
 import org.mozilla.fenix.databinding.FragmentCreateCollectionBinding
 import org.mozilla.fenix.ext.requireComponents
 
@@ -26,7 +26,8 @@ class CollectionCreationFragment : DialogFragment() {
     private lateinit var collectionCreationInteractor: CollectionCreationInteractor
 
     private var _binding: FragmentCreateCollectionBinding? = null
-    private val binding get() = _binding!!
+    private val binding
+        get() = _binding!!
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,32 +43,35 @@ class CollectionCreationFragment : DialogFragment() {
         _binding = FragmentCreateCollectionBinding.inflate(inflater, container, false)
         val args: CollectionCreationFragmentArgs by navArgs()
 
-        collectionCreationStore = StoreProvider.get(this) {
+        collectionCreationStore = storeProvider.get { restoredState ->
             CollectionCreationStore(
-                createInitialCollectionCreationState(
-                    browserState = requireComponents.core.store.state,
-                    tabCollectionStorage = requireComponents.core.tabCollectionStorage,
-                    publicSuffixList = requireComponents.publicSuffixList,
-                    saveCollectionStep = args.saveCollectionStep,
-                    tabIds = args.tabIds,
-                    selectedTabIds = args.selectedTabIds,
-                    selectedTabCollectionId = args.selectedTabCollectionId,
-                ),
+                restoredState
+                    ?: createInitialCollectionCreationState(
+                        browserState = requireComponents.core.store.state,
+                        tabCollectionStorage = requireComponents.core.tabCollectionStorage,
+                        publicSuffixList = requireComponents.publicSuffixList,
+                        saveCollectionStep = args.saveCollectionStep,
+                        tabIds = args.tabIds,
+                        selectedTabIds = args.selectedTabIds,
+                        selectedTabCollectionId = args.selectedTabCollectionId,
+                    )
             )
         }
-        collectionCreationInteractor = DefaultCollectionCreationInteractor(
-            DefaultCollectionCreationController(
-                collectionCreationStore,
-                requireComponents.core.store,
-                ::dismiss,
-                requireComponents.core.tabCollectionStorage,
-                scope = lifecycleScope,
-            ),
-        )
-        collectionCreationView = CollectionCreationView(
-            binding.createCollectionWrapper,
-            collectionCreationInteractor,
-        )
+        collectionCreationInteractor =
+            DefaultCollectionCreationInteractor(
+                DefaultCollectionCreationController(
+                    collectionCreationStore,
+                    requireComponents.core.store,
+                    ::dismiss,
+                    requireComponents.core.tabCollectionStorage,
+                    scope = lifecycleScope,
+                )
+            )
+        collectionCreationView =
+            CollectionCreationView(
+                binding.createCollectionWrapper,
+                collectionCreationInteractor,
+            )
 
         return binding.root
     }
@@ -94,11 +98,12 @@ class CollectionCreationFragment : DialogFragment() {
         return ComponentDialog(requireContext(), this.theme).apply {
             onBackPressedDispatcher.addCallback(
                 owner = this,
-                onBackPressedCallback = object : OnBackPressedCallback(true) {
-                    override fun handleOnBackPressed() {
-                        collectionCreationView.handleOnBackPressed()
-                    }
-                },
+                onBackPressedCallback =
+                    object : OnBackPressedCallback(true) {
+                        override fun handleOnBackPressed() {
+                            collectionCreationView.handleOnBackPressed()
+                        }
+                    },
             )
         }
     }

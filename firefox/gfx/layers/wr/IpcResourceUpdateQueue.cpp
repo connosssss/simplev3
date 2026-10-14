@@ -1,12 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "IpcResourceUpdateQueue.h"
+
 #include <string.h>
+
 #include <algorithm>
+
+#include "mozilla/CheckedInt.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/layers/PTextureChild.h"
 #include "mozilla/layers/WebRenderBridgeChild.h"
@@ -219,7 +221,8 @@ bool ShmSegmentsReader::Read(const layers::OffsetRange& aRange,
     return false;
   }
 
-  if (aRange.start() + aRange.length() > mChunkSize * mSmallAllocs.Length()) {
+  CheckedInt<size_t> end = CheckedInt<size_t>(aRange.start()) + aRange.length();
+  if (!end.isValid() || end.value() > mChunkSize * mSmallAllocs.Length()) {
     return false;
   }
 
@@ -271,8 +274,9 @@ Maybe<Range<uint8_t>> ShmSegmentsReader::GetReadPointer(
     return GetReadPointerLarge(aRange);
   }
 
-  if (mChunkSize == 0 ||
-      aRange.start() + aRange.length() > mChunkSize * mSmallAllocs.Length()) {
+  CheckedInt<size_t> end = CheckedInt<size_t>(aRange.start()) + aRange.length();
+  if (mChunkSize == 0 || !end.isValid() ||
+      end.value() > mChunkSize * mSmallAllocs.Length()) {
     return Nothing();
   }
 
@@ -356,16 +360,6 @@ void IpcResourceUpdateQueue::PushExternalImageForTexture(
       aExtId, aKey, WrapNotNull(aTexture->GetIPDLActor()), aIsUpdate));
 }
 
-bool IpcResourceUpdateQueue::UpdateImageBuffer(
-    ImageKey aKey, const ImageDescriptor& aDescriptor, Range<uint8_t> aBytes) {
-  auto bytes = mWriter.Write(aBytes);
-  if (!bytes.length()) {
-    return false;
-  }
-  mUpdates.AppendElement(layers::OpUpdateImage(aDescriptor, bytes, aKey));
-  return true;
-}
-
 bool IpcResourceUpdateQueue::UpdateBlobImage(BlobImageKey aKey,
                                              const ImageDescriptor& aDescriptor,
                                              Range<uint8_t> aBytes,
@@ -434,7 +428,7 @@ void IpcResourceUpdateQueue::AddFontInstance(
     wr::FontInstanceKey aKey, wr::FontKey aFontKey, float aGlyphSize,
     const wr::FontInstanceOptions* aOptions,
     const wr::FontInstancePlatformOptions* aPlatformOptions,
-    Range<const gfx::FontVariation> aVariations) {
+    Range<const wr::FontVariation> aVariations) {
   auto bytes = mWriter.WriteAsBytes(aVariations);
   mUpdates.AppendElement(layers::OpAddFontInstance(
       aOptions ? Some(*aOptions) : Nothing(),

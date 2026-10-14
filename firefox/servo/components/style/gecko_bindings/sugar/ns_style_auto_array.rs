@@ -11,7 +11,7 @@ use crate::gecko_bindings::bindings::Gecko_EnsureStyleViewTimelineArrayLength;
 use crate::gecko_bindings::structs::nsStyleAutoArray;
 use crate::gecko_bindings::structs::{StyleAnimation, StyleTransition};
 use crate::gecko_bindings::structs::{StyleScrollTimeline, StyleViewTimeline};
-use std::iter::{once, Chain, Once};
+use std::iter::{Chain, Once, once};
 use std::ops::{Index, IndexMut};
 use std::slice::{Iter, IterMut};
 
@@ -36,12 +36,12 @@ impl<T> IndexMut<usize> for nsStyleAutoArray<T> {
 
 impl<T> nsStyleAutoArray<T> {
     /// Mutably iterate over the array elements.
-    pub fn iter_mut(&mut self) -> Chain<Once<&mut T>, IterMut<T>> {
+    pub fn iter_mut(&mut self) -> Chain<Once<&mut T>, IterMut<'_, T>> {
         once(&mut self.mFirstElement).chain(self.mOtherElements.iter_mut())
     }
 
     /// Iterate over the array elements.
-    pub fn iter(&self) -> Chain<Once<&T>, Iter<T>> {
+    pub fn iter(&self) -> Chain<Once<&T>, Iter<'_, T>> {
         once(&self.mFirstElement).chain(self.mOtherElements.iter())
     }
 

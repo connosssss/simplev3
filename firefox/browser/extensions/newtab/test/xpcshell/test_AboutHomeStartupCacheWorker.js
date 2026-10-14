@@ -18,6 +18,9 @@ const { TestUtils } = ChromeUtils.importESModule(
 const { sinon } = ChromeUtils.importESModule(
   "resource://testing-common/Sinon.sys.mjs"
 );
+const { NimbusTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/NimbusTestUtils.sys.mjs"
+);
 
 SearchTestUtils.init(this);
 
@@ -33,6 +36,8 @@ ChromeUtils.defineESModuleGetters(this, {
 
 const CACHE_WORKER_URL = "resource://newtab/lib/cache.worker.js";
 const NEWTAB_RENDER_URL = "resource://newtab/data/content/newtab-render.js";
+
+NimbusTestUtils.init(this);
 
 /**
  * In order to make this test less brittle, much of Activity Stream is
@@ -70,13 +75,6 @@ add_setup(async function () {
     "browser.newtabpage.activity-stream.newtabWallpapers.enabled",
     false
   );
-  // While this is on in nightly only, we still want to be testing what's going to release.
-  // Once this is on in release, we should update this test to also test against the new data,
-  // including updating the static data in topstories.json to match what Merino returns.
-  Services.prefs.setBoolPref(
-    "browser.newtabpage.activity-stream.discoverystream.merino-provider.enabled",
-    false
-  );
 
   let defaultDSConfig = JSON.parse(
     PREFS_CONFIG.get("discoverystream.config").getValue({
@@ -103,11 +101,6 @@ add_setup(async function () {
     `http://example.com`
   );
 
-  Services.prefs.setBoolPref(
-    "browser.newtabpage.activity-stream.telemetry.structuredIngestion",
-    false
-  );
-
   // We need a default search engine set up for rendering the search input.
   await SearchTestUtils.installSearchExtension(
     {
@@ -118,9 +111,12 @@ add_setup(async function () {
     { setAsDefault: true }
   );
 
+  const { cleanup: nimbusTestCleanup } = await NimbusTestUtils.setupTest();
+  registerCleanupFunction(nimbusTestCleanup);
+
   // Pretend that a new window has been loaded to kick off initializing all of
   // the feeds.
-  AboutNewTab.onBrowserReady();
+  await AboutNewTab.onBrowserReady();
 
   // Much of Activity Stream initializes asynchronously. This is the easiest way
   // I could find to ensure that enough of the feeds had initialized to produce

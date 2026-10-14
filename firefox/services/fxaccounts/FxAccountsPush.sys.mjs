@@ -16,7 +16,6 @@ import {
   ON_PASSWORD_RESET_NOTIFICATION,
   ON_PROFILE_CHANGE_NOTIFICATION,
   ON_PROFILE_UPDATED_NOTIFICATION,
-  ON_VERIFY_LOGIN_NOTIFICATION,
   log,
 } from "resource://gre/modules/FxAccountsCommon.sys.mjs";
 
@@ -25,7 +24,7 @@ import {
  *
  * @param [options]
  *        Object, custom options that used for testing
- * @constructor
+ * @class
  */
 export function FxAccountsPushService(options = {}) {
   this.log = log;
@@ -179,8 +178,9 @@ FxAccountsPushService.prototype = {
     this.log.trace("FxAccountsPushService _onPushMessage");
     if (!message.data) {
       // Use the empty signal to check the verification state of the account right away
-      this.log.debug("empty push message - checking account status");
-      this.fxai.checkVerificationStatus();
+      this.log.debug(
+        "empty push message, but oauth doesn't require checking account status - ignoring"
+      );
       return;
     }
     let payload = message.data.json();
@@ -218,13 +218,6 @@ FxAccountsPushService.prototype = {
           payload.data.collections
         );
         return;
-      case ON_VERIFY_LOGIN_NOTIFICATION:
-        Services.obs.notifyObservers(
-          null,
-          ON_VERIFY_LOGIN_NOTIFICATION,
-          JSON.stringify(payload.data)
-        );
-        break;
       default:
         this.log.warn("FxA Push command unrecognized: " + payload.command);
     }

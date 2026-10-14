@@ -1,16 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // HttpLog.h should generally be included first
-#include "HttpLog.h"
-
 #include "ObliviousHttpChannel.h"
 
 #include "BinaryHttpRequest.h"
+#include "HttpLog.h"
 #include "nsIHttpHeaderVisitor.h"
 #include "nsStringStream.h"
 
@@ -331,13 +327,6 @@ ObliviousHttpChannel::IsNoCacheResponse(bool* _retval) {
 }
 
 NS_IMETHODIMP
-ObliviousHttpChannel::IsPrivateResponse(bool* _retval) {
-  LOG(("ObliviousHttpChannel::IsPrivateResponse NOT IMPLEMENTED [this=%p]",
-       this));
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
 ObliviousHttpChannel::RedirectTo(nsIURI* aNewURI) {
   LOG(("ObliviousHttpChannel::RedirectTo NOT IMPLEMENTED [this=%p]", this));
   return NS_ERROR_NOT_IMPLEMENTED;
@@ -368,6 +357,16 @@ ObliviousHttpChannel::GetRequestContextID(uint64_t* _retval) {
 NS_IMETHODIMP
 ObliviousHttpChannel::SetRequestContextID(uint64_t rcID) {
   return mInnerChannel->SetRequestContextID(rcID);
+}
+
+NS_IMETHODIMP
+ObliviousHttpChannel::GetIsUserAgentHeaderOutdated(bool* aValue) {
+  return mInnerChannel->GetIsUserAgentHeaderOutdated(aValue);
+}
+
+NS_IMETHODIMP
+ObliviousHttpChannel::SetIsUserAgentHeaderOutdated(bool aValue) {
+  return mInnerChannel->SetIsUserAgentHeaderOutdated(aValue);
 }
 
 NS_IMETHODIMP
@@ -525,6 +524,9 @@ NS_IMETHODIMP
 ObliviousHttpChannel::AsyncOpen(nsIStreamListener* aListener) {
   LOG(("ObliviousHttpChannel::AsyncOpen [this=%p, listener=%p]", this,
        aListener));
+  if (mStreamListener) {
+    return NS_ERROR_ALREADY_OPENED;
+  }
   mStreamListener = aListener;
   nsresult rv = mInnerChannel->SetRequestMethod("POST"_ns);
   if (NS_FAILED(rv)) {
@@ -600,7 +602,7 @@ ObliviousHttpChannel::AsyncOpen(nsIStreamListener* aListener) {
     return rv;
   }
   rv = uploadChannel->ExplicitSetUploadStream(
-      uploadStream, "message/ohttp-req"_ns, streamLength, "POST"_ns, false);
+      uploadStream, "message/ohttp-req"_ns, streamLength, "POST"_ns);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -650,6 +652,18 @@ ObliviousHttpChannel::GetLoadInfo(nsILoadInfo** aLoadInfo) {
 NS_IMETHODIMP
 ObliviousHttpChannel::SetLoadInfo(nsILoadInfo* aLoadInfo) {
   return mInnerChannel->SetLoadInfo(aLoadInfo);
+}
+
+NS_IMETHODIMP
+ObliviousHttpChannel::GetParentProcessChannelHandle(
+    mozilla::dom::ParentProcessChannelHandle** aValue) {
+  return mInnerChannel->GetParentProcessChannelHandle(aValue);
+}
+
+NS_IMETHODIMP
+ObliviousHttpChannel::SetParentProcessChannelHandle(
+    mozilla::dom::ParentProcessChannelHandle* aValue) {
+  return mInnerChannel->SetParentProcessChannelHandle(aValue);
 }
 
 NS_IMETHODIMP
@@ -728,7 +742,8 @@ nsresult ObliviousHttpChannel::ProcessOnStopRequest() {
                                getter_AddRefs(mBinaryHttpResponse));
 }
 
-void ObliviousHttpChannel::EmitOnDataAvailable() {
+void ObliviousHttpChannel::EmitOnDataAvailable(
+    nsIStreamListener* aStreamListener) {
   if (!mBinaryHttpResponse) {
     return;
   }
@@ -749,8 +764,8 @@ void ObliviousHttpChannel::EmitOnDataAvailable() {
   if (NS_FAILED(rv)) {
     return;
   }
-  rv = mStreamListener->OnDataAvailable(this, contentStream, 0, contentLength);
-  Unused << rv;
+  rv = aStreamListener->OnDataAvailable(this, contentStream, 0, contentLength);
+  (void)rv;
 }
 
 NS_IMETHODIMP
@@ -759,8 +774,7 @@ ObliviousHttpChannel::OnStopRequest(nsIRequest* aRequest,
   LOG(("ObliviousHttpChannel::OnStopRequest [this=%p, request=%p, status=%u]",
        this, aRequest, (uint32_t)aStatusCode));
 
-  auto releaseStreamListener = MakeScopeExit(
-      [self = RefPtr{this}]() mutable { self->mStreamListener = nullptr; });
+  nsCOMPtr<nsIStreamListener> listener = std::move(mStreamListener);
 
   if (NS_SUCCEEDED(aStatusCode)) {
     bool requestSucceeded;
@@ -769,11 +783,11 @@ ObliviousHttpChannel::OnStopRequest(nsIRequest* aRequest,
       aStatusCode = ProcessOnStopRequest();
     }
   }
-  Unused << mStreamListener->OnStartRequest(this);
+  (void)listener->OnStartRequest(this);
   if (NS_SUCCEEDED(aStatusCode)) {
-    EmitOnDataAvailable();
+    EmitOnDataAvailable(listener);
   }
-  Unused << mStreamListener->OnStopRequest(this, aStatusCode);
+  (void)listener->OnStopRequest(this, aStatusCode);
 
   return NS_OK;
 }
@@ -797,15 +811,12 @@ ObliviousHttpChannel::GetRelayChannel(nsIHttpChannel** aChannel) {
 
 NS_IMETHODIMP ObliviousHttpChannel::ExplicitSetUploadStream(
     nsIInputStream* aStream, const nsACString& aContentType,
-    int64_t aContentLength, const nsACString& aMethod, bool aStreamHasHeaders) {
+    int64_t aContentLength, const nsACString& aMethod) {
   // This function should only be called before AsyncOpen.
   if (mStreamListener) {
     return NS_ERROR_IN_PROGRESS;
   }
-  if (aMethod != "POST"_ns && aMethod != "PUT") {
-    return NS_ERROR_INVALID_ARG;
-  }
-  if (aStreamHasHeaders) {
+  if (aMethod != "POST"_ns && aMethod != "PUT" && aMethod != "DELETE") {
     return NS_ERROR_INVALID_ARG;
   }
   mMethod.Assign(aMethod);
@@ -837,12 +848,6 @@ NS_IMETHODIMP ObliviousHttpChannel::ExplicitSetUploadStream(
   return NS_OK;
 }
 
-NS_IMETHODIMP ObliviousHttpChannel::GetUploadStreamHasHeaders(
-    bool* aUploadStreamHasHeaders) {
-  *aUploadStreamHasHeaders = false;
-  return NS_OK;
-}
-
 NS_IMETHODIMP ObliviousHttpChannel::CloneUploadStream(
     int64_t* aContentLength, nsIInputStream** _retval) {
   LOG(("ObliviousHttpChannel::CloneUploadStream NOT IMPLEMENTED [this=%p]",
@@ -868,6 +873,17 @@ NS_IMETHODIMP ObliviousHttpChannel::SetDocumentCharacterSet(
 NS_IMETHODIMP ObliviousHttpChannel::GetDocumentCharacterSet(
     nsAString& aDocumenharacterSet) {
   return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP ObliviousHttpChannel::GetDecompressDictionary(
+    DictionaryCacheEntry** aDictionary) {
+  *aDictionary = nullptr;
+  return NS_OK;
+}
+
+NS_IMETHODIMP ObliviousHttpChannel::SetDecompressDictionary(
+    DictionaryCacheEntry* aDictionary) {
+  return NS_OK;
 }
 
 }  // namespace mozilla::net

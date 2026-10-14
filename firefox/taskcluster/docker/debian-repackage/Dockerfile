@@ -1,6 +1,7 @@
 FROM $DOCKER_IMAGE_PARENT
 MAINTAINER Mozilla Releng <release@mozilla.com>
 
+VOLUME /builds/worker/checkouts
 VOLUME /builds/worker/workspace
 
 # At the moment the Firefox build sysroot for i386 and amd64 use jessie and arm64 uses buster.
@@ -31,11 +32,11 @@ RUN /usr/local/sbin/setup_packages.sh $TASKCLUSTER_ROOT_URL $DOCKER_IMAGE_PACKAG
     --arch=amd64 \
     --variant=buildd \
     --include=debhelper,binutils-multiarch,binutils-aarch64-linux-gnu \
-    --keyring=/usr/share/keyrings/debian-archive-buster-stable.gpg \
+    --keyring=/usr/share/keyrings/debian-archive-$(if test -f /usr/share/keyrings/debian-archive-buster-stable.gpg; then echo buster-stable.gpg; else echo removed-keys.gpg; fi) \
     --verbose \
     buster \
     /srv/buster-amd64 \
-    http://deb.debian.org/debian || (echo "Debootstrap failed, outputting log:" && cat /srv/buster-amd64/debootstrap/debootstrap.log && exit 1) && \
+    http://archive.debian.org/debian || (echo "Debootstrap failed, outputting log:" && cat /srv/buster-amd64/debootstrap/debootstrap.log && exit 1) && \
     chroot /srv/buster-amd64 /bin/bash -c "\
         dpkg --add-architecture arm64 && \
         apt-get update && \

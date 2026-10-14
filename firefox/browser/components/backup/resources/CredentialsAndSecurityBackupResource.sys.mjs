@@ -2,13 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { BackupResource } from "resource:///modules/backup/BackupResource.sys.mjs";
+import { BackupResource } from "moz-src:///browser/components/backup/resources/BackupResource.sys.mjs";
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  BackupService: "resource:///modules/backup/BackupService.sys.mjs",
+  BackupService: "moz-src:///browser/components/backup/BackupService.sys.mjs",
   OSKeyStore: "resource://gre/modules/OSKeyStore.sys.mjs",
 });
 
@@ -44,7 +44,13 @@ export class CredentialsAndSecurityBackupResource extends BackupResource {
     ];
     await BackupResource.copyFiles(profilePath, stagingPath, simpleCopyFiles);
 
-    const sqliteDatabases = ["cert9.db", "key4.db", "credentialstate.sqlite"];
+    const sqliteDatabases = [
+      "cert9.db",
+      "key4.db",
+      "credentialstate.sqlite",
+      "logins.db",
+      "autofill.db",
+    ];
     await BackupResource.copySqliteDatabases(
       profilePath,
       stagingPath,
@@ -66,21 +72,55 @@ export class CredentialsAndSecurityBackupResource extends BackupResource {
       recoveryPath,
       "autofill-profiles.json"
     );
+
+    const files = [
+      "pkcs11.txt",
+      "logins.json",
+      "logins-backup.json",
+      "cert9.db",
+      "key4.db",
+      "credentialstate.sqlite",
+      "logins.db",
+      "autofill.db",
+    ];
+
+    if (await IOUtils.exists(AUTOFILL_RECORDS_PATH)) {
+      await this.encryptAutofillData(AUTOFILL_RECORDS_PATH);
+      files.push("autofill-profiles.json");
+    }
+
+    await BackupResource.copyFiles(recoveryPath, destProfilePath, files);
+
+    return null;
+  }
+
+  async encryptAutofillData(AUTOFILL_RECORDS_PATH) {
     let autofillRecords = await IOUtils.readJSON(AUTOFILL_RECORDS_PATH);
 
     for (let creditCard of autofillRecords.creditCards) {
       let oldEncryptedCard = creditCard["cc-number-encrypted"];
       if (oldEncryptedCard) {
+        let plaintextCard;
         // We use the native OSKeyStore backend to decrypt the bytes with the
         // original secret in order to skip authentication dialogs.
-        let plaintextCardBytes = await lazy.nativeOSKeyStore.asyncDecryptBytes(
-          lazy.BackupService.RECOVERY_OSKEYSTORE_LABEL,
-          oldEncryptedCard
-        );
-        let plaintextCard = String.fromCharCode.apply(
-          String,
-          plaintextCardBytes
-        );
+        if (
+          await lazy.nativeOSKeyStore.asyncSecretAvailable(
+            lazy.BackupService.RECOVERY_OSKEYSTORE_LABEL
+          )
+        ) {
+          let plaintextCardBytes =
+            await lazy.nativeOSKeyStore.asyncDecryptBytes(
+              lazy.BackupService.RECOVERY_OSKEYSTORE_LABEL,
+              oldEncryptedCard
+            );
+          plaintextCard = String.fromCharCode.apply(String, plaintextCardBytes);
+        } else {
+          plaintextCard = await lazy.OSKeyStore.decrypt(
+            oldEncryptedCard,
+            "backup_cc"
+          );
+        }
+
         // We're accessing the "real" OSKeyStore for this device here, and
         // encrypting the card with it.
         let newEncryptedCard = await lazy.OSKeyStore.encrypt(plaintextCard);
@@ -89,19 +129,6 @@ export class CredentialsAndSecurityBackupResource extends BackupResource {
     }
 
     await IOUtils.writeJSON(AUTOFILL_RECORDS_PATH, autofillRecords);
-
-    const files = [
-      "pkcs11.txt",
-      "logins.json",
-      "logins-backup.json",
-      "autofill-profiles.json",
-      "cert9.db",
-      "key4.db",
-      "credentialstate.sqlite",
-    ];
-    await BackupResource.copyFiles(recoveryPath, destProfilePath, files);
-
-    return null;
   }
 
   async measure(profilePath = PathUtils.profileDir) {
@@ -124,6 +151,8 @@ export class CredentialsAndSecurityBackupResource extends BackupResource {
       "logins-backup.json",
       "autofill-profiles.json",
       "credentialstate.sqlite",
+      "logins.db",
+      "autofill.db",
     ];
     let credentialsSize = 0;
 

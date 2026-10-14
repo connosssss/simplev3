@@ -23,6 +23,12 @@ const ManifestPage = createFactory(
 const WorkersPage = createFactory(
   require("resource://devtools/client/application/src/components/service-workers/WorkersPage.js")
 );
+const SessionHistoryPage = createFactory(
+  require("resource://devtools/client/application/src/components/session-history/SessionHistoryPage.js")
+);
+const SpeculativeLoadsPage = createFactory(
+  require("resource://devtools/client/application/src/components/speculative-loads/SpeculativeLoadsPage.js")
+);
 
 class PageSwitcher extends PureComponent {
   static get propTypes() {
@@ -40,6 +46,12 @@ class PageSwitcher extends PureComponent {
         break;
       case PAGE_TYPES.SERVICE_WORKERS:
         component = WorkersPage({});
+        break;
+      case PAGE_TYPES.SESSION_HISTORY:
+        component = SessionHistoryPage({});
+        break;
+      case PAGE_TYPES.SPECULATIVE_LOADS:
+        component = SpeculativeLoadsPage({});
         break;
       default:
         console.error("Unknown path. Can not direct to a page.");

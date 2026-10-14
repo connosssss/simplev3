@@ -1,16 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsDocShellLoadState_h__
-#define nsDocShellLoadState_h__
+#ifndef nsDocShellLoadState_h_
+#define nsDocShellLoadState_h_
 
 #include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/NavigationBinding.h"
+#include "mozilla/dom/RemoteType.h"
 #include "mozilla/dom/SessionHistoryEntry.h"
 #include "mozilla/dom/UserNavigationInvolvement.h"
+#include "mozilla/dom/LoadURIOptionsBinding.h"
 
 #include "nsIClassifiedChannel.h"
 #include "nsILoadInfo.h"
@@ -22,9 +22,7 @@
 #include "nsDocShellLoadTypes.h"
 #include "nsTArrayForwardDeclare.h"
 
-class nsIContentSecurityPolicy;
 class nsIInputStream;
-class nsISHEntry;
 class nsIURI;
 class nsIDocShell;
 class nsIChannel;
@@ -32,13 +30,24 @@ class nsIReferrerInfo;
 struct HTTPSFirstDowngradeData;
 namespace mozilla {
 class OriginAttributes;
-template <typename, class>
-class UniquePtr;
+namespace net {
+class DocumentLoadListener;
+}
 namespace dom {
 class FormData;
 class DocShellLoadStateInit;
+struct NavigationAPIMethodTracker;
+class SessionHistoryEntry;
+struct RemoteType;
 }  // namespace dom
 }  // namespace mozilla
+
+namespace mozilla::dom {
+
+bool ContentTriggeredURILoadIsAllowed(
+    nsIURI* aURI, const mozilla::dom::RemoteType& aEffectiveRemoteType);
+
+}
 
 /**
  * nsDocShellLoadState contains setup information used in a nsIDocShell::loadURI
@@ -48,6 +57,7 @@ class nsDocShellLoadState final {
   using BrowsingContext = mozilla::dom::BrowsingContext;
   template <typename T>
   using MaybeDiscarded = mozilla::dom::MaybeDiscarded<T>;
+  using SessionHistoryEntry = mozilla::dom::SessionHistoryEntry;
 
  public:
   NS_INLINE_DECL_REFCOUNTING(nsDocShellLoadState);
@@ -124,17 +134,13 @@ class nsDocShellLoadState final {
 
   void SetTriggeringWindowId(uint64_t aTriggeringWindowId);
 
-  bool TriggeringStorageAccess() const;
-
-  void SetTriggeringStorageAccess(bool aTriggeringStorageAccess);
-
   mozilla::net::ClassificationFlags TriggeringClassificationFlags() const;
   void SetTriggeringClassificationFlags(
       mozilla::net::ClassificationFlags aFlags);
 
-  nsIContentSecurityPolicy* Csp() const;
+  nsIPolicyContainer* PolicyContainer() const;
 
-  void SetCsp(nsIContentSecurityPolicy* aCsp);
+  void SetPolicyContainer(nsIPolicyContainer* aPolicyContainer);
 
   bool InheritPrincipal() const;
 
@@ -176,6 +182,18 @@ class nsDocShellLoadState final {
 
   void SetIsFormSubmission(bool aIsFormSubmission);
 
+  bool NeedsCompletelyLoadedDocument() const;
+
+  void SetNeedsCompletelyLoadedDocument(bool aNeedsCompletelyLoadedDocument);
+
+  mozilla::Maybe<mozilla::dom::NavigationHistoryBehavior> HistoryBehavior()
+      const;
+
+  void SetHistoryBehavior(
+      mozilla::dom::NavigationHistoryBehavior aHistoryBehavior);
+
+  void ResetHistoryBehavior();
+
   uint32_t LoadType() const;
 
   void SetLoadType(uint32_t aLoadType);
@@ -185,9 +203,13 @@ class nsDocShellLoadState final {
   void SetUserNavigationInvolvement(
       mozilla::dom::UserNavigationInvolvement aUserNavigationInvolvement);
 
-  nsISHEntry* SHEntry() const;
+  SessionHistoryEntry* SHEntry() const;
 
-  void SetSHEntry(nsISHEntry* aSHEntry);
+  void SetSHEntry(SessionHistoryEntry* aSHEntry);
+
+  void SetPreviousEntryForActivation(nsISHEntry* aSHEntry);
+  void SetPreviousEntryForActivation(
+      const mozilla::Maybe<mozilla::dom::PreviousSessionHistoryInfo>& aInfo);
 
   const mozilla::dom::LoadingSessionHistoryInfo* GetLoadingSessionHistoryInfo()
       const;
@@ -338,21 +360,21 @@ class nsDocShellLoadState final {
 
   uint64_t GetLoadIdentifier() const { return mLoadIdentifier; }
 
-  void SetChannelInitialized(bool aInitilized) {
-    mChannelInitialized = aInitilized;
-  }
-
-  bool GetChannelInitialized() const { return mChannelInitialized; }
+  void SetSpeculativeListener(mozilla::net::DocumentLoadListener* aListener);
+  already_AddRefed<mozilla::net::DocumentLoadListener>
+  TakeSpeculativeListener();
 
   void SetIsMetaRefresh(bool aMetaRefresh) { mIsMetaRefresh = aMetaRefresh; }
 
   bool IsMetaRefresh() const { return mIsMetaRefresh; }
 
-  const mozilla::Maybe<nsCString>& GetRemoteTypeOverride() const {
+  const mozilla::Maybe<mozilla::dom::RemoteType>& GetRemoteTypeOverride()
+      const {
     return mRemoteTypeOverride;
   }
 
-  void SetRemoteTypeOverride(const nsCString& aRemoteTypeOverride);
+  void SetRemoteTypeOverride(
+      const mozilla::dom::RemoteType& aRemoteTypeOverride);
 
   void SetSchemelessInput(nsILoadInfo::SchemelessInputType aSchemelessInput) {
     mSchemelessInput = aSchemelessInput;
@@ -360,6 +382,15 @@ class nsDocShellLoadState final {
 
   nsILoadInfo::SchemelessInputType GetSchemelessInput() {
     return mSchemelessInput;
+  }
+
+  void SetForceMediaDocument(
+      mozilla::dom::ForceMediaDocument aForceMediaDocument) {
+    mForceMediaDocument = aForceMediaDocument;
+  }
+
+  mozilla::dom::ForceMediaDocument GetForceMediaDocument() const {
+    return mForceMediaDocument;
   }
 
   void SetHttpsUpgradeTelemetry(
@@ -378,9 +409,10 @@ class nsDocShellLoadState final {
   // originally, however non-errorpage history loads are always considered to be
   // triggered by the parent process, as we can validate them against the
   // history entry.
-  const nsCString& GetEffectiveTriggeringRemoteType() const;
+  const mozilla::dom::RemoteType& GetEffectiveTriggeringRemoteType() const;
 
-  void SetTriggeringRemoteType(const nsACString& aTriggeringRemoteType);
+  void SetTriggeringRemoteType(
+      const mozilla::dom::RemoteType& aTriggeringRemoteType);
 
   // Diagnostic assert if this is a system-principal triggered load, and it is
   // trivial to determine that the effective triggering remote type would not be
@@ -418,11 +450,21 @@ class nsDocShellLoadState final {
   // This is used as the parameter for https://html.spec.whatwg.org/#navigate
   void SetSourceElement(mozilla::dom::Element* aElement);
   already_AddRefed<mozilla::dom::Element> GetSourceElement() const;
+  bool HasSourceElement() const {
+    return mSourceElement && mSourceElement->IsAlive();
+  }
 
-  // This is used as the parameter for https://html.spec.whatwg.org/#navigate,
-  // but it's currently missing. See bug 1966674
+  // This is used as the parameter for https://html.spec.whatwg.org/#navigate
   nsIStructuredCloneContainer* GetNavigationAPIState() const;
   void SetNavigationAPIState(nsIStructuredCloneContainer* aNavigationAPIState);
+
+  // This is used to pass the navigation API method tracker through the
+  // navigation pipeline for navigate().
+  // See https://html.spec.whatwg.org/#navigation-api-method-tracker
+  mozilla::dom::NavigationAPIMethodTracker* GetNavigationAPIMethodTracker()
+      const;
+  void SetNavigationAPIMethodTracker(
+      mozilla::dom::NavigationAPIMethodTracker* aTracker);
 
   // This is used as the parameter for https://html.spec.whatwg.org/#navigate
   mozilla::dom::NavigationType GetNavigationType() const;
@@ -431,6 +473,38 @@ class nsDocShellLoadState final {
   // It should only ever be set if the method is POST.
   mozilla::dom::FormData* GetFormDataEntryList();
   void SetFormDataEntryList(mozilla::dom::FormData* aFormDataEntryList);
+
+  // This is used as the getter/setter for the app link intent launch type
+  // for the load.
+  uint32_t GetAppLinkLaunchType() const;
+  void SetAppLinkLaunchType(uint32_t aAppLinkLaunchType);
+
+  // This is used as the getter/setter for the captive portal tab flag.
+  bool GetIsCaptivePortalTab() const;
+  void SetIsCaptivePortalTab(bool aIsCaptivePortalTab);
+
+  void ProhibitInitialAboutBlankHandling() {
+    mIsInitialAboutBlankHandlingProhibited = true;
+  }
+  bool IsInitialAboutBlankHandlingProhibited() {
+    return mIsInitialAboutBlankHandlingProhibited;
+  }
+
+  void SetIsResumingInterceptedNavigation(
+      bool aIsResumingInterceptedNavigation) {
+    mIsResumingInterceptedNavigation = aIsResumingInterceptedNavigation;
+  }
+
+  bool IsResumingInterceptedNavigation() const {
+    return mIsResumingInterceptedNavigation;
+  }
+
+  bool HasComputedNamedTargetBrowsingContext() const {
+    return mHasComputedNamedTargetBrowsingContext;
+  }
+  void SetHasComputedNamedTargetBrowsingContext(bool aValue) {
+    mHasComputedNamedTargetBrowsingContext = aValue;
+  }
 
  protected:
   // Destructor can't be defaulted or inlined, as header doesn't have all type
@@ -483,22 +557,20 @@ class nsDocShellLoadState final {
   // SandboxFlags of the document that started the load.
   uint32_t mTriggeringSandboxFlags;
 
-  // The window ID and current "has storage access" value of the entity
-  // triggering the load. This allows the identification of self-initiated
-  // same-origin navigations that should propogate unpartitioned storage access.
+  // The window ID of the entity triggering the load.
   uint64_t mTriggeringWindowId;
-  bool mTriggeringStorageAccess;
 
   // The classification flags of the context responsible for causing
   // the load to start.
   mozilla::net::ClassificationFlags mTriggeringClassificationFlags;
 
-  // The CSP of the load, that is, the CSP of the entity responsible for causing
-  // the load to occur. Most likely this is the CSP of the document that started
-  // the load. In case the entity starting the load did not use a CSP, then mCsp
-  // can be null. Please note that this is also the CSP that will be applied to
-  // the load in case the load encounters a server side redirect.
-  nsCOMPtr<nsIContentSecurityPolicy> mCsp;
+  // The policyContainer of the load, that is, the policyContainer of the entity
+  // responsible for causing the load to occur. Most likely this is the
+  // policyContainer of the document that started the load. In case the entity
+  // starting the load did not use a policyContainer, then mpPolicyContainer can
+  // be null. Please note that this is also the policyContainer that will be
+  // applied to the load in case the load encounters a server side redirect.
+  nsCOMPtr<nsIPolicyContainer> mPolicyContainer;
 
   // If a refresh is caused by http-equiv="refresh" we want to set
   // aResultPrincipalURI, but we do not want to overwrite the channel's
@@ -521,6 +593,8 @@ class nsDocShellLoadState final {
   // for a content docshell the load fails.
   bool mPrincipalIsExplicit;
 
+  // If this attribute is true, any potential unload listeners have been
+  // notified if applicable.
   bool mNotifiedBeforeUnloadListeners;
 
   // Principal we're inheriting. If null, this means the principal should be
@@ -562,6 +636,14 @@ class nsDocShellLoadState final {
   // form submission.
   bool mIsFormSubmission;
 
+  // If this attribute is true, we need to check if the current document is
+  // completely loaded to determine if we should perform a push or replace load.
+  bool mNeedsCompletelyLoadedDocument;
+
+  // If this attribute is `Auto`, we should determine if this should be a push
+  // or replace load when actually loading.
+  mozilla::Maybe<mozilla::dom::NavigationHistoryBehavior> mHistoryBehavior;
+
   // Contains a load type as specified by the nsDocShellLoadTypes::load*
   // constants
   uint32_t mLoadType;
@@ -571,7 +653,7 @@ class nsDocShellLoadState final {
       mozilla::dom::UserNavigationInvolvement::None;
 
   // Active Session History entry (if loading from SH)
-  nsCOMPtr<nsISHEntry> mSHEntry;
+  RefPtr<SessionHistoryEntry> mSHEntry;
 
   // Loading session history info for the load
   mozilla::UniquePtr<mozilla::dom::LoadingSessionHistoryInfo>
@@ -598,8 +680,7 @@ class nsDocShellLoadState final {
   // When set, this is the Source Browsing Context for the navigation.
   MaybeDiscarded<BrowsingContext> mSourceBrowsingContext;
 
-  // Used for srcdoc loads to give view-source knowledge of the load's base URI
-  // as this information isn't embedded in the load's URI.
+  // BaseURI for the load, used when this information isn't clear from the URI.
   nsCOMPtr<nsIURI> mBaseURI;
 
   // Set of Load Flags, taken from nsDocShellLoadTypes.h and nsIWebNavigation
@@ -636,6 +717,9 @@ class nsDocShellLoadState final {
   // See nsILoadInfo.isFromProcessingFrameAttributes
   bool mIsFromProcessingFrameAttributes;
 
+  // Whether the target name has been looked up yet
+  bool mHasComputedNamedTargetBrowsingContext = false;
+
   // If set, a pending cross-process redirected channel should be used to
   // perform the load. The channel will be stored in this value.
   nsCOMPtr<nsIChannel> mPendingRedirectedChannel;
@@ -659,9 +743,14 @@ class nsDocShellLoadState final {
   // BrowsingContext::{Get, Set}CurrentLoadIdentifier)
   const uint64_t mLoadIdentifier;
 
-  // Optional value to indicate that a channel has been
+  // Optional DocumentLoadListener reference. This is only set in the parent
+  // process, and indicates that the channel has been pre-initialized in the
+  // parent process.
+  RefPtr<mozilla::net::DocumentLoadListener> mSpeculativeListener;
+
+  // Optional value available in content to indicate the channel has been
   // pre-initialized in the parent process.
-  bool mChannelInitialized;
+  bool mHasSpeculativeListener = false;
 
   // True if the load was triggered by a meta refresh.
   bool mIsMetaRefresh;
@@ -674,14 +763,18 @@ class nsDocShellLoadState final {
   nsCOMPtr<nsIURI> mUnstrippedURI;
 
   // If set, the remote type which the load should be completed within.
-  mozilla::Maybe<nsCString> mRemoteTypeOverride;
+  mozilla::Maybe<mozilla::dom::RemoteType> mRemoteTypeOverride;
 
   // Remote type of the process which originally requested the load.
-  nsCString mTriggeringRemoteType;
+  mozilla::dom::RemoteType mTriggeringRemoteType;
 
   // if the address had an intentional protocol
   nsILoadInfo::SchemelessInputType mSchemelessInput =
       nsILoadInfo::SchemelessInputTypeUnset;
+
+  // If not None, force the load to result in a specific media document kind.
+  mozilla::dom::ForceMediaDocument mForceMediaDocument =
+      mozilla::dom::ForceMediaDocument::None;
 
   // Solely for the use of collecting Telemetry for HTTPS upgrades.
   nsILoadInfo::HTTPSUpgradeTelemetryType mHttpsUpgradeTelemetry =
@@ -689,9 +782,30 @@ class nsDocShellLoadState final {
 
   nsWeakPtr mSourceElement;
 
-  nsCOMPtr<nsIStructuredCloneContainer> mNavigationAPIState;
+  RefPtr<nsStructuredCloneContainer> mNavigationAPIState;
+
+  RefPtr<mozilla::dom::NavigationAPIMethodTracker> mNavigationAPIMethodTracker;
 
   RefPtr<mozilla::dom::FormData> mFormDataEntryList;
+
+  // App link intent launch type: 0 = unknown, 1 = cold, 2 = warm, 3 = hot.
+  uint32_t mAppLinkLaunchType = 0;
+
+  // Whether this is a captive portal tab.
+  bool mIsCaptivePortalTab = false;
+
+  // When this is the initial load and it is loading about:blank, force it
+  // to take the regular load path. It will replace the previous document
+  // and not load synchronous.
+  bool mIsInitialAboutBlankHandlingProhibited;
+
+  // True when this LoadURI call is synchronously resuming a traversal
+  // navigation that was paused while the Navigation API's NavigateEvent was
+  // dispatched and intercepted. Set by Navigation::CommitNavigateEvent after
+  // the event commits, and consumed on the docshell side to keep the existing
+  // ongoing navigation in place (rather than resetting it) and to forward the
+  // flag through LoadHistoryEntry.
+  bool mIsResumingInterceptedNavigation = false;
 };
 
-#endif /* nsDocShellLoadState_h__ */
+#endif /* nsDocShellLoadState_h_ */

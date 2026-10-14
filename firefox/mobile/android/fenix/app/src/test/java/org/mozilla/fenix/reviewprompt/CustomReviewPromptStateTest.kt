@@ -12,10 +12,11 @@ class CustomReviewPromptStateTest {
     fun `WHEN positive button is clicked in the pre prompt THEN goes to the rate step`() {
         val initialState = CustomReviewPromptState.PrePrompt
 
-        val updatedState = reduceCustomReviewPromptActions(
-            initialState,
-            CustomReviewPromptAction.PositivePrePromptButtonClicked,
-        )
+        val updatedState =
+            reduceCustomReviewPromptActions(
+                initialState,
+                CustomReviewPromptAction.PositivePrePromptButtonClicked,
+            )
 
         assertEquals(CustomReviewPromptState.Rate, updatedState)
     }
@@ -24,10 +25,11 @@ class CustomReviewPromptStateTest {
     fun `WHEN negative button is clicked in the pre prompt THEN goes to the feedback step`() {
         val initialState = CustomReviewPromptState.PrePrompt
 
-        val updatedState = reduceCustomReviewPromptActions(
-            initialState,
-            CustomReviewPromptAction.NegativePrePromptButtonClicked,
-        )
+        val updatedState =
+            reduceCustomReviewPromptActions(
+                initialState,
+                CustomReviewPromptAction.NegativePrePromptButtonClicked,
+            )
 
         assertEquals(CustomReviewPromptState.Feedback, updatedState)
     }
@@ -40,13 +42,6 @@ class CustomReviewPromptStateTest {
             initialState,
             reduceCustomReviewPromptActions(
                 initialState,
-                CustomReviewPromptAction.DismissRequested,
-            ),
-        )
-        assertEquals(
-            initialState,
-            reduceCustomReviewPromptActions(
-                initialState,
                 CustomReviewPromptAction.RateButtonClicked,
             ),
         )
@@ -55,6 +50,20 @@ class CustomReviewPromptStateTest {
             reduceCustomReviewPromptActions(
                 initialState,
                 CustomReviewPromptAction.LeaveFeedbackButtonClicked,
+            ),
+        )
+        assertEquals(
+            initialState,
+            reduceCustomReviewPromptActions(
+                initialState,
+                CustomReviewPromptAction.Displayed,
+            ),
+        )
+        assertEquals(
+            initialState,
+            reduceCustomReviewPromptActions(
+                initialState,
+                CustomReviewPromptAction.Dismissed,
             ),
         )
     }

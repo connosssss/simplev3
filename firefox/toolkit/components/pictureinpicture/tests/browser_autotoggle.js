@@ -24,6 +24,8 @@ add_setup(async () => {
  * between tabs, ensuring that the main browser window maintains focus.
  */
 add_task(async function autopip_and_focus() {
+  Services.fog.testResetFOG();
+
   // Open a new window and save a handle for the first tab
   let win1 = await BrowserTestUtils.openNewBrowserWindow();
   let firstTab = win1.gBrowser.selectedTab;
@@ -68,12 +70,37 @@ add_task(async function autopip_and_focus() {
   is(Services.focus.activeWindow, win1, "First window is still focused");
   blurAborter.abort();
 
+  let ev = Glean.pictureinpicture.createPlayer.testGetValue();
+  Assert.equal(ev.length, 1);
+
+  Assert.equal(
+    ChromeUtils.nondeterministicGetWeakMapKeys(
+      PictureInPicture.weakAutoPipBrowserToParent
+    ).length,
+    1,
+    "weakAutoPipBrowserToParent has 1 key"
+  );
+
   // Switch back to the video tab and check if the PiP window closes
   let pipClosed = BrowserTestUtils.domWindowClosed(pipWin);
   await BrowserTestUtils.switchTab(win1.gBrowser, secondTab);
   ok(await pipClosed, "PiP window automatically closed.");
 
   await BrowserTestUtils.closeWindow(win1);
+
+  ev = Glean.pictureinpicture.closedMethodForegrounded.testGetValue();
+  Assert.equal(ev.length, 1);
+
+  Assert.equal(
+    ChromeUtils.nondeterministicGetWeakMapKeys(
+      PictureInPicture.weakAutoPipBrowserToParent
+    ).length,
+    0,
+    "weakAutoPipBrowserToParent is empty"
+  );
+
+  ev = Glean.pictureinpicture.closedMethodForegrounded.testGetValue();
+  Assert.equal(ev.length, 1);
 });
 
 /**
@@ -271,4 +298,60 @@ add_task(async () => {
       assertNoPiPWindowsOpen();
     }
   );
+});
+
+/**
+ * Tests that closing a PiP window deliberately (via Shift+ESC) while the tab is backgrounded
+ * suppresses auto-toggle, but auto-toggle works normally on the next background.
+ */
+add_task(async function autopip_suppress_on_deliberate_close() {
+  await SpecialPowers.pushPrefEnv({
+    set: [[ALWAYS_SHOW_PREF, true]],
+  });
+
+  // Open a new window and save a handle for the first tab
+  let win1 = await BrowserTestUtils.openNewBrowserWindow();
+  let firstTab = win1.gBrowser.selectedTab;
+
+  // Open a new tab containing a video
+  let pipTab = await BrowserTestUtils.openNewForegroundTab(
+    win1.gBrowser,
+    TEST_PAGE
+  );
+  let browser = pipTab.linkedBrowser;
+
+  // Ensure the video is playing
+  let videoID = "with-controls";
+  await ensureVideosReady(browser);
+  await SpecialPowers.spawn(browser, [videoID], async videoID => {
+    await content.document.getElementById(videoID).play();
+  });
+
+  // Switch from the video tab to the first tab and check if the PiP window opened
+  let domWindowOpened = BrowserTestUtils.domWindowOpenedAndLoaded(null);
+  await BrowserTestUtils.switchTab(win1.gBrowser, firstTab);
+  let pipWin = await domWindowOpened;
+  ok(pipWin, "PiP window automatically opened.");
+
+  // Close the PiP window deliberately while the tab is backgrounded and check that it doesn't reopen
+  domWindowOpened = BrowserTestUtils.domWindowOpenedAndLoaded(null);
+  // A short delay is needed to make the test more robust
+  // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  EventUtils.synthesizeKey("KEY_Escape", { shiftKey: true }, pipWin);
+  let reopened = await Promise.race([
+    domWindowOpened.then(() => true),
+    // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
+    new Promise(resolve => setTimeout(() => resolve(false), 2000)),
+  ]);
+  ok(!reopened, "PiP window should not reopen after deliberate close");
+
+  // Switch to the video tab and back to the first tab, which should automatically open the PiP window
+  domWindowOpened = BrowserTestUtils.domWindowOpenedAndLoaded(null);
+  await BrowserTestUtils.switchTab(win1.gBrowser, pipTab);
+  await BrowserTestUtils.switchTab(win1.gBrowser, firstTab);
+  pipWin = await domWindowOpened;
+  ok(pipWin, "PiP window automatically opened.");
+
+  await BrowserTestUtils.closeWindow(win1);
 });

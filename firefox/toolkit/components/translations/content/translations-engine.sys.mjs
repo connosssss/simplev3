@@ -74,25 +74,54 @@
 // unprivileged Cu.Sandbox, with these specific methods re-exported into the
 // sandbox scope.
 
-const engineActor = ChromeUtils.domProcessChild.getActor("TranslationsEngine");
+function getEngineActor() {
+  try {
+    return ChromeUtils.domProcessChild.getActor("TranslationsEngine");
+  } catch (error) {
+    if (error.name === "NotFoundError") {
+      return null;
+    }
+    throw error;
+  }
+}
 
-const TE_addProfilerMarker = engineActor.TE_addProfilerMarker.bind(engineActor);
-const TE_getLogLevel = engineActor.TE_getLogLevel.bind(engineActor);
-const TE_log = engineActor.TE_log.bind(engineActor);
-const TE_logError = engineActor.TE_logError.bind(engineActor);
-const TE_requestEnginePayload =
-  engineActor.TE_requestEnginePayload.bind(engineActor);
-const TE_reportEnginePerformance =
-  engineActor.TE_reportEnginePerformance.bind(engineActor);
-const TE_reportEngineStatus =
-  engineActor.TE_reportEngineStatus.bind(engineActor);
-const TE_resolveForceShutdown =
-  engineActor.TE_resolveForceShutdown.bind(engineActor);
-const TE_destroyEngineProcess =
-  engineActor.TE_destroyEngineProcess.bind(engineActor);
+function TE_addProfilerMarker(...args) {
+  return getEngineActor()?.TE_addProfilerMarker(...args);
+}
+function TE_getLogLevel(...args) {
+  return getEngineActor()?.TE_getLogLevel(...args);
+}
+function TE_log(...args) {
+  return getEngineActor()?.TE_log(...args);
+}
+function TE_logError(...args) {
+  return getEngineActor()?.TE_logError(...args);
+}
+function TE_requestEnginePayload(...args) {
+  const actor = getEngineActor();
+  if (!actor) {
+    throw new Error("TranslationsEngine actor not available.");
+  }
+  return actor.TE_requestEnginePayload(...args);
+}
+function TE_reportEnginePerformance(...args) {
+  return getEngineActor()?.TE_reportEnginePerformance(...args);
+}
+function TE_reportEngineStatus(...args) {
+  return getEngineActor()?.TE_reportEngineStatus(...args);
+}
+function TE_resolveForceShutdown(...args) {
+  return getEngineActor()?.TE_resolveForceShutdown(...args);
+}
+function TE_reportEngineIdleTimeoutForTests(...args) {
+  return getEngineActor()?.TE_reportEngineIdleTimeoutForTests(...args);
+}
+function TE_destroyEngineProcess(...args) {
+  return getEngineActor()?.TE_destroyEngineProcess(...args);
+}
 
-// How long the cache remains alive between uses, in milliseconds. In automation the
-// engine is manually created and destroyed to avoid timing issues.
+// How long the cache remains alive between uses, in milliseconds. In automation,
+// tests explicitly start any idle timeout they exercise.
 const CACHE_TIMEOUT_MS = 15_000;
 
 /**
@@ -124,6 +153,43 @@ ChromeUtils.defineESModuleGetters(lazy, {
  */
 export class TranslationsEngine {
   /**
+   * Returns the number of cached engines in automated tests.
+   *
+   * @returns {number}
+   */
+  static getActiveEngineCountForTests() {
+    if (!Cu.isInAutomation) {
+      throw new Error("The active translations engine count is test-only.");
+    }
+
+    return TranslationsEngine.#cachedEngines.size;
+  }
+
+  /**
+   * Starts the idle timer for a cached engine in an automated test.
+   *
+   * @param {LanguagePair} languagePair
+   * @param {number} timeoutMs
+   * @param {number} requestId
+   * @returns {Promise<void>}
+   */
+  static async startIdleTimeoutForTests(languagePair, timeoutMs, requestId) {
+    if (!Cu.isInAutomation) {
+      throw new Error("The translations engine idle timer is test-only.");
+    }
+
+    const languagePairKey =
+      lazy.TranslationsUtils.serializeLanguagePair(languagePair);
+    const engine = await TranslationsEngine.#cachedEngines.get(languagePairKey);
+
+    if (!engine) {
+      throw new Error(`No cached engine exists for "${languagePairKey}".`);
+    }
+
+    engine.startIdleTimeoutForTests(timeoutMs, requestId);
+  }
+
+  /**
    * Maps a language pair key to a cached engine. Engines are kept around for a timeout
    * before they are removed so that they can be re-used during navigation.
    *
@@ -146,6 +212,12 @@ export class TranslationsEngine {
    * @type {TimeoutID | null}
    */
   #keepAliveTimeout = null;
+
+  /** @type {number} */
+  #idleTimeoutMsForTests = 0;
+
+  /** @type {number | null} */
+  #idleTimeoutRequestIdForTests = null;
 
   /**
    * The Web Worker instance used to handle translation requests.
@@ -250,7 +322,7 @@ export class TranslationsEngine {
    * @returns {Promise<TranslationsEngine>}
    */
   static async create(languagePair, innerWindowId) {
-    const startTime = Cu.now();
+    const startTime = ChromeUtils.now();
     if (!languagePair.sourceLanguage || !languagePair.targetLanguage) {
       throw new Error(
         "Attempt to create Translator with missing language tags."
@@ -304,17 +376,21 @@ export class TranslationsEngine {
     if (this.#keepAliveTimeout) {
       lazy.clearTimeout(this.#keepAliveTimeout);
     }
-    for (const [innerWindowId, data] of ports) {
-      const { sourceLanguage, targetLanguage, port } = data;
+    for (const [port, { languagePair }] of ports) {
       if (
-        sourceLanguage === this.sourceLanguage &&
-        targetLanguage === this.targetLanguage
+        languagePair.sourceLanguage === this.languagePair.sourceLanguage &&
+        languagePair.targetLanguage === this.languagePair.targetLanguage &&
+        languagePair.sourceVariant === this.languagePair.sourceVariant &&
+        languagePair.targetVariant === this.languagePair.targetVariant
       ) {
         // This port is still active but being closed.
-        ports.delete(innerWindowId);
+        ports.delete(port);
         port.postMessage({ type: "TranslationsPort:EngineTerminated" });
         port.close();
       }
+    }
+    if (!force && this.#idleTimeoutRequestIdForTests !== null) {
+      TE_reportEngineIdleTimeoutForTests(this.#idleTimeoutRequestIdForTests);
     }
     TranslationsEngine.#removeEngineFromCache(this.languagePairKey, force);
   };
@@ -327,13 +403,33 @@ export class TranslationsEngine {
       // Clear any previous timeout.
       lazy.clearTimeout(this.#keepAliveTimeout);
     }
-    // In automated tests, the engine is manually destroyed.
-    if (!Cu.isInAutomation) {
-      this.#keepAliveTimeout = lazy.setTimeout(
-        this.terminate,
-        CACHE_TIMEOUT_MS
-      );
+
+    const timeoutMs = Cu.isInAutomation
+      ? this.#idleTimeoutMsForTests
+      : CACHE_TIMEOUT_MS;
+
+    if (timeoutMs > 0) {
+      this.#keepAliveTimeout = lazy.setTimeout(this.terminate, timeoutMs);
     }
+  }
+
+  /**
+   * Starts this engine's real idle timer in an automated test.
+   *
+   * @param {number} timeoutMs
+   * @param {number} requestId
+   */
+  startIdleTimeoutForTests(timeoutMs, requestId) {
+    if (!Cu.isInAutomation || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new Error("Invalid test-only translations engine idle timeout.");
+    }
+    if (this.#idleTimeoutRequestIdForTests !== null) {
+      throw new Error("The translations engine idle timer is already pending.");
+    }
+
+    this.#idleTimeoutMsForTests = timeoutMs;
+    this.#idleTimeoutRequestIdForTests = requestId;
+    this.keepAlive();
   }
 
   /**
@@ -562,23 +658,59 @@ export class TranslationsEngine {
 }
 
 /**
- * Maps the innerWindowId to the port.
+ * Tracks each port communicating with a translations engine.
  *
- * @type {Map<number, {
+ * @type {Map<MessagePort, {
  *  languagePair: LanguagePair,
- *  port: MessagePort
+ *  innerWindowId: number | undefined
  * }>}
  */
 const ports = new Map();
 
 /**
- * Listen to the port to the content process for incoming messages, and pass
- * them to the TranslationsEngine manager. The other end of the port is held
- * in the content process by the TranslationsDocument.
+ * Returns observable translations engine state for automated tests.
+ *
+ * @returns {{activeEngineCount: number, activePortCount: number}}
+ */
+export function getEngineStateForTests() {
+  if (!Cu.isInAutomation) {
+    throw new Error("The translations engine state is test-only.");
+  }
+
+  return {
+    activeEngineCount: TranslationsEngine.getActiveEngineCountForTests(),
+    activePortCount: ports.size,
+  };
+}
+
+/**
+ * Starts the idle timer for a cached engine in an automated test.
  *
  * @param {LanguagePair} languagePair
- * @param {number} innerWindowId
+ * @param {number} timeoutMs
+ * @param {number} requestId
+ * @returns {Promise<void>}
+ */
+export function startEngineIdleTimeoutForTests(
+  languagePair,
+  timeoutMs,
+  requestId
+) {
+  return TranslationsEngine.startIdleTimeoutForTests(
+    languagePair,
+    timeoutMs,
+    requestId
+  );
+}
+
+/**
+ * Listen for messages from a translations client and pass them to the
+ * TranslationsEngine manager.
+ *
+ * @param {LanguagePair} languagePair
+ * @param {number | undefined} innerWindowId
  * @param {MessagePort} port
+ * @returns {void}
  */
 function listenForPortMessages(languagePair, innerWindowId, port) {
   async function handleMessage({ data }) {
@@ -609,7 +741,7 @@ function listenForPortMessages(languagePair, innerWindowId, port) {
             // After an error no more translation requests will be sent. Go ahead
             // and close the port.
             port.close();
-            ports.delete(innerWindowId);
+            ports.delete(port);
           }
         );
         break;
@@ -698,6 +830,11 @@ function listenForPortMessages(languagePair, innerWindowId, port) {
         });
         break;
       }
+      case "TranslationsPort:Close": {
+        ports.delete(port);
+        port.close();
+        break;
+      }
       default:
         TE_logError("Unknown translations port message: " + data.type);
         break;
@@ -723,11 +860,14 @@ function listenForPortMessages(languagePair, innerWindowId, port) {
 function discardTranslations(innerWindowId) {
   TE_log("Discarding translations, innerWindowId:", innerWindowId);
 
-  const portData = ports.get(innerWindowId);
-  if (portData) {
-    const { port, languagePair } = portData;
+  for (const [port, portData] of ports) {
+    if (portData.innerWindowId !== innerWindowId) {
+      continue;
+    }
+
+    const { languagePair } = portData;
     port.close();
-    ports.delete(innerWindowId);
+    ports.delete(port);
 
     TranslationsEngine.withCachedEngine(languagePair, engine => {
       engine.discardTranslationQueue(innerWindowId);
@@ -748,7 +888,7 @@ export function handleActorMessage(data) {
         innerWindowId
       );
       listenForPortMessages(languagePair, innerWindowId, port);
-      ports.set(innerWindowId, { port, languagePair });
+      ports.set(port, { innerWindowId, languagePair });
       break;
     }
     case "DiscardTranslations": {

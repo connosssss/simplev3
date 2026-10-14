@@ -5,23 +5,29 @@
 package org.mozilla.fenix.settings.doh.info
 
 import androidx.annotation.StringRes
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
-import mozilla.components.compose.base.annotation.FlexibleWindowLightDarkPreview
+import mozilla.components.compose.base.LinkText
+import mozilla.components.compose.base.LinkTextState
+import mozilla.components.compose.base.annotation.FlexibleWindowPreview
+import mozilla.components.compose.base.theme.PreviewThemeProvider
+import mozilla.components.compose.base.theme.Theme
 import org.mozilla.fenix.R
-import org.mozilla.fenix.compose.LinkText
-import org.mozilla.fenix.compose.LinkTextState
 import org.mozilla.fenix.settings.SupportUtils
 import org.mozilla.fenix.theme.FirefoxTheme
 
@@ -38,60 +44,57 @@ internal fun InfoScreen(
     onLearnMoreClicked: (String) -> Unit = {},
 ) {
     val title = stringResource(infoScreenTopic.titleId)
-    val bulletPoints = infoScreenTopic.bulletPoints.map { (bulletPoint, sumoTopic) ->
-        val placeholders = bulletPoint.placeholders.map { placeholderRes ->
-            stringResource(placeholderRes)
+    val bulletPoints =
+        infoScreenTopic.bulletPoints.map { (bulletPoint, sumoTopic) ->
+            val placeholders =
+                bulletPoint.placeholders.map { placeholderRes ->
+                    stringResource(placeholderRes)
+                }
+
+            // If placeholders exist, pass them in the correct order to stringResource
+            val bulletText =
+                if (placeholders.isNotEmpty()) {
+                    stringResource(bulletPoint.textRes, *placeholders.toTypedArray())
+                } else {
+                    stringResource(bulletPoint.textRes)
+                }
+
+            // Return the final text and the url
+            bulletText to sumoTopic
         }
 
-        // If placeholders exist, pass them in the correct order to stringResource
-        val bulletText = if (placeholders.isNotEmpty()) {
-            stringResource(bulletPoint.textRes, *placeholders.toTypedArray())
-        } else {
-            stringResource(bulletPoint.textRes)
-        }
+    Surface {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Title(title = title)
 
-        // Return the final text and the url
-        bulletText to sumoTopic
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(FirefoxTheme.colors.layer1),
-    ) {
-        Title(
-            title = title,
-        )
-
-        bulletPoints.forEach { (text, url) ->
-            val learnMoreUrl = url?.let {
-                SupportUtils.getGenericSumoURLForTopic(it)
+            bulletPoints.forEach { (text, url) ->
+                val learnMoreUrl = url?.let {
+                    SupportUtils.getGenericSumoURLForTopic(it)
+                }
+                BulletTextWithOptionalLink(
+                    text = text,
+                    learnMoreUrl = learnMoreUrl,
+                    onLearnMoreClicked = onLearnMoreClicked,
+                )
             }
-            BulletTextWithOptionalLink(
-                text = text,
-                learnMoreUrl = learnMoreUrl,
-                onLearnMoreClicked = onLearnMoreClicked,
-            )
         }
     }
 }
 
 @Composable
-private fun Title(
-    title: String,
-) {
+private fun Title(title: String) {
     Row(
-        modifier = Modifier
-            .padding(
+        modifier =
+            Modifier.padding(
                 start = 72.dp,
                 top = 6.dp,
                 end = 16.dp,
                 bottom = 6.dp,
-            ),
+            )
     ) {
         Text(
             text = title,
-            color = FirefoxTheme.colors.textAccent,
+            color = MaterialTheme.colorScheme.onSurface,
             style = FirefoxTheme.typography.headline8,
         )
     }
@@ -100,66 +103,53 @@ private fun Title(
 @Composable
 private fun BulletTextWithOptionalLink(
     text: String,
-    learnMoreUrl: String? = null,
     onLearnMoreClicked: (String) -> Unit,
-    modifier: Modifier = Modifier
-        .padding(
-            start = 72.dp,
-            top = 6.dp,
-            end = 16.dp,
-            bottom = 6.dp,
-        ),
-    color: Color = FirefoxTheme.colors.textPrimary,
-    style: TextStyle = FirefoxTheme.typography.subtitle1,
+    modifier: Modifier = Modifier,
+    learnMoreUrl: String? = null,
+    color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    style: TextStyle = FirefoxTheme.typography.body2, // Follows the same TextStyle of LinkText
 ) {
     Row(
-        modifier = modifier,
+        modifier =
+            modifier.padding(
+                start = 72.dp,
+                top = 6.dp,
+                end = 16.dp,
+                bottom = 6.dp,
+            )
     ) {
-        Text(
-            text = "•",
-            modifier = Modifier.padding(end = 8.dp),
-            color = color,
-        )
-
-        if (learnMoreUrl == null) {
+        CompositionLocalProvider(LocalContentColor provides color) {
             Text(
-                text = text,
-                color = color,
+                text = "•",
+                modifier = Modifier.padding(end = 8.dp),
                 style = style,
             )
-        } else {
-            LinkText(
-                text = text,
-                linkTextStates = listOf(
-                    LinkTextState(
-                        text = stringResource(R.string.preference_doh_learn_more),
-                        url = learnMoreUrl,
-                        onClick = { onLearnMoreClicked(it) },
-                    ),
-                ),
-                linkTextDecoration = TextDecoration.Underline,
-                style = style.copy(
-                    color = color,
-                ),
-            )
+
+            if (learnMoreUrl == null) {
+                Text(
+                    text = text,
+                    style = style,
+                )
+            } else {
+                LinkText(
+                    text = text,
+                    linkTextStates =
+                        listOf(
+                            LinkTextState(
+                                text = stringResource(R.string.preference_doh_learn_more),
+                                url = learnMoreUrl,
+                                onClick = { onLearnMoreClicked(it) },
+                            )
+                        ),
+                    linkTextDecoration = TextDecoration.Underline,
+                    style = style,
+                )
+            }
         }
     }
 }
 
-@Composable
-@FlexibleWindowLightDarkPreview
-private fun InfoScreenPreview() {
-    FirefoxTheme {
-        InfoScreen(
-            infoScreenTopic = InfoScreenTopic.DEFAULT,
-        )
-    }
-}
-
-/**
- * Holds the resource for each bullet line, plus any string resource IDs
- * that you want to use as placeholders.
- */
+/** Holds the resource for each bullet line, plus any string resource IDs that you want to use as placeholders. */
 internal data class BulletPoint(
     @param:StringRes val textRes: Int,
     val placeholders: List<Int> = emptyList(),
@@ -177,38 +167,48 @@ internal enum class InfoScreenTopic(
 ) {
     DEFAULT(
         titleId = R.string.preference_doh_default_protection,
-        bulletPoints = listOf(
-            BulletPoint(R.string.preference_doh_default_protection_info_1) to null,
-            BulletPoint(R.string.preference_doh_default_protection_info_2) to null,
-            BulletPoint(
-                textRes = R.string.preference_doh_default_protection_info_3,
-                placeholders = listOf(
-                    R.string.preference_doh_learn_more,
-                ),
-            ) to SupportUtils.SumoTopic.DNS_OVER_HTTPS_LOCAL_PROVIDER,
-            BulletPoint(R.string.preference_doh_default_protection_info_4) to null,
-            BulletPoint(
-                textRes = R.string.preference_doh_default_protection_info_5,
-                placeholders = listOf(
-                    R.string.app_name,
-                    R.string.preference_doh_learn_more,
-                ),
-            ) to SupportUtils.SumoTopic.DNS_OVER_HTTPS_NETWORK,
-        ),
+        bulletPoints =
+            listOf(
+                BulletPoint(R.string.preference_doh_default_protection_info_1) to null,
+                BulletPoint(R.string.preference_doh_default_protection_info_2) to null,
+                BulletPoint(
+                    textRes = R.string.preference_doh_default_protection_info_3,
+                    placeholders = listOf(R.string.preference_doh_learn_more),
+                ) to SupportUtils.SumoTopic.DNS_OVER_HTTPS_LOCAL_PROVIDER,
+                BulletPoint(R.string.preference_doh_default_protection_info_4) to null,
+                BulletPoint(
+                    textRes = R.string.preference_doh_default_protection_info_5,
+                    placeholders =
+                        listOf(
+                            R.string.app_name,
+                            R.string.preference_doh_learn_more,
+                        ),
+                ) to SupportUtils.SumoTopic.DNS_OVER_HTTPS_NETWORK,
+            ),
     ),
     INCREASED(
         titleId = R.string.preference_doh_increased_protection,
-        bulletPoints = listOf(
-            BulletPoint(R.string.preference_doh_increased_protection_info_1) to null,
-            BulletPoint(R.string.preference_doh_increased_protection_info_2) to null,
-        ),
+        bulletPoints =
+            listOf(
+                BulletPoint(R.string.preference_doh_increased_protection_info_1) to null,
+                BulletPoint(R.string.preference_doh_increased_protection_info_2) to null,
+            ),
     ),
     MAX(
         titleId = R.string.preference_doh_max_protection,
-        bulletPoints = listOf(
-            BulletPoint(R.string.preference_doh_max_protection_info_1) to null,
-            BulletPoint(R.string.preference_doh_max_protection_info_2) to null,
-            BulletPoint(R.string.preference_doh_max_protection_info_3) to null,
-        ),
+        bulletPoints =
+            listOf(
+                BulletPoint(R.string.preference_doh_max_protection_info_1) to null,
+                BulletPoint(R.string.preference_doh_max_protection_info_2) to null,
+                BulletPoint(R.string.preference_doh_max_protection_info_3) to null,
+            ),
     ),
+}
+
+@FlexibleWindowPreview
+@Composable
+private fun InfoScreenPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
+        InfoScreen(infoScreenTopic = InfoScreenTopic.DEFAULT)
+    }
 }

@@ -69,6 +69,18 @@ def make_taskgraph():
             {
                 "try_mode": "try_task_config",
                 "try_task_config": {
+                    "rebuild": 10,
+                    "tasks": ["a"],
+                },
+                "project": "try",
+            },
+            {"a-1": 10, "a-2": 10},
+            id="duplicates a task chunked after it was selected",
+        ),
+        pytest.param(
+            {
+                "try_mode": "try_task_config",
+                "try_task_config": {
                     "tasks": ["a-*"],
                 },
                 "project": "try",
@@ -100,21 +112,34 @@ def make_taskgraph():
             {"a-1": 100, "a-2": 100},
             id="rebuild 100",
         ),
+        pytest.param(
+            {
+                "try_mode": "try_task_config",
+                "try_task_config": {
+                    "rebuild": 10,
+                    "tasks": ["c-*"],
+                },
+                "project": "try",
+            },
+            {"c": 10},
+            id="duplicates single dynamic chunk",
+        ),
     ),
 )
 def test_try_task_duplicates(make_taskgraph, graph_config, params, expected):
     taskb = Task(kind="test", label="b", attributes={}, task={})
     task1 = Task(kind="test", label="a-1", attributes={}, task={})
     task2 = Task(kind="test", label="a-2", attributes={}, task={})
-    taskgraph, label_to_taskid = make_taskgraph(
-        {
-            taskb.label: taskb,
-            task1.label: task1,
-            task2.label: task2,
-        }
-    )
+    # Dynamic chunking that fits in a single chunk yields no numeric suffix.
+    taskc = Task(kind="test", label="c", attributes={}, task={})
+    taskgraph, label_to_taskid = make_taskgraph({
+        taskb.label: taskb,
+        task1.label: task1,
+        task2.label: task2,
+        taskc.label: taskc,
+    })
 
-    taskgraph, label_to_taskid = morph._add_try_task_duplicates(
+    taskgraph, label_to_taskid = morph.add_try_task_duplicates(
         taskgraph, label_to_taskid, params, graph_config
     )
     for label in expected:
@@ -170,12 +195,10 @@ def test_make_index_tasks(make_taskgraph, graph_config):
     docker_task = Task(
         kind="docker-image", label="docker-image-index-task", attributes={}, task={}
     )
-    taskgraph, label_to_taskid = make_taskgraph(
-        {
-            task.label: task,
-            docker_task.label: docker_task,
-        }
-    )
+    taskgraph, label_to_taskid = make_taskgraph({
+        task.label: task,
+        docker_task.label: docker_task,
+    })
 
     index_paths = [
         r.split(".", 1)[1] for r in task_def["routes"] if r.startswith("index.")
@@ -194,10 +217,97 @@ def test_make_index_tasks(make_taskgraph, graph_config):
 
     assert index_task.task["payload"]["command"][0] == "insert-indexes.js"
     assert index_task.task["payload"]["env"]["TARGET_TASKID"] == "a-tid"
-    assert index_task.task["payload"]["env"]["INDEX_RANK"] == 1540722354
+    assert index_task.task["payload"]["env"]["INDEX_RANK"] == "1540722354"
 
     # check the scope summary
     assert index_task.task["scopes"] == ["index:insert-task:gecko.v2.mozilla-central.*"]
+
+
+@pytest.mark.parametrize(
+    "enable_always_target,should_raise",
+    (
+        pytest.param(False, False, id="always target disabled"),
+        pytest.param(["docker-image"], True, id="docker-image always targeted"),
+        pytest.param(True, True, id="everything always targeted"),
+    ),
+)
+def test_add_eager_cache_index_tasks_missing_docker_image(
+    make_taskgraph, graph_config, enable_always_target, should_raise
+):
+    task = Task(
+        kind="toolchain",
+        label="a",
+        attributes={"eager_indexes": ["gecko.cache.a"]},
+        task={},
+    )
+    taskgraph, label_to_taskid = make_taskgraph({task.label: task})
+    params = Parameters(strict=False, enable_always_target=enable_always_target)
+
+    if should_raise:
+        with pytest.raises(RuntimeError):
+            morph.add_eager_cache_index_tasks(
+                taskgraph, label_to_taskid, params, graph_config
+            )
+    else:
+        new_taskgraph, new_label_to_taskid = morph.add_eager_cache_index_tasks(
+            taskgraph, label_to_taskid, params, graph_config
+        )
+        assert new_label_to_taskid == {"a": "a-tid"}
+        assert set(new_taskgraph.tasks) == {"a"}
+
+
+@pytest.mark.parametrize(
+    "project,has_ccov,expected_task_added",
+    (
+        pytest.param("mozilla-central", True, True, id="with ccov tasks"),
+        pytest.param("mozilla-central", False, False, id="without ccov tasks"),
+        pytest.param("comm-central", True, True, id="comm-central"),
+        pytest.param("try", True, False, id="try"),
+        pytest.param("try-comm-central", True, False, id="try-comm-central"),
+    ),
+)
+def test_add_code_coverage_task(
+    make_taskgraph, graph_config, project, has_ccov, expected_task_added
+):
+    tasks = {}
+    if has_ccov:
+        tasks["ccov-test-1"] = Task(
+            kind="test",
+            label="ccov-test-1",
+            attributes={"ccov": True},
+            task={},
+        )
+        tasks["ccov-test-2"] = Task(
+            kind="test",
+            label="ccov-test-2",
+            attributes={"ccov": True},
+            task={},
+        )
+    tasks["non-ccov"] = Task(
+        kind="test",
+        label="non-ccov",
+        attributes={},
+        task={},
+    )
+
+    taskgraph, label_to_taskid = make_taskgraph(tasks)
+    params = Parameters(
+        strict=False,
+        owner="test@example.com",
+        head_repository="https://hg.mozilla.org/mozilla-central",
+        project=project,
+    )
+
+    taskgraph, label_to_taskid = morph.add_code_coverage_task(
+        taskgraph, label_to_taskid, params, graph_config
+    )
+
+    assert ("code-coverage-artifacts" in label_to_taskid) == expected_task_added
+    if expected_task_added:
+        task = taskgraph.tasks[label_to_taskid["code-coverage-artifacts"]]
+        assert task.task["routes"] == ["project.codecoverage.v1.tasks_done"]
+        assert task.task["requires"] == "all-resolved"
+        assert set(task.dependencies.keys()) == {"ccov-test-1", "ccov-test-2"}
 
 
 if __name__ == "__main__":

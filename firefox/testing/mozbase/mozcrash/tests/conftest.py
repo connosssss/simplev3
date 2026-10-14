@@ -1,10 +1,10 @@
 # coding=UTF-8
 
+import json
 import uuid
 
 import mozcrash
 import pytest
-from py._path.common import fspath
 
 
 @pytest.fixture(scope="session")
@@ -20,9 +20,9 @@ def check_for_crashes(tmpdir, stackwalk, monkeypatch):
     monkeypatch.delenv("MINIDUMP_SAVE_PATH", raising=False)
 
     def wrapper(
-        dump_directory=fspath(tmpdir),
+        dump_directory=str(tmpdir),
         symbols_path="symbols_path",
-        stackwalk_binary=fspath(stackwalk),
+        stackwalk_binary=str(stackwalk),
         dump_save_path=None,
         test_name=None,
         quiet=True,
@@ -39,6 +39,39 @@ def check_for_crashes(tmpdir, stackwalk, monkeypatch):
         )
 
     return wrapper
+
+
+@pytest.fixture
+def write_minidump(tmpdir):
+    """Write a minidump (a .dmp/.extra pair) carrying the given annotations to
+    the directory that check_for_crashes scans."""
+
+    def wrapper(annotations):
+        name = uuid.uuid4()
+        tmpdir.join(f"{name}.dmp").write("foo")
+        tmpdir.join(f"{name}.extra").write_text(
+            json.dumps(annotations), encoding="utf-8"
+        )
+
+    return wrapper
+
+
+@pytest.fixture
+def make_annotations():
+    """Return a factory that builds an annotation set from the minimal set that
+    makes check_for_crashes report a crash. Pass keyword arguments to add or
+    override annotations."""
+
+    def make(**overrides):
+        return {
+            "ProductName": "Firefox",
+            "Version": "55.0a1",
+            "BuildID": "20170512114708",
+            "ProcessType": "utility",
+            **overrides,
+        }
+
+    return make
 
 
 @pytest.fixture

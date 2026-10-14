@@ -5,8 +5,10 @@
 package org.mozilla.fenix.library.historymetadata.view
 
 import android.view.View
+import androidx.annotation.LayoutRes
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.RecyclerView
+import mozilla.components.ui.icons.R as iconsR
 import org.mozilla.fenix.R
 import org.mozilla.fenix.databinding.HistoryMetadataGroupListItemBinding
 import org.mozilla.fenix.ext.hideAndDisable
@@ -15,9 +17,7 @@ import org.mozilla.fenix.library.history.History
 import org.mozilla.fenix.library.historymetadata.interactor.HistoryMetadataGroupInteractor
 import org.mozilla.fenix.selection.SelectionHolder
 
-/**
- * View holder for a history metadata list item.
- */
+/** View holder for a history metadata list item. */
 class HistoryMetadataGroupItemViewHolder(
     view: View,
     private val interactor: HistoryMetadataGroupInteractor,
@@ -30,7 +30,7 @@ class HistoryMetadataGroupItemViewHolder(
 
     init {
         binding.historyLayout.overflowView.apply {
-            setImageResource(R.drawable.ic_close)
+            setImageResource(iconsR.drawable.mozac_ic_cross_24)
             contentDescription = view.context.getString(R.string.history_delete_item)
             setOnClickListener {
                 val item = item ?: return@setOnClickListener
@@ -67,6 +67,6 @@ class HistoryMetadataGroupItemViewHolder(
     }
 
     companion object {
-        const val LAYOUT_ID = R.layout.history_metadata_group_list_item
+        @LayoutRes val LAYOUT_ID = R.layout.history_metadata_group_list_item
     }
 }

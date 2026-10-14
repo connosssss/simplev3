@@ -5,8 +5,6 @@
 package mozilla.components.browser.engine.gecko
 
 import androidx.annotation.VisibleForTesting
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import mozilla.components.browser.engine.gecko.content.blocking.GeckoTrackingProtectionException
 import mozilla.components.browser.engine.gecko.ext.geckoTrackingProtectionPermission
 import mozilla.components.browser.engine.gecko.ext.isExcludedForTrackingProtection
@@ -20,13 +18,9 @@ import org.mozilla.geckoview.GeckoSession.PermissionDelegate.ContentPermission
 import org.mozilla.geckoview.GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW
 import org.mozilla.geckoview.GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY
 
-/**
- * A [TrackingProtectionExceptionStorage] implementation to store tracking protection exceptions.
- */
-internal class GeckoTrackingProtectionExceptionStorage(
-    private val runtime: GeckoRuntime,
-) : TrackingProtectionExceptionStorage {
-    internal var scope = CoroutineScope(Dispatchers.IO)
+/** A [TrackingProtectionExceptionStorage] implementation to store tracking protection exceptions. */
+internal class GeckoTrackingProtectionExceptionStorage(private val runtime: GeckoRuntime) :
+    TrackingProtectionExceptionStorage {
 
     override fun contains(session: EngineSession, onResult: (Boolean) -> Unit) {
         val url = (session as GeckoEngineSession).currentUrl
@@ -51,11 +45,9 @@ internal class GeckoTrackingProtectionExceptionStorage(
         this.orEmpty().filter { it.isExcludedForTrackingProtection }
 
     private fun List<ContentPermission>?.filterTrackingProtectionExceptions(url: String) =
-        this.orEmpty()
-            .filter {
-                it.isExcludedForTrackingProtection && it.uri.getOrigin().orEmpty()
-                    .stripDefaultPort() == url
-            }
+        this.orEmpty().filter {
+            it.isExcludedForTrackingProtection && it.uri.getOrigin().orEmpty().stripDefaultPort() == url
+        }
 
     override fun add(session: EngineSession, persistInPrivateMode: Boolean) {
         val geckoEngineSession = (session as GeckoEngineSession)

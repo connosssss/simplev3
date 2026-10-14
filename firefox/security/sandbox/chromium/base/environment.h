@@ -1,4 +1,4 @@
-// Copyright (c) 2011 The Chromium Authors. All rights reserved.
+// Copyright 2011 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -7,19 +7,21 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "base/base_export.h"
-#include "base/strings/string16.h"
-#include "base/strings/string_piece.h"
+#include "base/strings/cstring_view.h"
 #include "build/build_config.h"
 
 namespace base {
 
 namespace env_vars {
 
-#if defined(OS_POSIX) || defined(OS_FUCHSIA)
-BASE_EXPORT extern const char kHome[];
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+// On Posix systems, this variable contains the location of the user's home
+// directory. (e.g, /home/username/).
+inline constexpr char kHome[] = "HOME";
 #endif
 
 }  // namespace env_vars
@@ -31,26 +33,27 @@ class BASE_EXPORT Environment {
   // Returns the appropriate platform-specific instance.
   static std::unique_ptr<Environment> Create();
 
-  // Gets an environment variable's value and stores it in |result|.
-  // Returns false if the key is unset.
-  virtual bool GetVar(StringPiece variable_name, std::string* result) = 0;
+  // Returns an environment variable's value.
+  // Returns std::nullopt if the key is unset.
+  // Note that the variable may be set to an empty string.
+  virtual std::optional<std::string> GetVar(cstring_view variable_name) = 0;
 
-  // Syntactic sugar for GetVar(variable_name, nullptr);
-  virtual bool HasVar(StringPiece variable_name);
+  // Syntactic sugar for GetVar(variable_name).has_value();
+  bool HasVar(cstring_view variable_name);
 
   // Returns true on success, otherwise returns false. This method should not
   // be called in a multi-threaded process.
-  virtual bool SetVar(StringPiece variable_name,
+  virtual bool SetVar(cstring_view variable_name,
                       const std::string& new_value) = 0;
 
   // Returns true on success, otherwise returns false. This method should not
   // be called in a multi-threaded process.
-  virtual bool UnSetVar(StringPiece variable_name) = 0;
+  virtual bool UnSetVar(cstring_view variable_name) = 0;
 };
 
-#if defined(OS_WIN)
+#if BUILDFLAG(IS_WIN)
 using NativeEnvironmentString = std::wstring;
-#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 using NativeEnvironmentString = std::string;
 #endif
 using EnvironmentMap =

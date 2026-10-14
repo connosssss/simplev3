@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,24 +10,23 @@
 #ifndef nsRefreshDriver_h_
 #define nsRefreshDriver_h_
 
+#include "GeckoProfiler.h"  // for ProfileChunkedBuffer
+#include "LayersTypes.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/FlushType.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/RenderingPhase.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
-#include "nsTObserverArray.h"
-#include "nsTArray.h"
-#include "nsTHashSet.h"
+#include "mozilla/layers/TransactionIdAllocator.h"
 #include "nsClassHashtable.h"
 #include "nsHashKeys.h"
 #include "nsRefreshObservers.h"
+#include "nsTArray.h"
+#include "nsTHashSet.h"
+#include "nsTObserverArray.h"
 #include "nsThreadUtils.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/Maybe.h"
-#include "mozilla/layers/TransactionIdAllocator.h"
-#include "LayersTypes.h"
-
-#include "GeckoProfiler.h"  // for ProfileChunkedBuffer
 
 class nsPresContext;
 
@@ -40,6 +37,7 @@ struct DocumentFrameCallbacks;
 
 namespace mozilla {
 class AnimationEventDispatcher;
+class PaintPendingHangAnnotator;
 class PresShell;
 class RefreshDriverTimer;
 class Runnable;
@@ -201,6 +199,10 @@ class nsRefreshDriver final : public mozilla::layers::TransactionIdAllocator,
    */
   void SetActivity(bool aIsActive);
 
+  // Called when our pres shell gets attached to a widget, so that we can switch
+  // to its vsync source if we started ticking before the widget was available.
+  void NotifyWidgetAttached();
+
   /**
    * Return the prescontext we were initialized with
    */
@@ -361,6 +363,8 @@ class nsRefreshDriver final : public mozilla::layers::TransactionIdAllocator,
   // paints to one per vsync (see CanDoExtraTick).
   void FinishedVsyncTick() { mAttemptedExtraTickSinceLastVsync = false; }
 
+  bool HasReasonsToTick() const;
+
  private:
   using RequestTable = nsTHashSet<RefPtr<imgIRequest>>;
   struct ImageStartData {
@@ -398,8 +402,6 @@ class nsRefreshDriver final : public mozilla::layers::TransactionIdAllocator,
   void UpdateRemoteFrameEffects();
   void UpdateRelevancyOfContentVisibilityAutoFrames();
   MOZ_CAN_RUN_SCRIPT void PerformPendingViewTransitionOperations();
-  MOZ_CAN_RUN_SCRIPT void
-  DetermineProximityToViewportAndNotifyResizeObservers();
   void MaybeIncreaseMeasuredTicksSinceLoading();
   void EvaluateMediaQueriesAndReportChanges();
 
@@ -446,9 +448,6 @@ class nsRefreshDriver final : public mozilla::layers::TransactionIdAllocator,
   void UpdateAnimatedImages(mozilla::TimeStamp aPreviousRefresh,
                             mozilla::TimeStamp aNowTime);
 
-  bool HasReasonsToTick() const {
-    return GetReasonsToTick() != TickReasons::None;
-  }
   TickReasons GetReasonsToTick() const;
   void AppendTickReasonsToString(TickReasons aReasons, nsACString& aStr) const;
 
@@ -508,40 +507,42 @@ class nsRefreshDriver final : public mozilla::layers::TransactionIdAllocator,
 
   mozilla::UniquePtr<mozilla::ProfileChunkedBuffer> mPaintCause;
 
-  bool mThrottled : 1;
-  bool mNeedToRecomputeVisibility : 1;
-  bool mTestControllingRefreshes : 1;
-  bool mInRefresh : 1;
+  bool mThrottled : 1 = false;
+  bool mNeedToRecomputeVisibility : 1 = false;
+  bool mTestControllingRefreshes : 1 = false;
+  bool mInRefresh : 1 = false;
 
   // True if the refresh driver is suspended waiting for transaction
   // id's to be returned and shouldn't do any work during Tick().
-  bool mWaitingForTransaction : 1;
+  bool mWaitingForTransaction : 1 = false;
   // True if Tick() was skipped because of mWaitingForTransaction and
   // we should schedule a new Tick immediately when resumed instead
   // of waiting until the next interval.
-  bool mSkippedPaints : 1;
+  bool mSkippedPaints : 1 = false;
 
   // True if view managers should delay any resize request until the
   // next tick by the refresh driver. This flag will be reset at the
   // start of every tick.
-  bool mResizeSuppressed : 1;
+  bool mResizeSuppressed : 1 = false;
 
   // True if we may need to run any frame callback.
-  bool mNeedToRunFrameRequestCallbacks : 1;
+  bool mNeedToRunFrameRequestCallbacks : 1 = false;
 
   // True if we're currently within the scope of Tick() handling a normal
   // (timer-driven) tick.
-  bool mInNormalTick : 1;
+  bool mInNormalTick : 1 = false;
 
   // True if we attempted an extra tick (see CanDoExtraTick) since the last
   // vsync and thus shouldn't allow another.
-  bool mAttemptedExtraTickSinceLastVsync : 1;
+  bool mAttemptedExtraTickSinceLastVsync : 1 = false;
 
-  bool mHasExceededAfterLoadTickPeriod : 1;
+  bool mHasExceededAfterLoadTickPeriod : 1 = false;
 
-  bool mHasImageAnimations : 1;
+  bool mHasImageAnimations : 1 = false;
 
-  bool mHasStartedTimerAtLeastOnce : 1;
+  bool mHasStartedTimerAtLeastOnce : 1 = false;
+
+  mozilla::UniquePtr<mozilla::PaintPendingHangAnnotator> mHangAnnotator;
 
   mozilla::TimeStamp mMostRecentRefresh;
   mozilla::TimeStamp mTickStart;

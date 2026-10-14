@@ -487,7 +487,12 @@ sec_pkcs5v2_key_length(SECAlgorithmID *algid, SECAlgorithmID *cipherAlgId)
          * where we used the MAX keysize for the algorithm,
          * but put an incorrect header for a different keysize.
          */
+        PORT_SetError(0);
         length = DER_GetInteger(&p5_param.keyLength);
+        if (PORT_GetError() != 0) {
+            length = -1;
+            goto loser;
+        }
     } else {
         /* if the keylength was not specified, figure it
          * out from the oid */
@@ -906,6 +911,60 @@ pbe_PK11AlgidToParam(SECAlgorithmID *algid, SECItem *mech)
         goto loser;
     }
 
+    if (algorithm == SEC_OID_AES_128_GCM ||
+        algorithm == SEC_OID_AES_192_GCM ||
+        algorithm == SEC_OID_AES_256_GCM) {
+        /* GCMParameters ::= SEQUENCE { aes-nonce OCTET STRING,
+         *                              aes-ICVlen INTEGER DEFAULT 12 } */
+        typedef struct {
+            SECItem nonce;
+            SECItem icvLen;
+        } pbeGCMParamsCarrier;
+        CK_NSS_GCM_PARAMS *gcm;
+        pbeGCMParamsCarrier gcmParams = { { siBuffer, NULL, 0 },
+                                          { siBuffer, NULL, 0 } };
+        static const SEC_ASN1Template gcmParamsTemplate[] = {
+            { SEC_ASN1_SEQUENCE, 0, NULL, sizeof(pbeGCMParamsCarrier) },
+            { SEC_ASN1_OCTET_STRING, offsetof(pbeGCMParamsCarrier, nonce) },
+            { SEC_ASN1_OPTIONAL | SEC_ASN1_INTEGER,
+              offsetof(pbeGCMParamsCarrier, icvLen) },
+            { 0 }
+        };
+        rv = SEC_ASN1DecodeItem(arena, &gcmParams, gcmParamsTemplate,
+                                &(algid->parameters));
+        if (rv != SECSuccess || gcmParams.nonce.data == NULL ||
+            gcmParams.nonce.len == 0 || gcmParams.nonce.len > 1024) {
+            PORT_SetError(SEC_ERROR_INVALID_ALGORITHM);
+            goto loser;
+        }
+        /* Single allocation for struct + IV so one free releases both */
+        gcm = (CK_NSS_GCM_PARAMS *)PORT_ZAlloc(
+            sizeof(CK_NSS_GCM_PARAMS) + gcmParams.nonce.len);
+        if (gcm == NULL) {
+            goto loser;
+        }
+        gcm->pIv = ((CK_BYTE_PTR)gcm) + sizeof(CK_NSS_GCM_PARAMS);
+        PORT_Memcpy(gcm->pIv, gcmParams.nonce.data, gcmParams.nonce.len);
+        gcm->ulIvLen = gcmParams.nonce.len;
+        gcm->pAAD = NULL;
+        gcm->ulAADLen = 0;
+        if (gcmParams.icvLen.data != NULL) {
+            long icvLen = DER_GetInteger(&gcmParams.icvLen);
+            /* RFC 5084: AES-GCM-ICVlen ::= INTEGER (12 | 13 | 14 | 15 | 16) */
+            if (icvLen < 12 || icvLen > 16) {
+                PORT_Free(gcm);
+                PORT_SetError(SEC_ERROR_INVALID_ALGORITHM);
+                goto loser;
+            }
+            gcm->ulTagBits = icvLen * 8;
+        } else {
+            gcm->ulTagBits = (CK_ULONG)12 * 8; /* default per RFC 5084 */
+        }
+        paramData = (unsigned char *)gcm;
+        paramLen = sizeof(CK_NSS_GCM_PARAMS);
+        goto done;
+    }
+
     /*
      * decode the algid based on the pbe type
      */
@@ -934,21 +993,25 @@ pbe_PK11AlgidToParam(SECAlgorithmID *algid, SECItem *mech)
 
     /* get salt */
     salt = &p5_param.salt;
+    PORT_SetError(0);
     iterations = (CK_ULONG)DER_GetInteger(&p5_param.iteration);
+    if (PORT_GetError() != 0) {
+        goto loser;
+    }
 
     /* allocate and fill in the PKCS #11 parameters
      * based on the algorithm. */
     if (algorithm == SEC_OID_PKCS5_PBKDF2) {
         SECOidTag prfAlgTag;
-        CK_PKCS5_PBKD2_PARAMS *pbeV2_params =
-            (CK_PKCS5_PBKD2_PARAMS *)PORT_ZAlloc(
-                sizeof(CK_PKCS5_PBKD2_PARAMS) + salt->len);
+        CK_PKCS5_PBKD2_PARAMS2 *pbeV2_params =
+            (CK_PKCS5_PBKD2_PARAMS2 *)PORT_ZAlloc(
+                PR_MAX(sizeof(CK_PKCS5_PBKD2_PARAMS2), sizeof(CK_PKCS5_PBKD2_PARAMS)) + salt->len);
 
         if (pbeV2_params == NULL) {
             goto loser;
         }
         paramData = (unsigned char *)pbeV2_params;
-        paramLen = sizeof(CK_PKCS5_PBKD2_PARAMS);
+        paramLen = PR_MAX(sizeof(CK_PKCS5_PBKD2_PARAMS2), sizeof(CK_PKCS5_PBKD2_PARAMS));
 
         /* set the prf */
         prfAlgTag = SEC_OID_HMAC_SHA1;
@@ -981,7 +1044,7 @@ pbe_PK11AlgidToParam(SECAlgorithmID *algid, SECItem *mech)
         pbeV2_params->pPrfData = NULL;
         pbeV2_params->ulPrfDataLen = 0;
         pbeV2_params->saltSource = CKZ_SALT_SPECIFIED;
-        pSalt = ((CK_CHAR_PTR)pbeV2_params) + sizeof(CK_PKCS5_PBKD2_PARAMS);
+        pSalt = ((CK_CHAR_PTR)pbeV2_params) + PR_MAX(sizeof(CK_PKCS5_PBKD2_PARAMS2), sizeof(CK_PKCS5_PBKD2_PARAMS));
         if (salt->data) {
             PORT_Memcpy(pSalt, salt->data, salt->len);
         }
@@ -1011,6 +1074,7 @@ pbe_PK11AlgidToParam(SECAlgorithmID *algid, SECItem *mech)
         pbe_params->ulIteration = iterations;
     }
 
+done:
     /* copy into the mechanism sec item */
     mech->data = paramData;
     mech->len = paramLen;
@@ -1064,136 +1128,34 @@ PBE_PK11ParamToAlgid(SECOidTag algTag, SECItem *param, PLArenaPool *arena,
 }
 
 /*
- * public, Deprecated, This function is only for binary compatibility with
- * older applications. Does not support PKCS5v2.
- *
- * Applications should use PK11_PBEKeyGen() for keys and PK11_GetPBEIV() for
- * iv values rather than generating PBE bits directly.
+ * This function has been removed, and returns NULL so as to not break
+ * backwards compatibility.
  */
 PBEBitGenContext *
 PBE_CreateContext(SECOidTag hashAlgorithm, PBEBitGenID bitGenPurpose,
                   SECItem *pwitem, SECItem *salt, unsigned int bitsNeeded,
                   unsigned int iterations)
 {
-    SECItem *context = NULL;
-    SECItem mechItem;
-    CK_PBE_PARAMS pbe_params;
-    CK_MECHANISM_TYPE mechanism = CKM_INVALID_MECHANISM;
-    PK11SlotInfo *slot;
-    PK11SymKey *symKey = NULL;
-    unsigned char ivData[8];
-
-    /* use the purpose to select the low level keygen algorithm */
-    switch (bitGenPurpose) {
-        case pbeBitGenIntegrityKey:
-            switch (hashAlgorithm) {
-                case SEC_OID_SHA1:
-                    mechanism = CKM_PBA_SHA1_WITH_SHA1_HMAC;
-                    break;
-                case SEC_OID_MD2:
-                    mechanism = CKM_NSS_PBE_MD2_HMAC_KEY_GEN;
-                    break;
-                case SEC_OID_MD5:
-                    mechanism = CKM_NSS_PBE_MD5_HMAC_KEY_GEN;
-                    break;
-                default:
-                    break;
-            }
-            break;
-        case pbeBitGenCipherIV:
-            if (bitsNeeded > 64) {
-                break;
-            }
-            if (hashAlgorithm != SEC_OID_SHA1) {
-                break;
-            }
-            mechanism = CKM_PBE_SHA1_DES3_EDE_CBC;
-            break;
-        case pbeBitGenCipherKey:
-            if (hashAlgorithm != SEC_OID_SHA1) {
-                break;
-            }
-            switch (bitsNeeded) {
-                case 40:
-                    mechanism = CKM_PBE_SHA1_RC4_40;
-                    break;
-                case 128:
-                    mechanism = CKM_PBE_SHA1_RC4_128;
-                    break;
-                default:
-                    break;
-            }
-        case pbeBitGenIDNull:
-            break;
-    }
-
-    if (mechanism == CKM_INVALID_MECHANISM) {
-        /* we should set an error, but this is a deprecated function, and
-         * we are keeping bug for bug compatibility;)... */
-        return NULL;
-    }
-
-    pbe_params.pInitVector = ivData;
-    pbe_params.pPassword = pwitem->data;
-    pbe_params.ulPasswordLen = pwitem->len;
-    pbe_params.pSalt = salt->data;
-    pbe_params.ulSaltLen = salt->len;
-    pbe_params.ulIteration = iterations;
-    mechItem.data = (unsigned char *)&pbe_params;
-    mechItem.len = sizeof(pbe_params);
-
-    slot = PK11_GetInternalSlot();
-    symKey = PK11_RawPBEKeyGen(slot, mechanism,
-                               &mechItem, pwitem, PR_FALSE, NULL);
-    PK11_FreeSlot(slot);
-    if (symKey != NULL) {
-        if (bitGenPurpose == pbeBitGenCipherIV) {
-            /* NOTE: this assumes that bitsNeeded is a multiple of 8! */
-            SECItem ivItem;
-
-            ivItem.data = ivData;
-            ivItem.len = bitsNeeded / 8;
-            context = SECITEM_DupItem(&ivItem);
-        } else {
-            SECItem *keyData;
-            PK11_ExtractKeyValue(symKey);
-            keyData = PK11_GetKeyData(symKey);
-
-            /* assert bitsNeeded with length? */
-            if (keyData) {
-                context = SECITEM_DupItem(keyData);
-            }
-        }
-        PK11_FreeSymKey(symKey);
-    }
-
-    return (PBEBitGenContext *)context;
+    return NULL;
 }
 
 /*
- * public, Deprecated, This function is only for binary compatibility with
- * older applications. Does not support PKCS5v2.
- *
- * Applications should use PK11_PBEKeyGen() for keys and PK11_GetIV() for
- * iv values rather than generating PBE bits directly.
+ * This function has been removed, and returns NULL so as to not break
+ * backwards compatibility.
  */
 SECItem *
 PBE_GenerateBits(PBEBitGenContext *context)
 {
-    return (SECItem *)context;
+    return NULL;
 }
 
 /*
- * public, Deprecated, This function is only for binary compatibility with
- * older applications. Does not support PKCS5v2.
- *
- * Applications should use PK11_PBEKeyGen() for keys and PK11_GetPBEIV() for
- * iv values rather than generating PBE bits directly.
+ * This function has been removed, and returns so as to not break
+ * backwards compatibility.
  */
 void
 PBE_DestroyContext(PBEBitGenContext *context)
 {
-    SECITEM_FreeItem((SECItem *)context, PR_TRUE);
 }
 
 /*
@@ -1206,7 +1168,7 @@ SEC_PKCS5GetIV(SECAlgorithmID *algid, SECItem *pwitem, PRBool faulty3DES)
     CK_MECHANISM_TYPE type;
     SECItem *param = NULL;
     SECItem *iv = NULL;
-    SECItem src;
+    SECItem src = { siBuffer, NULL, 0 };
     int iv_len = 0;
     PK11SymKey *symKey;
     PK11SlotInfo *slot;
@@ -1246,7 +1208,7 @@ SEC_PKCS5GetIV(SECAlgorithmID *algid, SECItem *pwitem, PRBool faulty3DES)
     type = PK11_AlgtagToMechanism(pbeAlg);
     param = PK11_ParamFromAlgid(algid);
     if (param == NULL) {
-        goto done;
+        goto loser;
     }
     slot = PK11_GetInternalSlot();
     symKey = PK11_RawPBEKeyGen(slot, type, param, pwitem, faulty3DES, NULL);
@@ -1420,7 +1382,24 @@ pk11_RawPBEKeyGenWithKeyType(PK11SlotInfo *slot, CK_MECHANISM_TYPE type,
                              SECItem *params, CK_KEY_TYPE keyType, int keyLen,
                              SECItem *pwitem, void *wincx)
 {
+#ifndef NSS_USE_PKCS5_PBKD2_PARAMS2_ONLY
+    SECItem _params = { 0, NULL, 0 };
+    CK_PKCS5_PBKD2_PARAMS pbev2_1_params;
     CK_ULONG pwLen;
+#endif
+#ifdef UNSAFE_FUZZER_MODE
+    PK11SymKey *zeroKey = NULL;
+    unsigned char zeroBuff[32] = { 0 };
+    SECItem zeroItem = { siBuffer, zeroBuff, sizeof zeroBuff };
+
+    zeroKey = PK11_ImportSymKeyWithFlags(slot, type, PK11_OriginUnwrap,
+                                         CKA_FLAGS_ONLY, &zeroItem,
+                                         CKF_SIGN | CKF_ENCRYPT | CKF_DECRYPT |
+                                             CKF_UNWRAP | CKF_WRAP,
+                                         PR_FALSE, wincx);
+    return zeroKey;
+#else /* UNSAFE_FUZZER_MODE */
+
     /* do some sanity checks */
     if ((params == NULL) || (params->data == NULL)) {
         PORT_SetError(SEC_ERROR_INVALID_ARGS);
@@ -1434,15 +1413,33 @@ pk11_RawPBEKeyGenWithKeyType(PK11SlotInfo *slot, CK_MECHANISM_TYPE type,
 
     /* set the password pointer in the parameters... */
     if (type == CKM_PKCS5_PBKD2) {
-        CK_PKCS5_PBKD2_PARAMS *pbev2_params;
-        if (params->len < sizeof(CK_PKCS5_PBKD2_PARAMS)) {
+        CK_PKCS5_PBKD2_PARAMS2 *pbev2_params;
+
+        if (params->len < PR_MIN(sizeof(CK_PKCS5_PBKD2_PARAMS2), sizeof(CK_PKCS5_PBKD2_PARAMS))) {
             PORT_SetError(SEC_ERROR_INVALID_ARGS);
             return NULL;
         }
-        pbev2_params = (CK_PKCS5_PBKD2_PARAMS *)params->data;
+        pbev2_params = (CK_PKCS5_PBKD2_PARAMS2 *)params->data;
         pbev2_params->pPassword = pwitem->data;
-        pwLen = pwitem->len;
-        pbev2_params->ulPasswordLen = &pwLen;
+        pbev2_params->ulPasswordLen = pwitem->len;
+        params->len = sizeof(CK_PKCS5_PBKD2_PARAMS2);
+
+#ifndef NSS_USE_PKCS5_PBKD2_PARAMS2_ONLY
+        if (PK11_CheckPKCS11Version(slot, 2, 40, PR_FALSE) < 0) {
+            /* CK_PKCS5_PBKD2_PARAMS */
+            _params.type = params->type;
+            _params.data = (CK_CHAR_PTR)&pbev2_1_params;
+            _params.len = sizeof(CK_PKCS5_PBKD2_PARAMS);
+            memcpy(&pbev2_1_params, pbev2_params,
+                   PR_MIN(sizeof(CK_PKCS5_PBKD2_PARAMS2),
+                          sizeof(CK_PKCS5_PBKD2_PARAMS)));
+
+            pwLen = pwitem->len;
+            pbev2_1_params.ulPasswordLen = &pwLen;
+            params = &_params;
+        }
+#endif
+
     } else {
         CK_PBE_PARAMS *pbe_params;
         if (params->len < sizeof(CK_PBE_PARAMS)) {
@@ -1455,10 +1452,10 @@ pk11_RawPBEKeyGenWithKeyType(PK11SlotInfo *slot, CK_MECHANISM_TYPE type,
     }
 
     /* generate the key (and sometimes the IV as a side effect...) */
-    return pk11_TokenKeyGenWithFlagsAndKeyType(slot, type, params, keyType,
-                                               keyLen, NULL,
+    return pk11_TokenKeyGenWithFlagsAndKeyType(slot, type, params, keyType, keyLen, NULL,
                                                CKF_SIGN | CKF_ENCRYPT | CKF_DECRYPT | CKF_UNWRAP | CKF_WRAP,
                                                0, wincx);
+#endif /* UNSAFE_FUZZER_MODE */
 }
 
 /*
@@ -1560,6 +1557,23 @@ pk11_GetPBECryptoMechanism(SECAlgorithmID *algid, SECItem **param,
 
     if (mech == CKM_INVALID_MECHANISM) {
         PORT_SetError(SEC_ERROR_INVALID_ALGORITHM);
+        goto loser;
+    }
+    if (mech == CKM_AES_GCM) {
+        /* the GCM mechanism parameter is a CK_NSS_GCM_PARAMS structure, not a
+         * raw IV; take the self-contained parameter built from the cipher
+         * algid directly instead of round-tripping it through the IV helpers
+         * below, which only handle parameters that are plain IV bytes */
+        sec_pkcs5V2Parameter *pbeV2_param = sec_pkcs5_v2_get_v2_param(NULL, algid);
+        if (pbeV2_param == NULL) {
+            goto loser;
+        }
+        *param = PK11_ParamFromAlgid(&pbeV2_param->cipherAlgId);
+        sec_pkcs5_v2_destroy_v2_param(pbeV2_param);
+        if (*param == NULL) {
+            goto loser;
+        }
+        returnedMechanism = mech;
         goto loser;
     }
     if (PK11_GetIVLength(mech)) {

@@ -1,42 +1,33 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "ScriptPreloader-inl.h"
-#include "mozilla/AlreadyAddRefed.h"
-#include "mozilla/Monitor.h"
-
 #include "mozilla/ScriptPreloader.h"
-#include "mozilla/loader/ScriptCacheActors.h"
 
-#include "mozilla/URLPreloader.h"
-
-#include "mozilla/ArrayUtils.h"
+#include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Components.h"
 #include "mozilla/DebugOnly.h"
+#include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/EndianUtils.h"
 #include "mozilla/FileUtils.h"
+#include "mozilla/glean/JsXpconnectMetrics.h"
+#include "mozilla/glean/XpcomMetrics.h"
 #include "mozilla/IOBuffers.h"
+#include "mozilla/loader/ScriptCacheActors.h"
 #include "mozilla/Logging.h"
+#include "mozilla/Monitor.h"
+#include "mozilla/scache/StartupCache.h"
+#include "mozilla/scache/StartupCacheUtils.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_javascript.h"
 #include "mozilla/TaskController.h"
-#include "mozilla/glean/JsXpconnectMetrics.h"
-#include "mozilla/glean/XpcomMetrics.h"
 #include "mozilla/Try.h"
-#include "mozilla/Unused.h"
-#include "mozilla/dom/ContentChild.h"
-#include "mozilla/dom/ContentParent.h"
-#include "mozilla/dom/Document.h"
-#include "mozilla/scache/StartupCache.h"
+#include "mozilla/URLPreloader.h"
 
 #include "crc32c.h"
-#include "js/CompileOptions.h"              // JS::ReadOnlyCompileOptions
-#include "js/experimental/JSStencil.h"      // JS::Stencil, JS::DecodeStencil
-#include "js/experimental/CompileScript.h"  // JS::NewFrontendContext, JS::DestroyFrontendContext, JS::SetNativeStackQuota, JS::ThreadStackQuotaForSize
-#include "js/Transcoding.h"
 #include "MainThreadUtils.h"
 #include "nsDebug.h"
 #include "nsDirectoryServiceUtils.h"
@@ -48,10 +39,25 @@
 #include "nsProxyRelease.h"
 #include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
+#include "ScriptPreloader-inl.h"
 #include "xpcpublic.h"
 
+#include "js/CompileOptions.h"              // JS::ReadOnlyCompileOptions
+#include "js/experimental/CompileScript.h"  // JS::NewFrontendContext, JS::DestroyFrontendContext, JS::SetNativeStackQuota, JS::ThreadStackQuotaForSize
+#include "js/experimental/JSStencil.h"      // JS::Stencil, JS::DecodeStencil
+#include "js/Transcoding.h"
+
+#if defined(XP_LINUX)
+#  include <sys/mman.h>
+// MADV_COLD was added in Linux 5.4 / Android API 30; define it for older SDKs
+// so we can call madvise() unconditionally (the kernel will return EINVAL and
+// we ignore it).
+#  ifndef MADV_COLD
+#    define MADV_COLD 20
+#  endif
+#endif
+
 #define STARTUP_COMPLETE_TOPIC "browser-delayed-startup-finished"
-#define DOC_ELEM_INSERTED_TOPIC "document-element-inserted"
 #define CONTENT_DOCUMENT_LOADED_TOPIC "content-document-loaded"
 #define CACHE_WRITE_TOPIC "browser-idle-startup-tasks-finished"
 #define XPCOM_SHUTDOWN_TOPIC "xpcom-shutdown"
@@ -127,7 +133,7 @@ ScriptPreloader& ScriptPreloader::GetSingleton() {
       gCacheData = new AutoMemMap();
       gScriptPreloader = new ScriptPreloader(gCacheData.get());
       gScriptPreloader->mChildCache = &GetChildSingleton();
-      Unused << gScriptPreloader->InitCache();
+      (void)gScriptPreloader->InitCache();
     } else {
       gScriptPreloader = &GetChildSingleton();
     }
@@ -165,7 +171,7 @@ ScriptPreloader& ScriptPreloader::GetChildSingleton() {
     gChildCacheData = new AutoMemMap();
     gChildScriptPreloader = new ScriptPreloader(gChildCacheData.get());
     if (XRE_IsParentProcess()) {
-      Unused << gChildScriptPreloader->InitCache(u"scriptCache-child"_ns);
+      (void)gChildScriptPreloader->InitCache(u"scriptCache-child"_ns);
     }
   }
 
@@ -208,25 +214,33 @@ void ScriptPreloader::InitContentChild(ContentParent& parent) {
   // should be a sufficiently rare occurrence that it's not worth trying to
   // handle specially.
   auto processType = GetChildProcessType(parent.GetRemoteType());
-  bool wantScriptData = !cache.mInitializedProcesses.contains(processType);
-  cache.mInitializedProcesses += processType;
+  bool wantScriptData =
+      !cache.mRequestedChildProcessStencils.contains(processType);
+  cache.mRequestedChildProcessStencils += processType;
+
+  // If we're starting a web process (e.g. a preload process during startup),
+  // make sure we receive its script data before kicking off the cache write.
+  if (processType == ProcessType::Web) {
+    cache.mRequiredChildProcessStencils += processType;
+  }
 
   auto fd = cache.mCacheData->cloneFileDescriptor();
   // Don't send original cache data to new processes if the cache has been
   // invalidated.
   if (fd.IsValid() && !cache.mCacheInvalidated) {
-    Unused << parent.SendPScriptCacheConstructor(fd, wantScriptData);
+    (void)parent.SendPScriptCacheConstructor(fd, wantScriptData);
   } else {
-    Unused << parent.SendPScriptCacheConstructor(NS_ERROR_FILE_NOT_FOUND,
-                                                 wantScriptData);
+    (void)parent.SendPScriptCacheConstructor(NS_ERROR_FILE_NOT_FOUND,
+                                             wantScriptData);
   }
 }
 
-ProcessType ScriptPreloader::GetChildProcessType(const nsACString& remoteType) {
-  if (remoteType == EXTENSION_REMOTE_TYPE) {
+ProcessType ScriptPreloader::GetChildProcessType(
+    const dom::RemoteType& remoteType) {
+  if (remoteType.IsExtension()) {
     return ProcessType::Extension;
   }
-  if (remoteType == PRIVILEGEDABOUT_REMOTE_TYPE) {
+  if (remoteType.IsPrivilegedAbout()) {
     return ProcessType::PrivilegedAbout;
   }
   return ProcessType::Web;
@@ -263,10 +277,38 @@ void ScriptPreloader::Cleanup() {
   UnregisterWeakMemoryReporter(this);
 }
 
+void ScriptPreloader::StartCacheWriteIfReady() {
+  // Check if we're the right cache. Only the this-process ScriptPreloader in
+  // the parent process should do any cache writing.
+  if (!mChildCache) {
+    // If we don't have a child cache then we're not the right ScriptPreloader.
+    return;
+  }
+
+  if (mSaveComplete || mSaveThread) {
+    // We've already written the cache or are in the process of doing so.
+    return;
+  }
+
+  if (!mStartupHasAdvancedToCacheWritingStage) {
+    // Too early to write.
+    return;
+  }
+
+  if (!mChildCache->mReceivedChildProcessStencils.contains(
+          mChildCache->mRequiredChildProcessStencils)) {
+    // Still missing some expected child process script data.
+    return;
+  }
+
+  // Everything's ready, let's kick off the write task.
+  StartCacheWrite();
+}
+
 void ScriptPreloader::StartCacheWrite() {
   MOZ_DIAGNOSTIC_ASSERT(!mSaveThread);
 
-  Unused << NS_NewNamedThread("SaveScripts", getter_AddRefs(mSaveThread), this);
+  (void)NS_NewNamedThread("SaveScripts", getter_AddRefs(mSaveThread), this);
 
   nsCOMPtr<nsIAsyncShutdownClient> barrier = GetShutdownBarrier();
   barrier->AddBlocker(this, NS_LITERAL_STRING_FROM_CSTRING(__FILE__), __LINE__,
@@ -331,10 +373,19 @@ nsresult ScriptPreloader::Observe(nsISupports* subject, const char* topic,
 
     MOZ_ASSERT(mStartupFinished);
     MOZ_ASSERT(XRE_IsParentProcess());
+    mStartupHasAdvancedToCacheWritingStage = true;
 
-    if (mChildCache && !mSaveComplete && !mSaveThread) {
-      StartCacheWrite();
+#if defined(XP_LINUX)
+    // Startup is complete; mark the cache mapping cold so the kernel can
+    // reclaim these pages under memory pressure without unmapping them.
+    if (mCacheData->initialized()) {
+      // MADV_COLD may return EINVAL on kernels older than 5.4.
+      uint8_t* ptr = const_cast<uint8_t*>(mCacheData->get<uint8_t>().get());
+      (void)madvise(ptr, mCacheData->size(), MADV_COLD);
     }
+#endif
+
+    StartCacheWriteIfReady();
   } else if (mContentStartupFinishedTopic.Equals(topic)) {
     // If this is an uninitialized about:blank viewer or a chrome: document
     // (which should always be an XBL binding document), ignore it. We don't
@@ -402,6 +453,23 @@ bool ScriptPreloader::WillWriteScripts() {
   return !mDataPrepared && (XRE_IsParentProcess() || mChildActor);
 }
 
+bool ScriptPreloader::Active() const {
+  if (!mCacheInitialized) {
+    return false;
+  }
+
+  if (!mStartupFinished) {
+    return true;
+  }
+
+  if (StaticPrefs::javascript_options_force_preloader_active() &&
+      xpc::IsInAutomation()) {
+    return true;
+  }
+
+  return false;
+}
+
 Result<nsCOMPtr<nsIFile>, nsresult> ScriptPreloader::GetCacheFile(
     const nsAString& suffix) {
   NS_ENSURE_TRUE(mProfD, Err(NS_ERROR_NOT_INITIALIZED));
@@ -410,7 +478,7 @@ Result<nsCOMPtr<nsIFile>, nsresult> ScriptPreloader::GetCacheFile(
   MOZ_TRY(mProfD->Clone(getter_AddRefs(cacheFile)));
 
   MOZ_TRY(cacheFile->AppendNative("startupCache"_ns));
-  Unused << cacheFile->Create(nsIFile::DIRECTORY_TYPE, 0777);
+  (void)cacheFile->Create(nsIFile::DIRECTORY_TYPE, 0777);
 
   MOZ_TRY(cacheFile->Append(mBaseName + suffix));
 
@@ -426,8 +494,7 @@ Result<Ok, nsresult> ScriptPreloader::OpenCache() {
 
   MOZ_TRY(NS_GetSpecialDirectory("ProfLDS", getter_AddRefs(mProfD)));
 
-  nsCOMPtr<nsIFile> cacheFile;
-  MOZ_TRY_VAR(cacheFile, GetCacheFile(u".bin"_ns));
+  nsCOMPtr<nsIFile> cacheFile = MOZ_TRY(GetCacheFile(u".bin"_ns));
 
   bool exists;
   MOZ_TRY(cacheFile->Exists(&exists));
@@ -485,17 +552,16 @@ Result<Ok, nsresult> ScriptPreloader::InitCache(
   MOZ_RELEASE_ASSERT(obs);
 
   if (sProcessType == ProcessType::PrivilegedAbout) {
-    // Since we control all of the documents loaded in the privileged
-    // content process, we can increase the window of active time for the
-    // ScriptPreloader to include the scripts that are loaded until the
-    // first document finishes loading.
+    // Since we control all of the documents loaded in the privileged content
+    // process, the kBecomeUntrusted notification will never fire. Instead we
+    // increase the window of active time for the ScriptPreloader to include the
+    // scripts that are loaded until the first document finishes loading.
     mContentStartupFinishedTopic.AssignLiteral(CONTENT_DOCUMENT_LOADED_TOPIC);
   } else {
     // In the child process, we need to freeze the script cache before any
-    // untrusted code has been executed. The insertion of the first DOM
-    // document element may sometimes be earlier than is ideal, but at
-    // least it should always be safe.
-    mContentStartupFinishedTopic.AssignLiteral(DOC_ELEM_INSERTED_TOPIC);
+    // untrusted code has been executed. Use the shared kBecameUntrustedTopic
+    // notification as a proxy for this.
+    mContentStartupFinishedTopic = ContentChild::kBecameUntrustedTopic;
   }
   obs->AddObserver(this, mContentStartupFinishedTopic.get(), false);
 
@@ -633,8 +699,11 @@ void ScriptPreloader::PrepareCacheWriteInternal() {
     return;
   }
 
-  AutoSafeJSAPI jsapi;
-  JSAutoRealm ar(jsapi.cx(), xpc::PrivilegedJunkScope());
+  JS::FrontendContext* fc = JS::NewFrontendContext();
+  if (!fc) {
+    return;
+  }
+
   bool found = false;
   for (auto& script : IterHash(mScripts, Match<ScriptStatus::Saved>())) {
     // Don't write any scripts that are also in the child cache. They'll be
@@ -654,10 +723,12 @@ void ScriptPreloader::PrepareCacheWriteInternal() {
       found = true;
     }
 
-    if (!script->mSize && !script->XDREncode(jsapi.cx())) {
+    if (!script->mSize && !script->XDREncode(fc)) {
       script.Remove();
     }
   }
+
+  JS::DestroyFrontendContext(fc);
 
   if (!found) {
     mSaveComplete = true;
@@ -672,6 +743,36 @@ void ScriptPreloader::PrepareCacheWrite() {
 
   PrepareCacheWriteInternal();
 }
+
+// A struct to hold reference to a CachedStencil and the snapshot of the
+// CachedStencil::mLoadTime field.
+// CachedStencil::mLoadTime field can be modified concurrently, and we need
+// to create a snapshot, in order to sort scripts.
+struct CachedStencilRefAndTime {
+  using CachedStencil = ScriptPreloader::CachedStencil;
+  CachedStencil* mStencil;
+  TimeStamp mLoadTime;
+
+  explicit CachedStencilRefAndTime(CachedStencil* aStencil)
+      : mStencil(aStencil), mLoadTime(aStencil->mLoadTime) {}
+
+  // For use with nsTArray::Sort.
+  //
+  // Orders scripts by script load time, so that scripts which are needed
+  // earlier are stored earlier, and scripts needed at approximately the
+  // same time are stored approximately contiguously.
+  struct Comparator {
+    bool Equals(const CachedStencilRefAndTime& a,
+                const CachedStencilRefAndTime& b) const {
+      return a.mLoadTime == b.mLoadTime;
+    }
+
+    bool LessThan(const CachedStencilRefAndTime& a,
+                  const CachedStencilRefAndTime& b) const {
+      return a.mLoadTime < b.mLoadTime;
+    }
+  };
+} JS_HAZ_NON_GC_POINTER;
 
 // Writes out a script cache file for the scripts accessed during early
 // startup in this session. The cache file is a little-endian binary file with
@@ -706,8 +807,7 @@ Result<Ok, nsresult> ScriptPreloader::WriteCache() {
     return Ok();
   }
 
-  nsCOMPtr<nsIFile> cacheFile;
-  MOZ_TRY_VAR(cacheFile, GetCacheFile(u"-new.bin"_ns));
+  nsCOMPtr<nsIFile> cacheFile = MOZ_TRY(GetCacheFile(u"-new.bin"_ns));
 
   bool exists;
   MOZ_TRY(cacheFile->Exists(&exists));
@@ -726,19 +826,20 @@ Result<Ok, nsresult> ScriptPreloader::WriteCache() {
     mMonitor.AssertNotCurrentThreadOwns();
     MonitorAutoLock mal(mMonitor);
 
-    nsTArray<CachedStencil*> scripts;
+    nsTArray<CachedStencilRefAndTime> scriptRefs;
     for (auto& script : IterHash(mScripts, Match<ScriptStatus::Saved>())) {
-      scripts.AppendElement(script);
+      scriptRefs.AppendElement(CachedStencilRefAndTime(script));
     }
 
     // Sort scripts by load time, with async loaded scripts before sync scripts.
     // Since async scripts are always loaded immediately at startup, it helps to
     // have them stored contiguously.
-    scripts.Sort(CachedStencil::Comparator());
+    scriptRefs.Sort(CachedStencilRefAndTime::Comparator());
 
     OutputBuffer buf;
     size_t offset = 0;
-    for (auto script : scripts) {
+    for (auto& scriptRef : scriptRefs) {
+      auto* script = scriptRef.mStencil;
       script->mOffset = offset;
       MOZ_DIAGNOSTIC_ASSERT(
           JS::IsTranscodingBytecodeOffsetAligned(script->mOffset));
@@ -768,7 +869,8 @@ Result<Ok, nsresult> ScriptPreloader::WriteCache() {
       written += padding;
     }
 
-    for (auto script : scripts) {
+    for (auto& scriptRef : scriptRefs) {
+      auto* script = scriptRef.mStencil;
       MOZ_DIAGNOSTIC_ASSERT(JS::IsTranscodingBytecodeOffsetAligned(written));
       MOZ_TRY(Write(fd, script->Range().begin().get(), script->mSize));
 
@@ -797,25 +899,25 @@ nsresult ScriptPreloader::Run() {
   MonitorAutoLock mal(mSaveMonitor.Lock());
   mSaveMonitor.NoteLockHeld();
 
-  // Ideally wait about 10 seconds before saving, to avoid unnecessary IO
+  // Wait about 3 seconds before saving, to avoid unnecessary IO
   // during early startup. But only if the cache hasn't been invalidated,
   // since that can trigger a new write during shutdown, and we don't want to
   // cause shutdown hangs.
   if (!mCacheInvalidated) {
-    mal.Wait(TimeDuration::FromSeconds(10));
+    mal.Wait(TimeDuration::FromSeconds(3));
   }
 
   auto result = URLPreloader::GetSingleton().WriteCache();
-  Unused << NS_WARN_IF(result.isErr());
+  (void)NS_WARN_IF(result.isErr());
 
   result = WriteCache();
-  Unused << NS_WARN_IF(result.isErr());
+  (void)NS_WARN_IF(result.isErr());
 
   {
     MonitorAutoLock lock(mChildCache->mSaveMonitor.Lock());
     result = mChildCache->WriteCache();
   }
-  Unused << NS_WARN_IF(result.isErr());
+  (void)NS_WARN_IF(result.isErr());
 
   NS_DispatchToMainThread(
       NewRunnableMethod("ScriptPreloader::CacheWriteComplete", this,
@@ -921,6 +1023,14 @@ void ScriptPreloader::NoteStencil(const nsCString& url,
   script->mProcessTypes += processType;
 }
 
+void ScriptPreloader::NoteReceivedAllChildStencilsForProcess(
+    ProcessType aProcessType) {
+  mReceivedChildProcessStencils += aProcessType;
+
+  // We're the child cache. Tell the root cache to trigger a write if ready.
+  GetSingleton().StartCacheWriteIfReady();
+}
+
 /* static */
 void ScriptPreloader::FillCompileOptionsForCachedStencil(
     JS::CompileOptions& options) {
@@ -954,24 +1064,25 @@ already_AddRefed<JS::Stencil> ScriptPreloader::GetCachedStencil(
       "ScriptPreloader must be initialized before getting cached "
       "scripts in the content process.");
 
+#ifdef DEBUG
+  // All callers should have already checked that the script is from omni.ja
+  // (Gre or App resource type) before calling GetCachedStencil.
+  MOZ_ASSERT(path.Find("/resource/gre/"_ns) != kNotFound ||
+                 path.Find("/resource/app/"_ns) != kNotFound,
+             "GetCachedStencil should only be called for omni.ja scripts");
+#endif
+
   // If a script is used by both the parent and the child, it's stored only
   // in the child cache.
   if (mChildCache) {
     RefPtr<JS::Stencil> stencil =
         mChildCache->GetCachedStencilInternal(cx, options, path);
     if (stencil) {
-      glean::script_preloader::requests
-          .EnumGet(glean::script_preloader::RequestsLabel::eHitchild)
-          .Add();
       return stencil.forget();
     }
   }
 
   RefPtr<JS::Stencil> stencil = GetCachedStencilInternal(cx, options, path);
-  glean::script_preloader::requests
-      .EnumGet(stencil ? glean::script_preloader::RequestsLabel::eHit
-                       : glean::script_preloader::RequestsLabel::eMiss)
-      .Add();
 
   return stencil.forget();
 }
@@ -1271,19 +1382,20 @@ ScriptPreloader::CachedStencil::CachedStencil(ScriptPreloader& cache,
   mProcessTypes = {};
 }
 
-bool ScriptPreloader::CachedStencil::XDREncode(JSContext* cx) {
+bool ScriptPreloader::CachedStencil::XDREncode(JS::FrontendContext* aFc) {
   auto cleanup = MakeScopeExit([&]() { MaybeDropStencil(); });
 
   mXDRData.construct<JS::TranscodeBuffer>();
 
-  JS::TranscodeResult code = JS::EncodeStencil(cx, mStencil, Buffer());
+  JS::TranscodeResult code = JS::EncodeStencil(aFc, mStencil, Buffer());
+
   if (code == JS::TranscodeResult::Ok) {
     mXDRRange.emplace(Buffer().begin(), Buffer().length());
     mSize = Range().length();
     return true;
   }
   mXDRData.destroy();
-  JS_ClearPendingException(cx);
+  JS::ClearFrontendErrors(aFc);
   return false;
 }
 
@@ -1367,7 +1479,7 @@ already_AddRefed<nsIAsyncShutdownClient> ScriptPreloader::GetShutdownBarrier() {
   MOZ_RELEASE_ASSERT(svc);
 
   nsCOMPtr<nsIAsyncShutdownClient> barrier;
-  Unused << svc->GetXpcomWillShutdown(getter_AddRefs(barrier));
+  (void)svc->GetXpcomWillShutdown(getter_AddRefs(barrier));
   MOZ_RELEASE_ASSERT(barrier);
 
   return barrier.forget();

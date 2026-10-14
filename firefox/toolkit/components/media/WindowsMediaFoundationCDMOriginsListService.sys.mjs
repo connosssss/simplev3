@@ -8,7 +8,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 });
 
 ChromeUtils.defineLazyGetter(lazy, "console", () => {
-  return console.createInstance({ prefix: "EME" });
+  return console.createInstance({ prefix: "EME", maxLogLevel: "Off" });
 });
 
 const COLLECTION_NAME = "mfcdm-origins-list";
@@ -18,12 +18,9 @@ const ORIGIN_BLOCKED = 0;
 const ORIGIN_ALLOWED = 1;
 
 function log(message) {
-  const LOGGING_ENABLED = Services.env.get("MOZ_LOG")?.includes("EME");
-  if (LOGGING_ENABLED) {
-    lazy.console.debug(
-      `WindowsMediaFoundationCDMOriginsListService : ${message}\n`
-    );
-  }
+  lazy.console.debug(
+    `WindowsMediaFoundationCDMOriginsListService : ${message}`
+  );
 }
 
 /**
@@ -81,12 +78,8 @@ WindowsMediaFoundationCDMOriginsListService.prototype = {
     }
 
     this._rs = lazy.RemoteSettings(COLLECTION_NAME);
-    this._rs.on("sync", async event => {
-      let {
-        data: { current },
-      } = event;
-      this._onUpdateEntries(current || []);
-    });
+    this._rsListener = this._onRemoteSettingSync.bind(this);
+    this._rs.on("sync", this._rsListener);
 
     let entries;
     try {
@@ -97,6 +90,13 @@ WindowsMediaFoundationCDMOriginsListService.prototype = {
 
     this._onUpdateEntries(entries || []);
     this._entriesReady = true;
+  },
+
+  _onRemoteSettingSync(event) {
+    let {
+      data: { current },
+    } = event;
+    this._onUpdateEntries(current || []);
   },
 
   _onUpdateEntries(aEntries) {
@@ -133,8 +133,9 @@ WindowsMediaFoundationCDMOriginsListService.prototype = {
       this._callbacks = null;
       this._originsList = null;
       if (this._rs) {
-        this._rs.off("sync");
+        this._rs.off("sync", this._rsListener);
         this._rs = null;
+        this._rsListener = null;
       }
     }
   },

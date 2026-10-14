@@ -48,19 +48,31 @@ impl<'a> FunctionBody<'a> {
     /// Gets the locals reader for this function body.
     pub fn get_locals_reader(&self) -> Result<LocalsReader<'a>> {
         let mut reader = self.reader.clone();
-        let count = reader.read_var_u32()?;
-        Ok(LocalsReader { reader, count })
+        let declaration_count = reader.read_var_u32()?;
+        Ok(LocalsReader {
+            reader,
+            declaration_count,
+            total_count: 0,
+        })
     }
 
-    /// Gets the operators reader for this function body.
-    pub fn get_operators_reader(&self) -> Result<OperatorsReader<'a>> {
+    /// Gets a binary reader for this function body, after skipping locals.
+    pub fn get_binary_reader_for_operators(&self) -> Result<BinaryReader<'a>> {
         let mut reader = self.reader.clone();
         Self::skip_locals(&mut reader)?;
-        Ok(OperatorsReader::new(reader))
+        Ok(reader)
+    }
+
+    /// Uses [`FunctionBody::get_binary_reader_for_operators`] and then converts
+    /// that to an [`OperatorsReader`].
+    pub fn get_operators_reader(&self) -> Result<OperatorsReader<'a>> {
+        Ok(OperatorsReader::new(
+            self.get_binary_reader_for_operators()?,
+        ))
     }
 
     /// Gets the range of the function body.
-    pub fn range(&self) -> Range<usize> {
+    pub fn range(&self) -> Range<u64> {
         self.reader.range()
     }
 
@@ -75,32 +87,42 @@ impl<'a> FunctionBody<'a> {
 impl<'a> FromReader<'a> for FunctionBody<'a> {
     fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self> {
         let reader = reader.read_reader()?;
-        Ok(FunctionBody { reader })
+        Ok(FunctionBody::new(reader))
     }
 }
 
 /// A reader for a function body's locals.
 pub struct LocalsReader<'a> {
     reader: BinaryReader<'a>,
-    count: u32,
+    declaration_count: u32,
+    total_count: u32,
 }
 
 impl<'a> LocalsReader<'a> {
-    /// Gets the count of locals in the function body.
+    /// Gets the count of locals declarations in the function body.
     pub fn get_count(&self) -> u32 {
-        self.count
+        self.declaration_count
     }
 
     /// Gets the original position of the reader.
-    pub fn original_position(&self) -> usize {
+    pub fn original_position(&self) -> u64 {
         self.reader.original_position()
     }
 
     /// Reads an item from the reader.
     pub fn read(&mut self) -> Result<(u32, ValType)> {
         let count = self.reader.read()?;
+        match self.total_count.checked_add(count) {
+            Some(total) => self.total_count = total,
+            None => bail!(self.reader.original_position(), "too many locals"),
+        }
         let value_type = self.reader.read()?;
         Ok((count, value_type))
+    }
+
+    /// Gets the binary reader from this LocalsReader
+    pub fn get_binary_reader(self) -> BinaryReader<'a> {
+        self.reader
     }
 }
 
@@ -108,7 +130,7 @@ impl<'a> IntoIterator for LocalsReader<'a> {
     type Item = Result<(u32, ValType)>;
     type IntoIter = LocalsIterator<'a>;
     fn into_iter(self) -> Self::IntoIter {
-        let count = self.count;
+        let count = self.declaration_count;
         LocalsIterator {
             reader: self,
             left: count,
@@ -138,5 +160,18 @@ impl<'a> Iterator for LocalsIterator<'a> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         let count = self.reader.get_count() as usize;
         (count, Some(count))
+    }
+}
+
+impl<'a> LocalsIterator<'a> {
+    /// After reading the locals, the BinaryReader is ready to read the operators.
+    pub fn into_binary_reader_for_operators(self) -> BinaryReader<'a> {
+        debug_assert!(self.err || self.left == 0);
+        self.reader.get_binary_reader()
+    }
+
+    /// After reading the locals, the BinaryReader is ready to read the operators.
+    pub fn into_operators_reader(self) -> OperatorsReader<'a> {
+        OperatorsReader::new(self.reader.get_binary_reader())
     }
 }

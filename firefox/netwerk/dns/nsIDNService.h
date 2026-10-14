@@ -1,17 +1,15 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsIDNService_h__
-#define nsIDNService_h__
-
-#include "nsIIDNService.h"
+#ifndef nsIDNService_h_
+#define nsIDNService_h_
 
 #include "mozilla/RWLock.h"
+#include "mozilla/Span.h"
 #include "mozilla/intl/UnicodeScriptCodes.h"
 #include "mozilla/net/IDNBlocklistUtils.h"
-#include "mozilla/Span.h"
+#include "nsIIDNService.h"
 #include "nsTHashSet.h"
 
 class nsIPrefBranch;
@@ -42,6 +40,7 @@ class nsIDNService final : public nsIIDNService {
   void InitDigitConfusables();
   void InitCyrillicLatinConfusables();
   void InitThaiLatinConfusables();
+  void InitAllowedLimitedUseScripts();
 
  public:
   /**
@@ -91,6 +90,7 @@ class nsIDNService final : public nsIIDNService {
   bool isCJKIdeograph(char32_t aChar);
 
   nsTArray<mozilla::net::BlocklistRange> mIDNBlocklist;
+  nsTArray<mozilla::intl::Script> mAllowedLimitedUseScripts;
 
   // Confusables that we would like to check for IDN spoofing detection.
   nsTHashSet<char32_t> mCJKSlashConfusables;
@@ -105,4 +105,4 @@ extern "C" MOZ_EXPORT bool mozilla_net_is_label_safe(const char32_t* aLabel,
                                                      const char32_t* aTld,
                                                      size_t aTldLen);
 
-#endif  // nsIDNService_h__
+#endif  // nsIDNService_h_

@@ -1,6 +1,6 @@
 /**
 * AUTO-GENERATED - DO NOT EDIT. Source: https://github.com/gpuweb/cts
-**/import { isCompatibilityDevice } from '../common/framework/test_config.js';import { keysOf } from '../common/util/data_tables.js';import { assert, unreachable } from '../common/util/util.js';
+**/import { isCompatibilityMode } from '../common/framework/test_config.js';import { keysOf } from '../common/util/data_tables.js';import { assert, unreachable, hasFeature } from '../common/util/util.js';
 
 import { align, roundDown } from './util/math.js';
 import { getTextureDimensionFromView } from './util/texture/base.js';
@@ -90,6 +90,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     r8unorm: {
       color: {
         type: 'float',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -103,6 +104,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     r8snorm: {
       color: {
         type: 'float',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -115,6 +117,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     r8uint: {
       color: {
         type: 'uint',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -128,6 +131,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     r8sint: {
       color: {
         type: 'sint',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -142,6 +146,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rg8unorm: {
       color: {
         type: 'float',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -155,6 +160,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rg8snorm: {
       color: {
         type: 'float',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -167,6 +173,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rg8uint: {
       color: {
         type: 'uint',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -180,6 +187,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rg8sint: {
       color: {
         type: 'sint',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -194,6 +202,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgba8unorm: {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -208,6 +217,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     'rgba8unorm-srgb': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -222,6 +232,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgba8snorm: {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -234,6 +245,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgba8uint: {
       color: {
         type: 'uint',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -247,6 +259,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgba8sint: {
       color: {
         type: 'sint',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -260,6 +273,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     bgra8unorm: {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -274,6 +288,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     'bgra8unorm-srgb': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -290,28 +305,30 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
 
     r16unorm: {
       color: {
-        type: 'float',
+        type: 'unfilterable-float',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: true,
         readWriteStorage: false,
         bytes: 2
       },
-      colorRender: { blend: true, resolve: true, byteCost: 2, alignment: 2 },
+      colorRender: { blend: true, resolve: false, byteCost: 2, alignment: 2 },
       multisample: true,
       feature: 'texture-formats-tier1',
       get bytesPerBlock() {return this.color.bytes;}
     },
     r16snorm: {
       color: {
-        type: 'float',
+        type: 'unfilterable-float',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: true,
         readWriteStorage: false,
         bytes: 2
       },
-      colorRender: { blend: true, resolve: true, byteCost: 2, alignment: 2 },
+      colorRender: { blend: true, resolve: false, byteCost: 2, alignment: 2 },
       multisample: true,
       feature: 'texture-formats-tier1',
       get bytesPerBlock() {return this.color.bytes;}
@@ -319,6 +336,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     r16uint: {
       color: {
         type: 'uint',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -332,6 +350,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     r16sint: {
       color: {
         type: 'sint',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -345,6 +364,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     r16float: {
       color: {
         type: 'float',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -358,28 +378,30 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
 
     rg16unorm: {
       color: {
-        type: 'float',
+        type: 'unfilterable-float',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: true,
         readWriteStorage: false,
         bytes: 4
       },
-      colorRender: { blend: true, resolve: true, byteCost: 4, alignment: 2 },
+      colorRender: { blend: true, resolve: false, byteCost: 4, alignment: 2 },
       multisample: true,
       feature: 'texture-formats-tier1',
       get bytesPerBlock() {return this.color.bytes;}
     },
     rg16snorm: {
       color: {
-        type: 'float',
+        type: 'unfilterable-float',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: true,
         readWriteStorage: false,
         bytes: 4
       },
-      colorRender: { blend: true, resolve: true, byteCost: 4, alignment: 2 },
+      colorRender: { blend: true, resolve: false, byteCost: 4, alignment: 2 },
       multisample: true,
       feature: 'texture-formats-tier1',
       get bytesPerBlock() {return this.color.bytes;}
@@ -387,6 +409,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rg16uint: {
       color: {
         type: 'uint',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -400,6 +423,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rg16sint: {
       color: {
         type: 'sint',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -413,6 +437,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rg16float: {
       color: {
         type: 'float',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -426,28 +451,30 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
 
     rgba16unorm: {
       color: {
-        type: 'float',
+        type: 'unfilterable-float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: true,
         readWriteStorage: false,
         bytes: 8
       },
-      colorRender: { blend: true, resolve: true, byteCost: 8, alignment: 4 },
+      colorRender: { blend: true, resolve: false, byteCost: 8, alignment: 4 },
       multisample: true,
       feature: 'texture-formats-tier1',
       get bytesPerBlock() {return this.color.bytes;}
     },
     rgba16snorm: {
       color: {
-        type: 'float',
+        type: 'unfilterable-float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: true,
         readWriteStorage: false,
         bytes: 8
       },
-      colorRender: { blend: true, resolve: true, byteCost: 8, alignment: 2 },
+      colorRender: { blend: true, resolve: false, byteCost: 8, alignment: 2 },
       multisample: true,
       feature: 'texture-formats-tier1',
       get bytesPerBlock() {return this.color.bytes;}
@@ -455,6 +482,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgba16uint: {
       color: {
         type: 'uint',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -468,6 +496,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgba16sint: {
       color: {
         type: 'sint',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -481,6 +510,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgba16float: {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -497,6 +527,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     r32uint: {
       color: {
         type: 'uint',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -510,6 +541,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     r32sint: {
       color: {
         type: 'sint',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -523,6 +555,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     r32float: {
       color: {
         type: 'unfilterable-float',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -537,6 +570,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rg32uint: {
       color: {
         type: 'uint',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -550,6 +584,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rg32sint: {
       color: {
         type: 'sint',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -563,6 +598,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rg32float: {
       color: {
         type: 'unfilterable-float',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -577,6 +613,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgba32uint: {
       color: {
         type: 'uint',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -590,6 +627,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgba32sint: {
       color: {
         type: 'sint',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -603,6 +641,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgba32float: {
       color: {
         type: 'unfilterable-float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: true,
@@ -619,6 +658,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgb10a2uint: {
       color: {
         type: 'uint',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -632,6 +672,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgb10a2unorm: {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -645,6 +686,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rg11b10ufloat: {
       color: {
         type: 'float',
+        componentCount: 3,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -661,6 +703,7 @@ const kRegularTextureFormatInfo = formatTableWithDefaults({
     rgb9e5ufloat: {
       color: {
         type: 'float',
+        componentCount: 3,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -778,6 +821,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc1-rgba-unorm': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -790,6 +834,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc1-rgba-unorm-srgb': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -803,6 +848,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc2-rgba-unorm': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -815,6 +861,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc2-rgba-unorm-srgb': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -828,6 +875,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc3-rgba-unorm': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -840,6 +888,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc3-rgba-unorm-srgb': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -853,6 +902,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc4-r-unorm': {
       color: {
         type: 'float',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -864,6 +914,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc4-r-snorm': {
       color: {
         type: 'float',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -876,6 +927,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc5-rg-unorm': {
       color: {
         type: 'float',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -887,6 +939,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc5-rg-snorm': {
       color: {
         type: 'float',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -899,6 +952,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc6h-rgb-ufloat': {
       color: {
         type: 'float',
+        componentCount: 3,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -910,6 +964,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc6h-rgb-float': {
       color: {
         type: 'float',
+        componentCount: 3,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -922,6 +977,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc7-rgba-unorm': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -934,6 +990,7 @@ const kBCTextureFormatInfo = formatTableWithDefaults({
     'bc7-rgba-unorm-srgb': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -957,6 +1014,7 @@ const kETC2TextureFormatInfo = formatTableWithDefaults({
     'etc2-rgb8unorm': {
       color: {
         type: 'float',
+        componentCount: 3,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -969,6 +1027,7 @@ const kETC2TextureFormatInfo = formatTableWithDefaults({
     'etc2-rgb8unorm-srgb': {
       color: {
         type: 'float',
+        componentCount: 3,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -982,6 +1041,7 @@ const kETC2TextureFormatInfo = formatTableWithDefaults({
     'etc2-rgb8a1unorm': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -994,6 +1054,7 @@ const kETC2TextureFormatInfo = formatTableWithDefaults({
     'etc2-rgb8a1unorm-srgb': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1007,6 +1068,7 @@ const kETC2TextureFormatInfo = formatTableWithDefaults({
     'etc2-rgba8unorm': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1019,6 +1081,7 @@ const kETC2TextureFormatInfo = formatTableWithDefaults({
     'etc2-rgba8unorm-srgb': {
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1032,6 +1095,7 @@ const kETC2TextureFormatInfo = formatTableWithDefaults({
     'eac-r11unorm': {
       color: {
         type: 'float',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1043,6 +1107,7 @@ const kETC2TextureFormatInfo = formatTableWithDefaults({
     'eac-r11snorm': {
       color: {
         type: 'float',
+        componentCount: 1,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1055,6 +1120,7 @@ const kETC2TextureFormatInfo = formatTableWithDefaults({
     'eac-rg11unorm': {
       color: {
         type: 'float',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1066,6 +1132,7 @@ const kETC2TextureFormatInfo = formatTableWithDefaults({
     'eac-rg11snorm': {
       color: {
         type: 'float',
+        componentCount: 2,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1088,6 +1155,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 4,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1102,6 +1170,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 4,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1117,6 +1186,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 4,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1131,6 +1201,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 4,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1146,6 +1217,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 5,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1160,6 +1232,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 5,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1175,6 +1248,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 5,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1189,6 +1263,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 5,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1204,6 +1279,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 6,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1218,6 +1294,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 6,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1233,6 +1310,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 5,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1247,6 +1325,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 5,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1262,6 +1341,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 6,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1276,6 +1356,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 6,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1291,6 +1372,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 8,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1305,6 +1387,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 8,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1320,6 +1403,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 5,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1334,6 +1418,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 5,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1349,6 +1434,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 6,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1363,6 +1449,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 6,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1378,6 +1465,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 8,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1392,6 +1480,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 8,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1407,6 +1496,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 10,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1421,6 +1511,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 10,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1436,6 +1527,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 10,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1450,6 +1542,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 10,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1465,6 +1558,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 12,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1479,6 +1573,7 @@ const kASTCTextureFormatInfo = formatTableWithDefaults({
       blockHeight: 12,
       color: {
         type: 'float',
+        componentCount: 4,
         copySrc: true,
         copyDst: true,
         storage: false,
@@ -1551,6 +1646,8 @@ export const kAllTextureFormats = keysOf(kAllTextureFormatInfo);
 
 
 /** Per GPUTextureFormat-per-aspect info for color aspects. */
+
+
 
 
 
@@ -1660,10 +1757,12 @@ export const kAllTextureFormats = keysOf(kAllTextureFormatInfo);
  * * isTextureFormatPossiblyStorageReadable
  * * isTextureFormatPossiblyStorageReadWritable
  * * isTextureFormatPossiblyFilterableAsTextureF32
+ * * isTextureFormatPossiblyUsableWithCopyExternalImageToTexture
  *
  * These are also usable before or during a test
  *
  * * isColorTextureFormat
+ * * isColorTextureFormatWithAlpha
  * * isDepthTextureFormat
  * * isStencilTextureFormat
  * * isDepthOrStencilTextureFormat
@@ -1683,6 +1782,7 @@ export const kAllTextureFormats = keysOf(kAllTextureFormatInfo);
  * * isTextureFormatUsableAsStorageTexture
  * * isTextureFormatUsableAsReadWriteStorageTexture
  * * isTextureFormatUsableAsStorageFormatInCreateShaderModule
+ * * isTextureFormatUsableWithCopyExternalImageToTexture
  *
  * Per-GPUTextureFormat info.
  */
@@ -1710,8 +1810,35 @@ export const kStencilTextureFormats = kDepthStencilFormats.filter(
   (v) => kTextureFormatInfo[v].stencil
 );
 
-export const kTextureFormatTier1AllowsRenderAttachmentBlendableMultisampleResolve =
-['r8snorm', 'rg8snorm', 'rgba8snorm', 'rg11b10ufloat'];
+export const kTextureFormatTier1AllowsResolve = [
+'r8snorm',
+'rg8snorm',
+'rgba8snorm',
+'rg11b10ufloat'];
+
+
+export const kTextureFormatTier1ThrowsWhenNotEnabled = [
+'r16unorm',
+'r16snorm',
+'rg16unorm',
+'rg16snorm',
+'rgba16unorm',
+'rgba16snorm'];
+
+
+export const kTextureFormatTier1AllowsRenderAttachmentBlendableMultisample =
+[
+'r16unorm',
+'r16snorm',
+'rg16unorm',
+'rg16snorm',
+'rgba16unorm',
+'rgba16snorm',
+'r8snorm',
+'rg8snorm',
+'rgba8snorm',
+'rg11b10ufloat'];
+
 
 export const kTextureFormatsTier1EnablesStorageReadOnlyWriteOnly = [
 'r8unorm',
@@ -1800,22 +1927,41 @@ export const kOptionalTextureFormats = kAllTextureFormats.filter(
   (t) => kTextureFormatInfo[t].feature !== undefined
 );
 
-/** Valid GPUTextureFormats for `copyExternalImageToTexture`, by spec. */
-export const kValidTextureFormatsForCopyE2T = [
-'r8unorm',
-'r16float',
-'r32float',
-'rg8unorm',
-'rg16float',
-'rg32float',
-'rgba8unorm',
-'rgba8unorm-srgb',
-'bgra8unorm',
-'bgra8unorm-srgb',
-'rgb10a2unorm',
-'rgba16float',
-'rgba32float'];
+function isSnormTextureFormat(format) {
+  return format.endsWith('snorm');
+}
 
+/**
+ * Returns true if a texture can be possibly used with copyExternalImageToTexture.
+ * The texture may require certain features to be enabled.
+ */
+export function isTextureFormatPossiblyUsableWithCopyExternalImageToTexture(
+format)
+{
+  return (
+    isColorTextureFormat(format) &&
+    !isSintOrUintFormat(format) &&
+    !isCompressedTextureFormat(format) &&
+    !isSnormTextureFormat(format) &&
+    isTextureFormatPossiblyUsableAsColorRenderAttachment(format));
+
+}
+
+/**
+ * Returns true if a texture can be used with copyExternalImageToTexture.
+ */
+export function isTextureFormatUsableWithCopyExternalImageToTexture(
+features,
+format)
+{
+  return (
+    isColorTextureFormat(format) &&
+    !isSintOrUintFormat(format) &&
+    !isCompressedTextureFormat(format) &&
+    !isSnormTextureFormat(format) &&
+    isTextureFormatColorRenderable(features, format));
+
+}
 
 //
 // Other related stuff
@@ -2014,14 +2160,14 @@ format)
  * (defaulting to 2d) and GPUTextureFormat for a GPU device, by spec.
  */
 export function textureDimensionAndFormatCompatibleForDevice(
-device,
+features,
 dimension,
 format)
 {
   if (
   dimension === '3d' && (
-  isBCTextureFormat(format) && device.features.has('texture-compression-bc-sliced-3d') ||
-  isASTCTextureFormat(format) && device.features.has('texture-compression-astc-sliced-3d')))
+  isBCTextureFormat(format) && hasFeature(features, 'texture-compression-bc-sliced-3d') ||
+  isASTCTextureFormat(format) && hasFeature(features, 'texture-compression-astc-sliced-3d')))
   {
     return true;
   }
@@ -2036,12 +2182,12 @@ format)
  * Returns true iff a texture can be used with the provided GPUTextureViewDimension
  */
 export function textureViewDimensionAndFormatCompatibleForDevice(
-device,
+features,
 dimension,
 format)
 {
   return textureDimensionAndFormatCompatibleForDevice(
-    device,
+    features,
     getTextureDimensionFromView(dimension),
     format
   );
@@ -2051,11 +2197,11 @@ format)
  * Check if two formats are view format compatible.
  */
 export function textureFormatsAreViewCompatible(
-device,
+features,
 a,
 b)
 {
-  return isCompatibilityDevice(device) ?
+  return isCompatibilityMode(features) ?
   a === b :
   a === b || a + '-srgb' === b || b + '-srgb' === a;
 }
@@ -2183,12 +2329,14 @@ formats)
   return formats.filter((f) => f === undefined || kTextureFormatInfo[f].feature === feature);
 }
 
-function isTextureFormatTier1EnablesRenderAttachmentBlendableMultisampleResolve(
-format)
-{
-  return kTextureFormatTier1AllowsRenderAttachmentBlendableMultisampleResolve.includes(
+function isTextureFormatTier1EnablesRenderAttachmentBlendableMultisample(format) {
+  return kTextureFormatTier1AllowsRenderAttachmentBlendableMultisample.includes(
     format
   );
+}
+
+function isTextureFormatTier1EnablesResolve(format) {
+  return kTextureFormatTier1AllowsResolve.includes(format);
 }
 
 function isTextureFormatTier1EnablesStorageReadOnlyWriteOnly(format) {
@@ -2278,12 +2426,20 @@ export function isColorTextureFormat(format) {
   return !!kTextureFormatInfo[format].color;
 }
 
+export function isColorTextureFormatWithAlpha(format) {
+  return isColorTextureFormat(format) && kTextureFormatInfo[format].color?.componentCount === 4;
+}
+
 export function isDepthTextureFormat(format) {
   return !!kTextureFormatInfo[format].depth;
 }
 
 export function isStencilTextureFormat(format) {
   return !!kTextureFormatInfo[format].stencil;
+}
+
+export function isDepthStencilTextureFormat(format) {
+  return isDepthTextureFormat(format) && isStencilTextureFormat(format);
 }
 
 export function isDepthOrStencilTextureFormat(format) {
@@ -2299,27 +2455,30 @@ export function isEncodableTextureFormat(format) {
  * depth textures and stencil textures are usable with usage RENDER_ATTACHMENT.
  */
 export function isTextureFormatUsableAsRenderAttachment(
-device,
+features,
 format)
 {
   if (format === 'rg11b10ufloat') {
-    return device.features.has('rg11b10ufloat-renderable');
+    return hasFeature(features, 'rg11b10ufloat-renderable');
   }
-  return kTextureFormatInfo[format].colorRender || isDepthOrStencilTextureFormat(format);
+  if (isTextureFormatTier1EnablesRenderAttachmentBlendableMultisample(format)) {
+    return hasFeature(features, 'texture-formats-tier1');
+  }
+  return !!(kTextureFormatInfo[format].colorRender ?? isDepthOrStencilTextureFormat(format));
 }
 
 /**
  * Returns if a texture can be used as a "colorAttachment".
  */
 export function isTextureFormatColorRenderable(
-device,
+features,
 format)
 {
   if (format === 'rg11b10ufloat') {
-    return device.features.has('rg11b10ufloat-renderable');
+    return hasFeature(features, 'rg11b10ufloat-renderable');
   }
-  if (isTextureFormatTier1EnablesRenderAttachmentBlendableMultisampleResolve(format)) {
-    return device.features.has('texture-formats-tier1');
+  if (isTextureFormatTier1EnablesRenderAttachmentBlendableMultisample(format)) {
+    return hasFeature(features, 'texture-formats-tier1');
   }
   return !!kAllTextureFormatInfo[format].colorRender;
 }
@@ -2327,25 +2486,64 @@ format)
 /**
  * Returns if a texture can be blended.
  */
-export function isTextureFormatBlendable(device, format) {
-  if (!isTextureFormatColorRenderable(device, format)) {
+export function isTextureFormatBlendable(
+features,
+format)
+{
+  if (!isTextureFormatColorRenderable(features, format)) {
     return false;
   }
   if (format === 'rg11b10ufloat') {
-    return device.features.has('rg11b10ufloat-renderable');
+    return hasFeature(features, 'rg11b10ufloat-renderable');
   }
   if (is32Float(format)) {
-    return device.features.has('float32-blendable');
+    return hasFeature(features, 'float32-blendable');
+  }
+  if (isTextureFormatTier1EnablesRenderAttachmentBlendableMultisample(format)) {
+    return hasFeature(features, 'texture-formats-tier1');
   }
   return !!kAllTextureFormatInfo[format].colorRender?.blend;
 }
 
 /**
+ * Returns true if a texture can be filtered.
+ */
+export function isTextureFormatFilterable(
+features,
+format)
+{
+  const type = getTextureFormatType(format);
+  switch (type) {
+    case 'float':
+      return true;
+    case 'unfilterable-float':
+      if (is32Float(format)) {
+        return hasFeature(features, 'float32-filterable');
+      } else {
+        return false;
+      }
+    default:
+      return false;
+  }
+}
+
+/**
  * Returns the texture's type (float, unsigned-float, sint, uint, depth)
  */
-export function getTextureFormatType(format) {
+export function getTextureFormatType(format, aspect = 'all') {
   const info = kTextureFormatInfo[format];
-  const type = info.color?.type ?? info.depth?.type ?? info.stencil?.type;
+  let type;
+  switch (aspect) {
+    case 'all':
+      type = info.color?.type ?? info.depth?.type ?? info.stencil?.type;
+      break;
+    case 'depth-only':
+      type = info.depth?.type;
+      break;
+    case 'stencil-only':
+      type = info.stencil?.type;
+      break;
+  }
   assert(!!type);
   return type;
 }
@@ -2369,7 +2567,7 @@ export function isTextureFormatPossiblyUsableAsRenderAttachment(format) {
   return (
     isDepthOrStencilTextureFormat(format) ||
     !!info.colorRender ||
-    isTextureFormatTier1EnablesRenderAttachmentBlendableMultisampleResolve(format));
+    isTextureFormatTier1EnablesRenderAttachmentBlendableMultisample(format));
 
 }
 
@@ -2380,8 +2578,7 @@ export function isTextureFormatPossiblyUsableAsRenderAttachment(format) {
 export function isTextureFormatPossiblyUsableAsColorRenderAttachment(format) {
   const info = kTextureFormatInfo[format];
   return (
-    !!info.colorRender ||
-    isTextureFormatTier1EnablesRenderAttachmentBlendableMultisampleResolve(format));
+    !!info.colorRender || isTextureFormatTier1EnablesRenderAttachmentBlendableMultisample(format));
 
 }
 
@@ -2392,9 +2589,23 @@ export function isTextureFormatPossiblyUsableAsColorRenderAttachment(format) {
 export function isTextureFormatPossiblyMultisampled(format) {
   const info = kTextureFormatInfo[format];
   return (
-    info.multisample ||
-    isTextureFormatTier1EnablesRenderAttachmentBlendableMultisampleResolve(format));
+    info.multisample || isTextureFormatTier1EnablesRenderAttachmentBlendableMultisample(format));
 
+}
+
+/**
+ * Returns true if a texture can possibly be resolved.
+ * The texture may require certain features to be enabled.
+ */
+export function isTextureFormatPossiblyResolvable(format) {
+  if (format === 'rg11b10ufloat') {
+    return true;
+  }
+  if (isTextureFormatTier1EnablesResolve(format)) {
+    return true;
+  }
+  const info = kTextureFormatInfo[format];
+  return !!info.colorRender?.resolve;
 }
 
 /**
@@ -2454,20 +2665,20 @@ export const kCompatModeUnsupportedStorageTextureFormats = [
  * a shader @see {@link isTextureFormatUsableAsStorageFormatInCreateShaderModule}
  */
 function isTextureFormatUsableAsWriteOnlyStorageTexture(
-device,
+features,
 format)
 {
-  if (isCompatibilityDevice(device)) {
+  if (isCompatibilityMode(features)) {
     if (kCompatModeUnsupportedStorageTextureFormats.indexOf(format) >= 0) {
       return false;
     }
   }
-  if (format === 'bgra8unorm' && device.features.has('bgra8unorm-storage')) {
+  if (format === 'bgra8unorm' && hasFeature(features, 'bgra8unorm-storage')) {
     return true;
   }
   if (
   isTextureFormatTier1EnablesStorageReadOnlyWriteOnly(format) &&
-  device.features.has('texture-formats-tier1'))
+  hasFeature(features, 'texture-formats-tier1'))
   {
     return true;
   }
@@ -2484,20 +2695,20 @@ format)
  * a shader @see {@link isTextureFormatUsableAsStorageFormatInCreateShaderModule}
  */
 export function isTextureFormatUsableWithStorageAccessMode(
-device,
+features,
 format,
 access)
 {
   switch (access) {
     case 'read':
     case 'read-only':
-      return isTextureFormatUsableAsReadOnlyStorageTexture(device, format);
+      return isTextureFormatUsableAsReadOnlyStorageTexture(features, format);
     case 'write':
     case 'write-only':
-      return isTextureFormatUsableAsWriteOnlyStorageTexture(device, format);
+      return isTextureFormatUsableAsWriteOnlyStorageTexture(features, format);
     case 'read_write':
     case 'read-write':
-      return isTextureFormatUsableAsReadWriteStorageTexture(device, format);
+      return isTextureFormatUsableAsReadWriteStorageTexture(features, format);
   }
 }
 
@@ -2509,7 +2720,7 @@ access)
  * a shader @see {@link isTextureFormatUsableAsStorageFormatInCreateShaderModule}
  */
 function isTextureFormatUsableAsReadOnlyStorageTexture(
-device,
+features,
 format)
 {
   // This is the only storage texture format that isn't readable as a storage format.
@@ -2518,7 +2729,7 @@ format)
   }
   // All other formats that can be used as a storage texture can be used as
   // both read-only and write-only.
-  return isTextureFormatUsableAsWriteOnlyStorageTexture(device, format);
+  return isTextureFormatUsableAsWriteOnlyStorageTexture(features, format);
 }
 
 /**
@@ -2531,22 +2742,20 @@ format)
  * is available.
  */
 export function isTextureFormatUsableAsStorageFormatInCreateShaderModule(
-device,
+features,
 format)
 {
-  if (format === 'bgra8unorm') {
-    return true;
-  }
-  const info = kTextureFormatInfo[format];
-  return !!(info.color?.storage || info.depth?.storage || info.stencil?.storage);
+  return kPossibleStorageTextureFormats.includes(
+    format
+  );
 }
 
 function isTextureFormatUsableAsReadWriteStorageTexture(
-device,
+features,
 format)
 {
   if (isTextureFormatTier2EnablesStorageReadWrite(format)) {
-    return device.features.has('texture-formats-tier2');
+    return hasFeature(features, 'texture-formats-tier2');
   }
   return !!kTextureFormatInfo[format].color?.readWriteStorage;
 }
@@ -2595,17 +2804,20 @@ export const kCompatModeUnsupportedMultisampledTextureFormats = [
 /**
  * Returns true if you can make a multisampled texture from the given format.
  */
-export function isTextureFormatMultisampled(device, format) {
-  if (isCompatibilityDevice(device)) {
+export function isTextureFormatMultisampled(
+features,
+format)
+{
+  if (isCompatibilityMode(features)) {
     if (kCompatModeUnsupportedMultisampledTextureFormats.indexOf(format) >= 0) {
       return false;
     }
   }
   if (format === 'rg11b10ufloat') {
-    return device.features.has('rg11b10ufloat-renderable');
+    return hasFeature(features, 'rg11b10ufloat-renderable');
   }
-  if (isTextureFormatTier1EnablesRenderAttachmentBlendableMultisampleResolve(format)) {
-    return device.features.has('texture-formats-tier1');
+  if (isTextureFormatTier1EnablesRenderAttachmentBlendableMultisample(format)) {
+    return hasFeature(features, 'texture-formats-tier1');
   }
   return kAllTextureFormatInfo[format].multisample;
 }
@@ -2614,15 +2826,18 @@ export function isTextureFormatMultisampled(device, format) {
  * Returns true if a texture can be "resolved". uint/sint formats can be multisampled but
  * can not be resolved.
  */
-export function isTextureFormatResolvable(device, format) {
+export function isTextureFormatResolvable(
+features,
+format)
+{
   if (format === 'rg11b10ufloat') {
-    return device.features.has('rg11b10ufloat-renderable');
+    return hasFeature(features, 'rg11b10ufloat-renderable');
   }
-  if (isTextureFormatTier1EnablesRenderAttachmentBlendableMultisampleResolve(format)) {
-    return device.features.has('texture-formats-tier1');
+  if (isTextureFormatTier1EnablesResolve(format)) {
+    return hasFeature(features, 'texture-formats-tier1');
   }
   // You can't resolve a non-multisampled format.
-  if (!isTextureFormatMultisampled(device, format)) {
+  if (!isTextureFormatMultisampled(features, format)) {
     return false;
   }
   const info = kAllTextureFormatInfo[format];

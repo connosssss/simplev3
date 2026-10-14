@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,9 +6,9 @@
 #define mozilla_Mutex_h
 
 #include "mozilla/BlockingResourceBase.h"
-#include "mozilla/ThreadSafety.h"
-#include "mozilla/PlatformMutex.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/PlatformMutex.h"
+#include "mozilla/ThreadSafety.h"
 #include "nsISupports.h"
 
 //
@@ -53,11 +51,18 @@ class MOZ_CAPABILITY("mutex") OffTheBooksMutex : public detail::MutexImpl,
   {
   }
 
-  ~OffTheBooksMutex() {
+  ~OffTheBooksMutex()
 #ifdef DEBUG
+  {
     MOZ_ASSERT(!mOwningThread, "destroying a still-owned lock!");
-#endif
   }
+#else
+      = default;
+#endif
+
+  OffTheBooksMutex() = delete;
+  OffTheBooksMutex(const OffTheBooksMutex&) = delete;
+  OffTheBooksMutex& operator=(const OffTheBooksMutex&) = delete;
 
 #ifndef DEBUG
   /**
@@ -105,10 +110,6 @@ class MOZ_CAPABILITY("mutex") OffTheBooksMutex : public detail::MutexImpl,
 #endif  // ifndef DEBUG
 
  private:
-  OffTheBooksMutex() = delete;
-  OffTheBooksMutex(const OffTheBooksMutex&) = delete;
-  OffTheBooksMutex& operator=(const OffTheBooksMutex&) = delete;
-
   friend class OffTheBooksCondVar;
 
 #ifdef DEBUG
@@ -129,7 +130,6 @@ class Mutex : public OffTheBooksMutex {
 
   MOZ_COUNTED_DTOR(Mutex)
 
- private:
   Mutex() = delete;
   Mutex(const Mutex&) = delete;
   Mutex& operator=(const Mutex&) = delete;
@@ -163,6 +163,10 @@ class MOZ_RAII MOZ_SCOPED_CAPABILITY BaseAutoLock {
 
   ~BaseAutoLock(void) MOZ_CAPABILITY_RELEASE() { mLock.Unlock(); }
 
+  BaseAutoLock() = delete;
+  BaseAutoLock(BaseAutoLock&) = delete;
+  BaseAutoLock& operator=(BaseAutoLock&) = delete;
+
   // Assert that aLock is the mutex passed to the constructor and that the
   // current thread owns the mutex.  In coding patterns such as:
   //
@@ -194,9 +198,6 @@ class MOZ_RAII MOZ_SCOPED_CAPABILITY BaseAutoLock {
   }
 
  private:
-  BaseAutoLock() = delete;
-  BaseAutoLock(BaseAutoLock&) = delete;
-  BaseAutoLock& operator=(BaseAutoLock&) = delete;
   static void* operator new(size_t) noexcept(true);
 
   friend class BaseAutoUnlock<T>;
@@ -274,6 +275,10 @@ class MOZ_RAII MOZ_SCOPED_CAPABILITY ReleasableBaseAutoLock {
     }
   }
 
+  ReleasableBaseAutoLock() = delete;
+  ReleasableBaseAutoLock(ReleasableBaseAutoLock&) = delete;
+  ReleasableBaseAutoLock& operator=(ReleasableBaseAutoLock&) = delete;
+
   void AssertOwns(const T& aMutex) const MOZ_ASSERT_CAPABILITY(aMutex) {
     MOZ_ASSERT(&aMutex == &mLock);
     mLock.AssertCurrentThreadOwns();
@@ -301,9 +306,6 @@ class MOZ_RAII MOZ_SCOPED_CAPABILITY ReleasableBaseAutoLock {
   }
 
  private:
-  ReleasableBaseAutoLock() = delete;
-  ReleasableBaseAutoLock(ReleasableBaseAutoLock&) = delete;
-  ReleasableBaseAutoLock& operator=(ReleasableBaseAutoLock&) = delete;
   static void* operator new(size_t) noexcept(true);
 
   bool mLocked;
@@ -341,10 +343,11 @@ class MOZ_RAII MOZ_SCOPED_CAPABILITY BaseAutoUnlock {
 
   ~BaseAutoUnlock() MOZ_SCOPED_UNLOCK_REACQUIRE() { mLock.Lock(); }
 
- private:
   BaseAutoUnlock() = delete;
   BaseAutoUnlock(BaseAutoUnlock&) = delete;
   BaseAutoUnlock& operator=(BaseAutoUnlock&) = delete;
+
+ private:
   static void* operator new(size_t) noexcept(true);
 
   T mLock;
@@ -378,13 +381,13 @@ class MOZ_RAII MOZ_SCOPED_CAPABILITY BaseAutoTryLock {
     }
   }
 
+  BaseAutoTryLock(BaseAutoTryLock&) = delete;
+  BaseAutoTryLock& operator=(BaseAutoTryLock&) = delete;
+
   explicit operator bool() const { return mLock; }
 
  private:
-  BaseAutoTryLock(BaseAutoTryLock&) = delete;
-  BaseAutoTryLock& operator=(BaseAutoTryLock&) = delete;
   static void* operator new(size_t) noexcept(true);
-
   T* mLock;
 };
 }  // namespace detail

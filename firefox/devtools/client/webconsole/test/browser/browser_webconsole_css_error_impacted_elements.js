@@ -7,6 +7,7 @@
 const httpServer = createTestHTTPServer();
 httpServer.registerPathHandler(`/`, function (request, response) {
   response.setStatusLine(request.httpVersion, 200, "OK");
+  response.setHeader("Content-Type", "text/html");
   response.write(`
     <html>
       <head>
@@ -53,7 +54,11 @@ add_task(async function () {
 
   info("Check the CSS warning message for the top level document");
   let messageNode = await waitFor(() =>
-    findWarningMessage(hud, "Error in parsing value for ‘cursor’", ".css")
+    findWarningMessage(
+      hud,
+      "Error in parsing value for ‘cursor: unknownCursor;’",
+      ".css"
+    )
   );
 
   info("Click on the expand arrow");
@@ -104,7 +109,11 @@ add_task(async function () {
 
   info("Check the CSS warning message for the third-party iframe");
   messageNode = await waitFor(() =>
-    findWarningMessage(hud, "Error in parsing value for ‘color’", ".css")
+    findWarningMessage(
+      hud,
+      "Error in parsing value for ‘color: blouge;’",
+      ".css"
+    )
   );
 
   info("Click on the expand arrow");

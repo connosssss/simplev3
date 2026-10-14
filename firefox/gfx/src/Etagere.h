@@ -5,7 +5,7 @@
 #ifndef MOZILLA_GFX_ETAGERE_H
 #define MOZILLA_GFX_ETAGERE_H
 
-#include <stddef.h>
+#include <cstdint>
 
 namespace Etagere {
 

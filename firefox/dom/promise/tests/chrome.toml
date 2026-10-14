@@ -1,13 +1,9 @@
 [DEFAULT]
 
-["test_on_new_promise.html"]
-
-["test_on_promise_settled.html"]
-
-["test_on_promise_settled_duplicates.html"]
-
 ["test_promise_argument_xrays.html"]
-run-if = ["debug"]
+run-if = [
+  "debug",
+]
 support-files = [
   "file_promise_xrays.html",
   "file_promise_argument_tests.js",
@@ -17,7 +13,9 @@ support-files = [
 support-files = ["file_promise_job_with_bind_from_discarded_iframe.html"]
 
 ["test_promise_retval_xrays.html"]
-run-if = ["debug"]
+run-if = [
+  "debug",
+]
 support-files = [
   "file_promise_xrays.html",
   "file_promise_retval_tests.js"
@@ -25,3 +23,5 @@ support-files = [
 
 ["test_promise_xrays.html"]
 support-files = ["file_promise_xrays.html"]
+
+["test_scheduling_state_incumbent_hop.html"]

@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http:mozilla.org/MPL/2.0/. */
 
-#ifndef nsHttpInfo__
-#define nsHttpInfo__
+#ifndef nsHttpInfo_
+#define nsHttpInfo_
 
 #include "nsTArrayForwardDeclare.h"
 
@@ -11,6 +11,7 @@ namespace mozilla {
 namespace net {
 
 struct HttpRetParams;
+struct Http3ConnectionStatsParams;
 
 class HttpInfo {
  public:
@@ -23,4 +24,4 @@ class HttpInfo {
 }  // namespace net
 }  // namespace mozilla
 
-#endif  // nsHttpInfo__
+#endif  // nsHttpInfo_

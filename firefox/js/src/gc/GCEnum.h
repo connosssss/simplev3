@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -67,6 +65,7 @@ enum class State {
   D(CheckHashTablesOnMinorGC, 13)        \
   D(Compact, 14)                         \
   D(CheckHeapAfterGC, 15)                \
+  D(ConcurrentMarking, 16)               \
   D(YieldBeforeSweepingAtoms, 17)        \
   D(CheckGrayMarking, 18)                \
   D(YieldBeforeSweepingCaches, 19)       \
@@ -75,7 +74,8 @@ enum class State {
   D(YieldBeforeSweepingPropMapTrees, 23) \
   D(CheckWeakMapMarking, 24)             \
   D(YieldWhileGrayMarking, 25)           \
-  D(CheckHeapBeforeMinorGC, 26)
+  D(CheckHeapBeforeMinorGC, 26)          \
+  D(ConcurrentMarkingDelays, 27)
 
 enum class ZealMode {
 #define ZEAL_MODE(name, value) name = value,
@@ -84,6 +84,15 @@ enum class ZealMode {
       Count,
   Limit = Count - 1
 };
+
+/*
+ * For methods that mark pointers that cross compartment boundaries.
+ *
+ * These are called in per-zone GCs to prevent the wrappers' outgoing edges
+ * from dangling (full GCs naturally follow pointers across compartments) and
+ * when compacting to update cross-compartment pointers.
+ */
+enum EdgeSelector { AllEdges, NonGrayEdges, GrayEdges, BlackEdges };
 
 } /* namespace gc */
 
@@ -110,11 +119,6 @@ enum class GCAbortReason {
 #define JS_FOR_EACH_INTERNAL_MEMORY_USE(_) \
   _(ArrayBufferContents)                   \
   _(StringContents)                        \
-  _(ScriptPrivateData)                     \
-  _(MapObjectData)                         \
-  _(BigIntDigits)                          \
-  _(ScopeData)                             \
-  _(WeakMapObject)                         \
   _(ShapeSetForAdd)                        \
   _(PropMapChildren)                       \
   _(PropMapTable)                          \
@@ -125,8 +129,6 @@ enum class GCAbortReason {
   _(ModuleImportAttributes)                \
   _(BaselineScript)                        \
   _(IonScript)                             \
-  _(ArgumentsData)                         \
-  _(RareArgumentsData)                     \
   _(RegExpSharedBytecode)                  \
   _(RegExpSharedNamedCaptureData)          \
   _(RegExpSharedNamedCaptureSliceData)     \
@@ -144,6 +146,8 @@ enum class GCAbortReason {
   _(WasmGlobalCell)                        \
   _(WasmResolveResponseClosure)            \
   _(WasmModule)                            \
+  _(WasmComponent)                         \
+  _(WasmComponentInstanceInstance)         \
   _(WasmTableTable)                        \
   _(WasmExceptionData)                     \
   _(WasmTagType)                           \
@@ -161,8 +165,7 @@ enum class GCAbortReason {
   _(SharedArrayRawBuffer)                  \
   _(XDRBufferElements)                     \
   _(GlobalObjectData)                      \
-  _(ProxyExternalValueArray)               \
-  _(WasmTrailerBlock)
+  _(GraphLoadingStateRecord)
 
 #define JS_FOR_EACH_MEMORY_USE(_)  \
   JS_FOR_EACH_PUBLIC_MEMORY_USE(_) \
@@ -173,6 +176,10 @@ enum class MemoryUse : uint8_t {
   JS_FOR_EACH_MEMORY_USE(DEFINE_MEMORY_USE)
 #undef DEFINE_MEMORY_USE
 };
+
+// We sometimes use pointers to hold special values. The GC treats these as
+// nullptr.
+static constexpr uintptr_t MaxTaggedPointer = 0x5;
 
 } /* namespace js */
 

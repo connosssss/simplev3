@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,12 +5,12 @@
 #include "WebGLRenderbuffer.h"
 
 #include "GLContext.h"
-#include "mozilla/dom/WebGLRenderingContextBinding.h"
 #include "ScopedGLHelpers.h"
 #include "WebGLContext.h"
 #include "WebGLFormats.h"
 #include "WebGLStrongTypes.h"
 #include "WebGLTexture.h"
+#include "mozilla/dom/WebGLRenderingContextBinding.h"
 
 namespace mozilla {
 
@@ -144,6 +143,11 @@ GLenum WebGLRenderbuffer::DoRenderbufferStorage(
   return 0;
 }
 
+void WebGLRenderbuffer::Truncate() {
+  mImageInfo = {};
+  InvalidateCaches();
+}
+
 void WebGLRenderbuffer::RenderbufferStorage(uint32_t samples,
                                             GLenum internalFormat,
                                             uint32_t width, uint32_t height) {
@@ -173,11 +177,7 @@ void WebGLRenderbuffer::RenderbufferStorage(uint32_t samples,
   const GLenum error = DoRenderbufferStorage(samples, usage, width, height);
   if (error) {
     mContext->GenerateWarning("Unexpected error %s", EnumString(error).c_str());
-    if (error == LOCAL_GL_OUT_OF_MEMORY) {
-      // Truncate.
-      mImageInfo = {};
-      InvalidateCaches();
-    }
+    Truncate();
     return;
   }
 

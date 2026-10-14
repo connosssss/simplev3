@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +6,7 @@
 #define mozilla_dom_KeyAlgorithmProxy_h
 
 #include <cstdint>
-#include <utility>
+
 #include "js/RootingAPI.h"
 #include "mozilla/dom/CryptoBuffer.h"
 #include "mozilla/dom/KeyAlgorithmBinding.h"
@@ -35,27 +33,25 @@ struct RsaHashedKeyAlgorithmStorage {
   uint16_t mModulusLength;
   CryptoBuffer mPublicExponent;
 
-  bool ToKeyAlgorithm(JSContext* aCx, RsaHashedKeyAlgorithm& aRsa,
+  void ToKeyAlgorithm(JSContext* aCx, RsaHashedKeyAlgorithm& aRsa,
                       ErrorResult& aError) const {
     JS::Rooted<JSObject*> exponent(aCx,
                                    mPublicExponent.ToUint8Array(aCx, aError));
     if (aError.Failed()) {
-      return false;
+      return;
     }
 
     aRsa.mName = mName;
     aRsa.mModulusLength = mModulusLength;
     aRsa.mHash.mName = mHash.mName;
     aRsa.mPublicExponent.Init(exponent);
-
-    return true;
   }
 };
 
 // This class encapuslates a KeyAlgorithm object, and adds several
 // methods that make WebCrypto operations simpler.
 struct KeyAlgorithmProxy {
-  enum KeyAlgorithmType { AES, HMAC, RSA, EC, KDF, OKP };
+  enum KeyAlgorithmType { AES, HMAC, RSA, EC, KDF, OKP, MLKEM };
   KeyAlgorithmType mType;
 
   // Plain is always populated with the algorithm name
@@ -67,6 +63,7 @@ struct KeyAlgorithmProxy {
   EcKeyAlgorithm mEc;
   KeyAlgorithm mKDF;
   KeyAlgorithm mEd;
+  KeyAlgorithm mMlKem;
 
   // Structured clone
   bool WriteStructuredClone(JSStructuredCloneWriter* aWriter) const;
@@ -127,6 +124,12 @@ struct KeyAlgorithmProxy {
     mType = OKP;
     mName = aName;
     mEd.mName = aName;
+  }
+
+  void MakeMlKem(const nsString& aName) {
+    mType = MLKEM;
+    mName = aName;
+    mMlKem.mName = aName;
   }
 };
 

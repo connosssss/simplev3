@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,21 +5,22 @@
 #ifndef HOSTWEBGLCONTEXT_H_
 #define HOSTWEBGLCONTEXT_H_
 
-#include "mozilla/dom/BindingUtils.h"
-#include "mozilla/GfxMessageUtils.h"
-#include "ClientWebGLContext.h"
-#include "mozilla/Maybe.h"
-#include "GLContext.h"
-#include "WebGLContext.h"
-#include "WebGL2Context.h"
-#include "WebGLFramebuffer.h"
-#include "WebGLTypes.h"
-#include "WebGLCommandQueue.h"
-
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include "ClientWebGLContext.h"
+#include "GLContext.h"
+#include "WebGL2Context.h"
+#include "WebGLCommandQueue.h"
+#include "WebGLContext.h"
+#include "WebGLFramebuffer.h"
+#include "WebGLTypes.h"
+#include "mozilla/GfxMessageUtils.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/dom/BindingUtils.h"
 
 namespace mozilla {
 
@@ -68,17 +68,12 @@ class HostWebGLContext final : public SupportsWeakPtr {
   }
 
  public:
-  struct OwnerData final {
-    ClientWebGLContext* inProcess = nullptr;
-    dom::WebGLParent* outOfProcess = nullptr;
-  };
-
   static std::unique_ptr<HostWebGLContext> Create(
-      const OwnerData&, const webgl::InitContextDesc&,
+      dom::WebGLParent*, const webgl::InitContextDesc&,
       webgl::InitContextResult* out);
 
  private:
-  explicit HostWebGLContext(const OwnerData&);
+  explicit HostWebGLContext(dom::WebGLParent*);
 
  public:
   virtual ~HostWebGLContext();
@@ -86,7 +81,7 @@ class HostWebGLContext final : public SupportsWeakPtr {
   WebGLContext* GetWebGLContext() const { return mContext; }
 
  public:
-  const OwnerData mOwnerData;
+  dom::WebGLParent* const mOwner;
 
  private:
   RefPtr<WebGLContext> mContext;
@@ -187,13 +182,14 @@ class HostWebGLContext final : public SupportsWeakPtr {
 
   // -
 
-  Maybe<uvec2> FrontBufferSnapshotInto(Maybe<Range<uint8_t>> dest) const {
+  Maybe<uvec2> FrontBufferSnapshotInto(
+      Maybe<mozilla::Range<uint8_t>> dest) const {
     return mContext->FrontBufferSnapshotInto(dest);
   }
 
   Maybe<uvec2> FrontBufferSnapshotInto(
       std::shared_ptr<gl::SharedSurface>& front,
-      Maybe<Range<uint8_t>> dest) const {
+      Maybe<mozilla::Range<uint8_t>> dest) const {
     return mContext->FrontBufferSnapshotInto(front, dest);
   }
 
@@ -427,6 +423,15 @@ class HostWebGLContext final : public SupportsWeakPtr {
     mContext->PolygonOffset(factor, units);
   }
 
+  void PolygonOffsetClampEXT(GLfloat factor, GLfloat units,
+                             GLfloat clamp) const {
+    mContext->PolygonOffsetClampEXT(factor, units, clamp);
+  }
+
+  void ClipControlEXT(GLenum origin, GLenum depth) const {
+    mContext->ClipControlEXT(origin, depth);
+  }
+
   void SampleCoverage(GLclampf value, bool invert) const {
     mContext->SampleCoverage(value, invert);
   }
@@ -477,7 +482,7 @@ class HostWebGLContext final : public SupportsWeakPtr {
   }
 
   bool GetBufferSubData(GLenum target, uint64_t srcByteOffset,
-                        const Range<uint8_t>& dest) const {
+                        const mozilla::Range<uint8_t>& dest) const {
     return GetWebGL2Context()->GetBufferSubData(target, srcByteOffset, dest);
   }
 
@@ -660,8 +665,9 @@ class HostWebGLContext final : public SupportsWeakPtr {
     mContext->ReadPixelsPbo(desc, offset);
   }
 
-  webgl::ReadPixelsResult ReadPixelsInto(const webgl::ReadPixelsDesc& desc,
-                                         const Range<uint8_t>& dest) const {
+  webgl::ReadPixelsResult ReadPixelsInto(
+      const webgl::ReadPixelsDesc& desc,
+      const mozilla::Range<uint8_t>& dest) const {
     return mContext->ReadPixelsInto(desc, dest);
   }
 

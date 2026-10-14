@@ -207,13 +207,12 @@ CertReq(SECKEYPrivateKey *privk, SECKEYPublicKey *pubk, KeyType keyType,
     CERTSubjectPublicKeyInfo *spki;
     CERTCertificateRequest *cr;
     SECItem *encoding;
-    SECOidTag signAlgTag;
+    SECOidTag signAlgTag = SEC_OID_UNKNOWN;
     SECStatus rv;
     PLArenaPool *arena;
     void *extHandle;
     SECItem signedReq = { siBuffer, NULL, 0 };
     SECAlgorithmID signAlg;
-    SECItem *params = NULL;
 
     arena = PORT_NewArena(DER_DEFAULT_CHUNKSIZE);
     if (!arena) {
@@ -231,23 +230,13 @@ CertReq(SECKEYPrivateKey *privk, SECKEYPublicKey *pubk, KeyType keyType,
 
     /* Change cert type to RSA-PSS, if desired. */
     if (pssCertificate) {
-        params = SEC_CreateSignatureAlgorithmParameters(arena,
-                                                        NULL,
-                                                        SEC_OID_PKCS1_RSA_PSS_SIGNATURE,
-                                                        hashAlgTag,
-                                                        NULL,
-                                                        privk);
-        if (!params) {
-            PORT_FreeArena(arena, PR_FALSE);
-            SECKEY_DestroySubjectPublicKeyInfo(spki);
-            SECU_PrintError(progName, "unable to create RSA-PSS parameters");
-            return SECFailure;
-        }
-
-        spki->algorithm.parameters.data = NULL;
-        rv = SECOID_SetAlgorithmID(arena, &spki->algorithm,
-                                   SEC_OID_PKCS1_RSA_PSS_SIGNATURE,
-                                   hashAlgTag == SEC_OID_UNKNOWN ? NULL : params);
+        /* force a PSS signature. We can do a PSS signature with an
+         * RSA key, this will force us to generate a PSS signature */
+        signAlgTag = SEC_OID_PKCS1_RSA_PSS_SIGNATURE;
+        /* override the SPKI algorithm id. */
+        rv = SEC_CreateSignatureAlgorithmID(arena, &spki->algorithm,
+                                            signAlgTag, hashAlgTag,
+                                            NULL, NULL, pubk);
         if (rv != SECSuccess) {
             PORT_FreeArena(arena, PR_FALSE);
             SECKEY_DestroySubjectPublicKeyInfo(spki);
@@ -292,27 +281,12 @@ CertReq(SECKEYPrivateKey *privk, SECKEYPublicKey *pubk, KeyType keyType,
     }
 
     PORT_Memset(&signAlg, 0, sizeof(signAlg));
-    if (pssCertificate) {
-        rv = SECOID_SetAlgorithmID(arena, &signAlg,
-                                   SEC_OID_PKCS1_RSA_PSS_SIGNATURE, params);
-        if (rv != SECSuccess) {
-            PORT_FreeArena(arena, PR_FALSE);
-            SECU_PrintError(progName, "unable to set algorithm ID");
-            return SECFailure;
-        }
-    } else {
-        signAlgTag = SEC_GetSignatureAlgorithmOidTag(keyType, hashAlgTag);
-        if (signAlgTag == SEC_OID_UNKNOWN) {
-            PORT_FreeArena(arena, PR_FALSE);
-            SECU_PrintError(progName, "unknown Key or Hash type");
-            return SECFailure;
-        }
-        rv = SECOID_SetAlgorithmID(arena, &signAlg, signAlgTag, 0);
-        if (rv != SECSuccess) {
-            PORT_FreeArena(arena, PR_FALSE);
-            SECU_PrintError(progName, "unable to set algorithm ID");
-            return SECFailure;
-        }
+    rv = SEC_CreateSignatureAlgorithmID(arena, &signAlg, signAlgTag, hashAlgTag,
+                                        NULL, privk, NULL);
+    if (rv != SECSuccess) {
+        PORT_FreeArena(arena, PR_FALSE);
+        SECU_PrintError(progName, "can't create a signature algorithm id");
+        return SECFailure;
     }
 
     /* Sign the request */
@@ -863,10 +837,6 @@ SECItemToHex(const SECItem *item, char *dst)
     }
 }
 
-static const char *const keyTypeName[] = {
-    "null", "rsa", "dsa", "fortezza", "dh", "kea", "ec", "rsaPss", "rsaOaep"
-};
-
 #define MAX_CKA_ID_BIN_LEN 20
 #define MAX_CKA_ID_STR_LEN 40
 
@@ -914,7 +884,7 @@ PrintKey(PRFileDesc *out, const char *nickName, int count,
         keyType = key->keyType;
     }
     PR_fprintf(out, "<%2d> %-8.8s %-42.42s %s\n", count,
-               keyTypeName[keyType], ckaIDbuf, nickName);
+               SECKEY_GetKeyTypeString(keyType), ckaIDbuf, nickName);
 
     return SECSuccess;
 }
@@ -1190,8 +1160,12 @@ PrintSyntax()
         "\t\t [-z noisefile] [-d certdir] [-P dbprefix]\n", progName);
     FPS "\t%s -G [-h token-name] -k ec -q curve [-f pwfile]\n"
         "\t\t [-z noisefile] [-d certdir] [-P dbprefix]\n", progName);
-    FPS "\t%s -K [-n key-name] [-h token-name] [-k dsa|ec|rsa|all]\n",
-        progName);
+    FPS "\t%s -G [-h token-name] -k ed -q curve [-f pwfile]\n"
+        "\t\t [-z noisefile] [-d certdir] [-P dbprefix]\n", progName);
+    FPS "\t%s -G [-h token-name] -k mldsa -q paramset [-f pwfile]\n"
+        "\t\t [-z noisefile] [-d certdir] [-P dbprefix]\n", progName);
+    FPS "\t%s -K [-n key-name] [-h token-name] [-k dsa|ec|ed|rsa|mldsa|all]\n",
+         progName);
     FPS "\t\t [-f pwfile] [-X] [-d certdir] [-P dbprefix]\n");
     FPS "\t%s --upgrade-merge --source-dir upgradeDir --upgrade-id uniqueID\n",
         progName);
@@ -1424,6 +1398,12 @@ luG(enum usage_level ul, const char *command)
     FPS "%-20s c2tnb359w1, c2pnb368w1, c2tnb431r1, secp112r1, \n", "");
     FPS "%-20s secp112r2, secp128r1, secp128r2, sect113r1, sect113r2\n", "");
     FPS "%-20s sect131r1, sect131r2\n", "");
+    FPS "%-20s Edwards elliptic curve name (ed only)\n",
+        "   -q curve-name");
+    FPS "%-20s One of ed25519.\n", "");
+    FPS "%-20s ML-DSA parameter set (mldsa only)\n",
+        "   -q paramset");
+    FPS "%-20s valid values are ml-dsa-44,  ml-dsa-65, ml-dsa-87:\n", "");
     FPS "%-20s Key database directory (default is ~/.netscape)\n",
         "   -d keydir");
     FPS "%-20s Cert & Key database prefix\n",
@@ -1516,6 +1496,8 @@ luK(enum usage_level ul, const char *command)
 
     FPS "%-20s Key type (\"all\" (default), \"dsa\","
                                                     " \"ec\","
+                                                    " \"ed\","
+                                                    " \"mldsa\","
                                                     " \"rsa\")\n",
         "   -k key-type");
     FPS "%-20s The nickname of the key or associated certificate\n",
@@ -1674,6 +1656,14 @@ luR(enum usage_level ul, const char *command)
         "   -q pqgfile");
     FPS "%-20s Elliptic curve name (ec only)\n",
         "   -q curve-name");
+    FPS "%-20s See the \"-G\" option for a full list of supported names.\n",
+        "");
+    FPS "%-20s Edwards elliptic curve name (ed only)\n",
+        "   -q curve-name");
+    FPS "%-20s See the \"-G\" option for a full list of supported names.\n",
+        "");
+    FPS "%-20s ML-DSA parameter set (mldsa only)\n",
+        "   -q paramset");
     FPS "%-20s See the \"-G\" option for a full list of supported names.\n",
         "");
     FPS "%-20s Specify the password file\n",
@@ -1854,6 +1844,14 @@ luS(enum usage_level ul, const char *command)
         "   -q pqgfile");
     FPS "%-20s Elliptic curve name (ec only)\n",
         "   -q curve-name");
+    FPS "%-20s See the \"-G\" option for a full list of supported names.\n",
+        "");
+    FPS "%-20s Edwards elliptic curve name (ed only)\n",
+        "   -q curve-name");
+    FPS "%-20s See the \"-G\" option for a full list of supported names.\n",
+        "");
+    FPS "%-20s ML-DSA parameter set (mldsa only)\n",
+        "   -q paramset");
     FPS "%-20s See the \"-G\" option for a full list of supported names.\n",
         "");
     FPS "%-20s Self sign\n",
@@ -2044,54 +2042,18 @@ SetSignatureAlgorithm(PLArenaPool *arena,
                       SECKEYPrivateKey *privKey,
                       PRBool pssSign)
 {
-    SECStatus rv;
+    SECOidTag signAlgTag = SEC_OID_UNKNOWN;
+    SECItem *params = NULL;
 
-    if (pssSign ||
-        SECOID_GetAlgorithmTag(spkiAlg) == SEC_OID_PKCS1_RSA_PSS_SIGNATURE) {
-        SECItem *srcParams;
-        SECItem *params;
-
-        if (SECOID_GetAlgorithmTag(spkiAlg) == SEC_OID_PKCS1_RSA_PSS_SIGNATURE) {
-            srcParams = &spkiAlg->parameters;
-        } else {
-            /* If the issuer's public key is RSA, the parameter field
-             * of the SPKI should be NULL, which can't be used as a
-             * basis of RSA-PSS parameters. */
-            srcParams = NULL;
-        }
-        params = SEC_CreateSignatureAlgorithmParameters(arena,
-                                                        NULL,
-                                                        SEC_OID_PKCS1_RSA_PSS_SIGNATURE,
-                                                        hashAlgTag,
-                                                        srcParams,
-                                                        privKey);
-        if (!params) {
-            SECU_PrintError(progName, "Could not create RSA-PSS parameters");
-            return SECFailure;
-        }
-        rv = SECOID_SetAlgorithmID(arena, signAlg,
-                                   SEC_OID_PKCS1_RSA_PSS_SIGNATURE,
-                                   params);
-        if (rv != SECSuccess) {
-            SECU_PrintError(progName, "Could not set signature algorithm id.");
-            return rv;
-        }
-    } else {
-        KeyType keyType = SECKEY_GetPrivateKeyType(privKey);
-        SECOidTag algID;
-
-        algID = SEC_GetSignatureAlgorithmOidTag(keyType, hashAlgTag);
-        if (algID == SEC_OID_UNKNOWN) {
-            SECU_PrintError(progName, "Unknown key or hash type for issuer.");
-            return SECFailure;
-        }
-        rv = SECOID_SetAlgorithmID(arena, signAlg, algID, 0);
-        if (rv != SECSuccess) {
-            SECU_PrintError(progName, "Could not set signature algorithm id.");
-            return rv;
-        }
+    if (pssSign) {
+        signAlgTag = SEC_OID_PKCS1_RSA_PSS_SIGNATURE;
     }
-    return SECSuccess;
+    if (SECOID_GetAlgorithmTag(spkiAlg) == SEC_OID_PKCS1_RSA_PSS_SIGNATURE) {
+        signAlgTag = SEC_OID_PKCS1_RSA_PSS_SIGNATURE;
+        params = &spkiAlg->parameters;
+    }
+    return SEC_CreateSignatureAlgorithmID(arena, signAlg, signAlgTag,
+                                          hashAlgTag, params, privKey, NULL);
 }
 
 static SECStatus
@@ -2844,9 +2806,36 @@ certutil_main(int argc, char **argv, PRBool initialize)
     if (certutil.options[opt_UpgradeTokenName].activated)
         upgradeTokenName = certutil.options[opt_UpgradeTokenName].arg;
 
+    /* must be before opt_KeySize! */
+    /*  -k key type  */
+    if (certutil.options[opt_KeyType].activated) {
+        char *arg = certutil.options[opt_KeyType].arg;
+        if (PL_strcmp(arg, "rsa") == 0) {
+            keytype = rsaKey;
+        } else if (PL_strcmp(arg, "dsa") == 0) {
+            keytype = dsaKey;
+        } else if (PL_strcmp(arg, "ec") == 0) {
+            keytype = ecKey;
+        } else if (PL_strcmp(arg, "ed") == 0) {
+            keytype = edKey;
+        } else if (PL_strcmp(arg, "mldsa") == 0) {
+            keytype = mldsaKey;
+        } else if (PL_strcmp(arg, "all") == 0) {
+            keytype = nullKey;
+        } else {
+            /* use an existing private/public key pair */
+            keysource = arg;
+        }
+    } else if (certutil.commands[cmd_ListKeys].activated) {
+        keytype = nullKey;
+    }
+
     if (certutil.options[opt_KeySize].activated) {
         keysize = PORT_Atoi(certutil.options[opt_KeySize].arg);
-        if ((keysize < MIN_KEY_BITS) || (keysize > MAX_KEY_BITS)) {
+        /* mldsa limits are much different that rsa and dsa, don't
+         * do the check here */
+        if ((keytype != mldsaKey) &&
+            ((keysize < MIN_KEY_BITS) || (keysize > MAX_KEY_BITS))) {
             PR_fprintf(PR_STDERR,
                        "%s -g:  Keysize must be between %d and %d.\n",
                        progName, MIN_KEY_BITS, MAX_KEY_BITS);
@@ -2875,25 +2864,6 @@ certutil_main(int argc, char **argv, PRBool initialize)
                        progName, arg);
             return 255;
         }
-    }
-
-    /*  -k key type  */
-    if (certutil.options[opt_KeyType].activated) {
-        char *arg = certutil.options[opt_KeyType].arg;
-        if (PL_strcmp(arg, "rsa") == 0) {
-            keytype = rsaKey;
-        } else if (PL_strcmp(arg, "dsa") == 0) {
-            keytype = dsaKey;
-        } else if (PL_strcmp(arg, "ec") == 0) {
-            keytype = ecKey;
-        } else if (PL_strcmp(arg, "all") == 0) {
-            keytype = nullKey;
-        } else {
-            /* use an existing private/public key pair */
-            keysource = arg;
-        }
-    } else if (certutil.commands[cmd_ListKeys].activated) {
-        keytype = nullKey;
     }
 
     if (certutil.options[opt_KeyOpFlagsOn].activated) {
@@ -2938,9 +2908,12 @@ certutil_main(int argc, char **argv, PRBool initialize)
 
     /*  -q PQG file or curve name */
     if (certutil.options[opt_PQGFile].activated) {
-        if ((keytype != dsaKey) && (keytype != ecKey)) {
+        if ((keytype != dsaKey) && (keytype != ecKey) && (keytype != edKey) &&
+            (keytype != mldsaKey)) {
             PR_fprintf(PR_STDERR, "%s -q: specifies a PQG file for DSA keys"
-                                  " (-k dsa) or a named curve for EC keys (-k ec)\n)",
+                                  " (-k dsa)\n"
+                                  " or a named curve for EC and ED keys (-k ec, ed)\n"
+                                  " or a parameter set for ML-DSA keys (-k mldsa)\n",
                        progName);
             return 255;
         }

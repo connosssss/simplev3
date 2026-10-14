@@ -1,5 +1,4 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,7 +6,6 @@
 #include "nsIArray.idl"
 #include "nsISupports.idl"
 #include "nsIDragSession.idl"
-#include "nsIContentPolicy.idl"
 
 webidl DragEvent;
 webidl Node;
@@ -75,7 +73,7 @@ interface nsIDragService : nsISupports
   [noscript, can_run_script]
   void invokeDragSessionWithImage(in Node aDOMNode,
                                   in nsIPrincipal aPrincipal,
-                                  in nsIContentSecurityPolicy aCsp,
+                                  in nsIPolicyContainer aPolicyContainer,
                                   in nsICookieJarSettings aCookieJarSettings,
                                   in nsIArray aTransferableArray,
                                   in unsigned long aActionType,
@@ -91,7 +89,7 @@ interface nsIDragService : nsISupports
   [noscript, can_run_script]
   void invokeDragSessionWithRemoteImage(in Node aDOMNode,
                                         in nsIPrincipal aPrincipal,
-                                        in nsIContentSecurityPolicy aCsp,
+                                        in nsIPolicyContainer aPolicyContainer,
                                         in nsICookieJarSettings aCookieJarSettings,
                                         in nsIArray aTransferableArray,
                                         in unsigned long aActionType,
@@ -109,7 +107,7 @@ interface nsIDragService : nsISupports
   [noscript, can_run_script]
   void invokeDragSessionWithSelection(in Selection aSelection,
                                       in nsIPrincipal aPrincipal,
-                                      in nsIContentSecurityPolicy aCsp,
+                                      in nsIPolicyContainer aPolicyContainer,
                                       in nsICookieJarSettings aCookieJarSettings,
                                       in nsIArray aTransferableArray,
                                       in unsigned long aActionType,
@@ -162,6 +160,8 @@ interface nsIDragService : nsISupports
    *                       with one of specified value.  So, the value can be
    *                       DRAGDROP_ACTION_NONE, or one or more values of
    *                       DRAGDROP_ACTION_(MOVE|COPY|LINK).
+   *
+   * @throws NS_ERROR_NOT_AVAILABLE if dragging is suppressed.
    */
   void startDragSessionForTests(in nsISupports aWidgetProvider,
                                 in unsigned long aAllowedEffect);
@@ -173,6 +173,11 @@ interface nsIDragService : nsISupports
   [can_run_script]
   void suppress();
   void unsuppress();
+
+  /**
+   * True if the dragging is disabled.
+   */
+  [notxpcom, nostdcall] readonly attribute boolean isSuppressed;
 
   [notxpcom, nostdcall] boolean maybeAddBrowser(in BrowserParentPtr aBP);
   [notxpcom, nostdcall] boolean removeAllBrowsers();
@@ -192,15 +197,7 @@ interface nsIDragService : nsISupports
    * True if this is a mock nsIDragService, created with
    * createMockDragController().
    */
-  readonly attribute boolean isMockService;
-
-%{ C++
-  bool IsMockService() {
-    bool ret = false;
-    MOZ_ALWAYS_SUCCEEDS(GetIsMockService(&ret));
-    return ret;
-  }
-%}
+  [infallible] readonly attribute boolean isMockService;
 
   /**
    * If this is true, mSessionIsSynthesizedForTests should not become true.
@@ -215,8 +212,3 @@ interface nsIDragService : nsISupports
    */
   [infallible] attribute boolean neverAllowSessionIsSynthesizedForTests;
 };
-
-
-%{ C++
-
-%}

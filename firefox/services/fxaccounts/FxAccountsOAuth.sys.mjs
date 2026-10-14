@@ -5,19 +5,16 @@
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  jwcrypto: "resource://services-crypto/jwcrypto.sys.mjs",
+  jwcrypto: "moz-src:///services/crypto/modules/jwcrypto.sys.mjs",
 });
 
 import {
+  ERROR_AUTH_ERROR,
   OAUTH_CLIENT_ID,
-  SCOPE_PROFILE,
-  SCOPE_PROFILE_WRITE,
   SCOPE_APP_SYNC,
+  log,
 } from "resource://gre/modules/FxAccountsCommon.sys.mjs";
 
-const VALID_SCOPES = [SCOPE_PROFILE, SCOPE_PROFILE_WRITE, SCOPE_APP_SYNC];
-
-export const ERROR_INVALID_SCOPES = "INVALID_SCOPES";
 export const ERROR_INVALID_STATE = "INVALID_STATE";
 export const ERROR_SYNC_SCOPE_NOT_GRANTED = "ERROR_SYNC_SCOPE_NOT_GRANTED";
 export const ERROR_NO_KEYS_JWE = "ERROR_NO_KEYS_JWE";
@@ -37,7 +34,7 @@ export class FxAccountsOAuth {
   /**
    * Creates a new FxAccountsOAuth
    *
-   * @param { Object } fxaClient: The fxa client used to send http request to the oauth server
+   * @param {object} fxaClient: The fxa client used to send http request to the oauth server
    */
   constructor(fxaClient, fxaKeys) {
     this.#flow = {};
@@ -47,8 +44,9 @@ export class FxAccountsOAuth {
 
   /**
    * Stores a flow in-memory
+   *
    * @param { string } state: A base-64 URL-safe string represnting a random value created at the start of the flow
-   * @param { Object } value: The data needed to complete a flow, once the oauth code is available.
+   * @param {object} value: The data needed to complete a flow, once the oauth code is available.
    * in practice, `value` is:
    *  - `verifier`: A base=64 URL-safe string representing the PKCE code verifier
    *  - `key`: The private key need to decrypt the JWE we recieve from the auth server
@@ -65,10 +63,11 @@ export class FxAccountsOAuth {
     this.#flow = {};
   }
 
-  /*
+  /**
    * Gets a stored flow
+   *
    * @param { string } state: The base-64 URL-safe state string that was created at the start of the flow
-   * @returns { Object }: The values initially stored when startign th eoauth flow
+   * @returns {object}: The values initially stored when startign th eoauth flow
    * in practice, the return value is:
    *  - `verifier`: A base=64 URL-safe string representing the PKCE code verifier
    *  - `key`: The private key need to decrypt the JWE we recieve from the auth server
@@ -93,7 +92,7 @@ export class FxAccountsOAuth {
    *
    * @param { string[] } scopes: The OAuth scopes the client should request from FxA
    *
-   * @returns { Object }: Returns an object representing the query parameters that should be
+   * @returns {object}: Returns an object representing the query parameters that should be
    *     added to the FxA authorization URL to initialize an oAuth flow.
    *     In practice, the query parameters are:
    *       - `client_id`: The OAuth client ID for Firefox Desktop
@@ -109,12 +108,6 @@ export class FxAccountsOAuth {
    *          to generate a JWE
    */
   async beginOAuthFlow(scopes) {
-    if (
-      !Array.isArray(scopes) ||
-      scopes.some(scope => !VALID_SCOPES.includes(scope))
-    ) {
-      throw new Error(ERROR_INVALID_SCOPES);
-    }
     const queryParams = {
       client_id: OAUTH_CLIENT_ID,
       action: "email",
@@ -172,17 +165,19 @@ export class FxAccountsOAuth {
     return queryParams;
   }
 
-  /** Completes an OAuth flow and invalidates any other ongoing flows
+  /**
+   * Completes an OAuth flow and invalidates any other ongoing flows
+   *
    * @param { string } sessionTokenHex: The session token encoded in hexadecimal
    * @param { string } code: OAuth authorization code provided by running an OAuth flow
    * @param { string } state: The state first provided by `beginOAuthFlow`, then roundtripped through the server
    *
-   * @returns { Object }: Returns an object representing the result of completing the oauth flow.
+   * @returns {object}: Returns an object representing the result of completing the oauth flow.
    *   The object includes the following:
    *     - 'scopedKeys': The encryption keys provided by the server, already decrypted
    *     - 'refreshToken': The refresh token provided by the server
    *     - 'accessToken': The access token provided by the server
-   * */
+   */
   async completeOAuthFlow(sessionTokenHex, code, state) {
     const flow = this.getFlow(state);
     if (!flow) {
@@ -196,14 +191,12 @@ export class FxAccountsOAuth {
         verifier,
         OAUTH_CLIENT_ID
       );
-    if (
-      requestedScopes.includes(SCOPE_APP_SYNC) &&
-      !scope.includes(SCOPE_APP_SYNC)
-    ) {
-      throw new Error(ERROR_SYNC_SCOPE_NOT_GRANTED);
-    }
-    if (scope.includes(SCOPE_APP_SYNC) && !keys_jwe) {
-      throw new Error(ERROR_NO_KEYS_JWE);
+    const requestedSync = requestedScopes.includes(SCOPE_APP_SYNC);
+    const grantedSync = scope.includes(SCOPE_APP_SYNC);
+    // This is not necessarily unexpected as the user could be using
+    // third-party auth but sent the sync scope, we shouldn't error here
+    if (requestedSync && !grantedSync) {
+      log.info("Requested Sync scope but was not granted sync!");
     }
     let scopedKeys;
     if (keys_jwe) {
@@ -228,5 +221,139 @@ export class FxAccountsOAuth {
       refreshToken: refresh_token,
       accessToken: access_token,
     };
+  }
+
+  /**
+   * Grants an OAuth authorization code for another client.
+   *
+   * This is the counterpart to `beginOAuthFlow`: where that starts a flow for
+   * this browser to complete, this authorizes the parameters some *other*
+   * client produced by running its own `beginOAuthFlow`. It is used by the
+   * pairing authority, which is already signed in and so holds both the session
+   * token and the scoped keys the connecting client is asking for.
+   *
+   * If the caller supplied a `keys_jwk`, the requested scoped keys are wrapped
+   * into a `keys_jwe` so they can be delivered to that client through the auth
+   * server without the server itself being able to read them.
+   *
+   * @param { string } sessionToken: The session token encoded in hexadecimal
+   * @param {object} options: The OAuth parameters to authorize
+   *   - `client_id`: The OAuth client ID of the client being granted the code
+   *   - `state`: The state created by the other client's `beginOAuthFlow`
+   *   - `scope`: Space separated scopes being requested
+   *   - `access_type`: Typically `offline`
+   *   - `code_challenge`: The PKCE challenge
+   *   - `code_challenge_method`: The PKCE challenge method, ie `S256`
+   *   - `keys_jwk`: Optional public JWK to encrypt scoped keys to
+   *
+   * @returns {Promise<object>}: Object containing "code" and "state" properties.
+   */
+  async authorizeOAuthCode(sessionToken, options) {
+    const params = { ...options };
+    if (params.keys_jwk) {
+      const jwk = JSON.parse(
+        new TextDecoder().decode(
+          ChromeUtils.base64URLDecode(params.keys_jwk, { padding: "reject" })
+        )
+      );
+      params.keys_jwe = await this.#createKeysJWE(
+        sessionToken,
+        params.client_id,
+        params.scope,
+        jwk
+      );
+      delete params.keys_jwk;
+    }
+    return this.#fxaClient.oauthAuthorize(sessionToken, params);
+  }
+
+  /**
+   * Create a JWE to deliver keys to another client via the OAuth scoped-keys flow.
+   *
+   * This is used to transfer key material to another client, by providing an
+   * appropriately-encrypted value for the `keys_jwe` OAuth response parameter.
+   * Since we're transferring keys from one client to another, two things must be
+   * true:
+   *
+   *   * This client must actually have the key.
+   *   * The other client must be allowed to request that key.
+   *
+   * @param {string} sessionToken the sessionToken to use when fetching key metadata
+   * @param {string} clientId the client requesting access to our keys
+   * @param {string} scopes Space separated requested scopes being requested
+   * @param {object} jwk Ephemeral JWK provided by the client for secure key transfer
+   */
+  async #createKeysJWE(sessionToken, clientId, scopes, jwk) {
+    // This checks with the FxA server about what scopes the client is allowed.
+    // Note that we pass the requesting client_id here, not our own client_id.
+    const clientKeyData = await this.#fxaClient.getScopedKeyData(
+      sessionToken,
+      clientId,
+      scopes
+    );
+    const scopedKeys = {};
+    for (const scope of Object.keys(clientKeyData)) {
+      const key = await this.#fxaKeys.getKeyForScope(scope);
+      if (!key) {
+        throw new Error(`Key not available for scope "${scope}"`);
+      }
+      scopedKeys[scope] = key;
+    }
+    return lazy.jwcrypto.generateJWE(
+      jwk,
+      new TextEncoder().encode(JSON.stringify(scopedKeys))
+    );
+  }
+
+  /**
+   * Obtain an OAuth access token for the given scopes, minted from the stored
+   * session token.
+   *
+   * Note that access-token caching and in-flight de-duplication are handled by
+   * the caller (`FxAccountsInternal.getOAuthToken`).
+   *
+   * @param {object} accountState: The current AccountState
+   * @param {string[]|string} scopes: The requested scopes
+   * @param {number} [ttl]: Optional token time-to-live
+   * @returns {Promise<{token: string, expiresAt: number|null}>}
+   */
+  async getAccessToken(accountState, scopes, ttl) {
+    return this.#getAccessTokenWithSessionToken(accountState, scopes, ttl);
+  }
+
+  /**
+   * Obtain an OAuth access token minted directly from the session token.
+   *
+   * @param {object} accountState: The current AccountState
+   * @param {string[]|string} scopes: The requested scopes
+   * @param {number} [ttl]: Optional token time-to-live
+   * @returns {Promise<{token: string, expiresAt: number|null}>}
+   */
+  async #getAccessTokenWithSessionToken(accountState, scopes, ttl) {
+    const data = await accountState.getUserAccountData(["sessionToken"]);
+    if (!data || !data.sessionToken) {
+      throw new Error(ERROR_AUTH_ERROR);
+    }
+    const scopeString = this.#normalizeScopes(scopes).join(" ");
+    const result = await this.#fxaClient.accessTokenWithSessionToken(
+      data.sessionToken,
+      OAUTH_CLIENT_ID,
+      scopeString,
+      ttl
+    );
+    return {
+      token: result.access_token,
+      expiresAt: result.expires_in
+        ? Math.floor(Date.now() / 1000) + result.expires_in
+        : null,
+    };
+  }
+
+  // Normalizes scopes (accepting a space-separated string or an array) to a
+  // sorted, de-duplicated, lower-cased array.
+  #normalizeScopes(scopes) {
+    const arr = typeof scopes === "string" ? scopes.split(/\s+/) : scopes;
+    const set = new Set(arr.filter(Boolean).map(s => s.toLowerCase()));
+    return [...set].sort();
   }
 }

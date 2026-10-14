@@ -4,7 +4,7 @@
 
 import React, { useCallback } from "react";
 import { SafeAnchor } from "../SafeAnchor/SafeAnchor";
-import { actionCreators as ac, actionTypes as at } from "common/Actions.mjs";
+import { actionTypes as at } from "common/Actions.mjs";
 
 export const PersonalizedCard = ({
   dispatch,
@@ -13,8 +13,7 @@ export const PersonalizedCard = ({
   handleBlock,
   messageData,
 }) => {
-  const wavingFox =
-    "chrome://newtab/content/data/content/assets/waving-fox.svg";
+  const kitFox = "chrome://newtab/content/data/content/assets/kit.png";
 
   const onDismiss = useCallback(() => {
     handleDismiss();
@@ -24,7 +23,6 @@ export const PersonalizedCard = ({
   const onToggleClick = useCallback(
     elementId => {
       dispatch({ type: at.SHOW_PERSONALIZE });
-      dispatch(ac.UserEvent({ event: "SHOW_PERSONALIZE" }));
       handleClick(elementId);
     },
     [dispatch, handleClick]
@@ -37,17 +35,19 @@ export const PersonalizedCard = ({
           type="icon ghost"
           iconSrc="chrome://global/skin/icons/close.svg"
           onClick={onDismiss}
-          data-l10n-id="newtab-toast-dismiss-button"
+          data-l10n-id="newtab-card-dismiss-button"
         ></moz-button>
       </div>
+      <img src={kitFox} alt="" />
       <div className="personalized-card-inner">
-        <img src={wavingFox} alt="" />
-        <h2>{messageData.content.cardTitle}</h2>
-        <p>{messageData.content.cardMessage}</p>
+        <div className="personalized-card-message-wrapper">
+          <h2>{messageData.content.cardTitle}</h2>
+          <p>{messageData.content.cardMessage}</p>
+        </div>
         <div className="personalized-card-cta-wrapper">
           <moz-button
             type="primary"
-            class="personalized-card-cta"
+            class="personalized-card-button"
             onClick={() => onToggleClick("open-personalization-panel")}
           >
             {messageData.content.ctaText}
@@ -55,7 +55,7 @@ export const PersonalizedCard = ({
           <SafeAnchor
             className="personalized-card-link"
             dispatch={dispatch}
-            url="https://www.mozilla.org/en-US/privacy/firefox/#notice"
+            url={messageData.content.linkUrl || "https://support.mozilla.org/"}
             onLinkClick={() => {
               handleClick("link-click");
             }}

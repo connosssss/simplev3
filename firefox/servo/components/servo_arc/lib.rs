@@ -41,13 +41,12 @@ use std::process;
 use std::ptr;
 use std::sync::atomic;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use std::{isize, usize};
 
 /// A soft limit on the amount of references that may be made to an `Arc`.
 ///
 /// Going above this limit will abort your program (although not
 /// necessarily) at _exactly_ `MAX_REFCOUNT + 1` references.
-const MAX_REFCOUNT: usize = (isize::MAX) as usize;
+const MAX_REFCOUNT: usize = isize::MAX as usize;
 
 /// Special refcount value that means the data is not reference counted,
 /// and that the `Arc` is really acting as a read-only static reference.
@@ -140,6 +139,10 @@ impl<T> UniqueArc<T> {
 
 impl<T> UniqueArc<mem::MaybeUninit<T>> {
     /// Convert to an initialized Arc.
+    ///
+    /// # Safety
+    ///
+    /// See `MaybeUninit::assume_init`.
     #[inline]
     pub unsafe fn assume_init(this: Self) -> UniqueArc<T> {
         UniqueArc(Arc {
@@ -152,7 +155,7 @@ impl<T> UniqueArc<mem::MaybeUninit<T>> {
 impl<T> Deref for UniqueArc<T> {
     type Target = T;
     fn deref(&self) -> &T {
-        &*self.0
+        &self.0
     }
 }
 
@@ -208,12 +211,15 @@ impl<T> Arc<T> {
             let ptr = ptr::NonNull::new(alloc::alloc(layout))
                 .unwrap_or_else(|| alloc::handle_alloc_error(layout))
                 .cast::<ArcInner<T>>();
-            ptr::write(ptr.as_ptr(), ArcInner {
-                count: atomic::AtomicUsize::new(1),
-                #[cfg(feature = "track_alloc_size")]
-                alloc_size: layout.size(),
-                data,
-            });
+            ptr::write(
+                ptr.as_ptr(),
+                ArcInner {
+                    count: atomic::AtomicUsize::new(1),
+                    #[cfg(feature = "track_alloc_size")]
+                    alloc_size: layout.size(),
+                    data,
+                },
+            );
             ptr
         };
 
@@ -251,34 +257,40 @@ impl<T> Arc<T> {
 
     /// Reconstruct the Arc<T> from a raw pointer obtained from into_raw()
     ///
-    /// Note: This raw pointer will be offset in the allocation and must be preceded
-    /// by the atomic count.
+    /// # Safety
+    ///
+    /// Assumes that the pointer comes from an into_raw call. That is, this raw pointer will be
+    /// offset in the allocation and must be preceded by the atomic count.
     #[inline]
     pub unsafe fn from_raw(ptr: *const T) -> Self {
         // To find the corresponding pointer to the `ArcInner` we need
         // to subtract the offset of the `data` field from the pointer.
-        let ptr = (ptr as *const u8).sub(data_offset::<T>());
+        let ptr = unsafe { (ptr as *const u8).sub(data_offset::<T>()) };
         Arc {
-            p: ptr::NonNull::new_unchecked(ptr as *mut ArcInner<T>),
+            p: unsafe { ptr::NonNull::new_unchecked(ptr as *mut ArcInner<T>) },
             phantom: PhantomData,
         }
     }
 
     /// Like from_raw, but returns an addrefed arc instead.
+    ///
+    /// # Safety
+    ///
+    /// See `from_raw()`.
     #[inline]
     pub unsafe fn from_raw_addrefed(ptr: *const T) -> Self {
-        let arc = Self::from_raw(ptr);
+        let arc = unsafe { Self::from_raw(ptr) };
         mem::forget(arc.clone());
         arc
     }
 
-    /// Create a new static Arc<T> (one that won't reference count the object)
-    /// and place it in the allocation provided by the specified `alloc`
-    /// function.
+    /// Create a new static Arc<T> (one that won't reference count the object) and place it in the
+    /// allocation provided by the specified `alloc` function.
     ///
-    /// `alloc` must return a pointer into a static allocation suitable for
-    /// storing data with the `Layout` passed into it. The pointer returned by
-    /// `alloc` will not be freed.
+    /// # Safety
+    ///
+    /// `alloc` must return a pointer into a static allocation suitable for storing data with the
+    /// `Layout` passed into it. The pointer returned by `alloc` will not be freed.
     #[inline]
     pub unsafe fn new_static<F>(alloc: F, data: T) -> Arc<T>
     where
@@ -294,10 +306,12 @@ impl<T> Arc<T> {
             data,
         };
 
-        ptr::write(ptr, x);
+        unsafe {
+            ptr::write(ptr, x);
+        }
 
         Arc {
-            p: ptr::NonNull::new_unchecked(ptr),
+            p: unsafe { ptr::NonNull::new_unchecked(ptr) },
             phantom: PhantomData,
         }
     }
@@ -348,9 +362,14 @@ impl<T: ?Sized> Arc<T> {
     ///
     /// It's a logic error to call this more than once, but it's not unsafe, as
     /// it'd just report negative leaks.
+    ///
+    /// The allocation is expected to live for the rest of the process, so this
+    /// also marks it static: clone()/drop() then skip the atomic refcount
+    /// updates.
     #[inline(always)]
     pub fn mark_as_intentionally_leaked(&self) {
         self.record_drop();
+        self.inner().count.store(STATIC_REFCOUNT, Relaxed);
     }
 
     // Non-inlined part of `drop`. Just invokes the destructor and calls the
@@ -360,12 +379,14 @@ impl<T: ?Sized> Arc<T> {
         self.record_drop();
         let inner = self.ptr();
 
-        let layout = Layout::for_value(&*inner);
-        #[cfg(feature = "track_alloc_size")]
-        let layout = Layout::from_size_align_unchecked((*inner).alloc_size, layout.align());
+        unsafe {
+            let layout = Layout::for_value(&*inner);
+            #[cfg(feature = "track_alloc_size")]
+            let layout = Layout::from_size_align_unchecked((*inner).alloc_size, layout.align());
 
-        std::ptr::drop_in_place(inner);
-        alloc::dealloc(inner as *mut _, layout);
+            std::ptr::drop_in_place(inner);
+            alloc::dealloc(inner as *mut _, layout);
+        }
     }
 
     /// Test pointer equality between the two Arcs, i.e. they must be the _same_
@@ -386,7 +407,7 @@ impl<T: ?Sized> Arc<T> {
 }
 
 #[cfg(feature = "gecko_refcount_logging")]
-extern "C" {
+unsafe extern "C" {
     fn NS_LogCtor(
         aPtr: *mut std::os::raw::c_void,
         aTypeName: *const std::os::raw::c_char,
@@ -565,10 +586,6 @@ impl<T: ?Sized + PartialEq> PartialEq for Arc<T> {
     fn eq(&self, other: &Arc<T>) -> bool {
         Self::ptr_eq(self, other) || *(*self) == *(*other)
     }
-
-    fn ne(&self, other: &Arc<T>) -> bool {
-        !Self::ptr_eq(self, other) && *(*self) != *(*other)
-    }
 }
 
 impl<T: ?Sized + PartialOrd> PartialOrd for Arc<T> {
@@ -639,14 +656,14 @@ impl<T> From<T> for Arc<T> {
 impl<T: ?Sized> borrow::Borrow<T> for Arc<T> {
     #[inline]
     fn borrow(&self) -> &T {
-        &**self
+        self
     }
 }
 
 impl<T: ?Sized> AsRef<T> for Arc<T> {
     #[inline]
     fn as_ref(&self) -> &T {
-        &**self
+        self
     }
 }
 
@@ -746,6 +763,12 @@ impl<H, T> HeaderSlice<H, T> {
     pub fn len(&self) -> usize {
         self.len
     }
+
+    /// Returns whether the slice is empty.
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 }
 
 impl<H, T> Arc<HeaderSlice<H, T>> {
@@ -814,7 +837,8 @@ impl<H, T> Arc<HeaderSlice<H, T>> {
                 // We should have consumed the buffer exactly, maybe accounting
                 // for some padding from the alignment.
                 debug_assert!(
-                    (buffer.add(layout.size()) as usize - current as *mut u8 as usize) < layout.align()
+                    (buffer.add(layout.size()) as usize - current as *mut u8 as usize)
+                        < layout.align()
                 );
             }
             assert!(
@@ -952,8 +976,11 @@ impl<'a, T> ArcBorrow<'a, T> {
         arc
     }
 
-    /// For constructing from a reference known to be Arc-backed,
-    /// e.g. if we obtain such a reference over FFI
+    /// For constructing from a reference known to be Arc-backed.
+    ///
+    /// # Safety
+    ///
+    /// The reference must come from an object that's arc-allocated.
     #[inline]
     pub unsafe fn from_ref(r: &'a T) -> Self {
         ArcBorrow(r)
@@ -961,8 +988,9 @@ impl<'a, T> ArcBorrow<'a, T> {
 
     /// Compare two `ArcBorrow`s via pointer equality. Will only return
     /// true if they come from the same allocation
+    #[inline]
     pub fn ptr_eq(this: &Self, other: &Self) -> bool {
-        this.0 as *const T == other.0 as *const T
+        std::ptr::eq(this.0, other.0)
     }
 
     /// Temporarily converts |self| into a bonafide Arc and exposes it to the
@@ -1041,7 +1069,7 @@ pub enum ArcUnionBorrow<'a, A: 'a, B: 'a> {
 impl<A, B> ArcUnion<A, B> {
     unsafe fn new(ptr: *mut ()) -> Self {
         ArcUnion {
-            p: ptr::NonNull::new_unchecked(ptr),
+            p: unsafe { ptr::NonNull::new_unchecked(ptr) },
             phantom_a: PhantomData,
             phantom_b: PhantomData,
         }
@@ -1060,7 +1088,7 @@ impl<A, B> ArcUnion<A, B> {
 
     /// Returns an enum representing a borrow of either A or B.
     #[inline]
-    pub fn borrow(&self) -> ArcUnionBorrow<A, B> {
+    pub fn borrow(&self) -> ArcUnionBorrow<'_, A, B> {
         if self.is_first() {
             let ptr = self.p.as_ptr() as *const ArcInner<A>;
             let borrow = unsafe { ArcBorrow::from_ref(&(*ptr).data) };
@@ -1097,7 +1125,7 @@ impl<A, B> ArcUnion<A, B> {
     }
 
     /// Returns a borrow of the first type if applicable, otherwise `None`.
-    pub fn as_first(&self) -> Option<ArcBorrow<A>> {
+    pub fn as_first(&self) -> Option<ArcBorrow<'_, A>> {
         match self.borrow() {
             ArcUnionBorrow::First(x) => Some(x),
             ArcUnionBorrow::Second(_) => None,
@@ -1105,7 +1133,7 @@ impl<A, B> ArcUnion<A, B> {
     }
 
     /// Returns a borrow of the second type if applicable, otherwise None.
-    pub fn as_second(&self) -> Option<ArcBorrow<B>> {
+    pub fn as_second(&self) -> Option<ArcBorrow<'_, B>> {
         match self.borrow() {
             ArcUnionBorrow::First(_) => None,
             ArcUnionBorrow::Second(x) => Some(x),

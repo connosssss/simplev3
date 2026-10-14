@@ -1,13 +1,13 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsXMLPrettyPrinter_h__
-#define nsXMLPrettyPrinter_h__
+#ifndef nsXMLPrettyPrinter_h_
+#define nsXMLPrettyPrinter_h_
 
-#include "nsStubDocumentObserver.h"
 #include "nsCOMPtr.h"
+#include "nsIWeakReferenceUtils.h"
+#include "nsStubDocumentObserver.h"
 
 class nsXMLPrettyPrinter : public nsStubDocumentObserver {
  public:
@@ -27,11 +27,12 @@ class nsXMLPrettyPrinter : public nsStubDocumentObserver {
    * displayed window.
    *
    * @param aDocument  document to prettyprint
+   * @param aShowXSLTDisabledMessage if we should suggest an XSLT extension
    * @param [out] aDidPrettyPrint if true, and error not returned, actually
    *              went ahead with prettyprinting the document.
    */
   nsresult PrettyPrint(mozilla::dom::Document* aDocument,
-                       bool* aDidPrettyPrint);
+                       bool aShowXSLTDisabledMessage, bool* aDidPrettyPrint);
 
   /**
    * Unhook the prettyprinter
@@ -51,9 +52,10 @@ class nsXMLPrettyPrinter : public nsStubDocumentObserver {
 
   mozilla::dom::Document*
       mDocument;  // weak. Set as long as we're observing the document
+  nsWeakPtr mElement;
   bool mUnhookPending;
 };
 
 nsresult NS_NewXMLPrettyPrinter(nsXMLPrettyPrinter** aPrinter);
 
-#endif  // nsXMLPrettyPrinter_h__
+#endif  // nsXMLPrettyPrinter_h_

@@ -15,7 +15,7 @@ export interface Attachment {
   // e.g. "2f7c0f7bbc...ca79f0850c4de",
   hash: string;
   // e.g. 5047568,
-  size: string;
+  size: number;
   // e.g. "lex.50.50.deen.s2t.bin",
   filename: string;
   // e.g. "main-workspace/translations-models/316ebb3a-0682-42cc-8e73-a3ba4bbb280f.bin",
@@ -33,9 +33,11 @@ export interface TranslationModelRecord {
   // The full model name, e.g. "lex.50.50.deen.s2t.bin"
   name: string;
   // The BCP 47 language tag, e.g. "de"
-  fromLang: string;
+  sourceLanguage: string;
   // The BCP 47 language tag, e.g. "en"
-  toLang: string;
+  targetLanguage: string;
+  // The architecture of the model, e.g "base", "base-memory", "tiny"
+  architecture: string;
   // A model variant. This is a developer-only property that can be used in Nightly or
   // local builds to test different types of models.
   variant?: string;
@@ -43,6 +45,10 @@ export interface TranslationModelRecord {
   version: string;
   // e.g. "lex"
   fileType: string;
+  // The sha256 hash of the decompressed file
+  decompressedHash: string;
+  // The size of the decompressed file (bytes)
+  decompressedSize: number;
   // The file attachment for this record
   attachment: Attachment;
   // e.g. 1673023100578
@@ -70,6 +76,10 @@ export interface WasmRecord {
   license: string;
   // The semver number, used for handling future format changes. e.g. 1.0
   version: string;
+  // The sha256 hash of the decompressed file
+  decompressedHash: string;
+  // The size of the decompressed wasm file (bytes)
+  decompressedSize: number;
   // The file attachment for this record
   attachment: Attachment;
   // e.g. 1673455932527
@@ -78,6 +88,8 @@ export interface WasmRecord {
   // See: https://remote-settings.readthedocs.io/en/latest/target-filters.html#filter-expressions
   filter_expression: string;
 }
+
+export type TranslationsRecord = TranslationModelRecord | WasmRecord;
 
 /**
  * The following are the types that are provided by the Bergamot wasm library.
@@ -191,18 +203,37 @@ export namespace Bergamot {
  * The client to interact with RemoteSettings.
  * See services/settings/RemoteSettingsClient.sys.mjs
  */
-interface RemoteSettingsClient {
+export interface RemoteSettingsClient {
   on: Function;
   get: Function;
-  attachments: any;
   sync: Function;
+  attachments: Attachments;
+}
+
+export interface AttachmentDownloadResult {
+  buffer: ArrayBuffer;
+  blob?: Blob;
+  record?: TranslationsRecord;
+  _source?: string;
+}
+
+/**
+ * Attachments API for Remote Settings.
+ * Implemented by services/settings/Attachments.sys.mjs
+ */
+export interface Attachments {
+  download(record: TranslationsRecord): Promise<AttachmentDownloadResult>;
+  isDownloaded(record: TranslationsRecord): Promise<boolean>;
+  deleteAll(): Promise<void>;
+  deleteDownloaded(record: TranslationsRecord): Promise<void>;
 }
 
 /**
  * A single language model file.
  */
 interface LanguageTranslationModelFile {
-  buffer: ArrayBuffer;
+  blob: Blob | null;
+  buffer?: ArrayBuffer;
   record: TranslationModelRecord;
 }
 
@@ -225,8 +256,6 @@ interface LanguageTranslationModelFiles {
   // The lexical shortlist that limits possible output of the decoder and makes
   // inference faster.
   lex?: LanguageTranslationModelFile;
-  // A model that can generate a translation quality estimation.
-  qualityModel?: LanguageTranslationModelFile;
 
   // There is either a single vocab file:
   vocab?: LanguageTranslationModelFile;
@@ -249,7 +278,8 @@ type LanguageTranslationModelFilesAligned = {
  * and so the engine will be mocked.
  */
 interface TranslationsEnginePayload {
-  bergamotWasmArrayBuffer: ArrayBuffer;
+  bergamotWasmBlob: Blob | null;
+  bergamotWasmArrayBuffer?: ArrayBuffer;
   translationModelPayloads: TranslationModelPayload[];
   isMocked: boolean;
 }
@@ -260,6 +290,14 @@ interface TranslationsEnginePayload {
 export type NodeVisibility = "in-viewport" | "beyond-viewport" | "hidden";
 
 /**
+ * Document-language metadata collected from the content page.
+ */
+export interface DocumentLanguageMetadata {
+  htmlLangAttribute: string;
+  textSample: string;
+}
+
+/**
  * Used to decide how to translate a page for full page translations.
  */
 export interface LangTags {
@@ -267,8 +305,97 @@ export interface LangTags {
   docLangTag: string | null;
   userLangTag: string | null;
   htmlLangAttribute: string | null;
-  identifiedLangTag: string | null;
-  identifiedLangConfident?: boolean;
+  identified: null | DetectionResult;
+}
+
+/**
+ * Describes how Translations should respond after considering page-language
+ * identification, document metadata, and the user's Language and Translations settings.
+ *
+ * "allowOffer" means the page is eligible to move forward with automatic
+ * translation or automatic offer UI. If auto-translate is enabled for the
+ * resolved source language, the page should translate automatically. Otherwise,
+ * Translations may offer the panel when automatic popup is enabled.
+ *
+ * "showButton" means Translations should show the URL-bar button, but should
+ * not auto-translate or automatically offer the panel. This represents a scenario
+ * in which we detect that there may be a translatable language, but we don't have
+ * high confidence that the detection is correct. This makes the UI easier for the
+ * user to open, without committing to making an automated decision.
+ *
+ * "hideButton" means Translations should hide the URL-bar button and not offer
+ * translation UI for the page. This represents scenarios in which we do not think
+ * that the current page is in a language that the user may want to translate.
+ */
+export type TranslationsOfferAction =
+  | "allowOffer"
+  | "showButton"
+  | "hideButton";
+
+/**
+ * The normalized status of a page-language candidate used by the offer matrix.
+ */
+export type TranslationsOfferMatrixLanguageStatus =
+  | "supported"
+  | "user-language"
+  | "unsupported"
+  | null;
+
+/**
+ * A page-language candidate after matching it against Translations support and
+ * the user's web content languages.
+ */
+export interface TranslationsOfferLanguageCandidate {
+  langTag: string;
+  supportedLangTag: string | null;
+  matchesWebContentLanguage: boolean;
+}
+
+/**
+ * A page-language candidate produced from language identification.
+ */
+export interface TranslationsOfferIdentifiedLanguageCandidate extends TranslationsOfferLanguageCandidate {
+  identificationResult: DetectionResult;
+}
+
+/**
+ * The page-language candidate selected by a Translations offer matrix outcome.
+ */
+export type TranslationsOfferMatrixSourceCandidate = "html" | "identified";
+
+/**
+ * The comparable page-language values used by the Translations offer matrix.
+ * Omitted fields in a matrix entry are free variables.
+ */
+export interface TranslationsOfferMatrixConditions {
+  htmlStatus?: TranslationsOfferMatrixLanguageStatus;
+  identificationStatus?: TranslationsOfferMatrixLanguageStatus;
+  identificationMatchesHtml?: boolean;
+  identificationConfident?: boolean;
+}
+
+/**
+ * The outcome to apply when a Translations offer matrix scenario matches.
+ */
+export interface TranslationsOfferMatrixOutcome {
+  action: TranslationsOfferAction;
+  sourceCandidate?: TranslationsOfferMatrixSourceCandidate;
+}
+
+/**
+ * A scenario in the Translations offer matrix.
+ */
+export interface TranslationsOfferMatrixScenario {
+  conditions: TranslationsOfferMatrixConditions;
+  outcome: TranslationsOfferMatrixOutcome;
+}
+
+/**
+ * The concrete action and resolved language tags to use for a Translations offer.
+ */
+export interface TranslationsOfferInstruction {
+  action: TranslationsOfferAction;
+  resolvedLangTags: LangTags;
 }
 
 /**
@@ -385,6 +512,7 @@ export type RequestTranslationsPort = (
 ) => Promise<MessagePort>;
 
 export type TranslationsPortMessages =
+  | { type: "TranslationsPort:Close" }
   // We have determined that the source text is already translated into the target language, so do nothing.
   | { type: "TranslationsPort:Passthrough"; translationId: string }
   // We found translated text for this request in our cache, so send the targetText directly without translating.
@@ -535,3 +663,30 @@ export interface TranslationRequest {
  * A convenience type describing a function that executes a translation.
  */
 export type TranslationFunction = (message: string) => Promise<string>;
+
+/**
+ * A larger web document can be composed of multiple languages. This object details the
+ * breakdown of what languages are present in the document, and at what percentages.
+ * For instance a document could be 70% English and 30% French:
+ *
+ *   [
+ *      { language: "en", percentage: 70 },
+ *      { language: "fr", percentage: 30 },
+ *   ]
+ */
+interface MultilingualSection {
+  // BCP 47 language tag, or "un" for unknown.
+  language: string;
+  // The integral percentage ranged 0-100.
+  percent: number;
+}
+
+interface DetectionResult {
+  // The language code.
+  language: string;
+  // Whether the detector is confident of the result.
+  confident: boolean;
+  // The list of languages detected in multilingual content. This is between 0 and 3
+  // languages.
+  languages: MultilingualSection[];
+}

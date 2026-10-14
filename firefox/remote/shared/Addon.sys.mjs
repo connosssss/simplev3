@@ -14,9 +14,10 @@ ChromeUtils.defineESModuleGetters(lazy, {
   generateUUID: "chrome://remote/content/shared/UUID.sys.mjs",
 });
 
-// from https://developer.mozilla.org/en-US/Add-ons/Add-on_Manager/AddonManager#AddonInstall_errors
+// from the AddonManager.ERROR_* constants in
+// toolkit/mozapps/extensions/AddonManager.sys.mjs
 const ERRORS = {
-  [-1]: "ERROR_NETWORK_FAILURE: A network error occured.",
+  [-1]: "ERROR_NETWORK_FAILURE: A network error occurred.",
   [-2]: "ERROR_INCORRECT_HASH: The downloaded file did not match the expected hash.",
   [-3]: "ERROR_CORRUPT_FILE: The file appears to be corrupt.",
   [-4]: "ERROR_FILE_ACCESS: There was an error accessing the filesystem.",
@@ -31,6 +32,20 @@ const ERRORS = {
   [-12]:
     "ERROR_UNSUPPORTED_ADDON_TYPE: The add-on type is not supported by the platform.",
 };
+
+// Maps the ID of a temporarily installed add-on to the path of the XPI file
+// created for it in `installWithBase64`. The file has to outlive the install
+// so that the add-on's content scripts keep working, and is removed once the
+// add-on is uninstalled.
+const temporaryAddonFilePaths = new Map();
+
+async function removeTemporaryAddonFile(id) {
+  if (temporaryAddonFilePaths.has(id)) {
+    const path = temporaryAddonFilePaths.get(id);
+    temporaryAddonFilePaths.delete(id);
+    await IOUtils.remove(path, { ignoreAbsent: true });
+  }
+}
 
 async function installAddon(file, temporary, allowPrivateBrowsing) {
   let addon;
@@ -70,8 +85,53 @@ async function installAddon(file, temporary, allowPrivateBrowsing) {
   return addon;
 }
 
-/** Installs addons by path and uninstalls by ID. */
+/** Lists addon information, installs by path or base64, and uninstalls by ID. */
 export class Addon {
+  /**
+   * Get information about installed addons.
+   *
+   * @param {string?} type
+   *     Addon type to retrieve, or null (default) for all types.
+   * @param {object=} options
+   * @param {boolean=} options.includeHidden
+   *     Whether to include hidden addons. Defaults to false.
+   *
+   * @returns {Promise<Array<object>>}
+   *     Objects containing addon details.
+   */
+  static async getAddons(type = null, options = {}) {
+    const { includeHidden = false } = options;
+    const addons = await lazy.AddonManager.getAddonsByTypes(
+      type === null ? null : [type]
+    );
+
+    return addons
+      .filter(addon => includeHidden || !addon.hidden)
+      .map(addon => {
+        const policy = WebExtensionPolicy.getByID(addon.id);
+
+        return {
+          id: addon.id,
+          name: addon.name,
+          version: addon.version,
+          manifestVersion: addon.manifestVersion,
+          isActive: addon.isActive,
+          isSystem: addon.isSystem,
+          hidden: addon.hidden,
+          temporarilyInstalled: addon.temporarilyInstalled,
+          sourceURL: addon.sourceURI?.spec ?? null,
+          policy: policy
+            ? {
+                uuid: policy.mozExtensionHostname,
+                baseURL: policy.baseURL,
+                extensionURL: policy.getURL(""),
+                backgroundScripts: policy.extension?.backgroundScripts || [],
+              }
+            : null,
+        };
+      });
+  }
+
   /**
    * Install a Firefox addon with provided base64 string representation.
    *
@@ -114,7 +174,19 @@ export class Addon {
     try {
       const file = new lazy.FileUtils.File(path);
       addon = await installAddon(file, temporary, allowPrivateBrowsing);
-    } finally {
+    } catch (e) {
+      await IOUtils.remove(path, { ignoreAbsent: true });
+      throw e;
+    }
+
+    if (temporary) {
+      // We have to keep the file for a temporary extension around to make
+      // content scripts work. Store it so that we can remove it
+      // once the addon is uninstalled.
+      // Remove any stale file first in case we're reinstalling the addon.
+      await removeTemporaryAddonFile(addon.id);
+      temporaryAddonFilePaths.set(addon.id, path);
+    } else {
       await IOUtils.remove(path);
     }
 
@@ -165,6 +237,14 @@ export class Addon {
     return addon.id;
   }
 
+  static async cleanupTemporaryAddonFiles() {
+    await Promise.all(
+      Array.from(temporaryAddonFilePaths.keys(), id =>
+        removeTemporaryAddonFile(id)
+      )
+    );
+  }
+
   /**
    * Uninstall a Firefox addon.
    *
@@ -182,7 +262,7 @@ export class Addon {
    *     Raised if the WebExtension with provided id could not be found.
    */
   static async uninstall(id) {
-    let candidate = await lazy.AddonManager.getAddonByID(id);
+    const candidate = await lazy.AddonManager.getAddonByID(id);
     if (candidate === null) {
       // `AddonManager.getAddonByID` never rejects but instead
       // returns `null` if the requested addon cannot be found.
@@ -202,9 +282,10 @@ export class Addon {
           }
         },
 
-        onUninstalled: addon => {
+        onUninstalled: async addon => {
           if (addon.id === candidate.id) {
             lazy.AddonManager.removeAddonListener(listener);
+            await removeTemporaryAddonFile(candidate.id);
             resolve();
           }
         },

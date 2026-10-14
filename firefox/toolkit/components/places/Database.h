@@ -11,7 +11,6 @@
 #include "nsIObserver.h"
 #include "mozilla/storage.h"
 #include "mozilla/storage/StatementCache.h"
-#include "mozilla/Attributes.h"
 #include "nsIEventTarget.h"
 #include "Shutdown.h"
 #include "nsCategoryCache.h"
@@ -21,6 +20,9 @@
 // Filename of the icons database.
 #define DATABASE_FAVICONS_FILENAME u"favicons.sqlite"_ns
 #define DATABASE_FAVICONS_SCHEMANAME "favicons"_ns
+
+// How much time Sqlite can wait before returning a SQLITE_BUSY error.
+#define DATABASE_BUSY_TIMEOUT_MS 100
 
 // Fired after Places inited.
 #define TOPIC_PLACES_INIT_COMPLETE "places-init-complete"
@@ -116,7 +118,7 @@ class Database final : public nsIObserver, public nsSupportsWeakReference {
    * @return one of the nsINavHistoryService::DATABASE_STATUS_* constants.
    */
   uint16_t GetDatabaseStatus() {
-    mozilla::Unused << EnsureConnection();
+    (void)EnsureConnection();
     return mDatabaseStatus;
   }
 
@@ -126,9 +128,11 @@ class Database final : public nsIObserver, public nsSupportsWeakReference {
    * @return The connection handle.
    */
   mozIStorageConnection* MainConn() {
-    mozilla::Unused << EnsureConnection();
+    (void)EnsureConnection();
     return mMainConn;
   }
+
+  bool IsConnectionOpen() const { return !!mMainConn; }
 
   /**
    * Dispatches a runnable to the connection async thread, to be serialized
@@ -214,7 +218,7 @@ class Database final : public nsIObserver, public nsSupportsWeakReference {
       const nsACString& aQuery);
 
   int64_t GetTagsFolderId() {
-    mozilla::Unused << EnsureConnection();
+    (void)EnsureConnection();
     return mTagsRootId;
   }
 
@@ -329,6 +333,10 @@ class Database final : public nsIObserver, public nsSupportsWeakReference {
   nsresult MigrateV80Up();
   nsresult MigrateV81Up();
   nsresult MigrateV82Up();
+  nsresult MigrateV83Up();
+  nsresult MigrateV85Up();
+  nsresult MigrateV86Up();
+  nsresult MigrateV87Up();
 
   nsresult UpdateBookmarkRootTitles();
 

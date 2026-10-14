@@ -10,19 +10,17 @@ use std::{
     time::Instant,
 };
 
-use neqo_common::{event::Provider as _, qdebug, qinfo, qtrace, Header, MessageType, Role};
-use neqo_transport::{
-    AppError, Connection, ConnectionEvent, DatagramTracking, StreamId, StreamType,
-};
+use neqo_common::{Header, MessageType, Role, event::Provider as _, qdebug, qinfo, qtrace};
+use neqo_transport::{AppError, Connection, ConnectionEvent, StreamId};
 
 use crate::{
-    connection::{Http3Connection, Http3State, WebTransportSessionAcceptAction},
+    Error, Http3Parameters, Http3StreamType, NewStreamType, Priority, PriorityHandler,
+    ReceiveOutput, Res,
+    connection::{Http3Connection, Http3State},
     frames::HFrame,
     recv_message::{RecvMessage, RecvMessageInfo},
     send_message::SendMessage,
     server_connection_events::{Http3ServerConnEvent, Http3ServerConnEvents},
-    Error, Http3Parameters, Http3StreamType, NewStreamType, Priority, PriorityHandler,
-    ReceiveOutput, Res,
 };
 
 #[derive(Debug)]
@@ -52,6 +50,18 @@ impl Http3ServerHandler {
         self.base_handler.state().clone()
     }
 
+    pub(crate) const fn base_handler_mut(&mut self) -> &mut Http3Connection {
+        &mut self.base_handler
+    }
+
+    pub(crate) const fn server_events(&self) -> &Http3ServerConnEvents {
+        &self.events
+    }
+
+    pub(crate) const fn mark_needs_processing(&mut self) {
+        self.needs_processing = true;
+    }
+
     /// Supply a response for a request.
     ///
     /// # Errors
@@ -67,13 +77,14 @@ impl Http3ServerHandler {
         stream_id: StreamId,
         data: &[u8],
         conn: &mut Connection,
+        now: Instant,
     ) -> Res<usize> {
         let n = self
             .base_handler
             .send_streams_mut()
             .get_mut(&stream_id)
             .ok_or(Error::InvalidStreamId)?
-            .send_data(conn, data)?;
+            .send_data(conn, data, now)?;
         if n > 0 {
             self.base_handler.stream_has_pending_data(stream_id);
         }
@@ -105,9 +116,14 @@ impl Http3ServerHandler {
     /// # Errors
     ///
     /// An error will be returned if stream does not exist.
-    pub fn stream_close_send(&mut self, stream_id: StreamId, conn: &mut Connection) -> Res<()> {
+    pub fn stream_close_send(
+        &mut self,
+        stream_id: StreamId,
+        conn: &mut Connection,
+        now: Instant,
+    ) -> Res<()> {
         qdebug!("[{self}] Close sending side stream={stream_id}");
-        self.base_handler.stream_close_send(conn, stream_id)?;
+        self.base_handler.stream_close_send(conn, stream_id, now)?;
         self.needs_processing = true;
         Ok(())
     }
@@ -152,69 +168,24 @@ impl Http3ServerHandler {
         self.base_handler.stream_reset_send(conn, stream_id, error)
     }
 
-    /// Accept a `WebTransport` Session request
-    pub(crate) fn webtransport_session_accept(
-        &mut self,
-        conn: &mut Connection,
-        stream_id: StreamId,
-        accept: &WebTransportSessionAcceptAction,
-    ) -> Res<()> {
-        self.needs_processing = true;
-        self.base_handler.webtransport_session_accept(
-            conn,
-            stream_id,
-            Box::new(self.events.clone()),
-            accept,
-        )
-    }
-
-    /// Close `WebTransport` cleanly
+    /// Commit to reliably delivering the stream data buffered so far.
     ///
     /// # Errors
-    ///
-    /// `InvalidStreamId` if the stream does not exist,
-    /// `TransportStreamDoesNotExist` if the transport stream does not exist (this may happen if
-    /// `process_output` has not been called when needed, and HTTP3 layer has not picked up the
-    /// info that the stream has been closed.) `InvalidInput` if an empty buffer has been
-    /// supplied.
-    pub fn webtransport_close_session(
+    /// When the transport rejects the commitment (see
+    /// [`neqo_transport::Connection::stream_commit`]).
+    pub fn stream_commit(
         &mut self,
+        stream_id: StreamId,
         conn: &mut Connection,
-        session_id: StreamId,
-        error: u32,
-        message: &str,
+        now: Instant,
     ) -> Res<()> {
-        self.needs_processing = true;
-        self.base_handler
-            .webtransport_close_session(conn, session_id, error, message)
+        self.base_handler.stream_commit(conn, stream_id, now)
     }
 
-    pub fn webtransport_create_stream(
-        &mut self,
-        conn: &mut Connection,
-        session_id: StreamId,
-        stream_type: StreamType,
-    ) -> Res<StreamId> {
-        self.needs_processing = true;
-        self.base_handler.webtransport_create_stream_local(
-            conn,
-            session_id,
-            stream_type,
-            Box::new(self.events.clone()),
-            Box::new(self.events.clone()),
-        )
-    }
-
-    pub fn webtransport_send_datagram(
-        &mut self,
-        conn: &mut Connection,
-        session_id: StreamId,
-        buf: &[u8],
-        id: impl Into<DatagramTracking>,
-    ) -> Res<()> {
-        self.needs_processing = true;
+    pub(crate) fn validate_extended_connect_session(&self, session_id: StreamId) -> Res<()> {
         self.base_handler
-            .webtransport_send_datagram(session_id, conn, buf, id)
+            .validate_extended_connect_session(session_id)
+            .map(|_| ())
     }
 
     /// Process HTTTP3 layer.
@@ -226,7 +197,7 @@ impl Http3ServerHandler {
 
         let res = self.check_connection_events(conn, now);
         if !self.check_result(conn, now, &res) && self.base_handler.state().active() {
-            let res = self.base_handler.process_sending(conn);
+            let res = self.base_handler.process_sending(conn, now);
             self.check_result(conn, now, &res);
         }
     }
@@ -234,6 +205,13 @@ impl Http3ServerHandler {
     /// Take the next available event.
     pub(crate) fn next_event(&self) -> Option<Http3ServerConnEvent> {
         self.events.next_event()
+    }
+
+    /// Queue a GOAWAY frame on the local control stream.
+    pub(crate) fn queue_goaway(&mut self, stream_id: StreamId) {
+        self.base_handler
+            .queue_control_frame(&HFrame::Goaway { stream_id });
+        self.needs_processing = true;
     }
 
     /// Whether this connection has events to process or data to send.
@@ -275,7 +253,7 @@ impl Http3ServerHandler {
                     self.base_handler.add_new_stream(stream_id);
                 }
                 ConnectionEvent::RecvStreamReadable { stream_id } => {
-                    self.handle_stream_readable(conn, stream_id)?;
+                    self.handle_stream_readable(conn, stream_id, now)?;
                 }
                 ConnectionEvent::RecvStreamReset {
                     stream_id,
@@ -305,7 +283,10 @@ impl Http3ServerHandler {
                         s.stream_writable();
                     }
                 }
-                ConnectionEvent::Datagram(dgram) => self.base_handler.handle_datagram(&dgram),
+                ConnectionEvent::Datagram(dgram) => self.base_handler.handle_datagram(dgram),
+                ConnectionEvent::OutgoingDatagramSpaceAvailable => {
+                    self.events.datagram_space_available();
+                }
                 ConnectionEvent::AuthenticationNeeded
                 | ConnectionEvent::EchFallbackAuthenticationNeeded { .. }
                 | ConnectionEvent::ZeroRttRejected
@@ -313,15 +294,23 @@ impl Http3ServerHandler {
                 ConnectionEvent::SendStreamComplete { .. }
                 | ConnectionEvent::SendStreamCreatable { .. }
                 | ConnectionEvent::OutgoingDatagramOutcome { .. }
-                | ConnectionEvent::IncomingDatagramDropped => {}
+                | ConnectionEvent::SconeUpdated(_)
+                | ConnectionEvent::PathMigrated { .. } => {}
             }
         }
         Ok(())
     }
 
-    fn handle_stream_readable(&mut self, conn: &mut Connection, stream_id: StreamId) -> Res<()> {
-        match self.base_handler.handle_stream_readable(conn, stream_id)? {
-            ReceiveOutput::NewStream(NewStreamType::Push(_)) => Err(Error::HttpStreamCreation),
+    fn handle_stream_readable(
+        &mut self,
+        conn: &mut Connection,
+        stream_id: StreamId,
+        now: Instant,
+    ) -> Res<()> {
+        match self
+            .base_handler
+            .handle_stream_readable(conn, stream_id, now)?
+        {
             ReceiveOutput::NewStream(NewStreamType::Http(first_frame_type)) => {
                 self.base_handler.add_streams(
                     stream_id,
@@ -341,11 +330,12 @@ impl Http3ServerHandler {
                         },
                         Rc::clone(self.base_handler.qpack_decoder()),
                         Box::new(self.events.clone()),
-                        None,
-                        PriorityHandler::new(false, Priority::default()),
+                        PriorityHandler::new(Priority::default()),
                     )),
                 );
-                let res = self.base_handler.handle_stream_readable(conn, stream_id)?;
+                let res = self
+                    .base_handler
+                    .handle_stream_readable(conn, stream_id, now)?;
                 assert_eq!(ReceiveOutput::NoOutput, res);
                 Ok(())
             }
@@ -356,27 +346,27 @@ impl Http3ServerHandler {
                     Box::new(self.events.clone()),
                     Box::new(self.events.clone()),
                 )?;
-                let res = self.base_handler.handle_stream_readable(conn, stream_id)?;
+                let res = self
+                    .base_handler
+                    .handle_stream_readable(conn, stream_id, now)?;
                 assert_eq!(ReceiveOutput::NoOutput, res);
                 Ok(())
             }
             ReceiveOutput::ControlFrames(control_frames) => {
                 for f in control_frames {
                     match f {
-                        HFrame::MaxPushId { .. } => {
-                            // TODO implement push
-                            Ok(())
-                        }
-                        HFrame::Goaway { .. } | HFrame::CancelPush { .. } => {
+                        HFrame::Goaway { .. } => Err(Error::HttpFrameUnexpected),
+                        // Server push is not supported. A server that does not push ignores
+                        // MAX_PUSH_ID (RFC 9114, Section 7.2.7); any other push frame is
+                        // unexpected.
+                        HFrame::MaxPushId => Ok(()),
+                        HFrame::CancelPush | HFrame::PriorityUpdatePush => {
                             Err(Error::HttpFrameUnexpected)
                         }
-                        HFrame::PriorityUpdatePush { element_id, priority } => {
-                            // TODO: check if the element_id references a promised push stream or
-                            // is greater than the maximum Push ID.
-                            self.events.priority_update(StreamId::from(element_id), priority);
-                            Ok(())
-                        }
-                        HFrame::PriorityUpdateRequest { element_id, priority } => {
+                        HFrame::PriorityUpdateRequest {
+                            element_id,
+                            priority,
+                        } => {
                             // check that the element_id references a request stream
                             // within the client-sided bidirectional stream limit
                             let element_stream_id = StreamId::new(element_id);
@@ -384,14 +374,14 @@ impl Http3ServerHandler {
                                 || !element_stream_id.is_client_initiated()
                                 || !conn.is_stream_id_allowed(element_stream_id)
                             {
-                                return Err(Error::HttpId)
+                                return Err(Error::HttpId);
                             }
 
                             self.events.priority_update(element_stream_id, priority);
                             Ok(())
                         }
                         _ => unreachable!(
-                            "we should only put MaxPushId, Goaway and PriorityUpdates into control_frames"
+                            "only Goaway, PriorityUpdateRequest and server-push frames are put into control_frames"
                         ),
                     }?;
                 }
@@ -416,11 +406,11 @@ impl Http3ServerHandler {
         buf: &mut [u8],
     ) -> Res<(usize, bool)> {
         qdebug!("[{self}] read_data from stream {stream_id}");
-        let res = self.base_handler.read_data(conn, stream_id, buf);
-        if let Err(e) = &res {
-            if e.connection_error() {
-                self.close(conn, now, e);
-            }
+        let res = self.base_handler.read_data(conn, stream_id, buf, now);
+        if let Err(e) = &res
+            && e.connection_error()
+        {
+            self.close(conn, now, e);
         }
         res
     }

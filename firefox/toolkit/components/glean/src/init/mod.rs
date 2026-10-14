@@ -6,7 +6,6 @@ use std::env;
 use std::ffi::{c_char, CStr, CString};
 use std::ops::DerefMut;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use firefox_on_glean::{metrics, pings};
 use nserror::{nsresult, NS_ERROR_FAILURE};
@@ -16,7 +15,7 @@ use xpcom::interfaces::{
 };
 use xpcom::{RefPtr, XpCom};
 
-use glean::{ClientInfoMetrics, Configuration};
+use glean::{ClientInfoMetrics, Configuration, ConfigurationBuilder};
 
 #[cfg(not(target_os = "android"))]
 mod upload_pref;
@@ -42,6 +41,8 @@ pub extern "C" fn fog_init(
     disable_internal_pings: bool,
 ) -> nsresult {
     let upload_enabled = static_prefs::pref!("datareporting.healthreport.uploadEnabled");
+    let enable_store_submitted_pings =
+        static_prefs::pref!("telemetry.fog.enable_store_submitted_pings");
     let recording_enabled = static_prefs::pref!("telemetry.fog.test.localhost_port") < 0;
     let uploader = Some(Box::new(ViaductUploader) as Box<dyn glean::net::PingUploader>);
 
@@ -53,6 +54,7 @@ pub extern "C" fn fog_init(
         // Flipping it around, because no value = defaults to false,
         // so we take in `disable` but pass on `enable`.
         !disable_internal_pings,
+        enable_store_submitted_pings,
     )
     .into()
 }
@@ -82,6 +84,7 @@ pub extern "C" fn fog_init(
         upload_enabled,
         uploader,
         !disable_internal_pings,
+        false,
     )
     .into()
 }
@@ -92,8 +95,9 @@ fn fog_init_internal(
     upload_enabled: bool,
     uploader: Option<Box<dyn glean::net::PingUploader>>,
     enable_internal_pings: bool,
+    enable_store_submitted_pings: bool,
 ) -> Result<(), nsresult> {
-    metrics::fog::initialization.start();
+    let timer_id = metrics::fog::initializations.start();
 
     log::debug!("Initializing FOG.");
 
@@ -104,6 +108,7 @@ fn fog_init_internal(
     conf.upload_enabled = upload_enabled;
     conf.uploader = uploader;
     conf.enable_internal_pings = enable_internal_pings;
+    conf.enable_store_submitted_pings = enable_store_submitted_pings;
 
     // If we're operating in automation without any specific source tags to set,
     // set the tag "automation" so any pings that escape don't clutter the tables.
@@ -122,7 +127,7 @@ fn fog_init_internal(
 
     glean::initialize(conf, client_info);
 
-    metrics::fog::initialization.stop();
+    metrics::fog::initializations.stop_and_accumulate(timer_id);
 
     Ok(())
 }
@@ -145,24 +150,28 @@ fn build_configuration(
         app_display_version,
         channel: Some(channel),
         locale: Some(locale),
+        os_version: None, // TODO: bug 2017277
     };
     log::debug!("Client Info: {:#?}", client_info);
+
+    let application_id = if app_id_override.is_empty() {
+        let app_id_guard = super::APP_ID.read().unwrap();
+        if app_id_guard.is_empty() {
+            "firefox.desktop".to_string()
+        } else {
+            app_id_guard.clone()
+        }
+    } else {
+        app_id_override.to_utf8().to_string()
+    };
 
     let localhost_port = static_prefs::pref!("telemetry.fog.test.localhost_port");
     let server = if localhost_port > 0 {
         format!("http://localhost:{}", localhost_port)
+    } else if application_id == "thunderbird.desktop" {
+        String::from("https://incoming.thunderbird.net")
     } else {
-        if app_id_override == "thunderbird.desktop" {
-            String::from("https://incoming.thunderbird.net")
-        } else {
-            String::from("https://incoming.telemetry.mozilla.org")
-        }
-    };
-
-    let application_id = if app_id_override.is_empty() {
-        "firefox.desktop".to_string()
-    } else {
-        app_id_override.to_utf8().to_string()
+        String::from("https://incoming.telemetry.mozilla.org")
     };
 
     extern "C" {
@@ -173,32 +182,27 @@ fn build_configuration(
     let pings_per_interval = unsafe { FOG_MaxPingLimit() };
     metrics::fog::max_pings_per_minute.set(pings_per_interval.into());
 
-    let rate_limit = Some(glean::PingRateLimit {
+    let rate_limit = glean::PingRateLimit {
         seconds_per_interval: 60,
         pings_per_interval,
-    });
-
-    let configuration = Configuration {
-        upload_enabled: false,
-        data_path,
-        application_id,
-        max_events: None,
-        delay_ping_lifetime_io: true,
-        server_endpoint: Some(server),
-        uploader: None,
-        use_core_mps: true,
-        trim_data_to_registered_pings: true,
-        log_level: None,
-        rate_limit,
-        enable_event_timestamps: true,
-        experimentation_id: None,
-        enable_internal_pings: true,
-        ping_schedule: pings::ping_schedule(),
-        ping_lifetime_threshold: 0,
-        ping_lifetime_max_time: Duration::ZERO,
     };
 
-    Ok((configuration, client_info))
+    let acceleration_factor = if static_prefs::pref!("telemetry.fog.test.decelerate_early_events") {
+        0
+    } else {
+        5
+    };
+
+    let builder = ConfigurationBuilder::new(false, data_path, application_id)
+        .with_delay_ping_lifetime_io(true)
+        .with_server_endpoint(server)
+        .with_use_core_mps(true)
+        .with_trim_data_to_registered_pings(true)
+        .with_ping_schedule(pings::ping_schedule())
+        .with_events_ping_acceleration_factor(acceleration_factor)
+        .with_rate_limit(rate_limit);
+
+    Ok((builder.build(), client_info))
 }
 
 #[cfg(not(target_os = "android"))]
@@ -338,6 +342,13 @@ pub extern "C" fn fog_test_reset(
     app_id_override: &nsACString,
 ) -> nsresult {
     fog_test_reset_internal(data_path_override, app_id_override).into()
+}
+
+/// **TEST-ONLY METHOD**
+/// Shutdown FOG and the Glean SDK.
+#[no_mangle]
+pub extern "C" fn fog_test_shutdown() {
+    glean::shutdown();
 }
 
 // Split out into its own function so I could use `?`

@@ -7,9 +7,6 @@
 const { AppInfo } = ChromeUtils.importESModule(
   "chrome://remote/content/shared/AppInfo.sys.mjs"
 );
-const { error } = ChromeUtils.importESModule(
-  "chrome://remote/content/shared/webdriver/Errors.sys.mjs"
-);
 const {
   Capabilities,
   mergeCapabilities,
@@ -18,6 +15,7 @@ const {
   ProxyConfiguration,
   Timeouts,
   validateCapabilities,
+  WEBDRIVER_CLASSIC_CAPABILITIES,
 } = ChromeUtils.importESModule(
   "chrome://remote/content/shared/webdriver/Capabilities.sys.mjs"
 );
@@ -50,33 +48,39 @@ add_task(function test_Timeouts_fromJSON() {
   equal(ts.script, json.script);
 });
 
-add_task(function test_Timeouts_fromJSON_unrecognized_field() {
-  let json = {
-    sessionId: "foobar",
-  };
-  try {
-    Timeouts.fromJSON(json);
-  } catch (e) {
-    equal(e.name, error.InvalidArgumentError.name);
-    equal(e.message, "Unrecognized timeout: sessionId");
+add_task(function test_Timeouts_fromJSON_invalid_key() {
+  let json = { sessionId: "foobar" };
+  Assert.throws(() => Timeouts.fromJSON(json), /InvalidArgumentError/);
+});
+
+add_task(function test_Timeouts_fromJSON_value_invalid_types() {
+  for (let type of ["implicit", "pageLoad", "script"]) {
+    for (let value of [[], {}, false, "10", 2.5]) {
+      Assert.throws(
+        () => Timeouts.fromJSON({ [type]: value }),
+        /InvalidArgumentError/
+      );
+    }
   }
 });
 
-add_task(function test_Timeouts_fromJSON_invalid_types() {
-  for (let value of [null, [], {}, false, "10", 2.5]) {
-    Assert.throws(
-      () => Timeouts.fromJSON({ implicit: value }),
-      /InvalidArgumentError/
-    );
+add_task(function test_Timeouts_fromJSON_value_bounds() {
+  for (let type of ["implicit", "pageLoad", "script"]) {
+    for (let value of [-1, Number.MAX_SAFE_INTEGER + 1]) {
+      Assert.throws(
+        () => Timeouts.fromJSON({ [type]: value }),
+        /InvalidArgumentError/
+      );
+    }
   }
 });
 
-add_task(function test_Timeouts_fromJSON_bounds() {
-  for (let value of [-1, Number.MAX_SAFE_INTEGER + 1]) {
-    Assert.throws(
-      () => Timeouts.fromJSON({ script: value }),
-      /InvalidArgumentError/
-    );
+add_task(function test_Timeouts_fromJSON_value_valid() {
+  for (let type of ["implicit", "pageLoad", "script"]) {
+    for (let value of [null, 0, 100]) {
+      let timeouts = Timeouts.fromJSON({ [type]: value });
+      equal(timeouts[type], value);
+    }
   }
 });
 
@@ -361,13 +365,6 @@ add_task(function test_Proxy_fromJSON() {
     /InvalidArgumentError/
   );
 
-  // Bug 1703805: Since Firefox 90 ftpProxy is no longer supported
-  Assert.throws(
-    () =>
-      ProxyConfiguration.fromJSON({ proxyType: "manual", ftpProxy: "foo:21" }),
-    /InvalidArgumentError/
-  );
-
   // noProxy: invalid settings
   for (let noProxy of [true, 42, {}, null, "foo", [true], [42], [{}], [null]]) {
     Assert.throws(
@@ -433,7 +430,7 @@ add_task(function test_Capabilities_ctor_bidi() {
   equal(false, caps.get("acceptInsecureCerts"));
   ok(!caps.has("timeouts"));
   ok(caps.get("proxy") instanceof ProxyConfiguration);
-  ok(!caps.has("setWindowRect"));
+  ok(caps.has("setWindowRect"));
   ok(!caps.has("strictFileInteractability"));
   ok(!caps.has("webSocketUrl"));
 
@@ -453,15 +450,21 @@ add_task(function test_Capabilities_toJSON() {
   let caps = new Capabilities();
   let json = caps.toJSON();
 
+  equal(caps.get("acceptInsecureCerts"), json.acceptInsecureCerts);
   equal(caps.get("browserName"), json.browserName);
   equal(caps.get("browserVersion"), json.browserVersion);
-  equal(caps.get("platformName"), json.platformName);
   equal(caps.get("pageLoadStrategy"), json.pageLoadStrategy);
-  equal(caps.get("acceptInsecureCerts"), json.acceptInsecureCerts);
-  deepEqual(caps.get("proxy").toJSON(), json.proxy);
-  deepEqual(caps.get("timeouts").toJSON(), json.timeouts);
+  equal(caps.get("platformName"), json.platformName);
+  ok(
+    "proxy" in json,
+    "proxy should always be in WebDriver Classic capabilities when not configured"
+  );
+  deepEqual({}, json.proxy);
+
   equal(caps.get("setWindowRect"), json.setWindowRect);
   equal(caps.get("strictFileInteractability"), json.strictFileInteractability);
+  deepEqual(caps.get("timeouts").toJSON(), json.timeouts);
+  equal(caps.get("userAgent"), json.userAgent);
   equal(caps.get("webSocketUrl"), json.webSocketUrl);
 
   equal(caps.get("moz:accessibilityChecks"), json["moz:accessibilityChecks"]);
@@ -470,6 +473,52 @@ add_task(function test_Capabilities_toJSON() {
   equal(caps.get("moz:processID"), json["moz:processID"]);
   equal(caps.get("moz:profile"), json["moz:profile"]);
   equal(caps.get("moz:webdriverClick"), json["moz:webdriverClick"]);
+  equal(caps.get("moz:windowless"), json["moz:windowless"]);
+
+  // Check a configured proxy
+  caps.set("proxy", ProxyConfiguration.fromJSON({ proxyType: "direct" }));
+  json = caps.toJSON();
+
+  ok(
+    "proxy" in json,
+    "proxy should always be in WebDriver Classic capabilities when configured"
+  );
+  deepEqual(json.proxy, { proxyType: "direct" });
+});
+
+add_task(function test_Capabilities_toJSON_bidi() {
+  let caps = new Capabilities(true);
+  let json = caps.toJSON();
+
+  equal(caps.get("acceptInsecureCerts"), json.acceptInsecureCerts);
+  equal(caps.get("browserName"), json.browserName);
+  equal(caps.get("browserVersion"), json.browserVersion);
+  equal(caps.get("platformName"), json.platformName);
+  ok(
+    !("proxy" in json),
+    "proxy should not be in BiDi capabilities when not configured"
+  );
+  equal(caps.get("setWindowRect"), json.setWindowRect);
+  equal(caps.get("userAgent"), json.userAgent);
+
+  equal(caps.get("moz:buildID"), json["moz:buildID"]);
+  equal(caps.get("moz:platformVersion"), json["moz:platformVersion"]);
+  equal(caps.get("moz:processID"), json["moz:processID"]);
+  equal(caps.get("moz:profile"), json["moz:profile"]);
+
+  for (const capability of WEBDRIVER_CLASSIC_CAPABILITIES) {
+    ok(
+      !(capability in json),
+      `${capability} should not be in BiDi capabilities`
+    );
+  }
+
+  // Check a configured proxy
+  caps.set("proxy", ProxyConfiguration.fromJSON({ proxyType: "direct" }));
+  json = caps.toJSON();
+
+  ok("proxy" in json, "proxy should be in BiDi capabilities when configured");
+  deepEqual(json.proxy, { proxyType: "direct" });
 });
 
 add_task(function test_Capabilities_fromJSON_http() {
@@ -658,6 +707,12 @@ add_task(function test_validateCapabilities_invalid() {
       /InvalidArgumentError/
     );
   }
+
+  Assert.throws(
+    () => validateCapabilities({ "moz:userContext": "user-context" }),
+    /readonly capability/,
+    "moz:userContext is rejected as a readonly capability"
+  );
 });
 
 add_task(function test_validateCapabilities_valid() {

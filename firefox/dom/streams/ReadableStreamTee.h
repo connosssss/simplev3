@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30,8 +28,7 @@ class ReadableStreamDefaultTeeSourceAlgorithms final
       ReadableStreamDefaultTeeSourceAlgorithms, UnderlyingSourceAlgorithmsBase)
 
   ReadableStreamDefaultTeeSourceAlgorithms(TeeState* aTeeState,
-                                           TeeBranch aBranch)
-      : mTeeState(aTeeState), mBranch(aBranch) {}
+                                           TeeBranch aBranch);
 
   MOZ_CAN_RUN_SCRIPT void StartCallback(
       JSContext* aCx, ReadableStreamControllerBase& aController,
@@ -48,7 +45,7 @@ class ReadableStreamDefaultTeeSourceAlgorithms final
       ErrorResult& aRv) override;
 
  protected:
-  ~ReadableStreamDefaultTeeSourceAlgorithms() override = default;
+  ~ReadableStreamDefaultTeeSourceAlgorithms();
 
  private:
   // Virtually const, but is cycle collected
@@ -65,8 +62,7 @@ struct ReadableStreamDefaultTeeReadRequest final : public ReadRequest {
 
   RefPtr<TeeState> mTeeState;
 
-  explicit ReadableStreamDefaultTeeReadRequest(TeeState* aTeeState)
-      : mTeeState(aTeeState) {}
+  explicit ReadableStreamDefaultTeeReadRequest(TeeState* aTeeState);
 
   void ChunkSteps(JSContext* aCx, JS::Handle<JS::Value> aChunk,
                   ErrorResult& aRv) override;

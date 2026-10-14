@@ -4,8 +4,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use enumset::{enum_set, EnumSet, EnumSetType};
-use neqo_common::{header::HeadersExt as _, Header};
+use enumset::{EnumSet, EnumSetType, enum_set};
+use neqo_common::{Header, header::HeadersExt as _};
 
 use crate::{Error, MessageType, Res};
 
@@ -50,7 +50,10 @@ impl TryFrom<(MessageType, &str)> for PseudoHeaderState {
 /// a status header or if the value of the header is 101 or cannot be parsed.
 pub fn is_interim(headers: &[Header]) -> Res<bool> {
     if let Some(h) = headers.iter().take(1).find_header(":status") {
-        let status_code = h.value().parse::<u16>().map_err(|_| Error::InvalidHeader)?;
+        let status_code = std::str::from_utf8(h.value())
+            .map_err(|_| Error::InvalidHeader)?
+            .parse::<u16>()
+            .map_err(|_| Error::InvalidHeader)?;
         if status_code == 101 {
             // https://datatracker.ietf.org/doc/html/draft-ietf-quic-http#section-4.3
             Err(Error::InvalidHeader)
@@ -92,9 +95,9 @@ fn track_pseudo(
 ///
 /// Returns an error if headers are not well formed.
 pub fn headers_valid(headers: &[Header], message_type: MessageType) -> Res<()> {
-    let mut method_value: Option<&str> = None;
-    let mut protocol_value: Option<&str> = None;
-    let mut scheme_value: Option<&str> = None;
+    let mut method_value: Option<&[u8]> = None;
+    let mut protocol_value: Option<&[u8]> = None;
+    let mut scheme_value: Option<&[u8]> = None;
     let mut pseudo_state = EnumSet::new();
     for header in headers {
         let is_pseudo = track_pseudo(header.name(), &mut pseudo_state, message_type)?;
@@ -111,8 +114,26 @@ pub fn headers_valid(headers: &[Header], message_type: MessageType) -> Res<()> {
             _ = bytes.next();
         }
 
-        if bytes.any(|b| matches!(b, 0 | 0x10 | 0x13 | 0x3a | 0x41..=0x5a)) {
+        if bytes.any(|b| matches!(b, 0 | 0x0a | 0x0d | 0x3a | 0x41..=0x5a)) {
             return Err(Error::InvalidHeader); // illegal characters.
+        }
+
+        // CR, LF, and NUL are not permitted in a field value either (RFC 9114,
+        // Section 4.3); carried verbatim into an HTTP/1.1 serialization they
+        // would split the message.
+        if header.value().iter().any(|b| matches!(b, 0 | 0x0a | 0x0d)) {
+            return Err(Error::InvalidHeader); // illegal characters.
+        }
+
+        // Connection-specific header fields make a message malformed (RFC 9114,
+        // Section 4.2). TE is the only one that may appear, and only with the
+        // value "trailers". Names are already lowercased above.
+        match header.name() {
+            "connection" | "keep-alive" | "proxy-connection" | "transfer-encoding" | "upgrade" => {
+                return Err(Error::InvalidHeader);
+            }
+            "te" if header.value() != b"trailers" => return Err(Error::InvalidHeader),
+            _ => {}
         }
     }
     // Clear the regular header bit, since we only check pseudo headers below.
@@ -120,11 +141,11 @@ pub fn headers_valid(headers: &[Header], message_type: MessageType) -> Res<()> {
     let pseudo_header_mask = match message_type {
         MessageType::Response => enum_set!(PseudoHeaderState::Status),
         MessageType::Request => {
-            if method_value == Some("CONNECT") {
+            if method_value == Some(b"CONNECT".as_ref()) {
                 let connect_mask = PseudoHeaderState::Method | PseudoHeaderState::Authority;
                 if let Some(protocol) = protocol_value {
                     // For a webtransport CONNECT, the :scheme field must be set to https.
-                    if protocol == "webtransport" && scheme_value != Some("https") {
+                    if protocol == b"webtransport" && scheme_value != Some(b"https".as_ref()) {
                         return Err(Error::InvalidHeader);
                     }
                     // The CONNECT request for with :protocol included must have the scheme,
@@ -141,7 +162,7 @@ pub fn headers_valid(headers: &[Header], message_type: MessageType) -> Res<()> {
 
     if (MessageType::Request == message_type)
         && pseudo_state.contains(PseudoHeaderState::Protocol)
-        && method_value != Some("CONNECT")
+        && method_value != Some(b"CONNECT".as_ref())
     {
         return Err(Error::InvalidHeader);
     }
@@ -169,10 +190,11 @@ pub fn trailers_valid(headers: &[Header]) -> Res<()> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use neqo_common::Header;
 
-    use super::headers_valid;
+    use super::{headers_valid, is_interim};
     use crate::MessageType;
 
     fn create_connect_headers() -> Vec<Header> {
@@ -195,27 +217,21 @@ mod tests {
     #[test]
     fn connect_with_missing_header() {
         for field in &[":scheme", ":path", ":authority"] {
-            assert!(headers_valid(
-                &create_connect_headers_without_field(field),
-                MessageType::Request
-            )
-            .is_err());
+            assert!(
+                headers_valid(
+                    &create_connect_headers_without_field(field),
+                    MessageType::Request
+                )
+                .is_err()
+            );
         }
     }
 
     #[test]
     fn invalid_scheme_webtransport_connect() {
-        assert!(headers_valid(
-            &[
-                Header::new(":method", "CONNECT"),
-                Header::new(":protocol", "webtransport"),
-                Header::new(":authority", "something.com"),
-                Header::new(":scheme", "http"),
-                Header::new(":path", "/here"),
-            ],
-            MessageType::Request
-        )
-        .is_err());
+        let mut headers = create_connect_headers();
+        headers[2] = Header::new(":scheme", "http");
+        assert!(headers_valid(&headers, MessageType::Request).is_err());
     }
 
     #[test]
@@ -225,15 +241,182 @@ mod tests {
 
     #[test]
     fn invalid_webtransport_connect_with_status() {
-        assert!(headers_valid(
-            [
-                create_connect_headers(),
-                vec![Header::new(":status", "200")]
-            ]
-            .concat()
-            .as_slice(),
-            MessageType::Request
-        )
-        .is_err());
+        assert!(
+            headers_valid(
+                [
+                    create_connect_headers(),
+                    vec![Header::new(":status", "200")]
+                ]
+                .concat()
+                .as_slice(),
+                MessageType::Request
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn is_interim_invalid_utf8() {
+        // Create a header with invalid UTF-8 bytes in the status value
+        let invalid_utf8_bytes = vec![0xFF, 0xFE, 0xFD];
+        let header = Header::new(":status", invalid_utf8_bytes.as_slice());
+        let headers = vec![header];
+        assert!(is_interim(&headers).is_err());
+    }
+
+    #[test]
+    fn is_interim_not_a_number() {
+        let headers = vec![Header::new(":status", "not-a-number")];
+        assert!(is_interim(&headers).is_err());
+    }
+
+    #[test]
+    fn protocol_requires_connect_method() {
+        // :protocol is only valid with CONNECT method.
+        let mut headers = create_connect_headers();
+        headers[0] = Header::new(":method", "GET");
+        assert!(headers_valid(&headers, MessageType::Request).is_err());
+    }
+
+    #[test]
+    fn classic_connect_valid() {
+        // Classic CONNECT only requires :method and :authority.
+        let headers = vec![
+            Header::new(":method", "CONNECT"),
+            Header::new(":authority", "proxy.example.com:443"),
+        ];
+        assert!(headers_valid(&headers, MessageType::Request).is_ok());
+    }
+
+    #[test]
+    fn response_requires_status() {
+        let headers = vec![Header::new(":status", "200")];
+        assert!(headers_valid(&headers, MessageType::Response).is_ok());
+    }
+
+    #[test]
+    fn response_missing_status() {
+        let headers: Vec<Header> = vec![];
+        assert!(headers_valid(&headers, MessageType::Response).is_err());
+    }
+
+    #[test]
+    fn regular_request_valid() {
+        let headers = vec![
+            Header::new(":method", "GET"),
+            Header::new(":scheme", "https"),
+            Header::new(":path", "/index.html"),
+        ];
+        assert!(headers_valid(&headers, MessageType::Request).is_ok());
+    }
+
+    #[test]
+    fn reject_cr_lf_in_field_name() {
+        // CR (0x0d) and LF (0x0a) in a field name must be treated as malformed
+        // (RFC 9114, Section 4.3), otherwise they can be carried verbatim into a
+        // downstream HTTP/1.1 serialization and split the message.
+        for bad in ["x\rname", "x\nname", "x\r\nname"] {
+            let headers = vec![
+                Header::new(":method", "GET"),
+                Header::new(":scheme", "https"),
+                Header::new(":path", "/"),
+                Header::new(bad, "value"),
+            ];
+            assert!(headers_valid(&headers, MessageType::Request).is_err());
+        }
+
+        // The same request with a clean field name is accepted.
+        let headers = vec![
+            Header::new(":method", "GET"),
+            Header::new(":scheme", "https"),
+            Header::new(":path", "/"),
+            Header::new("xname", "value"),
+        ];
+        assert!(headers_valid(&headers, MessageType::Request).is_ok());
+    }
+
+    #[test]
+    fn reject_cr_lf_nul_in_field_value() {
+        // CR (0x0d), LF (0x0a), and NUL (0x00) in a field value must be treated
+        // as malformed (RFC 9114, Section 4.3), otherwise they can be carried
+        // verbatim into a downstream HTTP/1.1 serialization and split the message.
+        for bad in [b"v\rx".as_slice(), b"v\nx", b"v\r\nx", b"v\0x"] {
+            let headers = vec![
+                Header::new(":method", "GET"),
+                Header::new(":scheme", "https"),
+                Header::new(":path", "/"),
+                Header::new("name", bad),
+            ];
+            assert!(headers_valid(&headers, MessageType::Request).is_err());
+        }
+
+        // The same bytes in a pseudo-header value are rejected too.
+        let headers = vec![
+            Header::new(":method", "GET"),
+            Header::new(":scheme", "https"),
+            Header::new(":path", b"/\r\nx".as_slice()),
+        ];
+        assert!(headers_valid(&headers, MessageType::Request).is_err());
+    }
+
+    #[test]
+    fn reject_connection_specific_header() {
+        // A message carrying a connection-specific header field is malformed
+        // (RFC 9114, Section 4.2), in either direction.
+        for name in [
+            "connection",
+            "keep-alive",
+            "proxy-connection",
+            "transfer-encoding",
+            "upgrade",
+            "te",
+        ] {
+            let response = vec![Header::new(":status", "200"), Header::new(name, "x")];
+            assert!(headers_valid(&response, MessageType::Response).is_err());
+
+            let request = vec![
+                Header::new(":method", "GET"),
+                Header::new(":scheme", "https"),
+                Header::new(":path", "/"),
+                Header::new(name, "x"),
+            ];
+            assert!(headers_valid(&request, MessageType::Request).is_err());
+        }
+
+        // TE is the sole exception, but only carrying the value "trailers".
+        let ok = vec![
+            Header::new(":method", "GET"),
+            Header::new(":scheme", "https"),
+            Header::new(":path", "/"),
+            Header::new("te", "trailers"),
+        ];
+        assert!(headers_valid(&ok, MessageType::Request).is_ok());
+    }
+
+    #[test]
+    fn regular_request_missing_method() {
+        let headers = vec![
+            Header::new(":scheme", "https"),
+            Header::new(":path", "/index.html"),
+        ];
+        assert!(headers_valid(&headers, MessageType::Request).is_err());
+    }
+
+    #[test]
+    fn regular_request_missing_scheme() {
+        let headers = vec![
+            Header::new(":method", "GET"),
+            Header::new(":path", "/index.html"),
+        ];
+        assert!(headers_valid(&headers, MessageType::Request).is_err());
+    }
+
+    #[test]
+    fn regular_request_missing_path() {
+        let headers = vec![
+            Header::new(":method", "GET"),
+            Header::new(":scheme", "https"),
+        ];
+        assert!(headers_valid(&headers, MessageType::Request).is_err());
     }
 }

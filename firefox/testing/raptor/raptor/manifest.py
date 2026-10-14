@@ -13,7 +13,7 @@ from urllib.parse import (
     urlunsplit,
 )
 
-from cmdline import DESKTOP_APPS, GECKO_PROFILER_APPS, TRACE_APPS
+from cmdline import GECKO_PROFILER_APPS, TRACE_APPS
 from constants.raptor_tests_constants import YOUTUBE_PLAYBACK_MEASURE
 from logger.logger import RaptorLogger
 from manifestparser import TestManifest
@@ -33,6 +33,7 @@ LIVE_SITE_TIMEOUT_MULTIPLIER = 1.2
 
 required_settings = [
     "alert_threshold",
+    "subtest_alert_threshold",
     "apps",
     "lower_is_better",
     "measure",
@@ -45,6 +46,28 @@ required_settings = [
 
 playback_settings = [
     "playback_pageset_manifest",
+]
+
+bool_settings = [
+    "lower_is_better",
+    "subtest_lower_is_better",
+    "accept_zero_vismet",
+    "interactive",
+    "host_from_parent",
+    "expose_browser_profiler",
+    "expose_chrome_trace",
+    "gather_cpuTime",
+    "sparse_checkout",
+    "verbose",
+    "browser_visualmetrics",
+    "login",
+    "cold",
+    "use_live_sites",
+    "newtab_per_cycle",
+    "background_test",
+    "benchmark_page",
+    "benchmark_webserver",
+    "screen_capture",
 ]
 
 
@@ -63,19 +86,6 @@ def get_browser_test_list(browser_app, run_local):
     )
 
 
-def validate_app_playback_settings(test_details):
-    # For Linux desktop playback tests, we need to augment the playback_settings
-    # to ensure that the right recording archive is used. Since Android tests
-    # are run on a Linux host, we should ensure that Android tests are not
-    # affected.
-
-    # This is temporary until Linux machines are upgraded (Bug 1926419)
-    apps = [app.strip() for app in test_details["apps"].split(",")]
-    return any(app in apps for app in DESKTOP_APPS) and test_details.get(
-        "playback_pageset_manifest_backup"
-    )
-
-
 def validate_test_toml(test_details):
     # validate all required test details were found in the test TOML
     valid_settings = True
@@ -86,6 +96,9 @@ def validate_test_toml(test_details):
             continue
         if setting == "scenario_time" and test_details["type"] != "scenario":
             continue
+        # subtest_alert_threshold is optional
+        if setting == "subtest_alert_threshold":
+            continue
         if test_details.get(setting) is None:
             # if page-cycles is not specified, it's ok as long as browser-cycles is there
             if (
@@ -95,24 +108,20 @@ def validate_test_toml(test_details):
                 continue
             valid_settings = False
             LOG.error(
-                "setting '%s' is required but not found in %s"
-                % (setting, test_details["manifest"])
+                f"setting '{setting}' is required but not found in "
+                f"{test_details['manifest']}"
             )
 
     test_details.setdefault("page_timeout", 30000)
 
     # if playback is specified, we need more playback settings
     if test_details.get("playback") is not None:
-        # Ensure correct values used for android playback
-        pbs = playback_settings
-        if validate_app_playback_settings(test_details):
-            pbs += ["playback_pageset_manifest_backup"]
-        for setting in pbs:
+        for setting in playback_settings:
             if test_details.get(setting) is None:
                 valid_settings = False
                 LOG.error(
-                    "setting '%s' is required but not found in %s"
-                    % (setting, test_details["manifest"])
+                    f"setting '{setting}' is required but not found in "
+                    f"{test_details['manifest']}"
                 )
 
     # if 'alert-on' is specified, we need to make sure that the value given is valid
@@ -150,8 +159,8 @@ def validate_test_toml(test_details):
 
             if len(matches) == 0:
                 LOG.error(
-                    "The 'alert_on' value of '%s' is not valid because "
-                    "it doesn't exist in the 'measure' test setting!" % alert_on_value
+                    f"The 'alert_on' value of '{alert_on_value}' is not valid "
+                    "because it doesn't exist in the 'measure' test setting!"
                 )
                 valid_settings = False
             else:
@@ -196,15 +205,13 @@ def add_test_url_params(url, extra_params):
     final_query_string = unquote(urlencode(parsed_query_params, doseq=True))
 
     # reconstruct test_url with the changed query string
-    return urlunsplit(
-        (
-            parsed_url.scheme,
-            parsed_url.netloc,
-            parsed_url.path,
-            final_query_string,
-            parsed_url.fragment,
-        )
-    )
+    return urlunsplit((
+        parsed_url.scheme,
+        parsed_url.netloc,
+        parsed_url.path,
+        final_query_string,
+        parsed_url.fragment,
+    ))
 
 
 def write_test_settings_json(args, test_details, oskey):
@@ -264,9 +271,9 @@ def write_test_settings_json(args, test_details, oskey):
             "raptor-options"
         ]["lower_is_better"]
     else:
-        test_settings["raptor-options"][
-            "subtest_lower_is_better"
-        ] = subtest_lower_is_better
+        test_settings["raptor-options"]["subtest_lower_is_better"] = (
+            subtest_lower_is_better
+        )
 
     if test_details.get("alert_change_type", None) is not None:
         test_settings["raptor-options"]["alert_change_type"] = test_details[
@@ -294,18 +301,16 @@ def write_test_settings_json(args, test_details, oskey):
             )
             threads.extend(test_threads)
 
-        test_settings["raptor-options"].update(
-            {
-                "gecko_profile": True,
-                "gecko_profile_entries": int(
-                    test_details.get("gecko_profile_entries", 1000000)
-                ),
-                "gecko_profile_interval": float(
-                    test_details.get("gecko_profile_interval", 1)
-                ),
-                "gecko_profile_threads": ",".join(set(threads)),
-            }
-        )
+        test_settings["raptor-options"].update({
+            "gecko_profile": True,
+            "gecko_profile_entries": int(
+                test_details.get("gecko_profile_entries", 1000000)
+            ),
+            "gecko_profile_interval": float(
+                test_details.get("gecko_profile_interval", 1)
+            ),
+            "gecko_profile_threads": ",".join(set(threads)),
+        })
 
         features = test_details.get("gecko_profile_features")
         if features:
@@ -315,16 +320,16 @@ def write_test_settings_json(args, test_details, oskey):
         test_settings["raptor-options"]["extra_profiler_run"] = True
 
     if test_details.get("newtab_per_cycle", None) is not None:
-        test_settings["raptor-options"]["newtab_per_cycle"] = bool(
-            test_details["newtab_per_cycle"]
-        )
+        test_settings["raptor-options"]["newtab_per_cycle"] = test_details[
+            "newtab_per_cycle"
+        ]
 
     if test_details["type"] == "scenario":
         test_settings["raptor-options"]["scenario_time"] = test_details["scenario_time"]
         if "background_test" in test_details:
-            test_settings["raptor-options"]["background_test"] = bool(
-                test_details["background_test"]
-            )
+            test_settings["raptor-options"]["background_test"] = test_details[
+                "background_test"
+            ]
         else:
             test_settings["raptor-options"]["background_test"] = False
 
@@ -416,32 +421,22 @@ def get_raptor_test_list(args, oskey):
     # the page-cycles value in the TOML can be overriden when debug-mode enabled, when
     # gecko-profiling enabled, or when --page-cycles cmd line arg was used (that overrides all)
     for next_test in tests_to_run:
-        LOG.info("configuring settings for test %s" % next_test["name"])
+        LOG.info(f"configuring settings for test {next_test['name']}")
         max_page_cycles = int(next_test.get("page_cycles", 1))
         max_browser_cycles = int(next_test.get("browser_cycles", 1))
+
+        for setting in bool_settings:
+            if next_test.get(setting, None) is not None:
+                next_test[setting] = bool_from_str(next_test.get(setting))
 
         # If using playback, the playback recording info may need to be transformed.
         # This transformation needs to happen before the test name is changed
         # below (for cold tests for instance)
 
-        # Bug 1926419 avoid using mitm11 manifest on linux desktop tests.
-        if oskey == "linux" and args.app in DESKTOP_APPS:
-            if next_test.get("playback") is not None:
-                # Only use the backup manifest if it is set.
-                if next_test.get("playback_pageset_manifest_backup"):
-                    next_test["playback_pageset_manifest_backup"] = transform_subtest(
-                        next_test["playback_pageset_manifest_backup"], next_test["name"]
-                    )
-                else:
-                    next_test["playback_pageset_manifest"] = transform_subtest(
-                        next_test["playback_pageset_manifest"], next_test["name"]
-                    )
-
-        else:
-            if next_test.get("playback") is not None:
-                next_test["playback_pageset_manifest"] = transform_subtest(
-                    next_test["playback_pageset_manifest"], next_test["name"]
-                )
+        if next_test.get("playback") is not None:
+            next_test["playback_pageset_manifest"] = transform_subtest(
+                next_test["playback_pageset_manifest"], next_test["name"]
+            )
 
         # Check if either --gecko-profiler or --extra-profiler-run is enabled.
         if args.gecko_profile or (
@@ -471,7 +466,7 @@ def get_raptor_test_list(args, oskey):
                 ):
                     next_test["gecko_profile_entries"] = str(args.gecko_profile_entries)
                     LOG.info(
-                        "gecko-profiling entries set to %s" % args.gecko_profile_entries
+                        f"gecko-profiling entries set to {args.gecko_profile_entries}"
                     )
 
                 if (
@@ -482,8 +477,7 @@ def get_raptor_test_list(args, oskey):
                         args.gecko_profile_interval
                     )
                     LOG.info(
-                        "gecko-profiling interval set to %s"
-                        % args.gecko_profile_interval
+                        f"gecko-profiling interval set to {args.gecko_profile_interval}"
                     )
 
                 if (
@@ -503,15 +497,13 @@ def get_raptor_test_list(args, oskey):
                     ):
                         threads.extend(getattr(args, "gecko_profile_extra_threads", []))
                     next_test["gecko_profile_threads"] = ",".join(threads)
-                    LOG.info("gecko-profiling threads %s" % args.gecko_profile_threads)
+                    LOG.info(f"gecko-profiling threads {args.gecko_profile_threads}")
                 if (
                     "gecko_profile_features" in args
                     and args.gecko_profile_features is not None
                 ):
                     next_test["gecko_profile_features"] = args.gecko_profile_features
-                    LOG.info(
-                        "gecko-profiling features %s" % args.gecko_profile_features
-                    )
+                    LOG.info(f"gecko-profiling features {args.gecko_profile_features}")
         else:
             # if the gecko profiler or extra profiler run is not enabled, ignore all of its
             # settings.
@@ -531,13 +523,13 @@ def get_raptor_test_list(args, oskey):
         if args.page_cycles is not None:
             next_test["page_cycles"] = args.page_cycles
             LOG.info(
-                "setting page-cycles to %d as specified on cmd line" % args.page_cycles
+                f"setting page-cycles to {args.page_cycles} as specified on cmd line"
             )
         elif int(next_test.get("page_cycles", 1)) > max_page_cycles:
             next_test["page_cycles"] = max_page_cycles
             LOG.info(
-                "setting page-cycles to %d because gecko-profling is enabled"
-                % next_test["page_cycles"]
+                f"setting page-cycles to {next_test['page_cycles']} because "
+                "gecko-profling is enabled"
             )
 
         # if --browser-cycles was provided on the command line, use that instead of TOML
@@ -545,28 +537,27 @@ def get_raptor_test_list(args, oskey):
         if args.browser_cycles is not None:
             next_test["browser_cycles"] = args.browser_cycles
             LOG.info(
-                "setting browser-cycles to %d as specified on cmd line"
-                % args.browser_cycles
+                f"setting browser-cycles to {args.browser_cycles} as specified "
+                "on cmd line"
             )
         elif int(next_test.get("browser_cycles", 1)) > max_browser_cycles:
             next_test["browser_cycles"] = max_browser_cycles
             LOG.info(
-                "setting browser-cycles to %d because gecko-profilng is enabled"
-                % next_test["browser_cycles"]
+                f"setting browser-cycles to {next_test['browser_cycles']} because "
+                "gecko-profilng is enabled"
             )
 
         # if --page-timeout was provided on the command line, use that instead of TOML
         if args.page_timeout is not None:
             LOG.info(
-                "setting page-timeout to %d as specified on cmd line"
-                % args.page_timeout
+                f"setting page-timeout to {args.page_timeout} as specified on cmd line"
             )
             next_test["page_timeout"] = args.page_timeout
 
         _running_cold = False
 
         # check command line to see if we set cold page load from command line
-        if args.cold or next_test.get("cold") == "true":
+        if args.cold or next_test.get("cold"):
             # for raptor-webext jobs cold page-load is determined by the 'cold' key
             # in test manifest TOML
             _running_cold = True
@@ -604,12 +595,12 @@ def get_raptor_test_list(args, oskey):
                 initial_test_url, args.test_url_params
             )
             LOG.info(
-                "adding extra test_url params (%s) as specified on cmd line "
-                "to the current test_url (%s), resulting: %s"
-                % (args.test_url_params, initial_test_url, next_test["test_url"])
+                f"adding extra test_url params ({args.test_url_params}) as specified "
+                f"on cmd line to the current test_url ({initial_test_url}), "
+                f"resulting: {next_test['test_url']}"
             )
 
-        if next_test.get("use_live_sites", "false") == "true":
+        if next_test.get("use_live_sites"):
             # when using live sites we want to turn off playback
             LOG.info("using live sites so turning playback off!")
             next_test["playback"] = None
@@ -622,14 +613,13 @@ def get_raptor_test_list(args, oskey):
                 int(next_test["page_timeout"]) * LIVE_SITE_TIMEOUT_MULTIPLIER
             )
             LOG.info(
-                "using live sites so using page timeout of %dms"
-                % next_test["page_timeout"]
+                f"using live sites so using page timeout of {next_test['page_timeout']}ms"
             )
 
         if not args.browsertime and "browsertime" in next_test.get("manifest", ""):
             raise Exception(
-                "%s test can only be run with --browsertime"
-                % next_test.get("name", "Unknown")
+                f"{next_test.get('name', 'Unknown')} test can only be run with "
+                "--browsertime"
             )
 
         # browsertime doesn't use the 'measure' test toml setting; however just for the sake
@@ -657,10 +647,7 @@ def get_raptor_test_list(args, oskey):
             next_test["measure"] = _measures
 
             # if using live sites, don't measure hero element as it only exists in recordings
-            if (
-                "hero" in next_test["measure"]
-                and next_test.get("use_live_sites", "false") == "true"
-            ):
+            if "hero" in next_test["measure"] and next_test.get("use_live_sites"):
                 # remove 'hero' from the 'measures =' list
                 next_test["measure"].remove("hero")
                 # remove the 'hero =' line since no longer measuring hero
@@ -679,18 +666,6 @@ def get_raptor_test_list(args, oskey):
             next_test["support_class"] = support_class()
             next_test["support_class"].setup_test(next_test, args)
 
-        bool_settings = [
-            "lower_is_better",
-            "subtest_lower_is_better",
-            "accept_zero_vismet",
-            "interactive",
-            "host_from_parent",
-            "expose_browser_profiler",
-        ]
-        for setting in bool_settings:
-            if next_test.get(setting, None) is not None:
-                next_test[setting] = bool_from_str(next_test.get(setting))
-
     # write out .json test setting files for the control server to read and send to web ext
     if len(tests_to_run) != 0:
         for test in tests_to_run:
@@ -698,7 +673,7 @@ def get_raptor_test_list(args, oskey):
                 write_test_settings_json(args, test, oskey)
             else:
                 # test doesn't have valid settings, remove it from available list
-                LOG.info("test %s is not valid due to missing settings" % test["name"])
+                LOG.info(f"test {test['name']} is not valid due to missing settings")
                 tests_to_run.remove(test)
 
     return tests_to_run

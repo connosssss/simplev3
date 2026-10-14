@@ -5,8 +5,6 @@
 package org.mozilla.fenix.settings.biometric
 
 import android.content.Context
-import android.os.Build.VERSION.SDK_INT
-import android.os.Build.VERSION_CODES.M
 import androidx.annotation.VisibleForTesting
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
@@ -16,8 +14,8 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import mozilla.components.support.base.feature.LifecycleAwareFeature
 import mozilla.components.support.base.log.logger.Logger
+import org.mozilla.fenix.settings.biometric.ext.isBiometricHardwareAvailable
 import org.mozilla.fenix.settings.biometric.ext.isEnrolled
-import org.mozilla.fenix.settings.biometric.ext.isHardwareAvailable
 
 /**
  * A [LifecycleAwareFeature] for the Android Biometric API to prompt for user authentication.
@@ -35,8 +33,7 @@ class BiometricPromptFeature(
 ) : LifecycleAwareFeature {
     private val logger = Logger(javaClass.simpleName)
 
-    @VisibleForTesting
-    internal var biometricPrompt: BiometricPrompt? = null
+    @VisibleForTesting internal var biometricPrompt: BiometricPrompt? = null
 
     override fun start() {
         ensureBiometricPromptInitialized()
@@ -52,10 +49,11 @@ class BiometricPromptFeature(
      * @param title Adds a title for the authentication prompt.
      */
     fun requestAuthentication(title: String) {
-        val promptInfo = BiometricPrompt.PromptInfo.Builder()
-            .setAllowedAuthenticators(BIOMETRIC_WEAK or DEVICE_CREDENTIAL)
-            .setTitle(title)
-            .build()
+        val promptInfo =
+            BiometricPrompt.PromptInfo.Builder()
+                .setAllowedAuthenticators(BIOMETRIC_WEAK or DEVICE_CREDENTIAL)
+                .setTitle(title)
+                .build()
 
         ensureBiometricPromptInitialized()
 
@@ -89,15 +87,8 @@ class BiometricPromptFeature(
 
     companion object {
 
-        /**
-         * Checks if the appropriate SDK version and hardware capabilities are met to use the feature.
-         */
-        fun canUseFeature(manager: BiometricManager): Boolean {
-            return if (SDK_INT >= M) {
-                manager.isHardwareAvailable() && manager.isEnrolled()
-            } else {
-                false
-            }
-        }
+        /** Checks if the appropriate SDK version and hardware capabilities are met to use the feature. */
+        fun canUseFeature(manager: BiometricManager): Boolean =
+            manager.isBiometricHardwareAvailable() && manager.isEnrolled()
     }
 }

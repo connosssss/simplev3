@@ -1583,13 +1583,13 @@ PlacesTreeView.prototype = {
         }
         return PlacesUIUtils.getBestTitle(node, true);
       case this.COLUMN_TYPE_TAGS:
-        return node.tags?.replace(",", ", ");
+        return node.tags?.replaceAll(",", ", ");
       case this.COLUMN_TYPE_URI:
         if (PlacesUtils.nodeIsURI(node)) {
           return node.uri;
         }
         return "";
-      case this.COLUMN_TYPE_DATE:
+      case this.COLUMN_TYPE_DATE: {
         let nodeTime = node.time;
         if (nodeTime == 0 || !PlacesUtils.nodeIsURI(node)) {
           // hosts and days shouldn't have a value for the date column.
@@ -1601,6 +1601,7 @@ PlacesTreeView.prototype = {
         }
 
         return this._convertPRTimeToString(nodeTime);
+      }
       case this.COLUMN_TYPE_VISITCOUNT:
         return node.accessCount;
       case this.COLUMN_TYPE_DATEADDED:

@@ -8,21 +8,23 @@
 
 #![deny(missing_docs)]
 
-use crate::parser::{Parse, ParserContext};
-use crate::values::distance::{ComputeSquaredDistance, SquaredDistance};
 use crate::Atom;
-pub use cssparser::{serialize_identifier, serialize_name, CowRcStr, Parser};
+use crate::derives::*;
+use crate::parser::{Parse, ParserContext};
+use crate::typed_om::{KeywordValue, NumericType, NumericValue, ToTyped, TypedValue, UnitValue};
+use crate::values::distance::{ComputeSquaredDistance, SquaredDistance};
+use crate::values::generics::position::IsTreeScoped;
+pub use cssparser::{CowRcStr, Parser, serialize_identifier, serialize_name};
 pub use cssparser::{SourceLocation, Token};
+use num_traits::Zero;
 use precomputed_hash::PrecomputedHash;
 use selectors::parser::SelectorParseErrorKind;
 use std::fmt::{self, Debug, Write};
-use style_traits::{CssWriter, ParseError, StyleParseErrorKind, ToCss};
+use style_traits::{CssString, CssWriter, ParseError, StyleParseErrorKind, ToCss};
+use thin_vec::ThinVec;
 use to_shmem::impl_trivial_to_shmem;
 
-#[cfg(feature = "gecko")]
-pub use crate::gecko::url::CssUrl;
-#[cfg(feature = "servo")]
-pub use crate::servo::url::CssUrl;
+pub use crate::url::CssUrl;
 
 pub mod animated;
 pub mod computed;
@@ -30,6 +32,7 @@ pub mod distance;
 pub mod generics;
 pub mod resolved;
 pub mod specified;
+pub mod tagged_numeric;
 
 /// A CSS float value.
 pub type CSSFloat = f32;
@@ -38,11 +41,134 @@ pub type CSSFloat = f32;
 /// it into NaN.
 #[inline]
 pub fn normalize(v: CSSFloat) -> CSSFloat {
-    if v.is_nan() {
-        0.0
-    } else {
-        v
+    if v.is_nan() { 0.0 } else { v }
+}
+
+/// Computes the minimum value of the two floats. The CSS Values and Units definition
+/// for min() considers -0 to be less than +0 (whereas Rust considers them equal).
+/// https://drafts.csswg.org/css-values-4/#css-signed-zero
+#[inline]
+pub fn calc_min(a: CSSFloat, b: CSSFloat) -> CSSFloat {
+    match (a.is_sign_negative(), b.is_sign_negative()) {
+        (true, false) => a,
+        (false, true) => b,
+        _ => a.min(b),
     }
+}
+
+/// Computes the maximum value of the two floats. The CSS Values and Units definition
+/// for max() considers +0 to be greater than -0 (whereas Rust considers them equal).
+/// https://drafts.csswg.org/css-values-4/#css-signed-zero
+#[inline]
+pub fn calc_max(a: CSSFloat, b: CSSFloat) -> CSSFloat {
+    match (a.is_sign_negative(), b.is_sign_negative()) {
+        (true, false) => b,
+        (false, true) => a,
+        _ => a.max(b),
+    }
+}
+
+/// Computes the sign of the given value. The CSS Values and Units definition for
+/// sign() returns +0 or -0 for an input of +0 or -0, respectively (whereas the
+/// Rust f32::signum() function returns +1 or -1, respectively).
+/// https://drafts.csswg.org/css-values-4/#funcdef-sign
+#[inline]
+pub fn calc_sign(value: CSSFloat) -> CSSFloat {
+    if value.is_nan() {
+        f32::NAN
+    } else if value.is_zero() {
+        value
+    } else if value.is_sign_negative() {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
+/// Generates a random integer given a base value and limit.
+/// https://drafts.csswg.org/css-values-5/#generate-a-random-integer
+pub fn calc_random_integer(base: f32, limit: f32) -> f32 {
+    (base * limit).floor()
+}
+
+/// Evaluates a random() function given a base value and its arguments.
+/// https://drafts.csswg.org/css-values-5/#random-evaluation
+pub fn calc_random(base: f32, min: f32, max: f32, step: Option<f32>) -> f32 {
+    if base.is_nan() || min.is_nan() || max.is_nan() || step.is_some_and(f32::is_nan) {
+        return f32::NAN;
+    }
+
+    // Clamps a <number> into the range of a random base value, using the highest
+    // f32 strictly less than one. The random base value has a half-open range of
+    // [0, 1), but the `fixed <number>` format of <random-key> accepts the closed
+    // range of [0, 1]. So if an author specifies `fixed 1`, this value is used
+    // instead as the random base value.
+    let base = normalize(base.max(0.).min((1.0f32).next_down()));
+
+    // "In random(A, B), if A is infinite, the result is infinite."
+    if min.is_infinite() {
+        return min;
+    }
+
+    // "If A is finite, but the difference between A and B is either infinite or
+    // large enough to be treated as infinite in the user agent, the result is
+    // NaN."
+    if !(max - min).is_finite() {
+        return f32::NAN;
+    }
+
+    // "If the maximum value is less than the minimum value, it behaves as if
+    // it's equal to the minimum value."
+    let max = if max < min { min } else { max };
+    let range = max - min;
+
+    let Some(step) = step else {
+        return min + base * range;
+    };
+
+    // "If C is infinite, the result is A."
+    if step.is_infinite() {
+        return min;
+    }
+
+    // "If C is negative, zero, or positive but close enough to zero that the
+    // range for the step multiplier would be infinite in the user agent, the
+    // step must be ignored."
+    if step <= 0.0 {
+        return min + base * range;
+    }
+
+    // "Let epsilon be step / 1000, or the smallest representable value greater
+    // than zero in the numeric type being used if epsilon would round to zero."
+    let epsilon = match step / 1000.0 {
+        e if e > 0.0 => e,
+        _ => (0.0f32).next_up(),
+    };
+
+    // "Let N be the largest integer such that min + N * step is less than or
+    // equal to max."
+    let mut n = (range / step).floor();
+    if n.is_infinite() {
+        return min + base * range;
+    }
+
+    // "If N produces a value that is not within epsilon of max, but N+1 would
+    // produce a value within epsilon of max, set N to N+1."
+    if (min + n * step - max).abs() > epsilon && (min + (n + 1.0) * step - max).abs() <= epsilon {
+        n += 1.0;
+    }
+
+    // "Let step index be a random integer less than N+1, given R. Let value
+    // be min + step index * step."
+    let step_index = calc_random_integer(base, n + 1.0);
+    let value = min + step_index * step;
+
+    // "If step index is N and value is within epsilon of max, return max."
+    if step_index == n && (value - max).abs() <= epsilon {
+        return max;
+    }
+
+    value
 }
 
 /// A CSS integer value.
@@ -93,11 +219,11 @@ where
 }
 
 /// Serialize a number with calc, and NaN/infinity handling (if enabled)
-pub fn serialize_number<W>(v: f32, was_calc: bool, dest: &mut CssWriter<W>) -> fmt::Result
+pub fn serialize_number<W>(v: f32, dest: &mut CssWriter<W>) -> fmt::Result
 where
     W: Write,
 {
-    serialize_specified_dimension(v, "", was_calc, dest)
+    serialize_specified_dimension(v, "", /* was_calc = */ false, dest)
 }
 
 /// Serialize a specified dimension with unit, calc, and NaN/infinity handling (if enabled)
@@ -155,6 +281,7 @@ where
     MallocSizeOf,
     PartialEq,
     SpecifiedValueInfo,
+    ToAnimatedValue,
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
@@ -169,7 +296,7 @@ impl AsRef<str> for AtomString {
 }
 
 impl Parse for AtomString {
-    fn parse<'i>(_: &ParserContext, input: &mut Parser<'i, '_>) -> Result<Self, ParseError<'i>> {
+    fn parse(_: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Ok(Self(Atom::from(input.expect_string()?.as_ref())))
     }
 }
@@ -210,7 +337,7 @@ impl PrecomputedHash for AtomString {
     }
 }
 
-impl<'a> From<&'a str> for AtomString {
+impl From<&str> for AtomString {
     #[inline]
     fn from(string: &str) -> Self {
         Self(Atom::from(string))
@@ -387,7 +514,7 @@ impl PrecomputedHash for AtomIdent {
 }
 
 #[cfg(feature = "gecko")]
-impl<'a> From<&'a str> for AtomIdent {
+impl From<&str> for AtomIdent {
     #[inline]
     fn from(string: &str) -> Self {
         Self(Atom::from(string))
@@ -407,16 +534,18 @@ impl AtomIdent {
     where
         F: FnOnce(&Self) -> R,
     {
-        Atom::with(ptr, |atom: &Atom| {
-            // safety: repr(transparent)
-            let atom = atom as *const Atom as *const AtomIdent;
-            callback(&*atom)
-        })
+        unsafe {
+            Atom::with(ptr, |atom: &Atom| {
+                // safety: repr(transparent)
+                let atom = atom as *const Atom as *const AtomIdent;
+                callback(&*atom)
+            })
+        }
     }
 
     /// Cast an atom ref to an AtomIdent ref.
     #[inline]
-    pub fn cast<'a>(atom: &'a Atom) -> &'a Self {
+    pub fn cast(atom: &Atom) -> &Self {
         let ptr = atom as *const _ as *const Self;
         // safety: repr(transparent)
         unsafe { &*ptr }
@@ -448,13 +577,27 @@ where
     dest.write_char('%')
 }
 
+/// Reify a percentage.
+pub fn reify_percentage(value: CSSFloat, dest: &mut ThinVec<TypedValue>) -> Result<(), ()> {
+    let numeric_value = NumericValue::Unit(UnitValue {
+        numeric_type: NumericType::percent(),
+        value: value * 100.,
+        unit: CssString::from("percent"),
+    });
+
+    dest.push(TypedValue::Numeric(numeric_value));
+    Ok(())
+}
+
 /// Convenience void type to disable some properties and values through types.
-#[cfg_attr(feature = "servo", derive(Deserialize, MallocSizeOf, Serialize))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
+    MallocSizeOf,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToAnimatedValue,
     ToComputedValue,
@@ -475,11 +618,8 @@ impl ComputeSquaredDistance for Impossible {
 impl_trivial_to_shmem!(Impossible);
 
 impl Parse for Impossible {
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+    fn parse(_context: &ParserContext, _input: &mut Parser) -> Result<Self, ParseError> {
+        Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError))
     }
 }
 
@@ -521,10 +661,12 @@ impl<A: Debug, B: Debug> Debug for Either<A, B> {
     Clone,
     Debug,
     Default,
+    Deserialize,
     Eq,
     Hash,
     MallocSizeOf,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToAnimatedValue,
     ToComputedValue,
@@ -539,28 +681,18 @@ impl CustomIdent {
     ///
     /// TODO(zrhoffman, bug 1844501): Use CustomIdent::parse in more places instead of
     /// CustomIdent::from_ident.
-    pub fn parse<'i, 't>(
-        input: &mut Parser<'i, 't>,
-        invalid: &[&str],
-    ) -> Result<Self, ParseError<'i>> {
-        let location = input.current_source_location();
+    pub fn parse(input: &mut Parser, invalid: &[&str]) -> Result<Self, ParseError> {
         let ident = input.expect_ident()?;
-        CustomIdent::from_ident(location, ident, invalid)
+        CustomIdent::from_ident(ident, invalid)
     }
 
     /// Parse an already-tokenizer identifier
-    pub fn from_ident<'i>(
-        location: SourceLocation,
-        ident: &CowRcStr<'i>,
-        excluding: &[&str],
-    ) -> Result<Self, ParseError<'i>> {
+    pub fn from_ident<'i>(ident: &CowRcStr<'i>, excluding: &[&str]) -> Result<Self, ParseError> {
         if !Self::is_valid(ident, excluding) {
-            return Err(
-                location.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(ident.clone()))
-            );
+            return Err(ParseError::custom(SelectorParseErrorKind::UnexpectedIdent));
         }
         if excluding.iter().any(|s| ident.eq_ignore_ascii_case(s)) {
-            Err(location.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+            Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError))
         } else {
             Ok(CustomIdent(Atom::from(ident.as_ref())))
         }
@@ -592,6 +724,15 @@ impl ToCss for CustomIdent {
     }
 }
 
+impl ToTyped for CustomIdent {
+    fn to_typed(&self, dest: &mut ThinVec<TypedValue>) -> Result<(), ()> {
+        // This shouldn't escape identifiers. See bug 2023533.
+        let s = ToCss::to_css_cssstring(self);
+        dest.push(TypedValue::Keyword(KeywordValue(s)));
+        Ok(())
+    }
+}
+
 /// <https://www.w3.org/TR/css-values-4/#dashed-idents>
 /// This is simply an Atom, but will only parse if the identifier starts with "--".
 #[repr(transparent)]
@@ -614,14 +755,9 @@ pub struct DashedIdent(pub Atom);
 
 impl DashedIdent {
     /// Parse an already-tokenizer identifier
-    pub fn from_ident<'i>(
-        location: SourceLocation,
-        ident: &CowRcStr<'i>,
-    ) -> Result<Self, ParseError<'i>> {
+    pub fn from_ident<'i>(ident: &CowRcStr<'i>) -> Result<Self, ParseError> {
         if !ident.starts_with("--") {
-            return Err(
-                location.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(ident.clone()))
-            );
+            return Err(ParseError::custom(SelectorParseErrorKind::UnexpectedIdent));
         }
         Ok(Self(Atom::from(ident.as_ref())))
     }
@@ -635,16 +771,32 @@ impl DashedIdent {
     pub fn is_empty(&self) -> bool {
         self.0 == atom!("")
     }
+
+    /// Returns an atom with the same value, but without the starting "--".
+    ///
+    /// # Panics
+    ///
+    /// Panics when used on the special `DashedIdent::empty()`.
+    pub(crate) fn undashed(&self) -> Atom {
+        assert!(!self.is_empty(), "Can't undash the empty DashedIdent");
+        #[cfg(feature = "gecko")]
+        let name = &self.0.as_slice()[2..];
+        #[cfg(feature = "servo")]
+        let name = &self.0[2..];
+        Atom::from(name)
+    }
+}
+
+impl IsTreeScoped for DashedIdent {
+    fn is_tree_scoped(&self) -> bool {
+        !self.is_empty()
+    }
 }
 
 impl Parse for DashedIdent {
-    fn parse<'i, 't>(
-        _: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        let location = input.current_source_location();
+    fn parse(_: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let ident = input.expect_ident()?;
-        Self::from_ident(location, ident)
+        Self::from_ident(ident)
     }
 }
 
@@ -706,15 +858,12 @@ impl KeyframesName {
 }
 
 impl Parse for KeyframesName {
-    fn parse<'i, 't>(
-        _: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        let location = input.current_source_location();
+    fn parse(_: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Ok(match *input.next()? {
-            Token::Ident(ref s) => Self(CustomIdent::from_ident(location, s, &["none"])?.0),
-            Token::QuotedString(ref s) => Self(Atom::from(s.as_ref())),
-            ref t => return Err(location.new_unexpected_token_error(t.clone())),
+            Token::Ident(ref s) => Self(CustomIdent::from_ident(s, &["none"])?.0),
+            // Note that empty <string> should be rejected.
+            Token::QuotedString(ref s) if !s.as_ref().is_empty() => Self(Atom::from(s.as_ref())),
+            _ => return Err(ParseError::unexpected_token()),
         })
     }
 }
@@ -741,5 +890,13 @@ impl ToCss for KeyframesName {
 
         #[cfg(feature = "servo")]
         return serialize(self.0.as_ref(), dest);
+    }
+}
+
+impl ToTyped for KeyframesName {
+    fn to_typed(&self, dest: &mut ThinVec<TypedValue>) -> Result<(), ()> {
+        let s = ToCss::to_css_cssstring(self);
+        dest.push(TypedValue::Keyword(KeywordValue(s)));
+        Ok(())
     }
 }

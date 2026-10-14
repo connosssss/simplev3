@@ -13,8 +13,10 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   BookmarkHTMLUtils: "resource://gre/modules/BookmarkHTMLUtils.sys.mjs",
   BrowserUtils: "resource://gre/modules/BrowserUtils.sys.mjs",
-  FirefoxProfileMigrator: "resource:///modules/FirefoxProfileMigrator.sys.mjs",
-  MigrationUtils: "resource:///modules/MigrationUtils.sys.mjs",
+  FirefoxProfileMigrator:
+    "moz-src:///browser/components/migration/FirefoxProfileMigrator.sys.mjs",
+  MigrationUtils:
+    "moz-src:///browser/components/migration/MigrationUtils.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
 });
 
@@ -35,11 +37,12 @@ ChromeUtils.defineESModuleGetters(lazy, {
  * Shared prototype for migrators.
  *
  * To implement a migrator:
+ *
  * 1. Import this module.
  * 2. Create a subclass of MigratorBase for your new migrator.
- * 3. Override the `key` static getter with a unique identifier for the browser
+ * 3. Override the ``key`` static getter with a unique identifier for the browser
  *    that this migrator migrates from.
- * 4. If the migrator supports multiple profiles, override the sourceProfiles
+ * 4. If the migrator supports multiple profiles, override the sourceProfiles.
  *    Here we default for single-profile migrator.
  * 5. Implement getResources(aProfile) (see below).
  * 6. For startup-only migrators, override ``startupOnlyMigrator``.
@@ -83,8 +86,9 @@ export class MigratorBase {
    *
    * Returns array of profile objects from which data may be imported. The object
    * should have the following keys:
-   *   id - a unique string identifier for the profile
-   *   name - a pretty name to display to the user in the UI
+   *
+   * - ``id`` - a unique string identifier for the profile
+   * - ``name`` - a pretty name to display to the user in the UI
    *
    * Only profiles from which data can be imported should be listed.  Otherwise
    * the behavior of the migration wizard isn't well-defined.
@@ -107,6 +111,7 @@ export class MigratorBase {
    * profiles.
    *
    * Each migration resource should provide:
+   *
    * - a ``type`` getter, returning any of the migration resource types (see
    *   MigrationUtils.resourceTypes).
    *
@@ -120,8 +125,8 @@ export class MigratorBase {
    *   migration wizard wants to display the migration state for the
    *   resource.
    *
-   *   Note: In the case of a simple asynchronous implementation, you may find
-   *   MigrationUtils.wrapMigrateFunction handy for handling aCallback easily.
+   * Note: In the case of a simple asynchronous implementation, you may find
+   * MigrationUtils.wrapMigrateFunction handy for handling aCallback easily.
    *
    * For each migration type listed in MigrationUtils.resourceTypes, multiple
    * migration resources may be provided.  This practice is useful when the
@@ -173,6 +178,7 @@ export class MigratorBase {
    * that is just the Firefox migrator, see bug 737381).  Default: false.
    *
    * Startup-only migrators are different in two ways:
+   *
    * - they may only be used during startup.
    * - the user-profile is half baked during migration.  The folder exists,
    *   but it's only accessible through MigrationUtils.profileStartup.

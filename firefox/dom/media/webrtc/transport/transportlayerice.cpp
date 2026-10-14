@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -47,11 +45,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "nsNetCID.h"
 
 // nICEr includes
-extern "C" {
-#include "nr_api.h"
 #include "ice_util.h"
+#include "nr_api.h"
 #include "transport_addr.h"
-}
 
 // Local includes
 #include "logging.h"
@@ -66,13 +62,13 @@ namespace mozilla {
 
 MOZ_MTLOG_MODULE("mtransport")
 
-TransportLayerIce::TransportLayerIce() : stream_(nullptr), component_(0) {
+TransportLayerIce::TransportLayerIce()
+    : stream_(nullptr), component_(0), dtls_id_(0) {
   // setup happens later
 }
 
-TransportLayerIce::~TransportLayerIce() {
-  // No need to do anything here, since we use smart pointers
-}
+// No need to do anything here, since we use smart pointers
+TransportLayerIce::~TransportLayerIce() = default;
 
 void TransportLayerIce::SetParameters(RefPtr<NrIceMediaStream> stream,
                                       int component) {
@@ -94,6 +90,9 @@ void TransportLayerIce::SetParameters(RefPtr<NrIceMediaStream> stream,
 }
 
 void TransportLayerIce::PostSetup() {
+  // Bind to the DTLS association current at setup time. A parallel chain
+  // created later for a changed fingerprint will bind to the new id instead.
+  dtls_id_ = stream_->GetDtlsId();
   stream_->SignalReady.connect(this, &TransportLayerIce::IceReady);
   stream_->SignalFailed.connect(this, &TransportLayerIce::IceFailed);
   stream_->SignalPacketReceived.connect(this,
@@ -105,7 +104,8 @@ void TransportLayerIce::PostSetup() {
 
 TransportResult TransportLayerIce::SendPacket(MediaPacket& packet) {
   CheckThread();
-  nsresult res = stream_->SendPacket(component_, packet.data(), packet.len());
+  nsresult res =
+      stream_->SendPacket(component_, packet.data(), packet.len(), dtls_id_);
   int len = packet.len();
   // We're done with packet.
   SignalPacketSending(this, packet);
@@ -148,21 +148,15 @@ void TransportLayerIce::IceFailed(NrIceMediaStream* stream) {
 }
 
 void TransportLayerIce::IcePacketReceived(NrIceMediaStream* stream,
-                                          int component,
-                                          const unsigned char* data, int len) {
+                                          int component, uint32_t dtls_id,
+                                          MediaPacket& packet) {
   CheckThread();
-  // We get packets for both components, so ignore the ones that aren't
-  // for us.
-  if (component_ != component) return;
+  // We get packets for both components, and (during a fingerprint-changing ICE
+  // restart) for both DTLS associations. Ignore the ones that aren't for us.
+  if (component_ != component || dtls_id_ != dtls_id) return;
 
   MOZ_MTLOG(ML_DEBUG, LAYER_INFO << "PacketReceived(" << stream->name() << ","
-                                 << component << "," << len << ")");
-  // Might be useful to allow MediaPacket to borrow a buffer (ie; not take
-  // ownership, but copy it if the MediaPacket is moved). This could be a
-  // footgun though with MediaPackets that end up on the heap.
-  MediaPacket packet;
-  packet.Copy(data, len);
-  packet.Categorize();
+                                 << component << "," << packet.len() << ")");
 
   SignalPacketReceived(this, packet);
 }

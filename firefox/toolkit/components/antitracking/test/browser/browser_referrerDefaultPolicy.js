@@ -1,11 +1,15 @@
 "use strict";
 
-requestLongerTimeout(16);
+requestLongerTimeout(2);
 
 Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/browser/base/content/test/general/head.js",
+  "chrome://mochitests/content/browser/browser/base/content/test/browser-general/head.js",
   this
 );
+
+add_setup(function () {
+  registerCleanupFunction(clearSiteTestData);
+});
 
 async function openAWindow(usePrivate) {
   info("Creating a new " + (usePrivate ? "private" : "normal") + " window");
@@ -22,7 +26,10 @@ async function testOnWindowBody(win, expectedReferrer, rp) {
   let browser = win.gBrowser;
   let tab = browser.selectedTab;
   let b = browser.getBrowserForTab(tab);
-  await promiseTabLoadEvent(tab, TEST_TOP_PAGE);
+  await BrowserTestUtils.loadURIString({
+    browser: tab.linkedBrowser,
+    uriString: TEST_TOP_PAGE,
+  });
 
   info("Loading tracking scripts and tracking images");
   let { iframeReferrer, refreshReferrer } = await SpecialPowers.spawn(
@@ -60,24 +67,18 @@ async function testOnWindowBody(win, expectedReferrer, rp) {
       let iframeReferrer;
       {
         let iframe = content.document.createElement("iframe");
-        let p = new content.Promise(resolve => {
-          iframe.onload = resolve;
-        });
-        content.document.body.appendChild(iframe);
+        const loaded = ContentTaskUtils.waitForEvent(iframe, "load");
         if (rp) {
           iframe.referrerPolicy = rp;
         }
         iframe.src =
           "https://tracking.example.org/browser/toolkit/components/antitracking/test/browser/referrer.sjs?what=iframe";
-        await p;
+        content.document.body.appendChild(iframe);
+        await loaded;
 
-        p = new content.Promise(resolve => {
-          content.onmessage = event => {
-            resolve(event.data);
-          };
-        });
+        const messageEvent = ContentTaskUtils.waitForEvent(content, "message");
         iframe.contentWindow.postMessage("ping", "*");
-        iframeReferrer = await p;
+        iframeReferrer = (await messageEvent).data;
       }
 
       let refreshReferrer;
@@ -105,8 +106,8 @@ async function testOnWindowBody(win, expectedReferrer, rp) {
               iframeLoaded();
             }
           };
-          content.document.body.appendChild(iframe);
           iframe.src = content.location;
+          content.document.body.appendChild(iframe);
           await p;
         }
 
@@ -248,6 +249,7 @@ async function executeTests() {
   gRecording = false;
   for (let mode in gTests) {
     info(`Open a ${mode} window`);
+    let win = await openAWindow(mode == "private");
     while (gTests[mode].length) {
       let test = gTests[mode].shift();
       info(`Running test ${test.toSource()}`);
@@ -262,12 +264,9 @@ async function executeTests() {
         ],
       });
 
-      let win = await openAWindow(mode == "private");
-
       await testOnWindowBody(win, test.expectedReferrer, test.rp);
-
-      await closeAWindow(win);
     }
+    await closeAWindow(win);
   }
 
   Services.prefs.clearUserPref(kPBPref);
@@ -675,13 +674,4 @@ add_task(async function () {
   await executeTests();
 
   UrlClassifierTestUtils.cleanupTestTrackers();
-});
-
-add_task(async function () {
-  info("Cleaning up.");
-  await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
-      resolve()
-    );
-  });
 });

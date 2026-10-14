@@ -1,20 +1,21 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SapiService_h
-#define mozilla_dom_SapiService_h
+#ifndef DOM_MEDIA_WEBSPEECH_SYNTH_WINDOWS_SAPISERVICE_H_
+#define DOM_MEDIA_WEBSPEECH_SYNTH_WINDOWS_SAPISERVICE_H_
 
-#include "nsISpeechService.h"
-#include "nsIObserver.h"
-#include "nsRefPtrHashtable.h"
-#include "nsTArray.h"
-#include "mozilla/StaticPtr.h"
-
+// sapi.h's includes need windows.h on MinGW
+// clang-format off
 #include <windows.h>
 #include <sapi.h>
+// clang-format on
+
+#include "mozilla/StaticPtr.h"
+#include "nsIObserver.h"
+#include "nsISpeechService.h"
+#include "nsRefPtrHashtable.h"
+#include "nsTArray.h"
 
 class nsISynthVoiceRegistry;
 
@@ -54,4 +55,4 @@ class SapiService final : public nsISpeechService, public nsIObserver {
 
 }  // namespace mozilla::dom
 
-#endif
+#endif  // DOM_MEDIA_WEBSPEECH_SYNTH_WINDOWS_SAPISERVICE_H_

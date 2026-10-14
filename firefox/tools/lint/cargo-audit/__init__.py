@@ -2,17 +2,21 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+from __future__ import annotations
+
 import json
 import os
+import re
 import subprocess
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import mozpack.path as mozpath
 from mozfile import which
 from mozlint import result
 from mozlint.pathutils import expand_exclusions
+from packaging.version import Version
 
 
 def to_str_affected(info: dict[str, Any]) -> str:
@@ -167,12 +171,25 @@ def run_process(args: list[str]) -> str:
             if result.stdout:
                 return result.stdout
             else:
-                raise RuntimeError(
-                    f"Command failed: {' '.join(args)}\n"
-                    f"Exit code: {result.returncode}\n"
-                    f"stdout:\n{result.stdout}\n"
-                    f"stderr:\n{result.stderr}"
+                message = [
+                    f"cargo-audit failed (exit code {result.returncode}) while running:",
+                    f"  {' '.join(args)}",
+                ]
+                if result.stderr.strip():
+                    message.append("\nstderr:")
+                    message.append(result.stderr.rstrip())
+                # A non-zero exit code with no output usually means cargo-audit
+                # could not load the RustSec advisory database (for example
+                # because it contains an advisory in a format the pinned
+                # cargo-audit version cannot parse). That is not a regression
+                # caused by a specific push, so point at the tracking bug.
+                message.append(
+                    "\nThis usually means cargo-audit could not load the RustSec "
+                    "advisory database, which evolves independently of this "
+                    "repository. If cargo-audit needs updating to handle it, "
+                    "please file a new bug blocking bug 1747536."
                 )
+                raise RuntimeError("\n".join(message))
         return result.stdout
     except FileNotFoundError as e:
         raise RuntimeError(
@@ -213,6 +230,7 @@ def lint(paths, config, log, **lintargs) -> list[Any]:
             for kind, warnings in warning_categories.items():
                 for warning in warnings:
                     message = build_message(kind, warning, show_verbose)
+                    exclusions = config.get("exclude-error", [])
                     if not is_excluded(message, exclusions):
                         results.append(build_issue(config, f, message, "warning"))
 
@@ -223,12 +241,44 @@ def get_audit_version() -> str:
     """Get the version number of the cargo-audit installation.
 
     Returns:
-        A string representing the cargo-audit version.
+        str: A string representing the cargo-audit version.
     """
     return run_process(["cargo-audit", "--version"]).strip().split()[1]
 
 
+def get_rust_version() -> Optional[str]:
+    """Get the version number from rustc.
+
+    Returns:
+        str: A string representing the rust version or None if it couldn't be
+            detected.
+    """
+    proc = subprocess.run(
+        ["rustc", "--version"], capture_output=True, text=True, check=False
+    )
+    if proc.returncode != 0:
+        return
+
+    m = re.match(r"^rustc (\S+) \(.+\)$", proc.stdout)
+    if not m:
+        return
+
+    version = m.group(1)
+    if "-" in version:
+        version = version.rsplit("-", 1)[0]
+    return version
+
+
 def setup(root, log, **lintargs) -> int:
+    min_rust_version = "1.85.0"
+    rust_version = get_rust_version()
+    if not rust_version or Version(rust_version) < Version(min_rust_version):
+        version_was = f"{rust_version} was" if rust_version else "was not"
+        log.error(
+            f"cargo-audit requires at least Rust {min_rust_version}, but Rust {version_was} detected!"
+        )
+        return 1
+
     binary = which("cargo-audit")
 
     with Path(__file__).parent.joinpath("cargo-audit_version.txt").open() as f:
@@ -240,18 +290,16 @@ def setup(root, log, **lintargs) -> int:
             installed_version = get_audit_version()
 
         if not installed_version or installed_version != desired_version:
-
-            output = run_process(
-                [
-                    "cargo",
-                    "install",
-                    "--version",
-                    desired_version,
-                    "--color",
-                    "never",
-                    "cargo-audit",
-                ]
-            )
+            output = run_process([
+                "cargo",
+                "install",
+                "--locked",
+                "--version",
+                desired_version,
+                "--color",
+                "never",
+                "cargo-audit",
+            ])
             if not which("cargo-audit") or get_audit_version() != desired_version:
                 log.error(f"Could not install cargo-audit:\n{output}")
                 return 1

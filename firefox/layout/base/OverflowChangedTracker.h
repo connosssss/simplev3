@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +5,10 @@
 #ifndef mozilla_OverflowChangedTracker_h
 #define mozilla_OverflowChangedTracker_h
 
-#include "nsIFrame.h"
+#include "mozilla/HashTable.h"
 #include "nsContainerFrame.h"
-#include "mozilla/SplayTree.h"
+#include "nsIFrame.h"
+#include "nsTArray.h"
 
 namespace mozilla {
 
@@ -37,7 +36,7 @@ class OverflowChangedTracker {
   OverflowChangedTracker() : mSubtreeRoot(nullptr) {}
 
   ~OverflowChangedTracker() {
-    NS_ASSERTION(mEntryList.empty(), "Need to flush before destroying!");
+    MOZ_ASSERT(mEntries.IsEmpty(), "Need to flush before destroying!");
   }
 
   /**
@@ -56,16 +55,23 @@ class OverflowChangedTracker {
         aFrame->FrameMaintainsOverflow(),
         "Why add a frame that doesn't maintain overflow to the tracker?");
     uint32_t depth = aFrame->GetDepthInFrameTree();
-    Entry* entry = nullptr;
-    if (!mEntryList.empty()) {
-      entry = mEntryList.find(Entry(aFrame, depth));
+    // We use fallible allocation to avoid crashing on OOM; in the event that
+    // of allocation failure, we'll effectively ignore the entries that weren't
+    // added to the tracker, which could result in painting glitches but should
+    // be otherwise harmless.
+    if (NS_WARN_IF(!mEntries.EnsureLengthAtLeast(depth + 1, fallible))) {
+      return;  // Failed to extend array! Just ignore this frame.
     }
-    if (entry == nullptr) {
-      // Add new entry.
-      mEntryList.insert(new Entry(aFrame, depth, aChangeKind));
+    auto* entriesForDepth = mEntries[depth].get();
+    if (!entriesForDepth) {
+      mEntries[depth] = MakeUnique<FrameChangedMap>();
+      entriesForDepth = mEntries[depth].get();
+    }
+    if (auto p = entriesForDepth->lookupForAdd(aFrame)) {
+      p->value() = std::max(p->value(), aChangeKind);
     } else {
-      // Update the existing entry if the new value is stronger.
-      entry->mChangeKind = std::max(entry->mChangeKind, aChangeKind);
+      // We also ignore OOM-failure here, just don't track this frame.
+      (void)NS_WARN_IF(!entriesForDepth->add(p, aFrame, aChangeKind));
     }
   }
 
@@ -73,14 +79,15 @@ class OverflowChangedTracker {
    * Remove a frame.
    */
   void RemoveFrame(nsIFrame* aFrame) {
-    if (mEntryList.empty()) {
+    uint32_t depth = aFrame->GetDepthInFrameTree();
+    if (depth >= mEntries.Length()) {
       return;
     }
-
-    uint32_t depth = aFrame->GetDepthInFrameTree();
-    if (mEntryList.find(Entry(aFrame, depth))) {
-      delete mEntryList.remove(Entry(aFrame, depth));
+    auto* entriesForDepth = mEntries[depth].get();
+    if (!entriesForDepth || entriesForDepth->empty()) {
+      return;
     }
+    entriesForDepth->remove(aFrame);
   }
 
   /**
@@ -99,107 +106,84 @@ class OverflowChangedTracker {
    * us from processing the same frame twice.
    */
   void Flush() {
-    while (!mEntryList.empty()) {
-      Entry* entry = mEntryList.removeMin();
-      nsIFrame* frame = entry->mFrame;
-
-      bool overflowChanged = false;
-      if (entry->mChangeKind == CHILDREN_CHANGED) {
-        // Need to union the overflow areas of the children.
-        // Only update the parent if the overflow changes.
-        overflowChanged = frame->UpdateOverflow();
-      } else {
-        // Take a faster path that doesn't require unioning the overflow areas
-        // of our children.
-
-        NS_ASSERTION(
-            frame->GetProperty(nsIFrame::DebugInitialOverflowPropertyApplied()),
-            "InitialOverflowProperty must be set first.");
-
-        OverflowAreas* overflow =
-            frame->GetProperty(nsIFrame::InitialOverflowProperty());
-        if (overflow) {
-          // FinishAndStoreOverflow will change the overflow areas passed in,
-          // so make a copy.
-          OverflowAreas overflowCopy = *overflow;
-          frame->FinishAndStoreOverflow(overflowCopy, frame->GetSize());
+    while (!mEntries.IsEmpty()) {
+      // This takes ownership of the UniquePtr to the deepestEntries hashtable,
+      // so it will be deleted at the end of the loop iteration.
+      UniquePtr<FrameChangedMap> deepestEntries = mEntries.PopLastElement();
+      if (!deepestEntries || deepestEntries->empty()) {
+        continue;
+      }
+      for (auto iter = deepestEntries->iter(); !iter.done(); iter.next()) {
+        nsIFrame* frame = iter.get().key();
+        ChangeKind kind = iter.get().value();
+        bool overflowChanged = false;
+        if (kind == CHILDREN_CHANGED) {
+          // Need to union the overflow areas of the children.
+          // Only update the parent if the overflow changes.
+          overflowChanged = frame->UpdateOverflow();
         } else {
-          nsRect bounds(nsPoint(0, 0), frame->GetSize());
-          OverflowAreas boundsOverflow;
-          boundsOverflow.SetAllTo(bounds);
-          frame->FinishAndStoreOverflow(boundsOverflow, bounds.Size());
+          // Take a faster path that doesn't require unioning the overflow areas
+          // of our children.
+          NS_ASSERTION(frame->GetProperty(
+                           nsIFrame::DebugInitialOverflowPropertyApplied()),
+                       "InitialOverflowProperty must be set first.");
+
+          OverflowAreas* overflow =
+              frame->GetProperty(nsIFrame::InitialOverflowProperty());
+          if (overflow) {
+            // FinishAndStoreOverflow will change the overflow areas passed in,
+            // so make a copy.
+            OverflowAreas overflowCopy = *overflow;
+            frame->FinishAndStoreOverflow(overflowCopy, frame->GetSize());
+          } else {
+            nsRect bounds(nsPoint(0, 0), frame->GetSize());
+            OverflowAreas boundsOverflow;
+            boundsOverflow.SetAllTo(bounds);
+            frame->FinishAndStoreOverflow(boundsOverflow, bounds.Size());
+          }
+
+          // We can't tell if the overflow changed, so be conservative
+          overflowChanged = true;
         }
 
-        // We can't tell if the overflow changed, so be conservative
-        overflowChanged = true;
-      }
+        // If the frame style changed (e.g. positioning offsets)
+        // then we need to update the parent with the overflow areas of its
+        // children.
+        // The hashmap for the parent's depth will be mEntries.LastElement(),
+        // as we already popped the map for the current depth off the end.
+        if (overflowChanged) {
+          nsIFrame* parent = frame->GetParent();
 
-      // If the frame style changed (e.g. positioning offsets)
-      // then we need to update the parent with the overflow areas of its
-      // children.
-      if (overflowChanged) {
-        nsIFrame* parent = frame->GetParent();
-
-        // It's possible that the parent is already in a nondisplay context,
-        // should not add it to the list if that's true.
-        if (parent && parent != mSubtreeRoot &&
-            parent->FrameMaintainsOverflow()) {
-          Entry* parentEntry =
-              mEntryList.find(Entry(parent, entry->mDepth - 1));
-          if (parentEntry) {
-            parentEntry->mChangeKind =
-                std::max(parentEntry->mChangeKind, CHILDREN_CHANGED);
-          } else {
-            mEntryList.insert(
-                new Entry(parent, entry->mDepth - 1, CHILDREN_CHANGED));
+          // It's possible that the parent is already in a nondisplay context,
+          // should not add it to the list if that's true.
+          if (parent && parent != mSubtreeRoot &&
+              parent->FrameMaintainsOverflow()) {
+            auto* entriesForParentDepth = mEntries.LastElement().get();
+            if (!entriesForParentDepth) {
+              mEntries.LastElement() = MakeUnique<FrameChangedMap>();
+              entriesForParentDepth = mEntries.LastElement().get();
+            }
+            if (auto p = entriesForParentDepth->lookupForAdd(parent)) {
+              p->value() = CHILDREN_CHANGED;
+            } else {
+              // We ignore OOM-failure here, just don't track this frame.
+              (void)NS_WARN_IF(
+                  !entriesForParentDepth->add(p, parent, CHILDREN_CHANGED));
+            }
           }
         }
       }
-      delete entry;
     }
   }
 
  private:
-  struct Entry : SplayTreeNode<Entry> {
-    Entry(nsIFrame* aFrame, uint32_t aDepth,
-          ChangeKind aChangeKind = CHILDREN_CHANGED)
-        : mFrame(aFrame), mDepth(aDepth), mChangeKind(aChangeKind) {}
+  typedef HashMap<nsIFrame*, ChangeKind> FrameChangedMap;
 
-    bool operator==(const Entry& aOther) const {
-      return mFrame == aOther.mFrame;
-    }
+  // A collection of frames to be processed. Frames whose depth in the frame
+  // tree is /n/ will be stored in the hashmap at mEntries[n].
+  AutoTArray<UniquePtr<FrameChangedMap>, 32> mEntries;
 
-    /**
-     * Sort by *reverse* depth in the tree, and break ties with
-     * the frame pointer.
-     */
-    bool operator<(const Entry& aOther) const {
-      if (mDepth == aOther.mDepth) {
-        return mFrame < aOther.mFrame;
-      }
-      return mDepth > aOther.mDepth; /* reverse, want "min" to be deepest */
-    }
-
-    static int compare(const Entry& aOne, const Entry& aTwo) {
-      if (aOne == aTwo) {
-        return 0;
-      } else if (aOne < aTwo) {
-        return -1;
-      } else {
-        return 1;
-      }
-    }
-
-    nsIFrame* mFrame;
-    /* Depth in the frame tree */
-    uint32_t mDepth;
-    ChangeKind mChangeKind;
-  };
-
-  /* A list of frames to process, sorted by their depth in the frame tree */
-  SplayTree<Entry, Entry> mEntryList;
-
-  /* Don't update overflow of this frame or its ancestors. */
+  // Don't update overflow of this frame or its ancestors.
   const nsIFrame* mSubtreeRoot;
 };
 

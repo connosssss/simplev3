@@ -7,7 +7,12 @@ import { Module } from "chrome://remote/content/shared/messagehandler/Module.sys
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  getBrowsingContextInfo:
+    "chrome://remote/content/webdriver-bidi/modules/root/browsingContext.sys.mjs",
+  NavigableManager: "chrome://remote/content/shared/NavigableManager.sys.mjs",
   TabManager: "chrome://remote/content/shared/TabManager.sys.mjs",
+  UserContextManager:
+    "chrome://remote/content/shared/UserContextManager.sys.mjs",
 });
 
 class BrowsingContextModule extends Module {
@@ -15,6 +20,7 @@ class BrowsingContextModule extends Module {
 
   interceptEvent(name, payload) {
     if (
+      name == "browsingContext.contextCreated" ||
       name == "browsingContext.domContentLoaded" ||
       name == "browsingContext.load"
     ) {
@@ -26,14 +32,24 @@ class BrowsingContextModule extends Module {
 
       // Resolve browsing context to a Navigable id.
       payload.context =
-        lazy.TabManager.getIdForBrowsingContext(browsingContext);
+        lazy.NavigableManager.getIdForBrowsingContext(browsingContext);
+      // Resolve the user context id for the browsing context.
+      payload.userContext =
+        lazy.UserContextManager.getIdByBrowsingContext(browsingContext);
 
-      // Resolve navigation id.
-      const navigation =
-        this.messageHandler.navigationManager.getNavigationForBrowsingContext(
-          browsingContext
-        );
-      payload.navigation = navigation ? navigation.navigationId : null;
+      if (name == "browsingContext.contextCreated") {
+        payload = {
+          ...payload,
+          ...lazy.getBrowsingContextInfo(browsingContext, { maxDepth: 0 }),
+        };
+      } else {
+        // Resolve navigation id.
+        const navigation =
+          this.messageHandler.navigationManager.getNavigationForBrowsingContext(
+            browsingContext
+          );
+        payload.navigation = navigation ? navigation.navigationId : null;
+      }
     }
 
     return payload;

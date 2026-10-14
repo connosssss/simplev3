@@ -5,8 +5,8 @@
 
 /* eslint no-unused-vars: ["error", {vars: "local", caughtErrors: "none", args: "none"}] */
 
-const { TelemetryTestUtils } = ChromeUtils.importESModule(
-  "resource://testing-common/TelemetryTestUtils.sys.mjs"
+const { AboutAddonsTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/AboutAddonsTestUtils.sys.mjs"
 );
 
 let { AddonManagerPrivate } = ChromeUtils.importESModule(
@@ -273,7 +273,7 @@ function check_all_in_list(aManager, aIds, aIgnoreExtras) {
 }
 
 function getAddonCard(win, id) {
-  return win.document.querySelector(`addon-card[addon-id="${id}"]`);
+  return AboutAddonsTestUtils.getAddonCard(win, id);
 }
 
 async function wait_for_view_load(
@@ -447,7 +447,7 @@ function formatDate(aDate) {
 }
 
 function is_hidden(aElement) {
-  var style = aElement.ownerGlobal.getComputedStyle(aElement);
+  var style = aElement.documentGlobal.getComputedStyle(aElement);
   if (style.display == "none") {
     return true;
   }
@@ -498,98 +498,6 @@ async function install_addon(path, cb, pathPrefix = TESTROOT) {
   return log_callback(p, cb);
 }
 
-function CategoryUtilities(aManagerWindow) {
-  this.window = aManagerWindow;
-  this.window.addEventListener("unload", () => (this.window = null), {
-    once: true,
-  });
-}
-
-CategoryUtilities.prototype = {
-  window: null,
-
-  get _categoriesBox() {
-    return this.window.document.querySelector("categories-box");
-  },
-
-  getSelectedViewId() {
-    let selectedItem = this._categoriesBox.querySelector("[selected]");
-    isnot(selectedItem, null, "A category should be selected");
-    return selectedItem.getAttribute("viewid");
-  },
-
-  get selectedCategory() {
-    isnot(
-      this.window,
-      null,
-      "Should not get selected category when manager window is not loaded"
-    );
-    let viewId = this.getSelectedViewId();
-    let view = this.window.gViewController.parseViewId(viewId);
-    return view.type == "list" ? view.param : view.type;
-  },
-
-  get(categoryType) {
-    isnot(
-      this.window,
-      null,
-      "Should not get category when manager window is not loaded"
-    );
-
-    let button = this._categoriesBox.querySelector(`[name="${categoryType}"]`);
-    if (button) {
-      return button;
-    }
-
-    ok(false, "Should have found a category with type " + categoryType);
-    return null;
-  },
-
-  isVisible(categoryButton) {
-    isnot(
-      this.window,
-      null,
-      "Should not check visible state when manager window is not loaded"
-    );
-
-    // There are some tests checking this before the categories have loaded.
-    if (!categoryButton) {
-      return false;
-    }
-
-    if (categoryButton.disabled || categoryButton.hidden) {
-      return false;
-    }
-
-    return !is_hidden(categoryButton);
-  },
-
-  isTypeVisible(categoryType) {
-    return this.isVisible(this.get(categoryType));
-  },
-
-  open(categoryButton) {
-    isnot(
-      this.window,
-      null,
-      "Should not open category when manager window is not loaded"
-    );
-    ok(
-      this.isVisible(categoryButton),
-      "Category should be visible if attempting to open it"
-    );
-
-    EventUtils.synthesizeMouseAtCenter(categoryButton, {}, this.window);
-
-    // Use wait_for_view_load until all open_manager calls are gone.
-    return wait_for_view_load(this.window);
-  },
-
-  openType(categoryType) {
-    return this.open(this.get(categoryType));
-  },
-};
-
 // Returns a promise that will resolve when the certificate error override has been added, or reject
 // if there is some failure.
 function addCertOverride(host) {
@@ -631,7 +539,7 @@ function addCertOverrides() {
   ]);
 }
 
-/** *** Mock Provider *****/
+/***** Mock Provider *****/
 
 function MockProvider(
   addonTypes,
@@ -683,7 +591,7 @@ MockProvider.prototype = {
     }
   },
 
-  /** *** Utility functions *****/
+  /***** Utility functions *****/
 
   /**
    * Register this provider with the AddonManager
@@ -882,7 +790,7 @@ MockProvider.prototype = {
     return newInstalls;
   },
 
-  /** *** AddonProvider implementation *****/
+  /***** AddonProvider implementation *****/
 
   /**
    * Called to initialize the provider.
@@ -1036,7 +944,7 @@ MockProvider.prototype = {
   },
 };
 
-/** *** Mock Addon object for the Mock Provider *****/
+/***** Mock Addon object for the Mock Provider *****/
 
 function MockAddon(aId, aName, aType, aOperationsRequiringRestart) {
   // Only set required attributes.
@@ -1294,7 +1202,7 @@ MockAddon.prototype = {
   },
 };
 
-/** *** Mock AddonInstall object for the Mock Provider *****/
+/***** Mock AddonInstall object for the Mock Provider *****/
 
 function MockInstall(aName, aType, aAddonToInstall) {
   this.name = aName || "";
@@ -1452,47 +1360,6 @@ MockInstall.prototype = {
   },
 };
 
-function waitForCondition(condition, nextTest, errorMsg) {
-  let tries = 0;
-  let interval = setInterval(function () {
-    if (tries >= 30) {
-      ok(false, errorMsg);
-      moveOn();
-    }
-    var conditionPassed;
-    try {
-      conditionPassed = condition();
-    } catch (e) {
-      ok(false, e + "\n" + e.stack);
-      conditionPassed = false;
-    }
-    if (conditionPassed) {
-      moveOn();
-    }
-    tries++;
-  }, 100);
-  let moveOn = function () {
-    clearInterval(interval);
-    nextTest();
-  };
-}
-
-// Wait for and then acknowledge (by pressing the primary button) the
-// given notification.
-function promiseNotification(id = "addon-webext-permissions") {
-  return new Promise(resolve => {
-    function popupshown() {
-      let notification = PopupNotifications.getNotification(id);
-      if (notification) {
-        PopupNotifications.panel.removeEventListener("popupshown", popupshown);
-        PopupNotifications.panel.firstElementChild.button.click();
-        resolve();
-      }
-    }
-    PopupNotifications.panel.addEventListener("popupshown", popupshown);
-  });
-}
-
 /**
  * Wait for the given PopupNotification to display
  *
@@ -1507,6 +1374,14 @@ function promisePopupNotificationShown(name = "addon-webext-permissions") {
     function popupshown() {
       let notification = PopupNotifications.getNotification(name);
       if (!notification) {
+        return;
+      }
+      // Don't use PopupNotifications.isPanelOpen here: it also returns true
+      // while the panel is still in the "showing" state, in which case the
+      // popup frame isn't open yet and its contents aren't focusable.
+      let panelState = PopupNotifications.panel.state;
+      if (panelState != "open") {
+        info(`Ignoring popupshown for ${name}, panel state: ${panelState}`);
         return;
       }
 
@@ -1623,11 +1498,9 @@ function closeView(win) {
 }
 
 function switchView(win, type) {
-  return new CategoryUtilities(win).openType(type);
-}
-
-function isCategoryVisible(win, type) {
-  return new CategoryUtilities(win).isTypeVisible(type);
+  const categoryButton = AboutAddonsTestUtils.getCategoryButton(win, type);
+  EventUtils.synthesizeMouseAtCenter(categoryButton, {}, win);
+  return wait_for_view_load(win);
 }
 
 function mockPromptService() {
@@ -1767,4 +1640,17 @@ async function switchToDetailView({ id, win }) {
   card = getAddonCard(win, id);
   ok(card.querySelector("addon-details"), "The card does have details");
   return card;
+}
+
+/**
+ * Trigger an action from the page options menu.
+ */
+async function triggerPageOptionsAction(win, action) {
+  let button = win.document.querySelector(`#page-options [action="${action}"]`);
+  // Button is temporarily disabled on click. Wait in case we just clicked.
+  await TestUtils.waitForCondition(
+    () => !button.disabled,
+    "Wait for button to become enabled"
+  );
+  button.click();
 }

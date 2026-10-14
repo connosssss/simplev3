@@ -6,6 +6,7 @@ package mozilla.components.feature.search.telemetry.incontent
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.engine.Engine
 import mozilla.components.feature.search.telemetry.ExtensionInfo
@@ -38,105 +39,109 @@ import org.mockito.Mockito.verify
 @RunWith(AndroidJUnit4::class)
 class InContentTelemetryTest {
     private lateinit var telemetry: InContentTelemetry
+    private val testDispatcher = StandardTestDispatcher()
 
-    fun createMockProviderList(): List<SearchProviderModel> = listOf(
-        SearchProviderModel(
-            schema = 1671479978127,
-            taggedCodes = listOf("monline_7_dg", "monline_4_dg", "monline_3_dg", "monline_dg"),
-            telemetryId = "baidu",
-            organicCodes = emptyList(),
-            codeParamName = "tn",
-            followOnParamNames = listOf("oq"),
-            queryParamNames = listOf("wd", "word"),
-            searchPageRegexp = "^https://(?:m|www)\\.baidu\\.com/(?:s|baidu)",
-            extraAdServersRegexps = listOf("^https?://www\\.baidu\\.com/baidu\\.php?"),
-            expectedOrganicCodes = emptyList(),
-        ),
-        SearchProviderModel(
-            schema = 1671479978127,
-            taggedCodes = listOf("firefox-b-m", "fpas", "lm"),
-            telemetryId = "example",
-            organicCodes = listOf("foo"),
-            codeParamName = "pc",
-            queryParamNames = listOf("q"),
-            searchPageRegexp = "^https:\\/\\/example\\.com\\/",
-            extraAdServersRegexps = listOf("^https://example.com/y\\\\.js?.*ad_provider\\\\="),
-            expectedOrganicCodes = emptyList(),
-        ),
-        SearchProviderModel(
-            schema = 1671479978127,
-            taggedCodes = listOf("firefox-b-m", "fpas", "lm"),
-            telemetryId = "duckduckgo",
-            organicCodes = emptyList(),
-            codeParamName = "t",
-            queryParamNames = listOf("q"),
-            searchPageRegexp = "^https:\\/\\/duckduckgo\\.com\\/",
-            extraAdServersRegexps = listOf("^https://duckduckgo.com/y\\\\.js?.*ad_provider\\\\="),
-            expectedOrganicCodes = listOf("ha"),
-        ),
-        SearchProviderModel(
-            schema = 1671479978127,
-            taggedCodes = listOf("firefox-b-m", "fpas", "def"),
-            telemetryId = "google",
-            organicCodes = emptyList(),
-            codeParamName = "client",
-            followOnParamNames = listOf("oq", "ved", "ei"),
-            queryParamNames = listOf("q"),
-            searchPageRegexp = "^https://www\\.google\\.(?:.+)/search",
-            extraAdServersRegexps = listOf("^https?://www\\\\.google(?:adservices)?\\\\.com/(?:pagead/)?aclk"),
-            expectedOrganicCodes = emptyList(),
-        ),
-        SearchProviderModel(
-            schema = 1671479978127,
-            taggedCodes = listOf("MOZ2", "MOZL", "def"),
-            telemetryId = "bing",
-            organicCodes = emptyList(),
-            codeParamName = "pc",
-            queryParamNames = listOf("q"),
-            searchPageRegexp = "^https://www\\.bing\\.com/search",
-            extraAdServersRegexps = listOf("^https://www\\\\.bing\\\\.com/acli?c?k"),
-            followOnCookies = listOf(
-                SearchProviderCookie(
-                    extraCodeParamName = "form",
-                    extraCodePrefixes = listOf("QBRE"),
-                    host = "name",
-                    name = "SRCHS",
-                    codeParamName = "PC",
-                ),
+    fun createMockProviderList(): List<SearchProviderModel> =
+        listOf(
+            SearchProviderModel(
+                schema = 1671479978127,
+                taggedCodes = listOf("monline_7_dg", "monline_4_dg", "monline_3_dg", "monline_dg"),
+                telemetryId = "baidu",
+                organicCodes = emptyList(),
+                codeParamName = "tn",
+                followOnParamNames = listOf("oq"),
+                queryParamNames = listOf("wd", "word"),
+                searchPageRegexp = "^https://(?:m|www)\\.baidu\\.com/(?:s|baidu)",
+                extraAdServersRegexps = listOf("^https?://www\\.baidu\\.com/baidu\\.php?"),
+                expectedOrganicCodes = emptyList(),
             ),
-            expectedOrganicCodes = emptyList(),
-        ),
-        SearchProviderModel(
-            schema = 1671479978127,
-            taggedCodes = listOf("MOZ2", "MOZL", "def"),
-            telemetryId = "bing2",
-            organicCodes = emptyList(),
-            codeParamName = "pc",
-            queryParamNames = listOf("q"),
-            searchPageRegexp = "^https://www\\.bing2\\.com/search",
-            extraAdServersRegexps = listOf("^https://www\\\\.bing2\\\\.com/acli?c?k"),
-            followOnCookies = listOf(
-                SearchProviderCookie(
-                    extraCodeParamName = "",
-                    extraCodePrefixes = emptyList(),
-                    host = "name",
-                    name = "SRCHS",
-                    codeParamName = "PC",
-                ),
+            SearchProviderModel(
+                schema = 1671479978127,
+                taggedCodes = listOf("firefox-b-m", "fpas", "lm"),
+                telemetryId = "example",
+                organicCodes = listOf("foo"),
+                codeParamName = "pc",
+                queryParamNames = listOf("q"),
+                searchPageRegexp = "^https:\\/\\/example\\.com\\/",
+                extraAdServersRegexps = listOf("^https://example.com/y\\\\.js?.*ad_provider\\\\="),
+                expectedOrganicCodes = emptyList(),
             ),
-            expectedOrganicCodes = emptyList(),
-        ),
-    )
+            SearchProviderModel(
+                schema = 1671479978127,
+                taggedCodes = listOf("firefox-b-m", "fpas", "lm"),
+                telemetryId = "duckduckgo",
+                organicCodes = emptyList(),
+                codeParamName = "t",
+                queryParamNames = listOf("q"),
+                searchPageRegexp = "^https:\\/\\/duckduckgo\\.com\\/",
+                extraAdServersRegexps = listOf("^https://duckduckgo.com/y\\\\.js?.*ad_provider\\\\="),
+                expectedOrganicCodes = listOf("ha"),
+            ),
+            SearchProviderModel(
+                schema = 1671479978127,
+                taggedCodes = listOf("firefox-b-m", "fpas", "def"),
+                telemetryId = "google",
+                organicCodes = emptyList(),
+                codeParamName = "client",
+                followOnParamNames = listOf("oq", "ved", "ei"),
+                queryParamNames = listOf("q"),
+                searchPageRegexp = "^https://www\\.google\\.(?:.+)/search",
+                extraAdServersRegexps = listOf("^https?://www\\\\.google(?:adservices)?\\\\.com/(?:pagead/)?aclk"),
+                expectedOrganicCodes = emptyList(),
+            ),
+            SearchProviderModel(
+                schema = 1671479978127,
+                taggedCodes = listOf("MOZ2", "MOZL", "def"),
+                telemetryId = "bing",
+                organicCodes = emptyList(),
+                codeParamName = "pc",
+                queryParamNames = listOf("q"),
+                searchPageRegexp = "^https://www\\.bing\\.com/search",
+                extraAdServersRegexps = listOf("^https://www\\\\.bing\\\\.com/acli?c?k"),
+                followOnCookies =
+                    listOf(
+                        SearchProviderCookie(
+                            extraCodeParamName = "form",
+                            extraCodePrefixes = listOf("QBRE"),
+                            host = "name",
+                            name = "SRCHS",
+                            codeParamName = "PC",
+                        )
+                    ),
+                expectedOrganicCodes = emptyList(),
+            ),
+            SearchProviderModel(
+                schema = 1671479978127,
+                taggedCodes = listOf("MOZ2", "MOZL", "def"),
+                telemetryId = "bing2",
+                organicCodes = emptyList(),
+                codeParamName = "pc",
+                queryParamNames = listOf("q"),
+                searchPageRegexp = "^https://www\\.bing2\\.com/search",
+                extraAdServersRegexps = listOf("^https://www\\\\.bing2\\\\.com/acli?c?k"),
+                followOnCookies =
+                    listOf(
+                        SearchProviderCookie(
+                            extraCodeParamName = "",
+                            extraCodePrefixes = emptyList(),
+                            host = "name",
+                            name = "SRCHS",
+                            codeParamName = "PC",
+                        )
+                    ),
+                expectedOrganicCodes = emptyList(),
+            ),
+        )
 
     @Before
     fun setup() {
-        telemetry = spy(InContentTelemetry())
+        telemetry = spy(InContentTelemetry(testDispatcher))
     }
 
     @Test
     fun `WHEN installWebExtension is called THEN install a properly configured extension`() {
         val engine: Engine = mock()
-        val store: BrowserStore = mock()
+        val store = BrowserStore()
         val extensionCaptor = argumentCaptor<ExtensionInfo>()
 
         runBlocking {
@@ -177,7 +182,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, listOf())
@@ -200,7 +205,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
         telemetry.trackPartnerUrlTypeMetric(url, listOf())
 
@@ -221,7 +226,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, listOf())
@@ -243,7 +248,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, listOf())
@@ -265,7 +270,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, listOf())
@@ -287,7 +292,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, listOf())
@@ -309,7 +314,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, listOf())
@@ -331,7 +336,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, listOf())
@@ -353,7 +358,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, createCookieList())
@@ -375,7 +380,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, createCookieList())
@@ -397,7 +402,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, createCookieList())
@@ -419,7 +424,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, listOf())
@@ -441,7 +446,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, listOf())
@@ -463,7 +468,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, listOf())
@@ -485,7 +490,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, listOf())
@@ -507,7 +512,7 @@ class InContentTelemetryTest {
                 override fun process(fact: Fact) {
                     facts.add(fact)
                 }
-            },
+            }
         )
 
         telemetry.trackPartnerUrlTypeMetric(url, listOf())

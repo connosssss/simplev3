@@ -845,6 +845,11 @@ get_hex_string(SECItem* data)
     static const char hex[] = { "0123456789ABCDEF" };
 
     /* '#' + 2 chars per octet + terminator */
+    /* Reject lengths that would overflow data->len * 2 + 2 in unsigned int. */
+    if (data->len > (UINT_MAX - 2) / 2) {
+        PORT_SetError(SEC_ERROR_INPUT_LEN);
+        return NULL;
+    }
     rv = SECITEM_AllocItem(NULL, NULL, data->len * 2 + 2);
     if (!rv) {
         return NULL;
@@ -1291,91 +1296,6 @@ CERT_GetLastNameElement(PLArenaPool* arena, const CERTName* name, int wantedTag)
     return lastAva ? avaToString(arena, lastAva) : NULL;
 }
 
-char*
-CERT_GetCertificateEmailAddress(CERTCertificate* cert)
-{
-    char* rawEmailAddr = NULL;
-    SECItem subAltName;
-    SECStatus rv;
-    CERTGeneralName* nameList = NULL;
-    CERTGeneralName* current;
-    PLArenaPool* arena = NULL;
-    int i;
-
-    subAltName.data = NULL;
-
-    rawEmailAddr = CERT_GetNameElement(cert->arena, &(cert->subject),
-                                       SEC_OID_PKCS9_EMAIL_ADDRESS);
-    if (rawEmailAddr == NULL) {
-        rawEmailAddr =
-            CERT_GetNameElement(cert->arena, &(cert->subject), SEC_OID_RFC1274_MAIL);
-    }
-    if (rawEmailAddr == NULL) {
-
-        rv =
-            CERT_FindCertExtension(cert, SEC_OID_X509_SUBJECT_ALT_NAME, &subAltName);
-        if (rv != SECSuccess) {
-            goto finish;
-        }
-        arena = PORT_NewArena(DER_DEFAULT_CHUNKSIZE);
-        if (!arena) {
-            goto finish;
-        }
-        nameList = current = CERT_DecodeAltNameExtension(arena, &subAltName);
-        if (!nameList) {
-            goto finish;
-        }
-        if (nameList != NULL) {
-            do {
-                if (current->type == certDirectoryName) {
-                    rawEmailAddr =
-                        CERT_GetNameElement(cert->arena, &(current->name.directoryName),
-                                            SEC_OID_PKCS9_EMAIL_ADDRESS);
-                    if (rawEmailAddr ==
-                        NULL) {
-                        rawEmailAddr =
-                            CERT_GetNameElement(cert->arena, &(current->name.directoryName),
-                                                SEC_OID_RFC1274_MAIL);
-                    }
-                } else if (current->type == certRFC822Name) {
-                    rawEmailAddr =
-                        (char*)PORT_ArenaZAlloc(cert->arena, current->name.other.len + 1);
-                    if (!rawEmailAddr) {
-                        goto finish;
-                    }
-                    PORT_Memcpy(rawEmailAddr, current->name.other.data,
-                                current->name.other.len);
-                    rawEmailAddr[current->name.other.len] =
-                        '\0';
-                }
-                if (rawEmailAddr) {
-                    break;
-                }
-                current = CERT_GetNextGeneralName(current);
-            } while (current != nameList);
-        }
-    }
-    if (rawEmailAddr) {
-        for (i = 0; i <= (int)PORT_Strlen(rawEmailAddr); i++) {
-            rawEmailAddr[i] = tolower((unsigned char)rawEmailAddr[i]);
-        }
-    }
-
-finish:
-
-    /* Don't free nameList, it's part of the arena. */
-
-    if (arena) {
-        PORT_FreeArena(arena, PR_FALSE);
-    }
-
-    if (subAltName.data) {
-        SECITEM_FreeItem(&subAltName, PR_FALSE);
-    }
-
-    return (rawEmailAddr);
-}
-
 static char*
 appendStringToBuf(char* dest, char* src, PRUint32* pRemaining)
 {
@@ -1400,13 +1320,13 @@ appendItemToBuf(char* dest, SECItem* src, PRUint32* pRemaining)
     if (dest && src && src->data && src->len && src->data[0]) {
         PRUint32 len = src->len;
         PRUint32 i;
-        PRUint32 reqLen = len + 1;
+        PRUint64 reqLen = (PRUint64)len + 1;
         /* are there any embedded control characters ? */
         for (i = 0; i < len; i++) {
             if (NEEDS_HEX_ESCAPE(src->data[i]))
                 reqLen += 2;
         }
-        if (*pRemaining > reqLen) {
+        if (*pRemaining >= reqLen) {
             for (i = 0; i < len; ++i) {
                 PRUint8 c = src->data[i];
                 if (NEEDS_HEX_ESCAPE(c)) {
@@ -1422,7 +1342,7 @@ appendItemToBuf(char* dest, SECItem* src, PRUint32* pRemaining)
                 }
             }
             *dest++ = '\0';
-            *pRemaining -= reqLen;
+            *pRemaining -= (PRUint32)reqLen;
         }
     }
     return dest;
@@ -1440,7 +1360,7 @@ cert_GetCertificateEmailAddresses(CERTCertificate* cert)
     char* pBuf = NULL;
     PORTCheapArenaPool tmpArena;
     PRUint32 maxLen = 0;
-    PRInt32 finalLen = 0;
+    PRUint32 finalLen = 0;
     SECStatus rv;
     SECItem subAltName;
 
@@ -1601,12 +1521,6 @@ CERT_GetOrgUnitName(const CERTName* name)
 {
     return (
         CERT_GetNameElement(NULL, name, SEC_OID_AVA_ORGANIZATIONAL_UNIT_NAME));
-}
-
-char*
-CERT_GetDnQualifier(const CERTName* name)
-{
-    return (CERT_GetNameElement(NULL, name, SEC_OID_AVA_DN_QUALIFIER));
 }
 
 char*

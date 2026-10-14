@@ -1,27 +1,27 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:expandtab:shiftwidth=2:tabstop=2:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsUserIdleService.h"
+
+#include <algorithm>
+
+#include "mozilla/AppShutdown.h"
+#include "mozilla/Components.h"
+#include "mozilla/Logging.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/Services.h"
+#include "mozilla/dom/ContentChild.h"
+#include "mozilla/glean/WidgetMetrics.h"
+#include "nsCOMArray.h"
+#include "nsDebug.h"
 #include "nsError.h"
 #include "nsIAsyncShutdown.h"
-#include "nsUserIdleService.h"
-#include "nsString.h"
 #include "nsIObserverService.h"
-#include "nsDebug.h"
-#include "nsCOMArray.h"
+#include "nsString.h"
 #include "nsXULAppAPI.h"
 #include "prinrval.h"
-#include "mozilla/Logging.h"
 #include "prtime.h"
-#include "mozilla/AppShutdown.h"
-#include "mozilla/dom/ContentChild.h"
-#include "mozilla/Services.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/glean/WidgetMetrics.h"
-#include <algorithm>
 
 #ifdef MOZ_WIDGET_ANDROID
 #  include <android/log.h>
@@ -129,7 +129,7 @@ nsUserIdleServiceDaily::Observe(nsISupports*, const char* aTopic,
   // Start timer for the next check in one day.
   (void)mTimer->InitWithNamedFuncCallback(
       DailyCallback, this, SECONDS_PER_DAY * PR_MSEC_PER_SEC,
-      nsITimer::TYPE_ONE_SHOT, "nsUserIdleServiceDaily::Observe");
+      nsITimer::TYPE_ONE_SHOT, "nsUserIdleServiceDaily::Observe"_ns);
 
   return NS_OK;
 }
@@ -206,7 +206,7 @@ void nsUserIdleServiceDaily::Init() {
 
     (void)mTimer->InitWithNamedFuncCallback(
         DailyCallback, this, milliSecLeftUntilDaily, nsITimer::TYPE_ONE_SHOT,
-        "nsUserIdleServiceDaily::Init");
+        "nsUserIdleServiceDaily::Init"_ns);
   }
 }
 
@@ -264,7 +264,7 @@ void nsUserIdleServiceDaily::DailyCallback(nsITimer* aTimer, void* aClosure) {
 
     (void)self->mTimer->InitWithNamedFuncCallback(
         DailyCallback, self, delayTime / PR_USEC_PER_MSEC,
-        nsITimer::TYPE_ONE_SHOT, "nsUserIdleServiceDaily::DailyCallback");
+        nsITimer::TYPE_ONE_SHOT, "nsUserIdleServiceDaily::DailyCallback"_ns);
     return;
   }
 
@@ -393,7 +393,7 @@ nsUserIdleService::nsUserIdleService()
     mDailyIdle = new nsUserIdleServiceDaily(this);
     mDailyIdle->Init();
   }
-  nsCOMPtr<nsIAsyncShutdownService> svc = services::GetAsyncShutdownService();
+  nsCOMPtr<nsIAsyncShutdownService> svc = components::AsyncShutdown::Service();
   MOZ_ASSERT(svc);
   nsCOMPtr<nsIAsyncShutdownClient> client;
   auto rv = svc->GetAppShutdownConfirmed(getter_AddRefs(client));
@@ -857,7 +857,8 @@ void nsUserIdleService::SetTimerExpiryIfBefore(TimeStamp aNextTimeout) {
     // Start the timer
     mTimer->InitWithNamedFuncCallback(
         StaticIdleTimerCallback, this, deltaTime.ToMilliseconds(),
-        nsITimer::TYPE_ONE_SHOT, "nsUserIdleService::SetTimerExpiryIfBefore");
+        nsITimer::TYPE_ONE_SHOT,
+        "nsUserIdleService::SetTimerExpiryIfBefore"_ns);
   }
 }
 

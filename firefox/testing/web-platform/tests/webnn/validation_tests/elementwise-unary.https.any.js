@@ -9,7 +9,7 @@
 
 const kElementwiseUnaryOperators = [
   'abs', 'ceil', 'cos', 'erf', 'exp', 'floor', 'identity', 'log', 'neg',
-  'reciprocal', 'sign', 'sin', 'sqrt', 'tan'
+  'reciprocal', 'roundEven', 'sign', 'sin', 'sqrt', 'tan'
 ];
 
 kElementwiseUnaryOperators.forEach((operatorName) => {
@@ -19,4 +19,10 @@ kElementwiseUnaryOperators.forEach((operatorName) => {
 const label = 'elementwise_unary_op';
 kElementwiseUnaryOperators.forEach((operatorName) => {
   validateSingleInputOperation(operatorName, label);
+});
+
+kElementwiseUnaryOperators.forEach((operatorName) => {
+  validateOperandRank(operatorName, 'input', (builder, input) => {
+    return builder[operatorName](input);
+  });
 });

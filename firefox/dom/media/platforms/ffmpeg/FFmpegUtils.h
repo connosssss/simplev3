@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,8 +6,9 @@
 #define DOM_MEDIA_PLATFORMS_FFMPEG_FFMPEGUTILS_H_
 
 #include <cstddef>
-#include "nsStringFwd.h"
+
 #include "FFmpegLibWrapper.h"
+#include "nsStringFwd.h"
 
 // This must be the last header included
 #include "FFmpegLibs.h"
@@ -52,6 +51,14 @@ inline bool IsVideoCodec(AVCodecID aCodecID) {
   }
 }
 
+inline int64_t GetFramePts(const AVFrame* aFrame) {
+#if LIBAVCODEC_VERSION_MAJOR > 57
+  return aFrame->pts;
+#else
+  return aFrame->pkt_pts;
+#endif
+}
+
 // Access the correct location for the channel count, based on ffmpeg version.
 template <typename T>
 inline int& ChannelCount(T* aObject) {
@@ -83,6 +90,21 @@ inline const int64_t& Duration(const T* aObject) {
 }
 
 const char* AVCodecToString(const AVCodecID& aCodec);
+
+// ffmpeg/libavcodec/internal.h defines STRIDE_ALIGN for
+// avcodec_default_get_buffer2() according to used instructions set.
+// The recent biggest value is 64 for AVX-512.
+// We need to keep our internal align in sync with the biggest value
+// to make sure our custom get_buffer2() allocator works with any system
+// provided ffmpeg.
+
+inline int32_t GetBuffer2StrideAlign(int32_t aStride) {
+  // STRIDE_ALIGN from libavcodec/internal.h
+  static constexpr int32_t kStrideAlign = 64;
+  static constexpr int32_t kPlaneTrailingPadding = 16 + kStrideAlign - 1;
+
+  return (kPlaneTrailingPadding + aStride - 1) / aStride;
+}
 
 }  // namespace mozilla
 

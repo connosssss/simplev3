@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
 Services.scriptloader.loadSubScript(
@@ -727,7 +725,10 @@ add_task(async function test_bookmark_contextmenu() {
   BrowserTestUtils.removeTab(tab);
 });
 
-add_task(async function test_bookmark_sidebar_contextmenu() {
+add_task(async function test_legacy_bookmark_sidebar_contextmenu() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["sidebar.updatedBookmarks.enabled", false]],
+  });
   await withSidebarTree("bookmarks", async tree => {
     let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, PAGE);
 
@@ -749,6 +750,48 @@ add_task(async function test_bookmark_sidebar_contextmenu() {
 
     BrowserTestUtils.removeTab(tab);
   });
+  await SpecialPowers.popPrefEnv();
+});
+
+add_task(async function test_bookmark_sidebar_contextmenu() {
+  // TODO: (Bug 2040327) Remove hard-coded pref once new bookmarks panel is enabled on all builds.
+  await SpecialPowers.pushPrefEnv({
+    set: [["sidebar.updatedBookmarks.enabled", true]],
+  });
+  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, PAGE);
+
+  let extension = bookmarkContextMenuExtension();
+  await extension.startup();
+  let bookmarkGuid = await extension.awaitMessage("bookmark-created");
+
+  const { component, contentWindow } =
+    await SidebarTestUtils.bookmarks.showBookmarksSidebar(window);
+  const toolbarFolder = await SidebarTestUtils.bookmarks.openToolbarFolder(
+    component.bookmarkList
+  );
+  const bookmarkRow = await SidebarTestUtils.bookmarks.findBookmarkItemByGuid(
+    toolbarFolder.querySelector("sidebar-bookmark-list"),
+    "rowEls",
+    bookmarkGuid
+  );
+
+  const menu = SidebarController.currentContextMenu;
+  const shown = BrowserTestUtils.waitForEvent(menu, "popupshown");
+  EventUtils.synthesizeMouseAtCenter(
+    bookmarkRow.mainEl,
+    { type: "contextmenu", button: 2 },
+    contentWindow
+  );
+  await shown;
+
+  const menuItem = menu.getElementsByAttribute("label", "Get bookmark")[0];
+  closeChromeContextMenu("sidebar-bookmarks-context-menu", menuItem);
+  SidebarTestUtils.closePanel(window);
+  await extension.awaitMessage("test-finish");
+  await extension.unload();
+
+  BrowserTestUtils.removeTab(tab);
+  await SpecialPowers.popPrefEnv();
 });
 
 function bookmarkFolderContextMenuExtension() {

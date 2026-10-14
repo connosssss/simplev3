@@ -1,15 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SVGPreserveAspectRatio.h"
 
+#include "SVGAnimatedPreserveAspectRatio.h"
 #include "mozilla/dom/SVGPreserveAspectRatioBinding.h"
 #include "nsContentUtils.h"
 #include "nsWhitespaceTokenizer.h"
-#include "SVGAnimatedPreserveAspectRatio.h"
 
 using namespace mozilla::dom;
 using namespace mozilla::dom::SVGPreserveAspectRatio_Binding;
@@ -93,9 +91,7 @@ void SVGPreserveAspectRatio::ToString(nsAString& aValueAsString) const {
 }
 
 bool SVGPreserveAspectRatio::operator==(
-    const SVGPreserveAspectRatio& aOther) const {
-  return mAlign == aOther.mAlign && mMeetOrSlice == aOther.mMeetOrSlice;
-}
+    const SVGPreserveAspectRatio& aOther) const = default;
 
 JSObject* DOMSVGPreserveAspectRatio::WrapObject(
     JSContext* aCx, JS::Handle<JSObject*> aGivenProto) {

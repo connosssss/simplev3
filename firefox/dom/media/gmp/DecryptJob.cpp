@@ -1,9 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "DecryptJob.h"
+
 #include "mozilla/Atomics.h"
 
 namespace mozilla {
@@ -27,11 +27,13 @@ void DecryptJob::PostResult(DecryptStatus aResult,
   if (aDecryptedData.Length() != mSample->Size()) {
     NS_WARNING("CDM returned incorrect number of decrypted bytes");
   }
-  if (aResult == eme::Ok) {
+  if (aResult == DecryptStatus::Ok) {
     UniquePtr<MediaRawDataWriter> writer(mSample->CreateWriter());
-    PodCopy(writer->Data(), aDecryptedData.Elements(),
-            std::min<size_t>(aDecryptedData.Length(), mSample->Size()));
-  } else if (aResult == eme::NoKeyErr) {
+    if (NS_WARN_IF(!writer->Replace(aDecryptedData.Elements(),
+                                    aDecryptedData.Length()))) {
+      aResult = DecryptStatus::GenericErr;
+    }
+  } else if (aResult == DecryptStatus::NoKeyErr) {
     NS_WARNING("CDM returned NoKeyErr");
     // We still have the encrypted sample, so we can re-enqueue it to be
     // decrypted again once the key is usable again.

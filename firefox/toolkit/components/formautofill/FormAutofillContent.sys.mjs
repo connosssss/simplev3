@@ -30,8 +30,8 @@ export var FormAutofillContent = {
     return Services.cpmm.sharedData.get("FormAutofill:savedFieldNames");
   },
 
-  get focusedElement() {
-    return formFillController.focusedElement;
+  get controlledElement() {
+    return formFillController.controlledElement;
   },
 
   /**
@@ -58,6 +58,12 @@ export var FormAutofillContent = {
       );
       this._popupPending = true;
     }
+  },
+
+  repopulatePopup() {
+    formFillController.QueryInterface(Ci.nsIAutoCompleteInput);
+    formFillController.controller.resetInternalState();
+    this.showPopup();
   },
 
   handleEvent(evt) {

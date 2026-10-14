@@ -52,6 +52,23 @@ bitflags! {
         /// any other style data. This hint is only processed in animation-only
         /// traversal which is prior to normal traversal.
         const RESTYLE_SMIL = 1 << 10;
+
+        /// Match self if this element is dependent on a style query.
+        const RESTYLE_IF_AFFECTED_BY_STYLE_QUERIES = 1 << 11;
+
+        /// Match self or descendants if dependent on a named style query.
+        const RESTYLE_IF_AFFECTED_BY_NAMED_STYLE_CONTAINER = 1 << 12;
+
+        /// Do a selector match of the element if it depends on an ancestor's font
+        /// or this element's writing mode. Used to handle the invalidation cases
+        /// for style container queries in which relative font metrics change or
+        /// when a writing-mode-dependant unit needs to be updated for a style
+        /// container query.
+        const RESTYLE_IF_AFFECTED_BY_WM_OR_ANCESTOR_FONT = 1 << 13;
+
+        /// We don't need to match this element but do a selector match of it's
+        /// children if they are affected by style container queries.
+        const RESTYLE_CHILD_IF_AFFECTED_BY_STYLE_QUERIES = 1 <<14;
     }
 }
 
@@ -90,8 +107,6 @@ impl RestyleHint {
 
     /// Propagates this restyle hint to a child element.
     pub fn propagate(&mut self, traversal_flags: &TraversalFlags) -> Self {
-        use std::mem;
-
         // In the middle of an animation only restyle, we don't need to
         // propagate any restyle hints, and we need to remove ourselves.
         if traversal_flags.for_animation_only() {
@@ -106,7 +121,7 @@ impl RestyleHint {
         );
 
         // Else we should clear ourselves, and return the propagated hint.
-        mem::replace(self, Self::empty()).propagate_for_non_animation_restyle()
+        std::mem::take(self).propagate_for_non_animation_restyle()
     }
 
     /// Returns a new `RestyleHint` appropriate for children of the current element.
@@ -115,11 +130,27 @@ impl RestyleHint {
             return Self::restyle_subtree();
         }
         let mut result = Self::empty();
-        if self.contains(RestyleHint::RESTYLE_PSEUDOS) {
+        if self.contains(Self::RESTYLE_PSEUDOS) {
             result |= Self::RESTYLE_SELF_IF_PSEUDO;
         }
-        if self.contains(RestyleHint::RECASCADE_DESCENDANTS) {
+        if self.contains(Self::RECASCADE_DESCENDANTS) {
             result |= Self::recascade_subtree();
+        }
+        if self.contains(Self::RESTYLE_IF_AFFECTED_BY_WM_OR_ANCESTOR_FONT) {
+            result |= Self::RESTYLE_IF_AFFECTED_BY_WM_OR_ANCESTOR_FONT;
+        }
+        if self.contains(Self::RESTYLE_CHILD_IF_AFFECTED_BY_STYLE_QUERIES) {
+            result |= Self::RESTYLE_IF_AFFECTED_BY_STYLE_QUERIES;
+        }
+        if self.contains(Self::RESTYLE_IF_AFFECTED_BY_NAMED_STYLE_CONTAINER) {
+            // We may need to restyle further down the tree if rules are
+            // declared for a named container.
+            // e.g @container my-name {#b {...}}
+            // and <div id=a> <div> <div id=b> </div> </div> </div>
+            // If a toggles `container-name: my-name` the rules for #b
+            // also invalidate. This is why we need one hint for unnamed
+            // container and one for named containers.
+            result |= Self::RESTYLE_IF_AFFECTED_BY_NAMED_STYLE_CONTAINER;
         }
         result
     }
@@ -132,9 +163,9 @@ impl RestyleHint {
     /// The replacements for the animation cascade levels.
     #[inline]
     pub fn for_animations() -> Self {
-        RestyleHint::RESTYLE_SMIL |
-            RestyleHint::RESTYLE_CSS_ANIMATIONS |
-            RestyleHint::RESTYLE_CSS_TRANSITIONS
+        RestyleHint::RESTYLE_SMIL
+            | RestyleHint::RESTYLE_CSS_ANIMATIONS
+            | RestyleHint::RESTYLE_CSS_TRANSITIONS
     }
 
     /// Returns whether the hint specifies that an animation cascade level must
@@ -149,9 +180,9 @@ impl RestyleHint {
     #[inline]
     pub fn has_animation_hint_or_recascade(&self) -> bool {
         self.intersects(
-            Self::for_animations() |
-                Self::RECASCADE_SELF |
-                Self::RECASCADE_SELF_IF_INHERIT_RESET_STYLE,
+            Self::for_animations()
+                | Self::RECASCADE_SELF
+                | Self::RECASCADE_SELF_IF_INHERIT_RESET_STYLE,
         )
     }
 
@@ -192,4 +223,4 @@ impl Default for RestyleHint {
 }
 
 #[cfg(feature = "servo")]
-malloc_size_of_is_0!(RestyleHint);
+malloc_size_of::malloc_size_of_is_0!(RestyleHint);

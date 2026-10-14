@@ -1,15 +1,17 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_widget_WinOLELock_h__
-#define mozilla_widget_WinOLELock_h__
+#ifndef mozilla_widget_WinOLELock_h_
+#define mozilla_widget_WinOLELock_h_
 
-#include <type_traits>
 #include <minwindef.h>
 #include <winbase.h>
+
+#include <type_traits>
+
 #include "mozilla/Assertions.h"
+#include "mozilla/CheckedInt.h"
 
 namespace details {
 // implementation of `is_complete_type_v` borrowed from Raymond Chen:
@@ -170,9 +172,9 @@ class ScopedOLEMemory<U[]> {
   static_assert(std::is_pod_v<U>, "type must be POD");
 
  public:
-  explicit ScopedOLEMemory(size_t n)
-      : mHandle(::GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(U) * n)),
-        mExtent(n) {}
+  // Fail the allocation rather than under-allocating if the size computation
+  // would overflow; `lock()` hands out all `n` elements either way.
+  explicit ScopedOLEMemory(size_t n) : mHandle(AllocFor(n)), mExtent(n) {}
   ~ScopedOLEMemory() { ::GlobalFree(mHandle); }
 
   ScopedOLELock<U[]> lock() const { return ScopedOLELock<U[]>(mHandle); }
@@ -186,8 +188,16 @@ class ScopedOLEMemory<U[]> {
   }
 
  private:
+  static HGLOBAL AllocFor(size_t n) {
+    mozilla::CheckedInt<size_t> const bytes =
+        mozilla::CheckedInt<size_t>(n) * sizeof(U);
+    return bytes.isValid()
+               ? ::GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes.value())
+               : nullptr;
+  }
+
   HGLOBAL mHandle;
   size_t mExtent;
 };
 
-#endif  // mozilla_widget_WinOLELock_h__
+#endif  // mozilla_widget_WinOLELock_h_

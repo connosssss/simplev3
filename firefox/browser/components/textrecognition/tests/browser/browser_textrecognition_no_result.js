@@ -7,10 +7,7 @@ add_task(async function () {
     "http://mochi.test:8888/browser/toolkit/content/tests/browser/doggy.png";
 
   await SpecialPowers.pushPrefEnv({
-    set: [
-      ["test.wait300msAfterTabSwitch", true],
-      ["dom.text-recognition.enabled", true],
-    ],
+    set: [["dom.text-recognition.enabled", true]],
   });
 
   clearTelemetry();
@@ -44,7 +41,7 @@ add_task(async function () {
     await popupHiddenPromise;
 
     info("Waiting for the dialog browser to be shown.");
-    const { contentDocument } = await BrowserTestUtils.waitForCondition(() =>
+    const { contentDocument } = await TestUtils.waitForCondition(() =>
       document.querySelector(".textRecognitionDialogFrame")
     );
 
@@ -52,13 +49,13 @@ add_task(async function () {
     const noResultsHeader = contentDocument.querySelector(
       "#text-recognition-header-no-results"
     );
-    await BrowserTestUtils.waitForCondition(() => {
+    await TestUtils.waitForCondition(() => {
       return noResultsHeader.style.display !== "none";
     });
 
     {
       info("Check the scalar telemetry.");
-      const scalars = await BrowserTestUtils.waitForCondition(() =>
+      const scalars = await TestUtils.waitForCondition(() =>
         getTelemetryScalars()
       );
       const contentContext = scalars["browser.ui.interaction.content_context"];
@@ -91,7 +88,7 @@ add_task(async function () {
     close.click();
 
     info("Waiting for the dialog frame to close.");
-    await BrowserTestUtils.waitForCondition(
+    await TestUtils.waitForCondition(
       () => !document.querySelector(".textRecognitionDialogFrame")
     );
 

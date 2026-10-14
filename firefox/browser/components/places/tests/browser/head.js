@@ -6,21 +6,6 @@ ChromeUtils.defineLazyGetter(this, "gFluentStrings", function () {
   return new Localization(["branding/brand.ftl", "browser/browser.ftl"], true);
 });
 
-function openLibrary(callback, aLeftPaneRoot, win = window) {
-  let library = win.openDialog(
-    "chrome://browser/content/places/places.xhtml",
-    "",
-    "chrome,toolbar=yes,dialog=no,resizable",
-    aLeftPaneRoot
-  );
-  waitForFocus(function () {
-    checkLibraryPaneVisibility(library, aLeftPaneRoot);
-    callback(library);
-  }, library);
-
-  return library;
-}
-
 /**
  * Returns a handle to a Library window.
  * If one is opens returns itm otherwise it opens a new one.
@@ -32,41 +17,31 @@ function openLibrary(callback, aLeftPaneRoot, win = window) {
  * @returns {Promise}
  *          Resolves to the handle to the library window.
  */
-function promiseLibrary(aLeftPaneRoot, win = window) {
-  return new Promise(resolve => {
-    let library = Services.wm.getMostRecentWindow("Places:Organizer");
-    if (library && !library.closed) {
-      if (aLeftPaneRoot) {
-        library.PlacesOrganizer.selectLeftPaneContainerByHierarchy(
-          aLeftPaneRoot
-        );
-      }
-      checkLibraryPaneVisibility(library, aLeftPaneRoot);
-      resolve(library);
-    } else {
-      openLibrary(resolve, aLeftPaneRoot, win);
-    }
-  });
+async function promiseLibrary(aLeftPaneRoot, win = window) {
+  let library = Services.wm.getMostRecentWindow("Places:Organizer");
+  if (!library || library.closed) {
+    library = win.openDialog(
+      "chrome://browser/content/places/places.xhtml",
+      "",
+      "chrome,toolbar=yes,dialog=no,resizable",
+      aLeftPaneRoot
+    );
+  } else if (aLeftPaneRoot) {
+    library.PlacesOrganizer.selectLeftPaneContainerByHierarchy(aLeftPaneRoot);
+  }
+  await SimpleTest.promiseFocus(library);
+  checkLibraryPaneVisibility(library, aLeftPaneRoot);
+  return library;
 }
 
-function promiseLibraryClosed(organizer) {
-  return new Promise(resolve => {
-    if (organizer.closed) {
-      resolve();
-      return;
-    }
-    // Wait for the Organizer window to actually be closed
-    organizer.addEventListener(
-      "unload",
-      function () {
-        executeSoon(resolve);
-      },
-      { once: true }
-    );
-
-    // Close Library window.
-    organizer.close();
-  });
+async function promiseLibraryClosed(organizer) {
+  if (organizer.closed) {
+    return;
+  }
+  // Wait for the Organizer window to actually be closed.
+  let promiseClosed = BrowserTestUtils.domWindowClosed(organizer);
+  organizer.close();
+  await promiseClosed;
 }
 
 function checkLibraryPaneVisibility(library, selectedPane) {
@@ -119,20 +94,30 @@ function promiseClipboard(aPopulateClipboardFn, aFlavor) {
   });
 }
 
-function synthesizeClickOnSelectedTreeCell(aTree, aOptions) {
+async function synthesizeClickOnSelectedTreeCell(aTree, aOptions) {
   if (aTree.view.selection.count < 1) {
     throw new Error("The test node should be successfully selected");
   }
+  await TestUtils.waitForCondition(
+    () => aTree.getBoundingClientRect().width > 0,
+    "Tree should have non-zero width before clicking"
+  );
   // Get selection rowID.
   let min = {},
     max = {};
   aTree.view.selection.getRangeAt(0, min, max);
   let rowID = min.value;
   aTree.ensureRowIsVisible(rowID);
-  // Calculate the click coordinates.
-  var rect = aTree.getCoordsForCellItem(rowID, aTree.columns[0], "text");
-  var x = rect.x + rect.width / 2;
-  var y = rect.y + rect.height / 2;
+  // Calculate the click coordinates. getCoordsForCellItem returns the width the
+  // text would need rather than the space it actually gets, so for a cropped
+  // cell the rect can extend past the tree body (bug 1708159). Clamp it to the
+  // body's content box, which is what the rows are laid out in, or the midpoint
+  // we click lands outside the tree and hits an unrelated element.
+  let rect = aTree.getCoordsForCellItem(rowID, aTree.columns[0], "text");
+  let minX = aTree.body.clientLeft;
+  let maxX = minX + aTree.body.clientWidth;
+  let x = (Math.max(rect.x, minX) + Math.min(rect.x + rect.width, maxX)) / 2;
+  let y = rect.y + rect.height / 2;
   if (aTree.id == "bookmarks-view" || aTree.id == "historyTree") {
     // We are purposefully keeping the main <tree> element unlabeled, because in
     // this specific case, the on-screen label for either "Bookmarks" or
@@ -150,7 +135,7 @@ function synthesizeClickOnSelectedTreeCell(aTree, aOptions) {
     x,
     y,
     aOptions || {},
-    aTree.ownerGlobal
+    aTree.documentGlobal
   );
   AccessibilityUtils.resetEnv();
 }
@@ -176,7 +161,7 @@ function synthesizeClickOnSelectedTreeCell(aTree, aOptions) {
 function promiseSetToolbarVisibility(aToolbar, aVisible) {
   if (isToolbarVisible(aToolbar) != aVisible) {
     let visibilityChanged = TestUtils.waitForCondition(
-      () => aToolbar.collapsed != aVisible
+      () => isToolbarVisible(aToolbar) == aVisible
     );
     setToolbarVisibility(aToolbar, aVisible, undefined, false);
     return visibilityChanged;
@@ -196,9 +181,7 @@ function promiseSetToolbarVisibility(aToolbar, aVisible) {
 function isToolbarVisible(aToolbar) {
   let hidingAttribute =
     aToolbar.getAttribute("type") == "menubar" ? "autohide" : "collapsed";
-  let hidingValue = aToolbar.getAttribute(hidingAttribute)?.toLowerCase();
-  // Check for both collapsed="true" and collapsed="collapsed"
-  return hidingValue !== "true" && hidingValue !== hidingAttribute;
+  return !aToolbar.hasAttribute(hidingAttribute);
 }
 
 /**
@@ -325,21 +308,10 @@ var openContextMenuForContentSelector = async function (browser, selector) {
     dump(`openContextMenuForContentSelector: found ${elt}\n`);
 
     /* Open context menu so chrome can access the element */
-    const domWindowUtils = content.windowUtils;
-    let rect = elt.getBoundingClientRect();
-    let left = rect.left + rect.width / 2;
-    let top = rect.top + rect.height / 2;
-    domWindowUtils.sendMouseEvent(
-      "contextmenu",
-      left,
-      top,
-      2,
-      1,
-      0,
-      false,
-      0,
-      0,
-      true
+    EventUtils.synthesizeMouseAtCenter(
+      elt,
+      { type: "contextmenu", button: 2, clickCount: 1, buttons: 0 },
+      content
     );
   });
   await contextPromise;
@@ -456,7 +428,7 @@ function promisePlacesInitComplete() {
   return placesInitCompleteObserved;
 }
 
-// Function copied from browser/base/content/test/general/head.js.
+// Function copied from browser/base/content/test/browser-general/head.js.
 function promisePopupShown(popup) {
   return new Promise(resolve => {
     if (popup.state == "open") {
@@ -471,7 +443,7 @@ function promisePopupShown(popup) {
   });
 }
 
-// Function copied from browser/base/content/test/general/head.js.
+// Function copied from browser/base/content/test/browser-general/head.js.
 function promisePopupHidden(popup) {
   return new Promise(resolve => {
     let onPopupHidden = () => {
@@ -479,6 +451,74 @@ function promisePopupHidden(popup) {
       resolve();
     };
     popup.addEventListener("popuphidden", onPopupHidden);
+  });
+}
+
+/**
+ * Boilerplate code to ensure the bookmarks toolbar is visible and contains
+ * at least one bookmark.
+ */
+async function ensureBookmarksToolbarIsVisibleAndPopulated() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.toolbars.bookmarks.visibility", "always"]],
+  });
+
+  // Necessary to avoid intermittent failures in verify-fission where default
+  // bookmarks may or may not have been imported yet.
+  await promisePlacesInitComplete();
+  await PlacesUtils.bookmarks.eraseEverything();
+
+  // Avoid the empty toolbar placeholder shifting stuff around.
+  let bm = await PlacesUtils.bookmarks.insert({
+    parentGuid: PlacesUtils.bookmarks.toolbarGuid,
+    title: "initial",
+    url: "about:robots",
+  });
+
+  let toolbar = document.getElementById("PersonalToolbar");
+  let wasCollapsed = toolbar.collapsed;
+  if (wasCollapsed) {
+    await promiseSetToolbarVisibility(toolbar, true);
+    await BrowserTestUtils.waitForEvent(
+      toolbar,
+      "BookmarksToolbarVisibilityUpdated"
+    );
+  }
+
+  registerCleanupFunction(async () => {
+    if (wasCollapsed) {
+      await promiseSetToolbarVisibility(toolbar, false);
+    }
+    try {
+      await PlacesUtils.bookmarks.remove(bm);
+    } catch (ex) {
+      // The bookmark may have been removed already.
+    }
+  });
+
+  await waitForBookmarksToolbarElements(1);
+}
+
+/**
+ * Ensure N bookmarks are visible on the Bookmarks Toolbar.
+ *
+ * @param {integer} expectedCount The number of bookmarks to wait for.
+ * @returns {Promise} resolved when the condition is satisfied.
+ */
+function waitForBookmarksToolbarElements(expectedCount) {
+  let container = document.getElementById("PlacesToolbarItems");
+  if (container.childElementCount == expectedCount) {
+    return Promise.resolve();
+  }
+  return new Promise(resolve => {
+    info("Waiting for bookmarks");
+    let mut = new MutationObserver(() => {
+      if (container.childElementCount == expectedCount) {
+        resolve();
+        mut.disconnect();
+      }
+    });
+    mut.observe(container, { childList: true });
   });
 }
 
@@ -507,7 +547,7 @@ async function clickBookmarkStar(win = window) {
     menuList,
     { attributes: true },
     () => !!menuList.getAttribute("selectedGuid"),
-    "Should select the menu folder item"
+    { msg: "Should select the menu folder item" }
   );
 }
 
@@ -581,7 +621,7 @@ function setSearch(searchBox, query) {
     });
     searchBox.select();
     if (query) {
-      EventUtils.sendString(query, searchBox.ownerGlobal);
+      EventUtils.sendString(query, searchBox.documentGlobal);
     } else {
       searchBox.clear();
     }

@@ -2,16 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsAHttpConnection_h__
-#define nsAHttpConnection_h__
+#ifndef nsAHttpConnection_h_
+#define nsAHttpConnection_h_
 
-#include "mozilla/net/DNS.h"
-#include "nsHttp.h"
-#include "nsISupports.h"
-#include "nsAHttpTransaction.h"
-#include "WebTransportSessionBase.h"
 #include "HttpTrafficAnalyzer.h"
+#include "WebTransportSessionBase.h"
+#include "mozilla/net/DNS.h"
+#include "nsAHttpTransaction.h"
+#include "nsHttp.h"
 #include "nsIRequest.h"
+#include "nsISupports.h"
 
 class nsIAsyncInputStream;
 class nsIAsyncOutputStream;
@@ -291,4 +291,4 @@ class nsAHttpConnection : public nsISupports {
 }  // namespace net
 }  // namespace mozilla
 
-#endif  // nsAHttpConnection_h__
+#endif  // nsAHttpConnection_h_

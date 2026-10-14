@@ -5,6 +5,8 @@
 #ifndef mozilla_intl_l10n_RegistryBindings_h
 #define mozilla_intl_l10n_RegistryBindings_h
 
+#include "mozilla/dom/FluentBinding.h"
+
 #include "mozilla/intl/l10nregistry_ffi_generated.h"
 
 #include "mozilla/RefPtr.h"
@@ -21,22 +23,28 @@ struct RefPtrTraits<intl::ffi::FileSource> {
   }
 };
 
+}  // namespace mozilla
+
+namespace std {
 template <>
-class DefaultDelete<intl::ffi::GeckoFluentBundleIterator> {
- public:
-  void operator()(intl::ffi::GeckoFluentBundleIterator* aPtr) const {
+struct default_delete<mozilla::intl::ffi::GeckoFluentBundleIterator> {
+  void operator()(mozilla::intl::ffi::GeckoFluentBundleIterator* aPtr) const {
     fluent_bundle_iterator_destroy(aPtr);
   }
 };
 
 template <>
-class DefaultDelete<intl::ffi::GeckoFluentBundleAsyncIteratorWrapper> {
- public:
+struct default_delete<
+    mozilla::intl::ffi::GeckoFluentBundleAsyncIteratorWrapper> {
   void operator()(
-      intl::ffi::GeckoFluentBundleAsyncIteratorWrapper* aPtr) const {
+      mozilla::intl::ffi::GeckoFluentBundleAsyncIteratorWrapper* aPtr) const {
     fluent_bundle_async_iterator_destroy(aPtr);
   }
 };
+
+}  // namespace std
+
+namespace mozilla {
 
 template <>
 struct RefPtrTraits<intl::ffi::GeckoL10nRegistry> {

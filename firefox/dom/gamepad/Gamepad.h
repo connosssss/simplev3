@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,19 +5,20 @@
 #ifndef mozilla_dom_gamepad_Gamepad_h
 #define mozilla_dom_gamepad_Gamepad_h
 
+#include <stdint.h>
+
 #include "mozilla/dom/GamepadBinding.h"
 #include "mozilla/dom/GamepadButton.h"
 #include "mozilla/dom/GamepadHandle.h"
-#include "mozilla/dom/GamepadPose.h"
 #include "mozilla/dom/GamepadHapticActuator.h"
 #include "mozilla/dom/GamepadLightIndicator.h"
+#include "mozilla/dom/GamepadPose.h"
 #include "mozilla/dom/GamepadTouch.h"
 #include "mozilla/dom/Performance.h"
-#include <stdint.h>
 #include "nsCOMPtr.h"
-#include "nsTHashMap.h"
 #include "nsString.h"
 #include "nsTArray.h"
+#include "nsTHashMap.h"
 #include "nsWrapperCache.h"
 
 namespace mozilla::dom {
@@ -43,11 +42,10 @@ class Gamepad final : public nsISupports, public nsWrapperCache {
  public:
   Gamepad(nsISupports* aParent, const nsAString& aID, int32_t aIndex,
           GamepadHandle aHandle, GamepadMappingType aMapping, GamepadHand aHand,
-          uint32_t aDisplayID, uint32_t aNumButtons, uint32_t aNumAxes,
-          uint32_t aNumHaptics, uint32_t aNumLightIndicator,
-          uint32_t aNumTouchEvents);
+          uint32_t aNumButtons, uint32_t aNumAxes, uint32_t aNumHaptics,
+          uint32_t aNumLightIndicator, uint32_t aNumTouchEvents);
 
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Gamepad)
 
   void SetConnected(bool aConnected);
@@ -78,8 +76,6 @@ class Gamepad final : public nsISupports, public nsWrapperCache {
 
   GamepadMappingType Mapping() { return mMapping; }
 
-  uint32_t DisplayId() const { return mDisplayId; }
-
   GamepadHand Hand() { return mHand; }
 
   bool Connected() const { return mConnected; }
@@ -90,7 +86,22 @@ class Gamepad final : public nsISupports, public nsWrapperCache {
     aButtons = mButtons.Clone();
   }
 
+  // Returns nullptr if aButton is out of range.
+  GamepadButton* GetButton(uint32_t aButton) const {
+    return aButton < mButtons.Length() ? mButtons[aButton].get() : nullptr;
+  }
+
   void GetAxes(nsTArray<double>& aAxes) const { aAxes = mAxes.Clone(); }
+
+  // Returns false (and leaves *aOutValue untouched) if aAxis is out of
+  // range.
+  bool GetAxis(uint32_t aAxis, double* aOutValue) const {
+    if (aAxis >= mAxes.Length()) {
+      return false;
+    }
+    *aOutValue = mAxes[aAxis];
+    return true;
+  }
 
   GamepadPose* GetPose() const { return mPose; }
 
@@ -120,7 +131,6 @@ class Gamepad final : public nsISupports, public nsWrapperCache {
   int32_t mIndex;
   // the gamepad hash key in GamepadManager
   GamepadHandle mHandle;
-  uint32_t mDisplayId;
   uint32_t mTouchIdHashValue;
   // The mapping in use.
   GamepadMappingType mMapping;

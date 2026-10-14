@@ -9,6 +9,7 @@ import android.content.DialogInterface.BUTTON_POSITIVE
 import android.os.Looper.getMainLooper
 import android.widget.CheckBox
 import android.widget.TextView
+import androidx.appcompat.R as appcompatR
 import androidx.appcompat.app.AlertDialog
 import androidx.core.view.isVisible
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -16,6 +17,7 @@ import mozilla.components.feature.prompts.R
 import mozilla.components.feature.prompts.R.id
 import mozilla.components.support.test.ext.appCompatContext
 import mozilla.components.support.test.mock
+import mozilla.components.support.test.robolectric.testContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -28,7 +30,6 @@ import org.mockito.Mockito.spy
 import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations.openMocks
 import org.robolectric.Shadows.shadowOf
-import androidx.appcompat.R as appcompatR
 
 @RunWith(AndroidJUnit4::class)
 class MultiButtonDialogFragmentTest {
@@ -38,23 +39,25 @@ class MultiButtonDialogFragmentTest {
     @Before
     fun setup() {
         openMocks(this)
+        testContext.setTheme(com.google.android.material.R.style.Theme_MaterialComponents_Light)
     }
 
     @Test
     fun `Build dialog`() {
-        val fragment = spy(
-            MultiButtonDialogFragment.newInstance(
-                "sessionId",
-                "uid",
-                "title",
-                "message",
-                true,
-                false,
-                "positiveButton",
-                "negativeButton",
-                "neutralButton",
-            ),
-        )
+        val fragment =
+            spy(
+                MultiButtonDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    "title",
+                    "message",
+                    true,
+                    false,
+                    "positiveButton",
+                    "negativeButton",
+                    "neutralButton",
+                )
+            )
 
         doReturn(appCompatContext).`when`(fragment).requireContext()
 
@@ -86,19 +89,20 @@ class MultiButtonDialogFragmentTest {
 
     @Test
     fun `Dialog with hasShownManyDialogs equals false should not have a checkbox`() {
-        val fragment = spy(
-            MultiButtonDialogFragment.newInstance(
-                "sessionId",
-                "uid",
-                "title",
-                "message",
-                false,
-                false,
-                "positiveButton",
-                "negativeButton",
-                "neutralButton",
-            ),
-        )
+        val fragment =
+            spy(
+                MultiButtonDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    "title",
+                    "message",
+                    false,
+                    false,
+                    "positiveButton",
+                    "negativeButton",
+                    "neutralButton",
+                )
+            )
 
         doReturn(appCompatContext).`when`(fragment).requireContext()
 
@@ -113,17 +117,18 @@ class MultiButtonDialogFragmentTest {
 
     @Test
     fun `Clicking on a positive button notifies the feature`() {
-        val fragment = spy(
-            MultiButtonDialogFragment.newInstance(
-                "sessionId",
-                "uid",
-                "title",
-                "message",
-                false,
-                false,
-                "positiveButton",
-            ),
-        )
+        val fragment =
+            spy(
+                MultiButtonDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    "title",
+                    "message",
+                    false,
+                    false,
+                    "positiveButton",
+                )
+            )
 
         fragment.feature = mockFeature
 
@@ -141,17 +146,18 @@ class MultiButtonDialogFragmentTest {
 
     @Test
     fun `Clicking on a negative button notifies the feature`() {
-        val fragment = spy(
-            MultiButtonDialogFragment.newInstance(
-                "sessionId",
-                "uid",
-                "title",
-                "message",
-                false,
-                false,
-                negativeButton = "negative",
-            ),
-        )
+        val fragment =
+            spy(
+                MultiButtonDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    "title",
+                    "message",
+                    false,
+                    false,
+                    negativeButton = "negative",
+                )
+            )
 
         fragment.feature = mockFeature
 
@@ -169,17 +175,18 @@ class MultiButtonDialogFragmentTest {
 
     @Test
     fun `Clicking on a neutral button notifies the feature`() {
-        val fragment = spy(
-            MultiButtonDialogFragment.newInstance(
-                "sessionId",
-                "uid",
-                "title",
-                "message",
-                false,
-                false,
-                neutralButton = "neutral",
-            ),
-        )
+        val fragment =
+            spy(
+                MultiButtonDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    "title",
+                    "message",
+                    false,
+                    false,
+                    neutralButton = "neutral",
+                )
+            )
 
         fragment.feature = mockFeature
 
@@ -197,17 +204,18 @@ class MultiButtonDialogFragmentTest {
 
     @Test
     fun `After checking no more dialogs checkbox onConfirm must be called with NoMoreDialogs equals true`() {
-        val fragment = spy(
-            MultiButtonDialogFragment.newInstance(
-                "sessionId",
-                "uid",
-                "title",
-                "message",
-                true,
-                false,
-                positiveButton = "positive",
-            ),
-        )
+        val fragment =
+            spy(
+                MultiButtonDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    "title",
+                    "message",
+                    true,
+                    false,
+                    positiveButton = "positive",
+                )
+            )
 
         fragment.feature = mockFeature
 
@@ -229,17 +237,18 @@ class MultiButtonDialogFragmentTest {
 
     @Test
     fun `Touching outside of the dialog must notify the feature onCancel`() {
-        val fragment = spy(
-            MultiButtonDialogFragment.newInstance(
-                "sessionId",
-                "uid",
-                "title",
-                "message",
-                true,
-                false,
-                positiveButton = "positive",
-            ),
-        )
+        val fragment =
+            spy(
+                MultiButtonDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    "title",
+                    "message",
+                    true,
+                    false,
+                    positiveButton = "positive",
+                )
+            )
 
         fragment.feature = mockFeature
 

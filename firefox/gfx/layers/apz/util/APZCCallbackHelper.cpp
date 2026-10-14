@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,37 +5,36 @@
 #include "APZCCallbackHelper.h"
 
 #include "APZEventState.h"  // for PrecedingPointerDown
-
-#include "gfxPlatform.h"  // For gfxPlatform::UseTiling
-
+#include "gfxPlatform.h"    // For gfxPlatform::UseTiling
+#include "jsapi.h"
 #include "mozilla/AsyncEventDispatcher.h"
-#include "mozilla/EventForwards.h"
-#include "mozilla/dom/CustomEvent.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/dom/MouseEventBinding.h"
-#include "mozilla/dom/BrowserParent.h"
-#include "mozilla/dom/ScriptSettings.h"
-#include "mozilla/IntegerPrintfMacros.h"
-#include "mozilla/layers/RepaintRequest.h"
-#include "mozilla/layers/WebRenderLayerManager.h"
-#include "mozilla/layers/WebRenderBridgeChild.h"
 #include "mozilla/DisplayPortUtils.h"
+#include "mozilla/EventForwards.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/ScrollContainerFrame.h"
 #include "mozilla/ToString.h"
 #include "mozilla/ViewportUtils.h"
+#include "mozilla/dom/BrowserParent.h"
+#include "mozilla/dom/CustomEvent.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/MouseEventBinding.h"
+#include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/layers/RepaintRequest.h"
+#include "mozilla/layers/WebRenderBridgeChild.h"
+#include "mozilla/layers/WebRenderLayerManager.h"
 #include "nsContainerFrame.h"
 #include "nsContentUtils.h"
 #include "nsIContent.h"
 #include "nsIDOMWindowUtils.h"
-#include "mozilla/dom/Document.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsLayoutUtils.h"
-#include "nsPrintfCString.h"
+#include "nsMenuPopupFrame.h"
 #include "nsPIDOMWindow.h"
+#include "nsPrintfCString.h"
 #include "nsRefreshDriver.h"
 #include "nsString.h"
-#include "nsView.h"
 
 static mozilla::LazyLogModule sApzHlpLog("apz.helper");
 #define APZCCH_LOG(...) MOZ_LOG(sApzHlpLog, LogLevel::Debug, (__VA_ARGS__))
@@ -131,8 +128,11 @@ static CSSPoint ScrollFrameTo(ScrollContainerFrame* aFrame,
   bool scrollInProgress = APZCCallbackHelper::IsScrollInProgress(aFrame);
   if (!scrollInProgress) {
     ScrollSnapTargetIds snapTargetIds = aRequest.GetLastSnapTargetIds();
-    aFrame->ScrollToCSSPixelsForApz(targetScrollPosition,
-                                    std::move(snapTargetIds));
+    if (!aFrame->ScrollToCSSPixelsForApz(targetScrollPosition,
+                                         std::move(snapTargetIds),
+                                         aRequest.GetScrollGenerationOnApz())) {
+      return targetScrollPosition;
+    }
     geckoScrollPosition = CSSPoint::FromAppUnits(aFrame->GetScrollPosition());
     aSuccessOut = true;
   }
@@ -158,7 +158,6 @@ static DisplayPortMargins ScrollFrame(nsIContent* aContent,
       nsLayoutUtils::FindScrollContainerFrameFor(aRequest.GetScrollId());
   if (sf) {
     sf->ResetScrollInfoIfNeeded(aRequest.GetScrollGeneration(),
-                                aRequest.GetScrollGenerationOnApz(),
                                 aRequest.GetScrollAnimationType(),
                                 ScrollContainerFrame::InScrollingGesture(
                                     aRequest.IsInScrollingGesture()));
@@ -184,6 +183,8 @@ static DisplayPortMargins ScrollFrame(nsIContent* aContent,
       sf, aRequest.GetDisplayPortMargins());
   CSSPoint apzScrollOffset = aRequest.GetVisualScrollOffset();
   CSSPoint actualScrollOffset = ScrollFrameTo(sf, aRequest, scrollUpdated);
+  // sf might have been destroyed by the call to ScrollFrameTo, so re-get it.
+  sf = nsLayoutUtils::FindScrollContainerFrameFor(aRequest.GetScrollId());
   CSSPoint scrollDelta = apzScrollOffset - actualScrollOffset;
 
   if (scrollUpdated) {
@@ -212,7 +213,7 @@ static DisplayPortMargins ScrollFrame(nsIContent* aContent,
     // We need to force a display port adjustment in the following paint to
     // account for a difference between the requested and actual scroll
     // offsets in repaints requested by
-    // AsyncPanZoomController::NotifyLayersUpdated.
+    // AsyncPanZoomController::NotifyMainThreadTransaction.
     displayPortMargins = DisplayPortMargins::FromAPZ(
         aRequest.GetDisplayPortMargins(), apzScrollOffset, actualScrollOffset);
   } else {
@@ -293,7 +294,7 @@ void APZCCallbackHelper::NotifyLayerTransforms(
     const nsTArray<MatrixMessage>& aTransforms) {
   MOZ_ASSERT(NS_IsMainThread());
   for (const MatrixMessage& msg : aTransforms) {
-    BrowserParent* parent =
+    RefPtr<BrowserParent> parent =
         BrowserParent::GetBrowserParentFromLayersId(msg.GetLayersId());
     if (parent) {
       parent->SetChildToParentConversionMatrix(
@@ -390,8 +391,10 @@ void APZCCallbackHelper::UpdateRootFrame(const RepaintRequest& aRequest) {
     CSSPoint currentScrollPosition =
         CSSPoint::FromAppUnits(sf->GetScrollPosition());
     ScrollSnapTargetIds snapTargetIds = aRequest.GetLastSnapTargetIds();
-    sf->ScrollToCSSPixelsForApz(currentScrollPosition,
-                                std::move(snapTargetIds));
+    // Ignoring the result is safe only because sf isn't used after this call.
+    (void)sf->ScrollToCSSPixelsForApz(currentScrollPosition,
+                                      std::move(snapTargetIds),
+                                      sf->ScrollGenerationOnApz());
   }
 
   // Do this as late as possible since scrolling can flush layout. It also
@@ -506,6 +509,37 @@ void APZCCallbackHelper::InitializeRootDisplayport(nsIFrame* aFrame) {
   }
 }
 
+void APZCCallbackHelper::EnsureDisplayportSizeOnPopupRoot(nsIFrame* aFrame) {
+  MOZ_ASSERT(XRE_IsParentProcess(),
+             "The root displayport should be only used in the parent process");
+  MOZ_ASSERT(aFrame && aFrame->IsMenuPopupFrame(),
+             "This function is only available for popup frames.");
+
+  nsIContent* content = aFrame->GetContent();
+  if (!content) {
+    return;
+  }
+
+  uint32_t unused;
+  ScrollableLayerGuid::ViewID viewId;
+  if (APZCCallbackHelper::GetOrCreateScrollIdentifiers(content, &unused,
+                                                       &viewId)) {
+    MOZ_LOG(sDisplayportLog, LogLevel::Debug,
+            ("Refreshing root displayport on popup scrollId=%" PRIu64, viewId));
+
+    nsRect newBaseRect = DisplayPortUtils::GetDisplayportBase(aFrame);
+    nsRect currentBaseRect;
+    if (!DisplayPortUtils::GetDisplayPort(aFrame->GetContent(),
+                                          &currentBaseRect) ||
+        !newBaseRect.IsEqualEdges(currentBaseRect)) {
+      DisplayPortUtils::SetDisplayPortBase(content, newBaseRect);
+      DisplayPortUtils::SetDisplayPortMargins(
+          content, aFrame->PresShell(), DisplayPortMargins::Empty(content),
+          DisplayPortUtils::ClearMinimalDisplayPortProperty::Yes, 0);
+    }
+  }
+}
+
 nsPresContext* APZCCallbackHelper::GetPresContextForContent(
     nsIContent* aContent) {
   dom::Document* doc = aContent->GetComposedDoc();
@@ -533,11 +567,10 @@ PresShell* APZCCallbackHelper::GetRootContentDocumentPresShellForContent(
 }
 
 nsEventStatus APZCCallbackHelper::DispatchWidgetEvent(WidgetGUIEvent& aEvent) {
-  nsEventStatus status = nsEventStatus_eConsumeNoDefault;
   if (aEvent.mWidget) {
-    aEvent.mWidget->DispatchEvent(&aEvent, status);
+    return aEvent.mWidget->DispatchEvent(&aEvent);
   }
-  return status;
+  return nsEventStatus_eConsumeNoDefault;
 }
 
 nsEventStatus APZCCallbackHelper::DispatchSynthesizedMouseEvent(
@@ -644,20 +677,14 @@ static dom::Element* GetDisplayportElementFor(
 static dom::Element* GetRootElementFor(nsIWidget* aWidget) {
   // This returns the root element that ChromeProcessController sets the
   // displayport on during initialization.
-  if (nsView* view = nsView::GetViewFor(aWidget)) {
-    if (aWidget->GetWindowType() == widget::WindowType::Popup) {
-      MOZ_ASSERT(view->GetFrame() && view->GetFrame()->IsMenuPopupFrame() &&
-                 view->GetFrame()->GetContent() &&
-                 view->GetFrame()->GetContent()->IsElement());
-      return view->GetFrame()->GetContent()->AsElement();
-    }
-
-    if (PresShell* presShell = view->GetPresShell()) {
-      MOZ_ASSERT(presShell->GetDocument());
-      return presShell->GetDocument()->GetDocumentElement();
-    }
+  auto* frame = aWidget->GetFrame();
+  if (!frame) {
+    return nullptr;
   }
-  return nullptr;
+  if (frame->IsMenuPopupFrame()) {
+    return frame->GetContent()->AsElement();
+  }
+  return frame->PresContext()->Document()->GetDocumentElement();
 }
 
 namespace {
@@ -809,15 +836,11 @@ void DisplayportSetListener::OnPostRefresh() {
 
 nsIFrame* GetRootFrameForWidget(const nsIWidget* aWidget,
                                 const PresShell* aPresShell) {
-  if (aWidget->GetWindowType() == widget::WindowType::Popup) {
+  if (auto* popup = aWidget->GetPopupFrame()) {
     // In the case where the widget is popup window and uses APZ, the widget
     // frame (i.e. menu popup frame) is the reference frame used for building
     // the display list for hit-testing inside the popup.
-    MOZ_ASSERT(aWidget->AsyncPanZoomEnabled());
-    if (nsView* view = nsView::GetViewFor(aWidget)) {
-      MOZ_ASSERT(view->GetFrame() && view->GetFrame()->IsMenuPopupFrame());
-      return view->GetFrame();
-    }
+    return popup;
   }
 
   return aPresShell->GetRootFrame();
@@ -895,12 +918,7 @@ void APZCCallbackHelper::NotifyMozMouseScrollEvent(
   if (!targetContent) {
     return;
   }
-  RefPtr<dom::Document> ownerDoc = targetContent->OwnerDoc();
-  if (!ownerDoc) {
-    return;
-  }
-
-  nsContentUtils::DispatchEventOnlyToChrome(ownerDoc, targetContent, aEvent,
+  nsContentUtils::DispatchEventOnlyToChrome(targetContent, aEvent,
                                             CanBubble::eYes, Cancelable::eYes);
 }
 
@@ -983,31 +1001,30 @@ void APZCCallbackHelper::CancelAutoscroll(
 void APZCCallbackHelper::NotifyScaleGestureComplete(
     const nsCOMPtr<nsIWidget>& aWidget, float aScale) {
   MOZ_ASSERT(NS_IsMainThread());
-
-  if (nsView* view = nsView::GetViewFor(aWidget)) {
-    if (PresShell* presShell = view->GetPresShell()) {
-      dom::Document* doc = presShell->GetDocument();
-      MOZ_ASSERT(doc);
-      if (nsPIDOMWindowInner* win = doc->GetInnerWindow()) {
-        dom::AutoJSAPI jsapi;
-        if (!jsapi.Init(win)) {
-          return;
-        }
-
-        JSContext* cx = jsapi.cx();
-        JS::Rooted<JS::Value> detail(cx, JS::Float32Value(aScale));
-        RefPtr<dom::CustomEvent> event =
-            NS_NewDOMCustomEvent(doc, nullptr, nullptr);
-        event->InitCustomEvent(cx, u"MozScaleGestureComplete"_ns,
-                               /* CanBubble */ true,
-                               /* Cancelable */ false, detail);
-        event->SetTrusted(true);
-        auto* dispatcher = new AsyncEventDispatcher(doc, event.forget(),
-                                                    ChromeOnlyDispatch::eYes);
-        dispatcher->PostDOMEvent();
-      }
-    }
+  nsIFrame* frame = aWidget->GetFrame();
+  if (!frame) {
+    return;
   }
+  dom::Document* doc = frame->PresShell()->GetDocument();
+  MOZ_ASSERT(doc);
+  nsPIDOMWindowInner* win = doc->GetInnerWindow();
+  if (!win) {
+    return;
+  }
+  dom::AutoJSAPI jsapi;
+  if (!jsapi.Init(win)) {
+    return;
+  }
+  JSContext* cx = jsapi.cx();
+  JS::Rooted<JS::Value> detail(cx, JS::NumberValue(aScale));
+  RefPtr<dom::CustomEvent> event = NS_NewDOMCustomEvent(doc, nullptr, nullptr);
+  event->InitCustomEvent(cx, u"MozScaleGestureComplete"_ns,
+                         /* CanBubble */ true,
+                         /* Cancelable */ false, detail);
+  event->SetTrusted(true);
+  auto* dispatcher =
+      new AsyncEventDispatcher(doc, event.forget(), ChromeOnlyDispatch::eYes);
+  dispatcher->PostDOMEvent();
 }
 
 /* static */

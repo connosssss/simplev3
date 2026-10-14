@@ -4,6 +4,7 @@
 
 package mozilla.components.feature.downloads.fake
 
+import kotlin.Boolean
 import mozilla.components.feature.downloads.FileSystemHelper
 
 class FakeFileSystemHelper(

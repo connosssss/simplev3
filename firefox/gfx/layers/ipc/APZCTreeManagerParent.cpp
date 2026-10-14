@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -38,14 +36,8 @@ void APZCTreeManagerParent::ChildAdopted(
   mUpdater = std::move(aAPZUpdater);
 }
 
-mozilla::ipc::IPCResult APZCTreeManagerParent::RecvSetKeyboardMap(
-    const KeyboardMap& aKeyboardMap) {
-  mUpdater->RunOnUpdaterThread(
-      mLayersId, NewRunnableMethod<KeyboardMap>(
-                     "layers::IAPZCTreeManager::SetKeyboardMap", mTreeManager,
-                     &IAPZCTreeManager::SetKeyboardMap, aKeyboardMap));
-
-  return IPC_OK();
+void APZCTreeManagerParent::ActorDestroy(ActorDestroyReason aWhy) {
+  CompositorBridgeParent::DisconnectApzcTreeManager(this);
 }
 
 mozilla::ipc::IPCResult APZCTreeManagerParent::RecvZoomToRect(
@@ -76,6 +68,12 @@ mozilla::ipc::IPCResult APZCTreeManagerParent::RecvContentReceivedInputBlock(
 
 mozilla::ipc::IPCResult APZCTreeManagerParent::RecvSetTargetAPZC(
     const uint64_t& aInputBlockId, nsTArray<ScrollableLayerGuid>&& aTargets) {
+  for (const auto& guid : aTargets) {
+    if (!IsGuidValid(guid)) {
+      return IPC_FAIL_NO_REASON(this);
+    }
+  }
+
   mUpdater->RunOnUpdaterThread(
       mLayersId,
       NewRunnableMethod<uint64_t,
@@ -98,15 +96,6 @@ mozilla::ipc::IPCResult APZCTreeManagerParent::RecvUpdateZoomConstraints(
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult APZCTreeManagerParent::RecvSetDPI(
-    const float& aDpiValue) {
-  mUpdater->RunOnUpdaterThread(
-      mLayersId,
-      NewRunnableMethod<float>("layers::IAPZCTreeManager::SetDPI", mTreeManager,
-                               &IAPZCTreeManager::SetDPI, aDpiValue));
-  return IPC_OK();
-}
-
 mozilla::ipc::IPCResult APZCTreeManagerParent::RecvSetAllowedTouchBehavior(
     const uint64_t& aInputBlockId, nsTArray<TouchBehaviorFlags>&& aValues) {
   mUpdater->RunOnUpdaterThread(
@@ -116,17 +105,6 @@ mozilla::ipc::IPCResult APZCTreeManagerParent::RecvSetAllowedTouchBehavior(
           "layers::IAPZCTreeManager::SetAllowedTouchBehavior", mTreeManager,
           &IAPZCTreeManager::SetAllowedTouchBehavior, aInputBlockId,
           std::move(aValues)));
-
-  return IPC_OK();
-}
-
-mozilla::ipc::IPCResult APZCTreeManagerParent::RecvSetBrowserGestureResponse(
-    const uint64_t& aInputBlockId, const BrowserGestureResponse& aResponse) {
-  mUpdater->RunOnUpdaterThread(
-      mLayersId, NewRunnableMethod<uint64_t, BrowserGestureResponse>(
-                     "layers::IAPZCTreeManager::SetBrowserGestureResponse",
-                     mTreeManager, &IAPZCTreeManager::SetBrowserGestureResponse,
-                     aInputBlockId, aResponse));
 
   return IPC_OK();
 }
@@ -146,44 +124,12 @@ mozilla::ipc::IPCResult APZCTreeManagerParent::RecvStartScrollbarDrag(
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult APZCTreeManagerParent::RecvStartAutoscroll(
-    const ScrollableLayerGuid& aGuid, const ScreenPoint& aAnchorLocation) {
-  // Unlike RecvStartScrollbarDrag(), this message comes from the parent
-  // process (via nsBaseWidget::mAPZC) rather than from the child process
-  // (via BrowserChild::mApzcTreeManager), so there is no need to check the
-  // layers id against mLayersId (and in any case, it wouldn't match, because
-  // mLayersId stores the parent process's layers id, while nsBaseWidget is
-  // sending the child process's layers id).
-
-  mUpdater->RunOnControllerThread(
-      mLayersId,
-      NewRunnableMethod<ScrollableLayerGuid, ScreenPoint>(
-          "layers::IAPZCTreeManager::StartAutoscroll", mTreeManager,
-          &IAPZCTreeManager::StartAutoscroll, aGuid, aAnchorLocation));
-
-  return IPC_OK();
-}
-
-mozilla::ipc::IPCResult APZCTreeManagerParent::RecvStopAutoscroll(
+mozilla::ipc::IPCResult APZCTreeManagerParent::RecvNotifyApzAwareListenerAdded(
     const ScrollableLayerGuid& aGuid) {
-  // See RecvStartAutoscroll() for why we don't check the layers id.
-
-  mUpdater->RunOnControllerThread(
-      mLayersId, NewRunnableMethod<ScrollableLayerGuid>(
-                     "layers::IAPZCTreeManager::StopAutoscroll", mTreeManager,
-                     &IAPZCTreeManager::StopAutoscroll, aGuid));
-
-  return IPC_OK();
-}
-
-mozilla::ipc::IPCResult APZCTreeManagerParent::RecvSetLongTapEnabled(
-    const bool& aLongTapEnabled) {
-  mUpdater->RunOnUpdaterThread(
-      mLayersId,
-      NewRunnableMethod<bool>(
-          "layers::IAPZCTreeManager::SetLongTapEnabled", mTreeManager,
-          &IAPZCTreeManager::SetLongTapEnabled, aLongTapEnabled));
-
+  if (!IsGuidValid(aGuid)) {
+    return IPC_FAIL_NO_REASON(this);
+  }
+  mTreeManager->NotifyApzAwareListenerAdded(aGuid);
   return IPC_OK();
 }
 

@@ -14,18 +14,21 @@ const { LoginCSVImport } = ChromeUtils.importESModule(
 const { LoginExport } = ChromeUtils.importESModule(
   "resource://gre/modules/LoginExport.sys.mjs"
 );
-const { TelemetryTestUtils: TTU } = ChromeUtils.importESModule(
-  "resource://testing-common/TelemetryTestUtils.sys.mjs"
+
+const isRustBackend = Services.prefs.getBoolPref(
+  "signon.storage.rust.enabled",
+  false
 );
 
-// Enable the collection (during test) for all products so even products
-// that don't collect the data will be able to run the test without failure.
-Services.prefs.setBoolPref(
-  "toolkit.telemetry.testing.overrideProductsCheck",
-  true
-);
+// The Rust storage backend regenerates timePasswordChanged whenever the
+// password changes during a modify, so it can't preserve the timestamp from an
+// imported CSV row like the JSON backend does. Exclude that field from the
+// metadata checks for the modify cases when running against the Rust backend.
+// Follow-up: bug 2052578.
+const MODIFIED_LOGIN_META_PROPS = isRustBackend
+  ? ["timesUsed", "timeCreated", "timeLastUsed"]
+  : ["timesUsed", "timeCreated", "timePasswordChanged", "timeLastUsed"];
 
-const CATEGORICAL_HISTOGRAM = "PWMGR_IMPORT_LOGINS_FROM_FILE_CATEGORICAL";
 /**
  * Given an array of strings it creates a temporary CSV file that has them as content.
  *
@@ -37,8 +40,8 @@ const CATEGORICAL_HISTOGRAM = "PWMGR_IMPORT_LOGINS_FROM_FILE_CATEGORICAL";
  */
 async function setupCsv(csvLines, extension) {
   // Cleanup state.
-  TTU.getAndClearHistogram(CATEGORICAL_HISTOGRAM);
-  Services.logins.removeAllUserFacingLogins();
+  Services.fog.testResetFOG();
+  await Services.logins.removeAllUserFacingLoginsAsync();
   let tmpFile = await LoginTestUtils.file.setupCsvFileWithLines(
     csvLines,
     extension
@@ -67,21 +70,27 @@ function checkLoginNewlyCreated(login) {
 }
 
 /**
- * Asserts histogram telemetry for the categories of logins
+ * Asserts the import result counter for one category of logins.
  *
- * @param {Object} histogram Histogram object returned from `TelemetryTestUtils.getAndClearHistogram()`
- * @param {Number} index Index representing one of the following values in order: ["added", "modified", "error", "no_change"]. See `toolkit/components/telemetry/Histogram.json` for more information
- * @param {Number} expected The expected number of entries in the histogram at the passed index
+ * @param {string} label One of "added", "modified", "error" or "no_change".
+ * @param {number} expected The expected count for the label.
  */
-function assertHistogramTelemetry(histogram, index, expected) {
-  TTU.assertHistogram(histogram, index, expected);
+function assertImportCategoryTelemetry(label, expected) {
+  equal(
+    Glean.pwmgr.importLoginsFromFileCategorical[label].testGetValue(),
+    expected,
+    `Check import_logins_from_file_categorical.${label}`
+  );
 }
+
+add_setup(() => {
+  Services.fog.initializeFOG();
+});
 
 /**
  * Ensure that an import works with TSV.
  */
 add_task(async function test_import_tsv() {
-  let histogram = TTU.getAndClearHistogram(CATEGORICAL_HISTOGRAM);
   let tsvFilePath = await setupCsv(
     [
       "url\tusername\tpassword\thttpRealm\tformActionOrigin\tguid\ttimeCreated\ttimeLastUsed\ttimePasswordChanged",
@@ -91,7 +100,7 @@ add_task(async function test_import_tsv() {
   );
 
   await LoginCSVImport.importFromCSV(tsvFilePath);
-  assertHistogramTelemetry(histogram, 0, 1);
+  assertImportCategoryTelemetry("added", 1);
 
   await LoginTestUtils.checkLogins(
     [
@@ -571,14 +580,13 @@ add_task(async function test_import_summary_contains_added_login() {
  * Imports login data summary contains modified logins without guid.
  */
 add_task(async function test_import_summary_modified_login_without_guid() {
-  let histogram = TTU.getAndClearHistogram(CATEGORICAL_HISTOGRAM);
   let initialDataFile = await setupCsv([
     "url,username,password,httpRealm,formActionOrigin,guid,timeCreated,timeLastUsed,timePasswordChanged",
     "https://modifiedwithoutguid.example.com,gini@example.com,initial_password,My realm,,,1589617814635,1589710449871,1589617846802",
   ]);
   await LoginCSVImport.importFromCSV(initialDataFile);
-  assertHistogramTelemetry(histogram, 0, 1);
-  histogram = TTU.getAndClearHistogram(CATEGORICAL_HISTOGRAM);
+  assertImportCategoryTelemetry("added", 1);
+  Services.fog.testResetFOG();
 
   let csvFile = await LoginTestUtils.file.setupCsvFileWithLines([
     "url,username,password,httpRealm,formActionOrigin,guid,timeCreated,timeLastUsed,timePasswordChanged",
@@ -586,7 +594,7 @@ add_task(async function test_import_summary_modified_login_without_guid() {
   ]);
 
   let [modifiedWithoutGuid] = await LoginCSVImport.importFromCSV(csvFile.path);
-  assertHistogramTelemetry(histogram, 1, 1);
+  assertImportCategoryTelemetry("modified", 1);
   equal(
     modifiedWithoutGuid.result,
     "modified",
@@ -610,7 +618,7 @@ add_task(async function test_import_summary_modified_login_without_guid() {
       }),
     ],
     "Check that logins were updated with the correct fields",
-    (a, e) => a.equals(e) && checkMetaInfo(a, e)
+    (a, e) => a.equals(e) && checkMetaInfo(a, e, MODIFIED_LOGIN_META_PROPS)
   );
 });
 
@@ -654,7 +662,7 @@ add_task(async function test_import_summary_modified_login_with_guid() {
       }),
     ],
     "Check that logins were updated with the correct fields",
-    (a, e) => a.equals(e) && checkMetaInfo(a, e)
+    (a, e) => a.equals(e) && checkMetaInfo(a, e, MODIFIED_LOGIN_META_PROPS)
   );
 });
 
@@ -662,14 +670,13 @@ add_task(async function test_import_summary_modified_login_with_guid() {
  * Imports login data summary contains unchanged logins.
  */
 add_task(async function test_import_summary_contains_unchanged_login() {
-  let histogram = TTU.getAndClearHistogram(CATEGORICAL_HISTOGRAM);
   let initialDataFile = await setupCsv([
     "url,username,password,httpRealm,formActionOrigin,guid,timeCreated,timeLastUsed,timePasswordChanged",
     "https://nochange.example.com,jane@example.com,nochange_password,My realm,,{5ec0d12f-e194-4279-ae1b-d7d281bb0002},1589617814635,1589710449871,1589617846802",
   ]);
   await LoginCSVImport.importFromCSV(initialDataFile);
-  assertHistogramTelemetry(histogram, 0, 1);
-  histogram = TTU.getAndClearHistogram(CATEGORICAL_HISTOGRAM);
+  assertImportCategoryTelemetry("added", 1);
+  Services.fog.testResetFOG();
 
   let csvFile = await LoginTestUtils.file.setupCsvFileWithLines([
     "url,username,password,httpRealm,formActionOrigin,guid,timeCreated,timeLastUsed,timePasswordChanged",
@@ -677,7 +684,7 @@ add_task(async function test_import_summary_contains_unchanged_login() {
   ]);
 
   let [noChange] = await LoginCSVImport.importFromCSV(csvFile.path);
-  assertHistogramTelemetry(histogram, 3, 1);
+  assertImportCategoryTelemetry("no_change", 1);
   equal(noChange.result, "no_change", `Check that the login was not changed`);
 });
 
@@ -685,7 +692,6 @@ add_task(async function test_import_summary_contains_unchanged_login() {
  * Imports login data summary contains logins with errors in case of missing fields.
  */
 add_task(async function test_import_summary_contains_missing_fields_errors() {
-  let histogram = TTU.getAndClearHistogram(CATEGORICAL_HISTOGRAM);
   const missingFieldsToCheck = ["url", "password"];
   const sourceObject = {
     url: "https://invalid.password.example.com",
@@ -713,7 +719,7 @@ add_task(async function test_import_summary_contains_missing_fields_errors() {
       `Check that the invalid field name is correctly reported for the ${missingField}`
     );
   }
-  assertHistogramTelemetry(histogram, 2, 1);
+  assertImportCategoryTelemetry("error", 1);
 });
 
 /**

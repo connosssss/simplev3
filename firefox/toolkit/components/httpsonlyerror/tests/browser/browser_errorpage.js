@@ -10,35 +10,27 @@ const BAD_CERT = "http://expired.example.com/";
 const UNKNOWN_ISSUER = "http://self-signed.example.com/";
 
 const { TabStateFlusher } = ChromeUtils.importESModule(
-  "resource:///modules/sessionstore/TabStateFlusher.sys.mjs"
+  "moz-src:///browser/components/sessionstore/TabStateFlusher.sys.mjs"
 );
-
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
 
 add_task(async function () {
   info("Check that the error pages shows up");
 
-  await Promise.all([
-    testPageWithURI(
-      GOOD_PAGE,
-      "Should not show error page on upgradeable website.",
-      false
-    ),
-    testPageWithURI(
-      BAD_CERT,
-      "Should show error page on bad-certificate error.",
-      true
-    ),
-    testPageWithURI(
-      UNKNOWN_ISSUER,
-      "Should show error page on unkown-issuer error.",
-      true
-    ),
-  ]);
+  await testPageWithURI(
+    GOOD_PAGE,
+    "Should not show error page on upgradeable website.",
+    false
+  );
+  await testPageWithURI(
+    BAD_CERT,
+    "Should show error page on bad-certificate error.",
+    true
+  );
+  await testPageWithURI(
+    UNKNOWN_ISSUER,
+    "Should show error page on unkown-issuer error.",
+    true
+  );
 });
 
 add_task(async function () {

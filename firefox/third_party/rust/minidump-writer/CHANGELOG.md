@@ -8,6 +8,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- next-header -->
 ## [Unreleased] - ReleaseDate
+## [0.13.0] - 2026-07-20
+### Changed
+- [PR#174](https://github.com/rust-minidump/minidump-writer/pull/174) and [PR#175](https://github.com/rust-minidump/minidump-writer/pull/175) refactored `src/linux/thread_info`.
+- [PR#181](https://github.com/rust-minidump/minidump-writer/pull/181) refactored `src/linux/maps_reader` and `src/linux/module_reader`.
+- [PR#185](https://github.com/rust-minidump/minidump-writer/pull/185) refactored the backend functions to use `libc`.
+- [PR#186](https://github.com/rust-minidump/minidump-writer/pull/186) removed the `nix` dependency.
+- [deb17c2](https://github.com/rust-minidump/minidump-writer/commit/deb17c272daa0a20c9327e42526537910bd97882) updated `crash-context` to 0.8, adding `loongarch64`, `riscv`, and `s390x` support, though none of those targets have an implementation in `minidump-writer` itself as of yet.
+
+### Fixed
+- [PR#188](https://github.com/rust-minidump/minidump-writer/pull/188) fixed the process reader API that was broken by [PR#181](https://github.com/rust-minidump/minidump-writer/pull/181).
+
+### Added
+- [PR#184](https://github.com/rust-minidump/minidump-writer/pull/184) added a `libc` backend.
+
+### Removed
+- [PR#177](https://github.com/rust-minidump/minidump-writer/pull/177) and [PR#178](https://github.com/rust-minidump/minidump-writer/pull/178) removed dead/legacy code.
+
+## [0.12.0] - 2026-05-07
+### Changed
+- [PR#169](https://github.com/rust-minidump/minidump-writer/pull/169) updated the crate to edition 2024 and an MSRV of 1.85.0.
+- [PR#172](https://github.com/rust-minidump/minidump-writer/pull/172) updated dependencies, resolving several audit failures. The MSRV was changed to 1.88.0 due to the `time` crate.
+- [PR#173](https://github.com/rust-minidump/minidump-writer/pull/173) replaced the `windows-sys` dependency introduced in [PR#168](https://github.com/rust-minidump/minidump-writer/pull/168) with inline bindings.
+
+### Fixed
+- [PR#164](https://github.com/rust-minidump/minidump-writer/pull/164) resolved [#163](https://github.com/rust-minidump/minidump-writer/issues/163) by avoiding reading Linux distro information on Android.
+
+### Added
+- [PR#168](https://github.com/rust-minidump/minidump-writer/pull/168) resolved [MOZ#1831094](https://bugzilla.mozilla.org/show_bug.cgi?id=1831094) by adding functionality for reading process and module reading for each platform minidump-writer targets.
+
+## [0.11.0] - 2025-09-15
+### Changed
+- [PR#146](https://github.com/rust-minidump/minidump-writer/pull/146) changed `windows::MinidumpWriter::dump_crash_context` to take crash_context by reference.
+- [PR#155](https://github.com/rust-minidump/minidump-writer/pull/155) refactored a large portion of the code.
+
+### Fixed
+- [PR#150](https://github.com/rust-minidump/minidump-writer/pull/150) fixed undefined behavior in the Linux crash dump writing.
+
 ## [0.10.2] - 2025-02-03
 ### Added
 - [PR#143](https://github.com/rust-minidump/minidump-writer/pull/143)
@@ -166,7 +203,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release, including basic support for `x86_64-unknown-linux-gnu/musl` and `x86_64-pc-windows-msvc`
 
 <!-- next-url -->
-[Unreleased]: https://github.com/rust-minidump/minidump-writer/compare/0.10.2...HEAD
+[Unreleased]: https://github.com/rust-minidump/minidump-writer/compare/0.13.0...HEAD
+[0.13.0]: https://github.com/rust-minidump/minidump-writer/compare/0.12.0...0.13.0
+[0.12.0]: https://github.com/rust-minidump/minidump-writer/compare/0.11.0...0.12.0
+[0.11.0]: https://github.com/rust-minidump/minidump-writer/compare/0.10.2...0.11.0
 [0.10.2]: https://github.com/rust-minidump/minidump-writer/compare/0.10.1...0.10.2
 [0.10.1]: https://github.com/rust-minidump/minidump-writer/compare/0.10.0...0.10.1
 [0.10.0]: https://github.com/rust-minidump/minidump-writer/compare/0.9.0...0.10.0

@@ -24,11 +24,11 @@ add_setup(async function () {
       ["dom.storage_access.enabled", true],
       [
         "network.cookie.cookieBehavior",
-        Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN,
+        Ci.nsICookieService.BEHAVIOR_PARTITION_FOREIGN,
       ],
       [
         "network.cookie.cookieBehavior.pbmode",
-        Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN,
+        Ci.nsICookieService.BEHAVIOR_PARTITION_FOREIGN,
       ],
       ["privacy.trackingprotection.enabled", false],
       ["privacy.trackingprotection.pbmode.enabled", false],
@@ -47,6 +47,9 @@ add_setup(async function () {
   });
 
   await UrlClassifierTestUtils.addTestTrackers();
+  registerCleanupFunction(async () => {
+    await UrlClassifierTestUtils.cleanupTestTrackers();
+  });
 });
 
 async function runTestWindowOpenHeuristic(disableHeuristics) {
@@ -124,8 +127,8 @@ async function runTestWindowOpenHeuristic(disableHeuristics) {
           ok(false, "Unknown message");
         });
 
-        content.document.body.appendChild(ifr);
         ifr.src = obj.page;
+        content.document.body.appendChild(ifr);
       });
     }
   );
@@ -136,11 +139,7 @@ async function runTestWindowOpenHeuristic(disableHeuristics) {
   await SpecialPowers.popPrefEnv();
 
   info("Cleaning up.");
-  await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
-      resolve()
-    );
-  });
+  await clearSiteTestData();
 }
 
 add_task(async function testWindowOpenHeuristic() {
@@ -209,23 +208,17 @@ add_task(async function testDoublyNestedWindowOpenHeuristic() {
           ok(false, "Unknown message");
         });
 
-        content.document.body.appendChild(ifr);
         ifr.src = obj.page;
+        content.document.body.appendChild(ifr);
       });
     }
   );
 
   info("Removing the tab");
   BrowserTestUtils.removeTab(tab);
-});
 
-add_task(async function () {
   info("Cleaning up.");
-  await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
-      resolve()
-    );
-  });
+  await clearSiteTestData();
 });
 
 async function runTestUserInteractionHeuristic(disableHeuristics) {
@@ -264,11 +257,9 @@ async function runTestUserInteractionHeuristic(disableHeuristics) {
       info("Checking if storage access is denied");
 
       let ifr = content.document.createElement("iframe");
-      let loading = new content.Promise(resolve => {
-        ifr.onload = resolve;
-      });
-      content.document.body.appendChild(ifr);
+      const loading = ContentTaskUtils.waitForEvent(ifr, "load");
       ifr.src = obj.page;
+      content.document.body.appendChild(ifr);
       await loading;
 
       info(
@@ -384,11 +375,9 @@ async function runTestUserInteractionHeuristic(disableHeuristics) {
       info("Checking if storage access is denied");
 
       let ifr = content.document.createElement("iframe");
-      let loading = new content.Promise(resolve => {
-        ifr.onload = resolve;
-      });
-      content.document.body.appendChild(ifr);
+      const loading = ContentTaskUtils.waitForEvent(ifr, "load");
       ifr.src = obj.page;
+      content.document.body.appendChild(ifr);
       await loading;
 
       info(
@@ -480,12 +469,7 @@ async function runTestUserInteractionHeuristic(disableHeuristics) {
   }
 
   info("Cleaning up.");
-  await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
-      resolve()
-    );
-  });
-
+  await clearSiteTestData();
   await SpecialPowers.popPrefEnv();
 }
 
@@ -536,11 +520,9 @@ add_task(async function testDoublyNestedUserInteractionHeuristic() {
       info("Checking if storage access is denied");
 
       let ifr = content.document.createElement("iframe");
-      let loading = new content.Promise(resolve => {
-        ifr.onload = resolve;
-      });
-      content.document.body.appendChild(ifr);
+      const loading = ContentTaskUtils.waitForEvent(ifr, "load");
       ifr.src = obj.page;
+      content.document.body.appendChild(ifr);
       await loading;
 
       info(
@@ -644,11 +626,9 @@ add_task(async function testDoublyNestedUserInteractionHeuristic() {
       info("Checking if storage access is denied");
 
       let ifr = content.document.createElement("iframe");
-      let loading = new content.Promise(resolve => {
-        ifr.onload = resolve;
-      });
-      content.document.body.appendChild(ifr);
+      const loading = ContentTaskUtils.waitForEvent(ifr, "load");
       ifr.src = obj.page;
+      content.document.body.appendChild(ifr);
       await loading;
 
       info(
@@ -728,18 +708,12 @@ add_task(async function testDoublyNestedUserInteractionHeuristic() {
 
   info("Removing the tab");
   BrowserTestUtils.removeTab(tab);
-});
 
-add_task(async function () {
   info("Wait until the storage permission is ready before cleaning up.");
   await waitStoragePermission();
 
   info("Cleaning up.");
-  await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
-      resolve()
-    );
-  });
+  await clearSiteTestData();
 });
 
 async function runTestFirstPartyWindowOpenHeuristic(disableHeuristics) {
@@ -805,9 +779,9 @@ async function runTestFirstPartyWindowOpenHeuristic(disableHeuristics) {
           ok(false, "Unknown message");
         });
 
-        content.document.body.appendChild(ifr);
         ifr.id = "ifr";
         ifr.src = obj.page;
+        content.document.body.appendChild(ifr);
       });
     }
   );
@@ -823,11 +797,9 @@ async function runTestFirstPartyWindowOpenHeuristic(disableHeuristics) {
     ],
     async obj => {
       let ifr = content.document.createElement("iframe");
-      let loading = new content.Promise(resolve => {
-        ifr.onload = resolve;
-      });
-      content.document.body.appendChild(ifr);
+      const loading = ContentTaskUtils.waitForEvent(ifr, "load");
       ifr.src = obj.page;
+      content.document.body.appendChild(ifr);
       await loading;
 
       info("Opening a window from the iframe.");
@@ -896,11 +868,7 @@ async function runTestFirstPartyWindowOpenHeuristic(disableHeuristics) {
   await SpecialPowers.popPrefEnv();
 
   info("Cleaning up.");
-  await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
-      resolve()
-    );
-  });
+  await clearSiteTestData();
 }
 
 add_task(async function testFirstPartyWindowOpenHeuristic() {
@@ -909,8 +877,4 @@ add_task(async function testFirstPartyWindowOpenHeuristic() {
 
 add_task(async function testFirstPartyWindowOpenHeuristicDisabled() {
   await runTestFirstPartyWindowOpenHeuristic(true);
-});
-
-add_task(async function () {
-  UrlClassifierTestUtils.cleanupTestTrackers();
 });

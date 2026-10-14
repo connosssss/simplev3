@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,13 +6,12 @@
 #define mozilla_css_SheetLoadData_h
 
 #include "mozilla/AlreadyAddRefed.h"
-#include "mozilla/RefPtr.h"
-#include "mozilla/css/Loader.h"
-#include "mozilla/css/SheetParsingMode.h"
 #include "mozilla/Encoding.h"
-#include "mozilla/PreloaderBase.h"
-#include "mozilla/SharedSubResourceCache.h"
 #include "mozilla/NotNull.h"
+#include "mozilla/PreloaderBase.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/SharedSubResourceCache.h"
+#include "mozilla/css/Loader.h"
 #include "mozilla/dom/CacheExpirationTime.h"
 #include "nsProxyRelease.h"
 
@@ -36,11 +33,6 @@ namespace mozilla::css {
 /*********************************************
  * Data needed to properly load a stylesheet *
  *********************************************/
-
-static_assert(eAuthorSheetFeatures == 0 && eUserSheetFeatures == 1 &&
-                  eAgentSheetFeatures == 2,
-              "sheet parsing mode constants won't fit "
-              "in SheetLoadData::mParsingMode");
 
 enum class SyncLoad : bool { No, Yes };
 
@@ -67,14 +59,14 @@ class SheetLoadData final
       nsICSSLoaderObserver* aObserver, nsIPrincipal* aTriggeringPrincipal,
       nsIReferrerInfo*, const nsAString& aNonce,
       dom::FetchPriority aFetchPriority,
-      already_AddRefed<SubResourceNetworkMetadataHolder>&& aNetworkMetadata);
+      already_AddRefed<SubResourceNetworkMetadataHolder> aNetworkMetadata);
 
   // Data for loading a sheet linked from an @import rule
   SheetLoadData(
       css::Loader*, nsIURI*, StyleSheet*, SheetLoadData* aParentData,
       nsICSSLoaderObserver* aObserver, nsIPrincipal* aTriggeringPrincipal,
       nsIReferrerInfo*,
-      already_AddRefed<SubResourceNetworkMetadataHolder>&& aNetworkMetadata);
+      already_AddRefed<SubResourceNetworkMetadataHolder> aNetworkMetadata);
 
   // Data for loading a non-document sheet
   SheetLoadData(
@@ -83,7 +75,7 @@ class SheetLoadData final
       nsICSSLoaderObserver* aObserver, nsIPrincipal* aTriggeringPrincipal,
       nsIReferrerInfo*, const nsAString& aNonce,
       dom::FetchPriority aFetchPriority,
-      already_AddRefed<SubResourceNetworkMetadataHolder>&& aNetworkMetadata);
+      already_AddRefed<SubResourceNetworkMetadataHolder> aNetworkMetadata);
 
   nsIReferrerInfo* ReferrerInfo() const { return mReferrerInfo; }
 
@@ -199,18 +191,6 @@ class SheetLoadData final
   // async observer notification for an already-complete sheet.
   bool mSheetAlreadyComplete : 1;
 
-  // If true, the sheet is being loaded cross-origin without CORS permissions.
-  // This is completely normal and CORS isn't needed for such loads.  This
-  // flag is simply useful in determining whether to set mBlockResourceTiming
-  // for a child sheet.
-  bool mIsCrossOriginNoCORS : 1;
-
-  // If this flag is true, LoadSheet will call SetReportResourceTiming(false)
-  // on the timedChannel. This is to mark resources that are loaded by a
-  // cross-origin stylesheet with a no-cors policy.
-  // https://www.w3.org/TR/resource-timing/#processing-model
-  bool mBlockResourceTiming : 1;
-
   // Boolean flag indicating whether the load has failed.  This will be set
   // to true if this load, or the load of any descendant import, fails.
   bool mLoadFailed : 1;
@@ -225,6 +205,19 @@ class SheetLoadData final
   //     is performed by a different loader for the different document
   //   * This load uses a complete cache and no necko activity happens
   bool mShouldEmulateNotificationsForCachedLoad : 1;
+
+  // Whether SheetComplete was called.
+  bool mSheetCompleteCalled : 1 = false;
+
+  // Whether we intentionally are not calling SheetComplete because nobody is
+  // listening for the load.
+  bool mIntentionallyDropped : 1 = false;
+
+  const bool mRecordErrors : 1;
+
+  // Whether our final URI is same-origin with the document that's loading us.
+  // Only relevant for non-inline sheets.
+  bool mFinalURISameOrigin : 1 = false;
 
   // Whether this is a preload, and which kind of preload it is.
   //
@@ -255,18 +248,9 @@ class SheetLoadData final
   // The quirks mode of the loader at the time the load was triggered.
   const nsCompatibility mCompatMode;
 
-  // Whether SheetComplete was called.
-  bool mSheetCompleteCalled = false;
-
-  // Whether we intentionally are not calling SheetComplete because nobody is
-  // listening for the load.
-  bool mIntentionallyDropped = false;
-
   // The start timestamp for the load, or the timestamp where this load is
   // coalesced into an existing load.
   TimeStamp mLoadStart;
-
-  const bool mRecordErrors;
 
   RefPtr<SubResourceNetworkMetadataHolder> mNetworkMetadata;
 

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,11 +5,11 @@
 #ifndef mozilla_dom_HTMLImageElement_h
 #define mozilla_dom_HTMLImageElement_h
 
+#include "Units.h"
 #include "mozilla/Attributes.h"
+#include "nsCycleCollectionParticipant.h"
 #include "nsGenericHTMLElement.h"
 #include "nsImageLoadingContent.h"
-#include "Units.h"
-#include "nsCycleCollectionParticipant.h"
 
 namespace mozilla {
 class EventChainPreVisitor;
@@ -24,8 +22,7 @@ class HTMLImageElement final : public nsGenericHTMLElement,
   friend class HTMLPictureElement;
 
  public:
-  explicit HTMLImageElement(
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+  explicit HTMLImageElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
 
   static already_AddRefed<HTMLImageElement> Image(
       const GlobalObject& aGlobal, const Optional<uint32_t>& aWidth,
@@ -36,8 +33,11 @@ class HTMLImageElement final : public nsGenericHTMLElement,
 
   // nsISupports
   NS_DECL_ISUPPORTS_INHERITED
+  NS_DECL_ADDSIZEOFEXCLUDINGTHIS
 
   bool Draggable() const override;
+
+  void MaybeRecomputeAutoSizes(bool aQueueImageTask);
 
   ResponsiveImageSelector* GetResponsiveImageSelector() const {
     return mResponsiveSelector.get();
@@ -60,8 +60,8 @@ class HTMLImageElement final : public nsGenericHTMLElement,
                       nsIPrincipal* aMaybeScriptedPrincipal,
                       nsAttrValue& aResult) override;
   nsChangeHint GetAttributeChangeHint(const nsAtom* aAttribute,
-                                      int32_t aModType) const override;
-  NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
+                                      AttrModType aModType) const override;
+  bool IsNoNamespaceAttrMapped(const nsAtom* aAttribute) const override;
   nsMapRuleToAttributesFunc GetAttributeMappingFunction() const override;
 
   void GetEventTargetParent(EventChainPreVisitor& aVisitor) override;
@@ -94,7 +94,7 @@ class HTMLImageElement final : public nsGenericHTMLElement,
   uint32_t NaturalHeight() { return NaturalSize().height; }
   uint32_t NaturalWidth() { return NaturalSize().width; }
 
-  bool Complete();
+  bool Complete() const;
   uint32_t Hspace() {
     return GetDimensionAttrAsUnsignedInt(nsGkAtoms::hspace, 0);
   }
@@ -199,9 +199,7 @@ class HTMLImageElement final : public nsGenericHTMLElement,
     SetHTMLAttr(nsGkAtoms::lowsrc, aLowsrc, aError);
   }
 
-#ifdef DEBUG
-  HTMLFormElement* GetForm() const;
-#endif
+  HTMLFormElement* GetFormInternal() const { return mForm; }
   void SetForm(HTMLFormElement* aForm);
   void ClearForm(bool aRemoveFromForm);
 
@@ -249,13 +247,19 @@ class HTMLImageElement final : public nsGenericHTMLElement,
       nsAString& aResult);
 
   enum class StartLoad : bool { No, Yes };
-  void StopLazyLoading(StartLoad = StartLoad::Yes);
+  void StopLazyLoading(StartLoad);
 
   // This is used when restyling, for retrieving the extra style from the source
   // element.
   const StyleLockedDeclarationBlock* GetMappedAttributesFromSource() const;
 
   FetchPriority GetFetchPriorityForImage() const override;
+
+  /**
+   * Whether we are lazy loaded with sizes=auto
+   * https://html.spec.whatwg.org/#allows-auto-sizes
+   */
+  bool AllowsAutoSizes() const;
 
  protected:
   virtual ~HTMLImageElement();
@@ -350,12 +354,15 @@ class HTMLImageElement final : public nsGenericHTMLElement,
   // Created when we're tracking responsive image state
   RefPtr<ResponsiveImageSelector> mResponsiveSelector;
 
-  // This is a weak reference that this element and the HTMLFormElement
+  // This is a strong reference that this element and the HTMLFormElement
   // cooperate in maintaining.
-  HTMLFormElement* mForm = nullptr;
+  RefPtr<HTMLFormElement> mForm;
 
  private:
   bool SourceElementMatches(Element* aSourceElement);
+
+  // Start or stop observing for resizes when sizes=auto
+  void UpdateAutoSizeObserver();
 
   static void MapAttributesIntoRule(MappedDeclarationsBuilder&);
   /**
@@ -382,8 +389,7 @@ class HTMLImageElement final : public nsGenericHTMLElement,
   void SetLazyLoading();
 
   bool IsInPicture() const {
-    return GetParentElement() &&
-           GetParentElement()->IsHTMLElement(nsGkAtoms::picture);
+    return mParent && mParent->IsHTMLElement(nsGkAtoms::picture);
   }
 
   void InvalidateAttributeMapping();

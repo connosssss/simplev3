@@ -1,5 +1,4 @@
-/* -*- Mode: c++; c-basic-offset: 2; tab-width: 2; indent-tabs-mode: nil; -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -210,6 +209,14 @@ nsresult GeckoViewStreamListener::HandleWebResponse(nsIRequest* aRequest) {
     builder->Body(mStream);
   }
 
+  // Suggested download filename
+  nsString filename;
+  if (NS_SUCCEEDED(channel->GetContentDispositionFilename(filename))) {
+    builder->Header(jni::StringParam(u"content-disposition"_ns),
+                    nsPrintfCString("attachment; filename=\"%s\"",
+                                    NS_ConvertUTF16toUTF8(filename).get()));
+  }
+
   // Redirected
   nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
   builder->Redirected(!loadInfo->RedirectChain().IsEmpty());
@@ -238,12 +245,6 @@ nsresult GeckoViewStreamListener::HandleWebResponse(nsIRequest* aRequest) {
   } else {
     // Headers for other responses
     // try to provide some basic metadata about the response
-    nsString filename;
-    if (NS_SUCCEEDED(channel->GetContentDispositionFilename(filename))) {
-      builder->Header(jni::StringParam(u"content-disposition"_ns),
-                      nsPrintfCString("attachment; filename=\"%s\"",
-                                      NS_ConvertUTF16toUTF8(filename).get()));
-    }
 
     nsCString contentType;
     if (NS_SUCCEEDED(channel->GetContentType(contentType))) {
@@ -259,6 +260,8 @@ nsresult GeckoViewStreamListener::HandleWebResponse(nsIRequest* aRequest) {
     }
   }
 
+  AmendWebResponse(builder);
+
   java::WebResponse::GlobalRef response = builder->Build();
 
   SendWebResponse(response);
@@ -273,35 +276,30 @@ void GeckoViewStreamListener::InitializeStreamSupport(nsIRequest* aRequest) {
       mSupport, mozilla::MakeUnique<StreamSupport>(mSupport, aRequest));
 }
 
-std::tuple<jni::ByteArray::LocalRef, java::sdk::Boolean::LocalRef>
+std::tuple<jni::ByteArray::LocalRef, bool>
 GeckoViewStreamListener::CertificateFromChannel(nsIChannel* aChannel) {
   MOZ_ASSERT(aChannel);
 
   nsCOMPtr<nsITransportSecurityInfo> securityInfo;
   aChannel->GetSecurityInfo(getter_AddRefs(securityInfo));
   if (!securityInfo) {
-    return std::make_tuple((jni::ByteArray::LocalRef) nullptr,
-                           (java::sdk::Boolean::LocalRef) nullptr);
+    return std::make_tuple((jni::ByteArray::LocalRef) nullptr, false);
   }
 
   uint32_t securityState = 0;
   securityInfo->GetSecurityState(&securityState);
-  auto isSecure = securityState == nsIWebProgressListener::STATE_IS_SECURE
-                      ? java::sdk::Boolean::TRUE()
-                      : java::sdk::Boolean::FALSE();
+  bool isSecure = securityState == nsIWebProgressListener::STATE_IS_SECURE;
 
   nsCOMPtr<nsIX509Cert> cert;
   securityInfo->GetServerCert(getter_AddRefs(cert));
   if (!cert) {
-    return std::make_tuple((jni::ByteArray::LocalRef) nullptr,
-                           (java::sdk::Boolean::LocalRef) nullptr);
+    return std::make_tuple((jni::ByteArray::LocalRef) nullptr, false);
   }
 
   nsTArray<uint8_t> derBytes;
   nsresult rv = cert->GetRawDER(derBytes);
   NS_ENSURE_SUCCESS(rv,
-                    std::make_tuple((jni::ByteArray::LocalRef) nullptr,
-                                    (java::sdk::Boolean::LocalRef) nullptr));
+                    std::make_tuple((jni::ByteArray::LocalRef) nullptr, false));
 
   auto certBytes = jni::ByteArray::New(
       reinterpret_cast<const int8_t*>(derBytes.Elements()), derBytes.Length());

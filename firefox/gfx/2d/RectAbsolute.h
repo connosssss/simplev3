@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,10 +8,10 @@
 #include <algorithm>
 #include <cstdint>
 
-#include "mozilla/Attributes.h"
 #include "Point.h"
 #include "Rect.h"
 #include "Types.h"
+#include "mozilla/Attributes.h"
 
 namespace mozilla {
 
@@ -58,7 +56,15 @@ struct BaseRectAbsolute {
   MOZ_ALWAYS_INLINE T& Right() { return right; }
   MOZ_ALWAYS_INLINE T& Top() { return top; }
   MOZ_ALWAYS_INLINE T& Bottom() { return bottom; }
-  T Area() const { return Width() * Height(); }
+  // For integer coordinates, widen to 64-bit before multiplying so the area of
+  // a large rect does not overflow. Floating-point coordinates are unchanged.
+  auto Area() const {
+    if constexpr (std::is_integral_v<T>) {
+      return int64_t(Width()) * int64_t(Height());
+    } else {
+      return Width() * Height();
+    }
+  }
 
   void Inflate(T aD) { Inflate(aD, aD); }
   void Inflate(T aDx, T aDy) {

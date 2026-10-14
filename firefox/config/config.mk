@@ -63,8 +63,6 @@ __depth :=
 endif
 $(foreach __d,$(__depth) .,$(eval __depth = $(wordlist 2,$(words $(__depth)),$(__depth))$(eval -include $(subst $(space),/,$(strip $(srcdir) $(__depth) defs.mk)))))
 
-COMMA = ,
-
 # Sanity check some variables
 CHECK_VARS := \
  XPI_NAME \
@@ -105,16 +103,9 @@ ifdef XPI_NAME
 ACDEFINES += -DXPI_NAME=$(XPI_NAME)
 endif
 
-CC := $(CC_WRAPPER) $(CC)
-CXX := $(CXX_WRAPPER) $(CXX)
 MKDIR ?= mkdir
 SLEEP ?= sleep
 TOUCH ?= touch
-
-#
-# Build using PIC by default
-#
-_ENABLE_PIC=1
 
 # Don't build SIMPLE_PROGRAMS with PGO, since they don't need it anyway,
 # and we don't have the same build logic to re-link them in the second pass.
@@ -178,8 +169,8 @@ endif
 
 LDFLAGS		= $(MOZ_LTO_LDFLAGS) $(COMPUTED_LDFLAGS) $(PGO_LDFLAGS)
 
-COMPILE_CFLAGS	= $(MOZ_LTO_CFLAGS) $(COMPUTED_CFLAGS) $(PGO_CFLAGS) $(_DEPEND_CFLAGS) $(MK_COMPILE_DEFINES)
-COMPILE_CXXFLAGS = $(MOZ_LTO_CFLAGS) $(COMPUTED_CXXFLAGS) $(PGO_CFLAGS) $(_DEPEND_CFLAGS) $(MK_COMPILE_DEFINES)
+COMPILE_CFLAGS	= $(MOZ_LTO_CFLAGS) $(COMPUTED_CFLAGS) $(PGO_CFLAGS) $(_DEPEND_CFLAGS)
+COMPILE_CXXFLAGS = $(MOZ_LTO_CFLAGS) $(COMPUTED_CXXFLAGS) $(PGO_CFLAGS) $(_DEPEND_CFLAGS)
 COMPILE_CMFLAGS = $(MOZ_LTO_CFLAGS) $(OS_COMPILE_CMFLAGS) $(MOZBUILD_CMFLAGS)
 COMPILE_CMMFLAGS = $(MOZ_LTO_CFLAGS) $(OS_COMPILE_CMMFLAGS) $(MOZBUILD_CMMFLAGS)
 ASFLAGS = $(COMPUTED_ASFLAGS)
@@ -187,14 +178,13 @@ SFLAGS = $(COMPUTED_SFLAGS)
 
 HOST_CFLAGS = $(COMPUTED_HOST_CFLAGS) $(_HOST_DEPEND_CFLAGS)
 HOST_CXXFLAGS = $(COMPUTED_HOST_CXXFLAGS) $(_HOST_DEPEND_CFLAGS)
-HOST_C_LDFLAGS = $(COMPUTED_HOST_C_LDFLAGS)
-HOST_CXX_LDFLAGS = $(COMPUTED_HOST_CXX_LDFLAGS)
+HOST_C_LDFLAGS = $(COMPUTED_HOST_LDFLAGS) $(COMPUTED_HOST_C_LDFLAGS)
+HOST_CXX_LDFLAGS = $(COMPUTED_HOST_LDFLAGS) $(COMPUTED_HOST_CXX_LDFLAGS)
 
-WASM_CFLAGS = $(COMPUTED_WASM_CFLAGS) $(_DEPEND_CFLAGS) $(MK_COMPILE_DEFINES)
-WASM_CXXFLAGS = $(COMPUTED_WASM_CXXFLAGS) $(_DEPEND_CFLAGS) $(MK_COMPILE_DEFINES)
+WASM_CFLAGS = $(COMPUTED_WASM_CFLAGS) $(_DEPEND_CFLAGS)
+WASM_CXXFLAGS = $(COMPUTED_WASM_CXXFLAGS) $(_DEPEND_CFLAGS)
 
-ifdef MOZ_LTO
-ifeq (Darwin,$(OS_TARGET))
+ifdef MOZ_LTO_OBJECT_PATH
 # When linking on macOS, debug info is not linked along with the final binary,
 # and the dwarf data stays in object files until they are "linked" with the
 # dsymutil tool.
@@ -210,7 +200,6 @@ ifeq (Darwin,$(OS_TARGET))
 # last linked binary. So we use a subdirectory containing the name of the
 # linked binary.
 LDFLAGS += -Wl,-object_path_lto,$(@F).lto.o/
-endif
 endif
 
 # We only add color flags if neither the flag to disable color
@@ -261,48 +250,25 @@ ifdef LIB
 export LIB
 endif
 
-ifdef MOZ_USING_CCACHE
-ifeq ($(CC_TYPE),clang)
-export CCACHE_CPP2=1
-endif
+# Export so sccache (used as a compiler wrapper) rewrites paths under these
+# base directories to relative ones, sharing cache hits across worktrees.
+ifdef SCCACHE_BASEDIRS
+export SCCACHE_BASEDIRS
 endif
 
-ifdef CCACHE_PREFIX
-export CCACHE_PREFIX
+ifdef SCCACHE_MAX_FRAME_LENGTH
+export SCCACHE_MAX_FRAME_LENGTH
+endif
+
+ifdef SCCACHE_CLIENT_SIDE
+export SCCACHE_CLIENT_SIDE
 endif
 
 ifeq ($(OS_ARCH),WINNT)
 ifneq (,$(filter msvc clang-cl,$(CC_TYPE)))
-ifneq ($(TARGET_CPU),x86)
-# Normal operation on 64-bit Windows needs 2 MB of stack. (Bug 582910)
-# ASAN requires 6 MB of stack.
-# Setting the stack to 8 MB to match the capability of other systems
-# to deal with frame construction for unreasonably deep DOM trees
-# with worst-case styling. This uses address space unnecessarily for
-# non-main threads, but that should be tolerable on 64-bit systems.
-# (Bug 256180)
-WIN32_EXE_LDFLAGS      += -STACK:8388608
+WIN32_EXE_LDFLAGS += $(WIN32_EXE_DEFAULT_LDFLAGS)
 else
-# Since this setting affects the default stack size for non-main
-# threads, too, to avoid burning the address space, increase only
-# 512 KB over the default. Just enough to be able to deal with
-# reasonable styling applied to DOM trees whose depth is near what
-# Blink's HTML parser can output, esp.
-# layout/base/crashtests/507119.html (Bug 256180)
-ifndef MOZ_DEBUG
-WIN32_EXE_LDFLAGS      += -STACK:1572864
-else
-# In debug builds, layout code has extra logging helpers on the stack,
-# which can go over the 1.5MB limit on some deeply-nested crashtests.
-WIN32_EXE_LDFLAGS      += -STACK:2097152
-endif
-endif
-else
-ifneq ($(TARGET_CPU),x86)
-MOZ_PROGRAM_LDFLAGS += -Wl,-Xlink=-STACK:8388608
-else
-MOZ_PROGRAM_LDFLAGS += -Wl,-Xlink=-STACK:1572864
-endif
+MOZ_PROGRAM_LDFLAGS += $(WIN32_EXE_DEFAULT_LDFLAGS)
 endif
 endif
 
@@ -311,9 +277,6 @@ endif
 ######################################################################
 
 ifeq ($(OS_ARCH),Darwin)
-ifndef NSDISTMODE
-NSDISTMODE=absolute_symlink
-endif
 PWD := $(CURDIR)
 endif
 
@@ -328,13 +291,13 @@ endif # WINNT
 ifeq (,$(CROSS_COMPILE)$(filter-out WINNT, $(OS_ARCH)))
 INSTALL = $(NSINSTALL) -t
 
+else ifeq ($(OS_ARCH),Darwin)
+INSTALL = $(NSINSTALL) -L $(PWD)
+
 else
+INSTALL = $(NSINSTALL) -R
 
-# This isn't laid out as conditional directives so that NSDISTMODE can be
-# target-specific.
-INSTALL         = $(if $(filter copy, $(NSDISTMODE)), $(NSINSTALL) -t, $(if $(filter absolute_symlink, $(NSDISTMODE)), $(NSINSTALL) -L $(PWD), $(NSINSTALL) -R))
-
-endif # WINNT
+endif
 
 # The default for install_cmd is simply INSTALL
 install_cmd ?= $(INSTALL) $(1)

@@ -1,21 +1,20 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ChannelMediaDecoder.h"
+
+#include "BaseMediaResource.h"
 #include "ChannelMediaResource.h"
 #include "DecoderTraits.h"
 #include "ExternalEngineStateMachine.h"
 #include "MediaDecoderStateMachine.h"
 #include "MediaFormatReader.h"
-#include "BaseMediaResource.h"
 #include "MediaShutdownManager.h"
+#include "VideoUtils.h"
 #include "base/process_util.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_media.h"
-#include "VideoUtils.h"
 
 namespace mozilla {
 
@@ -23,7 +22,7 @@ using TimeUnit = media::TimeUnit;
 
 extern LazyLogModule gMediaDecoderLog;
 #define LOG(x, ...) \
-  DDMOZ_LOG(gMediaDecoderLog, LogLevel::Debug, x, ##__VA_ARGS__)
+  DDMOZ_LOG_FMT(gMediaDecoderLog, LogLevel::Debug, x, ##__VA_ARGS__)
 #define LOGD(x, ...) \
   MOZ_LOG_FMT(gMediaDecoderLog, LogLevel::Debug, x, ##__VA_ARGS__)
 
@@ -113,7 +112,7 @@ void ChannelMediaDecoder::ResourceCallback::NotifyDataArrived() {
   mTimerArmed = true;
   mTimer->InitWithNamedFuncCallback(
       TimerCallback, this, sDelay, nsITimer::TYPE_ONE_SHOT,
-      "ChannelMediaDecoder::ResourceCallback::TimerCallback");
+      "ChannelMediaDecoder::ResourceCallback::TimerCallback"_ns);
 }
 
 void ChannelMediaDecoder::ResourceCallback::NotifyDataEnded(nsresult aStatus) {
@@ -206,8 +205,8 @@ already_AddRefed<ChannelMediaDecoder> ChannelMediaDecoder::Clone(
   return decoder.forget();
 }
 
-MediaDecoderStateMachineBase* ChannelMediaDecoder::CreateStateMachine(
-    bool aDisableExternalEngine) {
+already_AddRefed<MediaDecoderStateMachineBase>
+ChannelMediaDecoder::CreateStateMachine(bool aDisableExternalEngine) {
   MOZ_ASSERT(NS_IsMainThread());
   MediaFormatReaderInit init;
   init.mVideoFrameContainer = GetVideoFrameContainer();
@@ -221,6 +220,9 @@ MediaDecoderStateMachineBase* ChannelMediaDecoder::CreateStateMachine(
                            sTrackingIdCounter++,
                            TrackingId::TrackAcrossProcesses::Yes);
   mReader = DecoderTraits::CreateReader(ContainerType(), init);
+  if (NS_WARN_IF(!mReader)) {
+    return nullptr;
+  }
 
 #ifdef MOZ_WMF_MEDIA_ENGINE
   // This state machine is mainly used for the encrypted playback. However, for
@@ -230,10 +232,10 @@ MediaDecoderStateMachineBase* ChannelMediaDecoder::CreateStateMachine(
        StaticPrefs::media_wmf_media_engine_enabled() == 3) &&
       StaticPrefs::media_wmf_media_engine_channel_decoder_enabled() &&
       !aDisableExternalEngine) {
-    return new ExternalEngineStateMachine(this, mReader);
+    return MakeAndAddRef<ExternalEngineStateMachine>(this, mReader);
   }
 #endif
-  return new MediaDecoderStateMachine(this, mReader);
+  return MakeAndAddRef<MediaDecoderStateMachine>(this, mReader);
 }
 
 void ChannelMediaDecoder::Shutdown() {
@@ -305,11 +307,12 @@ void ChannelMediaDecoder::NotifyDownloadEnded(nsresult aStatus) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_DIAGNOSTIC_ASSERT(!IsShutdown());
 
-  LOG("NotifyDownloadEnded, status=%" PRIx32, static_cast<uint32_t>(aStatus));
+  LOG("NotifyDownloadEnded, status={:x}", static_cast<uint32_t>(aStatus));
 
   if (NS_SUCCEEDED(aStatus)) {
     // Download ends successfully. This is a stream with a finite length.
     GetStateMachine()->DispatchIsLiveStream(false);
+    NotifyReaderDataArrived();
   }
 
   MediaDecoderOwner* owner = GetOwner();
@@ -319,12 +322,11 @@ void ChannelMediaDecoder::NotifyDownloadEnded(nsresult aStatus) {
         [playbackStats = mPlaybackStatistics,
          res = RefPtr<BaseMediaResource>(mResource),
          duration = mDuration.match(DurationToTimeUnit())]() {
-          Unused << UpdateResourceOfPlaybackByteRate(playbackStats, res,
-                                                     duration);
+          (void)UpdateResourceOfPlaybackByteRate(playbackStats, res, duration);
         });
     nsresult rv = GetStateMachine()->OwnerThread()->Dispatch(r.forget());
     MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-    Unused << rv;
+    (void)rv;
     owner->DownloadSuspended();
     // NotifySuspendedStatusChanged will tell the element that download
     // has been suspended "by the cache", which is true since we never
@@ -378,12 +380,11 @@ void ChannelMediaDecoder::DurationChanged() {
       [playbackStats = mPlaybackStatistics,
        res = RefPtr<BaseMediaResource>(mResource),
        duration = mDuration.match(DurationToTimeUnit())]() {
-        Unused << UpdateResourceOfPlaybackByteRate(playbackStats, res,
-                                                   duration);
+        (void)UpdateResourceOfPlaybackByteRate(playbackStats, res, duration);
       });
   nsresult rv = GetStateMachine()->OwnerThread()->Dispatch(r.forget());
   MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-  Unused << rv;
+  (void)rv;
 }
 
 void ChannelMediaDecoder::DownloadProgressed() {
@@ -413,7 +414,7 @@ void ChannelMediaDecoder::DownloadProgressed() {
               })
       ->Then(
           mAbstractMainThread, __func__,
-          [=,
+          [=, this,
            self = RefPtr<ChannelMediaDecoder>(this)](MediaStatistics aStats) {
             if (IsShutdown()) {
               return;
@@ -560,13 +561,6 @@ void ChannelMediaDecoder::MetadataLoaded(
                                aEventVisibility);
   // Set mode to PLAYBACK after reading metadata.
   mResource->SetReadMode(MediaCacheStream::MODE_PLAYBACK);
-}
-
-void ChannelMediaDecoder::GetDebugInfo(dom::MediaDecoderDebugInfo& aInfo) {
-  MediaDecoder::GetDebugInfo(aInfo);
-  if (mResource) {
-    mResource->GetDebugInfo(aInfo.mResource);
-  }
 }
 
 bool ChannelMediaDecoder::MediaStatistics::CanPlayThrough() const {

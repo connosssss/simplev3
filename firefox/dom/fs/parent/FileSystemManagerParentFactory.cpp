@@ -1,12 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "FileSystemManagerParentFactory.h"
 
-#include "mozilla/OriginAttributes.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/FileSystemDataManager.h"
 #include "mozilla/dom/FileSystemLog.h"
@@ -51,11 +48,17 @@ mozilla::ipc::IPCResult CreateFileSystemManagerParent(
       quota::GetInfoFromValidatedPrincipalInfo(*quotaManager, aPrincipalInfo),
       IPC_OK(), [aResolver](const auto rv) { aResolver(rv); });
 
-  quota::OriginMetadata originMetadata(std::move(principalMetadata),
-                                       quota::PERSISTENCE_TYPE_DEFAULT);
+  // Private browsing data belongs to the private repository, which is wiped
+  // when the private browsing session ends.
+  const auto persistenceType = principalMetadata.mIsPrivate
+                                   ? quota::PERSISTENCE_TYPE_PRIVATE
+                                   : quota::PERSISTENCE_TYPE_DEFAULT;
 
-  // Block use for now in PrivateBrowsing
-  QM_TRY(OkIf(!OriginAttributes::IsPrivateBrowsing(originMetadata.mOrigin)),
+  quota::OriginMetadata originMetadata(std::move(principalMetadata),
+                                       persistenceType);
+
+  QM_TRY(OkIf(StaticPrefs::dom_fs_privateBrowsing_enabled() ||
+              !originMetadata.mIsPrivate),
          IPC_OK(),
          [aResolver](const auto&) { aResolver(NS_ERROR_DOM_NOT_ALLOWED_ERR); });
 
@@ -71,7 +74,7 @@ mozilla::ipc::IPCResult CreateFileSystemManagerParent(
       originMetadata)
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [origin = originMetadata.mOrigin,
+          [origin = std::move(originMetadata.mOrigin),
            parentEndpoint = std::move(aParentEndpoint), backgroundActor,
            aResolver](const fs::Registered<fs::data::FileSystemDataManager>&
                           dataManager) mutable {

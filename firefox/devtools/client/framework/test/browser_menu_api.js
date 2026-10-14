@@ -54,6 +54,7 @@ async function testMenuPopup(toolbox) {
     new MenuItem({
       id: "menu-item-1",
       label: "Normal Item",
+      accesskey: "n",
       click: () => {
         info("Click callback has fired for menu item");
         clickFired = true;
@@ -61,15 +62,18 @@ async function testMenuPopup(toolbox) {
     }),
     new MenuItem({
       label: "Checked Item",
+      accesskey: "c",
       type: "checkbox",
       checked: true,
     }),
     new MenuItem({
       label: "Radio Item",
+      accesskey: "r",
       type: "radio",
     }),
     new MenuItem({
       label: "Disabled Item",
+      accesskey: "d",
       disabled: true,
     }),
     new MenuItem({
@@ -106,14 +110,14 @@ async function testMenuPopup(toolbox) {
 
   is(menuItems[1].getAttribute("label"), MENU_ITEMS[1].label, "Correct label");
   is(menuItems[1].getAttribute("type"), "checkbox", "Correct type attr");
-  is(menuItems[1].getAttribute("checked"), "true", "Has checked attr");
+  ok(menuItems[1].hasAttribute("checked"), "Has checked attr");
 
   is(menuItems[2].getAttribute("label"), MENU_ITEMS[2].label, "Correct label");
   is(menuItems[2].getAttribute("type"), "radio", "Correct type attr");
   ok(!menuItems[2].hasAttribute("checked"), "Doesn't have checked attr");
 
   is(menuItems[3].getAttribute("label"), MENU_ITEMS[3].label, "Correct label");
-  is(menuItems[3].getAttribute("disabled"), "true", "disabled attr menuitem");
+  ok(menuItems[3].hasAttribute("disabled"), "disabled attr menuitem");
 
   is(
     menuItems[4].getAttribute("data-l10n-id"),

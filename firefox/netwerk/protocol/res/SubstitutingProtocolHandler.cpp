@@ -1,29 +1,26 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "SubstitutingProtocolHandler.h"
+
+#include "SubstitutingJARURI.h"
+#include "SubstitutingURL.h"
 #include "mozilla/ModuleUtils.h"
-#include "mozilla/Unused.h"
 #include "mozilla/chrome/RegistryMessageUtils.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/ipc/URIUtils.h"
-
-#include "SubstitutingProtocolHandler.h"
-#include "SubstitutingURL.h"
-#include "SubstitutingJARURI.h"
+#include "nsEscape.h"
 #include "nsIChannel.h"
-#include "nsIIOService.h"
+#include "nsIClassInfoImpl.h"
 #include "nsIFile.h"
+#include "nsIIOService.h"
+#include "nsIObjectInputStream.h"
+#include "nsIObjectOutputStream.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
 #include "nsReadableUtils.h"
 #include "nsURLHelper.h"
-#include "nsEscape.h"
-#include "nsIObjectInputStream.h"
-#include "nsIObjectOutputStream.h"
-#include "nsIClassInfoImpl.h"
 
 using mozilla::dom::ContentParent;
 
@@ -163,11 +160,43 @@ void SubstitutingJARURI::Serialize(mozilla::ipc::URIParams& aParams) {
   URIParams source;
   URIParams resolved;
 
-  mSource->Serialize(source);
-  mResolved->Serialize(resolved);
+  SerializeURI(mSource, source);
+  SerializeURI(mResolved, resolved);
   params.source() = source;
   params.resolved() = resolved;
   aParams = params;
+}
+
+size_t SubstitutingJARURI::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) {
+  // We don't need to calcaulte this unless it shows up in DMD.
+  return 0;
+};
+
+/* static */
+nsresult SubstitutingJARURI::ResolveSource(nsIURI* aSource,
+                                           SubstitutingJARURI** aResult) {
+  if (!aSource) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  nsAutoCString spec;
+  nsresult rv = aSource->GetSpec(spec);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  nsCOMPtr<nsIURI> resolved;
+  rv = NS_NewURI(getter_AddRefs(resolved), spec);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  // Only a substitution carrying the RESOLVE_JAR_URI flag resolves to a
+  // SubstitutingJARURI, and ResolveJARURI has checked that it maps to a local
+  // jar file.
+  RefPtr<SubstitutingJARURI> uri;
+  rv =
+      resolved->QueryInterface(kSubstitutingJARURIImplCID, getter_AddRefs(uri));
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  uri.forget(aResult);
+  return NS_OK;
 }
 
 // SubstitutingJARURI::nsISerializable
@@ -183,15 +212,20 @@ SubstitutingJARURI::Read(nsIObjectInputStream* aStream) {
   rv = aStream->ReadObject(true, getter_AddRefs(source));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  mSource = do_QueryInterface(source, &rv);
-  NS_ENSURE_SUCCESS(rv, rv);
-
+  // Read the resolved URI too so the stream stays in sync, but don't use it.
   nsCOMPtr<nsISupports> resolved;
   rv = aStream->ReadObject(true, getter_AddRefs(resolved));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  mResolved = do_QueryInterface(resolved, &rv);
+  nsCOMPtr<nsIURI> sourceURI = do_QueryInterface(source, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
+
+  RefPtr<SubstitutingJARURI> uri;
+  rv = ResolveSource(sourceURI, getter_AddRefs(uri));
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  mSource = uri->mSource;
+  mResolved = uri->mResolved;
 
   return NS_OK;
 }
@@ -265,15 +299,16 @@ bool SubstitutingJARURI::Deserialize(const mozilla::ipc::URIParams& aParams) {
   const SubstitutingJARURIParams& jarUriParams =
       aParams.get_SubstitutingJARURIParams();
 
+  // The resolved URI in the params is deliberately ignored, see ResolveSource.
   nsCOMPtr<nsIURI> source = DeserializeURI(jarUriParams.source());
-  nsresult rv;
-  mSource = do_QueryInterface(source, &rv);
-  if (NS_FAILED(rv)) {
+  RefPtr<SubstitutingJARURI> uri;
+  if (NS_FAILED(ResolveSource(source, getter_AddRefs(uri)))) {
     return false;
   }
-  nsCOMPtr<nsIURI> jarUri = DeserializeURI(jarUriParams.resolved());
-  mResolved = do_QueryInterface(jarUri, &rv);
-  return NS_SUCCEEDED(rv);
+
+  mSource = uri->mSource;
+  mResolved = uri->mResolved;
+  return true;
 }
 
 nsresult SubstitutingJARURI::ReadPrivate(nsIObjectInputStream* aStream) {
@@ -291,6 +326,8 @@ NS_INTERFACE_MAP_BEGIN(SubstitutingJARURI)
   NS_INTERFACE_MAP_ENTRY(nsIURL)
   NS_INTERFACE_MAP_ENTRY(nsIStandardURL)
   NS_INTERFACE_MAP_ENTRY(nsISerializable)
+  NS_INTERFACE_MAP_ENTRY(nsIIPCSerializableURI)
+  NS_INTERFACE_MAP_ENTRY(nsIURIWithSizeOf)
   if (aIID.Equals(kSubstitutingJARURIImplCID)) {
     foundInterface = static_cast<nsIURI*>(this);
   } else
@@ -299,7 +336,8 @@ NS_INTERFACE_MAP_BEGIN(SubstitutingJARURI)
 NS_INTERFACE_MAP_END
 
 NS_IMPL_CI_INTERFACE_GETTER(SubstitutingJARURI, nsIURI, nsIJARURI, nsIURL,
-                            nsIStandardURL, nsISerializable)
+                            nsIStandardURL, nsISerializable,
+                            nsIIPCSerializableURI, nsIURIWithSizeOf)
 
 NS_IMPL_NSIURIMUTATOR_ISUPPORTS(SubstitutingJARURI::Mutator, nsIURISetters,
                                 nsIURIMutator, nsISerializable)
@@ -336,8 +374,8 @@ nsresult SubstitutingProtocolHandler::CollectSubstitutions(
     }
     SubstitutionMapping substitution = {mScheme,
                                         nsCString(substitutionEntry.GetKey()),
-                                        serialized, entry.flags};
-    aMappings.AppendElement(substitution);
+                                        std::move(serialized), entry.flags};
+    aMappings.AppendElement(std::move(substitution));
   }
 
   return NS_OK;
@@ -366,7 +404,7 @@ nsresult SubstitutingProtocolHandler::SendSubstitution(const nsACString& aRoot,
   mapping.flags = aFlags;
 
   for (uint32_t i = 0; i < parents.Length(); i++) {
-    Unused << parents[i]->SendRegisterChromeItem(mapping);
+    (void)parents[i]->SendRegisterChromeItem(mapping);
   }
 
   return NS_OK;

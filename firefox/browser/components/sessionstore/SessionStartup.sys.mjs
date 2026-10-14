@@ -29,17 +29,18 @@
 
 /* :::::::: Constants and Helpers ::::::::::::::: */
 
-const lazy = {};
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
-ChromeUtils.defineESModuleGetters(lazy, {
+const lazy = XPCOMUtils.declareLazy({
   BrowserUsageTelemetry: "resource:///modules/BrowserUsageTelemetry.sys.mjs",
   CrashMonitor: "resource://gre/modules/CrashMonitor.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
-  SessionFile: "resource:///modules/sessionstore/SessionFile.sys.mjs",
+  SessionFile: "moz-src:///browser/components/sessionstore/SessionFile.sys.mjs",
   StartupPerformance:
-    "resource:///modules/sessionstore/StartupPerformance.sys.mjs",
-  sessionStoreLogger: "resource:///modules/sessionstore/SessionLogger.sys.mjs",
+    "moz-src:///browser/components/sessionstore/StartupPerformance.sys.mjs",
+  sessionStoreLogger:
+    "moz-src:///browser/components/sessionstore/SessionLogger.sys.mjs",
 });
 
 const STATE_RUNNING_STR = "running";
@@ -72,12 +73,19 @@ export var SessionStartup = {
 
   _resumeSessionEnabled: null,
 
+  // The values of browser.sessionstore.resuming_after_os_restart and
+  // browser.sessionstore.resume_session_once as they were found at startup,
+  // before init() and SessionStore clear them.
+  _resumingAfterOsRestart: false,
+  _resumeSessionOnce: false,
+
   /* ........ Global Event Handlers .............. */
 
   /**
    * Initialize the component
    */
   init() {
+    Services.prefs.lockPref("browser.sessionstore.encryption.available");
     Services.obs.notifyObservers(null, "sessionstore-init-started");
 
     if (!AppConstants.DEBUG) {
@@ -91,11 +99,13 @@ export var SessionStartup = {
       return;
     }
 
-    if (
-      Services.prefs.getBoolPref(
-        "browser.sessionstore.resuming_after_os_restart"
-      )
-    ) {
+    this._resumingAfterOsRestart = Services.prefs.getBoolPref(
+      "browser.sessionstore.resuming_after_os_restart"
+    );
+    this._resumeSessionOnce = Services.prefs.getBoolPref(
+      "browser.sessionstore.resume_session_once"
+    );
+    if (this._resumingAfterOsRestart) {
       lazy.sessionStoreLogger.debug("resuming_after_os_restart");
       if (!Services.appinfo.restartedByOS) {
         // We had set resume_session_once in order to resume after an OS restart,
@@ -138,13 +148,59 @@ export var SessionStartup = {
   },
 
   /**
+   * Record what we found on disk to restore from, and whether the user wanted
+   * a session restored at all. Must run before we give up on a startup with
+   * no valid session, as that is the case this measures. Prefs that init() or
+   * SessionStore clear on the way here are reported from the snapshots taken
+   * in init() rather than read again.
+   *
+   * @param origin Which file we loaded from, or "empty" if none.
+   * @param useOldExtension Whether |origin| used the legacy file format.
+   * @param fileStates What we saw of each candidate file, see SessionFile.read.
+   */
+  _recordSessionAvailability({ origin, useOldExtension, fileStates }) {
+    let format = "none";
+    if (origin != "empty") {
+      format = useOldExtension ? "js" : "jsonlz4";
+    }
+    let availability = {
+      origin,
+      format,
+      clean: fileStates.clean,
+      recovery: fileStates.recovery,
+      recovery_backup: fileStates.recoveryBackup,
+      clean_backup: fileStates.cleanBackup,
+      upgrade_backup: fileStates.upgradeBackup,
+      startup_page_is_resume:
+        Services.prefs.getIntPref("browser.startup.page") ==
+        BROWSER_STARTUP_RESUME_SESSION,
+      resume_session_once: this._resumeSessionOnce,
+      resume_from_crash: Services.prefs.getBoolPref(
+        "browser.sessionstore.resume_from_crash"
+      ),
+      restarted_by_os: Services.appinfo.restartedByOS,
+      resuming_after_os_restart: this._resumingAfterOsRestart,
+    };
+    Glean.sessionRestore.startupSessionAvailability.record(availability);
+    lazy.sessionStoreLogger.debug("Session availability", availability);
+  },
+
+  /**
    * Complete initialization once the Session File has been read.
    *
    * @param source The Session State string read from disk.
    * @param parsed The object obtained by parsing |source| as JSON.
    */
-  _onSessionFileRead({ source, parsed, noFilesFound }) {
+  _onSessionFileRead({
+    source,
+    parsed,
+    noFilesFound,
+    origin,
+    useOldExtension,
+    fileStates,
+  }) {
     this._initialized = true;
+    this._recordSessionAvailability({ origin, useOldExtension, fileStates });
     const crashReasons = {
       FINAL_STATE_WRITING_INCOMPLETE: "final-state-write-incomplete",
       SESSION_STATE_FLAG_MISSING:
@@ -198,8 +254,9 @@ export var SessionStartup = {
           }, 0)
         );
       }, 0);
+      let savedGroupsCount = initialState.savedGroups.length;
       lazy.sessionStoreLogger.debug(
-        `initialState contains ${pinnedTabCount} pinned tabs`
+        `initialState contains ${pinnedTabCount} pinned tabs and ${savedGroupsCount} saved groups`
       );
 
       lazy.BrowserUsageTelemetry.updateMaxTabPinnedCount(pinnedTabCount);
@@ -330,6 +387,7 @@ export var SessionStartup = {
    * launch of the browser. This does not include crash restoration. In
    * particular, if session restore is configured to restore only in case of
    * crash, this method returns false.
+   *
    * @returns bool
    */
   isAutomaticRestoreEnabled() {
@@ -348,6 +406,7 @@ export var SessionStartup = {
 
   /**
    * Determines whether there is a pending session restore.
+   *
    * @returns bool
    */
   willRestore() {
@@ -360,6 +419,7 @@ export var SessionStartup = {
   /**
    * Determines whether there is a pending session restore and if that will refer
    * back to a crash.
+   *
    * @returns bool
    */
   willRestoreAsCrashed() {

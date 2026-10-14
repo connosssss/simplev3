@@ -1,13 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "sdp/SipccSdpParser.h"
-#include "sdp/SipccSdp.h"
 
+#include <memory>
 #include <utility>
+
+#include "sdp/SipccSdp.h"
 extern "C" {
 #include "sipcc_sdp.h"
 }
@@ -31,7 +31,8 @@ const std::string& SipccSdpParser::ParserName() {
 }
 
 UniquePtr<SdpParser::Results> SipccSdpParser::Parse(const std::string& aText) {
-  UniquePtr<InternalResults> results(new InternalResults(Name()));
+  UniquePtr<InternalResults> results =
+      std::make_unique<InternalResults>(Name());
   sdp_conf_options_t* sipcc_config = sdp_init_config();
   if (!sipcc_config) {
     return UniquePtr<SdpParser::Results>();

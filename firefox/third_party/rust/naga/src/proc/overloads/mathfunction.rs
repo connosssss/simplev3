@@ -4,10 +4,10 @@ use crate::proc::overloads::any_overload_set::AnyOverloadSet;
 use crate::proc::overloads::list::List;
 use crate::proc::overloads::regular::regular;
 use crate::proc::overloads::utils::{
-    concrete_int_scalars, float_scalars, float_scalars_unimplemented_abstract, list, pairs, rule,
-    scalar_or_vecn, triples, vector_sizes,
+    float_scalars, float_scalars_unimplemented_abstract, list, pairs, rule, scalar_or_vecn, triples,
 };
 use crate::proc::overloads::OverloadSet;
+use crate::proc::type_methods::{concrete_int_scalars, vector_sizes};
 
 use crate::ir;
 
@@ -17,7 +17,8 @@ impl ir::MathFunction {
 
         let set: AnyOverloadSet = match self {
             // Component-wise unary numeric operations
-            Mf::Abs | Mf::Sign => regular!(1, SCALAR|VECN of NUMERIC).into(),
+            Mf::Abs => regular!(1, SCALAR|VECN of NUMERIC).into(),
+            Mf::Sign => regular!(1, SCALAR|VECN of SIGNED_NUMERIC).into(),
 
             // Component-wise binary numeric operations
             Mf::Min | Mf::Max => regular!(2, SCALAR|VECN of NUMERIC).into(),
@@ -97,8 +98,8 @@ impl ir::MathFunction {
             Mf::Distance => {
                 regular!(2, SCALAR|VECN of FLOAT_ABSTRACT_UNIMPLEMENTED -> Scalar).into()
             }
-            Mf::Length => regular!(1, SCALAR|VECN of FLOAT_ABSTRACT_UNIMPLEMENTED -> Scalar).into(),
-            Mf::Normalize => regular!(1, VECN of FLOAT_ABSTRACT_UNIMPLEMENTED).into(),
+            Mf::Length => regular!(1, SCALAR|VECN of FLOAT -> Scalar).into(),
+            Mf::Normalize => regular!(1, VECN of FLOAT).into(),
             Mf::FaceForward => regular!(3, VECN of FLOAT_ABSTRACT_UNIMPLEMENTED).into(),
             Mf::Reflect => regular!(2, VECN of FLOAT_ABSTRACT_UNIMPLEMENTED).into(),
             Mf::Refract => refract().into(),

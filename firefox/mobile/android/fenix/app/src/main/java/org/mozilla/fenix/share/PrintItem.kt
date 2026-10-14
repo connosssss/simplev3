@@ -11,54 +11,49 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
+import mozilla.components.ui.icons.R as iconsR
 import org.mozilla.fenix.R
 import org.mozilla.fenix.theme.FirefoxTheme
 
 /**
  * A Print item.
  *
- *  @param onClick event handler when the print item is clicked.
+ * @param onClick event handler when the print item is clicked.
  */
 @Composable
-fun PrintItem(
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .height(56.dp)
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Spacer(Modifier.width(16.dp))
+fun PrintItem(onClick: () -> Unit) {
+    Surface {
+        Row(
+            modifier = Modifier.height(56.dp).fillMaxWidth().clickable(onClick = onClick),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Spacer(Modifier.width(16.dp))
 
-        Icon(
-            painter = painterResource(R.drawable.ic_print),
-            contentDescription = null,
-            tint = FirefoxTheme.colors.iconPrimary,
-        )
+            Icon(
+                painter = painterResource(iconsR.drawable.mozac_ic_print_24),
+                contentDescription = null,
+            )
 
-        Spacer(Modifier.width(32.dp))
+            Spacer(Modifier.width(32.dp))
 
-        Text(
-            color = FirefoxTheme.colors.textPrimary,
-            text = stringResource(R.string.menu_print),
-            style = FirefoxTheme.typography.subtitle1,
-        )
+            Text(
+                text = stringResource(R.string.menu_print),
+                style = FirefoxTheme.typography.subtitle1,
+            )
+        }
     }
 }
 
 @Composable
-@Preview
 @PreviewLightDark
 private fun PrintItemPreview() {
     FirefoxTheme {

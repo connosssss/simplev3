@@ -4,17 +4,15 @@
 
 package org.mozilla.fenix.browser.tabstrip
 
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -30,15 +28,15 @@ import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
-import mozilla.components.compose.base.button.PrimaryButton
+import mozilla.components.compose.base.button.FilledButton
 import mozilla.components.compose.base.menu.DropdownMenu
 import mozilla.components.compose.base.menu.MenuItem
 import mozilla.components.ui.tabcounter.TabCounter
 import org.mozilla.fenix.theme.FirefoxTheme
 
 /**
- * A button showing number of tabs in the tab strip, encapsulating [TabCounter] and [DropdownMenu].
- * When long pressed, the [DropdownMenu] will appear.
+ * A button showing number of tabs in the tab strip, encapsulating [TabCounter] and [DropdownMenu]. When long pressed,
+ * the [DropdownMenu] will appear.
  *
  * @param tabCount The number of tabs to display in the counter.
  * @param size The size of the button.
@@ -48,7 +46,6 @@ import org.mozilla.fenix.theme.FirefoxTheme
  * @param onClick Invoked when the user clicks the button.
  */
 @Composable
-@OptIn(ExperimentalFoundationApi::class)
 fun TabStripTabCounterButton(
     tabCount: Int,
     size: Dp,
@@ -60,16 +57,17 @@ fun TabStripTabCounterButton(
     var menuExpanded by remember { mutableStateOf(false) }
 
     Box(
-        modifier = modifier
-            .size(size)
-            .clip(CircleShape)
-            .combinedClickable(
-                onClick = onClick,
-                role = Role.Button,
-                onLongClick = {
-                    menuExpanded = true
-                },
-            ),
+        modifier =
+            modifier
+                .size(size)
+                .clip(CircleShape)
+                .combinedClickable(
+                    onClick = onClick,
+                    role = Role.Button,
+                    onLongClick = {
+                        menuExpanded = true
+                    },
+                ),
         contentAlignment = Alignment.Center,
     ) {
         TabCounter(
@@ -80,10 +78,11 @@ fun TabStripTabCounterButton(
         DropdownMenu(
             menuItems = menuItems,
             expanded = menuExpanded,
-            offset = DpOffset(
-                x = 0.dp,
-                y = -size,
-            ),
+            offset =
+                DpOffset(
+                    x = 0.dp,
+                    y = -size,
+                ),
             onDismissRequest = { menuExpanded = false },
         )
     }
@@ -93,50 +92,49 @@ fun TabStripTabCounterButton(
 @Composable
 private fun TabStripTabCounterButtonPreview() {
     FirefoxTheme {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(FirefoxTheme.colors.layer1)
-                .padding(FirefoxTheme.layout.space.dynamic400),
-            verticalArrangement = Arrangement.spacedBy(FirefoxTheme.layout.space.dynamic400),
-        ) {
-            Text(
-                text = "TabStripTabCounterButton",
-                style = FirefoxTheme.typography.body1,
-                color = FirefoxTheme.colors.textPrimary,
-            )
-
-            Text(
-                text = """
-                    Clicking the button will increment the tab count. Long press the button to open the dropdown menu.
-                """.trimIndent(),
-                style = FirefoxTheme.typography.caption,
-                color = FirefoxTheme.colors.textPrimary,
-            )
-
-            var privacyBadgeVisible by remember { mutableStateOf(false) }
-            var tabCount by remember { mutableIntStateOf(1) }
-            TabStripTabCounterButton(
-                tabCount = tabCount,
-                size = 56.dp,
-                menuItems = listOf(
-                    TabCounterMenuItem.IconItem.NewTab { },
-                    TabCounterMenuItem.IconItem.NewPrivateTab { },
-                    TabCounterMenuItem.Divider,
-                    TabCounterMenuItem.IconItem.CloseTab { },
-                ).map { it.toMenuItem() },
-                modifier = Modifier
-                    .align(Alignment.End)
-                    .background(FirefoxTheme.colors.layer2),
-                onClick = { tabCount++ },
-                privacyBadgeVisible = privacyBadgeVisible,
-            )
-
-            PrimaryButton(
-                text = "Toggle privacy badge",
-                modifier = Modifier.fillMaxWidth(),
+        Surface {
+            Column(
+                modifier = Modifier.padding(FirefoxTheme.layout.space.dynamic400),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(FirefoxTheme.layout.space.dynamic200),
             ) {
-                privacyBadgeVisible = !privacyBadgeVisible
+                Text(
+                    text = "TabStripTabCounterButton",
+                    style = FirefoxTheme.typography.body1,
+                )
+
+                Text(
+                    text =
+                        """
+                        Clicking the button will increment the tab count. Long press the button to open the dropdown menu.
+                        """
+                            .trimIndent(),
+                    style = FirefoxTheme.typography.caption,
+                )
+
+                var privacyBadgeVisible by remember { mutableStateOf(false) }
+                var tabCount by remember { mutableIntStateOf(1) }
+                TabStripTabCounterButton(
+                    tabCount = tabCount,
+                    size = 56.dp,
+                    menuItems =
+                        listOf(
+                                TabCounterMenuItem.IconItem.NewTab {},
+                                TabCounterMenuItem.IconItem.NewPrivateTab {},
+                                TabCounterMenuItem.Divider,
+                                TabCounterMenuItem.IconItem.CloseTab {},
+                            )
+                            .map { it.toMenuItem() },
+                    onClick = { tabCount++ },
+                    privacyBadgeVisible = privacyBadgeVisible,
+                )
+
+                FilledButton(
+                    text = "Toggle privacy badge",
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    privacyBadgeVisible = !privacyBadgeVisible
+                }
             }
         }
     }

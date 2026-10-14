@@ -6,6 +6,7 @@
 //!
 //! [layer]: https://drafts.csswg.org/css-cascade-5/#layering
 
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::shared_lock::{DeepCloneWithLock, Locked};
 use crate::shared_lock::{SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard};
@@ -28,12 +29,12 @@ pub struct LayerOrder(u16);
 impl LayerOrder {
     /// The order of the root layer.
     pub const fn root() -> Self {
-        Self(std::u16::MAX - 1)
+        Self(u16::MAX - 1)
     }
 
     /// The order of the style attribute layer.
     pub const fn style_attribute() -> Self {
-        Self(std::u16::MAX)
+        Self(u16::MAX)
     }
 
     /// Returns whether this layer is for the style attribute, which behaves
@@ -55,7 +56,7 @@ impl LayerOrder {
     /// Increment the cascade layer order.
     #[inline]
     pub fn inc(&mut self) {
-        if self.0 != std::u16::MAX - 1 {
+        if self.0 != u16::MAX - 1 {
             self.0 += 1;
         }
     }
@@ -95,27 +96,24 @@ impl LayerName {
 }
 
 impl Parse for LayerName {
-    fn parse<'i, 't>(
-        _: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(_: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let mut result = SmallVec::new();
         result.push(AtomIdent::from(&**input.expect_ident()?));
         loop {
-            let next_name = input.try_parse(|input| -> Result<AtomIdent, ParseError<'i>> {
+            let next_name = input.try_parse(|input| -> Result<AtomIdent, ParseError> {
                 match input.next_including_whitespace()? {
                     Token::Delim('.') => {},
                     other => {
-                        let t = other.clone();
-                        return Err(input.new_unexpected_token_error(t));
+                        let _ = other.clone();
+                        return Err(ParseError::unexpected_token());
                     },
                 }
 
                 let name = match input.next_including_whitespace()? {
-                    Token::Ident(ref ident) => ident,
+                    Token::Ident(ident) => ident,
                     other => {
-                        let t = other.clone();
-                        return Err(input.new_unexpected_token_error(t));
+                        let _ = other.clone();
+                        return Err(ParseError::unexpected_token());
                     },
                 };
 
@@ -164,7 +162,7 @@ impl ToCssWithGuard for LayerBlockRule {
     fn to_css(
         &self,
         guard: &SharedRwLockReadGuard,
-        dest: &mut crate::str::CssStringWriter,
+        dest: &mut style_traits::CssStringWriter,
     ) -> fmt::Result {
         dest.write_str("@layer")?;
         if let Some(ref name) = self.name {
@@ -176,11 +174,7 @@ impl ToCssWithGuard for LayerBlockRule {
 }
 
 impl DeepCloneWithLock for LayerBlockRule {
-    fn deep_clone_with_lock(
-        &self,
-        lock: &SharedRwLock,
-        guard: &SharedRwLockReadGuard,
-    ) -> Self {
+    fn deep_clone_with_lock(&self, lock: &SharedRwLock, guard: &SharedRwLockReadGuard) -> Self {
         Self {
             name: self.name.clone(),
             rules: Arc::new(
@@ -190,7 +184,7 @@ impl DeepCloneWithLock for LayerBlockRule {
                         .deep_clone_with_lock(lock, guard),
                 ),
             ),
-            source_location: self.source_location.clone(),
+            source_location: self.source_location,
         }
     }
 }
@@ -210,7 +204,7 @@ impl ToCssWithGuard for LayerStatementRule {
     fn to_css(
         &self,
         _: &SharedRwLockReadGuard,
-        dest: &mut crate::str::CssStringWriter,
+        dest: &mut style_traits::CssStringWriter,
     ) -> fmt::Result {
         let mut writer = CssWriter::new(dest);
         writer.write_str("@layer ")?;

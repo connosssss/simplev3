@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,11 +5,9 @@
 #include "SharedTextureDMABuf.h"
 
 #include "mozilla/gfx/Logging.h"
-#include "mozilla/layers/ImageDataSerializer.h"
 #include "mozilla/webgpu/WebGPUParent.h"
-#include "mozilla/widget/DMABufSurface.h"
 #include "mozilla/widget/DMABufDevice.h"
-#include <gbm.h>
+#include "mozilla/widget/DMABufSurface.h"
 
 namespace mozilla::webgpu {
 
@@ -26,21 +23,16 @@ UniquePtr<SharedTextureDMABuf> SharedTextureDMABuf::Create(
   }
 
   auto* context = aParent->GetContext();
-  uint64_t memorySize = 0;
-  ffi::WGPUVkImageHandle* vkImage = wgpu_vkimage_create_with_dma_buf(
-      context, aDeviceId, aWidth, aHeight, &memorySize);
-  if (!vkImage) {
-    gfxCriticalNoteOnce << "Failed to create VkImage";
+  int32_t rawFd = -1;
+  ffi::WGPUDMABufInfo dmaBufInfo = ffi::wgpu_vkimage_create_with_dma_buf(
+      context, aDeviceId, aWidth, aHeight, &rawFd);
+  if (!dmaBufInfo.is_valid || rawFd < 0) {
+    gfxCriticalNoteOnce << "Failed to create dma-buf backed VkImage";
     return nullptr;
   }
-  UniquePtr<VkImageHandle> handle =
-      MakeUnique<VkImageHandle>(aParent, aDeviceId, vkImage);
 
-  const auto dmaBufInfo = wgpu_vkimage_get_dma_buf_info(vkImage);
-  if (!dmaBufInfo.is_valid) {
-    gfxCriticalNoteOnce << "Invalid DMABufInfo";
-    return nullptr;
-  }
+  RefPtr<gfx::FileHandleWrapper> fd =
+      new gfx::FileHandleWrapper(UniqueFileHandle(rawFd));
 
   MOZ_ASSERT(dmaBufInfo.plane_count <= 3);
 
@@ -48,15 +40,6 @@ UniquePtr<SharedTextureDMABuf> SharedTextureDMABuf::Create(
     gfxCriticalNoteOnce << "Invalid plane count";
     return nullptr;
   }
-
-  auto rawFd = wgpu_vkimage_get_file_descriptor(context, aDeviceId, vkImage);
-  if (rawFd < 0) {
-    gfxCriticalNoteOnce << "Failed to get fd fom VkDeviceMemory";
-    return nullptr;
-  }
-
-  RefPtr<gfx::FileHandleWrapper> fd =
-      new gfx::FileHandleWrapper(UniqueFileHandle(rawFd));
 
   RefPtr<DMABufSurface> surface = DMABufSurfaceRGBA::CreateDMABufSurface(
       std::move(fd), dmaBufInfo, aWidth, aHeight);
@@ -78,31 +61,31 @@ UniquePtr<SharedTextureDMABuf> SharedTextureDMABuf::Create(
   }
 
   return MakeUnique<SharedTextureDMABuf>(
-      aParent, aDeviceId, std::move(handle), aWidth, aHeight, aFormat, aUsage,
-      std::move(surface), desc.get_SurfaceDescriptorDMABuf());
+      aWidth, aHeight, aFormat, aUsage, std::move(surface),
+      desc.get_SurfaceDescriptorDMABuf(), dmaBufInfo);
 }
 
 SharedTextureDMABuf::SharedTextureDMABuf(
-    WebGPUParent* aParent, const ffi::WGPUDeviceId aDeviceId,
-    UniquePtr<VkImageHandle>&& aVkImageHandle, const uint32_t aWidth,
-    const uint32_t aHeight, const struct ffi::WGPUTextureFormat aFormat,
+    const uint32_t aWidth, const uint32_t aHeight,
+    const struct ffi::WGPUTextureFormat aFormat,
     const ffi::WGPUTextureUsages aUsage, RefPtr<DMABufSurface>&& aSurface,
-    const layers::SurfaceDescriptorDMABuf& aSurfaceDescriptor)
+    const layers::SurfaceDescriptorDMABuf& aSurfaceDescriptor,
+    const ffi::WGPUDMABufInfo& aDMABufInfo)
     : SharedTexture(aWidth, aHeight, aFormat, aUsage),
-      mParent(aParent),
-      mDeviceId(aDeviceId),
-      mVkImageHandle(std::move(aVkImageHandle)),
       mSurface(std::move(aSurface)),
-      mSurfaceDescriptor(aSurfaceDescriptor) {}
+      mSurfaceDescriptor(aSurfaceDescriptor),
+      mDMABufInfo(aDMABufInfo) {}
 
-SharedTextureDMABuf::~SharedTextureDMABuf() {}
+SharedTextureDMABuf::~SharedTextureDMABuf() = default;
 
 void SharedTextureDMABuf::CleanForRecycling() {
-  mSemaphoreFds.Clear();
-  mVkSemaphoreHandles.Clear();
+  SharedTexture::CleanForRecycling();
+  mSemaphoreFd = nullptr;
 }
 
 Maybe<layers::SurfaceDescriptor> SharedTextureDMABuf::ToSurfaceDescriptor() {
+  MOZ_ASSERT(mSubmissionIndex > 0);
+
   layers::SurfaceDescriptor sd;
   if (!mSurface->Serialize(sd)) {
     return Nothing();
@@ -113,13 +96,13 @@ Maybe<layers::SurfaceDescriptor> SharedTextureDMABuf::ToSurfaceDescriptor() {
   }
 
   auto& sdDMABuf = sd.get_SurfaceDescriptorDMABuf();
-  sdDMABuf.semaphoreFd() = mSemaphoreFds.LastElement();
+  sdDMABuf.semaphoreFd() = mSemaphoreFd;
 
   return Some(sd);
 }
 
 void SharedTextureDMABuf::GetSnapshot(const ipc::Shmem& aDestShmem,
-                                      const gfx::IntSize& aSize) {
+                                      size_t aDestStride) {
   const RefPtr<gfx::SourceSurface> surface = mSurface->GetAsSourceSurface();
   if (!surface) {
     MOZ_ASSERT_UNREACHABLE("unexpected to be called");
@@ -140,18 +123,21 @@ void SharedTextureDMABuf::GetSnapshot(const ipc::Shmem& aDestShmem,
     return;
   }
 
-  const uint32_t stride = layers::ImageDataSerializer::ComputeRGBStride(
-      gfx::SurfaceFormat::B8G8R8A8, aSize.width);
   uint8_t* src = static_cast<uint8_t*>(map.GetData());
   uint8_t* dst = aDestShmem.get<uint8_t>();
 
-  MOZ_ASSERT(stride * aSize.height <= aDestShmem.Size<uint8_t>());
-  MOZ_ASSERT(static_cast<uint32_t>(map.GetStride()) >= stride);
+  const size_t src_stride = static_cast<size_t>(map.GetStride());
+  const size_t bytesPerRow = static_cast<size_t>(mWidth) * 4;
+  MOZ_RELEASE_ASSERT(src_stride >= bytesPerRow);
+  MOZ_RELEASE_ASSERT(aDestStride >= bytesPerRow);
 
-  for (int y = 0; y < aSize.height; y++) {
-    memcpy(dst, src, stride);
-    src += map.GetStride();
-    dst += stride;
+  for (uint32_t y = 0; y < mHeight; y++) {
+    memcpy(dst, src, bytesPerRow);
+    if (bytesPerRow < aDestStride) {
+      memset(dst + bytesPerRow, 0, aDestStride - bytesPerRow);
+    }
+    src += src_stride;
+    dst += aDestStride;
   }
 }
 
@@ -159,38 +145,29 @@ UniqueFileHandle SharedTextureDMABuf::CloneDmaBufFd() {
   return mSurfaceDescriptor.fds()[0]->ClonePlatformHandle();
 }
 
-const ffi::WGPUVkImageHandle* SharedTextureDMABuf::GetHandle() {
-  return mVkImageHandle->Get();
-}
+void SharedTextureDMABuf::onBeforeQueueSubmit(
+    const ffi::WGPUGlobal* aContext, RawId aQueueId,
+    nsTArray<ffi::WGPUVkSemaphoreHandle>& aSignalSemaphores) {
+  SharedTexture::onBeforeQueueSubmit(aContext, aQueueId, aSignalSemaphores);
 
-void SharedTextureDMABuf::onBeforeQueueSubmit(RawId aQueueId) {
-  if (!mParent) {
-    return;
-  }
-
-  auto* context = mParent->GetContext();
-  if (!context) {
-    return;
-  }
-
-  ffi::WGPUVkSemaphoreHandle* vkSemaphore =
-      wgpu_vksemaphore_create_signal_semaphore(context, aQueueId);
-  if (!vkSemaphore) {
+  int32_t rawFd = -1;
+  auto semaphore =
+      ffi::wgpu_vksemaphore_create_signal_semaphore(aContext, aQueueId, &rawFd);
+  if (!semaphore) {
     gfxCriticalNoteOnce << "Failed to create VkSemaphore";
     return;
   }
 
-  auto rawFd =
-      wgpu_vksemaphore_get_file_descriptor(context, mDeviceId, vkSemaphore);
+  // Ownership transfers to wgpu_server_queue_submit(), which destroys the
+  // semaphore once the submission that signals it has completed.
+  aSignalSemaphores.AppendElement(semaphore);
+
   if (rawFd < 0) {
     gfxCriticalNoteOnce << "Failed to get fd from VkSemaphore";
     return;
   }
 
-  mVkSemaphoreHandles.AppendElement(
-      MakeUnique<VkSemaphoreHandle>(mParent, mDeviceId, vkSemaphore));
-  mSemaphoreFds.AppendElement(
-      new gfx::FileHandleWrapper(UniqueFileHandle(rawFd)));
+  mSemaphoreFd = new gfx::FileHandleWrapper(UniqueFileHandle(rawFd));
 }
 
 }  // namespace mozilla::webgpu

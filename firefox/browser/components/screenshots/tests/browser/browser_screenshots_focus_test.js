@@ -26,7 +26,7 @@ async function restoreFocusOnEscape(initialFocusElem, helper) {
   let gotFocus;
   if (Services.focus.focusedElement !== initialFocusElem) {
     gotFocus = BrowserTestUtils.waitForEvent(initialFocusElem, "focus");
-    await SimpleTest.promiseFocus(initialFocusElem.ownerGlobal);
+    await SimpleTest.promiseFocus(initialFocusElem.documentGlobal);
     Services.focus.setFocus(initialFocusElem, Services.focus.FLAG_BYKEY);
     info(
       `Waiting to place focus on initialFocusElem: ${initialFocusElem.localName}#${initialFocusElem.id}`
@@ -52,7 +52,7 @@ async function restoreFocusOnEscape(initialFocusElem, helper) {
     `focusedElement: ${Services.focus.focusedElement.localName}.${Services.focus.focusedElement.className}`
   );
 
-  await BrowserTestUtils.waitForCondition(async () => {
+  await TestUtils.waitForCondition(async () => {
     return button.getRootNode().activeElement === button;
   }, "The first button in the panel should have focus");
 
@@ -65,7 +65,7 @@ async function restoreFocusOnEscape(initialFocusElem, helper) {
   await helper.waitForPanelClosed();
   await exitObserved;
   info("Waiting for the initialFocusElem to be the focusedElement");
-  await BrowserTestUtils.waitForCondition(async () => {
+  await TestUtils.waitForCondition(async () => {
     return Services.focus.focusedElement === initialFocusElem;
   }, "The initially focused element should have focus");
 
@@ -101,7 +101,7 @@ add_task(async function testPanelFocused() {
       );
 
       info("Waiting for the button to be the activeElement");
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         return button.getRootNode().activeElement === button;
       }, "The first button in the panel should have focus");
 
@@ -222,7 +222,7 @@ add_task(async function test_focusLastUsedMethod() {
 
       let expectedFocusedButton = await helper.getPanelButton("#visible-page");
 
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         return (
           expectedFocusedButton.getRootNode().activeElement ===
           expectedFocusedButton
@@ -249,7 +249,7 @@ add_task(async function test_focusLastUsedMethod() {
 
       expectedFocusedButton = await helper.getPanelButton("#full-page");
 
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         return (
           expectedFocusedButton.getRootNode().activeElement ===
           expectedFocusedButton
@@ -274,7 +274,7 @@ add_task(async function test_focusLastUsedMethod() {
 
       expectedFocusedButton = await helper.getPanelButton("#visible-page");
 
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         return (
           expectedFocusedButton.getRootNode().activeElement ===
           expectedFocusedButton
@@ -293,7 +293,7 @@ add_task(async function test_focusLastUsedMethod() {
 
       expectedFocusedButton = helper.getDialogButton("download");
 
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         return (
           expectedFocusedButton.getRootNode().activeElement ===
           expectedFocusedButton
@@ -322,7 +322,7 @@ add_task(async function test_focusLastUsedMethod() {
 
       expectedFocusedButton = helper.getDialogButton("copy");
 
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         return (
           expectedFocusedButton.getRootNode().activeElement ===
           expectedFocusedButton
@@ -354,7 +354,7 @@ add_task(async function test_focusLastUsedMethod() {
 
       expectedFocusedButton = helper.getDialogButton("download");
 
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         return (
           expectedFocusedButton.getRootNode().activeElement ===
           expectedFocusedButton
@@ -396,7 +396,7 @@ add_task(async function testFocusedIsLocked() {
 
       firstButton.focus();
 
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         return firstButton.getRootNode().activeElement === firstButton;
       }, "The first button in the panel should have focus");
       info(
@@ -410,7 +410,7 @@ add_task(async function testFocusedIsLocked() {
 
       EventUtils.synthesizeKey("KEY_Tab");
 
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         return lastButton.getRootNode().activeElement === lastButton;
       }, "The last button in the panel should have focus");
       info(
@@ -425,7 +425,7 @@ add_task(async function testFocusedIsLocked() {
       EventUtils.synthesizeKey("KEY_Tab");
 
       // Focus should move to the content document
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         return (
           firstButton.getRootNode().activeElement !== firstButton &&
           lastButton.getRootNode().activeElement !== lastButton
@@ -445,7 +445,7 @@ add_task(async function testFocusedIsLocked() {
       EventUtils.synthesizeKey("KEY_Tab");
 
       // Focus should still be in the content document
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         return (
           firstButton.getRootNode().activeElement !== firstButton &&
           lastButton.getRootNode().activeElement !== lastButton
@@ -467,7 +467,7 @@ add_task(async function testFocusedIsLocked() {
       info(
         `Actual focused id: ${Services.focus.focusedElement.id}. Expected focused id: ${firstButton.id}`
       );
-      await BrowserTestUtils.waitForCondition(() => {
+      await TestUtils.waitForCondition(() => {
         return firstButton.getRootNode().activeElement === firstButton;
       }, "The first button in the panel should have focus");
       info(
@@ -480,4 +480,52 @@ add_task(async function testFocusedIsLocked() {
       );
     }
   );
+});
+
+add_task(async function testExitSplitViewToAnotherTab() {
+  // See Bug 2013290
+  const helper = new ScreenshotsHelper(gBrowser.selectedBrowser);
+
+  const tab1 = await addTabAndLoadBrowser(
+    `data:text/html,<html><body><input id="field"></body></html>`
+  );
+  const tab2 = await addTabAndLoadBrowser();
+  const tab3 = await addTabAndLoadBrowser();
+  const browser = tab1.linkedBrowser;
+
+  await BrowserTestUtils.switchTab(gBrowser, tab1);
+  gBrowser.addTabSplitView([tab1, tab2]);
+
+  await SimpleTest.promiseFocus(browser);
+  // Place focus in the content document of the current tab
+  EventUtils.synthesizeKey("VK_TAB", {});
+
+  let focusId = await SpecialPowers.spawn(browser, [], async () => {
+    return await new Promise(resolve => {
+      const input = content.document.getElementById("field");
+      if (content.document.activeElement == input) {
+        resolve(input.id);
+      } else {
+        input.addEventListener("focus", () => resolve(input.id), {
+          capture: true,
+          once: true,
+        });
+      }
+    });
+  });
+  is(focusId, "field", "The input in the content document has focus");
+
+  helper.triggerUIFromToolbar();
+  await helper.waitForPanel();
+
+  const screenshotExit = TestUtils.topicObserved("screenshots-exit");
+  // Click on the 3rd tab - which is not in the split view
+  EventUtils.synthesizeMouseAtCenter(tab3, {}, window);
+
+  await screenshotExit;
+  is(gBrowser.selectedTab, tab3, "tab3 is the selectedTab");
+
+  BrowserTestUtils.removeTab(tab1);
+  BrowserTestUtils.removeTab(tab2);
+  BrowserTestUtils.removeTab(tab3);
 });

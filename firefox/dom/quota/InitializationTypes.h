@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30,9 +28,10 @@ enum class Initialization {
   UpgradeStorageFrom2_0To2_1 = 1 << 6,
   UpgradeStorageFrom2_1To2_2 = 1 << 7,
   UpgradeStorageFrom2_2To2_3 = 1 << 8,
-  UpgradeFromIndexedDBDirectory = 1 << 9,
-  UpgradeFromPersistentStorageDirectory = 1 << 10,
-  PersistentRepository = 1 << 11,
+  UpgradeStorageFrom2_3To2_4 = 1 << 9,
+  UpgradeFromIndexedDBDirectory = 1 << 10,
+  UpgradeFromPersistentStorageDirectory = 1 << 11,
+  PersistentRepository = 1 << 12,
 };
 
 enum class GroupInitialization {

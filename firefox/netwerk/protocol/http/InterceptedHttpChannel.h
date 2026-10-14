@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,11 +7,12 @@
 
 #include "HttpBaseChannel.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
-#include "nsINetworkInterceptController.h"
-#include "nsIInputStream.h"
 #include "nsICacheInfoChannel.h"
+#include "nsIInputStream.h"
+#include "nsINetworkInterceptController.h"
 #include "nsIThreadRetargetableRequest.h"
 #include "nsIThreadRetargetableStreamListener.h"
+#include "nsInputStreamPump.h"
 
 namespace mozilla::net {
 
@@ -73,6 +72,8 @@ class InterceptedHttpChannel final
   nsCOMPtr<nsIInputStream> mBodyReader;
   nsCOMPtr<nsISupports> mReleaseHandle;
   nsCOMPtr<nsIProgressEventSink> mProgressSink;
+  // Lets the retargeted OnDataAvailable avoid reading mProgressSink.
+  Atomic<bool> mHasProgressSink{false};
   nsCOMPtr<nsIInterceptedBodyCallback> mBodyCallback;
   nsCOMPtr<nsICacheInfoChannel> mSynthesizedCacheInfo;
   RefPtr<nsInputStreamPump> mPump;
@@ -169,7 +170,7 @@ class InterceptedHttpChannel final
     // The final status of the interception.
     Status mStatus;
 
-    bool mIsNonSubresourceRequest;
+    bool mIsNonSubresourceRequest = false;
     // The keys used for telemetries.
     nsCString mKey;
     nsCString mSubresourceKey;
@@ -319,6 +320,16 @@ class InterceptedHttpChannel final
   void DoNotifyListenerCleanup() override;
 
   void DoAsyncAbort(nsresult aStatus) override;
+
+  NS_IMETHOD GetDecompressDictionary(
+      DictionaryCacheEntry** aDictionary) override {
+    *aDictionary = nullptr;
+    return NS_OK;
+  }
+  NS_IMETHOD SetDecompressDictionary(
+      DictionaryCacheEntry* aDictionary) override {
+    return NS_OK;
+  }
 };
 
 }  // namespace mozilla::net

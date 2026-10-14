@@ -17,11 +17,6 @@ support-files = [
 ]
 
 ["test_bug883173.html"]
-skip-if = [
-  "os == 'linux' && os_version == '18.04' && asan", # Bug 1829511
-  "os == 'linux' && os_version == '18.04' && tsan", # Bug 1829511
-  "os == 'linux' && os_version == '18.04' && debug", # Bug 1829511
-]
 
 ["test_bug895091.html"]
 
@@ -38,7 +33,9 @@ skip-if = [
 ["test_texttrack_cors_preload_none.html"]
 
 ["test_texttrack_mode_change_during_loading.html"]
-skip-if = ["true"]
+skip-if = [
+  "true",
+]
 
 ["test_texttrack_moz.html"]
 
@@ -72,11 +69,13 @@ skip-if = ["true"]
 
 ["test_webvtt_positionalign.html"]
 
+["test_webvtt_process_cues_exception.html"]
+
 ["test_webvtt_resistfingerprinting.html"]
 support-files = [
   "basicvtt-server.sjs",
 ]
-run-sequentially = "An extension having the same id is installed/uninstalled in different tests"
+run-sequentially = ["true"] # An extension having the same id is installed/uninstalled in different tests
 
 ["test_webvtt_seeking.html"]
 

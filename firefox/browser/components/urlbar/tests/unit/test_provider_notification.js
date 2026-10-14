@@ -10,19 +10,18 @@ let context;
 add_setup(async function () {
   firstProvider = new UrlbarTestUtils.TestProvider({
     results: [
-      new UrlbarResult(
-        UrlbarUtils.RESULT_TYPE.URL,
-        UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-        {
+      new UrlbarResult({
+        type: UrlbarShared.RESULT_TYPE.URL,
+        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+        payload: {
           url: "https://mozilla.com/",
           tags: [],
           title: "mozilla.com",
-          displayUrl: "mozilla.com",
-        }
-      ),
+        },
+      }),
     ],
     priority: 999,
-    type: UrlbarUtils.PROVIDER_TYPE.PROFILE,
+    type: UrlbarShared.PROVIDER_TYPE.PROFILE,
     name: "firstProvider",
     onEngagement: () => {},
     onAbandonment: () => {},
@@ -32,19 +31,18 @@ add_setup(async function () {
 
   secondProvider = new UrlbarTestUtils.TestProvider({
     results: [
-      new UrlbarResult(
-        UrlbarUtils.RESULT_TYPE.URL,
-        UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-        {
+      new UrlbarResult({
+        type: UrlbarShared.RESULT_TYPE.URL,
+        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+        payload: {
           url: "https://example.com/",
           tags: [],
           title: "example.com",
-          displayUrl: "example.com",
-        }
-      ),
+        },
+      }),
     ],
     priority: 999,
-    type: UrlbarUtils.PROVIDER_TYPE.PROFILE,
+    type: UrlbarShared.PROVIDER_TYPE.PROFILE,
     name: "secondProvider",
   });
 
@@ -52,12 +50,13 @@ add_setup(async function () {
     providers: [firstProvider.name, secondProvider.name],
   });
 
-  UrlbarProvidersManager.registerProvider(firstProvider);
-  UrlbarProvidersManager.registerProvider(secondProvider);
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  providersManager.registerProvider(firstProvider);
+  providersManager.registerProvider(secondProvider);
 
   registerCleanupFunction(() => {
-    UrlbarProvidersManager.unregisterProvider(firstProvider);
-    UrlbarProvidersManager.unregisterProvider(secondProvider);
+    providersManager.unregisterProvider(firstProvider);
+    providersManager.unregisterProvider(secondProvider);
     sinon.restore();
   });
 });
@@ -67,8 +66,9 @@ add_task(async function testOnEngagementNotification() {
 
   const engagedResult = makeVisitResult(context, {
     uri: "https://mozilla.com/",
+    title: "mozilla.com",
     providerName: "firstProvider",
-    source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+    source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
   });
 
   await check_results({
@@ -77,20 +77,21 @@ add_task(async function testOnEngagementNotification() {
       engagedResult,
       makeVisitResult(context, {
         uri: "https://example.com/",
+        title: "example.com",
         providerName: "secondProvider",
-        source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
       }),
     ],
   });
 
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
   controller.setView({
     get visibleResults() {
       return context.results;
     },
   });
 
-  await UrlbarProvidersManager.notifyEngagementChange(
+  await ProvidersManager.getInstanceForSap("urlbar").notifyEngagementChange(
     "engagement",
     context,
     {
@@ -114,25 +115,27 @@ add_task(async function testOnAbandonmentNotification() {
     matches: [
       makeVisitResult(context, {
         uri: "https://mozilla.com/",
+        title: "mozilla.com",
         providerName: "firstProvider",
-        source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
       }),
       makeVisitResult(context, {
         uri: "https://example.com/",
+        title: "example.com",
         providerName: "secondProvider",
-        source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
       }),
     ],
   });
 
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
   controller.setView({
     get visibleResults() {
       return context.results;
     },
   });
 
-  await UrlbarProvidersManager.notifyEngagementChange(
+  await ProvidersManager.getInstanceForSap("urlbar").notifyEngagementChange(
     "abandonment",
     context,
     {},
@@ -151,8 +154,9 @@ add_task(async function testOnImpressionNotification() {
 
   const engagedResult = makeVisitResult(context, {
     uri: "https://mozilla.com/",
+    title: "mozilla.com",
     providerName: "firstProvider",
-    source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+    source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
   });
 
   await check_results({
@@ -161,20 +165,22 @@ add_task(async function testOnImpressionNotification() {
       engagedResult,
       makeVisitResult(context, {
         uri: "https://example.com/",
+        title: "example.com",
         providerName: "secondProvider",
-        source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
       }),
     ],
   });
 
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
   controller.setView({
     get visibleResults() {
       return context.results;
     },
   });
 
-  await UrlbarProvidersManager.notifyEngagementChange(
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  await providersManager.notifyEngagementChange(
     "engagement",
     context,
     {
@@ -190,7 +196,7 @@ add_task(async function testOnImpressionNotification() {
     "onImpression called for first provider after an engagement event"
   );
 
-  await UrlbarProvidersManager.notifyEngagementChange(
+  await providersManager.notifyEngagementChange(
     "abandonment",
     context,
     {
@@ -215,8 +221,9 @@ add_task(async function testOnSearchSessionEndNotification() {
 
   const engagedResult = makeVisitResult(context, {
     uri: "https://mozilla.com/",
+    title: "mozilla.com",
     providerName: "firstProvider",
-    source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+    source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
   });
 
   await check_results({
@@ -225,20 +232,22 @@ add_task(async function testOnSearchSessionEndNotification() {
       engagedResult,
       makeVisitResult(context, {
         uri: "https://example.com/",
+        title: "example.com",
         providerName: "secondProvider",
-        source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+        source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
       }),
     ],
   });
 
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
   controller.setView({
     get visibleResults() {
       return context.results;
     },
   });
 
-  await UrlbarProvidersManager.notifyEngagementChange(
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  await providersManager.notifyEngagementChange(
     "engagement",
     context,
     {
@@ -254,7 +263,7 @@ add_task(async function testOnSearchSessionEndNotification() {
     "onSearchSessionEnd called for first provider after an engagement event"
   );
 
-  await UrlbarProvidersManager.notifyEngagementChange(
+  await providersManager.notifyEngagementChange(
     "abandonment",
     context,
     {
@@ -279,9 +288,10 @@ add_task(async function testProviderPresenceInMap() {
     "onSearchSessionEnd",
   ];
 
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
   for (const method of notificationMethods) {
     const providersForMethod =
-      UrlbarProvidersManager.providersByNotificationType[method];
+      providersManager.providersByNotificationType[method];
 
     const isFirstProviderPresent = providersForMethod.has(firstProvider);
     const isSecondProviderPresent = providersForMethod.has(secondProvider);
@@ -296,11 +306,11 @@ add_task(async function testProviderPresenceInMap() {
     );
   }
 
-  UrlbarProvidersManager.unregisterProvider(firstProvider);
+  providersManager.unregisterProvider(firstProvider);
 
   for (const method of notificationMethods) {
     const providersForMethod =
-      UrlbarProvidersManager.providersByNotificationType[method];
+      providersManager.providersByNotificationType[method];
     const isPresent = providersForMethod.has(firstProvider);
     Assert.ok(
       !isPresent,

@@ -1,5 +1,9 @@
 "use strict";
 
+const { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
+);
+
 const gPrefs = Services.prefs;
 
 function symmetricEquality(expect, a, b) {
@@ -844,7 +848,7 @@ add_test(function test_invalidHostChars() {
       "Trying to set hostname containing char code: " + i
     );
   }
-  for (let c of '@[]*<>|:"') {
+  for (let c of "@[]<>|:") {
     Assert.throws(
       () => {
         url = url
@@ -1224,4 +1228,95 @@ add_task(async function test_bug1914141() {
   equal(Services.io.isValidHostname("zzzz::1.2.3.4"), false);
 
   equal(Services.io.isValidHostname("::1.2.3.4"), true);
+});
+
+add_task(async function test_bug1998992() {
+  const maxLength = Services.prefs.getIntPref(
+    "network.standard-url.max-length"
+  );
+
+  let uri = stringToURL("http://example.com/");
+
+  const baseLength = uri.spec.length;
+  const targetEncodedLength = maxLength - baseLength + 100;
+
+  const numSpaces = Math.ceil(targetEncodedLength / 3);
+  const longRef = " ".repeat(numSpaces);
+
+  Assert.throws(
+    () => {
+      uri.mutate().setRef(longRef).finalize();
+    },
+    /NS_ERROR_MALFORMED_URI/,
+    "SetRef should reject refs that exceed max length after encoding"
+  );
+
+  Assert.throws(
+    () => {
+      uri.mutate().setQuery(longRef).finalize();
+    },
+    /NS_ERROR_MALFORMED_URI/,
+    "SetQuery should reject queries that exceed max length after encoding"
+  );
+});
+
+// SetPathQueryRef and SetFilePath re-enter SetSpecInternal, which clears the
+// URL before reparsing. If the reparse succeeds but normalization then fails,
+// the segments describe the candidate spec while mSpec is empty; both setters
+// run SanityCheck() on the way out, which MOZ_CRASHes on such a URL.
+add_task(async function test_bug2049622() {
+  const maxLength = Services.prefs.getIntPref(
+    "network.standard-url.max-length"
+  );
+
+  const spec = "http://example.com/dir/file.html?q=1#ref";
+  let uri = stringToURL(spec);
+
+  // Each U+00E9 is 2 bytes of UTF-8 that escape to "%C3%A9", so the path is
+  // short enough to clear the pre-parse length checks but 3x too long once
+  // escaped -- i.e. it fails in BuildNormalizedSpec, after ParseURL succeeded.
+  const numChars = Math.ceil((maxLength - uri.spec.length + 100) / 6);
+  const longPath = "/" + "é".repeat(numChars);
+
+  Assert.throws(
+    () => {
+      uri.mutate().setPathQueryRef(longPath).finalize();
+    },
+    /NS_ERROR_MALFORMED_URI/,
+    "SetPathQueryRef should reject paths that exceed max length after encoding"
+  );
+
+  Assert.throws(
+    () => {
+      uri.mutate().setFilePath(longPath).finalize();
+    },
+    /NS_ERROR_MALFORMED_URI/,
+    "SetFilePath should reject file paths that exceed max length after encoding"
+  );
+
+  Assert.equal(uri.spec, spec, "the original URL is untouched");
+});
+
+// CoalescePath skips net_CoalesceDirs unless the path contains a '/' followed
+// by '.' or '%'. Pin both sides of that test: paths that must still coalesce,
+// and paths whose '.'/'%' never follows a '/' and so must be left alone.
+add_task(async function test_coalesce_prescan() {
+  for (let [path, expected] of [
+    ["/a/./b", "/a/b"],
+    ["/a/../b", "/b"],
+    ["/a/%2e/b", "/a/b"],
+    ["/a/%2e%2e/b", "/b"],
+    ["/a/.%2e/b", "/b"],
+    ["/a/%2e./b", "/b"],
+    ["/a/b/..", "/a/"],
+    ["/a/b/.", "/a/b/"],
+    ["/a/./b?q=.&r=%2e#f.g", "/a/b?q=.&r=%2e#f.g"],
+    // No '/' immediately before the '.' or '%', so nothing to coalesce.
+    ["/a.b/c.html", "/a.b/c.html"],
+    ["/a%2e./b", "/a%2e./b"],
+    ["/dir/file.html", "/dir/file.html"],
+  ]) {
+    let url = stringToURL("http://example.com" + path);
+    Assert.equal(url.pathQueryRef, expected, path);
+  }
 });

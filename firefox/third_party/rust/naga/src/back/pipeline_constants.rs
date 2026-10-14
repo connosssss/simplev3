@@ -1,6 +1,8 @@
 use alloc::{
     borrow::Cow,
+    boxed::Box,
     string::{String, ToString},
+    vec::Vec,
 };
 use core::mem;
 
@@ -18,7 +20,8 @@ use crate::{
     Span, Statement, TypeInner, WithSpan,
 };
 
-#[cfg(no_std)]
+// Possibly unused if not compiled with no_std
+#[allow(unused_imports)]
 use num_traits::float::FloatCore as _;
 
 #[derive(Error, Debug, Clone)]
@@ -26,6 +29,8 @@ use num_traits::float::FloatCore as _;
 pub enum PipelineConstantError {
     #[error("Missing value for pipeline-overridable constant with identifier string: '{0}'")]
     MissingValue(String),
+    #[error("pipeline-overridable constant '{0}' not found in the shader")]
+    NotFound(String),
     #[error(
         "Source f64 value needs to be finite ({}) for number destinations",
         "NaNs and Inifinites are not allowed"
@@ -36,12 +41,22 @@ pub enum PipelineConstantError {
     #[error(transparent)]
     ConstantEvaluatorError(#[from] ConstantEvaluatorError),
     #[error(transparent)]
-    ValidationError(#[from] WithSpan<ValidationError>),
+    ValidationError(#[from] Box<WithSpan<ValidationError>>),
     #[error("workgroup_size override isn't strictly positive")]
     NegativeWorkgroupSize,
+    #[error("max vertices or max primitives is negative")]
+    NegativeMeshOutputMax,
 }
 
 /// Compact `module` and replace all overrides with constants.
+///
+/// `module` must be valid. Both compaction and constant evaluation may produce
+/// invalid results (e.g. replace an invalid expression with a constant) for
+/// invalid modules.
+///
+/// If `entry_point` is specified, remove all other entry points from the
+/// returned module. Without this, re-validation will fail if any entry point
+/// uses an override whose value wasn't provided.
 ///
 /// If no changes are needed, this just returns `Cow::Borrowed` references to
 /// `module` and `module_info`. Otherwise, it clones `module`, retains only the
@@ -59,6 +74,27 @@ pub fn process_overrides<'a>(
     entry_point: Option<(ir::ShaderStage, &str)>,
     pipeline_constants: &PipelineConstants,
 ) -> Result<(Cow<'a, Module>, Cow<'a, ModuleInfo>), PipelineConstantError> {
+    let mut handles = module
+        .overrides
+        .iter()
+        .map(|(handle, _)| handle)
+        .collect::<Vec<_>>();
+    for c in pipeline_constants.keys() {
+        let c_id = c.parse().ok();
+        if let Some((i, _)) = handles.iter().enumerate().find(|&(_, handle)| {
+            let o = &module.overrides[*handle];
+            if o.id.is_some() {
+                o.id == c_id
+            } else {
+                o.name.as_deref() == Some(c.as_str())
+            }
+        }) {
+            handles.swap_remove(i);
+        } else {
+            return Err(PipelineConstantError::NotFound(c.clone()));
+        }
+    }
+
     if (entry_point.is_none() || module.entry_points.len() <= 1) && module.overrides.is_empty() {
         // We skip compacting the module here mostly to reduce the risk of
         // hitting corner cases like https://github.com/gfx-rs/wgpu/issues/7793.
@@ -114,7 +150,7 @@ pub fn process_overrides<'a>(
 
     // An iterator through the original overrides table, consumed in
     // approximate tandem with the global expressions.
-    let mut overrides = mem::take(&mut module.overrides);
+    let mut overrides = module.overrides.take();
     let mut override_iter = overrides.iter_mut_span();
 
     // Do two things in tandem:
@@ -233,7 +269,7 @@ pub fn process_overrides<'a>(
         }
     }
 
-    let mut functions = mem::take(&mut module.functions);
+    let mut functions = module.functions.take();
     for (_, function) in functions.iter_mut() {
         process_function(&mut module, &override_map, &mut layouter, function)?;
     }
@@ -243,6 +279,7 @@ pub fn process_overrides<'a>(
     for ep in entry_points.iter_mut() {
         process_function(&mut module, &override_map, &mut layouter, &mut ep.function)?;
         process_workgroup_size_override(&mut module, &adjusted_global_expressions, ep)?;
+        process_mesh_shader_overrides(&mut module, &adjusted_global_expressions, ep)?;
     }
     module.entry_points = entry_points;
     module.overrides = overrides;
@@ -276,7 +313,7 @@ fn process_workgroup_size_override(
                         Some(h) => {
                             ep.workgroup_size[i] = module
                                 .to_ctx()
-                                .eval_expr_to_u32(adjusted_global_expressions[h])
+                                .get_const_val(adjusted_global_expressions[h])
                                 .map(|n| {
                                     if n == 0 {
                                         Err(PipelineConstantError::NegativeWorkgroupSize)
@@ -291,6 +328,28 @@ fn process_workgroup_size_override(
                 },
             )?;
             ep.workgroup_size_overrides = None;
+        }
+    }
+    Ok(())
+}
+
+fn process_mesh_shader_overrides(
+    module: &mut Module,
+    adjusted_global_expressions: &HandleVec<Expression, Handle<Expression>>,
+    ep: &mut crate::EntryPoint,
+) -> Result<(), PipelineConstantError> {
+    if let Some(ref mut mesh_info) = ep.mesh_info {
+        if let Some(r#override) = mesh_info.max_vertices_override {
+            mesh_info.max_vertices = module
+                .to_ctx()
+                .get_const_val(adjusted_global_expressions[r#override])
+                .map_err(|_| PipelineConstantError::NegativeMeshOutputMax)?;
+        }
+        if let Some(r#override) = mesh_info.max_primitives_override {
+            mesh_info.max_primitives = module
+                .to_ctx()
+                .get_const_val(adjusted_global_expressions[r#override])
+                .map_err(|_| PipelineConstantError::NegativeMeshOutputMax)?;
         }
     }
     Ok(())
@@ -370,7 +429,7 @@ fn process_function(
 
     let mut local_expression_kind_tracker = crate::proc::ExpressionKindTracker::new();
 
-    let mut expressions = mem::take(&mut function.expressions);
+    let mut expressions = function.expressions.take();
 
     // Dummy `emitter` and `block` for the constant evaluator.
     // We can ignore the concept of emitting expressions here since
@@ -633,6 +692,19 @@ fn adjust_expr(new_pos: &HandleVec<Expression, Handle<Expression>>, expr: &mut E
         } => {
             adjust(query);
         }
+        Expression::CooperativeLoad { ref mut data, .. } => {
+            adjust(&mut data.pointer);
+            adjust(&mut data.stride);
+        }
+        Expression::CooperativeMultiplyAdd {
+            ref mut a,
+            ref mut b,
+            ref mut c,
+        } => {
+            adjust(a);
+            adjust(b);
+            adjust(c);
+        }
     }
 }
 
@@ -833,6 +905,34 @@ fn adjust_stmt(new_pos: &HandleVec<Expression, Handle<Expression>>, stmt: &mut S
                 }
                 crate::RayQueryFunction::ConfirmIntersection => {}
                 crate::RayQueryFunction::Terminate => {}
+                crate::RayQueryFunction::Begin => {}
+            }
+        }
+        Statement::CooperativeStore {
+            ref mut target,
+            ref mut data,
+        } => {
+            adjust(target);
+            adjust(&mut data.pointer);
+            adjust(&mut data.stride);
+        }
+        Statement::RayPipelineFunction(ref mut func) => match *func {
+            crate::RayPipelineFunction::TraceRay {
+                ref mut acceleration_structure,
+                ref mut descriptor,
+                ref mut payload,
+            } => {
+                adjust(acceleration_structure);
+                adjust(descriptor);
+                adjust(payload);
+            }
+        },
+        Statement::DebugPrintf {
+            format: _,
+            ref mut arguments,
+        } => {
+            for argument in arguments.iter_mut() {
+                adjust(argument);
             }
         }
         Statement::Break
@@ -939,6 +1039,32 @@ fn map_value_to_literal(value: f64, scalar: Scalar) -> Result<Literal, PipelineC
             // https://webidl.spec.whatwg.org/#js-boolean
             let value = value != 0.0 && !value.is_nan();
             Ok(Literal::Bool(value))
+        }
+        Scalar::I16 => {
+            if !value.is_finite() {
+                return Err(PipelineConstantError::SrcNeedsToBeFinite);
+            }
+
+            let value = value.trunc();
+            if value < f64::from(i16::MIN) || value > f64::from(i16::MAX) {
+                return Err(PipelineConstantError::DstRangeTooSmall);
+            }
+
+            let value = value as i16;
+            Ok(Literal::I16(value))
+        }
+        Scalar::U16 => {
+            if !value.is_finite() {
+                return Err(PipelineConstantError::SrcNeedsToBeFinite);
+            }
+
+            let value = value.trunc();
+            if value < f64::from(u16::MIN) || value > f64::from(u16::MAX) {
+                return Err(PipelineConstantError::DstRangeTooSmall);
+            }
+
+            let value = value as u16;
+            Ok(Literal::U16(value))
         }
         Scalar::I32 => {
             // https://webidl.spec.whatwg.org/#js-long

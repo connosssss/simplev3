@@ -11,7 +11,13 @@ import { useIntersectionObserver } from "../../lib/utils";
 // If a feature is triggered outside of this flow (e.g., the Mobile Download QR Promo),
 // it should emit New Tab-specific Glean events independently.
 
-function MessageWrapper({ children, dispatch, hiddenOverride, onDismiss }) {
+function MessageWrapper({
+  children,
+  dispatch,
+  hiddenOverride,
+  onDismiss,
+  wrapperClassName,
+}) {
   const message = useSelector(state => state.Messages);
   const [isIntersecting, setIsIntersecting] = useState(false);
   const [tabIsVisible, setTabIsVisible] = useState(
@@ -20,10 +26,16 @@ function MessageWrapper({ children, dispatch, hiddenOverride, onDismiss }) {
   );
   const [hasRun, setHasRun] = useState();
 
+  // The observer only fires once per element, so record the intersection even
+  // while the tab is hidden and let the effects below wait for the tab to be
+  // shown.
   const handleIntersection = useCallback(() => {
     setIsIntersecting(true);
+  }, []);
+
+  useEffect(() => {
     // only send impression if messageId is defined and tab is visible
-    if (tabIsVisible && message.messageData.id && !hasRun) {
+    if (isIntersecting && tabIsVisible && message.messageData.id && !hasRun) {
       setHasRun(true);
       dispatch(
         ac.AlsoToMain({
@@ -32,11 +44,12 @@ function MessageWrapper({ children, dispatch, hiddenOverride, onDismiss }) {
         })
       );
     }
-  }, [dispatch, message, tabIsVisible, hasRun]);
+  }, [dispatch, message, tabIsVisible, isIntersecting, hasRun]);
 
   useEffect(() => {
-    // we dont want to dispatch this action unless the current tab is open and visible
-    if (message.isVisible && tabIsVisible) {
+    // we dont want to dispatch this action unless the current tab is open and
+    // visible, and the message has been scrolled into view
+    if (message.isVisible && tabIsVisible && isIntersecting) {
       dispatch(
         ac.AlsoToMain({
           type: at.MESSAGE_NOTIFY_VISIBILITY,
@@ -44,7 +57,7 @@ function MessageWrapper({ children, dispatch, hiddenOverride, onDismiss }) {
         })
       );
     }
-  }, [message, dispatch, tabIsVisible]);
+  }, [message, dispatch, tabIsVisible, isIntersecting]);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -78,7 +91,7 @@ function MessageWrapper({ children, dispatch, hiddenOverride, onDismiss }) {
     onDismiss?.();
   }, [dispatch, message, onDismiss]);
 
-  function handleDismiss() {
+  const handleDismiss = useCallback(() => {
     const { id } = message.messageData;
     if (id) {
       dispatch(
@@ -89,9 +102,9 @@ function MessageWrapper({ children, dispatch, hiddenOverride, onDismiss }) {
       );
     }
     handleClose();
-  }
+  }, [dispatch, message, handleClose]);
 
-  function handleBlock() {
+  const handleBlock = useCallback(() => {
     const { id } = message.messageData;
     if (id) {
       dispatch(
@@ -101,19 +114,22 @@ function MessageWrapper({ children, dispatch, hiddenOverride, onDismiss }) {
         })
       );
     }
-  }
+  }, [dispatch, message]);
 
-  function handleClick(elementId) {
-    const { id } = message.messageData;
-    if (id) {
-      dispatch(
-        ac.OnlyToMain({
-          type: at.MESSAGE_CLICK,
-          data: { message: message.messageData, source: elementId || "" },
-        })
-      );
-    }
-  }
+  const handleClick = useCallback(
+    elementId => {
+      const { id } = message.messageData;
+      if (id) {
+        dispatch(
+          ac.OnlyToMain({
+            type: at.MESSAGE_CLICK,
+            data: { message: message.messageData, source: elementId || "" },
+          })
+        );
+      }
+    },
+    [dispatch, message]
+  );
 
   if (!message || (!hiddenOverride && !message.isVisible)) {
     return null;
@@ -125,7 +141,11 @@ function MessageWrapper({ children, dispatch, hiddenOverride, onDismiss }) {
       ref={el => {
         ref.current = [el];
       }}
-      className="message-wrapper"
+      className={
+        wrapperClassName
+          ? `message-wrapper ${wrapperClassName}`
+          : "message-wrapper"
+      }
     >
       {React.cloneElement(children, {
         isIntersecting,
@@ -133,6 +153,7 @@ function MessageWrapper({ children, dispatch, hiddenOverride, onDismiss }) {
         handleClick,
         handleBlock,
         handleClose,
+        dispatch,
       })}
     </div>
   );

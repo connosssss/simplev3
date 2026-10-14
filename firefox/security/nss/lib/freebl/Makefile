@@ -112,9 +112,9 @@ endif
 # NSS_X64 means the target is a 64-bits 64 CPU architecture
 # NSS_X86_OR_X64 means the target is either x86 or x64
 ifeq (,$(filter-out i386 x386 x86 x86_64,$(CPU_ARCH)))
-        DEFINES += -DNSS_X86_OR_X64
-        EXTRA_SRCS += gcm-x86.c aes-x86.c
-$(OBJDIR)/gcm-x86.o: CFLAGS += -mpclmul -maes
+        DEFINES += -DNSS_X86_OR_X64 -DHAVE_PLATFORM_GHASH
+        EXTRA_SRCS += ghash-x86.c aes-x86.c
+$(OBJDIR)/ghash-x86.o: CFLAGS += -mpclmul -maes
 $(OBJDIR)/aes-x86.o: CFLAGS += -mpclmul -maes
 ifneq (,$(USE_64)$(USE_X32))
         DEFINES += -DNSS_X64
@@ -137,27 +137,58 @@ endif
     endif
 endif
 ifeq ($(CPU_ARCH),aarch64)
-    ifdef CC_IS_CLANG
+    # CC_IS_GCC covers clang too; the Arm crypto extension intrinsics need one
+    # or the other.
+    ifeq (1,$(CC_IS_GCC))
         DEFINES += -DUSE_HW_AES -DUSE_HW_SHA1 -DUSE_HW_SHA2
-        EXTRA_SRCS += aes-armv8.c gcm-aarch64.c sha1-armv8.c sha256-armv8.c
-    else ifeq (1,$(CC_IS_GCC))
-        # GCC versions older than 4.9 don't support ARM AES. The check
-        # is done in two parts, first allows "major.minor" == "4.9",
-        # and then rejects any major versions prior to 5. Note that
-        # there has been no GCC 4.10, as it was renamed to GCC 5.
-        ifneq (,$(filter 4.9,$(word 1,$(GCC_VERSION)).$(word 2,$(GCC_VERSION))))
-            DEFINES += -DUSE_HW_AES -DUSE_HW_SHA1 -DUSE_HW_SHA2
-            EXTRA_SRCS += aes-armv8.c gcm-aarch64.c sha1-armv8.c sha256-armv8.c
+        EXTRA_SRCS += aes-armv8.c sha1-armv8.c sha256-armv8.c
+        # The PMULL code is little-endian only. This must agree with the #if
+        # in ghash-aarch64.c, or freebl ends up with duplicate or missing
+        # gcm_*_hw symbols. See bug 2068010.
+        ifeq ($(LITTLE_ENDIAN),1)
+            AARCH64_PMULL = 1
         endif
-        ifeq (,$(filter 0 1 2 3 4,$(word 1,$(GCC_VERSION))))
-            DEFINES += -DUSE_HW_AES -DUSE_HW_SHA1 -DUSE_HW_SHA2
-            EXTRA_SRCS += aes-armv8.c gcm-aarch64.c sha1-armv8.c sha256-armv8.c
+    endif
+    ifdef AARCH64_PMULL
+        DEFINES += -DHAVE_PLATFORM_GHASH
+        EXTRA_SRCS += ghash-aarch64.c
+    endif
+    # AArch64 AES-GCM implementation from AWS-LC. Not supported on Windows.
+    # It bridges to the ghash-aarch64.c hash context, so it needs PMULL too.
+    ifndef USE_STUB_BUILD
+    ifdef AARCH64_PMULL
+    ifneq ($(OS_TARGET),WINNT)
+        DEFINES += -DHAVE_PLATFORM_GCM
+        EXTRA_SRCS += aarch64-gcm-wrap.c
+        AARCH64_GCM = 1
+        # The .S assembly files are preprocessed and therefore not handled by
+        # the ASFILES suffix substitution (which only matches $(ASM_SUFFIX)),
+        # so add their object files to OBJS explicitly. This must happen before
+        # coreconf/rules.mk is included so they become link prerequisites. The
+        # C wrapper rides along in EXTRA_SRCS, which the parent (loader-only)
+        # build discards by resetting CSRCS; the OBJS addition bypasses that, so
+        # restrict it to the child build that compiles the real library.
+        AARCH64_GCM_ASFILES = \
+            aarch64-gcm-slothy/gcm-128-enc.S \
+            aarch64-gcm-slothy/gcm-192-enc.S \
+            aarch64-gcm-slothy/gcm-256-enc.S \
+            aarch64-gcm-slothy/gcm-128-dec.S \
+            aarch64-gcm-slothy/gcm-192-dec.S \
+            aarch64-gcm-slothy/gcm-256-dec.S \
+            $(NULL)
+        ifdef FREEBL_CHILD_BUILD
+            OBJS += $(addprefix $(OBJDIR)/$(PROG_PREFIX), $(AARCH64_GCM_ASFILES:.S=$(OBJ_SUFFIX)))
         endif
+    endif
+    endif
     endif
 endif
 ifeq ($(CPU_ARCH),arm)
 ifndef NSS_DISABLE_ARM32_NEON
-    EXTRA_SRCS += gcm-arm32-neon.c
+    ifeq ($(LITTLE_ENDIAN),1)
+        DEFINES += -DHAVE_PLATFORM_GHASH
+    endif
+    EXTRA_SRCS += ghash-arm32-neon.c
 endif
     ifdef CC_IS_CLANG
         DEFINES += -DUSE_HW_AES -DUSE_HW_SHA1 -DUSE_HW_SHA2
@@ -201,11 +232,11 @@ else
     # The Intel AES assembly code requires Visual C++ 2010.
     # if $(_MSC_VER) >= 1600 (Visual C++ 2010)
     ifeq ($(firstword $(sort $(_MSC_VER) 1600)),1600)
-	DEFINES += -DUSE_HW_AES -DINTEL_GCM
+	DEFINES += -DUSE_HW_AES -DHAVE_PLATFORM_GCM
 	ASFILES += intel-aes-x86-masm.asm intel-gcm-x86-masm.asm
 	EXTRA_SRCS += intel-gcm-wrap.c
 	ifeq ($(CLANG_CL),1)
-	    INTEL_GCM_CLANG_CL = 1
+	    INTEL_GCM = 1
 	endif
     endif
     # The Intel SHA extenstion requires Visual C++ 2015.
@@ -215,8 +246,6 @@ else
     endif
 endif
 else
-    # -DMP_NO_MP_WORD
-    DEFINES += -DMP_IS_LITTLE_ENDIAN
 ifdef NS_USE_GCC
 # Ideally, we should use amd64 assembly code, but it's not yet mingw-w64
 # compatible.
@@ -232,11 +261,11 @@ ifeq ($(CPU_ARCH),x86_64)
     # The Intel AES assembly code requires Visual C++ 2010 (10.0). The _xgetbv
     # compiler intrinsic function requires Visual C++ 2010 (10.0) SP1.
     ifeq ($(_MSC_VER_GE_10SP1),1)
-	DEFINES += -DUSE_HW_AES -DINTEL_GCM
+	DEFINES += -DUSE_HW_AES -DHAVE_PLATFORM_GCM
 	ASFILES += intel-aes-x64-masm.asm intel-gcm-x64-masm.asm
 	EXTRA_SRCS += intel-gcm-wrap.c
 	ifeq ($(CLANG_CL),1)
-	    INTEL_GCM_CLANG_CL = 1
+	    INTEL_GCM = 1
 	endif
     endif
     # The Intel SHA extenstion requires Visual C++ 2015.
@@ -253,7 +282,7 @@ endif
 ifeq ($(OS_TARGET),Darwin)
 ifeq ($(CPU_ARCH),x86_64)
     ASFILES  = mpi_amd64_common.s
-    DEFINES += -DMPI_AMD64 -DMP_IS_LITTLE_ENDIAN
+    DEFINES += -DMPI_AMD64
     DEFINES += -DMP_ASSEMBLY_MULTIPLY -DNSS_USE_COMBA
     MPI_SRCS += mpi_amd64.c mp_comba.c
 else ifeq ($(CPU_ARCH),x86)
@@ -271,10 +300,9 @@ ifeq ($(CPU_ARCH),x86_64)
     ASFLAGS += -fPIC -Wa,--noexecstack
     DEFINES += -DNSS_BEVAND_ARCFOUR -DMPI_AMD64 -DMP_ASSEMBLY_MULTIPLY
     DEFINES += -DNSS_USE_COMBA
-    DEFINES += -DMP_IS_LITTLE_ENDIAN
 #   DEFINES += -DMPI_AMD64_ADD
     # comment the next four lines to turn off Intel HW acceleration.
-    DEFINES += -DUSE_HW_AES -DINTEL_GCM
+    DEFINES += -DUSE_HW_AES -DHAVE_PLATFORM_GCM
     ASFILES += intel-aes.s intel-gcm.s
     EXTRA_SRCS += intel-gcm-wrap.c
     INTEL_GCM = 1
@@ -284,7 +312,6 @@ ifeq ($(CPU_ARCH),x86)
     ASFILES  = mpi_x86.s
     DEFINES += -DMP_ASSEMBLY_MULTIPLY -DMP_ASSEMBLY_SQUARE
     DEFINES += -DMP_ASSEMBLY_DIV_2DX1D -DMP_USE_UINT_DIGIT
-    DEFINES += -DMP_IS_LITTLE_ENDIAN
 endif
 ifeq ($(CPU_ARCH),arm)
     DEFINES += -DMP_ASSEMBLY_MULTIPLY -DMP_ASSEMBLY_SQUARE
@@ -293,16 +320,19 @@ ifeq ($(CPU_ARCH),arm)
     MPI_SRCS += mpi_arm.c
 endif
 ifeq ($(CPU_ARCH),ppc)
-    EXTRA_SRCS += gcm-ppc.c
+    ifeq ($(LITTLE_ENDIAN),1)
+        DEFINES += -DHAVE_PLATFORM_GHASH
+    endif
+    EXTRA_SRCS += ghash-ppc.c
 ifdef USE_64
     DEFINES += -DNSS_NO_INIT_SUPPORT
     PPC_ABI := $(shell $(CC) -dM -E - < /dev/null | awk '$$2 == "_CALL_ELF" {print $$3}')
     ifeq ($(PPC_ABI),2)
         ASFILES += sha512-p8.s
     ifeq ($(OS_TEST),ppc64le)
-        DEFINES += -DPPC_GCM
         EXTRA_SRCS += chacha20poly1305-ppc.c ppc-gcm-wrap.c
         ASFILES += chacha20-ppc64le.s ppc-gcm.s
+        DEFINES += -DHAVE_PLATFORM_GCM
     endif # ppc64le
     endif
 endif # USE_64
@@ -521,8 +551,8 @@ else
 	    # comment the next four lines to turn off Intel HW acceleration
 	    ASFILES += intel-gcm.s
 	    EXTRA_SRCS += intel-gcm-wrap.c
+	    DEFINES += -DHAVE_PLATFORM_GCM
 	    INTEL_GCM = 1
-	    DEFINES += -DINTEL_GCM
 	else
 	    ASFILES  = arcfour-amd64-sun.s mpi_amd64_sun.s sha-fast-amd64-sun.s
 		ASFILES += mp_comba_amd64_sun.s mpcpucache_amd64.s
@@ -533,7 +563,7 @@ else
 	    # Intel acceleration for GCM does not build currently with Studio
 	endif
 	DEFINES += -DNSS_BEVAND_ARCFOUR -DMPI_AMD64 -DMP_ASSEMBLY_MULTIPLY
-	DEFINES += -DNSS_USE_COMBA -DMP_IS_LITTLE_ENDIAN
+	DEFINES += -DNSS_USE_COMBA
 	# comment the next two lines to turn off Intel HW acceleration
 	DEFINES += -DUSE_HW_AES
 	ASFILES += intel-aes.s
@@ -599,9 +629,31 @@ ifndef NSS_DISABLE_CHACHAPOLY
     VERIFIED_SRCS += Hacl_Poly1305_32.c Hacl_Chacha20.c Hacl_Chacha20Poly1305_32.c
 endif # NSS_DISABLE_CHACHAPOLY
 
-VERIFIED_SRCS += Hacl_Hash_SHA3.c Hacl_P256.c Hacl_P384.c Hacl_P521.c libcrux_mlkem768_portable.c libcrux_mlkem_portable.c libcrux_core.c
+VERIFIED_SRCS += Hacl_Hash_SHA3.c Hacl_P256.c Hacl_P384.c Hacl_P521.c
 VERIFIED_SRCS += Hacl_Ed25519.c
 VERIFIED_SRCS += Hacl_Curve25519_51.c
+
+# Vendored libcrux ML-KEM + ML-DSA combined extraction (see lib/freebl/libcrux/).
+# These share one SHA-3/combined_core and are compiled with an isolated include
+# scope (see below) so their krml/eurydice headers don't collide with the HACL*
+# extraction in verified/.
+LIBCRUX_SRCS = combined_core.c libcrux_ct_ops.c libcrux_sha3_portable.c \
+               libcrux_mlkem_core.c libcrux_mlkem_portable.c \
+               libcrux_mlkem512_portable.c libcrux_mlkem768_portable.c \
+               libcrux_mlkem1024_portable.c \
+               libcrux_mldsa_core.c libcrux_mldsa_portable.c \
+               libcrux_mldsa44_portable.c libcrux_mldsa65_portable.c \
+               libcrux_mldsa87_portable.c
+# Bug 2067434 - restrict these to the child build that compiles the real
+# library. The parent (loader-only) and lowhash stub builds reset CSRCS to their
+# single source file, and appending here bypasses that. The stub build shares
+# its OBJDIR with the real single-shlib build, so under make -jN both would
+# compile these to the same object files at once, producing truncated objects.
+ifdef FREEBL_CHILD_BUILD
+ifndef USE_STUB_BUILD
+CSRCS += $(LIBCRUX_SRCS)
+endif
+endif
 
 # Bug 1918767 / Bug 1918711 - by setting KRML_MUSTINLINE=inline here, we
 # avoid it being defined to `inline __forceinline` (for msvc) or `inline
@@ -641,11 +693,29 @@ rijndael_tables:
 	$(OBJDIR)/make_rijndael_tab
 
 vpath %.h mpi ecl verified deprecated
-vpath %.c mpi ecl verified deprecated
+vpath %.c mpi ecl verified deprecated libcrux
 vpath %.S mpi ecl
 vpath %.s mpi ecl
 vpath %.asm mpi ecl
-INCLUDES += -Impi -Iecl -Iverified -Iverified/internal -Iverified/karamel/include -Iverified/karamel/krmllib/dist/minimal -Iverified/eurydice -Ideprecated
+INCLUDES += -Impi -Iecl -Iverified -Iverified/internal -Iverified/karamel/include -Iverified/karamel/krmllib/dist/minimal -Ideprecated
+
+# The vendored libcrux objects and the freebl wrappers that use them (kyber.c,
+# ml_dsa.c) are compiled with the libcrux/ include dirs searched FIRST, so their
+# krml/eurydice headers resolve to the libcrux copies rather than the HACL*
+# copies under verified/.
+LIBCRUX_OBJS = $(addprefix $(OBJDIR)/$(PROG_PREFIX),$(LIBCRUX_SRCS:.c=$(OBJ_SUFFIX)))
+LIBCRUX_USERS = $(LIBCRUX_OBJS) \
+                $(OBJDIR)/$(PROG_PREFIX)kyber$(OBJ_SUFFIX) \
+                $(OBJDIR)/$(PROG_PREFIX)ml_dsa$(OBJ_SUFFIX)
+$(LIBCRUX_USERS): INCLUDES := -Ilibcrux -Ilibcrux/internal -Ilibcrux/karamel $(INCLUDES)
+
+ifeq ($(OS_TARGET),WINNT)
+# C4146: unary minus applied to an unsigned type. eurydice_glue.h does this
+# deliberately in its wrapping_neg helpers, where the wrapped result is the
+# intended value. The extraction is kept byte-identical to upstream (CI diffs
+# it), so silence the warning here rather than patching the header.
+$(LIBCRUX_USERS): CFLAGS += -wd4146
+endif
 
 
 DEFINES += -DMP_API_COMPATIBLE
@@ -737,22 +807,6 @@ ifdef INTEL_GCM
 # GCM binary needs -mssse3
 #
 $(OBJDIR)/$(PROG_PREFIX)intel-gcm-wrap$(OBJ_SUFFIX): CFLAGS += -mssse3
-
-# The integrated assembler in Clang 3.2 does not support % in the
-# expression of a .set directive. intel-gcm.s uses .set to give
-# symbolic names to registers, for example,
-#     .set  Htbl, %rdi
-# So we can't use Clang's integrated assembler with intel-gcm.s.
-ifdef CC_IS_CLANG
-$(OBJDIR)/$(PROG_PREFIX)intel-gcm$(OBJ_SUFFIX): CFLAGS += -no-integrated-as
-endif
-endif
-
-ifdef INTEL_GCM_CLANG_CL
-#
-# clang-cl needs -mssse3
-#
-$(OBJDIR)/$(PROG_PREFIX)intel-gcm-wrap$(OBJ_SUFFIX): CFLAGS += -mssse3
 endif
 
 $(OBJDIR)/$(PROG_PREFIX)sha256-x86$(OBJ_SUFFIX): CFLAGS += -msha -mssse3 -msse4.1
@@ -766,28 +820,38 @@ $(OBJDIR)/$(PROG_PREFIX)aes-armv8$(OBJ_SUFFIX): CFLAGS += -march=armv8-a -mfpu=c
 $(OBJDIR)/$(PROG_PREFIX)sha1-armv8$(OBJ_SUFFIX): CFLAGS += -march=armv8-a -mfpu=crypto-neon-fp-armv8$(if $(USES_SOFTFLOAT_ABI), -mfloat-abi=softfp)
 $(OBJDIR)/$(PROG_PREFIX)sha256-armv8$(OBJ_SUFFIX): CFLAGS += -march=armv8-a -mfpu=crypto-neon-fp-armv8$(if $(USES_SOFTFLOAT_ABI), -mfloat-abi=softfp)
 ifndef NSS_DISABLE_ARM32_NEON
-$(OBJDIR)/$(PROG_PREFIX)gcm-arm32-neon$(OBJ_SUFFIX): CFLAGS += -mfpu=neon$(if $(USES_SOFTFLOAT_ABI), -mfloat-abi=softfp)
+$(OBJDIR)/$(PROG_PREFIX)ghash-arm32-neon$(OBJ_SUFFIX): CFLAGS += -mfpu=neon$(if $(USES_SOFTFLOAT_ABI), -mfloat-abi=softfp)
 endif
 endif
 
 ifeq ($(CPU_ARCH),aarch64)
 $(OBJDIR)/$(PROG_PREFIX)aes-armv8$(OBJ_SUFFIX): CFLAGS += -march=armv8-a+crypto
-$(OBJDIR)/$(PROG_PREFIX)gcm-aarch64$(OBJ_SUFFIX): CFLAGS += -march=armv8-a+crypto
+$(OBJDIR)/$(PROG_PREFIX)ghash-aarch64$(OBJ_SUFFIX): CFLAGS += -march=armv8-a+crypto
 $(OBJDIR)/$(PROG_PREFIX)sha1-armv8$(OBJ_SUFFIX): CFLAGS += -march=armv8-a+crypto
 $(OBJDIR)/$(PROG_PREFIX)sha256-armv8$(OBJ_SUFFIX): CFLAGS += -march=armv8-a+crypto
+endif
+
+ifdef AARCH64_GCM
+# Compile the preprocessed .S assembly with an explicit rule. The generic
+# pattern rules for .s and .S share the same target pattern, so leaving these
+# to implicit-rule resolution lets make chain through a generated .s file and
+# (with some make versions) delete the .S source as an intermediate.
+$(addprefix $(OBJDIR)/$(PROG_PREFIX), $(AARCH64_GCM_ASFILES:.S=$(OBJ_SUFFIX))): $(OBJDIR)/$(PROG_PREFIX)%$(OBJ_SUFFIX): %.S | $$(@D)/d
+	$(CC) -o $@ -c $(CFLAGS) -march=armv8-a+crypto $<
+$(OBJDIR)/$(PROG_PREFIX)aarch64-gcm-wrap$(OBJ_SUFFIX): CFLAGS += -march=armv8-a+crypto
 endif
 
 ifeq ($(CPU_ARCH),ppc)
 $(OBJDIR)/$(PROG_PREFIX)sha512$(OBJ_SUFFIX): CFLAGS += -funroll-loops -fpeel-loops
 ifneq ($(NSS_DISABLE_ALTIVEC),1)
-$(OBJDIR)/$(PROG_PREFIX)gcm-ppc$(OBJ_SUFFIX): CFLAGS += -maltivec
+$(OBJDIR)/$(PROG_PREFIX)ghash-ppc$(OBJ_SUFFIX): CFLAGS += -maltivec
 $(OBJDIR)/$(PROG_PREFIX)gcm$(OBJ_SUFFIX): CFLAGS += -maltivec
 $(OBJDIR)/$(PROG_PREFIX)rijndael$(OBJ_SUFFIX): CFLAGS += -maltivec
 $(OBJDIR)/$(PROG_PREFIX)sha512$(OBJ_SUFFIX): CFLAGS += -maltivec
 $(OBJDIR)/$(PROG_PREFIX)chacha20poly1305-ppc$(OBJ_SUFFIX): CFLAGS += -maltivec
 endif
 ifneq ($(NSS_DISABLE_CRYPTO_VSX),1)
-$(OBJDIR)/$(PROG_PREFIX)gcm-ppc$(OBJ_SUFFIX): CFLAGS += -mcrypto -mvsx
+$(OBJDIR)/$(PROG_PREFIX)ghash-ppc$(OBJ_SUFFIX): CFLAGS += -mcrypto -mvsx
 $(OBJDIR)/$(PROG_PREFIX)gcm$(OBJ_SUFFIX): CFLAGS += -mcrypto -mvsx
 $(OBJDIR)/$(PROG_PREFIX)rijndael$(OBJ_SUFFIX): CFLAGS += -mcrypto -mvsx
 $(OBJDIR)/$(PROG_PREFIX)sha512$(OBJ_SUFFIX): CFLAGS += -mcrypto -mvsx

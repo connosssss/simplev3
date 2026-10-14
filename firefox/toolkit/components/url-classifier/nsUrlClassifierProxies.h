@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,7 +9,6 @@
 #include "nsUrlClassifierDBService.h"
 #include "nsProxyRelease.h"
 #include "nsThreadUtils.h"
-#include "mozilla/Attributes.h"
 #include "nsIPrincipal.h"
 #include "LookupCache.h"
 
@@ -68,12 +66,13 @@ class UrlClassifierDBServiceWorkerProxy final
    public:
     BeginUpdateRunnable(nsUrlClassifierDBServiceWorker* aTarget,
                         nsIUrlClassifierUpdateObserver* aUpdater,
-                        const nsACString& aTables)
+                        const nsACString& aTables, const nsACString& aProvider)
         : mozilla::Runnable(
               "UrlClassifierDBServiceWorkerProxy::BeginUpdateRunnable"),
           mTarget(aTarget),
           mUpdater(aUpdater),
-          mTables(aTables) {}
+          mTables(aTables),
+          mProvider(aProvider) {}
 
     NS_DECL_NSIRUNNABLE
 
@@ -81,6 +80,7 @@ class UrlClassifierDBServiceWorkerProxy final
     const RefPtr<nsUrlClassifierDBServiceWorker> mTarget;
     const nsCOMPtr<nsIUrlClassifierUpdateObserver> mUpdater;
     const nsCString mTables;
+    const nsCString mProvider;
   };
 
   class BeginStreamRunnable : public mozilla::Runnable {
@@ -337,17 +337,20 @@ class UrlClassifierUpdateObserverProxy final
    public:
     UpdateSuccessRunnable(
         const nsMainThreadPtrHandle<nsIUrlClassifierUpdateObserver>& aTarget,
-        uint32_t aRequestedTimeout)
+        const nsTArray<nsCString>& aTables,
+        const nsTArray<uint32_t>& aWaitSeconds)
         : mozilla::Runnable(
               "UrlClassifierUpdateObserverProxy::UpdateSuccessRunnable"),
           mTarget(aTarget),
-          mRequestedTimeout(aRequestedTimeout) {}
+          mTables(aTables.Clone()),
+          mWaitSeconds(aWaitSeconds.Clone()) {}
 
     NS_DECL_NSIRUNNABLE
 
    private:
     const nsMainThreadPtrHandle<nsIUrlClassifierUpdateObserver> mTarget;
-    const uint32_t mRequestedTimeout;
+    const nsTArray<nsCString> mTables;
+    const nsTArray<uint32_t> mWaitSeconds;
   };
 
  private:

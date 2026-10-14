@@ -11,13 +11,13 @@ ChromeUtils.defineESModuleGetters(this, {
 AddonTestUtils.init(this);
 AddonTestUtils.overrideCertDB();
 
-Services.scriptloader.loadSubScript(
+Services.scriptloader.loadSubScriptWithOptions(
   Services.io.newFileURI(do_get_file("head_dnr.js")).spec,
-  this
+  { target: this, allowUnsafeURL: true }
 );
-Services.scriptloader.loadSubScript(
+Services.scriptloader.loadSubScriptWithOptions(
   Services.io.newFileURI(do_get_file("head_dnr_static_rules.js")).spec,
-  this
+  { target: this, allowUnsafeURL: true }
 );
 
 const server = createHttpServer({ hosts: ["example.com"] });
@@ -27,7 +27,6 @@ server.registerPathHandler("/", (req, res) => {
 });
 
 add_setup(async () => {
-  Services.prefs.setBoolPref("extensions.manifestV3.enabled", true);
   Services.prefs.setBoolPref("extensions.dnr.enabled", true);
   Services.prefs.setBoolPref("extensions.dnr.feedback", true);
 

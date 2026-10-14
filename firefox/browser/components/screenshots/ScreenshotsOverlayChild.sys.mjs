@@ -38,6 +38,7 @@ import {
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 import { ShortcutUtils } from "resource://gre/modules/ShortcutUtils.sys.mjs";
+import { SELECTION_MODES } from "moz-src:///browser/components/screenshots/ScreenshotsSelectionModes.sys.mjs";
 
 const STATES = {
   CROSSHAIRS: "crosshairs",
@@ -50,7 +51,10 @@ const STATES = {
 const lazy = {};
 
 ChromeUtils.defineLazyGetter(lazy, "overlayLocalization", () => {
-  return new Localization(["browser/screenshots.ftl"], true);
+  return new Localization(
+    ["browser/screenshots.ftl", "preview/miniWindow.ftl"],
+    true
+  );
 });
 
 const SCREENSHOTS_LAST_SAVED_METHOD_PREF =
@@ -66,11 +70,36 @@ XPCOMUtils.defineLazyPreferenceGetter(
 const REGION_CHANGE_THRESHOLD = 5;
 const SCROLL_BY_EDGE = 20;
 
+// Minimum size of a mini-window crop selection, in content CSS px. An
+// undersized selection is grown to this on selection.
+const MIN_MINI_WINDOW_REGION_WIDTH = 300;
+const MIN_MINI_WINDOW_REGION_HEIGHT = 150;
+
 export class ScreenshotsOverlay {
   #content;
   #initialized = false;
   #state = "";
+  #mode = SELECTION_MODES.SCREENSHOTS;
   #moverId;
+
+  get mode() {
+    return this.#mode;
+  }
+
+  // The built overlay is cached and depends on the mode, so
+  // invalidate it when the mode changes.
+  set mode(value) {
+    if (this.#mode !== value) {
+      this.#mode = value;
+      this.overlayTemplate = null;
+      if (this.selectionRegion) {
+        // Mini-window crops are confined to the visible viewport.
+        this.selectionRegion.confineToViewport =
+          value === SELECTION_MODES.MINI_WINDOW;
+      }
+    }
+  }
+
   #cachedEle;
   #lastPageX;
   #lastPageY;
@@ -91,6 +120,11 @@ export class ScreenshotsOverlay {
       downloadAttributes,
       copyAttributes,
       previewFaceAriaLabel,
+      popAttributes,
+      reselectAttributes,
+      miniWindowCancelAttributes,
+      miniWindowOverlayHeader,
+      miniWindowOverlayInstructions,
     ] = lazy.overlayLocalization.formatMessagesSync([
       { id: "screenshots-cancel-button" },
       { id: "screenshots-component-cancel-button" },
@@ -104,7 +138,29 @@ export class ScreenshotsOverlay {
         args: { shortcut: copyShorcut },
       },
       { id: "screenshots-overlay-preview-face-label" },
+      { id: "screenshots-component-mini-window-button" },
+      { id: "screenshots-component-reselect-button" },
+      { id: "screenshots-component-mini-window-cancel-button" },
+      { id: "mini-window-overlay-header" },
+      { id: "mini-window-overlay-instructions" },
     ]);
+
+    let instructionsMarkup =
+      this.mode === SELECTION_MODES.MINI_WINDOW
+        ? `<h1 class="preview-header">${miniWindowOverlayHeader.value}</h1>
+            <div class="preview-instructions">${miniWindowOverlayInstructions.value}</div>`
+        : `<div class="preview-instructions">${instructions.value}</div>`;
+
+    let buttonsContainerMarkup =
+      this.mode === SELECTION_MODES.MINI_WINDOW
+        ? `
+              <button id="mini-window-cancel-button" class="screenshots-button" title="${miniWindowCancelAttributes.attributes[0].value}" aria-label="${miniWindowCancelAttributes.attributes[1].value}"><label>${miniWindowCancelAttributes.value}</label></button>
+              <button id="reselect-button" class="screenshots-button" title="${reselectAttributes.attributes[0].value}" aria-label="${reselectAttributes.attributes[1].value}"><label>${reselectAttributes.value}</label></button>
+              <button id="pop" class="screenshots-button primary" title="${popAttributes.attributes[0].value}" aria-label="${popAttributes.attributes[1].value}"><img/><label>${popAttributes.value}</label></button>`
+        : `
+              <button id="cancel" class="screenshots-button" title="${cancelAttributes.attributes[0].value}" aria-label="${cancelAttributes.attributes[1].value}"><img/></button>
+              <button id="copy" class="screenshots-button" title="${copyAttributes.attributes[0].value}" aria-label="${copyAttributes.attributes[1].value}"><img/><label>${copyAttributes.value}</label></button>
+              <button id="download" class="screenshots-button primary" title="${downloadAttributes.attributes[0].value}" aria-label="${downloadAttributes.attributes[1].value}"><img/><label>${downloadAttributes.value}</label></button>`;
 
     return `
       <template>
@@ -112,11 +168,25 @@ export class ScreenshotsOverlay {
         <div id="screenshots-component">
           <div id="preview-container" hidden>
             <div id="face-container" tabindex="0" role="button" aria-label="${previewFaceAriaLabel.attributes[0].value}">
-              <div class="eye left"><div id="left-eye" class="eyeball"></div></div>
-              <div class="eye right"><div id="right-eye" class="eyeball"></div></div>
-              <div class="face"></div>
+              ${
+                this.mode === SELECTION_MODES.MINI_WINDOW
+                  ? `<img id="mini-window-preview-logo" src="chrome://browser/content/miniwindow/assets/mini-window.svg" alt=""/>`
+                  : `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+                <g>
+                  <path d="M11.4.9v2.9h-6c-.9 0-1.5.8-1.5 1.5v6H.8V3.8C.8 2.1 2.2.7 3.9.7h7.6v.2z" class="face-line-color"/>
+                  <path d="M63.2 11.4h-3.1v-6c0-.8-.6-1.5-1.5-1.5h-6v-3h7.6c1.7 0 3.1 1.4 3.1 3.1z" class="face-line-color"/>
+                  <path d="M52.6 63.2v-3.1h6c.9 0 1.5-.6 1.5-1.5v-6h3.1v7.6c0 1.7-1.4 3.1-3.1 3.1z" class="face-line-color"/>
+                  <path d="M.8 52.7h3.1v6c0 .9.6 1.5 1.5 1.5h6v3.1H3.8c-1.7 0-3.1-1.4-3.1-3.1z" class="face-line-color"/>
+                  <path d="M33.3 49.2H33c-4.6-.1-7.8-3.6-7.9-3.8-.6-.8-.6-2 .1-2.7.8-.8 1.9-.6 2.6.1 0 0 2.3 2.6 5.2 2.6 1.8 0 3.6-.9 5.2-2.6.8-.8 1.9-.8 2.7 0 .8.8.8 1.9 0 2.7-2.2 2.4-4.9 3.7-7.6 3.7z" class="face-line-color" style="display:inline"/>
+                  <ellipse id="leftEye" cx="23" cy="26" class="face-line-color" rx="5" ry="7"/>
+                  <ellipse id="rightEye" cx="43" cy="26" class="face-line-color" rx="5" ry="7"/>
+                  <ellipse id="leftPupil" cx="25" cy="30" class="face-pupil-color" rx="3" ry="3"/>
+                  <ellipse id="rightPupil" cx="45" cy="30" class="face-pupil-color" rx="3" ry="3"/>
+                </g>
+              </svg>`
+              }
             </div>
-            <div class="preview-instructions">${instructions.value}</div>
+            ${instructionsMarkup}
             <button class="screenshots-button ghost-button" id="screenshots-cancel-button" title="${cancelAttributes.attributes[0].value}" aria-label="${cancelAttributes.attributes[1].value}">${cancelLabel.value}</button>
           </div>
           <div id="hover-highlight" hidden></div>
@@ -156,11 +226,7 @@ export class ScreenshotsOverlay {
             </div>
           </div>
           <div id="buttons-container" hidden>
-            <div class="buttons-wrapper">
-              <button id="cancel" class="screenshots-button" title="${cancelAttributes.attributes[0].value}" aria-label="${cancelAttributes.attributes[1].value}"><img/></button>
-              <button id="copy" class="screenshots-button" title="${copyAttributes.attributes[0].value}" aria-label="${copyAttributes.attributes[1].value}"><img/><label>${copyAttributes.value}</label></button>
-              <button id="download" class="screenshots-button primary" title="${downloadAttributes.attributes[0].value}" aria-label="${downloadAttributes.attributes[1].value}"><img/><label>${downloadAttributes.value}</label></button>
-            </div>
+            <div class="buttons-wrapper">${buttonsContainerMarkup}</div>
           </div>
         </div>
       </template>`;
@@ -191,12 +257,15 @@ export class ScreenshotsOverlay {
     return this.#methodsUsed;
   }
 
-  constructor(contentDocument) {
+  constructor(contentDocument, mode = SELECTION_MODES.SCREENSHOTS) {
     this.document = contentDocument;
-    this.window = contentDocument.ownerGlobal;
+    this.window = contentDocument.documentGlobal;
+    this.mode = mode;
 
     this.windowDimensions = new WindowDimensions();
     this.selectionRegion = new Region(this.windowDimensions);
+    this.selectionRegion.confineToViewport =
+      this.mode === SELECTION_MODES.MINI_WINDOW;
     this.hoverElementRegion = new Region(this.windowDimensions);
     this.resetMethodsUsed();
 
@@ -220,7 +289,13 @@ export class ScreenshotsOverlay {
     return this.content.root.getElementById(id);
   }
 
-  async initialize() {
+  async initialize(mode = SELECTION_MODES.SCREENSHOTS) {
+    // If we're already using the overlay for something else,
+    // we must tear it down and reinitialize it for the new mode.
+    if (this.initialized && this.mode !== mode) {
+      this.tearDown();
+    }
+    this.mode = mode;
     if (this.initialized) {
       return;
     }
@@ -255,6 +330,11 @@ export class ScreenshotsOverlay {
     this.cancelButton = this.getElementById("cancel");
     this.copyButton = this.getElementById("copy");
     this.downloadButton = this.getElementById("download");
+    this.popButton = this.getElementById("pop");
+    this.miniWindowCancelButton = this.getElementById(
+      "mini-window-cancel-button"
+    );
+    this.reselectButton = this.getElementById("reselect-button");
 
     this.previewContainer = this.getElementById("preview-container");
     this.previewFace = this.getElementById("face-container");
@@ -263,8 +343,8 @@ export class ScreenshotsOverlay {
     this.buttonsContainer = this.getElementById("buttons-container");
     this.screenshotsContainer = this.getElementById("screenshots-component");
 
-    this.leftEye = this.getElementById("left-eye");
-    this.rightEye = this.getElementById("right-eye");
+    this.leftEye = this.getElementById("leftPupil");
+    this.rightEye = this.getElementById("rightPupil");
 
     this.leftBackgroundEl = this.getElementById("left-background");
     this.topBackgroundEl = this.getElementById("top-background");
@@ -319,6 +399,7 @@ export class ScreenshotsOverlay {
   /**
    * Returns the x and y coordinates of the event relative to both the
    * viewport and the page.
+   *
    * @param {Event} event The event
    * @returns
    *  {
@@ -367,6 +448,7 @@ export class ScreenshotsOverlay {
    * early return in the event handler function.
    * If the event had another button, set to the crosshairs or selected state
    * and return true to early return from the event handler function.
+   *
    * @param {PointerEvent} event
    * @returns true if the event button(s) was the non primary button
    *          false otherwise
@@ -403,7 +485,28 @@ export class ScreenshotsOverlay {
       case "download":
         this.downloadSelectedRegion();
         break;
+      case "pop":
+        this.popSelectedRegion();
+        break;
+      case "mini-window-cancel-button":
+        this.cancelOverlay();
+        break;
+      case "reselect-button":
+        this.reselectRegion();
+        break;
     }
+  }
+
+  /** Close the overlay outright, regardless of state. */
+  cancelOverlay() {
+    this.#dispatchEvent("Screenshots:Close", {
+      reason: "OverlayCancel",
+    });
+  }
+
+  /** Drop the current selection and go back to selecting a region. */
+  reselectRegion() {
+    this.#setState(STATES.CROSSHAIRS);
   }
 
   maybeCancelScreenshots() {
@@ -419,6 +522,7 @@ export class ScreenshotsOverlay {
   /**
    * Handles the pointerdown event depending on the state.
    * Early return when a pointer down happens on a button.
+   *
    * @param {Event} event The pointerown event
    */
   handlePointerDown(event) {
@@ -457,6 +561,7 @@ export class ScreenshotsOverlay {
 
   /**
    * Handles the pointermove event depending on the state
+   *
    * @param {Event} event The pointermove event
    */
   handlePointerMove(event) {
@@ -489,6 +594,7 @@ export class ScreenshotsOverlay {
 
   /**
    * Handles the pointerup event depending on the state
+   *
    * @param {Event} event The pointerup event
    */
   handlePointerUp(event) {
@@ -513,6 +619,7 @@ export class ScreenshotsOverlay {
 
   /**
    * Handles when a keydown occurs in the screenshots component.
+   *
    * @param {Event} event The keydown event
    */
   handleKeyDown(event) {
@@ -540,6 +647,7 @@ export class ScreenshotsOverlay {
   /**
    * Handles when a keyup occurs in the screenshots component.
    * All we need to do on keyup is set the state to selected.
+   *
    * @param {Event} event The keydown event
    */
   handleKeyUp(event) {
@@ -568,8 +676,9 @@ export class ScreenshotsOverlay {
   /**
    * Gets the accel key depending on the platform.
    * metaKey for macOS. ctrlKey for Windows and Linux.
+   *
    * @param {Event} event The keydown event
-   * @returns {Boolean} True if the accel key is pressed, false otherwise.
+   * @returns {boolean} True if the accel key is pressed, false otherwise.
    */
   getAccelKey(event) {
     if (AppConstants.platform === "macosx") {
@@ -613,7 +722,7 @@ export class ScreenshotsOverlay {
         // face and move focus to the bottom right mover for adjustments
         if (Services.focus.focusedElement === this.previewFace) {
           let rect = this.previewFace.getBoundingClientRect();
-          this.hoverElementRegion.dimensions = rect;
+          this.hoverElementRegion.setDimensionsFromDOMRect(rect);
           this.draggingReadyStart();
           this.draggingReadyDragEnd({ doNotMoveFocus: true });
           this.bottomRightMover.focus({ focusVisible: true });
@@ -645,6 +754,7 @@ export class ScreenshotsOverlay {
 
   /**
    * Handles a keydown event for the dragging state.
+   *
    * @param {Event} event The keydown event
    */
   draggingKeyDown(event) {
@@ -674,6 +784,7 @@ export class ScreenshotsOverlay {
 
   /**
    * Handles a keydown event for the resizing state.
+   *
    * @param {Event} event The keydown event
    */
   resizingKeyDown(event) {
@@ -726,12 +837,20 @@ export class ScreenshotsOverlay {
         this.handleKeyDownOnButton(event);
         break;
       case this.copyKey.toLowerCase():
-        if (this.state === "selected" && this.getAccelKey(event)) {
+        if (
+          this.mode !== SELECTION_MODES.MINI_WINDOW &&
+          this.state === "selected" &&
+          this.getAccelKey(event)
+        ) {
           this.copySelectedRegion();
         }
         break;
       case this.downloadKey.toLowerCase():
-        if (this.state === "selected" && this.getAccelKey(event)) {
+        if (
+          this.mode !== SELECTION_MODES.MINI_WINDOW &&
+          this.state === "selected" &&
+          this.getAccelKey(event)
+        ) {
           this.downloadSelectedRegion();
         }
         break;
@@ -743,6 +862,7 @@ export class ScreenshotsOverlay {
    * Just the arrow key will move the region by 1px.
    * Arrow key + shift will move the region by 10px.
    * Arrow key + control/meta will move to the edge of the window.
+   *
    * @param {Event} event The keydown event
    */
   resizingArrowLeftKeyDown(event) {
@@ -760,6 +880,7 @@ export class ScreenshotsOverlay {
    * Just the arrow key will move the region by 1px.
    * Arrow key + shift will move the region by 10px.
    * Arrow key + control/meta will move to the edge of the window.
+   *
    * @param {Event} event The keydown event
    */
   handleArrowLeftKeyDown(event) {
@@ -820,6 +941,7 @@ export class ScreenshotsOverlay {
    * Just the arrow key will move the region by 1px.
    * Arrow key + shift will move the region by 10px.
    * Arrow key + control/meta will move to the edge of the window.
+   *
    * @param {Event} event The keydown event
    */
   resizingArrowUpKeyDown(event) {
@@ -837,6 +959,7 @@ export class ScreenshotsOverlay {
    * Just the arrow key will move the region by 1px.
    * Arrow key + shift will move the region by 10px.
    * Arrow key + control/meta will move to the edge of the window.
+   *
    * @param {Event} event The keydown event
    */
   handleArrowUpKeyDown(event) {
@@ -897,6 +1020,7 @@ export class ScreenshotsOverlay {
    * Just the arrow key will move the region by 1px.
    * Arrow key + shift will move the region by 10px.
    * Arrow key + control/meta will move to the edge of the window.
+   *
    * @param {Event} event The keydown event
    */
   resizingArrowRightKeyDown(event) {
@@ -914,6 +1038,7 @@ export class ScreenshotsOverlay {
    * Just the arrow key will move the region by 1px.
    * Arrow key + shift will move the region by 10px.
    * Arrow key + control/meta will move to the edge of the window.
+   *
    * @param {Event} event The keydown event
    */
   handleArrowRightKeyDown(event) {
@@ -977,6 +1102,7 @@ export class ScreenshotsOverlay {
    * Just the arrow key will move the region by 1px.
    * Arrow key + shift will move the region by 10px.
    * Arrow key + control/meta will move to the edge of the window.
+   *
    * @param {Event} event The keydown event
    */
   resizingArrowDownKeyDown(event) {
@@ -1048,6 +1174,7 @@ export class ScreenshotsOverlay {
   /**
    * We lock focus to the overlay when a region is selected.
    * Can still escape with shift + F6.
+   *
    * @param {Event} event The keydown event
    */
   maybeLockFocus(event) {
@@ -1071,10 +1198,16 @@ export class ScreenshotsOverlay {
           }
         }
         break;
-      case STATES.SELECTED:
+      case STATES.SELECTED: {
+        // The last action button in tab order: #pop in mini-window mode,
+        // otherwise #download.
+        let lastActionButton = this.popButton ?? this.downloadButton;
         if (event.originalTarget.id === "highlight" && event.shiftKey) {
-          this.downloadButton.focus({ focusVisible: true });
-        } else if (event.originalTarget.id === "download" && !event.shiftKey) {
+          lastActionButton.focus({ focusVisible: true });
+        } else if (
+          event.originalTarget === lastActionButton &&
+          !event.shiftKey
+        ) {
           this.highlightEl.focus({ focusVisible: true });
         } else {
           // The content document can listen for keydown events and prevent moving
@@ -1090,6 +1223,7 @@ export class ScreenshotsOverlay {
           );
         }
         break;
+      }
     }
   }
 
@@ -1098,7 +1232,9 @@ export class ScreenshotsOverlay {
    * This will default to the download button.
    */
   setFocusToActionButton() {
-    if (lazy.SCREENSHOTS_LAST_SAVED_METHOD === "copy") {
+    if (this.popButton) {
+      this.popButton.focus({ focusVisible: true, preventScroll: true });
+    } else if (lazy.SCREENSHOTS_LAST_SAVED_METHOD === "copy") {
       this.copyButton.focus({ focusVisible: true, preventScroll: true });
     } else {
       this.downloadButton.focus({ focusVisible: true, preventScroll: true });
@@ -1111,7 +1247,7 @@ export class ScreenshotsOverlay {
    *
    * @param {KeyEvent} event The keydown event
    *
-   * @returns {Boolean} True if the event was handled here, otherwise false.
+   * @returns {boolean} True if the event was handled here, otherwise false.
    */
   handleKeyDownOnButton(event) {
     switch (event.originalTarget) {
@@ -1124,6 +1260,15 @@ export class ScreenshotsOverlay {
         break;
       case this.downloadButton:
         this.downloadSelectedRegion();
+        break;
+      case this.popButton:
+        this.popSelectedRegion();
+        break;
+      case this.miniWindowCancelButton:
+        this.cancelOverlay();
+        break;
+      case this.reselectButton:
+        this.reselectRegion();
         break;
       default:
         return false;
@@ -1146,7 +1291,8 @@ export class ScreenshotsOverlay {
 
   /**
    * Dispatch a custom event to the ScreenshotsComponentChild actor
-   * @param {String} eventType The name of the event
+   *
+   * @param {string} eventType The name of the event
    * @param {object} detail Extra details to send to the child actor
    */
   #dispatchEvent(eventType, detail) {
@@ -1161,11 +1307,16 @@ export class ScreenshotsOverlay {
 
   /**
    * Set a new state for the overlay
-   * @param {String} newState
-   * @param {Object} options (optional) Options for calling start of state method
+   *
+   * @param {string} newState
+   * @param {object} options (optional) Options for calling start of state method
    */
   #setState(newState, options = {}) {
-    if (this.#state === STATES.SELECTED && newState === STATES.CROSSHAIRS) {
+    if (
+      this.#state === STATES.SELECTED &&
+      newState === STATES.CROSSHAIRS &&
+      this.#mode == SELECTION_MODES.SCREENSHOTS
+    ) {
       this.#dispatchEvent("Screenshots:RecordEvent", {
         eventName: "startedOverlayRetry",
       });
@@ -1219,6 +1370,14 @@ export class ScreenshotsOverlay {
     });
   }
 
+  popSelectedRegion() {
+    this.#dispatchEvent("Screenshots:MiniWindow", {
+      region: this.selectionRegion.dimensions,
+      viewportWidth: this.windowDimensions.clientWidth,
+      viewportHeight: this.windowDimensions.clientHeight,
+    });
+  }
+
   /**
    * Hide hover element, selection and buttons containers.
    * Show the preview container and the panel.
@@ -1262,6 +1421,7 @@ export class ScreenshotsOverlay {
    */
   selectedStart(options = {}) {
     this.selectionRegion.sortCoords();
+    this.#ensureMiniWindowRegionSize();
     this.hidePreviewContainer();
     this.hideHoverElementContainer();
     this.drawSelectionContainer();
@@ -1269,6 +1429,28 @@ export class ScreenshotsOverlay {
 
     if (!options.doNotMoveFocus) {
       this.setFocusToActionButton();
+    }
+  }
+
+  /**
+   * Clamp the selection region to a minimum size if in mini-window mode.
+   */
+  #ensureMiniWindowRegionSize() {
+    if (this.mode !== SELECTION_MODES.MINI_WINDOW) {
+      return;
+    }
+    let region = this.selectionRegion;
+    if (region.width < MIN_MINI_WINDOW_REGION_WIDTH) {
+      region.right = region.left + MIN_MINI_WINDOW_REGION_WIDTH;
+      if (region.width < MIN_MINI_WINDOW_REGION_WIDTH) {
+        region.left = region.right - MIN_MINI_WINDOW_REGION_WIDTH;
+      }
+    }
+    if (region.height < MIN_MINI_WINDOW_REGION_HEIGHT) {
+      region.bottom = region.top + MIN_MINI_WINDOW_REGION_HEIGHT;
+      if (region.height < MIN_MINI_WINDOW_REGION_HEIGHT) {
+        region.top = region.bottom - MIN_MINI_WINDOW_REGION_HEIGHT;
+      }
     }
   }
 
@@ -1287,8 +1469,9 @@ export class ScreenshotsOverlay {
   /**
    * Dragging has started so we set the initial selection region and set the
    * state to draggingReady.
-   * @param {Number} pageX The x position relative to the page
-   * @param {Number} pageY The y position relative to the page
+   *
+   * @param {number} pageX The x position relative to the page
+   * @param {number} pageY The y position relative to the page
    */
   crosshairsDragStart(pageX, pageY) {
     this.selectionRegion.dimensions = {
@@ -1304,9 +1487,10 @@ export class ScreenshotsOverlay {
   /**
    * If the background is clicked we set the state to crosshairs
    * otherwise set the state to resizing
-   * @param {Number} pageX The x position relative to the page
-   * @param {Number} pageY The y position relative to the page
-   * @param {String} targetId The id of the event target
+   *
+   * @param {number} pageX The x position relative to the page
+   * @param {number} pageY The y position relative to the page
+   * @param {string} targetId The id of the event target
    */
   selectedDragStart(pageX, pageY, targetId) {
     if (targetId === this.screenshotsContainer.id) {
@@ -1323,8 +1507,9 @@ export class ScreenshotsOverlay {
   /**
    * Draw the eyes in the preview container and find the element currently
    * being hovered.
-   * @param {Number} clientX The x position relative to the viewport
-   * @param {Number} clientY The y position relative to the viewport
+   *
+   * @param {number} clientX The x position relative to the viewport
+   * @param {number} clientY The y position relative to the viewport
    */
   crosshairsMove(clientX, clientY) {
     this.drawPreviewEyes(clientX, clientY);
@@ -1335,8 +1520,9 @@ export class ScreenshotsOverlay {
   /**
    * Set the selection region dimensions and if the region is at least 40
    * pixels diagnally in distance, set the state to dragging.
-   * @param {Number} pageX The x position relative to the page
-   * @param {Number} pageY The y position relative to the page
+   *
+   * @param {number} pageX The x position relative to the page
+   * @param {number} pageY The y position relative to the page
    */
   draggingReadyDrag(pageX, pageY) {
     this.selectionRegion.dimensions = {
@@ -1352,8 +1538,9 @@ export class ScreenshotsOverlay {
   /**
    * Scroll if along the edge of the viewport, update the selection region
    * dimensions and draw the selection container.
-   * @param {Number} pageX The x position relative to the page
-   * @param {Number} pageY The y position relative to the page
+   *
+   * @param {number} pageX The x position relative to the page
+   * @param {number} pageY The y position relative to the page
    */
   draggingDrag(pageX, pageY) {
     this.scrollIfByEdge(pageX, pageY);
@@ -1367,8 +1554,9 @@ export class ScreenshotsOverlay {
 
   /**
    * Resize the selection region depending on the mover that started the resize.
-   * @param {Number} pageX The x position relative to the page
-   * @param {Number} pageY The y position relative to the page
+   *
+   * @param {number} pageX The x position relative to the page
+   * @param {number} pageY The y position relative to the page
    */
   resizingDrag(pageX, pageY) {
     this.scrollIfByEdge(pageX, pageY);
@@ -1492,7 +1680,7 @@ export class ScreenshotsOverlay {
    * container and set the state to selected.
    * Otherwise set the state to crosshairs.
    *
-   * @param {Object} options (optional) Options for passing to setState method
+   * @param {object} options (optional) Options for passing to setState method
    */
   draggingReadyDragEnd(options = {}) {
     if (this.hoverElementRegion.isRegionValid) {
@@ -1509,8 +1697,9 @@ export class ScreenshotsOverlay {
 
   /**
    * Update the selection region dimensions and set the state to selected.
-   * @param {Number} pageX The x position relative to the page
-   * @param {Number} pageY The y position relative to the page
+   *
+   * @param {number} pageX The x position relative to the page
+   * @param {number} pageY The y position relative to the page
    */
   draggingDragEnd(pageX, pageY) {
     this.selectionRegion.dimensions = {
@@ -1525,8 +1714,9 @@ export class ScreenshotsOverlay {
   /**
    * Update the selection region dimensions by calling `resizingDrag` and set
    * the state to selected.
-   * @param {Number} pageX The x position relative to the page
-   * @param {Number} pageY The y position relative to the page
+   *
+   * @param {number} pageX The x position relative to the page
+   * @param {number} pageY The y position relative to the page
    */
   resizingDragEnd(pageX, pageY) {
     this.resizingDrag(pageX, pageY);
@@ -1558,10 +1748,15 @@ export class ScreenshotsOverlay {
 
   /**
    * Draw the preview eyes pointer towards the mouse.
-   * @param {Number} clientX The x position relative to the viewport
-   * @param {Number} clientY The y position relative to the viewport
+   *
+   * @param {number} clientX The x position relative to the viewport
+   * @param {number} clientY The y position relative to the viewport
    */
   drawPreviewEyes(clientX, clientY) {
+    // Mini-window mode shows a static logo instead.
+    if (!this.leftEye) {
+      return;
+    }
     let { clientWidth, clientHeight } = this.windowDimensions.dimensions;
     const xpos = Math.floor((10 * (clientX - clientWidth / 2)) / clientWidth);
     const ypos = Math.floor((10 * (clientY - clientHeight / 2)) / clientHeight);
@@ -1590,7 +1785,7 @@ export class ScreenshotsOverlay {
   updateScreenshotsOverlayContainer() {
     let { scrollWidth, scrollHeight, scrollMinX } =
       this.windowDimensions.dimensions;
-    this.screenshotsContainer.style = `left:${scrollMinX};width:${scrollWidth}px;height:${scrollHeight}px;`;
+    this.screenshotsContainer.style = `left:${scrollMinX}px;width:${scrollWidth}px;height:${scrollHeight}px;`;
   }
 
   showScreenshotsOverlayContainer() {
@@ -1765,8 +1960,9 @@ export class ScreenshotsOverlay {
    * Try to find a reasonable element for a given point.
    * If a reasonable element is found, draw the hover element container for
    * that element region.
-   * @param {Number} clientX The x position relative to the viewport
-   * @param {Number} clientY The y position relative to the viewport
+   *
+   * @param {number} clientX The x position relative to the viewport
+   * @param {number} clientY The y position relative to the viewport
    */
   async handleElementHover(clientX, clientY) {
     this.setPointerEventsNone();
@@ -1790,15 +1986,7 @@ export class ScreenshotsOverlay {
     }
 
     if (rect) {
-      let { scrollX, scrollY } = this.windowDimensions.dimensions;
-      let { left, top, right, bottom } = rect;
-      let newRect = {
-        left: left + scrollX,
-        top: top + scrollY,
-        right: right + scrollX,
-        bottom: bottom + scrollY,
-      };
-      this.hoverElementRegion.dimensions = newRect;
+      this.hoverElementRegion.setDimensionsFromDOMRect(rect);
       this.drawHoverElementRegion();
     } else {
       this.hoverElementRegion.resetDimensions();
@@ -1808,8 +1996,9 @@ export class ScreenshotsOverlay {
 
   /**
    * Scroll the viewport if near one or both of the edges.
-   * @param {Number} pageX The x position relative to the page
-   * @param {Number} pageY The y position relative to the page
+   *
+   * @param {number} pageX The x position relative to the page
+   * @param {number} pageY The y position relative to the page
    */
   scrollIfByEdge(pageX, pageY) {
     let { scrollX, scrollY, clientWidth, clientHeight } =
@@ -1834,8 +2023,9 @@ export class ScreenshotsOverlay {
 
   /**
    * Scroll the window by the given amount.
-   * @param {Number} x The x amount to scroll
-   * @param {Number} y The y amount to scroll
+   *
+   * @param {number} x The x amount to scroll
+   * @param {number} y The y amount to scroll
    */
   scrollWindow(x, y) {
     this.window.scrollBy(x, y);
@@ -1845,7 +2035,8 @@ export class ScreenshotsOverlay {
   /**
    * The page was resized or scrolled. We need to update the screenshots
    * container size so we don't draw outside the page bounds.
-   * @param {String} eventType will be "scroll" or "resize"
+   *
+   * @param {string} eventType will be "scroll" or "resize"
    */
   async updateScreenshotsOverlayDimensions(eventType) {
     let updateWindowDimensionsPromise = this.updateWindowDimensions();
@@ -1872,7 +2063,7 @@ export class ScreenshotsOverlay {
   /**
    * Returns the window's dimensions for the current window.
    *
-   * @return {Object} An object containing window dimensions
+   * @return {object} An object containing window dimensions
    *   {
    *     clientWidth: The width of the viewport
    *     clientHeight: The height of the viewport
@@ -1898,11 +2089,6 @@ export class ScreenshotsOverlay {
       scrollX,
     } = this.window;
 
-    let scrollWidth = innerWidth + scrollMaxX - scrollMinX;
-    let scrollHeight = innerHeight + scrollMaxY - scrollMinY;
-    let clientHeight = innerHeight;
-    let clientWidth = innerWidth;
-
     const scrollbarHeight = {};
     const scrollbarWidth = {};
     this.window.windowUtils.getScrollbarSize(
@@ -1910,10 +2096,18 @@ export class ScreenshotsOverlay {
       scrollbarWidth,
       scrollbarHeight
     );
-    scrollWidth -= scrollbarWidth.value;
-    scrollHeight -= scrollbarHeight.value;
-    clientWidth -= scrollbarWidth.value;
-    clientHeight -= scrollbarHeight.value;
+
+    let clientHeight = innerHeight - scrollbarHeight.value;
+    let clientWidth = innerWidth - scrollbarWidth.value;
+
+    // Use the document element's scrollWidth/scrollHeight which give the
+    // actual content dimensions via a single rounding. The previous formula
+    // (innerHeight + scrollMaxY - scrollMinY) can overshoot by 1 CSS pixel
+    // because it adds separately rounded values derived from the scroll
+    // range, causing transparent rows at the image edges.
+    let docEl = this.window.document.documentElement;
+    let scrollWidth = Math.max(docEl.scrollWidth, clientWidth);
+    let scrollHeight = Math.max(docEl.scrollHeight, clientHeight);
 
     return {
       clientWidth,

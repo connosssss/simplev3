@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,13 @@
 #ifndef MOZILLA_GFX_COMPOSITORMANAGERPARENT_H
 #define MOZILLA_GFX_COMPOSITORMANAGERPARENT_H
 
+#include <stdint.h>  // for uint32_t
+
 #include <map>
-#include <stdint.h>                 // for uint32_t
-#include "mozilla/Attributes.h"     // for override
-#include "mozilla/StaticPtr.h"      // for StaticRefPtr
-#include "mozilla/StaticMonitor.h"  // for StaticMonitor
+
 #include "mozilla/RefPtr.h"         // for already_AddRefed
+#include "mozilla/StaticMonitor.h"  // for StaticMonitor
+#include "mozilla/StaticPtr.h"      // for StaticRefPtr
 #include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/layers/PCompositorManagerParent.h"
 #include "nsTArray.h"  // for AutoTArray
@@ -38,7 +37,7 @@ class CompositorManagerParent final : public PCompositorManagerParent {
       uint32_t aNamespace);
   static bool Create(Endpoint<PCompositorManagerParent>&& aEndpoint,
                      dom::ContentParentId aContentId, uint32_t aNamespace,
-                     bool aIsRoot);
+                     uint32_t aContentBridgeNamespace, bool aIsRoot);
   static void Shutdown();
 
   static already_AddRefed<CompositorBridgeParent>
@@ -71,7 +70,7 @@ class CompositorManagerParent final : public PCompositorManagerParent {
   void ActorDestroy(ActorDestroyReason aReason) override;
 
   already_AddRefed<PCompositorBridgeParent> AllocPCompositorBridgeParent(
-      const CompositorBridgeOptions& aOpt);
+      const CompositorBridgeOptions& aOpt, const uint32_t& aNamespace);
 
   static void NotifyWebRenderError(wr::WebRenderError aError);
 
@@ -80,6 +79,8 @@ class CompositorManagerParent final : public PCompositorManagerParent {
   bool OwnsExternalImageId(const wr::ExternalImageId& aId) const {
     return mNamespace == static_cast<uint32_t>(wr::AsUint64(aId) >> 32);
   }
+
+  uint32_t GetNamespace() const { return mNamespace; }
 
  private:
   static StaticMonitor sMonitor;
@@ -92,7 +93,8 @@ class CompositorManagerParent final : public PCompositorManagerParent {
 
   static void ShutdownInternal();
 
-  CompositorManagerParent(dom::ContentParentId aContentId, uint32_t aNamespace);
+  CompositorManagerParent(dom::ContentParentId aContentId, uint32_t aNamespace,
+                          uint32_t aContentBridgeNamespace);
   virtual ~CompositorManagerParent();
 
   void Bind(Endpoint<PCompositorManagerParent>&& aEndpoint, bool aIsRoot);
@@ -104,6 +106,9 @@ class CompositorManagerParent final : public PCompositorManagerParent {
   AutoTArray<RefPtr<CompositorBridgeParent>, 1> mPendingCompositorBridges;
   const dom::ContentParentId mContentId;
   const uint32_t mNamespace;
+  // The id namespace the UI process assigned for this (content) child's
+  // compositor bridge; 0 when the child may not create content compositors.
+  const uint32_t mContentBridgeNamespace;
   uint32_t mLastSharedSurfaceResourceId MOZ_GUARDED_BY(sMonitor) = 0;
   RefPtr<RemoteTextureTxnScheduler> mRemoteTextureTxnScheduler;
 };

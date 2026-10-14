@@ -35,7 +35,7 @@ fun TabList(
     val tabs = store.observeAsComposableState { state -> state.tabs.filter(tabsFilter) }
     val selectedTabId = store.observeAsComposableState { state -> state.selectedTabId }
     TabList(
-        tabs.value ?: emptyList(),
+        tabs.value,
         modifier,
         selectedTabId.value,
         onTabSelected,
@@ -60,11 +60,7 @@ fun TabList(
     onTabSelected: (TabSessionState) -> Unit,
     onTabClosed: (TabSessionState) -> Unit,
 ) {
-    LazyColumn(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface),
-    ) {
+    LazyColumn(modifier = modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
         items(tabs) { tab ->
             Tab(
                 tab,

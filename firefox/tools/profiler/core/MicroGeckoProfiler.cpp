@@ -14,18 +14,11 @@ using namespace mozilla;
 using webrtc::trace_event_internal::TraceValueUnion;
 
 void uprofiler_register_thread(const char* name, void* stacktop) {
-#ifdef MOZ_GECKO_PROFILER
   profiler_register_thread(name, stacktop);
-#endif  // MOZ_GECKO_PROFILER
 }
 
-void uprofiler_unregister_thread() {
-#ifdef MOZ_GECKO_PROFILER
-  profiler_unregister_thread();
-#endif  // MOZ_GECKO_PROFILER
-}
+void uprofiler_unregister_thread() { profiler_unregister_thread(); }
 
-#ifdef MOZ_GECKO_PROFILER
 namespace {
 Maybe<MarkerTiming> ToTiming(char phase) {
   switch (phase) {
@@ -57,13 +50,41 @@ struct TraceOption {
   Variant<int64_t, bool, double, ProfilerString8View> mValue = AsVariant(false);
 };
 
-struct TraceMarker {
+struct TraceMarker : public mozilla::BaseMarkerType<TraceMarker> {
   static constexpr int MAX_NUM_ARGS = 6;
   using OptionsType = std::tuple<TraceOption, TraceOption, TraceOption,
                                  TraceOption, TraceOption, TraceOption>;
-  static constexpr mozilla::Span<const char> MarkerTypeName() {
-    return MakeStringSpan("TraceEvent");
-  }
+
+  static constexpr const char* Name = "TraceEvent";
+  // Call sites pass the trace event's own name, so ETW must keep that name.
+  static constexpr bool ETWStoreName = true;
+
+  using MS = MarkerSchema;
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"name1", MS::InputType::CString, "Key 1", MS::Format::String},
+      {"val1", MS::InputType::CString, "Value 1", MS::Format::String},
+      {"name2", MS::InputType::CString, "Key 2", MS::Format::String},
+      {"val2", MS::InputType::CString, "Value 2", MS::Format::String},
+      {"name3", MS::InputType::CString, "Key 3", MS::Format::String},
+      {"val3", MS::InputType::CString, "Value 3", MS::Format::String},
+      {"name4", MS::InputType::CString, "Key 4", MS::Format::String},
+      {"val4", MS::InputType::CString, "Value 4", MS::Format::String},
+      {"name5", MS::InputType::CString, "Key 5", MS::Format::String},
+      {"val5", MS::InputType::CString, "Value 5", MS::Format::String},
+      {"name6", MS::InputType::CString, "Key 6", MS::Format::String},
+      {"val6", MS::InputType::CString, "Value 6", MS::Format::String},
+  };
+  static constexpr MS::Location Locations[] = {MS::Location::MarkerChart,
+                                               MS::Location::MarkerTable};
+  static constexpr const char* ChartLabel = "{marker.name}";
+  static constexpr const char* TableLabel =
+      "{marker.name}  {marker.data.name1} {marker.data.val1}  "
+      "{marker.data.name2} {marker.data.val2}"
+      "{marker.data.name3} {marker.data.val3}"
+      "{marker.data.name4} {marker.data.val4}"
+      "{marker.data.name5} {marker.data.val5}"
+      "{marker.data.name6} {marker.data.val6}";
+
   static void StreamJSONMarkerData(
       mozilla::baseprofiler::SpliceableJSONWriter& aWriter,
       const OptionsType& aArgs) {
@@ -101,42 +122,16 @@ struct TraceMarker {
       writeValue("val6", arg.mValue);
     }
   }
-  static mozilla::MarkerSchema MarkerTypeDisplay() {
-    using MS = MarkerSchema;
-    MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
-    schema.SetChartLabel("{marker.name}");
-    schema.SetTableLabel(
-        "{marker.name}  {marker.data.name1} {marker.data.val1}  "
-        "{marker.data.name2} {marker.data.val2}"
-        "{marker.data.name3} {marker.data.val3}"
-        "{marker.data.name4} {marker.data.val4}"
-        "{marker.data.name5} {marker.data.val5}"
-        "{marker.data.name6} {marker.data.val6}");
-    schema.AddKeyLabelFormatSearchable("name1", "Key 1", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("val1", "Value 1", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("name2", "Key 2", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("val2", "Value 2", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("name3", "Key 3", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("val3", "Value 3", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("name4", "Key 4", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("val4", "Value 4", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("name5", "Key 5", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("val5", "Value 5", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("name6", "Key 6", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormatSearchable("val6", "Value 6", MS::Format::String,
-                                       MS::Searchable::Searchable);
-    return schema;
+
+  static void TranslateMarkerInputToSchema(void* aContext,
+                                           const OptionsType& aArgs) {
+    // Bug 2072225. Cannot pass Stringify(arg.mValue()) <- Use after free
+    const ProfilerString8View empty;
+    ETW::OutputMarkerSchema(
+        aContext, TraceMarker{}, std::get<0>(aArgs).mName, empty,
+        std::get<1>(aArgs).mName, empty, std::get<2>(aArgs).mName, empty,
+        std::get<3>(aArgs).mName, empty, std::get<4>(aArgs).mName, empty,
+        std::get<5>(aArgs).mName, empty);
   }
 };
 }  // namespace
@@ -181,14 +176,12 @@ struct ProfileBufferEntryReader::Deserializer<TraceOption> {
   }
 };
 }  // namespace mozilla
-#endif  // MOZ_GECKO_PROFILER
 
 void uprofiler_simple_event_marker_internal(
     const char* name, const char category, char phase, int num_args,
     const char** arg_names, const unsigned char* arg_types,
     const unsigned long long* arg_values, bool capture_stack = false,
     void* provided_stack = nullptr) {
-#ifdef MOZ_GECKO_PROFILER
   if (!profiler_thread_is_being_profiled_for_markers()) {
     return;
   }
@@ -201,9 +194,10 @@ void uprofiler_simple_event_marker_internal(
   }
   MOZ_ASSERT(num_args <= TraceMarker::MAX_NUM_ARGS);
   TraceMarker::OptionsType tuple;
-  TraceOption* args[6] = {&std::get<0>(tuple), &std::get<1>(tuple),
-                          &std::get<2>(tuple), &std::get<3>(tuple),
-                          &std::get<4>(tuple), &std::get<5>(tuple)};
+  TraceOption* args[TraceMarker::MAX_NUM_ARGS] = {
+      &std::get<0>(tuple), &std::get<1>(tuple), &std::get<2>(tuple),
+      &std::get<3>(tuple), &std::get<4>(tuple), &std::get<5>(tuple)};
+  nsCString strValueContainers[TraceMarker::MAX_NUM_ARGS];
   for (int i = 0; i < std::min(num_args, TraceMarker::MAX_NUM_ARGS); ++i) {
     auto& arg = *args[i];
     arg.mPassed = true;
@@ -228,9 +222,10 @@ void uprofiler_simple_event_marker_internal(
                           ->as_double);
         break;
       case TRACE_VALUE_TYPE_POINTER:
-        arg.mValue = AsVariant(ProfilerString8View(nsPrintfCString(
+        strValueContainers[i] = nsPrintfCString(
             "%p", reinterpret_cast<const TraceValueUnion*>(&arg_values[i])
-                      ->as_pointer)));
+                      ->as_pointer);
+        arg.mValue = AsVariant(ProfilerString8View(strValueContainers[i]));
         break;
       case TRACE_VALUE_TYPE_STRING:
         arg.mValue = AsVariant(ProfilerString8View::WrapNullTerminatedString(
@@ -238,14 +233,15 @@ void uprofiler_simple_event_marker_internal(
                 ->as_string));
         break;
       case TRACE_VALUE_TYPE_COPY_STRING:
-        arg.mValue = AsVariant(ProfilerString8View(
-            nsCString(reinterpret_cast<const TraceValueUnion*>(&arg_values[i])
-                          ->as_string)));
+        strValueContainers[i] =
+            reinterpret_cast<const TraceValueUnion*>(&arg_values[i])->as_string;
+        arg.mValue = AsVariant(ProfilerString8View(strValueContainers[i]));
         break;
       default:
         MOZ_ASSERT_UNREACHABLE("Unexpected trace value type");
-        arg.mValue = AsVariant(ProfilerString8View(
-            nsPrintfCString("Unexpected type: %u", arg_types[i])));
+        strValueContainers[i] =
+            nsPrintfCString("Unexpected type: %u", arg_types[i]);
+        arg.mValue = AsVariant(ProfilerString8View(strValueContainers[i]));
         break;
     }
   }
@@ -261,7 +257,6 @@ void uprofiler_simple_event_marker_internal(
                             provided_stack)))
                   : MarkerStack::Capture(StackCaptureOptions::NoStack))},
       TraceMarker{}, tuple);
-#endif  // MOZ_GECKO_PROFILER
 }
 
 void uprofiler_simple_event_marker_capture_stack(
@@ -292,18 +287,12 @@ void uprofiler_simple_event_marker(const char* name, const char category,
 }
 
 bool uprofiler_backtrace_into_buffer(NativeStack* aNativeStack, void* aBuffer) {
-#if defined(MOZ_GECKO_PROFILER)
   return profiler_backtrace_into_buffer(
       *(static_cast<mozilla::ProfileChunkedBuffer*>(aBuffer)), *aNativeStack);
-#else
-  return false;
-#endif
 }
 
 void uprofiler_native_backtrace(const void* top, NativeStack* nativeStack) {
-#if defined(MOZ_GECKO_PROFILER)
   DoNativeBacktraceDirect(top, *nativeStack, nullptr);
-#endif
 }
 
 bool uprofiler_is_active() { return profiler_is_active(); }

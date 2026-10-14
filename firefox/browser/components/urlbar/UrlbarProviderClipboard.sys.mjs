@@ -5,26 +5,27 @@
 import {
   UrlbarProvider,
   UrlbarUtils,
-} from "resource:///modules/UrlbarUtils.sys.mjs";
+} from "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs";
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
-  UrlbarTokenizer: "resource:///modules/UrlbarTokenizer.sys.mjs",
+  UrlbarResult: "chrome://browser/content/urlbar/UrlbarResult.mjs",
+  UrlbarPrefs: "moz-src:///browser/components/urlbar/UrlbarPrefs.sys.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
+  UrlUtils: "resource://gre/modules/UrlUtils.sys.mjs",
 });
 
 const RESULT_MENU_COMMANDS = {
   DISMISS: "dismiss",
 };
-const CLIPBOARD_IMPRESSION_LIMIT = 2;
+export const CLIPBOARD_IMPRESSION_LIMIT = 2;
 
 /**
  * A provider that returns a suggested url to the user based
  * on a valid URL stored in the clipboard.
  */
-class ProviderClipboard extends UrlbarProvider {
+export class UrlbarProviderClipboard extends UrlbarProvider {
   #previousClipboard = {
     value: "",
     impressionsLeft: CLIPBOARD_IMPRESSION_LIMIT,
@@ -34,15 +35,11 @@ class ProviderClipboard extends UrlbarProvider {
     super();
   }
 
-  get name() {
-    return "UrlbarProviderClipboard";
-  }
-
   /**
-   * @returns {Values<typeof UrlbarUtils.PROVIDER_TYPE>}
+   * @returns {Values<typeof lazy.UrlbarShared.PROVIDER_TYPE>}
    */
   get type() {
-    return UrlbarUtils.PROVIDER_TYPE.PROFILE;
+    return lazy.UrlbarShared.PROVIDER_TYPE.PROFILE;
   }
 
   setPreviousClipboardValue(newValue) {
@@ -55,7 +52,7 @@ class ProviderClipboard extends UrlbarProvider {
       !lazy.UrlbarPrefs.get("clipboard.featureGate") ||
       !lazy.UrlbarPrefs.get("suggest.clipboard") ||
       queryContext.searchString ||
-      queryContext.searchMode
+      queryContext.restrictInSearchMode()
     ) {
       return false;
     }
@@ -66,12 +63,14 @@ class ProviderClipboard extends UrlbarProvider {
     if (
       !textFromClipboard ||
       textFromClipboard.length > 2048 ||
-      lazy.UrlbarTokenizer.REGEXP_SPACES.test(textFromClipboard)
+      lazy.UrlUtils.REGEXP_SPACES.test(textFromClipboard)
     ) {
       return false;
     }
-    textFromClipboard =
-      controller.input.sanitizeTextFromClipboard(textFromClipboard);
+    textFromClipboard = lazy.UrlbarShared.sanitizeTextFromClipboard(
+      textFromClipboard,
+      UrlbarUtils.getFixupPrimitives(textFromClipboard, queryContext.isPrivate)
+    );
     const validUrl = this.#validUrl(textFromClipboard);
     if (!validUrl) {
       return false;
@@ -110,50 +109,60 @@ class ProviderClipboard extends UrlbarProvider {
     return 1;
   }
 
+  /**
+   * Starts querying.
+   *
+   * @param {UrlbarQueryContext} queryContext
+   * @param {(provider: UrlbarProvider, result: UrlbarResult) => void} addCallback
+   *   Callback invoked by the provider to add a new result.
+   */
   async startQuery(queryContext, addCallback) {
     // If the query was started, isActive should have cached a url already.
-    let result = new lazy.UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.URL,
-      UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-      ...lazy.UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, {
-        fallbackTitle: [
-          UrlbarUtils.prepareUrlForDisplay(this.#previousClipboard.value, {
+    let result = new lazy.UrlbarResult({
+      type: lazy.UrlbarShared.RESULT_TYPE.URL,
+      source: lazy.UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+      payload: {
+        title: lazy.UrlbarShared.prepareUrlForDisplay(
+          this.#previousClipboard.value,
+          {
             trimURL: false,
-          }),
-          UrlbarUtils.HIGHLIGHT.NONE,
-        ],
-        url: [this.#previousClipboard.value, UrlbarUtils.HIGHLIGHT.NONE],
+          }
+        ),
+        url: this.#previousClipboard.value,
         icon: "chrome://global/skin/icons/clipboard.svg",
         isBlockable: true,
-      })
-    );
+      },
+    });
 
     addCallback(this, result);
   }
 
+  /**
+   * @param {UrlbarQueryContext} queryContext
+   * @param {UrlbarParentController} controller
+   * @param {object} details
+   */
   onEngagement(queryContext, controller, details) {
     this.#previousClipboard.impressionsLeft = 0; // User has picked the suggested clipboard result
     // Handle commands.
-    this.#handlePossibleCommand(
-      controller.view,
-      details.result,
-      details.selType
-    );
+    this.#handlePossibleCommand(controller, details.result, details.selType);
   }
 
   onImpression() {
     this.#previousClipboard.impressionsLeft--;
   }
 
-  #handlePossibleCommand(view, result, selType) {
+  /**
+   * @param {UrlbarParentController} controller
+   * @param {UrlbarResult} result
+   * @param {string} selType
+   */
+  #handlePossibleCommand(controller, result, selType) {
     switch (selType) {
       case RESULT_MENU_COMMANDS.DISMISS:
-        view.controller.removeResult(result);
+        controller.removeResult(result);
         this.#previousClipboard.impressionsLeft = 0;
         break;
     }
   }
 }
-
-const UrlbarProviderClipboard = new ProviderClipboard();
-export { UrlbarProviderClipboard, CLIPBOARD_IMPRESSION_LIMIT };

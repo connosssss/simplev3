@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -40,6 +38,10 @@ RemoteTrackSource::~RemoteTrackSource() { Destroy(); }
 
 void RemoteTrackSource::Destroy() {
   if (mStream) {
+    if (mReceiver && mStream->mType == MediaSegment::VIDEO) {
+      mReceivingSizeOnEnded = mReceiver->ReceivingSize().orElse(
+          [] { return Some(gfx::IntSize{0, 0}); });
+    }
     MOZ_ASSERT(!mStream->IsDestroyed());
     mStream->End();
     mStream->Destroy();
@@ -51,7 +53,13 @@ void RemoteTrackSource::Destroy() {
 }
 
 void RemoteTrackSource::GetSettings(dom::MediaTrackSettings& aSettings) {
-  if (mStream->mType == MediaSegment::VIDEO) {
+  if (mReceivingSizeOnEnded) {
+    aSettings.mWidth.Construct(mReceivingSizeOnEnded->width);
+    aSettings.mHeight.Construct(mReceivingSizeOnEnded->height);
+    return;
+  }
+
+  if (mStream && mStream->mType == MediaSegment::VIDEO) {
     const gfx::IntSize size = mReceiver->ReceivingSize().valueOrFrom(
         [] { return gfx::IntSize{0, 0}; });
     aSettings.mWidth.Construct(size.width);

@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 tw=80 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ADTSDemuxer.h"
-#include "mozilla/ArrayUtils.h"
+#include "mozilla/Logging.h"
 #include "mozilla/ModuleUtils.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_media.h"
@@ -22,6 +20,11 @@
 
 #include <algorithm>
 
+mozilla::LazyLogModule gMediaSnifferLog("MediaSniffer");
+
+#define LOG(msg, ...) \
+  MOZ_LOG(gMediaSnifferLog, mozilla::LogLevel::Debug, (msg, ##__VA_ARGS__))
+
 // The minimum number of bytes that are needed to attempt to sniff an mp4 file.
 static const unsigned MP4_MIN_BYTES_COUNT = 12;
 // The maximum number of bytes to consider when attempting to sniff a file.
@@ -33,6 +36,8 @@ static const uint32_t MAX_BYTES_SNIFFED_MP3 = 320 * 144 / 32 + 1 + 4;
 // Multi-channel low sample-rate AAC packets can be huge, have a higher maximum
 // size.
 static const uint32_t MAX_BYTES_SNIFFED_ADTS = 8096;
+// Enough bytes to verify a run of consecutive MPEG-TS packets.
+static const uint32_t MAX_BYTES_SNIFFED_MPEGTS = 188 * 5;
 
 NS_IMPL_ISUPPORTS(nsMediaSniffer, nsIContentSniffer)
 
@@ -167,7 +172,11 @@ bool MatchesMP4(const uint8_t* aData, const uint32_t aLength,
 }
 
 static bool MatchesWebM(const uint8_t* aData, const uint32_t aLength) {
-  return nestegg_sniff((uint8_t*)aData, aLength);
+  return nestegg_sniff_webm((uint8_t*)aData, aLength);
+}
+
+static bool MatchesMatroska(const uint8_t* aData, const uint32_t aLength) {
+  return nestegg_sniff_mkv((uint8_t*)aData, aLength);
 }
 
 // This function implements mp3 sniffing based on parsing
@@ -178,6 +187,30 @@ static bool MatchesMP3(const uint8_t* aData, const uint32_t aLength) {
 
 static bool MatchesADTS(const uint8_t* aData, const uint32_t aLength) {
   return mozilla::ADTSDemuxer::ADTSSniffer(aData, aLength);
+}
+
+// MPEG-2 Transport Streams are a sequence of 188-byte packets, each starting
+// with the sync byte 0x47. A lone sync byte is not distinctive, so we require
+// it at the start of each of the first several packets. A whole .ts segment
+// begins on a packet boundary, so the first sync byte is at offset 0. We do not
+// consider the BDAV container format extra header nor an FEC trailer.
+static bool MatchesMPEGTS(const uint8_t* aData, const uint32_t aLength) {
+  static const uint8_t kSyncByte = 0x47;
+  static const uint32_t kPacketSize = 188;
+  static const uint32_t kPacketsToMatch = 5;
+  static const uint32_t kMinBytesToMatch =
+      kPacketSize * (kPacketsToMatch - 1) + 1;
+
+  if (aLength < kMinBytesToMatch) {
+    return false;
+  }
+
+  for (uint32_t i = 0; i < kPacketsToMatch; ++i) {
+    if (aData[i * kPacketSize] != kSyncByte) {
+      return false;
+    }
+  }
+  return true;
 }
 
 NS_IMETHODIMP
@@ -235,22 +268,38 @@ nsMediaSniffer::GetMIMETypeFromContent(nsIRequest* aRequest,
   }
 
   if (MatchesMP4(aData, clampedLength, aSniffedType)) {
+    LOG("Sniffed MP4 content");
     return NS_OK;
   }
 
   if (MatchesWebM(aData, clampedLength)) {
+    LOG("Sniffed Webm content");
     aSniffedType.AssignLiteral(VIDEO_WEBM);
+    return NS_OK;
+  }
+
+  if (MatchesMatroska(aData, clampedLength)) {
+    LOG("Sniffed Matroska content");
+    aSniffedType.AssignLiteral(VIDEO_MATROSKA);
     return NS_OK;
   }
 
   // Bug 950023: 512 bytes are often not enough to sniff for mp3.
   if (MatchesMP3(aData, std::min(aLength, MAX_BYTES_SNIFFED_MP3))) {
     aSniffedType.AssignLiteral(AUDIO_MP3);
+    LOG("Sniffed MP3 content");
     return NS_OK;
   }
 
   if (MatchesADTS(aData, std::min(aLength, MAX_BYTES_SNIFFED_ADTS))) {
     aSniffedType.AssignLiteral(AUDIO_AAC);
+    LOG("Sniffed ATDS content");
+    return NS_OK;
+  }
+
+  if (MatchesMPEGTS(aData, std::min(aLength, MAX_BYTES_SNIFFED_MPEGTS))) {
+    aSniffedType.AssignLiteral(VIDEO_MPEG_TS);
+    LOG("Sniffed MPEG-TS content");
     return NS_OK;
   }
 
@@ -261,3 +310,5 @@ nsMediaSniffer::GetMIMETypeFromContent(nsIRequest* aRequest,
   aSniffedType.AssignLiteral(APPLICATION_OCTET_STREAM);
   return NS_ERROR_NOT_AVAILABLE;
 }
+
+#undef LOG

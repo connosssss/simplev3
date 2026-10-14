@@ -1,4 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +7,10 @@
   /* import-globals-from ../head_common.js */
   let commonFile = do_get_file("../head_common.js", false);
   let uri = Services.io.newFileURI(commonFile);
-  Services.scriptloader.loadSubScript(uri.spec, this);
+  Services.scriptloader.loadSubScriptWithOptions(uri.spec, {
+    target: this,
+    allowUnsafeURL: true,
+  });
 }
 
 // Put any other stuff relative to this test folder below.
@@ -21,11 +23,11 @@ let uniqueFaviconId = 0;
 /**
  * Checks that the favicon for the given page matches the provided data.
  *
- * @param aPageURI
+ * @param {string|URL|nsIURI} aPageURI
  *        nsIURI object for the page to check.
- * @param aExpectedMimeType
+ * @param {string} aExpectedMimeType
  *        Expected MIME type of the icon, for example "image/png".
- * @param aExpectedData
+ * @param {number[]} aExpectedData
  *        Expected icon data, expressed as an array of byte values.
  *        If set null, skip the test for the favicon data.
  */
@@ -45,8 +47,8 @@ async function checkFaviconDataForPage(
 /**
  * Checks that the given page has no associated favicon.
  *
- * @param aPageURI
- *        nsIURI object for the page to check.
+ * @param {string|URL|nsIURI} aPageURI
+ *   nsIURI object for the page to check.
  */
 async function checkFaviconMissingForPage(aPageURI) {
   let favicon = await PlacesTestUtils.getFaviconForPage(aPageURI);
@@ -109,7 +111,7 @@ async function createFavicon(aFileName) {
 
   return {
     file: faviconFile,
-    uri: uri(faviconFile),
+    uri: Services.io.newFileURI(faviconFile),
     data: readFileData(faviconFile),
     mimeType: "image/png",
   };

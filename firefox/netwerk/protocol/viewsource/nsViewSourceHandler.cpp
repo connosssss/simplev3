@@ -1,13 +1,12 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=4 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsViewSourceHandler.h"
-#include "nsViewSourceChannel.h"
+
 #include "nsNetUtil.h"
 #include "nsSimpleNestedURI.h"
+#include "nsViewSourceChannel.h"
 
 #define VIEW_SOURCE "view-source"
 
@@ -40,11 +39,13 @@ nsViewSourceHandler::GetFlagsForURI(nsIURI* aURI, uint32_t* result) {
   }
 
   nsCOMPtr<nsIURI> innerURI;
-  nestedURI->GetInnerURI(getter_AddRefs(innerURI));
+  nsresult rv = nestedURI->GetInnermostURI(getter_AddRefs(innerURI));
+  if (NS_FAILED(rv)) {
+    return NS_OK;
+  }
   nsCOMPtr<nsINetUtil> netUtil = do_GetNetUtil();
   bool isLoadable = false;
-  nsresult rv =
-      netUtil->ProtocolHasFlags(innerURI, URI_LOADABLE_BY_ANYONE, &isLoadable);
+  rv = netUtil->ProtocolHasFlags(innerURI, URI_LOADABLE_BY_ANYONE, &isLoadable);
   NS_ENSURE_SUCCESS(rv, rv);
   if (isLoadable) {
     *result |= URI_LOADABLE_BY_EXTENSIONS;

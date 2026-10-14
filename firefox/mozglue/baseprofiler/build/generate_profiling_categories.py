@@ -63,7 +63,7 @@ RUST_TEMPLATE = """\
 RUST_ENUM_TEMPLATE = """\
 #[repr(u32)]
 #[derive(Debug, Copy, Clone)]
-pub enum {name} {{
+{default_derive}pub enum {name} {{
 {fields}
 }}
 """
@@ -71,14 +71,6 @@ pub enum {name} {{
 RUST_CONVERSION_IMPL_TEMPLATE = """\
 impl {name} {{
   pub fn to_cpp_enum_value(&self) -> u32 {{
-{content}
-  }}
-}}
-"""
-
-RUST_DEFAULT_IMPL_TEMPLATE = """\
-impl Default for {name} {{
-  fn default() -> Self {{
 {content}
   }}
 }}
@@ -145,9 +137,9 @@ def generate_macro_header(c_out, yaml_path):
         color = category["color"]
         assert isinstance(color, str)
         subcategories = category.get("subcategories", None)
-        assert (
-            isinstance(subcategories, list) and len(subcategories) > 0
-        ), f"At least one subcategory expected as default in {name}."
+        assert isinstance(subcategories, list) and len(subcategories) > 0, (
+            f"At least one subcategory expected as default in {name}."
+        )
 
         category_items.append(
             generate_category_macro(name, label, color, subcategories)
@@ -184,13 +176,15 @@ class RustEnum:
     }
     ```
 
-    And in addition to enums, it will generate impls for each enum. See one
-    example below:
+    Sub category enums additionally derive `Default`, with the default
+    sub-category variant marked with `#[default]`. See one example below:
     ```
-    impl Default for Network {
-        fn default() -> Self {
-            Network::Other
-        }
+    #[repr(u32)]
+    #[derive(Debug, Copy, Clone)]
+    #[derive(Default)]
+    pub enum Network {
+        #[default]
+        Other = 0,
     }
     ```
     """
@@ -214,22 +208,17 @@ class RustEnum:
 
     def append_discriminant_field(self, field_name, field_value):
         """Append the enum fields list with a discriminant field."""
+        prefix = "  #[default]\n" if self.default_category == field_name else ""
         field = (
             field_name,
-            f"  {field_name} = {field_value},",
+            f"{prefix}  {field_name} = {field_value},",
         )
         self.fields.append(field)
 
-    def append_default_impl(self, default_category):
-        """Append the enum impls list with a default implementation."""
+    def set_default_category(self, default_category):
+        """Mark this enum as deriving `Default`, with `default_category` as
+        the default variant."""
         self.default_category = default_category
-
-        self.impls.append(
-            RUST_DEFAULT_IMPL_TEMPLATE.format(
-                name=self.name,
-                content=f"      {self.name}::{self.default_category}",
-            )
-        )
 
     def append_conversion_impl(self, content):
         """Append the enum impls list with a conversion implementation for cpp values."""
@@ -240,7 +229,10 @@ class RustEnum:
     def to_rust_string(self):
         """Serialize the enum with its impls as a string"""
         joined_fields = "\n".join(map(lambda field: field[1], self.fields))
-        result = RUST_ENUM_TEMPLATE.format(name=self.name, fields=joined_fields)
+        default_derive = "#[derive(Default)]\n" if self.default_category else ""
+        result = RUST_ENUM_TEMPLATE.format(
+            name=self.name, fields=joined_fields, default_derive=default_derive
+        )
         result += "\n"
         result += "\n".join(self.impls)
         return result
@@ -270,9 +262,9 @@ def generate_rust_enums(c_out, yaml_path):
         # This will be used as our main enum field and sub category enum.
         cat_label = "".join(filter(str.isalnum, cat_label))
         cat_subcategories = category.get("subcategories", None)
-        assert (
-            isinstance(cat_subcategories, list) and len(cat_subcategories) > 0
-        ), f"At least one subcategory expected as default in {cat_name}."
+        assert isinstance(cat_subcategories, list) and len(cat_subcategories) > 0, (
+            f"At least one subcategory expected as default in {cat_name}."
+        )
 
         # Create a new enum for this sub category and append it to the enums list.
         category_enum = RustEnum(cat_label)
@@ -288,7 +280,7 @@ def generate_rust_enums(c_out, yaml_path):
             if cat_name == subcat_name:
                 # This is the default sub-category. It should use the label as name.
                 friendly_subcat_name = subcat_label
-                category_enum.append_default_impl(subcat_label)
+                category_enum.set_default_category(subcat_label)
             else:
                 # This is a non-default sub-category.
                 underscore_pos = subcat_name.find("_")
@@ -300,9 +292,9 @@ def generate_rust_enums(c_out, yaml_path):
             )
             profiling_category_pair_value += 1
 
-        assert (
-            category_enum.default_category is not None
-        ), "There must be a default subcategory with the same name."
+        assert category_enum.default_category is not None, (
+            "There must be a default subcategory with the same name."
+        )
 
         # Append the main enums.
         profiling_category_pair_enum.append_optional_tuple_field(cat_label)

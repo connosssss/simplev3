@@ -56,7 +56,7 @@ void UpdateHandler(nsITimer* aTimer, void* aClosure) {
       uint64_t lightLMU[outputs];
 
       kr = IOConnectCallMethod(sDataPort, 0, nil, 0, nil, 0, lightLMU, &outputs,
-                               nil, 0);
+                               nil, nullptr);
       if (kr == KERN_SUCCESS) {
         uint64_t mean = (lightLMU[0] + lightLMU[1]) / 2;
         if (mean == sLastMean) {
@@ -108,7 +108,7 @@ void EnableSensorNotifications(SensorType aSensor) {
     if (sUpdateTimer) {
       sUpdateTimer->InitWithNamedFuncCallback(
           UpdateHandler, nullptr, DEFAULT_SENSOR_POLL,
-          nsITimer::TYPE_REPEATING_SLACK, "hal_impl::UpdateHandler");
+          nsITimer::TYPE_REPEATING_SLACK, "hal_impl::UpdateHandler"_ns);
     }
   }
 }
@@ -127,13 +127,11 @@ void DisableSensorNotifications(SensorType aSensor) {
   }
   // If all sensors are disabled, cancel the update timer.
   if (sUpdateTimer) {
-    for (int i = 0; i < NUM_SENSOR_TYPE; i++) {
-      if (sActiveSensors[i]) {
-        return;
-      }
+    if (std::none_of(std::begin(sActiveSensors), std::end(sActiveSensors),
+                     [](bool v) { return v; })) {
+      sUpdateTimer->Cancel();
+      NS_RELEASE(sUpdateTimer);
     }
-    sUpdateTimer->Cancel();
-    NS_RELEASE(sUpdateTimer);
   }
 }
 }  // namespace hal_impl

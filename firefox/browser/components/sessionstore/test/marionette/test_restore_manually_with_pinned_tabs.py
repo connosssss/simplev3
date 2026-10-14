@@ -19,20 +19,18 @@ def inline(doc):
 
 class TestSessionRestoreWithPinnedTabs(SessionStoreTestCase):
     def setUp(self):
-        super(TestSessionRestoreWithPinnedTabs, self).setUp(
+        super().setUp(
             startup_page=1,
             include_private=False,
             restore_on_demand=True,
-            test_windows=set(
-                [
-                    # Window 1
-                    (
-                        inline("""<div">ipsum</div>"""),
-                        inline("""<div">dolor</div>"""),
-                        inline("""<div">amet</div>"""),
-                    ),
-                ]
-            ),
+            test_windows=set([
+                # Window 1
+                (
+                    inline("""<div">ipsum</div>"""),
+                    inline("""<div">dolor</div>"""),
+                    inline("""<div">amet</div>"""),
+                ),
+            ]),
         )
 
     def test_no_restore_with_quit(self):
@@ -44,7 +42,7 @@ class TestSessionRestoreWithPinnedTabs(SessionStoreTestCase):
             """
             let resolve = arguments[0];
             gBrowser.pinTab(gBrowser.tabs[0]);
-            let { TabStateFlusher } = ChromeUtils.importESModule("resource:///modules/sessionstore/TabStateFlusher.sys.mjs");
+            let { TabStateFlusher } = ChromeUtils.importESModule("moz-src:///browser/components/sessionstore/TabStateFlusher.sys.mjs");
             TabStateFlusher.flush(gBrowser.tabs[0]).then(resolve);
         """
         )

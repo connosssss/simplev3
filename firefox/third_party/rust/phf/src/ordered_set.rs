@@ -1,9 +1,9 @@
 //! An order-preserving immutable set constructed at compile time.
-use crate::{ordered_map, OrderedMap, PhfHash};
+use crate::{OrderedMap, PhfHash, ordered_map};
 use core::fmt;
 use core::iter::FusedIterator;
 use core::iter::IntoIterator;
-use phf_shared::PhfBorrow;
+use phf_shared::PhfEq;
 
 /// An order-preserving immutable set constructed at compile time.
 ///
@@ -29,6 +29,17 @@ where
     }
 }
 
+impl<T> PartialEq for OrderedSet<T>
+where
+    T: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.map == other.map
+    }
+}
+
+impl<T> Eq for OrderedSet<T> where T: Eq {}
+
 impl<T> OrderedSet<T> {
     /// Returns the number of elements in the `OrderedSet`.
     #[inline]
@@ -46,20 +57,20 @@ impl<T> OrderedSet<T> {
     /// key.
     ///
     /// This can be useful for interning schemes.
-    pub fn get_key<U: ?Sized>(&self, key: &U) -> Option<&T>
+    pub fn get_key<U>(&self, key: &U) -> Option<&T>
     where
-        U: Eq + PhfHash,
-        T: PhfBorrow<U>,
+        U: Eq + PhfHash + ?Sized,
+        T: PhfEq<U>,
     {
         self.map.get_key(key)
     }
 
     /// Returns the index of the key within the list used to initialize
     /// the ordered set.
-    pub fn get_index<U: ?Sized>(&self, key: &U) -> Option<usize>
+    pub fn get_index<U>(&self, key: &U) -> Option<usize>
     where
-        U: Eq + PhfHash,
-        T: PhfBorrow<U>,
+        U: Eq + PhfHash + ?Sized,
+        T: PhfEq<U>,
     {
         self.map.get_index(key)
     }
@@ -71,10 +82,10 @@ impl<T> OrderedSet<T> {
     }
 
     /// Returns true if `value` is in the `OrderedSet`.
-    pub fn contains<U: ?Sized>(&self, value: &U) -> bool
+    pub fn contains<U>(&self, value: &U) -> bool
     where
-        U: Eq + PhfHash,
-        T: PhfBorrow<U>,
+        U: Eq + PhfHash + ?Sized,
+        T: PhfEq<U>,
     {
         self.map.contains_key(value)
     }
@@ -91,7 +102,7 @@ impl<T> OrderedSet<T> {
 
 impl<T> OrderedSet<T>
 where
-    T: Eq + PhfHash + PhfBorrow<T>,
+    T: Eq + PhfHash + PhfEq<T>,
 {
     /// Returns true if `other` shares no elements with `self`.
     #[inline]

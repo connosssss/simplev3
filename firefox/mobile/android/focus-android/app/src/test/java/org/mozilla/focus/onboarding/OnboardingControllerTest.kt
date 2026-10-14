@@ -4,7 +4,6 @@
 package org.mozilla.focus.onboarding
 
 import android.content.Context
-import android.os.Build
 import mozilla.components.support.test.whenever
 import org.junit.Before
 import org.junit.Test
@@ -21,27 +20,20 @@ import org.mozilla.focus.fragment.onboarding.OnboardingStorage
 import org.mozilla.focus.state.AppAction
 import org.mozilla.focus.state.AppStore
 import org.mozilla.focus.utils.Settings
-import org.robolectric.annotation.Config
 
 class OnboardingControllerTest {
 
-    @Mock
-    private lateinit var appStore: AppStore
+    @Mock private lateinit var appStore: AppStore
 
-    @Mock
-    private lateinit var context: Context
+    @Mock private lateinit var context: Context
 
-    @Mock
-    private lateinit var appContext: FocusApplication
+    @Mock private lateinit var appContext: FocusApplication
 
-    @Mock
-    private lateinit var components: Components
+    @Mock private lateinit var components: Components
 
-    @Mock
-    private lateinit var settings: Settings
+    @Mock private lateinit var settings: Settings
 
-    @Mock
-    private lateinit var onboardingStorage: OnboardingStorage
+    @Mock private lateinit var onboardingStorage: OnboardingStorage
     private lateinit var onboardingController: OnboardingController
 
     @Before
@@ -52,14 +44,15 @@ class OnboardingControllerTest {
         whenever(appContext.components).thenReturn(components)
         whenever(components.settings).thenReturn(settings)
 
-        onboardingController = spy(
-            DefaultOnboardingController(
-                onboardingStorage,
-                appStore,
-                context,
-                "1",
-            ),
-        )
+        onboardingController =
+            spy(
+                DefaultOnboardingController(
+                    onboardingStorage,
+                    appStore,
+                    context,
+                    "1",
+                )
+            )
     }
 
     @Test
@@ -68,13 +61,5 @@ class OnboardingControllerTest {
 
         verify(settings).isFirstRun = false
         verify(appStore).dispatch(AppAction.FinishFirstRun("1"))
-    }
-
-    @Config(sdk = [Build.VERSION_CODES.M])
-    @Test
-    fun `GIVEN onBoarding and build version is M, WHEN get started button is pressed, THEN onBoarding flow must end`() {
-        onboardingController.handleGetStartedButtonClicked()
-
-        verify(onboardingController, times(1)).handleFinishOnBoarding()
     }
 }

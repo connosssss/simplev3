@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,10 +5,9 @@
 #include "APZCBasicTester.h"
 #include "APZCTreeManagerTester.h"
 #include "APZTestCommon.h"
-#include "mozilla/layers/WebRenderScrollDataWrapper.h"
-#include "apz/util/APZEventState.h"
-
 #include "InputUtils.h"
+#include "apz/util/APZEventState.h"
+#include "mozilla/layers/WebRenderScrollDataWrapper.h"
 
 class APZCTransformNotificationTester : public APZCTreeManagerTester {
  public:
@@ -26,8 +23,7 @@ class APZCTransformNotificationTester : public APZCTreeManagerTester {
         LayerIntRect(0, 0, 100, 100),
     };
     CreateScrollData(treeShape, layerVisibleRect);
-    SetScrollableFrameMetrics(root, ScrollableLayerGuid::START_SCROLL_ID,
-                              CSSRect(0, 0, 500, 500));
+    SetScrollableFrameMetrics(root, START_SCROLL_ID, CSSRect(0, 0, 500, 500));
 
     mRegistration = MakeUnique<ScopedLayerTreeRegistration>(LayersId{0}, mcc);
 
@@ -42,8 +38,7 @@ class APZCTransformNotificationTester : public APZCTreeManagerTester {
         LayerIntRect(0, 0, 100, 100),
     };
     CreateScrollData(treeShape, layerVisibleRect);
-    SetScrollableFrameMetrics(root, ScrollableLayerGuid::START_SCROLL_ID,
-                              CSSRect(0, 0, 100, 100));
+    SetScrollableFrameMetrics(root, START_SCROLL_ID, CSSRect(0, 0, 100, 100));
 
     mRegistration = MakeUnique<ScopedLayerTreeRegistration>(LayersId{0}, mcc);
 
@@ -161,42 +156,42 @@ TEST_F(APZCTransformNotificationTester, PanWithMomentumTransformNotifications) {
   }
 
   check.Call("Pan Start");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(1, 2), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Panning");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, mRootApzc, ScreenIntPoint(50, 50),
              ScreenPoint(15, 30), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Pan End");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Momentum Start");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMSTART, manager,
              ScreenIntPoint(50, 50), ScreenPoint(30, 90), mcc->Time());
   mcc->AdvanceByMillis(10);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Momentum Pan");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMPAN, manager,
              ScreenIntPoint(50, 50), ScreenPoint(10, 30), mcc->Time());
   mcc->AdvanceByMillis(10);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Momentum End");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMEND, manager,
              ScreenIntPoint(50, 50), ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(10);
@@ -237,21 +232,21 @@ TEST_F(APZCTransformNotificationTester,
   }
 
   check.Call("Pan Start");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(1, 2), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Panning");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, mRootApzc, ScreenIntPoint(50, 50),
              ScreenPoint(15, 30), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Pan End");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(55);
@@ -274,7 +269,9 @@ TEST_F(APZCTransformNotificationTester,
   MockFunction<void(std::string checkPointName)> check;
   {
     InSequence s;
+
     EXPECT_CALL(check, Call("Pan Start"));
+
     EXPECT_CALL(
         *mcc,
         NotifyAPZStateChange(
@@ -306,42 +303,46 @@ TEST_F(APZCTransformNotificationTester,
     EXPECT_CALL(check, Call("Done"));
   }
 
+  // Scroll somewhere into the middle of the scroll range, so that we have
+  // lots of space to scroll in both directions.
+  mRootApzc->GetFrameMetrics().SetVisualScrollOffset(CSSPoint(250, 250));
+
   check.Call("Pan Start");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(1, 2), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Panning");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, mRootApzc, ScreenIntPoint(50, 50),
              ScreenPoint(15, 30), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Pan End");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(55);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("New Pan Start");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(1, 2), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, mRootApzc, ScreenIntPoint(50, 50),
              ScreenPoint(15, 30), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("New Pan End");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(105);
@@ -394,28 +395,28 @@ TEST_F(APZCTransformNotificationTester,
   }
 
   check.Call("Pan Start");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(1, 2), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Panning");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, mRootApzc, ScreenIntPoint(50, 50),
              ScreenPoint(15, 30), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Pan End");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(55);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Wheel Start");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   SmoothWheel(manager, ScreenIntPoint(50, 50), ScreenPoint(10, 10),
               mcc->Time());
   mcc->AdvanceByMillis(10);
@@ -458,14 +459,14 @@ TEST_F(APZCTransformNotificationTester, PanOverscrollTransformNotifications) {
   }
 
   check.Call("Pan Start");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(1, 2), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
   check.Call("Panning Into Overscroll");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, mRootApzc, ScreenIntPoint(50, 50),
              ScreenPoint(15, -30), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -475,7 +476,7 @@ TEST_F(APZCTransformNotificationTester, PanOverscrollTransformNotifications) {
   EXPECT_TRUE(mRootApzc->IsOverscrolled());
 
   check.Call("Pan End");
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -517,12 +518,12 @@ TEST_F(APZCTransformNotificationTester, ScrollableTouchStateChange) {
 
   // Conduct a touch down and touch up in the scrollable element,
   // and ensure the correct state change notifications are sent.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   TouchDown(mRootApzc, ScreenIntPoint(10, 10), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   TouchUp(mRootApzc, ScreenIntPoint(10, 10), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
@@ -555,12 +556,12 @@ TEST_F(APZCTransformNotificationTester, NonScrollableTouchStateChange) {
 
   // Conduct a touch down and touch up in the non-scrollable element,
   // and ensure the correct state change notifications are sent.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   TouchDown(mRootApzc, ScreenIntPoint(10, 10), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   TouchUp(mRootApzc, ScreenIntPoint(10, 10), mcc->Time());
   mcc->AdvanceByMillis(5);
   mRootApzc->AdvanceAnimations(mcc->GetSampleTime());

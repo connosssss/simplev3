@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- *
+/*
  * Copyright 2016 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,6 +20,13 @@
 #ifndef wasm_wasm_baseline_stk_mgmt_inl_h
 #define wasm_wasm_baseline_stk_mgmt_inl_h
 
+#include "wasm/WasmBCStk.h"
+
+#include <bit>
+#include <cstdint>
+
+#include "wasm/WasmBCClass.h"
+
 namespace js {
 namespace wasm {
 
@@ -34,6 +39,15 @@ size_t BaseCompiler::countMemRefsOnStk() {
     }
   }
   return nRefs;
+}
+
+bool BaseCompiler::hasLiveRegsOnStk() {
+  for (Stk& v : stk_) {
+    if (v.isReg()) {
+      return true;
+    }
+  }
+  return false;
 }
 #endif
 
@@ -132,7 +146,7 @@ void BaseCompiler::loadRegisterF32(const Stk& src, RegF32 dest) {
   moveF32(src.f32reg(), dest);
 }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 void BaseCompiler::loadConstV128(const Stk& src, RegV128 dest) {
   V128 f;
   src.v128val(&f);
@@ -268,7 +282,7 @@ void BaseCompiler::loadF32(const Stk& src, RegF32 dest) {
   }
 }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 void BaseCompiler::loadV128(const Stk& src, RegV128 dest) {
   switch (src.kind()) {
     case Stk::ConstV128:
@@ -417,7 +431,7 @@ void BaseCompiler::sync() {
         v.setOffs(Stk::MemF32, offs);
         break;
       }
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
       case Stk::LocalV128: {
         ScratchV128 scratch(*this);
         loadV128(v, scratch);
@@ -502,7 +516,7 @@ void BaseCompiler::pushAny(AnyReg r) {
       pushF64(r.f64());
       break;
     }
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
     case AnyReg::V128: {
       pushV128(r.v128());
       break;
@@ -549,7 +563,7 @@ void BaseCompiler::pushF32(RegF32 r) {
   push(Stk(r));
 }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 void BaseCompiler::pushV128(RegV128 r) {
   MOZ_ASSERT(!isAvailableV128(r));
   push(Stk(r));
@@ -579,7 +593,7 @@ void BaseCompiler::pushF64(double v) { push(Stk(v)); }
 
 void BaseCompiler::pushF32(float v) { push(Stk(v)); }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 void BaseCompiler::pushV128(V128 v) { push(Stk(v)); }
 #endif
 
@@ -607,7 +621,7 @@ void BaseCompiler::pushLocalF32(uint32_t slot) {
   stk_.infallibleEmplaceBack(Stk(Stk::LocalF32, slot));
 }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 void BaseCompiler::pushLocalV128(uint32_t slot) {
   stk_.infallibleEmplaceBack(Stk(Stk::LocalV128, slot));
 }
@@ -645,7 +659,7 @@ AnyReg BaseCompiler::popAny(AnyReg specific) {
     case Stk::ConstF64:
       return AnyReg(popF64(specific.f64()));
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
     case Stk::MemV128:
     case Stk::LocalV128:
     case Stk::RegisterV128:
@@ -693,7 +707,7 @@ AnyReg BaseCompiler::popAny() {
     case Stk::ConstF64:
       return AnyReg(popF64());
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
     case Stk::MemV128:
     case Stk::LocalV128:
     case Stk::RegisterV128:
@@ -726,9 +740,15 @@ void BaseCompiler::popI32(const Stk& v, RegI32 dest) {
       break;
     case Stk::LocalI32:
       loadLocalI32(v, dest);
+#if defined(DEBUG) && defined(JS_64BIT)
+      masm.debugAssertCanonicalInt32(dest);
+#endif
       break;
     case Stk::MemI32:
       fr.popGPR(dest);
+#if defined(DEBUG) && defined(JS_64BIT)
+      masm.debugAssertCanonicalInt32(dest);
+#endif
       break;
     case Stk::RegisterI32:
       loadRegisterI32(v, dest);
@@ -765,7 +785,7 @@ RegI32 BaseCompiler::popI32(RegI32 specific) {
   return specific;
 }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 // Call only from other popV128() variants.
 // v must be the stack top.  May pop the CPU stack.
 
@@ -1067,7 +1087,7 @@ bool BaseCompiler::hasConst() const {
     case Stk::ConstI64:
     case Stk::ConstF32:
     case Stk::ConstF64:
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
     case Stk::ConstV128:
 #endif
     case Stk::ConstRef:
@@ -1134,10 +1154,10 @@ bool BaseCompiler::popConstPositivePowerOfTwo(int32_t* c, uint_fast8_t* power,
     return false;
   }
   *c = v.i32val();
-  if (*c <= cutoff || !mozilla::IsPowerOfTwo(static_cast<uint32_t>(*c))) {
+  if (*c <= cutoff || !std::has_single_bit(static_cast<uint32_t>(*c))) {
     return false;
   }
-  *power = mozilla::FloorLog2(*c);
+  *power = mozilla::FloorLog2(uint32_t(*c));
   stk_.popBack();
   return true;
 }
@@ -1149,10 +1169,10 @@ bool BaseCompiler::popConstPositivePowerOfTwo(int64_t* c, uint_fast8_t* power,
     return false;
   }
   *c = v.i64val();
-  if (*c <= cutoff || !mozilla::IsPowerOfTwo(static_cast<uint64_t>(*c))) {
+  if (*c <= cutoff || !std::has_single_bit(static_cast<uint64_t>(*c))) {
     return false;
   }
-  *power = mozilla::FloorLog2(*c);
+  *power = mozilla::FloorLog2(uint64_t(*c));
   stk_.popBack();
   return true;
 }
@@ -1177,7 +1197,7 @@ void BaseCompiler::pop2xF64(RegF64* r0, RegF64* r1) {
   *r0 = popF64();
 }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 void BaseCompiler::pop2xV128(RegV128* r0, RegV128* r1) {
   *r1 = popV128();
   *r0 = popV128();
@@ -1289,7 +1309,7 @@ size_t BaseCompiler::stackConsumed(size_t numval) {
       case Stk::MemF32:
         size += BaseStackFrame::StackSizeOfFloat;
         break;
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
       case Stk::MemV128:
         size += BaseStackFrame::StackSizeOfV128;
         break;
@@ -1317,7 +1337,7 @@ void BaseCompiler::popValueStackTo(uint32_t stackSize) {
       case Stk::RegisterF32:
         freeF32(v.f32reg());
         break;
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
       case Stk::RegisterV128:
         freeV128(v.v128reg());
         break;

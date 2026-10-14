@@ -123,11 +123,9 @@ var data = [
 
 add_task(async function setup() {
   Services.prefs.setStringPref("browser.fixup.alternate.prefix", "www.");
-  Services.prefs.setStringPref("browser.fixup.alternate.suffix", ".com");
   Services.prefs.setStringPref("browser.fixup.alternate.protocol", "https");
   registerCleanupFunction(function () {
     Services.prefs.clearUserPref("browser.fixup.alternate.prefix");
-    Services.prefs.clearUserPref("browser.fixup.alternate.suffix");
     Services.prefs.clearUserPref("browser.fixup.alternate.protocol");
   });
 });

@@ -16,7 +16,7 @@ body {
 
 @media (prefers-contrast) {
   body {
-    --warning-color: var(--in-content-page-color);
+    --warning-color: var(--text-color);
   }
 }
 
@@ -28,6 +28,18 @@ body.certerror {
  * This allows for element hiding to be controlled entirely in HTML & JS. */
 [hidden] {
   display: none !important;
+}
+
+#sslKeyLoggingWarning {
+  position: fixed;
+  top: 0;
+  inset-inline: 0;
+  margin: 0;
+  border-radius: 0;
+  z-index: 1;
+  --message-bar-background-color: var(--background-color-warning);
+  --message-bar-icon-background-color: var(--background-color-warning);
+  --message-bar-icon-color: var(--icon-color-warning);
 }
 
 body.captiveportal .title {
@@ -56,7 +68,7 @@ button:disabled {
 }
 
 #errorWhatToDoTitle {
-  font-weight: bold;
+  font-weight: var(--font-weight-bold);
   margin-top: 2em;
 }
 
@@ -88,20 +100,75 @@ button:disabled {
 
 .trr-message-container {
   background-color: var(--background-color-box);
-  border: 1px solid var(--in-content-box-border-color);
-  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-small);
   padding: 10px;
 }
 
 #badCertAdvancedPanel {
   background-color: var(--background-color-box);
-  border: 1px solid var(--in-content-box-border-color);
+  border: 1px solid var(--border-color);
 }
 
 .advanced-panel {
   margin: 48px auto;
   min-width: var(--in-content-container-min-width);
   max-width: var(--in-content-container-max-width);
+}
+
+.custom-net-error-card h3,
+.advanced-container h3 {
+  margin-block-end: var(--space-small);
+
+  & + p,
+  & + ul {
+    margin-block-start: var(--space-large);
+  }
+}
+
+.what-can-you-do-list {
+  margin: 0;
+  margin-block-end: var(--space-xxlarge);
+  padding-inline-start: var(--space-large);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxsmall);
+
+  & > li {
+    padding-inline-start: var(--space-small);
+  }
+}
+
+.custom-net-error-card h1 + p:last-of-type {
+  margin-block-end: var(--space-xxlarge);
+}
+
+/* Search call-to-action on the online dnsNotFound error page (bug 2055637). */
+/* Not moz-button-group: it reorders its slotted children by moving them in the
+   light DOM, which breaks Lit's markers for the button slot this page swaps
+   between the Search button and an offline message. */
+.search-cta-buttons {
+  display: flex;
+  flex-flow: row wrap;
+  justify-content: flex-start;
+  align-items: center;
+  gap: var(--space-small);
+  margin-block: var(--space-large) var(--space-xxlarge);
+}
+
+.search-cta-offline {
+  margin-block: 0;
+}
+
+/* Keep the error code and Learn More lines tight together, one above the
+   other, at a slightly smaller size (bug 2055637). */
+.search-cta-error-code,
+.search-cta-learn-more {
+  display: block;
+  margin: 0;
+  padding: 0;
+  font-size: var(--font-size-small);
+  line-height: 1.5;
 }
 
 #errorCode {
@@ -119,23 +186,23 @@ button:disabled {
 }
 
 #certificateErrorDebugInformation {
-  background-color: var(--in-content-box-info-background) !important;
-  border-top: 1px solid var(--in-content-border-color);
+  background-color: var(--background-color-box-info) !important;
+  border-top: 1px solid var(--border-color);
   width: 100%;
-  padding: 1em 3%;
+  padding: var(--space-large);
   box-sizing: border-box;
 }
 
 #certificateErrorText {
   font-family: monospace;
   white-space: pre-wrap;
-  padding: 1em 0;
+  padding: var(--space-small) 0;
   display: flex;
   flex-wrap: wrap;
 }
 
 #cert_domain_link:not([href]) {
-  color: var(--in-content-page-color);
+  color: var(--text-color);
   text-decoration: none;
 }
 
@@ -144,18 +211,21 @@ button:disabled {
 }
 
 #errorLongDesc strong {
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 
 #errorShortDesc {
   font-size: 1.15em;
   line-height: 1.3;
-  font-weight: 400;
+  font-weight: normal;
   margin-top: 10px;
 }
 
+#prefChangeContainer {
+  margin-block-end: var(--space-large);
+}
+
 /* Felt Privacy v1 LARGER SCREEN! */
-/* stylelint-disable-next-line media-query-no-invalid */
 @media -moz-pref("security.certerrors.felt-privacy-v1") {
   .felt-privacy-body {
     justify-content: start;
@@ -164,18 +234,73 @@ button:disabled {
   net-error-card {
     width: min(100%, 720px);
     min-width: min-content;
-    margin-top: 150px;
+    margin-top: calc(150px - var(--error-page-padding, 0px));
+    padding-block-end: var(--space-xxlarge);
+
+    @media (max-width: 640px) {
+      /* min-content holds the card wider than a narrow viewport, which is what
+         forces a horizontal scrollbar. */
+      min-width: 0;
+      margin-top: var(--space-xxlarge);
+    }
+  }
+
+  /* Narrow viewports buy width back with padding rather than by shrinking type.
+     This selector matches the page itself, and the card's own rules below reach
+     into its shadow tree. */
+  /* stylelint-disable-next-line stylelint-plugin-mozilla/no-has-selector */
+  body:has(net-error-card) {
+    @media (max-width: 640px) {
+      padding-inline: var(--space-xxlarge);
+    }
+
+    @media (max-width: 480px) {
+      padding-inline: var(--space-large);
+    }
+
+    @media (max-width: 320px) {
+      padding-inline: var(--space-small);
+    }
   }
 
   .felt-privacy-container {
     display: flex;
     flex-direction: row;
+
+    > .container {
+      width: 100%;
+    }
+
+    /* Without the illustration, shrink the text to its widest line and center
+       it, so short messages do not sit left of center in the full-width card. */
+    @media not -moz-pref("browser.netError.illustration.enabled") {
+      justify-content: center;
+
+      > .container {
+        width: fit-content;
+      }
+    }
+
+    /* Stack the illustration above the text, both left aligned. */
+    @media (max-width: 640px) {
+      flex-direction: column;
+      align-items: start;
+    }
   }
 
   .img-container > img {
     width: 8.75em;
     margin-block-start: 2em;
     margin-inline-end: 2.5em;
+
+    &.no-connection {
+      width: 13em;
+    }
+
+    @media (max-width: 640px) {
+      margin-block: 0 var(--space-large);
+      margin-inline-end: 0;
+    }
   }
 
   #viewCertificate {

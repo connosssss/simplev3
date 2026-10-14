@@ -8,9 +8,13 @@ add_setup(async function () {
     set: [
       ["browser.contextual-password-manager.enabled", true],
       ["signon.rememberSignons", true],
+      ["toolkit.osKeyStore.unofficialBuildOnlyLogin", ""],
     ],
   });
-  registerCleanupFunction(LoginTestUtils.clearData);
+  registerCleanupFunction(() => {
+    LoginTestUtils.clearData();
+    Services.prefs.clearUserPref("sidebar.new-sidebar.has-used");
+  });
 });
 
 add_task(async function test_notification_is_only_shown_in_triggered_window() {
@@ -26,7 +30,7 @@ add_task(async function test_notification_is_only_shown_in_triggered_window() {
 
   const passwordCard = megalist.querySelector("password-card");
   await waitForReauth(() => passwordCard.editBtn.click());
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => megalist.querySelector("login-form"),
     "Login form failed to render"
   );
@@ -35,19 +39,25 @@ add_task(async function test_notification_is_only_shown_in_triggered_window() {
   const loginForm = megalist.querySelector("login-form");
 
   // Only show the discard changes notification if the login form has been modified.
-  setInputValue(loginForm, "login-username-field", login.username + "added");
+  setInputValue(loginForm, "moz-input-text", login.username + "added");
 
   const cancelButton = loginForm.shadowRoot.querySelector(
     "moz-button[data-l10n-id=login-item-cancel-button]"
   );
   cancelButton.buttonEl.click();
-  await checkNotificationAndTelemetry(megalist, "discard-changes");
+  const notifMsgBar = await checkNotificationAndTelemetry(
+    megalist,
+    "discard-changes"
+  );
   ok(true, "Got discard changes notification");
 
   await ensureNoNotifications(megalistNewWindow, "discard-changes");
 
   SidebarController.hide();
   win.SidebarController.hide();
+  notifMsgBar.shadowRoot
+    .querySelector("moz-button[type='destructive']")
+    .click();
 
   await BrowserTestUtils.closeWindow(win);
 });

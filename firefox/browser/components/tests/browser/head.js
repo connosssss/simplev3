@@ -44,7 +44,7 @@ function mockShell(overrides = {}) {
     isPinned: false,
     isPinnedToStartMenu: false,
 
-    async checkPinCurrentAppToTaskbarAsync() {
+    canPinToTaskbar() {
       if (!this.canPin) {
         throw Error;
       }
@@ -52,13 +52,16 @@ function mockShell(overrides = {}) {
     get isAppInDock() {
       return this.isPinned;
     },
-    isCurrentAppPinnedToTaskbarAsync() {
+    isCurrentAppPinnedToTaskbar() {
       return Promise.resolve(this.isPinned);
     },
-    isCurrentAppPinnedToStartMenuAsync() {
+    isCurrentAppPinnedToStartMenu() {
       return Promise.resolve(this.isPinnedToStartMenu);
     },
     isDefaultBrowser() {
+      return this.isDefault;
+    },
+    async isDefaultBrowserAsync() {
       return this.isDefault;
     },
     get macDockSupport() {
@@ -73,8 +76,8 @@ function mockShell(overrides = {}) {
     },
 
     ensureAppIsPinnedToDock: sharedPinStub,
-    pinCurrentAppToTaskbarAsync: sharedPinStub,
-    pinCurrentAppToStartMenuAsync: startMenuPinStub,
+    pinCurrentAppToTaskbar: sharedPinStub,
+    pinCurrentAppToStartMenu: startMenuPinStub,
     setAsDefault: sinon.stub(),
     ...overrides,
   };

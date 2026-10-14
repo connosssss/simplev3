@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: ft=cpp tw=78 sw=2 et ts=2 sts=2 cin
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -11,6 +9,7 @@
 
 interface nsIChannel;
 interface nsIContentSecurityPolicy;
+interface nsIPolicyContainer;
 interface nsICookieJarSettings;
 interface nsICSPEventListener;
 interface nsINode;
@@ -33,10 +32,12 @@ namespace mozilla {
 namespace dom {
 class ClientInfo;
 class ClientSource;
-struct FeaturePolicyInfo;
+struct PermissionsPolicyInfo;
 class PerformanceStorage;
+struct RemoteType;
 class ServiceWorkerDescriptor;
 enum class RequestMode : uint8_t;
+enum class ForceMediaDocument : uint8_t;
 } // namespace dom
 } // namespace mozilla
 %}
@@ -59,9 +60,13 @@ native OriginAttributes(mozilla::OriginAttributes);
 [ptr] native PerformanceStoragePtr(mozilla::dom::PerformanceStorage);
       native LoadTainting(mozilla::LoadTainting);
       native CSPRef(already_AddRefed<nsIContentSecurityPolicy>);
-      native MaybeFeaturePolicyInfo(mozilla::Maybe<mozilla::dom::FeaturePolicyInfo>);
-[ref] native const_FeaturePolicyInfoRef(const mozilla::dom::FeaturePolicyInfo);
+      native PolicyContainerRef(already_AddRefed<nsIPolicyContainer>);
+      native MaybePermissionsPolicyInfo(mozilla::Maybe<mozilla::dom::PermissionsPolicyInfo>);
+[ref] native const_PermissionsPolicyInfoRef(const mozilla::dom::PermissionsPolicyInfo);
       native MaybeRequestMode(mozilla::Maybe<mozilla::dom::RequestMode>);
+      native ForceMediaDocument(mozilla::dom::ForceMediaDocument);
+[ref] native RemoteType(mozilla::dom::RemoteType);
+[ref] native const_RemoteTypeRef(const mozilla::dom::RemoteType);
 
 typedef unsigned long nsSecurityFlags;
 
@@ -337,7 +342,11 @@ interface nsILoadInfo : nsISupports
    * reset to the remote type of the sending process when sent from a content
    * process to the parent process.
    */
-  attribute AUTF8String triggeringRemoteType;
+  [binaryname(XPCOMTriggeringRemoteType)]
+  readonly attribute AUTF8String triggeringRemoteType;
+
+  [noscript] RemoteType getTriggeringRemoteType();
+  [noscript] void setTriggeringRemoteType(in const_RemoteTypeRef aTriggeringRemoteType);
 
   /**
    * For non-document loads the principalToInherit is always null. For
@@ -361,6 +370,17 @@ interface nsILoadInfo : nsISupports
    */
   [noscript, notxpcom, nostdcall]
   nsIPrincipal FindPrincipalToInherit(in nsIChannel aChannel);
+
+  /**
+   * Some callers clobber PrincipalToInherit with a new principal which should
+   * not be validated against triggeringRemoteType.
+   * Those callers use this setter, which sets `isPrincipalToInheritTrusted()`.
+   * The trust flag is not serialized over IPC.
+   */
+  [noscript]
+  void setTrustedPrincipalToInherit(in nsIPrincipal principal);
+  [noscript, notxpcom, nostdcall]
+  boolean isPrincipalToInheritTrusted();
 
   /**
    * This is the ownerDocument of the LoadingNode. Unless the LoadingNode
@@ -449,13 +469,9 @@ interface nsILoadInfo : nsISupports
 
 
   /**
-  * The window id and storage access status of the window of the
-  * context that triggered the load. This is used to allow self-initiated
-  * same-origin navigations to propogate their "has storage access" bit
-  * to the next Document.
+  * The window id of the window of the context that triggered the load.
   */
   [infallible] attribute unsigned long long triggeringWindowId;
-  [infallible] attribute boolean triggeringStorageAccess;
 
   /**
    * The classification flags of the first-party context responsible for causing
@@ -665,6 +681,14 @@ interface nsILoadInfo : nsISupports
     NoStoragePermission = 0,
     HasStoragePermission = 1,
     StoragePermissionAllowListed = 2,
+    // Value for Storage-Access-Headers. Like NoStoragePermission, but on a channel that can potentially
+    // have access to unpartitioned cookies.
+    // XXX(Bug 1978856): If this is considered to be not useful, this variant can be removed.
+    DisabledStoragePermission = 3,
+    // Value for Storage-Access-Headers. The user has granted storage-access permissions previously,
+    // but in this request we partition the storage. Website can simply elevate to unpartitioned cookies
+    // by running document.requestStoragePermission()
+    InactiveStoragePermission = 4,
   };
 
 /**
@@ -720,6 +744,13 @@ interface nsILoadInfo : nsISupports
    * True if the load was triggered by a meta refresh.
    */
   [infallible] attribute boolean isMetaRefresh;
+
+  /**
+   * True if this navigation was served from a completed navigational prefetch.
+   * Diagnostics only (profiler network markers); don't gate behaviour on it.
+   * https://wicg.github.io/nav-speculation/prefetch.html
+   */
+  [infallible] attribute boolean activatedFromNavigationalPrefetch;
 
   /**
    * If forceInheritPrincipal is true, the data coming from the channel should
@@ -906,6 +937,20 @@ interface nsILoadInfo : nsISupports
   [infallible] attribute boolean allowInsecureRedirectToDataURI;
 
   /**
+   * If not NONE, force the resulting document to load as specific kind of MediaDocument.
+   */
+  [noscript] attribute ForceMediaDocument forceMediaDocument;
+
+%{ C++
+  mozilla::dom::ForceMediaDocument GetForceMediaDocument()
+  {
+    mozilla::dom::ForceMediaDocument forceMediaDocument;
+    MOZ_ALWAYS_SUCCEEDS(GetForceMediaDocument(&forceMediaDocument));
+    return forceMediaDocument;
+  }
+%}
+
+  /**
    * If true, the content policy security check is excluded from web requests.
    */
   [infallible] attribute boolean skipContentPolicyCheckForWebRequest;
@@ -939,16 +984,17 @@ interface nsILoadInfo : nsISupports
   [infallible] readonly attribute BrowsingContext browsingContext;
 
   /**
-   * The BrowsingContext which the worker is associated.
+   * The BrowsingContextID that a request such as fetch() or importScripts() is
+   * associated with.
    *
-   * Note that this could be 0 if the load is not triggered in a WorkerScope.
-   * This value is only set and used in the parent process for some sitautions
-   * the channel is created in the parent process for Workers. Such as fetch().
-   * In content process, it is always 0.
-   * This value would not be propagated through IPC.
+   * Fetch is used to send reports to endpoints. The associated bc ID is
+   * used so that a web developer can track the sending of reports in devtools,
+   * by ultimately setting the browsing context ID on a LoadInfo object.
+   *
+   * This will be 0 when the request is from a SharedWorker or ServiceWorker.
    */
-  [infallible] attribute unsigned long long workerAssociatedBrowsingContextID;
-  [infallible] readonly attribute BrowsingContext workerAssociatedBrowsingContext;
+  [infallible] attribute unsigned long long associatedBrowsingContextID;
+  [infallible] readonly attribute BrowsingContext associatedBrowsingContext;
 
   /**
    * Only when the element being loaded is <frame src="foo.html">
@@ -1425,18 +1471,48 @@ interface nsILoadInfo : nsISupports
    * After evaluating what CSP to use for frame navigations we should
    * update the above documentation to match the outcome of Bug 1557114.
    */
-  [notxpcom,nostdcall] CSPRef GetCsp();
   [notxpcom,nostdcall] CSPRef GetPreloadCsp();
-  [notxpcom,nostdcall] CSPRef GetCspToInherit();
+
+  [notxpcom,nostdcall] PolicyContainerRef GetPolicyContainer();
 
   /**
-    * The possibly cross-origin container feature policy required to
-    * initialize the feature policy of a document load.
+   * Hands off from the policyContainerToInherit functionality!
+   *
+   * For navigations, GetPolicyContainerToInherit returns what the spec calls
+   * the "request's client's global object's CSP list", or more precisely a
+   * snapshot of it taken when the navigation starts.  For navigations that
+   * need to inherit their CSP, this is the right CSP to use for the new
+   * document.  We need a way to transfer the CSP from the docshell (where the
+   * navigation starts) to the point where the new document is created and
+   * decides whether to inherit its CSP, and this is the mechanism we use for
+   * that.
+   *
+   * For example:
+   * A document with a CSP triggers a new top-level data: URI load.
+   * We pass the CSP of the document that triggered the load all the
+   * way to docshell. Within docshell we call SetPolicyContainerToInherit() on
+   * the loadinfo. Within Document::InitPolicyContainer() we check if the newly
+   * created document needs to inherit the policy container. If so, we call
+   * GetPolicyContainerToInherit(). Please note that any additonal Meta CSP in
+   * that document will be merged into that CSP. Any subresource loads within
+   * that document subesquently will receive the correct CSP by querying
+   * loadinfo->GetPolicyContainer() from that point on.
+   *
+   * javascript: URLs are the exception: the document they create inherits the
+   * policy container of the document it replaces, so nsJSThunk overrides the
+   * value docshell set here once it knows that document.
+   */
+  [notxpcom,nostdcall] PolicyContainerRef GetPolicyContainerToInherit();
+  [notxpcom,nostdcall] void SetPolicyContainerToInherit(in nsIPolicyContainer aPolicyContainerToInherit);
+
+  /**
+    * The possibly cross-origin container permissions policy required to
+    * initialize the permissions policy of a document load.
     */
   [noscript, nostdcall, notxpcom]
-  MaybeFeaturePolicyInfo GetContainerFeaturePolicyInfo();
+  MaybePermissionsPolicyInfo GetContainerPermissionsPolicyInfo();
   [noscript, nostdcall, notxpcom]
-  void SetContainerFeaturePolicyInfo(in const_FeaturePolicyInfoRef aContainerFeaturePolicy);
+  void SetContainerPermissionsPolicyInfo(in const_PermissionsPolicyInfoRef aContainerPermissionsPolicy);
 
   /**
     * The service worker and fetch specifications require returning the
@@ -1511,6 +1587,7 @@ interface nsILoadInfo : nsISupports
   const uint32_t BLOCKING_REASON_CLASSIFY_FINGERPRINTING_URI = 2008;
   const uint32_t BLOCKING_REASON_CLASSIFY_SOCIALTRACKING_URI = 2009;
   const uint32_t BLOCKING_REASON_CLASSIFY_EMAILTRACKING_URI = 2010;
+  const uint32_t BLOCKING_REASON_CLASSIFY_HARMFULADDON_URI = 2011;
   const uint32_t BLOCKING_REASON_MIXED_BLOCKED = 3001;
   // The general reason comes from nsCSPContext::permitsInternal(),
   // which is way too generic to distinguish an exact reason.
@@ -1576,6 +1653,10 @@ interface nsILoadInfo : nsISupports
    * innerWindowIID in the nsILoadInfo.
    * It also could be set by workers when fetch is called under
    * the workers' scope.
+   *
+   * If the value is nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP, CORP checking
+   * must be performed for the loading.
+   * See https://wicg.github.io/cross-origin-embedder-policy/#corp-check.
    */
   [infallible] attribute nsILoadInfo_CrossOriginEmbedderPolicy
         loadingEmbedderPolicy;
@@ -1585,23 +1666,12 @@ interface nsILoadInfo : nsISupports
    * credentialless enabled in Origin Trial.
    */
   [infallible] attribute boolean isOriginTrialCoepCredentiallessEnabledForTopLevel;
+
   /**
    * This attribute will be true if this is a load triggered by a media
    * element.
    */
   [infallible] attribute boolean isMediaRequest;
-
-  /**
-   * This attribute will be true if this is a load triggered by a media
-   * element and it's an initial request.
-   */
-  [infallible] attribute boolean isMediaInitialRequest;
-
-  /**
-   * This attribute will be true if the fetch request is from object or embed
-   * elements
-   */
-  [infallible] attribute boolean isFromObjectOrEmbed;
 
   /**
    * If this is non-null, this property holds the URI as it was before query
@@ -1621,12 +1691,6 @@ interface nsILoadInfo : nsISupports
   [noscript, notxpcom, nostdcall, binaryname(SetInterceptionInfo)]
   void binarySetInterceptionInfo(in nsIInterceptionInfo info);
 
-  /**
-   * Whether nsICookieInjector has injected a cookie for this request to
-   * handle a cookie banner. This is only done for top-level requests.
-   */
-  [infallible] attribute boolean hasInjectedCookieForCookieBannerHandling;
-
   cenum SchemelessInputType : 8 {
     SchemelessInputTypeUnset = 0,
     SchemelessInputTypeSchemeful = 1,
@@ -1639,20 +1703,21 @@ interface nsILoadInfo : nsISupports
 
   cenum HTTPSUpgradeTelemetryType : 32 {
     NOT_INITIALIZED = 0,
-    NO_UPGRADE = (1 << 0),
-    ALREADY_HTTPS = (1 << 1),
-    HSTS = (1 << 2),
-    HTTPS_ONLY_UPGRADE = (1 << 3),
-    HTTPS_ONLY_UPGRADE_DOWNGRADE = (1 << 4),
-    HTTPS_FIRST_UPGRADE = (1 << 5),
-    HTTPS_FIRST_UPGRADE_DOWNGRADE = (1 << 6),
-    HTTPS_FIRST_SCHEMELESS_UPGRADE = (1 << 7),
-    HTTPS_FIRST_SCHEMELESS_UPGRADE_DOWNGRADE = (1 << 8),
-    CSP_UIR = (1 << 9),
-    HTTPS_RR = (1 << 10),
-    WEB_EXTENSION_UPGRADE = (1 << 11),
-    UPGRADE_EXCEPTION = (1 << 12),
-    SKIP_HTTPS_UPGRADE = (1 << 13),
+    NO_UPGRADE = 1,
+    ALREADY_HTTPS = 2,
+    HSTS = 3,
+    HTTPS_ONLY_UPGRADE = 4,
+    HTTPS_ONLY_UPGRADE_DOWNGRADE = 5,
+    HTTPS_FIRST_UPGRADE = 6,
+    HTTPS_FIRST_UPGRADE_DOWNGRADE = 7,
+    HTTPS_FIRST_SCHEMELESS_UPGRADE = 8,
+    HTTPS_FIRST_SCHEMELESS_UPGRADE_DOWNGRADE = 9,
+    CSP_UIR = 10,
+    HTTPS_RR = 11,
+    WEB_EXTENSION_UPGRADE = 12,
+    UPGRADE_EXCEPTION = 13,
+    SKIP_HTTPS_UPGRADE = 14,
+    /* Don't forget to update DomSecurityIPCUtils.h */
   };
 
   /**

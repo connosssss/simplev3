@@ -1,22 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsString_h___
-#define nsString_h___
+#ifndef nsString_h_
+#define nsString_h_
 
 #include <ostream>
 
 #include "mozilla/Attributes.h"
-
-#include "nsStringFwd.h"
-
+#include "mozilla/Char16.h"
 #include "nsAString.h"
 #include "nsDependentSubstring.h"
 #include "nsReadableUtils.h"
-
+#include "nsStringFwd.h"
 #include "nsTString.h"
 
 static_assert(sizeof(char16_t) == 2, "size of char16_t must be 2");
@@ -53,7 +49,6 @@ class MOZ_GSL_OWNER NS_LossyConvertUTF16toASCII : public nsAutoCString {
     LossyAppendUTF16toASCII(aString, *this);
   }
 
- private:
   // NOT TO BE IMPLEMENTED
   NS_LossyConvertUTF16toASCII(char) = delete;
 };
@@ -80,7 +75,6 @@ class NS_ConvertASCIItoUTF16 : public nsAutoString {
     AppendASCIItoUTF16(aCString, *this);
   }
 
- private:
   // NOT TO BE IMPLEMENTED
   NS_ConvertASCIItoUTF16(char16_t) = delete;
 };
@@ -111,7 +105,6 @@ class NS_ConvertUTF16toUTF8 : public nsAutoCString {
     AppendUTF16toUTF8(aString, *this);
   }
 
- private:
   // NOT TO BE IMPLEMENTED
   NS_ConvertUTF16toUTF8(char) = delete;
 };
@@ -138,7 +131,6 @@ class NS_ConvertUTF8toUTF16 : public nsAutoString {
     AppendUTF8toUTF16(aCString, *this);
   }
 
- private:
   // NOT TO BE IMPLEMENTED
   NS_ConvertUTF8toUTF16(char16_t) = delete;
 };
@@ -184,4 +176,4 @@ inline std::ostream& operator<<(std::ostream& aOut, const nsAString& aString) {
 #include "nsLiteralString.h"
 #include "nsPromiseFlatString.h"
 
-#endif  // !defined(nsString_h___)
+#endif  // !defined(nsString_h_)

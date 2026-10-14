@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -15,12 +14,11 @@
 
 #include <algorithm>
 #include <fstream>
-#include <iostream>
-#include <sstream>
 #include <utility>
 
-#include "gfxUtils.h"
 #include "GLBlitHelper.h"
+#include "gfxPlatform.h"
+#include "gfxUtils.h"
 #ifdef XP_MACOSX
 #  include "GLContextCGL.h"
 #else
@@ -28,13 +26,13 @@
 #endif
 #include "GLContextProvider.h"
 #include "MozFramebuffer.h"
+#include "ScopedGLHelpers.h"
+#include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/gfx/Swizzle.h"
+#include "mozilla/glean/GfxMetrics.h"
 #include "mozilla/layers/ScreenshotGrabber.h"
 #include "mozilla/layers/SurfacePoolCA.h"
-#include "mozilla/StaticPrefs_gfx.h"
-#include "mozilla/glean/GfxMetrics.h"
 #include "mozilla/webrender/RenderMacIOSurfaceTextureHost.h"
-#include "ScopedGLHelpers.h"
 
 @interface CALayer (PrivateSetContentsOpaque)
 - (void)setContentsOpaque:(BOOL)opaque;
@@ -119,57 +117,6 @@ static void EmitTelemetryForVideoLowPower(VideoLowPowerType aVideoLowPower) {
   }
 }
 
-// Utility classes for NativeLayerRootSnapshotter (NLRS) profiler screenshots.
-
-class RenderSourceNLRS : public profiler_screenshots::RenderSource {
- public:
-  explicit RenderSourceNLRS(UniquePtr<gl::MozFramebuffer>&& aFramebuffer)
-      : RenderSource(aFramebuffer->mSize),
-        mFramebuffer(std::move(aFramebuffer)) {}
-  auto& FB() { return *mFramebuffer; }
-
- protected:
-  UniquePtr<gl::MozFramebuffer> mFramebuffer;
-};
-
-class DownscaleTargetNLRS : public profiler_screenshots::DownscaleTarget {
- public:
-  DownscaleTargetNLRS(gl::GLContext* aGL,
-                      UniquePtr<gl::MozFramebuffer>&& aFramebuffer)
-      : profiler_screenshots::DownscaleTarget(aFramebuffer->mSize),
-        mGL(aGL),
-        mRenderSource(new RenderSourceNLRS(std::move(aFramebuffer))) {}
-  already_AddRefed<profiler_screenshots::RenderSource> AsRenderSource()
-      override {
-    return do_AddRef(mRenderSource);
-  };
-  bool DownscaleFrom(profiler_screenshots::RenderSource* aSource,
-                     const IntRect& aSourceRect,
-                     const IntRect& aDestRect) override;
-
- protected:
-  RefPtr<gl::GLContext> mGL;
-  RefPtr<RenderSourceNLRS> mRenderSource;
-};
-
-class AsyncReadbackBufferNLRS
-    : public profiler_screenshots::AsyncReadbackBuffer {
- public:
-  AsyncReadbackBufferNLRS(gl::GLContext* aGL, const IntSize& aSize,
-                          GLuint aBufferHandle)
-      : profiler_screenshots::AsyncReadbackBuffer(aSize),
-        mGL(aGL),
-        mBufferHandle(aBufferHandle) {}
-  void CopyFrom(profiler_screenshots::RenderSource* aSource) override;
-  bool MapAndCopyInto(DataSourceSurface* aSurface,
-                      const IntSize& aReadSize) override;
-
- protected:
-  virtual ~AsyncReadbackBufferNLRS();
-  RefPtr<gl::GLContext> mGL;
-  GLuint mBufferHandle = 0;
-};
-
 // Needs to be on the stack whenever CALayer mutations are performed.
 // (Mutating CALayers outside of a transaction can result in permanently stuck
 // rendering, because such mutations create an implicit transaction which never
@@ -203,37 +150,23 @@ NativeLayerRootCA::CreateForCALayer(CALayer* aLayer) {
   return layerRoot.forget();
 }
 
-// Returns an autoreleased CALayer* object.
-static CALayer* MakeOffscreenRootCALayer() {
-  // This layer should behave similarly to the backing layer of a flipped
-  // NSView. It will never be rendered on the screen and it will never be
-  // attached to an NSView's layer; instead, it will be the root layer of a
-  // "local" CAContext. Setting geometryFlipped to YES causes the orientation of
-  // descendant CALayers' contents (such as IOSurfaces) to be consistent with
-  // what happens in a layer subtree that is attached to a flipped NSView.
-  // Setting it to NO would cause the surfaces in individual leaf layers to
-  // render upside down (rather than just flipping the entire layer tree upside
-  // down).
-  AutoCATransaction transaction;
-  CALayer* layer = [CALayer layer];
-  layer.position = CGPointZero;
-  layer.bounds = CGRectZero;
-  layer.anchorPoint = CGPointZero;
-  layer.contentsGravity = kCAGravityTopLeft;
-  layer.masksToBounds = YES;
-  layer.geometryFlipped = YES;
-  return layer;
-}
-
 NativeLayerRootCA::NativeLayerRootCA(CALayer* aLayer)
-    : mMutex("NativeLayerRootCA"),
-      mOnscreenRepresentation(aLayer),
-      mOffscreenRepresentation(MakeOffscreenRootCALayer()) {}
+    : mMutex("NativeLayerRootCA"), mOnscreenRootCALayer([aLayer retain]) {}
 
 NativeLayerRootCA::~NativeLayerRootCA() {
   MOZ_RELEASE_ASSERT(
       mSublayers.IsEmpty(),
       "Please clear all layers before destroying the layer root.");
+
+  {
+    // Clear the root layer's sublayers. At this point the window is usually
+    // closed, so this transaction does not cause any screen updates.
+    AutoCATransaction transaction;
+    mOnscreenRootCALayer.sublayers = @[];
+  }
+
+  [mOnscreenRootCALayer release];
+  [mOffscreenRootCALayer release];
 }
 
 already_AddRefed<NativeLayer> NativeLayerRootCA::CreateLayer(
@@ -256,6 +189,13 @@ already_AddRefed<NativeLayer> NativeLayerRootCA::CreateLayerForColor(
   return layer.forget();
 }
 
+already_AddRefed<NativeLayerCA>
+NativeLayerRootCA::CreateLayerForSurfacePresentation(const IntSize& aSize,
+                                                     bool aIsOpaque) {
+  RefPtr<NativeLayerCA> layer = new NativeLayerCA(aSize, aIsOpaque);
+  return layer.forget();
+}
+
 void NativeLayerRootCA::AppendLayer(NativeLayer* aLayer) {
   MutexAutoLock lock(mMutex);
 
@@ -265,8 +205,7 @@ void NativeLayerRootCA::AppendLayer(NativeLayer* aLayer) {
   mSublayers.AppendElement(layerCA);
   layerCA->SetBackingScale(mBackingScale);
   layerCA->SetRootWindowIsFullscreen(mWindowIsFullscreen);
-  ForAllRepresentations(
-      [&](Representation& r) { r.mMutatedLayerStructure = true; });
+  SetMutatedLayerStructure();
 }
 
 void NativeLayerRootCA::RemoveLayer(NativeLayer* aLayer) {
@@ -276,8 +215,7 @@ void NativeLayerRootCA::RemoveLayer(NativeLayer* aLayer) {
   MOZ_RELEASE_ASSERT(layerCA);
 
   mSublayers.RemoveElement(layerCA);
-  ForAllRepresentations(
-      [&](Representation& r) { r.mMutatedLayerStructure = true; });
+  SetMutatedLayerStructure();
 }
 
 void NativeLayerRootCA::SetLayers(
@@ -302,8 +240,7 @@ void NativeLayerRootCA::SetLayers(
 
   if (layersCA != mSublayers) {
     mSublayers = std::move(layersCA);
-    ForAllRepresentations(
-        [&](Representation& r) { r.mMutatedLayerStructure = true; });
+    SetMutatedLayerStructure();
   }
 }
 
@@ -338,50 +275,49 @@ bool NativeLayerRootCA::AreOffMainThreadCommitsSuspended() {
 }
 
 bool NativeLayerRootCA::CommitToScreen() {
-  {
-    MutexAutoLock lock(mMutex);
+  MutexAutoLock lock(mMutex);
 
-    if (!NS_IsMainThread() && mOffMainThreadCommitsSuspended) {
-      mCommitPending = true;
-      return false;
+  if (!NS_IsMainThread() && mOffMainThreadCommitsSuspended) {
+    mCommitPending = true;
+    return false;
+  }
+
+  CommitRepresentation(WhichRepresentation::ONSCREEN, mOnscreenRootCALayer,
+                       mSublayers, mMutatedOnscreenLayerStructure,
+                       mWindowIsFullscreen);
+  mMutatedOnscreenLayerStructure = false;
+
+  mCommitPending = false;
+
+  if (StaticPrefs::gfx_webrender_debug_dump_native_layer_tree_to_file()) {
+    static uint32_t sFrameID = 0;
+    uint32_t frameID = sFrameID++;
+
+    NSString* dirPath =
+        [NSString stringWithFormat:@"%@/Desktop/nativelayerdumps-%d",
+                                   NSHomeDirectory(), getpid()];
+    if ([NSFileManager.defaultManager createDirectoryAtPath:dirPath
+                                withIntermediateDirectories:YES
+                                                 attributes:nil
+                                                      error:nullptr]) {
+      NSString* filename =
+          [NSString stringWithFormat:@"frame-%d.html", frameID];
+      NSString* filePath = [dirPath stringByAppendingPathComponent:filename];
+      DumpLayerTreeToFile([filePath UTF8String], lock);
+    } else {
+      NSLog(@"Failed to create directory %@", dirPath);
     }
+  }
 
-    mOnscreenRepresentation.Commit(WhichRepresentation::ONSCREEN, mSublayers,
-                                   mWindowIsFullscreen);
-
-    mCommitPending = false;
-
-    if (StaticPrefs::gfx_webrender_debug_dump_native_layer_tree_to_file()) {
-      static uint32_t sFrameID = 0;
-      uint32_t frameID = sFrameID++;
-
-      NSString* dirPath =
-          [NSString stringWithFormat:@"%@/Desktop/nativelayerdumps-%d",
-                                     NSHomeDirectory(), getpid()];
-      if ([NSFileManager.defaultManager createDirectoryAtPath:dirPath
-                                  withIntermediateDirectories:YES
-                                                   attributes:nil
-                                                        error:nullptr]) {
-        NSString* filename =
-            [NSString stringWithFormat:@"frame-%d.html", frameID];
-        NSString* filePath = [dirPath stringByAppendingPathComponent:filename];
-        DumpLayerTreeToFile([filePath UTF8String], lock);
-      } else {
-        NSLog(@"Failed to create directory %@", dirPath);
-      }
-    }
-
-    // Decide if we are going to emit telemetry about video low power on this
-    // commit.
-    static const int32_t TELEMETRY_COMMIT_PERIOD =
-        StaticPrefs::gfx_core_animation_low_power_telemetry_frames_AtStartup();
-    mTelemetryCommitCount =
-        (mTelemetryCommitCount + 1) % TELEMETRY_COMMIT_PERIOD;
-    if (mTelemetryCommitCount == 0) {
-      // Figure out if we are hitting video low power mode.
-      VideoLowPowerType videoLowPower = CheckVideoLowPower(lock);
-      EmitTelemetryForVideoLowPower(videoLowPower);
-    }
+  // Decide if we are going to emit telemetry about video low power on this
+  // commit.
+  static const int32_t TELEMETRY_COMMIT_PERIOD =
+      StaticPrefs::gfx_core_animation_low_power_telemetry_frames_AtStartup();
+  mTelemetryCommitCount = (mTelemetryCommitCount + 1) % TELEMETRY_COMMIT_PERIOD;
+  if (mTelemetryCommitCount == 0) {
+    // Figure out if we are hitting video low power mode.
+    VideoLowPowerType videoLowPower = CheckVideoLowPower(lock);
+    EmitTelemetryForVideoLowPower(videoLowPower);
   }
 
   return true;
@@ -395,7 +331,7 @@ UniquePtr<NativeLayerRootSnapshotter> NativeLayerRootCA::CreateSnapshotter() {
                      "should exist when this is called");
 
   auto cr = NativeLayerRootSnapshotterCA::Create(
-      this, mOffscreenRepresentation.mRootCALayer);
+      MakeUnique<SnapshotterDelegate>(this));
   if (cr) {
     mWeakSnapshotter = cr.get();
   }
@@ -405,126 +341,106 @@ UniquePtr<NativeLayerRootSnapshotter> NativeLayerRootCA::CreateSnapshotter() {
 #endif
 }
 
-#ifdef XP_MACOSX
 void NativeLayerRootCA::OnNativeLayerRootSnapshotterDestroyed(
     NativeLayerRootSnapshotterCA* aNativeLayerRootSnapshotter) {
   MutexAutoLock lock(mMutex);
   MOZ_RELEASE_ASSERT(mWeakSnapshotter == aNativeLayerRootSnapshotter);
   mWeakSnapshotter = nullptr;
 }
-#endif
 
-void NativeLayerRootCA::CommitOffscreen() {
+void NativeLayerRootCA::CommitOffscreen(CALayer* aRootCALayer) {
   MutexAutoLock lock(mMutex);
-  mOffscreenRepresentation.Commit(WhichRepresentation::OFFSCREEN, mSublayers,
-                                  mWindowIsFullscreen);
-}
-
-template <typename F>
-void NativeLayerRootCA::ForAllRepresentations(F aFn) {
-  aFn(mOnscreenRepresentation);
-  aFn(mOffscreenRepresentation);
-}
-
-NativeLayerRootCA::Representation::Representation(CALayer* aRootCALayer)
-    : mRootCALayer([aRootCALayer retain]) {}
-
-NativeLayerRootCA::Representation::~Representation() {
-  if (mMutatedLayerStructure) {
-    // Clear the root layer's sublayers. At this point the window is usually
-    // closed, so this transaction does not cause any screen updates.
-    AutoCATransaction transaction;
-    mRootCALayer.sublayers = @[];
+  if (aRootCALayer != mOffscreenRootCALayer) {
+    [mOffscreenRootCALayer release];
+    mOffscreenRootCALayer = [aRootCALayer retain];
+    mMutatedOffscreenLayerStructure = true;
   }
-
-  [mRootCALayer release];
+  CommitRepresentation(WhichRepresentation::OFFSCREEN, aRootCALayer, mSublayers,
+                       mMutatedOffscreenLayerStructure, mWindowIsFullscreen);
+  mMutatedOffscreenLayerStructure = false;
 }
 
-void NativeLayerRootCA::Representation::Commit(
+void NativeLayerRootCA::SetMutatedLayerStructure() {
+  mMutatedOnscreenLayerStructure = true;
+  mMutatedOffscreenLayerStructure = true;
+}
+
+NativeLayerCAUpdateType NativeLayerRootCA::GetMaxUpdateRequired(
     WhichRepresentation aRepresentation,
     const nsTArray<RefPtr<NativeLayerCA>>& aSublayers,
-    bool aWindowIsFullscreen) {
-  bool mustRebuild = mMutatedLayerStructure;
-  if (!mustRebuild) {
-    // Check which type of update we need to do, if any.
-    NativeLayerCA::UpdateType updateRequired = NativeLayerCA::UpdateType::None;
+    bool aMutatedLayerStructure) const {
+  if (aMutatedLayerStructure) {
+    return UpdateType::All;
+  }
 
-    for (auto layer : aSublayers) {
-      // Use the ordering of our UpdateType enums to build a maximal update
-      // type.
-      updateRequired =
-          std::max(updateRequired, layer->HasUpdate(aRepresentation));
-      if (updateRequired == NativeLayerCA::UpdateType::All) {
-        break;
-      }
+  UpdateType maxUpdateRequired = UpdateType::None;
+  for (const auto& layer : aSublayers) {
+    UpdateType updateRequired = layer->HasUpdate(aRepresentation);
+    if (updateRequired == UpdateType::All) {
+      return UpdateType::All;
     }
+    // Use the ordering of our UpdateType enum values.
+    maxUpdateRequired = std::max(maxUpdateRequired, updateRequired);
+  }
+  return maxUpdateRequired;
+}
 
-    if (updateRequired == NativeLayerCA::UpdateType::None) {
+void NativeLayerRootCA::CommitRepresentation(
+    WhichRepresentation aRepresentation, CALayer* aRootCALayer,
+    const nsTArray<RefPtr<NativeLayerCA>>& aSublayers,
+    bool aMutatedLayerStructure, bool aWindowIsFullscreen) {
+  UpdateType updateRequired =
+      GetMaxUpdateRequired(aRepresentation, aSublayers, aMutatedLayerStructure);
+  if (updateRequired == NativeLayerCA::UpdateType::OnlyVideo) {
+    // Attempt a video-only update, which does not require being wrapped in a
+    // CATransaction.
+    bool allUpdatesSucceeded =
+        std::all_of(aSublayers.begin(), aSublayers.end(),
+                    [=](const RefPtr<NativeLayerCA>& layer) {
+                      bool ignoredMustRebuild = false;
+                      return layer->ApplyChanges(
+                          aRepresentation, NativeLayerCA::UpdateType::OnlyVideo,
+                          &ignoredMustRebuild);
+                    });
+
+    if (allUpdatesSucceeded) {
       // Nothing more needed, so early exit.
       return;
-    }
-
-    if (updateRequired == NativeLayerCA::UpdateType::OnlyVideo) {
-      bool allUpdatesSucceeded = std::all_of(
-          aSublayers.begin(), aSublayers.end(),
-          [=](const RefPtr<NativeLayerCA>& layer) {
-            return layer->ApplyChanges(aRepresentation,
-                                       NativeLayerCA::UpdateType::OnlyVideo);
-          });
-
-      if (allUpdatesSucceeded) {
-        // Nothing more needed, so early exit;
-        return;
-      }
     }
   }
 
   // We're going to do a full update now, which requires a transaction. Update
-  // all of the sublayers. Afterwards, only continue processing the sublayers
-  // which have an extent.
+  // all of the sublayers. We collect all sublayers with non-zero extents into
+  // the sublayers array - layers which are completely clipped out will return
+  // null from UndelyingCALayer.
   AutoCATransaction transaction;
-  nsTArray<NativeLayerCA*> sublayersWithExtent;
-  for (auto layer : aSublayers) {
-    mustRebuild |= layer->WillUpdateAffectLayers(aRepresentation);
-    layer->ApplyChanges(aRepresentation, NativeLayerCA::UpdateType::All);
-    CALayer* caLayer = layer->UnderlyingCALayer(aRepresentation);
-    if (!caLayer.masksToBounds || !CGRectIsEmpty(caLayer.bounds)) {
-      // This layer has an extent. If it didn't before, we need to rebuild.
-      mustRebuild |= !layer->HasExtent();
-      layer->SetHasExtent(true);
-      sublayersWithExtent.AppendElement(layer);
-    } else {
-      // This layer has no extent. If it did before, we need to rebuild.
-      mustRebuild |= layer->HasExtent();
-      layer->SetHasExtent(false);
+  NSMutableArray<CALayer*>* sublayers =
+      [NSMutableArray arrayWithCapacity:aSublayers.Length()];
+  bool mustRebuild = updateRequired == UpdateType::All;
+  for (const auto& layer : aSublayers) {
+    layer->ApplyChanges(aRepresentation, NativeLayerCA::UpdateType::All,
+                        &mustRebuild);
+    if (CALayer* caLayer = layer->UnderlyingCALayer(aRepresentation)) {
+      [sublayers addObject:caLayer];
     }
-
-    // One other reason we may need to rebuild is if the caLayer is not part of
-    // the root layer's sublayers. This might happen if the caLayer was rebuilt.
-    // We construct this check in a way that maximizes the boolean
-    // short-circuit, because we don't want to call containsObject unless
-    // absolutely necessary.
-    mustRebuild =
-        mustRebuild || ![mRootCALayer.sublayers containsObject:caLayer];
   }
 
   if (mustRebuild) {
-    uint32_t sublayersCount = sublayersWithExtent.Length();
-    NSMutableArray<CALayer*>* sublayers =
-        [NSMutableArray arrayWithCapacity:sublayersCount];
-    for (auto layer : sublayersWithExtent) {
-      [sublayers addObject:layer->UnderlyingCALayer(aRepresentation)];
-    }
-    mRootCALayer.sublayers = sublayers;
+    aRootCALayer.sublayers = sublayers;
   }
-
-  mMutatedLayerStructure = false;
 }
+
+SnapshotterCADelegate::~SnapshotterCADelegate() = default;
+
+NativeLayerRootCA::SnapshotterDelegate::SnapshotterDelegate(
+    NativeLayerRootCA* aLayerRoot)
+    : mLayerRoot(aLayerRoot) {}
+NativeLayerRootCA::SnapshotterDelegate::~SnapshotterDelegate() = default;
 
 #ifdef XP_MACOSX
 /* static */ UniquePtr<NativeLayerRootSnapshotterCA>
-NativeLayerRootSnapshotterCA::Create(NativeLayerRootCA* aLayerRoot,
-                                     CALayer* aRootCALayer) {
+NativeLayerRootSnapshotterCA::Create(
+    UniquePtr<SnapshotterCADelegate>&& aDelegate) {
   if (NS_IsMainThread()) {
     // Disallow creating snapshotters on the main thread.
     // On the main thread, any explicit CATransaction / NSAnimationContext is
@@ -545,8 +461,7 @@ NativeLayerRootSnapshotterCA::Create(NativeLayerRootCA* aLayerRoot,
   }
 
   return UniquePtr<NativeLayerRootSnapshotterCA>(
-      new NativeLayerRootSnapshotterCA(aLayerRoot, std::move(gl),
-                                       aRootCALayer));
+      new NativeLayerRootSnapshotterCA(std::move(aDelegate), std::move(gl)));
 }
 #endif
 
@@ -619,22 +534,25 @@ VideoLowPowerType NativeLayerRootCA::CheckVideoLowPower(
   // determine more detail.
 
   uint32_t videoLayerCount = 0;
-  NativeLayerCA* topLayer = nullptr;
+  DebugOnly<RefPtr<NativeLayerCA>> topLayer;
   CALayer* topCALayer = nil;
   CALayer* secondCALayer = nil;
   bool topLayerIsVideo = false;
 
   for (auto layer : mSublayers) {
     // Only layers with extent are contributing to our sublayers.
-    if (layer->HasExtent()) {
-      topLayer = layer;
-
-      secondCALayer = topCALayer;
-      topCALayer = topLayer->UnderlyingCALayer(WhichRepresentation::ONSCREEN);
-      topLayerIsVideo = topLayer->IsVideo(aProofOfLock);
-      if (topLayerIsVideo) {
+    CALayer* caLayer = layer->UnderlyingCALayer(WhichRepresentation::ONSCREEN);
+    if (caLayer) {
+      bool isVideo = layer->IsVideo(aProofOfLock);
+      if (isVideo) {
         ++videoLayerCount;
       }
+
+      secondCALayer = topCALayer;
+
+      topLayer = layer;
+      topCALayer = caLayer;
+      topLayerIsVideo = isVideo;
     }
   }
 
@@ -677,10 +595,14 @@ VideoLowPowerType NativeLayerRootCA::CheckVideoLowPower(
     // assert this instead of if-ing it, to ensure that we always have a
     // return value from this clause.
 #ifdef DEBUG
-    auto textureHost = topLayer->mTextureHost;
-    MOZ_ASSERT(textureHost);
-    MacIOSurface* macIOSurface = textureHost->GetSurface();
-    CFTypeRefPtr<IOSurfaceRef> surface = macIOSurface->GetIOSurfaceRef();
+    CFTypeRefPtr<IOSurfaceRef> surface;
+    if (auto textureHost = topLayer->mTextureHost) {
+      MacIOSurface* macIOSurface = textureHost->GetSurface();
+      surface = macIOSurface->GetIOSurfaceRef();
+    } else {
+      surface = topLayer->mSurfaceToPresent;
+    }
+    MOZ_ASSERT(surface);
     OSType pixelFormat = IOSurfaceGetPixelFormat(surface.get());
     MOZ_ASSERT(
         !(pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
@@ -703,19 +625,17 @@ VideoLowPowerType NativeLayerRootCA::CheckVideoLowPower(
 
 #ifdef XP_MACOSX
 NativeLayerRootSnapshotterCA::NativeLayerRootSnapshotterCA(
-    NativeLayerRootCA* aLayerRoot, RefPtr<GLContext>&& aGL,
-    CALayer* aRootCALayer)
-    : mLayerRoot(aLayerRoot), mGL(aGL) {
-  AutoCATransaction transaction;
-  mRenderer = [[CARenderer
-      rendererWithCGLContext:gl::GLContextCGL::Cast(mGL)->GetCGLContext()
-                     options:nil] retain];
-  mRenderer.layer = aRootCALayer;
-}
+    UniquePtr<SnapshotterCADelegate>&& aDelegate, RefPtr<GLContext>&& aGL)
+    : mDelegate(std::move(aDelegate)), mGL(aGL) {}
 
 NativeLayerRootSnapshotterCA::~NativeLayerRootSnapshotterCA() {
-  mLayerRoot->OnNativeLayerRootSnapshotterDestroyed(this);
-  [mRenderer release];
+  mDelegate->OnSnapshotterDestroyed(this);
+
+  if (mRenderer) {
+    AutoCATransaction transaction;
+    mRenderer.layer.sublayers = @[];
+    [mRenderer release];
+  }
 }
 
 already_AddRefed<profiler_screenshots::RenderSource>
@@ -728,27 +648,51 @@ void NativeLayerRootSnapshotterCA::UpdateSnapshot(const IntSize& aSize) {
   CGRect bounds = CGRectMake(0, 0, aSize.width, aSize.height);
 
   {
-    // Set the correct bounds and scale on the renderer and its root layer.
+    // Lazily initialize our renderer, and set the correct bounds and scale
+    // on the renderer and its root layer.
+    AutoCATransaction transaction;
+    if (!mRenderer) {
+      mRenderer = [[CARenderer
+          rendererWithCGLContext:gl::GLContextCGL::Cast(mGL)->GetCGLContext()
+                         options:nil] retain];
+      // This layer should behave similarly to the backing layer of a flipped
+      // NSView. It will never be rendered on the screen and it will never be
+      // attached to an NSView's layer; instead, it will be the root layer of a
+      // "local" CAContext. Setting geometryFlipped to YES causes the
+      // orientation of descendant CALayers' contents (such as IOSurfaces) to be
+      // consistent with what happens in a layer subtree that is attached to a
+      // flipped NSView. Setting it to NO would cause the surfaces in individual
+      // leaf layers to render upside down (rather than just flipping the entire
+      // layer tree upside down).
+      AutoCATransaction transaction;
+      CALayer* layer = [CALayer layer];
+      layer.position = CGPointZero;
+      layer.anchorPoint = CGPointZero;
+      layer.contentsGravity = kCAGravityTopLeft;
+      layer.masksToBounds = YES;
+      layer.geometryFlipped = YES;
+      mRenderer.layer = layer;
+    }
+
     // CARenderer always renders at unit scale, i.e. the coordinates on the root
     // layer must map 1:1 to render target pixels. But the coordinates on our
     // content layers are in "points", where 1 point maps to 2 device pixels on
     // HiDPI. So in order to render at the full device pixel resolution, we set
     // a scale transform on the root offscreen layer.
-    AutoCATransaction transaction;
     mRenderer.layer.bounds = bounds;
-    float scale = mLayerRoot->BackingScale();
+    float scale = mDelegate->BackingScale();
     mRenderer.layer.sublayerTransform = CATransform3DMakeScale(scale, scale, 1);
     mRenderer.bounds = bounds;
   }
 
-  mLayerRoot->CommitOffscreen();
+  mDelegate->UpdateSnapshotterLayers(mRenderer.layer);
 
   mGL->MakeCurrent();
 
   bool needToRedrawEverything = false;
   if (!mSnapshot || mSnapshot->Size() != aSize) {
     mSnapshot = nullptr;
-    auto fb = gl::MozFramebuffer::Create(mGL, aSize, 0, false);
+    auto fb = gl::MozFramebuffer::Create(mGL, aSize, 0, false, false);
     if (!fb) {
       return;
     }
@@ -799,6 +743,11 @@ void NativeLayerRootSnapshotterCA::UpdateSnapshot(const IntSize& aSize) {
 bool NativeLayerRootSnapshotterCA::ReadbackPixels(
     const IntSize& aReadbackSize, SurfaceFormat aReadbackFormat,
     const Range<uint8_t>& aReadbackBuffer) {
+  if (mDelegate->DoCustomReadbackForReftestsIfDesired(
+          aReadbackSize, aReadbackFormat, aReadbackBuffer)) {
+    return true;
+  }
+
   if (aReadbackFormat != SurfaceFormat::B8G8R8A8) {
     return false;
   }
@@ -818,12 +767,11 @@ bool NativeLayerRootSnapshotterCA::ReadbackPixels(
 
 already_AddRefed<profiler_screenshots::DownscaleTarget>
 NativeLayerRootSnapshotterCA::CreateDownscaleTarget(const IntSize& aSize) {
-  auto fb = gl::MozFramebuffer::Create(mGL, aSize, 0, false);
+  auto fb = gl::MozFramebuffer::Create(mGL, aSize, 0, false, false);
   if (!fb) {
     return nullptr;
   }
-  RefPtr<profiler_screenshots::DownscaleTarget> dt =
-      new DownscaleTargetNLRS(mGL, std::move(fb));
+  RefPtr dt = MakeRefPtr<DownscaleTargetNLRS>(mGL, std::move(fb));
   return dt.forget();
 }
 
@@ -835,10 +783,10 @@ NativeLayerRootSnapshotterCA::CreateAsyncReadbackBuffer(const IntSize& aSize) {
 
   gl::ScopedPackState scopedPackState(mGL);
   mGL->fBindBuffer(LOCAL_GL_PIXEL_PACK_BUFFER, bufferHandle);
-  mGL->fPixelStorei(LOCAL_GL_PACK_ALIGNMENT, 1);
   mGL->fBufferData(LOCAL_GL_PIXEL_PACK_BUFFER, bufferByteCount, nullptr,
                    LOCAL_GL_STREAM_READ);
-  return MakeAndAddRef<AsyncReadbackBufferNLRS>(mGL, aSize, bufferHandle);
+  return MakeAndAddRef<AsyncReadbackBufferNLRS>(mGL, aSize, bufferHandle,
+                                                /*bool aYFlip*/ true);
 }
 #endif
 
@@ -860,7 +808,7 @@ NativeLayerCA::NativeLayerCA(bool aIsOpaque)
 #endif
 }
 
-CGColorRef CGColorCreateForDeviceColor(gfx::DeviceColor aColor) {
+CGColorRef CGColorCreateForDeviceColor(const gfx::DeviceColor& aColor) {
   if (StaticPrefs::gfx_color_management_native_srgb()) {
     return CGColorCreateSRGB(aColor.r, aColor.g, aColor.b, aColor.a);
   }
@@ -869,10 +817,14 @@ CGColorRef CGColorCreateForDeviceColor(gfx::DeviceColor aColor) {
 }
 
 NativeLayerCA::NativeLayerCA(gfx::DeviceColor aColor)
-    : mMutex("NativeLayerCA"), mIsOpaque(aColor.a >= 1.0f) {
+    : mMutex("NativeLayerCA"),
+      mColor(Some(aColor)),
+      mIsOpaque(aColor.a >= 1.0f) {
   MOZ_ASSERT(aColor.a > 0.0f, "Can't handle a fully transparent backdrop.");
-  mColor.AssignUnderCreateRule(CGColorCreateForDeviceColor(aColor));
 }
+
+NativeLayerCA::NativeLayerCA(const IntSize& aSize, bool aIsOpaque)
+    : mMutex("NativeLayerCA"), mSize(aSize), mIsOpaque(aIsOpaque) {}
 
 NativeLayerCA::~NativeLayerCA() {
 #ifdef NIGHTLY_BUILD
@@ -883,6 +835,10 @@ NativeLayerCA::~NativeLayerCA() {
           this);
   }
 #endif
+
+  if (mSurfaceToPresent) {
+    IOSurfaceDecrementUseCount(mSurfaceToPresent.get());
+  }
 }
 
 void NativeLayerCA::AttachExternalImage(wr::RenderTextureHost* aExternalImage) {
@@ -915,9 +871,19 @@ void NativeLayerCA::AttachExternalImage(wr::RenderTextureHost* aExternalImage) {
 
   mDisplayRect = IntRect(IntPoint{}, mSize);
 
-  bool oldSpecializeVideo = mSpecializeVideo;
-  mSpecializeVideo = ShouldSpecializeVideo(lock);
-  bool changedSpecializeVideo = (mSpecializeVideo != oldSpecializeVideo);
+  bool isDRM = aExternalImage->IsFromDRMSource();
+  bool changedIsDRM = (mIsDRM != isDRM);
+  mIsDRM = isDRM;
+
+  MacIOSurface* macIOSurface = texture->GetSurface();
+  bool isHDR = macIOSurface->IsHDRSurface() && gfxPlatform::UseHDR();
+  bool changedIsHDR = (mIsHDR != isHDR);
+  mIsHDR = isHDR;
+
+  bool specializeVideo = ShouldSpecializeVideo(lock);
+  bool changedSpecializeVideo = (mSpecializeVideo != specializeVideo);
+  mSpecializeVideo = specializeVideo;
+
 #ifdef NIGHTLY_BUILD
   if (changedSpecializeVideo &&
       StaticPrefs::gfx_core_animation_specialize_video_log()) {
@@ -927,20 +893,17 @@ void NativeLayerCA::AttachExternalImage(wr::RenderTextureHost* aExternalImage) {
   }
 #endif
 
-  bool oldIsDRM = mIsDRM;
-  mIsDRM = aExternalImage->IsFromDRMSource();
-  bool changedIsDRM = (mIsDRM != oldIsDRM);
-
   ForAllRepresentations([&](Representation& r) {
     r.mMutatedFrontSurface = true;
     r.mMutatedDisplayRect |= changedSizeAndDisplayRect;
     r.mMutatedSize |= changedSizeAndDisplayRect;
     r.mMutatedSpecializeVideo |= changedSpecializeVideo;
     r.mMutatedIsDRM |= changedIsDRM;
+    r.mMutatedIsHDR |= changedIsHDR;
   });
 }
 
-GpuFence* NativeLayerCA::GetGpuFence() {
+RefPtr<GpuFence> NativeLayerCA::GetGpuFence() {
   if (!mTextureHost) {
     return nullptr;
   }
@@ -966,25 +929,13 @@ bool NativeLayerCA::ShouldSpecializeVideo(const MutexAutoLock& aProofOfLock) {
     return false;
   }
 
-  MOZ_ASSERT(mTextureHost);
-
   // DRM video is supported in macOS 10.15 and beyond, and such video must use
   // a specialized video layer.
-  if (mTextureHost->IsFromDRMSource()) {
+  if (mIsDRM) {
     return true;
   }
 
-  // Beyond this point, we need to know about the format of the video.
-  MacIOSurface* macIOSurface = mTextureHost->GetSurface();
-  if (macIOSurface->GetYUVColorSpace() == gfx::YUVColorSpace::BT2020) {
-    // BT2020 is a signifier of HDR color space, whether or not the bit depth
-    // is expanded to cover that color space. This video needs a specialized
-    // video layer.
-    return true;
-  }
-
-  if (macIOSurface->GetColorDepth() == gfx::ColorDepth::COLOR_10) {
-    // 10-bit videos require specialized video layers.
+  if (mIsHDR) {
     return true;
   }
 
@@ -1190,10 +1141,9 @@ void NativeLayerCA::DumpLayer(std::ostream& aOutputStream) {
   }
 
   if (mColor) {
-    const CGFloat* components = CGColorGetComponents(mColor.get());
-    aOutputStream << "background: rgb(" << components[0] * 255.0f << " "
-                  << components[1] * 255.0f << " " << components[2] * 255.0f
-                  << "); opacity: " << components[3] << "; ";
+    aOutputStream << "background: rgb(" << mColor->r * 255.0f << " "
+                  << mColor->g * 255.0f << " " << mColor->b * 255.0f
+                  << "); opacity: " << mColor->a << "; ";
 
     // That's all we need for color layers. We don't need to specify an image.
     aOutputStream << "\"/></div>\n";
@@ -1238,7 +1188,11 @@ void NativeLayerCA::DumpLayer(std::ostream& aOutputStream) {
   aOutputStream << "\" ";
 
   CFTypeRefPtr<IOSurfaceRef> surface;
-  if (mSurfaceHandler) {
+  if (mSurfaceToPresent) {
+    surface = mSurfaceToPresent;
+    aOutputStream << "alt=\"presented surface 0x" << std::hex
+                  << int(IOSurfaceGetID(surface.get())) << "\" ";
+  } else if (mSurfaceHandler) {
     if (auto frontSurface = mSurfaceHandler->FrontSurface()) {
       surface = frontSurface->mSurface;
       aOutputStream << "alt=\"regular surface 0x" << std::hex
@@ -1258,7 +1212,9 @@ void NativeLayerCA::DumpLayer(std::ostream& aOutputStream) {
   if (surface) {
     // Attempt to render the surface as a PNG. Skia can do this for RGB
     // surfaces.
-    RefPtr<MacIOSurface> surf = new MacIOSurface(surface);
+    RefPtr<MacIOSurface> surf = new MacIOSurface(
+        surface, gfx::YUVColorSpace::Identity, gfx::TransferFunction::SRGB,
+        MacIOSurface::AllowAlpha::Yes);
     if (surf->Lock(true)) {
       SurfaceFormat format = surf->GetFormat();
       if (format == SurfaceFormat::B8G8R8A8 ||
@@ -1281,6 +1237,50 @@ void NativeLayerCA::DumpLayer(std::ostream& aOutputStream) {
   aOutputStream << "\"/></div>\n";
 }
 
+static NSString* NSStringForOSType(OSType type) {
+  unichar c[4];
+  c[0] = (type >> 24) & 0xFF;
+  c[1] = (type >> 16) & 0xFF;
+  c[2] = (type >> 8) & 0xFF;
+  c[3] = (type >> 0) & 0xFF;
+  NSString* string = [[NSString stringWithCharacters:c length:4] autorelease];
+  return string;
+}
+
+/* static */ void NativeLayerCA::LogSurface(
+    const nsACString& aHeader, IOSurfaceRef aSurfaceRef,
+    CVPixelBufferRef aBuffer, CMVideoFormatDescriptionRef aFormat) {
+  nsCString header(aHeader);
+  NSLog(@"LogSurface(%s):\n", header.get());
+
+  // List the buffer first, because it's likely the source of aSurfaceRef.
+  if (aBuffer) {
+#ifdef XP_MACOSX
+    CGColorSpaceRef colorSpace = CVImageBufferGetColorSpace(aBuffer);
+    NSLog(@"ColorSpace is %@.\n", colorSpace);
+#endif
+
+    if (@available(macOS 12.0, *)) {
+      CFDictionaryRef bufferAttachments =
+          CVBufferCopyAttachments(aBuffer, kCVAttachmentMode_ShouldPropagate);
+      NSLog(@"Buffer attachments are %@.\n", bufferAttachments);
+      CFRelease(bufferAttachments);
+    }
+  }
+
+  CFDictionaryRef surfaceValues = IOSurfaceCopyAllValues(aSurfaceRef);
+  NSLog(@"Surface values are %@.\n", surfaceValues);
+  CFRelease(surfaceValues);
+
+  if (aFormat) {
+    OSType codec = CMFormatDescriptionGetMediaSubType(aFormat);
+    NSLog(@"Codec is %@.\n", NSStringForOSType(codec));
+
+    CFDictionaryRef extensions = CMFormatDescriptionGetExtensions(aFormat);
+    NSLog(@"Format extensions are %@.\n", extensions);
+  }
+}
+
 gfx::IntRect NativeLayerCA::CurrentSurfaceDisplayRect() {
   MutexAutoLock lock(mMutex);
   if (mSurfaceHandler) {
@@ -1289,8 +1289,84 @@ gfx::IntRect NativeLayerCA::CurrentSurfaceDisplayRect() {
   return mDisplayRect;
 }
 
-NativeLayerCA::Representation::Representation()
-    : mMutatedPosition(true),
+void NativeLayerCA::SetDisplayRect(const gfx::IntRect& aDisplayRect) {
+  MutexAutoLock lock(mMutex);
+  MOZ_ASSERT(!mSurfaceHandler, "Setting display rect will have no effect.");
+  if (!mDisplayRect.IsEqualInterior(aDisplayRect)) {
+    mDisplayRect = aDisplayRect;
+
+    ForAllRepresentations(
+        [&](Representation& r) { r.mMutatedDisplayRect = true; });
+  }
+}
+
+void NativeLayerCA::SetSurfaceToPresent(CFTypeRefPtr<IOSurfaceRef> aSurfaceRef,
+                                        gfx::IntSize& aSize, bool aIsDRM,
+                                        bool aIsHDR) {
+  MutexAutoLock lock(mMutex);
+  MOZ_ASSERT(!mSurfaceHandler,
+             "Shouldn't call this for layers that manage their own surfaces.");
+  MOZ_ASSERT(!mTextureHost,
+             "Shouldn't call this for layers that get external surfaces.");
+
+  bool changedSurface = (mSurfaceToPresent != aSurfaceRef);
+  if (changedSurface) {
+    if (mSurfaceToPresent) {
+      IOSurfaceDecrementUseCount(mSurfaceToPresent.get());
+    }
+    mSurfaceToPresent = aSurfaceRef;
+    if (mSurfaceToPresent) {
+      IOSurfaceIncrementUseCount(mSurfaceToPresent.get());
+    }
+  }
+
+  bool changedSize = (mSize != aSize);
+  mSize = aSize;
+
+  // Figure out if the surface is a video.
+  if (mSurfaceToPresent) {
+    auto pixelFormat = IOSurfaceGetPixelFormat(mSurfaceToPresent.get());
+    MacIOSurface::AllowAlpha allowAlpha = mIsOpaque
+                                              ? MacIOSurface::AllowAlpha::No
+                                              : MacIOSurface::AllowAlpha::Yes;
+    auto surfaceFormat =
+        MacIOSurface::SurfaceFormatForPixelFormat(pixelFormat, allowAlpha);
+    mTextureHostIsVideo = gfx::Info(surfaceFormat)->isYuv;
+  } else {
+    mTextureHostIsVideo = false;
+  }
+
+  bool changedIsDRM = (mIsDRM != aIsDRM);
+  mIsDRM = aIsDRM;
+
+  bool changedIsHDR = (mIsHDR != aIsHDR);
+  mIsHDR = aIsHDR;
+
+  bool specializeVideo = ShouldSpecializeVideo(lock);
+  bool changedSpecializeVideo = (mSpecializeVideo != specializeVideo);
+  mSpecializeVideo = specializeVideo;
+
+#ifdef NIGHTLY_BUILD
+  if (changedSpecializeVideo &&
+      StaticPrefs::gfx_core_animation_specialize_video_log()) {
+    NSLog(
+        @"VIDEO_LOG: SetSurfaceToPresent: %p is forcing a video layer rebuild.",
+        this);
+  }
+#endif
+
+  ForAllRepresentations([&](Representation& r) {
+    r.mMutatedFrontSurface |= changedSurface;
+    r.mMutatedSize |= changedSize;
+    r.mMutatedSpecializeVideo |= changedSpecializeVideo;
+    r.mMutatedIsDRM |= changedIsDRM;
+    r.mMutatedIsHDR |= changedIsHDR;
+  });
+}
+
+NativeLayerCARepresentation::NativeLayerCARepresentation()
+    : mWrappingCALayerHasExtent(false),
+      mMutatedPosition(true),
       mMutatedTransform(true),
       mMutatedDisplayRect(true),
       mMutatedClipRect(true),
@@ -1301,19 +1377,15 @@ NativeLayerCA::Representation::Representation()
       mMutatedFrontSurface(true),
       mMutatedSamplingFilter(true),
       mMutatedSpecializeVideo(true),
-      mMutatedIsDRM(true) {}
+      mMutatedIsDRM(true),
+      mMutatedIsHDR(true) {}
 
-NativeLayerCA::Representation::~Representation() {
+NativeLayerCARepresentation::~NativeLayerCARepresentation() {
   [mContentCALayer release];
   [mOpaquenessTintLayer release];
+  [mProtectedBackingLayer release];
   [mWrappingCALayer release];
   [mRoundedClipCALayer release];
-}
-
-void NativeLayerCA::InvalidateRegionThroughoutSwapchain(
-    const MutexAutoLock& aProofOfLock, const IntRegion& aRegion) {
-  MOZ_ASSERT(mSurfaceHandler);
-  mSurfaceHandler->InvalidateRegionThroughoutSwapchain(aRegion);
 }
 
 template <typename F>
@@ -1367,7 +1439,7 @@ void NativeLayerCA::DiscardBackbuffers() {
   mSurfaceHandler->DiscardBackbuffers();
 }
 
-NativeLayerCA::Representation& NativeLayerCA::GetRepresentation(
+NativeLayerCARepresentation& NativeLayerCA::GetRepresentation(
     WhichRepresentation aRepresentation) {
   switch (aRepresentation) {
     case WhichRepresentation::ONSCREEN:
@@ -1419,14 +1491,17 @@ Maybe<CGRect> NativeLayerCA::CalculateClipGeometry(
 }
 
 bool NativeLayerCA::ApplyChanges(WhichRepresentation aRepresentation,
-                                 NativeLayerCA::UpdateType aUpdate) {
+                                 NativeLayerCA::UpdateType aUpdate,
+                                 bool* aMustRebuild) {
   MutexAutoLock lock(mMutex);
   CFTypeRefPtr<IOSurfaceRef> surface;
   IntSize size = mSize;
   IntRect displayRect = mDisplayRect;
   bool surfaceIsFlipped = mSurfaceIsFlipped;
 
-  if (mSurfaceHandler) {
+  if (mSurfaceToPresent) {
+    surface = mSurfaceToPresent;
+  } else if (mSurfaceHandler) {
     if (auto frontSurface = mSurfaceHandler->FrontSurface()) {
       surface = frontSurface->mSurface;
     }
@@ -1437,11 +1512,20 @@ bool NativeLayerCA::ApplyChanges(WhichRepresentation aRepresentation,
     surface = mTextureHost->GetSurface()->GetIOSurfaceRef();
   }
 
-  return GetRepresentation(aRepresentation)
-      .ApplyChanges(aUpdate, size, mIsOpaque, mPosition, mTransform,
-                    displayRect, mClipRect, mRoundedClipRect, mBackingScale,
-                    surfaceIsFlipped, mSamplingFilter, mSpecializeVideo,
-                    surface, mColor, mIsDRM, IsVideo(lock));
+  auto& r = GetRepresentation(aRepresentation);
+  if (r.mMutatedSpecializeVideo) {
+    *aMustRebuild = true;
+  }
+  bool hadExtentBeforeUpdate = r.UnderlyingCALayer() != nullptr;
+  bool updateSucceeded = r.ApplyChanges(
+      aUpdate, size, mIsOpaque, mPosition, mTransform, displayRect, mClipRect,
+      mRoundedClipRect, mBackingScale, surfaceIsFlipped, mSamplingFilter,
+      mSpecializeVideo, surface, mColor, IsVideo(lock), mIsDRM, mIsHDR);
+  bool hasExtentAfterUpdate = r.UnderlyingCALayer() != nullptr;
+  if (hasExtentAfterUpdate != hadExtentBeforeUpdate) {
+    *aMustRebuild = true;
+  }
+  return updateSucceeded;
 }
 
 CALayer* NativeLayerCA::UnderlyingCALayer(WhichRepresentation aRepresentation) {
@@ -1449,45 +1533,8 @@ CALayer* NativeLayerCA::UnderlyingCALayer(WhichRepresentation aRepresentation) {
   return GetRepresentation(aRepresentation).UnderlyingCALayer();
 }
 
-static NSString* NSStringForOSType(OSType type) {
-  unichar c[4];
-  c[0] = (type >> 24) & 0xFF;
-  c[1] = (type >> 16) & 0xFF;
-  c[2] = (type >> 8) & 0xFF;
-  c[3] = (type >> 0) & 0xFF;
-  NSString* string = [[NSString stringWithCharacters:c length:4] autorelease];
-  return string;
-}
-
-/* static */ void LogSurface(IOSurfaceRef aSurfaceRef, CVPixelBufferRef aBuffer,
-                             CMVideoFormatDescriptionRef aFormat) {
-  NSLog(@"VIDEO_LOG: LogSurface...\n");
-
-  CFDictionaryRef surfaceValues = IOSurfaceCopyAllValues(aSurfaceRef);
-  NSLog(@"Surface values are %@.\n", surfaceValues);
-  CFRelease(surfaceValues);
-
-  if (aBuffer) {
-#ifdef XP_MACOSX
-    CGColorSpaceRef colorSpace = CVImageBufferGetColorSpace(aBuffer);
-    NSLog(@"ColorSpace is %@.\n", colorSpace);
-#endif
-
-    CFDictionaryRef bufferAttachments =
-        CVBufferGetAttachments(aBuffer, kCVAttachmentMode_ShouldPropagate);
-    NSLog(@"Buffer attachments are %@.\n", bufferAttachments);
-  }
-
-  if (aFormat) {
-    OSType codec = CMFormatDescriptionGetMediaSubType(aFormat);
-    NSLog(@"Codec is %@.\n", NSStringForOSType(codec));
-
-    CFDictionaryRef extensions = CMFormatDescriptionGetExtensions(aFormat);
-    NSLog(@"Format extensions are %@.\n", extensions);
-  }
-}
-
-bool NativeLayerCA::Representation::EnqueueSurface(IOSurfaceRef aSurfaceRef) {
+bool NativeLayerCARepresentation::EnqueueSurface(IOSurfaceRef aSurfaceRef,
+                                                 bool aIsHDR) {
   MOZ_ASSERT(
       [mContentCALayer isKindOfClass:[AVSampleBufferDisplayLayer class]]);
   AVSampleBufferDisplayLayer* videoLayer =
@@ -1577,14 +1624,6 @@ bool NativeLayerCA::Representation::EnqueueSurface(IOSurfaceRef aSurfaceRef) {
       CFTypeRefPtr<CMVideoFormatDescriptionRef>::WrapUnderCreateRule(
           formatDescription);
 
-#ifdef NIGHTLY_BUILD
-  if (mLogNextVideoSurface &&
-      StaticPrefs::gfx_core_animation_specialize_video_log()) {
-    LogSurface(aSurfaceRef, pixelBuffer, formatDescription);
-    mLogNextVideoSurface = false;
-  }
-#endif
-
   CMSampleTimingInfo timingInfo = kCMTimingInfoInvalid;
 
   bool spoofTiming = false;
@@ -1635,19 +1674,46 @@ bool NativeLayerCA::Representation::EnqueueSurface(IOSurfaceRef aSurfaceRef) {
                          kCFBooleanTrue);
   }
 
+  // Set a layer property for HDR video. We would like to set this
+  // property exactly once, at time of layer creation, but correct
+  // HDR display seems to require that it is set before every call to
+  // enqueueSampleBuffer.
+#ifdef XP_MACOSX
+  if (@available(macOS 26.0, *)) {
+    videoLayer.preferredDynamicRange =
+        aIsHDR ? CADynamicRangeHigh : CADynamicRangeStandard;
+  } else if (@available(macOS 14.0, *)) {
+    videoLayer.wantsExtendedDynamicRangeContent = aIsHDR;
+  }
+#else
+  (void)aIsHDR;
+#endif
+
+#ifdef NIGHTLY_BUILD
+  if (mLogNextVideoSurface &&
+      StaticPrefs::gfx_core_animation_specialize_video_log()) {
+    NativeLayerCA::LogSurface("EnqueueSurface"_ns, aSurfaceRef, pixelBuffer,
+                              formatDescription);
+
+    NSLog(@"%@", sampleBuffer);
+    mLogNextVideoSurface = false;
+  }
+#endif
+
   [videoLayer enqueueSampleBuffer:sampleBuffer];
 
   return true;
 }
 
-bool NativeLayerCA::Representation::ApplyChanges(
-    NativeLayerCA::UpdateType aUpdate, const IntSize& aSize, bool aIsOpaque,
+bool NativeLayerCARepresentation::ApplyChanges(
+    UpdateType aUpdate, const IntSize& aSize, bool aIsOpaque,
     const IntPoint& aPosition, const Matrix4x4& aTransform,
     const IntRect& aDisplayRect, const Maybe<IntRect>& aClipRect,
     const Maybe<gfx::RoundedRect>& aRoundedClip, float aBackingScale,
     bool aSurfaceIsFlipped, gfx::SamplingFilter aSamplingFilter,
-    bool aSpecializeVideo, CFTypeRefPtr<IOSurfaceRef> aFrontSurface,
-    CFTypeRefPtr<CGColorRef> aColor, bool aIsDRM, bool aIsVideo) {
+    bool aSpecializeVideo, const CFTypeRefPtr<IOSurfaceRef>& aFrontSurface,
+    const Maybe<gfx::DeviceColor>& aColor, bool aIsVideo, bool aIsDRM,
+    bool aIsHDR) {
   // If we have an OnlyVideo update, handle it and early exit.
   if (aUpdate == UpdateType::OnlyVideo) {
     // If we don't have any updates to do, exit early with success. This is
@@ -1663,7 +1729,7 @@ bool NativeLayerCA::Representation::ApplyChanges(
     bool updateSucceeded = false;
     if (aSpecializeVideo) {
       IOSurfaceRef surface = aFrontSurface.get();
-      updateSucceeded = EnqueueSurface(surface);
+      updateSucceeded = EnqueueSurface(surface, aIsHDR);
 
       if (updateSucceeded) {
         mMutatedFrontSurface = false;
@@ -1684,9 +1750,11 @@ bool NativeLayerCA::Representation::ApplyChanges(
 
   MOZ_ASSERT(aUpdate == UpdateType::All);
 
-  if (mWrappingCALayer && mMutatedSpecializeVideo) {
+  if (mWrappingCALayer && (mMutatedSpecializeVideo || mMutatedIsDRM)) {
     // Since specialize video changes the way we construct our wrapping and
-    // content layers, we have to scrap them if this value has changed.
+    // content layers, we have to scrap them if this value has changed. A DRM
+    // change also gets fresh layers, so a layer never switches between
+    // holding DRM and non-DRM frames.
 #ifdef NIGHTLY_BUILD
     if (aIsVideo && StaticPrefs::gfx_core_animation_specialize_video_log()) {
       NSLog(@"VIDEO_LOG: Scrapping existing video layer.");
@@ -1696,6 +1764,8 @@ bool NativeLayerCA::Representation::ApplyChanges(
     mContentCALayer = nil;
     [mOpaquenessTintLayer release];
     mOpaquenessTintLayer = nil;
+    [mProtectedBackingLayer release];
+    mProtectedBackingLayer = nil;
     [mWrappingCALayer release];
     mWrappingCALayer = nil;
     [mRoundedClipCALayer release];
@@ -1725,7 +1795,8 @@ bool NativeLayerCA::Representation::ApplyChanges(
     if (aColor) {
       // Color layers set a color on the clip layer and don't get a content
       // layer.
-      mRoundedClipCALayer.backgroundColor = aColor.get();
+      mRoundedClipCALayer.backgroundColor =
+          CGColorCreateForDeviceColor(*aColor);
     } else {
       if (aSpecializeVideo) {
 #ifdef NIGHTLY_BUILD
@@ -1749,6 +1820,17 @@ bool NativeLayerCA::Representation::ApplyChanges(
         [(AVSampleBufferDisplayLayer*)mContentCALayer
             setControlTimebase:timebase];
         CFRelease(timebase);
+        ((AVSampleBufferDisplayLayer*)mContentCALayer).preventsCapture = aIsDRM;
+        if (aIsDRM) {
+          mProtectedBackingLayer = [[CALayer layer] retain];
+          mProtectedBackingLayer.position = CGPointZero;
+          mProtectedBackingLayer.anchorPoint = CGPointZero;
+          mProtectedBackingLayer.edgeAntialiasingMask = 0;
+          mProtectedBackingLayer.opaque = YES;
+          mProtectedBackingLayer.backgroundColor =
+              CGColorGetConstantColor(kCGColorBlack);
+          [mRoundedClipCALayer addSublayer:mProtectedBackingLayer];
+        }
       } else {
 #ifdef NIGHTLY_BUILD
         if (aIsVideo &&
@@ -1774,10 +1856,6 @@ bool NativeLayerCA::Representation::ApplyChanges(
 
       [mRoundedClipCALayer addSublayer:mContentCALayer];
     }
-  }
-
-  if (aSpecializeVideo && mMutatedIsDRM) {
-    ((AVSampleBufferDisplayLayer*)mContentCALayer).preventsCapture = aIsDRM;
   }
 
   bool shouldTintOpaqueness = StaticPrefs::gfx_core_animation_tint_opaque();
@@ -1820,13 +1898,16 @@ bool NativeLayerCA::Representation::ApplyChanges(
     if (mOpaquenessTintLayer) {
       mOpaquenessTintLayer.bounds = mContentCALayer.bounds;
     }
+    if (mProtectedBackingLayer) {
+      mProtectedBackingLayer.bounds = mContentCALayer.bounds;
+    }
     mContentCALayer.contentsScale = aBackingScale;
   }
 
   if (mMutatedBackingScale || mMutatedPosition || mMutatedDisplayRect ||
       mMutatedClipRect || mMutatedRoundedClipRect || mMutatedTransform ||
       mMutatedSurfaceIsFlipped || mMutatedSize || layerNeedsInitialization) {
-    Maybe<CGRect> scaledClipRect = CalculateClipGeometry(
+    Maybe<CGRect> scaledClipRect = NativeLayerCA::CalculateClipGeometry(
         aSize, aPosition, aTransform, aDisplayRect, aClipRect, aBackingScale);
 
     CGRect useClipRect;
@@ -1840,6 +1921,8 @@ bool NativeLayerCA::Representation::ApplyChanges(
     mWrappingCALayer.bounds =
         CGRectMake(0, 0, useClipRect.size.width, useClipRect.size.height);
     mWrappingCALayer.masksToBounds = scaledClipRect.isSome();
+    mWrappingCALayerHasExtent =
+        scaledClipRect.isNothing() || !CGRectIsEmpty(useClipRect);
 
     // Default the clip rect for the rounded rect clip layer to be the
     // same as the wrapping layer clip. This ensures that if it's not used,
@@ -1941,6 +2024,9 @@ bool NativeLayerCA::Representation::ApplyChanges(
       if (mOpaquenessTintLayer) {
         mOpaquenessTintLayer.transform = mContentCALayer.transform;
       }
+      if (mProtectedBackingLayer) {
+        mProtectedBackingLayer.transform = mContentCALayer.transform;
+      }
     }
   }
 
@@ -1965,13 +2051,15 @@ bool NativeLayerCA::Representation::ApplyChanges(
       // forcing the layer contents to display that frame. Our call to
       // enqueueSampleBuffer will handle future async updates to the layer;
       // buffers queued with enqueueSampleBuffer overwrite the layer contents.
-      if (layerNeedsInitialization) {
+      // DRM frames are left to enqueueSampleBuffer alone, because capture of
+      // the layer contents was observed not to be blocked by preventsCapture.
+      if (layerNeedsInitialization && !aIsDRM) {
         mContentCALayer.contents = (id)surface;
       }
 
       // Attempt to enqueue this as a video frame. If we fail, we'll rebuild
       // our video layer in the next update.
-      bool isEnqueued = EnqueueSurface(surface);
+      bool isEnqueued = EnqueueSurface(surface, aIsHDR);
       if (!isEnqueued) {
         // Set mMutatedSpecializeVideo, which will ensure that the next update
         // will rebuild the video layer.
@@ -1987,7 +2075,7 @@ bool NativeLayerCA::Representation::ApplyChanges(
 #ifdef NIGHTLY_BUILD
       if (mLogNextVideoSurface &&
           StaticPrefs::gfx_core_animation_specialize_video_log()) {
-        LogSurface(surface, nullptr, nullptr);
+        NativeLayerCA::LogSurface("ApplyChanges"_ns, surface, nullptr, nullptr);
         mLogNextVideoSurface = false;
       }
 #endif
@@ -2007,11 +2095,12 @@ bool NativeLayerCA::Representation::ApplyChanges(
   mMutatedSamplingFilter = false;
   mMutatedSpecializeVideo = false;
   mMutatedIsDRM = false;
+  mMutatedIsHDR = false;
 
   return true;
 }
 
-NativeLayerCA::UpdateType NativeLayerCA::Representation::HasUpdate(
+NativeLayerCA::UpdateType NativeLayerCARepresentation::HasUpdate(
     bool aIsVideo) {
   if (!mWrappingCALayer) {
     return UpdateType::All;
@@ -2022,7 +2111,7 @@ NativeLayerCA::UpdateType NativeLayerCA::Representation::HasUpdate(
   if (mMutatedPosition || mMutatedTransform || mMutatedDisplayRect ||
       mMutatedClipRect || mMutatedRoundedClipRect || mMutatedBackingScale ||
       mMutatedSize || mMutatedSurfaceIsFlipped || mMutatedSamplingFilter ||
-      mMutatedSpecializeVideo || mMutatedIsDRM) {
+      mMutatedSpecializeVideo || mMutatedIsDRM || mMutatedIsHDR) {
     return UpdateType::All;
   }
 
@@ -2035,88 +2124,6 @@ NativeLayerCA::UpdateType NativeLayerCA::Representation::HasUpdate(
   }
 
   return UpdateType::None;
-}
-
-bool NativeLayerCA::WillUpdateAffectLayers(
-    WhichRepresentation aRepresentation) {
-  MutexAutoLock lock(mMutex);
-  auto& r = GetRepresentation(aRepresentation);
-  return r.mMutatedSpecializeVideo || !r.UnderlyingCALayer();
-}
-
-bool DownscaleTargetNLRS::DownscaleFrom(
-    profiler_screenshots::RenderSource* aSource, const IntRect& aSourceRect,
-    const IntRect& aDestRect) {
-  mGL->BlitHelper()->BlitFramebufferToFramebuffer(
-      static_cast<RenderSourceNLRS*>(aSource)->FB().mFB,
-      mRenderSource->FB().mFB, aSourceRect, aDestRect, LOCAL_GL_LINEAR);
-
-  return true;
-}
-
-void AsyncReadbackBufferNLRS::CopyFrom(
-    profiler_screenshots::RenderSource* aSource) {
-  IntSize size = aSource->Size();
-  MOZ_RELEASE_ASSERT(Size() == size);
-
-  gl::ScopedPackState scopedPackState(mGL);
-  mGL->fBindBuffer(LOCAL_GL_PIXEL_PACK_BUFFER, mBufferHandle);
-  mGL->fPixelStorei(LOCAL_GL_PACK_ALIGNMENT, 1);
-  const gl::ScopedBindFramebuffer bindFB(
-      mGL, static_cast<RenderSourceNLRS*>(aSource)->FB().mFB);
-  mGL->fReadPixels(0, 0, size.width, size.height, LOCAL_GL_RGBA,
-                   LOCAL_GL_UNSIGNED_BYTE, 0);
-}
-
-bool AsyncReadbackBufferNLRS::MapAndCopyInto(DataSourceSurface* aSurface,
-                                             const IntSize& aReadSize) {
-  MOZ_RELEASE_ASSERT(aReadSize <= aSurface->GetSize());
-
-  if (!mGL || !mGL->MakeCurrent()) {
-    return false;
-  }
-
-  gl::ScopedPackState scopedPackState(mGL);
-  mGL->fBindBuffer(LOCAL_GL_PIXEL_PACK_BUFFER, mBufferHandle);
-  mGL->fPixelStorei(LOCAL_GL_PACK_ALIGNMENT, 1);
-
-  const uint8_t* srcData = nullptr;
-  if (mGL->IsSupported(gl::GLFeature::map_buffer_range)) {
-    srcData = static_cast<uint8_t*>(mGL->fMapBufferRange(
-        LOCAL_GL_PIXEL_PACK_BUFFER, 0, aReadSize.height * aReadSize.width * 4,
-        LOCAL_GL_MAP_READ_BIT));
-  } else {
-    srcData = static_cast<uint8_t*>(
-        mGL->fMapBuffer(LOCAL_GL_PIXEL_PACK_BUFFER, LOCAL_GL_READ_ONLY));
-  }
-
-  if (!srcData) {
-    return false;
-  }
-
-  int32_t srcStride = mSize.width * 4;  // Bind() sets an alignment of 1
-  DataSourceSurface::ScopedMap map(aSurface, DataSourceSurface::WRITE);
-  uint8_t* destData = map.GetData();
-  int32_t destStride = map.GetStride();
-  SurfaceFormat destFormat = aSurface->GetFormat();
-  for (int32_t destRow = 0; destRow < aReadSize.height; destRow++) {
-    // Turn srcData upside down during the copy.
-    int32_t srcRow = aReadSize.height - 1 - destRow;
-    const uint8_t* src = &srcData[srcRow * srcStride];
-    uint8_t* dest = &destData[destRow * destStride];
-    SwizzleData(src, srcStride, SurfaceFormat::R8G8B8A8, dest, destStride,
-                destFormat, IntSize(aReadSize.width, 1));
-  }
-
-  mGL->fUnmapBuffer(LOCAL_GL_PIXEL_PACK_BUFFER);
-
-  return true;
-}
-
-AsyncReadbackBufferNLRS::~AsyncReadbackBufferNLRS() {
-  if (mGL && mGL->MakeCurrent()) {
-    mGL->fDeleteBuffers(1, &mBufferHandle);
-  }
 }
 
 }  // namespace layers

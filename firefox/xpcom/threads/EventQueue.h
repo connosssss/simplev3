@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,17 +14,18 @@
 namespace mozilla {
 
 #define EVENT_QUEUE_PRIORITY_LIST(EVENT_PRIORITY) \
-  EVENT_PRIORITY(Idle, 0)                         \
-  EVENT_PRIORITY(DeferredTimers, 1)               \
-  EVENT_PRIORITY(Low, 2)                          \
-  EVENT_PRIORITY(InputLow, 3)                     \
-  EVENT_PRIORITY(Normal, 4)                       \
-  EVENT_PRIORITY(MediumHigh, 5)                   \
-  EVENT_PRIORITY(InputHigh, 6)                    \
-  EVENT_PRIORITY(Vsync, 7)                        \
-  EVENT_PRIORITY(InputHighest, 8)                 \
-  EVENT_PRIORITY(RenderBlocking, 9)               \
-  EVENT_PRIORITY(Control, 10)
+  EVENT_PRIORITY(Lowest, 0)                       \
+  EVENT_PRIORITY(Idle, 1)                         \
+  EVENT_PRIORITY(DeferredTimers, 2)               \
+  EVENT_PRIORITY(Low, 3)                          \
+  EVENT_PRIORITY(InputLow, 4)                     \
+  EVENT_PRIORITY(Normal, 5)                       \
+  EVENT_PRIORITY(MediumHigh, 6)                   \
+  EVENT_PRIORITY(InputHigh, 7)                    \
+  EVENT_PRIORITY(Vsync, 8)                        \
+  EVENT_PRIORITY(InputHighest, 9)                 \
+  EVENT_PRIORITY(RenderBlocking, 10)              \
+  EVENT_PRIORITY(Control, 11)
 
 enum class EventQueuePriority {
 #define EVENT_PRIORITY(NAME, VALUE) NAME = VALUE,
@@ -57,7 +56,7 @@ class EventQueueInternal {
   // nsIRunnablePriority::GetPriority().  *aDelay is time the event has
   // already been delayed (used when moving an event from one queue to
   // another)
-  void PutEvent(already_AddRefed<nsIRunnable>&& aEvent,
+  void PutEvent(already_AddRefed<nsIRunnable> aEvent,
                 EventQueuePriority aPriority, const MutexAutoLock& aProofOfLock,
                 mozilla::TimeDuration* aDelay = nullptr);
 

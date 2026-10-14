@@ -4,6 +4,8 @@
 "use strict";
 
 ChromeUtils.defineESModuleGetters(this, {
+  actionTypes: "resource://newtab/common/Actions.mjs",
+  actionUtils: "resource://newtab/common/Actions.mjs",
   sinon: "resource://testing-common/Sinon.sys.mjs",
   NewTabMessaging: "resource://newtab/lib/NewTabMessaging.sys.mjs",
 });
@@ -14,10 +16,19 @@ function createMockSubject(targetBrowser, message, dispatch) {
   };
 }
 
-add_task(async function test_NewTabMessaging() {
+/**
+ * Returns an instance of NewTabMessaging that has its store mocked out and
+ * instrumented for easier testing.
+ *
+ * @param {SinonSandbox} sandbox
+ *   A Sinon sandbox for stubbing and spying.
+ * @param {function(NewTabMessaging):Promise<void>} taskFn
+ *   An async function that accepts a test instance of NewTabMessaging to
+ *   manipulate. This instance is pre-initialized, and will be uninitialized
+ *   after taskFn resolves.
+ */
+async function getTestNewTabMessaging(sandbox, taskFn) {
   let messaging = new NewTabMessaging();
-  let sandbox = sinon.createSandbox();
-  let mockDispatch = sandbox.spy();
   messaging.store = {
     dispatch: sandbox.spy(),
     getState() {
@@ -32,47 +43,181 @@ add_task(async function test_NewTabMessaging() {
   messaging.init();
   Assert.ok(messaging.initialized, "Should be initialized");
 
-  // Fake observer notification
-  let mockMessage = { id: "test-message" };
-  let mockBrowser = {
-    browsingContext: {
-      currentWindowGlobal: {
-        getActor: () => ({
-          getTabDetails: () => ({ portID: "12345" }),
-        }),
+  await taskFn(messaging);
+  messaging.uninit();
+}
+
+/**
+ * Tests that the newtab-message observer notification can be used to show
+ * messages on newtab.
+ */
+add_task(async function test_NewTabMessaging() {
+  let sandbox = sinon.createSandbox();
+  let mockDispatch = sandbox.spy();
+
+  await getTestNewTabMessaging(sandbox, async messaging => {
+    // Fake observer notification
+    let mockMessage = { id: "test-message" };
+    let mockBrowser = {
+      browsingContext: {
+        currentWindowGlobal: {
+          getActor: () => ({
+            getTabDetails: () => ({ portID: "12345" }),
+          }),
+        },
       },
+    };
+
+    messaging.observe(
+      createMockSubject(mockBrowser, mockMessage, mockDispatch),
+      "newtab-message",
+      null
+    );
+
+    // Check if ASRouterDispatch was set
+    Assert.equal(
+      messaging.ASRouterDispatch,
+      mockDispatch,
+      "ASRouterDispatch should be assigned"
+    );
+
+    // Simulate impression handling
+    messaging.handleImpression(mockMessage);
+    Assert.ok(
+      mockDispatch.calledWithMatch({ type: "IMPRESSION", data: mockMessage }),
+      "Impression action should be dispatched"
+    );
+
+    // Simulate telemetry
+    messaging.sendTelemetry("CLICK", mockMessage);
+    Assert.ok(
+      mockDispatch.calledWithMatch({
+        type: "NEWTAB_MESSAGE_TELEMETRY",
+        data: sandbox.match.has("event", "CLICK"),
+      }),
+      "Telemetry event should be dispatched"
+    );
+  });
+
+  sandbox.restore();
+});
+
+/**
+ * Tests that dismissing a message sends the action to hide all current messages
+ * on all existing newtabs.
+ */
+add_task(async function test_dismissal() {
+  let sandbox = sinon.createSandbox();
+  await getTestNewTabMessaging(sandbox, async messaging => {
+    messaging.onAction({
+      type: actionTypes.MESSAGE_DISMISS,
+      data: { message: "some-message-ID" },
+    });
+
+    Assert.ok(
+      messaging.store.dispatch.calledOnce,
+      "Should have dispatched a single action"
+    );
+    const [action] = messaging.store.dispatch.getCall(0).args;
+    Assert.equal(
+      action.type,
+      actionTypes.MESSAGE_TOGGLE_VISIBILITY,
+      "Should have sent the action to toggle visibility"
+    );
+    Assert.deepEqual(
+      action.data,
+      { isVisible: false },
+      "Should have set visibility to false"
+    );
+    Assert.ok(
+      actionUtils.isSendToPreloaded(action),
+      "Should be sending the action to all newtab instances, including the preloaded one."
+    );
+  });
+
+  sandbox.restore();
+});
+
+function queryActiveNewtabMessage(messaging, selectedBrowser) {
+  let subject = {
+    wrappedJSObject: {
+      browser: { selectedBrowser },
+      activeNewtabMessage: false,
     },
   };
+  messaging.observe(subject, "newtab-message-query", null);
+  return subject.wrappedJSObject.activeNewtabMessage;
+}
 
-  messaging.observe(
-    createMockSubject(mockBrowser, mockMessage, mockDispatch),
-    "newtab-message",
-    null
-  );
+/**
+ * Tests that NEW_TAB_UNLOAD stops the unloaded browser from reporting an
+ * active newtab message, without affecting other browsers.
+ */
+add_task(async function test_unload_forgets_browser() {
+  let sandbox = sinon.createSandbox();
+  await getTestNewTabMessaging(sandbox, async messaging => {
+    let browserA = {};
+    let browserB = {};
+    for (let browser of [browserA, browserB]) {
+      messaging.onAction({
+        type: actionTypes.MESSAGE_NOTIFY_VISIBILITY,
+        data: true,
+        _target: { browser },
+      });
+    }
 
-  // Check if ASRouterDispatch was set
-  Assert.equal(
-    messaging.ASRouterDispatch,
-    mockDispatch,
-    "ASRouterDispatch should be assigned"
-  );
+    Assert.ok(
+      queryActiveNewtabMessage(messaging, browserA),
+      "Browser A should report an active newtab message"
+    );
+    Assert.ok(
+      queryActiveNewtabMessage(messaging, browserB),
+      "Browser B should report an active newtab message"
+    );
 
-  // Simulate impression handling
-  messaging.handleImpression(mockMessage);
-  Assert.ok(
-    mockDispatch.calledWithMatch({ type: "IMPRESSION", data: mockMessage }),
-    "Impression action should be dispatched"
-  );
+    messaging.onAction({
+      type: actionTypes.NEW_TAB_UNLOAD,
+      _target: { browser: browserA },
+    });
 
-  // Simulate telemetry
-  messaging.sendTelemetry("CLICK", mockMessage);
-  Assert.ok(
-    mockDispatch.calledWithMatch({
-      type: "NEWTAB_MESSAGE_TELEMETRY",
-      data: sandbox.match.has("event", "CLICK"),
-    }),
-    "Telemetry event should be dispatched"
-  );
-  messaging.uninit();
+    Assert.ok(
+      !queryActiveNewtabMessage(messaging, browserA),
+      "Browser A should no longer report an active newtab message"
+    );
+    Assert.ok(
+      queryActiveNewtabMessage(messaging, browserB),
+      "Browser B should still report an active newtab message"
+    );
+  });
+
+  sandbox.restore();
+});
+
+/**
+ * Tests that NEW_TAB_UNLOAD for an unknown browser, or without a target, is
+ * harmless.
+ */
+add_task(async function test_unload_unknown_browser() {
+  let sandbox = sinon.createSandbox();
+  await getTestNewTabMessaging(sandbox, async messaging => {
+    let browser = {};
+    messaging.onAction({
+      type: actionTypes.MESSAGE_NOTIFY_VISIBILITY,
+      data: true,
+      _target: { browser },
+    });
+
+    messaging.onAction({
+      type: actionTypes.NEW_TAB_UNLOAD,
+      _target: { browser: {} },
+    });
+    messaging.onAction({ type: actionTypes.NEW_TAB_UNLOAD });
+
+    Assert.ok(
+      queryActiveNewtabMessage(messaging, browser),
+      "The shown browser should still report an active newtab message"
+    );
+  });
+
   sandbox.restore();
 });

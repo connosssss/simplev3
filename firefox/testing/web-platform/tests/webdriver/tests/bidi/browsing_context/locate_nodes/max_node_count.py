@@ -2,6 +2,8 @@ import pytest
 
 from ... import any_string, recursive_compare
 
+pytestmark = pytest.mark.asyncio
+
 
 @pytest.mark.parametrize("type,value,max_count,expected", [
     ("css", "div", 1, [
@@ -237,7 +239,6 @@ from ... import any_string, recursive_compare
     "accessibility_name_multiple",
     "accessibility_role_name_multiple",
 ])
-@pytest.mark.asyncio
 async def test_find_by_locator_limit_return_count(bidi_session, inline, top_context, type, value, max_count, expected):
     url = inline("""
         <div data-class="one" role="banner" aria-label="bar">foo</div>
@@ -247,16 +248,15 @@ async def test_find_by_locator_limit_return_count(bidi_session, inline, top_cont
         context=top_context["context"], url=url, wait="complete"
     )
 
-    result = await bidi_session.browsing_context.locate_nodes(
+    nodes = await bidi_session.browsing_context.locate_nodes(
         context=top_context["context"],
         locator={ "type": type, "value": value },
         max_node_count = max_count
     )
 
-    recursive_compare(expected, result["nodes"])
+    recursive_compare(expected, nodes)
 
 
-@pytest.mark.asyncio
 async def test_several_context_nodes(bidi_session, inline, top_context):
     url = inline(
         """
@@ -280,19 +280,19 @@ async def test_several_context_nodes(bidi_session, inline, top_context):
         context=top_context["context"], url=url, wait="complete"
     )
 
-    result_context_nodes = await bidi_session.browsing_context.locate_nodes(
+    context_nodes = await bidi_session.browsing_context.locate_nodes(
         context=top_context["context"],
         locator={"type": "css", "value": ".context-node"},
     )
 
-    result = await bidi_session.browsing_context.locate_nodes(
+    nodes = await bidi_session.browsing_context.locate_nodes(
         context=top_context["context"],
         locator={"type": "css", "value": "div"},
         max_node_count=1,
         start_nodes=[
-            {"sharedId": result_context_nodes["nodes"][0]["sharedId"]},
-            {"sharedId": result_context_nodes["nodes"][1]["sharedId"]},
+            {"sharedId": context_nodes[0]["sharedId"]},
+            {"sharedId": context_nodes[1]["sharedId"]},
         ],
     )
 
-    assert len(result["nodes"]) == 1
+    assert len(nodes) == 1

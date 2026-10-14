@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,23 +5,25 @@
 #include "QuotaManagerDependencyFixture.h"
 
 #include "DirectoryMetadata.h"
+#include "QuotaManagerTestHelpers.h"
 #include "mozIStorageService.h"
 #include "mozStorageCID.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/quota/QuotaManagerService.h"
 #include "mozilla/dom/quota/ResultExtensions.h"
+#include "mozilla/dom/quota/StreamUtils.h"
 #include "mozilla/dom/quota/UsageInfo.h"
 #include "mozilla/gtest/MozAssertions.h"
 #include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
+#include "nsIBinaryInputStream.h"
 #include "nsIPrefBranch.h"
 #include "nsIPrefService.h"
 #include "nsIQuotaCallbacks.h"
 #include "nsIQuotaRequests.h"
 #include "nsIVariant.h"
 #include "nsScriptSecurityManager.h"
-#include "QuotaManagerTestHelpers.h"
 
 namespace mozilla::dom::quota::test {
 
@@ -462,8 +462,13 @@ QuotaManagerDependencyFixture::LoadDirectoryMetadataHeader(
           return Nothing();
         }
 
+        auto streamResult = GetBinaryInputStream(
+            *directory, nsLiteralString(METADATA_V2_FILE_NAME));
+        MOZ_RELEASE_ASSERT(streamResult.isOk());
+        const auto& stream = streamResult.unwrap();
+
         auto originStateMetadataRes =
-            quota::LoadDirectoryMetadataHeader(*directory);
+            quota::ReadDirectoryMetadataHeader(*stream);
         MOZ_RELEASE_ASSERT(originStateMetadataRes.isOk());
 
         auto originStateMetadata = originStateMetadataRes.unwrap();
@@ -594,7 +599,7 @@ void QuotaManagerDependencyFixture::EnsureQuotaManager() {
                      [&resolver]() { return resolver->IsDone(); });
 }
 
-MOZ_RUNINIT nsCOMPtr<nsISerialEventTarget>
+constinit nsCOMPtr<nsISerialEventTarget>
     QuotaManagerDependencyFixture::sBackgroundTarget;
 
 }  // namespace mozilla::dom::quota::test

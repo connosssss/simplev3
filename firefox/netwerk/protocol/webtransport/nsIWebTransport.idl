@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,12 +16,15 @@ interface nsIWebTransportHash;
 %{C++
 namespace mozilla::dom {
 class ClientInfo;
+class WebTransportStatsData;
 }
 namespace mozilla::net {
 class WebTransportSessionBase;
 class WebTransportStreamBase;
 }
 %}
+
+[ptr] native WebTransportStatsDataPtr(mozilla::dom::WebTransportStatsData);
 
 [ptr] native WebTransportSessionPtr(mozilla::net::WebTransportSessionBase);
 [ptr] native WebTransportStreamPtr(mozilla::net::WebTransportStreamBase);
@@ -55,13 +57,26 @@ interface nsIWebTransport : nsISupports {
                     in boolean aDedicated,
                     in Array<nsIWebTransportHash> aServerCertHashes,
                     in nsIPrincipal aLoadingPrincipal,
+                    in uint64_t aBrowsingContextID,
                     in unsigned long aSecurityFlags,
                     in WebTransportSessionEventListener aListener,
                     in const_MaybeClientInfoRef aClientInfo,
+                    in Array<AString> aProtocols,
                     in nsIWebTransport_HTTPVersion aVersion);
 
-  // Asynchronously get stats.
+  // Asynchronously get stats. On success (NS_OK), results in exactly one
+  // call to onStatsAvailable(), even if stats could not be gathered (in
+  // which case aStats is null) -- unless the session is torn down before the
+  // gather completes, since there is then no listener left to call back. On
+  // failure, no callback follows; the caller must treat that the same as a
+  // null aStats.
   void getStats();
+
+  // Export keying material using TLS exporter (RFC 5705).
+  // Returns the exported keying material in the output array.
+  void exportKeyingMaterial(in Array<uint8_t> aLabel,
+                           in Array<uint8_t> aContext,
+                           out Array<uint8_t> aKeyingMaterial);
 
   // Close the session.
   void closeSession(in uint32_t aErrorCode,
@@ -71,14 +86,32 @@ interface nsIWebTransport : nsISupports {
   void createOutgoingBidirectionalStream(in nsIWebTransportStreamCallback aListener);
   void createOutgoingUnidirectionalStream(in nsIWebTransportStreamCallback aListener);
 
-  void sendDatagram(in Array<uint8_t> aData, in uint64_t aTrackingId);
+  void sendDatagram(in Array<uint8_t> aData, in uint64_t aTrackingId,
+                    in uint64_t aSendGroupId, in int64_t aSendOrder);
 
   void getMaxDatagramSize();
+
+  uint64_t getHttpChannelID();
+
+  // Get the negotiated protocol (subprotocol) for the session.
+  // Returns empty string if no protocol was negotiated.
+  ACString getNegotiatedProtocol();
+
+  // Register a send group with a caller-provided ID.
+  void registerSendGroup(in uint64_t groupId);
 
   // This can be only called after onSessionReady().
   // After this point, we can retarget the underlying WebTransportSessionProxy
   // object off main thread.
   [noscript] void retargetTo(in nsIEventTarget aTarget);
+};
+
+// Wraps a WebTransportStatsData snapshot so it can be passed through a
+// scriptable interface. The raw data is only accessible to native (C++)
+// consumers, since WebTransportStatsData itself is not scriptable.
+[builtinclass, scriptable, uuid(bd8549d7-002f-4032-96a4-19430399d081)]
+interface nsIWebTransportSessionStats : nsISupports {
+  [noscript] readonly attribute WebTransportStatsDataPtr rawStats;
 };
 
 // Events related to a WebTransport session.
@@ -89,7 +122,9 @@ interface WebTransportSessionEventListener : nsISupports {
   void onSessionReady(in uint64_t aSessionId);
   void onSessionClosed(in boolean aCleanly,
                        in uint32_t aErrorCode,
-                       in ACString aReason);
+                       in ACString aReason,
+                       in nsIWebTransportSessionStats aStats);
+  void onDraining();
 
   // When a new stream has been received.
   void onIncomingBidirectionalStreamAvailable(in nsIWebTransportBidirectionalStream aStream);
@@ -113,7 +148,8 @@ interface WebTransportSessionEventListener : nsISupports {
     in uint64_t aId,
     in WebTransportSessionEventListener_DatagramOutcome aOutCome);
 
-  // void onStatsAvailable(in WebTransportStats aStats);
+  // aStats is null if stats could not be gathered for this session.
+  void onStatsAvailable(in nsIWebTransportSessionStats aStats);
 };
 
 [uuid(8fb30aa9-5163-4eb3-81f3-371e1ccb5b0e)]

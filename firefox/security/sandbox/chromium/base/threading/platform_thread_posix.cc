@@ -1,4 +1,4 @@
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+// Copyright 2012 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -14,28 +14,47 @@
 #include <unistd.h>
 
 #include <memory>
+#include <tuple>
 
-#include "base/debug/activity_tracker.h"
+#include "base/compiler_specific.h"
 #include "base/lazy_instance.h"
 #include "base/logging.h"
-#include "base/no_destructor.h"
+#include "base/memory/raw_ptr.h"
+#if !defined(MOZ_SANDBOX)
+#include "base/notimplemented.h"
+#endif  // !defined(MOZ_SANDBOX)
 #include "base/threading/platform_thread_internal_posix.h"
+#if !defined(MOZ_SANDBOX)
+#include "base/threading/platform_thread_metrics.h"
+#endif  // !defined(MOZ_SANDBOX)
 #include "base/threading/scoped_blocking_call.h"
 #include "base/threading/thread_id_name_manager.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "partition_alloc/buildflags.h"
 
-#if !defined(OS_MACOSX) && !defined(OS_FUCHSIA) && !defined(OS_NACL)
+#if !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_FUCHSIA)
+#if !defined(MOZ_SANDBOX)
 #include "base/posix/can_lower_nice_to.h"
+#endif  // !defined(MOZ_SANDBOX)
 #endif
 
-#if defined(OS_LINUX)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #include <sys/syscall.h>
+
+#include <atomic>
 #endif
 
-#if defined(OS_FUCHSIA)
-#include <zircon/process.h>
+#if BUILDFLAG(IS_FUCHSIA)
+#include <lib/zx/thread.h>
+
+#include "base/fuchsia/koid.h"
 #else
 #include <sys/resource.h>
+#endif
+
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+#include "partition_alloc/stack/stack.h"  // nogncheck
 #endif
 
 namespace base {
@@ -46,13 +65,14 @@ size_t GetDefaultThreadStackSize(const pthread_attr_t& attributes);
 
 namespace {
 
+#if !defined(MOZ_SANDBOX)
 struct ThreadParams {
-  ThreadParams()
-      : delegate(nullptr), joinable(false), priority(ThreadPriority::NORMAL) {}
+  ThreadParams() = default;
 
-  PlatformThread::Delegate* delegate;
-  bool joinable;
-  ThreadPriority priority;
+  raw_ptr<PlatformThread::Delegate> delegate = nullptr;
+  bool joinable = false;
+  ThreadType thread_type = ThreadType::kDefault;
+  MessagePumpType message_pump_type = MessagePumpType::DEFAULT;
 };
 
 void* ThreadFunc(void* params) {
@@ -63,15 +83,23 @@ void* ThreadFunc(void* params) {
         static_cast<ThreadParams*>(params));
 
     delegate = thread_params->delegate;
-    if (!thread_params->joinable)
-      base::ThreadRestrictions::SetSingletonAllowed(false);
+    if (!thread_params->joinable) {
+      base::DisallowSingleton();
+    }
 
-#if !defined(OS_NACL)
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+    partition_alloc::internal::StackTopRegistry::Get().NotifyThreadCreated();
+#endif
+
+#if BUILDFLAG(IS_APPLE)
+    PlatformThread::SetCurrentThreadRealtimePeriodValue(
+        delegate->GetRealtimePeriod());
+#endif
+
     // Threads on linux/android may inherit their priority from the thread
     // where they were created. This explicitly sets the priority of all new
     // threads.
-    PlatformThread::SetCurrentThreadPriority(thread_params->priority);
-#endif
+    PlatformThread::SetCurrentThreadType(thread_params->thread_type);
   }
 
   ThreadIdNameManager::GetInstance()->RegisterThread(
@@ -83,6 +111,13 @@ void* ThreadFunc(void* params) {
   ThreadIdNameManager::GetInstance()->RemoveName(
       PlatformThread::CurrentHandle().platform_handle(),
       PlatformThread::CurrentId());
+#if BUILDFLAG(IS_ANDROID)
+  PlatformThreadPriorityMonitor::Get().UnregisterCurrentThread();
+#endif
+
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+  partition_alloc::internal::StackTopRegistry::Get().NotifyThreadDestroyed();
+#endif
 
   base::TerminateOnThread();
   return nullptr;
@@ -92,7 +127,8 @@ bool CreateThread(size_t stack_size,
                   bool joinable,
                   PlatformThread::Delegate* delegate,
                   PlatformThreadHandle* thread_handle,
-                  ThreadPriority priority) {
+                  ThreadType thread_type,
+                  MessagePumpType message_pump_type) {
   DCHECK(thread_handle);
   base::InitThreading();
 
@@ -101,27 +137,31 @@ bool CreateThread(size_t stack_size,
 
   // Pthreads are joinable by default, so only specify the detached
   // attribute if the thread should be non-joinable.
-  if (!joinable)
+  if (!joinable) {
     pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
+  }
 
   // Get a better default if available.
-  if (stack_size == 0)
+  if (stack_size == 0) {
     stack_size = base::GetDefaultThreadStackSize(attributes);
+  }
 
-  if (stack_size > 0)
+  if (stack_size > 0) {
     pthread_attr_setstacksize(&attributes, stack_size);
+  }
 
   std::unique_ptr<ThreadParams> params(new ThreadParams);
   params->delegate = delegate;
   params->joinable = joinable;
-  params->priority = priority;
+  params->thread_type = thread_type;
+  params->message_pump_type = message_pump_type;
 
   pthread_t handle;
   int err = pthread_create(&handle, &attributes, ThreadFunc, params.get());
   bool success = !err;
   if (success) {
     // ThreadParams should be deleted on the created thread after used.
-    ignore_result(params.release());
+    std::ignore = params.release();
   } else {
     // Value of |handle| is undefined if pthread_create fails.
     handle = 0;
@@ -134,141 +174,186 @@ bool CreateThread(size_t stack_size,
 
   return success;
 }
+#endif  // !defined(MOZ_SANDBOX)
 
-#if defined(OS_LINUX)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
-// Store the thread ids in local storage since calling the SWI can
-// expensive and PlatformThread::CurrentId is used liberally. Clear
-// the stored value after a fork() because forking changes the thread
-// id. Forking without going through fork() (e.g. clone()) is not
-// supported, but there is no known usage. Using thread_local is
-// fine here (despite being banned) since it is going to be allowed
-// but is blocked on a clang bug for Mac (https://crbug.com/829078)
-// and we can't use ThreadLocalStorage because of re-entrancy due to
-// CHECK/DCHECKs.
+// Store the thread ids in local storage since calling the SWI can be
+// expensive and PlatformThread::CurrentId is used liberally.
 thread_local pid_t g_thread_id = -1;
+
+// A boolean value that indicates that the value stored in |g_thread_id| on the
+// main thread is invalid, because it hasn't been updated since the process
+// forked.
+//
+// This used to work by setting |g_thread_id| to -1 in a pthread_atfork handler.
+// However, when a multithreaded process forks, it is only allowed to call
+// async-signal-safe functions until it calls an exec() syscall. However,
+// accessing TLS may allocate (see crbug.com/1275748), which is not
+// async-signal-safe and therefore causes deadlocks, corruption, and crashes.
+//
+// It's Atomic to placate TSAN.
+std::atomic<bool> g_main_thread_tid_cache_valid = false;
+
+// Tracks whether the current thread is the main thread, and therefore whether
+// |g_main_thread_tid_cache_valid| is relevant for the current thread. This is
+// also updated by PlatformThread::CurrentId().
+thread_local bool g_is_main_thread = true;
 
 class InitAtFork {
  public:
-  InitAtFork() { pthread_atfork(nullptr, nullptr, internal::ClearTidCache); }
+  InitAtFork() {
+    pthread_atfork(nullptr, nullptr, internal::InvalidateTidCache);
+  }
 };
 
-#endif  // defined(OS_LINUX)
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace
 
-#if defined(OS_LINUX)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
 namespace internal {
 
-void ClearTidCache() {
-  g_thread_id = -1;
+void InvalidateTidCache() {
+  g_main_thread_tid_cache_valid.store(false, std::memory_order_relaxed);
 }
 
 }  // namespace internal
 
-#endif  // defined(OS_LINUX)
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
 // static
-PlatformThreadId PlatformThread::CurrentId() {
+PlatformThreadId PlatformThreadBase::CurrentId() {
   // Pthreads doesn't have the concept of a thread ID, so we have to reach down
   // into the kernel.
-#if defined(OS_MACOSX)
-  return pthread_mach_thread_np(pthread_self());
-#elif defined(OS_LINUX)
-  static NoDestructor<InitAtFork> init_at_fork;
-  if (g_thread_id == -1) {
-    g_thread_id = syscall(__NR_gettid);
+#if BUILDFLAG(IS_APPLE)
+  uint64_t tid;
+  CHECK_EQ(pthread_threadid_np(nullptr, &tid), 0);
+  return PlatformThreadId(tid);
+#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  // Workaround false-positive MSAN use-of-uninitialized-value on
+  // thread_local storage for loaded libraries:
+  // https://github.com/google/sanitizers/issues/1265
+  MSAN_UNPOISON(&g_thread_id, sizeof(pid_t));
+  MSAN_UNPOISON(&g_is_main_thread, sizeof(bool));
+  static InitAtFork init_at_fork;
+  if (g_thread_id == -1 ||
+      (g_is_main_thread &&
+       !g_main_thread_tid_cache_valid.load(std::memory_order_relaxed))) {
+    // Update the cached tid.
+    g_thread_id = static_cast<pid_t>(syscall(__NR_gettid));
+    // If this is the main thread, we can mark the tid_cache as valid.
+    // Otherwise, stop the current thread from always entering this slow path.
+    if (g_thread_id == getpid()) {
+      g_main_thread_tid_cache_valid.store(true, std::memory_order_relaxed);
+    } else {
+      g_is_main_thread = false;
+    }
   } else {
-    DCHECK_EQ(g_thread_id, syscall(__NR_gettid))
-        << "Thread id stored in TLS is different from thread id returned by "
-           "the system. It is likely that the process was forked without going "
-           "through fork().";
+#if DCHECK_IS_ON()
+    if (g_thread_id != syscall(__NR_gettid)) {
+      RAW_LOG(
+          FATAL,
+          "Thread id stored in TLS is different from thread id returned by "
+          "the system. It is likely that the process was forked without going "
+          "through fork().");
+    }
+#endif
   }
-  return g_thread_id;
-#elif defined(OS_ANDROID)
-  return gettid();
-#elif defined(OS_FUCHSIA)
-  return zx_thread_self();
-#elif defined(OS_SOLARIS) || defined(OS_QNX)
-  return pthread_self();
-#elif defined(OS_NACL) && defined(__GLIBC__)
-  return pthread_self();
-#elif defined(OS_NACL) && !defined(__GLIBC__)
-  // Pointers are 32-bits in NaCl.
-  return reinterpret_cast<int32_t>(pthread_self());
-#elif defined(OS_POSIX) && defined(OS_AIX)
-  return pthread_self();
-#elif defined(OS_POSIX) && !defined(OS_AIX)
-  return reinterpret_cast<int64_t>(pthread_self());
+  return PlatformThreadId(g_thread_id);
+#elif BUILDFLAG(IS_ANDROID)
+  // Note: do not cache the return value inside a thread_local variable on
+  // Android (as above). The reasons are:
+  // - thread_local is slow on Android (goes through emutls)
+  // - gettid() is fast, since its return value is cached in pthread (in the
+  //   thread control block of pthread). See gettid.c in bionic.
+  return PlatformThreadId(gettid());
+#elif BUILDFLAG(IS_FUCHSIA)
+  thread_local static zx_koid_t id =
+      GetKoid(*zx::thread::self()).value_or(ZX_KOID_INVALID);
+  return PlatformThreadId(id);
+#elif BUILDFLAG(IS_SOLARIS) || BUILDFLAG(IS_QNX)
+  return PlatformThreadId(pthread_self());
+
+#elif BUILDFLAG(IS_POSIX) && BUILDFLAG(IS_AIX)
+  return PlatformThreadId(pthread_self());
+#elif BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_AIX)
+  return PlatformThreadId(reinterpret_cast<int64_t>(pthread_self()));
 #endif
 }
 
 // static
-PlatformThreadRef PlatformThread::CurrentRef() {
+PlatformThreadRef PlatformThreadBase::CurrentRef() {
   return PlatformThreadRef(pthread_self());
 }
 
 // static
-PlatformThreadHandle PlatformThread::CurrentHandle() {
+PlatformThreadHandle PlatformThreadBase::CurrentHandle() {
   return PlatformThreadHandle(pthread_self());
 }
 
+#if !BUILDFLAG(IS_APPLE)
 // static
-void PlatformThread::YieldCurrentThread() {
+void PlatformThreadBase::YieldCurrentThread() {
   sched_yield();
 }
+#endif  // !BUILDFLAG(IS_APPLE)
 
 // static
-void PlatformThread::Sleep(TimeDelta duration) {
+void PlatformThreadBase::Sleep(TimeDelta duration) {
   struct timespec sleep_time, remaining;
 
   // Break the duration into seconds and nanoseconds.
   // NOTE: TimeDelta's microseconds are int64s while timespec's
   // nanoseconds are longs, so this unpacking must prevent overflow.
-  sleep_time.tv_sec = duration.InSeconds();
-  duration -= TimeDelta::FromSeconds(sleep_time.tv_sec);
-  sleep_time.tv_nsec = duration.InMicroseconds() * 1000;  // nanoseconds
+  sleep_time.tv_sec = static_cast<time_t>(duration.InSeconds());
+  duration -= Seconds(sleep_time.tv_sec);
+  sleep_time.tv_nsec = static_cast<long>(duration.InMicroseconds() * 1000);
 
-  while (nanosleep(&sleep_time, &remaining) == -1 && errno == EINTR)
+  while (nanosleep(&sleep_time, &remaining) == -1 && errno == EINTR) {
     sleep_time = remaining;
+  }
 }
 
 // static
-const char* PlatformThread::GetName() {
+const char* PlatformThreadBase::GetName() {
   return ThreadIdNameManager::GetInstance()->GetName(CurrentId());
 }
 
+#if !defined(MOZ_SANDBOX)
 // static
-bool PlatformThread::CreateWithPriority(size_t stack_size, Delegate* delegate,
+bool PlatformThreadBase::CreateWithType(size_t stack_size,
+                                        Delegate* delegate,
                                         PlatformThreadHandle* thread_handle,
-                                        ThreadPriority priority) {
+                                        ThreadType thread_type,
+                                        MessagePumpType pump_type_hint) {
   return CreateThread(stack_size, true /* joinable thread */, delegate,
-                      thread_handle, priority);
+                      thread_handle, thread_type, pump_type_hint);
 }
 
 // static
-bool PlatformThread::CreateNonJoinable(size_t stack_size, Delegate* delegate) {
-  return CreateNonJoinableWithPriority(stack_size, delegate,
-                                       ThreadPriority::NORMAL);
+bool PlatformThreadBase::CreateNonJoinable(size_t stack_size,
+                                           Delegate* delegate) {
+  return CreateNonJoinableWithType(stack_size, delegate, ThreadType::kDefault);
 }
 
 // static
-bool PlatformThread::CreateNonJoinableWithPriority(size_t stack_size,
-                                                   Delegate* delegate,
-                                                   ThreadPriority priority) {
+bool PlatformThreadBase::CreateNonJoinableWithType(
+    size_t stack_size,
+    Delegate* delegate,
+    ThreadType thread_type,
+    MessagePumpType pump_type_hint) {
   PlatformThreadHandle unused;
 
   bool result = CreateThread(stack_size, false /* non-joinable thread */,
-                             delegate, &unused, priority);
+                             delegate, &unused, thread_type, pump_type_hint);
   return result;
 }
+#endif  // !defined(MOZ_SANDBOX)
 
 // static
-void PlatformThread::Join(PlatformThreadHandle thread_handle) {
-  // Record the event that this thread is blocking upon (for hang diagnosis).
-  base::debug::ScopedThreadJoinActivity thread_activity(&thread_handle);
-
+void PlatformThreadBase::Join(PlatformThreadHandle thread_handle) {
   // Joining another thread may block the current thread for a long time, since
   // the thread referred to by |thread_handle| may still be running long-lived /
   // blocking tasks.
@@ -278,81 +363,47 @@ void PlatformThread::Join(PlatformThreadHandle thread_handle) {
 }
 
 // static
-void PlatformThread::Detach(PlatformThreadHandle thread_handle) {
+void PlatformThreadBase::Detach(PlatformThreadHandle thread_handle) {
   CHECK_EQ(0, pthread_detach(thread_handle.platform_handle()));
 }
 
-// Mac and Fuchsia have their own Set/GetCurrentThreadPriority()
-// implementations.
-#if !defined(OS_MACOSX) && !defined(OS_FUCHSIA)
+// Mac and Fuchsia have their own SetCurrentThreadType() and
+// GetCurrentThreadPriorityForTest() implementations.
+#if !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_FUCHSIA)
 
+#if !defined(MOZ_SANDBOX)
 // static
-bool PlatformThread::CanIncreaseThreadPriority(ThreadPriority priority) {
-#if defined(OS_NACL)
-  return false;
-#else
-  auto platform_specific_ability =
-      internal::CanIncreaseCurrentThreadPriorityForPlatform(priority);
-  if (platform_specific_ability)
-    return platform_specific_ability.value();
-
-  return internal::CanLowerNiceTo(
-      internal::ThreadPriorityToNiceValue(priority));
-#endif  // defined(OS_NACL)
-}
-
-// static
-void PlatformThread::SetCurrentThreadPriorityImpl(ThreadPriority priority) {
-#if defined(OS_NACL)
-  NOTIMPLEMENTED();
-#else
-  if (internal::SetCurrentThreadPriorityForPlatform(priority))
-    return;
-
-  // setpriority(2) should change the whole thread group's (i.e. process)
-  // priority. However, as stated in the bugs section of
-  // http://man7.org/linux/man-pages/man2/getpriority.2.html: "under the current
-  // Linux/NPTL implementation of POSIX threads, the nice value is a per-thread
-  // attribute". Also, 0 is prefered to the current thread id since it is
-  // equivalent but makes sandboxing easier (https://crbug.com/399473).
-  const int nice_setting = internal::ThreadPriorityToNiceValue(priority);
-  if (setpriority(PRIO_PROCESS, 0, nice_setting)) {
-    DVPLOG(1) << "Failed to set nice value of thread ("
-              << PlatformThread::CurrentId() << ") to " << nice_setting;
+bool PlatformThreadBase::CanChangeThreadType(ThreadType from, ThreadType to) {
+  if (from >= to) {
+    // Decreasing thread priority on POSIX is always allowed.
+    return true;
   }
-#endif  // defined(OS_NACL)
+  if (to == ThreadType::kRealtimeAudio) {
+    return internal::CanSetThreadTypeToRealtimeAudio();
+  }
+
+  return internal::CanLowerNiceTo(internal::ThreadTypeToNiceValue(to));
 }
 
 // static
-ThreadPriority PlatformThread::GetCurrentThreadPriority() {
-#if defined(OS_NACL)
-  NOTIMPLEMENTED();
-  return ThreadPriority::NORMAL;
-#else
+ThreadType PlatformThreadBase::GetCurrentEffectiveThreadTypeForTest() {
   // Mirrors SetCurrentThreadPriority()'s implementation.
   auto platform_specific_priority =
-      internal::GetCurrentThreadPriorityForPlatform();
-  if (platform_specific_priority)
+      internal::GetCurrentEffectiveThreadTypeForPlatformForTest();  // IN-TEST
+  if (platform_specific_priority) {
     return platform_specific_priority.value();
-
-  // Need to clear errno before calling getpriority():
-  // http://man7.org/linux/man-pages/man2/getpriority.2.html
-  errno = 0;
-  int nice_value = getpriority(PRIO_PROCESS, 0);
-  if (errno != 0) {
-    DVPLOG(1) << "Failed to get nice value of thread ("
-              << PlatformThread::CurrentId() << ")";
-    return ThreadPriority::NORMAL;
   }
 
-  return internal::NiceValueToThreadPriority(nice_value);
-#endif  // !defined(OS_NACL)
-}
+  int nice_value = internal::GetCurrentThreadNiceValue();
 
-#endif  // !defined(OS_MACOSX) && !defined(OS_FUCHSIA)
+  return internal::NiceValueToThreadTypeForTest(nice_value);  // IN-TEST
+}
+#endif  // !defined(MOZ_SANDBOX)
+
+#endif  // !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_FUCHSIA)
 
 // static
-size_t PlatformThread::GetDefaultThreadStackSize() {
+size_t PlatformThreadBase::GetDefaultThreadStackSize() {
   pthread_attr_t attributes;
   pthread_attr_init(&attributes);
   return base::GetDefaultThreadStackSize(attributes);

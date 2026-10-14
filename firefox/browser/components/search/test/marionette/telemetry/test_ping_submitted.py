@@ -8,17 +8,15 @@ from marionette_harness.marionette_test import MarionetteTestCase
 
 class TestPingSubmitted(MarionetteTestCase):
     def setUp(self):
-        super(TestPingSubmitted, self).setUp()
+        super().setUp()
 
         self.marionette.set_context(self.marionette.CONTEXT_CHROME)
 
-        self.marionette.enforce_gecko_prefs(
-            {
-                "datareporting.healthreport.uploadEnabled": True,
-                "telemetry.fog.test.localhost_port": 3000,
-                "browser.search.log": True,
-            }
-        )
+        self.marionette.enforce_gecko_prefs({
+            "datareporting.healthreport.uploadEnabled": True,
+            "telemetry.fog.test.localhost_port": 3000,
+            "browser.search.log": True,
+        })
         # The categorization ping is submitted on startup. If anything delays
         # its initialization, turning the preference on and immediately
         # attaching a categorization event could result in the ping being
@@ -40,6 +38,22 @@ class TestPingSubmitted(MarionetteTestCase):
             })().then(outerResolve);
         """
         self.marionette.execute_async_script(script)
+
+        self.wait_for_fog()
+
+    def wait_for_fog(self):
+        # Glean's blocking test APIs (testGetValue) park the main thread
+        # forever if Glean is still pre-init, and FOG is initialized from a
+        # startup idle task, so it can lag the point where the browser reports
+        # itself started up. Wait for it before reading any metric.
+        Wait(self.marionette, timeout=60).until(
+            lambda _: self.marionette.execute_script(
+                """
+                return Services.fog.initialized;
+                """
+            ),
+            message="FOG should be initialized before reading Glean metrics.",
+        )
 
     def test_ping_submit_on_start(self):
         # Record an event for the ping to eventually submit.
@@ -80,6 +94,8 @@ class TestPingSubmitted(MarionetteTestCase):
         )
 
         self.marionette.restart(clean=False, in_app=True)
+
+        self.wait_for_fog()
 
         Wait(self.marionette, timeout=60).until(
             lambda _: self.marionette.execute_script(

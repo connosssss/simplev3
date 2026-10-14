@@ -108,7 +108,7 @@ class TelemetryTests(TestingMixin, VCSToolsScript, CodeCoverageMixin):
             "uninstall",
         ]
 
-        super(TelemetryTests, self).__init__(
+        super().__init__(
             config_options=config_options,
             all_actions=all_actions or actions,
             default_actions=default_actions or actions,
@@ -142,7 +142,7 @@ class TelemetryTests(TestingMixin, VCSToolsScript, CodeCoverageMixin):
         if self.abs_dirs:
             return self.abs_dirs
 
-        abs_dirs = super(TelemetryTests, self).query_abs_dirs()
+        abs_dirs = super().query_abs_dirs()
 
         abs_test_install_dir = os.path.join(abs_dirs["abs_work_dir"], "tests")
 
@@ -190,8 +190,6 @@ class TelemetryTests(TestingMixin, VCSToolsScript, CodeCoverageMixin):
             # additional reports helpful for Jenkins and inpection via Treeherder
             "--log-html",
             os.path.join(dirs["abs_blob_upload_dir"], "report.html"),
-            "--log-xunit",
-            os.path.join(dirs["abs_blob_upload_dir"], "report.xml"),
             # Enable tracing output to log transmission protocol
             "-vv",
         ]

@@ -29,7 +29,7 @@ ChromeUtils.defineLazyGetter(lazy, "logConsole", function () {
 });
 
 XPCOMUtils.defineLazyServiceGetters(lazy, {
-  idleService: ["@mozilla.org/widget/useridleservice;1", "nsIUserIdleService"],
+  idleService: ["@mozilla.org/widget/useridleservice;1", Ci.nsIUserIdleService],
 });
 
 XPCOMUtils.defineLazyPreferenceGetter(
@@ -61,6 +61,7 @@ XPCOMUtils.defineLazyPreferenceGetter(
 );
 
 const DOMWINDOW_OPENED_TOPIC = "domwindowopened";
+const RECENT_BROWSER_INTERACTION_EXPIRY_TIME_MS = 60000;
 
 /**
  * Returns a monotonically increasing timestamp, that is critical to distinguish
@@ -155,7 +156,7 @@ class _Interactions {
    *
    * @type {number}
    */
-  _pageViewStartTime = Cu.now();
+  _pageViewStartTime = ChromeUtils.now();
 
   /**
    * Stores interactions in the database, see the {@link InteractionsStore}
@@ -169,6 +170,14 @@ class _Interactions {
    * Whether the component has been initialized.
    */
   #initialized = false;
+
+  /**
+   * Maps a browser to its interactions which are less than
+   * RECENT_BROWSER_INTERACTION_EXPIRY_TIME_MS old.
+   *
+   * @type {WeakMap<browser, InteractionInfo>}
+   */
+  #recentInteractions = new WeakMap();
 
   /**
    * Initializes, sets up actors and observers.
@@ -192,6 +201,7 @@ class _Interactions {
         },
       },
       messageManagerGroups: ["browsers"],
+      safeForUntrustedWebProcess: true,
     });
 
     this.#activeWindow = Services.wm.getMostRecentBrowserWindow();
@@ -224,7 +234,7 @@ class _Interactions {
     lazy.logConsole.debug("Database reset");
     this.#interactions = new WeakMap();
     this.#userIsIdle = false;
-    this._pageViewStartTime = Cu.now();
+    this._pageViewStartTime = ChromeUtils.now();
     ChromeUtils.consumeInteractionData();
     await _Interactions.interactionUpdatePromise;
     await this.store.reset();
@@ -290,9 +300,16 @@ class _Interactions {
 
     // Only reset the time if this is being loaded in the active tab of the
     // active window.
-    if (docInfo.isActive && browser.ownerGlobal == this.#activeWindow) {
-      this._pageViewStartTime = Cu.now();
+    if (docInfo.isActive && browser.documentGlobal == this.#activeWindow) {
+      this._pageViewStartTime = ChromeUtils.now();
     }
+
+    this.#recentInteractions.set(browser, [
+      ...(this.#recentInteractions.get(browser) ?? []),
+      interaction,
+    ]);
+
+    this.#pruneOldRecentInteractions(browser);
   }
 
   /**
@@ -342,6 +359,48 @@ class _Interactions {
   }
 
   /**
+   * Fetches recent interactions for a browser
+   *
+   * @param {Browser} browser
+   *   The browser object that we are fetching recent interactions for.
+   */
+  async getRecentInteractionsForBrowser(browser) {
+    // We need to force update the active interaction's total view time
+    // to get an accurate reading.
+    this.#updateInteraction();
+    await _Interactions.interactionUpdatePromise;
+    return this.#recentInteractions.get(browser);
+  }
+
+  /**
+   * Removes stale interactions from #recentInteractions that were updated
+   * more than RECENT_BROWSER_INTERACTION_EXPIRY_TIME_MS ago.
+   *
+   * @param {Browser} browser
+   *  The browser object that we are pruning stale recent interactions for.
+   */
+  #pruneOldRecentInteractions(browser) {
+    const now = Date.now();
+
+    const interactions = this.#recentInteractions.get(browser);
+    if (!interactions) {
+      return;
+    }
+
+    const interactionstoTrack = interactions.filter(
+      interaction =>
+        now - interaction.updated_at <=
+        RECENT_BROWSER_INTERACTION_EXPIRY_TIME_MS
+    );
+
+    if (interactionstoTrack.length) {
+      this.#recentInteractions.set(browser, interactionstoTrack);
+    } else {
+      this.#recentInteractions.delete(browser);
+    }
+  }
+
+  /**
    * Stores the promise created in updateInteraction_async so that we can await its fulfillment
    * when sychronization is needed.
    */
@@ -380,7 +439,7 @@ class _Interactions {
     pageViewStartTime,
     store
   ) {
-    if (!activeWindow || (browser && browser.ownerGlobal != activeWindow)) {
+    if (!activeWindow || (browser && browser.documentGlobal != activeWindow)) {
       lazy.logConsole.debug(
         "Not updating interaction as there is no active window"
       );
@@ -406,8 +465,8 @@ class _Interactions {
       return;
     }
 
-    interaction.totalViewTime += Cu.now() - pageViewStartTime;
-    Interactions._pageViewStartTime = Cu.now();
+    interaction.totalViewTime += ChromeUtils.now() - pageViewStartTime;
+    Interactions._pageViewStartTime = ChromeUtils.now();
 
     const interactionData = ChromeUtils.consumeInteractionData();
     const typing = interactionData.Typing;
@@ -451,7 +510,7 @@ class _Interactions {
     }
 
     this.#activeWindow = win;
-    this._pageViewStartTime = Cu.now();
+    this._pageViewStartTime = ChromeUtils.now();
   }
 
   /**
@@ -481,7 +540,7 @@ class _Interactions {
 
     this.#updateInteraction(previousBrowser);
 
-    this._pageViewStartTime = Cu.now();
+    this._pageViewStartTime = ChromeUtils.now();
 
     let browser = this.#activeWindow?.gBrowser.selectedBrowser;
     if (browser && this.#interactions.has(browser)) {
@@ -545,7 +604,7 @@ class _Interactions {
       case "active":
         lazy.logConsole.debug("User became active");
         this.#userIsIdle = false;
-        this._pageViewStartTime = Cu.now();
+        this._pageViewStartTime = ChromeUtils.now();
         break;
     }
   }

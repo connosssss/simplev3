@@ -1,5 +1,6 @@
 {
   "global": {
+    "isGlobal": true,
     "queryParams": [
       "at_campaign",
       "at_send_date",
@@ -18,12 +19,11 @@
       "utm_email_id",
       "utm_campaign_id",
       "utm_newsletter_id"
-    ],
-    "topLevelSites": ["*"]
+    ]
   },
   "twitter": {
     "queryParams": ["refsrc", "cxt", "s"],
-    "topLevelSites": ["www.twitter.com", "twitter.com", "x.com"]
+    "hosts": ["www.twitter.com", "twitter.com", "x.com"]
   },
   "amazon": {
     "queryParams": [
@@ -63,7 +63,7 @@
       "_encoding",
       "qualifier"
     ],
-    "topLevelSites": [
+    "hosts": [
       "www.amazon.com",
       "www.amazon.de",
       "www.amazon.nl",
@@ -74,22 +74,37 @@
       "www.amazon.ac",
       "www.amazon.cn",
       "www.amazon.eg",
-      "www.amazon.in",
       "www.amazon.co.uk",
       "www.amazon.it",
       "www.amazon.pl",
       "www.amazon.sg",
-      "www.amazon.ca"
+      "www.amazon.ca",
+      "www.amazon.com.au",
+      "www.amazon.com.br",
+      "www.amazon.com.mx",
+      "www.amazon.com.be",
+      "www.amazon.com.tr",
+      "www.amazon.sa",
+      "www.amazon.ae",
+      "www.amazon.se",
+      "www.amazon.ie",
+      "www.amazon.co.za",
+      "www.audible.com",
+      "www.audible.co.uk",
+      "www.audible.de",
+      "www.audible.fr",
+      "www.audible.it",
+      "www.audible.ca",
+      "www.audible.com.au",
+      "www.audible.co.jp",
+      "www.audible.in",
+      "www.audible.es",
+      "www.audible.com.br"
     ]
   },
   "youtube": {
-    "queryParams": ["si", "feature", "kw", "pp"],
-    "topLevelSites": [
-      "www.youtube.com",
-      "youtube.com",
-      "m.youtube.com",
-      "youtu.be"
-    ]
+    "queryParams": ["si", "is", "feature", "kw", "pp"],
+    "hosts": ["www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be"]
   },
   "carousell": {
     "queryParams": [
@@ -105,7 +120,7 @@
       "t-referrer_browse_type",
       "t-id"
     ],
-    "topLevelSites": [
+    "hosts": [
       "ca.carousell.com",
       "www.carousell.sg",
       "www.carousell.com.hk",
@@ -115,27 +130,23 @@
   },
   "etsy": {
     "queryParams": ["click_sum", "ref", "click_key", "organic_search_click"],
-    "topLevelSites": ["www.etsy.com"]
-  },
-  "wikipedia": {
-    "queryParams": ["wprov"],
-    "topLevelSites": ["www.wikipedia.org", "en.wikipedia.org"]
+    "hosts": ["www.etsy.com"]
   },
   "wallstreetjournal": {
     "queryParams": ["reflink"],
-    "topLevelSites": ["www.wsj.com"]
+    "hosts": ["www.wsj.com"]
   },
   "theathletic": {
     "queryParams": ["source"],
-    "topLevelSites": ["theathletic.com"]
+    "hosts": ["theathletic.com"]
   },
   "forbes": {
     "queryParams": ["sh"],
-    "topLevelSites": ["www.forbes.com"]
+    "hosts": ["www.forbes.com"]
   },
   "bloomberg": {
     "queryParams": ["leadSource", "sref", "srnd"],
-    "topLevelSites": ["www.bloomberg.com"]
+    "hosts": ["www.bloomberg.com"]
   },
   "tiktok": {
     "queryParams": [
@@ -153,7 +164,7 @@
       "t",
       "q"
     ],
-    "topLevelSites": ["www.tiktok.com"]
+    "hosts": ["www.tiktok.com"]
   },
   "bbc": {
     "queryParams": [
@@ -167,11 +178,11 @@
       "ns_fee",
       "xtor"
     ],
-    "topLevelSites": ["www.bbc.com"]
+    "hosts": ["www.bbc.com"]
   },
   "cnn": {
     "queryParams": ["ref"],
-    "topLevelSites": ["www.cnn.co.jp", "www.cnn.com", "edition.cnn.com"]
+    "hosts": ["www.cnn.co.jp", "www.cnn.com", "edition.cnn.com"]
   },
   "imdb": {
     "queryParams": [
@@ -180,21 +191,22 @@
       "pf_rd_m",
       "pf_rd_s",
       "pf_rd_t",
-      "pf_rd_r"
+      "pf_rd_r",
+      "ref_"
     ],
-    "topLevelSites": ["www.imdb.com", "m.imdb.com"]
+    "hosts": ["www.imdb.com", "m.imdb.com"]
   },
   "mirror": {
     "queryParams": ["int_source"],
-    "topLevelSites": ["www.mirror.co.uk"]
+    "hosts": ["www.mirror.co.uk"]
   },
   "wise": {
     "queryParams": ["partnerizecampaignID", "clickref", "adref", "partnerID"],
-    "topLevelSites": ["wise.com"]
+    "hosts": ["wise.com"]
   },
   "facebook": {
     "queryParams": ["tracking", "extid", "mibextid"],
-    "topLevelSites": ["www.facebook.com"]
+    "hosts": ["www.facebook.com"]
   },
   "lazada": {
     "queryParams": [
@@ -211,7 +223,7 @@
       "cid",
       "pos"
     ],
-    "topLevelSites": [
+    "hosts": [
       "www.lazada.com.ph",
       "www.lazada.vn",
       "www.lazada.sg",
@@ -222,7 +234,7 @@
   },
   "msn": {
     "queryParams": ["cvid", "pc", "ei"],
-    "topLevelSites": ["www.msn.com"]
+    "hosts": ["www.msn.com"]
   },
   "aliexpress": {
     "queryParams": [
@@ -247,7 +259,7 @@
       "algo_expid",
       "gps-id"
     ],
-    "topLevelSites": [
+    "hosts": [
       "www.aliexpress.com",
       "robotime.aliexpress.com",
       "ar.aliexpress.com"
@@ -261,11 +273,11 @@
       "correlation_id",
       "share_id"
     ],
-    "topLevelSites": ["www.reddit.com"]
+    "hosts": ["www.reddit.com"]
   },
   "wired": {
     "queryParams": ["mbid"],
-    "topLevelSites": ["www.wired.co.uk", "www.wired.com"]
+    "hosts": ["www.wired.co.uk", "www.wired.com"]
   },
   "yandex": {
     "queryParams": [
@@ -280,7 +292,7 @@
       "suggest_reqid",
       "clid"
     ],
-    "topLevelSites": ["yandex.com"]
+    "hosts": ["yandex.com"]
   },
   "ebay": {
     "queryParams": [
@@ -297,7 +309,7 @@
       "_from",
       "hash"
     ],
-    "topLevelSites": ["www.ebay.com", "www.ebay.co.uk"]
+    "hosts": ["www.ebay.com", "www.ebay.co.uk"]
   },
   "flipkart": {
     "queryParams": [
@@ -311,7 +323,7 @@
       "pageUID",
       "lid"
     ],
-    "topLevelSites": ["www.flipkart.com"]
+    "hosts": ["www.flipkart.com"]
   },
   "google": {
     "queryParams": [
@@ -342,7 +354,7 @@
       "gs_lcp",
       "gs_lcrp"
     ],
-    "topLevelSites": [
+    "hosts": [
       "www.google.com",
       "www.google.ad",
       "www.google.ae",
@@ -536,34 +548,34 @@
   },
   "bing": {
     "queryParams": ["qp", "cvid", "qs", "form", "sk", "sc", "sp"],
-    "topLevelSites": ["www.bing.com"]
+    "hosts": ["www.bing.com"]
   },
   "twitch": {
     "queryParams": ["tt_content", "tt_medium"],
-    "topLevelSites": ["www.twitch.tv", "dev.twitch.tv"]
+    "hosts": ["www.twitch.tv", "dev.twitch.tv"]
   },
   "cnet": {
     "queryParams": ["ftag"],
-    "topLevelSites": ["www.cnet.com"]
+    "hosts": ["www.cnet.com"]
   },
   "nytimes": {
     "queryParams": ["smid"],
-    "topLevelSites": ["www.nytimes.com"]
+    "hosts": ["www.nytimes.com"]
   },
   "github": {
     "queryParams": ["email_token", "email_source"],
-    "topLevelSites": ["github.com"]
+    "hosts": ["github.com"]
   },
   "linkedin": {
     "queryParams": ["refId", "trk", "trackingId"],
-    "topLevelSites": ["ca.linkedin.com", "ro.linkedin.com"]
+    "hosts": ["ca.linkedin.com", "ro.linkedin.com"]
   },
   "newyorker": {
     "queryParams": ["esrc", "bxid", "cndid", "source", "mbid"],
-    "topLevelSites": ["www.newyorker.com"]
+    "hosts": ["www.newyorker.com"]
   },
   "bestbuy": {
     "queryParams": ["acampID", "irclickid", "irgwc", "loc", "mpid", "intl"],
-    "topLevelSites": ["www.bestbuy.com"]
+    "hosts": ["www.bestbuy.com"]
   }
 }

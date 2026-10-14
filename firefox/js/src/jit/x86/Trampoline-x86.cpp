@@ -1,10 +1,6 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
-#include "mozilla/MathAlgorithms.h"
 
 #include "jit/Bailouts.h"
 #include "jit/BaselineFrame.h"
@@ -25,8 +21,6 @@
 
 #include "jit/MacroAssembler-inl.h"
 #include "vm/JSScript-inl.h"
-
-using mozilla::IsPowerOfTwo;
 
 using namespace js;
 using namespace js::jit;
@@ -51,10 +45,15 @@ enum EnterJitEbpArgumentOffset {
 // Generates a trampoline for calling Jit compiled code from a C++ function.
 // The trampoline use the EnterJitCode signature, with the standard cdecl
 // calling convention.
-void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
+void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm,
+                                  EnterJitMode mode) {
   AutoCreatedBy acb(masm, "JitRuntime::generateEnterJIT");
 
-  enterJITOffset_ = startTrampolineCode(masm);
+  if (mode == EnterJitMode::GeneratorResume) {
+    enterJITGeneratorResumeOffset_ = startTrampolineCode(masm);
+  } else {
+    enterJITOffset_ = startTrampolineCode(masm);
+  }
 
   masm.assertStackAlignment(ABIStackAlignment,
                             -int32_t(sizeof(uintptr_t)) /* return address */);
@@ -66,95 +65,39 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
   // Save non-volatile registers. These must be saved by the trampoline,
   // rather than the JIT'd code, because they are scanned by the conservative
   // scanner.
-  masm.push(ebx);
-  masm.push(esi);
-  masm.push(edi);
+  masm.pushRegs(ebx, esi, edi);
 
-  // Load the number of values to be copied (argc) into eax
-  masm.loadPtr(Address(ebp, ARG_ARGC), eax);
+  if (mode == EnterJitMode::GeneratorResume) {
+    Register reg_argv = ebx;
+    masm.loadPtr(Address(ebp, ARG_ARGV), reg_argv);
+    Register reg_token = edx;
+    masm.loadPtr(Address(ebp, ARG_CALLEETOKEN), reg_token);
+    generateEnterJitResumeShared(masm, reg_argv, reg_token, eax, ecx);
+  } else {
+    Register reg_argc = eax;
+    masm.loadPtr(Address(ebp, ARG_ARGC), reg_argc);
 
-  // If we are constructing, that also needs to include newTarget
-  {
-    Label noNewTarget;
-    masm.loadPtr(Address(ebp, ARG_CALLEETOKEN), edx);
-    masm.branchTest32(Assembler::Zero, edx,
-                      Imm32(CalleeToken_FunctionConstructing), &noNewTarget);
+    Register reg_argv = ebx;
+    masm.loadPtr(Address(ebp, ARG_ARGV), reg_argv);
 
-    masm.addl(Imm32(1), eax);
+    Register reg_token = edx;
+    masm.loadPtr(Address(ebp, ARG_CALLEETOKEN), reg_token);
 
-    masm.bind(&noNewTarget);
+    generateEnterJitShared(masm, reg_argc, reg_argv, reg_token, ecx, esi, edi);
+
+    // Push the descriptor.
+    masm.mov(Operand(ebp, ARG_RESULT), eax);
+    masm.unboxInt32(Address(eax, 0x0), eax);
+    masm.pushFrameDescriptorForJitCall(FrameType::CppToJSJit, eax, eax);
+
+    // Load the InterpreterFrame address into the OsrFrameReg.
+    // This address is also used for setting the constructing bit on all paths.
+    masm.loadPtr(Address(ebp, ARG_STACKFRAME), OsrFrameReg);
   }
-
-  // eax <- 8*numValues, eax is now the offset betwen argv and the last value.
-  masm.shll(Imm32(3), eax);
-
-  // Guarantee stack alignment of Jit frames.
-  //
-  // This code compensates for the offset created by the copy of the vector of
-  // arguments, such that the jit frame will be aligned once the return
-  // address is pushed on the stack.
-  //
-  // In the computation of the offset, we omit the size of the JitFrameLayout
-  // which is pushed on the stack, as the JitFrameLayout size is a multiple of
-  // the JitStackAlignment.
-  masm.movl(esp, ecx);
-  masm.subl(eax, ecx);
-  static_assert(
-      sizeof(JitFrameLayout) % JitStackAlignment == 0,
-      "No need to consider the JitFrameLayout for aligning the stack");
-
-  // ecx = ecx & 15, holds alignment.
-  masm.andl(Imm32(JitStackAlignment - 1), ecx);
-  masm.subl(ecx, esp);
-
-  /***************************************************************
-  Loop over argv vector, push arguments onto stack in reverse order
-  ***************************************************************/
-
-  // ebx = argv   --argv pointer is in ebp + 16
-  masm.loadPtr(Address(ebp, ARG_ARGV), ebx);
-
-  // eax = argv[8(argc)]  --eax now points one value past the last argument
-  masm.addl(ebx, eax);
-
-  // while (eax > ebx)  --while still looping through arguments
-  {
-    Label header, footer;
-    masm.bind(&header);
-
-    masm.cmp32(eax, ebx);
-    masm.j(Assembler::BelowOrEqual, &footer);
-
-    // eax -= 8  --move to previous argument
-    masm.subl(Imm32(8), eax);
-
-    // Push what eax points to on stack, a Value is 2 words
-    masm.push(Operand(eax, 4));
-    masm.push(Operand(eax, 0));
-
-    masm.jmp(&header);
-    masm.bind(&footer);
-  }
-
-  // Load the number of actual arguments.  |result| is used to store the
-  // actual number of arguments without adding an extra argument to the enter
-  // JIT.
-  masm.mov(Operand(ebp, ARG_RESULT), eax);
-  masm.unboxInt32(Address(eax, 0x0), eax);
-
-  // Push the callee token.
-  masm.push(Operand(ebp, ARG_CALLEETOKEN));
-
-  // Load the InterpreterFrame address into the OsrFrameReg.
-  // This address is also used for setting the constructing bit on all paths.
-  masm.loadPtr(Address(ebp, ARG_STACKFRAME), OsrFrameReg);
-
-  // Push the descriptor.
-  masm.pushFrameDescriptorForJitCall(FrameType::CppToJSJit, eax, eax);
 
   CodeLabel returnLabel;
   Label oomReturnLabel;
-  {
+  if (mode != EnterJitMode::GeneratorResume) {
     // Handle Interpreter -> Baseline OSR.
     AllocatableGeneralRegisterSet regs(GeneralRegisterSet::All());
     MOZ_ASSERT(!regs.has(ebp));
@@ -174,10 +117,8 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
 
     // Push return address.
     masm.mov(&returnLabel, scratch);
-    masm.push(scratch);
-
     // Frame prologue.
-    masm.push(ebp);
+    masm.pushRegs(scratch, ebp);
     masm.mov(esp, ebp);
 
     // Reserve frame.
@@ -202,7 +143,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
 
     masm.push(jitcode);
 
-    using Fn = bool (*)(BaselineFrame* frame, InterpreterFrame* interpFrame,
+    using Fn = void (*)(BaselineFrame* frame, InterpreterFrame* interpFrame,
                         uint32_t numStackValues);
     masm.setupUnalignedABICall(scratch);
     masm.passABIArg(framePtrScratch);  // BaselineFrame
@@ -215,9 +156,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
 
     MOZ_ASSERT(jitcode != ReturnReg);
 
-    Label error;
     masm.addPtr(Imm32(ExitFrameLayout::SizeWithFooter()), esp);
-    masm.branchIfFalseBool(ReturnReg, &error);
 
     // If OSR-ing, then emit instrumentation for setting lastProfilerFrame
     // if profiler instrumentation is enabled.
@@ -233,14 +172,6 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
 
     masm.jump(jitcode);
 
-    // OOM: frame epilogue, load error value, discard return address and return.
-    masm.bind(&error);
-    masm.mov(ebp, esp);
-    masm.pop(ebp);
-    masm.addPtr(Imm32(sizeof(uintptr_t)), esp);  // Return address.
-    masm.moveValue(MagicValue(JS_ION_ERROR), JSReturnOperand);
-    masm.jump(&oomReturnLabel);
-
     masm.bind(&notOsr);
     masm.loadPtr(Address(ebp, ARG_SCOPECHAIN), R1.scratchReg());
   }
@@ -255,7 +186,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
   ***************************************************************/
   masm.call(Address(ebp, ARG_JITCODE));
 
-  {
+  if (mode != EnterJitMode::GeneratorResume) {
     // Interpreter -> Baseline OSR will return here.
     masm.bind(&returnLabel);
     masm.addCodeLabel(returnLabel);
@@ -279,13 +210,8 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
       Return stack and registers to correct state
   **************************************************************/
 
-  // Restore non-volatile registers
-  masm.pop(edi);
-  masm.pop(esi);
-  masm.pop(ebx);
-
-  // Restore old stack frame pointer
-  masm.pop(ebp);
+  // Restore non-volatile registers, and the old stack frame pointer
+  masm.popRegs(edi, esi, ebx, ebp);
   masm.ret();
 }
 
@@ -301,7 +227,7 @@ JitRuntime::getCppEntryRegisters(JitFrameLayout* frameStackAddress) {
 // Push AllRegs in a way that is compatible with RegisterDump, regardless of
 // what PushRegsInMask might do to reduce the set size.
 static void DumpAllRegs(MacroAssembler& masm) {
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   masm.PushRegsInMask(AllRegs);
 #else
   // When SIMD isn't supported, PushRegsInMask reduces the set of float
@@ -361,157 +287,6 @@ void JitRuntime::generateInvalidator(MacroAssembler& masm, Label* bailoutTail) {
 
   // Jump to shared bailout tail. The BailoutInfo pointer has to be in ecx.
   masm.jmp(bailoutTail);
-}
-
-void JitRuntime::generateArgumentsRectifier(MacroAssembler& masm,
-                                            ArgumentsRectifierKind kind) {
-  AutoCreatedBy acb(masm, "JitRuntime::generateArgumentsRectifier");
-
-  switch (kind) {
-    case ArgumentsRectifierKind::Normal:
-      argumentsRectifierOffset_ = startTrampolineCode(masm);
-      break;
-    case ArgumentsRectifierKind::TrialInlining:
-      trialInliningArgumentsRectifierOffset_ = startTrampolineCode(masm);
-      break;
-  }
-
-  // Caller:
-  // [arg2] [arg1] [this] [ [argc] [callee] [descr] [raddr] ] <- esp
-
-  // Frame prologue.
-  //
-  // NOTE: if this changes, fix the Baseline bailout code too!
-  // See BaselineStackBuilder::calculatePrevFramePtr and
-  // BaselineStackBuilder::buildRectifierFrame (in BaselineBailouts.cpp).
-  masm.push(FramePointer);
-  masm.movl(esp, FramePointer);  // Save %esp.
-
-  // Load argc.
-  masm.loadNumActualArgs(FramePointer, esi);
-
-  // Load the number of |undefined|s to push into %ecx.
-  masm.loadPtr(Address(ebp, RectifierFrameLayout::offsetOfCalleeToken()), eax);
-  masm.mov(eax, ecx);
-  masm.andl(Imm32(CalleeTokenMask), ecx);
-  masm.loadFunctionArgCount(ecx, ecx);
-
-  // The frame pointer and its padding are pushed on the stack.
-  // Including |this|, there are (|nformals| + 1) arguments to push to the
-  // stack.  Then we push a JitFrameLayout.  We compute the padding expressed
-  // in the number of extra |undefined| values to push on the stack.
-  static_assert(
-      sizeof(JitFrameLayout) % JitStackAlignment == 0,
-      "No need to consider the JitFrameLayout for aligning the stack");
-  static_assert(
-      JitStackAlignment % sizeof(Value) == 0,
-      "Ensure that we can pad the stack by pushing extra UndefinedValue");
-  static_assert(IsPowerOfTwo(JitStackValueAlignment),
-                "must have power of two for masm.andl to do its job");
-
-  masm.addl(
-      Imm32(JitStackValueAlignment - 1 /* for padding */ + 1 /* for |this| */),
-      ecx);
-
-  // Account for newTarget, if necessary.
-  static_assert(
-      CalleeToken_FunctionConstructing == 1,
-      "Ensure that we can use the constructing bit to count an extra push");
-  masm.mov(eax, edx);
-  masm.andl(Imm32(CalleeToken_FunctionConstructing), edx);
-  masm.addl(edx, ecx);
-
-  masm.andl(Imm32(~(JitStackValueAlignment - 1)), ecx);
-  masm.subl(esi, ecx);
-  masm.subl(Imm32(1), ecx);  // For |this|.
-
-  // Copy the number of actual arguments into edx.
-  masm.mov(esi, edx);
-
-  masm.moveValue(UndefinedValue(), ValueOperand(ebx, edi));
-
-  // Caller:
-  // [arg2] [arg1] [this] [ [argc] [callee] [descr] [raddr] ]
-  // '-- #esi ---'
-  //
-  // Rectifier frame:
-  // [ebp'] <- ebp [padding] <- esp [undef] [undef] [arg2] [arg1] [this]
-  //                                '--- #ecx ----' '-- #esi ---'
-  //
-  // [ [argc] [callee] [descr] [raddr] ]
-
-  // Push undefined.
-  {
-    Label undefLoopTop;
-    masm.bind(&undefLoopTop);
-
-    masm.push(ebx);  // type(undefined);
-    masm.push(edi);  // payload(undefined);
-    masm.subl(Imm32(1), ecx);
-    masm.j(Assembler::NonZero, &undefLoopTop);
-  }
-
-  // Get the topmost argument.
-  BaseIndex b(FramePointer, esi, TimesEight, sizeof(RectifierFrameLayout));
-  masm.lea(Operand(b), ecx);
-
-  // Push arguments, |nargs| + 1 times (to include |this|).
-  masm.addl(Imm32(1), esi);
-  {
-    Label copyLoopTop;
-
-    masm.bind(&copyLoopTop);
-    masm.push(Operand(ecx, sizeof(Value) / 2));
-    masm.push(Operand(ecx, 0x0));
-    masm.subl(Imm32(sizeof(Value)), ecx);
-    masm.subl(Imm32(1), esi);
-    masm.j(Assembler::NonZero, &copyLoopTop);
-  }
-
-  {
-    Label notConstructing;
-
-    masm.mov(eax, ebx);
-    masm.branchTest32(Assembler::Zero, ebx,
-                      Imm32(CalleeToken_FunctionConstructing),
-                      &notConstructing);
-
-    BaseValueIndex src(FramePointer, edx,
-                       sizeof(RectifierFrameLayout) + sizeof(Value));
-
-    masm.andl(Imm32(CalleeTokenMask), ebx);
-    masm.loadFunctionArgCount(ebx, ebx);
-
-    BaseValueIndex dst(esp, ebx, sizeof(Value));
-
-    ValueOperand newTarget(ecx, edi);
-
-    masm.loadValue(src, newTarget);
-    masm.storeValue(newTarget, dst);
-
-    masm.bind(&notConstructing);
-  }
-
-  // Construct JitFrameLayout.
-  masm.push(eax);  // callee token
-  masm.pushFrameDescriptorForJitCall(FrameType::Rectifier, edx, edx);
-
-  // Call the target function.
-  masm.andl(Imm32(CalleeTokenMask), eax);
-  switch (kind) {
-    case ArgumentsRectifierKind::Normal:
-      masm.loadJitCodeRaw(eax, eax);
-      argumentsRectifierReturnOffset_ = masm.callJitNoProfiler(eax);
-      break;
-    case ArgumentsRectifierKind::TrialInlining:
-      masm.loadJitCodeRawNoIon(eax, eax, edx);
-      masm.callJitNoProfiler(eax);
-      break;
-  }
-
-  masm.mov(FramePointer, StackPointer);
-  masm.pop(FramePointer);
-  masm.ret();
 }
 
 static void PushBailoutFrame(MacroAssembler& masm, Register spArg) {
@@ -681,18 +456,13 @@ uint32_t JitRuntime::generatePreBarrier(JSContext* cx, MacroAssembler& masm,
   Register temp1 = eax;
   Register temp2 = ebx;
   Register temp3 = ecx;
-  masm.push(temp1);
-  masm.push(temp2);
-  masm.push(temp3);
+  masm.pushRegs(temp1, temp2, temp3);
 
   Label noBarrier;
-  masm.emitPreBarrierFastPath(cx->runtime(), type, temp1, temp2, temp3,
-                              &noBarrier);
+  masm.emitPreBarrierFastPath(type, temp1, temp2, temp3, &noBarrier);
 
   // Call into C++ to mark this GC thing.
-  masm.pop(temp3);
-  masm.pop(temp2);
-  masm.pop(temp1);
+  masm.popRegs(temp3, temp2, temp1);
 
   LiveRegisterSet save;
   save.set() = RegisterSet(GeneralRegisterSet(Registers::VolatileMask),
@@ -710,9 +480,7 @@ uint32_t JitRuntime::generatePreBarrier(JSContext* cx, MacroAssembler& masm,
   masm.ret();
 
   masm.bind(&noBarrier);
-  masm.pop(temp3);
-  masm.pop(temp2);
-  masm.pop(temp1);
+  masm.popRegs(temp3, temp2, temp1);
   masm.ret();
 
   return offset;

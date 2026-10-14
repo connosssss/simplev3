@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,19 +19,9 @@ template <typename T>
 struct ParamTraits;
 }  // namespace IPC
 
-#ifdef XP_WIN
-// defines TimeStampValue as a complex value keeping both
-// GetTickCount and QueryPerformanceCounter values
-#  include "TimeStamp_windows.h"
-
-#  include "mozilla/Maybe.h"  // For TimeStamp::RawQueryPerformanceCounterValue
-#endif
-
 namespace mozilla {
 
-#ifndef XP_WIN
-typedef uint64_t TimeStampValue;
-#endif
+using TimeStampValue = uint64_t;
 
 class TimeStamp;
 class TimeStampTests;
@@ -44,20 +32,38 @@ class TimeStampTests;
 class BaseTimeDurationPlatformUtils {
  public:
   static MFBT_API double ToSeconds(int64_t aTicks);
-  static MFBT_API double ToSecondsSigDigits(int64_t aTicks);
   static MFBT_API int64_t TicksFromMilliseconds(double aMilliseconds);
-  static MFBT_API int64_t ResolutionInTicks();
+  // Convert a platform tick count to an integer count of aRate ticks, rounded
+  // to the nearest tick, using integer/rational arithmetic (no floating point).
+  static MFBT_API int64_t ToTicksAtRate(int64_t aTicks, uint32_t aRate);
 };
+
+/**
+ * Convert a tick count held in a double to the integer tick count used
+ * internally by BaseTimeDuration, saturating at the ends of the int64_t range.
+ * Converting an out-of-range double to int64_t is undefined behavior, so the
+ * range must be checked before the conversion rather than after.
+ */
+inline int64_t SaturatingTicksFromDouble(double aTicks) {
+  // NOTE: this MUST be a >= test, because int64_t(double(INT64_MAX))
+  // overflows and gives INT64_MIN.
+  if (aTicks >= double(INT64_MAX)) {
+    return INT64_MAX;
+  }
+
+  // This MUST be a <= test.
+  if (aTicks <= double(INT64_MIN)) {
+    return INT64_MIN;
+  }
+
+  return int64_t(aTicks);
+}
 
 /**
  * Instances of this class represent the length of an interval of time.
  * Negative durations are allowed, meaning the end is before the start.
  *
- * Internally the duration is stored as a int64_t in units of
- * PR_TicksPerSecond() when building with NSPR interval timers, or a
- * system-dependent unit when building with system clocks.  The
- * system-dependent unit must be constant, otherwise the semantics of
- * this class would be broken.
+ * Internally the duration is stored as a system-dependent unit.
  *
  * The ValueCalculator template parameter determines how arithmetic
  * operations are performed on the integer count of ticks (mValue).
@@ -86,6 +92,17 @@ class BaseTimeDuration {
     return *this;
   }
 
+  // Block double multiplier (slower, imprecise if long duration) - Bug 853398.
+  // If required, use MultDouble explicitly and with care.
+  BaseTimeDuration operator*(const double aMultiplier) const = delete;
+
+  // Block double divisor (for the same reason, and because dividing by
+  // fractional values would otherwise invoke the int64_t variant, and rounding
+  // the passed argument can then cause divide-by-zero) - Bug 1147491.
+  BaseTimeDuration operator/(const double aDivisor) const = delete;
+
+  // ToSeconds returns the (fractional) number of seconds of the duration
+  // with the maximum representable precision.
   double ToSeconds() const {
     if (mValue == INT64_MAX) {
       return PositiveInfinity<double>();
@@ -95,20 +112,28 @@ class BaseTimeDuration {
     }
     return BaseTimeDurationPlatformUtils::ToSeconds(mValue);
   }
-  // Return a duration value that includes digits of time we think to
-  // be significant.  This method should be used when displaying a
-  // time to humans.
-  double ToSecondsSigDigits() const {
+  // ToMilliseconds returns the (fractional) number of milliseconds of the
+  // duration with the maximum representable precision.
+  double ToMilliseconds() const { return ToSeconds() * 1000.0; }
+  // ToMicroseconds returns the (fractional) number of microseconds of the
+  // duration with the maximum representable precision.
+  double ToMicroseconds() const { return ToMilliseconds() * 1000.0; }
+
+  // ToTicksAtRate returns the duration as an integer count of aRate ticks,
+  // rounded to the nearest tick. The conversion is done with integer/rational
+  // arithmetic directly from the platform tick count to avoid floating-point
+  // representation error. Saturated to INT64_MAX/INT64_MIN if result does not
+  // fit in int64_t.
+  int64_t ToTicksAtRate(uint32_t aRate) const {
+    MOZ_ASSERT(aRate > 0, "aRate must be a positive tick rate");
     if (mValue == INT64_MAX) {
-      return PositiveInfinity<double>();
+      return INT64_MAX;
     }
     if (mValue == INT64_MIN) {
-      return NegativeInfinity<double>();
+      return INT64_MIN;
     }
-    return BaseTimeDurationPlatformUtils::ToSecondsSigDigits(mValue);
+    return BaseTimeDurationPlatformUtils::ToTicksAtRate(mValue, aRate);
   }
-  double ToMilliseconds() const { return ToSeconds() * 1000.0; }
-  double ToMicroseconds() const { return ToMilliseconds() * 1000.0; }
 
   // Using a double here is safe enough; with 53 bits we can represent
   // durations up to over 280,000 years exactly.  If the units of
@@ -172,20 +197,6 @@ class BaseTimeDuration {
                               const BaseTimeDuration& aB) {
     return FromTicks(std::min(aA.mValue, aB.mValue));
   }
-
-#if defined(DEBUG)
-  int64_t GetValue() const { return mValue; }
-#endif
-
- private:
-  // Block double multiplier (slower, imprecise if long duration) - Bug 853398.
-  // If required, use MultDouble explicitly and with care.
-  BaseTimeDuration operator*(const double aMultiplier) const = delete;
-
-  // Block double divisor (for the same reason, and because dividing by
-  // fractional values would otherwise invoke the int64_t variant, and rounding
-  // the passed argument can then cause divide-by-zero) - Bug 1147491.
-  BaseTimeDuration operator/(const double aDivisor) const = delete;
 
  public:
   BaseTimeDuration MultDouble(double aMultiplier) const {
@@ -251,14 +262,6 @@ class BaseTimeDuration {
     return aStream << aDuration.ToMilliseconds() << " ms";
   }
 
-  // Return a best guess at the system's current timing resolution,
-  // which might be variable.  BaseTimeDurations below this order of
-  // magnitude are meaningless, and those at the same order of
-  // magnitude or just above are suspect.
-  static BaseTimeDuration Resolution() {
-    return FromTicks(BaseTimeDurationPlatformUtils::ResolutionInTicks());
-  }
-
   // We could define additional operators here:
   // -- convert to/from other time units
   // -- scale duration by a float
@@ -279,18 +282,7 @@ class BaseTimeDuration {
   }
 
   static BaseTimeDuration FromTicks(double aTicks) {
-    // NOTE: this MUST be a >= test, because int64_t(double(INT64_MAX))
-    // overflows and gives INT64_MIN.
-    if (aTicks >= double(INT64_MAX)) {
-      return FromTicks(INT64_MAX);
-    }
-
-    // This MUST be a <= test.
-    if (aTicks <= double(INT64_MIN)) {
-      return FromTicks(INT64_MIN);
-    }
-
-    return FromTicks(int64_t(aTicks));
+    return FromTicks(SaturatingTicksFromDouble(aTicks));
   }
 
   // Duration, result is implementation-specific difference of two TimeStamps
@@ -324,7 +316,7 @@ class TimeDurationValueCalculator {
 template <>
 inline int64_t TimeDurationValueCalculator::Multiply<double>(int64_t aA,
                                                              double aB) {
-  return static_cast<int64_t>(aA * aB);
+  return SaturatingTicksFromDouble(static_cast<double>(aA) * aB);
 }
 
 /**
@@ -355,11 +347,8 @@ typedef BaseTimeDuration<TimeDurationValueCalculator> TimeDuration;
  * to a TimeStamp to get a new TimeStamp. You can't do something
  * meaningless like add two TimeStamps.
  *
- * Internally this is implemented as either a wrapper around
- *   - high-resolution, monotonic, system clocks if they exist on this
- *     platform
- *   - PRIntervalTime otherwise.  We detect wraparounds of
- *     PRIntervalTime and work around them.
+ * Internally this is implemented as a wrapper around high-resolution,
+ * monotonic, platform-dependent system clocks.
  *
  * This class is similar to C++11's time_point, however it is
  * explicitly nullable and provides an IsNull() method. time_point
@@ -370,20 +359,6 @@ typedef BaseTimeDuration<TimeDurationValueCalculator> TimeDuration;
  *
  * Note that, since TimeStamp objects are small, prefer to pass them by value
  * unless there is a specific reason not to do so.
- */
-#if defined(XP_WIN)
-// If this static_assert fails then possibly the warning comment below is no
-// longer valid and should be removed.
-static_assert(sizeof(TimeStampValue) > 8);
-#endif
-/*
- * WARNING: On Windows, each TimeStamp is represented internally by two
- * different raw values (one from GTC and one from QPC) and which value gets
- * used for a given operation depends on whether both operands have QPC values
- * or not. This duality of values can lead to some surprising results when
- * mixing TimeStamps with and without QPC values, such as comparisons being
- * non-transitive (ie, a > b > c might not imply a > c). See bug 1829983 for
- * more details/an example.
  */
 class TimeStamp {
  public:
@@ -433,13 +408,21 @@ class TimeStamp {
    *
    * Now() is trying to ensure the best possible precision on each platform,
    * at least one millisecond.
-   *
-   * NowLoRes() has been introduced to workaround performance problems of
-   * QueryPerformanceCounter on the Windows platform.  NowLoRes() is giving
-   * lower precision, usually 15.6 ms, but with very good performance benefit.
-   * Use it for measurements of longer times, like >200ms timeouts.
    */
   static TimeStamp Now() { return Now(true); }
+
+  /**
+   * Return a (coarse) timestamp reflecting the current elapsed system time.
+   * NowLoRes() behaves different depending on the OS:
+   *
+   * Windows: NowLoRes() == Now(), uses always QueryPerformanceCounter.
+   * MacOS:   NowLoRes() == Now(), uses always mach_absolute_time.
+   * Posix:   If the kernel supports CLOCK_MONOTONIC_COARSE use that,
+   *          CLOCK_MONOTONIC otherwise.
+   *
+   * Used to promise better performance, which might still be true only for
+   * Posix.
+   */
   static TimeStamp NowLoRes() { return Now(false); }
 
   /**
@@ -481,10 +464,8 @@ class TimeStamp {
 #endif
 
 #ifdef XP_WIN
-  Maybe<uint64_t> RawQueryPerformanceCounterValue() const {
-    // mQPC is stored in `mt` i.e. QueryPerformanceCounter * 1000
-    // so divide out the 1000
-    return mValue.mHasQPC ? Some(mValue.mQPC / 1000ULL) : Nothing();
+  uint64_t RawQueryPerformanceCounterValue() const {
+    return static_cast<uint64_t>(mValue);
   }
 #endif
 

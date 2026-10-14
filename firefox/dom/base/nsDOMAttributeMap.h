@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20,6 +18,7 @@
 class nsAtom;
 class nsINode;
 class nsIPrincipal;
+class nsNodeInfoManager;
 
 namespace mozilla {
 class ErrorResult;
@@ -97,7 +96,7 @@ class nsDOMAttributeMap final : public nsISupports, public nsWrapperCache {
 
   explicit nsDOMAttributeMap(Element* aContent);
 
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_SKIPPABLE_WRAPPERCACHE_CLASS(nsDOMAttributeMap)
 
   void DropReference();
@@ -105,10 +104,10 @@ class nsDOMAttributeMap final : public nsISupports, public nsWrapperCache {
   Element* GetContent() { return mContent; }
 
   /**
-   * Called when mContent is moved into a new document.
-   * Updates the nodeinfos of all owned nodes.
+   * Called when mContent is adopted into a new document.
+   * Adopts all cached Attr nodes into aManager's document.
    */
-  nsresult SetOwnerDocument(Document* aDocument);
+  void AdoptCachedAttributes(nsNodeInfoManager* aManager);
 
   /**
    * Drop an attribute from the map's cache (does not remove the attribute
@@ -130,8 +129,8 @@ class nsDOMAttributeMap final : public nsISupports, public nsWrapperCache {
   static void BlastSubtreeToPieces(nsINode* aNode);
 
   Element* GetParentObject() const { return mContent; }
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapObject(JSContext* aCx,
+                       JS::Handle<JSObject*> aGivenProto) override;
   DocGroup* GetDocGroup() const;
 
   // WebIDL
@@ -159,7 +158,7 @@ class nsDOMAttributeMap final : public nsISupports, public nsWrapperCache {
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 
  protected:
-  virtual ~nsDOMAttributeMap();
+  ~nsDOMAttributeMap();
 
  private:
   nsCOMPtr<Element> mContent;

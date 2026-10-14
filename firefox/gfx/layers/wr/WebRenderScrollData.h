@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,20 +5,19 @@
 #ifndef GFX_WEBRENDERSCROLLDATA_H
 #define GFX_WEBRENDERSCROLLDATA_H
 
-#include <map>
 #include <iosfwd>
 
-#include "chrome/common/ipc_message_utils.h"
 #include "FrameMetrics.h"
-#include "ipc/IPCMessageUtils.h"
 #include "LayersTypes.h"
+#include "chrome/common/ipc_message_utils.h"
+#include "ipc/IPCMessageUtils.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/GfxMessageUtils.h"
+#include "mozilla/HashTable.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/layers/FocusTarget.h"
 #include "mozilla/layers/ScrollbarData.h"
 #include "mozilla/webrender/WebRenderTypes.h"
-#include "mozilla/HashTable.h"
-#include "mozilla/Maybe.h"
 #include "nsTArrayForwardDeclare.h"
 
 namespace mozilla {
@@ -48,7 +45,7 @@ class WebRenderLayerScrollData final {
 
   using ViewID = ScrollableLayerGuid::ViewID;
 
-  // Helper function for WebRenderScrollData::Validate().
+  // Helper function for WebRenderScrollData::ValidateShape().
   bool ValidateSubtree(const WebRenderScrollData& aParent,
                        std::vector<size_t>& aVisitCounts,
                        size_t aCurrentIndex) const;
@@ -100,6 +97,7 @@ class WebRenderLayerScrollData final {
     return mRemoteDocumentSize;
   }
   void SetReferentId(LayersId aReferentId) { mReferentId = Some(aReferentId); }
+  void ClearReferentId() { mReferentId = Nothing(); }
   Maybe<LayersId> GetReferentId() const { return mReferentId; }
 
   void SetScrollbarData(const ScrollbarData& aData) { mScrollbarData = aData; }
@@ -244,7 +242,7 @@ class WebRenderScrollData {
   // Validate that the scroll data is well-formed, and particularly that
   // |mLayerScrollData| encodes a valid tree. This is necessary because
   // the data can be sent over IPC from a less-trusted content process.
-  bool Validate() const;
+  bool ValidateShape() const;
 
   WebRenderLayerManager* GetManager() const;
 
@@ -348,25 +346,8 @@ class WebRenderScrollData {
 }  // namespace mozilla
 
 namespace IPC {
-
-template <>
-struct ParamTraits<mozilla::layers::WebRenderLayerScrollData> {
-  typedef mozilla::layers::WebRenderLayerScrollData paramType;
-
-  static void Write(MessageWriter* aWriter, const paramType& aParam);
-
-  static bool Read(MessageReader* aReader, paramType* aResult);
-};
-
-template <>
-struct ParamTraits<mozilla::layers::WebRenderScrollData> {
-  typedef mozilla::layers::WebRenderScrollData paramType;
-
-  static void Write(MessageWriter* aWriter, const paramType& aParam);
-
-  static bool Read(MessageReader* aReader, paramType* aResult);
-};
-
+DECLARE_IPC_SERIALIZER(mozilla::layers::WebRenderLayerScrollData);
+DECLARE_IPC_SERIALIZER(mozilla::layers::WebRenderScrollData);
 }  // namespace IPC
 
 #endif /* GFX_WEBRENDERSCROLLDATA_H */

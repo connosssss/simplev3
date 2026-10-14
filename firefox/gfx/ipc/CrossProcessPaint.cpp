@@ -1,27 +1,23 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "CrossProcessPaint.h"
 
+#include "gfxPlatform.h"
+#include "mozilla/Logging.h"
+#include "mozilla/PresShell.h"
+#include "mozilla/dom/BrowserParent.h"
 #include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "mozilla/dom/ContentProcessManager.h"
 #include "mozilla/dom/ImageBitmap.h"
-#include "mozilla/dom/BrowserParent.h"
-#include "mozilla/dom/PWindowGlobalParent.h"
 #include "mozilla/dom/Promise.h"
-#include "mozilla/dom/WindowGlobalParent.h"
-#include "mozilla/dom/WindowGlobalChild.h"
 #include "mozilla/dom/WindowGlobalActorsBinding.h"
+#include "mozilla/dom/WindowGlobalChild.h"
+#include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/gfx/DrawEventRecorder.h"
 #include "mozilla/gfx/InlineTranslator.h"
-#include "mozilla/Logging.h"
-#include "mozilla/PresShell.h"
-
-#include "gfxPlatform.h"
-
+#include "mozilla/gfx/RecordedEvent.h"
 #include "nsContentUtils.h"
 #include "nsIDocShell.h"
 #include "nsPresContext.h"
@@ -133,6 +129,9 @@ PaintFragment PaintFragment::Record(dom::BrowsingContext* aBc,
   if (aFlags & CrossProcessPaintFlags::UseHighQualityScaling) {
     renderDocFlags |= RenderDocumentFlags::UseHighQualityScaling;
   }
+  if (aFlags & CrossProcessPaintFlags::ForPrinting) {
+    renderDocFlags |= RenderDocumentFlags::ForPrinting;
+  }
 
   // Perform the actual rendering
   {
@@ -147,8 +146,8 @@ PaintFragment PaintFragment::Record(dom::BrowsingContext* aBc,
     thebes.SetMatrix(Matrix::Scaling(aScale, aScale));
     thebes.SetCrossProcessPaintScale(aScale);
     RefPtr<PresShell> presShell = presContext->PresShell();
-    Unused << presShell->RenderDocument(r, renderDocFlags, aBackgroundColor,
-                                        &thebes);
+    (void)presShell->RenderDocument(r, renderDocFlags, aBackgroundColor,
+                                    &thebes);
   }
 
   if (!recorder->mOutputStream.mValid) {
@@ -194,14 +193,64 @@ static dom::TabId GetTabId(dom::WindowGlobalParent* aWGP) {
 }
 
 /* static */
-bool CrossProcessPaint::Start(dom::WindowGlobalParent* aRoot,
+void CrossProcessPaint::Start(dom::WindowGlobalParent* aRoot,
                               const dom::DOMRect* aRect, float aScale,
                               nscolor aBackgroundColor,
                               CrossProcessPaintFlags aFlags,
                               dom::Promise* aPromise) {
-  MOZ_RELEASE_ASSERT(XRE_IsParentProcess());
-  aScale = std::max(aScale, kMinPaintScale);
+  Maybe<IntRect> rect;
+  if (aRect) {
+    rect =
+        Some(IntRect::RoundOut((float)aRect->X(), (float)aRect->Y(),
+                               (float)aRect->Width(), (float)aRect->Height()));
+  }
 
+  Start(aRoot, rect, aScale, aBackgroundColor, aFlags)
+      ->Then(
+          GetMainThreadSerialEventTarget(), __func__,
+          [promise = RefPtr{aPromise}](RefPtr<SourceSurface>&& aSnapshot) {
+            ErrorResult rv;
+            RefPtr<dom::ImageBitmap> bitmap =
+                dom::ImageBitmap::CreateFromSourceSurface(
+                    promise->GetParentObject(), aSnapshot, rv);
+            if (!rv.Failed()) {
+              CPP_LOG("Success, fulfilling promise.\n");
+              promise->MaybeResolve(bitmap);
+            } else {
+              CPP_LOG("Couldn't create ImageBitmap for SourceSurface.\n");
+              promise->MaybeReject(std::move(rv));
+            }
+          },
+          [promise = RefPtr{aPromise}](const nsresult& aRv) {
+            promise->MaybeReject(aRv);
+          });
+}
+
+/* static */
+RefPtr<CrossProcessPaint::ResolvePromise> CrossProcessPaint::Start(
+    dom::TabId aRootTabId, uint64_t aRootWindowContextId,
+    nsTHashSet<uint64_t>&& aDependencies, CrossProcessPaintFlags aFlags) {
+  MOZ_ASSERT(!aDependencies.IsEmpty());
+  RefPtr resolver =
+      new CrossProcessPaint(1.0, aRootTabId, aRootWindowContextId, aFlags);
+  RefPtr<CrossProcessPaint::ResolvePromise> promise = resolver->Init();
+
+  PaintFragment rootFragment;
+  rootFragment.mDependencies = std::move(aDependencies);
+
+  resolver->QueueDependencies(rootFragment.mDependencies);
+  resolver->mReceivedFragments.InsertOrUpdate(aRootTabId,
+                                              std::move(rootFragment));
+
+  resolver->MaybeResolve();
+
+  return promise;
+}
+
+/* static */
+RefPtr<CrossProcessPaint::SnapshotPromise> CrossProcessPaint::Start(
+    dom::WindowGlobalParent* aRoot, const Maybe<IntRect>& aRect, float aScale,
+    nscolor aBackgroundColor, CrossProcessPaintFlags aFlags) {
   CPP_LOG(
       "Starting paint. "
       "[wgp=%p, "
@@ -210,26 +259,21 @@ bool CrossProcessPaint::Start(dom::WindowGlobalParent* aRoot,
       aRoot, aScale, NS_GET_R(aBackgroundColor), NS_GET_G(aBackgroundColor),
       NS_GET_B(aBackgroundColor), NS_GET_A(aBackgroundColor));
 
-  Maybe<IntRect> rect;
-  if (aRect) {
-    rect =
-        Some(IntRect::RoundOut((float)aRect->X(), (float)aRect->Y(),
-                               (float)aRect->Width(), (float)aRect->Height()));
+  MOZ_RELEASE_ASSERT(XRE_IsParentProcess());
+  aScale = std::max(aScale, kMinPaintScale);
+
+  if (aRect && aRect->IsEmpty()) {
+    return SnapshotPromise::CreateAndReject(NS_ERROR_INVALID_ARG, __func__);
   }
 
-  if (rect && rect->IsEmpty()) {
-    return false;
-  }
-
-  dom::TabId rootId = GetTabId(aRoot);
-
+  dom::TabId rootTabId = GetTabId(aRoot);
   RefPtr<CrossProcessPaint> resolver =
-      new CrossProcessPaint(aScale, rootId, aFlags);
-  RefPtr<CrossProcessPaint::ResolvePromise> promise;
+      new CrossProcessPaint(aScale, rootTabId, aRoot->InnerWindowId(), aFlags);
+  RefPtr<ResolvePromise> promise;
   if (aRoot->IsInProcess()) {
     RefPtr<dom::WindowGlobalChild> childActor = aRoot->GetChildActor();
     if (!childActor) {
-      return false;
+      return SnapshotPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
     }
 
     // `BrowsingContext()` cannot be nullptr.
@@ -239,93 +283,69 @@ bool CrossProcessPaint::Start(dom::WindowGlobalParent* aRoot,
     resolver->mPendingFragments += 1;
     resolver->ReceiveFragment(
         aRoot,
-        PaintFragment::Record(bc, rect, aScale, aBackgroundColor, aFlags));
+        PaintFragment::Record(bc, aRect, aScale, aBackgroundColor, aFlags));
   } else {
     promise = resolver->Init();
-    resolver->QueuePaint(aRoot, rect, aBackgroundColor, aFlags);
+    resolver->QueuePaint(aRoot, aRect, aBackgroundColor, aFlags);
   }
 
+  auto snapshotPromise = MakeRefPtr<SnapshotPromise::Private>(__func__);
   promise->Then(
       GetMainThreadSerialEventTarget(), __func__,
-      [promise = RefPtr{aPromise}, rootId](ResolvedFragmentMap&& aFragments) {
-        RefPtr<RecordedDependentSurface> root = aFragments.Get(rootId);
-        CPP_LOG("Resolved all fragments.\n");
+      [snapshotPromise, rootTabId](ResolvedFragmentMap&& aFragments) {
+        RefPtr<RecordedDependentSurface> root = aFragments.Get(rootTabId);
+        if (!root) {
+          snapshotPromise->Reject(NS_ERROR_FAILURE, __func__);
+          return;
+        }
 
-        // Create the destination draw target
+        // Create the destination draw target.
         RefPtr<DrawTarget> drawTarget =
             gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(
                 root->mSize, SurfaceFormat::B8G8R8A8);
         if (!drawTarget || !drawTarget->IsValid()) {
           CPP_LOG("Couldn't create (%d x %d) surface for fragment %" PRIu64
                   ".\n",
-                  root->mSize.width, root->mSize.height, (uint64_t)rootId);
-          promise->MaybeReject(NS_ERROR_FAILURE);
+                  root->mSize.width, root->mSize.height, (uint64_t)rootTabId);
+          snapshotPromise->Reject(NS_ERROR_FAILURE, __func__);
           return;
         }
 
-        // Translate the recording using our child tabs
+        // Translate the recording using our child tabs.
         {
           InlineTranslator translator(drawTarget, nullptr);
           translator.SetDependentSurfaces(&aFragments);
           if (!translator.TranslateRecording((char*)root->mRecording.mData,
                                              root->mRecording.mLen)) {
             CPP_LOG("Couldn't translate recording for fragment %" PRIu64 ".\n",
-                    (uint64_t)rootId);
-            promise->MaybeReject(NS_ERROR_FAILURE);
+                    (uint64_t)rootTabId);
+            snapshotPromise->Reject(NS_ERROR_FAILURE, __func__);
             return;
           }
         }
 
         RefPtr<SourceSurface> snapshot = drawTarget->Snapshot();
         if (!snapshot) {
-          promise->MaybeReject(NS_ERROR_FAILURE);
+          snapshotPromise->Reject(NS_ERROR_FAILURE, __func__);
           return;
         }
-
-        ErrorResult rv;
-        RefPtr<dom::ImageBitmap> bitmap =
-            dom::ImageBitmap::CreateFromSourceSurface(
-                promise->GetParentObject(), snapshot, rv);
-
-        if (!rv.Failed()) {
-          CPP_LOG("Success, fulfilling promise.\n");
-          promise->MaybeResolve(bitmap);
-        } else {
-          CPP_LOG("Couldn't create ImageBitmap for SourceSurface.\n");
-          promise->MaybeReject(std::move(rv));
-        }
+        snapshotPromise->Resolve(std::move(snapshot), __func__);
       },
-      [promise = RefPtr{aPromise}](const nsresult& aRv) {
-        promise->MaybeReject(aRv);
+      [snapshotPromise](const nsresult& aRv) {
+        snapshotPromise->Reject(aRv, __func__);
       });
 
-  return true;
+  return snapshotPromise;
 }
 
-/* static */
-RefPtr<CrossProcessPaint::ResolvePromise> CrossProcessPaint::Start(
-    nsTHashSet<uint64_t>&& aDependencies) {
-  MOZ_ASSERT(!aDependencies.IsEmpty());
-  RefPtr<CrossProcessPaint> resolver =
-      new CrossProcessPaint(1.0, dom::TabId(0), CrossProcessPaintFlags::None);
-
-  RefPtr<CrossProcessPaint::ResolvePromise> promise = resolver->Init();
-
-  PaintFragment rootFragment;
-  rootFragment.mDependencies = std::move(aDependencies);
-
-  resolver->QueueDependencies(rootFragment.mDependencies);
-  resolver->mReceivedFragments.InsertOrUpdate(dom::TabId(0),
-                                              std::move(rootFragment));
-
-  resolver->MaybeResolve();
-
-  return promise;
-}
-
-CrossProcessPaint::CrossProcessPaint(float aScale, dom::TabId aRoot,
+CrossProcessPaint::CrossProcessPaint(float aScale, dom::TabId aRootTabId,
+                                     uint64_t aRootWindowContextId,
                                      CrossProcessPaintFlags aFlags)
-    : mRoot{aRoot}, mScale{aScale}, mPendingFragments{0}, mFlags{aFlags} {}
+    : mRootTabId{aRootTabId},
+      mRootWindowContextId{aRootWindowContextId},
+      mScale{aScale},
+      mPendingFragments{0},
+      mFlags{aFlags} {}
 
 CrossProcessPaint::~CrossProcessPaint() { Clear(NS_ERROR_ABORT); }
 
@@ -395,11 +415,28 @@ void CrossProcessPaint::QueueDependencies(
               (uint64_t)dependency);
       continue;
     }
+    dom::CanonicalBrowsingContext* const bc = browser->GetBrowsingContext();
+    MOZ_DIAGNOSTIC_ASSERT(bc);
+
+    const bool isDescendantOfRootWindowId = [&] {
+      for (RefPtr wgp = bc->GetEmbedderWindowGlobal(); wgp;
+           wgp = wgp->GetBrowsingContext()->GetEmbedderWindowGlobal()) {
+        if (wgp->InnerWindowId() == mRootWindowContextId) {
+          return true;
+        }
+      }
+      return false;
+    }();
+    if (NS_WARN_IF(!isDescendantOfRootWindowId)) {
+      CPP_LOG("Skipping dependency %" PRIu64 " from another browser.\n",
+              (uint64_t)dependency);
+      continue;
+    }
 
     // Note that if the remote document is currently being cloned, it's possible
     // that the BrowserParent isn't the one for the cloned document, but the
     // BrowsingContext should be persisted/consistent.
-    QueuePaint(browser->GetBrowsingContext());
+    QueuePaint(bc);
   }
 }
 
@@ -411,8 +448,7 @@ void CrossProcessPaint::QueuePaint(dom::WindowGlobalParent* aWGP,
 
   CPP_LOG("Queueing paint for WindowGlobalParent(%p).\n", aWGP);
 
-  aWGP->DrawSnapshotInternal(this, aRect, mScale, aBackgroundColor,
-                             (uint32_t)aFlags);
+  aWGP->DrawSnapshotInternal(this, aRect, mScale, aBackgroundColor, aFlags);
   mPendingFragments += 1;
 }
 
@@ -450,7 +486,7 @@ void CrossProcessPaint::QueuePaint(dom::CanonicalBrowsingContext* aBc) {
         // 1562720)
         wgp->DrawSnapshotInternal(self, Nothing(), self->mScale,
                                   NS_RGBA(0, 0, 0, 0),
-                                  (uint32_t)self->GetFlagsForDependencies());
+                                  self->GetFlagsForDependencies());
       },
       [self = RefPtr{this}]() {
         CPP_LOG(
@@ -483,7 +519,7 @@ void CrossProcessPaint::MaybeResolve() {
   // Resolve the paint fragments from the bottom up
   ResolvedFragmentMap resolved;
   {
-    nsresult rv = ResolveInternal(mRoot, &resolved);
+    nsresult rv = ResolveInternal(mRootTabId, &resolved);
     if (NS_FAILED(rv)) {
       CPP_LOG("Couldn't resolve.\n");
       Clear(rv);

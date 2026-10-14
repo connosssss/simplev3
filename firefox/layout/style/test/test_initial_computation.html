@@ -36,8 +36,10 @@
 <pre id="test">
 <script class="testbody" type="text/javascript">
 
-/** Test for computation of CSS 'initial' on all properties and 'unset' on
-    reset properties **/
+/**
+ * Test for computation of CSS 'initial' on all properties and 'unset' on
+ * reset properties
+ */
 
 var gBrokenInitial = {
 };
@@ -72,6 +74,9 @@ function setup_initial_values(id, ivalprop, prereqprop) {
 function test_property(property)
 {
   var info = gCSSProperties[property];
+  if ("subproperties" in info && info.subproperties.length == 0) {
+    return;
+  }
 
   var keywords = ["initial"];
   if (!info.inherited)

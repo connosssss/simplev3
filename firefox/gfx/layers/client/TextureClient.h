@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,9 +14,9 @@
 #include "mozilla/Assertions.h"  // for MOZ_ASSERT, etc
 #include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"  // for override
-#include "mozilla/DebugOnly.h"
 #include "mozilla/Mutex.h"
-#include "mozilla/RefPtr.h"  // for RefPtr, RefCounted
+#include "mozilla/RefPtr.h"               // for RefPtr, RefCounted
+#include "mozilla/UniquePtrExtensions.h"  // for UniqueFileHandle
 #include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/gfx/2D.h"  // for DrawTarget
 #include "mozilla/gfx/CriticalSection.h"
@@ -30,9 +28,9 @@
 #include "mozilla/layers/ISurfaceAllocator.h"
 #include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor
 #include "mozilla/layers/LayersTypes.h"
+#include "mozilla/layers/PTextureChild.h"  // for PTextureChild
 #include "mozilla/layers/SyncObject.h"
-#include "mozilla/mozalloc.h"             // for operator delete
-#include "mozilla/UniquePtrExtensions.h"  // for UniqueFileHandle
+#include "mozilla/mozalloc.h"  // for operator delete
 #include "mozilla/webrender/WebRenderTypes.h"
 #include "nsCOMPtr.h"         // for already_AddRefed
 #include "nsISupportsImpl.h"  // for TextureImage::AddRef, etc
@@ -63,6 +61,7 @@ class TextureClient;
 class ITextureClientRecycleAllocator;
 class SharedSurfaceTextureData;
 class TextureForwarder;
+class ImageBridgeChild;
 class RecordedTextureData;
 struct RemoteTextureOwnerId;
 
@@ -253,6 +252,8 @@ class TextureData {
     return nullptr;
   }
 
+  virtual void ReturnDrawTarget(already_AddRefed<gfx::DrawTarget> aDT);
+
   /**
    * When the TextureData is not being Unlocked, this can be used to inform a
    * TextureData that drawing has finished until the next BorrowDrawTarget.
@@ -263,7 +264,7 @@ class TextureData {
     return nullptr;
   }
 
-  virtual void ReturnSnapshot(already_AddRefed<gfx::SourceSurface> aSnapshot) {}
+  virtual void ReturnSnapshot(already_AddRefed<gfx::SourceSurface> aSnapshot);
 
   virtual bool BorrowMappedData(MappedTextureData&) { return false; }
 
@@ -275,7 +276,9 @@ class TextureData {
   virtual void Forget(LayersIPCChannel* aAllocator) {}
 
   virtual bool Serialize(SurfaceDescriptor& aDescriptor) = 0;
-  virtual void GetSubDescriptor(RemoteDecoderVideoSubDescriptor* aOutDesc) {}
+  virtual RemoteDecoderVideoType GetRemoteDecoderVideoType() {
+    return RemoteDecoderVideoType::TypeNone;
+  }
 
   virtual void OnForwardedToHost() {}
 
@@ -384,7 +387,9 @@ class TextureClient : public AtomicRefCountedWithFinalize<TextureClient> {
       const gfx::IntSize& aCbCrSize, uint32_t aCbCrStride,
       StereoMode aStereoMode, gfx::ColorDepth aColorDepth,
       gfx::YUVColorSpace aYUVColorSpace, gfx::ColorRange aColorRange,
-      gfx::ChromaSubsampling aSubsampling, TextureFlags aTextureFlags);
+      gfx::TransferFunction aTransferFunction,
+      gfx::ChromaSubsampling aSubsampling, TextureFlags aTextureFlags,
+      const Maybe<gfx::HDRMetadata>& aHDRMetadata = Nothing());
 
   // Creates and allocates a TextureClient (can be accessed through raw
   // pointers).
@@ -494,15 +499,12 @@ class TextureClient : public AtomicRefCountedWithFinalize<TextureClient> {
                            const gfx::IntPoint* aPoint);
 
   /**
-   * Allocate and deallocate a TextureChild actor.
+   * Allocate a TextureChild actor.
    *
    * TextureChild is an implementation detail of TextureClient that is not
-   * exposed to the rest of the code base. CreateIPDLActor and DestroyIPDLActor
-   * are for use with the managing IPDL protocols only (so that they can
-   * implement AllocPextureChild and DeallocPTextureChild).
+   * exposed to the rest of the code base.
    */
-  static PTextureChild* CreateIPDLActor();
-  static bool DestroyIPDLActor(PTextureChild* actor);
+  static already_AddRefed<PTextureChild> CreateIPDLActor();
 
   /**
    * Get the TextureClient corresponding to the actor passed in parameter.
@@ -619,6 +621,13 @@ class TextureClient : public AtomicRefCountedWithFinalize<TextureClient> {
   TextureData* GetInternalData() { return mData; }
   const TextureData* GetInternalData() const { return mData; }
 
+  /**
+   * Serializes the underlying TextureData into aDescriptor. Returns false if
+   * the TextureData has already been destroyed. Safe to call from any thread
+   * concurrently with Destroy().
+   */
+  bool ToSurfaceDescriptor(SurfaceDescriptor& aDescriptor);
+
   uint64_t GetSerial() const { return mSerial; }
   void GetSurfaceDescriptorRemoteDecoder(
       SurfaceDescriptorRemoteDecoder* aOutDesc);
@@ -717,16 +726,6 @@ class TextureClient : public AtomicRefCountedWithFinalize<TextureClient> {
   friend class AtomicRefCountedWithFinalize<TextureClient>;
 
  protected:
-  /**
-   * Should only be called *once* per texture, in TextureClient::InitIPDLActor.
-   * Some texture implementations rely on the fact that the descriptor will be
-   * deserialized.
-   * Calling ToSurfaceDescriptor again after it has already returned true,
-   * or never constructing a TextureHost with aDescriptor may result in a memory
-   * leak (see TextureClientD3D9 for example).
-   */
-  bool ToSurfaceDescriptor(SurfaceDescriptor& aDescriptor);
-
   void LockActor() const;
   void UnlockActor() const;
 
@@ -747,9 +746,6 @@ class TextureClient : public AtomicRefCountedWithFinalize<TextureClient> {
   gl::GfxTextureWasteTracker mWasteTracker;
 
   OpenMode mOpenMode;
-#ifdef DEBUG
-  uint32_t mExpectedDtRefs;
-#endif
   bool mIsLocked;
   bool mIsReadLocked MOZ_GUARDED_BY(mMutex);
   bool mIsPendingForwardReadLocked MOZ_GUARDED_BY(mMutex) = false;
@@ -781,6 +777,9 @@ class TextureClient : public AtomicRefCountedWithFinalize<TextureClient> {
   friend class TextureChild;
   friend void TestTextureClientSurface(TextureClient*, gfxImageSurface*);
   friend void TestTextureClientYCbCr(TextureClient*, PlanarYCbCrData&);
+  friend void TestYCbCrDescriptorTransferFunction(gfx::TransferFunction,
+                                                  Maybe<gfx::HDRMetadata>,
+                                                  RefPtr<ImageBridgeChild>);
   friend already_AddRefed<TextureHost> CreateTextureHostWithBackend(
       TextureClient*, ISurfaceAllocator*, LayersBackend&);
 };

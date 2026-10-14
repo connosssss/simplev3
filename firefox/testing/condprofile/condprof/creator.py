@@ -1,7 +1,7 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
-""" Creates or updates profiles.
+"""Creates or updates profiles.
 
 The profile creation works as following:
 
@@ -23,6 +23,7 @@ When Firefox changes its version, profiles from the previous version
 should work as expected. Each profile tarball comes with a metadata file
 that keep track of the Firefox version that was used and the profile age.
 """
+
 import os
 import tempfile
 import shutil
@@ -68,7 +69,13 @@ class ProfileCreator:
         # Make a temporary directory for the logs if an
         # archive dir is not provided
         if not self.archive:
-            self.tmp_dir = tempfile.mkdtemp()
+            if os.environ.get("MOZ_UPLOAD_DIR"):
+                self.tmp_dir = os.path.join(
+                    os.environ.get("MOZ_UPLOAD_DIR"), "condprof"
+                )
+                os.makedirs(self.tmp_dir, exist_ok=True)
+            else:
+                self.tmp_dir = tempfile.mkdtemp()
 
     def _log_filename(self, name):
         filename = "%s-%s-%s.log" % (
@@ -116,7 +123,8 @@ class ProfileCreator:
             ]
 
         for name in names:
-            # remove `cache` from profile
+            # The following removes files from the profile before archival. An
+            # alternative is to exclude the file in the _filter of create_archive.
             shutil.rmtree(os.path.join(self.env.profile, "cache"), ignore_errors=True)
             shutil.rmtree(os.path.join(self.env.profile, "cache2"), ignore_errors=True)
 

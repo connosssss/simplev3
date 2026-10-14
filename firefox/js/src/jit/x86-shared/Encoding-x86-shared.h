@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -192,6 +190,7 @@ enum TwoByteOpcodeID {
   OP2_MOVSHDUP_VpsWps = 0x16,
   OP2_MOVHPS_VqEq = 0x16,
   OP2_MOVHPS_EqVq = 0x17,
+  OP2_RDSSP = 0x1E,
   OP2_MOVAPD_VsdWsd = 0x28,
   OP2_MOVAPS_VsdWsd = 0x28,
   OP2_MOVAPS_WsdVsd = 0x29,
@@ -279,6 +278,7 @@ enum TwoByteOpcodeID {
   OP2_SHLD_GvEv = 0xA5,
   OP2_SHRD = 0xAC,
   OP2_SHRD_GvEv = 0xAD,
+  OP2_INCSSP = 0xAE,
   OP_FENCE = 0xAE,
   OP2_IMUL_GvEv = 0xAF,
   OP2_CMPXCHG_GvEb = 0xB0,
@@ -412,6 +412,7 @@ enum ThreeByteOpcodeID {
   OP3_VFMADD231PD_VxHxWx = 0xB8,
   OP3_VFNMADD231PS_VxHxWx = 0xBC,
   OP3_VFNMADD231PD_VxHxWx = 0xBC,
+  OP3_ANDN_GyByEy = 0xF2,
   OP3_SHLX_GyEyBy = 0xF7,
   OP3_SARX_GyEyBy = 0xF7,
   OP3_SHRX_GyEyBy = 0xF7,
@@ -480,6 +481,10 @@ enum GroupOpcodeID {
   GROUP5_OP_CALLN = 2,
   GROUP5_OP_JMPN = 4,
   GROUP5_OP_PUSH = 6,
+
+  GROUP15_OP_INCSSP = 5,
+
+  GROUP21_OP_RDSSP = 1,
 
   FILD_OP_64 = 5,
 

@@ -2,9 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const lazy = {};
-ChromeUtils.defineESModuleGetters(lazy, {
-  SessionStore: "resource:///modules/sessionstore/SessionStore.sys.mjs",
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
+
+const lazy = XPCOMUtils.declareLazy({
+  SessionStore:
+    "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
 });
 
 export const PageWireframes = {
@@ -12,8 +14,8 @@ export const PageWireframes = {
    * Returns the wireframe object for the current index of the session history
    * for the given tab. The wireframe will only exist with browser.history.collectWireframes.
    *
-   * @param {Object} tab
-   * @return {Object} wireframe
+   * @param {object} tab
+   * @return {object} wireframe
    *   See dom/webidl/Document.webidl for the Wireframe dictionary
    */
   getWireframeState(tab) {
@@ -28,7 +30,7 @@ export const PageWireframes = {
    * Returns an SVG preview for the wireframe at the current index of the session history
    * for the given tab. The wireframe will only exist with browser.history.collectWireframes.
    *
-   * @param {Object} tab
+   * @param {object} tab
    * @return {SVGElement}
    */
   getWireframeElementForTab(tab) {
@@ -40,9 +42,9 @@ export const PageWireframes = {
    * Converts a color encoded as a uint32_t (Gecko's nscolor format)
    * to an rgb string.
    *
-   * @param {Number} nscolor
+   * @param {number} nscolor
    *   An RGB color encoded in nscolor format.
-   * @return {String}
+   * @return {string}
    *   A string of the form "rgb(r, g, b)".
    */
   nscolorToRGB(nscolor) {
@@ -56,7 +58,7 @@ export const PageWireframes = {
    * Converts a color encoded as a uint32_t (Gecko's nscolor format)
    * to an rgb string.
    *
-   * @param {Object} wireframe
+   * @param {object} wireframe
    *   See Bug 1731714 and dom/webidl/Document.webidl for the Wireframe dictionary
    * @param {Document} document
    *   A Document to crate SVG elements.

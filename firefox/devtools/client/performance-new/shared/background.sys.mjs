@@ -25,6 +25,7 @@ import { createLazyLoaders } from "resource://devtools/client/performance-new/sh
  * @typedef {import("../@types/perf").ProfilerBrowserInfo} ProfilerBrowserInfo
  * @typedef {import("../@types/perf").ProfileCaptureResult} ProfileCaptureResult
  * @typedef {import("../@types/perf").ProfilerFaviconData} ProfilerFaviconData
+ * @typedef {import("../@types/perf").JSSources} JSSources
  */
 
 /** @type {PerformancePref["PopupFeatureFlag"]} */
@@ -34,8 +35,8 @@ const POPUP_FEATURE_FLAG_PREF = "devtools.performance.popup.feature-flag";
 // This is reported from the STATUS_QUERY message, and identifies the
 // capabilities of the WebChannel. The front-end can handle old WebChannel
 // versions and has a full list of versions and capabilities here:
-// https://github.com/firefox-devtools/profiler/blob/main/src/app-logic/web-channel.js
-const CURRENT_WEBCHANNEL_VERSION = 5;
+// https://github.com/firefox-devtools/profiler/blob/main/src/app-logic/web-channel.ts
+const CURRENT_WEBCHANNEL_VERSION = 7;
 
 const lazyRequire = {};
 // eslint-disable-next-line mozilla/lazy-getter-object-name
@@ -72,7 +73,9 @@ const lazy = createLazyLoaders({
       "resource://devtools/shared/performance-new/recording-utils.sys.mjs"
     ),
   CustomizableUI: () =>
-    ChromeUtils.importESModule("resource:///modules/CustomizableUI.sys.mjs"),
+    ChromeUtils.importESModule(
+      "moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs"
+    ),
   PerfSymbolication: () =>
     ChromeUtils.importESModule(
       "resource://devtools/shared/performance-new/symbolication.sys.mjs"
@@ -84,12 +87,24 @@ const lazy = createLazyLoaders({
   PlacesUtils: () =>
     ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs")
       .PlacesUtils,
+  SourceMapNetworkRequest: () =>
+    require("resource://devtools/client/shared/source-map-loader/utils/network-request.js"),
+  WasmDwarfConverter: () =>
+    require("resource://devtools/client/shared/source-map-loader/wasm-dwarf/convertToJSON.js"),
+  SourceMapResolver: () =>
+    require("resource://devtools/client/shared/source-map-loader/utils/fetchSourceMap.js"),
+  SourceMapUtil: () =>
+    require("resource://devtools/client/shared/vendor/source-map/lib/util.js"),
 });
+
+/** @type {{[key:string]: number} | null} */
+let gPreviousMozLogValues = null;
 
 /**
  * This function is called when the profile is captured with the shortcut keys,
  * with the profiler toolbarbutton, with the button inside the popup, or with
  * the about:logging page.
+ *
  * @param {PageContext} pageContext
  * @return {Promise<void>}
  */
@@ -106,6 +121,7 @@ export async function captureProfile(pageContext) {
   const { profileCaptureResult, additionalInformation } = await lazy
     .RecordingUtils()
     .getProfileDataAsGzippedArrayBufferThenStop();
+  cleanupMozLogs();
   const profilerViewMode = lazy
     .PrefsPresets()
     .getProfilerViewModeForCurrentPreset(pageContext);
@@ -125,7 +141,8 @@ export async function captureProfile(pageContext) {
   registerProfileCaptureForBrowser(
     browser,
     profileCaptureResult,
-    symbolicationService
+    symbolicationService,
+    additionalInformation?.jsSources ?? null
   );
 }
 
@@ -133,16 +150,21 @@ export async function captureProfile(pageContext) {
  * This function is called when the profiler is started with the shortcut
  * keys, with the profiler toolbarbutton, or with the button inside the
  * popup.
+ *
  * @param {PageContext} pageContext
  */
 export function startProfiler(pageContext) {
-  const { entries, interval, features, threads, duration } = lazy
+  const { entries, interval, features, threads, mozLogs, duration } = lazy
     .PrefsPresets()
     .getRecordingSettings(pageContext, Services.profiler.GetFeatures());
 
   // Get the active Browser ID from browser.
   const { getActiveBrowserID } = lazy.RecordingUtils();
   const activeTabID = getActiveBrowserID();
+
+  if (typeof mozLogs == "string") {
+    updateMozLogs(mozLogs);
+  }
 
   Services.profiler.StartProfiler(
     entries,
@@ -155,17 +177,65 @@ export function startProfiler(pageContext) {
 }
 
 /**
- * This function is called directly by devtools/startup/DevToolsStartup.jsm when
- * using the shortcut keys to capture a profile.
+ * Given a MOZ_LOG string, toggles the expected preferences to enable the
+ * LogModules mentioned in the string at the expected level of logging.
+ * This will also record preference values in order to reset them on stop.
+ * `mozLogs` is a string similar to the one passed as MOZ_LOG env variable.
+ *
+ * @param {string} mozLogs
+ */
+function updateMozLogs(mozLogs) {
+  gPreviousMozLogValues = {};
+  for (const module of mozLogs.split(",")) {
+    const lastColon = module.lastIndexOf(":");
+    const logName = module.slice(0, lastColon).trim();
+    const value = parseInt(module.slice(lastColon + 1).trim(), 10);
+    const prefName = `logging.${logName}`;
+    gPreviousMozLogValues[prefName] = Services.prefs.getIntPref(
+      prefName,
+      undefined
+    );
+    // MOZ_LOG aren't profiler specific and enabled globally in Firefox.
+    // Preferences are the easiest (only?) way to toggle them from JavaScript.
+    Services.prefs.setIntPref(prefName, value);
+  }
+}
+
+/**
+ * This function is called directly by devtools/startup/DevToolsStartup.sys.mjs
+ * when using the shortcut keys to capture a profile.
+ *
  * @type {() => void}
  */
 export function stopProfiler() {
   Services.profiler.StopProfiler();
+
+  cleanupMozLogs();
 }
 
 /**
- * This function is called directly by devtools/startup/DevToolsStartup.jsm when
- * using the shortcut keys to start and stop the profiler.
+ * This function should be called when we are done profiler in order to reset
+ * the MOZ_LOG enabled while profiling.
+ *
+ * @type {() => void}
+ */
+export function cleanupMozLogs() {
+  if (gPreviousMozLogValues) {
+    for (const [prefName, value] of Object.entries(gPreviousMozLogValues)) {
+      if (typeof value == "number") {
+        Services.prefs.setIntPref(prefName, value);
+      } else {
+        Services.prefs.clearUserPref(prefName);
+      }
+    }
+    gPreviousMozLogValues = null;
+  }
+}
+
+/**
+ * This function is called directly by devtools/startup/DevToolsStartup.sys.mjs
+ * when using the shortcut keys to start and stop the profiler.
+ *
  * @param {PageContext} pageContext
  * @return {void}
  */
@@ -211,6 +281,95 @@ export function restartProfiler(pageContext) {
  * @type {WeakMap<MockedExports.Browser, ProfilerBrowserInfo>}
  */
 const infoForBrowserMap = new WeakMap();
+
+/**
+ * @param {string} url
+ * @param {string} sourceMapURL
+ */
+async function fetchSourceMap(url, sourceMapURL) {
+  if (!sourceMapURL) {
+    throw new Error("sourceMapURL must not be empty");
+  }
+
+  const { resolvedSourceMapURL, baseURL } = lazy
+    .SourceMapResolver()
+    .resolveSourceMapURL({ sourceMapBaseURL: url, sourceMapURL });
+  const { networkRequest } = lazy.SourceMapNetworkRequest();
+
+  if (new URL(resolvedSourceMapURL).protocol === "file:") {
+    throw new Error("file:// source maps are not supported");
+  }
+
+  const fetchOpts = {
+    loadFromCache: false,
+    allowRedirects: false,
+    sourceMapBaseURL: url,
+  };
+  const fetched = await networkRequest(resolvedSourceMapURL, fetchOpts);
+
+  let { content } = fetched;
+  if (fetched.isDwarf) {
+    const { convertToJSON } = lazy.WasmDwarfConverter();
+    content = await convertToJSON(content);
+  }
+
+  const sourceMap = JSON.parse(content);
+  const sources = sourceMap.sources ?? [];
+  const existingSourcesContent = sourceMap.sourcesContent ?? [];
+  const sourceRoot = sourceMap.sourceRoot ?? "";
+  const { computeSourceURL } = lazy.SourceMapUtil();
+
+  sourceMap.sourcesContent = await Promise.all(
+    sources.map(
+      async (/** @type {string} */ sourceUrl, /** @type {number} */ i) => {
+        if (existingSourcesContent[i] != null) {
+          return existingSourcesContent[i];
+        }
+        if (sourceUrl == null) {
+          return null;
+        }
+        try {
+          const absoluteSourceUrl = new URL(
+            computeSourceURL(sourceRoot, sourceUrl, baseURL)
+          );
+          if (absoluteSourceUrl.protocol === "file:") {
+            return null;
+          }
+          const sourceFetched = await networkRequest(
+            absoluteSourceUrl.href,
+            fetchOpts
+          );
+          return sourceFetched.content;
+        } catch (_e) {
+          return null;
+        }
+      }
+    )
+  );
+
+  return sourceMap;
+}
+
+/**
+ * @param {string} sourceId
+ * @param {MockedExports.Browser} browser
+ * @return {Promise<object>}
+ */
+async function handleGetSourceMap(sourceId, browser) {
+  const infoForBrowser = infoForBrowserMap.get(browser);
+  if (infoForBrowser === undefined) {
+    throw new Error("No JS source data found for this tab");
+  }
+  const jsSources = infoForBrowser.jsSources;
+  if (jsSources === null) {
+    throw new Error("Source not found in the browser");
+  }
+  const sourceInfo = jsSources[sourceId];
+  if (!sourceInfo?.url || !sourceInfo?.sourceMapURL) {
+    throw new Error("Source or source map URL not found");
+  }
+  return fetchSourceMap(sourceInfo.url, sourceInfo.sourceMapURL);
+}
 
 /**
  * This handler computes the response for any messages coming
@@ -340,7 +499,36 @@ async function getResponseForMessage(request, browser) {
       const { openScriptInDebugger } = lazy.BrowserModule();
       return openScriptInDebugger(tabId, scriptUrl, line, column);
     }
+    case "GET_JS_SOURCES": {
+      const { sourceIds } = request;
+      if (!Array.isArray(sourceIds)) {
+        throw new Error("sourceIds must be an array");
+      }
 
+      const infoForBrowser = infoForBrowserMap.get(browser);
+      if (infoForBrowser === undefined) {
+        throw new Error("No JS source data found for this tab");
+      }
+
+      const jsSources = infoForBrowser.jsSources;
+      if (jsSources === null) {
+        return sourceIds.map(() => ({
+          error: "Source not found in the browser",
+        }));
+      }
+
+      return sourceIds.map(id => {
+        const sourceInfo = jsSources[id];
+        if (!sourceInfo?.sourceText) {
+          return { error: "Source not found in the browser" };
+        }
+
+        return { sourceText: sourceInfo.sourceText };
+      });
+    }
+    case "GET_SOURCE_MAP": {
+      return handleGetSourceMap(request.sourceId, browser);
+    }
     default: {
       console.error(
         "An unknown message type was received by the profiler's WebChannel handler.",
@@ -440,15 +628,18 @@ export async function handleWebChannelMessage(channel, id, message, target) {
  *   when profiler.firefox.com sends GET_SYMBOL_TABLE WebChannel messages to us. This
  *   method should obtain a symbol table for the requested binary and resolve the
  *   returned promise with it.
+ * @param {JSSources | null} jsSources - JS sources from the profile collection.
  */
 export function registerProfileCaptureForBrowser(
   browser,
   profileCaptureResult,
-  symbolicationService
+  symbolicationService,
+  jsSources
 ) {
   infoForBrowserMap.set(browser, {
     profileCaptureResult,
     symbolicationService,
+    jsSources,
   });
 }
 
@@ -468,27 +659,34 @@ async function getPageFavicons(pageUrls) {
   // Get the data of favicons and return them.
   const { favicons, toURI } = lazy.PlacesUtils();
 
-  const promises = pageUrls.map(pageUrl =>
-    favicons
-      .getFaviconForPage(toURI(pageUrl), /* preferredWidth = */ 32)
-      .then(favicon => {
-        // Check if data is found in the database and return it if so.
-        if (favicon.rawData.length) {
-          return {
-            // PlacesUtils returns a number array for the data. Converting it to
-            // the Uint8Array here to send it to the tab more efficiently.
-            data: new Uint8Array(favicon.rawData).buffer,
-            mimeType: favicon.mimeType,
-          };
-        }
+  const promises = pageUrls.map(async pageUrl => {
+    try {
+      // toURI can throw synchronously for URLs that can't be parsed into
+      // a URI, so it needs to be inside the try block rather than outside the
+      // promise chain.
+      const favicon = await favicons.getFaviconForPage(
+        toURI(pageUrl),
+        /* preferredWidth = */ 32
+      );
 
-        return null;
-      })
-      .catch(() => {
-        // Couldn't find a favicon for this page, return null explicitly.
-        return null;
-      })
-  );
+      // Check if data is found in the database and return it if so.
+      if (favicon.rawData.length) {
+        return {
+          // PlacesUtils returns a number array for the data. Converting it to
+          // the Uint8Array here to send it to the tab more efficiently.
+          data: new Uint8Array(favicon.rawData).buffer,
+          mimeType: favicon.mimeType,
+        };
+      }
+
+      return null;
+    } catch (e) {
+      // Couldn't find a favicon for this page, or the URL couldn't be parsed
+      // into a URI. Return null explicitly so a single bad URL doesn't abort
+      // the whole batch.
+      return null;
+    }
+  });
 
   return Promise.all(promises);
 }

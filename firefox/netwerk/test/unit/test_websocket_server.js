@@ -7,7 +7,16 @@
 /* import-globals-from head_cache.js */
 /* import-globals-from head_cookies.js */
 /* import-globals-from head_channels.js */
-/* import-globals-from head_servers.js */
+
+const {
+  NodeWebSocketPlainServer,
+  NodeWebSocketServer,
+  NodeWebSocketHttp2Server,
+  NodeHTTPProxyServer,
+  NodeHTTPSProxyServer,
+  NodeHTTP2ProxyServer,
+  WebSocketConnection,
+} = ChromeUtils.importESModule("resource://testing-common/NodeServer.sys.mjs");
 
 const certOverrideService = Cc[
   "@mozilla.org/security/certoverride;1"
@@ -55,6 +64,41 @@ async function channelOpenPromise(url, msg) {
   conn.close();
   let finalStatus = await finalStatusPromise;
   return [finalStatus.status, res];
+}
+
+// h1.1 direct
+async function test_h1_plain_websocket_direct() {
+  let wss = new NodeWebSocketPlainServer();
+  await wss.start();
+  registerCleanupFunction(async () => wss.stop());
+  Assert.notEqual(wss.port(), null);
+  await wss.registerMessageHandler((data, ws) => {
+    ws.send(data);
+  });
+  let url = `ws://localhost:${wss.port()}`;
+  const msg = "test websocket";
+
+  let conn = new WebSocketConnection();
+  await conn.open(url);
+  conn.send(msg);
+  let mess1 = await conn.receiveMessages();
+  Assert.deepEqual(mess1, [msg]);
+
+  // Now send 3 more, and check that we received all of them
+  conn.send(msg);
+  conn.send(msg);
+  conn.send(msg);
+  let mess2 = [];
+  while (mess2.length < 3) {
+    // receive could return 1, 2 or all 3 replies.
+    mess2 = mess2.concat(await conn.receiveMessages());
+  }
+  Assert.deepEqual(mess2, [msg, msg, msg]);
+
+  conn.close();
+  let { status } = await conn.finished();
+
+  Assert.equal(status, Cr.NS_OK);
 }
 
 // h1.1 direct
@@ -310,6 +354,70 @@ async function test_bug_1848013() {
   await proxy.stop();
 }
 
+async function test_bug_2037813() {
+  Services.prefs.setBoolPref("network.http.http2.websockets", true);
+  // Allow localhost to be proxied so the connection actually routes through
+  // the proxy, triggering an HTTP CONNECT request like the browser does.
+  Services.prefs.setBoolPref("network.proxy.allow_hijacking_localhost", true);
+
+  let proxy = new NodeHTTPProxyServer();
+  await proxy.start();
+
+  let wss = new NodeWebSocketHttp2Server();
+  await wss.start();
+
+  registerCleanupFunction(async () => {
+    Services.prefs.clearUserPref("network.http.http2.websockets");
+    Services.prefs.clearUserPref("network.proxy.allow_hijacking_localhost");
+    await wss.execute(`
+      const EventEmitter = require('events');
+      if (global.origEmit) {
+        EventEmitter.prototype.emit = global.origEmit;
+        delete global.origEmit;
+        delete global.receivedWebSocketHeaders;
+      }
+    `);
+    await wss.stop();
+    await proxy.stop();
+  });
+
+  Assert.notEqual(wss.port(), null);
+  await wss.registerMessageHandler((data, ws) => {
+    ws.send(data);
+  });
+
+  // Hook into the underlying WebSocket server to capture the headers from the
+  // HTTP/2 Extended CONNECT handshake.
+  await wss.execute(`
+    const EventEmitter = require('events');
+    global.origEmit = EventEmitter.prototype.emit;
+    EventEmitter.prototype.emit = function(event, ...args) {
+      if (event === 'stream' && args[1] && args[1][':method'] === 'CONNECT' && args[1][':protocol'] === 'websocket') {
+        global.receivedWebSocketHeaders = args[1];
+      }
+      return global.origEmit.apply(this, [event, ...args]);
+    };
+  `);
+
+  // To create a h2 connection before the websocket one.
+  let chan = makeChan(`https://localhost:${wss.port()}/`);
+  await httpChannelOpenPromise(chan, CL_ALLOW_UNKNOWN_CL);
+
+  let url = `wss://localhost:${wss.port()}`;
+  const msg = "test h2 websocket with h1 insecure proxy";
+  let [status, res] = await channelOpenPromise(url, msg);
+  Assert.equal(status, Cr.NS_OK);
+  Assert.deepEqual(res, [msg]);
+
+  let headers = await wss.execute(`global.receivedWebSocketHeaders;`);
+  Assert.ok(headers, "Received HTTP/2 CONNECT headers on the server");
+  Assert.ok("origin" in headers, "Origin header was sent");
+  Assert.ok(
+    "sec-websocket-version" in headers,
+    "Sec-WebSocket-Version header was sent"
+  );
+}
+
 function ActivityObserver() {}
 
 ActivityObserver.prototype = {
@@ -374,13 +482,20 @@ function checkConnectionActivities(activites, host, port) {
     };
   }
 
-  Assert.equal(connections.length, 2);
+  // Three connections: the initial h2 attempt, an h1 retry triggered by the
+  // PSK resumption error logic in nsHttpTransaction, and the final h1
+  // fallback.
+  Assert.equal(connections.length, 3);
 
   const firstConn = parseConnInfoHash(connections[0]);
   Assert.equal(firstConn.h2Flag, ".");
   Assert.equal(firstConn.host, host);
   Assert.equal(firstConn.port, port);
-  const fallbackConn = parseConnInfoHash(connections[1]);
+  const retryConn = parseConnInfoHash(connections[1]);
+  Assert.equal(retryConn.h2Flag, "X");
+  Assert.equal(retryConn.host, host);
+  Assert.equal(retryConn.port, port);
+  const fallbackConn = parseConnInfoHash(connections[2]);
   Assert.equal(fallbackConn.h2Flag, "X");
   Assert.equal(fallbackConn.host, host);
   Assert.equal(fallbackConn.port, port);
@@ -408,6 +523,7 @@ async function test_websocket_fallback() {
   checkConnectionActivities(observer.activites, "localhost", wss.port());
 }
 
+add_task(test_h1_plain_websocket_direct);
 add_task(test_h1_websocket_direct);
 add_task(test_h2_websocket_direct);
 add_task(test_h1_ws_with_secure_h1_proxy);
@@ -417,4 +533,5 @@ add_task(test_h2_ws_with_h1_insecure_proxy);
 add_task(test_h2_ws_with_h1_secure_proxy);
 add_task(test_h2_ws_with_h2_proxy);
 add_task(test_bug_1848013);
+add_task(test_bug_2037813);
 add_task(test_websocket_fallback);

@@ -2,10 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef NeqoHttp3Conn_h__
-#define NeqoHttp3Conn_h__
+#ifndef NeqoHttp3Conn_h_
+#define NeqoHttp3Conn_h_
 
 #include <cstdint>
+
+#include "mozilla/dom/PWebTransport.h"
 #include "mozilla/net/neqo_glue_ffi_generated.h"
 
 namespace mozilla {
@@ -18,12 +20,12 @@ class NeqoHttp3Conn final {
       const NetAddr& aLocalAddr, const NetAddr& aRemoteAddr,
       uint32_t aMaxTableSize, uint16_t aMaxBlockedStreams, uint64_t aMaxData,
       uint64_t aMaxStreamData, bool aVersionNegotiation, bool aWebTransport,
-      const nsACString& aQlogDir, uint32_t aDatagramSize,
-      uint32_t aProviderFlags, uint32_t aIdleTimeout, NeqoHttp3Conn** aConn) {
+      const nsACString& aQlogDir, uint32_t aIdleTimeout, uint32_t aFastPto,
+      NeqoHttp3Conn** aConn) {
     return neqo_http3conn_new_use_nspr_for_io(
         &aOrigin, &aAlpn, &aLocalAddr, &aRemoteAddr, aMaxTableSize,
         aMaxBlockedStreams, aMaxData, aMaxStreamData, aVersionNegotiation,
-        aWebTransport, &aQlogDir, aDatagramSize, aProviderFlags, aIdleTimeout,
+        aWebTransport, &aQlogDir, aIdleTimeout, aFastPto,
         (const mozilla::net::NeqoHttp3Conn**)aConn);
   }
 
@@ -32,15 +34,20 @@ class NeqoHttp3Conn final {
                        uint32_t aMaxTableSize, uint16_t aMaxBlockedStreams,
                        uint64_t aMaxData, uint64_t aMaxStreamData,
                        bool aVersionNegotiation, bool aWebTransport,
-                       const nsACString& aQlogDir, uint32_t aDatagramSize,
-                       uint32_t aProviderFlags, uint32_t aIdleTimeout,
-                       int64_t socket, NeqoHttp3Conn** aConn) {
+                       const nsACString& aQlogDir, uint32_t aIdleTimeout,
+                       uint32_t aFastPto, int64_t socket, bool aPMTUDEnabled,
+                       NeqoHttp3Conn** aConn) {
     return neqo_http3conn_new(
         &aOrigin, &aAlpn, &aLocalAddr, &aRemoteAddr, aMaxTableSize,
         aMaxBlockedStreams, aMaxData, aMaxStreamData, aVersionNegotiation,
-        aWebTransport, &aQlogDir, aDatagramSize, aProviderFlags, aIdleTimeout,
-        socket, (const mozilla::net::NeqoHttp3Conn**)aConn);
+        aWebTransport, &aQlogDir, aIdleTimeout, aFastPto, socket, aPMTUDEnabled,
+        (const mozilla::net::NeqoHttp3Conn**)aConn);
   }
+
+  NeqoHttp3Conn() = delete;
+  ~NeqoHttp3Conn() = delete;
+  NeqoHttp3Conn(const NeqoHttp3Conn&) = delete;
+  NeqoHttp3Conn& operator=(const NeqoHttp3Conn&) = delete;
 
   void Close(uint64_t aError) { neqo_http3conn_close(this, aError); }
 
@@ -90,6 +97,12 @@ class NeqoHttp3Conn final {
                                 &aHeaders, aStreamId, aUrgency, aIncremental);
   }
 
+  nsresult Connect(const nsACString& aHost, const nsACString& aHeaders,
+                   uint64_t* aStreamId, uint8_t aUrgency, bool aIncremental) {
+    return neqo_http3conn_connect(this, &aHost, &aHeaders, aStreamId, aUrgency,
+                                  aIncremental);
+  }
+
   nsresult PriorityUpdate(uint64_t aStreamId, uint8_t aUrgency,
                           bool aIncremental) {
     return neqo_http3conn_priority_update(this, aStreamId, aUrgency,
@@ -125,8 +138,8 @@ class NeqoHttp3Conn final {
     neqo_http3conn_stream_stop_sending(this, aStreamId, aError);
   }
 
-  void SetResumptionToken(nsTArray<uint8_t>& aToken) {
-    neqo_http3conn_set_resumption_token(this, &aToken);
+  nsresult SetResumptionToken(nsTArray<uint8_t>& aToken) {
+    return neqo_http3conn_set_resumption_token(this, &aToken);
   }
 
   void SetEchConfig(nsTArray<uint8_t>& aEchConfig) {
@@ -149,10 +162,29 @@ class NeqoHttp3Conn final {
                                                       &aHeaders, aSessionId);
   }
 
-  nsresult CloseWebTransport(uint64_t aSessionId, uint32_t aError,
-                             const nsACString& aMessage) {
-    return neqo_http3conn_webtransport_close_session(this, aSessionId, aError,
-                                                     &aMessage);
+  nsresult CreateConnectUdp(const nsACString& aHost, const nsACString& aPath,
+                            const nsACString& aHeaders, uint64_t* aSessionId) {
+    return neqo_http3conn_connect_udp_create_session(this, &aHost, &aPath,
+                                                     &aHeaders, aSessionId);
+  }
+
+  bool CloseWebTransport(uint64_t aSessionId, uint32_t aError,
+                         const nsACString& aMessage,
+                         mozilla::dom::WebTransportStatsData& aStats) {
+    WebTransportSessionStats stats{};
+    nsresult rv = neqo_http3conn_webtransport_close_session(
+        this, aSessionId, aError, &aMessage, &stats);
+    if (NS_FAILED(rv)) {
+      return false;
+    }
+    TranslateWebTransportSessionStats(stats, aStats);
+    return true;
+  }
+
+  nsresult CloseConnectUdp(uint64_t aSessionId, uint32_t aError,
+                           const nsACString& aMessage) {
+    return neqo_http3conn_connect_udp_close_session(this, aSessionId, aError,
+                                                    &aMessage);
   }
 
   nsresult CreateWebTransportStream(uint64_t aSessionId,
@@ -164,9 +196,17 @@ class NeqoHttp3Conn final {
 
   nsresult WebTransportSendDatagram(uint64_t aSessionId,
                                     nsTArray<uint8_t>& aData,
-                                    uint64_t aTrackingId) {
-    return neqo_http3conn_webtransport_send_datagram(this, aSessionId, &aData,
-                                                     aTrackingId);
+                                    uint64_t aTrackingId, uint64_t aSendGroupId,
+                                    int64_t aSendOrder) {
+    return neqo_http3conn_webtransport_send_datagram(
+        this, aSessionId, &aData, aTrackingId, aSendGroupId, aSendOrder);
+  }
+
+  nsresult ConnectUdpSendDatagram(uint64_t aSessionId, nsTArray<uint8_t>& aData,
+                                  uint64_t aTrackingId, uint64_t aSendGroupId,
+                                  int64_t aSendOrder) {
+    return neqo_http3conn_connect_udp_send_datagram(
+        this, aSessionId, &aData, aTrackingId, aSendGroupId, aSendOrder);
   }
 
   nsresult WebTransportMaxDatagramSize(uint64_t aSessionId, uint64_t* aResult) {
@@ -174,17 +214,88 @@ class NeqoHttp3Conn final {
                                                          aResult);
   }
 
-  nsresult WebTransportSetSendOrder(uint64_t aSessionId,
-                                    Maybe<int64_t> aSendOrder) {
+  bool GetWebTransportSessionStats(
+      uint64_t aSessionId, mozilla::dom::WebTransportStatsData& aStats) {
+    WebTransportSessionStats stats{};
+    nsresult rv =
+        neqo_http3conn_webtransport_session_stats(this, aSessionId, &stats);
+    if (NS_FAILED(rv)) {
+      return false;
+    }
+    TranslateWebTransportSessionStats(stats, aStats);
+    return true;
+  }
+
+  // Only the connection-level counters; used once neqo has dropped the
+  // session, which leaves the session-scoped datagram counters at 0.
+  void GetWebTransportTransportStats(
+      mozilla::dom::WebTransportStatsData& aStats) {
+    struct WebTransportSessionStats stats = {};
+    neqo_http3conn_webtransport_transport_stats(this, &stats);
+    TranslateWebTransportSessionStats(stats, aStats);
+  }
+
+  nsresult WebTransportSetSendOrder(uint64_t aSessionId, int64_t aSendOrder) {
     return neqo_http3conn_webtransport_set_sendorder(this, aSessionId,
-                                                     aSendOrder.ptrOr(nullptr));
+                                                     &aSendOrder);
+  }
+
+  nsresult WebTransportSetSendGroup(uint64_t aSessionId,
+                                    uint64_t aSendGroupId) {
+    return neqo_http3conn_webtransport_set_sendgroup(this, aSessionId,
+                                                     aSendGroupId);
+  }
+
+  nsresult RegisterWebTransportSendGroup(uint64_t aSessionId,
+                                         uint64_t aGroupId) {
+    return neqo_http3conn_webtransport_register_send_group(this, aSessionId,
+                                                           aGroupId);
+  }
+  nsresult GetWebTransportSessionProtocol(uint64_t aSessionId,
+                                          nsACString& aProtocol) {
+    return neqo_http3conn_webtransport_session_protocol(this, aSessionId,
+                                                        &aProtocol);
+  }
+
+  nsresult ExportWebTransportKeyingMaterial(
+      uint64_t aSessionId, const nsTArray<uint8_t>& aLabel,
+      const nsTArray<uint8_t>& aContext, nsTArray<uint8_t>& aKeyingMaterial) {
+    constexpr uint32_t kKeyingMaterialLength = 32;
+    aKeyingMaterial.SetLength(kKeyingMaterialLength);
+    return neqo_http3conn_export_keying_material(
+        this, aSessionId, aLabel.Elements(), aLabel.Length(),
+        aContext.Elements(), aContext.Length(), aKeyingMaterial.Elements(),
+        kKeyingMaterialLength);
   }
 
  private:
-  NeqoHttp3Conn() = delete;
-  ~NeqoHttp3Conn() = delete;
-  NeqoHttp3Conn(const NeqoHttp3Conn&) = delete;
-  NeqoHttp3Conn& operator=(const NeqoHttp3Conn&) = delete;
+  static void TranslateWebTransportSessionStats(
+      const struct WebTransportSessionStats& aFrom,
+      mozilla::dom::WebTransportStatsData& aTo) {
+    // Use transport-level totals for spec compliance
+    aTo.bytesSent() = aFrom.bytes_sent_total;
+    // bytesSentOverhead is omitted: we don't separate application vs
+    // protocol overhead. See bug 2051624.
+    aTo.bytesAcknowledged() = aFrom.bytes_acked;
+    aTo.packetsSent() = aFrom.packets_sent;
+    aTo.bytesLost() = aFrom.bytes_lost;
+    aTo.packetsLost() = aFrom.packets_lost;
+    aTo.bytesReceived() = aFrom.bytes_received_total;
+    aTo.packetsReceived() = aFrom.packets_received;
+    aTo.smoothedRtt() = aFrom.smoothed_rtt;
+    aTo.rttVariation() = aFrom.rtt_variation;
+    aTo.minRtt() = aFrom.min_rtt;
+    aTo.estimatedSendRate() = aFrom.estimated_send_rate;
+    aTo.atSendCapacity() = aFrom.at_send_capacity;
+    // neqo doesn't track droppedIncoming/expiredIncoming per-session yet;
+    // report 0 until it does. lostOutgoing uses the connection-level counter
+    // as a stand-in, since Firefox doesn't support WebTransport connection
+    // pooling.
+    aTo.datagrams().droppedIncoming() = 0;
+    aTo.datagrams().expiredIncoming() = 0;
+    aTo.datagrams().expiredOutgoing() = aFrom.datagrams_expired_outgoing;
+    aTo.datagrams().lostOutgoing() = aFrom.datagrams_lost_outgoing;
+  }
 };
 
 class NeqoEncoder final {
@@ -192,6 +303,10 @@ class NeqoEncoder final {
   static void Init(NeqoEncoder** aEncoder) {
     neqo_encoder_new((const mozilla::net::NeqoEncoder**)aEncoder);
   }
+  NeqoEncoder() = delete;
+  ~NeqoEncoder() = delete;
+  NeqoEncoder(const NeqoEncoder&) = delete;
+  NeqoEncoder& operator=(const NeqoEncoder&) = delete;
 
   void EncodeByte(uint8_t aData) { neqo_encode_byte(this, aData); }
 
@@ -219,12 +334,6 @@ class NeqoEncoder final {
 
   void AddRef() { neqo_encoder_addref(this); }
   void Release() { neqo_encoder_release(this); }
-
- private:
-  NeqoEncoder() = delete;
-  ~NeqoEncoder() = delete;
-  NeqoEncoder(const NeqoEncoder&) = delete;
-  NeqoEncoder& operator=(const NeqoEncoder&) = delete;
 };
 
 class NeqoDecoder final {
@@ -233,6 +342,10 @@ class NeqoDecoder final {
                    NeqoDecoder** aDecoder) {
     neqo_decoder_new(aBuf, aCount, (const mozilla::net::NeqoDecoder**)aDecoder);
   }
+  NeqoDecoder() = delete;
+  ~NeqoDecoder() = delete;
+  NeqoDecoder(const NeqoDecoder&) = delete;
+  NeqoDecoder& operator=(const NeqoDecoder&) = delete;
 
   bool DecodeVarint(uint64_t* aResult) {
     return neqo_decode_varint(this, aResult);
@@ -256,12 +369,6 @@ class NeqoDecoder final {
 
   void AddRef() { neqo_decoder_addref(this); }
   void Release() { neqo_decoder_release(this); }
-
- private:
-  NeqoDecoder() = delete;
-  ~NeqoDecoder() = delete;
-  NeqoDecoder(const NeqoDecoder&) = delete;
-  NeqoDecoder& operator=(const NeqoDecoder&) = delete;
 };
 
 }  // namespace net

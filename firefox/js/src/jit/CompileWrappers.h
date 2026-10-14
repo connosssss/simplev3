@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -13,6 +11,7 @@
 #include "js/TypeDecls.h"
 #include "vm/Realm.h"
 #include "vm/RealmFuses.h"
+#include "vm/RuntimeFuses.h"
 
 struct JSAtomState;
 
@@ -79,6 +78,7 @@ class CompileRuntime {
   const void* mainContextPtr();
   const void* addressOfJitActivation();
   const void* addressOfJitStackLimit();
+  const void* addressOfJitStackLimitNoInterrupt();
   const void* addressOfInterruptBits();
   const void* addressOfRealm();
   const void* addressOfZone();
@@ -87,10 +87,18 @@ class CompileRuntime {
   const void* addressOfStringToAtomCache();
   const void* addressOfLastBufferedWholeCell();
 
-  bool hasSeenObjectEmulateUndefinedFuseIntact();
-  const void* addressOfHasSeenObjectEmulateUndefinedFuse();
+  bool runtimeFuseIntact(RuntimeFuses::FuseIndex index);
+  const void* addressOfRuntimeFuse(RuntimeFuses::FuseIndex index);
 
-  bool hasSeenArrayExceedsInt32LengthFuseIntact();
+  bool hasSeenObjectEmulateUndefinedFuseIntact() {
+    return runtimeFuseIntact(
+        RuntimeFuses::FuseIndex::HasSeenObjectEmulateUndefinedFuse);
+  }
+
+  bool hasSeenArrayExceedsInt32LengthFuseIntact() {
+    return runtimeFuseIntact(
+        RuntimeFuses::FuseIndex::HasSeenArrayExceedsInt32LengthFuse);
+  }
 
 #ifdef DEBUG
   const void* addressOfIonBailAfterCounter();
@@ -114,12 +122,13 @@ class CompileZone {
   CompileRuntime* runtime();
   bool isAtomsZone();
 
-  const uint32_t* addressOfNeedsIncrementalBarrier();
+  const uint32_t* addressOfNeedsMarkingBarrier();
   uint32_t* addressOfTenuredAllocCount();
   gc::FreeSpan** addressOfFreeList(gc::AllocKind allocKind);
   bool allocNurseryObjects();
   bool allocNurseryStrings();
   bool allocNurseryBigInts();
+  void* addressOfZone();
   void* addressOfNurseryPosition();
 
   void* addressOfNurseryAllocatedSites();
@@ -130,6 +139,8 @@ class CompileZone {
   gc::AllocSite* catchAllAllocSite(JS::TraceKind traceKind,
                                    gc::CatchAllAllocSite siteKind);
   gc::AllocSite* tenuringAllocSite();
+
+  void* jitZone();
 
   bool hasRealmWithAllocMetadataBuilder();
 };

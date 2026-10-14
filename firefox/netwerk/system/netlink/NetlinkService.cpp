@@ -1,39 +1,37 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set et sw=2 ts=4: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "NetlinkService.h"
+
 #include <arpa/inet.h>
-#include <netinet/ether.h>
+#include <ifaddrs.h>
+#include <linux/rtnetlink.h>
 #include <net/if.h>
+#include <netinet/ether.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <unistd.h>
-#include <linux/rtnetlink.h>
-#include <ifaddrs.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 
-#include "nsThreadUtils.h"
-#include "NetlinkService.h"
-#include "nsIThread.h"
-#include "nsString.h"
-#include "nsPrintfCString.h"
-#include "mozilla/Logging.h"
 #include "../../base/IPv6Utils.h"
 #include "../LinkServiceCommon.h"
 #include "../NetworkLinkServiceDefines.h"
-
 #include "mozilla/Base64.h"
+#include "mozilla/DebugOnly.h"
 #include "mozilla/FunctionTypeTraits.h"
+#include "mozilla/Logging.h"
 #include "mozilla/ProfilerThreadSleep.h"
 #include "mozilla/glean/NetwerkMetrics.h"
-#include "mozilla/DebugOnly.h"
-#include "mozilla/ScopeExit.h"
+#include "nsIThread.h"
+#include "nsPrintfCString.h"
+#include "nsString.h"
+#include "nsThreadUtils.h"
 
 #if defined(HAVE_RES_NINIT)
 #  include <netinet/in.h>
 #  include <resolv.h>
+
+#  include <memory>
 #endif
 
 namespace mozilla::net {
@@ -204,9 +202,8 @@ class NetlinkNeighbor {
     _retval.AppendInt(mNeigh.ndm_ifindex);
     if (mHasMAC) {
       _retval.Append(" mac=");
-      _retval.Append(nsPrintfCString("%02x:%02x:%02x:%02x:%02x:%02x", mMAC[0],
-                                     mMAC[1], mMAC[2], mMAC[3], mMAC[4],
-                                     mMAC[5]));
+      _retval.AppendPrintf("%02x:%02x:%02x:%02x:%02x:%02x", mMAC[0], mMAC[1],
+                           mMAC[2], mMAC[3], mMAC[4], mMAC[5]);
     }
   }
 
@@ -759,7 +756,7 @@ void NetlinkService::OnLinkMessage(struct nlmsghdr* aNlh) {
   LOG(("NetlinkService::OnLinkMessage [type=%s]",
        aNlh->nlmsg_type == RTM_NEWLINK ? "new" : "del"));
 
-  UniquePtr<NetlinkLink> link(new NetlinkLink());
+  auto link = std::make_unique<NetlinkLink>();
   if (!link->Init(aNlh)) {
     return;
   }
@@ -810,7 +807,7 @@ void NetlinkService::OnAddrMessage(struct nlmsghdr* aNlh) {
   LOG(("NetlinkService::OnAddrMessage [type=%s]",
        aNlh->nlmsg_type == RTM_NEWADDR ? "new" : "del"));
 
-  UniquePtr<NetlinkAddress> address(new NetlinkAddress());
+  auto address = std::make_unique<NetlinkAddress>();
   if (!address->Init(aNlh)) {
     return;
   }
@@ -902,7 +899,7 @@ void NetlinkService::OnRouteMessage(struct nlmsghdr* aNlh) {
   LOG(("NetlinkService::OnRouteMessage [type=%s]",
        aNlh->nlmsg_type == RTM_NEWROUTE ? "new" : "del"));
 
-  UniquePtr<NetlinkRoute> route(new NetlinkRoute());
+  auto route = std::make_unique<NetlinkRoute>();
   if (!route->Init(aNlh)) {
     return;
   }
@@ -1000,7 +997,7 @@ void NetlinkService::OnNeighborMessage(struct nlmsghdr* aNlh) {
   LOG(("NetlinkService::OnNeighborMessage [type=%s]",
        aNlh->nlmsg_type == RTM_NEWNEIGH ? "new" : "del"));
 
-  UniquePtr<NetlinkNeighbor> neigh(new NetlinkNeighbor());
+  auto neigh = std::make_unique<NetlinkNeighbor>();
   if (!neigh->Init(aNlh)) {
     return;
   }
@@ -1234,7 +1231,10 @@ NetlinkService::Run() {
 nsresult NetlinkService::Init(NetlinkServiceListener* aListener) {
   nsresult rv;
 
+  // No lock needed: Init() runs before the netlink thread starts.
+  MOZ_PUSH_IGNORE_THREAD_SAFETY
   mListener = aListener;
+  MOZ_POP_THREAD_SAFETY
 
   if (inet_pton(AF_INET, ROUTE_CHECK_IPV4, &mRouteCheckIPv4) != 1) {
     LOG(("Cannot parse address " ROUTE_CHECK_IPV4));
@@ -1837,7 +1837,7 @@ void NetlinkService::CalculateNetworkID() {
       } else {
         glean::network::id.AccumulateSingleSample(4);  // Both!
       }
-      mNetworkId = output;
+      mNetworkId = std::move(output);
       idChanged = true;
     } else {
       // same id

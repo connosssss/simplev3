@@ -10,9 +10,7 @@ const { AppConstants } = ChromeUtils.importESModule(
   "resource://gre/modules/AppConstants.sys.mjs"
 );
 
-const defaultBranch = Services.prefs.getDefaultBranch(
-  SearchUtils.BROWSER_SEARCH_PREF
-);
+const defaultBranch = Services.prefs.getDefaultBranch("browser.search.");
 const baseURL = "https://example.com/search?";
 
 const CONFIG = [
@@ -54,15 +52,12 @@ add_task(async function test_pref_initial_value() {
   // on nightly builds. For non-nightly builds, check that modifying on the
   // normal branch doesn't work.
   if (!AppConstants.NIGHTLY_BUILD) {
-    Services.prefs.setCharPref(
-      SearchUtils.BROWSER_SEARCH_PREF + "param.code",
-      "bad"
-    );
+    Services.prefs.setCharPref("browser.search.param.code", "bad");
   }
 
-  await Services.search.init();
+  await SearchService.init();
 
-  const engine = Services.search.getEngineById("preferenceEngine");
+  const engine = SearchService.getEngineById("preferenceEngine");
   let expectedCode =
     SearchUtils.MODIFIED_APP_CHANNEL == "esr" ? "enterprise" : "good&id=unique";
   let searchParams = new URL(engine.getSubmission("foo").uri.spec).searchParams;
@@ -78,14 +73,14 @@ add_task(async function test_pref_initial_value() {
   // branch. Normally, this won't be an issue, since we don't expect users
   // to be playing with these prefs, and worst-case, they'll just get the
   // actual change on restart.
-  Services.prefs.clearUserPref(SearchUtils.BROWSER_SEARCH_PREF + "param.code");
+  Services.prefs.clearUserPref("browser.search.param.code");
 });
 
 add_task(async function test_pref_updated() {
   // Update the pref without re-init nor restart.
   defaultBranch.setCharPref("param.code", "supergood&id=unique123456");
 
-  const engine = Services.search.getEngineById("preferenceEngine");
+  const engine = SearchService.getEngineById("preferenceEngine");
   let expectedCode =
     SearchUtils.MODIFIED_APP_CHANNEL == "esr"
       ? "enterprise"
@@ -107,7 +102,7 @@ add_task(
     // Note you can't delete a preference from the default branch.
     defaultBranch.setCharPref("param.code", "");
 
-    let engine = Services.search.getEngineById("preferenceEngine");
+    let engine = SearchService.getEngineById("preferenceEngine");
     Assert.equal(
       engine.getSubmission("foo").uri.spec,
       baseURL + "q=foo",
@@ -121,7 +116,7 @@ add_task(async function test_pref_updated_enterprise() {
   defaultBranch.setCharPref("param.code", "supergood&id=unique123456");
   await enableEnterprise();
 
-  const engine = Services.search.getEngineById("preferenceEngine");
+  const engine = SearchService.getEngineById("preferenceEngine");
   Assert.equal(
     engine.getSubmission("foo").uri.spec,
     baseURL + "code=enterprise&q=foo",

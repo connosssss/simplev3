@@ -1,13 +1,13 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "RemoteEncoderModule.h"
+
 #include "RemoteDecodeUtils.h"
-#include "RemoteMediaDataEncoderChild.h"
+#include "RemoteMediaDataEncoder.h"
 #include "RemoteMediaManagerChild.h"
+#include "nsThreadUtils.h"
 
 #ifdef MOZ_APPLEMEDIA
 #  include "AppleUtils.h"
@@ -56,14 +56,15 @@ already_AddRefed<MediaDataEncoder> RemoteEncoderModule::CreateEncoder(
       RemoteMediaManagerChild::GetManagerThread();
   if (!thread) {
     // Shutdown has begun.
-    MOZ_LOG(sPEMLog, LogLevel::Debug,
-            ("Sandbox %s encoder requested codec %d after shutdown",
-             RemoteMediaInToStr(mLocation), static_cast<int>(aConfig.mCodec)));
+    MOZ_LOG_FMT(sPEMLog, LogLevel::Debug,
+                "Sandbox {} encoder requested codec {} after shutdown",
+                RemoteMediaInToStr(mLocation),
+                static_cast<int>(aConfig.mCodec));
     return nullptr;
   }
 
   auto encoder =
-      MakeRefPtr<RemoteMediaDataEncoderChild>(std::move(thread), mLocation);
+      MakeRefPtr<RemoteMediaDataEncoder>(std::move(thread), mLocation);
 
   // This returns a promise, but we know that once it returns, the only
   // interactions the caller can do will require a dispatch to the manager
@@ -81,10 +82,10 @@ RemoteEncoderModule::AsyncCreateEncoder(const EncoderConfig& aEncoderConfig,
       RemoteMediaManagerChild::GetManagerThread();
   if (!thread) {
     // Shutdown has begun.
-    MOZ_LOG(sPEMLog, LogLevel::Debug,
-            ("Sandbox %s encoder requested codec %d after shutdown",
-             RemoteMediaInToStr(mLocation),
-             static_cast<int>(aEncoderConfig.mCodec)));
+    MOZ_LOG_FMT(sPEMLog, LogLevel::Debug,
+                "Sandbox {} encoder requested codec {} after shutdown",
+                RemoteMediaInToStr(mLocation),
+                static_cast<int>(aEncoderConfig.mCodec));
     return PlatformEncoderModule::CreateEncoderPromise::CreateAndReject(
         MediaResult(NS_ERROR_DOM_MEDIA_CANCELED,
                     "Remote manager not available"),
@@ -92,7 +93,7 @@ RemoteEncoderModule::AsyncCreateEncoder(const EncoderConfig& aEncoderConfig,
   }
 
   auto encoder =
-      MakeRefPtr<RemoteMediaDataEncoderChild>(std::move(thread), mLocation);
+      MakeRefPtr<RemoteMediaDataEncoder>(std::move(thread), mLocation);
   return RemoteMediaManagerChild::InitializeEncoder(std::move(encoder),
                                                     aEncoderConfig);
 }
@@ -106,6 +107,7 @@ media::EncodeSupportSet RemoteEncoderModule::Supports(
   // TODO(aosmond): The platform specific criteria were copied from the various
   // PEMs in order to pass the WebCodecs WPTs but should eventually be rewritten
   // to generically support any PEM.
+  auto hwPref = aConfig.mHardwarePreference;
 
 #ifdef MOZ_APPLEMEDIA
   // Only two temporal layers supported, and only from 11.3 and more recent
@@ -134,21 +136,54 @@ media::EncodeSupportSet RemoteEncoderModule::Supports(
         return media::EncodeSupportSet{};
     }
   }
+
+  // Some hardware encoders have poor realtime performance, as measured by
+  // the latency between frames. If the config is realtime, and hardware
+  // is required, hardware is allowed, but otherwise not. See bug 2049606.
+  if ((aConfig.mCodec == CodecType::VP8 || aConfig.mCodec == CodecType::VP9) &&
+      aConfig.mUsage == Usage::Realtime &&
+      aConfig.mHardwarePreference == HardwarePreference::None) {
+    hwPref = HardwarePreference::RequireSoftware;
+  }
 #endif
 
-  return SupportsCodec(aConfig.mCodec);
+  media::EncodeSupportSet supports = SupportsCodec(aConfig.mCodec);
+  switch (hwPref) {
+    case HardwarePreference::RequireHardware:
+      supports -= media::EncodeSupport::SoftwareEncode;
+      break;
+    case HardwarePreference::RequireSoftware:
+      supports -= media::EncodeSupport::HardwareEncode;
+      break;
+    default:
+      break;
+  }
+  return supports;
 }
 
 media::EncodeSupportSet RemoteEncoderModule::SupportsCodec(
     CodecType aCodecType) const {
   media::EncodeSupportSet supports =
       RemoteMediaManagerChild::Supports(mLocation, aCodecType);
-  MOZ_LOG(sPEMLog, LogLevel::Debug,
-          ("Sandbox %s encoder %s requested codec %d",
-           RemoteMediaInToStr(mLocation),
-           supports.isEmpty() ? "supports" : "rejects",
-           static_cast<int>(aCodecType)));
+  MOZ_LOG_FMT(sPEMLog, LogLevel::Debug,
+              "Sandbox {} encoder {} requested codec {}",
+              RemoteMediaInToStr(mLocation),
+              !supports.isEmpty() ? "supports" : "rejects",
+              static_cast<int>(aCodecType));
   return supports;
+}
+
+RefPtr<RemoteEncoderModule::SupportsEncoderPromise>
+RemoteEncoderModule::SupportsAsync(const EncoderConfig& aConfig) const {
+  return RemoteMediaManagerChild::EnsureCodecSupportFor(mLocation)->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [this, self = RefPtr(this), aConfig](bool) {
+        return SupportsEncoderPromise::CreateAndResolve(Supports(aConfig),
+                                                        __func__);
+      },
+      [](nsresult aRv) {
+        return SupportsEncoderPromise::CreateAndReject(aRv, __func__);
+      });
 }
 
 }  // namespace mozilla

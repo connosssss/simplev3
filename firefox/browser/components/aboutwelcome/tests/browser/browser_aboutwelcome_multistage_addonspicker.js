@@ -7,16 +7,16 @@ const { AboutWelcomeParent } = ChromeUtils.importESModule(
 const { AboutWelcomeTelemetry } = ChromeUtils.importESModule(
   "resource:///modules/aboutwelcome/AboutWelcomeTelemetry.sys.mjs"
 );
-const { AWScreenUtils } = ChromeUtils.importESModule(
-  "resource:///modules/aboutwelcome/AWScreenUtils.sys.mjs"
+const { ASRouterScreenUtils } = ChromeUtils.importESModule(
+  "resource:///modules/asrouter/ASRouterScreenUtils.sys.mjs"
 );
 const { InternalTestingProfileMigrator } = ChromeUtils.importESModule(
-  "resource:///modules/InternalTestingProfileMigrator.sys.mjs"
+  "moz-src:///browser/components/migration/InternalTestingProfileMigrator.sys.mjs"
 );
 
 async function clickVisibleButton(browser, selector) {
   // eslint-disable-next-line no-shadow
-  await ContentTask.spawn(browser, { selector }, async ({ selector }) => {
+  await SpecialPowers.spawn(browser, [{ selector }], async ({ selector }) => {
     function getVisibleElement() {
       for (const el of content.document.querySelectorAll(selector)) {
         if (el.offsetParent !== null) {

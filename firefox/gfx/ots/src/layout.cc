@@ -190,7 +190,7 @@ bool ParseClassDefFormat1(const ots::Font *font,
   if (!subtable.ReadU16(&start_glyph)) {
     return OTS_FAILURE_MSG("Failed to read starting glyph of class definition");
   }
-  if (start_glyph > num_glyphs) {
+  if (start_glyph >= num_glyphs) {
     return OTS_FAILURE_MSG("Bad starting glyph %d in class definition", start_glyph);
   }
 
@@ -281,7 +281,7 @@ bool ParseCoverageFormat1(const ots::Font *font,
     if (!subtable.ReadU16(&glyph)) {
       return OTS_FAILURE_MSG("Failed to read glyph %d in coverage", i);
     }
-    if (glyph > num_glyphs) {
+    if (glyph >= num_glyphs) {
       return OTS_FAILURE_MSG("bad glyph ID: %u", glyph);
     }
   }
@@ -386,7 +386,7 @@ bool ParseRuleSubtable(const ots::Font *font,
     if (!subtable.ReadU16(&glyph_id)) {
       return OTS_FAILURE_MSG("Failed to read glyph %d", i);
     }
-    if (glyph_id > num_glyphs) {
+    if (glyph_id >= num_glyphs) {
       return OTS_FAILURE_MSG("Bad glyph %d for entry %d", glyph_id, i);
     }
   }
@@ -489,8 +489,8 @@ bool ParseClassRuleTable(const ots::Font *font,
     return OTS_FAILURE_MSG("Failed to read header of class rule table");
   }
 
-  if (glyph_count == 0 || glyph_count >= num_glyphs) {
-    return OTS_FAILURE_MSG("Bad glyph count %d in class rule table", glyph_count);
+  if (glyph_count == 0) {
+    return OTS_FAILURE_MSG("Glyph count cannot be 0 in class rule table");
   }
 
   // ClassRule table contains an array of classes. Each value of classes
@@ -614,9 +614,6 @@ bool ParseContextFormat3(const ots::Font *font,
     return OTS_FAILURE_MSG("Failed to read header in context format 3");
   }
 
-  if (glyph_count >= num_glyphs) {
-    return OTS_FAILURE_MSG("Bad glyph count %d in context format 3", glyph_count);
-  }
   const unsigned lookup_record_end = 2 * static_cast<unsigned>(glyph_count) +
       4 * static_cast<unsigned>(lookup_count) + 6;
   if (lookup_record_end > std::numeric_limits<uint16_t>::max()) {
@@ -662,7 +659,7 @@ bool ParseChainRuleSubtable(const ots::Font *font,
     if (!subtable.ReadU16(&glyph_id)) {
       return OTS_FAILURE_MSG("Failed to read backtrack glyph %d in chain rule subtable", i);
     }
-    if (glyph_id > num_glyphs) {
+    if (glyph_id >= num_glyphs) {
       return OTS_FAILURE_MSG("Bad glyph id %d for bactrack glyph %d in chain rule subtable", glyph_id, i);
     }
   }
@@ -679,7 +676,7 @@ bool ParseChainRuleSubtable(const ots::Font *font,
     if (!subtable.ReadU16(&glyph_id)) {
       return OTS_FAILURE_MSG("Failed to read input glyph %d in chain rule subtable", i);
     }
-    if (glyph_id > num_glyphs) {
+    if (glyph_id >= num_glyphs) {
       return OTS_FAILURE_MSG("Bad glyph id %d for input glyph %d in chain rule subtable", glyph_id, i);
     }
   }
@@ -693,7 +690,7 @@ bool ParseChainRuleSubtable(const ots::Font *font,
     if (!subtable.ReadU16(&glyph_id)) {
       return OTS_FAILURE_MSG("Failed to read lookahead glyph %d in chain rule subtable", i);
     }
-    if (glyph_id > num_glyphs) {
+    if (glyph_id >= num_glyphs) {
       return OTS_FAILURE_MSG("Bad glyph id %d for lookadhead glyph %d in chain rule subtable", glyph_id, i);
     }
   }

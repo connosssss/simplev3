@@ -49,6 +49,7 @@ class JUnitTestRunner(MochitestDesktop):
         self.verbose = False
         self.http3Server = None
         self.http2Server = None
+        self.mozHttp2Server = None
         self.dohServer = None
         if (
             options.log_tbpl_level == "debug"
@@ -88,7 +89,10 @@ class JUnitTestRunner(MochitestDesktop):
         self.cleanup()
         self.device.clear_logcat()
         self.build_profile()
-        self.startServers(self.options, debuggerInfo=None, public=True)
+        if self.startServers(self.options, debuggerInfo=None, public=True) is False:
+            raise RuntimeError(
+                "Failed to start servers: a required port is already in use"
+            )
         self.log.debug("Servers started")
 
     def collectLogcatForCurrentTest(self):
@@ -114,6 +118,14 @@ class JUnitTestRunner(MochitestDesktop):
         """
         return False
 
+    def needsParakeetModelServer(self, options):
+        """
+        Overrides MochitestDesktop.needsParakeetModelServer and always returns
+        False as the junit tests do not use the parakeet model server. This is
+        needed to satisfy MochitestDesktop.startServers.
+        """
+        return False
+
     def server_init(self):
         """
         Additional initialization required to satisfy MochitestDesktop.startServers
@@ -122,6 +134,7 @@ class JUnitTestRunner(MochitestDesktop):
         self.server = None
         self.wsserver = None
         self.websocketProcessBridge = None
+        self.parakeetModelServer = None
         self.SERVER_STARTUP_TIMEOUT = 180 if mozinfo.info.get("debug") else 90
         if self.options.remoteWebServer is None:
             self.options.remoteWebServer = moznetwork.get_ip()
@@ -160,15 +173,15 @@ class JUnitTestRunner(MochitestDesktop):
         self.merge_base_profiles(self.options, "geckoview-junit")
 
         if self.options.web_content_isolation_strategy is not None:
-            self.options.extra_prefs.append(
+            self.options.extraPrefs.append(
                 "fission.webContentIsolationStrategy=%s"
                 % self.options.web_content_isolation_strategy
             )
-        self.options.extra_prefs.append("fission.autostart=true")
+        self.options.extraPrefs.append("fission.autostart=true")
         if self.options.disable_fission:
-            self.options.extra_prefs.pop()
-            self.options.extra_prefs.append("fission.autostart=false")
-        prefs = parse_preferences(self.options.extra_prefs)
+            self.options.extraPrefs.pop()
+            self.options.extraPrefs.append("fission.autostart=false")
+        prefs = parse_preferences(self.options.extraPrefs)
         self.profile.set_preferences(prefs)
 
         if self.fillCertificateDB(self.options):
@@ -258,6 +271,12 @@ class JUnitTestRunner(MochitestDesktop):
             env["MOZ_FORCE_DISABLE_FISSION"] = "1"
         else:
             env["MOZ_FORCE_ENABLE_FISSION"] = "1"
+        if self.options.enable_isolated_zygote_process:
+            env["MOZ_ANDROID_CONTENT_SERVICE_ISOLATED_WITH_ZYGOTE"] = "1"
+        else:
+            env["MOZ_ANDROID_CONTENT_SERVICE_ISOLATED_WITH_ZYGOTE"] = "0"
+        if self.options.isolated_process:
+            env["MOZ_ANDROID_CONTENT_SERVICE_ISOLATED_PROCESS"] = "1"
 
         # Add additional env variables
         for [key, value] in [p.split("=", 1) for p in self.options.add_env]:
@@ -475,7 +494,7 @@ class JunitArgumentParser(argparse.ArgumentParser):
     """
 
     def __init__(self, **kwargs):
-        super(JunitArgumentParser, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self.add_argument(
             "--appname",
@@ -597,11 +616,25 @@ class JunitArgumentParser(argparse.ArgumentParser):
             help="Run the tests without Fission (site isolation) enabled.",
         )
         self.add_argument(
+            "--enable-isolated-zygote-process",
+            action="store_true",
+            dest="enable_isolated_zygote_process",
+            default=False,
+            help="Run with app Zygote preloading enabled.",
+        )
+        self.add_argument(
             "--web-content-isolation-strategy",
             type=int,
             dest="web_content_isolation_strategy",
             help="Strategy used to determine whether or not a particular site should load into "
             "a webIsolated content process, see fission.webContentIsolationStrategy.",
+        )
+        self.add_argument(
+            "--enable-isolated-process",
+            action="store_true",
+            dest="isolated_process",
+            default=False,
+            help="Run the tests with content service isolated process enabled.",
         )
         self.add_argument(
             "--repeat",
@@ -619,20 +652,22 @@ class JunitArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--setpref",
             action="append",
-            dest="extra_prefs",
+            dest="extraPrefs",
             default=[],
             metavar="PREF=VALUE",
             help="Defines an extra user preference.",
         )
         # Additional options for server.
-        self.add_argument(
-            "--certificate-path",
-            action="store",
-            type=str,
-            dest="certPath",
-            default=None,
-            help="Path to directory containing certificate store.",
-        ),
+        (
+            self.add_argument(
+                "--certificate-path",
+                action="store",
+                type=str,
+                dest="certPath",
+                default=None,
+                help="Path to directory containing certificate store.",
+            ),
+        )
         self.add_argument(
             "--http-port",
             action="store",
@@ -678,9 +713,7 @@ def run_test_harness(parser, options):
     if hasattr(options, "log"):
         log = options.log
     else:
-        log = mozlog.commandline.setup_logging(
-            "runjunit", options, {"tbpl": sys.stdout}
-        )
+        log = mozlog.commandline.setup_logging("runjunit", options, {"raw": sys.stdout})
     runner = JUnitTestRunner(log, options)
     result = -1
     try:

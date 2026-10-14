@@ -1,9 +1,6 @@
 [DEFAULT]
 support-files = [
   "empty.html",
-  "image.gif",
-  "image.png",
-  "image_server.sjs",
 ]
 tags = "os_integration"
 
@@ -12,17 +9,19 @@ tags = "os_integration"
 
 ["test_alerts.html"]
 
+["test_alerts_callbacks.html"]
+
+["test_count_id.html"]
+
 ["test_alerts_noobserve.html"]
 
 ["test_alerts_requireinteraction.html"]
 
-["test_image.html"]
-skip-if = ["verify"]
-
 ["test_invalid_utf16.html"]
-run-if = ["os == 'win'"] # Bug 1836526
+run-if = [
+  "os == 'win'", # Bug 1836526
+]
 
 ["test_multiple_alerts.html"]
 
 ["test_principal.html"]
-skip-if = ["verify"] # Bug 1810860

@@ -1,29 +1,34 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=2 expandtab: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsDeviceContext.h"
+
 #include <algorithm>  // for max
+
 #include "gfxContext.h"
 #include "gfxPoint.h"    // for gfxSize
 #include "gfxTextRun.h"  // for gfxFontGroup
 #include "mozilla/LookAndFeel.h"
-#include "mozilla/gfx/PathHelpers.h"
-#include "mozilla/gfx/PrintTarget.h"
 #include "mozilla/ProfilerMarkers.h"
 #include "mozilla/StaticPrefs_layout.h"
-#include "mozilla/Try.h"            // for MOZ_TRY
-#include "mozilla/widget/Screen.h"  // for Screen
-#include "nsDebug.h"                // for NS_ASSERTION, etc
-#include "nsFontMetrics.h"          // for nsFontMetrics
-#include "nsIDeviceContextSpec.h"   // for nsIDeviceContextSpec
-#include "nsIWidget.h"              // for nsIWidget, NS_NATIVE_WINDOW
-#include "nsRect.h"                 // for nsRect
-#include "nsTArray.h"               // for nsTArray, nsTArray_Impl
+#include "mozilla/Try.h"                // for MOZ_TRY
+#include "mozilla/dom/WindowContext.h"  // for WindowContext
 #include "mozilla/gfx/Logging.h"
+#include "mozilla/gfx/PathHelpers.h"
+#include "mozilla/gfx/PrintTarget.h"
+#include "mozilla/widget/Screen.h"         // for Screen
 #include "mozilla/widget/ScreenManager.h"  // for ScreenManager
+#include "nsDebug.h"                       // for NS_ASSERTION, etc
+#include "nsFontMetrics.h"                 // for nsFontMetrics
+#include "nsIDeviceContextSpec.h"          // for nsIDeviceContextSpec
+#include "nsIWidget.h"                     // for nsIWidget, NS_NATIVE_WINDOW
+#include "nsRect.h"                        // for nsRect
+#include "nsTArray.h"                      // for nsTArray, nsTArray_Impl
+
+#ifdef ACCESSIBILITY
+#  include "mozilla/a11y/PdfStructTreeBuilder.h"
+#endif
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -44,6 +49,19 @@ nsDeviceContext::nsDeviceContext()
 
 nsDeviceContext::~nsDeviceContext() = default;
 
+int32_t nsDeviceContext::ComputeAppUnitsPerDevPixelForWidgetScale(
+    CSSToLayoutDeviceScale aScale) {
+  return std::max(1, NS_lround(AppUnitsPerCSSPixel() / aScale.scale));
+}
+
+int32_t nsDeviceContext::ApplyFullZoomToAPD(int32_t aUnzoomedAppUnits,
+                                            float aFullZoom) {
+  if (aFullZoom == 1.0f) {
+    return aUnzoomedAppUnits;
+  }
+  return std::max(1, NSToIntRound(float(aUnzoomedAppUnits) / aFullZoom));
+}
+
 void nsDeviceContext::SetDPI() {
   float dpi;
 
@@ -53,7 +71,8 @@ void nsDeviceContext::SetDPI() {
     mPrintingScale = mDeviceContextSpec->GetPrintingScale();
     mPrintingTranslate = mDeviceContextSpec->GetPrintingTranslate();
     mAppUnitsPerDevPixelAtUnitFullZoom =
-        NS_lround((AppUnitsPerCSSPixel() * 96) / dpi);
+        ComputeAppUnitsPerDevPixelForWidgetScale(
+            CSSToLayoutDeviceScale(dpi / 96.0));
   } else {
     // A value of -1 means use the maximum of 96 and the system DPI.
     // A value of 0 means use the system DPI. A positive value is used as the
@@ -76,7 +95,7 @@ void nsDeviceContext::SetDPI() {
         mWidget ? mWidget->GetDefaultScale() : CSSToLayoutDeviceScale(1.0);
     MOZ_ASSERT(scale.scale > 0.0);
     mAppUnitsPerDevPixelAtUnitFullZoom =
-        std::max(1, NS_lround(AppUnitsPerCSSPixel() / scale.scale));
+        ComputeAppUnitsPerDevPixelForWidgetScale(scale);
   }
 
   NS_ASSERTION(dpi != -1.0, "no dpi set");
@@ -224,19 +243,21 @@ nsresult nsDeviceContext::InitForPrinting(nsIDeviceContextSpec* aDevice) {
 
 nsresult nsDeviceContext::BeginDocument(const nsAString& aTitle,
                                         const nsAString& aPrintToFileName,
+                                        dom::WindowContext* aWindowContext,
                                         int32_t aStartPage, int32_t aEndPage) {
   MOZ_DIAGNOSTIC_ASSERT(!mIsCurrentlyPrintingDoc,
                         "Mismatched BeginDocument/EndDocument calls");
   AUTO_PROFILER_MARKER_TEXT("DeviceContext Printing", LAYOUT_Printing, {},
                             "nsDeviceContext::BeginDocument"_ns);
 
-  nsresult rv = mPrintTarget->BeginPrinting(aTitle, aPrintToFileName,
-                                            aStartPage, aEndPage);
+  mInnerWindowId = aWindowContext ? aWindowContext->InnerWindowId() : 0;
+  nsresult rv = mPrintTarget->BeginPrinting(
+      aTitle, aPrintToFileName, mInnerWindowId, aStartPage, aEndPage);
 
   if (NS_SUCCEEDED(rv)) {
     if (mDeviceContextSpec) {
-      rv = mDeviceContextSpec->BeginDocument(aTitle, aPrintToFileName,
-                                             aStartPage, aEndPage);
+      rv = mDeviceContextSpec->BeginDocument(
+          aTitle, aPrintToFileName, aWindowContext, aStartPage, aEndPage);
     }
     mIsCurrentlyPrintingDoc = true;
   }
@@ -256,6 +277,17 @@ RefPtr<PrintEndDocumentPromise> nsDeviceContext::EndDocument() {
                             "nsDeviceContext::EndDocument"_ns);
 
   mIsCurrentlyPrintingDoc = false;
+#ifdef ACCESSIBILITY
+  // PdfStructTreeBuilder::Init is called in
+  // a11y::DocManager::NotifyOfPrintDocument for same-process documents or
+  // a11y::DocAccessibleParent::RecvPrinting for remote documents, triggered by
+  // nsPrintJob::SetupToPrintContent. This is because the accessibility tree
+  // needs to be built from the DOM document and potentially sent async from the
+  // content process before printing begins. However, cleanup is much simpler:
+  // we can do it synchronously as soon as we're finished printing and
+  // nsDeviceContext will always be notified when we finish printing.
+  mozilla::a11y::PdfStructTreeBuilder::Done(mInnerWindowId);
+#endif
 
   if (mPrintTarget) {
     auto result = mPrintTarget->EndPrinting();
@@ -282,9 +314,13 @@ nsresult nsDeviceContext::AbortDocument() {
 
   nsresult rv = mPrintTarget->AbortPrinting();
   mIsCurrentlyPrintingDoc = false;
+#ifdef ACCESSIBILITY
+  // See the comment in EndDocument.
+  mozilla::a11y::PdfStructTreeBuilder::Done(mInnerWindowId);
+#endif
 
   if (mDeviceContextSpec) {
-    Unused << mDeviceContextSpec->EndDocument();
+    (void)mDeviceContextSpec->EndDocument();
   }
 
   mPrintTarget = nullptr;
@@ -365,22 +401,15 @@ bool nsDeviceContext::SetFullZoom(float aScale) {
   return oldAppUnitsPerDevPixel != mAppUnitsPerDevPixel;
 }
 
-static int32_t ApplyFullZoom(int32_t aUnzoomedAppUnits, float aFullZoom) {
-  if (aFullZoom == 1.0f) {
-    return aUnzoomedAppUnits;
-  }
-  return std::max(1, NSToIntRound(float(aUnzoomedAppUnits) / aFullZoom));
-}
-
 int32_t nsDeviceContext::AppUnitsPerDevPixelInTopLevelChromePage() const {
   // The only zoom that applies to chrome pages is the system zoom, if any.
-  return ApplyFullZoom(mAppUnitsPerDevPixelAtUnitFullZoom,
-                       LookAndFeel::SystemZoomSettings().mFullZoom);
+  return ApplyFullZoomToAPD(mAppUnitsPerDevPixelAtUnitFullZoom,
+                            LookAndFeel::SystemZoomSettings().mFullZoom);
 }
 
 void nsDeviceContext::UpdateAppUnitsForFullZoom() {
   mAppUnitsPerDevPixel =
-      ApplyFullZoom(mAppUnitsPerDevPixelAtUnitFullZoom, mFullZoom);
+      ApplyFullZoomToAPD(mAppUnitsPerDevPixelAtUnitFullZoom, mFullZoom);
   // adjust mFullZoom to reflect appunit rounding
   mFullZoom = float(mAppUnitsPerDevPixelAtUnitFullZoom) / mAppUnitsPerDevPixel;
 }

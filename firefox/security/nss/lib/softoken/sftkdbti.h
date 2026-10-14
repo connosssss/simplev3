@@ -18,13 +18,16 @@ struct SFTKDBHandleStr {
     int newDefaultIterationCount;
     SECItem *oldKey;
     SECItem *updatePasswordKey;
-    PZLock *passwordLock;
+    PRLock *passwordLock;
     SFTKDBHandle *peerDB;
     SDB *update;
     char *updateID;
     PRBool updateDBIsInit;
     PRBool usesLegacyStorage;
 };
+
+extern const CK_ATTRIBUTE_TYPE sftkdb_known_attributes[];
+extern size_t sftkdb_known_attributes_size;
 
 #define SFTK_KEYDB_TYPE 0x40000000
 #define SFTK_CERTDB_TYPE 0x00000000

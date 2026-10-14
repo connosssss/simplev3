@@ -10,8 +10,8 @@ origin:
 
   url: http://hunspell.github.io
 
-  release: 1180421f50f211984211e968eb6801ffd3390b8f (2022-08-22T13:53:31Z).
-  revision: 1180421f50f211984211e968eb6801ffd3390b8f
+  release: e8342700b4dde06130cdbba75f7e6500ffa58864 (2026-10-04T18:42:59Z).
+  revision: e8342700b4dde06130cdbba75f7e6500ffa58864
   license: MPL-1.1
   license-file: COPYING.MPL
 
@@ -39,8 +39,6 @@ vendoring:
   patches:
     - patches/bug1410214.patch
     - patches/bug1653659.patch
-    - patches/bug1739761.patch
-    - patches/bug1838113.patch
 
   update-actions:
     - action: move-dir
@@ -49,9 +47,19 @@ vendoring:
     - action: delete-path
       path: "src/Makefile.am"
     - action: delete-path
+      path: "tests/unit/data/Makefile.am"
+    - action: delete-path
+      path: "tests/unit/data/Makefile.in"
+    - action: delete-path
+      path: "tests/unit/data/suggestiontest/Makefile.am"
+    - action: delete-path
+      path: "tests/unit/data/suggestiontest/Makefile.in"
+    - action: delete-path
       path: "src/filemgr.cxx"
     - action: delete-path
       path: "src/hunvisapi.h.in"
+    - action: delete-path
+      path: "src/hunversion.h.in"
     - action: delete-path
       path: "src/hunzip.cxx"
     - action: delete-path

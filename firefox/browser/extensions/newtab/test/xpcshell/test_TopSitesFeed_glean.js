@@ -7,7 +7,7 @@ ChromeUtils.defineESModuleGetters(this, {
   ContileIntegration: "resource://newtab/lib/TopSitesFeed.sys.mjs",
   NimbusFeatures: "resource://nimbus/ExperimentAPI.sys.mjs",
   sinon: "resource://testing-common/Sinon.sys.mjs",
-  SearchService: "resource://gre/modules/SearchService.sys.mjs",
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
   TopSitesFeed: "resource://newtab/lib/TopSitesFeed.sys.mjs",
 });
 
@@ -122,7 +122,10 @@ add_setup(async () => {
   Services.fog.initializeFOG();
 
   let sandbox = sinon.createSandbox();
-  sandbox.stub(SearchService.prototype, "init").resolves();
+  sandbox.stub(SearchService, "init").resolves();
+  sandbox.stub(SearchService, "defaultEngine").get(() => {
+    return { identifier: "ddg", searchUrlDomain: "duckduckgo.com" };
+  });
 
   const nimbusStub = sandbox.stub(NimbusFeatures.newtab, "getVariable");
   nimbusStub.withArgs(NIMBUS_VARIABLE_CONTILE_ENABLED).returns(true);
@@ -2129,6 +2132,48 @@ add_task(async function test_reset_telemetry_data() {
     JSON.stringify(expectedResult)
   );
   Services.prefs.clearUserPref(TOP_SITES_BLOCKED_SPONSORS_PREF);
+  sandbox.restore();
+});
+
+async function runGetLinksWithPinnedSites(sandbox, pinnedSites) {
+  let { feed, fetchStub } = prepFeed(getTopSitesFeedForTest(sandbox), sandbox);
+  fetchStub.resolves({ ok: true, status: 204 });
+  feed.pinnedCache = {
+    request: sandbox.stub().resolves(pinnedSites),
+    expire: sandbox.stub(),
+  };
+  sandbox.stub(feed, "_maybeInsertSearchShortcuts").resolves(false);
+  await feed._readDefaults();
+  await feed.getLinksWithDefaults(false);
+}
+
+add_task(async function test_pinned_count_metric_with_pinned_sites() {
+  let sandbox = sinon.createSandbox();
+  await runGetLinksWithPinnedSites(sandbox, [
+    { url: "https://example.com", label: "Example" },
+    { url: "https://mozilla.org", label: "Mozilla" },
+    null,
+  ]);
+  Assert.equal(Glean.topsites.pinnedCount.testGetValue(), 2);
+  sandbox.restore();
+});
+
+add_task(async function test_pinned_count_metric_with_no_pinned_sites() {
+  let sandbox = sinon.createSandbox();
+  await runGetLinksWithPinnedSites(sandbox, []);
+  Assert.equal(Glean.topsites.pinnedCount.testGetValue(), 0);
+  sandbox.restore();
+});
+
+add_task(async function test_pinned_count_metric_ignores_array_holes() {
+  let sandbox = sinon.createSandbox();
+  // Pinning only the 3rd slot leaves undefined holes at positions 0 and 1.
+  await runGetLinksWithPinnedSites(sandbox, [
+    undefined,
+    undefined,
+    { url: "https://example.com", label: "Example" },
+  ]);
+  Assert.equal(Glean.topsites.pinnedCount.testGetValue(), 1);
   sandbox.restore();
 });
 

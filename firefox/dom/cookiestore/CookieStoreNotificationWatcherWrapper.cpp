@@ -1,16 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "CookieStoreNotificationWatcherWrapper.h"
-#include "CookieStoreNotificationWatcher.h"
+
 #include "CookieStore.h"
+#include "CookieStoreNotificationWatcher.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRef.h"
+#include "nsGlobalWindowInner.h"
 #include "nsProxyRelease.h"
 
 namespace mozilla::dom {
@@ -99,12 +99,12 @@ void CookieStoreNotificationWatcherWrapper::ResolvePromiseWhenNotified(
           mEventTarget(GetCurrentSerialEventTarget()) {}
 
     NS_IMETHOD Run() override {
-      mPromise->MaybeResolveWithUndefined();
-      mPromise = nullptr;
+      if (mPromise) {
+        mPromise->MaybeResolveWithUndefined();
+        mPromise = nullptr;
+      }
       return NS_OK;
     }
-
-    bool HasPromise() const { return !!mPromise; }
 
    private:
     ~PromiseResolver() {
@@ -140,10 +140,8 @@ void CookieStoreNotificationWatcherWrapper::ResolvePromiseWhenNotified(
   auto callback = [resolver = RefPtr(resolver),
                    eventTarget = RefPtr(GetCurrentSerialEventTarget()),
                    workerRef = RefPtr(workerRef)] {
-    if (resolver->HasPromise()) {
-      RefPtr<Runnable> runnable(resolver);
-      eventTarget->Dispatch(runnable.forget());
-    }
+    RefPtr<Runnable> runnable(resolver);
+    eventTarget->Dispatch(runnable.forget());
   };
 
   if (!NS_IsMainThread()) {

@@ -5,6 +5,7 @@
 "use strict";
 
 const {
+  createElement,
   PureComponent,
 } = require("resource://devtools/client/shared/vendor/react.mjs");
 const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
@@ -16,6 +17,7 @@ class ConnectSection extends PureComponent {
       children: PropTypes.node,
       className: PropTypes.string,
       extraContent: PropTypes.node,
+      headerButton: PropTypes.node,
       icon: PropTypes.string.isRequired,
       title: PropTypes.node.isRequired,
     };
@@ -32,11 +34,13 @@ class ConnectSection extends PureComponent {
   }
 
   render() {
-    const { extraContent } = this.props;
+    const { headerButton, extraContent } = this.props;
 
-    return dom.section(
+    return createElement(
+      "moz-card",
       {
-        className: `card connect-section ${this.props.className || ""}`,
+        // "className" does not get applied as "class" on web components
+        class: `connect-section ${this.props.className || ""}`,
       },
       dom.header(
         {
@@ -45,13 +49,15 @@ class ConnectSection extends PureComponent {
         dom.img({
           className: "connect-section__header__icon",
           src: this.props.icon,
+          alt: "",
         }),
-        dom.h1(
+        dom.h3(
           {
-            className: "card__heading connect-section__header__title",
+            className: "connect-section__header__title",
           },
           this.props.title
-        )
+        ),
+        headerButton
       ),
       this.props.children
         ? dom.div(

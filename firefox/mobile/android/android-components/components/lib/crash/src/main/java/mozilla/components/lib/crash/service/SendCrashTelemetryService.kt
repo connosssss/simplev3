@@ -7,7 +7,6 @@ package mozilla.components.lib.crash.service
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -24,12 +23,10 @@ class SendCrashTelemetryService : Service() {
     private val crashReporter: CrashReporter by lazy { CrashReporter.requireInstance }
 
     override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = CrashNotification.ensureChannelExists(this)
-            val notification = NotificationCompat.Builder(this, channel)
-                .setContentTitle(
-                    getString(R.string.mozac_lib_gathering_crash_telemetry_in_progress),
-                )
+        val channel = CrashNotification.ensureChannelExists(this)
+        val notification =
+            NotificationCompat.Builder(this, channel)
+                .setContentTitle(getString(R.string.mozac_lib_gathering_crash_telemetry_in_progress))
                 .setSmallIcon(R.drawable.mozac_lib_crash_notification)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setCategory(NotificationCompat.CATEGORY_ERROR)
@@ -37,9 +34,8 @@ class SendCrashTelemetryService : Service() {
                 .setProgress(0, 0, true)
                 .build()
 
-            val notificationId = SharedIdsHelper.getIdForTag(this, NOTIFICATION_TAG)
-            startForeground(notificationId, notification)
-        }
+        val notificationId = SharedIdsHelper.getIdForTag(this, NOTIFICATION_TAG)
+        startForeground(notificationId, notification)
 
         NotificationManagerCompat.from(this).cancel(NOTIFICATION_TAG, NOTIFICATION_ID)
         val crash = Crash.fromIntent(intent)

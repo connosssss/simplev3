@@ -13,29 +13,18 @@ loadScripts(
 ChromeUtils.defineESModuleGetters(this, {
   PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
-  UrlbarProvider: "resource:///modules/UrlbarUtils.sys.mjs",
-  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.sys.mjs",
-  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
+  UrlbarProvider: "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs",
+  ProvidersManager:
+    "moz-src:///browser/components/urlbar/UrlbarProvidersManager.sys.mjs",
+  UrlbarResult: "chrome://browser/content/urlbar/UrlbarResult.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
   UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.sys.mjs",
-  UrlbarUtils: "resource:///modules/UrlbarUtils.sys.mjs",
+  UrlbarUtils: "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs",
 });
 
 function isEventForAutocompleteItem(event) {
-  return event.accessible.role == ROLE_COMBOBOX_OPTION;
-}
-
-function isEventForButton(event) {
-  return event.accessible.role == ROLE_PUSHBUTTON;
-}
-
-function isEventForOneOffEngine(event) {
-  let parent = event.accessible.parent;
-  return (
-    event.accessible.role == ROLE_PUSHBUTTON &&
-    parent &&
-    parent.role == ROLE_GROUPING &&
-    parent.name
-  );
+  // XXX: See bug 2016839
+  return event.accessible.role == ROLE_OPTION;
 }
 
 function isEventForMenuPopup(event) {
@@ -48,9 +37,9 @@ function isEventForMenuItem(event) {
 
 function isEventForResultButton(event) {
   let parent = event.accessible.parent;
+  // XXX: See bug 2016839
   return (
-    event.accessible.role == ROLE_PUSHBUTTON &&
-    parent?.role == ROLE_COMBOBOX_LIST
+    event.accessible.role == ROLE_PUSHBUTTON && parent?.role == ROLE_LISTBOX
   );
 }
 
@@ -66,7 +55,7 @@ class TipTestProvider extends UrlbarProvider {
     return "TipTestProvider";
   }
   get type() {
-    return UrlbarUtils.PROVIDER_TYPE.PROFILE;
+    return UrlbarShared.PROVIDER_TYPE.PROFILE;
   }
   async isActive() {
     return true;
@@ -84,32 +73,29 @@ class TipTestProvider extends UrlbarProvider {
 
 // Check that the URL bar manages accessibility focus appropriately.
 async function runTests() {
-  // TODO: Remove in https://bugzilla.mozilla.org/show_bug.cgi?id=1923383
-  await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.scotchBonnet.enableOverride", false]],
-  });
   registerCleanupFunction(async function () {
     await UrlbarTestUtils.promisePopupClose(window);
     await PlacesUtils.history.clear();
   });
 
   await PlacesTestUtils.addVisits([
-    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    // eslint-disable-next-line sdl/no-insecure-url
     "http://example1.com/blah",
-    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    // eslint-disable-next-line sdl/no-insecure-url
     "http://example2.com/blah",
-    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    // eslint-disable-next-line sdl/no-insecure-url
     "http://example1.com/",
-    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    // eslint-disable-next-line sdl/no-insecure-url
     "http://example2.com/",
   ]);
 
   // Ensure initial state.
   await UrlbarTestUtils.promisePopupClose(window);
 
+  // XXX: See bug 2016839
   let focused = waitForEvent(
     EVENT_FOCUS,
-    event => event.accessible.role == ROLE_ENTRY
+    event => event.accessible.role == ROLE_EDITCOMBOBOX
   );
   gURLBar.focus();
   let event = await focused;
@@ -210,12 +196,6 @@ async function runTests() {
   event = await focused;
   testStates(event.accessible, STATE_FOCUSED);
 
-  info("Ensuring autocomplete focus on arrow up for search settings button");
-  focused = waitForEvent(EVENT_FOCUS, isEventForButton);
-  EventUtils.synthesizeKey("KEY_ArrowUp");
-  event = await focused;
-  testStates(event.accessible, STATE_FOCUSED);
-
   info("Ensuring text box focus when text is typed");
   focused = waitForEvent(EVENT_FOCUS, textBox);
   EventUtils.sendString("z");
@@ -249,18 +229,6 @@ async function runTests() {
     EventUtils.synthesizeKey("KEY_ArrowDown");
   }
 
-  info("Ensuring one-off search button focus on arrow down");
-  focused = waitForEvent(EVENT_FOCUS, isEventForOneOffEngine);
-  EventUtils.synthesizeKey("KEY_ArrowDown");
-  event = await focused;
-  testStates(event.accessible, STATE_FOCUSED);
-
-  info("Ensuring autocomplete focus on arrow up");
-  focused = waitForEvent(EVENT_FOCUS, isEventForAutocompleteItem);
-  EventUtils.synthesizeKey("KEY_ArrowUp");
-  event = await focused;
-  testStates(event.accessible, STATE_FOCUSED);
-
   info("Ensuring text box focus on text selection");
   focused = waitForEvent(EVENT_FOCUS, textBox);
   EventUtils.synthesizeKey("KEY_ArrowLeft", { shiftKey: true });
@@ -286,15 +254,23 @@ async function runTests() {
     // With native context menus, we do not observe accessibility events and we
     // cannot send synthetic key events to the menu.
     info("Opening and closing context native context menu");
-    let contextMenu = gURLBar.querySelector(".textbox-contextmenu");
+    let contextMenu = window.EditContextMenu.popup;
     let popupshown = BrowserTestUtils.waitForEvent(contextMenu, "popupshown");
-    EventUtils.synthesizeMouseAtCenter(gURLBar.querySelector("moz-input-box"), {
-      type: "contextmenu",
-    });
+    // ... we should, however, see a focus event on the input after the
+    // native menu is closed. We await this below to ensure the popup is fully
+    // hidden (to a11y) before moving on.
+    focused = waitForEvent(EVENT_FOCUS, textBox);
+    EventUtils.synthesizeMouseAtCenter(
+      gURLBar.querySelector(".urlbar-input-box"),
+      {
+        type: "contextmenu",
+      }
+    );
     await popupshown;
     let popuphidden = BrowserTestUtils.waitForEvent(contextMenu, "popuphidden");
     contextMenu.hidePopup();
     await popuphidden;
+    await focused;
   } else {
     info(
       "Ensuring context menu gets menu event on launch, and item focus on down"
@@ -303,9 +279,12 @@ async function runTests() {
       nsIAccessibleEvent.EVENT_MENUPOPUP_START,
       isEventForMenuPopup
     );
-    EventUtils.synthesizeMouseAtCenter(gURLBar.querySelector("moz-input-box"), {
-      type: "contextmenu",
-    });
+    EventUtils.synthesizeMouseAtCenter(
+      gURLBar.querySelector(".urlbar-input-box"),
+      {
+        type: "contextmenu",
+      }
+    );
     await menuEvent;
 
     focused = waitForEvent(EVENT_FOCUS, isEventForMenuItem);
@@ -330,56 +309,58 @@ async function runTests() {
 // with the main test.
 async function runTipTests() {
   let matches = [
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.URL,
-      UrlbarUtils.RESULT_SOURCE.HISTORY,
-      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
-      { url: "http://mozilla.org/a" }
-    ),
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.TIP,
-      UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-      {
-        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.URL,
+      source: UrlbarShared.RESULT_SOURCE.HISTORY,
+      // eslint-disable-next-line sdl/no-insecure-url
+      payload: { url: "http://mozilla.org/a" },
+    }),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.TIP,
+      source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+      payload: {
+        // eslint-disable-next-line sdl/no-insecure-url
         helpUrl: "http://example.com/",
         type: "test",
         titleL10n: { id: "urlbar-search-tips-confirm" },
         buttons: [
           {
-            // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+            // eslint-disable-next-line sdl/no-insecure-url
             url: "http://example.com/",
             l10n: { id: "urlbar-search-tips-confirm" },
           },
         ],
-      }
-    ),
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.URL,
-      UrlbarUtils.RESULT_SOURCE.HISTORY,
-      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
-      { url: "http://mozilla.org/b" }
-    ),
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.URL,
-      UrlbarUtils.RESULT_SOURCE.HISTORY,
-      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
-      { url: "http://mozilla.org/c" }
-    ),
+      },
+    }),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.URL,
+      source: UrlbarShared.RESULT_SOURCE.HISTORY,
+      // eslint-disable-next-line sdl/no-insecure-url
+      payload: { url: "http://mozilla.org/b" },
+    }),
+    new UrlbarResult({
+      type: UrlbarShared.RESULT_TYPE.URL,
+      source: UrlbarShared.RESULT_SOURCE.HISTORY,
+      // eslint-disable-next-line sdl/no-insecure-url
+      payload: { url: "http://mozilla.org/c" },
+    }),
   ];
 
   // Ensure the tip appears in the expected position.
   matches[1].suggestedIndex = 2;
 
   let provider = new TipTestProvider(matches);
-  UrlbarProvidersManager.registerProvider(provider);
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  providersManager.registerProvider(provider);
 
   registerCleanupFunction(async function () {
-    UrlbarProvidersManager.unregisterProvider(provider);
+    providersManager.unregisterProvider(provider);
   });
 
+  // XXX: See bug 2016839
   let focused = waitForEvent(
     EVENT_FOCUS,
-    event => event.accessible.role == ROLE_ENTRY
+    event => event.accessible.role == ROLE_EDITCOMBOBOX
   );
   gURLBar.focus();
   let event = await focused;

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-*/
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,6 +5,7 @@
 #ifndef VideoOutput_h
 #define VideoOutput_h
 
+#include "MediaInfo.h"
 #include "MediaTrackListener.h"
 #include "VideoFrameContainer.h"
 
@@ -100,11 +100,11 @@ class VideoOutput : public DirectMediaTrackListener {
         // We ignore null images.
         continue;
       }
-      ImageContainer::NonOwningImage nonOwningImage(
+      images.AppendElement(ImageContainer::NonOwningImage(
           image, chunk.mTimeStamp, frameId, mProducerID,
           chunk.mProcessingDuration, chunk.mMediaTime, chunk.mWebrtcCaptureTime,
-          chunk.mWebrtcReceiveTime, chunk.mRtpTimestamp);
-      images.AppendElement(std::move(nonOwningImage));
+          chunk.mWebrtcReceiveTime, chunk.mRtpTimestamp,
+          Some(chunk.mRotation)));
 
       lastPrincipalHandle = chunk.GetPrincipalHandle();
 
@@ -133,6 +133,7 @@ class VideoOutput : public DirectMediaTrackListener {
 
     mVideoFrameContainer->SetCurrentFrames(
         mFrames[0].second.mFrame.GetIntrinsicSize(), images);
+
     mMainThread->Dispatch(NewRunnableMethod("VideoFrameContainer::Invalidate",
                                             mVideoFrameContainer,
                                             &VideoFrameContainer::Invalidate));
@@ -167,6 +168,13 @@ class VideoOutput : public DirectMediaTrackListener {
     SendFramesEnsureLocked();
   }
   void NotifyRemoved(MediaTrackGraph* aGraph) override {
+    if (NS_IsMainThread()) {
+      mAttachment = State::Detached;
+    } else {
+      aGraph->DispatchToMainThreadStableState(NS_NewRunnableFunction(
+          "VideoOutput::NotifyRemoved",
+          [this, self = RefPtr(this)] { mAttachment = State::Detached; }));
+    }
     // Doesn't need locking by mMutex, since the direct listener is removed from
     // the track before we get notified.
     if (mFrames.Length() <= 1) {
@@ -246,6 +254,10 @@ class VideoOutput : public DirectMediaTrackListener {
   const RefPtr<VideoFrameContainer> mVideoFrameContainer;
   const RefPtr<AbstractThread> mMainThread;
   const ProducerID mProducerID = ImageContainer::AllocateProducerID();
+
+  // Main thread only.
+  enum class State : uint8_t { Attached, Detaching, Detached };
+  Watchable<State> mAttachment = {State::Detached, "VideoOutput::mAttachment"};
 };
 
 /**

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -60,7 +58,7 @@ static PackedRegisterMask ReadRegisterMask(CompactBufferReader& stream) {
 static void WriteFloatRegisterMask(CompactBufferWriter& stream,
                                    FloatRegisters::SetType bits) {
   switch (sizeof(FloatRegisters::SetType)) {
-#ifdef JS_CODEGEN_ARM64
+#if defined(JS_CODEGEN_ARM64) || defined(JS_CODEGEN_LOONG64)
     case 16:
       stream.writeUnsigned64(bits.low());
       stream.writeUnsigned64(bits.high());
@@ -84,7 +82,7 @@ static void WriteFloatRegisterMask(CompactBufferWriter& stream,
 static FloatRegisters::SetType ReadFloatRegisterMask(
     CompactBufferReader& stream) {
   switch (sizeof(FloatRegisters::SetType)) {
-#ifdef JS_CODEGEN_ARM64
+#if defined(JS_CODEGEN_ARM64) || defined(JS_CODEGEN_LOONG64)
     case 16: {
       uint64_t low = stream.readUnsigned64();
       uint64_t high = stream.readUnsigned64();
@@ -233,8 +231,7 @@ void SafepointWriter::writeValueSlots(LSafepoint* safepoint) {
 #endif
 
 #if defined(JS_JITSPEW) && defined(JS_NUNBOX32)
-static void DumpNunboxPart(const LAllocation& a) {
-  Fprinter& out = JitSpewPrinter();
+static void DumpNunboxPart(GenericPrinter& out, const LAllocation& a) {
   if (a.isStackSlot()) {
     out.printf("stack %d", a.toStackSlot()->slot());
   } else if (a.isArgument()) {
@@ -383,13 +380,11 @@ void SafepointWriter::writeNunboxParts(LSafepoint* safepoint) {
 
 #  ifdef JS_JITSPEW
     if (JitSpewEnabled(JitSpew_Safepoints)) {
-      JitSpewHeader(JitSpew_Safepoints);
-      Fprinter& out = JitSpewPrinter();
-      out.printf("    nunbox (type in ");
-      DumpNunboxPart(typeEntry.alloc());
-      out.printf(", payload in ");
-      DumpNunboxPart(payloadEntry.alloc());
-      out.printf(")\n");
+      AutoJitSpewMessage msg(JitSpew_Safepoints, "    nunbox (type in ");
+      DumpNunboxPart(msg.printer(), typeEntry.alloc());
+      msg.append(", payload in ");
+      DumpNunboxPart(msg.printer(), payloadEntry.alloc());
+      msg.append(")");
     }
 #  endif
 

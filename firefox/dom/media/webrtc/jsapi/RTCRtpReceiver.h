@@ -2,24 +2,25 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _RTCRtpReceiver_h_
-#define _RTCRtpReceiver_h_
+#ifndef RTCRtpReceiver_h_
+#define RTCRtpReceiver_h_
 
-#include "nsISupports.h"
-#include "nsWrapperCache.h"
-#include "mozilla/RefPtr.h"
-#include "mozilla/StateMirroring.h"
-#include "mozilla/Maybe.h"
+#include <vector>
+
+#include "PerformanceRecorder.h"
+#include "RTCStatsReport.h"
 #include "js/RootingAPI.h"
 #include "libwebrtcglue/RtpRtcpConfig.h"
-#include "nsTArray.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/StateMirroring.h"
 #include "mozilla/dom/RTCRtpCapabilitiesBinding.h"
 #include "mozilla/dom/RTCRtpParametersBinding.h"
 #include "mozilla/dom/RTCStatsReportBinding.h"
-#include "PerformanceRecorder.h"
-#include "RTCStatsReport.h"
+#include "nsISupports.h"
+#include "nsTArray.h"
+#include "nsWrapperCache.h"
 #include "transportbridge/MediaPipeline.h"
-#include <vector>
 
 class nsPIDOMWindowInner;
 
@@ -174,6 +175,23 @@ class RTCRtpReceiver : public nsISupports,
   void UpdateVideoConduit();
   void UpdateAudioConduit();
 
+  // Early media (bug 2019381): whether we should start receiving based on
+  // what we offered, even though we don't have a real answer for our
+  // current local offer yet (which may be the first one ever, or a
+  // reoffer that actually changed our own recv side). Only true for a
+  // transceiver that's currently offering to receive, bundled onto a
+  // transport with at least one negotiated member -- ie; a packet could
+  // actually have arrived already, unlike a bundle that has never gone
+  // through ICE/DTLS -- and whose own recv-relevant offer changed this
+  // round, so the still-valid real negotiated details aren't preferred
+  // over it.
+  bool CanReceiveEarlyMedia();
+
+  // Whether our bundle group has at least one member that has itself
+  // completed a prior negotiation round as a transport owner, per the
+  // current local description's bundle grouping.
+  bool HasNegotiatedBundleOwner();
+
   std::string GetMid() const;
   JsepTransceiver& GetJsepTransceiver();
   const JsepTransceiver& GetJsepTransceiver() const;
@@ -223,4 +241,4 @@ class RTCRtpReceiver : public nsISupports,
 
 }  // namespace dom
 }  // namespace mozilla
-#endif  // _RTCRtpReceiver_h_
+#endif  // RTCRtpReceiver_h_

@@ -14,7 +14,7 @@ import sys
 # load modules from parent dir
 sys.path.insert(1, os.path.dirname(sys.path[0]))
 
-import mozharness.base.script as script
+from mozharness.base import script
 from mozharness.mozilla.building.buildbase import (
     BUILD_BASE_CONFIG_OPTIONS,
     BuildingConfig,
@@ -28,9 +28,7 @@ class FxDesktopBuild(BuildScript):
             "config_options": BUILD_BASE_CONFIG_OPTIONS,
             "all_actions": [
                 "get-secrets",
-                "clobber",
                 "build",
-                "static-analysis-autotest",
                 "valgrind-test",
                 "multi-l10n",
                 "package-source",
@@ -47,7 +45,6 @@ class FxDesktopBuild(BuildScript):
                 "clone_upstream_url": "https://hg.mozilla.org/mozilla-unified",
                 "repo_base": "https://hg.mozilla.org",
                 "profile_build_resources_path": "%(upload_path)s/profile_build_resources.json",
-                "nightly_promotion_branches": ["mozilla-central", "mozilla-aurora"],
                 # try will overwrite these
                 "clone_with_purge": False,
                 "clone_by_revision": False,
@@ -58,12 +55,12 @@ class FxDesktopBuild(BuildScript):
             },
             "ConfigClass": BuildingConfig,
         }
-        super(FxDesktopBuild, self).__init__(**buildscript_kwargs)
+        super().__init__(**buildscript_kwargs)
 
     def query_abs_dirs(self):
         if self.abs_dirs:
             return self.abs_dirs
-        abs_dirs = super(FxDesktopBuild, self).query_abs_dirs()
+        abs_dirs = super().query_abs_dirs()
 
         dirs = {
             # BuildFactories in factory.py refer to a 'build' dir on the slave.

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -12,6 +10,7 @@
 #include "jit/Lowering.h"
 #include "jit/MIR-wasm.h"
 #include "jit/MIR.h"
+
 #include "jit/shared/Lowering-shared-inl.h"
 
 using namespace js;
@@ -49,8 +48,8 @@ void LIRGenerator::visitBox(MBox* box) {
 
   // If the box wrapped a double, it needs a new register.
   if (IsFloatingPointType(inner->type())) {
-    defineBox(new (alloc()) LBoxFloatingPoint(
-                  useRegisterAtStart(inner), tempCopy(inner, 0), inner->type()),
+    defineBox(new (alloc())
+                  LBoxFloatingPoint(useRegister(inner), inner->type()),
               box);
     return;
   }
@@ -80,7 +79,7 @@ void LIRGenerator::visitBox(MBox* box) {
   lir->setDef(0, LDefinition(vreg, LDefinition::GENERAL));
   lir->setDef(1, LDefinition::BogusTemp());
   box->setVirtualRegister(vreg);
-  add(lir);
+  addUnchecked(lir);
 }
 
 void LIRGenerator::visitUnbox(MUnbox* unbox) {
@@ -120,16 +119,6 @@ void LIRGenerator::visitUnbox(MUnbox* unbox) {
   defineReuseInput(lir, unbox, 0);
 }
 
-void LIRGenerator::visitReturnImpl(MDefinition* opd, bool isGenerator) {
-  MOZ_ASSERT(opd->type() == MIRType::Value);
-
-  LReturn* ins = new (alloc()) LReturn(isGenerator);
-  ins->setOperand(0, LUse(JSReturnReg_Type));
-  ins->setOperand(1, LUse(JSReturnReg_Data));
-  fillBoxUses(ins, 0, opd);
-  add(ins);
-}
-
 void LIRGeneratorARM::defineInt64Phi(MPhi* phi, size_t lirIndex) {
   LPhi* low = current->getPhi(lirIndex + INT64LOW_INDEX);
   LPhi* high = current->getPhi(lirIndex + INT64HIGH_INDEX);
@@ -162,31 +151,29 @@ void LIRGeneratorARM::lowerInt64PhiInput(MPhi* phi, uint32_t inputPosition,
 // x = !y
 void LIRGeneratorARM::lowerForALU(LInstructionHelper<1, 1, 0>* ins,
                                   MDefinition* mir, MDefinition* input) {
-  ins->setOperand(
-      0, ins->snapshot() ? useRegister(input) : useRegisterAtStart(input));
-  define(
-      ins, mir,
-      LDefinition(LDefinition::TypeFrom(mir->type()), LDefinition::REGISTER));
+  // Unary ALU operations don't read the input after writing to the output, even
+  // for fallible operations, so we can use at-start allocations.
+  ins->setOperand(0, useRegisterAtStart(input));
+  define(ins, mir);
 }
 
 // z = x+y
 void LIRGeneratorARM::lowerForALU(LInstructionHelper<1, 2, 0>* ins,
                                   MDefinition* mir, MDefinition* lhs,
                                   MDefinition* rhs) {
-  // Some operations depend on checking inputs after writing the result, e.g.
-  // MulI, but only for bail out paths so useAtStart when no bailouts.
-  ins->setOperand(0,
-                  ins->snapshot() ? useRegister(lhs) : useRegisterAtStart(lhs));
-  ins->setOperand(1, ins->snapshot() ? useRegisterOrConstant(rhs)
-                                     : useRegisterOrConstantAtStart(rhs));
-  define(
-      ins, mir,
-      LDefinition(LDefinition::TypeFrom(mir->type()), LDefinition::REGISTER));
+  // Binary ALU operations don't read any input after writing to the output,
+  // even for fallible operations, so we can use at-start allocations.
+  ins->setOperand(0, useRegisterAtStart(lhs));
+  ins->setOperand(1, useRegisterOrConstantAtStart(rhs));
+  define(ins, mir);
 }
 
 void LIRGeneratorARM::lowerForALUInt64(
     LInstructionHelper<INT64_PIECES, INT64_PIECES, 0>* ins, MDefinition* mir,
     MDefinition* input) {
+  // Reuse the input.  Define + use-at-start would create risk that the output
+  // uses the same register pair as the input but in reverse order.  Reusing
+  // probably has less spilling than the alternative, define + use.
   ins->setInt64Operand(0, useInt64RegisterAtStart(input));
   defineInt64ReuseInput(ins, mir, 0);
 }
@@ -195,7 +182,7 @@ void LIRGeneratorARM::lowerForALUInt64(
     LInstructionHelper<INT64_PIECES, 2 * INT64_PIECES, 0>* ins,
     MDefinition* mir, MDefinition* lhs, MDefinition* rhs) {
   ins->setInt64Operand(0, useInt64RegisterAtStart(lhs));
-  ins->setInt64Operand(INT64_PIECES, useInt64OrConstant(rhs));
+  ins->setInt64Operand(INT64_PIECES, useInt64RegisterOrConstant(rhs));
   defineInt64ReuseInput(ins, mir, 0);
 }
 
@@ -205,7 +192,7 @@ void LIRGeneratorARM::lowerForMulInt64(LMulI64* ins, MMul* mir,
 
   if (rhs->isConstant()) {
     int64_t constant = rhs->toConstant()->toInt64();
-    int32_t shift = mozilla::FloorLog2(constant);
+    int32_t shift = mozilla::FloorLog2(uint64_t(constant));
     // See special cases in CodeGeneratorARM::visitMulI64
     if (constant >= -1 && constant <= 2) {
       needsTemp = false;
@@ -216,7 +203,7 @@ void LIRGeneratorARM::lowerForMulInt64(LMulI64* ins, MMul* mir,
   }
 
   ins->setLhs(useInt64RegisterAtStart(lhs));
-  ins->setRhs(useInt64OrConstant(rhs));
+  ins->setRhs(useInt64RegisterOrConstant(rhs));
   if (needsTemp) {
     ins->setTemp0(temp());
   }
@@ -227,28 +214,16 @@ void LIRGeneratorARM::lowerForMulInt64(LMulI64* ins, MMul* mir,
 void LIRGeneratorARM::lowerForFPU(LInstructionHelper<1, 1, 0>* ins,
                                   MDefinition* mir, MDefinition* input) {
   ins->setOperand(0, useRegisterAtStart(input));
-  define(
-      ins, mir,
-      LDefinition(LDefinition::TypeFrom(mir->type()), LDefinition::REGISTER));
+  define(ins, mir);
 }
 
-template <size_t Temps>
-void LIRGeneratorARM::lowerForFPU(LInstructionHelper<1, 2, Temps>* ins,
+void LIRGeneratorARM::lowerForFPU(LInstructionHelper<1, 2, 0>* ins,
                                   MDefinition* mir, MDefinition* lhs,
                                   MDefinition* rhs) {
   ins->setOperand(0, useRegisterAtStart(lhs));
   ins->setOperand(1, useRegisterAtStart(rhs));
-  define(
-      ins, mir,
-      LDefinition(LDefinition::TypeFrom(mir->type()), LDefinition::REGISTER));
+  define(ins, mir);
 }
-
-template void LIRGeneratorARM::lowerForFPU(LInstructionHelper<1, 2, 0>* ins,
-                                           MDefinition* mir, MDefinition* lhs,
-                                           MDefinition* rhs);
-template void LIRGeneratorARM::lowerForFPU(LInstructionHelper<1, 2, 1>* ins,
-                                           MDefinition* mir, MDefinition* lhs,
-                                           MDefinition* rhs);
 
 void LIRGeneratorARM::lowerWasmBuiltinTruncateToInt32(
     MWasmBuiltinTruncateToInt32* ins) {
@@ -284,9 +259,7 @@ void LIRGeneratorARM::lowerUntypedPhiInput(MPhi* phi, uint32_t inputPosition,
 void LIRGeneratorARM::lowerForShift(LInstructionHelper<1, 2, 0>* ins,
                                     MDefinition* mir, MDefinition* lhs,
                                     MDefinition* rhs) {
-  ins->setOperand(0, useRegister(lhs));
-  ins->setOperand(1, useRegisterOrConstant(rhs));
-  define(ins, mir);
+  lowerForALU(ins, mir, lhs, rhs);
 }
 
 template <class LInstr>
@@ -325,11 +298,6 @@ template void LIRGeneratorARM::lowerForShiftInt64(LRotateI64* ins,
                                                   MDefinition* rhs);
 
 void LIRGeneratorARM::lowerDivI(MDiv* div) {
-  if (div->isUnsigned()) {
-    lowerUDiv(div);
-    return;
-  }
-
   // Division instructions are slow. Division by constant denominators can be
   // rewritten to use other instructions.
   if (div->rhs()->isConstant()) {
@@ -339,7 +307,7 @@ void LIRGeneratorARM::lowerDivI(MDiv* div) {
     // possible; division by negative powers of two can be optimized in a
     // similar manner as positive powers of two, and division by other
     // constants can be optimized by a reciprocal multiplication technique.
-    int32_t shift = FloorLog2(rhs);
+    int32_t shift = FloorLog2(uint32_t(rhs));
     if (rhs > 0 && 1 << shift == rhs) {
       LDivPowTwoI* lir =
           new (alloc()) LDivPowTwoI(useRegisterAtStart(div->lhs()), shift);
@@ -371,39 +339,28 @@ void LIRGeneratorARM::lowerDivI(MDiv* div) {
   defineReturn(lir, div);
 }
 
-void LIRGeneratorARM::lowerNegI(MInstruction* ins, MDefinition* input) {
-  define(new (alloc()) LNegI(useRegisterAtStart(input)), ins);
-}
-
-void LIRGeneratorARM::lowerNegI64(MInstruction* ins, MDefinition* input) {
-  // Reuse the input.  Define + use-at-start would create risk that the output
-  // uses the same register pair as the input but in reverse order.  Reusing
-  // probably has less spilling than the alternative, define + use.
-  defineInt64ReuseInput(new (alloc()) LNegI64(useInt64RegisterAtStart(input)),
-                        ins, 0);
-}
-
-void LIRGenerator::visitAbs(MAbs* ins) {
-  define(allocateAbs(ins, useRegisterAtStart(ins->input())), ins);
-}
-
 void LIRGeneratorARM::lowerMulI(MMul* mul, MDefinition* lhs, MDefinition* rhs) {
   LMulI* lir = new (alloc()) LMulI;
   if (mul->fallible()) {
     assignSnapshot(lir, mul->bailoutKind());
   }
+
+  // Negative zero check reads |lhs| and |rhs| after writing to the output, so
+  // we can't use at-start allocations.
+  if (mul->canBeNegativeZero() && !rhs->isConstant()) {
+    lir->setOperand(0, useRegister(lhs));
+    lir->setOperand(1, useRegister(rhs));
+    define(lir, mul);
+    return;
+  }
+
   lowerForALU(lir, mul, lhs, rhs);
 }
 
 void LIRGeneratorARM::lowerModI(MMod* mod) {
-  if (mod->isUnsigned()) {
-    lowerUMod(mod);
-    return;
-  }
-
   if (mod->rhs()->isConstant()) {
     int32_t rhs = mod->rhs()->toConstant()->toInt32();
-    int32_t shift = FloorLog2(rhs);
+    int32_t shift = FloorLog2(uint32_t(rhs));
     if (rhs > 0 && 1 << shift == rhs) {
       LModPowTwoI* lir =
           new (alloc()) LModPowTwoI(useRegister(mod->lhs()), shift);
@@ -496,13 +453,6 @@ void LIRGeneratorARM::lowerUModI64(MMod* mod) {
   MOZ_CRASH("We use MWasmBuiltinModI64 instead.");
 }
 
-void LIRGenerator::visitPowHalf(MPowHalf* ins) {
-  MDefinition* input = ins->input();
-  MOZ_ASSERT(input->type() == MIRType::Double);
-  LPowHalfD* lir = new (alloc()) LPowHalfD(useRegisterAtStart(input));
-  defineReuseInput(lir, ins, 0);
-}
-
 void LIRGeneratorARM::lowerWasmSelectI(MWasmSelect* select) {
   auto* lir = new (alloc())
       LWasmSelect(useRegisterAtStart(select->trueExpr()),
@@ -513,7 +463,7 @@ void LIRGeneratorARM::lowerWasmSelectI(MWasmSelect* select) {
 void LIRGeneratorARM::lowerWasmSelectI64(MWasmSelect* select) {
   auto* lir = new (alloc()) LWasmSelectI64(
       useInt64RegisterAtStart(select->trueExpr()),
-      useInt64(select->falseExpr()), useRegister(select->condExpr()));
+      useInt64Register(select->falseExpr()), useRegister(select->condExpr()));
   defineInt64ReuseInput(lir, select, LWasmSelectI64::TrueExprIndex);
 }
 
@@ -600,25 +550,12 @@ void LIRGeneratorARM::lowerBigIntPtrMod(MBigIntPtrMod* ins) {
   }
 }
 
-void LIRGenerator::visitWasmNeg(MWasmNeg* ins) {
-  if (ins->type() == MIRType::Int32) {
-    define(new (alloc()) LNegI(useRegisterAtStart(ins->input())), ins);
-  } else if (ins->type() == MIRType::Float32) {
-    define(new (alloc()) LNegF(useRegisterAtStart(ins->input())), ins);
-  } else {
-    MOZ_ASSERT(ins->type() == MIRType::Double);
-    define(new (alloc()) LNegD(useRegisterAtStart(ins->input())), ins);
-  }
-}
-
 void LIRGeneratorARM::lowerUDiv(MDiv* div) {
   MDefinition* lhs = div->getOperand(0);
   MDefinition* rhs = div->getOperand(1);
 
   if (ARMFlags::HasIDIV()) {
-    LUDiv* lir = new (alloc()) LUDiv;
-    lir->setOperand(0, useRegister(lhs));
-    lir->setOperand(1, useRegister(rhs));
+    auto* lir = new (alloc()) LUDiv(useRegister(lhs), useRegister(rhs));
     if (div->fallible()) {
       assignSnapshot(lir, div->bailoutKind());
     }
@@ -626,7 +563,7 @@ void LIRGeneratorARM::lowerUDiv(MDiv* div) {
     return;
   }
 
-  LSoftUDivOrMod* lir = new (alloc())
+  auto* lir = new (alloc())
       LSoftUDivOrMod(useFixedAtStart(lhs, r0), useFixedAtStart(rhs, r1));
 
   if (div->fallible()) {
@@ -641,9 +578,7 @@ void LIRGeneratorARM::lowerUMod(MMod* mod) {
   MDefinition* rhs = mod->getOperand(1);
 
   if (ARMFlags::HasIDIV()) {
-    LUMod* lir = new (alloc()) LUMod;
-    lir->setOperand(0, useRegister(lhs));
-    lir->setOperand(1, useRegister(rhs));
+    auto* lir = new (alloc()) LUMod(useRegister(lhs), useRegister(rhs));
     if (mod->fallible()) {
       assignSnapshot(lir, mod->bailoutKind());
     }
@@ -651,7 +586,7 @@ void LIRGeneratorARM::lowerUMod(MMod* mod) {
     return;
   }
 
-  LSoftUDivOrMod* lir = new (alloc())
+  auto* lir = new (alloc())
       LSoftUDivOrMod(useFixedAtStart(lhs, r0), useFixedAtStart(rhs, r1));
 
   if (mod->fallible()) {
@@ -659,20 +594,6 @@ void LIRGeneratorARM::lowerUMod(MMod* mod) {
   }
 
   defineReturn(lir, mod);
-}
-
-void LIRGenerator::visitWasmUnsignedToDouble(MWasmUnsignedToDouble* ins) {
-  MOZ_ASSERT(ins->input()->type() == MIRType::Int32);
-  LWasmUint32ToDouble* lir =
-      new (alloc()) LWasmUint32ToDouble(useRegisterAtStart(ins->input()));
-  define(lir, ins);
-}
-
-void LIRGenerator::visitWasmUnsignedToFloat32(MWasmUnsignedToFloat32* ins) {
-  MOZ_ASSERT(ins->input()->type() == MIRType::Int32);
-  LWasmUint32ToFloat32* lir =
-      new (alloc()) LWasmUint32ToFloat32(useRegisterAtStart(ins->input()));
-  define(lir, ins);
 }
 
 void LIRGenerator::visitWasmLoad(MWasmLoad* ins) {
@@ -763,56 +684,6 @@ void LIRGenerator::visitWasmStore(MWasmStore* ins) {
   add(lir, ins);
 }
 
-void LIRGenerator::visitAsmJSLoadHeap(MAsmJSLoadHeap* ins) {
-  MDefinition* base = ins->base();
-  MOZ_ASSERT(base->type() == MIRType::Int32);
-
-  // For the ARM it is best to keep the 'base' in a register if a bounds check
-  // is needed.
-  LAllocation baseAlloc;
-  LAllocation limitAlloc;
-
-  if (base->isConstant() && !ins->needsBoundsCheck()) {
-    // A bounds check is only skipped for a positive index.
-    MOZ_ASSERT(base->toConstant()->toInt32() >= 0);
-    baseAlloc = LAllocation(base->toConstant());
-  } else {
-    baseAlloc = useRegisterAtStart(base);
-    if (ins->needsBoundsCheck()) {
-      MDefinition* boundsCheckLimit = ins->boundsCheckLimit();
-      MOZ_ASSERT(boundsCheckLimit->type() == MIRType::Int32);
-      limitAlloc = useRegisterAtStart(boundsCheckLimit);
-    }
-  }
-
-  define(new (alloc()) LAsmJSLoadHeap(baseAlloc, limitAlloc, LAllocation()),
-         ins);
-}
-
-void LIRGenerator::visitAsmJSStoreHeap(MAsmJSStoreHeap* ins) {
-  MDefinition* base = ins->base();
-  MOZ_ASSERT(base->type() == MIRType::Int32);
-
-  LAllocation baseAlloc;
-  LAllocation limitAlloc;
-
-  if (base->isConstant() && !ins->needsBoundsCheck()) {
-    MOZ_ASSERT(base->toConstant()->toInt32() >= 0);
-    baseAlloc = LAllocation(base->toConstant());
-  } else {
-    baseAlloc = useRegisterAtStart(base);
-    if (ins->needsBoundsCheck()) {
-      MDefinition* boundsCheckLimit = ins->boundsCheckLimit();
-      MOZ_ASSERT(boundsCheckLimit->type() == MIRType::Int32);
-      limitAlloc = useRegisterAtStart(boundsCheckLimit);
-    }
-  }
-
-  add(new (alloc()) LAsmJSStoreHeap(baseAlloc, useRegisterAtStart(ins->value()),
-                                    limitAlloc, LAllocation()),
-      ins);
-}
-
 void LIRGeneratorARM::lowerTruncateDToInt32(MTruncateToInt32* ins) {
   MDefinition* opd = ins->input();
   MOZ_ASSERT(opd->type() == MIRType::Double);
@@ -858,18 +729,8 @@ void LIRGenerator::visitAtomicExchangeTypedArrayElement(
 
   const LAllocation value = useRegister(ins->value());
 
-  // If the target is a floating register then we need a temp at the
-  // CodeGenerator level for creating the result.
-
-  LDefinition tempDef = LDefinition::BogusTemp();
-  if (ins->arrayType() == Scalar::Uint32) {
-    MOZ_ASSERT(ins->type() == MIRType::Double);
-    tempDef = temp();
-  }
-
-  LAtomicExchangeTypedArrayElement* lir = new (alloc())
-      LAtomicExchangeTypedArrayElement(elements, index, value, tempDef);
-
+  auto* lir =
+      new (alloc()) LAtomicExchangeTypedArrayElement(elements, index, value);
   define(lir, ins);
 }
 
@@ -906,34 +767,23 @@ void LIRGenerator::visitAtomicTypedArrayElementBinop(
     return;
   }
 
-  const LAllocation value = useRegister(ins->value());
-
-  if (ins->isForEffect()) {
-    LAtomicTypedArrayElementBinopForEffect* lir = new (alloc())
-        LAtomicTypedArrayElementBinopForEffect(elements, index, value,
-                                               /* flagTemp= */ temp());
-    add(lir, ins);
-    return;
-  }
-
-  // For a Uint32Array with a known double result we need a temp for
-  // the intermediate output.
-  //
   // Optimization opportunity (bug 1077317): We can do better by
   // allowing 'value' to remain as an imm32 if it is small enough to
   // fit in an instruction.
 
-  LDefinition flagTemp = temp();
-  LDefinition outTemp = LDefinition::BogusTemp();
+  const LAllocation value = useRegister(ins->value());
 
-  if (ins->arrayType() == Scalar::Uint32 && IsFloatingPointType(ins->type())) {
-    outTemp = temp();
+  LDefinition flagTemp = temp();
+
+  if (ins->isForEffect()) {
+    auto* lir = new (alloc()) LAtomicTypedArrayElementBinopForEffect(
+        elements, index, value, flagTemp);
+    add(lir, ins);
+    return;
   }
 
-  // On arm, map flagTemp to temp1 and outTemp to temp2, at least for now.
-
-  LAtomicTypedArrayElementBinop* lir = new (alloc())
-      LAtomicTypedArrayElementBinop(elements, index, value, flagTemp, outTemp);
+  auto* lir = new (alloc())
+      LAtomicTypedArrayElementBinop(elements, index, value, flagTemp);
   define(lir, ins);
 }
 
@@ -960,25 +810,15 @@ void LIRGenerator::visitCompareExchangeTypedArrayElement(
     return;
   }
 
-  const LAllocation oldval = useRegister(ins->oldval());
-  const LAllocation newval = useRegister(ins->newval());
-
-  // If the target is a floating register then we need a temp at the
-  // CodeGenerator level for creating the result.
-  //
   // Optimization opportunity (bug 1077317): We could do better by
   // allowing oldval to remain an immediate, if it is small enough
   // to fit in an instruction.
 
-  LDefinition tempDef = LDefinition::BogusTemp();
-  if (ins->arrayType() == Scalar::Uint32 && IsFloatingPointType(ins->type())) {
-    tempDef = temp();
-  }
+  const LAllocation oldval = useRegister(ins->oldval());
+  const LAllocation newval = useRegister(ins->newval());
 
-  LCompareExchangeTypedArrayElement* lir =
-      new (alloc()) LCompareExchangeTypedArrayElement(elements, index, oldval,
-                                                      newval, tempDef);
-
+  auto* lir = new (alloc())
+      LCompareExchangeTypedArrayElement(elements, index, oldval, newval);
   define(lir, ins);
 }
 
@@ -1138,15 +978,12 @@ void LIRGenerator::visitCopySign(MCopySign* ins) {
   MOZ_ASSERT(lhs->type() == rhs->type());
   MOZ_ASSERT(lhs->type() == ins->type());
 
-  LInstructionHelper<1, 2, 2>* lir;
+  LInstructionHelper<1, 2, 0>* lir;
   if (lhs->type() == MIRType::Double) {
     lir = new (alloc()) LCopySignD();
   } else {
     lir = new (alloc()) LCopySignF();
   }
-
-  lir->setTemp(0, temp());
-  lir->setTemp(1, temp());
 
   lowerForFPU(lir, ins, lhs, rhs);
 }
@@ -1197,7 +1034,7 @@ void LIRGenerator::visitWasmBinarySimd128(MWasmBinarySimd128* ins) {
   MOZ_CRASH("binary SIMD NYI");
 }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 bool MWasmTernarySimd128::specializeBitselectConstantMaskAsShuffle(
     int8_t shuffle[16]) {
   return false;
@@ -1205,6 +1042,8 @@ bool MWasmTernarySimd128::specializeBitselectConstantMaskAsShuffle(
 bool MWasmTernarySimd128::canRelaxBitselect() { return false; }
 
 bool MWasmBinarySimd128::canPmaddubsw() { return false; }
+
+bool MWasmBinarySimd128::canTestBits() { return false; }
 #endif
 
 bool MWasmBinarySimd128::specializeForConstantRhs() {

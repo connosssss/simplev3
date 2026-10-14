@@ -9,9 +9,8 @@ use crate::error_recording::{record_error, test_get_num_recorded_errors, ErrorTy
 use crate::metrics::JsonValue;
 use crate::metrics::Metric;
 use crate::metrics::MetricType;
-use crate::storage::StorageManager;
-use crate::CommonMetricData;
 use crate::Glean;
+use crate::{CommonMetricData, TestGetValue};
 
 /// An object metric.
 ///
@@ -118,27 +117,15 @@ impl ObjectMetric {
             .into()
             .unwrap_or_else(|| &self.meta().inner.send_in_pings[0]);
 
-        match StorageManager.snapshot_metric_for_test(
-            glean.storage(),
+        match glean.storage().get_metric(
+            #[cfg(not(feature = "sqlite"))]
+            glean,
+            self.meta(),
             queried_ping_name,
-            &self.meta.identifier(glean),
-            self.meta.inner.lifetime,
         ) {
             Some(Metric::Object(o)) => Some(o),
             _ => None,
         }
-    }
-
-    /// **Test-only API (exported for FFI purposes).**
-    ///
-    /// Gets the currently stored value as JSON.
-    ///
-    /// This doesn't clear the stored value.
-    pub fn test_get_value(&self, ping_name: Option<String>) -> Option<JsonValue> {
-        crate::block_on_dispatcher();
-        let value = crate::core::with_glean(|glean| self.get_value(glean, ping_name.as_deref()));
-        // We only store valid JSON
-        value.map(|val| serde_json::from_str(&val).unwrap())
     }
 
     /// **Exported for test purposes.**
@@ -160,5 +147,21 @@ impl ObjectMetric {
         crate::core::with_glean(|glean| {
             test_get_num_recorded_errors(glean, self.meta(), error).unwrap_or(0)
         })
+    }
+}
+
+impl TestGetValue for ObjectMetric {
+    type Output = JsonValue;
+
+    /// **Test-only API (exported for FFI purposes).**
+    ///
+    /// Gets the currently stored value as JSON.
+    ///
+    /// This doesn't clear the stored value.
+    fn test_get_value(&self, ping_name: Option<String>) -> Option<JsonValue> {
+        crate::block_on_dispatcher();
+        let value = crate::core::with_glean(|glean| self.get_value(glean, ping_name.as_deref()));
+        // We only store valid JSON
+        value.map(|val| serde_json::from_str(&val).unwrap())
     }
 }

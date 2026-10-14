@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et ft=cpp : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,24 +13,23 @@
 #include "mozilla/EnumeratedRange.h"
 #include "mozilla/HalWakeLock.h"
 #include "mozilla/Observer.h"
-#include "mozilla/Unused.h"
 #include "WindowIdentifier.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
 using namespace mozilla::hal;
 
-namespace mozilla {
-namespace hal_sandbox {
+namespace mozilla::hal_sandbox {
 
 static bool sHalChildDestroyed = false;
 
 bool HalChildDestroyed() { return sHalChildDestroyed; }
 
 static PHalChild* sHal;
-static PHalChild* Hal() {
-  if (!sHal) {
+static PHalChild* GetHal() {
+  if (!sHal && !sHalChildDestroyed) {
     sHal = ContentChild::GetSingleton()->SendPHalConstructor();
+    sHalChildDestroyed = !sHal;
   }
   return sHal;
 }
@@ -43,7 +40,9 @@ void Vibrate(const nsTArray<uint32_t>& pattern, WindowIdentifier&& id) {
   WindowIdentifier newID(std::move(id));
   newID.AppendProcessID();
   if (BrowserChild* bc = BrowserChild::GetFrom(newID.GetWindow())) {
-    Hal()->SendVibrate(pattern, newID.AsArray(), WrapNotNull(bc));
+    if (PHalChild* hal = GetHal()) {
+      hal->SendVibrate(pattern, newID.AsArray(), WrapNotNull(bc));
+    }
   }
 }
 
@@ -53,30 +52,56 @@ void CancelVibrate(WindowIdentifier&& id) {
   WindowIdentifier newID(std::move(id));
   newID.AppendProcessID();
   if (BrowserChild* bc = BrowserChild::GetFrom(newID.GetWindow())) {
-    Hal()->SendCancelVibrate(newID.AsArray(), WrapNotNull(bc));
+    if (PHalChild* hal = GetHal()) {
+      hal->SendCancelVibrate(newID.AsArray(), WrapNotNull(bc));
+    }
   }
 }
 
-void EnableBatteryNotifications() { Hal()->SendEnableBatteryNotifications(); }
-
-void DisableBatteryNotifications() { Hal()->SendDisableBatteryNotifications(); }
-
-void GetCurrentBatteryInformation(BatteryInformation* aBatteryInfo) {
-  Hal()->SendGetCurrentBatteryInformation(aBatteryInfo);
+void EnableBatteryNotifications() {
+  if (PHalChild* hal = GetHal()) {
+    hal->SendEnableBatteryNotifications();
+  }
 }
 
-void EnableNetworkNotifications() { Hal()->SendEnableNetworkNotifications(); }
+void DisableBatteryNotifications() {
+  if (PHalChild* hal = GetHal()) {
+    hal->SendDisableBatteryNotifications();
+  }
+}
 
-void DisableNetworkNotifications() { Hal()->SendDisableNetworkNotifications(); }
+void GetCurrentBatteryInformation(BatteryInformation* aBatteryInfo) {
+  if (PHalChild* hal = GetHal()) {
+    hal->SendGetCurrentBatteryInformation(aBatteryInfo);
+  }
+}
+
+void EnableNetworkNotifications() {
+  if (PHalChild* hal = GetHal()) {
+    hal->SendEnableNetworkNotifications();
+  }
+}
+
+void DisableNetworkNotifications() {
+  if (PHalChild* hal = GetHal()) {
+    hal->SendDisableNetworkNotifications();
+  }
+}
 
 void GetCurrentNetworkInformation(NetworkInformation* aNetworkInfo) {
-  Hal()->SendGetCurrentNetworkInformation(aNetworkInfo);
+  if (PHalChild* hal = GetHal()) {
+    hal->SendGetCurrentNetworkInformation(aNetworkInfo);
+  }
 }
 
 RefPtr<GenericNonExclusivePromise> LockScreenOrientation(
     const hal::ScreenOrientation& aOrientation) {
-  return Hal()
-      ->SendLockScreenOrientation(aOrientation)
+  PHalChild* hal = GetHal();
+  if (!hal) {
+    return GenericNonExclusivePromise::CreateAndReject(NS_ERROR_FAILURE,
+                                                       __func__);
+  }
+  return hal->SendLockScreenOrientation(aOrientation)
       ->Then(GetCurrentSerialEventTarget(), __func__,
              [](const mozilla::MozPromise<nsresult, ipc::ResponseRejectReason,
                                           true>::ResolveOrRejectValue& aValue) {
@@ -93,30 +118,48 @@ RefPtr<GenericNonExclusivePromise> LockScreenOrientation(
              });
 }
 
-void UnlockScreenOrientation() { Hal()->SendUnlockScreenOrientation(); }
+void UnlockScreenOrientation() {
+  if (PHalChild* hal = GetHal()) {
+    hal->SendUnlockScreenOrientation();
+  }
+}
 
 void EnableSensorNotifications(SensorType aSensor) {
-  Hal()->SendEnableSensorNotifications(aSensor);
+  if (PHalChild* hal = GetHal()) {
+    hal->SendEnableSensorNotifications(aSensor);
+  }
 }
 
 void DisableSensorNotifications(SensorType aSensor) {
-  Hal()->SendDisableSensorNotifications(aSensor);
+  if (PHalChild* hal = GetHal()) {
+    hal->SendDisableSensorNotifications(aSensor);
+  }
 }
 
-void EnableWakeLockNotifications() { Hal()->SendEnableWakeLockNotifications(); }
+void EnableWakeLockNotifications() {
+  if (PHalChild* hal = GetHal()) {
+    hal->SendEnableWakeLockNotifications();
+  }
+}
 
 void DisableWakeLockNotifications() {
-  Hal()->SendDisableWakeLockNotifications();
+  if (PHalChild* hal = GetHal()) {
+    hal->SendDisableWakeLockNotifications();
+  }
 }
 
 void ModifyWakeLock(const nsAString& aTopic, WakeLockControl aLockAdjust,
                     WakeLockControl aHiddenAdjust) {
-  Hal()->SendModifyWakeLock(aTopic, aLockAdjust, aHiddenAdjust);
+  if (PHalChild* hal = GetHal()) {
+    hal->SendModifyWakeLock(aTopic, aLockAdjust, aHiddenAdjust);
+  }
 }
 
 void GetWakeLockInfo(const nsAString& aTopic,
                      WakeLockInformation* aWakeLockInfo) {
-  Hal()->SendGetWakeLockInfo(aTopic, aWakeLockInfo);
+  if (PHalChild* hal = GetHal()) {
+    hal->SendGetWakeLockInfo(aTopic, aWakeLockInfo);
+  }
 }
 
 bool EnableAlarm() {
@@ -133,10 +176,6 @@ bool SetAlarm(int32_t aSeconds, int32_t aNanoseconds) {
 
 void SetProcessPriority(int aPid, ProcessPriority aPriority) {
   MOZ_CRASH("Only the main process may set processes' priorities.");
-}
-
-void PerformHapticFeedback(int32_t aType) {
-  Hal()->SendPerformHapticFeedback(aType);
 }
 
 class HalParent : public PHalParent,
@@ -200,7 +239,7 @@ class HalParent : public PHalParent,
   }
 
   void Notify(const BatteryInformation& aBatteryInfo) override {
-    Unused << SendNotifyBatteryChange(aBatteryInfo);
+    (void)SendNotifyBatteryChange(aBatteryInfo);
   }
 
   virtual mozilla::ipc::IPCResult RecvEnableNetworkNotifications() override {
@@ -221,7 +260,7 @@ class HalParent : public PHalParent,
   }
 
   void Notify(const NetworkInformation& aNetworkInfo) override {
-    Unused << SendNotifyNetworkChange(aNetworkInfo);
+    (void)SendNotifyNetworkChange(aNetworkInfo);
   }
 
   virtual mozilla::ipc::IPCResult RecvLockScreenOrientation(
@@ -233,17 +272,17 @@ class HalParent : public PHalParent,
     // fullscreen.  We don't have that information currently.
 
     hal::LockScreenOrientation(aOrientation)
-        ->Then(
-            GetMainThreadSerialEventTarget(), __func__,
-            [aResolve](const GenericNonExclusivePromise::ResolveOrRejectValue&
-                           aValue) {
-              if (aValue.IsResolve()) {
-                MOZ_ASSERT(aValue.ResolveValue());
-                aResolve(NS_OK);
-                return;
-              }
-              aResolve(aValue.RejectValue());
-            });
+        ->Then(GetMainThreadSerialEventTarget(), __func__,
+               [aResolve = std::move(aResolve)](
+                   const GenericNonExclusivePromise::ResolveOrRejectValue&
+                       aValue) {
+                 if (aValue.IsResolve()) {
+                   MOZ_ASSERT(aValue.ResolveValue());
+                   aResolve(NS_OK);
+                   return;
+                 }
+                 aResolve(aValue.RejectValue());
+               });
     return IPC_OK();
   }
 
@@ -267,7 +306,7 @@ class HalParent : public PHalParent,
   }
 
   void Notify(const SensorData& aSensorData) override {
-    Unused << SendNotifySensorChange(aSensorData);
+    (void)SendNotifySensorChange(aSensorData);
   }
 
   virtual mozilla::ipc::IPCResult RecvModifyWakeLock(
@@ -297,13 +336,7 @@ class HalParent : public PHalParent,
   }
 
   void Notify(const WakeLockInformation& aWakeLockInfo) override {
-    Unused << SendNotifyWakeLockChange(aWakeLockInfo);
-  }
-
-  virtual mozilla::ipc::IPCResult RecvPerformHapticFeedback(
-      const int32_t& aType) override {
-    hal::PerformHapticFeedback(aType);
-    return IPC_OK();
+    (void)SendNotifyWakeLockChange(aWakeLockInfo);
   }
 };
 
@@ -311,6 +344,7 @@ class HalChild : public PHalChild {
  public:
   virtual void ActorDestroy(ActorDestroyReason aWhy) override {
     sHalChildDestroyed = true;
+    sHal = nullptr;
   }
 
   virtual mozilla::ipc::IPCResult RecvNotifyBatteryChange(
@@ -346,5 +380,4 @@ PHalChild* CreateHalChild() { return new HalChild(); }
 
 PHalParent* CreateHalParent() { return new HalParent(); }
 
-}  // namespace hal_sandbox
-}  // namespace mozilla
+}  // namespace mozilla::hal_sandbox

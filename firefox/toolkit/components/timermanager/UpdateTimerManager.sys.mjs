@@ -22,6 +22,7 @@ XPCOMUtils.defineLazyPreferenceGetter(
 
 /**
  *  Logs a string to the error console.
+ *
  *  @param   string
  *           The string to write to the error console.
  *  @param   bool
@@ -37,7 +38,8 @@ function LOG(string, alwaysLog = false) {
 /**
  *  A manager for timers. Manages timers that fire over long periods of time
  *  (e.g. days, weeks, months).
- *  @constructor
+ *
+ *  @class
  */
 export function TimerManager() {
   Services.obs.addObserver(this, "profile-before-change");
@@ -69,7 +71,7 @@ TimerManager.prototype = {
   /**
    * See nsIObserver.idl
    */
-  observe: function TM_observe(aSubject, aTopic) {
+  observe(aSubject, aTopic) {
     // Prevent setting the timer interval to a value of less than 30 seconds.
     var minInterval = 30000;
     // Prevent setting the first timer interval to a value of less than 10
@@ -82,7 +84,7 @@ TimerManager.prototype = {
         minInterval = 500;
         minFirstInterval = 500;
       // fall through
-      case "profile-after-change":
+      case "profile-after-change": {
         this._timerMinimumDelay = Math.max(
           1000 *
             Services.prefs.getIntPref(PREF_APP_UPDATE_TIMERMINIMUMDELAY, 120),
@@ -104,6 +106,7 @@ TimerManager.prototype = {
         this._canEnsureTimer = true;
         this._ensureTimer(firstInterval);
         break;
+      }
       case "profile-before-change":
         Services.obs.removeObserver(this, "profile-before-change");
 
@@ -127,7 +130,7 @@ TimerManager.prototype = {
    * @param   timer
    *          The checking timer that fired.
    */
-  notify: function TM_notify(timer) {
+  notify(timer) {
     var nextDelay = null;
     function updateNextDelay(delay) {
       if (nextDelay === null || delay < nextDelay) {
@@ -155,14 +158,35 @@ TimerManager.prototype = {
       let [cid, method, timerID, prefInterval, defaultInterval, maxInterval] =
         value.split(",");
 
+      // Do basic validation of the contract ID to prevent anything too weird.
+      if (!cid) {
+        LOG(
+          "TimerManager:notify - update-timer category registered without a contract ID - skipping"
+        );
+        continue;
+      }
+      if (!cid.startsWith("@mozilla.org/")) {
+        LOG(
+          "TimerManager:notify - update-timer category registered with a contract ID " +
+            cid +
+            " that does not start with @mozilla.org/ - skipping"
+        );
+        continue;
+      }
+      if (method != "getService" && method != "createInstance") {
+        LOG(
+          "TimerManager:notify - update-timer category registered for " +
+            cid +
+            " with a method that is neither getService nor createInstance - skipping"
+        );
+        continue;
+      }
       defaultInterval = parseInt(defaultInterval);
-      // cid and method are validated below when calling notify.
       if (!timerID || !defaultInterval || isNaN(defaultInterval)) {
         LOG(
-          "TimerManager:notify - update-timer category registered" +
-            (cid ? " for " + cid : "") +
-            " without required parameters - " +
-            "skipping"
+          "TimerManager:notify - update-timer category registered for " +
+            cid +
+            " without required parameters - skipping"
         );
         continue;
       }
@@ -195,8 +219,12 @@ TimerManager.prototype = {
         function () {
           ChromeUtils.idleDispatch(() => {
             try {
-              let startTime = Cu.now();
-              Cc[cid][method](Ci.nsITimerCallback).notify(timer);
+              let startTime = ChromeUtils.now();
+              if (method == "getService") {
+                Cc[cid].getService(Ci.nsITimerCallback).notify(timer);
+              } else {
+                Cc[cid].createInstance(Ci.nsITimerCallback).notify(timer);
+              }
               ChromeUtils.addProfilerMarker(
                 "UpdateTimer",
                 { category: "Timer", startTime },
@@ -239,7 +267,7 @@ TimerManager.prototype = {
           if (timerData.callback && timerData.callback.notify) {
             ChromeUtils.idleDispatch(() => {
               try {
-                let startTime = Cu.now();
+                let startTime = ChromeUtils.now();
                 timerData.callback.notify(timer);
                 ChromeUtils.addProfilerMarker(
                   "UpdateTimer",
@@ -331,7 +359,7 @@ TimerManager.prototype = {
   /**
    * See nsIUpdateTimerManager.idl
    */
-  registerTimer: function TM_registerTimer(id, callback, interval, skipFirst) {
+  registerTimer(id, callback, interval, skipFirst) {
     let markerText = `timerID: ${id} interval: ${interval}s`;
     if (skipFirst) {
       markerText += " skipFirst";
@@ -380,7 +408,7 @@ TimerManager.prototype = {
     this._ensureTimer(interval * 1000);
   },
 
-  unregisterTimer: function TM_unregisterTimer(id) {
+  unregisterTimer(id) {
     ChromeUtils.addProfilerMarker(
       "UnregisterUpdateTimer",
       { category: "Timer" },

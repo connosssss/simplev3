@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,76 +7,62 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/dom/AbstractRange.h"
 #include "mozilla/dom/Document.h"
-#include "mozilla/dom/ShadowRoot.h"
 #include "mozilla/dom/HTMLSlotElement.h"
+#include "mozilla/dom/ShadowRoot.h"
 #include "nsContentUtils.h"
 #include "nsFrameSelection.h"
+#include "nsIContentInlines.h"
 
 namespace mozilla {
 
 using namespace dom;
 
-template bool RangeUtils::IsValidPoints(const RangeBoundary& aStartBoundary,
-                                        const RangeBoundary& aEndBoundary);
-template bool RangeUtils::IsValidPoints(const RangeBoundary& aStartBoundary,
-                                        const RawRangeBoundary& aEndBoundary);
-template bool RangeUtils::IsValidPoints(const RawRangeBoundary& aStartBoundary,
-                                        const RangeBoundary& aEndBoundary);
-template bool RangeUtils::IsValidPoints(const RawRangeBoundary& aStartBoundary,
-                                        const RawRangeBoundary& aEndBoundary);
+template bool RangeUtils::IsValidPoints(const RangeBoundary&,
+                                        const RangeBoundary&);
+template bool RangeUtils::IsValidPoints(const RangeBoundary&,
+                                        const RawRangeBoundary&);
+template bool RangeUtils::IsValidPoints(const RawRangeBoundary&,
+                                        const RangeBoundary&);
+template bool RangeUtils::IsValidPoints(const RawRangeBoundary&,
+                                        const RawRangeBoundary&);
 
 template nsresult
 RangeUtils::CompareNodeToRangeBoundaries<TreeKind::ShadowIncludingDOM>(
-    nsINode* aNode, const RangeBoundary& aStartBoundary,
-    const RangeBoundary& aEndBoundary, bool* aNodeIsBeforeRange,
-    bool* aNodeIsAfterRange);
-template nsresult RangeUtils::CompareNodeToRangeBoundaries<TreeKind::Flat>(
-    nsINode* aNode, const RangeBoundary& aStartBoundary,
-    const RangeBoundary& aEndBoundary, bool* aNodeIsBeforeRange,
-    bool* aNodeIsAfterRange);
-
+    const nsINode*, const RangeBoundary&, const RangeBoundary&, bool*, bool*);
 template nsresult
-RangeUtils::CompareNodeToRangeBoundaries<TreeKind::ShadowIncludingDOM>(
-    nsINode* aNode, const RangeBoundary& aStartBoundary,
-    const RawRangeBoundary& aEndBoundary, bool* aNodeIsBeforeRange,
-    bool* aNodeIsAfterRange);
-template nsresult RangeUtils::CompareNodeToRangeBoundaries<TreeKind::Flat>(
-    nsINode* aNode, const RangeBoundary& aStartBoundary,
-    const RawRangeBoundary& aEndBoundary, bool* aNodeIsBeforeRange,
-    bool* aNodeIsAfterRange);
+RangeUtils::CompareNodeToRangeBoundaries<TreeKind::FlatForSelection>(
+    const nsINode*, const RangeBoundary&, const RangeBoundary&, bool*, bool*);
 
-template nsresult
-RangeUtils::CompareNodeToRangeBoundaries<TreeKind::ShadowIncludingDOM>(
-    nsINode* aNode, const RawRangeBoundary& aStartBoundary,
-    const RangeBoundary& aEndBoundary, bool* aNodeIsBeforeRange,
-    bool* aNodeIsAfterRange);
-template nsresult RangeUtils::CompareNodeToRangeBoundaries<TreeKind::Flat>(
-    nsINode* aNode, const RawRangeBoundary& aStartBoundary,
-    const RangeBoundary& aEndBoundary, bool* aNodeIsBeforeRange,
-    bool* aNodeIsAfterRange);
+template nsresult RangeUtils::CompareNodeToRangeBoundaries<
+    TreeKind::ShadowIncludingDOM>(const nsINode*, const RangeBoundary&,
+                                  const RawRangeBoundary&, bool*, bool*);
+template nsresult RangeUtils::CompareNodeToRangeBoundaries<
+    TreeKind::FlatForSelection>(const nsINode*, const RangeBoundary&,
+                                const RawRangeBoundary&, bool*, bool*);
 
-template nsresult
-RangeUtils::CompareNodeToRangeBoundaries<TreeKind::ShadowIncludingDOM>(
-    nsINode* aNode, const RawRangeBoundary& aStartBoundary,
-    const RawRangeBoundary& aEndBoundary, bool* aNodeIsBeforeRange,
-    bool* aNodeIsAfterRange);
-template nsresult RangeUtils::CompareNodeToRangeBoundaries<TreeKind::Flat>(
-    nsINode* aNode, const RawRangeBoundary& aStartBoundary,
-    const RawRangeBoundary& aEndBoundary, bool* aNodeIsBeforeRange,
-    bool* aNodeIsAfterRange);
+template nsresult RangeUtils::CompareNodeToRangeBoundaries<
+    TreeKind::ShadowIncludingDOM>(const nsINode*, const RawRangeBoundary&,
+                                  const RangeBoundary&, bool*, bool*);
+template nsresult RangeUtils::CompareNodeToRangeBoundaries<
+    TreeKind::FlatForSelection>(const nsINode*, const RawRangeBoundary&,
+                                const RangeBoundary&, bool*, bool*);
+
+template nsresult RangeUtils::CompareNodeToRangeBoundaries<
+    TreeKind::ShadowIncludingDOM>(const nsINode*, const RawRangeBoundary&,
+                                  const RawRangeBoundary&, bool*, bool*);
+template nsresult RangeUtils::CompareNodeToRangeBoundaries<
+    TreeKind::FlatForSelection>(const nsINode*, const RawRangeBoundary&,
+                                const RawRangeBoundary&, bool*, bool*);
 
 template nsresult RangeUtils::CompareNodeToRange<TreeKind::ShadowIncludingDOM>(
-    nsINode* aNode, AbstractRange* aAbstractRange, bool* aNodeIsBeforeRange,
-    bool* aNodeIsAfterRange);
-template nsresult RangeUtils::CompareNodeToRange<TreeKind::Flat>(
-    nsINode* aNode, AbstractRange* aAbstractRange, bool* aNodeIsBeforeRange,
-    bool* aNodeIsAfterRange);
+    const nsINode*, const AbstractRange*, bool*, bool*);
+template nsresult RangeUtils::CompareNodeToRange<TreeKind::FlatForSelection>(
+    const nsINode*, const AbstractRange*, bool*, bool*);
 
-template Maybe<bool>
-RangeUtils::IsNodeContainedInRange<TreeKind::ShadowIncludingDOM>(
-    nsINode& aNode, AbstractRange* aAbstractRange);
-template Maybe<bool> RangeUtils::IsNodeContainedInRange<TreeKind::Flat>(
-    nsINode& aNode, AbstractRange* aAbstractRange);
+template Maybe<bool> RangeUtils::IsNodeContainedInRange<
+    TreeKind::ShadowIncludingDOM>(const nsINode&, const AbstractRange*);
+template Maybe<bool> RangeUtils::IsNodeContainedInRange<
+    TreeKind::FlatForSelection>(const nsINode&, const AbstractRange*);
 
 [[nodiscard]] static inline bool ParentNodeIsInSameSelection(
     const nsINode& aNode) {
@@ -165,7 +149,11 @@ bool RangeUtils::IsValidPoints(
   }
 
   const Maybe<int32_t> order =
-      nsContentUtils::ComparePoints(aStartBoundary, aEndBoundary);
+      aStartBoundary.GetTreeKind() == TreeKind::FlatForSelection
+          ? nsContentUtils::ComparePoints<TreeKind::FlatForSelection>(
+                aStartBoundary, aEndBoundary)
+          : nsContentUtils::ComparePoints<TreeKind::DOM>(aStartBoundary,
+                                                         aEndBoundary);
   if (!order) {
     MOZ_ASSERT_UNREACHABLE();
     return false;
@@ -176,8 +164,8 @@ bool RangeUtils::IsValidPoints(
 
 // static
 template <TreeKind aKind, typename Dummy>
-Maybe<bool> RangeUtils::IsNodeContainedInRange(nsINode& aNode,
-                                               AbstractRange* aAbstractRange) {
+Maybe<bool> RangeUtils::IsNodeContainedInRange(
+    const nsINode& aNode, const AbstractRange* aAbstractRange) {
   bool nodeIsBeforeRange{false};
   bool nodeIsAfterRange{false};
 
@@ -199,8 +187,8 @@ Maybe<bool> RangeUtils::IsNodeContainedInRange(nsINode& aNode,
 
 // static
 template <TreeKind aKind, typename Dummy>
-nsresult RangeUtils::CompareNodeToRange(nsINode* aNode,
-                                        AbstractRange* aAbstractRange,
+nsresult RangeUtils::CompareNodeToRange(const nsINode* aNode,
+                                        const AbstractRange* aAbstractRange,
                                         bool* aNodeIsBeforeRange,
                                         bool* aNodeIsAfterRange) {
   if (NS_WARN_IF(!aAbstractRange) ||
@@ -212,10 +200,11 @@ nsresult RangeUtils::CompareNodeToRange(nsINode* aNode,
       aAbstractRange->MayCrossShadowBoundaryEndRef(), aNodeIsBeforeRange,
       aNodeIsAfterRange);
 }
+
 template <TreeKind aKind, typename SPT, typename SRT, typename EPT,
           typename ERT, typename Dummy>
 nsresult RangeUtils::CompareNodeToRangeBoundaries(
-    nsINode* aNode, const RangeBoundaryBase<SPT, SRT>& aStartBoundary,
+    const nsINode* aNode, const RangeBoundaryBase<SPT, SRT>& aStartBoundary,
     const RangeBoundaryBase<EPT, ERT>& aEndBoundary, bool* aNodeIsBeforeRange,
     bool* aNodeIsAfterRange) {
   MOZ_ASSERT(aNodeIsBeforeRange);
@@ -227,6 +216,10 @@ nsresult RangeUtils::CompareNodeToRangeBoundaries(
     return NS_ERROR_INVALID_ARG;
   }
 
+  constexpr TreeKind boundaryKind = aKind == TreeKind::FlatForSelection
+                                        ? TreeKind::FlatForSelection
+                                        : TreeKind::DOM;
+
   // create a pair of dom points that expresses location of node:
   //     NODE(start), NODE(end)
   // Let incoming range be:
@@ -235,42 +228,60 @@ nsresult RangeUtils::CompareNodeToRangeBoundaries(
   // then the Node is contained (completely) by the Range.
 
   // gather up the dom point info
-  int32_t nodeStart;
-  uint32_t nodeEnd;
-  const nsINode* parent = nullptr;
+  ConstRawRangeBoundary nodeStart(boundaryKind);
+  ConstRawRangeBoundary nodeEnd(boundaryKind);
 
-  MOZ_ASSERT_IF(aKind == TreeKind::Flat,
-                StaticPrefs::dom_shadowdom_selection_across_boundary_enabled());
   // ShadowRoot has no parent, nor can be represented by parent/offset pair.
-  if (!aNode->IsShadowRoot()) {
-    parent = ShadowDOMSelectionHelpers::GetParentNodeInSameSelection(
-        *aNode, aKind == TreeKind::Flat ? AllowRangeCrossShadowBoundary::Yes
-                                        : AllowRangeCrossShadowBoundary::No);
-  }
+  nsINode* const parentNodeInSameSelection = [&]() -> nsINode* {
+    if (aNode->IsShadowRoot()) {
+      return nullptr;
+    }
+    return ShadowDOMSelectionHelpers::GetParentNodeInSameSelection(
+        *aNode, aKind == TreeKind::FlatForSelection
+                    ? AllowRangeCrossShadowBoundary::Yes
+                    : AllowRangeCrossShadowBoundary::No);
+  }();
 
-  if (!parent) {
+  if (!parentNodeInSameSelection) {
     // can't make a parent/offset pair to represent start or
     // end of the root node, because it has no parent.
     // so instead represent it by (node,0) and (node,numChildren)
-    parent = aNode;
-    nodeStart = 0;
-    nodeEnd = aNode->GetChildCount();
-  } else if (const HTMLSlotElement* slotAsParent =
-                 HTMLSlotElement::FromNode(parent);
-             slotAsParent && aKind == TreeKind::Flat) {
+    nodeStart = ConstRawRangeBoundary::StartOfParent(
+        *aNode, RangeBoundarySetBy::Ref, boundaryKind);
+    nodeEnd = ConstRawRangeBoundary::EndOfParent(
+        *aNode, RangeBoundarySetBy::Ref, boundaryKind);
+  } else if (const auto* slotAsParent =
+                 parentNodeInSameSelection
+                     ->GetAsHTMLSlotElementIfFilledForSelection();
+             slotAsParent && aKind == TreeKind::FlatForSelection) {
     // aNode is a slotted content, use the index in the assigned nodes
     // to represent this node.
     auto index = slotAsParent->AssignedNodes().IndexOf(aNode);
-    nodeStart = index;
-    nodeEnd = nodeStart + 1;
+    nodeStart =
+        ConstRawRangeBoundary(slotAsParent, index, RangeBoundarySetBy::Offset,
+                              TreeKind::FlatForSelection);
+    nodeEnd = ConstRawRangeBoundary(slotAsParent, index + 1,
+                                    RangeBoundarySetBy::Offset,
+                                    TreeKind::FlatForSelection);
   } else {
-    nodeStart = parent->ComputeIndexOf_Deprecated(aNode);
-    NS_WARNING_ASSERTION(
-        nodeStart >= 0,
-        "aNode has the parent node but it does not have aNode!");
-    nodeEnd = nodeStart + 1u;
-    MOZ_ASSERT(nodeStart < 0 || static_cast<uint32_t>(nodeStart) < nodeEnd,
-               "nodeStart should be less than nodeEnd");
+    nodeStart =
+        ConstRawRangeBoundary::FromChild(*aNode->AsContent(), boundaryKind);
+    nodeEnd = ConstRawRangeBoundary::After(*aNode->AsContent(), boundaryKind);
+    if (boundaryKind == TreeKind::FlatForSelection && !nodeStart.IsSet() &&
+        !nodeEnd.IsSet()) {
+      if (ShadowRoot* const shadowRoot =
+              parentNodeInSameSelection->GetShadowRootForSelection()) {
+        // In this case, aNode must be a child node which is not in the shadow
+        // hosted by the parent node.
+        if (aNode == parentNodeInSameSelection->GetFirstChild()) {
+          nodeStart = nodeEnd = ConstRawRangeBoundary::StartOfParent(
+              *shadowRoot, RangeBoundarySetBy::Ref, TreeKind::FlatForSelection);
+        } else {
+          nodeStart = nodeEnd = ConstRawRangeBoundary::EndOfParent(
+              *shadowRoot, RangeBoundarySetBy::Ref, TreeKind::FlatForSelection);
+        }
+      }
+    }
   }
 
   // XXX nsContentUtils::ComparePoints() may be expensive.  If some callers
@@ -286,25 +297,36 @@ nsresult RangeUtils::CompareNodeToRangeBoundaries(
   // rid of the warning without much larger changes so we do this just to
   // silence the warning. (Bug 1438996)
 
+  const ConstRawRangeBoundary startBoundary =
+      aStartBoundary.GetTreeKind() == boundaryKind
+          ? aStartBoundary.AsConstRaw()
+          : (boundaryKind == TreeKind::DOM
+                 ? aStartBoundary.AsConstRaw().AsRangeBoundaryInDOMTree()
+                 : aStartBoundary.AsConstRaw()
+                       .AsRangeBoundaryInFlatTreeOrNonFlattenedNode(
+                           aStartBoundary == aEndBoundary
+                               ? RangeBoundaryFor::Collapsed
+                               : RangeBoundaryFor::Start));
   // is RANGE(start) <= NODE(start) ?
   Maybe<int32_t> order =
-      nsContentUtils::ComparePoints_AllowNegativeOffsets<aKind>(
-          aStartBoundary.GetContainer(),
-          *aStartBoundary.Offset(
-              RangeBoundaryBase<SPT,
-                                SRT>::OffsetFilter::kValidOrInvalidOffsets),
-          parent, nodeStart);
+      nsContentUtils::ComparePoints<aKind>(startBoundary, nodeStart);
   if (NS_WARN_IF(!order)) {
     return NS_ERROR_DOM_WRONG_DOCUMENT_ERR;
   }
   *aNodeIsBeforeRange = *order > 0;
-  // is RANGE(end) >= NODE(end) ?
-  order = nsContentUtils::ComparePointsWithIndices<aKind>(
-      aEndBoundary.GetContainer(),
-      *aEndBoundary.Offset(
-          RangeBoundaryBase<EPT, ERT>::OffsetFilter::kValidOrInvalidOffsets),
-      parent, nodeEnd);
 
+  const ConstRawRangeBoundary endBoundary =
+      aEndBoundary.GetTreeKind() == boundaryKind
+          ? aEndBoundary.AsConstRaw()
+          : (boundaryKind == TreeKind::DOM
+                 ? aEndBoundary.AsConstRaw().AsRangeBoundaryInDOMTree()
+                 : aEndBoundary.AsConstRaw()
+                       .AsRangeBoundaryInFlatTreeOrNonFlattenedNode(
+                           aStartBoundary == aEndBoundary
+                               ? RangeBoundaryFor::Collapsed
+                               : RangeBoundaryFor::End));
+  // is RANGE(end) >= NODE(end) ?
+  order = nsContentUtils::ComparePoints<aKind>(endBoundary, nodeEnd);
   if (NS_WARN_IF(!order)) {
     return NS_ERROR_DOM_WRONG_DOCUMENT_ERR;
   }
@@ -314,12 +336,21 @@ nsresult RangeUtils::CompareNodeToRangeBoundaries(
 }
 
 // static
+RawRangeBoundary ShadowDOMSelectionHelpers::StartRef(
+    const AbstractRange* aRange,
+    AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary) {
+  MOZ_ASSERT(aRange);
+  return (aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes)
+             ? aRange->MayCrossShadowBoundaryStartRef().AsRaw()
+             : aRange->StartRef().AsRaw();
+}
+
+// static
 nsINode* ShadowDOMSelectionHelpers::GetStartContainer(
     const AbstractRange* aRange,
     AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary) {
   MOZ_ASSERT(aRange);
-  return (StaticPrefs::dom_shadowdom_selection_across_boundary_enabled() &&
-          aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes)
+  return (aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes)
              ? aRange->GetMayCrossShadowBoundaryStartContainer()
              : aRange->GetStartContainer();
 }
@@ -329,10 +360,19 @@ uint32_t ShadowDOMSelectionHelpers::StartOffset(
     const AbstractRange* aRange,
     AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary) {
   MOZ_ASSERT(aRange);
-  return (StaticPrefs::dom_shadowdom_selection_across_boundary_enabled() &&
-          aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes)
+  return (aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes)
              ? aRange->MayCrossShadowBoundaryStartOffset()
              : aRange->StartOffset();
+}
+
+// static
+RawRangeBoundary ShadowDOMSelectionHelpers::EndRef(
+    const AbstractRange* aRange,
+    AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary) {
+  MOZ_ASSERT(aRange);
+  return (aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes)
+             ? aRange->MayCrossShadowBoundaryEndRef().AsRaw()
+             : aRange->EndRef().AsRaw();
 }
 
 // static
@@ -340,8 +380,7 @@ nsINode* ShadowDOMSelectionHelpers::GetEndContainer(
     const AbstractRange* aRange,
     AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary) {
   MOZ_ASSERT(aRange);
-  return (StaticPrefs::dom_shadowdom_selection_across_boundary_enabled() &&
-          aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes)
+  return (aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes)
              ? aRange->GetMayCrossShadowBoundaryEndContainer()
              : aRange->GetEndContainer();
 }
@@ -351,8 +390,7 @@ uint32_t ShadowDOMSelectionHelpers::EndOffset(
     const AbstractRange* aRange,
     AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary) {
   MOZ_ASSERT(aRange);
-  return (StaticPrefs::dom_shadowdom_selection_across_boundary_enabled() &&
-          aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes)
+  return (aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes)
              ? aRange->MayCrossShadowBoundaryEndOffset()
              : aRange->EndOffset();
 }
@@ -365,12 +403,10 @@ nsINode* ShadowDOMSelectionHelpers::GetParentNodeInSameSelection(
     return nullptr;
   }
 
-  if (StaticPrefs::dom_shadowdom_selection_across_boundary_enabled() &&
-      aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes) {
+  if (aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes) {
     if (aNode.IsContent()) {
-      if (HTMLSlotElement* slot = aNode.AsContent()->GetAssignedSlot();
-          slot && GetShadowRoot(slot->GetContainingShadowHost(),
-                                aAllowCrossShadowBoundary)) {
+      if (HTMLSlotElement* const slot =
+              aNode.AsContent()->GetAssignedSlotForSelection()) {
         return slot;
       }
     }
@@ -384,8 +420,7 @@ ShadowRoot* ShadowDOMSelectionHelpers::GetShadowRoot(
     const nsINode* aNode,
     AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary) {
   MOZ_ASSERT(aNode);
-  return (StaticPrefs::dom_shadowdom_selection_across_boundary_enabled() &&
-          aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes)
+  return (aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes)
              ? aNode->GetShadowRootForSelection()
              : nullptr;
 }  // namespace dom

@@ -12,9 +12,10 @@ import android.widget.TextView
 import androidx.core.graphics.drawable.toDrawable
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import mozilla.components.concept.engine.webextension.WebExtensionBrowserAction
 import mozilla.components.concept.toolbar.Toolbar
 import mozilla.components.support.base.android.Padding
@@ -32,14 +33,16 @@ import mozilla.components.ui.icons.R as iconsR
 open class WebExtensionToolbarAction(
     internal var action: WebExtensionBrowserAction,
     internal val padding: Padding? = null,
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
     internal val iconJobDispatcher: CoroutineDispatcher,
     internal val listener: () -> Unit,
 ) : Toolbar.Action {
     internal var iconJob: Job? = null
 
     override fun createView(parent: ViewGroup): View {
-        val rootView = LayoutInflater.from(parent.context)
-            .inflate(R.layout.mozac_feature_toolbar_web_extension_action_layout, parent, false)
+        val rootView =
+            LayoutInflater.from(parent.context)
+                .inflate(R.layout.mozac_feature_toolbar_web_extension_action_layout, parent, false)
 
         rootView.isEnabled = action.enabled ?: true
         rootView.setOnClickListener { listener.invoke() }
@@ -57,7 +60,7 @@ open class WebExtensionToolbarAction(
                 }
 
                 override fun onViewAttachedToWindow(view: View) = Unit
-            },
+            }
         )
         return rootView
     }
@@ -67,28 +70,28 @@ open class WebExtensionToolbarAction(
         val imageView = view.findViewById<ImageView>(R.id.action_image)
         val textView = view.findViewById<TextView>(R.id.badge_text)
 
-        iconJob = CoroutineScope(iconJobDispatcher).launch {
-            try {
-                val icon = action.loadIcon?.invoke(imageView.measuredHeight)
-                icon?.let {
-                    MainScope().launch {
-                        imageView.setImageDrawable(it.toDrawable(view.context.resources))
+        iconJob =
+            CoroutineScope(iconJobDispatcher).launch {
+                try {
+                    val icon = action.loadIcon?.invoke(imageView.measuredHeight)
+                    icon?.let {
+                        withContext(mainDispatcher) {
+                            imageView.setImageDrawable(it.toDrawable(view.context.resources))
+                        }
                     }
-                }
-            } catch (throwable: Throwable) {
-                MainScope().launch {
-                    imageView.setImageResource(
-                        iconsR.drawable.mozac_ic_web_extension_default_icon,
+                } catch (throwable: Throwable) {
+                    withContext(mainDispatcher) {
+                        imageView.setImageResource(iconsR.drawable.mozac_ic_extension_fill_24)
+                    }
+
+                    Log.log(
+                        Log.Priority.ERROR,
+                        "mozac-webextensions",
+                        throwable,
+                        "Failed to load browser action icon, falling back to default.",
                     )
                 }
-                Log.log(
-                    Log.Priority.ERROR,
-                    "mozac-webextensions",
-                    throwable,
-                    "Failed to load browser action icon, falling back to default.",
-                )
             }
-        }
 
         action.title?.let { imageView.contentDescription = it }
         action.badgeText?.let { textView.text = it }

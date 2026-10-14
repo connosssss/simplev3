@@ -20,6 +20,9 @@ function assertTarget(target, url) {
 }
 
 add_task(async function () {
+  // We use a commands object for the main process
+  await pushPref("devtools.chrome.enabled", true);
+
   const tab = await addTab(TEST_URI);
   const browser = tab.linkedBrowser;
   let commands, target;
@@ -64,7 +67,7 @@ add_task(async function () {
   info("Test parent process");
   commands = await commandsFromURL(new URL("https://foo?type=process"));
   target = await commands.descriptorFront.getTarget();
-  const topWindow = Services.wm.getMostRecentWindow("navigator:browser");
+  const topWindow = Services.wm.getMostRecentBrowserWindow();
   assertTarget(target, topWindow.location.href);
   await commands.destroy();
 
@@ -120,7 +123,7 @@ async function testRemoteTCP() {
     new URL("https://foo?type=process&host=127.0.0.1&port=" + port)
   );
   const target = await commands.descriptorFront.getTarget();
-  const topWindow = Services.wm.getMostRecentWindow("navigator:browser");
+  const topWindow = Services.wm.getMostRecentBrowserWindow();
   assertTarget(target, topWindow.location.href);
 
   const settings = commands.client._transport.connectionSettings;
@@ -143,7 +146,7 @@ async function testRemoteWebSocket() {
     new URL("https://foo?type=process&host=127.0.0.1&port=" + port + "&ws=true")
   );
   const target = await commands.descriptorFront.getTarget();
-  const topWindow = Services.wm.getMostRecentWindow("navigator:browser");
+  const topWindow = Services.wm.getMostRecentBrowserWindow();
   assertTarget(target, topWindow.location.href);
 
   const settings = commands.client._transport.connectionSettings;

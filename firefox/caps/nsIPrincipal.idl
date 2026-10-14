@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -88,7 +87,8 @@ interface nsIPrincipal : nsISupports
     %}
 
     /*
-     * Returns whether the Principals URI is equal to the other URI
+     * Returns whether the Principals URI is equal to the other URI.
+     * The ref doesn't affect equality with the principal.
      *
      * May be called from any thread.
      */
@@ -360,7 +360,7 @@ interface nsIPrincipal : nsISupports
      *
      * May be called from any thread.
      */
-    readonly attribute ACString exposablePrePath;
+    readonly attribute AUTF8String exposablePrePath;
 
     /**
      * Returns the Spec of the Principals URI with
@@ -368,7 +368,7 @@ interface nsIPrincipal : nsISupports
      *
      * May be called from any thread.
      */
-    readonly attribute ACString exposableSpec;
+    readonly attribute AUTF8String exposableSpec;
 
     /**
      * Return the scheme of the principals URI
@@ -473,6 +473,16 @@ interface nsIPrincipal : nsISupports
      */
     [infallible]
     readonly attribute boolean isLoopbackHost;
+
+    /**
+     * True if this principal is only a secure context because its host was
+     * allowlisted by the user via `dom.securecontext.allowlist`, i.e. it is
+     * not actually served over an encrypted connection.
+     *
+     * NOTE: Main-Thread Only.
+     */
+    [infallible]
+    readonly attribute boolean isSecureContextAllowlistedHost;
 
     /**
      * Returns the Flags of the Principals
@@ -631,6 +641,13 @@ interface nsIPrincipal : nsISupports
     %{C++
       inline bool IsSystemPrincipal() const;
     %}
+
+    /**
+     * Returns true iff the principal is an addon principal.
+     *
+     * May be called from any thread.
+     */
+    [infallible] readonly attribute boolean isAddonPrincipal;
 
     /**
      * Returns true iff the principal is either an addon principal or

@@ -22,17 +22,14 @@ add_task(async function testCheckDNSResolution() {
   const { document } = monitor.panelWin;
 
   const requestsComplete = waitForNetworkEvents(monitor, 1);
-  await reloadBrowser();
+  await reloadSelectedTab();
   await requestsComplete;
 
   // Wait until the tab panel summary is displayed
   const waitForTab = waitUntil(
     () => document.querySelectorAll(".tabpanel-summary-label")[0]
   );
-  EventUtils.sendMouseEvent(
-    { type: "mousedown" },
-    document.querySelectorAll(".request-list-item")[0]
-  );
+  clickOnRequestRow(document.querySelectorAll(".request-list-item")[0]);
   await waitForTab;
 
   const dnsEl = [...document.querySelectorAll(".headers-summary")].find(

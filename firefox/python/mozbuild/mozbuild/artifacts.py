@@ -31,7 +31,6 @@ environment.  ``mach artifact`` ensures these modules are available, but other
 consumers will need to arrange this themselves.
 """
 
-
 import collections
 import functools
 import glob
@@ -46,8 +45,10 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
-from io import BufferedReader
+from io import BufferedReader, BytesIO
 from urllib.parse import urlparse
 
 import buildconfig
@@ -60,12 +61,12 @@ from mozpack import executables
 from mozpack.files import FileFinder, JarFinder, TarFinder
 from mozpack.mozjar import JarReader, JarWriter
 from mozpack.packager.unpack import UnpackFinder
-from taskgraph.util.taskcluster import find_task_id, get_artifact_url, list_artifacts
 
 from mozbuild.artifact_builds import JOB_CHOICES
 from mozbuild.artifact_cache import ArtifactCache
+from mozbuild.build_markers import build_marker
 from mozbuild.dirutils import ensureParentDir, mkdir
-from mozbuild.util import FileAvoidWrite
+from mozbuild.util import FileAvoidWrite, get_root_url, get_taskcluster_client
 
 # Number of candidate pushheads to cache per parent changeset.
 NUM_PUSHHEADS_TO_QUERY_PER_PARENT = 50
@@ -89,6 +90,19 @@ UNFILTERED_PROJECT_PACKAGE_PROCESSED_SUFFIX = (
 )
 
 
+def _future_result(future):
+    """Wait for the result of ``future``.
+
+    Waiting without a timeout blocks in a way that can't be interrupted with
+    Ctrl-C on Windows before Python 3.14, so wait in small increments.
+    """
+    while True:
+        try:
+            return future.result(timeout=0.1)
+        except FutureTimeoutError:
+            pass
+
+
 class GeckoJobConfiguration:
     trust_domain = "gecko"
     product = "firefox"
@@ -102,11 +116,11 @@ class GeckoJobConfiguration:
     beta_candidate_trees = [
         "releases/mozilla-beta",
     ]
-    # The list below list should be updated when we have new ESRs.
+    # The list below should be updated when we have new ESRs.
     esr_candidate_trees = [
-        "releases/mozilla-esr115",
-        "releases/mozilla-esr128",
+        "releases/mozilla-esr153",
         "releases/mozilla-esr140",
+        "releases/mozilla-esr115",
     ]
     try_tree = "try"
 
@@ -127,21 +141,34 @@ class ThunderbirdJobConfiguration:
     beta_candidate_trees = [
         "releases/comm-beta",
     ]
-    # The list below list should be updated when we have new ESRs.
+    # The list below should be updated when we have new ESRs.
     esr_candidate_trees = [
-        "releases/comm-esr115",
-        "releases/comm-esr128",
+        "releases/comm-esr153",
+        "releases/comm-esr140",
     ]
     try_tree = "try-comm-central"
 
 
 class ArtifactJob:
+    def _get_orig_basename(self, filename):
+        """Extract the original basename from a filename, removing hash prefixes if present."""
+        orig_basename = os.path.basename(filename)
+        # Turn 'HASH-target...' into 'target...' if possible.  It might not
+        # be possible if the file is given directly on the command line.
+        before, _sep, after = orig_basename.partition("-")
+        if re.match(r"[0-9a-fA-F]{16}$", before):
+            orig_basename = after
+        return orig_basename
+
     # These are a subset of TEST_HARNESS_BINS in testing/mochitest/Makefile.in.
     # Each item is a pair of (pattern, (src_prefix, dest_prefix), where src_prefix
     # is the prefix of the pattern relevant to its location in the archive, and
     # dest_prefix is the prefix to be added that will yield the final path relative
     # to dist/.
-    test_artifact_patterns = {
+    # This must stay an ordered sequence: consumers use the first matching
+    # pattern, and some patterns overlap (a trailing `*` matches a whole
+    # subtree), so more specific patterns have to come first.
+    test_artifact_patterns = (
         ("bin/BadCertAndPinningServer", ("bin", "bin")),
         ("bin/DelegatedCredentialsServer", ("bin", "bin")),
         ("bin/EncryptedClientHelloServer", ("bin", "bin")),
@@ -149,6 +176,7 @@ class ArtifactJob:
         ("bin/GenerateOCSPResponse", ("bin", "bin")),
         ("bin/OCSPStaplingServer", ("bin", "bin")),
         ("bin/SanctionsTestServer", ("bin", "bin")),
+        ("bin/ZeroRttAcceptServer", ("bin", "bin")),
         ("bin/certutil", ("bin", "bin")),
         ("bin/geckodriver", ("bin", "bin")),
         ("bin/pk12util", ("bin", "bin")),
@@ -159,12 +187,12 @@ class ArtifactJob:
         ("bin/http3server", ("bin", "bin")),
         ("bin/plugins/gmp-*/*/*", ("bin/plugins", "bin")),
         ("bin/plugins/*", ("bin/plugins", "plugins")),
-    }
+    )
 
     # We can tell our input is a test archive by this suffix, which happens to
     # be the same across platforms.
     _test_zip_archive_suffix = ".common.tests.zip"
-    _test_tar_archive_suffix = ".common.tests.tar.gz"
+    _test_tar_archive_suffix = ".common.tests.tar.zst"
 
     # A map of extra archives to fetch and unpack.  An extra archive might
     # include optional build output to incorporate into the local artifact
@@ -202,11 +230,12 @@ class ArtifactJob:
         log=None,
         download_tests=True,
         download_symbols=False,
-        download_maven_zip=False,
+        artifact_filters=None,
         override_job_configuration=None,
         substs=None,
         mozbuild=None,
     ):
+        artifact_filters = artifact_filters or []
         if override_job_configuration is not None:
             self.job_configuration = override_job_configuration
 
@@ -214,11 +243,9 @@ class ArtifactJob:
         self._tests_re = None
         if download_tests:
             self._tests_re = re.compile(
-                r"public/build/(en-US/)?target\.common\.tests\.(zip|tar\.gz)$"
+                r"public/build/(en-US/)?target\.common\.tests\.(zip|tar\.zst)$"
             )
-        self._maven_zip_re = None
-        if download_maven_zip:
-            self._maven_zip_re = re.compile(r"public/build/target\.maven\.zip$")
+        self._artifact_filters = set(artifact_filters)
         self._log = log
         self._substs = substs
         self._symbols_archive_suffix = None
@@ -236,15 +263,14 @@ class ArtifactJob:
     def find_candidate_artifacts(self, artifacts):
         # TODO: Handle multiple artifacts, taking the latest one.
         tests_artifact = None
-        maven_zip_artifact = None
+        found_artifact_filters = set()
         for artifact in artifacts:
             name = artifact["name"]
-            if self._maven_zip_re:
-                if self._maven_zip_re.match(name):
-                    maven_zip_artifact = name
+            if self._artifact_filters:
+                if name in self._artifact_filters:
+                    found_artifact_filters.add(name)
                     yield name
-                else:
-                    continue
+                continue
             elif self._package_re and self._package_re.match(name):
                 yield name
             elif self._tests_re and self._tests_re.match(name):
@@ -256,6 +282,8 @@ class ArtifactJob:
                 yield name
             elif name.endswith(self._extra_archive_suffixes):
                 yield name
+            elif name == self._licenses_artifact:
+                yield name
             else:
                 self.log(
                     logging.DEBUG,
@@ -265,21 +293,32 @@ class ArtifactJob:
                 )
         if self._tests_re and not tests_artifact:
             raise ValueError(
-                f'Expected tests archive matching "{self._tests_re}", but '
-                "found none!"
+                f'Expected tests archive matching "{self._tests_re}", but found none!'
             )
-        if self._maven_zip_re and not maven_zip_artifact:
-            raise ValueError(
-                f'Expected Maven zip archive matching "{self._maven_zip_re}", but '
-                "found none!"
-            )
+        if self._artifact_filters:
+            missing_artifacts = self._artifact_filters - found_artifact_filters
+            if missing_artifacts:
+                raise ValueError(
+                    f"Did not find expected artifacts {sorted(missing_artifacts)}. Did find artifacts: {sorted(found_artifact_filters)}"
+                )
 
+    # Processed archives are only a local cache of the files to install.
+    # Package and test files are stored uncompressed in them, because
+    # compressing them takes longer than extracting the originals.
     @contextmanager
     def get_writer(self, **kwargs):
         with JarWriter(**kwargs) as writer:
             yield writer
 
+    _licenses_artifact = "public/build/licenses.json"
+
     def process_artifact(self, filename, processed_filename):
+        if self._get_orig_basename(filename) == "licenses.json":
+            with self.get_writer(file=processed_filename) as writer, open(
+                filename, "rb"
+            ) as fh:
+                writer.add(b"licenses.artifact.json", fh)
+            return
         if filename.endswith(ArtifactJob._test_zip_archive_suffix) and self._tests_re:
             return self.process_tests_zip_artifact(filename, processed_filename)
         if filename.endswith(ArtifactJob._test_tar_archive_suffix) and self._tests_re:
@@ -292,6 +331,30 @@ class ArtifactJob:
             return self.process_extra_archive(filename, processed_filename)
         return self.process_package_artifact(filename, processed_filename)
 
+    def upload_symbols_archive(self, filename):
+        """If UPLOAD_DIR is set and ``filename`` is a symbols archive, copy it
+        directly to the upload directory, and return True. Nothing in the
+        build uses the unpacked symbols in that case, so the caller doesn't
+        need to install them."""
+        upload_dir = os.environ.get("UPLOAD_DIR")
+        if not (
+            upload_dir
+            and self._symbols_archive_suffix
+            and filename.endswith(self._symbols_archive_suffix)
+        ):
+            return False
+        dest_path = mozpath.join(upload_dir, self._get_orig_basename(filename))
+        ensureParentDir(dest_path)
+        with build_marker("ArtifactUpload", dest_path, log=self.log):
+            shutil.copy2(filename, dest_path)
+        self.log(
+            logging.INFO,
+            "artifact",
+            {"src": filename, "dest": dest_path},
+            "Copied symbols archive from {src} to {dest} for direct upload",
+        )
+        return True
+
     def process_package_artifact(self, filename, processed_filename):
         raise NotImplementedError(
             "Subclasses must specialize process_package_artifact!"
@@ -302,13 +365,13 @@ class ArtifactJob:
 
         added_entry = False
 
-        with self.get_writer(file=processed_filename, compress_level=5) as writer:
+        with self.get_writer(file=processed_filename, compress=False) as writer:
             reader = JarReader(filename)
-            for filename, entry in reader.entries.items():
+            for entry_filename, entry in reader.entries.items():
                 for pattern, (src_prefix, dest_prefix) in self.test_artifact_patterns:
-                    if not mozpath.match(filename, pattern):
+                    if not mozpath.match(entry_filename, pattern):
                         continue
-                    destpath = mozpath.relpath(filename, src_prefix)
+                    destpath = mozpath.relpath(entry_filename, src_prefix)
                     destpath = mozpath.join(dest_prefix, destpath)
                     self.log(
                         logging.DEBUG,
@@ -317,36 +380,92 @@ class ArtifactJob:
                         "Adding {destpath} to processed archive",
                     )
                     mode = entry["external_attr"] >> 16
-                    writer.add(destpath.encode("utf-8"), reader[filename], mode=mode)
+                    writer.add(
+                        destpath.encode("utf-8"), reader[entry_filename], mode=mode
+                    )
                     added_entry = True
                     break
 
-                if filename.endswith(".toml"):
+                if entry_filename.endswith(".toml"):
                     # The artifact build writes test .toml files into the object
                     # directory; they don't come from the upstream test archive.
                     self.log(
                         logging.DEBUG,
                         "artifact",
-                        {"filename": filename},
+                        {"filename": entry_filename},
                         "Skipping test INI file {filename}",
                     )
                     continue
 
                 for files_entry in OBJDIR_TEST_FILES.values():
                     origin_pattern = files_entry["pattern"]
-                    leaf_filename = filename
+                    leaf_filename = entry_filename
                     if "dest" in files_entry:
                         dest = files_entry["dest"]
                         origin_pattern = mozpath.join(dest, origin_pattern)
-                        leaf_filename = filename[len(dest) + 1 :]
-                    if mozpath.match(filename, origin_pattern):
+                        leaf_filename = entry_filename[len(dest) + 1 :]
+                    if mozpath.match(entry_filename, origin_pattern):
                         destpath = mozpath.join(
                             "..", files_entry["base"], leaf_filename
                         )
                         mode = entry["external_attr"] >> 16
                         writer.add(
-                            destpath.encode("utf-8"), reader[filename], mode=mode
+                            destpath.encode("utf-8"), reader[entry_filename], mode=mode
                         )
+
+        if not added_entry:
+            raise ValueError(
+                f'Archive format changed! No pattern from "{LinuxArtifactJob.test_artifact_patterns}"'
+                "matched an archive path."
+            )
+
+    def write_tests_tar_artifact(self, filename, stream, writer):
+        from mozbuild.action.test_archive import OBJDIR_TEST_FILES
+
+        added_entry = False
+        for tar_entry_filename, entry in TarFinder(filename, stream):
+            for (
+                pattern,
+                (src_prefix, dest_prefix),
+            ) in self.test_artifact_patterns:
+                if not mozpath.match(tar_entry_filename, pattern):
+                    continue
+
+                destpath = mozpath.relpath(tar_entry_filename, src_prefix)
+                destpath = mozpath.join(dest_prefix, destpath)
+                self.log(
+                    logging.DEBUG,
+                    "artifact",
+                    {"destpath": destpath},
+                    "Adding {destpath} to processed archive",
+                )
+                mode = entry.mode
+                writer.add(destpath.encode("utf-8"), entry.open(), mode=mode)
+                added_entry = True
+                break
+
+            if tar_entry_filename.endswith(".toml"):
+                # The artifact build writes test .toml files into the object
+                # directory; they don't come from the upstream test archive.
+                self.log(
+                    logging.DEBUG,
+                    "artifact",
+                    {"filename": tar_entry_filename},
+                    "Skipping test INI file {filename}",
+                )
+                continue
+
+            for files_entry in OBJDIR_TEST_FILES.values():
+                origin_pattern = files_entry["pattern"]
+                leaf_filename = tar_entry_filename
+                if "dest" in files_entry:
+                    dest = files_entry["dest"]
+                    origin_pattern = mozpath.join(dest, origin_pattern)
+                    leaf_filename = tar_entry_filename[len(dest) + 1 :]
+                if mozpath.match(tar_entry_filename, origin_pattern):
+                    destpath = mozpath.join("..", files_entry["base"], leaf_filename)
+                    mode = entry.mode
+                    writer.add(destpath.encode("utf-8"), entry.open(), mode=mode)
 
         if not added_entry:
             raise ValueError(
@@ -355,80 +474,35 @@ class ArtifactJob:
             )
 
     def process_tests_tar_artifact(self, filename, processed_filename):
-        from mozbuild.action.test_archive import OBJDIR_TEST_FILES
+        with self.get_writer(file=processed_filename, compress=False) as writer:
+            if filename.endswith(".zst"):
+                import zstandard
 
-        added_entry = False
-
-        with self.get_writer(file=processed_filename, compress_level=5) as writer:
-            with tarfile.open(filename) as reader:
-                for filename, entry in TarFinder(filename, reader):
-                    for (
-                        pattern,
-                        (src_prefix, dest_prefix),
-                    ) in self.test_artifact_patterns:
-                        if not mozpath.match(filename, pattern):
-                            continue
-
-                        destpath = mozpath.relpath(filename, src_prefix)
-                        destpath = mozpath.join(dest_prefix, destpath)
-                        self.log(
-                            logging.DEBUG,
-                            "artifact",
-                            {"destpath": destpath},
-                            "Adding {destpath} to processed archive",
-                        )
-                        mode = entry.mode
-                        writer.add(destpath.encode("utf-8"), entry.open(), mode=mode)
-                        added_entry = True
-                        break
-
-                    if filename.endswith(".toml"):
-                        # The artifact build writes test .toml files into the object
-                        # directory; they don't come from the upstream test archive.
-                        self.log(
-                            logging.DEBUG,
-                            "artifact",
-                            {"filename": filename},
-                            "Skipping test INI file {filename}",
-                        )
-                        continue
-
-                    for files_entry in OBJDIR_TEST_FILES.values():
-                        origin_pattern = files_entry["pattern"]
-                        leaf_filename = filename
-                        if "dest" in files_entry:
-                            dest = files_entry["dest"]
-                            origin_pattern = mozpath.join(dest, origin_pattern)
-                            leaf_filename = filename[len(dest) + 1 :]
-                        if mozpath.match(filename, origin_pattern):
-                            destpath = mozpath.join(
-                                "..", files_entry["base"], leaf_filename
-                            )
-                            mode = entry.mode
-                            writer.add(
-                                destpath.encode("utf-8"), entry.open(), mode=mode
-                            )
-
-        if not added_entry:
-            raise ValueError(
-                f'Archive format changed! No pattern from "{LinuxArtifactJob.test_artifact_patterns}"'
-                "matched an archive path."
-            )
+                unzstd = zstandard.ZstdDecompressor()
+                with open(filename, mode="rb") as fd:
+                    out = BytesIO()
+                    unzstd.copy_stream(fd, out)
+                    out.seek(0)
+                    with tarfile.open(fileobj=out) as reader:
+                        self.write_tests_tar_artifact(filename, reader, writer)
+            else:
+                with tarfile.open(fileobj=filename) as reader:
+                    self.write_tests_tar_artifact(filename, reader, writer)
 
     def process_symbols_archive(
         self, filename, processed_filename, skip_compressed=False
     ):
         with self.get_writer(file=processed_filename, compress_level=5) as writer:
-            for filename, entry in self.iter_artifact_archive(filename):
-                if skip_compressed and filename.endswith(".gz"):
+            for archive_filename, entry in self.iter_artifact_archive(filename):
+                if skip_compressed and archive_filename.endswith(".gz"):
                     self.log(
                         logging.DEBUG,
                         "artifact",
-                        {"filename": filename},
+                        {"filename": archive_filename},
                         "Skipping compressed ELF debug symbol file {filename}",
                     )
                     continue
-                destpath = mozpath.join("crashreporter-symbols", filename)
+                destpath = mozpath.join("crashreporter-symbols", archive_filename)
                 self.log(
                     logging.INFO,
                     "artifact",
@@ -454,17 +528,17 @@ class ArtifactJob:
         dest_prefix = extra_archive["dest_prefix"]
 
         with self.get_writer(file=processed_filename, compress_level=5) as writer:
-            for filename, entry in self.iter_artifact_archive(filename):
-                if not filename.startswith(src_prefix):
+            for extra_filename, entry in self.iter_artifact_archive(filename):
+                if not extra_filename.startswith(src_prefix):
                     self.log(
                         logging.DEBUG,
                         "artifact",
-                        {"filename": filename, "src_prefix": src_prefix},
+                        {"filename": extra_filename, "src_prefix": src_prefix},
                         "Skipping extra archive item {filename} "
                         "that does not start with {src_prefix}",
                     )
                     continue
-                destpath = mozpath.relpath(filename, src_prefix)
+                destpath = mozpath.relpath(extra_filename, src_prefix)
                 destpath = mozpath.join(dest_prefix, destpath)
                 self.log(
                     logging.INFO,
@@ -477,8 +551,8 @@ class ArtifactJob:
     def iter_artifact_archive(self, filename):
         if filename.endswith(".zip"):
             reader = JarReader(filename)
-            for filename in reader.entries:
-                yield filename, reader[filename]
+            for entry_name in reader.entries:
+                yield entry_name, reader[entry_name]
         elif filename.endswith(".tar.zst") and self._mozbuild is not None:
             self._mozbuild._ensure_zstd()
             import zstandard
@@ -494,7 +568,7 @@ class ArtifactJob:
                         break
                     yield info.name, reader.extractfile(info)
         else:
-            raise RuntimeError("Unsupported archive type for %s" % filename)
+            raise RuntimeError(f"Unsupported archive type for {filename}")
 
     @property
     def product(self):
@@ -525,33 +599,79 @@ class ArtifactJob:
 
 
 class AndroidArtifactJob(ArtifactJob):
-    package_re = r"public/build/geckoview_example\.apk$"
+    package_re = r"public/build/target\.maven\.zip$"
     job_configuration = AndroidJobConfiguration
 
-    package_artifact_patterns = {"**/*.so"}
+    @property
+    def _host_jna_arch(self):
+        """Map host platform to JNA's architecture directory name."""
+        os_arch = self._substs.get("HOST_OS_ARCH", "")
+        # JNA uses hyphenated arch names (e.g. `x86-64`) but `HOST_CPU_ARCH`
+        # is underscored (e.g. `x86_64`).
+        cpu = self._substs.get("HOST_CPU_ARCH", "x86_64").replace("_", "-")
+        if os_arch == "Darwin":
+            return f"darwin-{cpu}"
+        elif os_arch == "WINNT":
+            return f"win32-{cpu}"
+        return f"linux-{cpu}"
+
+    @property
+    def package_artifact_patterns(self):
+        return {
+            # Android target libraries.
+            f"**/{self._substs['ANDROID_CPU_ARCH']}/{self._substs['DLL_PREFIX']}*{self._substs['DLL_SUFFIX']}",
+            # Desktop host libraries for libsForTests.
+            f"{self._host_jna_arch}/{self._substs['HOST_DLL_PREFIX']}*{self._substs['HOST_DLL_SUFFIX']}",
+        }
 
     def process_package_artifact(self, filename, processed_filename):
-        # Extract all .so files into the root, which will get copied into dist/bin.
-        with self.get_writer(file=processed_filename, compress_level=5) as writer:
-            for p, f in UnpackFinder(JarFinder(filename, JarReader(filename))):
-                if not any(
-                    mozpath.match(p, pat) for pat in self.package_artifact_patterns
+        # Extract all libraries into the root, which will get copied into `dist/bin` and `dist/host/bin`.
+        with self.get_writer(file=processed_filename, compress=False) as writer:
+            zip_path = filename
+
+            for pattern, prefix in (
+                (
+                    "**/full-megazord-libsForTests*.jar",
+                    f"host/bin/appservices/resources/{self._host_jna_arch}",
+                ),
+                ("**/geckoview-*.aar", "bin"),
+            ):
+                # New `JarReader` each time to avoid iteration ordering issues.
+                for aar_path, aar_file in JarFinder(zip_path, JarReader(zip_path)).find(
+                    pattern
                 ):
-                    continue
+                    # exoplayer2 is bundled in `target.maven.zip` but its
+                    # libs aren't needed for libsForTests.
+                    if "exoplayer2" in aar_path:
+                        continue
 
-                dirname, basename = os.path.split(p)
-                self.log(
-                    logging.DEBUG,
-                    "artifact",
-                    {"basename": basename},
-                    "Adding {basename} to processed archive",
-                )
+                    self.log(
+                        logging.DEBUG,
+                        "artifact",
+                        {"aar_path": aar_path},
+                        "Processing Maven artifact {aar_path}",
+                    )
 
-                basedir = "bin"
-                if not basename.endswith(".so"):
-                    basedir = mozpath.join("bin", dirname.lstrip("assets/"))
-                basename = mozpath.join(basedir, basename)
-                writer.add(basename.encode("utf-8"), f.open())
+                    jar_finder = JarFinder(
+                        aar_file.file.filename, JarReader(fileobj=aar_file.open())
+                    )
+                    for p, f in jar_finder:
+                        if not any(
+                            mozpath.match(p, pat)
+                            for pat in self.package_artifact_patterns
+                        ):
+                            continue
+
+                        dirname, basename = os.path.split(p)
+                        procname = mozpath.join(prefix, basename)
+                        self.log(
+                            logging.DEBUG,
+                            "artifact",
+                            {"basename": basename, "procname": procname},
+                            "Adding {procname} to processed archive",
+                        )
+
+                        writer.add(procname.encode("utf-8"), f.open())
 
     def process_symbols_archive(self, filename, processed_filename):
         ArtifactJob.process_symbols_archive(
@@ -564,8 +684,8 @@ class AndroidArtifactJob(ArtifactJob):
         import gzip
 
         with self.get_writer(file=processed_filename, compress_level=5) as writer:
-            for filename, entry in self.iter_artifact_archive(filename):
-                if not filename.endswith(".gz"):
+            for symbols_filename, entry in self.iter_artifact_archive(filename):
+                if not symbols_filename.endswith(".gz"):
                     continue
 
                 # Uncompress "libxul.so/D3271457813E976AE7BF5DAFBABABBFD0/libxul.so.dbg.gz"
@@ -577,7 +697,7 @@ class AndroidArtifactJob(ArtifactJob):
                 #
                 # There are other paths that will work but none seem more desireable.  See
                 # https://github.com/llvm-mirror/lldb/blob/882670690ca69d9dd96b7236c620987b11894af9/source/Host/common/Symbols.cpp#L324.
-                basename = os.path.basename(filename).replace(".gz", "")
+                basename = os.path.basename(symbols_filename).replace(".gz", "")
                 destpath = mozpath.join("crashreporter-symbols", basename)
                 self.log(
                     logging.DEBUG,
@@ -602,9 +722,7 @@ class LinuxArtifactJob(ArtifactJob):
         "{product}/pingsender",
         "{product}/plugin-container",
         "{product}/updater",
-        "{product}/glxtest",
-        "{product}/v4l2test",
-        "{product}/vaapitest",
+        "{product}/gfxtest",
         "{product}/**/*.so",
         # Preserve signatures when present.
         "{product}/**/*.sig",
@@ -616,25 +734,35 @@ class LinuxArtifactJob(ArtifactJob):
 
     def process_package_artifact(self, filename, processed_filename):
         added_entry = False
+        patterns = self.package_artifact_patterns
 
-        with self.get_writer(file=processed_filename, compress_level=5) as writer:
-            with tarfile.open(filename) as reader:
-                for p, f in UnpackFinder(TarFinder(filename, reader)):
-                    if not any(
-                        mozpath.match(p, pat) for pat in self.package_artifact_patterns
+        with self.get_writer(file=processed_filename, compress=False) as writer:
+            # None of the files we want are inside jars, so read the archive
+            # sequentially, which only requires decompressing it once.
+            with tarfile.open(filename, mode="r|*", bufsize=1024 * 1024) as reader:
+                for info in reader:
+                    if not info.isfile() or not any(
+                        mozpath.match(info.name, pat) for pat in patterns
                     ):
                         continue
 
                     # We strip off the relative "firefox/" bit from the path,
                     # but otherwise preserve it.
-                    destpath = mozpath.join("bin", mozpath.relpath(p, self.product))
+                    destpath = mozpath.join(
+                        "bin", mozpath.relpath(info.name, self.product)
+                    )
                     self.log(
                         logging.DEBUG,
                         "artifact",
                         {"destpath": destpath},
                         "Adding {destpath} to processed archive",
                     )
-                    writer.add(destpath.encode("utf-8"), f.open(), mode=f.mode)
+                    with build_marker("ArtifactExtract", destpath, log=self.log):
+                        writer.add(
+                            destpath.encode("utf-8"),
+                            reader.extractfile(info),
+                            mode=info.mode,
+                        )
                     added_entry = True
 
         if not added_entry:
@@ -704,20 +832,19 @@ class MacArtifactJob(ArtifactJob):
                 "XUL",
             ],
         ),
+        ("Contents/Library/LaunchServices", ["org.mozilla.dmgInstallHelper"]),
     )
 
     @property
     def _extra_archives(self):
         extra_archives = super()._extra_archives
-        extra_archives.update(
-            {
-                ".update_framework_artifacts.zip": {
-                    "description": "Update-related macOS Framework Artifacts",
-                    "src_prefix": "",
-                    "dest_prefix": "update_framework_artifacts",
-                },
-            }
-        )
+        extra_archives.update({
+            ".update_framework_artifacts.zip": {
+                "description": "Update-related macOS Framework Artifacts",
+                "src_prefix": "",
+                "dest_prefix": "update_framework_artifacts",
+            },
+        })
         return extra_archives
 
     @property
@@ -764,7 +891,7 @@ class MacArtifactJob(ArtifactJob):
                 )
             ]
 
-            with self.get_writer(file=processed_filename, compress_level=5) as writer:
+            with self.get_writer(file=processed_filename, compress=False) as writer:
                 for root, paths in self.paths_no_keep_path:
                     finder = UnpackFinder(mozpath.join(source, root))
                     for path in paths:
@@ -811,7 +938,7 @@ class WinArtifactJob(ArtifactJob):
     _package_artifact_patterns = {
         "{product}/dependentlibs.list",
         "{product}/**/*.dll",
-        "{product}/*.exe",
+        "{product}/**/*.exe",
         "{product}/*.tlb",
     }
 
@@ -820,7 +947,8 @@ class WinArtifactJob(ArtifactJob):
         return {p.format(product=self.product) for p in self._package_artifact_patterns}
 
     # These are a subset of TEST_HARNESS_BINS in testing/mochitest/Makefile.in.
-    test_artifact_patterns = {
+    # See `ArtifactJob.test_artifact_patterns` for why the order matters.
+    test_artifact_patterns = (
         ("bin/BadCertAndPinningServer.exe", ("bin", "bin")),
         ("bin/DelegatedCredentialsServer.exe", ("bin", "bin")),
         ("bin/EncryptedClientHelloServer.exe", ("bin", "bin")),
@@ -828,6 +956,7 @@ class WinArtifactJob(ArtifactJob):
         ("bin/GenerateOCSPResponse.exe", ("bin", "bin")),
         ("bin/OCSPStaplingServer.exe", ("bin", "bin")),
         ("bin/SanctionsTestServer.exe", ("bin", "bin")),
+        ("bin/ZeroRttAcceptServer.exe", ("bin", "bin")),
         ("bin/certutil.exe", ("bin", "bin")),
         ("bin/geckodriver.exe", ("bin", "bin")),
         ("bin/minidumpwriter.exe", ("bin", "bin")),
@@ -840,11 +969,11 @@ class WinArtifactJob(ArtifactJob):
         ("bin/plugins/gmp-*/*/*", ("bin/plugins", "bin")),
         ("bin/plugins/*", ("bin/plugins", "plugins")),
         ("bin/components/*", ("bin/components", "bin/components")),
-    }
+    )
 
     def process_package_artifact(self, filename, processed_filename):
         added_entry = False
-        with self.get_writer(file=processed_filename, compress_level=5) as writer:
+        with self.get_writer(file=processed_filename, compress=False) as writer:
             for p, f in UnpackFinder(JarFinder(filename, JarReader(filename))):
                 if not any(
                     mozpath.match(p, pat) for pat in self.package_artifact_patterns
@@ -882,13 +1011,12 @@ class UnfilteredProjectPackageArtifactJob(ArtifactJob):
     """
 
     # Can't yet handle `AndroidArtifactJob` uniformly, since the `product` is "mobile".
-    package_re = "|".join(
-        [
-            f"({cls.package_re})"
-            for cls in (LinuxArtifactJob, MacArtifactJob, WinArtifactJob)
-        ]
-    )
+    package_re = "|".join([
+        f"({cls.package_re})"
+        for cls in (LinuxArtifactJob, MacArtifactJob, WinArtifactJob)
+    ])
     job_configuration = GeckoJobConfiguration
+    _licenses_artifact = None
 
     @property
     def _extra_archives(self):
@@ -918,7 +1046,7 @@ class UnfilteredProjectPackageArtifactJob(ArtifactJob):
                 raise ValueError(f"Expected one source bundle, found: {bundle_dirs}")
             (source,) = bundle_dirs
 
-            with self.get_writer(file=processed_filename, compress_level=5) as writer:
+            with self.get_writer(file=processed_filename, compress=False) as writer:
                 finder = FileFinder(source)
                 for p, f in finder.find("*"):
                     q = p
@@ -1082,7 +1210,9 @@ class PushheadCache(CacheManager):
         )
 
     @cachedmethod(operator.attrgetter("_cache"))
-    def parent_pushhead_id(self, tree, revision):
+    def parent_push(self, tree, revision):
+        """Return the id and head revision of the push containing ``revision``
+        on ``tree``."""
         cset_url_tmpl = (
             "https://hg.mozilla.org/{tree}/json-pushes?"
             "changeset={changeset}&version=2&tipsonly=1"
@@ -1094,8 +1224,12 @@ class PushheadCache(CacheManager):
         if req.status_code not in range(200, 300):
             raise ValueError
         result = req.json()
-        [found_pushid] = result["pushes"].keys()
-        return int(found_pushid)
+        [(found_pushid, push)] = result["pushes"].items()
+        return int(found_pushid), push["changesets"][-1]
+
+    @cachedmethod(operator.attrgetter("_cache"))
+    def parent_pushhead_id(self, tree, revision):
+        return self.parent_push(tree, revision)[0]
 
     @cachedmethod(operator.attrgetter("_cache"))
     def pushid_range(self, tree, start, end):
@@ -1132,24 +1266,48 @@ class TaskCache(CacheManager):
         # 'autoland'
         tree = tree.split("/")[1] if "/" in tree else tree
 
-        if job.endswith("-opt"):
-            tree += ".shippable"
+        # Optimized builds are normally only published to the `.shippable`
+        # index. Some consumers (e.g. the Android Gradle python tests) run on
+        # autoland, where shippable Android builds aren't scheduled by default;
+        # with MOZ_ARTIFACT_ALLOW_NON_SHIPPABLE they fall back to the regular
+        # per-push opt builds. The shippable index is still tried first, so
+        # branches that only publish shippable builds (central, beta, release,
+        # esr) are unaffected. See bug 1768186 for lifting this more generally.
+        # The app-services duplicates are not shippable builds, so they
+        # publish the plain namespace rather than the shippable one.
+        if job.endswith("-opt") and "-appservices-" not in job:
+            if os.environ.get("MOZ_ARTIFACT_ALLOW_NON_SHIPPABLE"):
+                trees = [f"{tree}.shippable", tree]
+            else:
+                trees = [f"{tree}.shippable"]
+        else:
+            trees = [tree]
 
-        namespace = f"{job_configuration.trust_domain}.v2.{tree}.revision.{rev}.{job_configuration.product}.{job}"
-        self.log(
-            logging.DEBUG,
-            "artifact",
-            {"namespace": namespace},
-            "Searching Taskcluster index with namespace: {namespace}",
-        )
-        try:
-            taskId = find_task_id(namespace)
-        except KeyError:
+        from taskcluster.exceptions import TaskclusterRestFailure
+
+        index = get_taskcluster_client("index")
+        for candidate_tree in trees:
+            namespace = f"{job_configuration.trust_domain}.v2.{candidate_tree}.revision.{rev}.{job_configuration.product}.{job}"
+            self.log(
+                logging.DEBUG,
+                "artifact",
+                {"namespace": namespace},
+                "Searching Taskcluster index with namespace: {namespace}",
+            )
+            try:
+                taskId = index.findTask(namespace)["taskId"]
+                break
+            except (KeyError, TaskclusterRestFailure) as e:
+                if isinstance(e, TaskclusterRestFailure) and e.status_code != 404:
+                    raise
+        else:
             # Not all revisions correspond to pushes that produce the job we
             # care about; and even those that do may not have completed yet.
             raise ValueError(f"Task for {namespace} does not exist (yet)!")
 
-        return taskId, list_artifacts(taskId)
+        queue = get_taskcluster_client("queue")
+        response = queue.listLatestArtifacts(taskId)
+        return taskId, response["artifacts"]
 
 
 class Artifacts:
@@ -1165,15 +1323,17 @@ class Artifacts:
         cache_dir=".",
         hg=None,
         git=None,
+        jj=None,
         skip_cache=False,
         topsrcdir=None,
         download_tests=True,
         download_symbols=False,
-        download_maven_zip=False,
+        artifact_filters=None,
         no_process=False,
         unfiltered_project_package=False,
         mozbuild=None,
     ):
+        artifact_filters = artifact_filters or []
         if (hg and git) or (not hg and not git):
             raise ValueError("Must provide path to exactly one of hg and git")
 
@@ -1187,11 +1347,16 @@ class Artifacts:
         self._tree = tree
         self._job = job or self._guess_artifact_job()
         self._log = log
+        self._topsrcdir = topsrcdir
         self._hg = hg
         self._git = git
+        self._jj = jj
+        if self._jj:
+            self._git_root = self.run_jj("git", "root").strip()
+        else:
+            self._git_root = None
         self._cache_dir = cache_dir
         self._skip_cache = skip_cache
-        self._topsrcdir = topsrcdir
         self._no_process = no_process
         self._unfiltered_project_package = unfiltered_project_package
 
@@ -1207,7 +1372,7 @@ class Artifacts:
                     log=self._log,
                     download_tests=download_tests,
                     download_symbols=download_symbols,
-                    download_maven_zip=download_maven_zip,
+                    artifact_filters=artifact_filters,
                     override_job_configuration=job_configuration,
                     substs=self._substs,
                     mozbuild=mozbuild,
@@ -1222,7 +1387,7 @@ class Artifacts:
                 log=self._log,
                 download_tests=False,
                 download_symbols=False,
-                download_maven_zip=False,
+                artifact_filters=[],
                 override_job_configuration=job_configuration,
                 substs=self._substs,
                 mozbuild=mozbuild,
@@ -1248,19 +1413,36 @@ class Artifacts:
         kwargs["universal_newlines"] = True
         return subprocess.check_output([self._hg] + list(args), **kwargs)
 
+    def run_jj(self, *args, **kwargs):
+        kwargs["universal_newlines"] = True
+        return subprocess.check_output(
+            [self._jj] + list(args), **kwargs, cwd=self._topsrcdir
+        )
+
+    def check_git_output(self, cmd, *args, **kwargs):
+        env = os.environ.copy()
+        if self._git_root:
+            env["GIT_DIR"] = self._git_root
+        kwargs["universal_newlines"] = True
+        return subprocess.check_output([self._git] + cmd, *args, **kwargs, env=env)
+
+    def call_git(self, cmd, *args, **kwargs):
+        env = os.environ.copy()
+        if self._git_root:
+            env["GIT_DIR"] = self._git_root
+        return subprocess.call([self._git] + cmd, *args, **kwargs, env=env)
+
     @property
     @functools.cache
     def _is_git_cinnabar(self):
         if self._git:
             try:
-                metadata = subprocess.check_output(
+                metadata = self.check_git_output(
                     [
-                        self._git,
                         "rev-parse",
                         "--revs-only",
                         "refs/cinnabar/metadata",
                     ],
-                    universal_newlines=True,
                     cwd=self._topsrcdir,
                 )
                 return bool(metadata.strip())
@@ -1278,9 +1460,8 @@ class Artifacts:
             ("pure-cinnabar", "028d2077b6267f634c161a8a68e2feeee0cfb663"),
         ):
             if (
-                subprocess.call(
+                self.call_git(
                     [
-                        self._git,
                         "cat-file",
                         "-e",
                         f"{commit}^{{commit}}",
@@ -1304,10 +1485,10 @@ class Artifacts:
             target_suffix = "-opt"
 
         if self._substs.get("MOZ_BUILD_APP", "") == "mobile/android":
+            if self._substs.get("MOZ_APPSERVICES_IN_TREE"):
+                target_suffix = "-appservices" + target_suffix
             if self._substs["ANDROID_CPU_ARCH"] == "x86_64":
                 return "android-x86_64" + target_suffix
-            if self._substs["ANDROID_CPU_ARCH"] == "x86":
-                return "android-x86" + target_suffix
             if self._substs["ANDROID_CPU_ARCH"] == "arm64-v8a":
                 return "android-aarch64" + target_suffix
             return "android-arm" + target_suffix
@@ -1325,12 +1506,7 @@ class Artifacts:
                 return "win64-aarch64" + target_suffix
             return ("win64" if target_64bit else "win32") + target_suffix
         if self._defines.get("XP_MACOSX", False):
-            if (
-                not self._substs.get("MOZ_DEBUG")
-                or self._substs["TARGET_CPU"] == "x86_64"
-            ):
-                # We only produce unified builds in automation, so the target_cpu
-                # check is not relevant.
+            if self._substs["TARGET_CPU"] == "x86_64":
                 return "macosx64" + target_suffix
             if self._substs["TARGET_CPU"] == "aarch64":
                 return "macosx64-aarch64" + target_suffix
@@ -1357,7 +1533,10 @@ class Artifacts:
                     "Attempting to find a pushhead containing {rev} on {tree}.",
                 )
                 try:
-                    pushid = pushhead_cache.parent_pushhead_id(tree, rev)
+                    with build_marker(
+                        "ArtifactPushlog", f"{tree} push of {rev}", log=self.log
+                    ):
+                        pushid = pushhead_cache.parent_pushhead_id(tree, rev)
                     found_pushids[tree] = pushid
                 except ValueError:
                     continue
@@ -1378,28 +1557,29 @@ class Artifacts:
                     },
                     "Retrieving the last {num} pushheads starting with id {pushid} on {tree}",
                 )
-                for pushhead in pushhead_cache.pushid_range(tree, start, end):
+                with build_marker(
+                    "ArtifactPushlog", f"{tree} pushes {start} to {end}", log=self.log
+                ):
+                    pushheads = pushhead_cache.pushid_range(tree, start, end)
+                for pushhead in pushheads:
                     candidate_pushheads[pushhead].append(tree)
 
         return candidate_pushheads
 
-    def _get_revisions_from_git(self):
-        rev_list = subprocess.check_output(
+    def _get_revisions_from_git(self, rev="HEAD"):
+        rev_list = self.check_git_output(
             [
-                self._git,
                 "rev-list",
                 "--topo-order",
                 f"--max-count={NUM_REVISIONS_TO_QUERY}",
-                "HEAD",
+                rev,
             ],
-            universal_newlines=True,
             cwd=self._topsrcdir,
         )
 
         if self._is_git_cinnabar:
-            hash_list = subprocess.check_output(
-                [self._git, "cinnabar", "git2hg"] + rev_list.splitlines(),
-                universal_newlines=True,
+            hash_list = self.check_git_output(
+                ["cinnabar", "git2hg"] + rev_list.splitlines(),
                 cwd=self._topsrcdir,
             )
         elif self._git_repo_kind == "firefox":
@@ -1434,6 +1614,12 @@ class Artifacts:
 
         If we're using git, retrieves hg revisions from git-cinnabar.
         """
+
+        if self._jj:
+            workspace_rev = self.run_jj(
+                "log", "--revisions", "@", "--template", "commit_id", "--no-graph"
+            ).strip()
+            return self._get_revisions_from_git(workspace_rev)
         if self._git:
             return self._get_revisions_from_git()
 
@@ -1496,28 +1682,54 @@ https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html
         working parent.
         """
 
-        last_revs = self._get_recent_public_revisions()
-        candidate_pushheads = []
+        with build_marker("ArtifactVcs", "recent public revisions", log=self.log):
+            last_revs = self._get_recent_public_revisions()
+        count = 0
+        # (tree, revision) pairs that were already yielded.
+        yielded = set()
+        candidate_pushheads = {}
         if self._git and not self._is_git_cinnabar:
             candidate_pushheads = {
                 rev: self._artifact_job.candidate_trees for rev in last_revs
             }
         else:
+            # The most recent public revision is often itself a pushhead, in
+            # which case it's the first candidate, and there is no need to
+            # query the pushlog for more unless it doesn't have artifacts.
+            first = next((r.rstrip() for r in last_revs if r.rstrip()), None)
+            for tree in self._artifact_job.candidate_trees if first else ():
+                with self._pushhead_cache as pushhead_cache:
+                    try:
+                        with build_marker(
+                            "ArtifactPushlog", f"{tree} push of {first}", log=self.log
+                        ):
+                            _, head = pushhead_cache.parent_push(tree, first)
+                    except ValueError:
+                        continue
+                if head == first:
+                    count += 1
+                    yielded.add((tree, first))
+                    yield [tree], first
+
             for rev in last_revs:
                 candidate_pushheads = self._pushheads_from_rev(
                     rev.rstrip(), NUM_PUSHHEADS_TO_QUERY_PER_PARENT
                 )
                 if candidate_pushheads:
                     break
-        count = 0
         for rev_unstripped in last_revs:
             rev = rev_unstripped.rstrip()
             if not rev:
                 continue
-            if rev not in candidate_pushheads:
+            trees = [
+                tree
+                for tree in candidate_pushheads.get(rev, [])
+                if (tree, rev) not in yielded
+            ]
+            if not trees:
                 continue
             count += 1
-            yield candidate_pushheads[rev], rev
+            yield trees, rev
 
         if not count:
             raise Exception(
@@ -1528,15 +1740,20 @@ https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html
 
     def find_pushhead_artifacts(self, task_cache, job, tree, pushhead):
         try:
-            taskId, artifacts = task_cache.artifacts(
-                tree, job, self._artifact_job.job_configuration, pushhead
-            )
+            with build_marker(
+                "ArtifactFind", f"{job} on {tree} at {pushhead}", log=self.log
+            ):
+                taskId, artifacts = task_cache.artifacts(
+                    tree, job, self._artifact_job.job_configuration, pushhead
+                )
         except ValueError:
             return None
 
         urls = []
         for artifact_name in self._artifact_job.find_candidate_artifacts(artifacts):
-            url = get_artifact_url(taskId, artifact_name)
+            url = (
+                f"{get_root_url()}/api/queue/v1/task/{taskId}/artifacts/{artifact_name}"
+            )
             urls.append(url)
         if urls:
             self.log(
@@ -1548,7 +1765,9 @@ https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html
             return urls
         return None
 
-    def install_from_file(self, filename, distdir):
+    def _process_file(self, filename):
+        """Post-process a downloaded artifact if necessary, and return the path
+        of the processed artifact, or None if processing is disabled."""
         self.log(
             logging.DEBUG,
             "artifact",
@@ -1556,26 +1775,8 @@ https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html
             "Installing from {filename}",
         )
 
-        # Copy all .so files, avoiding modification where possible.
-        ensureParentDir(mozpath.join(distdir, ".dummy"))
-
         if self._no_process:
-            orig_basename = os.path.basename(filename)
-            # Turn 'HASH-target...' into 'target...' if possible.  It might not
-            # be possible if the file is given directly on the command line.
-            before, _sep, after = orig_basename.rpartition("-")
-            if re.match(r"[0-9a-fA-F]{16}$", before):
-                orig_basename = after
-            path = mozpath.join(distdir, orig_basename)
-            with FileAvoidWrite(path, readmode="rb") as fh:
-                shutil.copyfileobj(open(filename, mode="rb"), fh)
-            self.log(
-                logging.DEBUG,
-                "artifact",
-                {"path": path},
-                "Copied unprocessed artifact: to {path}",
-            )
-            return
+            return None
 
         # Do we need to post-process?
         processed_filename = filename + PROCESSED_SUFFIX
@@ -1605,7 +1806,8 @@ https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html
                 "Writing processed {processed_filename}",
             )
             try:
-                self._artifact_job.process_artifact(filename, processed_filename)
+                with build_marker("ArtifactProcess", filename, log=self.log):
+                    self._artifact_job.process_artifact(filename, processed_filename)
             except Exception as e:
                 # Delete the partial output of failed processing.
                 try:
@@ -1615,6 +1817,26 @@ https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html
                 raise e
 
         self._artifact_cache._persist_limit.register_file(processed_filename)
+        return processed_filename
+
+    def _install_processed_file(self, filename, processed_filename, distdir):
+        # Copy all .so files, avoiding modification where possible.
+        ensureParentDir(mozpath.join(distdir, ".dummy"))
+
+        if processed_filename is None:
+            orig_basename = self._artifact_job._get_orig_basename(filename)
+            path = mozpath.join(distdir, orig_basename)
+            with build_marker("ArtifactInstall", path, log=self.log), FileAvoidWrite(
+                path, readmode="rb"
+            ) as fh:
+                shutil.copyfileobj(open(filename, mode="rb"), fh)
+            self.log(
+                logging.DEBUG,
+                "artifact",
+                {"path": path},
+                "Copied unprocessed artifact: to {path}",
+            )
+            return
 
         self.log(
             logging.DEBUG,
@@ -1623,7 +1845,9 @@ https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html
             "Installing from processed {processed_filename}",
         )
 
-        with zipfile.ZipFile(processed_filename) as zf:
+        with build_marker(
+            "ArtifactInstall", processed_filename, log=self.log
+        ), zipfile.ZipFile(processed_filename) as zf:
             for info in zf.infolist():
                 n = mozpath.join(distdir, info.filename)
                 fh = FileAvoidWrite(n, readmode="rb")
@@ -1648,12 +1872,40 @@ https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html
                         stat.S_IWUSR | stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH
                     )  # u+w, a+r.
                     os.chmod(n, perms)
+
+    def _install_from_sources(self, sources, fetch, distdir):
+        """Fetch and process all ``sources`` concurrently, then install them
+        into ``distdir`` sequentially, in order, since later artifacts may
+        overwrite files from earlier ones."""
+
+        def prepare(source):
+            filename = fetch(source)
+            if not self._no_process and self._artifact_job.upload_symbols_archive(
+                filename
+            ):
+                return None
+            return filename, self._process_file(filename)
+
+        with ThreadPoolExecutor(max_workers=max(len(sources), 1)) as executor:
+            futures = [executor.submit(prepare, source) for source in sources]
+            try:
+                for future in futures:
+                    if prepared := _future_result(future):
+                        self._install_processed_file(*prepared, distdir)
+            except BaseException:
+                self._artifact_cache.cancel()
+                raise
         return 0
 
-    def install_from_url(self, url, distdir):
+    def _fetch_url(self, url):
         self.log(logging.DEBUG, "artifact", {"url": url}, "Installing from {url}")
-        filename = self._artifact_cache.fetch(url)
-        return self.install_from_file(filename, distdir)
+        return self._artifact_cache.fetch(url)
+
+    def install_from_files(self, filenames, distdir):
+        return self._install_from_sources(filenames, lambda f: f, distdir)
+
+    def install_from_urls(self, urls, distdir):
+        return self._install_from_sources(urls, self._fetch_url, distdir)
 
     def _install_from_hg_pushheads(self, hg_pushheads, distdir):
         """Iterate pairs (hg_hash, {tree-set}) associating hg revision hashes
@@ -1672,16 +1924,15 @@ https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html
                         logging.DEBUG,
                         "artifact",
                         {"hg_hash": hg_hash, "tree": tree},
-                        "Trying to find artifacts for hg revision {hg_hash} on tree {tree}.",
+                        # XXXgijs this log is now correct (these are git revs);
+                        # Updating the variable naming is bug 1993477.
+                        "Trying to find artifacts for git revision {hg_hash} on tree {tree}.",
                     )
                     urls = self.find_pushhead_artifacts(
                         task_cache, self._job, tree, hg_hash
                     )
                     if urls:
-                        for url in urls:
-                            if self.install_from_url(url, distdir):
-                                return 1
-                        return 0
+                        return self.install_from_urls(urls, distdir)
 
         self.log(
             logging.ERROR,
@@ -1703,10 +1954,9 @@ https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html
                     "log", "--template", "{node}\n", "-r", revset, cwd=self._topsrcdir
                 ).strip()
             elif self._git:
-                revset = subprocess.check_output(
-                    [self._git, "rev-parse", "%s^{commit}" % revset],
+                revset = self.check_git_output(
+                    ["rev-parse", f"{revset}^{{commit}}"],
                     stderr=open(os.devnull, "w"),
-                    universal_newlines=True,
                     cwd=self._topsrcdir,
                 ).strip()
             else:
@@ -1722,9 +1972,8 @@ https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html
 
         if revision is None and self._git:
             if self._is_git_cinnabar:
-                revision = subprocess.check_output(
-                    [self._git, "cinnabar", "git2hg", revset],
-                    universal_newlines=True,
+                revision = self.check_git_output(
+                    ["cinnabar", "git2hg", revset],
                     cwd=self._topsrcdir,
                 ).strip()
             elif self._git_repo_kind == "firefox":
@@ -1749,50 +1998,44 @@ https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html
         # Include try in our search to allow pulling from a specific push.
         pushheads = [
             (
-                self._artifact_job.candidate_trees + [self._artifact_job.try_tree],
+                self._artifact_job.candidate_trees
+                + [self._artifact_job.job_configuration.try_tree],
                 revision,
             )
         ]
         return self._install_from_hg_pushheads(pushheads, distdir)
 
     def install_from_task(self, taskId, distdir):
-        artifacts = list_artifacts(taskId)
+        queue = get_taskcluster_client("queue")
+        response = queue.listLatestArtifacts(taskId)
+        artifacts = response["artifacts"]
 
         urls = []
         for artifact_name in self._artifact_job.find_candidate_artifacts(artifacts):
-            url = get_artifact_url(taskId, artifact_name)
+            url = (
+                f"{get_root_url()}/api/queue/v1/task/{taskId}/artifacts/{artifact_name}"
+            )
             urls.append(url)
         if not urls:
             raise ValueError(f"Task {taskId} existed, but no artifacts found!")
-        for url in urls:
-            if self.install_from_url(url, distdir):
-                return 1
-        return 0
+        return self.install_from_urls(urls, distdir)
 
     def install_from(self, source, distdir):
         """Install artifacts from a ``source`` into the given ``distdir``."""
         if (source and os.path.isfile(source)) or "MOZ_ARTIFACT_FILE" in os.environ:
             source = source or os.environ["MOZ_ARTIFACT_FILE"]
-            for source in source.split(os.pathsep):
-                ret = self.install_from_file(source, distdir)
-                if ret:
-                    return ret
-            return 0
+            return self.install_from_files(source.split(os.pathsep), distdir)
 
         if (source and urlparse(source).scheme) or "MOZ_ARTIFACT_URL" in os.environ:
             source = source or os.environ["MOZ_ARTIFACT_URL"]
-            for source in source.split():
-                ret = self.install_from_url(source, distdir)
-                if ret:
-                    return ret
-            return 0
+            return self.install_from_urls(source.split(), distdir)
 
         if source or "MOZ_ARTIFACT_REVISION" in os.environ:
             source = source or os.environ["MOZ_ARTIFACT_REVISION"]
             return self.install_from_revset(source, distdir)
 
         for var in (
-            "MOZ_ARTIFACT_TASK_%s" % self._job.upper().replace("-", "_"),
+            f"MOZ_ARTIFACT_TASK_{self._job.upper().replace('-', '_')}",
             "MOZ_ARTIFACT_TASK",
         ):
             if var in os.environ:

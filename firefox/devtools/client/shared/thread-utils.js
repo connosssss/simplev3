@@ -11,7 +11,8 @@ const { validateBreakpointLocation } = ChromeUtils.importESModule(
 
 const asyncStore = asyncStoreHelper("debugger", {
   pendingBreakpoints: ["pending-breakpoints", {}],
-  tabs: ["tabs", []],
+  openedURLs: ["openedURLs", []],
+  prettyPrintedURLs: ["pretty-printed-urls", []],
   xhrBreakpoints: ["xhr-breakpoints", []],
   eventListenerBreakpoints: ["event-listener-breakpoints", undefined],
   blackboxedRanges: ["blackboxedRanges", {}],
@@ -42,8 +43,6 @@ exports.getThreadOptions = async function () {
     logEventBreakpoints: Services.prefs.getBoolPref(
       "devtools.debugger.log-event-breakpoints"
     ),
-    // This option is always true. See Bug 1654590 for removal.
-    observeAsmJS: true,
     breakpoints: sanitizeBreakpoints(await asyncStore.pendingBreakpoints),
     // XXX: `event-listener-breakpoints` is a copy of the event-listeners state
     // of the debugger panel. The `active` property is therefore linked to

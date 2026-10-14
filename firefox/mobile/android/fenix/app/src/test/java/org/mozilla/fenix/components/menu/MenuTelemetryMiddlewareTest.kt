@@ -4,17 +4,16 @@
 
 package org.mozilla.fenix.components.menu
 
-import mozilla.components.browser.state.state.ReaderState
-import mozilla.components.browser.state.state.createTab
+import kotlin.test.assertNotNull
+import mozilla.components.compose.menu.store.MenuState as CustomizableMenuState
+import mozilla.components.compose.menu.store.MenuStore as CustomizableMenuStore
 import mozilla.components.feature.addons.Addon
 import mozilla.components.service.fxa.manager.AccountState
-import mozilla.components.support.test.ext.joinBlocking
 import mozilla.components.support.test.robolectric.testContext
-import mozilla.telemetry.glean.internal.CounterMetric
+import mozilla.telemetry.glean.private.CounterMetricType
 import mozilla.telemetry.glean.private.EventMetricType
 import mozilla.telemetry.glean.private.NoExtras
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
@@ -22,29 +21,40 @@ import org.junit.runner.RunWith
 import org.mozilla.fenix.GleanMetrics.AppMenu
 import org.mozilla.fenix.GleanMetrics.Events
 import org.mozilla.fenix.GleanMetrics.HomeMenu
-import org.mozilla.fenix.GleanMetrics.HomeScreen
-import org.mozilla.fenix.GleanMetrics.Menu
 import org.mozilla.fenix.GleanMetrics.ReaderMode
 import org.mozilla.fenix.GleanMetrics.Translations
 import org.mozilla.fenix.components.menu.middleware.MenuTelemetryMiddleware
-import org.mozilla.fenix.components.menu.store.BrowserMenuState
 import org.mozilla.fenix.components.menu.store.MenuAction
 import org.mozilla.fenix.components.menu.store.MenuState
 import org.mozilla.fenix.components.menu.store.MenuStore
 import org.mozilla.fenix.helpers.FenixGleanTestRule
+import org.mozilla.fenix.tabgroups.flow.TabGroupFlowEntryPoint
 import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class MenuTelemetryMiddlewareTest {
-    @get:Rule
-    val gleanTestRule = FenixGleanTestRule(testContext)
+    @get:Rule val gleanTestRule = FenixGleanTestRule(testContext)
 
     @Test
     fun `WHEN adding a bookmark THEN record the bookmark browser menu telemetry`() {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.AddBookmark).joinBlocking()
+        store.dispatch(MenuAction.AddBookmark)
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "add_bookmark")
+    }
+
+    @Test
+    fun `GIVEN middleware is registered to the customizable menu store WHEN an action is dispatched THEN record telemetry`() {
+        val store =
+            CustomizableMenuStore(
+                initialState = CustomizableMenuState(emptyList()),
+                middleware = listOf(MenuTelemetryMiddleware(accessPoint = MenuAccessPoint.Browser)),
+            )
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(MenuAction.AddBookmark)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "add_bookmark")
     }
@@ -54,7 +64,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.EditBookmark).joinBlocking()
+        store.dispatch(MenuAction.Navigate.EditBookmark())
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "edit_bookmark")
     }
@@ -64,7 +74,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.Bookmarks).joinBlocking()
+        store.dispatch(MenuAction.Navigate.Bookmarks)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "bookmarks")
     }
@@ -74,19 +84,9 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.AddShortcut).joinBlocking()
+        store.dispatch(MenuAction.AddShortcut)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "add_to_top_sites")
-    }
-
-    @Test
-    fun `WHEN open in regular tab THEN record open in regular tab menu telemetry`() {
-        val store = createStore()
-        assertNull(Events.browserMenuAction.testGetValue())
-
-        store.dispatch(MenuAction.OpenInRegularTab).joinBlocking()
-
-        assertTelemetryRecorded(Events.browserMenuAction, item = "open_in_regular_tab")
     }
 
     @Test
@@ -94,7 +94,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.RemoveShortcut).joinBlocking()
+        store.dispatch(MenuAction.RemoveShortcut)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "remove_from_top_sites")
     }
@@ -103,20 +103,9 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.AddToHomeScreen).joinBlocking()
+        store.dispatch(MenuAction.Navigate.AddToHomeScreen)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "add_to_homescreen")
-    }
-
-    @Test
-    fun `WHEN navigating to customize homepage THEN record the customize homepage telemetry`() {
-        val store = createStore()
-        assertNull(AppMenu.customizeHomepage.testGetValue())
-        assertNull(HomeScreen.customizeHomeClicked.testGetValue())
-
-        store.dispatch(MenuAction.Navigate.CustomizeHomepage).joinBlocking()
-
-        assertTelemetryRecorded(AppMenu.customizeHomepage)
     }
 
     @Test
@@ -124,7 +113,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.Downloads).joinBlocking()
+        store.dispatch(MenuAction.Navigate.Downloads)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "downloads")
     }
@@ -134,7 +123,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.History).joinBlocking()
+        store.dispatch(MenuAction.Navigate.History)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "history")
     }
@@ -144,7 +133,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.ManageExtensions).joinBlocking()
+        store.dispatch(MenuAction.Navigate.ManageExtensions)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "addons_manager")
     }
@@ -158,8 +147,8 @@ class MenuTelemetryMiddlewareTest {
             MenuAction.Navigate.MozillaAccount(
                 accountState = AccountState.NotAuthenticated,
                 accesspoint = MenuAccessPoint.Browser,
-            ),
-        ).joinBlocking()
+            )
+        )
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "sync_account")
         assertTelemetryRecorded(AppMenu.signIntoSync)
@@ -170,7 +159,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.OpenInApp).joinBlocking()
+        store.dispatch(MenuAction.OpenInApp)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "open_in_app")
     }
@@ -180,23 +169,9 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.Passwords).joinBlocking()
+        store.dispatch(MenuAction.Navigate.Passwords)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "passwords")
-    }
-
-    @Test
-    fun `WHEN navigating to the release notes page from home page menu THEN record the whats new interaction telemetry`() {
-        val store = createStore()
-        assertNull(Events.whatsNewTapped.testGetValue())
-
-        store.dispatch(MenuAction.Navigate.ReleaseNotes).joinBlocking()
-
-        assertNotNull(Events.whatsNewTapped.testGetValue())
-        val snapshot = Events.whatsNewTapped.testGetValue()!!
-
-        assertEquals(1, snapshot.size)
-        assertEquals("MENU", snapshot.single().extra?.getValue("source"))
     }
 
     @Test
@@ -204,9 +179,109 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.SaveToCollection(hasCollection = true)).joinBlocking()
+        store.dispatch(MenuAction.Navigate.SaveToCollection(hasCollection = true))
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "save_to_collection")
+    }
+
+    @Test
+    fun `WHEN navigating back without view history THEN record back telemetry`() {
+        val store = createStore()
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(MenuAction.Navigate.Back(viewHistory = false))
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "back")
+    }
+
+    @Test
+    fun `WHEN navigating back with view history THEN record back long press telemetry`() {
+        val store = createStore()
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(MenuAction.Navigate.Back(viewHistory = true))
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "back_long_press")
+    }
+
+    @Test
+    fun `WHEN navigating back from external menu without view history THEN record custom back telemetry`() {
+        val store = createStore(accessPoint = MenuAccessPoint.External)
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(MenuAction.Navigate.Back(viewHistory = false))
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "custom_back")
+    }
+
+    @Test
+    fun `WHEN navigating back from external menu with view history THEN record custom back long press telemetry`() {
+        val store = createStore(accessPoint = MenuAccessPoint.External)
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(MenuAction.Navigate.Back(viewHistory = true))
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "custom_back_long_press")
+    }
+
+    @Test
+    fun `WHEN navigating forward without view history THEN record forward telemetry`() {
+        val store = createStore()
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(MenuAction.Navigate.Forward(viewHistory = false))
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "forward")
+    }
+
+    @Test
+    fun `WHEN navigating forward with view history THEN record forward long press telemetry`() {
+        val store = createStore()
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(MenuAction.Navigate.Forward(viewHistory = true))
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "forward_long_press")
+    }
+
+    @Test
+    fun `WHEN navigating forward from external menu without view history THEN record custom forward telemetry`() {
+        val store = createStore(accessPoint = MenuAccessPoint.External)
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(MenuAction.Navigate.Forward(viewHistory = false))
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "custom_forward")
+    }
+
+    @Test
+    fun `WHEN navigating forward from external menu with view history THEN record custom forward long press telemetry`() {
+        val store = createStore(accessPoint = MenuAccessPoint.External)
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(MenuAction.Navigate.Forward(viewHistory = true))
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "custom_forward_long_press")
+    }
+
+    @Test
+    fun `WHEN reloading page THEN record reload telemetry`() {
+        val store = createStore()
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(MenuAction.Navigate.Reload(bypassCache = false))
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "reload")
+    }
+
+    @Test
+    fun `WHEN stopping page load THEN record stop telemetry`() {
+        val store = createStore()
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(MenuAction.Navigate.Stop)
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "stop")
     }
 
     @Test
@@ -214,7 +289,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.Share).joinBlocking()
+        store.dispatch(MenuAction.Navigate.Share)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "share")
     }
@@ -224,9 +299,9 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore(accessPoint = MenuAccessPoint.External)
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.Share).joinBlocking()
+        store.dispatch(MenuAction.Navigate.Share)
 
-        assertTelemetryRecorded(Events.browserMenuAction, item = "share_custom_tab")
+        assertTelemetryRecorded(Events.browserMenuAction, item = "custom_share")
     }
 
     @Test
@@ -235,10 +310,20 @@ class MenuTelemetryMiddlewareTest {
         assertNull(Events.browserMenuAction.testGetValue())
         assertNull(HomeMenu.settingsItemClicked.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.Settings).joinBlocking()
+        store.dispatch(MenuAction.Navigate.Settings)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "settings")
         assertNull(HomeMenu.settingsItemClicked.testGetValue())
+    }
+
+    @Test
+    fun `WHEN navigating to the homepage settings THEN record the change wallpaper browser menu telemetry`() {
+        val store = createStore()
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(MenuAction.Navigate.CustomizeHomepage)
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "customize_homepage")
     }
 
     @Test
@@ -247,7 +332,7 @@ class MenuTelemetryMiddlewareTest {
         assertNull(Events.browserMenuAction.testGetValue())
         assertNull(HomeMenu.settingsItemClicked.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.Settings).joinBlocking()
+        store.dispatch(MenuAction.Navigate.Settings)
 
         assertTelemetryRecorded(HomeMenu.settingsItemClicked)
         assertNull(Events.browserMenuAction.testGetValue())
@@ -259,7 +344,7 @@ class MenuTelemetryMiddlewareTest {
         assertNull(Events.browserMenuAction.testGetValue())
         assertNull(Translations.action.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.Translate).joinBlocking()
+        store.dispatch(MenuAction.Navigate.Translate)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "translate")
 
@@ -273,7 +358,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.DeleteBrowsingDataAndQuit).joinBlocking()
+        store.dispatch(MenuAction.DeleteBrowsingDataAndQuit)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "quit")
     }
@@ -283,7 +368,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.FindInPage).joinBlocking()
+        store.dispatch(MenuAction.FindInPage)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "find_in_page")
     }
@@ -293,9 +378,9 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore(accessPoint = MenuAccessPoint.External)
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.FindInPage).joinBlocking()
+        store.dispatch(MenuAction.FindInPage)
 
-        assertTelemetryRecorded(Events.browserMenuAction, item = "find_in_page_custom_tab")
+        assertTelemetryRecorded(Events.browserMenuAction, item = "custom_find_in_page")
     }
 
     @Test
@@ -303,7 +388,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.MenuBanner).joinBlocking()
+        store.dispatch(MenuAction.DefaultBrowserMenuBannerClicked)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "menu_banner")
     }
@@ -313,7 +398,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.DismissMenuBanner).joinBlocking()
+        store.dispatch(MenuAction.DefaultBrowserMenuBannerDismissed)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "dismiss_menu_banner")
     }
@@ -323,65 +408,9 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(ReaderMode.appearance.testGetValue())
 
-        store.dispatch(MenuAction.CustomizeReaderView).joinBlocking()
+        store.dispatch(MenuAction.CustomizeReaderView)
 
         assertTelemetryRecorded(ReaderMode.appearance)
-    }
-
-    @Test
-    fun `GIVEN reader view is not active WHEN toggle reader view action is dispatched THEN record the reader mode opened telemetry`() {
-        val url = "https://www.mozilla.org"
-        val title = "Mozilla"
-        val readerState = ReaderState(
-            readerable = true,
-            active = false,
-        )
-        val browserMenuState = BrowserMenuState(
-            selectedTab = createTab(
-                url = url,
-                title = title,
-                readerState = readerState,
-            ),
-        )
-        val store = createStore(
-            menuState = MenuState(
-                browserMenuState = browserMenuState,
-            ),
-        )
-
-        assertNull(ReaderMode.opened.testGetValue())
-
-        store.dispatch(MenuAction.ToggleReaderView).joinBlocking()
-
-        assertTelemetryRecorded(ReaderMode.opened)
-    }
-
-    @Test
-    fun `GIVEN reader view is active WHEN toggle reader view action is dispatched THEN record the reader mode closed telemetry`() {
-        val url = "https://www.mozilla.org"
-        val title = "Mozilla"
-        val readerState = ReaderState(
-            readerable = true,
-            active = true,
-        )
-        val browserMenuState = BrowserMenuState(
-            selectedTab = createTab(
-                url = url,
-                title = title,
-                readerState = readerState,
-            ),
-        )
-        val store = createStore(
-            menuState = MenuState(
-                browserMenuState = browserMenuState,
-            ),
-        )
-
-        assertNull(ReaderMode.closed.testGetValue())
-
-        store.dispatch(MenuAction.ToggleReaderView).joinBlocking()
-
-        assertTelemetryRecorded(ReaderMode.closed)
     }
 
     @Test
@@ -389,7 +418,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.RequestDesktopSite).joinBlocking()
+        store.dispatch(MenuAction.RequestDesktopSite)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "desktop_view_on")
     }
@@ -399,9 +428,9 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore(accessPoint = MenuAccessPoint.External)
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.RequestDesktopSite).joinBlocking()
+        store.dispatch(MenuAction.RequestDesktopSite)
 
-        assertTelemetryRecorded(Events.browserMenuAction, item = "desktop_view_on_custom_tab")
+        assertTelemetryRecorded(Events.browserMenuAction, item = "custom_desktop_view_on")
     }
 
     @Test
@@ -409,7 +438,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.RequestMobileSite).joinBlocking()
+        store.dispatch(MenuAction.RequestMobileSite)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "desktop_view_off")
     }
@@ -419,16 +448,16 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore(accessPoint = MenuAccessPoint.External)
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.RequestMobileSite).joinBlocking()
+        store.dispatch(MenuAction.RequestMobileSite)
 
-        assertTelemetryRecorded(Events.browserMenuAction, item = "desktop_view_off_custom_tab")
+        assertTelemetryRecorded(Events.browserMenuAction, item = "custom_desktop_view_off")
     }
 
     fun `When opening a site in browser THEN record the open in Fenix telemetry`() {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.OpenInFirefox).joinBlocking()
+        store.dispatch(MenuAction.OpenInFirefox)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "open_in_fenix")
     }
@@ -438,19 +467,9 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.DiscoverMoreExtensions).joinBlocking()
+        store.dispatch(MenuAction.Navigate.DiscoverMoreExtensions)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "discover_more_extensions")
-    }
-
-    @Test
-    fun `WHEN navigating to the sumo page for installing add-ons THEN record the extensions learn more browser menu telemetry`() {
-        val store = createStore()
-        assertNull(Events.browserMenuAction.testGetValue())
-
-        store.dispatch(MenuAction.Navigate.ExtensionsLearnMore).joinBlocking()
-
-        assertTelemetryRecorded(Events.browserMenuAction, item = "extensions_learn_more")
     }
 
     @Test
@@ -458,7 +477,7 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.AddonDetails(Addon(""))).joinBlocking()
+        store.dispatch(MenuAction.Navigate.AddonDetails(Addon("")))
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "addon_details")
     }
@@ -468,29 +487,29 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.InstallAddon(Addon(""))).joinBlocking()
+        store.dispatch(MenuAction.InstallAddon(Addon("")))
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "install_addon")
     }
 
     @Test
-    fun `WHEN CFR is shown THEN record the CFR is shown menu telemetry`() {
+    fun `WHEN navigating to an installed add-on's details THEN record the installed addon details browser menu telemetry`() {
         val store = createStore()
-        assertNull(Menu.showCfr.testGetValue())
+        assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.OnCFRShown).joinBlocking()
+        store.dispatch(MenuAction.Navigate.InstalledAddonDetails(Addon("")))
 
-        assertTelemetryRecorded(Menu.showCfr)
+        assertTelemetryRecorded(Events.browserMenuAction, item = "installed_addon_details")
     }
 
     @Test
-    fun `WHEN CFR is dismissed THEN record the CFR is dismissed menu telemetry`() {
+    fun `WHEN moving to a non-private tab THEN record the move to non-private tab browser menu telemetry`() {
         val store = createStore()
-        assertNull(Menu.dismissCfr.testGetValue())
+        assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.OnCFRDismiss).joinBlocking()
+        store.dispatch(MenuAction.MoveToNonPrivateTab)
 
-        assertTelemetryRecorded(Menu.dismissCfr)
+        assertTelemetryRecorded(Events.browserMenuAction, item = "move_to_non_private_tab")
     }
 
     @Test
@@ -498,9 +517,21 @@ class MenuTelemetryMiddlewareTest {
         val store = createStore()
         assertNull(Events.browserMenuAction.testGetValue())
 
-        store.dispatch(MenuAction.Navigate.WebCompatReporter).joinBlocking()
+        store.dispatch(MenuAction.Navigate.WebCompatReporter)
 
         assertTelemetryRecorded(Events.browserMenuAction, item = "report_broken_site")
+    }
+
+    @Test
+    fun `WHEN adding a tab to a group THEN record the group flow telemetry`() {
+        val store = createStore()
+        assertNull(Events.browserMenuAction.testGetValue())
+
+        store.dispatch(
+            MenuAction.Navigate.OpenTabGroupFlow(entryPoint = TabGroupFlowEntryPoint.AddTabToGroup(tabId = "123"))
+        )
+
+        assertTelemetryRecorded(Events.browserMenuAction, item = "add_to_group")
     }
 
     private fun assertTelemetryRecorded(
@@ -519,7 +550,7 @@ class MenuTelemetryMiddlewareTest {
         assertEquals(1, event.testGetValue()!!.size)
     }
 
-    private fun assertTelemetryRecorded(event: CounterMetric) {
+    private fun assertTelemetryRecorded(event: CounterMetricType) {
         assertNotNull(event.testGetValue())
         assertEquals(1, event.testGetValue()!!)
     }
@@ -527,12 +558,9 @@ class MenuTelemetryMiddlewareTest {
     private fun createStore(
         menuState: MenuState = MenuState(),
         accessPoint: MenuAccessPoint = MenuAccessPoint.Browser,
-    ) = MenuStore(
-        initialState = menuState,
-        middleware = listOf(
-            MenuTelemetryMiddleware(
-                accessPoint = accessPoint,
-            ),
-        ),
-    )
+    ) =
+        MenuStore(
+            initialState = menuState,
+            middleware = listOf(MenuTelemetryMiddleware(accessPoint = accessPoint)),
+        )
 }

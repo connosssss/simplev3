@@ -4,24 +4,51 @@
 
 #include "FocusManager.h"
 
-#include "LocalAccessible-inl.h"
 #include "DocAccessible-inl.h"
+#include "LocalAccessible-inl.h"
+#include "mozilla/EventStateManager.h"
+#include "mozilla/a11y/DocAccessibleParent.h"
+#include "mozilla/dom/BrowserParent.h"
+#include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/WindowContext.h"
 #include "nsAccessibilityService.h"
 #include "nsEventShell.h"
-
 #include "nsFocusManager.h"
-#include "mozilla/a11y/DocAccessibleParent.h"
-#include "mozilla/EventStateManager.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/dom/BrowsingContext.h"
-#include "mozilla/dom/BrowserParent.h"
 
 namespace mozilla {
 namespace a11y {
 
-FocusManager::FocusManager() {}
+/**
+ * If our focus target is the body accessible, manually retarget it to the doc
+ * accessible. Otherwise, focus will land on what is effectively just a
+ * generic accessible as far as clients are concerned, which doesn't have
+ * any useful semantics.
+ */
+static LocalAccessible* MaybeAdjustDocumentFocusTarget(
+    LocalAccessible* aTarget) {
+  if (!aTarget) {
+    return aTarget;
+  }
+  DocAccessible* document = aTarget->Document();
+  if (document && document->IsBodyElement(aTarget->GetContent())) {
+    return document;
+  }
+  return aTarget;
+}
 
-FocusManager::~FocusManager() {}
+/**
+ * Return the appropriate accessible target given the focused node.
+ */
+static LocalAccessible* FocusTargetFor(DocAccessible* aDocument,
+                                       nsINode* aNode) {
+  return MaybeAdjustDocumentFocusTarget(
+      aDocument->GetAccessibleEvenIfNotInMapOrContainer(aNode));
+}
+
+FocusManager::FocusManager() = default;
+
+FocusManager::~FocusManager() = default;
 
 LocalAccessible* FocusManager::FocusedLocalAccessible() const {
   MOZ_ASSERT(NS_IsMainThread());
@@ -44,8 +71,7 @@ LocalAccessible* FocusManager::FocusedLocalAccessible() const {
   if (focusedNode) {
     DocAccessible* doc =
         GetAccService()->GetDocAccessible(focusedNode->OwnerDoc());
-    return doc ? doc->GetAccessibleEvenIfNotInMapOrContainer(focusedNode)
-               : nullptr;
+    return doc ? FocusTargetFor(doc, focusedNode) : nullptr;
   }
 
   return nullptr;
@@ -88,9 +114,10 @@ Accessible* FocusManager::FocusedAccessible() const {
   // which returns the content BrowsingContext that has focus.
   dom::BrowsingContext* focusedContext =
       focusManagerDOM->GetFocusedBrowsingContextInChrome();
+  dom::WindowContext* focusedWindow =
+      focusedContext ? focusedContext->GetCurrentWindowContext() : nullptr;
 
-  DocAccessibleParent* focusedDoc =
-      DocAccessibleParent::GetFrom(focusedContext);
+  DocAccessibleParent* focusedDoc = DocAccessibleParent::GetFrom(focusedWindow);
   return focusedDoc ? focusedDoc->GetFocusedAcc() : nullptr;
 #endif  // defined(ANDROID)
 }
@@ -201,8 +228,6 @@ void FocusManager::ActiveItemChanged(LocalAccessible* aItem,
     return;
   }
 
-  mActiveItem = nullptr;
-
   if (aItem && aCheckIfActive) {
     LocalAccessible* widget = aItem->ContainerWidget();
 #ifdef A11Y_LOG
@@ -222,7 +247,7 @@ void FocusManager::ActiveItemChanged(LocalAccessible* aItem,
     if (browser) {
       a11y::DocAccessibleParent* dap = browser->GetTopLevelDocAccessible();
       if (dap) {
-        Unused << dap->SendRestoreFocus();
+        (void)dap->SendRestoreFocus();
       }
     }
   }
@@ -251,10 +276,11 @@ void FocusManager::ForceFocusEvent() {
 void FocusManager::DispatchFocusEvent(DocAccessible* aDocument,
                                       LocalAccessible* aTarget) {
   MOZ_ASSERT(aDocument, "No document for focused accessible!");
+  aTarget = MaybeAdjustDocumentFocusTarget(aTarget);
   if (aDocument) {
-    RefPtr<AccEvent> event =
-        new AccEvent(nsIAccessibleEvent::EVENT_FOCUS, aTarget, eAutoDetect,
-                     AccEvent::eCoalesceOfSameType);
+    auto event =
+        MakeRefPtr<AccEvent>(nsIAccessibleEvent::EVENT_FOCUS, aTarget,
+                             eAutoDetect, AccEvent::eCoalesceOfSameType);
     aDocument->FireDelayedEvent(event);
     mLastFocus = aTarget;
     if (mActiveItem != aTarget) {
@@ -280,16 +306,14 @@ void FocusManager::ProcessDOMFocus(nsINode* aTarget) {
       GetAccService()->GetDocAccessible(aTarget->OwnerDoc());
   if (!document) return;
 
-  LocalAccessible* target =
-      document->GetAccessibleEvenIfNotInMapOrContainer(aTarget);
+  LocalAccessible* target = FocusTargetFor(document, aTarget);
   if (target) {
     // Check if still focused. Otherwise we can end up with storing the active
     // item for control that isn't focused anymore.
     nsINode* focusedNode = FocusedDOMNode();
     if (!focusedNode) return;
 
-    LocalAccessible* DOMFocus =
-        document->GetAccessibleEvenIfNotInMapOrContainer(focusedNode);
+    LocalAccessible* DOMFocus = FocusTargetFor(document, focusedNode);
     if (target != DOMFocus) return;
 
     LocalAccessible* activeItem = target->CurrentItem();
@@ -308,7 +332,8 @@ void FocusManager::ProcessFocusEvent(AccEvent* aEvent) {
 
   // Emit focus event if event target is the active item. Otherwise then check
   // if it's still focused and then update active item and emit focus event.
-  LocalAccessible* target = aEvent->GetAccessible();
+  LocalAccessible* target =
+      MaybeAdjustDocumentFocusTarget(aEvent->GetAccessible());
   MOZ_ASSERT(!target->IsDefunct());
   if (target != mActiveItem) {
     // Check if still focused. Otherwise we can end up with storing the active
@@ -317,8 +342,7 @@ void FocusManager::ProcessFocusEvent(AccEvent* aEvent) {
     nsINode* focusedNode = FocusedDOMNode();
     if (!focusedNode) return;
 
-    LocalAccessible* DOMFocus =
-        document->GetAccessibleEvenIfNotInMapOrContainer(focusedNode);
+    LocalAccessible* DOMFocus = FocusTargetFor(document, focusedNode);
     if (target != DOMFocus) return;
 
     LocalAccessible* activeItem = target->CurrentItem();
@@ -350,9 +374,9 @@ void FocusManager::ProcessFocusEvent(AccEvent* aEvent) {
     if (ARIAMenubar != mActiveARIAMenubar) {
       // Leaving ARIA menu. Fire menu_end event on current menubar.
       if (mActiveARIAMenubar) {
-        RefPtr<AccEvent> menuEndEvent =
-            new AccEvent(nsIAccessibleEvent::EVENT_MENU_END, mActiveARIAMenubar,
-                         aEvent->FromUserInput());
+        auto menuEndEvent =
+            MakeRefPtr<AccEvent>(nsIAccessibleEvent::EVENT_MENU_END,
+                                 mActiveARIAMenubar, aEvent->FromUserInput());
         nsEventShell::FireEvent(menuEndEvent);
       }
 
@@ -360,17 +384,17 @@ void FocusManager::ProcessFocusEvent(AccEvent* aEvent) {
 
       // Entering ARIA menu. Fire menu_start event.
       if (mActiveARIAMenubar) {
-        RefPtr<AccEvent> menuStartEvent =
-            new AccEvent(nsIAccessibleEvent::EVENT_MENU_START,
-                         mActiveARIAMenubar, aEvent->FromUserInput());
+        auto menuStartEvent =
+            MakeRefPtr<AccEvent>(nsIAccessibleEvent::EVENT_MENU_START,
+                                 mActiveARIAMenubar, aEvent->FromUserInput());
         nsEventShell::FireEvent(menuStartEvent);
       }
     }
   } else if (mActiveARIAMenubar) {
     // Focus left a menu. Fire menu_end event.
-    RefPtr<AccEvent> menuEndEvent =
-        new AccEvent(nsIAccessibleEvent::EVENT_MENU_END, mActiveARIAMenubar,
-                     aEvent->FromUserInput());
+    auto menuEndEvent =
+        MakeRefPtr<AccEvent>(nsIAccessibleEvent::EVENT_MENU_END,
+                             mActiveARIAMenubar, aEvent->FromUserInput());
     nsEventShell::FireEvent(menuEndEvent);
 
     mActiveARIAMenubar = nullptr;
@@ -387,8 +411,8 @@ void FocusManager::ProcessFocusEvent(AccEvent* aEvent) {
   // offset before the caret move event is handled.
   SelectionMgr()->ResetCaretOffset();
 
-  RefPtr<AccEvent> focusEvent = new AccEvent(nsIAccessibleEvent::EVENT_FOCUS,
-                                             target, aEvent->FromUserInput());
+  auto focusEvent = MakeRefPtr<AccEvent>(nsIAccessibleEvent::EVENT_FOCUS,
+                                         target, aEvent->FromUserInput());
   nsEventShell::FireEvent(focusEvent);
 
   if (NS_WARN_IF(target->IsDefunct())) {

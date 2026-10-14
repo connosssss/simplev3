@@ -81,6 +81,10 @@ class PictureInPictureVideoWrapper {
     return !!video.closest(".ytd-video-preview");
   }
 
+  isUrlbarToggleEligible(video) {
+    return !!video.closest("#movie_player");
+  }
+
   setVolume(video, volume) {
     if (this.player) {
       this.player.setVolume(volume * 100);
@@ -94,6 +98,21 @@ class PictureInPictureVideoWrapper {
       return this.player.getVolume() / 100;
     }
     return video.volume;
+  }
+
+  setPlaybackRate(video, playbackRate) {
+    if (this.player) {
+      this.player.setPlaybackRate(playbackRate);
+    } else {
+      video.playbackRate = playbackRate;
+    }
+  }
+
+  getPlaybackRate(video) {
+    if (this.player) {
+      return this.player.getPlaybackRate();
+    }
+    return video.playbackRate;
   }
 }
 

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,23 +5,21 @@
 #ifndef mozilla_dom_TypedArray_h
 #define mozilla_dom_TypedArray_h
 
-#include <string>
 #include <type_traits>
 #include <utility>
 
 #include "js/ArrayBuffer.h"
 #include "js/ArrayBufferMaybeShared.h"
 #include "js/Context.h"
-#include "js/experimental/TypedData.h"  // js::Unwrap(Ui|I)nt(8|16|32)Array, js::Get(Ui|I)nt(8|16|32)ArrayLengthAndData, js::UnwrapUint8ClampedArray, js::GetUint8ClampedArrayLengthAndData, js::UnwrapFloat(32|64)Array, js::GetFloat(32|64)ArrayLengthAndData, JS_GetArrayBufferViewType
-#include "js/GCAPI.h"                   // JS::AutoCheckCannotGC
-#include "js/RootingAPI.h"              // JS::Rooted
-#include "js/ScalarType.h"              // JS::Scalar::Type
+#include "js/GCAPI.h"       // JS::AutoCheckCannotGC
+#include "js/RootingAPI.h"  // JS::Rooted
+#include "js/ScalarType.h"  // JS::Scalar::Type
 #include "js/SharedArrayBuffer.h"
+#include "js/experimental/TypedData.h"  // js::Unwrap(Ui|I)nt(8|16|32)Array, js::Get(Ui|I)nt(8|16|32)ArrayLengthAndData, js::UnwrapUint8ClampedArray, js::GetUint8ClampedArrayLengthAndData, js::UnwrapFloat(32|64)Array, js::GetFloat(32|64)ArrayLengthAndData, JS_GetArrayBufferViewType
 #include "js/friend/ErrorMessages.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Buffer.h"
 #include "mozilla/ErrorResult.h"
-#include "mozilla/Result.h"
 #include "mozilla/Vector.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/ScriptSettings.h"
@@ -345,6 +341,8 @@ struct TypedArray_base : public SpiderMonkeyInterfaceObjectStorage,
   TypedArray_base() = default;
   TypedArray_base(TypedArray_base&& aOther) = default;
 
+  TypedArray_base(const TypedArray_base&) = delete;
+
  public:
   inline bool Init(JSObject* obj) {
     MOZ_ASSERT(!inited());
@@ -657,51 +655,25 @@ struct TypedArray_base : public SpiderMonkeyInterfaceObjectStorage,
         std::forward<Processor>(aProcessor));
   }
 
-  template <typename Processor>
+  template <bool AllowLargeTypedArrays = false, typename Processor>
   [[nodiscard]] ProcessReturnType<Processor> ProcessFixedData(
       Processor&& aProcessor) const {
     mozilla::dom::AutoJSAPI jsapi;
     if (!jsapi.Init(mImplObj)) {
-#if defined(EARLY_BETA_OR_EARLIER)
-      if constexpr (std::is_same_v<ArrayT, JS::ArrayBufferView>) {
-        if (!mImplObj) {
-          MOZ_CRASH("Null mImplObj");
-        }
-        if (!xpc::NativeGlobal(mImplObj)) {
-          MOZ_CRASH("Null xpc::NativeGlobal(mImplObj)");
-        }
-        if (!xpc::NativeGlobal(mImplObj)->GetGlobalJSObject()) {
-          MOZ_CRASH("Null xpc::NativeGlobal(mImplObj)->GetGlobalJSObject()");
-        }
-      }
-#endif
       MOZ_CRASH("Failed to get JSContext");
     }
-#if defined(EARLY_BETA_OR_EARLIER)
-    if constexpr (std::is_same_v<ArrayT, JS::ArrayBufferView>) {
-      JS::Rooted<JSObject*> view(jsapi.cx(),
-                                 js::UnwrapArrayBufferView(mImplObj));
-      if (!view) {
-        if (JSObject* unwrapped = js::CheckedUnwrapStatic(mImplObj)) {
-          if (!js::UnwrapArrayBufferView(unwrapped)) {
-            MOZ_CRASH(
-                "Null "
-                "js::UnwrapArrayBufferView(js::CheckedUnwrapStatic(mImplObj))");
-          }
-          view = unwrapped;
-        } else {
-          MOZ_CRASH("Null js::CheckedUnwrapStatic(mImplObj)");
-        }
-      }
-    }
-#endif
     JS::AutoBrittleMode abm(jsapi.cx());
     if (!JS::EnsureNonInlineArrayBufferOrView(jsapi.cx(), mImplObj)) {
-      MOZ_CRASH("small oom when moving inline data out-of-line");
+      // Fails on (small) OOM, or when trying to modify a buffer when its length
+      // is already pinned. Brittle mode, set just above, will cause the former
+      // to crash before returning false, but that is for diagnostic purposes
+      // only and could be removed at any time.
+      MOZ_CRASH("failed to make ArrayBuffer data be stored separately");
     }
     LengthPinner pinner(this);
 
-    return CallProcessor(GetCurrentData(), std::forward<Processor>(aProcessor));
+    return CallProcessor(GetCurrentData<AllowLargeTypedArrays>(),
+                         std::forward<Processor>(aProcessor));
   }
 
  private:
@@ -745,8 +717,6 @@ struct TypedArray_base : public SpiderMonkeyInterfaceObjectStorage,
 
     return result;
   }
-
-  TypedArray_base(const TypedArray_base&) = delete;
 };
 
 template <class ArrayT>
@@ -757,6 +727,8 @@ struct TypedArray : public TypedArray_base<ArrayT> {
   TypedArray() = default;
 
   TypedArray(TypedArray&& aOther) = default;
+
+  TypedArray(const TypedArray&) = delete;
 
   static inline JSObject* Create(JSContext* cx, nsWrapperCache* creator,
                                  size_t length, ErrorResult& error) {
@@ -829,8 +801,6 @@ struct TypedArray : public TypedArray_base<ArrayT> {
     MOZ_ASSERT(!isShared);
     memcpy(span.Elements(), data.Elements(), data.LengthBytes());
   }
-
-  TypedArray(const TypedArray&) = delete;
 };
 
 template <JS::Scalar::Type GetViewType(JSObject*)>

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,7 +7,7 @@
 
 #include "mozilla/PrincipalHashKey.h"
 #include "mozilla/dom/BrowsingContext.h"
-#include "mozilla/FunctionRef.h"
+#include "mozilla/dom/RemoteType.h"
 #include "nsRefPtrHashtable.h"
 #include "nsHashKeys.h"
 #include "nsTArray.h"
@@ -85,7 +83,17 @@ class BrowsingContextGroup final : public nsWrapperCache {
   // Look up the process which should be used to host documents with this
   // RemoteType. This will be a non-dead process associated with this
   // BrowsingContextGroup, if possible.
-  ContentParent* GetHostProcess(const nsACString& aRemoteType);
+  ContentParent* GetHostProcess(const RemoteType& aRemoteType);
+
+  // Check if the process which sent the message being read from aReader is
+  // aware of this BrowsingContextGroup's existence.
+  // If this returns false, it will first set a fatal error on aReader with more
+  // details.
+  bool IsKnownForMessageReader(IPC::MessageReader* aReader);
+
+  // Check if the process with the given ChildID is aware of this
+  // BrowsingContextGroup's existence.
+  bool IsKnownForChildID(GeckoChildID aChildID);
 
   // When a BrowsingContext is being discarded, we may want to keep the
   // corresponding BrowsingContextGroup alive until the other process
@@ -260,9 +268,7 @@ class BrowsingContextGroup final : public nsWrapperCache {
 
   uint32_t mKeepAliveCount = 0;
 
-#ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
   bool mDestroyed = false;
-#endif
 
   // A BrowsingContextGroup contains a series of {Browsing,Window}Context
   // objects. They are addressed using a hashtable to avoid linear lookup when
@@ -292,7 +298,7 @@ class BrowsingContextGroup final : public nsWrapperCache {
   // A non-launching host process must also be a subscriber, though a launching
   // host process may not yet be subscribed, and a subscriber need not be a host
   // process.
-  nsRefPtrHashtable<nsCStringHashKey, ContentParent> mHosts;
+  nsRefPtrHashtable<nsGenericHashKey<RemoteType>, ContentParent> mHosts;
 
   // Whether or not a given http(s) origin uses origin or siteOrigin-keyed
   // DocGroups/AgentClusters. Only contains entries for http(s) origins.

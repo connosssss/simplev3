@@ -41,21 +41,22 @@ class LoginFragment : Fragment() {
         webView.settings.javaScriptEnabled = true
         CookieManager.getInstance().setAcceptCookie(true)
 
-        webView.webViewClient = object : WebViewClient() {
-            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                if (url != null && url.startsWith(redirectUrl)) {
-                    val uri = url.toUri()
-                    val code = uri.getQueryParameter("code")
-                    val state = uri.getQueryParameter("state")
-                    val action = uri.getQueryParameter("action")
-                    if (code != null && state != null && action != null) {
-                        listener?.onLoginComplete(code, state, action, this@LoginFragment)
+        webView.webViewClient =
+            object : WebViewClient() {
+                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                    if (url != null && url.startsWith(redirectUrl)) {
+                        val uri = url.toUri()
+                        val code = uri.getQueryParameter("code")
+                        val state = uri.getQueryParameter("state")
+                        val action = uri.getQueryParameter("action")
+                        if (code != null && state != null) {
+                            listener?.onLoginComplete(code, state, action, this@LoginFragment)
+                        }
                     }
-                }
 
-                super.onPageStarted(view, url, favicon)
+                    super.onPageStarted(view, url, favicon)
+                }
             }
-        }
         webView.loadUrl(authUrl)
 
         mWebView?.destroy()
@@ -90,7 +91,8 @@ class LoginFragment : Fragment() {
     }
 
     interface OnLoginCompleteListener {
-        fun onLoginComplete(code: String, state: String, action: String, fragment: LoginFragment)
+        /** A callback invoked when we get a successful redirect from the auth server. */
+        fun onLoginComplete(code: String, state: String, action: String?, fragment: LoginFragment)
     }
 
     companion object {
@@ -99,10 +101,11 @@ class LoginFragment : Fragment() {
 
         fun create(authUrl: String, redirectUrl: String): LoginFragment =
             LoginFragment().apply {
-                arguments = Bundle().apply {
-                    putString(AUTH_URL, authUrl)
-                    putString(REDIRECT_URL, redirectUrl)
-                }
+                arguments =
+                    Bundle().apply {
+                        putString(AUTH_URL, authUrl)
+                        putString(REDIRECT_URL, redirectUrl)
+                    }
             }
     }
 }

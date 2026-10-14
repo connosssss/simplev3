@@ -1,16 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* constants used throughout the Layout module */
 
-#ifndef LayoutConstants_h___
-#define LayoutConstants_h___
+#ifndef LayoutConstants_h_
+#define LayoutConstants_h_
 
-#include "mozilla/EnumSet.h"
 #include "Units.h"
+#include "mozilla/EnumSet.h"
 
 /**
  * Constant used to indicate an unconstrained size.
@@ -68,6 +66,22 @@ enum class ComputeSizeFlag : uint8_t {
 using ComputeSizeFlags = mozilla::EnumSet<ComputeSizeFlag>;
 
 /**
+ * Flags to pass to nsIFrame::GetTransformMatrix(),
+ * nsLayoutUtils::GetTransformToAncestor(), etc.
+ */
+enum class TransformMatrixFlag : uint8_t {
+  // Return the matrix in CSS pixels rather than device pixels.
+  InCSSUnits,
+  // Stop the ancestor walk at a stacking context, or at a frame with a display
+  // port.
+  StopAtStackingContextAndDisplayPort,
+  // Accumulate the offsets between frames as if every scroll container on the
+  // way to the ancestor were scrolled to its origin.
+  IgnoreScrolling,
+};
+using TransformMatrixFlags = mozilla::EnumSet<TransformMatrixFlag>;
+
+/**
  * The fallback size of width is 300px and the aspect-ratio is 2:1, based on
  * CSS2 section 10.3.2 and CSS Sizing Level 3 section 5.1:
  * https://drafts.csswg.org/css2/visudet.html#inline-replaced-width
@@ -105,4 +119,4 @@ using ContentRelevancy = EnumSet<ContentRelevancyReason, uint8_t>;
 
 }  // namespace mozilla
 
-#endif  // LayoutConstants_h___
+#endif  // LayoutConstants_h_

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -170,6 +168,13 @@ bool jit::ReorderInstructions(MIRGenerator* mir, MIRGraph& graph) {
           break;
         }
         if (prev->isSetInitializedLength()) {
+          break;
+        }
+        if (prev->isClearResumingGeneratorFlag()) {
+          // Everything above this is a generator/async resume still in
+          // progress. Don't move a bailing instruction between the
+          // MSetInitializedLength and MClearResumingGeneratorFlag, because the
+          // stack storage array is needed in Baseline when we bail out.
           break;
         }
 

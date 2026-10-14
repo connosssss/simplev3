@@ -5,26 +5,22 @@
 package mozilla.components.compose.base.theme.layout
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import mozilla.components.compose.base.theme.layout.AcornSize.MaxWidth.large
 import mozilla.components.compose.base.theme.layout.AcornSize.MaxWidth.medium
-import mozilla.components.compose.base.theme.layout.AcornSize.MaxWidth.small
 
 private const val DEFAULT_FONT_SCALE = 1.0f
 
-/**
- * A palette defining the static or dynamic sizing dimensions of visual elements styled by
- * the Acorn Design System.
- */
+/** A palette defining the static or dynamic sizing dimensions of visual elements styled by the Acorn Design System. */
 sealed class AcornSize {
 
-    /**
-     * A palette defining the static sizing dimensions of visual elements styled by
-     * the Acorn Design System.
-     */
+    /** A palette defining the static sizing dimensions of visual elements styled by the Acorn Design System. */
+    val static50: Dp = 4.dp
     val static100: Dp = 8.dp
+    val static150: Dp = 12.dp
     val static200: Dp = 16.dp
     val static250: Dp = 20.dp
     val static300: Dp = 24.dp
@@ -36,10 +32,7 @@ sealed class AcornSize {
     val static1300: Dp = 104.dp
     val static1400: Dp = 112.dp
 
-    /**
-     * A palette defining the dynamic sizing dimensions of visual elements styled by
-     * the Acorn Design System.
-     */
+    /** A palette defining the dynamic sizing dimensions of visual elements styled by the Acorn Design System. */
     abstract val dynamic100: Dp
     abstract val dynamic200: Dp
     abstract val dynamic250: Dp
@@ -52,9 +45,7 @@ sealed class AcornSize {
     abstract val dynamic1300: Dp
     abstract val dynamic1400: Dp
 
-    /**
-     * [AcornSize] tokens for [AcornWindowSize.Small].
-     */
+    /** [AcornSize] tokens for [AcornWindowSize.Small]. */
     data object Small : AcornSize() {
         override val dynamic100: Dp = 8.dp
         override val dynamic200: Dp = 16.dp
@@ -69,9 +60,7 @@ sealed class AcornSize {
         override val dynamic1400: Dp = 112.dp
     }
 
-    /**
-     * [AcornSize] tokens for [AcornWindowSize.Medium] and [AcornWindowSize.Large].
-     */
+    /** [AcornSize] tokens for [AcornWindowSize.Medium] and [AcornWindowSize.Large]. */
     data object MediumLarge : AcornSize() {
         override val dynamic100: Dp = 16.dp
         override val dynamic200: Dp = 24.dp
@@ -86,15 +75,11 @@ sealed class AcornSize {
         override val dynamic1400: Dp = 120.dp
     }
 
-    /**
-     * The diameter for circular progress indicators.
-     */
+    /** The diameter for circular progress indicators. */
     val circularIndicatorDiameter: Dp
         get() = dynamic300
 
-    /**
-     * @see MaxWidth
-     */
+    /** @see MaxWidth */
     val maxWidth: MaxWidth = MaxWidth
 
     /**
@@ -110,11 +95,11 @@ sealed class AcornSize {
         val large: Dp = 800.dp
     }
 
-    /**
-     * The max-width value for a container depending if font scaling is enabled.
-     */
+    /** The max-width value for a container depending if font scaling is enabled. */
     val containerMaxWidth: Dp
-        @Composable get() {
+        @Composable
+        @ReadOnlyComposable
+        get() {
             return if (LocalDensity.current.fontScale > DEFAULT_FONT_SCALE) {
                 large
             } else {
@@ -122,18 +107,18 @@ sealed class AcornSize {
             }
         }
 
-    /**
-     * [AcornSize] helper object
-     */
+    /** [AcornSize] helper object */
     companion object {
         /**
          * Returns the palette of size tokens corresponding to the [AcornWindowSize].
          *
          * @param windowSize The app window's current [AcornWindowSize].
          */
-        fun fromWindowSize(windowSize: AcornWindowSize): AcornSize = when (windowSize) {
-            AcornWindowSize.Small -> Small
-            AcornWindowSize.Medium, AcornWindowSize.Large -> MediumLarge
-        }
+        fun fromWindowSize(windowSize: AcornWindowSize): AcornSize =
+            when (windowSize) {
+                AcornWindowSize.Small -> Small
+                AcornWindowSize.Medium,
+                AcornWindowSize.Large -> MediumLarge
+            }
     }
 }

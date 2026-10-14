@@ -1,6 +1,8 @@
 [DEFAULT]
+run-if = [
+  "os != 'android'",
+]
 head = "head_favicons.js"
-skip-if = ["os == 'android'"]
 support-files = [
   "expected-favicon-animated16.png.png",
   "expected-favicon-animated16.png.libz-rs.png",
@@ -43,6 +45,8 @@ support-files = [
 ["test_copyFavicons.js"]
 
 ["test_expireAllFavicons.js"]
+
+["test_expireFaviconsForPage.js"]
 
 ["test_expire_migrated_icons.js"]
 

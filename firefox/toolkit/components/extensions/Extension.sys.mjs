@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -58,6 +56,10 @@ const lazy = XPCOMUtils.declareLazy({
   NetUtil: "resource://gre/modules/NetUtil.sys.mjs",
   SITEPERMS_ADDON_TYPE:
     "resource://gre/modules/addons/siteperms-addon-utils.sys.mjs",
+  getSitePermsShortDescriptionStringId:
+    "resource://gre/modules/addons/siteperms-addon-utils.sys.mjs",
+  getSitePermsPermissionsPromptStringIds:
+    "resource://gre/modules/addons/siteperms-addon-utils.sys.mjs",
   Schemas: "resource://gre/modules/Schemas.sys.mjs",
   ServiceWorkerCleanUp: "resource://gre/modules/ServiceWorkerCleanUp.sys.mjs",
   extensionStorageSync: "resource://gre/modules/ExtensionStorageSync.sys.mjs",
@@ -70,6 +72,11 @@ const lazy = XPCOMUtils.declareLazy({
     Services.io
       .getProtocolHandler("resource")
       .QueryInterface(Ci.nsIResProtocolHandler),
+
+  // TODO Bug 1598804 - same condition as:
+  // https://searchfox.org/firefox-main/rev/1f6f9eea1a/toolkit/components/extensions/child/ext-test.js#8
+  testApiEnabled: () =>
+    Cu.isInAutomation || Services.env.exists("XPCSHELL_TEST_PROFILE_DIR"),
 
   aomStartup: {
     service: "@mozilla.org/addons/addon-manager-startup;1",
@@ -92,15 +99,6 @@ const lazy = XPCOMUtils.declareLazy({
   },
 
   dnrEnabled: { pref: "extensions.dnr.enabled", default: true },
-
-  // All functionality is gated by the "userScripts" permission, and forgetting
-  // about its existence is enough to hide all userScripts functionality.
-  // MV3 userScripts API in development (bug 1875475), off by default.
-  // Not to be confused with MV2 and extensions.webextensions.userScripts.enabled!
-  userScriptsMV3Enabled: {
-    pref: "extensions.userScripts.mv3.enabled",
-    default: false,
-  },
 
   // This pref modifies behavior for MV2.  MV3 is enabled regardless.
   eventPagesEnabled: { pref: "extensions.eventPages.enabled", default: true },
@@ -193,7 +191,6 @@ const PRIVILEGED_PERMS = new Set([
   "activityLog",
   "mozillaAddons",
   "networkStatus",
-  "normandyAddonStudy",
   "telemetry",
 ]);
 
@@ -203,20 +200,9 @@ const PRIVILEGED_PERMS_ANDROID_ONLY = new Set([
   "nativeMessaging",
 ]);
 
-const PRIVILEGED_PERMS_DESKTOP_ONLY = new Set(["normandyAddonStudy"]);
-
 if (AppConstants.platform == "android") {
   for (const perm of PRIVILEGED_PERMS_ANDROID_ONLY) {
     PRIVILEGED_PERMS.add(perm);
-  }
-}
-
-if (
-  AppConstants.MOZ_APP_NAME != "firefox" ||
-  AppConstants.platform == "android"
-) {
-  for (const perm of PRIVILEGED_PERMS_DESKTOP_ONLY) {
-    PRIVILEGED_PERMS.delete(perm);
   }
 }
 
@@ -241,37 +227,6 @@ const INSTALL_AND_UPDATE_STARTUP_REASONS = new Set([
 
 const PROTOCOL_HANDLER_OPEN_PERM_KEY = "open-protocol-handler";
 const PERMISSION_KEY_DELIMITER = "^";
-
-// These are used for manipulating jar entry paths, which always use Unix
-// separators (originally copied from `ospath_unix.jsm` as part of the "OS.Path
-// to PathUtils" migration).
-
-/**
- * Return the final part of the path.
- * The final part of the path is everything after the last "/".
- */
-function basename(path) {
-  return path.slice(path.lastIndexOf("/") + 1);
-}
-
-/**
- * Return the directory part of the path.
- * The directory part of the path is everything before the last
- * "/". If the last few characters of this part are also "/",
- * they are ignored.
- *
- * If the path contains no directory, return ".".
- */
-function dirname(path) {
-  let index = path.lastIndexOf("/");
-  if (index == -1) {
-    return ".";
-  }
-  while (index >= 0 && path[index] == "/") {
-    --index;
-  }
-  return path.slice(0, index + 1);
-}
 
 // Returns true if the extension is owned by Mozilla (is either privileged,
 // using one of the @mozilla.com/@mozilla.org protected addon id suffixes).
@@ -344,8 +299,6 @@ function classifyPermission(perm, restrictSchemes, isPrivileged) {
   } else if (!isPrivileged && PRIVILEGED_PERMS.has(match[1])) {
     return { invalid: perm, privileged: true };
   } else if (perm.startsWith("declarativeNetRequest") && !lazy.dnrEnabled) {
-    return { invalid: perm };
-  } else if (perm === "userScripts" && !lazy.userScriptsMV3Enabled) {
     return { invalid: perm };
   }
   return { permission: perm };
@@ -457,7 +410,7 @@ var UUIDMap = {
 };
 
 function clearCacheForExtensionPrincipal(principal, clearAll = false) {
-  if (!principal.schemeIs("moz-extension")) {
+  if (!ExtensionUtils.isExtensionUrl(principal)) {
     return Promise.reject(new Error("Unexpected non extension principal"));
   }
 
@@ -799,7 +752,7 @@ export var ExtensionProcessCrashObserver = {
   },
 
   observe(subject, topic, data) {
-    let childID = data;
+    let childID = parseInt(data, 10);
     switch (topic) {
       case "geckoview-initial-foreground":
         this._appInForeground = true;
@@ -861,7 +814,7 @@ export var ExtensionProcessCrashObserver = {
 
         this.lastCrashedProcessChildID = childID;
 
-        const now = Cu.now();
+        const now = ChromeUtils.now();
         // Filter crash timestamps older than processCrashTimeframe.
         this.lastCrashTimestamps = this.lastCrashTimestamps.filter(
           timestamp => now - timestamp < lazy.processCrashTimeframe
@@ -946,7 +899,11 @@ export class ExtensionData {
    * Note: These fields are only available and meant to be used on Extension
    * instances, declared here because methods from this class reference them.
    */
-  /** @type {object} TODO: move to the Extension class, bug 1871094. */
+  /**
+   * TODO: move to the Extension class, bug 1871094.
+   *
+   * @type {object}
+   */
   addonData;
   /** @type {nsIURI} */
   baseURI;
@@ -1282,13 +1239,13 @@ export class ExtensionData {
    * @param {object} manifest A normalized manifest (which, in this case, means
    * that `browser_specific_settings` was folded into `applications`).
    *
-   * @returns {{required:Array<string>, optional: Array<string>}} an object
-   * containing the `required` and `optional` data collection permissions
-   * listed in the manifest.
+   * @returns {{required:Array<string>, optional: Array<string>, hasPreviousConsent: boolean}} an
+   * object containing the `required` and `optional` data collection
+   * permissions listed in the manifest.
    */
   getDataCollectionPermissions(manifest = this.manifest) {
     if (this.type !== "extension") {
-      return { required: [], optional: [] };
+      return { required: [], optional: [], hasPreviousConsent: false };
     }
 
     const data_collection_permissions =
@@ -1297,6 +1254,9 @@ export class ExtensionData {
     return {
       required: Array.from(new Set(data_collection_permissions?.required)),
       optional: Array.from(new Set(data_collection_permissions?.optional)),
+      hasPreviousConsent: Boolean(
+        data_collection_permissions?.has_previous_consent
+      ),
     };
   }
 
@@ -1366,7 +1326,11 @@ export class ExtensionData {
         )
       : [];
 
-    if (this.originControls && lazy.installIncludesOrigins) {
+    if (
+      this.originControls &&
+      (lazy.installIncludesOrigins ||
+        Services.policies?.isAddonRequiredByPolicy(this.id))
+    ) {
       return {
         permissions: [],
         origins: this.getManifestOrigins(),
@@ -1427,7 +1391,7 @@ export class ExtensionData {
         .map(matcher => matcher.pattern)
         // moz-extension://id/* is always added to allowedOrigins, but it
         // is not a valid host permission in the API. So, remove it.
-        .filter(pattern => !pattern.startsWith("moz-extension:")),
+        .filter(pattern => !ExtensionUtils.isExtensionUrl(pattern)),
       apis: [...this.apiNames],
     };
 
@@ -1466,7 +1430,7 @@ export class ExtensionData {
       ),
       data_collection: newPermissions.data_collection.filter(
         perm =>
-          !oldPermissions.data_collection.includes(perm) && perm !== "none"
+          !oldPermissions.data_collection?.includes(perm) && perm !== "none"
       ),
     };
   }
@@ -1503,13 +1467,15 @@ export class ExtensionData {
    * @param {object} oldOptionalPermissions
    * @param {object} newPermissions
    * @param {object} newOptionalPermissions
+   * @param {boolean} newIsPrivileged
    */
   static async migratePermissions(
     id,
     oldPermissions,
     oldOptionalPermissions,
     newPermissions,
-    newOptionalPermissions
+    newOptionalPermissions,
+    newIsPrivileged
   ) {
     let migrated = ExtensionData.intersectPermissions(
       oldPermissions,
@@ -1554,13 +1520,44 @@ export class ExtensionData {
       )
     );
 
+    // For policy-managed extensions, revoke any previously-granted host
+    // origins that are no longer in the new manifest (required or optional).
+    // Optional host permissions granted by the user are preserved when still
+    // subsumed by the new optional set.
+    // TODO(Bug 2022704): extend the host permissions migration logic also to
+    // extensions not managed by the enterprise policies.
+    let originsToRevoke = [];
+    if (Services.policies?.isAddonRequiredByPolicy(id)) {
+      // Match the criteria used by ExtensionData restrictSchemes getter. The
+      // policy/extension for `id` is not registered at this point (old shut
+      // down, new not started yet), so we cannot look it up via
+      // WebExtensionPolicy.getByID — newIsPrivileged is propagated from the
+      // XPIProvider via BootstrapScope.update.
+      let restrictSchemes = !(
+        newIsPrivileged && newPermissions.permissions?.includes("mozillaAddons")
+      );
+      let newRequiredSet = new MatchPatternSet(newPermissions.origins ?? [], {
+        restrictSchemes,
+        ignorePath: true,
+      });
+      let newOptionalSet = new MatchPatternSet(
+        newOptionalPermissions.origins ?? [],
+        { restrictSchemes, ignorePath: true }
+      );
+      let granted = await lazy.ExtensionPermissions.get(id);
+      originsToRevoke = granted.origins.filter(o => {
+        let p = new MatchPattern(o, { ignorePath: true });
+        return !newRequiredSet.subsumes(p) && !newOptionalSet.subsumes(p);
+      });
+    }
+
     // Remove any optional permissions that have been removed from the manifest.
     await lazy.ExtensionPermissions.remove(id, {
       permissions: removed,
       data_collection: Array.from(
         oldDataCollectionSet.difference(dataCollectionSet)
       ),
-      origins: [],
+      origins: originsToRevoke,
     });
   }
 
@@ -1654,22 +1651,6 @@ export class ExtensionData {
     return this._backgroundState;
   }
 
-  /**
-   * Returns true if the addon is configured to be installed
-   * by enterprise policy.
-   * Should be kept in sync with XPIDatabase.sys.mjs
-   */
-  get isInstalledByEnterprisePolicy() {
-    const policySettings = Services.policies?.getExtensionSettings(this.id);
-    const legacyLockedSettings =
-      Services.policies?.getActivePolicies()?.Extensions?.Locked ?? [];
-    return (
-      ["force_installed", "normal_installed"].includes(
-        policySettings?.installation_mode
-      ) || legacyLockedSettings.includes(this.id)
-    );
-  }
-
   async getExtensionVersionWithoutValidation() {
     return (await this.readJSON("manifest.json")).version;
   }
@@ -1725,6 +1706,7 @@ export class ExtensionData {
       manifestVersion: this.manifestVersion,
       // We introduced this context param in Bug 1831417.
       ignoreUnrecognizedProperties: false,
+      temporarilyInstalled: this.temporarilyInstalled,
     };
 
     if (this.fluentL10n || this.localeData) {
@@ -2082,12 +2064,6 @@ export class ExtensionData {
       }
 
       const shouldIgnorePermission = (perm, verbose = true) => {
-        if (perm === "userScripts" && !lazy.userScriptsMV3Enabled) {
-          if (verbose) {
-            this.manifestWarning(`Unavailable extension permission: ${perm}`);
-          }
-          return true;
-        }
         if (isMV2 && PERMS_NOT_IN_MV2.has(perm)) {
           if (verbose) {
             this.manifestWarning(
@@ -2113,7 +2089,9 @@ export class ExtensionData {
         }
       }
 
-      if (this.id) {
+      // ExtensionData consumers do not rely on persisted optional permissions,
+      // see https://bugzilla.mozilla.org/show_bug.cgi?id=1974419#c1
+      if (this.id && this.constructor !== ExtensionData) {
         // An extension always gets permission to its own url.
         let matcher = new MatchPattern(this.getURL(), { ignorePath: true });
         originPermissions.add(matcher.pattern);
@@ -2175,6 +2153,7 @@ export class ExtensionData {
 
           jsPaths: options.js || [],
           cssPaths: options.css || [],
+          cssOrigin: options.css_origin,
         });
       }
 
@@ -2237,6 +2216,14 @@ export class ExtensionData {
           })
         );
       }
+
+      const sandboxPages = manifest.sandbox?.pages;
+      if (sandboxPages) {
+        // Normalize all paths to contain a single leading /
+        result.sandboxPages = sandboxPages.map(path =>
+          path.replace(/^\/*/, "/")
+        );
+      }
     } else if (this.type == "locale") {
       // Langpack startup is performance critical, so we want to compute as much
       // as possible here to make startup not trigger async DB reads.
@@ -2297,17 +2284,17 @@ export class ExtensionData {
       };
     } else if (this.type == "dictionary") {
       let dictionaries = {};
+      let entries;
       for (let [lang, path] of Object.entries(manifest.dictionaries)) {
+        // WebExtensionDictionaryManifest schema ensures that path is a
+        // strictRelativeUrl ending with ".dic".
         path = path.replace(/^\/+/, "");
-
-        let dir = dirname(path);
-        if (dir === ".") {
-          dir = "";
-        }
-        let leafName = basename(path);
+        let leafNameIndex = path.lastIndexOf("/") + 1;
+        let dir = path.slice(0, leafNameIndex);
+        let leafName = path.slice(leafNameIndex);
         let affixPath = leafName.slice(0, -3) + "aff";
 
-        let entries = await this._readDirectory(dir);
+        entries ??= await this._readDirectory(dir);
         if (!entries.includes(leafName)) {
           this.manifestError(
             `Invalid dictionary path specified for '${lang}': ${path}`
@@ -2315,7 +2302,7 @@ export class ExtensionData {
         }
         if (!entries.includes(affixPath)) {
           this.manifestError(
-            `Invalid dictionary path specified for '${lang}': Missing affix file: ${path}`
+            `Invalid dictionary path specified for '${lang}': Missing affix file: ${dir}${affixPath}`
           );
         }
 
@@ -2367,6 +2354,7 @@ export class ExtensionData {
     await this.apiManager.lazyInit();
 
     this.webAccessibleResources = manifestData.webAccessibleResources;
+    this.sandboxPages = manifestData.sandboxPages;
 
     this.originControls = manifestData.originControls;
     this.allowedOrigins = new MatchPatternSet(manifestData.originPermissions, {
@@ -2628,6 +2616,7 @@ export class ExtensionData {
   /**
    * @typedef {object} HostPermissions
    * @param {string} allUrls   permission used to obtain all urls access
+   * @param {boolean} fileUrl  Whether any permission matched file:.
    * @param {Set} wildcards    set contains permissions with wildcards
    * @param {Set} sites        set contains explicit host permissions
    * @param {Map} wildcardsMap mapping origin wildcards to labels
@@ -2646,6 +2635,7 @@ export class ExtensionData {
    */
   static classifyOriginPermissions(origins = [], ignoreNonWebSchemes = false) {
     let allUrls = null,
+      fileUrls = false,
       wildcards = new Set(),
       sites = new Set(),
       // TODO: use map.values() instead of these sets.  Note: account for two
@@ -2659,6 +2649,7 @@ export class ExtensionData {
     for (let permission of origins) {
       if (permission == "<all_urls>") {
         allUrls = permission;
+        fileUrls = true;
         continue;
       }
 
@@ -2672,6 +2663,9 @@ export class ExtensionData {
       // Note: the scheme is ignored in the permission warnings. If this ever
       // changes, update the comparePermissions method as needed.
       let [, scheme, host] = match;
+      if (scheme === "file") {
+        fileUrls = true;
+      }
       if (ignoreNonWebSchemes && !wildcardSchemes.includes(scheme)) {
         continue;
       }
@@ -2695,7 +2689,7 @@ export class ExtensionData {
         sitesMap.set(pat.pattern, `${scheme}://${host}`);
       }
     }
-    return { allUrls, wildcards, sites, wildcardsMap, sitesMap };
+    return { allUrls, fileUrls, wildcards, sites, wildcardsMap, sitesMap };
   }
 
   /**
@@ -2714,6 +2708,8 @@ export class ExtensionData {
    * @param {Permissions} [info.optionalPermissions]
    *                      Optional permissions listed in the manifest.
    * @param {Permissions} info.permissions Requested permissions.
+   * @param {boolean} [info.fileSchemeAllowed]
+   *                  Whether the extension was already granted file access.
    * @param {string} info.siteOrigin
    * @param {Array<string>} [info.sitePermissions]
    * @param {boolean} info.unsigned
@@ -2729,6 +2725,10 @@ export class ExtensionData {
    * @param {boolean} [options.fullDomainsList]
    *                  Wether to include the full domains set in the returned
    *                  results.  Defaults to false.
+   * @param {boolean} [options.includeFileSchemeAccess]
+   *                  Wether to include an entry for internal:fileSchemeAllowed in
+   *                  the returned optionalOrigins when needed. Defaults to false.
+   *                  This option does nothing when info.optionalPermissions is unset!
    *
    * @typedef {object} PermissionStrings
    * @property {Array<string>} msgs an array of localized strings describing
@@ -2768,12 +2768,17 @@ export class ExtensionData {
       addon,
       optionalPermissions,
       permissions,
+      fileSchemeAllowed,
       siteOrigin,
       sitePermissions,
       type,
       unsigned,
     },
-    { buildOptionalOrigins = false, fullDomainsList = false } = {}
+    {
+      buildOptionalOrigins = false,
+      fullDomainsList = false,
+      includeFileSchemeAccess = false,
+    } = {}
   ) {
     const l10n = lazy.PERMISSION_L10N;
 
@@ -2791,6 +2796,11 @@ export class ExtensionData {
       dataCollectionPermissions: {},
       optionalDataCollectionPermissions: {},
     };
+
+    // If the internal:fileSchemeAllowed permission was granted, assume true
+    // independently of what the (optional) permissions say, to enable the user
+    // to always turn it off if desired.
+    let hasAnyFileScheme = fileSchemeAllowed;
 
     // To keep the label & accesskey in sync for localizations,
     // they need to be stored as attributes of the same Fluent message.
@@ -2824,26 +2834,23 @@ export class ExtensionData {
     // a less-generic message than addons with site permissions.
     // NOTE: this is used as part of the synthetic addon install flow implemented for the
     // SitePermissionAddonProvider.
-    // FIXME
     if (addon?.type === lazy.SITEPERMS_ADDON_TYPE) {
       // We simplify the origin to make it more user friendly. The origin is assured to be
       // available because the SitePermsAddon install is always expected to be triggered
       // from a website, making the siteOrigin always available through the installing principal.
       headerArgs.hostname = new URL(siteOrigin).hostname;
 
-      // messages are specific to the type of gated permission being installed
-      const headerId =
-        sitePermissions[0] === "midi-sysex"
-          ? "webext-site-perms-header-with-gated-perms-midi-sysex"
-          : "webext-site-perms-header-with-gated-perms-midi";
-      result.header = l10n.formatValueSync(headerId, headerArgs);
+      const permissionType = sitePermissions[0];
+      const stringIds =
+        lazy.getSitePermsPermissionsPromptStringIds(permissionType);
 
-      // We use the same string for midi and midi-sysex, and don't support any
-      // other types of site permission add-ons. So we just hard-code the
-      // descriptor for now. See bug 1826747.
-      result.text = l10n.formatValueSync(
-        "webext-site-perms-description-gated-perms-midi"
-      );
+      if (stringIds?.header && stringIds?.description) {
+        result.header = l10n.formatValueSync(stringIds.header, headerArgs);
+        result.text = l10n.formatValueSync(stringIds.description);
+      } else {
+        Cu.reportError(`Unknown site permission type: ${permissionType}`);
+        return null;
+      }
 
       setAcceptCancel(acceptId, cancelId);
       return result;
@@ -2854,23 +2861,15 @@ export class ExtensionData {
     // about:addon detail view for the synthetic addon entries.
     if (sitePermissions) {
       for (let permission of sitePermissions) {
-        let permMsg;
-        switch (permission) {
-          case "midi":
-            permMsg = l10n.formatValueSync("webext-site-perms-midi");
-            break;
-          case "midi-sysex":
-            permMsg = l10n.formatValueSync("webext-site-perms-midi-sysex");
-            break;
-          default:
-            Cu.reportError(
-              `site_permission ${permission} missing readable text property`
-            );
-            // We must never have a DOM api permission that is hidden so in
-            // the case of any error, we'll use the plain permission string.
-            // test_ext_sitepermissions.js tests for no missing messages, this
-            // is just an extra fallback.
-            permMsg = permission;
+        let permId = lazy.getSitePermsShortDescriptionStringId(permission);
+        let permMsg = permId ? l10n.formatValueSync(permId) : null;
+        if (!permMsg) {
+          Cu.reportError(
+            `site_permission ${permission} missing readable text property`
+          );
+          // Use the permission name itself as a fallback if a localized
+          // string has not been found.
+          permMsg = permission;
         }
         result.msgs.push(permMsg);
       }
@@ -2889,8 +2888,9 @@ export class ExtensionData {
 
     if (permissions) {
       // First classify our host permissions
-      let { allUrls, wildcards, sites } =
+      let { allUrls, fileUrls, wildcards, sites } =
         ExtensionData.classifyOriginPermissions(permissions.origins);
+      hasAnyFileScheme ||= fileUrls;
 
       // Format the host permissions.  If we have a wildcard for all urls,
       // a single string will suffice.  Otherwise, show domain wildcards
@@ -2990,16 +2990,22 @@ export class ExtensionData {
         }
       }
 
-      const { allUrls, sitesMap, wildcardsMap } =
+      const { allUrls, fileUrls, sitesMap, wildcardsMap } =
         ExtensionData.classifyOriginPermissions(
           optionalPermissions.origins,
           true
         );
+      hasAnyFileScheme ||= fileUrls;
       const ooKeys = [];
       const ooL10nIds = [];
       if (allUrls) {
         ooKeys.push(allUrls);
         ooL10nIds.push("webext-perms-host-description-all-urls");
+      }
+      // Intentionally render file access after the broad <all_urls> entry.
+      if (includeFileSchemeAccess && hasAnyFileScheme) {
+        ooKeys.push("internal:fileSchemeAllowed");
+        ooL10nIds.push("webext-perms-host-description-file-urls");
       }
 
       // Current UX controls are meant for developer testing with mv3.
@@ -3252,7 +3258,16 @@ const PROXIED_EVENTS = new Set([
   "test-harness-message",
   "background-script-suspend",
   "background-script-suspend-canceled",
-  "background-script-suspend-ignored",
+]);
+
+const PROXIED_TEST_EVENTS = new Set([
+  "test-task-start",
+  "test-task-done",
+  "test-result",
+  "test-eq",
+  "test-message",
+  "test-done",
+  "test-log",
 ]);
 
 class BootstrapScope {
@@ -3295,7 +3310,8 @@ class BootstrapScope {
         data.oldPermissions,
         data.oldOptionalPermissions,
         data.userPermissions || emptyPermissions,
-        data.optionalPermissions || emptyPermissions
+        data.optionalPermissions || emptyPermissions,
+        data.isPrivileged
       );
     }
 
@@ -3387,7 +3403,7 @@ export class Extension extends ExtensionData {
   /** @type {Map<string, Map<string, any>>} */
   persistentListeners;
 
-  /** @type {import("ExtensionShortcuts.sys.mjs").ExtensionShortcuts} */
+  /** @type {import("./ExtensionShortcuts.sys.mjs").ExtensionShortcuts} */
   shortcuts;
 
   /**
@@ -3479,6 +3495,8 @@ export class Extension extends ExtensionData {
       !!addonData.recommendationState?.states?.length ||
       lazy.QuarantinedDomains.isUserAllowedAddonId(this.id);
 
+    this.hasRecommendedState = !!addonData.recommendationState?.states?.length;
+
     this.views = new Set();
     this._backgroundPageFrameLoader = null;
 
@@ -3492,6 +3510,7 @@ export class Extension extends ExtensionData {
     this.allowedOrigins = null;
     this._optionalOrigins = null;
     this.webAccessibleResources = null;
+    this.sandboxPages = null;
 
     this.registeredContentScripts = new Map();
 
@@ -3632,7 +3651,13 @@ export class Extension extends ExtensionData {
   }
 
   receiveMessage({ name, data }) {
-    if (name === this.MESSAGE_EMIT_EVENT) {
+    if (name !== this.MESSAGE_EMIT_EVENT) {
+      return;
+    }
+    if (
+      data.event === "background-script-reset-idle" ||
+      (lazy.testApiEnabled && PROXIED_TEST_EVENTS.has(data.event))
+    ) {
       this.emitter.emit(data.event, ...data.args);
     }
   }
@@ -3739,6 +3764,13 @@ export class Extension extends ExtensionData {
     return content_security_policy;
   }
 
+  get sandboxPageCSP() {
+    if (this.manifestVersion === 2) {
+      return this.manifest.sandbox?.content_security_policy;
+    }
+    return this.manifest.content_security_policy?.sandbox;
+  }
+
   get backgroundScripts() {
     return this.manifest.background?.scripts;
   }
@@ -3797,9 +3829,12 @@ export class Extension extends ExtensionData {
       id: this.id,
       uuid: this.uuid,
       name: this.name,
+      version: this.version,
       type: this.type,
       manifestVersion: this.manifestVersion,
       extensionPageCSP: this.extensionPageCSP,
+      sandboxPageCSP: this.sandboxPageCSP,
+      sandboxPages: this.sandboxPages,
       instanceId: this.instanceId,
       resourceURL: this.resourceURL,
       contentScripts: this.contentScripts,
@@ -3809,6 +3844,7 @@ export class Extension extends ExtensionData {
       optionalPermissions: this.optionalPermissions,
       isPrivileged: this.isPrivileged,
       ignoreQuarantine: this.ignoreQuarantine,
+      hasRecommendedState: this.hasRecommendedState,
       temporarilyInstalled: this.temporarilyInstalled,
     };
   }
@@ -3919,6 +3955,16 @@ export class Extension extends ExtensionData {
 
     pendingExtensions.delete(this.id);
     sharedData.set("extensions/pending", pendingExtensions);
+
+    if (!sharedData.has("extensions/documentIdKey")) {
+      // See ExtensionDocumentId.sys.mjs for an explanation of this.
+      sharedData.set(
+        "extensions/documentIdKey",
+        Cc["@mozilla.org/keyed-uuid-mapper;1"]
+          .createInstance(Ci.nsIKeyedUUIDMapper)
+          .generateKey()
+      );
+    }
 
     Services.ppmm.sharedData.flush();
     this.broadcast("Extension:Startup", this.id);
@@ -4081,8 +4127,10 @@ export class Extension extends ExtensionData {
       id: this.id,
       mozExtensionHostname: this.uuid,
       baseURL: this.resourceURL,
+      version: this.version,
       isPrivileged: this.isPrivileged,
       ignoreQuarantine: this.ignoreQuarantine,
+      hasRecommendedState: this.hasRecommendedState,
       temporarilyInstalled: this.temporarilyInstalled,
       allowedOrigins: new MatchPatternSet([]),
       localizeCallback: () => "",
@@ -4097,8 +4145,10 @@ export class Extension extends ExtensionData {
     pendingExtensions.set(this.id, {
       mozExtensionHostname: this.uuid,
       baseURL: this.resourceURL,
+      version: this.version,
       isPrivileged: this.isPrivileged,
       ignoreQuarantine: this.ignoreQuarantine,
+      hasRecommendedState: this.hasRecommendedState,
     });
     sharedData.set("extensions/pending", pendingExtensions);
 
@@ -4350,18 +4400,30 @@ export class Extension extends ExtensionData {
 
     if (
       this.originControls &&
-      this.startupReason === "ADDON_INSTALL" &&
-      (this.manifest.granted_host_permissions || lazy.installIncludesOrigins)
+      (this.startupReason === "ADDON_INSTALL" ||
+        (this.startupReason === "ADDON_UPGRADE" &&
+          Services.policies?.isAddonRequiredByPolicy(this.id))) &&
+      (this.manifest.granted_host_permissions ||
+        lazy.installIncludesOrigins ||
+        Services.policies?.isAddonRequiredByPolicy(this.id))
     ) {
       let origins = this.getManifestOrigins();
       lazy.ExtensionPermissions.add(this.id, { permissions: [], origins });
       updateCache = true;
+
+      // ExtensionPermissions.add asynchronously updates this.allowedOrigins
+      // and this.permissions as needed, but that is too late for us, so we
+      // fix up the permissions here based on what we know.
 
       let allowed = this.allowedOrigins.patterns.map(p => p.pattern);
       this.allowedOrigins = new MatchPatternSet(origins.concat(allowed), {
         restrictSchemes: this.restrictSchemes,
         ignorePath: true,
       });
+
+      if (origins.includes("<all_urls>")) {
+        this.permissions.add("<all_urls>");
+      }
     }
 
     if (updateCache) {
@@ -4373,6 +4435,8 @@ export class Extension extends ExtensionData {
     if (!this.cleanupFile) {
       return;
     }
+    // Note: This is test-only logic, only when the Extension is created via
+    // ExtensionTestCommon.generate in ExtensionTestCommon.sys.mjs
 
     let file = this.cleanupFile;
     this.cleanupFile = null;
@@ -4380,12 +4444,27 @@ export class Extension extends ExtensionData {
     Services.obs.removeObserver(this, "xpcom-shutdown");
 
     return this.broadcast("Extension:FlushJarCache", { path: file.path })
-      .then(() => {
+      .then(async () => {
         // We can't delete this file until everyone using it has
         // closed it (because Windows is dumb). So we wait for all the
         // child processes (including the parent) to flush their JAR
         // caches. These caches may keep the file open.
-        file.remove(false);
+
+        // Content processes pending shutdown may be unreachable by broadcast()
+        // above (see comment 2 and comment 3 of bug 1768532), but will release
+        // the file handle when they terminate. So, wait and retry a few times.
+        let retries = 10;
+        do {
+          try {
+            file.remove(false);
+            break;
+          } catch (e) {
+            if (e.result !== Cr.NS_ERROR_FILE_ACCESS_DENIED || --retries < 0) {
+              throw e;
+            }
+            await ExtensionUtils.promiseTimeout(100);
+          }
+        } while (!Services.startup.shuttingDown);
       })
       .catch(Cu.reportError);
   }
@@ -4559,6 +4638,15 @@ export class Dictionary extends ExtensionData {
 }
 
 export class Langpack extends ExtensionData {
+  /**
+   * Set of langpack ids (matching `langpackId`, which is also the
+   * langpack's L10nRegistry metasource string) for langpacks that have
+   * completed startup and not yet shut down.
+   *
+   * @type {Set<string>}
+   */
+  static activeLangpackIds = new Set();
+
   constructor(addonData) {
     super(addonData.resourceURI);
     this.startupData = addonData.startupData;
@@ -4567,6 +4655,10 @@ export class Langpack extends ExtensionData {
 
   static getBootstrapScope() {
     return new LangpackBootstrapScope();
+  }
+
+  get langpackId() {
+    return this.startupData.langpackId;
   }
 
   async promiseLocales() {
@@ -4598,7 +4690,7 @@ export class Langpack extends ExtensionData {
       );
     }
 
-    const langpackId = this.startupData.langpackId;
+    const langpackId = this.langpackId;
     const l10nRegistrySources = this.startupData.l10nRegistrySources;
 
     lazy.resourceProtocol.setSubstitution(langpackId, this.rootURI);
@@ -4614,6 +4706,8 @@ export class Langpack extends ExtensionData {
     });
 
     L10nRegistry.getInstance().registerSources(fileSources);
+
+    Langpack.activeLangpackIds.add(langpackId);
 
     Services.obs.notifyObservers(
       { wrappedJSObject: { langpack: this } },
@@ -4639,6 +4733,13 @@ export class Langpack extends ExtensionData {
     }
 
     lazy.resourceProtocol.setSubstitution(this.startupData.langpackId, null);
+
+    Langpack.activeLangpackIds.delete(this.startupData.langpackId);
+
+    Services.obs.notifyObservers(
+      { wrappedJSObject: { langpack: this } },
+      "webextension-langpack-shutdown"
+    );
   }
 }
 

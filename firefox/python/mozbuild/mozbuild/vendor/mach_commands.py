@@ -3,6 +3,7 @@
 # file, # You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import logging
+import shutil
 import sys
 
 from mach.decorators import Command, CommandArgument, SubCommand
@@ -78,7 +79,7 @@ def vendor(
     Vendoring other libraries can be done with ./mach vendor [arguments] path/to/file.yaml
     """
     library = library[0]
-    assert library not in ["rust", "python"]
+    assert library not in ["rust", "python", "node"]
 
     command_context.populate_logger()
     command_context.log_manager.enable_unstructured()
@@ -157,7 +158,7 @@ def vendor(
         new_files_only,
     )
 
-    sys.exit(0)
+    return 0
 
 
 def check_modified_files(command_context):
@@ -177,9 +178,7 @@ def check_modified_files(command_context):
 {files}
 
 Please commit or stash these changes before vendoring, or re-run with `--ignore-modified`.
-""".format(
-                files="\n".join(sorted(modified))
-            ),
+""".format(files="\n".join(sorted(modified))),
         )
         sys.exit(1)
 
@@ -208,15 +207,23 @@ Please commit or stash these changes before vendoring, or re-run with `--ignore-
     "--issues-json",
     help="Path to a code-review issues.json file to write out",
 )
+@CommandArgument(
+    "--vcs-diff",
+    help="Path to a diff. file to write out, if there are uncommitted changes present after running",
+)
 def vendor_rust(command_context, **kwargs):
     from mozbuild.vendor.vendor_rust import VendorRust
 
     vendor_command = command_context._spawn(VendorRust)
     issues_json = kwargs.pop("issues_json", None)
+    vcs_diff = kwargs.pop("vcs_diff", None)
     ok = vendor_command.vendor(**kwargs)
     if issues_json:
         with open(issues_json, "w") as fh:
             fh.write(vendor_command.serialize_issues_json())
+    if vcs_diff:
+        with open(vcs_diff, "w", encoding="utf-8", newline="\n") as fh:
+            shutil.copyfileobj(vendor_command.generate_diff_stream(), fh)
     if ok:
         sys.exit(0)
     else:
@@ -234,7 +241,7 @@ def vendor_rust(command_context, **kwargs):
     "Some extra files like docs and tests will automatically be excluded."
     "Downloads the packages listed in third_party/python/pyproject.toml, along "
     "with their transitive dependencies, and adds them to version control.",
-    virtualenv_name="vendor",
+    virtualenv_name="uv",
 )
 @CommandArgument(
     "--keep-extra-files",
@@ -302,4 +309,56 @@ def vendor_python(
         '"./mach generate-python-lockfiles" to verify no incompatibilities were introduced.'
         "\n\nNote: If there are incompatibilities, it may be useful to re-run with the "
         '"--keep-lockfiles" flag and inspect the lockfiles manually to determine the culprit(s).'
+    )
+
+
+# =====================================================================
+
+
+@SubCommand(
+    "vendor",
+    "node",
+    description="Vendor node packages needed to build Firefox into "
+    "third_party/node. Resolves third_party/node/package.json with pnpm, "
+    "prunes documentation and tests, and adds the result to version control.",
+)
+@CommandArgument(
+    "--add",
+    action="append",
+    default=[],
+    metavar="PACKAGE",
+    help="Specify one or more dependencies to vendor.\n"
+    "Use the format: '<dependency>@<version>' (e.g. '--add webpack@5.89.0')",
+)
+@CommandArgument(
+    "--remove",
+    action="append",
+    default=[],
+    metavar="PACKAGE",
+    help="Remove one or more vendored dependencies.\n"
+    "Use the format: '<dependency>' (e.g. '--remove webpack')",
+)
+@CommandArgument(
+    "-f",
+    "--force",
+    action="store_true",
+    help="Discard pnpm-lock.yaml and resolve again, taking the newest versions "
+    "that satisfy third_party/node/package.json. Without this, a dependency "
+    "already in the lock file keeps the version it has.",
+)
+@CommandArgument(
+    "--ignore-modified",
+    action="store_true",
+    default=False,
+    help="Ignore modified files under third_party/node in the current checkout.",
+)
+def vendor_node(command_context, add, remove, force, ignore_modified):
+    from mozbuild.vendor.vendor_node import VendorNode
+
+    vendor_command = command_context._spawn(VendorNode)
+    return vendor_command.vendor(
+        add=add,
+        remove=remove,
+        force=force,
+        ignore_modified=ignore_modified,
     )

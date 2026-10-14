@@ -1,18 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "Logging.h"
 #include "SourceSurfaceSkia.h"
-#include "HelpersSkia.h"
+
 #include "DrawTargetSkia.h"
+#include "HelpersSkia.h"
+#include "Logging.h"
+#include "mozilla/CheckedInt.h"
 #include "skia/include/core/SkData.h"
 #include "skia/include/core/SkImage.h"
 #include "skia/include/core/SkSurface.h"
 #include "skia/include/private/base/SkMalloc.h"
-#include "mozilla/CheckedInt.h"
 
 namespace mozilla::gfx {
 
@@ -131,14 +130,21 @@ bool SourceSurfaceSkia::InitFromImage(const sk_sp<SkImage>& aImage,
         aFormat != SurfaceFormat::UNKNOWN
             ? aFormat
             : SkiaColorTypeToGfxFormat(pixmap.colorType(), pixmap.alphaType());
+    if (pixmap.info().bytesPerPixel() != BytesPerPixel(mFormat)) {
+      return false;
+    }
     mStride = pixmap.rowBytes();
   } else if (aFormat != SurfaceFormat::UNKNOWN) {
     mFormat = aFormat;
-    SkImageInfo info = MakeSkiaImageInfo(mSize, mFormat);
-    mStride = GetAlignedStride<4>(info.width(), info.bytesPerPixel());
-    if (!mStride) {
+    const SkImageInfo& info = aImage->imageInfo();
+    if (info.bytesPerPixel() != BytesPerPixel(mFormat)) {
       return false;
     }
+    auto stride = GetAlignedStride<4>(info.width(), info.bytesPerPixel());
+    if (stride.isNothing() || size_t(stride.value()) < info.minRowBytes64()) {
+      return false;
+    }
+    mStride = stride.value();
   } else {
     return false;
   }
@@ -154,15 +160,21 @@ bool SourceSurfaceSkia::InitFromImage(const sk_sp<SkImage>& aImage,
 
 already_AddRefed<SourceSurface> SourceSurfaceSkia::ExtractSubrect(
     const IntRect& aRect) {
-  if (!mImage || aRect.IsEmpty() || !GetRect().Contains(aRect)) {
+  if (aRect.IsEmpty() || !GetRect().Contains(aRect)) {
+    return nullptr;
+  }
+  // Shared snapshot pixels must remain stable until the copy completes.
+  MutexAutoLock lock(mChangeMutex);
+  if (!mImage) {
     return nullptr;
   }
   SkImageInfo info = MakeSkiaImageInfo(aRect.Size(), mFormat);
-  size_t stride = GetAlignedStride<4>(info.width(), info.bytesPerPixel());
-  if (!stride) {
+  auto stride = GetAlignedStride<4>(info.width(), info.bytesPerPixel());
+  if (stride.isNothing()) {
     return nullptr;
   }
-  sk_sp<SkImage> subImage = ReadSkImage(mImage, info, stride, aRect.x, aRect.y);
+  sk_sp<SkImage> subImage =
+      ReadSkImage(mImage, info, stride.value(), aRect.x, aRect.y);
   if (!subImage) {
     return nullptr;
   }

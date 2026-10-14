@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -11,6 +9,7 @@
 
 #include <atomic>
 #include <thread>
+#include "freestanding/NativeNtBlockSet.cpp"
 #include "freestanding/SharedSection.cpp"
 #include "mozilla/CmdLineAndEnvUtils.h"
 #include "mozilla/DynamicBlocklist.h"
@@ -69,6 +68,11 @@ class SharedSectionTestHelper {
     return SharedSection::kSharedViewSize -
            (offsetof(SharedSection::Layout, mFirstBlockEntry) +
             sizeof(DllBlockInfo));
+  }
+  static HANDLE GetSectionHandle() { return SharedSection::sSectionHandle; }
+  static void* GetWriteCopyView() { return SharedSection::sWriteCopyView; }
+  static constexpr size_t GetSharedViewSize() {
+    return SharedSection::kSharedViewSize;
   }
 };
 }  // namespace mozilla::freestanding
@@ -243,7 +247,7 @@ static DynamicBlockList ConvertStaticBlocklistToDynamic(
             });
 
   Vector<DllBlockInfo> copied;
-  Unused << copied.resize(originalLength + 1);  // aBlockEntries + sentinel
+  (void)copied.resize(originalLength + 1);  // aBlockEntries + sentinel
 
   size_t currentStringOffset = 0;
   for (size_t i = 0; i < originalLength; ++i) {
@@ -441,6 +445,114 @@ static bool TestDynamicBlocklist() {
   return true;
 }
 
+static bool AddToBlockSet(NativeNtBlockSet& aBlockSet,
+                          const UNICODE_STRING& aName, uint64_t aVersion) {
+  MOZ_SEH_TRY {
+    aBlockSet.Add(aName, aVersion);
+    return true;
+  }
+  MOZ_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+    printf(
+        "TEST-FAILED | TestCrossProcessWin | "
+        "NativeNtBlockSet::Add accessed invalid memory.\n");
+    return false;
+  }
+}
+
+// aBlockSet is expected to already contain aAllVersionsName from an earlier
+// SharedSection view.
+static bool CheckBlockSetAfterViewReset(
+    NativeNtBlockSet& aBlockSet, const UNICODE_STRING& aVersionedName,
+    uint64_t aVersion, const UNICODE_STRING& aAllVersionsName) {
+  // This maps a new view.
+  const DllBlockInfo* entry = gSharedSection.SearchBlocklist(aVersionedName);
+  if (!entry) {
+    printf(
+        "TEST-FAILED | TestCrossProcessWin | "
+        "No blocklist entry match for %S after Reset.\n",
+        aVersionedName.Buffer);
+    return false;
+  }
+
+  if (!AddToBlockSet(aBlockSet, entry->mName, aVersion) ||
+      !AddToBlockSet(aBlockSet, aAllVersionsName, DllBlockInfo::ALL_VERSIONS)) {
+    return false;
+  }
+
+  WritableBuffer buffer;
+  aBlockSet.Write(buffer);
+
+  const char kExpected[] = "1ccelerator_Test.dll,3.2.1.6;atkdx11disp_Test.dll;";
+  if (buffer.Length() != strlen(kExpected) ||
+      memcmp(buffer.Data(), kExpected, buffer.Length()) != 0) {
+    printf(
+        "TEST-FAILED | TestCrossProcessWin | "
+        "NativeNtBlockSet::Write wrote \"%.*s\" (expected \"%s\").\n",
+        static_cast<int>(buffer.Length()), buffer.Data(), kExpected);
+    return false;
+  }
+
+  return true;
+}
+
+// Entries in NativeNtBlockSet must stay valid after the SharedSection view
+// that the dynamic blocklist entries point into is unmapped (bug 2073733).
+static bool TestBlockSetOutlivesSharedSectionView() {
+  static NativeNtBlockSet sBlockSet;
+  const UNICODE_STRING kAllVersionsName =
+      MOZ_LITERAL_UNICODE_STRING(L"atkdx11disp_Test.dll");
+  const UNICODE_STRING kVersionedName =
+      MOZ_LITERAL_UNICODE_STRING(L"1ccelerator_Test.dll");
+  const uint64_t kVersion = MAKE_VERSION(3, 2, 1, 6);
+
+  LauncherVoidResult result = gSharedSection.Init();
+  if (result.isErr()) {
+    PrintLauncherError(result, "SharedSection::Init failed");
+    return false;
+  }
+
+  result = gSharedSection.SetBlocklist(gShortList, false);
+  if (result.isErr()) {
+    PrintLauncherError(result, "SetBlocklist(gShortList) failed");
+    return false;
+  }
+
+  const DllBlockInfo* entry = gSharedSection.SearchBlocklist(kAllVersionsName);
+  if (!entry) {
+    printf(
+        "TEST-FAILED | TestCrossProcessWin | "
+        "No blocklist entry match for %S.\n",
+        kAllVersionsName.Buffer);
+    return false;
+  }
+  if (!AddToBlockSet(sBlockSet, entry->mName, DllBlockInfo::ALL_VERSIONS)) {
+    return false;
+  }
+
+  // Unmap the view, and reserve its address range so that any access through
+  // a stale pointer into it faults instead of reading whatever gets mapped
+  // there next.
+  void* oldView = SharedSectionTestHelper::GetWriteCopyView();
+  gSharedSection.Reset();
+  void* reserved =
+      ::VirtualAlloc(oldView, SharedSectionTestHelper::GetSharedViewSize(),
+                     MEM_RESERVE, PAGE_NOACCESS);
+  if (!reserved) {
+    printf(
+        "TEST-FAILED | TestCrossProcessWin | "
+        "Failed to reserve the old view - %08lx\n",
+        ::GetLastError());
+    return false;
+  }
+
+  bool success = CheckBlockSetAfterViewReset(sBlockSet, kVersionedName,
+                                             kVersion, kAllVersionsName);
+
+  ::VirtualFree(reserved, 0, MEM_RELEASE);
+  gSharedSection.Reset();
+  return success;
+}
+
 class ChildProcess final {
   nsAutoHandle mChildProcess;
   nsAutoHandle mChildMainThread;
@@ -467,7 +579,7 @@ class ChildProcess final {
     Vector<std::thread> threads;
     std::atomic<bool> success = true;
     for (int i = 0; i < 10; ++i) {
-      Unused << threads.emplaceBack(
+      (void)threads.emplaceBack(
           [&success](SRWLOCK* aLock) {
             // All threads call GetKernel32Exports(), but only the first thread
             // maps a write-copy section and populates it.
@@ -524,6 +636,18 @@ class ChildProcess final {
     if (result.inspectErr() !=
         WindowsError::FromWin32Error(ERROR_ACCESS_DENIED)) {
       PrintLauncherError(result, "The readonly section was writable");
+      return 1;
+    }
+
+    // The empty DACL should prevent writable handles.
+    HANDLE writableHandle;
+    if (::DuplicateHandle(
+            nt::kCurrentProcess, SharedSectionTestHelper::GetSectionHandle(),
+            nt::kCurrentProcess, &writableHandle, GENERIC_WRITE, FALSE, 0)) {
+      ::CloseHandle(writableHandle);
+      printf(
+          "TEST-FAILED | TestCrossProcessWin | "
+          "The handle was writable.\n");
       return 1;
     }
 
@@ -617,6 +741,10 @@ int wmain(int argc, wchar_t* argv[]) {
   }
 
   if (!TestDynamicBlocklist()) {
+    return 1;
+  }
+
+  if (!TestBlockSetOutlivesSharedSectionView()) {
     return 1;
   }
 

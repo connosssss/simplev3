@@ -52,7 +52,7 @@ const actionTypes = {
   REVERSE_SEARCH_NEXT: "REVERSE_SEARCH_NEXT",
   REVERSE_SEARCH_BACK: "REVERSE_SEARCH_BACK",
   EAGER_EVALUATION_TOGGLE: "EAGER_EVALUATION_TOGGLE",
-  WARNING_GROUPS_TOGGLE: "WARNING_GROUPS_TOGGLE",
+  GROUP_SIMILAR_MESSAGES_TOGGLE: "GROUP_SIMILAR_MESSAGES_TOGGLE",
   WILL_NAVIGATE: "WILL_NAVIGATE",
   EDITOR_SET_WIDTH: "EDITOR_SET_WIDTH",
 };
@@ -70,6 +70,10 @@ const prefs = {
       CSS: "filter.css",
       NET: "filter.net",
       NETXHR: "filter.netxhr",
+      // Origin filters, only displayed in the browser console and the browser
+      // toolbox console.
+      CHROME: "filter.chrome",
+      CONTENT: "filter.content",
     },
     UI: {
       // Persist is only used by the webconsole.
@@ -93,7 +97,7 @@ const prefs = {
       SIDEBAR_TOGGLE: "devtools.webconsole.sidebarToggle",
       AUTOCOMPLETE: "devtools.webconsole.input.autocomplete",
       EAGER_EVALUATION: "devtools.webconsole.input.eagerEvaluation",
-      GROUP_WARNINGS: "devtools.webconsole.groupWarningMessages",
+      GROUP_SIMILAR_MESSAGES: "devtools.webconsole.groupSimilarMessages",
     },
   },
 };
@@ -108,7 +112,17 @@ const FILTERS = {
   NETXHR: "netxhr",
   TEXT: "text",
   WARN: "warn",
+  // Origin filters, only displayed in the browser console and the browser
+  // toolbox console. They allow to show or hide messages coming from privileged
+  // ("chrome") browser code or from web content respectively.
+  CHROME: "chrome",
+  CONTENT: "content",
 };
+
+// Filters only displayed in the browser console and the browser toolbox console,
+// used to separate messages emitted by privileged browser ("chrome") code from
+// those emitted by web content.
+const ORIGIN_FILTERS = [FILTERS.CHROME, FILTERS.CONTENT];
 
 const DEFAULT_FILTERS_VALUES = {
   [FILTERS.TEXT]: "",
@@ -120,6 +134,8 @@ const DEFAULT_FILTERS_VALUES = {
   [FILTERS.CSS]: false,
   [FILTERS.NET]: false,
   [FILTERS.NETXHR]: false,
+  [FILTERS.CHROME]: true,
+  [FILTERS.CONTENT]: true,
 };
 
 const DEFAULT_FILTERS = Object.keys(DEFAULT_FILTERS_VALUES).filter(
@@ -211,6 +227,7 @@ const evaluationNotifications = {
 module.exports = Object.assign(
   {
     FILTERS,
+    ORIGIN_FILTERS,
     DEFAULT_FILTERS,
     DEFAULT_FILTERS_VALUES,
     FILTERBAR_DISPLAY_MODES: {

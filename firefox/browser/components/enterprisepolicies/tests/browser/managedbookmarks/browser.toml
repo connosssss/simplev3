@@ -2,6 +2,8 @@
 prefs = ["browser.policies.alternatePath='<test-root>/browser/components/enterprisepolicies/tests/browser/managedbookmarks/managedbookmarks.json'"]
 support-files = ["managedbookmarks.json"]
 
-skip-if = ["os == 'linux'"] # Popup timeout issue - see Bug 1742167
+skip-if = [
+  "os == 'linux' && os_version == '22.04' && arch == 'x86_64' && display == 'wayland'", # Popup timeout issue - see Bug 1742167
+]
 
 ["browser_policy_managedbookmarks.js"]

@@ -8,17 +8,11 @@ const MOCK_FLOW_ID =
 const MOCK_FLOW_BEGIN_TIME = 1590780440325;
 const MOCK_DEVICE_ID = "7e450f3337d3479b8582ea1c9bb5ba6c";
 
-Services.prefs.setBoolPref("identity.fxaccounts.oauth.enabled", false);
-Services.prefs.setStringPref(
-  "identity.fxaccounts.contextParam",
-  "fx_desktop_v3"
-);
+const gFxaParams = `context=${Services.prefs.getStringPref("identity.fxaccounts.contextParam")}`;
 
 registerCleanupFunction(function () {
   Services.prefs.clearUserPref("identity.fxaccounts.remote.root");
   Services.prefs.clearUserPref("services.sync.username");
-  Services.prefs.clearUserPref("identity.fxaccounts.oauth.enabled");
-  Services.prefs.clearUserPref("identity.fxaccounts.contextParam");
 });
 
 add_task(setup_UITourTest);
@@ -79,7 +73,13 @@ add_UITour_task(async function test_firefoxAccountsNoParams() {
   await BrowserTestUtils.browserLoaded(
     gTestTab.linkedBrowser,
     false,
-    "https://example.com/?context=fx_desktop_v3&entrypoint=uitour&action=email&service=sync"
+    url =>
+      url.startsWith("https://example.com/") &&
+      // always expect a service.
+      url.includes("service=") &&
+      url.includes(gFxaParams) &&
+      url.includes("action=email") &&
+      url.includes("entrypoint=uitour")
   );
 });
 
@@ -89,7 +89,10 @@ add_UITour_task(async function test_firefoxAccountsValidParams() {
   await BrowserTestUtils.browserLoaded(
     gTestTab.linkedBrowser,
     false,
-    "https://example.com/?context=fx_desktop_v3&entrypoint=uitour&action=email&service=sync&utm_foo=foo&utm_bar=bar"
+    url =>
+      url.startsWith("https://example.com/") &&
+      url.includes("action=email") &&
+      url.includes("utm_foo=foo&utm_bar=bar")
   );
 });
 
@@ -99,7 +102,11 @@ add_UITour_task(async function test_firefoxAccountsWithEmail() {
   await BrowserTestUtils.browserLoaded(
     gTestTab.linkedBrowser,
     false,
-    "https://example.com/?context=fx_desktop_v3&entrypoint=uitour&email=foo%40bar.com&service=sync"
+    url =>
+      url.startsWith("https://example.com/") &&
+      url.includes(gFxaParams) &&
+      url.includes("action=email") &&
+      url.includes("email=foo%40bar.com")
   );
 });
 
@@ -114,8 +121,14 @@ add_UITour_task(async function test_firefoxAccountsWithEmailAndFlowParams() {
   await BrowserTestUtils.browserLoaded(
     gTestTab.linkedBrowser,
     false,
-    "https://example.com/?context=fx_desktop_v3&entrypoint=uitour&email=foo%40bar.com&service=sync&" +
-      `flow_id=${MOCK_FLOW_ID}&flow_begin_time=${MOCK_FLOW_BEGIN_TIME}&device_id=${MOCK_DEVICE_ID}`
+    url =>
+      url.startsWith("https://example.com/") &&
+      url.includes(gFxaParams) &&
+      url.includes("action=email") &&
+      url.includes("email=foo%40bar.com") &&
+      url.includes(
+        `flow_id=${MOCK_FLOW_ID}&flow_begin_time=${MOCK_FLOW_BEGIN_TIME}&device_id=${MOCK_DEVICE_ID}`
+      )
   );
 });
 
@@ -164,8 +177,13 @@ add_UITour_task(
     await BrowserTestUtils.browserLoaded(
       gTestTab.linkedBrowser,
       false,
-      "https://example.com/?context=fx_desktop_v3&entrypoint=uitour&email=foo%40bar.com&service=sync&" +
-        `flow_id=${MOCK_FLOW_ID}&flow_begin_time=${MOCK_FLOW_BEGIN_TIME}`
+      url =>
+        url.startsWith("https://example.com/") &&
+        url.includes("email=foo%40bar.com") &&
+        url.includes("action=email") &&
+        url.includes(
+          `flow_id=${MOCK_FLOW_ID}&flow_begin_time=${MOCK_FLOW_BEGIN_TIME}`
+        )
     );
   }
 );
@@ -181,11 +199,8 @@ add_UITour_task(async function test_firefoxAccountsWithEmailAndEntrypoints() {
     "entry",
     "foo@bar.com"
   );
-  await BrowserTestUtils.browserLoaded(
-    gTestTab.linkedBrowser,
-    false,
-    "https://example.com/?context=fx_desktop_v3&entrypoint=entry&email=foo%40bar.com&service=sync&" +
-      `entrypoint_experiment=exp&entrypoint_variation=var`
+  await BrowserTestUtils.browserLoaded(gTestTab.linkedBrowser, false, url =>
+    url.includes(`entrypoint_experiment=exp&entrypoint_variation=var`)
   );
 });
 
@@ -198,18 +213,15 @@ add_UITour_task(async function test_firefoxAccountsNonAlphaValue() {
   let expected = encodeURIComponent(value).replace(/%20/g, "+");
   info("Load https://accounts.firefox.com");
   await gContentAPI.showFirefoxAccounts({ utm_foo: value });
-  await BrowserTestUtils.browserLoaded(
-    gTestTab.linkedBrowser,
-    false,
-    "https://example.com/?context=fx_desktop_v3&entrypoint=uitour&action=email&service=sync&utm_foo=" +
-      expected
+  await BrowserTestUtils.browserLoaded(gTestTab.linkedBrowser, false, url =>
+    url.includes(`&utm_foo=` + expected)
   );
 });
 
 // A helper to check the request was ignored due to invalid params.
 async function checkFxANotLoaded() {
   try {
-    await waitForConditionPromise(() => {
+    await TestUtils.waitForCondition(() => {
       return gBrowser.selectedBrowser.currentURI.spec.startsWith(
         "https://example.com"
       );

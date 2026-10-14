@@ -25,7 +25,7 @@ import org.mockito.Mockito.verifyNoInteractions
 import org.robolectric.annotation.Config
 
 @RunWith(AndroidJUnit4::class)
-@Config(sdk = [Build.VERSION_CODES.N])
+@Config(sdk = [Build.VERSION_CODES.O])
 class DisplayOrientationListenerTest {
     private val context: Context = mock()
     private val displayManager: DisplayManager = mock()
@@ -41,7 +41,7 @@ class DisplayOrientationListenerTest {
 
     @Test
     fun `WHEN started THEN register it as a display listener`() {
-        val listener = DisplayOrientationListener(context) { }
+        val listener = DisplayOrientationListener(context) {}
 
         listener.start()
 
@@ -50,7 +50,7 @@ class DisplayOrientationListenerTest {
 
     @Test
     fun `WHEN stopped THEN unregister from being a display listener`() {
-        val listener = DisplayOrientationListener(context) { }
+        val listener = DisplayOrientationListener(context) {}
 
         listener.stop()
 
@@ -119,9 +119,10 @@ class DisplayOrientationListenerTest {
     @Config(sdk = [Build.VERSION_CODES.S])
     fun `GIVEN a new Android version WHEN a display is changed and has a new rotation THEN inform the client and remember the new rotation`() {
         var hasRotationChanged = false
-        val config = Configuration().apply {
-            orientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        }
+        val config =
+            Configuration().apply {
+                orientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            }
         val resources: Resources = mock()
         doReturn(config).`when`(resources).configuration
         doReturn(resources).`when`(context).resources

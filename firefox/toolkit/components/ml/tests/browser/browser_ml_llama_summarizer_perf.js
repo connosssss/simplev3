@@ -12,17 +12,31 @@ async function fetchArticle(url) {
 
 let testData = [];
 
+// Both models run the configuration consumers actually ship: llama.cpp with
+// neither mmap nor mlock, as LinkPreviewModel creates its engine. Options the
+// engine does not honor are deliberately absent.
 const smollm2Model = {
   taskName: "text-generation",
   modelId: "HuggingFaceTB/SmolLM2-360M-Instruct-GGUF",
   modelFile: "smollm2-360m-instruct-q8_0.gguf",
-  kvCacheDtype: "q8_0",
-  flashAttn: true,
-  useMmap: true,
+  useMmap: false,
   useMlock: false,
-  perfModelId: "HuggingFaceTB/SmolLM2-360M-Instruct",
+  perfModelId: "SmolLM2-360M",
+  backend: "llama.cpp",
 };
 
+const qwen3Model = {
+  taskName: "text-generation",
+  modelId: "unsloth/Qwen3-0.6B-GGUF",
+  modelFile: "Qwen3-0.6B-Q8_0.gguf",
+  useMmap: false,
+  useMlock: false,
+  perfModelId: "Qwen3-0.6B",
+  backend: "llama.cpp",
+};
+
+// The two ends of the range consumers see; a middle article only interpolates
+// between them, at the cost of a third of the runtime.
 const articles = [
   {
     data: `${rootDataUrl}/tiny.txt`,
@@ -30,18 +44,17 @@ const articles = [
     numTokens: 200,
   },
   {
-    data: `${rootDataUrl}/medium.txt`,
-    type: "medium",
-    numTokens: 568,
+    data: `${rootDataUrl}/big.txt`,
+    type: "big",
+    numTokens: 1100,
   },
 ];
 
 let numEngines = 0;
 
-for (const model of [smollm2Model]) {
+for (const model of [smollm2Model, qwen3Model]) {
   for (const article of articles) {
-    // Replace all non-alphabnumeric or dash or underscore by underscore
-    const perfName = `${model.perfModelId.replace(/\//g, "-")}_${article.type}`;
+    const perfName = `${model.perfModelId}_${article.type}${hwInferenceSuffix()}`;
 
     const engineId = `engine-${numEngines}`;
 
@@ -63,7 +76,7 @@ const perfMetadata = {
   owner: "GenAI Team",
   name: "browser_ml_llama_summarizer_perf.js",
   description:
-    "Template test for latency for Summarizer model using Llama.cpp WASM",
+    "Summarization latency and memory for the SmolLM2 and Qwen3 models on llama.cpp",
   options: {
     default: {
       perfherder: true,
@@ -99,14 +112,14 @@ const perfMetadata = {
   },
 };
 
-requestLongerTimeout(120);
+requestLongerTimeout(30);
 
 // To run locally
 // pip install huggingface-hub
 // huggingface-cli download {model_id} --local-dir MOZ_ML_LOCAL_DIR/onnx-models/{model_id}/{revision}
 
 // Update your test in
-// Then run:  ./mach lint -l perfdocs --fix .
+// Then run:  ./mach perfdocs --generate
 // This will auto-generate docs
 async function run_summarizer_with_perf({
   taskName,
@@ -144,12 +157,12 @@ async function run_summarizer_with_perf({
     modelId,
     modelRevision: "main",
     numContext,
-    numBatch: Math.min(numContext, 64),
-    numUbatch: Math.min(numContext, 64),
-    backend: "wllama",
+    backend: "llama.cpp",
     timeoutMS: -1,
     ...llamaOptions,
   });
+
+  console.log("detected concurrency", navigator.hardwareConcurrency);
 
   if (taskName.includes("text-generation")) {
     chatInput = [
@@ -169,28 +182,33 @@ async function run_summarizer_with_perf({
     prompt: chatInput,
     nPredict: numNewTokens,
     skipPrompt: false,
+    stopOnEndOfGenerationTokens: false,
+    context: { swaFull: false, flashAttn: false },
   };
 
-  await perfTest({
+  await runMLPerfTest({
     name: `sum-${perfName}`,
     options,
     request,
     trackPeakMemory,
+    // Not an ONNX consumer: pin the backend so the matrix does not apply.
+    backends: ["llama.cpp"],
   });
 }
 
-add_task(async function test_ml_smollm_tiny_article() {
-  await run_summarizer_with_perf(testData[0]);
-});
-
-add_task(async function test_ml_smollm_medium_article() {
-  await run_summarizer_with_perf(testData[1]);
-});
-
-add_task(async function test_ml_smollm_tiny_article_with_mem() {
-  await run_summarizer_with_perf({ ...testData[0], trackPeakMemory: true });
-});
-
-add_task(async function test_ml_smollm_medium_article_with_mem() {
-  await run_summarizer_with_perf({ ...testData[1], trackPeakMemory: true });
-});
+// Generated from testData so adding a model or an article cannot silently
+// reuse a task name, and so no task hardcodes an index into it.
+for (const data of testData) {
+  for (const trackPeakMemory of [false, true]) {
+    const name = `test_summarizer_${data.perfName.replace(/\W/g, "_")}${
+      trackPeakMemory ? "_with_mem" : ""
+    }`;
+    add_task(
+      {
+        async [name]() {
+          await run_summarizer_with_perf({ ...data, trackPeakMemory });
+        },
+      }[name]
+    );
+  }
+}

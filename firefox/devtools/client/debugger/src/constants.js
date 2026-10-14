@@ -15,23 +15,28 @@ export const primaryPaneTabs = {
   TRACER: "tracer",
 };
 
-export const markerTypes = {
-  /* Line Markers */
-  CONDITIONAL_BP_MARKER: "conditional-breakpoint-panel-marker",
-  DEBUG_LINE_MARKER: "debug-line-marker",
-  LINE_EXCEPTION_MARKER: "line-exception-marker",
-  HIGHLIGHT_LINE_MARKER: "highlight-line-marker",
-  MULTI_HIGHLIGHT_LINE_MARKER: "multi-highlight-line-marker",
-  BLACKBOX_LINE_MARKER: "blackbox-line-marker",
-  INLINE_PREVIEW_MARKER: "inline-preview-marker",
-  /* Position Markers */
-  COLUMN_BREAKPOINT_MARKER: "column-breakpoint-marker",
-  DEBUG_POSITION_MARKER: "debug-position-marker",
-  EXCEPTION_POSITION_MARKER: "exception-position-marker",
-  ACTIVE_SELECTION_MARKER: "active-selection-marker",
-  PAUSED_LOCATION_MARKER: "paused-location-marker",
-  /* Gutter Markers */
-  EMPTY_LINE_MARKER: "empty-line-marker",
-  BLACKBOX_LINE_GUTTER_MARKER: "blackbox-line-gutter-marker",
-  GUTTER_BREAKPOINT_MARKER: "gutter-breakpoint-marker",
+export const sourceTree = {
+  /**
+   * Sources tree reducer
+   *
+   * A Source Tree is composed of:
+   *
+   *  - Thread Items to designate targets/threads.
+   *    These are the roots of the Tree if no project directory is selected.
+   *
+   *  - Group Items to designate the different domains used in the website.
+   *    These are direct children of threads and may contain directory or source items.
+   *
+   *  - Directory Items to designate all the folders.
+   *    Note that each folder has an item. The Source Tree React component is doing the magic to coalesce folders made of only one sub folder.
+   *
+   *  - Source Items to designate sources.
+   *    They are the leaves of the Tree. (we should not have empty directories.
+   */
+  itemTypes: {
+    THREAD: "thread",
+    DIRECTORY: "directory",
+    GROUP: "group",
+    SOURCE: "source",
+  },
 };

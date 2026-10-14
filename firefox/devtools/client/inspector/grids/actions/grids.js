@@ -16,7 +16,7 @@ module.exports = {
    *
    * @param  {NodeFront} nodeFront
    *         The NodeFront of the DOM node to toggle the grid highlighter.
-   * @param  {String} color
+   * @param  {string} color
    *         The color to use for this nodeFront's grid highlighter.
    */
   updateGridColor(nodeFront, color) {
@@ -32,12 +32,15 @@ module.exports = {
    *
    * @param  {NodeFront} nodeFront
    *         The NodeFront of the DOM node to toggle the grid highlighter.
-   * @param  {Boolean} highlighted
+   * @param  {boolean} highlighted
    *         Whether or not the grid highlighter is highlighting the grid.
+   * @param  {Array} gridFragments
+   *         The grid fragments of the grid.
    */
-  updateGridHighlighted(nodeFront, highlighted) {
+  updateGridHighlighted(nodeFront, highlighted, gridFragments) {
     return {
       type: UPDATE_GRID_HIGHLIGHTED,
+      gridFragments,
       highlighted,
       nodeFront,
     };

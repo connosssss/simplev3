@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,6 +12,7 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/TextEditor.h"
 #include "mozilla/dom/Selection.h"
+#include "mozilla/Utf16.h"
 
 #include "nsDebug.h"
 #include "nsError.h"
@@ -53,7 +53,7 @@ DeleteTextTransaction::MaybeCreateForPreviousCharacter(EditorBase& aEditorBase,
 
   uint32_t length = 1;
   uint32_t offset = aOffset - 1;
-  if (offset && NS_IS_SURROGATE_PAIR(data[offset - 1], data[offset])) {
+  if (offset && mozilla::IsSurrogatePair(data[offset - 1], data[offset])) {
     ++length;
     --offset;
   }
@@ -74,7 +74,7 @@ DeleteTextTransaction::MaybeCreateForNextCharacter(EditorBase& aEditorBase,
 
   uint32_t length = 1;
   if (aOffset + 1 < data.Length() &&
-      NS_IS_SURROGATE_PAIR(data[aOffset], data[aOffset + 1])) {
+      mozilla::IsSurrogatePair(data[aOffset], data[aOffset + 1])) {
     ++length;
   }
   return DeleteTextTransaction::MaybeCreate(aEditorBase, aTextNode, aOffset,
@@ -146,10 +146,10 @@ NS_IMETHODIMP DeleteTextTransaction::DoTransaction() {
   }
 
   const OwningNonNull<EditorBase> editorBase = *mEditorBase;
-  editorBase->DoDeleteText(*textNode, mOffset, mLengthToDelete, error);
-  if (MOZ_UNLIKELY(error.Failed())) {
+  nsresult rv = editorBase->DoDeleteText(*textNode, mOffset, mLengthToDelete);
+  if (NS_FAILED(rv)) [[unlikely]] {
     NS_WARNING("EditorBase::DoDeleteText() failed");
-    return error.StealNSResult();
+    return rv;
   }
 
   editorBase->RangeUpdaterRef().SelAdjDeleteText(*textNode, mOffset,
@@ -195,10 +195,9 @@ NS_IMETHODIMP DeleteTextTransaction::UndoTransaction() {
     return NS_ERROR_NOT_AVAILABLE;
   }
   const OwningNonNull<EditorBase> editorBase = *mEditorBase;
-  IgnoredErrorResult error;
-  editorBase->DoInsertText(*textNode, mOffset, mDeletedText, error);
-  NS_WARNING_ASSERTION(!error.Failed(), "EditorBase::DoInsertText() failed");
-  return error.StealNSResult();
+  nsresult rv = editorBase->DoInsertText(*textNode, mOffset, mDeletedText);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "EditorBase::DoInsertText() failed");
+  return rv;
 }
 
 NS_IMETHODIMP DeleteTextTransaction::RedoTransaction() {

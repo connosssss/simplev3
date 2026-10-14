@@ -4,9 +4,7 @@
 
 package mozilla.components.browser.state.helper
 
-import androidx.compose.ui.test.junit4.createComposeRule
-import kotlinx.coroutines.runBlocking
-import mozilla.components.browser.state.action.BrowserAction
+import androidx.compose.ui.test.junit4.v2.createComposeRule
 import mozilla.components.browser.state.action.CustomTabListAction
 import mozilla.components.browser.state.action.TabListAction
 import mozilla.components.browser.state.state.BrowserState
@@ -18,13 +16,9 @@ import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 
-/**
- * On-device tests for [Target].
- */
-
+/** On-device tests for [Target]. */
 class OnDeviceTargetTest {
-    @get:Rule
-    val rule = createComposeRule()
+    @get:Rule val rule = createComposeRule()
 
     @Test
     fun observingSelectedTab() {
@@ -34,48 +28,41 @@ class OnDeviceTargetTest {
         var observedTabId: String? = null
 
         rule.setContent {
-            val state = target.observeAsComposableStateFrom(
-                store = store,
-                observe = { tab -> tab?.id },
-            )
+            val state =
+                target.observeAsComposableStateFrom(
+                    store = store,
+                    observe = { tab -> tab?.id },
+                )
             observedTabId = state.value?.id
         }
 
         assertNull(observedTabId)
 
-        store.dispatchBlockingOnIdle(
-            TabListAction.AddTabAction(createTab("https://www.mozilla.org", id = "mozilla")),
-        )
+        store.dispatch(TabListAction.AddTabAction(createTab("https://www.mozilla.org", id = "mozilla")))
 
         rule.runOnIdle {
             assertEquals("mozilla", observedTabId)
         }
 
-        store.dispatchBlockingOnIdle(
-            TabListAction.AddTabAction(createTab("https://example.org", id = "example")),
-        )
+        store.dispatch(TabListAction.AddTabAction(createTab("https://example.org", id = "example")))
 
         rule.runOnIdle {
             assertEquals("mozilla", observedTabId)
         }
 
-        store.dispatchBlockingOnIdle(
-            TabListAction.SelectTabAction("example"),
-        )
+        store.dispatch(TabListAction.SelectTabAction("example"))
 
         rule.runOnIdle {
             assertEquals("example", observedTabId)
         }
 
-        store.dispatchBlockingOnIdle(
-            TabListAction.RemoveTabAction("example"),
-        )
+        store.dispatch(TabListAction.RemoveTabAction("example"))
 
         rule.runOnIdle {
             assertEquals("mozilla", observedTabId)
         }
 
-        store.dispatchBlockingOnIdle(TabListAction.RemoveAllTabsAction())
+        store.dispatch(TabListAction.RemoveAllTabsAction())
 
         rule.runOnIdle {
             assertNull(observedTabId)
@@ -84,36 +71,40 @@ class OnDeviceTargetTest {
 
     @Test
     fun observingPinnedTab() {
-        val store = BrowserStore(
-            initialState = BrowserState(
-                tabs = listOf(
-                    createTab("https://www.mozilla.org", id = "mozilla"),
-                    createTab("https://www.example.org", id = "example"),
-                ),
-                selectedTabId = "mozilla",
-            ),
-        )
+        val store =
+            BrowserStore(
+                initialState =
+                    BrowserState(
+                        tabs =
+                            listOf(
+                                createTab("https://www.mozilla.org", id = "mozilla"),
+                                createTab("https://www.example.org", id = "example"),
+                            ),
+                        selectedTabId = "mozilla",
+                    )
+            )
 
         val target = Target.Tab("mozilla")
         var observedTabId: String? = null
 
         rule.setContent {
-            val state = target.observeAsComposableStateFrom(
-                store = store,
-                observe = { tab -> tab?.id },
-            )
+            val state =
+                target.observeAsComposableStateFrom(
+                    store = store,
+                    observe = { tab -> tab?.id },
+                )
             observedTabId = state.value?.id
         }
 
         assertEquals("mozilla", observedTabId)
 
-        store.dispatchBlockingOnIdle(TabListAction.SelectTabAction("example"))
+        store.dispatch(TabListAction.SelectTabAction("example"))
 
         rule.runOnIdle {
             assertEquals("mozilla", observedTabId)
         }
 
-        store.dispatchBlockingOnIdle(TabListAction.RemoveTabAction("mozilla"))
+        store.dispatch(TabListAction.RemoveTabAction("mozilla"))
 
         rule.runOnIdle {
             assertNull(observedTabId)
@@ -122,56 +113,51 @@ class OnDeviceTargetTest {
 
     @Test
     fun observingCustomTab() {
-        val store = BrowserStore(
-            initialState = BrowserState(
-                tabs = listOf(
-                    createTab("https://www.mozilla.org", id = "mozilla"),
-                    createTab("https://www.example.org", id = "example"),
-                ),
-                customTabs = listOf(
-                    createCustomTab("https://www.reddit.com/r/firefox/", id = "reddit"),
-                ),
-                selectedTabId = "mozilla",
-            ),
-        )
+        val store =
+            BrowserStore(
+                initialState =
+                    BrowserState(
+                        tabs =
+                            listOf(
+                                createTab("https://www.mozilla.org", id = "mozilla"),
+                                createTab("https://www.example.org", id = "example"),
+                            ),
+                        customTabs = listOf(createCustomTab("https://www.reddit.com/r/firefox/", id = "reddit")),
+                        selectedTabId = "mozilla",
+                    )
+            )
 
         val target = Target.CustomTab("reddit")
 
         var observedTabId: String? = null
 
         rule.setContent {
-            val state = target.observeAsComposableStateFrom(
-                store = store,
-                observe = { tab -> tab?.id },
-            )
+            val state =
+                target.observeAsComposableStateFrom(
+                    store = store,
+                    observe = { tab -> tab?.id },
+                )
             observedTabId = state.value?.id
         }
 
         assertEquals("reddit", observedTabId)
 
-        store.dispatchBlockingOnIdle(TabListAction.SelectTabAction("example"))
+        store.dispatch(TabListAction.SelectTabAction("example"))
 
         rule.runOnIdle {
             assertEquals("reddit", observedTabId)
         }
 
-        store.dispatchBlockingOnIdle(TabListAction.RemoveTabAction("mozilla"))
+        store.dispatch(TabListAction.RemoveTabAction("mozilla"))
 
         rule.runOnIdle {
             assertEquals("reddit", observedTabId)
         }
 
-        store.dispatchBlockingOnIdle(CustomTabListAction.RemoveCustomTabAction("reddit"))
+        store.dispatch(CustomTabListAction.RemoveCustomTabAction("reddit"))
 
         rule.runOnIdle {
             assertNull(observedTabId)
-        }
-    }
-
-    private fun BrowserStore.dispatchBlockingOnIdle(action: BrowserAction) {
-        rule.runOnIdle {
-            val job = dispatch(action)
-            runBlocking { job.join() }
         }
     }
 }

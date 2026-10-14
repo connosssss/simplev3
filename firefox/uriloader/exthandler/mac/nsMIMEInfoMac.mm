@@ -1,11 +1,13 @@
-/* -*- Mode: C++; tab-width: 3; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #import <ApplicationServices/ApplicationServices.h>
+#import <Cocoa/Cocoa.h>
 
+#include "AppleUtils.h"
+#include "nsCocoaUtils.h"
 #include "nsComponentManagerUtils.h"
 #include "nsObjCExceptions.h"
 #include "nsMIMEInfoMac.h"
@@ -52,10 +54,9 @@ nsMIMEInfoMac::LaunchWithFile(nsIFile* aFile) {
     rv = localHandlerApp->GetExecutable(getter_AddRefs(application));
     NS_ENSURE_SUCCESS(rv, rv);
 
-  } else if (mPreferredAction == useSystemDefault) {
-    application = GetDefaultApplication();
-  } else
+  } else if (mPreferredAction != useSystemDefault) {
     return NS_ERROR_INVALID_ARG;
+  }
 
   // if we've already got an app, just QI so we have the launchWithDoc method
   nsCOMPtr<nsILocalFileMac> app;
@@ -63,20 +64,20 @@ nsMIMEInfoMac::LaunchWithFile(nsIFile* aFile) {
     app = do_QueryInterface(application, &rv);
     if (NS_FAILED(rv)) return rv;
   } else {
-    // otherwise ask LaunchServices for an app directly
+    nsAutoreleasePool localPool;
+
+    // Resolve the actual file's default application, as Finder would.
     nsCOMPtr<nsILocalFileMac> tempFile = do_QueryInterface(aFile, &rv);
-    if (NS_FAILED(rv)) return rv;
+    NS_ENSURE_SUCCESS(rv, rv);
 
-    FSRef tempFileRef;
-    tempFile->GetFSRef(&tempFileRef);
-
-    FSRef appFSRef;
-    if (::LSGetApplicationForItem(&tempFileRef, kLSRolesAll, &appFSRef,
-                                  nullptr) == noErr) {
-      MOZ_TRY(NS_NewLocalFileWithFSRef(&appFSRef, getter_AddRefs(app)));
-    } else {
+    mozilla::AutoCFTypeRef<CFURLRef> fileURL;
+    MOZ_TRY(tempFile->GetCFURL(fileURL.Receive()));
+    NSURL* appURL = [[NSWorkspace sharedWorkspace]
+        URLForApplicationToOpenURL:(NSURL*)fileURL.Ref()];
+    if (!appURL) {
       return NS_ERROR_FAILURE;
     }
+    MOZ_TRY(NS_NewLocalFileWithCFURL((CFURLRef)appURL, getter_AddRefs(app)));
   }
   return app->LaunchWithDoc(aFile, false);
 
@@ -93,11 +94,11 @@ nsresult nsMIMEInfoMac::LoadUriInternal(nsIURI* aURI) {
   nsAutoCString uri;
   aURI->GetSpec(uri);
   if (!uri.IsEmpty()) {
-    CFURLRef myURLRef =
-        ::CFURLCreateWithBytes(kCFAllocatorDefault, (const UInt8*)uri.get(),
-                               strlen(uri.get()), kCFStringEncodingUTF8, NULL);
+    CFURLRef myURLRef = ::CFURLCreateWithBytes(
+        kCFAllocatorDefault, (const UInt8*)uri.get(), strlen(uri.get()),
+        kCFStringEncodingUTF8, nullptr);
     if (myURLRef) {
-      OSStatus status = ::LSOpenCFURLRef(myURLRef, NULL);
+      OSStatus status = ::LSOpenCFURLRef(myURLRef, nullptr);
       if (status == noErr) rv = NS_OK;
       ::CFRelease(myURLRef);
     }

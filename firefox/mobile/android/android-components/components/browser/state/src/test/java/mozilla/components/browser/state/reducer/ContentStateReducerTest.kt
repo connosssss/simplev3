@@ -4,11 +4,13 @@
 
 package mozilla.components.browser.state.reducer
 
+import kotlin.test.assertIs
 import kotlinx.coroutines.test.runTest
 import mozilla.components.browser.state.action.ContentAction
 import mozilla.components.browser.state.selector.findTabOrCustomTabOrSelectedTab
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.state.ContentState
+import mozilla.components.browser.state.state.SecurityInfo.Unknown
 import mozilla.components.browser.state.state.TabSessionState
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.support.test.mock
@@ -19,10 +21,16 @@ import org.junit.Test
 
 class ContentStateReducerTest {
     @Test
+    fun `GIVEN a new ContentState THEN it's security status is unknown`() {
+        val defaultContentState = ContentState("emptyStateUrl")
+
+        assertIs<Unknown>(defaultContentState.securityInfo)
+    }
+
+    @Test
     fun `updateContentState will return a new BrowserState with updated ContentState`() {
         val initialContentState = ContentState("emptyStateUrl")
-        val browserState =
-            BrowserState(tabs = listOf(TabSessionState("tabId", initialContentState)))
+        val browserState = BrowserState(tabs = listOf(TabSessionState("tabId", initialContentState)))
 
         val result = updateContentState(browserState, "tabId") { it.copy(url = "updatedUrl") }
 
@@ -33,18 +41,18 @@ class ContentStateReducerTest {
     @Test
     fun `WHEN entering pdf viewer THEN mark the current tab as showing a pdf`() = runTest {
         val currentTabId = "test"
-        val currentTab = TabSessionState(
-            id = currentTabId,
-            content = ContentState(
-                url = "https://mozilla.org",
-                isPdf = false,
-            ),
-        )
-        val browserStore = BrowserStore(
-            initialState = BrowserState(tabs = listOf(mock(), currentTab)),
-        )
+        val currentTab =
+            TabSessionState(
+                id = currentTabId,
+                content =
+                    ContentState(
+                        url = "https://mozilla.org",
+                        isPdf = false,
+                    ),
+            )
+        val browserStore = BrowserStore(initialState = BrowserState(tabs = listOf(mock(), currentTab)))
 
-        browserStore.dispatch(ContentAction.EnteredPdfViewer(currentTabId)).join()
+        browserStore.dispatch(ContentAction.EnteredPdfViewer(currentTabId))
 
         assertTrue(browserStore.state.findTabOrCustomTabOrSelectedTab(currentTabId)!!.content.isPdf)
     }
@@ -52,18 +60,18 @@ class ContentStateReducerTest {
     @Test
     fun `WHEN exiting pdf viewer THEN mark the current tab as not showing a pdf`() = runTest {
         val currentTabId = "test"
-        val currentTab = TabSessionState(
-            id = currentTabId,
-            content = ContentState(
-                url = "https://mozilla.org",
-                isPdf = true,
-            ),
-        )
-        val browserStore = BrowserStore(
-            initialState = BrowserState(tabs = listOf(mock(), currentTab)),
-        )
+        val currentTab =
+            TabSessionState(
+                id = currentTabId,
+                content =
+                    ContentState(
+                        url = "https://mozilla.org",
+                        isPdf = true,
+                    ),
+            )
+        val browserStore = BrowserStore(initialState = BrowserState(tabs = listOf(mock(), currentTab)))
 
-        browserStore.dispatch(ContentAction.ExitedPdfViewer(currentTabId)).join()
+        browserStore.dispatch(ContentAction.ExitedPdfViewer(currentTabId))
 
         assertFalse(browserStore.state.findTabOrCustomTabOrSelectedTab(currentTabId)!!.content.isPdf)
     }

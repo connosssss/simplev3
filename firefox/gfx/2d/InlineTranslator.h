@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -41,6 +39,28 @@ class InlineTranslator : public Translator {
   void SetReferenceDrawTargetTransform(const Matrix& aTransform) {
     mBaseDTTransform = aTransform;
   }
+  void SetBaseDrawTarget(DrawTarget* aDT) { mBaseDT = aDT; }
+
+  /**
+   * The objects known to the translator, which allow replaying the same
+   * recording multiple times, if the recording refers to objects created by
+   * previous recordings.
+   */
+  class State {
+    friend class InlineTranslator;
+
+    DrawTarget* mCurrentDT = nullptr;
+    nsRefPtrHashtable<nsPtrHashKey<void>, DrawTarget> mDrawTargets;
+    nsRefPtrHashtable<nsPtrHashKey<void>, Path> mPaths;
+    nsRefPtrHashtable<nsPtrHashKey<void>, SourceSurface> mSourceSurfaces;
+    nsRefPtrHashtable<nsPtrHashKey<void>, FilterNode> mFilterNodes;
+    nsRefPtrHashtable<nsPtrHashKey<void>, GradientStops> mGradientStops;
+    nsRefPtrHashtable<nsPtrHashKey<void>, ScaledFont> mScaledFonts;
+    nsRefPtrHashtable<nsPtrHashKey<void>, UnscaledFont> mUnscaledFonts;
+    nsRefPtrHashtable<nsUint64HashKey, NativeFontResource> mNativeFontResources;
+  };
+  void SaveState(State& aState) const;
+  void RestoreState(const State& aState);
 
   DrawTarget* LookupDrawTarget(ReferencePtr aRefPtr) final {
     DrawTarget* result = mDrawTargets.GetWeak(aRefPtr);
@@ -92,7 +112,11 @@ class InlineTranslator : public Translator {
   already_AddRefed<SourceSurface> LookupExternalSurface(uint64_t aKey) override;
 
   void AddDrawTarget(ReferencePtr aRefPtr, DrawTarget* aDT) final {
-    mDrawTargets.InsertOrUpdate(aRefPtr, RefPtr{aDT});
+    RefPtr<DrawTarget>& value = mDrawTargets.LookupOrInsert(aRefPtr);
+    if (mCurrentDT && mCurrentDT == value) {
+      mCurrentDT = nullptr;
+    }
+    value = aDT;
   }
 
   void AddPath(ReferencePtr aRefPtr, Path* aPath) final {

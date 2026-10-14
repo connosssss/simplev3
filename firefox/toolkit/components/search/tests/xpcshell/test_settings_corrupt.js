@@ -16,20 +16,17 @@ add_task(async function test_settings_invalid_json() {
   );
 
   Assert.equal(
-    Services.prefs.getIntPref(
-      SearchUtils.BROWSER_SEARCH_PREF + "lastSettingsCorruptTime",
-      false
-    ),
+    Services.prefs.getIntPref("browser.search.lastSettingsCorruptTime", false),
     0,
     "lastSettingsCorruptTime is initially 0."
   );
   let notificationBoxStub = sinon.stub(
-    Services.search.wrappedJSObject,
+    SearchService,
     "_showSearchSettingsResetNotificationBox"
   );
 
   info("init search service");
-  const initResult = await Services.search.init();
+  const initResult = await SearchService.init();
 
   info("init'd search service");
   Assert.ok(
@@ -38,7 +35,7 @@ add_task(async function test_settings_invalid_json() {
   );
 
   let lastSettingsCorruptTime = Services.prefs.getIntPref(
-    SearchUtils.BROWSER_SEARCH_PREF + "lastSettingsCorruptTime",
+    "browser.search.lastSettingsCorruptTime",
     false
   );
 
@@ -49,7 +46,7 @@ add_task(async function test_settings_invalid_json() {
     "lastSettingsCorruptTime is set to the current time."
   );
 
-  let defaultEngineName = Services.search.defaultEngine.name;
+  let defaultEngineName = SearchService.defaultEngine.name;
   sinon.assert.calledWith(notificationBoxStub, defaultEngineName);
   notificationBoxStub.restore();
 
@@ -61,12 +58,9 @@ add_task(async function test_settings_invalid_json() {
 });
 
 add_task(async function test_settings_migration_fail() {
-  Services.search.wrappedJSObject.reset();
+  SearchService.reset();
 
-  Services.prefs.setIntPref(
-    SearchUtils.BROWSER_SEARCH_PREF + "lastSettingsCorruptTime",
-    0
-  );
+  Services.prefs.setIntPref("browser.search.lastSettingsCorruptTime", 0);
 
   let settingsTemplate = await readJSONFile(
     do_get_file("settings/v7-loadPath-migration.json")
@@ -77,12 +71,12 @@ add_task(async function test_settings_migration_fail() {
   await promiseSaveSettingsData(settingsTemplate);
 
   let notificationBoxStub = sinon.stub(
-    Services.search.wrappedJSObject,
+    SearchService,
     "_showSearchSettingsResetNotificationBox"
   );
 
   info("init search service");
-  const initResult = await Services.search.init();
+  const initResult = await SearchService.init();
 
   info("init'd search service");
   Assert.ok(
@@ -91,7 +85,7 @@ add_task(async function test_settings_migration_fail() {
   );
 
   let lastSettingsCorruptTime = Services.prefs.getIntPref(
-    SearchUtils.BROWSER_SEARCH_PREF + "lastSettingsCorruptTime",
+    "browser.search.lastSettingsCorruptTime",
     false
   );
 
@@ -102,7 +96,7 @@ add_task(async function test_settings_migration_fail() {
     "lastSettingsCorruptTime is set to the current time."
   );
 
-  let defaultEngineName = Services.search.defaultEngine.name;
+  let defaultEngineName = SearchService.defaultEngine.name;
   sinon.assert.calledWith(notificationBoxStub, defaultEngineName);
   notificationBoxStub.restore();
 });

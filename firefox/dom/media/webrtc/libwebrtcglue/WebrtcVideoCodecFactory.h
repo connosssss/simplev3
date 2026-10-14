@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-*/
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,12 +5,19 @@
 #ifndef DOM_MEDIA_WEBRTC_LIBWEBRTCGLUE_WEBRTCVIDEOCODECFACTORY_H_
 #define DOM_MEDIA_WEBRTC_LIBWEBRTCGLUE_WEBRTCVIDEOCODECFACTORY_H_
 
-#include "api/video_codecs/video_decoder_factory.h"
-#include "api/video_codecs/video_encoder_factory.h"
+#include "MediaCodecsSupport.h"
 #include "MediaEventSource.h"
 #include "PerformanceRecorder.h"
+#include "PlatformDecoderModule.h"
+#include "PlatformEncoderModule.h"
+#include "api/video_codecs/video_codec.h"
+#include "api/video_codecs/video_decoder_factory.h"
+#include "api/video_codecs/video_encoder_factory.h"
 
 namespace mozilla {
+class EncoderConfig;
+class MediaExtendedMIMEType;
+struct SupportDecoderParams;
 class GmpPluginNotifierInterface {
   virtual void DisconnectAll() = 0;
   virtual MediaEventSource<uint64_t>& CreatedGmpPluginEvent() = 0;
@@ -22,6 +28,7 @@ class GmpPluginNotifier : public GmpPluginNotifierInterface {
  public:
   explicit GmpPluginNotifier(nsCOMPtr<nsISerialEventTarget> aOwningThread)
       : mOwningThread(std::move(aOwningThread)),
+        mGmpPluginMutex("GmpPluginNotifier::mGmpPluginMutex"),
         mCreatedGmpPluginEvent(mOwningThread),
         mReleasedGmpPluginEvent(mOwningThread) {}
 
@@ -29,6 +36,7 @@ class GmpPluginNotifier : public GmpPluginNotifierInterface {
 
   void DisconnectAll() override {
     MOZ_ASSERT(mOwningThread->IsOnCurrentThread());
+    MutexAutoLock lock(mGmpPluginMutex);
     mCreatedGmpPluginEvent.DisconnectAll();
     mReleasedGmpPluginEvent.DisconnectAll();
   }
@@ -43,6 +51,7 @@ class GmpPluginNotifier : public GmpPluginNotifierInterface {
 
  protected:
   const nsCOMPtr<nsISerialEventTarget> mOwningThread;
+  Mutex mGmpPluginMutex MOZ_UNANNOTATED;
   MediaEventForwarder<uint64_t> mCreatedGmpPluginEvent;
   MediaEventForwarder<uint64_t> mReleasedGmpPluginEvent;
 };
@@ -64,6 +73,12 @@ class WebrtcVideoDecoderFactory : public GmpPluginNotifier,
   std::unique_ptr<webrtc::VideoDecoder> Create(
       const webrtc::Environment& env,
       const webrtc::SdpVideoFormat& format) override;
+
+  // Query whether the codec is supported for decoding in SW and/or HW. Waits
+  // for the remote process which would decode the codec to report accurate
+  // support. Used by MediaCapabilities. Must be called off the main thread.
+  static RefPtr<PlatformDecoderModule::SupportsDecoderPromise> SupportsCodec(
+      const MediaExtendedMIMEType& aMime, const SupportDecoderParams& aParams);
 
  private:
   const std::string mPCHandle;
@@ -109,6 +124,12 @@ class WebrtcVideoEncoderFactory : public GmpPluginNotifierInterface,
   std::unique_ptr<webrtc::VideoEncoder> Create(
       const webrtc::Environment& env,
       const webrtc::SdpVideoFormat& format) override;
+
+  // Query whether the codec is supported for encoding in SW and/or HW. Waits
+  // for the remote process which would encode the codec to report accurate
+  // support. Used by MediaCapabilities. Must be called off the main thread.
+  static RefPtr<PlatformEncoderModule::SupportsEncoderPromise> SupportsCodec(
+      const EncoderConfig& aConfig);
 
   void DisconnectAll() override { mInternalFactory->DisconnectAll(); }
 

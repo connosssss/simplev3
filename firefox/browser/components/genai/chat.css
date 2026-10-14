@@ -23,19 +23,30 @@ browser {
 
 #header {
   align-items: center;
+  /* stylelint-disable-next-line stylelint-plugin-mozilla/use-design-tokens */
   background-color: var(--sidebar-background-color);
-  border-bottom: 1px solid var(--in-content-border-color);
+  color: var(--sidebar-text-color);
+  border-bottom: 1px solid var(--border-color);
   display: flex;
   flex-direction: row;
   padding-inline: var(--space-large);
+  /* Leave room for the buttons' focus outlines so they aren't clipped by the
+     header edges. */
+  padding-block: var(--space-xsmall);
 
-  ::part(button),
+  ::part(button) {
+    margin: 0;
+  }
+
+  /* The provider switcher is a <select> styled like a button; the moz-buttons
+     keep their default (design-system) radius so the close button matches the
+     close buttons in other sidebar panels (notably with nova enabled). */
   select {
     border-radius: var(--border-radius-small);
     margin: 0;
   }
 
-  moz-button:first-of-type {
+  #header-more {
     margin-inline-end: var(--space-xsmall);
   }
 
@@ -50,6 +61,8 @@ browser {
     flex: 1;
     height: var(--button-size-icon);
     margin-block: var(--space-xsmall);
+    overflow: hidden;
+    text-overflow: ellipsis;
 
     &:hover {
       background-color: var(--button-background-color-ghost-hover);
@@ -60,41 +73,70 @@ browser {
       --caret-anchor: right;
     }
   }
-
-  /* Hide some content, e.g., dropdown, when onboarding exists */
-  #multi-stage-message-root + & {
-    select {
-      background-image: none;
-    }
-
-    #header-more {
-      display: none;
-    }
-  }
 }
 
 #header-close {
   position: relative;
   z-index: 1;
+  /* The close button is ordered early in the DOM (for keyboard focus order) but
+     should stay visually last in the default single-row header. In
+     "hide-launcher" mode the grid layout below positions it explicitly. */
+  order: 1;
 
-  /* stylelint-disable-next-line media-query-no-invalid */
   @media not -moz-pref("sidebar.revamp") {
     display: none;
   }
 }
 
+/* In horizontal-tabs "hide-launcher" mode there is no launcher to switch
+   sidebar panels with, so the chatbot panel gains a panel switcher. It shares a
+   first row with the (single) close button, while the chatbot's own provider
+   switcher and options menu move to a second row. */
+@media -moz-pref("sidebar.visibility", "hide-launcher") {
+  #header {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    grid-template-areas:
+      "switcher switcher close"
+      "provider perm     more";
+    column-gap: var(--space-xsmall);
+    row-gap: var(--space-xsmall);
+  }
+
+  sidebar-panel-switcher {
+    grid-area: switcher;
+  }
+
+  #header-close {
+    grid-area: close;
+  }
+
+  #provider {
+    grid-area: provider;
+  }
+
+  #permissions-indicator {
+    grid-area: perm;
+  }
+
+  #header-more {
+    grid-area: more;
+  }
+}
+
 #multi-stage-message-root {
-  background-color: rgba(0, 0, 0, 0.5);
+  background-color: var(--background-color-overlay);
   display: flex;
   flex-direction: column;
   inset: 0;
   overflow: auto;
   position: absolute;
+  z-index: 2;
 
   .onboardingContainer {
     height: unset;
-    margin: var(--space-large);
-    margin-top: max(36px, 10vh - 31px);
+    margin: auto var(--space-large);
+    min-height: unset;
   }
 
   .screen {
@@ -116,10 +158,13 @@ browser {
     padding-inline: 0;
   }
 
+  .content-tile {
+    width: 100%;
+  }
+
   .tiles-single-select-container {
     margin-top: 0;
 
-    /* stylelint-disable-next-line media-query-no-invalid */
     @media not -moz-pref("browser.ml.chat.onboarding.unresponsive") {
       --fade-height: 20px;
       --fade-padding: 8px;
@@ -137,11 +182,11 @@ browser {
         z-index: 1;
       }
       &::after {
-        background: linear-gradient(transparent, var(--in-content-page-background));
+        background: linear-gradient(transparent, var(--background-color-canvas));
         bottom: 0;
       }
       &::before {
-        background: linear-gradient(var(--in-content-page-background), transparent);
+        background: linear-gradient(var(--background-color-canvas), transparent);
         top: 0;
       }
     }
@@ -167,6 +212,7 @@ browser {
       background-color: var(--button-background-color-hover);
     }
 
+    /* stylelint-disable-next-line stylelint-plugin-mozilla/no-has-selector */
     &:has(.selected) {
       background-color: var(--background-color-canvas);
       border: var(--focus-outline);
@@ -196,7 +242,7 @@ browser {
     &.chatgpt {
       background-image: url(assets/brands/chatgpt.svg);
       -moz-context-properties: fill;
-      fill: var(--in-content-page-color);
+      fill: var(--text-color);
     }
     &.copilot {
       background-image: url(assets/brands/copilot.svg);
@@ -210,52 +256,16 @@ browser {
     &.lechat {
       background-image: url(assets/brands/lechat.svg);
     }
+    &.scout {
+      background-image: url(assets/brands/scout.svg);
+    }
   }
 
   .text {
     flex-direction: column;
-    font-weight: var(--font-weight-bold);
+    font-weight: var(--font-weight-semibold);
     margin: 5px;
     text-align: start;
-
-    > div {
-      color: var(--text-color-deemphasized);
-      font-weight: normal;
-      margin: -3px;
-      overflow-y: hidden;
-      padding: 3px; /* extra space to avoid outlines hidden by overflow */
-
-      @media (prefers-reduced-motion: no-preference) {
-        transition: max-height 0.6s;
-      }
-    }
-
-    ul {
-      margin: 0;
-      padding: 0;
-    }
-
-    li {
-      background-position: 0 50%;
-      background-repeat: no-repeat;
-      -moz-context-properties: fill;
-      fill: currentColor;
-      margin-block: var(--space-small);
-      padding-inline-start: 24px;
-
-      &[data-l10n-id*="generate"] {
-        background-image: url(chrome://global/skin/icons/edit-outline.svg);
-      }
-      &[data-l10n-id*="analyze"] {
-        background-image: url(chrome://global/skin/icons/eye.svg);
-      }
-      &[data-l10n-id*="switch"] {
-        background-image: url(chrome://global/skin/icons/arrows-updown.svg);
-      }
-      &[data-l10n-id*="price"] {
-        background-image: url(chrome://browser/skin/price.svg);
-      }
-    }
   }
 
   .link-paragraph {
@@ -263,61 +273,97 @@ browser {
     font-size: 0.8em;
   }
 
-  .inline-image {
-    background-image: url(assets/shortcuts-static.svg);
-    background-repeat: no-repeat;
-    background-size: contain;
+  + #header,
+  + #browser-container,
+  + #summarize-btn-container {
+    display: none;
+  }
+}
 
-    @media (prefers-reduced-motion: no-preference) {
-      background-image: url(assets/shortcuts-animated.svg);
+#footer {
+  border-top: 1px solid var(--border-color);
+
+  &.promo-active {
+    --promo-background: linear-gradient(
+      180deg,
+      light-dark(color-mix(in srgb, var(--color-violet-10) 20%, transparent), color-mix(in srgb, var(--color-violet-70) 20%, transparent)) 0%,
+      light-dark(color-mix(in srgb, var(--color-orange-10) 20%, transparent), color-mix(in srgb, var(--color-orange-70) 20%, transparent)) 100%
+    );
+    --promo-mask:
+      linear-gradient(to right, transparent 0%, black 45%, black 55%, transparent 100%),
+      linear-gradient(to bottom, transparent 0%, black 45%, black 55%, transparent 100%);
+    overflow: hidden;
+    padding: var(--space-large);
+    position: relative;
+
+    &::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      background: var(--promo-background);
+      mask-image: var(--promo-mask);
+      pointer-events: none;
     }
 
-    @media (prefers-color-scheme: dark) {
-      background-image: url(assets/shortcuts-static-dark.svg);
+    #summarize-btn-container {
+      padding: 0;
+      padding-block-start: var(--space-large);
 
-      @media (prefers-reduced-motion: no-preference) {
-        background-image: url(assets/shortcuts-animated-dark.svg);
+      .badge {
+        inset-inline-start: -5px;
       }
-    }
-
-    > img {
-      visibility: hidden;
     }
   }
 }
 
 #summarize-btn-container {
-  border-top: 1px solid var(--in-content-border-color);
-  padding: var(--space-large);
   position: relative;
+  padding: var(--space-large);
 
   .badge {
     --badge-background-color-new: var(--color-green-40);
 
+    /* stylelint-disable-next-line stylelint-plugin-mozilla/use-design-tokens */
     background: var(--badge-background-color-new);
     border-radius: var(--border-radius-small);
     color: var(--button-text-color-primary-hover);
     font-size: var(--font-size-small);
-    left: 10px;
+    inset-inline-start: 10px;
     padding: var(--space-xxsmall) var(--space-small);
     position: absolute;
     text-align: center;
     top: 4px;
     z-index: 1;
 
-    /* stylelint-disable-next-line media-query-no-invalid */
     @media not -moz-pref("browser.ml.chat.page.footerBadge") {
       display: none;
     }
   }
 
-  /* stylelint-disable-next-line media-query-no-invalid */
   @media (not -moz-pref("browser.ml.chat.page")) or -moz-pref("browser.ml.chat.provider", "") {
     display: none;
   }
+}
 
-  /* Hide footer when onboarding exists */
-  #multi-stage-message-root ~ & {
+/* During chatbot onboarding the overlay normally hides the panel header. In
+   horizontal-tabs "hide-launcher" mode the header holds the only controls for
+   switching or closing the panel (there is no launcher), so keep the switcher
+   and close button visible above the overlay. The provider switcher and options
+   menu stay hidden until a provider is chosen. */
+@media -moz-pref("sidebar.visibility", "hide-launcher") {
+  #multi-stage-message-root + #header {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas: "switcher close";
+    position: relative;
+    z-index: 3;
+    background-color: var(--background-color-overlay);
+  }
+
+  #multi-stage-message-root + #header > #provider,
+  #multi-stage-message-root + #header > #permissions-indicator,
+  #multi-stage-message-root + #header > #header-more {
     display: none;
   }
 }

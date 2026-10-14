@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,9 +6,7 @@
 #define mozilla_dom_ImageDecoder_h
 
 #include "FrameTimeout.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/ErrorResult.h"
-#include "mozilla/NotNull.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/dom/ImageDecoderBinding.h"
 #include "mozilla/dom/WebCodecsUtils.h"
@@ -27,7 +23,7 @@ class MediaResult;
 namespace image {
 class AnonymousDecoder;
 class SourceBuffer;
-enum class DecoderType;
+enum class DecoderType : uint8_t;
 enum class SurfaceFlags : uint8_t;
 struct DecodeFramesResult;
 struct DecodeFrameCountResult;
@@ -42,7 +38,7 @@ class ImageDecoder final : public nsISupports,
                            public nsWrapperCache,
                            public media::ShutdownConsumer {
  public:
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(ImageDecoder)
 
  public:
@@ -54,7 +50,8 @@ class ImageDecoder final : public nsISupports,
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
 
-  static already_AddRefed<ImageDecoder> Constructor(
+  // TODO(bug 1749042): Mark as MOZ_CAN_RUN_SCRIPT when IDL constructors can be.
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY static already_AddRefed<ImageDecoder> Constructor(
       const GlobalObject& aGlobal, const ImageDecoderInit& aInit,
       ErrorResult& aRv);
 
@@ -70,19 +67,21 @@ class ImageDecoder final : public nsISupports,
 
   ImageTrackList* Tracks() const { return mTracks; }
 
-  already_AddRefed<Promise> Decode(const ImageDecodeOptions& aOptions,
-                                   ErrorResult& aRv);
+  MOZ_CAN_RUN_SCRIPT already_AddRefed<Promise> Decode(
+      const ImageDecodeOptions& aOptions, ErrorResult& aRv);
 
   void Reset();
 
-  void Close();
+  MOZ_CAN_RUN_SCRIPT void Close();
 
   void OnShutdown() override;
 
   void OnSourceBufferComplete(const MediaResult& aResult);
 
   void QueueSelectTrackMessage(uint32_t aSelectedIndex);
-  void ProcessControlMessageQueue();
+  MOZ_CAN_RUN_SCRIPT void ProcessControlMessageQueue();
+
+  void ResetWithoutRef(const MediaResult& aResult);
 
  private:
   ~ImageDecoder();
@@ -106,19 +105,23 @@ class ImageDecoder final : public nsISupports,
   // VideoFrame can run on either main thread or worker thread.
   void AssertIsOnOwningThread() const { NS_ASSERT_OWNINGTHREAD(ImageDecoder); }
 
-  void Initialize(const GlobalObject& aGLobal, const ImageDecoderInit& aInit,
-                  ErrorResult& aRv);
-  void Destroy();
-  void Reset(const MediaResult& aResult);
-  void Close(const MediaResult& aResult);
+  MOZ_CAN_RUN_SCRIPT void Initialize(const GlobalObject& aGLobal,
+                                     const ImageDecoderInit& aInit,
+                                     ErrorResult& aRv);
+  MOZ_CAN_RUN_SCRIPT void Close(const MediaResult& aResult);
+  void CloseWithoutRef(const MediaResult& aResult);
+  MOZ_CAN_RUN_SCRIPT void CloseAndCancelWithoutRef(const MediaResult& aResult);
+  already_AddRefed<ImageDecoderReadRequest> CloseCommon(
+      const MediaResult& aResult);
 
   void QueueConfigureMessage(const Maybe<gfx::IntSize>& aOutputSize,
                              ColorSpaceConversion aColorSpaceConversion);
   void QueueDecodeMetadataMessage();
   void QueueDecodeFrameMessage();
 
-  void ResumeControlMessageQueue();
-  MessageProcessedResult ProcessConfigureMessage(ConfigureMessage* aMsg);
+  MOZ_CAN_RUN_SCRIPT void ResumeControlMessageQueue();
+  MOZ_CAN_RUN_SCRIPT MessageProcessedResult
+  ProcessConfigureMessage(ConfigureMessage* aMsg);
   MessageProcessedResult ProcessDecodeMetadataMessage(
       DecodeMetadataMessage* aMsg);
   MessageProcessedResult ProcessDecodeFrameMessage(DecodeFrameMessage* aMsg);
@@ -130,11 +133,11 @@ class ImageDecoder final : public nsISupports,
   void OnCompleteFailed(const MediaResult& aResult);
 
   void OnMetadataSuccess(const image::DecodeMetadataResult& aMetadata);
-  void OnMetadataFailed(const nsresult& aErr);
+  MOZ_CAN_RUN_SCRIPT void OnMetadataFailed(const nsresult& aErr);
 
   void RequestFrameCount(uint32_t aKnownFrameCount);
   void OnFrameCountSuccess(const image::DecodeFrameCountResult& aResult);
-  void OnFrameCountFailed(const nsresult& aErr);
+  MOZ_CAN_RUN_SCRIPT void OnFrameCountFailed(const nsresult& aErr);
 
   void RequestDecodeFrames(uint32_t aFramesToDecode);
   void OnDecodeFramesSuccess(const image::DecodeFramesResult& aResult);

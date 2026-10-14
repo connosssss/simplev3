@@ -1,6 +1,5 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 4; indent-tabs-mode: nil; -*-
- * Any copyright is dedicated to the Public Domain.
-   http://creativecommons.org/publicdomain/zero/1.0/ */
+/* Any copyright is dedicated to the Public Domain.
+http://creativecommons.org/publicdomain/zero/1.0/ */
 
 package org.mozilla.geckoview.test
 
@@ -16,22 +15,14 @@ import org.junit.runner.RunWith
 class GeckoRuntimeTest : BaseSessionTest() {
     @Test
     fun isInteractiveWidgetDefaultResizesVisualFalse() {
-        sessionRule.setPrefsUntilTestEnd(
-            mapOf(
-                "dom.interactive_widget_default_resizes_visual" to false,
-            ),
-        )
+        sessionRule.setPrefsUntilTestEnd(mapOf("dom.interactive_widget_default_resizes_visual" to false))
 
         assertFalse(sessionRule.runtime.isInteractiveWidgetDefaultResizesVisual())
     }
 
     @Test
     fun isInteractiveWidgetDefaultResizesVisualTrue() {
-        sessionRule.setPrefsUntilTestEnd(
-            mapOf(
-                "dom.interactive_widget_default_resizes_visual" to true,
-            ),
-        )
+        sessionRule.setPrefsUntilTestEnd(mapOf("dom.interactive_widget_default_resizes_visual" to true))
 
         assertTrue(sessionRule.runtime.isInteractiveWidgetDefaultResizesVisual())
     }

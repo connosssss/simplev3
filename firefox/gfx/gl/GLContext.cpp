@@ -1,15 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "GLContext.h"
 
-#include <algorithm>
-#include <stdio.h>
-#include <string.h>
 #include <ctype.h>
+#include <string.h>
+
+#include <algorithm>
+#include <memory>
 #include <regex>
 #include <string>
 #include <vector>
@@ -23,34 +22,31 @@
 #endif
 
 #include "GLBlitHelper.h"
+#include "GLContextProvider.h"
+#include "GLLibraryLoader.h"
 #include "GLReadTexImageHelper.h"
 #include "GLScreenBuffer.h"
-
+#include "GLTextureImage.h"
+#include "GfxTexturesReporter.h"
+#include "OGLShaderProgram.h"  // for ShaderProgramType
+#include "ScopedGLHelpers.h"
+#include "SharedSurfaceGL.h"
+#include "gfx2DGlue.h"
 #include "gfxCrashReporterUtils.h"
 #include "gfxEnv.h"
 #include "gfxUtils.h"
-#include "GLContextProvider.h"
-#include "GLLibraryLoader.h"
-#include "GLTextureImage.h"
+#include "mozilla/IntegerPrintfMacros.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/StaticPrefs_gfx.h"
+#include "mozilla/StaticPrefs_gl.h"
+#include "mozilla/gfx/Logging.h"
+#include "mozilla/layers/BuildConstants.h"
+#include "mozilla/layers/TextureForwarder.h"  // for LayersIPCChannel
+#include "nsCharSeparatedTokenizer.h"
 #include "nsPrintfCString.h"
 #include "nsThreadUtils.h"
 #include "prenv.h"
 #include "prlink.h"
-#include "ScopedGLHelpers.h"
-#include "SharedSurfaceGL.h"
-#include "GfxTexturesReporter.h"
-#include "gfx2DGlue.h"
-#include "mozilla/StaticPrefs_gfx.h"
-#include "mozilla/StaticPrefs_gl.h"
-#include "mozilla/IntegerPrintfMacros.h"
-#include "mozilla/gfx/Logging.h"
-#include "mozilla/layers/BuildConstants.h"
-#include "mozilla/layers/TextureForwarder.h"  // for LayersIPCChannel
-
-#include "OGLShaderProgram.h"  // for ShaderProgramType
-
-#include "mozilla/DebugOnly.h"
-#include "mozilla/Maybe.h"
 
 #ifdef XP_MACOSX
 #  include <CoreServices/CoreServices.h>
@@ -99,9 +95,11 @@ static const char* const sExtensionNames[] = {
     "GL_APPLE_vertex_array_object",
     "GL_ARB_ES2_compatibility",
     "GL_ARB_ES3_compatibility",
+    "GL_ARB_clip_control",
     "GL_ARB_color_buffer_float",
     "GL_ARB_compatibility",
     "GL_ARB_copy_buffer",
+    "GL_ARB_copy_image",
     "GL_ARB_depth_clamp",
     "GL_ARB_depth_texture",
     "GL_ARB_draw_buffers",
@@ -116,6 +114,7 @@ static const char* const sExtensionNames[] = {
     "GL_ARB_map_buffer_range",
     "GL_ARB_occlusion_query2",
     "GL_ARB_pixel_buffer_object",
+    "GL_ARB_polygon_offset_clamp",
     "GL_ARB_provoking_vertex",
     "GL_ARB_robust_buffer_access_behavior",
     "GL_ARB_robustness",
@@ -127,6 +126,7 @@ static const char* const sExtensionNames[] = {
     "GL_ARB_texture_compression_bptc",
     "GL_ARB_texture_compression_rgtc",
     "GL_ARB_texture_float",
+    "GL_ARB_texture_mirror_clamp_to_edge",
     "GL_ARB_texture_non_power_of_two",
     "GL_ARB_texture_rectangle",
     "GL_ARB_texture_rg",
@@ -140,6 +140,7 @@ static const char* const sExtensionNames[] = {
     "GL_CHROMIUM_color_buffer_float_rgba",
     "GL_EXT_bgra",
     "GL_EXT_blend_minmax",
+    "GL_EXT_clip_control",
     "GL_EXT_color_buffer_float",
     "GL_EXT_color_buffer_half_float",
     "GL_EXT_copy_texture",
@@ -159,6 +160,7 @@ static const char* const sExtensionNames[] = {
     "GL_EXT_multisampled_render_to_texture",
     "GL_EXT_occlusion_query_boolean",
     "GL_EXT_packed_depth_stencil",
+    "GL_EXT_polygon_offset_clamp",
     "GL_EXT_provoking_vertex",
     "GL_EXT_read_format_bgra",
     "GL_EXT_robustness",
@@ -172,6 +174,7 @@ static const char* const sExtensionNames[] = {
     "GL_EXT_texture_compression_s3tc_srgb",
     "GL_EXT_texture_filter_anisotropic",
     "GL_EXT_texture_format_BGRA8888",
+    "GL_EXT_texture_mirror_clamp_to_edge",
     "GL_EXT_texture_norm16",
     "GL_EXT_texture_sRGB",
     "GL_EXT_texture_storage",
@@ -357,7 +360,7 @@ static bool LoadSymbolsWithDesc(const SymbolLoader& loader,
 
   if (desc) {
     const nsPrintfCString err("Failed to load symbols for %s.", desc);
-    NS_ERROR(err.BeginReading());
+    NS_ERROR(err.get());
   }
   return false;
 }
@@ -527,13 +530,49 @@ bool GLContext::InitImpl() {
 
   if (!fnLoadSymbols(coreSymbols, "GL")) return false;
 
+  const auto* const versionRawStr = (const char*)fGetString(LOCAL_GL_VERSION);
+  if (!versionRawStr || !*versionRawStr) {
+    // This can happen with Pernosco.
+    NS_WARNING("Empty GL version string");
+    return false;
+  }
+
+  const std::string versionStr = versionRawStr;
+  if (versionStr.starts_with("OpenGL ES")) {
+    mProfile = ContextProfile::OpenGLES;
+  }
+
+  uint32_t majorVer, minorVer;
+  if (!ParseVersion(versionStr, &majorVer, &minorVer)) {
+    MOZ_ASSERT(false, "Failed to parse GL_VERSION");
+    return false;
+  }
+  MOZ_ASSERT(majorVer < 10);
+  MOZ_ASSERT(minorVer < 10);
+  mVersion = majorVer * 100 + minorVer * 10;
+  if (mVersion < 200) return false;
+
   {
-    const SymLoadStruct symbols[] = {
+    const SymLoadStruct allSymbols[] = {
         {(PRFuncPtr*)&mSymbols.fGetGraphicsResetStatus,
          {{"glGetGraphicsResetStatus", "glGetGraphicsResetStatusARB",
            "glGetGraphicsResetStatusKHR", "glGetGraphicsResetStatusEXT"}}},
         END_SYMBOLS};
-    (void)fnLoadSymbols(symbols, nullptr);
+    const SymLoadStruct extensionSymbols[] = {
+        {(PRFuncPtr*)&mSymbols.fGetGraphicsResetStatus,
+         {{"glGetGraphicsResetStatusKHR", "glGetGraphicsResetStatusARB",
+           "glGetGraphicsResetStatusEXT"}}},
+        END_SYMBOLS};
+
+    // Some drivers (e.g. ANGLE) will allow loading the core symbol when using a
+    // context version that does not support it, but will subsequently raise an
+    // error when it is called. We therefore avoid attempting to load the core
+    // symbol on unsupported context versions.
+    const bool useExtensionSymbols = (mProfile == ContextProfile::OpenGLES)
+                                         ? (mVersion < 320)
+                                         : (mVersion < 450);
+    (void)fnLoadSymbols(useExtensionSymbols ? extensionSymbols : allSymbols,
+                        nullptr);
 
     // We need to call the fGetError symbol directly here because if there is an
     // unflushed reset status, we don't want to mark the context as lost. That
@@ -553,30 +592,6 @@ bool GLContext::InitImpl() {
       return false;
     }
   }
-
-  ////////////////
-
-  const auto* const versionRawStr = (const char*)fGetString(LOCAL_GL_VERSION);
-  if (!versionRawStr || !*versionRawStr) {
-    // This can happen with Pernosco.
-    NS_WARNING("Empty GL version string");
-    return false;
-  }
-
-  const std::string versionStr = versionRawStr;
-  if (versionStr.find("OpenGL ES") == 0) {
-    mProfile = ContextProfile::OpenGLES;
-  }
-
-  uint32_t majorVer, minorVer;
-  if (!ParseVersion(versionStr, &majorVer, &minorVer)) {
-    MOZ_ASSERT(false, "Failed to parse GL_VERSION");
-    return false;
-  }
-  MOZ_ASSERT(majorVer < 10);
-  MOZ_ASSERT(minorVer < 10);
-  mVersion = majorVer * 100 + minorVer * 10;
-  if (mVersion < 200) return false;
 
   ////
 
@@ -630,9 +645,14 @@ bool GLContext::InitImpl() {
 
   ////////////////
 
-  const char* glVendorString = (const char*)fGetString(LOCAL_GL_VENDOR);
-  const char* glRendererString = (const char*)fGetString(LOCAL_GL_RENDERER);
+  const char* glVendorString =
+      reinterpret_cast<const char*>(fGetString(LOCAL_GL_VENDOR));
+  const char* glRendererString =
+      reinterpret_cast<const char*>(fGetString(LOCAL_GL_RENDERER));
   if (!glVendorString || !glRendererString) return false;
+
+  mVendorString.Assign(glVendorString);
+  mRendererString.Assign(glRendererString);
 
   // The order of these strings must match up with the order of the enum
   // defined in GLContext.h for vendor IDs.
@@ -668,9 +688,9 @@ bool GLContext::InitImpl() {
       "NVIDIA Tegra",
       "Android Emulator",
       "Gallium 0.4 on llvmpipe",
-      "Intel HD Graphics 3000 OpenGL Engine",
       "Microsoft Basic Render Driver",
       "Samsung Xclipse",
+      "AMD Radeon HD GFX10",
       "Unknown"};
 
   mRenderer = GLRenderer::Other;
@@ -682,7 +702,9 @@ bool GLContext::InitImpl() {
   }
 
   {
-    const auto versionStr = (const char*)fGetString(LOCAL_GL_VERSION);
+    const auto versionStr =
+        reinterpret_cast<const char*>(fGetString(LOCAL_GL_VERSION));
+    mVersionString.Assign(versionStr);
     if (strstr(versionStr, "Mesa")) {
       mIsMesa = true;
     }
@@ -749,7 +771,7 @@ bool GLContext::InitImpl() {
 
     if (Renderer() == GLRenderer::AndroidEmulator) {
       // Bug 1665300
-      mSymbols.fGetGraphicsResetStatus = 0;
+      mSymbols.fGetGraphicsResetStatus = nullptr;
     }
 
     if (Vendor() == GLVendor::Vivante) {
@@ -943,6 +965,17 @@ bool GLContext::InitImpl() {
 
   mMaxTexOrRbSize = std::min(mMaxTextureSize, mMaxRenderbufferSize);
 
+#ifdef MOZ_WIDGET_ANDROID
+  if (Renderer() == GLRenderer::SamsungXclipse && jni::GetAPIVersion() >= 35) {
+    // On Samsung Xclipse GPUs on Android 15 attribute values for the final
+    // vertex in a buffer may be incorrect. Padding the buffer to contain
+    // enough space for an additional vertex avoids the issue. See bug 1983036.
+    GLint maxVertexAttribStride;
+    raw_fGetIntegerv(LOCAL_GL_MAX_VERTEX_ATTRIB_STRIDE, &maxVertexAttribStride);
+    mVertexBufferExtraPadding = Some(maxVertexAttribStride);
+  }
+#endif
+
   ////////////////////////////////////////////////////////////////////////////
 
   // We're ready for final setup.
@@ -1085,6 +1118,13 @@ void GLContext::LoadMoreSymbols(const SymbolLoader& loader) {
             END_SYMBOLS
         };
         fnLoadFeatureByCore(coreSymbols, extSymbols, GLFeature::texture_storage);
+    }
+
+    if (IsSupported(GLFeature::copy_image)) {
+        const SymLoadStruct symbols[] = {
+            {(PRFuncPtr*)&mSymbols.fCopyImageSubData, {{"glCopyImageSubData"}}},
+            END_SYMBOLS};
+        fnLoadForFeature(symbols, GLFeature::copy_image);
     }
 
     if (IsSupported(GLFeature::sampler_objects)) {
@@ -1438,22 +1478,36 @@ void GLContext::LoadMoreSymbols(const SymbolLoader& loader) {
         fnLoadForFeature(symbols, GLFeature::prim_restart);
     }
 
-    if (IsExtensionSupported(KHR_debug)) {
-        const SymLoadStruct symbols[] = {
-            { (PRFuncPtr*) &mSymbols.fDebugMessageControl,  {{ "glDebugMessageControl",  "glDebugMessageControlKHR", }} },
-            { (PRFuncPtr*) &mSymbols.fDebugMessageInsert,   {{ "glDebugMessageInsert",   "glDebugMessageInsertKHR",  }} },
-            { (PRFuncPtr*) &mSymbols.fDebugMessageCallback, {{ "glDebugMessageCallback", "glDebugMessageCallbackKHR" }} },
-            { (PRFuncPtr*) &mSymbols.fGetDebugMessageLog,   {{ "glGetDebugMessageLog",   "glGetDebugMessageLogKHR",  }} },
-            { (PRFuncPtr*) &mSymbols.fGetPointerv,          {{ "glGetPointerv",          "glGetPointervKHR",         }} },
-            { (PRFuncPtr*) &mSymbols.fPushDebugGroup,       {{ "glPushDebugGroup",       "glPushDebugGroupKHR",      }} },
-            { (PRFuncPtr*) &mSymbols.fPopDebugGroup,        {{ "glPopDebugGroup",        "glPopDebugGroupKHR",       }} },
-            { (PRFuncPtr*) &mSymbols.fObjectLabel,          {{ "glObjectLabel",          "glObjectLabelKHR",         }} },
-            { (PRFuncPtr*) &mSymbols.fGetObjectLabel,       {{ "glGetObjectLabel",       "glGetObjectLabelKHR",      }} },
-            { (PRFuncPtr*) &mSymbols.fObjectPtrLabel,       {{ "glObjectPtrLabel",       "glObjectPtrLabelKHR",      }} },
-            { (PRFuncPtr*) &mSymbols.fGetObjectPtrLabel,    {{ "glGetObjectPtrLabel",    "glGetObjectPtrLabelKHR",   }} },
+    if (IsSupported(GLFeature::debug)) {
+        const SymLoadStruct coreSymbols[] = {
+            { (PRFuncPtr*) &mSymbols.fDebugMessageControl,  {{ "glDebugMessageControl" }} },
+            { (PRFuncPtr*) &mSymbols.fDebugMessageInsert,   {{ "glDebugMessageInsert" }} },
+            { (PRFuncPtr*) &mSymbols.fDebugMessageCallback, {{ "glDebugMessageCallback" }} },
+            { (PRFuncPtr*) &mSymbols.fGetDebugMessageLog,   {{ "glGetDebugMessageLog" }} },
+            { (PRFuncPtr*) &mSymbols.fGetPointerv,          {{ "glGetPointerv" }} },
+            { (PRFuncPtr*) &mSymbols.fPushDebugGroup,       {{ "glPushDebugGroup" }} },
+            { (PRFuncPtr*) &mSymbols.fPopDebugGroup,        {{ "glPopDebugGroup" }} },
+            { (PRFuncPtr*) &mSymbols.fObjectLabel,          {{ "glObjectLabel" }} },
+            { (PRFuncPtr*) &mSymbols.fGetObjectLabel,       {{ "glGetObjectLabel" }} },
+            { (PRFuncPtr*) &mSymbols.fObjectPtrLabel,       {{ "glObjectPtrLabel" }} },
+            { (PRFuncPtr*) &mSymbols.fGetObjectPtrLabel,    {{ "glGetObjectPtrLabel" }} },
             END_SYMBOLS
         };
-        fnLoadForExt(symbols, KHR_debug);
+        const SymLoadStruct extSymbols[] = {
+            { (PRFuncPtr*) &mSymbols.fDebugMessageControl,  {{ "glDebugMessageControlKHR" }} },
+            { (PRFuncPtr*) &mSymbols.fDebugMessageInsert,   {{ "glDebugMessageInsertKHR" }} },
+            { (PRFuncPtr*) &mSymbols.fDebugMessageCallback, {{ "glDebugMessageCallbackKHR" }} },
+            { (PRFuncPtr*) &mSymbols.fGetDebugMessageLog,   {{ "glGetDebugMessageLogKHR" }} },
+            { (PRFuncPtr*) &mSymbols.fGetPointerv,          {{ "glGetPointervKHR" }} },
+            { (PRFuncPtr*) &mSymbols.fPushDebugGroup,       {{ "glPushDebugGroupKHR" }} },
+            { (PRFuncPtr*) &mSymbols.fPopDebugGroup,        {{ "glPopDebugGroupKHR" }} },
+            { (PRFuncPtr*) &mSymbols.fObjectLabel,          {{ "glObjectLabelKHR" }} },
+            { (PRFuncPtr*) &mSymbols.fGetObjectLabel,       {{ "glGetObjectLabelKHR" }} },
+            { (PRFuncPtr*) &mSymbols.fObjectPtrLabel,       {{ "glObjectPtrLabelKHR" }} },
+            { (PRFuncPtr*) &mSymbols.fGetObjectPtrLabel,    {{ "glGetObjectPtrLabelKHR" }} },
+            END_SYMBOLS
+        };
+        fnLoadFeatureByCore(coreSymbols, extSymbols, GLFeature::debug);
     }
 
     if (IsExtensionSupported(NV_fence)) {
@@ -1499,6 +1553,21 @@ void GLContext::LoadMoreSymbols(const SymbolLoader& loader) {
                                       }}},
                                      END_SYMBOLS};
     fnLoadForFeature(symbols, GLFeature::provoking_vertex);
+  }
+
+  if (IsSupported(GLFeature::polygon_offset_clamp)) {
+    const SymLoadStruct symbols[] = {
+        {(PRFuncPtr*)&mSymbols.fPolygonOffsetClamp,
+         {{"glPolygonOffsetClamp", "glPolygonOffsetClampEXT"}}},
+        END_SYMBOLS};
+    fnLoadForFeature(symbols, GLFeature::polygon_offset_clamp);
+  }
+
+  if (IsSupported(GLFeature::clip_control)) {
+    const SymLoadStruct symbols[] = {{(PRFuncPtr*)&mSymbols.fClipControl,
+                                      {{"glClipControl", "glClipControlEXT"}}},
+                                     END_SYMBOLS};
+    fnLoadForFeature(symbols, GLFeature::clip_control);
   }
 
   if (IsExtensionSupported(EXT_semaphore)) {
@@ -1659,14 +1728,12 @@ void GLContext::DebugCallback(GLenum source, GLenum type, GLuint id,
   }
 
   printf_stderr("[KHR_debug: 0x%" PRIxPTR "] ID %u: %s, %s, %s:\n    %s\n",
-                (uintptr_t)this, id, sourceStr.BeginReading(),
-                typeStr.BeginReading(), sevStr.BeginReading(), message);
+                (uintptr_t)this, id, sourceStr.get(), typeStr.get(),
+                sevStr.get(), message);
 }
 
 void GLContext::InitExtensions() {
   MOZ_GL_ASSERT(this, IsCurrent());
-
-  std::vector<nsCString> driverExtensionList;
 
   [&]() {
     if (mSymbols.fGetStringi) {
@@ -1674,22 +1741,27 @@ void GLContext::InitExtensions() {
       if (GetPotentialInteger(LOCAL_GL_NUM_EXTENSIONS, (GLint*)&count)) {
         for (GLuint i = 0; i < count; i++) {
           // This is UTF-8.
-          const char* rawExt = (const char*)fGetStringi(LOCAL_GL_EXTENSIONS, i);
+          const char* rawExt = reinterpret_cast<const char*>(
+              fGetStringi(LOCAL_GL_EXTENSIONS, i));
 
           // We CANNOT use nsDependentCString here, because the spec doesn't
           // guarantee that the pointers returned are different, only that their
           // contents are. On Flame, each of these index string queries returns
           // the same address.
-          driverExtensionList.push_back(nsCString(rawExt));
+          mExtensionStrings.AppendElement(nsCString(rawExt));
         }
         return;
       }
     }
 
-    const char* rawExts = (const char*)fGetString(LOCAL_GL_EXTENSIONS);
+    const char* rawExts =
+        reinterpret_cast<const char*>(fGetString(LOCAL_GL_EXTENSIONS));
     if (rawExts) {
-      nsDependentCString exts(rawExts);
-      SplitByChar(exts, ' ', &driverExtensionList);
+      for (const auto& extension : nsDependentCString(rawExts).Split(' ')) {
+        if (!extension.IsEmpty()) {
+          mExtensionStrings.AppendElement(extension);
+        }
+      }
     }
   }();
   const auto err = fGetError();
@@ -1698,10 +1770,10 @@ void GLContext::InitExtensions() {
   const bool shouldDumpExts = ShouldDumpExts();
   if (shouldDumpExts) {
     printf_stderr("%i GL driver extensions: (*: recognized)\n",
-                  (uint32_t)driverExtensionList.size());
+                  (uint32_t)mExtensionStrings.Length());
   }
 
-  MarkBitfieldByStrings(driverExtensionList, shouldDumpExts, sExtensionNames,
+  MarkBitfieldByStrings(mExtensionStrings, shouldDumpExts, sExtensionNames,
                         &mAvailableExtensions);
 
   if (WorkAroundDriverBugs()) {
@@ -1748,15 +1820,6 @@ void GLContext::InitExtensions() {
     }
 
 #ifdef XP_MACOSX
-    // Bug 1009642: On OSX Mavericks (10.9), the driver for Intel HD
-    // 3000 appears to be buggy WRT updating sub-images of S3TC
-    // textures with glCompressedTexSubImage2D. Works on Intel HD 4000
-    // and Intel HD 5000/Iris that I tested.
-    // Bug 1124996: Appears to be the same on OSX Yosemite (10.10)
-    if (Renderer() == GLRenderer::IntelHD3000) {
-      MarkExtensionUnsupported(EXT_texture_compression_s3tc);
-    }
-
     // OSX supports EXT_texture_sRGB in Legacy contexts, but not in Core
     // contexts. Though EXT_texture_sRGB was included into GL2.1, it *excludes*
     // the interactions with s3tc. Strictly speaking, you must advertize support
@@ -1779,7 +1842,7 @@ void GLContext::InitExtensions() {
 }
 
 void GLContext::PlatformStartup() {
-  RegisterStrongMemoryReporter(new GfxTexturesReporter());
+  RegisterStrongMemoryReporter(MakeAndAddRef<GfxTexturesReporter>());
 }
 
 // Common code for checking for both GL extensions and GLX extensions.
@@ -1847,23 +1910,19 @@ void GLContext::AttachBuffersToFB(GLuint colorTex, GLuint colorRB,
     fFramebufferTexture2D(LOCAL_GL_FRAMEBUFFER, LOCAL_GL_COLOR_ATTACHMENT0,
                           target, colorTex, 0);
   } else if (colorRB) {
-    // On the Android 4.3 emulator, IsRenderbuffer may return false incorrectly.
-    MOZ_GL_ASSERT(this, fIsRenderbuffer(colorRB) ||
-                            Renderer() == GLRenderer::AndroidEmulator);
+    MOZ_GL_ASSERT(this, fIsRenderbuffer(colorRB));
     fFramebufferRenderbuffer(LOCAL_GL_FRAMEBUFFER, LOCAL_GL_COLOR_ATTACHMENT0,
                              LOCAL_GL_RENDERBUFFER, colorRB);
   }
 
   if (depthRB) {
-    MOZ_GL_ASSERT(this, fIsRenderbuffer(depthRB) ||
-                            Renderer() == GLRenderer::AndroidEmulator);
+    MOZ_GL_ASSERT(this, fIsRenderbuffer(depthRB));
     fFramebufferRenderbuffer(LOCAL_GL_FRAMEBUFFER, LOCAL_GL_DEPTH_ATTACHMENT,
                              LOCAL_GL_RENDERBUFFER, depthRB);
   }
 
   if (stencilRB) {
-    MOZ_GL_ASSERT(this, fIsRenderbuffer(stencilRB) ||
-                            Renderer() == GLRenderer::AndroidEmulator);
+    MOZ_GL_ASSERT(this, fIsRenderbuffer(stencilRB));
     fFramebufferRenderbuffer(LOCAL_GL_FRAMEBUFFER, LOCAL_GL_STENCIL_ATTACHMENT,
                              LOCAL_GL_RENDERBUFFER, stencilRB);
   }
@@ -1998,10 +2057,18 @@ void GLContext::AssertNotPassingStackBufferToTheGL(const void* ptr) {
   // approach of only asserting when address and someStackAddress are
   // on the same page.
   bool isStackAddress = pageDistance <= 1;
+
+#  if !(defined(_WIN32) && !defined(_WIN64))
+  // On 32-bit Windows, heap and stack are adjacent in the limited 2GB address
+  // space, causing false positives where legitimate heap allocations appear
+  // within 1 page of the stack. Disable this assertion there.
   MOZ_ASSERT(!isStackAddress,
              "Please don't pass stack arrays to the GL. "
              "Consider using HeapCopyOfStackArray. "
              "See bug 1005658.");
+#  else
+  (void)isStackAddress;
+#  endif
 }
 
 void GLContext::CreatedProgram(GLContext* aOrigin, GLuint aName) {
@@ -2130,7 +2197,7 @@ static void ReportArrayContents(
   for (uint32_t i = 0; i < copy.Length(); ++i) {
     if (lastContext != copy[i].origin) {
       if (lastContext) {
-        printf_stderr("%s\n", line.BeginReading());
+        printf_stderr("%s\n", line.get());
         line.Assign("");
       }
       line.Append(nsPrintfCString("  [%p - %s] ", copy[i].origin,
@@ -2140,7 +2207,7 @@ static void ReportArrayContents(
     line.AppendInt(copy[i].name);
     line.Append(' ');
   }
-  printf_stderr("%s\n", line.BeginReading());
+  printf_stderr("%s\n", line.get());
 }
 
 void GLContext::ReportOutstandingNames() {
@@ -2172,7 +2239,7 @@ bool GLContext::IsValidOwningThread() const {
 
 GLBlitHelper* GLContext::BlitHelper() {
   if (!mBlitHelper) {
-    mBlitHelper.reset(new GLBlitHelper(this));
+    mBlitHelper = std::make_unique<GLBlitHelper>(this);
   }
 
   return mBlitHelper.get();
@@ -2637,7 +2704,7 @@ void GLContext::OnContextLostError() const {
   }
 
   const nsPrintfCString hex("<enum 0x%04x>", err);
-  return hex.BeginReading();
+  return std::string(hex.View());
 }
 
 // --
@@ -2650,7 +2717,7 @@ void GLContext::BeforeGLCall_Debug(const char* const funcName) const {
   }
 
   MOZ_ASSERT(!mDebugErrorScope);
-  mDebugErrorScope.reset(new LocalErrorScope(*this));
+  mDebugErrorScope = std::make_unique<LocalErrorScope>(*this);
 }
 
 void GLContext::AfterGLCall_Debug(const char* const funcName) const {
@@ -2676,11 +2743,11 @@ void GLContext::AfterGLCall_Debug(const char* const funcName) const {
     const auto errStr = GLErrorToString(err);
     const auto text = nsPrintfCString("%s: Generated unexpected %s error",
                                       funcName, errStr.c_str());
-    printf_stderr("[gl:%p] %s.\n", this, text.BeginReading());
+    printf_stderr("[gl:%p] %s.\n", this, text.get());
 
     const bool abortOnError = mDebugFlags & DebugFlagAbortOnError;
     if (abortOnError && err != LOCAL_GL_CONTEXT_LOST) {
-      gfxCriticalErrorOnce() << text.BeginReading();
+      gfxCriticalErrorOnce() << text.get();
       MOZ_CRASH(
           "Aborting... (Run with MOZ_GL_DEBUG_ABORT_ON_ERROR=0 to disable)");
     }
@@ -2694,7 +2761,7 @@ void GLContext::OnImplicitMakeCurrentFailure(const char* const funcName) {
 }
 
 bool GLContext::CreateOffscreenDefaultFb(const gfx::IntSize& size) {
-  mOffscreenDefaultFb = MozFramebuffer::Create(this, size, 0, true);
+  mOffscreenDefaultFb = MozFramebuffer::Create(this, size, 0, true, true);
   return bool(mOffscreenDefaultFb);
 }
 
@@ -2724,7 +2791,7 @@ void MesaMemoryLeakWorkaround() {
 
   if (foundPath) {
     // Deliberately leak to prevent unload
-    Unused << dlopen(foundPath->get(), RTLD_LAZY);
+    (void)dlopen(foundPath->get(), RTLD_LAZY);
   }
 #endif  // XP_LINUX but not ANDROID
 }

@@ -14,12 +14,12 @@
 <div id="content" style="display: none">
 
 <div id="testnode"></div>
-  
+
 </div>
 <pre id="test">
 <script class="testbody" type="text/javascript">
 
-/** Test that property_database.js contains all supported CSS properties **/
+/** Test that property_database.js contains all supported CSS properties */
 
 /*
  * Here we are testing the hand-written property_database.js against
@@ -67,21 +67,6 @@ for (var idx in gShorthandProperties) {
        "'" + prop.name + "' listed with correct DOM property name");
   }
 }
-for (var idx in gShorthandPropertiesLikeLonghand) {
-  var prop = gShorthandPropertiesLikeLonghand[idx];
-  if (prop.pref && !IsCSSPropertyPrefEnabled(prop.pref)) {
-    continue;
-  }
-  var present = prop.name in gCSSProperties;
-  ok(present,
-     "'" + prop.name + "' listed in gCSSProperties");
-  if (present) {
-    ok(gCSSProperties[prop.name].type == CSS_TYPE_SHORTHAND_AND_LONGHAND,
-       "'" + prop.name + "' listed as CSS_TYPE_SHORTHAND_AND_LONGHAND");
-    ok(gCSSProperties[prop.name].domProp == prop.prop,
-       "'" + prop.name + "' listed with correct DOM property name");
-  }
-}
 
 /*
  * Test that all shorthand properties have a subproperty list and all
@@ -96,6 +81,7 @@ for (var prop in gCSSProperties) {
     ok(!("subproperties" in entry),
        "longhand property '" + prop + "' must not have subproperty list");
   } else if (entry.type == CSS_TYPE_TRUE_SHORTHAND ||
+             entry.type == CSS_TYPE_LEGACY_SHORTHAND ||
              entry.type == CSS_TYPE_SHORTHAND_AND_LONGHAND) {
     ok("subproperties" in entry,
        "shorthand property '" + prop + "' must have subproperty list");
@@ -103,7 +89,7 @@ for (var prop in gCSSProperties) {
 
   if ("subproperties" in entry) {
     var good = true;
-    if (entry.subproperties.length < 1) {
+    if (entry.subproperties.length < 1 && prop != "-webkit-line-clamp") {
       info("subproperty list for '" + prop + "' is empty");
       good = false;
     }
@@ -154,6 +140,9 @@ for (var prop in gCSSProperties) {
  */
 for (var prop in gCSSProperties) {
   var entry = gCSSProperties[prop];
+  if (entry.domPropDisabled) {
+    continue;
+  }
   var expectedDOMProp = prop.replace(/-([a-z])/g,
                                      function(m, p1, offset, str) {
                                        return p1.toUpperCase();

@@ -1,4 +1,4 @@
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+// Copyright 2012 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -8,19 +8,24 @@
 #include "sandbox/win/src/interception.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
-#include <memory>
 #include <set>
 #include <string>
 
-#include "base/logging.h"
+#include "base/bits.h"
+#include "base/check_op.h"
+#include "base/compiler_specific.h"
+#include "base/containers/heap_array.h"
+#include "base/notreached.h"
+#include "base/rand_util.h"
 #include "base/scoped_native_library.h"
 #include "base/win/pe_image.h"
-#include "base/win/windows_version.h"
 #include "sandbox/win/src/interception_internal.h"
 #include "sandbox/win/src/interceptors.h"
+#include "sandbox/win/src/internal_types.h"
 #include "sandbox/win/src/sandbox.h"
-#include "sandbox/win/src/sandbox_rand.h"
+#include "sandbox/win/src/sandbox_nt_util.h"
 #include "sandbox/win/src/service_resolver.h"
 #include "sandbox/win/src/target_interceptions.h"
 #include "sandbox/win/src/target_process.h"
@@ -34,6 +39,13 @@ namespace {
 const size_t kAllocGranularity = 65536;
 const size_t kPageSize = 4096;
 
+// Rounds up the size of a given buffer, considering alignment (padding).
+// value is the current size of the buffer, and alignment is specified in
+// bytes.
+inline size_t RoundUpToMultiple(size_t value, size_t alignment) {
+  return ((value + alignment - 1) / alignment) * alignment;
+}
+
 }  // namespace
 
 namespace internal {
@@ -41,12 +53,8 @@ namespace internal {
 // Find a random offset within 64k and aligned to ceil(log2(size)).
 size_t GetGranularAlignedRandomOffset(size_t size) {
   CHECK_LE(size, kAllocGranularity);
-  unsigned int offset;
-
-  do {
-    GetRandom(&offset);
-    offset &= (kAllocGranularity - 1);
-  } while (offset > (kAllocGranularity - size));
+  unsigned int offset = static_cast<unsigned int>(
+      base::RandInt(0, static_cast<int>(kAllocGranularity - size)));
 
   // Find an alignment between 64 and the page size (4096).
   size_t align_size = kPageSize;
@@ -73,14 +81,9 @@ InterceptionManager::InterceptionData::InterceptionData(
 
 InterceptionManager::InterceptionData::~InterceptionData() {}
 
-InterceptionManager::InterceptionManager(TargetProcess* child_process,
-                                         bool relaxed)
-    : child_(child_process), names_used_(false), relaxed_(relaxed) {
-  child_->AddRef();
-}
-InterceptionManager::~InterceptionManager() {
-  child_->Release();
-}
+InterceptionManager::InterceptionManager(TargetProcess& child_process)
+    : child_(child_process), names_used_(false) {}
+InterceptionManager::~InterceptionManager() {}
 
 bool InterceptionManager::AddToPatchedFunctions(
     const wchar_t* dll_name,
@@ -135,26 +138,24 @@ ResultCode InterceptionManager::InitializeInterceptions() {
   if (interceptions_.empty())
     return SBOX_ALL_OK;  // Nothing to do here
 
-  size_t buffer_bytes = GetBufferSize();
-  std::unique_ptr<char[]> local_buffer(new char[buffer_bytes]);
+  auto local_buffer = base::HeapArray<uint8_t>::Uninit(GetBufferSize());
 
-  if (!SetupConfigBuffer(local_buffer.get(), buffer_bytes))
+  if (!SetupConfigBuffer(local_buffer.data(), local_buffer.size())) {
     return SBOX_ERROR_CANNOT_SETUP_INTERCEPTION_CONFIG_BUFFER;
+  }
 
   void* remote_buffer;
-  if (!CopyToChildMemory(child_->Process(), local_buffer.get(), buffer_bytes,
-                         &remote_buffer))
+  if (!CopyToChildMemory(child_->Process(), local_buffer, &remote_buffer)) {
     return SBOX_ERROR_CANNOT_COPY_DATA_TO_CHILD;
+  }
 
-  bool hot_patch_needed = (0 != buffer_bytes);
-  ResultCode rc = PatchNtdll(hot_patch_needed);
+  ResultCode rc = PatchNtdll(/*hot_patch_needed=*/!local_buffer.empty());
 
   if (rc != SBOX_ALL_OK)
     return rc;
 
-  g_interceptions = reinterpret_cast<SharedMemory*>(remote_buffer);
-  rc = child_->TransferVariable("g_interceptions", &g_interceptions,
-                                sizeof(g_interceptions));
+  rc = child_->TransferVariable("g_interceptions", &remote_buffer,
+                                &g_interceptions, sizeof(g_interceptions));
   return rc;
 }
 
@@ -194,6 +195,24 @@ size_t InterceptionManager::GetBufferSize() const {
   return buffer_bytes;
 }
 
+void InterceptionManager::ReserveBaseIfUnpatchable(const std::wstring& dll,
+                                                   size_t num_functions) {
+  // Modules will be mapped in the same position in every process, so we use
+  // where ours are mapped to predict patching issues.
+  HMODULE module = ::GetModuleHandleW(dll.c_str());
+  if (!module) {
+    return;
+  }
+
+  if (CanAllocateNearTo(module, GetDllInterceptionDataSize(num_functions))) {
+    return;
+  }
+
+  // Reserve a byte to make the loader relocate it to where it can be patched.
+  (void)::VirtualAllocEx(child_->Process(), module, 1, MEM_RESERVE,
+                         PAGE_NOACCESS);
+}
+
 // Basically, walk the list of interceptions moving them to the config buffer,
 // but keeping together all interceptions that belong to the same dll.
 // The config buffer is a local buffer, not the one allocated on the child.
@@ -205,7 +224,7 @@ bool InterceptionManager::SetupConfigBuffer(void* buffer, size_t buffer_bytes) {
 
   SharedMemory* shared_memory = reinterpret_cast<SharedMemory*>(buffer);
   DllPatchInfo* dll_info = shared_memory->dll_list;
-  int num_dlls = 0;
+  size_t num_dlls = 0;
 
   shared_memory->interceptor_base =
       names_used_ ? child_->MainModule() : nullptr;
@@ -240,6 +259,12 @@ bool InterceptionManager::SetupConfigBuffer(void* buffer, size_t buffer_bytes) {
         ++rest;
       }
     }
+
+    // A module that is going to be unloaded is never patched.
+    if (!dll_info->unload_module) {
+      ReserveBaseIfUnpatchable(dll, dll_info->num_functions);
+    }
+
     dll_info = reinterpret_cast<DllPatchInfo*>(buffer);
     ++num_dlls;
   }
@@ -267,7 +292,7 @@ bool InterceptionManager::SetupDllInfo(const InterceptionData& data,
     return false;
 
   *buffer_bytes -= required;
-  *buffer = reinterpret_cast<char*>(*buffer) + required;
+  *buffer = UNSAFE_TODO(reinterpret_cast<char*>(*buffer) + required);
 
   // set up the dll info to be what we know about it at this time
   dll_info->unload_module = (data.type == INTERCEPTION_UNLOAD_MODULE);
@@ -275,7 +300,7 @@ bool InterceptionManager::SetupDllInfo(const InterceptionData& data,
   dll_info->offset_to_functions = required;
   dll_info->num_functions = 0;
   data.dll.copy(dll_info->dll_name, data.dll.size());
-  dll_info->dll_name[data.dll.size()] = L'\0';
+  UNSAFE_TODO(dll_info->dll_name[data.dll.size()]) = L'\0';
 
   return true;
 }
@@ -307,7 +332,7 @@ bool InterceptionManager::SetupInterceptionInfo(const InterceptionData& data,
 
   // update the caller's values
   *buffer_bytes -= required;
-  *buffer = reinterpret_cast<char*>(*buffer) + required;
+  *buffer = UNSAFE_TODO(reinterpret_cast<char*>(*buffer) + required);
 
   function->record_bytes = required;
   function->type = data.type;
@@ -316,13 +341,13 @@ bool InterceptionManager::SetupInterceptionInfo(const InterceptionData& data,
   char* names = function->function;
 
   data.function.copy(names, name_bytes);
-  names += name_bytes;
-  *names++ = '\0';
+  UNSAFE_TODO(names += name_bytes);
+  *UNSAFE_TODO(names++) = '\0';
 
   // interceptor follows the function_name
   data.interceptor.copy(names, interceptor_bytes);
-  names += interceptor_bytes;
-  *names++ = '\0';
+  UNSAFE_TODO(names += interceptor_bytes);
+  *UNSAFE_TODO(names++) = '\0';
 
   // update the dll table
   dll_info->num_functions++;
@@ -381,36 +406,30 @@ ResultCode InterceptionManager::PatchNtdll(bool hot_patch_needed) {
   size_t thunk_offset = internal::GetGranularAlignedRandomOffset(thunk_bytes);
 
   // Split the base and offset along page boundaries.
-  thunk_base += thunk_offset & ~(kPageSize - 1);
+  UNSAFE_TODO(thunk_base += thunk_offset & ~(kPageSize - 1));
   thunk_offset &= kPageSize - 1;
 
   // Make an aligned, padded allocation, and move the pointer to our chunk.
-  size_t thunk_bytes_padded = (thunk_bytes + kPageSize - 1) & ~(kPageSize - 1);
+  size_t thunk_bytes_padded = base::bits::AlignUp(thunk_bytes, kPageSize);
   thunk_base = reinterpret_cast<BYTE*>(
       ::VirtualAllocEx(child, thunk_base, thunk_bytes_padded, MEM_COMMIT,
                        PAGE_EXECUTE_READWRITE));
   CHECK(thunk_base);  // If this fails we'd crash anyway on an invalid access.
-  DllInterceptionData* thunks =
-      reinterpret_cast<DllInterceptionData*>(thunk_base + thunk_offset);
-
-  DllInterceptionData dll_data;
-  dll_data.data_bytes = thunk_bytes;
-  dll_data.num_thunks = 0;
-  dll_data.used_bytes = offsetof(DllInterceptionData, thunks);
-
-  // Reset all helpers for a new child.
-  memset(g_originals, 0, sizeof(g_originals));
+  DllInterceptionData* thunks = reinterpret_cast<DllInterceptionData*>(
+      UNSAFE_TODO(thunk_base + thunk_offset));
 
   // this should write all the individual thunks to the child's memory
-  ResultCode rc = PatchClientFunctions(thunks, thunk_bytes, &dll_data);
+  base::expected<PatchClientResultData, ResultCode> patch =
+      PatchClientFunctions(thunks, thunk_bytes);
 
-  if (rc != SBOX_ALL_OK)
-    return rc;
+  if (!patch.has_value()) {
+    return patch.error();
+  }
 
   // and now write the first part of the table to the child's memory
   SIZE_T written;
   bool ok =
-      !!::WriteProcessMemory(child, thunks, &dll_data,
+      !!::WriteProcessMemory(child, thunks, &patch.value().dll_data,
                              offsetof(DllInterceptionData, thunks), &written);
 
   if (!ok || (offsetof(DllInterceptionData, thunks) != written))
@@ -422,20 +441,24 @@ ResultCode InterceptionManager::PatchNtdll(bool hot_patch_needed) {
                      &old_protection);
 
   ResultCode ret =
-      child_->TransferVariable("g_originals", g_originals, sizeof(g_originals));
+      child_->TransferVariable("g_originals", &patch.value().originals,
+                               &g_originals, sizeof(g_originals));
   return ret;
 }
 
-ResultCode InterceptionManager::PatchClientFunctions(
-    DllInterceptionData* thunks,
-    size_t thunk_bytes,
-    DllInterceptionData* dll_data) {
+base::expected<PatchClientResultData, ResultCode>
+InterceptionManager::PatchClientFunctions(DllInterceptionData* thunks,
+                                          size_t thunk_bytes) {
   DCHECK(thunks);
-  DCHECK(dll_data);
 
   HMODULE ntdll_base = ::GetModuleHandle(kNtdllName);
   if (!ntdll_base)
-    return SBOX_ERROR_NO_HANDLE;
+    return base::unexpected(SBOX_ERROR_NO_HANDLE);
+
+  PatchClientResultData patch;
+  patch.dll_data.data_bytes = thunk_bytes;
+  patch.dll_data.num_thunks = 0;
+  patch.dll_data.used_bytes = offsetof(DllInterceptionData, thunks);
 
   char* interceptor_base = nullptr;
 
@@ -444,43 +467,27 @@ ResultCode InterceptionManager::PatchClientFunctions(
   base::ScopedNativeLibrary local_interceptor(::LoadLibrary(child_->Name()));
 #endif  // defined(SANDBOX_EXPORTS)
 
-  std::unique_ptr<ServiceResolverThunk> thunk;
-#if defined(_WIN64)
-  thunk.reset(new ServiceResolverThunk(child_->Process(), relaxed_));
-#else
-  base::win::OSInfo* os_info = base::win::OSInfo::GetInstance();
-  if (os_info->wow64_status() == base::win::OSInfo::WOW64_ENABLED) {
-    if (os_info->version() >= base::win::Version::WIN10)
-      thunk.reset(new Wow64W10ResolverThunk(child_->Process(), relaxed_));
-    else if (os_info->version() >= base::win::Version::WIN8)
-      thunk.reset(new Wow64W8ResolverThunk(child_->Process(), relaxed_));
-    else
-      thunk.reset(new Wow64ResolverThunk(child_->Process(), relaxed_));
-  } else if (os_info->version() >= base::win::Version::WIN8) {
-    thunk.reset(new Win8ResolverThunk(child_->Process(), relaxed_));
-  } else {
-    thunk.reset(new ServiceResolverThunk(child_->Process(), relaxed_));
-  }
-#endif
+  ServiceResolverThunk thunk(child_->Process(), /*relaxed=*/true);
 
-  for (auto interception : interceptions_) {
-    const std::wstring ntdll(kNtdllName);
-    if (interception.dll != ntdll)
-      return SBOX_ERROR_BAD_PARAMS;
+  patch.originals = {};
+  for (auto& interception : interceptions_) {
+    if (interception.dll != kNtdllName) {
+      return base::unexpected(SBOX_ERROR_BAD_PARAMS);
+    }
 
     if (INTERCEPTION_SERVICE_CALL != interception.type)
-      return SBOX_ERROR_BAD_PARAMS;
+      return base::unexpected(SBOX_ERROR_BAD_PARAMS);
 
 #if defined(SANDBOX_EXPORTS)
     // We may be trying to patch by function name.
     if (!interception.interceptor_address) {
       const char* address;
-      NTSTATUS ret = thunk->ResolveInterceptor(
+      NTSTATUS ret = thunk.ResolveInterceptor(
           local_interceptor.get(), interception.interceptor.c_str(),
           reinterpret_cast<const void**>(&address));
       if (!NT_SUCCESS(ret)) {
         ::SetLastError(GetLastErrorFromNtStatus(ret));
-        return SBOX_ERROR_CANNOT_RESOLVE_INTERCEPTION_THUNK;
+        return base::unexpected(SBOX_ERROR_CANNOT_RESOLVE_INTERCEPTION_THUNK);
       }
 
       // Translate the local address to an address on the child.
@@ -489,24 +496,25 @@ ResultCode InterceptionManager::PatchClientFunctions(
           (address - reinterpret_cast<char*>(local_interceptor.get()));
     }
 #endif  // defined(SANDBOX_EXPORTS)
-    NTSTATUS ret = thunk->Setup(
+    NTSTATUS ret = thunk.Setup(
         ntdll_base, interceptor_base, interception.function.c_str(),
         interception.interceptor.c_str(), interception.interceptor_address,
-        &thunks->thunks[dll_data->num_thunks],
-        thunk_bytes - dll_data->used_bytes, nullptr);
+        &UNSAFE_TODO(thunks->thunks[patch.dll_data.num_thunks]),
+        thunk_bytes - patch.dll_data.used_bytes, nullptr);
     if (!NT_SUCCESS(ret)) {
       ::SetLastError(GetLastErrorFromNtStatus(ret));
-      return SBOX_ERROR_CANNOT_SETUP_INTERCEPTION_THUNK;
+      return base::unexpected(SBOX_ERROR_CANNOT_SETUP_INTERCEPTION_THUNK);
     }
 
-    DCHECK(!g_originals[interception.id]);
-    g_originals[interception.id] = &thunks->thunks[dll_data->num_thunks];
+    DCHECK(!UNSAFE_TODO(patch.originals.functions[interception.id]));
+    UNSAFE_TODO(patch.originals.functions[interception.id]) =
+        &UNSAFE_TODO(thunks->thunks[patch.dll_data.num_thunks]);
 
-    dll_data->num_thunks++;
-    dll_data->used_bytes += sizeof(ThunkData);
+    patch.dll_data.num_thunks++;
+    patch.dll_data.used_bytes += sizeof(ThunkData);
   }
 
-  return SBOX_ALL_OK;
+  return patch;
 }
 
 }  // namespace sandbox

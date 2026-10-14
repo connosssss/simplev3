@@ -1,11 +1,13 @@
-// Copyright (c) 2006-2008 The Chromium Authors. All rights reserved.
+// Copyright 2006-2008 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #include "sandbox/win/src/policy_target.h"
 
+#include <ntstatus.h>
 #include <stddef.h>
 
+#include "base/compiler_specific.h"
 #include "sandbox/win/src/crosscall_client.h"
 #include "sandbox/win/src/ipc_tags.h"
 #include "sandbox/win/src/policy_engine_processor.h"
@@ -16,39 +18,41 @@
 #include "sandbox/win/src/sharedmem_ipc_client.h"
 #include "sandbox/win/src/target_services.h"
 
+using namespace std::literals;
+
 namespace sandbox {
-
-// Handle for our private heap.
-extern void* g_heap;
-
-// This is the list of all imported symbols from ntdll.dll.
-SANDBOX_INTERCEPT NtExports g_nt;
 
 // Policy data.
 extern void* volatile g_shared_policy_memory;
 SANDBOX_INTERCEPT size_t g_shared_policy_size;
 
 bool QueryBroker(IpcTag ipc_id, CountedParameterSetBase* params) {
-  DCHECK_NT(static_cast<size_t>(ipc_id) < kMaxServiceCount);
-  DCHECK_NT(g_shared_policy_memory);
-  DCHECK_NT(g_shared_policy_size > 0);
+  DCHECK_NT(ipc_id <= IpcTag::kMaxValue);
 
-  if (static_cast<size_t>(ipc_id) >= kMaxServiceCount)
+  if (ipc_id <= IpcTag::UNUSED || ipc_id > IpcTag::kMaxValue) {
     return false;
+  }
+
+  // Policy is only sent if required.
+  if (!g_shared_policy_memory) {
+    CHECK_NT(g_shared_policy_size);
+    return false;
+  }
 
   PolicyGlobal* global_policy =
       reinterpret_cast<PolicyGlobal*>(g_shared_policy_memory);
 
-  if (!global_policy->entry[static_cast<size_t>(ipc_id)])
+  if (!UNSAFE_TODO(global_policy->entry[static_cast<size_t>(ipc_id)])) {
     return false;
+  }
 
   PolicyBuffer* policy = reinterpret_cast<PolicyBuffer*>(
-      reinterpret_cast<char*>(g_shared_policy_memory) +
-      reinterpret_cast<size_t>(
-          global_policy->entry[static_cast<size_t>(ipc_id)]));
+      UNSAFE_TODO(reinterpret_cast<char*>(g_shared_policy_memory) +
+                  reinterpret_cast<size_t>(
+                      global_policy->entry[static_cast<size_t>(ipc_id)])));
 
   if ((reinterpret_cast<size_t>(
-           global_policy->entry[static_cast<size_t>(ipc_id)]) >
+           UNSAFE_TODO(global_policy->entry[static_cast<size_t>(ipc_id)])) >
        global_policy->data_size) ||
       (g_shared_policy_size < global_policy->data_size)) {
     NOTREACHED_NT();
@@ -56,7 +60,7 @@ bool QueryBroker(IpcTag ipc_id, CountedParameterSetBase* params) {
   }
 
   for (size_t i = 0; i < params->count; i++) {
-    if (!params->parameters[i].IsValid()) {
+    if (!UNSAFE_TODO(params->parameters[i]).IsValid()) {
       NOTREACHED_NT();
       return false;
     }
@@ -73,7 +77,7 @@ bool QueryBroker(IpcTag ipc_id, CountedParameterSetBase* params) {
 // -----------------------------------------------------------------------
 
 // Hooks NtImpersonateAnonymousToken so we can block until call to LowerToken.
-// This means a non-retricted token behaves the same as restricted one before
+// This means a non-restricted token behaves the same as restricted one before
 // LowerToken and prevents us from being left with an anonymous logon token
 // because we are blocking the RevertToSelf that would undo it.
 NTSTATUS WINAPI TargetNtImpersonateAnonymousToken(
@@ -86,12 +90,66 @@ NTSTATUS WINAPI TargetNtImpersonateAnonymousToken(
   return orig_ImpersonateAnonymousToken(thread);
 }
 
+// Split out so that it can use AddressSanitizer.
+NOINLINE bool IsKnownDlls(HANDLE handle) {
+  auto root_path = GetPathFromHandle(handle);
+  if (!root_path) {
+    return false;
+  }
+
+#if defined(_WIN64)
+  constexpr auto kKnownDllsDir = LR"(\KnownDlls)"sv;
+#else
+  constexpr auto kKnownDllsDir = LR"(\KnownDlls32)"sv;
+#endif
+  return root_path->length() == kKnownDllsDir.length() &&
+         _wcsnicmp(root_path->data(), kKnownDllsDir.data(),
+                   kKnownDllsDir.length()) == 0;
+}
+
+// Hooks NtOpenSection when directed by the config, so that we can detect calls
+// to open KnownDlls entries and always return not found. This will cause
+// fall-back to the normal loading path. This means that if a config blocks
+// access to the KnownDlls list, but allows read access to the actual DLLs then
+// they can continue to be loaded.
+// This is called too early to use AddressSanitizer.
+ABSL_ATTRIBUTE_NO_SANITIZE_ADDRESS
+SANDBOX_INTERCEPT NTSTATUS __stdcall TargetNtOpenSection(
+    NtOpenSectionFunction orig_NtOpenSection, PHANDLE section_handle,
+    ACCESS_MASK desired_access, POBJECT_ATTRIBUTES object_attributes) {
+
+  NTSTATUS open_status =
+      orig_NtOpenSection(section_handle, desired_access, object_attributes);
+  // We're only interested in failure that might be caused by the sandbox.
+  if (open_status != STATUS_ACCESS_DENIED) {
+    return open_status;
+  }
+
+  // Calls for KnownDlls use a RootDirectory.
+  if (!object_attributes->RootDirectory) {
+    return open_status;
+  }
+
+  // Make sure IsKnownDlls isn't called too early, so that everything it uses is
+  // loaded. We shouldn't get here before that for KnownDlls. 
+  if (!SandboxFactory::GetTargetServices()->GetState()->InitCalled()) {
+    return open_status;
+  }
+
+  if (!IsKnownDlls(object_attributes->RootDirectory)) {
+    return open_status;
+  }
+
+  // This is for a KnownDll, just return not found to trigger fall-back loading.
+  return STATUS_OBJECT_NAME_NOT_FOUND;
+}
+
 // Hooks NtSetInformationThread to block RevertToSelf from being
 // called before the actual call to LowerToken.
 NTSTATUS WINAPI TargetNtSetInformationThread(
     NtSetInformationThreadFunction orig_SetInformationThread,
     HANDLE thread,
-    NT_THREAD_INFORMATION_CLASS thread_info_class,
+    THREADINFOCLASS thread_info_class,
     PVOID thread_information,
     ULONG thread_information_bytes) {
   do {

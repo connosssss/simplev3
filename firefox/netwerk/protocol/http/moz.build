@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -14,8 +12,10 @@ XPIDL_SOURCES += [
     "nsICORSPreflightCacheEntry.idl",
     "nsIEarlyHintObserver.idl",
     "nsIHttpActivityObserver.idl",
+    "nsIHttpAuthCache.idl",
     "nsIHttpAuthenticableChannel.idl",
     "nsIHttpAuthenticator.idl",
+    "nsIHttpAuthEntry.idl",
     "nsIHttpAuthManager.idl",
     "nsIHttpChannel.idl",
     "nsIHttpChannelAuthProvider.idl",
@@ -26,7 +26,6 @@ XPIDL_SOURCES += [
     "nsINetworkErrorLogging.idl",
     "nsIObliviousHttp.idl",
     "nsIObliviousHttpChannel.idl",
-    "nsIRaceCacheWithNetwork.idl",
     "nsIReplacedHttpResponse.idl",
     "nsITlsHandshakeListener.idl",
     "nsIWellKnownOpportunisticUtils.idl",
@@ -37,7 +36,7 @@ XPIDL_MODULE = "necko_http"
 EXPORTS += [
     "nsCORSListenerProxy.h",
     "nsHttp.h",
-    "nsHttpAtomList.h",
+    "nsHttpAtomList.inc",
     "nsHttpHeaderArray.h",
     "nsHttpRequestHead.h",
     "nsHttpResponseHead.h",
@@ -53,6 +52,9 @@ EXPORTS.mozilla.net += [
     "BackgroundChannelRegistrar.h",
     "BackgroundDataBridgeChild.h",
     "BackgroundDataBridgeParent.h",
+    "CacheControlParser.h",
+    "CacheEntryWriteHandleChild.h",
+    "CacheEntryWriteHandleParent.h",
     "ClassOfService.h",
     "EarlyHintPreloader.h",
     "EarlyHintRegistrar.h",
@@ -67,6 +69,7 @@ EXPORTS.mozilla.net += [
     "HttpConnectionMgrParent.h",
     "HttpConnectionMgrShell.h",
     "HttpInfo.h",
+    "HttpTrafficAnalyzer.h",
     "HttpTransactionChild.h",
     "HttpTransactionParent.h",
     "HttpTransactionShell.h",
@@ -104,14 +107,19 @@ UNIFIED_SOURCES += [
     "CapsuleDecoder.cpp",
     "CapsuleEncoder.cpp",
     "CapsuleParser.cpp",
+    "ConnectionAttempt.cpp",
+    "ConnectionAttemptPool.cpp",
     "ConnectionDiagnostics.cpp",
     "ConnectionEntry.cpp",
+    "ConnectionEstablisher.cpp",
     "ConnectionHandle.cpp",
     "DnsAndConnectSocket.cpp",
     "EarlyHintPreconnect.cpp",
     "EarlyHintPreloader.cpp",
     "EarlyHintRegistrar.cpp",
     "EarlyHintsService.cpp",
+    "HappyEyeballsConnectionAttempt.cpp",
+    "HappyEyeballsTransaction.cpp",
     "Http2Compression.cpp",
     "Http2Session.cpp",
     "Http2Stream.cpp",
@@ -119,8 +127,10 @@ UNIFIED_SOURCES += [
     "Http2StreamTunnel.cpp",
     "Http2WebTransportSession.cpp",
     "Http2WebTransportStream.cpp",
+    "Http3ConnectUDPStream.cpp",
     "Http3Session.cpp",
     "Http3Stream.cpp",
+    "Http3StreamTunnel.cpp",
     "Http3WebTransportSession.cpp",
     "Http3WebTransportStream.cpp",
     "HttpAuthUtils.cpp",
@@ -178,16 +188,23 @@ UNIFIED_SOURCES += [
     "WebTransportFlowControl.cpp",
     "WebTransportSessionBase.cpp",
     "WebTransportStreamBase.cpp",
+    "ZeroRttHandle.cpp",
 ]
 
 if CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
     UNIFIED_SOURCES += [
         "HttpWinUtils.cpp",
     ]
+    SOURCE_HEADERS += [
+        "HttpWinUtils.h",
+    ]
 
 if CONFIG["TARGET_OS"] == "OSX":
     UNIFIED_SOURCES += [
         "MicrosoftEntraSSOUtils.mm",
+    ]
+    SOURCE_HEADERS += [
+        "MicrosoftEntraSSOUtils.h",
     ]
     OS_LIBS += [
         "-framework AuthenticationServices",
@@ -204,6 +221,7 @@ IPDL_SOURCES += [
     "PAltService.ipdl",
     "PAltSvcTransaction.ipdl",
     "PBackgroundDataBridge.ipdl",
+    "PCacheEntryWriteHandle.ipdl",
     "PHttpBackgroundChannel.ipdl",
     "PHttpChannel.ipdl",
     "PHttpConnectionMgr.ipdl",
@@ -238,8 +256,82 @@ EXTRA_JS_MODULES += [
     "WellKnownOpportunisticUtils.sys.mjs",
 ]
 
+DIRS += ["happy_eyeballs_glue"]
+
 XPCOM_MANIFESTS += [
     "components.conf",
 ]
 
 include("/tools/fuzzing/libfuzzer-config.mozbuild")
+
+SOURCE_HEADERS += [
+    "AlternateServices.h",
+    "ASpdySession.h",
+    "BinaryHttpRequest.h",
+    "Capsule.h",
+    "CapsuleDecoder.h",
+    "CapsuleEncoder.h",
+    "CapsuleParser.h",
+    "ConnectionAttempt.h",
+    "ConnectionAttemptPool.h",
+    "ConnectionEntry.h",
+    "ConnectionEstablisher.h",
+    "ConnectionHandle.h",
+    "DnsAndConnectSocket.h",
+    "EarlyHintPreconnect.h",
+    "HappyEyeballsConnectionAttempt.h",
+    "HappyEyeballsConnMgrDelegate.h",
+    "HappyEyeballsTransaction.h",
+    "Http2Compression.h",
+    "Http2HuffmanIncoming.h",
+    "Http2HuffmanOutgoing.h",
+    "Http2Session.h",
+    "Http2Stream.h",
+    "Http2StreamBase.h",
+    "Http2StreamTunnel.h",
+    "Http2WebTransportSession.h",
+    "Http2WebTransportStream.h",
+    "Http3ConnectUDPStream.h",
+    "Http3Session.h",
+    "Http3Stream.h",
+    "Http3StreamBase.h",
+    "Http3StreamTunnel.h",
+    "Http3WebTransportSession.h",
+    "Http3WebTransportStream.h",
+    "HttpConnectionBase.h",
+    "HttpConnectionUDP.h",
+    "HttpLog.h",
+    "HTTPSRecordResolver.h",
+    "InterceptedHttpChannel.h",
+    "MockHttpAuth.h",
+    "NetworkMarker.h",
+    "nsAHttpConnection.h",
+    "nsHttpActivityDistributor.h",
+    "nsHttpAuthCache.h",
+    "nsHttpAuthManager.h",
+    "nsHttpBasicAuth.h",
+    "nsHttpChannel.h",
+    "nsHttpChannelAuthProvider.h",
+    "nsHttpChunkedDecoder.h",
+    "nsHttpConnection.h",
+    "nsHttpConnectionInfo.h",
+    "nsHttpConnectionMgr.h",
+    "nsHttpDigestAuth.h",
+    "nsHttpHandler.h",
+    "nsHttpNTLMAuth.h",
+    "nsHttpTransaction.h",
+    "nsICorsPreflightCallback.h",
+    "ObliviousHttpChannel.h",
+    "ObliviousHttpService.h",
+    "PendingTransactionInfo.h",
+    "PendingTransactionQueue.h",
+    "QuicSocketControl.h",
+    "TlsHandshaker.h",
+    "TLSTransportLayer.h",
+    "TRRServiceChannel.h",
+    "WebTransportCertificateVerifier.h",
+    "WebTransportFlowControl.h",
+    "WebTransportSessionBase.h",
+    "WebTransportStreamBase.h",
+    "ZeroRttHandle.h",
+]

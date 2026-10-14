@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,23 +7,22 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/mman.h>
 #include <prenv.h>
+#include <sys/mman.h>
 
+#include "GtkCompositorWidget.h"
+#include "MozContainer.h"
 #include "gfx2DGlue.h"
 #include "gfxPlatform.h"
-#include "MozContainer.h"
-#include "GtkCompositorWidget.h"
-#include "mozilla/gfx/DataSurfaceHelpers.h"
-#include "mozilla/gfx/Tools.h"
-#include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_widget.h"
 #include "mozilla/WidgetUtils.h"
+#include "mozilla/gfx/DataSurfaceHelpers.h"
+#include "mozilla/gfx/Tools.h"
 
 #undef LOGWAYLAND
 #ifdef MOZ_LOGGING
-#  include "mozilla/Logging.h"
 #  include "Units.h"
+#  include "mozilla/Logging.h"
 extern mozilla::LazyLogModule gWidgetWaylandLog;
 #  define LOGWAYLAND(...) \
     MOZ_LOG(gWidgetWaylandLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
@@ -58,18 +56,18 @@ namespace mozilla::widget {
         |       | WindowSurfaceWayland          |<------>| nsWindow       |
         |       |                               |        ------------------
         |       |  -----------------------      |
-        |       |  | WaylandBufferSHM    |      |
+        |       |  | WaylandBuffer       |      |
         |       |  |                     |      |
         |       |  | ------------------- |      |
-        |       |  | |  WaylandShmPool | |      |
+        |       |  | |  SHMBufSurface  | |      |
         |       |  | ------------------- |      |
         |       |  -----------------------      |
         |       |                               |
         |       |  -----------------------      |
-        |       |  | WaylandBufferSHM    |      |
+        |       |  | WaylandBuffer       |      |
         |       |  |                     |      |
         |       |  | ------------------- |      |
-        |       |  | |  WaylandShmPool | |      |
+        |       |  | |  SHMBufSurface  | |      |
         |       |  | ------------------- |      |
         |       |  -----------------------      |
         |       ---------------------------------
@@ -79,18 +77,18 @@ namespace mozilla::widget {
   | WindowSurfaceWayland          |<------>| nsWindow       |
   |                               |        ------------------
   |  -----------------------      |
-  |  | WaylandBufferSHM    |      |
+  |  | WaylandBuffer       |      |
   |  |                     |      |
   |  | ------------------- |      |
-  |  | |  WaylandShmPool | |      |
+  |  | |  SHMBufSurface  | |      |
   |  | ------------------- |      |
   |  -----------------------      |
   |                               |
   |  -----------------------      |
-  |  | WaylandBufferSHM    |      |
+  |  | WaylandBuffer       |      |
   |  |                     |      |
   |  | ------------------- |      |
-  |  | |  WaylandShmPool | |      |
+  |  | |  SHMBufSurface  | |      |
   |  | ------------------- |      |
   |  -----------------------      |
   ---------------------------------
@@ -116,7 +114,7 @@ One WindowSurfaceWayland draws one nsWindow so those are tied 1:1.
 At Wayland level it holds one wl_surface object.
 
 To perform visualiation of nsWindow, WindowSurfaceWayland contains one
-wl_surface and two wl_buffer objects (owned by WaylandBufferSHM)
+wl_surface and two wl_buffer objects (owned by WaylandBuffer)
 as we use double buffering. When nsWindow drawing is finished to wl_buffer,
 the wl_buffer is attached to wl_surface and it's sent to Wayland compositor.
 
@@ -125,7 +123,7 @@ compositor for instance) we store the drawing to WindowImageSurface object
 and draw later when wl_buffer becomes available or discard the
 WindowImageSurface cache when whole screen is invalidated.
 
-WaylandBufferSHM
+WaylandBuffer
 
 Is a class which provides a wl_buffer for drawing.
 Wl_buffer is a main Wayland object with actual graphics data.
@@ -134,18 +132,18 @@ When double buffering is involved every window (GdkWindow for instance)
 utilises two wl_buffers which are cycled. One is filed with data by application
 and one is rendered by compositor.
 
-WaylandBufferSHM is implemented by shared memory (shm).
-It owns wl_buffer object, owns WaylandShmPool
+WaylandBuffer is implemented by shared memory (shm).
+It owns wl_buffer object, owns SHMBufSurface
 (which provides the shared memory) and ties them together.
 
-WaylandShmPool
+SHMBufSurface
 
-WaylandShmPool acts as a manager of shared memory for WaylandBufferSHM.
+SHMBufSurface acts as a manager of shared memory for WaylandBuffer.
 Allocates it, holds reference to it and releases it.
 
 We allocate shared memory (shm) by mmap(..., MAP_SHARED,...) as an interface
 between us and wayland compositor. We draw our graphics data to the shm and
-handle to wayland compositor by WaylandBufferSHM/WindowSurfaceWayland
+handle to wayland compositor by WaylandBuffer/WindowSurfaceWayland
 (wl_buffer/wl_surface).
 */
 
@@ -155,11 +153,9 @@ using gfx::DataSourceSurface;
 
 WindowSurfaceWaylandMB::WindowSurfaceWaylandMB(
     RefPtr<nsWindow> aWindow, GtkCompositorWidget* aCompositorWidget)
-    : mSurfaceLock("WindowSurfaceWayland lock"),
-      mWindow(std::move(aWindow)),
-      mCompositorWidget(aCompositorWidget),
-      mFrameInProcess(false),
-      mCallbackRequested(false) {}
+    : mWindow(std::move(aWindow)),
+      mWaylandSurface(mWindow->GetWaylandSurface()),
+      mCompositorWidget(aCompositorWidget) {}
 
 bool WindowSurfaceWaylandMB::MaybeUpdateWindowSize() {
   // We want to get window size from compositor widget as it matches window
@@ -178,7 +174,7 @@ bool WindowSurfaceWaylandMB::MaybeUpdateWindowSize() {
 
 already_AddRefed<DrawTarget> WindowSurfaceWaylandMB::Lock(
     const LayoutDeviceIntRegion& aInvalidRegion) {
-  MutexAutoLock lock(mSurfaceLock);
+  WaylandSurfaceLock lock(mWaylandSurface);
 
 #ifdef MOZ_LOGGING
   gfx::IntRect lockRect = aInvalidRegion.GetBounds().ToUnknownRect();
@@ -190,7 +186,6 @@ already_AddRefed<DrawTarget> WindowSurfaceWaylandMB::Lock(
   if (mWindow->GetWindowType() == WindowType::Invisible) {
     return nullptr;
   }
-  mFrameInProcess = true;
 
   CollectPendingSurfaces(lock);
 
@@ -209,7 +204,7 @@ already_AddRefed<DrawTarget> WindowSurfaceWaylandMB::Lock(
   }
 
   if (!mInProgressBuffer) {
-    if (mFrontBuffer && !mFrontBuffer->IsAttached()) {
+    if (mFrontBuffer && !mFrontBuffer->IsAttached(lock)) {
       mInProgressBuffer = mFrontBuffer;
     } else {
       mInProgressBuffer = ObtainBufferFromPool(lock, mWindowSize);
@@ -230,7 +225,7 @@ already_AddRefed<DrawTarget> WindowSurfaceWaylandMB::Lock(
 }
 
 void WindowSurfaceWaylandMB::HandlePartialUpdate(
-    const MutexAutoLock& aProofOfLock,
+    const WaylandSurfaceLock& aWaylandSurfaceLock,
     const LayoutDeviceIntRegion& aInvalidRegion) {
   LayoutDeviceIntRegion copyRegion;
   if (mInProgressBuffer->GetBufferAge() == 2) {
@@ -247,7 +242,7 @@ void WindowSurfaceWaylandMB::HandlePartialUpdate(
         mozilla::gfx::CreateDataSourceSurfaceFromData(
             mFrontBuffer->GetSize().ToUnknownSize(),
             mFrontBuffer->GetSurfaceFormat(),
-            (const uint8_t*)mFrontBuffer->GetShmPool()->GetImageData(),
+            (const uint8_t*)mFrontBuffer->GetImageData(),
             mFrontBuffer->GetSize().width *
                 BytesPerPixel(mFrontBuffer->GetSurfaceFormat()));
     RefPtr<DrawTarget> dt = mInProgressBuffer->Lock();
@@ -262,12 +257,12 @@ void WindowSurfaceWaylandMB::HandlePartialUpdate(
 
 void WindowSurfaceWaylandMB::Commit(
     const LayoutDeviceIntRegion& aInvalidRegion) {
-  MutexAutoLock lock(mSurfaceLock);
+  WaylandSurfaceLock lock(mWaylandSurface);
   Commit(lock, aInvalidRegion);
 }
 
 void WindowSurfaceWaylandMB::Commit(
-    const MutexAutoLock& aProofOfLock,
+    const WaylandSurfaceLock& aWaylandSurfaceLock,
     const LayoutDeviceIntRegion& aInvalidRegion) {
 #ifdef MOZ_LOGGING
   gfx::IntRect invalidRect = aInvalidRegion.GetBounds().ToUnknownRect();
@@ -278,39 +273,16 @@ void WindowSurfaceWaylandMB::Commit(
       invalidRect.height, mWindowSize.width, mWindowSize.height);
 #endif
 
-  if (!mInProgressBuffer) {
+  if (!mInProgressBuffer || !mWaylandSurface->IsMapped()) {
     // invisible window
     return;
   }
-  mFrameInProcess = false;
 
-  MozContainer* container = mWindow->GetMozContainer();
-  WaylandSurface* waylandSurface = MOZ_WL_SURFACE(container);
-  WaylandSurfaceLock lock(waylandSurface);
-  if (!waylandSurface->IsMapped()) {
-    LOGWAYLAND(
-        "WindowSurfaceWaylandMB::Commit [%p] frame queued: can't lock "
-        "wl_surface\n",
-        (void*)mWindow.get());
-    if (!mCallbackRequested) {
-      RefPtr<WindowSurfaceWaylandMB> self(this);
-      waylandSurface->AddReadyToDrawCallbackLocked(
-          lock, [self, aInvalidRegion]() -> void {
-            MutexAutoLock lock(self->mSurfaceLock);
-            if (!self->mFrameInProcess) {
-              self->Commit(lock, aInvalidRegion);
-            }
-            self->mCallbackRequested = false;
-          });
-      mCallbackRequested = true;
-    }
-    return;
-  }
-
-  waylandSurface->InvalidateRegionLocked(lock,
+  auto waylandSurface = aWaylandSurfaceLock.GetWaylandSurface();
+  waylandSurface->InvalidateRegionLocked(aWaylandSurfaceLock,
                                          aInvalidRegion.ToUnknownRegion());
-  waylandSurface->AttachLocked(lock, mInProgressBuffer);
-  waylandSurface->CommitLocked(lock, /* force commit */ true,
+  waylandSurface->AttachLocked(aWaylandSurfaceLock, mInProgressBuffer);
+  waylandSurface->CommitLocked(aWaylandSurfaceLock, /* force commit */ true,
                                /* force flush */ true);
 
   mInProgressBuffer->ResetBufferAge();
@@ -318,19 +290,20 @@ void WindowSurfaceWaylandMB::Commit(
   mFrontBufferInvalidRegion = aInvalidRegion;
   mInProgressBuffer = nullptr;
 
-  EnforcePoolSizeLimit(aProofOfLock);
-  IncrementBufferAge(aProofOfLock);
+  EnforcePoolSizeLimit(aWaylandSurfaceLock);
+  IncrementBufferAge(aWaylandSurfaceLock);
 }
 
-RefPtr<WaylandBufferSHM> WindowSurfaceWaylandMB::ObtainBufferFromPool(
-    const MutexAutoLock& aProofOfLock, const LayoutDeviceIntSize& aSize) {
+RefPtr<WaylandBuffer> WindowSurfaceWaylandMB::ObtainBufferFromPool(
+    const WaylandSurfaceLock& aWaylandSurfaceLock,
+    const LayoutDeviceIntSize& aSize) {
   if (!mAvailableBuffers.IsEmpty()) {
-    RefPtr<WaylandBufferSHM> buffer = mAvailableBuffers.PopLastElement();
+    RefPtr<WaylandBuffer> buffer = mAvailableBuffers.PopLastElement();
     mInUseBuffers.AppendElement(buffer);
     return buffer;
   }
 
-  RefPtr<WaylandBufferSHM> buffer = WaylandBufferSHM::Create(aSize);
+  RefPtr<WaylandBuffer> buffer = WaylandBuffer::CreateSHM(aSize);
   if (buffer) {
     mInUseBuffers.AppendElement(buffer);
   }
@@ -339,9 +312,9 @@ RefPtr<WaylandBufferSHM> WindowSurfaceWaylandMB::ObtainBufferFromPool(
 }
 
 void WindowSurfaceWaylandMB::ReturnBufferToPool(
-    const MutexAutoLock& aProofOfLock,
-    const RefPtr<WaylandBufferSHM>& aBuffer) {
-  if (aBuffer->IsAttached()) {
+    const WaylandSurfaceLock& aWaylandSurfaceLock,
+    const RefPtr<WaylandBuffer>& aBuffer) {
+  if (aBuffer->IsAttached(aWaylandSurfaceLock)) {
     mPendingBuffers.AppendElement(aBuffer);
   } else if (aBuffer->IsMatchingSize(mWindowSize)) {
     mAvailableBuffers.AppendElement(aBuffer);
@@ -350,7 +323,7 @@ void WindowSurfaceWaylandMB::ReturnBufferToPool(
 }
 
 void WindowSurfaceWaylandMB::EnforcePoolSizeLimit(
-    const MutexAutoLock& aProofOfLock) {
+    const WaylandSurfaceLock& aWaylandSurfaceLock) {
   // Enforce the pool size limit, removing least-recently-used entries as
   // necessary.
   while (mAvailableBuffers.Length() > BACK_BUFFER_NUM) {
@@ -364,9 +337,9 @@ void WindowSurfaceWaylandMB::EnforcePoolSizeLimit(
 }
 
 void WindowSurfaceWaylandMB::CollectPendingSurfaces(
-    const MutexAutoLock& aProofOfLock) {
+    const WaylandSurfaceLock& aWaylandSurfaceLock) {
   mPendingBuffers.RemoveElementsBy([&](auto& buffer) {
-    if (!buffer->IsAttached()) {
+    if (!buffer->IsAttached(aWaylandSurfaceLock)) {
       if (buffer->IsMatchingSize(mWindowSize)) {
         mAvailableBuffers.AppendElement(std::move(buffer));
       }
@@ -377,14 +350,14 @@ void WindowSurfaceWaylandMB::CollectPendingSurfaces(
 }
 
 void WindowSurfaceWaylandMB::IncrementBufferAge(
-    const MutexAutoLock& aProofOfLock) {
-  for (const RefPtr<WaylandBufferSHM>& buffer : mInUseBuffers) {
+    const WaylandSurfaceLock& aWaylandSurfaceLock) {
+  for (const RefPtr<WaylandBuffer>& buffer : mInUseBuffers) {
     buffer->IncrementBufferAge();
   }
-  for (const RefPtr<WaylandBufferSHM>& buffer : mPendingBuffers) {
+  for (const RefPtr<WaylandBuffer>& buffer : mPendingBuffers) {
     buffer->IncrementBufferAge();
   }
-  for (const RefPtr<WaylandBufferSHM>& buffer : mAvailableBuffers) {
+  for (const RefPtr<WaylandBuffer>& buffer : mAvailableBuffers) {
     buffer->IncrementBufferAge();
   }
 }

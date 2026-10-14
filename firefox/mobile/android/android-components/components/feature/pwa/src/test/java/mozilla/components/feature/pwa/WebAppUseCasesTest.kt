@@ -5,10 +5,9 @@
 package mozilla.components.feature.pwa
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import mozilla.components.browser.state.state.BrowserState
-import mozilla.components.browser.state.state.SecurityInfoState
+import mozilla.components.browser.state.state.SecurityInfo
 import mozilla.components.browser.state.state.TabSessionState
 import mozilla.components.browser.state.state.createTab
 import mozilla.components.browser.state.store.BrowserStore
@@ -24,22 +23,23 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mockito.`when`
 
-@ExperimentalCoroutinesApi
 @RunWith(AndroidJUnit4::class)
 class WebAppUseCasesTest {
     @Test
     fun `isInstallable returns false if currentSession has no manifest`() {
-        val session = createTestSession(
-            secure = true,
-            manifest = null,
-        )
+        val session =
+            createTestSession(
+                secure = true,
+                manifest = null,
+            )
 
-        val store = BrowserStore(
-            BrowserState(
-                tabs = listOf(session),
-                selectedTabId = session.id,
-            ),
-        )
+        val store =
+            BrowserStore(
+                BrowserState(
+                    tabs = listOf(session),
+                    selectedTabId = session.id,
+                )
+            )
 
         val webAppUseCases = WebAppUseCases(testContext, store, mock<WebAppShortcutManager>())
         assertFalse(webAppUseCases.isInstallable())
@@ -47,26 +47,29 @@ class WebAppUseCasesTest {
 
     @Test
     fun `isInstallable returns true if currentSession has a manifest`() {
-        val manifest = WebAppManifest(
-            name = "Demo",
-            startUrl = "https://example.com",
-            display = WebAppManifest.DisplayMode.STANDALONE,
-            icons = listOf(
-                WebAppManifest.Icon(
-                    src = "https://example.com/icon.png",
-                    sizes = listOf(Size(192, 192)),
-                ),
-            ),
-        )
+        val manifest =
+            WebAppManifest(
+                name = "Demo",
+                startUrl = "https://example.com",
+                display = WebAppManifest.DisplayMode.STANDALONE,
+                icons =
+                    listOf(
+                        WebAppManifest.Icon(
+                            src = "https://example.com/icon.png",
+                            sizes = listOf(Size(192, 192)),
+                        )
+                    ),
+            )
 
         val session = createTestSession(secure = true, manifest = manifest)
 
-        val store = BrowserStore(
-            BrowserState(
-                tabs = listOf(session),
-                selectedTabId = session.id,
-            ),
-        )
+        val store =
+            BrowserStore(
+                BrowserState(
+                    tabs = listOf(session),
+                    selectedTabId = session.id,
+                )
+            )
 
         val shortcutManager: WebAppShortcutManager = mock()
         `when`(shortcutManager.supportWebApps).thenReturn(true)
@@ -78,29 +81,33 @@ class WebAppUseCasesTest {
     @Suppress("Deprecation")
     @Test
     fun `isInstallable returns false if supportWebApps is false`() {
-        val manifest = WebAppManifest(
-            name = "Demo",
-            startUrl = "https://example.com",
-            display = WebAppManifest.DisplayMode.STANDALONE,
-            icons = listOf(
-                WebAppManifest.Icon(
-                    src = "https://example.com/icon.png",
-                    sizes = listOf(Size(192, 192)),
-                ),
-            ),
-        )
+        val manifest =
+            WebAppManifest(
+                name = "Demo",
+                startUrl = "https://example.com",
+                display = WebAppManifest.DisplayMode.STANDALONE,
+                icons =
+                    listOf(
+                        WebAppManifest.Icon(
+                            src = "https://example.com/icon.png",
+                            sizes = listOf(Size(192, 192)),
+                        )
+                    ),
+            )
 
-        val session = createTestSession(
-            secure = true,
-            manifest = manifest,
-        )
+        val session =
+            createTestSession(
+                secure = true,
+                manifest = manifest,
+            )
 
-        val store = BrowserStore(
-            BrowserState(
-                tabs = listOf(session),
-                selectedTabId = session.id,
-            ),
-        )
+        val store =
+            BrowserStore(
+                BrowserState(
+                    tabs = listOf(session),
+                    selectedTabId = session.id,
+                )
+            )
 
         val shortcutManager: WebAppShortcutManager = mock()
         `when`(shortcutManager.supportWebApps).thenReturn(false)
@@ -116,16 +123,20 @@ class WebAppUseCasesTest {
         val currentTime = System.currentTimeMillis()
 
         val session = createTestSession(secure = true)
-        val store = BrowserStore(
-            BrowserState(
-                tabs = listOf(session),
-                selectedTabId = session.id,
-            ),
-        )
+        val store =
+            BrowserStore(
+                BrowserState(
+                    tabs = listOf(session),
+                    selectedTabId = session.id,
+                )
+            )
 
         `when`(storage.hasRecentManifest("https://www.mozilla.org", currentTime)).thenReturn(true)
 
-        assertEquals(WebAppShortcutManager.WebAppInstallState.Installed, WebAppUseCases(testContext, store, shortcutManager).getInstallState(currentTime))
+        assertEquals(
+            WebAppShortcutManager.WebAppInstallState.Installed,
+            WebAppUseCases(testContext, store, shortcutManager).getInstallState(currentTime),
+        )
     }
 }
 
@@ -133,17 +144,19 @@ private fun createTestSession(
     secure: Boolean,
     manifest: WebAppManifest? = null,
 ): TabSessionState {
-    val protocol = if (secure) {
-        "https"
-    } else {
-        "http"
-    }
+    val protocol =
+        if (secure) {
+            "https"
+        } else {
+            "http"
+        }
     val tab = createTab("$protocol://www.mozilla.org")
 
     return tab.copy(
-        content = tab.content.copy(
-            securityInfo = SecurityInfoState(secure = secure),
-            webAppManifest = manifest,
-        ),
+        content =
+            tab.content.copy(
+                securityInfo = SecurityInfo.from(secure),
+                webAppManifest = manifest,
+            )
     )
 }

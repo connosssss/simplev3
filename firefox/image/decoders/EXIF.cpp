@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -75,19 +74,17 @@ static Resolution ResolutionFromParsedData(const ParsedEXIFData& aData,
   Resolution resolution{ToDppx(*aData.resolutionX, *aData.resolutionUnit),
                         ToDppx(*aData.resolutionY, *aData.resolutionUnit)};
 
-  if (StaticPrefs::image_exif_density_correction_sanity_check_enabled()) {
-    if (!aData.pixelXDimension || !aData.pixelYDimension) {
-      return {};
-    }
+  if (!aData.pixelXDimension || !aData.pixelYDimension) {
+    return {};
+  }
 
-    const gfx::IntSize exifSize(*aData.pixelXDimension, *aData.pixelYDimension);
+  const gfx::IntSize exifSize(*aData.pixelXDimension, *aData.pixelYDimension);
 
-    gfx::IntSize scaledSize = aRealImageSize;
-    resolution.ApplyTo(scaledSize.width, scaledSize.height);
+  gfx::IntSize scaledSize = aRealImageSize;
+  resolution.ApplyTo(scaledSize.width, scaledSize.height);
 
-    if (exifSize != scaledSize) {
-      return {};
-    }
+  if (exifSize != scaledSize) {
+    return {};
   }
 
   return resolution;

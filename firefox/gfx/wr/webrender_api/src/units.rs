@@ -11,6 +11,8 @@
 //!
 //! The terms "layer" and "stacking context" can be used interchangeably
 //! in the context of coordinate systems.
+//!
+//! See also webrender/doc/coordinate-spaces.md
 
 pub use app_units::Au;
 use euclid::{Length, Rect, Scale, Size2D, Transform3D, Translation2D};
@@ -107,21 +109,6 @@ pub type WorldPoint3D = Point3D<f32, WorldPixel>;
 pub type WorldVector2D = Vector2D<f32, WorldPixel>;
 pub type WorldVector3D = Vector3D<f32, WorldPixel>;
 
-/// Geometry in the space in which we decided to perform visibility/clipping/invalidation
-/// calculations.
-/// This is intended to be a temporary type while transitioning some calculation from world
-/// to raster space.
-#[derive(Hash, Clone, Copy, Debug, Eq, MallocSizeOf, PartialEq, Ord, PartialOrd, Deserialize, Serialize, PeekPoke)]
-pub struct VisPixel;
-
-pub type VisRect = Box2D<f32, VisPixel>;
-
-/// TODO: Remove this once visibility rects have moved to raster space.
-pub fn vis_rect_as_world(r: VisRect) -> WorldRect {
-    r.cast_unit()
-}
-
-
 /// Offset in number of tiles.
 #[derive(Hash, Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Tiles;
@@ -139,7 +126,6 @@ pub type LayoutToDeviceScale = Scale<f32, LayoutPixel, DevicePixel>;
 pub type LayoutTransform = Transform3D<f32, LayoutPixel, LayoutPixel>;
 pub type LayoutToWorldTransform = Transform3D<f32, LayoutPixel, WorldPixel>;
 pub type WorldToLayoutTransform = Transform3D<f32, WorldPixel, LayoutPixel>;
-pub type LayoutToVisTransform = Transform3D<f32, LayoutPixel, VisPixel>;
 
 pub type LayoutToPictureTransform = Transform3D<f32, LayoutPixel, PicturePixel>;
 pub type PictureToLayoutTransform = Transform3D<f32, PicturePixel, LayoutPixel>;
@@ -190,6 +176,19 @@ impl TexelRect {
             uv0: DevicePoint::new(-1.0, -1.0),
             uv1: DevicePoint::new(-1.0, -1.0),
         }
+    }
+
+    pub fn to_array(&self) -> [f32; 4] {
+        [
+            self.uv0.x,
+            self.uv0.y,
+            self.uv1.x,
+            self.uv1.y,
+        ]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.uv1.x <= self.uv0.x || self.uv1.y <= self.uv0.y
     }
 }
 

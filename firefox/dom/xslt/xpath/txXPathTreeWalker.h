@@ -1,15 +1,14 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef txXPathTreeWalker_h__
-#define txXPathTreeWalker_h__
+#ifndef txXPathTreeWalker_h_
+#define txXPathTreeWalker_h_
 
-#include "txCore.h"
-#include "txXPathNode.h"
 #include "nsIContentInlines.h"
 #include "nsTArray.h"
+#include "txCore.h"
+#include "txXPathNode.h"
 
 class nsAtom;
 
@@ -52,7 +51,7 @@ class txXPathNodeUtils {
   static bool getAttr(const txXPathNode& aNode, nsAtom* aLocalName,
                       int32_t aNSID, nsAString& aValue);
   static already_AddRefed<nsAtom> getLocalName(const txXPathNode& aNode);
-  static nsAtom* getPrefix(const txXPathNode& aNode);
+  static already_AddRefed<nsAtom> getPrefix(const txXPathNode& aNode);
   static void getLocalName(const txXPathNode& aNode, nsAString& aLocalName);
   static void getNodeName(const txXPathNode& aNode, nsAString& aName);
   static int32_t getNamespaceID(const txXPathNode& aNode);
@@ -171,4 +170,4 @@ inline bool txXPathNodeUtils::isText(const txXPathNode& aNode) {
   return aNode.isContent() && aNode.Content()->IsText();
 }
 
-#endif /* txXPathTreeWalker_h__ */
+#endif /* txXPathTreeWalker_h_ */

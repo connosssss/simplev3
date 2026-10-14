@@ -23,7 +23,7 @@ add_task(async function () {
 
   info("selecting first request");
   const firstRequestItem = document.querySelectorAll(".request-list-item")[0];
-  EventUtils.sendMouseEvent({ type: "mousedown" }, firstRequestItem);
+  clickOnRequestRow(firstRequestItem);
 
   info("switching to response panel");
   const waitForRespPanel = waitForDOM(
@@ -49,7 +49,7 @@ add_task(async function () {
   EventUtils.sendString("greeting");
 
   // Wait till there are 2048 resources rendered in the results.
-  await waitForDOMIfNeeded(document, "#response-panel tr.treeRow", 2048);
+  await waitForDOM(document, "#response-panel tr.treeRow", 2048);
 
   is(firstRow.classList.contains("opened"), true, "the node remains open");
 

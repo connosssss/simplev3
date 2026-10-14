@@ -11,6 +11,9 @@
 let testEngine;
 
 add_setup(async () => {
+  // Force settings redesign to false, so that `hideOneOffButton` will correctly
+  // work for the time being.
+  Services.prefs.setBoolPref("browser.settings-redesign.enabled", false);
   // Disable search suggestions for a less verbose test.
   Services.prefs.setBoolPref("browser.search.suggest.enabled", false);
   // Disable ScotchBonnet that provides its own tab to search implementation.
@@ -25,7 +28,7 @@ add_setup(async () => {
     0
   );
   await SearchTestUtils.installSearchExtension({ name: "Test" });
-  testEngine = await Services.search.getEngineByName("Test");
+  testEngine = await SearchService.getEngineByName("Test");
 
   registerCleanupFunction(async () => {
     Services.prefs.clearUserPref(
@@ -39,7 +42,12 @@ add_setup(async () => {
 // Tests that tab-to-search results appear when the engine's result domain is
 // autofilled.
 add_task(async function basic() {
-  await PlacesTestUtils.addVisits(["https://example.com/"]);
+  await PlacesTestUtils.addVisits([
+    {
+      url: "https://example.com/",
+      transition: PlacesUtils.history.TRANSITION_TYPED,
+    },
+  ]);
   let context = createContext("examp", { isPrivate: false });
   await check_results({
     context,
@@ -50,17 +58,17 @@ add_task(async function basic() {
         uri: "https://example.com/",
         title: "test visit for https://example.com/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
       makeSearchResult(context, {
         engineName: testEngine.name,
-        engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+        engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
         searchUrlDomainWithoutSuffix: UrlbarUtils.stripPublicSuffixFromHost(
           testEngine.searchUrlDomain
         ),
         providesSearchMode: true,
         query: "",
-        providerName: "TabToSearch",
+        providerName: "UrlbarProviderTabToSearch",
       }),
     ],
   });
@@ -76,11 +84,59 @@ add_task(async function basic() {
         uri: "https://example.com/",
         title: "test visit for https://example.com/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
     ],
   });
   Services.prefs.clearUserPref("browser.urlbar.suggest.engines");
+
+  await cleanupPlaces();
+});
+
+add_task(async function noTabToSearchResultsInSmartbar() {
+  await PlacesTestUtils.addVisits([
+    {
+      url: "https://example.com/",
+      transition: PlacesUtils.history.TRANSITION_TYPED,
+    },
+  ]);
+
+  // Sanity check: the tab-to-search result appears in the urlbar SAP.
+  let urlbarController = UrlbarTestUtils.mockChildController();
+  let urlbarContext = createContext("examp", {
+    isPrivate: false,
+  });
+
+  await urlbarController.startQuery(urlbarContext);
+  Assert.ok(
+    urlbarContext.results.some(
+      r => r.providerName == "UrlbarProviderTabToSearch"
+    ),
+    "Tab-to-search result should appear in the urlbar SAP"
+  );
+
+  // The same result should not appear in the smartbar SAP.
+  let smartbarController = UrlbarTestUtils.mockChildController({
+    sapName: "smartbar",
+  });
+  let smartbarContext = createContext("examp", {
+    isPrivate: false,
+    sapName: "smartbar",
+  });
+
+  await smartbarController.startQuery(smartbarContext);
+
+  Assert.greater(
+    smartbarContext.results.length,
+    0,
+    "Smartbar query should return some results"
+  );
+  Assert.ok(
+    !smartbarContext.results.some(
+      r => r.providerName == "UrlbarProviderTabToSearch"
+    ),
+    "Tab-to-search result should not appear in the smartbar SAP"
+  );
 
   await cleanupPlaces();
 });
@@ -94,20 +150,20 @@ add_task(async function noAutofill() {
     context,
     matches: [
       makeSearchResult(context, {
-        engineName: Services.search.defaultEngine.name,
-        engineIconUri: await Services.search.defaultEngine.getIconURL(),
+        engineName: SearchService.defaultEngine.name,
+        engineIconUri: await SearchService.defaultEngine.getIconURL(),
         heuristic: true,
-        providerName: "HeuristicFallback",
+        providerName: "UrlbarProviderHeuristicFallback",
       }),
       makeSearchResult(context, {
         engineName: testEngine.name,
-        engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+        engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
         searchUrlDomainWithoutSuffix: UrlbarUtils.stripPublicSuffixFromHost(
           testEngine.searchUrlDomain
         ),
         providesSearchMode: true,
         query: "",
-        providerName: "TabToSearch",
+        providerName: "UrlbarProviderTabToSearch",
       }),
     ],
   });
@@ -116,7 +172,12 @@ add_task(async function noAutofill() {
 // Tests that tab-to-search results are not shown when the typed string matches
 // an engine domain, but something else is being autofilled.
 add_task(async function autofillDoesNotMatchEngine() {
-  await PlacesTestUtils.addVisits(["https://example.test.ca/"]);
+  await PlacesTestUtils.addVisits([
+    {
+      url: "https://example.test.ca/",
+      transition: PlacesUtils.history.TRANSITION_TYPED,
+    },
+  ]);
   let context = createContext("example", { isPrivate: false });
   await check_results({
     context,
@@ -127,7 +188,7 @@ add_task(async function autofillDoesNotMatchEngine() {
         uri: "https://example.test.ca/",
         title: "test visit for https://example.test.ca/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
     ],
   });
@@ -139,7 +200,12 @@ add_task(async function autofillDoesNotMatchEngine() {
 // tab-to-search.
 add_task(async function ignoreWww() {
   // The history result has www., the engine does not.
-  await PlacesTestUtils.addVisits(["https://www.example.com/"]);
+  await PlacesTestUtils.addVisits([
+    {
+      url: "https://www.example.com/",
+      transition: PlacesUtils.history.TRANSITION_TYPED,
+    },
+  ]);
   let context = createContext("www.examp", { isPrivate: false });
   await check_results({
     context,
@@ -150,24 +216,29 @@ add_task(async function ignoreWww() {
         uri: "https://www.example.com/",
         title: "test visit for https://www.example.com/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
       makeSearchResult(context, {
         engineName: testEngine.name,
-        engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+        engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
         searchUrlDomainWithoutSuffix: UrlbarUtils.stripPublicSuffixFromHost(
           testEngine.searchUrlDomain
         ),
         providesSearchMode: true,
         query: "",
-        providerName: "TabToSearch",
+        providerName: "UrlbarProviderTabToSearch",
       }),
     ],
   });
   await cleanupPlaces();
 
   // The engine has www., the history result does not.
-  await PlacesTestUtils.addVisits(["https://foo.bar/"]);
+  await PlacesTestUtils.addVisits([
+    {
+      url: "https://foo.bar/",
+      transition: PlacesUtils.history.TRANSITION_TYPED,
+    },
+  ]);
   let extension = await SearchTestUtils.installSearchExtension(
     {
       name: "TestWww",
@@ -175,7 +246,7 @@ add_task(async function ignoreWww() {
     },
     { skipUnload: true }
   );
-  let wwwTestEngine = Services.search.getEngineByName("TestWww");
+  let wwwTestEngine = SearchService.getEngineByName("TestWww");
   context = createContext("foo", { isPrivate: false });
   await check_results({
     context,
@@ -186,24 +257,29 @@ add_task(async function ignoreWww() {
         uri: "https://foo.bar/",
         title: "test visit for https://foo.bar/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
       makeSearchResult(context, {
         engineName: wwwTestEngine.name,
-        engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+        engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
         searchUrlDomainWithoutSuffix: UrlbarUtils.stripPublicSuffixFromHost(
           wwwTestEngine.searchUrlDomain
         ),
         providesSearchMode: true,
         query: "",
-        providerName: "TabToSearch",
+        providerName: "UrlbarProviderTabToSearch",
       }),
     ],
   });
   await cleanupPlaces();
 
   // Both the engine and the history result have www.
-  await PlacesTestUtils.addVisits(["https://www.foo.bar/"]);
+  await PlacesTestUtils.addVisits([
+    {
+      url: "https://www.foo.bar/",
+      transition: PlacesUtils.history.TRANSITION_TYPED,
+    },
+  ]);
   context = createContext("foo", { isPrivate: false });
   await check_results({
     context,
@@ -214,17 +290,17 @@ add_task(async function ignoreWww() {
         uri: "https://www.foo.bar/",
         title: "test visit for https://www.foo.bar/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
       makeSearchResult(context, {
         engineName: wwwTestEngine.name,
-        engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+        engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
         searchUrlDomainWithoutSuffix: UrlbarUtils.stripPublicSuffixFromHost(
           wwwTestEngine.searchUrlDomain
         ),
         providesSearchMode: true,
         query: "",
-        providerName: "TabToSearch",
+        providerName: "UrlbarProviderTabToSearch",
       }),
     ],
   });
@@ -238,8 +314,14 @@ add_task(async function ignoreWww() {
 add_task(async function conflictingEngines() {
   for (let i = 0; i < 3; i++) {
     await PlacesTestUtils.addVisits([
-      "https://foobar.com/",
-      "https://foo.com/",
+      {
+        url: "https://foobar.com/",
+        transition: PlacesUtils.history.TRANSITION_TYPED,
+      },
+      {
+        url: "https://foo.com/",
+        transition: PlacesUtils.history.TRANSITION_TYPED,
+      },
     ]);
   }
   let extension1 = await SearchTestUtils.installSearchExtension(
@@ -256,8 +338,8 @@ add_task(async function conflictingEngines() {
     },
     { skipUnload: true }
   );
-  let fooBarTestEngine = Services.search.getEngineByName("TestFooBar");
-  let fooTestEngine = Services.search.getEngineByName("TestFoo");
+  let fooBarTestEngine = SearchService.getEngineByName("TestFooBar");
+  let fooTestEngine = SearchService.getEngineByName("TestFoo");
 
   // Search for "foo", autofilling foo.com. Observe that the foo.com
   // tab-to-search result is shown, even though the foobar.com engine was added
@@ -273,22 +355,22 @@ add_task(async function conflictingEngines() {
         uri: "https://foo.com/",
         title: "test visit for https://foo.com/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
       makeSearchResult(context, {
         engineName: fooTestEngine.name,
-        engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+        engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
         searchUrlDomainWithoutSuffix: UrlbarUtils.stripPublicSuffixFromHost(
           fooTestEngine.searchUrlDomain
         ),
         providesSearchMode: true,
         query: "",
-        providerName: "TabToSearch",
+        providerName: "UrlbarProviderTabToSearch",
       }),
       makeVisitResult(context, {
         uri: "https://foobar.com/",
         title: "test visit for https://foobar.com/",
-        providerName: "Places",
+        providerName: "UrlbarProviderPlaces",
       }),
     ],
   });
@@ -305,17 +387,17 @@ add_task(async function conflictingEngines() {
         uri: "https://foobar.com/",
         title: "test visit for https://foobar.com/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
       makeSearchResult(context, {
         engineName: fooBarTestEngine.name,
-        engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+        engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
         searchUrlDomainWithoutSuffix: UrlbarUtils.stripPublicSuffixFromHost(
           fooBarTestEngine.searchUrlDomain
         ),
         providesSearchMode: true,
         query: "",
-        providerName: "TabToSearch",
+        providerName: "UrlbarProviderTabToSearch",
       }),
     ],
   });
@@ -342,14 +424,17 @@ add_task(async function multipleEnginesForHostname() {
 
   // Add enough visits to autofill example.com.
   for (let i = 0; i < maxResultCount; i++) {
-    await PlacesTestUtils.addVisits("https://example.com/");
+    await PlacesTestUtils.addVisits({
+      url: "https://example.com/",
+      transition: PlacesUtils.history.TRANSITION_TYPED,
+    });
   }
 
   // Add enough visits to other URLs matching our query to fill up the list of
   // results.
   let otherVisitResults = [];
   for (let i = 0; i < maxResultCount; i++) {
-    let url = "https://mochi.test:8888/example/" + i;
+    let url = `https://mochi${i}.test:8888/example/` + i;
     await PlacesTestUtils.addVisits(url);
     otherVisitResults.unshift(
       makeVisitResult(context, {
@@ -368,17 +453,17 @@ add_task(async function multipleEnginesForHostname() {
         uri: "https://example.com/",
         title: "test visit for https://example.com/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
       makeSearchResult(context, {
         engineName: testEngine.name,
-        engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+        engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
         searchUrlDomainWithoutSuffix: UrlbarUtils.stripPublicSuffixFromHost(
           testEngine.searchUrlDomain
         ),
         providesSearchMode: true,
         query: "",
-        providerName: "TabToSearch",
+        providerName: "UrlbarProviderTabToSearch",
       }),
       // There should be `maxResultCount` - 2 other visit results. If this fails
       // because there are actually `maxResultCount` - 3 other results, then the
@@ -394,7 +479,12 @@ add_task(async function multipleEnginesForHostname() {
 
 add_task(async function test_casing() {
   info("Tab-to-search results appear also in case of different casing.");
-  await PlacesTestUtils.addVisits(["https://example.com/"]);
+  await PlacesTestUtils.addVisits([
+    {
+      url: "https://example.com/",
+      transition: PlacesUtils.history.TRANSITION_TYPED,
+    },
+  ]);
   let context = createContext("eXAm", { isPrivate: false });
   await check_results({
     context,
@@ -405,17 +495,17 @@ add_task(async function test_casing() {
         uri: "https://example.com/",
         title: "test visit for https://example.com/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
       makeSearchResult(context, {
         engineName: testEngine.name,
-        engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+        engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
         searchUrlDomainWithoutSuffix: UrlbarUtils.stripPublicSuffixFromHost(
           testEngine.searchUrlDomain
         ),
         providesSearchMode: true,
         query: "",
-        providerName: "TabToSearch",
+        providerName: "UrlbarProviderTabToSearch",
       }),
     ],
   });
@@ -431,33 +521,38 @@ add_task(async function test_publicSuffix() {
     },
     { skipUnload: true }
   );
-  let engine = Services.search.getEngineByName("MyTest");
-  await PlacesTestUtils.addVisits(["https://test.mytest.it/"]);
+  let engine = SearchService.getEngineByName("MyTest");
+  await PlacesTestUtils.addVisits([
+    {
+      url: "https://test.mytest.it/",
+      transition: PlacesUtils.history.TRANSITION_TYPED,
+    },
+  ]);
   let context = createContext("my", { isPrivate: false });
   await check_results({
     context,
     matches: [
       makeSearchResult(context, {
-        engineName: Services.search.defaultEngine.name,
-        engineIconUri: await Services.search.defaultEngine.getIconURL(),
+        engineName: SearchService.defaultEngine.name,
+        engineIconUri: await SearchService.defaultEngine.getIconURL(),
         heuristic: true,
-        providerName: "HeuristicFallback",
+        providerName: "UrlbarProviderHeuristicFallback",
       }),
       makeSearchResult(context, {
         engineName: engine.name,
-        engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+        engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
         searchUrlDomainWithoutSuffix: UrlbarUtils.stripPublicSuffixFromHost(
           engine.searchUrlDomain
         ),
         providesSearchMode: true,
         query: "",
-        providerName: "TabToSearch",
+        providerName: "UrlbarProviderTabToSearch",
         satisfiesAutofillThreshold: true,
       }),
       makeVisitResult(context, {
         uri: "https://test.mytest.it/",
         title: "test visit for https://test.mytest.it/",
-        providerName: "Places",
+        providerName: "UrlbarProviderPlaces",
       }),
     ],
   });
@@ -476,7 +571,12 @@ add_task(async function test_publicSuffixIsHost() {
   );
 
   // The top level domain will be autofilled, not the full domain.
-  await PlacesTestUtils.addVisits(["https://com.mx/"]);
+  await PlacesTestUtils.addVisits([
+    {
+      url: "https://com.mx/",
+      transition: PlacesUtils.history.TRANSITION_TYPED,
+    },
+  ]);
   let context = createContext("co", { isPrivate: false });
   await check_results({
     context,
@@ -487,7 +587,7 @@ add_task(async function test_publicSuffixIsHost() {
         uri: "https://com.mx/",
         title: "test visit for https://com.mx/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
     ],
   });
@@ -504,8 +604,13 @@ add_task(async function test_disabledEngine() {
     },
     { skipUnload: true }
   );
-  let engine = Services.search.getEngineByName("Disabled");
-  await PlacesTestUtils.addVisits(["https://disabled.com/"]);
+  let engine = SearchService.getEngineByName("Disabled");
+  await PlacesTestUtils.addVisits([
+    {
+      url: "https://disabled.com/",
+      transition: PlacesUtils.history.TRANSITION_TYPED,
+    },
+  ]);
   let context = createContext("dis", { isPrivate: false });
 
   info("Sanity check that the engine would appear.");
@@ -518,17 +623,17 @@ add_task(async function test_disabledEngine() {
         uri: "https://disabled.com/",
         title: "test visit for https://disabled.com/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
       makeSearchResult(context, {
         engineName: engine.name,
-        engineIconUri: UrlbarUtils.ICON.SEARCH_GLASS,
+        engineIconUri: UrlbarShared.ICON.SEARCH_GLASS,
         searchUrlDomainWithoutSuffix: UrlbarUtils.stripPublicSuffixFromHost(
           engine.searchUrlDomain
         ),
         providesSearchMode: true,
         query: "",
-        providerName: "TabToSearch",
+        providerName: "UrlbarProviderTabToSearch",
       }),
     ],
   });
@@ -545,7 +650,7 @@ add_task(async function test_disabledEngine() {
         uri: "https://disabled.com/",
         title: "test visit for https://disabled.com/",
         heuristic: true,
-        providerName: "Autofill",
+        providerName: "UrlbarProviderAutofill",
       }),
     ],
   });

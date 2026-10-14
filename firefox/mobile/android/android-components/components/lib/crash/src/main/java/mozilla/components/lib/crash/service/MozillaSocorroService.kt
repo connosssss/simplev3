@@ -11,16 +11,6 @@ import android.os.Build
 import androidx.annotation.VisibleForTesting
 import androidx.core.content.pm.PackageInfoCompat
 import androidx.core.net.toUri
-import mozilla.components.concept.base.crash.Breadcrumb
-import mozilla.components.lib.crash.Crash
-import mozilla.components.lib.crash.CrashReporter
-import mozilla.components.support.base.ext.getStacktraceAsJsonString
-import mozilla.components.support.base.ext.getStacktraceAsString
-import mozilla.components.support.base.log.logger.Logger
-import mozilla.components.support.utils.ext.getPackageInfoCompat
-import org.json.JSONArray
-import org.json.JSONException
-import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
@@ -37,12 +27,22 @@ import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPOutputStream
 import kotlin.random.Random
 import mozilla.components.Build as AcBuild
+import mozilla.components.concept.base.crash.Breadcrumb
+import mozilla.components.lib.crash.Crash
+import mozilla.components.lib.crash.RuntimeTag
+import mozilla.components.lib.crash.service.CrashReport.Annotation
+import mozilla.components.support.base.ext.getStacktraceAsJsonString
+import mozilla.components.support.base.ext.getStacktraceAsString
+import mozilla.components.support.base.log.logger.Logger
+import mozilla.components.support.utils.ext.packageManagerCompatHelper
+import org.json.JSONArray
+import org.json.JSONException
+import org.json.JSONObject
 
 // This ID is used for all Mozilla products.  Setting as default if no ID is passed in
 private const val MOZILLA_PRODUCT_ID = "{eeb82917-e434-4870-8148-5c03d4caa81b}"
 
-@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-internal const val CAUGHT_EXCEPTION_TYPE = "caught exception"
+@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE) internal const val CAUGHT_EXCEPTION_TYPE = "caught exception"
 internal const val UNCAUGHT_EXCEPTION_TYPE = "uncaught exception"
 internal const val FATAL_NATIVE_CRASH_TYPE = "fatal native crash"
 internal const val NON_FATAL_NATIVE_CRASH_TYPE = "non-fatal native crash"
@@ -61,14 +61,28 @@ private const val MINI_DUMP_FILE_EXT = "dmp"
 private const val EXTRAS_FILE_EXT = "extra"
 private const val FILE_REGEX = "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\\."
 
+private const val MISSING_STACKTRACE_CLASS = "\$Missing"
+private const val MISSING_STACKTRACE_METHOD = "<stackTrace>"
+
+/**
+ * Fills in a placeholder frame when a throwable has no stack trace so that Socorro can process it.
+ *
+ * These report similar to: `[@ kotlinx.coroutines.JobCancellationException: at $Missing.<stackTrace>(Unknown Source) ]`
+ */
+private fun Throwable.withStacktraceIfMissing(): Throwable = also {
+    if (stackTrace.isEmpty()) {
+        stackTrace = arrayOf(StackTraceElement(MISSING_STACKTRACE_CLASS, MISSING_STACKTRACE_METHOD, null, -1))
+    }
+}
+
 /**
  * A [CrashReporterService] implementation uploading crash reports to crash-stats.mozilla.com.
  *
  * @param applicationContext The application [Context].
- * @param appName A human-readable app name. This name is used on crash-stats.mozilla.com to filter crashes by app.
- *                The name needs to be safelisted for the server to accept the crash.
- *                [File a bug](https://bugzilla.mozilla.org/enter_bug.cgi?product=Socorro) if you would like to get your
- *                app added to the safelist.
+ * @param appName A human-readable app name. This name is used on crash-stats.mozilla.com to filter crashes by app. The
+ *   name needs to be safelisted for the server to accept the crash.
+ *   [File a bug](https://bugzilla.mozilla.org/enter_bug.cgi?product=Socorro) if you would like to get your app added to
+ *   the safelist.
  * @param appId The application ID assigned by Socorro server.
  * @param version The engine version.
  * @param buildId The engine build ID.
@@ -78,6 +92,7 @@ private const val FILE_REGEX = "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}
  * @param versionCode The version code of the application.
  * @param releaseChannel The release channel of the application.
  * @param distributionId The distribution id of the application.
+ * @param startTime the process start time in milliseconds, injectable for testing.
  */
 @Suppress("LargeClass")
 class MozillaSocorroService(
@@ -87,15 +102,14 @@ class MozillaSocorroService(
     private val version: String = DEFAULT_VERSION,
     private val buildId: String = DEFAULT_BUILD_ID,
     private val vendor: String = DEFAULT_VENDOR,
-    @get:VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    internal val serverUrl: String? = null,
+    @get:VisibleForTesting(otherwise = VisibleForTesting.PRIVATE) internal val serverUrl: String? = null,
     private var versionName: String = DEFAULT_VERSION_NAME,
     private var versionCode: String = DEFAULT_VERSION_CODE,
     private val releaseChannel: String = DEFAULT_RELEASE_CHANNEL,
     private val distributionId: String = DEFAULT_DISTRIBUTION_ID,
+    private val startTime: Long = System.currentTimeMillis(),
 ) : CrashReporterService {
     private val logger = Logger("mozac/MozillaSocorroCrashHelperService")
-    private val startTime = System.currentTimeMillis()
     private val ignoreKeys = hashSetOf("URL", "ServerURL", "StackTraces")
 
     override val id: String = "socorro"
@@ -107,12 +121,16 @@ class MozillaSocorroService(
     }
 
     init {
-        val packageInfo = try {
-            applicationContext.packageManager.getPackageInfoCompat(applicationContext.packageName, 0)
-        } catch (e: PackageManager.NameNotFoundException) {
-            logger.error("package name not found, failed to get application version")
-            null
-        }
+        val packageInfo =
+            try {
+                applicationContext.packageManagerCompatHelper.getPackageInfoCompat(
+                    applicationContext.packageName,
+                    0,
+                )
+            } catch (e: PackageManager.NameNotFoundException) {
+                logger.error("package name not found, failed to get application version")
+                null
+            }
 
         packageInfo?.let {
             if (versionName == DEFAULT_VERSION_NAME) {
@@ -169,7 +187,7 @@ class MozillaSocorroService(
         isNativeCodeCrash: Boolean,
         isFatalCrash: Boolean,
     ): String? {
-        val crashVersionName = crash.runtimeTags[CrashReporter.RELEASE_RUNTIME_TAG] ?: versionName
+        val crashVersionName = crash.runtimeTags[RuntimeTag.RELEASE] ?: versionName
         val url = URL(serverUrl ?: buildServerUrl(crashVersionName))
         val boundary = generateBoundary()
         var conn: HttpURLConnection? = null
@@ -187,8 +205,17 @@ class MozillaSocorroService(
             conn.setRequestProperty("Content-Encoding", "gzip")
 
             sendCrashData(
-                conn.outputStream, boundary, crash.timestamp, throwable, miniDumpFilePath, extrasFilePath,
-                isNativeCodeCrash, isFatalCrash, breadcrumbsJson.toString(), crashVersionName,
+                conn.outputStream,
+                boundary,
+                crash.timestamp,
+                throwable,
+                miniDumpFilePath,
+                extrasFilePath,
+                isNativeCodeCrash,
+                isFatalCrash,
+                breadcrumbsJson.toString(),
+                crashVersionName,
+                crash.uuid,
             )
 
             BufferedReader(InputStreamReader(conn.inputStream)).use { reader ->
@@ -232,7 +259,11 @@ class MozillaSocorroService(
         return map
     }
 
-    @Suppress("LongParameterList", "LongMethod", "ComplexMethod")
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    internal fun createFormDataWriter(os: OutputStream, boundary: String, logger: Logger) =
+        FormDataWriter(os, boundary, logger)
+
+    @Suppress("LongParameterList", "LongMethod", "CognitiveComplexMethod")
     private fun sendCrashData(
         os: OutputStream,
         boundary: String,
@@ -244,141 +275,113 @@ class MozillaSocorroService(
         isFatalCrash: Boolean,
         breadcrumbs: String,
         versionName: String,
+        crashEventId: String,
     ) {
-        val nameSet = mutableSetOf<String>()
-        val gzipOs = GZIPOutputStream(os)
-        sendPart(gzipOs, boundary, "ProductName", appName, nameSet)
-        sendPart(gzipOs, boundary, "ProductID", appId, nameSet)
-        sendPart(gzipOs, boundary, "Version", versionName, nameSet)
-        sendPart(gzipOs, boundary, "ApplicationBuildID", versionCode, nameSet)
-        sendPart(gzipOs, boundary, "AndroidComponentVersion", AcBuild.VERSION, nameSet)
-        sendPart(gzipOs, boundary, "GleanVersion", AcBuild.GLEAN_SDK_VERSION, nameSet)
-        sendPart(gzipOs, boundary, "ApplicationServicesVersion", AcBuild.APPLICATION_SERVICES_VERSION, nameSet)
-        sendPart(gzipOs, boundary, "GeckoViewVersion", version, nameSet)
-        sendPart(gzipOs, boundary, "BuildID", buildId, nameSet)
-        sendPart(gzipOs, boundary, "Vendor", vendor, nameSet)
-        sendPart(gzipOs, boundary, "Breadcrumbs", breadcrumbs, nameSet)
-        sendPart(gzipOs, boundary, "useragent_locale", Locale.getDefault().toLanguageTag(), nameSet)
-        sendPart(gzipOs, boundary, "DistributionID", distributionId, nameSet)
+        val formDataWriter = createFormDataWriter(GZIPOutputStream(os), boundary, logger)
+        formDataWriter.sendAnnotation(Annotation.ProductName, appName)
+        formDataWriter.sendAnnotation(Annotation.ProductID, appId)
+        formDataWriter.sendAnnotation(Annotation.Version, versionName)
+        formDataWriter.sendAnnotation(Annotation.ApplicationBuildID, versionCode)
+        formDataWriter.sendAnnotation(Annotation.AndroidComponentVersion, AcBuild.VERSION)
+        formDataWriter.sendAnnotation(Annotation.GleanVersion, AcBuild.GLEAN_SDK_VERSION)
+        formDataWriter.sendAnnotation(Annotation.ApplicationServicesVersion, AcBuild.APPLICATION_SERVICES_VERSION)
+        formDataWriter.sendAnnotation(Annotation.GeckoViewVersion, version)
+        formDataWriter.sendAnnotation(Annotation.BuildID, buildId)
+        formDataWriter.sendAnnotation(Annotation.Vendor, vendor)
+        formDataWriter.sendAnnotation(Annotation.Breadcrumbs, breadcrumbs)
+        formDataWriter.sendAnnotation(Annotation.useragent_locale, Locale.getDefault().toLanguageTag())
+        formDataWriter.sendAnnotation(Annotation.DistributionID, distributionId)
+
+        var additionalDumps: FormDataWriter.AdditionalMinidumps? = null
+        var extrasFileKeys = setOf<String>()
 
         extrasFilePath?.let {
             val regex = "$FILE_REGEX$EXTRAS_FILE_EXT".toRegex()
             if (regex.matchEntire(it.substringAfterLast("/")) != null) {
                 val extrasFile = File(it)
                 val extrasMap = readExtrasFromFile(extrasFile)
+                extrasFileKeys = extrasMap.keys
                 for (key in extrasMap.keys) {
-                    sendPart(gzipOs, boundary, key, extrasMap[key], nameSet)
+                    formDataWriter.sendPart(key, extrasMap[key])
                 }
+                additionalDumps = formDataWriter.AdditionalMinidumps(extrasMap)
                 extrasFile.delete()
             }
         }
 
-        if (throwable?.stackTrace?.isEmpty() == false) {
-            sendPart(
-                gzipOs,
-                boundary,
-                "JavaStackTrace",
+        val sendIfMissing = { a: Annotation, value: () -> String ->
+            if (!extrasFileKeys.contains(a.toString())) {
+                formDataWriter.sendAnnotation(a, value())
+            }
+        }
+
+        sendIfMissing(Annotation.CrashEventID) { crashEventId }
+
+        throwable?.withStacktraceIfMissing()?.also {
+            formDataWriter.sendAnnotation(
+                Annotation.JavaStackTrace,
                 getExceptionStackTrace(
-                    throwable,
+                    it,
                     !isNativeCodeCrash && !isFatalCrash,
                 ),
-                nameSet,
             )
 
-            sendPart(gzipOs, boundary, "JavaException", throwable.getStacktraceAsJsonString(), nameSet)
+            formDataWriter.sendAnnotation(Annotation.JavaException, it.getStacktraceAsJsonString())
         }
 
         miniDumpFilePath?.let {
             val regex = "$FILE_REGEX$MINI_DUMP_FILE_EXT".toRegex()
             if (regex.matchEntire(it.substringAfterLast("/")) != null) {
-                val minidumpFile = File(it)
-                sendFile(gzipOs, boundary, "upload_file_minidump", minidumpFile, nameSet)
-                minidumpFile.delete()
+                formDataWriter.sendAndDeleteFileAtPath("upload_file_minidump", it)
+                additionalDumps?.send(it)
             }
         }
 
-        when {
-            isNativeCodeCrash && isFatalCrash ->
-                sendPart(gzipOs, boundary, "CrashType", FATAL_NATIVE_CRASH_TYPE, nameSet)
-            isNativeCodeCrash && !isFatalCrash ->
-                sendPart(gzipOs, boundary, "CrashType", NON_FATAL_NATIVE_CRASH_TYPE, nameSet)
-            !isNativeCodeCrash && isFatalCrash ->
-                sendPart(gzipOs, boundary, "CrashType", UNCAUGHT_EXCEPTION_TYPE, nameSet)
-            !isNativeCodeCrash && !isFatalCrash ->
-                sendPart(gzipOs, boundary, "CrashType", CAUGHT_EXCEPTION_TYPE, nameSet)
-        }
+        formDataWriter.sendAnnotation(
+            Annotation.CrashType,
+            if (isNativeCodeCrash) {
+                if (isFatalCrash) FATAL_NATIVE_CRASH_TYPE else NON_FATAL_NATIVE_CRASH_TYPE
+            } else {
+                if (isFatalCrash) UNCAUGHT_EXCEPTION_TYPE else CAUGHT_EXCEPTION_TYPE
+            },
+        )
 
-        sendPackageInstallTime(gzipOs, boundary, nameSet)
-        sendProcessName(gzipOs, boundary, nameSet)
-        sendPart(gzipOs, boundary, "ReleaseChannel", releaseChannel, nameSet)
-        sendPart(
-            gzipOs,
-            boundary,
-            "StartupTime",
+        formDataWriter.sendPackageInstallTime(applicationContext)
+        formDataWriter.sendProcessName(applicationContext)
+        formDataWriter.sendAnnotation(Annotation.ReleaseChannel, releaseChannel)
+        formDataWriter.sendAnnotation(
+            Annotation.StartupTime,
             TimeUnit.MILLISECONDS.toSeconds(startTime).toString(),
-            nameSet,
         )
-        sendPart(
-            gzipOs,
-            boundary,
-            "CrashTime",
+        formDataWriter.sendAnnotation(
+            Annotation.CrashTime,
             TimeUnit.MILLISECONDS.toSeconds(timestamp).toString(),
-            nameSet,
         )
-        sendPart(gzipOs, boundary, "Android_PackageName", applicationContext.packageName, nameSet)
-        sendPart(gzipOs, boundary, "Android_Manufacturer", Build.MANUFACTURER, nameSet)
-        sendPart(gzipOs, boundary, "Android_Model", Build.MODEL, nameSet)
-        sendPart(gzipOs, boundary, "Android_Board", Build.BOARD, nameSet)
-        sendPart(gzipOs, boundary, "Android_Brand", Build.BRAND, nameSet)
-        sendPart(gzipOs, boundary, "Android_Device", Build.DEVICE, nameSet)
-        sendPart(gzipOs, boundary, "Android_Display", Build.DISPLAY, nameSet)
-        sendPart(gzipOs, boundary, "Android_Fingerprint", Build.FINGERPRINT, nameSet)
-        sendPart(gzipOs, boundary, "Android_Hardware", Build.HARDWARE, nameSet)
-        sendPart(
-            gzipOs,
-            boundary,
-            "Android_Version",
+        formDataWriter.sendAnnotation(Annotation.Android_PackageName, applicationContext.packageName)
+        formDataWriter.sendAnnotation(Annotation.Android_Manufacturer, Build.MANUFACTURER)
+        formDataWriter.sendAnnotation(Annotation.Android_Model, Build.MODEL)
+        formDataWriter.sendAnnotation(Annotation.Android_Board, Build.BOARD)
+        formDataWriter.sendAnnotation(Annotation.Android_Brand, Build.BRAND)
+        formDataWriter.sendAnnotation(Annotation.Android_Device, Build.DEVICE)
+        formDataWriter.sendAnnotation(Annotation.Android_Display, Build.DISPLAY)
+        formDataWriter.sendAnnotation(Annotation.Android_Fingerprint, Build.FINGERPRINT)
+        formDataWriter.sendAnnotation(Annotation.Android_Hardware, Build.HARDWARE)
+        formDataWriter.sendAnnotation(
+            Annotation.Android_Version,
             "${Build.VERSION.SDK_INT} (${Build.VERSION.CODENAME})",
-            nameSet,
         )
 
         if (Build.SUPPORTED_ABIS.isNotEmpty()) {
-            sendPart(gzipOs, boundary, "Android_CPU_ABI", Build.SUPPORTED_ABIS[0], nameSet)
+            formDataWriter.sendAnnotation(Annotation.Android_CPU_ABI, Build.SUPPORTED_ABIS[0])
             if (Build.SUPPORTED_ABIS.size >= 2) {
-                sendPart(gzipOs, boundary, "Android_CPU_ABI2", Build.SUPPORTED_ABIS[1], nameSet)
+                formDataWriter.sendAnnotation(Annotation.Android_CPU_ABI2, Build.SUPPORTED_ABIS[1])
             }
         }
+        sendIfMissing(Annotation.OS) { "Android" }
+        sendIfMissing(Annotation.OSVersion) { "${Build.VERSION.SDK_INT}" }
+        sendIfMissing(Annotation.CPUArchitecture) { Crash.CPU_ARCH }
 
-        gzipOs.write(("\r\n--$boundary--\r\n").toByteArray())
-        gzipOs.flush()
-        gzipOs.close()
-    }
-
-    private fun sendProcessName(os: OutputStream, boundary: String, nameSet: MutableSet<String>) {
-        val pid = android.os.Process.myPid()
-        val manager = applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        manager.runningAppProcesses.filter { it.pid == pid }.forEach {
-            sendPart(os, boundary, "Android_ProcessName", it.processName, nameSet)
-            return
-        }
-    }
-
-    private fun sendPackageInstallTime(os: OutputStream, boundary: String, nameSet: MutableSet<String>) {
-        val packageManager = applicationContext.packageManager
-        try {
-            val packageInfo = packageManager.getPackageInfoCompat(applicationContext.packageName, 0)
-            sendPart(
-                os,
-                boundary,
-                "InstallTime",
-                TimeUnit.MILLISECONDS.toSeconds(
-                    packageInfo.lastUpdateTime,
-                ).toString(),
-                nameSet,
-            )
-        } catch (e: PackageManager.NameNotFoundException) {
-            logger.error("Error getting package info", e)
-        }
+        formDataWriter.finish()
     }
 
     private fun generateBoundary(): String {
@@ -388,76 +391,131 @@ class MozillaSocorroService(
     }
 
     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    internal fun sendPart(
-        os: OutputStream,
-        boundary: String,
-        name: String,
-        data: String?,
-        nameSet: MutableSet<String>,
+    internal class FormDataWriter(
+        private val os: OutputStream,
+        private val boundary: String,
+        private val logger: Logger,
     ) {
-        if (data == null) {
-            return
+        private val nameSet: MutableSet<String> = mutableSetOf()
+
+        internal inner class AdditionalMinidumps(extrasMap: HashMap<String, String>) {
+            private val names = extrasMap[Annotation.additional_minidumps.toString()]?.split(',') ?: listOf()
+
+            fun send(baseMinidumpPath: String) {
+                for (suffix in names) {
+                    val path = "${baseMinidumpPath.removeSuffix(".$MINI_DUMP_FILE_EXT")}-$suffix.$MINI_DUMP_FILE_EXT"
+                    sendAndDeleteFileAtPath("upload_file_minidump_$suffix", path)
+                }
+            }
         }
 
-        if (nameSet.contains(name)) {
-            return
-        } else {
-            nameSet.add(name)
+        fun sendAnnotation(
+            annotation: Annotation,
+            data: String?,
+        ) {
+            sendPart(annotation.toString(), data)
         }
 
-        try {
-            os.write(
-                (
-                    "--$boundary\r\nContent-Disposition: form-data; " +
-                        "name=$name\r\n\r\n$data\r\n"
-                    ).toByteArray(),
-            )
-        } catch (e: IOException) {
-            logger.error("Exception when sending $name", e)
-        }
-    }
+        fun sendPart(name: String, data: String?) {
+            if (data == null) {
+                return
+            }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    internal fun sendFile(
-        os: OutputStream,
-        boundary: String,
-        name: String,
-        file: File,
-        nameSet: MutableSet<String>,
-    ) {
-        if (nameSet.contains(name)) {
-            return
-        } else {
-            nameSet.add(name)
+            if (nameSet.contains(name)) {
+                return
+            } else {
+                nameSet.add(name)
+            }
+
+            try {
+                os.write(
+                    ("--$boundary\r\nContent-Disposition: form-data; " + "name=$name\r\n\r\n$data\r\n").toByteArray()
+                )
+            } catch (e: IOException) {
+                logger.error("Exception when sending $name", e)
+            }
         }
 
-        try {
-            os.write(
-                (
-                    "--${boundary}\r\n" +
-                        "Content-Disposition: form-data; name=\"$name\"; " +
-                        "filename=\"${file.getName()}\"\r\n" +
-                        "Content-Type: application/octet-stream\r\n\r\n"
-                    ).toByteArray(),
-            )
-        } catch (e: IOException) {
-            logger.error("failed to write boundary", e)
-            return
+        fun sendAndDeleteFileAtPath(name: String, path: String) {
+            val file = File(path)
+            sendFile(name, file)
+            file.delete()
         }
 
-        try {
-            val fileInputStream = FileInputStream(file).channel
-            fileInputStream.transferTo(0, fileInputStream.size(), Channels.newChannel(os))
-            fileInputStream.close()
-        } catch (e: IOException) {
-            logger.error("failed to send file", e)
+        fun sendFile(
+            name: String,
+            file: File,
+        ) {
+            if (nameSet.contains(name)) {
+                return
+            } else {
+                nameSet.add(name)
+            }
+
+            if (!file.exists()) {
+                logger.error("failed to send file for $name as ${file.path} doesn't exist")
+                return
+            }
+
+            try {
+                os.write(
+                    ("--${boundary}\r\n" +
+                            "Content-Disposition: form-data; name=\"$name\"; " +
+                            "filename=\"${file.getName()}\"\r\n" +
+                            "Content-Type: application/octet-stream\r\n\r\n")
+                        .toByteArray()
+                )
+            } catch (e: IOException) {
+                logger.error("failed to write boundary", e)
+                return
+            }
+
+            try {
+                val fileInputStream = FileInputStream(file).channel
+                fileInputStream.transferTo(0, fileInputStream.size(), Channels.newChannel(os))
+                fileInputStream.close()
+            } catch (e: IOException) {
+                logger.error("failed to send file", e)
+            }
+
+            try {
+                // Add EOL to separate from the next part
+                os.write("\r\n".toByteArray())
+            } catch (e: IOException) {
+                logger.error("failed to write EOL", e)
+            }
         }
 
-        try {
-            // Add EOL to separate from the next part
-            os.write("\r\n".toByteArray())
-        } catch (e: IOException) {
-            logger.error("failed to write EOL", e)
+        fun sendProcessName(applicationContext: Context) {
+            val pid = android.os.Process.myPid()
+            val manager = applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            manager.runningAppProcesses
+                .filter { it.pid == pid }
+                .forEach {
+                    sendAnnotation(Annotation.Android_ProcessName, it.processName)
+                    return
+                }
+        }
+
+        fun sendPackageInstallTime(applicationContext: Context) {
+            val packageManager = applicationContext.packageManagerCompatHelper
+            try {
+                val packageInfo = packageManager.getPackageInfoCompat(applicationContext.packageName, 0)
+                sendAnnotation(
+                    Annotation.InstallTime,
+                    TimeUnit.MILLISECONDS.toSeconds(packageInfo.lastUpdateTime).toString(),
+                )
+            } catch (e: PackageManager.NameNotFoundException) {
+                logger.error("Error getting package info", e)
+            }
+        }
+
+        fun finish() {
+            // The close delimiter's leading CRLF is already supplied by the trailing CRLF
+            // every part writes; emitting another would land inside the last part's value.
+            os.write(("--$boundary--\r\n").toByteArray())
+            os.flush()
+            os.close()
         }
     }
 
@@ -516,8 +574,7 @@ class MozillaSocorroService(
 
         try {
             FileReader(file).use { fileReader ->
-                val input = fileReader.readLines().firstOrNull()
-                    ?: throw JSONException("failed to read json file")
+                val input = fileReader.readLines().firstOrNull() ?: throw JSONException("failed to read json file")
 
                 val jsonObject = JSONObject(input)
                 for (key in jsonObject.keys()) {
@@ -556,10 +613,12 @@ class MozillaSocorroService(
     }
 
     internal fun buildServerUrl(versionName: String): String =
-        "https://crash-reports.mozilla.com/submit".toUri()
+        "https://crash-reports.mozilla.com/submit"
+            .toUri()
             .buildUpon()
             .appendQueryParameter("id", appId)
             .appendQueryParameter("version", versionName)
             .appendQueryParameter("android_component_version", AcBuild.VERSION)
-            .build().toString()
+            .build()
+            .toString()
 }

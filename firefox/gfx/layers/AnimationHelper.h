@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,15 +5,13 @@
 #ifndef mozilla_layers_AnimationHelper_h
 #define mozilla_layers_AnimationHelper_h
 
+#include "X11UndefineNone.h"
+#include "mozilla/TimeStamp.h"  // for TimeStamp
+#include "mozilla/TimingParams.h"
 #include "mozilla/dom/Nullable.h"
 #include "mozilla/layers/AnimationStorageData.h"
 #include "mozilla/layers/LayersMessages.h"     // for TransformData, etc
 #include "mozilla/webrender/WebRenderTypes.h"  // for RenderRoot
-#include "mozilla/TimeStamp.h"                 // for TimeStamp
-#include "mozilla/TimingParams.h"
-#include "mozilla/Types.h"  // for SideBits
-#include "X11UndefineNone.h"
-#include <unordered_map>
 
 namespace mozilla::layers {
 class Animation;
@@ -35,6 +31,7 @@ class AnimationHelper {
  public:
   struct SampleResult {
     enum class Type : uint8_t { None, Skipped, Sampled };
+    // TODO(bug 2064481): Check if we need ScrollToDelayPhase anymore.
     enum class Reason : uint8_t { None, ScrollToDelayPhase };
     Type mType = Type::None;
     Reason mReason = Reason::None;

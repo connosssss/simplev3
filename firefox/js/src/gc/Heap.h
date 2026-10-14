@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -165,13 +163,6 @@ class alignas(ArenaSize) Arena {
    */
   AllocKind allocKind;
 
-  /*
-   * The zone that this Arena is contained within, when allocated. The offset
-   * of this field must match the ArenaZoneOffset stored in js/HeapAPI.h,
-   * as is statically asserted below.
-   */
-  JS::Zone* zone_;
-
  public:
   /*
    * Arena::next has two purposes: when unallocated, it points to the next
@@ -183,9 +174,9 @@ class alignas(ArenaSize) Arena {
  private:
   static const size_t ARENA_FLAG_BITS = 4;
   static const size_t DELAYED_MARKING_ARENA_BITS =
-      JS_BITS_PER_WORD - ArenaShift;
+      JS_BITS_PER_WORD - ARENA_FLAG_BITS;
   static_assert(
-      ARENA_FLAG_BITS + DELAYED_MARKING_ARENA_BITS <= JS_BITS_PER_WORD,
+      ArenaShift >= ARENA_FLAG_BITS,
       "Not enough space to pack flags and nextDelayedMarkingArena_ pointer "
       "into a single word.");
 
@@ -212,10 +203,9 @@ class alignas(ArenaSize) Arena {
     ArenaCellSet* bufferedCells_;
 
     /*
-     * For arenas in the atoms zone, the starting index into zone atom
-     * marking bitmaps (see AtomMarking.h) of the things in this zone.
-     * Atoms never refer to nursery things, so no store buffer index is
-     * needed.
+     * For arenas in the atoms zone, the starting index into zone atom reference
+     * bitmaps (see AtomMarking.h) of the things in this zone. Atoms never refer
+     * to nursery things, so no store buffer index is needed.
      */
     size_t atomBitmapStart_;
   };
@@ -230,9 +220,9 @@ class alignas(ArenaSize) Arena {
   uint8_t data[ArenaSize - ArenaHeaderSize];
 
   // Create a free arena in uninitialized committed memory.
-  void init(GCRuntime* gc, JS::Zone* zone, AllocKind kind);
+  void init(GCRuntime* gc, AllocKind kind);
 
-  JS::Zone* zone() const { return zone_; }
+  inline JS::Zone* zone() const;
 
   // Sets |firstFreeSpan| to the Arena's entire valid range, and
   // also sets the next span stored at |firstFreeSpan.last| as empty.
@@ -244,7 +234,7 @@ class alignas(ArenaSize) Arena {
     last->initAsEmpty();
   }
 
-  // Unregister the associated atom marking bitmap index for an arena in the
+  // Unregister the associated atom reference bitmap index for an arena in the
   // atoms zone.
   inline void freeAtomMarkingBitmapIndex(GCRuntime* gc, const AutoLockGC& lock);
 
@@ -549,6 +539,8 @@ class ArenaChunk : public ArenaChunkBase {
   // Merge arenas freed by background sweeping into the main free arenas bitmap.
   void mergePendingFreeArenas(GCRuntime* gc, const AutoLockGC& lock);
 
+  ArenaChunk* next() const { return info.next; }
+
 #ifdef DEBUG
   void verify() const;
 #else
@@ -604,7 +596,7 @@ struct alignas(gc::CellAlignBytes) NurseryCellHeader {
   static const uintptr_t TraceKindMask = 3;
 
   static uintptr_t MakeValue(AllocSite* const site, JS::TraceKind kind) {
-    MOZ_ASSERT(uintptr_t(kind) < TraceKindMask);
+    MOZ_ASSERT(uintptr_t(kind) <= TraceKindMask);
     MOZ_ASSERT((uintptr_t(site) & TraceKindMask) == 0);
     return uintptr_t(site) | uintptr_t(kind);
   }
@@ -634,6 +626,8 @@ static_assert(uintptr_t(JS::TraceKind::Object) <=
 static_assert(uintptr_t(JS::TraceKind::String) <=
               NurseryCellHeader::TraceKindMask);
 static_assert(uintptr_t(JS::TraceKind::BigInt) <=
+              NurseryCellHeader::TraceKindMask);
+static_assert(uintptr_t(JS::TraceKind::GetterSetter) <=
               NurseryCellHeader::TraceKindMask);
 
 } /* namespace gc */

@@ -4,7 +4,7 @@
 
 // Imported for side-effects.
 import { html } from "lit.all.mjs";
-import "chrome://global/content/elements/panel-list.js";
+import "chrome://global/content/elements/panel-list.mjs";
 import "browser/components/migration/content/migration-wizard.mjs";
 import { MigrationWizardConstants } from "chrome://browser/content/migration/migration-wizard-constants.mjs";
 
@@ -202,7 +202,7 @@ const Template = ({
     }
   </style>
 
-  <div class="card card-no-hover" style="width: fit-content">
+  <moz-card style="width: fit-content">
     <migration-wizard
       ?dialog-mode=${dialogMode}
       ?force-show-import-all=${forceShowImportAll}
@@ -224,7 +224,7 @@ const Template = ({
       subheader-font-weight=${subheaderFontWeight}
       .state=${state}
     ></migration-wizard>
-  </div>
+  </moz-card>
 `;
 
 export const LoadingSkeleton = Template.bind({});
@@ -585,6 +585,14 @@ SafariPermissions.args = {
   dialogMode: true,
   state: {
     page: MigrationWizardConstants.PAGES.SAFARI_PERMISSION,
+  },
+};
+
+export const SafariPreSequoiaPasswordPermissions = Template.bind({});
+SafariPreSequoiaPasswordPermissions.args = {
+  dialogMode: true,
+  state: {
+    page: MigrationWizardConstants.PAGES.SAFARI_PASSWORD_PERMISSION_PRE_SEQUOIA,
   },
 };
 

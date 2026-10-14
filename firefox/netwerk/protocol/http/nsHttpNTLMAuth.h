@@ -2,11 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsHttpNTLMAuth_h__
-#define nsHttpNTLMAuth_h__
+#ifndef nsHttpNTLMAuth_h_
+#define nsHttpNTLMAuth_h_
 
-#include "nsIHttpAuthenticator.h"
 #include "mozilla/StaticPtr.h"
+#include "nsIHttpAuthenticator.h"
 
 namespace mozilla {
 namespace net {
@@ -23,14 +23,10 @@ class nsHttpNTLMAuth : public nsIHttpAuthenticator {
  private:
   virtual ~nsHttpNTLMAuth() = default;
 
-  // This flag indicates whether we are using the native NTLM implementation
-  // or the internal one.
-  bool mUseNative{false};
-
   static StaticRefPtr<nsHttpNTLMAuth> gSingleton;
 };
 
 }  // namespace net
 }  // namespace mozilla
 
-#endif  // !nsHttpNTLMAuth_h__
+#endif  // !nsHttpNTLMAuth_h_

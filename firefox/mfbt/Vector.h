@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,17 +11,18 @@
 #include <type_traits>
 #include <utility>
 
-#include "mozilla/Alignment.h"
 #include "mozilla/AllocPolicy.h"
 #include "mozilla/ArrayUtils.h"  // for PointerRangeSize
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/CheckedArithmetic.h"
+#include "mozilla/Likely.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/OperatorNewExtensions.h"
+#include "mozilla/PodOperations.h"
 #include "mozilla/ReentrancyGuard.h"
 #include "mozilla/Span.h"
-#include "mozilla/TemplateLib.h"
 
 namespace mozilla {
 
@@ -38,7 +37,7 @@ namespace detail {
  * power-of-two as possible. growStorageBy() is responsible for ensuring this.
  */
 template <size_t EltSize>
-static bool CapacityHasExcessSpace(size_t aCapacity) {
+bool CapacityHasExcessSpace(size_t aCapacity) {
   size_t size = aCapacity * EltSize;
   return RoundUpPow2(size) - size >= EltSize;
 }
@@ -88,8 +87,8 @@ inline size_t GrowEltsByDoubling(size_t aOldElts, size_t aIncr) {
      *
      * for a Vector doesn't overflow ptrdiff_t (see bug 510319).
      */
-    if (MOZ_UNLIKELY(aOldElts &
-                     mozilla::tl::MulOverflowMask<4 * EltSize>::value)) {
+    [[maybe_unused]] size_t tmp;
+    if (MOZ_UNLIKELY(!mozilla::SafeMul(aOldElts, 4 * EltSize, &tmp))) {
       return 0;
     }
 
@@ -110,8 +109,9 @@ inline size_t GrowEltsByDoubling(size_t aOldElts, size_t aIncr) {
 
   /* Did aOldElts + aIncr overflow?  Will newMinCap * EltSize rounded up to the
    * next power of two overflow PTRDIFF_MAX? */
+  [[maybe_unused]] size_t tmp;
   if (MOZ_UNLIKELY(newMinCap < aOldElts ||
-                   newMinCap & tl::MulOverflowMask<4 * EltSize>::value)) {
+                   !mozilla::SafeMul(newMinCap, 4 * EltSize, &tmp))) {
     return 0;
   }
 
@@ -122,14 +122,14 @@ inline size_t GrowEltsByDoubling(size_t aOldElts, size_t aIncr) {
 
 // Fallback version.
 template <typename AP, size_t EltSize>
-static size_t ComputeGrowth(size_t aOldElts, size_t aIncr, int) {
+size_t ComputeGrowth(size_t aOldElts, size_t aIncr, int) {
   return GrowEltsByDoubling<EltSize>(aOldElts, aIncr);
 }
 
 // If the AllocPolicy provides its own computeGrowth<EltSize> implementation,
 // use that.
 template <typename AP, size_t EltSize>
-static size_t ComputeGrowth(
+size_t ComputeGrowth(
     size_t aOldElts, size_t aIncr,
     decltype(std::declval<AP>().template computeGrowth<EltSize>(0, 0),
              bool()) aOverloadSelector) {
@@ -272,16 +272,13 @@ struct VectorImpl<T, N, AP, true> {
   template <typename U>
   static inline void copyConstruct(T* aDst, const U* aSrcStart,
                                    const U* aSrcEnd) {
-    /*
-     * See above memset comment. Also, notice that copyConstruct is
-     * currently templated (T != U), so memcpy won't work without
-     * requiring T == U.
-     *
-     * memcpy(aDst, aSrcStart, sizeof(T) * (aSrcEnd - aSrcStart));
-     */
     MOZ_ASSERT(aSrcStart <= aSrcEnd);
-    for (const U* p = aSrcStart; p < aSrcEnd; ++p, ++aDst) {
-      new_(aDst, *p);
+    if constexpr (std::is_same_v<T, U>) {
+      PodCopy(aDst, aSrcStart, PointerRangeSize(aSrcStart, aSrcEnd));
+    } else {
+      for (const U* p = aSrcStart; p < aSrcEnd; ++p, ++aDst) {
+        new_(aDst, *p);
+      }
     }
   }
 
@@ -343,8 +340,8 @@ class MOZ_NON_PARAM MOZ_GSL_OWNER Vector final : private AllocPolicy {
   /* utilities */
   static constexpr bool kElemIsPod =
       std::is_trivial_v<T> && std::is_standard_layout_v<T>;
-  typedef detail::VectorImpl<T, MinInlineCapacity, AllocPolicy, kElemIsPod>
-      Impl;
+  using Impl =
+      detail::VectorImpl<T, MinInlineCapacity, AllocPolicy, kElemIsPod>;
   friend struct detail::VectorImpl<T, MinInlineCapacity, AllocPolicy,
                                    kElemIsPod>;
 
@@ -378,7 +375,7 @@ class MOZ_NON_PARAM MOZ_GSL_OWNER Vector final : private AllocPolicy {
   template <size_t MinimumInlineCapacity, size_t Dummy>
   struct ComputeCapacity {
     static constexpr size_t value =
-        tl::Min<MinimumInlineCapacity, kMaxInlineBytes / sizeof(T)>::value;
+        std::min(MinimumInlineCapacity, kMaxInlineBytes / sizeof(T));
   };
 
   template <size_t Dummy>
@@ -537,7 +534,7 @@ class MOZ_NON_PARAM MOZ_GSL_OWNER Vector final : private AllocPolicy {
  public:
   static const size_t sMaxInlineStorage = MinInlineCapacity;
 
-  typedef T ElementType;
+  using ElementType = T;
 
   explicit Vector(AllocPolicy);
   Vector() : Vector(AllocPolicy()) {}
@@ -545,6 +542,9 @@ class MOZ_NON_PARAM MOZ_GSL_OWNER Vector final : private AllocPolicy {
   Vector(Vector&&);            /* Move constructor. */
   Vector& operator=(Vector&&); /* Move assignment. */
   ~Vector();
+
+  Vector(const Vector&) = delete;
+  void operator=(const Vector&) = delete;
 
   /* accessors */
 
@@ -559,6 +559,22 @@ class MOZ_NON_PARAM MOZ_GSL_OWNER Vector final : private AllocPolicy {
   bool empty() const { return mLength == 0; }
 
   size_t capacity() const { return mTail.mCapacity; }
+
+#ifdef DEBUG
+  /**
+   * True unless mBegin is stale relative to this vector's own address.
+   * usingInlineStorage() reports whether mBegin points at this vector's own
+   * embedded storage; that self-reference goes stale if a struct embedding this
+   * vector is relocated via a raw byte copy that skips the struct's move
+   * constructor, e.g. by nsTArray's default (memmove) element-relocation
+   * strategy. (To fix that particular case, use
+   * MOZ_DECLARE_RELOCATE_USING_MOVE_CONSTRUCTOR on the element type so nsTArray
+   * uses its move constructor instead.)
+   */
+  bool isStorageConsistent() const {
+    return usingInlineStorage() == (mTail.mCapacity == kInlineCapacity);
+  }
+#endif
 
   T* begin() {
     MOZ_ASSERT(!mEntered);
@@ -582,25 +598,33 @@ class MOZ_NON_PARAM MOZ_GSL_OWNER Vector final : private AllocPolicy {
 
   T& operator[](size_t aIndex) {
     MOZ_ASSERT(!mEntered);
-    MOZ_ASSERT(aIndex < mLength);
+    if (MOZ_UNLIKELY(aIndex >= mLength)) {
+      mozilla::detail::InvalidArrayIndex_CRASH(aIndex, mLength);
+    }
     return begin()[aIndex];
   }
 
   const T& operator[](size_t aIndex) const {
     MOZ_ASSERT(!mEntered);
-    MOZ_ASSERT(aIndex < mLength);
+    if (MOZ_UNLIKELY(aIndex >= mLength)) {
+      mozilla::detail::InvalidArrayIndex_CRASH(aIndex, mLength);
+    }
     return begin()[aIndex];
   }
 
   T& back() {
     MOZ_ASSERT(!mEntered);
-    MOZ_ASSERT(!empty());
+    if (MOZ_UNLIKELY(empty())) {
+      mozilla::detail::InvalidArrayIndex_CRASH(0, 0);
+    }
     return *(end() - 1);
   }
 
   const T& back() const {
     MOZ_ASSERT(!mEntered);
-    MOZ_ASSERT(!empty());
+    if (MOZ_UNLIKELY(empty())) {
+      mozilla::detail::InvalidArrayIndex_CRASH(0, 0);
+    }
     return *(end() - 1);
   }
 
@@ -918,9 +942,20 @@ class MOZ_NON_PARAM MOZ_GSL_OWNER Vector final : private AllocPolicy {
 
   void swap(Vector& aOther);
 
- private:
-  Vector(const Vector&) = delete;
-  void operator=(const Vector&) = delete;
+  /**
+   * For internal use by allocation policies that provide garbage collected
+   * memory.
+   *
+   * Trace any allocations owned by this object that were made with AllocPolicy.
+   * Call the supplied closure |aTraceFunc| for each of them, passing a double
+   * pointer to the memory held (e.g. a void** pointer).
+   */
+  template <typename F>
+  void traceOwnedAllocs(F&& aTraceFunc) {
+    if (!usingInlineStorage()) {
+      aTraceFunc(&mBegin);
+    }
+  }
 };
 
 /* This does the re-entrancy check plus several other sanity checks. */
@@ -1048,8 +1083,7 @@ MOZ_NEVER_INLINE bool Vector<T, N, AP>::growStorageBy(size_t aIncr) {
 
   if (aIncr == 1 && usingInlineStorage()) {
     /* This case occurs in ~70--80% of the calls to this function. */
-    constexpr size_t newSize =
-        tl::RoundUpPow2<(kInlineCapacity + 1) * sizeof(T)>::value;
+    constexpr size_t newSize = RoundUpPow2((kInlineCapacity + 1) * sizeof(T));
     static_assert(newSize / sizeof(T) > 0,
                   "overflow when exceeding inline Vector storage");
     newCap = newSize / sizeof(T);
@@ -1519,7 +1553,9 @@ MOZ_ALWAYS_INLINE bool Vector<T, N, AP>::append(const U* aInsBegin,
 template <typename T, size_t N, class AP>
 MOZ_ALWAYS_INLINE void Vector<T, N, AP>::popBack() {
   MOZ_REENTRANCY_GUARD_ET_AL;
-  MOZ_ASSERT(!empty());
+  if (MOZ_UNLIKELY(empty())) {
+    mozilla::detail::InvalidArrayIndex_CRASH(0, 0);
+  }
   --mLength;
   endNoCheck()->~T();
 }
@@ -1626,7 +1662,8 @@ inline size_t Vector<T, N, AP>::sizeOfIncludingThis(
 
 template <typename T, size_t N, class AP>
 inline void Vector<T, N, AP>::swap(Vector& aOther) {
-  static_assert(N == 0, "still need to implement this for N != 0");
+  static_assert(N == 0,
+                "still need to implement this for N != 0 (Bug 1987683)");
 
   // This only works when inline storage is always empty.
   if (!usingInlineStorage() && aOther.usingInlineStorage()) {

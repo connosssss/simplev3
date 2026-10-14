@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,9 +8,10 @@
 // Allows to use RefPtr<T> with various kinds of GObjects
 
 #include <gdk/gdk.h>
+#include <gio/gdesktopappinfo.h>
 #include <gio/gio.h>
 #include <gtk/gtk.h>
-#include <gio/gdesktopappinfo.h>
+
 #include "mozilla/RefPtr.h"
 
 typedef struct _DbusmenuMenuitem DbusmenuMenuitem;
@@ -53,6 +53,8 @@ GOBJECT_TRAITS(GDBusMethodInvocation)
 GOBJECT_TRAITS(GdkWindow)
 GOBJECT_TRAITS(GtkIconInfo)
 GOBJECT_TRAITS(GIcon)
+GOBJECT_TRAITS(::GSettings)
+GOBJECT_TRAITS(GDBusConnection)
 
 #undef GOBJECT_TRAITS
 

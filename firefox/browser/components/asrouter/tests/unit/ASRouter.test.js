@@ -13,7 +13,6 @@ import {
   TARGETING_PREFERENCES,
 } from "modules/ASRouterPreferences.sys.mjs";
 import { ASRouterTriggerListeners } from "modules/ASRouterTriggerListeners.sys.mjs";
-import { CFRPageActions } from "modules/CFRPageActions.sys.mjs";
 import { GlobalOverrider } from "tests/unit/utils";
 import { PanelTestProvider } from "modules/PanelTestProvider.sys.mjs";
 import ProviderResponseSchema from "content-src/schemas/provider-response.schema.json";
@@ -26,6 +25,7 @@ const FAKE_PROVIDERS = [
   FAKE_REMOTE_SETTINGS_PROVIDER,
 ];
 const ONE_DAY_IN_MS = 24 * 60 * 60 * 1000;
+const SIX_MONTHS_IN_MS = (24 * 60 * 60 * 365 * 1000) / 2;
 const FAKE_RESPONSE_HEADERS = { get() {} };
 const FAKE_BUNDLE = [FAKE_LOCAL_MESSAGES[1], FAKE_LOCAL_MESSAGES[2]];
 
@@ -49,9 +49,13 @@ describe("ASRouter", () => {
   let fakeTargetingContext;
   let FakeToolbarBadgeHub;
   let FakeMomentsPageHub;
+  let FakeSpecialMessageActions;
+  let FakeMessagingSystemAllowlists;
   let ASRouterTargeting;
   let gBrowser;
   let screenImpressions;
+  let multiProfileMessageImpressions;
+  let multiProfileMessageBlocklist;
 
   function setMessageProviderPref(value) {
     sandbox.stub(ASRouterPreferences, "providers").get(() => value);
@@ -63,6 +67,9 @@ describe("ASRouter", () => {
     getStub
       .withArgs("messageBlockList")
       .returns(Promise.resolve(messageBlockList));
+    getStub
+      .withArgs("multiProfileMessageBlocklist")
+      .returns(Promise.resolve(multiProfileMessageBlocklist));
     getStub
       .withArgs("providerBlockList")
       .returns(Promise.resolve(providerBlockList));
@@ -80,6 +87,15 @@ describe("ASRouter", () => {
       storage: {
         get: getStub,
         set: sandbox.stub().returns(Promise.resolve()),
+        setSharedMessageImpressions: sandbox.stub(),
+        getSharedMessageImpressions: sandbox
+          .stub()
+          .resolves(multiProfileMessageImpressions),
+        setSharedMessageBlocked: sandbox.stub(),
+        getSharedMessageBlocklist: sandbox
+          .stub()
+          .resolves(multiProfileMessageBlocklist),
+        resetSharedMessageStorage: sandbox.stub().resolves(),
       },
       sendTelemetry: sandbox.stub().resolves(),
       clearChildMessages: sandbox.stub().resolves(),
@@ -87,6 +103,7 @@ describe("ASRouter", () => {
       updateAdminState: sandbox.stub().resolves(),
       dispatchCFRAction: sandbox.stub().resolves(),
     };
+    MessageLoaderUtils._recordedReachIds = new Set();
     sandbox.stub(router, "loadMessagesFromAllProviders").callThrough();
     return router.init(initParams);
   }
@@ -106,10 +123,18 @@ describe("ASRouter", () => {
     groupImpressions = {};
     previousSessionEnd = 100;
     screenImpressions = {};
+    multiProfileMessageImpressions = {};
+    multiProfileMessageBlocklist = [];
     sandbox = sinon.createSandbox();
     ASRouterTargeting = {
       isMatch: sandbox.stub(),
       findMatchingMessage: sandbox.stub(),
+      getMessageTriggers: message => {
+        if (Array.isArray(message.triggers)) {
+          return message.triggers;
+        }
+        return message.trigger ? [message.trigger] : [];
+      },
       Environment: {
         locale: "en-US",
         localeLanguageCode: "en",
@@ -168,7 +193,6 @@ describe("ASRouter", () => {
         platformName: "macosx",
         scores: {},
         scoreThreshold: 5000,
-        isChinaRepack: false,
         userId: "adsf",
         currentProfileId: "1",
         canCreateSelectableProfiles: false,
@@ -178,7 +202,7 @@ describe("ASRouter", () => {
     gBrowser = {
       selectedBrowser: {
         constructor: { name: "MozBrowser" },
-        get ownerGlobal() {
+        get documentGlobal() {
           return { gBrowser };
         },
       },
@@ -187,6 +211,7 @@ describe("ASRouter", () => {
     ASRouterPreferences.specialConditions = {
       someCondition: true,
     };
+    sandbox.stub(ASRouterPreferences, "_maybeSetMessagingProfileID").resolves();
     sandbox.spy(ASRouterPreferences, "init");
     sandbox.spy(ASRouterPreferences, "uninit");
     sandbox.spy(ASRouterPreferences, "addListener");
@@ -235,12 +260,16 @@ describe("ASRouter", () => {
       "fxms-message-15",
     ].reduce((features, featureId) => {
       features[featureId] = {
-        getEnrollmentMetadata: sandbox.stub().returns({
-          slug: "experiment-slug",
-          branch: "experiment-branch-slug",
-          isRollout: false,
-        }),
-        getAllVariables: sandbox.stub().returns(undefined),
+        getAllEnrollments: sandbox.stub().returns([
+          {
+            meta: {
+              slug: "experiment-slug",
+              branch: "experiment-branch-slug",
+              isRollout: false,
+            },
+            value: undefined,
+          },
+        ]),
         recordExposureEvent: sandbox.stub(),
       };
       return features;
@@ -262,17 +291,6 @@ describe("ASRouter", () => {
       MacAttribution: { applicationPath: "" },
       ToolbarBadgeHub: FakeToolbarBadgeHub,
       MomentsPageHub: FakeMomentsPageHub,
-      KintoHttpClient: class {
-        bucket() {
-          return this;
-        }
-        collection() {
-          return this;
-        }
-        getRecord() {
-          return Promise.resolve({ data: { attachment: { size: 42 } } });
-        }
-      },
       UnstoredDownloader: class {
         download() {
           return Promise.resolve({ buffer: "fake buffer" });
@@ -283,9 +301,13 @@ describe("ASRouter", () => {
         getAllBranches: sandbox.stub().resolves([]),
         ready: sandbox.stub().resolves(),
       },
-      SpecialMessageActions: {
+      SpecialMessageActions: (FakeSpecialMessageActions = {
         handleAction: sandbox.stub(),
-      },
+      }),
+      MessagingSystemAllowlists: (FakeMessagingSystemAllowlists = {
+        ensureInit: sandbox.stub().resolves(),
+        getActionOnlyActions: sandbox.stub().returns([]),
+      }),
       TargetingContext: class {
         static combineContexts(...args) {
           return fakeTargetingContext.combineContexts.apply(sandbox, args);
@@ -397,8 +419,8 @@ describe("ASRouter", () => {
 
       assert.deepEqual(Router.state.screenImpressions, screenImpressions);
     });
-    it("should clear impressions for groups that are not active", async () => {
-      groupImpressions = { foo: [0, 1, 2] };
+    it("should clear impressions for groups that are not active once they are more than six months old", async () => {
+      groupImpressions = { foo: [Date.now() - SIX_MONTHS_IN_MS - 1] };
       Router = new _ASRouter();
       await initASRouter(Router);
 
@@ -544,6 +566,94 @@ describe("ASRouter", () => {
           },
         ]);
       });
+    });
+
+    it("should load shared message impressions and blocklist when selectable profiles are enabled", async () => {
+      const testMessage = { id: "msg1", frequency: { lifetimeCap: 10 } };
+      setMessageProviderPref([
+        { id: "onboarding", type: "local", messages: [testMessage] },
+      ]);
+
+      const testMultiProfileImpressions = { msg1: [123, 456] };
+      const testMultiProfileBlocklist = ["blocked1", "blocked2"];
+      const getSharedMessageImpressions = sandbox
+        .stub()
+        .resolves(testMultiProfileImpressions);
+      const getSharedMessageBlocklist = sandbox
+        .stub()
+        .resolves(testMultiProfileBlocklist);
+
+      sandbox
+        .stub(ASRouterTargeting.Environment, "canCreateSelectableProfiles")
+        .value(true);
+      sandbox
+        .stub(ASRouterTargeting.Environment, "hasSelectableProfiles")
+        .value(true);
+
+      Router = new _ASRouter();
+      const getStub = sandbox.stub();
+
+      const testInitParams = {
+        storage: {
+          get: getStub,
+          set: sandbox.stub().returns(Promise.resolve()),
+          getSharedMessageImpressions,
+          getSharedMessageBlocklist,
+        },
+      };
+
+      await Router.init(testInitParams);
+
+      assert.calledOnce(getSharedMessageImpressions);
+      assert.calledOnce(getSharedMessageBlocklist);
+      assert.deepEqual(
+        Router.state.multiProfileMessageImpressions,
+        testMultiProfileImpressions
+      );
+      assert.deepEqual(
+        Router.state.multiProfileMessageBlocklist,
+        testMultiProfileBlocklist
+      );
+    });
+
+    it("should not load shared data when selectable profiles are disabled", async () => {
+      const getSharedMessageImpressions = sandbox.stub();
+      const getSharedMessageBlocklist = sandbox.stub();
+
+      sandbox
+        .stub(ASRouterTargeting.Environment, "canCreateSelectableProfiles")
+        .value(false);
+      sandbox
+        .stub(ASRouterTargeting.Environment, "hasSelectableProfiles")
+        .value(false);
+
+      Router = new _ASRouter();
+      const getStub = sandbox.stub();
+
+      const testInitParams = {
+        storage: {
+          get: getStub,
+          set: sandbox.stub().returns(Promise.resolve()),
+          getSharedMessageImpressions,
+          getSharedMessageBlocklist,
+        },
+      };
+
+      await Router.init(testInitParams);
+
+      assert.notCalled(getSharedMessageImpressions);
+      assert.notCalled(getSharedMessageBlocklist);
+    });
+
+    it("should add observer for multiprofile data updates", async () => {
+      sandbox.spy(global.Services.obs, "addObserver");
+      await createRouterAndInit();
+
+      assert.calledWithExactly(
+        global.Services.obs.addObserver,
+        Router._updateMultiprofileData,
+        "sps-profiles-updated"
+      );
     });
   });
 
@@ -693,8 +803,6 @@ describe("ASRouter", () => {
   describe("#routeCFRMessage", () => {
     let browser;
     beforeEach(() => {
-      sandbox.stub(CFRPageActions, "forceRecommendation");
-      sandbox.stub(CFRPageActions, "addRecommendation");
       browser = {};
     });
     it("should route moments messages to the right hub", () => {
@@ -702,78 +810,11 @@ describe("ASRouter", () => {
 
       assert.calledOnce(FakeMomentsPageHub.executeAction);
       assert.notCalled(FakeToolbarBadgeHub.registerBadgeNotificationListener);
-      assert.notCalled(CFRPageActions.addRecommendation);
-      assert.notCalled(CFRPageActions.forceRecommendation);
     });
     it("should route toolbar_badge message to the right hub", () => {
       Router.routeCFRMessage({ template: "toolbar_badge" }, browser);
 
       assert.calledOnce(FakeToolbarBadgeHub.registerBadgeNotificationListener);
-      assert.notCalled(CFRPageActions.addRecommendation);
-      assert.notCalled(CFRPageActions.forceRecommendation);
-      assert.notCalled(FakeMomentsPageHub.executeAction);
-    });
-    it("should route milestone_message to the right hub", () => {
-      Router.routeCFRMessage(
-        { template: "milestone_message" },
-        browser,
-        "",
-        false
-      );
-
-      assert.calledOnce(CFRPageActions.addRecommendation);
-      assert.notCalled(CFRPageActions.forceRecommendation);
-      assert.notCalled(FakeToolbarBadgeHub.registerBadgeNotificationListener);
-      assert.notCalled(FakeMomentsPageHub.executeAction);
-    });
-    it("should route cfr_doorhanger message to the right hub force = false", () => {
-      Router.routeCFRMessage(
-        { template: "cfr_doorhanger" },
-        browser,
-        { param: {} },
-        false
-      );
-
-      assert.calledOnce(CFRPageActions.addRecommendation);
-      assert.notCalled(FakeToolbarBadgeHub.registerBadgeNotificationListener);
-      assert.notCalled(CFRPageActions.forceRecommendation);
-      assert.notCalled(FakeMomentsPageHub.executeAction);
-    });
-    it("should route cfr_doorhanger message to the right hub force = true", () => {
-      Router.routeCFRMessage({ template: "cfr_doorhanger" }, browser, {}, true);
-
-      assert.calledOnce(CFRPageActions.forceRecommendation);
-      assert.notCalled(CFRPageActions.addRecommendation);
-      assert.notCalled(FakeToolbarBadgeHub.registerBadgeNotificationListener);
-      assert.notCalled(FakeMomentsPageHub.executeAction);
-    });
-    it("should route cfr_urlbar_chiclet message to the right hub force = false", () => {
-      Router.routeCFRMessage(
-        { template: "cfr_urlbar_chiclet" },
-        browser,
-        { param: {} },
-        false
-      );
-
-      assert.calledOnce(CFRPageActions.addRecommendation);
-      const { args } = CFRPageActions.addRecommendation.firstCall;
-      // Host should be null
-      assert.isNull(args[1]);
-      assert.notCalled(FakeToolbarBadgeHub.registerBadgeNotificationListener);
-      assert.notCalled(CFRPageActions.forceRecommendation);
-      assert.notCalled(FakeMomentsPageHub.executeAction);
-    });
-    it("should route cfr_urlbar_chiclet message to the right hub force = true", () => {
-      Router.routeCFRMessage(
-        { template: "cfr_urlbar_chiclet" },
-        browser,
-        {},
-        true
-      );
-
-      assert.calledOnce(CFRPageActions.forceRecommendation);
-      assert.notCalled(CFRPageActions.addRecommendation);
-      assert.notCalled(FakeToolbarBadgeHub.registerBadgeNotificationListener);
       assert.notCalled(FakeMomentsPageHub.executeAction);
     });
     it("should route default to sending to content", () => {
@@ -784,10 +825,271 @@ describe("ASRouter", () => {
         true
       );
 
-      assert.notCalled(CFRPageActions.forceRecommendation);
-      assert.notCalled(CFRPageActions.addRecommendation);
       assert.notCalled(FakeToolbarBadgeHub.registerBadgeNotificationListener);
       assert.notCalled(FakeMomentsPageHub.executeAction);
+    });
+    describe("action template", () => {
+      let addImpressionStub;
+      let blockMessageByIdStub;
+      const allowedMessage = {
+        id: "TEST_ACTION",
+        template: "action_only",
+        content: { action: { type: "CONFIRM_LAUNCH_ON_LOGIN" } },
+      };
+      beforeEach(() => {
+        addImpressionStub = sandbox.stub(Router, "addImpression");
+        blockMessageByIdStub = sandbox.stub(Router, "blockMessageById");
+      });
+      it("calls handleAction and records an impression without blocking for an allowed action", async () => {
+        Router.routeCFRMessage(allowedMessage, browser, {});
+        await Promise.resolve(); // let dispatchCFRAction's async wrapper resolve
+
+        assert.calledOnceWithExactly(
+          FakeSpecialMessageActions.handleAction,
+          allowedMessage.content.action,
+          browser
+        );
+        assert.calledWithMatch(initParams.dispatchCFRAction, {
+          type: "ACTION_ONLY_TELEMETRY",
+          data: {
+            action: "action_only_user_event",
+            message_id: allowedMessage.id,
+            event: "IMPRESSION",
+          },
+        });
+        assert.calledWithMatch(initParams.dispatchCFRAction, {
+          type: "IMPRESSION",
+          data: allowedMessage,
+        });
+        assert.notCalled(addImpressionStub);
+        assert.notCalled(blockMessageByIdStub);
+      });
+      it("allowlists the SET_DEFAULT_BROWSER_OPEN_WITH action", () => {
+        assert.isTrue(
+          Router._isAllowedActionOnlyMessageAction({
+            type: "SET_DEFAULT_BROWSER_OPEN_WITH",
+          }),
+          "SET_DEFAULT_BROWSER_OPEN_WITH is an allowed action-only action"
+        );
+      });
+      it("allowlists ENABLE_CLOSED_BROWSER_NOTIFICATIONS but not its opposite", () => {
+        assert.isTrue(
+          Router._isAllowedActionOnlyMessageAction({
+            type: "ENABLE_CLOSED_BROWSER_NOTIFICATIONS",
+          }),
+          "the enabling action can fire from an action_only message"
+        );
+        assert.isFalse(
+          Router._isAllowedActionOnlyMessageAction({
+            type: "DISABLE_CLOSED_BROWSER_NOTIFICATIONS",
+          }),
+          "the disabling action only ever fires from UI the user clicked"
+        );
+      });
+      it("does nothing for a non-allowlisted action", () => {
+        const badMessage = {
+          id: "BAD",
+          template: "action_only",
+          content: { action: { type: "OPEN_URL" } },
+        };
+        Router.routeCFRMessage(badMessage, browser, {});
+
+        assert.notCalled(FakeSpecialMessageActions.handleAction);
+        assert.notCalled(addImpressionStub);
+        assert.notCalled(blockMessageByIdStub);
+      });
+      it("allows MULTI_ACTION when every nested action is allowlisted", async () => {
+        const multiMessage = {
+          id: "MULTI",
+          template: "action_only",
+          content: {
+            action: {
+              type: "MULTI_ACTION",
+              data: {
+                actions: [
+                  { type: "CONFIRM_LAUNCH_ON_LOGIN" },
+                  { type: "PIN_FIREFOX_TO_TASKBAR" },
+                ],
+              },
+            },
+          },
+        };
+        Router.routeCFRMessage(multiMessage, browser, {});
+        await Promise.resolve(); // let dispatchCFRAction's async wrapper resolve
+
+        assert.calledOnce(FakeSpecialMessageActions.handleAction);
+        assert.calledWithMatch(initParams.dispatchCFRAction, {
+          type: "IMPRESSION",
+          data: multiMessage,
+        });
+        assert.notCalled(addImpressionStub);
+      });
+      it("rejects MULTI_ACTION when any nested action is not allowlisted", () => {
+        const badMulti = {
+          id: "BAD_MULTI",
+          template: "action_only",
+          content: {
+            action: {
+              type: "MULTI_ACTION",
+              data: {
+                actions: [
+                  { type: "CONFIRM_LAUNCH_ON_LOGIN" },
+                  { type: "OPEN_URL" },
+                ],
+              },
+            },
+          },
+        };
+        Router.routeCFRMessage(badMulti, browser, {});
+
+        assert.notCalled(FakeSpecialMessageActions.handleAction);
+        assert.notCalled(addImpressionStub);
+      });
+      it("rejects a nested MULTI_ACTION even if MULTI_ACTION is allowlisted", () => {
+        // MULTI_ACTION is not blocklisted, so Remote Settings can grant it. It
+        // is still only valid as the top level action.
+        FakeMessagingSystemAllowlists.getActionOnlyActions.returns([
+          "MULTI_ACTION",
+        ]);
+        const nestedMulti = {
+          id: "NESTED_MULTI",
+          template: "action_only",
+          content: {
+            action: {
+              type: "MULTI_ACTION",
+              data: {
+                actions: [
+                  {
+                    type: "MULTI_ACTION",
+                    data: { actions: [{ type: "OPEN_URL" }] },
+                  },
+                ],
+              },
+            },
+          },
+        };
+        Router.routeCFRMessage(nestedMulti, browser, {});
+
+        assert.notCalled(FakeSpecialMessageActions.handleAction);
+        assert.notCalled(addImpressionStub);
+      });
+      it("rejects a MULTI_ACTION with no nested actions", () => {
+        const emptyMulti = {
+          id: "EMPTY_MULTI",
+          template: "action_only",
+          content: {
+            action: { type: "MULTI_ACTION", data: { actions: [] } },
+          },
+        };
+        Router.routeCFRMessage(emptyMulti, browser, {});
+
+        assert.notCalled(FakeSpecialMessageActions.handleAction);
+        assert.notCalled(addImpressionStub);
+      });
+      it("does nothing when the message has no action", () => {
+        const noAction = {
+          id: "NO_ACTION",
+          template: "action_only",
+          content: {},
+        };
+        Router.routeCFRMessage(noAction, browser, {});
+
+        assert.notCalled(FakeSpecialMessageActions.handleAction);
+        assert.notCalled(addImpressionStub);
+        assert.notCalled(blockMessageByIdStub);
+      });
+      it("allows an action supplied only by the Remote Settings allowlist", async () => {
+        FakeMessagingSystemAllowlists.getActionOnlyActions.returns([
+          "FOO_ACTION",
+        ]);
+        const rsMessage = {
+          id: "RS_ACTION",
+          template: "action_only",
+          content: { action: { type: "FOO_ACTION" } },
+        };
+        Router.routeCFRMessage(rsMessage, browser, {});
+        await Promise.resolve(); // let dispatchCFRAction's async wrapper resolve
+
+        assert.calledOnceWithExactly(
+          FakeSpecialMessageActions.handleAction,
+          rsMessage.content.action,
+          browser
+        );
+        assert.notCalled(addImpressionStub);
+        assert.calledWithMatch(initParams.dispatchCFRAction, {
+          type: "IMPRESSION",
+          data: rsMessage,
+        });
+      });
+      it("rejects an action absent from both baseline and Remote Settings", () => {
+        FakeMessagingSystemAllowlists.getActionOnlyActions.returns([
+          "FOO_ACTION",
+        ]);
+        const badMessage = {
+          id: "BAR",
+          template: "action_only",
+          content: { action: { type: "BAR_ACTION" } },
+        };
+        Router.routeCFRMessage(badMessage, browser, {});
+
+        assert.notCalled(FakeSpecialMessageActions.handleAction);
+        assert.notCalled(addImpressionStub);
+      });
+      it("allows MULTI_ACTION mixing baseline and Remote Settings actions", async () => {
+        FakeMessagingSystemAllowlists.getActionOnlyActions.returns([
+          "FOO_ACTION",
+        ]);
+        const multiMessage = {
+          id: "MIXED_MULTI",
+          template: "action_only",
+          content: {
+            action: {
+              type: "MULTI_ACTION",
+              data: {
+                actions: [
+                  { type: "CONFIRM_LAUNCH_ON_LOGIN" },
+                  { type: "FOO_ACTION" },
+                ],
+              },
+            },
+          },
+        };
+        Router.routeCFRMessage(multiMessage, browser, {});
+        await Promise.resolve(); // let dispatchCFRAction's async wrapper resolve
+
+        assert.calledOnceWithExactly(
+          FakeSpecialMessageActions.handleAction,
+          multiMessage.content.action,
+          browser
+        );
+        assert.notCalled(addImpressionStub);
+        assert.calledWithMatch(initParams.dispatchCFRAction, {
+          type: "IMPRESSION",
+          data: multiMessage,
+        });
+      });
+    });
+    it("should tag the message with panel_local_testing when force is true", () => {
+      const msg = {
+        template: "feature_callout",
+        provider: "cfr",
+        targeting: "true",
+      };
+      const { message } = Router.routeCFRMessage(msg, browser, {}, true);
+      assert.equal(message.provider, "panel_local_testing");
+      assert.include(
+        message.targeting,
+        'providerCohorts.panel_local_testing == "SHOW_TEST"'
+      );
+    });
+    it("should not modify the message provider when force is false", () => {
+      const msg = {
+        template: "feature_callout",
+        provider: "cfr",
+        targeting: "true",
+      };
+      const { message } = Router.routeCFRMessage(msg, browser, {}, false);
+      assert.equal(message.provider, "cfr");
     });
   });
 
@@ -907,13 +1209,53 @@ describe("ASRouter", () => {
         ASRouterTriggerListeners.get("openURL").init,
         Router._triggerHandler,
         ["www.mozilla.org", "www.mozilla.com"],
-        undefined
+        undefined, // patterns
+        undefined // regexPatterns
       );
       assert.calledWithExactly(
         ASRouterTriggerListeners.get("openURL").init,
         Router._triggerHandler,
         ["www.example.com"],
-        undefined
+        undefined, // patterns
+        undefined // regexPatterns
+      );
+    });
+    it("should register a listener for each trigger of a multi-trigger message", async () => {
+      sandbox.spy(ASRouterTriggerListeners.get("openURL"), "init");
+      sandbox.spy(ASRouterTriggerListeners.get("frequentVisits"), "init");
+
+      await createRouterAndInit([
+        {
+          id: "foo",
+          type: "local",
+          enabled: true,
+          messages: [
+            {
+              id: "multi",
+              template: "simple_template",
+              triggers: [
+                { id: "openURL", params: ["www.mozilla.org"] },
+                { id: "frequentVisits", params: ["www.example.com"] },
+              ],
+              content: { title: "Multi", body: "Multi123" },
+            },
+          ],
+        },
+      ]);
+
+      assert.calledWithExactly(
+        ASRouterTriggerListeners.get("openURL").init,
+        Router._triggerHandler,
+        ["www.mozilla.org"],
+        undefined, // patterns
+        undefined // regexPatterns
+      );
+      assert.calledWithExactly(
+        ASRouterTriggerListeners.get("frequentVisits").init,
+        Router._triggerHandler,
+        ["www.example.com"],
+        undefined, // patterns
+        undefined // regexPatterns
       );
     });
     it("should parse the message's messagesLoaded trigger and immediately fire trigger", async () => {
@@ -973,7 +1315,6 @@ describe("ASRouter", () => {
           type: "local",
           enabled: true,
           messages: [
-            "cfr_doorhanger",
             "toolbar_badge",
             "update_action",
             "infobar",
@@ -1034,6 +1375,9 @@ describe("ASRouter", () => {
       sandbox
         .stub(MessageLoaderUtils, "_getRemoteSettingsMessages")
         .resolves([{ id: "message_1" }]);
+      sandbox
+        .stub(MessageLoaderUtils, "_getRemoteSettingsLanguagePackRecord")
+        .resolves({ attachment: { size: 123 } });
       sandbox.stub(global.IOUtils, "exists").resolves(false);
       const spy = sandbox.spy();
       global.UnstoredDownloader.prototype.download = spy;
@@ -1055,7 +1399,7 @@ describe("ASRouter", () => {
         .stub(MessageLoaderUtils, "_getRemoteSettingsMessages")
         .resolves([{ id: "message_1" }]);
       sandbox
-        .stub(global.KintoHttpClient.prototype, "getRecord")
+        .stub(MessageLoaderUtils, "_getRemoteSettingsLanguagePackRecord")
         .resolves(null);
       const provider = {
         id: "cfr",
@@ -1306,6 +1650,45 @@ describe("ASRouter", () => {
 
       assert.deepEqual(result, message1);
     });
+    it("should match a message with multiple triggers against any of its trigger ids", async () => {
+      const message = {
+        id: "MULTI",
+        campaign: "foocampaign",
+        triggers: [{ id: "foo" }, { id: "bar" }],
+        groups: ["cfr"],
+        provider: "cfr",
+      };
+      await Router.setState({ messages: [message] });
+      ASRouterTargeting.findMatchingMessage.callsFake(
+        ({ messages }) => messages[0] || null
+      );
+
+      assert.deepEqual(
+        await Router.handleMessageRequest({ triggerId: "foo" }),
+        message
+      );
+      assert.deepEqual(
+        await Router.handleMessageRequest({ triggerId: "bar" }),
+        message
+      );
+    });
+    it("should filter out a multi-trigger message when no trigger id matches", async () => {
+      const message = {
+        id: "MULTI",
+        campaign: "foocampaign",
+        triggers: [{ id: "foo" }, { id: "bar" }],
+        groups: ["cfr"],
+        provider: "cfr",
+      };
+      await Router.setState({ messages: [message] });
+      ASRouterTargeting.findMatchingMessage.callsFake(
+        ({ messages }) => messages[0] || null
+      );
+
+      const result = await Router.handleMessageRequest({ triggerId: "baz" });
+
+      assert.isNull(result);
+    });
     it("should have messageImpressions in the message context", () => {
       assert.propertyVal(
         Router._getMessagesContext(),
@@ -1466,6 +1849,16 @@ describe("ASRouter", () => {
       const call = global.Services.prefs.removeObserver.lastCall;
       assert.calledWithExactly(call, USE_REMOTE_L10N_PREF, Router);
     });
+    it("should remove observer for multiprofile data updates", () => {
+      sandbox.spy(global.Services.obs, "removeObserver");
+      Router.uninit();
+
+      assert.calledWithExactly(
+        global.Services.obs.removeObserver,
+        Router._updateMultiprofileData,
+        "sps-profiles-updated"
+      );
+    });
   });
 
   describe("#setMessageById", async () => {
@@ -1513,6 +1906,97 @@ describe("ASRouter", () => {
       });
 
       assert.isFalse(Router.isUnblockedMessage(msg));
+    });
+    it("should not exclude a message with no provider", async () => {
+      const msg = { id: "msg1", groups: [] };
+      await Router.setState({ messages: [msg], providers: [] });
+      assert.isTrue(Router.isUnblockedMessage(msg));
+    });
+  });
+
+  describe("#hasMessageForTrigger", () => {
+    const provider = { id: "unit-test" };
+
+    it("should return true for a loaded message that matches the trigger, is unblocked, and is below its frequency cap", async () => {
+      const msg = {
+        id: "msg1",
+        groups: [],
+        provider: "unit-test",
+        trigger: { id: "lastWindowClose" },
+      };
+      await Router.setState({ messages: [msg], providers: [provider] });
+
+      assert.isTrue(Router.hasMessageForTrigger("lastWindowClose"));
+    });
+
+    it("should return false if no loaded message has a matching trigger", async () => {
+      const msg = {
+        id: "msg1",
+        groups: [],
+        provider: "unit-test",
+        trigger: { id: "openURL" },
+      };
+      await Router.setState({ messages: [msg], providers: [provider] });
+
+      assert.isFalse(Router.hasMessageForTrigger("lastWindowClose"));
+    });
+
+    it("should return false if the only matching message is blocked by its group", async () => {
+      const msg = {
+        id: "msg1",
+        groups: ["foo"],
+        provider: "unit-test",
+        trigger: { id: "lastWindowClose" },
+      };
+      await Router.setState({
+        messages: [msg],
+        providers: [provider],
+        groups: [{ id: "foo", enabled: false }],
+      });
+
+      assert.isFalse(Router.hasMessageForTrigger("lastWindowClose"));
+    });
+
+    it("should return false if the only matching message is over its frequency cap", async () => {
+      const msg = {
+        id: "msg1",
+        groups: [],
+        provider: "unit-test",
+        trigger: { id: "lastWindowClose" },
+        frequency: { lifetime: 1 },
+      };
+      await Router.setState(state => ({
+        messages: [msg],
+        providers: [provider],
+        messageImpressions: {
+          ...state.messageImpressions,
+          msg1: [0],
+        },
+      }));
+
+      assert.isFalse(Router.hasMessageForTrigger("lastWindowClose"));
+    });
+
+    it("should return true if at least one matching message is eligible, even if another matching one is blocked", async () => {
+      const blockedMsg = {
+        id: "blocked",
+        groups: ["foo"],
+        provider: "unit-test",
+        trigger: { id: "lastWindowClose" },
+      };
+      const eligibleMsg = {
+        id: "eligible",
+        groups: [],
+        provider: "unit-test",
+        trigger: { id: "lastWindowClose" },
+      };
+      await Router.setState({
+        messages: [blockedMsg, eligibleMsg],
+        providers: [provider],
+        groups: [{ id: "foo", enabled: false }],
+      });
+
+      assert.isTrue(Router.hasMessageForTrigger("lastWindowClose"));
     });
   });
 
@@ -1581,21 +2065,6 @@ describe("ASRouter", () => {
       let msg = Router.routeCFRMessage(data.content, browser, data, false);
       assert.deepEqual(msg.message, message);
     });
-    it("should call CFRPageActions.forceRecommendation if the template is cfr_action and force is true", async () => {
-      sandbox.stub(CFRPageActions, "forceRecommendation");
-      const testMessage = { id: "foo", template: "cfr_doorhanger" };
-      await Router.setState({ messages: [testMessage] });
-      Router.routeCFRMessage(testMessage, {}, null, true);
-
-      assert.calledOnce(CFRPageActions.forceRecommendation);
-    });
-    it("should call CFRPageActions.addRecommendation if the template is cfr_action and force is false", async () => {
-      sandbox.stub(CFRPageActions, "addRecommendation");
-      const testMessage = { id: "foo", template: "cfr_doorhanger" };
-      await Router.setState({ messages: [testMessage] });
-      Router.routeCFRMessage(testMessage, {}, {}, false);
-      assert.calledOnce(CFRPageActions.addRecommendation);
-    });
   });
 
   describe("#updateTargetingParameters", () => {
@@ -1620,18 +2089,20 @@ describe("ASRouter", () => {
     beforeEach(() => {
       let getAllBranchesStub = sandbox.stub();
       featureIds.forEach(feature => {
-        global.NimbusFeatures[feature].getAllVariables.returns({
-          id: `message-${feature}`,
-        });
-        global.NimbusFeatures[feature].getEnrollmentMetadata.returns({
-          slug: `slug-${feature}`,
-          branch: `branch-${feature}`,
-          isRollout: false,
-        });
+        global.NimbusFeatures[feature].getAllEnrollments.returns([
+          {
+            meta: {
+              slug: `slug-${feature}`,
+              branch: `branch-${feature}`,
+              isRollout: false,
+            },
+            value: { id: `message-${feature}`, recordReach: true },
+          },
+        ]);
         getAllBranchesStub.withArgs(`slug-${feature}`).resolves([
           {
             slug: `other-branch-${feature}`,
-            [feature]: { value: { trigger: "unit-test" } },
+            [feature]: { value: { trigger: "unit-test", recordReach: true } },
           },
         ]);
       });
@@ -1643,7 +2114,7 @@ describe("ASRouter", () => {
     afterEach(() => {
       sandbox.restore();
     });
-    it("should tag `forReachEvent` for all the expected message types", async () => {
+    it("should tag `_reachId` for all the expected message types", async () => {
       // This should match the `providers.messaging-experiments`
       let response = await MessageLoaderUtils.loadMessagesForProvider({
         type: "remote-experiments",
@@ -1654,7 +2125,7 @@ describe("ASRouter", () => {
       assert.property(response, "messages");
       assert.lengthOf(response.messages, featureIds.length * 2);
       assert.lengthOf(
-        response.messages.filter(m => m.forReachEvent),
+        response.messages.filter(m => m._reachId),
         featureIds.length
       );
     });
@@ -1684,13 +2155,26 @@ describe("ASRouter", () => {
         id: "firstRun",
       });
 
+      const [{ trigger }] =
+        ASRouterTargeting.findMatchingMessage.firstCall.args;
+
       assert.calledOnce(ASRouterTargeting.findMatchingMessage);
+      assert.strictEqual(trigger.id, "firstRun");
+      assert.strictEqual(trigger.param, undefined);
+      assert.isObject(trigger.context);
+      assert.strictEqual(trigger.context.isAIWindow, false);
+      assert.strictEqual(trigger.context.browserIsSelected, true);
+      assert.strictEqual(trigger.context.onThirdPartyPage, true);
       assert.deepEqual(
         ASRouterTargeting.findMatchingMessage.firstCall.args[0].trigger,
         {
           id: "firstRun",
           param: undefined,
-          context: { browserIsSelected: true },
+          context: {
+            isAIWindow: false,
+            browserIsSelected: true,
+            onThirdPartyPage: true,
+          },
         }
       );
     });
@@ -1709,9 +2193,9 @@ describe("ASRouter", () => {
         id: "firstRun",
       });
 
-      assert.calledTwice(start);
+      assert.calledOnce(start);
       assert.calledWithExactly(start);
-      assert.calledTwice(stopAndAccumulate);
+      assert.calledOnce(stopAndAccumulate);
       assert.calledWithExactly(stopAndAccumulate, fakeTimerId);
     });
     it("should have previousSessionEnd in the message context", () => {
@@ -1725,9 +2209,11 @@ describe("ASRouter", () => {
       let messages = [
         {
           id: "foo1",
-          forReachEvent: { sent: false, group: "cfr" },
-          experimentSlug: "exp01",
-          branchSlug: "branch01",
+          recordReach: true,
+          _reachId: "foo1",
+          _nimbusFeature: "cfr",
+          _nimbusSlug: "exp01",
+          _branchSlug: "branch01",
           template: "simple_template",
           trigger: { id: "foo" },
           content: { title: "Foo1", body: "Foo123-1" },
@@ -1741,9 +2227,11 @@ describe("ASRouter", () => {
         },
         {
           id: "foo3",
-          forReachEvent: { sent: false, group: "cfr" },
-          experimentSlug: "exp02",
-          branchSlug: "branch02",
+          recordReach: true,
+          _reachId: "foo3",
+          _nimbusFeature: "cfr",
+          _nimbusSlug: "exp02",
+          _branchSlug: "branch02",
           template: "simple_template",
           trigger: { id: "foo" },
           content: { title: "Foo1", body: "Foo123-1" },
@@ -1763,14 +2251,17 @@ describe("ASRouter", () => {
       let messages = [
         {
           id: "foo1",
-          forReachEvent: { sent: true, group: "cfr" },
-          experimentSlug: "exp01",
-          branchSlug: "branch01",
+          recordReach: true,
+          _reachId: "foo1",
+          _nimbusFeature: "cfr",
+          _nimbusSlug: "exp01",
+          _branchSlug: "branch01",
           template: "simple_template",
           trigger: { id: "foo" },
           content: { title: "Foo1", body: "Foo123-1" },
         },
       ];
+      MessageLoaderUtils._recordedReachIds.add("foo1");
       sandbox.stub(Router, "handleMessageRequest").resolves(messages);
       sandbox.spy(Glean.messagingExperiments.reachCfr, "record");
 
@@ -1784,10 +2275,10 @@ describe("ASRouter", () => {
     // four tests with `forEach`) doesn't work, because it will always
     // pass, so don't use it as a pattern to write other tests. Bug 1967593
     it("should record the Exposure event for each valid feature", async () => {
-      ["cfr_doorhanger", "update_action", "infobar", "spotlight"].forEach(
+      ["feature_callout", "update_action", "infobar", "spotlight"].forEach(
         async template => {
           let featureMap = {
-            cfr_doorhanger: "cfr",
+            feature_callout: "cfr",
             spotlight: "spotlight",
             infobar: "infobar",
             update_action: "moments-page",
@@ -1821,21 +2312,19 @@ describe("ASRouter", () => {
     it("should send Exposure and route messages if recording reach fails", async () => {
       const template = "feature_callout";
       const featureId = "fxms-message-15";
-      const featureIdReachGroup = "FxmsMessage15";
+      const invalidFeatureIdForReach = "FxmsMessage15";
       let messages = [
         {
-          _nimbusFeature: [featureId], // from _experimentsAPILoader
-          forReachEvent: {
-            sent: false,
-            group: featureIdReachGroup,
-          },
+          _nimbusFeature: invalidFeatureIdForReach,
+          recordReach: true,
+          _reachId: "foo1",
           id: "foo1",
           template,
           trigger: { id: "fakeTrigger" },
           content: { title: "Foo1", body: "Foo123-1" },
         },
         {
-          _nimbusFeature: [featureId], // from _experimentsAPILoader
+          _nimbusFeature: featureId,
           id: "foo2",
           template,
           trigger: { id: "fakeTrigger" },
@@ -1846,17 +2335,14 @@ describe("ASRouter", () => {
       sandbox.spy(Router, "routeCFRMessage");
       sandbox
         .stub(
-          Glean.messagingExperiments[`reach${featureIdReachGroup}`],
+          Glean.messagingExperiments[`reach${invalidFeatureIdForReach}`],
           "record"
         )
         .throws(new Error("stuff"));
       assert.notCalled(global.NimbusFeatures[featureId].recordExposureEvent);
 
       await Router.sendTriggerMessage(
-        {
-          browser: {},
-          id: "foo",
-        },
+        { browser: {}, id: "fakeTrigger" },
         true // skipMessagesLoaded to avoid irrelevant calls spy/stub calls
       );
 
@@ -2231,30 +2717,48 @@ describe("ASRouter", () => {
     });
 
     describe("cleanup on init", () => {
-      it("should clear messageImpressions for messages which do not exist in state.messages", async () => {
-        const messages = [{ id: "foo", frequency: { lifetime: 10 } }];
-        messageImpressions = { foo: [0], bar: [0, 1] };
-        // Impressions for "bar" should be removed since that id does not exist in messages
-        const result = { foo: [0] };
-
-        await createRouterAndInit([
-          { id: "onboarding", type: "local", messages, enabled: true },
-        ]);
-        assert.calledWith(Router._storage.set, "messageImpressions", result);
-        assert.deepEqual(Router.state.messageImpressions, result);
-      });
-      it("should clear messageImpressions older than the period if no lifetime impression cap is included", async () => {
-        const CURRENT_TIME = ONE_DAY_IN_MS * 2;
-        clock.tick(CURRENT_TIME);
+      it("should clear old messageImpressions for missing messages", async () => {
         const messages = [
           {
-            id: "foo",
-            frequency: { custom: [{ period: ONE_DAY_IN_MS, cap: 5 }] },
+            id: "recentImpressionForActiveMessage",
+            frequency: { lifetime: 10 },
           },
+          { id: "oldImpressionForActiveMessage", frequency: { lifetime: 10 } },
         ];
-        messageImpressions = { foo: [0, 1, CURRENT_TIME - 10] };
-        // Only 0 and 1 are more than 24 hours before CURRENT_TIME
-        const result = { foo: [CURRENT_TIME - 10] };
+        let now = Date.now();
+        let old = now - SIX_MONTHS_IN_MS - 1;
+        messageImpressions = {
+          recentImpressionForActiveMessage: [now],
+          oldImpressionForActiveMessage: [old],
+          recentImpressionForInactiveMessage: [now],
+          oldImpressionForInactiveMessage: [old],
+          mixedImpressionsForInactiveMessage: [now, old],
+        };
+        // Impressions older than six months for nonexistent messages should be
+        // cleared. If that results in an empty impressions array, the key
+        // should be removed altogether.
+        const expectedResult = {
+          recentImpressionForActiveMessage: [now],
+          oldImpressionForActiveMessage: [old],
+          recentImpressionForInactiveMessage: [now],
+          mixedImpressionsForInactiveMessage: [now],
+        };
+
+        await createRouterAndInit([
+          { id: "onboarding", type: "local", messages, enabled: true },
+        ]);
+        assert.calledWith(
+          Router._storage.set,
+          "messageImpressions",
+          expectedResult
+        );
+        assert.deepEqual(Router.state.messageImpressions, expectedResult);
+      });
+      it("should clear messageImpressions if they are not properly formatted", async () => {
+        const messages = [{ id: "foo", frequency: { lifetime: 10 } }];
+        // this is impromperly formatted since messageImpressions are supposed to be an array
+        messageImpressions = { foo: 0, bar: undefined, baz: [] };
+        const result = {};
 
         await createRouterAndInit([
           { id: "onboarding", type: "local", messages, enabled: true },
@@ -2262,10 +2766,10 @@ describe("ASRouter", () => {
         assert.calledWith(Router._storage.set, "messageImpressions", result);
         assert.deepEqual(Router.state.messageImpressions, result);
       });
-      it("should clear messageImpressions older than the longest period if no lifetime impression cap is included", async () => {
+      it("should clear groupImpressions older than the longest period if no lifetime impression cap is included", async () => {
         const CURRENT_TIME = ONE_DAY_IN_MS * 2;
         clock.tick(CURRENT_TIME);
-        const messages = [
+        const groups = [
           {
             id: "foo",
             frequency: {
@@ -2276,54 +2780,24 @@ describe("ASRouter", () => {
             },
           },
         ];
-        messageImpressions = { foo: [0, 1, CURRENT_TIME - 10] };
+        groupImpressions = { foo: [0, 1, CURRENT_TIME - 10] };
         // Only 0 and 1 are more than 24 hours before CURRENT_TIME
         const result = { foo: [CURRENT_TIME - 10] };
 
-        await createRouterAndInit([
-          { id: "onboarding", type: "local", messages, enabled: true },
-        ]);
-        assert.calledWith(Router._storage.set, "messageImpressions", result);
-        assert.deepEqual(Router.state.messageImpressions, result);
-      });
-      it("should clear messageImpressions if they are not properly formatted", async () => {
-        const messages = [{ id: "foo", frequency: { lifetime: 10 } }];
-        // this is impromperly formatted since messageImpressions are supposed to be an array
-        messageImpressions = { foo: 0 };
-        const result = {};
-
-        await createRouterAndInit([
-          { id: "onboarding", type: "local", messages, enabled: true },
-        ]);
-        assert.calledWith(Router._storage.set, "messageImpressions", result);
-        assert.deepEqual(Router.state.messageImpressions, result);
-      });
-      it("should not clear messageImpressions for messages which do exist in state.messages", async () => {
-        const messages = [
-          { id: "foo", frequency: { lifetime: 10 } },
-          { id: "bar", frequency: { lifetime: 10 } },
-        ];
-        messageImpressions = { foo: [0], bar: [] };
-
-        await createRouterAndInit([
-          { id: "onboarding", type: "local", messages, enabled: true },
-        ]);
-        assert.notCalled(Router._storage.set);
-        assert.deepEqual(Router.state.messageImpressions, messageImpressions);
+        Router = new _ASRouter();
+        await initASRouter(Router);
+        await Router.setState({
+          groups,
+          groupImpressions,
+        });
+        Router.cleanupImpressions();
+        assert.calledWith(Router._storage.set, "groupImpressions", result);
+        assert.deepEqual(Router.state.groupImpressions, result);
       });
     });
   });
 
   describe("#_onLocaleChanged", () => {
-    it("should call _maybeUpdateL10nAttachment in the handler", async () => {
-      sandbox.spy(Router, "_maybeUpdateL10nAttachment");
-      await Router._onLocaleChanged();
-
-      assert.calledOnce(Router._maybeUpdateL10nAttachment);
-    });
-  });
-
-  describe("#_maybeUpdateL10nAttachment", () => {
     it("should update the l10n attachment if the locale was changed", async () => {
       const getter = sandbox.stub();
       getter.onFirstCall().returns("en-US");
@@ -2339,7 +2813,7 @@ describe("ASRouter", () => {
       sandbox.spy(Router, "setState");
       Router.loadMessagesFromAllProviders.resetHistory();
 
-      await Router._maybeUpdateL10nAttachment();
+      await Router._onLocaleChanged();
 
       assert.calledWith(Router.setState, {
         localeInUse: "fr",
@@ -2370,26 +2844,27 @@ describe("ASRouter", () => {
       Router.loadMessagesFromAllProviders.resetHistory();
       sandbox.spy(Router, "setState");
 
-      await Router._maybeUpdateL10nAttachment();
+      await Router._onLocaleChanged();
 
       assert.notCalled(Router.setState);
       assert.notCalled(Router.loadMessagesFromAllProviders);
     });
   });
   describe("#observe", () => {
-    it("should reload l10n for CFRPageActions when the `USE_REMOTE_L10N_PREF` pref is changed", () => {
-      sandbox.spy(CFRPageActions, "reloadL10n");
-
+    let reloadL10nStub;
+    beforeEach(() => {
+      reloadL10nStub = sandbox.stub();
+      globals.set("RemoteL10n", { reloadL10n: reloadL10nStub });
+    });
+    it("should reload l10n when the `USE_REMOTE_L10N_PREF` pref is changed", () => {
       Router.observe("", "", USE_REMOTE_L10N_PREF);
 
-      assert.calledOnce(CFRPageActions.reloadL10n);
+      assert.calledOnce(reloadL10nStub);
     });
     it("should not react to other pref changes", () => {
-      sandbox.spy(CFRPageActions, "reloadL10n");
-
       Router.observe("", "", "foo");
 
-      assert.notCalled(CFRPageActions.reloadL10n);
+      assert.notCalled(reloadL10nStub);
     });
   });
   describe("#loadAllMessageGroups", () => {
@@ -2547,8 +3022,7 @@ describe("ASRouter", () => {
 
       await MessageLoaderUtils.loadMessagesForProvider(args);
 
-      assert.calledOnce(global.NimbusFeatures.spotlight.getEnrollmentMetadata);
-      assert.calledOnce(global.NimbusFeatures.spotlight.getAllVariables);
+      assert.calledOnce(global.NimbusFeatures.spotlight.getAllEnrollments);
     });
     it("should handle the case of no experiments in the ExperimentAPI", async () => {
       const args = {
@@ -2576,14 +3050,16 @@ describe("ASRouter", () => {
         },
       };
 
-      global.NimbusFeatures.infobar.getAllVariables.returns(
-        enrollment.branch.infobar.value
-      );
-      global.NimbusFeatures.infobar.getEnrollmentMetadata.returns({
-        slug: enrollment.slug,
-        branch: enrollment.branch.slug,
-        isRollout: false,
-      });
+      global.NimbusFeatures.infobar.getAllEnrollments.returns([
+        {
+          meta: {
+            slug: enrollment.slug,
+            branch: enrollment.branch.slug,
+            isRollout: false,
+          },
+          value: enrollment.branch.infobar.value,
+        },
+      ]);
       global.ExperimentAPI.getAllBranches.returns([
         enrollment.branch,
         {
@@ -2599,19 +3075,7 @@ describe("ASRouter", () => {
 
       assert.lengthOf(result.messages, 1);
     });
-    it("should skip disabled features and not load the messages", async () => {
-      const args = {
-        type: "remote-experiments",
-        featureIds: ["cfr"],
-      };
-
-      global.NimbusFeatures.cfr.getAllVariables.returns(null);
-
-      const result = await MessageLoaderUtils.loadMessagesForProvider(args);
-
-      assert.lengthOf(result.messages, 0);
-    });
-    it("should fetch branches with trigger", async () => {
+    it("should load branches for reach", async () => {
       const args = {
         type: "remote-experiments",
         featureIds: ["cfr"],
@@ -2627,29 +3091,43 @@ describe("ASRouter", () => {
         },
       };
 
-      global.NimbusFeatures.cfr.getAllVariables.returns(
-        enrollment.branch.cfr.value
-      );
-      global.NimbusFeatures.cfr.getEnrollmentMetadata.returns({
-        slug: enrollment.slug,
-        branch: enrollment.branch.slug,
-        isRollout: false,
-      });
+      global.NimbusFeatures.cfr.getAllEnrollments.returns([
+        {
+          meta: {
+            slug: enrollment.slug,
+            branch: enrollment.branch.slug,
+            isRollout: false,
+          },
+          value: enrollment.branch.cfr.value,
+        },
+      ]);
       global.ExperimentAPI.getAllBranches.resolves([
         enrollment.branch,
         {
           slug: "branch02",
           cfr: {
             featureId: "cfr",
-            value: { id: "id02", trigger: { id: "openURL" } },
+            value: {
+              id: "id02",
+              trigger: { id: "openURL" },
+              recordReach: true,
+            },
           },
         },
         {
-          // This branch should not be loaded as it doesn't have the trigger
+          // This branch should not be loaded as it doesn't have a trigger
           slug: "branch03",
           cfr: {
             featureId: "cfr",
-            value: { id: "id03" },
+            value: { id: "id03", recordReach: true },
+          },
+        },
+        {
+          // This branch should not be loaded as it doesn't have recordReach
+          slug: "branch03",
+          cfr: {
+            featureId: "cfr",
+            value: { id: "id04" },
           },
         },
       ]);
@@ -2659,73 +3137,14 @@ describe("ASRouter", () => {
       assert.equal(result.messages.length, 2);
       assert.equal(result.messages[0].id, "id01");
       assert.equal(result.messages[1].id, "id02");
-      assert.equal(result.messages[1].experimentSlug, "exp01");
-      assert.equal(result.messages[1].branchSlug, "branch02");
-      assert.deepEqual(result.messages[1].forReachEvent, {
-        sent: false,
-        group: "cfr",
-      });
-    });
-    it("should fetch branches with trigger even if enrolled branch is disabled", async () => {
-      const args = {
-        type: "remote-experiments",
-        featureIds: ["cfr"],
-      };
-      const enrollment = {
-        slug: "exp01",
-        branch: {
-          slug: "branch01",
-          cfr: {
-            featureId: "cfr",
-            value: {},
-          },
-        },
-      };
-
-      // Needs to match the `featureIds` value to return an enrollment
-      // for that feature
-      global.NimbusFeatures.cfr.getAllVariables.returns(
-        enrollment.branch.cfr.value
-      );
-      global.NimbusFeatures.cfr.getEnrollmentMetadata.returns({
-        slug: enrollment.slug,
-        branch: enrollment.branch.slug,
-        isRollout: false,
-      });
-      global.ExperimentAPI.getAllBranches.resolves([
-        enrollment.branch,
-        {
-          slug: "branch02",
-          cfr: {
-            featureId: "cfr",
-            value: { id: "id02", trigger: { id: "openURL" } },
-          },
-        },
-        {
-          // This branch should not be loaded as it doesn't have the trigger
-          slug: "branch03",
-          cfr: {
-            featureId: "cfr",
-            value: { id: "id03" },
-          },
-        },
-      ]);
-
-      const result = await MessageLoaderUtils.loadMessagesForProvider(args);
-
-      assert.equal(result.messages.length, 1);
-      assert.equal(result.messages[0].id, "id02");
-      assert.equal(result.messages[0].experimentSlug, "exp01");
-      assert.equal(result.messages[0].branchSlug, "branch02");
-      assert.deepEqual(result.messages[0].forReachEvent, {
-        sent: false,
-        group: "cfr",
-      });
+      assert.equal(result.messages[1]._nimbusSlug, "exp01");
+      assert.equal(result.messages[1]._branchSlug, "branch02");
+      assert.equal(result.messages[1]._nimbusFeature, "cfr");
     });
   });
   describe("#_remoteSettingsLoader", () => {
     let provider;
-    let spy;
+    let downloadSpy;
     beforeEach(() => {
       provider = {
         id: "cfr",
@@ -2734,20 +3153,22 @@ describe("ASRouter", () => {
       sandbox
         .stub(MessageLoaderUtils, "_getRemoteSettingsMessages")
         .resolves([{ id: "message_1" }]);
+      sandbox
+        .stub(MessageLoaderUtils, "_getRemoteSettingsLanguagePackRecord")
+        .resolves({ attachment: { size: 42 } });
       sandbox.stub(global.IOUtils, "exists").resolves(false);
-      spy = sandbox.spy(global.UnstoredDownloader.prototype.download);
-      global.UnstoredDownloader.prototype.download = spy;
+      downloadSpy = sandbox.spy(global.UnstoredDownloader.prototype.download);
+      global.UnstoredDownloader.prototype.download = downloadSpy;
     });
     it("should be called with the expected dir path", async () => {
       const writeSpy = sandbox.spy(global.IOUtils, "write");
-
       sandbox
         .stub(global.Services.locale, "appLocaleAsBCP47")
         .get(() => "en-US");
 
       await MessageLoaderUtils._remoteSettingsLoader(provider, {});
 
-      assert.calledOnce(spy);
+      assert.calledOnce(downloadSpy);
       assert.calledWithMatch(
         writeSpy,
         "asrouter.ftl", // PathUtils.join() is mocked in `unit-entry.js` and only returns the filename.
@@ -2764,21 +3185,18 @@ describe("ASRouter", () => {
 
       await MessageLoaderUtils._remoteSettingsLoader(provider, {});
 
-      assert.calledOnce(spy);
+      assert.calledOnce(downloadSpy);
     });
     it("should not download if local file has same size", async () => {
       global.IOUtils.exists.resolves(true);
       sandbox.stub(global.IOUtils, "stat").resolves({ size: 42 });
-      sandbox
-        .stub(global.KintoHttpClient.prototype, "getRecord")
-        .resolves({ data: { attachment: { size: 42 } } });
       sandbox
         .stub(global.Services.locale, "appLocaleAsBCP47")
         .get(() => "en-US");
 
       await MessageLoaderUtils._remoteSettingsLoader(provider, {});
 
-      assert.notCalled(spy);
+      assert.notCalled(downloadSpy);
     });
     it("should allow fetch for known locales", async () => {
       sandbox
@@ -2787,33 +3205,31 @@ describe("ASRouter", () => {
 
       await MessageLoaderUtils._remoteSettingsLoader(provider, {});
 
-      assert.calledOnce(spy);
+      assert.calledOnce(downloadSpy);
     });
     it("should fallback to 'en-US' for locale 'und' ", async () => {
       sandbox.stub(global.Services.locale, "appLocaleAsBCP47").get(() => "und");
-      const getRecordSpy = sandbox.spy(
-        global.KintoHttpClient.prototype,
-        "getRecord"
-      );
 
       await MessageLoaderUtils._remoteSettingsLoader(provider, {});
 
-      assert.ok(getRecordSpy.args[0][0].includes("en-US"));
-      assert.calledOnce(spy);
+      assert.calledWithMatch(
+        MessageLoaderUtils._getRemoteSettingsLanguagePackRecord,
+        sinon.match("en-US")
+      );
+      assert.calledOnce(downloadSpy);
     });
     it("should fallback to 'ja-JP-mac' for locale 'ja-JP-macos'", async () => {
       sandbox
         .stub(global.Services.locale, "appLocaleAsBCP47")
         .get(() => "ja-JP-macos");
-      const getRecordSpy = sandbox.spy(
-        global.KintoHttpClient.prototype,
-        "getRecord"
-      );
 
       await MessageLoaderUtils._remoteSettingsLoader(provider, {});
 
-      assert.ok(getRecordSpy.args[0][0].includes("ja-JP-mac"));
-      assert.calledOnce(spy);
+      assert.calledWithMatch(
+        MessageLoaderUtils._getRemoteSettingsLanguagePackRecord,
+        sinon.match("ja-JP-mac")
+      );
+      assert.calledOnce(downloadSpy);
     });
     it("should not allow fetch for unsupported locales", async () => {
       sandbox
@@ -2822,7 +3238,7 @@ describe("ASRouter", () => {
 
       await MessageLoaderUtils._remoteSettingsLoader(provider, {});
 
-      assert.notCalled(spy);
+      assert.notCalled(downloadSpy);
     });
   });
   describe("#resetMessageState", () => {
@@ -2832,18 +3248,17 @@ describe("ASRouter", () => {
       });
       await Router.setState({
         messageImpressions: { 1: [0, 1, 2], 2: [0, 1, 2] },
-      }); // Add impressions for test messages
-      let impressions = Object.values(Router.state.messageImpressions);
-      assert.equal(impressions.filter(i => i.length).length, 2); // Both messages have impressions
+      });
+      assert.equal(
+        Object.values(Router.state.messageImpressions).filter(i => i.length)
+          .length,
+        2
+      );
 
       Router.resetMessageState();
-      impressions = Object.values(Router.state.messageImpressions);
-
-      assert.isEmpty(impressions.filter(i => i.length)); // Both messages now have zero impressions
-      assert.calledWithExactly(Router._storage.set, "messageImpressions", {
-        1: [],
-        2: [],
-      });
+      assert.isEmpty(
+        Object.values(Router.state.messageImpressions).filter(i => i.length)
+      );
     });
   });
   describe("#resetGroupsState", () => {
@@ -2853,31 +3268,31 @@ describe("ASRouter", () => {
       });
       await Router.setState({
         groupImpressions: { 1: [0, 1, 2], 2: [0, 1, 2] },
-      }); // Add impressions for test groups
-      let impressions = Object.values(Router.state.groupImpressions);
-      assert.equal(impressions.filter(i => i.length).length, 2); // Both groups have impressions
+      });
+      assert.equal(
+        Object.values(Router.state.groupImpressions).filter(i => i.length)
+          .length,
+        2
+      );
 
       Router.resetGroupsState();
-      impressions = Object.values(Router.state.groupImpressions);
-
-      assert.isEmpty(impressions.filter(i => i.length)); // Both groups now have zero impressions
-      assert.calledWithExactly(Router._storage.set, "groupImpressions", {
-        1: [],
-        2: [],
-      });
+      assert.isEmpty(
+        Object.values(Router.state.groupImpressions).filter(i => i.length)
+      );
     });
   });
   describe("#resetScreenImpressions", () => {
     it("should reset all screen impressions", async () => {
       await Router.setState({ screenImpressions: { 1: 1, 2: 2 } });
-      let impressions = Object.values(Router.state.screenImpressions);
-      assert.equal(impressions.filter(i => i).length, 2); // Both screens have impressions
+      assert.equal(
+        Object.values(Router.state.screenImpressions).filter(i => i).length,
+        2
+      );
 
       Router.resetScreenImpressions();
-      impressions = Object.values(Router.state.screenImpressions);
-
-      assert.isEmpty(impressions.filter(i => i)); // Both screens now have zero impressions
-      assert.calledWithExactly(Router._storage.set, "screenImpressions", {});
+      assert.isEmpty(
+        Object.values(Router.state.screenImpressions).filter(i => i)
+      );
     });
   });
   describe("#editState", () => {
@@ -2887,8 +3302,11 @@ describe("ASRouter", () => {
       await Router.setState({
         messageImpressions: { 1: [0, 1, 2], 2: [0, 1, 2] },
       });
-      let impressions = Object.values(Router.state.messageImpressions);
-      assert.equal(impressions.filter(i => i.length).length, 2); // Both messages have impressions
+      assert.equal(
+        Object.values(Router.state.messageImpressions).filter(i => i.length)
+          .length,
+        2
+      );
 
       Router.editState("messageImpressions", {
         1: [],
@@ -2905,6 +3323,397 @@ describe("ASRouter", () => {
         1: [],
         2: [],
         3: [0, 1, 2],
+      });
+    });
+    it("should update multiprofile message impressions in shared storage", async () => {
+      sandbox.stub(ASRouterPreferences, "devtoolsEnabled").get(() => true);
+      await Router.setState({
+        multiProfileMessageImpressions: { 1: [0, 1, 2], 2: [0, 1, 2] },
+      });
+
+      await Router.editState("multiProfileMessageImpressions", {
+        1: [3, 4],
+        3: [0, 1, 2],
+      });
+
+      // State reflects the edited value
+      assert.deepEqual(Router.state.multiProfileMessageImpressions, {
+        1: [3, 4],
+        3: [0, 1, 2],
+      });
+      // Added/changed entries are persisted to shared storage
+      assert.calledWithExactly(
+        Router._storage.setSharedMessageImpressions,
+        "1",
+        [3, 4]
+      );
+      assert.calledWithExactly(
+        Router._storage.setSharedMessageImpressions,
+        "3",
+        [0, 1, 2]
+      );
+      // Removed entry is deleted from shared storage
+      assert.calledWithExactly(
+        Router._storage.setSharedMessageImpressions,
+        "2",
+        undefined
+      );
+      // Regular storage is not used for multiprofile impressions
+      assert.neverCalledWith(
+        Router._storage.set,
+        "multiProfileMessageImpressions"
+      );
+    });
+    it("should throw for invalid state key", async () => {
+      sandbox.stub(ASRouterPreferences, "devtoolsEnabled").get(() => true);
+      let error;
+      try {
+        await Router.editState("notARealKey", {});
+      } catch (e) {
+        error = e;
+      }
+      assert.instanceOf(error, Error);
+      assert.equal(error.message, "Invalid state key");
+    });
+  });
+
+  describe("multiprofile messages", () => {
+    describe("#_updateMultiprofileData", () => {
+      it("should update multiprofile data state from storage with event source remote", async () => {
+        const testImpressions = { test_msg: [111, 222] };
+        const testBlocklist = ["blocked_msg"];
+
+        Router._storage.getSharedMessageImpressions = sandbox
+          .stub()
+          .resolves(testImpressions);
+        Router._storage.getSharedMessageBlocklist = sandbox
+          .stub()
+          .resolves(testBlocklist);
+
+        await Router._updateMultiprofileData(
+          null,
+          "sps-profiles-updated",
+          "remote"
+        );
+
+        assert.calledOnce(Router._storage.getSharedMessageImpressions);
+        assert.calledOnce(Router._storage.getSharedMessageBlocklist);
+        assert.deepEqual(
+          Router.state.multiProfileMessageImpressions,
+          testImpressions
+        );
+        assert.deepEqual(
+          Router.state.multiProfileMessageBlocklist,
+          testBlocklist
+        );
+      });
+      it("should not update multiprofile data from storage with event source local", async () => {
+        const testImpressions = { test_msg: [111, 222] };
+        const testBlocklist = ["blocked_msg"];
+
+        await Router.setState(() => {
+          return {
+            multiProfileMessageBlocklist: testBlocklist,
+            multiProfileMessageImpressions: testImpressions,
+          };
+        });
+
+        Router._storage.getSharedMessageImpressions = sandbox.stub();
+        Router._storage.getSharedMessageBlocklist = sandbox.stub();
+
+        await Router._updateMultiprofileData(
+          null,
+          "sps-profiles-updated",
+          "local"
+        );
+
+        assert.notCalled(Router._storage.getSharedMessageImpressions);
+        assert.notCalled(Router._storage.getSharedMessageBlocklist);
+        assert.deepEqual(
+          Router.state.multiProfileMessageImpressions,
+          testImpressions
+        );
+        assert.deepEqual(
+          Router.state.multiProfileMessageBlocklist,
+          testBlocklist
+        );
+      });
+    });
+
+    describe("multiprofile #addImpression", () => {
+      describe("addImpression when multiprofile is enabled", () => {
+        beforeEach(() => {
+          sandbox
+            .stub(ASRouterTargeting.Environment, "canCreateSelectableProfiles")
+            .value(true);
+        });
+        it("should add impression data when profileScope is set", async () => {
+          const message = {
+            id: "foo",
+            provider: "bar",
+            frequency: { lifetime: 3 },
+            profileScope: "single",
+          };
+          await Router.addImpression(message);
+          assert.deepEqual(
+            Router.state.multiProfileMessageImpressions.foo,
+            [0],
+            "foo message shared multiprofile impressions"
+          );
+          assert.deepEqual(
+            Router.state.messageImpressions.foo,
+            [0],
+            "foo message impressions"
+          );
+        });
+        it("should not add profileImpressions when profileScope is not set", async () => {
+          const message = {
+            id: "foo",
+            provider: "bar",
+            frequency: { lifetime: 3 },
+          };
+          await Router.addImpression(message);
+          assert.deepEqual(
+            Router.state.multiProfileMessageImpressions.foo,
+            undefined,
+            "foo message shared multiprofile impressions"
+          );
+          assert.deepEqual(
+            Router.state.messageImpressions.foo,
+            [0],
+            "foo message impressions"
+          );
+        });
+      });
+      describe("addImpression when multiprofile is not enabled", () => {
+        it("should not add shared multiprofile impression even when profileScope is set", async () => {
+          sandbox
+            .stub(ASRouterTargeting.Environment, "canCreateSelectableProfiles")
+            .value(false);
+
+          const message = {
+            id: "foo",
+            provider: "bar",
+            frequency: { lifetime: 3 },
+            profileScope: "single",
+          };
+          await Router.addImpression(message);
+          assert.deepEqual(
+            Router.state.multiProfileMessageImpressions.foo,
+            undefined,
+            "foo message shared multiprofile impressions"
+          );
+          assert.deepEqual(
+            Router.state.messageImpressions.foo,
+            [0],
+            "foo message impressions"
+          );
+        });
+      });
+    });
+
+    describe("multiprofile #cleanupImpressions", () => {
+      beforeEach(() => {
+        Router._storage.setSharedMessageImpressions = sandbox.stub();
+        sandbox
+          .stub(ASRouterTargeting.Environment, "canCreateSelectableProfiles")
+          .value(true);
+      });
+      it("should remove impressions from shared multiprofile impressions if the message is not in state & is older than six months", async () => {
+        await Router.setState(() => ({
+          multiProfileMessageImpressions: {
+            deadMessage: [Date.now() - SIX_MONTHS_IN_MS - 1, Date.now()],
+          },
+          messageImpressions: {
+            deadMessage: [Date.now() - SIX_MONTHS_IN_MS - 1, Date.now()],
+          },
+        }));
+
+        Router.cleanupImpressions();
+
+        assert.property(
+          Router.state.multiProfileMessageImpressions,
+          "deadMessage"
+        );
+        assert.lengthOf(
+          Router.state.multiProfileMessageImpressions.deadMessage,
+          1
+        );
+      });
+    });
+
+    describe("multiprofile #hasValidProfileScope", () => {
+      it("should not filter messages when profile scope not set", async () => {
+        const message1 = {
+          id: "foo",
+          provider: "cfr",
+          groups: [],
+        };
+        const result = await Router.hasValidProfileScope(message1);
+        assert.isTrue(result);
+      });
+      it("should not filter when profile scope set and has both message and shared profile impression", async () => {
+        const message1 = {
+          id: "foo",
+          provider: "cfr",
+          profileScope: "single",
+          groups: [],
+        };
+        await Router.setState(() => ({
+          messages: [message1],
+          multiProfileMessageImpressions: { foo: [111, 222] },
+          messageImpressions: { foo: [111, 222] },
+        }));
+
+        const result = await Router.hasValidProfileScope(message1);
+        assert.isTrue(result);
+      });
+      it("should filter when profile scope set and has just shared profile impression", async () => {
+        const message1 = {
+          id: "foo",
+          provider: "cfr",
+          profileScope: "single",
+          groups: [],
+        };
+        await Router.setState(() => ({
+          messages: [message1],
+          multiProfileMessageImpressions: { foo: [111, 222] },
+        }));
+
+        const result = await Router.hasValidProfileScope(message1);
+        assert.isFalse(result);
+      });
+    });
+
+    describe("multiprofile #blockMessageById", () => {
+      beforeEach(() => {
+        sandbox
+          .stub(ASRouterTargeting.Environment, "canCreateSelectableProfiles")
+          .value(true);
+      });
+
+      it("should add the id to the shared messageBlockList if the profile scope is single", async () => {
+        await Router.setState({
+          messages: [
+            { id: "foo", provider: "cfr", profileScope: "single", groups: [] },
+          ],
+        });
+
+        await Router.blockMessageById("foo");
+        assert.isTrue(Router.state.messageBlockList.includes("foo"));
+        assert.isTrue(
+          Router.state.multiProfileMessageBlocklist.includes("foo")
+        );
+        assert.calledOnce(Router._storage.setSharedMessageBlocked);
+      });
+
+      it("should not add the id to the shared messageBlockList if there is no profile scope", async () => {
+        await Router.setState({
+          messages: [{ id: "bar", provider: "cfr", groups: [] }],
+        });
+
+        await Router.blockMessageById("bar");
+        assert.isTrue(Router.state.messageBlockList.includes("bar"));
+        assert.isFalse(
+          Router.state.multiProfileMessageBlocklist.includes("bar")
+        );
+        assert.notCalled(Router._storage.setSharedMessageBlocked);
+      });
+    });
+
+    describe("multiprofile #unblockMessageById", () => {
+      beforeEach(() => {
+        sandbox
+          .stub(ASRouterTargeting.Environment, "canCreateSelectableProfiles")
+          .value(true);
+      });
+
+      it("should remove the id from the messageBlockList", async () => {
+        await Router.setState({
+          messages: [
+            { id: "foo", provider: "cfr", profileScope: "single", groups: [] },
+          ],
+        });
+        await Router.blockMessageById("foo");
+        assert.isTrue(Router.state.messageBlockList.includes("foo"));
+        assert.isTrue(
+          Router.state.multiProfileMessageBlocklist.includes("foo")
+        );
+        assert.calledWithExactly(
+          Router._storage.setSharedMessageBlocked,
+          "foo"
+        );
+
+        await Router.unblockMessageById("foo");
+        assert.isFalse(Router.state.messageBlockList.includes("foo"));
+        assert.isFalse(
+          Router.state.multiProfileMessageBlocklist.includes("foo")
+        );
+        // multiprofile uses the same function for block and unblock
+        assert.calledWithExactly(
+          Router._storage.setSharedMessageBlocked,
+          "foo",
+          false
+        );
+      });
+    });
+
+    describe("multiprofile #handleMessageRequest", () => {
+      beforeEach(async () => {
+        await Router.setState(() => ({
+          providers: [{ id: "cfr" }],
+        }));
+
+        sandbox.stub(Router, "shouldShowMessagesToProfile").returns(true);
+      });
+      it("should hide message when not a valid multi profile scope", async () => {
+        await Router.setState(() => ({
+          messages: [
+            { id: "foo", provider: "cfr", profileScope: "single", groups: [] },
+          ],
+          multiProfileMessageImpressions: { foo: [111, 222] },
+          messageImpressions: {},
+        }));
+        const result = await Router.handleMessageRequest({ provider: "cfr" });
+        assert.isNull(result);
+        assert.notCalled(ASRouterTargeting.findMatchingMessage);
+      });
+
+      it("should show message for valid multi profile scope", async () => {
+        const message1 = {
+          id: "foo",
+          provider: "cfr",
+          profileScope: "single",
+          groups: [],
+        };
+        await Router.setState(() => ({
+          messages: [message1],
+          multiProfileMessageImpressions: { foo: [111, 222] },
+          messageImpressions: { foo: [111, 222] },
+        }));
+
+        await Router.handleMessageRequest({ provider: "cfr" });
+        assert.calledWithMatch(ASRouterTargeting.findMatchingMessage, {
+          messages: [
+            { id: "foo", provider: "cfr", groups: [], profileScope: "single" },
+          ],
+        });
+      });
+
+      it("should show messages when profile scope is not set", async () => {
+        await Router.setState(() => ({
+          messages: [
+            { id: "foo", provider: "cfr", profileScope: "", groups: [] },
+          ],
+          messageImpressions: { foo: [111, 222] },
+        }));
+
+        await Router.handleMessageRequest({ provider: "cfr" });
+        assert.calledWithMatch(ASRouterTargeting.findMatchingMessage, {
+          messages: [
+            { id: "foo", provider: "cfr", groups: [], profileScope: "" },
+          ],
+        });
       });
     });
   });

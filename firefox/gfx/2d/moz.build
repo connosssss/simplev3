@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -25,13 +23,12 @@ EXPORTS.mozilla.gfx += [
     "DataSourceSurfaceWrapper.h",
     "DataSurfaceHelpers.h",
     "DrawEventRecorder.h",
+    "DrawEventRecorderTypes.h",
     "DrawTargetOffset.h",
     "DrawTargetRecording.h",
     "DrawTargetSkia.h",
     "FilterNodeSoftware.h",
     "Filters.h",
-    "FontFeature.h",
-    "FontVariation.h",
     "Helpers.h",
     "HelpersCairo.h",
     "InlineTranslator.h",
@@ -76,27 +73,29 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("cocoa", "uikit"):
         "NativeFontResourceMac.cpp",
         "ScaledFontMac.cpp",
     ]
+    SOURCE_HEADERS += [
+        "NativeFontResourceMac.h",
+    ]
 elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
     EXPORTS.mozilla.gfx += [
         "DWriteSettings.h",
+        "SourceSurfaceD3D11.h",
         "UnscaledFontDWrite.h",
-        "UnscaledFontGDI.h",
     ]
     SOURCES += [
-        "ConicGradientEffectD2D1.cpp",
-        "DrawTargetD2D1.cpp",
         "DWriteSettings.cpp",
-        "ExtendInputEffectD2D1.cpp",
-        "FilterNodeD2D1.cpp",
         "NativeFontResourceDWrite.cpp",
-        "NativeFontResourceGDI.cpp",
-        "PathD2D.cpp",
-        "RadialGradientEffectD2D1.cpp",
         "ScaledFontDWrite.cpp",
-        "ScaledFontWin.cpp",
-        "SourceSurfaceD2D1.cpp",
+        "SourceSurfaceD3D11.cpp",
     ]
     DEFINES["WIN32"] = True
+    SOURCE_HEADERS += [
+        "AutoHelpersWin.h",
+        "HelpersWin.h",
+        "HelpersWinFonts.h",
+        "NativeFontResourceDWrite.h",
+        "ScaledFontDWrite.h",
+    ]
 
 if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
     EXPORTS.mozilla.gfx += [
@@ -106,15 +105,26 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
         "NativeFontResourceFreeType.cpp",
         "UnscaledFontFreeType.cpp",
     ]
+    SOURCE_HEADERS += [
+        "NativeFontResourceFreeType.h",
+    ]
 
 if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
     SOURCES += [
         "ScaledFontFontconfig.cpp",
     ]
 
+    SOURCE_HEADERS += [
+        "ScaledFontFontconfig.h",
+    ]
+
 if CONFIG["MOZ_WIDGET_TOOLKIT"] == "android":
     SOURCES += [
         "ScaledFontFreeType.cpp",
+    ]
+
+    SOURCE_HEADERS += [
+        "ScaledFontFreeType.h",
     ]
 
 EXPORTS.mozilla.gfx += [
@@ -125,7 +135,6 @@ EXPORTS.mozilla.gfx += [
 # Are we targeting x86 or x64?  If so, build SSE2 files.
 if CONFIG["INTEL_ARCHITECTURE"]:
     SOURCES += [
-        "BlurSSE2.cpp",
         "ConvolutionFilterAVX2.cpp",
         "ConvolutionFilterSSE2.cpp",
         "FilterProcessingSSE2.cpp",
@@ -137,7 +146,6 @@ if CONFIG["INTEL_ARCHITECTURE"]:
     DEFINES["USE_SSE2"] = True
     # The file uses SSE2 intrinsics, so it needs special compile flags on some
     # compilers.
-    SOURCES["BlurSSE2.cpp"].flags += CONFIG["SSE2_FLAGS"]
     SOURCES["ConvolutionFilterAVX2.cpp"].flags += ["-mavx2"]
     SOURCES["ConvolutionFilterSSE2.cpp"].flags += CONFIG["SSE2_FLAGS"]
     SOURCES["FilterProcessingSSE2.cpp"].flags += CONFIG["SSE2_FLAGS"]
@@ -145,9 +153,10 @@ if CONFIG["INTEL_ARCHITECTURE"]:
     SOURCES["SwizzleAVX2.cpp"].flags += ["-mavx2"]
     SOURCES["SwizzleSSE2.cpp"].flags += CONFIG["SSE2_FLAGS"]
     SOURCES["SwizzleSSSE3.cpp"].flags += CONFIG["SSSE3_FLAGS"]
-elif CONFIG["TARGET_CPU"].startswith("mips"):
-    SOURCES += [
-        "BlurLS3.cpp",
+
+    SOURCE_HEADERS += [
+        "SSEHelpers.h",
+        "SwizzleSSE2.h",
     ]
 
 UNIFIED_SOURCES += [
@@ -194,16 +203,19 @@ SOURCES += [
 
 if CONFIG["TARGET_CPU"] == "aarch64" or CONFIG["BUILD_ARM_NEON"]:
     SOURCES += [
-        "BlurNEON.cpp",
         "ConvolutionFilterNEON.cpp",
         "LuminanceNEON.cpp",
         "SwizzleNEON.cpp",
     ]
     DEFINES["USE_NEON"] = True
-    SOURCES["BlurNEON.cpp"].flags += CONFIG["NEON_FLAGS"]
     SOURCES["ConvolutionFilterNEON.cpp"].flags += CONFIG["NEON_FLAGS"]
     SOURCES["LuminanceNEON.cpp"].flags += CONFIG["NEON_FLAGS"]
     SOURCES["SwizzleNEON.cpp"].flags += CONFIG["NEON_FLAGS"]
+
+    SOURCE_HEADERS += [
+        "LuminanceNEON.h",
+        "SwizzleNEON.h",
+    ]
 
 include("/ipc/chromium/chromium-config.mozbuild")
 
@@ -215,7 +227,7 @@ for var in ("USE_CAIRO", "MOZ2D_HAS_MOZ_CAIRO"):
 if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
     DEFINES["MOZ_ENABLE_FREETYPE"] = True
 
-CXXFLAGS += ["-Werror=switch"]
+COMPILE_FLAGS["WARNINGS_CXXFLAGS"] += ["-Werror=switch"]
 
 if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
     CXXFLAGS += CONFIG["CAIRO_FT_CFLAGS"]
@@ -223,4 +235,28 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
 LOCAL_INCLUDES += CONFIG["SKIA_INCLUDES"]
 LOCAL_INCLUDES += [
     "/gfx/cairo/cairo/src",
+    "/third_party/xsimd/include",
+]
+
+SOURCE_HEADERS += [
+    "BigEndianInts.h",
+    "BufferEdgePad.h",
+    "BufferUnrotate.h",
+    "DrawTargetCairo.h",
+    "FilterProcessing.h",
+    "FilterProcessingSIMD-inl.h",
+    "ImageScaling.h",
+    "MMIHelpers.h",
+    "PathAnalysis.h",
+    "PathCairo.h",
+    "PathRecording.h",
+    "RecordedEventImpl.h",
+    "SFNTData.h",
+    "SIMD.h",
+    "SkConvolver.h",
+    "SourceSurfaceSkia.h",
+    "SVGTurbulenceRenderer-inl.h",
+    "SwizzleGeneric.h",
+    "SwizzleGenericDecls.h",
+    "SwizzleHelpers.h",
 ]

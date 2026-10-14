@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,6 +14,7 @@
 #include "mozilla/dom/TrustedHTML.h"
 #include "mozilla/dom/TrustedScript.h"
 #include "mozilla/dom/TrustedScriptURL.h"
+#include "mozilla/dom/TrustedTypePolicyFactory.h"
 #include "nsISupportsImpl.h"
 #include "nsString.h"
 #include "nsWrapperCache.h"
@@ -26,7 +25,6 @@ class nsTArray;
 namespace mozilla::dom {
 
 class DOMString;
-class TrustedTypePolicyFactory;
 
 // https://w3c.github.io/trusted-types/dist/spec/#trusted-type-policy
 class TrustedTypePolicy : public nsWrapperCache {

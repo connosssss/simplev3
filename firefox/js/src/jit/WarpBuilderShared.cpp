@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -26,9 +24,11 @@ bool WarpBuilderShared::resumeAfter(MInstruction* ins, BytecodeLocation loc) {
   // 1. MInt64ToBigInt, which is used to convert the result of either a call
   //    into Wasm code or loading from a BigIntArray, so we attach the resume
   //    point to that instead of to the call resp. load.
-  // 2. MPostIntPtrConversion which is used after conversion from IntPtr.
+  // 2. MUnsignedToDouble, which is used to convert the result of loading from a
+  //    Uint32Array, so we attach the resume point to that instead of the load.
+  // 3. MPostIntPtrConversion which is used after conversion from IntPtr.
   MOZ_ASSERT(ins->isEffectful() || ins->isInt64ToBigInt() ||
-             ins->isPostIntPtrConversion());
+             ins->isUnsignedToDouble() || ins->isPostIntPtrConversion());
   MOZ_ASSERT(!ins->isMovable());
 
   MResumePoint* resumePoint = MResumePoint::New(

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,9 +10,9 @@
 #include "cryptohi.h"
 #include "keyhi.h"
 #include "keythi.h"
-#include "pk11pub.h"
 #include "mozpkix/Input.h"
 #include "mozpkix/Result.h"
+#include "pk11pub.h"
 
 #define MOZILLA_CT_ARRAY_LENGTH(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -75,7 +73,7 @@ inline static pkix::Result UncheckedReadUint(size_t length, pkix::Reader& in,
 template <size_t length, typename T>
 pkix::Result ReadUint(pkix::Reader& in, T& out) {
   uint64_t value;
-  static_assert(std::is_unsigned<T>::value, "T must be unsigned");
+  static_assert(std::is_unsigned_v<T>, "T must be unsigned");
   static_assert(length <= 8, "At most 8 byte integers can be read");
   static_assert(sizeof(T) >= length, "T must be able to hold <length> bytes");
   pkix::Result rv = UncheckedReadUint(length, in, value);

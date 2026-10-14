@@ -1,21 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "WebTransport.h"
 
+#include <memory>
+
 #include "WebTransportBidirectionalStream.h"
-#include "mozilla/RefPtr.h"
-#include "nsUTF8Utils.h"
-#include "nsIURL.h"
-#include "nsIWebTransportStream.h"
 #include "mozilla/Assertions.h"
-#include "mozilla/dom/Document.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/dom/DOMExceptionBinding.h"
-#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/PWebTransport.h"
+#include "mozilla/dom/Promise-inl.h"
+#include "mozilla/dom/Promise.h"
 #include "mozilla/dom/ReadableStream.h"
 #include "mozilla/dom/ReadableStreamDefaultController.h"
 #include "mozilla/dom/RemoteWorkerChild.h"
@@ -29,6 +27,12 @@
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/PBackgroundChild.h"
+#include "nsIURL.h"
+#include "nsIWebTransportStream.h"
+#include "nsPIDOMWindowInlines.h"
+#include "nsTHashSet.h"
+#include "nsThreadUtils.h"
+#include "nsUTF8Utils.h"
 
 using namespace mozilla::ipc;
 
@@ -43,6 +47,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(WebTransport)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mIncomingBidirectionalAlgorithm)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mDatagrams)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mReady)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mDraining)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mClosed)
   for (const auto& hashEntry : tmp->mSendStreams.Values()) {
     NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mSendStreams entry item");
@@ -52,11 +57,16 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(WebTransport)
     NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mReceiveStreams entry item");
     cb.NoteXPCOMChild(hashEntry);
   }
+  for (const auto& promise : tmp->mPendingGetStatsPromises) {
+    CycleCollectionNoteChild(cb, promise.get(),
+                             "mPendingGetStatsPromises promise");
+  }
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(WebTransport)
   tmp->mSendStreams.Clear();
   tmp->mReceiveStreams.Clear();
+  tmp->mPendingGetStatsPromises.Clear();
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mGlobal)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mUnidirectionalStreams)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mBidirectionalStreams)
@@ -66,11 +76,13 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(WebTransport)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mIncomingBidirectionalAlgorithm)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mDatagrams)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mReady)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mDraining)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mClosed)
   if (tmp->mChild) {
     tmp->mChild->Shutdown(false);
     tmp->mChild = nullptr;
   }
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(WebTransport)
@@ -111,8 +123,8 @@ void WebTransport::NewBidirectionalStream(
   // IncomingBidirectionalStreams stream. Must be added to the ReceiveStreams
   // and SendStreams arrays
 
-  UniquePtr<BidirectionalPair> streams(
-      new BidirectionalPair(aIncoming, aOutgoing));
+  UniquePtr<BidirectionalPair> streams =
+      std::make_unique<BidirectionalPair>(aIncoming, aOutgoing);
   auto tuple = std::tuple<uint64_t, UniquePtr<BidirectionalPair>>(
       aStreamId, std::move(streams));
   mBidirectionalStreams.AppendElement(std::move(tuple));
@@ -223,20 +235,18 @@ void WebTransport::Init(const GlobalObject& aGlobal, const nsAString& aURL,
       return;
     }
     for (const auto& hash : aOptions.mServerCertificateHashes.Value()) {
-      if (!hash.mAlgorithm.WasPassed() || !hash.mValue.WasPassed()) continue;
-
-      if (hash.mAlgorithm.Value() != u"sha-256") {
+      if (hash.mAlgorithm != u"sha-256") {
         LOG(("Algorithms other than SHA-256 are not supported"));
         continue;
       }
 
       nsTArray<uint8_t> data;
-      if (!AppendTypedArrayDataTo(hash.mValue.Value(), data)) {
+      if (!AppendTypedArrayDataTo(hash.mValue, data)) {
         aError.Throw(NS_ERROR_OUT_OF_MEMORY);
         return;
       }
 
-      nsCString alg = NS_ConvertUTF16toUTF8(hash.mAlgorithm.Value());
+      nsCString alg = NS_ConvertUTF16toUTF8(hash.mAlgorithm);
       aServerCertHashes.EmplaceBack(alg, data);
     }
   }
@@ -251,6 +261,50 @@ void WebTransport::Init(const GlobalObject& aGlobal, const nsAString& aURL,
       WebTransportCongestionControl::Default;  // aOptions.mCongestionControl;
   // Set this to 'default' until we add congestion control setting
 
+  // Step 11.5: Let protocols be options's protocols if it exists, and null
+  // otherwise.
+  nsTArray<nsString> protocols;
+  if (aOptions.mProtocols.Length() != 0) {
+    const auto& protocolSeq = aOptions.mProtocols;
+    protocols.SetCapacity(protocolSeq.Length());
+
+    // Validate protocols per spec
+    nsTHashSet<nsString> seen;
+    for (const auto& protocol : protocolSeq) {
+      // Check for empty string
+      if (protocol.IsEmpty()) {
+        aError.ThrowSyntaxError("Protocol cannot be empty string");
+        return;
+      }
+
+      // Protocol strings are serialized as SF strings (RFC 8941), which only
+      // allow printable ASCII (0x20-0x7E). Reject anything outside that range.
+      for (size_t i = 0; i < protocol.Length(); i++) {
+        char16_t c = protocol[i];
+        if (c < 0x20 || c > 0x7E) {
+          aError.ThrowSyntaxError(
+              "Protocol contains characters not allowed in HTTP header fields");
+          return;
+        }
+      }
+
+      // Check for maximum length (512 bytes)
+      if (protocol.Length() > 512) {
+        aError.ThrowSyntaxError("Protocol name too long (max 512 bytes)");
+        return;
+      }
+
+      // Check for duplicates
+      if (seen.Contains(protocol)) {
+        aError.ThrowSyntaxError("Duplicate protocol in list");
+        return;
+      }
+      seen.Insert(protocol);
+
+      protocols.AppendElement(protocol);
+    }
+  }
+
   // Setup up WebTransportDatagramDuplexStream
   // Step 12: Let incomingDatagrams be a new ReadableStream.
   // Step 13: Let outgoingDatagrams be a new WritableStream.
@@ -263,13 +317,20 @@ void WebTransport::Init(const GlobalObject& aGlobal, const nsAString& aURL,
     return;
   }
 
-  // XXX TODO
-
+  // TODO: Fix the shared and service worker use cases
+  WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
+  mService = workerPrivate && (workerPrivate->IsSharedWorker() ||
+                               workerPrivate->IsServiceWorker())
+                 ? nullptr
+                 : net::WebTransportEventService::GetOrCreate();
   // Step 15 Let transport be a newly constructed WebTransport object, with:
   // SendStreams: empty ordered set
   // ReceiveStreams: empty ordered set
   // Ready: new promise
   mReady = Promise::CreateInfallible(mGlobal);
+
+  // Draining: new promise
+  mDraining = Promise::CreateInfallible(mGlobal);
 
   // Closed: new promise
   mClosed = Promise::CreateInfallible(mGlobal);
@@ -277,14 +338,21 @@ void WebTransport::Init(const GlobalObject& aGlobal, const nsAString& aURL,
   PBackgroundChild* backgroundChild =
       BackgroundChild::GetOrCreateForCurrentThread();
   if (NS_WARN_IF(!backgroundChild)) {
+    aError.Throw(NS_ERROR_FAILURE);
     return;
   }
 
-  nsCOMPtr<nsIPrincipal> principal = mGlobal->PrincipalOrNull();
-  mozilla::Maybe<IPCClientInfo> ipcClientInfo;
+  if (mGlobal->GetClientInfo().isNothing()) {
+    aError.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
+    return;
+  }
+  IPCClientInfo ipcClientInfo = mGlobal->GetClientInfo().ref().ToIPC();
 
-  if (mGlobal->GetClientInfo().isSome()) {
-    ipcClientInfo = mozilla::Some(mGlobal->GetClientInfo().ref().ToIPC());
+  nsCOMPtr<nsIPrincipal> principal = mGlobal->PrincipalOrNull();
+
+  nsPIDOMWindowInner* window = mGlobal->GetAsInnerWindow();
+  if (window) {
+    mBrowsingContextID = window->GetBrowsingContext()->Id();
   }
   // Create a new IPC connection
   Endpoint<PWebTransportParent> parentEndpoint;
@@ -295,9 +363,11 @@ void WebTransport::Init(const GlobalObject& aGlobal, const nsAString& aURL,
   RefPtr<WebTransportChild> child = new WebTransportChild(this);
   if (NS_IsMainThread()) {
     if (!childEndpoint.Bind(child)) {
+      aError.Throw(NS_ERROR_FAILURE);
       return;
     }
   } else if (!childEndpoint.Bind(child, mGlobal->SerialEventTarget())) {
+    aError.Throw(NS_ERROR_FAILURE);
     return;
   }
 
@@ -362,9 +432,9 @@ void WebTransport::Init(const GlobalObject& aGlobal, const nsAString& aURL,
   mChild = child;
   backgroundChild
       ->SendCreateWebTransportParent(
-          aURL, principal, ipcClientInfo, dedicated, requireUnreliable,
-          (uint32_t)congestionControl, std::move(aServerCertHashes),
-          std::move(parentEndpoint))
+          aURL, principal, mBrowsingContextID, ipcClientInfo, dedicated,
+          requireUnreliable, (uint32_t)congestionControl, protocols,
+          std::move(aServerCertHashes), std::move(parentEndpoint))
       ->Then(GetCurrentSerialEventTarget(), __func__,
              [self = RefPtr{this}](
                  PBackgroundChild::CreateWebTransportParentPromise::
@@ -408,8 +478,19 @@ void WebTransport::ResolveWaitingConnection(
   // Step 17.2: Set transport.[[State]] to "connected".
   mState = WebTransportState::CONNECTED;
   // Step 17.3: Set transport.[[Session]] to session.
-  // Step 17.4: Set transport’s [[Reliability]] to "supports-unreliable".
+  // Step 17.4: Set transport's [[Reliability]] to "supports-unreliable".
   mReliability = aReliability;
+  if (NS_IsMainThread()) {
+    nsPIDOMWindowInner* innerWindow = GetParentObject()->GetAsInnerWindow();
+    if (innerWindow) {
+      mInnerWindowID = innerWindow->WindowID();
+    }
+  } else {
+    WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
+    if (workerPrivate->IsDedicatedWorker()) {
+      mInnerWindowID = workerPrivate->WindowID();
+    }
+  }
 
   mChild->SendGetMaxDatagramSize()->Then(
       GetCurrentSerialEventTarget(), __func__,
@@ -428,6 +509,21 @@ void WebTransport::ResolveWaitingConnection(
 
   // We can now release any queued datagrams
   mDatagrams->SetChild(mChild);
+
+  if (mInnerWindowID != 0) {
+    // Get the http chanel created for the web transport session;
+    mChild->SendGetHttpChannelID()->Then(
+        GetCurrentSerialEventTarget(), __func__,
+        [self = RefPtr{this}](uint64_t&& aHttpChannelId) {
+          MOZ_ASSERT(self->mService);
+          self->mHttpChannelID = aHttpChannelId;
+          self->mService->WebTransportSessionCreated(self->mInnerWindowID,
+                                                     aHttpChannelId);
+        },
+        [](const mozilla::ipc::ResponseRejectReason& aReason) {
+          LOG(("WebTransport fetching the channel information failed "));
+        });
+  }
 }
 
 void WebTransport::RejectWaitingConnection(nsresult aRv) {
@@ -487,22 +583,349 @@ bool WebTransport::ParseURL(const nsAString& aURL) const {
   return true;
 }
 
+// aDroppedIncoming/aExpiredIncoming are passed separately because they are
+// tracked at the DOM layer (WebTransportDatagramDuplexStream::mDroppedIncoming
+// / mExpiredIncoming) rather than by the neqo transport, which doesn't track
+// per-session incoming datagram drops/expiry at all (its datagrams().
+// droppedIncoming()/expiredIncoming() are always 0). The DOM-level queue is
+// what actually enforces incomingMaxBufferedDatagrams/incomingMaxAge, so it's
+// the source of truth for these two fields.
+static void PopulateConnectionStats(WebTransportConnectionStats& aStats,
+                                    const WebTransportStatsData& aSource,
+                                    uint64_t aDroppedIncoming,
+                                    uint64_t aExpiredIncoming) {
+  // bytesSent maps to neqo's bytes_tx (total wire bytes including QUIC
+  // framing and retransmissions). The spec calls for payload bytes excluding
+  // framing and retransmissions, which neqo does not expose separately, so
+  // bytesSentOverhead (the difference) is omitted rather than reported as 0,
+  // per the spec's "unavailable stats are absent" rule. See bug 2051624.
+  aStats.mBytesSent.Construct(aSource.bytesSent());
+  aStats.mBytesAcknowledged.Construct(aSource.bytesAcknowledged());
+  aStats.mPacketsSent.Construct(aSource.packetsSent());
+  aStats.mBytesLost.Construct(aSource.bytesLost());
+  aStats.mPacketsLost.Construct(aSource.packetsLost());
+  aStats.mBytesReceived.Construct(aSource.bytesReceived());
+  aStats.mPacketsReceived.Construct(aSource.packetsReceived());
+  aStats.mSmoothedRtt.Construct(aSource.smoothedRtt());
+  aStats.mRttVariation.Construct(aSource.rttVariation());
+  aStats.mMinRtt.Construct(aSource.minRtt());
+  // estimatedSendRate is nullable; aSource.estimatedSendRate() == -1
+  // signals "unknown".
+  if (aSource.estimatedSendRate() >= 0) {
+    aStats.mEstimatedSendRate.SetValue(
+        static_cast<uint64_t>(aSource.estimatedSendRate()));
+  }
+  aStats.mAtSendCapacity = aSource.atSendCapacity();
+  aStats.mDatagrams.mDroppedIncoming.Construct(aDroppedIncoming);
+  aStats.mDatagrams.mExpiredIncoming.Construct(aExpiredIncoming);
+  aStats.mDatagrams.mExpiredOutgoing.Construct(
+      aSource.datagrams().expiredOutgoing());
+  aStats.mDatagrams.mLostOutgoing.Construct(aSource.datagrams().lostOutgoing());
+}
+
 already_AddRefed<Promise> WebTransport::GetStats(ErrorResult& aError) {
-  aError.Throw(NS_ERROR_NOT_IMPLEMENTED);
-  return nullptr;
+  // https://w3c.github.io/webtransport/#dom-webtransport-getstats
+  LOG(("GetStats() called, mClosePending=%d", mClosePending));
+
+  // Step 1: Let transport be this. (implicit)
+
+  // Step 2: Let p be a new promise.
+  RefPtr<Promise> promise = Promise::CreateInfallible(GetParentObject());
+
+  // Step 3: If transport.[[State]] is "failed", reject p with an
+  // InvalidStateError and abort these steps.
+  if (mState == WebTransportState::FAILED) {
+    promise->MaybeRejectWithInvalidStateError("WebTransport failed");
+    return promise.forget();
+  }
+
+  // If close() has been called but hasn't completed (we're waiting on the
+  // parent to return final stats), queue this request; it's resolved or
+  // rejected once Close()'s IPC callback runs (see Close()).
+  if (mClosePending) {
+    LOG(("GetStats: close is pending, queuing promise (queue size: %zu)",
+         mPendingGetStatsPromises.Length()));
+    mPendingGetStatsPromises.AppendElement(promise);
+    return promise.forget();
+  }
+
+  // Step 4: Run the following steps in parallel.
+  //
+  // Step 4.1 is handled below, before dispatching to SendGetStatsRequest().
+  // Step 4.2 (reject if "failed" after waiting) is handled in
+  // SendGetStatsRequest()'s IPC success callback, once the parent reports no
+  // stats.
+  //
+  // Step 4.3: if [[State]] is "closed", resolve with the most recent stats
+  // available for the connection. The exact collection point is
+  // implementation-defined; this implementation caches stats when close()
+  // completes (see Close()) or when the connection is closed remotely (see
+  // RemoteClosed()).
+  if (mState == WebTransportState::CLOSED) {
+    LOG(("GetStats: state is CLOSED, hasCachedStats=%d",
+         mCachedStats.isSome()));
+    RefPtr<Promise> p = promise;
+    if (mCachedStats) {
+      WebTransportStatsData cachedStats = *mCachedStats;
+      uint64_t droppedIncoming = mCachedDroppedIncoming;
+      uint64_t expiredIncoming = mCachedExpiredIncoming;
+      GetCurrentSerialEventTarget()->Dispatch(NS_NewRunnableFunction(
+          "WebTransport::GetStats", [p, cachedStats = std::move(cachedStats),
+                                     droppedIncoming, expiredIncoming]() {
+            WebTransportConnectionStats stats;
+            PopulateConnectionStats(stats, cachedStats, droppedIncoming,
+                                    expiredIncoming);
+            p->MaybeResolve(stats);
+          }));
+    } else {
+      GetCurrentSerialEventTarget()->Dispatch(
+          NS_NewRunnableFunction("WebTransport::GetStats", [p]() {
+            p->MaybeRejectWithInvalidStateError(
+                "No stats available for closed connection");
+          }));
+    }
+    return promise.forget();
+  }
+
+  // mChild may be null only if we entered an unexpected state; all normal
+  // states (CONNECTING, CONNECTED) have mChild set (CLOSED is handled above).
+  if (!mChild) {
+    promise->MaybeRejectWithInvalidStateError("WebTransport not connected");
+    return promise.forget();
+  }
+
+  // Step 4.1: If transport.[[State]] is "connecting", wait for the state to
+  // change before gathering stats, so that getStats() resolves only after
+  // [[Ready]] settles (and rejects if connecting fails). The resolve step is a
+  // network task queued after the connecting state change (spec step 4.1/4.6),
+  // so racing it against [[Ready]] must observe ready first.
+  if (mState == WebTransportState::CONNECTING) {
+    mReady->AddCallbacksWithCycleCollectedArgs(
+        [](JSContext*, JS::Handle<JS::Value>, ErrorResult&, WebTransport* aSelf,
+           Promise* aPromise) { aSelf->SendGetStatsRequest(aPromise); },
+        [](JSContext*, JS::Handle<JS::Value>, ErrorResult&, WebTransport*,
+           Promise* aPromise) {
+          aPromise->MaybeRejectWithInvalidStateError("WebTransport failed");
+        },
+        RefPtr{this}, promise);
+    return promise.forget();
+  }
+
+  // Steps 4.4-4.6: state is "connected"; gather stats now (see
+  // SendGetStatsRequest()).
+  SendGetStatsRequest(promise);
+
+  // Step 5: Return p.
+  return promise.forget();
+}
+
+void WebTransport::SendGetStatsRequest(Promise* aPromise) {
+  // Step 4.4: Let gatheredStats be the list of stats specific to the
+  // underlying connection needed to populate WebTransportConnectionStats and
+  // WebTransportDatagramStats accurately. This is done in parallel via IPC.
+  //
+  // Step 4.5 (removing non-pooled-connection stats when [[NewConnection]] is
+  // "no") does not apply: Firefox does not yet support WebTransport
+  // connection pooling, so gatheredStats is never filtered.
+  //
+  // Step 4.6: Queue a network task with transport to run the following steps.
+  if (!mChild) {
+    aPromise->MaybeRejectWithInvalidStateError("WebTransport not connected");
+    return;
+  }
+  mChild->SendGetStats(
+      [promise = RefPtr(aPromise),
+       self = RefPtr(this)](Maybe<WebTransportStatsData>&& aStats) {
+        LOG(("GetStats callback: aStats.isSome() = %d", aStats.isSome()));
+        if (!aStats) {
+          // Step 4.2: transport.[[State]] became "failed" while waiting.
+          LOG(("GetStats: No stats available\n"));
+          promise->MaybeRejectWithInvalidStateError("Failed to get stats");
+          return;
+        }
+
+        LOG(
+            ("GetStats: bytesSent=%llu, bytesReceived=%llu, "
+             "minRtt=%f, smoothedRtt=%f\n",
+             (unsigned long long)aStats->bytesSent(),
+             (unsigned long long)aStats->bytesReceived(), aStats->minRtt(),
+             aStats->smoothedRtt()));
+
+        // Step 4.6.1-4: Create a WebTransportConnectionStats object, create a
+        // WebTransportDatagramStats object, set datagrams, and populate each
+        // member from gatheredStats.
+        // Also update the cache so post-close getStats() returns fresh data.
+        // droppedIncoming/expiredIncoming are tracked at the DOM layer
+        // (datagrams queue drops/expiry) rather than at the transport layer,
+        // so snapshot them here.
+        self->mCachedStats = Some(*aStats);
+        // The datagram queue doesn't count drops/expiry yet; see bug 2007757.
+        self->mCachedDroppedIncoming = 0;
+        self->mCachedExpiredIncoming = 0;
+
+        WebTransportConnectionStats stats;
+        PopulateConnectionStats(stats, *aStats, self->mCachedDroppedIncoming,
+                                self->mCachedExpiredIncoming);
+
+        // Step 4.6.5: Resolve p with stats.
+        promise->MaybeResolve(stats);
+      },
+      [promise = RefPtr(aPromise)](mozilla::ipc::ResponseRejectReason) {
+        // IPC failure: treat as if the transport failed.
+        promise->MaybeRejectWithInvalidStateError("Failed to get stats");
+      });
+}
+
+already_AddRefed<Promise> WebTransport::ExportKeyingMaterial(
+    const BufferSource& aLabel, const Optional<BufferSource>& aContext,
+    ErrorResult& aError) {
+  LOG(("ExportKeyingMaterial() called"));
+
+  // https://w3c.github.io/webtransport/#dom-webtransport-exportkeyingmaterial
+  // Step 1-2: Extract label data
+  nsTArray<uint8_t> labelData;
+  ProcessTypedArraysFixed(aLabel, [&](const Span<const uint8_t>& aData) {
+    labelData.AppendElements(aData.Elements(), aData.Length());
+  });
+
+  // Step 3: If labelLength is more than 255, return a promise rejected with a
+  // RangeError
+  if (labelData.Length() > 255) {
+    aError.ThrowRangeError("label must not exceed 255 bytes");
+    return nullptr;
+  }
+
+  // Step 4: Let contextLength be 0.
+  // Step 5: If context is given, set contextLength to context.byte length.
+  Maybe<nsTArray<uint8_t>> contextData;
+  if (aContext.WasPassed()) {
+    nsTArray<uint8_t> context;
+    ProcessTypedArraysFixed(
+        aContext.Value(), [&](const Span<const uint8_t>& aData) {
+          context.AppendElements(aData.Elements(), aData.Length());
+        });
+
+    // Step 6: If contextLength is more than 255, return a promise rejected with
+    // a RangeError
+    if (context.Length() > 255) {
+      aError.ThrowRangeError("context must not exceed 255 bytes");
+      return nullptr;
+    }
+
+    contextData = Some(std::move(context));
+  }
+
+  // Step 7: Let p be a new promise.
+  RefPtr<Promise> promise = Promise::CreateInfallible(GetParentObject());
+
+  // Step 8: If transport.[[State]] is "closed" or "failed", return a new
+  // rejected promise with an InvalidStateError.
+  if (mState == WebTransportState::CLOSED ||
+      mState == WebTransportState::FAILED || !mChild) {
+    promise->MaybeRejectWithInvalidStateError("Transport closed or failed");
+    return promise.forget();
+  }
+
+  mChild->SendExportKeyingMaterial(
+      labelData, contextData,
+      [self = RefPtr{this}, promise](
+          nsTArray<uint8_t>&& aKeyingMaterial) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
+        // Step 8: If transport.[[State]] became "closed" or "failed", reject
+        // with InvalidStateError
+        if (self->mState == WebTransportState::CLOSED ||
+            self->mState == WebTransportState::FAILED) {
+          promise->MaybeRejectWithInvalidStateError(
+              "Transport closed or failed during export");
+          return;
+        }
+
+        // Convert the byte array to ArrayBuffer
+        AutoJSAPI jsapi;
+        if (!jsapi.Init(promise->GetGlobalObject())) {
+          promise->MaybeRejectWithTypeError("Failed to initialize JS API");
+          return;
+        }
+        JSContext* cx = jsapi.cx();
+
+        UniquePtr<uint8_t[], JS::FreePolicy> data(
+            static_cast<uint8_t*>(JS_malloc(cx, aKeyingMaterial.Length())));
+        if (!data) {
+          promise->MaybeRejectWithTypeError("Out of memory");
+          return;
+        }
+        memcpy(data.get(), aKeyingMaterial.Elements(),
+               aKeyingMaterial.Length());
+
+        JS::Rooted<JSObject*> arrayBuffer(
+            cx, JS::NewArrayBufferWithContents(cx, aKeyingMaterial.Length(),
+                                               std::move(data)));
+        if (!arrayBuffer) {
+          promise->MaybeRejectWithTypeError("Failed to create ArrayBuffer");
+          return;
+        }
+
+        JSObject* uint8Array = JS_NewUint8ArrayWithBuffer(
+            cx, arrayBuffer, 0, static_cast<int64_t>(aKeyingMaterial.Length()));
+        if (!uint8Array) {
+          promise->MaybeRejectWithTypeError("Failed to create Uint8Array");
+          return;
+        }
+
+        // Step 8.1/8.2: Let keyingMaterial be the result of exporting TLS
+        // keying material, as defined in [WEB-TRANSPORT-OVERVIEW] Section 4.1,
+        // with labelLength, label, contextLength, and if present, context.
+        // Queue a network task with transport to resolve p with keyingMaterial.
+        JS::Rooted<JS::Value> value(cx, JS::ObjectValue(*uint8Array));
+        promise->MaybeResolve(value);
+      },
+      [promise](mozilla::ipc::ResponseRejectReason) {
+        promise->MaybeRejectWithInvalidStateError(
+            "Failed to export keying material");
+      });
+
+  return promise.forget();
 }
 
 WebTransportReliabilityMode WebTransport::Reliability() { return mReliability; }
 
 WebTransportCongestionControl WebTransport::CongestionControl() {
-  // XXX not implemented
+  // XXX We only implement cubic congestion control currently in QUIC
   return WebTransportCongestionControl::Default;
 }
 
+bool WebTransport::SupportsReliableOnly(const GlobalObject& aGlobal) {
+  // XXX Change to true when we land http/2 support if on http2 (Bug 2071107)
+  return false;
+}
+
+void WebTransport::GetProtocol(nsAString& aProtocol) { aProtocol = mProtocol; }
+
+void WebTransport::ResolveDraining() {
+  LOG(("ResolveDraining() called"));
+  mDraining->MaybeResolveWithUndefined();
+}
+
+void WebTransport::SetNegotiatedProtocol(const nsACString& aProtocol) {
+  LOG(("SetNegotiatedProtocol: %s", PromiseFlatCString(aProtocol).get()));
+  CopyUTF8toUTF16(aProtocol, mProtocol);
+}
+
 void WebTransport::RemoteClosed(bool aCleanly, const uint32_t& aCode,
-                                const nsACString& aReason) {
+                                const nsACString& aReason,
+                                const Maybe<WebTransportStatsData>& aStats) {
   LOG(("Server closed: cleanly: %d, code %u, reason %s", aCleanly, aCode,
        PromiseFlatCString(aReason).get()));
+
+  // Cache stats from the remote close notification. This is required by the
+  // spec to allow getStats() to return statistics after the connection is
+  // closed (per https://w3c.github.io/webtransport/#dom-webtransport-getstats
+  // step 4.3).
+  if (!mCachedStats && aStats) {
+    LOG(("Caching stats from RemoteClosed"));
+    mCachedStats = Some(*aStats);
+    mCachedDroppedIncoming = 0;
+  }
+
   // Step 2 of https://w3c.github.io/webtransport/#web-transport-termination
   // We calculate cleanly on the parent
   // Step 2.1: If transport.[[State]] is "closed" or "failed", abort these
@@ -610,14 +1033,17 @@ void WebTransport::Close(const WebTransportCloseInfo& aOptions,
   }
   LOG(("Sending Close"));
   MOZ_ASSERT(mChild);
+
   // Step 4: Let session be transport.[[Session]].
   // Step 5: Let code be closeInfo.closeCode.
   // Step 6: "Let reasonString be the maximal code unit prefix of
   // closeInfo.reason where the length of the UTF-8 encoded prefix
-  // doesn’t exceed 1024."
+  // doesn't exceed 1024."
   // Take the maximal "code unit prefix" of mReason and limit to 1024 bytes
   // Step 7: Let reason be reasonString, UTF-8 encoded.
   // Step 8: In parallel, terminate session with code and reason.
+
+  nsCString reason;
   if (aOptions.mReason.Length() > 1024u) {
     // We want to start looking for the previous code point at one past the
     // limit, since if a code point ends exactly at the specified length, the
@@ -625,21 +1051,80 @@ void WebTransport::Close(const WebTransportCloseInfo& aOptions,
     // RewindToPriorUTF8Codepoint doesn't reduce the index if it points to the
     // start of a code point. We know reason[1024] is accessible since
     // Length() > 1024
-    mChild->SendClose(
-        aOptions.mCloseCode,
+    reason =
         Substring(aOptions.mReason, 0,
-                  RewindToPriorUTF8Codepoint(aOptions.mReason.get(), 1024u)));
+                  RewindToPriorUTF8Codepoint(aOptions.mReason.get(), 1024u));
   } else {
-    mChild->SendClose(aOptions.mCloseCode, aOptions.mReason);
-    LOG(("Close sent"));
+    reason = aOptions.mReason;
   }
 
-  // Step 9: Cleanup transport with AbortError and closeInfo. (sets mState to
-  // Closed)
+  // Set close pending state so GetStats requests will be queued
+  LOG(("Setting close pending state"));
+  mClosePending = true;
+
+  // Send Close IPC and get stats back.  We need to cache stats after close to
+  // allow us to respond to GetStats() post-close with final stats, and Close()
+  // will kill the IPC connection to the parent (and the WebTransport session
+  // will go away in any case, so IPC to the  parent wouldn't help us).
+  RefPtr<WebTransport> self = this;
   RefPtr<WebTransportError> error =
       new WebTransportError("close()"_ns, WebTransportErrorSource::Session,
                             DOMException_Binding::ABORT_ERR);
-  Cleanup(error, &aOptions, aRv);
+  WebTransportCloseInfo closeInfo;
+  closeInfo.mCloseCode = aOptions.mCloseCode;
+  closeInfo.mReason = aOptions.mReason;
+
+  mChild->SendClose(
+      aOptions.mCloseCode, reason,
+      [self, error, closeInfo](Maybe<WebTransportStatsData>&& aStats) {
+        LOG(("Close callback received"));
+        if (aStats) {
+          LOG(("Caching stats from close: bytesSent=%llu",
+               (unsigned long long)aStats->bytesSent()));
+          self->mCachedStats = Some(*aStats);
+          self->mCachedDroppedIncoming = 0;
+        } else {
+          LOG(("No stats returned from close"));
+          self->mCachedStats = Nothing();
+        }
+
+        // Resolve any pending GetStats promises
+        LOG(("Resolving %zu pending GetStats promises",
+             self->mPendingGetStatsPromises.Length()));
+        for (auto& promise : self->mPendingGetStatsPromises) {
+          if (self->mCachedStats) {
+            WebTransportConnectionStats stats;
+            PopulateConnectionStats(stats, *self->mCachedStats,
+                                    self->mCachedDroppedIncoming,
+                                    self->mCachedExpiredIncoming);
+            promise->MaybeResolve(stats);
+          } else {
+            promise->MaybeRejectWithInvalidStateError(
+                "No stats available for closed connection");
+          }
+        }
+        self->mPendingGetStatsPromises.Clear();
+
+        self->mClosePending = false;
+      },
+      [self, error, closeInfo](mozilla::ipc::ResponseRejectReason) {
+        LOG(("Close IPC failed"));
+        // Reject pending GetStats promises
+        for (auto& promise : self->mPendingGetStatsPromises) {
+          promise->MaybeRejectWithInvalidStateError("Close IPC failed");
+        }
+        self->mPendingGetStatsPromises.Clear();
+
+        self->mClosePending = false;
+      });
+  LOG(("Close sent"));
+
+  // Step 9: Cleanup transport with AbortError and closeInfo (sets mState to
+  // CLOSED). Per spec, only step 8 ("terminate session") runs in parallel;
+  // this must happen synchronously as part of close(), not deferred until
+  // the Close IPC round trip (used above only to cache final stats)
+  // completes.
+  Cleanup(error, &closeInfo, aRv);
   LOG(("Cleanup done"));
 
   // The other side will call `Close()` for us now, make sure we don't call it
@@ -656,7 +1141,14 @@ already_AddRefed<WebTransportDatagramDuplexStream> WebTransport::GetDatagrams(
 
 already_AddRefed<Promise> WebTransport::CreateBidirectionalStream(
     const WebTransportSendStreamOptions& aOptions, ErrorResult& aRv) {
-  LOG(("CreateBidirectionalStream() called"));
+  return CreateBidirectionalStreamInternal(aOptions, aOptions.mSendGroup,
+                                           aOptions.mSendOrder, aRv);
+}
+
+already_AddRefed<Promise> WebTransport::CreateBidirectionalStreamInternal(
+    const WebTransportSendStreamOptions& aOptions,
+    WebTransportSendGroup* aSendGroup, int64_t aSendOrder, ErrorResult& aRv) {
+  LOG(("CreateBidirectionalStreamInternal() called"));
   // https://w3c.github.io/webtransport/#dom-webtransport-createbidirectionalstream
   RefPtr<Promise> promise = Promise::CreateInfallible(GetParentObject());
 
@@ -668,21 +1160,31 @@ already_AddRefed<Promise> WebTransport::CreateBidirectionalStream(
     return nullptr;
   }
 
-  // Step 3: Let sendOrder be options's sendOrder.
-  Maybe<int64_t> sendOrder;
-  if (!aOptions.mSendOrder.IsNull()) {
-    sendOrder = Some(aOptions.mSendOrder.Value());
+  // Step 2.5: Let sendGroup be options's sendGroup. If sendGroup is not null,
+  // and sendGroup.[[Transport]] is not this.[[Transport]], throw an
+  // InvalidStateError.
+  if (aSendGroup && aSendGroup->GetTransport() != this) {
+    aRv.ThrowInvalidStateError("sendGroup belongs to a different WebTransport");
+    return nullptr;
   }
+
+  // Step 3: Let sendOrder be options's sendOrder
+  RefPtr<WebTransportSendGroup> sendGroup = aSendGroup;
+  int64_t sendOrder = aSendOrder;
   // Step 4: Let p be a new promise.
   // Step 5: Run the following steps in parallel, but abort them whenever
-  // transport’s [[State]] becomes "closed" or "failed", and instead queue
+  // transport's [[State]] becomes "closed" or "failed", and instead queue
   // a network task with transport to reject p with an InvalidStateError.
 
   // Ask the parent to create the stream and send us the DataPipeSender/Receiver
   // pair
+  Maybe<uint64_t> sendGroupId;
+  if (sendGroup) {
+    sendGroupId = Some(sendGroup->GetGroupId());
+  }
   mChild->SendCreateBidirectionalStream(
-      sendOrder,
-      [self = RefPtr{this}, sendOrder, promise](
+      sendOrder, sendGroupId,
+      [self = RefPtr{this}, sendOrder, sendGroup, promise](
           BidirectionalStreamResponse&& aPipes) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
         LOG(("CreateBidirectionalStream response"));
         if (BidirectionalStreamResponse::Tnsresult == aPipes.type()) {
@@ -708,7 +1210,8 @@ already_AddRefed<Promise> WebTransport::CreateBidirectionalStream(
             WebTransportBidirectionalStream::Create(
                 self, self->mGlobal, id,
                 aPipes.get_BidirectionalStream().inStream(),
-                aPipes.get_BidirectionalStream().outStream(), sendOrder, error);
+                aPipes.get_BidirectionalStream().outStream(), sendOrder,
+                sendGroup, error);
         LOG(("Returning a bidirectionalStream"));
         promise->MaybeResolve(newStream);
       },
@@ -728,9 +1231,16 @@ already_AddRefed<ReadableStream> WebTransport::IncomingBidirectionalStreams() {
 
 already_AddRefed<Promise> WebTransport::CreateUnidirectionalStream(
     const WebTransportSendStreamOptions& aOptions, ErrorResult& aRv) {
-  LOG(("CreateUnidirectionalStream() called"));
+  return CreateUnidirectionalStreamInternal(aOptions, aOptions.mSendGroup,
+                                            aOptions.mSendOrder, aRv);
+}
+
+already_AddRefed<Promise> WebTransport::CreateUnidirectionalStreamInternal(
+    const WebTransportSendStreamOptions& aOptions,
+    WebTransportSendGroup* aSendGroup, int64_t aSendOrder, ErrorResult& aRv) {
+  LOG(("CreateUnidirectionalStreamInternal() called"));
   // https://w3c.github.io/webtransport/#dom-webtransport-createunidirectionalstream
-  // Step 2: If transport.[[State]] is "closed" or "failed", return a new
+  // Step 1: If transport.[[State]] is "closed" or "failed", return a new
   // rejected promise with an InvalidStateError.
   if (mState == WebTransportState::CLOSED ||
       mState == WebTransportState::FAILED || !mChild) {
@@ -738,22 +1248,33 @@ already_AddRefed<Promise> WebTransport::CreateUnidirectionalStream(
     return nullptr;
   }
 
-  // Step 3: Let sendOrder be options's sendOrder.
-  Maybe<int64_t> sendOrder;
-  if (!aOptions.mSendOrder.IsNull()) {
-    sendOrder = Some(aOptions.mSendOrder.Value());
+  // Step 2: Let sendGroup be options's sendGroup.
+  // Step 3: If sendGroup is not null, and sendGroup.[[Transport]] is not
+  // this.[[Transport]], throw an InvalidStateError.
+  if (aSendGroup && aSendGroup->GetTransport() != this) {
+    aRv.ThrowInvalidStateError("sendGroup belongs to a different WebTransport");
+    return nullptr;
   }
+
+  // Step 4: Let sendOrder be options's sendOrder
+  RefPtr<WebTransportSendGroup> sendGroup = aSendGroup;
+  int64_t sendOrder = aSendOrder;
+
   // Step 4: Let p be a new promise.
   RefPtr<Promise> promise = Promise::CreateInfallible(GetParentObject());
 
   // Step 5: Run the following steps in parallel, but abort them whenever
-  // transport’s [[State]] becomes "closed" or "failed", and instead queue
+  // transport's[[State]] becomes "closed" or "failed", and instead queue
   // a network task with transport to reject p with an InvalidStateError.
 
   // Ask the parent to create the stream and send us the DataPipeSender
+  Maybe<uint64_t> sendGroupId;
+  if (sendGroup) {
+    sendGroupId = Some(sendGroup->GetGroupId());
+  }
   mChild->SendCreateUnidirectionalStream(
-      sendOrder,
-      [self = RefPtr{this}, sendOrder,
+      sendOrder, sendGroupId,
+      [self = RefPtr{this}, sendOrder, sendGroup,
        promise](UnidirectionalStreamResponse&& aResponse)
           MOZ_CAN_RUN_SCRIPT_BOUNDARY {
             LOG(("CreateUnidirectionalStream response"));
@@ -786,7 +1307,7 @@ already_AddRefed<Promise> WebTransport::CreateUnidirectionalStream(
                 WebTransportSendStream::Create(
                     self, self->mGlobal, id,
                     aResponse.get_UnidirectionalStream().outStream(), sendOrder,
-                    error);
+                    sendGroup, error);
             if (!writableStream) {
               promise->MaybeReject(std::move(error));
               return;
@@ -807,6 +1328,31 @@ already_AddRefed<Promise> WebTransport::CreateUnidirectionalStream(
 
 already_AddRefed<ReadableStream> WebTransport::IncomingUnidirectionalStreams() {
   return do_AddRef(mIncomingUnidirectionalStreams);
+}
+
+already_AddRefed<WebTransportSendGroup> WebTransport::CreateSendGroup(
+    ErrorResult& aRv) {
+  LOG(("WebTransport::CreateSendGroup() called"));
+  // https://w3c.github.io/webtransport/#dom-webtransport-createsendgroup
+  // Step 1: If this.[[State]] is "closed" or "failed", throw an
+  // InvalidStateError.
+  if (mState == WebTransportState::CLOSED ||
+      mState == WebTransportState::FAILED || !mChild) {
+    aRv.ThrowInvalidStateError("WebTransport closed or failed");
+    return nullptr;
+  }
+  // Step 2: Return the result of creating a WebTransportSendGroup with this.
+  RefPtr<WebTransportSendGroup> group =
+      new WebTransportSendGroup(mGlobal, this);
+
+  // Assign a unique group ID locally so the group is immediately usable,
+  // then notify the parent process to register it in the network stack.
+  uint64_t groupId = mNextSendGroupId++;
+  group->SetGroupId(groupId);
+  LOG(("CreateSendGroup assigned ID: %" PRIu64, groupId));
+  mChild->SendCreateSendGroup(groupId);
+
+  return group.forget();
 }
 
 // Can be invoked with "error", "error, error, and true/false", or "error and
@@ -834,6 +1380,13 @@ void WebTransport::Cleanup(WebTransportError* aError,
   // Step 9: If closeInfo is given, then set transport.[[State]] to "closed".
   // Otherwise, set transport.[[State]] to "failed".
   mState = aCloseInfo ? WebTransportState::CLOSED : WebTransportState::FAILED;
+
+  // Notify all the listeners of the closed session
+  if (aCloseInfo && mInnerWindowID != 0) {
+    mService->WebTransportSessionClosed(
+        mInnerWindowID, mHttpChannelID, aCloseInfo->mCloseCode,
+        NS_ConvertUTF8toUTF16(aCloseInfo->mReason));
+  }
 
   // Step 10: For each sendStream in sendStreams, error sendStream with error.
   AutoJSAPI jsapi;
@@ -892,12 +1445,18 @@ void WebTransport::Cleanup(WebTransportError* aError,
   NotifyToWindow(false);
 }
 
-void WebTransport::SendSetSendOrder(uint64_t aStreamId,
-                                    Maybe<int64_t> aSendOrder) {
+void WebTransport::SendSetSendOrder(uint64_t aStreamId, int64_t aSendOrder) {
   if (!mChild || !mChild->CanSend()) {
     return;
   }
   mChild->SendSetSendOrder(aStreamId, aSendOrder);
+}
+
+void WebTransport::SendSetSendGroup(uint64_t aStreamId, uint64_t aGroupId) {
+  if (!mChild || !mChild->CanSend()) {
+    return;
+  }
+  mChild->SendSetSendGroup(aStreamId, aGroupId);
 }
 
 void WebTransport::NotifyBFCacheOnMainThread(nsPIDOMWindowInner* aInner,

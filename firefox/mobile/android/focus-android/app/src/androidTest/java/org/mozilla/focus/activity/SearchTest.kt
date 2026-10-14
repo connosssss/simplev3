@@ -12,26 +12,26 @@ import org.mozilla.focus.activity.robots.browserScreen
 import org.mozilla.focus.activity.robots.homeScreen
 import org.mozilla.focus.activity.robots.searchScreen
 import org.mozilla.focus.helpers.FeatureSettingsHelper
+import org.mozilla.focus.helpers.FocusTestRule
 import org.mozilla.focus.helpers.MainActivityFirstrunTestRule
 import org.mozilla.focus.helpers.TestHelper.exitToTop
 import org.mozilla.focus.helpers.TestHelper.pressEnterKey
 import org.mozilla.focus.helpers.TestHelper.verifyKeyboardVisibility
 import org.mozilla.focus.helpers.TestHelper.waitingTime
-import org.mozilla.focus.helpers.TestSetup
 import org.mozilla.focus.testAnnotations.SmokeTest
 
 // This test checks the search engine can be changed and that search suggestions appear
-class SearchTest : TestSetup() {
+class SearchTest {
     private lateinit var searchString: String
     private val enginesList = listOf("DuckDuckGo", "Google", "Wikipedia")
     private val featureSettingsHelper = FeatureSettingsHelper()
 
-    @get:Rule
-    val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
+    @get:Rule(order = 0) val focusTestRule: FocusTestRule = FocusTestRule()
+
+    @get:Rule val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
 
     @Before
-    override fun setUp() {
-        super.setUp()
+    fun setUp() {
         featureSettingsHelper.setCfrForTrackingProtectionEnabled(false)
         featureSettingsHelper.setSearchWidgetDialogEnabled(false)
     }
@@ -46,14 +46,14 @@ class SearchTest : TestSetup() {
     fun changeSearchEngineTest() {
         for (searchEngine in enginesList) {
             // Open [settings menu] and select Search engine
-            homeScreen {
-            }.openMainMenu {
-            }.openSettings {
-            }.openSearchSettingsMenu {
-                openSearchEngineSubMenu()
-                selectSearchEngine(searchEngine)
-                exitToTop()
-            }
+            homeScreen {}
+                .openMainMenu {}
+                .openSettings {}
+                .openSearchSettingsMenu {
+                    openSearchEngineSubMenu()
+                    selectSearchEngine(searchEngine)
+                    exitToTop()
+                }
 
             searchScreen {
                 typeInSearchBar("mozilla ")
@@ -79,12 +79,12 @@ class SearchTest : TestSetup() {
             verifySearchSuggestionsAreShown()
             clearSearchBar()
         }
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openSearchSettingsMenu {
-            verifySearchSuggestionsSwitchState(true)
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openSearchSettingsMenu {
+                verifySearchSuggestionsSwitchState(true)
+            }
     }
 
     @SmokeTest
@@ -98,12 +98,12 @@ class SearchTest : TestSetup() {
             verifySearchSuggestionsAreNotShown()
             clearSearchBar()
         }
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openSearchSettingsMenu {
-            verifySearchSuggestionsSwitchState(false)
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openSearchSettingsMenu {
+                verifySearchSuggestionsSwitchState(false)
+            }
     }
 
     @Test
@@ -129,10 +129,11 @@ class SearchTest : TestSetup() {
         browserScreen {
             progressBar.waitUntilGone(waitingTime)
             verifyPageURL("google")
-        }.openSearchBar {
-            // Tap URL bar, check it displays search term (instead of URL)
-            verifySearchEditBarContainsText(searchString)
         }
+            .openSearchBar {
+                // Tap URL bar, check it displays search term (instead of URL)
+                verifySearchEditBarContainsText(searchString)
+            }
     }
 
     @SmokeTest
@@ -147,13 +148,13 @@ class SearchTest : TestSetup() {
             allowEnableSearchSuggestions()
             clearSearchBar()
         }
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openSearchSettingsMenu {
-            clickSearchSuggestionsSwitch()
-            exitToTop()
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openSearchSettingsMenu {
+                clickSearchSuggestionsSwitch()
+                exitToTop()
+            }
 
         searchScreen {
             typeInSearchBar(searchString)
@@ -166,15 +167,15 @@ class SearchTest : TestSetup() {
     fun clearSearchButtonTest() {
         searchString = "mozilla "
 
-        homeScreen {
-        }.openSearchBar {
-            typeInSearchBar(searchString)
-            verifyKeyboardVisibility(true)
-            verifySearchEditBarContainsText(searchString)
-            clearSearchBar()
-            verifyKeyboardVisibility(true)
-            verifySearchEditBarIsEmpty()
-        }
+        homeScreen {}
+            .openSearchBar {
+                typeInSearchBar(searchString)
+                verifyKeyboardVisibility(true)
+                verifySearchEditBarContainsText(searchString)
+                clearSearchBar()
+                verifyKeyboardVisibility(true)
+                verifySearchEditBarIsEmpty()
+            }
 
         searchString = "firefox"
 

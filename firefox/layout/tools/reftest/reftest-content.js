@@ -2,15 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-env mozilla/frame-script */
-
 const XHTML_NS = "http://www.w3.org/1999/xhtml";
 
 const DEBUG_CONTRACTID = "@mozilla.org/xpcom/debug;1";
 const PRINTSETTINGS_CONTRACTID = "@mozilla.org/gfx/printsettings-service;1";
 const NS_OBSERVER_SERVICE_CONTRACTID = "@mozilla.org/observer-service;1";
 const NS_GFXINFO_CONTRACTID = "@mozilla.org/gfx/info;1";
-const IO_SERVICE_CONTRACTID = "@mozilla.org/network/io-service;1";
 
 // "<!--CLEAR-->"
 const BLANK_URL_FOR_CLEARING =
@@ -410,6 +407,18 @@ function shouldNotFlush(contentRootElement) {
       .getAttribute("class")
       .split(/\s+/)
       .includes("reftest-no-flush")
+  );
+}
+
+function shouldCheckNoWRRaster(contentRootElement) {
+  // use getAttribute because className works differently in HTML and SVG
+  return (
+    contentRootElement &&
+    contentRootElement.hasAttribute("class") &&
+    contentRootElement
+      .getAttribute("class")
+      .split(/\s+/)
+      .includes("reftest-no-wr-raster")
   );
 }
 
@@ -822,6 +831,10 @@ function WaitForTestEnd(
           for (let i = 0; i < elements.length; ++i) {
             windowUtils().checkAndClearDisplayListState(elements[i]);
           }
+          // Clear WR rasterization state before MozReftestInvalidate
+          if (shouldCheckNoWRRaster(contentRootElement)) {
+            windowUtils().checkAndClearWRDidRasterize();
+          }
           var notification = content.document.createEvent("Events");
           notification.initEvent("MozReftestInvalidate", true, false);
           contentRootElement.dispatchEvent(notification);
@@ -968,6 +981,12 @@ function WaitForTestEnd(
               }
             }
           }
+          // Check if WebRender rasterized any tiles when it shouldn't have.
+          if (shouldCheckNoWRRaster(contentRootElement)) {
+            if (windowUtils().checkAndClearWRDidRasterize()) {
+              SendFailedNoWRRaster();
+            }
+          }
         }
 
         if (!IsSnapshottableTestType()) {
@@ -1003,8 +1022,8 @@ function WaitForTestEnd(
   CheckForLivenessOfContentRootElement();
   if (contentRootElement?.hasAttribute("class")) {
     attrModifiedObserver =
-      // ownerGlobal doesn't exist in content windows.
-      // eslint-disable-next-line mozilla/use-ownerGlobal
+      // documentGlobal doesn't exist in content windows.
+      // eslint-disable-next-line mozilla/use-documentGlobal
       new contentRootElement.ownerDocument.defaultView.MutationObserver(
         AttrModifiedListener
       );
@@ -1443,11 +1462,9 @@ function SendContentReady() {
   let info = {};
 
   try {
-    info.D2DEnabled = gfxInfo.D2DEnabled;
     info.DWriteEnabled = gfxInfo.DWriteEnabled;
     info.EmbeddedInFirefoxReality = gfxInfo.EmbeddedInFirefoxReality;
   } catch (e) {
-    info.D2DEnabled = false;
     info.DWriteEnabled = false;
     info.EmbeddedInFirefoxReality = false;
   }
@@ -1476,6 +1493,10 @@ function SendFailedNoDisplayList() {
 
 function SendFailedDisplayList() {
   sendAsyncMessage("reftest:FailedDisplayList");
+}
+
+function SendFailedNoWRRaster() {
+  sendAsyncMessage("reftest:FailedNoWRRaster");
 }
 
 function SendFailedOpaqueLayer(why) {

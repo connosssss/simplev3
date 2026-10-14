@@ -1,13 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef nsGenericHTMLFrameElement_h
 #define nsGenericHTMLFrameElement_h
-
-#include "mozilla/Attributes.h"
 
 #include "nsFrameLoader.h"
 #include "nsFrameLoaderOwner.h"
@@ -34,9 +30,8 @@ class XULFrameElement;
 class nsGenericHTMLFrameElement : public nsGenericHTMLElement,
                                   public nsFrameLoaderOwner {
  public:
-  nsGenericHTMLFrameElement(
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
-      mozilla::dom::FromParser aFromParser)
+  nsGenericHTMLFrameElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo,
+                            mozilla::dom::FromParser aFromParser)
       : nsGenericHTMLElement(std::move(aNodeInfo)),
         mSrcLoadHappened(false),
         mNetworkCreated(aFromParser == mozilla::dom::FROM_PARSER_NETWORK) {}
@@ -59,14 +54,16 @@ class nsGenericHTMLFrameElement : public nsGenericHTMLElement,
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(nsGenericHTMLFrameElement,
                                            nsGenericHTMLElement)
 
-  void SwapFrameLoaders(mozilla::dom::HTMLIFrameElement& aOtherLoaderOwner,
-                        mozilla::ErrorResult& aError);
+  MOZ_CAN_RUN_SCRIPT void SwapFrameLoaders(
+      mozilla::dom::HTMLIFrameElement& aOtherLoaderOwner,
+      mozilla::ErrorResult& aError);
 
-  void SwapFrameLoaders(mozilla::dom::XULFrameElement& aOtherLoaderOwner,
-                        mozilla::ErrorResult& aError);
+  MOZ_CAN_RUN_SCRIPT void SwapFrameLoaders(
+      mozilla::dom::XULFrameElement& aOtherLoaderOwner,
+      mozilla::ErrorResult& aError);
 
-  void SwapFrameLoaders(nsFrameLoaderOwner* aOtherLoaderOwner,
-                        mozilla::ErrorResult& rv);
+  MOZ_CAN_RUN_SCRIPT void SwapFrameLoaders(
+      nsFrameLoaderOwner* aOtherLoaderOwner, mozilla::ErrorResult& rv);
 
   /**
    * Helper method to map a HTML 'scrolling' attribute value (which can be null)

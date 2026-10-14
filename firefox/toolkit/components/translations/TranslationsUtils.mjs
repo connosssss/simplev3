@@ -7,10 +7,47 @@
  */
 
 /**
+ * @typedef {object} Lazy
+ * @property {typeof console} console
+ * @property {typeof import("resource://services-settings/RemoteSettingsClient.sys.mjs").RemoteSettingsClient} RemoteSettingsClient
+ */
+
+/** @type {Lazy} */
+const lazy = {};
+
+ChromeUtils.defineLazyGetter(lazy, "console", () => {
+  return console.createInstance({
+    maxLogLevelPref: "browser.translations.logLevel",
+    prefix: "Translations",
+  });
+});
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  RemoteSettingsClient:
+    "resource://services-settings/RemoteSettingsClient.sys.mjs",
+});
+
+/**
  * A set of global static utility functions that are useful throughout the
  * Translations ecosystem within the Firefox code base.
  */
 export class TranslationsUtils {
+  /**
+   * The name of the Remote Settings collection that hosts
+   * Translations Model Records for the current version of Firefox.
+   */
+  static get translationsModelsCollectionName() {
+    return "translations-models-v2";
+  }
+
+  /**
+   * The name of the Remote Settings collection that hosts
+   * Translations WASM Records for the current version of Firefox.
+   */
+  static get translationsWasmCollectionName() {
+    return "translations-wasm-v2";
+  }
+
   /**
    * Checks if the language tag string parses as a valid BCP-47 language tag.
    *
@@ -60,14 +97,14 @@ export class TranslationsUtils {
    *
    * If one language tag belongs to one of our models, and the other
    * language tag is determined to be a match, then it is determined
-   * that the model is compatible to for translation with that language.
+   * that the model is compatible for translation with that language.
    *
    * @param {string} lhsLangTag - The left-hand-side language tag to compare.
    * @param {string} rhsLangTag - The right-hand-side language tag to compare.
    *
    * @returns {boolean}
-   *  `true`  if the language tags match, either directly or after normalization.
-   *  `false` if either tag is invalid or empty, or if they do not match.
+   *  `true`  if the language tags are the same string, or if valid tags match after canonicalization or normalization.
+   *  `false` if either tag is empty, or if they are invalid and not the same string, or if valid tags do not match.
    *
    * @see https://datatracker.ietf.org/doc/html/rfc5646#appendix-A
    */
@@ -81,18 +118,29 @@ export class TranslationsUtils {
       return true;
     }
 
-    if (lhsLangTag.split("-")[0] !== rhsLangTag.split("-")[0]) {
-      // The language components of the tags do not match so there is no need to normalize them and compare.
-      return false;
-    }
-
     try {
+      // The language tags did not match, so attempt to canonicalize them and check again.
+      const canonicalLhsLangTag = Intl.getCanonicalLocales(lhsLangTag)[0];
+      const canonicalRhsLangTag = Intl.getCanonicalLocales(rhsLangTag)[0];
+
+      if (canonicalLhsLangTag === canonicalRhsLangTag) {
+        return true;
+      }
+
+      if (
+        canonicalLhsLangTag.split("-")[0] !== canonicalRhsLangTag.split("-")[0]
+      ) {
+        // The language components of the canonicalized tags do not match,
+        // so there is no need to further normalize them and compare.
+        return false;
+      }
+
       return (
-        TranslationsUtils.#normalizeLangTag(lhsLangTag) ===
-        TranslationsUtils.#normalizeLangTag(rhsLangTag)
+        TranslationsUtils.#normalizeLangTag(canonicalLhsLangTag) ===
+        TranslationsUtils.#normalizeLangTag(canonicalRhsLangTag)
       );
     } catch {
-      // One of the locales is not valid, just continue on to return false.
+      // At least one of the locales is not valid, just continue on to return false.
     }
 
     return false;
@@ -124,5 +172,41 @@ export class TranslationsUtils {
       key += `,${targetVariant}`;
     }
     return key;
+  }
+
+  /**
+   * Deletes all translations language model files.
+   *
+   * @returns {Promise<string[]>} - A list of record IDs.
+   */
+  static async deleteAllLanguageFiles() {
+    const { RemoteSettings } = ChromeUtils.importESModule(
+      "resource://services-settings/remote-settings.sys.mjs"
+    );
+    const client = RemoteSettings(
+      TranslationsUtils.translationsModelsCollectionName
+    );
+
+    try {
+      await client.attachments.deleteAll();
+    } catch (error) {
+      if (!(error instanceof lazy.RemoteSettingsClient.EmptyDatabaseError)) {
+        lazy.console.error(
+          "Failed to delete Translations language files.",
+          error
+        );
+      }
+    }
+
+    try {
+      const records = await client.get({
+        syncIfEmpty: false,
+        loadDumpIfNewer: false,
+      });
+      return records.map(record => record.id);
+    } catch (error) {
+      lazy.console.error("Failed to list Translations model records.", error);
+      return [];
+    }
   }
 }

@@ -5,6 +5,8 @@
 package mozilla.components.support.locale
 
 import android.content.Context
+import java.util.Locale
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -12,15 +14,10 @@ import mozilla.components.browser.state.action.BrowserAction
 import mozilla.components.browser.state.action.LocaleAction
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
 import mozilla.components.lib.state.Store
 import mozilla.components.support.base.log.logger.Logger
-import java.util.Locale
-import kotlin.coroutines.CoroutineContext
 
-/**
- * [Middleware] implementation for updating [BrowserState.locale] state changes during restore.
- */
+/** [Middleware] implementation for updating [BrowserState.locale] state changes during restore. */
 class LocaleMiddleware(
     private val applicationContext: Context,
     coroutineContext: CoroutineContext = Dispatchers.IO,
@@ -31,12 +28,12 @@ class LocaleMiddleware(
     private var scope = CoroutineScope(coroutineContext)
 
     override fun invoke(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         next: (BrowserAction) -> Unit,
         action: BrowserAction,
     ) {
         when (action) {
-            is LocaleAction.RestoreLocaleStateAction -> restoreLocale(context.store)
+            is LocaleAction.RestoreLocaleStateAction -> restoreLocale(store)
             is LocaleAction.UpdateLocaleAction -> updateLocale(action.locale)
             else -> {
                 // no-op
@@ -49,9 +46,7 @@ class LocaleMiddleware(
     private fun restoreLocale(store: Store<BrowserState, BrowserAction>) = scope.launch {
         val localeHistory = localeManager.getCurrentLocale(applicationContext)
         if (localeHistory == null) {
-            logger.debug(
-                "No recoverable locale has been set. Following device locale.",
-            )
+            logger.debug("No recoverable locale has been set. Following device locale.")
         } else {
             logger.debug("Locale restored from the storage $localeHistory")
         }

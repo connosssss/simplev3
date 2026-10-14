@@ -65,9 +65,9 @@ add_task(async function () {
       details: {
         status: 303,
         statusText: "See Other",
-        type: "plain",
+        type: "plain (redirect)",
         fullMimeType: "text/plain; charset=utf-8",
-        size: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 22),
+        size: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 0),
         time: true,
       },
     },
@@ -171,10 +171,7 @@ add_task(async function () {
    * A function that tests "Headers" panel contains correct information.
    */
   async function testHeaders(data, index) {
-    EventUtils.sendMouseEvent(
-      { type: "mousedown" },
-      document.querySelectorAll(".request-list-item")[index]
-    );
+    clickOnRequestRow(document.querySelectorAll(".request-list-item")[index]);
 
     // wait till all the summary section is loaded
     await waitUntil(() =>

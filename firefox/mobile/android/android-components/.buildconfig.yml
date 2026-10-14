@@ -18,13 +18,13 @@ projects:
     path: components/browser/engine-gecko
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:service-nimbus
@@ -41,25 +41,27 @@ projects:
     path: components/browser/engine-system
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:support-base
     - components:support-ktx
     - components:support-test
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:browser-errorpages:
     description: Responsive browser error pages for Android apps.
     path: components/browser/errorpages
     publish: true
     upstream_dependencies:
     - components:concept-base
+    - components:concept-engine
     - components:concept-fetch
+    - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:support-base
     - components:support-ktx
@@ -72,30 +74,29 @@ projects:
     path: components/browser/icons
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-fetch-httpurlconnection
     - components:lib-fetch-okhttp
     - components:lib-publicsuffixlist
     - components:lib-state
+    - components:service-merino-manifest
     - components:support-base
     - components:support-images
     - components:support-ktx
     - components:support-test
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:browser-menu:
     description: A customizable menu for browsers.
     path: components/browser/menu
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
@@ -103,6 +104,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
@@ -133,7 +135,6 @@ projects:
     publish: true
     upstream_dependencies:
     - components:browser-engine-gecko
-    - components:browser-errorpages
     - components:browser-menu
     - components:browser-menu2
     - components:browser-state
@@ -147,6 +148,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-session
@@ -175,12 +177,12 @@ projects:
     path: components/browser/state
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
@@ -189,7 +191,6 @@ projects:
     - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:browser-storage-sync:
     description: A syncable, Rust Places-backed implementation of core data storage.
     path: components/browser/storage-sync
@@ -198,9 +199,11 @@ projects:
     - components:concept-base
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:concept-toolbar
     - components:lib-publicsuffixlist
+    - components:support-appservices
     - components:support-base
     - components:support-ktx
     - components:support-test
@@ -211,13 +214,13 @@ projects:
     path: components/browser/tabstray
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:lib-publicsuffixlist
     - components:lib-state
@@ -234,13 +237,13 @@ projects:
     path: components/browser/thumbnails
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
@@ -250,13 +253,11 @@ projects:
     - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:browser-toolbar:
     description: A customizable toolbar for browsers.
     path: components/browser/toolbar
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-menu
     - components:browser-menu2
     - components:browser-state
@@ -266,6 +267,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-toolbar
     - components:lib-publicsuffixlist
     - components:lib-state
@@ -284,21 +286,49 @@ projects:
     path: components/compose/awesomebar
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
+    - components:browser-icons
+    - components:browser-menu
+    - components:browser-menu2
+    - components:browser-session-storage
     - components:browser-state
+    - components:browser-storage-sync
+    - components:browser-tabstray
+    - components:browser-thumbnails
+    - components:browser-toolbar
+    - components:compose-base
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
+    - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:concept-sync
+    - components:concept-tabstray
+    - components:concept-toolbar
+    - components:feature-awesomebar
+    - components:feature-search
+    - components:feature-session
+    - components:feature-tabs
+    - components:feature-top-sites
     - components:lib-publicsuffixlist
     - components:lib-state
+    - components:service-location
+    - components:service-merino-manifest
+    - components:support-appservices
     - components:support-base
+    - components:support-images
     - components:support-ktx
+    - components:support-locale
+    - components:support-remotesettings
     - components:support-test
     - components:support-utils
     - components:tooling-lint
+    - components:ui-autocomplete
+    - components:ui-colors
     - components:ui-icons
+    - components:ui-tabcounter
+    - components:ui-widgets
   components:compose-base:
     description: A component containing base Composable components based on Acorn
       Design System.
@@ -320,16 +350,17 @@ projects:
     path: components/compose/browser-toolbar
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-menu2
     - components:browser-state
     - components:compose-base
+    - components:compose-cfr
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-toolbar
     - components:feature-session
     - components:lib-publicsuffixlist
@@ -349,6 +380,7 @@ projects:
     path: components/compose/cfr
     publish: true
     upstream_dependencies:
+    - components:compose-base
     - components:concept-base
     - components:concept-fetch
     - components:lib-publicsuffixlist
@@ -357,6 +389,7 @@ projects:
     - components:support-test
     - components:support-utils
     - components:tooling-lint
+    - components:ui-colors
     - components:ui-icons
   components:compose-engine:
     description: A component for integrating a concept-engine implementation into
@@ -364,13 +397,13 @@ projects:
     path: components/compose/engine
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
@@ -378,13 +411,28 @@ projects:
     - components:support-test
     - components:support-utils
     - components:tooling-lint
+  components:compose-menu:
+    description: A customizable menu using Jetpack Compose.
+    path: components/compose/menu
+    publish: true
+    upstream_dependencies:
+    - components:compose-base
+    - components:concept-base
+    - components:concept-fetch
+    - components:lib-publicsuffixlist
+    - components:lib-state
+    - components:support-base
+    - components:support-ktx
+    - components:support-test
+    - components:support-utils
+    - components:tooling-lint
+    - components:ui-colors
     - components:ui-icons
   components:compose-tabstray:
     description: A customizable tabs tray using Jetpack Compose.
     path: components/compose/tabstray
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-menu
     - components:browser-menu2
     - components:browser-session-storage
@@ -399,6 +447,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-session
@@ -416,6 +465,18 @@ projects:
     - components:ui-icons
     - components:ui-tabcounter
     - components:ui-widgets
+  components:concept-accelerometer:
+    description: An abstract definition of an accelerometer.
+    path: components/concept/accelerometer
+    publish: true
+    upstream_dependencies:
+    - components:tooling-lint
+  components:concept-ai-controls:
+    description: An abstract definition of a ai-controls component.
+    path: components/concept/ai-controls
+    publish: true
+    upstream_dependencies:
+    - components:tooling-lint
   components:concept-awesomebar:
     description: An abstract definition of an awesomebar component.
     path: components/concept/awesomebar
@@ -435,22 +496,35 @@ projects:
     - components:support-base
     - components:support-test
     - components:tooling-lint
+  components:concept-bookmarks-file:
+    description: An abstract definition of a component for importing bookmarks from
+      a file.
+    path: components/concept/bookmarks-file
+    publish: true
+    upstream_dependencies:
+    - components:tooling-lint
+  components:concept-bookmarks-parser:
+    description: An abstract definition of a bookmark-file-parser component.
+    path: components/concept/bookmarks-parser
+    publish: true
+    upstream_dependencies:
+    - components:concept-storage-bookmarks
+    - components:tooling-lint
   components:concept-engine:
     description: An abstract layer hiding the actual browser engine implementation.
     path: components/concept/engine
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:concept-base
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:support-base
     - components:support-ktx
     - components:support-test
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:concept-fetch:
     description: An abstract definition of an HTTP client for fetching resources.
     path: components/concept/fetch
@@ -459,6 +533,18 @@ projects:
     - components:concept-base
     - components:support-base
     - components:support-test
+    - components:tooling-lint
+  components:concept-integrity:
+    description: A concept for verifying the integrity of an installation
+    path: components/concept/integrity
+    publish: true
+    upstream_dependencies:
+    - components:tooling-lint
+  components:concept-llm:
+    description: An abstract definition of an LLM request.
+    path: components/concept/llm
+    publish: true
+    upstream_dependencies:
     - components:tooling-lint
   components:concept-menu:
     description: An abstract definition of a browser menu component.
@@ -471,6 +557,27 @@ projects:
     - components:support-base
     - components:support-ktx
     - components:support-test
+    - components:support-utils
+    - components:tooling-lint
+  components:concept-passwords-file:
+    description: An abstract definition of a component for importing passwords from
+      a file.
+    path: components/concept/passwords-file
+    publish: true
+    upstream_dependencies:
+    - components:tooling-lint
+  components:concept-passwords-parser:
+    description: An abstract definition of a passwords-file-parser component.
+    path: components/concept/passwords-parser
+    publish: true
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-fetch
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:lib-publicsuffixlist
+    - components:support-base
+    - components:support-ktx
     - components:support-utils
     - components:tooling-lint
   components:concept-push:
@@ -490,11 +597,19 @@ projects:
     upstream_dependencies:
     - components:concept-base
     - components:concept-fetch
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:support-base
     - components:support-ktx
     - components:support-test
     - components:support-utils
+    - components:tooling-lint
+  components:concept-storage-bookmarks:
+    description: This component contains interfaces and abstract classes that describe
+      the bookmarks storage layer.
+    path: components/concept/storage-bookmarks
+    publish: true
+    upstream_dependencies:
     - components:tooling-lint
   components:concept-sync:
     description: An abstract definition of a browser data synchronization layer.
@@ -510,17 +625,16 @@ projects:
     path: components/concept/tabstray
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:support-base
     - components:support-ktx
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:concept-toolbar:
     description: An abstract definition of a toolbar component.
     path: components/concept/toolbar
@@ -540,7 +654,6 @@ projects:
     path: components/feature/accounts
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-menu
     - components:browser-menu2
     - components:browser-session-storage
@@ -555,6 +668,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:concept-tabstray
     - components:concept-toolbar
@@ -581,7 +695,6 @@ projects:
     path: components/feature/accounts-push
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
@@ -589,6 +702,7 @@ projects:
     - components:concept-fetch
     - components:concept-push
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:feature-push
     - components:lib-dataprotect
@@ -601,14 +715,12 @@ projects:
     - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:feature-addons:
     description: A feature that provides for managing add-ons.
     path: components/feature/addons
     publish: true
     upstream_dependencies:
     - components:browser-engine-gecko
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
@@ -616,6 +728,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-toolbar
     - components:lib-publicsuffixlist
     - components:lib-state
@@ -636,13 +749,13 @@ projects:
     path: components/feature/app-links
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-toolbar
     - components:feature-session
     - components:lib-publicsuffixlist
@@ -661,13 +774,12 @@ projects:
     path: components/feature/autofill
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-toolbar
-    - components:lib-fetch-okhttp
     - components:lib-publicsuffixlist
     - components:service-digitalassetlinks
     - components:support-base
@@ -678,12 +790,32 @@ projects:
     - components:ui-colors
     - components:ui-icons
     - components:ui-widgets
+  components:feature-automotive:
+    description: Component adding support for Android Automotive OS.
+    path: components/feature/automotive
+    publish: true
+    upstream_dependencies:
+    - components:browser-state
+    - components:concept-awesomebar
+    - components:concept-base
+    - components:concept-engine
+    - components:concept-fetch
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:feature-media
+    - components:lib-publicsuffixlist
+    - components:lib-state
+    - components:support-base
+    - components:support-ktx
+    - components:support-test
+    - components:support-utils
+    - components:tooling-lint
+    - components:ui-icons
   components:feature-awesomebar:
     description: Component connecting a concept-toolbar with a concept-awesomebar.
     path: components/feature/awesomebar
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-icons
     - components:browser-menu
     - components:browser-menu2
@@ -700,6 +832,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:concept-tabstray
     - components:concept-toolbar
@@ -711,9 +844,12 @@ projects:
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:service-location
+    - components:service-merino-manifest
+    - components:support-appservices
     - components:support-base
     - components:support-images
     - components:support-ktx
+    - components:support-locale
     - components:support-remotesettings
     - components:support-test
     - components:support-utils
@@ -729,13 +865,13 @@ projects:
     path: components/feature/containers
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-android-test
@@ -745,13 +881,11 @@ projects:
     - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:feature-contextmenu:
     description: Component for displaying context menus for web content.
     path: components/feature/contextmenu
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-icons
     - components:browser-menu
     - components:browser-menu2
@@ -767,6 +901,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-app-links
@@ -776,9 +911,12 @@ projects:
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:service-location
+    - components:service-merino-manifest
+    - components:support-appservices
     - components:support-base
     - components:support-images
     - components:support-ktx
+    - components:support-locale
     - components:support-remotesettings
     - components:support-test
     - components:support-test-libstate
@@ -794,7 +932,6 @@ projects:
     path: components/feature/customtabs
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-icons
     - components:browser-menu
     - components:browser-menu2
@@ -810,6 +947,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-intent
@@ -820,9 +958,12 @@ projects:
     - components:lib-state
     - components:service-digitalassetlinks
     - components:service-location
+    - components:service-merino-manifest
+    - components:support-appservices
     - components:support-base
     - components:support-images
     - components:support-ktx
+    - components:support-locale
     - components:support-remotesettings
     - components:support-test
     - components:support-test-libstate
@@ -839,13 +980,13 @@ projects:
     path: components/feature/downloads
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-toolbar
     - components:lib-publicsuffixlist
     - components:lib-state
@@ -859,19 +1000,28 @@ projects:
     - components:ui-colors
     - components:ui-icons
     - components:ui-widgets
+  components:feature-example:
+    description: A sample feature component demonstrating module structure and conventions.
+    path: components/feature/example
+    publish: false
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-fetch
+    - components:support-base
+    - components:tooling-lint
   components:feature-findinpage:
     description: Feature that will subscribe to the selected session and show an UI
       for results of find in page.
     path: components/feature/findinpage
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
@@ -885,32 +1035,69 @@ projects:
     path: components/feature/fxsuggest
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
+    - components:browser-icons
+    - components:browser-menu
+    - components:browser-menu2
+    - components:browser-session-storage
     - components:browser-state
+    - components:browser-storage-sync
+    - components:browser-tabstray
+    - components:browser-thumbnails
+    - components:browser-toolbar
+    - components:compose-base
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
+    - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:concept-sync
+    - components:concept-tabstray
     - components:concept-toolbar
+    - components:feature-awesomebar
+    - components:feature-search
     - components:feature-session
+    - components:feature-tabs
+    - components:feature-top-sites
     - components:lib-publicsuffixlist
     - components:lib-state
+    - components:service-location
+    - components:service-merino-manifest
     - components:service-nimbus
+    - components:support-appservices
     - components:support-base
+    - components:support-images
     - components:support-ktx
     - components:support-locale
     - components:support-remotesettings
     - components:support-test
     - components:support-utils
     - components:tooling-lint
+    - components:ui-autocomplete
+    - components:ui-colors
     - components:ui-icons
+    - components:ui-tabcounter
+    - components:ui-widgets
+  components:feature-importer:
+    description: A feature that handles importing bookmarks and passwords.
+    path: components/feature/importer
+    publish: true
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-bookmarks-file
+    - components:concept-fetch
+    - components:lib-publicsuffixlist
+    - components:lib-state
+    - components:support-base
+    - components:support-ktx
+    - components:support-utils
+    - components:tooling-lint
   components:feature-intent:
     description: Combining various feature components for intent processing.
     path: components/feature/intent
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-icons
     - components:browser-menu
     - components:browser-menu2
@@ -926,6 +1113,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-search
@@ -934,9 +1122,12 @@ projects:
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:service-location
+    - components:service-merino-manifest
+    - components:support-appservices
     - components:support-base
     - components:support-images
     - components:support-ktx
+    - components:support-locale
     - components:support-remotesettings
     - components:support-test
     - components:support-test-libstate
@@ -947,12 +1138,12 @@ projects:
     - components:ui-icons
     - components:ui-tabcounter
     - components:ui-widgets
-  components:feature-logins:
-    description: Feature component for logins related features.
-    path: components/feature/logins
-    publish: true
+  components:feature-ipprotection:
+    description: Feature module bridging GeckoView IP protection proxy state into
+      an AC store.
+    path: components/feature/ipprotection
+    publish: false
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-menu
     - components:browser-menu2
     - components:browser-session-storage
@@ -965,8 +1156,76 @@ projects:
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
+    - components:concept-integrity
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:concept-sync
+    - components:concept-tabstray
+    - components:concept-toolbar
+    - components:feature-session
+    - components:feature-tabs
+    - components:lib-dataprotect
+    - components:lib-integrity-googleplay
+    - components:lib-publicsuffixlist
+    - components:lib-state
+    - components:service-firefox-accounts
+    - components:support-base
+    - components:support-images
+    - components:support-ktx
+    - components:support-test
+    - components:support-test-libstate
+    - components:support-utils
+    - components:tooling-lint
+    - components:ui-autocomplete
+    - components:ui-colors
+    - components:ui-icons
+    - components:ui-tabcounter
+    - components:ui-widgets
+  components:feature-listentopage:
+    description: A feature that handles listening to a page.
+    path: components/feature/listentopage
+    publish: true
+    upstream_dependencies:
+    - components:browser-state
+    - components:compose-base
+    - components:concept-awesomebar
+    - components:concept-base
+    - components:concept-engine
+    - components:concept-fetch
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:lib-publicsuffixlist
+    - components:lib-state
+    - components:support-base
+    - components:support-ktx
+    - components:support-test
+    - components:support-test-fakes
+    - components:support-utils
+    - components:tooling-lint
+    - components:ui-colors
+    - components:ui-icons
+  components:feature-logins:
+    description: Feature component for logins related features.
+    path: components/feature/logins
+    publish: true
+    upstream_dependencies:
+    - components:browser-menu
+    - components:browser-menu2
+    - components:browser-session-storage
+    - components:browser-state
+    - components:browser-tabstray
+    - components:browser-thumbnails
+    - components:browser-toolbar
+    - components:compose-base
+    - components:compose-cfr
+    - components:concept-awesomebar
+    - components:concept-base
+    - components:concept-engine
+    - components:concept-fetch
+    - components:concept-menu
+    - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-prompts
@@ -991,13 +1250,13 @@ projects:
     path: components/feature/media
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
@@ -1006,19 +1265,36 @@ projects:
     - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
+    - components:ui-icons
+  components:feature-password-importer:
+    description: A feature that handles importing passwords.
+    path: components/feature/password-importer
+    publish: true
+    upstream_dependencies:
+    - components:compose-base
+    - components:concept-base
+    - components:concept-fetch
+    - components:concept-passwords-file
+    - components:lib-publicsuffixlist
+    - components:lib-state
+    - components:support-base
+    - components:support-ktx
+    - components:support-utils
+    - components:tooling-lint
+    - components:ui-colors
     - components:ui-icons
   components:feature-privatemode:
     description: Features used to enhance private browsing mode.
     path: components/feature/privatemode
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
@@ -1027,14 +1303,12 @@ projects:
     - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:feature-prompts:
     description: Feature that will subscribe to the selected session and will handle
       all the common prompt dialogs from web content.
     path: components/feature/prompts
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-menu
     - components:browser-menu2
     - components:browser-session-storage
@@ -1043,12 +1317,14 @@ projects:
     - components:browser-thumbnails
     - components:browser-toolbar
     - components:compose-base
+    - components:compose-cfr
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-session
@@ -1068,6 +1344,27 @@ projects:
     - components:ui-icons
     - components:ui-tabcounter
     - components:ui-widgets
+  components:feature-protection-dashboard:
+    description: Feature that will store global tracking protection information.
+    path: components/feature/protection-dashboard
+    publish: true
+    upstream_dependencies:
+    - components:browser-state
+    - components:compose-base
+    - components:concept-awesomebar
+    - components:concept-base
+    - components:concept-engine
+    - components:concept-fetch
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:lib-publicsuffixlist
+    - components:lib-state
+    - components:support-base
+    - components:support-ktx
+    - components:support-utils
+    - components:tooling-lint
+    - components:ui-colors
+    - components:ui-icons
   components:feature-push:
     description: Feature that implements push notifications with a supported push
       service.
@@ -1085,7 +1382,6 @@ projects:
     path: components/feature/pwa
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-icons
     - components:browser-menu
     - components:browser-menu2
@@ -1101,6 +1397,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-customtabs
@@ -1112,9 +1409,12 @@ projects:
     - components:lib-state
     - components:service-digitalassetlinks
     - components:service-location
+    - components:service-merino-manifest
+    - components:support-appservices
     - components:support-base
     - components:support-images
     - components:support-ktx
+    - components:support-locale
     - components:support-remotesettings
     - components:support-test
     - components:support-test-libstate
@@ -1138,12 +1438,12 @@ projects:
     - components:support-test
     - components:support-utils
     - components:tooling-lint
+    - components:ui-icons
   components:feature-readerview:
     description: Feature implementation providing a Reader View WebExtension.
     path: components/feature/readerview
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-menu
     - components:browser-state
     - components:concept-awesomebar
@@ -1152,11 +1452,13 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
     - components:support-ktx
     - components:support-test
+    - components:support-test-libstate
     - components:support-utils
     - components:support-webextensions
     - components:tooling-lint
@@ -1167,7 +1469,6 @@ projects:
     path: components/feature/recentlyclosed
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-session-storage
     - components:browser-state
     - components:concept-awesomebar
@@ -1175,6 +1476,7 @@ projects:
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-toolbar
     - components:feature-session
     - components:lib-publicsuffixlist
@@ -1186,7 +1488,6 @@ projects:
     - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:feature-screendetection:
     description: Feature implementation connecting an engine implementation with the
       search module.
@@ -1204,7 +1505,6 @@ projects:
     path: components/feature/search
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-icons
     - components:browser-menu
     - components:browser-menu2
@@ -1220,6 +1520,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-session
@@ -1227,9 +1528,12 @@ projects:
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:service-location
+    - components:service-merino-manifest
+    - components:support-appservices
     - components:support-base
     - components:support-images
     - components:support-ktx
+    - components:support-locale
     - components:support-remotesettings
     - components:support-test
     - components:support-test-fakes
@@ -1247,7 +1551,6 @@ projects:
     publish: true
     upstream_dependencies:
     - components:browser-engine-gecko
-    - components:browser-errorpages
     - components:browser-menu
     - components:browser-menu2
     - components:browser-session-storage
@@ -1262,6 +1565,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-session
@@ -1287,13 +1591,13 @@ projects:
     path: components/feature/session
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-toolbar
     - components:lib-publicsuffixlist
     - components:lib-state
@@ -1304,7 +1608,6 @@ projects:
     - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:feature-share:
     description: Feature implementation for saving and sorting recent apps used for
       sharing.
@@ -1325,7 +1628,6 @@ projects:
     path: components/feature/sitepermissions
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-menu
     - components:browser-menu2
     - components:browser-session-storage
@@ -1340,6 +1642,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-session
@@ -1351,6 +1654,7 @@ projects:
     - components:support-images
     - components:support-ktx
     - components:support-test
+    - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
     - components:ui-autocomplete
@@ -1358,12 +1662,36 @@ projects:
     - components:ui-icons
     - components:ui-tabcounter
     - components:ui-widgets
+  components:feature-summarize:
+    description: A feature that handles displaying summarized browser content
+    path: components/feature/summarize
+    publish: true
+    upstream_dependencies:
+    - components:compose-base
+    - components:concept-accelerometer
+    - components:concept-ai-controls
+    - components:concept-base
+    - components:concept-engine
+    - components:concept-fetch
+    - components:concept-llm
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:lib-publicsuffixlist
+    - components:lib-shake
+    - components:lib-state
+    - components:support-base
+    - components:support-ktx
+    - components:support-test-fakes
+    - components:support-utils
+    - components:tooling-lint
+    - components:ui-colors
+    - components:ui-icons
+    - components:ui-richtext
   components:feature-syncedtabs:
     description: Feature that provides access to other devices' tabs in the same account.
     path: components/feature/syncedtabs
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-icons
     - components:browser-state
     - components:browser-storage-sync
@@ -1372,6 +1700,7 @@ projects:
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:concept-toolbar
     - components:feature-session
@@ -1379,20 +1708,20 @@ projects:
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:service-firefox-accounts
+    - components:service-merino-manifest
+    - components:support-appservices
     - components:support-base
     - components:support-images
     - components:support-ktx
     - components:support-test
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:feature-tab-collections:
     description: Feature implementation for saving, restoring and organizing collections
       of tabs.
     path: components/feature/tab-collections
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-menu
     - components:browser-menu2
     - components:browser-session-storage
@@ -1407,6 +1736,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-session
@@ -1427,13 +1757,35 @@ projects:
     - components:ui-icons
     - components:ui-tabcounter
     - components:ui-widgets
+  components:feature-tabdata-coordinator:
+    description: Component gathering tab data, such as tabs and tab groups, from its
+      various sources into a single consumable location.
+    path: components/feature/tabdata-coordinator
+    publish: true
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-fetch
+    - components:feature-tabgroups-storage
+    - components:support-base
+    - components:support-utils
+    - components:tooling-lint
+  components:feature-tabgroups-storage:
+    description: Component for persisting tab groups and the assignment of tabs to
+      those groups.
+    path: components/feature/tabgroups-storage
+    publish: true
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-fetch
+    - components:support-base
+    - components:support-utils
+    - components:tooling-lint
   components:feature-tabs:
     description: Feature implementation connecting a tabs tray implementation with
       the session and toolbar modules.
     path: components/feature/tabs
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-menu
     - components:browser-menu2
     - components:browser-session-storage
@@ -1448,6 +1800,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-session
@@ -1472,13 +1825,13 @@ projects:
     publish: true
     upstream_dependencies:
     - components:browser-domains
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-toolbar
     - components:feature-session
     - components:lib-publicsuffixlist
@@ -1486,6 +1839,7 @@ projects:
     - components:support-base
     - components:support-ktx
     - components:support-test
+    - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
     - components:ui-icons
@@ -1498,10 +1852,12 @@ projects:
     - components:concept-base
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:concept-toolbar
     - components:lib-publicsuffixlist
     - components:support-android-test
+    - components:support-appservices
     - components:support-base
     - components:support-ktx
     - components:support-test
@@ -1512,31 +1868,30 @@ projects:
     path: components/feature/webauthn
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:support-base
     - components:support-ktx
     - components:support-test
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:feature-webcompat:
     description: Feature that provides hotfixes for websites from Mozilla's Web Compatibility
       team
     path: components/feature/webcompat
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
@@ -1545,20 +1900,19 @@ projects:
     - components:support-utils
     - components:support-webextensions
     - components:tooling-lint
-    - components:ui-icons
   components:feature-webcompat-reporter:
     description: Feature that enables users to report site issues to Mozilla's Web
       Compatibility team.
     path: components/feature/webcompat-reporter
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
@@ -1567,13 +1921,11 @@ projects:
     - components:support-utils
     - components:support-webextensions
     - components:tooling-lint
-    - components:ui-icons
   components:feature-webnotifications:
     description: Feature component for Web Notifications.
     path: components/feature/webnotifications
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-icons
     - components:browser-menu
     - components:browser-menu2
@@ -1589,6 +1941,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-tabstray
     - components:concept-toolbar
     - components:feature-intent
@@ -1599,9 +1952,12 @@ projects:
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:service-location
+    - components:service-merino-manifest
+    - components:support-appservices
     - components:support-base
     - components:support-images
     - components:support-ktx
+    - components:support-locale
     - components:support-remotesettings
     - components:support-test
     - components:support-utils
@@ -1611,6 +1967,35 @@ projects:
     - components:ui-icons
     - components:ui-tabcounter
     - components:ui-widgets
+  components:lib-accelerometer-sensormanager:
+    description: An implementation of the accelerometer concept that uses the Android
+      SensorManager
+    path: components/lib/accelerometer-sensormanager
+    publish: true
+    upstream_dependencies:
+    - components:concept-accelerometer
+    - components:concept-base
+    - components:concept-fetch
+    - components:support-base
+    - components:support-test
+    - components:tooling-lint
+  components:lib-ai-controls:
+    description: An abstract definition of a ai-controls component.
+    path: components/lib/ai-controls
+    publish: true
+    upstream_dependencies:
+    - components:concept-ai-controls
+    - components:concept-base
+    - components:concept-engine
+    - components:concept-fetch
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:lib-publicsuffixlist
+    - components:support-base
+    - components:support-ktx
+    - components:support-test-fakes
+    - components:support-utils
+    - components:tooling-lint
   components:lib-auth:
     description: A component for various kinds of authentication mechanisms.
     path: components/lib/auth
@@ -1621,20 +2006,49 @@ projects:
     - components:support-base
     - components:support-test
     - components:tooling-lint
+  components:lib-bookmark-parser-jsoup:
+    description: A jsoup-based implementation of concept-bookmarks-parser
+    path: components/lib/bookmark-parser-jsoup
+    publish: true
+    upstream_dependencies:
+    - components:concept-bookmarks-parser
+    - components:concept-storage-bookmarks
+    - components:tooling-lint
+  components:lib-bookmarks-file:
+    description: A concrete implementation of concept-bookmarks-file-importer that
+      parses Netscape HTML bookmark files.
+    path: components/lib/bookmarks-file
+    publish: true
+    upstream_dependencies:
+    - components:concept-bookmarks-file
+    - components:concept-bookmarks-parser
+    - components:concept-storage-bookmarks
+    - components:tooling-lint
   components:lib-crash:
     description: A generic crash reporter library that can report crashes to multiple
       services.
     path: components/lib/crash
     publish: true
     upstream_dependencies:
+    - components:browser-engine-gecko
+    - components:browser-state
+    - components:concept-awesomebar
     - components:concept-base
+    - components:concept-engine
     - components:concept-fetch
+    - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
+    - components:lib-state
+    - components:service-nimbus
+    - components:support-android-test
     - components:support-base
     - components:support-ktx
+    - components:support-locale
     - components:support-test
     - components:support-utils
     - components:tooling-lint
+    - components:ui-icons
   components:lib-crash-sentry:
     description: A crash reporter for Sentry.io that that uses lib-crash.
     path: components/lib/crash-sentry
@@ -1678,12 +2092,88 @@ projects:
     - components:support-test
     - components:tooling-fetch-tests
     - components:tooling-lint
+  components:lib-integrity-googleplay:
+    description: A library for verifying the integrity of an installation using Google
+      Play
+    path: components/lib/integrity-googleplay
+    publish: true
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-fetch
+    - components:concept-integrity
+    - components:support-base
+    - components:support-test
+    - components:tooling-lint
   components:lib-jexl:
     description: 'Javascript Expression Language: Powerful context-based expression
       parser and evaluator.'
     path: components/lib/jexl
     publish: true
     upstream_dependencies:
+    - components:tooling-lint
+  components:lib-llm-gemininano:
+    description: A Gemini Nano implementation of the LLM concept.
+    path: components/lib/llm-gemininano
+    publish: true
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-fetch
+    - components:concept-llm
+    - components:support-base
+    - components:support-test
+    - components:tooling-lint
+  components:lib-llm-mlpa:
+    description: An implmentation of  that is backed by MLPA
+    path: components/lib/llm-mlpa
+    publish: true
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-engine
+    - components:concept-fetch
+    - components:concept-integrity
+    - components:concept-llm
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:lib-publicsuffixlist
+    - components:support-base
+    - components:support-ktx
+    - components:support-test
+    - components:support-test-fakes
+    - components:support-utils
+    - components:tooling-lint
+  components:lib-password-parser-csv:
+    description: A CSV implementation of concept-passwords-parser
+    path: components/lib/password-parser-csv
+    publish: true
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-fetch
+    - components:concept-passwords-parser
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:lib-publicsuffixlist
+    - components:support-base
+    - components:support-ktx
+    - components:support-utils
+    - components:tooling-lint
+  components:lib-passwords-file:
+    description: A concrete implementation of concept-passwords-file that imports
+      passwords from CSV files.
+    path: components/lib/passwords-file
+    publish: true
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-fetch
+    - components:concept-passwords-file
+    - components:concept-passwords-parser
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:lib-password-parser-csv
+    - components:lib-publicsuffixlist
+    - components:support-base
+    - components:support-ktx
+    - components:support-test
+    - components:support-utils
     - components:tooling-lint
   components:lib-publicsuffixlist:
     description: A library for reading and using the public suffix list.
@@ -1706,6 +2196,17 @@ projects:
     - components:support-base
     - components:support-test
     - components:tooling-lint
+  components:lib-shake:
+    description: A library to detect shake gestures from accelerometer data
+    path: components/lib/shake
+    publish: true
+    upstream_dependencies:
+    - components:concept-accelerometer
+    - components:concept-base
+    - components:concept-fetch
+    - components:support-base
+    - components:support-test
+    - components:tooling-lint
   components:lib-state:
     description: A library for maintaining application state.
     path: components/lib/state
@@ -1719,6 +2220,22 @@ projects:
     - components:support-test
     - components:support-utils
     - components:tooling-lint
+  components:samples-acorn-components:
+    description: A simple application demonstrating the Acorn Design System components
+      for Android.
+    path: samples/acorn-components
+    publish: false
+    upstream_dependencies:
+    - components:compose-base
+    - components:concept-base
+    - components:concept-fetch
+    - components:lib-publicsuffixlist
+    - components:support-base
+    - components:support-ktx
+    - components:support-utils
+    - components:tooling-lint
+    - components:ui-colors
+    - components:ui-icons
   components:samples-browser:
     description: A simple browser composed from browser components.
     path: samples/browser
@@ -1739,12 +2256,14 @@ projects:
     - components:browser-toolbar
     - components:compose-awesomebar
     - components:compose-base
+    - components:compose-cfr
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:concept-tabstray
     - components:concept-toolbar
@@ -1780,6 +2299,7 @@ projects:
     - components:service-digitalassetlinks
     - components:service-glean
     - components:service-location
+    - components:service-merino-manifest
     - components:service-nimbus
     - components:service-sync-logins
     - components:support-android-test
@@ -1803,7 +2323,6 @@ projects:
     publish: false
     upstream_dependencies:
     - components:browser-engine-gecko
-    - components:browser-errorpages
     - components:browser-icons
     - components:browser-menu
     - components:browser-menu2
@@ -1816,6 +2335,7 @@ projects:
     - components:compose-awesomebar
     - components:compose-base
     - components:compose-browser-toolbar
+    - components:compose-cfr
     - components:compose-engine
     - components:compose-tabstray
     - components:concept-awesomebar
@@ -1824,6 +2344,7 @@ projects:
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:concept-tabstray
     - components:concept-toolbar
@@ -1836,6 +2357,7 @@ projects:
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:service-location
+    - components:service-merino-manifest
     - components:service-nimbus
     - components:support-appservices
     - components:support-base
@@ -1856,7 +2378,11 @@ projects:
     publish: false
     upstream_dependencies:
     - components:concept-base
+    - components:concept-engine
     - components:concept-fetch
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:concept-toolbar
     - components:lib-crash
     - components:lib-fetch-httpurlconnection
     - components:lib-publicsuffixlist
@@ -1865,6 +2391,9 @@ projects:
     - components:support-ktx
     - components:support-utils
     - components:tooling-lint
+    - components:ui-colors
+    - components:ui-icons
+    - components:ui-widgets
   components:samples-dataprotect:
     description: An app demoing how to use the Dataprotect component to load and store
       encrypted data in SharedPreferences.
@@ -1885,9 +2414,12 @@ projects:
     publish: false
     upstream_dependencies:
     - components:concept-base
+    - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
+    - components:concept-toolbar
     - components:feature-qr
     - components:lib-dataprotect
     - components:lib-fetch-httpurlconnection
@@ -1899,19 +2431,50 @@ projects:
     - components:support-ktx
     - components:support-utils
     - components:tooling-lint
+    - components:ui-colors
+    - components:ui-icons
+    - components:ui-widgets
+  components:samples-firefox-relay:
+    description: A simple app demoing Firefox Relay integration.
+    path: samples/firefox-relay
+    publish: false
+    upstream_dependencies:
+    - components:compose-base
+    - components:concept-base
+    - components:concept-engine
+    - components:concept-fetch
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:concept-sync
+    - components:concept-toolbar
+    - components:lib-dataprotect
+    - components:lib-fetch-httpurlconnection
+    - components:lib-publicsuffixlist
+    - components:lib-state
+    - components:service-firefox-accounts
+    - components:service-firefox-relay
+    - components:support-appservices
+    - components:support-base
+    - components:support-ktx
+    - components:support-utils
+    - components:tooling-lint
+    - components:ui-colors
+    - components:ui-icons
+    - components:ui-widgets
   components:samples-glean:
     description: An app demoing how to use the Glean library to collect and send telemetry
       data.
     path: samples/glean
     publish: false
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:concept-toolbar
     - components:lib-fetch-httpurlconnection
     - components:lib-publicsuffixlist
     - components:lib-state
@@ -1924,7 +2487,9 @@ projects:
     - components:support-locale
     - components:support-utils
     - components:tooling-lint
+    - components:ui-colors
     - components:ui-icons
+    - components:ui-widgets
   components:samples-glean-library:
     description: A third-party library used by samples-glean to demonstrate multi-library
       support for Glean.
@@ -1939,8 +2504,10 @@ projects:
     upstream_dependencies:
     - components:browser-storage-sync
     - components:concept-base
+    - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:concept-toolbar
     - components:lib-dataprotect
@@ -1955,15 +2522,21 @@ projects:
     - components:support-ktx
     - components:support-utils
     - components:tooling-lint
+    - components:ui-colors
+    - components:ui-icons
+    - components:ui-widgets
   components:samples-sync-logins:
     description: A simple app demoing Firefox Sync (Logins) integration.
     path: samples/sync-logins
     publish: false
     upstream_dependencies:
     - components:concept-base
+    - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
+    - components:concept-toolbar
     - components:lib-dataprotect
     - components:lib-fetch-httpurlconnection
     - components:lib-publicsuffixlist
@@ -1975,6 +2548,9 @@ projects:
     - components:support-ktx
     - components:support-utils
     - components:tooling-lint
+    - components:ui-colors
+    - components:ui-icons
+    - components:ui-widgets
   components:samples-toolbar:
     description: An app demoing multiple customized toolbars using the browser-toolbar
       component.
@@ -1982,19 +2558,20 @@ projects:
     publish: false
     upstream_dependencies:
     - components:browser-domains
-    - components:browser-errorpages
     - components:browser-menu
     - components:browser-menu2
     - components:browser-state
     - components:browser-toolbar
     - components:compose-base
     - components:compose-browser-toolbar
+    - components:compose-cfr
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-menu
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-toolbar
     - components:feature-session
     - components:feature-toolbar
@@ -2028,8 +2605,10 @@ projects:
     publish: true
     upstream_dependencies:
     - components:concept-base
+    - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:lib-dataprotect
     - components:lib-publicsuffixlist
@@ -2037,9 +2616,32 @@ projects:
     - components:support-base
     - components:support-ktx
     - components:support-test
+    - components:support-test-fakes
     - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
+  components:service-firefox-relay:
+    description: A library to communicate with the Relay services API
+    path: components/service/firefox-relay
+    publish: false
+    upstream_dependencies:
+    - components:compose-base
+    - components:concept-base
+    - components:concept-fetch
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:concept-sync
+    - components:lib-dataprotect
+    - components:lib-publicsuffixlist
+    - components:lib-state
+    - components:service-firefox-accounts
+    - components:support-base
+    - components:support-ktx
+    - components:support-test
+    - components:support-utils
+    - components:tooling-lint
+    - components:ui-colors
+    - components:ui-icons
   components:service-glean:
     description: A client-side telemetry SDK for collecting metrics and sending them
       to the Mozilla telemetry service
@@ -2079,27 +2681,53 @@ projects:
     - components:concept-base
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:concept-toolbar
     - components:feature-top-sites
+    - components:lib-publicsuffixlist
+    - components:support-appservices
+    - components:support-base
+    - components:support-ktx
+    - components:support-test
+    - components:support-utils
+    - components:tooling-lint
+  components:service-merino-manifest:
+    description: A library that provides metadata for popular websites using an embedded
+      snapshot of the Merino manifest.
+    path: components/service/merino-manifest
+    publish: true
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-fetch
     - components:lib-publicsuffixlist
     - components:support-base
     - components:support-ktx
     - components:support-test
     - components:support-utils
     - components:tooling-lint
+  components:service-merino-weather:
+    description: A library for fetching weather forecasts from the Merino service.
+    path: components/service/merino-weather
+    publish: true
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-fetch
+    - components:support-base
+    - components:support-test
+    - components:tooling-lint
   components:service-nimbus:
     description: A client-side experiment SDK
     path: components/service/nimbus
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
@@ -2124,6 +2752,15 @@ projects:
     - components:support-test
     - components:support-utils
     - components:tooling-lint
+  components:service-sync:
+    description: A library for integrating with the Firefox Sync service
+    path: components/service/sync
+    publish: true
+    upstream_dependencies:
+    - components:concept-base
+    - components:concept-fetch
+    - components:support-base
+    - components:tooling-lint
   components:service-sync-autofill:
     description: A library for autofilling addresses and credit cards.
     path: components/service/sync-autofill
@@ -2132,6 +2769,7 @@ projects:
     - components:concept-base
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:lib-dataprotect
     - components:lib-publicsuffixlist
@@ -2148,11 +2786,13 @@ projects:
     - components:concept-base
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-sync
     - components:lib-dataprotect
     - components:lib-publicsuffixlist
     - components:support-base
     - components:support-ktx
+    - components:support-test
     - components:support-utils
     - components:tooling-lint
   components:support-android-test:
@@ -2197,11 +2837,11 @@ projects:
     path: components/support/ktx
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:support-android-test
     - components:support-base
@@ -2209,26 +2849,38 @@ projects:
     - components:support-test-fakes
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:support-license:
     description: A component to help display licensing agreements.
     path: components/support/license
     publish: true
     upstream_dependencies:
+    - components:concept-base
+    - components:concept-engine
+    - components:concept-fetch
+    - components:concept-storage
+    - components:concept-storage-bookmarks
+    - components:concept-toolbar
+    - components:lib-publicsuffixlist
+    - components:support-base
+    - components:support-ktx
+    - components:support-utils
     - components:tooling-lint
+    - components:ui-colors
+    - components:ui-icons
+    - components:ui-widgets
   components:support-locale:
     description: A component to allow apps to change the system defined language by
       their custom one
     path: components/support/locale
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
@@ -2237,7 +2889,6 @@ projects:
     - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:support-remotesettings:
     description: A component to help fetch data from remote servers.
     path: components/support/remotesettings
@@ -2246,6 +2897,7 @@ projects:
     - components:concept-base
     - components:concept-fetch
     - components:lib-publicsuffixlist
+    - components:support-appservices
     - components:support-base
     - components:support-ktx
     - components:support-test
@@ -2275,17 +2927,16 @@ projects:
     path: components/support/test-fakes
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:support-base
     - components:support-ktx
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:support-test-libstate:
     description: A collection of helpers for testing functionality that relies on
       the lib-state component (local unit tests).
@@ -2316,13 +2967,13 @@ projects:
     path: components/support/webextensions
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:browser-state
     - components:concept-awesomebar
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:lib-publicsuffixlist
     - components:lib-state
     - components:support-base
@@ -2331,7 +2982,6 @@ projects:
     - components:support-test-libstate
     - components:support-utils
     - components:tooling-lint
-    - components:ui-icons
   components:tooling-detekt:
     description: Custom Detekt rules for internal use.
     path: components/tooling/detekt
@@ -2349,6 +2999,12 @@ projects:
     path: components/tooling/lint
     publish: false
     upstream_dependencies: []
+  components:ui-animation:
+    description: A library for providing animations.
+    path: components/ui/animation
+    publish: true
+    upstream_dependencies:
+    - components:tooling-lint
   components:ui-autocomplete:
     description: A set of components to provide autocomplete functionality.
     path: components/ui/autocomplete
@@ -2378,6 +3034,21 @@ projects:
     publish: true
     upstream_dependencies:
     - components:tooling-lint
+  components:ui-richtext:
+    description: A UI model for display rich text component
+    path: components/ui/richtext
+    publish: true
+    upstream_dependencies:
+    - components:compose-base
+    - components:concept-base
+    - components:concept-fetch
+    - components:lib-publicsuffixlist
+    - components:support-base
+    - components:support-ktx
+    - components:support-utils
+    - components:tooling-lint
+    - components:ui-colors
+    - components:ui-icons
   components:ui-tabcounter:
     description: A tab counter for browsers.
     path: components/ui/tabcounter
@@ -2401,11 +3072,11 @@ projects:
     path: components/ui/widgets
     publish: true
     upstream_dependencies:
-    - components:browser-errorpages
     - components:concept-base
     - components:concept-engine
     - components:concept-fetch
     - components:concept-storage
+    - components:concept-storage-bookmarks
     - components:concept-toolbar
     - components:lib-publicsuffixlist
     - components:support-base

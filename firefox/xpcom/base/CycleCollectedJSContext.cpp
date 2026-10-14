@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,8 +10,9 @@
 #include "js/Debug.h"
 #include "js/GCAPI.h"
 #include "js/Utility.h"
+#include "js/friend/DumpFunctions.h"
+#include "js/friend/MicroTask.h"
 #include "jsapi.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/AutoRestore.h"
 #include "mozilla/CycleCollectedJSRuntime.h"
@@ -23,12 +22,14 @@
 #include "mozilla/ProfilerMarkers.h"
 #include "mozilla/ProfilerRunnable.h"
 #include "mozilla/Sprintf.h"
-#include "mozilla/Unused.h"
+#include "mozilla/StaticPrefs_javascript.h"
+#include "mozilla/dom/CallbackObject.h"
 #include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/DOMJSClass.h"
 #include "mozilla/dom/FinalizationRegistryBinding.h"
-#include "mozilla/dom/CallbackObject.h"
+#include "mozilla/dom/Promise.h"
 #include "mozilla/dom/PromiseDebugging.h"
+#include "mozilla/dom/PromiseDebuggingBinding.h"
 #include "mozilla/dom/PromiseRejectionEvent.h"
 #include "mozilla/dom/PromiseRejectionEventBinding.h"
 #include "mozilla/dom/RootedDictionary.h"
@@ -72,15 +73,19 @@ CycleCollectedJSContext::CycleCollectedJSContext()
 
 CycleCollectedJSContext::~CycleCollectedJSContext() {
   MOZ_COUNT_DTOR(CycleCollectedJSContext);
+  MOZ_ASSERT(mWebTaskSchedulingStateCount == 0,
+             "A global leaked a WebTaskSchedulingState, which would have "
+             "permanently disabled the getHostDefinedData fast path");
   // If the allocation failed, here we are.
   if (!mJSContext) {
     return;
   }
-  mRecycledPromiseJob = nullptr;
 
   JS::SetHostCleanupFinalizationRegistryCallback(mJSContext, nullptr, nullptr);
 
   JS_SetContextPrivate(mJSContext, nullptr);
+
+  MOZ_ASSERT(!JS::HasAnyMicroTasks(mJSContext));
 
   mRuntime->SetContext(nullptr);
   mRuntime->Shutdown(mJSContext);
@@ -95,14 +100,13 @@ CycleCollectedJSContext::~CycleCollectedJSContext() {
   // Clear mPendingException first, since it might be cycle collected.
   mPendingException = nullptr;
 
-  MOZ_ASSERT(mDebuggerMicroTaskQueue.empty());
-  MOZ_ASSERT(mPendingMicroTaskRunnables.empty());
-
   mUncaughtRejections.reset();
+  mUncaughtRejectionIndices.Clear();
   mConsumedRejections.reset();
 
   mAboutToBeNotifiedRejectedPromises.Clear();
   mPendingUnhandledRejections.Clear();
+  mUncaughtRejectionObservers.Clear();
 
   mFinalizationRegistryCleanup.Destroy();
 
@@ -172,229 +176,103 @@ size_t CycleCollectedJSContext::SizeOfExcludingThis(
   return 0;
 }
 
-class PromiseJobRunnable final : public CallbackObjectBase,
-                                 public MicroTaskRunnable {
- public:
-  PromiseJobRunnable(JS::HandleObject aPromise, JS::HandleObject aCallback,
-                     JS::HandleObject aCallbackGlobal,
-                     JS::HandleObject aAllocationSite,
-                     nsIGlobalObject* aIncumbentGlobal,
-                     WebTaskSchedulingState* aSchedulingState)
-      : CallbackObjectBase(aCallback, aCallbackGlobal, aAllocationSite,
-                           aIncumbentGlobal),
-        mPropagateUserInputEventHandling(false) {
-    MOZ_ASSERT(js::IsFunctionObject(aCallback));
-    InitInternal(aPromise, aSchedulingState);
-  }
-
-  void Reinit(JS::HandleObject aPromise, JS::HandleObject aCallback,
-              JS::HandleObject aCallbackGlobal,
-              JS::HandleObject aAllocationSite,
-              nsIGlobalObject* aIncumbentGlobal,
-              WebTaskSchedulingState* aSchedulingState) {
-    InitNoHold(aCallback, aCallbackGlobal, aAllocationSite, aIncumbentGlobal);
-    InitInternal(aPromise, aSchedulingState);
-  }
-
- protected:
-  virtual ~PromiseJobRunnable() = default;
-
-  // This is modeled on the Call methods which WebIDL codegen creates for
-  // callback PromiseJobCallback = undefined();
-  MOZ_CAN_RUN_SCRIPT inline void Call() {
-    IgnoredErrorResult rv;
-    CallSetup s(this, rv, "promise callback", eReportExceptions);
-    if (!s.GetContext()) {
-      MOZ_ASSERT(rv.Failed());
-      return;
-    }
-    JS::Rooted<JS::Value> rval(s.GetContext());
-
-    JS::Rooted<JS::Value> callable(s.GetContext(), JS::ObjectValue(*mCallback));
-    if (!JS::Call(s.GetContext(), JS::UndefinedHandleValue, callable,
-                  JS::HandleValueArray::empty(), &rval)) {
-      // This isn't really needed but it ensures that rv's value is updated
-      // consistently.
-      rv.NoteJSContextException(s.GetContext());
-    }
-  }
-
-  MOZ_CAN_RUN_SCRIPT
-  virtual void Run(AutoSlowOperation& aAso) override {
-    JSObject* callback = CallbackPreserveColor();
-    nsCOMPtr<nsIGlobalObject> global =
-        callback ? xpc::NativeGlobal(callback) : nullptr;
-    if (global && !global->IsDying()) {
-      // Propagate the user input event handling bit if needed.
-      AutoHandlingUserInputStatePusher userInpStatePusher(
-          mPropagateUserInputEventHandling);
-
-      // https://wicg.github.io/scheduling-apis/#sec-patches-html-hostcalljobcallback
-      // 2. Set event loop’s current scheduling state to
-      // callback.[[HostDefined]].[[SchedulingState]].
-      global->SetWebTaskSchedulingState(mSchedulingState);
-
-      Call();
-
-      // (The step after step 7): Set event loop’s current scheduling state to
-      // null
-      global->SetWebTaskSchedulingState(nullptr);
-    }
-    // Now that PromiseJobCallback is no longer needed, clear any pointers it
-    // contains. This removes any storebuffer entries associated with those
-    // pointers, which can cause problems by taking up memory and by triggering
-    // minor GCs. This otherwise would not happen until the next minor GC or
-    // cycle collection.
-    Reset();
-    // Clear also other explicit member variables of PromiseJobRunnable so that
-    // we can possibly reuse it.
-    mSchedulingState = nullptr;
-    mPropagateUserInputEventHandling = false;
-
-    if (CycleCollectedJSContext* ccjs = CycleCollectedJSContext::Get()) {
-      ccjs->mRecycledPromiseJob = this;
-    }
-  }
-
-  virtual bool Suppressed() override {
-    JSObject* callback = CallbackPreserveColor();
-    nsIGlobalObject* global = callback ? xpc::NativeGlobal(callback) : nullptr;
-    return global && global->IsInSyncOperation();
-  }
-
-  void TraceMicroTask(JSTracer* aTracer) override {
-    // We can trace CallbackObjectBase.
-    Trace(aTracer);
-  }
-
- private:
-  void InitInternal(JS::HandleObject aPromise,
-                    WebTaskSchedulingState* aSchedulingState) {
-    if (aPromise) {
-      JS::PromiseUserInputEventHandlingState state =
-          JS::GetPromiseUserInputEventHandlingState(aPromise);
-      mPropagateUserInputEventHandling =
-          state ==
-          JS::PromiseUserInputEventHandlingState::HadUserInteractionAtCreation;
-    }
-    mSchedulingState = aSchedulingState;
-  }
-
-  RefPtr<WebTaskSchedulingState> mSchedulingState;
-  bool mPropagateUserInputEventHandling;
-};
-
-enum { INCUMBENT_SETTING_SLOT, SCHEDULING_STATE_SLOT, HOSTDEFINED_DATA_SLOTS };
-
-// Finalizer for instances of HostDefinedData.
-void FinalizeHostDefinedData(JS::GCContext* gcx, JSObject* objSelf) {
-  JS::Value slotEvent = JS::GetReservedSlot(objSelf, SCHEDULING_STATE_SLOT);
-  if (slotEvent.isUndefined()) {
+void FinalizeSchedulingStateWrapper(JS::GCContext* aGCX, JSObject* aObjSelf) {
+  nsISupports* schedulingState = JS::GetObjectISupports<nsISupports>(aObjSelf);
+  if (!schedulingState) {
     return;
   }
 
-  WebTaskSchedulingState* schedulingState =
-      static_cast<WebTaskSchedulingState*>(slotEvent.toPrivate());
-  JS_SetReservedSlot(objSelf, SCHEDULING_STATE_SLOT, JS::UndefinedValue());
+  JS::SetObjectISupports(aObjSelf, nullptr);
   schedulingState->Release();
 }
 
-static const JSClassOps sHostDefinedData = {
-    nullptr /* addProperty */, nullptr /* delProperty */,
-    nullptr /* enumerate */,   nullptr /* newEnumerate */,
-    nullptr /* resolve */,     nullptr /* mayResolve */,
-    FinalizeHostDefinedData /* finalize */
+static const JSClassOps sSchedulingStateWrapper = {
+    .finalize = FinalizeSchedulingStateWrapper,
 };
 
-// Implements `HostDefined` in https://html.spec.whatwg.org/#hostmakejobcallback
-static const JSClass sHostDefinedDataClass = {
-    "HostDefinedData",
-    JSCLASS_HAS_RESERVED_SLOTS(HOSTDEFINED_DATA_SLOTS) |
-        JSCLASS_FOREGROUND_FINALIZE,
-    &sHostDefinedData};
+// The only slot holds the WebTaskSchedulingState as an nsISupports, which is
+// how the cycle collector sees the strong reference.
+static const JSClass sSchedulingStateClass = {"SchedulingStateWrapper",
+                                              JSCLASS_HAS_RESERVED_SLOTS(1) |
+                                                  JSCLASS_SLOT0_IS_NSISUPPORTS |
+                                                  JSCLASS_FOREGROUND_FINALIZE,
+                                              &sSchedulingStateWrapper};
 
-bool CycleCollectedJSContext::getHostDefinedData(
-    JSContext* aCx, JS::MutableHandle<JSObject*> aData) const {
+bool CycleCollectedJSContext::getHostDefinedGlobal(
+    JSContext* aCx, JS::MutableHandle<JSObject*> out) const {
   nsIGlobalObject* global = mozilla::dom::GetIncumbentGlobal();
   if (!global) {
-    aData.set(nullptr);
     return true;
   }
 
-  JS::Rooted<JSObject*> incumbentGlobal(aCx, global->GetGlobalJSObject());
-
-  if (!incumbentGlobal) {
-    aData.set(nullptr);
-    return true;
-  }
-
-  JSAutoRealm ar(aCx, incumbentGlobal);
-
-  JS::Rooted<JSObject*> objResult(aCx,
-                                  JS_NewObject(aCx, &sHostDefinedDataClass));
-  if (!objResult) {
-    aData.set(nullptr);
-    return false;
-  }
-
-  JS_SetReservedSlot(objResult, INCUMBENT_SETTING_SLOT,
-                     JS::ObjectValue(*incumbentGlobal));
-
-  if (mozilla::dom::WebTaskSchedulingState* schedulingState =
-          mozilla::dom::GetWebTaskSchedulingState()) {
-    schedulingState->AddRef();
-    JS_SetReservedSlot(objResult, SCHEDULING_STATE_SLOT,
-                       JS::PrivateValue(schedulingState));
-  }
-
-  aData.set(objResult);
-
+  out.set(global->GetGlobalJSObject());
   return true;
 }
 
-bool CycleCollectedJSContext::enqueuePromiseJob(
-    JSContext* aCx, JS::HandleObject aPromise, JS::HandleObject aJob,
-    JS::HandleObject aAllocationSite, JS::HandleObject hostDefinedData) {
-  MOZ_ASSERT(aCx == Context());
-  MOZ_ASSERT(Get() == this);
+void CycleCollectedJSContext::traceNonGCThingMicroTask(JSTracer* trc,
+                                                       JS::Value* valuePtr) {
+  // This hook is called for non-JSObject microtask values.
+  // In Gecko, the microtask queue should only contain JSObjects (JS microtasks)
+  // or Private values (Gecko MicroTaskRunnables). Private values are
+  // indistinguishable from doubles at the bit level, so if this hook is called,
+  // we know it's not an object, and by design it must be a Private value
+  // containing a MicroTaskRunnable pointer that was enqueued via
+  // EnqueueMicroTask.
 
-  nsIGlobalObject* global = nullptr;
-  WebTaskSchedulingState* schedulingState = nullptr;
+  MOZ_ASSERT(!valuePtr->isObject(),
+             "This hook should only be called for non-objects");
+  MOZ_ASSERT(!valuePtr->isNullOrUndefined(),
+             "This hook should only be called with private values");
+  if (void* ptr = valuePtr->toPrivate()) {
+    // The pointer is a MicroTaskRunnable that may have GC-reachable data
+    auto* runnable = static_cast<MicroTaskRunnable*>(ptr);
+    runnable->TraceMicroTask(trc);
+  }
+}
 
-  if (hostDefinedData) {
-    MOZ_RELEASE_ASSERT(JS::GetClass(hostDefinedData.get()) ==
-                       &sHostDefinedDataClass);
-    JS::Value incumbentGlobal =
-        JS::GetReservedSlot(hostDefinedData.get(), INCUMBENT_SETTING_SLOT);
-    // hostDefinedData is only created when incumbent global exists.
-    MOZ_ASSERT(incumbentGlobal.isObject());
-    global = xpc::NativeGlobal(&incumbentGlobal.toObject());
+bool CycleCollectedJSContext::getHostDefinedData(
+    JSContext* aCx, JS::MutableHandle<JSObject*> aIncumbentGlobal,
+    JS::MutableHandle<JSObject*> aOptionalHostDefinedData) const {
+  aIncumbentGlobal.set(nullptr);
+  aOptionalHostDefinedData.set(nullptr);
 
-    JS::Value state =
-        JS::GetReservedSlot(hostDefinedData.get(), SCHEDULING_STATE_SLOT);
-    if (!state.isUndefined()) {
-      schedulingState = static_cast<WebTaskSchedulingState*>(state.toPrivate());
-    }
-  } else {
-    // There are two possible causes for hostDefinedData to be missing.
-    //   1. It's optimized out, the SpiderMonkey expects the embedding to
-    //   retrieve it on their own.
-    //   2. It's the special case for debugger usage.
-    global = mozilla::dom::GetIncumbentGlobal();
-    schedulingState = mozilla::dom::GetWebTaskSchedulingState();
+  if (!getHostDefinedGlobal(aCx, aIncumbentGlobal)) {
+    return false;
   }
 
-  JS::RootedObject jobGlobal(aCx, JS::CurrentGlobalOrNull(aCx));
-  RefPtr<PromiseJobRunnable> runnable;
-  if (mRecycledPromiseJob) {
-    runnable = mRecycledPromiseJob.forget();
-    runnable->Reinit(aPromise, aJob, jobGlobal, aAllocationSite, global,
-                     schedulingState);
-  } else {
-    runnable = new PromiseJobRunnable(aPromise, aJob, jobGlobal,
-                                      aAllocationSite, global, schedulingState);
+  if (!aIncumbentGlobal) {
+    return true;
   }
-  DispatchToMicroTask(runnable.forget());
+
+  // A performance note: On promise heavy benchmarks the allocation of an
+  // object can be heavy, which is why this is conditional on the existence
+  // of schedulingState. Checking the count first avoids walking the script
+  // settings stack (and the principal check in GetEntryGlobal) when no global
+  // on this thread has a scheduling state at all.
+  if (!MayHaveWebTaskSchedulingState()) {
+    return true;
+  }
+
+  mozilla::dom::WebTaskSchedulingState* schedulingState =
+      mozilla::dom::GetWebTaskSchedulingState();
+  if (!schedulingState) {
+    return true;
+  }
+
+  JS::Rooted<JSObject*> schedulingStateResult(
+      aCx, JS_NewObjectWithGivenProto(aCx, &sSchedulingStateClass, nullptr));
+  if (!schedulingStateResult) {
+    aOptionalHostDefinedData.set(nullptr);
+    aIncumbentGlobal.set(nullptr);
+    return false;
+  }
+
+  // This ref will be removed by FinalizeSchedulingStateWrapper.
+  schedulingState->AddRef();
+  JS::SetObjectISupports(schedulingStateResult,
+                         static_cast<nsISupports*>(schedulingState));
+  aOptionalHostDefinedData.set(schedulingStateResult);
+
   return true;
 }
 
@@ -407,11 +285,47 @@ void CycleCollectedJSContext::runJobs(JSContext* aCx) {
   PerformMicroTaskCheckPoint();
 }
 
-bool CycleCollectedJSContext::empty() const {
-  // This is our override of JS::JobQueue::empty. Since that interface is only
-  // concerned with the ordinary microtask queue, not the debugger microtask
-  // queue, we only report on the former.
-  return mPendingMicroTaskRunnables.empty();
+JS::JSMicroTaskRef AsJSMicroTask(JS::Handle<MayConsumeMicroTask> aMicroTask) {
+  // Safe: aMicroTask is rooted, and its trace() traces mMicroTask.
+  return aMicroTask.get().mMicroTask->asJS();
+}
+
+// Unwrap (without interacting with refcounting) a Gecko MicroTaskRunnable if
+// the task is not a JS MicroTask (see MicroTask.h for "JS MicroTask");
+// otherwise, return nullptr.
+//
+// This is a non-owning conversion: aMicroTask still owns the refcount.
+MicroTaskRunnable* MaybeUnwrapTaskToRunnable(
+    JS::Handle<MayConsumeMicroTask> aMicroTask) {
+  if (aMicroTask.get().IsJSMicroTask()) {
+    return nullptr;
+  }
+
+  void* nonJSTask = aMicroTask.get().mMicroTask->embedderPtr();
+  return static_cast<MicroTaskRunnable*>(nonJSTask);
+}
+
+already_AddRefed<MicroTaskRunnable> MaybeConsumeAsOwnedRunnable(
+    JS::MutableHandle<MustConsumeMicroTask> aMicroTask) {
+  MOZ_ASSERT(!aMicroTask.get().IsConsumed(),
+             "Attempting to consume an already-consumed task");
+  MicroTaskRunnable* mtr = MaybeUnwrapTaskToRunnable(aMicroTask);
+  if (!mtr) {
+    return nullptr;
+  }
+  aMicroTask.get().markAsConsumed();
+  return already_AddRefed(mtr);
+}
+
+bool RunAndConsumeJSMicroTask(
+    JSContext* aCx, JS::MutableHandle<MustConsumeMicroTask> aMicroTask) {
+  MOZ_ASSERT(!JS_IsExceptionPending(aCx));
+  // Safe: aMicroTask is rooted, and its trace() traces mMicroTask.
+  bool result = JS::RunJSMicroTask(
+      aCx, JS::Handle<Maybe<JS::MicroTask>>::fromMarkedLocation(
+               &aMicroTask.get().mMicroTask));
+  aMicroTask.get().markAsConsumed();
+  return result;
 }
 
 // Preserve a debuggee's microtask queue while it is interrupted by the
@@ -421,7 +335,7 @@ class CycleCollectedJSContext::SavedMicroTaskQueue
  public:
   explicit SavedMicroTaskQueue(CycleCollectedJSContext* ccjs) : ccjs(ccjs) {
     ccjs->mDebuggerRecursionDepth++;
-    ccjs->mPendingMicroTaskRunnables.swap(mQueue);
+    mSavedQueue = JS::SaveMicroTaskQueue(ccjs->Context());
   }
 
   ~SavedMicroTaskQueue() {
@@ -449,30 +363,34 @@ class CycleCollectedJSContext::SavedMicroTaskQueue
     // during synchnronous events under debugger control may produce events
     // which run outside the debugger, but this is viewed as strictly
     // preferrable to crashing.
-    MOZ_RELEASE_ASSERT(ccjs->mPendingMicroTaskRunnables.size() <= 1);
     MOZ_RELEASE_ASSERT(ccjs->mDebuggerRecursionDepth);
-    RefPtr<MicroTaskRunnable> maybeSuppressedTasks;
 
-    // Handle the case where there is a SuppressedMicroTask still in the queue.
-    if (!ccjs->mPendingMicroTaskRunnables.empty()) {
-      maybeSuppressedTasks = ccjs->mPendingMicroTaskRunnables.front();
-      ccjs->mPendingMicroTaskRunnables.pop_front();
+    JSContext* cx = ccjs->Context();
+
+    JS::Rooted<MustConsumeMicroTask> suppressedTasks(cx);
+    MOZ_ASSERT(JS::GetRegularMicroTaskCount(cx) <= 1);
+    if (JS::HasRegularMicroTasks(cx)) {
+      suppressedTasks = DequeueNextRegularMicroTask(cx);
+      MOZ_ASSERT(MaybeUnwrapTaskToRunnable(suppressedTasks) ==
+                 ccjs->mSuppressedMicroTaskList);
+    }
+    MOZ_RELEASE_ASSERT(!JS::HasRegularMicroTasks(cx));
+    JS::RestoreMicroTaskQueue(cx, std::move(mSavedQueue));
+
+    if (suppressedTasks.get()) {
+      if (!EnqueueMicroTask(cx,
+                            MaybeConsumeAsOwnedRunnable(&suppressedTasks))) {
+        NS_ABORT_OOM(0);
+      }
     }
 
-    MOZ_RELEASE_ASSERT(ccjs->mPendingMicroTaskRunnables.empty());
     ccjs->mDebuggerRecursionDepth--;
-    ccjs->mPendingMicroTaskRunnables.swap(mQueue);
-
-    // Re-enqueue the suppressed task now that we've put the original microtask
-    // queue back.
-    if (maybeSuppressedTasks) {
-      ccjs->mPendingMicroTaskRunnables.push_back(maybeSuppressedTasks);
-    }
   }
 
  private:
   CycleCollectedJSContext* ccjs;
   std::deque<RefPtr<MicroTaskRunnable>> mQueue;
+  js::UniquePtr<JS::SavedMicroTaskQueue> mSavedQueue;
 };
 
 js::UniquePtr<JS::JobQueue::SavedJobQueue>
@@ -505,30 +423,29 @@ void CycleCollectedJSContext::PromiseRejectionTrackerCallback(
   uint64_t promiseID = JS::GetPromiseID(aPromise);
 
   if (state == JS::PromiseRejectionHandlingState::Unhandled) {
-    PromiseDebugging::AddUncaughtRejection(aPromise);
+    PromiseDebugging::AddUncaughtRejection(aPromise, promiseID);
     if (!aMutedErrors) {
       RefPtr<Promise> promise =
           Promise::CreateFromExisting(xpc::NativeGlobal(aPromise), aPromise);
+      size_t index = aboutToBeNotified.Length();
       aboutToBeNotified.AppendElement(promise);
-      unhandled.InsertOrUpdate(promiseID, std::move(promise));
+      unhandled.InsertOrUpdate(promiseID,
+                               PendingRejection{std::move(promise), index});
     }
   } else {
-    PromiseDebugging::AddConsumedRejection(aPromise);
-    for (size_t i = 0; i < aboutToBeNotified.Length(); i++) {
-      if (aboutToBeNotified[i] &&
-          aboutToBeNotified[i]->PromiseObj() == aPromise) {
-        // To avoid large amounts of memmoves, we don't shrink the vector
-        // here. Instead, we filter out nullptrs when iterating over the
-        // vector later.
-        aboutToBeNotified[i] = nullptr;
-        DebugOnly<bool> isFound = unhandled.Remove(promiseID);
-        MOZ_ASSERT(isFound);
-        return;
+    PromiseDebugging::AddConsumedRejection(aPromise, promiseID);
+    if (Maybe<PendingRejection> pending = unhandled.Extract(promiseID)) {
+      // The stored index outlives the array whenever AfterProcessMicrotasks
+      // hands it off, so only clear the slot if it still holds this promise.
+      // To avoid large amounts of memmoves, we don't shrink the vector here.
+      // Instead, we filter out nullptrs when iterating over the vector later.
+      if (pending->mIndex < aboutToBeNotified.Length() &&
+          aboutToBeNotified[pending->mIndex] == pending->mPromise) {
+        aboutToBeNotified[pending->mIndex] = nullptr;
       }
+      return;
     }
-    RefPtr<Promise> promise;
-    unhandled.Remove(promiseID, getter_AddRefs(promise));
-    if (!promise && !aMutedErrors) {
+    if (!aMutedErrors) {
       nsIGlobalObject* global = xpc::NativeGlobal(aPromise);
       if (nsCOMPtr<EventTarget> owner = do_QueryInterface(global)) {
         RootedDictionary<PromiseRejectionEventInit> init(aCx);
@@ -542,8 +459,8 @@ void CycleCollectedJSContext::PromiseRejectionTrackerCallback(
             PromiseRejectionEvent::Constructor(owner, u"rejectionhandled"_ns,
                                                init);
 
-        RefPtr<AsyncEventDispatcher> asyncDispatcher =
-            new AsyncEventDispatcher(owner, event.forget());
+        RefPtr asyncDispatcher =
+            MakeRefPtr<AsyncEventDispatcher>(owner, event.forget());
         asyncDispatcher->PostDOMEvent();
       }
     }
@@ -561,18 +478,6 @@ already_AddRefed<Exception> CycleCollectedJSContext::GetPendingException()
 void CycleCollectedJSContext::SetPendingException(Exception* aException) {
   MOZ_ASSERT(mJSContext);
   mPendingException = aException;
-}
-
-std::deque<RefPtr<MicroTaskRunnable>>&
-CycleCollectedJSContext::GetMicroTaskQueue() {
-  MOZ_ASSERT(mJSContext);
-  return mPendingMicroTaskRunnables;
-}
-
-std::deque<RefPtr<MicroTaskRunnable>>&
-CycleCollectedJSContext::GetDebuggerMicroTaskQueue() {
-  MOZ_ASSERT(mJSContext);
-  return mDebuggerMicroTaskQueue;
 }
 
 void CycleCollectedJSContext::TraceMicroTasks(JSTracer* aTracer) {
@@ -668,7 +573,7 @@ void CycleCollectedJSContext::AfterProcessMicrotasks() {
   // Notify unhandled promise rejections:
   // https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
   if (mAboutToBeNotifiedRejectedPromises.Length()) {
-    RefPtr<NotifyUnhandledRejections> runnable = new NotifyUnhandledRejections(
+    RefPtr runnable = MakeRefPtr<NotifyUnhandledRejections>(
         std::move(mAboutToBeNotifiedRejectedPromises));
     NS_DispatchToCurrentThread(runnable);
   }
@@ -679,8 +584,8 @@ void CycleCollectedJSContext::AfterProcessMicrotasks() {
   // Clear kept alive objects in JS WeakRef.
   // https://whatpr.org/html/4571/webappapis.html#perform-a-microtask-checkpoint
   //
-  // ECMAScript implementations are expected to call ClearKeptObjects when a
-  // synchronous sequence of ECMAScript execution completes.
+  // ECMAScript implementations are expected to call ClearKeptObjects when
+  // a synchronous sequence of ECMAScript execution completes.
   //
   // https://tc39.es/proposal-weakrefs/#sec-clear-kept-objects
   JS::ClearKeptObjects(mJSContext);
@@ -720,7 +625,7 @@ uint32_t CycleCollectedJSContext::RecursionDepth() const {
 }
 
 void CycleCollectedJSContext::RunInStableState(
-    already_AddRefed<nsIRunnable>&& aRunnable) {
+    already_AddRefed<nsIRunnable> aRunnable) {
   MOZ_ASSERT(mJSContext);
   nsCOMPtr<nsIRunnable> runnable = std::move(aRunnable);
   PROFILER_MARKER("CycleCollectedJSContext::RunInStableState", OTHER, {},
@@ -729,7 +634,7 @@ void CycleCollectedJSContext::RunInStableState(
 }
 
 void CycleCollectedJSContext::AddPendingIDBTransaction(
-    already_AddRefed<nsIRunnable>&& aTransaction) {
+    already_AddRefed<nsIRunnable> aTransaction) {
   MOZ_ASSERT(mJSContext);
 
   PendingIDBTransactionData data;
@@ -753,21 +658,47 @@ void CycleCollectedJSContext::AddPendingIDBTransaction(
   mPendingIDBTransactions.AppendElement(std::move(data));
 }
 
+// MicroTaskRunnables and the JS MicroTask Queue:
+//
+// The following describes our refcounting scheme:
+//
+// - A runnable wrapped in a JS::Value (RunnableToValue) is always created from
+// an already_AddRefed (so has a positive refcount) and it holds onto that ref
+// count until it is finally eventually unwrapped to an owning reference
+// (MaybeUnwrapTaskToOwnedRunnable)
+//
+// - This means runnables in the queue have their refcounts stay above zero for
+// the duration of the time they are in the queue.
+JS::MicroTask RunnableToMicroTask(
+    already_AddRefed<MicroTaskRunnable>& aRunnable) {
+  auto* r = aRunnable.take();
+  MOZ_ASSERT(r);
+  return JS::MicroTask::FromEmbedderPtr(r);
+}
+
+bool EnqueueMicroTask(JSContext* aCx,
+                      already_AddRefed<MicroTaskRunnable> aRunnable) {
+  return JS::EnqueueMicroTask(aCx, RunnableToMicroTask(aRunnable));
+}
+bool EnqueueDebugMicroTask(JSContext* aCx,
+                           already_AddRefed<MicroTaskRunnable> aRunnable) {
+  return JS::EnqueueDebugMicroTask(aCx, RunnableToMicroTask(aRunnable));
+}
+
 void CycleCollectedJSContext::DispatchToMicroTask(
     already_AddRefed<MicroTaskRunnable> aRunnable) {
   RefPtr<MicroTaskRunnable> runnable(aRunnable);
-
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(runnable);
 
   JS::JobQueueMayNotBeEmpty(Context());
+  PROFILER_MARKER_FLOW_ONLY("CycleCollectedJSContext::DispatchToMicroTask",
+                            OTHER, {}, FlowMarker,
+                            Flow::FromPointer(runnable.get()));
 
   LogMicroTaskRunnable::LogDispatch(runnable.get());
-  if (!runnable->isInList()) {
-    // A recycled object may be in the list already.
-    mMicrotasksToTrace.insertBack(runnable);
+  if (!EnqueueMicroTask(Context(), runnable.forget())) {
+    NS_ABORT_OOM(0);
   }
-  mPendingMicroTaskRunnables.push_back(std::move(runnable));
 }
 
 class AsyncMutationHandler final : public mozilla::Runnable {
@@ -786,98 +717,582 @@ class AsyncMutationHandler final : public mozilla::Runnable {
   }
 };
 
-SuppressedMicroTasks::SuppressedMicroTasks(CycleCollectedJSContext* aContext)
-    : mContext(aContext),
-      mSuppressionGeneration(aContext->mSuppressionGeneration) {}
+LazyLogModule gLog("mtq");
 
-bool SuppressedMicroTasks::Suppressed() {
+SuppressedMicroTaskList::SuppressedMicroTaskList(
+    CycleCollectedJSContext* aContext)
+    : mContext(aContext),
+      mSuppressionGeneration(aContext->mSuppressionGeneration),
+      mSuppressedMicroTaskRunnables(aContext->Context(), aContext->Context()) {}
+
+bool SuppressedMicroTaskList::Suppressed() {
   if (mSuppressionGeneration == mContext->mSuppressionGeneration) {
     return true;
   }
 
-  for (std::deque<RefPtr<MicroTaskRunnable>>::reverse_iterator it =
-           mSuppressedMicroTaskRunnables.rbegin();
-       it != mSuppressedMicroTaskRunnables.rend(); ++it) {
-    mContext->GetMicroTaskQueue().push_front(*it);
-  }
-  mContext->mSuppressedMicroTasks = nullptr;
+  MOZ_ASSERT(mContext->mSuppressedMicroTaskList == this);
 
+  MOZ_LOG_FMT(gLog, LogLevel::Verbose, "Prepending %zu suppressed microtasks",
+              mSuppressedMicroTaskRunnables.get().length());
+  for (size_t i = mSuppressedMicroTaskRunnables.get().length(); i > 0; i--) {
+    mSuppressedMicroTaskRunnables.get()[i - 1].ConsumeByPrependToQueue(
+        mContext->Context());
+  }
+
+  mSuppressedMicroTaskRunnables.get().clear();
+
+  mContext->mSuppressedMicroTaskList = nullptr;
+
+  // Return false: We are -not- ourselves suppressed, so,
+  // in PerformMicroTasks we will end up in the branch where
+  // we can drop the final refcount.
   return false;
 }
 
-bool CycleCollectedJSContext::PerformMicroTaskCheckPoint(bool aForce) {
-  if (mPendingMicroTaskRunnables.empty() && mDebuggerMicroTaskQueue.empty()) {
-    AfterProcessMicrotasks();
-    // Nothing to do, return early.
+SuppressedMicroTaskList::~SuppressedMicroTaskList() {
+  MOZ_ASSERT(mContext->mSuppressedMicroTaskList == nullptr);
+  MOZ_ASSERT(mSuppressedMicroTaskRunnables.get().empty());
+};
+
+static void MOZ_CAN_RUN_SCRIPT
+RunJSMicroTask(JSContext* aCx, CycleCollectedJSContext* aCCJS,
+               JS::MutableHandle<MustConsumeMicroTask> aMicroTask,
+               bool aHasSuppressedMicroTasks);
+
+// Run a microtask. Handles both non-JS (enqueued MicroTaskRunnables) and JS
+// microtasks.
+static void MOZ_CAN_RUN_SCRIPT
+RunMicroTask(JSContext* aCx, CycleCollectedJSContext* aCCJS,
+             JS::MutableHandle<MustConsumeMicroTask> aMicroTask,
+             bool aHasSuppressedMicroTasks) {
+  LogMustConsumeMicroTask::Run log(&aMicroTask.get());
+
+  if (RefPtr<MicroTaskRunnable> runnable =
+          MaybeConsumeAsOwnedRunnable(aMicroTask)) {
+    AUTO_PROFILER_TERMINATING_FLOW_MARKER_FLOW_ONLY(
+        "RunMicroTaskRunnable", OTHER, Flow::FromPointer(runnable.get()));
+    AutoSlowOperation aso;
+    runnable->Run(aso);
+    return;
+  }
+
+  RunJSMicroTask(aCx, aCCJS, aMicroTask, aHasSuppressedMicroTasks);
+}
+
+// Basically this is nsAutoMicroTask, however it takes CycleCollectedJSContext*
+// as a parameter and caches it to avoid having to two TLS gets.
+//
+// This is safe because CycleCollectedJSContext::Get will not be unset
+// until shutdown well after the last call to PerformMicroTaskCheckpoint.
+//
+// In debug builds this is asserted.
+class MOZ_STACK_CLASS StatefulMicroTask {
+ public:
+  explicit StatefulMicroTask(CycleCollectedJSContext* aCCJS) : mCCJS(aCCJS) {
+    MOZ_ASSERT(aCCJS);
+    MOZ_ASSERT(aCCJS == CycleCollectedJSContext::Get());
+    mWillPerform = mCCJS->EnterMicroTask();
+  }
+
+  MOZ_CAN_RUN_SCRIPT ~StatefulMicroTask() {
+    MOZ_ASSERT(mCCJS == CycleCollectedJSContext::Get());
+
+    mCCJS->LeaveMicroTask();
+  }
+
+  bool WillPerformMicroTaskCheckPoint() { return mWillPerform; }
+
+ private:
+  CycleCollectedJSContext* mCCJS;
+  bool mWillPerform = false;
+};
+
+// Given a (possibly null) incumbent global JS object and
+// optionalHostDefinedData extract the nsIGlobalObject native global and
+// WebTaskSchedulingState.
+void ExtractIncumbentAndSchedulingState(
+    JS::Handle<JSObject*> aIncumbentGlobalObj,
+    JS::Handle<JSObject*> aOptionalHostDefinedData,
+    nsIGlobalObject*& aIncumbentGlobal,
+    WebTaskSchedulingState*& aSchedulingState) {
+  MOZ_ASSERT(!aIncumbentGlobal && !aSchedulingState);
+  MOZ_ASSERT_IF(!aIncumbentGlobalObj, !aOptionalHostDefinedData);
+
+  if (aIncumbentGlobalObj) {
+    // hostDefinedData is only created when incumbent global exists.
+    aIncumbentGlobal = xpc::NativeGlobal(aIncumbentGlobalObj);
+
+    if (aOptionalHostDefinedData) {
+      MOZ_ASSERT(JS::GetClass(aOptionalHostDefinedData) ==
+                 &sSchedulingStateClass);
+      aSchedulingState = static_cast<WebTaskSchedulingState*>(
+          JS::GetObjectISupports<nsISupports>(aOptionalHostDefinedData));
+    }
+  }
+}
+
+static void MaybeGetFlowMarker(
+    JS::Handle<MayConsumeMicroTask> aMicroTask,
+    mozilla::Maybe<AutoProfilerTerminatingFlowMarkerFlowOnly>&
+        aTerminatingMarker) {
+  // Avoid the overhead of getFlowId in the common case
+  // of not having the profiler enabled.
+  if (profiler_is_active_and_unpaused() &&
+      profiler_feature_active(ProfilerFeature::Flows)) {
+    uint64_t flowId = 0;
+    // Since this only returns false when the microtask won't run (dead wrapper)
+    // we can elide the marker if it does fail.
+    if (AsJSMicroTask(aMicroTask).getFlowId(&flowId)) {
+      aTerminatingMarker.emplace("RunMicroTask",
+                                 mozilla::baseprofiler::category::OTHER,
+                                 Flow::ProcessScoped(flowId));
+    }
+  }
+}
+
+// Extract the data required to run a task.
+//
+// Returns false if the task is in an unrunnable state.
+static bool ExtractTaskData(
+    JS::Handle<MayConsumeMicroTask> aMicroTask,
+    JS::MutableHandle<JSObject*> aCallbackGlobal,
+    JS::MutableHandle<JSObject*> aIncumbentGlobal,
+    JS::MutableHandle<JSObject*> aOptionalHostDefinedData,
+    JS::MutableHandle<JSObject*> aAllocStack) {
+  aCallbackGlobal.set(AsJSMicroTask(aMicroTask).executionGlobal());
+  if (!aCallbackGlobal) {
     return false;
   }
 
-  uint32_t currentDepth = RecursionDepth();
-  if (mMicroTaskRecursionDepth && *mMicroTaskRecursionDepth >= currentDepth &&
+  // Don't run if we fail to unwrap the host defined data, as that
+  // would indicate the target realm is gone.
+  if (!AsJSMicroTask(aMicroTask)
+           .maybeGetHostDefinedData(aIncumbentGlobal,
+                                    aOptionalHostDefinedData)) {
+    return false;
+  }
+
+  (void)AsJSMicroTask(aMicroTask).maybeGetAllocationSite(aAllocStack);
+  return true;
+}
+
+// Return true if execution can proceed, or false if we cannot.
+static bool CanRunJSCallback(nsIGlobalObject* aGlobalObject,
+                             JSObject* aCallbackGlobal,
+                             nsIGlobalObject* aIncumbentGlobal) {
+  if (!aGlobalObject->CanRunJSMicroTask(aCallbackGlobal)) {
+    return false;
+  }
+
+  if (!aGlobalObject->HasJSGlobal()) {
+    return false;
+  }
+
+  if (aIncumbentGlobal && !aIncumbentGlobal->HasJSGlobal()) {
+    return false;
+  }
+
+  return true;
+}
+
+static bool ShouldPropagateUserInputEventHandlingState(
+    JS::Handle<MayConsumeMicroTask> aMicroTask) {
+  JSObject* maybePromise = AsJSMicroTask(aMicroTask).maybeGetPromise();
+
+  // User Input State propagation.
+  auto state = maybePromise
+                   ? JS::GetPromiseUserInputEventHandlingState(maybePromise)
+                   : JS::PromiseUserInputEventHandlingState::DontCare;
+  return state ==
+         JS::PromiseUserInputEventHandlingState::HadUserInteractionAtCreation;
+}
+
+// Return true if semantically we can try to drain more microtasks from
+// the queue without doing more task setup.
+//
+// Here we're concerned about the parts indepenendent of the next task;
+// task specific checks happen later.
+bool CanAttemptToDrainMoreMicroTasks(CycleCollectedJSContext* aCCJS,
+                                     StatefulMicroTask& aSMT) {
+  if (!aSMT.WillPerformMicroTaskCheckPoint()) {
+    return true;
+  }
+
+  // Can't attempt to recycle setup if we'll actually start draining again
+  // (n.b. this may be conservative)
+  return !aCCJS->CheckRecursionDepth(aCCJS->RecursionDepth());
+}
+
+nsIGlobalObject* GetCheckedGlobalObject(JS::Handle<JSObject*> aCallbackGlobal,
+                                        bool aIsMainThread,
+                                        nsIGlobalObject* aIncumbentGlobal) {
+  IgnoredErrorResult errorResult;
+  nsIGlobalObject* globalObject = CallSetup::GetActiveGlobalObjectForCall(
+      aCallbackGlobal, aIsMainThread, /*aIsJSImplementedWebIDL=*/false,
+      errorResult);
+  if (!globalObject) {
+    return nullptr;
+  }
+
+  if (!CanRunJSCallback(globalObject, aCallbackGlobal, aIncumbentGlobal)) {
+    return nullptr;
+  }
+
+  return globalObject;
+}
+
+/* static */
+void RunJSMicroTask(JSContext* aCx, CycleCollectedJSContext* aCCJS,
+                    JS::MutableHandle<MustConsumeMicroTask> aMicroTask,
+                    bool aHasSuppressedMicroTasks) {
+  // After this point, if we fail to run, we
+  //
+  // 1. Know we have JS microtask
+  // 2. Can freely ignore it if we cannot execute it.
+  //
+  // Create a ScopeExit to handle this.
+  auto ignoreMicroTasks = mozilla::MakeScopeExit(
+      [&aMicroTask]() { aMicroTask.get().IgnoreJSMicroTask(); });
+
+  JS::RootedTuple<JSObject*, JSObject*, JSObject*, JSObject*,
+                  WontConsumeMicroTask, JSObject*, JSObject*, JSObject*,
+                  JSObject*>
+      roots(aCx);
+
+  JS::RootedField<JSObject*, 0> callbackGlobal(roots);
+  JS::RootedField<JSObject*, 1> incumbentGlobalObj(roots);
+  JS::RootedField<JSObject*, 2> optionalHostDefinedData(roots);
+  JS::RootedField<JSObject*, 3> allocStack(roots);
+
+  if (!ExtractTaskData(aMicroTask, &callbackGlobal, &incumbentGlobalObj,
+                       &optionalHostDefinedData, &allocStack)) {
+    return;
+  }
+
+  // We may have an incumbent global to deal with.
+  //
+  // See https://github.com/whatwg/html/issues/11686 for discussion
+  // around trying to deprecate this eventually.
+  nsIGlobalObject* incumbentGlobal = nullptr;
+
+  // Promises carry along a web-task scheduling state as well.
+  WebTaskSchedulingState* schedulingState = nullptr;
+  ExtractIncumbentAndSchedulingState(incumbentGlobalObj,
+                                     optionalHostDefinedData, incumbentGlobal,
+                                     schedulingState);
+
+  const bool isMainThread = NS_IsMainThread();
+
+  // We need to do EnterMicroTask and LeaveMicroTask (on all exit paths), so use
+  // RAII class.
+  StatefulMicroTask smt(aCCJS);
+
+  {
+    IgnoredErrorResult errorResult;
+    nsIGlobalObject* globalObject =
+        GetCheckedGlobalObject(callbackGlobal, isMainThread, incumbentGlobal);
+    if (!globalObject) {
+      return;
+    }
+
+    // At this point we will definitely consume the task, so we
+    // no longer need the scope exit.
+    ignoreMicroTasks.release();
+
+    const char* reason = "promise callback";
+
+    // SetupForExecution
+    AutoAllowLegacyScriptExecution exemption;
+    AutoEntryScript aes(globalObject, reason, isMainThread);
+
+    Maybe<AutoIncumbentScript> autoIncumbentScript;
+    if (incumbentGlobal) {
+      autoIncumbentScript.emplace(incumbentGlobal);
+    }
+
+    MOZ_ASSERT(aCx == aes.cx());
+
+    JSAutoRealm ar(aCx, callbackGlobal);
+
+    Maybe<JS::AutoSetAsyncStackForNewCalls> asyncStackSetter;
+    if (allocStack) {
+      asyncStackSetter.emplace(aCx, allocStack, reason);
+    }
+
+    // Inform the profiler about the flow for this microtask.
+    mozilla::Maybe<AutoProfilerTerminatingFlowMarkerFlowOnly> terminatingMarker;
+    MaybeGetFlowMarker(aMicroTask, terminatingMarker);
+
+    {
+      mozilla::Maybe<AutoHandlingUserInputStatePusher> userInputStateSwitcher;
+      // A new scope is used to make sure the UserInputState is reset before
+      // potentially draining more microtasks.
+      if (NS_IsMainThread()) {
+        bool propagate = ShouldPropagateUserInputEventHandlingState(aMicroTask);
+        userInputStateSwitcher.emplace(propagate);
+      }
+
+      if (incumbentGlobal) {
+        // https://wicg.github.io/scheduling-apis/#sec-patches-html-hostcalljobcallback
+        // 2. Set event loop’s current scheduling state to
+        // callback.[[HostDefined]].[[SchedulingState]].
+        incumbentGlobal->SetWebTaskSchedulingState(schedulingState);
+      }
+
+      // Note: We're dropping the return value on the floor here, however
+      // cleanup and exception handling are done as part of the CallSetup
+      // destructor if necessary.
+      bool ret = RunAndConsumeJSMicroTask(aCx, aMicroTask);
+
+      // (The step after step 7): Set event loop’s current scheduling
+      // state to null
+      if (incumbentGlobal) {
+        incumbentGlobal->SetWebTaskSchedulingState(nullptr);
+      }
+
+      // If we failed to execute, we should not attempt to execute more
+      // tasks without running cleanup.
+      if (!ret) {
+        return;
+      }
+    }
+
+    // Note: It's quite costly to set up all the execution state, and there's
+    // a common case where the next task is run in the same execution state.
+    // To avoid setting it up again, we'll try to drain more if it's possible.
+    if (!StaticPrefs::javascript_options_batch_microtask_execution()) {
+      return;
+    }
+
+    if (!JS::HasAnyMicroTasks(aCx)) {
+      return;
+    }
+
+    if (!CanAttemptToDrainMoreMicroTasks(aCCJS, smt)) {
+      return;
+    }
+
+    do {
+      JS::RootedField<WontConsumeMicroTask, 4> peekTask(roots,
+                                                        PeekNextMicroTask(aCx));
+
+      // We can only coalesce JS tasks.
+      if (!peekTask.get().IsJSMicroTask()) {
+        break;
+      }
+
+      JS::RootedField<JSObject*, 5> peekedCallbackGlobal(roots);
+      JS::RootedField<JSObject*, 6> peekedIncumbentGlobalObj(roots);
+      JS::RootedField<JSObject*, 7> peekedOptionalHostDefinedData(roots);
+      JS::RootedField<JSObject*, 8> peekedAllocStack(roots);
+
+      if (!ExtractTaskData(peekTask, &peekedCallbackGlobal,
+                           &peekedIncumbentGlobalObj,
+                           &peekedOptionalHostDefinedData, &peekedAllocStack)) {
+        break;
+      }
+
+      // Change of global or alloc stack need to run setup again
+      // (stack is conservative. We probably could make this work.)
+      if (peekedCallbackGlobal != callbackGlobal ||
+          peekedAllocStack != allocStack) {
+        break;
+      }
+
+      nsIGlobalObject* peekedIncumbentGlobal = nullptr;
+      WebTaskSchedulingState* peekedSchedulingState = nullptr;
+      ExtractIncumbentAndSchedulingState(
+          peekedIncumbentGlobalObj, peekedOptionalHostDefinedData,
+          peekedIncumbentGlobal, peekedSchedulingState);
+
+      // Change of global
+      if (peekedIncumbentGlobal != incumbentGlobal) {
+        break;
+      }
+
+      // Validate the global -- this also checks if JS execution continues to be
+      // allowed.
+      nsIGlobalObject* peekedGlobal = GetCheckedGlobalObject(
+          peekedCallbackGlobal, isMainThread, peekedIncumbentGlobal);
+      if (!peekedGlobal || peekedGlobal != globalObject) {
+        break;
+      }
+
+      // Ok, we're good to run again.
+      aMicroTask.set(DequeueNextMicroTask(aCx));
+
+      // Notify the JS engine if the queue is now empty, enabling optimizations
+      // like skipping await microtask creation for resolved promises.
+      if (!JS::HasAnyMicroTasks(aCx) && !aHasSuppressedMicroTasks) {
+        JS::JobQueueIsEmpty(aCx);
+      }
+
+      if (incumbentGlobal) {
+        // https://wicg.github.io/scheduling-apis/#sec-patches-html-hostcalljobcallback
+        // 2. Set event loop's current scheduling state to
+        // callback.[[HostDefined]].[[SchedulingState]].
+        incumbentGlobal->SetWebTaskSchedulingState(peekedSchedulingState);
+      }
+
+      mozilla::Maybe<AutoHandlingUserInputStatePusher> userInputStateSwitcher;
+      if (NS_IsMainThread()) {
+        bool propagate = ShouldPropagateUserInputEventHandlingState(aMicroTask);
+        userInputStateSwitcher.emplace(propagate);
+      }
+
+      // If this task fails we need cleanup code, which is in AutoJSAPI's
+      // destructor to run, so abort execution.
+      bool ret = RunAndConsumeJSMicroTask(aCx, aMicroTask);
+
+      // (The step after step 7): Set event loop’s current scheduling
+      // state to null
+      if (incumbentGlobal) {
+        incumbentGlobal->SetWebTaskSchedulingState(nullptr);
+      }
+
+      if (!ret) {
+        break;
+      }
+
+      MOZ_ASSERT(!JS_IsExceptionPending(aCx));
+    } while (JS::HasAnyMicroTasks(aCx));
+  }
+}
+
+MustConsumeMicroTask DequeueNextMicroTask(JSContext* aCx) {
+  return MustConsumeMicroTask(JS::DequeueNextMicroTask(aCx));
+}
+
+MustConsumeMicroTask DequeueNextRegularMicroTask(JSContext* aCx) {
+  return MustConsumeMicroTask(JS::DequeueNextRegularMicroTask(aCx));
+}
+
+MustConsumeMicroTask DequeueNextDebuggerMicroTask(JSContext* aCx) {
+  return MustConsumeMicroTask(JS::DequeueNextDebuggerMicroTask(aCx));
+}
+
+WontConsumeMicroTask PeekNextMicroTask(JSContext* aCx) {
+  return WontConsumeMicroTask(JS::PeekNextMicroTask(aCx));
+}
+
+static bool IsSuppressed(JS::Handle<MustConsumeMicroTask> aTask) {
+  if (aTask.get().IsJSMicroTask()) {
+    JSObject* jsGlobal = AsJSMicroTask(aTask).executionGlobal();
+    if (!jsGlobal) {
+      return false;
+    }
+    nsIGlobalObject* global = xpc::NativeGlobal(jsGlobal);
+    return global && global->IsInSyncOperation();
+  }
+
+  MicroTaskRunnable* runnable = MaybeUnwrapTaskToRunnable(aTask);
+
+  // If it's not a JS microtask, it must be a MicroTaskRunnable,
+  // and so MaybeUnwrapTaskToRunnable must return non-null.
+  MOZ_ASSERT(runnable, "Unexpected task type");
+
+  return runnable->Suppressed();
+}
+
+bool CycleCollectedJSContext::CheckRecursionDepth(uint32_t aCurrentDepth,
+                                                  bool aForce) {
+  if (mMicroTaskRecursionDepth && *mMicroTaskRecursionDepth >= aCurrentDepth &&
       !aForce) {
     // We are already executing microtasks for the current recursion depth.
     return false;
   }
 
-  if (mTargetedMicroTaskRecursionDepth != 0 &&
-      mTargetedMicroTaskRecursionDepth + mDebuggerRecursionDepth !=
-          currentDepth) {
+  return !(mTargetedMicroTaskRecursionDepth != 0 &&
+           mTargetedMicroTaskRecursionDepth + mDebuggerRecursionDepth !=
+               aCurrentDepth);
+}
+
+bool CycleCollectedJSContext::PerformMicroTaskCheckPoint(bool aForce) {
+  MOZ_LOG_FMT(gLog, LogLevel::Verbose, "Called PerformMicroTaskCheckpoint");
+
+  JSContext* cx = Context();
+
+  // If we have no JSContext we are not capable of checking for
+  // nor running microtasks, and so simply return false early here.
+  if (!cx) {
+    return false;
+  }
+
+  if (!JS::HasAnyMicroTasks(cx)) {
+    // Nothing to do, return early.
+    AfterProcessMicrotasks();
+    return false;
+  }
+
+  uint32_t currentDepth = RecursionDepth();
+  if (!CheckRecursionDepth(currentDepth, aForce)) {
     return false;
   }
 
   if (NS_IsMainThread() && !nsContentUtils::IsSafeToRunScript()) {
     // Special case for main thread where DOM mutations may happen when
     // it is not safe to run scripts.
-    nsContentUtils::AddScriptRunner(new AsyncMutationHandler());
+    nsContentUtils::AddScriptRunner(MakeAndAddRef<AsyncMutationHandler>());
     return false;
   }
 
   mozilla::AutoRestore<Maybe<uint32_t>> restore(mMicroTaskRecursionDepth);
   mMicroTaskRecursionDepth = Some(currentDepth);
 
-  AUTO_PROFILER_TRACING_MARKER("JS", "Perform microtasks", JS);
+  AUTO_PROFILER_MARKER("Perform microtasks", JS);
 
   bool didProcess = false;
   AutoSlowOperation aso;
 
-  for (;;) {
-    RefPtr<MicroTaskRunnable> runnable;
-    if (!mDebuggerMicroTaskQueue.empty()) {
-      runnable = std::move(mDebuggerMicroTaskQueue.front());
-      mDebuggerMicroTaskQueue.pop_front();
-    } else if (!mPendingMicroTaskRunnables.empty()) {
-      runnable = std::move(mPendingMicroTaskRunnables.front());
-      mPendingMicroTaskRunnables.pop_front();
-    } else {
-      break;
-    }
+  // Make sure we don't leak tasks into the Gecko MicroTask queues.
+  JS::Rooted<MustConsumeMicroTask> job(cx);
+  while (JS::HasAnyMicroTasks(cx)) {
+    job.set(DequeueNextMicroTask(cx));
+
+    // To avoid us accidentally re-enqueing a SuppressionMicroTaskList in
+    // itself, we determine here if the job is actually the suppression task
+    // list.
+    bool isSuppressionJob =
+        mSuppressedMicroTaskList
+            ? MaybeUnwrapTaskToRunnable(job) == mSuppressedMicroTaskList
+            : false;
 
     // No need to check Suppressed if there aren't ongoing sync operations nor
-    // pending mSuppressedMicroTasks.
-    if ((IsInSyncOperation() || mSuppressedMicroTasks) &&
-        runnable->Suppressed()) {
+    // pending mSuppressedMicroTasks.s
+    if ((IsInSyncOperation() || mSuppressedMicroTaskList) &&
+        IsSuppressed(job)) {
       // Microtasks in worker shall never be suppressed.
-      // Otherwise, mPendingMicroTaskRunnables will be replaced later with
+      // Otherwise, the micro tasks queue will be replaced later with
       // all suppressed tasks in mDebuggerMicroTaskQueue unexpectedly.
       MOZ_ASSERT(NS_IsMainThread());
       JS::JobQueueMayNotBeEmpty(Context());
-      if (runnable != mSuppressedMicroTasks) {
-        if (!mSuppressedMicroTasks) {
-          mSuppressedMicroTasks = new SuppressedMicroTasks(this);
+
+      // To avoid re-enqueing a suppressed SuppressionMicroTaskList in itself.
+      if (!isSuppressionJob) {
+        if (!mSuppressedMicroTaskList) {
+          mSuppressedMicroTaskList = new SuppressedMicroTaskList(this);
         }
-        mSuppressedMicroTasks->mSuppressedMicroTaskRunnables.push_back(
-            runnable);
+
+        if (!mSuppressedMicroTaskList->mSuppressedMicroTaskRunnables.get()
+                 .append(std::move(job.get()))) {
+          NS_ABORT_OOM(0);
+        }
+      } else {
+        // Consume the runnable & simultaneously drop a ref count.
+        RefPtr<MicroTaskRunnable> refToDrop(MaybeConsumeAsOwnedRunnable(&job));
+        MOZ_ASSERT(refToDrop);
       }
     } else {
-      if (mPendingMicroTaskRunnables.empty() &&
-          mDebuggerMicroTaskQueue.empty() && !mSuppressedMicroTasks) {
+      // MG:XXX: It's sort of too bad that we can't handle the JobQueueIsEmpty
+      // note entirely within the JS engine, but in order to do that we'd need
+      // to move the suppressed micro task handling inside and that's more
+      // divergence than I would like.
+      if (!JS::HasAnyMicroTasks(cx) && !mSuppressedMicroTaskList) {
         JS::JobQueueIsEmpty(Context());
       }
       didProcess = true;
 
-      LogMicroTaskRunnable::Run log(runnable.get());
-      runnable->Run(aso);
-      runnable = nullptr;
+      RunMicroTask(cx, this, &job, !!mSuppressedMicroTaskList);
     }
   }
 
@@ -885,8 +1300,19 @@ bool CycleCollectedJSContext::PerformMicroTaskCheckPoint(bool aForce) {
   // Note, it is possible that we end up keeping these suppressed tasks around
   // for some time, but no longer than spinning the event loop nestedly
   // (sync XHR, alert, etc.)
-  if (mSuppressedMicroTasks) {
-    mPendingMicroTaskRunnables.push_back(mSuppressedMicroTasks);
+  if (mSuppressedMicroTaskList) {
+    // Like everywhere else, do_AddRef when enqueing. Then the refcount in the
+    // queue is 2; when ->Suppressed is called, mSuppressedMicroTaskList will
+    // be nulled out, dropping the refcount to 1, then when the conversion to
+    // owned happens, inside of RunMicroTask, the remaining ref will be
+    // dropped, and the code will be cleaned up.
+    //
+    // This should work generally, as if you re-enqueue the task list (we have
+    // no code to prevent this!) you'll just have more refs in the queue,
+    // all of which is good.
+    if (!EnqueueMicroTask(cx, do_AddRef(mSuppressedMicroTaskList))) {
+      MOZ_CRASH("Failed to re-enqueue suppressed microtask list");
+    }
   }
 
   AfterProcessMicrotasks();
@@ -898,30 +1324,15 @@ void CycleCollectedJSContext::PerformDebuggerMicroTaskCheckpoint() {
   // Don't do normal microtask handling checks here, since whoever is calling
   // this method is supposed to know what they are doing.
 
-  AutoSlowOperation aso;
-  for (;;) {
-    // For a debugger microtask checkpoint, we always use the debugger microtask
-    // queue.
-    std::deque<RefPtr<MicroTaskRunnable>>* microtaskQueue =
-        &GetDebuggerMicroTaskQueue();
+  JSContext* cx = Context();
 
-    if (microtaskQueue->empty()) {
-      break;
-    }
+  JS::Rooted<MustConsumeMicroTask> job(cx);
+  while (JS::HasDebuggerMicroTasks(cx)) {
+    job.set(DequeueNextDebuggerMicroTask(cx));
 
-    RefPtr<MicroTaskRunnable> runnable = std::move(microtaskQueue->front());
-    MOZ_ASSERT(runnable);
+    // MG:XXX: Need to add a JS::JobQueueIsEmpty call here.
 
-    LogMicroTaskRunnable::Run log(runnable.get());
-
-    // This function can re-enter, so we remove the element before calling.
-    microtaskQueue->pop_front();
-
-    if (mPendingMicroTaskRunnables.empty() && mDebuggerMicroTaskQueue.empty()) {
-      JS::JobQueueIsEmpty(Context());
-    }
-    runnable->Run(aso);
-    runnable = nullptr;
+    RunMicroTask(cx, this, &job, false);
   }
 
   AfterProcessMicrotasks();
@@ -943,6 +1354,7 @@ NS_IMETHODIMP CycleCollectedJSContext::NotifyUnhandledRejections::Run() {
 
     // Only fire unhandledrejection if the promise is still not handled;
     uint64_t promiseID = JS::GetPromiseID(promiseObj);
+    bool defaultPrevented = false;
     if (!JS::GetPromiseIsHandled(promiseObj)) {
       if (nsCOMPtr<EventTarget> target =
               do_QueryInterface(promise->GetParentObject())) {
@@ -954,24 +1366,42 @@ NS_IMETHODIMP CycleCollectedJSContext::NotifyUnhandledRejections::Run() {
         RefPtr<PromiseRejectionEvent> event =
             PromiseRejectionEvent::Constructor(target, u"unhandledrejection"_ns,
                                                init);
-        // We don't use the result of dispatching event here to check whether to
-        // report the Promise to console.
         target->DispatchEvent(*event);
+        defaultPrevented = event->DefaultPrevented();
       }
     }
 
     cccx = CycleCollectedJSContext::Get();
     NS_ENSURE_STATE(cccx);
+
+    // Notify observers only if still unhandled (matches old
+    // FlushUncaughtRejectionsInternal behavior for observer consumers
+    // like PromiseTestUtils). An observer returning true takes ownership of
+    // the rejection and suppresses the console report, as on the
+    // FlushUncaughtRejectionsInternal and Cancel() paths.
+    bool suppressReporting = false;
     if (!JS::GetPromiseIsHandled(promiseObj)) {
-      DebugOnly<bool> isFound =
-          cccx->mPendingUnhandledRejections.Remove(promiseID);
-      MOZ_ASSERT(isFound);
+      auto& observers = cccx->mUncaughtRejectionObservers;
+      for (size_t j = 0; j < observers.Length(); ++j) {
+        RefPtr<UncaughtRejectionObserver> obs =
+            static_cast<UncaughtRejectionObserver*>(observers[j].get());
+        if (obs->OnLeftUncaught(promiseObj, IgnoreErrors())) {
+          suppressReporting = true;
+        }
+      }
     }
 
-    // If a rejected promise is being handled in "unhandledrejection" event
-    // handler, it should be removed from the table in
-    // PromiseRejectionTrackerCallback.
-    MOZ_ASSERT(!cccx->mPendingUnhandledRejections.Lookup(promiseID));
+    // Report to console regardless of handled state — this matches the
+    // pre-existing behavior where FlushRejections reported before handling
+    // could occur. Only preventDefault() suppresses the console report.
+    if (!defaultPrevented && !suppressReporting) {
+      JSAutoRealm ar(cccx->Context(), promiseObj);
+      Promise::ReportRejectedPromise(cccx->Context(), promiseObj);
+    }
+
+    // Remove from the pending table. May already be removed if the
+    // promise was handled between tracking and now.
+    cccx->mPendingUnhandledRejections.Remove(promiseID);
   }
   return NS_OK;
 }
@@ -980,6 +1410,10 @@ nsresult CycleCollectedJSContext::NotifyUnhandledRejections::Cancel() {
   CycleCollectedJSContext* cccx = CycleCollectedJSContext::Get();
   NS_ENSURE_STATE(cccx);
 
+  // The runnable was canceled, so the unhandledrejection event will never
+  // fire. Report any still-unhandled rejections directly to observers and
+  // the console, since the deferred path in FlushUncaughtRejectionsInternal
+  // already skipped them.
   for (size_t i = 0; i < mUnhandledRejections.Length(); ++i) {
     RefPtr<Promise>& promise = mUnhandledRejections[i];
     if (!promise) {
@@ -987,6 +1421,24 @@ nsresult CycleCollectedJSContext::NotifyUnhandledRejections::Cancel() {
     }
 
     JS::RootedObject promiseObj(cccx->RootingCx(), promise->PromiseObj());
+
+    if (!JS::GetPromiseIsHandled(promiseObj)) {
+      bool suppressReporting = false;
+      auto& observers = cccx->mUncaughtRejectionObservers;
+      for (size_t j = 0; j < observers.Length(); ++j) {
+        RefPtr<UncaughtRejectionObserver> obs =
+            static_cast<UncaughtRejectionObserver*>(observers[j].get());
+        if (obs->OnLeftUncaught(promiseObj, IgnoreErrors())) {
+          suppressReporting = true;
+        }
+      }
+
+      if (!suppressReporting) {
+        JSAutoRealm ar(cccx->Context(), promiseObj);
+        Promise::ReportRejectedPromise(cccx->Context(), promiseObj);
+      }
+    }
+
     cccx->mPendingUnhandledRejections.Remove(JS::GetPromiseID(promiseObj));
   }
   return NS_OK;
@@ -1025,18 +1477,40 @@ class FinalizationRegistryCleanup::CleanupRunnable
     : public DiscardableRunnable {
  public:
   explicit CleanupRunnable(FinalizationRegistryCleanup* aCleanupWork)
-      : DiscardableRunnable("CleanupRunnable"), mCleanupWork(aCleanupWork) {}
+      : DiscardableRunnable("CleanupRunnable"), mCleanupWork(aCleanupWork) {
+    MOZ_ASSERT(aCleanupWork);
+  }
+
+  virtual ~CleanupRunnable() {
+    if (mCleanupWork) {
+      clearPendingRunnable();
+    }
+  }
 
   // MOZ_CAN_RUN_SCRIPT_BOUNDARY until Runnable::Run is MOZ_CAN_RUN_SCRIPT.  See
   // bug 1535398.
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   NS_IMETHOD Run() override {
+    if (!mCleanupWork) {
+      // The FinalizationRegistryCleanup has been destroyed.
+      return NS_OK;
+    }
+
+    clearPendingRunnable();
+
     mCleanupWork->DoCleanup();
+    mCleanupWork = nullptr;
     return NS_OK;
+  }
+
+  void clearPendingRunnable() {
+    MOZ_ASSERT(mCleanupWork->mPendingRunnable == this);
+    mCleanupWork->mPendingRunnable = nullptr;
   }
 
  private:
   FinalizationRegistryCleanup* mCleanupWork;
+  friend class FinalizationRegistryCleanup;
 };
 
 FinalizationRegistryCleanup::FinalizationRegistryCleanup(
@@ -1046,6 +1520,10 @@ FinalizationRegistryCleanup::FinalizationRegistryCleanup(
 void FinalizationRegistryCleanup::Destroy() {
   // This must happen before the CycleCollectedJSContext destructor calls
   // JS_DestroyContext().
+  if (mPendingRunnable) {
+    MOZ_ASSERT(mPendingRunnable->mCleanupWork == this);
+    mPendingRunnable->mCleanupWork = nullptr;
+  }
   mCallbacks.reset();
 }
 
@@ -1057,33 +1535,22 @@ void FinalizationRegistryCleanup::Init() {
 
 /* static */
 void FinalizationRegistryCleanup::QueueCallback(JSFunction* aDoCleanup,
-                                                JSObject* aHostDefinedData,
+                                                JSObject* aIncumbentGlobal,
                                                 void* aData) {
   FinalizationRegistryCleanup* cleanup =
       static_cast<FinalizationRegistryCleanup*>(aData);
-  cleanup->QueueCallback(aDoCleanup, aHostDefinedData);
+  cleanup->QueueCallback(aDoCleanup, aIncumbentGlobal);
 }
 
 void FinalizationRegistryCleanup::QueueCallback(JSFunction* aDoCleanup,
-                                                JSObject* aHostDefinedData) {
-  bool firstCallback = mCallbacks.empty();
+                                                JSObject* aIncumbentGlobal) {
+  MOZ_ASSERT_IF(!mCallbacks.empty(), mPendingRunnable);
 
-  JSObject* incumbentGlobal = nullptr;
+  MOZ_ALWAYS_TRUE(mCallbacks.append(Callback{aDoCleanup, aIncumbentGlobal}));
 
-  // Extract incumbentGlobal from aHostDefinedData.
-  if (aHostDefinedData) {
-    MOZ_RELEASE_ASSERT(JS::GetClass(aHostDefinedData) ==
-                       &sHostDefinedDataClass);
-    JS::Value global =
-        JS::GetReservedSlot(aHostDefinedData, INCUMBENT_SETTING_SLOT);
-    incumbentGlobal = &global.toObject();
-  }
-
-  MOZ_ALWAYS_TRUE(mCallbacks.append(Callback{aDoCleanup, incumbentGlobal}));
-
-  if (firstCallback) {
-    RefPtr<CleanupRunnable> cleanup = new CleanupRunnable(this);
-    NS_DispatchToCurrentThread(cleanup.forget());
+  if (!mPendingRunnable) {
+    mPendingRunnable = new CleanupRunnable(this);
+    NS_DispatchToCurrentThread(mPendingRunnable);
   }
 }
 

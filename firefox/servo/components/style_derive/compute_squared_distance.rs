@@ -7,7 +7,6 @@ use crate::cg;
 use proc_macro2::TokenStream;
 use quote::TokenStreamExt;
 use syn::{DeriveInput, WhereClause};
-use synstructure;
 
 pub fn derive(mut input: DeriveInput) -> TokenStream {
     let animation_input_attrs = cg::parse_input_attrs::<AnimationInputAttrs>(&input);
@@ -39,7 +38,11 @@ pub fn derive(mut input: DeriveInput) -> TokenStream {
     if needs_catchall_branch {
         // This ideally shouldn't be needed, but see:
         // https://github.com/rust-lang/rust/issues/68867
-        match_body.append_all(quote! { _ => unsafe { debug_unreachable!() } });
+
+        match_body.append_all(quote! { _ => unsafe {
+            use ::debug_unreachable::debug_unreachable;
+            debug_unreachable!()
+        } });
     }
 
     let name = &input.ident;
@@ -66,11 +69,11 @@ pub fn derive(mut input: DeriveInput) -> TokenStream {
 
 fn derive_variant_arm(
     variant: &synstructure::VariantInfo,
-    mut where_clause: &mut Option<WhereClause>,
+    where_clause: &mut Option<WhereClause>,
 ) -> TokenStream {
     let variant_attrs = cg::parse_variant_attrs_from_ast::<AnimationVariantAttrs>(&variant.ast());
-    let (this_pattern, this_info) = cg::ref_pattern(&variant, "this");
-    let (other_pattern, other_info) = cg::ref_pattern(&variant, "other");
+    let (this_pattern, this_info) = cg::ref_pattern(variant, "this");
+    let (other_pattern, other_info) = cg::ref_pattern(variant, "other");
 
     if variant_attrs.error {
         return quote! {
@@ -83,17 +86,17 @@ fn derive_variant_arm(
     } else {
         let mut sum = quote!();
         sum.append_separated(this_info.iter().zip(&other_info).map(|(this, other)| {
-            let field_attrs = cg::parse_field_attrs::<DistanceFieldAttrs>(&this.ast());
+            let field_attrs = cg::parse_field_attrs::<DistanceFieldAttrs>(this.ast());
             if field_attrs.field_bound {
                 let ty = &this.ast().ty;
                 cg::add_predicate(
-                    &mut where_clause,
+                    where_clause,
                     parse_quote!(#ty: crate::values::distance::ComputeSquaredDistance),
                 );
             }
 
             let animation_field_attrs =
-                cg::parse_field_attrs::<AnimationFieldAttrs>(&this.ast());
+                cg::parse_field_attrs::<AnimationFieldAttrs>(this.ast());
 
             if animation_field_attrs.constant {
                 quote! {
@@ -113,9 +116,9 @@ fn derive_variant_arm(
         sum
     };
 
-    return quote! {
+    quote! {
         (&#this_pattern, &#other_pattern) => Ok(#sum),
-    };
+    }
 }
 
 #[derive(Default, FromField)]

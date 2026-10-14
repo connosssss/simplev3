@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -204,6 +202,7 @@ class JS_PUBLIC_API AtomOrTwoByteChars
 
  public:
   template <typename T>
+    requires(std::is_constructible_v<Base, T>)
   MOZ_IMPLICIT AtomOrTwoByteChars(T&& rhs) : Base(std::forward<T>(rhs)) {}
 
   template <typename T>
@@ -227,9 +226,6 @@ class JS_PUBLIC_API AtomOrTwoByteChars
 // must not add data members to this class.
 class BaseStackFrame {
   friend class StackFrame;
-
-  BaseStackFrame(const StackFrame&) = delete;
-  BaseStackFrame& operator=(const StackFrame&) = delete;
 
  protected:
   void* ptr;
@@ -300,6 +296,9 @@ class BaseStackFrame {
 
   // Trace the concrete implementation of JS::ubi::StackFrame.
   virtual void trace(JSTracer* trc) = 0;
+
+  BaseStackFrame(const StackFrame&) = delete;
+  BaseStackFrame& operator=(const StackFrame&) = delete;
 };
 
 // A traits template with a specialization for each backing type that implements
@@ -383,11 +382,11 @@ class StackFrame {
   // virtual constructors. See the comment above Node's copy constructor for
   // more details; that comment applies here as well.
   StackFrame(const StackFrame& rhs) {
-    memcpy(storage.u.mBytes, rhs.storage.u.mBytes, sizeof(storage.u));
+    memcpy(storage.bytes(), rhs.storage.bytes(), sizeof(storage));
   }
 
   StackFrame& operator=(const StackFrame& rhs) {
-    memcpy(storage.u.mBytes, rhs.storage.u.mBytes, sizeof(storage.u));
+    memcpy(storage.bytes(), rhs.storage.bytes(), sizeof(storage));
     return *this;
   }
 
@@ -558,14 +557,11 @@ class JS_PUBLIC_API Base {
   explicit Base(void* ptr) : ptr(ptr) {}
 
  public:
-  bool operator==(const Base& rhs) const {
-    // Some compilers will indeed place objects of different types at
-    // the same address, so technically, we should include the vtable
-    // in this comparison. But it seems unlikely to cause problems in
-    // practice.
-    return ptr == rhs.ptr;
-  }
-  bool operator!=(const Base& rhs) const { return !(*this == rhs); }
+  // Some compilers will indeed place objects of different types at
+  // the same address, so technically, we should include the vtable
+  // in this comparison. But it seems unlikely to cause problems in
+  // practice.
+  bool operator==(const Base& rhs) const = default;
 
   // An identifier for this node, guaranteed to be stable and unique for as
   // long as this ubi::Node's referent is alive and at the same address.
@@ -667,7 +663,6 @@ class JS_PUBLIC_API Base {
   // return nullptr.
   virtual const char* scriptFilename() const { return nullptr; }
 
- private:
   Base(const Base& rhs) = delete;
   Base& operator=(const Base& rhs) = delete;
 };
@@ -755,11 +750,11 @@ class Node {
   // through vtables for copying and assignment that are just going to move
   // two words around. The compiler knows how to optimize memcpy.
   Node(const Node& rhs) {
-    memcpy(storage.u.mBytes, rhs.storage.u.mBytes, sizeof(storage.u));
+    memcpy(storage.bytes(), rhs.storage.bytes(), sizeof(storage));
   }
 
   Node& operator=(const Node& rhs) {
-    memcpy(storage.u.mBytes, rhs.storage.u.mBytes, sizeof(storage.u));
+    memcpy(storage.bytes(), rhs.storage.bytes(), sizeof(storage));
     return *this;
   }
 
@@ -832,7 +827,7 @@ class Node {
   using Id = Base::Id;
   Id identifier() const {
     auto id = base()->identifier();
-    MOZ_ASSERT(JS::Value::isNumberRepresentable(id));
+    MOZ_RELEASE_ASSERT(JS::Value::isNumberRepresentable(id));
     return id;
   }
 
@@ -916,6 +911,9 @@ class EdgeRange {
  public:
   virtual ~EdgeRange() = default;
 
+  EdgeRange(const EdgeRange&) = delete;
+  EdgeRange& operator=(const EdgeRange&) = delete;
+
   // True if there are no more edges in this range.
   bool empty() const { return !front_; }
 
@@ -928,10 +926,6 @@ class EdgeRange {
   // Remove the front edge from this range. This should only be called if
   // !empty().
   virtual void popFront() = 0;
-
- private:
-  EdgeRange(const EdgeRange&) = delete;
-  EdgeRange& operator=(const EdgeRange&) = delete;
 };
 
 typedef mozilla::Vector<Edge, 8, js::SystemAllocPolicy> EdgeVector;
@@ -1102,8 +1096,8 @@ class JS_PUBLIC_API Concrete<JS::BigInt> : TracerConcrete<JS::BigInt> {
 };
 
 template <>
-class JS_PUBLIC_API Concrete<js::BaseScript>
-    : TracerConcreteWithRealm<js::BaseScript> {
+class JS_PUBLIC_API
+    Concrete<js::BaseScript> : TracerConcreteWithRealm<js::BaseScript> {
  protected:
   explicit Concrete(js::BaseScript* ptr)
       : TracerConcreteWithRealm<js::BaseScript>(ptr) {}
@@ -1159,26 +1153,6 @@ class JS_PUBLIC_API Concrete<JSString> : TracerConcrete<JSString> {
   Size size(mozilla::MallocSizeOf mallocSizeOf) const override;
 
   CoarseType coarseType() const final { return CoarseType::String; }
-
-  const char16_t* typeName() const override { return concreteTypeName; }
-  static const char16_t concreteTypeName[];
-};
-
-template <>
-class JS_PUBLIC_API Concrete<js::gc::SmallBuffer>
-    : TracerConcrete<js::gc::SmallBuffer> {
- protected:
-  explicit Concrete(js::gc::SmallBuffer* ptr)
-      : TracerConcrete<js::gc::SmallBuffer>(ptr) {}
-
- public:
-  static void construct(void* storage, js::gc::SmallBuffer* ptr) {
-    new (storage) Concrete(ptr);
-  }
-
-  Size size(mozilla::MallocSizeOf mallocSizeOf) const override;
-
-  CoarseType coarseType() const final { return CoarseType::Object; }
 
   const char16_t* typeName() const override { return concreteTypeName; }
   static const char16_t concreteTypeName[];

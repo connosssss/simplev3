@@ -1,31 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "FontFaceSet.h"
 
+#include "FontPreloader.h"
+#include "ReferrerInfo.h"
 #include "gfxFontConstants.h"
 #include "gfxFontSrcPrincipal.h"
 #include "gfxFontSrcURI.h"
 #include "gfxFontUtils.h"
-#include "FontPreloader.h"
-#include "mozilla/css/Loader.h"
-#include "mozilla/dom/CSSFontFaceRule.h"
-#include "mozilla/dom/DocumentInlines.h"
-#include "mozilla/dom/Event.h"
-#include "mozilla/dom/FontFaceImpl.h"
-#include "mozilla/dom/FontFaceSetBinding.h"
-#include "mozilla/dom/FontFaceSetDocumentImpl.h"
-#include "mozilla/dom/FontFaceSetWorkerImpl.h"
-#include "mozilla/dom/FontFaceSetIterator.h"
-#include "mozilla/dom/FontFaceSetLoadEvent.h"
-#include "mozilla/dom/FontFaceSetLoadEventBinding.h"
-#include "mozilla/dom/Promise.h"
-#include "mozilla/FontPropertyTypes.h"
 #include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/FontPropertyTypes.h"
+#include "mozilla/LoadInfo.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
@@ -35,28 +23,37 @@
 #include "mozilla/ServoStyleSet.h"
 #include "mozilla/ServoUtils.h"
 #include "mozilla/Sprintf.h"
-#include "mozilla/LoadInfo.h"
+#include "mozilla/css/Loader.h"
+#include "mozilla/dom/CSSFontFaceRule.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/DocumentInlines.h"
+#include "mozilla/dom/Event.h"
+#include "mozilla/dom/FontFaceImpl.h"
+#include "mozilla/dom/FontFaceSetBinding.h"
+#include "mozilla/dom/FontFaceSetDocumentImpl.h"
+#include "mozilla/dom/FontFaceSetIterator.h"
+#include "mozilla/dom/FontFaceSetLoadEvent.h"
+#include "mozilla/dom/FontFaceSetLoadEventBinding.h"
+#include "mozilla/dom/FontFaceSetWorkerImpl.h"
+#include "mozilla/dom/Promise.h"
 #include "nsComponentManagerUtils.h"
 #include "nsContentPolicyUtils.h"
 #include "nsContentUtils.h"
+#include "nsDOMNavigationTiming.h"
 #include "nsDeviceContext.h"
 #include "nsFontFaceLoader.h"
 #include "nsIConsoleService.h"
 #include "nsIContentPolicy.h"
 #include "nsIDocShell.h"
-#include "mozilla/dom/Document.h"
+#include "nsIInputStream.h"
 #include "nsILoadContext.h"
-#include "nsINetworkPredictor.h"
 #include "nsIPrincipal.h"
 #include "nsIWebNavigation.h"
-#include "nsNetUtil.h"
-#include "nsIInputStream.h"
 #include "nsLayoutUtils.h"
+#include "nsNetUtil.h"
 #include "nsPresContext.h"
 #include "nsPrintfCString.h"
 #include "nsUTF8Utils.h"
-#include "nsDOMNavigationTiming.h"
-#include "ReferrerInfo.h"
 
 using namespace mozilla;
 using namespace mozilla::css;
@@ -107,9 +104,9 @@ FontFaceSet::~FontFaceSet() {
 
 /* static */ already_AddRefed<FontFaceSet> FontFaceSet::CreateForDocument(
     dom::Document* aDocument) {
-  RefPtr<FontFaceSet> set = new FontFaceSet(aDocument->GetScopeObject());
-  RefPtr<FontFaceSetDocumentImpl> impl =
-      new FontFaceSetDocumentImpl(set, aDocument);
+  RefPtr<FontFaceSet> set =
+      do_AddRef(new FontFaceSet(aDocument->GetScopeObject()));
+  auto impl = MakeRefPtr<FontFaceSetDocumentImpl>(set, aDocument);
   set->mImpl = impl;
   impl->Initialize();
   return set.forget();
@@ -117,8 +114,8 @@ FontFaceSet::~FontFaceSet() {
 
 /* static */ already_AddRefed<FontFaceSet> FontFaceSet::CreateForWorker(
     nsIGlobalObject* aParent, WorkerPrivate* aWorkerPrivate) {
-  RefPtr<FontFaceSet> set = new FontFaceSet(aParent);
-  RefPtr<FontFaceSetWorkerImpl> impl = new FontFaceSetWorkerImpl(set);
+  RefPtr<FontFaceSet> set = do_AddRef(new FontFaceSet(aParent));
+  auto impl = MakeRefPtr<FontFaceSetWorkerImpl>(set);
   set->mImpl = impl;
   if (NS_WARN_IF(!impl->Initialize(aWorkerPrivate))) {
     return nullptr;
@@ -185,11 +182,6 @@ bool FontFaceSet::Check(const nsACString& aFont, const nsAString& aText,
   return true;
 }
 
-bool FontFaceSet::ReadyPromiseIsPending() const {
-  return mReady ? mReady->State() == Promise::PromiseState::Pending
-                : !mResolveLazilyCreatedReadyPromise;
-}
-
 Promise* FontFaceSet::GetReady(ErrorResult& aRv) {
   mImpl->EnsureReady();
 
@@ -223,8 +215,6 @@ bool FontFaceSet::HasRuleFontFace(FontFace* aFontFace) {
 #endif
 
 void FontFaceSet::Add(FontFace& aFontFace, ErrorResult& aRv) {
-  FlushUserFontSet();
-
   FontFaceImpl* fontImpl = aFontFace.GetImpl();
   MOZ_ASSERT(fontImpl);
 
@@ -335,13 +325,11 @@ uint32_t FontFaceSet::SizeIncludingNonAuthorOrigins() {
 }
 
 already_AddRefed<FontFaceSetIterator> FontFaceSet::Entries() {
-  RefPtr<FontFaceSetIterator> it = new FontFaceSetIterator(this, true);
-  return it.forget();
+  return MakeAndAddRef<FontFaceSetIterator>(this, true);
 }
 
 already_AddRefed<FontFaceSetIterator> FontFaceSet::Values() {
-  RefPtr<FontFaceSetIterator> it = new FontFaceSetIterator(this, false);
-  return it.forget();
+  return MakeAndAddRef<FontFaceSetIterator>(this, false);
 }
 
 void FontFaceSet::ForEach(JSContext* aCx, FontFaceSetForEachCallback& aCallback,
@@ -392,7 +380,8 @@ void FontFaceSet::DispatchLoadingEventAndReplaceReadyPromise() {
     // refcounting.  (Also, the Promise object creation must be done on
     // the main thread.)
     set->AppendTask(
-        PostTraversalTask::DispatchLoadingEventAndReplaceReadyPromise(this));
+        PostTraversalTask::DispatchLoadingEventAndReplaceReadyPromise(
+            do_AddRef(mImpl)));
     return;
   }
 
@@ -400,10 +389,8 @@ void FontFaceSet::DispatchLoadingEventAndReplaceReadyPromise() {
       ->PostDOMEvent();
 
   if (mReady && mReady->State() != Promise::PromiseState::Pending) {
-    if (GetParentObject()) {
-      ErrorResult rv;
-      mReady = Promise::Create(GetParentObject(), rv);
-    }
+    // Let's recreate the Promise if GetReady() is called.
+    mReady = nullptr;
   }
 
   // We may previously have been in a state where all fonts had finished
@@ -413,14 +400,26 @@ void FontFaceSet::DispatchLoadingEventAndReplaceReadyPromise() {
   mResolveLazilyCreatedReadyPromise = false;
 }
 
-void FontFaceSet::MaybeResolve() {
-  if (mReady) {
-    mReady->MaybeResolve(this);
-  } else {
-    mResolveLazilyCreatedReadyPromise = true;
-  }
+static RefPtr<FontFaceSetLoadEvent> MakeLoadEvent(
+    FontFaceSet* aFontFaceSet, const nsAString& aType,
+    nsTArray<OwningNonNull<FontFace>>&& aFontFaces) {
+  FontFaceSetLoadEventInit init;
+  init.mBubbles = false;
+  init.mCancelable = false;
+  init.mFontfaces = std::move(aFontFaces);
+  return FontFaceSetLoadEvent::Constructor(aFontFaceSet, aType, init);
+}
 
-  // Now dispatch the loadingdone/loadingerror events.
+static RefPtr<FontFaceSetLoadEvent> MaybeMakeLoadEvent(
+    FontFaceSet* aFontFaceSet, const nsAString& aType,
+    nsTArray<OwningNonNull<FontFace>>&& aFontFaces) {
+  if (aFontFaces.IsEmpty()) {
+    return nullptr;
+  }
+  return MakeLoadEvent(aFontFaceSet, aType, std::move(aFontFaces));
+}
+
+void FontFaceSet::MaybeResolve() {
   nsTArray<OwningNonNull<FontFace>> loaded;
   nsTArray<OwningNonNull<FontFace>> failed;
 
@@ -452,22 +451,19 @@ void FontFaceSet::MaybeResolve() {
   checkStatus(mRuleFaces);
   checkStatus(mNonRuleFaces);
 
-  DispatchLoadingFinishedEvent(u"loadingdone"_ns, std::move(loaded));
-
-  if (!failed.IsEmpty()) {
-    DispatchLoadingFinishedEvent(u"loadingerror"_ns, std::move(failed));
+  RefPtr loadingdone =
+      MakeLoadEvent(this, u"loadingdone"_ns, std::move(loaded));
+  RefPtr loadingerror =
+      MaybeMakeLoadEvent(this, u"loadingerror"_ns, std::move(failed));
+  if (RefPtr ready = mReady) {
+    ready->MaybeResolve(this);
+  } else {
+    mResolveLazilyCreatedReadyPromise = true;
   }
-}
-
-void FontFaceSet::DispatchLoadingFinishedEvent(
-    const nsAString& aType, nsTArray<OwningNonNull<FontFace>>&& aFontFaces) {
-  FontFaceSetLoadEventInit init;
-  init.mBubbles = false;
-  init.mCancelable = false;
-  init.mFontfaces = std::move(aFontFaces);
-  RefPtr<FontFaceSetLoadEvent> event =
-      FontFaceSetLoadEvent::Constructor(this, aType, init);
-  (new AsyncEventDispatcher(this, event.forget()))->PostDOMEvent();
+  DispatchEvent(*loadingdone);
+  if (loadingerror) {
+    DispatchEvent(*loadingerror);
+  }
 }
 
 void FontFaceSet::FlushUserFontSet() { mImpl->FlushUserFontSet(); }

@@ -56,8 +56,8 @@ add_task(async function test_containers_no_left_click() {
 
   is(contextMenu.state, "open", "Context menu is open.");
   let contextIdItems = contextMenu.querySelectorAll("menuitem");
-  // 4 + default + manage containers
-  is(contextIdItems.length, 6, "Has 6 menu items");
+  // 4 + default + add container + manage containers
+  is(contextIdItems.length, 7, "Has 7 menu items");
   contextMenu.hidePopup();
 });
 
@@ -73,7 +73,7 @@ add_task(async function test_containers_with_left_click() {
   ok(newTabButton, "New tab button exists");
   ok(!newTabButton.hidden, "New tab button is visible");
 
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => !!findPopup(),
     "Wait for popup to exist"
   );
@@ -81,11 +81,13 @@ add_task(async function test_containers_with_left_click() {
 
   let popupShownPromise = BrowserTestUtils.waitForEvent(popup, "popupshown");
   let popupHiddenPromise = BrowserTestUtils.waitForEvent(popup, "popuphidden");
+  // The menu opens on press, so release the button only once it is shown.
   EventUtils.synthesizeMouseAtCenter(newTabButton, { type: "mousedown" });
   await popupShownPromise;
+  EventUtils.synthesizeMouseAtCenter(newTabButton, { type: "mouseup" });
   let contextIdItems = popup.querySelectorAll("menuitem");
-  // 4 + default + manage containers
-  is(contextIdItems.length, 6, "Has 6 menu items");
+  // 4 + default + add container + manage containers
+  is(contextIdItems.length, 7, "Has 7 menu items");
   popup.hidePopup();
   await popupHiddenPromise;
 
@@ -94,6 +96,7 @@ add_task(async function test_containers_with_left_click() {
     EventUtils.synthesizeMouseAtCenter(newTabButton, { type: "mousedown" });
 
     await popupShownPromise;
+    EventUtils.synthesizeMouseAtCenter(newTabButton, { type: "mouseup" });
     let contextIdItem = popup.querySelector(
       `menuitem[data-usercontextid="${i}"]`
     );
@@ -105,7 +108,11 @@ add_task(async function test_containers_with_left_click() {
       gBrowser.tabContainer,
       "TabOpen"
     );
-    EventUtils.synthesizeMouseAtCenter(contextIdItem, {});
+    if (popup.isNativeMenu) {
+      popup.activateItem(contextIdItem);
+    } else {
+      EventUtils.synthesizeMouseAtCenter(contextIdItem, {});
+    }
 
     let tabEvent = await waitForTabPromise;
     let tab = tabEvent.target;
@@ -133,8 +140,8 @@ add_task(async function test_containers_with_left_click() {
 
   is(contextMenu.state, "open", "Context menu is open.");
   contextIdItems = contextMenu.querySelectorAll("menuitem");
-  // 4 + default + manage containers
-  is(contextIdItems.length, 6, "Has 6 menu items");
+  // 4 + default + add container + manage containers
+  is(contextIdItems.length, 7, "Has 7 menu items");
   contextMenu.hidePopup();
 });
 
@@ -194,8 +201,8 @@ add_task(async function test_opening_container_tab_context() {
   EventUtils.synthesizeMouseAtCenter(newTabButton, { type: "contextmenu" });
   await popupShownPromise;
   let contextIdItems = popup.querySelectorAll("menuitem");
-  // 4 + default + manage containers
-  is(contextIdItems.length, 6, "Has 6 menu items");
+  // 4 + default + add container + manage containers
+  is(contextIdItems.length, 7, "Has 7 menu items");
   popup.hidePopup();
   await popupHiddenPromise;
 
@@ -262,8 +269,8 @@ add_task(async function test_vertical_tabs_right_click_new_tab_button() {
   await popupshownContextmenu;
   is(contextMenu.state, "open", "Context menu is open.");
   let contextIdItems = contextMenu.querySelectorAll("menuitem");
-  // 4 + default + manage containers
-  is(contextIdItems.length, 6, "Has 6 menu items");
+  // 4 + default + add container + manage containers
+  is(contextIdItems.length, 7, "Has 7 menu items");
   contextMenu.hidePopup();
 
   await SpecialPowers.popPrefEnv();
@@ -299,6 +306,7 @@ add_task(async function test_vertical_tabs_right_click_other_new_tab_button() {
   info("Windows and tabs opened, waiting for readyWindowsPromise");
   await NonPrivateTabs.readyWindowsPromise;
   info("readyWindowsPromise resolved");
+  await SidebarController.waitUntilStable();
   const newTabButton = sidebar.querySelector("#vertical-tabs-newtab-button");
 
   let popup = findPopup();
@@ -317,8 +325,8 @@ add_task(async function test_vertical_tabs_right_click_other_new_tab_button() {
   await popupshownContextmenu;
   is(contextMenu.state, "open", "Context menu is open.");
   let contextIdItems = contextMenu.querySelectorAll("menuitem");
-  // 4 + default + manage containers
-  is(contextIdItems.length, 6, "Has 6 menu items");
+  // 4 + default + add container + manage containers
+  is(contextIdItems.length, 7, "Has 7 menu items");
   contextMenu.hidePopup();
 
   await SpecialPowers.popPrefEnv();

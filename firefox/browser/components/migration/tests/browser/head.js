@@ -14,7 +14,7 @@ const { sinon } = ChromeUtils.importESModule(
   "resource://testing-common/Sinon.sys.mjs"
 );
 const { InternalTestingProfileMigrator } = ChromeUtils.importESModule(
-  "resource:///modules/InternalTestingProfileMigrator.sys.mjs"
+  "moz-src:///browser/components/migration/InternalTestingProfileMigrator.sys.mjs"
 );
 const { TelemetryTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/TelemetryTestUtils.sys.mjs"
@@ -75,7 +75,9 @@ async function withMigrationWizardDialog(taskFn) {
       BrowserTestUtils.removeTab(gBrowser.getTabForBrowser(prefsBrowser));
     } else {
       BrowserTestUtils.startLoadingURIString(prefsBrowser, "about:blank");
-      await BrowserTestUtils.browserLoaded(prefsBrowser);
+      await BrowserTestUtils.browserLoaded(prefsBrowser, {
+        wantLoad: "about:blank",
+      });
     }
   }
 }
@@ -309,6 +311,26 @@ async function waitForTestMigration(
 }
 
 /**
+ * Wait for a panel-list to be ready to interact with. In chrome the panel-list
+ * is parented to a XUL <panel> that it opens asynchronously, so its own "shown"
+ * event can fire before that panel is open and its items are interactive.
+ *
+ * Bug 2063011 will fix this in panel-list itself, and remove this helper.
+ *
+ * @param {Element} panelList
+ */
+async function waitForPanelListShown(panelList) {
+  await new Promise(resolve => {
+    panelList.addEventListener("shown", resolve, { once: true });
+  });
+
+  let panel = panelList.parentElement;
+  if (panel?.localName == "panel") {
+    await BrowserTestUtils.waitForPopupEvent(panel, "shown");
+  }
+}
+
+/**
  * Takes a MigrationWizard element and chooses the
  * InternalTestingProfileMigrator as the browser to migrate from. Then, it
  * checks the checkboxes associated with the selectedResourceTypes and
@@ -329,19 +351,25 @@ async function selectResourceTypesAndStartMigration(
   migratorKey = InternalTestingProfileMigrator.key
 ) {
   let shadow = wizard.openOrClosedShadowRoot;
+  let panelList = shadow.querySelector("panel-list");
+  Assert.ok(!panelList.open, "Panel should not yet be open.");
 
   // First, select the InternalTestingProfileMigrator browser.
   let selector = shadow.querySelector("#browser-profile-selector");
-  EventUtils.synthesizeMouseAtCenter(selector, {}, wizard.ownerGlobal);
+  EventUtils.synthesizeMouseAtCenter(selector, {}, wizard.documentGlobal);
 
-  await new Promise(resolve => {
-    shadow
-      .querySelector("panel-list")
-      .addEventListener("shown", resolve, { once: true });
-  });
+  await waitForPanelListShown(panelList);
 
   let panelItem = shadow.querySelector(`panel-item[key="${migratorKey}"]`);
-  panelItem.click();
+  Assert.ok(
+    panelItem.openOrClosedShadowRoot.querySelector("button"),
+    "The panel-list button exists."
+  );
+  EventUtils.synthesizeMouseAtCenter(panelItem, {}, wizard.documentGlobal);
+
+  await new Promise(resolve => {
+    panelList.addEventListener("hidden", resolve, { once: true });
+  });
 
   // And then check the right checkboxes for the resource types.
   let resourceTypeList = shadow.querySelector("#resource-type-list");

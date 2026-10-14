@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,7 +7,6 @@
 
 #include "mozilla/DataMutex.h"
 #include "mozilla/glean/fog_ffi_generated.h"
-#include "mozilla/Maybe.h"
 #include "nsIGleanPing.h"
 #include "nsString.h"
 
@@ -68,7 +65,6 @@ class Ping {
    * @param aCallback - The callback to call on the next submit.
    */
   void TestBeforeNextSubmit(PingTestCallback&& aCallback) const;
-  void TestBeforeNextSubmitFallible(FalliblePingTestCallback&& aCallback) const;
 
   /**
    * **Test-only API**
@@ -97,7 +93,11 @@ class Ping {
   void SetEnabled(bool aValue) const;
 
  private:
-  nsresult SubmitInternal(const nsACString& aReason = nsCString()) const;
+  nsresult SubmitInternal(const nsACString& aReason,
+                          const nsACString& aPingName) const;
+
+  void TestBeforeNextSubmitFallible(FalliblePingTestCallback&& aCallback,
+                                    const nsACString& aPingName) const;
 
   const uint32_t mId;
 };
@@ -109,12 +109,14 @@ class GleanPing final : public nsIGleanPing {
   NS_DECL_ISUPPORTS
   NS_DECL_NSIGLEANPING
 
-  explicit GleanPing(uint32_t aId) : mPing(aId) {}
+  explicit GleanPing(uint32_t aId, const nsCString aName)
+      : mPing(aId), mName(aName) {}
 
  private:
   virtual ~GleanPing() = default;
 
   const impl::Ping mPing;
+  const nsCString mName;
 };
 
 }  // namespace mozilla::glean

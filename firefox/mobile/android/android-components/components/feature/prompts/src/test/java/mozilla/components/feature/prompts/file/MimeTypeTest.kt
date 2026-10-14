@@ -20,7 +20,6 @@ import android.provider.MediaStore.ACTION_IMAGE_CAPTURE
 import android.provider.MediaStore.ACTION_VIDEO_CAPTURE
 import android.provider.MediaStore.Audio.Media.RECORD_SOUND_ACTION
 import android.provider.MediaStore.EXTRA_OUTPUT
-import android.webkit.MimeTypeMap
 import androidx.core.net.toUri
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import mozilla.components.concept.engine.prompt.PromptRequest
@@ -37,17 +36,17 @@ import org.mockito.ArgumentMatchers.eq
 import org.mockito.ArgumentMatchers.notNull
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
-import org.robolectric.Shadows.shadowOf
 
 @RunWith(AndroidJUnit4::class)
 class MimeTypeTest {
 
-    private val request = PromptRequest.File(
-        mimeTypes = emptyArray(),
-        onSingleFileSelected = { _, _ -> },
-        onMultipleFilesSelected = { _, _ -> },
-        onDismiss = {},
-    )
+    private val request =
+        PromptRequest.File(
+            mimeTypes = emptyArray(),
+            onSingleFileSelected = { _, _ -> },
+            onMultipleFilesSelected = { _, _ -> },
+            onDismiss = {},
+        )
     private val capture = PromptRequest.File.FacingMode.ANY
 
     private lateinit var context: Context
@@ -66,7 +65,7 @@ class MimeTypeTest {
 
     @Test
     fun `matches empty list of mime types`() {
-        assertTypes(setOf(MimeType.Wildcard)) {
+        assertTypes(setOf(MimeType.Image(), MimeType.Audio, MimeType.Video, MimeType.Wildcard)) {
             it.matches(emptyArray())
         }
     }
@@ -237,10 +236,7 @@ class MimeTypeTest {
         val image = MimeType.Image { _, _, _ -> uri }
 
         @Suppress("DEPRECATION")
-        `when`(
-            packageManager
-                .resolveContentProvider(eq("org.mozilla.browser.fileprovider"), anyInt()),
-        )
+        `when`(packageManager.resolveContentProvider(eq("org.mozilla.browser.fileprovider"), anyInt()))
             .thenReturn(mock(ProviderInfo::class.java))
         mockResolveActivity()
 
@@ -248,8 +244,7 @@ class MimeTypeTest {
             assertEquals(action, ACTION_IMAGE_CAPTURE)
             assertEquals(1, extras?.size())
 
-            @Suppress("DEPRECATION")
-            val photoUri = extras!!.get(EXTRA_OUTPUT) as Uri
+            @Suppress("DEPRECATION") val photoUri = extras!!.get(EXTRA_OUTPUT) as Uri
             assertEquals(uri, photoUri)
         }
 
@@ -337,10 +332,11 @@ class MimeTypeTest {
 
         // allowMultipleFiles true and not empty mimeTypes will create an intent
         // with EXTRA_ALLOW_MULTIPLE and EXTRA_MIME_TYPES
-        val multiJpegRequest = request.copy(
-            mimeTypes = arrayOf("image/jpeg"),
-            isMultipleFilesSelection = true,
-        )
+        val multiJpegRequest =
+            request.copy(
+                mimeTypes = arrayOf("image/jpeg"),
+                isMultipleFilesSelection = true,
+            )
         with(MimeType.Wildcard.buildIntent(testContext, multiJpegRequest)) {
             assertEquals(action, ACTION_GET_CONTENT)
             assertEquals(type, "*/*")
@@ -356,15 +352,7 @@ class MimeTypeTest {
 
     @Test
     fun `Wildcard buildIntent with file extensions`() {
-        shadowOf(MimeTypeMap.getSingleton()).apply {
-            addExtensionMimeTypeMapping(".gif", "image/gif")
-            addExtensionMimeTypeMapping(
-                "docx",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
-        }
-
-        val extensionsRequest = request.copy(mimeTypes = arrayOf(".gif", "image/jpeg", "docx", ".fun"))
+        val extensionsRequest = request.copy(mimeTypes = arrayOf("image/gif", "image/jpeg", "docx", ".fun"))
 
         with(MimeType.Wildcard.buildIntent(testContext, extensionsRequest)) {
             assertEquals(action, ACTION_GET_CONTENT)

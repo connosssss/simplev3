@@ -1,17 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef builtin_intl_NumberFormat_h
 #define builtin_intl_NumberFormat_h
 
+#include <stddef.h>
 #include <stdint.h>
+#include <string_view>
 
-#include "builtin/SelfHostingDefines.h"
 #include "js/Class.h"
 #include "vm/NativeObject.h"
+#include "vm/StringType.h"
 
 namespace mozilla::intl {
 class NumberFormat;
@@ -19,20 +19,26 @@ class NumberRangeFormat;
 }  // namespace mozilla::intl
 
 namespace js {
+class ArrayObject;
+}
+
+namespace js::intl {
+
+struct NumberFormatOptions;
 
 class NumberFormatObject : public NativeObject {
  public:
   static const JSClass class_;
   static const JSClass& protoClass_;
 
-  static constexpr uint32_t INTERNALS_SLOT = 0;
-  static constexpr uint32_t UNUMBER_FORMATTER_SLOT = 1;
-  static constexpr uint32_t UNUMBER_RANGE_FORMATTER_SLOT = 2;
-  static constexpr uint32_t SLOT_COUNT = 3;
-
-  static_assert(INTERNALS_SLOT == INTL_INTERNALS_OBJECT_SLOT,
-                "INTERNALS_SLOT must match self-hosting define for internals "
-                "object slot");
+  JS_DEFINE_TYPED_SLOT(0, LOCALE_SLOT, Object, String, Undefined);
+  JS_DEFINE_TYPED_SLOT(1, NUMBERING_SYSTEM_SLOT, String, Undefined);
+  JS_DEFINE_TYPED_SLOT(2, OPTIONS_SLOT, Double, Undefined);
+  JS_DEFINE_TYPED_SLOT(3, DIGITS_OPTIONS_SLOT, Double, Undefined);
+  JS_DEFINE_TYPED_SLOT(4, UNUMBER_FORMATTER_SLOT, Private, Undefined);
+  JS_DEFINE_TYPED_SLOT(5, UNUMBER_RANGE_FORMATTER_SLOT, Private, Undefined);
+  JS_DEFINE_TYPED_SLOT(6, BOUND_FORMAT_SLOT, Object, Undefined);
+  static constexpr uint32_t SLOT_COUNT = 7;
 
   // Estimated memory use for UNumberFormatter and UFormattedNumber
   // (see IcuMemoryUsage).
@@ -42,8 +48,52 @@ class NumberFormatObject : public NativeObject {
   // (see IcuMemoryUsage).
   static constexpr size_t EstimatedRangeFormatterMemoryUse = 19894;
 
+  bool isLocaleResolved() const {
+    return getFixedSlotTyped(LOCALE_SLOT).isString();
+  }
+
+  JSObject* getRequestedLocales() const {
+    const auto& slot = getFixedSlotTyped(LOCALE_SLOT);
+    if (slot.isUndefined()) {
+      return nullptr;
+    }
+    return &slot.toObject();
+  }
+
+  void setRequestedLocales(JSObject* requestedLocales) {
+    setFixedSlotTyped(LOCALE_SLOT, JS::ObjectValue(*requestedLocales));
+  }
+
+  JSLinearString* getLocale() const {
+    const auto& slot = getFixedSlotTyped(LOCALE_SLOT);
+    if (slot.isUndefined()) {
+      return nullptr;
+    }
+    return &slot.toString()->asLinear();
+  }
+
+  void setLocale(JSLinearString* locale) {
+    setFixedSlotTyped(LOCALE_SLOT, JS::StringValue(locale));
+  }
+
+  JSLinearString* getNumberingSystem() const {
+    const auto& slot = getFixedSlotTyped(NUMBERING_SYSTEM_SLOT);
+    if (slot.isUndefined()) {
+      return nullptr;
+    }
+    return &slot.toString()->asLinear();
+  }
+
+  void setNumberingSystem(JSLinearString* numberingSystem) {
+    setFixedSlotTyped(NUMBERING_SYSTEM_SLOT, JS::StringValue(numberingSystem));
+  }
+
+  NumberFormatOptions getOptions() const;
+
+  void setOptions(const NumberFormatOptions& options);
+
   mozilla::intl::NumberFormat* getNumberFormatter() const {
-    const auto& slot = getFixedSlot(UNUMBER_FORMATTER_SLOT);
+    const auto& slot = getFixedSlotTyped(UNUMBER_FORMATTER_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
@@ -51,11 +101,11 @@ class NumberFormatObject : public NativeObject {
   }
 
   void setNumberFormatter(mozilla::intl::NumberFormat* formatter) {
-    setFixedSlot(UNUMBER_FORMATTER_SLOT, PrivateValue(formatter));
+    setFixedSlotTyped(UNUMBER_FORMATTER_SLOT, PrivateValue(formatter));
   }
 
   mozilla::intl::NumberRangeFormat* getNumberRangeFormatter() const {
-    const auto& slot = getFixedSlot(UNUMBER_RANGE_FORMATTER_SLOT);
+    const auto& slot = getFixedSlotTyped(UNUMBER_RANGE_FORMATTER_SLOT);
     if (slot.isUndefined()) {
       return nullptr;
     }
@@ -63,7 +113,19 @@ class NumberFormatObject : public NativeObject {
   }
 
   void setNumberRangeFormatter(mozilla::intl::NumberRangeFormat* formatter) {
-    setFixedSlot(UNUMBER_RANGE_FORMATTER_SLOT, PrivateValue(formatter));
+    setFixedSlotTyped(UNUMBER_RANGE_FORMATTER_SLOT, PrivateValue(formatter));
+  }
+
+  JSObject* getBoundFormat() const {
+    const auto& slot = getFixedSlotTyped(BOUND_FORMAT_SLOT);
+    if (slot.isUndefined()) {
+      return nullptr;
+    }
+    return &slot.toObject();
+  }
+
+  void setBoundFormat(JSObject* boundFormat) {
+    setFixedSlotTyped(BOUND_FORMAT_SLOT, JS::ObjectValue(*boundFormat));
   }
 
  private:
@@ -73,56 +135,19 @@ class NumberFormatObject : public NativeObject {
   static void finalize(JS::GCContext* gcx, JSObject* obj);
 };
 
-/**
- * Returns a new instance of the standard built-in NumberFormat constructor.
- *
- * Usage: numberFormat = intl_NumberFormat(locales, options)
- */
-[[nodiscard]] extern bool intl_NumberFormat(JSContext* cx, unsigned argc,
-                                            Value* vp);
-
-/**
- * Returns the numbering system type identifier per Unicode
- * Technical Standard 35, Unicode Locale Data Markup Language, for the
- * default numbering system for the given locale.
- *
- * Usage: defaultNumberingSystem = intl_numberingSystem(locale)
- */
-[[nodiscard]] extern bool intl_numberingSystem(JSContext* cx, unsigned argc,
-                                               Value* vp);
-
-/**
- * Returns a string representing the number x according to the effective
- * locale and the formatting options of the given NumberFormat.
- *
- * Spec: ECMAScript Internationalization API Specification, 11.3.2.
- *
- * Usage: formatted = intl_FormatNumber(numberFormat, x, formatToParts)
- */
-[[nodiscard]] extern bool intl_FormatNumber(JSContext* cx, unsigned argc,
-                                            Value* vp);
-
-/**
- * Returns a string representing the number range «x - y» according to the
- * effective locale and the formatting options of the given NumberFormat.
- *
- * Usage: formatted = intl_FormatNumberRange(numberFormat, x, y, formatToParts)
- */
-[[nodiscard]] extern bool intl_FormatNumberRange(JSContext* cx, unsigned argc,
-                                                 Value* vp);
-
-#if DEBUG || MOZ_SYSTEM_ICU
-/**
- * Returns an object with all available measurement units.
- *
- * Usage: units = intl_availableMeasurementUnits()
- */
-[[nodiscard]] extern bool intl_availableMeasurementUnits(JSContext* cx,
-                                                         unsigned argc,
-                                                         Value* vp);
-#endif
-
-namespace intl {
+enum class NumberFormatUnit {
+  Year,
+  Quarter,
+  Month,
+  Week,
+  Day,
+  Hour,
+  Minute,
+  Second,
+  Millisecond,
+  Microsecond,
+  Nanosecond,
+};
 
 /**
  * Returns a new instance of the standard built-in NumberFormat constructor.
@@ -153,8 +178,21 @@ namespace intl {
 [[nodiscard]] extern JSString* FormatBigInt(
     JSContext* cx, Handle<NumberFormatObject*> numberFormat, Handle<BigInt*> x);
 
-}  // namespace intl
+[[nodiscard]] extern JSLinearString* FormatNumber(
+    JSContext* cx, mozilla::intl::NumberFormat* numberFormat, double x);
 
-}  // namespace js
+[[nodiscard]] extern JSLinearString* FormatNumber(
+    JSContext* cx, mozilla::intl::NumberFormat* numberFormat,
+    std::string_view x);
+
+[[nodiscard]] extern ArrayObject* FormatNumberToParts(
+    JSContext* cx, mozilla::intl::NumberFormat* numberFormat, double x,
+    NumberFormatUnit numberFormatUnit);
+
+[[nodiscard]] extern ArrayObject* FormatNumberToParts(
+    JSContext* cx, mozilla::intl::NumberFormat* numberFormat,
+    std::string_view x, NumberFormatUnit numberFormatUnit);
+
+}  // namespace js::intl
 
 #endif /* builtin_intl_NumberFormat_h */

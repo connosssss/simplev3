@@ -70,11 +70,16 @@
 
 #include <algorithm>
 #include <assert.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <ctype.h>
+#include <cstdlib>
+#include <cstring>
+#include <cstdio>
+#include <cctype>
+#include <iterator>
 #include <sstream>
+#include <unordered_set>
+#if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
+#include <bit>
+#endif
 
 #include "csutil.hxx"
 #include "atypes.hxx"
@@ -90,23 +95,12 @@
 #else
 #ifndef MOZILLA_CLIENT
 #include "utf_info.hxx"
-#define UTF_LST_LEN (sizeof(utf_lst) / (sizeof(unicode_info)))
 #endif
 #endif
 
 #ifdef MOZILLA_CLIENT
 #include "mozHunspellRLBoxGlue.h"
 #endif
-
-struct unicode_info2 {
-  char cletter;
-  unsigned short cupper;
-  unsigned short clower;
-};
-
-static struct unicode_info2* utf_tbl = NULL;
-static int utf_tbl_count =
-    0;  // utf_tbl can be used by multiple Hunspell instances
 
 #ifndef MOZILLA_CLIENT
 void myopen(std::ifstream& stream, const char* path, std::ios_base::openmode mode)
@@ -130,135 +124,115 @@ void myopen(std::ifstream& stream, const char* path, std::ios_base::openmode mod
 }
 #endif
 
+// Encode a BMP-only sequence of w_char codepoints as UTF-8.
+// Each w_char represents a single 16-bit codepoint (h:l). Codepoints
+// outside the BMP are not representable here and never produced by
+// u8_u16, so the encoder only needs the 1/2/3-byte cases.
 std::string& u16_u8(std::string& dest, const std::vector<w_char>& src) {
   dest.clear();
-  std::vector<w_char>::const_iterator u2 = src.begin();
-  std::vector<w_char>::const_iterator u2_max = src.end();
-  while (u2 < u2_max) {
-    signed char u8;
-    if (u2->h) {  // > 0xFF
-      // XXX 4-byte haven't implemented yet.
-      if (u2->h >= 0x08) {  // >= 0x800 (3-byte UTF-8 character)
-        u8 = 0xe0 + (u2->h >> 4);
-        dest.push_back(u8);
-        u8 = 0x80 + ((u2->h & 0xf) << 2) + (u2->l >> 6);
-        dest.push_back(u8);
-        u8 = 0x80 + (u2->l & 0x3f);
-        dest.push_back(u8);
-      } else {  // < 0x800 (2-byte UTF-8 character)
-        u8 = 0xc0 + (u2->h << 2) + (u2->l >> 6);
-        dest.push_back(u8);
-        u8 = 0x80 + (u2->l & 0x3f);
-        dest.push_back(u8);
-      }
-    } else {               // <= 0xFF
-      if (u2->l & 0x80) {  // >0x80 (2-byte UTF-8 character)
-        u8 = 0xc0 + (u2->l >> 6);
-        dest.push_back(u8);
-        u8 = 0x80 + (u2->l & 0x3f);
-        dest.push_back(u8);
-      } else {  // < 0x80 (1-byte UTF-8 character)
-        u8 = u2->l;
-        dest.push_back(u8);
-      }
+  dest.reserve(src.size());
+  for (const w_char& wc : src) {
+    uint16_t cp = (static_cast<uint16_t>(wc.h) << 8) | wc.l;
+    if (cp < 0x80) {
+      dest.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+      dest.push_back(static_cast<char>(0xc0 | (cp >> 6)));
+      dest.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
+    } else {
+      dest.push_back(static_cast<char>(0xe0 | (cp >> 12)));
+      dest.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3f)));
+      dest.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
     }
-    ++u2;
   }
   return dest;
 }
 
-int u8_u16(std::vector<w_char>& dest, const std::string& src) {
-  dest.clear();
-  std::string::const_iterator u8 = src.begin();
-  std::string::const_iterator u8_max = src.end();
+static void warn_missing_cont(const std::string& src, std::string::const_iterator p) {
+  HUNSPELL_WARNING(stderr,
+                   "UTF-8 encoding error. Missing continuation byte in "
+                   "%ld. character position:\n%s\n",
+                   static_cast<long>(std::distance(src.begin(), p)),
+                   src.c_str());
+}
 
-  while (u8 < u8_max) {
-    w_char u2;
-    switch ((*u8) & 0xf0) {
-      case 0x00:
-      case 0x10:
-      case 0x20:
-      case 0x30:
-      case 0x40:
-      case 0x50:
-      case 0x60:
-      case 0x70: {
-        u2.h = 0;
-        u2.l = *u8;
-        break;
+// Decode UTF-8 bytes into w_char codepoints. BMP-only; a 4-byte lead
+// (codepoint >= U+10000) terminates conversion and returns -1.
+//
+// On a malformed sequence the decoder emits U+FFFD and resyncs by
+// advancing past the lead byte plus any continuation bytes already
+// validated. e.g. a 3-byte lead with valid first cont but invalid
+// second cont advances by 2; a 3-byte lead with invalid first cont
+// advances by 1.
+int u8_u16(std::vector<w_char>& dest, const std::string& src, bool only_convert_first_letter) {
+  // faster to oversize initially, assign to elements and resize to what's used
+  // than to reserve and push_back
+  dest.resize(only_convert_first_letter ? 1 : src.size());
+  auto out = dest.begin();
+  auto p = src.begin(), end = src.end();
+
+  while (p < end) {
+    uint8_t b0 = static_cast<uint8_t>(*p);
+    uint16_t cp;
+
+    if (b0 < 0x80) {
+      // 1-byte ASCII
+      cp = b0;
+    } else if (b0 < 0xc0) {
+      // continuation byte at lead position
+      HUNSPELL_WARNING(stderr,
+                       "UTF-8 encoding error. Unexpected continuation bytes "
+                       "in %ld. character position\n%s\n",
+                       static_cast<long>(std::distance(src.begin(), p)),
+                       src.c_str());
+      cp = 0xfffd;
+    } else if (b0 < 0xe0) {
+      // 2-byte sequence: 110xxxxx 10yyyyyy
+      if (p + 1 < end && is_utf8_cont(p[1])) {
+        cp = ((b0 & 0x1f) << 6) | (static_cast<uint8_t>(p[1]) & 0x3f);
+        ++p;  // step past lead; loop bottom steps past cont
+      } else {
+        warn_missing_cont(src, p);
+        cp = 0xfffd;
       }
-      case 0x80:
-      case 0x90:
-      case 0xa0:
-      case 0xb0: {
-        HUNSPELL_WARNING(stderr,
-                         "UTF-8 encoding error. Unexpected continuation bytes "
-                         "in %ld. character position\n%s\n",
-                         static_cast<long>(std::distance(src.begin(), u8)),
-                         src.c_str());
-        u2.h = 0xff;
-        u2.l = 0xfd;
-        break;
-      }
-      case 0xc0:
-      case 0xd0: {  // 2-byte UTF-8 codes
-        if ((*(u8 + 1) & 0xc0) == 0x80) {
-          u2.h = (*u8 & 0x1f) >> 2;
-          u2.l = (static_cast<unsigned char>(*u8) << 6) + (*(u8 + 1) & 0x3f);
-          ++u8;
+    } else if (b0 < 0xf0) {
+      // 3-byte sequence: 1110xxxx 10yyyyyy 10zzzzzz
+      if (p + 1 < end && is_utf8_cont(p[1])) {
+        uint8_t b1 = static_cast<uint8_t>(p[1]);
+        ++p;  // step past lead
+        if (p + 1 < end && is_utf8_cont(p[1])) {
+          cp = ((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (static_cast<uint8_t>(p[1]) & 0x3f);
+          ++p;  // step past first cont; loop bottom steps past second cont
         } else {
-          HUNSPELL_WARNING(stderr,
-                           "UTF-8 encoding error. Missing continuation byte in "
-                           "%ld. character position:\n%s\n",
-                           static_cast<long>(std::distance(src.begin(), u8)),
-                           src.c_str());
-          u2.h = 0xff;
-          u2.l = 0xfd;
+          warn_missing_cont(src, p);
+          cp = 0xfffd;
         }
-        break;
+      } else {
+        warn_missing_cont(src, p);
+        cp = 0xfffd;
       }
-      case 0xe0: {  // 3-byte UTF-8 codes
-        if ((*(u8 + 1) & 0xc0) == 0x80) {
-          u2.h = ((*u8 & 0x0f) << 4) + ((*(u8 + 1) & 0x3f) >> 2);
-          ++u8;
-          if ((*(u8 + 1) & 0xc0) == 0x80) {
-            u2.l = (static_cast<unsigned char>(*u8) << 6) + (*(u8 + 1) & 0x3f);
-            ++u8;
-          } else {
-            HUNSPELL_WARNING(stderr,
-                             "UTF-8 encoding error. Missing continuation byte "
-                             "in %ld. character position:\n%s\n",
-                             static_cast<long>(std::distance(src.begin(), u8)),
-                             src.c_str());
-            u2.h = 0xff;
-            u2.l = 0xfd;
-          }
-        } else {
-          HUNSPELL_WARNING(stderr,
-                           "UTF-8 encoding error. Missing continuation byte in "
-                           "%ld. character position:\n%s\n",
-                           static_cast<long>(std::distance(src.begin(), u8)),
-                           src.c_str());
-          u2.h = 0xff;
-          u2.l = 0xfd;
-        }
-        break;
-      }
-      case 0xf0: {  // 4 or more byte UTF-8 codes
-        HUNSPELL_WARNING(stderr,
-                         "This UTF-8 encoding can't convert to UTF-16:\n%s\n",
-                         src.c_str());
-        u2.h = 0xff;
-        u2.l = 0xfd;
-        dest.push_back(u2);
-        return -1;
-      }
+    } else {
+      // 4+ byte lead: codepoint >= U+10000, can't fit in w_char
+      HUNSPELL_WARNING(stderr,
+                       "This UTF-8 encoding can't convert to UTF-16:\n%s\n",
+                       src.c_str());
+      out->h = 0xff;
+      out->l = 0xfd;
+      ++out;
+      dest.resize(out - dest.begin());
+      return -1;
     }
-    dest.push_back(u2);
-    ++u8;
+
+    out->h = static_cast<unsigned char>(cp >> 8);
+    out->l = static_cast<unsigned char>(cp);
+    ++out;
+    if (only_convert_first_letter)
+      break;
+    ++p;  // consume lead byte
   }
 
-  return dest.size();
+  int size = static_cast<int>(out - dest.begin());
+  dest.resize(size);
+  return size;
 }
 
 namespace {
@@ -266,7 +240,7 @@ class is_any_of {
  public:
   explicit is_any_of(const std::string& in) : chars(in) {}
 
-  bool operator()(char c) { return chars.find(c) != std::string::npos; }
+  bool operator()(char c) const { return chars.find(c) != std::string::npos; }
 
  private:
   std::string chars;
@@ -275,36 +249,21 @@ class is_any_of {
 
 std::string::const_iterator mystrsep(const std::string &str,
                                      std::string::const_iterator& start) {
-  std::string::const_iterator end = str.end();
+  auto end = str.end();
 
   is_any_of op(" \t");
   // don't use isspace() here, the string can be in some random charset
   // that's way different than the locale's
-  std::string::const_iterator sp = start;
+  auto sp = start;
   while (sp != end && op(*sp))
       ++sp;
 
-  std::string::const_iterator dp = sp;
+  auto dp = sp;
   while (dp != end && !op(*dp))
       ++dp;
 
   start = dp;
   return sp;
-}
-
-// replaces strdup with ansi version
-char* mystrdup(const char* s) {
-  char* d = NULL;
-  if (s) {
-    size_t sl = strlen(s) + 1;
-    d = (char*)malloc(sl);
-    if (d) {
-      memcpy(d, s, sl);
-    } else {
-      HUNSPELL_WARNING(stderr, "Can't allocate memory.\n");
-    }
-  }
-  return d;
 }
 
 // remove cross-platform text line end characters
@@ -336,6 +295,14 @@ std::vector<std::string> line_tok(const std::string& text, char breakchar) {
   return ret;
 }
 
+// keep the first of each line and drop the later repeats
+static void drop_repeated_lines(std::vector<std::string>& lines) {
+  std::unordered_set<std::string> seen;
+  auto firstrepeat = std::remove_if(lines.begin(), lines.end(),
+                                    [&seen](const std::string& line) { return !seen.insert(line).second; });
+  lines.erase(firstrepeat, lines.end());
+}
+
 // uniq line in place
 void line_uniq(std::string& text, char breakchar)
 {
@@ -344,20 +311,13 @@ void line_uniq(std::string& text, char breakchar)
   if (lines.empty()) {
     return;
   }
+
+  drop_repeated_lines(lines);
+
   text = lines[0];
   for (size_t i = 1; i < lines.size(); ++i) {
-    bool dup = false;
-    for (size_t j = 0; j < i; ++j) {
-      if (lines[i] == lines[j]) {
-        dup = true;
-        break;
-      }
-    }
-    if (!dup) {
-      if (!text.empty())
-        text.push_back(breakchar);
-      text.append(lines[i]);
-    }
+    text.push_back(breakchar);
+    text.append(lines[i]);
   }
 }
 
@@ -372,21 +332,8 @@ void line_uniq_app(std::string& text, char breakchar) {
   if (lines.empty()) {
     return;
   }
-  text = lines[0];
-  for (size_t i = 1; i < lines.size(); ++i) {
-    bool dup = false;
-    for (size_t j = 0; j < i; ++j) {
-      if (lines[i] == lines[j]) {
-        dup = true;
-        break;
-      }
-    }
-    if (!dup) {
-      if (!text.empty())
-        text.push_back(breakchar);
-      text.append(lines[i]);
-    }
-  }
+
+  drop_repeated_lines(lines);
 
   if (lines.size() == 1) {
     text = lines[0];
@@ -394,21 +341,23 @@ void line_uniq_app(std::string& text, char breakchar) {
   }
 
   text.assign(" ( ");
-  for (size_t i = 0; i < lines.size(); ++i) {
-      text.append(lines[i]);
-      text.append(" | ");
+  for (auto& line : lines) {
+    text.append(line);
+    text.append(" | ");
   }
   text[text.size() - 2] = ')';  // " ) "
 }
 
 // append s to ends of every lines in text
 std::string& strlinecat(std::string& str, const std::string& apd) {
-  size_t pos = 0;
-  while ((pos = str.find('\n', pos)) != std::string::npos) {
-    str.insert(pos, apd);
-    pos += apd.length() + 1;
+  std::string result;
+  size_t pos = 0, end;
+  while ((end = str.find('\n', pos)) != std::string::npos) {
+    result.append(str, pos, end - pos).append(apd).push_back('\n');
+    pos = end + 1;
   }
-  str.append(apd);
+  result.append(str, pos, std::string::npos).append(apd);
+  str.swap(result);
   return str;
 }
 
@@ -421,6 +370,22 @@ int fieldlen(const char* r) {
   return n;
 }
 
+size_t append_compound_parts(const std::string& desc, std::string& result) {
+  // find by offset, a search from a bare pointer remeasures the rest of desc on every step
+  size_t part = desc.find(MORPH_PART);
+  if (part == std::string::npos)
+    return 0;
+  size_t nextpart = desc.find(MORPH_PART, part + 1);
+  while (nextpart != std::string::npos) {
+    const char* field = desc.c_str() + part + MORPH_TAG_LEN;
+    size_t len = std::min<size_t>(fieldlen(field), nextpart - part - MORPH_TAG_LEN);
+    result.append(field, len);
+    part = nextpart;
+    nextpart = desc.find(MORPH_PART, part + 1);
+  }
+  return part;
+}
+
 bool copy_field(std::string& dest,
                 const std::string& morph,
                 const std::string& var) {
@@ -429,15 +394,11 @@ bool copy_field(std::string& dest,
   size_t pos = morph.find(var);
   if (pos == std::string::npos)
     return false;
-  dest.clear();
-  std::string beg(morph.substr(pos + MORPH_TAG_LEN, std::string::npos));
-
-  for (size_t i = 0; i < beg.size(); ++i) {
-    const char c(beg[i]);
-    if (c == ' ' || c == '\t' || c == '\n')
-      break;
-    dest.push_back(c);
-  }
+  pos += MORPH_TAG_LEN;
+  // copy the field value up to the next whitespace, without first
+  // making a throwaway copy of the whole remaining tail of the string
+  size_t end = morph.find_first_of(" \t\n", pos);
+  dest.assign(morph, pos, end == std::string::npos ? std::string::npos : end - pos);
 
   return true;
 }
@@ -461,11 +422,77 @@ size_t reverseword(std::string& word) {
 
 // reverse word
 size_t reverseword_utf(std::string& word) {
-  std::vector<w_char> w;
-  u8_u16(w, word);
-  std::reverse(w.begin(), w.end());
-  u16_u8(word, w);
-  return w.size();
+  std::reverse(word.begin(), word.end()); //1st step: we reverse the string
+
+  //2nd step: we process each multibyte character and reverse it
+  for (auto it = word.rbegin(); it != word.rend(); ) {
+    switch ((*it) & 0xf0) {
+      case 0x00:
+      case 0x10:
+      case 0x20:
+      case 0x30:
+      case 0x40:
+      case 0x50:
+      case 0x60:
+      case 0x70:
+        //one byte
+        ++it;
+        break;
+      case 0x80:
+      case 0x90:
+      case 0xa0:
+      case 0xb0:
+        HUNSPELL_WARNING(stderr,
+                         "UTF-8 encoding error. Unexpected continuation bytes "
+                         "in %ld. character position\n%s\n",
+                         static_cast<long>(std::distance(word.begin(), it.base()) - 1),
+                         word.c_str());
+        ++it;
+        break;
+      case 0xc0:
+      case 0xd0: {
+        //two bytes
+        if (std::distance(it, word.rend()) >= 2) {
+          std::iter_swap(it, it + 1);
+          it += 2;
+        } else {
+          HUNSPELL_WARNING(stderr,
+                         "UTF-8 encoding error. Missing character at the end\n%s\n",
+                         word.c_str());
+          ++it;
+        }
+        break;
+      }
+      case 0xe0: {
+        //three bytes
+        if (std::distance(it, word.rend()) >= 3) {
+          std::iter_swap(it, it + 2);
+          it += 3;
+        } else {
+          HUNSPELL_WARNING(stderr,
+                         "UTF-8 encoding error. Missing character at the end\n%s\n",
+                         word.c_str());
+          ++it;
+        }
+        break;
+      }
+      default: {
+        // 4 or more byte UTF-8 codes
+        if (std::distance(it, word.rend()) >= 4) {
+          std::iter_swap(it, it + 3);
+          std::iter_swap(it + 1, it + 2);
+          it += 4;
+        } else {
+          HUNSPELL_WARNING(stderr,
+                         "UTF-8 encoding error. Missing character at the end\n%s\n",
+                         word.c_str());
+          ++it;
+        }
+        break;
+      }
+    }
+  }
+  return word.size();
 }
 
 void uniqlist(std::vector<std::string>& list) {
@@ -501,62 +528,79 @@ unsigned char ccase(const struct cs_info* csconv, int nIndex) {
 }
 
 w_char upper_utf(w_char u, int langnum) {
-  unsigned short idx = (u.h << 8) + u.l;
-  unsigned short upridx = unicodetoupper(idx, langnum);
-  if (idx != upridx) {
-    u.h = (unsigned char)(upridx >> 8);
-    u.l = (unsigned char)(upridx & 0x00FF);
-  }
+
+#if defined(_WIN32) || (defined(__BYTE_ORDER__) && (__BYTE_ORDER__==__ORDER_LITTLE_ENDIAN__))  || defined(__LITTLE_ENDIAN__)
+
+//with these optimizations, msvc can optimize this function to one jmp instruction
+//but g++ remains in five instructions
+//maybe use inline asm for g++?
+
+#if (__cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)) && defined __cpp_lib_bit_cast && __cpp_lib_bit_cast >= 201806L
+  return std::bit_cast<w_char>(unicodetoupper((unsigned short)u, langnum));
+#else
+  const auto us = unicodetoupper((unsigned short)u, langnum);
+  memcpy(&u, &us, sizeof(unsigned short));
   return u;
+#endif
+
+#else
+  const auto us = unicodetoupper((unsigned short)u, langnum);
+  u.h = (unsigned char)(us >> 8);
+  u.l = (unsigned char)(us & 0xff);
+  return u;
+#endif
 }
 
 w_char lower_utf(w_char u, int langnum) {
-  unsigned short idx = (u.h << 8) + u.l;
-  unsigned short lwridx = unicodetolower(idx, langnum);
-  if (idx != lwridx) {
-    u.h = (unsigned char)(lwridx >> 8);
-    u.l = (unsigned char)(lwridx & 0x00FF);
-  }
+
+#if defined(_WIN32) || (defined(__BYTE_ORDER__) && (__BYTE_ORDER__==__ORDER_LITTLE_ENDIAN__))  || defined(__LITTLE_ENDIAN__)
+
+//with these optimizations, msvc can optimize this function to one jmp instruction
+//but g++ remains in five instructions
+//maybe use inline asm for g++?
+
+#if (__cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)) && defined __cpp_lib_bit_cast && __cpp_lib_bit_cast >= 201806L
+  return std::bit_cast<w_char>(unicodetolower((unsigned short)u, langnum));
+#else
+  const auto us = unicodetolower((unsigned short)u, langnum);
+  memcpy(&u, &us, sizeof(unsigned short));
   return u;
+#endif
+
+#else
+  const auto us = unicodetolower((unsigned short)u, langnum);
+  u.h = (unsigned char)(us >> 8);
+  u.l = (unsigned char)(us & 0xff);
+  return u;
+#endif
 }
 
 // convert std::string to all caps
 std::string& mkallcap(std::string& s, const struct cs_info* csconv) {
-  for (std::string::iterator aI = s.begin(), aEnd = s.end(); aI != aEnd; ++aI) {
-    *aI = cupper(csconv, static_cast<unsigned char>(*aI));
+  for (char& aI : s) {
+    aI = cupper(csconv, static_cast<unsigned char>(aI));
   }
   return s;
 }
 
 // convert std::string to all little
 std::string& mkallsmall(std::string& s, const struct cs_info* csconv) {
-  for (std::string::iterator aI = s.begin(), aEnd = s.end(); aI != aEnd; ++aI) {
-    *aI = clower(csconv, static_cast<unsigned char>(*aI));
+  for (char& aI : s) {
+    aI = clower(csconv, static_cast<unsigned char>(aI));
   }
   return s;
 }
 
-std::vector<w_char>& mkallsmall_utf(std::vector<w_char>& u,
-                                          int langnum) {
-  for (size_t i = 0; i < u.size(); ++i) {
-    unsigned short idx = (u[i].h << 8) + u[i].l;
-    unsigned short lwridx = unicodetolower(idx, langnum);
-    if (idx != lwridx) {
-      u[i].h = (unsigned char)(lwridx >> 8);
-      u[i].l = (unsigned char)(lwridx & 0x00FF);
-    }
+std::vector<w_char>& mkallsmall_utf(std::vector<w_char>& u, int langnum) {
+  for (auto& i : u) {
+    i = lower_utf(i, langnum);
   }
   return u;
 }
 
 std::vector<w_char>& mkallcap_utf(std::vector<w_char>& u, int langnum) {
-  for (size_t i = 0; i < u.size(); i++) {
-    unsigned short idx = (u[i].h << 8) + u[i].l;
-    unsigned short upridx = unicodetoupper(idx, langnum);
-    if (idx != upridx) {
-      u[i].h = (unsigned char)(upridx >> 8);
-      u[i].l = (unsigned char)(upridx & 0x00FF);
-    }
+  for (auto& i : u) {
+    i = upper_utf(i, langnum);
   }
   return u;
 }
@@ -570,12 +614,7 @@ std::string& mkinitcap(std::string& s, const struct cs_info* csconv) {
 
 std::vector<w_char>& mkinitcap_utf(std::vector<w_char>& u, int langnum) {
   if (!u.empty()) {
-    unsigned short idx = (u[0].h << 8) + u[0].l;
-    unsigned short upridx = unicodetoupper(idx, langnum);
-    if (idx != upridx) {
-      u[0].h = (unsigned char)(upridx >> 8);
-      u[0].l = (unsigned char)(upridx & 0x00FF);
-    }
+    u[0] = upper_utf(u[0], langnum);
   }
   return u;
 }
@@ -589,12 +628,7 @@ std::string& mkinitsmall(std::string& s, const struct cs_info* csconv) {
 
 std::vector<w_char>& mkinitsmall_utf(std::vector<w_char>& u, int langnum) {
   if (!u.empty()) {
-    unsigned short idx = (u[0].h << 8) + u[0].l;
-    unsigned short lwridx = unicodetolower(idx, langnum);
-    if (idx != lwridx) {
-      u[0].h = (unsigned char)(lwridx >> 8);
-      u[0].l = (unsigned char)(lwridx & 0x00FF);
-    }
+    u[0] = lower_utf(u[0], langnum);
   }
   return u;
 }
@@ -617,7 +651,7 @@ char* get_stored_pointer(const char* s) {
 // encodings supported
 // supplying isupper, tolower, and toupper
 
-static struct cs_info iso1_tbl[] = {
+const struct cs_info iso1_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -705,7 +739,7 @@ static struct cs_info iso1_tbl[] = {
     {0x00, 0xfc, 0xdc}, {0x00, 0xfd, 0xdd}, {0x00, 0xfe, 0xde},
     {0x00, 0xff, 0xff}};
 
-static struct cs_info iso2_tbl[] = {
+const struct cs_info iso2_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -793,7 +827,7 @@ static struct cs_info iso2_tbl[] = {
     {0x00, 0xfc, 0xdc}, {0x00, 0xfd, 0xdd}, {0x00, 0xfe, 0xde},
     {0x00, 0xff, 0xff}};
 
-static struct cs_info iso3_tbl[] = {
+const struct cs_info iso3_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -881,7 +915,7 @@ static struct cs_info iso3_tbl[] = {
     {0x00, 0xfc, 0xdc}, {0x00, 0xfd, 0xdd}, {0x00, 0xfe, 0xde},
     {0x00, 0xff, 0xff}};
 
-static struct cs_info iso4_tbl[] = {
+const struct cs_info iso4_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -969,7 +1003,7 @@ static struct cs_info iso4_tbl[] = {
     {0x00, 0xfc, 0xdc}, {0x00, 0xfd, 0xdd}, {0x00, 0xfe, 0xde},
     {0x00, 0xff, 0xff}};
 
-static struct cs_info iso5_tbl[] = {
+const struct cs_info iso5_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -1057,7 +1091,7 @@ static struct cs_info iso5_tbl[] = {
     {0x00, 0xfc, 0xac}, {0x00, 0xfd, 0xfd}, {0x00, 0xfe, 0xae},
     {0x00, 0xff, 0xaf}};
 
-static struct cs_info iso6_tbl[] = {
+const struct cs_info iso6_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -1145,7 +1179,7 @@ static struct cs_info iso6_tbl[] = {
     {0x00, 0xfc, 0xfc}, {0x00, 0xfd, 0xfd}, {0x00, 0xfe, 0xfe},
     {0x00, 0xff, 0xff}};
 
-static struct cs_info iso7_tbl[] = {
+const struct cs_info iso7_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -1233,7 +1267,7 @@ static struct cs_info iso7_tbl[] = {
     {0x00, 0xfc, 0xbc}, {0x00, 0xfd, 0xbe}, {0x00, 0xfe, 0xbf},
     {0x00, 0xff, 0xff}};
 
-static struct cs_info iso8_tbl[] = {
+const struct cs_info iso8_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -1321,7 +1355,7 @@ static struct cs_info iso8_tbl[] = {
     {0x00, 0xfc, 0xfc}, {0x00, 0xfd, 0xfd}, {0x00, 0xfe, 0xfe},
     {0x00, 0xff, 0xff}};
 
-static struct cs_info iso9_tbl[] = {
+const struct cs_info iso9_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -1409,7 +1443,7 @@ static struct cs_info iso9_tbl[] = {
     {0x00, 0xfc, 0xdc}, {0x00, 0xfd, 0x49}, {0x00, 0xfe, 0xde},
     {0x00, 0xff, 0xff}};
 
-static struct cs_info iso10_tbl[] = {
+const struct cs_info iso10_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -1497,7 +1531,7 @@ static struct cs_info iso10_tbl[] = {
     {0x00, 0xfc, 0xfc}, {0x00, 0xfd, 0xfd}, {0x00, 0xfe, 0xfe},
     {0x00, 0xff, 0xff}};
 
-static struct cs_info koi8r_tbl[] = {
+const struct cs_info koi8r_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -1585,7 +1619,7 @@ static struct cs_info koi8r_tbl[] = {
     {0x01, 0xdc, 0xfc}, {0x01, 0xdd, 0xfd}, {0x01, 0xde, 0xfe},
     {0x01, 0xdf, 0xff}};
 
-static struct cs_info koi8u_tbl[] = {
+const struct cs_info koi8u_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -1675,7 +1709,7 @@ static struct cs_info koi8u_tbl[] = {
     {0x01, 0xda, 0xfa}, {0x01, 0xdb, 0xfb}, {0x01, 0xdc, 0xfc},
     {0x01, 0xdd, 0xfd}, {0x01, 0xde, 0xfe}, {0x01, 0xdf, 0xff}};
 
-static struct cs_info cp1251_tbl[] = {
+const struct cs_info cp1251_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -1763,7 +1797,7 @@ static struct cs_info cp1251_tbl[] = {
     {0x00, 0xfc, 0xdc}, {0x00, 0xfd, 0xdd}, {0x00, 0xfe, 0xde},
     {0x00, 0xff, 0xdf}};
 
-static struct cs_info iso13_tbl[] = {
+const struct cs_info iso13_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -1851,7 +1885,7 @@ static struct cs_info iso13_tbl[] = {
     {0x00, 0xFC, 0xDC}, {0x00, 0xFD, 0xDD}, {0x00, 0xFE, 0xDE},
     {0x00, 0xFF, 0xFF}};
 
-static struct cs_info iso14_tbl[] = {
+const struct cs_info iso14_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -1939,7 +1973,7 @@ static struct cs_info iso14_tbl[] = {
     {0x00, 0xfc, 0xdc}, {0x00, 0xfd, 0xdd}, {0x00, 0xfe, 0xde},
     {0x00, 0xff, 0xff}};
 
-static struct cs_info iso15_tbl[] = {
+const struct cs_info iso15_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -2027,7 +2061,7 @@ static struct cs_info iso15_tbl[] = {
     {0x00, 0xfc, 0xdc}, {0x00, 0xfd, 0xdd}, {0x00, 0xfe, 0xde},
     {0x00, 0xff, 0xbe}};
 
-static struct cs_info iscii_devanagari_tbl[] = {
+const struct cs_info iscii_devanagari_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -2115,7 +2149,7 @@ static struct cs_info iscii_devanagari_tbl[] = {
     {0x00, 0xfc, 0xfc}, {0x00, 0xfd, 0xfd}, {0x00, 0xfe, 0xfe},
     {0x00, 0xff, 0xff}};
 
-static struct cs_info tis620_tbl[] = {
+const struct cs_info tis620_tbl[] = {
     {0x00, 0x00, 0x00}, {0x00, 0x01, 0x01}, {0x00, 0x02, 0x02},
     {0x00, 0x03, 0x03}, {0x00, 0x04, 0x04}, {0x00, 0x05, 0x05},
     {0x00, 0x06, 0x06}, {0x00, 0x07, 0x07}, {0x00, 0x08, 0x08},
@@ -2205,10 +2239,10 @@ static struct cs_info tis620_tbl[] = {
 
 struct enc_entry {
   const char* enc_name;
-  struct cs_info* cs_table;
+  const struct cs_info* cs_table;
 };
 
-static struct enc_entry encds[] = {
+const struct enc_entry encds[] = {
     {"iso88591", iso1_tbl},  // ISO-8859-1
     {"iso88592", iso2_tbl},  // ISO-8859-2
     {"iso88593", iso3_tbl},  // ISO-8859-3
@@ -2255,15 +2289,14 @@ static void toAsciiLowerAndRemoveNonAlphanumeric(const char* pName,
   *pBuf = '\0';
 }
 
-struct cs_info* get_current_cs(const std::string& es) {
+const struct cs_info* get_current_cs(const std::string& es) {
   char* normalized_encoding = new char[es.size() + 1];
   toAsciiLowerAndRemoveNonAlphanumeric(es.c_str(), normalized_encoding);
 
-  struct cs_info* ccs = NULL;
-  int n = sizeof(encds) / sizeof(encds[0]);
-  for (int i = 0; i < n; i++) {
-    if (strcmp(normalized_encoding, encds[i].enc_name) == 0) {
-      ccs = encds[i].cs_table;
+  const struct cs_info* ccs = nullptr;
+  for (const auto& encd : encds) {
+    if (strcmp(normalized_encoding, encd.enc_name) == 0) {
+      ccs = encd.cs_table;
       break;
     }
   }
@@ -2280,14 +2313,14 @@ struct cs_info* get_current_cs(const std::string& es) {
   return ccs;
 }
 #else
-struct cs_info* get_current_cs(const std::string& es) {
+const struct cs_info* get_current_cs(const std::string& es) {
   return moz_hunspell_GetCurrentCS(es.c_str());
 }
 #endif
 
 // primitive isalpha() replacement for tokenization
 std::string get_casechars(const char* enc) {
-  struct cs_info* csconv = get_current_cs(enc);
+  const struct cs_info* csconv = get_current_cs(enc);
   std::string expw;
   for (int i = 0; i <= 255; ++i) {
     if (cupper(csconv, i) != clower(csconv, i)) {
@@ -2307,7 +2340,7 @@ struct lang_map {
   int num;
 };
 
-static struct lang_map lang2enc[] =
+const struct lang_map lang2enc[] =
     {{"ar", LANG_ar},    {"az", LANG_az},
      {"az_AZ", LANG_az},  // for back-compatibility
      {"bg", LANG_bg},    {"ca", LANG_ca},
@@ -2326,43 +2359,12 @@ static struct lang_map lang2enc[] =
      {"ru", LANG_ru},    {"uk", LANG_uk}};
 
 int get_lang_num(const std::string& lang) {
-  int n = sizeof(lang2enc) / sizeof(lang2enc[0]);
-  for (int i = 0; i < n; i++) {
-    if (strcmp(lang.c_str(), lang2enc[i].lang) == 0) {
-      return lang2enc[i].num;
+  for (const auto& i : lang2enc) {
+    if (strcmp(lang.c_str(), i.lang) == 0) {
+      return i.num;
     }
   }
   return LANG_xx;
-}
-
-#ifndef OPENOFFICEORG
-#ifndef MOZILLA_CLIENT
-void initialize_utf_tbl() {
-  utf_tbl_count++;
-  if (utf_tbl)
-    return;
-  utf_tbl = new unicode_info2[CONTSIZE];
-  for (size_t j = 0; j < CONTSIZE; ++j) {
-    utf_tbl[j].cletter = 0;
-    utf_tbl[j].clower = (unsigned short)j;
-    utf_tbl[j].cupper = (unsigned short)j;
-  }
-  for (size_t j = 0; j < UTF_LST_LEN; ++j) {
-    utf_tbl[utf_lst[j].c].cletter = 1;
-    utf_tbl[utf_lst[j].c].clower = utf_lst[j].clower;
-    utf_tbl[utf_lst[j].c].cupper = utf_lst[j].cupper;
-  }
-}
-#endif
-#endif
-
-void free_utf_tbl() {
-  if (utf_tbl_count > 0)
-    utf_tbl_count--;
-  if (utf_tbl && (utf_tbl_count == 0)) {
-    delete[] utf_tbl;
-    utf_tbl = NULL;
-  }
 }
 
 unsigned short unicodetoupper(unsigned short c, int langnum) {
@@ -2377,7 +2379,8 @@ unsigned short unicodetoupper(unsigned short c, int langnum) {
 #ifdef MOZILLA_CLIENT
   return moz_hunspell_ToUpperCase((char16_t)c);
 #else
-  return (utf_tbl) ? utf_tbl[c].cupper : c;
+  unsigned short up = utf_pages[utf_page_index[c >> 8]][c & 0xFF].cupper;
+  return up ? up : c;
 #endif
 #endif
 }
@@ -2394,7 +2397,8 @@ unsigned short unicodetolower(unsigned short c, int langnum) {
 #ifdef MOZILLA_CLIENT
   return moz_hunspell_ToLowerCase((char16_t)c);
 #else
-  return (utf_tbl) ? utf_tbl[c].clower : c;
+  unsigned short lo = utf_pages[utf_page_index[c >> 8]][c & 0xFF].clower;
+  return lo ? lo : c;
 #endif
 #endif
 }
@@ -2402,28 +2406,33 @@ unsigned short unicodetolower(unsigned short c, int langnum) {
 int unicodeisalpha(unsigned short c) {
 #ifdef OPENOFFICEORG
   return u_isalpha(c);
+#elif defined(MOZILLA_CLIENT)
+  // utf_tbl is not available in MOZILLA_CLIENT mode and this function is not
+  // called by any internal Hunspell code path used via the RLBox sandbox.
+  (void)c;
+  return 0;
 #else
-  return (utf_tbl) ? utf_tbl[c].cletter : 0;
+  return utf_pages[utf_page_index[c >> 8]][c & 0xFF].cletter;
 #endif
 }
 
 /* get type of capitalization */
-int get_captype(const std::string& word, cs_info* csconv) {
+int get_captype(const std::string& word, const cs_info* csconv) {
   // now determine the capitalization type of the first nl letters
   size_t ncap = 0;
   size_t nneutral = 0;
   size_t firstcap = 0;
-  if (csconv == NULL)
+  if (csconv == nullptr)
     return NOCAP;
-  for (std::string::const_iterator q = word.begin(); q != word.end(); ++q) {
-    unsigned char nIndex = static_cast<unsigned char>(*q);
+  for (char q : word) {
+    const auto nIndex = static_cast<unsigned char>(q);
     if (ccase(csconv, nIndex))
       ncap++;
     if (cupper(csconv, nIndex) == clower(csconv, nIndex))
       nneutral++;
   }
   if (ncap) {
-    unsigned char nIndex = static_cast<unsigned char>(word[0]);
+    const auto nIndex = static_cast<unsigned char>(word[0]);
     firstcap = csconv[nIndex].ccase;
   }
 
@@ -2446,11 +2455,10 @@ int get_captype_utf8(const std::vector<w_char>& word, int langnum) {
   size_t nneutral = 0;
   size_t firstcap = 0;
 
-  std::vector<w_char>::const_iterator it = word.begin();
-  std::vector<w_char>::const_iterator it_end = word.end();
+  auto it = word.begin(), it_end = word.end();
   while (it != it_end) {
-    unsigned short idx = (it->h << 8) + it->l;
-    unsigned short lwridx = unicodetolower(idx, langnum);
+    const auto idx = (unsigned short)*it;
+    const auto lwridx = unicodetolower(idx, langnum);
     if (idx != lwridx)
       ncap++;
     if (unicodetoupper(idx, langnum) == lwridx)
@@ -2458,7 +2466,7 @@ int get_captype_utf8(const std::vector<w_char>& word, int langnum) {
     ++it;
   }
   if (ncap) {
-    unsigned short idx = (word[0].h << 8) + word[0].l;
+    const auto idx = (unsigned short)word[0];
     firstcap = (idx != unicodetolower(idx, langnum));
   }
 
@@ -2482,13 +2490,10 @@ size_t remove_ignored_chars_utf(std::string& word,
   std::vector<w_char> w2;
   u8_u16(w, word);
 
-  for (size_t i = 0; i < w.size(); ++i) {
-    if (!std::binary_search(ignored_chars.begin(),
-                            ignored_chars.end(),
-                            w[i])) {
-      w2.push_back(w[i]);
-    }
-  }
+  std::copy_if(w.begin(), w.end(), std::back_inserter(w2),
+  [&ignored_chars](w_char wc) {
+    return !std::binary_search(ignored_chars.begin(), ignored_chars.end(), wc);
+  });
 
   u16_u8(word, w2);
   return w2.size();
@@ -2510,8 +2515,7 @@ bool parse_string(const std::string& line, std::string& out, int ln) {
   }
   int i = 0;
   int np = 0;
-  std::string::const_iterator iter = line.begin();
-  std::string::const_iterator start_piece = mystrsep(line, iter);
+  auto iter = line.begin(), start_piece = mystrsep(line, iter);
   while (start_piece != line.end()) {
     switch (i) {
       case 0: {

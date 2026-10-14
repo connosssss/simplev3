@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -27,6 +25,7 @@ DIRS += [
     "html",
     "interfaces",
     "ipc",
+    "pdf",
     "xpcom",
     "xul",
 ]
@@ -41,11 +40,17 @@ BROWSER_CHROME_MANIFESTS += [
     "tests/browser/e10s/browser.toml",
     "tests/browser/events/browser.toml",
     "tests/browser/fission/browser.toml",
+    "tests/browser/forceEnabled/browser.toml",
     "tests/browser/general/browser.toml",
     "tests/browser/hittest/browser.toml",
+    "tests/browser/lateServiceEnable/browser.toml",
     "tests/browser/mac/browser.toml",
-    "tests/browser/performance/browser.toml",
+    "tests/browser/mac/zoom/browser.toml",
+    "tests/browser/name_and_description/browser.toml",
+    "tests/browser/pdfOutput/browser.toml",
+    "tests/browser/performance/perftest.toml",
     "tests/browser/pivot/browser.toml",
+    "tests/browser/relations/browser.toml",
     "tests/browser/role/browser.toml",
     "tests/browser/scroll/browser.toml",
     "tests/browser/selectable/browser.toml",
@@ -53,6 +58,7 @@ BROWSER_CHROME_MANIFESTS += [
     "tests/browser/telemetry/browser.toml",
     "tests/browser/text/browser.toml",
     "tests/browser/tree/browser.toml",
+    "tests/browser/treeupdate/browser.toml",
     "tests/browser/windows/ia2/browser.toml",
     "tests/browser/windows/uia/browser.toml",
 ]
@@ -64,3 +70,12 @@ SPHINX_TREES["/accessible"] = "docs"
 
 with Files("docs/**"):
     SCHEDULES.exclusive = ["docs"]
+
+with Files("tests/browser/atk/**"):
+    SCHEDULES.exclusive = ["linux"]
+
+with Files("tests/browser/windows/**"):
+    SCHEDULES.exclusive = ["windows"]
+
+with Files("tests/browser/mac/**"):
+    SCHEDULES.exclusive = ["macosx"]

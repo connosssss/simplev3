@@ -6,79 +6,76 @@
 
 #include <stdint.h>
 
-#include <vector>
-#include <string>
+#include <map>
 #include <set>
+#include <string>
+#include <vector>
 
-#include "call/call.h"
-#include "call/audio_receive_stream.h"
-#include "call/video_receive_stream.h"
-#include "api/rtp_parameters.h"
-#include "api/units/timestamp.h"
-#include "api/units/time_delta.h"
-#include "system_wrappers/include/clock.h"
-#include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
-
-#include "RTCRtpTransceiver.h"
+#include "ErrorList.h"
+#include "MainThreadUtils.h"
+#include "MediaSegment.h"
+#include "MediaTrackGraph.h"
+#include "MediaTransportHandler.h"
 #include "PeerConnectionImpl.h"
+#include "PerformanceRecorder.h"
+#include "PrincipalHandle.h"
+#include "RTCRtpTransceiver.h"
 #include "RTCStatsReport.h"
-#include "mozilla/dom/RTCRtpReceiverBinding.h"
-#include "mozilla/dom/RTCRtpSourcesBinding.h"
-#include "mozilla/dom/RTCStatsReportBinding.h"
+#include "RemoteTrackSource.h"
+#include "api/rtp_parameters.h"
+#include "api/units/time_delta.h"
+#include "api/units/timestamp.h"
+#include "call/audio_receive_stream.h"
+#include "call/call.h"
+#include "call/video_receive_stream.h"
+#include "js/RootingAPI.h"
 #include "jsep/JsepTransceiver.h"
 #include "libwebrtcglue/MediaConduitControl.h"
 #include "libwebrtcglue/MediaConduitInterface.h"
-#include "transportbridge/MediaPipeline.h"
-#include "sdp/SdpEnum.h"
-#include "sdp/SdpAttribute.h"
-#include "MediaTransportHandler.h"
-#include "RemoteTrackSource.h"
-
-#include "mozilla/dom/RTCRtpCapabilitiesBinding.h"
-#include "mozilla/dom/MediaStreamTrack.h"
-#include "mozilla/dom/Promise.h"
-#include "mozilla/dom/Nullable.h"
-#include "mozilla/dom/Document.h"
-#include "mozilla/dom/AudioStreamTrack.h"
-#include "mozilla/dom/VideoStreamTrack.h"
-#include "mozilla/dom/RTCRtpScriptTransform.h"
-
-#include "nsPIDOMWindow.h"
-#include "PrincipalHandle.h"
-#include "nsIPrincipal.h"
-#include "MediaTrackGraph.h"
-#include "nsStringFwd.h"
-#include "MediaSegment.h"
-#include "nsLiteralString.h"
-#include "nsTArray.h"
-#include "nsDOMNavigationTiming.h"
-#include "MainThreadUtils.h"
-#include "ErrorList.h"
-#include "nsWrapperCache.h"
-#include "nsISupports.h"
-#include "nsCOMPtr.h"
-#include "nsIScriptObjectPrincipal.h"
-#include "nsCycleCollectionParticipant.h"
-#include "nsDebug.h"
-#include "nsThreadUtils.h"
-#include "PerformanceRecorder.h"
-
+#include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
+#include "mozilla/AbstractThread.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/ErrorResult.h"
+#include "mozilla/Logging.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/NullPrincipal.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/StateMirroring.h"
-#include "mozilla/Logging.h"
 #include "mozilla/RefPtr.h"
-#include "mozilla/AbstractThread.h"
+#include "mozilla/StateMirroring.h"
 #include "mozilla/StateWatching.h"
-#include "mozilla/Maybe.h"
-#include "mozilla/Assertions.h"
-#include "mozilla/AlreadyAddRefed.h"
-#include "mozilla/MozPromise.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/dom/AudioStreamTrack.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/MediaStreamTrack.h"
+#include "mozilla/dom/Nullable.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/RTCRtpCapabilitiesBinding.h"
+#include "mozilla/dom/RTCRtpReceiverBinding.h"
+#include "mozilla/dom/RTCRtpScriptTransform.h"
+#include "mozilla/dom/RTCRtpSourcesBinding.h"
+#include "mozilla/dom/RTCStatsReportBinding.h"
+#include "mozilla/dom/VideoStreamTrack.h"
 #include "mozilla/fallible.h"
 #include "mozilla/mozalloc_oom.h"
-#include "mozilla/ErrorResult.h"
-#include "js/RootingAPI.h"
+#include "nsCOMPtr.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsDOMNavigationTiming.h"
+#include "nsDebug.h"
+#include "nsIPrincipal.h"
+#include "nsIScriptObjectPrincipal.h"
+#include "nsISupports.h"
+#include "nsLiteralString.h"
+#include "nsPIDOMWindow.h"
+#include "nsStringFwd.h"
+#include "nsTArray.h"
+#include "nsThreadUtils.h"
+#include "nsWrapperCache.h"
+#include "sdp/SdpAttribute.h"
+#include "sdp/SdpEnum.h"
+#include "system_wrappers/include/clock.h"
+#include "transportbridge/MediaPipeline.h"
 
 namespace mozilla::dom {
 
@@ -194,6 +191,12 @@ RTCRtpReceiver::RTCRtpReceiver(
                       &RTCRtpReceiver::UpdateReceiveTrackMute);
 
   mParameters.mCodecs.Construct();
+  mParameters.mHeaderExtensions.Construct();
+
+  mParameters.mRtcp.Construct();
+  // On a receiver, rtcp.cname is left unset; it is a sender-side value.
+  // TODO(bug 1765852): We do not support reduced size yet
+  mParameters.mRtcp.Value().mReducedSize.Construct(false);
 }
 
 #undef INIT_MIRROR
@@ -230,15 +233,6 @@ already_AddRefed<Promise> RTCRtpReceiver::GetStats(ErrorResult& aError) {
     return nullptr;
   }
 
-  if (NS_WARN_IF(!mTransceiver)) {
-    // TODO(bug 1056433): When we stop nulling this out when the PC is closed
-    // (or when the transceiver is stopped), we can remove this code. We
-    // resolve instead of reject in order to make this eventual change in
-    // behavior a little smaller.
-    promise->MaybeResolve(new RTCStatsReport(mWindow));
-    return promise.forget();
-  }
-
   mTransceiver->ChainToDomPromiseWithCodecStats(GetStatsInternal(), promise);
   return promise.forget();
 }
@@ -263,6 +257,8 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
   }
 
   std::string mid = mTransceiver->GetMidAscii();
+  nsString transportId =
+      NS_ConvertASCIItoUTF16(GetJsepTransceiver().mTransport.mTransportId);
 
   {
     // Add bandwidth estimation stats
@@ -293,7 +289,8 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
   promises.AppendElement(
       InvokeAsync(
           mCallThread, __func__,
-          [pipeline = mPipeline, recvTrackId, mid = std::move(mid)] {
+          [pipeline = mPipeline, recvTrackId = std::move(recvTrackId),
+           mid = std::move(mid), transportId = std::move(transportId)] {
             auto report = MakeUnique<dom::RTCStatsCollection>();
             auto asAudio = pipeline->mConduit->AsAudioSessionConduit();
             auto asVideo = pipeline->mConduit->AsVideoSessionConduit();
@@ -331,6 +328,9 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
                   aRemote.mMediaType.Construct(
                       kind);  // mediaType is the old name for kind.
                   aRemote.mLocalId.Construct(localId);
+                  if (!transportId.IsEmpty()) {
+                    aRemote.mTransportId.Construct(transportId);
+                  }
                 };
 
             auto constructCommonInboundRtpStats =
@@ -349,6 +349,9 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
                       kind);  // mediaType is the old name for kind.
                   if (remoteId.Length()) {
                     aLocal.mRemoteId.Construct(remoteId);
+                  }
+                  if (!transportId.IsEmpty()) {
+                    aLocal.mTransportId.Construct(transportId);
                   }
                 };
 
@@ -510,6 +513,22 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
               local.mDiscardedPackets.Construct(videoStats->packets_discarded);
               local.mBytesReceived.Construct(
                   videoStats->rtp_stats.packet_counter.payload_bytes);
+              aConduit->GetAssociatedRemoteRtxSSRC().apply([&](const auto
+                                                                   rtxSsrc) {
+                local.mRtxSsrc.Construct(rtxSsrc);
+                // rtx_rtp_stats is only set once an RTX packet has been
+                // received, but the retransmitted counters should be present
+                // for the lifetime of the negotiated RTX stream.
+                if (videoStats->rtx_rtp_stats) {
+                  local.mRetransmittedPacketsReceived.Construct(
+                      videoStats->rtx_rtp_stats->packet_counter.packets);
+                  local.mRetransmittedBytesReceived.Construct(
+                      videoStats->rtx_rtp_stats->packet_counter.payload_bytes);
+                } else {
+                  local.mRetransmittedPacketsReceived.Construct(0);
+                  local.mRetransmittedBytesReceived.Construct(0);
+                }
+              });
 
               // Fill in packet type statistics
               local.mNackCount.Construct(
@@ -521,8 +540,7 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
 
               // Lastly, fill in video decoder stats
               local.mFramesDecoded.Construct(videoStats->frames_decoded);
-              local.mKeyFramesDecoded.Construct(
-                  videoStats->frame_counts.key_frames);
+              local.mKeyFramesDecoded.Construct(videoStats->key_frames_decoded);
 
               local.mFramesPerSecond.Construct(videoStats->decode_frame_rate);
               local.mFrameWidth.Construct(videoStats->width);
@@ -530,8 +548,8 @@ nsTArray<RefPtr<RTCStatsPromise>> RTCRtpReceiver::GetStatsInternal(
               // XXX: key_frames + delta_frames may undercount frames because
               // they were dropped in FrameBuffer::InsertFrame. (bug 1766553)
               local.mFramesReceived.Construct(
-                  videoStats->frame_counts.key_frames +
-                  videoStats->frame_counts.delta_frames);
+                  videoStats->received_frame_counts.key_frames +
+                  videoStats->received_frame_counts.delta_frames);
               local.mJitterBufferDelay.Construct(
                   videoStats->jitter_buffer_delay.seconds<double>());
               local.mJitterBufferTargetDelay.Construct(
@@ -735,13 +753,37 @@ void RTCRtpReceiver::UpdateTransport() {
       (mPc->GetSignalingState() == RTCSignalingState::Stable);
 
   auto const& details = GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails();
-  std::vector<webrtc::RtpExtension> extmaps;
+  std::map<std::string, webrtc::RtpExtension> extmapsByUri;
   if (GetJsepTransceiver().HasBundleLevel()) {
     if (details) {
       details->ForEachRTPHeaderExtension(
-          [&extmaps](const SdpExtmapAttributeList::Extmap& extmap) {
-            extmaps.emplace_back(extmap.extensionname, extmap.entry);
+          [&extmapsByUri](const SdpExtmapAttributeList::Extmap& extmap) {
+            extmapsByUri.insert_or_assign(
+                extmap.extensionname.get(),
+                webrtc::RtpExtension(
+                    extmap.extensionname,
+                    webrtc::RtpHeaderExtensionId(extmap.entry)));
           });
+    }
+    if (!signalingStable) {
+      // Early media (bug 2019381): the negotiated details above only
+      // reflect the last completed offer/answer round, which can be stale
+      // during a pending local offer -- e.g. an extension the offer just
+      // (re)added wouldn't be recognized yet, since Negotiate() hasn't run
+      // for this round. Layer in whatever the pending offer itself
+      // declares, so the demux filter built below already knows about it.
+      for (const auto& extmap :
+           GetJsepTransceiver().mRecvTrack.GetEarlyRtpExtensions()) {
+        extmapsByUri.insert_or_assign(
+            extmap.extensionname.get(),
+            webrtc::RtpExtension(extmap.extensionname,
+                                 webrtc::RtpHeaderExtensionId(extmap.entry)));
+      }
+    }
+    std::vector<webrtc::RtpExtension> extmaps;
+    extmaps.reserve(extmapsByUri.size());
+    for (auto& [uri, extmap] : extmapsByUri) {
+      extmaps.push_back(extmap);
     }
 
     filter = MakeUnique<MediaPipelineFilter>(extmaps);
@@ -782,6 +824,44 @@ void RTCRtpReceiver::UpdateTransport() {
   }
 }
 
+bool RTCRtpReceiver::CanReceiveEarlyMedia() {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (!GetJsepTransceiver().mRecvTrack.GetReceptive()) {
+    // The local description we just applied isn't actually offering to
+    // receive right now ([[Receptive]] per WEBRTC-PC); defer entirely to
+    // IsReceiving(), which reflects the real negotiated outcome via
+    // mCurrentDirection. mTransceiver->Direction() is only the app's
+    // preferred direction and can disagree with what was actually applied.
+    return false;
+  }
+  if (mPc->GetSignalingState() != RTCSignalingState::Have_local_offer) {
+    // No pending, unanswered local offer right now to be tentative about.
+    return false;
+  }
+  if (!HasNegotiatedBundleOwner()) {
+    // Only a bundle with at least one negotiated member is actually live
+    // (has gone through ICE/DTLS); a fresh bundle cannot have received
+    // anything yet.
+    return false;
+  }
+  // Only tentative if our own recv-relevant offer actually changed this
+  // round; otherwise the real negotiated details -- still valid, and
+  // unaffected by an unrelated renegotiation elsewhere in the session --
+  // should keep being used instead.
+  return mPc->LocalOfferedRecvParamsChanged(GetMid());
+}
+
+bool RTCRtpReceiver::HasNegotiatedBundleOwner() {
+  MOZ_ASSERT(NS_IsMainThread());
+  // See JsepSessionImpl::SetLocalDescription() for how this is computed:
+  // it identifies whichever transceiver currently owns this mid's transport
+  // (the bundle tag, or this transceiver itself if unbundled) and checks
+  // whether *that* transceiver already had its own transport as of last
+  // round -- not just BundleLevel() (which JSEP can clear speculatively
+  // mid-round -- see EnsureHasOwnTransport()).
+  return GetJsepTransceiver().CanUseExistingTransport();
+}
+
 void RTCRtpReceiver::UpdateConduit() {
   if (mPipeline->mConduit->type() == MediaSessionConduit::VIDEO) {
     UpdateVideoConduit();
@@ -789,7 +869,7 @@ void RTCRtpReceiver::UpdateConduit() {
     UpdateAudioConduit();
   }
 
-  if ((mReceiving = mTransceiver->IsReceiving())) {
+  if ((mReceiving = mTransceiver->IsReceiving() || CanReceiveEarlyMedia())) {
     mHaveStartedReceiving = true;
   }
 }
@@ -803,10 +883,10 @@ void RTCRtpReceiver::UpdateVideoConduit() {
   // and fail if a value is not provided for the remote_ssrc that will be used
   // by the far-end sender.
   if (!GetJsepTransceiver().mRecvTrack.GetSsrcs().empty()) {
-    MOZ_LOG(gReceiverLog, LogLevel::Debug,
-            ("%s[%s]: %s Setting remote SSRC %u", mPc->GetHandle().c_str(),
-             GetMid().c_str(), __FUNCTION__,
-             GetJsepTransceiver().mRecvTrack.GetSsrcs().front()));
+    MOZ_LOG_FMT(gReceiverLog, LogLevel::Debug,
+                "{}[{}]: {} Setting remote SSRC {}", mPc->GetHandle().c_str(),
+                GetMid().c_str(), __FUNCTION__,
+                GetJsepTransceiver().mRecvTrack.GetSsrcs().front());
     uint32_t rtxSsrc =
         GetJsepTransceiver().mRecvTrack.GetRtxSsrcs().empty()
             ? 0
@@ -821,15 +901,26 @@ void RTCRtpReceiver::UpdateVideoConduit() {
     if (GetJsepTransceiver().HasBundleLevel() &&
         (!GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails() ||
          !GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails()->GetExt(
-             webrtc::RtpExtension::kMidUri))) {
+             nsLiteralCString(webrtc::RtpExtension::kMidUri)))) {
       mCallThread->Dispatch(
           NewRunnableMethod("VideoSessionConduit::DisableSsrcChanges", conduit,
                             &VideoSessionConduit::DisableSsrcChanges));
     }
   }
 
-  if (GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails() &&
-      GetJsepTransceiver().mRecvTrack.GetActive()) {
+  if (CanReceiveEarlyMedia()) {
+    // Early media (bug 2019381); see CanReceiveEarlyMedia(). Once a real
+    // answer arrives, the negotiated-details branch below takes back over.
+    std::vector<VideoCodecConfig> configs;
+    RTCRtpTransceiver::EarlyRecvCodecsToVideoCodecConfigs(
+        GetJsepTransceiver().mRecvTrack, &configs);
+    if (!configs.empty()) {
+      mVideoCodecs = configs;
+      mVideoRtpRtcpConfig =
+          Some(RtpRtcpConfig(webrtc::RtcpMode::kCompound, true));
+    }
+  } else if (GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails() &&
+             GetJsepTransceiver().mRecvTrack.GetActive()) {
     const auto& details(
         *GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails());
 
@@ -838,7 +929,8 @@ void RTCRtpReceiver::UpdateVideoConduit() {
       // @@NG read extmap from track
       details.ForEachRTPHeaderExtension(
           [&extmaps](const SdpExtmapAttributeList::Extmap& extmap) {
-            extmaps.emplace_back(extmap.extensionname, extmap.entry);
+            extmaps.emplace_back(extmap.extensionname,
+                                 webrtc::RtpHeaderExtensionId(extmap.entry));
           });
       mLocalRtpExtensions = extmaps;
     }
@@ -850,9 +942,9 @@ void RTCRtpReceiver::UpdateVideoConduit() {
       // seem like a failure to set an answer, it just means that codec
       // negotiation failed. For now, we're just doing the same thing we do
       // if negotiation as a whole failed.
-      MOZ_LOG(gReceiverLog, LogLevel::Error,
-              ("%s[%s]: %s  No video codecs were negotiated (recv).",
-               mPc->GetHandle().c_str(), GetMid().c_str(), __FUNCTION__));
+      MOZ_LOG_FMT(gReceiverLog, LogLevel::Error,
+                  "{}[{}]: {}  No video codecs were negotiated (recv).",
+                  mPc->GetHandle().c_str(), GetMid().c_str(), __FUNCTION__);
       return;
     }
 
@@ -866,10 +958,10 @@ void RTCRtpReceiver::UpdateAudioConduit() {
       *mPipeline->mConduit->AsAudioSessionConduit();
 
   if (!GetJsepTransceiver().mRecvTrack.GetSsrcs().empty()) {
-    MOZ_LOG(gReceiverLog, LogLevel::Debug,
-            ("%s[%s]: %s Setting remote SSRC %u", mPc->GetHandle().c_str(),
-             GetMid().c_str(), __FUNCTION__,
-             GetJsepTransceiver().mRecvTrack.GetSsrcs().front()));
+    MOZ_LOG_FMT(gReceiverLog, LogLevel::Debug,
+                "{}[{}]: {} Setting remote SSRC {}", mPc->GetHandle().c_str(),
+                GetMid().c_str(), __FUNCTION__,
+                GetJsepTransceiver().mRecvTrack.GetSsrcs().front());
     mSsrc = GetJsepTransceiver().mRecvTrack.GetSsrcs().front();
 
     // TODO (bug 1423041) once we pay attention to receiving MID's in RTP
@@ -879,15 +971,24 @@ void RTCRtpReceiver::UpdateAudioConduit() {
     if (GetJsepTransceiver().HasBundleLevel() &&
         (!GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails() ||
          !GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails()->GetExt(
-             webrtc::RtpExtension::kMidUri))) {
+             nsLiteralCString(webrtc::RtpExtension::kMidUri)))) {
       mCallThread->Dispatch(
           NewRunnableMethod("AudioSessionConduit::DisableSsrcChanges", conduit,
                             &AudioSessionConduit::DisableSsrcChanges));
     }
   }
 
-  if (GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails() &&
-      GetJsepTransceiver().mRecvTrack.GetActive()) {
+  if (CanReceiveEarlyMedia()) {
+    // Early media (bug 2019381); see CanReceiveEarlyMedia(). Once a real
+    // answer arrives, the negotiated-details branch below takes back over.
+    std::vector<AudioCodecConfig> configs;
+    RTCRtpTransceiver::EarlyRecvCodecsToAudioCodecConfigs(
+        GetJsepTransceiver().mRecvTrack, &configs);
+    if (!configs.empty()) {
+      mAudioCodecs = configs;
+    }
+  } else if (GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails() &&
+             GetJsepTransceiver().mRecvTrack.GetActive()) {
     const auto& details(
         *GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails());
     std::vector<AudioCodecConfig> configs;
@@ -897,9 +998,9 @@ void RTCRtpReceiver::UpdateAudioConduit() {
       // seem like a failure to set an answer, it just means that codec
       // negotiation failed. For now, we're just doing the same thing we do
       // if negotiation as a whole failed.
-      MOZ_LOG(gReceiverLog, LogLevel::Error,
-              ("%s[%s]: %s No audio codecs were negotiated (recv)",
-               mPc->GetHandle().c_str(), GetMid().c_str(), __FUNCTION__));
+      MOZ_LOG_FMT(gReceiverLog, LogLevel::Error,
+                  "{}[{}]: {} No audio codecs were negotiated (recv)",
+                  mPc->GetHandle().c_str(), GetMid().c_str(), __FUNCTION__);
       return;
     }
 
@@ -909,7 +1010,8 @@ void RTCRtpReceiver::UpdateAudioConduit() {
       // @@NG read extmap from track
       details.ForEachRTPHeaderExtension(
           [&extmaps](const SdpExtmapAttributeList::Extmap& extmap) {
-            extmaps.emplace_back(extmap.extensionname, extmap.entry);
+            extmaps.emplace_back(extmap.extensionname,
+                                 webrtc::RtpHeaderExtensionId(extmap.entry));
           });
       mLocalRtpExtensions = extmaps;
     }
@@ -930,6 +1032,18 @@ bool RTCRtpReceiver::HasTrack(const dom::MediaStreamTrack* aTrack) const {
 }
 
 void RTCRtpReceiver::SyncFromJsep(const JsepTransceiver& aJsepTransceiver) {
+  // Spec says we set [[Receptive]] to true on sLD(sendrecv/recvonly), and to
+  // false on sRD(recvonly/inactive), sLD(sendonly/inactive), or when stop()
+  // is called.
+  // Update mReceptive and disconnect before the mPipeline guard: if mPipeline
+  // was cleared by an async Shutdown(), UpdateStreams and
+  // SetTrackMuteFromRemoteSdp must still see a consistent mReceptive state.
+  bool wasReceptive = mReceptive;
+  mReceptive = aJsepTransceiver.mRecvTrack.GetReceptive();
+  if (wasReceptive && !mReceptive) {
+    mUnmuteListener.DisconnectIfExists();
+  }
+
   if (!mPipeline) {
     return;
   }
@@ -937,6 +1051,10 @@ void RTCRtpReceiver::SyncFromJsep(const JsepTransceiver& aJsepTransceiver) {
   if (GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails()) {
     const auto& details(
         *GetJsepTransceiver().mRecvTrack.GetNegotiatedDetails());
+    mParameters.mHeaderExtensions.Reset();
+    mParameters.mHeaderExtensions.Construct();
+    RTCRtpTransceiver::ToDomHeaderExtensions(
+        details, mParameters.mHeaderExtensions.Value());
     mParameters.mCodecs.Reset();
     mParameters.mCodecs.Construct();
     if (details.GetEncodingCount()) {
@@ -948,35 +1066,28 @@ void RTCRtpReceiver::SyncFromJsep(const JsepTransceiver& aJsepTransceiver) {
         }
         RTCRtpCodecParameters codec;
         RTCRtpTransceiver::ToDomRtpCodecParameters(*jsepCodec, &codec);
-        Unused << mParameters.mCodecs.Value().AppendElement(codec, fallible);
+        (void)mParameters.mCodecs.Value().AppendElement(codec, fallible);
         if (jsepCodec->Type() == SdpMediaSection::kVideo) {
           const JsepVideoCodecDescription& videoJsepCodec =
               static_cast<JsepVideoCodecDescription&>(*jsepCodec);
           if (videoJsepCodec.mRtxEnabled) {
             RTCRtpCodecParameters rtx;
             RTCRtpTransceiver::ToDomRtpCodecParametersRtx(videoJsepCodec, &rtx);
-            Unused << mParameters.mCodecs.Value().AppendElement(rtx, fallible);
+            (void)mParameters.mCodecs.Value().AppendElement(rtx, fallible);
           }
         }
       }
     }
   }
 
-  // Spec says we set [[Receptive]] to true on sLD(sendrecv/recvonly), and to
-  // false on sRD(recvonly/inactive), sLD(sendonly/inactive), or when stop()
-  // is called.
-  bool wasReceptive = mReceptive;
-  mReceptive = aJsepTransceiver.mRecvTrack.GetReceptive();
   if (!wasReceptive && mReceptive) {
     mUnmuteListener = mPipeline->mConduit->RtpPacketEvent().Connect(
         GetMainThreadSerialEventTarget(), this, &RTCRtpReceiver::OnRtpPacket);
-  } else if (wasReceptive && !mReceptive) {
-    mUnmuteListener.DisconnectIfExists();
   }
 }
 
 void RTCRtpReceiver::SyncToJsep(JsepTransceiver& aJsepTransceiver) const {
-  if (!mTransceiver->GetPreferredCodecs().empty()) {
+  if (!mTransceiver->GetPreferredCodecs().IsEmpty()) {
     aJsepTransceiver.mRecvTrack.PopulateCodecs(
         mTransceiver->GetPreferredCodecs(),
         mTransceiver->GetPreferredCodecsInUse());
@@ -1054,6 +1165,11 @@ void RTCRtpReceiver::SetTrackMuteFromRemoteSdp() {
   MOZ_ASSERT(!mReceptive,
              "PeerConnectionImpl should have blocked unmute events prior to "
              "firing mute");
+  if (!mTrack || mTrack->Ended()) {
+    // Track has already ended (e.g. transceiver was stopped before this
+    // renegotiation), so there is nothing to mute.
+    return;
+  }
   mReceiveTrackMute = true;
   // Set the mute state (and fire the mute event) synchronously. Unmute is
   // handled asynchronously after receiving RTP packets.
@@ -1147,7 +1263,8 @@ const RTCStatsTimestampMaker* RTCRtpReceiver::GetTimestampMaker() const {
 
 Maybe<gfx::IntSize> RTCRtpReceiver::ReceivingSize() const {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(mPipeline->mConduit->type() == MediaSessionConduit::VIDEO);
+  MOZ_ASSERT_IF(mPipeline,
+                mPipeline->mConduit->type() == MediaSessionConduit::VIDEO);
   return mReceivingSize.Ref();
 }
 

@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -27,7 +25,12 @@ XPIDL_SOURCES += [
 
 XPIDL_MODULE = "loginmgr"
 
+MOZ_SRC_FILES += [
+    "BreachAlertsData.sys.mjs",
+]
+
 EXTRA_JS_MODULES += [
+    "BreachAlertStore.sys.mjs",
     "crypto-SDR.sys.mjs",
     "InsecurePasswordUtils.sys.mjs",
     "LoginAutoComplete.sys.mjs",
@@ -41,8 +44,10 @@ EXTRA_JS_MODULES += [
     "LoginManagerPrompter.sys.mjs",
     "LoginRecipes.sys.mjs",
     "LoginRelatedRealms.sys.mjs",
+    "LoginStorageMigrator.sys.mjs",
     "PasswordRulesManager.sys.mjs",
     "storage-json.sys.mjs",
+    "storage-rust.sys.mjs",
 ]
 
 EXTRA_JS_MODULES.shared += [
@@ -78,3 +83,13 @@ JAR_MANIFESTS += ["jar.mn"]
 
 with Files("**"):
     BUG_COMPONENT = ("Toolkit", "Password Manager")
+
+LICENSED_UNDER += ["apple-password-rules-parser"]
+LICENSED_UNDER["apple-password-rules-parser"].paths = [
+    "shared/PasswordRulesParser.sys.mjs",
+]
+
+LICENSED_UNDER += ["chromium"]
+LICENSED_UNDER["chromium"].paths = [
+    "shared/PasswordGenerator.sys.mjs",
+]

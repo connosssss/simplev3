@@ -5,7 +5,6 @@
 privatebrowsingpage-open-private-window-label = Open a Private Window
     .accesskey = P
 about-private-browsing-search-placeholder = Search the web
-about-private-browsing-info-title = You’re in a Private Window
 about-private-browsing-search-btn =
     .title = Search the web
 # Variables
@@ -19,23 +18,11 @@ about-private-browsing-handoff-no-engine =
 about-private-browsing-handoff-text = Search with { $engine } or enter address
 about-private-browsing-handoff-text-no-engine = Search or enter address
 about-private-browsing-not-private = You are currently not in a private window.
-about-private-browsing-info-description-private-window = Private window: { -brand-short-name } clears your search and browsing history when you close all private windows. This doesn’t make you anonymous.
-about-private-browsing-info-description-simplified = { -brand-short-name } clears your search and browsing history when you close all private windows, but this doesn’t make you anonymous.
-about-private-browsing-learn-more-link = Learn more
 
 about-private-browsing-hide-activity = Hide your activity and location, everywhere you browse
 about-private-browsing-get-privacy = Get privacy protections everywhere you browse
 about-private-browsing-hide-activity-1 = Hide browsing activity and location with { -mozilla-vpn-brand-name }. One click creates a secure connection, even on public Wi-Fi.
 about-private-browsing-prominent-cta = Stay private with { -mozilla-vpn-brand-name }
-
-about-private-browsing-focus-promo-cta = Download { -focus-brand-name }
-about-private-browsing-focus-promo-header = { -focus-brand-name }: Private browsing on-the-go
-about-private-browsing-focus-promo-text = Our dedicated private browsing mobile app clears your history and cookies every time.
-
-## The following strings will be used for experiments in Fx99 and Fx100
-
-about-private-browsing-focus-promo-header-c = Next-level privacy on mobile
-about-private-browsing-focus-promo-text-c = { -focus-brand-name } clears your history every time while blocking ads and trackers.
 
 # This string is the title for the banner for search engine selection
 # in a private window.
@@ -62,15 +49,47 @@ about-private-browsing-pin-promo-link-text = { PLATFORM() ->
 }
 about-private-browsing-pin-promo-title = No saved cookies or history, right from your desktop. Browse like no one’s watching.
 
-## Strings used in a promotion message for cookie banner reduction
+## Strings used in a promotion message for Firefox Relay
 
-# Simplified version of the headline if the original text doesn't work
-# in your language: `{ -brand-short-name } will show fewer cookie requests`
-about-private-browsing-cookie-banners-promo-heading = { -brand-short-name } takes care of cookie banners for you
-about-private-browsing-cookie-banners-promo-body = We now automatically refuse many cookie banners so you can get tracked less and go back to distraction-free browsing.
+about-private-browsing-relay-promo-header = Help prevent inbox spam with email masks
+about-private-browsing-relay-promo-title = Hide your real address with an email mask when you sign up, shop, or share it online.
+about-private-browsing-relay-promo-link-text = Try email masks
 
-## Strings for Felt Privacy v1 experiments in 119
+## Strings for the info section of about:privatebrowsing
 
 about-private-browsing-felt-privacy-v1-info-header = Leave no traces on this device
 about-private-browsing-felt-privacy-v1-info-body = { -brand-short-name} deletes your cookies, history, and site data when you close all your private windows.
 about-private-browsing-felt-privacy-v1-info-link = Who might be able to see my activity?
+
+## Strings for the Nova redesign of about:privatebrowsing
+
+# "You're off the record" is an English idiom meant to communicate that you
+# are not being recorded. If there is not a comparable phrase in the locale,
+# fall back to "Your browsing will be deleted"
+about-private-browsing-nova-info-header = You’re off the record
+about-private-browsing-nova-info-subheader2 = We’ll erase every search and sign-in when you close all your Private Windows. { -brand-short-name }’s built-in protections are on here too, like blocking trackers.
+about-private-browsing-nova-info-body = Closing all your private windows deletes your cookies, history and site data.
+about-private-browsing-nova-info-link = Who might still be able to see my activity?
+about-private-browsing-private-window-basics-link = Private Window basics
+about-private-browsing-private-window-redesign-subheader = { -brand-short-name } is designed to protect your privacy as you browse, with built-in tracking protections. Closing this window erases its history, cookies, and site data to keep your browsing private from others who use this device.
+
+## Strings for the Private Window basics spotlight
+
+about-private-browsing-spotlight-basics-title = Private Window basics
+about-private-browsing-spotlight-basics-subtitle = Private Windows help keep your browsing private from others on this device. They don’t make you anonymous or clear all of your data.
+# This is a section header in the Private Window basics spotlight dialog,
+# introducing information about what users should know about Private Windows.
+about-private-browsing-spotlight-basics-what-to-know = What to know
+about-private-browsing-spotlight-basics-activity-seen = Some activity may still be seen by sites, search engines, internet providers, or your employer.
+about-private-browsing-spotlight-basics-bookmarks-downloads = Bookmarks and downloads stay on your device and may appear in the address bar.
+# This is a section header in the Private Window basics spotlight dialog,
+# introducing additional privacy protection features available in { -brand-short-name }.
+about-private-browsing-spotlight-basics-more-privacy = More privacy protections
+about-private-browsing-spotlight-basics-malware-alerts = { -brand-short-name } automatically alerts you about malware and deceptive sites.
+# "Participating sites" refers to websites that honor Global Privacy Control (GPC) signals, either voluntarily or where legally required.
+about-private-browsing-spotlight-basics-no-sell-data = { -brand-short-name } automatically asks participating sites not to sell or share your personal data.
+about-private-browsing-spotlight-basics-vpn = Use built-in VPN to make your location harder to trace.
+# "Strict" refers to the Strict level of Enhanced Tracking Protection settings.
+# Translations should be consistent with the existing "Strict" string in about:preferences.
+about-private-browsing-spotlight-basics-strict-tracking = Switch to Strict in settings for stronger tracking protections.
+about-private-browsing-spotlight-basics-learn-more = Learn more

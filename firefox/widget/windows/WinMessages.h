@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,9 +8,6 @@
 /*****************************************************************************
  * MOZ_WM_* messages
  ****************************************************************************/
-
-// accessibility priming
-#define MOZ_WM_STARTA11Y (WM_APP + 0x0302)
 
 // From Firefox 5 (2011) to Firefox 137 (2025), these were internal messages for
 // WM_MOUSEWHEEL, WM_MOUSEHWHEEL, WM_VSCROLL, and WM_HSCROLL, used to work

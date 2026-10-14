@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,10 +10,10 @@
 #include <ostream>
 #include <type_traits>
 
-#include "mozilla/Assertions.h"
-#include "mozilla/FloatingPoint.h"
-#include "mozilla/gfx/ScaleFactors2D.h"
 #include "Types.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Saturate.h"
+#include "mozilla/gfx/ScaleFactors2D.h"
 
 namespace mozilla::gfx {
 
@@ -44,10 +42,10 @@ namespace mozilla::gfx {
  */
 template <class T, class Sub, class Point, class SizeT, class MarginT>
 struct BaseRect {
-  T x, y, width, height;
+  T x{0}, y{0}, width{0}, height{0};
 
   // Constructors
-  BaseRect() : x(0), y(0), width(0), height(0) {}
+  BaseRect() = default;
   BaseRect(const Point& aOrigin, const SizeT& aSize)
       : x(aOrigin.x), y(aOrigin.y), width(aSize.width), height(aSize.height) {}
   BaseRect(T aX, T aY, T aWidth, T aHeight)
@@ -329,7 +327,7 @@ struct BaseRect {
       x = limit - aDx < x ? limit : x + aDx;
       width = (limit - aDx < x2 ? limit : x2 + aDx) - x;
     } else {
-      T limit = std::numeric_limits<T>::min();
+      T limit = std::numeric_limits<T>::lowest();
       x = limit - aDx > x ? limit : x + aDx;
       width = (limit - aDx > x2 ? limit : x2 + aDx) - x;
     }
@@ -341,7 +339,7 @@ struct BaseRect {
       y = limit - aDy < y ? limit : y + aDy;
       height = (limit - aDy < y2 ? limit : y2 + aDy) - y;
     } else {
-      T limit = std::numeric_limits<T>::min();
+      T limit = std::numeric_limits<T>::lowest();
       y = limit - aDy > y ? limit : y + aDy;
       height = (limit - aDy > y2 ? limit : y2 + aDy) - y;
     }
@@ -421,6 +419,14 @@ struct BaseRect {
     aSub -= aSize;
     return aSub;
   }
+  friend Sub operator+(Sub aSub, const MarginT& aMargin) {
+    aSub.Inflate(aMargin);
+    return aSub;
+  }
+  friend Sub operator-(Sub aSub, const MarginT& aMargin) {
+    aSub.Deflate(aMargin);
+    return aSub;
+  }
   Sub& operator+=(const Point& aPoint) {
     MoveBy(aPoint);
     return *static_cast<Sub*>(this);
@@ -437,6 +443,14 @@ struct BaseRect {
   Sub& operator-=(const SizeT& aSize) {
     width -= aSize.width;
     height -= aSize.height;
+    return *static_cast<Sub*>(this);
+  }
+  Sub& operator+=(const MarginT& aMargin) {
+    Inflate(aMargin);
+    return *static_cast<Sub*>(this);
+  }
+  Sub& operator-=(const MarginT& aMargin) {
+    Deflate(aMargin);
     return *static_cast<Sub*>(this);
   }
   // Find difference as a Margin
@@ -492,15 +506,36 @@ struct BaseRect {
   Point Center() const { return Point(x, y) + Point(width, height) / 2; }
   SizeT Size() const { return SizeT(width, height); }
 
-  T Area() const { return width * height; }
+  // For integer coordinates, widen to 64-bit before multiplying so that the
+  // area of a large rect does not overflow.
+  auto Area() const {
+    if constexpr (std::is_integral_v<T>) {
+      return int64_t(width) * int64_t(height);
+    } else {
+      return width * height;
+    }
+  }
 
   // Helper methods for computing the extents
   MOZ_ALWAYS_INLINE T X() const { return x; }
   MOZ_ALWAYS_INLINE T Y() const { return y; }
   MOZ_ALWAYS_INLINE T Width() const { return width; }
   MOZ_ALWAYS_INLINE T Height() const { return height; }
-  MOZ_ALWAYS_INLINE T XMost() const { return x + width; }
-  MOZ_ALWAYS_INLINE T YMost() const { return y + height; }
+
+  MOZ_ALWAYS_INLINE T XMost() const {
+    if constexpr (std::is_integral_v<T>) {
+      return (Saturate<T>(x) + width).value();
+    } else {
+      return x + width;
+    }
+  }
+  MOZ_ALWAYS_INLINE T YMost() const {
+    if constexpr (std::is_integral_v<T>) {
+      return (Saturate<T>(y) + height).value();
+    } else {
+      return y + height;
+    }
+  }
 
   // Set width and height. SizeTo() sets them together.
   MOZ_ALWAYS_INLINE void SetWidth(T aWidth) { width = aWidth; }

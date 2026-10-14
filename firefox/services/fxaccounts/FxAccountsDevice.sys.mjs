@@ -178,10 +178,10 @@ export class FxAccountsDevice {
    * multiple concurrent calls to `refreshDeviceList` will only refresh the
    * list once.
    *
-   * @param  {Boolean} [options.ignoreCached]
+   * @param  {boolean} [options.ignoreCached]
    *         If `true`, forces a refresh, even if the cached device list is
    *         still fresh. Defaults to `false`.
-   * @return {Promise<Boolean>}
+   * @return {Promise<boolean>}
    *         `true` if the list was refreshed, `false` if the cached list is
    *         fresh. Rejects if an error occurs refreshing the list or device
    *         push registration.
@@ -266,6 +266,9 @@ export class FxAccountsDevice {
       (await this._checkRemoteCommandsUpdateNeeded(ourDevice.availableCommands))
     ) {
       log.warn(`Our commands need to be updated on the server`);
+      await this._registerOrUpdateDevice(currentState, accountData);
+    } else if (ourDevice && ourDevice.type != this.getLocalType()) {
+      log.warn(`The device type needs to be updated on the server`);
       await this._registerOrUpdateDevice(currentState, accountData);
     } else {
       log.trace(`Our push subscription looks OK`);
@@ -444,6 +447,7 @@ export class FxAccountsDevice {
           sessionToken,
           currentDevice.id,
           deviceName,
+          this.getLocalType(),
           deviceOptions
         );
       } else {
@@ -604,7 +608,7 @@ export class FxAccountsDevice {
           );
         });
         break;
-      case ON_DEVICE_DISCONNECTED_NOTIFICATION:
+      case ON_DEVICE_DISCONNECTED_NOTIFICATION: {
         let json = JSON.parse(data);
         if (!json.isLocalDevice) {
           // If we're the device being disconnected, don't bother fetching a new
@@ -617,6 +621,7 @@ export class FxAccountsDevice {
           });
         }
         break;
+      }
       case ONVERIFIED_NOTIFICATION:
         this.updateDeviceRegistrationIfNecessary().catch(error => {
           log.warn(

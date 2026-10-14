@@ -23,7 +23,8 @@ use wgt::WasmNotSendSync;
 use crate::{
     AccelerationStructureAABBs, AccelerationStructureEntries, AccelerationStructureInstances,
     AccelerationStructureTriangleIndices, AccelerationStructureTriangleTransform,
-    AccelerationStructureTriangles, BufferBinding, ProgrammableStage, TextureBinding,
+    AccelerationStructureTriangles, BufferBinding, ExternalTextureBinding, ProgrammableStage,
+    TextureBinding,
 };
 
 /// Base trait for all resources, allows downcasting via [`Any`].
@@ -56,10 +57,6 @@ trait DynResourceExt {
     ///
     /// - Panics if `self` is not downcastable to `T`.
     fn expect_downcast_ref<T: DynResource>(&self) -> &T;
-    /// # Panics
-    ///
-    /// - Panics if `self` is not downcastable to `T`.
-    fn expect_downcast_mut<T: DynResource>(&mut self) -> &mut T;
 
     /// Unboxes a `Box<dyn DynResource>` to a concrete type.
     ///
@@ -73,12 +70,6 @@ impl<R: DynResource + ?Sized> DynResourceExt for R {
     fn expect_downcast_ref<'a, T: DynResource>(&'a self) -> &'a T {
         self.as_any()
             .downcast_ref()
-            .expect("Resource doesn't have the expected backend type.")
-    }
-
-    fn expect_downcast_mut<'a, T: DynResource>(&'a mut self) -> &'a mut T {
-        self.as_any_mut()
-            .downcast_mut()
             .expect("Resource doesn't have the expected backend type.")
     }
 
@@ -115,6 +106,7 @@ pub trait DynPipelineCache: DynResource + fmt::Debug {}
 pub trait DynPipelineLayout: DynResource + fmt::Debug {}
 pub trait DynQuerySet: DynResource + fmt::Debug {}
 pub trait DynRenderPipeline: DynResource + fmt::Debug {}
+pub trait DynRayTracingPipeline: DynResource + fmt::Debug {}
 pub trait DynSampler: DynResource + fmt::Debug {}
 pub trait DynShaderModule: DynResource + fmt::Debug {}
 pub trait DynSurfaceTexture:
@@ -124,8 +116,8 @@ pub trait DynSurfaceTexture:
 pub trait DynTexture: DynResource + fmt::Debug {}
 pub trait DynTextureView: DynResource + fmt::Debug {}
 
-impl<'a> BufferBinding<'a, dyn DynBuffer> {
-    pub fn expect_downcast<B: DynBuffer>(self) -> BufferBinding<'a, B> {
+impl<'a, S> BufferBinding<'a, dyn DynBuffer, S> {
+    pub fn expect_downcast<B: DynBuffer>(self) -> BufferBinding<'a, B, S> {
         BufferBinding {
             buffer: self.buffer.expect_downcast_ref(),
             offset: self.offset,
@@ -140,6 +132,16 @@ impl<'a> TextureBinding<'a, dyn DynTextureView> {
             view: self.view.expect_downcast_ref(),
             usage: self.usage,
         }
+    }
+}
+
+impl<'a> ExternalTextureBinding<'a, dyn DynBuffer, dyn DynTextureView> {
+    pub fn expect_downcast<B: DynBuffer, T: DynTextureView>(
+        self,
+    ) -> ExternalTextureBinding<'a, B, T> {
+        let planes = self.planes.map(|plane| plane.expect_downcast());
+        let params = self.params.expect_downcast();
+        ExternalTextureBinding { planes, params }
     }
 }
 

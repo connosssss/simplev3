@@ -370,158 +370,6 @@ loser:
     return SECFailure;
 }
 
-/* the content of an encrypted data content info is encrypted.
- * it is assumed that for encrypted data, that the data has already
- * been set and is in the "plainContent" field of the content info.
- *
- * cinfo is the content info to encrypt
- *
- * key is the key with which to perform the encryption.  if the
- *     algorithm is a password based encryption algorithm, the
- *     key is actually a password which will be processed per
- *     PKCS #5.
- *
- * in the event of an error, SECFailure is returned.  SECSuccess
- * indicates a success.
- */
-SECStatus
-SEC_PKCS7EncryptContents(PLArenaPool *poolp,
-                         SEC_PKCS7ContentInfo *cinfo,
-                         SECItem *key,
-                         void *wincx)
-{
-    SECAlgorithmID *algid = NULL;
-    SECItem *src;
-    SECItem *dest;
-    SECItem *blocked_data = NULL;
-    void *mark;
-    void *cx;
-    PK11SymKey *eKey = NULL;
-    PK11SlotInfo *slot = NULL;
-
-    CK_MECHANISM_TYPE cryptoMechType;
-    int bs;
-    SECStatus rv = SECFailure;
-    SECItem *c_param = NULL;
-
-    if ((cinfo == NULL) || (key == NULL))
-        return SECFailure;
-
-    if (SEC_PKCS7ContentType(cinfo) != SEC_OID_PKCS7_ENCRYPTED_DATA)
-        return SECFailure;
-
-    algid = SEC_PKCS7GetEncryptionAlgorithm(cinfo);
-    if (algid == NULL)
-        return SECFailure;
-
-    if (poolp == NULL)
-        poolp = cinfo->poolp;
-
-    mark = PORT_ArenaMark(poolp);
-
-    src = &cinfo->content.encryptedData->encContentInfo.plainContent;
-    dest = &cinfo->content.encryptedData->encContentInfo.encContent;
-    dest->data = (unsigned char *)PORT_ArenaZAlloc(poolp, (src->len + 64));
-    dest->len = (src->len + 64);
-    if (dest->data == NULL) {
-        rv = SECFailure;
-        goto loser;
-    }
-
-    slot = PK11_GetInternalKeySlot();
-    if (slot == NULL) {
-        rv = SECFailure;
-        goto loser;
-    }
-
-    eKey = PK11_PBEKeyGen(slot, algid, key, PR_FALSE, wincx);
-    if (eKey == NULL) {
-        rv = SECFailure;
-        goto loser;
-    }
-
-    cryptoMechType = PK11_GetPBECryptoMechanism(algid, &c_param, key);
-    if (cryptoMechType == CKM_INVALID_MECHANISM) {
-        rv = SECFailure;
-        goto loser;
-    }
-
-    /* block according to PKCS 8 */
-    bs = PK11_GetBlockSize(cryptoMechType, c_param);
-    rv = SECSuccess;
-    if (bs) {
-        char pad_char;
-        pad_char = (char)(bs - (src->len % bs));
-        if (src->len % bs) {
-            rv = SECSuccess;
-            blocked_data = PK11_BlockData(src, bs);
-            if (blocked_data) {
-                PORT_Memset((blocked_data->data + blocked_data->len - (int)pad_char),
-                            pad_char, (int)pad_char);
-            } else {
-                rv = SECFailure;
-                goto loser;
-            }
-        } else {
-            blocked_data = SECITEM_DupItem(src);
-            if (blocked_data) {
-                blocked_data->data = (unsigned char *)PORT_Realloc(
-                    blocked_data->data,
-                    blocked_data->len + bs);
-                if (blocked_data->data) {
-                    blocked_data->len += bs;
-                    PORT_Memset((blocked_data->data + src->len), (char)bs, bs);
-                } else {
-                    rv = SECFailure;
-                    goto loser;
-                }
-            } else {
-                rv = SECFailure;
-                goto loser;
-            }
-        }
-    } else {
-        blocked_data = SECITEM_DupItem(src);
-        if (!blocked_data) {
-            rv = SECFailure;
-            goto loser;
-        }
-    }
-
-    cx = PK11_CreateContextBySymKey(cryptoMechType, CKA_ENCRYPT,
-                                    eKey, c_param);
-    if (cx == NULL) {
-        rv = SECFailure;
-        goto loser;
-    }
-
-    rv = PK11_CipherOp((PK11Context *)cx, dest->data, (int *)(&dest->len),
-                       (int)(src->len + 64), blocked_data->data,
-                       (int)blocked_data->len);
-    PK11_DestroyContext((PK11Context *)cx, PR_TRUE);
-
-loser:
-    /* let success fall through */
-    if (blocked_data != NULL)
-        SECITEM_ZfreeItem(blocked_data, PR_TRUE);
-
-    if (rv == SECFailure)
-        PORT_ArenaRelease(poolp, mark);
-    else
-        PORT_ArenaUnmark(poolp, mark);
-
-    if (eKey != NULL)
-        PK11_FreeSymKey(eKey);
-
-    if (slot != NULL)
-        PK11_FreeSlot(slot);
-
-    if (c_param != NULL)
-        SECITEM_ZfreeItem(c_param, PR_TRUE);
-
-    return rv;
-}
-
 /* the content of an encrypted data content info is decrypted.
  * it is assumed that for encrypted data, that the data has already
  * been set and is in the "encContent" field of the content info.
@@ -606,15 +454,20 @@ SEC_PKCS7DecryptContents(PLArenaPool *poolp,
     rv = PK11_CipherOp((PK11Context *)cx, dest->data, (int *)(&dest->len),
                        (int)(src->len + 64), src->data, (int)src->len);
     PK11_DestroyContext((PK11Context *)cx, PR_TRUE);
+    /* PK11_CipherOp may leave dest->len at 0; bail out before the padding
+     * check so dest->len - 1 does not underflow. */
+    if (rv != SECSuccess) {
+        goto loser;
+    }
 
     bs = PK11_GetBlockSize(cryptoMechType, c_param);
     if (bs) {
-        /* check for proper badding in block algorithms.  this assumes
-         * RC2 cbc or a DES cbc variant.  and the padding is thus defined
-         */
-        if (((int)dest->data[dest->len - 1] <= bs) &&
-            ((int)dest->data[dest->len - 1] > 0)) {
-            dest->len -= (int)dest->data[dest->len - 1];
+        /* Check for proper PKCS#7 padding: the last byte gives the number of
+         * pad bytes, which must be in [1, bs]. */
+        unsigned int pad = dest->data[dest->len - 1];
+        if ((dest->len >= (unsigned int)bs) &&
+            pad >= 1 && pad <= (unsigned int)bs) {
+            dest->len -= pad;
         } else {
             rv = SECFailure;
             /* set an error ? */
@@ -651,13 +504,4 @@ SEC_PKCS7GetCertificateList(SEC_PKCS7ContentInfo *cinfo)
             return NULL;
             break;
     }
-}
-
-int
-SEC_PKCS7GetKeyLength(SEC_PKCS7ContentInfo *cinfo)
-{
-    if (cinfo->contentTypeTag->offset == SEC_OID_PKCS7_ENVELOPED_DATA)
-        return cinfo->content.envelopedData->encContentInfo.keysize;
-    else
-        return 0;
 }

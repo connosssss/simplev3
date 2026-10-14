@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,22 +6,22 @@
 
 #include <algorithm>
 
+#include "SVGArcConverter.h"
 #include "SVGGeometryProperty.h"
+#include "SVGPathSegUtils.h"
 #include "gfx2DGlue.h"
 #include "gfxPlatform.h"
 #include "mozAutoDocUpdate.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/SVGContentUtils.h"
+#include "mozilla/dom/SVGPathElementBinding.h"
+#include "mozilla/dom/SVGPathSegment.h"
+#include "mozilla/gfx/2D.h"
 #include "nsGkAtoms.h"
 #include "nsIFrame.h"
 #include "nsStyleConsts.h"
 #include "nsStyleStruct.h"
 #include "nsWindowSizes.h"
-#include "mozilla/dom/SVGPathElementBinding.h"
-#include "mozilla/dom/SVGPathSegment.h"
-#include "mozilla/gfx/2D.h"
-#include "mozilla/RefPtr.h"
-#include "mozilla/SVGContentUtils.h"
-#include "SVGArcConverter.h"
-#include "SVGPathSegUtils.h"
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(Path)
 
@@ -41,19 +39,18 @@ class MOZ_RAII AutoChangePathSegListNotifier : public mozAutoDocUpdate {
       : mozAutoDocUpdate(aSVGPathElement->GetComposedDoc(), true),
         mSVGElement(aSVGPathElement) {
     MOZ_ASSERT(mSVGElement, "Expecting non-null value");
-    mEmptyOrOldValue = mSVGElement->WillChangePathSegList(*this);
+    mSVGElement->WillChangePathSegList(*this);
   }
 
   ~AutoChangePathSegListNotifier() {
-    mSVGElement->DidChangePathSegList(mEmptyOrOldValue, *this);
-    if (mSVGElement->GetAnimPathSegList()->IsAnimating()) {
+    mSVGElement->DidChangePathSegList(*this);
+    if (mSVGElement->GetAnimatedPathSegList()->IsAnimating()) {
       mSVGElement->AnimationNeedsResample();
     }
   }
 
  private:
   SVGPathElement* const mSVGElement;
-  nsAttrValue mEmptyOrOldValue;
 };
 
 JSObject* SVGPathElement::WrapNode(JSContext* aCx,
@@ -65,7 +62,7 @@ JSObject* SVGPathElement::WrapNode(JSContext* aCx,
 // Implementation
 
 SVGPathElement::SVGPathElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo)
     : SVGPathElementBase(std::move(aNodeInfo)) {}
 
 //----------------------------------------------------------------------
@@ -85,18 +82,7 @@ NS_IMPL_ELEMENT_CLONE_WITH_INIT(SVGPathElement)
 already_AddRefed<SVGPathSegment> SVGPathElement::GetPathSegmentAtLength(
     float aDistance) {
   FlushIfNeeded();
-  RefPtr<SVGPathSegment> segment;
-  if (SVGGeometryProperty::DoForComputedStyle(
-          this, [&](const ComputedStyle* s) {
-            const auto& d = s->StyleSVGReset()->mD;
-            if (d.IsPath()) {
-              segment = SVGPathData::GetPathSegmentAtLength(
-                  this, d.AsPath()._0.AsSpan(), aDistance);
-            }
-          })) {
-    return segment.forget();
-  }
-  return SVGPathData::GetPathSegmentAtLength(this, mD.GetAnimValue().AsSpan(),
+  return SVGPathData::GetPathSegmentAtLength(this, mD.GetBaseValue().AsSpan(),
                                              aDistance);
 }
 
@@ -138,10 +124,10 @@ static void CreatePathSegments(SVGPathElement* aPathElement,
           Point cp1, cp2;
           while (converter.GetNextSegment(&cp1, &cp2, &segEnd)) {
             auto curve = StylePathCommand::CubicCurve(
-                StyleByTo::To,
-                StyleCoordinatePair<StyleCSSFloat>{segEnd.x, segEnd.y},
-                StyleCoordinatePair<StyleCSSFloat>{cp1.x, cp1.y},
-                StyleCoordinatePair<StyleCSSFloat>{cp2.x, cp2.y});
+                StyleEndPoint<StyleCSSFloat>::ToPosition({segEnd.x, segEnd.y}),
+                StyleCurveControlPoint<StyleCSSFloat>::Absolute({cp1.x, cp1.y}),
+                StyleCurveControlPoint<StyleCSSFloat>::Absolute(
+                    {cp2.x, cp2.y}));
             aValues.AppendElement(new SVGPathSegment(aPathElement, curve));
           }
           break;
@@ -162,21 +148,15 @@ static void CreatePathSegments(SVGPathElement* aPathElement,
 void SVGPathElement::GetPathData(const SVGPathDataSettings& aOptions,
                                  nsTArray<RefPtr<SVGPathSegment>>& aValues) {
   FlushIfNeeded();
-  if (SVGGeometryProperty::DoForComputedStyle(
-          this, [&](const ComputedStyle* s) {
-            const auto& d = s->StyleSVGReset()->mD;
-            if (d.IsPath()) {
-              CreatePathSegments(this, d.AsPath(), aValues,
-                                 aOptions.mNormalize);
-            }
-          })) {
-    return;
-  }
-  CreatePathSegments(this, mD.GetAnimValue().RawData(), aValues,
+  CreatePathSegments(this, mD.GetBaseValue().RawData(), aValues,
                      aOptions.mNormalize);
 }
 
 void SVGPathElement::SetPathData(const Sequence<SVGPathSegmentInit>& aValues) {
+  if (!mD.FirstSegmentIsValid(aValues)) {
+    UnsetAttr(nsGkAtoms::d, IgnoreErrors());
+    return;
+  }
   AutoChangePathSegListNotifier notifier(this);
   mD.SetBaseValueFromPathSegments(aValues);
 }
@@ -202,9 +182,9 @@ bool SVGPathElement::HasValidDimensions() const {
 //----------------------------------------------------------------------
 // nsIContent methods
 
-NS_IMETHODIMP_(bool)
-SVGPathElement::IsAttributeMapped(const nsAtom* name) const {
-  return name == nsGkAtoms::d || SVGPathElementBase::IsAttributeMapped(name);
+bool SVGPathElement::IsNoNamespaceAttrMapped(const nsAtom* name) const {
+  return name == nsGkAtoms::d ||
+         SVGPathElementBase::IsNoNamespaceAttrMapped(name);
 }
 
 already_AddRefed<Path> SVGPathElement::GetOrBuildPathForMeasuring() {
@@ -249,18 +229,15 @@ void SVGPathElement::GetMarkPoints(nsTArray<SVGMark>* aMarks) {
   mD.GetAnimValue().GetMarkerPositioningData(1.0f, aMarks);
 }
 
-void SVGPathElement::GetAsSimplePath(SimplePath* aSimplePath) {
-  aSimplePath->Reset();
+void SVGPathElement::GetAsSimpleShape(SimpleShape* aShape) {
+  aShape->Reset();
   auto callback = [&](const ComputedStyle* s) {
     const nsStyleSVGReset* styleSVGReset = s->StyleSVGReset();
     if (styleSVGReset->mD.IsPath()) {
-      auto pathData = styleSVGReset->mD.AsPath()._0.AsSpan();
-      auto maybeRect = SVGPathToAxisAlignedRect(pathData);
-      if (maybeRect.isSome()) {
-        const Rect& r = *maybeRect;
-        float zoom = s->EffectiveZoom().ToFloat();
-        aSimplePath->SetRect(r.x * zoom, r.y * zoom, r.width * zoom,
-                             r.height * zoom);
+      if (auto maybeRect = SVGPathSegUtils::SVGPathToAxisAlignedRect(
+              styleSVGReset->mD.AsPath()._0.AsSpan())) {
+        maybeRect->Scale(s->EffectiveZoom().ToFloat());
+        aShape->SetRoundedRect(CSSRect::FromUnknownRect(*maybeRect), CSSSize());
       }
     }
   };

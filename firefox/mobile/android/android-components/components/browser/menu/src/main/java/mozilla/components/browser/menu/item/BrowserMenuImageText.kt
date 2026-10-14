@@ -45,8 +45,8 @@ internal fun TextView.setColorResource(@ColorRes textColorResource: Int) {
  * @param textColorResource Optional ID of color resource to tint the text.
  * @param enabled Sets the enabled status for the view. By default, it is true.
  * @param isCollapsingMenuLimit Whether this menu item can serve as the limit of a collapsing menu.
- * @param isSticky whether this item menu should not be scrolled offscreen (downwards or upwards
- * depending on the menu position).
+ * @param isSticky whether this item menu should not be scrolled offscreen (downwards or upwards depending on the menu
+ *   position).
  * @param listener Callback to be invoked when this menu item is clicked.
  */
 open class BrowserMenuImageText(
@@ -92,17 +92,18 @@ open class BrowserMenuImageText(
         }
     }
 
-    override fun asCandidate(context: Context): MenuCandidate = TextMenuCandidate(
-        label,
-        start = DrawableMenuIcon(
-            context,
-            resource = imageResource,
-            tint = if (iconTintColorResource == NO_ID) null else getColor(context, iconTintColorResource),
-        ),
-        textStyle = TextStyle(
-            color = if (textColorResource == NO_ID) null else getColor(context, textColorResource),
-        ),
-        containerStyle = ContainerStyle(isVisible = visible()),
-        onClick = listener,
-    )
+    override fun asCandidate(context: Context): MenuCandidate =
+        TextMenuCandidate(
+            label,
+            start =
+                DrawableMenuIcon(
+                    context,
+                    resource = imageResource,
+                    tint = if (iconTintColorResource == NO_ID) null else getColor(context, iconTintColorResource),
+                ),
+            textStyle =
+                TextStyle(color = if (textColorResource == NO_ID) null else getColor(context, textColorResource)),
+            containerStyle = ContainerStyle(isVisible = visible()),
+            onClick = listener,
+        )
 }

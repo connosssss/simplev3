@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,8 +11,6 @@
 #include "mozilla/EventForwards.h"
 #include "mozilla/layers/MatrixMessage.h"
 #include "nsRefreshObservers.h"
-
-#include <functional>
 
 class nsIContent;
 class nsIWidget;
@@ -103,6 +100,11 @@ class APZCCallbackHelper {
      The nsIFrame needs to be a popup menu frame. */
   static void InitializeRootDisplayport(nsIFrame* aFrame);
 
+  /* Refresh the displayport base of the given popup menu frame if the popup's
+     geometry has changed since it was last set when the popup element is
+     reused. */
+  static void EnsureDisplayportSizeOnPopupRoot(nsIFrame* aFrame);
+
   /* Get the pres context associated with the document enclosing |aContent|. */
   static nsPresContext* GetPresContextForContent(nsIContent* aContent);
 
@@ -164,7 +166,7 @@ class APZCCallbackHelper {
       uint64_t aInputBlockId);
 
   /* Notify content of a mouse scroll testing event. */
-  static void NotifyMozMouseScrollEvent(
+  MOZ_CAN_RUN_SCRIPT static void NotifyMozMouseScrollEvent(
       const ScrollableLayerGuid::ViewID& aScrollId, const nsString& aEvent);
 
   /* Notify content that the repaint flush is complete. */

@@ -5,6 +5,9 @@
 package mozilla.components.browser.state.engine.middleware
 
 import android.content.ComponentCallbacks2
+import kotlin.test.assertNotNull
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import mozilla.components.browser.state.action.SystemAction
 import mozilla.components.browser.state.selector.findCustomTab
 import mozilla.components.browser.state.selector.findTab
@@ -15,23 +18,16 @@ import mozilla.components.browser.state.state.createTab
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.engine.EngineSession
 import mozilla.components.concept.engine.EngineSessionState
-import mozilla.components.support.test.ext.joinBlocking
-import mozilla.components.support.test.libstate.ext.waitUntilIdle
 import mozilla.components.support.test.mock
-import mozilla.components.support.test.rule.MainCoroutineRule
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Before
-import org.junit.Rule
 import org.junit.Test
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
 
 class TrimMemoryMiddlewareTest {
-    @get:Rule
-    val coroutinesTestRule = MainCoroutineRule()
-    private val dispatcher = coroutinesTestRule.testDispatcher
-    private val scope = coroutinesTestRule.scope
+    private val dispatcher = StandardTestDispatcher()
+    private val scope = TestScope(dispatcher)
 
     private lateinit var engineSessionReddit: EngineSession
     private lateinit var engineSessionTheVerge: EngineSession
@@ -61,80 +57,86 @@ class TrimMemoryMiddlewareTest {
         engineSessionStateTheVerge = mock()
         engineSessionStateTwitch = mock()
 
-        store = BrowserStore(
-            middleware = listOf(
-                TrimMemoryMiddleware(),
-                SuspendMiddleware(scope),
-            ),
-            initialState = BrowserState(
-                tabs = listOf(
-                    createTab("https://www.mozilla.org", id = "mozilla").copy(
-                        lastAccess = 5,
+        store =
+            BrowserStore(
+                middleware =
+                    listOf(
+                        TrimMemoryMiddleware(),
+                        SuspendMiddleware(scope),
                     ),
-                    createTab("https://www.theverge.com/", id = "theverge").copy(
-                        engineState = EngineState(
-                            engineSession = engineSessionTheVerge,
-                            engineSessionState = engineSessionStateTheVerge,
-                            engineObserver = mock(),
-                        ),
-                        lastAccess = 2,
+                initialState =
+                    BrowserState(
+                        tabs =
+                            listOf(
+                                createTab("https://www.mozilla.org", id = "mozilla").copy(lastAccess = 5),
+                                createTab("https://www.theverge.com/", id = "theverge")
+                                    .copy(
+                                        engineState =
+                                            EngineState(
+                                                engineSession = engineSessionTheVerge,
+                                                engineSessionState = engineSessionStateTheVerge,
+                                                engineObserver = mock(),
+                                            ),
+                                        lastAccess = 2,
+                                    ),
+                                createTab(
+                                        "https://www.reddit.com/r/firefox/",
+                                        id = "reddit",
+                                        private = true,
+                                    )
+                                    .copy(
+                                        engineState =
+                                            EngineState(
+                                                engineSession = engineSessionReddit,
+                                                engineSessionState = engineSessionStateReddit,
+                                                engineObserver = mock(),
+                                            ),
+                                        lastAccess = 20,
+                                    ),
+                                createTab("https://github.com/", id = "github").copy(lastAccess = 12),
+                                createTab("https://news.google.com", id = "google-news")
+                                    .copy(
+                                        engineState = EngineState(engineSessionGoogleNews, engineObserver = mock()),
+                                        lastAccess = 10,
+                                    ),
+                                createTab("https://www.amazon.com", id = "amazon")
+                                    .copy(
+                                        engineState = EngineState(engineSessionAmazon, engineObserver = mock()),
+                                        lastAccess = 4,
+                                    ),
+                                createTab("https://www.youtube.com", id = "youtube")
+                                    .copy(
+                                        engineState = EngineState(engineSessionYouTube, engineObserver = mock()),
+                                        lastAccess = 4,
+                                    ),
+                                createTab("https://www.facebook.com", id = "facebook")
+                                    .copy(
+                                        engineState = EngineState(engineSessionFacebook, engineObserver = mock()),
+                                        lastAccess = 7,
+                                    ),
+                            ),
+                        customTabs =
+                            listOf(
+                                createCustomTab("https://www.twitch.tv/", id = "twitch")
+                                    .copy(
+                                        engineState =
+                                            EngineState(
+                                                engineSession = engineSessionTwitch,
+                                                engineSessionState = engineSessionStateTwitch,
+                                                engineObserver = mock(),
+                                            )
+                                    ),
+                                createCustomTab("https://twitter.com/home", id = "twitter"),
+                            ),
+                        selectedTabId = "reddit",
                     ),
-                    createTab(
-                        "https://www.reddit.com/r/firefox/",
-                        id = "reddit",
-                        private = true,
-                    ).copy(
-                        engineState = EngineState(
-                            engineSession = engineSessionReddit,
-                            engineSessionState = engineSessionStateReddit,
-                            engineObserver = mock(),
-                        ),
-                        lastAccess = 20,
-                    ),
-                    createTab("https://github.com/", id = "github").copy(
-                        lastAccess = 12,
-                    ),
-                    createTab("https://news.google.com", id = "google-news").copy(
-                        engineState = EngineState(engineSessionGoogleNews, engineObserver = mock()),
-                        lastAccess = 10,
-                    ),
-                    createTab("https://www.amazon.com", id = "amazon").copy(
-                        engineState = EngineState(engineSessionAmazon, engineObserver = mock()),
-                        lastAccess = 4,
-                    ),
-                    createTab("https://www.youtube.com", id = "youtube").copy(
-                        engineState = EngineState(engineSessionYouTube, engineObserver = mock()),
-                        lastAccess = 4,
-                    ),
-                    createTab("https://www.facebook.com", id = "facebook").copy(
-                        engineState = EngineState(engineSessionFacebook, engineObserver = mock()),
-                        lastAccess = 7,
-                    ),
-                ),
-                customTabs = listOf(
-                    createCustomTab("https://www.twitch.tv/", id = "twitch").copy(
-                        engineState = EngineState(
-                            engineSession = engineSessionTwitch,
-                            engineSessionState = engineSessionStateTwitch,
-                            engineObserver = mock(),
-                        ),
-                    ),
-                    createCustomTab("https://twitter.com/home", id = "twitter"),
-                ),
-                selectedTabId = "reddit",
-            ),
-        )
+            )
     }
 
     @Test
     fun `TrimMemoryMiddleware - TRIM_MEMORY_UI_HIDDEN`() {
-        store.dispatch(
-            SystemAction.LowMemoryAction(
-                level = ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN,
-            ),
-        ).joinBlocking()
+        store.dispatch(SystemAction.LowMemoryAction(level = ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN))
 
-        store.waitUntilIdle()
         dispatcher.scheduler.advanceUntilIdle()
 
         store.state.findTab("theverge")!!.engineState.apply {
@@ -194,13 +196,8 @@ class TrimMemoryMiddlewareTest {
     fun `TrimMemoryMiddleware - TRIM_MEMORY_RUNNING_CRITICAL`() {
         @Suppress("DEPRECATION") // Apps are not notified of these levels since API level 34.
         // See https://bugzilla.mozilla.org/show_bug.cgi?id=1909473
-        store.dispatch(
-            SystemAction.LowMemoryAction(
-                level = ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL,
-            ),
-        ).joinBlocking()
+        store.dispatch(SystemAction.LowMemoryAction(level = ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL))
 
-        store.waitUntilIdle()
         dispatcher.scheduler.advanceUntilIdle()
 
         store.state.findTab("theverge")!!.engineState.apply {

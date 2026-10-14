@@ -7,7 +7,7 @@
 <script src="/soft-navigation-heuristics/resources/soft-navigation-test-helper.js"></script>
 
 <button id="navigateButton">Click here!</button>
-<img id="testImage" height="256" width="256" src="/images/lcp-256x256.png" elementtiming="test-image"></img>
+<img id="testImage" height="256" width="256" src="/images/lcp-256x256.png" elementtiming="test-image">
 
 <script>
   async function waitForImageRender() {
@@ -29,11 +29,8 @@
       testImage.src = newImageSrc;
     }, {once: true});
 
-    const softNavPromise = SoftNavigationTestHelper.getPerformanceEntries(
-      /*type=*/ "soft-navigation",
-      /*include_soft_navigation_observations=*/ false,
-      /*min_num_entries=*/ 1,
-    );
+    const softNavPromise =
+        SoftNavigationTestHelper.getPerformanceEntries("soft-navigation");
 
     if (test_driver) {
       test_driver.click(navigateButton);

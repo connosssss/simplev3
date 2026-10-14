@@ -22,6 +22,8 @@ Step 4:
 """
 
 # includes
+from __future__ import annotations
+
 import pathlib
 import sys
 import xml.etree.ElementTree
@@ -50,17 +52,13 @@ HEADER = b"""
  *
  * To generate this file, see tutorial in \'GLConsts.py\'.
  */
-"""[
-    1:
-]
+"""[1:]
 
 FOOTER = b"""
 #endif // GLCONSTS_H_
 
 // clang-format on
-"""[
-    1:
-]
+"""[1:]
 
 # -
 

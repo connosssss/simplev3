@@ -4,22 +4,32 @@
 
 //! Computed types for text properties.
 
-use crate::values::computed::length::LengthPercentage;
+use crate::Zero;
+use crate::derives::*;
+#[cfg(feature = "gecko")]
+use crate::gecko_bindings::bindings;
+use crate::typed_om::{KeywordValue, ToTyped, TypedValue};
+use crate::values::animated::text::TextDecorationInset as AnimatedTextDecorationInset;
+use crate::values::animated::{Context as AnimatedContext, ToAnimatedValue};
+use crate::values::computed::length::{CSSPixelLength, LengthPercentage};
 use crate::values::generics::NumberOrAuto;
 use crate::values::generics::text::{
-    GenericHyphenateLimitChars, GenericInitialLetter, GenericTextDecorationLength, GenericTextIndent,
+    GenericHyphenateLimitChars, GenericInitialLetter, GenericTextDecorationInset,
+    GenericTextDecorationLength, GenericTextIndent,
 };
 use crate::values::specified::text as specified;
 use crate::values::specified::text::{TextEmphasisFillMode, TextEmphasisShapeKeyword};
-use crate::values::{CSSFloat, CSSInteger};
-use crate::Zero;
+use crate::values::{CSSFloat, CSSInteger, ComputeSquaredDistance};
 use std::fmt::{self, Write};
-use style_traits::{CssWriter, ToCss};
+use style_traits::{CssString, CssWriter, ToCss};
+use thin_vec::ThinVec;
 
 pub use crate::values::specified::text::{
-    HyphenateCharacter, LineBreak, MozControlCharacterVisibility, OverflowWrap, RubyPosition,
-    TextAlignLast, TextDecorationLine, TextDecorationSkipInk, TextEmphasisPosition, TextJustify,
-    TextOverflow, TextTransform, TextUnderlinePosition, WordBreak,
+    HyphenateCharacter, Hyphens, LineBreak, MozControlCharacterVisibility, OverflowWrap, RubyAlign,
+    RubyPosition, TextAlignLast, TextAutospace, TextBoxEdge, TextBoxTrim, TextCombineUpright,
+    TextDecorationLine, TextDecorationSkipInk, TextDecorationStyle, TextEmphasisPosition,
+    TextJustify, TextOverflow, TextRendering, TextSecurity, TextSizeAdjust, TextTransform,
+    TextUnderlinePosition, TextWrapMode, TextWrapStyle, UnicodeBidi, WhiteSpaceCollapse, WordBreak,
 };
 
 /// A computed value for the `initial-letter` property.
@@ -27,6 +37,61 @@ pub type InitialLetter = GenericInitialLetter<CSSFloat, CSSInteger>;
 
 /// Implements type for `text-decoration-thickness` property.
 pub type TextDecorationLength = GenericTextDecorationLength<LengthPercentage>;
+
+/// Implements type for `text-decoration-inset` property.
+pub type TextDecorationInset = GenericTextDecorationInset<LengthPercentage>;
+
+impl ToAnimatedValue for TextDecorationInset {
+    type AnimatedValue = AnimatedTextDecorationInset;
+
+    fn to_animated_value(self, context: &AnimatedContext) -> Self::AnimatedValue {
+        match self {
+            Self::Auto => {
+                let font_size_px = context
+                    .style
+                    .get_font()
+                    .slow_clone_font_size()
+                    .computed_size()
+                    .px();
+                #[cfg(feature = "gecko")]
+                let auto_length = unsafe { bindings::Gecko_CalcAutoDecorationInset(font_size_px) };
+                #[cfg(feature = "servo")]
+                let auto_length = {
+                    // Use an inset factor of 1/12.5, so we get 2px of inset (resulting in 4px
+                    // gap between adjacent lines) at font-size 25px.
+                    let auto_inset_factor = 1.0 / 12.5;
+
+                    // Use the em size multiplied by auto_inset_factor, with a minimum of one
+                    // CSS pixel to ensure that at least some separation occurs.
+                    (font_size_px * auto_inset_factor).max(1.0)
+                };
+                let auto_length = CSSPixelLength::new(auto_length);
+                Self::AnimatedValue {
+                    start: LengthPercentage::new_length(auto_length),
+                    end: LengthPercentage::new_length(auto_length),
+                    is_auto: true,
+                }
+            },
+            Self::LengthPercentage { start, end } => Self::AnimatedValue {
+                start: start.to_animated_value(context),
+                end: end.to_animated_value(context),
+                is_auto: false,
+            },
+        }
+    }
+
+    #[inline]
+    fn from_animated_value(value: Self::AnimatedValue) -> Self {
+        if value.is_auto {
+            Self::Auto
+        } else {
+            Self::LengthPercentage {
+                start: value.start,
+                end: value.end,
+            }
+        }
+    }
+}
 
 /// The computed value of `text-align`.
 pub type TextAlign = specified::TextAlignKeyword;
@@ -91,6 +156,20 @@ impl ToCss for LetterSpacing {
     }
 }
 
+impl ToTyped for LetterSpacing {
+    // Note: The specification does not currently define how letter spacing
+    // should be reified into Typed OM. The current behavior follows existing
+    // WPT coverage (letter-spacing.html). Syncing spec with UA/WPT behavior
+    // tracked in https://github.com/w3c/csswg-drafts/issues/13907
+    fn to_typed(&self, dest: &mut ThinVec<TypedValue>) -> Result<(), ()> {
+        if !self.0.has_percentage() && self.0.is_zero() {
+            dest.push(TypedValue::Keyword(KeywordValue(CssString::from("normal"))));
+            return Ok(());
+        }
+        self.0.to_typed(dest)
+    }
+}
+
 /// A computed value for the `word-spacing` property.
 pub type WordSpacing = LengthPercentage;
 
@@ -103,9 +182,10 @@ impl WordSpacing {
 }
 
 /// Computed value for the text-emphasis-style property
-#[derive(Clone, Debug, MallocSizeOf, PartialEq, ToCss, ToResolvedValue)]
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, ToCss, ToResolvedValue, ToTyped)]
 #[allow(missing_docs)]
 #[repr(C, u8)]
+#[typed(todo_derive_fields)]
 pub enum TextEmphasisStyle {
     /// [ <fill> || <shape> ]
     Keyword {

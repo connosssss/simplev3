@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { Observers } from "resource://services-common/observers.sys.mjs";
-
 import { CommonUtils } from "resource://services-common/utils.sys.mjs";
 
 const lazy = {};
@@ -36,7 +34,8 @@ export var CryptoUtils = {
 
   /**
    * Generate a string of random bytes.
-   * @returns {String} Octet string
+   *
+   * @returns {string} Octet string
    */
   generateRandomBytesLegacy(length) {
     let bytes = CryptoUtils.generateRandomBytes(length);
@@ -123,7 +122,7 @@ export var CryptoUtils = {
    * @param {string} ikm IKM as an octet string.
    * @param {string} salt Salt as an Hex string.
    * @param {string} info Info as a regular string.
-   * @param {Number} len Desired output length in bytes.
+   * @param {number} len Desired output length in bytes.
    */
   async hkdfLegacy(ikm, xts, info, len) {
     ikm = CommonUtils.byteStringToArrayBuffer(ikm);
@@ -155,7 +154,7 @@ export var CryptoUtils = {
    * @param {ArrayBuffer} ikm
    * @param {ArrayBuffer} salt
    * @param {ArrayBuffer} info
-   * @param {Number} len Desired output length in bytes.
+   * @param {number} len Desired output length in bytes.
    * @returns {Uint8Array}
    */
   async hkdf(ikm, salt, info, len) {
@@ -526,13 +525,3 @@ export var CryptoUtils = {
     };
   },
 };
-
-var Svc = {};
-
-Observers.add("xpcom-shutdown", function unloadServices() {
-  Observers.remove("xpcom-shutdown", unloadServices);
-
-  for (let k in Svc) {
-    delete Svc[k];
-  }
-});

@@ -8,24 +8,32 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   assert: "chrome://remote/content/shared/webdriver/Assert.sys.mjs",
+  BrowsingContextListener:
+    "chrome://remote/content/shared/listeners/BrowsingContextListener.sys.mjs",
   ContextDescriptorType:
     "chrome://remote/content/shared/messagehandler/MessageHandler.sys.mjs",
   error: "chrome://remote/content/shared/webdriver/Errors.sys.mjs",
   generateUUID: "chrome://remote/content/shared/UUID.sys.mjs",
+  NavigableManager: "chrome://remote/content/shared/NavigableManager.sys.mjs",
   OwnershipModel: "chrome://remote/content/webdriver-bidi/RemoteValue.sys.mjs",
   pprint: "chrome://remote/content/shared/Format.sys.mjs",
   processExtraData:
     "chrome://remote/content/webdriver-bidi/modules/Intercept.sys.mjs",
   RealmType: "chrome://remote/content/shared/Realm.sys.mjs",
+  SessionDataCategory:
+    "chrome://remote/content/shared/messagehandler/sessiondata/SessionData.sys.mjs",
   SessionDataMethod:
     "chrome://remote/content/shared/messagehandler/sessiondata/SessionData.sys.mjs",
   setDefaultAndAssertSerializationOptions:
     "chrome://remote/content/webdriver-bidi/RemoteValue.sys.mjs",
-  TabManager: "chrome://remote/content/shared/TabManager.sys.mjs",
   UserContextManager:
     "chrome://remote/content/shared/UserContextManager.sys.mjs",
+  waitForTopBrowsingContextToBeReady:
+    "chrome://remote/content/shared/BrowsingContextUtils.sys.mjs",
   WindowGlobalMessageHandler:
     "chrome://remote/content/shared/messagehandler/WindowGlobalMessageHandler.sys.mjs",
+  workerListenerRegistry:
+    "chrome://remote/content/shared/js-process-actors/WebDriverWorkerListenerActor.sys.mjs",
 });
 
 /**
@@ -63,22 +71,42 @@ const ScriptEvaluateResultType = {
  */
 
 class ScriptModule extends RootBiDiModule {
+  #submittedContextsCreated;
+  #contextListener;
   #preloadScriptMap;
+  #realmInfoMap;
   #subscribedEvents;
 
   constructor(messageHandler) {
     super(messageHandler);
 
+    this.#contextListener = new lazy.BrowsingContextListener();
+    this.#contextListener.on("attached", this.#onContextAttached);
+    this.#contextListener.on("discarded", this.#onContextDiscarded);
+
+    // Set of browsing context ids for which "browsingContext.contextCreated" event was sent.
+    this.#submittedContextsCreated = new Set();
+
     // Map in which the keys are UUIDs, and the values are structs
     // of the type PreloadScript.
     this.#preloadScriptMap = new Map();
+
+    // Map with browsing contexts as keys and realm info object
+    // as values.
+    this.#realmInfoMap = new WeakMap();
 
     // Set of event names which have active subscriptions.
     this.#subscribedEvents = new Set();
   }
 
   destroy() {
+    this.#contextListener.off("attached", this.#onContextAttached);
+    this.#contextListener.off("discarded", this.#onContextDiscarded);
+    this.#contextListener.destroy();
+
+    this.#submittedContextsCreated = null;
     this.#preloadScriptMap = null;
+    this.#realmInfoMap = null;
     this.#subscribedEvents = null;
   }
 
@@ -208,7 +236,7 @@ class ScriptModule extends RootBiDiModule {
       navigables = new Set();
 
       for (const contextId of contextIds) {
-        const context = this.#getBrowsingContext(contextId);
+        const context = this._getNavigable(contextId);
 
         lazy.assert.topLevel(
           context,
@@ -246,7 +274,7 @@ class ScriptModule extends RootBiDiModule {
     this.#preloadScriptMap.set(script, preloadScript);
 
     const preloadScriptDataItem = {
-      category: "preload-script",
+      category: lazy.SessionDataCategory.PreloadScript,
       moduleName: "_configuration",
       values: [
         {
@@ -432,9 +460,15 @@ class ScriptModule extends RootBiDiModule {
     }
 
     const { contextId, realmId, sandbox } = this.#assertTarget(target);
-    const context = await this.#getContextFromTarget({ contextId, realmId });
+    const context = await this.#getContextFromTarget({
+      contextId,
+      realmId,
+      supportsPrivilegedScope: true,
+    });
+
     const serializationOptionsWithDefaults =
       lazy.setDefaultAndAssertSerializationOptions(serializationOptions);
+
     const evaluationResult = await this._forwardToWindowGlobal(
       "callFunctionDeclaration",
       context.id,
@@ -547,9 +581,15 @@ class ScriptModule extends RootBiDiModule {
     this.#assertResultOwnership(resultOwnership);
 
     const { contextId, realmId, sandbox } = this.#assertTarget(target);
-    const context = await this.#getContextFromTarget({ contextId, realmId });
+    const context = await this.#getContextFromTarget({
+      contextId,
+      realmId,
+      supportsPrivilegedScope: true,
+    });
+
     const serializationOptionsWithDefaults =
       lazy.setDefaultAndAssertSerializationOptions(serializationOptions);
+
     const evaluationResult = await this._forwardToWindowGlobal(
       "evaluateExpression",
       context.id,
@@ -644,7 +684,7 @@ class ScriptModule extends RootBiDiModule {
         contextId,
         lazy.pprint`Expected "context" to be a string, got ${contextId}`
       );
-      destination.id = this.#getBrowsingContext(contextId).id;
+      destination.id = this._getNavigable(contextId).id;
     } else {
       destination.contextDescriptor = {
         type: lazy.ContextDescriptorType.All,
@@ -659,15 +699,23 @@ class ScriptModule extends RootBiDiModule {
         );
       }
 
-      // Remove this check when other realm types are supported
-      if (type !== lazy.RealmType.Window) {
+      const unsupportedRealmTypes = [
+        lazy.RealmType.AudioWorklet,
+        lazy.RealmType.PaintWorklet,
+        lazy.RealmType.Worker,
+        lazy.RealmType.Worklet,
+      ];
+      if (unsupportedRealmTypes.includes(type)) {
         throw new lazy.error.UnsupportedOperationError(
-          `Unsupported "type": ${type}. Only "type" ${lazy.RealmType.Window} is currently supported.`
+          `Unsupported "type": ${type}`
         );
       }
     }
 
-    return { realms: await this.#getRealmInfos(destination) };
+    const realms = await this.#getRealmInfos(destination);
+    return {
+      realms: type === null ? realms : realms.filter(r => r.type === type),
+    };
   }
 
   /**
@@ -698,7 +746,7 @@ class ScriptModule extends RootBiDiModule {
 
     const preloadScript = this.#preloadScriptMap.get(script);
     const sessionDataItem = {
-      category: "preload-script",
+      category: lazy.SessionDataCategory.PreloadScript,
       moduleName: "_configuration",
       values: [
         {
@@ -831,7 +879,7 @@ class ScriptModule extends RootBiDiModule {
 
   #buildReturnValue(evaluationResult) {
     evaluationResult = lazy.processExtraData(
-      this.messageHandler.sessionId,
+      this.messageHandler.internalSessionId,
       evaluationResult
     );
 
@@ -855,26 +903,19 @@ class ScriptModule extends RootBiDiModule {
     return rv;
   }
 
-  #getBrowsingContext(contextId) {
-    const context = lazy.TabManager.getBrowsingContextById(contextId);
-    if (context === null) {
-      throw new lazy.error.NoSuchFrameError(
-        `Browsing Context with id ${contextId} not found`
-      );
-    }
-
-    if (!context.currentWindowGlobal) {
-      throw new lazy.error.NoSuchFrameError(
-        `No window found for BrowsingContext with id ${contextId}`
-      );
-    }
-
-    return context;
+  #getBrowsingContextIdByInnerWindowId(innerWindowId) {
+    const windowGlobalParent =
+      WindowGlobalParent.getByInnerWindowId(innerWindowId);
+    return windowGlobalParent?.browsingContext.id;
   }
 
-  async #getContextFromTarget({ contextId, realmId }) {
+  async #getContextFromTarget({
+    contextId,
+    realmId,
+    supportsPrivilegedScope = false,
+  }) {
     if (contextId !== null) {
-      return this.#getBrowsingContext(contextId);
+      return this._getNavigable(contextId, { supportsPrivilegedScope });
     }
 
     const destination = {
@@ -882,17 +923,23 @@ class ScriptModule extends RootBiDiModule {
         type: lazy.ContextDescriptorType.All,
       },
     };
-    const realms = await this.#getRealmInfos(destination);
-    const realm = realms.find(el => el.realm == realmId);
+    const realmInfos = await this.#getWindowRealmInfos(destination);
+    const realm = realmInfos.find(info => info.realm == realmId);
 
     if (realm && realm.context !== null) {
-      return this.#getBrowsingContext(realm.context);
+      return this._getNavigable(realm.context, { supportsPrivilegedScope });
     }
 
     throw new lazy.error.NoSuchFrameError(`Realm with id ${realmId} not found`);
   }
 
   async #getRealmInfos(destination) {
+    const windowRealms = await this.#getWindowRealmInfos(destination);
+    const workerRealms = this.#getWorkerRealmInfos(destination);
+    return [...windowRealms, ...workerRealms];
+  }
+
+  async #getWindowRealmInfos(destination) {
     let realms = await this.messageHandler.forwardCommand({
       moduleName: "script",
       commandName: "getWindowRealms",
@@ -911,29 +958,203 @@ class ScriptModule extends RootBiDiModule {
     return realms
       .flat()
       .map(realm => {
+        const context = realm.context;
         // Resolve browsing context to a TabManager id.
-        realm.context = lazy.TabManager.getIdForBrowsingContext(realm.context);
+        realm.context = lazy.NavigableManager.getIdForBrowsingContext(context);
+
+        // Only attempt to resolve a user context if a valid navigable id was
+        // found.
+        if (realm.context !== null) {
+          realm.userContext =
+            lazy.UserContextManager.getIdByBrowsingContext(context);
+        }
         return realm;
       })
       .filter(realm => realm.context !== null);
   }
 
-  #onRealmCreated = (eventName, { realmInfo }) => {
-    // Resolve browsing context to a TabManager id.
-    const context = lazy.TabManager.getIdForBrowsingContext(realmInfo.context);
-    const browsingContextId = realmInfo.context.id;
+  #getWorkerRealmInfo(workerData) {
+    const { id, type, url } = workerData;
 
-    // Do not emit the event, if the browsing context is gone.
-    if (context === null) {
+    const realmInfo = {
+      origin: url,
+      realm: id,
+    };
+
+    switch (type) {
+      case Ci.nsIWorkerDebugger.TYPE_DEDICATED: {
+        const owners = this.#getWorkerOwners(workerData);
+        realmInfo.owners = owners;
+        realmInfo.type = lazy.RealmType.DedicatedWorker;
+        break;
+      }
+      case Ci.nsIWorkerDebugger.TYPE_SHARED: {
+        realmInfo.type = lazy.RealmType.SharedWorker;
+        break;
+      }
+      case Ci.nsIWorkerDebugger.TYPE_SERVICE: {
+        realmInfo.type = lazy.RealmType.ServiceWorker;
+        break;
+      }
+      default:
+        throw new Error(`Unexpected worker type ${type}`);
+    }
+
+    return realmInfo;
+  }
+
+  #getWorkerRealmInfos(destination) {
+    const workers = lazy.workerListenerRegistry.getWorkers();
+    const realmInfos = [];
+
+    for (const workerData of workers) {
+      if (workerData.isChrome) {
+        // Bug 2016576: Support workers for chrome scope.
+        continue;
+      }
+
+      if (destination.id !== undefined) {
+        const workerBrowsingContextIds =
+          this.#getWorkerBrowsingContexts(workerData);
+        if (!workerBrowsingContextIds.includes(destination.id)) {
+          continue;
+        }
+      }
+
+      realmInfos.push(this.#getWorkerRealmInfo(workerData));
+    }
+
+    return realmInfos;
+  }
+
+  /**
+   * Retrieve all browsing contexts related to a given worker.
+   *
+   * @param {object} workerData
+   *     Worker event payload from the WorkerListenerRegistry
+   *
+   * @returns {Array<BrowsingContext>}
+   *     Array of browsing contexts related to the worker.
+   */
+  #getWorkerBrowsingContexts(workerData) {
+    // Bug 2014206: For shared workers, windowIDs currently crash and the event
+    // contains an empty array.
+    // Bug 2016096: For service workers, windowIDs is currently always empty.
+    return workerData.windowIDs
+      .map(innerWindowId =>
+        this.#getBrowsingContextIdByInnerWindowId(innerWindowId)
+      )
+      .filter(Boolean);
+  }
+
+  /**
+   * Implements https://w3c.github.io/webdriver-bidi/#get-the-workers-owners
+   * This implementation diverges from the spec since the worker global is not
+   * accessible in the parent process.
+   *
+   * @param {object} workerData
+   *     Worker event payload from the WorkerListenerRegistry
+   *
+   * @returns {Array<string>}
+   *     Array of realm ids.
+   */
+  #getWorkerOwners(workerData) {
+    const owners = [];
+    for (const innerWindowId of workerData.windowIDs) {
+      const windowRealms = this.messageHandler.realms.get(innerWindowId);
+      if (windowRealms) {
+        const defaultRealm = [...windowRealms.values()].find(
+          realm => !realm.sandbox
+        );
+        if (defaultRealm) {
+          owners.push(defaultRealm.realm);
+        }
+      }
+    }
+    return owners;
+  }
+
+  #hasEventSubscriptionToContextCreated(browsingContext) {
+    const sessionData =
+      this.messageHandler.sessionData.getSessionDataForContext(
+        "browsingContext",
+        "event",
+        browsingContext
+      );
+
+    return sessionData.some(
+      item => item.value === "browsingContext.contextCreated"
+    );
+  }
+
+  #onContextAttached = async (eventName, data) => {
+    const { browsingContext } = data;
+    // If there is a subscription for "browsingContext.contextCreated" event,
+    // do not send "script.realmCreated" event yet and
+    // wait until the "browsingContext.contextCreated" event is submitted
+    if (
+      this.#realmInfoMap.has(browsingContext) &&
+      !this.#hasEventSubscriptionToContextCreated(browsingContext)
+    ) {
+      // If `waitForTopBrowsingContextToBeReady` returns `null`,
+      // it means that the browsing context was discarded.
+      // Do not send an event in this case.
+      if (
+        !browsingContext.parent &&
+        (await lazy.waitForTopBrowsingContextToBeReady(browsingContext)) ===
+          null
+      ) {
+        return;
+      }
+
+      this.#sendDelayedRealmCreatedEvent(browsingContext);
+    }
+  };
+
+  #onContextDiscarded = (eventName, data) => {
+    const { browsingContext, why } = data;
+
+    // Filter out top-level browsing contexts that are destroyed because of a
+    // cross-group navigation.
+    if (why !== "replace") {
+      const contextId =
+        lazy.NavigableManager.getIdForBrowsingContext(browsingContext);
+      this.#submittedContextsCreated.delete(contextId);
+    }
+  };
+
+  #onContextCreatedSubmitted = (eventName, { browsingContext }) => {
+    const contextId =
+      lazy.NavigableManager.getIdForBrowsingContext(browsingContext);
+    this.#submittedContextsCreated.add(contextId);
+
+    if (this.#realmInfoMap.has(browsingContext)) {
+      this.#sendDelayedRealmCreatedEvent(browsingContext);
+    }
+  };
+
+  #onRealmCreated = (eventName, { realmInfo }) => {
+    const browsingContext = realmInfo.context;
+
+    // Resolve browsing context to a TabManager id.
+    const contextId =
+      lazy.NavigableManager.getIdForBrowsingContext(browsingContext);
+
+    // Do not emit the event, if the browsing context is gone, not created, not ready yet,
+    // or if the browsing context with the subscription for
+    // "browsingContext.contextCreated" event is not received yet.
+    if (
+      contextId === null ||
+      (!browsingContext.currentWindowGlobal && !browsingContext.parent) ||
+      (this.#hasEventSubscriptionToContextCreated(browsingContext) &&
+        !this.#submittedContextsCreated.has(contextId))
+    ) {
+      // Save the realm info to send it when the browsing context is ready.
+      this.#realmInfoMap.set(browsingContext, realmInfo);
       return;
     }
 
-    realmInfo.context = context;
-    this._emitEventForBrowsingContext(
-      browsingContextId,
-      "script.realmCreated",
-      realmInfo
-    );
+    this.#sendRealmCreatedEvent(realmInfo, browsingContext, contextId);
   };
 
   #onRealmDestroyed = (eventName, { realm, context }) => {
@@ -942,39 +1163,125 @@ class ScriptModule extends RootBiDiModule {
     });
   };
 
-  #startListingOnRealmCreated() {
+  #onWorkerRegistered = (eventName, workerData) => {
+    if (workerData.isChrome) {
+      // Bug 2016576: Support workers for chrome scope.
+      return;
+    }
+
+    this._emitEventForBrowsingContexts(
+      this.#getWorkerBrowsingContexts(workerData),
+      "script.realmCreated",
+      this.#getWorkerRealmInfo(workerData)
+    );
+  };
+
+  #onWorkerUnregistered = (eventName, workerData) => {
+    const { id, isChrome } = workerData;
+
+    if (isChrome) {
+      // Bug 2016576: Support workers for chrome scope.
+      return;
+    }
+
+    const realmInfo = {
+      realm: id,
+    };
+
+    this._emitEventForBrowsingContexts(
+      this.#getWorkerBrowsingContexts(workerData),
+      "script.realmDestroyed",
+      realmInfo
+    );
+  };
+
+  #sendDelayedRealmCreatedEvent(browsingContext) {
+    if (this.#realmInfoMap?.has(browsingContext)) {
+      const realmInfo = this.#realmInfoMap.get(browsingContext);
+      // Resolve browsing context to a TabManager id.
+      const browsingContextId = lazy.NavigableManager.getIdForBrowsingContext(
+        realmInfo.context
+      );
+      this.#sendRealmCreatedEvent(
+        realmInfo,
+        browsingContext,
+        browsingContextId
+      );
+      this.#realmInfoMap.delete(browsingContext);
+    }
+  }
+
+  #sendRealmCreatedEvent(realmInfo, context, browsingContextId) {
+    realmInfo.context = browsingContextId;
+    realmInfo.userContext =
+      lazy.UserContextManager.getIdByBrowsingContext(context);
+
+    this._emitEventForBrowsingContext(
+      context.id,
+      "script.realmCreated",
+      realmInfo
+    );
+  }
+
+  #startListeningOnRealmCreated() {
     if (!this.#subscribedEvents.has("script.realmCreated")) {
       this.messageHandler.on("realm-created", this.#onRealmCreated);
+      this.messageHandler.on(
+        "browsingContext._contextCreatedEmitted",
+        this.#onContextCreatedSubmitted
+      );
+      this.#contextListener.startListening();
+      lazy.workerListenerRegistry.on(
+        "worker-registered",
+        this.#onWorkerRegistered
+      );
     }
   }
 
-  #stopListingOnRealmCreated() {
+  #stopListeningOnRealmCreated() {
     if (this.#subscribedEvents.has("script.realmCreated")) {
       this.messageHandler.off("realm-created", this.#onRealmCreated);
+      this.messageHandler.off(
+        "browsingContext._contextCreatedEmitted",
+        this.#onContextCreatedSubmitted
+      );
+      this.#contextListener.stopListening();
+      lazy.workerListenerRegistry.off(
+        "worker-registered",
+        this.#onWorkerRegistered
+      );
     }
   }
 
-  #startListingOnRealmDestroyed() {
+  #startListeningOnRealmDestroyed() {
     if (!this.#subscribedEvents.has("script.realmDestroyed")) {
       this.messageHandler.on("realm-destroyed", this.#onRealmDestroyed);
+      lazy.workerListenerRegistry.on(
+        "worker-unregistered",
+        this.#onWorkerUnregistered
+      );
     }
   }
 
-  #stopListingOnRealmDestroyed() {
+  #stopListeningOnRealmDestroyed() {
     if (this.#subscribedEvents.has("script.realmDestroyed")) {
       this.messageHandler.off("realm-destroyed", this.#onRealmDestroyed);
+      lazy.workerListenerRegistry.off(
+        "worker-unregistered",
+        this.#onWorkerUnregistered
+      );
     }
   }
 
   #subscribeEvent(event) {
     switch (event) {
       case "script.realmCreated": {
-        this.#startListingOnRealmCreated();
+        this.#startListeningOnRealmCreated();
         this.#subscribedEvents.add(event);
         break;
       }
       case "script.realmDestroyed": {
-        this.#startListingOnRealmDestroyed();
+        this.#startListeningOnRealmDestroyed();
         this.#subscribedEvents.add(event);
         break;
       }
@@ -984,12 +1291,12 @@ class ScriptModule extends RootBiDiModule {
   #unsubscribeEvent(event) {
     switch (event) {
       case "script.realmCreated": {
-        this.#stopListingOnRealmCreated();
+        this.#stopListeningOnRealmCreated();
         this.#subscribedEvents.delete(event);
         break;
       }
       case "script.realmDestroyed": {
-        this.#stopListingOnRealmDestroyed();
+        this.#stopListeningOnRealmDestroyed();
         this.#subscribedEvents.delete(event);
         break;
       }

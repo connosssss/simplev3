@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef NonStdMoveChecker_h__
-#define NonStdMoveChecker_h__
+#ifndef NonStdMoveChecker_h_
+#define NonStdMoveChecker_h_
 
 #include "plugin.h"
 
@@ -19,11 +19,12 @@ private:
 
   static
 #if CLANG_VERSION_FULL >= 1600
-  std::optional<FixItHint>
+      std::optional<FixItHint>
 #else
-  Optional<FixItHint>
+      Optional<FixItHint>
 #endif
-  makeFixItHint(const MatchFinder::MatchResult &Result, const Expr *TargetExpr);
+      makeFixItHint(const MatchFinder::MatchResult &Result,
+                    const Expr *TargetExpr);
 };
 
 #endif

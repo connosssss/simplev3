@@ -10,64 +10,61 @@ import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
-import mozilla.components.support.utils.PendingIntentUtils
 import mozilla.telemetry.glean.private.NoExtras
 import org.mozilla.focus.GleanMetrics.SearchWidget
 import org.mozilla.focus.activity.MainActivity
 import org.mozilla.focus.ui.theme.FocusTheme
 
+/** Utility class for search widget related operations. */
 object SearchWidgetUtils {
 
     private fun addSearchWidgetToHomeScreen(activity: Activity) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val appWidgetManager = AppWidgetManager.getInstance(activity)
-            val searchWidgetProvider = ComponentName(activity, SearchWidgetProvider::class.java)
-            if (appWidgetManager!!.isRequestPinAppWidgetSupported) {
-                val pinnedWidgetCallbackIntent = Intent(activity, SearchWidgetProvider::class.java)
-                val successCallback = PendingIntent.getBroadcast(
+        val appWidgetManager = AppWidgetManager.getInstance(activity)
+        val searchWidgetProvider = ComponentName(activity, SearchWidgetProvider::class.java)
+        if (appWidgetManager!!.isRequestPinAppWidgetSupported) {
+            val pinnedWidgetCallbackIntent = Intent(activity, SearchWidgetProvider::class.java)
+            val successCallback =
+                PendingIntent.getBroadcast(
                     activity,
                     0,
                     pinnedWidgetCallbackIntent,
-                    PendingIntentUtils.defaultFlags or
-                        PendingIntent.FLAG_UPDATE_CURRENT,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
                 )
-                appWidgetManager.requestPinAppWidget(searchWidgetProvider, Bundle(), successCallback)
-            }
+            appWidgetManager.requestPinAppWidget(searchWidgetProvider, Bundle(), successCallback)
         }
     }
 
-    /**
-     * Shows promote search widget dialog
-     */
+    /** Shows promote search widget dialog */
     fun showPromoteSearchWidgetDialog(activity: MainActivity) {
         val promoteSearchWidgetDialog = Dialog(activity)
-        promoteSearchWidgetDialog.apply {
-            setContentView(
-                ComposeView(activity).apply {
-                    setViewTreeLifecycleOwner(activity)
-                    this.setViewTreeSavedStateRegistryOwner(activity)
-                    setContent {
-                        FocusTheme {
-                            PromoteSearchWidgetDialogCompose(
-                                onAddSearchWidgetButtonClick = {
-                                    addSearchWidgetToHomeScreen(activity)
-                                    SearchWidget.addToHomeScreenButton.record(NoExtras())
-                                },
-                                onDismiss = {
-                                    promoteSearchWidgetDialog.dismiss()
-                                },
-                            )
+        promoteSearchWidgetDialog
+            .apply {
+                setContentView(
+                    ComposeView(activity).apply {
+                        setViewTreeLifecycleOwner(activity)
+                        this.setViewTreeSavedStateRegistryOwner(activity)
+                        setContent {
+                            FocusTheme {
+                                PromoteSearchWidgetDialogCompose(
+                                    onAddSearchWidgetButtonClick = {
+                                        addSearchWidgetToHomeScreen(activity)
+                                        SearchWidget.addToHomeScreenButton.record(NoExtras())
+                                    },
+                                    onDismiss = {
+                                        promoteSearchWidgetDialog.dismiss()
+                                    },
+                                )
+                            }
                         }
+                        isTransitionGroup = true
                     }
-                    isTransitionGroup = true
-                },
-            )
-        }.show()
+                )
+            }
+            .show()
         SearchWidget.promoteDialogShown.record(NoExtras())
     }
 }

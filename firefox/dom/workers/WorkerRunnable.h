@@ -1,18 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_workers_workerrunnable_h__
-#define mozilla_dom_workers_workerrunnable_h__
+#ifndef mozilla_dom_workers_workerrunnable_h_
+#define mozilla_dom_workers_workerrunnable_h_
 
-#include <cstdint>
 #include <utility>
+
 #include "MainThreadUtils.h"
-#include "mozilla/Atomics.h"
 #include "mozilla/RefPtr.h"
-#include "mozilla/ThreadSafeWeakPtr.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/dom/WorkerStatus.h"
@@ -77,6 +73,16 @@ class WorkerRunnable : public nsIRunnable
   // True if this runnable should be dispatched to the debugger queue,
   // and false otherwise.
   virtual bool IsDebuggerRunnable() const { return false; }
+
+  // True only for runnables that carry a RemoteWorkerDebugger IPC message
+  // (i.e. WrappedDebuggerRunnable). Such runnables are safe to service from
+  // within a nested sync loop while the parent thread is blocked in
+  // Enable/DisableRemoteDebugger, because their handlers only mutate debugger
+  // state and dispatch follow-up work; they never run JavaScript. Every other
+  // debugger-queue runnable (debugger script compilation, debugger message
+  // delivery, ...) returns false and must stay deferred until the worker
+  // returns to DoRunLoop. See WorkerPrivate::RunCurrentSyncLoop.
+  virtual bool IsIPCMessageDebuggerRunnable() const { return false; }
 
   static WorkerRunnable* FromRunnable(nsIRunnable* aRunnable);
 
@@ -270,13 +276,25 @@ class WorkerThreadRunnable : public WorkerRunnable {
 // This runnable is used to send a message to a worker debugger.
 class WorkerDebuggerRunnable : public WorkerThreadRunnable {
  protected:
-  explicit WorkerDebuggerRunnable(const char* aName = "WorkerDebuggerRunnable")
-      : WorkerThreadRunnable(aName) {}
+  // mIsIPCMessage defaults to false: an ordinary WorkerDebuggerRunnable runs
+  // debugger JavaScript (script compilation, message delivery) and must not be
+  // serviced from within a nested sync loop. Only WrappedDebuggerRunnable, the
+  // sole wrapper for RemoteWorkerDebugger IPC delivered on the DebuggerOnly
+  // WorkerEventTarget, passes true here. See IsIPCMessageDebuggerRunnable.
+  explicit WorkerDebuggerRunnable(const char* aName = "WorkerDebuggerRunnable",
+                                  bool aIsIPCMessage = false)
+      : WorkerThreadRunnable(aName), mIsIPCMessage(aIsIPCMessage) {}
 
   virtual ~WorkerDebuggerRunnable() = default;
 
  private:
+  const bool mIsIPCMessage;
+
   virtual bool IsDebuggerRunnable() const override { return true; }
+
+  virtual bool IsIPCMessageDebuggerRunnable() const override {
+    return mIsIPCMessage;
+  }
 
   virtual bool PreDispatch(WorkerPrivate* aWorkerPrivate) override {
     AssertIsOnMainThread();
@@ -566,4 +584,4 @@ class WorkerDebuggeeRunnable : public WorkerThreadRunnable {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_workers_workerrunnable_h__
+#endif  // mozilla_dom_workers_workerrunnable_h_

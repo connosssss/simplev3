@@ -2,70 +2,54 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use std::process::Command;
-
-use anyhow::Result;
+use anyhow::{bail, Result};
+use askama::Template;
+use camino::Utf8Path;
 use fs_err as fs;
 
-mod pipeline;
-pub use pipeline::pipeline;
+use crate::{bindings::GenerateOptions, BindgenLoader};
 
-mod gen_python;
+pub mod filters;
+mod pipeline;
+pub use pipeline::{pipeline, Root};
+
 #[cfg(feature = "bindgen-tests")]
 pub mod test;
-use crate::{BindingGenerator, Component, GenerationSettings};
 
-use gen_python::{generate_python_bindings, Config};
-
-pub struct PythonBindingGenerator;
-
-impl BindingGenerator for PythonBindingGenerator {
-    type Config = Config;
-
-    fn new_config(&self, root_toml: &toml::Value) -> Result<Self::Config> {
-        Ok(
-            match root_toml.get("bindings").and_then(|b| b.get("python")) {
-                Some(v) => v.clone().try_into()?,
-                None => Default::default(),
-            },
-        )
-    }
-
-    fn update_component_configs(
-        &self,
-        settings: &GenerationSettings,
-        components: &mut Vec<Component<Self::Config>>,
-    ) -> Result<()> {
-        for c in &mut *components {
-            c.config.cdylib_name.get_or_insert_with(|| {
-                settings
-                    .cdylib
-                    .clone()
-                    .unwrap_or_else(|| format!("uniffi_{}", c.ci.namespace()))
-            });
+/// Generate Python bindings
+pub fn generate(loader: &BindgenLoader, options: GenerateOptions) -> Result<()> {
+    let metadata = loader.load_metadata(&options.source)?;
+    if let Some(crate_filter) = &options.crate_filter {
+        if !metadata.contains_key(crate_filter) {
+            bail!("No UniFFI metadata found for crate {crate_filter}");
         }
-        Ok(())
     }
+    let root = loader.load_pipeline_initial_root(&options.source, metadata)?;
+    run_pipeline(root, &options.out_dir, options.crate_filter.as_deref())?;
 
-    fn write_bindings(
-        &self,
-        settings: &GenerationSettings,
-        components: &[Component<Self::Config>],
-    ) -> Result<()> {
-        for Component { ci, config, .. } in components {
-            let py_file = settings.out_dir.join(format!("{}.py", ci.namespace()));
-            fs::write(&py_file, generate_python_bindings(config, &mut ci.clone())?)?;
+    Ok(())
+}
 
-            if settings.try_format_code {
-                if let Err(e) = Command::new("yapf").arg(&py_file).output() {
-                    println!(
-                        "Warning: Unable to auto-format {} using yapf: {e:?}",
-                        py_file.file_name().unwrap(),
-                    )
-                }
+pub fn run_pipeline(
+    initial_root: pipeline::initial::Root,
+    out_dir: &Utf8Path,
+    crate_filter: Option<&str>,
+) -> Result<()> {
+    let python_root = pipeline().execute(initial_root)?;
+    println!("writing out {out_dir}");
+    if !out_dir.exists() {
+        fs::create_dir_all(out_dir)?;
+    }
+    for module in python_root.modules.values() {
+        if let Some(crate_filter) = crate_filter {
+            if module.crate_name != crate_filter {
+                continue;
             }
         }
-
-        Ok(())
+        let path = out_dir.join(format!("{}.py", module.name));
+        let content = module.render()?;
+        println!("writing {path}");
+        fs::write(path, content)?;
     }
+    Ok(())
 }

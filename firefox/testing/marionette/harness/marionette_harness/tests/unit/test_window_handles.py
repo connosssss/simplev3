@@ -2,21 +2,28 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+import os
+import sys
 from urllib.parse import quote
 
 from marionette_driver import errors
 from marionette_harness import MarionetteTestCase, WindowManagerMixin
+
+# add this directory to the path
+sys.path.append(os.path.dirname(__file__))
+
+from chrome_handler_mixin import ChromeHandlerMixin
 
 
 def inline(doc):
     return "data:text/html;charset=utf-8,{}".format(quote(doc))
 
 
-class TestWindowHandles(WindowManagerMixin, MarionetteTestCase):
+class TestWindowHandles(ChromeHandlerMixin, WindowManagerMixin, MarionetteTestCase):
     def setUp(self):
         super(TestWindowHandles, self).setUp()
 
-        self.chrome_dialog = "chrome://remote/content/marionette/test.xhtml"
+        self.chrome_dialog = self.chrome_base_url + "test.xhtml"
 
     def tearDown(self):
         self.close_all_windows()
@@ -112,9 +119,11 @@ class TestWindowHandles(WindowManagerMixin, MarionetteTestCase):
         self.marionette.start_session()
 
         self.assert_window_handles()
-        self.assertEqual(window_handles, self.marionette.window_handles)
 
-        self.marionette.switch_to_window(new_window)
+        # For a new session the window handles will have a new uuid as value
+        self.assertEqual(len(window_handles), len(self.marionette.window_handles))
+        for item in self.marionette.window_handles:
+            self.assertNotIn(item, window_handles)
 
     def test_window_handles_include_unloaded_tabs(self):
         new_tab = self.open_tab()

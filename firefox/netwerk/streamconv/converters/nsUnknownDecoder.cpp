@@ -1,32 +1,29 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsUnknownDecoder.h"
-#include "nsIPipe.h"
-#include "nsIInputStream.h"
-#include "nsIOutputStream.h"
-#include "nsMimeTypes.h"
 
+#include <algorithm>
+
+#include "mozilla/StaticPrefs_network.h"
 #include "nsCRT.h"
-
-#include "nsIMIMEService.h"
-
-#include "nsIViewSourceChannel.h"
-#include "nsIHttpChannel.h"
-#include "nsIForcePendingChannel.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIEncodedChannel.h"
+#include "nsIForcePendingChannel.h"
+#include "nsIHttpChannel.h"
+#include "nsIInputStream.h"
+#include "nsIMIMEService.h"
+#include "nsIOutputStream.h"
+#include "nsIPipe.h"
 #include "nsIURI.h"
-#include "nsStringStream.h"
+#include "nsIViewSourceChannel.h"
+#include "nsMimeTypes.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
 #include "nsQueryObject.h"
-#include "nsComponentManagerUtils.h"
 #include "nsServiceManagerUtils.h"
-#include "mozilla/StaticPrefs_network.h"
-
-#include <algorithm>
+#include "nsStringStream.h"
 
 #define MAX_BUFFER_SIZE 512u
 
@@ -176,7 +173,7 @@ nsUnknownDecoder::OnDataAvailable(nsIRequest* request, nsIInputStream* aStream,
     // Determine how much of the stream should be read to fill up the
     // sniffer buffer...
     //
-    if (mBufferLen + aCount >= MAX_BUFFER_SIZE) {
+    if (aCount >= MAX_BUFFER_SIZE - mBufferLen) {
       count = MAX_BUFFER_SIZE - mBufferLen;
     } else {
       count = aCount;
@@ -332,8 +329,11 @@ nsUnknownDecoder::GetMIMETypeFromContent(nsIRequest* aRequest,
   DetermineContentType(aRequest);
   mBuffer = nullptr;
   mBufferLen = 0;
-  type.Assign(mContentType);
-  mContentType.Truncate();
+  {
+    MutexAutoLock lock(mMutex);
+    type.Assign(mContentType);
+    mContentType.Truncate();
+  }
   return type.IsEmpty() ? NS_ERROR_NOT_AVAILABLE : NS_OK;
 }
 
@@ -360,7 +360,7 @@ nsUnknownDecoder::nsSnifferEntry nsUnknownDecoder::sSnifferEntries[] = {
     // some sort...  "Scripts" can include arbitrary data to be passed
     // to an interpreter, so we need to decide whether we can call this
     // text or whether it's data.
-    SNIFFER_ENTRY_WITH_FUNC("#!", &nsUnknownDecoder::LastDitchSniff),
+    SNIFFER_ENTRY_WITH_FUNC("#!", &nsUnknownDecoder::SniffBinary),
 
     // XXXbz should (and can) we also include the various ways that <?xml can
     // appear as UTF-16 and such?  See http://www.w3.org/TR/REC-xml#sec-guessing
@@ -378,6 +378,7 @@ void nsUnknownDecoder::DetermineContentType(nsIRequest* aRequest) {
   }
 
   nsCOMPtr<nsIChannel> channel(do_QueryInterface(aRequest));
+  nsCOMPtr<nsIHttpChannel> httpChannel(do_QueryInterface(aRequest));
   if (channel) {
     nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
     if (loadInfo->GetSkipContentSniffing()) {
@@ -386,9 +387,8 @@ void nsUnknownDecoder::DetermineContentType(nsIRequest* aRequest) {
        * but also have sniffing disabled, just determine whether
        * to use text/plain or octetstream and log an error to the Console
        */
-      LastDitchSniff(aRequest);
+      SniffBinary(aRequest);
 
-      nsCOMPtr<nsIHttpChannel> httpChannel(do_QueryInterface(aRequest));
       if (httpChannel) {
         nsAutoCString type;
         httpChannel->GetContentType(type);
@@ -414,10 +414,11 @@ void nsUnknownDecoder::DetermineContentType(nsIRequest* aRequest) {
   // Check if data are compressed.
   nsAutoCString decodedData;
 
+  nsresult rv = NS_OK;
   if (channel) {
     // ConvertEncodedData is always called only on a single thread for each
     // instance of an object.
-    nsresult rv = ConvertEncodedData(aRequest, mBuffer, mBufferLen);
+    rv = ConvertEncodedData(aRequest, mBuffer, mBufferLen);
     if (NS_SUCCEEDED(rv)) {
       MutexAutoLock lock(mMutex);
       decodedData = mDecodedData;
@@ -425,6 +426,35 @@ void nsUnknownDecoder::DetermineContentType(nsIRequest* aRequest) {
     if (!decodedData.IsEmpty()) {
       testData = decodedData.get();
       testDataLen = std::min<uint32_t>(decodedData.Length(), MAX_BUFFER_SIZE);
+    }
+  }
+
+  // https://mimesniff.spec.whatwg.org/#sniffing-a-mislabeled-binary-resource
+  if (httpChannel) {
+    nsAutoCString contentType;
+    httpChannel->GetContentType(contentType);
+    if (contentType.EqualsLiteral("text/plain")) {
+      auto isEncoded = [&]() -> bool {
+        nsAutoCString contentEncoding;
+        return NS_SUCCEEDED(httpChannel->GetResponseHeader(
+                   "Content-Encoding"_ns, contentEncoding)) &&
+               !contentEncoding.IsEmpty();
+      };
+
+      // Do not sniff if the response is content-encoded but decoding produced
+      // no data. This happens when the compressed stream is larger than our
+      // sniffing buffer and the encoding (like zstd) only emits output once it
+      // has a full block. Compressed bytes always look like binary data, so
+      // sniffing them would turn a valid text/plain document into a download.
+      // A genuine decompression failure (NS_FAILED(rv)) also leaves decodedData
+      // empty; in that case we still fall through to SniffBinary.
+      if (decodedData.IsEmpty() && isEncoded() && NS_SUCCEEDED(rv)) {
+        MutexAutoLock lock(mMutex);
+        mContentType = TEXT_PLAIN;
+        return;
+      }
+      SniffBinary(aRequest);
+      return;
     }
   }
 
@@ -466,7 +496,7 @@ void nsUnknownDecoder::DetermineContentType(nsIRequest* aRequest) {
                   testDataLen, sniffedType);
   {
     MutexAutoLock lock(mMutex);
-    mContentType = sniffedType;
+    mContentType = std::move(sniffedType);
     if (!mContentType.IsEmpty()) {
       return;
     }
@@ -497,13 +527,14 @@ void nsUnknownDecoder::DetermineContentType(nsIRequest* aRequest) {
     return;
   }
 
-  LastDitchSniff(aRequest);
+  SniffBinary(aRequest);
 #ifdef DEBUG
   MutexAutoLock lock(mMutex);
   NS_ASSERTION(!mContentType.IsEmpty(), "Content type should be known by now.");
 #endif
 }
 
+// https://mimesniff.spec.whatwg.org/#identifying-a-resource-with-an-unknown-mime-type
 bool nsUnknownDecoder::SniffForHTML(nsIRequest* aRequest) {
   MutexAutoLock lock(mMutex);
 
@@ -529,32 +560,48 @@ bool nsUnknownDecoder::SniffForHTML(nsIRequest* aRequest) {
     return false;
   }
 
-  // If we seem to be SGML or XML and we got down here, just pretend we're HTML
-  if (*str == '!' || *str == '?') {
+  uint32_t bufSize = end - str;
+  nsDependentCSubstring substr(str, bufSize);
+
+  if (StringBeginsWith(substr, "?xml"_ns)) {
+    mContentType = TEXT_XML;
+    return true;
+  }
+
+  // We use sizeof(_tagstr) below because that's the length of _tagstr
+  // with the one char " " or ">" appended.
+#define MATCHES_TAG(_tagstr)                               \
+  (substr.Length() >= sizeof(_tagstr) &&                   \
+   StringBeginsWith(substr, _tagstr##_ns,                  \
+                    nsCaseInsensitiveCStringComparator) && \
+   (substr[sizeof(_tagstr) - 1] == ' ' || substr[sizeof(_tagstr) - 1] == '>'))
+
+  if (MATCHES_TAG("!DOCTYPE HTML") || MATCHES_TAG("html") ||
+      MATCHES_TAG("head") || MATCHES_TAG("script") || MATCHES_TAG("iframe") ||
+      MATCHES_TAG("h1") || MATCHES_TAG("div") || MATCHES_TAG("font") ||
+      MATCHES_TAG("table") || MATCHES_TAG("a") || MATCHES_TAG("style") ||
+      MATCHES_TAG("title") || MATCHES_TAG("b") || MATCHES_TAG("body") ||
+      MATCHES_TAG("br") || MATCHES_TAG("p") || MATCHES_TAG("!--")) {
     mContentType = TEXT_HTML;
     return true;
   }
 
-  uint32_t bufSize = end - str;
-  // We use sizeof(_tagstr) below because that's the length of _tagstr
-  // with the one char " " or ">" appended.
-#define MATCHES_TAG(_tagstr)                                      \
-  (bufSize >= sizeof(_tagstr) &&                                  \
-   (nsCRT::strncasecmp(str, _tagstr " ", sizeof(_tagstr)) == 0 || \
-    nsCRT::strncasecmp(str, _tagstr ">", sizeof(_tagstr)) == 0))
-
-  if (MATCHES_TAG("html") || MATCHES_TAG("frameset") || MATCHES_TAG("body") ||
-      MATCHES_TAG("head") || MATCHES_TAG("script") || MATCHES_TAG("iframe") ||
-      MATCHES_TAG("a") || MATCHES_TAG("img") || MATCHES_TAG("table") ||
-      MATCHES_TAG("title") || MATCHES_TAG("link") || MATCHES_TAG("base") ||
-      MATCHES_TAG("style") || MATCHES_TAG("div") || MATCHES_TAG("p") ||
-      MATCHES_TAG("font") || MATCHES_TAG("applet") || MATCHES_TAG("meta") ||
-      MATCHES_TAG("center") || MATCHES_TAG("form") || MATCHES_TAG("isindex") ||
-      MATCHES_TAG("h1") || MATCHES_TAG("h2") || MATCHES_TAG("h3") ||
-      MATCHES_TAG("h4") || MATCHES_TAG("h5") || MATCHES_TAG("h6") ||
-      MATCHES_TAG("b") || MATCHES_TAG("pre")) {
+  if (StaticPrefs::network_mimesniff_non_standard_html_comment() &&
+      StringBeginsWith(substr, "!--"_ns)) {
     mContentType = TEXT_HTML;
     return true;
+  }
+
+  if (StaticPrefs::network_mimesniff_extra_moz_html_tags()) {
+    if (MATCHES_TAG("frameset") || MATCHES_TAG("img") || MATCHES_TAG("link") ||
+        MATCHES_TAG("base") || MATCHES_TAG("applet") || MATCHES_TAG("meta") ||
+        MATCHES_TAG("center") || MATCHES_TAG("form") ||
+        MATCHES_TAG("isindex") || MATCHES_TAG("h2") || MATCHES_TAG("h3") ||
+        MATCHES_TAG("h4") || MATCHES_TAG("h5") || MATCHES_TAG("h6") ||
+        MATCHES_TAG("pre")) {
+      mContentType = TEXT_HTML;
+      return true;
+    }
   }
 
 #undef MATCHES_TAG
@@ -590,7 +637,7 @@ bool nsUnknownDecoder::SniffURI(nsIRequest* aRequest) {
         result = mimeService->GetTypeFromURI(uri, type);
         if (NS_SUCCEEDED(result)) {
           MutexAutoLock lock(mMutex);
-          mContentType = type;
+          mContentType = std::move(type);
           return true;
         }
       }
@@ -606,7 +653,7 @@ bool nsUnknownDecoder::SniffURI(nsIRequest* aRequest) {
 #define IS_TEXT_CHAR(ch) \
   (((unsigned char)(ch)) > 31 || (9 <= (ch) && (ch) <= 13) || (ch) == 27)
 
-bool nsUnknownDecoder::LastDitchSniff(nsIRequest* aRequest) {
+bool nsUnknownDecoder::SniffBinary(nsIRequest* aRequest) {
   // All we can do now is try to guess whether this is text/plain or
   // application/octet-stream
 
@@ -796,18 +843,7 @@ nsresult nsUnknownDecoder::ConvertEncodedData(nsIRequest* request,
 // nsIThreadRetargetableStreamListener methods
 //
 NS_IMETHODIMP
-nsUnknownDecoder::CheckListenerChain() {
-  nsCOMPtr<nsIThreadRetargetableStreamListener> listener;
-  {
-    MutexAutoLock lock(mMutex);
-    listener = do_QueryInterface(mNextListener);
-  }
-  if (!listener) {
-    return NS_ERROR_NO_INTERFACE;
-  }
-
-  return listener->CheckListenerChain();
-}
+nsUnknownDecoder::CheckListenerChain() { return NS_ERROR_NO_INTERFACE; }
 
 NS_IMETHODIMP
 nsUnknownDecoder::OnDataFinished(nsresult aStatus) {
@@ -831,12 +867,12 @@ void nsBinaryDetector::DetermineContentType(nsIRequest* aRequest) {
 
   nsCOMPtr<nsILoadInfo> loadInfo = httpChannel->LoadInfo();
   if (loadInfo->GetSkipContentSniffing()) {
-    LastDitchSniff(aRequest);
+    SniffBinary(aRequest);
     return;
   }
   // It's an HTTP channel.  Check for the text/plain mess
   nsAutoCString contentTypeHdr;
-  Unused << httpChannel->GetResponseHeader("Content-Type"_ns, contentTypeHdr);
+  (void)httpChannel->GetResponseHeader("Content-Type"_ns, contentTypeHdr);
   nsAutoCString contentType;
   httpChannel->GetContentType(contentType);
 
@@ -860,13 +896,12 @@ void nsBinaryDetector::DetermineContentType(nsIRequest* aRequest) {
   // XXXbz we could improve this by doing a local decompress if we
   // wanted, I'm sure.
   nsAutoCString contentEncoding;
-  Unused << httpChannel->GetResponseHeader("Content-Encoding"_ns,
-                                           contentEncoding);
+  (void)httpChannel->GetResponseHeader("Content-Encoding"_ns, contentEncoding);
   if (!contentEncoding.IsEmpty()) {
     return;
   }
 
-  LastDitchSniff(aRequest);
+  SniffBinary(aRequest);
   MutexAutoLock lock(mMutex);
   if (mContentType.EqualsLiteral(APPLICATION_OCTET_STREAM)) {
     // We want to guess at it instead

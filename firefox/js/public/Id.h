@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -71,12 +69,7 @@ class PropertyKey {
     return id;
   }
 
-  bool operator==(const PropertyKey& rhs) const {
-    return asBits_ == rhs.asBits_;
-  }
-  bool operator!=(const PropertyKey& rhs) const {
-    return asBits_ != rhs.asBits_;
-  }
+  bool operator==(const PropertyKey& rhs) const = default;
 
   MOZ_ALWAYS_INLINE bool isVoid() const {
     MOZ_ASSERT_IF((asBits_ & TypeMask) == VoidTypeTag, asBits_ == VoidTypeTag);
@@ -97,10 +90,10 @@ class PropertyKey {
 
   constexpr uintptr_t asRawBits() const { return asBits_; }
 
-  MOZ_ALWAYS_INLINE int32_t toInt() const {
+  MOZ_ALWAYS_INLINE uint32_t toInt() const {
     MOZ_ASSERT(isInt());
     uint32_t bits = static_cast<uint32_t>(asBits_) >> 1;
-    return static_cast<int32_t>(bits);
+    return bits;
   }
 
   MOZ_ALWAYS_INLINE JSString* toString() const {
@@ -209,6 +202,14 @@ class PropertyKey {
     return reinterpret_cast<JSLinearString*>(toString());
   }
 
+  // Relaxed atomic load and store operations on a PropertyKey.
+  PropertyKey atomicGet() const {
+    return fromRawBits(__atomic_load_n(&asBits_, __ATOMIC_RELAXED));
+  }
+  void atomicSet(const PropertyKey& other) {
+    __atomic_store_n(&asBits_, other.asBits_, __ATOMIC_RELAXED);
+  }
+
 #if defined(DEBUG) || defined(JS_JITSPEW)
   void dump() const;
   void dump(js::GenericPrinter& out) const;
@@ -234,7 +235,7 @@ namespace JS {
 extern JS_PUBLIC_DATA const JS::HandleId VoidHandlePropertyKey;
 
 template <>
-struct GCPolicy<jsid> {
+struct GCPolicy<jsid> : public GCPolicyBase<jsid> {
   static void trace(JSTracer* trc, jsid* idp, const char* name) {
     // This should only be called as part of root marking since that's the only
     // time we should trace unbarriered GC thing pointers. This will assert if
@@ -246,6 +247,7 @@ struct GCPolicy<jsid> {
            js::gc::IsCellPointerValid(id.toGCCellPtr().asCell());
   }
 
+  static constexpr bool mightBeInNursery() { return false; }
   static bool isTenured(jsid id) {
     MOZ_ASSERT_IF(id.isGCThing(),
                   !js::gc::IsInsideNursery(id.toGCCellPtr().asCell()));
@@ -356,7 +358,7 @@ class WrappedPtrOperations<JS::PropertyKey, Wrapper> {
   bool isSymbol() const { return id().isSymbol(); }
   bool isGCThing() const { return id().isGCThing(); }
 
-  int32_t toInt() const { return id().toInt(); }
+  uint32_t toInt() const { return id().toInt(); }
   JSString* toString() const { return id().toString(); }
   JS::Symbol* toSymbol() const { return id().toSymbol(); }
 

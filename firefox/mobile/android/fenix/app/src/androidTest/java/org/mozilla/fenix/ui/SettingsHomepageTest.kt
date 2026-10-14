@@ -4,82 +4,88 @@
 
 package org.mozilla.fenix.ui
 
-import androidx.compose.ui.test.junit4.AndroidComposeTestRule
-import org.junit.Ignore
+import androidx.compose.ui.test.junit4.v2.AndroidComposeTestRule as AndroidComposeTestRuleV2
 import org.junit.Rule
 import org.junit.Test
+import org.mozilla.fenix.R
+import org.mozilla.fenix.customannotations.Converted
 import org.mozilla.fenix.customannotations.SmokeTest
+import org.mozilla.fenix.helpers.AppAndSystemHelper.isDefaultPinnedShortcutsOnHomepage
 import org.mozilla.fenix.helpers.AppAndSystemHelper.openAppFromExternalLink
+import org.mozilla.fenix.helpers.Constants.defaultPinnedShortcutTitles
+import org.mozilla.fenix.helpers.FenixTestRule
 import org.mozilla.fenix.helpers.HomeActivityIntentTestRule
 import org.mozilla.fenix.helpers.RetryTestRule
+import org.mozilla.fenix.helpers.RetryableComposeTestRule
 import org.mozilla.fenix.helpers.TestAssetHelper.getGenericAsset
+import org.mozilla.fenix.helpers.TestHelper.exitMenu
 import org.mozilla.fenix.helpers.TestHelper.mDevice
 import org.mozilla.fenix.helpers.TestHelper.restartApp
-import org.mozilla.fenix.helpers.TestHelper.verifySnackBarText
-import org.mozilla.fenix.helpers.TestSetup
 import org.mozilla.fenix.helpers.perf.DetectMemoryLeaksRule
 import org.mozilla.fenix.ui.robots.browserScreen
 import org.mozilla.fenix.ui.robots.homeScreen
 import org.mozilla.fenix.ui.robots.navigationToolbar
 
-/**
- *  Tests for verifying the Homepage settings menu
- *
- */
-class SettingsHomepageTest : TestSetup() {
-    @get:Rule
-    val composeTestRule =
-        AndroidComposeTestRule(
-            HomeActivityIntentTestRule.withDefaultSettingsOverrides(skipOnboarding = true),
-        ) { it.activity }
+/** Tests for verifying the Homepage settings menu */
+class SettingsHomepageTest {
+    @get:Rule(order = 0) val fenixTestRule: FenixTestRule = FenixTestRule()
 
-    @get:Rule
-    val memoryLeaksRule = DetectMemoryLeaksRule()
+    private val mockWebServer
+        get() = fenixTestRule.mockWebServer
 
-    @Rule
-    @JvmField
-    val retryTestRule = RetryTestRule(3)
+    @get:Rule(order = 1) val retryTestRule = RetryTestRule(3)
+
+    @get:Rule(order = 2)
+    val retryableComposeTestRule = RetryableComposeTestRule {
+        AndroidComposeTestRuleV2(HomeActivityIntentTestRule.withDefaultSettingsOverrides()) { it.activity }
+    }
+
+    private val composeTestRule
+        get() = retryableComposeTestRule.current
+
+    @get:Rule(order = 3) val memoryLeaksRule = DetectMemoryLeaksRule(composeTestRule = { composeTestRule })
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1564843
     @Test
     fun verifyHomepageSettingsTest() {
-        homeScreen {
-        }.openThreeDotMenu {
-        }.openSettings {
-        }.openHomepageSubMenu {
-            verifyHomePageView()
-        }
+        homeScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openHomepageSubMenu {
+                verifyHomePageView()
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1564859
     @Test
     fun verifyShortcutOptionTest() {
-        // en-US defaults
-        val defaultTopSites = arrayOf(
-            "Wikipedia",
-            "Google",
-        )
-        val genericURL = getGenericAsset(mockWebServer, 1)
+        val genericURL = mockWebServer.getGenericAsset(1)
 
-        homeScreen {
-            defaultTopSites.forEach { item ->
-                verifyExistingTopSitesTabs(composeTestRule, item)
+        homeScreen(composeTestRule) {
+                if (isDefaultPinnedShortcutsOnHomepage()) {
+                    defaultPinnedShortcutTitles.forEach { item ->
+                        verifyExistingTopSitesTabs(item)
+                    }
+                }
             }
-        }.openThreeDotMenu {
-        }.openCustomizeHome {
-            clickShortcutsButton()
-        }.goBackToHomeScreen {
-            defaultTopSites.forEach { item ->
-                verifyNotExistingTopSiteItem(composeTestRule, item)
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openHomepageSubMenu {
+                clickShortcutsButton()
             }
-        }
+            .goBack {}
+            .goBack(composeTestRule) {
+                defaultPinnedShortcutTitles.forEach { item ->
+                    verifyNotExistingTopSiteItem(item)
+                }
+            }
         // Disabling the "Shortcuts" homepage setting option should remove the "Add to shortcuts" from main menu option
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(genericURL.url) {
-        }.openThreeDotMenu {
-            expandMenu()
-            verifyAddToShortcutsButton(shouldExist = false)
-        }
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(genericURL.url) {}
+            .openThreeDotMenu {
+                clickTheMoreButton()
+                verifyAddToShortcutsButton(isDisplayed = false)
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1565003
@@ -88,92 +94,123 @@ class SettingsHomepageTest : TestSetup() {
         composeTestRule.activityRule.applySettingsExceptions {
             it.isRecentTabsFeatureEnabled = false
         }
-        val genericURL = getGenericAsset(mockWebServer, 1)
+        val genericURL = mockWebServer.getGenericAsset(1)
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(genericURL.url) {
-        }.goToHomescreen(composeTestRule) {
-            verifyRecentlyVisitedSectionIsDisplayed(true)
-        }.openThreeDotMenu {
-        }.openCustomizeHome {
-            clickRecentlyVisited()
-        }.goBackToHomeScreen {
-            verifyRecentlyVisitedSectionIsDisplayed(false)
-        }
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(genericURL.url) {}
+            .goToHomescreen {
+                verifyRecentlyVisitedSectionIsDisplayed(true)
+            }
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openHomepageSubMenu {
+                clickRecentlyVisited()
+            }
+            .goBack {}
+            .goBack(composeTestRule) {
+                verifyRecentlyVisitedSectionIsDisplayed(false)
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1564999
+    @Converted(
+        replacedBy = ["org.mozilla.fenix.ui.efficiency.tests.SettingsHomepageTest#continueOptionTest"],
+        bug = 2042363,
+        since = "2026-05",
+    )
     @SmokeTest
     @Test
-    fun jumpBackInOptionTest() {
-        val genericURL = getGenericAsset(mockWebServer, 1)
+    fun continueOptionTest() {
+        val genericURL = mockWebServer.getGenericAsset(1)
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(genericURL.url) {
-        }.goToHomescreen(composeTestRule) {
-            verifyJumpBackInSectionIsDisplayed()
-        }.openThreeDotMenu {
-        }.openCustomizeHome {
-            clickJumpBackInButton()
-        }.goBackToHomeScreen {
-            verifyJumpBackInSectionIsNotDisplayed(composeTestRule)
-        }
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(genericURL.url) {}
+            .goToHomescreen {
+                verifyContinueSectionIsDisplayed()
+            }
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openHomepageSubMenu {
+                clickContinueButton()
+            }
+            .goBack {}
+            .goBack(composeTestRule) {
+                verifyContinueSectionIsNotDisplayed()
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1565000
+    @Converted(
+        replacedBy = ["org.mozilla.fenix.ui.efficiency.tests.SettingsHomepageTest#recentBookmarksOptionTest"],
+        bug = 2042363,
+        since = "2026-05",
+    )
     @SmokeTest
     @Test
     fun recentBookmarksOptionTest() {
-        val genericURL = getGenericAsset(mockWebServer, 1)
+        val genericURL = mockWebServer.getGenericAsset(1)
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(genericURL.url) {
-        }.openThreeDotMenu {
-        }.bookmarkPage {
-        }.goToHomescreen(composeTestRule) {
-            verifyBookmarksSectionIsDisplayed(exists = true)
-        }.openThreeDotMenu {
-        }.openCustomizeHome {
-            clickRecentBookmarksButton()
-        }.goBackToHomeScreen {
-            verifyBookmarksSectionIsDisplayed(exists = false)
-        }
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(genericURL.url) {}
+            .openThreeDotMenu {}
+            .clickBookmarkThisPageButton {}
+            .goToHomescreen {
+                verifyBookmarksSectionIsDisplayed(exists = true)
+            }
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openHomepageSubMenu {
+                clickRecentBookmarksButton()
+            }
+            .goBack {}
+            .goBack(composeTestRule) {
+                verifyBookmarksSectionIsDisplayed(exists = false)
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1569831
+    @Converted(
+        replacedBy = ["org.mozilla.fenix.ui.efficiency.tests.SettingsHomepageTest#verifyOpeningScreenOptionsTest"],
+        bug = 2058818,
+        since = "2026-07",
+    )
     @SmokeTest
     @Test
     fun verifyOpeningScreenOptionsTest() {
-        val genericURL = getGenericAsset(mockWebServer, 1)
+        val genericURL = mockWebServer.getGenericAsset(1)
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(genericURL.url) {
-        }.openThreeDotMenu {
-        }.openSettings {
-            verifySettingsOptionSummary("Homepage", "Open on homepage after four hours")
-        }.openHomepageSubMenu {
-            verifySelectedOpeningScreenOption("Homepage after four hours of inactivity")
-            clickOpeningScreenOption("Homepage")
-            verifySelectedOpeningScreenOption("Homepage")
-        }
-
-        restartApp(composeTestRule.activityRule)
-
-        homeScreen {
-            verifyHomeScreen()
-        }.openThreeDotMenu {
-        }.openSettings {
-            verifySettingsOptionSummary("Homepage", "Open on homepage")
-        }.openHomepageSubMenu {
-            clickOpeningScreenOption("Last tab")
-            verifySelectedOpeningScreenOption("Last tab")
-        }.goBack {
-            verifySettingsOptionSummary("Homepage", "Open on last tab")
-        }
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(genericURL.url) {}
+            .openThreeDotMenu {}
+            .clickSettingsButton {
+                verifySettingsOptionSummary("Homepage", "Open on homepage after four hours")
+            }
+            .openHomepageSubMenu {
+                verifySelectedOpeningScreenOption("Homepage after four hours of inactivity")
+                clickOpeningScreenOption("Homepage")
+                verifySelectedOpeningScreenOption("Homepage")
+            }
 
         restartApp(composeTestRule.activityRule)
 
-        browserScreen {
+        homeScreen(composeTestRule) {
+                verifyHomeScreen()
+            }
+            .openThreeDotMenu {}
+            .clickSettingsButton {
+                verifySettingsOptionSummary("Homepage", "Open on homepage")
+            }
+            .openHomepageSubMenu {
+                clickOpeningScreenOption("Last tab")
+                verifySelectedOpeningScreenOption("Last tab")
+            }
+            .goBack {
+                verifySettingsOptionSummary("Homepage", "Open on last tab")
+            }
+
+        restartApp(composeTestRule.activityRule)
+
+        browserScreen(composeTestRule) {
             verifyUrl(genericURL.url.toString())
         }
     }
@@ -181,46 +218,97 @@ class SettingsHomepageTest : TestSetup() {
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1569843
     @Test
     fun verifyOpeningScreenAfterLaunchingExternalLinkTest() {
-        val genericPage = getGenericAsset(mockWebServer, 1)
+        val genericPage = mockWebServer.getGenericAsset(1)
 
-        homeScreen {
-        }.openThreeDotMenu {
-        }.openSettings {
-        }.openHomepageSubMenu {
-            clickOpeningScreenOption("Homepage")
-        }.goBackToHomeScreen {}
+        homeScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openHomepageSubMenu {
+                clickOpeningScreenOption("Homepage")
+            }
+            .goBackToHomeScreen(composeTestRule) {}
 
-        with(composeTestRule.activityRule) {
-            finishActivity()
-            mDevice.waitForIdle()
-            openAppFromExternalLink(genericPage.url.toString())
+        composeTestRule.activityRule.applySettingsExceptions {
+            it.isTermsOfServiceAccepted = true
+
+            with(composeTestRule.activityRule) {
+                finishActivity()
+                mDevice.waitForIdle()
+                openAppFromExternalLink(composeTestRule, genericPage.url.toString())
+            }
         }
 
-        browserScreen {
+        browserScreen(composeTestRule) {
             verifyPageContent(genericPage.content)
         }
     }
 
-    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1676359
-    @Ignore("Intermittent test: https://github.com/mozilla-mobile/fenix/issues/26559")
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1676355
     @Test
-    fun verifyWallpaperChangeTest() {
-        val wallpapers = listOf(
-            "Wallpaper Item: amethyst",
-            "Wallpaper Item: cerulean",
-            "Wallpaper Item: sunrise",
-        )
-
-        for (wallpaper in wallpapers) {
-            homeScreen {
-            }.openThreeDotMenu {
-            }.openCustomizeHome {
-                openWallpapersMenu()
-                selectWallpaper(wallpaper)
-                verifySnackBarText("Wallpaper updated!")
-            }.clickSnackBarViewButton {
-                verifyWallpaperImageApplied(true)
+    fun verifyTheWallpapersMenuUI() {
+        homeScreen(retryableComposeTestRule.current) {}
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openHomepageSubMenu {}
+            .clickWallpapersMenuOption {
+                verifyTheWallpapersSettingsPageHeader()
+                verifyClassicFirefoxSection(retryableComposeTestRule.current)
+                verifyEdgeToEdgeWallpaperIsDisplayed(retryableComposeTestRule.current)
+                verifyDefaultWallpaperIsDisplayed(retryableComposeTestRule.current)
             }
+    }
+
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1676359
+    @Test
+    fun verifyWallpaperChangeFunctionalityTest() {
+        homeScreen(retryableComposeTestRule.current) {}
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openHomepageSubMenu {}
+            .clickWallpapersMenuOption {
+                verifyEdgeToEdgeWallpaperIsSelected(retryableComposeTestRule.current)
+                verifyDefaultWallpaperIsNotSelected(retryableComposeTestRule.current)
+                clickTheDefaultWallpaper(retryableComposeTestRule.current)
+                verifyDefaultWallpaperIsSelected(retryableComposeTestRule.current)
+                verifyEdgeToEdgeWallpaperIsNotSelected(retryableComposeTestRule.current)
+            }
+            .goBack {}
+            .goBack(retryableComposeTestRule.current) {
+                exitMenu()
+                verifyDefaultWallpaperApplied(retryableComposeTestRule.current)
+            }
+    }
+
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/3375726
+    @Test
+    fun verifyEdgeToEdgeWallpaperBackgroundAdaptation() {
+        homeScreen(retryableComposeTestRule.current) {}
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openHomepageSubMenu {}
+            .clickWallpapersMenuOption {
+                verifyEdgeToEdgeWallpaperIsSelected(retryableComposeTestRule.current)
+            }
+            .goBack {}
+            .goBack(retryableComposeTestRule.current) {
+                exitMenu()
+                verifyWindowBackgroundDrawable(retryableComposeTestRule.current, R.drawable.home_background_gradient)
+            }
+
+        homeScreen(retryableComposeTestRule.current) {}
+            .openThreeDotMenu {}
+            .clickSettingsButton {}
+            .openCustomizeSubMenu {
+                selectDarkMode()
+            }
+            .goBack {}
+            .goBack(retryableComposeTestRule.current) {
+                verifyWindowBackgroundDrawable(retryableComposeTestRule.current, R.drawable.home_background_gradient)
+            }
+            .togglePrivateBrowsingMode()
+
+        homeScreen(retryableComposeTestRule.current) {
+            verifyPrivateModeBackgroundApplied(retryableComposeTestRule.current)
         }
     }
 }

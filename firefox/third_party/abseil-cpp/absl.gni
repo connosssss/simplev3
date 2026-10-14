@@ -24,6 +24,8 @@ declare_args() {
   moz_webrtc_build = true
 }
 
+CHECK_INCLUDES_STRICT_PUBLIC_INCLUDES_PRIVATE = false
+
 template("absl_source_set") {
   source_set(target_name) {
     if (defined(invoker.testonly) && invoker.testonly && !absl_build_tests) {
@@ -37,6 +39,20 @@ template("absl_source_set") {
         "//abseil-cpp:absl_default_cflags_cc",
         "//abseil-cpp:absl_define_config",
       ]
+
+      if (moz_webrtc_build) {
+        configs -= [ "//chromium/build/config/compiler:prevent_unsafe_narrowing" ]
+
+        # Silence -Wcomma / -Wtautological-type-limit-compare spam from
+        # third-party abseil sources. See bug 1965053.
+        if (!defined(cflags_cc)) {
+          cflags_cc = []
+        }
+        cflags_cc += [
+          "-Wno-comma",
+          "-Wno-tautological-type-limit-compare",
+        ]
+      }
 
       if (!defined(defines)) {
         defines = []
@@ -55,9 +71,10 @@ template("absl_source_set") {
       public_configs += [ "//abseil-cpp:absl_include_config" ]
 
       if (!defined(visibility)) {
-        # Within Chromium builds, restrict direct visibility of Abseil sources, so
-        # users must depend on //third_party/abseil-cpp:absl. This prevents use of
-        # banned targets like absl/types:any. A few targets require exceptions.
+        # Within Chromium builds, restrict direct visibility of Abseil sources,
+        # so users must depend on //third_party/abseil-cpp:absl. This prevents
+        # use of banned targets like absl/types:any. A few targets require
+        # exceptions.
         if (build_with_chromium) {
           visibility = [
             # Abseil itself.

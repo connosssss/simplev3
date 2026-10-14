@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,20 +8,18 @@
 #include "DocAccessible-inl.h"
 #include "DocAccessibleChild.h"
 #include "LocalAccessible-inl.h"
-#include "nsEventShell.h"
 #include "TextLeafAccessible.h"
 #include "TextUpdater.h"
-
-#include "nsIContentInlines.h"
-
 #include "mozilla/AppShutdown.h"
-#include "mozilla/dom/BrowserChild.h"
-#include "mozilla/dom/Element.h"
 #include "mozilla/PerfStats.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/ProfilerMarkers.h"
-#include "nsAccessibilityService.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/WindowGlobalChild.h"
 #include "mozilla/glean/AccessibleMetrics.h"
+#include "nsAccessibilityService.h"
+#include "nsEventShell.h"
+#include "nsIContentInlines.h"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
@@ -344,6 +341,7 @@ void NotificationController::DropMutationEvent(AccTreeMutationEvent* aEvent) {
     MOZ_ASSERT(hideEvent);
 
     if (hideEvent->NeedsShutdown()) {
+      mDocument->UncacheChildrenInSubtree(aEvent->GetAccessible());
       mDocument->ShutdownChildrenInSubtree(aEvent->GetAccessible());
     }
   } else {
@@ -482,6 +480,11 @@ void NotificationController::ScheduleProcessing() {
   // Note: the mPresShell null-check might be unnecessary; it's just to prevent
   // a null-deref here, if we somehow get called after we've been shut down.
   if (mObservingState == eNotObservingRefresh && mPresShell) {
+    if (mDocument->IsPrintDoc()) {
+      // A print document is a static clone and thus doesn't need a refresh
+      // tick.
+      return;
+    }
     if (mPresShell->AddRefreshObserver(this, FlushType::Display,
                                        "Accessibility notifications")) {
       mObservingState = eRefreshObserving;
@@ -772,6 +775,15 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
     }
 #endif
 
+    if (!mDocument->DocumentNode()->IsCurrentActiveDocument()) {
+      // Our document is no longer current for its WindowGlobal; e.g. we're
+      // the initial about:blank and a new document has replaced us in that
+      // WindowGlobal. Shut ourselves down instead of building an accessibility
+      // tree (and IPC actor) nobody will use.
+      mDocument->Shutdown();
+      return;
+    }
+
     mDocument->DoInitialUpdate();
     if (AppShutdown::IsShutdownImpending()) {
       return;
@@ -921,7 +933,7 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
       continue;
     }
 
-    if (IPCAccessibilityActive() && !mDocument->IPCDoc()) {
+    if (mDocument->ShouldSendToParentProcess() && !mDocument->IPCDoc()) {
       childDoc->Shutdown();
       continue;
     }
@@ -975,16 +987,7 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
   // mutation is done.
   mDocument->ProcessInvalidationList();
 
-  // Process relocation list.
-  for (uint32_t idx = 0; idx < mRelocations.Length(); idx++) {
-    // owner should be in a document and have na associated DOM node (docs
-    // sometimes don't)
-    if (mRelocations[idx]->IsInDocument() &&
-        mRelocations[idx]->HasOwnContent()) {
-      mDocument->DoARIAOwnsRelocation(mRelocations[idx]);
-    }
-  }
-  mRelocations.Clear();
+  ProcessRelocations();
 
   // Process only currently queued generic notifications.
   // These are used for processing aria-activedescendant, DOMMenuItemActive,
@@ -1066,11 +1069,11 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
       // parent process. This request will be after the mutation events in the
       // IPDL queue, so the parent process will respond once it has finished
       // handling all the mutation events.
-      Unused << mDocument->IPCDoc()->SendRequestAckMutationEvents();
+      (void)mDocument->IPCDoc()->SendRequestAckMutationEvents();
     }
   }
 
-  if (IPCAccessibilityActive()) {
+  if (mDocument->ShouldSendToParentProcess()) {
     size_t newDocCount = newChildDocs.Length();
     for (size_t i = 0; i < newDocCount; i++) {
       DocAccessible* childDoc = newChildDocs[i];
@@ -1089,16 +1092,13 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
         continue;
       }
 
-      ipcDoc = new DocAccessibleChild(childDoc, parentIPCDoc->Manager());
-      childDoc->SetIPCDoc(ipcDoc);
-
-      nsCOMPtr<nsIBrowserChild> browserChild =
-          do_GetInterface(mDocument->DocumentNode()->GetDocShell());
-      if (browserChild) {
-        static_cast<BrowserChild*>(browserChild.get())
-            ->SendPDocAccessibleConstructor(
-                ipcDoc, parentIPCDoc, id,
-                childDoc->DocumentNode()->GetBrowsingContext());
+      if (WindowGlobalChild* wgc =
+              childDoc->DocumentNode()->GetWindowGlobalChild()) {
+        RefPtr<DocAccessibleChild> newIpcDoc =
+            new DocAccessibleChild(childDoc, wgc);
+        childDoc->SetIPCDoc(newIpcDoc);
+        wgc->SendPDocAccessibleConstructor(newIpcDoc, id,
+                                           childDoc->IsPrintDoc());
       }
     }
   }
@@ -1126,6 +1126,18 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
       mPresShell->RemoveRefreshObserver(this, FlushType::Display)) {
     mObservingState = eNotObservingRefresh;
   }
+}
+
+void NotificationController::ProcessRelocations() {
+  for (uint32_t idx = 0; idx < mRelocations.Length(); idx++) {
+    // owner should be in a document and have na associated DOM node (docs
+    // sometimes don't)
+    if (mRelocations[idx]->IsInDocument() &&
+        mRelocations[idx]->HasOwnContent()) {
+      mDocument->DoARIAOwnsRelocation(mRelocations[idx]);
+    }
+  }
+  mRelocations.Clear();
 }
 
 void NotificationController::EventMap::PutEvent(AccTreeMutationEvent* aEvent) {

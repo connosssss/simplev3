@@ -2,13 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _RTCDTMFSender_h_
-#define _RTCDTMFSender_h_
+#ifndef RTCDTMFSender_h_
+#define RTCDTMFSender_h_
 
 #include "MediaEventSource.h"
+#include "js/RootingAPI.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/RefPtr.h"
-#include "js/RootingAPI.h"
 #include "nsITimer.h"
 
 class nsPIDOMWindowInner;
@@ -55,14 +55,13 @@ class RTCDTMFSender : public DOMEventTargetHelper,
   void GetToneBuffer(nsAString& aOutToneBuffer);
   IMPL_EVENT_HANDLER(tonechange)
 
-  void StopPlayout();
-
   MediaEventSource<DtmfEvent>& OnDtmfEvent() { return mDtmfEvent; }
 
  private:
   virtual ~RTCDTMFSender() = default;
 
-  void StartPlayout(uint32_t aDelay);
+  void SchedulePlayout(uint32_t aDelay);
+  void DoPlayout();
 
   RefPtr<RTCRtpTransceiver> mTransceiver;
   MediaEventProducer<DtmfEvent> mDtmfEvent;
@@ -72,8 +71,9 @@ class RTCDTMFSender : public DOMEventTargetHelper,
   uint32_t mDuration = 0;
   uint32_t mInterToneGap = 0;
   nsCOMPtr<nsITimer> mSendTimer;
+  bool mPlayoutScheduled = false;
 };
 
 }  // namespace dom
 }  // namespace mozilla
-#endif  // _RTCDTMFSender_h_
+#endif  // RTCDTMFSender_h_

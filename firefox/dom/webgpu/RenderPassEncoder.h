@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,15 +5,16 @@
 #ifndef GPU_RenderPassEncoder_H_
 #define GPU_RenderPassEncoder_H_
 
-#include "mozilla/dom/TypedArray.h"
 #include "CanvasContext.h"
 #include "ObjectModel.h"
+#include "mozilla/dom/TypedArray.h"
 
 namespace mozilla {
 class ErrorResult;
 
 namespace dom {
 class DoubleSequenceOrGPUColorDict;
+enum class GPUIndexFormat : uint8_t;
 struct GPURenderPassDescriptor;
 template <typename T>
 class Sequence;
@@ -28,51 +28,40 @@ namespace ffi {
 struct WGPURecordedRenderPass;
 }  // namespace ffi
 
+RawId BeginFfiRenderPass(ffi::WGPUClient* aClient, RawId aEncoderId,
+                         const dom::GPURenderPassDescriptor& aDesc);
+
 class BindGroup;
 class Buffer;
 class CommandEncoder;
 class RenderBundle;
 class RenderPipeline;
 class TextureView;
+class ExternalTexture;
 
-struct ffiWGPURenderPassDeleter {
-  void operator()(ffi::WGPURecordedRenderPass*);
-};
-
-class RenderPassEncoder final : public ObjectBase,
+class RenderPassEncoder final : public nsWrapperCache,
+                                public ObjectBase,
                                 public ChildOf<CommandEncoder> {
  public:
   GPU_DECL_CYCLE_COLLECTION(RenderPassEncoder)
   GPU_DECL_JS_WRAP(RenderPassEncoder)
 
-  RenderPassEncoder(CommandEncoder* const aParent,
-                    const dom::GPURenderPassDescriptor& aDesc);
+  RenderPassEncoder(CommandEncoder* const aParent, RawId aId);
 
  protected:
   virtual ~RenderPassEncoder();
-  void Cleanup();
-
-  std::unique_ptr<ffi::WGPURecordedRenderPass, ffiWGPURenderPassDeleter> mPass;
-  // keep all the used objects alive while the pass is recorded
-  nsTArray<RefPtr<const BindGroup>> mUsedBindGroups;
-  nsTArray<RefPtr<const Buffer>> mUsedBuffers;
-  nsTArray<RefPtr<const RenderPipeline>> mUsedPipelines;
-  nsTArray<RefPtr<const TextureView>> mUsedTextureViews;
-  nsTArray<RefPtr<const RenderBundle>> mUsedRenderBundles;
 
   // The canvas contexts of any canvas textures used in bind groups of this
   // render pass.
   CanvasContextArray mUsedCanvasContexts;
+  nsTArray<RefPtr<ExternalTexture>> mExternalTextures;
 
-  // programmable pass encoder
  private:
   void SetBindGroup(uint32_t aSlot, BindGroup* const aBindGroup,
                     const uint32_t* aDynamicOffsets,
-                    uint64_t aDynamicOffsetsLength);
+                    size_t aDynamicOffsetsLength);
 
  public:
-  void Invalidate() { mValid = false; }
-
   void SetBindGroup(uint32_t aSlot, BindGroup* const aBindGroup,
                     const dom::Sequence<uint32_t>& aDynamicOffsets,
                     ErrorResult& aRv);
@@ -85,8 +74,8 @@ class RenderPassEncoder final : public ObjectBase,
   void SetIndexBuffer(const Buffer& aBuffer,
                       const dom::GPUIndexFormat& aIndexFormat, uint64_t aOffset,
                       const dom::Optional<uint64_t>& aSize);
-  void SetVertexBuffer(uint32_t aSlot, const Buffer& aBuffer, uint64_t aOffset,
-                       const dom::Optional<uint64_t>& aSize);
+  void SetVertexBuffer(uint32_t aSlot, const Buffer* const aBuffer,
+                       uint64_t aOffset, const dom::Optional<uint64_t>& aSize);
   void Draw(uint32_t aVertexCount, uint32_t aInstanceCount,
             uint32_t aFirstVertex, uint32_t aFirstInstance);
   void DrawIndexed(uint32_t aIndexCount, uint32_t aInstanceCount,

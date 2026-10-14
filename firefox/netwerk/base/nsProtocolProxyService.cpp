@@ -1,49 +1,44 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=4 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "SimpleChannel.h"
-#include "mozilla/ArrayUtils.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/AutoRestore.h"
-
 #include "nsProtocolProxyService.h"
-#include "nsProxyInfo.h"
-#include "nsIClassInfoImpl.h"
-#include "nsIIOService.h"
-#include "nsIObserverService.h"
-#include "nsIProtocolHandler.h"
-#include "nsIProtocolProxyCallback.h"
-#include "nsIChannel.h"
-#include "nsICancelable.h"
-#include "nsDNSService2.h"
-#include "nsPIDNSService.h"
-#include "nsIPrefBranch.h"
-#include "nsIPrefService.h"
-#include "nsContentUtils.h"
-#include "nsCRT.h"
-#include "nsThreadUtils.h"
-#include "nsQueryObject.h"
-#include "nsSOCKSIOLayer.h"
-#include "nsString.h"
-#include "nsNetUtil.h"
-#include "nsNetCID.h"
-#include "prnetdb.h"
-#include "nsPACMan.h"
-#include "nsProxyRelease.h"
-#include "mozilla/Mutex.h"
+
+#include "SimpleChannel.h"
+#include "mozilla/AutoRestore.h"
 #include "mozilla/CondVar.h"
-#include "nsISystemProxySettings.h"
-#include "nsINetworkLinkService.h"
-#include "nsIHttpChannelInternal.h"
-#include "mozilla/dom/nsMixedContentBlocker.h"
 #include "mozilla/Logging.h"
+#include "mozilla/Mutex.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_network.h"
 #include "mozilla/Tokenizer.h"
-#include "mozilla/Unused.h"
+#include "mozilla/dom/nsMixedContentBlocker.h"
+#include "nsCRT.h"
+#include "nsContentUtils.h"
+#include "nsDNSService2.h"
+#include "nsICancelable.h"
+#include "nsIChannel.h"
+#include "nsIClassInfoImpl.h"
+#include "nsIHttpChannelInternal.h"
+#include "nsIIOService.h"
+#include "nsINetworkLinkService.h"
+#include "nsIObserverService.h"
+#include "nsIPrefBranch.h"
+#include "nsIPrefService.h"
+#include "nsIProtocolHandler.h"
+#include "nsIProtocolProxyCallback.h"
+#include "nsISystemProxySettings.h"
+#include "nsNetCID.h"
+#include "nsNetUtil.h"
+#include "nsPACMan.h"
+#include "nsPIDNSService.h"
+#include "nsProxyInfo.h"
+#include "nsProxyRelease.h"
+#include "nsQueryObject.h"
+#include "nsSOCKSIOLayer.h"
+#include "nsString.h"
+#include "nsThreadUtils.h"
+#include "prnetdb.h"
 
 //----------------------------------------------------------------------------
 
@@ -57,6 +52,7 @@ extern const char kProxyType_SOCKS4[];
 extern const char kProxyType_SOCKS5[];
 extern const char kProxyType_DIRECT[];
 extern const char kProxyType_PROXY[];
+extern const char kProxyType_MASQUE[];
 
 #undef LOG
 #define LOG(args) MOZ_LOG(gProxyLog, LogLevel::Debug, args)
@@ -678,7 +674,7 @@ class AsyncGetPACURIRequestOrSystemWPADSetting final : public nsIRunnable {
         mResetPACThread(aResetPACThread),
         mSystemWPADAllowed(aSystemWPADAllowed) {
     MOZ_ASSERT(NS_IsMainThread());
-    Unused << mIsMainThreadOnly;
+    (void)mIsMainThreadOnly;
   }
 
   NS_IMETHOD Run() override {
@@ -1261,6 +1257,7 @@ const char kProxyType_SOCKS[] = "socks";
 const char kProxyType_SOCKS4[] = "socks4";
 const char kProxyType_SOCKS5[] = "socks5";
 const char kProxyType_DIRECT[] = "direct";
+const char kProxyType_MASQUE[] = "masque";
 
 const char* nsProtocolProxyService::ExtractProxyInfo(const char* start,
                                                      uint32_t aResolveFlags,
@@ -1357,7 +1354,7 @@ const char* nsProtocolProxyService::ExtractProxyInfo(const char* start,
     }
 
     if (!urlHost.IsEmpty()) {
-      pi->mHost = urlHost;
+      pi->mHost = std::move(urlHost);
 
       int32_t tPort;
       if (NS_SUCCEEDED(pacURI->GetPort(&tPort)) && tPort != -1) {
@@ -1587,7 +1584,7 @@ nsresult nsProtocolProxyService::AsyncResolveInternal(
     nsCOMPtr<nsISystemProxySettings> sp2 =
         do_GetService(NS_SYSTEMPROXYSETTINGS_CONTRACTID);
     if (sp2 != mSystemProxySettings) {
-      mSystemProxySettings = sp2;
+      mSystemProxySettings = std::move(sp2);
       ResetPACThread();
     }
   }
@@ -1700,8 +1697,21 @@ nsProtocolProxyService::NewProxyInfoWithAuth(
     return NS_ERROR_NOT_IMPLEMENTED;
   }
 
-  return NewProxyInfo_Internal(type, aHost, aPort, aUsername, aPassword,
+  return NewProxyInfo_Internal(type, aHost, aPort, ""_ns, aUsername, aPassword,
                                aProxyAuthorizationHeader,
+                               aConnectionIsolationKey, aFlags,
+                               aFailoverTimeout, aFailoverProxy, 0, aResult);
+}
+
+NS_IMETHODIMP
+nsProtocolProxyService::NewMASQUEProxyInfo(
+    const nsACString& aHost, int32_t aPort, const nsACString& aMasqueTemplate,
+    const nsACString& aProxyAuthorizationHeader,
+    const nsACString& aConnectionIsolationKey, uint32_t aFlags,
+    uint32_t aFailoverTimeout, nsIProxyInfo* aFailoverProxy,
+    nsIProxyInfo** aResult) {
+  return NewProxyInfo_Internal(kProxyType_MASQUE, aHost, aPort, aMasqueTemplate,
+                               ""_ns, ""_ns, aProxyAuthorizationHeader,
                                aConnectionIsolationKey, aFlags,
                                aFailoverTimeout, aFailoverProxy, 0, aResult);
 }
@@ -2073,8 +2083,8 @@ nsresult nsProtocolProxyService::GetProtocolInfo(nsIURI* uri,
 
 nsresult nsProtocolProxyService::NewProxyInfo_Internal(
     const char* aType, const nsACString& aHost, int32_t aPort,
-    const nsACString& aUsername, const nsACString& aPassword,
-    const nsACString& aProxyAuthorizationHeader,
+    const nsACString& aMasqueTemplate, const nsACString& aUsername,
+    const nsACString& aPassword, const nsACString& aProxyAuthorizationHeader,
     const nsACString& aConnectionIsolationKey, uint32_t aFlags,
     uint32_t aFailoverTimeout, nsIProxyInfo* aFailoverProxy,
     uint32_t aResolveFlags, nsIProxyInfo** aResult) {
@@ -2091,10 +2101,14 @@ nsresult nsProtocolProxyService::NewProxyInfo_Internal(
   proxyInfo->mType = aType;
   proxyInfo->mHost = aHost;
   proxyInfo->mPort = aPort;
+  proxyInfo->mMasqueTemplate = aMasqueTemplate;
   proxyInfo->mUsername = aUsername;
   proxyInfo->mPassword = aPassword;
   proxyInfo->mFlags = aFlags;
   proxyInfo->mResolveFlags = aResolveFlags;
+  if (aFlags & nsIProxyInfo::ALWAYS_TUNNEL_VIA_PROXY) {
+    proxyInfo->mResolveFlags |= nsIProtocolProxyService::RESOLVE_ALWAYS_TUNNEL;
+  }
   proxyInfo->mTimeout =
       aFailoverTimeout == UINT32_MAX ? mFailedProxyTimeout : aFailoverTimeout;
   proxyInfo->mProxyAuthorizationHeader = aProxyAuthorizationHeader;
@@ -2150,15 +2164,24 @@ nsresult nsProtocolProxyService::Resolve_Internal(nsIChannel* channel,
     return NS_OK;
   }
 
-  bool mainThreadOnly;
-  if (mSystemProxySettings && mProxyConfig == PROXYCONFIG_SYSTEM &&
-      NS_SUCCEEDED(mSystemProxySettings->GetMainThreadOnly(&mainThreadOnly)) &&
-      !mainThreadOnly) {
-    *usePACThread = true;
-    return NS_OK;
-  }
-
   if (mSystemProxySettings && mProxyConfig == PROXYCONFIG_SYSTEM) {
+    bool mainThreadOnly = false;
+    if (NS_SUCCEEDED(
+            mSystemProxySettings->GetMainThreadOnly(&mainThreadOnly)) &&
+        !mainThreadOnly) {
+      *usePACThread = true;
+      return NS_OK;
+    }
+
+    if (StaticPrefs::network_proxy_fast_path_system_direct()) {
+      bool systemDirect = false;
+      if (NS_SUCCEEDED(
+              mSystemProxySettings->GetSystemProxyDirect(&systemDirect)) &&
+          systemDirect) {
+        return NS_OK;
+      }
+    }
+
     // If the system proxy setting implementation is not threadsafe (e.g
     // linux gconf), we'll do it inline here. Such implementations promise
     // not to block
@@ -2294,7 +2317,8 @@ nsresult nsProtocolProxyService::Resolve_Internal(nsIChannel* channel,
 
   if (type) {
     rv = NewProxyInfo_Internal(type, *host, port, ""_ns, ""_ns, ""_ns, ""_ns,
-                               proxyFlags, UINT32_MAX, nullptr, flags, result);
+                               ""_ns, proxyFlags, UINT32_MAX, nullptr, flags,
+                               result);
     if (NS_FAILED(rv)) return rv;
   }
 
@@ -2341,7 +2365,7 @@ bool nsProtocolProxyService::ApplyFilter(
 
   if (filterLink->filter) {
     nsCOMPtr<nsIURI> uri;
-    Unused << GetProxyURI(channel, getter_AddRefs(uri));
+    (void)GetProxyURI(channel, getter_AddRefs(uri));
     if (!uri) {
       return false;
     }
@@ -2499,6 +2523,30 @@ nsProtocolProxyService::NotifyProxyConfigChangedInternal() {
     callback->OnProxyConfigChanged();
   }
   return NS_OK;
+}
+
+bool nsProtocolProxyService::IsEffectivelyDirect() {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (!StaticPrefs::network_proxy_fast_path_system_direct()) {
+    return false;
+  }
+
+  if (!mFilters.IsEmpty()) {
+    return false;
+  }
+
+  if (mProxyConfig == PROXYCONFIG_DIRECT) {
+    return true;
+  }
+
+  if (mProxyConfig == PROXYCONFIG_SYSTEM && mSystemProxySettings) {
+    bool systemDirect = false;
+    mSystemProxySettings->GetSystemProxyDirect(&systemDirect);
+    return systemDirect;
+  }
+
+  return false;
 }
 
 }  // namespace net

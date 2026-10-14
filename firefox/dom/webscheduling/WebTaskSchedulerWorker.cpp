@@ -1,12 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "WebTaskSchedulerWorker.h"
-#include "mozilla/dom/WorkerScope.h"
+
 #include "mozilla/dom/TimeoutManager.h"
+#include "mozilla/dom/WorkerScope.h"
 
 namespace mozilla::dom {
 WebTaskWorkerRunnable::WebTaskWorkerRunnable(
@@ -54,8 +53,8 @@ bool WebTaskWorkerRunnable::WorkerRun(JSContext* aCx,
   return true;
 }
 
-nsresult WebTaskSchedulerWorker::SetTimeoutForDelayedTask(
-    WebTask* aTask, uint64_t aDelay, EventQueuePriority aPriority) {
+nsresult WebTaskSchedulerWorker::SetTimeoutForDelayedTask(WebTask* aTask,
+                                                          uint64_t aDelay) {
   if (mWorkerIsShuttingDown) {
     return NS_ERROR_ABORT;
   }
@@ -72,7 +71,7 @@ nsresult WebTaskSchedulerWorker::SetTimeoutForDelayedTask(
     return NS_ERROR_UNEXPECTED;
   }
   RefPtr<DelayedWebTaskHandler> handler =
-      new DelayedWebTaskHandler(cx, this, aTask, aPriority);
+      new DelayedWebTaskHandler(cx, this, aTask);
   ErrorResult rv;
 
   int32_t delay = aDelay > INT32_MAX ? INT32_MAX : (int32_t)aDelay;

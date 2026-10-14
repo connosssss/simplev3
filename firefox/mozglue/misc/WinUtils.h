@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -23,8 +21,7 @@ class MOZ_STATIC_CLASS Win32SRWLock final {
   // https://docs.microsoft.com/en-ca/windows/desktop/ProcThread/thread-handles-and-identifiers
   static const DWORD kInvalidThreadId = 0;
 
-  constexpr Win32SRWLock()
-      : mExclusiveThreadId(kInvalidThreadId), mLock(SRWLOCK_INIT) {}
+  Win32SRWLock() = default;
 
   ~Win32SRWLock() { MOZ_ASSERT(mExclusiveThreadId == kInvalidThreadId); }
 
@@ -69,15 +66,15 @@ class MOZ_STATIC_CLASS Win32SRWLock final {
   // But a thread will only read its own ID if it previously wrote it, and a
   // single thread doesn't need a memory barrier to read its own write.
 
-  Atomic<DWORD, Relaxed> mExclusiveThreadId;
-  SRWLOCK mLock;
+  Atomic<DWORD, Relaxed> mExclusiveThreadId{kInvalidThreadId};
+  SRWLOCK mLock = SRWLOCK_INIT;
 };
 
 #else  // DEBUG
 
 class MOZ_STATIC_CLASS Win32SRWLock final {
  public:
-  constexpr Win32SRWLock() : mLock(SRWLOCK_INIT) {}
+  Win32SRWLock() = default;
 
   void LockShared() { ::AcquireSRWLockShared(&mLock); }
 
@@ -95,7 +92,7 @@ class MOZ_STATIC_CLASS Win32SRWLock final {
   Win32SRWLock& operator=(Win32SRWLock&&) = delete;
 
  private:
-  SRWLOCK mLock;
+  SRWLOCK mLock = SRWLOCK_INIT;
 };
 
 #endif

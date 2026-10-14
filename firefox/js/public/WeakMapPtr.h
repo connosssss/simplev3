@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -25,6 +23,11 @@ template <typename K, typename V>
 class JS_PUBLIC_API WeakMapPtr {
  public:
   WeakMapPtr() : ptr(nullptr) {}
+
+  // WeakMapPtr is neither copyable nor assignable.
+  WeakMapPtr(const WeakMapPtr& wmp) = delete;
+  WeakMapPtr& operator=(const WeakMapPtr& wmp) = delete;
+
   bool init(JSContext* cx);
   bool initialized() { return ptr != nullptr; }
   void destroy();
@@ -37,10 +40,6 @@ class JS_PUBLIC_API WeakMapPtr {
 
  private:
   void* ptr;
-
-  // WeakMapPtr is neither copyable nor assignable.
-  WeakMapPtr(const WeakMapPtr& wmp) = delete;
-  WeakMapPtr& operator=(const WeakMapPtr& wmp) = delete;
 };
 
 } /* namespace JS */

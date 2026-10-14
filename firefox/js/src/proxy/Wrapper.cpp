@@ -1,12 +1,8 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "js/Wrapper.h"
-
-#include "jsexn.h"
 
 #include "js/CallAndConstruct.h"      // JS::Construct, JS::IsConstructor
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
@@ -316,10 +312,8 @@ JSObject* Wrapper::wrappedObject(JSObject* wrapper) {
 }
 
 JS_PUBLIC_API JSObject* js::UncheckedUnwrapWithoutExpose(JSObject* wrapped) {
-  while (true) {
-    if (!wrapped->is<WrapperObject>() || MOZ_UNLIKELY(IsWindowProxy(wrapped))) {
-      break;
-    }
+  while (wrapped && wrapped->is<WrapperObject>() &&
+         MOZ_LIKELY(!IsWindowProxy(wrapped))) {
     wrapped = wrapped->as<WrapperObject>().target();
 
     // This can be called from when getting a weakmap key delegate() on a

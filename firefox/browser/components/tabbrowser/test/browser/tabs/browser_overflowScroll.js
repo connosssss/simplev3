@@ -33,9 +33,7 @@ add_task(async function () {
 
   gBrowser.pinTab(gBrowser.tabs[0]);
 
-  await BrowserTestUtils.waitForCondition(() => {
-    return Array.from(gBrowser.tabs).every(tab => tab._fullyOpen);
-  });
+  await BrowserTestUtils.allTabOpenAnimationsFinished(window);
 
   ok(arrowScrollbox.overflowing, "Tab strip should be overflowing");
 
@@ -86,7 +84,7 @@ add_task(async function () {
 
   EventUtils.synthesizeMouseAtCenter(upButton, { clickCount: 2 });
   await waitForNextFrame();
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => !gBrowser.tabContainer.arrowScrollbox._isScrolling
   );
   isLeft(element, "Scrolled one page of tabs with a double click");

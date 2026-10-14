@@ -5,14 +5,15 @@
 //! A set of author stylesheets and their computed representation, such as the
 //! ones used for ShadowRoot.
 
-use crate::dom::TElement;
-use crate::invalidation::media_queries::ToMediaListKey;
+use crate::derives::*;
+use crate::invalidation::stylesheets::StylesheetInvalidationSet;
 use crate::shared_lock::SharedRwLockReadGuard;
 use crate::stylesheet_set::AuthorStylesheetSet;
 use crate::stylesheets::StylesheetInDocument;
 use crate::stylist::CascadeData;
 use crate::stylist::Stylist;
 use servo_arc::Arc;
+use std::sync::LazyLock;
 
 /// A set of author stylesheets and their computed representation, such as the
 /// ones used for ShadowRoot.
@@ -31,8 +32,16 @@ where
 
 pub use self::GenericAuthorStyles as AuthorStyles;
 
-lazy_static! {
-    static ref EMPTY_CASCADE_DATA: Arc<CascadeData> = Arc::new_leaked(CascadeData::new());
+static EMPTY_CASCADE_DATA: LazyLock<Arc<CascadeData>> =
+    LazyLock::new(|| Arc::new_leaked(CascadeData::new()));
+
+impl<S> Default for GenericAuthorStyles<S>
+where
+    S: StylesheetInDocument + PartialEq + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<S> GenericAuthorStyles<S>
@@ -49,22 +58,26 @@ where
     }
 
     /// Flush the pending sheet changes, updating `data` as appropriate.
-    ///
-    /// TODO(emilio): Need a host element and a snapshot map to do invalidation
-    /// properly.
     #[inline]
-    pub fn flush<E>(&mut self, stylist: &mut Stylist, guard: &SharedRwLockReadGuard)
-    where
-        E: TElement,
-        S: ToMediaListKey,
-    {
-        let flusher = self
-            .stylesheets
-            .flush::<E>(/* host = */ None, /* snapshot_map = */ None);
-
-        let result = stylist.rebuild_author_data(&self.data, flusher.sheets, guard);
+    pub fn flush(
+        &mut self,
+        stylist: &mut Stylist,
+        guard: &SharedRwLockReadGuard,
+    ) -> StylesheetInvalidationSet {
+        // TODO(emilio): We don't collect invalidations for shadow trees, see
+        // Servo_StyleSet_FlushStyleSheets.
+        let (flusher, mut invalidations) =
+            self.stylesheets
+                .flush(None, self.data.custom_media_map(), guard);
+        let result = stylist.rebuild_author_data(
+            &self.data,
+            flusher.sheets,
+            guard,
+            &mut invalidations.cascade_data_difference,
+        );
         if let Ok(Some(new_data)) = result {
             self.data = new_data;
         }
+        invalidations
     }
 }

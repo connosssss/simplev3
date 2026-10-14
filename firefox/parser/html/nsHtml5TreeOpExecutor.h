@@ -100,6 +100,8 @@ class nsHtml5TreeOpExecutor final
  public:
   nsHtml5TreeOpExecutor();
 
+  static void InitializeStatics();
+
  protected:
   virtual ~nsHtml5TreeOpExecutor();
 
@@ -111,15 +113,13 @@ class nsHtml5TreeOpExecutor final
    */
   NS_IMETHOD WillParse() override;
 
-  NS_IMETHOD WillBuildModel(nsDTDMode /* unused */) override {
-    return WillBuildModel();
-  }
-  nsresult WillBuildModel();
+  NS_IMETHOD WillBuildModel() override;
 
   /**
    * Emits EOF.
    */
-  NS_IMETHOD DidBuildModel(bool aTerminated) override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHOD
+  DidBuildModel(bool aTerminated) override;
 
   /**
    * Forwards to nsContentSink
@@ -220,7 +220,8 @@ class nsHtml5TreeOpExecutor final
   bool IsInFlushLoop() { return mRunFlushLoopOnStack; }
 #endif
 
-  void RunScript(nsIContent* aScriptElement, bool aMayDocumentWriteOrBlock);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void RunScript(nsIContent* aScriptElement,
+                                             bool aMayDocumentWriteOrBlock);
 
   /**
    * Flush the operations from the tree operations from the argument
@@ -265,7 +266,7 @@ class nsHtml5TreeOpExecutor final
                     const nsAString& aMedia, const nsAString& aSrcset,
                     const nsAString& aSizes,
                     const nsAString& aImageReferrerPolicy, bool aLinkPreload,
-                    const nsAString& aFetchPriority);
+                    const nsAString& aFetchPriority, const nsAString& aType);
 
   void PreloadOpenPicture();
 
@@ -319,6 +320,11 @@ class nsHtml5TreeOpExecutor final
    * list of preloaded URIs
    */
   bool ShouldPreloadURI(nsIURI* aURI);
+
+  /**
+   * Returns true if the image type is supported.
+   */
+  bool ImageTypeSupports(const nsAString& aType);
 
   ReferrerPolicy GetPreloadReferrerPolicy(const nsAString& aReferrerPolicy);
 

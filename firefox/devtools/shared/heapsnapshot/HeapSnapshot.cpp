@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32,7 +31,6 @@
 #include "mozilla/dom/HeapSnapshotBinding.h"
 #include "mozilla/RangedPtr.h"
 #include "mozilla/glean/DevtoolsSharedHeapsnapshotMetrics.h"
-#include "mozilla/Unused.h"
 
 #include "jsapi.h"
 #include "jsfriendapi.h"
@@ -314,7 +312,7 @@ bool HeapSnapshot::saveStackFrame(const protobuf::StackFrame& frame,
   // Incomplete message.
   if (!frame.has_data()) return false;
 
-  auto data = frame.data();
+  const auto& data = frame.data();
 
   if (!data.has_id()) return false;
   StackFrameId id = data.id();
@@ -828,7 +826,11 @@ class TwoByteString
   };
 
  public:
+  // NOTE: The type requirement prevents this constructor to shadow default
+  // copy/move constructor, see
+  // https://clang.llvm.org/extra/clang-tidy/checks/bugprone/forwarding-reference-overload.html
   template <typename T>
+    requires(std::is_constructible_v<Base, T>)
   MOZ_IMPLICIT TwoByteString(T&& rhs) : Base(std::forward<T>(rhs)) {}
 
   template <typename T>
@@ -838,6 +840,9 @@ class TwoByteString
     new (this) TwoByteString(std::forward<T>(rhs));
     return *this;
   }
+
+  TwoByteString(TwoByteString&&) = default;
+  TwoByteString& operator=(TwoByteString&&) = default;
 
   TwoByteString(const TwoByteString&) = delete;
   TwoByteString& operator=(const TwoByteString&) = delete;
@@ -1154,7 +1159,7 @@ class MOZ_STACK_CLASS StreamWriter : public CoreDumpWriter {
         stream(stream),
         compartments(compartments) {}
 
-  ~StreamWriter() override {}
+  ~StreamWriter() override = default;
 
   bool writeMetadata(uint64_t timestamp) final {
     protobuf::Metadata metadata;
@@ -1387,10 +1392,10 @@ already_AddRefed<nsIFile> HeapSnapshot::CreateUniqueCoreDumpFile(
 // Deletion policy for cleaning up PHeapSnapshotTempFileHelperChild pointers.
 class DeleteHeapSnapshotTempFileHelperChild {
  public:
-  constexpr DeleteHeapSnapshotTempFileHelperChild() {}
+  constexpr DeleteHeapSnapshotTempFileHelperChild() = default;
 
   void operator()(PHeapSnapshotTempFileHelperChild* ptr) const {
-    Unused << NS_WARN_IF(!HeapSnapshotTempFileHelperChild::Send__delete__(ptr));
+    (void)NS_WARN_IF(!HeapSnapshotTempFileHelperChild::Send__delete__(ptr));
   }
 };
 

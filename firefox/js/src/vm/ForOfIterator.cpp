@@ -1,10 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "js/ForOfIterator.h"
+
+#include <algorithm>
 
 #include "js/Exception.h"
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
@@ -27,17 +27,16 @@ bool ForOfIterator::init(HandleValue iterable,
     return false;
   }
 
-  MOZ_ASSERT(index == NOT_ARRAY);
+  MOZ_ASSERT(!isOptimizedArray_);
 
   if (IsArrayWithDefaultIterator<MustBePacked::No>(iterableObj, cx)) {
     // Array is optimizable.
-    index = 0;
-    iterator = iterableObj;
-    nextMethod.setUndefined();
+    isOptimizedArray_ = true;
+    arrayIndex_ = 0;
+    iteratorOrArray_ = iterableObj;
+    nextMethod_.setUndefined();
     return true;
   }
-
-  MOZ_ASSERT(index == NOT_ARRAY);
 
   RootedValue callee(cx);
   RootedId iteratorId(cx, PropertyKey::Symbol(cx->wellKnownSymbols().iterator));
@@ -46,8 +45,8 @@ bool ForOfIterator::init(HandleValue iterable,
   }
 
   // If obj[@@iterator] is undefined and we were asked to allow non-iterables,
-  // bail out now without setting iterator.  This will make valueIsIterable(),
-  // which our caller should check, return false.
+  // bail out now without setting iteratorOrArray_.  This will make
+  // valueIsIterable(), which our caller should check, return false.
   if (nonIterableBehavior == AllowNonIterable && callee.isUndefined()) {
     return true;
   }
@@ -81,22 +80,22 @@ bool ForOfIterator::init(HandleValue iterable,
     return false;
   }
 
-  iterator = iteratorObj;
-  nextMethod = res;
+  iteratorOrArray_ = iteratorObj;
+  nextMethod_ = res;
   return true;
 }
 
 inline bool ForOfIterator::nextFromOptimizedArray(MutableHandleValue vp,
                                                   bool* done) {
-  MOZ_ASSERT(index != NOT_ARRAY);
+  MOZ_ASSERT(isOptimizedArray_);
 
   if (!CheckForInterrupt(cx_)) {
     return false;
   }
 
-  ArrayObject* arr = &iterator->as<ArrayObject>();
+  ArrayObject* arr = &iteratorOrArray_->as<ArrayObject>();
 
-  if (index >= arr->length()) {
+  if (arrayIndex_ >= arr->length()) {
     vp.setUndefined();
     *done = true;
     return true;
@@ -104,25 +103,25 @@ inline bool ForOfIterator::nextFromOptimizedArray(MutableHandleValue vp,
   *done = false;
 
   // Try to get array element via direct access.
-  if (index < arr->getDenseInitializedLength()) {
-    vp.set(arr->getDenseElement(index));
+  if (arrayIndex_ < arr->getDenseInitializedLength()) {
+    vp.set(arr->getDenseElement(arrayIndex_));
     if (!vp.isMagic(JS_ELEMENTS_HOLE)) {
-      ++index;
+      ++arrayIndex_;
       return true;
     }
   }
 
-  return GetElement(cx_, iterator, iterator, index++, vp);
+  return GetElement(cx_, iteratorOrArray_, iteratorOrArray_, arrayIndex_++, vp);
 }
 
 bool ForOfIterator::next(MutableHandleValue vp, bool* done) {
-  MOZ_ASSERT(iterator);
-  if (index != NOT_ARRAY) {
+  MOZ_ASSERT(iteratorOrArray_);
+  if (isOptimizedArray_) {
     return nextFromOptimizedArray(vp, done);
   }
 
   RootedValue v(cx_);
-  if (!js::Call(cx_, nextMethod, iterator, &v)) {
+  if (!js::Call(cx_, nextMethod_, iteratorOrArray_, &v)) {
     return false;
   }
 
@@ -144,8 +143,24 @@ bool ForOfIterator::next(MutableHandleValue vp, bool* done) {
   return GetProperty(cx_, resultObj, resultObj, cx_->names().value, vp);
 }
 
+mozilla::Maybe<uint32_t> ForOfIterator::sizeHint() const {
+  if (!isOptimizedArray_) {
+    return mozilla::Nothing();
+  }
+  ArrayObject* arr = &iteratorOrArray_->as<ArrayObject>();
+  return mozilla::Some(
+      std::min(arr->length(), arr->getDenseInitializedLength()));
+}
+
 void ForOfIterator::closeThrow() {
-  MOZ_ASSERT(iterator);
+  MOZ_ASSERT(iteratorOrArray_);
+
+  if (isOptimizedArray_) {
+    // |iteratorOrArray_| is the array object. IsArrayWithDefaultIterator
+    // ensured %ArrayIteratorPrototype% does not have a |return| property, so
+    // IteratorClose is a no-op.
+    return;
+  }
 
   // Don't handle uncatchable exceptions to match `for-of` bytecode behavior,
   // which also doesn't run IteratorClose when an interrupt was requested.
@@ -158,7 +173,8 @@ void ForOfIterator::closeThrow() {
   JS::AutoSaveExceptionState savedExc(cx_);
 
   // Perform IteratorClose on the iterator.
-  MOZ_ALWAYS_TRUE(CloseIterOperation(cx_, iterator, CompletionKind::Throw));
+  MOZ_ALWAYS_TRUE(
+      CloseIterOperation(cx_, iteratorOrArray_, CompletionKind::Throw));
 
   // CloseIterOperation clears any pending exception.
   MOZ_ASSERT(!cx_->isExceptionPending());

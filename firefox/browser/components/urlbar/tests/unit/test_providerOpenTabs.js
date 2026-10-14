@@ -37,8 +37,8 @@ add_task(async function test_openTabs() {
   Assert.deepEqual(
     [
       { url, userContextId: userContextId1, tabGroup: null, count: 2 },
-      { url: url2, userContextId: userContextId1, tabGroup: null, count: 1 },
       { url, userContextId: userContextId2, tabGroup: tabGroupId, count: 1 },
+      { url: url2, userContextId: userContextId1, tabGroup: null, count: 1 },
     ],
     await UrlbarProviderOpenTabs.getDatabaseRegisteredOpenTabsForTests(),
     "Found all the expected tabs"
@@ -85,7 +85,7 @@ add_task(async function test_openTabs() {
     );
     Assert.equal(
       match.type,
-      UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
+      UrlbarShared.RESULT_TYPE.TAB_SWITCH,
       "Got the expected result type"
     );
     Assert.equal(match.payload.url, url, "Got the expected url");
@@ -95,6 +95,37 @@ add_task(async function test_openTabs() {
   let provider = new UrlbarProviderOpenTabs();
   await provider.startQuery(context, callback);
   Assert.equal(matchCount, 2, "Found the expected number of matches");
+
+  // Make sure memory DB handles registerOpenTab correctly.
+  await UrlbarProviderOpenTabs.registerOpenTab(
+    url,
+    userContextId1,
+    null,
+    false
+  );
+  Assert.deepEqual(
+    [
+      { url, userContextId: userContextId1, tabGroup: null, count: 2 },
+      { url, userContextId: userContextId2, tabGroup: tabGroupId, count: 1 },
+    ],
+    await UrlbarProviderOpenTabs.getDatabaseRegisteredOpenTabsForTests(),
+    "No duplicate records found"
+  );
+  await UrlbarProviderOpenTabs.unregisterOpenTab(
+    url,
+    userContextId1,
+    null,
+    false
+  );
+  Assert.deepEqual(
+    [
+      { url, userContextId: userContextId1, tabGroup: null, count: 1 },
+      { url, userContextId: userContextId2, tabGroup: tabGroupId, count: 1 },
+    ],
+    await UrlbarProviderOpenTabs.getDatabaseRegisteredOpenTabsForTests(),
+    "Record was kept until count reaches zero"
+  );
+
   // Sanity check that this doesn't throw.
   provider.cancelQuery(context);
   await UrlbarProviderOpenTabs.unregisterOpenTab(
@@ -108,6 +139,11 @@ add_task(async function test_openTabs() {
     userContextId2,
     tabGroupId,
     false
+  );
+  Assert.deepEqual(
+    [],
+    await UrlbarProviderOpenTabs.getDatabaseRegisteredOpenTabsForTests(),
+    "Records were cleaned up"
   );
 });
 

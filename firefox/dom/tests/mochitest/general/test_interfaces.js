@@ -1,4 +1,4 @@
-/** Test for Bug 766694 **/
+/** Test for Bug 766694 */
 
 // This is a list of all interfaces that are exposed to every webpage.
 // Please only add things to this list with great care and proper review
@@ -51,6 +51,8 @@ let wasmGlobalInterfaces = [
   { name: "CompileError", insecureContext: true },
   { name: "LinkError", insecureContext: true },
   { name: "RuntimeError", insecureContext: true },
+  { name: "SuspendError", insecureContext: true },
+  { name: "Suspending", insecureContext: true },
   { name: "Function", insecureContext: true, nightly: true },
   { name: "Exception", insecureContext: true },
   { name: "Tag", insecureContext: true },
@@ -59,6 +61,7 @@ let wasmGlobalInterfaces = [
   { name: "compileStreaming", insecureContext: true },
   { name: "instantiate", insecureContext: true },
   { name: "instantiateStreaming", insecureContext: true },
+  { name: "promising", insecureContext: true },
   { name: "validate", insecureContext: true },
 ];
 // IMPORTANT: Do not change this list without review from
@@ -192,6 +195,8 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "AudioScheduledSourceNode", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "AudioSession", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "AudioWorklet", insecureContext: false },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "AudioWorkletNode", insecureContext: false },
@@ -220,9 +225,9 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CDATASection", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "CSS", insecureContext: true },
+  { name: "CSPViolationReportBody", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "CSS2Properties", insecureContext: true },
+  { name: "CSS", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSAnimation", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -232,6 +237,8 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSCounterStyleRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSFontFaceDescriptors", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSFontFaceRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSFontFeatureValuesRule", insecureContext: true },
@@ -240,15 +247,37 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSGroupingRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSImageValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSImportRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSKeyframeRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSKeyframesRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSKeywordValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSLayerBlockRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSLayerStatementRule", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathClamp", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathInvert", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathMax", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathMin", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathNegate", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathProduct", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathSum", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMatrixComponent", insecureContext: true, nightly: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSMediaRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -258,31 +287,67 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSNestedDeclarations", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSNumericArray", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSNumericValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSPageDescriptors", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSPageRule", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSPerspective", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSPositionTryDescriptors", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSPositionTryRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSPropertyRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSPseudoElement", insecureContext: true, disabled: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSRotate", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSRuleList", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "CSSScopeRule", insecureContext: true, nightly: true },
+  { name: "CSSScale", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSScopeRule", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSSkew", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSSkewX", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSSkewY", insecureContext: true, nightly: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSStartingStyleRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSStyleDeclaration", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSStyleProperties", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSStyleRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSStyleSheet", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSStyleValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSSupportsRule", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSTransformComponent", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSTransformValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CSSTransition", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSTranslate", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSUnitValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSUnparsedValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSVariableReferenceValue", insecureContext: true, nightly: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "Cache",
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -312,12 +377,9 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "CloseEvent", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  {
-    name: "CloseWatcher",
-    insecureContext: true,
-    nightly: true,
-    android: false,
-  },
+  { name: "CloseWatcher", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CommandEvent", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "Comment", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -405,6 +467,18 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "DocumentFragment", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "DocumentPictureInPicture",
+    insecureContext: false,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "DocumentPictureInPictureEvent",
+    insecureContext: false,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "DocumentTimeline", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "DocumentType", insecureContext: true },
@@ -471,123 +545,163 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPU", earlyBetaOrEarlier: true },
   { name: "GPU", windows: true },
+  { name: "GPU", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUAdapter", earlyBetaOrEarlier: true },
   { name: "GPUAdapter", windows: true },
+  { name: "GPUAdapter", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUAdapterInfo", earlyBetaOrEarlier: true },
   { name: "GPUAdapterInfo", windows: true },
+  { name: "GPUAdapterInfo", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUBindGroup", earlyBetaOrEarlier: true },
   { name: "GPUBindGroup", windows: true },
+  { name: "GPUBindGroup", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUBindGroupLayout", earlyBetaOrEarlier: true },
   { name: "GPUBindGroupLayout", windows: true },
+  { name: "GPUBindGroupLayout", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUBuffer", earlyBetaOrEarlier: true },
   { name: "GPUBuffer", windows: true },
+  { name: "GPUBuffer", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUBufferUsage", earlyBetaOrEarlier: true },
   { name: "GPUBufferUsage", windows: true },
+  { name: "GPUBufferUsage", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUCanvasContext", earlyBetaOrEarlier: true },
   { name: "GPUCanvasContext", windows: true },
+  { name: "GPUCanvasContext", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUColorWrite", earlyBetaOrEarlier: true },
   { name: "GPUColorWrite", windows: true },
+  { name: "GPUColorWrite", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUCommandBuffer", earlyBetaOrEarlier: true },
   { name: "GPUCommandBuffer", windows: true },
+  { name: "GPUCommandBuffer", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUCommandEncoder", earlyBetaOrEarlier: true },
   { name: "GPUCommandEncoder", windows: true },
+  { name: "GPUCommandEncoder", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUCompilationInfo", earlyBetaOrEarlier: true },
   { name: "GPUCompilationInfo", windows: true },
+  { name: "GPUCompilationInfo", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUCompilationMessage", earlyBetaOrEarlier: true },
   { name: "GPUCompilationMessage", windows: true },
+  { name: "GPUCompilationMessage", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUComputePassEncoder", earlyBetaOrEarlier: true },
   { name: "GPUComputePassEncoder", windows: true },
+  { name: "GPUComputePassEncoder", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUComputePipeline", earlyBetaOrEarlier: true },
   { name: "GPUComputePipeline", windows: true },
+  { name: "GPUComputePipeline", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUDevice", earlyBetaOrEarlier: true },
   { name: "GPUDevice", windows: true },
+  { name: "GPUDevice", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUDeviceLostInfo", earlyBetaOrEarlier: true },
   { name: "GPUDeviceLostInfo", windows: true },
+  { name: "GPUDeviceLostInfo", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUError", earlyBetaOrEarlier: true },
   { name: "GPUError", windows: true },
+  { name: "GPUError", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUExternalTexture", earlyBetaOrEarlier: true },
   { name: "GPUExternalTexture", windows: true },
+  { name: "GPUExternalTexture", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUInternalError", earlyBetaOrEarlier: true },
   { name: "GPUInternalError", windows: true },
+  { name: "GPUInternalError", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUMapMode", earlyBetaOrEarlier: true },
   { name: "GPUMapMode", windows: true },
+  { name: "GPUMapMode", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUOutOfMemoryError", earlyBetaOrEarlier: true },
   { name: "GPUOutOfMemoryError", windows: true },
+  { name: "GPUOutOfMemoryError", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUPipelineError", earlyBetaOrEarlier: true },
   { name: "GPUPipelineError", windows: true },
+  { name: "GPUPipelineError", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUPipelineLayout", earlyBetaOrEarlier: true },
   { name: "GPUPipelineLayout", windows: true },
+  { name: "GPUPipelineLayout", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUQuerySet", earlyBetaOrEarlier: true },
   { name: "GPUQuerySet", windows: true },
+  { name: "GPUQuerySet", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUQueue", earlyBetaOrEarlier: true },
   { name: "GPUQueue", windows: true },
+  { name: "GPUQueue", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPURenderBundle", earlyBetaOrEarlier: true },
   { name: "GPURenderBundle", windows: true },
+  { name: "GPURenderBundle", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPURenderBundleEncoder", earlyBetaOrEarlier: true },
   { name: "GPURenderBundleEncoder", windows: true },
+  { name: "GPURenderBundleEncoder", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPURenderPassEncoder", earlyBetaOrEarlier: true },
   { name: "GPURenderPassEncoder", windows: true },
+  { name: "GPURenderPassEncoder", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPURenderPipeline", earlyBetaOrEarlier: true },
   { name: "GPURenderPipeline", windows: true },
+  { name: "GPURenderPipeline", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUSampler", earlyBetaOrEarlier: true },
   { name: "GPUSampler", windows: true },
+  { name: "GPUSampler", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUShaderModule", earlyBetaOrEarlier: true },
   { name: "GPUShaderModule", windows: true },
+  { name: "GPUShaderModule", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUShaderStage", earlyBetaOrEarlier: true },
   { name: "GPUShaderStage", windows: true },
+  { name: "GPUShaderStage", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUSupportedFeatures", earlyBetaOrEarlier: true },
   { name: "GPUSupportedFeatures", windows: true },
+  { name: "GPUSupportedFeatures", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUSupportedLimits", earlyBetaOrEarlier: true },
   { name: "GPUSupportedLimits", windows: true },
+  { name: "GPUSupportedLimits", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUTexture", earlyBetaOrEarlier: true },
   { name: "GPUTexture", windows: true },
+  { name: "GPUTexture", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUTextureUsage", earlyBetaOrEarlier: true },
   { name: "GPUTextureUsage", windows: true },
+  { name: "GPUTextureUsage", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUTextureView", earlyBetaOrEarlier: true },
   { name: "GPUTextureView", windows: true },
+  { name: "GPUTextureView", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUUncapturedErrorEvent", earlyBetaOrEarlier: true },
   { name: "GPUUncapturedErrorEvent", windows: true },
+  { name: "GPUUncapturedErrorEvent", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUValidationError", earlyBetaOrEarlier: true },
   { name: "GPUValidationError", windows: true },
+  { name: "GPUValidationError", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GainNode", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -795,6 +909,8 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "IDBOpenDBRequest", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "IDBRecord", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "IDBRequest", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "IDBTransaction", insecureContext: true },
@@ -802,10 +918,6 @@ let interfaceNamesInGlobalScope = [
   { name: "IDBVersionChangeEvent", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "IIRFilterNode", insecureContext: true },
-  // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "IdentityCredential", nightly: true, desktop: true },
-  // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "IdentityProvider", nightly: true, desktop: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "IdleDeadline", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -830,6 +942,8 @@ let interfaceNamesInGlobalScope = [
   { name: "InputEvent", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "InstallTrigger", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "IntegrityViolationReportBody", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "IntersectionObserver", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -864,6 +978,8 @@ let interfaceNamesInGlobalScope = [
   { name: "MIDIOutputMap", android: false },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "MIDIPort", android: false },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "MathMLAnchorElement", insecureContext: true, nightly: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "MathMLElement", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -950,25 +1066,47 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "NamedNodeMap", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "NavigateEvent", insecureContext: true, disabled: true },
+  {
+    name: "NavigateEvent",
+    insecureContext: true,
+  },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "Navigation", insecureContext: true, disabled: true },
+  {
+    name: "Navigation",
+    insecureContext: true,
+  },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "NavigationActivation", insecureContext: true, disabled: true },
+  {
+    name: "NavigationActivation",
+    insecureContext: true,
+  },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   {
     name: "NavigationCurrentEntryChangeEvent",
     insecureContext: true,
-    disabled: true,
   },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "NavigationDestination", insecureContext: true, disabled: true },
+  {
+    name: "NavigationDestination",
+    insecureContext: true,
+  },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "NavigationHistoryEntry", insecureContext: true, disabled: true },
+  {
+    name: "NavigationHistoryEntry",
+    insecureContext: true,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "NavigationPrecommitController",
+    insecureContext: true,
+  },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "NavigationPreloadManager",
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "NavigationTransition", insecureContext: true, disabled: true },
+  {
+    name: "NavigationTransition",
+    insecureContext: true,
+  },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "Navigator", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -1085,6 +1223,10 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "Permissions", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "PictureInPictureEvent", insecureContext: true, android: false },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "PictureInPictureWindow", insecureContext: true, android: false },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "Plugin", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "PluginArray", insecureContext: true },
@@ -1125,11 +1267,19 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "RTCEncodedVideoFrame", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "RTCError", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "RTCErrorEvent", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "RTCIceCandidate", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "RTCIceCandidatePair", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "RTCIceTransport", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "RTCPeerConnection", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "RTCPeerConnectionIceErrorEvent", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "RTCPeerConnectionIceEvent", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -1164,6 +1314,10 @@ let interfaceNamesInGlobalScope = [
   { name: "ReadableStreamDefaultController", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "ReadableStreamDefaultReader", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "ReportBody", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "ReportingObserver", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "Request", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -1369,7 +1523,7 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "SVGViewElement", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "Sanitizer", disabled: true },
+  { name: "Sanitizer", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "Scheduler", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -1385,9 +1539,15 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "ScrollAreaEvent", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "ScrollTimeline", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "SecurityPolicyViolationEvent", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "Selection", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "Serial", android: false },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "SerialPort", android: false },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "ServiceWorker",
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -1404,6 +1564,76 @@ let interfaceNamesInGlobalScope = [
   { name: "SourceBufferList", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "SpecialPowers", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "SpeechGrammar",
+    insecureContext: true,
+    nightly: true,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "SpeechGrammarList",
+    insecureContext: true,
+    nightly: true,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "SpeechRecognition",
+    insecureContext: false,
+    nightly: true,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "SpeechRecognitionAlternative",
+    insecureContext: false,
+    nightly: true,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "SpeechRecognitionErrorEvent",
+    insecureContext: false,
+    nightly: true,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "SpeechRecognitionErrorEvent",
+    insecureContext: false,
+    nightly: true,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "SpeechRecognitionEvent",
+    insecureContext: false,
+    nightly: true,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "SpeechRecognitionPhrase",
+    insecureContext: false,
+    nightly: true,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "SpeechRecognitionResult",
+    insecureContext: false,
+    nightly: true,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "SpeechRecognitionResultList",
+    insecureContext: false,
+    nightly: true,
+    android: false,
+  },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "SpeechSynthesis", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -1424,6 +1654,10 @@ let interfaceNamesInGlobalScope = [
   { name: "StorageEvent", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "StorageManager", fennec: false },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "StylePropertyMap", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "StylePropertyMapReadOnly", insecureContext: true, nightly: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "StyleSheet", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -1483,6 +1717,16 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "TreeWalker", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "TrustedHTML", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "TrustedScript", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "TrustedScriptURL", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "TrustedTypePolicy", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "TrustedTypePolicyFactory", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "U2F", insecureContext: false, disabled: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "UIEvent", insecureContext: true },
@@ -1513,12 +1757,17 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "VideoPlaybackQuality", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "ViewTransition", insecureContext: true, nightly: true },
+  { name: "ViewTimeline", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "ViewTransition", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "ViewTransitionTypeSet", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "VisualViewport", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "WGSLLanguageFeatures", earlyBetaOrEarlier: true },
   { name: "WGSLLanguageFeatures", windows: true },
+  { name: "WGSLLanguageFeatures", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "WakeLock" },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -1576,9 +1825,13 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "WebTransportDatagramDuplexStream", insecureContext: false },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "WebTransportDatagramsWritable", insecureContext: false },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "WebTransportError", insecureContext: false },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "WebTransportReceiveStream", insecureContext: false },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "WebTransportSendGroup", insecureContext: false },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "WebTransportSendStream", insecureContext: false },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -1658,6 +1911,12 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "document", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "documentPictureInPicture",
+    insecureContext: false,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "dump", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "event", insecureContext: true },
@@ -1714,6 +1973,11 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "name", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "navigation",
+    insecureContext: true,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "navigator", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "netscape", insecureContext: true },
@@ -1755,6 +2019,8 @@ let interfaceNamesInGlobalScope = [
   { name: "onclick", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "onclose", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "oncommand", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "oncontentvisibilityautostatechange", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -2070,11 +2336,34 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "top", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "trustedTypes", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "u2f", insecureContext: false, disabled: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "updateCommands", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "visualViewport", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "webkitSpeechGrammar",
+    insecureContext: true,
+    nightly: true,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "webkitSpeechGrammarList",
+    insecureContext: true,
+    nightly: true,
+    android: false,
+  },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  {
+    name: "webkitSpeechRecognition",
+    insecureContext: false,
+    nightly: true,
+    android: false,
+  },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "webkitURL", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!

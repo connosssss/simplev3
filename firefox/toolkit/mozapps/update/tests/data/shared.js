@@ -18,8 +18,6 @@ const { XPCOMUtils } = ChromeUtils.importESModule(
 ChromeUtils.defineESModuleGetters(this, {
   UpdateUtils: "resource://gre/modules/UpdateUtils.sys.mjs",
   ctypes: "resource://gre/modules/ctypes.sys.mjs",
-  TelemetryArchiveTesting:
-    "resource://testing-common/TelemetryArchiveTesting.sys.mjs",
 });
 
 const PREF_APP_UPDATE_AUTO = "app.update.auto";
@@ -127,7 +125,13 @@ var gChannel;
 var gDebugTest = false;
 
 /* import-globals-from sharedUpdateXML.js */
-Services.scriptloader.loadSubScript(DATA_URI_SPEC + "sharedUpdateXML.js", this);
+Services.scriptloader.loadSubScriptWithOptions(
+  DATA_URI_SPEC + "sharedUpdateXML.js",
+  {
+    target: this,
+    allowUnsafeURL: true,
+  }
+);
 
 const PERMS_FILE = FileUtils.PERMS_FILE;
 const PERMS_DIRECTORY = FileUtils.PERMS_DIRECTORY;
@@ -152,14 +156,14 @@ XPCOMUtils.defineLazyServiceGetter(
   this,
   "gUpdateManager",
   "@mozilla.org/updates/update-manager;1",
-  "nsIUpdateManager"
+  Ci.nsIUpdateManager
 );
 
 XPCOMUtils.defineLazyServiceGetter(
   this,
   "gUpdateChecker",
   "@mozilla.org/updates/update-checker;1",
-  "nsIUpdateChecker"
+  Ci.nsIUpdateChecker
 );
 
 ChromeUtils.defineLazyGetter(this, "gDefaultPrefBranch", function test_gDPB() {
@@ -361,6 +365,7 @@ function writeFile(aFile, aText) {
 
 /**
  * Attempts to remove a file. Does not fail if the file does not exist.
+ *
  * @param  file
  *         The `nsIFile` to remove.
  */
@@ -880,27 +885,6 @@ async function continueFileHandler(leafName) {
         continueFile.path
     );
   });
-}
-
-async function waitForUpdatePing(archiveChecker, expectedProperties) {
-  // We cannot control when the ping will be generated/archived after we trigger
-  // an update, so let's make sure to have one before moving on with validation.
-  let updatePing;
-  await TestUtils.waitForCondition(
-    async function () {
-      // Check that the ping made it into the Telemetry archive.
-      // The test data is defined in ../data/sharedUpdateXML.js
-      updatePing = await archiveChecker.promiseFindPing(
-        "update",
-        expectedProperties
-      );
-      return !!updatePing;
-    },
-    "Wait for Update Ping to be generated",
-    500,
-    100
-  );
-  return updatePing;
 }
 
 /**

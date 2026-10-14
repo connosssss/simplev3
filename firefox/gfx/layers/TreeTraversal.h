@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -86,8 +84,8 @@ class ReverseIterator {
  */
 template <typename Iterator, typename Node, typename PreAction,
           typename PostAction>
-static auto ForEachNode(Node aRoot, const PreAction& aPreAction,
-                        const PostAction& aPostAction)
+auto ForEachNode(Node aRoot, const PreAction& aPreAction,
+                 const PostAction& aPostAction)
     -> std::enable_if_t<
         std::is_same_v<decltype(aPreAction(aRoot)), TraversalFlag> &&
             std::is_same_v<decltype(aPostAction(aRoot)), TraversalFlag>,
@@ -127,8 +125,8 @@ static auto ForEachNode(Node aRoot, const PreAction& aPreAction,
  */
 template <typename Iterator, typename Node, typename PreAction,
           typename PostAction>
-static auto ForEachNode(Node aRoot, const PreAction& aPreAction,
-                        const PostAction& aPostAction)
+auto ForEachNode(Node aRoot, const PreAction& aPreAction,
+                 const PostAction& aPostAction)
     -> std::enable_if_t<std::is_same_v<decltype(aPreAction(aRoot)), void> &&
                             std::is_same_v<decltype(aPostAction(aRoot)), void>,
                         void> {

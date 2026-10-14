@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,37 +5,37 @@
 #ifndef mozilla_dom_BrowserChild_h
 #define mozilla_dom_BrowserChild_h
 
-#include "mozilla/dom/ContentFrameMessageManager.h"
-#include "mozilla/dom/PBrowserChild.h"
-#include "nsIWebNavigation.h"
-#include "nsCOMPtr.h"
-#include "nsIWebBrowserChrome.h"
-#include "nsIInterfaceRequestor.h"
-#include "nsIWindowProvider.h"
-#include "nsIDocShell.h"
-#include "nsIInterfaceRequestorUtils.h"
-#include "nsWeakReference.h"
-#include "nsIBrowserChild.h"
-#include "nsITooltipListener.h"
-#include "nsIWebProgressListener.h"
+#include "PuppetWidget.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/dom/TabContext.h"
-#include "mozilla/dom/CoalescedMouseData.h"
-#include "mozilla/dom/CoalescedTouchData.h"
-#include "mozilla/dom/CoalescedWheelData.h"
-#include "mozilla/dom/MessageManagerCallback.h"
-#include "mozilla/dom/VsyncMainChild.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/EventForwards.h"
+#include "mozilla/dom/CoalescedMouseData.h"
+#include "mozilla/dom/CoalescedTouchData.h"
+#include "mozilla/dom/CoalescedWheelData.h"
+#include "mozilla/dom/ContentFrameMessageManager.h"
+#include "mozilla/dom/MessageManagerCallback.h"
+#include "mozilla/dom/PBrowserChild.h"
+#include "mozilla/dom/TabContext.h"
+#include "mozilla/dom/VsyncMainChild.h"
+#include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/layers/APZCCallbackHelper.h"
 #include "mozilla/layers/CompositorOptions.h"
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/GeckoContentControllerTypes.h"
-#include "mozilla/dom/ipc/IdType.h"
-#include "PuppetWidget.h"
+#include "nsCOMPtr.h"
 #include "nsDeque.h"
+#include "nsIBrowserChild.h"
+#include "nsIDocShell.h"
+#include "nsIInterfaceRequestor.h"
+#include "nsIInterfaceRequestorUtils.h"
 #include "nsIRemoteTab.h"
+#include "nsITooltipListener.h"
+#include "nsIWebBrowserChrome.h"
+#include "nsIWebNavigation.h"
+#include "nsIWebProgressListener.h"
+#include "nsIWindowProvider.h"
+#include "nsWeakReference.h"
 
 class nsBrowserStatusFilter;
 class nsIDOMWindow;
@@ -48,6 +46,7 @@ class nsIWebProgress;
 class nsPIDOMWindowInner;
 class nsWebBrowser;
 class nsDocShellLoadState;
+class nsIOpenWindowInfo;
 
 template <typename T>
 class nsTHashtable;
@@ -78,7 +77,6 @@ namespace dom {
 class BrowserChild;
 class BrowsingContext;
 class TabGroup;
-class ClonedMessageData;
 class CoalescedMouseData;
 class CoalescedWheelData;
 class SessionStoreChild;
@@ -114,7 +112,7 @@ class BrowserChildMessageManager : public ContentFrameMessageManager,
   }
 
   // Dispatch a runnable related to the global.
-  nsresult Dispatch(already_AddRefed<nsIRunnable>&& aRunnable) const;
+  nsresult Dispatch(already_AddRefed<nsIRunnable> aRunnable) const;
 
   RefPtr<BrowserChild> mBrowserChild;
 
@@ -140,7 +138,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
                            public nsITooltipListener,
                            public mozilla::ipc::IShmemAllocator {
   using PuppetWidget = mozilla::widget::PuppetWidget;
-  using ClonedMessageData = mozilla::dom::ClonedMessageData;
   using CoalescedMouseData = mozilla::dom::CoalescedMouseData;
   using CoalescedWheelData = mozilla::dom::CoalescedWheelData;
   using APZEventState = mozilla::layers::APZEventState;
@@ -168,7 +165,8 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
                bool aIsTopLevel);
 
   MOZ_CAN_RUN_SCRIPT nsresult Init(mozIDOMWindowProxy* aParent,
-                                   WindowGlobalChild* aInitialWindowChild);
+                                   WindowGlobalChild* aInitialWindowChild,
+                                   nsIOpenWindowInfo* aOpenWindowInfo);
 
   /** Return a BrowserChild with the given attributes. */
   static already_AddRefed<BrowserChild> Create(
@@ -185,7 +183,7 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   }
 
   NS_INLINE_DECL_STATIC_IID(DOM_BROWSERCHILD_IID)
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_NSIWEBBROWSERCHROME
   NS_DECL_NSIINTERFACEREQUESTOR
   NS_DECL_NSIWINDOWPROVIDER
@@ -223,21 +221,24 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
    * MessageManagerCallback methods that we override.
    */
   virtual bool DoSendBlockingMessage(
-      const nsAString& aMessage, StructuredCloneData& aData,
-      nsTArray<StructuredCloneData>* aRetVal) override;
+      const nsAString& aMessage, NotNull<ipc::StructuredCloneData*> aData,
+      nsTArray<NotNull<RefPtr<ipc::StructuredCloneData>>>* aRetVal) override;
 
-  virtual nsresult DoSendAsyncMessage(const nsAString& aMessage,
-                                      StructuredCloneData& aData) override;
+  virtual nsresult DoSendAsyncMessage(
+      const nsAString& aMessage,
+      NotNull<ipc::StructuredCloneData*> aData) override;
 
   bool DoUpdateZoomConstraints(const uint32_t& aPresShellId,
                                const ViewID& aViewId,
                                const Maybe<ZoomConstraints>& aConstraints);
 
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvLoadURL(nsDocShellLoadState* aLoadState,
                                       const ParentShowInfo& aInfo);
 
-  mozilla::ipc::IPCResult RecvCreateAboutBlankDocumentViewer(
-      nsIPrincipal* aPrincipal, nsIPrincipal* aPartitionedPrincipal);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY mozilla::ipc::IPCResult
+  RecvCreateAboutBlankDocumentViewer(nsIPrincipal* aPrincipal,
+                                     nsIPrincipal* aPartitionedPrincipal);
 
   mozilla::ipc::IPCResult RecvResumeLoad(const uint64_t& aPendingSwitchID,
                                          const ParentShowInfo&);
@@ -282,59 +283,59 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   mozilla::ipc::IPCResult RecvKeyboardHeightChanged(
       const mozilla::ScreenIntCoord& aHeight);
 
-  mozilla::ipc::IPCResult RecvAndroidPipModeChanged(bool aPipMode);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY mozilla::ipc::IPCResult RecvAndroidPipModeChanged(
+      bool aPipMode);
 
   mozilla::ipc::IPCResult RecvActivate(uint64_t aActionId);
 
   mozilla::ipc::IPCResult RecvDeactivate(uint64_t aActionId);
 
   mozilla::ipc::IPCResult RecvRealMouseMoveEvent(
-      const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
-      const uint64_t& aInputBlockId);
+      const mozilla::WidgetMouseEvent& aMouseEvent,
+      const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
   mozilla::ipc::IPCResult RecvNormalPriorityRealMouseMoveEvent(
-      const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
-      const uint64_t& aInputBlockId);
-  mozilla::ipc::IPCResult RecvRealMouseMoveEventForTests(
-      const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
-      const uint64_t& aInputBlockId);
-  mozilla::ipc::IPCResult RecvNormalPriorityRealMouseMoveEventForTests(
-      const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
-      const uint64_t& aInputBlockId);
+      const mozilla::WidgetMouseEvent& aMouseEvent,
+      const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
+  mozilla::ipc::IPCResult RecvRealMouseMoveEventNoCompress(
+      const mozilla::WidgetMouseEvent& aMouseEvent,
+      const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
+  mozilla::ipc::IPCResult RecvNormalPriorityRealMouseMoveEventNoCompress(
+      const mozilla::WidgetMouseEvent& aMouseEvent,
+      const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
 
   mozilla::ipc::IPCResult RecvSynthMouseMoveEvent(
-      const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
-      const uint64_t& aInputBlockId);
+      const mozilla::WidgetMouseEvent& aMouseEvent,
+      const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
   mozilla::ipc::IPCResult RecvNormalPrioritySynthMouseMoveEvent(
-      const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
-      const uint64_t& aInputBlockId);
+      const mozilla::WidgetMouseEvent& aMouseEvent,
+      const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
 
   mozilla::ipc::IPCResult RecvRealMouseButtonEvent(
-      const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
-      const uint64_t& aInputBlockId);
+      const mozilla::WidgetMouseEvent& aMouseOrPointerEvent,
+      const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
   mozilla::ipc::IPCResult RecvNormalPriorityRealMouseButtonEvent(
-      const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
-      const uint64_t& aInputBlockId);
+      const mozilla::WidgetMouseEvent& aMouseOrPointerEvent,
+      const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
 
   mozilla::ipc::IPCResult RecvRealPointerButtonEvent(
-      const mozilla::WidgetPointerEvent& aEvent,
+      const mozilla::WidgetPointerEvent& aPointerEvent,
       const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
   mozilla::ipc::IPCResult RecvNormalPriorityRealPointerButtonEvent(
-      const mozilla::WidgetPointerEvent& aEvent,
+      const mozilla::WidgetPointerEvent& aPointerEvent,
       const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
 
   mozilla::ipc::IPCResult RecvRealMouseEnterExitWidgetEvent(
-      const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
-      const uint64_t& aInputBlockId);
+      const mozilla::WidgetMouseEvent& aMouseEvent,
+      const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
   mozilla::ipc::IPCResult RecvNormalPriorityRealMouseEnterExitWidgetEvent(
-      const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
-      const uint64_t& aInputBlockId);
+      const mozilla::WidgetMouseEvent& aMouseEvent,
+      const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
-  mozilla::ipc::IPCResult RecvRealDragEvent(const WidgetDragEvent& aEvent,
-                                            const uint32_t& aDragAction,
-                                            const uint32_t& aDropEffect,
-                                            nsIPrincipal* aPrincipal,
-                                            nsIContentSecurityPolicy* aCsp);
+  mozilla::ipc::IPCResult RecvRealDragEvent(
+      const WidgetDragEvent& aEvent, const uint32_t& aDragAction,
+      const uint32_t& aDropEffect, nsIPrincipal* aPrincipal,
+      nsIPolicyContainer* aPolicyContainer);
 
   mozilla::ipc::IPCResult RecvRealKeyEvent(
       const mozilla::WidgetKeyboardEvent& aEvent, const nsID& aUUID);
@@ -411,14 +412,13 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   mozilla::ipc::IPCResult RecvNormalPriorityInsertText(
       const nsAString& aStringToInsert);
 
-  mozilla::ipc::IPCResult RecvReplaceText(const nsString& aReplaceSrcString,
-                                          const nsString& aStringToInsert,
-                                          uint32_t aOffset,
-                                          bool aPreventSetSelection);
+  mozilla::ipc::IPCResult RecvReplaceText(
+      const nsString& aReplaceSrcString, const nsString& aStringToInsert,
+      uint32_t aOffset, PreventSetSelection aPreventSetSelection);
 
   mozilla::ipc::IPCResult RecvNormalPriorityReplaceText(
       const nsString& aReplaceSrcString, const nsString& aStringToInsert,
-      uint32_t aOffset, bool aPreventSetSelection);
+      uint32_t aOffset, PreventSetSelection aPreventSetSelection);
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvPasteTransferable(
@@ -427,20 +427,16 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   mozilla::ipc::IPCResult RecvLoadRemoteScript(const nsAString& aURL,
                                                const bool& aRunInGlobalScope);
 
-  mozilla::ipc::IPCResult RecvAsyncMessage(const nsAString& aMessage,
-                                           const ClonedMessageData& aData);
-  mozilla::ipc::IPCResult RecvSwappedWithOtherRemoteLoader(
-      const IPCTabContext& aContext);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY mozilla::ipc::IPCResult RecvAsyncMessage(
+      const nsAString& aMessage, NotNull<StructuredCloneData*> aData);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY mozilla::ipc::IPCResult
+  RecvSwappedWithOtherRemoteLoader(const IPCTabContext& aContext);
 
   mozilla::ipc::IPCResult RecvSafeAreaInsetsChanged(
       const mozilla::LayoutDeviceIntMargin& aSafeAreaInsets);
 
-#ifdef ACCESSIBILITY
-  PDocAccessibleChild* AllocPDocAccessibleChild(
-      PDocAccessibleChild*, const uint64_t&,
-      const MaybeDiscardedBrowsingContext&);
-  bool DeallocPDocAccessibleChild(PDocAccessibleChild*);
-#endif
+  mozilla::ipc::IPCResult RecvInitSupportsUnadjustedMovement(
+      const bool& aSupportsUnadjustedMovement);
 
   RefPtr<VsyncMainChild> GetVsyncChild();
 
@@ -520,9 +516,11 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
     return GetFrom(docShell);
   }
 
-  mozilla::ipc::IPCResult RecvUIResolutionChanged(const float& aDpi,
-                                                  const int32_t& aRounding,
-                                                  const double& aScale);
+  mozilla::ipc::IPCResult RecvUIResolutionChanged(
+      const float& aDpi, const int32_t& aRounding, const double& aScale,
+      const double& aDesktopToDeviceScale);
+
+  mozilla::ipc::IPCResult RecvTransparencyChanged(const bool& aIsTransparent);
 
   mozilla::ipc::IPCResult RecvHandleAccessKey(const WidgetKeyboardEvent& aEvent,
                                               nsTArray<uint32_t>&& aCharCodes);
@@ -541,11 +539,8 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
       const MaybeDiscardedBrowsingContext&, const PrintData&,
       const MaybeDiscardedBrowsingContext&);
 
-  mozilla::ipc::IPCResult RecvDestroyPrintClone(
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY mozilla::ipc::IPCResult RecvDestroyPrintClone(
       const MaybeDiscardedBrowsingContext&);
-
-  mozilla::ipc::IPCResult RecvUpdateNativeWindowHandle(
-      const uintptr_t& aNewHandle);
 
   mozilla::ipc::IPCResult RecvWillChangeProcess();
 
@@ -580,6 +575,12 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   void SetTargetAPZC(
       uint64_t aInputBlockId,
       const nsTArray<layers::ScrollableLayerGuid>& aTargets) const;
+  // Fast-path notification from EventListenerManager that a non-passive
+  // APZ-aware event listener has been registered. |aScrollId| identifies the
+  // nearest scroll container ancestor of the listener target (or the
+  // document's root scroll container for document/window listeners).
+  void NotifyApzAwareListenerAdded(
+      layers::ScrollableLayerGuid::ViewID aScrollId) const;
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvHandleTap(
       const layers::GeckoContentController_TapType& aType,
@@ -612,10 +613,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   nsresult CanCancelContentJS(nsIRemoteTab::NavigationType aNavigationType,
                               int32_t aNavigationIndex, nsIURI* aNavigationURI,
                               int32_t aEpoch, bool* aCanCancel);
-
-#if defined(XP_WIN) && defined(ACCESSIBILITY)
-  uintptr_t GetNativeWindowHandle() const { return mNativeWindowHandle; }
-#endif
 
   BrowsingContext* GetBrowsingContext() const { return mBrowsingContext; }
 
@@ -654,7 +651,7 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
                                  const ScrollableLayerGuid& aGuid,
                                  const uint64_t& aInputBlockId);
 
-  void HandleRealMouseButtonEvent(const WidgetMouseEvent& aEvent,
+  void HandleRealMouseButtonEvent(const WidgetMouseEvent& aMouseOrPointerEvent,
                                   const ScrollableLayerGuid& aGuid,
                                   const uint64_t& aInputBlockId);
 
@@ -701,9 +698,7 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
       const Maybe<
           ContentBlockingNotifier::StorageAccessPermissionGrantedReason>&
           aReason,
-      const Maybe<ContentBlockingNotifier::CanvasFingerprinter>&
-          aCanvasFingerprinter,
-      const Maybe<bool> aCanvasFingerprinterKnownText);
+      const Maybe<CanvasFingerprintingEvent>& aCanvasFingerprintingEvent);
 
   already_AddRefed<nsIDragSession> GetDragSession();
   void SetDragSession(nsIDragSession* aSession);
@@ -727,7 +722,7 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   mozilla::ipc::IPCResult RecvStoreDropTargetAndDelayEndDragSession(
       const LayoutDeviceIntPoint& aPt, uint32_t aDropEffect,
       uint32_t aDragAction, nsIPrincipal* aPrincipal,
-      nsIContentSecurityPolicy* aCsp);
+      nsIPolicyContainer* aPolicyContainer);
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvDispatchToDropTargetAndResumeEndDragSession(
@@ -764,6 +759,10 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   mozilla::ipc::IPCResult RecvReleaseAllPointerCapture();
 
   mozilla::ipc::IPCResult RecvReleasePointerLock();
+
+#ifdef ACCESSIBILITY
+  mozilla::ipc::IPCResult RecvRequestDocAccessibleForPrint();
+#endif
 
  private:
   void HandleDoubleTap(const CSSPoint& aPoint, const Modifiers& aModifiers,
@@ -814,8 +813,7 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
       const MaybeDiscardedBrowsingContext& aBc, const PrintData& aPrintData,
       RefPtr<BrowsingContext>* aCachedBrowsingContext);
 
-  bool CreateRemoteLayerManager(
-      mozilla::layers::PCompositorBridgeChild* aCompositorChild);
+  bool CreateRemoteLayerManager();
 
   nsresult PrepareRequestData(nsIRequest* aRequest, RequestData& aRequestData);
   nsresult PrepareProgressListenerData(nsIWebProgress* aWebProgress,
@@ -847,7 +845,14 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   RefPtr<BrowsingContext> mBrowsingContext;
   RefPtr<nsIDragSession> mDragSession;
 
+  // Tracks the keydown event currently being dispatched.
+  // This allows us to detect whether the event loop is being spun during
+  // keydown dispatch, which can cause key event IPC messages to be handled
+  // out of order.
+  Maybe<CodeNameIndex> mCurrentBeingDispatchedKeyDownCode;
+  // Tracks the most recent keydown event that was consumed.
   Maybe<CodeNameIndex> mPreviousConsumedKeyDownCode;
+
   uint32_t mChromeFlags;
   uint32_t mMaxTouchPoints;
   // The number of windows which may have ePointerRawUpdate event listener.
@@ -935,11 +940,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
 
   RefPtr<layers::IAPZCTreeManager> mApzcTreeManager;
   RefPtr<SessionStoreChild> mSessionStoreChild;
-
-#if defined(XP_WIN) && defined(ACCESSIBILITY)
-  // The handle associated with the native window that contains this tab
-  uintptr_t mNativeWindowHandle;
-#endif  // defined(XP_WIN)
 
   int32_t mCancelContentJSEpoch;
 

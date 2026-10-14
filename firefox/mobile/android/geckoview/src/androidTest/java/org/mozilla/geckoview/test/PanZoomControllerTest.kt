@@ -5,6 +5,7 @@ import android.view.InputDevice
 import android.view.MotionEvent
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.MediumTest
+import kotlin.math.roundToInt
 import org.hamcrest.Matchers.closeTo
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.greaterThan
@@ -20,12 +21,13 @@ import org.mozilla.geckoview.GeckoSession.ScrollPositionUpdate
 import org.mozilla.geckoview.PanZoomController
 import org.mozilla.geckoview.ScreenLength
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.WithDisplay
-import kotlin.math.roundToInt
+import org.mozilla.geckoview.test.util.UiThreadUtils
 
 @RunWith(AndroidJUnit4::class)
 @MediumTest
 class PanZoomControllerTest : BaseSessionTest() {
     private val errorEpsilon = 3.0
+    private val logTag = "PanZoomControllerTest"
     private val scrollWaitTimeout = 10000.0 // 10 seconds
 
     private fun setupDocument(documentPath: String) {
@@ -55,7 +57,8 @@ class PanZoomControllerTest : BaseSessionTest() {
              }
              window.requestAnimationFrame(step);
            });
-            """.trimIndent(),
+            """
+                .trimIndent()
         )
     }
 
@@ -185,12 +188,12 @@ class PanZoomControllerTest : BaseSessionTest() {
         val originalVH = mainSession.evaluateJS("window.visualViewport.height") as Double
         assertThat("Visual viewport height is not zero", originalVH, greaterThan(0.0))
 
-        val innerHeight = mainSession.evaluateJS("window.innerHeight") as Double
+        val clientHeight = mainSession.evaluateJS("document.documentElement.clientHeight") as Double
         // Need to round due to dom.InnerSize.rounded=true
         assertThat(
-            "Visual viewport height equals to window.innerHeight",
+            "Visual viewport height equals to documentElement.clientHeight",
             originalVH.roundToInt(),
-            equalTo(innerHeight.roundToInt()),
+            equalTo(clientHeight.roundToInt()),
         )
 
         val originalScale = mainSession.evaluateJS("visualViewport.scale") as Double
@@ -254,25 +257,27 @@ class PanZoomControllerTest : BaseSessionTest() {
 
     private fun sendDownEvent(x: Float, y: Float): GeckoResult<Int> {
         val downTime = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_DOWN,
-            x,
-            y,
-            0,
-        )
+        val down =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_DOWN,
+                x,
+                y,
+                0,
+            )
 
-        val result = mainSession.panZoomController.onTouchEventForDetailResult(down)
-            .map { value -> value!!.handledResult() }
-        val up = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP,
-            x,
-            y,
-            0,
-        )
+        val result =
+            mainSession.panZoomController.onTouchEventForDetailResult(down).map { value -> value!!.handledResult() }
+        val up =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_UP,
+                x,
+                y,
+                0,
+            )
 
         mainSession.panZoomController.onTouchEvent(up)
 
@@ -377,7 +382,8 @@ class PanZoomControllerTest : BaseSessionTest() {
              }
              window.requestAnimationFrame(step);
            });
-            """.trimIndent(),
+            """
+                .trimIndent()
         )
     }
 
@@ -411,13 +417,14 @@ class PanZoomControllerTest : BaseSessionTest() {
         // pull to refresh gesture.
         mainSession.evaluateJS(
             """
-        const iframe = document.querySelector('iframe');
-        iframe.contentWindow.scrollTo({
-          left: 0,
-          top: 50,
-          behavior: 'instant',
-        });
-            """.trimIndent(),
+            const iframe = document.querySelector('iframe');
+            iframe.contentWindow.scrollTo({
+              left: 0,
+              top: 50,
+              behavior: 'instant',
+            });
+            """
+                .trimIndent()
         )
         waitForScroll(scrollWaitTimeout)
         mainSession.flushApzRepaints()
@@ -433,13 +440,14 @@ class PanZoomControllerTest : BaseSessionTest() {
         // Scroll to the bottom of the iframe
         mainSession.evaluateJS(
             """
-          const iframe = document.querySelector('iframe');
-          iframe.contentWindow.scrollTo({
-            left: 0,
-            top: iframe.contentWindow.scrollMaxY,
-            behavior: 'instant'
-          });
-            """.trimIndent(),
+            const iframe = document.querySelector('iframe');
+            iframe.contentWindow.scrollTo({
+              left: 0,
+              top: iframe.contentWindow.scrollMaxY,
+              behavior: 'instant'
+            });
+            """
+                .trimIndent()
         )
         waitForScroll(scrollWaitTimeout)
         mainSession.flushApzRepaints()
@@ -487,13 +495,14 @@ class PanZoomControllerTest : BaseSessionTest() {
         // pull to refresh gesture.
         mainSession.evaluateJS(
             """
-        const iframe = document.querySelector('iframe');
-        iframe.contentWindow.scrollTo({
-          left: 0,
-          top: 50,
-          behavior: 'instant',
-        });
-            """.trimIndent(),
+            const iframe = document.querySelector('iframe');
+            iframe.contentWindow.scrollTo({
+              left: 0,
+              top: 50,
+              behavior: 'instant',
+            });
+            """
+                .trimIndent()
         )
         waitForScroll(scrollWaitTimeout)
         mainSession.flushApzRepaints()
@@ -509,13 +518,14 @@ class PanZoomControllerTest : BaseSessionTest() {
         // Scroll to the bottom of the iframe
         mainSession.evaluateJS(
             """
-          const iframe = document.querySelector('iframe');
-          iframe.contentWindow.scrollTo({
-            left: 0,
-            top: iframe.contentWindow.scrollMaxY,
-            behavior: 'instant'
-          });
-            """.trimIndent(),
+            const iframe = document.querySelector('iframe');
+            iframe.contentWindow.scrollTo({
+              left: 0,
+              top: iframe.contentWindow.scrollMaxY,
+              behavior: 'instant'
+            });
+            """
+                .trimIndent()
         )
         waitForScroll(scrollWaitTimeout)
         mainSession.flushApzRepaints()
@@ -552,15 +562,16 @@ class PanZoomControllerTest : BaseSessionTest() {
         // For example, in iframe_98vh_no_scrollable.html, even though
         // the page does not have a scroll range, the page is "pannable"
         // because the dynamic toolbar can be hidden.
-        var files = arrayOf(
-            ROOT_100_PERCENT_HEIGHT_HTML_PATH,
-            ROOT_98VH_HTML_PATH,
-            ROOT_100VH_HTML_PATH,
-            IFRAME_100_PERCENT_HEIGHT_NO_SCROLLABLE_HTML_PATH,
-            IFRAME_100_PERCENT_HEIGHT_SCROLLABLE_HTML_PATH,
-            IFRAME_98VH_SCROLLABLE_HTML_PATH,
-            IFRAME_98VH_NO_SCROLLABLE_HTML_PATH,
-        )
+        var files =
+            arrayOf(
+                ROOT_100_PERCENT_HEIGHT_HTML_PATH,
+                ROOT_98VH_HTML_PATH,
+                ROOT_100VH_HTML_PATH,
+                IFRAME_100_PERCENT_HEIGHT_NO_SCROLLABLE_HTML_PATH,
+                IFRAME_100_PERCENT_HEIGHT_SCROLLABLE_HTML_PATH,
+                IFRAME_98VH_SCROLLABLE_HTML_PATH,
+                IFRAME_98VH_NO_SCROLLABLE_HTML_PATH,
+            )
         for (file in files) {
             setupDocument(file + "?event-prevent")
             var value = sessionRule.waitForResult(sendDownEvent(50f, 50f))
@@ -573,14 +584,15 @@ class PanZoomControllerTest : BaseSessionTest() {
             // Scroll to the bottom edge if it's possible.
             mainSession.evaluateJS(
                 """
-            const targetWindow = document.querySelector('iframe') ?
-                document.querySelector('iframe').contentWindow : window;
-            targetWindow.scrollTo({
-              left: 0,
-              top: targetWindow.scrollMaxY,
-              behavior: 'instant'
-            });
-                """.trimIndent(),
+                const targetWindow = document.querySelector('iframe') ?
+                    document.querySelector('iframe').contentWindow : window;
+                targetWindow.scrollTo({
+                  left: 0,
+                  top: targetWindow.scrollMaxY,
+                  behavior: 'instant'
+                });
+                """
+                    .trimIndent()
             )
             waitForScroll(scrollWaitTimeout)
             mainSession.flushApzRepaints()
@@ -609,78 +621,85 @@ class PanZoomControllerTest : BaseSessionTest() {
 
     private fun fling(): GeckoResult<Int> {
         val downTime = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_DOWN,
-            50f,
-            90f,
-            0,
-        )
+        val down =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_DOWN,
+                50f,
+                90f,
+                0,
+            )
 
-        val result = mainSession.panZoomController.onTouchEventForDetailResult(down)
-            .map { value -> value!!.handledResult() }
-        var move = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_MOVE,
-            50f,
-            70f,
-            0,
-        )
+        val result =
+            mainSession.panZoomController.onTouchEventForDetailResult(down).map { value -> value!!.handledResult() }
+        var move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                70f,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(move)
-        move = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_MOVE,
-            50f,
-            30f,
-            0,
-        )
+        move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                30f,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(move)
 
-        val up = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP,
-            50f,
-            10f,
-            0,
-        )
+        val up =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_UP,
+                50f,
+                10f,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(up)
         return result
     }
 
     private fun pan(startY: Float, endY: Float) {
         val downTime = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_DOWN,
-            50f,
-            startY,
-            0,
-        )
+        val down =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_DOWN,
+                50f,
+                startY,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(down)
 
-        val move = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_MOVE,
-            50f,
-            endY,
-            0,
-        )
+        val move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                endY,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(move)
 
-        val up = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP,
-            50f,
-            endY,
-            0,
-        )
+        val up =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_UP,
+                50f,
+                endY,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(up)
     }
 
@@ -716,7 +735,11 @@ class PanZoomControllerTest : BaseSessionTest() {
     @WithDisplay(width = 100, height = 100)
     @Test
     fun touchEventWithXOrigin() {
-        setupDocument(TOUCH_XORIGIN_HTML_PATH)
+        mainSession.loadTestPath(TOUCH_XORIGIN_HTML_PATH)
+        mainSession.waitForPageStop()
+        sessionRule.waitForContentTransformsReceived(mainSession)
+        mainSession.promiseAllPaintsDone()
+        mainSession.flushApzRepaints()
 
         // Touch handler with preventDefault
         val value = sessionRule.waitForResult(sendDownEvent(50f, 45f))
@@ -728,11 +751,7 @@ class PanZoomControllerTest : BaseSessionTest() {
     fun compositorScrollDelegate() {
         // Reduce touch start tolerance to ensure our touch scroll
         // gestures cause scrolling
-        sessionRule.setPrefsUntilTestEnd(
-            mapOf(
-                "apz.touch_start_tolerance" to "0.01",
-            ),
-        )
+        sessionRule.setPrefsUntilTestEnd(mapOf("apz.touch_start_tolerance" to "0.01"))
 
         // Load a simple vertically scrollable page
         // Query its maximum vertical scroll position for later use
@@ -742,11 +761,13 @@ class PanZoomControllerTest : BaseSessionTest() {
         // Set up a CompositorScrollDelegate that appends all updates to
         // a local list
         val updates: MutableList<ScrollPositionUpdate> = mutableListOf()
-        mainSession.setCompositorScrollDelegate(object : CompositorScrollDelegate {
-            override fun onScrollChanged(session: GeckoSession, update: ScrollPositionUpdate) {
-                updates.add(update)
+        mainSession.setCompositorScrollDelegate(
+            object : CompositorScrollDelegate {
+                override fun onScrollChanged(session: GeckoSession, update: ScrollPositionUpdate) {
+                    updates.add(update)
+                }
             }
-        })
+        )
 
         val fuzzyEqual = { a: Float, b: Float -> Math.abs(a - b) <= 1.0 }
 
@@ -796,136 +817,109 @@ class PanZoomControllerTest : BaseSessionTest() {
 
     @WithDisplay(width = 100, height = 100)
     @Test
+    fun compositorScrollDelegateNotifiedOnRegistration() {
+        // Load a simple vertically scrollable page
+        setupDocument(SIMPLE_SCROLL_TEST_PATH)
+
+        // Set up an initial CompositorScrollDelegate
+        // that appends updates to a local list
+        val updates: MutableList<ScrollPositionUpdate> = mutableListOf()
+        mainSession.setCompositorScrollDelegate(
+            object : CompositorScrollDelegate {
+                override fun onScrollChanged(session: GeckoSession, update: ScrollPositionUpdate) {
+                    updates.add(update)
+                }
+            }
+        )
+
+        // Scroll to y=50 and wait for the initial delegate to
+        // be notified on this
+        mainSession.evaluateJS("window.scrollTo(0, 50)")
+        while (updates.size == 0 || updates[updates.size - 1].scrollY != 50.0f) {
+            mainSession.promiseAllPaintsDone()
+            mainSession.flushApzRepaints()
+        }
+
+        // Register a second CompositorScrollDelegate, and check that it
+        // immediatley gets notified about the scrollY=50, even though
+        // that scroll offset was reached before the delegate was registered.
+        var wasNotified = false
+        mainSession.setCompositorScrollDelegate(
+            object : CompositorScrollDelegate {
+                override fun onScrollChanged(session: GeckoSession, update: ScrollPositionUpdate) {
+                    wasNotified = true
+                    assertThat(
+                        "notified scrollY is correct",
+                        update.scrollY,
+                        equalTo(50.0f),
+                    )
+                }
+            }
+        )
+
+        // setCompositorScrollDelegate() runs on the UI thread,
+        // so the delegate callback may not be called synchronously.
+        UiThreadUtils.loopUntilIdle(sessionRule.env.defaultTimeoutMillis)
+
+        assertThat(
+            "delegate was notified on registration",
+            wasNotified,
+            equalTo(true),
+        )
+
+        // Clean up
+        mainSession.setCompositorScrollDelegate(null)
+    }
+
+    @WithDisplay(width = 100, height = 100)
+    @Test
     fun stylusTilt() {
         setupDocument(TOUCH_HTML_PATH)
 
-        val tiltX = mainSession.evaluatePromiseJS(
-            """
-            new Promise(resolve =>
-                document.documentElement.addEventListener(
-                    "pointerdown",
-                    e => resolve(e.tiltX),
-                    { once: true }))
-            """.trimIndent(),
-        )
-        val tiltY = mainSession.evaluatePromiseJS(
-            """
-            new Promise(resolve =>
-                document.documentElement.addEventListener(
-                    "pointerup",
-                    e => resolve(e.tiltY),
-                    { once: true }))
-            """.trimIndent(),
-        )
+        val tiltX =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve =>
+                    document.documentElement.addEventListener(
+                        "pointerdown",
+                        e => resolve(e.tiltX),
+                        { once: true }))
+                """
+                    .trimIndent()
+            )
+        val tiltY =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve =>
+                    document.documentElement.addEventListener(
+                        "pointerup",
+                        e => resolve(e.tiltY),
+                        { once: true }))
+                """
+                    .trimIndent()
+            )
 
         val pointerProperties = arrayOf(MotionEvent.PointerProperties())
         pointerProperties[0].id = 0
         pointerProperties[0].toolType = MotionEvent.TOOL_TYPE_STYLUS
 
-        val pointerCoords = arrayOf(
-            MotionEvent.PointerCoords().apply {
-                x = 50.0f
-                y = 50.0f
-                pressure = 1.0f
-                size = 1.0f
-                pressure = 1.0f
-                orientation = 0.0f
-                setAxisValue(MotionEvent.AXIS_TILT, (Math.PI / 4).toFloat()) // 45 deg
-            },
-        )
+        val pointerCoords =
+            arrayOf(
+                MotionEvent.PointerCoords().apply {
+                    x = 50.0f
+                    y = 50.0f
+                    pressure = 1.0f
+                    size = 1.0f
+                    pressure = 1.0f
+                    orientation = 0.0f
+                    setAxisValue(MotionEvent.AXIS_TILT, (Math.PI / 4).toFloat()) // 45 deg
+                }
+            )
 
         val source = (InputDevice.SOURCE_TOUCHSCREEN or InputDevice.SOURCE_STYLUS)
         val downTime = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_DOWN,
-            1,
-            pointerProperties,
-            pointerCoords,
-            0,
-            0,
-            0.0f,
-            0.0f,
-            0,
-            0,
-            source,
-            0,
-        )
-        mainSession.panZoomController.onTouchEvent(down)
-
-        assertThat(
-            "The tiltX of pointerdown should be 0deg",
-            tiltX.value,
-            equalTo(0.0),
-        )
-
-        val up = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP,
-            1,
-            pointerProperties,
-            pointerCoords,
-            0,
-            0,
-            0.0f,
-            0.0f,
-            0,
-            0,
-            source,
-            0,
-        )
-        mainSession.panZoomController.onTouchEvent(up)
-
-        assertThat(
-            "The tiltY of pointerup should be 45deg",
-            tiltY.value,
-            equalTo(45.0),
-        )
-    }
-
-    @WithDisplay(width = 100, height = 100)
-    @Test
-    fun pointerTypeOnPointerEvent() {
-        setupDocument(TOUCH_HTML_PATH)
-
-        for (pointerType in listOf("pen", "touch")) {
-            val pointerTypeDown = mainSession.evaluatePromiseJS(
-                """
-                new Promise(resolve =>
-                    document.documentElement.addEventListener(
-                        "pointerdown",
-                        e => resolve(e.pointerType),
-                        { once: true }))
-                """.trimIndent(),
-            )
-            val pointerTypeUp = mainSession.evaluatePromiseJS(
-                """
-                new Promise(resolve =>
-                    document.documentElement.addEventListener(
-                        "pointerup",
-                        e => resolve(e.pointerType),
-                        { once: true }))
-                """.trimIndent(),
-            )
-
-            val pointerProperties = arrayOf(MotionEvent.PointerProperties())
-            pointerProperties[0].id = 0
-            pointerProperties[0].toolType = when (pointerType) {
-                "pen" -> MotionEvent.TOOL_TYPE_STYLUS
-                else -> MotionEvent.TOOL_TYPE_FINGER
-            }
-
-            val pointerCoords = arrayOf(MotionEvent.PointerCoords())
-            pointerCoords[0].x = 50.0f
-            pointerCoords[0].y = 50.0f
-            pointerCoords[0].pressure = 1.0f
-            pointerCoords[0].size = 1.0f
-
-            val source = (InputDevice.SOURCE_TOUCHSCREEN or InputDevice.SOURCE_STYLUS)
-            val downTime = SystemClock.uptimeMillis()
-            val down = MotionEvent.obtain(
+        val down =
+            MotionEvent.obtain(
                 downTime,
                 SystemClock.uptimeMillis(),
                 MotionEvent.ACTION_DOWN,
@@ -941,15 +935,16 @@ class PanZoomControllerTest : BaseSessionTest() {
                 source,
                 0,
             )
-            mainSession.panZoomController.onTouchEvent(down)
+        mainSession.panZoomController.onTouchEvent(down)
 
-            assertThat(
-                "The pointerType of pointerdown should be pen or touch by MotionEvent",
-                pointerTypeDown.value,
-                equalTo(pointerType),
-            )
+        assertThat(
+            "The tiltX of pointerdown should be 0deg",
+            tiltX.value,
+            equalTo(0.0),
+        )
 
-            val up = MotionEvent.obtain(
+        val up =
+            MotionEvent.obtain(
                 downTime,
                 SystemClock.uptimeMillis(),
                 MotionEvent.ACTION_UP,
@@ -965,6 +960,102 @@ class PanZoomControllerTest : BaseSessionTest() {
                 source,
                 0,
             )
+        mainSession.panZoomController.onTouchEvent(up)
+
+        assertThat(
+            "The tiltY of pointerup should be 45deg",
+            tiltY.value,
+            equalTo(45.0),
+        )
+    }
+
+    @WithDisplay(width = 100, height = 100)
+    @Test
+    fun pointerTypeOnPointerEvent() {
+        setupDocument(TOUCH_HTML_PATH)
+
+        for (pointerType in listOf("pen", "touch")) {
+            val pointerTypeDown =
+                mainSession.evaluatePromiseJS(
+                    """
+                    new Promise(resolve =>
+                        document.documentElement.addEventListener(
+                            "pointerdown",
+                            e => resolve(e.pointerType),
+                            { once: true }))
+                    """
+                        .trimIndent()
+                )
+            val pointerTypeUp =
+                mainSession.evaluatePromiseJS(
+                    """
+                    new Promise(resolve =>
+                        document.documentElement.addEventListener(
+                            "pointerup",
+                            e => resolve(e.pointerType),
+                            { once: true }))
+                    """
+                        .trimIndent()
+                )
+
+            val pointerProperties = arrayOf(MotionEvent.PointerProperties())
+            pointerProperties[0].id = 0
+            pointerProperties[0].toolType =
+                when (pointerType) {
+                    "pen" -> MotionEvent.TOOL_TYPE_STYLUS
+                    else -> MotionEvent.TOOL_TYPE_FINGER
+                }
+
+            val pointerCoords = arrayOf(MotionEvent.PointerCoords())
+            pointerCoords[0].x = 50.0f
+            pointerCoords[0].y = 50.0f
+            pointerCoords[0].pressure = 1.0f
+            pointerCoords[0].size = 1.0f
+
+            val source = (InputDevice.SOURCE_TOUCHSCREEN or InputDevice.SOURCE_STYLUS)
+            val downTime = SystemClock.uptimeMillis()
+            val down =
+                MotionEvent.obtain(
+                    downTime,
+                    SystemClock.uptimeMillis(),
+                    MotionEvent.ACTION_DOWN,
+                    1,
+                    pointerProperties,
+                    pointerCoords,
+                    0,
+                    0,
+                    0.0f,
+                    0.0f,
+                    0,
+                    0,
+                    source,
+                    0,
+                )
+            mainSession.panZoomController.onTouchEvent(down)
+
+            assertThat(
+                "The pointerType of pointerdown should be pen or touch by MotionEvent",
+                pointerTypeDown.value,
+                equalTo(pointerType),
+            )
+
+            val up =
+                MotionEvent.obtain(
+                    downTime,
+                    SystemClock.uptimeMillis(),
+                    MotionEvent.ACTION_UP,
+                    1,
+                    pointerProperties,
+                    pointerCoords,
+                    0,
+                    0,
+                    0.0f,
+                    0.0f,
+                    0,
+                    0,
+                    source,
+                    0,
+                )
             mainSession.panZoomController.onTouchEvent(up)
 
             assertThat(

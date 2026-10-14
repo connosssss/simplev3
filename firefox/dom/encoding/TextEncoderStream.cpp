@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,12 +6,12 @@
 
 #include "js/ArrayBuffer.h"
 #include "js/experimental/TypedData.h"
-#include "nsIGlobalObject.h"
 #include "mozilla/Encoding.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/TextEncoderStreamBinding.h"
-#include "mozilla/dom/TransformerCallbackHelpers.h"
 #include "mozilla/dom/TransformStream.h"
+#include "mozilla/dom/TransformerCallbackHelpers.h"
+#include "nsIGlobalObject.h"
 
 namespace mozilla::dom {
 
@@ -141,51 +139,37 @@ class TextEncoderStreamAlgorithms : public TransformerAlgorithmsWrapper {
 
   // https://encoding.spec.whatwg.org/#dom-textencoderstream
   MOZ_CAN_RUN_SCRIPT void TransformCallbackImpl(
-      JS::Handle<JS::Value> aChunk,
+      JSContext* aCx, JS::Handle<JS::Value> aChunk,
       TransformStreamDefaultController& aController,
       ErrorResult& aRv) override {
     // Step 2. Let transformAlgorithm be an algorithm which takes a chunk
     // argument and runs the encode and enqueue a chunk algorithm with this and
     // chunk.
 
-    AutoJSAPI jsapi;
-    if (!jsapi.Init(aController.GetParentObject())) {
-      aRv.ThrowUnknownError("Internal error");
-      return;
-    }
-    JSContext* cx = jsapi.cx();
-
     // https://encoding.spec.whatwg.org/#encode-and-enqueue-a-chunk
 
     // Step 1. Let input be the result of converting chunk to a DOMString.
     // Step 2. Convert input to an I/O queue of code units.
     nsString str;
-    if (!ConvertJSValueToString(cx, aChunk, eStringify, eStringify, str)) {
+    if (!ConvertJSValueToString(aCx, aChunk, eStringify, eStringify, str)) {
       aRv.MightThrowJSException();
-      aRv.StealExceptionFromJSContext(cx);
+      aRv.StealExceptionFromJSContext(aCx);
       return;
     }
 
-    EncodeAndEnqueue(cx, str, aController, false, aRv);
+    EncodeAndEnqueue(aCx, str, aController, false, aRv);
   }
 
   // https://encoding.spec.whatwg.org/#dom-textencoderstream
   MOZ_CAN_RUN_SCRIPT void FlushCallbackImpl(
-      TransformStreamDefaultController& aController,
+      JSContext* aCx, TransformStreamDefaultController& aController,
       ErrorResult& aRv) override {
     // Step 3. Let flushAlgorithm be an algorithm which runs the encode and
     // flush algorithm with this.
 
-    AutoJSAPI jsapi;
-    if (!jsapi.Init(aController.GetParentObject())) {
-      aRv.ThrowUnknownError("Internal error");
-      return;
-    }
-    JSContext* cx = jsapi.cx();
-
     // The spec manually manages pending high surrogate here, but let's call the
     // encoder as it's managed there.
-    EncodeAndEnqueue(cx, u""_ns, aController, true, aRv);
+    EncodeAndEnqueue(aCx, u""_ns, aController, true, aRv);
   }
 
  private:

@@ -11,7 +11,7 @@ use std::{
 
 use neqo_common::qtrace;
 
-use crate::recovery::RecoveryToken;
+use crate::recovery;
 
 #[derive(Debug, Clone)]
 /// There's a little bit of different behavior for resetting idle timeout. See
@@ -59,7 +59,7 @@ impl IdleTimeout {
         t
     }
 
-    pub fn on_packet_sent(&mut self, now: Instant) {
+    pub const fn on_packet_sent(&mut self, now: Instant) {
         // Only reset idle timeout if we've received a packet since the last
         // time we reset the timeout here.
         match self.state {
@@ -122,22 +122,22 @@ impl IdleTimeout {
         &mut self,
         now: Instant,
         pto: Duration,
-        tokens: &mut Vec<RecoveryToken>,
+        tokens: &mut recovery::Tokens,
     ) -> bool {
         if !self.keep_alive_outstanding && now >= self.keep_alive_timeout(now, pto) {
             self.keep_alive_outstanding = true;
-            tokens.push(RecoveryToken::KeepAlive);
+            tokens.push(recovery::Token::KeepAlive);
             true
         } else {
             false
         }
     }
 
-    pub fn lost_keep_alive(&mut self) {
+    pub const fn lost_keep_alive(&mut self) {
         self.keep_alive_outstanding = false;
     }
 
-    pub fn ack_keep_alive(&mut self) {
+    pub const fn ack_keep_alive(&mut self) {
         self.keep_alive_outstanding = false;
     }
 }

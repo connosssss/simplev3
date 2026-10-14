@@ -48,49 +48,28 @@ export class ShieldFrameChild extends JSWindowActorChild {
     }
     switch (event.detail.action) {
       // Actions that require the parent process
-      case "GetRemoteValue:AddonStudyList":
-        let addonStudies = await this.sendQuery("Shield:GetAddonStudyList");
-        this.triggerPageCallback(
-          "ReceiveRemoteValue:AddonStudyList",
-          addonStudies
-        );
-        break;
-      case "GetRemoteValue:PreferenceStudyList":
-        let prefStudies = await this.sendQuery("Shield:GetPreferenceStudyList");
-        this.triggerPageCallback(
-          "ReceiveRemoteValue:PreferenceStudyList",
-          prefStudies
-        );
-        break;
-      case "GetRemoteValue:MessagingSystemList":
+      case "GetRemoteValue:MessagingSystemList": {
         let experiments = await this.sendQuery("Shield:GetMessagingSystemList");
         this.triggerPageCallback(
           "ReceiveRemoteValue:MessagingSystemList",
           experiments
         );
         break;
-      case "RemoveAddonStudy":
-        this.sendAsyncMessage("Shield:RemoveAddonStudy", event.detail.data);
-        break;
-      case "RemovePreferenceStudy":
-        this.sendAsyncMessage(
-          "Shield:RemovePreferenceStudy",
-          event.detail.data
-        );
-        break;
+      }
       case "RemoveMessagingSystemExperiment":
         this.sendAsyncMessage(
           "Shield:RemoveMessagingSystemExperiment",
           event.detail.data
         );
         break;
-      case "GetRemoteValue:StudiesEnabled":
+      case "GetRemoteValue:StudiesEnabled": {
         let studiesEnabled = await this.sendQuery("Shield:GetStudiesEnabled");
         this.triggerPageCallback(
           "ReceiveRemoteValue:StudiesEnabled",
           studiesEnabled
         );
         break;
+      }
       case "NavigateToDataPreferences":
         this.sendAsyncMessage("Shield:OpenDataPreferences");
         break;
@@ -101,7 +80,7 @@ export class ShieldFrameChild extends JSWindowActorChild {
           lazy.AboutPages.aboutStudies.getShieldLearnMoreHref()
         );
         break;
-      case "GetRemoteValue:ShieldTranslations":
+      case "GetRemoteValue:ShieldTranslations": {
         const strings = {};
         for (let str of lazy.gStringBundle.getSimpleEnumeration()) {
           strings[str.key] = str.value;
@@ -117,27 +96,20 @@ export class ShieldFrameChild extends JSWindowActorChild {
           strings
         );
         break;
-      case "ExperimentOptIn":
+      }
+      case "ExperimentOptIn": {
         const message = await this.sendQuery(
           "Shield:ExperimentOptIn",
           event.detail.data
         );
         this.triggerPageCallback("ReceiveRemoteValue:OptInMessage", message);
         break;
+      }
     }
   }
 
   receiveMessage(msg) {
     switch (msg.name) {
-      case "Shield:UpdateAddonStudyList":
-        this.triggerPageCallback("ReceiveRemoteValue:AddonStudyList", msg.data);
-        break;
-      case "Shield:UpdatePreferenceStudyList":
-        this.triggerPageCallback(
-          "ReceiveRemoteValue:PreferenceStudyList",
-          msg.data
-        );
-        break;
       case "Shield:UpdateMessagingSystemExperimentList":
         this.triggerPageCallback(
           "ReceiveRemoteValue:MessagingSystemList",
@@ -148,8 +120,9 @@ export class ShieldFrameChild extends JSWindowActorChild {
   }
   /**
    * Trigger an event to communicate with the unprivileged about:studies page.
-   * @param {String} type The type of event to trigger.
-   * @param {Object} detail The data to pass along to the event.
+   *
+   * @param {string} type The type of event to trigger.
+   * @param {object} detail The data to pass along to the event.
    */
   triggerPageCallback(type, detail) {
     // Clone details and use the event class from the unprivileged context.

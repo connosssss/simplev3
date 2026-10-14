@@ -1,10 +1,11 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jit/ShuffleAnalysis.h"
-#include "mozilla/MathAlgorithms.h"
+
+#include <bit>
+
 #include "jit/MIR-wasm.h"
 #include "jit/MIR.h"
 #include "wasm/WasmFeatures.h"
@@ -16,7 +17,7 @@ using mozilla::Maybe;
 using mozilla::Nothing;
 using mozilla::Some;
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 
 // Specialization analysis for SIMD operations.  This is still x86-centric but
 // generalizes fairly easily to other architectures.
@@ -174,21 +175,6 @@ static void MapLanes(T* result, const T* input, int (*f)(int)) {
 template <typename T>
 static bool IsIdentity(const T* lanes) {
   return ScanIncreasingMasked(lanes, 0) == int(16 / sizeof(T));
-}
-
-// Recognize part of an identity permutation starting at start, with
-// the first value of the permutation expected to be bias.
-template <typename T>
-static bool IsIdentity(const T* lanes, int start, int len, int bias) {
-  if (lanes[start] != bias) {
-    return false;
-  }
-  for (int i = start + 1; i < start + len; i++) {
-    if (lanes[i] != lanes[i - 1] + 1) {
-      return false;
-    }
-  }
-  return true;
 }
 
 // We can permute by dwords if the mask is reducible to a dword mask, and in
@@ -380,7 +366,7 @@ static Maybe<SimdPermuteOp> TryZeroExtend(SimdConstant* control) {
   for (; i <= 4 && lanes[i] == int8_t(i); i++) {
   }
   // The length of the fragment has to be a power of 2, and next item is zero.
-  if (!mozilla::IsPowerOfTwo(i) || lanes[i] < 16) {
+  if (!std::has_single_bit(i) || lanes[i] < 16) {
     return Nothing();
   }
   MOZ_ASSERT(i > 0 && i <= 4);
@@ -390,7 +376,7 @@ static Maybe<SimdPermuteOp> TryZeroExtend(SimdConstant* control) {
   }
   // The length of the entire fragment of zero and non-zero items
   // needs to be power of 2.
-  if (!mozilla::IsPowerOfTwo(i)) {
+  if (!std::has_single_bit(i)) {
     return Nothing();
   }
   MOZ_ASSERT(i > fromLen && i <= 8);
@@ -842,4 +828,4 @@ SimdShuffle jit::AnalyzeSimdShuffle(SimdConstant control, MDefinition* lhs,
 #  undef R
 }
 
-#endif  // ENABLE_WASM_SIMD
+#endif  // ENABLE_JIT_SIMD

@@ -11,8 +11,7 @@
           "manifest_version": {
             "type": "integer",
             "minimum": 2,
-            "maximum": 3,
-            "postprocess": "manifestVersionCheck"
+            "maximum": 3
           },
 
           "applications": {
@@ -214,7 +213,6 @@
 
           "content_security_policy": {
             "optional": true,
-            "onError": "warn",
             "choices": [
               {
                 "max_manifest_version": 2,
@@ -233,10 +231,38 @@
                     "optional": true,
                     "format": "contentSecurityPolicy",
                     "description": "The Content Security Policy used for extension pages."
+                  },
+                  "sandbox": {
+                    "type": "string",
+                    "optional": true,
+                    "format": "contentSecurityPolicySandbox",
+                    "description": "The content security policy used for sandboxed extension pages."
                   }
                 }
               }
             ]
+          },
+
+          "sandbox": {
+            "type": "object",
+            "optional": true,
+            "additionalProperties": {
+              "$ref": "UnrecognizedProperty"
+            },
+            "properties": {
+              "pages": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "The list of pages in the form of globs to serve as sandboxed extension pages."
+              },
+              "content_security_policy": {
+                "type": "string",
+                "optional": true,
+                "max_manifest_version": 2,
+                "format": "contentSecurityPolicySandbox",
+                "description": "The content security policy used for sandboxed extension pages."
+              }
+            }
           },
 
           "permissions": {
@@ -658,8 +684,14 @@
                 },
                 "optional": true,
                 "default": []
+              },
+              "has_previous_consent": {
+                "type": "boolean",
+                "optional": true,
+                "default": false
               }
-            }
+            },
+            "additionalProperties": { "$ref": "UnrecognizedProperty" }
           }
         },
         "additionalProperties": { "$ref": "UnrecognizedProperty" }
@@ -782,6 +814,11 @@
             "optional": true,
             "description": "The list of CSS files to inject",
             "items": { "$ref": "ExtensionURL" }
+          },
+          "css_origin": {
+            "$ref": "extensionTypes.CSSOrigin",
+            "default": "author",
+            "optional": true
           },
           "js": {
             "type": "array",

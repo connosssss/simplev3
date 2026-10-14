@@ -2,7 +2,8 @@ use crate::annotation;
 use crate::core::*;
 use crate::encode::Encode;
 use crate::kw;
-use crate::parser::{Cursor, Parse, Parser, Result};
+use crate::lexer::{Lexer, Token, TokenKind};
+use crate::parser::{Parse, Parser, Result};
 use crate::token::*;
 use std::mem;
 
@@ -116,6 +117,14 @@ struct ExpressionParser<'a> {
     /// <(index of branch instructions, BranchHintAnnotation)>
     branch_hints: Vec<BranchHint>,
 
+    /// A branch hint annotation that has been parsed but not yet attached to an
+    /// instruction. The annotation applies to the instruction (or folded
+    /// instruction) that immediately follows it. For a folded instruction the
+    /// head instruction (e.g. the `if` or `br_if`) is pushed after its
+    /// operands, so the hint's index cannot be known until that instruction is
+    /// actually pushed. See `push_instr_with_hint`.
+    pending_hint: Option<u32>,
+
     /// Storage for all span information in `raw_instrs`. Optionally disabled to
     /// reduce memory consumption of parsing expressions.
     spans: Option<Vec<Span>>,
@@ -131,12 +140,21 @@ enum Paren {
 enum Level<'a> {
     /// This is a normal `block` or `loop` or similar, where the instruction
     /// payload here is pushed when the block is exited.
-    EndWith(Instruction<'a>, Option<Span>),
+    ///
+    /// The final field is a pending branch hint that applies to the payload
+    /// instruction, if the folded instruction was preceded by a branch hint
+    /// annotation. It's recorded when the instruction is finally pushed.
+    EndWith(Instruction<'a>, Option<Span>, Option<u32>),
 
     /// This is a pretty special variant which means that we're parsing an `if`
     /// statement, and the state of the `if` parsing is tracked internally in
     /// the payload.
-    If(If<'a>),
+    ///
+    /// The final field is a pending branch hint that applies to the `if`
+    /// instruction, if it was preceded by a branch hint annotation. It's
+    /// recorded when the `if` instruction is finally pushed (see
+    /// `handle_if_lparen`).
+    If(If<'a>, Option<u32>),
 
     /// This means we're either parsing inside of `(then ...)` or `(else ...)`
     /// which don't correspond to terminating instructions, we're just in a
@@ -167,6 +185,7 @@ impl<'a> ExpressionParser<'a> {
             raw_instrs: Vec::new(),
             stack: Vec::new(),
             branch_hints: Vec::new(),
+            pending_hint: None,
             spans: if parser.track_instr_spans() {
                 Some(Vec::new())
             } else {
@@ -188,7 +207,7 @@ impl<'a> ExpressionParser<'a> {
             // As a small ease-of-life adjustment here, if we're parsing inside
             // of an `if block then we require that all sub-components are
             // s-expressions surrounded by `(` and `)`, so verify that here.
-            if let Some(Level::If(_)) = self.stack.last() {
+            if let Some(Level::If(..)) = self.stack.last() {
                 if !parser.is_empty() && !parser.peek::<LParen>()? {
                     return Err(parser.error("expected `(`"));
                 }
@@ -199,7 +218,10 @@ impl<'a> ExpressionParser<'a> {
                 // and move on.
                 Paren::None => {
                     let span = parser.cur_span();
-                    self.push_instr(parser.parse()?, span);
+                    // A flat instruction is pushed immediately, so any pending
+                    // branch hint applies directly to it.
+                    let hint = self.pending_hint.take();
+                    self.push_instr_with_hint(parser.parse()?, span, hint);
                 }
 
                 // If we see a left-parenthesis then things are a little
@@ -226,53 +248,75 @@ impl<'a> ExpressionParser<'a> {
                     }
 
                     let span = parser.cur_span();
+                    // Any pending branch hint applies to the head of this folded
+                    // instruction, so take it here and route it to wherever the
+                    // head instruction is pushed.
+                    let hint = self.pending_hint.take();
                     match parser.parse()? {
                         // If block/loop show up then we just need to be sure to
                         // push an `end` instruction whenever the `)` token is
-                        // seen
+                        // seen. The head instruction is pushed immediately, so
+                        // the hint is recorded now.
                         i @ Instruction::Block(_)
                         | i @ Instruction::Loop(_)
                         | i @ Instruction::TryTable(_) => {
-                            self.push_instr(i, span);
+                            self.push_instr_with_hint(i, span, hint);
                             self.stack
-                                .push(Level::EndWith(Instruction::End(None), None));
+                                .push(Level::EndWith(Instruction::End(None), None, None));
                         }
 
                         // Parsing an `if` instruction is super tricky, so we
                         // push an `If` scope and we let all our scope-based
-                        // parsing handle the remaining items.
+                        // parsing handle the remaining items. The `if`
+                        // instruction is pushed only once `(then` is reached, so
+                        // stash the pending hint until then.
                         i @ Instruction::If(_) => {
-                            self.stack.push(Level::If(If::Clause(i, span)));
+                            self.stack.push(Level::If(If::Clause(i, span), hint));
                         }
 
                         // Anything else means that we're parsing a nested form
                         // such as `(i32.add ...)` which means that the
-                        // instruction we parsed will be coming at the end.
-                        other => self.stack.push(Level::EndWith(other, Some(span))),
+                        // instruction we parsed will be coming at the end, so
+                        // stash the pending hint until the closing `)`.
+                        other => self.stack.push(Level::EndWith(other, Some(span), hint)),
                     }
                 }
 
                 // If we registered a `)` token as being seen, then we're
                 // guaranteed there's an item in the `stack` stack for us to
                 // pop. We peel that off and take a look at what it says to do.
-                Paren::Right(span) => match self.stack.pop().unwrap() {
-                    Level::EndWith(i, s) => self.push_instr(i, s.unwrap_or(span)),
-                    Level::IfArm => {}
-                    Level::BranchHint => {}
+                Paren::Right(span) => {
+                    let level = self.stack.pop().unwrap();
+                    // A pending hint at a closing `)` had no instruction after
+                    // it (e.g. `(br_if ... (@...))` or a dangling annotation), so
+                    // it's misplaced — except for the `)` closing the annotation.
+                    if !matches!(level, Level::BranchHint) {
+                        self.check_hint_consumed(parser)?;
+                    }
+                    match level {
+                        Level::EndWith(i, s, hint) => {
+                            self.push_instr_with_hint(i, s.unwrap_or(span), hint)
+                        }
+                        Level::IfArm => {}
+                        Level::BranchHint => {}
 
-                    // If an `if` statement hasn't parsed the clause or `then`
-                    // block, then that's an error because there weren't enough
-                    // items in the `if` statement. Otherwise we're just careful
-                    // to terminate with an `end` instruction.
-                    Level::If(If::Clause(..)) => {
-                        return Err(parser.error("previous `if` had no `then`"));
+                        // If an `if` statement hasn't parsed the clause or `then`
+                        // block, then that's an error because there weren't enough
+                        // items in the `if` statement. Otherwise we're just careful
+                        // to terminate with an `end` instruction.
+                        Level::If(If::Clause(..), _) => {
+                            return Err(parser.error("previous `if` had no `then`"));
+                        }
+                        Level::If(_, _) => {
+                            self.push_instr(Instruction::End(None), span);
+                        }
                     }
-                    Level::If(_) => {
-                        self.push_instr(Instruction::End(None), span);
-                    }
-                },
+                }
             }
         }
+        // A trailing annotation with no following instruction is likewise
+        // misplaced.
+        self.check_hint_consumed(parser)?;
         Ok(())
     }
 
@@ -282,11 +326,12 @@ impl<'a> ExpressionParser<'a> {
             match self.paren(parser)? {
                 Paren::Left => {
                     let span = parser.cur_span();
-                    self.stack.push(Level::EndWith(parser.parse()?, Some(span)));
+                    self.stack
+                        .push(Level::EndWith(parser.parse()?, Some(span), None));
                 }
                 Paren::Right(span) => {
                     let (top_instr, span) = match self.stack.pop().unwrap() {
-                        Level::EndWith(i, s) => (i, s.unwrap_or(span)),
+                        Level::EndWith(i, s, _) => (i, s.unwrap_or(span)),
                         _ => panic!("unknown level type"),
                     };
                     self.push_instr(top_instr, span);
@@ -295,7 +340,7 @@ impl<'a> ExpressionParser<'a> {
                     }
                 }
                 Paren::None => {
-                    return Err(parser.error("expected to continue a folded instruction"))
+                    return Err(parser.error("expected to continue a folded instruction"));
                 }
             }
         }
@@ -332,8 +377,8 @@ impl<'a> ExpressionParser<'a> {
     /// didn't handle the lparen here).
     fn handle_if_lparen(&mut self, parser: Parser<'a>) -> Result<bool> {
         // Only execute the code below if there's an `If` listed last.
-        let i = match self.stack.last_mut() {
-            Some(Level::If(i)) => i,
+        let (i, pending) = match self.stack.last_mut() {
+            Some(Level::If(i, pending)) => (i, pending),
             _ => return Ok(false),
         };
 
@@ -346,11 +391,17 @@ impl<'a> ExpressionParser<'a> {
                 if !parser.peek::<kw::then>()? {
                     return Ok(false);
                 }
+                // A pending hint here isn't followed by an instruction (the
+                // next token is `(then`), so it's misplaced.
+                if self.pending_hint.is_some() {
+                    return Err(Self::hint_placement_error(parser));
+                }
                 parser.parse::<kw::then>()?;
                 let instr = mem::replace(if_instr, Instruction::End(None));
                 let span = *if_instr_span;
+                let hint = pending.take();
                 *i = If::Then;
-                self.push_instr(instr, span);
+                self.push_instr_with_hint(instr, span, hint);
                 self.stack.push(Level::IfArm);
                 Ok(true)
             }
@@ -382,10 +433,13 @@ impl<'a> ExpressionParser<'a> {
             _ => return Err(parser.error("invalid value for branch hint")),
         };
 
-        self.branch_hints.push(BranchHint {
-            instr_index: self.raw_instrs.len(),
-            value,
-        });
+        // A pending hint that hasn't yet been attached to an instruction means
+        // two annotations are targeting the same instruction, which is a
+        // duplicate.
+        if self.pending_hint.is_some() {
+            return Err(parser.error("@metadata.code.branch_hint annotation: duplicate annotation"));
+        }
+        self.pending_hint = Some(value);
         Ok(())
     }
 
@@ -394,6 +448,35 @@ impl<'a> ExpressionParser<'a> {
         if let Some(spans) = &mut self.spans {
             spans.push(span);
         }
+    }
+
+    /// Errors if a branch hint annotation has been parsed but not attached to an
+    /// instruction. A branch hint must immediately precede the instruction it
+    /// applies to, so an unconsumed hint means the annotation was misplaced
+    /// (inside a folded form or with no following instruction).
+    fn check_hint_consumed(&self, parser: Parser<'a>) -> Result<()> {
+        if self.pending_hint.is_some() {
+            return Err(Self::hint_placement_error(parser));
+        }
+        Ok(())
+    }
+
+    fn hint_placement_error(parser: Parser<'a>) -> crate::Error {
+        parser.error("@metadata.code.branch_hint annotation: must precede an instruction")
+    }
+
+    /// Pushes an instruction, recording a branch hint for it if `hint` is a
+    /// pending branch hint value. The hint's `instr_index` is the index this
+    /// instruction is pushed at, so branch hints end up sorted by increasing
+    /// index (instructions are only ever appended) as the encoder requires.
+    fn push_instr_with_hint(&mut self, instr: Instruction<'a>, span: Span, hint: Option<u32>) {
+        if let Some(value) = hint {
+            self.branch_hints.push(BranchHint {
+                instr_index: self.raw_instrs.len(),
+                value,
+            });
+        }
+        self.push_instr(instr, span);
     }
 }
 
@@ -441,7 +524,7 @@ macro_rules! instructions {
         }
 
         impl Encode for Instruction<'_> {
-            #[allow(non_snake_case)]
+            #[allow(non_snake_case, unused_lifetimes)]
             fn encode(&self, v: &mut Vec<u8>) {
                 match self {
                     $(
@@ -1194,13 +1277,22 @@ instructions! {
         Suspend(Index<'a>)             : [0xe2] : "suspend",
         Resume(Resume<'a>)             : [0xe3] : "resume",
         ResumeThrow(ResumeThrow<'a>)   : [0xe4] : "resume_throw",
-        Switch(Switch<'a>)             : [0xe5] : "switch",
+        ResumeThrowRef(ResumeThrowRef<'a>) : [0xe5] : "resume_throw_ref",
+        Switch(Switch<'a>)             : [0xe6] : "switch",
 
         // Wide arithmetic proposal
         I64Add128   : [0xfc, 19] : "i64.add128",
         I64Sub128   : [0xfc, 20] : "i64.sub128",
         I64MulWideS : [0xfc, 21] : "i64.mul_wide_s",
         I64MulWideU : [0xfc, 22] : "i64.mul_wide_u",
+
+        // Custom descriptors
+        StructNewDesc(Index<'a>) : [0xfb, 32] : "struct.new_desc",
+        StructNewDefaultDesc(Index<'a>) : [0xfb, 33] : "struct.new_default_desc",
+        RefGetDesc(Index<'a>): [0xfb, 34] : "ref.get_desc",
+        RefCastDescEq(RefCastDescEq<'a>) : [] : "ref.cast_desc_eq",
+        BrOnCastDescEq(Box<BrOnCastDescEq<'a>>) : [] : "br_on_cast_desc_eq",
+        BrOnCastDescEqFail(Box<BrOnCastDescEqFail<'a>>) : [] : "br_on_cast_desc_eq_fail",
     }
 }
 
@@ -1208,11 +1300,12 @@ instructions! {
 // since big `*.wat` files will have a lot of these. This is a small ratchet to
 // make sure that this enum doesn't become larger than it already is, although
 // ideally it also wouldn't be as large as it is now.
-const _: () = {
+#[test]
+fn assert_instruction_not_too_large() {
     let size = std::mem::size_of::<Instruction<'_>>();
     let pointer = std::mem::size_of::<u64>();
     assert!(size <= pointer * 11);
-};
+}
 
 impl<'a> Instruction<'a> {
     pub(crate) fn needs_data_count(&self) -> bool {
@@ -1298,6 +1391,23 @@ impl<'a> Parse<'a> for ResumeThrow<'a> {
         Ok(ResumeThrow {
             type_index: parser.parse()?,
             tag_index: parser.parse()?,
+            table: parser.parse()?,
+        })
+    }
+}
+
+/// Extra information associated with the resume_throw_ref instruction
+#[derive(Debug, Clone)]
+#[allow(missing_docs)]
+pub struct ResumeThrowRef<'a> {
+    pub type_index: Index<'a>,
+    pub table: ResumeTable<'a>,
+}
+
+impl<'a> Parse<'a> for ResumeThrowRef<'a> {
+    fn parse(parser: Parser<'a>) -> Result<Self> {
+        Ok(ResumeThrowRef {
+            type_index: parser.parse()?,
             table: parser.parse()?,
         })
     }
@@ -1485,7 +1595,7 @@ pub struct MemArg<'a> {
     ///
     /// This is not stored as a log, this is the actual alignment (e.g. 1, 2, 4,
     /// 8, etc).
-    pub align: u32,
+    pub align: u64,
     /// The offset, in bytes of this access.
     pub offset: u64,
     /// The memory index we're accessing
@@ -1493,12 +1603,8 @@ pub struct MemArg<'a> {
 }
 
 impl<'a> MemArg<'a> {
-    fn parse(parser: Parser<'a>, default_align: u32) -> Result<Self> {
-        fn parse_field<T>(
-            name: &str,
-            parser: Parser<'_>,
-            f: impl FnOnce(Cursor<'_>, &str, u32) -> Result<T>,
-        ) -> Result<Option<T>> {
+    fn parse(parser: Parser<'a>, default_align: u64) -> Result<Self> {
+        fn parse_field(name: &str, parser: Parser<'_>) -> Result<Option<u64>> {
             parser.step(|c| {
                 let (kw, rest) = match c.keyword()? {
                     Some(p) => p,
@@ -1512,35 +1618,34 @@ impl<'a> MemArg<'a> {
                     return Ok((None, c));
                 }
                 let num = &kw[1..];
-                let num = if let Some(stripped) = num.strip_prefix("0x") {
-                    f(c, stripped, 16)?
-                } else {
-                    f(c, num, 10)?
-                };
-
-                Ok((Some(num), rest))
-            })
-        }
-
-        fn parse_u32(name: &str, parser: Parser<'_>) -> Result<Option<u32>> {
-            parse_field(name, parser, |c, num, radix| {
-                u32::from_str_radix(num, radix).map_err(|_| c.error("i32 constant out of range"))
-            })
-        }
-
-        fn parse_u64(name: &str, parser: Parser<'_>) -> Result<Option<u64>> {
-            parse_field(name, parser, |c, num, radix| {
-                u64::from_str_radix(num, radix).map_err(|_| c.error("i64 constant out of range"))
+                let lexer = Lexer::new(num);
+                let mut pos = 0;
+                if let Ok(Some(
+                    token @ Token {
+                        kind: TokenKind::Integer(integer_kind),
+                        ..
+                    },
+                )) = lexer.parse(&mut pos)
+                {
+                    let int = token.integer(lexer.input(), integer_kind);
+                    let (s, base) = int.val();
+                    let value = u64::from_str_radix(s, base);
+                    return match value {
+                        Ok(n) => Ok((Some(n), rest)),
+                        Err(_) => Err(c.error("u64 constant out of range")),
+                    };
+                }
+                Err(c.error("expected u64 integer constant"))
             })
         }
 
         let memory = parser
             .parse::<Option<_>>()?
             .unwrap_or_else(|| Index::Num(0, parser.prev_span()));
-        let offset = parse_u64("offset", parser)?.unwrap_or(0);
-        let align = match parse_u32("align", parser)? {
+        let offset = parse_field("offset", parser)?.unwrap_or(0);
+        let align = match parse_field("align", parser)? {
             Some(n) if !n.is_power_of_two() => {
-                return Err(parser.error("alignment must be a power of two"))
+                return Err(parser.error("alignment must be a power of two"));
             }
             n => n.unwrap_or(default_align),
         };
@@ -1563,7 +1668,7 @@ pub struct LoadOrStoreLane<'a> {
 }
 
 impl<'a> LoadOrStoreLane<'a> {
-    fn parse(parser: Parser<'a>, default_align: u32) -> Result<Self> {
+    fn parse(parser: Parser<'a>, default_align: u64) -> Result<Self> {
         // This is sort of funky. The first integer we see could be the lane
         // index, but it could also be the memory index. To determine what it is
         // then if we see a second integer we need to look further.
@@ -1942,6 +2047,63 @@ pub struct BrOnCastFail<'a> {
 impl<'a> Parse<'a> for BrOnCastFail<'a> {
     fn parse(parser: Parser<'a>) -> Result<Self> {
         Ok(BrOnCastFail {
+            label: parser.parse()?,
+            from_type: parser.parse()?,
+            to_type: parser.parse()?,
+        })
+    }
+}
+
+/// Extra data associated with the `ref.cast_desc` instruction
+#[derive(Debug, Clone)]
+pub struct RefCastDescEq<'a> {
+    /// The type to cast to.
+    pub r#type: RefType<'a>,
+}
+
+impl<'a> Parse<'a> for RefCastDescEq<'a> {
+    fn parse(parser: Parser<'a>) -> Result<Self> {
+        Ok(RefCastDescEq {
+            r#type: parser.parse()?,
+        })
+    }
+}
+
+/// Extra data associated with the `br_on_cast_desc_eq` instruction
+#[derive(Debug, Clone)]
+pub struct BrOnCastDescEq<'a> {
+    /// The label to branch to.
+    pub label: Index<'a>,
+    /// The type we're casting from.
+    pub from_type: RefType<'a>,
+    /// The type we're casting to.
+    pub to_type: RefType<'a>,
+}
+
+impl<'a> Parse<'a> for BrOnCastDescEq<'a> {
+    fn parse(parser: Parser<'a>) -> Result<Self> {
+        Ok(BrOnCastDescEq {
+            label: parser.parse()?,
+            from_type: parser.parse()?,
+            to_type: parser.parse()?,
+        })
+    }
+}
+
+/// Extra data associated with the `br_on_cast_desc_fail` instruction
+#[derive(Debug, Clone)]
+pub struct BrOnCastDescEqFail<'a> {
+    /// The label to branch to.
+    pub label: Index<'a>,
+    /// The type we're casting from.
+    pub from_type: RefType<'a>,
+    /// The type we're casting to.
+    pub to_type: RefType<'a>,
+}
+
+impl<'a> Parse<'a> for BrOnCastDescEqFail<'a> {
+    fn parse(parser: Parser<'a>) -> Result<Self> {
+        Ok(BrOnCastDescEqFail {
             label: parser.parse()?,
             from_type: parser.parse()?,
             to_type: parser.parse()?,

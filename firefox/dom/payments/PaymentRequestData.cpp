@@ -1,17 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "PaymentRequestData.h"
+
+#include "PaymentRequestUtils.h"
 #include "mozilla/dom/PaymentRequestBinding.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "nsArrayUtils.h"
 #include "nsComponentManagerUtils.h"
 #include "nsIMutableArray.h"
 #include "nsUnicharUtils.h"
-#include "PaymentRequestData.h"
-#include "PaymentRequestUtils.h"
 
 namespace mozilla::dom::payments {
 
@@ -41,7 +40,7 @@ PaymentMethodData::GetSupportedMethods(nsAString& aSupportedMethods) {
 NS_IMETHODIMP
 PaymentMethodData::GetData(JSContext* aCx, JS::MutableHandle<JS::Value> aData) {
   if (mData.IsEmpty()) {
-    aData.set(JS::NullValue());
+    aData.setNull();
     return NS_OK;
   }
   nsresult rv = DeserializeToJSValue(mData, aCx, aData);
@@ -208,7 +207,7 @@ NS_IMETHODIMP
 PaymentDetailsModifier::GetData(JSContext* aCx,
                                 JS::MutableHandle<JS::Value> aData) {
   if (mData.IsEmpty()) {
-    aData.set(JS::NullValue());
+    aData.setNull();
     return NS_OK;
   }
   nsresult rv = DeserializeToJSValue(mData, aCx, aData);
@@ -440,7 +439,7 @@ NS_IMETHODIMP
 PaymentDetails::GetPaymentMethodErrors(JSContext* aCx,
                                        JS::MutableHandle<JS::Value> aErrors) {
   if (mPaymentMethodErrors.IsEmpty()) {
-    aErrors.set(JS::NullValue());
+    aErrors.setNull();
     return NS_OK;
   }
   nsresult rv = DeserializeToJSValue(mPaymentMethodErrors, aCx, aErrors);

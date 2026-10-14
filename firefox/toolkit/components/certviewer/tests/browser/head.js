@@ -69,8 +69,8 @@ function promiseLoadSubDialog(aURL) {
   });
 }
 
-function injectErrorPageFrame(tab, src) {
-  return SpecialPowers.spawn(
+async function injectErrorPageFrame(tab, src) {
+  await SpecialPowers.spawn(
     tab.linkedBrowser,
     [{ frameSrc: src }],
     async function ({ frameSrc }) {
@@ -85,10 +85,15 @@ function injectErrorPageFrame(tab, src) {
       // We will have race conditions when accessing the frame content after setting a src,
       // so we can't wait for AboutNetErrorLoad. Let's wait for the certerror class to
       // appear instead (which should happen at the same time as AboutNetErrorLoad).
-      await ContentTaskUtils.waitForCondition(() =>
-        iframe.contentDocument.body.classList.contains("certerror")
+      await ContentTaskUtils.waitForCondition(
+        () =>
+          iframe.contentDocument.body.classList.contains("certerror") ||
+          iframe.contentDocument.body.classList.contains("felt-privacy-body")
       );
     }
+  );
+  await BrowserTestUtils.waitForPaintingUnsuppressed(
+    tab.linkedBrowser.browsingContext.children[0]
   );
 }
 

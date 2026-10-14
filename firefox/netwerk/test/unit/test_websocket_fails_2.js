@@ -7,8 +7,10 @@
 /* import-globals-from head_cache.js */
 /* import-globals-from head_cookies.js */
 /* import-globals-from head_channels.js */
-/* import-globals-from head_servers.js */
 /* import-globals-from head_websocket.js */
+
+const { NodeHTTPSProxyServer, NodeWebSocketServer } =
+  ChromeUtils.importESModule("resource://testing-common/NodeServer.sys.mjs");
 
 // We don't normally allow localhost channels to be proxied, but this
 // is easier than updating all the certs and/or domains.
@@ -16,10 +18,6 @@ Services.prefs.setBoolPref("network.proxy.allow_hijacking_localhost", true);
 registerCleanupFunction(() => {
   Services.prefs.clearUserPref("network.proxy.allow_hijacking_localhost");
 });
-
-let certdb = Cc["@mozilla.org/security/x509certdb;1"].getService(
-  Ci.nsIX509CertDB
-);
 
 add_setup(() => {
   Services.prefs.setBoolPref("network.http.http2.websockets", true);
@@ -31,22 +29,17 @@ registerCleanupFunction(() => {
 
 // TLS handshake to the end server fails with proxy
 async function test_tls_fail_on_ws_server_over_proxy() {
-  // we are expecting a timeout, so lets shorten how long we must wait
-  Services.prefs.setIntPref("network.websocket.timeout.open", 1);
-
-  // no cert to ws server
-  addCertFromFile(certdb, "proxy-ca.pem", "CTu,u,u");
-
   let proxy = new NodeHTTPSProxyServer();
   await proxy.start();
 
   let wss = new NodeWebSocketServer();
+  // no cert to ws server
+  wss._skipCert = true;
   await wss.start();
 
   registerCleanupFunction(async () => {
     await wss.stop();
     await proxy.stop();
-    Services.prefs.clearUserPref("network.websocket.timeout.open");
   });
 
   Assert.notEqual(wss.port(), null);
@@ -59,6 +52,9 @@ async function test_tls_fail_on_ws_server_over_proxy() {
   const msg = "test tls fail on ws server over proxy";
   let [status] = await openWebSocketChannelPromise(chan, url, msg);
 
-  Assert.equal(status, Cr.NS_ERROR_NET_TIMEOUT_EXTERNAL);
+  // The origin's certificate is rejected inside the CONNECT tunnel.
+  // WebSocketChannel recognises the status as a TLS failure and reports
+  // NS_ERROR_NET_INADEQUATE_SECURITY so the close code becomes 1015.
+  Assert.equal(status, 0x804b0052); // NS_ERROR_NET_INADEQUATE_SECURITY
 }
 add_task(test_tls_fail_on_ws_server_over_proxy);

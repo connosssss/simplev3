@@ -6,6 +6,7 @@
 
 const {
   Component,
+  createElement,
   createFactory,
 } = require("resource://devtools/client/shared/vendor/react.mjs");
 const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
@@ -26,6 +27,11 @@ const AnimationToolbar = createFactory(
 const NoAnimationPanel = createFactory(
   require("resource://devtools/client/inspector/animation/components/NoAnimationPanel.js")
 );
+const {
+  getInspectorStr,
+} = require("resource://devtools/client/inspector/animation/utils/l10n.js");
+
+const AppErrorBoundary = require("resource://devtools/client/shared/components/AppErrorBoundary.js");
 const SplitBox = createFactory(
   require("resource://devtools/client/shared/components/splitter/SplitBox.js")
 );
@@ -43,11 +49,12 @@ class App extends Component {
       getAnimationsCurrentTime: PropTypes.func.isRequired,
       getComputedStyle: PropTypes.func.isRequired,
       getNodeFromActor: PropTypes.func.isRequired,
+      playBackRateMultiplier: PropTypes.number.isRequired,
       removeAnimationsCurrentTimeListener: PropTypes.func.isRequired,
       rewindAnimationsCurrentTime: PropTypes.func.isRequired,
       selectAnimation: PropTypes.func.isRequired,
       setAnimationsCurrentTime: PropTypes.func.isRequired,
-      setAnimationsPlaybackRate: PropTypes.func.isRequired,
+      setAnimationsPlaybackRateMultiplier: PropTypes.func.isRequired,
       setAnimationsPlayState: PropTypes.func.isRequired,
       setDetailVisibility: PropTypes.func.isRequired,
       setHighlightedNode: PropTypes.func.isRequired,
@@ -78,11 +85,12 @@ class App extends Component {
       getAnimationsCurrentTime,
       getComputedStyle,
       getNodeFromActor,
+      playBackRateMultiplier,
       removeAnimationsCurrentTimeListener,
       rewindAnimationsCurrentTime,
       selectAnimation,
       setAnimationsCurrentTime,
-      setAnimationsPlaybackRate,
+      setAnimationsPlaybackRateMultiplier,
       setAnimationsPlayState,
       setDetailVisibility,
       setHighlightedNode,
@@ -93,24 +101,33 @@ class App extends Component {
       toggleElementPicker,
     } = this.props;
 
-    return dom.div(
+    return createElement(
+      AppErrorBoundary,
       {
-        id: "animation-container",
-        className: detailVisibility ? "animation-detail-visible" : "",
-        tabIndex: -1,
+        componentName: "Inspector: Animations",
+        panel: getInspectorStr("inspector.sidebar.animationInspectorTitle"),
+        // Parent container already overflows, so we don't need to set it on the
+        // AppErrorBoundary, otherwise we might get double scrollbars
+        disableVerticalOverflow: true,
       },
-      animations.length
-        ? [
-            AnimationToolbar({
-              addAnimationsCurrentTimeListener,
-              animations,
-              removeAnimationsCurrentTimeListener,
-              rewindAnimationsCurrentTime,
-              setAnimationsPlaybackRate,
-              setAnimationsPlayState,
-              timeScale,
-            }),
-            SplitBox({
+      dom.div(
+        {
+          id: "animation-container",
+          className: detailVisibility ? "animation-detail-visible" : "",
+          tabIndex: -1,
+        },
+        AnimationToolbar({
+          addAnimationsCurrentTimeListener,
+          animations,
+          playBackRateMultiplier,
+          removeAnimationsCurrentTimeListener,
+          rewindAnimationsCurrentTime,
+          setAnimationsPlaybackRateMultiplier,
+          setAnimationsPlayState,
+          timeScale,
+        }),
+        animations.length
+          ? SplitBox({
               className: "animation-container-splitter",
               endPanel: AnimationDetailContainer({
                 addAnimationsCurrentTimeListener,
@@ -144,11 +161,11 @@ class App extends Component {
                 timeScale,
               }),
               vert: false,
-            }),
-          ]
-        : NoAnimationPanel({
-            toggleElementPicker,
-          })
+            })
+          : NoAnimationPanel({
+              toggleElementPicker,
+            })
+      )
     );
   }
 }
@@ -157,6 +174,7 @@ const mapStateToProps = state => {
   return {
     animations: state.animations.animations,
     detailVisibility: state.animations.detailVisibility,
+    playBackRateMultiplier: state.animations.playBackRateMultiplier,
     timeScale: state.animations.timeScale,
   };
 };

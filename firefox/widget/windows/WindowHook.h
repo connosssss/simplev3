@@ -1,17 +1,15 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __mozilla_WindowHook_h__
-#define __mozilla_WindowHook_h__
+#ifndef _mozilla_WindowHook_h_
+#define _mozilla_WindowHook_h_
 
-#include <windows.h>
-
-#include <nsHashKeys.h>
 #include <nsClassHashtable.h>
+#include <nsHashKeys.h>
 #include <nsTArray.h>
+#include <windows.h>
 
 #include "nsAppShell.h"
 
@@ -42,10 +40,7 @@ class WindowHook {
     CallbackData(Callback cb, void* ctx) : cb(cb), context(ctx) {}
     bool Invoke(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam,
                 LRESULT* aResult);
-    bool operator==(const CallbackData& rhs) const {
-      return cb == rhs.cb && context == rhs.context;
-    }
-    bool operator!=(const CallbackData& rhs) const { return !(*this == rhs); }
+    bool operator==(const CallbackData& rhs) const = default;
     explicit operator bool() const { return !!cb; }
   };
 
@@ -73,4 +68,4 @@ class WindowHook {
 }  // namespace widget
 }  // namespace mozilla
 
-#endif  // __mozilla_WindowHook_h__
+#endif  // _mozilla_WindowHook_h_

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,7 +5,12 @@
 #ifndef MOZILLA_GFX_HELPERSSKIA_H_
 #define MOZILLA_GFX_HELPERSSKIA_H_
 
+#include <cmath>
+#include <vector>
+
 #include "2D.h"
+#include "mozilla/Assertions.h"
+#include "nsDebug.h"
 #include "skia/include/core/SkCanvas.h"
 #include "skia/include/core/SkFontTypes.h"
 #include "skia/include/core/SkPathEffect.h"
@@ -15,10 +18,6 @@
 #include "skia/include/core/SkShader.h"
 #include "skia/include/core/SkTileMode.h"
 #include "skia/include/effects/SkDashPathEffect.h"
-#include "mozilla/Assertions.h"
-#include <cmath>
-#include <vector>
-#include "nsDebug.h"
 
 namespace mozilla {
 namespace gfx {
@@ -26,22 +25,31 @@ namespace gfx {
 static inline SkColorType GfxFormatToSkiaColorType(SurfaceFormat format) {
   switch (format) {
     case SurfaceFormat::B8G8R8A8:
-      return kBGRA_8888_SkColorType;
     case SurfaceFormat::B8G8R8X8:
-      // We probably need to do something here.
       return kBGRA_8888_SkColorType;
     case SurfaceFormat::R5G6B5_UINT16:
       return kRGB_565_SkColorType;
     case SurfaceFormat::A8:
       return kAlpha_8_SkColorType;
     case SurfaceFormat::R8G8B8A8:
+    case SurfaceFormat::R8G8B8X8:
       return kRGBA_8888_SkColorType;
     case SurfaceFormat::A8R8G8B8:
+    case SurfaceFormat::X8R8G8B8:
+#ifndef FUZZING
       MOZ_DIAGNOSTIC_CRASH("A8R8G8B8 unsupported by Skia");
+#endif
       return kRGBA_8888_SkColorType;
     default:
+#ifndef FUZZING
       MOZ_DIAGNOSTIC_CRASH("Unknown surface format");
-      return kRGBA_8888_SkColorType;
+#endif
+      switch (BytesPerPixel(format)) {
+        case 4:
+          return kRGBA_8888_SkColorType;
+        default:
+          return kAlpha_8_SkColorType;
+      }
   }
 }
 
@@ -61,13 +69,7 @@ static inline SurfaceFormat SkiaColorTypeToGfxFormat(
 }
 
 static inline SkAlphaType GfxFormatToSkiaAlphaType(SurfaceFormat format) {
-  switch (format) {
-    case SurfaceFormat::B8G8R8X8:
-    case SurfaceFormat::R5G6B5_UINT16:
-      return kOpaque_SkAlphaType;
-    default:
-      return kPremul_SkAlphaType;
-  }
+  return IsOpaque(format) ? kOpaque_SkAlphaType : kPremul_SkAlphaType;
 }
 
 static inline SkImageInfo MakeSkiaImageInfo(const IntSize& aSize,
@@ -150,7 +152,7 @@ static inline bool StrokeOptionsToPaint(SkPaint& aPaint,
           SkFloatToScalar(aOptions.mDashPattern[i % aOptions.mDashLength]);
     }
 
-    auto dash = SkDashPathEffect::Make(&pattern.front(), dashCount,
+    auto dash = SkDashPathEffect::Make({&pattern.front(), dashCount},
                                        SkFloatToScalar(aOptions.mDashOffset));
     aPaint.setPathEffect(dash);
   }
@@ -235,6 +237,10 @@ static inline SkColor ColorToSkColor(const DeviceColor& color, Float aAlpha) {
   return SkColorSetARGB(ColorFloatToByte(color.a * aAlpha),
                         ColorFloatToByte(color.r), ColorFloatToByte(color.g),
                         ColorFloatToByte(color.b));
+}
+
+static inline SkColor4f ColorToSkColor4f(const DeviceColor& color) {
+  return SkColor4f{color.r, color.g, color.b, color.a};
 }
 
 static inline SkPoint PointToSkPoint(const Point& aPoint) {
@@ -323,7 +329,7 @@ static inline FillRule GetFillRule(SkPathFillType aFillType) {
     case SkPathFillType::kInverseWinding:
     case SkPathFillType::kInverseEvenOdd:
     default:
-      NS_WARNING("Unsupported fill type\n");
+      NS_WARNING("Unsupported fill type");
       break;
   }
 
@@ -334,18 +340,11 @@ static inline FillRule GetFillRule(SkPathFillType aFillType) {
  * Returns true if the canvas is backed by pixels.  Returns false if the canvas
  * wraps an SkPDFDocument, for example.
  *
- * Note: It is not clear whether the test used to implement this function may
- * result in it returning false in some circumstances even when the canvas
- * _is_ pixel backed.  In other words maybe it is possible for such a canvas to
- * have kUnknown_SkPixelGeometry?
+ * SkBitmapDevice has a valid SkColorType. SkPDFDevice is always
+ * kUnknown_SkColorType.
  */
 static inline bool IsBackedByPixels(const SkCanvas* aCanvas) {
-  SkSurfaceProps props(0, kUnknown_SkPixelGeometry);
-  if (!aCanvas->getProps(&props) ||
-      props.pixelGeometry() == kUnknown_SkPixelGeometry) {
-    return false;
-  }
-  return true;
+  return aCanvas->imageInfo().colorType() != kUnknown_SkColorType;
 }
 
 /**

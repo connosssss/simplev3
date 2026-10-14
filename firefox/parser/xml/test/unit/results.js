@@ -499,9 +499,8 @@ var vectors = [
       '<html><head></head><body><div draggable="true">\n\t<h1>Drop me</h1>\n</div>\n\n</body></html>',
   },
   {
-    data: '<iframe src="view-source:http://www.example.org/" frameborder="0" style="width:400px;height:180px"></iframe>\n\n<textarea type="text" cols="50" rows="10"></textarea>',
-    sanitized:
-      '<html><head></head><body>\n\n<textarea type="text" cols="50" rows="10"></textarea></body></html>',
+    data: '<iframe src="view-source:http://www.example.org/" frameborder="0" style="width:400px;height:180px"></iframe>\n\n<textarea type="text" cols="50" rows="10">inside</textarea>outside',
+    sanitized: "<html><head></head><body>\n\noutside</body></html>",
   },
   {
     data: "<script>\nfunction makePopups(){\n\tfor (i=1;i<6;i++) {\n\t\twindow.open('popup.html','spam'+i,'width=50,height=50');\n\t}\n}\n</script>\n\n<body>\n<a href=\"#\" onclick=\"makePopups()\">Spam</a>",
@@ -906,19 +905,49 @@ var vectors = [
   },
   {
     data: "<svg><use href='http://example.com/test.svg'></svg>",
-    flags: 1, // ParserUtils.SanitizerAllowStyle
+    flags: 0,
     sanitized: "<html><head></head><body><svg><use></use></svg></body></html>",
   },
   {
     // fragments that reference the same document are allowed.
     data: "<svg><use href='#x'></svg>",
-    flags: 1, // ParserUtils.SanitizerAllowStyle
+    flags: 0,
     sanitized:
       '<html><head></head><body><svg><use href="#x"></use></svg></body></html>',
   },
   {
     data: '<svg><use xlink:href="http://example/#baz"/></svg>',
-    flags: 1, // ParserUtils.SanitizerAllowStyl,
+    flags: 0,
     sanitized: "<html><head></head><body><svg><use></use></svg></body></html>",
+  },
+  {
+    // xlink:arcrole is not in the sanitizer's allowed xlink attribute list,
+    // so it must be removed.
+    data: '<svg><a xlink:arcrole="foo">bar</a></svg>',
+    flags: 0,
+    sanitized: "<html><head></head><body><svg><a>bar</a></svg></body></html>",
+  },
+  {
+    // xlink:role is also not in the allowed list and must be removed.
+    data: '<svg><a xlink:role="foo">bar</a></svg>',
+    flags: 0,
+    sanitized: "<html><head></head><body><svg><a>bar</a></svg></body></html>",
+  },
+  {
+    // Allowed xlink attribute (xlink:title) should be preserved.
+    data: '<svg><a xlink:title="foo">bar</a></svg>',
+    flags: 0,
+    sanitized:
+      '<html><head></head><body><svg><a xlink:title="foo">bar</a></svg></body></html>',
+  },
+  {
+    data: `<div is="custom-div">foo</div>`,
+    sanitized: "<html><head></head><body><div>foo</div></body></html>",
+  },
+  {
+    data: `<body><style is="custom-style">* { color: red; }</style></body>`,
+    flags: Ci.nsIParserUtils.SanitizerAllowStyle,
+    sanitized:
+      "<html><head></head><body><style>* { color: red; }</style></body></html>",
   },
 ];

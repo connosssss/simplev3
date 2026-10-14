@@ -1,264 +1,304 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
-# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-import os
-from glob import glob
-from html.parser import HTMLParser
+"""Check the LICENSES and LICENSED_UNDER declarations across the tree.
 
+What is checked, and why it cannot be checked by the build backend, is
+documented in docs/code-quality/lint/linters/license.md.
+"""
+
+import ast
+import collections
+import re
+from pathlib import Path
+
+import mozpack.path as mozpath
+from license_expression import ExpressionError, get_spdx_licensing
+from mozbuild.licenses import covering_manifest
 from mozlint import result
 from mozlint.pathutils import expand_exclusions
 
-here = os.path.abspath(os.path.dirname(__file__))
-topsrcdir = os.path.join(here, "..", "..", "..")
+DECLARES = "LICENSES"
+REFERENCES = "LICENSED_UNDER"
 
-# Official source: https://www.mozilla.org/en-US/MPL/headers/
-TEMPLATES = {
-    "mpl2_license": """
-    This Source Code Form is subject to the terms of the Mozilla Public
-    License, v. 2.0. If a copy of the MPL was not distributed with this
-    file, You can obtain one at https://mozilla.org/MPL/2.0/.
-    """.strip().splitlines(),
-    "public_domain_license": """
-    Any copyright is dedicated to the public domain.
-    https://creativecommons.org/publicdomain/zero/1.0/
-    """.strip().splitlines(),
-}
-license_list = os.path.join(here, "valid-licenses.txt")
+# The preprocessor hook an application used to splice its own sections into the
+# hand-maintained license.html with. The page is generated now, so setting
+# these has no effect at all.
+REMOVED_DEFINES = (
+    "APP_LICENSE_BLOCK",
+    "APP_LICENSE_LIST_BLOCK",
+    "APP_LICENSE_BODY_BLOCK",
+)
+
+# `LicenseRef-<name>` and `DocumentRef-<doc>:LicenseRef-<name>` are valid SPDX
+# expressions, but name a license the SPDX list does not carry, so
+# license_expression rejects them in validating mode. Substituting a known id
+# keeps the rest of the expression under validation.
+LICENSE_REF = re.compile(r"(?:DocumentRef-[A-Za-z0-9.-]+:)?LicenseRef-[A-Za-z0-9.-]+")
 
 
-def load_valid_license():
+class NonLiteral(Exception):
+    """A statement whose license ids are not plain string literals."""
+
+
+def _string_literal(node):
+    """The string literal `node` has to be."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    raise NonLiteral(f"{ast.unparse(node)} is not a string literal")
+
+
+def _string_items(node):
+    """The string literals the list or tuple `node` has to hold."""
+    if not isinstance(node, (ast.List, ast.Tuple)):
+        raise NonLiteral(f"{ast.unparse(node)} is not a list of string literals")
+    return [_string_literal(element) for element in node.elts]
+
+
+def _target(node):
+    """Describe an assignment target as (variable, key node, flag).
+
+    `LICENSES["mit"].title` is ("LICENSES", <"mit">, "title") and a bare
+    `LICENSES` is ("LICENSES", None, None). The key is left unresolved so that
+    only the variables this linter owns have to hold a literal.
     """
-    Load the list of license patterns
-    """
-    with open(license_list) as f:
-        l = f.readlines()
-        # Remove the empty lines
-        return list(filter(bool, [x.replace("\n", "") for x in l]))
+    flag = node.attr if isinstance(node, ast.Attribute) else None
+    while isinstance(node, (ast.Attribute, ast.Subscript)):
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+            return node.value.id, node.slice, flag
+        node = node.value
+    if isinstance(node, ast.Name):
+        return node.id, None, flag
+    return None, None, None
 
 
-def is_valid_license(licenses, filename):
-    """
-    From a given file, check if we can find the license patterns
-    in the X first lines of the file
-    """
-    with open(filename, errors="replace") as myfile:
-        contents = myfile.read()
-        # Empty files don't need a license.
-        if not contents:
-            return True
-
-        for l in licenses:
-            if l.lower().strip() in contents.lower():
-                return True
-    return False
+def _assignment_targets(node):
+    """The targets of `node`, if it assigns to anything at all."""
+    if isinstance(node, ast.AugAssign):
+        return [node.target]
+    if isinstance(node, ast.Assign):
+        return node.targets
+    return []
 
 
-def add_header(log, filename, header):
+class Declarations:
+    """What one moz.build says about the license notices.
+
+    Gathered in a single walk, because lint() needs all of it for every file.
     """
-    Add the header to the top of the file
-    """
-    header.append("\n")
-    with open(filename, "r+") as f:
-        # lines in list format
-        try:
-            lines = f.readlines()
-        except UnicodeDecodeError as e:
-            log.debug(f"Could not read file '{f}'")
-            log.debug(f"Error: {e}")
+
+    def __init__(self, tree):
+        # id -> the first line naming it under `LICENSES`, declaration or flag.
+        self.named = {}
+        self.referenced = {}
+        # (id, flag) -> the assigned constants, one per assignment: a flag set
+        # twice is two values to check, not one.
+        self.flags = collections.defaultdict(list)
+        self.removed_defines = {}
+        # The lines whose ids this cannot read, reported rather than skipped.
+        self.non_literals = {}
+
+        for node in ast.walk(tree):
+            for target in _assignment_targets(node):
+                self._add(node, *_target(target))
+
+    def _add(self, node, variable, key, flag):
+        if variable == "DEFINES":
+            try:
+                define = _string_literal(key) if key is not None else None
+            except NonLiteral:
+                return
+            if define in REMOVED_DEFINES:
+                self.removed_defines.setdefault(define, node.lineno)
             return
 
-        i = 0
-        if lines:
-            # if the file isn't empty (__init__.py can be empty files)
-            if lines[0].startswith("#!") or lines[0].startswith("<?xml "):
-                i = 1
+        if variable not in (DECLARES, REFERENCES):
+            return
 
-            if lines[0].startswith("/* -*- Mode"):
-                i = 2
-        # Insert in the top of the data structure
-        lines[i:i] = header
-        f.seek(0, 0)
-        f.write("".join(lines))
+        try:
+            ids = (
+                [_string_literal(key)] if key is not None else _string_items(node.value)
+            )
+        except NonLiteral as e:
+            self.non_literals.setdefault(node.lineno, str(e))
+            return
+
+        for license_id in ids:
+            if variable == REFERENCES:
+                self.referenced.setdefault(license_id, node.lineno)
+                continue
+            self.named.setdefault(license_id, node.lineno)
+            if key is None:
+                continue
+            if flag is not None and isinstance(node.value, ast.Constant):
+                self.flags[(license_id, flag)].append((node.value.value, node.lineno))
+
+    def flag(self, license_id, name, of_type=str):
+        """The values of one flag, in source order, skipping the other types."""
+        return [
+            (value, lineno)
+            for value, lineno in self.flags.get((license_id, name), ())
+            if isinstance(value, of_type)
+        ]
 
 
-def is_test(f):
+def _declarations(path):
+    """The declarations of one moz.build, raising OSError or SyntaxError."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return Declarations(tree)
+
+
+def _declared_in_tree(config, root):
+    """The set of ids named under LICENSES anywhere in the tree.
+
+    Gathered from every moz.build rather than from the ones being linted,
+    because a notice is usually declared far from the code referencing it: the
+    shared texts in toolkit/content/licenses cover the whole tree.
     """
-    is the file a test or not?
-    """
-    if "lint/test/" in f or "lint_license_test_tmp_file.js" in f:
-        # For the unit tests
-        return False
-    return (
-        "/tests/" in f
-        or "/test/" in f
-        or "/test_" in f
-        or "/gtest" in f
-        or "/crashtest" in f
-        or "/mochitest" in f
-        or "/reftest" in f
-        or "/imptest" in f
-        or "/androidTest" in f
-        or "/jit-test/" in f
-        or "jsapi-tests/" in f
-    )
+    declared = set()
+    for path in expand_exclusions([root], config, root):
+        try:
+            declarations = _declarations(Path(path))
+        except (OSError, SyntaxError):
+            # Reported by the loop in lint() when it covers the same tree; a
+            # run over a subset of it reports nothing here, so a file it cannot
+            # read leaves the declared set short.
+            continue
+        declared.update(declarations.named)
+    return declared
 
 
-def fix_me(log, filename):
-    """
-    Add the copyright notice to the top of the file
-    """
-    _, ext = os.path.splitext(filename)
-    license = []
+def lint(paths, config, **lintargs):
+    root = lintargs["root"]
+    declared_in_tree = _declared_in_tree(config, root)
 
-    license_template = TEMPLATES["mpl2_license"]
-    test = False
-
-    if is_test(filename):
-        license_template = TEMPLATES["public_domain_license"]
-        test = True
-
-    if ext in [
-        ".cpp",
-        ".c",
-        ".cc",
-        ".h",
-        ".m",
-        ".mm",
-        ".rs",
-        ".java",
-        ".kt",
-        ".js",
-        ".jsx",
-        ".mjs",
-        ".css",
-        ".idl",
-        ".webidl",
-    ]:
-        for i, l in enumerate(license_template):
-            start = " "
-            end = ""
-            if i == 0:
-                # first line, we have the /*
-                start = "/"
-            if i == len(license_template) - 1:
-                # Last line, we end by */
-                end = " */"
-            license.append(start + "* " + l.strip() + end + "\n")
-
-        add_header(log, filename, license)
-        return True
-
-    if ext in [".py", ".ftl", ".properties"]:
-        for l in license_template:
-            license.append("# " + l.strip() + "\n")
-        add_header(log, filename, license)
-        return True
-
-    if ext in [".xml", ".html", ".xhtml", ".dtd", ".svg"]:
-        for i, l in enumerate(license_template):
-            start = "   - "
-            end = ""
-            if i == 0:
-                # first line, we have the <!--
-                start = "<!-- "
-            if i == 2 or (i == 1 and test):
-                # Last line, we end by -->
-                end = " -->"
-            license.append(start + l.strip() + end)
-            if ext != ".svg" or not end:
-                # When dealing with an svg, we should not have a space between
-                # the license and the content
-                license.append("\n")
-        add_header(log, filename, license)
-        return True
-
-    # In case we don't know how to handle a specific format.
-    return False
-
-
-class HTMLParseError(Exception):
-    def __init__(self, msg, pos):
-        super().__init__(msg, *pos)
-
-
-class LicenseHTMLParser(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.in_code = False
-        self.invalid_paths = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "code":
-            if self.in_code:
-                raise HTMLParseError("nested code tag", self.getpos())
-            self.in_code = True
-
-    def handle_endtag(self, tag):
-        if tag == "code":
-            if not self.in_code:
-                raise HTMLParseError("not started code tag", self.getpos())
-            self.in_code = False
-
-    def handle_data(self, data):
-        if self.in_code:
-            path = data.strip()
-            abspath = os.path.join(topsrcdir, path)
-            if not glob(abspath):
-                self.invalid_paths.append((path, self.getpos()))
-
-
-def lint_license_html(path):
-    parser = LicenseHTMLParser()
-    with open(path) as fd:
-        content = fd.read()
-        parser.feed(content)
-    return parser.invalid_paths
-
-
-def is_html_licence_summary(path):
-    license_html = os.path.join(topsrcdir, "toolkit", "content", "license.html")
-    return os.path.samefile(path, license_html)
-
-
-def lint(paths, config, fix=None, **lintargs):
+    licensing = get_spdx_licensing()
+    manifests = {}
     results = []
-    log = lintargs["log"]
-    files = list(expand_exclusions(paths, config, lintargs["root"]))
-    fixed = 0
 
-    licenses = load_valid_license()
-    for f in files:
-        if not is_valid_license(licenses, f):
-            if fix and fix_me(log, f):
-                fixed += 1
-            else:
-                res = {
-                    "path": f,
-                    "message": "No matching license strings found in tools/lint/license/valid-licenses.txt",  # noqa
-                    "level": "error",
-                }
-                results.append(result.from_config(config, **res))
+    def report(path, lineno, message, hint):
+        results.append(
+            result.from_config(
+                config,
+                path=path,
+                lineno=lineno,
+                level="error",
+                message=message,
+                hint=hint,
+            )
+        )
 
-        if is_html_licence_summary(f):
-            try:
-                for invalid_path, (lineno, column) in lint_license_html(f):
-                    res = {
-                        "path": f,
-                        "message": f"references unknown path {invalid_path}",
-                        "level": "error",
-                        "lineno": lineno,
-                        "column": column,
-                    }
-                    results.append(result.from_config(config, **res))
-            except HTMLParseError as err:
-                res = {
-                    "path": f,
-                    "message": err.args[0],
-                    "level": "error",
-                    "lineno": err.args[1],
-                    "column": err.args[2],
-                }
-                results.append(result.from_config(config, **res))
+    for path in sorted(expand_exclusions(paths, config, root)):
+        try:
+            declarations = _declarations(Path(path))
+        except SyntaxError as e:
+            report(
+                path,
+                e.lineno or 1,
+                f"this file does not parse as Python: {e.msg}.",
+                "The license declarations are read from the syntax tree, and "
+                "the build system cannot execute this file either.",
+            )
+            continue
+        except OSError as e:
+            report(
+                path,
+                1,
+                f"this file cannot be read: {e.strerror}.",
+                "The license declarations are read from every moz.build in "
+                "the tree, so this one has to be readable.",
+            )
+            continue
 
-    return {"results": results, "fixed": fixed}
+        problems = []
+
+        for license_id, lineno in declarations.referenced.items():
+            if license_id in declared_in_tree:
+                continue
+            problems.append((
+                lineno,
+                f'LICENSED_UNDER["{license_id}"] has no matching '
+                f'LICENSES["{license_id}"] declaration anywhere in the tree.',
+                "Declare the notice once, with a title and a text file, "
+                "in the moz.build that owns the license text.",
+            ))
+
+        for define, lineno in declarations.removed_defines.items():
+            problems.append((
+                lineno,
+                f'DEFINES["{define}"] no longer reaches about:license.',
+                "The page is generated from the LICENSES declarations rather "
+                "than preprocessed, so this define is dead and the section it "
+                "names is not rendered. Generate the application's own "
+                "license.html the way browser/base/moz.build does, passing "
+                "the block as an extra input to gen_license_html.py.",
+            ))
+
+        for lineno, reason in declarations.non_literals.items():
+            problems.append((
+                lineno,
+                f"the license id of this declaration is not a literal: {reason}.",
+                f"{DECLARES} and {REFERENCES} are read without executing the "
+                "moz.build, so a computed id cannot be checked against the "
+                "rest of the tree. Spell the id out.",
+            ))
+
+        directory = mozpath.dirname(mozpath.normpath(path))
+        covering = covering_manifest(directory, root, manifests)
+        for license_id in declarations.named:
+            spdx = declarations.flag(license_id, "spdx")
+            for expression, lineno in spdx:
+                try:
+                    licensing.parse(
+                        LICENSE_REF.sub("MIT", expression), validate=True, strict=True
+                    )
+                except (ExpressionError, ValueError) as e:
+                    problems.append((
+                        lineno,
+                        f'"{expression}" is not a valid SPDX license expression: {e}',
+                        "Use an id from https://spdx.org/licenses/, or "
+                        "LicenseRef-<name> for a license that has none. "
+                        "Combine ids with AND, OR and WITH.",
+                    ))
+
+            if covering is None:
+                continue
+            subcomponent = any(
+                value
+                for value, _ in declarations.flag(license_id, "subcomponent", bool)
+            )
+            if spdx and covering.license and not subcomponent:
+                for _, lineno in spdx:
+                    problems.append((
+                        lineno,
+                        f'LICENSES["{license_id}"].spdx repeats `origin.license` '
+                        f"from {mozpath.relpath(covering.path, root)}, which "
+                        f"declares {covering.license}.",
+                        "moz.yaml owns the license of a vendored library, and "
+                        "the SBOM reads it from there rather than from this "
+                        "flag, so the two are free to drift apart. Drop the "
+                        "flag; or, if this notice covers code whose license "
+                        "differs from the library's own, set "
+                        f'LICENSES["{license_id}"].subcomponent = True.',
+                    ))
+
+            for text, lineno in declarations.flag(license_id, "text"):
+                declared_file = covering.license_file
+                if not declared_file or mozpath.normpath(
+                    mozpath.join(directory, text)
+                ) != mozpath.normpath(declared_file):
+                    continue
+                problems.append((
+                    lineno,
+                    f'LICENSES["{license_id}"].text repeats `origin.license-file` '
+                    f"from {mozpath.relpath(covering.path, root)}.",
+                    "A notice with no `text` is read from the file that "
+                    "manifest names, so the two cannot come to name different "
+                    "files. Drop the flag.",
+                ))
+
+        for lineno, message, hint in sorted(problems):
+            report(path, lineno, message, hint)
+
+    return results

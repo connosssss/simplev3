@@ -12,8 +12,8 @@ origin:
   license: BSD-3-Clause
   license-file: LICENSE
 
-  release: v2.7.0 (2025-03-11T23:03:18+01:00).
-  revision: v2.7.0
+  release: v2.8.0 (2026-03-14T10:49:34+01:00).
+  revision: v2.8.0
 
 
 updatebot:
@@ -32,6 +32,9 @@ vendoring:
   exclude:
     - "**"
 
+  patches:
+    - 00_use_consistent_printf_types.patch
+
   include:
     - srtp
     - crypto
@@ -40,3 +43,10 @@ vendoring:
     - LICENSE
     - CHANGES
     - README.md
+
+  update-actions:
+    # Upstream generates config.h at build time so it isn't in the sources we fetch, but
+    # moz.build defines HAVE_CONFIG_H, so put our placeholder back after unpacking.
+    - action: copy-file
+      from: '{yaml_dir}/config.h'
+      to: '{yaml_dir}/src/include/config.h'

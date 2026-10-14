@@ -1,12 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "InlineTranslator.h"
-#include "RecordedEventImpl.h"
 
+#include "RecordedEventImpl.h"
 #include "mozilla/gfx/RecordingTypes.h"
 
 using namespace mozilla::gfx;
@@ -42,7 +40,7 @@ bool InlineTranslator::TranslateRecording(char* aData, size_t aLen) {
     return false;
   }
 
-  uint8_t eventType = RecordedEvent::EventType::INVALID;
+  uint8_t eventType;
   ReadElement(reader, eventType);
   while (reader.good()) {
     bool success = RecordedEvent::DoWithEvent(
@@ -83,6 +81,38 @@ already_AddRefed<DrawTarget> InlineTranslator::CreateDrawTarget(
   RefPtr<DrawTarget> drawTarget = mBaseDT;
   AddDrawTarget(aRefPtr, drawTarget);
   return drawTarget.forget();
+}
+
+template <typename Table>
+static void CopyTable(Table& aDest, const Table& aSrc) {
+  aDest = Table(aSrc.Count());
+  for (const auto& entry : aSrc) {
+    aDest.InsertOrUpdate(entry.GetKey(), entry.GetData());
+  }
+}
+
+void InlineTranslator::SaveState(State& aState) const {
+  aState.mCurrentDT = mCurrentDT;
+  CopyTable(aState.mDrawTargets, mDrawTargets);
+  CopyTable(aState.mPaths, mPaths);
+  CopyTable(aState.mSourceSurfaces, mSourceSurfaces);
+  CopyTable(aState.mFilterNodes, mFilterNodes);
+  CopyTable(aState.mGradientStops, mGradientStops);
+  CopyTable(aState.mScaledFonts, mScaledFonts);
+  CopyTable(aState.mUnscaledFonts, mUnscaledFonts);
+  CopyTable(aState.mNativeFontResources, mNativeFontResources);
+}
+
+void InlineTranslator::RestoreState(const State& aState) {
+  mCurrentDT = aState.mCurrentDT;
+  CopyTable(mDrawTargets, aState.mDrawTargets);
+  CopyTable(mPaths, aState.mPaths);
+  CopyTable(mSourceSurfaces, aState.mSourceSurfaces);
+  CopyTable(mFilterNodes, aState.mFilterNodes);
+  CopyTable(mGradientStops, aState.mGradientStops);
+  CopyTable(mScaledFonts, aState.mScaledFonts);
+  CopyTable(mUnscaledFonts, aState.mUnscaledFonts);
+  CopyTable(mNativeFontResources, aState.mNativeFontResources);
 }
 
 already_AddRefed<SourceSurface> InlineTranslator::LookupExternalSurface(

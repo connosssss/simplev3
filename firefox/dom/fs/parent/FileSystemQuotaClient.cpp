@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -29,6 +27,20 @@ FileSystemQuotaClient::FileSystemQuotaClient() {
   ::mozilla::ipc::AssertIsOnBackgroundThread();
 }
 
+RefPtr<FileSystemCipherKeyManager>
+FileSystemQuotaClient::GetOrCreateCipherKeyManager(
+    const quota::OriginMetadata& aOriginMetadata) {
+  quota::AssertIsOnIOThread();
+
+  if (!aOriginMetadata.mIsPrivate) {
+    return nullptr;
+  }
+
+  return mCipherKeyManagers.LookupOrInsertWith(aOriginMetadata.mOrigin, [] {
+    return new FileSystemCipherKeyManager("FileSystemCipherKeyManager");
+  });
+}
+
 quota::Client::Type FileSystemQuotaClient::GetType() {
   return quota::Client::Type::FILESYSTEM;
 }
@@ -56,9 +68,16 @@ Result<quota::UsageInfo, nsresult> FileSystemQuotaClient::InitOrigin(
     }
   }
 
+  Maybe<FileSystemCipherKey> maybeCipherKey;
+  if (const RefPtr<FileSystemCipherKeyManager> cipherKeyManager =
+          GetOrCreateCipherKeyManager(aOriginMetadata)) {
+    maybeCipherKey = Some(cipherKeyManager->Ensure(kDatabaseCipherKeyId));
+  }
+
   QM_TRY_INSPECT(
       const ResultConnection& conn,
-      data::GetStorageConnection(aOriginMetadata, /* aDirectoryLockId */ -1)
+      data::GetStorageConnection(aOriginMetadata,
+                                 /* aDirectoryLockId */ -1, maybeCipherKey)
           .mapErr(toNSResult));
 
   QM_TRY(MOZ_TO_RESULT(
@@ -90,8 +109,8 @@ Result<quota::UsageInfo, nsresult> FileSystemQuotaClient::GetUsageForOrigin(
     const AtomicBool& /* aCanceled */) {
   quota::AssertIsOnIOThread();
 
-  MOZ_ASSERT(aPersistenceType ==
-             quota::PersistenceType::PERSISTENCE_TYPE_DEFAULT);
+  MOZ_ASSERT(aPersistenceType == quota::PERSISTENCE_TYPE_DEFAULT ||
+             aPersistenceType == quota::PERSISTENCE_TYPE_PRIVATE);
 
   quota::QuotaManager* quotaManager = quota::QuotaManager::Get();
   MOZ_ASSERT(quotaManager);
@@ -107,11 +126,30 @@ Result<quota::UsageInfo, nsresult> FileSystemQuotaClient::GetUsageForOrigin(
 void FileSystemQuotaClient::OnOriginClearCompleted(
     const quota::OriginMetadata& aOriginMetadata) {
   quota::AssertIsOnIOThread();
+
+  if (!aOriginMetadata.mIsPrivate) {
+    return;
+  }
+
+  if (auto entry = mCipherKeyManagers.Lookup(aOriginMetadata.mOrigin)) {
+    entry.Data()->Invalidate();
+    entry.Remove();
+  }
 }
 
 void FileSystemQuotaClient::OnRepositoryClearCompleted(
     quota::PersistenceType aPersistenceType) {
   quota::AssertIsOnIOThread();
+
+  if (aPersistenceType != quota::PERSISTENCE_TYPE_PRIVATE) {
+    return;
+  }
+
+  for (const auto& cipherKeyManager : mCipherKeyManagers.Values()) {
+    cipherKeyManager->Invalidate();
+  }
+
+  mCipherKeyManagers.Clear();
 }
 
 void FileSystemQuotaClient::ReleaseIOThreadObjects() {

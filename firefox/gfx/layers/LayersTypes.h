@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,17 +5,18 @@
 #ifndef GFX_LAYERSTYPES_H
 #define GFX_LAYERSTYPES_H
 
-#include <iosfwd>    // for ostream
 #include <stdint.h>  // for uint32_t
 #include <stdio.h>   // FILE
+
+#include <iosfwd>  // for ostream
 #include <tuple>
 
 #include "Units.h"
 #include "mozilla/DefineEnum.h"  // for MOZ_DEFINE_ENUM_CLASS_WITH_BASE
+#include "mozilla/EnumSet.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/TimeStamp.h"  // for TimeStamp
 #include "nsRegion.h"
-#include "mozilla/EnumSet.h"
 
 #ifndef MOZ_LAYERS_HAVE_LOG
 #  define MOZ_LAYERS_HAVE_LOG
@@ -58,11 +57,7 @@ struct LayersId final {
 
   // Implement some operators so this class can be used as a key in
   // stdlib classes.
-  bool operator<(const LayersId& aOther) const { return mId < aOther.mId; }
-
-  bool operator==(const LayersId& aOther) const { return mId == aOther.mId; }
-
-  bool operator!=(const LayersId& aOther) const { return !(*this == aOther); }
+  auto operator<=>(const LayersId& aOther) const = default;
 
   friend std::ostream& operator<<(std::ostream& aStream, const LayersId& aId);
 
@@ -99,29 +94,7 @@ struct BaseTransactionId final {
   // Allow explicit cast to a uint64_t for now
   explicit operator uint64_t() const { return mId; }
 
-  bool operator<(const BaseTransactionId<T>& aOther) const {
-    return mId < aOther.mId;
-  }
-
-  bool operator<=(const BaseTransactionId<T>& aOther) const {
-    return mId <= aOther.mId;
-  }
-
-  bool operator>(const BaseTransactionId<T>& aOther) const {
-    return mId > aOther.mId;
-  }
-
-  bool operator>=(const BaseTransactionId<T>& aOther) const {
-    return mId >= aOther.mId;
-  }
-
-  bool operator==(const BaseTransactionId<T>& aOther) const {
-    return mId == aOther.mId;
-  }
-
-  bool operator!=(const BaseTransactionId<T>& aOther) const {
-    return mId != aOther.mId;
-  }
+  auto operator<=>(const BaseTransactionId<T>& aOther) const = default;
 };
 
 class TransactionIdType {};
@@ -158,6 +131,7 @@ enum class WebRenderCompositor : int8_t {
   D3D11,
   OPENGL,
   WAYLAND,
+  Unknown,
   LAST
 };
 
@@ -266,9 +240,7 @@ class LayerHandle final {
   explicit LayerHandle(uint64_t aHandle) : mHandle(aHandle) {}
   bool IsValid() const { return mHandle != 0; }
   explicit operator bool() const { return IsValid(); }
-  bool operator==(const LayerHandle& aOther) const {
-    return mHandle == aOther.mHandle;
-  }
+  bool operator==(const LayerHandle& aOther) const = default;
   uint64_t Value() const { return mHandle; }
 
  private:
@@ -291,12 +263,7 @@ class CompositableHandle final {
   bool IsValid() const { return mHandle != 0; }
   explicit operator bool() const { return IsValid(); }
   explicit operator uint64_t() const { return mHandle; }
-  bool operator==(const CompositableHandle& aOther) const {
-    return mHandle == aOther.mHandle;
-  }
-  bool operator!=(const CompositableHandle& aOther) const {
-    return !(*this == aOther);
-  }
+  bool operator==(const CompositableHandle& aOther) const = default;
   uint64_t Value() const { return mHandle; }
 
  private:
@@ -324,25 +291,7 @@ struct RemoteTextureId {
 
   // Implement some operators so this class can be used as a key in
   // stdlib classes.
-  bool operator<(const RemoteTextureId& aOther) const {
-    return mId < aOther.mId;
-  }
-
-  bool operator>(const RemoteTextureId& aOther) const {
-    return mId > aOther.mId;
-  }
-
-  bool operator==(const RemoteTextureId& aOther) const {
-    return mId == aOther.mId;
-  }
-
-  bool operator!=(const RemoteTextureId& aOther) const {
-    return !(*this == aOther);
-  }
-
-  bool operator>=(const RemoteTextureId& aOther) const {
-    return mId >= aOther.mId;
-  }
+  auto operator<=>(const RemoteTextureId& aOther) const = default;
 
   // Helper struct that allow this class to be used as a key in
   // std::unordered_map like so:
@@ -369,17 +318,7 @@ struct RemoteTextureOwnerId {
 
   // Implement some operators so this class can be used as a key in
   // stdlib classes.
-  bool operator<(const RemoteTextureOwnerId& aOther) const {
-    return mId < aOther.mId;
-  }
-
-  bool operator==(const RemoteTextureOwnerId& aOther) const {
-    return mId == aOther.mId;
-  }
-
-  bool operator!=(const RemoteTextureOwnerId& aOther) const {
-    return !(*this == aOther);
-  }
+  auto operator<=>(const RemoteTextureOwnerId& aOther) const = default;
 
   // Helper struct that allow this class to be used as a key in
   // std::unordered_map like so:
@@ -406,17 +345,8 @@ struct SurfaceDescriptorRemoteDecoderId {
 
   // Implement some operators so this class can be used as a key in
   // stdlib classes.
-  bool operator<(const SurfaceDescriptorRemoteDecoderId& aOther) const {
-    return mId < aOther.mId;
-  }
-
-  bool operator==(const SurfaceDescriptorRemoteDecoderId& aOther) const {
-    return mId == aOther.mId;
-  }
-
-  bool operator!=(const SurfaceDescriptorRemoteDecoderId& aOther) const {
-    return !(*this == aOther);
-  }
+  auto operator<=>(const SurfaceDescriptorRemoteDecoderId& aOther) const =
+      default;
 
   // Helper struct that allow this class to be used as a key in
   // std::unordered_map like so:
@@ -443,13 +373,7 @@ struct GpuProcessTextureId {
   // Allow explicit cast to a uint64_t for now
   explicit operator uint64_t() const { return mId; }
 
-  bool operator==(const GpuProcessTextureId& aOther) const {
-    return mId == aOther.mId;
-  }
-
-  bool operator!=(const GpuProcessTextureId& aOther) const {
-    return !(*this == aOther);
-  }
+  auto operator<=>(const GpuProcessTextureId& aOther) const = default;
 
   // Helper struct that allow this class to be used as a key in
   // std::unordered_map like so:
@@ -473,13 +397,8 @@ struct CompositeProcessFencesHolderId {
   // Allow explicit cast to a uint64_t for now
   explicit operator uint64_t() const { return mId; }
 
-  bool operator==(const CompositeProcessFencesHolderId& aOther) const {
-    return mId == aOther.mId;
-  }
-
-  bool operator!=(const CompositeProcessFencesHolderId& aOther) const {
-    return !(*this == aOther);
-  }
+  auto operator<=>(const CompositeProcessFencesHolderId& aOther) const =
+      default;
 
   // Helper struct that allow this class to be used as a key in
   // std::unordered_map like so:
@@ -487,6 +406,54 @@ struct CompositeProcessFencesHolderId {
   //   GpuProcessQueryId::HashFn> myMap;
   struct HashFn {
     std::size_t operator()(const CompositeProcessFencesHolderId aKey) const {
+      return std::hash<uint64_t>{}(aKey.mId);
+    }
+  };
+};
+
+// AndroidImageReaderId allocated in GPU process
+struct GpuProcessAndroidImageReaderId {
+  uint64_t mId = 0;
+
+  static GpuProcessAndroidImageReaderId GetNext();
+
+  bool IsValid() const { return mId != 0; }
+
+  // Allow explicit cast to a uint64_t for now
+  explicit operator uint64_t() const { return mId; }
+
+  auto operator<=>(const GpuProcessAndroidImageReaderId& aOther) const =
+      default;
+
+  // Helper struct that allow this class to be used as a key in
+  // std::unordered_map like so:
+  //   std::unordered_map<GpuProcessAndroidImageReaderId, ValueType,
+  //   GpuProcessAndroidImageReaderId::HashFn> myMap;
+  struct HashFn {
+    std::size_t operator()(const GpuProcessAndroidImageReaderId aKey) const {
+      return std::hash<uint64_t>{}(aKey.mId);
+    }
+  };
+};
+
+struct AndroidMediaCodecFrameId {
+  uint64_t mId = 0;
+
+  static AndroidMediaCodecFrameId GetNext();
+
+  bool IsValid() const { return mId != 0; }
+
+  // Allow explicit cast to a uint64_t for now
+  explicit operator uint64_t() const { return mId; }
+
+  auto operator<=>(const AndroidMediaCodecFrameId& aOther) const = default;
+
+  // Helper struct that allow this class to be used as a key in
+  // std::unordered_map like so:
+  //   std::unordered_map<AndroidMediaCodecFrameId, ValueType,
+  //   AndroidMediaCodecFrameId::HashFn> myMap;
+  struct HashFn {
+    std::size_t operator()(const AndroidMediaCodecFrameId aKey) const {
       return std::hash<uint64_t>{}(aKey.mId);
     }
   };
@@ -558,14 +525,26 @@ MOZ_DEFINE_ENUM_CLASS_WITH_BASE(CompositionPayloadType, uint8_t, (
 extern const char* kCompositionPayloadTypeNames[kCompositionPayloadTypeCount];
 
 struct CompositionPayload {
-  bool operator==(const CompositionPayload& aOther) const {
-    return mType == aOther.mType && mTimeStamp == aOther.mTimeStamp;
-  }
+  bool operator==(const CompositionPayload& aOther) const = default;
   /* The type of payload that is in this composition */
   CompositionPayloadType mType;
   /* When this payload was generated */
   TimeStamp mTimeStamp;
 };
+
+// clang-format off
+MOZ_DEFINE_ENUM_CLASS_WITH_BASE(
+  RemoteDecoderVideoType, int8_t, (
+    TypeNone,
+    Buffer,
+    D3D10,
+    DXGIYCbCr,
+    DMABuf,
+    MacIOSurface,
+    DcompSurface,
+    AndroidImageReaderImage
+));
+// clang-format on
 
 }  // namespace layers
 }  // namespace mozilla

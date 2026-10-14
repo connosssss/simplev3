@@ -9,6 +9,7 @@ import android.os.Looper.getMainLooper
 import android.view.inputmethod.EditorInfo.IME_NULL
 import android.widget.CheckBox
 import android.widget.TextView
+import androidx.appcompat.R as appcompatR
 import androidx.appcompat.app.AlertDialog
 import androidx.core.view.inputmethod.EditorInfoCompat
 import androidx.core.view.isVisible
@@ -16,6 +17,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import mozilla.components.feature.prompts.R.id
 import mozilla.components.support.test.ext.appCompatContext
 import mozilla.components.support.test.mock
+import mozilla.components.support.test.robolectric.testContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -28,7 +30,6 @@ import org.mockito.Mockito.spy
 import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations
 import org.robolectric.Shadows.shadowOf
-import androidx.appcompat.R as appcompatR
 
 @RunWith(AndroidJUnit4::class)
 class TextPromptDialogFragmentTest {
@@ -38,13 +39,24 @@ class TextPromptDialogFragmentTest {
     @Before
     fun setup() {
         MockitoAnnotations.openMocks(this)
+        testContext.setTheme(com.google.android.material.R.style.Theme_MaterialComponents_Light)
     }
 
     @Test
     fun `build dialog`() {
-        val fragment = spy(
-            TextPromptDialogFragment.newInstance("sessionId", "uid", true, "title", "label", "defaultValue", true, false),
-        )
+        val fragment =
+            spy(
+                TextPromptDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    true,
+                    "title",
+                    "label",
+                    "defaultValue",
+                    true,
+                    false,
+                )
+            )
 
         doReturn(appCompatContext).`when`(fragment).requireContext()
 
@@ -81,9 +93,19 @@ class TextPromptDialogFragmentTest {
 
     @Test
     fun `TextPrompt with hasShownManyDialogs equals false should not have a checkbox`() {
-        val fragment = spy(
-            TextPromptDialogFragment.newInstance("sessionId", "uid", false, "title", "label", "defaultValue", false, false),
-        )
+        val fragment =
+            spy(
+                TextPromptDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    false,
+                    "title",
+                    "label",
+                    "defaultValue",
+                    false,
+                    false,
+                )
+            )
 
         doReturn(appCompatContext).`when`(fragment).requireContext()
 
@@ -98,9 +120,19 @@ class TextPromptDialogFragmentTest {
 
     @Test
     fun `Clicking on positive button notifies the feature`() {
-        val fragment = spy(
-            TextPromptDialogFragment.newInstance("sessionId", "uid", true, "title", "label", "defaultValue", false, false),
-        )
+        val fragment =
+            spy(
+                TextPromptDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    true,
+                    "title",
+                    "label",
+                    "defaultValue",
+                    false,
+                    false,
+                )
+            )
 
         fragment.feature = mockFeature
 
@@ -118,9 +150,19 @@ class TextPromptDialogFragmentTest {
 
     @Test
     fun `After checking no more dialogs checkbox feature onNoMoreDialogsChecked must be called`() {
-        val fragment = spy(
-            TextPromptDialogFragment.newInstance("sessionId", "uid", false, "title", "label", "defaultValue", true, false),
-        )
+        val fragment =
+            spy(
+                TextPromptDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    false,
+                    "title",
+                    "label",
+                    "defaultValue",
+                    true,
+                    false,
+                )
+            )
 
         fragment.feature = mockFeature
 
@@ -142,9 +184,19 @@ class TextPromptDialogFragmentTest {
 
     @Test
     fun `touching outside of the dialog must notify the feature onCancel`() {
-        val fragment = spy(
-            TextPromptDialogFragment.newInstance("sessionId", "uid", true, "title", "label", "defaultValue", true, false),
-        )
+        val fragment =
+            spy(
+                TextPromptDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    true,
+                    "title",
+                    "label",
+                    "defaultValue",
+                    true,
+                    false,
+                )
+            )
 
         fragment.feature = mockFeature
 
@@ -157,9 +209,19 @@ class TextPromptDialogFragmentTest {
 
     @Test
     fun `when TextPromptDialogFragment is created in private mode then keyboard is in private mode`() {
-        val fragment = spy(
-            TextPromptDialogFragment.newInstance("sessionId", "uid", true, "title", "label", "defaultValue", true, true),
-        )
+        val fragment =
+            spy(
+                TextPromptDialogFragment.newInstance(
+                    "sessionId",
+                    "uid",
+                    true,
+                    "title",
+                    "label",
+                    "defaultValue",
+                    true,
+                    true,
+                )
+            )
 
         fragment.feature = mockFeature
         doReturn(appCompatContext).`when`(fragment).requireContext()

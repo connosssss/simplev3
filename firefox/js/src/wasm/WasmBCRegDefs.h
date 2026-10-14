@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- *
+/*
  * Copyright 2016 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -62,14 +60,14 @@ static constexpr FloatRegister RabaldrScratchF32{FloatRegisters::s30,
                                                  FloatRegisters::Single};
 static constexpr FloatRegister RabaldrScratchF64{FloatRegisters::d30,
                                                  FloatRegisters::Double};
-#  ifdef ENABLE_WASM_SIMD
+#  ifdef ENABLE_JIT_SIMD
 static constexpr FloatRegister RabaldrScratchV128{FloatRegisters::d30,
                                                   FloatRegisters::Simd128};
 #  endif
 
 static_assert(RabaldrScratchF32 != ScratchFloat32Reg_, "Too busy");
 static_assert(RabaldrScratchF64 != ScratchDoubleReg_, "Too busy");
-#  ifdef ENABLE_WASM_SIMD
+#  ifdef ENABLE_JIT_SIMD
 static_assert(RabaldrScratchV128 != ScratchSimd128Reg, "Too busy");
 #  endif
 #endif
@@ -132,7 +130,7 @@ static constexpr Register RabaldrScratchI32 = CallTempReg2;
 
 template <MIRType t>
 struct RegTypeOf {
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   static_assert(t == MIRType::Float32 || t == MIRType::Double ||
                     t == MIRType::Simd128,
                 "Float mask type");
@@ -150,7 +148,7 @@ template <>
 struct RegTypeOf<MIRType::Double> {
   static constexpr RegTypeName value = RegTypeName::Float64;
 };
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 template <>
 struct RegTypeOf<MIRType::Simd128> {
   static constexpr RegTypeName value = RegTypeName::Vector128;
@@ -208,7 +206,7 @@ struct RegPtr : public Register {
 };
 
 struct RegF32 : public FloatRegister {
-  RegF32() {}
+  RegF32() = default;
   explicit RegF32(FloatRegister reg) : FloatRegister(reg) {
     MOZ_ASSERT(isSingle());
   }
@@ -217,7 +215,7 @@ struct RegF32 : public FloatRegister {
 };
 
 struct RegF64 : public FloatRegister {
-  RegF64() {}
+  RegF64() = default;
   explicit RegF64(FloatRegister reg) : FloatRegister(reg) {
     MOZ_ASSERT(isDouble());
   }
@@ -225,9 +223,9 @@ struct RegF64 : public FloatRegister {
   static RegF64 Invalid() { return RegF64(); }
 };
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 struct RegV128 : public FloatRegister {
-  RegV128() {}
+  RegV128() = default;
   explicit RegV128(FloatRegister reg) : FloatRegister(reg) {
     MOZ_ASSERT(isSimd128());
   }
@@ -243,7 +241,7 @@ struct AnyReg {
     RegRef ref_;
     RegF32 f32_;
     RegF64 f64_;
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
     RegV128 v128_;
 #endif
   };
@@ -254,7 +252,7 @@ struct AnyReg {
     REF,
     F32,
     F64,
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
     V128
 #endif
   } tag;
@@ -275,7 +273,7 @@ struct AnyReg {
     tag = F64;
     f64_ = r;
   }
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   explicit AnyReg(RegV128 r) {
     tag = V128;
     v128_ = r;
@@ -302,7 +300,7 @@ struct AnyReg {
     MOZ_ASSERT(tag == F64);
     return f64_;
   }
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   RegV128 v128() const {
     MOZ_ASSERT(tag == V128);
     return v128_;
@@ -319,7 +317,7 @@ struct AnyReg {
         return AnyRegister(f32_);
       case F64:
         return AnyRegister(f64_);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
       case V128:
         return AnyRegister(v128_);
 #endif
@@ -329,9 +327,8 @@ struct AnyReg {
 #ifdef JS_PUNBOX64
         return AnyRegister(i64_.reg);
 #else
-        // The compiler is written so that this is never needed: any() is
-        // called on arbitrary registers for asm.js but asm.js does not have
-        // 64-bit ints.  For wasm, any() is called on arbitrary registers
+        // The compiler is written so that this is never needed.
+        // For wasm, any() is called on arbitrary registers
         // only on 64-bit platforms.
         MOZ_CRASH("AnyReg::any() on 32-bit platform");
 #endif
@@ -412,18 +409,18 @@ class BaseRegAlloc {
   // Notes on float register allocation.
   //
   // The general rule in SpiderMonkey is that float registers can alias double
-  // registers, but there are predicates to handle exceptions to that rule:
-  // hasUnaliasedDouble() and hasMultiAlias().  The way aliasing actually
-  // works is platform dependent and exposed through the aliased(n, &r)
-  // predicate, etc.
+  // registers, but there's a predicate to handle exceptions to that rule:
+  // hasMultiAlias().  The way aliasing actually works is platform dependent
+  // and exposed through the aliased(n, &r) predicate, etc.
   //
-  //  - hasUnaliasedDouble(): on ARM VFPv3-D32 there are double registers that
-  //    cannot be treated as float.
   //  - hasMultiAlias(): on ARM and MIPS a double register aliases two float
   //    registers.
   //
   // On some platforms (x86, x64, ARM64) but not all (ARM)
   // ScratchFloat32Register is the same as ScratchDoubleRegister.
+  //
+  // On ARM VFPv3-D32 there are double registers that cannot be treated as
+  // float.
   //
   // It's a basic invariant of the AllocatableRegisterSet that it deals
   // properly with aliasing of registers: if s0 or s1 are allocated then d0 is
@@ -651,7 +648,7 @@ class BaseRegAlloc {
 
   bool isAvailableF64(RegF64 r) { return isAvailableFPU(r); }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   bool isAvailableV128(RegV128 r) { return isAvailableFPU(r); }
 #endif
 
@@ -673,7 +670,7 @@ class BaseRegAlloc {
   [[nodiscard]] inline RegF64 needF64();
   inline void needF64(RegF64 specific);
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   [[nodiscard]] inline RegV128 needV128();
   inline void needV128(RegV128 specific);
 #endif
@@ -684,7 +681,7 @@ class BaseRegAlloc {
   inline void freePtr(RegPtr r);
   inline void freeF64(RegF64 r);
   inline void freeF32(RegF32 r);
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline void freeV128(RegV128 r);
 #endif
 
@@ -732,7 +729,7 @@ class BaseRegAlloc {
 
     void addKnownF64(RegF64 r) { knownFPU_.add(r); }
 
-#  ifdef ENABLE_WASM_SIMD
+#  ifdef ENABLE_JIT_SIMD
     void addKnownV128(RegV128 r) { knownFPU_.add(r); }
 #  endif
 
@@ -769,7 +766,7 @@ class BaseScratchRegister {
 #endif
 };
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 #  ifdef RABALDR_SCRATCH_V128
 class ScratchV128 : public BaseScratchRegister {
  public:

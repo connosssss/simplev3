@@ -1,19 +1,17 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/dom/ReadableStreamDefaultReader.h"
-
-#include "mozilla/dom/AutoEntryScript.h"
-#include "mozilla/dom/ReadableStream.h"
-#include "mozilla/dom/RootedDictionary.h"
+#include "ReadableStreamAbstract.h"
+#include "ReadableStreamDefaultReaderAbstract.h"
+#include "ReadableStreamGenericReaderAbstract.h"
 #include "js/PropertyAndElement.h"
 #include "js/TypeDecls.h"
 #include "js/Value.h"
 #include "jsapi.h"
+#include "mozilla/dom/AutoEntryScript.h"
 #include "mozilla/dom/ReadableStreamDefaultReaderBinding.h"
+#include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/UnderlyingSourceBinding.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
@@ -81,7 +79,7 @@ bool ReadableStreamReaderGenericInitialize(ReadableStreamGenericReader* aReader,
     // Step 4.
     case ReadableStream::ReaderState::Closed:
       // Step 4.1.
-      aReader->ClosedPromise()->MaybeResolve(JS::UndefinedHandleValue);
+      aReader->ClosedPromise()->MaybeSafeResolve(JS::UndefinedHandleValue);
 
       return true;
     // Step 5.
@@ -89,7 +87,8 @@ bool ReadableStreamReaderGenericInitialize(ReadableStreamGenericReader* aReader,
       // Step 5.1 Implicit
       // Step 5.2
       JS::RootingContext* rcx = RootingCx();
-      JS::Rooted<JS::Value> rootedError(rcx, aStream->StoredError());
+      // MaybeReject will wrap the value for us.
+      JS::Rooted<JS::Value> rootedError(rcx, aStream->UnsafeStoredError());
       aReader->ClosedPromise()->MaybeReject(rootedError);
 
       // Step 5.3
@@ -159,7 +158,7 @@ void Read_ReadRequest::ChunkSteps(JSContext* aCx, JS::Handle<JS::Value> aChunk,
     return;
   }
 
-  mPromise->MaybeResolve(value);
+  mPromise->MaybeSafeResolve(value);
 }
 
 void Read_ReadRequest::CloseSteps(JSContext* aCx, ErrorResult& aRv) {
@@ -176,7 +175,7 @@ void Read_ReadRequest::CloseSteps(JSContext* aCx, ErrorResult& aRv) {
     return;
   }
 
-  mPromise->MaybeResolve(value);
+  mPromise->MaybeSafeResolve(value);
 }
 
 void Read_ReadRequest::ErrorSteps(JSContext* aCx, JS::Handle<JS::Value> e,
@@ -224,7 +223,11 @@ void ReadableStreamDefaultReaderRead(JSContext* aCx,
     }
 
     case ReadableStream::ReaderState::Errored: {
-      JS::Rooted<JS::Value> storedError(aCx, stream->StoredError());
+      JS::Rooted<JS::Value> storedError(aCx);
+      stream->GetStoredError(aCx, &storedError, aRv);
+      if (aRv.Failed()) {
+        return;
+      }
       aRequest->ErrorSteps(aCx, storedError, aRv);
       return;
     }
@@ -271,8 +274,7 @@ already_AddRefed<Promise> ReadableStreamDefaultReader::Read(ErrorResult& aRv) {
 namespace streams_abstract {
 
 // https://streams.spec.whatwg.org/#readable-stream-reader-generic-release
-void ReadableStreamReaderGenericRelease(ReadableStreamGenericReader* aReader,
-                                        ErrorResult& aRv) {
+void ReadableStreamReaderGenericRelease(ReadableStreamGenericReader* aReader) {
   // Step 1. Let stream be reader.[[stream]].
   RefPtr<ReadableStream> stream = aReader->GetStream();
 
@@ -290,8 +292,9 @@ void ReadableStreamReaderGenericRelease(ReadableStreamGenericReader* aReader,
   } else {
     // Step 5. Otherwise, set reader.[[closedPromise]] to a promise rejected
     // with a TypeError exception.
-    RefPtr<Promise> promise = Promise::CreateRejectedWithTypeError(
-        aReader->GetParentObject(), "Lock Released"_ns, aRv);
+    RefPtr<Promise> promise =
+        Promise::CreateInfallible(aReader->GetParentObject());
+    promise->MaybeRejectWithTypeError("Lock Released"_ns);
     aReader->SetClosedPromise(promise.forget());
   }
 
@@ -335,10 +338,7 @@ void ReadableStreamDefaultReaderRelease(JSContext* aCx,
                                         ReadableStreamDefaultReader* aReader,
                                         ErrorResult& aRv) {
   // Step 1. Perform ! ReadableStreamReaderGenericRelease(reader).
-  ReadableStreamReaderGenericRelease(aReader, aRv);
-  if (aRv.Failed()) {
-    return;
-  }
+  ReadableStreamReaderGenericRelease(aReader);
 
   // Step 2. Let e be a new TypeError exception.
   ErrorResult rv;
@@ -368,6 +368,19 @@ void ReadableStreamDefaultReader::ReleaseLock(ErrorResult& aRv) {
   // Step 2. Perform ! ReadableStreamDefaultReaderRelease(this).
   RefPtr<ReadableStreamDefaultReader> thisRefPtr = this;
   ReadableStreamDefaultReaderRelease(cx, thisRefPtr, aRv);
+}
+
+ReadableStreamGenericReader::ReadableStreamGenericReader(
+    nsCOMPtr<nsIGlobalObject> aGlobal)
+    : mGlobal(std::move(aGlobal)) {}
+
+void ReadableStreamGenericReader::SetStream(
+    already_AddRefed<ReadableStream> aStream) {
+  mStream = aStream;
+}
+void ReadableStreamGenericReader::SetStream(ReadableStream* aStream) {
+  RefPtr<ReadableStream> stream(aStream);
+  SetStream(stream.forget());
 }
 
 // https://streams.spec.whatwg.org/#generic-reader-closed

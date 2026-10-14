@@ -25,7 +25,7 @@ load chrome://reftest/content/crashtests/layout/generic/crashtests/321224.xhtml
 load chrome://reftest/content/crashtests/layout/generic/crashtests/322780-1.xhtml
 load 323381-1.html
 load 323381-2.html
-load 323386-1.html
+asserts(0-1) load 323386-1.html # Large sizes, but font-metric dependent whether the calculation overflows.
 load 323389-1.html
 load 323389-2.html
 load 323493-1.html
@@ -325,7 +325,7 @@ load 476241-1.html
 load 477731-1.html
 load 477928.html
 load 478131-1.html
-load 478170-1.html # Big sizes
+load 478170-1.html
 pref(layout.css.letter-spacing.model,2) load 478185-1.html
 load 478504.html
 asserts-if(!Android,0-1) load 479938-1.html # Bug 575011
@@ -487,7 +487,7 @@ load 798020-1.html
 load 798235-1.html
 load 799207-1.html
 load 799207-2.html
-load 801268-1.html
+asserts(1-2) load 801268-1.html # Large sizes hit NS_UNCONSTRAINEDSIZE assert.
 load 804089-1.xhtml
 load 807565-1.html
 load 807565-2.html
@@ -670,6 +670,8 @@ load 1373586.html
 load 1375858.html
 load 1381134.html
 load 1381134-2.html
+load 1395974-1.html
+load 1395974-2.html
 load 1397449.html
 load 1401420-1.html
 load 1401709.html
@@ -807,7 +809,7 @@ asserts(0-4) load 1730506.html # asserts from integer overflow & bogus sizes wit
 asserts(1-4) load 1730570.html # asserts from integer overflow & bogus sizes
 load 1734015.html
 skip-if(Android) load 1741488-1.html # printPreview doesn't work on android
-skip-if(Android) asserts(2-2) load 1764205.html # printPreview doesn't work on android
+skip-if(Android) load 1764205.html # printPreview doesn't work on android
 load 1776079.html
 asserts(0-2) load 1791606.html
 load 1799749.html
@@ -821,3 +823,10 @@ load 1870219.html
 load 1915006.html
 asserts(0-85) load 1881375-1.html # bug 1890687 - assertions about fragmentation invariants, failing many times because the test runs in a loop
 asserts(0-5) load 1965081.html # Bug 457400 - ASSERTION: can't mark frame dirty during reflow
+load 1978475-1.html
+load 1990258.html
+load 1990319.html
+load 1998521.html
+load 1999326.html
+load 2026430.html
+load 2044844.html

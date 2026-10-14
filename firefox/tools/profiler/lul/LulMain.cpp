@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -19,14 +17,13 @@
 #include "LulCommonExt.h"
 #include "LulElfExt.h"
 #include "LulMainInt.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/MemoryChecking.h"
+#include "mozilla/PodOperations.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
 
 // Set this to 1 for verbose logging
 #define DEBUG_MAIN 0
@@ -36,7 +33,6 @@ namespace lul {
 using mozilla::CheckedInt;
 using mozilla::DebugOnly;
 using mozilla::MallocSizeOf;
-using mozilla::Unused;
 using std::pair;
 using std::string;
 using std::vector;
@@ -93,6 +89,22 @@ static const char* NameOf_DW_REG(int16_t aReg) {
       return "fp";
     case DW_REG_MIPS_PC:
       return "pc";
+#elif defined(GP_ARCH_loongarch64)
+    case DW_REG_LOONGARCH_RA:
+      return "ra";
+    case DW_REG_LOONGARCH_SP:
+      return "sp";
+    case DW_REG_LOONGARCH_FP:
+      return "fp";
+    case DW_REG_LOONGARCH_S0:
+      return "s0";
+#elif defined(GP_ARCH_riscv64)
+    case DW_REG_RISCV_RA:
+      return "ra";
+    case DW_REG_RISCV_SP:
+      return "sp";
+    case DW_REG_RISCV_FP:
+      return "fp";
 #else
 #  error "Unsupported arch"
 #endif
@@ -155,6 +167,15 @@ void RuleSet::Print(uintptr_t avma, uintptr_t len,
   res += mPCexpr.ShowRule(" PC");
   res += mSPexpr.ShowRule(" SP");
   res += mFPexpr.ShowRule(" FP");
+#elif defined(GP_ARCH_loongarch64)
+  res += mRAexpr.ShowRule(" RA");
+  res += mSPexpr.ShowRule(" SP");
+  res += mFPexpr.ShowRule(" FP");
+  res += mS0expr.ShowRule(" S0");
+#elif defined(GP_ARCH_riscv64)
+  res += mRAexpr.ShowRule(" RA");
+  res += mSPexpr.ShowRule(" SP");
+  res += mFPexpr.ShowRule(" FP");
 #else
 #  error "Unsupported arch"
 #endif
@@ -199,6 +220,22 @@ LExpr* RuleSet::ExprForRegno(DW_REG_NUMBER aRegno) {
       return &mFPexpr;
     case DW_REG_MIPS_PC:
       return &mPCexpr;
+#elif defined(GP_ARCH_loongarch64)
+    case DW_REG_LOONGARCH_RA:
+      return &mRAexpr;
+    case DW_REG_LOONGARCH_SP:
+      return &mSPexpr;
+    case DW_REG_LOONGARCH_FP:
+      return &mFPexpr;
+    case DW_REG_LOONGARCH_S0:
+      return &mS0expr;
+#elif defined(GP_ARCH_riscv64)
+    case DW_REG_RISCV_RA:
+      return &mRAexpr;
+    case DW_REG_RISCV_SP:
+      return &mSPexpr;
+    case DW_REG_RISCV_FP:
+      return &mFPexpr;
 #else
 #  error "Unknown arch"
 #endif
@@ -207,9 +244,8 @@ LExpr* RuleSet::ExprForRegno(DW_REG_NUMBER aRegno) {
   }
 }
 
-RuleSet::RuleSet() {
-  // All fields are of type LExpr and so are initialised by LExpr::LExpr().
-}
+// All fields are of type LExpr and so are initialised by LExpr::LExpr().
+RuleSet::RuleSet() = default;
 
 ////////////////////////////////////////////////////////////////
 // SecMap                                                     //
@@ -1055,6 +1091,22 @@ static TaggedUWord EvaluateReg(int16_t aReg, const UnwindRegs* aOldRegs,
       return aOldRegs->fp;
     case DW_REG_MIPS_PC:
       return aOldRegs->pc;
+#elif defined(GP_ARCH_loongarch64)
+    case DW_REG_LOONGARCH_RA:
+      return aOldRegs->ra;
+    case DW_REG_LOONGARCH_SP:
+      return aOldRegs->sp;
+    case DW_REG_LOONGARCH_FP:
+      return aOldRegs->fp;
+    case DW_REG_LOONGARCH_S0:
+      return aOldRegs->s0;
+#elif defined(GP_ARCH_riscv64)
+    case DW_REG_RISCV_RA:
+      return aOldRegs->ra;
+    case DW_REG_RISCV_SP:
+      return aOldRegs->sp;
+    case DW_REG_RISCV_FP:
+      return aOldRegs->fp;
 #else
 #  error "Unsupported arch"
 #endif
@@ -1073,8 +1125,8 @@ TaggedUWord EvaluatePfxExpr(int32_t start, const UnwindRegs* aOldRegs,
   // the highest numbered in-use element.
   const int N_STACK = 10;
   TaggedUWord stack[N_STACK];
+  std::fill(std::begin(stack), std::end(stack), TaggedUWord());
   int stackPointer = -1;
-  for (int i = 0; i < N_STACK; i++) stack[i] = TaggedUWord();
 
 #define PUSH(_tuw)                                             \
   do {                                                         \
@@ -1258,6 +1310,17 @@ static void UseRuleSet(/*MOD*/ UnwindRegs* aRegs, const StackImage* aStackImg,
   aRegs->sp = TaggedUWord();
   aRegs->fp = TaggedUWord();
   aRegs->pc = TaggedUWord();
+#elif defined(GP_ARCH_loongarch64)
+  aRegs->ra = TaggedUWord();
+  aRegs->sp = TaggedUWord();
+  aRegs->fp = TaggedUWord();
+  aRegs->s0 = TaggedUWord();
+  aRegs->pc = TaggedUWord();
+#elif defined(GP_ARCH_riscv64)
+  aRegs->ra = TaggedUWord();
+  aRegs->sp = TaggedUWord();
+  aRegs->fp = TaggedUWord();
+  aRegs->pc = TaggedUWord();
 #else
 #  error "Unsupported arch"
 #endif
@@ -1303,6 +1366,15 @@ static void UseRuleSet(/*MOD*/ UnwindRegs* aRegs, const StackImage* aStackImg,
   aRegs->sp = aRS->mSPexpr.EvaluateExpr(&old_regs, cfa, aStackImg, aPfxInstrs);
   aRegs->fp = aRS->mFPexpr.EvaluateExpr(&old_regs, cfa, aStackImg, aPfxInstrs);
   aRegs->pc = aRS->mPCexpr.EvaluateExpr(&old_regs, cfa, aStackImg, aPfxInstrs);
+#elif defined(GP_ARCH_loongarch64)
+  aRegs->ra = aRS->mRAexpr.EvaluateExpr(&old_regs, cfa, aStackImg, aPfxInstrs);
+  aRegs->sp = aRS->mSPexpr.EvaluateExpr(&old_regs, cfa, aStackImg, aPfxInstrs);
+  aRegs->fp = aRS->mFPexpr.EvaluateExpr(&old_regs, cfa, aStackImg, aPfxInstrs);
+  aRegs->s0 = aRS->mS0expr.EvaluateExpr(&old_regs, cfa, aStackImg, aPfxInstrs);
+#elif defined(GP_ARCH_riscv64)
+  aRegs->ra = aRS->mRAexpr.EvaluateExpr(&old_regs, cfa, aStackImg, aPfxInstrs);
+  aRegs->sp = aRS->mSPexpr.EvaluateExpr(&old_regs, cfa, aStackImg, aPfxInstrs);
+  aRegs->fp = aRS->mFPexpr.EvaluateExpr(&old_regs, cfa, aStackImg, aPfxInstrs);
 #else
 #  error "Unsupported arch"
 #endif
@@ -1372,6 +1444,27 @@ void LUL::Unwind(/*OUT*/ uintptr_t* aFramePCs,
           (int)regs.fp.Valid(), (unsigned long long int)regs.fp.Value());
       buf[sizeof(buf) - 1] = 0;
       mLog(buf);
+#elif defined(GP_ARCH_loongarch64)
+      SprintfLiteral(
+          buf,
+          "LoopTop: pc %d/%llx  ra %d/%llx  sp %d/%llx  fp %d/%llx"
+          "  s0 %d/%llx\n",
+          (int)regs.pc.Valid(), (unsigned long long int)regs.pc.Value(),
+          (int)regs.ra.Valid(), (unsigned long long int)regs.ra.Value(),
+          (int)regs.sp.Valid(), (unsigned long long int)regs.sp.Value(),
+          (int)regs.fp.Valid(), (unsigned long long int)regs.fp.Value(),
+          (int)regs.s0.Valid(), (unsigned long long int)regs.s0.Value());
+      buf[sizeof(buf) - 1] = 0;
+      mLog(buf);
+#elif defined(GP_ARCH_riscv64)
+      SprintfLiteral(
+          buf, "LoopTop: pc %d/%llx  ra %d/%llx  sp %d/%llx  fp %d/%llx\n",
+          (int)regs.pc.Valid(), (unsigned long long int)regs.pc.Value(),
+          (int)regs.ra.Valid(), (unsigned long long int)regs.ra.Value(),
+          (int)regs.sp.Valid(), (unsigned long long int)regs.sp.Value(),
+          (int)regs.fp.Valid(), (unsigned long long int)regs.fp.Value());
+      buf[sizeof(buf) - 1] = 0;
+      mLog(buf);
 #else
 #  error "Unsupported arch"
 #endif
@@ -1388,6 +1481,12 @@ void LUL::Unwind(/*OUT*/ uintptr_t* aFramePCs,
     TaggedUWord sp = regs.sp;
 #elif defined(GP_ARCH_mips64)
     TaggedUWord ia = regs.pc;
+    TaggedUWord sp = regs.sp;
+#elif defined(GP_ARCH_loongarch64)
+    TaggedUWord ia = (*aFramesUsed == 0 ? regs.pc : regs.ra);
+    TaggedUWord sp = regs.sp;
+#elif defined(GP_ARCH_riscv64)
+    TaggedUWord ia = (*aFramesUsed == 0 ? regs.pc : regs.ra);
     TaggedUWord sp = regs.sp;
 #else
 #  error "Unsupported arch"
@@ -1642,6 +1741,105 @@ void LUL::Unwind(/*OUT*/ uintptr_t* aFramePCs,
         }
       }
     }
+#elif defined(GP_ARCH_loongarch64)
+    TaggedUWord old_fp = regs.fp;
+    if (old_fp.Valid() && old_fp.IsAligned() && last_valid_sp.Valid() &&
+        last_valid_sp.Value() <= old_fp.Value()) {
+      // First, try chase the JS frames. See "[SMDOC] The JS ABIs" for the exact
+      // layout. This pass is needed since the native ABI frame layout does NOT
+      // coincide with JS frame layout on loongarch64.
+      TaggedUWord js_new_fp = DerefTUW(old_fp, aStackImg);
+      if (js_new_fp.Valid() && js_new_fp.IsAligned() &&
+          old_fp.Value() < js_new_fp.Value()) {
+        TaggedUWord old_fp_plus1 = old_fp + TaggedUWord(8);
+        TaggedUWord js_new_ra = DerefTUW(old_fp_plus1, aStackImg);
+        TaggedUWord js_new_sp = old_fp + TaggedUWord(16);
+        if (js_new_ra.Valid() && js_new_sp.Valid()) {
+          regs.fp = js_new_fp;
+          regs.ra = js_new_ra;
+          regs.sp = js_new_sp;
+          (*aFramePointerFramesAcquired)++;
+          continue;
+        }
+      }
+
+      // If JS frame chasing failed, try the native ABI.
+      //
+      // https://raw.githubusercontent.com/loongson/la-abi-specs/refs/heads/release/ladwarf.adoc
+      //
+      // Stack layout:
+      //             |                |
+      //             | previous frame |
+      //             |________________|
+      //    CFA----->|________________|<------ previous sp
+      //             |_______ra_______|
+      //             |_______fp_______|
+      //             |                |
+      //             | current frame  |
+      //             |________________|
+      //             |________________|<------ current sp
+      TaggedUWord old_fp_minus2 = old_fp - TaggedUWord(16);
+      TaggedUWord new_fp = DerefTUW(old_fp_minus2, aStackImg);
+      if (new_fp.Valid() && new_fp.IsAligned() &&
+          old_fp.Value() < new_fp.Value()) {
+        TaggedUWord old_fp_minus1 = old_fp - TaggedUWord(8);
+        TaggedUWord new_ra = DerefTUW(old_fp_minus1, aStackImg);
+        if (new_ra.Valid()) {
+          regs.fp = new_fp;
+          regs.ra = new_ra;
+          regs.sp = old_fp;
+          (*aFramePointerFramesAcquired)++;
+          continue;
+        }
+      }
+    }
+#elif defined(GP_ARCH_riscv64)
+    TaggedUWord old_fp = regs.fp;
+    if (old_fp.Valid() && old_fp.IsAligned() && last_valid_sp.Valid() &&
+        last_valid_sp.Value() <= old_fp.Value()) {
+      // First, try chase the JS frames. See "[SMDOC] The JS ABIs" for the exact
+      // layout. This pass is needed since the native ABI frame layout does NOT
+      // coincide with JS frame layout on riscv64.
+      TaggedUWord js_new_fp = DerefTUW(old_fp, aStackImg);
+      if (js_new_fp.Valid() && js_new_fp.IsAligned() &&
+          old_fp.Value() < js_new_fp.Value()) {
+        TaggedUWord old_fp_plus1 = old_fp + TaggedUWord(8);
+        TaggedUWord js_new_ra = DerefTUW(old_fp_plus1, aStackImg);
+        TaggedUWord js_new_sp = old_fp + TaggedUWord(16);
+        if (js_new_ra.Valid() && js_new_sp.Valid()) {
+          regs.fp = js_new_fp;
+          regs.ra = js_new_ra;
+          regs.sp = js_new_sp;
+          (*aFramePointerFramesAcquired)++;
+          continue;
+        }
+      }
+
+      // If JS frame chasing failed, try the native ABI.
+      //
+      // https://riscv-non-isa.github.io/riscv-elf-psabi-doc/#_frame_pointer_convention
+      //
+      // > After the prologue, the frame pointer register will point to the
+      // Canonical Frame Address or CFA, which is the stack pointer value on
+      // entry to the current procedure. The previous frame pointer and return
+      // address pair will reside just prior to the current stack address held
+      // in `fp`. This puts the return address at `fp - XLEN/8`, and the
+      // previous frame pointer at `fp - 2 * XLEN/8`.
+      TaggedUWord old_fp_minus2 = old_fp - TaggedUWord(16);
+      TaggedUWord new_fp = DerefTUW(old_fp_minus2, aStackImg);
+      if (new_fp.Valid() && new_fp.IsAligned() &&
+          old_fp.Value() < new_fp.Value()) {
+        TaggedUWord old_fp_minus1 = old_fp - TaggedUWord(8);
+        TaggedUWord new_ra = DerefTUW(old_fp_minus1, aStackImg);
+        if (new_ra.Valid()) {
+          regs.fp = new_fp;
+          regs.ra = new_ra;
+          regs.sp = old_fp;
+          (*aFramePointerFramesAcquired)++;
+          continue;
+        }
+      }
+    }
 #endif  // defined(GP_PLAT_amd64_linux) || defined(GP_PLAT_x86_linux) ||
         // defined(GP_PLAT_amd64_android) || defined(GP_PLAT_x86_android) ||
         // defined(GP_PLAT_amd64_freebsd)
@@ -1689,7 +1887,7 @@ static __attribute__((noinline)) bool GetAndCheckStackTrace(
   memset(&startRegs, 0, sizeof(startRegs));
 #if defined(GP_ARCH_amd64)
   volatile uintptr_t block[3];
-  MOZ_ASSERT(sizeof(block) == 24);
+  static_assert(sizeof(block) == 24);
   __asm__ __volatile__(
       "leaq 0(%%rip), %%r15"
       "\n\t"
@@ -1709,7 +1907,7 @@ static __attribute__((noinline)) bool GetAndCheckStackTrace(
   uintptr_t start = block[1] - REDZONE_SIZE;
 #elif defined(GP_PLAT_x86_linux) || defined(GP_PLAT_x86_android)
   volatile uintptr_t block[3];
-  MOZ_ASSERT(sizeof(block) == 12);
+  static_assert(sizeof(block) == 12);
   __asm__ __volatile__(
       ".byte 0xE8,0x00,0x00,0x00,0x00" /*call next insn*/
       "\n\t"
@@ -1731,7 +1929,7 @@ static __attribute__((noinline)) bool GetAndCheckStackTrace(
   uintptr_t start = block[1] - REDZONE_SIZE;
 #elif defined(GP_PLAT_arm_linux) || defined(GP_PLAT_arm_android)
   volatile uintptr_t block[6];
-  MOZ_ASSERT(sizeof(block) == 24);
+  static_assert(sizeof(block) == 24);
   __asm__ __volatile__(
       "mov r0, r15"
       "\n\t"
@@ -1760,7 +1958,7 @@ static __attribute__((noinline)) bool GetAndCheckStackTrace(
   uintptr_t start = block[1] - REDZONE_SIZE;
 #elif defined(GP_ARCH_arm64)
   volatile uintptr_t block[4];
-  MOZ_ASSERT(sizeof(block) == 32);
+  static_assert(sizeof(block) == 32);
   __asm__ __volatile__(
       "adr x0, . \n\t"
       "str x0, [%0, #0] \n\t"
@@ -1779,7 +1977,7 @@ static __attribute__((noinline)) bool GetAndCheckStackTrace(
   uintptr_t start = block[1] - REDZONE_SIZE;
 #elif defined(GP_ARCH_mips64)
   volatile uintptr_t block[3];
-  MOZ_ASSERT(sizeof(block) == 24);
+  static_assert(sizeof(block) == 24);
   __asm__ __volatile__(
       "sd $29, 8(%0)     \n"
       "sd $30, 16(%0)    \n"
@@ -1790,6 +1988,44 @@ static __attribute__((noinline)) bool GetAndCheckStackTrace(
   startRegs.pc = TaggedUWord(block[0]);
   startRegs.sp = TaggedUWord(block[1]);
   startRegs.fp = TaggedUWord(block[2]);
+  const uintptr_t REDZONE_SIZE = 0;
+  uintptr_t start = block[1] - REDZONE_SIZE;
+#elif defined(GP_ARCH_loongarch64)
+  volatile uintptr_t block[5];
+  static_assert(sizeof(block) == 40);
+  __asm__ __volatile__(
+      "pcaddi $t0, 0        \n"
+      "st.d   $ra, %0, 0    \n"
+      "st.d   $sp, %0, 8    \n"
+      "st.d   $fp, %0, 16   \n"
+      "st.d   $s0, %0, 24   \n"
+      "st.d   $t0, %0, 32   \n"
+      :
+      : "r"(block)
+      : "memory", "t0");
+  startRegs.ra = TaggedUWord(block[0]);
+  startRegs.sp = TaggedUWord(block[1]);
+  startRegs.fp = TaggedUWord(block[2]);
+  startRegs.s0 = TaggedUWord(block[3]);
+  startRegs.pc = TaggedUWord(block[4]);
+  const uintptr_t REDZONE_SIZE = 0;
+  uintptr_t start = block[1] - REDZONE_SIZE;
+#elif defined(GP_ARCH_riscv64)
+  volatile uintptr_t block[4];
+  static_assert(sizeof(block) == 32);
+  __asm__ __volatile__(
+      "auipc  t0, 0       \n"
+      "sd     ra, 0(%0)   \n"
+      "sd     sp, 8(%0)   \n"
+      "sd     fp, 16(%0)  \n"
+      "sd     t0, 24(%0)  \n"
+      :
+      : "r"(block)
+      : "memory", "t0");
+  startRegs.ra = TaggedUWord(block[0]);
+  startRegs.sp = TaggedUWord(block[1]);
+  startRegs.fp = TaggedUWord(block[2]);
+  startRegs.pc = TaggedUWord(block[3]);
   const uintptr_t REDZONE_SIZE = 0;
   uintptr_t start = block[1] - REDZONE_SIZE;
 #else
@@ -1925,74 +2161,75 @@ static __attribute__((noinline)) bool GetAndCheckStackTrace(
 #define DECL_TEST_FN(NAME) \
   bool NAME(LUL* aLUL, const char* strPorig, const char* strP);
 
-#define GEN_TEST_FN(NAME, FRAMESIZE)                                          \
-  bool NAME(LUL* aLUL, const char* strPorig, const char* strP) {              \
-    /* Create a frame of size (at least) FRAMESIZE, so that the */            \
-    /* 8 functions created by this macro offer some variation in frame */     \
-    /* sizes.  This isn't as simple as it might seem, since a clever */       \
-    /* optimizing compiler (eg, clang-5) detects that the array is unused */  \
-    /* and removes it.  We try to defeat this by passing it to a function */  \
-    /* in a different compilation unit, and hoping that clang does not */     \
-    /* notice that the call is a no-op. */                                    \
-    char space[FRAMESIZE];                                                    \
-    Unused << write(1, space, 0); /* write zero bytes of |space| to stdout */ \
-                                                                              \
-    if (*strP == '\0') {                                                      \
-      /* We've come to the end of the director string. */                     \
-      /* Take a stack snapshot. */                                            \
-      /* We purposefully use a negation to avoid tail-call optimization */    \
-      return !GetAndCheckStackTrace(aLUL, strPorig);                          \
-    } else {                                                                  \
-      /* Recurse onwards.  This is a bit subtle.  The obvious */              \
-      /* thing to do here is call onwards directly, from within the */        \
-      /* arms of the case statement.  That gives a problem in that */         \
-      /* there will be multiple return points inside each function when */    \
-      /* unwinding, so it will be difficult to check for consistency */       \
-      /* against the director string.  Instead, we make an indirect */        \
-      /* call, so as to guarantee that there is only one call site */         \
-      /* within each function.  This does assume that the compiler */         \
-      /* won't transform it back to the simple direct-call form. */           \
-      /* To discourage it from doing so, the call is bracketed with */        \
-      /* __asm__ __volatile__ sections so as to make it not-movable. */       \
-      bool (*nextFn)(LUL*, const char*, const char*) = NULL;                  \
-      switch (*strP) {                                                        \
-        case '1':                                                             \
-          nextFn = TestFn1;                                                   \
-          break;                                                              \
-        case '2':                                                             \
-          nextFn = TestFn2;                                                   \
-          break;                                                              \
-        case '3':                                                             \
-          nextFn = TestFn3;                                                   \
-          break;                                                              \
-        case '4':                                                             \
-          nextFn = TestFn4;                                                   \
-          break;                                                              \
-        case '5':                                                             \
-          nextFn = TestFn5;                                                   \
-          break;                                                              \
-        case '6':                                                             \
-          nextFn = TestFn6;                                                   \
-          break;                                                              \
-        case '7':                                                             \
-          nextFn = TestFn7;                                                   \
-          break;                                                              \
-        case '8':                                                             \
-          nextFn = TestFn8;                                                   \
-          break;                                                              \
-        default:                                                              \
-          nextFn = TestFn8;                                                   \
-          break;                                                              \
-      }                                                                       \
-      /* "use" |space| immediately after the recursive call, */               \
-      /* so as to dissuade clang from deallocating the space while */         \
-      /* the call is active, or otherwise messing with the stack frame. */    \
-      __asm__ __volatile__("" ::: "cc", "memory");                            \
-      bool passed = nextFn(aLUL, strPorig, strP + 1);                         \
-      Unused << write(1, space, 0);                                           \
-      __asm__ __volatile__("" ::: "cc", "memory");                            \
-      return passed;                                                          \
-    }                                                                         \
+#define GEN_TEST_FN(NAME, FRAMESIZE)                                         \
+  bool NAME(LUL* aLUL, const char* strPorig, const char* strP) {             \
+    /* Create a frame of size (at least) FRAMESIZE, so that the */           \
+    /* 8 functions created by this macro offer some variation in frame */    \
+    /* sizes.  This isn't as simple as it might seem, since a clever */      \
+    /* optimizing compiler (eg, clang-5) detects that the array is unused */ \
+    /* and removes it.  We try to defeat this by passing it to a function */ \
+    /* in a different compilation unit, and hoping that clang does not */    \
+    /* notice that the call is a no-op. */                                   \
+    char space[FRAMESIZE];                                                   \
+    [[maybe_unused]] ssize_t r =                                             \
+        write(1, space, 0); /* write zero bytes of |space| to stdout */      \
+                                                                             \
+    if (*strP == '\0') {                                                     \
+      /* We've come to the end of the director string. */                    \
+      /* Take a stack snapshot. */                                           \
+      /* We purposefully use a negation to avoid tail-call optimization */   \
+      return !GetAndCheckStackTrace(aLUL, strPorig);                         \
+    } else {                                                                 \
+      /* Recurse onwards.  This is a bit subtle.  The obvious */             \
+      /* thing to do here is call onwards directly, from within the */       \
+      /* arms of the case statement.  That gives a problem in that */        \
+      /* there will be multiple return points inside each function when */   \
+      /* unwinding, so it will be difficult to check for consistency */      \
+      /* against the director string.  Instead, we make an indirect */       \
+      /* call, so as to guarantee that there is only one call site */        \
+      /* within each function.  This does assume that the compiler */        \
+      /* won't transform it back to the simple direct-call form. */          \
+      /* To discourage it from doing so, the call is bracketed with */       \
+      /* __asm__ __volatile__ sections so as to make it not-movable. */      \
+      bool (*nextFn)(LUL*, const char*, const char*) = NULL;                 \
+      switch (*strP) {                                                       \
+        case '1':                                                            \
+          nextFn = TestFn1;                                                  \
+          break;                                                             \
+        case '2':                                                            \
+          nextFn = TestFn2;                                                  \
+          break;                                                             \
+        case '3':                                                            \
+          nextFn = TestFn3;                                                  \
+          break;                                                             \
+        case '4':                                                            \
+          nextFn = TestFn4;                                                  \
+          break;                                                             \
+        case '5':                                                            \
+          nextFn = TestFn5;                                                  \
+          break;                                                             \
+        case '6':                                                            \
+          nextFn = TestFn6;                                                  \
+          break;                                                             \
+        case '7':                                                            \
+          nextFn = TestFn7;                                                  \
+          break;                                                             \
+        case '8':                                                            \
+          nextFn = TestFn8;                                                  \
+          break;                                                             \
+        default:                                                             \
+          nextFn = TestFn8;                                                  \
+          break;                                                             \
+      }                                                                      \
+      /* "use" |space| immediately after the recursive call, */              \
+      /* so as to dissuade clang from deallocating the space while */        \
+      /* the call is active, or otherwise messing with the stack frame. */   \
+      __asm__ __volatile__("" ::: "cc", "memory");                           \
+      bool passed = nextFn(aLUL, strPorig, strP + 1);                        \
+      [[maybe_unused]] ssize_t _ = write(1, space, 0);                       \
+      __asm__ __volatile__("" ::: "cc", "memory");                           \
+      return passed;                                                         \
+    }                                                                        \
   }
 
 // The test functions are mutually recursive, so it is necessary to

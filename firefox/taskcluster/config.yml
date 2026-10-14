@@ -5,13 +5,39 @@
 trust-domain: gecko
 project-repo-param-prefix: ''
 product-dir: 'browser'
+# Mapping of project to the branches that should be considered "production"
+# releases. A value of `true` means all branches of the project are release
+# branches, while a list restricts releases to the named branches. Consumed by
+# mozilla_taskgraph.util.attributes:release_level.
+release-branches:
+    # https://github.com/mozilla-firefox/firefox
+    firefox:
+        - main
+        - beta
+        - release
+        - esr140
+        - esr153
+    mozilla-central: true
+    mozilla-beta: true
+    mozilla-release: true
+    mozilla-esr115: true
+    mozilla-esr140: true
+    mozilla-esr153: true
+    # bug 1845368: pine is a permanent project branch used for testing
+    # nightly updates
+    pine: true
+    # bug 1877483: larch has similar needs for nightlies
+    larch: true
+    # maple is also an L3 branch: https://phabricator.services.mozilla.com/D184833
+    maple: true
+    # bug 1988213: cypress project branch
+    cypress: true
 treeherder:
     group-names:
         'js-bench-sm': 'JavaScript shell benchmarks with Spidermonkey'
         'js-bench-v8': 'JavaScript shell benchmarks with Google V8'
         'node': 'Node tests'
         'py3': 'Python 3 unit tests'
-        'A': 'Android Gradle tests'
         'Bpgo': 'Profile-guided optimization builds'
         'Btime': 'Browsertime performance tests on Firefox'
         'Btime-cache': 'Browsertime performance tests on Firefox with populated bytecode cache.'
@@ -61,12 +87,16 @@ treeherder:
         'Btime-100M_40ms': 'Browsertime network benchmark tests with 100M_40ms condition'
         'Btime-ChR-100M_40ms': 'Browsertime network benchmark tests with 100M_40ms condition'
         'Btime-CaR-100M_40ms': 'Browsertime network benchmark tests with 100M_40ms condition'
+        'DTbc': 'DevTools remote debugging backward compatibility tests'
         'Fetch': 'Fetch and store content'
         'Fxfn': 'Firefox functional tests'
+        'gv-junit': 'GeckoView junit tests'
         'l10n-bump': 'L10n Bumper'
         'M': 'Mochitests'
         'M-f': 'Mochitest failures'
         'M-ioi': 'Mochitests tagged with inc-origin-init'
+        'M-sa': 'Mochitest with a browser restart between every test'
+        'M-sa-cf': 'Mochitest with a browser restart between every test for confirm failure'
         'M-ioi-cf': 'Mochitests tagged with inc-origin-init for confirm failure'
         'Mn': 'Marionette tests'
         'Mn-ioi': 'Marionette tests tagged with inc-origin-init'
@@ -76,6 +106,7 @@ treeherder:
         'MSIXs': 'Signing of Repack into MSIX package'
         'nt-trainhop': 'Desktop newtab trainhop tests'
         'nt-trainhop-cf': 'Desktop newtab trainhop tests for confirm failure'
+        'OpenH264': 'OpenH264 plugin'
         'Pup': "Puppeteer tests"
         'R': 'Reftests'
         'R-ioi': 'Reftests with incremental origin initialization enabled'
@@ -94,6 +125,8 @@ treeherder:
         'W-pb': 'Web platform tests with private browsing enabled'
         'W-ioi': 'Web platform tests tagged with inc-origin-init'
         'W-ioi-cf': 'Web platform tests tagged with inc-origin-init for confirm failure'
+        'W-oh264': 'Web platform tests with OpenH264 preferred'
+        'W-oh264-cf': 'Web platform tests with OpenH264 preferred for confirm failure'
         'W-pb-ioi': 'Web platform tests with private browsing enabled and tagged with inc-origin-init'
         'X': 'Xpcshell tests'
         'X-f': 'Xpcshell tests that fail on a given config'
@@ -102,9 +135,11 @@ treeherder:
         'L10n': 'Localised Repacks'
         'L10n-Rpk': 'Localized Repackaged Repacks'
         'deb-L10n': 'Localized Debian Repacks'
+        'pkg-Rpk': 'MacOS pkg repackage'
         'BM': 'Beetmover'
         'BMR': 'Beetmover repackages'
         'BM-apt': 'Beetmover .deb packages'
+        'BM-rpm': 'Beetmover .rpm packages'
         'c-Up': 'Balrog submission of complete updates'
         'css': 'Checksum signing for source'
         'rs': 'Repackage signing'
@@ -113,10 +148,9 @@ treeherder:
         'BMcss': 'Beetmover checksums for source'
         'Deb8': 'Packages for Debian 8'
         'Deb8-32': 'Packages for Debian 8 32-bits'
-        'Deb9': 'Packages for Debian 9'
-        'Deb10': 'Packages for Debian 10'
-        'Deb11': 'Packages for Debian 11'
+        'Deb10a64': 'AArch64 packages for Debian 10'
         'Deb12': 'Packages for Debian 12'
+        'Deb13': 'Packages for Debian 13'
         'Ub18': 'Packages for Ubuntu 18.04'
         'Ub20': 'Packages for Ubuntu 20.04'
         'Ub22': 'Packages for Ubuntu 22.04'
@@ -130,10 +164,11 @@ treeherder:
         'TLA64': 'Toolchain builds for Linux AArch64'
         'TM': 'Toolchain builds for OSX'
         'TMA64': 'Toolchain builds for OSX Aarch64'
-        'TMW': 'Toolchain builds for Windows MinGW'
         'TW32': 'Toolchain builds for Windows 32-bits'
         'TW64': 'Toolchain builds for Windows 64-bits'
         'TWA64': 'Toolchain builds for Windows AArch64'
+        'TWM': 'Toolchain builds for Windows MinGW'
+        'WASI': 'Toolchain builds for WASI'
         'WMC32': 'MinGW-Clang builds for Windows 32-bits'
         'WMC64': 'MinGW-Clang builds for Windows 64-bits'
         'Searchfox': 'Searchfox builds'
@@ -162,6 +197,7 @@ treeherder:
         'Flatpak': 'Flatpak image generation'
         'langpack': 'Langpack sigatures and uploads'
         'TPS': 'Sync tests'
+        'UpInt': 'MAR integrity tests'
         'UV': 'Update verify'
         'UVnext': 'Update verify for esr-next'
         'pydep': 'python dependency update'
@@ -169,12 +205,16 @@ treeherder:
         'Wgpu': 'WebGPU standalone'
         'cpp': 'C/C++ checks'
         'pedantic': 'pedantic checks'
+        'legal': 'Licensing and legal checks'
         'text': 'Check on texts'
         'misc': 'Misc checks'
         'js': 'JavaScript checks'
         'py': 'Python checks'
         'java': 'Java checks'
         'rust': 'Rust checks'
+        'vendor': 'Vendoring checks'
+        'tests': 'Test verification'
+        'android': 'Android checks'
         'Static-Analysis': 'Full tree static-analysis'
         'SS': 'Shadow scheduler'
         'Sentry': 'Sentry synchronization'
@@ -191,15 +231,20 @@ treeherder:
         'l10n': 'Localization checks'
         'wc': 'webcompat'
         'Boot': 'Bootstrap'
+        'inst': 'Linux installer tests'
+        'inst-apt': 'Linux installer tests: apt'
+        'inst-rpm': 'Linux installer tests: rpm'
+        'inst-flatpak': 'Linux installer tests: flatpak'
+        'inst-tarball': 'Linux installer tests: tarball'
+        'inst-snap': 'Linux installer tests: snap'
         'Attr-L10n': 'Build Attribution'
         'android-l10n': 'Import strings from android-l10n repo'
-        'update-test': 'Test updates to release from older firefox versions'
+        'updt-tst': 'Test updates to release from older firefox versions'
 
         # The below symbols are from firefox-android (fenix/focus/android-components)
         'buildconfig': 'Make sure the content of .buildconfig.yml matches what gradle knows about its projects'
         'compare-locales': 'Validate strings.xml with compare-locales'
         'detekt': 'detekt linter'
-        'ktlint': 'ktlint linter'
         'lint': 'gradle lint linter'
 
         'focus': 'Focus general tasks no matter the variant'
@@ -212,7 +257,9 @@ treeherder:
         'fenix-beta': 'Fenix beta-related tasks'
         'fenix-debug': 'Fenix builds made for testing'
         'fenix-nightly': 'Fenix nightly-related tasks'
+        'fenix-nightly-nobp': 'Fenix nightly builds without baseline profiles'
         'fenix-nightlySim': 'Nightly-related tasks that run on each github push'
+        'fenix-nightlyAsReleaseSim': 'Fenix nightly-as-release performance tasks (nightly built against release-milestone GeckoView)'
         'fenix-release': 'Fenix production-related tasks'
 
         # This list is based on mobile/android/android-components/.buildconfig.yml except the exceptions down below
@@ -232,16 +279,26 @@ treeherder:
         'compose-awesomebar': 'compose-engine'
         'compose-browser-toolbar': 'awesomebar-browser-toolbar'
         'compose-engine': 'compose-engine'
+        'compose-menu': 'compose-menu'
         'compose-tabstray': 'compose-tabstray'
+        'concept-accelerometer': 'concept-accelerometer'
+        'concept-ai-controls': 'concept-ai-controls'
+        'concept-integrity': 'concept-integrity'
         'concept-awesomebar': 'concept-awesomebar'
         'concept-base': 'concept-base'
+        'concept-bookmarks-file': 'concept-bookmarks-file'
         'compose-base': 'compose-base'
+        'concept-bookmarks-parser': 'concept-bookmarks-parser'
         'compose-cfr': 'compose-cfr'
         'concept-engine': 'concept-engine'
         'concept-fetch': 'concept-fetch'
+        'concept-llm': 'concept-llm'
         'concept-menu': 'concept-menu'
+        'concept-passwords-file': 'concept-passwords-file'
+        'concept-passwords-parser': 'concept-passwords-parser'
         'concept-push': 'concept-push'
         'concept-storage': 'concept-storage'
+        'concept-storage-bookmarks': 'concept-storage-bookmarks'
         'concept-sync': 'concept-sync'
         'concept-tabstray': 'concept-tabstray'
         'concept-toolbar': 'concept-toolbar'
@@ -250,14 +307,20 @@ treeherder:
         'feature-addons': 'feature-addons'
         'feature-app-links': 'feature-app-links'
         'feature-autofill': 'feature-autofill'
+        'feature-automotive': 'feature-automotive'
         'feature-awesomebar': 'feature-awesomebar'
         'feature-containers': 'feature-containers'
         'feature-contextmenu': 'feature-contextmenu'
         'feature-customtabs': 'feature-customtabs'
         'feature-downloads': 'feature-downloads'
+        'feature-example': 'feature-example'
         'feature-findinpage': 'feature-findinpage'
         'feature-fxsuggest': 'feature-fxsuggest'
+        'feature-importer': 'feature-importer'
+        'feature-password-importer': 'feature-password-importer'
+        'feature-listentopage': 'feature-listentopage'
         'feature-intent': 'feature-intent'
+        'feature-ipprotection': 'feature-ipprotection'
         'feature-logins': 'feature-logins'
         'feature-media': 'feature-media'
         'feature-privatemode': 'feature-privatemode'
@@ -273,28 +336,41 @@ treeherder:
         'feature-screendetection': 'feature-screendetection'
         'feature-share': 'feature-share'
         'feature-sitepermissions': 'feature-sitepermissions'
+        'feature-summarize': 'feature-summarize'
         'feature-syncedtabs': 'feature-syncedtabs'
         'feature-tab-collections': 'feature-tab-collections'
+        'feature-tabgroups-storage': 'feature-tabgroups-storage'
         'feature-tabs': 'feature-tabs'
         'feature-toolbar': 'feature-toolbar'
         'feature-top-sites': 'feature-top-sites'
         'feature-webauthn': 'feature-webauthn'
         'feature-webcompat': 'feature-webcompat'
         'feature-webnotifications': 'feature-webnotifications'
+        'lib-ai-controls': 'lib-ai-controls'
         'lib-crash': 'lib-crash'
         'lib-auth': 'lib-auth'
+        'lib-bookmarks-file': 'lib-bookmarks-file'
+        'lib-bookmark-parser-jsoup': 'lib-bookmark-parser-jsoup'
         'lib-crash-sentry': 'lib-crash-sentry'
         'lib-crash-sentry-legacy': 'lib-crash-sentry-legacy'
         'lib-dataprotect': 'lib-dataprotect'
         'lib-fetch-okhttp': 'lib-fetch-okhttp'
         'lib-jexl': 'lib-jexl'
+        'lib-llm-gemininano': 'lib-llm-gemininano'
+        'lib-llm-mlpa': 'lib-llm-mlpa'
+        'lib-integrity-googleplay': 'lib-integrity-googleplay'
+        'lib-passwords-file': 'lib-passwords-file'
+        'lib-password-parser-csv': 'lib-password-parser-csv'
+        'lib-shake': 'lib-shake'
         'lib-publicsuffixlist': 'lib-publicsuffixlist'
         'lib-push-firebase': 'lib-push-firebase'
         'lib-state': 'lib-state'
+        'samples-acorn-components': 'samples-acorn-components'
         'samples-compose-browser': 'samples-compose-browser'
         'samples-crash': 'samples-crash'
         'samples-dataprotect': 'samples-dataprotect'
         'samples-firefox-accounts': 'samples-firefox-accounts'
+        'samples-firefox-relay': 'samples-firefox-relay'
         'samples-glean-library': 'samples-glean-library'
         'samples-glean': 'samples-glean'
         'samples-sync-logins': 'samples-sync-logins'
@@ -303,12 +379,16 @@ treeherder:
         'service-digitalassetlinks': 'service-digitalassetlinks'
         'service-experiments': 'service-experiments'
         'service-firefox-accounts': 'service-firefox-accounts'
+        'service-firefox-relay': 'service-firefox-relay'
         'service-fretboard': 'service-fretboard'
         'service-glean': 'service-glean'
         'service-location': 'service-location'
         'service-mars': 'service-mars'
+        'service-merino-manifest': 'service-merino-manifest'
+        'service-merino-weather': 'service-merino-weather'
         'service-nimbus': 'service-nimbus'
         'service-pocket': 'service-pocket'
+        'service-sync': 'service-sync'
         'service-sync-autofill': 'service-sync-autofill'
         'service-sync-logins': 'service-sync-logins'
         'support-android-test': 'support-android-test'
@@ -333,16 +413,21 @@ treeherder:
         'tooling-detekt': 'tooling-detekt'
         'tooling-fetch-tests': 'tooling-fetch-tests'
         'tooling-lint': 'tooling-lint'
+        'ui-animation': 'ui-animation'
         'ui-autocomplete': 'ui-autocomplete'
         'ui-colors': 'ui-colors'
         'ui-fonts': 'ui-fonts'
         'ui-icons': 'ui-icons'
+        'ui-richtext': 'ui-richtext'
         'ui-tabcounter': 'ui-tabcounter'
         'ui-widgets': 'ui-widgets'
 
         # These ones are too long to fit in 25 chars
+        'lib-accelerometer-sensorm': 'lib-accelerometer-sensormanager'
         'lib-fetch-httpurlconnecti': 'lib-fetch-httpurlconnection'
         'feature-webcompat-reporte': 'feature-webcompat-reporter'
+        'feature-protection-dashbo': 'feature-protection-dashboard'
+        'feature-tabdata-coordinat': 'feature-tabdata-coordinator'
 
         # Groups aren't generated off buildconfig.yml:
         'samples-browser': 'samples-browser'
@@ -360,6 +445,7 @@ index:
         - 'static-analysis'
         - 'devedition'
         - 'source'
+        - 'test'
         - 'system-symbols'
         - 'geckodriver'
 
@@ -379,6 +465,7 @@ try:
             - 'sm-arm-sim-linux32'
             - 'sm-arm64-sim-linux64'
             - 'sm-compacting-linux64'
+            - 'sm-concurrent-linux64'
             - 'sm-rootanalysis-linux64'
             - 'sm-package-linux64'
             - 'sm-tsan-linux64'
@@ -427,11 +514,6 @@ release-promotion:
                 - release-partner-attribution
                 - release-partner-attribution-beetmover
             target-tasks-method: promote_desktop
-        promote_firefox_rc:
-            product: firefox
-            is-rc: true
-            target-tasks-method: promote_desktop
-            partial-updates: true
         push_devedition:
             product: devedition
             target-tasks-method: push_desktop
@@ -449,11 +531,6 @@ release-promotion:
             product: firefox
             target-tasks-method: ship_desktop
             version-bump: true
-            partial-updates: true
-        ship_firefox_rc:
-            product: firefox
-            is-rc: true
-            target-tasks-method: ship_desktop
             partial-updates: true
         promote_android:
             product: firefox-android
@@ -477,56 +554,69 @@ partner-urls:
             firefox:
                 by-release-type:
                     default: null
-                    beta|release.*:
+                    beta|release:
                         by-release-level:
                             production: 'git@github.com:mozilla-partners/repack-manifests.git'
-                            staging: 'git@github.com:moz-releng-automation-stage/repack-manifests.git'
+                            staging: 'git@github.com:mozilla-partners/staging-repack-manifests.git'
                     esr.*:
                         by-release-level:
                             production: 'git@github.com:mozilla-partners/esr-repack-manifests.git'
-                            staging: 'git@github.com:moz-releng-automation-stage/esr-repack-manifests.git'
+                            staging: 'git@github.com:mozilla-partners/staging-esr-repack-manifests.git'
     release-partner-attribution:
         by-release-product:
             default: null
             firefox:
                 by-release-type:
                     default: null
-                    beta|release.*:
+                    beta|release:
                         by-release-level:
                             production: 'git@github.com:mozilla-partners/repack-manifests.git'
-                            staging: 'git@github.com:moz-releng-automation-stage/repack-manifests.git'
+                            staging: 'git@github.com:mozilla-partners/staging-repack-manifests.git'
                     esr.*:
                         by-release-level:
                             production: 'git@github.com:mozilla-partners/esr-repack-manifests.git'
-                            staging: 'git@github.com:moz-releng-automation-stage/esr-repack-manifests.git'
+                            staging: 'git@github.com:mozilla-partners/staging-esr-repack-manifests.git'
     release-eme-free-repack:
         by-release-product:
             default: null
             firefox:
                 by-release-type:
                     default: null
-                    beta|release.*:
+                    beta|release:
                         by-release-level:
                             production: 'git@github.com:mozilla-partners/mozilla-EME-free-manifest.git'
-                            staging: 'git@github.com:moz-releng-automation-stage/mozilla-EME-free-manifest.git'
+                            staging: 'git@github.com:mozilla-partners/staging-mozilla-EME-free-manifest.git'
 
 
+# Beta and ESR are integration branches, so by default their tasks run at the
+# same priority as autoland. Release managers landing an uplift they intend to
+# ship set the "SHIPPING" flag in Lando, which adds "SHIPPING" to the commit
+# message and raises the priority to get results as quickly as possible.
 task-priority:
     by-project:
         'mozilla-release': 'highest'
-        'mozilla-esr.*': 'very-high'
-        'mozilla-beta': 'high'
+        'mozilla-esr.*':
+            by-shipping:
+                'true': 'very-high'
+                'default': 'low'
+        'mozilla-beta':
+            by-shipping:
+                'true': 'very-high'
+                'default': 'low'
         'mozilla-central': 'medium'
         'autoland': 'low'
-        'mozilla-inbound': 'low'
         'default': 'very-low'
 
 taskgraph:
     register: gecko_taskgraph:register
+    repositories:
+        gecko:
+            name: 'Mozilla Firefox'
+    decision-parameters: 'gecko_taskgraph.parameters:get_decision_parameters'
 
 workers:
     aliases:
-        b-linux.*:
+        b-linux(|-docker(|-x?large|-updatebot)-amd|-medium|-aarch64|-x?large|-kvm):
             provisioner: '{trust-domain}-{level}'
             implementation: docker-worker
             os: linux
@@ -536,7 +626,7 @@ workers:
             implementation: generic-worker
             os: windows
             worker-type: '{alias}-azure'
-        b-win2022:
+        b-win2022(|-xxlarge|-updatebot):
             provisioner: '{trust-domain}-{level}'
             implementation: generic-worker
             os: windows
@@ -546,22 +636,12 @@ workers:
             implementation: generic-worker
             os: windows
             worker-type: 'win11-a64-24h2-builder'
-        image:
+        b-win-aarch64-25h2:
             provisioner: '{trust-domain}-{level}'
-            implementation: docker-worker
-            os: linux
-            worker-type: '{alias}'
-        images:
-            provisioner: '{trust-domain}-{level}'
-            implementation: docker-worker
-            os: linux
-            worker-type: '{alias}'
-        images-gcp:
-            provisioner: '{trust-domain}-{level}'
-            implementation: docker-worker
-            os: linux
-            worker-type: '{alias}'
-        images-gcp-aarch64:
+            implementation: generic-worker
+            os: windows
+            worker-type: 'win11-a64-25h2-builder'
+        images.*:
             provisioner: '{trust-domain}-{level}'
             implementation: docker-worker
             os: linux
@@ -597,9 +677,13 @@ workers:
             implementation: beetmover
             os: linux
             worker-type:
-                by-release-level:
-                    production: '{trust-domain}-3-beetmover'
-                    staging: '{trust-domain}-1-beetmover'
+                by-project:
+                    # Autoland needs level 3 for integration beetmover tasks
+                    autoland: '{trust-domain}-3-beetmover'
+                    default:
+                        by-release-level:
+                            production: '{trust-domain}-3-beetmover'
+                            staging: '{trust-domain}-1-beetmover'
         beetmover-android:
             provisioner: scriptworker-k8s
             implementation: scriptworker-beetmover
@@ -716,32 +800,17 @@ workers:
             implementation: generic-worker
             os: linux-lambda
             worker-type: 'gecko-{alias}'
-        t-linux-docker(|-noscratch):
+        t-linux-docker(|-noscratch|-noscratch-amd|-16c32gb-amd|-amd):
             provisioner: '{trust-domain}-t'
             implementation: docker-worker
             os: linux
             worker-type: '{alias}'
-        t-linux-(large-noscratch|xlarge-source):
-            provisioner: '{trust-domain}-t'
-            implementation: docker-worker
-            os: linux
-            worker-type: '{alias}-gcp'
         t-linux-kvm:
             provisioner: '{trust-domain}-t'
             implementation: docker-worker
             os: linux
             worker-type: 't-linux-docker-kvm'
-        t-linux-talos:
-            provisioner: releng-hardware
-            implementation: generic-worker
-            os: linux
-            worker-type: 'gecko-{alias}'
-        t-linux-netperf-1804:
-            provisioner: releng-hardware
-            implementation: generic-worker
-            os: linux
-            worker-type: 'gecko-{alias}'
-        t-linux-talos-1804:
+        t-linux-(talos|netperf)-2404:
             provisioner: releng-hardware
             implementation: generic-worker
             os: linux
@@ -756,11 +825,6 @@ workers:
             implementation: generic-worker
             os: linux
             worker-type: 't-linux-xlarge-2204-wayland'
-        t-linux-wayland-vm:
-            provisioner: '{trust-domain}-t'
-            implementation: generic-worker
-            os: linux
-            worker-type: 't-linux-vm-2204-wayland'
         t-linux-2204-wayland-snap:
             provisioner: '{trust-domain}-t'
             implementation: generic-worker
@@ -787,6 +851,16 @@ workers:
             os: macosx
             worker-type: 'gecko-{alias}'
         t-osx-1500-m4:
+            provisioner: releng-hardware
+            implementation: generic-worker
+            os: macosx
+            worker-type: 'gecko-{alias}'
+        t-osx-1500-m-vms:
+            provisioner: releng-hardware
+            implementation: generic-worker
+            os: macosx
+            worker-type: 'gecko-{alias}'
+        t-osx-2700-m4:
             provisioner: releng-hardware
             implementation: generic-worker
             os: macosx
@@ -822,7 +896,7 @@ workers:
             implementation: generic-worker
             os: windows
             worker-type: '{alias}'
-        win10-64-2009(-gpu):
+        win10-64-2009(-gpu|-source):
             provisioner: 'gecko-t'
             implementation: generic-worker
             os: windows
@@ -832,12 +906,22 @@ workers:
             implementation: generic-worker
             os: windows
             worker-type: '{alias}'
-        win11-64-24h2(|-gpu|-source|-large):
+        win11-64-24h2(|-gpu|-source|-large|-webgpu|-privileged):
+            provisioner: 'gecko-t'
+            implementation: generic-worker
+            os: windows
+            worker-type: '{alias}'
+        win11-64-25h2(|-gpu|-source|-large|-webgpu|-privileged):
             provisioner: 'gecko-t'
             implementation: generic-worker
             os: windows
             worker-type: '{alias}'
         win11-a64-24h2:
+            provisioner: 'gecko-t'
+            implementation: generic-worker
+            os: windows
+            worker-type: '{alias}'
+        win11-a64-25h2:
             provisioner: 'gecko-t'
             implementation: generic-worker
             os: windows
@@ -861,7 +945,7 @@ workers:
             provisioner: '{trust-domain}-t'
             implementation: docker-worker
             os: linux
-            worker-type: misc-gcp
+            worker-type: misc
 
 
 mac-signing:
@@ -875,27 +959,40 @@ mac-signing:
                 - deep: false
                   runtime: true
                   force: true
-                  entitlements: security/mac/hardenedruntime/production/plugin-container.xml
+                  entitlements: public/build/security/plugin-container.xml
                   globs:
                       - "/Contents/MacOS/plugin-container.app"
 
                 - deep: false
                   runtime: true
                   force: true
-                  entitlements: security/mac/hardenedruntime/production/media-plugin-helper.xml
+                  entitlements: public/build/security/media-plugin-helper.xml
                   globs:
                       - "/Contents/MacOS/media-plugin-helper.app"
 
                 - deep: false
                   runtime: true
                   force: true
-                  # These files are signed without entitlements
+                  entitlements: public/build/security/security-module-helper.xml
+                  globs:
+                      - "/Contents/MacOS/security-module-helper.app"
+                  only-if-milestone-is-nightly: true
+
+                - deep: false
+                  runtime: true
+                  force: true
+                  # In production builds, these files are signed without
+                  # entitlements files, but with hardened runtime enabled. As a
+                  # result, they have the default (more restrictive)
+                  # entitlement settings.
                   globs:
                       - "/Contents/MacOS/crashhelper"
                       - "/Contents/MacOS/crashreporter.app"
                       - "/Contents/MacOS/updater.app/Contents/Frameworks/UpdateSettings.framework"
                       - "/Contents/MacOS/updater.app"
+                      - "/Contents/MacOS/gpu-helper.app"
                       - "/Contents/Library/LaunchServices/org.mozilla.updater"
+                      - "/Contents/Library/LaunchServices/org.mozilla.dmgInstallHelper"
                       - "/Contents/MacOS/XUL"
                       - "/Contents/MacOS/pingsender"
                       - "/Contents/MacOS/nmhproxy"
@@ -908,11 +1005,11 @@ mac-signing:
                   force: true
                   entitlements:
                       by-build-platform:
-                          .*devedition.*: security/mac/hardenedruntime/production/firefoxdeveloperedition.browser.xml
+                          .*devedition.*: public/build/security/firefoxdeveloperedition.browser.xml
                           default:
                               by-project:
-                                  mozilla-central: security/mac/hardenedruntime/production/nightly.browser.xml
-                                  default: security/mac/hardenedruntime/production/firefox.browser.xml
+                                  mozilla-central: public/build/security/nightly.browser.xml
+                                  default: public/build/security/firefox.browser.xml
                   globs:
                       - "/"  # The .app
 
@@ -920,27 +1017,37 @@ mac-signing:
                 - deep: false
                   runtime: true
                   force: true
-                  entitlements: security/mac/hardenedruntime/developer/plugin-container.xml
+                  entitlements: public/build/security/plugin-container.xml
                   globs:
                       - "/Contents/MacOS/plugin-container.app"
 
                 - deep: false
                   runtime: true
                   force: true
-                  entitlements: security/mac/hardenedruntime/developer/media-plugin-helper.xml
+                  entitlements: public/build/security/media-plugin-helper.xml
                   globs:
                       - "/Contents/MacOS/media-plugin-helper.app"
 
                 - deep: false
                   runtime: true
                   force: true
-                  entitlements: security/mac/hardenedruntime/developer/utility.xml
+                  entitlements: public/build/security/security-module-helper.xml
+                  globs:
+                      - "/Contents/MacOS/security-module-helper.app"
+                  only-if-milestone-is-nightly: true
+
+                - deep: false
+                  runtime: true
+                  force: true
+                  entitlements: public/build/security/utility.xml
                   globs:
                       - "/Contents/MacOS/crashhelper"
                       - "/Contents/MacOS/crashreporter.app"
                       - "/Contents/MacOS/updater.app/Contents/Frameworks/UpdateSettings.framework"
                       - "/Contents/MacOS/updater.app"
+                      - "/Contents/MacOS/gpu-helper.app"
                       - "/Contents/Library/LaunchServices/org.mozilla.updater"
+                      - "/Contents/Library/LaunchServices/org.mozilla.dmgInstallHelper"
                       - "/Contents/MacOS/pingsender"
                       - "/Contents/MacOS/nmhproxy"
                       - "/Contents/Frameworks/ChannelPrefs.framework"
@@ -957,19 +1064,19 @@ mac-signing:
                 - deep: false
                   runtime: true
                   force: true
-                  entitlements: security/mac/hardenedruntime/developer/browser.xml
+                  entitlements: public/build/security/browser.xml
                   globs:
                       - "/"  # The .app
 
 expiration-policy:
-    by-project:
-        try:
+    by-level:
+        '1':
             default: 28 days
             shortest: 7 days
             short: 14 days
             medium: 28 days
             long: 28 days
-        autoland:
+        '3':
             default: 1 year
             shortest: 14 days
             short: 3 months

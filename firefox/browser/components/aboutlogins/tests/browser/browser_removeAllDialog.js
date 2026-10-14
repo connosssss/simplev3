@@ -89,7 +89,7 @@ add_setup(async function () {
   });
   registerCleanupFunction(async () => {
     BrowserTestUtils.removeTab(gBrowser.selectedTab);
-    Services.logins.removeAllUserFacingLogins();
+    await Services.logins.removeAllUserFacingLoginsAsync();
     LoginHelper.setOSAuthEnabled(oldPrefValue);
   });
   TEST_LOGIN1 = await addLogin(TEST_LOGIN1);
@@ -398,6 +398,13 @@ add_task(async function test_edit_mode_resets_on_remove_all_with_login() {
   TEST_LOGIN2 = await addLogin(TEST_LOGIN2);
   let removeAllPromise = waitForRemoveAllLogins();
   let browser = gBrowser.selectedBrowser;
+  await SpecialPowers.spawn(browser, [], async () => {
+    await ContentTaskUtils.waitForCondition(
+      () =>
+        content.document.documentElement.classList.contains("login-selected"),
+      "Waiting for the added login to be selected"
+    );
+  });
   await activateLoginItemEdit(browser);
   await openRemoveAllDialog(browser);
   await SpecialPowers.spawn(browser, [], async () => {

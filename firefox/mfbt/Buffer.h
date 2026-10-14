@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <iterator>
+#include <utility>
 
 #include "mozilla/Assertions.h"
 #include "mozilla/Maybe.h"

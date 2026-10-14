@@ -3,16 +3,16 @@
 
 "use strict";
 const { FirefoxProfileMigrator } = ChromeUtils.importESModule(
-  "resource:///modules/FirefoxProfileMigrator.sys.mjs"
+  "moz-src:///browser/components/migration/FirefoxProfileMigrator.sys.mjs"
 );
 const { InternalTestingProfileMigrator } = ChromeUtils.importESModule(
-  "resource:///modules/InternalTestingProfileMigrator.sys.mjs"
+  "moz-src:///browser/components/migration/InternalTestingProfileMigrator.sys.mjs"
 );
 const { LoginCSVImport } = ChromeUtils.importESModule(
   "resource://gre/modules/LoginCSVImport.sys.mjs"
 );
 const { PasswordFileMigrator } = ChromeUtils.importESModule(
-  "resource:///modules/FileMigrators.sys.mjs"
+  "moz-src:///browser/components/migration/FileMigrators.sys.mjs"
 );
 const { sinon } = ChromeUtils.importESModule(
   "resource://testing-common/Sinon.sys.mjs"
@@ -107,7 +107,7 @@ async function promiseMigrator(name, srcDir, targetDir) {
   // module and instantiate it directly rather than going through MigrationUtils,
   // to bypass that availability check.
   let migrator = new FirefoxProfileMigrator();
-  let migrators = migrator._getResourcesInternal(srcDir, targetDir);
+  let migrators = migrator.getResourcesInternal(srcDir, targetDir);
   for (let m of migrators) {
     if (m.name == name) {
       return new Promise(resolve => m.migrate(resolve));

@@ -38,7 +38,7 @@ Notes about specific filter kinds:
 
 #define WR_FEATURE_TEXTURE_2D
 
-#include shared,prim_shared
+#include shared,prim_shared,gpu_buffer
 
 varying highp vec2 vInput1Uv;
 varying highp vec2 vInput2Uv;
@@ -170,9 +170,10 @@ PER_INSTANCE in vec4 aFilterInput1ContentScaleAndOffset;
 PER_INSTANCE in vec4 aFilterInput2ContentScaleAndOffset;
 PER_INSTANCE in int aFilterInput1TaskAddress;
 PER_INSTANCE in int aFilterInput2TaskAddress;
-PER_INSTANCE in int aFilterKind;
-PER_INSTANCE in int aFilterInputCount;
-PER_INSTANCE in ivec2 aFilterExtraDataAddress;
+// Packed into a uvec2 to ensure all instance attributes have 4 byte alignment.
+// See bug 2052528.
+PER_INSTANCE in uvec2 aFilterKindAndInputCount;
+PER_INSTANCE in int aFilterExtraDataAddress;
 
 // used for feFlood and feDropShadow colors
 // this is based on SrgbToLinear below, but that version hits SWGL compile
@@ -202,10 +203,12 @@ vec2 compute_uv(RectWithEndpoint task_rect, vec4 scale_and_offset, vec2 target_s
 }
 
 void main(void) {
+    int filter_kind = int(aFilterKindAndInputCount.x);
+    int input_count = int(aFilterKindAndInputCount.y);
     vec2 pos = mix(aFilterTargetRect.xy, aFilterTargetRect.zw, aPosition.xy);
 
     RectWithEndpoint input_1_task;
-    if (aFilterInputCount > 0) {
+    if (input_count > 0) {
         vec2 texture_size = vec2(TEX_SIZE(sColor0).xy);
         input_1_task = fetch_render_task_rect(aFilterInput1TaskAddress);
         vInput1UvRect = compute_uv_rect(input_1_task, texture_size);
@@ -213,17 +216,17 @@ void main(void) {
     }
 
     RectWithEndpoint input_2_task;
-    if (aFilterInputCount > 1) {
+    if (input_count > 1) {
         vec2 texture_size = vec2(TEX_SIZE(sColor1).xy);
         input_2_task = fetch_render_task_rect(aFilterInput2TaskAddress);
         vInput2UvRect = compute_uv_rect(input_2_task, texture_size);
         vInput2Uv = compute_uv(input_2_task, aFilterInput2ContentScaleAndOffset, aFilterTargetRect.zw - aFilterTargetRect.xy, texture_size);
     }
 
-    vFilterInputCount = aFilterInputCount;
-    vFilterKind = aFilterKind;
+    vFilterInputCount = input_count;
+    vFilterKind = filter_kind;
 
-    switch (aFilterKind) {
+    switch (filter_kind) {
         case FILTER_IDENTITY:
         case FILTER_IDENTITY_CONVERTSRGB:
             break;
@@ -270,19 +273,23 @@ void main(void) {
         case FILTER_BLEND_SOFT_LIGHT_CONVERTSRGB:
             break;
         case FILTER_COLOR_MATRIX:
-        case FILTER_COLOR_MATRIX_CONVERTSRGB:
-            vec4 mat_data[4] = fetch_from_gpu_cache_4_direct(aFilterExtraDataAddress);
+        case FILTER_COLOR_MATRIX_CONVERTSRGB: {
+            ivec2 gpu_buffer_uv = get_gpu_buffer_uv(aFilterExtraDataAddress);
+            vec4 mat_data[4] = fetch_from_gpu_buffer_4f_direct(gpu_buffer_uv);
             vColorMat = mat4(mat_data[0], mat_data[1], mat_data[2], mat_data[3]);
-            vFilterData0 = fetch_from_gpu_cache_1_direct(aFilterExtraDataAddress + ivec2(4, 0));
+            vFilterData0 = fetch_from_gpu_buffer_1f_direct(gpu_buffer_uv + ivec2(4, 0));
             break;
+        }
         case FILTER_COMPONENT_TRANSFER:
-        case FILTER_COMPONENT_TRANSFER_CONVERTSRGB:
-            vData = ivec4(aFilterExtraDataAddress, 0, 0);
+        case FILTER_COMPONENT_TRANSFER_CONVERTSRGB: {
+            ivec2 gpu_buffer_uv = get_gpu_buffer_uv(aFilterExtraDataAddress);
+            vData = ivec4(gpu_buffer_uv, 0, 0);
             break;
+        }
         case FILTER_COMPOSITE_ARITHMETIC:
         case FILTER_COMPOSITE_ARITHMETIC_CONVERTSRGB:
             // arithmetic parameters
-            vFilterData0 = fetch_from_gpu_cache_1_direct(aFilterExtraDataAddress);
+            vFilterData0 = fetch_from_gpu_buffer_1f(aFilterExtraDataAddress);
             break;
         case FILTER_COMPOSITE_ATOP:
         case FILTER_COMPOSITE_ATOP_CONVERTSRGB:
@@ -326,12 +333,12 @@ void main(void) {
             // TODO
             break;
         case FILTER_DROP_SHADOW:
-            vFilterData0 = fetch_from_gpu_cache_1_direct(aFilterExtraDataAddress);
+            vFilterData0 = fetch_from_gpu_buffer_1f(aFilterExtraDataAddress);
             // premultiply the color
             vFilterData0.rgb = vFilterData0.rgb * vFilterData0.a;
             break;
         case FILTER_DROP_SHADOW_CONVERTSRGB:
-            vFilterData0 = fetch_from_gpu_cache_1_direct(aFilterExtraDataAddress);
+            vFilterData0 = fetch_from_gpu_buffer_1f(aFilterExtraDataAddress);
             // convert from sRGB to linearRGB and premultiply by alpha
             vFilterData0.rgb = vertexSrgbToLinear(vFilterData0.rgb);
             vFilterData0.rgb = vFilterData0.rgb * vFilterData0.a;
@@ -557,15 +564,15 @@ vec3 LinearToSrgb(vec3 color) {
     return if_then_else(lessThanEqual(color, vec3(0.0031308)), c1, c2);
 }
 
-vec4 sampleInUvRect(sampler2D sampler, vec2 uv, vec4 uvRect) {
+vec4 sampleInUvRect(sampler2D tex, vec2 uv, vec4 uvRect) {
     vec2 clamped = clamp(uv.xy, uvRect.xy, uvRect.zw);
-    return texture(sampler, clamped);
+    return texture(tex, clamped);
 }
 
-vec4 sampleInUvRectRepeat(sampler2D sampler, vec2 uv, vec4 uvRect) {
+vec4 sampleInUvRectRepeat(sampler2D tex, vec2 uv, vec4 uvRect) {
     vec2 size = (uvRect.zw - uvRect.xy);
     vec2 tiled = uv.xy - floor((uv.xy - uvRect.xy) / size) * size;
-    return texture(sampler, tiled);
+    return texture(tex, tiled);
 }
 
 void main(void) {
@@ -601,7 +608,7 @@ void main(void) {
     vec4 result = vec4(1.0, 0.0, 0.0, 1.0);
 
     // This would produce more efficient code for swgl if we used a switch statement.
-    // However, the glsl-optimizer pass produces awful code for switch statements, 
+    // However, the glsl-optimizer pass produces awful code for switch statements,
     // resulting in the optimized fragment shader taking half a minute to compile on
     // some Adreno devices. See bug 1929209.
     // We should fix the optimizer to produce more sensible output for switch
@@ -682,10 +689,10 @@ void main(void) {
         result = floor(clamp(Ns * 255.0, vec4(0.0), vec4(255.0)));
         // SWGL doesn't have an intrinsic for ivec4(vec4)
         k = ivec4(int(result.r), int(result.g), int(result.b), int(result.a));
-        result.r = fetch_from_gpu_cache_1_direct(vData.xy + ivec2(k.r, 0)).r;
-        result.g = fetch_from_gpu_cache_1_direct(vData.xy + ivec2(k.g, 0)).g;
-        result.b = fetch_from_gpu_cache_1_direct(vData.xy + ivec2(k.b, 0)).b;
-        result.a = fetch_from_gpu_cache_1_direct(vData.xy + ivec2(k.a, 0)).a;
+        result.r = fetch_from_gpu_buffer_1f_direct(vData.xy + ivec2(k.r, 0)).r;
+        result.g = fetch_from_gpu_buffer_1f_direct(vData.xy + ivec2(k.g, 0)).g;
+        result.b = fetch_from_gpu_buffer_1f_direct(vData.xy + ivec2(k.b, 0)).b;
+        result.a = fetch_from_gpu_buffer_1f_direct(vData.xy + ivec2(k.a, 0)).a;
         result.rgb = result.rgb * result.a;
     } else if (vFilterKind == FILTER_COMPOSITE_ARITHMETIC || vFilterKind == FILTER_COMPOSITE_ARITHMETIC_CONVERTSRGB) {
         result = Rs * Rb * vFilterData0.x + Rs * vFilterData0.y + Rb * vFilterData0.z + vec4(vFilterData0.w);

@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <string>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
@@ -28,7 +27,6 @@ mozilla::Atomic<size_t, mozilla::ReleaseAcquire> gPageSize;
 #if defined(ANDROID)
 #  include <sys/syscall.h>
 #  include <sys/system_properties.h>
-#  include <math.h>
 
 #  include <android/api-level.h>
 
@@ -73,7 +71,7 @@ void* __wrap_dlopen(const char* path, int flags) {
 
   RefPtr<LibHandle> handle = ElfLoader::Singleton.Load(path, flags);
   if (handle) handle->AddDirectRef();
-  return handle;
+  return handle.get();
 }
 
 const char* __wrap_dlerror(void) {
@@ -946,6 +944,7 @@ static bool Divert(T func, T new_func) {
       reinterpret_cast<uintptr_t>(new_func) - addr - 5;  // target displacement
   return true;
 #  elif defined(__arm__) || defined(__aarch64__)
+  // clang-format off
   const unsigned char trampoline[] = {
 #    ifdef __arm__
       // .thumb
@@ -964,6 +963,8 @@ static bool Divert(T func, T new_func) {
                    // .word <new_func.hi>
 #    endif
   };
+  // clang-format on
+
   const unsigned char* start;
 #    ifdef __arm__
   if (addr & 0x01) {

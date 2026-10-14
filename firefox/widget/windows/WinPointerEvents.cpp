@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,13 +6,14 @@
  * WinPointerEvents - Helper functions to retrieve PointerEvent's attributes
  */
 
-#include "nscore.h"
-#include "nsWindowDefs.h"
 #include "WinPointerEvents.h"
+
 #include "WinUtils.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/MouseEventBinding.h"
+#include "nsWindowDefs.h"
+#include "nscore.h"
 
 using namespace mozilla;
 using namespace mozilla::widget;
@@ -85,7 +85,7 @@ bool WinPointerEvents::GetPointerType(uint32_t aPointerId,
 POINTER_INPUT_TYPE
 WinPointerEvents::GetPointerType(uint32_t aPointerId) {
   POINTER_INPUT_TYPE pointerType = PT_POINTER;
-  Unused << GetPointerType(aPointerId, &pointerType);
+  (void)GetPointerType(aPointerId, &pointerType);
   return pointerType;
 }
 
@@ -188,8 +188,7 @@ void WinPointerEvents::ConvertAndCachePointerInfo(WPARAM aWParam,
   MOZ_ASSERT(GetPointerType(aInfo->pointerId) == PT_PEN);
   POINTER_PEN_INFO penInfo;
   GetPointerPenInfo(aInfo->pointerId, &penInfo);
-  aInfo->tiltX = penInfo.tiltX;
-  aInfo->tiltY = penInfo.tiltY;
+  aInfo->mTilt = Some(WinPointerInfo::Tilt{penInfo.tiltX, penInfo.tiltY});
   // Windows defines the pen pressure is normalized to a range between 0 and
   // 1024. Convert it to float.
   aInfo->mPressure = penInfo.pressure ? (float)penInfo.pressure / 1024 : 0;

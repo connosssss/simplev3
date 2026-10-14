@@ -10,10 +10,10 @@ cd $MOZ_FETCHES_DIR/cmake
 # Work around https://gitlab.kitware.com/cmake/cmake/-/issues/26031
 patch -p1 <<'EOF'
 diff --git a/Source/bindexplib.cxx b/Source/bindexplib.cxx
-index 52e200c24f..07ccf3965c 100644
+index bbcb0bccc9..f5d80dd784 100644
 --- a/Source/bindexplib.cxx
 +++ b/Source/bindexplib.cxx
-@@ -398,7 +398,7 @@ static bool DumpFile(std::string const& nmPath, const char* filename,
+@@ -414,7 +414,7 @@ static bool DumpFile(std::string const& nmPath, char const* filename,
                       std::set<std::string>& symbols,
                       std::set<std::string>& dataSymbols)
  {
@@ -28,17 +28,36 @@ EOF
 # The resulting cmake works well enough for our use.
 patch -p1 <<'EOF'
 diff --git a/Source/CMakeLists.txt b/Source/CMakeLists.txt
-index c268a92111..d18f8cf221 100644
+index 44f87dba80..0ff5214dd9 100644
 --- a/Source/CMakeLists.txt
 +++ b/Source/CMakeLists.txt
-@@ -863,7 +863,6 @@ if(WIN32)
- 
-     # Add a manifest file to executables on Windows to allow for
-     # GetVersion to work properly on Windows 8 and above.
--    target_sources(ManifestLib INTERFACE cmake.version.manifest)
+@@ -979,14 +979,6 @@ if(WIN32)
+         cmVSSolution.h
+         cmVSVersion.h
+       )
+-
+-    # Add a manifest file to executables on Windows to allow for
+-    # GetVersion to work properly on Windows 8 and above.
+-    if(MSVC)
+-      target_sources(ManifestLib INTERFACE cmake.version.manifest)
+-    else()
+-      target_sources(ManifestLib INTERFACE cmake.version.manifest.rc)
+-    endif()
    endif()
  endif()
- 
+
+diff --git a/Source/kwsys/CMakeLists.txt b/Source/kwsys/CMakeLists.txt
+index 08494b9bf5..0dfcc0f63a 100644
+--- a/Source/kwsys/CMakeLists.txt
++++ b/Source/kwsys/CMakeLists.txt
+@@ -977,7 +977,6 @@ if(KWSYS_STANDALONE OR CMake_SOURCE_DIR)
+       )
+     add_executable(${KWSYS_NAMESPACE}TestsCxx
+       ${KWSYS_CXX_TEST_SRCS}
+-      test.manifest
+     )
+     set_property(TARGET ${KWSYS_NAMESPACE}TestsCxx PROPERTY C_CLANG_TIDY "")
+     set_property(TARGET ${KWSYS_NAMESPACE}TestsCxx PROPERTY CXX_CLANG_TIDY "")
 EOF
 
 export PATH="$MOZ_FETCHES_DIR/clang/bin:$PATH"

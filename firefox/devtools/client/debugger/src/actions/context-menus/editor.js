@@ -6,7 +6,6 @@ import { showMenu } from "../../context-menu/menu";
 
 import { copyToTheClipboard } from "../../utils/clipboard";
 import {
-  isPretty,
   getRawSourceURL,
   shouldBlackbox,
   findBlackBoxRange,
@@ -48,12 +47,13 @@ export function showEditorContextMenu(event, editor, lineObject, location) {
     const hasMappedLocation =
       (source.isOriginal ||
         isSourceWithMap(state, source.id) ||
-        isPretty(source)) &&
+        source.isPrettyPrinted) &&
       !getPrettySource(state, source.id);
     const isSourceOnIgnoreList =
       isSourceMapIgnoreListEnabled(state) &&
       isSourceOnSourceMapIgnoreList(state, source);
     const editorWrappingEnabled = getEditorWrapping(state);
+    const endColumn = editor.getText(lineObject.to.line).length;
 
     showMenu(
       event,
@@ -68,7 +68,9 @@ export function showEditorContextMenu(event, editor, lineObject, location) {
         lineObject,
         isSourceOnIgnoreList,
         dispatch,
-      })
+        endColumn,
+      }),
+      { accesskeyConflictsBug: 2073896 }
     );
   };
 }
@@ -83,20 +85,25 @@ export function showEditorGutterContextMenu(event, line, location, lineText) {
       isSourceMapIgnoreListEnabled(state) &&
       isSourceOnSourceMapIgnoreList(state, source);
 
-    showMenu(event, [
-      ...createBreakpointItems(location, lineText, dispatch),
-      { type: "separator" },
-      continueToHereItem(location, isPaused, dispatch),
-      { type: "separator" },
-      blackBoxLineMenuItem(
-        source,
-        line,
-        blackboxedRanges,
-        isSourceOnIgnoreList,
-        location.line,
-        dispatch
-      ),
-    ]);
+    showMenu(
+      event,
+      [
+        ...createBreakpointItems(location, lineText, dispatch),
+        { type: "separator" },
+        continueToHereItem(location, isPaused, dispatch),
+        { type: "separator" },
+        blackBoxLineMenuItem(
+          source,
+          line,
+          blackboxedRanges,
+          isSourceOnIgnoreList,
+          location.line,
+          dispatch,
+          lineText.length
+        ),
+      ],
+      { accesskeyConflictsBug: 2073896 }
+    );
   };
 }
 
@@ -185,7 +192,8 @@ const blackBoxLineMenuItem = (
   // is opened from the gutter, it is not available when the
   // the context menu is opened from the editor.
   clickedLine = null,
-  dispatch
+  dispatch,
+  endColumn
 ) => {
   const startLine = clickedLine ?? toSourceLine(selectedSource, from.line);
   const endLine = clickedLine ?? toSourceLine(selectedSource, to.line);
@@ -226,11 +234,11 @@ const blackBoxLineMenuItem = (
       const selectionRange = {
         start: {
           line: startLine,
-          column: clickedLine == null ? from.ch : 0,
+          column: 0,
         },
         end: {
           line: endLine,
-          column: clickedLine == null ? to.ch : 0,
+          column: endColumn,
         },
       };
 
@@ -251,7 +259,8 @@ const blackBoxLinesMenuItem = (
   blackboxedRanges,
   isSourceOnIgnoreList,
   clickedLine,
-  dispatch
+  dispatch,
+  endColumn
 ) => {
   const startLine = toSourceLine(selectedSource, from.line);
   const endLine = toSourceLine(selectedSource, to.line);
@@ -276,11 +285,11 @@ const blackBoxLinesMenuItem = (
       const selectionRange = {
         start: {
           line: startLine,
-          column: from.ch,
+          column: 0,
         },
         end: {
           line: endLine,
-          column: to.ch,
+          column: endColumn,
         },
       };
 
@@ -342,6 +351,7 @@ function editorMenuItems({
   lineObject,
   isSourceOnIgnoreList,
   dispatch,
+  endColumn,
 }) {
   const items = [];
 
@@ -398,7 +408,8 @@ function editorMenuItems({
         blackboxedRanges,
         isSourceOnIgnoreList,
         null,
-        dispatch
+        dispatch,
+        endColumn
       )
     );
   }

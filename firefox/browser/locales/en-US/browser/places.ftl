@@ -22,14 +22,14 @@ places-open-in-window =
   .accesskey = N
 places-open-in-private-window =
   .label = Open in New Private Window
-  .accesskey = P
+  .accesskey = v
 
 places-empty-bookmarks-folder =
   .label = (Empty)
 
 places-add-bookmark =
   .label = Add Bookmark…
-  .accesskey = B
+  .accesskey = k
 places-add-folder-contextmenu =
   .label = Add Folder…
   .accesskey = F
@@ -152,10 +152,6 @@ places-organize-button =
   .tooltiptext = Organize your bookmarks
   .accesskey = O
 
-places-organize-button-mac =
-  .label = Organize
-  .tooltiptext = Organize your bookmarks
-
 places-file-close =
   .label = Close
   .accesskey = C
@@ -167,10 +163,6 @@ places-view-button =
   .label = Views
   .tooltiptext = Change your view
   .accesskey = V
-
-places-view-button-mac =
-  .label = Views
-  .tooltiptext = Change your view
 
 places-view-menu-columns =
   .label = Show Columns
@@ -196,10 +188,6 @@ places-maintenance-button =
   .label = Import and Backup
   .tooltiptext = Import and backup your bookmarks
   .accesskey = I
-
-places-maintenance-button-mac =
-  .label = Import and Backup
-  .tooltiptext = Import and backup your bookmarks
 
 places-cmd-backup =
   .label = Backup…
@@ -303,3 +291,10 @@ places-search-downloads =
 ##
 
 places-locked-prompt = The bookmarks and history system will not be functional because one of { -brand-short-name }’s files is in use by another application. Some security software can cause this problem.
+
+# Share is a verb here. Meaning to "Share" the bookmark "Folder"
+# .badge used to promote the sharing menu item; keep it as short as possible.
+places-share-folder3 =
+  .label = Share Folder
+  .accesskey = a
+  .badge = New

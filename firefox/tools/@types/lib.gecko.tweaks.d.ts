@@ -4,20 +4,68 @@
 
 // More specific types for parent process browsing contexts.
 interface CanonicalBrowsingContext extends LoadContextMixin {
-  embedderElement: XULBrowserElement;
+  embedderElement: MozBrowser;
   currentWindowContext: WindowGlobalParent;
+  // Set by tabbrowser.
+  nonWebControlledLoadingURI?: nsIURI;
   parent: CanonicalBrowsingContext;
   parentWindowContext: WindowGlobalParent;
   top: CanonicalBrowsingContext;
   topWindowContext: WindowGlobalParent;
 }
 
+declare namespace ChromeUtils {
+  type Modules = import("./generated/lib.gecko.modules").Modules;
+
+  function importESModule<T extends keyof Modules>(
+    aResourceURI: T,
+    aOptions?: ImportESModuleOptionsDictionary
+  ): Modules[T];
+}
+
 interface ChromeWindow extends Window {
   isChromeWindow: true;
 }
 
+// Defined by the <menu> custom element in toolkit/content/widgets/menu.js.
+interface XULMenuElement {
+  readonly menupopup: XULPopupElement;
+}
+
+interface XULElementTagNameMap {
+  browser: MozBrowser;
+  iframe: XULFrameElement;
+  label: XULTextElement;
+  menu: XULMenuElement;
+  menupopup: XULPopupElement;
+  tree: XULTreeElement;
+}
+
 interface Document {
-  createXULElement(name: "browser"): XULBrowserElement;
+  // Map elements created in the SVG namespace to the relevant type.
+  createElementNS(
+    namespace: "http://www.w3.org/2000/svg",
+    qualifiedName: string,
+    options?: string | ElementCreationOptions
+  ): SVGElement;
+  createXULElement<K extends keyof XULElementTagNameMap>(
+    localName: K,
+    options?: string | ElementCreationOptions
+  ): XULElementTagNameMap[K];
+  createXULElement(
+    localName: string,
+    options?: string | ElementCreationOptions
+  ): XULElement;
+}
+
+interface CustomElementRegistry {
+  // Accept XUL custom elements, which the generated CustomElementConstructor
+  // leaves out by requiring an HTMLElement.
+  define(
+    name: string,
+    constructor: new () => XULElement,
+    options?: ElementDefinitionOptions
+  ): void;
 }
 
 type nsIGleanPingNoReason = {
@@ -44,6 +92,25 @@ interface MessageListenerManagerMixin {
   );
 }
 
+// @typescript/dom-lib-generator drops `matches` unless it's Element-shaped.
+interface MatchPattern {
+  matches(uri: URI, explicit?: boolean): boolean;
+  matches(url: string, explicit?: boolean): boolean;
+}
+
+interface MatchPatternSet {
+  matches(uri: URI, explicit?: boolean): boolean;
+  matches(url: string, explicit?: boolean): boolean;
+}
+
+interface ChannelWrapper {
+  matches(
+    filter?: MozRequestFilter,
+    extension?: WebExtensionPolicy | null,
+    options?: MozRequestMatchOptions
+  ): boolean;
+}
+
 interface MozQueryInterface {
   <T>(iid: T): nsQIResult<T>;
 }
@@ -51,6 +118,15 @@ interface MozQueryInterface {
 interface nsICryptoHash extends nsISupports {
   // Accepts a TypedArray.
   update(aData: ArrayLike<number>, aLen: number): void;
+}
+
+// The type generator drops UTF8String dictionary members from IOUtils options.
+interface ReadUTF8Options {
+  decrypt?: string;
+}
+
+interface WriteOptions {
+  encrypt?: string;
 }
 
 interface nsIDOMWindow extends Window {}
@@ -117,14 +193,6 @@ type Sandbox = typeof globalThis & nsISupports;
 
 interface WindowGlobalParent extends WindowContext {
   readonly browsingContext: CanonicalBrowsingContext;
-}
-
-// Hand-crafted artisanal types.
-interface XULBrowserElement extends XULFrameElement, FrameLoader {
-  currentURI: nsIURI;
-  docShellIsActive: boolean;
-  isRemoteBrowser: boolean;
-  remoteType: string;
 }
 
 // https://github.com/microsoft/TypeScript-DOM-lib-generator/issues/1736

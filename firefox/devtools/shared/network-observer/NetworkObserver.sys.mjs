@@ -29,6 +29,8 @@ ChromeUtils.defineESModuleGetters(
       "resource://devtools/shared/network-observer/NetworkAuthListener.sys.mjs",
     NetworkHelper:
       "resource://devtools/shared/network-observer/NetworkHelper.sys.mjs",
+    NetworkLocalMode:
+      "resource://devtools/shared/network-observer/NetworkLocalMode.sys.mjs",
     NetworkOverride:
       "resource://devtools/shared/network-observer/NetworkOverride.sys.mjs",
     NetworkResponseListener:
@@ -98,8 +100,8 @@ const HTTP_DOWNLOAD_ACTIVITIES = [
  * http-on-examine-response notifications. All network request information is
  * routed to the remote Web Console.
  *
- * @constructor
- * @param {Object} options
+ * @class
+ * @param {object} options
  * @param {Function(nsIChannel): boolean} options.ignoreChannelFunction
  *        This function will be called for every detected channel to decide if it
  *        should be monitored or not.
@@ -115,11 +117,91 @@ const HTTP_DOWNLOAD_ACTIVITIES = [
  */
 export class NetworkObserver {
   /**
+   * Whether the consumer supports listening and handling auth prompts.
+   *
+   * @type {boolean}
+   */
+  #authPromptListenerEnabled = false;
+
+  /**
    * Map of URL patterns to RegExp
    *
    * @type {Map}
    */
   #blockedURLs = new Map();
+
+  /**
+   * The maximum size (in bytes) of the individual request and response bodies to be stored.
+   *
+   * @type {number}
+   */
+  #bodyLimit = 0;
+
+  /**
+   * Whether security information should be collected for requests.
+   *
+   * @type {boolean}
+   */
+  #collectSecurityInfo = true;
+
+  /**
+   * Used by NetworkHelper.parseSecurityInfo to skip decoding known certificates.
+   *
+   * @type {Map}
+   */
+  #decodedCertificateCache = new Map();
+
+  /**
+   * Whether response bodies should be decoded or not.
+   *
+   * @type {boolean}
+   */
+  #decodeResponseBodies = true;
+
+  /**
+   * See constructor argument of the same name.
+   *
+   * @type {Function}
+   */
+  #ignoreChannelFunction;
+
+  /**
+   * Used to store channels intercepted for service-worker requests.
+   *
+   * @type {WeakSet}
+   */
+  #interceptedChannels = new WeakSet();
+
+  /**
+   * Explicit flag to check if this observer was already destroyed.
+   *
+   * @type {boolean}
+   */
+  #isDestroyed = false;
+
+  /**
+   * Dictionary of all origins (string) mapped to a local folder, defined
+   * by its absolute path (string).
+   * Typically:
+   *   {
+   *     "firefox.localhost": "/home/me/hello-world",
+   *   }
+   */
+  #localModeMappings = {};
+
+  /**
+   * See constructor argument of the same name.
+   *
+   * @type {Function}
+   */
+  #onNetworkEvent;
+
+  /**
+   * Object that holds the activity objects for ongoing requests.
+   *
+   * @type {ChannelMap}
+   */
+  #openRequests = new lazy.ChannelMap();
 
   /**
    * Map of URL to local file path in order to redirect URL
@@ -130,76 +212,45 @@ export class NetworkObserver {
   #overrides = new Map();
 
   /**
-   * Used by NetworkHelper.parseSecurityInfo to skip decoding known certificates.
-   *
-   * @type {Map}
-   */
-  #decodedCertificateCache = new Map();
-  /**
-   * Whether the consumer supports listening and handling auth prompts.
-   *
-   * @type {boolean}
-   */
-  #authPromptListenerEnabled = false;
-  /**
-   * See constructor argument of the same name.
-   *
-   * @type {Function}
-   */
-  #ignoreChannelFunction;
-  /**
-   * Used to store channels intercepted for service-worker requests.
-   *
-   * @type {WeakSet}
-   */
-  #interceptedChannels = new WeakSet();
-  /**
-   * Explicit flag to check if this observer was already destroyed.
-   *
-   * @type {boolean}
-   */
-  #isDestroyed = false;
-  /**
-   * See constructor argument of the same name.
-   *
-   * @type {Function}
-   */
-  #onNetworkEvent;
-  /**
-   * Object that holds the activity objects for ongoing requests.
-   *
-   * @type {ChannelMap}
-   */
-  #openRequests = new lazy.ChannelMap();
-  /**
    * Network response bodies are piped through a buffer of the given size
    * (in bytes).
    *
-   * @type {Number}
+   * @type {number}
    */
   #responsePipeSegmentSize = Services.prefs.getIntPref(
     "network.buffer.cache.size"
   );
+
   /**
    * Whether to save the bodies of network requests and responses.
    *
    * @type {boolean}
    */
   #saveRequestAndResponseBodies = true;
+
   /**
    * Throttling configuration, see constructor of NetworkThrottleManager
    *
-   * @type {Object}
+   * @type {object}
    */
   #throttleData = null;
+
   /**
    * NetworkThrottleManager instance, created when a valid throttleData is set.
+   *
    * @type {NetworkThrottleManager}
    */
   #throttler = null;
 
   constructor(options = {}) {
-    const { ignoreChannelFunction, onNetworkEvent } = options;
+    const {
+      collectSecurityInfo,
+      decodeResponseBodies,
+      ignoreChannelFunction,
+      onNetworkEvent,
+      bodyLimit,
+    } = options;
+
     if (typeof ignoreChannelFunction !== "function") {
       throw new Error(
         `Expected "ignoreChannelFunction" to be a function, got ${ignoreChannelFunction} (${typeof ignoreChannelFunction})`
@@ -214,6 +265,20 @@ export class NetworkObserver {
 
     this.#ignoreChannelFunction = ignoreChannelFunction;
     this.#onNetworkEvent = onNetworkEvent;
+
+    // Set decodeResponseBodies if provided, otherwise default to "true".
+    if (typeof decodeResponseBodies === "boolean") {
+      this.#decodeResponseBodies = decodeResponseBodies;
+    }
+
+    if (typeof collectSecurityInfo === "boolean") {
+      this.#collectSecurityInfo = collectSecurityInfo;
+    }
+
+    // Set the provided bodyLimit if any, otherwise use the default "0".
+    if (typeof bodyLimit === "number") {
+      this.#bodyLimit = bodyLimit;
+    }
 
     // Start all platform observers.
     if (Services.appinfo.processType != Ci.nsIXULRuntime.PROCESS_TYPE_CONTENT) {
@@ -268,13 +333,38 @@ export class NetworkObserver {
     this.#saveRequestAndResponseBodies = save;
   }
 
+  /**
+   * Update the maximum size in bytes that can be collected for network request
+   * and response bodies.
+   * Requests and responses that have already been created will not be using the
+   * new limit, only later requests and responses will be affected.
+   *
+   * @param {number} bodyLimit
+   *        The new bodyLimit to use.
+   */
+  setBodyLimit(bodyLimit) {
+    this.#bodyLimit = bodyLimit;
+  }
+
   getThrottleData() {
     return this.#throttleData;
   }
 
+  /**
+   * Update the network throttling configuration.
+   *
+   * @param {object|null} value
+   *        The network throttling configuration object, or null if throttling
+   *        should be disabled.
+   */
   setThrottleData(value) {
     this.#throttleData = value;
-    // Clear out any existing throttlers
+
+    // If value is null, the user is disabling throttling, destroy the previous
+    // throttler.
+    if (this.#throttler && value === null) {
+      this.#throttler.destroy();
+    }
     this.#throttler = null;
   }
 
@@ -356,8 +446,9 @@ export class NetworkObserver {
       const httpActivity = this.#createOrGetActivityObject(channel);
       this.#createNetworkEvent(httpActivity);
 
-      // Handle overrides in http-on-before-connect because we need to redirect
+      // Handle both local mode and overrides in http-on-before-connect because we need to redirect
       // the request to the override before reaching the server.
+      this.#checkForLocalModeHook(httpActivity);
       this.#checkForContentOverride(httpActivity);
     }
   );
@@ -401,15 +492,39 @@ export class NetworkObserver {
         });
       } else {
         // Handles any early blockings e.g by Web Extensions or by CORS
-        const { blockingExtension, blockedReason } =
-          lazy.NetworkUtils.getBlockedReason(channel, httpActivity.fromCache);
+        const { extension, blockedReason } = lazy.NetworkUtils.getBlockedReason(
+          channel,
+          httpActivity.fromCache
+        );
         this.#createNetworkEvent(httpActivity, {
           blockedReason,
-          blockingExtension,
+          extension,
         });
       }
     }
   );
+
+  /**
+   * Check if the current channel matches any of local mode origins.
+   */
+  async #checkForLocalModeHook(httpActivity) {
+    const channel = httpActivity.channel;
+
+    const localFolderPath = this.#localModeMappings[channel.URI.host];
+
+    // Only intercept requests matching a local mode host name
+    if (!localFolderPath) {
+      return;
+    }
+
+    // Ignore any request done on a custom port which isn't http, nor https
+    const { port } = channel.URI;
+    if (port != -1 && port != 80 && port != 443) {
+      return;
+    }
+
+    lazy.NetworkLocalMode.interceptChannelWithPath(channel, localFolderPath);
+  }
 
   /**
    * Check if the current channel has its content being overriden
@@ -424,7 +539,11 @@ export class NetworkObserver {
 
     dump(" Override " + channel.URI.spec + " to " + overridePath + "\n");
     try {
-      lazy.NetworkOverride.overrideChannelWithFilePath(channel, overridePath);
+      lazy.NetworkOverride.overrideChannelWithFilePath(
+        channel,
+        overridePath,
+        true
+      );
       // Handle the activity as being from the cache to avoid looking up
       // typical information from the http channel, which would error for
       // overridden channels.
@@ -706,7 +825,8 @@ export class NetworkObserver {
       // not be considered as insecure either. Set empty string as security
       // state.
       owner.addSecurityInfo({ state: "" });
-      owner.addResponseContent(response, {});
+      owner.addResponseContent(response);
+      owner.addResponseContentComplete({});
     }
   );
 
@@ -886,7 +1006,7 @@ export class NetworkObserver {
    */
   #createNetworkEvent(
     httpActivity,
-    { timestamp, blockedReason, blockingExtension, inProgressRequest } = {}
+    { timestamp, blockedReason, extension, inProgressRequest } = {}
   ) {
     if (
       blockedReason === undefined &&
@@ -902,7 +1022,7 @@ export class NetworkObserver {
       {
         timestamp,
         blockedReason,
-        blockingExtension,
+        extension,
         discardRequestBody: !this.#saveRequestAndResponseBodies,
         discardResponseBody: !this.#saveRequestAndResponseBodies,
       },
@@ -1119,6 +1239,43 @@ export class NetworkObserver {
   }
 
   /**
+   * Update the list of all local mode mappings.
+   * This is a dictionary where keys are origins (string)
+   * which are mapped to a local folder absolute path (string).
+   *   {
+   *     "firefox.localhost": "/home/me/hello-world",
+   *   }
+   *
+   * @param {object} mappings
+   */
+  setLocalModeMappings(mappings) {
+    // Unicode hostnames are converted into ASCII with "punycode"
+    // Given that Necko APIs are exposing ASCII hostnames, convert any unicode host
+    // into ASCII from here so that client/frontend can use unicode and not have
+    // to think about this implementation detail.
+    // For example: "ʂ.com" is converted into "xn--yoa.com"
+    const asciiMappings = {};
+    for (const origin in mappings) {
+      asciiMappings[new URL("https://" + origin).host] = mappings[origin];
+    }
+    this.#localModeMappings = asciiMappings;
+
+    // Clear in-memory cache, so that the subsequent requests aren't fetched
+    // from the http cache and issue plain new http requests that can be intercepted
+    // by the NetworkObserver logic to provide new content from a new local folder.
+    for (const origin in asciiMappings) {
+      const uri = Services.io.newURI("https://" + origin);
+      const principal = Services.scriptSecurityManager.createContentPrincipal(
+        uri,
+        {}
+      );
+      ChromeUtils.clearResourceCache({
+        principal,
+      });
+    }
+  }
+
+  /**
    * Setup the network response listener for the given HTTP activity. The
    * NetworkResponseListener is responsible for storing the response body.
    *
@@ -1148,11 +1305,13 @@ export class NetworkObserver {
     sink.init(false, false, this.#responsePipeSegmentSize, PR_UINT32_MAX, null);
 
     // Add listener for the response body.
-    const newListener = new lazy.NetworkResponseListener(
-      httpActivity,
-      this.#decodedCertificateCache,
-      httpActivity.fromServiceWorker
-    );
+    const newListener = new lazy.NetworkResponseListener(httpActivity, {
+      decodedCertificateCache: this.#decodedCertificateCache,
+      collectSecurityInfo: this.#collectSecurityInfo,
+      decodeResponseBody: this.#decodeResponseBodies,
+      fromServiceWorker: httpActivity.fromServiceWorker,
+      responseBodyLimit: this.#bodyLimit,
+    });
 
     // Remember the input stream, so it isn't released by GC.
     newListener.inputStream = sink.inputStream;
@@ -1182,13 +1341,13 @@ export class NetworkObserver {
       return;
     }
 
-    const sentBody = lazy.NetworkHelper.readPostTextFromRequest(
+    const sentBody = lazy.NetworkHelper.readPostDataFromRequest(
       httpActivity.channel,
       httpActivity.charset
     );
 
     if (sentBody !== null) {
-      httpActivity.sentBody = sentBody;
+      httpActivity.sentBody = sentBody.data;
     }
   }
 
@@ -1218,9 +1377,7 @@ export class NetworkObserver {
 
   #sendRequestBody(httpActivity) {
     if (httpActivity.sentBody !== null) {
-      const limit = Services.prefs.getIntPref(
-        "devtools.netmonitor.requestBodyLimit"
-      );
+      const limit = this.#bodyLimit;
       const size = httpActivity.sentBody.length;
       if (size > limit && limit > 0) {
         httpActivity.sentBody = httpActivity.sentBody.substr(0, limit);

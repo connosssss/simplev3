@@ -5,25 +5,48 @@
 package org.mozilla.focus.state
 
 import android.os.Bundle
+import androidx.fragment.app.Fragment
+import java.util.UUID
 import mozilla.components.feature.top.sites.TopSite
 import mozilla.components.lib.state.State
+import org.mozilla.focus.autocomplete.AutocompleteAddFragment
+import org.mozilla.focus.autocomplete.AutocompleteListFragment
+import org.mozilla.focus.autocomplete.AutocompleteRemoveFragment
+import org.mozilla.focus.autocomplete.AutocompleteSettingsFragment
+import org.mozilla.focus.exceptions.ExceptionsListFragment
+import org.mozilla.focus.exceptions.ExceptionsRemoveFragment
+import org.mozilla.focus.fragment.CrashListFragment
+import org.mozilla.focus.fragment.about.AboutFragment
+import org.mozilla.focus.locale.screen.LanguageFragment
+import org.mozilla.focus.settings.AboutLibrariesFragment
+import org.mozilla.focus.settings.GeneralSettingsFragment
+import org.mozilla.focus.settings.InstalledSearchEnginesSettingsFragment
+import org.mozilla.focus.settings.ManualAddSearchEngineSettingsFragment
+import org.mozilla.focus.settings.MozillaSettingsFragment
+import org.mozilla.focus.settings.RemoveSearchEnginesSettingsFragment
+import org.mozilla.focus.settings.SearchSettingsFragment
+import org.mozilla.focus.settings.SettingsFragment
+import org.mozilla.focus.settings.advanced.AdvancedSettingsFragment
+import org.mozilla.focus.settings.advanced.SecretSettingsFragment
+import org.mozilla.focus.settings.permissions.SitePermissionsFragment
 import org.mozilla.focus.settings.permissions.permissionoptions.SitePermission
-import java.util.UUID
+import org.mozilla.focus.settings.privacy.PrivacySecuritySettingsFragment
 
 /**
  * Global state of the application.
  *
  * @property screen The currently displayed screen.
  * @property topSites The list of [TopSite] to display on the Home screen.
- * @property sitePermissionOptionChange A flag which reflects the state of site permission rules,
- * whether they have been updated or not
+ * @property sitePermissionOptionChange A flag which reflects the state of site permission rules, whether they have been
+ *   updated or not
  * @property secretSettingsEnabled A flag which reflects the state of debug secret settings
  * @property showEraseTabsCfr A flag which reflects the state erase tabs CFR
- * @property showStartBrowsingTabsCfr A flag which reflects the state of start browsing CFR
  * @property showSearchWidgetSnackbar A flag which reflects the state of search widget snackbar
- * @property showCookieBannerCfr A flag witch reflects the state of cookie banner CFR
+ * @property showTrackingProtectionCfrForTab A map where keys are tab IDs and values indicate whether to show the
+ *   Tracking Protection CFR for that tab.
+ * @property showStartBrowsingTabsCfr A flag which reflects the state of start browsing CFR
  * @property isPinningSupported A nullable flag indicating whether pinning shortcuts to the home screen is supported.
- **/
+ */
 data class AppState(
     val screen: Screen,
     val topSites: List<TopSite> = emptyList(),
@@ -33,38 +56,27 @@ data class AppState(
     val showSearchWidgetSnackbar: Boolean = false,
     val showTrackingProtectionCfrForTab: Map<String, Boolean> = emptyMap(),
     val showStartBrowsingTabsCfr: Boolean = false,
-    val showCookieBannerCfr: Boolean = false,
     val isPinningSupported: Boolean? = null,
 ) : State
 
 /**
  * A group of screens that the app can display.
  *
- * @property id A unique ID for identifying a screen. Only if this ID changes the screen is
- * considered a new screen that requires a navigation (as opposed to the state of the screen
- * changing).
+ * Each screen has a unique [id].
  */
 sealed class Screen {
     open val id = UUID.randomUUID().toString()
 
-    /**
-     * First run onboarding.
-     */
+    /** First run onboarding. */
     object FirstRun : Screen()
 
-    /**
-     * Second screen from new onboarding flow.
-     */
+    /** Second screen from new onboarding flow. */
     object OnboardingSecondScreen : Screen()
 
-    /**
-     * Screen to show content on about:crashes
-     */
+    /** Screen to show content on about:crashes */
     object CrashListScreen : Screen()
 
-    /**
-     * The home screen.
-     */
+    /** The home screen. */
     object Home : Screen()
 
     /**
@@ -82,50 +94,45 @@ sealed class Screen {
         override val id: String = "${super.id}_$showTabs}"
     }
 
-    /**
-     * Editing the URL of a tab.
-     */
-    data class EditUrl(
-        val tabId: String,
-    ) : Screen()
+    /** Editing the URL of a tab. */
+    data class EditUrl(val tabId: String) : Screen()
 
     /**
      * The application is locked (and requires unlocking).
      *
-     * @param bundle it is used for app navigation. If the user can unlock with success he should
-     * be redirected to a certain screen.It comes from the external intent.
+     * @property bundle it is used for app navigation. If the user can unlock with success he should be redirected to a
+     *   certain screen.It comes from the external intent.
      */
     data class Locked(val bundle: Bundle? = null) : Screen()
+
+    /** Screen for site permission options. */
     data class SitePermissionOptionsScreen(val sitePermission: SitePermission) : Screen()
-    data class Settings(
-        val page: Page = Page.Start,
-    ) : Screen() {
-        enum class Page {
-            Start,
 
-            General,
-            Privacy,
-            Search,
-            Advanced,
-            Mozilla,
-            About,
-            Licenses,
-            Locale,
-
-            PrivacyExceptions,
-            PrivacyExceptionsRemove,
-            CookieBanner,
-            SitePermissions,
-            SecretSettings,
-
-            SearchList,
-            SearchRemove,
-            SearchAdd,
-            SearchAutocomplete,
-            SearchAutocompleteList,
-            SearchAutocompleteAdd,
-            SearchAutocompleteRemove,
-            CrashList,
+    /** Settings screen. */
+    data class Settings(val page: Page = Page.Start) : Screen() {
+        /** Pages within the settings screen. */
+        enum class Page(val fragmentClass: Class<out Fragment>) {
+            Start(SettingsFragment::class.java),
+            General(GeneralSettingsFragment::class.java),
+            Privacy(PrivacySecuritySettingsFragment::class.java),
+            Search(SearchSettingsFragment::class.java),
+            Advanced(AdvancedSettingsFragment::class.java),
+            Mozilla(MozillaSettingsFragment::class.java),
+            About(AboutFragment::class.java),
+            Licenses(AboutLibrariesFragment::class.java),
+            Locale(LanguageFragment::class.java),
+            PrivacyExceptions(ExceptionsListFragment::class.java),
+            PrivacyExceptionsRemove(ExceptionsRemoveFragment::class.java),
+            SitePermissions(SitePermissionsFragment::class.java),
+            SecretSettings(SecretSettingsFragment::class.java),
+            SearchList(InstalledSearchEnginesSettingsFragment::class.java),
+            SearchRemove(RemoveSearchEnginesSettingsFragment::class.java),
+            SearchAdd(ManualAddSearchEngineSettingsFragment::class.java),
+            SearchAutocomplete(AutocompleteSettingsFragment::class.java),
+            SearchAutocompleteList(AutocompleteListFragment::class.java),
+            SearchAutocompleteAdd(AutocompleteAddFragment::class.java),
+            SearchAutocompleteRemove(AutocompleteRemoveFragment::class.java),
+            CrashList(CrashListFragment::class.java),
         }
     }
 }

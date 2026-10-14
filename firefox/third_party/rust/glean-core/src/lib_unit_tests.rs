@@ -232,6 +232,13 @@ fn experimentation_id_is_set_correctly() {
         ping_schedule: Default::default(),
         ping_lifetime_threshold: 0,
         ping_lifetime_max_time: 0,
+        max_pending_pings_count: None,
+        max_pending_pings_directory_size: None,
+        session_mode: crate::session::SessionMode::Auto,
+        session_sample_rate: 1.0,
+        session_inactivity_timeout_ms: 1_800_000,
+        events_ping_acceleration_factor: None,
+        enable_store_submitted_pings: false,
     })
     .unwrap();
 
@@ -446,6 +453,20 @@ fn attribution_and_distribution_are_correctly_stored() {
     attribution.campaign = Some("new campaign".into());
     assert_eq!(attribution, glean.test_get_attribution());
     assert_eq!(distribution_update, glean.test_get_distribution());
+
+    // Now, clear 'em.
+    glean.clear_attribution();
+    glean.clear_distribution();
+
+    // Ensure they're clear.
+    assert_eq!(
+        <AttributionMetrics as Default>::default(),
+        glean.test_get_attribution()
+    );
+    assert_eq!(
+        <DistributionMetrics as Default>::default(),
+        glean.test_get_distribution()
+    );
 }
 
 #[test]
@@ -550,7 +571,7 @@ fn backwards_compatible_deserialization() {
     use metrics::{Metric::*, TimeUnit};
 
     // Prepare some data to fill in
-    let dt = FixedOffset::east(9*3600).ymd(2014, 11, 28).and_hms_nano(21, 45, 59, 12);
+    let dt = FixedOffset::east_opt(9*3600).unwrap().with_ymd_and_hms(2014, 11, 28, 21, 45, 59).unwrap().with_nanosecond(12).unwrap();
 
     let mut custom_dist_exp = Histogram::exponential(1, 500, 10);
     custom_dist_exp.accumulate(10);
@@ -1190,10 +1211,10 @@ fn records_database_file_size() {
     // We should see the database containing some data.
     assert!(data.sum > 0);
 
-    let rkv_load_state = &glean.database_metrics.rkv_load_error;
-    let rkv_load_error = rkv_load_state.get_value(&glean, "metrics");
+    let load_state = &glean.database_metrics.load_error;
+    let load_error = load_state.get_value(&glean, "metrics");
 
-    assert_eq!(rkv_load_error, None);
+    assert_eq!(load_error, None);
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1359,4 +1380,320 @@ fn pings_are_controllable_from_remote_settings_config() {
 
     assert!(disabled_ping.submit_sync(&glean, None));
     assert!(!enabled_ping.submit_sync(&glean, None));
+}
+
+/// Helper: create an EventMetric that matches glean.session_end boundary events.
+/// The source of truth for this is found in glean_core/src/core/mod.rs
+/// `record_session_end_event` and the `session_end` metric definition in glean-core's
+/// `metrics.yaml`. If those definitions change, this helper must be updated to match.
+fn session_end_metric_internal() -> metrics::EventMetric {
+    metrics::EventMetric::new(
+        CommonMetricData {
+            name: "session_end".into(),
+            category: "glean".into(),
+            send_in_pings: vec!["events".into()],
+            lifetime: Lifetime::Ping,
+            ..Default::default()
+        },
+        vec![],
+    )
+}
+
+/// When the dirty flag is set and a session_id is persisted, restarting and
+/// calling `recover_session_on_dirty_flag` emits a synthetic session_end
+/// with reason="abnormal".
+#[test]
+fn crash_recovery_emits_abnormal_session_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_path = dir.path().display().to_string();
+
+    {
+        let mut glean = Glean::with_options(&data_path, GLOBAL_APPLICATION_ID, true, true);
+        // handle_client_active: starts session (persists session_id) and sets dirty flag.
+        glean.handle_client_active();
+        // Drop without calling handle_client_inactive — simulates crash.
+    }
+
+    // Simulate restart on the same data path.
+    let mut glean2 = Glean::with_options(&data_path, GLOBAL_APPLICATION_ID, true, true);
+    assert!(
+        glean2.is_dirty_flag_set(),
+        "dirty flag must still be set after crash"
+    );
+
+    glean2.recover_session_on_dirty_flag();
+
+    let events = session_end_metric_internal()
+        .get_value(&glean2, "events")
+        .expect("expected synthetic session_end after crash recovery");
+    assert_eq!(1, events.len());
+    let extra = events[0]
+        .extra
+        .as_ref()
+        .expect("expected extras on session_end");
+    assert_eq!(
+        "abnormal",
+        extra
+            .get("reason")
+            .expect("reason missing from synthetic session_end"),
+        "crashed active session must produce reason='abnormal'"
+    );
+    assert!(
+        extra.contains_key("session_id"),
+        "synthetic session_end must carry the crashed session's session_id"
+    );
+
+    // After recovery, session state must be fully cleared.
+    assert!(
+        glean2.session_manager().session_id().is_none(),
+        "session_id must be cleared after crash recovery"
+    );
+    assert!(
+        !glean2.session_manager().is_active(),
+        "session must be inactive after crash recovery"
+    );
+}
+
+/// After crash recovery, the next session must have session_seq incremented
+/// from the crashed session's seq.
+#[test]
+fn crash_recovery_next_session_increments_seq() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_path = dir.path().display().to_string();
+
+    let crashed_seq;
+    {
+        let mut glean = Glean::with_options(&data_path, GLOBAL_APPLICATION_ID, true, true);
+        glean.handle_client_active();
+        crashed_seq = glean.session_manager().session_seq;
+        // Drop without handle_client_inactive — simulates crash.
+    }
+
+    let mut glean2 = Glean::with_options(&data_path, GLOBAL_APPLICATION_ID, true, true);
+    glean2.recover_session_on_dirty_flag();
+
+    // Start a new session after recovery.
+    glean2.handle_client_active();
+
+    assert_eq!(
+        crashed_seq + 1,
+        glean2.session_manager().session_seq,
+        "new session after crash recovery must have session_seq = crashed_seq + 1"
+    );
+}
+
+/// When the dirty flag is set, a session_id is persisted, AND an inactive_since
+/// timestamp is persisted, crash recovery emits session_end with reason="abnormal_inactive".
+#[test]
+fn crash_recovery_emits_abnormal_inactive_session_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_path = dir.path().display().to_string();
+
+    {
+        let mut glean = Glean::with_options(&data_path, GLOBAL_APPLICATION_ID, true, true);
+        glean.handle_client_active(); // dirty=true, session persisted
+                                      // Manually persist inactive_since to simulate a crash while inactive
+                                      // (dirty flag was set before backgrounding, then the app crashed
+                                      // mid-shutdown before clearing it).
+        let now = chrono::Local::now().fixed_offset();
+        crate::session::persist_inactive_since(&glean, now);
+        // Drop without clearing dirty flag.
+    }
+
+    let mut glean2 = Glean::with_options(&data_path, GLOBAL_APPLICATION_ID, true, true);
+    assert!(glean2.is_dirty_flag_set());
+
+    glean2.recover_session_on_dirty_flag();
+
+    let events = session_end_metric_internal()
+        .get_value(&glean2, "events")
+        .expect("expected synthetic session_end after crash recovery");
+    assert_eq!(1, events.len());
+    let extra = events[0].extra.as_ref().expect("expected extras");
+    assert_eq!(
+        "abnormal_inactive",
+        extra.get("reason").expect("reason missing"),
+        "crashed inactive session must produce reason='abnormal_inactive'"
+    );
+}
+
+/// When the dirty flag is set but no session_id is persisted, crash recovery
+/// is a no-op (no synthetic session_end emitted).
+#[test]
+fn crash_recovery_no_session_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_path = dir.path().display().to_string();
+
+    {
+        let glean = Glean::with_options(&data_path, GLOBAL_APPLICATION_ID, true, true);
+        // Set dirty flag without starting a session.
+        glean.set_dirty_flag(true);
+        // Drop.
+    }
+
+    let mut glean2 = Glean::with_options(&data_path, GLOBAL_APPLICATION_ID, true, true);
+    assert!(glean2.is_dirty_flag_set());
+
+    glean2.recover_session_on_dirty_flag();
+
+    assert!(
+        session_end_metric_internal()
+            .get_value(&glean2, "events")
+            .is_none(),
+        "crash recovery without a persisted session must not emit any event"
+    );
+}
+
+#[test]
+fn test_storing_and_fetching_submitted_pings() {
+    let (glean, _temp) = new_glean(None);
+
+    let utc_time_one = DateTime::parse_from_rfc3339("2026-08-05T12:30:00.50Z")
+        .unwrap()
+        .to_utc();
+    let utc_time_two = DateTime::parse_from_rfc3339("2026-08-05T12:30:00.51Z")
+        .unwrap()
+        .to_utc();
+    let utc_time_three = DateTime::parse_from_rfc3339("2026-08-05T12:30:00.52Z")
+        .unwrap()
+        .to_utc();
+
+    // First ping, no upload date
+    glean
+        .storage()
+        .store_submitted_ping(
+            "id",
+            "ping",
+            utc_time_one,
+            None,
+            None,
+            json!({ "test": "a value" }),
+        )
+        .unwrap();
+
+    // Second ping, no upload date
+    glean
+        .storage()
+        .store_submitted_ping(
+            "id-one",
+            "ping-two",
+            utc_time_two,
+            None,
+            None,
+            json!({ "test": "a value" }),
+        )
+        .unwrap();
+
+    // Second ping again, with upload date .01s after submitted date
+    glean
+        .storage()
+        .store_submitted_ping(
+            "id-one",
+            "ping-two",
+            utc_time_two,
+            Some(utc_time_two),
+            None,
+            json!({ "test": "a value" }),
+        )
+        .unwrap();
+
+    // Third ping, upload failed
+    glean
+        .storage()
+        .store_submitted_ping(
+            "id-two",
+            "ping-three",
+            utc_time_three,
+            None,
+            Some(utc_time_three),
+            json!({ "test": "a value" }),
+        )
+        .unwrap();
+
+    let all_pings = glean.storage().get_all_submitted_pings();
+    assert_eq!(all_pings.len(), 3);
+    assert_eq!(all_pings.last().unwrap().document_id, "id".to_string());
+    assert_eq!(all_pings.get(1).unwrap().document_id, "id-one".to_string());
+    assert_eq!(all_pings.get(1).unwrap().submitted_date(), utc_time_two);
+    assert_eq!(
+        all_pings.get(1).unwrap().uploaded_date().unwrap(),
+        utc_time_two
+    );
+    assert_eq!(
+        all_pings.get(1).unwrap().payload.clone().unwrap(),
+        json!({ "test": "a value" })
+    );
+    assert_eq!(all_pings.first().unwrap().document_id, "id-two");
+    assert!(all_pings.first().unwrap().upload_failed.is_some());
+
+    let count = glean.storage().mark_ping_as_uploaded("id", utc_time_one);
+    assert_eq!(count, 1);
+
+    let some_pings = glean.storage().get_submitted_pings_by_name("ping");
+    assert_eq!(some_pings.len(), 1);
+    assert_eq!(some_pings.first().unwrap().document_id, "id".to_string());
+    assert_eq!(
+        some_pings.first().unwrap().uploaded_date().unwrap(),
+        utc_time_one
+    );
+}
+
+#[test]
+fn test_cleanup_of_submitted_pings() {
+    let (glean, _temp) = new_glean(None);
+
+    let utc_time_more_than_30_days_ago = DateTime::parse_from_rfc3339("2026-06-05T12:30:00.50Z")
+        .unwrap()
+        .to_utc();
+
+    // Submitted ping from more than 30 days ago
+    glean
+        .storage()
+        .store_submitted_ping(
+            "id-one",
+            "ping",
+            utc_time_more_than_30_days_ago,
+            None,
+            None,
+            json!({ "test": "a value" }),
+        )
+        .unwrap();
+
+    // Submitted ping from now
+    glean
+        .storage()
+        .store_submitted_ping(
+            "id-two",
+            "ping",
+            Utc::now(),
+            None,
+            None,
+            json!({ "test": "a value" }),
+        )
+        .unwrap();
+
+    // Both pings should have been stored
+    let all_pings = glean.storage().get_all_submitted_pings();
+    assert_eq!(all_pings.len(), 2);
+
+    // Run regular maintenance (happens on shutdown)
+    // This should only remove the ping from >30 days ago
+    glean
+        .storage()
+        .cleanup_submitted_pings(None)
+        .expect("Error running cleanup_submitted_pings");
+
+    let all_pings = glean.storage().get_all_submitted_pings();
+    assert_eq!(all_pings.len(), 1);
+    assert_eq!(all_pings.first().unwrap().document_id, "id-two".to_string());
+
+    // Run `cleanup_submitted_pings` with now as the `before_time`
+    // This should clear out all pings
+    glean
+        .storage()
+        .cleanup_submitted_pings(Some(Utc::now()))
+        .expect("Error running cleanup_submitted_pings");
+
+    let all_pings = glean.storage().get_all_submitted_pings();
+    assert_eq!(all_pings.len(), 0);
 }

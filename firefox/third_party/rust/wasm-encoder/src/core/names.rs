@@ -1,6 +1,7 @@
-use std::borrow::Cow;
-
-use crate::{encoding_size, CustomSection, Encode, Section, SectionId};
+use crate::{CustomSection, Encode, Section, SectionId, encoding_size};
+use alloc::borrow::Cow;
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// An encoder for the custom `name` section.
 ///
@@ -215,7 +216,7 @@ impl Section for NameSection {
 /// A map used to name items in a wasm module, organized by naming each
 /// individual index.
 ///
-/// This is used in conjunction with [`NameSection::functions`] and simlar
+/// This is used in conjunction with [`NameSection::functions`] and similar
 /// methods.
 #[derive(Clone, Debug, Default)]
 pub struct NameMap {

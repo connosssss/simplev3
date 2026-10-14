@@ -6,8 +6,7 @@
 set -ve
 
 apt-get update -q
-apt-get install \
-    arcanist \
+apt-get install -y --no-install-recommends \
     curl \
     jq \
     libasound2 \
@@ -20,5 +19,25 @@ apt-get install \
     unzip \
     bzip2 \
     wget
+
+uv tool install MozPhab==2.19.0
+
+# turn off update checks
+cat >"$HOME"/.moz-phab-config<<EOF
+[updater]
+self_last_check = -1
+self_auto_update = False
+EOF
+
+cat >"$HOME"/.hgrc<<EOF
+[ui]
+username = ffxbld <ffxbld@mozilla.com>
+EOF
+
+cat >"$HOME"/.gitconfig<<EOF
+[user]
+name = ffxbld
+email = ffxbld@mozilla.com
+EOF
 
 rm -rf /setup

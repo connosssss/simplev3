@@ -47,7 +47,7 @@ export function rawSuggestionUrlMatches(
 FfiConverterString.checkType(rawUrl);
 FfiConverterString.checkType(cookedUrl);
 const result = UniFFIScaffolding.callSync(
-    40, // uniffi_suggest_fn_func_raw_suggestion_url_matches
+    27, // uniffi_suggest_fn_func_raw_suggestion_url_matches
     FfiConverterString.lower(rawUrl),
     FfiConverterString.lower(cookedUrl),
 )
@@ -57,6 +57,7 @@ return handleRustResult(
     null,
 )
 }
+
 
 
 
@@ -138,16 +139,19 @@ export class AlternateNames {
         }
         /**
          * The entity's primary name. For a `Geoname`, this is `Geoname::name`.
+         * @type {string}
          */
         this.primary = primary;
         /**
          * The entity's name in the language that was ingested according to the
          * locale in the remote settings context. If none exists and this
          * `AlternateNames` is for a `Geoname`, then this will be its primary name.
+         * @type {?string}
          */
         this.localized = localized;
         /**
          * The entity's abbreviation, if any.
+         * @type {?string}
          */
         this.abbreviation = abbreviation;
     }
@@ -248,10 +252,12 @@ export class FtsMatchInfo {
         }
         /**
          * Was this a prefix match (`water b` matched against `water bottle`)
+         * @type {boolean}
          */
         this.prefix = prefix;
         /**
          * Did the match require stemming? (`run shoes` matched against `running shoes`)
+         * @type {boolean}
          */
         this.stemming = stemming;
     }
@@ -614,19 +620,23 @@ export class Geoname {
         }
         /**
          * The `geonameid` straight from the geoname table.
+         * @type {number}
          */
         this.geonameId = geonameId;
         /**
          * The geoname type. This is derived from `feature_class` and
          * `feature_code` as a more convenient representation of the type.
+         * @type {GeonameType[keyof GeonameType]}
          */
         this.geonameType = geonameType;
         /**
          * The place's primary name.
+         * @type {string}
          */
         this.name = name;
         /**
          * ISO-3166 two-letter uppercase country code, e.g., "US".
+         * @type {string}
          */
         this.countryCode = countryCode;
         /**
@@ -635,6 +645,7 @@ export class Geoname {
          * "PCLI" - Independent political entity: country
          * "A" - Administrative division: state, province, borough, district, etc.
          * "P" - Populated place: city, village, etc.
+         * @type {string}
          */
         this.featureClass = featureClass;
         /**
@@ -642,6 +653,7 @@ export class Geoname {
          * 
          * "ADM1" - Administrative division 1
          * "PPL" - Populated place like a city
+         * @type {string}
          */
         this.featureCode = featureCode;
         /**
@@ -649,18 +661,22 @@ export class Geoname {
          * their corresponding codes. For example, Liverpool has two admin
          * divisions: "ENG" at level 1 and "H8" at level 2. They would be
          * represented in this map with entries `(1, "ENG")` and `(2, "H8")`.
+         * @type {Map}
          */
         this.adminDivisionCodes = adminDivisionCodes;
         /**
          * Population size.
+         * @type {number}
          */
         this.population = population;
         /**
          * Latitude in decimal degrees (as a string).
+         * @type {string}
          */
         this.latitude = latitude;
         /**
          * Longitude in decimal degrees (as a string).
+         * @type {string}
          */
         this.longitude = longitude;
     }
@@ -943,17 +959,20 @@ export class GeonameAlternates {
         }
         /**
          * Names for the geoname itself.
+         * @type {AlternateNames}
          */
         this.geoname = geoname;
         /**
          * Names for the geoname's country. This will be `Some` as long as the
          * country is also in the ingested data, which should typically be true.
+         * @type {?AlternateNames}
          */
         this.country = country;
         /**
          * Names for the geoname's admin divisions. This is parallel to
          * `Geoname::admin_division_codes`. If there are no names in the ingested
          * data for an admin division, then it will be absent from this map.
+         * @type {Map}
          */
         this.adminDivisions = adminDivisions;
     }
@@ -1025,7 +1044,7 @@ export class FfiConverterTypeGeonameAlternates extends FfiConverterArrayBuffer {
 /**
  * GeonameMatchType
  */
-export const GeonameMatchType = {
+export const GeonameMatchType = Object.freeze({
     /**
      * ABBREVIATION
      */
@@ -1038,8 +1057,7 @@ export const GeonameMatchType = {
      * This includes any names that aren't abbreviations or airport codes.
      */
     NAME: 2,
-};
-Object.freeze(GeonameMatchType);
+});
 
 // Export the FFIConverter object to make external types work.
 export class FfiConverterTypeGeonameMatchType extends FfiConverterArrayBuffer {
@@ -1128,14 +1146,17 @@ export class GeonameMatch {
         }
         /**
          * The geoname that was matched.
+         * @type {Geoname}
          */
         this.geoname = geoname;
         /**
          * The type of name that was matched.
+         * @type {GeonameMatchType[keyof GeonameMatchType]}
          */
         this.matchType = matchType;
         /**
          * Whether the name was matched by prefix.
+         * @type {boolean}
          */
         this.prefix = prefix;
     }
@@ -1233,11 +1254,12 @@ export class LabeledTimingSample {
             throw e;
         }
         /**
-         * label
+         * @type {string}
          */
         this.label = label;
         /**
          * Time in microseconds
+         * @type {number}
          */
         this.value = value;
     }
@@ -1334,6 +1356,51 @@ export class FfiConverterOptionalBytes extends FfiConverterArrayBuffer {
 
 
 // Export the FFIConverter object to make external types work.
+export class FfiConverterSequenceInt32 extends FfiConverterArrayBuffer {
+    static read(dataStream) {
+        const len = dataStream.readInt32();
+        const arr = [];
+        for (let i = 0; i < len; i++) {
+            arr.push(FfiConverterInt32.read(dataStream));
+        }
+        return arr;
+    }
+
+    static write(dataStream, value) {
+        dataStream.writeInt32(value.length);
+        value.forEach((innerValue) => {
+            FfiConverterInt32.write(dataStream, innerValue);
+        })
+    }
+
+    static computeSize(value) {
+        // The size of the length
+        let size = 4;
+        for (const innerValue of value) {
+            size += FfiConverterInt32.computeSize(innerValue);
+        }
+        return size;
+    }
+
+    static checkType(value) {
+        if (!Array.isArray(value)) {
+            throw new UniFFITypeError(`${value} is not an array`);
+        }
+        value.forEach((innerValue, idx) => {
+            try {
+                FfiConverterInt32.checkType(innerValue);
+            } catch (e) {
+                if (e instanceof UniFFITypeError) {
+                    e.addItemDescriptionPart(`[${idx}]`);
+                }
+                throw e;
+            }
+        })
+    }
+}
+
+
+// Export the FFIConverter object to make external types work.
 export class FfiConverterOptionalTypeFtsMatchInfo extends FfiConverterArrayBuffer {
     static checkType(value) {
         if (value !== undefined && value !== null) {
@@ -1373,7 +1440,7 @@ export class FfiConverterOptionalTypeFtsMatchInfo extends FfiConverterArrayBuffe
 /**
  * Subject type for Yelp suggestion.
  */
-export const YelpSubjectType = {
+export const YelpSubjectType = Object.freeze({
     /**
      * SERVICE
      */
@@ -1382,8 +1449,7 @@ export const YelpSubjectType = {
      * BUSINESS
      */
     BUSINESS: 1,
-};
-Object.freeze(YelpSubjectType);
+});
 
 // Export the FFIConverter object to make external types work.
 export class FfiConverterTypeYelpSubjectType extends FfiConverterArrayBuffer {
@@ -1534,7 +1600,7 @@ export class Suggestion {}
  * Amp
  */
 Suggestion.Amp = class extends Suggestion{
-   constructor({title = undefined, url = undefined, rawUrl = undefined, icon = undefined, iconMimetype = undefined, fullKeyword = undefined, blockId = undefined, advertiser = undefined, iabCategory = undefined, impressionUrl = undefined, clickUrl = undefined, rawClickUrl = undefined, score = undefined, ftsMatchInfo = undefined } = {}) {
+   constructor({title = undefined, url = undefined, rawUrl = undefined, icon = undefined, iconMimetype = undefined, fullKeyword = undefined, blockId = undefined, advertiser = undefined, iabCategory = undefined, categories = undefined, impressionUrl = undefined, clickUrl = undefined, rawClickUrl = undefined, score = undefined, ftsMatchInfo = undefined, suggestionId = undefined } = {}) {
                 super();
             try {
                 FfiConverterString.checkType(title);
@@ -1609,6 +1675,14 @@ Suggestion.Amp = class extends Suggestion{
                 throw e;
             }
             this.iabCategory = iabCategory;try {
+                FfiConverterSequenceInt32.checkType(categories);
+            } catch (e) {
+                if (e instanceof UniFFITypeError) {
+                    e.addItemDescriptionPart("categories");
+                }
+                throw e;
+            }
+            this.categories = categories;try {
                 FfiConverterString.checkType(impressionUrl);
             } catch (e) {
                 if (e instanceof UniFFITypeError) {
@@ -1648,7 +1722,15 @@ Suggestion.Amp = class extends Suggestion{
                 }
                 throw e;
             }
-            this.ftsMatchInfo = ftsMatchInfo;
+            this.ftsMatchInfo = ftsMatchInfo;try {
+                FfiConverterString.checkType(suggestionId);
+            } catch (e) {
+                if (e instanceof UniFFITypeError) {
+                    e.addItemDescriptionPart("suggestionId");
+                }
+                throw e;
+            }
+            this.suggestionId = suggestionId;
     }
 }
 /**
@@ -1921,95 +2003,6 @@ Suggestion.Weather = class extends Suggestion{
     }
 }
 /**
- * Fakespot
- */
-Suggestion.Fakespot = class extends Suggestion{
-   constructor({fakespotGrade = undefined, productId = undefined, rating = undefined, title = undefined, totalReviews = undefined, url = undefined, icon = undefined, iconMimetype = undefined, score = undefined, matchInfo = undefined } = {}) {
-                super();
-            try {
-                FfiConverterString.checkType(fakespotGrade);
-            } catch (e) {
-                if (e instanceof UniFFITypeError) {
-                    e.addItemDescriptionPart("fakespotGrade");
-                }
-                throw e;
-            }
-            this.fakespotGrade = fakespotGrade;try {
-                FfiConverterString.checkType(productId);
-            } catch (e) {
-                if (e instanceof UniFFITypeError) {
-                    e.addItemDescriptionPart("productId");
-                }
-                throw e;
-            }
-            this.productId = productId;try {
-                FfiConverterFloat64.checkType(rating);
-            } catch (e) {
-                if (e instanceof UniFFITypeError) {
-                    e.addItemDescriptionPart("rating");
-                }
-                throw e;
-            }
-            this.rating = rating;try {
-                FfiConverterString.checkType(title);
-            } catch (e) {
-                if (e instanceof UniFFITypeError) {
-                    e.addItemDescriptionPart("title");
-                }
-                throw e;
-            }
-            this.title = title;try {
-                FfiConverterInt64.checkType(totalReviews);
-            } catch (e) {
-                if (e instanceof UniFFITypeError) {
-                    e.addItemDescriptionPart("totalReviews");
-                }
-                throw e;
-            }
-            this.totalReviews = totalReviews;try {
-                FfiConverterString.checkType(url);
-            } catch (e) {
-                if (e instanceof UniFFITypeError) {
-                    e.addItemDescriptionPart("url");
-                }
-                throw e;
-            }
-            this.url = url;try {
-                FfiConverterOptionalBytes.checkType(icon);
-            } catch (e) {
-                if (e instanceof UniFFITypeError) {
-                    e.addItemDescriptionPart("icon");
-                }
-                throw e;
-            }
-            this.icon = icon;try {
-                FfiConverterOptionalString.checkType(iconMimetype);
-            } catch (e) {
-                if (e instanceof UniFFITypeError) {
-                    e.addItemDescriptionPart("iconMimetype");
-                }
-                throw e;
-            }
-            this.iconMimetype = iconMimetype;try {
-                FfiConverterFloat64.checkType(score);
-            } catch (e) {
-                if (e instanceof UniFFITypeError) {
-                    e.addItemDescriptionPart("score");
-                }
-                throw e;
-            }
-            this.score = score;try {
-                FfiConverterOptionalTypeFtsMatchInfo.checkType(matchInfo);
-            } catch (e) {
-                if (e instanceof UniFFITypeError) {
-                    e.addItemDescriptionPart("matchInfo");
-                }
-                throw e;
-            }
-            this.matchInfo = matchInfo;
-    }
-}
-/**
  * Dynamic
  */
 Suggestion.Dynamic = class extends Suggestion{
@@ -2067,11 +2060,13 @@ export class FfiConverterTypeSuggestion extends FfiConverterArrayBuffer {
                     blockId: FfiConverterInt64.read(dataStream),
                     advertiser: FfiConverterString.read(dataStream),
                     iabCategory: FfiConverterString.read(dataStream),
+                    categories: FfiConverterSequenceInt32.read(dataStream),
                     impressionUrl: FfiConverterString.read(dataStream),
                     clickUrl: FfiConverterString.read(dataStream),
                     rawClickUrl: FfiConverterString.read(dataStream),
                     score: FfiConverterFloat64.read(dataStream),
-                    ftsMatchInfo: FfiConverterOptionalTypeFtsMatchInfo.read(dataStream)
+                    ftsMatchInfo: FfiConverterOptionalTypeFtsMatchInfo.read(dataStream),
+                    suggestionId: FfiConverterString.read(dataStream)
                 });
             case 2:
                 return new Suggestion.Wikipedia({
@@ -2117,19 +2112,6 @@ export class FfiConverterTypeSuggestion extends FfiConverterArrayBuffer {
                     score: FfiConverterFloat64.read(dataStream)
                 });
             case 7:
-                return new Suggestion.Fakespot({
-                    fakespotGrade: FfiConverterString.read(dataStream),
-                    productId: FfiConverterString.read(dataStream),
-                    rating: FfiConverterFloat64.read(dataStream),
-                    title: FfiConverterString.read(dataStream),
-                    totalReviews: FfiConverterInt64.read(dataStream),
-                    url: FfiConverterString.read(dataStream),
-                    icon: FfiConverterOptionalBytes.read(dataStream),
-                    iconMimetype: FfiConverterOptionalString.read(dataStream),
-                    score: FfiConverterFloat64.read(dataStream),
-                    matchInfo: FfiConverterOptionalTypeFtsMatchInfo.read(dataStream)
-                });
-            case 8:
                 return new Suggestion.Dynamic({
                     suggestionType: FfiConverterString.read(dataStream),
                     data: FfiConverterOptionalTypeJsonValue.read(dataStream),
@@ -2154,11 +2136,13 @@ export class FfiConverterTypeSuggestion extends FfiConverterArrayBuffer {
             FfiConverterInt64.write(dataStream, value.blockId);
             FfiConverterString.write(dataStream, value.advertiser);
             FfiConverterString.write(dataStream, value.iabCategory);
+            FfiConverterSequenceInt32.write(dataStream, value.categories);
             FfiConverterString.write(dataStream, value.impressionUrl);
             FfiConverterString.write(dataStream, value.clickUrl);
             FfiConverterString.write(dataStream, value.rawClickUrl);
             FfiConverterFloat64.write(dataStream, value.score);
             FfiConverterOptionalTypeFtsMatchInfo.write(dataStream, value.ftsMatchInfo);
+            FfiConverterString.write(dataStream, value.suggestionId);
             return;
         }
         if (value instanceof Suggestion.Wikipedia) {
@@ -2209,22 +2193,8 @@ export class FfiConverterTypeSuggestion extends FfiConverterArrayBuffer {
             FfiConverterFloat64.write(dataStream, value.score);
             return;
         }
-        if (value instanceof Suggestion.Fakespot) {
-            dataStream.writeInt32(7);
-            FfiConverterString.write(dataStream, value.fakespotGrade);
-            FfiConverterString.write(dataStream, value.productId);
-            FfiConverterFloat64.write(dataStream, value.rating);
-            FfiConverterString.write(dataStream, value.title);
-            FfiConverterInt64.write(dataStream, value.totalReviews);
-            FfiConverterString.write(dataStream, value.url);
-            FfiConverterOptionalBytes.write(dataStream, value.icon);
-            FfiConverterOptionalString.write(dataStream, value.iconMimetype);
-            FfiConverterFloat64.write(dataStream, value.score);
-            FfiConverterOptionalTypeFtsMatchInfo.write(dataStream, value.matchInfo);
-            return;
-        }
         if (value instanceof Suggestion.Dynamic) {
-            dataStream.writeInt32(8);
+            dataStream.writeInt32(7);
             FfiConverterString.write(dataStream, value.suggestionType);
             FfiConverterOptionalTypeJsonValue.write(dataStream, value.data);
             FfiConverterOptionalString.write(dataStream, value.dismissalKey);
@@ -2247,11 +2217,13 @@ export class FfiConverterTypeSuggestion extends FfiConverterArrayBuffer {
             totalSize += FfiConverterInt64.computeSize(value.blockId);
             totalSize += FfiConverterString.computeSize(value.advertiser);
             totalSize += FfiConverterString.computeSize(value.iabCategory);
+            totalSize += FfiConverterSequenceInt32.computeSize(value.categories);
             totalSize += FfiConverterString.computeSize(value.impressionUrl);
             totalSize += FfiConverterString.computeSize(value.clickUrl);
             totalSize += FfiConverterString.computeSize(value.rawClickUrl);
             totalSize += FfiConverterFloat64.computeSize(value.score);
             totalSize += FfiConverterOptionalTypeFtsMatchInfo.computeSize(value.ftsMatchInfo);
+            totalSize += FfiConverterString.computeSize(value.suggestionId);
             return totalSize;
         }
         if (value instanceof Suggestion.Wikipedia) {
@@ -2295,19 +2267,6 @@ export class FfiConverterTypeSuggestion extends FfiConverterArrayBuffer {
         if (value instanceof Suggestion.Weather) {
             totalSize += FfiConverterOptionalTypeGeoname.computeSize(value.city);
             totalSize += FfiConverterFloat64.computeSize(value.score);
-            return totalSize;
-        }
-        if (value instanceof Suggestion.Fakespot) {
-            totalSize += FfiConverterString.computeSize(value.fakespotGrade);
-            totalSize += FfiConverterString.computeSize(value.productId);
-            totalSize += FfiConverterFloat64.computeSize(value.rating);
-            totalSize += FfiConverterString.computeSize(value.title);
-            totalSize += FfiConverterInt64.computeSize(value.totalReviews);
-            totalSize += FfiConverterString.computeSize(value.url);
-            totalSize += FfiConverterOptionalBytes.computeSize(value.icon);
-            totalSize += FfiConverterOptionalString.computeSize(value.iconMimetype);
-            totalSize += FfiConverterFloat64.computeSize(value.score);
-            totalSize += FfiConverterOptionalTypeFtsMatchInfo.computeSize(value.matchInfo);
             return totalSize;
         }
         if (value instanceof Suggestion.Dynamic) {
@@ -2442,11 +2401,12 @@ export class QueryWithMetricsResult {
             throw e;
         }
         /**
-         * suggestions
+         * @type {Array.<Suggestion[keyof Suggestion]>}
          */
         this.suggestions = suggestions;
         /**
          * Samples for the `suggest.query_time` metric
+         * @type {Array.<LabeledTimingSample>}
          */
         this.queryTimes = queryTimes;
     }
@@ -2502,8 +2462,6 @@ export class FfiConverterTypeQueryWithMetricsResult extends FfiConverterArrayBuf
         }
     }
 }
-
-
 /**
  * Global Suggest configuration data.
  */
@@ -2524,7 +2482,7 @@ export class SuggestGlobalConfig {
             throw e;
         }
         /**
-         * showLessFrequentlyCap
+         * @type {number}
          */
         this.showLessFrequentlyCap = showLessFrequentlyCap;
     }
@@ -2574,7 +2532,7 @@ export class FfiConverterTypeSuggestGlobalConfig extends FfiConverterArrayBuffer
  * Please preserve the integer values after removing or adding providers.
  * Provider configs are associated with integer keys stored in the database.
  */
-export const SuggestionProvider = {
+export const SuggestionProvider = Object.freeze({
     /**
      * AMP
      */
@@ -2600,15 +2558,10 @@ export const SuggestionProvider = {
      */
     WEATHER: 7,
     /**
-     * FAKESPOT
-     */
-    FAKESPOT: 8,
-    /**
      * DYNAMIC
      */
     DYNAMIC: 9,
-};
-Object.freeze(SuggestionProvider);
+});
 
 // Export the FFIConverter object to make external types work.
 export class FfiConverterTypeSuggestionProvider extends FfiConverterArrayBuffer {
@@ -2630,8 +2583,6 @@ export class FfiConverterTypeSuggestionProvider extends FfiConverterArrayBuffer 
             case 6:
                 return SuggestionProvider.WEATHER
             case 7:
-                return SuggestionProvider.FAKESPOT
-            case 8:
                 return SuggestionProvider.DYNAMIC
             default:
                 throw new UniFFITypeError("Unknown SuggestionProvider variant");
@@ -2664,12 +2615,8 @@ export class FfiConverterTypeSuggestionProvider extends FfiConverterArrayBuffer 
             dataStream.writeInt32(6);
             return;
         }
-        if (value === SuggestionProvider.FAKESPOT) {
-            dataStream.writeInt32(7);
-            return;
-        }
         if (value === SuggestionProvider.DYNAMIC) {
-            dataStream.writeInt32(8);
+            dataStream.writeInt32(7);
             return;
         }
         throw new UniFFITypeError("Unknown SuggestionProvider variant");
@@ -2848,7 +2795,7 @@ export class FfiConverterOptionalSequenceString extends FfiConverterArrayBuffer 
 /**
  * AmpMatchingStrategy
  */
-export const AmpMatchingStrategy = {
+export const AmpMatchingStrategy = Object.freeze({
     /**
      * Disable keywords added via keyword expansion.
      * This eliminates keywords that for terms related to the "real" keywords, for example
@@ -2863,8 +2810,7 @@ export const AmpMatchingStrategy = {
      * Use FTS matching against the title field
      */
     FTS_AGAINST_TITLE: 3,
-};
-Object.freeze(AmpMatchingStrategy);
+});
 
 // Export the FFIConverter object to make external types work.
 export class FfiConverterTypeAmpMatchingStrategy extends FfiConverterArrayBuffer {
@@ -2981,11 +2927,13 @@ export class SuggestionProviderConstraints {
         /**
          * Which dynamic suggestions should we fetch or ingest? Corresponds to the
          * `suggestion_type` value in dynamic suggestions remote settings records.
+         * @type {?Array.<string>}
          */
         this.dynamicSuggestionTypes = dynamicSuggestionTypes;
         /**
          * Which strategy should we use for the AMP queries?
          * Use None for the default strategy.
+         * @type {?AmpMatchingStrategy[keyof AmpMatchingStrategy]}
          */
         this.ampAlternativeMatching = ampAlternativeMatching;
     }
@@ -3117,16 +3065,17 @@ export class SuggestIngestionConstraints {
             throw e;
         }
         /**
-         * providers
+         * @type {?Array.<SuggestionProvider[keyof SuggestionProvider]>}
          */
         this.providers = providers;
         /**
-         * providerConstraints
+         * @type {?SuggestionProviderConstraints}
          */
         this.providerConstraints = providerConstraints;
         /**
          * Only run ingestion if the table `suggestions` is empty
          * 
+         * @type {boolean}
          */
         this.emptyOnly = emptyOnly;
     }
@@ -3227,10 +3176,12 @@ export class SuggestIngestionMetrics {
         }
         /**
          * Samples for the `suggest.ingestion_time` metric
+         * @type {Array.<LabeledTimingSample>}
          */
         this.ingestionTimes = ingestionTimes;
         /**
          * Samples for the `suggest.ingestion_download_time` metric
+         * @type {Array.<LabeledTimingSample>}
          */
         this.downloadTimes = downloadTimes;
     }
@@ -3372,19 +3323,19 @@ export class SuggestionQuery {
             throw e;
         }
         /**
-         * keyword
+         * @type {string}
          */
         this.keyword = keyword;
         /**
-         * providers
+         * @type {Array.<SuggestionProvider[keyof SuggestionProvider]>}
          */
         this.providers = providers;
         /**
-         * providerConstraints
+         * @type {?SuggestionProviderConstraints}
          */
         this.providerConstraints = providerConstraints;
         /**
-         * limit
+         * @type {?number}
          */
         this.limit = limit;
     }
@@ -3468,7 +3419,7 @@ export class FfiConverterTypeSuggestionQuery extends FfiConverterArrayBuffer {
 /**
  * What should be interrupted when [SuggestStore::interrupt] is called?
  */
-export const InterruptKind = {
+export const InterruptKind = Object.freeze({
     /**
      * Interrupt read operations like [SuggestStore::query]
      */
@@ -3482,8 +3433,7 @@ export const InterruptKind = {
      * Interrupt both read and write operations,
      */
     READ_WRITE: 2,
-};
-Object.freeze(InterruptKind);
+});
 
 // Export the FFIConverter object to make external types work.
 export class FfiConverterTypeInterruptKind extends FfiConverterArrayBuffer {
@@ -4013,7 +3963,7 @@ export class SuggestStoreInterface {
      * Dismiss a suggestion.
      * 
      * Dismissed suggestions cannot be fetched again.
-     * @param {Suggestion} suggestion
+     * @param {Suggestion[keyof Suggestion]} suggestion
      */
     async dismissBySuggestion(
         suggestion) {
@@ -4068,8 +4018,8 @@ export class SuggestStoreInterface {
     }
     /**
      * Returns per-provider Suggest configuration data.
-     * @param {SuggestionProvider} provider
-     * @returns {Promise<?SuggestProviderConfig>}}
+     * @param {SuggestionProvider[keyof SuggestionProvider]} provider
+     * @returns {Promise<?SuggestProviderConfig[keyof SuggestProviderConfig]>}}
      */
     async fetchProviderConfig(
         provider) {
@@ -4090,7 +4040,7 @@ export class SuggestStoreInterface {
      * This should be called when the user types new input into the address
      * bar, to ensure that they see fresh suggestions as they type. This
      * method does not interrupt any ongoing ingests.
-     * @param {?InterruptKind} kind
+     * @param {?InterruptKind[keyof InterruptKind]} kind
      */
     interrupt(
         kind = null) {
@@ -4116,7 +4066,7 @@ export class SuggestStoreInterface {
      * [SuggestStore::query] will never return dismissed suggestions, so
      * normally you never need to know whether a `Suggestion` has been
      * dismissed, but this method can be used to do so.
-     * @param {Suggestion} suggestion
+     * @param {Suggestion[keyof Suggestion]} suggestion
      * @returns {Promise<boolean>}}
      */
     async isDismissedBySuggestion(
@@ -4126,7 +4076,7 @@ export class SuggestStoreInterface {
     /**
      * Queries the database for suggestions.
      * @param {SuggestionQuery} query
-     * @returns {Promise<Array.<Suggestion>>}}
+     * @returns {Promise<Array.<Suggestion[keyof Suggestion]>>}}
      */
     async query(
         query) {
@@ -4201,7 +4151,7 @@ export class SuggestStore extends SuggestStoreInterface {
         FfiConverterString.checkType(path);
         FfiConverterTypeRemoteSettingsService.checkType(remoteSettingsService);
         const result = UniFFIScaffolding.callSync(
-            41, // uniffi_suggest_fn_constructor_suggeststore_new
+            222, // uniffi_suggest_fn_constructor_suggeststore_new
             FfiConverterString.lower(path),
             FfiConverterTypeRemoteSettingsService.lower(remoteSettingsService),
         )
@@ -4219,7 +4169,7 @@ export class SuggestStore extends SuggestStoreInterface {
     async anyDismissedSuggestions() {
        
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            42, // uniffi_suggest_fn_method_suggeststore_any_dismissed_suggestions
+            223, // uniffi_suggest_fn_method_suggeststore_any_dismissed_suggestions
             FfiConverterTypeSuggestStore.lowerReceiver(this),
         )
         return handleRustResult(
@@ -4235,7 +4185,7 @@ export class SuggestStore extends SuggestStoreInterface {
     async clear() {
        
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            43, // uniffi_suggest_fn_method_suggeststore_clear
+            224, // uniffi_suggest_fn_method_suggeststore_clear
             FfiConverterTypeSuggestStore.lowerReceiver(this),
         )
         return handleRustResult(
@@ -4251,7 +4201,7 @@ export class SuggestStore extends SuggestStoreInterface {
     async clearDismissedSuggestions() {
        
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            44, // uniffi_suggest_fn_method_suggeststore_clear_dismissed_suggestions
+            225, // uniffi_suggest_fn_method_suggeststore_clear_dismissed_suggestions
             FfiConverterTypeSuggestStore.lowerReceiver(this),
         )
         return handleRustResult(
@@ -4276,7 +4226,7 @@ export class SuggestStore extends SuggestStoreInterface {
        
         FfiConverterString.checkType(key);
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            45, // uniffi_suggest_fn_method_suggeststore_dismiss_by_key
+            226, // uniffi_suggest_fn_method_suggeststore_dismiss_by_key
             FfiConverterTypeSuggestStore.lowerReceiver(this),
             FfiConverterString.lower(key),
         )
@@ -4291,14 +4241,14 @@ export class SuggestStore extends SuggestStoreInterface {
      * Dismiss a suggestion.
      * 
      * Dismissed suggestions cannot be fetched again.
-     * @param {Suggestion} suggestion
+     * @param {Suggestion[keyof Suggestion]} suggestion
      */
     async dismissBySuggestion(
         suggestion) {
        
         FfiConverterTypeSuggestion.checkType(suggestion);
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            46, // uniffi_suggest_fn_method_suggeststore_dismiss_by_suggestion
+            227, // uniffi_suggest_fn_method_suggeststore_dismiss_by_suggestion
             FfiConverterTypeSuggestStore.lowerReceiver(this),
             FfiConverterTypeSuggestion.lower(suggestion),
         )
@@ -4323,7 +4273,7 @@ export class SuggestStore extends SuggestStoreInterface {
        
         FfiConverterString.checkType(suggestionUrl);
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            47, // uniffi_suggest_fn_method_suggeststore_dismiss_suggestion
+            228, // uniffi_suggest_fn_method_suggeststore_dismiss_suggestion
             FfiConverterTypeSuggestStore.lowerReceiver(this),
             FfiConverterString.lower(suggestionUrl),
         )
@@ -4346,7 +4296,7 @@ export class SuggestStore extends SuggestStoreInterface {
        
         FfiConverterTypeGeoname.checkType(geoname);
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            48, // uniffi_suggest_fn_method_suggeststore_fetch_geoname_alternates
+            229, // uniffi_suggest_fn_method_suggeststore_fetch_geoname_alternates
             FfiConverterTypeSuggestStore.lowerReceiver(this),
             FfiConverterTypeGeoname.lower(geoname),
         )
@@ -4376,7 +4326,7 @@ export class SuggestStore extends SuggestStoreInterface {
         FfiConverterBoolean.checkType(matchNamePrefix);
         FfiConverterOptionalSequenceTypeGeoname.checkType(filter);
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            49, // uniffi_suggest_fn_method_suggeststore_fetch_geonames
+            230, // uniffi_suggest_fn_method_suggeststore_fetch_geonames
             FfiConverterTypeSuggestStore.lowerReceiver(this),
             FfiConverterString.lower(query),
             FfiConverterBoolean.lower(matchNamePrefix),
@@ -4396,7 +4346,7 @@ export class SuggestStore extends SuggestStoreInterface {
     async fetchGlobalConfig() {
        
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            50, // uniffi_suggest_fn_method_suggeststore_fetch_global_config
+            231, // uniffi_suggest_fn_method_suggeststore_fetch_global_config
             FfiConverterTypeSuggestStore.lowerReceiver(this),
         )
         return handleRustResult(
@@ -4408,15 +4358,15 @@ export class SuggestStore extends SuggestStoreInterface {
 
     /**
      * Returns per-provider Suggest configuration data.
-     * @param {SuggestionProvider} provider
-     * @returns {Promise<?SuggestProviderConfig>}}
+     * @param {SuggestionProvider[keyof SuggestionProvider]} provider
+     * @returns {Promise<?SuggestProviderConfig[keyof SuggestProviderConfig]>}}
      */
     async fetchProviderConfig(
         provider) {
        
         FfiConverterTypeSuggestionProvider.checkType(provider);
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            51, // uniffi_suggest_fn_method_suggeststore_fetch_provider_config
+            232, // uniffi_suggest_fn_method_suggeststore_fetch_provider_config
             FfiConverterTypeSuggestStore.lowerReceiver(this),
             FfiConverterTypeSuggestionProvider.lower(provider),
         )
@@ -4437,7 +4387,7 @@ export class SuggestStore extends SuggestStoreInterface {
        
         FfiConverterTypeSuggestIngestionConstraints.checkType(constraints);
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            52, // uniffi_suggest_fn_method_suggeststore_ingest
+            233, // uniffi_suggest_fn_method_suggeststore_ingest
             FfiConverterTypeSuggestStore.lowerReceiver(this),
             FfiConverterTypeSuggestIngestionConstraints.lower(constraints),
         )
@@ -4454,14 +4404,14 @@ export class SuggestStore extends SuggestStoreInterface {
      * This should be called when the user types new input into the address
      * bar, to ensure that they see fresh suggestions as they type. This
      * method does not interrupt any ongoing ingests.
-     * @param {?InterruptKind} kind
+     * @param {?InterruptKind[keyof InterruptKind]} kind
      */
     interrupt(
         kind = null) {
        
         FfiConverterOptionalTypeInterruptKind.checkType(kind);
         const result = UniFFIScaffolding.callSync(
-            53, // uniffi_suggest_fn_method_suggeststore_interrupt
+            234, // uniffi_suggest_fn_method_suggeststore_interrupt
             FfiConverterTypeSuggestStore.lowerReceiver(this),
             FfiConverterOptionalTypeInterruptKind.lower(kind),
         )
@@ -4487,7 +4437,7 @@ export class SuggestStore extends SuggestStoreInterface {
        
         FfiConverterString.checkType(key);
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            54, // uniffi_suggest_fn_method_suggeststore_is_dismissed_by_key
+            235, // uniffi_suggest_fn_method_suggeststore_is_dismissed_by_key
             FfiConverterTypeSuggestStore.lowerReceiver(this),
             FfiConverterString.lower(key),
         )
@@ -4504,7 +4454,7 @@ export class SuggestStore extends SuggestStoreInterface {
      * [SuggestStore::query] will never return dismissed suggestions, so
      * normally you never need to know whether a `Suggestion` has been
      * dismissed, but this method can be used to do so.
-     * @param {Suggestion} suggestion
+     * @param {Suggestion[keyof Suggestion]} suggestion
      * @returns {Promise<boolean>}}
      */
     async isDismissedBySuggestion(
@@ -4512,7 +4462,7 @@ export class SuggestStore extends SuggestStoreInterface {
        
         FfiConverterTypeSuggestion.checkType(suggestion);
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            55, // uniffi_suggest_fn_method_suggeststore_is_dismissed_by_suggestion
+            236, // uniffi_suggest_fn_method_suggeststore_is_dismissed_by_suggestion
             FfiConverterTypeSuggestStore.lowerReceiver(this),
             FfiConverterTypeSuggestion.lower(suggestion),
         )
@@ -4526,14 +4476,14 @@ export class SuggestStore extends SuggestStoreInterface {
     /**
      * Queries the database for suggestions.
      * @param {SuggestionQuery} query
-     * @returns {Promise<Array.<Suggestion>>}}
+     * @returns {Promise<Array.<Suggestion[keyof Suggestion]>>}}
      */
     async query(
         query) {
        
         FfiConverterTypeSuggestionQuery.checkType(query);
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            56, // uniffi_suggest_fn_method_suggeststore_query
+            237, // uniffi_suggest_fn_method_suggeststore_query
             FfiConverterTypeSuggestStore.lowerReceiver(this),
             FfiConverterTypeSuggestionQuery.lower(query),
         )
@@ -4554,7 +4504,7 @@ export class SuggestStore extends SuggestStoreInterface {
        
         FfiConverterTypeSuggestionQuery.checkType(query);
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            57, // uniffi_suggest_fn_method_suggeststore_query_with_metrics
+            238, // uniffi_suggest_fn_method_suggeststore_query_with_metrics
             FfiConverterTypeSuggestStore.lowerReceiver(this),
             FfiConverterTypeSuggestionQuery.lower(query),
         )
@@ -4589,11 +4539,11 @@ export class FfiConverterTypeSuggestStore extends FfiConverter {
     }
 
     static read(dataStream) {
-        return this.lift(dataStream.readPointer(8));
+        return this.lift(dataStream.readPointer(20));
     }
 
     static write(dataStream, value) {
-        dataStream.writePointer(8, this.lower(value));
+        dataStream.writePointer(20, this.lower(value));
     }
 
     static computeSize(value) {
@@ -4672,7 +4622,7 @@ export class SuggestStoreBuilderInterface {
     }
     /**
      * remoteSettingsServer
-     * @param {RemoteSettingsServer} server
+     * @param {RemoteSettingsServer[keyof RemoteSettingsServer]} server
      * @returns {SuggestStoreBuilder}
      */
     remoteSettingsServer(
@@ -4718,7 +4668,7 @@ export class SuggestStoreBuilder extends SuggestStoreBuilderInterface {
     static init() {
        
         const result = UniFFIScaffolding.callSync(
-            58, // uniffi_suggest_fn_constructor_suggeststorebuilder_new
+            239, // uniffi_suggest_fn_constructor_suggeststorebuilder_new
         )
         return handleRustResult(
             result,
@@ -4734,7 +4684,7 @@ export class SuggestStoreBuilder extends SuggestStoreBuilderInterface {
     build() {
        
         const result = UniFFIScaffolding.callSync(
-            59, // uniffi_suggest_fn_method_suggeststorebuilder_build
+            240, // uniffi_suggest_fn_method_suggeststorebuilder_build
             FfiConverterTypeSuggestStoreBuilder.lowerReceiver(this),
         )
         return handleRustResult(
@@ -4754,7 +4704,7 @@ export class SuggestStoreBuilder extends SuggestStoreBuilderInterface {
        
         FfiConverterString.checkType(path);
         const result = await UniFFIScaffolding.callAsyncWrapper(
-            60, // uniffi_suggest_fn_method_suggeststorebuilder_cache_path
+            241, // uniffi_suggest_fn_method_suggeststorebuilder_cache_path
             FfiConverterTypeSuggestStoreBuilder.lowerReceiver(this),
             FfiConverterString.lower(path),
         )
@@ -4775,7 +4725,7 @@ export class SuggestStoreBuilder extends SuggestStoreBuilderInterface {
        
         FfiConverterString.checkType(path);
         const result = UniFFIScaffolding.callSync(
-            61, // uniffi_suggest_fn_method_suggeststorebuilder_data_path
+            242, // uniffi_suggest_fn_method_suggeststorebuilder_data_path
             FfiConverterTypeSuggestStoreBuilder.lowerReceiver(this),
             FfiConverterString.lower(path),
         )
@@ -4803,7 +4753,7 @@ export class SuggestStoreBuilder extends SuggestStoreBuilderInterface {
         FfiConverterString.checkType(library);
         FfiConverterOptionalString.checkType(entryPoint);
         const result = UniFFIScaffolding.callSync(
-            62, // uniffi_suggest_fn_method_suggeststorebuilder_load_extension
+            243, // uniffi_suggest_fn_method_suggeststorebuilder_load_extension
             FfiConverterTypeSuggestStoreBuilder.lowerReceiver(this),
             FfiConverterString.lower(library),
             FfiConverterOptionalString.lower(entryPoint),
@@ -4825,7 +4775,7 @@ export class SuggestStoreBuilder extends SuggestStoreBuilderInterface {
        
         FfiConverterString.checkType(bucketName);
         const result = UniFFIScaffolding.callSync(
-            63, // uniffi_suggest_fn_method_suggeststorebuilder_remote_settings_bucket_name
+            244, // uniffi_suggest_fn_method_suggeststorebuilder_remote_settings_bucket_name
             FfiConverterTypeSuggestStoreBuilder.lowerReceiver(this),
             FfiConverterString.lower(bucketName),
         )
@@ -4838,7 +4788,7 @@ export class SuggestStoreBuilder extends SuggestStoreBuilderInterface {
 
     /**
      * remoteSettingsServer
-     * @param {RemoteSettingsServer} server
+     * @param {RemoteSettingsServer[keyof RemoteSettingsServer]} server
      * @returns {SuggestStoreBuilder}
      */
     remoteSettingsServer(
@@ -4846,7 +4796,7 @@ export class SuggestStoreBuilder extends SuggestStoreBuilderInterface {
        
         FfiConverterTypeRemoteSettingsServer.checkType(server);
         const result = UniFFIScaffolding.callSync(
-            64, // uniffi_suggest_fn_method_suggeststorebuilder_remote_settings_server
+            245, // uniffi_suggest_fn_method_suggeststorebuilder_remote_settings_server
             FfiConverterTypeSuggestStoreBuilder.lowerReceiver(this),
             FfiConverterTypeRemoteSettingsServer.lower(server),
         )
@@ -4867,7 +4817,7 @@ export class SuggestStoreBuilder extends SuggestStoreBuilderInterface {
        
         FfiConverterTypeRemoteSettingsService.checkType(rsService);
         const result = UniFFIScaffolding.callSync(
-            65, // uniffi_suggest_fn_method_suggeststorebuilder_remote_settings_service
+            246, // uniffi_suggest_fn_method_suggeststorebuilder_remote_settings_service
             FfiConverterTypeSuggestStoreBuilder.lowerReceiver(this),
             FfiConverterTypeRemoteSettingsService.lower(rsService),
         )
@@ -4902,11 +4852,11 @@ export class FfiConverterTypeSuggestStoreBuilder extends FfiConverter {
     }
 
     static read(dataStream) {
-        return this.lift(dataStream.readPointer(9));
+        return this.lift(dataStream.readPointer(21));
     }
 
     static write(dataStream, value) {
-        dataStream.writePointer(9, this.lower(value));
+        dataStream.writePointer(21, this.lower(value));
     }
 
     static computeSize(value) {

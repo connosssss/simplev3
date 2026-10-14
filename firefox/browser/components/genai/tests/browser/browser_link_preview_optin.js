@@ -15,6 +15,9 @@ const { sinon } = ChromeUtils.importESModule(
 );
 const TEST_LINK_URL = "https://example.com";
 
+registerCleanupFunction(() => {
+  Services.prefs.clearUserPref("browser.ml.linkPreview.onboardingTimes");
+});
 /**
  * Test that optin and collapsed preferences properly update existing cards.
  *
@@ -185,6 +188,22 @@ add_task(async function test_generate_keypoints_when_opted_in() {
   );
   await BrowserTestUtils.waitForEvent(panel, "popupshown");
 
+  if (!LinkPreview.canRunOnDevice) {
+    const previewCard = panel.querySelector("link-preview-card");
+    ok(previewCard, "card still renders the regular preview without a backend");
+    await previewCard.updateComplete;
+    ok(!previewCard.generating, "card is not generating without a backend");
+    ok(
+      !previewCard.shadowRoot.querySelector(".keypoints-header"),
+      "no key points section without a backend"
+    );
+    is(stub.callCount, 0, "generateTextAI not called without a backend");
+    panel.remove();
+    stub.restore();
+    LinkPreview.keyboardComboActive = false;
+    return;
+  }
+
   is(
     stub.callCount,
     1,
@@ -284,6 +303,25 @@ add_task(async function test_model_optin_deny_action() {
   const card = panel.querySelector("link-preview-card");
   ok(card, "card created for link preview");
 
+  if (!LinkPreview.canRunOnDevice) {
+    await card.updateComplete;
+    ok(
+      !card.shadowRoot.querySelector("model-optin"),
+      "no opt-in prompt rendered without a backend"
+    );
+    is(
+      generateStub.callCount,
+      0,
+      "generateTextAI not called without a backend"
+    );
+    panel.remove();
+    generateStub.restore();
+    LinkPreview.keyboardComboActive = false;
+    Services.prefs.setBoolPref("browser.ml.linkPreview.optin", false);
+    Services.prefs.setBoolPref("browser.ml.linkPreview.collapsed", false);
+    return;
+  }
+
   const modelOptinElement = await TestUtils.waitForCondition(() => {
     if (card.shadowRoot) {
       return card.shadowRoot.querySelector("model-optin");
@@ -353,6 +391,25 @@ add_task(async function test_model_optin_confirm_action() {
 
   const card = panel.querySelector("link-preview-card");
   ok(card, "card created for link preview");
+
+  if (!LinkPreview.canRunOnDevice) {
+    await card.updateComplete;
+    ok(
+      !card.shadowRoot.querySelector("model-optin"),
+      "no opt-in prompt rendered without a backend"
+    );
+    is(
+      generateStub.callCount,
+      0,
+      "generateTextAI not called without a backend"
+    );
+    panel.remove();
+    generateStub.restore();
+    LinkPreview.keyboardComboActive = false;
+    Services.prefs.setBoolPref("browser.ml.linkPreview.optin", false);
+    Services.prefs.setBoolPref("browser.ml.linkPreview.collapsed", false);
+    return;
+  }
 
   const modelOptinElement = await TestUtils.waitForCondition(() => {
     if (card.shadowRoot) {
@@ -448,5 +505,110 @@ add_task(async function test_no_optin_or_keypoints_in_disallowed_region() {
   );
 
   panel.remove();
+  generateStub.restore();
+});
+
+/**
+ * Test when the preference is false and locked,  the opt-in prompt will not
+ * be shown and no attempt will be made to generate key points.
+ */
+add_task(async function test_locked_preference() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["browser.ml.linkPreview.enabled", true],
+      ["browser.ml.linkPreview.optin", false],
+      ["browser.ml.linkPreview.collapsed", false],
+    ],
+  });
+
+  Services.prefs.lockPref("browser.ml.linkPreview.optin");
+
+  const generateStub = sinon.stub(LinkPreviewModel, "generateTextAI");
+
+  LinkPreview.keyboardComboActive = true;
+  XULBrowserWindow.setOverLink(
+    "https://example.com/browser/browser/components/genai/tests/browser/data/readableEn.html",
+    {}
+  );
+
+  let panel = await TestUtils.waitForCondition(() =>
+    document.getElementById("link-preview-panel")
+  );
+  await BrowserTestUtils.waitForEvent(panel, "popupshown");
+  const card = panel.querySelector("link-preview-card");
+  ok(card, "card created for link preview");
+
+  ok(
+    !LinkPreview.canShowKeyPoints,
+    "LinkPreview should indicate key points cannot be shown"
+  );
+
+  // Verify that the opt-in element is NOT present
+  const modelOptinElement = card.shadowRoot.querySelector("model-optin");
+  ok(!modelOptinElement, "model-optin element should NOT be present");
+
+  is(
+    generateStub.callCount,
+    0,
+    "generateTextAI should not be called in a disallowed region"
+  );
+
+  panel.remove();
+  generateStub.restore();
+
+  Services.prefs.unlockPref("browser.ml.linkPreview.optin");
+});
+
+/**
+ * Test that for an unsupported locale, the opt-in card is not shown and
+ * key points are hidden.
+ *
+ * This test verifies that if the current locale is not supported, the opt-in
+ * prompt will not be shown and no attempt will be made to generate key points.
+ */
+add_task(async function test_no_optin_or_keypoints_in_unsupported_locale() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["browser.ml.linkPreview.enabled", true],
+      ["browser.ml.linkPreview.optin", false],
+      ["browser.ml.linkPreview.collapsed", false],
+    ],
+  });
+
+  const localeStub = sinon
+    .stub(LinkPreview, "_isLocaleSupported")
+    .returns(false);
+  const generateStub = sinon.stub(LinkPreviewModel, "generateTextAI");
+
+  LinkPreview.keyboardComboActive = true;
+  XULBrowserWindow.setOverLink(
+    "https://example.com/browser/browser/components/genai/tests/browser/data/readableEn.html",
+    {}
+  );
+
+  let panel = await TestUtils.waitForCondition(() =>
+    document.getElementById("link-preview-panel")
+  );
+  await BrowserTestUtils.waitForEvent(panel, "popupshown");
+  const card = panel.querySelector("link-preview-card");
+  ok(card, "card created for link preview");
+
+  ok(
+    !LinkPreview.canShowKeyPoints,
+    "LinkPreview should indicate key points cannot be shown"
+  );
+
+  // Verify that the opt-in element is NOT present
+  const modelOptinElement = card.shadowRoot.querySelector("model-optin");
+  ok(!modelOptinElement, "model-optin element should NOT be present");
+
+  is(
+    generateStub.callCount,
+    0,
+    "generateTextAI should not be called in an unsupported locale"
+  );
+
+  panel.remove();
+  localeStub.restore();
   generateStub.restore();
 });

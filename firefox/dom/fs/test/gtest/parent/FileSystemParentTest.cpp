@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -75,13 +73,14 @@ void FileSystemParentTest::GetStaticDatabaseUsage(
             QM_TRY_INSPECT(
                 const ResultConnection& conn,
                 data::GetStorageConnection(GetTestOriginMetadata(),
-                                           /* aDirectoryLockId */ -1));
+                                           /* aDirectoryLockId */ -1,
+                                           /* aMaybeCipherKey */ Nothing()));
 
             return data::FileSystemDatabaseManager::GetUsage(
                 conn, GetTestOriginMetadata());
           }));
 
-  aDatabaseUsage = databaseUsage;
+  aDatabaseUsage = std::move(databaseUsage);
 }
 
 void FileSystemParentTest::EnsureDataManager() {
@@ -187,7 +186,7 @@ void FileSystemParentTest::GetDatabaseUsage(quota::UsageInfo& aDatabaseUsage) {
         QM_TRY_RETURN(databaseManager->GetUsage());
       }));
 
-  aDatabaseUsage = databaseUsage;
+  aDatabaseUsage = std::move(databaseUsage);
 }
 
 void FileSystemParentTest::UpdateDatabaseUsage(const FileId& aFileId) {

@@ -1,12 +1,8 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "frontend/SharedContext.h"
-
-#include "mozilla/RefPtr.h"
 
 #include "frontend/CompilationStencil.h"
 #include "frontend/FunctionSyntaxKind.h"  // FunctionSyntaxKind
@@ -127,7 +123,6 @@ FunctionBox::FunctionBox(FrontendContext* fc, SourceExtent extent,
       emitBytecode(false),
       wasEmittedByEnclosingScript_(false),
       isAnnexB(false),
-      useAsm(false),
       hasParameterExprs(false),
       hasDestructuringArgs(false),
       hasDuplicateParameters(false),
@@ -153,8 +148,7 @@ void FunctionBox::initWithEnclosingParseContext(ParseContext* enclosing,
                                                 FunctionSyntaxKind kind) {
   SharedContext* sc = enclosing->sc();
 
-  // HasModuleGoal and useAsm are inherited from enclosing context.
-  useAsm = sc->isFunctionBox() && sc->asFunctionBox()->useAsmOrInsideUseAsm();
+  // HasModuleGoal is inherited from enclosing context.
   setHasModuleGoal(sc->hasModuleGoal());
 
   // Arrow functions don't have their own `this` binding.
@@ -167,14 +161,10 @@ void FunctionBox::initWithEnclosingParseContext(ParseContext* enclosing,
   } else {
     if (IsConstructorKind(kind)) {
       // Record this function into the enclosing class statement so that
-      // finishClassConstructor can final processing. Due to aborted syntax
-      // parses (eg, because of asm.js), this may have already been set with an
-      // early FunctionBox. In that case, the FunctionNode should still match.
+      // finishClassConstructor can do its final processing.
       auto classStmt =
           enclosing->findInnermostStatement<ParseContext::ClassStatement>();
       MOZ_ASSERT(classStmt);
-      MOZ_ASSERT(classStmt->constructorBox == nullptr ||
-                 classStmt->constructorBox->functionNode == this->functionNode);
       classStmt->constructorBox = this;
     }
 
@@ -268,31 +258,6 @@ void FunctionBox::setEnclosingScopeForInnerLazyFunction(ScopeIndex scopeIndex) {
   if (isFunctionFieldCopiedToStencil) {
     copyUpdatedEnclosingScopeIndex();
   }
-}
-
-bool FunctionBox::setAsmJSModule(const JS::WasmModule* module) {
-  MOZ_ASSERT(!isFunctionFieldCopiedToStencil);
-
-  MOZ_ASSERT(flags_.kind() == FunctionFlags::NormalFunction);
-
-  // Update flags we will use to allocate the JSFunction.
-  flags_.clearBaseScript();
-  flags_.setIsExtended();
-  flags_.setKind(FunctionFlags::AsmJS);
-
-  if (!compilationState_.asmJS) {
-    compilationState_.asmJS =
-        fc_->getAllocator()->new_<StencilAsmJSContainer>();
-    if (!compilationState_.asmJS) {
-      return false;
-    }
-  }
-
-  if (!compilationState_.asmJS->moduleMap.putNew(index(), module)) {
-    js::ReportOutOfMemory(fc_);
-    return false;
-  }
-  return true;
 }
 
 ModuleSharedContext::ModuleSharedContext(

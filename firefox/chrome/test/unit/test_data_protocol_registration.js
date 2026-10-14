@@ -1,6 +1,4 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
- * vim: sw=2 ts=2 sts=2 tw=78 expandtab :
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -53,15 +51,11 @@ function run_test() {
         );
         old_factories.push({
           CID: registrar.contractIDToCID(factory.contractID),
-          factory: Components.manager.getClassObject(
-            Cc[factory.contractID],
-            Ci.nsIFactory
-          ),
         });
         old_factories_inds.push(true);
       } else {
         dump(factory.scheme + " has never been registered. Registering...");
-        old_factories.push({ CID: "", factory: null });
+        old_factories.push({ CID: "" });
         old_factories_inds.push(false);
       }
 

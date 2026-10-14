@@ -53,11 +53,12 @@ const tests = [
     output: {dataType: 'float32', shape: [4, 7]}
   },
   {
-    name: '[pad] Throw if building pad for scalar input.',
+    name:
+        '[pad] Test pad for scalar input with empty beginningPadding and endingPadding.',
     input: {dataType: 'float32', shape: []},
     beginningPadding: [],
     endingPadding: [],
-    options: {label}
+    output: {dataType: 'float32', shape: []}
   },
   {
     name:
@@ -154,3 +155,8 @@ tests.forEach(
             regrexp);
       }
     }, test.name));
+
+validateOperandRank('pad', 'input', (builder, input) => {
+  const rank = input.shape.length;
+  return builder.pad(input, Array(rank).fill(1), Array(rank).fill(1));
+});

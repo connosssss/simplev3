@@ -8,17 +8,25 @@
 "use strict";
 
 add_task(async function testHorizontalScrolling() {
+  const toolboxBorderWidth = Services.prefs.getBoolPref("browser.nova.enabled")
+    ? 2
+    : 0;
   // Ensure having the default fixed height, as it can impact the number of displayed lines
-  await pushPref("devtools.toolbox.footer.height", 250);
+  await pushPref("devtools.toolbox.footer.height", 250 + toolboxBorderWidth);
 
   // Also set a precise size for side panels, as it can impact the number of displayed columns
-  await pushPref("devtools.debugger.start-panel-size", 300);
-  await pushPref("devtools.debugger.end-panel-size", 300);
+  await pushPref(
+    "devtools.debugger.start-panel-size",
+    300 + toolboxBorderWidth
+  );
+  await pushPref("devtools.debugger.end-panel-size", 300 + toolboxBorderWidth);
 
   // Strengthen the test by ensuring we always use the same Firefox window size.
   // Note that the inner size is the important one as that's the final space available for DevTools.
   // The outer size will be different based on OS/Environment.
-  const expectedWidth = 1280;
+  // Widen the window by the extra width given to each of the two side panels,
+  // so that the editor is left with the same space in both pref states.
+  const expectedWidth = 1280 + 2 * toolboxBorderWidth;
   const expectedHeight = 1040;
   if (
     window.innerWidth != expectedWidth ||
@@ -47,7 +55,7 @@ add_task(async function testHorizontalScrolling() {
   await selectSource(dbg, "horizontal-scroll.js");
   const editor = getCMEditor(dbg);
 
-  const global = editor.codeMirror.contentDOM.ownerGlobal;
+  const global = editor.codeMirror.contentDOM.documentGlobal;
   const font = new global.FontFace(
     "Ahem",
     "url(chrome://mochitests/content/browser/devtools/client/debugger/test/mochitest/examples/Ahem.ttf)"
@@ -109,36 +117,37 @@ add_task(async function testHorizontalScrolling() {
   await waitForPaused(dbg);
 
   const lastColumn = getLastVisibleColumn();
-  is(lastColumn, 54);
+  is(lastColumn, 55);
   ok(
     isScrolledPositionVisible(dbg, 2, 1),
     "The 2nd line, first column is visible"
   );
   ok(
-    isScrolledPositionVisible(dbg, 2, lastColumn),
-    "The 2nd line, last column is visible"
+    isScrolledPositionVisible(dbg, 2, lastColumn - 1),
+    "The 2nd line, column before the last is visible"
   );
+
   ok(
-    !isScrolledPositionVisible(dbg, 2, lastColumn + 1),
-    "The column after the last column is hidden"
+    !isScrolledPositionVisible(dbg, 2, lastColumn),
+    "The last column is hidden"
   );
 
   info("Step to the last visible column, the editor shouldn't scroll");
   // There is one breakable position every two column.
   // We can see the column breakpoint for the column after the last visible one.
   // Setting a breakpoint on that column and pausing shouldn't cause to scroll the viewport.
-  await addBreakpoint(dbg, "horizontal-scroll.js", 2, lastColumn + 1);
+  await addBreakpoint(dbg, "horizontal-scroll.js", 2, lastColumn);
   await resume(dbg);
   await waitForPaused(dbg);
 
   is(getLastVisibleColumn(), lastColumn, "We did not scroll horizontaly");
   ok(
-    isScrolledPositionVisible(dbg, 2, lastColumn),
-    "The last column is still visible"
+    isScrolledPositionVisible(dbg, 2, lastColumn - 1),
+    "The column before the last column is still visible"
   );
   ok(
-    !isScrolledPositionVisible(dbg, 2, lastColumn + 1),
-    "The column after the last colunm is still hidden"
+    !isScrolledPositionVisible(dbg, 2, lastColumn),
+    "The last column is still hidden"
   );
 
   info(
@@ -148,7 +157,7 @@ add_task(async function testHorizontalScrolling() {
   info("Step into the next breakable column, the editor should now scroll");
   // Set a breakpoint on the first column that would cause a scroll
   // (there is one breakable position every two column)
-  await addBreakpoint(dbg, "horizontal-scroll.js", 2, lastColumn + 3);
+  await addBreakpoint(dbg, "horizontal-scroll.js", 2, lastColumn + 2);
   await resume(dbg);
   await waitForPaused(dbg);
 

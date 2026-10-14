@@ -1,32 +1,33 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Sharable code and data for wrapper around JSObjects. */
 
-#include "xpcprivate.h"
-#include "js/CallAndConstruct.h"  // JS_CallFunctionValue
-#include "js/Object.h"            // JS::GetClass
-#include "js/Printf.h"
-#include "js/PropertyAndElement.h"  // JS_Enumerate, JS_GetProperty, JS_GetPropertyById, JS_HasProperty, JS_HasPropertyById, JS_SetProperty, JS_SetPropertyById
-#include "nsArrayEnumerator.h"
-#include "nsINamed.h"
-#include "nsIScriptError.h"
-#include "nsWrapperCache.h"
-#include "AccessCheck.h"
-#include "nsJSUtils.h"
-#include "nsPrintfCString.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/Components.h"
 #include "mozilla/dom/AutoEntryScript.h"
 #include "mozilla/dom/BindingUtils.h"
+#include "mozilla/dom/ChromeUtilsBinding.h"
 #include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/DOMExceptionBinding.h"
 #include "mozilla/dom/MozQueryInterface.h"
 
+#include "AccessCheck.h"
 #include "jsapi.h"
 #include "jsfriendapi.h"
+#include "nsArrayEnumerator.h"
+#include "nsINamed.h"
+#include "nsIScriptError.h"
+#include "nsJSUtils.h"
+#include "nsPrintfCString.h"
+#include "nsWrapperCache.h"
+#include "xpcprivate.h"
+
+#include "js/CallAndConstruct.h"  // JS_CallFunctionValue
+#include "js/Object.h"            // JS::GetClass
+#include "js/Printf.h"
+#include "js/PropertyAndElement.h"  // JS_Enumerate, JS_GetProperty, JS_GetPropertyById, JS_HasProperty, JS_HasPropertyById, JS_SetProperty, JS_SetPropertyById
 
 using namespace xpc;
 using namespace JS;
@@ -630,16 +631,16 @@ nsresult nsXPCWrappedJS::CheckForException(XPCCallContext& ccx,
       // Log the exception to the JS Console, so that users can do
       // something with it.
       nsCOMPtr<nsIConsoleService> consoleService(
-          do_GetService(XPC_CONSOLE_CONTRACTID));
-      if (nullptr != consoleService) {
+          components::Console::Service());
+      if (consoleService) {
         nsCOMPtr<nsIScriptError> scriptError =
             do_QueryInterface(xpc_exception->GetData());
 
-        if (nullptr == scriptError) {
+        if (!scriptError) {
           // No luck getting one from the exception, so
           // try to cook one up.
-          scriptError = do_CreateInstance(XPC_SCRIPT_ERROR_CONTRACTID);
-          if (nullptr != scriptError) {
+          scriptError = components::ScriptError::Create();
+          if (scriptError) {
             nsCString newMessage;
             xpc_exception->ToString(cx, newMessage);
             // try to get filename, lineno from the first

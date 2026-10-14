@@ -30,6 +30,15 @@ impl<T> From<Arc<T>> for Strong<T> {
     }
 }
 
+impl<T> From<Option<Arc<T>>> for Strong<T> {
+    fn from(arc: Option<Arc<T>>) -> Self {
+        match arc {
+            Some(arc) => arc.into(),
+            None => Self::null(),
+        }
+    }
+}
+
 impl<GeckoType> Strong<GeckoType> {
     #[inline]
     /// Returns whether this reference is null.
@@ -55,7 +64,7 @@ impl<T> Deref for CopyablePtr<T> {
 }
 
 impl<T> DerefMut for CopyablePtr<T> {
-    fn deref_mut<'a>(&'a mut self) -> &'a mut T {
+    fn deref_mut(&mut self) -> &mut T {
         &mut self.mPtr
     }
 }

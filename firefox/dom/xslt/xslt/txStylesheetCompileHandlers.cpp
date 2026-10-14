@@ -1,16 +1,17 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "txStylesheetCompileHandlers.h"
 
+#include <memory>
 #include <utility>
 
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/FloatingPoint.h"
-#include "mozilla/UniquePtrExtensions.h"
 #include "nsGkAtoms.h"
+#include "nsStringFlags.h"
+#include "nsStringIterator.h"
+#include "nsStyleUtil.h"
 #include "nsWhitespaceTokenizer.h"
 #include "txCore.h"
 #include "txInstructions.h"
@@ -22,28 +23,25 @@
 #include "txToplevelItems.h"
 #include "txURIUtils.h"
 #include "txXSLTFunctions.h"
-#include "nsStringFlags.h"
-#include "nsStyleUtil.h"
-#include "nsStringIterator.h"
 
 using namespace mozilla;
 
-txHandlerTable* gTxIgnoreHandler = 0;
-txHandlerTable* gTxRootHandler = 0;
-txHandlerTable* gTxEmbedHandler = 0;
-txHandlerTable* gTxTopHandler = 0;
-txHandlerTable* gTxTemplateHandler = 0;
-txHandlerTable* gTxTextHandler = 0;
-txHandlerTable* gTxApplyTemplatesHandler = 0;
-txHandlerTable* gTxCallTemplateHandler = 0;
-txHandlerTable* gTxVariableHandler = 0;
-txHandlerTable* gTxForEachHandler = 0;
-txHandlerTable* gTxTopVariableHandler = 0;
-txHandlerTable* gTxChooseHandler = 0;
-txHandlerTable* gTxParamHandler = 0;
-txHandlerTable* gTxImportHandler = 0;
-txHandlerTable* gTxAttributeSetHandler = 0;
-txHandlerTable* gTxFallbackHandler = 0;
+txHandlerTable* gTxIgnoreHandler = nullptr;
+txHandlerTable* gTxRootHandler = nullptr;
+txHandlerTable* gTxEmbedHandler = nullptr;
+txHandlerTable* gTxTopHandler = nullptr;
+txHandlerTable* gTxTemplateHandler = nullptr;
+txHandlerTable* gTxTextHandler = nullptr;
+txHandlerTable* gTxApplyTemplatesHandler = nullptr;
+txHandlerTable* gTxCallTemplateHandler = nullptr;
+txHandlerTable* gTxVariableHandler = nullptr;
+txHandlerTable* gTxForEachHandler = nullptr;
+txHandlerTable* gTxTopVariableHandler = nullptr;
+txHandlerTable* gTxChooseHandler = nullptr;
+txHandlerTable* gTxParamHandler = nullptr;
+txHandlerTable* gTxImportHandler = nullptr;
+txHandlerTable* gTxAttributeSetHandler = nullptr;
+txHandlerTable* gTxFallbackHandler = nullptr;
 
 static nsresult txFnStartLRE(int32_t aNamespaceID, nsAtom* aLocalName,
                              nsAtom* aPrefix, txStylesheetAttr* aAttributes,
@@ -438,8 +436,8 @@ static nsresult txFnStartLREStylesheet(int32_t aNamespaceID, nsAtom* aLocalName,
   double prio = UnspecifiedNaN<double>();
 
   UniquePtr<txPattern> match(new txRootPattern());
-  UniquePtr<txTemplateItem> templ(
-      new txTemplateItem(std::move(match), nullExpr, nullExpr, prio));
+  auto templ = std::make_unique<txTemplateItem>(std::move(match), nullExpr,
+                                                nullExpr, prio);
   aState.openInstructionContainer(templ.get());
   aState.addToplevelItem(templ.release());
 
@@ -550,7 +548,7 @@ static nsresult txFnStartDecimalFormat(int32_t aNamespaceID, nsAtom* aLocalName,
                     name);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  UniquePtr<txDecimalFormat> format(new txDecimalFormat);
+  auto format = std::make_unique<txDecimalFormat>();
   rv = getCharAttr(aAttributes, aAttrCount, nsGkAtoms::decimalSeparator, false,
                    aState, format->mDecimalSeparator);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -617,7 +615,7 @@ static nsresult txFnStartImport(int32_t aNamespaceID, nsAtom* aLocalName,
                                 nsAtom* aPrefix, txStylesheetAttr* aAttributes,
                                 int32_t aAttrCount,
                                 txStylesheetCompilerState& aState) {
-  UniquePtr<txImportItem> import(new txImportItem);
+  auto import = std::make_unique<txImportItem>();
   import->mFrame = MakeUnique<txStylesheet::ImportFrame>();
   txStylesheet::ImportFrame* frame = import->mFrame.get();
   aState.addToplevelItem(import.release());
@@ -734,7 +732,7 @@ static nsresult txFnStartOutput(int32_t aNamespaceID, nsAtom* aLocalName,
                                 txStylesheetCompilerState& aState) {
   nsresult rv = NS_OK;
 
-  UniquePtr<txOutputItem> item(new txOutputItem);
+  auto item = std::make_unique<txOutputItem>();
 
   txExpandedName methodExpName;
   rv = getQNameAttr(aAttributes, aAttrCount, nsGkAtoms::method, false, aState,
@@ -794,7 +792,7 @@ static nsresult txFnStartOutput(int32_t aNamespaceID, nsAtom* aLocalName,
   if (attr) {
     nsWhitespaceTokenizer tokens(attr->mValue);
     while (tokens.hasMoreTokens()) {
-      UniquePtr<txExpandedName> qname(new txExpandedName());
+      auto qname = std::make_unique<txExpandedName>();
       rv = qname->init(tokens.nextToken(), aState.mElementContext->mMappings,
                        false);
       NS_ENSURE_SUCCESS(rv, rv);
@@ -837,7 +835,7 @@ static nsresult txFnStartStripSpace(int32_t aNamespaceID, nsAtom* aLocalName,
 
   bool strip = aLocalName == nsGkAtoms::stripSpace;
 
-  UniquePtr<txStripSpaceItem> stripItem(new txStripSpaceItem);
+  auto stripItem = std::make_unique<txStripSpaceItem>();
   nsWhitespaceTokenizer tokenizer(attr->mValue);
   while (tokenizer.hasMoreTokens()) {
     const nsAString& name = tokenizer.nextToken();
@@ -918,8 +916,8 @@ static nsresult txFnStartTemplate(int32_t aNamespaceID, nsAtom* aLocalName,
                       aState, match);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  UniquePtr<txTemplateItem> templ(
-      new txTemplateItem(std::move(match), name, mode, prio));
+  UniquePtr<txTemplateItem> templ =
+      std::make_unique<txTemplateItem>(std::move(match), name, mode, prio);
   aState.openInstructionContainer(templ.get());
   aState.addToplevelItem(templ.release());
 
@@ -953,8 +951,8 @@ static nsresult txFnStartTopVariable(int32_t aNamespaceID, nsAtom* aLocalName,
                    select);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  UniquePtr<txVariableItem> var(new txVariableItem(
-      name, std::move(select), aLocalName == nsGkAtoms::param));
+  auto var = std::make_unique<txVariableItem>(name, std::move(select),
+                                              aLocalName == nsGkAtoms::param);
   aState.openInstructionContainer(var.get());
   aState.pushPtr(var.get(), aState.eVariableItem);
 
@@ -1136,8 +1134,8 @@ static nsresult txFnStartApplyTemplates(int32_t aNamespaceID,
     select = MakeUnique<LocationStep>(nt.release(), LocationStep::CHILD_AXIS);
   }
 
-  UniquePtr<txPushNewContext> pushcontext(
-      new txPushNewContext(std::move(select)));
+  UniquePtr<txPushNewContext> pushcontext =
+      std::make_unique<txPushNewContext>(std::move(select));
   aState.pushSorter(pushcontext.get());
   pushInstruction(aState, std::move(pushcontext));
 
@@ -2054,9 +2052,9 @@ struct txHandlerTableData {
 
 const txHandlerTableData gTxIgnoreTableData = {
     // Other
-    {0, 0, txFnStartElementIgnore, txFnEndElementIgnore},
+    {0, nullptr, txFnStartElementIgnore, txFnEndElementIgnore},
     // LRE
-    {0, 0, txFnStartElementIgnore, txFnEndElementIgnore},
+    {0, nullptr, txFnStartElementIgnore, txFnEndElementIgnore},
     // Text
     txFnTextIgnore};
 
@@ -2066,17 +2064,17 @@ const txElementHandler gTxRootElementHandlers[] = {
 
 const txHandlerTableData gTxRootTableData = {
     // Other
-    {0, 0, txFnStartElementError, txFnEndElementError},
+    {0, nullptr, txFnStartElementError, txFnEndElementError},
     // LRE
-    {0, 0, txFnStartLREStylesheet, txFnEndLREStylesheet},
+    {0, nullptr, txFnStartLREStylesheet, txFnEndLREStylesheet},
     // Text
     txFnTextError};
 
 const txHandlerTableData gTxEmbedTableData = {
     // Other
-    {0, 0, txFnStartEmbed, txFnEndEmbed},
+    {0, nullptr, txFnStartEmbed, txFnEndEmbed},
     // LRE
-    {0, 0, txFnStartEmbed, txFnEndEmbed},
+    {0, nullptr, txFnStartEmbed, txFnEndEmbed},
     // Text
     txFnTextIgnore};
 
@@ -2099,9 +2097,9 @@ const txElementHandler gTxTopElementHandlers[] = {
 
 const txHandlerTableData gTxTopTableData = {
     // Other
-    {0, 0, txFnStartOtherTop, txFnEndOtherTop},
+    {0, nullptr, txFnStartOtherTop, txFnEndOtherTop},
     // LRE
-    {0, 0, txFnStartOtherTop, txFnEndOtherTop},
+    {0, nullptr, txFnStartOtherTop, txFnEndOtherTop},
     // Text
     txFnTextIgnore};
 
@@ -2131,17 +2129,17 @@ const txElementHandler gTxTemplateElementHandlers[] = {
 
 const txHandlerTableData gTxTemplateTableData = {
     // Other
-    {0, 0, txFnStartUnknownInstruction, txFnEndUnknownInstruction},
+    {0, nullptr, txFnStartUnknownInstruction, txFnEndUnknownInstruction},
     // LRE
-    {0, 0, txFnStartLRE, txFnEndLRE},
+    {0, nullptr, txFnStartLRE, txFnEndLRE},
     // Text
     txFnText};
 
 const txHandlerTableData gTxTextTableData = {
     // Other
-    {0, 0, txFnStartElementError, txFnEndElementError},
+    {0, nullptr, txFnStartElementError, txFnEndElementError},
     // LRE
-    {0, 0, txFnStartElementError, txFnEndElementError},
+    {0, nullptr, txFnStartElementError, txFnEndElementError},
     // Text
     txFnTextText};
 
@@ -2151,10 +2149,10 @@ const txElementHandler gTxApplyTemplatesElementHandlers[] = {
 
 const txHandlerTableData gTxApplyTemplatesTableData = {
     // Other
-    {0, 0, txFnStartElementSetIgnore,
+    {0, nullptr, txFnStartElementSetIgnore,
      txFnEndElementSetIgnore},  // should this be error?
     // LRE
-    {0, 0, txFnStartElementSetIgnore, txFnEndElementSetIgnore},
+    {0, nullptr, txFnStartElementSetIgnore, txFnEndElementSetIgnore},
     // Text
     txFnTextIgnore};
 
@@ -2163,18 +2161,18 @@ const txElementHandler gTxCallTemplateElementHandlers[] = {
 
 const txHandlerTableData gTxCallTemplateTableData = {
     // Other
-    {0, 0, txFnStartElementSetIgnore,
+    {0, nullptr, txFnStartElementSetIgnore,
      txFnEndElementSetIgnore},  // should this be error?
     // LRE
-    {0, 0, txFnStartElementSetIgnore, txFnEndElementSetIgnore},
+    {0, nullptr, txFnStartElementSetIgnore, txFnEndElementSetIgnore},
     // Text
     txFnTextIgnore};
 
 const txHandlerTableData gTxVariableTableData = {
     // Other
-    {0, 0, txFnStartElementStartRTF, 0},
+    {0, nullptr, txFnStartElementStartRTF, nullptr},
     // LRE
-    {0, 0, txFnStartElementStartRTF, 0},
+    {0, nullptr, txFnStartElementStartRTF, nullptr},
     // Text
     txFnTextStartRTF};
 
@@ -2183,17 +2181,17 @@ const txElementHandler gTxForEachElementHandlers[] = {
 
 const txHandlerTableData gTxForEachTableData = {
     // Other
-    {0, 0, txFnStartElementContinueTemplate, 0},
+    {0, nullptr, txFnStartElementContinueTemplate, nullptr},
     // LRE
-    {0, 0, txFnStartElementContinueTemplate, 0},
+    {0, nullptr, txFnStartElementContinueTemplate, nullptr},
     // Text
     txFnTextContinueTemplate};
 
 const txHandlerTableData gTxTopVariableTableData = {
     // Other
-    {0, 0, txFnStartElementStartTopVar, 0},
+    {0, nullptr, txFnStartElementStartTopVar, nullptr},
     // LRE
-    {0, 0, txFnStartElementStartTopVar, 0},
+    {0, nullptr, txFnStartElementStartTopVar, nullptr},
     // Text
     txFnTextStartTopVar};
 
@@ -2203,9 +2201,9 @@ const txElementHandler gTxChooseElementHandlers[] = {
 
 const txHandlerTableData gTxChooseTableData = {
     // Other
-    {0, 0, txFnStartElementError, 0},
+    {0, nullptr, txFnStartElementError, nullptr},
     // LRE
-    {0, 0, txFnStartElementError, 0},
+    {0, nullptr, txFnStartElementError, nullptr},
     // Text
     txFnTextError};
 
@@ -2214,9 +2212,9 @@ const txElementHandler gTxParamElementHandlers[] = {
 
 const txHandlerTableData gTxParamTableData = {
     // Other
-    {0, 0, txFnStartElementContinueTemplate, 0},
+    {0, nullptr, txFnStartElementContinueTemplate, nullptr},
     // LRE
-    {0, 0, txFnStartElementContinueTemplate, 0},
+    {0, nullptr, txFnStartElementContinueTemplate, nullptr},
     // Text
     txFnTextContinueTemplate};
 
@@ -2225,9 +2223,10 @@ const txElementHandler gTxImportElementHandlers[] = {
 
 const txHandlerTableData gTxImportTableData = {
     // Other
-    {0, 0, txFnStartElementContinueTopLevel, 0},
+    {0, nullptr, txFnStartElementContinueTopLevel, nullptr},
     // LRE
-    {0, 0, txFnStartOtherTop, txFnEndOtherTop},  // XXX what should we do here?
+    {0, nullptr, txFnStartOtherTop,
+     txFnEndOtherTop},  // XXX what should we do here?
     // Text
     txFnTextIgnore  // XXX what should we do here?
 };
@@ -2237,9 +2236,9 @@ const txElementHandler gTxAttributeSetElementHandlers[] = {
 
 const txHandlerTableData gTxAttributeSetTableData = {
     // Other
-    {0, 0, txFnStartElementError, 0},
+    {0, nullptr, txFnStartElementError, nullptr},
     // LRE
-    {0, 0, txFnStartElementError, 0},
+    {0, nullptr, txFnStartElementError, nullptr},
     // Text
     txFnTextError};
 
@@ -2248,9 +2247,9 @@ const txElementHandler gTxFallbackElementHandlers[] = {
 
 const txHandlerTableData gTxFallbackTableData = {
     // Other
-    {0, 0, txFnStartElementSetIgnore, txFnEndElementSetIgnore},
+    {0, nullptr, txFnStartElementSetIgnore, txFnEndElementSetIgnore},
     // LRE
-    {0, 0, txFnStartElementSetIgnore, txFnEndElementSetIgnore},
+    {0, nullptr, txFnStartElementSetIgnore, txFnEndElementSetIgnore},
     // Text
     txFnTextIgnore};
 

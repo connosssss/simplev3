@@ -8,12 +8,12 @@ potentially limited native resources.
 import { Fixture } from '../../../../common/framework/fixture.js';
 import { makeTestGroup } from '../../../../common/framework/test_group.js';
 import { getGPU } from '../../../../common/util/navigator_gpu.js';
-import { assert, assertReject, raceWithRejectOnTimeout } from '../../../../common/util/util.js';
+import { assert, assertReject, hasFeature, typedEntries } from '../../../../common/util/util.js';
 import {
   getDefaultLimitsForCTS,
   kFeatureNames,
-  kLimits,
   kLimitClasses,
+  kPossibleLimits,
 } from '../../../capability_info.js';
 import { clamp, isPowerOfTwo } from '../../../util/math.js';
 
@@ -44,7 +44,7 @@ g.test('default')
 
     if (device.features.size === 1) {
       t.expect(
-        device.features.has('core-features-and-limits'),
+        hasFeature(device.features, 'core-features-and-limits'),
         'Default device should not have any features other than "core-features-and-limits"'
       );
     } else {
@@ -54,11 +54,11 @@ g.test('default')
       );
     }
     // All limits should be defaults.
-    const limitInfo = getDefaultLimitsForCTS();
-    for (const limit of kLimits) {
+    const limitInfos = getDefaultLimitsForCTS();
+    for (const [limit, limitInfo] of typedEntries(limitInfos)) {
       t.expect(
-        device.limits[limit] === limitInfo[limit].default,
-        `Expected ${limit} == default: ${device.limits[limit]} != ${limitInfo[limit].default}`
+        device.limits[limit] === limitInfo.default,
+        `Expected ${limit} == default: ${device.limits[limit]} != ${limitInfo.default}`
       );
     }
   });
@@ -69,8 +69,7 @@ g.test('invalid')
     Test that requesting device on an invalid adapter resolves with lost device.
     - Induce invalid adapter via a device lost from a device.destroy()
     - Check the device is lost with reason 'destroyed'
-    - Try creating another device on the now-stale adapter
-    - Check that returns a device lost with 'unknown'
+    - Try creating another device on the now-stale adapter fails.
     `
   )
   .fn(async t => {
@@ -87,12 +86,8 @@ g.test('invalid')
       t.expect(lostInfo.reason === 'destroyed');
     }
 
-    // The adapter should now be invalid since a device was lost. Requesting another device should
-    // return an already lost device.
-    const kTimeoutMS = 1000;
-    const device = await t.requestDeviceTracked(adapter);
-    const lost = await raceWithRejectOnTimeout(device.lost, kTimeoutMS, 'device was not lost');
-    t.expect(lost.reason === 'unknown');
+    // The adapter should now be invalid since a device was lost. Requesting another device is not possible anymore.
+    t.shouldReject('OperationError', t.requestDeviceTracked(adapter));
   });
 
 g.test('stale')
@@ -100,7 +95,9 @@ g.test('stale')
     `
     Test that adapter.requestDevice() can successfully return a device once, and once only.
     - Tests that we can successfully resolve after serial and concurrent rejections.
-    - Tests that consecutive valid attempts only succeeds the first time, returning lost device otherwise.`
+    - Tests that consecutive valid attempts only succeeds the first time, throwing OperationError
+      afterward, when the adapter state is "consumed". (Note it's not possibe for CTS to test the
+      adapter state "expired" since there's no way to lose an adapter in the API.)`
   )
   .paramsSubcasesOnly(u =>
     u
@@ -209,9 +206,9 @@ g.test('features,known')
     assert(adapter !== null);
 
     const promise = t.requestDeviceTracked(adapter, { requiredFeatures: [feature] });
-    if (adapter.features.has(feature)) {
+    if (hasFeature(adapter.features, feature)) {
       const device = await promise;
-      t.expect(device.features.has(feature), 'Device should include the required feature');
+      t.expect(hasFeature(device.features, feature), 'Device should include the required feature');
     } else {
       t.shouldReject('TypeError', promise);
     }
@@ -251,7 +248,7 @@ g.test('limits,supported')
   )
   .params(u =>
     u
-      .combine('limit', kLimits)
+      .combine('limit', kPossibleLimits)
       .beginSubcases()
       .combine('limitValue', ['default', 'adapter', 'undefined'])
   )
@@ -262,12 +259,12 @@ g.test('limits,supported')
     const adapter = await gpu.requestAdapter();
     assert(adapter !== null);
 
-    const limitInfo = getDefaultLimitsForCTS();
+    const limitInfo = getDefaultLimitsForCTS()[limit];
     let value: number | undefined = -1;
     let result: number = -1;
     switch (limitValue) {
       case 'default':
-        value = limitInfo[limit].default;
+        value = limitInfo.default;
         result = value;
         break;
       case 'adapter':
@@ -276,7 +273,7 @@ g.test('limits,supported')
         break;
       case 'undefined':
         value = undefined;
-        result = limitInfo[limit].default;
+        result = limitInfo.default;
         break;
     }
 
@@ -314,7 +311,7 @@ g.test('limit,better_than_supported')
   )
   .params(u =>
     u
-      .combine('limit', kLimits)
+      .combine('limit', kPossibleLimits)
       .beginSubcases()
       .expandWithParams(p => {
         switch (kLimitClasses[p.limit]) {
@@ -357,7 +354,7 @@ g.test('limit,out_of_range')
   )
   .params(u =>
     u
-      .combine('limit', kLimits)
+      .combine('limit', kPossibleLimits)
       .beginSubcases()
       .expand('value', function* () {
         yield -(2 ** 64);
@@ -386,7 +383,6 @@ g.test('limit,out_of_range')
     const adapter = await gpu.requestAdapter();
     assert(adapter !== null);
     const limitInfo = getDefaultLimitsForCTS()[limit];
-
     const requiredLimits = {
       [limit]: value,
     };
@@ -418,7 +414,7 @@ g.test('limit,worse_than_default')
   )
   .params(u =>
     u
-      .combine('limit', kLimits)
+      .combine('limit', kPossibleLimits)
       .beginSubcases()
       .expandWithParams(p => {
         switch (kLimitClasses[p.limit]) {
@@ -443,14 +439,14 @@ g.test('limit,worse_than_default')
     const adapter = await gpu.requestAdapter();
     assert(adapter !== null);
 
-    const limitInfo = getDefaultLimitsForCTS();
-    const value = limitInfo[limit].default * mul + add;
+    const limitInfo = getDefaultLimitsForCTS()[limit];
+    const value = limitInfo.default * mul + add;
     const requiredLimits = {
-      [limit]: clamp(value, { min: 0, max: limitInfo[limit].maximumValue }),
+      [limit]: clamp(value, { min: 0, max: limitInfo.maximumValue }),
     };
 
     let success;
-    switch (limitInfo[limit].class) {
+    switch (limitInfo.class) {
       case 'alignment':
         success = isPowerOfTwo(value);
         break;
@@ -464,7 +460,7 @@ g.test('limit,worse_than_default')
       const device = await devicePromise;
       assert(device !== null);
       t.expect(
-        device.limits[limit] === limitInfo[limit].default,
+        device.limits[limit] === limitInfo.default,
         'Devices reported limit should match the default limit'
       );
       device.destroy();
@@ -506,12 +502,12 @@ g.test('always_returns_device')
       const device = await t.requestDeviceTracked(adapter);
       assert(device instanceof GPUDevice, 'requestDevice must return a device or throw');
 
-      if (featureLevel === 'core' && adapter.features.has('core-features-and-limits')) {
+      if (featureLevel === 'core' && hasFeature(adapter.features, 'core-features-and-limits')) {
         // Check if the device supports core, when featureLevel is core and adapter supports core.
         // This check is to make sure something lower-level is not forcing compatibility mode.
 
         t.expect(
-          device.features.has('core-features-and-limits'),
+          hasFeature(device.features, 'core-features-and-limits'),
           'must not get a Compatibility adapter if not requested'
         );
       }

@@ -4,12 +4,12 @@
 
 #include "EarlyHintPreconnect.h"
 
+#include "SpeculativeTransaction.h"
 #include "mozilla/CORSMode.h"
-#include "mozilla/dom/Element.h"
 #include "mozilla/StaticPrefs_network.h"
+#include "mozilla/dom/Element.h"
 #include "nsIOService.h"
 #include "nsIURI.h"
-#include "SpeculativeTransaction.h"
 
 namespace mozilla::net {
 
@@ -53,12 +53,6 @@ NS_IMETHODIMP
 EarlyHintsPreConnectOverride::GetParallelSpeculativeConnectLimit(
     uint32_t* parallelSpeculativeConnectLimit) {
   *parallelSpeculativeConnectLimit = mConnectionLimit;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-EarlyHintsPreConnectOverride::GetIsFromPredictor(bool* isFromPredictor) {
-  *isFromPredictor = false;
   return NS_OK;
 }
 

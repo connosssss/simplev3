@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -42,35 +40,31 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // Implementation of nICEr/nr_socket that is tied to the Gecko
 // SocketTransportService.
 
-#ifndef nr_socket_prsock__
-#define nr_socket_prsock__
+#ifndef nr_socket_prsock_
+#define nr_socket_prsock_
 
 #include <memory>
 #include <queue>
 
-#include "nspr.h"
-#include "prio.h"
-
-#include "nsCOMPtr.h"
+#include "m_cpp_utils.h"
+#include "mediapacket.h"
+#include "mozilla/ClearOnShutdown.h"
+#include "mozilla/ReentrantMonitor.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/TimeStamp.h"
 #include "nsASocketHandler.h"
-#include "nsXPCOM.h"
+#include "nsCOMPtr.h"
 #include "nsIEventTarget.h"
 #include "nsIUDPSocketChild.h"
 #include "nsProxyRelease.h"
 #include "nsThreadUtils.h"
-
-#include "mediapacket.h"
-#include "m_cpp_utils.h"
-#include "mozilla/ReentrantMonitor.h"
-#include "mozilla/RefPtr.h"
-#include "mozilla/TimeStamp.h"
-#include "mozilla/ClearOnShutdown.h"
+#include "nsXPCOM.h"
+#include "nspr.h"
+#include "prio.h"
 
 // nICEr includes
-extern "C" {
-#include "transport_addr.h"
 #include "async_wait.h"
-}
+#include "transport_addr.h"
 
 // Stub declaration for nICEr type
 typedef struct nr_socket_vtbl_ nr_socket_vtbl;
@@ -105,7 +99,7 @@ class NrSocketBase {
   // NrTcpSocketIpc as appropriate.
   static int CreateSocket(nr_transport_addr* addr, RefPtr<NrSocketBase>* sock,
                           const std::shared_ptr<NrSocketProxyConfig>& config);
-  static bool IsForbiddenAddress(nr_transport_addr* addr);
+  static bool IsForbiddenAddress(const nr_transport_addr* addr);
 
   // the nr_socket APIs
   virtual int create(nr_transport_addr* addr) = 0;
@@ -316,6 +310,6 @@ int nr_praddr_to_transport_addr(const PRNetAddr* praddr,
                                 nr_transport_addr* addr, int protocol,
                                 int keep);
 int nr_transport_addr_get_addrstring_and_port(const nr_transport_addr* addr,
-                                              nsACString* host, int32_t* port);
+                                              nsACString* host, uint16_t* port);
 }  // namespace mozilla
 #endif

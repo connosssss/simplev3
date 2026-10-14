@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,26 +5,26 @@
 #include "nsRangeFrame.h"
 
 #include "ListMutationObserver.h"
+#include "gfxContext.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/ReflowInput.h"
+#include "mozilla/ServoStyleSet.h"
 #include "mozilla/TouchEvents.h"
-
-#include "gfxContext.h"
-#include "nsContentCreatorFunctions.h"
-#include "nsCSSRendering.h"
-#include "nsDisplayList.h"
-#include "nsIContent.h"
-#include "nsLayoutUtils.h"
 #include "mozilla/dom/Document.h"
-#include "nsGkAtoms.h"
+#include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLDataListElement.h"
 #include "mozilla/dom/HTMLInputElement.h"
 #include "mozilla/dom/HTMLOptionElement.h"
-#include "mozilla/dom/MutationEventBinding.h"
-#include "nsPresContext.h"
+#include "nsCSSRendering.h"
+#include "nsContentCreatorFunctions.h"
+#include "nsDisplayList.h"
+#include "nsGkAtoms.h"
+#include "nsIContent.h"
+#include "nsIMutationObserver.h"
+#include "nsLayoutUtils.h"
 #include "nsNodeInfoManager.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/ServoStyleSet.h"
+#include "nsPresContext.h"
 #include "nsTArray.h"
 
 #ifdef ACCESSIBILITY
@@ -103,14 +101,14 @@ nsresult nsRangeFrame::CreateAnonymousContent(
     nsTArray<ContentInfo>& aElements) {
   Document* doc = mContent->OwnerDoc();
   // Create the ::-moz-range-track pseudo-element (a div):
-  mTrackDiv = MakeAnonymousDiv(*doc, PseudoStyleType::mozRangeTrack,
-                               PseudoStyleType::sliderTrack, aElements);
+  mTrackDiv = MakeAnonymousDiv(*doc, PseudoStyleType::MozRangeTrack,
+                               PseudoStyleType::SliderTrack, aElements);
   // Create the ::-moz-range-progress pseudo-element (a div):
-  mProgressDiv = MakeAnonymousDiv(*doc, PseudoStyleType::mozRangeProgress,
-                                  PseudoStyleType::sliderFill, aElements);
+  mProgressDiv = MakeAnonymousDiv(*doc, PseudoStyleType::MozRangeProgress,
+                                  PseudoStyleType::SliderFill, aElements);
   // Create the ::-moz-range-thumb pseudo-element (a div):
-  mThumbDiv = MakeAnonymousDiv(*doc, PseudoStyleType::mozRangeThumb,
-                               PseudoStyleType::sliderThumb, aElements);
+  mThumbDiv = MakeAnonymousDiv(*doc, PseudoStyleType::MozRangeThumb,
+                               PseudoStyleType::SliderThumb, aElements);
   return NS_OK;
 }
 
@@ -134,7 +132,12 @@ void nsRangeFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
   const nsStyleDisplay* disp = StyleDisplay();
   if (IsThemed(disp)) {
     DisplayBorderBackgroundOutline(aBuilder, aLists);
-    // Don't paint our children.
+    // Don't paint our children, but let the thumb be hittable for events.
+    if (auto* thumb = mThumbDiv->GetPrimaryFrame();
+        thumb && aBuilder->IsForEventDelivery() && !HidesContent()) {
+      nsDisplayListSet set(aLists, aLists.Content());
+      BuildDisplayListForChild(aBuilder, thumb, set, DisplayChildFlag::Inline);
+    }
   } else {
     BuildDisplayListForInline(aBuilder, aLists);
   }
@@ -165,27 +168,23 @@ void nsRangeFrame::Reflow(nsPresContext* aPresContext,
       contentBoxSize + aReflowInput.ComputedLogicalBorderPadding(wm).Size(wm));
   aDesiredSize.SetOverflowAreasToDesiredBounds();
 
-  ReflowAnonymousContent(aPresContext, aDesiredSize, contentBoxSize,
-                         aReflowInput);
+  ReflowChildFrames(aPresContext, aDesiredSize, contentBoxSize, aReflowInput);
   FinishAndStoreOverflow(&aDesiredSize);
 
   MOZ_ASSERT(aStatus.IsEmpty(), "This type of frame can't be split.");
 }
 
-void nsRangeFrame::ReflowAnonymousContent(nsPresContext* aPresContext,
-                                          ReflowOutput& aDesiredSize,
-                                          const LogicalSize& aContentBoxSize,
-                                          const ReflowInput& aReflowInput) {
+void nsRangeFrame::ReflowChildFrames(nsPresContext* aPresContext,
+                                     ReflowOutput& aDesiredSize,
+                                     const LogicalSize& aContentBoxSize,
+                                     const ReflowInput& aReflowInput) {
   const auto parentWM = aReflowInput.GetWritingMode();
   // The width/height of our content box, which is the available width/height
   // for our anonymous content.
   const nsSize rangeFrameContentBoxSize =
       aContentBoxSize.GetPhysicalSize(parentWM);
-  for (auto* div : {mTrackDiv.get(), mThumbDiv.get(), mProgressDiv.get()}) {
-    nsIFrame* child = div->GetPrimaryFrame();
-    if (!child) {
-      continue;
-    }
+  for (auto* child : mFrames) {
+    auto* content = child->GetContent();
     const WritingMode wm = child->GetWritingMode();
     const LogicalSize parentSizeInChildWM =
         aContentBoxSize.ConvertTo(wm, parentWM);
@@ -195,7 +194,7 @@ void nsRangeFrame::ReflowAnonymousContent(nsPresContext* aPresContext,
                                  Some(parentSizeInChildWM));
 
     const nsPoint pos = [&] {
-      if (div != mTrackDiv) {
+      if (content != mTrackDiv) {
         // Where we position the thumb and range-progress depends on its size,
         // so we first reflow them at {0,0} to obtain the size, then position
         // them afterwards.
@@ -233,9 +232,9 @@ void nsRangeFrame::ReflowAnonymousContent(nsPresContext* aPresContext,
         "We gave our child unconstrained height, so it should be complete");
     FinishReflowChild(child, aPresContext, childDesiredSize, &childReflowInput,
                       pos.x, pos.y, ReflowChildFlags::Default);
-    if (div == mThumbDiv) {
+    if (content == mThumbDiv) {
       DoUpdateThumbPosition(child, rangeFrameContentBoxSize);
-    } else if (div == mProgressDiv) {
+    } else if (content == mProgressDiv) {
       DoUpdateRangeProgressFrame(child, rangeFrameContentBoxSize);
     }
     ConsiderChildOverflow(aDesiredSize.mOverflowAreas, child);
@@ -405,19 +404,15 @@ void nsRangeFrame::UpdateForValueChange() {
 nsTArray<Decimal> nsRangeFrame::TickMarks() {
   nsTArray<Decimal> tickMarks;
   auto& input = InputElement();
-  auto* list = input.GetList();
+  auto* list = input.GetListInternal();
   if (!list) {
     return tickMarks;
   }
   auto min = input.GetMinimum();
   auto max = input.GetMaximum();
-  auto* options = list->Options();
-  nsAutoString label;
-  for (uint32_t i = 0; i < options->Length(); ++i) {
-    auto* item = options->Item(i);
-    auto* option = HTMLOptionElement::FromNode(item);
-    MOZ_ASSERT(option);
-    if (option->Disabled()) {
+  for (nsINode* n = list->GetFirstChild(); n; n = n->GetNextNode(list)) {
+    auto* option = HTMLOptionElement::FromNode(n);
+    if (!option || option->Disabled()) {
       continue;
     }
     nsAutoString str;
@@ -548,7 +543,8 @@ void nsRangeFrame::DoUpdateRangeProgressFrame(
 }
 
 nsresult nsRangeFrame::AttributeChanged(int32_t aNameSpaceID,
-                                        nsAtom* aAttribute, int32_t aModType) {
+                                        nsAtom* aAttribute,
+                                        AttrModType aModType) {
   NS_ASSERTION(mTrackDiv, "The track div must exist!");
   NS_ASSERTION(mThumbDiv, "The thumb div must exist!");
 
@@ -578,7 +574,7 @@ nsresult nsRangeFrame::AttributeChanged(int32_t aNameSpaceID,
       PresShell()->FrameNeedsReflow(this, IntrinsicDirty::None,
                                     NS_FRAME_IS_DIRTY);
     } else if (aAttribute == nsGkAtoms::list) {
-      const bool isRemoval = aModType == MutationEvent_Binding::REMOVAL;
+      const bool isRemoval = aModType == AttrModType::Removal;
       if (mListMutationObserver) {
         mListMutationObserver->Detach();
         if (isRemoval) {
@@ -609,7 +605,7 @@ nscoord nsRangeFrame::IntrinsicISize(const IntrinsicSizeInput& aInput,
   if (aType == IntrinsicISizeType::MinISize) {
     const auto* pos = StylePosition();
     auto wm = GetWritingMode();
-    const auto iSize = pos->ISize(wm, StyleDisplay()->mPosition);
+    const auto iSize = pos->ISize(wm, AnchorPosResolutionParams::From(this));
     if (iSize->HasPercent()) {
       // https://drafts.csswg.org/css-sizing-3/#percentage-sizing
       // https://drafts.csswg.org/css-sizing-3/#min-content-zero
@@ -660,9 +656,10 @@ bool nsRangeFrame::ShouldUseNativeStyle() const {
 
   return StyleDisplay()->EffectiveAppearance() == StyleAppearance::Range &&
          trackFrame &&
-         !trackFrame->Style()->HasAuthorSpecifiedBorderOrBackground() &&
+         !trackFrame->Style()->HasAuthorOrUserSpecifiedBorderOrBackground() &&
          progressFrame &&
-         !progressFrame->Style()->HasAuthorSpecifiedBorderOrBackground() &&
+         !progressFrame->Style()
+              ->HasAuthorOrUserSpecifiedBorderOrBackground() &&
          thumbFrame &&
-         !thumbFrame->Style()->HasAuthorSpecifiedBorderOrBackground();
+         !thumbFrame->Style()->HasAuthorOrUserSpecifiedBorderOrBackground();
 }

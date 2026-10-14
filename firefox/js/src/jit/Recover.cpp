@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,8 +6,7 @@
 
 #include "mozilla/Casting.h"
 
-#include "jsmath.h"
-
+#include "builtin/Math.h"
 #include "builtin/Object.h"
 #include "builtin/String.h"
 #include "jit/AtomicOperations.h"
@@ -25,6 +22,7 @@
 #include "js/ScalarType.h"
 #include "util/DifferentialTesting.h"
 #include "vm/BigIntType.h"
+#include "vm/BoundFunctionObject.h"
 #include "vm/EqualityOperations.h"
 #include "vm/Interpreter.h"
 #include "vm/Iteration.h"
@@ -43,18 +41,19 @@ bool MNode::writeRecoverData(CompactBufferWriter& writer) const {
   MOZ_CRASH("This instruction is not serializable");
 }
 
-void RInstruction::readRecoverData(CompactBufferReader& reader,
-                                   RInstructionStorage* raw) {
+uint32_t RInstruction::readRecoverData(CompactBufferReader& reader,
+                                       RInstructionStorage* raw) {
   uint32_t op = reader.readUnsigned();
   switch (Opcode(op)) {
 #define MATCH_OPCODES_(op)                                                  \
-  case Recover_##op:                                                        \
+  case Recover_##op: {                                                      \
     static_assert(sizeof(R##op) <= sizeof(RInstructionStorage),             \
                   "storage space must be big enough to store R" #op);       \
     static_assert(alignof(R##op) <= alignof(RInstructionStorage),           \
                   "storage space must be aligned adequate to store R" #op); \
-    new (raw->addr()) R##op(reader);                                        \
-    break;
+    auto* ins = new (raw->addr()) R##op(reader);                            \
+    return ins->numOperands();                                              \
+  }
 
     RECOVER_OPCODE_LIST(MATCH_OPCODES_)
 #undef MATCH_OPCODES_
@@ -130,8 +129,8 @@ bool RResumePoint::recover(JSContext* cx, SnapshotIterator& iter) const {
 }
 
 bool MBitNot::writeRecoverData(CompactBufferWriter& writer) const {
-  // 64-bit int bitnots exist only when compiling wasm; they exist neither for
-  // JS nor asm.js.  So we don't expect them here.
+  // 64-bit int bitnots exist only when compiling wasm; they do not exist
+  // for JS.  So we don't expect them here.
   MOZ_ASSERT(type() != MIRType::Int64);
   MOZ_ASSERT(canRecoverOnBailout());
   writer.writeUnsigned(uint32_t(RInstruction::Recover_BitNot));
@@ -280,6 +279,35 @@ bool RUrsh::recover(JSContext* cx, SnapshotIterator& iter) const {
   }
 
   iter.storeInstructionResult(result);
+  return true;
+}
+
+bool MRotate::writeRecoverData(CompactBufferWriter& writer) const {
+  MOZ_ASSERT(canRecoverOnBailout());
+  writer.writeUnsigned(uint32_t(RInstruction::Recover_Rotate));
+  writer.writeByte(isLeftRotate_);
+  return true;
+}
+
+RRotate::RRotate(CompactBufferReader& reader) {
+  isLeftRotate_ = reader.readByte();
+}
+
+bool RRotate::recover(JSContext* cx, SnapshotIterator& iter) const {
+  RootedValue operand(cx, iter.read());
+
+  // Our Int32 operand may have overflowed to double. This instruction
+  // is generated from bit shifts that convert their operands to int32,
+  // so we should do the same conversion here.
+  int32_t inputInt32;
+  MOZ_ALWAYS_TRUE(JS::ToInt32(cx, operand, &inputInt32));
+  uint32_t input = uint32_t(inputInt32);
+  int32_t c = iter.read().toInt32();
+  MOZ_ASSERT(c >= 1 && c <= 31);
+
+  uint32_t result = isLeftRotate_ ? ((input << c) | (input >> (32 - c)))
+                                  : ((input >> c) | (input << (32 - c)));
+  iter.storeInstructionResult(Int32Value(int32_t(result)));
   return true;
 }
 
@@ -1261,8 +1289,11 @@ bool RStrictConstantCompareInt32::recover(JSContext* cx,
                                           SnapshotIterator& iter) const {
   JS::Value lhs = iter.read();
 
-  iter.storeInstructionResult(
-      BooleanValue(lhs.isNumber() && lhs.toNumber() == constant_));
+  bool result = lhs.isNumber() && lhs.toNumber() == constant_;
+  if (jsop_ == JSOp::StrictNe) {
+    result = !result;
+  }
+  iter.storeInstructionResult(BooleanValue(result));
   return true;
 }
 
@@ -1288,8 +1319,11 @@ bool RStrictConstantCompareBoolean::recover(JSContext* cx,
                                             SnapshotIterator& iter) const {
   JS::Value lhs = iter.read();
 
-  iter.storeInstructionResult(
-      BooleanValue(lhs.isBoolean() && lhs.toBoolean() == constant_));
+  bool result = lhs == BooleanValue(constant_);
+  if (jsop_ == JSOp::StrictNe) {
+    result = !result;
+  }
+  iter.storeInstructionResult(BooleanValue(result));
   return true;
 }
 
@@ -1655,12 +1689,10 @@ bool MNearbyInt::writeRecoverData(CompactBufferWriter& writer) const {
   }
 }
 
-RNearbyInt::RNearbyInt(CompactBufferReader& reader) {
-  roundingMode_ = reader.readByte();
-}
-
-bool RNearbyInt::recover(JSContext* cx, SnapshotIterator& iter) const {
-  MOZ_CRASH("Unsupported rounding mode.");
+bool MRoundToDouble::writeRecoverData(CompactBufferWriter& writer) const {
+  MOZ_ASSERT(canRecoverOnBailout());
+  writer.writeUnsigned(uint32_t(RInstruction::Recover_Round));
+  return true;
 }
 
 bool MSign::writeRecoverData(CompactBufferWriter& writer) const {
@@ -1957,6 +1989,21 @@ bool RToFloat16::recover(JSContext* cx, SnapshotIterator& iter) const {
   return true;
 }
 
+bool MUnsignedToDouble::writeRecoverData(CompactBufferWriter& writer) const {
+  MOZ_ASSERT(canRecoverOnBailout());
+  writer.writeUnsigned(uint32_t(RInstruction::Recover_UnsignedToDouble));
+  return true;
+}
+
+RUnsignedToDouble::RUnsignedToDouble(CompactBufferReader& reader) {}
+
+bool RUnsignedToDouble::recover(JSContext* cx, SnapshotIterator& iter) const {
+  double num = iter.readNumber();
+
+  iter.storeInstructionResult(NumberValue(JS::ToUint32(num)));
+  return true;
+}
+
 bool MTruncateToInt32::writeRecoverData(CompactBufferWriter& writer) const {
   MOZ_ASSERT(canRecoverOnBailout());
   writer.writeUnsigned(uint32_t(RInstruction::Recover_TruncateToInt32));
@@ -1974,6 +2021,23 @@ bool RTruncateToInt32::recover(JSContext* cx, SnapshotIterator& iter) const {
   }
 
   iter.storeInstructionResult(Int32Value(trunc));
+  return true;
+}
+
+bool MCanonicalizeNaN::writeRecoverData(CompactBufferWriter& writer) const {
+  MOZ_ASSERT(canRecoverOnBailout());
+  writer.writeUnsigned(uint32_t(RInstruction::Recover_CanonicalizeNaN));
+  return true;
+}
+
+RCanonicalizeNaN::RCanonicalizeNaN(CompactBufferReader& reader) {}
+
+bool RCanonicalizeNaN::recover(JSContext* cx, SnapshotIterator& iter) const {
+  // NaN values are canoncalized when reading from the frame.
+  Value value = iter.read();
+  MOZ_RELEASE_ASSERT(value.isNumber());
+
+  iter.storeInstructionResult(value);
   return true;
 }
 
@@ -2153,6 +2217,49 @@ bool RNewIterator::recover(JSContext* cx, SnapshotIterator& iter) const {
   return true;
 }
 
+bool MNewDateObject::writeRecoverData(CompactBufferWriter& writer) const {
+  MOZ_ASSERT(canRecoverOnBailout());
+  writer.writeUnsigned(uint32_t(RInstruction::Recover_NewDateObject));
+  return true;
+}
+
+RNewDateObject::RNewDateObject(CompactBufferReader& reader) {}
+
+bool RNewDateObject::recover(JSContext* cx, SnapshotIterator& iter) const {
+  auto utcTime = iter.read();
+  MOZ_ASSERT(utcTime.isNumber());
+
+  auto* resultObject = jit::NewDateObject(cx, utcTime.toNumber());
+  if (!resultObject) {
+    return false;
+  }
+
+  iter.storeInstructionResult(ObjectValue(*resultObject));
+  return true;
+}
+
+bool MNewBoundFunction::writeRecoverData(CompactBufferWriter& writer) const {
+  MOZ_ASSERT(canRecoverOnBailout());
+  writer.writeUnsigned(uint32_t(RInstruction::Recover_NewBoundFunction));
+  return true;
+}
+
+RNewBoundFunction::RNewBoundFunction(CompactBufferReader& reader) {}
+
+bool RNewBoundFunction::recover(JSContext* cx, SnapshotIterator& iter) const {
+  Rooted<BoundFunctionObject*> templateObj(
+      cx, &iter.readObject()->as<BoundFunctionObject>());
+
+  JSObject* resultObject =
+      BoundFunctionObject::createWithTemplate(cx, templateObj);
+  if (!resultObject) {
+    return false;
+  }
+
+  iter.storeInstructionResult(ObjectValue(*resultObject));
+  return true;
+}
+
 bool MLambda::writeRecoverData(CompactBufferWriter& writer) const {
   MOZ_ASSERT(canRecoverOnBailout());
   writer.writeUnsigned(uint32_t(RInstruction::Recover_Lambda));
@@ -2197,6 +2304,36 @@ bool RFunctionWithProto::recover(JSContext* cx, SnapshotIterator& iter) const {
   return true;
 }
 
+bool MCallee::writeRecoverData(CompactBufferWriter& writer) const {
+  MOZ_ASSERT(canRecoverOnBailout());
+  writer.writeUnsigned(uint32_t(RInstruction::Recover_Callee));
+  return true;
+}
+
+RCallee::RCallee(CompactBufferReader& reader) {}
+
+bool RCallee::recover(JSContext* cx, SnapshotIterator& iter) const {
+  JSFunction* callee = CalleeTokenToFunction(iter.frame()->calleeToken());
+  iter.storeInstructionResult(ObjectValue(*callee));
+  return true;
+}
+
+bool MFunctionEnvironment::writeRecoverData(CompactBufferWriter& writer) const {
+  MOZ_ASSERT(canRecoverOnBailout());
+  writer.writeUnsigned(uint32_t(RInstruction::Recover_FunctionEnvironment));
+  return true;
+}
+
+RFunctionEnvironment::RFunctionEnvironment(CompactBufferReader& reader) {}
+
+bool RFunctionEnvironment::recover(JSContext* cx,
+                                   SnapshotIterator& iter) const {
+  JSObject* obj = iter.readObject();
+  JSObject* env = obj->as<JSFunction>().environment();
+  iter.storeInstructionResult(ObjectValue(*env));
+  return true;
+}
+
 bool MNewCallObject::writeRecoverData(CompactBufferWriter& writer) const {
   MOZ_ASSERT(canRecoverOnBailout());
   writer.writeUnsigned(uint32_t(RInstruction::Recover_NewCallObject));
@@ -2219,24 +2356,20 @@ bool RNewCallObject::recover(JSContext* cx, SnapshotIterator& iter) const {
   return true;
 }
 
-bool MObjectKeys::canRecoverOnBailout() const {
-  // Only claim that this operation can be recovered on bailout if some other
-  // optimization already marked it as such.
-  return isRecoveredOnBailout();
-}
-
-bool MObjectKeys::writeRecoverData(CompactBufferWriter& writer) const {
+bool MObjectKeysFromIterator::writeRecoverData(
+    CompactBufferWriter& writer) const {
   MOZ_ASSERT(canRecoverOnBailout());
-  writer.writeUnsigned(uint32_t(RInstruction::Recover_ObjectKeys));
+  writer.writeUnsigned(uint32_t(RInstruction::Recover_ObjectKeysFromIterator));
   return true;
 }
 
-RObjectKeys::RObjectKeys(CompactBufferReader& reader) {}
+RObjectKeysFromIterator::RObjectKeysFromIterator(CompactBufferReader& reader) {}
 
-bool RObjectKeys::recover(JSContext* cx, SnapshotIterator& iter) const {
-  Rooted<JSObject*> obj(cx, iter.readObject());
+bool RObjectKeysFromIterator::recover(JSContext* cx,
+                                      SnapshotIterator& iter) const {
+  Rooted<JSObject*> iterObj(cx, iter.readObject());
 
-  JSObject* resultKeys = ObjectKeys(cx, obj);
+  JSObject* resultKeys = ObjectKeysFromIterator(cx, iterObj);
   if (!resultKeys) {
     return false;
   }
@@ -2567,5 +2700,27 @@ bool RRest::recover(JSContext* cx, SnapshotIterator& iter) const {
   }
 
   iter.storeInstructionResult(ObjectValue(*rest));
+  return true;
+}
+
+bool MTypedArraySubarray::writeRecoverData(CompactBufferWriter& writer) const {
+  MOZ_ASSERT(canRecoverOnBailout());
+  writer.writeUnsigned(uint32_t(RInstruction::Recover_TypedArraySubarray));
+  return true;
+}
+
+RTypedArraySubarray::RTypedArraySubarray(CompactBufferReader& reader) {}
+
+bool RTypedArraySubarray::recover(JSContext* cx, SnapshotIterator& iter) const {
+  Rooted<TypedArrayObject*> obj(cx, &iter.readObject()->as<TypedArrayObject>());
+  intptr_t start = iter.readIntPtr();
+  intptr_t length = iter.readIntPtr();
+
+  auto* result = TypedArraySubarrayRecover(cx, obj, start, length);
+  if (!result) {
+    return false;
+  }
+
+  iter.storeInstructionResult(ObjectValue(*result));
   return true;
 }

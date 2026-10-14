@@ -42,6 +42,7 @@
 #define MYSPELLMGR_H_
 
 #include "hunvisapi.h"
+#include "hunversion.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -70,6 +71,9 @@ LIBHUNSPELL_DLL_EXPORTED int Hunspell_spell(Hunhandle* pHunspell, const char*);
 
 LIBHUNSPELL_DLL_EXPORTED char* Hunspell_get_dic_encoding(Hunhandle* pHunspell);
 
+/* version of the hunspell library itself, for example "1.7.3" */
+LIBHUNSPELL_DLL_EXPORTED const char* Hunspell_get_library_version(void);
+
 /* suggest(suggestions, word) - search suggestions
  * input: pointer to an array of strings pointer and the (bad) word
  *   array of strings pointer (here *slst) may not be initialized
@@ -80,6 +84,18 @@ LIBHUNSPELL_DLL_EXPORTED char* Hunspell_get_dic_encoding(Hunhandle* pHunspell);
 LIBHUNSPELL_DLL_EXPORTED int Hunspell_suggest(Hunhandle* pHunspell,
                                               char*** slst,
                                               const char* word);
+
+/* Suggest words from suffix rules
+ * suffix_suggest(suggestions, root_word)
+ * input: pointer to an array of strings pointer and the  word
+ *   array of strings pointer (here *slst) may not be initialized
+ * output: number of suggestions in string array, and suggestions in
+ *   a newly allocated array of strings (*slts will be NULL when number
+ *   of suggestion equals 0.)
+ */
+LIBHUNSPELL_DLL_EXPORTED int Hunspell_suffix_suggest(Hunhandle* pHunspell,
+                                                     char*** slst,
+                                                     const char* word);
 
 /* morphological functions */
 
@@ -134,6 +150,10 @@ LIBHUNSPELL_DLL_EXPORTED int Hunspell_generate2(Hunhandle* pHunspell,
 
 LIBHUNSPELL_DLL_EXPORTED int Hunspell_add(Hunhandle* pHunspell,
                                           const char* word);
+
+
+LIBHUNSPELL_DLL_EXPORTED int Hunspell_add_with_flags(Hunhandle* pHunspell,
+                                          const char* word, const char* flags, const char* desc);
 
 /* add word to the run-time dictionary with affix flags of
  * the example (a dictionary word): Hunspell will recognize

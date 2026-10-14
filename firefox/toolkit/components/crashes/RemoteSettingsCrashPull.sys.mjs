@@ -5,7 +5,7 @@
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  CrashSubmit: "resource://gre/modules/CrashSubmit.sys.mjs",
+  CrashSubmit: "moz-src:///toolkit/crashreporter/CrashSubmit.sys.mjs",
   CrashServiceUtils: "resource://gre/modules/CrashService.sys.mjs",
   RemoteSettings: "resource://services-settings/remote-settings.sys.mjs",
   RemoteSettingsClient:
@@ -28,9 +28,7 @@ export var RemoteSettingsCrashPull = {
       return;
     }
 
-    const enabled = Services.prefs.getBoolPref(
-      "browser.crashReports.crashPull"
-    );
+    const enabled = Services.prefs.getBoolPref("browser.crashReports.onDemand");
     if (!enabled) {
       return;
     }

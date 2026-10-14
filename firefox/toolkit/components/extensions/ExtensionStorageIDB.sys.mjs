@@ -9,6 +9,14 @@ const lazy = XPCOMUtils.declareLazy({
   ExtensionStorage: "resource://gre/modules/ExtensionStorage.sys.mjs",
   ExtensionUtils: "resource://gre/modules/ExtensionUtils.sys.mjs",
   getTrimmedString: "resource://gre/modules/ExtensionTelemetry.sys.mjs",
+
+  disabledAutoResetOnCorrupted: {
+    // NOTE: this pref is meant to disable the auto reset of the
+    // IndexedDB backend database when it is detected as corrupted
+    // for debugging purpose.
+    pref: "extensions.webextensions.keepStorageOnCorrupted.storageLocal",
+    default: false,
+  },
 });
 
 // The userContextID reserved for the extension storage (its purpose is ensuring that the IndexedDB
@@ -19,14 +27,15 @@ const WEBEXT_STORAGE_USER_CONTEXT_ID = -1 >>> 0;
 const IDB_NAME = "webExtensions-storage-local";
 const IDB_DATA_STORENAME = "storage-local-data";
 const IDB_VERSION = 1;
-const IDB_MIGRATE_RESULT_HISTOGRAM =
-  "WEBEXT_STORAGE_LOCAL_IDB_MIGRATE_RESULT_COUNT";
 
 // Whether or not the installed extensions should be migrated to the storage.local IndexedDB backend.
 const BACKEND_ENABLED_PREF =
   "extensions.webextensions.ExtensionStorageIDB.enabled";
 const IDB_MIGRATED_PREF_BRANCH =
   "extensions.webextensions.ExtensionStorageIDB.migrated";
+
+export const ERROR_OPEN_ON_INACTIVE_POLICY =
+  "Failed to open storage.local backend after the extension was already shutdown";
 
 class DataMigrationAbortedError extends Error {
   get name() {
@@ -158,20 +167,145 @@ var ErrorsTelemetry = {
   },
 };
 
-class ExtensionStorageLocalIDB extends IndexedDB {
+export class ExtensionStorageLocalIDB extends IndexedDB {
+  #addonId;
+  #storagePrincipal;
+
   onupgradeneeded(event) {
     if (event.oldVersion < 1) {
       this.createObjectStore(IDB_DATA_STORENAME);
     }
   }
 
-  static openForPrincipal(storagePrincipal) {
+  static get disabledAutoResetOnCorrupted() {
+    return lazy.disabledAutoResetOnCorrupted;
+  }
+
+  static isMissingObjectStore(db) {
+    return (
+      !db.objectStoreNames.contains(IDB_DATA_STORENAME) &&
+      db.version >= IDB_VERSION
+    );
+  }
+
+  static async openForPrincipal(storagePrincipal) {
+    const { addonPolicy, addonId } = storagePrincipal;
+
+    const ensureAddonPolicyIsActive = () => {
+      if (addonPolicy?.active) {
+        return;
+      }
+      throw new Error(
+        addonId
+          ? `${ERROR_OPEN_ON_INACTIVE_POLICY} (${addonId})`
+          : ERROR_OPEN_ON_INACTIVE_POLICY
+      );
+    };
+
+    // Don't even try to open the IndexedDB database if the
+    // extension is not active anymore.
+    ensureAddonPolicyIsActive();
+
     // The db is opened using an extension principal isolated in a reserved user context id.
-    return /** @type {Promise<ExtensionStorageLocalIDB>} */ (
-      super.openForPrincipal(storagePrincipal, IDB_NAME, {
+    let result = /** @type {ExtensionStorageLocalIDB} */ (
+      await super.openForPrincipal(storagePrincipal, IDB_NAME, {
         version: IDB_VERSION,
       })
     );
+    result.#storagePrincipal = storagePrincipal;
+    result.#addonId = addonId;
+
+    // Delete and recreate the database from scratch if the expected object store
+    // isn't found in objectStoreNames DOMStringList.
+    //
+    // NOTE: the onupgradeneeded handler is expected to be executed before openForPrincipal
+    // resolves, and so if at this point the expected object store name isn't found, then
+    // it means that the database got corrupted (and if the database version is still
+    // set then the onupgradeneeded function would never recreate it).
+    if (this.isMissingObjectStore(result.db)) {
+      Glean.extensionsData.storageLocalCorruptedReset.record({
+        addon_id: addonId,
+        reason: "ObjectStoreNotFound",
+        // @ts-ignore bug 1863760
+        is_addon_active: !!addonPolicy.active,
+        // @ts-ignore bug 1863760
+        after_reset: false,
+        // @ts-ignore bug 1863760
+        reset_disabled: lazy.disabledAutoResetOnCorrupted,
+      });
+
+      // Don't reset the database if the addon isn't active anymore.
+      ensureAddonPolicyIsActive();
+
+      if (!lazy.disabledAutoResetOnCorrupted) {
+        let resetErrorName = null;
+        try {
+          await this.resetForPrincipal(storagePrincipal);
+        } catch (err) {
+          Cu.reportError(err);
+          resetErrorName = ErrorsTelemetry.getErrorName(err);
+        }
+
+        // Now try again to open the db, which should create the object store
+        // from the onupgradedneeded event listener.
+        result = /** @type {ExtensionStorageLocalIDB} */ (
+          await super.openForPrincipal(storagePrincipal, IDB_NAME, {
+            version: IDB_VERSION,
+          })
+        );
+        // throw an error more specific than "An unexpected error occurred" if objectStoreNames
+        // doesn't still include the expected object store name.
+        if (this.isMissingObjectStore(result.db)) {
+          Glean.extensionsData.storageLocalCorruptedReset.record({
+            addon_id: storagePrincipal.addonId,
+            reason: "ObjectStoreNotFound",
+            // @ts-ignore bug 1863760
+            is_addon_active: !!addonPolicy.active,
+            // @ts-ignore bug 1863760
+            after_reset: true,
+            // @ts-ignore bug 1863760
+            reset_disabled: lazy.disabledAutoResetOnCorrupted,
+            reset_error_name: resetErrorName,
+          });
+          const { ExtensionError } = lazy.ExtensionUtils;
+          throw new ExtensionError("Corrupted storage.local backend");
+        }
+      }
+    }
+
+    // Make sure we reject also if the add-on ends up being disabled by the time
+    // the call is ready to resolve successfully.
+    ensureAddonPolicyIsActive();
+
+    return result;
+  }
+
+  static async resetForPrincipal(storagePrincipal) {
+    await new Promise(resolve => {
+      // NOTE: using clearStoragesForPrincipal here to make sure we are completely
+      // dropping the corrupted indexeddb (storagePrincipal is only used for the storage.local
+      // IndexedDB backend and so the call that follows will not be clearing other storage
+      // backends that belongs to the API).
+      let req = Services.qms.clearStoragesForPrincipal(storagePrincipal);
+      req.callback = resolve;
+    });
+  }
+
+  async dropAndReopen() {
+    // Do not reset the database if the addon isn't active anymore.
+    if (!this.#storagePrincipal.addonPolicy?.active) {
+      throw new Error(`${ERROR_OPEN_ON_INACTIVE_POLICY} (${this.#addonId})`);
+    }
+    // Forcefully drop the corrupted IndexedDB database.
+    await ExtensionStorageLocalIDB.resetForPrincipal(this.#storagePrincipal);
+    // Reopen the database after it has been reset and retrive the
+    // underlying wrapped IndexedDB database instance to become
+    // the active one for the current IndexedDB database wrapper
+    // instance.
+    const newInstance = await ExtensionStorageLocalIDB.openForPrincipal(
+      this.#storagePrincipal
+    );
+    this.db = newInstance.db;
   }
 
   async isEmpty() {
@@ -301,6 +435,41 @@ class ExtensionStorageLocalIDB extends IndexedDB {
   }
 
   /**
+   * Asynchronously retrieves the bytes in use for the given storage items.
+   *
+   * @param {Array<string>|string|null} [keys]
+   * @returns {Promise<number>}
+   */
+  async getBytesInUse(keys) {
+    const data = await this.get(keys);
+    let bytesInUse = 0;
+    for (let key in data) {
+      const clone = new StructuredCloneHolder(key, null, data[key]);
+      bytesInUse += key.length + clone.dataSize;
+    }
+    return bytesInUse;
+  }
+
+  /**
+   * Asynchronously retrieves all keys.
+   *
+   * @returns {Promise<Array<string>>}
+   *          Returns an array of keys.
+   */
+  async getKeys() {
+    const cursor = await this.objectStore(
+      IDB_DATA_STORENAME,
+      "readonly"
+    ).openCursor();
+    const keys = [];
+    while (!cursor.done) {
+      keys.push(cursor.key);
+      await cursor.continue();
+    }
+    return keys;
+  }
+
+  /**
    * Asynchronously removes the given storage items.
    *
    * @param {string|Array<string>} keys
@@ -353,14 +522,38 @@ class ExtensionStorageLocalIDB extends IndexedDB {
 
     const objectStore = this.objectStore(IDB_DATA_STORENAME, "readwrite");
 
-    const cursor = await objectStore.openCursor();
-    while (!cursor.done) {
-      changes[cursor.key] = { oldValue: cursor.value };
-      changed = true;
-      await cursor.continue();
+    try {
+      const cursor = await objectStore.openCursor();
+      while (!cursor.done) {
+        changes[cursor.key] = { oldValue: cursor.value };
+        changed = true;
+        await cursor.continue();
+      }
+      await objectStore.clear();
+    } catch (err) {
+      // Error names expected to be raised on known corrupted storage
+      // issues that storage.local.clear method may be hitting.
+      const KNOWN_CORRUPTED_ERROR_NAMES = ["UnknownError", "NotReadableError"];
+      const errorName = ErrorsTelemetry.getErrorName(err);
+      if (
+        lazy.disabledAutoResetOnCorrupted ||
+        !KNOWN_CORRUPTED_ERROR_NAMES.includes(errorName)
+      ) {
+        throw err;
+      } else {
+        // Drop and reopen the database if iterating over the
+        // IDB objectStore keys or clearing the objectStore
+        // has hit unexpected rejections.
+        Cu.reportError(err);
+        Glean.extensionsData.storageLocalCorruptedReset.record({
+          addon_id: this.#addonId,
+          reason: `RejectedClear:${errorName}`,
+          // @ts-ignore bug 1863760
+          is_addon_active: !!this.#storagePrincipal.addonPolicy?.active,
+        });
+        await this.dropAndReopen();
+      }
     }
-
-    await objectStore.clear();
 
     return changed ? changes : null;
   }
@@ -555,7 +748,6 @@ async function migrateJSONFileData(extension, storagePrincipal) {
 export var ExtensionStorageIDB = {
   BACKEND_ENABLED_PREF,
   IDB_MIGRATED_PREF_BRANCH,
-  IDB_MIGRATE_RESULT_HISTOGRAM,
 
   // Map<extension-id, Set<Function>>
   listeners: new Map(),
@@ -618,7 +810,7 @@ export var ExtensionStorageIDB = {
    * child context is going to ask the main process only once per child process, and on the
    * main process side the backend selection and data migration will happen only once.
    *
-   * @param {import("ExtensionPageChild.sys.mjs").ExtensionBaseContextChild} context
+   * @param {import("./ExtensionPageChild.sys.mjs").ExtensionBaseContextChild} context
    *        The extension context that is selecting the storage backend.
    *
    * @returns {Promise<object>}
@@ -772,7 +964,7 @@ export var ExtensionStorageIDB = {
    * from the internal IndexedDB operations have to be converted into an ExtensionError
    * to be accessible to the extension code).
    *
-   * @typedef {import("ExtensionUtils.sys.mjs").ExtensionError} ExtensionError
+   * @typedef {import("./ExtensionUtils.sys.mjs").ExtensionError} ExtensionError
    *
    * @param {object} params
    * @param {Error|ExtensionError|DOMException} params.error

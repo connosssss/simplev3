@@ -53,21 +53,17 @@ class Benchmark:
         self.start_http_server()
 
     def start_http_server(self):
-        # pick a free port
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("", 0))
         self.host = self.config["host"]
-        self.port = sock.getsockname()[1]
-        sock.close()
-        _webserver = "%s:%d" % (self.host, self.port)
+        self.port = int(self.test.get("benchmark_port") or self._pick_free_port())
+        _webserver = f"{self.host}:{self.port}"
 
         self.httpd = self.setup_webserver(_webserver)
         self.server_thread = threading.Thread(target=self.httpd.serve_forever)
         self.server_thread.start()
 
     def setup_webserver(self, webserver):
-        LOG.info("starting webserver on %r" % webserver)
-        LOG.info("serving benchmarks from here: %s" % self.bench_dir)
+        LOG.info(f"starting webserver on {webserver!r}")
+        LOG.info(f"serving benchmarks from here: {self.bench_dir}")
 
         self.host, self.port = webserver.split(":")
 
@@ -81,7 +77,7 @@ class Benchmark:
 
             def log_message(self, *args):
                 if CustomHandler.verbose:
-                    super(CustomHandler, self).log_message(*args)
+                    super().log_message(*args)
 
             def end_headers(self):
                 self.send_header("Access-Control-Allow-Origin", "*")
@@ -103,19 +99,24 @@ class Benchmark:
         except Exception:
             LOG.warning(f"Failed to stop benchmark server: {traceback.format_exc()}")
 
+    def _pick_free_port(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        return port
+
     def _full_clone(self, benchmark_repository, dest):
-        subprocess.check_call(
-            [
-                "git",
-                "clone",
-                "-c",
-                "http.postBuffer=2147483648",
-                "-c",
-                "core.autocrlf=false",
-                benchmark_repository,
-                str(dest.resolve()),
-            ]
-        )
+        subprocess.check_call([
+            "git",
+            "clone",
+            "-c",
+            "http.postBuffer=2147483648",
+            "-c",
+            "core.autocrlf=false",
+            benchmark_repository,
+            str(dest.resolve()),
+        ])
 
     def _get_benchmark_folder(self, benchmark_dest, run_local):
         if not run_local:
@@ -131,19 +132,17 @@ class Benchmark:
         See bug 1804694. This method should only be used in CI, locally we
         can simply pull the whole repo.
         """
-        subprocess.check_call(
-            [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                "--filter",
-                "blob:none",
-                "--sparse",
-                benchmark_repository,
-                str(dest.resolve()),
-            ]
-        )
+        subprocess.check_call([
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "--filter",
+            "blob:none",
+            "--sparse",
+            benchmark_repository,
+            str(dest.resolve()),
+        ])
         subprocess.check_call(
             [
                 "git",
@@ -206,7 +205,8 @@ class Benchmark:
             try:
                 # Get the default branch name, and check it if's been updated
                 default_branch = (
-                    subprocess.check_output(
+                    subprocess
+                    .check_output(
                         ["git", "rev-parse", "--abbrev-ref", "origin/HEAD"],
                         cwd=external_repo_path,
                     )
@@ -215,7 +215,8 @@ class Benchmark:
                     .split("/")[-1]
                 )
                 remote_default_branch = (
-                    subprocess.check_output(
+                    subprocess
+                    .check_output(
                         ["git", "remote", "set-head", "origin", "-a"],
                         cwd=external_repo_path,
                     )
@@ -269,13 +270,28 @@ class Benchmark:
 
         if not external_repo_path.is_dir():
             LOG.info(f"Cloning the benchmarks to {external_repo_path}")
-            # Bug 1804694 - Use sparse checkouts instead of full clones
-            # Locally, we should always do a full clone
-            self._full_clone(benchmark_repository, external_repo_path)
+            # Use sparse checkouts instead of full clones in CI. Locally, we can do
+            # a full clone. At the moment this is necessary for the perf-automation
+            # repo which hosts multiple benchmarks and we only need to sparse clone
+            # the required benchmark. Other benchmarks are either vendored in-tree
+            # or cloned directly (e.g. speedometer 3, motionmark 1.3)
+            use_sparse_checkout = (
+                self.test.get("sparse_checkout", False) and not run_local
+            )
+
+            if use_sparse_checkout:
+                LOG.info("Performing a sparse clone...")
+                self._sparse_clone(benchmark_repository, external_repo_path)
+                LOG.info("Sparse clone successful")
+            else:
+                LOG.info("Performing a full clone...")
+                self._full_clone(benchmark_repository, external_repo_path)
+                LOG.info("Full clone successful")
         else:
             # Make sure that the repo origin wasn't changed
             url = (
-                subprocess.check_output(
+                subprocess
+                .check_output(
                     ["git", "config", "--get", "remote.origin.url"],
                     cwd=external_repo_path,
                 )
@@ -308,6 +324,42 @@ class Benchmark:
         )
 
         return benchmark_dest
+
+    def _setup_fetched_benchmark(self, benchmark_dest, run_local=True):
+        """Setup a benchmark downloaded by a taskcluster fetch task.
+
+        Returns None when the test doesn't declare a `fetch_path`, or when the
+        fetch isn't present (e.g. running locally), so the caller can fall back
+        to cloning the benchmark repository.
+        """
+        fetch_path = self.test.get("fetch_path", None)
+        if not fetch_path:
+            return None
+
+        fetches_dir = os.environ.get("MOZ_FETCHES_DIR", None)
+        if not fetches_dir:
+            LOG.info("MOZ_FETCHES_DIR is unset, falling back to cloning the benchmark")
+            return None
+
+        benchmark_path = pathlib.Path(fetches_dir, fetch_path)
+        if not benchmark_path.is_dir():
+            LOG.info(
+                f"No fetched benchmark at {benchmark_path}, "
+                f"falling back to cloning the benchmark"
+            )
+            return None
+
+        LOG.info(f"Using the fetched benchmark found at {benchmark_path}")
+        benchmark_dest = pathlib.Path(
+            self._get_benchmark_folder(benchmark_dest, run_local), self.test["name"]
+        )
+
+        return self._copy_or_link_files(
+            benchmark_path,
+            benchmark_dest,
+            skip_files_and_hidden=False,
+            host_from_parent=self.test.get("host_from_parent", True),
+        )
 
     def _setup_in_tree_benchmarks(self, topsrc_path, benchmark_dest, run_local=True):
         """Setup a benchmakr that is found in-tree.
@@ -348,7 +400,14 @@ class Benchmark:
             # 'here' is that path, we can start with that
             bench_dir = pathlib.Path(here)
 
-        if self.test.get("repository", None) is not None:
+        fetched_bench_dir = self._setup_fetched_benchmark(
+            bench_dir, run_local=run_local
+        )
+
+        if fetched_bench_dir is not None:
+            # Setup benchmarks that a fetch task already downloaded for us
+            bench_dir = fetched_bench_dir
+        elif self.test.get("repository", None) is not None:
             # Setup benchmarks that are found on Github
             bench_dir = self._setup_git_benchmarks(
                 mozbuild_path, bench_dir, run_local=run_local

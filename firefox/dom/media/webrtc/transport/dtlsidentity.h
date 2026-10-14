@@ -1,10 +1,8 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
-#ifndef dtls_identity_h__
-#define dtls_identity_h__
+#ifndef dtls_identity_h_
+#define dtls_identity_h_
 
 #include <utility>
 #include <vector>
@@ -83,6 +81,8 @@ class DtlsIdentity final {
 
   nsresult ComputeFingerprint(DtlsDigest* digest) const;
   static nsresult ComputeFingerprint(const UniqueCERTCertificate& cert,
+                                     DtlsDigest* digest);
+  static nsresult ComputeFingerprint(const uint8_t* aDerCert, size_t aDerLen,
                                      DtlsDigest* digest);
 
   static constexpr nsLiteralCString DEFAULT_HASH_ALGORITHM = "sha-256"_ns;

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,6 +7,8 @@
 
 #include "js/TypeDecls.h"
 #include "mozilla/dom/JSActor.h"
+#include "mozilla/dom/JSIPCValue.h"
+#include "mozilla/dom/RemoteType.h"
 #include "nsRefPtrHashtable.h"
 #include "nsString.h"
 
@@ -44,8 +44,9 @@ class JSActorManager : public nsISupports {
    * Handle receiving a raw message from the other side.
    */
   void ReceiveRawMessage(const JSActorMessageMeta& aMetadata,
-                         Maybe<ipc::StructuredCloneData>&& aData,
-                         Maybe<ipc::StructuredCloneData>&& aStack);
+                         JSIPCValue&& aData, ipc::StructuredCloneData* aStack);
+
+  virtual const RemoteType& GetRemoteType() const = 0;
 
  protected:
   /**

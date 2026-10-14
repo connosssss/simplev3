@@ -1,24 +1,25 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* JavaScript JSClasses and JSOps for our Wrapped Native JS Objects. */
 
-#include "xpcprivate.h"
-#include "xpc_make_class.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/Preferences.h"
+
+#include <string_view>
+
+#include "jsapi.h"
+#include "xpc_make_class.h"
+#include "xpcprivate.h"
+
 #include "js/CharacterEncoding.h"
 #include "js/Class.h"
 #include "js/Object.h"  // JS::GetClass
 #include "js/Printf.h"
 #include "js/PropertyAndElement.h"  // JS_DefineProperty, JS_DefinePropertyById, JS_GetProperty, JS_GetPropertyById
 #include "js/Symbol.h"
-
-#include <string_view>
 
 using namespace mozilla;
 using namespace JS;
@@ -544,20 +545,20 @@ bool XPC_WN_Shared_Enumerate(JSContext* cx, HandleObject obj) {
 
   uint16_t interface_count = set->GetInterfaceCount();
   XPCNativeInterface** interfaceArray = set->GetInterfaceArray();
+  RootedId name(cx);
   for (uint16_t i = 0; i < interface_count; i++) {
     XPCNativeInterface* iface = interfaceArray[i];
     uint16_t member_count = iface->GetMemberCount();
     for (uint16_t k = 0; k < member_count; k++) {
       XPCNativeMember* member = iface->GetMemberAt(k);
-      jsid name = member->GetName();
+      name = member->GetName();
 
       // Skip if this member is going to come from the proto.
       uint16_t index;
       if (protoSet && protoSet->FindMember(name, nullptr, &index) && index == i)
         continue;
 
-      JS_MarkCrossZoneId(cx, name);
-      if (!xpc_ForcePropertyResolve(cx, obj, name)) {
+      if (!JS_WrapId(cx, &name) || !xpc_ForcePropertyResolve(cx, obj, name)) {
         return false;
       }
     }
@@ -649,16 +650,12 @@ static bool XPC_WN_NoHelper_Resolve(JSContext* cx, HandleObject obj,
 }
 
 static const JSClassOps XPC_WN_NoHelper_JSClassOps = {
-    XPC_WN_OnlyIWrite_AddPropertyStub,  // addProperty
-    XPC_WN_CannotDeletePropertyStub,    // delProperty
-    XPC_WN_Shared_Enumerate,            // enumerate
-    nullptr,                            // newEnumerate
-    XPC_WN_NoHelper_Resolve,            // resolve
-    nullptr,                            // mayResolve
-    XPC_WN_NoHelper_Finalize,           // finalize
-    nullptr,                            // call
-    nullptr,                            // construct
-    XPCWrappedNative::Trace,            // trace
+    .addProperty = XPC_WN_OnlyIWrite_AddPropertyStub,
+    .delProperty = XPC_WN_CannotDeletePropertyStub,
+    .enumerate = XPC_WN_Shared_Enumerate,
+    .resolve = XPC_WN_NoHelper_Resolve,
+    .finalize = XPC_WN_NoHelper_Finalize,
+    .trace = XPCWrappedNative::Trace,
 };
 
 const js::ClassExtension XPC_WN_JSClassExtension = {
@@ -1040,14 +1037,14 @@ static bool XPC_WN_Proto_Enumerate(JSContext* cx, HandleObject obj) {
 
   uint16_t interface_count = set->GetInterfaceCount();
   XPCNativeInterface** interfaceArray = set->GetInterfaceArray();
+  RootedId name(cx);
   for (uint16_t i = 0; i < interface_count; i++) {
     XPCNativeInterface* iface = interfaceArray[i];
     uint16_t member_count = iface->GetMemberCount();
 
     for (uint16_t k = 0; k < member_count; k++) {
-      jsid name = iface->GetMemberAt(k)->GetName();
-      JS_MarkCrossZoneId(cx, name);
-      if (!xpc_ForcePropertyResolve(cx, obj, name)) {
+      name = iface->GetMemberAt(k)->GetName();
+      if (!JS_WrapId(cx, &name) || !xpc_ForcePropertyResolve(cx, obj, name)) {
         return false;
       }
     }
@@ -1124,16 +1121,11 @@ static bool XPC_WN_Proto_Resolve(JSContext* cx, HandleObject obj, HandleId id,
 }
 
 static const JSClassOps XPC_WN_Proto_JSClassOps = {
-    XPC_WN_OnlyIWrite_Proto_AddPropertyStub,  // addProperty
-    XPC_WN_CannotDeletePropertyStub,          // delProperty
-    XPC_WN_Proto_Enumerate,                   // enumerate
-    nullptr,                                  // newEnumerate
-    XPC_WN_Proto_Resolve,                     // resolve
-    nullptr,                                  // mayResolve
-    XPC_WN_Proto_Finalize,                    // finalize
-    nullptr,                                  // call
-    nullptr,                                  // construct
-    nullptr,                                  // trace
+    .addProperty = XPC_WN_OnlyIWrite_Proto_AddPropertyStub,
+    .delProperty = XPC_WN_CannotDeletePropertyStub,
+    .enumerate = XPC_WN_Proto_Enumerate,
+    .resolve = XPC_WN_Proto_Resolve,
+    .finalize = XPC_WN_Proto_Finalize,
 };
 
 static const js::ClassExtension XPC_WN_Proto_ClassExtension = {
@@ -1164,10 +1156,10 @@ static bool XPC_WN_TearOff_Enumerate(JSContext* cx, HandleObject obj) {
   }
 
   uint16_t member_count = iface->GetMemberCount();
+  RootedId name(cx);
   for (uint16_t k = 0; k < member_count; k++) {
-    jsid name = iface->GetMemberAt(k)->GetName();
-    JS_MarkCrossZoneId(cx, name);
-    if (!xpc_ForcePropertyResolve(cx, obj, name)) {
+    name = iface->GetMemberAt(k)->GetName();
+    if (!JS_WrapId(cx, &name) || !xpc_ForcePropertyResolve(cx, obj, name)) {
       return false;
     }
   }
@@ -1212,16 +1204,11 @@ static size_t XPC_WN_TearOff_ObjectMoved(JSObject* obj, JSObject* old) {
 }
 
 static const JSClassOps XPC_WN_Tearoff_JSClassOps = {
-    XPC_WN_OnlyIWrite_AddPropertyStub,  // addProperty
-    XPC_WN_CannotDeletePropertyStub,    // delProperty
-    XPC_WN_TearOff_Enumerate,           // enumerate
-    nullptr,                            // newEnumerate
-    XPC_WN_TearOff_Resolve,             // resolve
-    nullptr,                            // mayResolve
-    XPC_WN_TearOff_Finalize,            // finalize
-    nullptr,                            // call
-    nullptr,                            // construct
-    nullptr,                            // trace
+    .addProperty = XPC_WN_OnlyIWrite_AddPropertyStub,
+    .delProperty = XPC_WN_CannotDeletePropertyStub,
+    .enumerate = XPC_WN_TearOff_Enumerate,
+    .resolve = XPC_WN_TearOff_Resolve,
+    .finalize = XPC_WN_TearOff_Finalize,
 };
 
 static const js::ClassExtension XPC_WN_Tearoff_JSClassExtension = {

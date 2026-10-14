@@ -1,4 +1,3 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -29,20 +28,14 @@ add_task(async function test_no_overlong_path_building() {
   let srcCertDBFile = do_get_file(`test_self_signed_certs/${CERT_DB_NAME}`);
   srcCertDBFile.copyTo(profile, CERT_DB_NAME);
 
-  let certDB = Cc["@mozilla.org/security/x509certdb;1"].getService(
-    Ci.nsIX509CertDB
-  );
-  let certToVerify = null;
-  for (let cert of certDB.getCerts()) {
-    if (cert.subjectName == "CN=self-signed cert") {
-      certToVerify = cert;
-      break;
-    }
-  }
+  let certToVerify = await findCertByCommonName("self-signed cert");
   notEqual(
     certToVerify,
     null,
     "should have found one of the preloaded self-signed certs"
+  );
+  let certDB = Cc["@mozilla.org/security/x509certdb;1"].getService(
+    Ci.nsIX509CertDB
   );
   let timeBefore = Date.now();
   // As mentioned above, mozilla::pkix limits how much it will search for a trusted path, even if a

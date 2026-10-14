@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,18 +13,19 @@
 #include "mozilla/IntegerRange.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/dom/Range.h"
 #include "mozilla/dom/Selection.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
 #include "nsFrameSelection.h"
-#include "nsRange.h"
+#include "nsIContentInlines.h"
 
 namespace mozilla {
 
 using namespace dom;
 
 SelectionChangeEventDispatcher::RawRangeData::RawRangeData(
-    const nsRange* aRange) {
+    const dom::Range* aRange) {
   if (aRange->IsPositioned()) {
     mStartContainer = aRange->GetStartContainer();
     mEndContainer = aRange->GetEndContainer();
@@ -41,7 +40,7 @@ SelectionChangeEventDispatcher::RawRangeData::RawRangeData(
 }
 
 bool SelectionChangeEventDispatcher::RawRangeData::Equals(
-    const nsRange* aRange) {
+    const dom::Range* aRange) {
   if (!aRange->IsPositioned()) {
     return !mStartContainer;
   }
@@ -88,7 +87,12 @@ void SelectionChangeEventDispatcher::OnSelectionChange(Document* aDoc,
       }
     }
 
-    if (!changed) {
+    // Even if the raw ranges have not changed, it is possible that there
+    // has been some change to the DOM which moved the live ranges given
+    // at the time of the last selectionchange. So we still fire
+    // selectionchange if the Range mutation observer caused a selection
+    // range to be updated.
+    if (!changed && !mSelectionRangeObservedMutation) {
       return;
     }
   }
@@ -99,6 +103,7 @@ void SelectionChangeEventDispatcher::OnSelectionChange(Document* aDoc,
     mOldRanges.AppendElement(RawRangeData(aSel->GetRangeAt(i)));
   }
   mOldDirection = aSel->GetDirection();
+  mSelectionRangeObservedMutation = false;
 
   // If we are hiding changes, then don't do anything else. We do this after we
   // update mOldRanges so that changes after the changes stop being hidden don't

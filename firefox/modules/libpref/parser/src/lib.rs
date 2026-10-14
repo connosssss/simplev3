@@ -122,7 +122,7 @@ type PrefFn = unsafe extern "C" fn(
 );
 
 /// Keep this in sync with PrefsParserErrorFn in Preferences.cpp.
-type ErrorFn = unsafe extern "C" fn(msg: *const c_char);
+type ErrorFn = unsafe extern "C" fn(full_msg: *const c_char, static_msg_offset: u64);
 
 /// Parse the contents of a prefs file.
 ///
@@ -352,7 +352,8 @@ impl<'t> Parser<'t> {
         Parser {
             path: path,
             kind: kind,
-            buf: buf,
+            // Skip a UTF-8 BOM if present at the start of the input.
+            buf: buf.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(buf),
             i: 0,
             line_num: 1,
             pref_fn: pref_fn,
@@ -431,7 +432,7 @@ impl<'t> Parser<'t> {
                 ),
                 Token::Int(u) => {
                     // Accept u <= 2147483647; anything larger will overflow i32.
-                    if u <= std::i32::MAX as u32 {
+                    if u <= i32::MAX as u32 {
                         (PrefType::Int, PrefValue { int_val: u as i32 })
                     } else {
                         token =
@@ -443,18 +444,18 @@ impl<'t> Parser<'t> {
                     token = self.get_token(&mut none_str);
                     if let Token::Int(u) = token {
                         // Accept u <= 2147483648; anything larger will overflow i32 once negated.
-                        if u <= std::i32::MAX as u32 {
+                        if u <= i32::MAX as u32 {
                             (
                                 PrefType::Int,
                                 PrefValue {
                                     int_val: -(u as i32),
                                 },
                             )
-                        } else if u == std::i32::MAX as u32 + 1 {
+                        } else if u == i32::MAX as u32 + 1 {
                             (
                                 PrefType::Int,
                                 PrefValue {
-                                    int_val: std::i32::MIN,
+                                    int_val: i32::MIN,
                                 },
                             )
                         } else {
@@ -471,7 +472,7 @@ impl<'t> Parser<'t> {
                     token = self.get_token(&mut none_str);
                     if let Token::Int(u) = token {
                         // Accept u <= 2147483647; anything larger will overflow i32.
-                        if u <= std::i32::MAX as u32 {
+                        if u <= i32::MAX as u32 {
                             (PrefType::Int, PrefValue { int_val: u as i32 })
                         } else {
                             token = self
@@ -557,7 +558,9 @@ impl<'t> Parser<'t> {
         }
     }
 
-    fn error_and_recover(&mut self, token: Token, msg: &str) -> Token {
+    // msg is a static string since we're recording it in telemetry and
+    // don't want to accidentally record user data.
+    fn error_and_recover(&mut self, token: Token, msg: &'static str) -> Token {
         self.has_errors = true;
 
         // If `token` is a Token::{Error,ErrorAtLine}, it's a lexing error and
@@ -568,9 +571,15 @@ impl<'t> Parser<'t> {
             Token::ErrorAtLine(token_msg, line_num) => (token_msg, line_num),
             _ => (msg, self.line_num),
         };
-        let msg = format!("{}:{}: prefs parse error: {}", self.path, line_num, msg);
-        let msg = std::ffi::CString::new(msg).unwrap();
-        unsafe { (self.error_fn)(msg.as_ptr() as *const c_char) };
+        let full_msg = format!("{}:{}: prefs parse error: {}", self.path, line_num, msg);
+        let full_msg_len = full_msg.len();
+        let full_msg = std::ffi::CString::new(full_msg).unwrap();
+        unsafe {
+            (self.error_fn)(
+                full_msg.as_ptr() as *const c_char,
+                (full_msg_len - msg.len()) as u64,
+            )
+        };
 
         // "Panic-mode" recovery: consume tokens until one of the following
         // occurs.

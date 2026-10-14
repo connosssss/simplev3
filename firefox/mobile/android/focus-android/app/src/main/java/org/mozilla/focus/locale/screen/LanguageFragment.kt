@@ -8,10 +8,11 @@ import android.os.Bundle
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.lib.state.ext.observeAsComposableState
@@ -21,9 +22,7 @@ import org.mozilla.focus.R
 import org.mozilla.focus.ext.components
 import org.mozilla.focus.settings.BaseComposeFragment
 
-/**
- * A [BaseComposeFragment] responsible for displaying and managing the language selection screen.
- */
+/** A [BaseComposeFragment] responsible for displaying and managing the language selection screen. */
 class LanguageFragment : BaseComposeFragment() {
     private lateinit var browserStore: BrowserStore
     private lateinit var localeUseCases: LocaleUseCases
@@ -34,20 +33,21 @@ class LanguageFragment : BaseComposeFragment() {
         super.onCreate(savedInstanceState)
         browserStore = requireContext().components.store
         localeUseCases = LocaleUseCases(browserStore)
-        languageScreenStore = LanguageScreenStore(
-            LanguageScreenState(),
-            listOf(
-                LanguageMiddleware(
-                    activity = requireActivity(),
-                    localeUseCase = localeUseCases,
-                    storage = LanguageStorage(requireContext()),
-                    getSystemDefault = { LocaleManager.getSystemDefault() },
+        languageScreenStore =
+            LanguageScreenStore(
+                LanguageScreenState(),
+                listOf(
+                    LanguageMiddleware(
+                        activity = requireActivity(),
+                        localeUseCase = localeUseCases,
+                        storage = LanguageStorage(requireContext()),
+                        getSystemDefault = { LocaleManager.getSystemDefault() },
+                    )
                 ),
-            ),
-        )
-        defaultLanguageScreenInteractor = DefaultLanguageScreenInteractor(
-            languageScreenStore = languageScreenStore,
-        )
+            )
+        languageScreenStore.state.languageList
+
+        defaultLanguageScreenInteractor = DefaultLanguageScreenInteractor(languageScreenStore = languageScreenStore)
     }
 
     override val titleRes: Int
@@ -55,55 +55,35 @@ class LanguageFragment : BaseComposeFragment() {
 
     @Composable
     override fun Content() {
-        val languagesList = languageScreenStore
-            .observeAsComposableState { state -> state.languageList }.value
-        val languageSelected = languageScreenStore.observeAsComposableState { state ->
-            state.selectedLanguage
-        }.value
-        if (languageSelected != null) {
-            Languages(languageSelected = languageSelected, languages = languagesList)
-        }
-    }
+        val languagesList by languageScreenStore.observeAsComposableState { it.languageList }
+        val languageSelected by languageScreenStore.observeAsComposableState { it.selectedLanguage }
 
-    private fun createLanguageListItem(
-        languages: List<Language>,
-        state: MutableState<String>,
-    ): List<LanguageListItem> {
-        val languageListItems = ArrayList<LanguageListItem>()
-        languages.forEach { language ->
-            if (language.tag == LanguageStorage.LOCALE_SYSTEM_DEFAULT) {
-                language.displayName = context?.getString(R.string.preference_language_systemdefault)
-            }
-            val languageListItem = LanguageListItem(
-                language = language,
-                onClick = {
-                    state.value = language.tag
-                    defaultLanguageScreenInteractor.handleLanguageSelected(language)
-                },
-            )
-            languageListItems.add(languageListItem)
-        }
-        return languageListItems
+        languageSelected?.let { Languages(languageSelected = it, languages = languagesList) }
     }
 
     @Composable
     private fun Languages(languageSelected: Language, languages: List<Language>) {
         val listState = rememberLazyListState()
         val coroutineScope = rememberCoroutineScope()
+
+        // This local state for the selected tag allows for instant UI feedback upon click.
+        var selectedTag by remember(languageSelected) { mutableStateOf(languageSelected.tag) }
+
         LaunchedEffect(languageSelected.index) {
             coroutineScope.launch {
-                languageSelected.let { listState.scrollToItem(it.index) }
+                if (languageSelected.index in languages.indices) {
+                    listState.scrollToItem(languageSelected.index)
+                }
             }
         }
-        val state = remember {
-            mutableStateOf(languageSelected.tag)
-        }
+
         LanguagesList(
-            languageListItems = createLanguageListItem(
-                languages = languages,
-                state = state,
-            ),
-            state = state,
+            languages = languages,
+            selectedTag = selectedTag,
+            onLanguageSelected = {
+                selectedTag = it.tag
+                defaultLanguageScreenInteractor.handleLanguageSelected(it)
+            },
             listState = listState,
         )
     }

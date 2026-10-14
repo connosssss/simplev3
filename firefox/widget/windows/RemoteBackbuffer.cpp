@@ -1,16 +1,17 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "RemoteBackbuffer.h"
-#include "GeckoProfiler.h"
-#include "nsThreadUtils.h"
-#include "mozilla/Span.h"
-#include "mozilla/gfx/Point.h"
-#include "WinUtils.h"
+
 #include <algorithm>
 #include <type_traits>
+
+#include "GeckoProfiler.h"
+#include "WinUtils.h"
+#include "mozilla/Span.h"
+#include "mozilla/gfx/Point.h"
+#include "nsThreadUtils.h"
 
 namespace mozilla {
 namespace widget {
@@ -210,11 +211,7 @@ class SharedImage {
 
 class PresentableSharedImage {
  public:
-  PresentableSharedImage()
-      : mSharedImage(),
-        mDeviceContext(nullptr),
-        mDIBSection(nullptr),
-        mSavedObject(nullptr) {}
+  PresentableSharedImage() = default;
 
   ~PresentableSharedImage() {
     if (mSavedObject) {
@@ -305,10 +302,10 @@ class PresentableSharedImage {
   PresentableSharedImage& operator=(PresentableSharedImage&&) = delete;
 
  private:
-  SharedImage mSharedImage;
-  HDC mDeviceContext;
-  HBITMAP mDIBSection;
-  HGDIOBJ mSavedObject;
+  SharedImage mSharedImage{};
+  HDC mDeviceContext{nullptr};
+  HBITMAP mDIBSection{nullptr};
+  HGDIOBJ mSavedObject{nullptr};
 };
 
 Provider::Provider()
@@ -323,13 +320,14 @@ Provider::Provider()
       mBackbuffer() {}
 
 Provider::~Provider() {
-  mBackbuffer.reset();
-
+  // Stop and join the service thread before releasing any state.
   if (mServiceThread) {
     mStopServiceThread = true;
     MOZ_ALWAYS_TRUE(::SetEvent(mRequestReadyEvent));
     MOZ_ALWAYS_TRUE(PR_JoinThread(mServiceThread) == PR_SUCCESS);
   }
+
+  mBackbuffer.reset();
 
   if (mSharedDataPtr) {
     MOZ_ALWAYS_TRUE(::UnmapViewOfFile(mSharedDataPtr));
@@ -396,6 +394,12 @@ bool Provider::Initialize(HWND aWindowHandle, DWORD aTargetProcessId) {
 
   mStopServiceThread = false;
 
+  // This matches the stack size used by the SwComposite thread. If we are
+  // compositing in the parent process, it would perform the same operations
+  // done on RemoteBackBuffer thread, so it should be sufficient. This is likely
+  // rounded up to 64kB on Windows, but much smaller than the default.
+  static constexpr PRUint32 kRemoteBackbufferStackSize = 40 * 1024;
+
   // Use a raw NSPR OS-level thread here instead of nsThread because we are
   // performing low-level synchronization across processes using Win32 Events,
   // and nsThread is designed around an incompatible "in-process task queue"
@@ -403,7 +407,7 @@ bool Provider::Initialize(HWND aWindowHandle, DWORD aTargetProcessId) {
   mServiceThread = PR_CreateThread(
       PR_USER_THREAD, [](void* p) { static_cast<Provider*>(p)->ThreadMain(); },
       this, PR_PRIORITY_NORMAL, PR_GLOBAL_THREAD, PR_JOINABLE_THREAD,
-      0 /*default stack size*/);
+      kRemoteBackbufferStackSize);
   return !!mServiceThread;
 }
 

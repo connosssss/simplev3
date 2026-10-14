@@ -21,10 +21,11 @@
  */
 
 const IGNORED_URLS = ["debugger eval code", "XStringBundle"];
-const IGNORED_EXTENSIONS = ["css", "svg", "png"];
-import { isPretty, getRawSourceURL } from "../utils/source";
-import { prefs } from "../utils/prefs";
+const IGNORED_EXTENSIONS = ["svg", "png"];
+import { getRawSourceURL } from "../utils/source";
+import { prefs, features } from "../utils/prefs";
 import { getDisplayURL } from "../utils/sources-tree/getURL";
+import { sourceTree } from "../constants";
 
 import TargetCommand from "resource://devtools/shared/commands/target/target-command.js";
 
@@ -32,6 +33,11 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   BinarySearch: "resource://gre/modules/BinarySearch.sys.mjs",
 });
+
+// Allow css if the stylesheetsInDebugger pref is enabled
+if (!features.stylesheetsInDebugger) {
+  IGNORED_EXTENSIONS.push("css");
+}
 
 export function initialSourcesTreeState({
   isWebExtension,
@@ -394,7 +400,7 @@ function isSourceVisibleInSourceTree(
     !!source.url &&
     !IGNORED_EXTENSIONS.includes(source.displayURL.fileExtension) &&
     !IGNORED_URLS.includes(source.url) &&
-    !isPretty(source) &&
+    !source.isPrettyPrinted &&
     // Only accept web extension sources when the chrome pref is enabled (to allows showing content scripts),
     // or when we are debugging an extension
     (!source.isExtension || showContentScripts || debuggeeIsWebExtension)
@@ -418,16 +424,30 @@ function addSortedItem(array, newValue, comparator) {
   array.splice(index, 0, newValue);
 }
 
+// Cache each of last possible containers to speedup item addition
+// when we are adding to the same container (thread, group, folder)
+let lastThreadItem = null;
+let lastGroupItem = null;
+let lastDirectoryItem = null;
+
 function addSource(threadItems, source, sourceActor) {
   // Ensure creating or fetching the related Thread Item
-  let threadItem = threadItems.find(item => {
-    return item.threadActorID == sourceActor.thread;
-  });
-  if (!threadItem) {
-    threadItem = createThreadTreeItem(sourceActor.thread);
-    // Note that threadItems will be cloned once to force a state update
-    // by the callsite of `addSourceActor`
-    addSortedItem(threadItems, threadItem, sortThreadItems);
+  let threadItem;
+  if (lastThreadItem?.threadActorID == sourceActor.thread) {
+    threadItem = lastThreadItem;
+  } else {
+    threadItem = threadItems.find(item => {
+      return item.threadActorID == sourceActor.thread;
+    });
+    if (!threadItem) {
+      threadItem = createThreadTreeItem(sourceActor.thread);
+      // Note that threadItems will be cloned once to force a state update
+      // by the callsite of `addSourceActor`
+      addSortedItem(threadItems, threadItem, sortThreadItems);
+    }
+    lastThreadItem = threadItem;
+    lastGroupItem = null;
+    lastDirectoryItem = null;
   }
 
   // Then ensure creating or fetching the related Group Item
@@ -435,34 +455,42 @@ function addSource(threadItems, source, sourceActor) {
   const { displayURL } = source;
   const { group, origin } = displayURL;
 
-  let groupItem = threadItem.children.find(item => {
-    return item.groupName == group;
-  });
+  let groupItem;
+  if (lastGroupItem?.groupName == group) {
+    groupItem = lastGroupItem;
+  } else {
+    groupItem = threadItem.children.find(item => {
+      return item.groupName == group;
+    });
 
-  if (!groupItem) {
-    groupItem = createGroupTreeItem(group, origin, threadItem, source);
-    // Copy children in order to force updating react in case we picked
-    // this directory as a project root
-    threadItem.children = [...threadItem.children];
+    if (!groupItem) {
+      groupItem = createGroupTreeItem(group, origin, threadItem, source);
+      // Copy children in order to force updating react in case we picked
+      // this directory as a project root
+      threadItem.children = [...threadItem.children];
 
-    addSortedItem(threadItem.children, groupItem, sortItems);
+      addSortedItem(threadItem.children, groupItem, sortItems);
+    }
+    lastGroupItem = groupItem;
+    lastDirectoryItem = null;
   }
 
   // Then ensure creating or fetching all possibly nested Directory Item(s)
   const { path } = displayURL;
   const parentPath = path.substring(0, path.lastIndexOf("/"));
-  const parentUrl = source.url.substring(0, source.url.lastIndexOf("/"));
-  const directoryItem = addOrGetParentDirectory(
-    groupItem,
-    parentPath,
-    parentUrl
-  );
+  let directoryItem;
+  if (lastDirectoryItem?.path == parentPath) {
+    directoryItem = lastDirectoryItem;
+  } else {
+    directoryItem = addOrGetParentDirectory(groupItem, parentPath);
+    lastDirectoryItem = directoryItem;
+  }
 
   // Check if a previous source actor registered this source.
   // It happens if we load the same url multiple times, or,
   // for inline sources (=HTML pages with inline scripts).
   const existing = directoryItem.children.find(item => {
-    return item.type == "source" && item.source == source;
+    return item.type == sourceTree.itemTypes.SOURCE && item.source == source;
   });
   if (existing) {
     return false;
@@ -479,7 +507,8 @@ function addSource(threadItems, source, sourceActor) {
 }
 /**
  * Find all the source items in tree
- * @param {Object} item - Current item node in the tree
+ *
+ * @param {object} item - Current item node in the tree
  * @param {Function} callback
  */
 function findSourceInThreadItem(source, threadItem) {
@@ -498,32 +527,45 @@ function findSourceInThreadItem(source, threadItem) {
   // and instead is an immediate child of the group item.
   if (!parentPath) {
     return groupItem.children.find(item => {
-      return item.type == "source" && item.source == source;
+      return item.type == sourceTree.itemTypes.SOURCE && item.source == source;
     });
   }
 
-  const directoryItem = groupItem._allGroupDirectoryItems.find(item => {
-    return item.type == "directory" && item.path == parentPath;
-  });
+  const directoryItem = groupItem._allGroupDirectoryItems.get(parentPath);
   if (!directoryItem) {
     return null;
   }
 
   return directoryItem.children.find(item => {
-    return item.type == "source" && item.source == source;
+    return item.type == sourceTree.itemTypes.SOURCE && item.source == source;
   });
 }
 
 function sortItems(a, b) {
-  if (a.type == "directory" && b.type == "source") {
+  if (
+    a.type == sourceTree.itemTypes.DIRECTORY &&
+    b.type == sourceTree.itemTypes.SOURCE
+  ) {
     return -1;
-  } else if (b.type == "directory" && a.type == "source") {
+  } else if (
+    b.type == sourceTree.itemTypes.DIRECTORY &&
+    a.type == sourceTree.itemTypes.SOURCE
+  ) {
     return 1;
-  } else if (a.type == "group" && b.type == "group") {
+  } else if (
+    a.type == sourceTree.itemTypes.GROUP &&
+    b.type == sourceTree.itemTypes.GROUP
+  ) {
     return a.groupName.localeCompare(b.groupName);
-  } else if (a.type == "directory" && b.type == "directory") {
+  } else if (
+    a.type == sourceTree.itemTypes.DIRECTORY &&
+    b.type == sourceTree.itemTypes.DIRECTORY
+  ) {
     return a.path.localeCompare(b.path);
-  } else if (a.type == "source" && b.type == "source") {
+  } else if (
+    a.type == sourceTree.itemTypes.SOURCE &&
+    b.type == sourceTree.itemTypes.SOURCE
+  ) {
     return a.source.longName.localeCompare(b.source.longName);
   }
   return 0;
@@ -597,38 +639,29 @@ export function sortThreads(a, b) {
  *
  * @param {GroupItem} groupItem
  *        The Group Item for the group where the path should be displayed.
- * @param {String} path
+ * @param {string} path
  *        Path of the directory for which we want a Directory Item.
- * @param {String} url
- *        URL of the directory for which we want a Directory Item.
  * @return {GroupItem|DirectoryItem}
  *        The parent Item where this path should be inserted.
  *        Note that it may be displayed right under the Group Item if the path is empty.
  */
-function addOrGetParentDirectory(groupItem, path, url) {
+function addOrGetParentDirectory(groupItem, path) {
   // We reached the top of the Tree, so return the Group Item.
   if (!path) {
     return groupItem;
   }
   // See if we have this directory already registered by a previous source
-  const existing = groupItem._allGroupDirectoryItems.find(item => {
-    return item.type == "directory" && item.path == path;
-  });
+  const existing = groupItem._allGroupDirectoryItems.get(path);
   if (existing) {
     return existing;
   }
   // It doesn't exists, so we will create a new Directory Item.
   // But now, lookup recursively for the parent Item for this to-be-create Directory Item
   const parentPath = path.substring(0, path.lastIndexOf("/"));
-  const parentUrl = url.substring(0, url.lastIndexOf("/"));
-  const parentDirectory = addOrGetParentDirectory(
-    groupItem,
-    parentPath,
-    parentUrl
-  );
+  const parentDirectory = addOrGetParentDirectory(groupItem, parentPath);
 
   // We can now create the new Directory Item and register it in its parent Item.
-  const directory = createDirectoryTreeItem(path, url, parentDirectory);
+  const directory = createDirectoryTreeItem(path, parentDirectory);
   // Copy children in order to force updating react in case we picked
   // this directory as a project root
   parentDirectory.children = [...parentDirectory.children];
@@ -637,7 +670,7 @@ function addOrGetParentDirectory(groupItem, path, url) {
 
   // Also maintain the list of all group items,
   // Which helps speedup querying for existing items.
-  groupItem._allGroupDirectoryItems.push(directory);
+  groupItem._allGroupDirectoryItems.set(directory.path, directory);
 
   return directory;
 }
@@ -668,7 +701,7 @@ function createBaseTreeItem({ type, parent, uniquePath, children }) {
 function createThreadTreeItem(thread) {
   return {
     ...createBaseTreeItem({
-      type: "thread",
+      type: sourceTree.itemTypes.THREAD,
       // Each thread is considered as an independant root item
       parent: null,
       uniquePath: thread,
@@ -685,7 +718,7 @@ function createThreadTreeItem(thread) {
 function createGroupTreeItem(groupName, origin, parent, source) {
   return {
     ...createBaseTreeItem({
-      type: "group",
+      type: sourceTree.itemTypes.GROUP,
       parent,
       uniquePath: `${parent.uniquePath}|${groupName}`,
       // Children of Group can be Directory and Source items
@@ -693,34 +726,37 @@ function createGroupTreeItem(groupName, origin, parent, source) {
     }),
 
     groupName,
-    url: origin,
+
+    // This is only used by project directory root tooltip
+    origin,
 
     // When a content script appear in a web page,
     // a dedicated group is created for it and should
     // be having an extension icon.
     isForExtensionSource: source.isExtension,
 
-    // List of all nested items for this group.
+    // Map of all nested directory items for this group, keyed by their path.
     // This helps find any nested directory in a given group without having to walk the tree.
-    // This is meant to be used only by the reducer.
-    _allGroupDirectoryItems: [],
+    // This is meant to be used only within the reducer.
+    _allGroupDirectoryItems: new Map(),
   };
 }
-function createDirectoryTreeItem(path, url, parent) {
+function createDirectoryTreeItem(path, parent) {
   // If the parent is a group we want to use '/' as separator
-  const pathSeparator = parent.type == "directory" ? "/" : "|";
+  const pathSeparator =
+    parent.type == sourceTree.itemTypes.DIRECTORY ? "/" : "|";
 
   // `path` will be the absolute path from the group/domain,
   // while we want to append only the directory name in uniquePath.
   // Also, we need to strip '/' prefix.
   const relativePath =
-    parent.type == "directory"
+    parent.type == sourceTree.itemTypes.DIRECTORY
       ? path.replace(parent.path, "").replace(/^\//, "")
       : path;
 
   return {
     ...createBaseTreeItem({
-      type: "directory",
+      type: sourceTree.itemTypes.DIRECTORY,
       parent,
       uniquePath: `${parent.uniquePath}${pathSeparator}${relativePath}`,
       // Children can be nested Directory or Source items
@@ -733,13 +769,12 @@ function createDirectoryTreeItem(path, url, parent) {
     // path will be:
     //   foo/bar
     path,
-    url,
   };
 }
 function createSourceTreeItem(source, sourceActor, parent) {
   return {
     ...createBaseTreeItem({
-      type: "source",
+      type: sourceTree.itemTypes.SOURCE,
       parent,
       uniquePath: `${parent.uniquePath}|${source.id}`,
       // Sources items are leaves of the SourceTree
@@ -755,8 +790,8 @@ function createSourceTreeItem(source, sourceActor, parent) {
  * Update `expanded` and `focusedItem` so that we show and focus
  * the new selected source.
  *
- * @param {Object} state
- * @param {Object} selectedLocation
+ * @param {object} state
+ * @param {object} selectedLocation
  *        The new location being selected.
  */
 function updateSelectedLocation(state, selectedLocation) {
@@ -782,8 +817,8 @@ function updateSelectedLocation(state, selectedLocation) {
 /**
  * Get the SourceItem displayed in the SourceTree for the currently selected location.
  *
- * @param {Object} state
- * @param {Object} selectedLocation
+ * @param {object} state
+ * @param {object} selectedLocation
  * @return {SourceItem}
  *        The directory source item where the given source is displayed.
  */
@@ -795,27 +830,43 @@ function getSourceItemForSelectedLocation(state, selectedLocation) {
     return null;
   }
 
-  // In the SourceTree, we never show the pretty printed sources and only
-  // the minified version, so if we are selecting a pretty file, fake selecting
-  // the minified version by looking up for the minified URL instead of the pretty one.
+  // In case of pretty printed sources, we want to find the minified version in the SourceTree.
+  // See details below
   const sourceUrl = getRawSourceURL(source.url);
 
   const { displayURL } = source;
   function findSourceInItem(item, path) {
-    if (item.type == "source") {
-      if (item.source.url == sourceUrl) {
+    if (item.type == sourceTree.itemTypes.SOURCE) {
+      // In the SourceTree, we never show the pretty printed sources and only
+      // the minified versions, so if we are selecting a pretty file, fake selecting
+      // the minified version by looking up for the minified URL instead of the pretty one.
+      if (source.isPrettyPrinted && item.source.url == sourceUrl) {
+        return item;
+      }
+      // Lets also make sure to handle unique sources which have the same URL
+      // (e.g. link to same external style sheet within the HTML page)
+      if (item.source.url == sourceUrl && item.source.id == source.id) {
         return item;
       }
       return null;
     }
     // Bail out if the current item doesn't match the source
-    if (item.type == "thread" && item.threadActorID != sourceActor?.thread) {
+    if (
+      item.type == sourceTree.itemTypes.THREAD &&
+      item.threadActorID != sourceActor?.thread
+    ) {
       return null;
     }
-    if (item.type == "group" && displayURL.group != item.groupName) {
+    if (
+      item.type == sourceTree.itemTypes.GROUP &&
+      displayURL.group != item.groupName
+    ) {
       return null;
     }
-    if (item.type == "directory" && !path.startsWith(item.path)) {
+    if (
+      item.type == sourceTree.itemTypes.DIRECTORY &&
+      !path.startsWith(item.path)
+    ) {
       return null;
     }
     // Otherwise, walk down the tree if this ancestor item seems to match

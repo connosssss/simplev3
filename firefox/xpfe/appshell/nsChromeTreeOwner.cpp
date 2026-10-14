@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 3; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,29 +21,8 @@
 
 using namespace mozilla;
 
-//*****************************************************************************
-// nsChromeTreeOwner string literals
-//*****************************************************************************
-
-const nsLiteralString kPersist(u"persist");
-const nsLiteralString kScreenX(u"screenX");
-const nsLiteralString kScreenY(u"screenY");
-const nsLiteralString kWidth(u"width");
-const nsLiteralString kHeight(u"height");
-const nsLiteralString kSizemode(u"sizemode");
-const nsLiteralString kSpace(u" ");
-
-//*****************************************************************************
-//***    nsChromeTreeOwner: Object Management
-//*****************************************************************************
-
-nsChromeTreeOwner::nsChromeTreeOwner() : mAppWindow(nullptr) {}
-
-nsChromeTreeOwner::~nsChromeTreeOwner() {}
-
-//*****************************************************************************
-// nsChromeTreeOwner::nsISupports
-//*****************************************************************************
+nsChromeTreeOwner::nsChromeTreeOwner() = default;
+nsChromeTreeOwner::~nsChromeTreeOwner() = default;
 
 NS_IMPL_ADDREF(nsChromeTreeOwner)
 NS_IMPL_RELEASE(nsChromeTreeOwner)
@@ -164,66 +142,6 @@ NS_IMETHODIMP nsChromeTreeOwner::SizeShellTo(nsIDocShellTreeItem* aShellItem,
 }
 
 NS_IMETHODIMP
-nsChromeTreeOwner::SetPersistence(bool aPersistPosition, bool aPersistSize,
-                                  bool aPersistSizeMode) {
-  NS_ENSURE_STATE(mAppWindow);
-  nsCOMPtr<dom::Element> docShellElement = mAppWindow->GetWindowDOMElement();
-  if (!docShellElement) return NS_ERROR_FAILURE;
-
-  nsAutoString persistString;
-  docShellElement->GetAttribute(kPersist, persistString);
-
-  bool saveString = false;
-  int32_t index;
-
-#define FIND_PERSIST_STRING(aString, aCond)     \
-  index = persistString.Find(aString);          \
-  if (!aCond && index > kNotFound) {            \
-    persistString.Cut(index, aString.Length()); \
-    saveString = true;                          \
-  } else if (aCond && index == kNotFound) {     \
-    persistString.Append(kSpace + aString);     \
-    saveString = true;                          \
-  }
-  FIND_PERSIST_STRING(kScreenX, aPersistPosition);
-  FIND_PERSIST_STRING(kScreenY, aPersistPosition);
-  FIND_PERSIST_STRING(kWidth, aPersistSize);
-  FIND_PERSIST_STRING(kHeight, aPersistSize);
-  FIND_PERSIST_STRING(kSizemode, aPersistSizeMode);
-
-  ErrorResult rv;
-  if (saveString) {
-    docShellElement->SetAttribute(kPersist, persistString, rv);
-  }
-
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsChromeTreeOwner::GetPersistence(bool* aPersistPosition, bool* aPersistSize,
-                                  bool* aPersistSizeMode) {
-  NS_ENSURE_STATE(mAppWindow);
-  nsCOMPtr<dom::Element> docShellElement = mAppWindow->GetWindowDOMElement();
-  if (!docShellElement) return NS_ERROR_FAILURE;
-
-  nsAutoString persistString;
-  docShellElement->GetAttribute(kPersist, persistString);
-
-  // data structure doesn't quite match the question, but it's close enough
-  // for what we want (since this method is never actually called...)
-  if (aPersistPosition)
-    *aPersistPosition = persistString.Find(kScreenX) > kNotFound ||
-                        persistString.Find(kScreenY) > kNotFound;
-  if (aPersistSize)
-    *aPersistSize = persistString.Find(kWidth) > kNotFound ||
-                    persistString.Find(kHeight) > kNotFound;
-  if (aPersistSizeMode)
-    *aPersistSizeMode = persistString.Find(kSizemode) > kNotFound;
-
-  return NS_OK;
-}
-
-NS_IMETHODIMP
 nsChromeTreeOwner::GetHasPrimaryContent(bool* aResult) {
   NS_ENSURE_STATE(mAppWindow);
   return mAppWindow->GetHasPrimaryContent(aResult);
@@ -232,14 +150,6 @@ nsChromeTreeOwner::GetHasPrimaryContent(bool* aResult) {
 //*****************************************************************************
 // nsChromeTreeOwner::nsIBaseWindow
 //*****************************************************************************
-
-NS_IMETHODIMP nsChromeTreeOwner::InitWindow(nsIWidget* parentWidget, int32_t x,
-                                            int32_t y, int32_t cx, int32_t cy) {
-  // Ignore widget parents for now.  Don't think those are a valid thing to
-  // call.
-  NS_ENSURE_SUCCESS(SetPositionAndSize(x, y, cx, cy, 0), NS_ERROR_FAILURE);
-  return NS_OK;
-}
 
 NS_IMETHODIMP nsChromeTreeOwner::Destroy() {
   NS_ENSURE_STATE(mAppWindow);
@@ -317,11 +227,6 @@ nsChromeTreeOwner::GetDimensions(DimensionKind aDimensionKind, int32_t* aX,
     return NS_ERROR_NOT_IMPLEMENTED;
   }
   return GetRootShellSize(aCX, aCY);
-}
-
-NS_IMETHODIMP nsChromeTreeOwner::Repaint(bool aForce) {
-  NS_ENSURE_STATE(mAppWindow);
-  return mAppWindow->Repaint(aForce);
 }
 
 NS_IMETHODIMP nsChromeTreeOwner::GetParentWidget(nsIWidget** aParentWidget) {
@@ -442,16 +347,6 @@ nsChromeTreeOwner::OnContentBlockingEvent(nsIWebProgress* aWebProgress,
   return NS_OK;
 }
 
-//*****************************************************************************
-// nsChromeTreeOwner: Helpers
-//*****************************************************************************
-
-//*****************************************************************************
-// nsChromeTreeOwner: Accessors
-//*****************************************************************************
-
 void nsChromeTreeOwner::AppWindow(mozilla::AppWindow* aAppWindow) {
   mAppWindow = aAppWindow;
 }
-
-mozilla::AppWindow* nsChromeTreeOwner::AppWindow() { return mAppWindow; }

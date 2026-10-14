@@ -138,42 +138,19 @@ smime_legacy_pref(SECOidTag algtag)
         if (smime_legacy_map[i].policytag == algtag)
             return i;
     }
+    /* GCM is preferred over CBC per RFC 8551, so rank above all legacy
+     * algorithms to win same-keysize tiebreaks during sorting. */
+    switch (algtag) {
+        case SEC_OID_AES_128_GCM:
+            return smime_legacy_map_count;
+        case SEC_OID_AES_192_GCM:
+            return smime_legacy_map_count + 1;
+        case SEC_OID_AES_256_GCM:
+            return smime_legacy_map_count + 2;
+        default:
+            break;
+    }
     return -1;
-}
-
-/*
- * smime_legacy_to policy - find policy algtag from a legacy input
- */
-static SECOidTag
-smime_legacy_to_policy(unsigned long which)
-{
-    int i;
-
-    for (i = 0; i < smime_legacy_map_count; i++) {
-        if (smime_legacy_map[i].cipher == which)
-            return smime_legacy_map[i].policytag;
-    }
-    return SEC_OID_UNKNOWN;
-}
-
-/* map the old legacy values to modern oids. If the value isn't a recognized
- * legacy value, assume it's a SECOidTag and continue. This allows us to use
- * the old query and set interfaces with modern oids. */
-SECOidTag
-smime_legacy_to_oid(unsigned long which)
-{
-    unsigned long mask;
-
-    /* NOTE: all the legacy values and a CIPHER_FAMILYID of 0x00010000,
-     * (CIPHER_FAMILYID_MASK is 0xffff0000). SECOidTags start at 0 and
-     * increase monotonically, so as long as there is less than 16K of
-     * tags, we can distinguish between values intended to be SMIME ciphers
-     * and values intended to be SECOidTags */
-    mask = which & CIPHER_FAMILYID_MASK;
-    if (mask == CIPHER_FAMILYID_SMIME) {
-        return smime_legacy_to_policy(which);
-    }
-    return (SECOidTag)which;
 }
 
 /* SEC_OID_RC2_CBC is actually 3 ciphers with different key lengths. All modern
@@ -244,14 +221,17 @@ smime_keysize_by_cipher(SECOidTag algtag)
             break;
         case SEC_OID_RC2_128_CBC:
         case SEC_OID_AES_128_CBC:
+        case SEC_OID_AES_128_GCM:
         case SEC_OID_CAMELLIA_128_CBC:
             keysize = 128;
             break;
         case SEC_OID_AES_192_CBC:
+        case SEC_OID_AES_192_GCM:
         case SEC_OID_CAMELLIA_192_CBC:
             keysize = 192;
             break;
         case SEC_OID_AES_256_CBC:
+        case SEC_OID_AES_256_GCM:
         case SEC_OID_CAMELLIA_256_CBC:
             keysize = 256;
             break;
@@ -296,7 +276,7 @@ typedef struct SMIMEListStr {
 } SMIMEList;
 
 static SMIMEList *smime_algorithm_list = NULL;
-static PZLock *algorithm_list_lock = NULL;
+static PRLock *algorithm_list_lock = NULL;
 static PRCallOnceType smime_init_arg = { 0 };
 
 /* return the number of algorithms in the list */
@@ -352,7 +332,7 @@ smime_list_grow(SMIMEList **list)
         size_t new_len = (*list)->space_len + SMIME_CHUNK_COUNT;
         new_space = (SECOidTag *)PORT_Realloc((*list)->tags,
                                               new_len * sizeof(SECOidTag));
-        if (new_space) {
+        if (new_space == NULL) {
             return SECFailure;
         }
         (*list)->tags = new_space;
@@ -381,28 +361,6 @@ smime_list_add(SMIMEList **list, SECOidTag algtag)
         return rv;
     }
     (*list)->tags[(*list)->array_len++] = algtag;
-    return SECSuccess;
-}
-
-static SECStatus
-smime_list_remove(SMIMEList *list, SECOidTag algtag)
-{
-    size_t c_index, i;
-    size_t cipher_count = smime_list_length(list);
-
-    if (cipher_count == 0) {
-        return SECSuccess;
-    }
-    c_index = smime_list_index_find(list, algtag);
-    if (c_index == cipher_count) {
-        /* already removed from the list */
-        return SECSuccess;
-    }
-    for (i = c_index; i < cipher_count - 1; i++) {
-        list->tags[i] = list->tags[i + 1];
-    }
-    list->array_len--;
-    list->tags[i] = 0;
     return SECSuccess;
 }
 
@@ -436,7 +394,7 @@ smime_lock_algorithm_list(void)
 {
     PORT_Assert(algorithm_list_lock);
     if (algorithm_list_lock) {
-        PZ_Lock(algorithm_list_lock);
+        PR_Lock(algorithm_list_lock);
     }
     return;
 }
@@ -446,7 +404,7 @@ smime_unlock_algorithm_list(void)
 {
     PORT_Assert(algorithm_list_lock);
     if (algorithm_list_lock) {
-        PZ_Unlock(algorithm_list_lock);
+        PR_Unlock(algorithm_list_lock);
     }
     return;
 }
@@ -455,7 +413,7 @@ static SECStatus
 smime_shutdown(void *appData, void *nssData)
 {
     if (algorithm_list_lock) {
-        PZ_DestroyLock(algorithm_list_lock);
+        PR_DestroyLock(algorithm_list_lock);
         algorithm_list_lock = NULL;
     }
     smime_free_list(&smime_algorithm_list);
@@ -479,7 +437,7 @@ smime_init_once(void *arg)
         *error = PORT_GetError();
         return PR_FAILURE;
     }
-    algorithm_list_lock = PZ_NewLock(nssILockCache);
+    algorithm_list_lock = PR_NewLock();
     if (algorithm_list_lock == NULL) {
         *error = PORT_GetError();
         return PR_FAILURE;
@@ -501,6 +459,12 @@ smime_init_once(void *arg)
         /* No algorithms have been enabled by policy (either by the system
          * or by the application, we then will use the traditional default
          * algorithms from the policy map */
+        /* Enable NSS_USE_ALG_IN_SMIME for GCM so the capability loop
+         * advertises it; do not add to smime_algorithm_list (encoding
+         * is not yet supported). */
+        NSS_SetAlgorithmPolicy(SEC_OID_AES_128_GCM, NSS_USE_ALG_IN_SMIME, 0);
+        NSS_SetAlgorithmPolicy(SEC_OID_AES_192_GCM, NSS_USE_ALG_IN_SMIME, 0);
+        NSS_SetAlgorithmPolicy(SEC_OID_AES_256_GCM, NSS_USE_ALG_IN_SMIME, 0);
         for (i = smime_legacy_map_count - 1; i >= 0; i--) {
             SECOidTag policytag = smime_legacy_map[i].policytag;
             /* this enables the algorithm by policy. We need this or
@@ -527,6 +491,8 @@ smime_init_once(void *arg)
             PORT_Free(tags);
             tags = NULL;
         }
+        /* GCM omitted from smime_algorithm_list (see above);
+         * advertised in NSS_SMIMEUtil_CreateSMIMECapabilities. */
         for (i = smime_legacy_map_count - 1; i >= 0; i--) {
             SECOidTag policytag = smime_legacy_map[i].policytag;
             /* we only enable the default algorithm, we don't change
@@ -545,7 +511,7 @@ smime_init_once(void *arg)
         goto loser;
     }
     legacy_prefs = PORT_ZNewArray(int, tagCount);
-    if (lengths == NULL) {
+    if (legacy_prefs == NULL) {
         *error = PORT_GetError();
         goto loser;
     }
@@ -586,6 +552,11 @@ smime_init_once(void *arg)
 
     /* put them in the enable list */
     for (i = 0; i < tagCount; i++) {
+        /* AEAD ciphers must not enter the outgoing cipher vote table
+         * until AuthEnvelopedData encoding is supported. */
+        if (PK11_IsAEAD(PK11_AlgtagToMechanism(tags[i]))) {
+            continue;
+        }
         smime_list_add(&smime_algorithm_list, tags[i]);
     }
     PORT_Free(lengths);
@@ -624,54 +595,6 @@ smime_init(void)
     }
     PORT_SetError(error);
     return SECFailure;
-}
-
-/*
- * NSS_SMIME_EnableCipher - this function locally records the user's preference
- */
-SECStatus
-NSS_SMIMEUtil_EnableCipher(unsigned long which, PRBool on)
-{
-    SECOidTag algtag;
-
-    SECStatus rv = smime_init();
-    if (rv != SECSuccess) {
-        return SECFailure;
-    }
-
-    algtag = smime_legacy_to_oid(which);
-    if (!smime_allowed_by_policy(algtag, NSS_USE_ALG_IN_SMIME)) {
-        PORT_SetError(SEC_ERROR_BAD_EXPORT_ALGORITHM);
-        return SECFailure;
-    }
-
-    smime_lock_algorithm_list();
-    if (on) {
-        rv = smime_list_add(&smime_algorithm_list, algtag);
-    } else {
-        rv = smime_list_remove(smime_algorithm_list, algtag);
-    }
-    smime_unlock_algorithm_list();
-    return rv;
-}
-
-/*
- * this function locally records the export policy
- */
-SECStatus
-NSS_SMIMEUtil_AllowCipher(unsigned long which, PRBool on)
-{
-    SECOidTag algtag = smime_legacy_to_oid(which);
-    PRUint32 set = on ? NSS_USE_ALG_IN_SMIME : 0;
-    PRUint32 clear = on ? 0 : NSS_USE_ALG_IN_SMIME;
-    /* make sure we are inited before setting, so
-     * the defaults are correct */
-    SECStatus rv = smime_init();
-    if (rv != SECSuccess) {
-        return SECFailure;
-    }
-
-    return NSS_SetAlgorithmPolicy(algtag, set, clear);
 }
 
 PRBool
@@ -786,63 +709,6 @@ NSS_SMIMEUtil_KeyDecodingAllowed(SECAlgorithmID *algid, SECKEYPrivateKey *key)
     }
     algtag = SECOID_GetAlgorithmTag(algid);
     return smime_allowed_by_policy(algtag, NSS_USE_ALG_IN_SMIME_KX_LEGACY);
-}
-
-/*
- * NSS_SMIME_EncryptionPossible - check if any encryption is allowed
- *
- * This tells whether or not *any* S/MIME encryption can be done,
- * according to policy.  Callers may use this to do nicer user interface
- * (say, greying out a checkbox so a user does not even try to encrypt
- * a message when they are not allowed to) or for any reason they want
- * to check whether S/MIME encryption (or decryption, for that matter)
- * may be done.
- *
- * It takes no arguments.  The return value is a simple boolean:
- *   PR_TRUE means encryption (or decryption) is *possible*
- *      (but may still fail due to other reasons, like because we cannot
- *      find all the necessary certs, etc.; PR_TRUE is *not* a guarantee)
- *   PR_FALSE means encryption (or decryption) is not permitted
- *
- * There are no errors from this routine.
- */
-PRBool
-NSS_SMIMEUtil_EncryptionPossible(void)
-{
-    SECStatus rv = smime_init();
-    size_t len;
-    if (rv != SECSuccess) {
-        return SECFailure;
-    }
-    smime_lock_algorithm_list();
-    len = smime_list_length(smime_algorithm_list);
-    smime_unlock_algorithm_list();
-    return len != 0 ? PR_TRUE : PR_FALSE;
-}
-
-PRBool
-NSS_SMIMEUtil_EncryptionEnabled(int which)
-{
-    SECOidTag algtag;
-    size_t c_index, len;
-
-    SECStatus rv = smime_init();
-    if (rv != SECSuccess) {
-        return SECFailure;
-    }
-
-    algtag = smime_legacy_to_oid(which);
-
-    smime_lock_algorithm_list();
-    len = smime_list_length(smime_algorithm_list);
-    c_index = smime_list_index_find(smime_algorithm_list, algtag);
-    smime_unlock_algorithm_list();
-
-    if (len >= c_index) {
-        return PR_FALSE;
-    }
-
-    return smime_allowed_by_policy(algtag, NSS_USE_ALG_IN_SMIME);
 }
 
 static SECOidTag
@@ -1190,6 +1056,9 @@ NSS_SMIMEUtil_CreateSMIMECapabilities(PLArenaPool *poolp, SECItem *dest)
     int cap_count;
     int cipher_count;
     int hash_count;
+    static const SECOidTag gcm_caps[] = {
+        SEC_OID_AES_256_GCM, SEC_OID_AES_192_GCM, SEC_OID_AES_128_GCM
+    };
 
     SECStatus rv = smime_init();
     if (rv != SECSuccess) {
@@ -1212,7 +1081,8 @@ NSS_SMIMEUtil_CreateSMIMECapabilities(PLArenaPool *poolp, SECItem *dest)
         return SECFailure;
     }
 
-    cap_count = cipher_count + hash_count + implemented_key_encipherment_len;
+    cap_count = cipher_count + hash_count + implemented_key_encipherment_len +
+                (int)PR_ARRAY_SIZE(gcm_caps);
 
     /* cipher_count + 1 is an upper bound - we might end up with less */
     smime_capabilities = PORT_ZNewArray(NSSSMIMECapability *, cap_count + 1);
@@ -1222,6 +1092,20 @@ NSS_SMIMEUtil_CreateSMIMECapabilities(PLArenaPool *poolp, SECItem *dest)
     }
 
     capIndex = 0;
+
+    /* RFC 8551: GCM preferred, advertised first. AuthEnvelopedData
+     * decryption is supported, so advertise GCM unconditionally; the
+     * encoder side stays gated by smime_algorithm_list (which omits
+     * GCM) until AuthEnvelopedData encoding is supported. */
+    for (i = 0; i < (int)PR_ARRAY_SIZE(gcm_caps); i++) {
+        if (!smime_allowed_by_policy(gcm_caps[i], NSS_USE_ALG_IN_SMIME)) {
+            continue;
+        }
+        cap = smime_create_capability(gcm_caps[i]);
+        if (cap == NULL)
+            break;
+        smime_capabilities[capIndex++] = cap;
+    }
 
     /* Add all the symmetric ciphers
      * We walk the cipher list,  as it is ordered by decreasing strength,

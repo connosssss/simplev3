@@ -3,26 +3,27 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/net/ChildDNSService.h"
-#include "nsDNSPrefetch.h"
-#include "nsIDNSListener.h"
-#include "nsIOService.h"
-#include "nsThreadUtils.h"
-#include "nsIXPConnect.h"
-#include "nsIProtocolProxyService.h"
-#include "nsNetCID.h"
-#include "nsQueryObject.h"
+
+#include "DNSAdditionalInfo.h"
+#include "TRRService.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/StaticPrefs_network.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/SyncRunnable.h"
-#include "mozilla/net/NeckoChild.h"
 #include "mozilla/net/DNSListenerProxy.h"
+#include "mozilla/net/NeckoChild.h"
 #include "mozilla/net/TRRServiceParent.h"
+#include "nsDNSPrefetch.h"
 #include "nsHostResolver.h"
+#include "nsIDNSListener.h"
+#include "nsIOService.h"
+#include "nsIProtocolProxyService.h"
+#include "nsIXPConnect.h"
+#include "nsNetCID.h"
+#include "nsQueryObject.h"
 #include "nsServiceManagerUtils.h"
+#include "nsThreadUtils.h"
 #include "prsystem.h"
-#include "DNSAdditionalInfo.h"
-#include "TRRService.h"
 
 namespace mozilla {
 namespace net {
@@ -72,7 +73,7 @@ void ChildDNSService::GetDNSRecordHashKey(
     nsIDNSService::DNSFlags aFlags, uintptr_t aListenerAddr,
     nsACString& aHashKey) {
   aHashKey.Assign(aHost);
-  aHashKey.Assign(aTrrServer);
+  aHashKey.Append(aTrrServer);
   aHashKey.AppendInt(aPort);
   aHashKey.AppendInt(aType);
 
@@ -255,15 +256,6 @@ ChildDNSService::CancelAsyncResolveNative(
 }
 
 NS_IMETHODIMP
-ChildDNSService::Resolve(const nsACString& hostname,
-                         nsIDNSService::DNSFlags flags,
-                         JS::Handle<JS::Value> aOriginAttributes,
-                         JSContext* aCx, uint8_t aArgc, nsIDNSRecord** result) {
-  // not planning to ever support this, since sync IPDL is evil.
-  return NS_ERROR_NOT_AVAILABLE;
-}
-
-NS_IMETHODIMP
 ChildDNSService::ResolveNative(const nsACString& hostname,
                                nsIDNSService::DNSFlags flags,
                                const OriginAttributes& aOriginAttributes,
@@ -287,7 +279,7 @@ ChildDNSService::ClearCache(bool aTrrToo) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  Unused << mTRRServiceParent->SendClearDNSCache(aTrrToo);
+  (void)mTRRServiceParent->SendClearDNSCache(aTrrToo);
   return NS_OK;
 }
 
@@ -508,6 +500,11 @@ NS_IMETHODIMP ChildDNSService::GetLastConfirmationSkipReason(
   // XXX(valentin): Fix for socket process
   *aSkipReason = nsITRRSkipReason::TRR_UNSET;
   return NS_OK;
+}
+
+NS_IMETHODIMP ChildDNSService::SetHttp3FirstForServer(const nsACString& aServer,
+                                                      bool aEnabled) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 }  // namespace net

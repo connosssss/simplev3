@@ -5,68 +5,82 @@
 package org.mozilla.fenix.debugsettings.gleandebugtools
 
 import android.content.Intent
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
 import android.widget.Toast
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
+import androidx.fragment.app.Fragment
+import androidx.fragment.compose.content
 import androidx.navigation.fragment.findNavController
+import mozilla.components.compose.base.button.IconButton
+import mozilla.components.lib.state.helpers.StoreProvider.Companion.fragmentStore
+import mozilla.components.ui.icons.R as iconsR
 import mozilla.telemetry.glean.Glean
 import org.mozilla.fenix.R
-import org.mozilla.fenix.components.lazyStore
-import org.mozilla.fenix.compose.ComposeFragment
 import org.mozilla.fenix.debugsettings.gleandebugtools.ui.GleanDebugToolsScreen
+import org.mozilla.fenix.e2e.SystemInsetsPaddedFragment
 import org.mozilla.fenix.ext.requireComponents
 import org.mozilla.fenix.theme.FirefoxTheme
 
-/**
- * [ComposeFragment] for displaying the Glean Debug Tools in the about:glean page.
- */
-class GleanDebugToolsFragment : ComposeFragment() {
+/** [Fragment] for displaying the Glean Debug Tools in the about:glean page. */
+class GleanDebugToolsFragment : Fragment(), SystemInsetsPaddedFragment {
 
-    private val store by lazyStore {
-        GleanDebugToolsStore(
-            initialState = GleanDebugToolsState(
+    private val store by
+        fragmentStore(
+            GleanDebugToolsState(
                 logPingsToConsoleEnabled = Glean.getLogPings(),
                 debugViewTag = Glean.getDebugViewTag() ?: "",
-            ),
-            middlewares = listOf(
-                GleanDebugToolsMiddleware(
-                    gleanDebugToolsStorage = DefaultGleanDebugToolsStorage(),
-                    clipboardHandler = requireComponents.clipboardHandler,
-                    openDebugView = { debugViewLink ->
-                        val intent = Intent(Intent.ACTION_VIEW)
-                        intent.data = debugViewLink.toUri()
-                        requireContext().startActivity(intent)
-                    },
-                    showToast = { pingType ->
-                        val toast = Toast.makeText(
-                            requireContext(),
-                            requireContext().getString(
-                                R.string.glean_debug_tools_send_ping_toast_message,
-                                pingType,
-                            ),
-                            Toast.LENGTH_LONG,
+            )
+        ) {
+            GleanDebugToolsStore(
+                initialState = it,
+                middlewares =
+                    listOf(
+                        GleanDebugToolsMiddleware(
+                            gleanDebugToolsStorage = DefaultGleanDebugToolsStorage(requireComponents.settings),
+                            clipboardHandler = requireComponents.clipboardHandler,
+                            openDebugView = { debugViewLink ->
+                                val intent = Intent(Intent.ACTION_VIEW)
+                                intent.data = debugViewLink.toUri()
+                                requireContext().startActivity(intent)
+                            },
+                            showToast = { pingType ->
+                                val toast =
+                                    Toast.makeText(
+                                        requireContext(),
+                                        requireContext()
+                                            .getString(
+                                                R.string.glean_debug_tools_send_ping_toast_message,
+                                                pingType,
+                                            ),
+                                        Toast.LENGTH_LONG,
+                                    )
+                                toast.show()
+                            },
                         )
-                        toast.show()
-                    },
-                ),
-            ),
-        )
-    }
+                    ),
+            )
+        }
 
     @OptIn(ExperimentalMaterial3Api::class)
-    @Composable
-    override fun UI() {
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?,
+    ): View? = content {
         FirefoxTheme {
             Scaffold(
                 topBar = {
@@ -74,26 +88,29 @@ class GleanDebugToolsFragment : ComposeFragment() {
                         title = {
                             Text(
                                 text = stringResource(R.string.glean_debug_tools_title),
-                                color = FirefoxTheme.colors.textPrimary,
-                                style = FirefoxTheme.typography.headline6,
+                                style = FirefoxTheme.typography.headline5,
                             )
                         },
                         navigationIcon = {
                             val directions = GleanDebugToolsFragmentDirections.actionGlobalBrowser()
-                            IconButton(onClick = { findNavController().navigate(directions) }) {
+                            IconButton(
+                                onClick = { findNavController().navigate(directions) },
+                                contentDescription =
+                                    stringResource(R.string.bookmark_navigate_back_button_content_description),
+                            ) {
                                 Icon(
-                                    painter = painterResource(R.drawable.mozac_ic_back_24),
-                                    contentDescription = stringResource(
-                                        R.string.bookmark_navigate_back_button_content_description,
-                                    ),
-                                    tint = FirefoxTheme.colors.iconPrimary,
+                                    painter = painterResource(iconsR.drawable.mozac_ic_back_24),
+                                    contentDescription = null,
                                 )
                             }
                         },
-                        colors = TopAppBarDefaults.topAppBarColors(containerColor = FirefoxTheme.colors.layer1),
+                        windowInsets =
+                            WindowInsets(
+                                top = 0.dp,
+                                bottom = 0.dp,
+                            ),
                     )
-                },
-                containerColor = FirefoxTheme.colors.layer1,
+                }
             ) { paddingValues ->
                 GleanDebugToolsScreen(
                     gleanDebugToolsStore = store,

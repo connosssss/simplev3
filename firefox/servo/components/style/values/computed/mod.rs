@@ -15,110 +15,135 @@ use super::generics::{self, GreaterThanOrEqualToOne, NonNegative, ZeroToOne};
 use super::specified;
 use super::{CSSFloat, CSSInteger};
 use crate::computed_value_flags::ComputedValueFlags;
-use crate::context::QuirksMode;
+use crate::context::{QuirksMode, TreeCountingCaches};
 use crate::custom_properties::ComputedCustomProperties;
+use crate::derives::*;
+use crate::device::Device;
+use crate::dom::DummyElementContext;
+use crate::dom::ElementContext;
 use crate::font_metrics::{FontMetrics, FontMetricsOrientation};
-use crate::media_queries::Device;
 #[cfg(feature = "gecko")]
 use crate::properties;
 use crate::properties::{ComputedValues, StyleBuilder};
 use crate::rule_cache::RuleCacheConditions;
+use crate::rule_tree::{CascadeLevel, RuleCascadeFlags};
 use crate::stylesheets::container_rule::{
     ContainerInfo, ContainerSizeQuery, ContainerSizeQueryResult,
 };
 use crate::stylist::Stylist;
+use crate::values::generics::ClampToNonNegative;
 use crate::values::specified::font::QueryFontMetricsFlags;
 use crate::values::specified::length::FontBaseSize;
+use crate::values::specified::random::RandomCacheKey;
 use crate::{ArcSlice, Atom, One};
-use euclid::{default, Point2D, Rect, Size2D};
+use euclid::{Point2D, Rect, Size2D, default};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
+use rustc_hash::FxHasher;
 use servo_arc::Arc;
 use std::cell::RefCell;
 use std::cmp;
 use std::f32;
+use std::hash::{Hash, Hasher};
 use std::ops::{Add, Sub};
 
-pub use self::align::{AlignContent, AlignItems, JustifyContent, JustifyItems, SelfAlignment};
-pub use self::align::{AlignSelf, JustifySelf};
+pub use self::align::{ContentDistribution, ItemPlacement, JustifyItems, SelfAlignment};
 pub use self::angle::Angle;
 pub use self::animation::{
     AnimationComposition, AnimationDirection, AnimationDuration, AnimationFillMode,
-    AnimationIterationCount, AnimationName, AnimationPlayState, AnimationTimeline, ScrollAxis,
-    TimelineName, TransitionBehavior, TransitionProperty, ViewTimelineInset, ViewTransitionClass,
-    ViewTransitionName,
+    AnimationIterationCount, AnimationName, AnimationPlayState, AnimationRangeEnd,
+    AnimationRangeStart, AnimationTimeline, ScrollAxis, TimelineName, TransitionBehavior,
+    TransitionProperty, ViewTimelineInset, ViewTransitionClass, ViewTransitionName,
 };
-pub use self::background::{BackgroundRepeat, BackgroundSize};
+pub use self::background::{
+    BackgroundClip, BackgroundOrigin, BackgroundRepeat, BackgroundSize, ImageLayerAttachment,
+};
 pub use self::basic_shape::FillRule;
 pub use self::border::{
     BorderCornerRadius, BorderImageRepeat, BorderImageSideWidth, BorderImageSlice,
-    BorderImageWidth, BorderRadius, BorderSideWidth, BorderSpacing, LineWidth,
+    BorderImageWidth, BorderRadius, BorderSideOffset, BorderSideWidth, BorderSpacing,
+    BoxDecorationBreak, FloatEdge, LineWidth,
 };
 pub use self::box_::{
-    Appearance, BaselineSource, BreakBetween, BreakWithin, Clear, Contain, ContainIntrinsicSize,
-    ContainerName, ContainerType, ContentVisibility, Display, Float, LineClamp, Overflow,
-    OverflowAnchor, OverflowClipBox, OverscrollBehavior, Perspective, PositionProperty, Resize,
-    ScrollSnapAlign, ScrollSnapAxis, ScrollSnapStop, ScrollSnapStrictness, ScrollSnapType,
-    ScrollbarGutter, TouchAction, VerticalAlign, WillChange, WritingModeProperty, Zoom,
+    AlignmentBaseline, Appearance, BackfaceVisibility, BaselineShift, BaselineSource, BoxAlign,
+    BoxCollapse, BoxDirection, BoxOrient, BoxPack, BreakBetween, BreakWithin, Clear, Contain,
+    ContainIntrinsicSize, ContainerName, ContainerType, ContentVisibility, DirectionProperty,
+    Display, DominantBaseline, Float, ImageOrientation, Isolation, LineClamp, MarginTrim, Orient,
+    Overflow, OverflowAnchor, OverflowClipMargin, OverscrollBehavior, Perspective,
+    PositionProperty, Resize, ScrollBehavior, ScrollSnapAlign, ScrollSnapAxis, ScrollSnapStop,
+    ScrollSnapStrictness, ScrollSnapType, ScrollbarGutter, ScrollbarInset, TextOrientation,
+    TopLayer, TouchAction, Visibility, WillChange, WritingModeProperty, Zoom,
 };
 pub use self::color::{
     Color, ColorOrAuto, ColorPropertyValue, ColorScheme, ForcedColorAdjust, PrintColorAdjust,
 };
-pub use self::column::ColumnCount;
+pub use self::column::{ColumnCount, ColumnFill, ColumnSpan};
+pub use self::corner_shape::{CornerShape, CornerShapeRect};
 pub use self::counters::{Content, ContentItem, CounterIncrement, CounterReset, CounterSet};
 pub use self::easing::TimingFunction;
-pub use self::effects::{BoxShadow, Filter, SimpleShadow};
+pub use self::effects::{Blend, BoxShadow, Filter, SimpleShadow};
 pub use self::flex::FlexBasis;
-pub use self::font::{FontFamily, FontLanguageOverride, FontPalette, FontStyle};
+pub use self::font::{
+    FontFamily, FontKerning, FontLanguageOverride, FontOpticalSizing, FontPalette, FontSmoothing,
+    FontStyle, FontVariantCaps, FontVariantEmoji, FontVariantPosition, MathShift, MathStyle,
+    MathVariant,
+};
 pub use self::font::{FontFeatureSettings, FontVariantLigatures, FontVariantNumeric};
-pub use self::font::{FontSize, FontSizeAdjust, FontStretch, FontSynthesis, FontSynthesisStyle, LineHeight};
+pub use self::font::{
+    FontSize, FontSizeAdjust, FontSynthesis, FontSynthesisStyle, FontWidth, LineHeight,
+};
 pub use self::font::{FontVariantAlternates, FontWeight};
 pub use self::font::{FontVariantEastAsian, FontVariationSettings};
 pub use self::font::{MathDepth, MozScriptMinSize, MozScriptSizeMultiplier, XLang, XTextScale};
-pub use self::image::{Gradient, Image, ImageRendering, LineDirection};
-pub use self::length::{AnchorSizeFunction, CSSPixelLength, NonNegativeLength};
+pub use self::image::{Gradient, Image, ImageDecoding, ImageRendering, LineDirection};
+pub use self::length::{CSSPixelLength, NonNegativeLength};
 pub use self::length::{Length, LengthOrNumber, LengthPercentage, NonNegativeLengthOrNumber};
-pub use self::length::{LengthOrAuto, LengthPercentageOrAuto, MaxSize, Margin, Size};
+pub use self::length::{LengthOrAuto, LengthPercentageOrAuto, Margin, MaxSize, Size};
 pub use self::length::{NonNegativeLengthPercentage, NonNegativeLengthPercentageOrAuto};
-#[cfg(feature = "gecko")]
-pub use self::list::ListStyleType;
-pub use self::list::Quotes;
+pub use self::list::{ListStylePosition, ListStyleType, Quotes};
 pub use self::motion::{OffsetPath, OffsetPosition, OffsetRotate};
 pub use self::outline::OutlineStyle;
 pub use self::page::{PageName, PageOrientation, PageSize, PageSizeOrientation, PaperSize};
+pub use self::param::LinkParameters;
 pub use self::percentage::{NonNegativePercentage, Percentage};
-pub use self::position::AnchorFunction;
-pub use self::position::AnchorName;
-pub use self::position::AnchorScope;
-pub use self::position::AspectRatio;
-pub use self::position::DashedIdentAndOrTryTactic;
-pub use self::position::Inset;
-pub use self::position::PositionAnchor;
-pub use self::position::PositionTryFallbacks;
-pub use self::position::PositionTryOrder;
-pub use self::position::PositionVisibility;
 pub use self::position::{
-    GridAutoFlow, GridTemplateAreas, MasonryAutoFlow, Position, PositionOrAuto, ZIndex,
+    AnchorFunction, AnchorName, AspectRatio, BoxSizing, DashedIdentAndOrTryTactic, FlexDirection,
+    FlexWrap, GridAutoFlow, GridTemplateAreas, Inset, ObjectFit, Position, PositionAnchor,
+    PositionOrAuto, PositionTryFallbacks, PositionTryOrder, PositionVisibility, ScopedName, ZIndex,
 };
 pub use self::position::{PositionArea, PositionAreaKeyword};
 pub use self::ratio::Ratio;
 pub use self::rect::NonNegativeLengthOrNumberRect;
 pub use self::resolution::Resolution;
-pub use self::svg::{DProperty, MozContextProperties};
+pub use self::svg::{
+    ColorInterpolation, DProperty, MaskComposite, MaskMode, MaskType, MozContextProperties,
+    ShapeRendering, StrokeLinecap, StrokeLinejoin, TextAnchor,
+};
 pub use self::svg::{SVGLength, SVGOpacity, SVGPaint, SVGPaintKind};
 pub use self::svg::{SVGPaintOrder, SVGStrokeDashArray, SVGWidth, VectorEffect};
-pub use self::text::{HyphenateCharacter, HyphenateLimitChars};
-pub use self::text::TextUnderlinePosition;
+pub use self::table::{BorderCollapse, EmptyCells, TableLayout};
+pub use self::text::{
+    HyphenateCharacter, HyphenateLimitChars, Hyphens, RubyAlign, TextCombineUpright,
+    TextDecorationStyle, TextRendering, TextSecurity, TextSizeAdjust, TextWrapMode, TextWrapStyle,
+    UnicodeBidi, WhiteSpaceCollapse,
+};
 pub use self::text::{InitialLetter, LetterSpacing, LineBreak, TextIndent};
 pub use self::text::{OverflowWrap, RubyPosition, TextOverflow, WordBreak, WordSpacing};
 pub use self::text::{TextAlign, TextAlignLast, TextEmphasisPosition, TextEmphasisStyle};
-pub use self::text::{TextDecorationLength, TextDecorationSkipInk, TextJustify};
+pub use self::text::{TextAutospace, TextUnderlinePosition};
+pub use self::text::{TextBoxEdge, TextBoxTrim};
+pub use self::text::{
+    TextDecorationInset, TextDecorationLength, TextDecorationSkipInk, TextJustify,
+};
 pub use self::time::Time;
 pub use self::transform::{Rotate, Scale, Transform, TransformBox, TransformOperation};
 pub use self::transform::{TransformOrigin, TransformStyle, Translate};
+pub use self::tree_counting::TreeCountingResult;
 #[cfg(feature = "gecko")]
 pub use self::ui::CursorImage;
 pub use self::ui::{
-    BoolInteger, Cursor, Inert, MozTheme, PointerEvents, ScrollbarColor, UserFocus, UserInput,
-    UserSelect,
+    BoolInteger, Cursor, FieldSizing, ImeMode, Inert, MozTheme, PointerEvents, ScrollbarColor,
+    ScrollbarWidth, UserFocus, UserSelect, WindowDragging, WindowShadow,
 };
 pub use super::specified::TextTransform;
 pub use super::specified::ViewportVariant;
@@ -133,8 +158,10 @@ pub mod basic_shape;
 pub mod border;
 #[path = "box.rs"]
 pub mod box_;
+pub mod calc;
 pub mod color;
 pub mod column;
+pub mod corner_shape;
 pub mod counters;
 pub mod easing;
 pub mod effects;
@@ -147,6 +174,7 @@ pub mod list;
 pub mod motion;
 pub mod outline;
 pub mod page;
+pub mod param;
 pub mod percentage;
 pub mod position;
 pub mod ratio;
@@ -157,6 +185,7 @@ pub mod table;
 pub mod text;
 pub mod time;
 pub mod transform;
+pub mod tree_counting;
 pub mod ui;
 pub mod url;
 
@@ -172,7 +201,7 @@ pub struct Context<'a> {
     ///
     /// See properties/longhands/font.mako.rs
     #[cfg(feature = "gecko")]
-    pub cached_system_font: Option<properties::longhands::system_font::ComputedSystemFont>,
+    pub cached_system_font: Option<properties::gecko::system_font::ComputedSystemFont>,
 
     /// A dummy option for servo so initializing a computed::Context isn't
     /// painful.
@@ -209,15 +238,31 @@ pub struct Context<'a> {
     /// FIXME(emilio): Drop the refcell.
     pub rule_cache_conditions: RefCell<&'a mut RuleCacheConditions>,
 
+    /// The cascade level in the shadow tree hierarchy.
+    pub scope: CascadeLevel,
+
+    /// The set of RuleCascadeFlags whose rules should be included during the
+    /// cascade. STARTING_STYLE is set from the caller for re-cascade.
+    /// APPEARANCE_BASE is added dynamically after the appearance property is
+    /// resolved to a non-None value.
+    pub included_cascade_flags: RuleCascadeFlags,
+
     /// Container size query for this context.
     container_size_query: RefCell<ContainerSizeQuery<'a>>,
+
+    /// Element context for the element being styled, used to resolve tree-counting functions
+    /// (`sibling-index()`, `sibling-count()`) and attribute values (`attr()`).
+    element_context: &'a dyn ElementContext,
+
+    /// Caches for evaluation of tree-counting functions.
+    pub tree_counting_caches: RefCell<&'a mut TreeCountingCaches>,
 }
 
 impl<'a> Context<'a> {
     /// Lazily evaluate the container size query, returning the result.
     pub fn get_container_size_query(&self) -> ContainerSizeQueryResult {
         let mut resolved = self.container_size_query.borrow_mut();
-        resolved.get().clone()
+        resolved.get()
     }
 
     /// Creates a suitable context for media query evaluation, in which
@@ -228,6 +273,7 @@ impl<'a> Context<'a> {
         F: FnOnce(&Context) -> R,
     {
         let mut conditions = RuleCacheConditions::default();
+        let mut tree_counting_caches = TreeCountingCaches::default();
         let context = Context {
             builder: StyleBuilder::for_inheritance(device, None, None, None),
             cached_system_font: None,
@@ -238,7 +284,11 @@ impl<'a> Context<'a> {
             container_info: None,
             for_non_inherited_property: false,
             rule_cache_conditions: RefCell::new(&mut conditions),
+            scope: CascadeLevel::same_tree_author_normal(),
+            included_cascade_flags: RuleCascadeFlags::empty(),
             container_size_query: RefCell::new(ContainerSizeQuery::none()),
+            element_context: &DummyElementContext {},
+            tree_counting_caches: RefCell::new(&mut tree_counting_caches),
         };
         f(&context)
     }
@@ -250,19 +300,21 @@ impl<'a> Context<'a> {
         stylist: Option<&Stylist>,
         container_info_and_style: Option<(ContainerInfo, Arc<ComputedValues>)>,
         container_size_query: ContainerSizeQuery,
+        element_context: &dyn ElementContext,
         f: F,
     ) -> R
     where
         F: FnOnce(&Context) -> R,
     {
         let mut conditions = RuleCacheConditions::default();
+        let mut tree_counting_caches = TreeCountingCaches::default();
 
         let (container_info, style) = match container_info_and_style {
             Some((ci, s)) => (Some(ci), Some(s)),
             None => (None, None),
         };
 
-        let style = style.as_ref().map(|s| &**s);
+        let style = style.as_deref();
         let quirks_mode = device.quirks_mode();
         let context = Context {
             builder: StyleBuilder::for_inheritance(device, stylist, style, None),
@@ -274,7 +326,11 @@ impl<'a> Context<'a> {
             container_info,
             for_non_inherited_property: false,
             rule_cache_conditions: RefCell::new(&mut conditions),
+            scope: CascadeLevel::same_tree_author_normal(),
+            included_cascade_flags: RuleCascadeFlags::empty(),
             container_size_query: RefCell::new(container_size_query),
+            element_context,
+            tree_counting_caches: RefCell::new(&mut tree_counting_caches),
         };
 
         f(&context)
@@ -286,7 +342,16 @@ impl<'a> Context<'a> {
         quirks_mode: QuirksMode,
         rule_cache_conditions: &'a mut RuleCacheConditions,
         container_size_query: ContainerSizeQuery<'a>,
+        mut included_cascade_flags: RuleCascadeFlags,
+        element_context: &'a dyn ElementContext,
+        tree_counting_caches: &'a mut TreeCountingCaches,
     ) -> Self {
+        if builder
+            .flags()
+            .intersects(ComputedValueFlags::IS_IN_APPEARANCE_BASE_SUBTREE)
+        {
+            included_cascade_flags.insert(RuleCascadeFlags::APPEARANCE_BASE);
+        }
         Self {
             builder,
             cached_system_font: None,
@@ -297,7 +362,11 @@ impl<'a> Context<'a> {
             for_smil_animation: false,
             for_non_inherited_property: false,
             rule_cache_conditions: RefCell::new(rule_cache_conditions),
+            scope: CascadeLevel::same_tree_author_normal(),
+            included_cascade_flags,
             container_size_query: RefCell::new(container_size_query),
+            element_context,
+            tree_counting_caches: RefCell::new(tree_counting_caches),
         }
     }
 
@@ -308,6 +377,8 @@ impl<'a> Context<'a> {
         quirks_mode: QuirksMode,
         rule_cache_conditions: &'a mut RuleCacheConditions,
         container_size_query: ContainerSizeQuery<'a>,
+        element_context: &'a dyn ElementContext,
+        tree_counting_caches: &'a mut TreeCountingCaches,
     ) -> Self {
         Self {
             builder,
@@ -319,7 +390,11 @@ impl<'a> Context<'a> {
             for_smil_animation,
             for_non_inherited_property: false,
             rule_cache_conditions: RefCell::new(rule_cache_conditions),
+            scope: CascadeLevel::same_tree_author_normal(),
+            included_cascade_flags: RuleCascadeFlags::empty(),
             container_size_query: RefCell::new(container_size_query),
+            element_context,
+            tree_counting_caches: RefCell::new(tree_counting_caches),
         }
     }
 
@@ -327,6 +402,7 @@ impl<'a> Context<'a> {
     pub fn new_for_initial_at_property_value(
         stylist: &'a Stylist,
         rule_cache_conditions: &'a mut RuleCacheConditions,
+        tree_counting_caches: &'a mut TreeCountingCaches,
     ) -> Self {
         Self {
             builder: StyleBuilder::new(stylist.device(), Some(stylist), None, None, None, false),
@@ -341,7 +417,11 @@ impl<'a> Context<'a> {
             for_smil_animation: false,
             for_non_inherited_property: false,
             rule_cache_conditions: RefCell::new(rule_cache_conditions),
+            scope: CascadeLevel::same_tree_author_normal(),
+            included_cascade_flags: RuleCascadeFlags::empty(),
             container_size_query: RefCell::new(ContainerSizeQuery::none()),
+            element_context: &DummyElementContext {},
+            tree_counting_caches: RefCell::new(tree_counting_caches),
         }
     }
 
@@ -352,7 +432,7 @@ impl<'a> Context<'a> {
 
     /// Get the inherited custom properties map.
     pub fn inherited_custom_properties(&self) -> &ComputedCustomProperties {
-        &self.builder.inherited_custom_properties()
+        self.builder.inherited_custom_properties()
     }
 
     /// Whether the style is for the root element.
@@ -395,12 +475,8 @@ impl<'a> Context<'a> {
         if !self.in_media_query {
             flags |= QueryFontMetricsFlags::USE_USER_FONT_SET
         }
-        self.device().query_font_metrics(
-            vertical,
-            font,
-            size,
-            flags,
-        )
+        self.device()
+            .query_font_metrics(vertical, font, size, flags, /* track_changes = */ true)
     }
 
     /// The current viewport size, used to resolve viewport units.
@@ -415,6 +491,69 @@ impl<'a> Context<'a> {
             .au_viewport_size_for_viewport_unit_resolution(variant)
     }
 
+    fn resolve_tree_counting_result(&self) -> TreeCountingResult {
+        // https://drafts.csswg.org/css-values-5/#tree-counting
+        // > A tree-counting function is a type of loosely-matched tree-scoped reference.
+        //
+        // As a loosely-matched reference, the tree-counting function can only match if
+        // the declaration is in the same or descendant shadow tree of the element. It
+        // does not match if the declaration is in a containing tree, so it must return
+        // the default sibling index and count of 1.
+        if self
+            .current_scope()
+            .shadow_order()
+            .is_in_same_or_containing_tree()
+        {
+            return TreeCountingResult::default();
+        }
+
+        self.tree_counting_caches
+            .borrow_mut()
+            .get_or_compute(self.element_context)
+    }
+
+    /// Returns the number of siblings of the element that matches the declaration
+    /// (including the element itself). Also marks the style as depending on sibling-count().
+    pub fn query_sibling_count(&self) -> u32 {
+        self.builder
+            .add_flags(ComputedValueFlags::USES_SIBLING_COUNT);
+        self.resolve_tree_counting_result().sibling_count
+    }
+
+    /// Returns the 1-based index of the element that matches the declaration amongst its
+    /// siblings. Also marks the style as depending on sibling-index().
+    pub fn query_sibling_index(&self) -> u32 {
+        self.builder
+            .add_flags(ComputedValueFlags::USES_SIBLING_INDEX);
+        self.rule_cache_conditions.borrow_mut().set_uncacheable();
+        self.resolve_tree_counting_result().sibling_index
+    }
+
+    /// Returns the random base value for the given random cache key. This constructs a
+    /// PRNG seed by hashing the components of the key's specified random cache name,
+    /// and then generating a random value from the seed. This ensures that the same
+    /// random cache name always results in the same random base value.
+    /// https://drafts.csswg.org/css-values-5/#random-caching
+    pub fn random_base_value(&self, key: &RandomCacheKey) -> f32 {
+        let mut hasher = FxHasher::default();
+        key.name.hash(&mut hasher);
+        key.ua_ident.hash(&mut hasher);
+        if key.is_element_scoped {
+            debug_assert!(
+                self.element_context.opaque_element().is_some(),
+                "Element-scoped random without element context"
+            );
+            self.builder
+                .add_flags(ComputedValueFlags::USES_ELEMENT_SCOPED_RANDOM);
+            self.rule_cache_conditions.borrow_mut().set_uncacheable();
+            self.element_context.opaque_element().hash(&mut hasher);
+        }
+        self.device().document_random_seed().hash(&mut hasher);
+
+        // Returns a float in the range [0, 1).
+        SmallRng::seed_from_u64(hasher.finish()).r#gen()
+    }
+
     /// Whether we're in a media or container query.
     pub fn in_media_or_container_query(&self) -> bool {
         self.in_media_query || self.in_container_query
@@ -426,29 +565,27 @@ impl<'a> Context<'a> {
     }
 
     /// The current style.
-    pub fn style(&self) -> &StyleBuilder {
+    pub fn style(&self) -> &StyleBuilder<'a> {
         &self.builder
     }
 
+    /// The current tree scope.
+    pub fn current_scope(&self) -> CascadeLevel {
+        self.scope
+    }
+
     /// Apply text-zoom if enabled.
-    #[cfg(feature = "gecko")]
     pub fn maybe_zoom_text(&self, size: CSSPixelLength) -> CSSPixelLength {
         if self
             .style()
             .get_font()
-            .clone__x_text_scale()
+            .get__x_text_scale()
             .text_zoom_enabled()
         {
             self.device().zoom_text(size)
         } else {
             size
         }
-    }
-
-    /// (Servo doesn't do text-zoom)
-    #[cfg(feature = "servo")]
-    pub fn maybe_zoom_text(&self, size: CSSPixelLength) -> CSSPixelLength {
-        size
     }
 }
 
@@ -625,7 +762,9 @@ where
 
     #[inline]
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
-        self.iter().map(|item| item.to_computed_value(context)).collect()
+        self.iter()
+            .map(|item| item.to_computed_value(context))
+            .collect()
     }
 
     #[inline]
@@ -717,6 +856,7 @@ trivial_to_computed_value!(bool);
 trivial_to_computed_value!(f32);
 trivial_to_computed_value!(i32);
 trivial_to_computed_value!(u8);
+trivial_to_computed_value!(i8);
 trivial_to_computed_value!(u16);
 trivial_to_computed_value!(u32);
 trivial_to_computed_value!(usize);
@@ -757,7 +897,7 @@ impl ToComputedValue for specified::AngleOrPercentage {
 
     #[inline]
     fn to_computed_value(&self, context: &Context) -> AngleOrPercentage {
-        match *self {
+        match self {
             specified::AngleOrPercentage::Percentage(percentage) => {
                 AngleOrPercentage::Percentage(percentage.to_computed_value(context))
             },
@@ -798,20 +938,6 @@ impl IsParallelTo for (Number, Number, Number) {
 /// A wrapper of Number, but the value >= 0.
 pub type NonNegativeNumber = NonNegative<CSSFloat>;
 
-impl ToAnimatedValue for NonNegativeNumber {
-    type AnimatedValue = CSSFloat;
-
-    #[inline]
-    fn to_animated_value(self, _: &crate::values::animated::Context) -> Self::AnimatedValue {
-        self.0
-    }
-
-    #[inline]
-    fn from_animated_value(animated: Self::AnimatedValue) -> Self {
-        animated.max(0.).into()
-    }
-}
-
 impl From<CSSFloat> for NonNegativeNumber {
     #[inline]
     fn from(number: CSSFloat) -> NonNegativeNumber {
@@ -842,16 +968,16 @@ impl One for NonNegativeNumber {
 pub type ZeroToOneNumber = ZeroToOne<CSSFloat>;
 
 impl ToAnimatedValue for ZeroToOneNumber {
-    type AnimatedValue = CSSFloat;
+    type AnimatedValue = Self;
 
     #[inline]
     fn to_animated_value(self, _: &crate::values::animated::Context) -> Self::AnimatedValue {
-        self.0
+        self
     }
 
     #[inline]
     fn from_animated_value(animated: Self::AnimatedValue) -> Self {
-        Self(animated.max(0.).min(1.))
+        Self(animated.0.max(0.).min(1.))
     }
 }
 
@@ -903,6 +1029,7 @@ impl From<GreaterThanOrEqualToOneNumber> for CSSFloat {
     MallocSizeOf,
     PartialEq,
     ToAnimatedZero,
+    ToAnimatedValue,
     ToCss,
     ToResolvedValue,
 )]
@@ -913,12 +1040,22 @@ pub enum NumberOrPercentage {
 }
 
 impl NumberOrPercentage {
+    /// Get the underlying value of this number or percentage.
+    pub fn value(&self) -> f32 {
+        match self {
+            NumberOrPercentage::Percentage(p) => p.0,
+            NumberOrPercentage::Number(n) => *n,
+        }
+    }
+}
+
+impl ClampToNonNegative for NumberOrPercentage {
     fn clamp_to_non_negative(self) -> Self {
         match self {
             NumberOrPercentage::Percentage(p) => {
                 NumberOrPercentage::Percentage(p.clamp_to_non_negative())
             },
-            NumberOrPercentage::Number(n) => NumberOrPercentage::Number(n.max(0.)),
+            NumberOrPercentage::Number(n) => NumberOrPercentage::Number(n.clamp_to_non_negative()),
         }
     }
 }
@@ -928,7 +1065,7 @@ impl ToComputedValue for specified::NumberOrPercentage {
 
     #[inline]
     fn to_computed_value(&self, context: &Context) -> NumberOrPercentage {
-        match *self {
+        match self {
             specified::NumberOrPercentage::Percentage(percentage) => {
                 NumberOrPercentage::Percentage(percentage.to_computed_value(context))
             },
@@ -960,20 +1097,6 @@ impl NonNegativeNumberOrPercentage {
     #[inline]
     pub fn hundred_percent() -> Self {
         NonNegative(NumberOrPercentage::Percentage(Percentage::hundred()))
-    }
-}
-
-impl ToAnimatedValue for NonNegativeNumberOrPercentage {
-    type AnimatedValue = NumberOrPercentage;
-
-    #[inline]
-    fn to_animated_value(self, _: &crate::values::animated::Context) -> Self::AnimatedValue {
-        self.0
-    }
-
-    #[inline]
-    fn from_animated_value(animated: Self::AnimatedValue) -> Self {
-        NonNegative(animated.clamp_to_non_negative())
     }
 }
 

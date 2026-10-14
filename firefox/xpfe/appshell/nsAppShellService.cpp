@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,6 +12,7 @@
 #include "nsPIWindowWatcher.h"
 #include "nsPIDOMWindow.h"
 #include "AppWindow.h"
+#include "nsOpenWindowInfo.h"
 
 #include "mozilla/widget/InitData.h"
 #include "nsWidgetsCID.h"
@@ -27,7 +27,7 @@
 #include "nsIWebNavigation.h"
 #include "nsIWindowlessBrowser.h"
 
-#include "mozilla/Attributes.h"
+#include "mozilla/NullPrincipal.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
 #include "mozilla/StartupTimeline.h"
@@ -40,7 +40,6 @@
 #include "nsEmbedCID.h"
 #include "nsIWebBrowser.h"
 #include "nsIDocShell.h"
-#include "gfxPlatform.h"
 
 #include "nsWebBrowser.h"
 #include "nsDocShell.h"
@@ -65,7 +64,7 @@ nsAppShellService::nsAppShellService()
   }
 }
 
-nsAppShellService::~nsAppShellService() {}
+nsAppShellService::~nsAppShellService() = default;
 
 /*
  * Implement the nsISupports methods...
@@ -124,7 +123,7 @@ nsAppShellService::CreateHiddenWindow() {
   nsCOMPtr<nsIDocShell> docShell;
   newWindow->GetDocShell(getter_AddRefs(docShell));
   if (docShell) {
-    Unused << docShell->GetBrowsingContext()->SetExplicitActive(
+    (void)docShell->GetBrowsingContext()->SetExplicitActive(
         dom::ExplicitActiveStatus::Inactive);
   }
 
@@ -207,14 +206,6 @@ WebBrowserChrome2Stub::GetChromeFlags(uint32_t* aChromeFlags) {
 }
 
 NS_IMETHODIMP
-WebBrowserChrome2Stub::SetChromeFlags(uint32_t aChromeFlags) {
-  MOZ_ASSERT_UNREACHABLE(
-      "WebBrowserChrome2Stub::SetChromeFlags is "
-      "not supported");
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
 WebBrowserChrome2Stub::ShowAsModal() {
   MOZ_ASSERT_UNREACHABLE("WebBrowserChrome2Stub::ShowAsModal is not supported");
   return NS_ERROR_NOT_IMPLEMENTED;
@@ -286,7 +277,7 @@ class BrowserDestroyer final : public Runnable {
   }
 
  protected:
-  virtual ~BrowserDestroyer() {}
+  virtual ~BrowserDestroyer() = default;
 
  private:
   nsCOMPtr<nsIWebBrowser> mBrowser;
@@ -393,23 +384,16 @@ nsAppShellService::CreateWindowlessBrowser(bool aIsChrome, uint32_t aChromeMask,
 
   /* A windowless web browser doesn't have an associated OS level window. To
    * accomplish this, we initialize the window associated with our instance of
-   * nsWebBrowser with an instance of HeadlessWidget/PuppetWidget, which provide
-   * a stub implementation of nsIWidget.
+   * nsWebBrowser with an instance of PuppetWidget, which provides a stub
+   * implementation of nsIWidget.
    */
-  nsCOMPtr<nsIWidget> widget;
-  if (gfxPlatform::IsHeadless()) {
-    widget = nsIWidget::CreateHeadlessWidget();
-  } else {
-    widget = nsIWidget::CreatePuppetWidget(nullptr);
-  }
+  nsCOMPtr<nsIWidget> widget = nsIWidget::CreatePuppetWidget(nullptr);
   if (!widget) {
     NS_ERROR("Couldn't create instance of stub widget");
     return NS_ERROR_FAILURE;
   }
 
-  nsresult rv =
-      widget->Create(nullptr, LayoutDeviceIntRect(0, 0, 0, 0), nullptr);
-  NS_ENSURE_SUCCESS(rv, rv);
+  MOZ_TRY(widget->Create(nullptr, LayoutDeviceIntRect(), widget::InitData()));
 
   // Create a BrowsingContext for our windowless browser.
   RefPtr<BrowsingContext> browsingContext = BrowsingContext::CreateIndependent(
@@ -427,11 +411,22 @@ nsAppShellService::CreateWindowlessBrowser(bool aIsChrome, uint32_t aChromeMask,
     browsingContext->SetPrivateBrowsing(true);
   }
 
+  RefPtr<nsOpenWindowInfo> openWindowInfo = new nsOpenWindowInfo();
+  if (aIsChrome) {
+    openWindowInfo->mPrincipalToInheritForAboutBlank =
+        nsContentUtils::GetSystemPrincipal();
+  } else {
+    openWindowInfo->mPrincipalToInheritForAboutBlank =
+        NullPrincipal::CreateWithoutOriginAttributes();
+  }
+
   /* Next, we create an instance of nsWebBrowser. Instances of this class have
    * an associated doc shell, which is what we're interested in.
    */
-  nsCOMPtr<nsIWebBrowser> browser = nsWebBrowser::Create(
-      stub, widget, browsingContext, nullptr /* initialWindowChild */);
+  RefPtr<nsWebBrowser> browser;
+  MOZ_TRY(nsWebBrowser::Create(stub, widget, browsingContext,
+                               nullptr /* initialWindowChild */, openWindowInfo,
+                               getter_AddRefs(browser)));
 
   if (NS_WARN_IF(!browser)) {
     NS_ERROR("Couldn't create instance of nsWebBrowser!");
@@ -466,18 +461,24 @@ nsresult nsAppShellService::JustCreateTopWindow(
 
   RefPtr<AppWindow> window = new AppWindow(aChromeMask);
 
-#ifdef XP_WIN
-  // If the parent is currently fullscreen, tell the child to ignore persisted
-  // full screen states. This way new browser windows open on top of fullscreen
-  // windows normally.
-  if (nsCOMPtr<nsIBaseWindow> baseWin = do_QueryInterface(aParent)) {
-    nsCOMPtr<nsIWidget> widget;
-    baseWin->GetMainWidget(getter_AddRefs(widget));
-    if (widget && widget->SizeMode() == nsSizeMode_Fullscreen) {
-      window->IgnoreXULSizeMode(true);
+  // Ignore a persisted sizemode="fullscreen" either when the caller asked for
+  // it, or when the parent is currently fullscreen. Without this a new window
+  // restores that sizemode and takes a Space of its own, so it never appears
+  // where the user is. The parent case is what keeps new browser windows
+  // opening on top of a fullscreen window; the flag covers callers that pass
+  // no parent, such as an extension popup.
+  bool shouldIgnoreXULSizeMode =
+      aChromeMask & nsIWebBrowserChrome::CHROME_SUPPRESS_INITIAL_FULLSCREEN;
+  if (!shouldIgnoreXULSizeMode) {
+    if (nsCOMPtr<nsIBaseWindow> baseWin = do_QueryInterface(aParent)) {
+      nsCOMPtr<nsIWidget> widget = baseWin->GetMainWidget();
+      shouldIgnoreXULSizeMode =
+          widget && widget->SizeMode() == nsSizeMode_Fullscreen;
     }
   }
-#endif
+  if (shouldIgnoreXULSizeMode) {
+    window->IgnoreXULSizeMode(true);
+  }
 
   widget::InitData widgetInitData;
   if (aIsHiddenWindow) {
@@ -493,6 +494,10 @@ nsresult nsAppShellService::JustCreateTopWindow(
     widgetInitData.mIsAnimationSuppressed = true;
   }
 
+  if (aChromeMask & nsIWebBrowserChrome::CHROME_SUPPRESS_INITIAL_FULLSCREEN) {
+    widgetInitData.mIsInitialFullscreenSuppressed = true;
+  }
+
   if (aChromeMask & nsIWebBrowserChrome::CHROME_ALWAYS_ON_TOP) {
     widgetInitData.mAlwaysOnTop = true;
   }
@@ -501,22 +506,16 @@ nsresult nsAppShellService::JustCreateTopWindow(
     widgetInitData.mHasRemoteContent = true;
   }
 
-#if defined(MOZ_WIDGET_GTK) || defined(XP_WIN)
-  // Windows/Gtk PIP window support. It's Chrome dialog window, always on top
-  // and without any bar.
-  uint32_t pipMask = nsIWebBrowserChrome::CHROME_ALWAYS_ON_TOP |
-                     nsIWebBrowserChrome::CHROME_OPENAS_CHROME |
-                     nsIWebBrowserChrome::CHROME_WINDOW_RESIZE;
-  uint32_t barMask = nsIWebBrowserChrome::CHROME_MENUBAR |
-                     nsIWebBrowserChrome::CHROME_TOOLBAR |
-                     nsIWebBrowserChrome::CHROME_LOCATIONBAR |
-                     nsIWebBrowserChrome::CHROME_TITLEBAR |
-                     nsIWebBrowserChrome::CHROME_STATUSBAR;
-  if (widgetInitData.mWindowType == widget::WindowType::Dialog &&
-      ((aChromeMask & pipMask) == pipMask) && !(aChromeMask & barMask)) {
-    widgetInitData.mPIPWindow = true;
+#if defined(MOZ_WIDGET_GTK) || defined(XP_WIN) || defined(XP_MACOSX)
+  if (aChromeMask & nsIWebBrowserChrome::CHROME_MEDIA_PIP) {
+    widgetInitData.mPiPType = mozilla::widget::PiPType::MediaPiP;
   }
 #endif
+
+  if (widgetInitData.mWindowType == widget::WindowType::TopLevel &&
+      (aChromeMask & nsIWebBrowserChrome::CHROME_DOCUMENT_PIP)) {
+    widgetInitData.mPiPType = mozilla::widget::PiPType::DocumentPiP;
+  }
 
   // alert=yes is expected to be used along with dialogs, not other window
   // types.
@@ -541,15 +540,9 @@ nsresult nsAppShellService::JustCreateTopWindow(
              nsIWebBrowserChrome::CHROME_ALL) {
     widgetInitData.mBorderStyle = BorderStyle::All;
   } else {
-    widgetInitData.mBorderStyle = BorderStyle::None;  // assumes none == 0x00
-    if (aChromeMask & nsIWebBrowserChrome::CHROME_WINDOW_BORDERS) {
-      widgetInitData.mBorderStyle |= BorderStyle::Border;
-    }
+    widgetInitData.mBorderStyle = BorderStyle::Border;
     if (aChromeMask & nsIWebBrowserChrome::CHROME_TITLEBAR) {
       widgetInitData.mBorderStyle |= BorderStyle::Title;
-    }
-    if (aChromeMask & nsIWebBrowserChrome::CHROME_WINDOW_CLOSE) {
-      widgetInitData.mBorderStyle |= BorderStyle::Close;
     }
     if (aChromeMask & nsIWebBrowserChrome::CHROME_WINDOW_RESIZE) {
       widgetInitData.mResizable = true;
@@ -589,9 +582,30 @@ nsresult nsAppShellService::JustCreateTopWindow(
   }
   widgetInitData.mIsPrivate = isPrivateBrowsingWindow;
 
-  nsresult rv =
-      window->Initialize(parent, center ? aParent : nullptr, aInitialWidth,
-                         aInitialHeight, aIsHiddenWindow, widgetInitData);
+  RefPtr<nsOpenWindowInfo> openWindowInfo = new nsOpenWindowInfo();
+  // Eagerly create an about:blank content viewer with the right principal
+  // here, rather than letting it happen in the upcoming call to
+  // SetInitialPrincipal. This avoids creating the about:blank document and
+  // then blowing it away with a second one, which can cause problems for the
+  // top-level chrome window case. See bug 789773.
+  // Toplevel chrome windows always have a system principal, so ensure the
+  // initial window is created with that principal.
+  // We need to do this even when creating a chrome window to load a content
+  // window, see bug 799348 comment 13 for details about what previously
+  // happened here due to it using the subject principal.
+  if (nsContentUtils::IsInitialized()) {  // Sometimes this happens really
+                                          // early. See bug 793370.
+    MOZ_DIAGNOSTIC_ASSERT(
+        nsContentUtils::LegacyIsCallerChromeOrNativeCode(),
+        "Previously, this method would use the subject principal rather than "
+        "hardcoding the system principal");
+    openWindowInfo->mPrincipalToInheritForAboutBlank =
+        nsContentUtils::GetSystemPrincipal();
+  }
+
+  nsresult rv = window->Initialize(
+      parent, center ? aParent : nullptr, aInitialWidth, aInitialHeight,
+      aIsHiddenWindow, widgetInitData, openWindowInfo);
 
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -606,53 +620,29 @@ nsresult nsAppShellService::JustCreateTopWindow(
     isPrivateBrowsingWindow = parentContext->UsePrivateBrowsing();
   }
 
-  if (RefPtr<nsDocShell> docShell = window->GetDocShell()) {
-    MOZ_ASSERT(docShell->GetBrowsingContext()->IsChrome());
+  RefPtr<nsDocShell> docShell = window->GetDocShell();
+  NS_ENSURE_TRUE(docShell, NS_ERROR_UNEXPECTED);
 
-    docShell->SetPrivateBrowsing(isPrivateBrowsingWindow);
-    docShell->SetRemoteTabs(aChromeMask &
-                            nsIWebBrowserChrome::CHROME_REMOTE_WINDOW);
-    docShell->SetRemoteSubframes(aChromeMask &
-                                 nsIWebBrowserChrome::CHROME_FISSION_WINDOW);
+  MOZ_ASSERT(docShell->GetBrowsingContext()->IsChrome());
 
-    // Eagerly create an about:blank content viewer with the right principal
-    // here, rather than letting it happen in the upcoming call to
-    // SetInitialPrincipal. This avoids creating the about:blank document and
-    // then blowing it away with a second one, which can cause problems for the
-    // top-level chrome window case. See bug 789773.
-    // Toplevel chrome windows always have a system principal, so ensure the
-    // initial window is created with that principal.
-    // We need to do this even when creating a chrome window to load a content
-    // window, see bug 799348 comment 13 for details about what previously
-    // happened here due to it using the subject principal.
-    if (nsContentUtils::IsInitialized()) {  // Sometimes this happens really
-                                            // early. See bug 793370.
-      MOZ_DIAGNOSTIC_ASSERT(
-          nsContentUtils::LegacyIsCallerChromeOrNativeCode(),
-          "Previously, this method would use the subject principal rather than "
-          "hardcoding the system principal");
-      // Use the system principal as the storage principal too until the new
-      // window finishes navigating and gets a real storage principal.
-      rv = docShell->CreateAboutBlankDocumentViewer(
-          nsContentUtils::GetSystemPrincipal(),
-          nsContentUtils::GetSystemPrincipal(),
-          /* aCsp = */ nullptr, /* aBaseURI = */ nullptr,
-          /* aIsInitialDocument = */ true);
-      NS_ENSURE_SUCCESS(rv, rv);
-      RefPtr<dom::Document> doc = docShell->GetDocument();
-      NS_ENSURE_TRUE(!!doc, NS_ERROR_FAILURE);
-      MOZ_ASSERT(doc->IsInitialDocument(),
-                 "Document should be an initial document");
-    }
+  docShell->SetPrivateBrowsing(isPrivateBrowsingWindow);
+  docShell->SetRemoteTabs(aChromeMask &
+                          nsIWebBrowserChrome::CHROME_REMOTE_WINDOW);
+  docShell->SetRemoteSubframes(aChromeMask &
+                               nsIWebBrowserChrome::CHROME_FISSION_WINDOW);
 
-    // Begin loading the URL provided.
-    if (aUrl) {
-      RefPtr<nsDocShellLoadState> loadState = new nsDocShellLoadState(aUrl);
-      loadState->SetTriggeringPrincipal(nsContentUtils::GetSystemPrincipal());
-      loadState->SetFirstParty(true);
-      rv = docShell->LoadURI(loadState, /* aSetNavigating */ true);
-      NS_ENSURE_SUCCESS(rv, rv);
-    }
+  if ((aChromeMask & nsIWebBrowserChrome::CHROME_DOCUMENT_PIP)) {
+    rv = docShell->GetBrowsingContext()->SetIsDocumentPiP(true);
+    NS_ENSURE_SUCCESS(rv, rv);
+  }
+
+  // Begin loading the URL provided.
+  if (aUrl) {
+    RefPtr<nsDocShellLoadState> loadState = new nsDocShellLoadState(aUrl);
+    loadState->SetTriggeringPrincipal(nsContentUtils::GetSystemPrincipal());
+    loadState->SetFirstParty(true);
+    rv = docShell->LoadURI(loadState, /* aSetNavigating */ true);
+    NS_ENSURE_SUCCESS(rv, rv);
   }
 
   window.forget(aResult);
@@ -719,8 +709,15 @@ nsAppShellService::RegisterTopLevelWindow(nsIAppWindow* aWindow) {
       nsContentUtils::LegacyIsCallerChromeOrNativeCode(),
       "Previously, this method would use the subject principal rather than "
       "hardcoding the system principal");
-  domWindow->SetInitialPrincipal(nsContentUtils::GetSystemPrincipal(), nullptr,
-                                 Nothing());
+#ifdef DEBUG
+  mozilla::dom::Document* doc = domWindow->GetDoc();
+  if (doc) {
+    MOZ_ASSERT(doc->GetPrincipal() == nsContentUtils::GetSystemPrincipal(),
+               "Wrong principal!");
+  } else {
+    MOZ_ASSERT(false, "How come there was no doc?");
+  }
+#endif
 
   // tell the window mediator about the new window
   nsCOMPtr<nsIWindowMediator> mediator(
@@ -734,7 +731,7 @@ nsAppShellService::RegisterTopLevelWindow(nsIAppWindow* aWindow) {
       do_GetService(NS_WINDOWWATCHER_CONTRACTID));
   NS_ASSERTION(wwatcher, "No windowwatcher?");
   if (wwatcher && domWindow) {
-    wwatcher->AddWindow(domWindow, 0);
+    wwatcher->AddWindow(domWindow, nullptr);
   }
 
   // an ongoing attempt to quit is stopped by a newly opened window

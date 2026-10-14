@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -126,3 +124,31 @@ else:
 FINAL_LIBRARY = "xul"
 
 include("/ipc/chromium/chromium-config.mozbuild")
+
+SOURCE_HEADERS += [
+    "AccIterator.h",
+    "ARIAMap.h",
+    "ARIAStateMap.h",
+    "CachedTableAccessible.h",
+    "CssAltContent.h",
+    "EmbeddedObjCollector.h",
+    "EventQueue.h",
+    "EventTree.h",
+    "Filters.h",
+    "NotificationController.h",
+    "nsAccCache.h",
+    "nsAccUtils.h",
+    "nsCoreUtils.h",
+    "nsEventShell.h",
+    "nsTextEquivUtils.h",
+    "Pivot.h",
+    "Relation.h",
+    "Statistics.h",
+    "StyleInfo.h",
+    "TextAttrs.h",
+    "TextLeafRange.h",
+    "TextRange-inl.h",
+    "TextRange.h",
+    "TextUpdater.h",
+    "TreeWalker.h",
+]

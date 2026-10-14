@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,9 +8,9 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/CheckedArithmetic.h"
 #include "mozilla/FastBernoulliTrial.h"
 #include "mozilla/IntegerPrintfMacros.h"
-#include "mozilla/JSONWriter.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/PlatformMutex.h"
 #include "mozilla/ProfilerCounts.h"
@@ -23,13 +21,10 @@
 #include "prenv.h"
 #include "replace_malloc.h"
 
-#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #ifdef XP_WIN
 #  include <windows.h>
@@ -57,6 +52,39 @@ namespace mozilla::profiler {
 // Utilities
 //---------------------------------------------------------------------------
 
+struct NativeAllocationMarker
+    : public mozilla::BaseMarkerType<NativeAllocationMarker> {
+  static constexpr const char* Name = "Native allocation";
+  static constexpr bool UseSpecialFrontendLocation = true;
+
+  using MS = mozilla::MarkerSchema;
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"size", MS::InputType::Int64, nullptr, MS::Format::Bytes},
+      {"memoryAddress", MS::InputType::Int64, nullptr, MS::Format::Integer},
+      {"threadId", MS::InputType::Int64, nullptr, MS::Format::Integer},
+  };
+
+  static void TranslateMarkerInputToSchema(void* aContext, int64_t aSize,
+                                           uintptr_t aMemoryAddress,
+                                           ProfilerThreadId aThreadId) {
+    ETW::OutputMarkerSchema(aContext, NativeAllocationMarker{}, aSize,
+                            static_cast<int64_t>(aMemoryAddress),
+                            static_cast<int64_t>(aThreadId.ToNumber()));
+  }
+
+  static void StreamJSONMarkerData(
+      mozilla::baseprofiler::SpliceableJSONWriter& aWriter, int64_t aSize,
+      uintptr_t aMemoryAddress, ProfilerThreadId aThreadId) {
+    // Tech note: If `ToNumber()` returns a uint64_t, the conversion to
+    // int64_t is "implementation-defined" before C++20. This is acceptable
+    // here, because this is a one-way conversion to a unique identifier
+    // that's used to visually separate data by thread on the front-end.
+    StreamJSONMarkerDataImpl(aWriter, aSize,
+                             static_cast<int64_t>(aMemoryAddress),
+                             static_cast<int64_t>(aThreadId.ToNumber()));
+  }
+};
+
 // Returns true or or false depending on whether the marker was actually added
 // or not.
 static bool profiler_add_native_allocation_marker(int64_t aSize,
@@ -76,28 +104,6 @@ static bool profiler_add_native_allocation_marker(int64_t aSize,
   if (profiler_is_locked_on_current_thread()) {
     return false;
   }
-
-  struct NativeAllocationMarker {
-    static constexpr mozilla::Span<const char> MarkerTypeName() {
-      return mozilla::MakeStringSpan("Native allocation");
-    }
-    static void StreamJSONMarkerData(
-        mozilla::baseprofiler::SpliceableJSONWriter& aWriter, int64_t aSize,
-        uintptr_t aMemoryAddress, ProfilerThreadId aThreadId) {
-      aWriter.IntProperty("size", aSize);
-      aWriter.IntProperty("memoryAddress",
-                          static_cast<int64_t>(aMemoryAddress));
-      // Tech note: If `ToNumber()` returns a uint64_t, the conversion to
-      // int64_t is "implementation-defined" before C++20. This is acceptable
-      // here, because this is a one-way conversion to a unique identifier
-      // that's used to visually separate data by thread on the front-end.
-      aWriter.IntProperty("threadId",
-                          static_cast<int64_t>(aThreadId.ToNumber()));
-    }
-    static mozilla::MarkerSchema MarkerTypeDisplay() {
-      return mozilla::MarkerSchema::SpecialFrontendLocation{};
-    }
-  };
 
   profiler_add_marker("Native allocation", geckoprofiler::category::OTHER,
                       {MarkerThreadId::MainThread(), MarkerStack::Capture()},
@@ -146,10 +152,11 @@ class InfallibleAllocWithoutHooksPolicy {
  public:
   template <typename T>
   static T* maybe_pod_malloc(size_t aNumElems) {
-    if (aNumElems & mozilla::tl::MulOverflowMask<sizeof(T)>::value) {
+    size_t size;
+    if (MOZ_UNLIKELY(!mozilla::SafeMul(aNumElems, sizeof(T), &size))) {
       return nullptr;
     }
-    return (T*)gMallocTable.malloc(aNumElems * sizeof(T));
+    return (T*)gMallocTable.malloc(size);
   }
 
   template <typename T>
@@ -159,10 +166,11 @@ class InfallibleAllocWithoutHooksPolicy {
 
   template <typename T>
   static T* maybe_pod_realloc(T* aPtr, size_t aOldSize, size_t aNewSize) {
-    if (aNewSize & mozilla::tl::MulOverflowMask<sizeof(T)>::value) {
+    size_t size;
+    if (MOZ_UNLIKELY(!mozilla::SafeMul(aNewSize, sizeof(T), &size))) {
       return nullptr;
     }
-    return (T*)gMallocTable.realloc(aPtr, aNewSize * sizeof(T));
+    return (T*)gMallocTable.realloc(aPtr, size);
   }
 
   template <typename T>
@@ -208,9 +216,6 @@ class MOZ_CAPABILITY("mutex") Mutex : private ::mozilla::detail::MutexImpl {
 };
 
 class MOZ_SCOPED_CAPABILITY MutexAutoLock {
-  MutexAutoLock(const MutexAutoLock&) = delete;
-  void operator=(const MutexAutoLock&) = delete;
-
   Mutex& mMutex;
 
  public:
@@ -219,6 +224,8 @@ class MOZ_SCOPED_CAPABILITY MutexAutoLock {
     mMutex.Lock();
   }
   ~MutexAutoLock() MOZ_CAPABILITY_RELEASE() { mMutex.Unlock(); }
+  MutexAutoLock(const MutexAutoLock&) = delete;
+  void operator=(const MutexAutoLock&) = delete;
 };
 
 //---------------------------------------------------------------------------

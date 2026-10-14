@@ -6,6 +6,8 @@
 
 #include <stdint.h>
 
+#include <memory>
+
 #include "CubebUtils.h"
 #include "H264.h"
 #include "ImageContainer.h"
@@ -13,12 +15,12 @@
 #include "MediaResource.h"
 #include "TimeUnits.h"
 #include "mozilla/Base64.h"
-#include "mozilla/dom/ContentChild.h"
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/SharedThreadPool.h"
 #include "mozilla/StaticPrefs_accessibility.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/TaskQueue.h"
+#include "mozilla/dom/ContentChild.h"
 #include "nsCharSeparatedTokenizer.h"
 #include "nsContentTypeParser.h"
 #include "nsIConsoleService.h"
@@ -215,6 +217,26 @@ bool IsDefaultPlaybackDeviceMono() {
   return CubebUtils::MaxNumberOfChannels() == 1;
 }
 
+void SetOpusOutputChannels(AudioInfo& aInfo) {
+  if (!aInfo.mCodecSpecificConfig.is<OpusCodecSpecificData>()) {
+    return;
+  }
+  aInfo.mCodecSpecificConfig.as<OpusCodecSpecificData>().mOutputChannels =
+      DecideAudioPlaybackChannels(aInfo);
+}
+
+uint32_t AudioPlaybackChannels(const AudioInfo& aInfo) {
+  if (aInfo.mCodecSpecificConfig.is<OpusCodecSpecificData>()) {
+    uint32_t channels =
+        aInfo.mCodecSpecificConfig.as<OpusCodecSpecificData>().mOutputChannels;
+    if (channels) {
+      return channels;
+    }
+    MOZ_ASSERT_UNREACHABLE("Opus config has no playback channel count");
+  }
+  return DecideAudioPlaybackChannels(aInfo);
+}
+
 bool IsVideoContentType(const nsCString& aContentType) {
   constexpr auto video = "video"_ns;
   return FindInReadable(video, aContentType);
@@ -228,16 +250,21 @@ bool IsValidVideoRegion(const gfx::IntSize& aFrame,
          aFrame.height <= PlanarYCbCrImage::MAX_DIMENSION &&
          aFrame.width * aFrame.height <= MAX_VIDEO_WIDTH * MAX_VIDEO_HEIGHT &&
          aPicture.width > 0 &&
-         aPicture.width <= PlanarYCbCrImage::MAX_DIMENSION &&
+         aPicture.width <= PlanarYCbCrImage::MAX_DIMENSION && aPicture.x >= 0 &&
          aPicture.x < PlanarYCbCrImage::MAX_DIMENSION &&
          aPicture.x + aPicture.width < PlanarYCbCrImage::MAX_DIMENSION &&
-         aPicture.height > 0 &&
+         aPicture.XMost() <= aFrame.width && aPicture.height > 0 &&
          aPicture.height <= PlanarYCbCrImage::MAX_DIMENSION &&
-         aPicture.y < PlanarYCbCrImage::MAX_DIMENSION &&
+         aPicture.y >= 0 && aPicture.y < PlanarYCbCrImage::MAX_DIMENSION &&
          aPicture.y + aPicture.height < PlanarYCbCrImage::MAX_DIMENSION &&
+         aPicture.YMost() <= aFrame.height &&
          aPicture.width * aPicture.height <=
              MAX_VIDEO_WIDTH * MAX_VIDEO_HEIGHT &&
-         aDisplay.width > 0 &&
+         IsValidVideoDisplaySize(aDisplay);
+}
+
+bool IsValidVideoDisplaySize(const gfx::IntSize& aDisplay) {
+  return aDisplay.width > 0 &&
          aDisplay.width <= PlanarYCbCrImage::MAX_DIMENSION &&
          aDisplay.height > 0 &&
          aDisplay.height <= PlanarYCbCrImage::MAX_DIMENSION &&
@@ -245,35 +272,29 @@ bool IsValidVideoRegion(const gfx::IntSize& aFrame,
 }
 
 already_AddRefed<SharedThreadPool> GetMediaThreadPool(MediaThreadType aType) {
-  const char* name;
-  uint32_t threads = 4;
+  RefPtr<SharedThreadPool> pool;
   switch (aType) {
     case MediaThreadType::PLATFORM_DECODER:
-      name = "MediaPDecoder";
+      pool = SharedThreadPool::Get("MediaPDecoder", 4);
       break;
     case MediaThreadType::WEBRTC_CALL_THREAD:
-      name = "WebrtcCallThread";
-      threads = 1;
+      pool = SharedThreadPool::Get("WebrtcCallThread", 1);
       break;
     case MediaThreadType::WEBRTC_WORKER:
-      name = "WebrtcWorker";
+      pool = SharedThreadPool::Get("WebrtcWorker", 4);
       break;
     case MediaThreadType::MDSM:
-      name = "MediaDecoderStateMachine";
-      threads = 1;
+      pool = SharedThreadPool::Get("MediaDecoderStateMachine", 1);
       break;
     case MediaThreadType::PLATFORM_ENCODER:
-      name = "MediaPEncoder";
+      pool = SharedThreadPool::Get("MediaPEncoder", 4);
       break;
     default:
       MOZ_FALLTHROUGH_ASSERT("Unexpected MediaThreadType");
     case MediaThreadType::SUPERVISOR:
-      name = "MediaSupervisor";
+      pool = SharedThreadPool::Get("MediaSupervisor", 4);
       break;
   }
-
-  RefPtr<SharedThreadPool> pool =
-      SharedThreadPool::Get(nsDependentCString(name), threads);
 
   // Ensure a larger stack for platform decoder threads
   bool needsLargerStacks = aType == MediaThreadType::PLATFORM_DECODER;
@@ -977,7 +998,7 @@ nsresult GenerateRandomPathName(nsCString& aOutSalt, uint32_t aLength) {
   return NS_OK;
 }
 
-already_AddRefed<TaskQueue> CreateMediaDecodeTaskQueue(const char* aName) {
+already_AddRefed<TaskQueue> CreateMediaDecodeTaskQueue(StaticString aName) {
   RefPtr<TaskQueue> queue = TaskQueue::Create(
       GetMediaThreadPool(MediaThreadType::PLATFORM_DECODER), aName);
   return queue.forget();
@@ -1055,7 +1076,8 @@ void LogToBrowserConsole(const nsAString& aMsg) {
   if (!NS_IsMainThread()) {
     nsString msg(aMsg);
     nsCOMPtr<nsIRunnable> task = NS_NewRunnableFunction(
-        "LogToBrowserConsole", [msg]() { LogToBrowserConsole(msg); });
+        "LogToBrowserConsole",
+        [msg = std::move(msg)]() { LogToBrowserConsole(msg); });
     SchedulerGroup::Dispatch(task.forget());
     return;
   }
@@ -1112,6 +1134,32 @@ bool IsH264CodecString(const nsAString& aCodec) {
                                  H264CodecStringStrictness::Lenient);
 }
 
+bool IsAllowedH264Codec(const nsAString& aCodec) {
+  uint8_t profile = 0, constraint = 0;
+  H264_LEVEL level;
+
+  // Don't validate too much here, validation happens below
+  if (!ExtractH264CodecDetails(aCodec, profile, constraint, level,
+                               H264CodecStringStrictness::Lenient)) {
+    return false;
+  }
+
+  // Just assume what we can play on all platforms the codecs/formats that
+  // WMF can play, since we don't have documentation about what other
+  // platforms can play... According to the WMF documentation:
+  // http://msdn.microsoft.com/en-us/library/windows/desktop/dd797815%28v=vs.85%29.aspx
+  // "The Media Foundation H.264 video decoder is a Media Foundation Transform
+  // that supports decoding of Baseline, Main, and High profiles, up to level
+  // 5.1.". We extend the limit to level 6.2, relying on the decoder to handle
+  // any potential errors, the level limit being rather arbitrary.
+  // We also report that we can play Extended profile, as there are
+  // bitstreams that are Extended compliant that are also Baseline compliant.
+  return level >= H264_LEVEL::H264_LEVEL_1 &&
+         level <= H264_LEVEL::H264_LEVEL_6_2 &&
+         (profile == H264_PROFILE_BASE || profile == H264_PROFILE_MAIN ||
+          profile == H264_PROFILE_EXTENDED || profile == H264_PROFILE_HIGH);
+}
+
 bool IsH265CodecString(const nsAString& aCodec) {
   uint8_t profile = 0;
   uint8_t level = 0;
@@ -1163,10 +1211,10 @@ UniquePtr<TrackInfo> CreateTrackInfoWithMIMEType(
     const nsACString& aCodecMIMEType) {
   UniquePtr<TrackInfo> trackInfo;
   if (StartsWith(aCodecMIMEType, "audio/")) {
-    trackInfo.reset(new AudioInfo());
+    trackInfo = std::make_unique<AudioInfo>();
     trackInfo->mMimeType = aCodecMIMEType;
   } else if (StartsWith(aCodecMIMEType, "video/")) {
-    trackInfo.reset(new VideoInfo());
+    trackInfo = std::make_unique<VideoInfo>();
     trackInfo->mMimeType = aCodecMIMEType;
   }
   return trackInfo;

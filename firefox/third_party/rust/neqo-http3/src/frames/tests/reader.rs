@@ -4,18 +4,27 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![allow(
+    clippy::missing_asserts_for_indexing,
+    clippy::unwrap_in_result,
+    reason = "OK in tests"
+)]
+
 use std::{cmp::min, fmt::Debug};
 
-use neqo_common::Encoder;
+use neqo_common::{Encoder, to_u64};
 use neqo_transport::{Connection, StreamId, StreamType};
 use test_fixture::{connect, now};
 
 use crate::{
+    Error, Res,
     frames::{
-        reader::FrameDecoder, FrameReader, HFrame, StreamReaderConnectionWrapper, WebTransportFrame,
+        FrameReader, HFrame, HFrameType, StreamReaderConnectionWrapper, WebTransportFrame,
+        capsule::{Capsule, MAX_DATAGRAM_BYTES},
+        hframe::{MAX_BUFFERED_FRAME_BYTES, MAX_HEADER_BYTES, MAX_SINGLE_VARINT_FRAME_BYTES},
+        reader::FrameDecoder,
     },
     settings::{HSetting, HSettingType, HSettings},
-    Error, PushId,
 };
 
 struct FrameReaderTest {
@@ -43,14 +52,32 @@ impl FrameReaderTest {
         drop(self.conn_c.process(out.dgram(), now()));
         let (frame, fin) = self
             .fr
-            .receive::<T>(&mut StreamReaderConnectionWrapper::new(
-                &mut self.conn_c,
-                self.stream_id,
-            ))
+            .receive::<T>(
+                &mut StreamReaderConnectionWrapper::new(&mut self.conn_c, self.stream_id),
+                now(),
+            )
             .ok()?;
         assert!(!fin);
         frame
     }
+
+    fn try_process<T: FrameDecoder<T>>(&mut self, v: &[u8]) -> Res<(Option<T>, bool)> {
+        self.conn_s.stream_send(self.stream_id, v).unwrap();
+        let out = self.conn_s.process_output(now());
+        _ = self.conn_c.process(out.dgram(), now());
+        self.fr.receive::<T>(
+            &mut StreamReaderConnectionWrapper::new(&mut self.conn_c, self.stream_id),
+            now(),
+        )
+    }
+}
+
+// Builds just the type + length varints of a frame header, no payload.
+fn encode_frame_header(frame_type: HFrameType, len: usize) -> Vec<u8> {
+    let mut enc = Encoder::default();
+    enc.encode_varint(frame_type.0);
+    enc.encode_len(len);
+    enc.into()
 }
 
 // Test receiving byte by byte for a SETTINGS frame.
@@ -58,18 +85,22 @@ impl FrameReaderTest {
 fn frame_reading_with_stream_settings1() {
     let mut fr = FrameReaderTest::new();
 
-    // Send and read settings frame 040406040804
+    // Send and read settings frame 040406040801
     assert!(fr.process::<HFrame>(&[0x4]).is_none());
     assert!(fr.process::<HFrame>(&[0x4]).is_none());
     assert!(fr.process::<HFrame>(&[0x6]).is_none());
     assert!(fr.process::<HFrame>(&[0x4]).is_none());
     assert!(fr.process::<HFrame>(&[0x8]).is_none());
-    let frame = fr.process(&[0x4]);
+    let frame = fr.process(&[0x1]);
 
     assert!(frame.is_some());
     if let HFrame::Settings { settings } = frame.unwrap() {
-        assert!(settings.len() == 1);
-        assert!(settings[0] == HSetting::new(HSettingType::MaxHeaderListSize, 4));
+        assert_eq!(settings.len(), 2);
+        assert_eq!(
+            settings[0],
+            HSetting::new(HSettingType::MaxHeaderListSize, 4)
+        );
+        assert_eq!(settings[1], HSetting::new(HSettingType::EnableConnect, 1));
     } else {
         panic!("wrong frame type");
     }
@@ -80,43 +111,85 @@ fn frame_reading_with_stream_settings1() {
 fn frame_reading_with_stream_settings2() {
     let mut fr = FrameReaderTest::new();
 
-    // Read settings frame 400406064004084100
-    for i in &[0x40, 0x04, 0x06, 0x06, 0x40, 0x04, 0x08, 0x41] {
+    // Read settings frame 400406064004080100
+    for i in &[0x40, 0x04, 0x05, 0x06, 0x40, 0x04, 0x08] {
         assert!(fr.process::<HFrame>(&[*i]).is_none());
     }
-    let frame = fr.process(&[0x0]);
+    let frame = fr.process(&[0x01]);
 
     assert!(frame.is_some());
     if let HFrame::Settings { settings } = frame.unwrap() {
-        assert!(settings.len() == 1);
-        assert!(settings[0] == HSetting::new(HSettingType::MaxHeaderListSize, 4));
+        assert_eq!(settings.len(), 2);
+        assert_eq!(
+            settings[0],
+            HSetting::new(HSettingType::MaxHeaderListSize, 4)
+        );
+        assert_eq!(settings[1], HSetting::new(HSettingType::EnableConnect, 1));
     } else {
         panic!("wrong frame type");
     }
 }
 
-// Test receiving byte by byte for a PUSH_PROMISE frame.
-#[test]
-fn frame_reading_with_stream_push_promise() {
+/// Assert that a declared length one byte over `cap` is rejected before buffering,
+/// while exactly `cap` is accepted (i.e. the check is `>`, not `>=`).
+fn assert_cap_boundary<T: FrameDecoder<T> + PartialEq + Debug>(frame_type: HFrameType, cap: usize) {
     let mut fr = FrameReaderTest::new();
+    let over = encode_frame_header(frame_type, cap + 1);
+    assert_eq!(Err(Error::HttpExcessiveLoad), fr.try_process::<T>(&over));
 
-    // Read push-promise frame 05054101010203
-    for i in &[0x05, 0x05, 0x41, 0x01, 0x01, 0x02] {
-        assert!(fr.process::<HFrame>(&[*i]).is_none());
-    }
-    let frame = fr.process(&[0x3]);
+    let mut fr = FrameReaderTest::new();
+    let at = encode_frame_header(frame_type, cap);
+    assert_eq!(Ok((None, false)), fr.try_process::<T>(&at));
+}
 
-    assert!(frame.is_some());
-    if let HFrame::PushPromise {
-        push_id,
-        header_block,
-    } = frame.unwrap()
-    {
-        assert_eq!(push_id, PushId::new(257));
-        assert_eq!(header_block, &[0x1, 0x2, 0x3]);
-    } else {
-        panic!("wrong frame type");
+/// Each buffered `HFrame` type paired with the cap that applies to it. The (unsupported) server
+/// push frames are buffered and capped too, so that they can be recognized and then rejected.
+const HFRAME_CAPS: &[(usize, &[HFrameType])] = &[
+    (
+        MAX_HEADER_BYTES,
+        &[HFrameType::HEADERS, HFrameType::PUSH_PROMISE],
+    ),
+    (
+        MAX_SINGLE_VARINT_FRAME_BYTES,
+        &[
+            HFrameType::GOAWAY,
+            HFrameType::CANCEL_PUSH,
+            HFrameType::MAX_PUSH_ID,
+        ],
+    ),
+    (
+        MAX_BUFFERED_FRAME_BYTES,
+        &[
+            HFrameType::SETTINGS,
+            HFrameType::PRIORITY_UPDATE_REQUEST,
+            HFrameType::PRIORITY_UPDATE_PUSH,
+        ],
+    ),
+];
+
+#[test]
+fn hframe_length_cap_boundary() {
+    for &(cap, frame_types) in HFRAME_CAPS {
+        for &frame_type in frame_types {
+            assert_cap_boundary::<HFrame>(frame_type, cap);
+        }
     }
+}
+
+#[test]
+fn wt_close_session_length_cap_boundary() {
+    assert_cap_boundary::<WebTransportFrame>(
+        HFrameType(0x2843), // WebTransportFrame::CLOSE_SESSION
+        WebTransportFrame::MAX_CLOSE_SESSION_BYTES,
+    );
+}
+
+#[test]
+fn capsule_datagram_length_cap_boundary() {
+    assert_cap_boundary::<Capsule>(
+        HFrameType(0x00), // capsule::CAPSULE_TYPE_DATAGRAM
+        MAX_DATAGRAM_BYTES,
+    );
 }
 
 // Test DATA
@@ -145,19 +218,48 @@ fn unknown_frame() {
 
     let mut enc = Encoder::with_capacity(UNKNOWN_FRAME_LEN + 4);
     enc.encode_varint(1028_u64); // Arbitrary type.
-    enc.encode_varint(UNKNOWN_FRAME_LEN as u64);
+    enc.encode_len(UNKNOWN_FRAME_LEN);
     let mut buf: Vec<_> = enc.into();
     buf.resize(UNKNOWN_FRAME_LEN + buf.len(), 0);
     assert!(fr.process::<HFrame>(&buf).is_none());
 
-    // now receive a CANCEL_PUSH frame to see that frame reader is ok.
-    let frame = fr.process(&[0x03, 0x01, 0x05]);
+    // now receive a GOAWAY frame to see that frame reader is ok.
+    let frame = fr.process(&[0x07, 0x01, 0x05]);
     assert!(frame.is_some());
-    if let HFrame::CancelPush { push_id } = frame.unwrap() {
-        assert!(push_id == PushId::new(5));
+    if let HFrame::Goaway { stream_id } = frame.unwrap() {
+        assert_eq!(stream_id, StreamId::new(5));
     } else {
         panic!("wrong frame type");
     }
+}
+
+// Server push is not supported. The frame reader recognizes push frames (ignoring their contents)
+// so that the role-aware stream handlers can reject them; the reader itself does not error.
+#[test]
+fn server_push_frames_are_recognized() {
+    let mut fr = FrameReaderTest::new();
+    assert_eq!(
+        fr.process::<HFrame>(&[0x03, 0x01, 0x05]),
+        Some(HFrame::CancelPush)
+    );
+
+    let mut fr = FrameReaderTest::new();
+    assert_eq!(
+        fr.process::<HFrame>(&[0x05, 0x05, 0x04, 0x61, 0x62, 0x63, 0x64]),
+        Some(HFrame::PushPromise)
+    );
+
+    let mut fr = FrameReaderTest::new();
+    assert_eq!(
+        fr.process::<HFrame>(&[0x0d, 0x01, 0x05]),
+        Some(HFrame::MaxPushId)
+    );
+
+    let mut fr = FrameReaderTest::new();
+    assert_eq!(
+        fr.process::<HFrame>(&[0x80, 0x0f, 0x07, 0x01, 0x01, 0x0a]),
+        Some(HFrame::PriorityUpdatePush)
+    );
 }
 
 // Test receiving byte by byte for a WT_FRAME_CLOSE_SESSION frame.
@@ -176,7 +278,7 @@ fn frame_reading_with_stream_wt_close_session() {
     assert!(frame.is_some());
     let WebTransportFrame::CloseSession { error, message } = frame.unwrap();
     assert_eq!(error, 5);
-    assert_eq!(message, "Hello".to_string());
+    assert_eq!(message, "Hello");
 }
 
 // Test an unknown frame for WebTransportFrames.
@@ -189,7 +291,7 @@ fn unknown_wt_frame() {
 
     let mut enc = Encoder::with_capacity(UNKNOWN_FRAME_LEN + 4);
     enc.encode_varint(1028_u64); // Arbitrary type.
-    enc.encode_varint(UNKNOWN_FRAME_LEN as u64);
+    enc.encode_len(UNKNOWN_FRAME_LEN);
     let mut buf: Vec<_> = enc.into();
     buf.resize(UNKNOWN_FRAME_LEN + buf.len(), 0);
     assert!(fr.process::<WebTransportFrame>(&buf).is_none());
@@ -201,7 +303,7 @@ fn unknown_wt_frame() {
     assert!(frame.is_some());
     let WebTransportFrame::CloseSession { error, message } = frame.unwrap();
     assert_eq!(error, 5);
-    assert_eq!(message, "Hello".to_string());
+    assert_eq!(message, "Hello");
 }
 
 enum FrameReadingTestSend {
@@ -239,10 +341,10 @@ fn test_reading_frame<T: FrameDecoder<T> + PartialEq + Debug>(
         drop(fr.conn_c.process(out.dgram(), now()));
     }
 
-    let rv = fr.fr.receive::<T>(&mut StreamReaderConnectionWrapper::new(
-        &mut fr.conn_c,
-        fr.stream_id,
-    ));
+    let rv = fr.fr.receive::<T>(
+        &mut StreamReaderConnectionWrapper::new(&mut fr.conn_c, fr.stream_id),
+        now(),
+    );
 
     match expected_result {
         FrameReadingTestExpect::Error => assert_eq!(Err(Error::HttpFrame), rv),
@@ -273,7 +375,7 @@ fn complete_and_incomplete_unknown_frame() {
     const UNKNOWN_FRAME_LEN: usize = 832;
     let mut enc = Encoder::with_capacity(UNKNOWN_FRAME_LEN + 4);
     enc.encode_varint(1028_u64); // Arbitrary type.
-    enc.encode_varint(UNKNOWN_FRAME_LEN as u64);
+    enc.encode_len(UNKNOWN_FRAME_LEN);
     let mut buf: Vec<_> = enc.into();
     buf.resize(UNKNOWN_FRAME_LEN + buf.len(), 0);
 
@@ -381,16 +483,16 @@ fn complete_and_incomplete_frames() {
     const FRAME_LEN: usize = 10;
     const HEADER_BLOCK: &[u8] = &[0x01, 0x02, 0x03, 0x04];
 
-    // H3_FRAME_TYPE_DATA len=0
+    // HFrameType::DATA len=0
     let f = HFrame::Data { len: 0 };
     let mut enc = Encoder::with_capacity(2);
     f.encode(&mut enc);
     let buf: Vec<_> = enc.into();
     test_complete_and_incomplete_frame::<HFrame>(&buf, 2);
 
-    // H3_FRAME_TYPE_DATA len=FRAME_LEN
+    // HFrameType::DATA len=FRAME_LEN
     let f = HFrame::Data {
-        len: FRAME_LEN as u64,
+        len: to_u64(FRAME_LEN),
     };
     let mut enc = Encoder::with_capacity(2);
     f.encode(&mut enc);
@@ -398,7 +500,7 @@ fn complete_and_incomplete_frames() {
     buf.resize(FRAME_LEN + buf.len(), 0);
     test_complete_and_incomplete_frame::<HFrame>(&buf, 2);
 
-    // H3_FRAME_TYPE_HEADERS empty header block
+    // HFrameType::HEADERS empty header block
     let f = HFrame::Headers {
         header_block: Vec::new(),
     };
@@ -407,7 +509,7 @@ fn complete_and_incomplete_frames() {
     let buf: Vec<_> = enc.into();
     test_complete_and_incomplete_frame::<HFrame>(&buf, 2);
 
-    // H3_FRAME_TYPE_HEADERS
+    // HFrameType::HEADERS
     let f = HFrame::Headers {
         header_block: HEADER_BLOCK.to_vec(),
     };
@@ -416,16 +518,7 @@ fn complete_and_incomplete_frames() {
     let buf: Vec<_> = enc.into();
     test_complete_and_incomplete_frame::<HFrame>(&buf, buf.len());
 
-    // H3_FRAME_TYPE_CANCEL_PUSH
-    let f = HFrame::CancelPush {
-        push_id: PushId::new(5),
-    };
-    let mut enc = Encoder::default();
-    f.encode(&mut enc);
-    let buf: Vec<_> = enc.into();
-    test_complete_and_incomplete_frame::<HFrame>(&buf, buf.len());
-
-    // H3_FRAME_TYPE_SETTINGS
+    // HFrameType::SETTINGS
     let f = HFrame::Settings {
         settings: HSettings::new(&[HSetting::new(HSettingType::MaxHeaderListSize, 4)]),
     };
@@ -434,28 +527,9 @@ fn complete_and_incomplete_frames() {
     let buf: Vec<_> = enc.into();
     test_complete_and_incomplete_frame::<HFrame>(&buf, buf.len());
 
-    // H3_FRAME_TYPE_PUSH_PROMISE
-    let f = HFrame::PushPromise {
-        push_id: PushId::new(4),
-        header_block: HEADER_BLOCK.to_vec(),
-    };
-    let mut enc = Encoder::default();
-    f.encode(&mut enc);
-    let buf: Vec<_> = enc.into();
-    test_complete_and_incomplete_frame::<HFrame>(&buf, buf.len());
-
-    // H3_FRAME_TYPE_GOAWAY
+    // HFrameType::GOAWAY
     let f = HFrame::Goaway {
         stream_id: StreamId::new(5),
-    };
-    let mut enc = Encoder::default();
-    f.encode(&mut enc);
-    let buf: Vec<_> = enc.into();
-    test_complete_and_incomplete_frame::<HFrame>(&buf, buf.len());
-
-    // H3_FRAME_TYPE_MAX_PUSH_ID
-    let f = HFrame::MaxPushId {
-        push_id: PushId::new(5),
     };
     let mut enc = Encoder::default();
     f.encode(&mut enc);
@@ -465,7 +539,7 @@ fn complete_and_incomplete_frames() {
 
 #[test]
 fn complete_and_incomplete_wt_frames() {
-    // H3_FRAME_TYPE_MAX_PUSH_ID
+    // HFrameType::MAX_PUSH_ID
     let f = WebTransportFrame::CloseSession {
         error: 5,
         message: "Hello".to_string(),
@@ -490,11 +564,10 @@ fn frame_reading_when_stream_is_closed_before_sending_data() {
     drop(fr.conn_s.process(out.dgram(), now()));
     assert_eq!(
         Ok((None, true)),
-        fr.fr
-            .receive::<HFrame>(&mut StreamReaderConnectionWrapper::new(
-                &mut fr.conn_s,
-                fr.stream_id
-            ))
+        fr.fr.receive::<HFrame>(
+            &mut StreamReaderConnectionWrapper::new(&mut fr.conn_s, fr.stream_id),
+            now()
+        )
     );
 }
 
@@ -513,10 +586,9 @@ fn wt_frame_reading_when_stream_is_closed_before_sending_data() {
     drop(fr.conn_s.process(out.dgram(), now()));
     assert_eq!(
         Ok((None, true)),
-        fr.fr
-            .receive::<WebTransportFrame>(&mut StreamReaderConnectionWrapper::new(
-                &mut fr.conn_s,
-                fr.stream_id
-            ))
+        fr.fr.receive::<WebTransportFrame>(
+            &mut StreamReaderConnectionWrapper::new(&mut fr.conn_s, fr.stream_id),
+            now()
+        )
     );
 }

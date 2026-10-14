@@ -6,7 +6,8 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   FilterAdult: "resource:///modules/FilterAdult.sys.mjs",
-  UrlbarUtils: "resource:///modules/UrlbarUtils.sys.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
+  UrlbarUtils: "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "logConsole", function () {
@@ -194,7 +195,7 @@ class _InteractionsBlocklist {
     let hostWithoutSuffix = lazy.UrlbarUtils.stripPublicSuffixFromHost(
       url.host
     );
-    let [hostWithSubdomains] = lazy.UrlbarUtils.stripPrefixAndTrim(
+    let [hostWithSubdomains] = lazy.UrlbarShared.stripPrefixAndTrim(
       hostWithoutSuffix,
       {
         stripWww: true,
@@ -229,7 +230,7 @@ class _InteractionsBlocklist {
     try {
       regex = new RegExp(regexToAdd, "i");
     } catch (ex) {
-      this.logConsole.warn("Invalid regex passed to addRegexToBlocklist.");
+      lazy.logConsole.warn("Invalid regex passed to addRegexToBlocklist.");
       return;
     }
 
@@ -256,7 +257,7 @@ class _InteractionsBlocklist {
     try {
       regex = new RegExp(regexToRemove, "i");
     } catch (ex) {
-      this.logConsole.warn("Invalid regex passed to addRegexToBlocklist.");
+      lazy.logConsole.warn("Invalid regex passed to addRegexToBlocklist.");
       return;
     }
 

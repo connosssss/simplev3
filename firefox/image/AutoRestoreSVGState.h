@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,16 +5,16 @@
 #ifndef mozilla_image_AutoRestoreSVGState_h
 #define mozilla_image_AutoRestoreSVGState_h
 
+#include "SVGDocumentWrapper.h"
+#include "SVGDrawingParameters.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/AutoRestore.h"
 #include "mozilla/SVGContextPaint.h"
-#include "mozilla/dom/SVGSVGElement.h"
-#include "nsPresContext.h"
-#include "SVGDrawingParameters.h"
-#include "SVGDocumentWrapper.h"
+#include "mozilla/dom/BrowsingContextBinding.h"
 #include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/dom/SVGDocument.h"
-#include "mozilla/dom/BrowsingContextBinding.h"
+#include "mozilla/dom/SVGSVGElement.h"
+#include "nsPresContext.h"
 
 namespace mozilla::image {
 
@@ -33,13 +32,18 @@ class MOZ_STACK_CLASS AutoRestoreSVGState final {
       : mIsDrawing(aSVGDocumentWrapper->mIsDrawing),
         // Apply any 'preserveAspectRatio' override (if specified) to the root
         // element:
-        mPAR(aSVGContext, aSVGDocumentWrapper->GetRootSVGElem()),
-        // Set the animation time:
-        mTime(aSVGDocumentWrapper->GetRootSVGElem(), aAnimationTime) {
+        mPAR(aSVGContext, aSVGDocumentWrapper->GetSVGRootElement()) {
     MOZ_ASSERT(!mIsDrawing.SavedValue());
     MOZ_ASSERT(aSVGDocumentWrapper->GetDocument());
 
+    // Setting the animation time flushes the document, so the re-entrancy
+    // guard has to be in place first.
+    aSVGDocumentWrapper->mIsDrawing = true;
+    mTime.emplace(aSVGDocumentWrapper->GetSVGRootElement(), aAnimationTime);
+
     if (auto* pc = aSVGDocumentWrapper->GetDocument()->GetPresContext()) {
+      pc->SetLinkParametersOverride(aSVGContext.GetLinkParameters());
+
       pc->SetColorSchemeOverride([&] {
         if (auto scheme = aSVGContext.GetColorScheme()) {
           return *scheme == ColorScheme::Light
@@ -49,8 +53,6 @@ class MOZ_STACK_CLASS AutoRestoreSVGState final {
         return dom::PrefersColorSchemeOverride::None;
       }());
     }
-
-    aSVGDocumentWrapper->mIsDrawing = true;
 
     // Set context paint (if specified) on the document:
     if (aContextPaint) {
@@ -63,7 +65,7 @@ class MOZ_STACK_CLASS AutoRestoreSVGState final {
  private:
   AutoRestore<bool> mIsDrawing;
   AutoPreserveAspectRatioOverride mPAR;
-  AutoSVGTimeSetRestore mTime;
+  Maybe<AutoSVGTimeSetRestore> mTime;
   Maybe<AutoSetRestoreSVGContextPaint> mContextPaint;
 };
 

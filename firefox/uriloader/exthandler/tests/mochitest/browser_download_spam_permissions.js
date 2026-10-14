@@ -18,7 +18,7 @@ const TEST_PATH = getRootDirectory(gTestPath).replace(
 const AUTOMATIC_DOWNLOAD_TOPIC = "blocked-automatic-download";
 
 var MockFilePicker = SpecialPowers.MockFilePicker;
-MockFilePicker.init(window.browsingContext);
+MockFilePicker.init();
 registerCleanupFunction(() => MockFilePicker.cleanup());
 
 let gTempDownloadDir;
@@ -48,6 +48,7 @@ add_setup(async function () {
   });
 
   registerCleanupFunction(async () => {
+    PermissionTestUtils.remove(TEST_URI, "automatic-download");
     Services.prefs.clearUserPref("browser.download.folderList");
     Services.prefs.clearUserPref("browser.download.dir");
     await IOUtils.remove(tempDir.path, { recursive: true });

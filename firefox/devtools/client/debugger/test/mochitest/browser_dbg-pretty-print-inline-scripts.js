@@ -23,9 +23,8 @@ add_task(async function () {
   const dbg = await initDebugger(TEST_FILENAME);
 
   await selectSource(dbg, TEST_FILENAME);
-  clickElement(dbg, "prettyPrintButton");
+  await togglePrettyPrint(dbg);
 
-  await waitForSelectedSource(dbg, PRETTY_PRINTED_FILENAME);
   const prettyPrintedSource = findSourceContent(dbg, PRETTY_PRINTED_FILENAME);
 
   ok(prettyPrintedSource, "Pretty-printed source exists");
@@ -50,12 +49,7 @@ add_task(async function () {
     }
   });
 
-  await assertBreakableLines(
-    dbg,
-    PRETTY_PRINTED_FILENAME,
-    htmlLines.length,
-    expectedBreakableLines
-  );
+  await assertBreakableLines(dbg, htmlLines.length, expectedBreakableLines);
 
   info("Check that console messages are pointing to pretty-printed file");
   const { toolbox } = dbg;
@@ -154,10 +148,8 @@ add_task(async function prettyPrintSingleLineDataUrl() {
   const dbg = await initDebuggerWithAbsoluteURL(TEST_URL);
 
   await selectSource(dbg, TEST_URL);
-  clickElement(dbg, "prettyPrintButton");
+  await togglePrettyPrint(dbg);
 
-  const prettySource = await waitForSource(dbg, PRETTY_PRINTED_URL);
-  await waitForSelectedSource(dbg, prettySource);
   const prettyPrintedSource = findSourceContent(dbg, PRETTY_PRINTED_URL);
 
   ok(prettyPrintedSource, "Pretty-printed source exists");
@@ -165,7 +157,7 @@ add_task(async function prettyPrintSingleLineDataUrl() {
   info("Check that the HTML file was pretty-printed as expected");
   const expectedPrettyHtml = `<meta charset=utf8><script>
 {
-  'use strict';
+  "use strict";
   globalThis.foo = function () {
   }
 }
@@ -177,11 +169,33 @@ add_task(async function prettyPrintSingleLineDataUrl() {
   );
 });
 
+// Asserts that files which contain characters which are
+// encoded by two code units (surrogate pairs)
+add_task(async function prettyPrintHtmlWithSurrogatePairCharacters() {
+  const TEST_URL = `doc-pretty-print-with-emojis.html`;
+  const PRETTY_PRINTED_URL = `${TEST_URL}:formatted`;
+  const dbg = await initDebugger(TEST_URL);
+
+  await selectSource(dbg, TEST_URL);
+  await togglePrettyPrint(dbg);
+  const prettyPrintedSource = findSourceContent(dbg, PRETTY_PRINTED_URL);
+  ok(prettyPrintedSource, "Pretty-printed source exists");
+
+  info("Check that the HTML file was pretty-printed as expected");
+  const expectedPrettyHtml =
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\" /></head><body>\n🥁🤯<script>\nconsole.log('%', '🤯🤯🤯🤯🤯')\n</script>🥁</body>";
+  is(
+    prettyPrintedSource.value,
+    expectedPrettyHtml,
+    "HTML file is pretty printed as expected"
+  );
+});
+
 /**
  * Return the expected pretty-printed HTML. Lines starting with ➤ indicate breakable
  * lines for easier maintenance.
  *
- * @returns {String}
+ * @returns {string}
  */
 function getExpectedPrettyPrintedHtml() {
   return `<!-- This Source Code Form is subject to the terms of the Mozilla Public
@@ -200,12 +214,12 @@ function getExpectedPrettyPrintedHtml() {
 
     <!-- the unusual formatting is wanted to check inline scripts pretty printing -->
     <script id="inline" type="application/javascript">
-➤const userInfo = JSON.parse(document.getElementById('json-data').text);
-➤console.log('User information: %o', userInfo);
+➤const userInfo = JSON.parse(document.getElementById("json-data").text);
+➤console.log("User information: %o", userInfo);
 ➤document.addEventListener(
-  'click',
+  "click",
   function onClick(e) {
-➤    console.log('in inline script');
+➤    console.log("in inline script");
     // this is
     // something
 ➤    e.target;
@@ -224,18 +238,18 @@ function getExpectedPrettyPrintedHtml() {
   42
 ]) {
 ➤  if (x > 0) {
-➤    console.log(x, 'yay')
+➤    console.log(x, "yay")
   } else {
-➤    console.log(x, 'booh')
+➤    console.log(x, "booh")
   }
 ➤}
 </script>
     <!-- Multiple line "minified" script, with content on the first line -->
     <script>
 {
-  'use strict';
-➤  document.querySelector('h1').addEventListener('mousedown', e => {
-➤    console.log('mousedown on h1')
+  "use strict";
+➤  document.querySelector("h1").addEventListener("mousedown", e => {
+➤    console.log("mousedown on h1")
 ➤  })
 ➤}
 </script>

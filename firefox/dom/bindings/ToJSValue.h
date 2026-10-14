@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,7 +8,7 @@
 #include <cstddef>  // for size_t
 #include <cstdint>  // for int32_t, int64_t, uint32_t, uint64_t
 #include <type_traits>  // for is_base_of, enable_if_t, enable_if, is_pointer, is_same, void_t
-#include <utility>        // for forward
+
 #include "ErrorList.h"    // for nsresult
 #include "js/Array.h"     // for NewArrayObject
 #include "js/GCVector.h"  // for RootedVector, MutableWrappedPtrOperations
@@ -21,7 +19,6 @@
 #include "jsapi.h"                  // for CurrentGlobalOrNull
 #include "mozilla/Assertions.h"  // for AssertionConditionType, MOZ_ASSERT, MOZ_ASSERT_HELPER1
 #include "mozilla/UniquePtr.h"         // for UniquePtr
-#include "mozilla/Unused.h"            // for Unused
 #include "mozilla/dom/BindingUtils.h"  // for MaybeWrapValue, MaybeWrapObjectOrNullValue, XPCOMObjectToJsval, GetOrCreateDOMReflector
 #include "mozilla/dom/CallbackObject.h"  // for CallbackObject
 #include "mozilla/dom/Record.h"
@@ -56,7 +53,7 @@ class TypedArrayCreator;
 // desirable.  So make this a template that only gets used if the argument type
 // is actually boolean
 template <typename T>
-[[nodiscard]] std::enable_if_t<std::is_same<T, bool>::value, bool> ToJSValue(
+[[nodiscard]] std::enable_if_t<std::is_same_v<T, bool>, bool> ToJSValue(
     JSContext* aCx, T aArgument, JS::MutableHandle<JS::Value> aValue) {
   // Make sure we're called in a compartment
   MOZ_ASSERT(JS::CurrentGlobalOrNull(aCx));
@@ -102,13 +99,13 @@ inline bool ToJSValue(JSContext* aCx, uint64_t aArgument,
   return true;
 }
 
-// accept floating point types
+// Accept floating point types.
 inline bool ToJSValue(JSContext* aCx, float aArgument,
                       JS::MutableHandle<JS::Value> aValue) {
   // Make sure we're called in a compartment
   MOZ_ASSERT(JS::CurrentGlobalOrNull(aCx));
 
-  aValue.setNumber(aArgument);
+  aValue.setNumber(double(aArgument));
   return true;
 }
 
@@ -117,7 +114,7 @@ inline bool ToJSValue(JSContext* aCx, double aArgument,
   // Make sure we're called in a compartment
   MOZ_ASSERT(JS::CurrentGlobalOrNull(aCx));
 
-  aValue.set(JS_NumberValue(aArgument));
+  aValue.setNumber(aArgument);
   return true;
 }
 
@@ -135,7 +132,7 @@ inline bool ToJSValue(JSContext* aCx, double aArgument,
 // Accept objects that inherit from nsWrapperCache (e.g. most
 // DOM objects).
 template <class T>
-[[nodiscard]] std::enable_if_t<std::is_base_of<nsWrapperCache, T>::value, bool>
+[[nodiscard]] std::enable_if_t<std::is_base_of_v<nsWrapperCache, T>, bool>
 ToJSValue(JSContext* aCx, T& aArgument, JS::MutableHandle<JS::Value> aValue) {
   // Make sure we're called in a compartment
   MOZ_ASSERT(JS::CurrentGlobalOrNull(aCx));
@@ -148,8 +145,8 @@ ToJSValue(JSContext* aCx, T& aArgument, JS::MutableHandle<JS::Value> aValue) {
 // you could convert them to JS twice and get two different objects.
 namespace binding_detail {
 template <class T>
-[[nodiscard]] std::enable_if_t<
-    std::is_base_of<NonRefcountedDOMObject, T>::value, bool>
+[[nodiscard]] std::enable_if_t<std::is_base_of_v<NonRefcountedDOMObject, T>,
+                               bool>
 ToJSValueFromPointerHelper(JSContext* aCx, T* aArgument,
                            JS::MutableHandle<JS::Value> aValue) {
   // Make sure we're called in a compartment
@@ -176,8 +173,8 @@ ToJSValueFromPointerHelper(JSContext* aCx, T* aArgument,
 // We can take a non-refcounted non-wrapper-cached DOM object that lives in a
 // UniquePtr.
 template <class T>
-[[nodiscard]] std::enable_if_t<
-    std::is_base_of<NonRefcountedDOMObject, T>::value, bool>
+[[nodiscard]] std::enable_if_t<std::is_base_of_v<NonRefcountedDOMObject, T>,
+                               bool>
 ToJSValue(JSContext* aCx, UniquePtr<T>&& aArgument,
           JS::MutableHandle<JS::Value> aValue) {
   if (!binding_detail::ToJSValueFromPointerHelper(aCx, aArgument.get(),
@@ -186,17 +183,16 @@ ToJSValue(JSContext* aCx, UniquePtr<T>&& aArgument,
   }
 
   // JS object took ownership
-  Unused << aArgument.release();
+  (void)aArgument.release();
   return true;
 }
 
 // Accept typed arrays built from appropriate nsTArray values
 template <typename T>
 [[nodiscard]]
-typename std::enable_if<std::is_base_of<AllTypedArraysBase, T>::value,
-                        bool>::type
-ToJSValue(JSContext* aCx, const TypedArrayCreator<T>& aArgument,
-          JS::MutableHandle<JS::Value> aValue) {
+std::enable_if_t<std::is_base_of_v<AllTypedArraysBase, T>, bool> ToJSValue(
+    JSContext* aCx, const TypedArrayCreator<T>& aArgument,
+    JS::MutableHandle<JS::Value> aValue) {
   // Make sure we're called in a compartment
   MOZ_ASSERT(JS::CurrentGlobalOrNull(aCx));
 
@@ -237,9 +233,9 @@ using ScriptableInterfaceType = typename GetScriptableInterfaceType<T>::Type;
 // Accept objects that inherit from nsISupports but not nsWrapperCache (e.g.
 // DOM File).
 template <class T>
-[[nodiscard]] std::enable_if_t<!std::is_base_of<nsWrapperCache, T>::value &&
-                                   !std::is_base_of<CallbackObject, T>::value &&
-                                   std::is_base_of<nsISupports, T>::value,
+[[nodiscard]] std::enable_if_t<!std::is_base_of_v<nsWrapperCache, T> &&
+                                   !std::is_base_of_v<CallbackObject, T> &&
+                                   std::is_base_of_v<nsISupports, T>,
                                bool>
 ToJSValue(JSContext* aCx, T& aArgument, JS::MutableHandle<JS::Value> aValue) {
   // Make sure we're called in a compartment
@@ -346,7 +342,7 @@ template <typename T>
 
 // Accept pointers to other things we accept
 template <typename T>
-[[nodiscard]] std::enable_if_t<std::is_pointer<T>::value, bool> ToJSValue(
+[[nodiscard]] std::enable_if_t<std::is_pointer_v<T>, bool> ToJSValue(
     JSContext* aCx, T aArgument, JS::MutableHandle<JS::Value> aValue) {
   return ToJSValue(aCx, *aArgument, aValue);
 }

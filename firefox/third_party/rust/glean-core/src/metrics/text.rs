@@ -4,14 +4,13 @@
 
 use std::sync::Arc;
 
-use crate::common_metric_data::{CommonMetricDataInternal, DynamicLabelType};
+use crate::common_metric_data::{CommonMetricDataInternal, MetricLabel};
 use crate::error_recording::{test_get_num_recorded_errors, ErrorType};
 use crate::metrics::Metric;
 use crate::metrics::MetricType;
-use crate::storage::StorageManager;
 use crate::util::truncate_string_at_boundary_with_error;
-use crate::CommonMetricData;
 use crate::Glean;
+use crate::{CommonMetricData, TestGetValue};
 
 // The maximum number of characters for text.
 const MAX_LENGTH_VALUE: usize = 200 * 1024;
@@ -39,9 +38,9 @@ impl MetricType for TextMetric {
         }
     }
 
-    fn with_dynamic_label(&self, label: DynamicLabelType) -> Self {
+    fn with_label(&self, label: MetricLabel) -> Self {
         let mut meta = (*self.meta).clone();
-        meta.inner.dynamic_label = Some(label);
+        meta.inner.label = Some(label);
         Self {
             meta: Arc::new(meta),
         }
@@ -100,34 +99,15 @@ impl TextMetric {
             .into()
             .unwrap_or_else(|| &self.meta().inner.send_in_pings[0]);
 
-        match StorageManager.snapshot_metric_for_test(
-            glean.storage(),
+        match glean.storage().get_metric(
+            #[cfg(not(feature = "sqlite"))]
+            glean,
+            self.meta(),
             queried_ping_name,
-            &self.meta.identifier(glean),
-            self.meta.inner.lifetime,
         ) {
             Some(Metric::Text(s)) => Some(s),
             _ => None,
         }
-    }
-
-    /// **Test-only API (exported for FFI purposes).**
-    ///
-    /// Gets the currently stored value as a string.
-    ///
-    /// This doesn't clear the stored value.
-    ///
-    /// # Arguments
-    ///
-    /// * `ping_name` - the optional name of the ping to retrieve the metric
-    ///                 for. Defaults to the first value in `send_in_pings`.
-    ///
-    /// # Returns
-    ///
-    /// The stored value or `None` if nothing stored.
-    pub fn test_get_value(&self, ping_name: Option<String>) -> Option<String> {
-        crate::block_on_dispatcher();
-        crate::core::with_glean(|glean| self.get_value(glean, ping_name.as_deref()))
     }
 
     /// **Exported for test purposes.**
@@ -150,6 +130,29 @@ impl TextMetric {
     }
 }
 
+impl TestGetValue for TextMetric {
+    type Output = String;
+
+    /// **Test-only API (exported for FFI purposes).**
+    ///
+    /// Gets the currently stored value as a string.
+    ///
+    /// This doesn't clear the stored value.
+    ///
+    /// # Arguments
+    ///
+    /// * `ping_name` - the optional name of the ping to retrieve the metric
+    ///                 for. Defaults to the first value in `send_in_pings`.
+    ///
+    /// # Returns
+    ///
+    /// The stored value or `None` if nothing stored.
+    fn test_get_value(&self, ping_name: Option<String>) -> Option<String> {
+        crate::block_on_dispatcher();
+        crate::core::with_glean(|glean| self.get_value(glean, ping_name.as_deref()))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -167,7 +170,8 @@ mod test {
             send_in_pings: vec!["store1".into()],
             lifetime: Lifetime::Application,
             disabled: false,
-            dynamic_label: None,
+            label: None,
+            in_session: false,
         });
 
         let sample_string = "0123456789".repeat(200 * 1024);

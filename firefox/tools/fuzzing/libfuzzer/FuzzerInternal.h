@@ -29,14 +29,13 @@ namespace fuzzer {
 
 using namespace std::chrono;
 
-class Fuzzer {
+class Fuzzer final {
 public:
-
   Fuzzer(UserCallback CB, InputCorpus &Corpus, MutationDispatcher &MD,
-         FuzzingOptions Options);
-  ~Fuzzer();
-  int Loop(Vector<SizedFile> &CorporaFiles);
-  int ReadAndExecuteSeedCorpora(Vector<SizedFile> &CorporaFiles);
+         const FuzzingOptions &Options);
+  ~Fuzzer() = delete;
+  int Loop(std::vector<SizedFile> &CorporaFiles);
+  int ReadAndExecuteSeedCorpora(std::vector<SizedFile> &CorporaFiles);
   void MinimizeCrashLoop(const Unit &U);
   void RereadOutputCorpus(size_t MaxSize);
 
@@ -68,13 +67,19 @@ public:
   static void GracefullyExit();
   static bool isGracefulExitRequested();
 
-  int ExecuteCallback(const uint8_t *Data, size_t Size);
+  // Executes the target callback on {Data, Size} once.
+  // Returns false if the input was rejected by the target (target returned -1),
+  // and true otherwise.
+  bool ExecuteCallback(const uint8_t *Data, size_t Size);
   bool RunOne(const uint8_t *Data, size_t Size, bool MayDeleteFile = false,
-              InputInfo *II = nullptr, bool *FoundUniqFeatures = nullptr);
+              InputInfo *II = nullptr, bool ForceAddToCorpus = false,
+              bool *FoundUniqFeatures = nullptr);
+  void TPCUpdateObservedPCs();
 
   // Merge Corpora[1:] into Corpora[0].
-  void Merge(const Vector<std::string> &Corpora);
-  int CrashResistantMergeInternalStep(const std::string &ControlFilePath);
+  void Merge(const std::vector<std::string> &Corpora);
+  int CrashResistantMergeInternalStep(const std::string &ControlFilePath,
+                                       bool IsSetCoverMerge);
   MutationDispatcher &GetMD() { return MD; }
   void PrintFinalStats();
   void SetMaxInputLen(size_t MaxInputLen);
@@ -88,6 +93,7 @@ public:
 
   void HandleMalloc(size_t Size);
   static bool MaybeExitGracefully();
+  static int InterruptExitCode();
   std::string WriteToOutputCorpus(const Unit &U);
 
 private:
@@ -142,7 +148,7 @@ private:
   size_t MaxMutationLen = 0;
   size_t TmpMaxMutationLen = 0;
 
-  Vector<uint32_t> UniqFeatureSetTmp;
+  std::vector<uint32_t> UniqFeatureSetTmp;
 
   // Need to know our own thread.
   static thread_local bool IsMyThread;

@@ -9,21 +9,17 @@ import mozilla.components.browser.state.action.SearchAction
 import mozilla.components.browser.state.search.SearchEngine
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
+import mozilla.components.lib.state.Store
 
-/**
- * [Middleware] for modifying the loaded list of [SearchEngine]s.
- */
+/** [Middleware] for modifying the loaded list of [SearchEngine]s. */
 class SearchFilterMiddleware : Middleware<BrowserState, BrowserAction> {
     override fun invoke(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         next: (BrowserAction) -> Unit,
         action: BrowserAction,
     ) {
         if (action is SearchAction.SetSearchEnginesAction) {
-            val newAction = action.copy(
-                regionSearchEngines = action.regionSearchEngines.filterBing(),
-            )
+            val newAction = action.copy(regionSearchEngines = action.regionSearchEngines.filterBing())
 
             next(newAction)
         } else {

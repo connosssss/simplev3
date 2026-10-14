@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,7 +10,6 @@
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/ResultExtensions.h"
 #include "mozilla/Services.h"
 #include "mozilla/SimpleEnumerator.h"
 #include "mozilla/StaticPrefs_extensions.h"
@@ -36,6 +34,7 @@
 #include "nsNetUtil.h"
 #include "nsPrintfCString.h"
 #include "nsPIDOMWindow.h"
+#include "nsPIDOMWindowInlines.h"
 #include "nsXULAppAPI.h"
 #include "nsQueryObject.h"
 
@@ -165,7 +164,7 @@ bool ExtensionPolicyService::IsExtensionProcess() const {
 
   if (isRemote && XRE_IsContentProcess()) {
     auto& remoteType = dom::ContentChild::GetSingleton()->GetRemoteType();
-    return remoteType == EXTENSION_REMOTE_TYPE;
+    return remoteType.IsExtension();
   }
   return !isRemote && XRE_IsParentProcess();
 }
@@ -257,8 +256,7 @@ ExtensionPolicyService::CollectReports(nsIHandleReportCallback* aHandleReport,
     name.ReplaceSubstring("\"", "");
     name.ReplaceSubstring("\\", "");
 
-    nsString url;
-    MOZ_TRY_VAR(url, ext->GetURL(u""_ns));
+    nsString url = MOZ_TRY(ext->GetURL(u""_ns));
 
     nsPrintfCString desc("Extension(id=%s, name=\"%s\", baseURL=%s)", id.get(),
                          name.get(), NS_ConvertUTF16toUTF8(url).get());
@@ -361,21 +359,24 @@ already_AddRefed<Promise> ExtensionPolicyService::ExecuteContentScripts(
   }
 
   RefPtr<Promise> promise = Promise::All(aCx, promises, IgnoreErrors());
-  Unused << NS_WARN_IF(!promise);
+  (void)NS_WARN_IF(!promise);
   return promise.forget();
 }
 
 // Use browser's MessageManagerGroup to decide if we care about it, to inject
-// extension APIs or content scripts.  Tabs use "browsers", and all custom
+// extension APIs or content scripts.  Tabs use "browsers", all custom
 // extension browsers use "webext-browsers", including popups & sidebars,
-// background & options pages, and xpcshell tests.
+// background & options pages, and xpcshell tests, and chatbot sidebar browsers
+// use "chatbot-browser".
 static bool IsTabOrExtensionBrowser(dom::BrowsingContext* aBC) {
   const auto& group = aBC->Top()->GetMessageManagerGroup();
-  bool rv = group == u"browsers"_ns || group == u"webext-browsers"_ns;
+  bool rv = group == u"browsers"_ns || group == u"webext-browsers"_ns ||
+            group == u"chatbot-browser"_ns;
 
 #ifdef MOZ_THUNDERBIRD
   // ...unless it's Thunderbird, which has extra groups for unrelated reasons.
-  rv = rv || group == u"single-site"_ns || group == u"single-page"_ns;
+  rv = rv || group == u"mail-message"_ns || group == u"single-site"_ns ||
+       group == u"single-page"_ns;
 #endif
 
   return rv;
@@ -641,7 +642,7 @@ RefPtr<AtomSet> ExtensionPolicyService::QuarantinedDomains() {
 
 void ExtensionPolicyService::UpdateRestrictedDomains() {
   nsAutoCString eltsString;
-  Unused << Preferences::GetCString(RESTRICTED_DOMAINS_PREF, eltsString);
+  (void)Preferences::GetCString(RESTRICTED_DOMAINS_PREF, eltsString);
 
   AutoTArray<nsString, 32> elts;
   for (const nsACString& elt : eltsString.Split(',')) {
@@ -734,7 +735,7 @@ nsresult ExtensionPolicyService::GetGeneratedBackgroundPageUrl(
 
     url.Append(NS_EscapeURL(html, esc_Minimal, escaped));
 
-    aResult = url;
+    aResult = std::move(url);
     return NS_OK;
   }
   return NS_ERROR_INVALID_ARG;

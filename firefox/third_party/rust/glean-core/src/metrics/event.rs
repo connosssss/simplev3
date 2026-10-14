@@ -8,9 +8,10 @@ use crate::common_metric_data::CommonMetricDataInternal;
 use crate::error_recording::{record_error, test_get_num_recorded_errors, ErrorType};
 use crate::event_database::RecordedEvent;
 use crate::metrics::MetricType;
+use crate::session::EventSessionContext;
 use crate::util::truncate_string_at_boundary_with_error;
-use crate::CommonMetricData;
 use crate::Glean;
+use crate::{CommonMetricData, TestGetValue};
 
 use chrono::Utc;
 
@@ -157,9 +158,21 @@ impl EventMetric {
             map.insert("glean_timestamp".to_string(), precise_timestamp.to_string());
         }
 
+        // Determine the session context for this event.
+        //
+        // Sampling suppression has already been handled by `should_record()` above,
+        // which gates all metric types uniformly.  This call is concerned only with
+        // what metadata to attach: `OutOfSession` for out-of-session metrics and
+        // between-session events, `InSession(meta)` for events in a sampled-in session.
+        let ctx = if self.meta().in_session() {
+            glean.session_manager().compute_event_context()
+        } else {
+            EventSessionContext::OutOfSession
+        };
+
         glean
             .event_storage()
-            .record(glean, &self.meta, timestamp, extra_strings)
+            .record(glean, &self.meta, timestamp, extra_strings, ctx)
     }
 
     /// **Test-only API (exported for FFI purposes).**
@@ -192,21 +205,6 @@ impl EventMetric {
         })
     }
 
-    /// **Test-only API (exported for FFI purposes).**
-    ///
-    /// Get the vector of currently stored events for this event metric.
-    ///
-    /// This doesn't clear the stored value.
-    ///
-    /// # Arguments
-    ///
-    /// * `ping_name` - the optional name of the ping to retrieve the metric
-    ///                 for. Defaults to the first value in `send_in_pings`.
-    pub fn test_get_value(&self, ping_name: Option<String>) -> Option<Vec<RecordedEvent>> {
-        crate::block_on_dispatcher();
-        crate::core::with_glean(|glean| self.get_value(glean, ping_name.as_deref()))
-    }
-
     /// **Exported for test purposes.**
     ///
     /// Gets the number of recorded errors for the given metric and error type.
@@ -224,5 +222,24 @@ impl EventMetric {
         crate::core::with_glean(|glean| {
             test_get_num_recorded_errors(glean, self.meta(), error).unwrap_or(0)
         })
+    }
+}
+
+impl TestGetValue for EventMetric {
+    type Output = Vec<RecordedEvent>;
+
+    /// **Test-only API (exported for FFI purposes).**
+    ///
+    /// Get the vector of currently stored events for this event metric.
+    ///
+    /// This doesn't clear the stored value.
+    ///
+    /// # Arguments
+    ///
+    /// * `ping_name` - the optional name of the ping to retrieve the metric
+    ///                 for. Defaults to the first value in `send_in_pings`.
+    fn test_get_value(&self, ping_name: Option<String>) -> Option<Vec<RecordedEvent>> {
+        crate::block_on_dispatcher();
+        crate::core::with_glean(|glean| self.get_value(glean, ping_name.as_deref()))
     }
 }

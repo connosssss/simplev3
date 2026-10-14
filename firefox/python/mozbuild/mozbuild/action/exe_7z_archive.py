@@ -12,6 +12,7 @@ import buildconfig
 import mozpack.path as mozpath
 
 from mozbuild.base import BuildEnvironmentNotFoundException
+from mozbuild.build_markers import build_marker
 
 
 def archive_exe(pkg_dir, tagfile, sfx_package, package, use_upx):
@@ -28,15 +29,16 @@ def archive_exe(pkg_dir, tagfile, sfx_package, package, use_upx):
                 cmd = [wine, upx]
             else:
                 cmd = [upx]
-            subprocess.check_call(
-                cmd
-                + [
-                    "--best",
-                    "-o",
-                    final_sfx,
-                    sfx_package,
-                ]
-            )
+            with build_marker("InstallerUpx", sfx_package):
+                subprocess.check_call(
+                    cmd
+                    + [
+                        "--best",
+                        "-o",
+                        final_sfx,
+                        sfx_package,
+                    ]
+                )
         else:
             final_sfx = sfx_package
 
@@ -44,9 +46,9 @@ def archive_exe(pkg_dir, tagfile, sfx_package, package, use_upx):
             sevenz = buildconfig.config.substs["7Z"]
         except BuildEnvironmentNotFoundException:
             # configure hasn't been run, just use the default
-            sevenz = "7z"
-        subprocess.check_call(
-            [
+            sevenz = "7zz"
+        with build_marker("Installer7z", package):
+            subprocess.check_call([
                 sevenz,
                 "a",
                 "-r",
@@ -60,8 +62,7 @@ def archive_exe(pkg_dir, tagfile, sfx_package, package, use_upx):
                 "-mb0:1",
                 "-mb0s1:2",
                 "-mb0s2:3",
-            ]
-        )
+            ])
 
         with open(package, "wb") as o:
             for i in [final_sfx, tagfile, mozpath.join(tmpdir, "app.7z")]:

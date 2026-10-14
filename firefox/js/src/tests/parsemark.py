@@ -76,7 +76,9 @@ def bench(
     """Return a list of milliseconds for the counted runs."""
     assert '"' not in filepath
     code = JS_CODE_TEMPLATE.substitute(
-        filepath=filepath,
+        # The path is embedded in a JS string literal, so backslashes must
+        # be escaped.
+        filepath=filepath.replace("\\", "\\\\"),
         warmup_run_count=warmup_runs,
         real_run_count=counted_runs,
         prepare=prepare,
@@ -134,20 +136,20 @@ def main():
         metavar="COUNT",
         type=int,
         default=50,
-        help="timed data runs that count towards the average" " [%default]",
+        help="timed data runs that count towards the average [%default]",
     )
     parser.add_option(
         "-s",
         "--shell",
         metavar="PATH",
-        help="explicit shell location; when omitted, will look" " in likely places",
+        help="explicit shell location; when omitted, will look in likely places",
     )
     parser.add_option(
         "-b",
         "--baseline",
         metavar="JSON_PATH",
         dest="baseline_path",
-        help="json file with baseline values to " "compare against",
+        help="json file with baseline values to compare against",
     )
     parser.add_option(
         "--mode",

@@ -9,7 +9,9 @@ import android.view.View
 import android.widget.Button
 import android.widget.RadioButton
 import io.mockk.Called
+import io.mockk.Runs
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
 import io.mockk.spyk
 import io.mockk.verify
@@ -17,13 +19,14 @@ import io.mockk.verifyAll
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.state.createTab
 import mozilla.components.browser.state.store.BrowserStore
+import mozilla.components.feature.readerview.R as readerviewR
 import mozilla.components.feature.readerview.ReaderViewFeature
 import mozilla.components.support.base.feature.ViewBoundFeatureWrapper
 import mozilla.components.support.test.robolectric.testContext
+import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.mozilla.fenix.R
 import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
@@ -32,65 +35,90 @@ class DefaultReaderModeControllerTest {
     private lateinit var readerViewFeature: ReaderViewFeature
     private lateinit var featureWrapper: ViewBoundFeatureWrapper<ReaderViewFeature>
     private lateinit var readerViewControlsBar: View
-    private lateinit var onReaderModeChanged: () -> Unit
+    private var onReaderModeChangedCount = 0
+    private val onReaderModeChanged: () -> Unit = { onReaderModeChangedCount++ }
 
     @Before
     fun setup() {
         val tab = createTab("https://mozilla.org")
-        val store = BrowserStore(
-            BrowserState(
-                tabs = listOf(tab),
-                selectedTabId = tab.id,
-            ),
-        )
+        val store =
+            BrowserStore(
+                BrowserState(
+                    tabs = listOf(tab),
+                    selectedTabId = tab.id,
+                )
+            )
         readerViewFeature = spyk(ReaderViewFeature(testContext, mockk(), store, mockk()))
 
-        featureWrapper = ViewBoundFeatureWrapper(
-            feature = readerViewFeature,
-            owner = mockk(relaxed = true),
-            view = mockk(relaxed = true),
-        )
+        featureWrapper =
+            ViewBoundFeatureWrapper(
+                feature = readerViewFeature,
+                owner = mockk(relaxed = true),
+                view = mockk(relaxed = true),
+            )
         readerViewControlsBar = mockk(relaxed = true)
-        onReaderModeChanged = mockk(relaxed = true)
 
-        every { readerViewFeature.hideReaderView() } returns Unit
-        every { readerViewFeature.showReaderView() } returns Unit
-        every { readerViewFeature.showControls() } returns Unit
-        every { readerViewFeature.hideControls() } returns Unit
+        every { readerViewFeature.hideReaderView() } just Runs
+        every { readerViewFeature.showReaderView() } just Runs
+        every { readerViewFeature.showControls() } just Runs
+        every { readerViewFeature.hideControls() } just Runs
     }
 
     @Test
     fun testHideReaderView() {
-        val controller = DefaultReaderModeController(
-            featureWrapper,
-            readerViewControlsBar,
-            onReaderModeChanged = onReaderModeChanged,
-        )
+        val controller =
+            DefaultReaderModeController(
+                featureWrapper,
+                readerViewControlsBar,
+                onReaderModeChanged = onReaderModeChanged,
+            )
         controller.hideReaderView()
         verify { readerViewFeature.hideReaderView() }
         verify { readerViewFeature.hideControls() }
-        verify { onReaderModeChanged.invoke() }
+        assertEquals(1, onReaderModeChangedCount)
     }
 
     @Test
     fun testShowReaderView() {
-        val controller = DefaultReaderModeController(
-            featureWrapper,
-            readerViewControlsBar,
-            onReaderModeChanged = onReaderModeChanged,
-        )
+        val controller =
+            DefaultReaderModeController(
+                featureWrapper,
+                readerViewControlsBar,
+                onReaderModeChanged = onReaderModeChanged,
+            )
         controller.showReaderView()
         verify { readerViewFeature.showReaderView() }
-        verify { onReaderModeChanged.invoke() }
+        assertEquals(1, onReaderModeChangedCount)
+    }
+
+    @Test
+    fun `GIVEN a color scheme override WHEN it is set THEN it is forwarded to the reader view feature`() {
+        every { readerViewFeature.colorSchemeOverride = any() } just Runs
+        val controller = DefaultReaderModeController(featureWrapper, readerViewControlsBar)
+
+        controller.setColorSchemeOverride(ReaderViewFeature.ColorScheme.DARK)
+
+        verify { readerViewFeature.colorSchemeOverride = ReaderViewFeature.ColorScheme.DARK }
+    }
+
+    @Test
+    fun `GIVEN a color scheme override WHEN it is cleared THEN the reader view feature override is cleared`() {
+        every { readerViewFeature.colorSchemeOverride = any() } just Runs
+        val controller = DefaultReaderModeController(featureWrapper, readerViewControlsBar)
+
+        controller.setColorSchemeOverride(null)
+
+        verify { readerViewFeature.colorSchemeOverride = null }
     }
 
     @Test
     fun testShowControlsNormalTab() {
-        val controller = DefaultReaderModeController(
-            featureWrapper,
-            readerViewControlsBar,
-            isPrivate = false,
-        )
+        val controller =
+            DefaultReaderModeController(
+                featureWrapper,
+                readerViewControlsBar,
+                isPrivate = false,
+            )
 
         controller.showControls()
         verify { readerViewFeature.showControls() }
@@ -99,13 +127,14 @@ class DefaultReaderModeControllerTest {
 
     @Test
     fun testShowControlsPrivateTab() {
-        val controller = spyk(
-            DefaultReaderModeController(
-                featureWrapper,
-                readerViewControlsBar,
-                isPrivate = true,
-            ),
-        )
+        val controller =
+            spyk(
+                DefaultReaderModeController(
+                    featureWrapper,
+                    readerViewControlsBar,
+                    isPrivate = true,
+                )
+            )
 
         val privateButtonColor = mockk<ColorStateList>()
         val privateRadioButtonColor = mockk<ColorStateList>()
@@ -119,16 +148,16 @@ class DefaultReaderModeControllerTest {
         val sansSerif = mockk<RadioButton>(relaxUnitFun = true)
 
         every {
-            readerViewControlsBar.findViewById<Button>(R.id.mozac_feature_readerview_font_size_decrease)
+            readerViewControlsBar.findViewById<Button>(readerviewR.id.mozac_feature_readerview_font_size_decrease)
         } returns decrease
         every {
-            readerViewControlsBar.findViewById<Button>(R.id.mozac_feature_readerview_font_size_increase)
+            readerViewControlsBar.findViewById<Button>(readerviewR.id.mozac_feature_readerview_font_size_increase)
         } returns increase
         every {
-            readerViewControlsBar.findViewById<RadioButton>(R.id.mozac_feature_readerview_font_serif)
+            readerViewControlsBar.findViewById<RadioButton>(readerviewR.id.mozac_feature_readerview_font_serif)
         } returns serif
         every {
-            readerViewControlsBar.findViewById<RadioButton>(R.id.mozac_feature_readerview_font_sans_serif)
+            readerViewControlsBar.findViewById<RadioButton>(readerviewR.id.mozac_feature_readerview_font_sans_serif)
         } returns sansSerif
 
         controller.showControls()

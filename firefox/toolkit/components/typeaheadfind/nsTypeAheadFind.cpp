@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,22 +23,22 @@
 #include "nsIFrame.h"
 #include "mozilla/dom/Document.h"
 #include "nsIContent.h"
-#include "nsTextFragment.h"
 #include "nsIEditor.h"
 
 #include "nsIDocShellTreeItem.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIObserverService.h"
 #include "nsFocusManager.h"
+#include "mozilla/dom/CharacterDataBuffer.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLInputElement.h"
 #include "mozilla/dom/HTMLTextAreaElement.h"
 #include "mozilla/dom/Link.h"
+#include "mozilla/dom/Range.h"
 #include "mozilla/dom/RangeBinding.h"
 #include "mozilla/dom/Selection.h"
 #include "mozilla/StaticPrefs_accessibility.h"
 #include "nsLayoutUtils.h"
-#include "nsRange.h"
 
 #include "nsTypeAheadFind.h"
 
@@ -200,7 +199,7 @@ void nsTypeAheadFind::ReleaseFoundResultsAndDisconnect() {
 }
 
 void nsTypeAheadFind::SetCurrentWindow(nsPIDOMWindowInner* aWindow) {
-  BindToOwner(aWindow->AsGlobal());
+  BindToGlobal(aWindow->AsGlobal());
 }
 
 NS_IMETHODIMP
@@ -333,7 +332,7 @@ nsresult nsTypeAheadFind::FindItNow(uint32_t aMode, bool aIsLinksOnly,
   bool useSelection = (aMode != FIND_FIRST && aMode != FIND_LAST) &&
                       (!aIsFirstVisiblePreferred || mStartFindRange);
 
-  RefPtr<nsRange> returnRange;
+  RefPtr<dom::Range> returnRange;
   if (NS_FAILED(GetSearchContainers(
           currentContainer, useSelection ? selectionController.get() : nullptr,
           aIsFirstVisiblePreferred, findPrev, getter_AddRefs(presShell),
@@ -342,7 +341,7 @@ nsresult nsTypeAheadFind::FindItNow(uint32_t aMode, bool aIsLinksOnly,
   }
 
   if (!mStartPointRange) {
-    mStartPointRange = nsRange::Create(presShell->GetDocument());
+    mStartPointRange = dom::Range::Create(presShell->GetDocument());
   }
 
   // XXXbz Should this really be ignoring errors?
@@ -452,14 +451,12 @@ nsresult nsTypeAheadFind::FindItNow(uint32_t aMode, bool aIsLinksOnly,
         nsINode* node = returnRange->GetStartContainer();
         while (node) {
           nsCOMPtr<nsIEditor> editor;
-          if (RefPtr<HTMLInputElement> input =
-                  HTMLInputElement::FromNode(node)) {
+          if (RefPtr input = HTMLInputElement::FromNode(node)) {
             editor = input->GetTextEditor();
-          } else if (RefPtr<HTMLTextAreaElement> textarea =
-                         HTMLTextAreaElement::FromNode(node)) {
+          } else if (RefPtr textarea = HTMLTextAreaElement::FromNode(node)) {
             editor = textarea->GetTextEditor();
           } else {
-            node = node->GetParentNode();
+            node = node->GetParentOrShadowHostNode();
             continue;
           }
 
@@ -518,20 +515,34 @@ nsresult nsTypeAheadFind::FindItNow(uint32_t aMode, bool aIsLinksOnly,
                       getter_AddRefs(mFoundLink));
       }
 
-      // Change selection color to ATTENTION and scroll to it.  Careful: we
-      // must wait until after we goof with focus above before changing to
-      // ATTENTION, or when we MoveFocus() and the selection is not on a
-      // link, we'll blur, which will lose the ATTENTION.
+      // Change selection color to ATTENTION.  Careful: we must wait until
+      // after we goof with focus above before changing to ATTENTION, or when
+      // we MoveFocus() and the selection is not on a link, we'll blur, which
+      // will lose the ATTENTION.
       if (selectionController) {
-        // Beware! This may flush notifications via synchronous
-        // ScrollSelectionIntoView.
         SetSelectionModeAndRepaint(nsISelectionController::SELECTION_ATTENTION);
-        selectionController->ScrollSelectionIntoView(
-            SelectionType::eNormal,
-            nsISelectionController::SELECTION_WHOLE_SELECTION,
-            ScrollAxis(WhereToScroll::Center), ScrollAxis(), ScrollFlags::None,
-            SelectionScrollMode::SyncFlush);
       }
+
+      NS_DispatchToMainThread(NS_NewRunnableFunction(
+          "AncestorRevealingAlgorithm",
+          [self = RefPtr{this}, returnRange = RefPtr{returnRange},
+           selectionController = nsCOMPtr{selectionController}]()
+              MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA {
+                // Reveal hidden-until-found and closed details elements.
+                // https://html.spec.whatwg.org/#interaction-with-details-and-hidden=until-found
+                if (RefPtr startNode = returnRange->GetStartContainer()) {
+                  startNode->AncestorRevealingAlgorithm(IgnoreErrors());
+                }
+                // Scroll to the selection.
+                if (selectionController) {
+                  selectionController->ScrollSelectionIntoView(
+                      SelectionType::eNormal,
+                      nsISelectionController::SELECTION_WHOLE_SELECTION,
+                      AxisScrollParams(WhereToScroll::Center),
+                      AxisScrollParams(), ScrollFlags::None,
+                      SelectionScrollMode::SyncFlush);
+                }
+              }));
 
       SetCurrentWindow(window);
       *aResult = hasWrapped ? FIND_WRAPPED : FIND_FOUND;
@@ -580,7 +591,7 @@ nsresult nsTypeAheadFind::FindItNow(uint32_t aMode, bool aIsLinksOnly,
     }
 
     if (continueLoop) {
-      Unused << GetSearchContainers(
+      (void)GetSearchContainers(
           currentContainer, nullptr, aIsFirstVisiblePreferred, findPrev,
           getter_AddRefs(presShell), getter_AddRefs(presContext));
       continue;
@@ -647,39 +658,27 @@ nsresult nsTypeAheadFind::GetSearchContainers(
 
   if (!doc) return NS_ERROR_FAILURE;
 
-  nsCOMPtr<nsIContent> rootContent;
-  if (doc->IsHTMLOrXHTML()) {
-    rootContent = doc->GetBody();
-  }
-
-  if (!rootContent) {
-    rootContent = doc->GetRootElement();
-    if (!rootContent) {
-      return NS_ERROR_FAILURE;
-    }
-  }
-
   if (!mSearchRange) {
-    mSearchRange = nsRange::Create(doc);
+    mSearchRange = dom::Range::Create(doc);
   }
-  nsCOMPtr<nsINode> searchRootNode(rootContent);
+  nsCOMPtr<nsINode> searchRootNode(doc);
 
   mSearchRange->SelectNodeContents(*searchRootNode, IgnoreErrors());
 
   if (!mStartPointRange) {
-    mStartPointRange = nsRange::Create(doc);
+    mStartPointRange = dom::Range::Create(doc);
   }
   mStartPointRange->SetStartAndEnd(searchRootNode, 0, searchRootNode, 0);
 
   if (!mEndPointRange) {
-    mEndPointRange = nsRange::Create(doc);
+    mEndPointRange = dom::Range::Create(doc);
   }
   mEndPointRange->SetStartAndEnd(searchRootNode, searchRootNode->Length(),
                                  searchRootNode, searchRootNode->Length());
 
   // Consider current selection as null if
   // it's not in the currently focused document
-  RefPtr<const nsRange> currentSelectionRange;
+  RefPtr<const dom::Range> currentSelectionRange;
   RefPtr<Document> selectionDocument = GetDocument();
   if (aSelectionController && selectionDocument && selectionDocument == doc) {
     RefPtr<Selection> selection = aSelectionController->GetSelection(
@@ -699,11 +698,11 @@ nsresult nsTypeAheadFind::GetSearchContainers(
     mEndPointRange->Collapse(false);
   } else {
     if (aFindPrev) {
-      Unused << mEndPointRange->SetStartAndEnd(
-          currentSelectionRange->StartRef(), currentSelectionRange->StartRef());
+      (void)mEndPointRange->SetStartAndEnd(currentSelectionRange->StartRef(),
+                                           currentSelectionRange->StartRef());
     } else {
-      Unused << mStartPointRange->SetStartAndEnd(
-          currentSelectionRange->EndRef(), currentSelectionRange->EndRef());
+      (void)mStartPointRange->SetStartAndEnd(currentSelectionRange->EndRef(),
+                                             currentSelectionRange->EndRef());
     }
   }
 
@@ -713,7 +712,7 @@ nsresult nsTypeAheadFind::GetSearchContainers(
   return NS_OK;
 }
 
-void nsTypeAheadFind::RangeStartsInsideLink(nsRange* aRange,
+void nsTypeAheadFind::RangeStartsInsideLink(dom::Range* aRange,
                                             bool* aIsInsideLink,
                                             bool* aIsStartingLink) {
   *aIsInsideLink = false;
@@ -736,12 +735,14 @@ void nsTypeAheadFind::RangeStartsInsideLink(nsRange* aRange,
       startContent = childContent;
     }
   } else if (startOffset > 0) {
-    const nsTextFragment* textFrag = startContent->GetText();
-    if (textFrag) {
+    const CharacterDataBuffer* characterDataBuffer =
+        startContent->GetCharacterDataBuffer();
+    if (characterDataBuffer) {
       // look for non whitespace character before start offset
       for (uint32_t index = 0; index < startOffset; index++) {
         // FIXME: take content language into account when deciding whitespace.
-        if (!mozilla::dom::IsSpaceCharacter(textFrag->CharAt(index))) {
+        if (!mozilla::dom::IsSpaceCharacter(
+                characterDataBuffer->CharAt(index))) {
           *aIsStartingLink = false;  // not at start of a node
           break;
         }
@@ -943,7 +944,7 @@ nsresult nsTypeAheadFind::FindInternal(uint32_t aMode,
 
       mStartFindRange = nullptr;
       if (selection) {
-        RefPtr<const nsRange> startFindRange = selection->GetRangeAt(0);
+        RefPtr<const dom::Range> startFindRange = selection->GetRangeAt(0);
         if (startFindRange) {
           mStartFindRange = startFindRange->CloneRange();
         }
@@ -958,27 +959,34 @@ nsresult nsTypeAheadFind::FindInternal(uint32_t aMode,
 void nsTypeAheadFind::GetSelection(PresShell* aPresShell,
                                    nsISelectionController** aSelCon,
                                    Selection** aDOMSel) {
-  if (!aPresShell) return;
-
-  // if aCurrentNode is nullptr, get selection for document
+  *aSelCon = nullptr;
   *aDOMSel = nullptr;
 
-  nsPresContext* presContext = aPresShell->GetPresContext();
-
-  nsIFrame* frame = aPresShell->GetRootFrame();
-
-  if (presContext && frame) {
-    frame->GetSelectionController(presContext, aSelCon);
-    if (*aSelCon) {
-      RefPtr<Selection> sel =
-          (*aSelCon)->GetSelection(nsISelectionController::SELECTION_NORMAL);
-      sel.forget(aDOMSel);
-    }
+  if (MOZ_UNLIKELY(!aPresShell)) {
+    return;
   }
+
+  nsPresContext* const presContext = aPresShell->GetPresContext();
+  if (MOZ_UNLIKELY(!presContext)) {
+    return;
+  }
+
+  nsIFrame* const frame = aPresShell->GetRootFrame();
+  if (MOZ_UNLIKELY(!frame)) {
+    return;
+  }
+
+  nsCOMPtr<nsISelectionController> selCon = frame->GetSelectionController();
+  RefPtr<Selection> sel;
+  if (selCon) {
+    sel = selCon->GetSelection(nsISelectionController::SELECTION_NORMAL);
+  }
+  selCon.forget(aSelCon);
+  sel.forget(aDOMSel);
 }
 
 NS_IMETHODIMP
-nsTypeAheadFind::GetFoundRange(nsRange** aFoundRange) {
+nsTypeAheadFind::GetFoundRange(dom::Range** aFoundRange) {
   NS_ENSURE_ARG_POINTER(aFoundRange);
   if (mFoundRange == nullptr) {
     *aFoundRange = nullptr;
@@ -990,13 +998,13 @@ nsTypeAheadFind::GetFoundRange(nsRange** aFoundRange) {
 }
 
 NS_IMETHODIMP
-nsTypeAheadFind::IsRangeVisible(nsRange* aRange, bool aMustBeInViewPort,
+nsTypeAheadFind::IsRangeVisible(dom::Range* aRange, bool aMustBeInViewPort,
                                 bool* aResult) {
   *aResult = IsRangeVisible(aRange, aMustBeInViewPort, false, nullptr);
   return NS_OK;
 }
 
-bool nsTypeAheadFind::IsRangeVisible(nsRange* aRange, bool aMustBeInViewPort,
+bool nsTypeAheadFind::IsRangeVisible(dom::Range* aRange, bool aMustBeInViewPort,
                                      bool aGetTopVisibleLeaf,
                                      bool* aUsesIndependentSelection) {
   // We need to know if the range start is visible.
@@ -1019,20 +1027,19 @@ bool nsTypeAheadFind::IsRangeVisible(nsRange* aRange, bool aMustBeInViewPort,
   // Detect if we are _inside_ a text control, or something else with its own
   // selection controller.
   if (aUsesIndependentSelection) {
-    *aUsesIndependentSelection =
-        frame->HasAnyStateBits(NS_FRAME_INDEPENDENT_SELECTION);
+    *aUsesIndependentSelection = frame->IsInsideTextControl();
   }
 
   return aMustBeInViewPort ? IsRangeRendered(aRange) : true;
 }
 
 NS_IMETHODIMP
-nsTypeAheadFind::IsRangeRendered(nsRange* aRange, bool* aResult) {
+nsTypeAheadFind::IsRangeRendered(dom::Range* aRange, bool* aResult) {
   *aResult = IsRangeRendered(aRange);
   return NS_OK;
 }
 
-bool nsTypeAheadFind::IsRangeRendered(nsRange* aRange) {
+bool nsTypeAheadFind::IsRangeRendered(dom::Range* aRange) {
   using FrameForPointOption = nsLayoutUtils::FrameForPointOption;
   nsCOMPtr<nsIContent> content =
       nsIContent::FromNodeOrNull(aRange->GetClosestCommonInclusiveAncestor());
@@ -1053,7 +1060,7 @@ bool nsTypeAheadFind::IsRangeRendered(nsRange* aRange) {
   // viewport. Do a hit-test to determine that quickly and properly.
   AutoTArray<nsIFrame*, 8> frames;
   nsIFrame* rootFrame = frame->PresShell()->GetRootFrame();
-  RefPtr<nsRange> range = static_cast<nsRange*>(aRange);
+  RefPtr<dom::Range> range = static_cast<dom::Range*>(aRange);
 
   // NOTE(emilio): This used to flush layout, _after_ checking style above.
   // Instead, don't flush.

@@ -1,12 +1,15 @@
-// Copyright (c) 2006-2010 The Chromium Authors. All rights reserved.
+// Copyright 2006-2010 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #include "sandbox/win/src/eat_resolver.h"
 
+#include <ntstatus.h>
 #include <stddef.h>
 
+#include "base/compiler_specific.h"
 #include "base/win/pe_image.h"
+#include "sandbox/win/src/nt_internals.h"
 #include "sandbox/win/src/sandbox_nt_util.h"
 
 namespace sandbox {
@@ -35,7 +38,8 @@ NTSTATUS EatResolverThunk::Setup(const void* target_module,
 
   size_t thunk_bytes = GetInternalThunkSize();
   storage_bytes -= thunk_bytes;
-  thunk_storage = reinterpret_cast<char*>(thunk_storage) + thunk_bytes;
+  thunk_storage =
+      UNSAFE_TODO(reinterpret_cast<char*>(thunk_storage) + thunk_bytes);
 #endif
 
   if (!SetInternalThunk(thunk_storage, storage_bytes, target_, interceptor_))

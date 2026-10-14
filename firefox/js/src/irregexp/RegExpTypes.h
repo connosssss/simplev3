@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -11,6 +9,8 @@
 #define regexp_RegExpTypes_h
 
 #include "js/UniquePtr.h"
+
+class JSLinearString;
 
 namespace js {
 class MatchPairs;
@@ -57,33 +57,37 @@ class ByteArrayData {
 };
 
 class Isolate;
-class RegExpStack;
-class RegExpStackScope;
+
+namespace regexp {
+
+class Stack;
+class StackScope;
 
 struct InputOutputData {
-  const void* inputStart;
-  const void* inputEnd;
+  JSLinearString* input;
 
-  // Index into inputStart (in chars) at which to begin matching.
+  // Index into input (in chars) at which to begin matching.
   size_t startIndex;
 
   js::MatchPairs* matches;
 
-  template <typename CharT>
-  InputOutputData(const CharT* inputStart, const CharT* inputEnd,
-                  size_t startIndex, js::MatchPairs* matches)
-      : inputStart(inputStart),
-        inputEnd(inputEnd),
+  // Whether this execution of the regexp can resume after an interrupt.
+  // If not, it will return ERROR when interrupted, and the caller must
+  // handle the interrupt. Setting this to true is an assertion that
+  // nothing is unrooted in the caller.
+  uint32_t canResume;
+
+  InputOutputData(JSLinearString* input, size_t startIndex,
+                  js::MatchPairs* matches, bool canResume)
+      : input(input),
         startIndex(startIndex),
-        matches(matches) {}
+        matches(matches),
+        canResume(canResume) {}
 
   // Note: return int32_t instead of size_t to prevent signed => unsigned
   // conversions in caller functions.
-  static constexpr int32_t offsetOfInputStart() {
-    return int32_t(offsetof(InputOutputData, inputStart));
-  }
-  static constexpr int32_t offsetOfInputEnd() {
-    return int32_t(offsetof(InputOutputData, inputEnd));
+  static constexpr int32_t offsetOfInput() {
+    return int32_t(offsetof(InputOutputData, input));
   }
   static constexpr int32_t offsetOfStartIndex() {
     return int32_t(offsetof(InputOutputData, startIndex));
@@ -91,8 +95,12 @@ struct InputOutputData {
   static constexpr int32_t offsetOfMatches() {
     return int32_t(offsetof(InputOutputData, matches));
   }
+  static constexpr int32_t offsetOfCanResume() {
+    return int32_t(offsetof(InputOutputData, canResume));
+  }
 };
 
+}  // namespace regexp
 }  // namespace internal
 }  // namespace v8
 
@@ -100,11 +108,11 @@ namespace js {
 namespace irregexp {
 
 using Isolate = v8::internal::Isolate;
-using RegExpStack = v8::internal::RegExpStack;
-using RegExpStackScope = v8::internal::RegExpStackScope;
+using RegExpStack = v8::internal::regexp::Stack;
+using RegExpStackScope = v8::internal::regexp::StackScope;
 using ByteArrayData = v8::internal::ByteArrayData;
 using ByteArray = js::UniquePtr<v8::internal::ByteArrayData, JS::FreePolicy>;
-using InputOutputData = v8::internal::InputOutputData;
+using InputOutputData = v8::internal::regexp::InputOutputData;
 
 }  // namespace irregexp
 }  // namespace js

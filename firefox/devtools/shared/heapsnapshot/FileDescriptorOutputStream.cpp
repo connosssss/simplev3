@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -59,15 +58,16 @@ FileDescriptorOutputStream::Flush() {
 }
 
 NS_IMETHODIMP
-FileDescriptorOutputStream::WriteFrom(nsIInputStream* fromStream,
-                                      uint32_t count, uint32_t* retval) {
+FileDescriptorOutputStream::WriteFrom(nsIInputStream* /*fromStream*/,
+                                      uint32_t /*count*/,
+                                      uint32_t* /*retval*/) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
-FileDescriptorOutputStream::WriteSegments(nsReadSegmentFun reader,
-                                          void* closure, uint32_t count,
-                                          uint32_t* retval) {
+FileDescriptorOutputStream::WriteSegments(nsReadSegmentFun /*reader*/,
+                                          void* /*closure*/, uint32_t /*count*/,
+                                          uint32_t* /*retval*/) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 

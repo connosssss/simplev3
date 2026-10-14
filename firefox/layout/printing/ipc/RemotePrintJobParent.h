@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,23 +5,19 @@
 #ifndef mozilla_layout_RemotePrintJobParent_h
 #define mozilla_layout_RemotePrintJobParent_h
 
-#include "mozilla/layout/PRemotePrintJobParent.h"
-#include "mozilla/layout/printing/DrawEventRecorder.h"
-
-#include "nsCOMArray.h"
-#include "nsCOMPtr.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/gfx/Point.h"
-#include "mozilla/gfx/RecordedEvent.h"
 #include "mozilla/gfx/CrossProcessPaint.h"
+#include "mozilla/layout/PRemotePrintJobParent.h"
+#include "mozilla/layout/printing/DrawEventRecorder.h"
+#include "nsCOMArray.h"
+#include "nsCOMPtr.h"
 
 class nsDeviceContext;
 class nsIPrintSettings;
 class nsIWebProgressListener;
 
-namespace mozilla {
-namespace layout {
+namespace mozilla::layout {
 
 class PrintTranslator;
 
@@ -35,9 +29,9 @@ class RemotePrintJobParent final : public PRemotePrintJobParent {
 
   void ActorDestroy(ActorDestroyReason aWhy) final;
 
-  mozilla::ipc::IPCResult RecvInitializePrint(const nsAString& aDocumentTitle,
-                                              const int32_t& aStartPage,
-                                              const int32_t& aEndPage) final;
+  mozilla::ipc::IPCResult RecvInitializePrint(
+      const nsAString& aDocumentTitle, const dom::MaybeDiscardedWindowContext&,
+      const int32_t& aStartPage, const int32_t& aEndPage) final;
 
   mozilla::ipc::IPCResult RecvProcessPage(const int32_t& aWidthInPoints,
                                           const int32_t& aHeightInPoints,
@@ -68,8 +62,13 @@ class RemotePrintJobParent final : public PRemotePrintJobParent {
  private:
   ~RemotePrintJobParent() final;
 
+  void InitializePrint(const nsAString& aDocumentTitle, dom::WindowContext*,
+                       const int32_t& aStartPage, const int32_t& aEndPage);
+
+  void FailInitialization(nsresult);
+
   nsresult InitializePrintDevice(const nsAString& aDocumentTitle,
-                                 const int32_t& aStartPage,
+                                 dom::WindowContext*, const int32_t& aStartPage,
                                  const int32_t& aEndPage);
 
   nsresult PrepareNextPageFD(FileDescriptor* aFd);
@@ -92,11 +91,17 @@ class RemotePrintJobParent final : public PRemotePrintJobParent {
   UniquePtr<PrintTranslator> mPrintTranslator;
   nsCOMArray<nsIWebProgressListener> mPrintProgressListeners;
   PRFileDescStream mCurrentPageStream;
-  bool mIsDoingPrinting;
-  nsresult mStatus;
+
+  // Once initialized, these identify the page we're printing.
+  uint64_t mInnerWindowId{0};
+  dom::TabId mTabId{0};
+
+  nsresult mStatus = NS_ERROR_UNEXPECTED;
+  bool mIsDoingPrinting = false;
+  // True after RecvInitializePrint is called.
+  bool mInitializeReceived = false;
 };
 
-}  // namespace layout
-}  // namespace mozilla
+}  // namespace mozilla::layout
 
 #endif  // mozilla_layout_RemotePrintJobParent_h

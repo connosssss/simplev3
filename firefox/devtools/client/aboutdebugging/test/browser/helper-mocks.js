@@ -132,9 +132,10 @@ class Mocks {
 
   /**
    * Creates a USB runtime for which a client conenction can be established.
-   * @param {String} id
+   *
+   * @param {string} id
    *        The id of the runtime.
-   * @param {Object} optional object used to create the fake runtime & device
+   * @param {object} optional object used to create the fake runtime & device
    *        - channel: {String} Release channel, for instance "release", "nightly"
    *        - clientWrapper: {ClientWrapper} optional ClientWrapper for this runtime
    *        - deviceId: {String} Device id
@@ -145,7 +146,7 @@ class Mocks {
    *        - socketPath: {String} (should only be used for connecting, so not here)
    *        - version: {String} Version, for instance "63.0a"
    *        - versionName: {String} Version return by ADB "63.0a"
-   * @return {Object} Returns the mock client created for this runtime so that methods
+   * @return {object} Returns the mock client created for this runtime so that methods
    * can be overridden on it.
    */
   createUSBRuntime(id, runtimeInfo = {}) {
@@ -246,34 +247,13 @@ async function createLocalClientWrapper() {
   // First, instantiate a DevToolsServer, the same way it is being done when running
   // firefox --start-debugger-server
   const {
-    useDistinctSystemPrincipalLoader,
-    releaseDistinctSystemPrincipalLoader,
-  } = ChromeUtils.importESModule(
-    "resource://devtools/shared/loader/DistinctSystemPrincipalLoader.sys.mjs"
-  );
-  const requester = {};
-  const serverLoader = useDistinctSystemPrincipalLoader(requester);
-  registerCleanupFunction(() => {
-    releaseDistinctSystemPrincipalLoader(requester);
-  });
-  const { DevToolsServer } = serverLoader.require(
-    "resource://devtools/server/devtools-server.js"
-  );
-  DevToolsServer.init();
-  DevToolsServer.registerAllActors();
-  DevToolsServer.allowChromeProcess = true;
+    CommandsFactory,
+  } = require("resource://devtools/shared/commands/commands-factory.js");
+  const client = await CommandsFactory.spawnClientToDebugSystemPrincipal();
 
-  // Then spawn a DevToolsClient connected to this new DevToolsServer
-  const {
-    DevToolsClient,
-  } = require("resource://devtools/client/devtools-client.js");
   const {
     ClientWrapper,
   } = require("resource://devtools/client/aboutdebugging/src/modules/client-wrapper.js");
-
-  const client = new DevToolsClient(DevToolsServer.connectPipe());
-
-  await client.connect();
   return new ClientWrapper(client);
 }
 /* exported createLocalClientWrapper */

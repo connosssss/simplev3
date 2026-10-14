@@ -1,16 +1,19 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_widget_WindowsUIUtils_h__
-#define mozilla_widget_WindowsUIUtils_h__
+#ifndef mozilla_widget_WindowsUIUtils_h_
+#define mozilla_widget_WindowsUIUtils_h_
 
-#include "nsIWindowsUIUtils.h"
-#include "nsString.h"
-#include "nsColor.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MozPromise.h"
+#include "nsColor.h"
+#include "nsIWindowsUIUtils.h"
+#include "nsString.h"
+
+// Avoid including windef.h to get this, which improves
+// build times.
+typedef struct HWND__* HWND;
 
 using SharePromise =
     mozilla::MozPromise<bool, nsresult, /* IsExclusive */ true>;
@@ -24,13 +27,19 @@ class WindowsUIUtils final : public nsIWindowsUIUtils {
   NS_DECL_ISUPPORTS
   NS_DECL_NSIWINDOWSUIUTILS
 
-  WindowsUIUtils();
+  WindowsUIUtils() = default;
 
   static RefPtr<SharePromise> Share(nsAutoString aTitle, nsAutoString aText,
                                     nsAutoString aUrl);
 
+  // Why the Win11 tablet-mode state is being recomputed. Receiving an OS-level
+  // ConvertibleSlateMode notification is itself evidence that the device is
+  // tablet-capable, and so overrides a negative result from the capability
+  // heuristic
+  enum class TabletModeUpdateReason : uint8_t { Notification, LazyQuery };
+
   static void UpdateInWin10TabletMode();
-  static void UpdateInWin11TabletMode();
+  static void UpdateInWin11TabletMode(TabletModeUpdateReason);
 
   // Check whether we're in Win10 tablet mode.
   //
@@ -44,6 +53,11 @@ class WindowsUIUtils final : public nsIWindowsUIUtils {
   // mode that there is no single getter to retrieve whether we're in a generic
   // "tablet mode".)
   static bool GetInWin11TabletMode();
+  // Check whether this device can enter tablet mode at all. Unlike the
+  // GetIn*TabletMode() getters, this is a stable property of the device rather
+  // than a momentary state, so it's the right question to ask when deciding
+  // whether to offer tablet-mode-related UI.
+  static bool GetIsTabletCapable();
 
   // Gets the system accent color, or one of the darker / lighter variants
   // (darker = -1/2/3, lighter=+1/2/3, values outside of that range are
@@ -55,9 +69,11 @@ class WindowsUIUtils final : public nsIWindowsUIUtils {
   static bool ComputeOverlayScrollbars();
   static double ComputeTextScaleFactor();
   static bool ComputeTransparencyEffects();
+  static void AssociateWithWinAppSDK(HWND aWnd);
+  static void SetIsTitlebarCollapsed(HWND aWnd, bool aIsCollapsed);
 
  protected:
-  ~WindowsUIUtils();
+  ~WindowsUIUtils() = default;
 };
 
-#endif  // mozilla_widget_WindowsUIUtils_h__
+#endif  // mozilla_widget_WindowsUIUtils_h_

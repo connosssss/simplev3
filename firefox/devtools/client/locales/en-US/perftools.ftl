@@ -32,11 +32,33 @@ perftools-description-local-build =
   If you’re profiling a build that you have compiled yourself, on this
   machine, please add your build’s objdir to the list below so that
   it can be used to look up symbol information.
+perftools-pick-local-build-directory = Pick build directory
 
 ## The controls for the interval at which the profiler samples the code.
 
 perftools-range-interval-label = Sampling interval:
 perftools-range-interval-milliseconds = {NUMBER($interval, maxFractionalUnits: 2)} ms
+
+## Generic memory units that can be used in various places, eg for the buffer size.
+
+# Byte
+perftools-memory-unit-b = { NUMBER($num, maxFractionalUnits: 2) } B
+# Kibibyte
+perftools-memory-unit-kib = { NUMBER($num, maxFractionalUnits: 2) } KiB
+# Mebibyte
+perftools-memory-unit-mib = { NUMBER($num, maxFractionalUnits: 2) } MiB
+# Gibibyte
+perftools-memory-unit-gib = { NUMBER($num, maxFractionalUnits: 2) } GiB
+# Tebibyte
+perftools-memory-unit-tib = { NUMBER($num, maxFractionalUnits: 2) } TiB
+# Pebibyte
+perftools-memory-unit-pib = { NUMBER($num, maxFractionalUnits: 2) } PiB
+# Exbibyte
+perftools-memory-unit-eib = { NUMBER($num, maxFractionalUnits: 2) } EiB
+# Zebibyte
+perftools-memory-unit-zib = { NUMBER($num, maxFractionalUnits: 2) } ZiB
+# Yobibyte
+perftools-memory-unit-yib = { NUMBER($num, maxFractionalUnits: 2) } YiB
 
 ##
 
@@ -98,8 +120,8 @@ pref-thread-stream-trans =
   .title = Network stream transport
 perftools-thread-socket-thread =
   .title = The thread where networking code runs any blocking socket calls
-perftools-thread-img-decoder =
-  .title = Image decoding threads
+perftools-thread-jxl-img-decode =
+  .title = JPEG XL image decoding threads
 perftools-thread-dns-resolver =
   .title = DNS resolution happens on this thread
 perftools-thread-task-controller =
@@ -157,12 +179,18 @@ perftools-presets-ml-description2 = Preset for investigating machine learning bu
 perftools-presets-networking-label = Networking
 perftools-presets-networking-description = Preset for investigating networking bugs in { -brand-shorter-name }.
 
+perftools-presets-networking-with-logs-label = Networking with Logs
+perftools-presets-networking-with-logs-description = Preset for investigating networking bugs in { -brand-shorter-name }, including networking logs. These logs may contain sensitive information such as the URLs you visit.
+
 # "Power" is used in the sense of energy (electricity used by the computer).
 perftools-presets-power-label = Power
 perftools-presets-power-description = Preset for investigating power use bugs in { -brand-shorter-name }, with low overhead.
 
 perftools-presets-debug-label = Debug
 perftools-presets-debug-description = Preset for debugging in { -brand-shorter-name }. High overhead, do not use for performance work but use for focusing on understanding browser behavior.
+
+perftools-presets-web-compat-label = Web Compat
+perftools-presets-web-compat-description = Recommended preset for debugging web compatibility issues in websites, rather than tracking performance.
 
 perftools-presets-custom-label = Custom
 

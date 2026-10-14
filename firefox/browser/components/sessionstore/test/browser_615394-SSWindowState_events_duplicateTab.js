@@ -14,7 +14,7 @@ const testState = {
 };
 
 function test() {
-  /** Test for Bug 615394 - Session Restore should notify when it is beginning and ending a restore **/
+  /** Test for Bug 615394 - Session Restore should notify when it is beginning and ending a restore */
   waitForExplicitFinish();
 
   waitForBrowserState(testState, test_duplicateTab);
@@ -64,6 +64,6 @@ function test_duplicateTab() {
   window.addEventListener("SSWindowStateReady", onSSWindowStateReady);
   gBrowser.tabContainer.addEventListener("SSTabRestoring", onSSTabRestoring);
 
-  gBrowser._insertBrowser(tab);
+  gBrowser.insertBrowser(tab);
   newTab = ss.duplicateTab(window, tab);
 }

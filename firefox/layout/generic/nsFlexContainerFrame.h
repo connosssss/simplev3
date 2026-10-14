@@ -1,18 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* rendering object for CSS "display: flex" and "display: -webkit-box" */
 
-#ifndef nsFlexContainerFrame_h___
-#define nsFlexContainerFrame_h___
+#ifndef nsFlexContainerFrame_h_
+#define nsFlexContainerFrame_h_
 
 #include <tuple>
 
-#include "mozilla/dom/FlexBinding.h"
 #include "mozilla/IntrinsicISizesCache.h"
+#include "mozilla/dom/FlexBinding.h"
 #include "nsContainerFrame.h"
 #include "nsILineIterator.h"
 
@@ -269,7 +267,8 @@ class nsFlexContainerFrame final : public nsContainerFrame,
   int32_t GetNumLines() const final;
   bool IsLineIteratorFlowRTL() final;
   mozilla::Result<LineInfo, nsresult> GetLine(int32_t aLineNumber) final;
-  int32_t FindLineContaining(nsIFrame* aFrame, int32_t aStartLine = 0) final;
+  int32_t FindLineContaining(const nsIFrame* aFrame,
+                             int32_t aStartLine = 0) final;
   NS_IMETHOD FindFrameAt(int32_t aLineNumber, nsPoint aPos,
                          nsIFrame** aFrameFound, bool* aPosIsBeforeFirstFrame,
                          bool* aPosIsAfterLastFrame) final;
@@ -681,6 +680,13 @@ class nsFlexContainerFrame final : public nsContainerFrame,
                                 mozilla::IntrinsicISizeType aType);
 
   /**
+   * If the flex item contains `NS_FRAME_CONTAINS_RELATIVE_BSIZE`, potentially
+   * propagate the flag to this flex container. See the function implementation
+   * for more details.
+   */
+  void MaybePropagateRelativeBSizeFlagFrom(const FlexItem& aItem);
+
+  /**
    * Cached values to optimize IntrinsicISize().
    */
   mozilla::IntrinsicISizesCache mCachedIntrinsicSizes;
@@ -696,4 +702,4 @@ class nsFlexContainerFrame final : public nsContainerFrame,
   nscoord mLastBaseline = NS_INTRINSIC_ISIZE_UNKNOWN;
 };
 
-#endif /* nsFlexContainerFrame_h___ */
+#endif /* nsFlexContainerFrame_h_ */

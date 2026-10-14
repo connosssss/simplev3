@@ -5,14 +5,11 @@
 Transform the checksums task into an actual task description.
 """
 
-import copy
 import logging
+from shlex import quote as shell_quote
 
+from mozilla_taskgraph.worker_types import get_release_config
 from taskgraph.transforms.base import TransformSequence
-from taskgraph.util.schema import resolve_keyed_by
-
-from gecko_taskgraph.util.attributes import release_level
-from gecko_taskgraph.util.scriptworker import get_release_config
 
 logger = logging.getLogger(__name__)
 
@@ -20,34 +17,26 @@ transforms = TransformSequence()
 
 
 @transforms.add
-def handle_keyed_by(config, jobs):
-    """Resolve fields that can be keyed by project, etc."""
-    fields = [
-        "run.config",
-        "run.extra-config",
-    ]
-    for job in jobs:
-        job = copy.deepcopy(job)
-        for field in fields:
-            resolve_keyed_by(
-                item=job,
-                field=field,
-                item_name=job["name"],
-                **{"release-level": release_level(config.params["project"])}
-            )
-        yield job
-
-
-@transforms.add
-def interpolate(config, jobs):
+def add_command(config, jobs):
     release_config = get_release_config(config)
     for job in jobs:
-        mh_options = list(job["run"]["options"])
-        job["run"]["options"] = [
-            option.format(
-                version=release_config["version"],
-                build_number=release_config["build_number"],
-            )
-            for option in mh_options
+        run = job["run"]
+        command = [
+            "python",
+            "python/mozrelease/mozrelease/generate_checksums.py",
+            "--stage-product",
+            run.pop("stage-product"),
+            "--bucket-name",
+            run.pop("bucket-name"),
+            "--version",
+            release_config["version"],
+            "--build-number",
+            str(release_config["build_number"]),
+            "--output-dir",
+            run.pop("output-dir"),
         ]
+        run.update({
+            "using": "mach",
+            "mach": " ".join(map(shell_quote, command)),
+        })
         yield job

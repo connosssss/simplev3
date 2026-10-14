@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -39,9 +37,6 @@ using ServiceWorkerRegistrationListPromise =
 using NavigationPreloadStatePromise =
     MozPromise<IPCNavigationPreloadState, CopyableErrorResult, false>;
 
-using NotificationsPromise =
-    MozPromise<CopyableTArray<IPCNotification>, nsresult, false>;
-
 using ServiceWorkerRegistrationCallback =
     std::function<void(const ServiceWorkerRegistrationDescriptor&)>;
 
@@ -57,6 +52,14 @@ using NavigationPreloadGetStateCallback =
 
 bool ServiceWorkerRegistrationDataIsValid(
     const ServiceWorkerRegistrationData& aData);
+
+// Performs scope validation steps of
+// https://w3c.github.io/ServiceWorker/#start-register-algorithm and
+// https://w3c.github.io/ServiceWorker/#register-algorithm.
+void ServiceWorkerScopeIsValid(nsIPrincipal* aPrincipal, nsIURI* aScopeURI,
+                               ErrorResult& aRv);
+
+bool IsServiceWorkersDisabledByPolicy(nsIURI* aURI);
 
 // Performs key spec validation steps of
 // https://w3c.github.io/ServiceWorker/#start-register-algorithm and

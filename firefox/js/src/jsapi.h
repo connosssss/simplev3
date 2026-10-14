@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -9,20 +7,12 @@
 #ifndef jsapi_h
 #define jsapi_h
 
-#include "mozilla/AlreadyAddRefed.h"
-#include "mozilla/FloatingPoint.h"
 #include "mozilla/Maybe.h"
-#include "mozilla/MemoryReporting.h"
-#include "mozilla/RangedPtr.h"
-#include "mozilla/RefPtr.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/Utf8.h"
 #include "mozilla/Variant.h"
 
-#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 
 #include "jspubtd.h"
 
@@ -93,17 +83,6 @@ using StringVector = JS::GCVector<JSString*>;
 
 /************************************************************************/
 
-static MOZ_ALWAYS_INLINE JS::Value JS_NumberValue(double d) {
-  int32_t i;
-  d = JS::CanonicalizeNaN(d);
-  if (mozilla::NumberIsInt32(d, &i)) {
-    return JS::Int32Value(i);
-  }
-  return JS::DoubleValue(d);
-}
-
-/************************************************************************/
-
 JS_PUBLIC_API bool JS_StringHasBeenPinned(JSContext* cx, JSString* str);
 
 /************************************************************************/
@@ -155,6 +134,14 @@ extern JS_PUBLIC_API bool JS_WrapObject(JSContext* cx,
 
 extern JS_PUBLIC_API bool JS_WrapValue(JSContext* cx,
                                        JS::MutableHandleValue vp);
+
+/**
+ * Wrap a jsid after entering a new compartment. Different zones separately mark
+ * the ids in a runtime, and this must be used any time an id is obtained from
+ * one compartment and then used in another compartment, unless the two
+ * compartments are guaranteed to be in the same zone.
+ */
+extern JS_PUBLIC_API bool JS_WrapId(JSContext* cx, JS::MutableHandle<jsid> id);
 
 extern JS_PUBLIC_API JSObject* JS_TransplantObject(JSContext* cx,
                                                    JS::HandleObject origobj,
@@ -438,11 +425,6 @@ extern JS_PUBLIC_API bool JS_GetPrototypeIfOrdinary(
  *
  * In cases where ES6 [[SetPrototypeOf]] returns false without an exception,
  * JS_SetPrototype throws a TypeError and returns false.
- *
- * Performance warning: JS_SetPrototype is very bad for performance. It may
- * cause compiled jit-code to be invalidated. It also causes not only obj but
- * all other objects in the same "group" as obj to be permanently deoptimized.
- * It's better to create the object with the right prototype from the start.
  */
 extern JS_PUBLIC_API bool JS_SetPrototype(JSContext* cx, JS::HandleObject obj,
                                           JS::HandleObject proto);
@@ -767,7 +749,7 @@ class MOZ_STACK_CLASS JS_PUBLIC_API AutoSetAsyncStackForNewCalls {
   // lifetime of the AutoSetAsyncStackForNewCalls object. It is strongly
   // encouraged that asyncCause be a string constant or similar statically
   // allocated string.
-  AutoSetAsyncStackForNewCalls(JSContext* cx, HandleObject stack,
+  AutoSetAsyncStackForNewCalls(JSContext* cx, JSObject* stack,
                                const char* asyncCause,
                                AsyncCallKind kind = AsyncCallKind::IMPLICIT);
   ~AutoSetAsyncStackForNewCalls();
@@ -860,9 +842,7 @@ extern JS_PUBLIC_API void JS_SetOffthreadIonCompilationEnabled(JSContext* cx,
   Register(WASM_FOLD_OFFSETS, "wasm.fold-offsets") \
   Register(WASM_DELAY_TIER2, "wasm.delay-tier2") \
   Register(WASM_JIT_BASELINE, "wasm.baseline") \
-  Register(WASM_JIT_OPTIMIZING, "wasm.optimizing") \
-  Register(REGEXP_DUPLICATE_NAMED_GROUPS, "regexp.duplicate-named-groups") \
-  Register(REGEXP_MODIFIERS, "regexp.modifiers")  // clang-format on
+  Register(WASM_JIT_OPTIMIZING, "wasm.optimizing")  // clang-format on
 
 typedef enum JSJitCompilerOption {
 #define JIT_COMPILER_DECLARE(key, str) JSJITCOMPILER_##key,
@@ -926,14 +906,14 @@ class MOZ_RAII JS_PUBLIC_API AutoFilename {
   js::ScriptSource* ss_;
   mozilla::Variant<const char*, UniqueChars> filename_;
 
-  AutoFilename(const AutoFilename&) = delete;
-  AutoFilename& operator=(const AutoFilename&) = delete;
-
  public:
   AutoFilename()
       : ss_(nullptr), filename_(mozilla::AsVariant<const char*>(nullptr)) {}
 
   ~AutoFilename() { reset(); }
+
+  AutoFilename(const AutoFilename&) = delete;
+  AutoFilename& operator=(const AutoFilename&) = delete;
 
   void reset();
 

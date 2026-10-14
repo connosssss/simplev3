@@ -1,31 +1,27 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/DebugOnly.h"
-
-#include "mozilla/Logging.h"
-
 #include "WinMouseScrollHandler.h"
-#include "nsWindow.h"
-#include "nsWindowDefs.h"
+
+#include <psapi.h>
+
 #include "KeyboardLayout.h"
 #include "WinUtils.h"
-#include "nsGkAtoms.h"
-#include "nsIDOMWindowUtils.h"
-
 #include "mozilla/AutoRestore.h"
+#include "mozilla/DebugOnly.h"
+#include "mozilla/Logging.h"
 #include "mozilla/MiscEvents.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/dom/WheelEventBinding.h"
 #include "mozilla/StaticPrefs_mousewheel.h"
 #include "mozilla/StaticPrefs_widget.h"
+#include "mozilla/dom/WheelEventBinding.h"
 #include "mozilla/widget/WinRegistry.h"
-
-#include <psapi.h>
+#include "nsGkAtoms.h"
+#include "nsIDOMWindowUtils.h"
+#include "nsWindow.h"
+#include "nsWindowDefs.h"
 
 namespace mozilla {
 namespace widget {
@@ -72,7 +68,7 @@ class MouseScrollHandler::SynthesizingEvent {
         mLParam(0),
         mStatus(NOT_SYNTHESIZING) {}
 
-  ~SynthesizingEvent() {}
+  ~SynthesizingEvent() = default;
 
   static SynthesizingEvent* GetActiveInstance();
 
@@ -300,16 +296,19 @@ bool MouseScrollHandler::ProcessMessage(nsWindow* aWidget, UINT msg,
 /* static */
 nsresult MouseScrollHandler::SynthesizeNativeMouseScrollEvent(
     nsWindow* aWidget, const LayoutDeviceIntPoint& aPoint,
-    uint32_t aNativeMessage, int32_t aDelta, uint32_t aModifierFlags,
-    uint32_t aAdditionalFlags) {
-  bool useFocusedWindow = !(
+    uint32_t aNativeMessage, int32_t aDelta,
+    nsIWidget::NativeModifiers aModifierFlags, uint32_t aAdditionalFlags) {
+  const bool useFocusedWindow = !(
       aAdditionalFlags & nsIDOMWindowUtils::MOUSESCROLL_PREFER_WIDGET_AT_POINT);
 
   POINT pt;
   pt.x = aPoint.x;
   pt.y = aPoint.y;
 
-  HWND target = useFocusedWindow ? ::WindowFromPoint(pt) : ::GetFocus();
+  // The default behavior before Win10 1903 is, WM_MOUSEWHEEL message is always
+  // sent to the focused window.  After that, WM_MOUSEWHEEL message is sent to
+  // the window under the cursor by default (but configurable).
+  HWND const target = useFocusedWindow ? ::GetFocus() : ::WindowFromPoint(pt);
   NS_ENSURE_TRUE(target, NS_ERROR_FAILURE);
 
   WPARAM wParam = 0;
@@ -319,10 +318,12 @@ nsresult MouseScrollHandler::SynthesizeNativeMouseScrollEvent(
     case WM_MOUSEHWHEEL: {
       lParam = MAKELPARAM(pt.x, pt.y);
       WORD mod = 0;
-      if (aModifierFlags & (nsIWidget::CTRL_L | nsIWidget::CTRL_R)) {
+      if (aModifierFlags & (nsIWidget::NativeModifiers::CTRL_L |
+                            nsIWidget::NativeModifiers::CTRL_R)) {
         mod |= MK_CONTROL;
       }
-      if (aModifierFlags & (nsIWidget::SHIFT_L | nsIWidget::SHIFT_R)) {
+      if (aModifierFlags & (nsIWidget::NativeModifiers::SHIFT_L |
+                            nsIWidget::NativeModifiers::SHIFT_R)) {
         mod |= MK_SHIFT;
       }
       wParam = MAKEWPARAM(mod, aDelta);
@@ -691,8 +692,8 @@ bool MouseScrollHandler::HandleScrollMessageAsMouseWheelMessage(
        aWidget, msgName, aWParam, aLParam, wheelEvent.mRefPoint.x.value,
        wheelEvent.mRefPoint.y.value, wheelEvent.mDeltaX, wheelEvent.mDeltaY,
        wheelEvent.mLineOrPageDeltaX, wheelEvent.mLineOrPageDeltaY,
-       GetBoolName(wheelEvent.IsShift()), GetBoolName(wheelEvent.IsControl()),
-       GetBoolName(wheelEvent.IsAlt()), GetBoolName(wheelEvent.IsMeta())));
+       TrueOrFalse(wheelEvent.IsShift()), TrueOrFalse(wheelEvent.IsControl()),
+       TrueOrFalse(wheelEvent.IsAlt()), TrueOrFalse(wheelEvent.IsMeta())));
 
   aWidget->DispatchWheelEvent(&wheelEvent);
   return true;
@@ -841,10 +842,10 @@ bool MouseScrollHandler::LastEventInfo::InitWheelEvent(
        "mAccumulatedDelta: %d",
        aWidget, aWheelEvent.mRefPoint.x.value, aWheelEvent.mRefPoint.y.value,
        aWheelEvent.mDeltaX, aWheelEvent.mDeltaY, aWheelEvent.mLineOrPageDeltaX,
-       aWheelEvent.mLineOrPageDeltaY, GetBoolName(aWheelEvent.IsShift()),
-       GetBoolName(aWheelEvent.IsControl()), GetBoolName(aWheelEvent.IsAlt()),
-       GetBoolName(aWheelEvent.IsMeta()),
-       GetBoolName(aWheelEvent.mAllowToOverrideSystemScrollSpeed),
+       aWheelEvent.mLineOrPageDeltaY, TrueOrFalse(aWheelEvent.IsShift()),
+       TrueOrFalse(aWheelEvent.IsControl()), TrueOrFalse(aWheelEvent.IsAlt()),
+       TrueOrFalse(aWheelEvent.IsMeta()),
+       TrueOrFalse(aWheelEvent.mAllowToOverrideSystemScrollSpeed),
        mAccumulatedDelta));
 
   return (delta != 0);
@@ -1055,10 +1056,10 @@ void MouseScrollHandler::UserPrefs::Init() {
            "mOverriddenVerticalScrollAmount=%d, "
            "mOverriddenHorizontalScrollAmount=%d, "
            "mMouseScrollTransactionTimeout=%d",
-           GetBoolName(mScrollMessageHandledAsWheelMessage),
-           GetBoolName(mEnableSystemSettingCache),
-           GetBoolName(mForceEnableSystemSettingCache),
-           GetBoolName(mEmulateToMakeWindowUnderCursorForeground),
+           TrueOrFalse(mScrollMessageHandledAsWheelMessage),
+           TrueOrFalse(mEnableSystemSettingCache),
+           TrueOrFalse(mForceEnableSystemSettingCache),
+           TrueOrFalse(mEmulateToMakeWindowUnderCursorForeground),
            mOverriddenVerticalScrollAmount, mOverriddenHorizontalScrollAmount,
            mMouseScrollTransactionTimeout));
 }
@@ -1099,14 +1100,14 @@ bool MouseScrollHandler::Device::GetWorkaroundPref(const char* aPrefName,
             ("MouseScroll::Device::GetWorkaroundPref(): Preferences::GetInt() "
              "failed,"
              " aPrefName=\"%s\", aValueIfAutomatic=%s",
-             aPrefName, GetBoolName(aValueIfAutomatic)));
+             aPrefName, TrueOrFalse(aValueIfAutomatic)));
     return aValueIfAutomatic;
   }
 
   MOZ_LOG(gMouseScrollLog, LogLevel::Info,
           ("MouseScroll::Device::GetWorkaroundPref(): Succeeded, "
            "aPrefName=\"%s\", aValueIfAutomatic=%s, lHackValue=%d",
-           aPrefName, GetBoolName(aValueIfAutomatic), lHackValue));
+           aPrefName, TrueOrFalse(aValueIfAutomatic), lHackValue));
 
   switch (lHackValue) {
     case 0:  // disabled
@@ -1133,7 +1134,7 @@ void MouseScrollHandler::Device::Init() {
 
   MOZ_LOG(gMouseScrollLog, LogLevel::Info,
           ("MouseScroll::Device::Init(): sFakeScrollableWindowNeeded=%s",
-           GetBoolName(sFakeScrollableWindowNeeded)));
+           TrueOrFalse(sFakeScrollableWindowNeeded)));
 }
 
 /******************************************************************************
@@ -1192,7 +1193,7 @@ void MouseScrollHandler::Device::Elantech::Init() {
       gMouseScrollLog, LogLevel::Info,
       ("MouseScroll::Device::Elantech::Init(): version=%d, sUseSwipeHack=%s, "
        "sUsePinchHack=%s",
-       version, GetBoolName(sUseSwipeHack), GetBoolName(sUsePinchHack)));
+       version, TrueOrFalse(sUseSwipeHack), TrueOrFalse(sUsePinchHack)));
 }
 
 /* static */
@@ -1556,7 +1557,7 @@ nsresult MouseScrollHandler::SynthesizingEvent::Synthesize(
        "x: %d, y: %d }, aWnd=0x%p, aMessage=0x%04X, aWParam=0x%08zX, "
        "aLParam=0x%08" PRIXLPTR ", synthesizing=%s, mStatus=%s",
        aCursorPoint.x, aCursorPoint.y, aWnd, aMessage, aWParam, aLParam,
-       GetBoolName(!!GetActiveInstance()), GetStatusName()));
+       TrueOrFalse(!!GetActiveInstance()), GetStatusName()));
 
   if (mStatus != NOT_SYNTHESIZING) {
     return NS_ERROR_NOT_AVAILABLE;

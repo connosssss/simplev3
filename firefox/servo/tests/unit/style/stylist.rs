@@ -7,10 +7,9 @@ use euclid::Scale;
 use euclid::Size2D;
 use selectors::parser::{AncestorHashes, Selector};
 use servo_arc::Arc;
-use stylo_atoms::Atom;
 use style::context::QuirksMode;
 use style::media_queries::{Device, MediaType};
-use style::properties::{longhands, Importance};
+use style::properties::{Importance, longhands};
 use style::properties::{PropertyDeclaration, PropertyDeclarationBlock};
 use style::selector_map::SelectorMap;
 use style::selector_parser::{SelectorImpl, SelectorParser};
@@ -19,6 +18,7 @@ use style::stylesheets::StyleRule;
 use style::stylist::needs_revalidation_for_testing;
 use style::stylist::{Rule, Stylist};
 use style::thread_state::{self, ThreadState};
+use stylo_atoms::Atom;
 
 /// Helper method to get some Rules from selector strings.
 /// Each sublist of the result contains the Rules for one StyleRule.
@@ -205,10 +205,12 @@ fn test_insert() {
             .unwrap()[0]
             .source_order
     );
-    assert!(selector_map
-        .class_hash
-        .get(&Atom::from("intro"), QuirksMode::NoQuirks)
-        .is_none());
+    assert!(
+        selector_map
+            .class_hash
+            .get(&Atom::from("intro"), QuirksMode::NoQuirks)
+            .is_none()
+    );
 }
 
 fn mock_stylist() -> Stylist {

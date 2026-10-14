@@ -20,8 +20,8 @@ origin:
 
   # Human-readable identifier for this version/release
   # Generally "version NNN", "tag SSS", "bookmark SSS"
-  release: 85b67f19bcfd2d5156d04cc69bc40930919a6f54 (2025-06-24T20:36:14Z).
-  revision: 85b67f19bcfd2d5156d04cc69bc40930919a6f54
+  release: e1412d3a540bec075b58c01853e1d85f45f7e841 (2026-10-12T18:57:45Z).
+  revision: e1412d3a540bec075b58c01853e1d85f45f7e841
 
   # The package's license, where possible using the mnemonic from
   # https://spdx.org/licenses/
@@ -50,12 +50,12 @@ vendoring:
 updatebot:
     maintainer-phab: "#pdfjs-reviewers"
     maintainer-bz: cdenizet@mozilla.com
-    fuzzy-query: "'debug | 'opt !san !android"
+    fuzzy-query: "'debug | 'opt !san !android !macos !ios"
     fuzzy-paths:
       - toolkit/components/pdfjs/test
-      - browser/base/content/test/static
+      - browser/base/content/test/browser-static
     tasks:
       - type: vendoring
         enabled: true
-        frequency: "1 week, 3 commits"
+        frequency: every
         blocking: 1626408

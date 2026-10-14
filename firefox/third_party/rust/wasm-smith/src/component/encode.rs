@@ -147,7 +147,7 @@ impl CoreType {
                         ModuleTypeDef::Import(imp) => {
                             enc_mod_ty.import(
                                 &imp.module,
-                                &imp.field,
+                                &imp.name,
                                 crate::core::encode::translate_entity_type(&imp.entity_type),
                             );
                         }
@@ -172,17 +172,7 @@ impl Type {
                 let mut f = enc.function();
 
                 f.params(func_ty.params.iter().map(|(name, ty)| (name.as_str(), *ty)));
-
-                if let Some(ty) = func_ty.unnamed_result_ty() {
-                    f.result(ty);
-                } else {
-                    f.results(
-                        func_ty
-                            .results
-                            .iter()
-                            .map(|(name, ty)| (name.as_deref().unwrap(), *ty)),
-                    );
-                }
+                f.result(func_ty.unnamed_result_ty());
             }
             Self::Component(comp_ty) => {
                 let mut enc_comp_ty = wasm_encoder::ComponentType::new();
@@ -239,11 +229,7 @@ impl DefinedType {
                 enc.record(ty.fields.iter().map(|(name, ty)| (name.as_str(), *ty)));
             }
             Self::Variant(ty) => {
-                enc.variant(
-                    ty.cases
-                        .iter()
-                        .map(|(name, ty, refines)| (name.as_str(), *ty, *refines)),
-                );
+                enc.variant(ty.cases.iter().map(|(name, ty)| (name.as_str(), *ty)));
             }
             Self::List(ty) => {
                 enc.list(ty.elem_ty);

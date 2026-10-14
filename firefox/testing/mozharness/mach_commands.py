@@ -7,10 +7,10 @@ import os
 import re
 import subprocess
 import sys
+from urllib.parse import urljoin
+from urllib.request import pathname2url
 
 import mozinfo
-from six.moves.urllib.parse import urljoin
-from six.moves.urllib.request import pathname2url
 
 from mach.decorators import (
     CommandArgument,
@@ -98,6 +98,11 @@ class MozharnessRunner(MozbuildObject):
                 "script": "desktop_unittest.py",
                 "config": desktop_unittest_config
                 + ["--mochitest-suite", "mochitest-browser-translations"],
+            },
+            "mochitest-browser-chrome-ml-models": {
+                "script": "desktop_unittest.py",
+                "config": desktop_unittest_config
+                + ["--mochitest-suite", "mochitest-browser-chrome-ml-models"],
             },
             "mochitest-devtools-chrome": {
                 "script": "desktop_unittest.py",

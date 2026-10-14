@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -13,7 +11,7 @@ namespace js {
 namespace jit {
 
 // ICStubSpace is an abstraction for allocation policy and storage for CacheIR
-// stub data. Each JitZone has a single ICStubSpace.
+// stub data. Each JitRealm has a single ICStubSpace.
 class ICStubSpace {
   static constexpr size_t DefaultChunkSize = 4096;
   LifoAlloc allocator_{DefaultChunkSize, js::BackgroundMallocArena};

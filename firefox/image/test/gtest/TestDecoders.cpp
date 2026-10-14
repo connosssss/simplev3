@@ -2,30 +2,35 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "gtest/gtest.h"
+#include <algorithm>
 
-#include "Common.h"
-#include "mozilla/Monitor.h"
 #include "AnimationSurfaceProvider.h"
+#include "Common.h"
 #include "DecodePool.h"
 #include "Decoder.h"
 #include "DecoderFactory.h"
 #include "decoders/nsBMPDecoder.h"
+#include "gtest/gtest.h"
+#include "mozilla/Monitor.h"
+#ifdef MOZ_JXL
+#  include "decoders/nsJXLDecoder.h"
+#endif
 #include "IDecodingTask.h"
-#include "ImageOps.h"
-#include "imgIContainer.h"
 #include "ImageFactory.h"
+#include "ImageOps.h"
+#include "ProgressTracker.h"
+#include "SourceBuffer.h"
+#include "imgIContainer.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/gfx/2D.h"
-#include "nsComponentManagerUtils.h"
 #include "nsCOMPtr.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIInputStream.h"
-#include "mozilla/RefPtr.h"
 #include "nsStreamUtils.h"
 #include "nsString.h"
 #include "nsThreadUtils.h"
-#include "ProgressTracker.h"
-#include "SourceBuffer.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -107,8 +112,8 @@ void WithBadBufferDecode(const ImageTestCase& aTestCase,
       decoderType, sourceBuffer, aOutputSize, DecoderFlags::FIRST_FRAME_ONLY,
       aTestCase.mSurfaceFlags);
   ASSERT_TRUE(decoder != nullptr);
-  RefPtr<IDecodingTask> task =
-      new AnonymousDecodingTask(WrapNotNull(decoder), /* aResumable */ false);
+  auto task = MakeRefPtr<AnonymousDecodingTask>(WrapNotNull(decoder),
+                                                /* aResumable */ false);
 
   // Run the full decoder synchronously on the main thread.
   task->Run();
@@ -206,14 +211,13 @@ void WithSingleChunkDecode(const ImageTestCase& aTestCase,
   // Create a decoder.
   DecoderType decoderType = DecoderFactory::GetDecoderType(aTestCase.mMimeType);
   DecoderFlags decoderFlags =
-      DecoderFactory::GetDefaultDecoderFlagsForType(decoderType) |
-      DecoderFlags::FIRST_FRAME_ONLY;
+      DefaultDecoderFlags() | DecoderFlags::FIRST_FRAME_ONLY;
   RefPtr<image::Decoder> decoder = DecoderFactory::CreateAnonymousDecoder(
       decoderType, sourceBuffer, aOutputSize, decoderFlags,
       aTestCase.mSurfaceFlags);
   ASSERT_TRUE(decoder != nullptr);
-  RefPtr<MonitorAnonymousDecodingTask> task = new MonitorAnonymousDecodingTask(
-      WrapNotNull(decoder), /* aResumable */ false);
+  auto task = MakeRefPtr<MonitorAnonymousDecodingTask>(WrapNotNull(decoder),
+                                                       /* aResumable */ false);
 
   if (aUseDecodePool) {
     DecodePool::Singleton()->AsyncRun(task.get());
@@ -256,8 +260,8 @@ void WithDelayedChunkDecode(const ImageTestCase& aTestCase,
       decoderType, sourceBuffer, aOutputSize, DecoderFlags::FIRST_FRAME_ONLY,
       aTestCase.mSurfaceFlags);
   ASSERT_TRUE(decoder != nullptr);
-  RefPtr<IDecodingTask> task =
-      new AnonymousDecodingTask(WrapNotNull(decoder), /* aResumable */ true);
+  auto task = MakeRefPtr<AnonymousDecodingTask>(WrapNotNull(decoder),
+                                                /* aResumable */ true);
 
   // Run the full decoder synchronously. It should now be waiting on
   // the iterator to yield some data since we haven't written anything yet.
@@ -282,8 +286,9 @@ static void CheckDecoderDelayedChunk(const ImageTestCase& aTestCase) {
   });
 }
 
-static void CheckDecoderMultiChunk(const ImageTestCase& aTestCase,
-                                   uint64_t aChunkSize = 1) {
+template <typename Func>
+static void WithMultiChunkDecode(const ImageTestCase& aTestCase,
+                                 uint64_t aChunkSize, Func aResultChecker) {
   nsCOMPtr<nsIInputStream> inputStream = LoadFile(aTestCase.mPath);
   ASSERT_TRUE(inputStream != nullptr);
 
@@ -297,14 +302,13 @@ static void CheckDecoderMultiChunk(const ImageTestCase& aTestCase,
   sourceBuffer->ExpectLength(length);
   DecoderType decoderType = DecoderFactory::GetDecoderType(aTestCase.mMimeType);
   DecoderFlags decoderFlags =
-      DecoderFactory::GetDefaultDecoderFlagsForType(decoderType) |
-      DecoderFlags::FIRST_FRAME_ONLY;
+      DefaultDecoderFlags() | DecoderFlags::FIRST_FRAME_ONLY;
   RefPtr<image::Decoder> decoder = DecoderFactory::CreateAnonymousDecoder(
       decoderType, sourceBuffer, Nothing(), decoderFlags,
       aTestCase.mSurfaceFlags);
   ASSERT_TRUE(decoder != nullptr);
-  RefPtr<IDecodingTask> task =
-      new AnonymousDecodingTask(WrapNotNull(decoder), /* aResumable */ true);
+  auto task = MakeRefPtr<AnonymousDecodingTask>(WrapNotNull(decoder),
+                                                /* aResumable */ true);
 
   // Run the full decoder synchronously. It should now be waiting on
   // the iterator to yield some data since we haven't written anything yet.
@@ -330,7 +334,65 @@ static void CheckDecoderMultiChunk(const ImageTestCase& aTestCase,
   sourceBuffer->Complete(NS_OK);
   SpinPendingEvents();
 
-  CheckDecoderResults(aTestCase, decoder);
+  aResultChecker(decoder);
+}
+
+static void CheckDecoderMultiChunk(const ImageTestCase& aTestCase,
+                                   uint64_t aChunkSize = 1) {
+  WithMultiChunkDecode(aTestCase, aChunkSize, [&](image::Decoder* aDecoder) {
+    CheckDecoderResults(aTestCase, aDecoder);
+  });
+}
+
+static uint32_t HashDecoderOutput(image::Decoder* aDecoder) {
+  RawAccessFrameRef frame = aDecoder->GetCurrentFrameRef();
+  if (!frame) {
+    return 0;
+  }
+  RefPtr<SourceSurface> surface = frame->GetSourceSurface();
+  if (!surface) {
+    return 0;
+  }
+  RefPtr<DataSourceSurface> dataSurface = surface->GetDataSurface();
+  if (!dataSurface) {
+    return 0;
+  }
+  DataSourceSurface::MappedSurface map;
+  if (!dataSurface->Map(DataSourceSurface::READ, &map)) {
+    return 0;
+  }
+  IntSize size = dataSurface->GetSize();
+  uint32_t hash = 5381;
+  for (int32_t y = 0; y < size.height; y++) {
+    // Use stride to calculate start of row location, but only include pixels
+    // up to the width in the hash in case there are unused pixels at the end
+    // of the row due to alignment.
+    const uint8_t* row = map.mData + y * map.mStride;
+    for (int32_t x = 0; x < size.width * 4; x++) {
+      hash = hash * 33 ^ row[x];
+    }
+  }
+  dataSurface->Unmap();
+  return hash;
+}
+
+static void CheckIncrementalDecodeMatchesOneShot(
+    const ImageTestCase& aTestCase) {
+  uint32_t singleChunkHash = 0;
+  WithSingleChunkDecode(aTestCase, Nothing(), false,
+                        [&](image::Decoder* aDecoder) {
+                          ASSERT_FALSE(aDecoder->HasError());
+                          singleChunkHash = HashDecoderOutput(aDecoder);
+                          ASSERT_NE(0u, singleChunkHash);
+                        });
+
+  uint32_t multiChunkHash = 0;
+  WithMultiChunkDecode(aTestCase, 1, [&](image::Decoder* aDecoder) {
+    ASSERT_FALSE(aDecoder->HasError());
+    multiChunkHash = HashDecoderOutput(aDecoder);
+  });
+
+  EXPECT_EQ(singleChunkHash, multiChunkHash);
 }
 
 static void CheckDownscaleDuringDecode(const ImageTestCase& aTestCase) {
@@ -368,6 +430,36 @@ static void CheckDownscaleDuringDecode(const ImageTestCase& aTestCase) {
         EXPECT_TRUE(RowsAreSolidColor(surface, 16, 4,
                                       aTestCase.ChooseColor(BGRAColor::Red()),
                                       /* aFuzz = */ 27));
+      });
+}
+
+static void CheckExifOrientationDownscale(const ImageTestCase& aTestCase) {
+  // An EXIF-rotated JPEG decoded to a non-aspect-preserving output size with
+  // libjpeg-turbo IDCT downscaling must still decode. The scale factor has to
+  // be computed in the same unoriented space as the downscaling filter, or the
+  // decode hard-fails.
+  bool oldValue = false;
+  Preferences::GetBool("image.jpeg.dct-scaling.enabled", &oldValue);
+  Preferences::SetBool("image.jpeg.dct-scaling.enabled", true);
+  auto resetPref = MakeScopeExit([&] {
+    Preferences::SetBool("image.jpeg.dct-scaling.enabled", oldValue);
+  });
+
+  WithSingleChunkDecode(
+      aTestCase, Some(aTestCase.mOutputSize), /* aUseDecodePool */ false,
+      [&](image::Decoder* aDecoder) {
+        // The decode must not fail: prior to the fix the surface pipe was
+        // rejected here and the decoder ended in an error state.
+        ASSERT_FALSE(aDecoder->HasError());
+        EXPECT_TRUE(aDecoder->GetDecodeDone());
+
+        RawAccessFrameRef currentFrame = aDecoder->GetCurrentFrameRef();
+        ASSERT_TRUE(bool(currentFrame));
+        RefPtr<SourceSurface> surface = currentFrame->GetSourceSurface();
+        ASSERT_TRUE(surface != nullptr);
+
+        EXPECT_EQ(aTestCase.mOutputSize, surface->GetSize());
+        EXPECT_TRUE(IsSolidColor(surface, aTestCase.Color(), aTestCase.Fuzz()));
       });
 }
 
@@ -447,8 +539,7 @@ static void WithSingleChunkAnimationDecode(const ImageTestCase& aTestCase,
   // Create a metadata decoder first, because otherwise RasterImage will get
   // unhappy about finding out the image is animated during a full decode.
   DecoderType decoderType = DecoderFactory::GetDecoderType(aTestCase.mMimeType);
-  DecoderFlags decoderFlags =
-      DecoderFactory::GetDefaultDecoderFlagsForType(decoderType);
+  DecoderFlags decoderFlags = DefaultDecoderFlags();
   RefPtr<IDecodingTask> task = DecoderFactory::CreateMetadataDecoder(
       decoderType, rasterImage, decoderFlags, sourceBuffer);
   ASSERT_TRUE(task != nullptr);
@@ -466,9 +557,9 @@ static void WithSingleChunkAnimationDecode(const ImageTestCase& aTestCase,
   // and make this decoder's output available in the surface cache.
   SurfaceKey surfaceKey = RasterSurfaceKey(aTestCase.mOutputSize, surfaceFlags,
                                            PlaybackType::eAnimated);
-  RefPtr<AnimationSurfaceProvider> provider = new AnimationSurfaceProvider(
-      rasterImage, surfaceKey, WrapNotNull(decoder),
-      /* aCurrentFrame */ 0);
+  auto provider = MakeRefPtr<AnimationSurfaceProvider>(rasterImage, surfaceKey,
+                                                       WrapNotNull(decoder),
+                                                       /* aCurrentFrame */ 0);
 
   // Run the full decoder synchronously.
   provider->Run();
@@ -538,8 +629,12 @@ static void CheckDecoderFrameFirst(const ImageTestCase& aTestCase) {
 
   Progress imageProgress = tracker->GetProgress();
 
-  EXPECT_TRUE(bool(imageProgress & FLAG_HAS_TRANSPARENCY) == false);
   EXPECT_TRUE(bool(imageProgress & FLAG_IS_ANIMATED) == true);
+
+  EXPECT_EQ(bool(aTestCase.mFlags & TEST_CASE_IS_TRANSPARENT),
+            bool(imageProgress & FLAG_HAS_TRANSPARENCY));
+  EXPECT_EQ(bool(aTestCase.mFlags & TEST_CASE_IS_ANIMATED),
+            bool(imageProgress & FLAG_IS_ANIMATED));
 
   // Ensure that we decoded the static version of the image.
   {
@@ -646,8 +741,12 @@ static void CheckDecoderFrameCurrent(const ImageTestCase& aTestCase) {
 
   Progress imageProgress = tracker->GetProgress();
 
-  EXPECT_TRUE(bool(imageProgress & FLAG_HAS_TRANSPARENCY) == false);
   EXPECT_TRUE(bool(imageProgress & FLAG_IS_ANIMATED) == true);
+
+  EXPECT_EQ(bool(aTestCase.mFlags & TEST_CASE_IS_TRANSPARENT),
+            bool(imageProgress & FLAG_HAS_TRANSPARENCY));
+  EXPECT_EQ(bool(aTestCase.mFlags & TEST_CASE_IS_ANIMATED),
+            bool(imageProgress & FLAG_IS_ANIMATED));
 
   // Ensure that we decoded both frames of the animated version of the image.
   {
@@ -747,12 +846,17 @@ IMAGE_GTEST_DECODER_BASE_F(BMP)
 IMAGE_GTEST_DECODER_BASE_F(ICO)
 IMAGE_GTEST_DECODER_BASE_F(Icon)
 IMAGE_GTEST_DECODER_BASE_F(WebP)
+IMAGE_GTEST_DECODER_BASE_F(AVIF)
 #ifdef MOZ_JXL
 IMAGE_GTEST_DECODER_BASE_F(JXL)
 #endif
 
 TEST_F(ImageDecoders, ICOWithANDMaskDownscaleDuringDecode) {
   CheckDownscaleDuringDecode(DownscaledTransparentICOWithANDMaskTestCase());
+}
+
+TEST_F(ImageDecoders, JPGExifOrientationDctDownscale) {
+  CheckExifOrientationDownscale(ExifOrientationDownscaleJPGTestCase());
 }
 
 TEST_F(ImageDecoders, WebPLargeMultiChunk) {
@@ -771,9 +875,23 @@ TEST_F(ImageDecoders, WebPTransparentNoAlphaHeaderSingleChunk) {
   CheckDecoderSingleChunk(TransparentNoAlphaHeaderWebPTestCase());
 }
 
-TEST_F(ImageDecoders, AVIFSingleChunk) {
-  CheckDecoderSingleChunk(GreenAVIFTestCase());
+TEST_F(ImageDecoders, AVIFTransparentSingleChunk) {
+  CheckDecoderSingleChunk(TransparentAVIFTestCase());
 }
+
+TEST_F(ImageDecoders, PNGTransparentSingleChunk) {
+  CheckDecoderSingleChunk(TransparentPNGTestCase());
+}
+
+TEST_F(ImageDecoders, GIFTransparentSingleChunk) {
+  CheckDecoderSingleChunk(TransparentGIFTestCase());
+}
+
+#ifdef MOZ_JXL
+TEST_F(ImageDecoders, JXLTransparentSingleChunk) {
+  CheckDecoderSingleChunk(TransparentJXLTestCase());
+}
+#endif
 
 TEST_F(ImageDecoders, AVIFSingleChunkNonzeroReserved) {
   CheckDecoderSingleChunk(NonzeroReservedAVIFTestCase());
@@ -926,27 +1044,230 @@ TEST_F(ImageDecoders, AVIFStackCheck) {
   CheckDecoderSingleChunk(StackCheckAVIFTestCase(), /* aUseDecodePool */ true);
 }
 
-TEST_F(ImageDecoders, AVIFDelayedChunk) {
-  CheckDecoderDelayedChunk(GreenAVIFTestCase());
-}
-
-TEST_F(ImageDecoders, AVIFMultiChunk) {
-  CheckDecoderMultiChunk(GreenAVIFTestCase());
-}
-
 TEST_F(ImageDecoders, AVIFLargeMultiChunk) {
   CheckDecoderMultiChunk(LargeAVIFTestCase(), /* aChunkSize */ 64);
-}
-
-TEST_F(ImageDecoders, AVIFDownscaleDuringDecode) {
-  CheckDownscaleDuringDecode(DownscaledAVIFTestCase());
 }
 
 #ifdef MOZ_JXL
 TEST_F(ImageDecoders, JXLLargeMultiChunk) {
   CheckDecoderMultiChunk(LargeJXLTestCase(), /* aChunkSize */ 64);
 }
-#endif
+
+#  ifdef DEBUG
+// Feeding a large JXL in tiny chunks must not cause WritePixelRowsToPipe to run
+// once per chunk or too much. The decoder should only do that work when
+// flush_pixels reports new pixels.
+TEST_F(ImageDecoders, JXLLargeMultiChunkPipeWriteCount) {
+  ImageTestCase testCase = LargeJXLTestCase();
+  WithMultiChunkDecode(testCase, /* aChunkSize */ 64,
+                       [&](image::Decoder* aDecoder) {
+                         ASSERT_FALSE(aDecoder->HasError());
+                         ASSERT_EQ(aDecoder->GetType(), DecoderType::JXL);
+                         auto* jxl = static_cast<nsJXLDecoder*>(aDecoder);
+                         EXPECT_LE(jxl->GetWritePixelRowsCount(), 16u);
+                       });
+}
+#  endif /* DEBUG */
+
+// Regression test for bug 2054317: feeding a progressive (multi-pass) lossy
+// RGBA JXL that spans more than one coded group in small chunks must not
+// panic. FlushPartialFrame's re-render pass could re-flush a group's modular
+// alpha buffer that a previous flush had already fully consumed. The exact
+// chunk boundaries that trigger this depend on decoder-internal timing, so
+// this sweeps several chunk sizes rather than relying on a single guess.
+TEST_F(ImageDecoders, JXLProgressiveAlphaMultiGroupMultiChunk) {
+  for (uint64_t chunkSize : {8, 16, 32, 64, 128, 256}) {
+    CheckDecoderMultiChunk(ProgressiveAlphaMultiGroupJXLTestCase(), chunkSize);
+  }
+}
+
+// aParticipants determines the number of participants (threads).
+// aUseDecodePool picks which of the two places a decode can run: false is a
+// synchronous decode on the main thread, true puts it on a DecodePool thread.
+// The helpers go to the JXL decode pool either way.
+static already_AddRefed<SourceSurface> DecodeLargeJXL(uint32_t aParticipants,
+                                                      bool aUseDecodePool) {
+  uint32_t oldValue = Preferences::GetUint("image.jxl.decode_participants", 1);
+  auto restore = MakeScopeExit(
+      [&] { Preferences::SetUint("image.jxl.decode_participants", oldValue); });
+  Preferences::SetUint("image.jxl.decode_participants", aParticipants);
+
+  ImageTestCase testCase = LargeJXLTestCase();
+  RefPtr<SourceSurface> surface;
+  WithSingleChunkDecode(testCase, Nothing(), aUseDecodePool,
+                        [&](image::Decoder* aDecoder) {
+                          surface = CheckDecoderState(testCase, aDecoder);
+                        });
+  return surface.forget();
+}
+
+// aMaxPixels is how many pixels may differ at all, aMaxChannelDiff how far any
+// one channel of those may be off.
+//
+// Walks row by row rather than comparing in one go, because the two surfaces
+// are allocated separately and need not share a stride, and to not compare
+// padding bytes.
+static void ExpectSurfacesSimilar(SourceSurface* aExpected,
+                                  SourceSurface* aActual, uint32_t aMaxPixels,
+                                  uint8_t aMaxChannelDiff) {
+  ASSERT_TRUE(aExpected && aActual);
+  ASSERT_EQ(aExpected->GetSize(), aActual->GetSize());
+  ASSERT_EQ(aExpected->GetFormat(), aActual->GetFormat());
+
+  RefPtr<DataSourceSurface> expected = aExpected->GetDataSurface();
+  RefPtr<DataSourceSurface> actual = aActual->GetDataSurface();
+  ASSERT_TRUE(expected && actual);
+
+  DataSourceSurface::ScopedMap expectedMap(expected, DataSourceSurface::READ);
+  DataSourceSurface::ScopedMap actualMap(actual, DataSourceSurface::READ);
+  ASSERT_TRUE(expectedMap.IsMapped() && actualMap.IsMapped());
+
+  const IntSize size = expected->GetSize();
+  const size_t bytesPerPixel = BytesPerPixel(expected->GetFormat());
+  // On an opaque surface the fourth byte is padding, and two decoders need not
+  // agree on what they leave there.
+  const size_t channels =
+      expected->GetFormat() == SurfaceFormat::OS_RGBX ? 3 : bytesPerPixel;
+
+  uint32_t differingPixels = 0;
+  uint32_t worstChannelDiff = 0;
+  for (int32_t row = 0; row < size.height; ++row) {
+    const uint8_t* expectedRow =
+        expectedMap.GetData() + row * expectedMap.GetStride();
+    const uint8_t* actualRow =
+        actualMap.GetData() + row * actualMap.GetStride();
+    for (int32_t col = 0; col < size.width; ++col) {
+      uint32_t pixelDiff = 0;
+      for (size_t channel = 0; channel < channels; ++channel) {
+        const size_t i = col * bytesPerPixel + channel;
+        const uint32_t diff = expectedRow[i] > actualRow[i]
+                                  ? expectedRow[i] - actualRow[i]
+                                  : actualRow[i] - expectedRow[i];
+        pixelDiff = std::max(pixelDiff, diff);
+      }
+      if (pixelDiff > 0) {
+        ++differingPixels;
+        worstChannelDiff = std::max(worstChannelDiff, pixelDiff);
+      }
+    }
+  }
+
+  EXPECT_LE(differingPixels, aMaxPixels)
+      << "worst channel difference " << worstChannelDiff;
+  EXPECT_LE(worstChannelDiff, uint32_t(aMaxChannelDiff))
+      << differingPixels << " pixels differ";
+}
+
+static void ExpectSurfacesIdentical(SourceSurface* aExpected,
+                                    SourceSurface* aActual) {
+  ExpectSurfacesSimilar(aExpected, aActual, /* aMaxPixels */ 0,
+                        /* aMaxChannelDiff */ 0);
+}
+
+// Run a jxl decode serially and in parallel and check the result is identical.
+TEST_F(ImageDecoders, JXLParallelDecodeMatchesSerial) {
+  // Make the pool at full size if it's not already made so that it's not
+  // created with fewer threads. The first parallel decode determines the pool
+  // size for the remainder of the process lifetime. This only works if the pref
+  // defaults to either 1 or 0, otherwise the preceding jxl tests would create
+  // a pool at the default pref value.
+  RefPtr<SourceSurface> discarded =
+      DecodeLargeJXL(0, /* aUseDecodePool */ false);
+
+  // reference surface = 1 decode thread which is the main thread.
+  RefPtr<SourceSurface> reference =
+      DecodeLargeJXL(1, /* aUseDecodePool */ false);
+
+  {
+    // Compare to the same image in another format to make sure it's the right
+    // reference.
+#  if defined(XP_WIN) && !defined(HAVE_64BIT_BUILD)
+    const uint32_t kReferenceMaxDifferingPixels = 7;
+    const uint8_t kReferenceMaxChannelDiff = 1;
+#  elif defined(ANDROID)
+    const uint32_t kReferenceMaxDifferingPixels = 4;
+    const uint8_t kReferenceMaxChannelDiff = 1;
+#  else
+    const uint32_t kReferenceMaxDifferingPixels = 0;
+    const uint8_t kReferenceMaxChannelDiff = 0;
+#  endif
+    ImageTestCase referenceCase = LargeJXLReferenceWebPTestCase();
+    RefPtr<SourceSurface> webpReference;
+    WithSingleChunkDecode(referenceCase, Nothing(), /* aUseDecodePool */ false,
+                          [&](image::Decoder* aDecoder) {
+                            webpReference =
+                                CheckDecoderState(referenceCase, aDecoder);
+                          });
+    ExpectSurfacesSimilar(webpReference, reference,
+                          kReferenceMaxDifferingPixels,
+                          kReferenceMaxChannelDiff);
+  }
+
+  for (bool useDecodePool : {false, true}) {
+    for (uint32_t participants : {1u, 0u, 2u, 8u, 64u}) {
+      SCOPED_TRACE(testing::Message() << "participants=" << participants
+                                      << " useDecodePool=" << useDecodePool);
+      RefPtr<SourceSurface> surface =
+          DecodeLargeJXL(participants, useDecodePool);
+      ExpectSurfacesIdentical(reference, surface);
+    }
+  }
+}
+
+// Stress test the pool with many more tasks than it has threads.
+TEST_F(ImageDecoders, JXLConcurrentDecodes) {
+  uint32_t oldValue = Preferences::GetUint("image.jxl.decode_participants", 1);
+  auto restore = MakeScopeExit(
+      [&] { Preferences::SetUint("image.jxl.decode_participants", oldValue); });
+
+  RefPtr<SourceSurface> reference =
+      DecodeLargeJXL(1, /* aUseDecodePool */ false);
+
+  Preferences::SetUint("image.jxl.decode_participants", 0);
+
+  ImageTestCase testCase = LargeJXLTestCase();
+  nsTArray<RefPtr<image::Decoder>> decoders;
+  nsTArray<RefPtr<MonitorAnonymousDecodingTask>> tasks;
+
+  for (size_t i = 0; i < 16; ++i) {
+    nsCOMPtr<nsIInputStream> inputStream = LoadFile(testCase.mPath);
+    ASSERT_TRUE(inputStream != nullptr);
+
+    uint64_t length;
+    ASSERT_NS_SUCCEEDED(inputStream->Available(&length));
+
+    auto sourceBuffer = MakeNotNull<RefPtr<SourceBuffer>>();
+    sourceBuffer->ExpectLength(length);
+    ASSERT_NS_SUCCEEDED(
+        sourceBuffer->AppendFromInputStream(inputStream, length));
+    sourceBuffer->Complete(NS_OK);
+
+    RefPtr<image::Decoder> decoder = DecoderFactory::CreateAnonymousDecoder(
+        DecoderFactory::GetDecoderType(testCase.mMimeType), sourceBuffer,
+        Nothing(), DefaultDecoderFlags() | DecoderFlags::FIRST_FRAME_ONLY,
+        testCase.mSurfaceFlags);
+    ASSERT_TRUE(decoder != nullptr);
+
+    decoders.AppendElement(decoder);
+    tasks.AppendElement(MakeRefPtr<MonitorAnonymousDecodingTask>(
+        WrapNotNull(decoder.get()), /* aResumable */ false));
+  }
+
+  // Queue them all before waiting on any, or the pool is never contended.
+  for (auto& task : tasks) {
+    DecodePool::Singleton()->AsyncRun(task.get());
+  }
+  for (auto& task : tasks) {
+    task->WaitUntilFinished();
+  }
+
+  for (size_t i = 0; i < decoders.Length(); ++i) {
+    SCOPED_TRACE(testing::Message() << "decode=" << i);
+    RefPtr<SourceSurface> surface = CheckDecoderState(testCase, decoders[i]);
+    ExpectSurfacesIdentical(reference, surface);
+  }
+}
+#endif /* MOZ_JXL */
 
 TEST_F(ImageDecoders, AnimatedGIFSingleChunk) {
   CheckDecoderSingleChunk(GreenFirstFrameAnimatedGIFTestCase());
@@ -995,6 +1316,24 @@ TEST_F(ImageDecoders, AnimatedAVIFMultiChunk) {
 TEST_F(ImageDecoders, AnimatedAVIFWithBlendedFrames) {
   CheckAnimationDecoderSingleChunk(GreenFirstFrameAnimatedAVIFTestCase());
 }
+
+#ifdef MOZ_JXL
+TEST_F(ImageDecoders, AnimatedJXLSingleChunk) {
+  CheckDecoderSingleChunk(GreenFirstFrameAnimatedJXLTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedJXLMultiChunk) {
+  CheckDecoderMultiChunk(GreenFirstFrameAnimatedJXLTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedJXLWithBlendedFrames) {
+  CheckAnimationDecoderSingleChunk(GreenFirstFrameAnimatedJXLTestCase());
+}
+
+TEST_F(ImageDecoders, CorruptJXLSingleChunk) {
+  CheckDecoderSingleChunk(CorruptJXLTestCase());
+}
+#endif
 
 TEST_F(ImageDecoders, CorruptSingleChunk) {
   CheckDecoderSingleChunk(CorruptTestCase());
@@ -1050,6 +1389,169 @@ TEST_F(ImageDecoders, AnimatedGIFWithFRAME_CURRENT) {
   CheckDecoderFrameCurrent(GreenFirstFrameAnimatedGIFTestCase());
 }
 
+TEST_F(ImageDecoders, AnimatedWebPWithFRAME_FIRST) {
+  CheckDecoderFrameFirst(GreenFirstFrameAnimatedWebPTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedWebPWithFRAME_CURRENT) {
+  CheckDecoderFrameCurrent(GreenFirstFrameAnimatedWebPTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedPNGWithFRAME_FIRST) {
+  CheckDecoderFrameFirst(GreenFirstFrameAnimatedPNGTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedPNGWithFRAME_CURRENT) {
+  CheckDecoderFrameCurrent(GreenFirstFrameAnimatedPNGTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedAVIFWithFRAME_FIRST) {
+  CheckDecoderFrameFirst(GreenFirstFrameAnimatedAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedAVIFWithFRAME_CURRENT) {
+  CheckDecoderFrameCurrent(GreenFirstFrameAnimatedAVIFTestCase());
+}
+
+#ifdef MOZ_JXL
+TEST_F(ImageDecoders, AnimatedJXLWithFRAME_FIRST) {
+  CheckDecoderFrameFirst(GreenFirstFrameAnimatedJXLTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedJXLWithFRAME_CURRENT) {
+  CheckDecoderFrameCurrent(GreenFirstFrameAnimatedJXLTestCase());
+}
+
+TEST_F(ImageDecoders, JXL_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenJXLTestCase());
+}
+
+TEST_F(ImageDecoders, JXLProgressive_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(ProgressiveJXLTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedJXL_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenFirstFrameAnimatedJXLTestCase());
+}
+
+TEST_F(ImageDecoders, LongAnimatedJXL_IncrementalFrameCountUpdates) {
+  ImageTestCase testCase = LongAnimatedJXLTestCase();
+
+  nsCOMPtr<nsIInputStream> inputStream = LoadFile(testCase.mPath);
+  ASSERT_TRUE(inputStream != nullptr);
+
+  uint64_t length;
+  nsresult rv = inputStream->Available(&length);
+  ASSERT_NS_SUCCEEDED(rv);
+
+  auto sourceBuffer = MakeNotNull<RefPtr<SourceBuffer>>();
+  sourceBuffer->ExpectLength(length);
+
+  DecoderType decoderType = DecoderFactory::GetDecoderType(testCase.mMimeType);
+  DecoderFlags decoderFlags =
+      DefaultDecoderFlags() | DecoderFlags::COUNT_FRAMES;
+  RefPtr<image::Decoder> decoder =
+      DecoderFactory::CreateAnonymousMetadataDecoder(decoderType, sourceBuffer,
+                                                     decoderFlags);
+  ASSERT_TRUE(decoder != nullptr);
+
+  auto task = MakeRefPtr<AnonymousDecodingTask>(WrapNotNull(decoder),
+                                                /* aResumable */ true);
+  task->Run();
+
+  // Feed only the first half of the data in fixed-size chunks, tracking how
+  // many times the scanned frame count (reported via PostFrameCount) increases.
+  const uint64_t kChunkSize = 4096;
+  uint64_t halfLength = length / 2;
+  uint64_t remaining = halfLength;
+  uint32_t lastFrameCount = 0;
+  uint32_t frameCountIncreases = 0;
+
+  while (remaining > 0) {
+    uint64_t read = std::min(remaining, kChunkSize);
+    remaining -= read;
+
+    rv = sourceBuffer->AppendFromInputStream(inputStream, read);
+    ASSERT_NS_SUCCEEDED(rv);
+
+    SpinPendingEvents();
+
+    const ImageMetadata& metadata = decoder->GetImageMetadata();
+    if (metadata.HasFrameCount()) {
+      uint32_t currentFrameCount = metadata.GetFrameCount();
+      if (currentFrameCount > lastFrameCount) {
+        frameCountIncreases++;
+        lastFrameCount = currentFrameCount;
+      }
+    }
+  }
+
+  EXPECT_GE(frameCountIncreases, 4u);
+  EXPECT_GE(lastFrameCount, 300u);
+}
+
+#endif
+
+TEST_F(ImageDecoders, BMP_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenBMPTestCase());
+}
+
+TEST_F(ImageDecoders, GIF_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenGIFTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedGIF_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenFirstFrameAnimatedGIFTestCase());
+}
+
+TEST_F(ImageDecoders, ICO_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenICOTestCase());
+}
+
+TEST_F(ImageDecoders, LargeICOWithPNG_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(LargeICOWithPNGTestCase());
+}
+
+TEST_F(ImageDecoders, JPEG_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenJPGTestCase());
+}
+
+TEST_F(ImageDecoders, PNG_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenPNGTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedPNG_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenFirstFrameAnimatedPNGTestCase());
+}
+
+TEST_F(ImageDecoders, TransparentPNG_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(TransparentPNGTestCase());
+}
+
+TEST_F(ImageDecoders, WebP_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenWebPTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedWebP_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenFirstFrameAnimatedWebPTestCase());
+}
+
+TEST_F(ImageDecoders, TransparentWebP_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(TransparentWebPTestCase());
+}
+
+TEST_F(ImageDecoders, AVIF_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedAVIF_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(GreenFirstFrameAnimatedAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, TransparentAVIF_IncrementalDecodeMatchesOneShot) {
+  CheckIncrementalDecodeMatchesOneShot(TransparentAVIFTestCase());
+}
+
 TEST_F(ImageDecoders, AnimatedGIFWithExtraImageSubBlocks) {
   ImageTestCase testCase = ExtraImageSubBlocksAnimatedGIFTestCase();
 
@@ -1073,8 +1575,12 @@ TEST_F(ImageDecoders, AnimatedGIFWithExtraImageSubBlocks) {
   RefPtr<ProgressTracker> tracker = image->GetProgressTracker();
   Progress imageProgress = tracker->GetProgress();
 
-  EXPECT_TRUE(bool(imageProgress & FLAG_HAS_TRANSPARENCY) == false);
   EXPECT_TRUE(bool(imageProgress & FLAG_IS_ANIMATED) == true);
+
+  EXPECT_EQ(bool(testCase.mFlags & TEST_CASE_IS_TRANSPARENT),
+            bool(imageProgress & FLAG_HAS_TRANSPARENCY));
+  EXPECT_EQ(bool(testCase.mFlags & TEST_CASE_IS_ANIMATED),
+            bool(imageProgress & FLAG_IS_ANIMATED));
 
   // Ensure that we decoded both frames of the image.
   LookupResult result =
@@ -1089,14 +1595,6 @@ TEST_F(ImageDecoders, AnimatedGIFWithExtraImageSubBlocks) {
 
   RefPtr<imgFrame> partialFrame = result.Surface().GetFrame(1);
   EXPECT_TRUE(bool(partialFrame));
-}
-
-TEST_F(ImageDecoders, AnimatedWebPWithFRAME_FIRST) {
-  CheckDecoderFrameFirst(GreenFirstFrameAnimatedWebPTestCase());
-}
-
-TEST_F(ImageDecoders, AnimatedWebPWithFRAME_CURRENT) {
-  CheckDecoderFrameCurrent(GreenFirstFrameAnimatedWebPTestCase());
 }
 
 TEST_F(ImageDecoders, TruncatedSmallGIFSingleChunk) {
@@ -1199,4 +1697,53 @@ TEST_F(ImageDecoders, MultipleSizesICOSingleChunk) {
 TEST_F(ImageDecoders, ExifResolutionEven) {
   RefPtr<Image> image = TestCaseToDecodedImage(ExifResolutionTestCase());
   EXPECT_EQ(image->GetResolution(), Resolution(2.0, 2.0));
+}
+
+TEST_F(ImageDecoders, AVIFConcurrentFilmGrainDecode) {
+  // Route AVIF through libaom instead of dav1d to hit the vulnerable path.
+  nsresult rv = Preferences::SetBool("image.avif.use-dav1d", false);
+  ASSERT_NS_SUCCEEDED(rv);
+  auto cleanup =
+      MakeScopeExit([] { Preferences::SetBool("image.avif.use-dav1d", true); });
+
+  ImageTestCase testCase420("avif_420_film_grain.avif", "image/avif",
+                            IntSize(128, 128), TEST_CASE_IGNORE_OUTPUT);
+  ImageTestCase testCase444("avif_444_film_grain.avif", "image/avif",
+                            IntSize(128, 128), TEST_CASE_IGNORE_OUTPUT);
+
+  const int kIterations = 50;
+  nsTArray<RefPtr<MonitorAnonymousDecodingTask>> tasks;
+
+  for (int i = 0; i < kIterations; ++i) {
+    const ImageTestCase& tc = (i % 2 == 0) ? testCase420 : testCase444;
+
+    nsCOMPtr<nsIInputStream> inputStream = LoadFile(tc.mPath);
+    ASSERT_TRUE(inputStream != nullptr);
+
+    uint64_t length;
+    rv = inputStream->Available(&length);
+    ASSERT_NS_SUCCEEDED(rv);
+
+    auto sourceBuffer = MakeNotNull<RefPtr<SourceBuffer>>();
+    sourceBuffer->ExpectLength(length);
+    rv = sourceBuffer->AppendFromInputStream(inputStream, length);
+    ASSERT_NS_SUCCEEDED(rv);
+    sourceBuffer->Complete(NS_OK);
+
+    DecoderType decoderType = DecoderFactory::GetDecoderType(tc.mMimeType);
+    RefPtr<image::Decoder> decoder = DecoderFactory::CreateAnonymousDecoder(
+        decoderType, sourceBuffer, Nothing(),
+        DefaultDecoderFlags() | DecoderFlags::FIRST_FRAME_ONLY,
+        tc.mSurfaceFlags);
+    ASSERT_TRUE(decoder != nullptr);
+
+    RefPtr<MonitorAnonymousDecodingTask> task =
+        new MonitorAnonymousDecodingTask(WrapNotNull(decoder), false);
+    tasks.AppendElement(task);
+    DecodePool::Singleton()->AsyncRun(task.get());
+  }
+
+  for (auto& task : tasks) {
+    task->WaitUntilFinished();
+  }
 }

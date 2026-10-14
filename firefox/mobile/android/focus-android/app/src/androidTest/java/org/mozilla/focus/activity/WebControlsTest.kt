@@ -4,7 +4,6 @@
 package org.mozilla.focus.activity
 
 import androidx.test.internal.runner.junit4.AndroidJUnit4ClassRunner
-import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Before
 import org.junit.Ignore
@@ -13,164 +12,161 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.focus.activity.robots.searchScreen
 import org.mozilla.focus.helpers.FeatureSettingsHelper
+import org.mozilla.focus.helpers.FocusTestRule
 import org.mozilla.focus.helpers.MainActivityIntentsTestRule
-import org.mozilla.focus.helpers.MockWebServerHelper
 import org.mozilla.focus.helpers.RetryTestRule
 import org.mozilla.focus.helpers.StringsHelper.GMAIL_APP
 import org.mozilla.focus.helpers.StringsHelper.PHONE_APP
-import org.mozilla.focus.helpers.TestAssetHelper
+import org.mozilla.focus.helpers.TestAssetHelper.getGenericTabAsset
+import org.mozilla.focus.helpers.TestAssetHelper.htmlControlsPageAsset
 import org.mozilla.focus.helpers.TestHelper.assertNativeAppOpens
 import org.mozilla.focus.helpers.TestHelper.waitingTime
-import org.mozilla.focus.helpers.TestSetup
 import org.mozilla.focus.testAnnotations.SmokeTest
 
 // These tests check that various web controls work properly
 @RunWith(AndroidJUnit4ClassRunner::class)
-class WebControlsTest : TestSetup() {
-    private lateinit var webServer: MockWebServer
+class WebControlsTest {
 
     private val featureSettingsHelper = FeatureSettingsHelper()
 
-    @get:Rule
-    val mActivityTestRule = MainActivityIntentsTestRule(showFirstRun = false)
+    @get:Rule(order = 0) val focusTestRule: FocusTestRule = FocusTestRule()
 
-    @Rule
-    @JvmField
-    val retryTestRule = RetryTestRule(3)
+    private val webServerRule
+        get() = focusTestRule.mockWebServerRule
+
+    @get:Rule val mActivityTestRule = MainActivityIntentsTestRule(showFirstRun = false)
+
+    @Rule @JvmField val retryTestRule = RetryTestRule(3)
 
     @Before
-    override fun setUp() {
-        super.setUp()
-        webServer = MockWebServer().apply {
-            dispatcher = MockWebServerHelper.AndroidAssetDispatcher()
-            start()
-        }
+    fun setUp() {
         featureSettingsHelper.setCfrForTrackingProtectionEnabled(false)
         featureSettingsHelper.setSearchWidgetDialogEnabled(false)
     }
 
     @After
     fun tearDown() {
-        webServer.shutdown()
         featureSettingsHelper.resetAllFeatureFlags()
     }
 
     @SmokeTest
     @Test
     fun verifyTextInputTest() {
-        val htmlControlsPage = TestAssetHelper.getHTMLControlsPageAsset(webServer).url
+        val htmlControlsPage = webServerRule.server.htmlControlsPageAsset.url
 
-        searchScreen {
-        }.loadPage(htmlControlsPage) {
-            progressBar.waitUntilGone(waitingTime)
-            clickAndWriteTextInInputBox("wiki")
-            clickSubmitTextInputButton()
-            verifyPageContent("You entered: wiki")
-        }
+        searchScreen {}
+            .loadPage(htmlControlsPage) {
+                progressBar.waitUntilGone(waitingTime)
+                clickAndWriteTextInInputBox("wiki")
+                clickSubmitTextInputButton()
+                verifyPageContent("You entered: wiki")
+            }
     }
 
     @SmokeTest
     @Test
     fun verifyDropdownMenuTest() {
-        val htmlControlsPage = TestAssetHelper.getHTMLControlsPageAsset(webServer).url
+        val htmlControlsPage = webServerRule.server.htmlControlsPageAsset.url
 
-        searchScreen {
-        }.loadPage(htmlControlsPage) {
-            progressBar.waitUntilGone(waitingTime)
-            clickDropDownForm()
-            selectDropDownOption("The National")
-            clickSubmitDropDownButton()
-            verifySelectedDropDownOption("The National")
-        }
+        searchScreen {}
+            .loadPage(htmlControlsPage) {
+                progressBar.waitUntilGone(waitingTime)
+                clickDropDownForm()
+                selectDropDownOption("The National")
+                clickSubmitDropDownButton()
+                verifySelectedDropDownOption("The National")
+            }
     }
 
     @SmokeTest
     @Test
     fun verifyExternalLinksTest() {
-        val htmlControlsPage = TestAssetHelper.getHTMLControlsPageAsset(webServer).url
+        val htmlControlsPage = webServerRule.server.htmlControlsPageAsset.url
 
-        searchScreen {
-        }.loadPage(htmlControlsPage) {
-            progressBar.waitUntilGone(waitingTime)
-            clickLinkMatchingText("External link")
-            progressBar.waitUntilGone(waitingTime)
-            verifyPageURL("DuckDuckGo")
-        }
+        searchScreen {}
+            .loadPage(htmlControlsPage) {
+                progressBar.waitUntilGone(waitingTime)
+                clickLinkMatchingText("External link")
+                progressBar.waitUntilGone(waitingTime)
+                verifyPageURL("example.com")
+            }
     }
 
     @SmokeTest
     @Test
     fun emailLinkTest() {
-        val htmlControlsPage = TestAssetHelper.getHTMLControlsPageAsset(webServer).url
+        val htmlControlsPage = webServerRule.server.htmlControlsPageAsset.url
 
-        searchScreen {
-        }.loadPage(htmlControlsPage) {
-            clickLinkMatchingText("Email link")
-            clickOpenLinksInAppsOpenButton()
-            assertNativeAppOpens(GMAIL_APP)
-        }
+        searchScreen {}
+            .loadPage(htmlControlsPage) {
+                clickLinkMatchingText("Email link")
+                clickOpenLinksInAppsOpenButton()
+                assertNativeAppOpens(GMAIL_APP)
+            }
     }
 
     @SmokeTest
     @Test
     fun telephoneLinkTest() {
-        val htmlControlsPage = TestAssetHelper.getHTMLControlsPageAsset(webServer).url
+        val htmlControlsPage = webServerRule.server.htmlControlsPageAsset.url
 
-        searchScreen {
-        }.loadPage(htmlControlsPage) {
-            clickLinkMatchingText("Telephone link")
-            clickOpenLinksInAppsOpenButton()
-            assertNativeAppOpens(PHONE_APP)
-        }
+        searchScreen {}
+            .loadPage(htmlControlsPage) {
+                clickLinkMatchingText("Telephone link")
+                clickOpenLinksInAppsOpenButton()
+                assertNativeAppOpens(PHONE_APP)
+            }
     }
 
     @SmokeTest
     @Test
     fun verifyDismissTextSelectionToolbarTest() {
-        val tab1Url = TestAssetHelper.getGenericTabAsset(webServer, 1).url
-        val htmlControlsPage = TestAssetHelper.getHTMLControlsPageAsset(webServer).url
+        val tab1Url = webServerRule.server.getGenericTabAsset(1).url
+        val htmlControlsPage = webServerRule.server.htmlControlsPageAsset.url
 
-        searchScreen {
-        }.loadPage(tab1Url) {
-            progressBar.waitUntilGone(waitingTime)
-        }.openSearchBar {
-        }.loadPage(htmlControlsPage) {
-            progressBar.waitUntilGone(waitingTime)
-            longClickText("Copy")
-        }.goToPreviousPage {
-            verifyCopyOptionDoesNotExist()
-        }
+        searchScreen {}
+            .loadPage(tab1Url) {
+                progressBar.waitUntilGone(waitingTime)
+            }
+            .openSearchBar {}
+            .loadPage(htmlControlsPage) {
+                progressBar.waitUntilGone(waitingTime)
+                longClickText("Copy")
+            }
+            .goToPreviousPage {
+                verifyCopyOptionDoesNotExist()
+            }
     }
 
     @Ignore("Failing, see: https://bugzilla.mozilla.org/show_bug.cgi?id=1841006")
     @SmokeTest
     @Test
     fun verifySelectTextTest() {
-        val htmlControlsPage = TestAssetHelper.getHTMLControlsPageAsset(webServer).url
+        val htmlControlsPage = webServerRule.server.htmlControlsPageAsset.url
 
-        searchScreen {
-        }.loadPage(htmlControlsPage) {
-            progressBar.waitUntilGone(waitingTime)
-            longClickAndCopyText("Copy")
-            clickAndPasteTextInInputBox()
-            clickSubmitTextInputButton()
-            verifyPageContent("You entered: Copy")
-        }
+        searchScreen {}
+            .loadPage(htmlControlsPage) {
+                progressBar.waitUntilGone(waitingTime)
+                longClickAndCopyText("Copy")
+                clickAndPasteTextInInputBox()
+                clickSubmitTextInputButton()
+                verifyPageContent("You entered: Copy")
+            }
     }
 
     @SmokeTest
     @Test
     fun verifyCalendarFormTest() {
-        val htmlControlsPage = TestAssetHelper.getHTMLControlsPageAsset(webServer).url
+        val htmlControlsPage = webServerRule.server.htmlControlsPageAsset.url
 
-        searchScreen {
-        }.loadPage(htmlControlsPage) {
-            progressBar.waitUntilGone(waitingTime)
-            clickCalendarForm()
-            selectDate()
-            clickButtonWithText("OK")
-            clickSubmitDateButton()
-            verifySelectedDate()
-        }
+        searchScreen {}
+            .loadPage(htmlControlsPage) {
+                progressBar.waitUntilGone(waitingTime)
+                clickCalendarForm()
+                selectDate()
+                clickButtonWithText("Set")
+                clickSubmitDateButton()
+                verifySelectedDate()
+            }
     }
 }

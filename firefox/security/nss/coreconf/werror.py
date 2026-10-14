@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import os
 import subprocess
@@ -69,7 +69,9 @@ def main():
                   'unreachable-code-return',
                   'duplicated-cond',
                   'logical-op',
-                  'implicit-function-declaration'
+                  'implicit-function-declaration',
+                  'unused-but-set-variable',
+                  'unused-but-set-global'
                   ]:
             set_warning(w,'')
         print('-Qunused-arguments')

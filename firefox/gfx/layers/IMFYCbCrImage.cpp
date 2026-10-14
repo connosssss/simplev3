@@ -1,20 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "IMFYCbCrImage.h"
+
 #include "mozilla/gfx/DeviceManagerDx.h"
-#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/gfx/Types.h"
-#include "mozilla/layers/TextureD3D11.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/layers/CompositableClient.h"
 #include "mozilla/layers/CompositableForwarder.h"
+#include "mozilla/layers/CompositeProcessFencesHolderMap.h"
 #include "mozilla/layers/D3D11YCbCrImage.h"
 #include "mozilla/layers/FenceD3D11.h"
-#include "mozilla/layers/CompositeProcessD3D11FencesHolderMap.h"
 #include "mozilla/layers/TextureClient.h"
+#include "mozilla/layers/TextureD3D11.h"
 
 namespace mozilla {
 namespace layers {
@@ -70,7 +69,7 @@ bool IMFYCbCrImage::CopyDataToTexture(const Data& aData, ID3D11Device* aDevice,
   ctx->UpdateSubresource(textureCr, 0, &box, aData.mCrChannel,
                          aData.mCbCrStride, 0);
 
-  auto* fenceHolderMap = CompositeProcessD3D11FencesHolderMap::Get();
+  auto* fenceHolderMap = CompositeProcessFencesHolderMap::Get();
   if (!fenceHolderMap) {
     MOZ_ASSERT_UNREACHABLE("unexpected to be called");
     return false;
@@ -89,7 +88,7 @@ TextureClient* IMFYCbCrImage::GetD3D11TextureClient(
     return nullptr;
   }
 
-  auto* fenceHolderMap = CompositeProcessD3D11FencesHolderMap::Get();
+  auto* fenceHolderMap = CompositeProcessFencesHolderMap::Get();
   if (!fenceHolderMap) {
     MOZ_ASSERT_UNREACHABLE("unexpected to be called");
     return nullptr;
@@ -113,9 +112,8 @@ TextureClient* IMFYCbCrImage::GetD3D11TextureClient(
   DXGIYCbCrTextureData* data =
       mTextureClient->GetInternalData()->AsDXGIYCbCrTextureData();
 
-  if (!fenceHolderMap->WaitAllFencesAndForget(data->mFencesHolderId, device)) {
-    return nullptr;
-  }
+  auto fences = fenceHolderMap->TakeAllFencesAndForget(data->mFencesHolderId);
+  FenceD3D11::WaitD3D11Fences(fences, device);
 
   if (!CopyDataToTexture(mData, device, data)) {
     // Failed to copy data

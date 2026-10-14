@@ -1,12 +1,8 @@
 .section-context-menu {
   position: relative;
 
-  .context-menu {
-    /* Fix the context menu width */
-    width: calc(4 * var(--size-item-large));
-
-    /* Position the context menu on top of the card grid, below the menu button. */
-    inset-block-start: calc( 2.5 * var(--size-item-small));
-    inset-inline-start: calc(-6.25 * var(--size-item-small));
+  &.context-menu-open > moz-button::part(button) {
+    background-color: var(--button-background-color-ghost-hover);
+    color: var(--button-text-color-ghost-hover);
   }
 }

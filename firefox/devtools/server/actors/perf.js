@@ -32,6 +32,7 @@ exports.PerfActor = class PerfActor extends Actor {
   /**
    * This counter is incremented at each new capture. This makes sure that the
    * profile data and the additionalInformation are in sync.
+   *
    * @type {number}
    */
   #captureHandleCounter = 0;
@@ -39,6 +40,7 @@ exports.PerfActor = class PerfActor extends Actor {
   /**
    * This stores the profile data retrieved from the last call to
    * startCaptureAndStopProfiler.
+   *
    * @type {Promise<ArrayBuffer> |null}
    */
   #previouslyRetrievedProfileDataPromise = null;
@@ -47,9 +49,20 @@ exports.PerfActor = class PerfActor extends Actor {
    * This stores the additionalInformation returned by
    * getProfileDataAsGzippedArrayBufferThenStop so that it can be sent to the
    * front using getPreviouslyRetrievedAdditionalInformation.
+   *
    * @type {Promise<MockedExports.ProfileGenerationAdditionalInformation>| null}
    */
   #previouslyRetrievedAdditionalInformationPromise = null;
+
+  /**
+   * Whether the currently running profiler was started by this actor (ie from
+   * the DevTools performance panel). This is used to only stop the profiler on
+   * destroy for recordings that DevTools started itself, leaving recordings
+   * started elsewhere (the profiler toolbar popup, MOZ_PROFILER_STARTUP) running.
+   *
+   * @type {boolean}
+   */
+  #startedByDevTools = false;
 
   constructor(conn) {
     super(conn, perfSpec);
@@ -70,6 +83,11 @@ exports.PerfActor = class PerfActor extends Actor {
     if (!IS_SUPPORTED_PLATFORM) {
       return;
     }
+
+    if (this.#startedByDevTools && Services.profiler.IsActive()) {
+      Services.profiler.StopProfiler();
+    }
+
     Services.obs.removeObserver(this._observer, "profiler-started");
     Services.obs.removeObserver(this._observer, "profiler-stopped");
   }
@@ -85,7 +103,7 @@ exports.PerfActor = class PerfActor extends Actor {
       entries: options.entries || 1000000,
       duration: options.duration || 0,
       interval: options.interval || 1,
-      features: options.features || ["js", "stackwalk", "cpu", "memory"],
+      features: options.features || ["js", "stackwalk", "memory"],
       threads: options.threads || ["GeckoMain", "Compositor"],
       activeTabID: RecordingUtils.getActiveBrowserID(),
     };
@@ -105,6 +123,7 @@ exports.PerfActor = class PerfActor extends Actor {
       return false;
     }
 
+    this.#startedByDevTools = true;
     return true;
   }
 
@@ -146,17 +165,6 @@ exports.PerfActor = class PerfActor extends Actor {
     return [Array.from(addr), Array.from(index), Array.from(buffer)];
   }
 
-  /* @backward-compat { version 140 }
-   * Version 140 introduced getProfileAndStopProfilerBulk below, a more
-   * efficient version of getProfileAndStopProfiler. getProfileAndStopProfiler
-   * needs to stay in the spec to support older versions of Firefox, so it's
-   * also present here. */
-  async getProfileAndStopProfiler() {
-    throw new Error(
-      "Unexpected getProfileAndStopProfiler function called in Firefox v140+. Most likely you're using an older version of Firefox to debug this application. Please use at least Firefox v140."
-    );
-  }
-
   async startCaptureAndStopProfiler() {
     if (!IS_SUPPORTED_PLATFORM) {
       throw new Error("Profiling is not supported on this platform.");
@@ -184,6 +192,7 @@ exports.PerfActor = class PerfActor extends Actor {
 
   /**
    * This actor function returns the profile data using the bulk protocol.
+   *
    * @param {number} handle returned by startCaptureAndStopProfiler
    * @returns {Promise<void>}
    */
@@ -273,6 +282,7 @@ exports.PerfActor = class PerfActor extends Actor {
         break;
       }
       case "profiler-stopped":
+        this.#startedByDevTools = false;
         this.emit(topic);
         break;
     }
@@ -280,6 +290,7 @@ exports.PerfActor = class PerfActor extends Actor {
 
   /**
    * Lists the supported features of the profiler for the current browser.
+   *
    * @returns {string[]}
    */
   getSupportedFeatures() {

@@ -102,14 +102,6 @@ extern CERTSubjectPublicKeyInfo *
 SECKEY_CreateSubjectPublicKeyInfo(const SECKEYPublicKey *k);
 
 /*
-** Convert a base64 ascii encoded DER public key and challenge to spki,
-** and verify the signature and challenge data are correct
-*/
-extern CERTSubjectPublicKeyInfo *
-SECKEY_ConvertAndDecodePublicKeyAndChallenge(char *pkacstr, char *challenge,
-                                             void *cx);
-
-/*
 ** Encode a  CERTSubjectPublicKeyInfo structure. into a
 ** DER encoded subject public key info.
 */
@@ -122,13 +114,6 @@ SECKEY_EncodeDERSubjectPublicKeyInfo(const SECKEYPublicKey *pubk);
 */
 extern CERTSubjectPublicKeyInfo *
 SECKEY_DecodeDERSubjectPublicKeyInfo(const SECItem *spkider);
-
-/*
-** Convert a base64 ascii encoded DER subject public key info to our
-** internal format.
-*/
-extern CERTSubjectPublicKeyInfo *
-SECKEY_ConvertAndDecodeSubjectPublicKeyInfo(const char *spkistr);
 
 /*
  * extract the public key from a subject Public Key info structure.
@@ -274,6 +259,25 @@ SECOidTag SECKEY_GetECCOid(const SECKEYECParams *params);
 /* make sure the key length matches the policy for keyType */
 SECStatus SECKEY_EnforceKeySize(KeyType keyType, unsigned keyLength,
                                 SECErrorCodes error);
+
+/* get the descriptive string for a given key type */
+const char *SECKEY_GetKeyTypeString(KeyType keyType);
+
+/* Maps an ML-DSA OID tag to its corresponding PKCS#11's CKP_* parameter set */
+CK_ML_DSA_PARAMETER_SET_TYPE
+SECKEY_GetMLDSAPkcs11ParamSetByOidTag(SECOidTag tag);
+
+/* Maps a PKCS#11's CKP_* parameter set to its corresponding ML-DSA OID tag */
+SECOidTag
+SECKEY_GetMLDSAOidTagByPkcs11ParamSet(CK_ML_DSA_PARAMETER_SET_TYPE paramSet);
+
+typedef enum {
+    SECKEYPubKeyType = 1,
+    SECKEYPrivKeyType,
+    SECKEYSignatureType,
+} SECKEYSizeType;
+
+unsigned int SECKEY_MLDSAOidParamsToLen(SECOidTag oid, SECKEYSizeType type);
 
 SEC_END_PROTOS
 

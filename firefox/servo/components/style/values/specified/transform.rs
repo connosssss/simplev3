@@ -4,19 +4,21 @@
 
 //! Specified types for CSS values that are related to transformations.
 
+use crate::Zero;
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::values::computed::{Context, LengthPercentage as ComputedLengthPercentage};
 use crate::values::computed::{Percentage as ComputedPercentage, ToComputedValue};
 use crate::values::generics::transform as generic;
-use crate::values::generics::transform::{Matrix, Matrix3D};
+use crate::values::generics::transform::{Matrix, Matrix3D, ToFloat};
+use crate::values::specified::percentage::NoCalcPercentage;
 use crate::values::specified::position::{
     HorizontalPositionKeyword, Side, VerticalPositionKeyword,
 };
 use crate::values::specified::{
-    self, Angle, Integer, Length, LengthPercentage, Number, NumberOrPercentage,
+    self, AllowQuirks, Angle, Integer, Length, LengthPercentage, Number, NumberOrPercentage,
 };
-use crate::Zero;
-use cssparser::Parser;
+use cssparser::{Parser, match_ignore_ascii_case};
 use style_traits::{ParseError, StyleParseErrorKind};
 
 pub use crate::values::generics::transform::TransformStyle;
@@ -37,7 +39,7 @@ pub type TransformOrigin = generic::TransformOrigin<
 
 #[cfg(feature = "gecko")]
 fn all_transform_boxes_are_enabled(_context: &ParserContext) -> bool {
-    static_prefs::pref!("layout.css.transform-box-content-stroke.enabled")
+    true
 }
 
 #[cfg(feature = "servo")]
@@ -66,6 +68,7 @@ fn all_transform_boxes_are_enabled(_context: &ParserContext) -> bool {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum TransformBox {
@@ -83,8 +86,8 @@ impl TransformOrigin {
     #[inline]
     pub fn initial_value() -> Self {
         Self::new(
-            OriginComponent::Length(LengthPercentage::Percentage(ComputedPercentage(0.5))),
-            OriginComponent::Length(LengthPercentage::Percentage(ComputedPercentage(0.5))),
+            OriginComponent::Length(LengthPercentage::Percentage(NoCalcPercentage::new(0.5))),
+            OriginComponent::Length(LengthPercentage::Percentage(NoCalcPercentage::new(0.5))),
             Length::zero(),
         )
     }
@@ -99,15 +102,36 @@ impl TransformOrigin {
     }
 }
 
+/// Whether to allow unitless values for perspective in prefixed transform properties.
+///
+/// See: https://github.com/whatwg/compat/issues/100
+#[allow(missing_docs)]
+pub enum AllowUnitlessPerspective {
+    No,
+    Yes,
+}
+
 impl Transform {
+    /// Parse the transform property value, allowing unitless perspective values.
+    ///
+    /// This is used for `-webkit-transform` which allows unitless values for perspective.
+    #[inline]
+    pub(crate) fn parse_legacy(
+        context: &ParserContext,
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
+        Self::parse_internal(context, input, AllowUnitlessPerspective::Yes)
+    }
+
     /// Internal parse function for deciding if we wish to accept prefixed values or not
     ///
     /// `transform` allows unitless zero angles as an exception, see:
     /// https://github.com/w3c/csswg-drafts/issues/1162
-    fn parse_internal<'i, 't>(
+    fn parse_internal(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+        input: &mut Parser,
+        allow_unitless_perspective: AllowUnitlessPerspective,
+    ) -> Result<Self, ParseError> {
         use style_traits::{Separator, Space};
 
         if input
@@ -121,7 +145,6 @@ impl Transform {
             Space::parse(input, |input| {
                 let function = input.expect_function()?.clone();
                 input.parse_nested_block(|input| {
-                    let location = input.current_source_location();
                     let result = match_ignore_ascii_case! { &function,
                         "matrix" => {
                             let a = Number::parse(context, input)?;
@@ -207,33 +230,51 @@ impl Transform {
                             let tz = specified::Length::parse(context, input)?;
                             Ok(generic::TransformOperation::Translate3D(tx, ty, tz))
                         },
+                        // TODO(Bug 2038213) - Properly handle serialization of percentages in calcs in
+                        // scale values by not eagerly converting into numbers here at parse time.
                         "scale" => {
-                            let sx = NumberOrPercentage::parse(context, input)?.to_number();
+                            let Some(sx) = NumberOrPercentage::parse(context, input)?.to_number() else {
+                                return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+                            };
                             if input.try_parse(|input| input.expect_comma()).is_ok() {
-                                let sy = NumberOrPercentage::parse(context, input)?.to_number();
+                                let Some(sy) = NumberOrPercentage::parse(context, input)?.to_number() else {
+                                    return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+                                };
                                 Ok(generic::TransformOperation::Scale(sx, sy))
                             } else {
-                                Ok(generic::TransformOperation::Scale(sx, sx))
+                                Ok(generic::TransformOperation::Scale(sx.clone(), sx))
                             }
                         },
                         "scalex" => {
-                            let sx = NumberOrPercentage::parse(context, input)?.to_number();
+                            let Some(sx) = NumberOrPercentage::parse(context, input)?.to_number() else {
+                                return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+                            };
                             Ok(generic::TransformOperation::ScaleX(sx))
                         },
                         "scaley" => {
-                            let sy = NumberOrPercentage::parse(context, input)?.to_number();
+                            let Some(sy) = NumberOrPercentage::parse(context, input)?.to_number() else {
+                                return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+                            };
                             Ok(generic::TransformOperation::ScaleY(sy))
                         },
                         "scalez" => {
-                            let sz = NumberOrPercentage::parse(context, input)?.to_number();
+                            let Some(sz) = NumberOrPercentage::parse(context, input)?.to_number() else {
+                                return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+                            };
                             Ok(generic::TransformOperation::ScaleZ(sz))
                         },
                         "scale3d" => {
-                            let sx = NumberOrPercentage::parse(context, input)?.to_number();
+                            let Some(sx) = NumberOrPercentage::parse(context, input)?.to_number() else {
+                                return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+                            };
                             input.expect_comma()?;
-                            let sy = NumberOrPercentage::parse(context, input)?.to_number();
+                            let Some(sy) = NumberOrPercentage::parse(context, input)?.to_number() else {
+                                return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+                            };
                             input.expect_comma()?;
-                            let sz = NumberOrPercentage::parse(context, input)?.to_number();
+                            let Some(sz) = NumberOrPercentage::parse(context, input)?.to_number() else {
+                                return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+                            };
                             Ok(generic::TransformOperation::Scale3D(sx, sy, sz))
                         },
                         "rotate" => {
@@ -281,7 +322,13 @@ impl Transform {
                             Ok(generic::TransformOperation::SkewY(theta))
                         },
                         "perspective" => {
-                            let p = match input.try_parse(|input| specified::Length::parse_non_negative(context, input)) {
+                            let p = match input.try_parse(|input| {
+                                if matches!(allow_unitless_perspective, AllowUnitlessPerspective::Yes) {
+                                    specified::Length::parse_non_negative_quirky(context, input, AllowQuirks::Always)
+                                } else {
+                                    specified::Length::parse_non_negative(context, input)
+                                }
+                            }) {
                                 Ok(p) => generic::PerspectiveFunction::Length(p),
                                 Err(..) => {
                                     input.expect_ident_matching("none")?;
@@ -293,9 +340,7 @@ impl Transform {
                         _ => Err(()),
                     };
                     result.map_err(|()| {
-                        location.new_custom_error(StyleParseErrorKind::UnexpectedFunction(
-                            function.clone(),
-                        ))
+                        ParseError::custom(StyleParseErrorKind::UnexpectedFunction)
                     })
                 })
             })?
@@ -305,11 +350,8 @@ impl Transform {
 }
 
 impl Parse for Transform {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        Transform::parse_internal(context, input)
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
+        Transform::parse_internal(context, input, AllowUnitlessPerspective::No)
     }
 }
 
@@ -325,10 +367,7 @@ pub enum OriginComponent<S> {
 }
 
 impl Parse for TransformOrigin {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let parse_depth = |input: &mut Parser| {
             input
                 .try_parse(|i| Length::parse(context, i))
@@ -408,7 +447,7 @@ where
 impl<S> OriginComponent<S> {
     /// `0%`
     pub fn zero() -> Self {
-        OriginComponent::Length(LengthPercentage::Percentage(ComputedPercentage::zero()))
+        OriginComponent::Length(LengthPercentage::Percentage(NoCalcPercentage::new(0.)))
     }
 }
 
@@ -416,10 +455,7 @@ impl<S> OriginComponent<S> {
 pub type Rotate = generic::Rotate<Number, Angle>;
 
 impl Parse for Rotate {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
             return Ok(generic::Rotate::None);
         }
@@ -465,10 +501,7 @@ impl Parse for Rotate {
 pub type Translate = generic::Translate<LengthPercentage, Length>;
 
 impl Parse for Translate {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
             return Ok(generic::Translate::None);
         }
@@ -497,34 +530,70 @@ impl Parse for Translate {
     }
 }
 
+/// An individual value that can appear in a CSS `scale`.
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped)]
+pub struct ScaleFactor(NumberOrPercentage);
+
+impl ScaleFactor {
+    fn one() -> Self {
+        ScaleFactor(NumberOrPercentage::Number(Number::new(1.0)))
+    }
+}
+
+impl Parse for ScaleFactor {
+    /// Scale accepts <number> | <percentage>, so we parse it as NumberOrPercentage,
+    /// and then convert into an Number if it's a non-calc Percentage.
+    /// https://github.com/w3c/csswg-drafts/pull/4396
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
+        Ok(ScaleFactor(
+            NumberOrPercentage::parse(context, input)?.into_simplified_number(),
+        ))
+    }
+}
+
+impl ToComputedValue for ScaleFactor {
+    type ComputedValue = <Number as ToComputedValue>::ComputedValue;
+
+    fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
+        self.0.to_computed_value(context).value()
+    }
+
+    fn from_computed_value(computed: &Self::ComputedValue) -> Self {
+        ScaleFactor(NumberOrPercentage::Number(Number::from_computed_value(
+            computed,
+        )))
+    }
+}
+
+impl ToFloat for ScaleFactor {
+    fn to_f32(&self) -> Result<f32, ()> {
+        match &self.0 {
+            NumberOrPercentage::Number(n) => n.resolve().ok_or(()),
+            NumberOrPercentage::Percentage(p) => p.resolve().ok_or(()),
+        }
+    }
+
+    fn to_f64(&self) -> Result<f64, ()> {
+        self.to_f32().map(|v| v as f64)
+    }
+}
+
 /// A specified CSS `scale`
-pub type Scale = generic::Scale<Number>;
+pub type Scale = generic::Scale<ScaleFactor>;
 
 impl Parse for Scale {
-    /// Scale accepts <number> | <percentage>, so we parse it as NumberOrPercentage,
-    /// and then convert into an Number if it's a Percentage.
-    /// https://github.com/w3c/csswg-drafts/pull/4396
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
             return Ok(generic::Scale::None);
         }
 
-        let sx = NumberOrPercentage::parse(context, input)?.to_number();
-        if let Ok(sy) = input.try_parse(|i| NumberOrPercentage::parse(context, i)) {
-            let sy = sy.to_number();
-            if let Ok(sz) = input.try_parse(|i| NumberOrPercentage::parse(context, i)) {
-                // 'scale: <number> <number> <number>'
-                return Ok(generic::Scale::Scale(sx, sy, sz.to_number()));
+        let sx = ScaleFactor::parse(context, input)?;
+        if let Ok(sy) = input.try_parse(|i| ScaleFactor::parse(context, i)) {
+            if let Ok(sz) = input.try_parse(|i| ScaleFactor::parse(context, i)) {
+                return Ok(generic::Scale::Scale(sx, sy, sz));
             }
-
-            // 'scale: <number> <number>'
-            return Ok(generic::Scale::Scale(sx, sy, Number::new(1.0)));
+            return Ok(generic::Scale::Scale(sx, sy, ScaleFactor::one()));
         }
-
-        // 'scale: <number>'
-        Ok(generic::Scale::Scale(sx, sx, Number::new(1.0)))
+        Ok(generic::Scale::Scale(sx.clone(), sx, ScaleFactor::one()))
     }
 }

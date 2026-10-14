@@ -7,21 +7,27 @@
 //!
 //! [basic-shape]: https://drafts.csswg.org/css-shapes/#typedef-basic-shape
 
+use crate::Zero;
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::values::computed::basic_shape::InsetRect as ComputedInsetRect;
-use crate::values::computed::{Context, ToComputedValue};
+use crate::values::computed::{
+    Context, LengthPercentage as ComputedLengthPercentage, ToComputedValue,
+};
 use crate::values::generics::basic_shape as generic;
 use crate::values::generics::basic_shape::{Path, PolygonCoord};
-use crate::values::generics::position::{GenericPosition, GenericPositionOrAuto};
+use crate::values::generics::position::GenericPositionOrAuto;
 use crate::values::generics::rect::Rect;
 use crate::values::specified::angle::Angle;
 use crate::values::specified::border::BorderRadius;
 use crate::values::specified::image::Image;
 use crate::values::specified::length::LengthPercentageOrAuto;
+use crate::values::specified::position::Position;
 use crate::values::specified::url::SpecifiedUrl;
-use crate::values::specified::{LengthPercentage, NonNegativeLengthPercentage, SVGPathData};
-use crate::Zero;
-use cssparser::Parser;
+use crate::values::specified::{
+    LengthPercentage, NoCalcPercentage, NonNegativeLengthPercentage, SVGPathData,
+};
+use cssparser::{Parser, match_ignore_ascii_case};
 use std::fmt::{self, Write};
 use style_traits::{CssWriter, ParseError, StyleParseErrorKind, ToCss};
 
@@ -34,40 +40,35 @@ pub type ClipPath = generic::GenericClipPath<BasicShape, SpecifiedUrl>;
 /// A specified `shape-outside` value.
 pub type ShapeOutside = generic::GenericShapeOutside<BasicShape, Image>;
 
-/// A specified value for `at <position>` in circle() and ellipse().
-// Note: its computed value is the same as computed::position::Position. We just want to always use
-// LengthPercentage as the type of its components, for basic shapes.
-pub type ShapePosition = GenericPosition<LengthPercentage, LengthPercentage>;
-
 /// A specified basic shape.
-pub type BasicShape = generic::GenericBasicShape<
-    Angle,
-    ShapePosition,
-    LengthPercentage,
-    NonNegativeLengthPercentage,
-    BasicShapeRect,
->;
+pub type BasicShape =
+    generic::GenericBasicShape<Angle, AxisPosition, Position, LengthPercentage, BasicShapeRect>;
 
 /// The specified value of `inset()`.
-pub type InsetRect = generic::GenericInsetRect<LengthPercentage, NonNegativeLengthPercentage>;
+pub type InsetRect = generic::GenericInsetRect<LengthPercentage>;
 
 /// A specified circle.
-pub type Circle = generic::Circle<ShapePosition, NonNegativeLengthPercentage>;
+pub type Circle = generic::Circle<Position, LengthPercentage>;
 
 /// A specified ellipse.
-pub type Ellipse = generic::Ellipse<ShapePosition, NonNegativeLengthPercentage>;
+pub type Ellipse = generic::Ellipse<Position, LengthPercentage>;
 
 /// The specified value of `ShapeRadius`.
-pub type ShapeRadius = generic::ShapeRadius<NonNegativeLengthPercentage>;
+pub type ShapeRadius = generic::ShapeRadius<LengthPercentage>;
 
 /// The specified value of `Polygon`.
 pub type Polygon = generic::GenericPolygon<LengthPercentage>;
 
 /// The specified value of `PathOrShapeFunction`.
-pub type PathOrShapeFunction = generic::GenericPathOrShapeFunction<Angle, LengthPercentage>;
+pub type PathOrShapeFunction =
+    generic::GenericPathOrShapeFunction<Angle, AxisPosition, Position, LengthPercentage>;
 
 /// The specified value of `ShapeCommand`.
-pub type ShapeCommand = generic::GenericShapeCommand<Angle, LengthPercentage>;
+pub type ShapeCommand =
+    generic::GenericShapeCommand<Angle, AxisPosition, Position, LengthPercentage>;
+
+/// The specified value for position type of `AxisEndPoint`.
+pub type AxisPosition = generic::AxisPosition<LengthPercentage>;
 
 /// The specified value of `xywh()`.
 /// Defines a rectangle via offsets from the top and left edge of the reference box, and a
@@ -193,6 +194,8 @@ bitflags! {
         /// For shape-outside.
         const SHAPE_OUTSIDE =
             Self::INSET.bits() |
+            Self::XYWH.bits() |
+            Self::RECT.bits() |
             Self::CIRCLE.bits() |
             Self::ELLIPSE.bits() |
             Self::POLYGON.bits();
@@ -200,13 +203,13 @@ bitflags! {
 }
 
 /// A helper for both clip-path and shape-outside parsing of shapes.
-fn parse_shape_or_box<'i, 't, R, ReferenceBox>(
+fn parse_shape_or_box<R, ReferenceBox>(
     context: &ParserContext,
-    input: &mut Parser<'i, 't>,
+    input: &mut Parser,
     to_shape: impl FnOnce(Box<BasicShape>, ReferenceBox) -> R,
     to_reference_box: impl FnOnce(ReferenceBox) -> R,
     flags: AllowedBasicShapes,
-) -> Result<R, ParseError<'i>>
+) -> Result<R, ParseError>
 where
     ReferenceBox: Default + Parse,
 {
@@ -234,16 +237,13 @@ where
 
     match ref_box {
         Some(r) => Ok(to_reference_box(r)),
-        None => Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError)),
+        None => Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError)),
     }
 }
 
 impl Parse for ClipPath {
     #[inline]
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
             return Ok(ClipPath::None);
         }
@@ -264,10 +264,7 @@ impl Parse for ClipPath {
 
 impl Parse for ShapeOutside {
     #[inline]
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         // Need to parse this here so that `Image::parse_with_cors_anonymous`
         // doesn't parse it.
         if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
@@ -294,13 +291,12 @@ impl BasicShape {
     /// 1. The supported <basic-shape>.
     /// 2. The type of shapes. Should we ignore fill-rule?
     /// 3. The default value of `at <position>`.
-    pub fn parse<'i, 't>(
+    pub fn parse(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
+        input: &mut Parser,
         flags: AllowedBasicShapes,
         shape_type: ShapeType,
-    ) -> Result<Self, ParseError<'i>> {
-        let location = input.current_source_location();
+    ) -> Result<Self, ParseError> {
         let function = input.expect_function()?.clone();
         input.parse_nested_block(move |i| {
             match_ignore_ascii_case! { &function,
@@ -309,18 +305,12 @@ impl BasicShape {
                         .map(BasicShapeRect::Inset)
                         .map(BasicShape::Rect)
                 },
-                "xywh"
-                    if flags.contains(AllowedBasicShapes::XYWH)
-                        && static_prefs::pref!("layout.css.basic-shape-xywh.enabled") =>
-                {
+                "xywh" if flags.contains(AllowedBasicShapes::XYWH) => {
                     Xywh::parse_function_arguments(context, i)
                         .map(BasicShapeRect::Xywh)
                         .map(BasicShape::Rect)
                 },
-                "rect"
-                    if flags.contains(AllowedBasicShapes::RECT)
-                        && static_prefs::pref!("layout.css.basic-shape-rect.enabled") =>
-                {
+                "rect" if flags.contains(AllowedBasicShapes::RECT) => {
                     ShapeRectFunction::parse_function_arguments(context, i)
                         .map(BasicShapeRect::Rect)
                         .map(BasicShape::Rect)
@@ -344,33 +334,26 @@ impl BasicShape {
                 },
                 "shape"
                     if flags.contains(AllowedBasicShapes::SHAPE)
-                        && static_prefs::pref!("layout.css.basic-shape-shape.enabled") =>
+                        && crate::pref!("layout.css.basic-shape-shape.enabled") =>
                 {
                     generic::Shape::parse_function_arguments(context, i, shape_type)
                         .map(PathOrShapeFunction::Shape)
                         .map(BasicShape::PathOrShape)
                 },
-                _ => Err(location
-                    .new_custom_error(StyleParseErrorKind::UnexpectedFunction(function.clone()))),
+                _ => Err(ParseError::custom(StyleParseErrorKind::UnexpectedFunction)),
             }
         })
     }
 }
 
 impl Parse for InsetRect {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         input.expect_function_matching("inset")?;
         input.parse_nested_block(|i| Self::parse_function_arguments(context, i))
     }
 }
 
-fn parse_round<'i, 't>(
-    context: &ParserContext,
-    input: &mut Parser<'i, 't>,
-) -> Result<BorderRadius, ParseError<'i>> {
+fn parse_round(context: &ParserContext, input: &mut Parser) -> Result<BorderRadius, ParseError> {
     if input
         .try_parse(|i| i.expect_ident_matching("round"))
         .is_ok()
@@ -383,90 +366,39 @@ fn parse_round<'i, 't>(
 
 impl InsetRect {
     /// Parse the inner function arguments of `inset()`
-    fn parse_function_arguments<'i, 't>(
+    fn parse_function_arguments(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
         let rect = Rect::parse_with(context, input, LengthPercentage::parse)?;
         let round = parse_round(context, input)?;
         Ok(generic::InsetRect { rect, round })
     }
 }
 
-impl ToCss for ShapePosition {
-    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
-    where
-        W: Write,
-    {
-        self.horizontal.to_css(dest)?;
-        dest.write_char(' ')?;
-        self.vertical.to_css(dest)
-    }
-}
-
-fn parse_at_position<'i, 't>(
+fn parse_at_position(
     context: &ParserContext,
-    input: &mut Parser<'i, 't>,
-) -> Result<GenericPositionOrAuto<ShapePosition>, ParseError<'i>> {
-    use crate::values::specified::position::{Position, Side};
-    use crate::values::specified::{AllowedNumericType, Percentage, PositionComponent};
-
-    fn convert_to_length_percentage<S: Side>(c: PositionComponent<S>) -> LengthPercentage {
-        // Convert the value when parsing, to make sure we serialize it properly for both
-        // specified and computed values.
-        // https://drafts.csswg.org/css-shapes-1/#basic-shape-serialization
-        match c {
-            // Since <position> keywords stand in for percentages, keywords without an offset
-            // turn into percentages.
-            PositionComponent::Center => LengthPercentage::from(Percentage::new(0.5)),
-            PositionComponent::Side(keyword, None) => {
-                Percentage::new(if keyword.is_start() { 0. } else { 1. }).into()
-            },
-            // Per spec issue, https://github.com/w3c/csswg-drafts/issues/8695, the part of
-            // "avoiding calc() expressions where possible" and "avoiding calc()
-            // transformations" will be removed from the spec, and we should follow the
-            // css-values-4 for position, i.e. we make it as length-percentage always.
-            // https://drafts.csswg.org/css-shapes-1/#basic-shape-serialization.
-            // https://drafts.csswg.org/css-values-4/#typedef-position
-            PositionComponent::Side(keyword, Some(length)) => {
-                if keyword.is_start() {
-                    length
-                } else {
-                    length.hundred_percent_minus(AllowedNumericType::All)
-                }
-            },
-            PositionComponent::Length(length) => length,
-        }
-    }
-
+    input: &mut Parser,
+) -> Result<GenericPositionOrAuto<Position>, ParseError> {
     if input.try_parse(|i| i.expect_ident_matching("at")).is_ok() {
-        Position::parse(context, input).map(|pos| {
-            GenericPositionOrAuto::Position(ShapePosition::new(
-                convert_to_length_percentage(pos.horizontal),
-                convert_to_length_percentage(pos.vertical),
-            ))
-        })
+        Position::parse(context, input).map(GenericPositionOrAuto::Position)
     } else {
-        // `at <position>` is omitted.
         Ok(GenericPositionOrAuto::Auto)
     }
 }
 
 impl Parse for Circle {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         input.expect_function_matching("circle")?;
         input.parse_nested_block(|i| Self::parse_function_arguments(context, i))
     }
 }
 
 impl Circle {
-    fn parse_function_arguments<'i, 't>(
+    fn parse_function_arguments(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
         let radius = input
             .try_parse(|i| ShapeRadius::parse(context, i))
             .unwrap_or_default();
@@ -477,26 +409,34 @@ impl Circle {
 }
 
 impl Parse for Ellipse {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         input.expect_function_matching("ellipse")?;
         input.parse_nested_block(|i| Self::parse_function_arguments(context, i))
     }
 }
 
 impl Ellipse {
-    fn parse_function_arguments<'i, 't>(
+    fn parse_function_arguments(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
         let (semiaxis_x, semiaxis_y) = input
             .try_parse(|i| -> Result<_, ParseError> {
-                Ok((
-                    ShapeRadius::parse(context, i)?,
-                    ShapeRadius::parse(context, i)?,
-                ))
+                let s_x = ShapeRadius::parse(context, i)?;
+                let s_y = ShapeRadius::parse(context, i)?;
+                if !crate::pref!("layout.css.ellipse-corners.enabled")
+                    && (matches!(
+                        s_x,
+                        ShapeRadius::ClosestCorner | ShapeRadius::FarthestCorner
+                    ) || matches!(
+                        s_y,
+                        ShapeRadius::ClosestCorner | ShapeRadius::FarthestCorner
+                    ))
+                {
+                    Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError))
+                } else {
+                    Ok((s_x, s_y))
+                }
             })
             .unwrap_or_default();
         let position = parse_at_position(context, input)?;
@@ -509,11 +449,7 @@ impl Ellipse {
     }
 }
 
-fn parse_fill_rule<'i, 't>(
-    input: &mut Parser<'i, 't>,
-    shape_type: ShapeType,
-    expect_comma: bool,
-) -> FillRule {
+fn parse_fill_rule(input: &mut Parser, shape_type: ShapeType, expect_comma: bool) -> FillRule {
     match shape_type {
         // Per [1] and [2], we ignore `<fill-rule>` for outline shapes, so always use a default
         // value.
@@ -541,10 +477,7 @@ fn parse_fill_rule<'i, 't>(
 }
 
 impl Parse for Polygon {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         input.expect_function_matching("polygon")?;
         input.parse_nested_block(|i| Self::parse_function_arguments(context, i, ShapeType::Filled))
     }
@@ -552,11 +485,11 @@ impl Parse for Polygon {
 
 impl Polygon {
     /// Parse the inner arguments of a `polygon` function.
-    fn parse_function_arguments<'i, 't>(
+    fn parse_function_arguments(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
+        input: &mut Parser,
         shape_type: ShapeType,
-    ) -> Result<Self, ParseError<'i>> {
+    ) -> Result<Self, ParseError> {
         let fill = parse_fill_rule(input, shape_type, true /* has comma */);
         let coordinates = input
             .parse_comma_separated(|i| {
@@ -573,10 +506,10 @@ impl Polygon {
 
 impl Path {
     /// Parse the inner arguments of a `path` function.
-    fn parse_function_arguments<'i, 't>(
-        input: &mut Parser<'i, 't>,
+    fn parse_function_arguments(
+        input: &mut Parser,
         shape_type: ShapeType,
-    ) -> Result<Self, ParseError<'i>> {
+    ) -> Result<Self, ParseError> {
         use crate::values::specified::svg_path::AllowEmpty;
 
         let fill = parse_fill_rule(input, shape_type, true /* has comma */);
@@ -614,10 +547,10 @@ impl ToCss for Xywh {
 
 impl Xywh {
     /// Parse the inner function arguments of `xywh()`.
-    fn parse_function_arguments<'i, 't>(
+    fn parse_function_arguments(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
         let x = LengthPercentage::parse(context, input)?;
         let y = LengthPercentage::parse(context, input)?;
         let width = NonNegativeLengthPercentage::parse(context, input)?;
@@ -651,10 +584,10 @@ impl ToCss for ShapeRectFunction {
 
 impl ShapeRectFunction {
     /// Parse the inner function arguments of `rect()`.
-    fn parse_function_arguments<'i, 't>(
+    fn parse_function_arguments(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
         let rect = Rect::parse_all_components_with(context, input, LengthPercentageOrAuto::parse)?;
         let round = parse_round(context, input)?;
         Ok(ShapeRectFunction { rect, round })
@@ -671,8 +604,8 @@ impl ToComputedValue for BasicShapeRect {
         use style_traits::values::specified::AllowedNumericType;
 
         match self {
-            Self::Inset(ref inset) => inset.to_computed_value(context),
-            Self::Xywh(ref xywh) => {
+            Self::Inset(inset) => inset.to_computed_value(context),
+            Self::Xywh(xywh) => {
                 // Given `xywh(x y w h)`, construct the equivalent inset() function,
                 // `inset(y calc(100% - x - w) calc(100% - y - h) x)`.
                 //
@@ -698,7 +631,7 @@ impl ToComputedValue for BasicShapeRect {
                     round: xywh.round.to_computed_value(context),
                 }
             },
-            Self::Rect(ref rect) => {
+            Self::Rect(rect) => {
                 // Given `rect(t r b l)`, the equivalent function is
                 // `inset(t calc(100% - r) calc(100% - b) l)`.
                 //
@@ -743,14 +676,14 @@ impl ToComputedValue for BasicShapeRect {
     }
 }
 
-impl generic::Shape<Angle, LengthPercentage> {
+impl generic::Shape<Angle, AxisPosition, Position, LengthPercentage> {
     /// Parse the inner arguments of a `shape` function.
     /// shape() = shape(<fill-rule>? from <coordinate-pair>, <shape-command>#)
-    fn parse_function_arguments<'i, 't>(
+    fn parse_function_arguments(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
+        input: &mut Parser,
         shape_type: ShapeType,
-    ) -> Result<Self, ParseError<'i>> {
+    ) -> Result<Self, ParseError> {
         let fill = parse_fill_rule(input, shape_type, false /* no following comma */);
 
         let mut first = true;
@@ -763,8 +696,7 @@ impl generic::Shape<Angle, LengthPercentage> {
                 // from the top-left corner of the reference
                 i.expect_ident_matching("from")?;
                 Ok(ShapeCommand::Move {
-                    by_to: generic::ByTo::To,
-                    point: generic::CoordinatePair::parse(context, i)?,
+                    point: generic::CommandEndPoint::parse_endpoint_as_abs(context, i)?,
                 })
             } else {
                 // The further path data commands.
@@ -774,7 +706,7 @@ impl generic::Shape<Angle, LengthPercentage> {
 
         // We must have one starting point and at least one following <shape-command>.
         if commands.len() < 2 {
-            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+            return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
         }
 
         Ok(Self {
@@ -785,78 +717,67 @@ impl generic::Shape<Angle, LengthPercentage> {
 }
 
 impl Parse for ShapeCommand {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        use crate::values::generics::basic_shape::{ArcSize, ArcSweep, ByTo, CoordinatePair};
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
+        use crate::values::generics::basic_shape::{
+            ArcRadii, ArcSize, ArcSweep, AxisEndPoint, CommandEndPoint, ControlPoint,
+        };
 
         // <shape-command> = <move-command> | <line-command> | <hv-line-command> |
         //                   <curve-command> | <smooth-command> | <arc-command> | close
         Ok(try_match_ident_ignore_ascii_case! { input,
             "close" => Self::Close,
             "move" => {
-                let by_to = ByTo::parse(input)?;
-                let point = CoordinatePair::parse(context, input)?;
-                Self::Move { by_to, point }
+                let point = CommandEndPoint::parse(context, input)?;
+                Self::Move { point }
             },
             "line" => {
-                let by_to = ByTo::parse(input)?;
-                let point = CoordinatePair::parse(context, input)?;
-                Self::Line { by_to, point }
+                let point = CommandEndPoint::parse(context, input)?;
+                Self::Line { point }
             },
             "hline" => {
-                let by_to = ByTo::parse(input)?;
-                let x = LengthPercentage::parse(context, input)?;
-                Self::HLine { by_to, x }
+                let x = AxisEndPoint::parse_hline(context, input)?;
+                Self::HLine { x }
             },
             "vline" => {
-                let by_to = ByTo::parse(input)?;
-                let y = LengthPercentage::parse(context, input)?;
-                Self::VLine { by_to, y }
+                let y = AxisEndPoint::parse_vline(context, input)?;
+                Self::VLine { y }
             },
             "curve" => {
-                let by_to = ByTo::parse(input)?;
-                let point = CoordinatePair::parse(context, input)?;
-                input.expect_ident_matching("via")?;
-                let control1 = CoordinatePair::parse(context, input)?;
-                match input.try_parse(|i| CoordinatePair::parse(context, i)) {
-                    Ok(control2) => Self::CubicCurve {
-                        by_to,
+                let point = CommandEndPoint::parse(context, input)?;
+                input.expect_ident_matching("with")?;
+                let control1 = ControlPoint::parse(context, input, point.is_abs())?;
+                if input.try_parse(|i| i.expect_delim('/')).is_ok() {
+                    let control2 = ControlPoint::parse(context, input, point.is_abs())?;
+                    Self::CubicCurve {
                         point,
                         control1,
                         control2,
-                    },
-                    Err(_) => Self::QuadCurve {
-                        by_to,
+                    }
+                } else {
+                    Self::QuadCurve {
                         point,
                         control1,
-                    },
+                    }
                 }
             },
             "smooth" => {
-                let by_to = ByTo::parse(input)?;
-                let point = CoordinatePair::parse(context, input)?;
-                if input.try_parse(|i| i.expect_ident_matching("via")).is_ok() {
-                    let control2 = CoordinatePair::parse(context, input)?;
+                let point = CommandEndPoint::parse(context, input)?;
+                if input.try_parse(|i| i.expect_ident_matching("with")).is_ok() {
+                    let control2 = ControlPoint::parse(context, input, point.is_abs())?;
                     Self::SmoothCubic {
-                        by_to,
                         point,
                         control2,
                     }
                 } else {
-                    Self::SmoothQuad { by_to, point }
+                    Self::SmoothQuad { point }
                 }
             },
             "arc" => {
-                let by_to = ByTo::parse(input)?;
-                let point = CoordinatePair::parse(context, input)?;
+                let point = CommandEndPoint::parse(context, input)?;
                 input.expect_ident_matching("of")?;
                 let rx = LengthPercentage::parse(context, input)?;
-                let ry = input
-                    .try_parse(|i| LengthPercentage::parse(context, i))
-                    .unwrap_or(rx.clone());
-                let radii = CoordinatePair::new(rx, ry);
+                let ry = input.try_parse(|i| LengthPercentage::parse(context, i)).ok();
+                let radii = ArcRadii { rx, ry: ry.into() };
 
                 // [<arc-sweep> || <arc-size> || rotate <angle>]?
                 let mut arc_sweep = None;
@@ -885,7 +806,6 @@ impl Parse for ShapeCommand {
                     break;
                 }
                 Self::Arc {
-                    by_to,
                     point,
                     radii,
                     arc_sweep: arc_sweep.unwrap_or(ArcSweep::Ccw),
@@ -898,12 +818,153 @@ impl Parse for ShapeCommand {
 }
 
 impl Parse for generic::CoordinatePair<LengthPercentage> {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let x = LengthPercentage::parse(context, input)?;
         let y = LengthPercentage::parse(context, input)?;
         Ok(Self::new(x, y))
+    }
+}
+
+impl generic::ControlPoint<Position, LengthPercentage> {
+    /// Parse <control-point> = [ <position> | <relative-control-point> ]
+    fn parse(
+        context: &ParserContext,
+        input: &mut Parser,
+        is_end_point_abs: bool,
+    ) -> Result<Self, ParseError> {
+        use generic::ControlReference;
+        let coord = input.try_parse(|i| generic::CoordinatePair::parse(context, i));
+
+        // Parse <position>
+        if is_end_point_abs && coord.is_err() {
+            let pos = Position::parse(context, input)?;
+            return Ok(Self::Absolute(pos));
+        }
+
+        // Parse <relative-control-point> = <coordinate-pair> [from [ start | end | origin ]]?
+        let coord = coord?;
+        let mut reference = if is_end_point_abs {
+            ControlReference::Origin
+        } else {
+            ControlReference::Start
+        };
+        if input.try_parse(|i| i.expect_ident_matching("from")).is_ok() {
+            reference = ControlReference::parse(input)?;
+        }
+
+        Ok(Self::Relative(generic::RelativeControlPoint {
+            coord,
+            reference,
+        }))
+    }
+}
+
+impl Parse for generic::CommandEndPoint<Position, LengthPercentage> {
+    /// Parse <command-end-point> = to <position> | by <coordinate-pair>
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
+        if ByTo::parse(input)?.is_abs() {
+            Self::parse_endpoint_as_abs(context, input)
+        } else {
+            let point = generic::CoordinatePair::parse(context, input)?;
+            Ok(Self::ByCoordinate(point))
+        }
+    }
+}
+
+impl generic::CommandEndPoint<Position, LengthPercentage> {
+    /// Parse <command-end-point> = to <position>
+    fn parse_endpoint_as_abs(
+        context: &ParserContext,
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
+        let point = Position::parse(context, input)?;
+        Ok(generic::CommandEndPoint::ToPosition(point))
+    }
+}
+
+impl generic::AxisEndPoint<AxisPosition, LengthPercentage> {
+    /// Parse <horizontal-line-command>
+    pub fn parse_hline(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
+        use cssparser::Token;
+        use generic::{AxisPosition, AxisPositionKeyword};
+
+        // If the command is relative, parse for <length-percentage> only.
+        if !ByTo::parse(input)?.is_abs() {
+            return Ok(Self::ByCoordinate(LengthPercentage::parse(context, input)?));
+        }
+
+        let x = AxisPosition::parse(context, input)?;
+        if let AxisPosition::Keyword(
+            _word @ (AxisPositionKeyword::Top
+            | AxisPositionKeyword::Bottom
+            | AxisPositionKeyword::YStart
+            | AxisPositionKeyword::YEnd),
+        ) = &x
+        {
+            let _ = Token::Ident(x.to_css_string().into());
+            return Err(ParseError::unexpected_token());
+        }
+        Ok(Self::ToPosition(x))
+    }
+
+    /// Parse <vertical-line-command>
+    pub fn parse_vline(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
+        use cssparser::Token;
+        use generic::{AxisPosition, AxisPositionKeyword};
+
+        // If the command is relative, parse for <length-percentage> only.
+        if !ByTo::parse(input)?.is_abs() {
+            return Ok(Self::ByCoordinate(LengthPercentage::parse(context, input)?));
+        }
+
+        let y = AxisPosition::parse(context, input)?;
+        if let AxisPosition::Keyword(
+            _word @ (AxisPositionKeyword::Left
+            | AxisPositionKeyword::Right
+            | AxisPositionKeyword::XStart
+            | AxisPositionKeyword::XEnd),
+        ) = &y
+        {
+            // Return an error if we parsed a different keyword.
+            let _ = Token::Ident(y.to_css_string().into());
+            return Err(ParseError::unexpected_token());
+        }
+        Ok(Self::ToPosition(y))
+    }
+}
+
+impl ToComputedValue for generic::AxisPosition<LengthPercentage> {
+    type ComputedValue = ComputedLengthPercentage;
+
+    fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
+        match self {
+            Self::LengthPercent(lp) => lp.to_computed_value(context),
+            Self::Keyword(word) => {
+                LengthPercentage::Percentage(NoCalcPercentage::new(word.as_percentage().0))
+                    .to_computed_value(context)
+            },
+        }
+    }
+
+    fn from_computed_value(computed: &Self::ComputedValue) -> Self {
+        Self::LengthPercent(LengthPercentage::from_computed_value(computed))
+    }
+}
+
+/// This determines whether the command is absolutely or relatively positioned.
+/// https://drafts.csswg.org/css-shapes-1/#typedef-shape-command-end-point
+#[derive(Clone, Copy, Debug, Parse, PartialEq)]
+enum ByTo {
+    /// Command is relative to the command’s starting point.
+    By,
+    /// Command is relative to the top-left corner of the reference box.
+    To,
+}
+
+impl ByTo {
+    /// Return true if it is absolute, i.e. it is To.
+    #[inline]
+    pub fn is_abs(&self) -> bool {
+        matches!(self, ByTo::To)
     }
 }

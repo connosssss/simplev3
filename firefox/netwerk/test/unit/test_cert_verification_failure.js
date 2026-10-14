@@ -4,17 +4,16 @@
 
 "use strict";
 
+const {
+  NodeHTTPSServer,
+  NodeHTTPSProxyServer,
+  NodeHTTP2Server,
+  NodeHTTP2ProxyServer,
+} = ChromeUtils.importESModule("resource://testing-common/NodeServer.sys.mjs");
+
 /* import-globals-from head_cache.js */
 /* import-globals-from head_cookies.js */
 /* import-globals-from head_channels.js */
-/* import-globals-from head_servers.js */
-
-// We don't normally allow localhost channels to be proxied, but this
-// is easier than updating all the certs and/or domains.
-Services.prefs.setBoolPref("network.proxy.allow_hijacking_localhost", true);
-registerCleanupFunction(() => {
-  Services.prefs.clearUserPref("network.proxy.allow_hijacking_localhost");
-});
 
 function makeChan(uri) {
   let chan = NetUtil.newChannel({
@@ -25,13 +24,25 @@ function makeChan(uri) {
   return chan;
 }
 
+add_task(async function setup() {
+  Services.prefs.setBoolPref("network.dns.native-is-localhost", true);
+});
+
+function resetConnections() {
+  Services.obs.notifyObservers(null, "net:cancel-all-connections");
+  Services.dns.clearCache(true);
+  return new Promise(resolve => do_timeout(500, resolve));
+}
+
 async function test_cert_failure(server_or_proxy, server_cert) {
+  await resetConnections();
   let server = new server_or_proxy();
+  server._skipCert = true;
   await server.start();
   registerCleanupFunction(async () => {
     await server.stop();
   });
-  let chan = makeChan(`https://localhost:${server.port()}/test`);
+  let chan = makeChan(`https://alt1.example.com:${server.port()}/test`);
   let req = await new Promise(resolve => {
     chan.asyncOpen(new ChannelListener(resolve, null, CL_EXPECT_FAILURE));
   });
@@ -55,6 +66,7 @@ add_task(async function test_http2() {
 
 add_task(async function test_https_proxy() {
   let proxy = new NodeHTTPSProxyServer();
+  proxy._skipCert = true;
   await proxy.start();
   registerCleanupFunction(() => {
     proxy.stop();
@@ -64,10 +76,33 @@ add_task(async function test_https_proxy() {
 
 add_task(async function test_http2_proxy() {
   let proxy = new NodeHTTP2ProxyServer();
+  proxy._skipCert = true;
   await proxy.start();
   registerCleanupFunction(() => {
     proxy.stop();
   });
 
   await test_cert_failure(NodeHTTPSServer, false);
+});
+
+// The two tests below trust the proxy's own certificate, so the load gets a
+// working CONNECT tunnel and only then fails on the origin's certificate,
+// inside it.
+async function test_cert_failure_through_tunnel(proxy_server) {
+  let proxy = new proxy_server();
+  proxy._skipCert = false;
+  await proxy.start();
+  registerCleanupFunction(async () => {
+    await proxy.stop();
+  });
+
+  await test_cert_failure(NodeHTTPSServer, true);
+}
+
+add_task(async function test_https_proxy_origin_cert_failure() {
+  await test_cert_failure_through_tunnel(NodeHTTPSProxyServer);
+});
+
+add_task(async function test_http2_proxy_origin_cert_failure() {
+  await test_cert_failure_through_tunnel(NodeHTTP2ProxyServer);
 });

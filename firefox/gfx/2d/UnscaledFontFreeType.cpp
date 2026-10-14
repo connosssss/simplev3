@@ -1,24 +1,24 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "UnscaledFontFreeType.h"
+
+#include "Logging.h"
 #include "NativeFontResourceFreeType.h"
 #include "ScaledFontFreeType.h"
-#include "Logging.h"
 #include "StackArray.h"
+#include "mozilla/webrender/webrender_ffi.h"
 
 #include FT_MULTIPLE_MASTERS_H
 #include FT_TRUETYPE_TABLES_H
 
 #include <dlfcn.h>
 #include <fcntl.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 namespace mozilla::gfx {
 
@@ -93,7 +93,7 @@ RefPtr<SharedFTFace> UnscaledFontFreeType::InitFace() {
 }
 
 void UnscaledFontFreeType::GetVariationSettingsFromFace(
-    std::vector<FontVariation>* aVariations, FT_Face aFace) {
+    std::vector<wr::FontVariation>* aVariations, FT_Face aFace) {
   if (!aFace || !(aFace->face_flags & FT_FACE_FLAG_MULTIPLE_MASTERS)) {
     return;
   }
@@ -132,8 +132,8 @@ void UnscaledFontFreeType::GetVariationSettingsFromFace(
         if (coords[i] != mmVar->axis[i].def) {
           changed = true;
         }
-        aVariations->push_back(FontVariation{uint32_t(mmVar->axis[i].tag),
-                                             float(coords[i] / 65536.0)});
+        aVariations->push_back(wr::FontVariation{uint32_t(mmVar->axis[i].tag),
+                                                 float(coords[i] / 65536.0)});
       }
       if (!changed) {
         aVariations->clear();
@@ -148,7 +148,8 @@ void UnscaledFontFreeType::GetVariationSettingsFromFace(
 }
 
 void UnscaledFontFreeType::ApplyVariationsToFace(
-    const FontVariation* aVariations, uint32_t aNumVariations, FT_Face aFace) {
+    const wr::FontVariation* aVariations, uint32_t aNumVariations,
+    FT_Face aFace) {
   if (!aFace || !(aFace->face_flags & FT_FACE_FLAG_MULTIPLE_MASTERS)) {
     return;
   }
@@ -172,7 +173,7 @@ void UnscaledFontFreeType::ApplyVariationsToFace(
 
   StackArray<FT_Fixed, 32> coords(aNumVariations);
   for (uint32_t i = 0; i < aNumVariations; i++) {
-    coords[i] = std::round(aVariations[i].mValue * 65536.0f);
+    coords[i] = std::round(aVariations[i].value * 65536.0f);
   }
   if ((*setCoords)(aFace, aNumVariations, coords.data()) != FT_Err_Ok) {
     // ignore the problem?
@@ -183,7 +184,7 @@ void UnscaledFontFreeType::ApplyVariationsToFace(
 
 already_AddRefed<ScaledFont> UnscaledFontFreeType::CreateScaledFont(
     Float aGlyphSize, const uint8_t* aInstanceData,
-    uint32_t aInstanceDataLength, const FontVariation* aVariations,
+    uint32_t aInstanceDataLength, const wr::FontVariation* aVariations,
     uint32_t aNumVariations) {
   if (aInstanceDataLength < sizeof(ScaledFontFreeType::InstanceData)) {
     gfxWarning() << "FreeType scaled font instance data is truncated.";
@@ -210,7 +211,7 @@ already_AddRefed<ScaledFont> UnscaledFontFreeType::CreateScaledFont(
     ApplyVariationsToFace(aVariations, aNumVariations, face->GetFace());
   }
 
-  RefPtr<ScaledFontFreeType> scaledFont = new ScaledFontFreeType(
+  RefPtr scaledFont = MakeRefPtr<ScaledFontFreeType>(
       std::move(face), this, aGlyphSize, instanceData.mApplySyntheticBold);
 
   return scaledFont.forget();
@@ -219,7 +220,7 @@ already_AddRefed<ScaledFont> UnscaledFontFreeType::CreateScaledFont(
 already_AddRefed<ScaledFont> UnscaledFontFreeType::CreateScaledFontFromWRFont(
     Float aGlyphSize, const wr::FontInstanceOptions* aOptions,
     const wr::FontInstancePlatformOptions* aPlatformOptions,
-    const FontVariation* aVariations, uint32_t aNumVariations) {
+    const wr::FontVariation* aVariations, uint32_t aNumVariations) {
   ScaledFontFreeType::InstanceData instanceData(aOptions, aPlatformOptions);
   return CreateScaledFont(aGlyphSize, reinterpret_cast<uint8_t*>(&instanceData),
                           sizeof(instanceData), aVariations, aNumVariations);
@@ -232,8 +233,8 @@ already_AddRefed<UnscaledFont> UnscaledFontFreeType::CreateFromFontDescriptor(
     return nullptr;
   }
   const char* path = reinterpret_cast<const char*>(aData);
-  RefPtr<UnscaledFont> unscaledFont =
-      new UnscaledFontFreeType(std::string(path, aDataLength), aIndex);
+  RefPtr unscaledFont =
+      MakeRefPtr<UnscaledFontFreeType>(std::string(path, aDataLength), aIndex);
   return unscaledFont.forget();
 }
 

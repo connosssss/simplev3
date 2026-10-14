@@ -4,11 +4,13 @@
 
 package org.mozilla.fenix.ui.efficiency.tests
 
+import org.junit.Ignore
 import org.junit.Test
 import org.mozilla.fenix.ui.efficiency.helpers.BaseTest
 
 class BrowserTest : BaseTest() {
 
+    @Ignore("Covered by verifyNavigationReachability[0: BrowserPage (TBD)")
     @Test
     fun browserPageItemsTest() {
         // Given: App is loaded with default settings
@@ -19,6 +21,6 @@ class BrowserTest : BaseTest() {
         on.browserPage.navigateToPage("mozilla.com")
 
         // Then: the browser screen elements should load
-        on.browserPage.mozVerifyElementsByGroup("requiredForPage")
+        on.browserPage.mozVerifyReadiness()
     }
 }

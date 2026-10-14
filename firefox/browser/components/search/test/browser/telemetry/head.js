@@ -18,6 +18,7 @@ ChromeUtils.defineESModuleGetters(this, {
     "moz-src:///browser/components/search/SearchSERPTelemetry.sys.mjs",
   SearchSERPTelemetryUtils:
     "moz-src:///browser/components/search/SearchSERPTelemetry.sys.mjs",
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
   SearchTestUtils: "resource://testing-common/SearchTestUtils.sys.mjs",
   SearchUITestUtils: "resource://testing-common/SearchUITestUtils.sys.mjs",
   SearchUtils: "moz-src:///toolkit/components/search/SearchUtils.sys.mjs",
@@ -42,13 +43,21 @@ ChromeUtils.defineLazyGetter(this, "UrlbarTestUtils", () => {
   return module;
 });
 
+ChromeUtils.defineLazyGetter(this, "SearchbarTestUtils", () => {
+  const { SearchbarTestUtils: module } = ChromeUtils.importESModule(
+    "resource://testing-common/UrlbarTestUtils.sys.mjs"
+  );
+  module.init(this);
+  return module;
+});
+
 ChromeUtils.defineLazyGetter(this, "searchCounts", () => {
   return Services.telemetry.getKeyedHistogramById("SEARCH_COUNTS");
 });
 
 ChromeUtils.defineLazyGetter(this, "SEARCH_AD_CLICK_SCALARS", () => {
   const sources = [
-    ...BrowserSearchTelemetry.KNOWN_SEARCH_SOURCES.values(),
+    ...Object.keys(BrowserSearchTelemetry.KNOWN_SEARCH_SOURCES),
     "unknown",
   ];
   return [
@@ -217,6 +226,20 @@ function resetTelemetry() {
   SERPCategorizationRecorder.testReset();
 }
 
+const DEFAULT_IMPRESSION = {
+  provider: "example",
+  tagged: "true",
+  partner_code: "ff",
+  source: "unknown",
+  is_private: "false",
+  is_signed_in: "false",
+  is_shopping_page: "false",
+  shopping_tab_displayed: "false",
+  has_ai_summary: "false",
+  prescan: "none_found",
+  scan: "complete",
+};
+
 /**
  * First checks that we get the correct number of recorded Glean impression events
  * and the recorded Glean impression events have the correct keys and values.
@@ -231,7 +254,20 @@ function assertSERPTelemetry(expectedEvents) {
   // Do a deep copy of impressions in case the input is using constants, as
   // we insert impression id into the expected events to make it easier to
   // run Assert.deepEqual() on the expected and actual result.
-  expectedEvents = JSON.parse(JSON.stringify(expectedEvents));
+  expectedEvents = structuredClone(expectedEvents);
+
+  for (let expectedEvent of expectedEvents) {
+    // The prescan finds ads whenever an ad component is expected, unless the
+    // test specifies otherwise.
+    let hasAds = !!expectedEvent.adImpressions?.some(adImpression =>
+      adImpression.component?.startsWith("ad_")
+    );
+    expectedEvent.impression = {
+      ...DEFAULT_IMPRESSION,
+      prescan: hasAds ? "found" : "none_found",
+      ...expectedEvent.impression,
+    };
+  }
 
   // A single test might run assertImpressionEvents more than once
   // so the Set needs to be cleared or else the impression event
@@ -310,7 +346,7 @@ function assertSERPTelemetry(expectedEvents) {
     let impressionId = expectedEvent.impression.impression_id;
     let expectedEngagements = expectedEvent.engagements;
     if (expectedEngagements) {
-      let recorded = idToEngagements.get(impressionId);
+      let recorded = idToEngagements.get(impressionId) ?? [];
       Assert.deepEqual(
         recorded,
         expectedEngagements,
@@ -654,7 +690,7 @@ async function syncCollection(record) {
   });
 }
 
-async function initSinglePageAppTest() {
+async function initSinglePageAppTest({ baseProviderOverrides = {} } = {}) {
   /* import-globals-from head-spa.js */
   Services.scriptloader.loadSubScript(
     "chrome://mochitests/content/browser/browser/components/search/test/browser/telemetry/head-spa.js",
@@ -696,11 +732,16 @@ async function initSinglePageAppTest() {
         default: true,
       },
     ],
-    isSPA: true,
-    defaultPageQueryParam: {
-      key: "page",
-      value: "web",
+    pageTypeParam: {
+      enableSPAHandling: true,
+      keys: ["page"],
+      pageTypes: [
+        { name: "web", values: ["web"], enabled: true, isDefault: true },
+        { name: "shopping", values: ["shopping"], enabled: true },
+        { name: "images", values: ["images"], enabled: false },
+      ],
     },
+    ...baseProviderOverrides,
   };
 
   const SPA_PROVIDER_INFO = [

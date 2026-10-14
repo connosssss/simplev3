@@ -1,55 +1,55 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ExtensionProtocolHandler.h"
 
+#include "FileDescriptorFile.h"
+#include "LoadInfo.h"
+#include "SimpleChannel.h"
 #include "mozilla/BinarySearch.h"
-#include "mozilla/Components.h"
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/dom/Promise.h"
-#include "mozilla/dom/Promise-inl.h"
+#include "mozilla/Components.h"
 #include "mozilla/ExtensionPolicyService.h"
 #include "mozilla/FileUtils.h"
+#include "mozilla/Omnijar.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/ResultExtensions.h"
+#include "mozilla/StaticMutex.h"
+#include "mozilla/SyncRunnable.h"
+#include "mozilla/Try.h"
+#include "mozilla/dom/Promise-inl.h"
+#include "mozilla/dom/Promise.h"
 #include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
 #include "mozilla/ipc/URIUtils.h"
 #include "mozilla/net/NeckoChild.h"
-#include "mozilla/Omnijar.h"
-#include "mozilla/RefPtr.h"
-#include "mozilla/ResultExtensions.h"
-#include "mozilla/Try.h"
-
-#include "FileDescriptorFile.h"
-#include "LoadInfo.h"
 #include "nsContentUtils.h"
-#include "nsServiceManagerUtils.h"
 #include "nsDirectoryServiceDefs.h"
 #include "nsICancelable.h"
+#include "nsIChannel.h"
 #include "nsIFile.h"
 #include "nsIFileChannel.h"
 #include "nsIFileStreams.h"
 #include "nsIFileURL.h"
-#include "nsIJARChannel.h"
-#include "nsIMIMEService.h"
-#include "nsIURL.h"
-#include "nsIChannel.h"
-#include "nsIInputStreamPump.h"
-#include "nsIJARURI.h"
-#include "nsIStreamListener.h"
 #include "nsIInputStream.h"
+#include "nsIInputStreamPump.h"
+#include "nsIJARChannel.h"
+#include "nsIJARURI.h"
+#include "nsIMIMEService.h"
 #include "nsIStreamConverterService.h"
+#include "nsIStreamListener.h"
+#include "nsIURL.h"
 #include "nsNetUtil.h"
 #include "nsReadableUtils.h"
+#include "nsServiceManagerUtils.h"
+#include "nsThreadUtils.h"
 #include "nsURLHelper.h"
 #include "prio.h"
-#include "SimpleChannel.h"
 
 #if defined(XP_WIN)
-#  include "nsILocalFileWin.h"
 #  include "WinUtils.h"
+#  include "nsILocalFileWin.h"
 #endif
 
 #if defined(XP_MACOSX)
@@ -119,7 +119,7 @@ class ExtensionStreamGetter final : public nsICancelable {
   // To use when getting an FD for a packed extension JAR file
   // in order to load a resource.
   ExtensionStreamGetter(nsIURI* aURI, nsILoadInfo* aLoadInfo,
-                        already_AddRefed<nsIJARChannel>&& aJarChannel,
+                        already_AddRefed<nsIJARChannel> aJarChannel,
                         nsIFile* aJarFile)
       : mURI(aURI),
         mLoadInfo(aLoadInfo),
@@ -342,7 +342,7 @@ void ExtensionStreamGetter::OnStream(already_AddRefed<nsIInputStream> aStream) {
     return;
   }
 
-  mPump = pump;
+  mPump = std::move(pump);
 }
 
 // Handle an FD sent from the parent.
@@ -385,9 +385,24 @@ NS_IMPL_RELEASE_INHERITED(ExtensionProtocolHandler, SubstitutingProtocolHandler)
 
 already_AddRefed<ExtensionProtocolHandler>
 ExtensionProtocolHandler::GetSingleton() {
+  static StaticMutex sMutex;
+  StaticMutexAutoLock lock(sMutex);
   if (!sSingleton) {
-    sSingleton = new ExtensionProtocolHandler();
-    ClearOnShutdown(&sSingleton);
+    if (NS_IsMainThread()) {
+      sSingleton = new ExtensionProtocolHandler();
+      ClearOnShutdown(&sSingleton);
+    } else {
+      StaticMutexAutoUnlock unlock(sMutex);
+      RefPtr<nsIRunnable> r = NS_NewRunnableFunction(
+          "ExtensionProtocolHandler::GetSingleton", []() {
+            StaticMutexAutoLock lock(sMutex);
+            if (!sSingleton) {
+              sSingleton = new ExtensionProtocolHandler();
+              ClearOnShutdown(&sSingleton);
+            }
+          });
+      SyncRunnable::DispatchToThread(GetMainThreadSerialEventTarget(), r);
+    }
   }
   return do_AddRef(sSingleton);
 }
@@ -422,7 +437,7 @@ bool ExtensionProtocolHandler::ResolveSpecialCases(const nsACString& aHost,
   }
 
   if (aPathname.EqualsLiteral("/_generated_background_page.html")) {
-    Unused << EPS().GetGeneratedBackgroundPageUrl(aHost, aResult);
+    (void)EPS().GetGeneratedBackgroundPageUrl(aHost, aResult);
     return !aResult.IsEmpty();
   }
 
@@ -471,7 +486,7 @@ void OpenWhenReady(
   nsCOMPtr<nsIStreamListener> listener(aListener);
   nsCOMPtr<nsIChannel> channel(aChannel);
 
-  Unused << aPromise->ThenWithCycleCollectedArgs(
+  (void)aPromise->ThenWithCycleCollectedArgs(
       [channel, aCallback](
           JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult& aRv,
           nsIStreamListener* aListener) -> already_AddRefed<Promise> {
@@ -545,6 +560,7 @@ nsresult ExtensionProtocolHandler::SubstituteChannel(nsIURI* aURI,
           nsCOMPtr<nsIRequest> request(origChannel);
           return RequestOrCancelable(WrapNotNull(request));
         });
+    channel->SetContentType("text/css"_ns);
   } else if (readyPromise) {
     size_t matchIdx;
     if (BinarySearchIf(
@@ -570,6 +586,7 @@ nsresult ExtensionProtocolHandler::SubstituteChannel(nsIURI* aURI,
           nsCOMPtr<nsIRequest> request(origChannel);
           return RequestOrCancelable(WrapNotNull(request));
         });
+    SetContentType(aURI, channel);
   } else {
     return NS_OK;
   }
@@ -603,8 +620,7 @@ Result<bool, nsresult> ExtensionProtocolHandler::AllowExternalResource(
   // allow loading. Before we allow an unpacked extension to load a
   // resource outside of the extension dir, we make sure the extension
   // dir is within the app directory.
-  bool result;
-  MOZ_TRY_VAR(result, AppDirContains(aExtensionDir));
+  bool result = MOZ_TRY(AppDirContains(aExtensionDir));
   if (!result) {
     return false;
   }
@@ -627,20 +643,32 @@ Result<bool, nsresult> ExtensionProtocolHandler::DevRepoContains(
   MOZ_ASSERT(!mozilla::IsPackagedBuild());
   MOZ_ASSERT(!IsNeckoChild());
 
-  // On the first invocation, set mDevRepo
+  // On the first invocation, set mDevRepo and mDevObjDir
   if (!mAlreadyCheckedDevRepo) {
     mAlreadyCheckedDevRepo = true;
     MOZ_TRY(nsMacUtilsImpl::GetRepoDir(getter_AddRefs(mDevRepo)));
+    nsresult rv = nsMacUtilsImpl::GetObjDir(getter_AddRefs(mDevObjDir));
+    if (NS_FAILED(rv)) {
+      // GetObjDir is never expected to fail, but if it does, don't let it
+      // trip the handling of mDevRepo.
+      LOG("GetObjDir() failed: %x", static_cast<uint32_t>(rv));
+    }
     if (MOZ_LOG_TEST(gExtProtocolLog, LogLevel::Debug)) {
       nsAutoCString repoPath;
-      Unused << mDevRepo->GetNativePath(repoPath);
+      (void)mDevRepo->GetNativePath(repoPath);
       LOG("Repo path: %s", repoPath.get());
+      nsAutoCString objdirPath;
+      (void)mDevObjDir->GetNativePath(objdirPath);
+      LOG("objdir path: %s", objdirPath.get());
     }
   }
 
   bool result = false;
   if (mDevRepo) {
     MOZ_TRY(mDevRepo->Contains(aRequestedFile, &result));
+  }
+  if (!result && mDevObjDir) {
+    MOZ_TRY(mDevObjDir->Contains(aRequestedFile, &result));
   }
   return result;
 }
@@ -656,9 +684,13 @@ Result<bool, nsresult> ExtensionProtocolHandler::AppDirContains(
   if (!mAlreadyCheckedAppDir) {
     mAlreadyCheckedAppDir = true;
     MOZ_TRY(NS_GetSpecialDirectory(NS_GRE_DIR, getter_AddRefs(mAppDir)));
+    nsresult rv = mAppDir->Normalize();
+    if (NS_FAILED(rv)) {
+      LOG("Failed to normalize AppDir: %x", static_cast<uint32_t>(rv));
+    }
     if (MOZ_LOG_TEST(gExtProtocolLog, LogLevel::Debug)) {
       nsAutoCString appDirPath;
-      Unused << mAppDir->GetNativePath(appDirPath);
+      (void)mAppDir->GetNativePath(appDirPath);
       LOG("AppDir path: %s", appDirPath.get());
     }
   }
@@ -784,18 +816,16 @@ Result<nsCOMPtr<nsIInputStream>, nsresult> ExtensionProtocolHandler::NewStream(
   bool isResourceFromExtensionDir = false;
   MOZ_TRY(extensionDir->Contains(requestedFile, &isResourceFromExtensionDir));
   if (!isResourceFromExtensionDir) {
-    bool isAllowed;
-    MOZ_TRY_VAR(isAllowed, AllowExternalResource(extensionDir, requestedFile));
+    bool isAllowed =
+        MOZ_TRY(AllowExternalResource(extensionDir, requestedFile));
     if (!isAllowed) {
       LogExternalResourceError(extensionDir, requestedFile);
       return Err(NS_ERROR_FILE_ACCESS_DENIED);
     }
   }
 
-  nsCOMPtr<nsIInputStream> inputStream;
-  MOZ_TRY_VAR(inputStream,
-              NS_NewLocalFileInputStream(requestedFile, PR_RDONLY, -1,
-                                         nsIFileInputStream::DEFER_OPEN));
+  nsCOMPtr<nsIInputStream> inputStream = MOZ_TRY(NS_NewLocalFileInputStream(
+      requestedFile, PR_RDONLY, -1, nsIFileInputStream::DEFER_OPEN));
 
   return inputStream;
 }
@@ -866,7 +896,7 @@ void ExtensionProtocolHandler::SetContentType(nsIURI* aURI,
     nsAutoCString contentType;
     rv = mime->GetTypeFromURI(aURI, contentType);
     if (NS_SUCCEEDED(rv)) {
-      Unused << aChannel->SetContentType(contentType);
+      (void)aChannel->SetContentType(contentType);
     }
   }
 }
@@ -937,8 +967,8 @@ static Result<Ok, nsresult> LogCacheCheck(const nsIJARChannel* aJarChannel,
   MOZ_TRY(innerFileURL->GetFile(getter_AddRefs(jarFile)));
 
   nsAutoCString uriSpec, jarSpec;
-  Unused << aJarURI->GetSpec(uriSpec);
-  Unused << innerFileURI->GetSpec(jarSpec);
+  (void)aJarURI->GetSpec(uriSpec);
+  (void)innerFileURI->GetSpec(jarSpec);
   LOG("[JARChannel %p] Cache %s: %s (%s)", aJarChannel,
       aIsCached ? "hit" : "miss", uriSpec.get(), jarSpec.get());
 
@@ -965,7 +995,7 @@ Result<Ok, nsresult> ExtensionProtocolHandler::SubstituteRemoteJarChannel(
   bool isCached = false;
   MOZ_TRY(jarChannel->EnsureCached(&isCached));
   if (MOZ_LOG_TEST(gExtProtocolLog, LogLevel::Debug)) {
-    Unused << LogCacheCheck(jarChannel, jarURI, isCached);
+    (void)LogCacheCheck(jarChannel, jarURI, isCached);
   }
 
   if (isCached) {

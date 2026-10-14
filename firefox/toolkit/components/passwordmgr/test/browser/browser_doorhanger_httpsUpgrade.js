@@ -74,7 +74,7 @@ add_task(async function test_httpsUpgradeCaptureFields_noChange() {
   Assert.equal(login.password, "notifyp1", "Check the password is unchanged");
   Assert.equal(login.timesUsed, 2, "Check times used increased");
 
-  Services.logins.removeLogin(login1);
+  await Services.logins.removeLoginAsync(login1);
 });
 
 add_task(async function test_httpsUpgradeCaptureFields_changePW() {
@@ -85,6 +85,11 @@ add_task(async function test_httpsUpgradeCaptureFields_changePW() {
   // Sanity check the HTTP login exists.
   let logins = await Services.logins.getAllLogins();
   Assert.equal(logins.length, 1, "Should have the HTTP login");
+
+  let storageChangedPromise = TestUtils.topicObserved(
+    "passwordmgr-storage-changed",
+    (_, data) => data == "modifyLogin"
+  );
 
   await testSubmittingLoginForm(
     "subtst_notifications_8.html",
@@ -113,6 +118,8 @@ add_task(async function test_httpsUpgradeCaptureFields_changePW() {
     "https://example.com"
   ); // This is HTTPS whereas the saved login is HTTP
 
+  await storageChangedPromise;
+
   await checkOnlyLoginWasUsedTwice({ justChanged: true });
   logins = await Services.logins.getAllLogins();
   Assert.equal(logins.length, 1, "Should only have 1 login still");
@@ -131,7 +138,7 @@ add_task(async function test_httpsUpgradeCaptureFields_changePW() {
   Assert.equal(login.password, "pass2", "Check the password changed");
   Assert.equal(login.timesUsed, 2, "Check times used increased");
 
-  Services.logins.removeAllUserFacingLogins();
+  await Services.logins.removeAllUserFacingLoginsAsync();
 });
 
 add_task(
@@ -143,6 +150,11 @@ add_task(
 
     let logins = await Services.logins.getAllLogins();
     Assert.equal(logins.length, 2, "Should have both HTTP and HTTPS logins");
+
+    let storageChangedPromise = TestUtils.topicObserved(
+      "passwordmgr-storage-changed",
+      (_, data) => data == "modifyLogin"
+    );
 
     await testSubmittingLoginForm(
       "subtst_notifications_8.html",
@@ -170,6 +182,8 @@ add_task(
       },
       "https://example.com"
     );
+
+    await storageChangedPromise;
 
     logins = await Services.logins.getAllLogins();
     Assert.equal(logins.length, 2, "Should have 2 logins still");
@@ -209,13 +223,16 @@ add_task(
       loginHTTPS.timePasswordChanged,
       "login.timeCreated < login.timePasswordChanged"
     );
-    Assert.equal(
-      loginHTTPS.timeLastUsed,
+    // The Rust storage backend records the password change and the use in two
+    // separate internal operations, so timeLastUsed may be a few ms after
+    // timePasswordChanged rather than exactly equal.
+    Assert.lessOrEqual(
       loginHTTPS.timePasswordChanged,
-      "timeLastUsed == timePasswordChanged"
+      loginHTTPS.timeLastUsed,
+      "timePasswordChanged <= timeLastUsed"
     );
 
-    Services.logins.removeAllUserFacingLogins();
+    await Services.logins.removeAllUserFacingLoginsAsync();
   }
 );
 
@@ -298,7 +315,7 @@ add_task(async function test_httpsUpgradeCaptureFields_captureMatchingHTTP() {
   logins = await Services.logins.getAllLogins();
   Assert.equal(logins.length, 2, "Should have both HTTP and HTTPS still");
 
-  let httpsLogins = LoginHelper.searchLoginsWithObject({
+  let httpsLogins = await Services.logins.searchLoginsAsync({
     origin: "https://example.com",
   });
   Assert.equal(httpsLogins.length, 1, "Check https logins count");
@@ -306,7 +323,7 @@ add_task(async function test_httpsUpgradeCaptureFields_captureMatchingHTTP() {
   Assert.ok(httpsLogin.equals(login1HTTPS), "Check HTTPS login didn't change");
   Assert.equal(httpsLogin.timesUsed, 1, "Check times used");
 
-  let httpLogins = LoginHelper.searchLoginsWithObject({
+  let httpLogins = await Services.logins.searchLoginsAsync({
     origin: "http://example.com",
   });
   Assert.equal(httpLogins.length, 1, "Check http logins count");
@@ -314,6 +331,6 @@ add_task(async function test_httpsUpgradeCaptureFields_captureMatchingHTTP() {
   Assert.ok(httpLogin.equals(login1), "Check HTTP login is as expected");
   Assert.equal(httpLogin.timesUsed, 2, "Check times used increased");
 
-  Services.logins.removeLogin(login1);
-  Services.logins.removeLogin(login1HTTPS);
+  await Services.logins.removeLoginAsync(login1);
+  await Services.logins.removeLoginAsync(login1HTTPS);
 });

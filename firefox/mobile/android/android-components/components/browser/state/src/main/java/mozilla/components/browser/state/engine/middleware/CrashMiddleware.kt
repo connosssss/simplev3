@@ -10,14 +10,12 @@ import mozilla.components.browser.state.action.EngineAction
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.concept.engine.EngineSession
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
+import mozilla.components.lib.state.Store
 
-/**
- * [Middleware] responsible for recovering crashed [EngineSession] instances.
- */
+/** [Middleware] responsible for recovering crashed [EngineSession] instances. */
 internal class CrashMiddleware : Middleware<BrowserState, BrowserAction> {
     override fun invoke(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         next: (BrowserAction) -> Unit,
         action: BrowserAction,
     ) {
@@ -29,19 +27,17 @@ internal class CrashMiddleware : Middleware<BrowserState, BrowserAction> {
         // crashes and will not request a new engine session until the user
         // explicitly asked to restore the session.
         if (action is CrashAction.SessionCrashedAction) {
-            onCrash(context, action)
+            onCrash(store, action)
         }
     }
 
     private fun onCrash(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         action: CrashAction.SessionCrashedAction,
     ) {
         // We suspend the crashed session here. After that the reducer will mark it as "crashed".
         // That will prevent it from getting recreated until explicitly handling the crash by
         // restoring.
-        context.dispatch(
-            EngineAction.SuspendEngineSessionAction(action.tabId),
-        )
+        store.dispatch(EngineAction.SuspendEngineSessionAction(action.tabId))
     }
 }

@@ -1,18 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "PrintTranslator.h"
 
+#include "InlineTranslator.h"
 #include "gfxContext.h"
-#include "nsDeviceContext.h"
-#include "mozilla/gfx/RecordedEvent.h"
-#include "mozilla/gfx/RecordingTypes.h"
 #include "mozilla/ProfilerMarkers.h"
 #include "mozilla/UniquePtr.h"
-#include "InlineTranslator.h"
+#include "mozilla/gfx/RecordedEvent.h"
+#include "mozilla/gfx/RecordingTypes.h"
+#include "nsDeviceContext.h"
 
 using namespace mozilla::gfx;
 
@@ -48,7 +46,7 @@ bool PrintTranslator::TranslateRecording(PRFileDescStream& aRecording) {
     return false;
   }
 
-  uint8_t eventType = RecordedEvent::EventType::INVALID;
+  uint8_t eventType;
   ReadElement(aRecording, eventType);
   while (aRecording.good()) {
     bool success = RecordedEvent::DoWithEventFromStream(

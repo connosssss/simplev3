@@ -5,21 +5,21 @@
 package org.mozilla.fenix.webcompat.middleware
 
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
+import mozilla.components.lib.state.Store
 import mozilla.telemetry.glean.private.NoExtras
 import org.mozilla.fenix.GleanMetrics.Webcompatreporting
 import org.mozilla.fenix.webcompat.store.WebCompatReporterAction
 import org.mozilla.fenix.webcompat.store.WebCompatReporterState
+import org.mozilla.fenix.webcompat.store.WebCompatReporterStore
 
 /**
- * A [Middleware] for recording telemetry based on [WebCompatReporterAction]s that are dispatch to the
+ * A [Middleware] for recording telemetry based on [WebCompatReporterAction]s that are dispatched to the
  * [WebCompatReporterStore].
  */
-class WebCompatReporterTelemetryMiddleware :
-    Middleware<WebCompatReporterState, WebCompatReporterAction> {
+class WebCompatReporterTelemetryMiddleware : Middleware<WebCompatReporterState, WebCompatReporterAction> {
 
     override fun invoke(
-        context: MiddlewareContext<WebCompatReporterState, WebCompatReporterAction>,
+        store: Store<WebCompatReporterState, WebCompatReporterAction>,
         next: (WebCompatReporterAction) -> Unit,
         action: WebCompatReporterAction,
     ) {
@@ -30,17 +30,16 @@ class WebCompatReporterTelemetryMiddleware :
                 Webcompatreporting.reasonDropdown.set(action.newReason.name)
             }
 
-            WebCompatReporterAction.SendMoreInfoClicked -> {
-                Webcompatreporting.sendMoreInfo.record(NoExtras())
-            }
-
             WebCompatReporterAction.SendReportClicked -> {
-                Webcompatreporting.send.record(NoExtras())
+                Webcompatreporting.send.record(
+                    Webcompatreporting.SendExtra(sentWithBlockedTrackers = store.state.includeEtpBlockedUrls)
+                )
             }
 
             WebCompatReporterAction.LearnMoreClicked -> {
                 Webcompatreporting.learnMore.record(NoExtras())
             }
+
             else -> {}
         }
     }

@@ -10,21 +10,22 @@
 ///
 ///```ascii
 ///                                       (int gpu buffer)
-///                                       +---------------+    (sGpuCache)
-///  (instance-step vertex attr)          |  Int header   |   +-----------+
-/// +-----------------------------+       |               |   | Transform |
-/// |    Quad instance (uvec4)    |  +--> | transform id +--> +-----------+
-/// |                             |  |    | z id          |
-/// | x: int prim address        +---+    +---------------+   (float gpu buffer)
-/// | y: float prim address      +--------------------------> +-----------+--------------+-+-+
-/// | z: quad flags               |      (sGpuCache)          | Quad Prim | Quad Segment | | |
-/// |    edge flags               |   +--------------------+  |           |              | | |
-/// |    part index               |   |     Picture task   |  | bounds    | rect         | | |
-/// |    segment index            |   |                    |  | clip      | uv rect      | | |
-/// | w: picture task address    +--> | task rect          |  | color     |              | | |
-/// +-----------------------------+   | device pixel scale |  +-----------+--------------+-+-+
-///                                   | content origin     |
-///                                   +--------------------+
+///                                       +------------------+
+///                                       |Int header (ivec4)|    (float gpu buffer)
+///  (instance-step vertex attr)          |                  |    +-----------+
+/// +-----------------------------+       | x: transform id  +--> | Transform |
+/// |    Quad instance (uvec4)    |  +--> | y: z id          |    +-----------+
+/// |                             |  |    | zw: pattern data |
+/// | x: int prim address        +---+    +------------------+   (float gpu buffer)
+/// | y: float prim address      +--------------------------> +-------------------+--------------+-+-+
+/// | z: quad flags               |     (float gpu buffer)    |     Quad Prim     | Quad Segment | | |
+/// |    edge flags               |   +--------------------+  |                   |              | | |
+/// |    part index               |   |     Picture task   |  | bounds            | rect         | | |
+/// |    segment index            |   |                    |  | clip              | uv rect      | | |
+/// | w: picture task address    +--> | task rect          |  | uv rect           |              | | |
+/// +-----------------------------+   | device pixel scale |  | pattern transform |              | | |
+///                                   | content origin     |  | color             |              | | |
+///                                   +--------------------+  +-------------------+--------------+-+-+
 ///
 /// To use the quad infrastructure, a shader must define the following entry
 /// points in the corresponding shader stages:
@@ -32,7 +33,11 @@
 /// - vec4 pattern_fragment(vec4 base_color)
 ///```
 
+// Default to a sampler2D source if the shader was compiled without an
+// explicit texture-kind feature.
+#if !defined(WR_FEATURE_TEXTURE_2D) && !defined(WR_FEATURE_TEXTURE_RECT) && !defined(WR_FEATURE_TEXTURE_EXTERNAL) && !defined(WR_FEATURE_TEXTURE_EXTERNAL_BT709) && !defined(WR_FEATURE_TEXTURE_EXTERNAL_ESSL1)
 #define WR_FEATURE_TEXTURE_2D
+#endif
 
 #include shared,rect,transform,render_task,gpu_buffer
 
@@ -65,7 +70,6 @@ varying highp vec2 vLocalPos;
 
 #define QF_IS_OPAQUE            1
 #define QF_APPLY_DEVICE_CLIP    2
-#define QF_IGNORE_DEVICE_SCALE  4
 #define QF_USE_AA_SEGMENTS      8
 #define QF_IS_MASK              16
 
@@ -83,8 +87,8 @@ struct QuadSegment {
 struct PrimitiveInfo {
     vec2 local_pos;
 
-    RectWithEndpoint local_prim_rect;
-    RectWithEndpoint local_clip_rect;
+    RectWithEndpoint pattern_rect;
+    RectWithEndpoint bounds;
 
     QuadSegment segment;
 
@@ -94,8 +98,10 @@ struct PrimitiveInfo {
 };
 
 struct QuadPrimitive {
+    // The (clipped) coverage rect.
     RectWithEndpoint bounds;
-    RectWithEndpoint clip;
+    // The rect that situates the source pattern.
+    RectWithEndpoint pattern_rect;
     RectWithEndpoint uv_rect;
     vec4 pattern_scale_offset;
     vec4 color;
@@ -118,7 +124,7 @@ QuadPrimitive fetch_primitive(int index) {
     vec4 texels[5] = fetch_from_gpu_buffer_5f(index);
 
     prim.bounds = RectWithEndpoint(texels[0].xy, texels[0].zw);
-    prim.clip = RectWithEndpoint(texels[1].xy, texels[1].zw);
+    prim.pattern_rect = RectWithEndpoint(texels[1].xy, texels[1].zw);
     prim.uv_rect = RectWithEndpoint(texels[2].xy, texels[2].zw);
     prim.pattern_scale_offset = texels[3];
     prim.color = texels[4];
@@ -187,15 +193,13 @@ VertexInfo write_vertex(vec2 local_pos,
                         Transform transform,
                         vec2 content_origin,
                         RectWithEndpoint task_rect,
-                        float device_pixel_scale,
                         int quad_flags) {
     VertexInfo vi;
 
-    // Transform the current vertex to world space.
-    vec4 world_pos = transform.m * vec4(local_pos, 0.0, 1.0);
-
-    // Convert the world positions to device pixel space.
-    vec2 device_pos = world_pos.xy * device_pixel_scale;
+    // Transform the current vertex to device space.
+    vec4 transformed = transform.m * vec4(local_pos, 0.0, 1.0);
+    vec2 device_pos = transformed.xy;
+    float w = transformed.w;
 
     if ((quad_flags & QF_APPLY_DEVICE_CLIP) != 0) {
         RectWithEndpoint device_clip_rect = RectWithEndpoint(
@@ -206,7 +210,7 @@ VertexInfo write_vertex(vec2 local_pos,
         // Clip to task rect
         device_pos = rect_clamp(device_clip_rect, device_pos);
 
-        vi.local_pos = (transform.inv_m * vec4(device_pos / device_pixel_scale, 0.0, 1.0)).xy;
+        vi.local_pos = (transform.inv_m * vec4(device_pos, 0.0, 1.0)).xy;
     } else {
         vi.local_pos = local_pos;
     }
@@ -214,13 +218,9 @@ VertexInfo write_vertex(vec2 local_pos,
     // Apply offsets for the render task to get correct screen location.
     vec2 final_offset = -content_origin + task_rect.p0;
 
-    gl_Position = uTransform * vec4(device_pos + final_offset * world_pos.w, z * world_pos.w, world_pos.w);
+    gl_Position = uTransform * vec4(device_pos + final_offset * w, z * w, w);
 
     return vi;
-}
-
-float edge_aa_offset(int edge, int flags) {
-    return ((flags & edge) != 0) ? AA_PIXEL_RADIUS : 0.0;
 }
 
 void pattern_vertex(PrimitiveInfo prim);
@@ -230,9 +230,11 @@ vec2 scale_offset_map_point(vec4 scale_offset, vec2 p) {
 }
 
 RectWithEndpoint scale_offset_map_rect(vec4 scale_offset, RectWithEndpoint r) {
+    vec2 p0 = scale_offset_map_point(scale_offset, r.p0);
+    vec2 p1 = scale_offset_map_point(scale_offset, r.p1);
     return RectWithEndpoint(
-        scale_offset_map_point(scale_offset, r.p0),
-        scale_offset_map_point(scale_offset, r.p1)
+        min(p0, p1),
+        max(p0, p1)
     );
 }
 
@@ -259,25 +261,34 @@ PrimitiveInfo quad_primive_info(void) {
     //  - Expanded for AA edges where appropriate
     RectWithEndpoint local_coverage_rect = seg.rect;
 
-    // Apply local clip rect
-    local_coverage_rect.p0 = max(local_coverage_rect.p0, prim.clip.p0);
-    local_coverage_rect.p1 = min(local_coverage_rect.p1, prim.clip.p1);
+    // Clamp the (possibly per-segment) coverage rect to the primitive bounds.
+    // Note: if we ensure on the CPU side that segments are contained in the
+    // prim bounds we can get rif of this here.
+    local_coverage_rect.p0 = max(local_coverage_rect.p0, prim.bounds.p0);
+    local_coverage_rect.p1 = min(local_coverage_rect.p1, prim.bounds.p1);
     local_coverage_rect.p1 = max(local_coverage_rect.p0, local_coverage_rect.p1);
+
+    float aa_left   = (qi.edge_flags & EDGE_AA_LEFT)   != 0 ? 1.0 : 0.0;
+    float aa_top    = (qi.edge_flags & EDGE_AA_TOP)    != 0 ? 1.0 : 0.0;
+    float aa_right  = (qi.edge_flags & EDGE_AA_RIGHT)  != 0 ? 1.0 : 0.0;
+    float aa_bottom = (qi.edge_flags & EDGE_AA_BOTTOM) != 0 ? 1.0 : 0.0;
 
     switch (qi.part_index) {
         case PART_LEFT:
             local_coverage_rect.p1.x = local_coverage_rect.p0.x + AA_PIXEL_RADIUS;
 #ifdef SWGL_ANTIALIAS
-            swgl_antiAlias(EDGE_AA_LEFT);
+            // The strip covers the full height of the primitive, so its top
+            // and bottom rows lie on the primitive's top and bottom edges.
+            swgl_antiAlias(EDGE_AA_LEFT | (qi.edge_flags & (EDGE_AA_TOP | EDGE_AA_BOTTOM)));
 #else
             local_coverage_rect.p0.x -= AA_PIXEL_RADIUS;
-            local_coverage_rect.p0.y -= AA_PIXEL_RADIUS;
-            local_coverage_rect.p1.y += AA_PIXEL_RADIUS;
+            local_coverage_rect.p0.y -= aa_top * AA_PIXEL_RADIUS;
+            local_coverage_rect.p1.y += aa_bottom * AA_PIXEL_RADIUS;
 #endif
             break;
         case PART_TOP:
-            local_coverage_rect.p0.x = local_coverage_rect.p0.x + AA_PIXEL_RADIUS;
-            local_coverage_rect.p1.x = local_coverage_rect.p1.x - AA_PIXEL_RADIUS;
+            local_coverage_rect.p0.x += aa_left * AA_PIXEL_RADIUS;
+            local_coverage_rect.p1.x -= aa_right * AA_PIXEL_RADIUS;
             local_coverage_rect.p1.y = local_coverage_rect.p0.y + AA_PIXEL_RADIUS;
 #ifdef SWGL_ANTIALIAS
             swgl_antiAlias(EDGE_AA_TOP);
@@ -288,16 +299,18 @@ PrimitiveInfo quad_primive_info(void) {
         case PART_RIGHT:
             local_coverage_rect.p0.x = local_coverage_rect.p1.x - AA_PIXEL_RADIUS;
 #ifdef SWGL_ANTIALIAS
-            swgl_antiAlias(EDGE_AA_RIGHT);
+            // The strip covers the full height of the primitive, so its top
+            // and bottom rows lie on the primitive's top and bottom edges.
+            swgl_antiAlias(EDGE_AA_RIGHT | (qi.edge_flags & (EDGE_AA_TOP | EDGE_AA_BOTTOM)));
 #else
             local_coverage_rect.p1.x += AA_PIXEL_RADIUS;
-            local_coverage_rect.p0.y -= AA_PIXEL_RADIUS;
-            local_coverage_rect.p1.y += AA_PIXEL_RADIUS;
+            local_coverage_rect.p0.y -= aa_top * AA_PIXEL_RADIUS;
+            local_coverage_rect.p1.y += aa_bottom * AA_PIXEL_RADIUS;
 #endif
             break;
         case PART_BOTTOM:
-            local_coverage_rect.p0.x = local_coverage_rect.p0.x + AA_PIXEL_RADIUS;
-            local_coverage_rect.p1.x = local_coverage_rect.p1.x - AA_PIXEL_RADIUS;
+            local_coverage_rect.p0.x += aa_left * AA_PIXEL_RADIUS;
+            local_coverage_rect.p1.x -= aa_right * AA_PIXEL_RADIUS;
             local_coverage_rect.p0.y = local_coverage_rect.p1.y - AA_PIXEL_RADIUS;
 #ifdef SWGL_ANTIALIAS
             swgl_antiAlias(EDGE_AA_BOTTOM);
@@ -306,30 +319,25 @@ PrimitiveInfo quad_primive_info(void) {
 #endif
             break;
         case PART_CENTER:
-            local_coverage_rect.p0.x += edge_aa_offset(EDGE_AA_LEFT, qi.edge_flags);
-            local_coverage_rect.p1.x -= edge_aa_offset(EDGE_AA_RIGHT, qi.edge_flags);
-            local_coverage_rect.p0.y += edge_aa_offset(EDGE_AA_TOP, qi.edge_flags);
-            local_coverage_rect.p1.y -= edge_aa_offset(EDGE_AA_BOTTOM, qi.edge_flags);
+            local_coverage_rect.p0.x += aa_left * AA_PIXEL_RADIUS;
+            local_coverage_rect.p1.x -= aa_right * AA_PIXEL_RADIUS;
+            local_coverage_rect.p0.y += aa_top * AA_PIXEL_RADIUS;
+            local_coverage_rect.p1.y -= aa_bottom * AA_PIXEL_RADIUS;
             break;
         case PART_ALL:
         default:
 #ifdef SWGL_ANTIALIAS
             swgl_antiAlias(qi.edge_flags);
 #else
-            local_coverage_rect.p0.x -= edge_aa_offset(EDGE_AA_LEFT, qi.edge_flags);
-            local_coverage_rect.p1.x += edge_aa_offset(EDGE_AA_RIGHT, qi.edge_flags);
-            local_coverage_rect.p0.y -= edge_aa_offset(EDGE_AA_TOP, qi.edge_flags);
-            local_coverage_rect.p1.y += edge_aa_offset(EDGE_AA_BOTTOM, qi.edge_flags);
+            local_coverage_rect.p0.x -= aa_left * AA_PIXEL_RADIUS;
+            local_coverage_rect.p1.x += aa_right * AA_PIXEL_RADIUS;
+            local_coverage_rect.p0.y -= aa_top * AA_PIXEL_RADIUS;
+            local_coverage_rect.p1.y += aa_bottom * AA_PIXEL_RADIUS;
 #endif
             break;
     }
 
     vec2 local_pos = mix(local_coverage_rect.p0, local_coverage_rect.p1, aPosition);
-
-    float device_pixel_scale = task.device_pixel_scale;
-    if ((qi.quad_flags & QF_IGNORE_DEVICE_SCALE) != 0) {
-        device_pixel_scale = 1.0f;
-    }
 
     VertexInfo vi = write_vertex(
         local_pos,
@@ -337,7 +345,6 @@ PrimitiveInfo quad_primive_info(void) {
         transform,
         task.content_origin,
         task.task_rect,
-        device_pixel_scale,
         qi.quad_flags
     );
 
@@ -348,8 +355,8 @@ PrimitiveInfo quad_primive_info(void) {
 
     return PrimitiveInfo(
         scale_offset_map_point(pattern_tx, vi.local_pos),
+        scale_offset_map_rect(pattern_tx, prim.pattern_rect),
         scale_offset_map_rect(pattern_tx, prim.bounds),
-        scale_offset_map_rect(pattern_tx, prim.clip),
         seg,
         qi.edge_flags,
         qi.quad_flags,
@@ -357,13 +364,27 @@ PrimitiveInfo quad_primive_info(void) {
     );
 }
 
+// Move the AA distance rect *away* from the primitive for edges that are
+// not anti-aliased (by an arbitrary amount).
+float edge_no_aa_offset(int edge, int flags) {
+    return ((flags & edge) != 0) ? 0.0 : 10.0;
+}
+
 void antialiasing_vertex(PrimitiveInfo prim) {
 #ifndef SWGL_ANTIALIAS
     // This does the setup that is required for init_tranform_vs.
-    RectWithEndpoint xf_bounds = RectWithEndpoint(
-        max(prim.local_prim_rect.p0, prim.local_clip_rect.p0),
-        min(prim.local_prim_rect.p1, prim.local_clip_rect.p1)
-    );
+
+    // The "transform bounds" define the edges along which anti-aliasing
+    // is applied in the fragment shader.
+    RectWithEndpoint xf_bounds = prim.bounds;
+
+    // In order to prevent the edges with no anti-aliasing from getting
+    // anti-aliased, we have to move the aa rect *away* from them.
+    xf_bounds.p0.x -= edge_no_aa_offset(EDGE_AA_LEFT, prim.edge_flags);
+    xf_bounds.p1.x += edge_no_aa_offset(EDGE_AA_RIGHT, prim.edge_flags);
+    xf_bounds.p0.y -= edge_no_aa_offset(EDGE_AA_TOP, prim.edge_flags);
+    xf_bounds.p1.y += edge_no_aa_offset(EDGE_AA_BOTTOM, prim.edge_flags);
+
     vTransformBounds = vec4(xf_bounds.p0, xf_bounds.p1);
 
     vLocalPos = prim.local_pos;

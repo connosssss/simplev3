@@ -4,132 +4,153 @@
 
 package org.mozilla.fenix.home.ui
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconToggleButton
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.colorResource
-import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.tooling.preview.PreviewLightDark
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.tooling.preview.PreviewParameter
+import mozilla.components.compose.base.button.IconButton
+import mozilla.components.compose.base.theme.PreviewThemeProvider
+import mozilla.components.compose.base.theme.Theme
+import mozilla.components.ui.icons.R as iconsR
 import org.mozilla.fenix.R
 import org.mozilla.fenix.browser.browsingmode.BrowsingMode
-import org.mozilla.fenix.home.ui.HomepageTestTag.HOMEPAGE_WORDMARK_LOGO
-import org.mozilla.fenix.home.ui.HomepageTestTag.HOMEPAGE_WORDMARK_TEXT
 import org.mozilla.fenix.home.ui.HomepageTestTag.PRIVATE_BROWSING_HOMEPAGE_BUTTON
 import org.mozilla.fenix.theme.FirefoxTheme
-import org.mozilla.fenix.theme.Theme
+import org.mozilla.fenix.wallpapers.WallpaperTheme
 
 /**
  * Header for the homepage.
+ *
+ * @param browsingMode The current [BrowsingMode].
+ * @param showStoriesButton Whether to show the stories button or not.
+ * @param browsingModeChanged Callback for when the browsing mode is toggled.
+ * @param onStoriesTapped Callback for when the stories button is tapped.
  */
 @Composable
 fun HomepageHeader(
     browsingMode: BrowsingMode,
+    showStoriesButton: Boolean,
     browsingModeChanged: (BrowsingMode) -> Unit,
+    onStoriesTapped: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .wrapContentHeight()
-            .padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 32.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    // In normal mode the wordmark and private-browsing button follow the wallpaper text color; in
+    // private mode there is no wallpaper, so the wordmark is untinted and the button uses its
+    // dedicated private-mode icon color.
+    val wordmarkTextColor =
+        if (browsingMode.isPrivate) {
+            null
+        } else {
+            WallpaperTheme.onWallpaper
+        }
+    val privateBrowsingButtonColor =
+        if (browsingMode.isPrivate) {
+            colorResource(getAttr(iconsR.attr.mozac_ic_private_mode_circle_fill_icon_color))
+        } else {
+            WallpaperTheme.onWallpaper
+        }
+
+    Column(
+        modifier =
+            Modifier.fillMaxWidth()
+                .wrapContentHeight()
+                .padding(
+                    bottom = FirefoxTheme.layout.space.static500,
+                    top = FirefoxTheme.layout.space.static100,
+                )
+                .padding(horizontal = FirefoxTheme.layout.space.static100),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        WordmarkLogo()
+        Row(
+            modifier = Modifier.fillMaxWidth().wrapContentHeight(),
+            verticalAlignment = Alignment.Top,
+        ) {
+            if (showStoriesButton) {
+                StoriesButton(color = WallpaperTheme.onWallpaper, onClick = onStoriesTapped)
+            }
 
-        WordmarkText()
+            Spacer(modifier = Modifier.weight(1f))
 
-        Spacer(modifier = Modifier.weight(1f))
+            PrivateBrowsingButton(
+                color = privateBrowsingButtonColor,
+                browsingMode = browsingMode,
+                browsingModeChanged = browsingModeChanged,
+            )
+        }
 
-        PrivateBrowsingButton(
-            browsingMode = browsingMode,
-            browsingModeChanged = browsingModeChanged,
+        if (!browsingMode.isPrivate) {
+            WordmarkAndLogo(wordmarkTextColor = wordmarkTextColor)
+        }
+    }
+}
+
+@Composable
+private fun StoriesButton(
+    color: Color,
+    onClick: () -> Unit,
+) {
+    IconButton(onClick = onClick, contentDescription = null) {
+        Icon(
+            tint = color,
+            painter = painterResource(iconsR.drawable.mozac_ic_reading_list_24),
+            contentDescription = stringResource(R.string.homepage_all_stories),
         )
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
-@Composable
-private fun WordmarkLogo() {
-    Image(
-        modifier = Modifier
-            .height(40.dp)
-            .semantics {
-                testTagsAsResourceId = true
-                testTag = HOMEPAGE_WORDMARK_LOGO
-            }
-            .padding(end = 10.dp),
-        painter = painterResource(getAttr(R.attr.fenixWordmarkLogo)),
-        contentDescription = null,
-    )
-}
-
-@OptIn(ExperimentalComposeUiApi::class)
-@Composable
-private fun WordmarkText() {
-    Image(
-        modifier = Modifier
-            .semantics {
-                testTagsAsResourceId = true
-                testTag = HOMEPAGE_WORDMARK_TEXT
-            }
-            .height(dimensionResource(R.dimen.wordmark_text_height)),
-        painter = painterResource(getAttr(R.attr.fenixWordmarkText)),
-        contentDescription = stringResource(R.string.app_name),
-    )
-}
-
-@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun PrivateBrowsingButton(
+    color: Color,
     browsingMode: BrowsingMode,
     browsingModeChanged: (BrowsingMode) -> Unit,
 ) {
     IconToggleButton(
-        modifier = Modifier
-            .background(
-                color = colorResource(getAttr(R.attr.mozac_ic_private_mode_circle_fill_background_color)),
-                shape = CircleShape,
-            )
-            .size(40.dp)
-            .semantics {
-                testTagsAsResourceId = true
-                testTag = PRIVATE_BROWSING_HOMEPAGE_BUTTON
-            },
+        modifier =
+            Modifier.background(
+                    color = colorResource(getAttr(iconsR.attr.mozac_ic_private_mode_circle_fill_background_color)),
+                    shape = CircleShape,
+                )
+                .semantics {
+                    role = Role.Switch
+                    testTagsAsResourceId = true
+                    testTag = PRIVATE_BROWSING_HOMEPAGE_BUTTON
+                },
         checked = browsingMode.isPrivate,
         onCheckedChange = {
             browsingModeChanged(BrowsingMode.fromBoolean(!browsingMode.isPrivate))
         },
     ) {
         Icon(
-            tint = colorResource(getAttr(R.attr.mozac_ic_private_mode_circle_fill_icon_color)),
-            painter = painterResource(R.drawable.mozac_ic_private_mode_24),
+            tint = color,
+            painter = painterResource(iconsR.drawable.mozac_ic_private_mode_24),
             contentDescription = stringResource(R.string.content_description_private_browsing),
         )
     }
 }
 
 @Composable
-private fun getAttr(resId: Int): Int {
+internal fun getAttr(resId: Int): Int {
     val typedArray = LocalContext.current.obtainStyledAttributes(intArrayOf(resId))
     val newResId = typedArray.getResourceId(0, 0)
     typedArray.recycle()
@@ -137,27 +158,16 @@ private fun getAttr(resId: Int): Int {
     return newResId
 }
 
+@Preview
 @Composable
-@PreviewLightDark
-private fun HomepageHeaderPreview() {
-    FirefoxTheme {
-        Row(modifier = Modifier.background(color = FirefoxTheme.colors.layer1)) {
+private fun HomepageHeaderPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
+        Surface {
             HomepageHeader(
                 browsingMode = BrowsingMode.Normal,
+                showStoriesButton = true,
                 browsingModeChanged = {},
-            )
-        }
-    }
-}
-
-@Composable
-@Preview
-private fun PrivateHomepageHeaderPreview() {
-    FirefoxTheme(theme = Theme.Private) {
-        Row(modifier = Modifier.background(color = FirefoxTheme.colors.layer1)) {
-            HomepageHeader(
-                browsingMode = BrowsingMode.Private,
-                browsingModeChanged = {},
+                onStoriesTapped = {},
             )
         }
     }

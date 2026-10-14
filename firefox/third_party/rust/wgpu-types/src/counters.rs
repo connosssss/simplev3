@@ -96,15 +96,15 @@ impl Default for InternalCounter {
     }
 }
 
-impl core::fmt::Debug for InternalCounter {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for InternalCounter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.read().fmt(f)
     }
 }
 
 /// `wgpu-hal`'s part of [`InternalCounters`].
 #[allow(missing_docs)]
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct HalCounters {
     // API objects
     pub buffers: InternalCounter,
@@ -114,6 +114,7 @@ pub struct HalCounters {
     pub bind_group_layouts: InternalCounter,
     pub render_pipelines: InternalCounter,
     pub compute_pipelines: InternalCounter,
+    pub ray_tracing_pipelines: InternalCounter,
     pub pipeline_layouts: InternalCounter,
     pub samplers: InternalCounter,
     pub command_encoders: InternalCounter,
@@ -133,7 +134,7 @@ pub struct HalCounters {
 }
 
 /// `wgpu-core`'s part of [`InternalCounters`].
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct CoreCounters {
     // TODO    #[cfg(features=)]
 }
@@ -142,7 +143,7 @@ pub struct CoreCounters {
 ///
 /// Obtain this from
 /// [`Device::get_internal_counters()`](../wgpu/struct.Device.html#method.get_internal_counters).
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct InternalCounters {
     /// `wgpu-core` counters.
     pub core: CoreCounters,
@@ -162,7 +163,7 @@ pub struct AllocationReport {
 }
 
 /// Describes a memory block in the [`AllocatorReport`].
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MemoryBlockReport {
     /// The size in bytes of this memory block.
     pub size: u64,
@@ -181,6 +182,7 @@ pub struct AllocatorReport {
     /// Sum of the memory used by all allocations, in bytes.
     pub total_allocated_bytes: u64,
     /// Sum of the memory reserved by all memory blocks including unallocated regions, in bytes.
+    // XXX: Rename to total_capacity_bytes following the rename at https://github.com/Traverse-Research/gpu-allocator/pull/266?
     pub total_reserved_bytes: u64,
 }
 

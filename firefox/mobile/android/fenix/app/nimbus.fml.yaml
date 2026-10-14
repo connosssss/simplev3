@@ -43,28 +43,24 @@ features:
         type: Map<HomeScreenSection, Boolean>
         default:
           {
-            "header": false,
             "top-sites": true,
             "jump-back-in": true,
-            "bookmarks": true,
-            "recent-explorations": true,
             "pocket": true,
             "pocket-sponsored-stories": true,
             "synced-tabs": true,
             "collections": true,
+            "privacy-report": true,
           }
     defaults:
       - channel: nightly
         value: {
           "sections-enabled": {
-            "header": false,
             "top-sites": true,
             "jump-back-in": true,
-            "bookmarks": true,
-            "recent-explorations": true,
             "pocket": true,
             "synced-tabs": true,
             "collections": true,
+            "privacy-report": true,
           }
         }
   nimbus-validation:
@@ -83,144 +79,21 @@ features:
         description: The drawable displayed in the app menu for Settings
         type: String
         default: mozac_ic_settings
-  search-term-groups:
-    description: A feature allowing the grouping of URLs around the search term that it came from.
+  gecko-nimbus-validation:
+    description: "Feature for validating Nimbus Gecko functionality"
     variables:
-      enabled:
-        description: If true, the feature shows up on the homescreen and on the new tab screen.
-        type: Boolean
-        default: false
-    defaults:
-      - channel: nightly
-        value:
-          enabled: true
-      - channel: developer
-        value:
-          enabled: true
-  mr2022:
-    description: Features for MR 2022.
-    variables:
-      sections-enabled:
-        description: "This property provides a lookup table of whether or not the given section should be enabled."
-        type: Map<MR2022Section, Boolean>
-        default:
-          {
-            "wallpapers-selection-tool": true,
-            "tcp-cfr": true,
-            "tcp-feature": true,
-          }
-    defaults:
-      - channel: developer
-        value: {
-          "sections-enabled": {
-            "wallpapers-selection-tool": true,
-          }
-        }
-  query-parameter-stripping:
-    description: Features for query parameter stripping.
-    variables:
-      sections-enabled:
-        description: "This property provides a lookup table of whether or not the given section should be enabled."
-        type: Map<QueryParameterStrippingSection, String>
-        default:
-          {
-            "query-parameter-stripping": "0",
-            "query-parameter-stripping-pmb": "0",
-            "query-parameter-stripping-allow-list": "",
-            "query-parameter-stripping-strip-list": "",
-          }
-    defaults:
-      - channel: developer
-        value: {
-          "sections-enabled": {
-            "query-parameter-stripping": "0",
-            "query-parameter-stripping-pmb": "0",
-            "query-parameter-stripping-allow-list": "",
-            "query-parameter-stripping-strip-list": "",
-          }
-        }
-      - channel: nightly
-        value: {
-          "sections-enabled": {
-            "query-parameter-stripping": "0",
-            "query-parameter-stripping-pmb": "0",
-            "query-parameter-stripping-allow-list": "",
-            "query-parameter-stripping-strip-list": "",
-          }
-        }
-  cookie-banners:
-    description: Features for cookie banner handling.
-    variables:
-      sections-enabled:
-        description: "This property provides a lookup table of whether or not the given section should be enabled."
-        type: Map<CookieBannersSection, Int>
-        default:
-          {
-            "feature-ui": 0,
-            "feature-setting-value": 0,
-            "feature-setting-value-pbm": 0,
-            "feature-setting-detect-only": 0,
-            "feature-setting-global-rules": 1,
-            "feature-setting-global-rules-sub-frames": 1,
-          }
-    defaults:
-      - channel: developer
-        value: {
-          "sections-enabled": {
-            "feature-ui": 1,
-            "feature-setting-value": 0,
-            "feature-setting-value-pbm": 1,
-            "feature-setting-detect-only": 0,
-            "feature-setting-global-rules": 1,
-            "feature-setting-global-rules-sub-frames": 1,
-          }
-        }
-      - channel: nightly
-        value: {
-          "sections-enabled": {
-            "feature-ui": 0,
-            "feature-setting-value": 0,
-            "feature-setting-value-pbm": 0,
-            "feature-setting-detect-only": 0,
-            "feature-setting-global-rules": 1,
-            "feature-setting-global-rules-sub-frames": 1,
-          }
-        }
-      - channel: beta
-        value: {
-          "sections-enabled": {
-            "feature-ui": 0,
-            "feature-setting-value": 0,
-            "feature-setting-value-pbm": 0,
-            "feature-setting-detect-only": 0,
-            "feature-setting-global-rules": 1,
-            "feature-setting-global-rules-sub-frames": 1,
-          }
-        }
-
-  growth-data:
-    description: A feature measuring campaign growth data
-    variables:
-      enabled:
-        description: If true, the feature is active
-        type: Boolean
-        default: false
-    defaults:
-      - channel: release
-        value:
-          enabled: true
-
-  re-engagement-notification:
-    description: A feature that shows the re-engagement notification if the user is inactive.
-    variables:
-      enabled:
-        description: If true, the re-engagement notification is shown to the inactive user.
-        type: Boolean
-        default: false
-      type:
-        description: The type of re-engagement notification that is shown to the inactive user.
-        type: Int
-        default: 0
+      test-preference:
+        description: "A test gecko preference"
+        type: Option<String>
+        gecko-pref:
+          pref: "gecko.nimbus.test"
+          branch: "default"
+      test-preference-2:
+        description: "A second test gecko preference"
+        type: Option<Int>
+        gecko-pref:
+          pref: "gecko.nimbus.test.two"
+          branch: "user"
 
   onboarding:
     description: "A feature that configures the new user onboarding page.
@@ -294,18 +167,6 @@ features:
         type: Boolean
         default: false
 
-  print:
-    description: A feature for printing from the share or browser menu.
-    variables:
-      share-print-enabled:
-        description: If true, a print button from the share menu is available.
-        type: Boolean
-        default: true
-      browser-print-enabled:
-        description: If true, a print button from the browser menu is available.
-        type: Boolean
-        default: true
-
   sent-from-firefox:
     description: A feature that allows the user to add a download firefox footer to a shared link.
     variables:
@@ -332,6 +193,67 @@ features:
           template-message: sent_from_firefox_template
           download-link: "[Download Link]"
           show-snackbar: true
+  listen-to-page:
+    description: A feature that allows audio listening of a page
+    variables:
+      enabled:
+        type: Boolean
+        description: If true, listen to page will be enabled
+        default: false
+    defaults:
+      - channel: developer
+        value:
+          enabled: false
+      - channel: nightly
+        value:
+          enabled: false
+      - channel: beta
+        value:
+          enabled: false
+
+  shake-to-summarize:
+    description: A feature that can summarize the content of a page when you shake the screen.
+    variables:
+      enabled:
+        type: Boolean
+        description: If true, shake to summarize will be enabled
+        default: true
+    defaults:
+      - channel: developer
+        value:
+          enabled: true
+      - channel: nightly
+        value:
+          enabled: true
+      - channel: beta
+        value:
+          enabled: true
+
+  weekly-privacy-notification:
+    description: A feature that shows a recurring weekly notification summarizing Tracking Protection activity.
+    variables:
+      enabled:
+        description: If true, the weekly privacy notification will be scheduled.
+        type: Boolean
+        default: false
+
+  import-bookmarks:
+    description: A feature that lets users import bookmarks from another browser.
+    variables:
+      enabled:
+        type: Boolean
+        description: If true, the import bookmarks feature will be enabled.
+        default: false
+    defaults:
+      - channel: developer
+        value:
+          enabled: true
+      - channel: nightly
+        value:
+          enabled: true
+      - channel: beta
+        value:
+          enabled: true
 
   setup-checklist:
     description: A feature on the home page that allows the user to track onboarding setup progress.
@@ -446,30 +368,58 @@ features:
         type: Boolean
         default: true
 
-  navigation-toolbar:
-    description: Feature for navigation toolbar.
+  minimal-addressbar:
+    description: Show a smaller height bottom addressbar with just the URL.
+    variables:
+      at-bottom-while-entering-text:
+        description: >
+          Whether to show the smaller height bottom addressbar with just the URL when entering text in a website.
+        type: Boolean
+        default: false
+
+  default-bottom-toolbar:
+    description: Default toolbar position for new users.
     variables:
       enabled:
         description: >
-          When the feature is enabled then the user will see the new navigation toolbar.
+          Whether to default the toolbar position to bottom.
+        type: Boolean
+        default: false
+
+  default-expanded-toolbar:
+    description: Default expanded (bottom navigation) toolbar state for new users.
+    variables:
+      enabled:
+        description: >
+          Whether to default the expanded toolbar (bottom navigation bar with
+          back/forward/share/bookmark/menu) to enabled. Only takes visible effect
+          on tall, non-wide windows.
+        type: Boolean
+        default: false
+
+  addressbar-focus-mode:
+    description: >
+      When starting to edit the current URL show the website details in the awesomebar
+      instead of the addressbar.
+    variables:
+      enabled:
+        description: Whether the feature is enabled
         type: Boolean
         default: false
     defaults:
       - channel: developer
         value:
           enabled: true
-      - channel: nightly
-        value:
-          enabled: true
 
-  composable-toolbar:
-    description: Use a composable toolbar instead of the View based one.
+  homescreen-edge-to-edge-background:
+    description: >
+      Feature that sets an edge to edge background on the Home Screen if the user hasn't selected
+      a custom wallpaper
     variables:
       enabled:
-        description: >
-          When the feature is enabled the user will see a new composable toolbar instead the previous View based one.
+        description: Enables the feature
         type: Boolean
-        default: false
+        default: true
 
   remote-tab-management:
     description: >
@@ -485,32 +435,36 @@ features:
         type: Boolean
         default: true
 
-  ship:
-    description: The feature that controls Session History in Parent (SHIP) in Gecko.
-    variables:
-      disabled:
-        description: >
-          Whether or not to disable SHIP. SHIP is enabled when set to false. SHIP is disabled when
-          set to true.
-        type: Boolean
-        default: true
-    defaults:
-      - channel: nightly
-        value:
-          disabled: false
-      - channel: developer
-        value:
-          disabled: false
-
   fission:
     description: The feature that controls whether fission is enabled or not in Gecko.
     variables:
+      shouldUseNimbus:
+        description: >
+            If true, the values for both SHIP and Fission set in this file apply.
+            Otherwise, the values from modules/libpref/init/StaticPrefList.yaml apply.
+        type: Boolean
+        default: false
       enabled:
         description: >
           Whether or not to enable fission. Fission is enabled when set to true. Fission is disabled when
           set to false.
         type: Boolean
         default: false
+      isolationStrategy:
+        description: >
+          The web content isolation strategy to use with fission. "0" means "isolate nothing", similar to
+          non-fission behavior. "1" means "isolate everything", where every site-origin gets its own
+          process. "2" means "isolate high value", Android-specific setting to only isolate sites
+          considered "high value".
+        type: Int
+        default: 0
+    defaults:
+      - channel: nightly
+        value:
+          isolationStrategy: 2
+      - channel: developer
+        value:
+          isolationStrategy: 2
 
   suggest-shipped-domains:
     description: Feature that suggests domains from the shipped domain list.
@@ -532,28 +486,33 @@ features:
     description: Control Fingerprinting Protection
     variables:
       enabled:
-        description: If true, the feature is active.
+        description: >
+          Deprecated and no longer read. Each of the values below is applied
+          independently when a recipe supplies it; leaving a value unset means
+          "leave the existing setting alone".
         type: Boolean
         default: false
       enabled-normal:
         description: >
           Enables / disables fingerprinting protection in normal browsing mode.
-        type: Boolean
-        default: false
+          Unset leaves the existing setting alone.
+        type: Option<Boolean>
+        default: null
       enabled-private:
         description: >
           Enables / disables fingerprinting protection in private browsing mode.
-        type: Boolean
-        default: true
+          Unset leaves the existing setting alone.
+        type: Option<Boolean>
+        default: null
       overrides:
         description: >
           The protection overrides to add or remove fingerprinting protection
           targets. Please check RFPTargets.inc for all supported targets.
           The format of the overrides is +Target1,-Target2,+Target3
           where + means add and - means remove. The targets are separated by
-          commas. The default value is empty string.
-        type: String
-        default: ""
+          commas. Unset leaves the existing setting alone.
+        type: Option<String>
+        default: null
       fdlibm-math:
         description: >
           Uses a different math backend for Math.sin/cos/tan in JavaScript that
@@ -565,22 +524,27 @@ features:
     description: Control Baseline Fingerprinting Protection
     variables:
       feat-enabled:
-        description: If true, the feature is active.
+        description: >
+          Deprecated and no longer read. Each of the values below is applied
+          independently when a recipe supplies it; leaving a value unset means
+          "leave the existing setting alone".
         type: Boolean
         default: false
       enabled:
-        type: Boolean
-        description: Enables / disables baseline fingerprinting protection.
-        default: true
+        type: Option<Boolean>
+        description: >
+          Enables / disables baseline fingerprinting protection. Unset leaves
+          the existing setting alone.
+        default: null
       overrides:
-        type: String
+        type: Option<String>
         description: >-
           The protection overrides to add or remove fingerprinting protection
           targets. Please check RFPTargets.inc for all supported targets.
           The format of the overrides is +Target1,-Target2,+Target3
           where + means add and - means remove. The targets are separated by
-          commas. The default value is empty string.
-        default: ""
+          commas. Unset leaves the existing setting alone.
+        default: null
 
   third-party-cookie-blocking:
     description: Control third-party cookie blocking.
@@ -600,53 +564,66 @@ features:
         type: Boolean
         default: true
 
-  menu-redesign:
-    description: Control the new menu redesign.
+  safe-browsing-v5:
+    description: Control Safe Browsing V5.
     variables:
-      enabled:
-        description: If true, the new menu redesign is available.
-        type: Boolean
-        default: true
-      report-site-issue:
-        description: If true, report site issue menu item and preview is available.
-        type: Boolean
-        default: true
-      menu-banner:
-        description: If true, the menu banner is visible.
-        type: Boolean
-        default: true
-    defaults:
-      - channel: release
-        value:
-          enabled: false
-      - channel: release
-        value:
-          report-site-issue: false
-
-  compose-homepage:
-    description: Turns on compose homepage.
-    variables:
-      enabled:
-        description: >
-          Whether or not to turn on the compose homepage.
+      feature-enabled:
+        description: >-
+          If true, this feature is enabled. Otherwise, we follow the
+          SafeBrowsing V5 enabled pref.
         type: Boolean
         default: false
-    defaults:
-      - channel: nightly
-        value:
-          enabled: true
-      - channel: developer
-        value:
-          enabled: true
-
-  override-user-specified-homepage-sections:
-    description: Whether to ignore the user-specified homepage section visibility settings and hide the options in the settings.
-    variables:
-      enabled:
-        description: >
-          When true, ignore the user-specified homepage section visibility settings, and hide the toggle options in the settings.
+      enable-v5:
+        description: >-
+          Enables / disables the SafeBrowsing V5 protocol.
         type: Boolean
         default: false
+
+  safe-browsing-real-time:
+    description: Control Safe Browsing real-time lookup and simulation.
+    variables:
+      feature-enabled:
+        description: >-
+          If true, this feature is enabled and the below settings override
+          the Gecko defaults. Otherwise, the Gecko defaults are used.
+        type: Boolean
+        default: false
+      global-cache-enabled:
+        description: >-
+          Enables / disables the Safe Browsing Global Cache.
+        type: Boolean
+        default: false
+      real-time-enabled:
+        description: >-
+          Enables / disables Safe Browsing real-time lookup.
+        type: Boolean
+        default: false
+      simulation-enabled:
+        description: >-
+          Enables / disables the real-time request simulator.
+        type: Boolean
+        default: false
+      simulation-hit-probability:
+        description: >-
+          Hit probability for the real-time request simulator.
+        type: Int
+        default: 5
+      simulation-cache-ttl-sec:
+        description: >-
+          Cache TTL in seconds for the real-time request simulator.
+        type: Int
+        default: 300
+      simulation-negative-cache-enabled:
+        description: >-
+          Enables / disables the negative cache for the real-time request simulator.
+        type: Boolean
+        default: false
+      simulation-negative-cache-ttl-sec:
+        description: >-
+          Negative cache TTL in seconds for the real-time request simulator.
+        type: Int
+        default: 300
+
   microsurveys:
     description: Feature for microsurveys.
     variables:
@@ -656,6 +633,26 @@ features:
         type: Boolean
         default: false
 
+  terms-of-use-prompt:
+    description: Enables the terms of use prompt for users who have not accepted ToU
+    variables:
+      enabled:
+        description: When the feature is enabled then the prompt can show for users.
+        type: Boolean
+        default: false
+      content-option:
+        description: Defines which content option should used for the prompt.
+        type: TermsOfUsePromptContentOption
+        default: value-0
+      max-display-count:
+        description: The maximum number of times to show the prompt.
+        type: Int
+        default: 2
+      enable-drag-to-dismiss:
+        description: Whether to show a drag handle on the prompt and allows users to use it to dismiss the prompt.
+        type: Boolean
+        default: true
+
   tab-strip:
     description: Enables tab strip.
     variables:
@@ -663,69 +660,11 @@ features:
         description: >
           Whether or not to enable tab strip.
         type: Boolean
-        default: false
+        default: true
       allow-on-all-devices:
         description: >
           Experimental: When true, bypasses device restrictions and enables use on all devices.
           May cause instability or unexpected behavior. This still requires the feature to be `enabled`.
-        type: Boolean
-        default: false
-    defaults:
-      - channel: developer
-        value:
-          enabled: true
-      - channel: nightly
-        value:
-          enabled: true
-      - channel: beta
-        value:
-          enabled: true
-
-  trending-searches:
-    description: Enables trending searches.
-    variables:
-      enabled:
-        description: >
-          Whether or not to enable trending searches.
-        type: Boolean
-        default: false
-      max-suggestions:
-        description: The number of maximum suggestions.
-        type: Int
-        default: 4
-
-  recent-searches:
-    description: Enables recent searches.
-    variables:
-      enabled:
-        description: >
-          Whether or not to enable recent searches.
-        type: Boolean
-        default: false
-      max-suggestions:
-        description: The number of maximum suggestions.
-        type: Int
-        default: 4
-
-  top-sites-suggestions:
-    description: Enables top sites suggestions.
-    variables:
-      enabled:
-        description: >
-          Whether or not to enable top sites suggestions.
-        type: Boolean
-        default: false
-      max-suggestions:
-        description: The number of maximum suggestions.
-        type: Int
-        default: 4
-
-  search-suggestions-on-homepage:
-    description: Enables search suggestions on homepage.
-    variables:
-      enabled:
-        description: >
-          Whether or not to enable search suggestions on homepage.
         type: Boolean
         default: false
 
@@ -737,13 +676,22 @@ features:
           Whether or not to enable homepage as a new tab
         type: Boolean
         default: false
+    defaults:
+      - channel: nightly
+        value:
+          enabled: true
+      - channel: developer
+        value:
+          enabled: true
 
-  homepage-search-bar:
-    description: Enables the homepage search bar.
+  universal-edge-to-edge-wallpapers:
+    description: >
+      Extends non-default homepage wallpapers edge-to-edge and adapts the toolbar, navigation bar
+      and system bars to them.
     variables:
       enabled:
         description: >
-          Whether or not to enable the homepage search bar.
+          Whether or not to enable the universal edge-to-edge wallpaper treatment.
         type: Boolean
         default: false
 
@@ -756,6 +704,14 @@ features:
         type: Boolean
         default: false
 
+  homepage-opening-screen-default:
+    description: Configure the default option for the homepage opening screen.
+    variables:
+      default-option:
+        description: The default option for the homepage opening screen.
+        type: OpeningScreenOption
+        default: homepage-four-hours
+
   user-characteristics:
     description: A feature for control user characteristic data collection
     variables:
@@ -763,23 +719,6 @@ features:
         description: The current collection version of the user characteristics.
         type: Int
         default: 0
-
-  bookmarks:
-    description: Feature for Bookmarks
-    variables:
-      new-compose-ui:
-        description: if true, enable new compose based UI
-        type: Boolean
-        default: false
-
-  networking:
-    description: Enables networking features
-    variables:
-      fetchPriorityEnabled:
-        description: >
-          Enables or disables network.fetchpriority.enabled preference.
-        type: Boolean
-        default: true
 
   networkingBannedPorts:
     description: "Networking (Necko) Banned Ports"
@@ -789,24 +728,61 @@ features:
         type: String
         default: ""
 
+  networking-happy-eyeballs:
+    description: "Networking (Necko) Happy Eyeballs V3 configuration"
+    variables:
+      enabled:
+        description: Whether to enable the Happy Eyeballs v3 algorithm for connection establishment
+        type: Option<Boolean>
+        gecko-pref:
+          pref: "network.http.happy_eyeballs_enabled"
+          branch: "default"
+      resolution-delay:
+        description: Time in ms to wait after the first DNS response before starting connections
+        type: Option<Int>
+        gecko-pref:
+          pref: "network.http.happy_eyeballs_resolution_delay"
+          branch: "default"
+      connection-attempt-delay:
+        description: Time in ms between successive connection attempts
+        type: Option<Int>
+        gecko-pref:
+          pref: "network.http.happy_eyeballs_connection_attempt_delay"
+          branch: "default"
+
+  tracking-protection-experimentation:
+    description: "Experimental controls for tracking protection behavior"
+    variables:
+      defer-annotation-enabled:
+        description: Whether to defer tracking protection classification annotation until the data is being handled
+        type: Option<Boolean>
+        gecko-pref:
+          pref: "privacy.trackingprotection.defer_annotation.enabled"
+          branch: "default"
+
+  webcompat-interventions:
+    description: "Experimental controls for webcompat site interventions"
+    variables:
+      disabled-intervention-2060611:
+        description: If `true`, disables the webcompat intervention tracked by bug 2060611 (background media playback). Unset or false leaves the intervention enabled.
+        type: Option<Boolean>
+        gecko-pref:
+          pref: "extensions.webcompat.disabled_interventions.2060611"
+          branch: "default"
+
   pki:
     description: Certificate verification configuration
     variables:
       certificateTransparencyMode:
         description: >
           What mode Certificate Transparency is in (0=disable, 1=telemetry only, 2=enforce).
-        type: Int
-        default: 0
-    defaults:
-      - channel: nightly
-        value:
-          certificateTransparencyMode: 2
-      - channel: developer
-        value:
-          certificateTransparencyMode: 2
-      - channel: beta
-        value:
-          certificateTransparencyMode: 2
+        type: Option<Int>
+        default: null
+      crliteChannel:
+        description: >
+          The channel from which CRLite filters will be installed.
+        type: Option<String>
+        default: null
 
   pqcrypto:
     description: Control the use of post-quantum key exchange mechanisms in TLS and HTTP/3.
@@ -826,17 +802,22 @@ features:
         type: Boolean
         default: false
 
-  encourage-search-cfr:
-    description: A feature that shows a CFR on first launch to encourage users to make a search
+  enable-popups:
+    description: A feature that enables or disables in app popups
     variables:
-      enabled:
-        description: When true, the CFR will show
+      cfr-popups-enabled:
+        description: When true, CFR popups will show
         type: Boolean
-        default: false
-      cfrText:
-        description: The text to show in the CFR
-        type: Text
-        default: ""
+        default: true
+      in-app-messages-enabled:
+        description: >
+          Enables non-CFR in-app messaging surfaces. Currently includes:
+          - Wallpaper onboarding bottom sheet
+          - PWA onboarding ("Add to Home screen") dialog
+          - "Open links in apps" banner
+        type: Boolean
+        default: true
+
   remote-search-configuration:
     description: Feature to use search configurations from remote servers.
     variables:
@@ -852,21 +833,12 @@ features:
         description: >
           Overrides the loadType when it is a same document navigation
         type: Boolean
-        default: true
+        default: false
       force-disable-uri:
         description: >
           Disable overriding the loadType during same document navigation on the domain specified by this URI.
         type: String
         default: ""
-    defaults:
-      - channel: nightly
-        value:
-          enabled: false
-          force-disable-uri: ""
-      - channel: developer
-        value:
-          enabled: false
-          force-disable-uri: ""
   doh:
     description: Feature controlling DNS over HTTPS (DoH).
     variables:
@@ -874,12 +846,16 @@ features:
         description: >
           When `true`, include DoH settings in the settings UI.
         type: Boolean
-        default: false
+        default: true
       autoselect-enabled:
         description: >
           Controls the network.android_doh.autoselect_enabled pref and automatically chooses a DoH provider when Default Protection mode is selected.
         type: Boolean
         default: false
+    defaults:
+      - channel: nightly
+        value:
+          autoselect-enabled: true
 
   private-browsing-lock:
     description: Allows enabling and disabling the private browsing mode lock via an authentication screen.
@@ -890,31 +866,476 @@ features:
         type: Boolean
         default: true
 
-  toolbar-redesign-option:
-    description: Control the visibility of toolbar redesign option in settings.
+  app-links:
+    description: Control behavior of app links handling in the browser.
     variables:
-      show-options:
-        description: >
-          Whether or not the toolbar redesign option is visible to the user.  This allows the user to switch between simple and expanded toolbar.
+      show-new-prompt:
+        description: Whether to show the new AppLinksPromptFragment dialog when an app link is detected. If false, the old dialog is used.
         type: Boolean
-        default: false
-      show-simple-customization:
-        description: >
-          Whether or not the simple toolbar customization option is visible to the user.
-        type: Boolean
-        default: false
-      show-expanded-customization:
-        description: >
-          Whether or not the expanded toolbar customization option is visible to the user.
-        type: Boolean
-        default: false
+        default: true
 
   tab-management-enhancements:
     description: Control the visibility of the tab management enhancements.
     variables:
+      opening_animation_enabled:
+        description: Whether or not the Tab Manager opening animation is enabled. When enabled,
+          a shared element transition will initiate, taking the currently-opened tab's thumbnail
+          and shrinking it into its spot in the Tab Manager.
+        type: Boolean
+        default: false
+    defaults:
+      - channel: release
+        value:
+          opening_animation_enabled: false
+      - channel: beta
+        value:
+          opening_animation_enabled: false
+      - channel: nightly
+        value:
+          opening_animation_enabled: true
+
+  tab-groups:
+    description: Control the visibility of the tab groups feature.
+    variables:
       enabled:
         description: >
-          Whether or not to enable the tab management enhancements.
+          Whether or not to enable the tab groups feature.
+        type: Boolean
+        default: true
+  tab-groups-drag-and-drop:
+    description: Control the visibility of drag and drop for tab groups.
+    variables:
+      enabled:
+        description: >
+          Whether or not to enable drag and drop for tab groups.
+        type: Boolean
+        default: false
+    defaults:
+      - channel: release
+        value:
+          enabled: false
+      - channel: beta
+        value:
+          enabled: true
+      - channel: nightly
+        value:
+          enabled: true
+  tab-groups-onboarding:
+    description: Control the visibility of onboarding for tab groups.
+    variables:
+      enabled:
+        description: >
+          Whether or not to enable onboarding for tab groups.
+        type: Boolean
+        default: true
+  tab-groups-live-reorder:
+    description: Control whether reorder happens live during a drag and drop action for Tab Groups.
+    variables:
+      enabled:
+        description: >
+          Whether or not to enable live reorder for tab groups drag and drop.
+        type: Boolean
+        default: false
+    defaults:
+      - channel: release
+        value:
+          enabled: false
+      - channel: beta
+        value:
+          enabled: false
+      - channel: nightly
+        value:
+          enabled: false
+  tab-groups-ungroup:
+    description: Control whether the ungroup option is available for tab groups.
+    variables:
+      enabled:
+        description: >
+          Whether or not to enable ungrouping tab groups.
+        type: Boolean
+        default: true
+  tab-groups-strip:
+    description: Control whether the tab groups strip is shown.
+    variables:
+      enabled:
+        description: >
+          Whether or not to enable the tab groups strip.
+        type: Boolean
+        default: false
+
+  marketing-onboarding-card:
+    description: A temporary feature to control the marketing onboarding card shown during the onboarding flow.
+    variables:
+      enabled:
+        description: If false, the marketing onboarding card will never be shown.
+        type: Boolean
+        default: true
+
+  suppress-sponsored-top-sites:
+    description: Suppress sponsored top sites for new users for 14 days.
+    variables:
+      enabled:
+        description: If true, new users won’t see sponsored tiles for 14 days.
+        type: Boolean
+        default: false
+
+  lna-blocking:
+    description: Feature that allows blocking local network or device access.
+    variables:
+      blocking:
+        description: >
+          Whether or not to block LNA requests
+        type: Boolean
+        default: true
+      block-trackers:
+        description: >
+          Whether or not to block trackers
+        type: Boolean
+        default: false
+      enabled:
+        description: >
+          Whether or not to turn on local network / device access blocking
+        type: Boolean
+        default: true
+      block-insecure-contexts:
+        description: >
+          Whether or not LNA requests coming from insecure contexts should be
+          blocked outright, without prompting the user for permission
+        type: Option<Boolean>
+        gecko-pref:
+          pref: "network.lna.block_insecure_contexts"
+          branch: "default"
+
+  isolated-content-processes:
+    description: Feature that controls content process isolation.
+    variables:
+      enabled:
+        description: >
+          Whether or not to enable isolated content processes.
+        type: Boolean
+        default: false
+      app-zygote-preloading:
+        description: >
+          Whether or not to enable app Zygote preloaded isolated content processes.
+        type: Boolean
+        default: false
+
+  custom-review-prompt-ui:
+    description: Feature that controls the custom UI for review prompt.
+    variables:
+      enabled:
+        description: When enabled we show the custom review prompt UI. Otherwise we try to directly show the Play Store in-app review prompt.
+        type: Boolean
+        default: true
+
+  default-browser-prompt:
+    description: Feature that controls when the default browser prompt is shown.
+    variables:
+      enabled:
+        description: Whether or not to enable the default browser prompt.
+        type: Boolean
+        default: true
+      daysBetweenPrompts:
+        description: The minimum number of days between showing the prompt.
+        type: Option<Int>
+        default: 14
+      maxPromptsShown:
+        description: The maximum number of times the prompt can shown to the user.
+        type: Option<Int>
+        default: 3
+      coldStartsBetweenPrompts:
+        description: The minimum number of cold starts between showing the prompt.
+        type: Option<Int>
+        default: 4
+
+  email-masks:
+    description: Feature to enable Email Mask for users on Firefox on Android.
+    variables:
+      enabled:
+        description: If true, Email Mask feature is enabled.
+        type: Boolean
+        default: true
+
+  ip-protection:
+    description: Feature to enable IP Protection (VPN) for users on Firefox on Android.
+    variables:
+      enabled:
+        description: If true, IP Protection feature is enabled.
+        type: Boolean
+        default: true
+      show-beta-badge:
+        description: If true, a BETA badge is shown next to the IP Protection entry in the settings list.
+        type: Boolean
+        default: true
+      show-onboarding-bottom-sheet:
+        description: If true, the IP Protection onboarding bottom sheet is shown to the user.
+        type: Boolean
+        default: true
+      data-limit-gigabyte:
+        description: Specifies the VPN data limit for unpaid users in GB (e.g. 50 GB).
+        type: Int
+        default: 50
+      allowed-regions:
+        description: Country codes whose users are eligible for IP Protection.
+        type: List<String>
+        default: [
+          "AD", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX", "BA", "BB", "BD",
+          "BE", "BF", "BG", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS", "BT", "BW", "BZ", "CA",
+          "CC", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CO", "CR", "CV", "CW", "CY", "CZ", "DE", "DJ",
+          "DK", "DM", "DO", "DZ", "EC", "EE", "ES", "ET", "FI", "FJ", "FK", "FM", "FO", "FR", "GA", "GB",
+          "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GT", "GU", "GW", "GY",
+          "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IO", "IS", "IT", "JE", "JM", "JO", "JP", "KE",
+          "KG", "KH", "KI", "KM", "KN", "KR", "KW", "KY", "LA", "LB", "LC", "LI", "LK", "LR", "LS", "LT",
+          "LU", "LV", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MN", "MO", "MP", "MQ", "MR",
+          "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI", "NL", "NO",
+          "NP", "NR", "NU", "NZ", "PA", "PE", "PF", "PG", "PH", "PL", "PM", "PN", "PR", "PT", "PW", "PY",
+          "RE", "RO", "RS", "RW", "SB", "SC", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO",
+          "SR", "ST", "SV", "SX", "SZ", "TC", "TD", "TG", "TH", "TK", "TL", "TN", "TO", "TT", "TV", "TW",
+          "UA", "US", "UY", "VA", "VC", "VE", "VG", "VI", "VU", "WF", "WS", "XK", "YT", "ZA", "ZM", "ZW"
+        ]
+      promo-deadline:
+        description: The final date for the promotion to end. This needs to be an ISO 8601 formatted date (i.e. YYYY-MM-DD).
+        type: String
+        default: "2026-08-31"
+    defaults:
+      - channel: developer
+        value:
+          allowed-regions: ["XX"]
+
+  show-more-shortcuts:
+    description: Feature to show expand/collapse buttons for shortcuts on the homepage.
+    variables:
+      enabled:
+        description: If true, show the expand/collapse buttons on the homepage.
+        type: Boolean
+        default: true
+
+  ads-client-for-stories:
+    description: Feature to enable the Mozilla Ads Client support for Sponsored Stories for users on Firefox on Android.
+    variables:
+      enabled:
+        description: If true, Mozilla Ads Client support for Sponsored Stories is enabled.
+        type: Boolean
+        default: false
+
+  private-mode-and-stories-entry-point:
+    description: Feature to enable the Private Mode and Stories Entry Point Experiment.
+    variables:
+      enabled:
+        description: If true, Private Mode and Stories Entry Point Experiment is enabled.
+        type: Boolean
+        default: false
+
+  search-optimization-option:
+    description: Feature to enable the Search Optimization cards for users on Firefox on Android.
+    variables:
+      enabled:
+        description: If true, Search Optimization is enabled.
+        type: Boolean
+        default: false
+      show-stocks-card:
+        description: If true, Search Optimization Stock cards are enabled.
+        type: Boolean
+        default: false
+      show-flights-card:
+        description: If true, Search Optimization Flights cards are enabled.
+        type: Boolean
+        default: false
+      show-sports-card:
+        description: If true, Search Optimization Sports cards are enabled.
+        type: Boolean
+        default: false
+    defaults:
+      - channel: developer
+        value:
+          enabled: true
+          show-stocks-card: true
+          show-flights-card: true
+          show-sports-card: true
+
+  downloads-custom-location:
+    description: Feature to enable the custom download location for users on Firefox on Android.
+    variables:
+      enabled:
+        description: If true, custom download location is enabled.
+        type: Boolean
+        default: true
+
+  google-lens-integration:
+    description: A feature that enables Google Lens integration for users on Firefox on Android.
+    variables:
+      enabled:
+        description: If true, Google Lens integration is enabled.
+        type: Boolean
+        default: false
+    defaults:
+      - channel: developer
+        value:
+          enabled: true
+      - channel: nightly
+        value:
+          enabled: true
+
+  voice-search-in-display-mode:
+    description: Controls whether the voice search entry point is shown in the display-mode browser toolbar.
+    variables:
+      enabled:
+        description: If true, voice search is shown in the display toolbar.
+        type: Boolean
+        default: false
+    defaults:
+      - channel: developer
+        value:
+          enabled: true
+      - channel: nightly
+        value:
+          enabled: true
+
+
+  homepage-weather-widget:
+    description: Feature to enable Homepage Weather Widget for users on Firefox for Android.
+    variables:
+      enabled:
+        description: If true, Homepage Weather Widget is enabled.
+        type: Boolean
+        default: false
+
+  webcompat-reporter-enhancements:
+    description: Feature to enable WebCompat Reporter enhancements for users on Firefox Android.
+    variables:
+      enabled:
+        description: If true, WebCompat Reporter enhancements is enabled.
+        type: Boolean
+        default: false
+    defaults:
+      - channel: nightly
+        value:
+          enabled: true
+      - channel: developer
+        value:
+          enabled: true
+
+  longfox:
+    description: Flag to enable Longfox for users on Firefox Android.
+    variables:
+      enabled:
+        description: If true, users will see a CTA for launching Longfox on the home screen.
+        type: Boolean
+        default: false
+    defaults:
+      - channel: nightly
+        value:
+          enabled: false
+      - channel: developer
+        value:
+          enabled: true
+
+  uninstall-survey:
+    description: Feature that controls the visibility and handling of the uninstall survey app shortcut.
+    variables:
+      enabled:
+        description: If true, the uninstall survey shortcut is enabled and visible.
+        type: Boolean
+        default: false
+    defaults:
+      - channel: developer
+        value:
+          enabled: true
+
+  homepage-customization:
+    description: Feature to enable Homepage Customization for users on Firefox on Android.
+    variables:
+      enabled:
+        description: If true, Homepage Customization is enabled.
+        type: Boolean
+        default: false
+
+  homepage-trending-recent-search:
+    description: Feature to show trending and recent searches on the Homepage Search for users on Firefox on Android.
+    variables:
+      enabled:
+        description: If true, trending and recent searches are shown on the Homepage Search.
+        type: Boolean
+        default: true
+
+  collections-to-tab-groups-migration:
+    description: Feature to migrate Collections to Tab Groups for users on Firefox for Android.
+    variables:
+      hide-collections-ui:
+        description: If true, the Collections UI is hidden.
+        type: Boolean
+        default: false
+      enabled:
+        description: If true, run the one-time migration that converts existing Collections into Tab Groups.
+        type: Boolean
+        default: false
+
+  oled-theme:
+    description: Feature to provide the OLED theme option for users on Firefox for Android.
+    variables:
+      enabled:
+        description: If true, the OLED theme option is shown.
+        type: Boolean
+        default: false
+
+  pairing-signin-prompt:
+    description: >
+      Controls the Sync sign-in card shown during initial onboarding to users who installed Firefox
+      through a pairing link.
+    variables:
+      enabled:
+        description: Whether the Sync sign-in card can be shown during initial onboarding.
+        type: Boolean
+        default: false
+      campaign-utm-content:
+        description: The "utm_content" value used to identify installs from the pairing campaign.
+        type: String
+        default: ""
+
+  pdf-viewer:
+    description: Feature for the PDF viewer tools for users on Firefox for Android.
+    variables:
+      android-ui-tools:
+        description: If true, the Android PDF UI tools are shown.
+        type: Boolean
+        default: false
+
+  tab-reload-cover:
+    description: >
+      Shows a cached thumbnail cover over the engine view while a tab reloads from session
+      restore, hiding it once the page has repainted. Optionally refreshes the stored thumbnail
+      before backgrounding so the cover reflects the last visible scroll position.
+    variables:
+      enabled:
+        description: If true, the cached thumbnail cover is shown on tab reloads.
+        type: Boolean
+        default: false
+      scroll-aware-capture-enabled:
+        description: >
+          If true, the stored thumbnail is refreshed at the last visible scroll position when the
+          selected tab loses foreground focus. Only meaningful when `enabled` is true.
+        type: Boolean
+        default: false
+
+  account-sync-decouple-m1:
+    description: Control whether the new UI for Account Sync is shown.
+    variables:
+      enabled:
+        description: If true, the new UI for Account Sync is shown.
+        type: Boolean
+        default: false
+    defaults:
+      - channel: developer
+        value:
+          enabled: true
+
+  wayback-machine:
+    description: >
+      Feature that shows a "Check Archived Version" button on eligible error pages, linking to the
+      Wayback Machine.
+    variables:
+      enabled:
+        description: If true, the "Check Archived Version" button is shown on eligible error pages.
         type: Boolean
         default: false
 
@@ -940,16 +1361,10 @@ types:
     HomeScreenSection:
       description: The identifiers for the sections of the homescreen.
       variants:
-        header:
-          description: The header of the homescreen.
         top-sites:
           description: The frecency and pinned sites.
-        bookmarks:
-          description: The sites the user has bookmarked.
         jump-back-in:
           description: The tabs the user was looking immediately before being interrupted.
-        recent-explorations:
-          description: The tab groups
         pocket:
           description: The pocket section. This should only be available in the US.
         pocket-sponsored-stories:
@@ -958,38 +1373,8 @@ types:
           description: The synced tabs section of the homepage.
         collections:
           description: The collections section of the homepage.
-
-    MR2022Section:
-      description: The identifiers for the sections of the MR 2022.
-      variants:
-        wallpapers-selection-tool:
-          description: Wallpapers selection dialog tool for the home screen.
-        tcp-cfr:
-          description: CFR for the first time you use the browse with Total Cookie Protection on the browser screen.
-        tcp-feature:
-          description: Controls the Total Cookie Protection feature.
-    CookieBannersSection:
-      description: The identifiers for the sections of the MR 2022.
-      variants:
-        feature-ui:
-          description: An integer either 0 or 1 indicating if the UI for cookie banner handling should be visible,
-            0 to hide the UI and 1 to show the UI. The actual UI is composed by cookie banner section
-            in the settings page, the toolbar section and the re-engagement dialog.
-        feature-setting-value:
-          description: An integer either 0 or 1 indicating if cookie banner setting should be enabled or disabled,
-             0 for setting the value to disabled, 1  for enabling the setting with the value reject_all.
-        feature-setting-value-pbm:
-          description: An integer either 0 or 1 indicating if cookie banner setting should be enabled or disabled,
-            0 for setting the value to disabled, 1  for enabling the setting with the value reject_all.
-        feature-setting-detect-only:
-          description: An integer either 0 or 1 indicating if cookie banner detect only mode
-            should be enabled or disabled. 0 for setting to be disabled, and 1 for enabling the setting.
-        feature-setting-global-rules:
-          description: An integer either 0 or 1 indicating if cookie banner global rules
-            should be enabled or disabled. 0 for setting to be disabled, and 1 for enabling the setting.
-        feature-setting-global-rules-sub-frames:
-          description: An integer either 0 or 1 indicating if cookie banner global rules sub-frames
-            should be enabled or disabled. 0 for setting to be disabled, and 1 for enabling the setting.
+        privacy-report:
+          description: The privacy report section showing trackers blocked.
 
     QueryParameterStrippingSection:
       description: The identifiers for the options for the Query Parameter Stripping feature.
@@ -1031,3 +1416,37 @@ types:
           description: The collection for the setup checklist that has 3 items.
         collection-2:
           description: The collection for the setup checklist that has 6 items.
+
+    # Enum is aligned with other Firefox platforms for consistent experiment configuration.
+    TermsOfUsePromptContentOption:
+      description: |
+        Determines which predefined title and "learn more" strings are used for the Terms of Use prompt.
+      variants:
+        value-0:
+          description: |
+            Uses the current defaults:
+            - Title: "We've got an update"
+            - Learn more: "Please take a moment to review and accept. Learn more."
+        value-1:
+          description: |
+            Uses the following copy:
+            - Title: "Terms of Use"
+            - Learn more: "You can learn more here."
+        value-2:
+          description: |
+            Uses the following copy:
+            - Title: "A note from Firefox"
+            - Learn more: "You can learn more here."
+
+    OpeningScreenOption:
+      description: The types of different experiment branches for the opening screen.
+      variants:
+        homepage:
+          description:
+            Uses the homepage as the opening screen.
+        last-tab:
+          description:
+            Uses the last tab as the opening screen.
+        homepage-four-hours:
+          description:
+            Uses the homepage after four hours of inactivity as the opening screen.

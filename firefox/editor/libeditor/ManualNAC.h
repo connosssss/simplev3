@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +7,7 @@
 
 #include "mozilla/dom/Element.h"
 #include "mozilla/RefPtr.h"
+#include "nsContentUtils.h"
 
 namespace mozilla {
 
@@ -47,20 +47,20 @@ class ManualNACPtr final {
   // We use move semantics, and delete the copy-constructor and operator=.
   ManualNACPtr(ManualNACPtr&& aOther) : mPtr(std::move(aOther.mPtr)) {}
   ManualNACPtr(ManualNACPtr& aOther) = delete;
-  ManualNACPtr& operator=(ManualNACPtr&& aOther) {
+  MOZ_CAN_RUN_SCRIPT ManualNACPtr& operator=(ManualNACPtr&& aOther) {
+    Reset();
     mPtr = std::move(aOther.mPtr);
     return *this;
   }
   ManualNACPtr& operator=(ManualNACPtr& aOther) = delete;
 
-  ~ManualNACPtr() { Reset(); }
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY ~ManualNACPtr() { Reset(); }
 
-  void Reset() {
+  MOZ_CAN_RUN_SCRIPT void Reset() {
     if (!mPtr) {
       return;
     }
-
-    RefPtr<dom::Element> ptr = std::move(mPtr);
+    RefPtr ptr = std::move(mPtr);
     RemoveContentFromNACArray(ptr);
   }
 
@@ -73,8 +73,17 @@ class ManualNACPtr final {
     return nac && nac->Contains(aAnonContent);
   }
 
-  static void RemoveContentFromNACArray(nsIContent* aAnonymousContent) {
-    nsIContent* parentContent = aAnonymousContent->GetParent();
+  template <typename StrongNodePtr>
+  MOZ_CAN_RUN_SCRIPT static void RemoveContentFromNACArray(
+      StrongNodePtr& aAnonymousContent) {
+    static_assert(std::is_same_v<StrongNodePtr, RefPtr<dom::Element>> ||
+                  std::is_same_v<StrongNodePtr, nsCOMPtr<nsIContent>>);
+    // aAnonymousContent may be a class member. Let's move the ownership to
+    // the local strong pointer.
+    StrongNodePtr anonymousContent =
+        std::forward<StrongNodePtr>(aAnonymousContent);
+    MOZ_ASSERT(!aAnonymousContent);
+    nsIContent* parentContent = anonymousContent->GetParent();
     if (!parentContent) {
       NS_WARNING("Potentially leaking manual NAC");
       return;
@@ -86,13 +95,17 @@ class ManualNACPtr final {
     // Document::AdoptNode might remove all properties before destroying editor.
     // So we have to consider that NAC could be already removed.
     if (nac) {
-      nac->RemoveElement(aAnonymousContent);
+      nac->RemoveElement(anonymousContent);
       if (nac->IsEmpty()) {
         parentContent->RemoveProperty(nsGkAtoms::manualNACProperty);
       }
     }
 
-    aAnonymousContent->UnbindFromTree();
+    // If anonymousContent had a UA shadow, the call of UnbindFromTree() may
+    // have dispatched a chrome event. So, be careful if you want to refer
+    // something after the script blocker is destroyed.
+    const nsAutoScriptBlocker scriptBlocker;
+    anonymousContent->UnbindFromTree();
   }
 
   dom::Element* get() const { return mPtr.get(); }
@@ -105,7 +118,8 @@ class ManualNACPtr final {
 
 }  // namespace mozilla
 
-inline void ImplCycleCollectionUnlink(mozilla::ManualNACPtr& field) {
+inline void ImplCycleCollectionUnlink(mozilla::ManualNACPtr& field)
+    MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   field.Reset();
 }
 

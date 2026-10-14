@@ -1,18 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "jit/shared/Lowering-shared-inl.h"
+#include "jit/Lowering.h"
 
 #include "jit/LIR.h"
-#include "jit/Lowering.h"
 #include "jit/MIR-wasm.h"
 #include "jit/MIR.h"
 #include "jit/ScalarTypeUtils.h"
-
 #include "vm/SymbolType.h"
+
+#include "jit/shared/Lowering-shared-inl.h"
 
 using namespace js;
 using namespace jit;
@@ -144,16 +142,20 @@ bool LRecoverInfo::OperandIter::canOptimizeOutIfUnused() {
 }
 #endif
 
-LAllocation LIRGeneratorShared::useRegisterOrIndexConstant(
-    MDefinition* mir, Scalar::Type type, int32_t offsetAdjustment) {
+LAllocation LIRGeneratorShared::useRegisterOrIndexConstant(MDefinition* mir,
+                                                           Scalar::Type type,
+                                                           bool useAtStart) {
   if (CanUseInt32Constant(mir)) {
     MConstant* cst = mir->toConstant();
     int32_t val =
         cst->type() == MIRType::Int32 ? cst->toInt32() : cst->toIntPtr();
     int32_t offset;
-    if (ArrayOffsetFitsInInt32(val, type, offsetAdjustment, &offset)) {
+    if (ArrayOffsetFitsInInt32(val, type, &offset)) {
       return LAllocation(mir->toConstant());
     }
+  }
+  if (useAtStart) {
+    return useRegisterAtStart(mir);
   }
   return useRegister(mir);
 }

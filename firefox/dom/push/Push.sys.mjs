@@ -17,7 +17,7 @@ XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "PushService",
   "@mozilla.org/push/Service;1",
-  "nsIPushService"
+  Ci.nsIPushService
 );
 
 /**
@@ -93,7 +93,7 @@ export class Push {
       let permissionDenied = () => {
         reject(
           new this._window.DOMException(
-            "User denied permission to use the Push API.",
+            "Permission to create push subscription is denied.",
             "NotAllowedError"
           )
         );

@@ -32,8 +32,6 @@ server.registerPathHandler("/status", (request, response) => {
 // a new one.  We test in onResponseStarted that the header
 // is what we expect.
 add_task(async function test_replaceResponseHeaders() {
-  Services.prefs.setBoolPref("network.http.rcwn.enabled", false);
-
   let extension = ExtensionTestUtils.loadExtension({
     background() {
       function replaceHeader(headers, newHeader) {
@@ -126,8 +124,6 @@ add_task(async function test_replaceResponseHeaders() {
 // loads the cached entry and adds a second CSP header.  We also
 // test that the browser has the CSP entries we expect.
 add_task(async function test_addCSPHeaders() {
-  Services.prefs.setBoolPref("network.http.rcwn.enabled", false);
-
   let extension = ExtensionTestUtils.loadExtension({
     background() {
       let testHeaders = [
@@ -194,23 +190,31 @@ add_task(async function test_addCSPHeaders() {
 
   let url = `${BASE_URL}/data/file_sample.html?r=${Math.random()}`;
   let contentPage = await ExtensionTestUtils.loadContentPage(url);
-  equal(contentPage.browser.csp.policyCount, 1, "expected 1 policy");
   equal(
-    contentPage.browser.csp.getPolicy(0),
+    contentPage.browser.policyContainer.csp.policyCount,
+    1,
+    "expected 1 policy"
+  );
+  equal(
+    contentPage.browser.policyContainer.csp.getPolicy(0),
     "object-src 'none'; script-src 'none'",
     "expected policy"
   );
   await contentPage.close();
 
   contentPage = await ExtensionTestUtils.loadContentPage(url);
-  equal(contentPage.browser.csp.policyCount, 2, "expected 2 policies");
   equal(
-    contentPage.browser.csp.getPolicy(0),
+    contentPage.browser.policyContainer.csp.policyCount,
+    2,
+    "expected 2 policies"
+  );
+  equal(
+    contentPage.browser.policyContainer.csp.getPolicy(0),
     "object-src 'none'; script-src 'none'",
     "expected first policy"
   );
   equal(
-    contentPage.browser.csp.getPolicy(1),
+    contentPage.browser.policyContainer.csp.getPolicy(1),
     "object-src 'none'; script-src https:",
     "expected second policy"
   );
@@ -226,8 +230,6 @@ add_task(async function test_addCSPHeaders() {
 // then load against a url that will specifically return
 // a 304 status code.
 add_task(async function test_addContentTypeHeaders() {
-  Services.prefs.setBoolPref("network.http.rcwn.enabled", false);
-
   let extension = ExtensionTestUtils.loadExtension({
     background() {
       browser.webRequest.onBeforeSendHeaders.addListener(

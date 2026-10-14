@@ -6,122 +6,143 @@ package org.mozilla.fenix.ui
 
 import android.os.Build
 import android.os.Build.VERSION.SDK_INT
-import androidx.compose.ui.test.junit4.AndroidComposeTestRule
+import androidx.compose.ui.test.junit4.v2.AndroidComposeTestRule as AndroidComposeTestRuleV2
 import androidx.core.net.toUri
 import androidx.test.espresso.intent.rule.IntentsRule
 import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
+import org.mozilla.fenix.customannotations.Converted
+import org.mozilla.fenix.customannotations.Critical
+import org.mozilla.fenix.customannotations.SkipLeaks
 import org.mozilla.fenix.customannotations.SmokeTest
 import org.mozilla.fenix.helpers.AppAndSystemHelper.assertExternalAppOpens
+import org.mozilla.fenix.helpers.AppAndSystemHelper.assertNativeAppOpens
 import org.mozilla.fenix.helpers.AppAndSystemHelper.deleteDownloadedFileOnStorage
 import org.mozilla.fenix.helpers.AppAndSystemHelper.setNetworkEnabled
+import org.mozilla.fenix.helpers.Constants.PackageName.GMAIL_APP
 import org.mozilla.fenix.helpers.Constants.PackageName.GOOGLE_APPS_PHOTOS
 import org.mozilla.fenix.helpers.Constants.PackageName.GOOGLE_DOCS
+import org.mozilla.fenix.helpers.FenixTestRule
 import org.mozilla.fenix.helpers.HomeActivityTestRule
-import org.mozilla.fenix.helpers.MatcherHelper.itemWithResIdAndText
-import org.mozilla.fenix.helpers.MatcherHelper.itemWithText
-import org.mozilla.fenix.helpers.TestAssetHelper
-import org.mozilla.fenix.helpers.TestAssetHelper.waitingTimeLong
+import org.mozilla.fenix.helpers.TestAssetHelper.downloadPageAsset
+import org.mozilla.fenix.helpers.TestAssetHelper.loremIpsumAsset
+import org.mozilla.fenix.helpers.TestHelper.appName
 import org.mozilla.fenix.helpers.TestHelper.clickSnackbarButton
 import org.mozilla.fenix.helpers.TestHelper.mDevice
 import org.mozilla.fenix.helpers.TestHelper.verifySnackBarText
-import org.mozilla.fenix.helpers.TestSetup
 import org.mozilla.fenix.helpers.perf.DetectMemoryLeaksRule
 import org.mozilla.fenix.ui.robots.browserScreen
-import org.mozilla.fenix.ui.robots.clickPageObject
 import org.mozilla.fenix.ui.robots.downloadRobot
 import org.mozilla.fenix.ui.robots.homeScreen
 import org.mozilla.fenix.ui.robots.navigationToolbar
 import org.mozilla.fenix.ui.robots.notificationShade
 
 /**
- *  Tests for verifying basic functionality of download
+ * Tests for verifying basic functionality of download
  *
- *  - Initiates a download
- *  - Verifies download prompt
- *  - Verifies download notification and actions
- *  - Verifies managing downloads inside the Downloads listing.
- **/
-class DownloadTest : TestSetup() {
-    // Remote test page managed by Mozilla Mobile QA team at https://github.com/mozilla-mobile/testapp
-    private val downloadTestPage =
-        "https://storage.googleapis.com/mobile_test_assets/test_app/downloads.html"
+ * - Initiates a download
+ * - Verifies download prompt
+ * - Verifies download notification and actions
+ * - Verifies managing downloads inside the Downloads listing.
+ */
+class DownloadTest {
+    @get:Rule(order = 0) val fenixTestRule: FenixTestRule = FenixTestRule()
+
+    private val mockWebServer
+        get() = fenixTestRule.mockWebServer
+
+    // Remote test page used by large-file tests (3GB.zip); managed by Mozilla Mobile QA team
+    // at https://github.com/mozilla-mobile/testapp
+    private val downloadTestPage = "https://storage.googleapis.com/mobile_test_assets/test_app/downloads.html"
     private var downloadFile: String = ""
 
-    @get:Rule
-    val activityTestRule =
-        AndroidComposeTestRule(
-            HomeActivityTestRule.withDefaultSettingsOverrides(),
-        ) { it.activity }
+    @get:Rule(order = 1)
+    val composeTestRule = AndroidComposeTestRuleV2(HomeActivityTestRule.withDefaultSettingsOverrides()) { it.activity }
 
-    @get:Rule
-    val intentsTestRule = IntentsRule()
+    @get:Rule val intentsTestRule = IntentsRule()
 
-    @get:Rule
-    val memoryLeaksRule = DetectMemoryLeaksRule()
+    @get:Rule(order = 2) val memoryLeaksRule = DetectMemoryLeaksRule(composeTestRule = { composeTestRule })
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/243844
     @Test
     fun verifyTheDownloadPromptsTest() {
-        downloadRobot {
-            openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "web_icon.png")
-            verifyDownloadCompleteSnackbar(fileName = "web_icon.png")
-            clickSnackbarButton(composeTestRule = activityTestRule, "OPEN")
+        downloadRobot(composeTestRule) {
+            openPageAndDownloadFile(url = mockWebServer.downloadPageAsset.url, downloadFile = "png_image.png")
+            verifyDownloadCompleteSnackbar(fileName = "png_image.png")
+            clickSnackbarButton(composeTestRule = this@DownloadTest.composeTestRule, "OPEN")
             verifyPhotosAppOpens()
         }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2299405
-    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1964989")
+    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1987355")
     @Test
     fun verifyTheDownloadFailedNotificationsTest() {
-        downloadRobot {
-            openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "1GB.zip")
-            setNetworkEnabled(enabled = false)
-            verifyDownloadFailedSnackbar(fileName = "1GB.zip")
-            clickSnackbarButton(composeTestRule = activityTestRule, "DETAILS")
-            // A clickTryAgainButton() method should be called here, to tap the "Try Again button from Downloads menu.
-            // This is not implemented yet.
+        downloadRobot(composeTestRule) {
+                openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "1GB.zip")
+                setNetworkEnabled(enabled = false)
+                verifyDownloadFailedSnackbar(fileName = "1GB.zip")
+                clickSnackbarButton(composeTestRule, "DETAILS")
+            }
+            .openNotificationShade {
+                verifySystemNotificationExists("Download failed")
+            }
+            .closeNotificationTray(composeTestRule) {}
+        downloadRobot(composeTestRule) {
+            verifyDownloadFileFailedMessage("1GB.zip")
             setNetworkEnabled(enabled = true)
+            clickTryAgainDownloadMenuButton()
+            verifyPauseDownloadMenuButtonButton()
         }
-        mDevice.openNotification()
-        notificationShade {
-            verifySystemNotificationExists("Download failed")
-        }.closeNotificationTray {}
+        downloadRobot(composeTestRule) {}
+            .openNotificationShade {
+                expandNotificationMessage("1GB.zip")
+                clickDownloadNotificationControlButton("CANCEL")
+                verifySystemNotificationDoesNotExist("1GB.zip")
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2298616
+    @SkipLeaks(reasons = ["https://bugzilla.mozilla.org/show_bug.cgi?id=2006672"])
+    @Ignore("https://bugzilla.mozilla.org/show_bug.cgi?id=1999369")
     @Test
     fun verifyDownloadCompleteNotificationTest() {
-        downloadRobot {
-            openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "web_icon.png")
-            verifyDownloadCompleteSnackbar(fileName = "web_icon.png")
+        downloadRobot(composeTestRule) {
+            openPageAndDownloadFile(url = mockWebServer.downloadPageAsset.url, downloadFile = "png_image.png")
+            verifyDownloadCompleteSnackbar(fileName = "png_image.png")
             waitUntilDownloadSnackbarGone()
         }
         mDevice.openNotification()
         notificationShade {
-            verifySystemNotificationExists("Download completed")
-            clickNotification("Download completed")
-            assertExternalAppOpens(GOOGLE_APPS_PHOTOS)
-            mDevice.pressBack()
-            mDevice.openNotification()
-            verifySystemNotificationExists("Download completed")
-            swipeDownloadNotification(
-                direction = "Left",
-                shouldDismissNotification = true,
-                canExpandNotification = false,
-                notificationItem = "web_icon.png",
-            )
-            verifySystemNotificationDoesNotExist("Firefox Fenix")
-        }.closeNotificationTray {}
+                verifySystemNotificationExists("Download completed")
+                clickNotification("Download completed")
+                assertExternalAppOpens(GOOGLE_APPS_PHOTOS)
+                mDevice.pressBack()
+                mDevice.openNotification()
+                verifySystemNotificationExists("Download completed")
+                swipeDownloadNotification(
+                    composeTestRule,
+                    direction = "Left",
+                    shouldDismissNotification = true,
+                    canExpandNotification = false,
+                    notificationItem = "png_image.png",
+                )
+                verifySystemNotificationDoesNotExist(appName)
+            }
+            .closeNotificationTray(composeTestRule) {}
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/451563
+    @Converted(
+        replacedBy = ["org.mozilla.fenix.ui.efficiency.tests.DownloadTest#pauseResumeCancelDownloadTest"],
+        bug = 2063195,
+        since = "2026-08",
+    )
     @SmokeTest
     @Test
     fun pauseResumeCancelDownloadTest() {
-        downloadRobot {
+        downloadRobot(composeTestRule) {
             openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "3GB.zip")
             verifySnackBarText("Download in progress")
             waitUntilDownloadSnackbarGone()
@@ -136,301 +157,349 @@ class DownloadTest : TestSetup() {
             verifySystemNotificationDoesNotExist("3GB.zip")
             mDevice.pressBack()
         }
-        browserScreen {
-        }.openThreeDotMenu {
-        }.openDownloadsManager {
-            verifyEmptyDownloadsList(activityTestRule)
-        }
+        browserScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickDownloadsButton {
+                verifyEmptyDownloadsListAfterCancel()
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2301474
     @Test
     fun openDownloadedFileFromDownloadsMenuTest() {
-        downloadRobot {
-            openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "web_icon.png")
-            verifyDownloadCompleteSnackbar(fileName = "web_icon.png")
+        downloadRobot(composeTestRule) {
+            openPageAndDownloadFile(url = mockWebServer.downloadPageAsset.url, downloadFile = "png_image.png")
+            verifyDownloadCompleteSnackbar(fileName = "png_image.png")
         }
-        browserScreen {
-        }.openThreeDotMenu {
-        }.openDownloadsManager {
-            verifyDownloadedFileExistsInDownloadsList(activityTestRule, "web_icon.png")
-            clickDownloadedItem(activityTestRule, "web_icon.png")
-            verifyPhotosAppOpens()
-            mDevice.pressBack()
-        }
+        browserScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickDownloadsButton {
+                verifyDownloadedFileExistsInDownloadsList("png_image.png")
+                clickDownloadedItem("png_image.png")
+                verifyPhotosAppOpens()
+                mDevice.pressBack()
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1114970
+    @Converted(
+        replacedBy = ["org.mozilla.fenix.ui.efficiency.tests.DownloadTest#deleteDownloadedFileTest"],
+        bug = 2071272,
+        since = "2026-09",
+    )
+    @Critical
     @Test
+    @SkipLeaks(reasons = ["https://bugzilla.mozilla.org/show_bug.cgi?id=2004099"])
     fun deleteDownloadedFileTest() {
-        downloadRobot {
-            openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "smallZip.zip")
+        downloadRobot(composeTestRule) {
+            openPageAndDownloadFile(url = mockWebServer.downloadPageAsset.url, downloadFile = "zip_small.zip")
         }
-        browserScreen {
-        }.openThreeDotMenu {
-        }.openDownloadsManager {
-            verifyDownloadedFileExistsInDownloadsList(activityTestRule, "smallZip.zip")
-            clickDownloadItemMenuIcon(activityTestRule, "smallZip.zip")
-            deleteDownloadedItem(activityTestRule, "smallZip.zip")
-            clickSnackbarButton(activityTestRule, "UNDO")
-            verifyDownloadedFileExistsInDownloadsList(activityTestRule, "smallZip.zip")
-            clickDownloadItemMenuIcon(activityTestRule, "smallZip.zip")
-            deleteDownloadedItem(activityTestRule, "smallZip.zip")
-            verifyEmptyDownloadsList(activityTestRule)
-        }
+        browserScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickDownloadsButton {
+                verifyDownloadedFileExistsInDownloadsList("zip_small.zip")
+                clickDownloadItemMenuIcon("zip_small.zip")
+                deleteDownloadedItem("zip_small.zip")
+                confirmDeleteDownloadDialogIfDisplayed()
+                clickSnackbarButton(composeTestRule, "Undo")
+                verifyDownloadedFileExistsInDownloadsList("zip_small.zip")
+                clickDownloadItemMenuIcon("zip_small.zip")
+                deleteDownloadedItem("zip_small.zip")
+                confirmDeleteDownloadDialogIfDisplayed()
+                verifyEmptyDownloadsList()
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2302662
     @Test
     fun deleteMultipleDownloadedFilesTest() {
-        val firstDownloadedFile = "smallZip.zip"
-        val secondDownloadedFile = "textfile.txt"
+        val firstDownloadedFile = "zip_small.zip"
+        val secondDownloadedFile = "txt_file.txt"
 
-        downloadRobot {
-            openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = firstDownloadedFile)
+        downloadRobot(composeTestRule) {
+            openPageAndDownloadFile(url = mockWebServer.downloadPageAsset.url, downloadFile = firstDownloadedFile)
             verifyDownloadCompleteSnackbar(fileName = firstDownloadedFile)
         }
-        browserScreen {
-        }.clickDownloadLink(secondDownloadedFile) {
-        }.clickDownload {
-            verifyDownloadCompleteSnackbar(fileName = secondDownloadedFile)
-        }
-        browserScreen {
-        }.openThreeDotMenu {
-        }.openDownloadsManager {
-            verifyDownloadedFileExistsInDownloadsList(activityTestRule, firstDownloadedFile)
-            verifyDownloadedFileExistsInDownloadsList(activityTestRule, secondDownloadedFile)
-            longClickDownloadedItem(activityTestRule, firstDownloadedFile)
-            clickDownloadedItem(activityTestRule, secondDownloadedFile)
-            openMultiSelectMoreOptionsMenu(activityTestRule)
-            clickMultiSelectRemoveButton(activityTestRule)
-            clickMultiSelectDeleteDialogButton(activityTestRule)
-            clickSnackbarButton(activityTestRule, "UNDO")
-            verifyDownloadedFileExistsInDownloadsList(activityTestRule, firstDownloadedFile)
-            verifyDownloadedFileExistsInDownloadsList(activityTestRule, secondDownloadedFile)
-            longClickDownloadedItem(activityTestRule, firstDownloadedFile)
-            clickDownloadedItem(activityTestRule, secondDownloadedFile)
-            openMultiSelectMoreOptionsMenu(activityTestRule)
-            clickMultiSelectRemoveButton(activityTestRule)
-            clickMultiSelectDeleteDialogButton(activityTestRule)
-            verifyEmptyDownloadsList(activityTestRule)
-        }
+        browserScreen(composeTestRule) {}
+            .clickDownloadLink(secondDownloadedFile) {}
+            .clickDownload(composeTestRule) {
+                verifyDownloadCompleteSnackbar(fileName = secondDownloadedFile)
+            }
+        browserScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickDownloadsButton {
+                verifyDownloadedFileExistsInDownloadsList(firstDownloadedFile)
+                verifyDownloadedFileExistsInDownloadsList(secondDownloadedFile)
+                longClickDownloadedItem(firstDownloadedFile)
+                clickDownloadedItem(secondDownloadedFile)
+                openMultiSelectMoreOptionsMenu()
+                clickMultiSelectRemoveButton()
+                confirmDeleteDownloadDialogIfDisplayed()
+                clickSnackbarButton(composeTestRule, "Undo")
+                verifyDownloadedFileExistsInDownloadsList(firstDownloadedFile)
+                verifyDownloadedFileExistsInDownloadsList(secondDownloadedFile)
+                longClickDownloadedItem(firstDownloadedFile)
+                clickDownloadedItem(secondDownloadedFile)
+                openMultiSelectMoreOptionsMenu()
+                clickMultiSelectRemoveButton()
+                confirmDeleteDownloadDialogIfDisplayed()
+                verifyEmptyDownloadsList()
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2301537
     @Test
     fun fileDeletedFromStorageIsDeletedEverywhereTest() {
-        downloadRobot {
-            openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "smallZip.zip")
-            verifyDownloadCompleteSnackbar(fileName = "smallZip.zip")
+        downloadRobot(composeTestRule) {
+            openPageAndDownloadFile(url = mockWebServer.downloadPageAsset.url, downloadFile = "zip_small.zip")
+            verifyDownloadCompleteSnackbar(fileName = "zip_small.zip")
         }
-        browserScreen {
-        }.openThreeDotMenu {
-        }.openDownloadsManager {
-            verifyDownloadedFileExistsInDownloadsList(activityTestRule, "smallZip.zip")
-            deleteDownloadedFileOnStorage("smallZip.zip")
-        }.exitDownloadsManagerToBrowser(activityTestRule) {
-        }.openThreeDotMenu {
-        }.openDownloadsManager {
-            verifyEmptyDownloadsList(activityTestRule)
-        }.exitDownloadsManagerToBrowser(activityTestRule) {
-        }
+        browserScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickDownloadsButton {
+                verifyDownloadedFileExistsInDownloadsList("zip_small.zip")
+                deleteDownloadedFileOnStorage("zip_small.zip")
+            }
+            .exitDownloadsManagerToBrowser {}
+            .openThreeDotMenu {}
+            .clickDownloadsButton {
+                verifyEmptyDownloadsList()
+            }
+            .exitDownloadsManagerToBrowser {}
 
-        downloadRobot {
-            openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "smallZip.zip")
-            verifyDownloadCompleteSnackbar(fileName = "smallZip.zip")
+        downloadRobot(composeTestRule) {
+            openPageAndDownloadFile(url = mockWebServer.downloadPageAsset.url, downloadFile = "zip_small.zip")
+            verifyDownloadCompleteSnackbar(fileName = "zip_small.zip")
         }
-        browserScreen {
-        }.openThreeDotMenu {
-        }.openDownloadsManager {
-            verifyDownloadedFileExistsInDownloadsList(activityTestRule, "smallZip.zip")
-        }
+        browserScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickDownloadsButton {
+                verifyDownloadedFileExistsInDownloadsList("zip_small.zip")
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2466505
     @Test
     fun systemNotificationCantBeDismissedWhileInProgressTest() {
-        downloadRobot {
+        downloadRobot(composeTestRule) {
             openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "3GB.zip")
         }
-        browserScreen {
-        }.openNotificationShade {
-            swipeDownloadNotification(direction = "Left", shouldDismissNotification = false, notificationItem = "3GB.zip")
-            expandNotificationMessage("3GB.zip")
-            clickDownloadNotificationControlButton("PAUSE")
-            notificationShade {
-            }.closeNotificationTray {
+        browserScreen(composeTestRule) {}
+            .openNotificationShade {
+                swipeDownloadNotification(
+                    composeTestRule,
+                    direction = "Left",
+                    shouldDismissNotification = false,
+                    notificationItem = "3GB.zip",
+                )
+                expandNotificationMessage("3GB.zip")
+                clickDownloadNotificationControlButton("PAUSE")
+                notificationShade {}.closeNotificationTray(composeTestRule) {}
+                browserScreen(composeTestRule) {}
+                    .openNotificationShade {
+                        swipeDownloadNotification(
+                            composeTestRule,
+                            direction = "Right",
+                            shouldDismissNotification = true,
+                            notificationItem = "3GB.zip",
+                        )
+                        verifySystemNotificationDoesNotExist("3GB.zip")
+                    }
             }
-            browserScreen {
-            }.openNotificationShade {
-                swipeDownloadNotification(direction = "Right", shouldDismissNotification = true, notificationItem = "3GB.zip")
-                verifySystemNotificationDoesNotExist("3GB.zip")
-            }
-        }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2299297
-    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1964989")
+    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1987355")
     @Test
     fun notificationCanBeDismissedIfDownloadIsInterruptedTest() {
-        downloadRobot {
+        downloadRobot(composeTestRule) {
             openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "1GB.zip")
             setNetworkEnabled(enabled = false)
             verifyDownloadFailedSnackbar(fileName = "1GB.zip")
-
-        browserScreen {
-        }.openNotificationShade {
-            verifySystemNotificationExists("Download failed")
-            swipeDownloadNotification(
-                direction = "Left",
-                shouldDismissNotification = true,
-                canExpandNotification = true,
-                notificationItem = "1GB.zip",
-            )
-            verifySystemNotificationDoesNotExist("Firefox Fenix")
-        }.closeNotificationTray {}
-         waitUntilDownloadSnackbarGone()
         }
+        browserScreen(composeTestRule) {}
+            .openNotificationShade {
+                verifySystemNotificationExists("Download failed")
+                swipeDownloadNotification(
+                    composeTestRule,
+                    direction = "Left",
+                    shouldDismissNotification = true,
+                    canExpandNotification = true,
+                    notificationItem = "1GB.zip",
+                )
+                verifySystemNotificationDoesNotExist(appName)
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/1632384
     @Test
     fun warningWhenClosingPrivateTabsWhileDownloadingTest() {
-        homeScreen {
-        }.togglePrivateBrowsingMode()
-        downloadRobot {
+        homeScreen(composeTestRule) {}.togglePrivateBrowsingMode()
+        downloadRobot(composeTestRule) {
             openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "3GB.zip")
         }
-        browserScreen {
-        }.openTabDrawer(activityTestRule) {
-            closeTab()
-        }
-        browserScreen {
-            verifyCancelPrivateDownloadsPrompt("1")
-            clickStayInPrivateBrowsingPromptButton()
-        }.openNotificationShade {
-            if (SDK_INT == Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                // On API 34 we first need to expand the system notification before verifying that the app name is displayed
-                expandNotificationMessage("3GB.zip")
-                verifySystemNotificationExists("Firefox Fenix")
-            } else {
-                verifySystemNotificationExists("Firefox Fenix")
+        browserScreen(composeTestRule) {}
+            .openTabDrawer(composeTestRule) {
+                closeTab()
             }
-        }
+        browserScreen(composeTestRule) {
+                verifyCancelPrivateDownloadsPrompt("1")
+                clickStayInPrivateBrowsingPromptButton()
+            }
+            .openNotificationShade {
+                if (SDK_INT == Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    // On API 34 we first need to expand the system notification before verifying that the app name is
+                    // displayed
+                    expandNotificationMessage("3GB.zip")
+                    verifySystemNotificationExists(appName)
+                } else {
+                    verifySystemNotificationExists(appName)
+                }
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2302663
     @Test
     fun cancelActivePrivateBrowsingDownloadsTest() {
-        homeScreen {
-        }.togglePrivateBrowsingMode()
-        downloadRobot {
+        homeScreen(composeTestRule) {}.togglePrivateBrowsingMode()
+        downloadRobot(composeTestRule) {
             openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "3GB.zip")
         }
-        browserScreen {
-        }.openTabDrawer(activityTestRule) {
-            closeTab()
-        }
-        browserScreen {
-            verifyCancelPrivateDownloadsPrompt("1")
-            clickCancelPrivateDownloadsPromptButton()
-        }.openNotificationShade {
-            verifySystemNotificationDoesNotExist("Firefox Fenix")
-        }
+        browserScreen(composeTestRule) {}
+            .openTabDrawer(composeTestRule) {
+                closeTab()
+            }
+        browserScreen(composeTestRule) {
+                verifyCancelPrivateDownloadsPrompt("1")
+                clickCancelPrivateDownloadsPromptButton()
+            }
+            .openNotificationShade {
+                verifySystemNotificationDoesNotExist(appName)
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2048448
     // Save edited PDF file from the share overlay
+    @Converted(
+        replacedBy = ["org.mozilla.fenix.ui.efficiency.tests.DownloadTest#saveAsPdfFunctionalityTest"],
+        bug = 2060299,
+        since = "2026-08",
+        notes =
+            "Legacy verifyDownloadPrompt also asserted the prompt named the file and that Cancel " +
+                "was displayed; the share-sheet prompt is a different dialog from the main-menu route and " +
+                "needs its own selectors, so those two checks did not carry over.",
+    )
     @SmokeTest
     @Test
     fun saveAsPdfFunctionalityTest() {
-        val genericURL =
-            TestAssetHelper.getGenericAsset(mockWebServer, 3)
-        downloadFile = "pdfForm.pdf"
+        val genericURL = mockWebServer.loremIpsumAsset
+        downloadFile = "Lorem"
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(genericURL.url) {
-            clickPageObject(itemWithText("PDF form file"))
-            waitForPageToLoad()
-            clickPageObject(itemWithResIdAndText("android:id/button2", "CANCEL"))
-            fillPdfForm("Firefox")
-        }.openThreeDotMenu {
-        }.clickShareButton {
-        }.clickSaveAsPDF {
-           verifyDownloadPrompt(downloadFile)
-        }.clickDownload {
-            verifyDownloadCompleteSnackbar(fileName = downloadFile)
-            clickSnackbarButton(composeTestRule = activityTestRule, "OPEN")
-            assertExternalAppOpens(GOOGLE_DOCS)
-        }
+        navigationToolbar(composeTestRule) {}
+            .enterURLAndEnterToBrowser(genericURL.url) {}
+            .openThreeDotMenu {}
+            .clickShareButton {}
+            .clickSaveAsPDF(composeTestRule) {
+                verifyDownloadPrompt(composeTestRule)
+            }
+            .clickDownload(composeTestRule) {
+                verifyDownloadCompleteSnackbar(fileName = downloadFile)
+                clickSnackbarButton(composeTestRule = composeTestRule, "OPEN")
+                assertExternalAppOpens(GOOGLE_DOCS)
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/244125
-    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1964989")
+    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1983769")
     @Test
     fun restartDownloadFromAppNotificationAfterConnectionIsInterruptedTest() {
         downloadFile = "3GB.zip"
 
-        navigationToolbar {
-        }.enterURLAndEnterToBrowser(downloadTestPage.toUri()) {
-            waitForPageToLoad(pageLoadWaitingTime = waitingTimeLong)
-        }.clickDownloadLink(downloadFile) {
-            verifyDownloadPrompt(downloadFile)
+        downloadRobot(composeTestRule) {
+            openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "3GB.zip")
             setNetworkEnabled(false)
-        }.clickDownload {
             verifyDownloadFailedSnackbar(fileName = "3GB.zip")
             setNetworkEnabled(true)
-            clickSnackbarButton(composeTestRule = activityTestRule, "DETAILS") // Downloads menu opens
-            // A clickTryAgainButton() method should be called here, to tap the "Try Again button from Downloads menu.
-            // This is not implemented yet.
+            clickSnackbarButton(composeTestRule, "DETAILS")
+            verifyDownloadFileFailedMessage("3GB.zip")
+            setNetworkEnabled(enabled = true)
+            clickTryAgainDownloadMenuButton()
+            verifyPauseDownloadMenuButtonButton()
         }
-        browserScreen {
-        }.openNotificationShade {
-            expandNotificationMessage("3GB.zip")
-            clickDownloadNotificationControlButton("CANCEL")
-        // This test is not complete yet, as download was not resumed
-        }
+        downloadRobot(composeTestRule) {}
+            .openNotificationShade {
+                expandNotificationMessage("3GB.zip")
+                clickDownloadNotificationControlButton("CANCEL")
+                verifySystemNotificationDoesNotExist("3GB.zip")
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2981843
     @Test
     fun verifyTheDownloadFiltersTest() {
-        val firstDownloadedFile = "smallZip.zip"
-        val secondDownloadedFile = "web_icon.png"
+        val firstDownloadedFile = "zip_small.zip"
+        val secondDownloadedFile = "png_image.png"
 
-        downloadRobot {
-            openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = firstDownloadedFile)
+        downloadRobot(composeTestRule) {
+            openPageAndDownloadFile(url = mockWebServer.downloadPageAsset.url, downloadFile = firstDownloadedFile)
             verifyDownloadCompleteSnackbar(fileName = firstDownloadedFile)
         }
-        browserScreen {
-        }.clickDownloadLink(secondDownloadedFile) {
-        }.clickDownload {
-            verifyDownloadCompleteSnackbar(fileName = secondDownloadedFile)
-        }
-        browserScreen {
-        }.openThreeDotMenu {
-        }.openDownloadsManager {
-            clickDownloadsFilter("Images", composeTestRule = activityTestRule)
-            verifyDownloadedFileExistsInDownloadsList(activityTestRule, secondDownloadedFile)
-            verifyDownloadFileIsNotDisplayed(activityTestRule, firstDownloadedFile)
-        }
+        browserScreen(composeTestRule) {}
+            .clickDownloadLink(secondDownloadedFile) {}
+            .clickDownload(composeTestRule) {
+                verifyDownloadCompleteSnackbar(fileName = secondDownloadedFile)
+            }
+        browserScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickDownloadsButton {
+                clickDownloadsFilter("Images")
+                verifyDownloadedFileExistsInDownloadsList(secondDownloadedFile)
+                verifyDownloadFileIsNotDisplayed(firstDownloadedFile)
+            }
     }
 
     // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/2987000
     @Test
     fun shareDownloadedFileTest() {
-        downloadRobot {
-            openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "web_icon.png")
-            verifyDownloadCompleteSnackbar(fileName = "web_icon.png")
+        downloadRobot(composeTestRule) {
+            openPageAndDownloadFile(url = mockWebServer.downloadPageAsset.url, downloadFile = "png_image.png")
+            verifyDownloadCompleteSnackbar(fileName = "png_image.png")
         }
-        browserScreen {
-        }.openThreeDotMenu {
-        }.openDownloadsManager {
-            verifyDownloadedFileExistsInDownloadsList(activityTestRule, "web_icon.png")
-            clickDownloadItemMenuIcon(activityTestRule, "web_icon.png")
-        }.shareDownloadedItem(activityTestRule, "web_icon.png") {
-            verifyAndroidShareLayout()
-            verifySharingWithSelectedApp(appName = "Gmail", "", "")
+        browserScreen(composeTestRule) {}
+            .openThreeDotMenu {}
+            .clickDownloadsButton {
+                verifyDownloadedFileExistsInDownloadsList("png_image.png")
+                clickDownloadItemMenuIcon("png_image.png")
+            }
+            .shareDownloadedItem("png_image.png") {
+                expandAndroidShareLayout("Gmail")
+                clickSharingApp("Gmail", GMAIL_APP)
+                assertNativeAppOpens(composeTestRule, GMAIL_APP)
+            }
+    }
+
+    // TestRail link: https://mozilla.testrail.io/index.php?/cases/view/457111
+    @Ignore("Failing, see https://bugzilla.mozilla.org/show_bug.cgi?id=1983769")
+    @Test
+    fun downloadRestartAfterConnectionIsReestablishedTest() {
+        downloadFile = "3GB.zip"
+
+        downloadRobot(composeTestRule) {
+            openPageAndDownloadFile(url = downloadTestPage.toUri(), downloadFile = "3GB.zip")
+            downloadRobot(composeTestRule) {}
+                .openNotificationShade {
+                    expandNotificationMessage("3GB.zip")
+                    clickDownloadNotificationControlButton("PAUSE")
+                    setNetworkEnabled(false)
+                    verifySystemNotificationExists("Download paused")
+                    clickDownloadNotificationControlButton("RESUME")
+                    verifySystemNotificationExists("Download failed")
+                    setNetworkEnabled(enabled = true)
+                    clickDownloadNotificationControlButton("TRY AGAIN")
+                    expandNotificationMessage("3GB.zip")
+                    clickDownloadNotificationControlButton("CANCEL")
+                    verifySystemNotificationDoesNotExist("3GB.zip")
+                }
         }
     }
 }

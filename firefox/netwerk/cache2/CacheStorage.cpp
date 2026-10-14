@@ -2,14 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "CacheLog.h"
 #include "CacheStorage.h"
-#include "CacheStorageService.h"
+
 #include "CacheEntry.h"
+#include "CacheLog.h"
 #include "CacheObserver.h"
-
+#include "CacheStorageService.h"
 #include "nsICacheEntryDoomCallback.h"
-
 #include "nsIURI.h"
 #include "nsNetUtil.h"
 
@@ -28,6 +27,38 @@ NS_IMETHODIMP CacheStorage::AsyncOpenURI(nsIURI* aURI,
                                          const nsACString& aIdExtension,
                                          uint32_t aFlags,
                                          nsICacheEntryOpenCallback* aCallback) {
+  NS_ENSURE_ARG(aURI);
+
+  nsCOMPtr<nsIURI> noRefURI;
+  nsresult rv = NS_GetURIWithoutRef(aURI, getter_AddRefs(noRefURI));
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  return AsyncOpenInternal(noRefURI, aIdExtension, aFlags, aCallback);
+}
+
+NS_IMETHODIMP CacheStorage::AsyncOpenURIString(
+    const nsACString& aURI, const nsACString& aIdExtension, uint32_t aFlags,
+    nsICacheEntryOpenCallback* aCallback) {
+  // The only entry point that has to parse: the caller has nothing but a spec.
+  nsCOMPtr<nsIURI> uri;
+  nsresult rv = NS_NewURI(getter_AddRefs(uri), aURI);
+  if (NS_FAILED(rv)) {
+    NS_ENSURE_ARG(aCallback);
+    aCallback->OnCacheEntryAvailable(nullptr, false, rv);
+    return NS_OK;
+  }
+
+  nsCOMPtr<nsIURI> noRefURI;
+  rv = NS_GetURIWithoutRef(uri, getter_AddRefs(noRefURI));
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  return AsyncOpenInternal(noRefURI, aIdExtension, aFlags, aCallback);
+}
+
+nsresult CacheStorage::AsyncOpenInternal(nsIURI* aURI,
+                                         const nsACString& aIdExtension,
+                                         uint32_t aFlags,
+                                         nsICacheEntryOpenCallback* aCallback) {
   if (!CacheStorageService::Self()) return NS_ERROR_NOT_INITIALIZED;
 
   if (MOZ_UNLIKELY(!CacheObserver::UseDiskCache()) && mWriteToDisk &&
@@ -42,22 +73,11 @@ NS_IMETHODIMP CacheStorage::AsyncOpenURI(nsIURI* aURI,
     return NS_OK;
   }
 
-  NS_ENSURE_ARG(aURI);
   NS_ENSURE_ARG(aCallback);
 
-  nsresult rv;
-
-  nsCOMPtr<nsIURI> noRefURI;
-  rv = NS_GetURIWithoutRef(aURI, getter_AddRefs(noRefURI));
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsAutoCString asciiSpec;
-  rv = noRefURI->GetAsciiSpec(asciiSpec);
-  NS_ENSURE_SUCCESS(rv, rv);
-
   RefPtr<CacheEntryHandle> entry;
-  rv = CacheStorageService::Self()->AddStorageEntry(
-      this, asciiSpec, aIdExtension, aFlags, getter_AddRefs(entry));
+  nsresult rv = CacheStorageService::Self()->AddStorageEntry(
+      this, aURI, aIdExtension, aFlags, getter_AddRefs(entry));
   if (NS_FAILED(rv)) {
     aCallback->OnCacheEntryAvailable(nullptr, false, rv);
     return NS_OK;
@@ -80,13 +100,9 @@ NS_IMETHODIMP CacheStorage::OpenTruncate(nsIURI* aURI,
   rv = NS_GetURIWithoutRef(aURI, getter_AddRefs(noRefURI));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsAutoCString asciiSpec;
-  rv = noRefURI->GetAsciiSpec(asciiSpec);
-  NS_ENSURE_SUCCESS(rv, rv);
-
   RefPtr<CacheEntryHandle> handle;
   rv = CacheStorageService::Self()->AddStorageEntry(
-      this, asciiSpec, aIdExtension,
+      this, noRefURI, aIdExtension,
       nsICacheStorage::OPEN_TRUNCATE,  // replace any existing one
       getter_AddRefs(handle));
   NS_ENSURE_SUCCESS(rv, rv);
@@ -114,11 +130,7 @@ NS_IMETHODIMP CacheStorage::Exists(nsIURI* aURI, const nsACString& aIdExtension,
   rv = NS_GetURIWithoutRef(aURI, getter_AddRefs(noRefURI));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsAutoCString asciiSpec;
-  rv = noRefURI->GetAsciiSpec(asciiSpec);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  return CacheStorageService::Self()->CheckStorageEntry(this, asciiSpec,
+  return CacheStorageService::Self()->CheckStorageEntry(this, noRefURI,
                                                         aIdExtension, aResult);
 }
 
@@ -139,12 +151,8 @@ CacheStorage::GetCacheIndexEntryAttrs(nsIURI* aURI,
   rv = NS_GetURIWithoutRef(aURI, getter_AddRefs(noRefURI));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsAutoCString asciiSpec;
-  rv = noRefURI->GetAsciiSpec(asciiSpec);
-  NS_ENSURE_SUCCESS(rv, rv);
-
   return CacheStorageService::Self()->GetCacheIndexEntryAttrs(
-      this, asciiSpec, aIdExtension, aHasAltData, aSizeInKB);
+      this, noRefURI, aIdExtension, aHasAltData, aSizeInKB);
 }
 
 NS_IMETHODIMP CacheStorage::AsyncDoomURI(nsIURI* aURI,
@@ -158,11 +166,7 @@ NS_IMETHODIMP CacheStorage::AsyncDoomURI(nsIURI* aURI,
   rv = NS_GetURIWithoutRef(aURI, getter_AddRefs(noRefURI));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsAutoCString asciiSpec;
-  rv = noRefURI->GetAsciiSpec(asciiSpec);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  rv = CacheStorageService::Self()->DoomStorageEntry(this, asciiSpec,
+  rv = CacheStorageService::Self()->DoomStorageEntry(this, noRefURI,
                                                      aIdExtension, aCallback);
   NS_ENSURE_SUCCESS(rv, rv);
 

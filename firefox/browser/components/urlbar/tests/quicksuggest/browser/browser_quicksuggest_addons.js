@@ -94,33 +94,58 @@ add_task(async function basic() {
       window,
       value: "only match the Merino suggestion",
     });
-    Assert.equal(UrlbarTestUtils.getResultCount(window), 2);
 
+    Assert.equal(UrlbarTestUtils.getResultCount(window), 2);
     const { element, result } = await UrlbarTestUtils.getDetailsOfResultAt(
       window,
       1
     );
+    Assert.equal(result.suggestedIndex, 1);
+
     const row = element.row;
+    Assert.ok(!row.hasAttribute("sponsored"));
     const icon = row.querySelector(".urlbarView-favicon");
-    Assert.equal(icon.src, merinoSuggestion.icon);
-    const url = row.querySelector(".urlbarView-url");
-    const expectedUrl = makeExpectedUrl(merinoSuggestion.url);
-    const displayUrl = expectedUrl.replace(/^https:\/\//, "");
-    Assert.equal(url.textContent, displayUrl);
+    UrlbarTestUtils.checkImageUrl(
+      icon.src,
+      UrlbarTestUtils.makeMozRemoteImageUrl(merinoSuggestion.icon)
+    );
     const title = row.querySelector(".urlbarView-title");
     Assert.equal(title.textContent, merinoSuggestion.title);
-    const description = row.querySelector(".urlbarView-row-body-description");
-    Assert.equal(description.textContent, merinoSuggestion.description);
-    const bottom = row.querySelector(".urlbarView-row-body-bottom");
-    Assert.equal(bottom.textContent, "Recommended");
     Assert.ok(
       BrowserTestUtils.isVisible(
-        row.querySelector(".urlbarView-title-separator")
-      ),
-      "The title separator should be visible"
+        row.querySelector(".urlbarView-subtitle-separator")
+      )
     );
+    const subtitle = row.querySelector(".urlbarView-subtitle");
+    Assert.equal(subtitle.textContent, "Firefox extension");
 
-    Assert.equal(result.suggestedIndex, 1);
+    const description = row.querySelector(".urlbarView-row-body-description");
+    Assert.equal(description.textContent, merinoSuggestion.description);
+
+    const bottomLabel = row.querySelector(".urlbarView-bottom-label");
+    Assert.equal(bottomLabel.textContent, "Recommended");
+    const bottomSeparator = row.querySelector(".urlbarView-bottom-separator");
+    Assert.ok(BrowserTestUtils.isHidden(bottomSeparator));
+    const bottomUrl = row.querySelector(".urlbarView-url");
+    const expectedUrl = makeExpectedUrl(merinoSuggestion.url);
+    const displayUrl = expectedUrl.replace(/^https:\/\//, "");
+    Assert.equal(bottomUrl.textContent, displayUrl);
+    Assert.ok(BrowserTestUtils.isHidden(bottomUrl));
+
+    info("Simulate hover");
+    InspectorUtils.addPseudoClassLock(row, ":hover");
+    Assert.ok(BrowserTestUtils.isVisible(bottomSeparator));
+    Assert.ok(BrowserTestUtils.isVisible(bottomUrl));
+
+    InspectorUtils.removePseudoClassLock(row, ":hover");
+    Assert.ok(BrowserTestUtils.isHidden(bottomSeparator));
+    Assert.ok(BrowserTestUtils.isHidden(bottomUrl));
+
+    info("Simulate selection");
+    row.toggleAttribute("selected", true);
+    Assert.ok(BrowserTestUtils.isVisible(bottomSeparator));
+    Assert.ok(BrowserTestUtils.isVisible(bottomUrl));
+    row.toggleAttribute("selected", false);
 
     const onLoad = BrowserTestUtils.browserLoaded(
       gBrowser.selectedBrowser,
@@ -130,6 +155,13 @@ add_task(async function basic() {
     EventUtils.synthesizeMouseAtCenter(row, {});
     await onLoad;
     Assert.ok(true, "Expected page is loaded");
+
+    // The click leaves the pointer over the row's position. Rows shift as the
+    // suggestion changes, so a later iteration's row can land under it and be
+    // genuinely hovered, which shows the bottom url this test expects hidden.
+    EventUtils.synthesizeMouseAtCenter(gBrowser.selectedTab, {
+      type: "mousemove",
+    });
 
     await PlacesUtils.history.clear();
   }
@@ -154,7 +186,7 @@ add_task(async function resultMenu_showLessFrequently() {
   Assert.equal(UrlbarPrefs.get("addons.showLessFrequentlyCount"), 1);
 
   await doShowLessFrequently({
-    input: "aaa b",
+    input: "aaa bb",
     expected: {
       isSuggestionShown: true,
       isMenuItemShown: true,
@@ -166,7 +198,7 @@ add_task(async function resultMenu_showLessFrequently() {
   // the command has been removed from the menu before it closes.
   await doShowLessFrequently({
     keepViewOpen: true,
-    input: "aaa b",
+    input: "aaa bbb",
     expected: {
       isSuggestionShown: true,
       isMenuItemShown: true,
@@ -182,21 +214,18 @@ add_task(async function resultMenu_showLessFrequently() {
     openByMouse: true,
   });
   Assert.ok(!menuitem, "Menuitem should be absent before closing the view");
-  gURLBar.view.resultMenu.hidePopup(true);
+  gURLBar.view.resultMenu.removeAttribute("open");
   await UrlbarTestUtils.promisePopupClose(window);
 
   await doShowLessFrequently({
-    input: "aaa b",
+    input: "aaa bbb",
     expected: {
-      // The suggestion should not display since addons.showLessFrequentlyCount
-      // is 3 and the substring (" b") after the first word ("aaa") is 2 chars
-      // long.
       isSuggestionShown: false,
     },
   });
 
   await doShowLessFrequently({
-    input: "aaa bb",
+    input: "aaa bbbc",
     expected: {
       // The suggestion should display, but item should not shown since the
       // addons.showLessFrequentlyCount reached to addonsShowLessFrequentlyCap
@@ -215,9 +244,9 @@ add_task(async function resultMenu_notInterested() {
   await doDismissTest("not_interested", true);
 });
 
-// Tests the "Not relevant" result menu dismissal command.
-add_task(async function resultMenu_notRelevant() {
-  await doDismissTest("not_relevant", false);
+// Tests the "Dismiss" result menu dismissal command.
+add_task(async function resultMenu_dismiss() {
+  await doDismissTest("dismiss", false);
 });
 
 // Tests the "Manage" result menu.
@@ -235,7 +264,7 @@ add_task(async function rowLabel() {
 
   const { element } = await UrlbarTestUtils.getDetailsOfResultAt(window, 1);
   const row = element.row;
-  Assert.equal(row.getAttribute("label"), "Firefox extension");
+  Assert.ok(!row.hasAttribute("label"), "Row should not have a label");
 
   await UrlbarTestUtils.promisePopupClose(window);
 });
@@ -274,8 +303,8 @@ async function doShowLessFrequently({ input, expected, keepViewOpen = false }) {
       gURLBar.view.isOpen,
       "The view should remain open clicking the command"
     );
-    Assert.ok(
-      details.element.row.hasAttribute("feedback-acknowledgment"),
+    await TestUtils.waitForCondition(
+      () => details.element.row.hasAttribute("feedback-acknowledgment"),
       "Row should have feedback acknowledgment after clicking command"
     );
   } catch (e) {
@@ -312,23 +341,24 @@ async function doDismissTest(command, allDismissed) {
   let dismissalPromise = TestUtils.topicObserved(
     "quicksuggest-dismissals-changed"
   );
-  await UrlbarTestUtils.openResultMenuAndClickItem(
+  // The row is replaced by the acknowledgment tip via onQueryResultRemoved,
+  // which round-trips over the actor on the message path.
+  let removalPromise = UrlbarTestUtils.promiseControllerNotification(
     window,
-    ["[data-l10n-id=firefox-suggest-command-dont-show-this]", command],
-    { resultIndex: EXPECTED_RESULT_INDEX, openByMouse: true }
+    "onQueryResultRemoved"
   );
+  await UrlbarTestUtils.openResultMenuAndClickItem(window, [command], {
+    resultIndex: EXPECTED_RESULT_INDEX,
+    openByMouse: true,
+  });
   info("Awaiting dismissal promise");
   await dismissalPromise;
+  await removalPromise;
 
   Assert.equal(
     UrlbarPrefs.get("suggest.addons"),
     !allDismissed,
     "suggest.addons should be true iff all suggestions weren't dismissed"
-  );
-  Assert.equal(
-    await QuickSuggest.isResultDismissed(details.result),
-    !allDismissed,
-    "Result should be dismissed iff all suggestions weren't dismissed"
   );
 
   // The row should be a tip now.
@@ -344,7 +374,7 @@ async function doDismissTest(command, allDismissed) {
   );
   Assert.equal(
     details.type,
-    UrlbarUtils.RESULT_TYPE.TIP,
+    UrlbarShared.RESULT_TYPE.TIP,
     "Row should be a tip after dismissal"
   );
   Assert.equal(
@@ -361,7 +391,7 @@ async function doDismissTest(command, allDismissed) {
   let title = details.element.row.querySelector(".urlbarView-title");
   let titleL10nId = title.dataset.l10nId;
   if (allDismissed) {
-    Assert.equal(titleL10nId, "firefox-suggest-dismissal-acknowledgment-all");
+    Assert.equal(titleL10nId, "urlbar-result-dismissal-acknowledgment-all");
   } else {
     Assert.equal(titleL10nId, "firefox-suggest-dismissal-acknowledgment-one");
   }
@@ -373,6 +403,7 @@ async function doDismissTest(command, allDismissed) {
     EXPECTED_RESULT_INDEX
   );
   Assert.ok(gotItButton, "Row should have a 'Got it' button");
+
   EventUtils.synthesizeMouseAtCenter(gotItButton, {}, window);
 
   // The view should remain open and the tip row should be gone.
@@ -388,7 +419,7 @@ async function doDismissTest(command, allDismissed) {
   for (let i = 0; i < UrlbarTestUtils.getResultCount(window); i++) {
     details = await UrlbarTestUtils.getDetailsOfResultAt(window, i);
     Assert.ok(
-      details.type != UrlbarUtils.RESULT_TYPE.TIP &&
+      details.type != UrlbarShared.RESULT_TYPE.TIP &&
         !isAddonResult(details.result),
       "Tip result and addon result should not be present"
     );

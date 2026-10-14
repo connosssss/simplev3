@@ -1,4 +1,3 @@
-# vim: set ts=4 sw=4 tw=99 et:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -6,18 +5,32 @@
 import os
 import sys
 
-from ipdl.ast import CxxInclude, Decl, Loc, QualifiedId, StructDecl
-from ipdl.ast import UnionDecl, UsingStmt, Visitor, StringLiteral
-from ipdl.ast import ASYNC, SYNC
-from ipdl.ast import IN, OUT, INOUT
-from ipdl.ast import NOT_NESTED, INSIDE_SYNC_NESTED, INSIDE_CPOW_NESTED
-from ipdl.ast import priorityList
-import ipdl.builtin as builtin
-from ipdl.util import hash_str
-
 # Used to get the list of Gecko process types
 # xpcom/geckoprocesstypes_generator/geckoprocesstypes/__init__.py
 import geckoprocesstypes
+
+from ipdl import builtin
+from ipdl.ast import (
+    ASYNC,
+    IN,
+    INOUT,
+    INSIDE_CPOW_NESTED,
+    INSIDE_SYNC_NESTED,
+    NOT_NESTED,
+    OUT,
+    SYNC,
+    CxxInclude,
+    Decl,
+    Loc,
+    QualifiedId,
+    StringLiteral,
+    StructDecl,
+    UnionDecl,
+    UsingStmt,
+    Visitor,
+    priorityList,
+)
+from ipdl.util import hash_str
 
 _DELETE_MSG = "__delete__"
 
@@ -105,7 +118,7 @@ class TypeVisitor:
 
 class Type:
     def __cmp__(self, o):
-        return cmp(self.fullname(), o.fullname())
+        return (self.fullname() > o.fullname()) - (self.fullname() < o.fullname())
 
     def __eq__(self, o):
         return self.__class__ == o.__class__ and self.fullname() == o.fullname()
@@ -532,8 +545,7 @@ class StructType(_CompoundType):
         return True
 
     def itercomponents(self):
-        for f in self.fields:
-            yield f
+        yield from self.fields
 
     def name(self):
         return self.qname.baseid
@@ -552,8 +564,7 @@ class UnionType(_CompoundType):
         return True
 
     def itercomponents(self):
-        for c in self.components:
-            yield c
+        yield from self.components
 
     def name(self):
         return self.qname.baseid
@@ -997,6 +1008,13 @@ class GatherDecls(TcheckVisitor):
                 },
             )
 
+            if not p.name.startswith("P"):
+                self.error(
+                    p.loc,
+                    "invalid protocol name `%s': name must begin with `P'",
+                    p.name,
+                )
+
             # FIXME/cjones: it's a little weird and counterintuitive
             # to put both the namespace and non-namespaced name in the
             # global scope.  try to figure out something better; maybe
@@ -1156,14 +1174,14 @@ class GatherDecls(TcheckVisitor):
         self.checkAttributes(sd.attributes, {"Comparable": None})
 
         for f in sd.fields:
-            ftypedecl = self.symtab.lookup(str(f.typespec))
+            ftypedecl = self.symtab.lookup(f.typespec.basename())
             if ftypedecl is None:
                 self.error(
                     f.loc,
                     "field `%s' of struct `%s' has unknown type `%s'",
                     f.name,
                     sd.name,
-                    str(f.typespec),
+                    f.typespec.basename(),
                 )
                 continue
 
@@ -1187,10 +1205,13 @@ class GatherDecls(TcheckVisitor):
         self.checkAttributes(ud.attributes, {"Comparable": None})
 
         for c in ud.components:
-            cdecl = self.symtab.lookup(str(c))
+            cdecl = self.symtab.lookup(c.basename())
             if cdecl is None:
                 self.error(
-                    c.loc, "unknown component type `%s' of union `%s'", str(c), ud.name
+                    c.loc,
+                    "unknown component type `%s' of union `%s'",
+                    c.basename(),
+                    ud.name,
                 )
                 continue
             utype.components.append(self._canonicalType(cdecl.type, c))
@@ -1481,10 +1502,6 @@ class GatherDecls(TcheckVisitor):
         md.decl._md = md
 
     def _canonicalType(self, itype, typespec):
-        loc = typespec.loc
-        if typespec.uniqueptr:
-            itype = UniquePtrType(itype)
-
         if itype.isIPDL() and itype.isProtocol():
             itype = ActorType(itype)
 
@@ -1493,14 +1510,19 @@ class GatherDecls(TcheckVisitor):
                 itype = NotNullType(itype)
         elif typespec.nullable:
             self.error(
-                loc, "`nullable' qualifier for type `%s' is unsupported", itype.name()
+                typespec.loc,
+                "`nullable' qualifier for type `%s' is unsupported",
+                itype.name(),
             )
 
-        if typespec.array:
-            itype = ArrayType(itype)
-
-        if typespec.maybe:
-            itype = MaybeType(itype)
+        for modifier in typespec.modifiers:
+            if modifier == "uniqueptr":
+                itype = UniquePtrType(itype)
+            elif modifier == "array":
+                itype = ArrayType(itype)
+            else:
+                assert modifier == "maybe"
+                itype = MaybeType(itype)
 
         return itype
 

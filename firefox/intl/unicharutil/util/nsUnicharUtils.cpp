@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +6,11 @@
 #include "nsUnicodeProperties.h"
 #include "nsUTF8Utils.h"
 #include "mozilla/Likely.h"
-#include "mozilla/HashFunctions.h"
 #include "mozilla/intl/UnicodeProperties.h"
+#include "mozilla/Utf16.h"
 #include "mozilla/StaticPrefs_layout.h"
+
+using namespace mozilla;
 
 // We map x -> x, except for upper-case letters,
 // which we map to their lower-case equivalents.
@@ -35,7 +36,7 @@ static MOZ_ALWAYS_INLINE uint32_t ToLowerCase_inline(uint32_t aChar) {
     return gASCIIToLower[aChar];
   }
 
-  return mozilla::intl::UnicodeProperties::ToLower(aChar);
+  return intl::UnicodeProperties::ToLower(aChar);
 }
 
 static MOZ_ALWAYS_INLINE uint32_t
@@ -142,7 +143,7 @@ void ToUpperCase(const nsAString& aSource, nsAString& aDest) {
 
 uint32_t ToFoldedCase(uint32_t aChar) {
   if (IS_ASCII(aChar)) return gASCIIToLower[aChar];
-  return mozilla::unicode::GetFoldedcase(aChar);
+  return unicode::GetFoldedcase(aChar);
 }
 
 void ToFoldedCase(nsAString& aString) {
@@ -153,11 +154,11 @@ void ToFoldedCase(nsAString& aString) {
 void ToFoldedCase(const char16_t* aIn, char16_t* aOut, size_t aLen) {
   for (uint32_t i = 0; i < aLen; i++) {
     uint32_t ch = aIn[i];
-    if (i < aLen - 1 && NS_IS_SURROGATE_PAIR(ch, aIn[i + 1])) {
-      ch = mozilla::unicode::GetFoldedcase(SURROGATE_TO_UCS4(ch, aIn[i + 1]));
-      NS_ASSERTION(!IS_IN_BMP(ch), "case mapping crossed BMP/SMP boundary!");
-      aOut[i++] = H_SURROGATE(ch);
-      aOut[i] = L_SURROGATE(ch);
+    if (i < aLen - 1 && IsSurrogatePair(ch, aIn[i + 1])) {
+      ch = unicode::GetFoldedcase(SurrogateToUCS4(ch, aIn[i + 1]));
+      NS_ASSERTION(!IsInBMP(ch), "case mapping crossed BMP/SMP boundary!");
+      aOut[i++] = HighSurrogate(ch);
+      aOut[i] = LowSurrogate(ch);
       continue;
     }
     aOut[i] = ToFoldedCase(ch);
@@ -168,31 +169,30 @@ uint32_t ToNaked(uint32_t aChar) {
   if (IS_ASCII(aChar)) {
     return aChar;
   }
-  return mozilla::unicode::GetNaked(aChar);
+  return unicode::GetNaked(aChar);
 }
 
 void ToNaked(nsAString& aString) {
-  uint32_t i = 0;
-  while (i < aString.Length()) {
-    uint32_t ch = aString[i];
-    if (i < aString.Length() - 1 && NS_IS_SURROGATE_PAIR(ch, aString[i + 1])) {
-      ch = SURROGATE_TO_UCS4(ch, aString[i + 1]);
-      if (mozilla::unicode::IsCombiningDiacritic(ch)) {
-        aString.Cut(i, 2);
-      } else {
-        ch = mozilla::unicode::GetNaked(ch);
-        NS_ASSERTION(!IS_IN_BMP(ch), "stripping crossed BMP/SMP boundary!");
-        aString.Replace(i++, 1, H_SURROGATE(ch));
-        aString.Replace(i++, 1, L_SURROGATE(ch));
+  char16_t* const buf = aString.BeginWriting();
+  const uint32_t len = aString.Length();
+  uint32_t out = 0;
+  for (uint32_t pos = 0; pos < len; pos++) {
+    uint32_t ch = buf[pos];
+    if (pos < len - 1 && IsSurrogatePair(ch, buf[pos + 1])) {
+      ch = SurrogateToUCS4(ch, buf[++pos]);
+      if (!unicode::IsCombiningDiacritic(ch)) {
+        ch = unicode::GetNaked(ch);
+        NS_ASSERTION(!IsInBMP(ch), "stripping crossed BMP/SMP boundary!");
+        buf[out++] = HighSurrogate(ch);
+        buf[out++] = LowSurrogate(ch);
       }
       continue;
     }
-    if (mozilla::unicode::IsCombiningDiacritic(ch)) {
-      aString.Cut(i, 1);
-    } else {
-      aString.Replace(i++, 1, ToNaked(ch));
+    if (!unicode::IsCombiningDiacritic(ch)) {
+      buf[out++] = ToNaked(ch);
     }
   }
+  aString.SetLength(out);
 }
 
 int32_t nsCaseInsensitiveStringComparator(const char16_t* lhs,
@@ -243,12 +243,11 @@ uint32_t ToLowerCase(uint32_t aChar) { return ToLowerCase_inline(aChar); }
 void ToLowerCase(const char16_t* aIn, char16_t* aOut, size_t aLen) {
   for (size_t i = 0; i < aLen; i++) {
     uint32_t ch = aIn[i];
-    if (i < aLen - 1 && NS_IS_SURROGATE_PAIR(ch, aIn[i + 1])) {
-      ch = mozilla::intl::UnicodeProperties::ToLower(
-          SURROGATE_TO_UCS4(ch, aIn[i + 1]));
-      NS_ASSERTION(!IS_IN_BMP(ch), "case mapping crossed BMP/SMP boundary!");
-      aOut[i++] = H_SURROGATE(ch);
-      aOut[i] = L_SURROGATE(ch);
+    if (i < aLen - 1 && IsSurrogatePair(ch, aIn[i + 1])) {
+      ch = intl::UnicodeProperties::ToLower(SurrogateToUCS4(ch, aIn[i + 1]));
+      NS_ASSERTION(!IsInBMP(ch), "case mapping crossed BMP/SMP boundary!");
+      aOut[i++] = HighSurrogate(ch);
+      aOut[i] = LowSurrogate(ch);
       continue;
     }
     aOut[i] = ToLowerCase(ch);
@@ -270,18 +269,17 @@ uint32_t ToUpperCase(uint32_t aChar) {
     return aChar;
   }
 
-  return mozilla::intl::UnicodeProperties::ToUpper(aChar);
+  return intl::UnicodeProperties::ToUpper(aChar);
 }
 
 void ToUpperCase(const char16_t* aIn, char16_t* aOut, size_t aLen) {
   for (size_t i = 0; i < aLen; i++) {
     uint32_t ch = aIn[i];
-    if (i < aLen - 1 && NS_IS_SURROGATE_PAIR(ch, aIn[i + 1])) {
-      ch = mozilla::intl::UnicodeProperties::ToUpper(
-          SURROGATE_TO_UCS4(ch, aIn[i + 1]));
-      NS_ASSERTION(!IS_IN_BMP(ch), "case mapping crossed BMP/SMP boundary!");
-      aOut[i++] = H_SURROGATE(ch);
-      aOut[i] = L_SURROGATE(ch);
+    if (i < aLen - 1 && IsSurrogatePair(ch, aIn[i + 1])) {
+      ch = intl::UnicodeProperties::ToUpper(SurrogateToUCS4(ch, aIn[i + 1]));
+      NS_ASSERTION(!IsInBMP(ch), "case mapping crossed BMP/SMP boundary!");
+      aOut[i++] = HighSurrogate(ch);
+      aOut[i] = LowSurrogate(ch);
       continue;
     }
     aOut[i] = ToUpperCase(ch);
@@ -293,7 +291,7 @@ uint32_t ToTitleCase(uint32_t aChar) {
     return ToUpperCase(aChar);
   }
 
-  return mozilla::unicode::GetTitlecaseForLower(aChar);
+  return unicode::GetTitlecaseForLower(aChar);
 }
 
 int32_t CaseInsensitiveCompare(const char16_t* a, const char16_t* b,
@@ -313,10 +311,10 @@ int32_t CaseInsensitiveCompare(const char16_t* a, const char16_t* b,
       // in the case where it _is_ a surrogate, we're definitely going to get
       // a mismatch, and don't need to interpret and lowercase it
 
-      if (len > 1 && NS_IS_SURROGATE_PAIR(c1, *a)) {
-        c1 = SURROGATE_TO_UCS4(c1, *a++);
-        if (NS_IS_SURROGATE_PAIR(c2, *b)) {
-          c2 = SURROGATE_TO_UCS4(c2, *b++);
+      if (len > 1 && IsSurrogatePair(c1, *a)) {
+        c1 = SurrogateToUCS4(c1, *a++);
+        if (IsSurrogatePair(c2, *b)) {
+          c2 = SurrogateToUCS4(c2, *b++);
         }
         // If c2 wasn't a surrogate, decrementing len means we'd stop
         // short of the end of string b, but that doesn't actually matter
@@ -364,7 +362,7 @@ static MOZ_ALWAYS_INLINE uint32_t GetLowerUTF8Codepoint_inline(
 
     // we don't go through ToLowerCase here, because we know this isn't
     // an ASCII character so the ASCII fast-path there is useless
-    c = mozilla::intl::UnicodeProperties::ToLower(c);
+    c = intl::UnicodeProperties::ToLower(c);
 
     *aNext = aStr + 2;
     return c;
@@ -379,7 +377,7 @@ static MOZ_ALWAYS_INLINE uint32_t GetLowerUTF8Codepoint_inline(
     c += (str[1] & 0x3F) << 6;
     c += (str[2] & 0x3F);
 
-    c = mozilla::intl::UnicodeProperties::ToLower(c);
+    c = intl::UnicodeProperties::ToLower(c);
 
     *aNext = aStr + 3;
     return c;
@@ -394,7 +392,7 @@ static MOZ_ALWAYS_INLINE uint32_t GetLowerUTF8Codepoint_inline(
     c += (str[2] & 0x3F) << 6;
     c += (str[3] & 0x3F);
 
-    c = mozilla::intl::UnicodeProperties::ToLower(c);
+    c = intl::UnicodeProperties::ToLower(c);
 
     *aNext = aStr + 4;
     return c;
@@ -446,7 +444,7 @@ GetLowerUTF8Codepoint_inline(const char* aStr, const char* aEnd,
     if (aMatchDiacritics) {
       break;
     }
-    if (!mozilla::unicode::IsCombiningDiacritic(c)) {
+    if (!unicode::IsCombiningDiacritic(c)) {
       break;
     }
     aStr = *aNext;
@@ -492,29 +490,6 @@ bool CaseInsensitiveUTF8CharsEqual(const char* aLeft, const char* aRight,
 
 namespace mozilla {
 
-uint32_t HashUTF8AsUTF16(const char* aUTF8, size_t aLength, bool* aErr) {
-  uint32_t hash = 0;
-  const char* s = aUTF8;
-  const char* end = aUTF8 + aLength;
-
-  *aErr = false;
-
-  while (s < end) {
-    uint32_t ucs4 = UTF8CharEnumerator::NextChar(&s, end, aErr);
-    if (*aErr) {
-      return 0;
-    }
-
-    if (ucs4 < PLANE1_BASE) {
-      hash = AddToHash(hash, ucs4);
-    } else {
-      hash = AddToHash(hash, H_SURROGATE(ucs4), L_SURROGATE(ucs4));
-    }
-  }
-
-  return hash;
-}
-
 // The Korean Won currency sign has East Asian Width = HALFWIDTH, and
 // Script = COMMON (rather than HANGUL), but we don't want to treat it like
 // Chinese/Japanese half-width characters for segment break transformation,
@@ -533,10 +508,18 @@ bool IsEastAsianPunctuation(uint32_t u) {
   // Punctuation). So we treat FULLWIDTH TILDE as punctuation here to give the
   // two characters consistent behavior.
   constexpr uint32_t kFullwidthTilde = 0xFF5E;
+  // U+3000 IDEOGRAPHIC SPACE has General Category = Zs (not Punctuation),
+  // but it conflicts with a JLReq rule that space added after
+  // question or exclamation mark is stipulated to be full-width if line is
+  // broken after full-width space following such a punctuation mark but
+  // line break is replaced by a space. So we treat IDEOGRAPHIC SPACE as
+  // punctuation here to allow line breaks after it while maintaining
+  // compatibility with JLReq.
+  constexpr uint32_t kIdeographicSpace = 0x3000;
   return intl::UnicodeProperties::IsEastAsianWidthFHW(u) &&
          ((intl::UnicodeProperties::IsPunctuation(u) &&
            u != kWonCurrencySign) ||
-          u == kFullwidthTilde);
+          u == kFullwidthTilde || u == kIdeographicSpace);
 }
 
 bool IsPunctuationForWordSelect(char16_t aCh) {

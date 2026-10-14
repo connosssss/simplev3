@@ -32,16 +32,18 @@ class BrowsertimeAndroid(PerftestAndroid, Browsertime):
     file ourselves. Also note when using playback, the nss certificate db is created as usual when
     mitmproxy is started (and saved in the profile) so it is already included in the profile that
     browsertime/geckodriver copies onto the device.
-    XXX: bc: This doesn't work with scoped storage in Android 10 since the shell owns the profile
-    directory that is pushed to the device and the profile can no longer be on the sdcard. But when
-    geckodriver's android.rs defines the profile to be located on internal storage, it will be
-    owned by shell but if we are attempting to eliminate root, then when we run shell commands
-    as the app, they will fail due to the app being unable to write to the shell owned profile
-    directory.
+
+    Storage selection (geckodriver --android-storage):
+      - "app"    : profile lives in /data/data/<pkg>/test_root and geckodriver uses run-as
+                   to push it. Requires either a rooted device or a debuggable app.
+      - "sdcard" : profile lives in $EXTERNAL_STORAGE/Android/data/<pkg>/files/test_root.
+                   The app reads it without run-as; works on stock production phones with
+                   non-debuggable APKs. Used as the fallback when the app is not debuggable
+                   and the device is not rooted.
     """
 
     def __init__(self, app, binary, activity=None, intent=None, **kwargs):
-        super(BrowsertimeAndroid, self).__init__(
+        super().__init__(
             app,
             binary,
             **kwargs,
@@ -49,12 +51,21 @@ class BrowsertimeAndroid(PerftestAndroid, Browsertime):
 
         self.config.update({"activity": activity, "intent": intent})
         self.remote_profile = None
+        self.android_storage_mode = None
 
     def _initialize_device(self):
         if self.device is None:
             self.device = ADBDeviceFactory(verbose=True)
-            if not self.config.get("disable_perf_tuning", False):
-                tune_performance(self.device, log=LOG)
+            if self.config.get("disable_perf_tuning", False):
+                return
+            if not self.device.is_rooted:
+                LOG.info("Device is not rooted, skipping perf tuning ")
+                return
+            tune_performance(
+                self.device,
+                log=LOG,
+                test_names=self._test_names,
+            )
 
     @property
     def android_external_storage(self):
@@ -62,21 +73,39 @@ class BrowsertimeAndroid(PerftestAndroid, Browsertime):
             self._initialize_device()
 
             external_storage = self.device.shell_output("echo $EXTERNAL_STORAGE")
-            if int(self.device.shell_output("getprop ro.build.version.release")) == 14:
-                # Bug 1910111:
-                # The default external storage path doesn't seem to have the necessary
-                # permissions on the A55/Android 14 when pushing the condprof files.
-                # Instead we can make use of /sdcard/Download.
-                self._remote_test_root = os.path.join(external_storage, "Download")
+            per_app_dir = os.path.join(
+                external_storage,
+                "Android",
+                "data",
+                self.config["binary"],
+                "files",
+                "test_root",
+            )
+            download_dir = os.path.join(external_storage, "Download")
+
+            # Rooted: prefer the per-app dir (probe + Bug 1910111 fallback).
+            # Non-rooted: always /sdcard/Download — Android 11+ FUSE blocks
+            # adb pull of app-written files inside the per-app dir even with
+            # `appops MANAGE_EXTERNAL_STORAGE` granted to shell on some OEM
+            # images. Condprof grants the app MANAGE_EXTERNAL_STORAGE so it
+            # can write to /sdcard/Download with raw paths.
+            if self.device.is_rooted:
+                try:
+                    self.device.mkdir(per_app_dir, parents=True)
+                    self._remote_test_root = per_app_dir
+                except Exception as e:
+                    LOG.info(
+                        f"Per-app external storage {per_app_dir} is not writable "
+                        f"({e}); falling back to {download_dir}."
+                    )
+                    self._remote_test_root = download_dir
             else:
-                self._remote_test_root = os.path.join(
-                    external_storage,
-                    "Android",
-                    "data",
-                    self.config["binary"],
-                    "files",
-                    "test_root",
+                LOG.info(
+                    f"Device is not rooted; using {download_dir} as the remote "
+                    "test root (per-app dir is unreliable for adb pull-back "
+                    "under scoped storage)."
                 )
+                self._remote_test_root = download_dir
 
         return self._remote_test_root
 
@@ -96,12 +125,10 @@ class BrowsertimeAndroid(PerftestAndroid, Browsertime):
         ]
 
         if self.config["app"] in CHROME_ANDROID_APPS:
-            args_list.extend(
-                [
-                    "--browser",
-                    "chrome",
-                ]
-            )
+            args_list.extend([
+                "--browser",
+                "chrome",
+            ])
             if self.config["app"] == "cstm-car-m":
                 args_list.extend(["--chrome.android.package", "org.chromium.chrome"])
         else:
@@ -113,27 +140,26 @@ class BrowsertimeAndroid(PerftestAndroid, Browsertime):
                 )
                 activity = "mozilla.telemetry.glean.debug.GleanDebugActivity"
 
-            # all hardware we test on is android 11+
-            args_list.extend(
-                [
-                    '--firefox.geckodriverArgs="--android-storage"',
-                    '--firefox.geckodriverArgs="app"',
-                ]
-            )
+            # Storage mode is set by setup_adb_device() based on root + debuggable
+            # Default to "app" for back-compat with paths that skip setup.
+            storage_mode = self.android_storage_mode or "app"
+            args_list.extend([
+                '--firefox.geckodriverArgs="--android-storage"',
+                f'--firefox.geckodriverArgs="{storage_mode}"',
+            ])
 
-            args_list.extend(
-                [
-                    "--browser",
-                    "firefox",
-                    "--firefox.android.package",
-                    self.config["binary"],
-                    "--firefox.android.activity",
-                    activity,
-                ]
-            )
+            args_list.extend([
+                "--browser",
+                "firefox",
+                "--firefox.android.package",
+                self.config["binary"],
+                "--firefox.android.activity",
+                activity,
+            ])
 
         if self.config["app"] == "geckoview":
-            # This is needed as geckoview is crashing on shutdown and is throwing marionette errors similar to 1768889
+            # This is needed as geckoview is crashing on shutdown and is throwing
+            # marionette errors similar to 1768889
             args_list.extend(["--ignoreShutdownFailures", "true"])
 
         if self.config["app"] == "fenix":
@@ -144,24 +170,23 @@ class BrowsertimeAndroid(PerftestAndroid, Browsertime):
             # special non-default one there
             if self.config.get("intent") is not None:
                 args_list.extend(["--firefox.android.intentArgument=-a"])
-                args_list.extend(
-                    ["--firefox.android.intentArgument", self.config["intent"]]
-                )
+                args_list.extend([
+                    "--firefox.android.intentArgument",
+                    self.config["intent"],
+                ])
 
                 # Change glean ping names in all cases on Fenix
-                args_list.extend(
-                    [
-                        "--firefox.android.intentArgument=--es",
-                        "--firefox.android.intentArgument=startNext",
-                        "--firefox.android.intentArgument=" + self.config["activity"],
-                        "--firefox.android.intentArgument=--esa",
-                        "--firefox.android.intentArgument=sourceTags",
-                        "--firefox.android.intentArgument=automation",
-                        "--firefox.android.intentArgument=--ez",
-                        "--firefox.android.intentArgument=performancetest",
-                        "--firefox.android.intentArgument=true",
-                    ]
-                )
+                args_list.extend([
+                    "--firefox.android.intentArgument=--es",
+                    "--firefox.android.intentArgument=startNext",
+                    "--firefox.android.intentArgument=" + self.config["activity"],
+                    "--firefox.android.intentArgument=--esa",
+                    "--firefox.android.intentArgument=sourceTags",
+                    "--firefox.android.intentArgument=automation",
+                    "--firefox.android.intentArgument=--ez",
+                    "--firefox.android.intentArgument=performancetest",
+                    "--firefox.android.intentArgument=true",
+                ])
 
                 args_list.extend(["--firefox.android.intentArgument=-d"])
                 args_list.extend(["--firefox.android.intentArgument", "about:blank"])
@@ -181,16 +206,7 @@ class BrowsertimeAndroid(PerftestAndroid, Browsertime):
         chrome_args += ["--enable-benchmarking"]
 
         if test.get("playback", False):
-            pb_args = [
-                "--proxy-server=%s:%d" % (self.playback.host, self.playback.port),
-                "--proxy-bypass-list=localhost;127.0.0.1",
-                "--ignore-certificate-errors",
-            ]
-
-            if not self.is_localhost:
-                pb_args[0] = pb_args[0].replace("127.0.0.1", self.config["host"])
-
-            chrome_args.extend(pb_args)
+            chrome_args.extend(self.playback_chrome_args())
 
         if self.debug_mode:
             chrome_args.extend(["--auto-open-devtools-for-tabs"])
@@ -202,7 +218,7 @@ class BrowsertimeAndroid(PerftestAndroid, Browsertime):
         return args_list
 
     def build_browser_profile(self):
-        super(BrowsertimeAndroid, self).build_browser_profile()
+        super().build_browser_profile()
 
         if self.config["app"] in FIREFOX_ANDROID_APPS:
             # Merge in the Android profile.
@@ -218,40 +234,67 @@ class BrowsertimeAndroid(PerftestAndroid, Browsertime):
     def setup_adb_device(self):
         self._initialize_device()
 
+        rooted = self.device.is_rooted
+
         self.clear_app_data()
         self.set_debug_app_flag()
-        self.device.run_as_package = self.config["binary"]
+
+        # Decide the storage mode for geckodriver. run-as only works on debuggable
+        # apps. Use it when available, otherwise route everything through external
+        # storage so the test works on non-rooted phones with production APKs.
+        package = self.config["binary"]
+        debuggable = False
+        if not rooted and self.config["app"] in FIREFOX_ANDROID_APPS:
+            debuggable = self.device.is_package_debuggable(package)
+
+        if rooted or debuggable:
+            self.android_storage_mode = "app"
+            self.device.run_as_package = package
+        else:
+            self.android_storage_mode = "sdcard"
+            LOG.info(
+                f"Device is not rooted and {package} is not debuggable; using "
+                "--android-storage sdcard for the geckodriver profile."
+            )
 
         self.geckodriver_profile = os.path.join(
             self.android_external_storage,
-            "%s-geckodriver-profile" % self.config["binary"],
+            f"{self.config['binary']}-geckodriver-profile",
         )
 
-        # make sure no remote profile exists
+        # Best-effort cleanup, can fail if storage/shell permissions aren't setup properly
         if self.device.exists(self.geckodriver_profile):
-            self.device.rm(self.geckodriver_profile, force=True, recursive=True)
+            try:
+                self.device.rm(self.geckodriver_profile, force=True, recursive=True)
+            except Exception as e:
+                LOG.info(
+                    f"Could not remove stale geckodriver profile "
+                    f"{self.geckodriver_profile}: {e}. "
+                    "Continuing; geckodriver will overwrite it."
+                )
 
     def run_test_setup(self, test):
-        super(BrowsertimeAndroid, self).run_test_setup(test)
+        super().run_test_setup(test)
 
         self.set_reverse_ports()
 
         if self.config["app"] in FIREFOX_ANDROID_APPS:
-            if self.playback:
+            if self.playback and self.playback.playback_mode != "direct":
                 self.turn_on_android_app_proxy()
             self.remove_mozprofile_delimiters_from_profile()
 
     def run_tests(self, tests, test_names):
+        self._test_names = test_names
         self.setup_adb_device()
 
         if self.config["app"] in CHROME_ANDROID_APPS:
             # Make sure that chrome is enabled on the device
             self.device.shell_output("pm enable com.android.chrome")
 
-        return super(BrowsertimeAndroid, self).run_tests(tests, test_names)
+        return super().run_tests(tests, test_names)
 
     def run_test_teardown(self, test):
         LOG.info("removing reverse socket connections")
         self.device.remove_socket_connections("reverse")
 
-        super(BrowsertimeAndroid, self).run_test_teardown(test)
+        super().run_test_teardown(test)

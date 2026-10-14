@@ -10,7 +10,8 @@
     android:layout_height="match_parent"
     android:background="?scrim"
     android:fitsSystemWindows="true"
-    tools:context="org.mozilla.fenix.shortcut.CreateShortcutFragment">
+    tools:context="org.mozilla.fenix.shortcut.CreateShortcutFragment"
+    tools:ignore="Overdraw">
 
     <androidx.constraintlayout.widget.ConstraintLayout
         android:layout_width="match_parent"
@@ -54,7 +55,7 @@
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
             android:layout_marginEnd="32dp"
-            android:backgroundTint="?borderPrimary"
+            android:backgroundTint="?attr/colorOutlineVariant"
             android:hint="@string/add_to_homescreen_text_placeholder"
             android:importantForAutofill="no"
             android:inputType="text"

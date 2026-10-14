@@ -4,6 +4,12 @@
 
 package mozilla.components.browser.state.engine.middleware
 
+import kotlin.test.assertNotNull
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
 import mozilla.components.browser.state.action.EngineAction
 import mozilla.components.browser.state.action.TabListAction
 import mozilla.components.browser.state.selector.findTab
@@ -11,42 +17,37 @@ import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.state.createTab
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.engine.EngineSession
+import mozilla.components.concept.engine.utils.ABOUT_HOME_URL
 import mozilla.components.support.test.any
-import mozilla.components.support.test.ext.joinBlocking
-import mozilla.components.support.test.libstate.ext.waitUntilIdle
 import mozilla.components.support.test.mock
-import mozilla.components.support.test.rule.MainCoroutineRule
-import mozilla.components.support.test.rule.runTestOnMain
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Rule
 import org.junit.Test
 import org.mockito.ArgumentMatchers.anyBoolean
 import org.mockito.Mockito.anyString
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class LinkingMiddlewareTest {
-    @get:Rule
-    val coroutinesTestRule = MainCoroutineRule()
-    private val dispatcher = coroutinesTestRule.testDispatcher
-    private val scope = coroutinesTestRule.scope
+    private val testDispatcher = StandardTestDispatcher()
+    private val scope = CoroutineScope(testDispatcher)
 
     @Test
     fun `loads URL after linking`() {
         val middleware = LinkingMiddleware(scope)
 
         val tab = createTab("https://www.mozilla.org", id = "1")
-        val store = BrowserStore(
-            initialState = BrowserState(tabs = listOf(tab)),
-            middleware = listOf(middleware),
-        )
+        val store =
+            BrowserStore(
+                initialState = BrowserState(tabs = listOf(tab)),
+                middleware = listOf(middleware),
+            )
 
         val engineSession: EngineSession = mock()
-        store.dispatch(EngineAction.LinkEngineSessionAction(tab.id, engineSession)).joinBlocking()
+        store.dispatch(EngineAction.LinkEngineSessionAction(tab.id, engineSession))
 
-        dispatcher.scheduler.advanceUntilIdle()
+        testDispatcher.scheduler.advanceUntilIdle()
 
         verify(engineSession).loadUrl(tab.content.url)
     }
@@ -57,29 +58,81 @@ class LinkingMiddlewareTest {
 
         val loadFlags = EngineSession.LoadUrlFlags.external()
         val additionalHeaders = mapOf("X-Extra-Header" to "true")
-        val tab = createTab(
-            url = "https://www.mozilla.org",
-            id = "1",
-            initialLoadFlags = loadFlags,
-            initialAdditionalHeaders = additionalHeaders,
-            initialTextDirectiveUserActivation = true,
-        )
-        val store = BrowserStore(
-            initialState = BrowserState(tabs = listOf(tab)),
-            middleware = listOf(middleware),
-        )
+        val tab =
+            createTab(
+                url = "https://www.mozilla.org",
+                id = "1",
+                initialLoadFlags = loadFlags,
+                initialAdditionalHeaders = additionalHeaders,
+                initialTextDirectiveUserActivation = true,
+            )
+        val store =
+            BrowserStore(
+                initialState = BrowserState(tabs = listOf(tab)),
+                middleware = listOf(middleware),
+            )
 
         val engineSession: EngineSession = mock()
-        store.dispatch(EngineAction.LinkEngineSessionAction(tab.id, engineSession)).joinBlocking()
+        store.dispatch(EngineAction.LinkEngineSessionAction(tab.id, engineSession))
 
-        dispatcher.scheduler.advanceUntilIdle()
+        testDispatcher.scheduler.advanceUntilIdle()
 
-        verify(engineSession).loadUrl(
-            url = tab.content.url,
-            flags = loadFlags,
-            additionalHeaders = additionalHeaders,
-            textDirectiveUserActivation = true,
-        )
+        verify(engineSession)
+            .loadUrl(
+                url = tab.content.url,
+                flags = loadFlags,
+                additionalHeaders = additionalHeaders,
+                textDirectiveUserActivation = true,
+            )
+    }
+
+    @Test
+    fun `GIVEN ABOUT_HOME_URL tab WHEN linking the tab THEN load the URL bypassing the load URI delegate`() {
+        val middleware = LinkingMiddleware(scope)
+
+        val tab = createTab(ABOUT_HOME_URL, id = "1")
+        val store =
+            BrowserStore(
+                initialState = BrowserState(tabs = listOf(tab)),
+                middleware = listOf(middleware),
+            )
+
+        val engineSession: EngineSession = mock()
+        store.dispatch(EngineAction.LinkEngineSessionAction(tab.id, engineSession))
+
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        verify(engineSession)
+            .loadUrl(
+                url = ABOUT_HOME_URL,
+                flags =
+                    EngineSession.LoadUrlFlags.select(EngineSession.LoadUrlFlags.LOAD_FLAGS_BYPASS_LOAD_URI_DELEGATE),
+            )
+    }
+
+    @Test
+    fun `GIVEN tab is already bypassing the load URI delegate WHEN linking the tab THEN the load flags are unchanged`() {
+        val middleware = LinkingMiddleware(scope)
+
+        val loadFlags =
+            EngineSession.LoadUrlFlags.select(EngineSession.LoadUrlFlags.LOAD_FLAGS_BYPASS_LOAD_URI_DELEGATE)
+        val tab = createTab(ABOUT_HOME_URL, id = "1", initialLoadFlags = loadFlags)
+        val store =
+            BrowserStore(
+                initialState = BrowserState(tabs = listOf(tab)),
+                middleware = listOf(middleware),
+            )
+
+        val engineSession: EngineSession = mock()
+        store.dispatch(EngineAction.LinkEngineSessionAction(tab.id, engineSession))
+
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        verify(engineSession)
+            .loadUrl(
+                url = ABOUT_HOME_URL,
+                flags = loadFlags,
+            )
     }
 
     @Test
@@ -88,22 +141,19 @@ class LinkingMiddlewareTest {
 
         val parent = createTab("https://www.mozilla.org", id = "1")
         val child = createTab("https://www.firefox.com", id = "2", parent = parent)
-        val store = BrowserStore(
-            initialState = BrowserState(
-                tabs = listOf(parent, child),
-            ),
-            middleware = listOf(middleware),
-        )
+        val store =
+            BrowserStore(
+                initialState = BrowserState(tabs = listOf(parent, child)),
+                middleware = listOf(middleware),
+            )
 
         val parentEngineSession: EngineSession = mock()
-        store.dispatch(EngineAction.LinkEngineSessionAction(parent.id, parentEngineSession)).joinBlocking()
+        store.dispatch(EngineAction.LinkEngineSessionAction(parent.id, parentEngineSession))
 
         val childEngineSession: EngineSession = mock()
-        store.dispatch(
-            EngineAction.LinkEngineSessionAction(child.id, childEngineSession, includeParent = true),
-        ).joinBlocking()
+        store.dispatch(EngineAction.LinkEngineSessionAction(child.id, childEngineSession, includeParent = true))
 
-        dispatcher.scheduler.advanceUntilIdle()
+        testDispatcher.scheduler.advanceUntilIdle()
 
         verify(childEngineSession).loadUrl(child.content.url, parentEngineSession)
     }
@@ -114,20 +164,19 @@ class LinkingMiddlewareTest {
 
         val parent = createTab("https://www.mozilla.org", id = "1")
         val child = createTab("moz-extension://1234", id = "2", parent = parent)
-        val store = BrowserStore(
-            initialState = BrowserState(
-                tabs = listOf(parent, child),
-            ),
-            middleware = listOf(middleware),
-        )
+        val store =
+            BrowserStore(
+                initialState = BrowserState(tabs = listOf(parent, child)),
+                middleware = listOf(middleware),
+            )
 
         val parentEngineSession: EngineSession = mock()
-        store.dispatch(EngineAction.LinkEngineSessionAction(parent.id, parentEngineSession)).joinBlocking()
+        store.dispatch(EngineAction.LinkEngineSessionAction(parent.id, parentEngineSession))
 
         val childEngineSession: EngineSession = mock()
-        store.dispatch(EngineAction.LinkEngineSessionAction(child.id, childEngineSession)).joinBlocking()
+        store.dispatch(EngineAction.LinkEngineSessionAction(child.id, childEngineSession))
 
-        dispatcher.scheduler.advanceUntilIdle()
+        testDispatcher.scheduler.advanceUntilIdle()
 
         verify(childEngineSession).loadUrl(child.content.url)
     }
@@ -137,15 +186,16 @@ class LinkingMiddlewareTest {
         val middleware = LinkingMiddleware(scope)
 
         val tab = createTab("https://www.mozilla.org", id = "1")
-        val store = BrowserStore(
-            initialState = BrowserState(tabs = listOf(tab)),
-            middleware = listOf(middleware),
-        )
+        val store =
+            BrowserStore(
+                initialState = BrowserState(tabs = listOf(tab)),
+                middleware = listOf(middleware),
+            )
 
         val engineSession: EngineSession = mock()
-        store.dispatch(EngineAction.LinkEngineSessionAction(tab.id, engineSession, skipLoading = true)).joinBlocking()
+        store.dispatch(EngineAction.LinkEngineSessionAction(tab.id, engineSession, skipLoading = true))
 
-        dispatcher.scheduler.advanceUntilIdle()
+        testDispatcher.scheduler.advanceUntilIdle()
 
         verify(engineSession, never()).loadUrl(tab.content.url)
     }
@@ -154,97 +204,96 @@ class LinkingMiddlewareTest {
     fun `does nothing if linked tab does not exist`() {
         val middleware = LinkingMiddleware(scope)
 
-        val store = BrowserStore(
-            initialState = BrowserState(tabs = listOf()),
-            middleware = listOf(middleware),
-        )
+        val store =
+            BrowserStore(
+                initialState = BrowserState(tabs = listOf()),
+                middleware = listOf(middleware),
+            )
 
         val engineSession: EngineSession = mock()
-        store.dispatch(EngineAction.LinkEngineSessionAction("invalid", engineSession)).joinBlocking()
+        store.dispatch(EngineAction.LinkEngineSessionAction("invalid", engineSession))
 
-        dispatcher.scheduler.advanceUntilIdle()
+        testDispatcher.scheduler.advanceUntilIdle()
 
         verify(engineSession, never()).loadUrl(anyString(), any(), any(), any(), any(), anyBoolean())
     }
 
     @Test
-    fun `registers engine observer after linking`() = runTestOnMain {
+    fun `registers engine observer after linking`() = runTest {
         val tab1 = createTab("https://www.mozilla.org", id = "1")
         val tab2 = createTab("https://www.mozilla.org", id = "2")
 
-        val middleware = LinkingMiddleware(scope)
+        val middleware = LinkingMiddleware(this)
 
-        val store = BrowserStore(
-            initialState = BrowserState(tabs = listOf(tab1, tab2)),
-            middleware = listOf(middleware),
-        )
+        val store =
+            BrowserStore(
+                initialState = BrowserState(tabs = listOf(tab1, tab2)),
+                middleware = listOf(middleware),
+            )
 
         val engineSession1: EngineSession = mock()
         val engineSession2: EngineSession = mock()
-        store.dispatch(EngineAction.LinkEngineSessionAction(tab1.id, engineSession1)).joinBlocking()
-        store.dispatch(EngineAction.LinkEngineSessionAction(tab2.id, engineSession2)).joinBlocking()
-        store.waitUntilIdle()
+        store.dispatch(EngineAction.LinkEngineSessionAction(tab1.id, engineSession1))
+        store.dispatch(EngineAction.LinkEngineSessionAction(tab2.id, engineSession2))
 
         // We only have a session for tab2 so we should only register an observer for tab2
         val engineObserver = store.state.findTab(tab2.id)?.engineState?.engineObserver
         assertNotNull(engineObserver)
 
-        verify(engineSession2).register(engineObserver!!)
+        verify(engineSession2).register(engineObserver)
         engineObserver.onTitleChange("test")
-
-        store.waitUntilIdle()
+        advanceUntilIdle()
 
         assertEquals("test", store.state.tabs[1].content.title)
     }
 
     @Test
-    fun `unregisters engine observer before unlinking`() = runTestOnMain {
+    fun `unregisters engine observer before unlinking`() = runTest {
         val tab1 = createTab("https://www.mozilla.org", id = "1")
         val tab2 = createTab("https://www.mozilla.org", id = "2")
 
         val middleware = LinkingMiddleware(scope)
 
-        val store = BrowserStore(
-            initialState = BrowserState(tabs = listOf(tab1, tab2)),
-            middleware = listOf(middleware),
-        )
+        val store =
+            BrowserStore(
+                initialState = BrowserState(tabs = listOf(tab1, tab2)),
+                middleware = listOf(middleware),
+            )
 
         val engineSession: EngineSession = mock()
-        store.dispatch(EngineAction.LinkEngineSessionAction(tab1.id, engineSession)).joinBlocking()
-        store.waitUntilIdle()
+        store.dispatch(EngineAction.LinkEngineSessionAction(tab1.id, engineSession))
         assertNotNull(store.state.findTab(tab1.id)?.engineState?.engineObserver)
         assertNull(store.state.findTab(tab2.id)?.engineState?.engineObserver)
 
-        store.dispatch(EngineAction.UnlinkEngineSessionAction(tab1.id)).joinBlocking()
-        store.dispatch(EngineAction.UnlinkEngineSessionAction(tab2.id)).joinBlocking()
-        store.waitUntilIdle()
+        store.dispatch(EngineAction.UnlinkEngineSessionAction(tab1.id))
+        store.dispatch(EngineAction.UnlinkEngineSessionAction(tab2.id))
         assertNull(store.state.findTab(tab1.id)?.engineState?.engineObserver)
         assertNull(store.state.findTab(tab2.id)?.engineState?.engineObserver)
     }
 
     @Test
-    fun `registers engine observer when tab is added with engine session`() = runTestOnMain {
+    fun `registers engine observer when tab is added with engine session`() = runTest {
         val engineSession: EngineSession = mock()
         val tab1 = createTab("https://www.mozilla.org", id = "1")
         val tab2 = createTab("https://www.mozilla.org", id = "2", engineSession = engineSession)
 
-        val middleware = LinkingMiddleware(scope)
+        val middleware = LinkingMiddleware(this)
 
-        val store = BrowserStore(
-            initialState = BrowserState(),
-            middleware = listOf(middleware),
-        )
+        val store =
+            BrowserStore(
+                initialState = BrowserState(),
+                middleware = listOf(middleware),
+            )
 
-        store.dispatch(TabListAction.AddTabAction(tab1)).joinBlocking()
-        store.dispatch(TabListAction.AddTabAction(tab2)).joinBlocking()
-        store.waitUntilIdle()
+        store.dispatch(TabListAction.AddTabAction(tab1))
+        store.dispatch(TabListAction.AddTabAction(tab2))
 
         // We only have a session for tab2 so we should only register an observer for tab2
         val engineObserver = store.state.findTab(tab2.id)?.engineState?.engineObserver
         assertNotNull(engineObserver)
-        verify(engineSession).register(engineObserver!!)
+        verify(engineSession).register(engineObserver)
         engineObserver.onTitleChange("test")
-        store.waitUntilIdle()
+        advanceUntilIdle()
 
         assertEquals("test", store.state.tabs[1].content.title)
     }

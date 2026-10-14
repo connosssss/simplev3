@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,8 +7,8 @@
 #ifndef mozilla_RecursiveMutex_h
 #define mozilla_RecursiveMutex_h
 
-#include "mozilla/ThreadSafety.h"
 #include "mozilla/BlockingResourceBase.h"
+#include "mozilla/ThreadSafety.h"
 
 #ifndef XP_WIN
 #  include <pthread.h>
@@ -23,6 +21,10 @@ class MOZ_CAPABILITY("recursive mutex") RecursiveMutex
  public:
   explicit RecursiveMutex(const char* aName);
   ~RecursiveMutex();
+
+  RecursiveMutex() = delete;
+  RecursiveMutex(const RecursiveMutex&) = delete;
+  RecursiveMutex& operator=(const RecursiveMutex&) = delete;
 
 #ifdef DEBUG
   void Lock() MOZ_CAPABILITY_ACQUIRE();
@@ -49,10 +51,6 @@ class MOZ_CAPABILITY("recursive mutex") RecursiveMutex
 #endif
 
  private:
-  RecursiveMutex() = delete;
-  RecursiveMutex(const RecursiveMutex&) = delete;
-  RecursiveMutex& operator=(const RecursiveMutex&) = delete;
-
   void LockInternal();
   void UnlockInternal();
 
@@ -84,10 +82,11 @@ class MOZ_RAII MOZ_SCOPED_CAPABILITY RecursiveMutexAutoLock {
     mRecursiveMutex->Unlock();
   }
 
- private:
   RecursiveMutexAutoLock() = delete;
   RecursiveMutexAutoLock(const RecursiveMutexAutoLock&) = delete;
   RecursiveMutexAutoLock& operator=(const RecursiveMutexAutoLock&) = delete;
+
+ private:
   static void* operator new(size_t) noexcept(true);
 
   mozilla::RecursiveMutex* mRecursiveMutex;
@@ -106,10 +105,11 @@ class MOZ_RAII MOZ_SCOPED_CAPABILITY RecursiveMutexAutoUnlock {
     mRecursiveMutex->Lock();
   }
 
- private:
   RecursiveMutexAutoUnlock() = delete;
   RecursiveMutexAutoUnlock(const RecursiveMutexAutoUnlock&) = delete;
   RecursiveMutexAutoUnlock& operator=(const RecursiveMutexAutoUnlock&) = delete;
+
+ private:
   static void* operator new(size_t) noexcept(true);
 
   mozilla::RecursiveMutex* mRecursiveMutex;

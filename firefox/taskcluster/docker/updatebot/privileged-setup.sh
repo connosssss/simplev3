@@ -14,7 +14,6 @@ apt-get update -y
 
 # Install dependencies
 apt-get install -y --no-install-recommends \
-    arcanist \
     ca-certificates \
     cloudsql-proxy \
     curl \
@@ -23,6 +22,8 @@ apt-get install -y --no-install-recommends \
     gcc \
     libc6-dev \
     meson \
+    php-cli \
+    php-curl \
     python3-minimal \
     python3-wheel \
     python3-pip \
@@ -32,13 +33,36 @@ apt-get install -y --no-install-recommends \
     python3-setuptools \
     openssh-client \
     rsync \
+    unzip \
     wget
 
 mkdir -p /builds/worker/.mozbuild
 chown -R worker:worker /builds/worker/
 export GOPATH=/builds/worker/go
 
+# Install specific version of Arcanist
+pushd /builds/worker/.mozbuild/
+git clone https://github.com/phacility/arcanist.git
+cd arcanist
+git checkout e50d1bc4eabac9c37e3220e9f3fb8e37ae20b957
+ln -s /builds/worker/.mozbuild/arcanist/bin/arc /usr/local/bin/arc
+popd
+
 . install-node-for-pdfjs.sh
+
+# Install the Claude Code CLI, used for AI-assisted tasks (e.g. attempting a
+# vendor when `./mach vendor` fails). The launcher and its platform binary are
+# pinned by the committed claude-code/package-lock.json and integrity-verified
+# by `npm ci`, which aborts the build on any mismatch; the auto-updater is
+# disabled via DISABLE_AUTOUPDATER (see Dockerfile). So the code we execute is
+# reproducible. Requires ANTHROPIC_API_KEY at runtime.
+mkdir -p /builds/worker/.mozbuild/claude-code
+cp claude-code/package.json claude-code/package-lock.json /builds/worker/.mozbuild/claude-code/
+pushd /builds/worker/.mozbuild/claude-code
+npm ci
+ln -s /builds/worker/.mozbuild/claude-code/node_modules/.bin/claude /usr/local/bin/claude
+popd
+claude --version  # verify
 
 # pdf.js setup
 # We want to aviod downloading a ton of packages all the time, so

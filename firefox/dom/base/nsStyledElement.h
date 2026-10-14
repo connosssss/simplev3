@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,17 +8,15 @@
  * SVG and MathML.
  */
 
-#ifndef __NS_STYLEDELEMENT_H_
-#define __NS_STYLEDELEMENT_H_
+#ifndef NS_STYLEDELEMENT_H_
+#define NS_STYLEDELEMENT_H_
 
-#include "mozilla/Attributes.h"
 #include "mozilla/dom/Element.h"
 #include "nsString.h"
 
-namespace mozilla {
-class DeclarationBlock;
-struct MutationClosureData;
-}  // namespace mozilla
+namespace mozilla::dom {
+class StylePropertyMap;
+}  // namespace mozilla::dom
 
 // IID for nsStyledElement interface
 #define NS_STYLED_ELEMENT_IID \
@@ -31,7 +27,7 @@ using nsStyledElementBase = mozilla::dom::Element;
 class nsStyledElement : public nsStyledElementBase {
  protected:
   inline explicit nsStyledElement(
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
+      already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo)
       : nsStyledElementBase(std::move(aNodeInfo)) {}
 
  public:
@@ -44,11 +40,13 @@ class nsStyledElement : public nsStyledElementBase {
   virtual void InlineStyleDeclarationWillChange(
       mozilla::MutationClosureData& aData) override;
   virtual nsresult SetInlineStyleDeclaration(
-      mozilla::DeclarationBlock& aDeclaration,
+      mozilla::StyleLockedDeclarationBlock&,
       mozilla::MutationClosureData& aData) override;
   virtual nsresult BindToTree(BindContext& aContext, nsINode& aParent) override;
 
-  nsICSSDeclaration* Style();
+  nsDOMCSSDeclaration* Style();
+
+  mozilla::dom::StylePropertyMap* AttributeStyleMap();
 
   NS_INLINE_DECL_STATIC_IID(NS_STYLED_ELEMENT_IID)
   NS_IMPL_FROMNODE_HELPER(nsStyledElement, IsStyledElement());
@@ -56,7 +54,7 @@ class nsStyledElement : public nsStyledElementBase {
   bool IsStyledElement() const final { return true; }
 
  protected:
-  nsICSSDeclaration* GetExistingStyle();
+  nsDOMCSSDeclaration* GetExistingStyle();
 
   /**
    * Parse a style attr value into a CSS rulestruct (or, if there is no
@@ -91,4 +89,4 @@ class nsStyledElement : public nsStyledElementBase {
                      const nsAttrValue* aValue, bool aNotify) override;
 };
 
-#endif  // __NS_STYLEDELEMENT_H_
+#endif  // NS_STYLEDELEMENT_H_

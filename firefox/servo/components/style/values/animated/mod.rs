@@ -9,11 +9,12 @@
 //! module's raison d'être is to ultimately contain all these types.
 
 use crate::color::AbsoluteColor;
-use crate::properties::{PropertyId, ComputedValues};
+use crate::properties::{ComputedValues, PropertyId};
+use crate::values::CSSFloat;
 use crate::values::computed::url::ComputedUrl;
 use crate::values::computed::{Angle, Image, Length};
+use crate::values::generics::{ClampToNonNegative, NonNegative};
 use crate::values::specified::SVGPathData;
-use crate::values::CSSFloat;
 use app_units::Au;
 use smallvec::SmallVec;
 use std::cmp;
@@ -24,6 +25,7 @@ mod font;
 mod grid;
 pub mod lists;
 mod svg;
+pub mod text;
 pub mod transform;
 
 /// The category a property falls into for ordering purposes.
@@ -224,10 +226,24 @@ where
     #[inline]
     fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
         match (self.as_ref(), other.as_ref()) {
-            (Some(ref this), Some(ref other)) => Ok(Some(this.animate(other, procedure)?)),
+            (Some(this), Some(other)) => Ok(Some(this.animate(other, procedure)?)),
             (None, None) => Ok(None),
             _ => Err(()),
         }
+    }
+}
+
+impl<T: ToAnimatedValue + ClampToNonNegative> ToAnimatedValue for NonNegative<T> {
+    type AnimatedValue = NonNegative<<T as ToAnimatedValue>::AnimatedValue>;
+
+    #[inline]
+    fn to_animated_value(self, cx: &crate::values::animated::Context) -> Self::AnimatedValue {
+        NonNegative(self.0.to_animated_value(cx))
+    }
+
+    #[inline]
+    fn from_animated_value(animated: Self::AnimatedValue) -> Self {
+        Self(<T as ToAnimatedValue>::from_animated_value(animated.0).clamp_to_non_negative())
     }
 }
 
@@ -248,7 +264,7 @@ impl ToAnimatedValue for Au {
 impl<T: Animate> Animate for Box<T> {
     #[inline]
     fn animate(&self, other: &Self, procedure: Procedure) -> Result<Self, ()> {
-        Ok(Box::new((**self).animate(&other, procedure)?))
+        Ok(Box::new((**self).animate(other, procedure)?))
     }
 }
 
@@ -277,7 +293,9 @@ where
 
     #[inline]
     fn to_animated_value(self, context: &Context) -> Self::AnimatedValue {
-        self.into_iter().map(|v| v.to_animated_value(context)).collect()
+        self.into_iter()
+            .map(|v| v.to_animated_value(context))
+            .collect()
     }
 
     #[inline]
@@ -294,7 +312,9 @@ where
 
     #[inline]
     fn to_animated_value(self, context: &Context) -> Self::AnimatedValue {
-        self.into_iter().map(|v| v.to_animated_value(context)).collect()
+        self.into_iter()
+            .map(|v| v.to_animated_value(context))
+            .collect()
     }
 
     #[inline]
@@ -369,7 +389,9 @@ where
 
     #[inline]
     fn to_animated_value(self, context: &Context) -> Self::AnimatedValue {
-        self.into_iter().map(|v| v.to_animated_value(context)).collect()
+        self.into_iter()
+            .map(|v| v.to_animated_value(context))
+            .collect()
     }
 
     #[inline]
@@ -402,6 +424,8 @@ trivial_to_animated_value!(ComputedUrl);
 trivial_to_animated_value!(bool);
 trivial_to_animated_value!(f32);
 trivial_to_animated_value!(i32);
+trivial_to_animated_value!(u8);
+trivial_to_animated_value!(u16);
 trivial_to_animated_value!(u32);
 trivial_to_animated_value!(usize);
 trivial_to_animated_value!(AbsoluteColor);

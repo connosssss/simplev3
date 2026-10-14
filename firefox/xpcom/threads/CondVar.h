@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,8 +6,8 @@
 #define mozilla_CondVar_h
 
 #include "mozilla/BlockingResourceBase.h"
-#include "mozilla/PlatformConditionVariable.h"
 #include "mozilla/Mutex.h"
+#include "mozilla/PlatformConditionVariable.h"
 #include "mozilla/TimeStamp.h"
 
 #if defined(MOZILLA_INTERNAL_API) && !defined(DEBUG)
@@ -45,6 +43,9 @@ class OffTheBooksCondVar : BlockingResourceBase {
    * Clean up after this OffTheBooksCondVar, but NOT its associated Mutex.
    **/
   ~OffTheBooksCondVar() = default;
+
+  OffTheBooksCondVar(const OffTheBooksCondVar&) = delete;
+  OffTheBooksCondVar& operator=(const OffTheBooksCondVar&) = delete;
 
   /**
    * Wait
@@ -107,8 +108,6 @@ class OffTheBooksCondVar : BlockingResourceBase {
 
  private:
   OffTheBooksCondVar();
-  OffTheBooksCondVar(const OffTheBooksCondVar&) = delete;
-  OffTheBooksCondVar& operator=(const OffTheBooksCondVar&) = delete;
 
   OffTheBooksMutex* mLock;
   detail::ConditionVariableImpl mImpl;
@@ -126,12 +125,11 @@ class CondVar : public OffTheBooksCondVar {
     MOZ_COUNT_CTOR(CondVar);
   }
 
-  MOZ_COUNTED_DTOR(CondVar)
+  CondVar() = delete;
+  CondVar(const CondVar&) = delete;
+  CondVar& operator=(const CondVar&) = delete;
 
- private:
-  CondVar();
-  CondVar(const CondVar&);
-  CondVar& operator=(const CondVar&);
+  MOZ_COUNTED_DTOR(CondVar)
 };
 
 }  // namespace mozilla

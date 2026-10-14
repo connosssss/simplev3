@@ -1,5 +1,4 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 20; indent-tabs-mode: nil; -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -20,7 +19,6 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import org.mozilla.gecko.GeckoAppShell;
 import org.mozilla.gecko.annotation.JNITarget;
-import org.mozilla.gecko.annotation.RobocopTarget;
 
 public final class GeckoLoader {
   private static final String LOGTAG = "GeckoLoader";
@@ -133,11 +131,6 @@ public final class GeckoLoader {
       f = context.getCacheDir();
       putenv("CACHE_DIRECTORY=" + f.getPath());
 
-      f = context.getExternalFilesDir(null);
-      if (f != null) {
-        putenv("PUBLIC_STORAGE=" + f.getPath());
-      }
-
       final android.os.UserManager um =
           (android.os.UserManager) context.getSystemService(Context.USER_SERVICE);
       if (um != null) {
@@ -152,6 +145,13 @@ public final class GeckoLoader {
       }
 
       setupInitialPrefs(prefs);
+    }
+
+    if (!GeckoAppShell.isIsolatedProcess()) {
+      final File f = context.getExternalFilesDir(null);
+      if (f != null) {
+        putenv("PUBLIC_STORAGE=" + f.getPath());
+      }
     }
 
     // Xpcshell tests set up their own temp directory
@@ -172,7 +172,6 @@ public final class GeckoLoader {
           "MOZ_ANDROID_CRASH_HANDLER=" + context.getPackageName() + "/" + crashHandler.getName());
     }
 
-    putenv("MOZ_ANDROID_DEVICE_SDK_VERSION=" + Build.VERSION.SDK_INT);
     putenv("MOZ_ANDROID_CPU_ABI=" + Build.CPU_ABI);
 
     // env from extras could have reset out linker flags; set them again.
@@ -220,7 +219,6 @@ public final class GeckoLoader {
     putenv("MOZ_ANDROID_LIBDIR=" + getLibraryBase());
   }
 
-  @RobocopTarget
   public static synchronized void loadSQLiteLibs(final Context context) {
     if (sSQLiteLibsLoaded) {
       return;

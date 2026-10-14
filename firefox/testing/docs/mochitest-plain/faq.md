@@ -50,10 +50,11 @@ await SpecialPowers.popPrefEnv(); // Implicit at the end of the test too.
 
 You can also set prefs directly in the manifest:
 
-```ini
+```toml
 [DEFAULT]
-prefs =
-  browser.chrome.guess_favicon=true
+prefs = [
+  "browser.chrome.guess_favicon=true",
+]
 ```
 
 If you need to change a pref when running a test locally, you can use the
@@ -77,7 +78,7 @@ To change more than one pref, you can add a `--setpref` argument for each:
 
 ## Can tests be run under a chrome URL?
 
-Yes, use [mochitest-chrome](../chrome-tests/index.rst).
+Yes, use [mochitest-chrome](../chrome-tests/index.md).
 
 ## How do I change the HTTP headers or status sent with a file used in a Mochitest?
 
@@ -112,17 +113,18 @@ strictly necessary.
 ## How do I write tests that check header values, method types, etc. of HTTP requests?
 
 To write such a test, you simply need to write an SJS (server-side JavaScript)
-for it. See the [testing HTTP server](/networking/http_server_for_testing.rst)
+for it. See the [testing HTTP server](/networking/http_server_for_testing.md)
 docs for less mochitest-specific documentation of what you can do in SJS
 scripts.
 
 An SJS is simply a JavaScript file with the extension .sjs which is loaded in a
-sandbox. Don't forget to reference it from your `mochitest.ini` file too!
+sandbox. Don't forget to reference it from your `mochitest.toml` file too!
 
-```ini
+```toml
 [DEFAULT]
-support-files =
-  test_file.sjs
+support-files = [
+  "test_file.sjs",
+]
 ```
 
 The global property `handleRequest` defined by the script is then executed with

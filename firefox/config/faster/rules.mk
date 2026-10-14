@@ -81,15 +81,8 @@ $(addprefix install-,$(INSTALL_MANIFESTS)): install-%: $(addprefix $(TOPOBJDIR)/
 	@# support for defines tracking in process_install_manifest.
 	@touch install_$(subst /,_,$*)
 	$(PYTHON3) -m mozbuild.action.process_install_manifest \
-		$(if $(filter copy,$(NSDISTMODE)),--no-symlinks) \
 		--track install_$(subst /,_,$*).track \
 		$(TOPOBJDIR)/$* \
 		-DAB_CD=en-US \
 		$(ACDEFINES) \
 		install_$(subst /,_,$*)
-
-# ============================================================================
-# Below is a set of additional dependencies and variables used to build things
-# that are not supported by data in moz.build.
-
-$(TOPOBJDIR)/build/.deps/application.ini.stub: $(TOPOBJDIR)/buildid.h $(TOPOBJDIR)/source-repo.h

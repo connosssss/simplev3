@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,8 +5,8 @@
 #include "ScriptableContentIterator.h"
 
 #include "mozilla/ContentIterator.h"
+#include "mozilla/dom/Range.h"
 #include "nsINode.h"
-#include "nsRange.h"
 
 namespace mozilla {
 
@@ -98,7 +96,8 @@ ScriptableContentIterator::InitWithRootNode(IteratorType aType,
 }
 
 NS_IMETHODIMP
-ScriptableContentIterator::InitWithRange(IteratorType aType, nsRange* aRange) {
+ScriptableContentIterator::InitWithRange(IteratorType aType,
+                                         dom::Range* aRange) {
   if (aType == NOT_INITIALIZED ||
       (mIteratorType != NOT_INITIALIZED && aType != mIteratorType)) {
     return NS_ERROR_INVALID_ARG;
@@ -110,7 +109,7 @@ ScriptableContentIterator::InitWithRange(IteratorType aType, nsRange* aRange) {
 
 NS_IMETHODIMP
 ScriptableContentIterator::InitWithRangeAllowCrossShadowBoundary(
-    IteratorType aType, nsRange* aRange) {
+    IteratorType aType, dom::Range* aRange) {
   if (aType == NOT_INITIALIZED ||
       (mIteratorType != NOT_INITIALIZED && aType != mIteratorType) ||
       aType != SUBTREE_ITERATOR) {

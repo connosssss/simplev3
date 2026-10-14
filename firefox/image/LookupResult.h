@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -99,6 +98,9 @@ class MOZ_STACK_CLASS LookupResult {
     return *this;
   }
 
+  LookupResult(const LookupResult&) = delete;
+  LookupResult& operator=(const LookupResult& aOther) = delete;
+
   DrawableSurface& Surface() { return mSurface; }
   const DrawableSurface& Surface() const { return mSurface; }
   const gfx::IntSize& SuggestedSize() const { return mSuggestedSize; }
@@ -113,9 +115,6 @@ class MOZ_STACK_CLASS LookupResult {
   bool GetFailedToRequestDecode() { return mFailedToRequestDecode; }
 
  private:
-  LookupResult(const LookupResult&) = delete;
-  LookupResult& operator=(const LookupResult& aOther) = delete;
-
   DrawableSurface mSurface;
   MatchType mMatchType;
 

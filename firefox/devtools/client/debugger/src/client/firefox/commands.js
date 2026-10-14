@@ -29,8 +29,8 @@ function currentThreadFront() {
 /**
  * Create an object front for the passed grip
  *
- * @param {Object} grip
- * @param {Object} frame: An optional frame that will manage the created object front.
+ * @param {object} grip
+ * @param {object} frame: An optional frame that will manage the created object front.
  *                        if not passed, the current thread front will manage the object.
  * @returns {ObjectFront}
  */
@@ -135,11 +135,22 @@ function breakOnNext(thread) {
   return lookupThreadFront(thread).breakOnNext();
 }
 
-async function sourceContents({ actor, thread }) {
-  const sourceThreadFront = lookupThreadFront(thread);
-  const sourceFront = sourceThreadFront.source({ actor });
-  const { source, contentType } = await sourceFront.source();
-  return { source, contentType };
+async function updateStyleSheetContent(sourceActor, text, isTransitionEnabled) {
+  const { targetFront, id } = sourceActor;
+  if (!targetFront) {
+    return null;
+  }
+  const stylesheetsFront = await targetFront.getFront("stylesheets");
+  return stylesheetsFront.update(id, text, isTransitionEnabled, "debugger");
+}
+
+async function toggleStylesheetVisibility(sourceActor) {
+  const { targetFront, id } = sourceActor;
+  if (!targetFront) {
+    return null;
+  }
+  const styleSheetsFront = await targetFront.getFront("stylesheets");
+  return styleSheetsFront.toggleDisabled(id);
 }
 
 async function setXHRBreakpoint(path, method) {
@@ -278,18 +289,18 @@ async function evaluateExpressions(expressions, options) {
 /**
  * Evaluate some JS expression in a given thread.
  *
- * @param {String} expression
- * @param {Object} options
- * @param {String} options.frameId
+ * @param {string} expression
+ * @param {object} options
+ * @param {string} options.frameId
  *                 Optional frame actor ID into which the expression should be evaluated.
- * @param {String} options.threadId
+ * @param {string} options.threadId
  *                 Optional thread actor ID into which the expression should be evaluated.
- * @param {String} options.selectedNodeActor
+ * @param {string} options.selectedNodeActor
  *                 Optional node actor ID which related to "$0" in the evaluated expression.
- * @param {Boolean} options.evalInTracer
+ * @param {boolean} options.evalInTracer
  *                 To be set to true, if the object actors created during the evaluation
  *                 should be registered in the tracer actor Pool.
- * @return {Object}
+ * @return {object}
  *                 See ScriptCommand.execute JS Doc.
  */
 async function evaluate(
@@ -341,6 +352,12 @@ async function getFrames(thread) {
 
 async function getFrameScopes(frame) {
   const frameFront = lookupThreadFront(frame.thread).getActorByID(frame.id);
+  // ThreadFront drops every frame front as soon as the thread resumes, and that
+  // happens before the resume reaches the redux state, so the frame the caller
+  // validated against the state may already be gone.
+  if (!frameFront) {
+    return null;
+  }
   return frameFront.getEnvironment();
 }
 
@@ -366,9 +383,9 @@ async function blackBox(sourceActor, shouldBlackBox, ranges) {
     const blackboxingFront =
       await commands.targetCommand.watcherFront.getBlackboxingActor();
     if (shouldBlackBox) {
-      await blackboxingFront.blackbox(sourceActor.url, ranges);
+      await blackboxingFront.blackbox(sourceActor.sourceObject.url, ranges);
     } else {
-      await blackboxingFront.unblackbox(sourceActor.url, ranges);
+      await blackboxingFront.unblackbox(sourceActor.sourceObject.url, ranges);
     }
   } else {
     const sourceFront = currentThreadFront().source({
@@ -425,17 +442,19 @@ function getMainThread() {
   return currentThreadFront().actor;
 }
 
-async function getSourceActorBreakpointPositions({ thread, actor }, range) {
-  const sourceThreadFront = lookupThreadFront(thread);
-  const sourceFront = sourceThreadFront.source({ actor });
+async function getSourceActorBreakpointPositions(sourceActor, range) {
+  const sourceFront = sourceActor.targetFront.threadFront.source({
+    actor: sourceActor.id,
+  });
   return sourceFront.getBreakpointPositionsCompressed(range);
 }
 
-async function getSourceActorBreakableLines({ thread, actor }) {
+async function getSourceActorBreakableLines(sourceActor) {
   let actorLines = [];
   try {
-    const sourceThreadFront = lookupThreadFront(thread);
-    const sourceFront = sourceThreadFront.source({ actor });
+    const sourceFront = sourceActor.targetFront.threadFront.source({
+      actor: sourceActor.id,
+    });
     actorLines = await sourceFront.getBreakableLines();
   } catch (e) {
     // Exceptions could be due to the target thread being shut down.
@@ -465,7 +484,6 @@ const clientCommands = {
   stepOver,
   restart,
   breakOnNext,
-  sourceContents,
   getSourceActorBreakpointPositions,
   getSourceActorBreakableLines,
   hasBreakpoint,
@@ -490,6 +508,8 @@ const clientCommands = {
   getFrontByID,
   fetchAncestorFramePositions,
   toggleJavaScriptEnabled,
+  updateStyleSheetContent,
+  toggleStylesheetVisibility,
 };
 
 export { setupCommands, clientCommands };

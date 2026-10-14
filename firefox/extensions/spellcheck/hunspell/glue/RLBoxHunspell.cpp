@@ -1,10 +1,11 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/Assertions.h"
 #include "RLBoxHunspell.h"
+
+#include <memory>
 #include "mozHunspellRLBoxGlue.h"
 #include "mozHunspellRLBoxHost.h"
 #include "nsThread.h"
@@ -28,8 +29,8 @@ RLBoxHunspell* RLBoxHunspell::Create(const nsCString& affpath,
                                      const nsCString& dpath) {
   MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
 
-  mozilla::UniquePtr<rlbox_sandbox_hunspell> sandbox(
-      new rlbox_sandbox_hunspell());
+  mozilla::UniquePtr<rlbox_sandbox_hunspell> sandbox =
+      std::make_unique<rlbox_sandbox_hunspell>();
 
 #if defined(MOZ_WASM_SANDBOXING_HUNSPELL) && !defined(HAVE_64BIT_BUILD)
   // By default, the rlbox sandbox size is smaller on 32-bit builds than the max
@@ -60,7 +61,9 @@ RLBoxHunspell* RLBoxHunspell::Create(const nsCString& affpath,
   bool success = sandbox->create_sandbox(/* shouldAbortOnFailure = */ false,
                                          &capacity, "rlbox_wasm2c_hunspell");
 #elif defined(MOZ_WASM_SANDBOXING_HUNSPELL)
-  bool success = sandbox->create_sandbox(/* shouldAbortOnFailure = */ false);
+  bool success =
+      sandbox->create_sandbox(/* shouldAbortOnFailure = */ false,
+                              nullptr /* capacity */, "rlbox_wasm2c_hunspell");
 #else
   sandbox->create_sandbox();
   const bool success = true;

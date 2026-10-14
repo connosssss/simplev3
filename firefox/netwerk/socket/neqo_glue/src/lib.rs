@@ -9,6 +9,8 @@ use std::time::Duration;
 use std::{
     borrow::Cow,
     cell::RefCell,
+    cmp::min,
+    collections::HashMap,
     ffi::c_void,
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -25,26 +27,31 @@ use firefox_on_glean::{
 };
 #[cfg(not(windows))]
 use libc::{c_int, AF_INET, AF_INET6};
+use libc::{c_uchar, size_t};
+use log::debug;
 use neqo_common::{
-    event::Provider as _, qdebug, qerror, qlog::NeqoQlog, qwarn, Datagram, Decoder, Encoder,
-    Header, IpTos, Role,
+    datagram, event::Provider as _, qdebug, qerror, qlog::Qlog, qwarn, Datagram, Decoder, Encoder,
+    Header, Role, Tos,
 };
-use neqo_crypto::{init, PRErrorCode};
 use neqo_http3::{
-    features::extended_connect::SessionCloseReason, Error as Http3Error, Http3Client,
+    connect_udp::ClientSession as _, features::extended_connect::session,
+    webtransport::ClientSession as _, ConnectUdpEvent, Error as Http3Error, Http3Client,
     Http3ClientEvent, Http3Parameters, Http3State, Priority, WebTransportEvent,
 };
 use neqo_transport::{
-    stream_id::StreamType, CongestionControlAlgorithm, Connection, ConnectionParameters,
-    Error as TransportError, Output, RandomConnectionIdGenerator, StreamId, Version,
+    stream_id::StreamType, streams::SendGroupId, CongestionControl, Connection,
+    ConnectionParameters, Error as TransportError, HyStartCssBaseline, Output, OutputBatch,
+    RandomConnectionIdGenerator, SlowStart, Stats as TransportStats, StreamDataLimit, StreamId,
+    Version,
 };
 use nserror::{
-    nsresult, NS_BASE_STREAM_WOULD_BLOCK, NS_ERROR_CONNECTION_REFUSED, NS_ERROR_FAILURE,
-    NS_ERROR_FILE_ALREADY_EXISTS, NS_ERROR_ILLEGAL_VALUE, NS_ERROR_INVALID_ARG,
-    NS_ERROR_NET_HTTP3_PROTOCOL_ERROR, NS_ERROR_NET_INTERRUPT, NS_ERROR_NET_RESET,
-    NS_ERROR_NET_TIMEOUT, NS_ERROR_NOT_AVAILABLE, NS_ERROR_NOT_CONNECTED, NS_ERROR_OUT_OF_MEMORY,
-    NS_ERROR_SOCKET_ADDRESS_IN_USE, NS_ERROR_UNEXPECTED, NS_OK,
+    nsresult, NS_BASE_STREAM_WOULD_BLOCK, NS_ERROR_CONNECTION_REFUSED,
+    NS_ERROR_DOM_INVALID_HEADER_NAME, NS_ERROR_FILE_ALREADY_EXISTS, NS_ERROR_ILLEGAL_VALUE,
+    NS_ERROR_INVALID_ARG, NS_ERROR_NET_HTTP3_PROTOCOL_ERROR, NS_ERROR_NET_INTERRUPT,
+    NS_ERROR_NET_RESET, NS_ERROR_NET_TIMEOUT, NS_ERROR_NOT_AVAILABLE, NS_ERROR_NOT_CONNECTED,
+    NS_ERROR_OUT_OF_MEMORY, NS_ERROR_SOCKET_ADDRESS_IN_USE, NS_ERROR_UNEXPECTED, NS_OK,
 };
+use nss_rs::{cert::CertificateCompressor, init, PRErrorCode};
 use nsstring::{nsACString, nsCString};
 use thin_vec::ThinVec;
 use uuid::Uuid;
@@ -53,11 +60,25 @@ use winapi::{
     ctypes::c_int,
     shared::ws2def::{AF_INET, AF_INET6},
 };
-use xpcom::{interfaces::nsISocketProvider, AtomicRefcnt, RefCounted, RefPtr};
+use xpcom::{AtomicRefcnt, RefCounted, RefPtr};
+use zlib_rs::{decompress_slice, InflateConfig, ReturnCode};
 
 std::thread_local! {
-    static RECV_BUF: RefCell<neqo_udp::RecvBuf> = RefCell::new(neqo_udp::RecvBuf::new());
+    static RECV_BUF: RefCell<neqo_udp::RecvBuf> = RefCell::new(neqo_udp::RecvBuf::default());
 }
+
+/// Upper bound on the bytes read from the socket in a single `neqo_http3conn_process_input` pass.
+/// No legitimate connection reads this much at once, so the cap only bounds a misbehaving or
+/// malicious peer that would otherwise make us buffer datagrams unboundedly. Nothing is lost when
+/// the cap is hit: buffered events are delivered to the upper layer right after, and the
+/// level-triggered poll re-fires `RecvData` to read the rest.
+const MAX_BYTES_READ_PER_PASS: usize = 50 * 1024 * 1024;
+
+#[cfg(target_vendor = "apple")]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(target_vendor = "apple")]
+static APPLE_FAST_PATH: AtomicBool = AtomicBool::new(false);
 
 #[allow(clippy::cast_possible_truncation, reason = "see check below")]
 const AF_INET_U16: u16 = AF_INET as u16;
@@ -110,13 +131,24 @@ pub struct NeqoHttp3Conn {
     socket: Option<neqo_udp::Socket<BorrowedSocket>>,
     /// Buffered outbound datagram from previous send that failed with
     /// WouldBlock. To be sent once UDP socket has write-availability again.
-    buffered_outbound_datagram: Option<Datagram>,
+    buffered_outbound_datagram: Option<datagram::Batch>,
 
     datagram_segment_size_sent: LocalMemoryDistribution<'static>,
     datagram_segment_size_received: LocalMemoryDistribution<'static>,
+    datagram_size_sent: LocalMemoryDistribution<'static>,
     datagram_size_received: LocalMemoryDistribution<'static>,
+    datagram_segments_sent: LocalCustomDistribution<'static>,
     datagram_segments_received: LocalCustomDistribution<'static>,
     would_block_counter: WouldBlockCounter,
+    /// Maps the child-minted WebTransport send-group id (assigned synchronously in the
+    /// content process) to the neqo-minted [`SendGroupId`].
+    webtransport_send_groups: HashMap<u64, SendGroupId>,
+    /// Whether the connection-close reason has already been recorded to Glean.
+    /// A connection may surface a `Closing` state change followed later by a
+    /// `Closed` one; this guards against counting the same close twice while
+    /// still catching closes that skip `Closing` entirely (idle timeout).
+    #[cfg(not(target_os = "android"))]
+    close_reason_recorded: bool,
 }
 
 impl Drop for NeqoHttp3Conn {
@@ -164,6 +196,145 @@ fn netaddr_to_socket_addr(arg: *const NetAddr) -> Result<SocketAddr, nsresult> {
     Err(NS_ERROR_UNEXPECTED)
 }
 
+fn enable_zlib_decoder(c: &mut Connection) -> neqo_transport::Res<()> {
+    struct ZlibCertDecoder {}
+
+    impl CertificateCompressor for ZlibCertDecoder {
+        // RFC 8879
+        const ID: u16 = 0x1;
+        const NAME: &std::ffi::CStr = c"zlib";
+
+        fn decode(input: &[u8], output: &mut [u8]) -> nss_rs::Res<()> {
+            let (output_slice, error) = decompress_slice(output, &input, InflateConfig::default());
+            if error != ReturnCode::Ok {
+                return Err(nss_rs::Error::CertificateDecoding);
+            }
+            if output_slice.len() != output.len() {
+                return Err(nss_rs::Error::CertificateDecoding);
+            }
+
+            Ok(())
+        }
+    }
+
+    c.set_certificate_compression::<ZlibCertDecoder>()
+}
+
+extern "C" {
+    pub fn ZSTD_decompress(
+        dst: *mut ::core::ffi::c_void,
+        dstCapacity: usize,
+        src: *const ::core::ffi::c_void,
+        compressedSize: usize,
+    ) -> usize;
+}
+
+extern "C" {
+    pub fn ZSTD_isError(result: usize) -> ::core::ffi::c_uint;
+}
+
+fn enable_zstd_decoder(c: &mut Connection) -> neqo_transport::Res<()> {
+    struct ZstdCertDecoder {}
+
+    impl CertificateCompressor for ZstdCertDecoder {
+        // RFC 8879
+        const ID: u16 = 0x3;
+        const NAME: &std::ffi::CStr = c"zstd";
+
+        fn decode(input: &[u8], output: &mut [u8]) -> nss_rs::Res<()> {
+            if input.is_empty() {
+                return Err(nss_rs::Error::CertificateDecoding);
+            }
+            if output.is_empty() {
+                return Err(nss_rs::Error::CertificateDecoding);
+            }
+
+            let output_len = unsafe {
+                ZSTD_decompress(
+                    output.as_mut_ptr() as *mut c_void,
+                    output.len(),
+                    input.as_ptr() as *const c_void,
+                    input.len(),
+                )
+            };
+
+            // ZSTD_isError return 1 if error, 0 otherwise
+            if unsafe { ZSTD_isError(output_len) != 0 } {
+                qdebug!("zstd compression failed with {output_len}");
+                return Err(nss_rs::Error::CertificateDecoding);
+            }
+
+            if output.len() != output_len {
+                qdebug!("zstd compression `output_len` {output_len} doesn't match expected `output.len()` {}", output.len());
+                return Err(nss_rs::Error::CertificateDecoding);
+            }
+
+            Ok(())
+        }
+    }
+
+    c.set_certificate_compression::<ZstdCertDecoder>()
+}
+
+#[repr(C)]
+#[derive(Debug, PartialEq)]
+pub enum BrotliDecoderResult {
+    Error = 0,
+    Success = 1,
+    NeedsMoreInput = 2,
+    NeedsMoreOutput = 3,
+}
+
+extern "C" {
+    pub fn BrotliDecoderDecompress(
+        encoded_size: size_t,
+        encoded_buffer: *const c_uchar,
+        decoded_size: *mut size_t,
+        decoded_buffer: *mut c_uchar,
+    ) -> BrotliDecoderResult;
+}
+
+fn enable_brotli_decoder(c: &mut Connection) -> neqo_transport::Res<()> {
+    struct BrotliCertDecoder {}
+
+    impl CertificateCompressor for BrotliCertDecoder {
+        // RFC 8879
+        const ID: u16 = 0x2;
+        const NAME: &std::ffi::CStr = c"brotli";
+
+        fn decode(input: &[u8], output: &mut [u8]) -> nss_rs::Res<()> {
+            if input.is_empty() {
+                return Err(nss_rs::Error::CertificateDecoding);
+            }
+            if output.is_empty() {
+                return Err(nss_rs::Error::CertificateDecoding);
+            }
+
+            let mut uncompressed_size = output.len();
+            let result = unsafe {
+                BrotliDecoderDecompress(
+                    input.len(),
+                    input.as_ptr(),
+                    &mut uncompressed_size as *mut usize,
+                    output.as_mut_ptr(),
+                )
+            };
+
+            if result != BrotliDecoderResult::Success {
+                return Err(nss_rs::Error::CertificateDecoding);
+            }
+
+            if uncompressed_size != output.len() {
+                return Err(nss_rs::Error::CertificateDecoding);
+            }
+
+            Ok(())
+        }
+    }
+
+    c.set_certificate_compression::<BrotliCertDecoder>()
+}
+
 type SendFunc = extern "C" fn(
     context: *mut c_void,
     addr_family: u16,
@@ -204,9 +375,9 @@ impl NeqoHttp3Conn {
         version_negotiation: bool,
         webtransport: bool,
         qlog_dir: &nsACString,
-        webtransport_datagram_size: u32,
-        provider_flags: u32,
         idle_timeout: u32,
+        fast_pto: u32,
+        pmtud_enabled: bool,
         socket: Option<i64>,
     ) -> Result<RefPtr<Self>, nsresult> {
         // Nss init.
@@ -240,10 +411,21 @@ impl NeqoHttp3Conn {
                     })?;
                     unsafe { BorrowedSocket::borrow_raw(raw) }
                 };
-                neqo_udp::Socket::new(borrowed).map_err(|e| {
+                let s = neqo_udp::Socket::new(borrowed).map_err(|e| {
                     qerror!("failed to initialize socket {}: {}", socket, e);
                     into_nsresult(&e)
-                })
+                })?;
+                // Called after Socket::new (which sets up IP_RECVTOS etc.) since
+                // enable_apple_fast_path only sets the fast-path flag on the
+                // already-constructed UdpSocketState.
+                #[cfg(target_vendor = "apple")]
+                if APPLE_FAST_PATH.load(Ordering::Relaxed)
+                    && static_prefs::pref!("network.http.http3.apple_fast_datapath")
+                {
+                    // SAFETY: The probe has verified the APIs work on this OS version.
+                    unsafe { s.enable_apple_fast_path() }
+                }
+                Ok(s)
             })
             .transpose()?;
 
@@ -267,26 +449,68 @@ impl NeqoHttp3Conn {
         };
 
         let cc_algorithm = match static_prefs::pref!("network.http.http3.cc_algorithm") {
-            0 => CongestionControlAlgorithm::NewReno,
-            1 => CongestionControlAlgorithm::Cubic,
+            0 => CongestionControl::NewReno,
+            1 => CongestionControl::Cubic,
             _ => {
                 // Unknown preferences; default to Cubic
-                CongestionControlAlgorithm::Cubic
+                CongestionControl::Cubic
             }
         };
 
+        let slow_start = match static_prefs::pref!("network.http.http3.slow_start_algorithm") {
+            0 => SlowStart::Classic,
+            1 => SlowStart::HyStart,
+            2 => SlowStart::Search,
+            _ => {
+                // Unknown preferences; default to Classic
+                debug!("Unknown http3.slow_start_algorithm pref, defaulting to SlowStart::Classic");
+                SlowStart::Classic
+            }
+        };
+
+        let pmtud_enabled =
+            // Check if PMTUD is explicitly enabled,
+            pmtud_enabled
+            // or enabled via pref,
+            || static_prefs::pref!("network.http.http3.pmtud")
+            // but disable PMTUD if NSPR is used (socket == None) or
+            // transmitted UDP datagrams might get fragmented by the IP layer.
+            && socket.as_ref().map_or(false, |s| !s.may_fragment());
+
+        let spurious_recovery = static_prefs::pref!("network.http.http3.spurious_recovery");
+
+        let css_baseline =
+            if static_prefs::pref!("network.http.http3.hystart_alternative_css_baseline") {
+                HyStartCssBaseline::EntryThreshold
+            } else {
+                HyStartCssBaseline::CurrentRoundMinRtt
+            };
+
         let mut params = ConnectionParameters::default()
             .versions(quic_version, version_list)
-            .cc_algorithm(cc_algorithm)
+            .congestion_control(cc_algorithm)
+            .slow_start(slow_start)
             .max_data(max_data)
-            .max_stream_data(StreamType::BiDi, false, max_stream_data)
+            .max_stream_data(StreamDataLimit::BiDiLocal, max_stream_data)
             .grease(static_prefs::pref!("security.tls.grease_http3_enable"))
             .sni_slicing(static_prefs::pref!("network.http.http3.sni-slicing"))
             .idle_timeout(Duration::from_secs(idle_timeout.into()))
             // Disabled on OpenBSD. See <https://bugzilla.mozilla.org/show_bug.cgi?id=1952304>.
             .pmtud_iface_mtu(cfg!(not(target_os = "openbsd")))
             // MLKEM support is configured further below. By default, disable it.
-            .mlkem(false);
+            .mlkem(false)
+            .pmtud(pmtud_enabled)
+            .spurious_recovery(spurious_recovery)
+            .hystart_css_baseline(css_baseline);
+
+        // 0 means "use neqo's spec-compliant default PTO scaling".
+        if fast_pto > 0 {
+            if let Ok(v) = u8::try_from(fast_pto) {
+                params = params.fast_pto(v);
+            } else {
+                debug_assert!(false, "fast_pto value {fast_pto} exceeds u8::MAX");
+            }
+        }
 
         // Set a short timeout when fuzzing.
         #[cfg(feature = "fuzzing")]
@@ -294,18 +518,14 @@ impl NeqoHttp3Conn {
             params = params.idle_timeout(Duration::from_millis(10));
         }
 
-        if webtransport_datagram_size > 0 {
-            params = params.datagram_size(webtransport_datagram_size.into());
-        }
-
         let http3_settings = Http3Parameters::default()
             .max_table_size_encoder(max_table_size)
             .max_table_size_decoder(max_table_size)
             .max_blocked_streams(max_blocked_streams)
-            .max_concurrent_push_streams(0)
             .connection_parameters(params)
             .webtransport(webtransport)
-            .http3_datagram(webtransport);
+            .connect(true)
+            .http3_datagram(true);
 
         let Ok(mut conn) = Connection::new_client(
             origin_conv,
@@ -319,30 +539,50 @@ impl NeqoHttp3Conn {
             return Err(NS_ERROR_INVALID_ARG);
         };
 
-        let mut additional_shares = usize::from(static_prefs::pref!(
-            "security.tls.client_hello.send_p256_keyshare"
-        ));
+        let mut additional_shares = 1;
+        let mut named_groups = Vec::with_capacity(6);
         if static_prefs::pref!("security.tls.enable_kyber")
             && static_prefs::pref!("network.http.http3.enable_kyber")
-            && (provider_flags & nsISocketProvider::IS_RETRY) == 0
-            && (provider_flags & nsISocketProvider::BE_CONSERVATIVE) == 0
         {
-            // These operations are infallible when conn.state == State::Init.
-            conn.set_groups(&[
-                neqo_crypto::TLS_GRP_KEM_MLKEM768X25519,
-                neqo_crypto::TLS_GRP_EC_X25519,
-                neqo_crypto::TLS_GRP_EC_SECP256R1,
-                neqo_crypto::TLS_GRP_EC_SECP384R1,
-                neqo_crypto::TLS_GRP_EC_SECP521R1,
-            ])
-            .map_err(|_| NS_ERROR_UNEXPECTED)?;
+            named_groups.push(nss_rs::TLS_GRP_KEM_MLKEM768X25519);
             additional_shares += 1;
         }
+        named_groups.extend_from_slice(&[
+            nss_rs::TLS_GRP_EC_X25519,
+            nss_rs::TLS_GRP_EC_SECP256R1,
+            nss_rs::TLS_GRP_EC_SECP384R1,
+            nss_rs::TLS_GRP_EC_SECP521R1,
+        ]);
+        // ML-KEM-1024 goes last so that it is never offered as a key share, but can
+        // still be negotiated through a HelloRetryRequest.
+        if static_prefs::pref!("security.tls.enable_mlkem1024") {
+            named_groups.push(nss_rs::TLS_GRP_KEM_MLKEM1024);
+        }
+        // These operations are infallible when conn.state == State::Init.
+        conn.set_groups(&named_groups)
+            .map_err(|_| NS_ERROR_UNEXPECTED)?;
         // If additional_shares == 2, send mlkem768x25519, x25519, and p256.
-        // If additional_shares == 1, send {mlkem768x25519, x25519} or {x25519, p256}.
-        // If additional_shares == 0, send x25519.
+        // If additional_shares == 1, send x25519 and p256.
         conn.send_additional_key_shares(additional_shares)
             .map_err(|_| NS_ERROR_UNEXPECTED)?;
+
+        if static_prefs::pref!("security.tls.enable_certificate_compression_zlib")
+            && static_prefs::pref!("network.http.http3.enable_certificate_compression_zlib")
+        {
+            enable_zlib_decoder(&mut conn).map_err(|_| NS_ERROR_UNEXPECTED)?;
+        }
+
+        if static_prefs::pref!("security.tls.enable_certificate_compression_zstd")
+            && static_prefs::pref!("network.http.http3.enable_certificate_compression_zstd")
+        {
+            enable_zstd_decoder(&mut conn).map_err(|_| NS_ERROR_UNEXPECTED)?;
+        }
+
+        if static_prefs::pref!("security.tls.enable_certificate_compression_brotli")
+            && static_prefs::pref!("network.http.http3.enable_certificate_compression_brotli")
+        {
+            enable_brotli_decoder(&mut conn).map_err(|_| NS_ERROR_UNEXPECTED)?;
+        }
 
         let mut conn = Http3Client::new_with_conn(conn, http3_settings);
 
@@ -350,22 +590,19 @@ impl NeqoHttp3Conn {
             let qlog_dir_conv = str::from_utf8(qlog_dir).map_err(|_| NS_ERROR_INVALID_ARG)?;
             let qlog_path = PathBuf::from(qlog_dir_conv);
 
-            match NeqoQlog::enabled_with_file(
+            match Qlog::enabled_with_file(
                 qlog_path.clone(),
                 Role::Client,
                 Some("Firefox Client qlog".to_string()),
                 Some("Firefox Client qlog".to_string()),
                 format!("{}_{}.qlog", origin, Uuid::new_v4()),
+                Instant::now(),
             ) {
                 Ok(qlog) => conn.set_qlog(qlog),
                 Err(e) => {
                     // Emit warnings but to not return an error if qlog initialization
                     // fails.
-                    qwarn!(
-                        "failed to create NeqoQlog at {}: {}",
-                        qlog_path.display(),
-                        e
-                    );
+                    qwarn!("failed to create Qlog at {}: {}", qlog_path.display(), e);
                 }
             }
         }
@@ -379,21 +616,48 @@ impl NeqoHttp3Conn {
                 .start_buffer(),
             datagram_segment_size_received: networking::http_3_udp_datagram_segment_size_received
                 .start_buffer(),
+            datagram_size_sent: networking::http_3_udp_datagram_size_sent.start_buffer(),
             datagram_size_received: networking::http_3_udp_datagram_size_received.start_buffer(),
+            datagram_segments_sent: networking::http_3_udp_datagram_segments_sent.start_buffer(),
             datagram_segments_received: networking::http_3_udp_datagram_segments_received
                 .start_buffer(),
             buffered_outbound_datagram: None,
             would_block_counter: WouldBlockCounter::new(),
+            webtransport_send_groups: HashMap::new(),
+            #[cfg(not(target_os = "android"))]
+            close_reason_recorded: false,
         }));
         unsafe { RefPtr::from_raw(conn).ok_or(NS_ERROR_NOT_CONNECTED) }
     }
 
+    /// Record the reason this HTTP/3 connection closed to Glean, at most once
+    /// per connection. Called from both the `Closing` and `Closed` state
+    /// changes: closes that go through a closing handshake surface `Closing`
+    /// first, while closes that skip it (idle timeout) surface only `Closed`.
     #[cfg(not(target_os = "android"))]
+    fn record_close_reason(&mut self, reason: &neqo_transport::CloseReason) {
+        if self.close_reason_recorded {
+            return;
+        }
+        self.close_reason_recorded = true;
+
+        let glean_label = match reason {
+            neqo_transport::CloseReason::Application(_) => "Application",
+            neqo_transport::CloseReason::Transport(r) => transport_error_to_glean_label(r),
+        };
+        networking::http_3_connection_close_reason
+            .get(glean_label)
+            .add(1);
+    }
+
     fn record_stats_in_glean(&self) {
         use firefox_on_glean::metrics::networking as glean;
-        use neqo_common::IpTosEcn;
-        use neqo_transport::ecn;
+        use neqo_common::Ecn;
+        use neqo_transport::{ecn, SlowStartExitReason};
+        use std::cmp::Ordering;
 
+        /// The biggest initial congestion window that can be set in neqo. Needs to be kept in sync with neqo.
+        const MAX_INITIAL_CWND: usize = 12520;
         // Metric values must be recorded as integers. Glean does not support
         // floating point distributions. In order to represent values <1, they
         // are multiplied by `PRECISION_FACTOR`. A `PRECISION_FACTOR` of
@@ -440,13 +704,43 @@ impl NeqoHttp3Conn {
             add("datagram", s.datagram);
         }
 
+        // Only record the metrics below for connections that established. Not
+        // gating on `stats.packets_rx` as it counts garbage too, so it would
+        // still admit a network that replies to every UDP packet with junk
+        // without ever speaking QUIC.
+        if stats.frame_rx.handshake_done == 0 {
+            return;
+        }
+
+        let version_label = match stats.version {
+            Version::Version1 => "v1",
+            Version::Version2 => "v2",
+        };
+        glean::http_3_quic_version.get(version_label).add(1);
+
+        // neqo's `pto_counts` is a sliding histogram: the highest set bucket is
+        // the longest run of consecutive PTOs the connection saw, i.e. how deep
+        // it fell into a black hole. Record that run length once per connection.
+        let max_consecutive_ptos = i64::try_from(
+            stats
+                .pto_counts
+                .iter()
+                .rposition(|&count| count > 0)
+                .map_or(0, |i| i + 1),
+        )
+        .unwrap_or(i64::MAX);
+        glean::http_3_max_consecutive_ptos.accumulate_single_sample_signed(max_consecutive_ptos);
+
         if !static_prefs::pref!("network.http.http3.use_nspr_for_io")
             && static_prefs::pref!("network.http.http3.ecn_report")
-            && stats.frame_rx.handshake_done != 0
         {
-            let rx_ect0_sum: u64 = stats.ecn_rx.into_values().map(|v| v[IpTosEcn::Ect0]).sum();
-            let rx_ce_sum: u64 = stats.ecn_rx.into_values().map(|v| v[IpTosEcn::Ce]).sum();
-            if rx_ect0_sum > 0 {
+            let rx_ect0_sum: u64 = stats.ecn_rx.into_values().map(|v| v[Ecn::Ect0]).sum();
+            let rx_ect1_sum: u64 = stats.ecn_rx.into_values().map(|v| v[Ecn::Ect1]).sum();
+            let rx_ce_sum: u64 = stats.ecn_rx.into_values().map(|v| v[Ecn::Ce]).sum();
+
+            // A CE mark can't be attributed to a specific ECT type on connections that saw
+            // both, so the per-type ratio and count metrics below are gated on exclusivity.
+            if rx_ect0_sum > 0 && rx_ect1_sum == 0 {
                 if let Ok(ratio) = i64::try_from((rx_ce_sum * PRECISION_FACTOR) / rx_ect0_sum) {
                     glean::http_3_ecn_ce_ect0_ratio_received.accumulate_single_sample_signed(ratio);
                 } else {
@@ -455,14 +749,25 @@ impl NeqoHttp3Conn {
                     debug_assert!(false, "{msg}");
                 }
             }
+
+            // Per-connection classification of the server's ECN marking (answers "% of servers").
+            let label = match (rx_ect0_sum > 0, rx_ect1_sum > 0, rx_ce_sum > 0) {
+                (true, true, _) => "ect0-and-ect1",
+                (true, false, false) => "ect0",
+                (false, true, false) => "ect1",
+                (true, false, true) => "ect0-and-ce",
+                (false, true, true) => "ect1-and-ce",
+                (false, false, true) => "ce-only",
+                (false, false, false) => "none",
+            };
+            glean::http_3_ecn_ect_received.get(label).add(1);
         }
 
         if !static_prefs::pref!("network.http.http3.use_nspr_for_io")
             && static_prefs::pref!("network.http.http3.ecn_mark")
-            && stats.frame_rx.handshake_done != 0
         {
-            let tx_ect0_sum: u64 = stats.ecn_tx.into_values().map(|v| v[IpTosEcn::Ect0]).sum();
-            let tx_ce_sum: u64 = stats.ecn_tx.into_values().map(|v| v[IpTosEcn::Ce]).sum();
+            let tx_ect0_sum: u64 = stats.ecn_tx_acked.into_values().map(|v| v[Ecn::Ect0]).sum();
+            let tx_ce_sum: u64 = stats.ecn_tx_acked.into_values().map(|v| v[Ecn::Ce]).sum();
             if tx_ect0_sum > 0 {
                 if let Ok(ratio) = i64::try_from((tx_ce_sum * PRECISION_FACTOR) / tx_ect0_sum) {
                     glean::http_3_ecn_ce_ect0_ratio_sent.accumulate_single_sample_signed(ratio);
@@ -504,25 +809,229 @@ impl NeqoHttp3Conn {
             }
         }
 
-        // Ignore connections into the void.
-        if stats.packets_rx != 0 {
-            if let Ok(loss) =
-                i64::try_from((stats.lost * PRECISION_FACTOR_USIZE) / stats.packets_tx)
-            {
-                glean::http_3_loss_ratio.accumulate_single_sample_signed(loss);
+        // Calculate and collect packet loss ratio. The value is used later to also record the filtered loss ratio for connections that used the congestion controller.
+        let loss_ratio =
+            match i64::try_from((stats.lost * PRECISION_FACTOR_USIZE) / stats.packets_tx) {
+                Ok(v) => {
+                    glean::http_3_loss_ratio.accumulate_single_sample_signed(v);
+                    Some(v)
+                }
+                Err(e) => {
+                    qwarn!("Failed to convert ratio to i64 for use with glean: {e}");
+                    debug_assert!(
+                        false,
+                        "Failed to convert ratio to i64 for use with glean: {e}"
+                    );
+                    None
+                }
+            };
+        // Records the unfiltered (old) slow start exit ratio
+        if stats.cc.slow_start_exit.is_some() {
+            glean::http_3_slow_start_exited.get("exited").add(1);
+        } else {
+            glean::http_3_slow_start_exited.get("not_exited").add(1);
+        }
+
+        let cwnd_that_grew = (stats.cc.cwnd > MAX_INITIAL_CWND).then_some(stats.cc.cwnd);
+        let growth_label = match (
+            cwnd_that_grew,
+            stats.cc.slow_start_exit.as_ref().map(|e| e.exit_cwnd),
+        ) {
+            (Some(_), Some(exit_cwnd)) if exit_cwnd < MAX_INITIAL_CWND => {
+                "no_growth_then_exit_then_growth"
+            }
+            (Some(_), _) => "had_growth",
+            (None, Some(_)) => "no_growth_but_exit",
+            (None, None) => "no_growth",
+        };
+        glean::http_3_congestion_window_growth
+            .get(growth_label)
+            .add(1);
+        // Filtered: only record CC metrics for connections that grew past the initial window.
+        if let Some(final_cwnd) = cwnd_that_grew {
+            glean::http_3_final_cwnd.accumulate(final_cwnd as u64);
+            if let Some(loss) = loss_ratio {
+                glean::http_3_loss_ratio_filtered.accumulate_single_sample_signed(loss);
+            }
+            // Record metrics concerning the slow start exit point below this filter.
+            let mut hystart_label = "not_exited";
+            let mut search_label = "not_exited";
+            if let Some(slow_start_exit) = stats.cc.slow_start_exit.as_ref() {
+                let exit_cwnd = slow_start_exit.exit_cwnd;
+                let reason = &slow_start_exit.reason;
+                glean::http_3_slow_start_exit_cwnd.accumulate(exit_cwnd as u64);
+                glean::http_3_slow_start_exited_filtered
+                    .get("exited")
+                    .add(1);
+                let accuracy_cwnd =
+                    ((exit_cwnd.abs_diff(final_cwnd) as f64) / final_cwnd as f64) * 100.0;
+                let accuracy_w_max = if let Some(final_w_max) = stats.cc.w_max {
+                    assert!(final_w_max > 0.0, "w_max can never be non-positive");
+                    glean::http_3_final_w_max.accumulate(final_w_max as u64);
+                    Some(((exit_cwnd as f64 - final_w_max).abs() / final_w_max) * 100.0)
+                } else {
+                    None
+                };
+                let direction_label = match exit_cwnd.cmp(&final_cwnd) {
+                    Ordering::Greater => "overshoot",
+                    Ordering::Less => "undershoot",
+                    Ordering::Equal => "exact",
+                };
+                let (reason_label, accuracy_label) = match reason {
+                    SlowStartExitReason::CongestionEvent(_) => {
+                        glean::http_3_slow_start_exit_direction_loss
+                            .get(direction_label)
+                            .add(1);
+                        hystart_label = "exited_ce";
+                        search_label = "exited_ce";
+                        ("ce", "ce_exit")
+                    }
+                    SlowStartExitReason::Heuristic => {
+                        glean::http_3_slow_start_exit_direction_heuristic
+                            .get(direction_label)
+                            .add(1);
+                        hystart_label = "exited_hystart";
+                        search_label = "exited_search";
+                        ("heuristic", "heuristic_exit")
+                    }
+                };
+                glean::http_3_slow_start_exit_reason
+                    .get(reason_label)
+                    .add(1);
+                glean::http_3_slow_start_exit_accuracy
+                    .get(accuracy_label)
+                    .accumulate_single_sample_signed(accuracy_cwnd as i64);
+                if let Some(accuracy_w_max) = accuracy_w_max {
+                    glean::http_3_slow_start_exit_accuracy_w_max
+                        .get(accuracy_label)
+                        .accumulate_single_sample_signed(accuracy_w_max as i64);
+                }
+            } else {
+                glean::http_3_slow_start_exited_filtered
+                    .get("not_exited")
+                    .add(1);
+            }
+            // Only record HyStart metrics when HyStart is enabled (1 == HyStart, see constructor).
+            if static_prefs::pref!("network.http.http3.slow_start_algorithm") == 1 {
+                glean::http_3_hystart_css_rounds_finished
+                    .get(hystart_label)
+                    .accumulate_single_sample_signed(stats.cc.hystart_css_rounds_finished as i64);
+                glean::http_3_hystart_css_entries
+                    .get(hystart_label)
+                    .accumulate_single_sample_signed(stats.cc.hystart_css_entries as i64);
+            }
+
+            // Only record SEARCH metrics when SEARCH is enabled (2 == SEARCH, see constructor).
+            if static_prefs::pref!("network.http.http3.slow_start_algorithm") == 2 {
+                // Metrics for drain phase evaluation
+                if let Some(empty_buffer_bdp) = stats.cc.search_empty_buffer_target {
+                    glean::http_3_search_empty_buffer_bdp_estimate.accumulate(empty_buffer_bdp);
+                }
+                if let Some(full_buffer_bdp) = stats.cc.search_full_buffer_target {
+                    glean::http_3_search_full_buffer_bdp_estimate.accumulate(full_buffer_bdp);
+                }
+                // Metrics to tune EXTRA_BINS
+                if let Some(lookback_bins) = stats.cc.search_lookback_bins_needed {
+                    glean::http_3_search_lookback_bins
+                        .accumulate_single_sample_signed(lookback_bins as i64);
+                    glean::http_3_search_rtt_inflated.get("inflated").add(1);
+                } else {
+                    glean::http_3_search_rtt_inflated
+                        .get("never_inflated")
+                        .add(1);
+                }
+                // Metrics to tune THRESH
+                if let Some(max_norm_diff) = stats.cc.search_max_norm_diff {
+                    glean::http_3_search_max_norm_diff
+                        .get(search_label)
+                        .accumulate_single_sample_signed(max_norm_diff as i64);
+                }
+                // Metrics to calibrate reset mechanism
+                glean::http_3_search_reset_count
+                    .get(search_label)
+                    .accumulate_single_sample_signed(stats.cc.search_reset.count as i64);
+                if let Some(max_passed_bins) = stats.cc.search_reset.max_passed_bins {
+                    glean::http_3_search_max_passed_bins
+                        .accumulate_single_sample_signed(max_passed_bins as i64);
+                }
+                // Metrics to gain insights into app-limited behavior during SEARCH slow start
+                glean::http_3_search_zero_bytes_sent
+                    .get(search_label)
+                    .accumulate_single_sample_signed(stats.cc.search_zero_sent_bytes as i64);
+
+                // Metrics to evaluate whether the first RTT used to initialize SEARCH is inflated
+                if let Some(first_rtt) = stats.cc.search_first_rtt {
+                    let first_us = u64::try_from(first_rtt.as_micros()).unwrap_or(u64::MAX);
+                    let min_us = u64::try_from(stats.min_rtt.as_micros()).unwrap_or(u64::MAX);
+                    if min_us > 0 {
+                        glean::http_3_search_first_rtt_vs_min_rtt
+                            .accumulate_single_sample_signed((first_us * 100 / min_us) as i64);
+                    }
+                    // And whether using `min(first, second)` would be a viable fix
+                    if let Some(second_rtt) = stats.cc.search_second_rtt {
+                        let second_us = u64::try_from(second_rtt.as_micros()).unwrap_or(u64::MAX);
+                        if second_us > 0 {
+                            glean::http_3_search_first_rtt_vs_second_rtt
+                                .accumulate_single_sample_signed(
+                                    (first_us * 100 / second_us) as i64,
+                                );
+                        }
+                    }
+                }
+            }
+        }
+
+        glean::http_3_congestion_event_count.accumulate_single_sample_signed(
+            (stats.cc.congestion_events.ecn + stats.cc.congestion_events.loss)
+                .saturating_sub(stats.cc.congestion_events.spurious) as i64,
+        );
+
+        if let Some(peer_max) = stats.pmtud_peer_max_udp_payload {
+            if let Ok(v) = i64::try_from(peer_max) {
+                glean::http_3_peer_max_udp_payload.accumulate_single_sample_signed(v);
+            }
+        }
+
+        let rtt_ms = |d: Duration| i64::try_from(d.as_millis()).unwrap_or(i64::MAX);
+        glean::http_3_rtt.accumulate_single_sample_signed(rtt_ms(stats.rtt));
+        glean::http_3_rtt_var.accumulate_single_sample_signed(rtt_ms(stats.rttvar));
+        glean::http_3_min_rtt.accumulate_single_sample_signed(rtt_ms(stats.min_rtt));
+
+        // Ignore connections that never had loss induced congestion events (and prevent dividing by zero).
+        if stats.cc.congestion_events.loss != 0 {
+            if let Ok(spurious) = i64::try_from(
+                (stats.cc.congestion_events.spurious * PRECISION_FACTOR_USIZE)
+                    / stats.cc.congestion_events.loss,
+            ) {
+                glean::http_3_spurious_congestion_event_ratio
+                    .accumulate_single_sample_signed(spurious);
             } else {
                 let msg = "Failed to convert ratio to i64 for use with glean";
                 qwarn!("{msg}");
                 debug_assert!(false, "{msg}");
             }
         }
-    }
 
-    // Noop on Android for now, due to performance regressions.
-    // - <https://bugzilla.mozilla.org/show_bug.cgi?id=1898810>
-    // - <https://bugzilla.mozilla.org/show_bug.cgi?id=1906664>
-    #[cfg(target_os = "android")]
-    fn record_stats_in_glean(&self) {}
+        // Collect congestion event reason metric
+        if let Ok(ce_loss) = i32::try_from(stats.cc.congestion_events.loss) {
+            glean::http_3_congestion_event_reason
+                .get("loss")
+                .add(ce_loss);
+        } else {
+            let msg = "Failed to convert to i32 for use with glean";
+            qwarn!("{msg}");
+            debug_assert!(false, "{msg}");
+        }
+        if let Ok(ce_ecn) = i32::try_from(stats.cc.congestion_events.ecn) {
+            glean::http_3_congestion_event_reason
+                .get("ecn-ce")
+                .add(ce_ecn);
+        } else {
+            let msg = "Failed to convert to i32 for use with glean";
+            qwarn!("{msg}");
+            debug_assert!(false, "{msg}");
+        }
+    }
 
     fn increment_would_block_rx(&mut self) {
         self.would_block_counter.increment_rx();
@@ -586,10 +1095,10 @@ pub extern "C" fn neqo_http3conn_new(
     version_negotiation: bool,
     webtransport: bool,
     qlog_dir: &nsACString,
-    webtransport_datagram_size: u32,
-    provider_flags: u32,
     idle_timeout: u32,
+    fast_pto: u32,
     socket: i64,
+    pmtud_enabled: bool,
     result: &mut *const NeqoHttp3Conn,
 ) -> nsresult {
     *result = ptr::null_mut();
@@ -606,9 +1115,9 @@ pub extern "C" fn neqo_http3conn_new(
         version_negotiation,
         webtransport,
         qlog_dir,
-        webtransport_datagram_size,
-        provider_flags,
         idle_timeout,
+        fast_pto,
+        pmtud_enabled,
         Some(socket),
     ) {
         Ok(http3_conn) => {
@@ -633,9 +1142,8 @@ pub extern "C" fn neqo_http3conn_new_use_nspr_for_io(
     version_negotiation: bool,
     webtransport: bool,
     qlog_dir: &nsACString,
-    webtransport_datagram_size: u32,
-    provider_flags: u32,
     idle_timeout: u32,
+    fast_pto: u32,
     result: &mut *const NeqoHttp3Conn,
 ) -> nsresult {
     *result = ptr::null_mut();
@@ -652,9 +1160,9 @@ pub extern "C" fn neqo_http3conn_new_use_nspr_for_io(
         version_negotiation,
         webtransport,
         qlog_dir,
-        webtransport_datagram_size,
-        provider_flags,
         idle_timeout,
+        fast_pto,
+        false,
         None,
     ) {
         Ok(http3_conn) => {
@@ -686,7 +1194,7 @@ pub unsafe extern "C" fn neqo_http3conn_process_input_use_nspr_for_io(
     let d = Datagram::new(
         remote,
         conn.local_addr,
-        IpTos::default(),
+        Tos::default(),
         (*packet).as_slice(),
     );
     conn.conn.process_input(d, Instant::now());
@@ -747,7 +1255,7 @@ pub unsafe extern "C" fn neqo_http3conn_process_input(
             let ecn_enabled = static_prefs::pref!("network.http.http3.ecn_report");
             let dgrams = dgrams.map(|mut d| {
                 if !ecn_enabled {
-                    d.set_tos(IpTos::default());
+                    d.set_tos(Tos::default());
                 }
                 d
             });
@@ -757,6 +1265,14 @@ pub unsafe extern "C" fn neqo_http3conn_process_input(
             conn.datagram_size_received.accumulate(sum as u64);
             conn.datagram_segments_received.accumulate(segment_count);
             bytes_read += sum;
+
+            if bytes_read >= MAX_BYTES_READ_PER_PASS {
+                qwarn!(
+                    "reached the {MAX_BYTES_READ_PER_PASS} byte receive cap in a single pass; \
+                     yielding to deliver buffered events, will continue on the next RecvData"
+                );
+                break;
+            }
         }
 
         ProcessInputResult {
@@ -840,15 +1356,35 @@ pub extern "C" fn neqo_http3conn_process_output_and_send(
 ) -> ProcessOutputAndSendResult {
     let mut bytes_written: usize = 0;
     loop {
+        let Ok(max_gso_segments) = min(
+            static_prefs::pref!("network.http.http3.max_gso_segments")
+                .try_into()
+                .expect("u32 fit usize"),
+            conn.socket
+                .as_mut()
+                .expect("non NSPR IO")
+                .max_gso_segments(),
+        )
+        .try_into() else {
+            qerror!("Socket return GSO size of 0");
+            return ProcessOutputAndSendResult {
+                result: NS_ERROR_UNEXPECTED,
+                bytes_written: 0,
+            };
+        };
+
         let output = conn
             .buffered_outbound_datagram
             .take()
-            .map(Output::Datagram)
-            .unwrap_or_else(|| conn.conn.process_output(Instant::now()));
+            .map(OutputBatch::DatagramBatch)
+            .unwrap_or_else(|| {
+                conn.conn
+                    .process_multiple_output(Instant::now(), max_gso_segments)
+            });
         match output {
-            Output::Datagram(mut dg) => {
+            OutputBatch::DatagramBatch(mut dg) => {
                 if !static_prefs::pref!("network.http.http3.ecn_mark") {
-                    dg.set_tos(IpTos::default());
+                    dg.set_tos(Tos::default());
                 }
 
                 if static_prefs::pref!("network.http.http3.block_loopback_ipv6_addr")
@@ -880,6 +1416,30 @@ pub extern "C" fn neqo_http3conn_process_output_and_send(
                             break;
                         }
                     }
+                    Err(e) if e.raw_os_error() == Some(libc::EIO) && dg.num_datagrams() > 1 => {
+                        // GSO is unsupported on this send path. quinn-udp has now
+                        // disabled GSO for subsequent sends, but the kernel
+                        // dropped the current batch. Resend it as individual
+                        // datagrams right away, rather than waiting for the QUIC
+                        // PTO (~300ms) to retransmit.
+                        //
+                        // See following resources for details:
+                        // - <https://bugzilla.mozilla.org/show_bug.cgi?id=2049334>
+                        // - <https://bugzilla.mozilla.org/show_bug.cgi?id=1989895>
+                        // - <https://github.com/quinn-rs/quinn/blob/93b6d01605147b9763ee1b1b381a6feb9fcd454e/quinn-udp/src/unix.rs#L345-L349>
+                        //
+                        // Long term this fallback belongs in quinn-udp, see
+                        // <https://github.com/quinn-rs/quinn/issues/2399>.
+                        qdebug!("Failed to send datagram batch size {} with error {e}. Missing GSO support? Resending as individual datagrams.", dg.num_datagrams());
+                        let socket = conn.socket.as_mut().expect("non NSPR IO");
+                        for single in dg.iter() {
+                            let single = datagram::Batch::from(single.to_owned());
+                            if let Err(e) = socket.send(&single) {
+                                qwarn!("failed to resend datagram without GSO: {e}");
+                                break;
+                            }
+                        }
+                    }
                     Err(e) => {
                         qwarn!("failed to send datagram: {}", e);
                         return ProcessOutputAndSendResult {
@@ -888,10 +1448,24 @@ pub extern "C" fn neqo_http3conn_process_output_and_send(
                         };
                     }
                 }
-                bytes_written += dg.len();
-                conn.datagram_segment_size_sent.accumulate(dg.len() as u64);
+                bytes_written += dg.data().len();
+
+                // Glean metrics
+                conn.datagram_size_sent.accumulate(dg.data().len() as u64);
+                conn.datagram_segments_sent
+                    .accumulate(dg.num_datagrams() as u64);
+                for _ in 0..(dg.data().len() / dg.datagram_size()) {
+                    conn.datagram_segment_size_sent
+                        .accumulate(dg.datagram_size().get() as u64);
+                }
+                conn.datagram_segment_size_sent.accumulate(
+                    dg.data()
+                        .len()
+                        .checked_rem(dg.datagram_size().get())
+                        .expect("datagram_size is a NonZeroUsize") as u64,
+                );
             }
-            Output::Callback(to) => {
+            OutputBatch::Callback(to) => {
                 let timeout = if to.is_zero() {
                     Duration::from_millis(1)
                 } else {
@@ -906,7 +1480,7 @@ pub extern "C" fn neqo_http3conn_process_output_and_send(
                 set_timer_func(context, timeout);
                 break;
             }
-            Output::None => {
+            OutputBatch::None => {
                 set_timer_func(context, u64::MAX);
                 break;
             }
@@ -942,36 +1516,59 @@ fn parse_headers(headers: &nsACString) -> Result<Vec<Header>, nsresult> {
     let mut hdrs = Vec::new();
     // this is only used for headers built by Firefox.
     // Firefox supplies all headers already prepared for sending over http1.
-    // They need to be split into (String, String) pairs.
-    match str::from_utf8(headers) {
-        Err(_) => {
-            return Err(NS_ERROR_INVALID_ARG);
-        }
-        Ok(h) => {
-            for elem in h.split("\r\n").skip(1) {
-                if elem.starts_with(':') {
-                    // colon headers are for http/2 and 3 and this is http/1
-                    // input, so that is probably a smuggling attack of some
-                    // kind.
-                    continue;
-                }
-                if elem.is_empty() {
-                    continue;
-                }
-                let hdr_str: Vec<_> = elem.splitn(2, ':').collect();
-                let name = hdr_str[0].trim().to_lowercase();
-                if is_excluded_header(&name) {
-                    continue;
-                }
-                let value = if hdr_str.len() > 1 {
-                    String::from(hdr_str[1].trim())
-                } else {
-                    String::new()
-                };
+    // They need to be split into (name, value) pairs where name is a String
+    // and value is a Vec<u8>.
 
-                hdrs.push(Header::new(name, value));
-            }
+    let headers_bytes: &[u8] = headers;
+
+    // Split on either \r or \n. When splitting "\r\n" sequences, this produces
+    // an empty element between them which is filtered out by the is_empty check.
+    // This also handles malformed inputs with bare \r or \n.
+    for elem in headers_bytes.split(|&b| b == b'\r' || b == b'\n').skip(1) {
+        if elem.is_empty() {
+            continue;
         }
+        if elem.starts_with(b":") {
+            // colon headers are for http/2 and 3 and this is http/1
+            // input, so that is probably a smuggling attack of some
+            // kind.
+            continue;
+        }
+
+        let colon_pos = match elem.iter().position(|&b| b == b':') {
+            Some(pos) => pos,
+            None => continue, // No colon, skip this line
+        };
+
+        let name_bytes = &elem[..colon_pos];
+        // Safe: if colon is at the end, this yields an empty slice
+        let value_bytes = &elem[colon_pos + 1..];
+
+        // Header names must be valid UTF-8
+        let name = match str::from_utf8(name_bytes) {
+            Ok(n) => n.trim().to_lowercase(),
+            Err(_) => return Err(NS_ERROR_DOM_INVALID_HEADER_NAME),
+        };
+
+        if is_excluded_header(&name) {
+            continue;
+        }
+
+        // Trim leading and trailing optional whitespace (OWS) from value.
+        // Per RFC 9110, OWS is defined as *( SP / HTAB ), i.e., space and tab only.
+        let value = value_bytes
+            .iter()
+            .position(|&b| b != b' ' && b != b'\t')
+            .map_or(&value_bytes[0..0], |start| {
+                let end = value_bytes
+                    .iter()
+                    .rposition(|&b| b != b' ' && b != b'\t')
+                    .map_or(value_bytes.len(), |pos| pos + 1);
+                &value_bytes[start..end]
+            })
+            .to_vec();
+
+        hdrs.push(Header::new(name, value));
     }
     Ok(hdrs)
 }
@@ -1013,7 +1610,7 @@ pub extern "C" fn neqo_http3conn_fetch(
     match conn.conn.fetch(
         Instant::now(),
         method_tmp,
-        &(scheme_tmp, host_tmp, path_tmp),
+        (scheme_tmp, host_tmp, path_tmp),
         &hdrs,
         priority,
     ) {
@@ -1021,7 +1618,39 @@ pub extern "C" fn neqo_http3conn_fetch(
             *stream_id = id.as_u64();
             NS_OK
         }
-        Err(Http3Error::StreamLimitError) => NS_BASE_STREAM_WOULD_BLOCK,
+        Err(Http3Error::StreamLimit) => NS_BASE_STREAM_WOULD_BLOCK,
+        Err(_) => NS_ERROR_UNEXPECTED,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn neqo_http3conn_connect(
+    conn: &mut NeqoHttp3Conn,
+    host: &nsACString,
+    headers: &nsACString,
+    stream_id: &mut u64,
+    urgency: u8,
+    incremental: bool,
+) -> nsresult {
+    let hdrs = match parse_headers(headers) {
+        Err(e) => {
+            return e;
+        }
+        Ok(h) => h,
+    };
+    let Ok(host_tmp) = str::from_utf8(host) else {
+        return NS_ERROR_INVALID_ARG;
+    };
+    if urgency >= 8 {
+        return NS_ERROR_INVALID_ARG;
+    }
+    let priority = Priority::new(urgency, incremental);
+    match conn.conn.connect(Instant::now(), host_tmp, &hdrs, priority) {
+        Ok(id) => {
+            *stream_id = id.as_u64();
+            NS_OK
+        }
+        Err(Http3Error::StreamLimit) => NS_BASE_STREAM_WOULD_BLOCK,
         Err(_) => NS_ERROR_UNEXPECTED,
     }
 }
@@ -1059,7 +1688,7 @@ pub unsafe extern "C" fn neqo_htttp3conn_send_request_body(
 ) -> nsresult {
     let array = slice::from_raw_parts(buf, len as usize);
     conn.conn
-        .send_data(StreamId::from(stream_id), array)
+        .send_data(StreamId::from(stream_id), array, Instant::now())
         .map_or(NS_ERROR_UNEXPECTED, |amount| {
             let Ok(amount) = u32::try_from(amount) else {
                 return NS_ERROR_UNEXPECTED;
@@ -1073,26 +1702,33 @@ pub unsafe extern "C" fn neqo_htttp3conn_send_request_body(
         })
 }
 
-const fn crypto_error_code(err: &neqo_crypto::Error) -> u64 {
+const fn crypto_error_code(err: &nss_rs::Error) -> u64 {
     match err {
-        neqo_crypto::Error::AeadError => 1,
-        neqo_crypto::Error::CertificateLoading => 2,
-        neqo_crypto::Error::CreateSslSocket => 3,
-        neqo_crypto::Error::HkdfError => 4,
-        neqo_crypto::Error::InternalError => 5,
-        neqo_crypto::Error::IntegerOverflow => 6,
-        neqo_crypto::Error::InvalidEpoch => 7,
-        neqo_crypto::Error::MixedHandshakeMethod => 8,
-        neqo_crypto::Error::NoDataAvailable => 9,
-        neqo_crypto::Error::NssError { .. } => 10,
-        neqo_crypto::Error::OverrunError => 11,
-        neqo_crypto::Error::SelfEncryptFailure => 12,
-        neqo_crypto::Error::TimeTravelError => 13,
-        neqo_crypto::Error::UnsupportedCipher => 14,
-        neqo_crypto::Error::UnsupportedVersion => 15,
-        neqo_crypto::Error::StringError => 16,
-        neqo_crypto::Error::EchRetry(_) => 17,
-        neqo_crypto::Error::CipherInitFailure => 18,
+        nss_rs::Error::Aead => 1,
+        nss_rs::Error::CertificateLoading => 2,
+        nss_rs::Error::CreateSslSocket => 3,
+        nss_rs::Error::Internal => 5,
+        nss_rs::Error::IntegerOverflow => 6,
+        nss_rs::Error::InvalidEpoch => 7,
+        nss_rs::Error::MixedHandshakeMethod => 8,
+        nss_rs::Error::NoDataAvailable => 9,
+        nss_rs::Error::Nss { .. } => 10,
+        nss_rs::Error::SelfEncrypt => 12,
+        nss_rs::Error::TimeTravel => 13,
+        nss_rs::Error::UnsupportedCipher => 14,
+        nss_rs::Error::UnsupportedVersion => 15,
+        nss_rs::Error::String => 16,
+        nss_rs::Error::EchRetry(_) => 17,
+        nss_rs::Error::CipherInit => 18,
+        nss_rs::Error::CertificateDecoding => 19,
+        nss_rs::Error::CertificateEncoding => 20,
+        nss_rs::Error::InvalidCertificateCompressionID => 21,
+        nss_rs::Error::InvalidAlpn => 22,
+        nss_rs::Error::AeadTruncated => 23,
+        nss_rs::Error::InvalidInput => 24,
+        nss_rs::Error::UnsupportedCurve => 25,
+        nss_rs::Error::UnsupportedHash => 26,
+        nss_rs::Error::InvalidState => 27,
     }
 }
 
@@ -1116,25 +1752,25 @@ impl From<TransportError> for CloseError {
     fn from(error: TransportError) -> Self {
         #[expect(clippy::match_same_arms, reason = "It's cleaner this way.")]
         match error {
-            TransportError::InternalError => Self::TransportInternalError,
-            TransportError::CryptoError(neqo_crypto::Error::EchRetry(_)) => Self::EchRetry,
-            TransportError::CryptoError(c) => Self::CryptoError(crypto_error_code(&c)),
+            TransportError::Internal => Self::TransportInternalError,
+            TransportError::Crypto(nss_rs::Error::EchRetry(_)) => Self::EchRetry,
+            TransportError::Crypto(c) => Self::CryptoError(crypto_error_code(&c)),
             TransportError::CryptoAlert(c) => Self::CryptoAlert(c),
-            TransportError::PeerApplicationError(c) => Self::PeerAppError(c),
-            TransportError::PeerError(c) => Self::PeerError(c),
-            TransportError::NoError
+            TransportError::PeerApplication(c) => Self::PeerAppError(c),
+            TransportError::Peer(c) => Self::PeerError(c),
+            TransportError::None
             | TransportError::IdleTimeout
             | TransportError::ConnectionRefused
-            | TransportError::FlowControlError
-            | TransportError::StreamLimitError
-            | TransportError::StreamStateError
-            | TransportError::FinalSizeError
-            | TransportError::FrameEncodingError
-            | TransportError::TransportParameterError
+            | TransportError::FlowControl
+            | TransportError::StreamLimit
+            | TransportError::StreamState
+            | TransportError::FinalSize
+            | TransportError::FrameEncoding
+            | TransportError::TransportParameter
             | TransportError::ProtocolViolation
             | TransportError::InvalidToken
             | TransportError::KeysExhausted
-            | TransportError::ApplicationError
+            | TransportError::Application
             | TransportError::NoAvailablePath
             | TransportError::CryptoBufferExceeded => Self::TransportError(error.code()),
             TransportError::EchRetry(_) => Self::EchRetry,
@@ -1142,7 +1778,7 @@ impl From<TransportError> for CloseError {
             TransportError::ConnectionIdLimitExceeded => Self::TransportInternalErrorOther(1),
             TransportError::ConnectionIdsExhausted => Self::TransportInternalErrorOther(2),
             TransportError::ConnectionState => Self::TransportInternalErrorOther(3),
-            TransportError::DecryptError => Self::TransportInternalErrorOther(5),
+            TransportError::Decrypt => Self::TransportInternalErrorOther(5),
             TransportError::IntegerOverflow => Self::TransportInternalErrorOther(7),
             TransportError::InvalidInput => Self::TransportInternalErrorOther(8),
             TransportError::InvalidMigration => Self::TransportInternalErrorOther(9),
@@ -1163,10 +1799,11 @@ impl From<TransportError> for CloseError {
             TransportError::UnknownFrameType => Self::TransportInternalErrorOther(24),
             TransportError::VersionNegotiation => Self::TransportInternalErrorOther(25),
             TransportError::WrongRole => Self::TransportInternalErrorOther(26),
-            TransportError::QlogError => Self::TransportInternalErrorOther(27),
+            TransportError::Qlog => Self::TransportInternalErrorOther(27),
             TransportError::NotAvailable => Self::TransportInternalErrorOther(28),
             TransportError::DisabledVersion => Self::TransportInternalErrorOther(29),
             TransportError::UnknownTransportParameter => Self::TransportInternalErrorOther(30),
+            TransportError::TooManyPtos => Self::TransportInternalErrorOther(31),
         }
     }
 }
@@ -1175,28 +1812,28 @@ impl From<TransportError> for CloseError {
 #[cfg(not(target_os = "android"))]
 const fn transport_error_to_glean_label(error: &TransportError) -> &'static str {
     match error {
-        TransportError::NoError => "NoError",
-        TransportError::InternalError => "InternalError",
+        TransportError::None => "NoError",
+        TransportError::Internal => "InternalError",
         TransportError::ConnectionRefused => "ConnectionRefused",
-        TransportError::FlowControlError => "FlowControlError",
-        TransportError::StreamLimitError => "StreamLimitError",
-        TransportError::StreamStateError => "StreamStateError",
-        TransportError::FinalSizeError => "FinalSizeError",
-        TransportError::FrameEncodingError => "FrameEncodingError",
-        TransportError::TransportParameterError => "TransportParameterError",
+        TransportError::FlowControl => "FlowControlError",
+        TransportError::StreamLimit => "StreamLimitError",
+        TransportError::StreamState => "StreamStateError",
+        TransportError::FinalSize => "FinalSizeError",
+        TransportError::FrameEncoding => "FrameEncodingError",
+        TransportError::TransportParameter => "TransportParameterError",
         TransportError::ProtocolViolation => "ProtocolViolation",
         TransportError::InvalidToken => "InvalidToken",
-        TransportError::ApplicationError => "ApplicationError",
+        TransportError::Application => "ApplicationError",
         TransportError::CryptoBufferExceeded => "CryptoBufferExceeded",
-        TransportError::CryptoError(_) => "CryptoError",
-        TransportError::QlogError => "QlogError",
+        TransportError::Crypto(_) => "CryptoError",
+        TransportError::Qlog => "QlogError",
         TransportError::CryptoAlert(_) => "CryptoAlert",
         TransportError::EchRetry(_) => "EchRetry",
         TransportError::AckedUnsentPacket => "AckedUnsentPacket",
         TransportError::ConnectionIdLimitExceeded => "ConnectionIdLimitExceeded",
         TransportError::ConnectionIdsExhausted => "ConnectionIdsExhausted",
         TransportError::ConnectionState => "ConnectionState",
-        TransportError::DecryptError => "DecryptError",
+        TransportError::Decrypt => "DecryptError",
         TransportError::DisabledVersion => "DisabledVersion",
         TransportError::IdleTimeout => "IdleTimeout",
         TransportError::IntegerOverflow => "IntegerOverflow",
@@ -1215,8 +1852,8 @@ const fn transport_error_to_glean_label(error: &TransportError) -> &'static str 
         TransportError::NotAvailable => "NotAvailable",
         TransportError::NotConnected => "NotConnected",
         TransportError::PacketNumberOverlap => "PacketNumberOverlap",
-        TransportError::PeerApplicationError(_) => "PeerApplicationError",
-        TransportError::PeerError(_) => "PeerError",
+        TransportError::PeerApplication(_) => "PeerApplicationError",
+        TransportError::Peer(_) => "PeerError",
         TransportError::StatelessReset => "StatelessReset",
         TransportError::TooMuchData => "TooMuchData",
         TransportError::UnexpectedMessage => "UnexpectedMessage",
@@ -1225,6 +1862,7 @@ const fn transport_error_to_glean_label(error: &TransportError) -> &'static str 
         TransportError::VersionNegotiation => "VersionNegotiation",
         TransportError::WrongRole => "WrongRole",
         TransportError::UnknownTransportParameter => "UnknownTransportParameter",
+        TransportError::TooManyPtos => "TooManyPtos",
     }
 }
 
@@ -1287,7 +1925,10 @@ pub extern "C" fn neqo_http3conn_close_stream(
     conn: &mut NeqoHttp3Conn,
     stream_id: u64,
 ) -> nsresult {
-    match conn.conn.stream_close_send(StreamId::from(stream_id)) {
+    match conn
+        .conn
+        .stream_close_send(StreamId::from(stream_id), Instant::now())
+    {
         Ok(()) => NS_OK,
         Err(_) => NS_ERROR_INVALID_ARG,
     }
@@ -1327,11 +1968,11 @@ pub enum SessionCloseReasonExternal {
 }
 
 impl SessionCloseReasonExternal {
-    fn new(reason: SessionCloseReason, data: &mut ThinVec<u8>) -> Self {
+    fn new(reason: session::CloseReason, data: &mut ThinVec<u8>) -> Self {
         match reason {
-            SessionCloseReason::Error(e) => Self::Error(e),
-            SessionCloseReason::Status(s) => Self::Status(s),
-            SessionCloseReason::Clean { error, message } => {
+            session::CloseReason::Error(e) => Self::Error(e),
+            session::CloseReason::Status(s) => Self::Status(s),
+            session::CloseReason::Clean { error, message } => {
                 data.extend_from_slice(message.as_ref());
                 Self::Clean(error)
             }
@@ -1355,13 +1996,28 @@ pub enum WebTransportEventExternal {
     Datagram {
         session_id: u64,
     },
+    Draining {
+        session_id: u64,
+    },
+}
+#[repr(C)]
+pub enum ConnectUdpEventExternal {
+    Negotiated(bool),
+    Session(u64),
+    SessionClosed {
+        stream_id: u64,
+        reason: SessionCloseReasonExternal,
+    },
+    Datagram {
+        session_id: u64,
+    },
 }
 
 impl WebTransportEventExternal {
     fn new(event: WebTransportEvent, data: &mut ThinVec<u8>) -> Self {
         match event {
             WebTransportEvent::Negotiated(n) => Self::Negotiated(n),
-            WebTransportEvent::Session {
+            WebTransportEvent::NewSession {
                 stream_id, status, ..
             } => {
                 data.extend_from_slice(b"HTTP/3 ");
@@ -1372,7 +2028,7 @@ impl WebTransportEventExternal {
             WebTransportEvent::SessionClosed {
                 stream_id, reason, ..
             } => match reason {
-                SessionCloseReason::Status(status) => {
+                session::CloseReason::Status(status) => {
                     data.extend_from_slice(b"HTTP/3 ");
                     data.extend_from_slice(status.to_string().as_bytes());
                     data.extend_from_slice(b"\r\n\r\n");
@@ -1392,6 +2048,47 @@ impl WebTransportEventExternal {
                 session_id: session_id.as_u64(),
             },
             WebTransportEvent::Datagram {
+                session_id,
+                datagram,
+            } => {
+                data.extend_from_slice(datagram.as_ref());
+                Self::Datagram {
+                    session_id: session_id.as_u64(),
+                }
+            }
+            WebTransportEvent::Draining { stream_id } => Self::Draining {
+                session_id: stream_id.as_u64(),
+            },
+        }
+    }
+}
+impl ConnectUdpEventExternal {
+    fn new(event: ConnectUdpEvent, data: &mut ThinVec<u8>) -> Self {
+        match event {
+            ConnectUdpEvent::Negotiated(n) => Self::Negotiated(n),
+            ConnectUdpEvent::NewSession {
+                stream_id, status, ..
+            } => {
+                data.extend_from_slice(b"HTTP/3 ");
+                data.extend_from_slice(status.to_string().as_bytes());
+                data.extend_from_slice(b"\r\n\r\n");
+                Self::Session(stream_id.as_u64())
+            }
+            ConnectUdpEvent::SessionClosed {
+                stream_id, reason, ..
+            } => match reason {
+                session::CloseReason::Status(status) => {
+                    data.extend_from_slice(b"HTTP/3 ");
+                    data.extend_from_slice(status.to_string().as_bytes());
+                    data.extend_from_slice(b"\r\n\r\n");
+                    Self::Session(stream_id.as_u64())
+                }
+                _ => Self::SessionClosed {
+                    stream_id: stream_id.as_u64(),
+                    reason: SessionCloseReasonExternal::new(reason, data),
+                },
+            },
+            ConnectUdpEvent::Datagram {
                 session_id,
                 datagram,
             } => {
@@ -1468,6 +2165,7 @@ pub enum Http3Event {
     },
     EchFallbackAuthenticationNeeded,
     WebTransport(WebTransportEventExternal),
+    ConnectUdp(ConnectUdpEventExternal),
     NoEvent,
 }
 
@@ -1492,13 +2190,13 @@ fn convert_h3_to_h1_headers(headers: &[Header], ret_headers: &mut ThinVec<u8>) -
         .value();
 
     ret_headers.extend_from_slice(b"HTTP/3 ");
-    ret_headers.extend_from_slice(status_val.as_bytes());
+    ret_headers.extend_from_slice(status_val);
     ret_headers.extend_from_slice(b"\r\n");
 
     for hdr in headers.iter().filter(|&h| h.name() != ":status") {
         ret_headers.extend_from_slice(&sanitize_header(Cow::from(hdr.name().as_bytes())));
         ret_headers.extend_from_slice(b": ");
-        ret_headers.extend_from_slice(&sanitize_header(Cow::from(hdr.value().as_bytes())));
+        ret_headers.extend_from_slice(&sanitize_header(Cow::from(hdr.value())));
         ret_headers.extend_from_slice(b"\r\n");
     }
     ret_headers.extend_from_slice(b"\r\n");
@@ -1517,6 +2215,7 @@ pub extern "C" fn neqo_http3conn_event(
             Http3ClientEvent::DataWritable { stream_id } => Http3Event::DataWritable {
                 stream_id: stream_id.as_u64(),
             },
+            Http3ClientEvent::OutgoingDatagramSpaceAvailable => Http3Event::NoEvent,
             Http3ClientEvent::StopSending { stream_id, error } => Http3Event::StopSending {
                 stream_id: stream_id.as_u64(),
                 error,
@@ -1549,49 +2248,6 @@ pub extern "C" fn neqo_http3conn_event(
                 error,
                 local,
             },
-            Http3ClientEvent::PushPromise {
-                push_id,
-                request_stream_id,
-                headers,
-            } => {
-                let res = convert_h3_to_h1_headers(&headers, data);
-                if res != NS_OK {
-                    return res;
-                }
-                Http3Event::PushPromise {
-                    push_id: push_id.into(),
-                    request_stream_id: request_stream_id.as_u64(),
-                }
-            }
-            Http3ClientEvent::PushHeaderReady {
-                push_id,
-                headers,
-                fin,
-                interim,
-            } => {
-                if interim {
-                    Http3Event::NoEvent
-                } else {
-                    let res = convert_h3_to_h1_headers(&headers, data);
-                    if res != NS_OK {
-                        return res;
-                    }
-                    Http3Event::PushHeaderReady {
-                        push_id: push_id.into(),
-                        fin,
-                    }
-                }
-            }
-            Http3ClientEvent::PushDataReadable { push_id } => Http3Event::PushDataReadable {
-                push_id: push_id.into(),
-            },
-            Http3ClientEvent::PushCanceled { push_id } => Http3Event::PushCanceled {
-                push_id: push_id.into(),
-            },
-            Http3ClientEvent::PushReset { push_id, error } => Http3Event::PushReset {
-                push_id: push_id.into(),
-                error,
-            },
             Http3ClientEvent::RequestsCreatable => Http3Event::RequestsCreatable,
             Http3ClientEvent::AuthenticationNeeded => Http3Event::AuthenticationNeeded,
             Http3ClientEvent::ZeroRttRejected => Http3Event::ZeroRttRejected,
@@ -1614,7 +2270,7 @@ pub extern "C" fn neqo_http3conn_event(
                 Http3State::Connected => Http3Event::ConnectionConnected,
                 Http3State::Closing(reason) => {
                     if let neqo_transport::CloseReason::Transport(
-                        TransportError::CryptoError(neqo_crypto::Error::EchRetry(c))
+                        TransportError::Crypto(nss_rs::Error::EchRetry(c))
                         | TransportError::EchRetry(c),
                     ) = &reason
                     {
@@ -1622,17 +2278,7 @@ pub extern "C" fn neqo_http3conn_event(
                     }
 
                     #[cfg(not(target_os = "android"))]
-                    {
-                        let glean_label = match &reason {
-                            neqo_transport::CloseReason::Application(_) => "Application",
-                            neqo_transport::CloseReason::Transport(r) => {
-                                transport_error_to_glean_label(r)
-                            }
-                        };
-                        networking::http_3_connection_close_reason
-                            .get(glean_label)
-                            .add(1);
-                    }
+                    conn.record_close_reason(&reason);
 
                     Http3Event::ConnectionClosing {
                         error: reason.into(),
@@ -1640,12 +2286,16 @@ pub extern "C" fn neqo_http3conn_event(
                 }
                 Http3State::Closed(error_code) => {
                     if let neqo_transport::CloseReason::Transport(
-                        TransportError::CryptoError(neqo_crypto::Error::EchRetry(c))
+                        TransportError::Crypto(nss_rs::Error::EchRetry(c))
                         | TransportError::EchRetry(c),
                     ) = &error_code
                     {
                         data.extend_from_slice(c.as_ref());
                     }
+
+                    #[cfg(not(target_os = "android"))]
+                    conn.record_close_reason(&error_code);
+
                     Http3Event::ConnectionClosed {
                         error: error_code.into(),
                     }
@@ -1658,6 +2308,9 @@ pub extern "C" fn neqo_http3conn_event(
             }
             Http3ClientEvent::WebTransport(e) => {
                 Http3Event::WebTransport(WebTransportEventExternal::new(e, data))
+            }
+            Http3ClientEvent::ConnectUdp(e) => {
+                Http3Event::ConnectUdp(ConnectUdpEventExternal::new(e, data))
             }
         };
 
@@ -1702,9 +2355,9 @@ pub unsafe extern "C" fn neqo_http3conn_read_response_data(
                 NS_OK
             }
         }
-        Err(
-            Http3Error::InvalidStreamId | Http3Error::TransportError(TransportError::NoMoreData),
-        ) => NS_ERROR_INVALID_ARG,
+        Err(Http3Error::InvalidStreamId | Http3Error::Transport(TransportError::NoMoreData)) => {
+            NS_ERROR_INVALID_ARG
+        }
         Err(_) => NS_ERROR_NET_HTTP3_PROTOCOL_ERROR,
     }
 }
@@ -1801,8 +2454,11 @@ pub extern "C" fn neqo_http3conn_authenticated(conn: &mut NeqoHttp3Conn, error: 
 pub extern "C" fn neqo_http3conn_set_resumption_token(
     conn: &mut NeqoHttp3Conn,
     token: &mut ThinVec<u8>,
-) {
-    _ = conn.conn.enable_resumption(Instant::now(), token);
+) -> nsresult {
+    match conn.conn.enable_resumption(Instant::now(), token) {
+        Ok(_) => NS_OK,
+        Err(_) => NS_ERROR_NET_HTTP3_PROTOCOL_ERROR,
+    }
 }
 
 #[no_mangle]
@@ -1886,20 +2542,90 @@ pub extern "C" fn neqo_http3conn_webtransport_create_session(
 
     match conn.conn.webtransport_create_session(
         Instant::now(),
-        &("https", host_tmp, path_tmp),
+        ("https", host_tmp, path_tmp),
         &hdrs,
     ) {
         Ok(id) => {
             *stream_id = id.as_u64();
             NS_OK
         }
-        Err(Http3Error::StreamLimitError) => NS_BASE_STREAM_WOULD_BLOCK,
+        Err(Http3Error::StreamLimit) => NS_BASE_STREAM_WOULD_BLOCK,
         Err(_) => NS_ERROR_UNEXPECTED,
     }
 }
 
 #[no_mangle]
-pub extern "C" fn neqo_http3conn_webtransport_close_session(
+pub extern "C" fn neqo_http3conn_connect_udp_create_session(
+    conn: &mut NeqoHttp3Conn,
+    host: &nsACString,
+    path: &nsACString,
+    headers: &nsACString,
+    stream_id: &mut u64,
+) -> nsresult {
+    let hdrs = match parse_headers(headers) {
+        Err(e) => {
+            return e;
+        }
+        Ok(h) => h,
+    };
+    let Ok(host_tmp) = str::from_utf8(host) else {
+        return NS_ERROR_INVALID_ARG;
+    };
+    let Ok(path_tmp) = str::from_utf8(path) else {
+        return NS_ERROR_INVALID_ARG;
+    };
+
+    match conn
+        .conn
+        .connect_udp_create_session(Instant::now(), ("https", host_tmp, path_tmp), &hdrs)
+    {
+        Ok(id) => {
+            *stream_id = id.as_u64();
+            NS_OK
+        }
+        Err(Http3Error::StreamLimit) => NS_BASE_STREAM_WOULD_BLOCK,
+        Err(_) => NS_ERROR_UNEXPECTED,
+    }
+}
+
+/// # Safety
+///
+/// `stats` must be either null or point to a valid, writable
+/// `WebTransportSessionStats`.
+#[no_mangle]
+pub unsafe extern "C" fn neqo_http3conn_webtransport_close_session(
+    conn: &mut NeqoHttp3Conn,
+    session_id: u64,
+    error: u32,
+    message: &nsACString,
+    stats: *mut WebTransportSessionStats,
+) -> nsresult {
+    let Ok(message_tmp) = str::from_utf8(message) else {
+        return NS_ERROR_INVALID_ARG;
+    };
+    match conn.conn.webtransport_close_session(
+        StreamId::from(session_id),
+        error,
+        message_tmp,
+        Instant::now(),
+    ) {
+        Ok(session_stats) => {
+            if !stats.is_null() {
+                unsafe {
+                    let transport_stats = conn.conn.transport_stats();
+                    populate_transport_stats(&mut *stats, &transport_stats);
+
+                    (*stats).datagrams_expired_outgoing = session_stats.datagrams_expired_outgoing;
+                }
+            }
+            NS_OK
+        }
+        Err(_) => NS_ERROR_INVALID_ARG,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn neqo_http3conn_connect_udp_close_session(
     conn: &mut NeqoHttp3Conn,
     session_id: u64,
     error: u32,
@@ -1908,11 +2634,13 @@ pub extern "C" fn neqo_http3conn_webtransport_close_session(
     let Ok(message_tmp) = str::from_utf8(message) else {
         return NS_ERROR_INVALID_ARG;
     };
-    match conn
-        .conn
-        .webtransport_close_session(StreamId::from(session_id), error, message_tmp)
-    {
-        Ok(()) => NS_OK,
+    match conn.conn.connect_udp_close_session(
+        StreamId::from(session_id),
+        error,
+        message_tmp,
+        Instant::now(),
+    ) {
+        Ok(_) => NS_OK,
         Err(_) => NS_ERROR_INVALID_ARG,
     }
 }
@@ -1932,7 +2660,7 @@ pub extern "C" fn neqo_http3conn_webtransport_create_stream(
             *stream_id = id.as_u64();
             NS_OK
         }
-        Err(Http3Error::StreamLimitError) => NS_BASE_STREAM_WOULD_BLOCK,
+        Err(Http3Error::StreamLimit) => NS_BASE_STREAM_WOULD_BLOCK,
         Err(_) => NS_ERROR_UNEXPECTED,
     }
 }
@@ -1943,18 +2671,55 @@ pub extern "C" fn neqo_http3conn_webtransport_send_datagram(
     session_id: u64,
     data: &mut ThinVec<u8>,
     tracking_id: u64,
+    send_group_id: u64,
+    send_order: i64,
 ) -> nsresult {
     let id = if tracking_id == 0 {
         None
     } else {
         Some(tracking_id)
     };
-    match conn
-        .conn
-        .webtransport_send_datagram(StreamId::from(session_id), data, id)
-    {
-        Ok(()) => NS_OK,
-        Err(Http3Error::TransportError(TransportError::TooMuchData)) => NS_ERROR_NOT_AVAILABLE,
+    // The local neqo2 vendor doesn't yet support per-datagram send group/order
+    // prioritization; accept the params from the C++ side but don't forward
+    // them until neqo grows the corresponding API.
+    let _ = (send_group_id, send_order);
+    match conn.conn.webtransport_send_datagram(
+        StreamId::from(session_id),
+        data,
+        id,
+        Instant::now(),
+    ) {
+        Ok(_) => NS_OK,
+        Err(Http3Error::Transport(TransportError::TooMuchData)) => NS_ERROR_NOT_AVAILABLE,
+        Err(_) => NS_ERROR_UNEXPECTED,
+    }
+}
+#[no_mangle]
+pub extern "C" fn neqo_http3conn_connect_udp_send_datagram(
+    conn: &mut NeqoHttp3Conn,
+    session_id: u64,
+    data: &mut ThinVec<u8>,
+    tracking_id: u64,
+    send_group_id: u64,
+    send_order: i64,
+) -> nsresult {
+    let id = if tracking_id == 0 {
+        None
+    } else {
+        Some(tracking_id)
+    };
+    // The local neqo2 vendor doesn't yet support per-datagram send group/order
+    // prioritization; accept the params from the C++ side but don't forward
+    // them until neqo grows the corresponding API.
+    let _ = (send_group_id, send_order);
+    match conn.conn.connect_udp_send_datagram(
+        StreamId::from(session_id),
+        data,
+        id,
+        Instant::now(),
+    ) {
+        Ok(_) => NS_OK,
+        Err(Http3Error::Transport(TransportError::TooMuchData)) => NS_ERROR_NOT_AVAILABLE,
         Err(_) => NS_ERROR_UNEXPECTED,
     }
 }
@@ -1991,10 +2756,227 @@ pub unsafe extern "C" fn neqo_http3conn_webtransport_set_sendorder(
     }
 }
 
+/// # Safety
+///
+/// Use of raw (i.e. unsafe) pointers as arguments.
+#[no_mangle]
+pub unsafe extern "C" fn neqo_http3conn_webtransport_set_sendgroup(
+    conn: &mut NeqoHttp3Conn,
+    stream_id: u64,
+    sendgroup_id: u64,
+) -> nsresult {
+    // sendgroup_id 0 means "no group" (null sendGroup); clear the group assignment.
+    if sendgroup_id == 0 {
+        return match conn
+            .conn
+            .webtransport_clear_sendgroup(StreamId::from(stream_id))
+        {
+            Ok(()) => NS_OK,
+            Err(_) => NS_ERROR_UNEXPECTED,
+        };
+    }
+    let Some(&sg_id) = conn.webtransport_send_groups.get(&sendgroup_id) else {
+        return NS_ERROR_UNEXPECTED;
+    };
+    match conn
+        .conn
+        .webtransport_set_sendgroup(StreamId::from(stream_id), sg_id)
+    {
+        Ok(()) => NS_OK,
+        Err(_) => NS_ERROR_UNEXPECTED,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn neqo_http3conn_webtransport_register_send_group(
+    conn: &mut NeqoHttp3Conn,
+    session_id: u64,
+    group_id: u64,
+) -> nsresult {
+    // neqo allocates the send-group id; map the child's provisional id to it.
+    match conn
+        .conn
+        .webtransport_create_send_group(StreamId::from(session_id))
+    {
+        Ok(neqo_id) => {
+            conn.webtransport_send_groups.insert(group_id, neqo_id);
+            NS_OK
+        }
+        Err(_) => NS_ERROR_UNEXPECTED,
+    }
+}
+
+
+/// Get the negotiated protocol for a WebTransport session.
+#[no_mangle]
+pub extern "C" fn neqo_http3conn_webtransport_session_protocol(
+    conn: &mut NeqoHttp3Conn,
+    session_id: u64,
+    protocol: &mut nsACString,
+) -> nsresult {
+    match conn
+        .conn
+        .webtransport_session_protocol(StreamId::from(session_id))
+    {
+        Ok(Some(p)) => {
+            protocol.assign(&p);
+            NS_OK
+        }
+        Ok(None) => {
+            // SAFETY: shrinking the string to length 0 never exposes
+            // uninitialized memory.
+            unsafe {
+                protocol.set_length(0);
+            }
+            NS_OK
+        }
+        Err(_) => NS_ERROR_UNEXPECTED,
+    }
+}
+
+/// Export keying material per RFC 5705/8446.
+///
+/// # Safety
+///
+/// Use of raw (i.e. unsafe) pointers as arguments.
+/// The `out` buffer must be at least `out_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn neqo_http3conn_export_keying_material(
+    conn: &mut NeqoHttp3Conn,
+    session_id: u64,
+    label: *const u8,
+    label_len: u32,
+    context: *const u8,
+    context_len: u32,
+    out: *mut u8,
+    out_len: u32,
+) -> nsresult {
+    let label_slice = if label.is_null() {
+        return NS_ERROR_INVALID_ARG;
+    } else {
+        slice::from_raw_parts(label, label_len as usize)
+    };
+
+    let context_slice = if context.is_null() || context_len == 0 {
+        &[]
+    } else {
+        slice::from_raw_parts(context, context_len as usize)
+    };
+
+    if out.is_null() || out_len == 0 {
+        return NS_ERROR_INVALID_ARG;
+    }
+
+    let out_slice = slice::from_raw_parts_mut(out, out_len as usize);
+    match conn.conn.webtransport_export_keying_material(
+        StreamId::from(session_id),
+        label_slice,
+        context_slice,
+        out_slice,
+    ) {
+        Ok(()) => NS_OK,
+        Err(_) => NS_ERROR_NOT_CONNECTED,
+    }
+}
+
+#[repr(C)]
+pub struct WebTransportSessionStats {
+    // Total bytes sent/received at QUIC transport level (includes framing and
+    // retransmissions; neqo does not expose payload-only byte counts separately).
+    pub bytes_sent_total: u64,
+    pub bytes_received_total: u64,
+    // Transport-level details
+    pub bytes_acked: u64,
+    pub packets_sent: u64,
+    pub bytes_lost: u64,
+    pub packets_lost: u64,
+    pub packets_received: u64,
+    // RTT
+    pub smoothed_rtt: f64,
+    pub rtt_variation: f64,
+    pub min_rtt: f64,
+    // Congestion-derived
+    pub estimated_send_rate: i64,  // bits/sec, -1 means null/unknown
+    pub at_send_capacity: bool,
+    // Datagram stats
+    pub datagrams_expired_outgoing: u64,
+    // Firefox does not support WebTransport connection pooling, so this
+    // connection-level counter is a valid per-session stand-in.
+    pub datagrams_lost_outgoing: u64,
+}
+
+// Shared by neqo_http3conn_webtransport_close_session and
+// neqo_http3conn_webtransport_session_stats, which both need to translate
+// the same connection-level TransportStats into a WebTransportSessionStats.
+fn populate_transport_stats(dst: &mut WebTransportSessionStats, transport_stats: &TransportStats) {
+    // Transport-level totals (for spec)
+    dst.bytes_sent_total = (transport_stats.bytes_acked
+        + transport_stats.cc.bytes_in_flight
+        + transport_stats.bytes_lost) as u64;
+    dst.bytes_received_total = transport_stats.bytes_rx as u64;
+
+    // Transport-level details
+    dst.bytes_acked = transport_stats.bytes_acked as u64;
+    dst.packets_sent = transport_stats.packets_tx as u64;
+    dst.bytes_lost = transport_stats.bytes_lost as u64;
+    dst.packets_lost = transport_stats.lost as u64;
+    dst.packets_received = transport_stats.packets_rx as u64;
+
+    // RTT stats (convert from Duration to milliseconds)
+    dst.smoothed_rtt = transport_stats.rtt.as_secs_f64() * 1000.0;
+    dst.rtt_variation = transport_stats.rttvar.as_secs_f64() * 1000.0;
+    dst.min_rtt = transport_stats.min_rtt.as_secs_f64() * 1000.0;
+
+    // Congestion-derived stats
+    if transport_stats.rtt.as_secs_f64() > 0.0 {
+        // estimated_send_rate in bits/sec = (cwnd * 8) / rtt_seconds
+        let rtt_seconds = transport_stats.rtt.as_secs_f64();
+        dst.estimated_send_rate = ((transport_stats.cc.cwnd as f64 * 8.0) / rtt_seconds) as i64;
+    } else {
+        dst.estimated_send_rate = -1; // null/unknown
+    }
+    dst.at_send_capacity = transport_stats.cc.bytes_in_flight >= transport_stats.cc.cwnd;
+
+    dst.datagrams_lost_outgoing = transport_stats.datagram_tx.lost as u64;
+}
+
+#[no_mangle]
+pub extern "C" fn neqo_http3conn_webtransport_session_stats(
+    conn: &NeqoHttp3Conn,
+    session_id: u64,
+    stats: &mut WebTransportSessionStats,
+) -> nsresult {
+    match conn.conn.webtransport_session_stats(StreamId::from(session_id)) {
+        Ok(session_stats) => {
+            let transport_stats = conn.conn.transport_stats();
+            populate_transport_stats(stats, &transport_stats);
+
+            stats.datagrams_expired_outgoing = session_stats.datagrams_expired_outgoing;
+
+            NS_OK
+        }
+        Err(_) => NS_ERROR_UNEXPECTED,
+    }
+}
+
+/// Fill in only the connection-level part of the stats.
+///
+/// Used when the session is already gone (neqo tears it down before the
+/// close event is drained), so the session-scoped datagram counters are
+/// unavailable.
+#[no_mangle]
+pub extern "C" fn neqo_http3conn_webtransport_transport_stats(
+    conn: &NeqoHttp3Conn,
+    stats: &mut WebTransportSessionStats,
+) {
+    populate_transport_stats(stats, &conn.conn.transport_stats());
+}
+
 /// Convert a [`std::io::Error`] into a [`nsresult`].
 ///
 /// Note that this conversion is specific to `neqo_glue`, i.e. does not aim to
 /// implement a general-purpose conversion.
+/// Treat NS_ERROR_NET_RESET as a generic retryable error for the upper layer.
 ///
 /// Modeled after
 /// [`ErrorAccordingToNSPR`](https://searchfox.org/mozilla-central/rev/a965e3c683ecc035dee1de72bd33a8d91b1203ed/netwerk/base/nsSocketTransport2.cpp#164-168).
@@ -2045,16 +3027,6 @@ fn into_nsresult(e: &io::Error) -> nsresult {
 
         // TODO: nightly-only for now <https://doc.rust-lang.org/std/io/enum.ErrorKind.html#variant.FilesystemLoop>.
         // io::ErrorKind::FilesystemLoop => NS_ERROR_FILE_UNRESOLVABLE_SYMLINK,
-
-        // > NSPR's socket code can return these, but they're not worth breaking out
-        // > into their own error codes, distinct from NS_ERROR_FAILURE:
-        // >
-        // > PR_BAD_DESCRIPTOR_ERROR
-        // > PR_INVALID_ARGUMENT_ERROR
-        //
-        // <https://searchfox.org/mozilla-central/rev/a965e3c683ecc035dee1de72bd33a8d91b1203ed/netwerk/base/nsSocketTransport2.cpp#231>
-        io::ErrorKind::InvalidInput => NS_ERROR_FAILURE,
-
         io::ErrorKind::TimedOut => NS_ERROR_NET_TIMEOUT,
         io::ErrorKind::Interrupted => NS_ERROR_NET_INTERRUPT,
 
@@ -2074,7 +3046,7 @@ fn into_nsresult(e: &io::Error) -> nsresult {
         | io::ErrorKind::InvalidData
         | io::ErrorKind::WriteZero
         | io::ErrorKind::Unsupported
-        | io::ErrorKind::Other => NS_ERROR_FAILURE,
+        | io::ErrorKind::Other => NS_ERROR_NET_RESET,
 
         // TODO: available since Rust v1.83.0 only
         // <https://doc.rust-lang.org/std/io/enum.ErrorKind.html>.
@@ -2088,11 +3060,13 @@ fn into_nsresult(e: &io::Error) -> nsresult {
         // | io::ErrorKind::ArgumentListTooLong
         // | io::ErrorKind::NetworkDown
         // | io::ErrorKind::StaleNetworkFileHandle
-        // | io::ErrorKind::StorageFull => NS_ERROR_FAILURE,
+        // | io::ErrorKind::StorageFull => NS_ERROR_NET_RESET,
 
         // TODO: nightly-only for now <https://doc.rust-lang.org/std/io/enum.ErrorKind.html>.
-        // io::ErrorKind::CrossesDevices | io::ErrorKind::InvalidFilename => NS_ERROR_FAILURE,
-        _ => NS_ERROR_FAILURE,
+        // io::ErrorKind::CrossesDevices
+        // | io::ErrorKind::InvalidFilename
+        // | io::ErrorKind::InvalidInput => NS_ERROR_NET_RESET,
+        _ => NS_ERROR_NET_RESET,
     }
 }
 
@@ -2172,7 +3146,7 @@ pub unsafe extern "C" fn neqo_encode_vvec(encoder: &mut NeqoEncoder, buf: *const
 }
 
 #[no_mangle]
-pub extern "C" fn neqo_encode_get_data(
+pub unsafe extern "C" fn neqo_encode_get_data(
     encoder: &mut NeqoEncoder,
     buf: *mut *const u8,
     read: &mut u32,
@@ -2300,4 +3274,116 @@ pub unsafe extern "C" fn neqo_decoder_remaining(decoder: &mut NeqoDecoder) -> u6
 pub unsafe extern "C" fn neqo_decoder_offset(decoder: &mut NeqoDecoder) -> u64 {
     let decoder = decoder.decoder.as_mut().unwrap();
     decoder.offset() as u64
+}
+
+/// Enables the Apple fast datapath (`sendmsg_x`/`recvmsg_x`) for all
+/// subsequently created QUIC sockets. Must only be called after the caller
+/// has verified that these private APIs are available and functional.
+#[cfg(target_vendor = "apple")]
+#[no_mangle]
+pub extern "C" fn neqo_glue_enable_apple_fast_path() {
+    APPLE_FAST_PATH.store(true, Ordering::Relaxed);
+}
+
+/// Inner implementation for [`neqo_glue_probe_apple_fast_path`].
+#[cfg(target_vendor = "apple")]
+fn probe_apple_fast_path_inner(send_fd: c_int, recv_fd: c_int) -> io::Result<()> {
+    use std::os::fd::BorrowedFd;
+
+    use neqo_common::Ecn;
+    use rustix::{
+        fs::{fcntl_getfl, fcntl_setfl, OFlags},
+        net::{getsockname, sockopt::{set_socket_timeout, Timeout}},
+    };
+
+    // Wrap a raw fd in neqo_udp::Socket, enable the fast path, restore blocking
+    // mode (UdpSocketState::new sets non-blocking), and return the socket's
+    // local address.
+    let make_socket = |fd: c_int| -> io::Result<(neqo_udp::Socket<BorrowedFd<'static>>, SocketAddr)> {
+        let bfd = unsafe { BorrowedFd::borrow_raw(fd) };
+        let socket = neqo_udp::Socket::new(bfd)?;
+        // SAFETY: The C++ caller has verified via dlsym that the APIs are present.
+        unsafe { socket.enable_apple_fast_path() };
+        fcntl_setfl(bfd, fcntl_getfl(bfd)? & !OFlags::NONBLOCK)?;
+        set_socket_timeout(bfd, Timeout::Recv, Some(Duration::from_secs(1)))?;
+        let addr: SocketAddr = getsockname(bfd)?
+            .try_into()
+            .map_err(|e: rustix::io::Errno| io::Error::from_raw_os_error(e.raw_os_error()))?;
+        Ok((socket, addr))
+    };
+    let (sender, send_addr) = make_socket(send_fd)?;
+    let (receiver, recv_addr) = make_socket(recv_fd)?;
+
+    if sender.max_gso_segments() <= 1 {
+        return Err(io::Error::other("max_gso_segments not increased"));
+    }
+
+    // Send two datagrams with distinct single-byte payloads and ECN codepoints,
+    // then receive them across one or more recvmsg_x calls, in any order.
+    let mut remaining: Vec<(u8, Ecn)> = vec![(0, Ecn::Ect0), (1, Ecn::Ect1)];
+    for &(byte, ecn) in &remaining {
+        sender.send(&Datagram::new(send_addr, recv_addr, Tos::from(ecn), vec![byte]).into())?;
+    }
+    let mut recv_buf = neqo_udp::RecvBuf::default();
+    while !remaining.is_empty() {
+        for d in receiver.recv(recv_addr, &mut recv_buf)? {
+            let &byte = d
+                .as_ref()
+                .first()
+                .ok_or_else(|| io::Error::other("empty datagram"))?;
+            let idx = remaining
+                .iter()
+                .position(|&(b, _)| b == byte)
+                .ok_or_else(|| io::Error::other("unexpected datagram payload"))?;
+            let (_, expected_ecn) = remaining.swap_remove(idx);
+            if Ecn::from(d.tos()) != expected_ecn {
+                return Err(io::Error::other("ECN mismatch"));
+            }
+            if d.source() != send_addr {
+                return Err(io::Error::other("source address mismatch"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Tests the Apple fast UDP datapath end-to-end using the same neqo-udp code
+/// path used in production. Called during socket process initialisation
+/// with two pre-created, loopback-bound UDP sockets. Returns `true` only if a
+/// datagram with ECN bits set survives the send/receive round-trip through the
+/// `sendmsg_x`/`recvmsg_x` APIs.
+#[cfg(target_vendor = "apple")]
+#[no_mangle]
+pub extern "C" fn neqo_glue_probe_apple_fast_path(send_fd: c_int, recv_fd: c_int) -> bool {
+    probe_apple_fast_path_inner(send_fd, recv_fd).is_ok()
+}
+
+// Test function called from C++ gtest
+// Callback signature: fn(user_data, name_ptr, name_len, value_ptr, value_len)
+type HeaderCallback = extern "C" fn(*mut c_void, *const u8, usize, *const u8, usize);
+
+#[no_mangle]
+pub extern "C" fn neqo_glue_test_parse_headers(
+    headers_input: &nsACString,
+    callback: HeaderCallback,
+    user_data: *mut c_void,
+) -> bool {
+    match parse_headers(headers_input) {
+        Ok(headers) => {
+            for header in headers {
+                let name_bytes = header.name().as_bytes();
+                let value_bytes = header.value();
+                callback(
+                    user_data,
+                    name_bytes.as_ptr(),
+                    name_bytes.len(),
+                    value_bytes.as_ptr(),
+                    value_bytes.len(),
+                );
+            }
+            true
+        }
+        Err(_) => false,
+    }
 }

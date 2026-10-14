@@ -1,45 +1,64 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Location.h"
-#include "nsIScriptObjectPrincipal.h"
-#include "nsIScriptContext.h"
-#include "nsDocShellLoadState.h"
-#include "nsIWebNavigation.h"
-#include "nsIOService.h"
-#include "nsIURL.h"
-#include "nsIJARURI.h"
-#include "nsIURIMutator.h"
-#include "nsNetUtil.h"
-#include "nsCOMPtr.h"
-#include "nsEscape.h"
-#include "nsPresContext.h"
-#include "nsError.h"
-#include "nsReadableUtils.h"
-#include "nsJSUtils.h"
-#include "nsContentUtils.h"
-#include "nsDocShell.h"
-#include "nsGlobalWindowOuter.h"
-#include "nsPIDOMWindowInlines.h"
-#include "mozilla/Likely.h"
-#include "nsCycleCollectionParticipant.h"
+
+#include "ReferrerInfo.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/Components.h"
+#include "mozilla/Likely.h"
 #include "mozilla/NullPrincipal.h"
 #include "mozilla/ServoStyleConsts.h"
 #include "mozilla/StaticPrefs_dom.h"
-#include "mozilla/Unused.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/dom/FragmentDirective.h"
 #include "mozilla/dom/LocationBinding.h"
 #include "mozilla/dom/ScriptSettings.h"
-#include "ReferrerInfo.h"
+#include "nsCOMPtr.h"
+#include "nsContentUtils.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsDocShell.h"
+#include "nsDocShellLoadState.h"
+#include "nsError.h"
+#include "nsEscape.h"
+#include "nsGlobalWindowOuter.h"
+#include "nsIJARURI.h"
+#include "nsIOService.h"
+#include "nsIScriptContext.h"
+#include "nsIScriptObjectPrincipal.h"
+#include "nsIURIMutator.h"
+#include "nsIWebNavigation.h"
+#include "nsJSUtils.h"
+#include "nsNetUtil.h"
+#include "nsPIDOMWindowInlines.h"
+#include "nsPresContext.h"
+#include "nsReadableUtils.h"
 
 namespace mozilla::dom {
+
+nsTArray<nsString> ProduceAncestorOriginsList(
+    const nsTArray<nsCOMPtr<nsIPrincipal>>& aPrincipals) {
+  nsTArray<nsString> result;
+
+  for (const auto& principal : aPrincipals) {
+    nsString origin;
+    if (principal == nullptr) {
+      origin.AssignLiteral(u"null");
+    } else {
+      nsAutoCString originNoSuffix;
+      if (NS_WARN_IF(NS_FAILED(principal->GetOriginNoSuffix(originNoSuffix)))) {
+        origin.AssignLiteral(u"null");
+      } else {
+        CopyUTF8toUTF16(originNoSuffix, origin);
+      }
+    }
+    result.AppendElement(std::move(origin));
+  }
+
+  return result;
+}
 
 Location::Location(nsPIDOMWindowInner* aWindow)
     : mCachedHash(VoidCString()), mInnerWindow(aWindow) {
@@ -61,7 +80,8 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(Location)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(Location, mInnerWindow)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(Location, mInnerWindow,
+                                      mRelevantDocNullAncestorOriginsList)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(Location)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(Location)
@@ -163,6 +183,12 @@ void Location::SetHash(const nsACString& aHash, nsIPrincipal& aSubjectPrincipal,
     return;
   }
 
+  nsAutoCString currentHash;
+  aRv = uri->GetRef(currentHash);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return;
+  }
+
   if (aHash.IsEmpty() || aHash.First() != '#') {
     aRv = NS_MutateURI(uri).SetRef("#"_ns + aHash).Finalize(uri);
   } else {
@@ -172,7 +198,42 @@ void Location::SetHash(const nsACString& aHash, nsIPrincipal& aSubjectPrincipal,
     return;
   }
 
-  SetURI(uri, aSubjectPrincipal, aRv);
+  // If the new hash is the same as the current hash, then return without
+  // navigating to the anchor again. This bailout is necessary for
+  // compatibility with deployed content, which redundantly sets
+  // location.hash on scroll. https://github.com/whatwg/html/issues/7386
+  nsAutoCString newHash;
+  aRv = uri->GetRef(newHash);
+  if (NS_WARN_IF(aRv.Failed()) || newHash == currentHash) {
+    return;
+  }
+
+  Navigate(uri, aSubjectPrincipal, aRv);
+}
+
+// https://html.spec.whatwg.org/#dom-location-ancestororigins
+RefPtr<DOMStringList> Location::GetAncestorOrigins(
+    nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv) {
+  Document* doc = mInnerWindow->GetExtantDoc();
+  // Step 1. If this's relevant Document is null, then return an empty list.
+  if (!doc || !doc->IsActive()) {
+    if (!mRelevantDocNullAncestorOriginsList) {
+      mRelevantDocNullAncestorOriginsList =
+          MakeRefPtr<DOMStringList>(mInnerWindow);
+    }
+    return mRelevantDocNullAncestorOriginsList;
+  }
+
+  // Step 2. If this's relevant Document's origin is not same origin-domain with
+  // the entry settings object's origin, then throw a "SecurityError"
+  // DOMException.
+  if (!CallerSubsumes(&aSubjectPrincipal)) {
+    aRv.Throw(NS_ERROR_DOM_SECURITY_ERR);
+    return nullptr;
+  }
+
+  // Step 3. Otherwise, return this's ancestor origins list.
+  return doc->AncestorOrigins();
 }
 
 void Location::GetHost(nsACString& aHost, nsIPrincipal& aSubjectPrincipal,
@@ -185,10 +246,10 @@ void Location::GetHost(nsACString& aHost, nsIPrincipal& aSubjectPrincipal,
   aHost.Truncate();
 
   nsCOMPtr<nsIURI> uri;
-  mozilla::Unused << GetURI(getter_AddRefs(uri), true);
+  (void)GetURI(getter_AddRefs(uri), true);
 
   if (uri) {
-    mozilla::Unused << uri->GetHostPort(aHost);
+    (void)uri->GetHostPort(aHost);
   }
 }
 
@@ -210,7 +271,7 @@ void Location::SetHost(const nsACString& aHost, nsIPrincipal& aSubjectPrincipal,
     return;
   }
 
-  SetURI(uri, aSubjectPrincipal, aRv);
+  Navigate(uri, aSubjectPrincipal, aRv);
 }
 
 void Location::GetHostname(nsACString& aHostname,
@@ -247,7 +308,7 @@ void Location::SetHostname(const nsACString& aHostname,
     return;
   }
 
-  SetURI(uri, aSubjectPrincipal, aRv);
+  Navigate(uri, aSubjectPrincipal, aRv);
 }
 
 nsresult Location::GetHref(nsACString& aHref) {
@@ -327,7 +388,7 @@ void Location::SetPathname(const nsACString& aPathname,
     return;
   }
 
-  SetURI(uri, aSubjectPrincipal, aRv);
+  Navigate(uri, aSubjectPrincipal, aRv);
 }
 
 void Location::GetPort(nsACString& aPort, nsIPrincipal& aSubjectPrincipal,
@@ -386,7 +447,7 @@ void Location::SetPort(const nsACString& aPort, nsIPrincipal& aSubjectPrincipal,
     return;
   }
 
-  SetURI(uri, aSubjectPrincipal, aRv);
+  Navigate(uri, aSubjectPrincipal, aRv);
 }
 
 void Location::GetProtocol(nsACString& aProtocol,
@@ -429,7 +490,7 @@ void Location::SetProtocol(const nsACString& aProtocol,
   aProtocol.BeginReading(start);
   aProtocol.EndReading(end);
   nsACString::const_iterator iter(start);
-  Unused << FindCharInReadable(':', iter, end);
+  (void)FindCharInReadable(':', iter, end);
 
   nsresult rv =
       NS_MutateURI(uri).SetScheme(Substring(start, iter)).Finalize(uri);
@@ -461,7 +522,7 @@ void Location::SetProtocol(const nsACString& aProtocol,
     return;
   }
 
-  SetURI(uri, aSubjectPrincipal, aRv);
+  Navigate(uri, aSubjectPrincipal, aRv);
 }
 
 void Location::GetSearch(nsACString& aSearch, nsIPrincipal& aSubjectPrincipal,
@@ -474,22 +535,21 @@ void Location::GetSearch(nsACString& aSearch, nsIPrincipal& aSubjectPrincipal,
   aSearch.SetLength(0);
 
   nsCOMPtr<nsIURI> uri;
-  nsresult result = NS_OK;
+  aRv = GetURI(getter_AddRefs(uri));
+  if (NS_WARN_IF(aRv.Failed()) || !uri) {
+    return;
+  }
 
-  result = GetURI(getter_AddRefs(uri));
+  nsAutoCString search;
+  aRv = uri->GetQuery(search);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return;
+  }
 
-  nsCOMPtr<nsIURL> url(do_QueryInterface(uri));
-
-  if (url) {
-    nsAutoCString search;
-
-    result = url->GetQuery(search);
-
-    if (NS_SUCCEEDED(result) && !search.IsEmpty()) {
-      aSearch.SetCapacity(search.Length() + 1);
-      aSearch.Assign('?');
-      aSearch.Append(search);
-    }
+  if (!search.IsEmpty()) {
+    aSearch.SetCapacity(search.Length() + 1);
+    aSearch.Assign('?');
+    aSearch.Append(search);
   }
 }
 
@@ -502,8 +562,7 @@ void Location::SetSearch(const nsACString& aSearch,
 
   nsCOMPtr<nsIURI> uri;
   aRv = GetURI(getter_AddRefs(uri));
-  nsCOMPtr<nsIURL> url(do_QueryInterface(uri));
-  if (NS_WARN_IF(aRv.Failed()) || !url) {
+  if (NS_WARN_IF(aRv.Failed())) {
     return;
   }
 
@@ -512,7 +571,7 @@ void Location::SetSearch(const nsACString& aSearch,
     return;
   }
 
-  SetURI(uri, aSubjectPrincipal, aRv);
+  Navigate(uri, aSubjectPrincipal, aRv);
 }
 
 void Location::Reload(JSContext* aCx, bool aForceget,
@@ -536,9 +595,7 @@ void Location::Reload(JSContext* aCx, bool aForceget,
                               ? CallerType::System
                               : CallerType::NonSystem;
 
-  nsresult rv = bc->CheckNavigationRateLimit(callerType);
-  if (NS_FAILED(rv)) {
-    aRv.Throw(rv);
+  if (!bc->CheckNavigationRateLimit(callerType)) {
     return;
   }
 
@@ -553,8 +610,8 @@ void Location::Reload(JSContext* aCx, bool aForceget,
       callerType == CallerType::System ? UserNavigationInvolvement::BrowserUI
                                        : UserNavigationInvolvement::None;
 
-  rv = docShell->ReloadNavigable(Some(WrapNotNull(aCx)), reloadFlags, nullptr,
-                                 userInvolvement);
+  nsresult rv = docShell->ReloadNavigable(Some(WrapNotNull(aCx)), reloadFlags,
+                                          nullptr, userInvolvement);
   if (NS_FAILED(rv) && rv != NS_BINDING_ABORTED) {
     // NS_BINDING_ABORTED is returned when we attempt to reload a POST result
     // and the user says no at the "do you want to reload?" prompt.  Don't

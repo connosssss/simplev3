@@ -1,15 +1,14 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsToolkit_h__
-#define nsToolkit_h__
+#ifndef nsToolkit_h_
+#define nsToolkit_h_
 
-#include "nsdefs.h"
+#include <windows.h>
 
 #include "nsCOMPtr.h"
-#include <windows.h>
+#include "nsdefs.h"
 
 // Avoid including windowsx.h to prevent macro pollution
 #ifndef GET_X_LPARAM

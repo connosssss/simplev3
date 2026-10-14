@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -61,36 +59,39 @@ WebSocketEventListenerChild::RecvWebSocketMessageAvailable(
 }
 
 mozilla::ipc::IPCResult WebSocketEventListenerChild::RecvWebSocketClosed(
-    const uint32_t& aWebSocketSerialID, const bool& aWasClean,
-    const uint16_t& aCode, const nsString& aReason) {
+    const uint32_t& aWebSocketSerialID, const uint64_t& aHttpChannelId,
+    const bool& aWasClean, const uint16_t& aCode, const nsString& aReason) {
   if (mService) {
     nsCOMPtr<nsIEventTarget> target = GetNeckoTarget();
-    mService->WebSocketClosed(aWebSocketSerialID, mInnerWindowID, aWasClean,
-                              aCode, aReason, target);
+    mService->WebSocketClosed(aWebSocketSerialID, mInnerWindowID,
+                              aHttpChannelId, aWasClean, aCode, aReason,
+                              target);
   }
 
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult WebSocketEventListenerChild::RecvFrameReceived(
-    const uint32_t& aWebSocketSerialID, const WebSocketFrameData& aFrameData) {
+    const uint32_t& aWebSocketSerialID, const uint64_t& aHttpChannelId,
+    const WebSocketFrameData& aFrameData) {
   if (mService) {
     nsCOMPtr<nsIEventTarget> target = GetNeckoTarget();
-    RefPtr<WebSocketFrame> frame = new WebSocketFrame(aFrameData);
-    mService->FrameReceived(aWebSocketSerialID, mInnerWindowID, frame.forget(),
-                            target);
+    RefPtr frame = MakeRefPtr<WebSocketFrame>(aFrameData);
+    mService->FrameReceived(aWebSocketSerialID, mInnerWindowID, aHttpChannelId,
+                            frame.forget(), target);
   }
 
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult WebSocketEventListenerChild::RecvFrameSent(
-    const uint32_t& aWebSocketSerialID, const WebSocketFrameData& aFrameData) {
+    const uint32_t& aWebSocketSerialID, const uint64_t& aHttpChannelId,
+    const WebSocketFrameData& aFrameData) {
   if (mService) {
     nsCOMPtr<nsIEventTarget> target = GetNeckoTarget();
-    RefPtr<WebSocketFrame> frame = new WebSocketFrame(aFrameData);
-    mService->FrameSent(aWebSocketSerialID, mInnerWindowID, frame.forget(),
-                        target);
+    RefPtr frame = MakeRefPtr<WebSocketFrame>(aFrameData);
+    mService->FrameSent(aWebSocketSerialID, mInnerWindowID, aHttpChannelId,
+                        frame.forget(), target);
   }
 
   return IPC_OK();

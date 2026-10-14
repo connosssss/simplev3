@@ -4,16 +4,11 @@
 
 package org.mozilla.fenix.autofill
 
-import android.os.Build
-import androidx.annotation.RequiresApi
 import mozilla.components.feature.autofill.AutofillConfiguration
 import mozilla.components.feature.autofill.ui.AbstractAutofillUnlockActivity
 import org.mozilla.fenix.ext.components
 
-/**
- * Activity responsible for unlocking the autofill service by asking the user to verify.
- */
-@RequiresApi(Build.VERSION_CODES.O)
+/** Activity responsible for unlocking the autofill service by asking the user to verify. */
 class AutofillUnlockActivity : AbstractAutofillUnlockActivity() {
     override val configuration: AutofillConfiguration by lazy { components.autofillConfiguration }
 }

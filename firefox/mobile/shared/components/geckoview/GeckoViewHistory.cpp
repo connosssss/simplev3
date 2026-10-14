@@ -11,7 +11,6 @@
 #include "nsXULAppAPI.h"
 
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/ResultExtensions.h"
 #include "mozilla/StaticPrefs_layout.h"
 
 #include "mozilla/dom/ContentParent.h"
@@ -31,6 +30,8 @@ using namespace mozilla::widget;
 
 static const nsLiteralString kOnVisitedMessage = u"GeckoView:OnVisited"_ns;
 static const nsLiteralString kGetVisitedMessage = u"GeckoView:GetVisited"_ns;
+static const nsLiteralString kGetHostVisitedSinceMessage =
+    u"GeckoView:GetHostVisitedSince"_ns;
 
 // Keep in sync with `GeckoSession.HistoryDelegate.VisitFlags`.
 enum class GeckoViewVisitFlags : int32_t {
@@ -119,8 +120,7 @@ void GeckoViewHistory::QueryVisitedStateInContentProcess(
 
   // Send the request to the parent process, one message per tab child.
   for (const NewURIEntry& entry : newEntries) {
-    Unused << NS_WARN_IF(
-        !entry.mBrowserChild->SendQueryVisitedState(entry.mURIs));
+    (void)NS_WARN_IF(!entry.mBrowserChild->SendQueryVisitedState(entry.mURIs));
   }
 }
 
@@ -243,6 +243,12 @@ GeckoViewHistory::VisitURI(nsIWidget* aWidget, nsIURI* aURI,
     return NS_OK;
   }
 
+  // TODO (Bug 2053043): POST visits are currently filtered out until
+  // a decision is made on how to handle them in GeckoView.
+  if (aFlags & IHistory::SOURCE_IS_POST_RESPONSE) {
+    return NS_OK;
+  }
+
   if (XRE_IsContentProcess()) {
     // If we're in the content process, send the visit to the parent. The parent
     // will find the matching chrome window for the content process and tab,
@@ -254,7 +260,7 @@ GeckoViewHistory::VisitURI(nsIWidget* aWidget, nsIURI* aURI,
     if (NS_WARN_IF(!browserChild)) {
       return NS_OK;
     }
-    Unused << NS_WARN_IF(
+    (void)NS_WARN_IF(
         !browserChild->SendVisitURI(aURI, aLastVisitedURI, aFlags, aBrowserId));
     return NS_OK;
   }
@@ -330,7 +336,7 @@ GeckoViewHistory::VisitURI(nsIWidget* aWidget, nsIURI* aURI,
   nsCOMPtr<nsIGeckoViewEventCallback> callback =
       new OnVisitedCallback(this, aURI);
 
-  Unused << NS_WARN_IF(
+  (void)NS_WARN_IF(
       NS_FAILED(dispatcher->Dispatch(kOnVisitedMessage, bundle, callback)));
   return NS_OK;
 }
@@ -434,6 +440,94 @@ class GetVisitedCallback final : public nsIGeckoViewEventCallback {
 
 NS_IMPL_ISUPPORTS(GetVisitedCallback, nsIGeckoViewEventCallback)
 
+// Resolves a `QueryHostVisitedSince` request with the visited status the
+// delegate returns: Some(true)/Some(false) on a definitive answer, and Nothing
+// when the status is unknown (delegate error, or the event callback is dropped
+// without a response). Guarantees the wrapped callback runs exactly once.
+class HostVisitedSinceCallback final : public nsIGeckoViewEventCallback {
+ public:
+  explicit HostVisitedSinceCallback(
+      std::function<void(mozilla::Maybe<bool>)>&& aResolve)
+      : mResolve(std::move(aResolve)) {}
+
+  NS_DECL_ISUPPORTS
+
+  NS_IMETHOD
+  OnSuccess(JS::Handle<JS::Value> aData, JSContext* aCx) override {
+    Resolve(aData.isBoolean() ? Some(aData.toBoolean()) : Nothing());
+    return NS_OK;
+  }
+
+  NS_IMETHOD
+  OnError(JS::Handle<JS::Value> aData, JSContext* aCx) override {
+    Resolve(Nothing());
+    return NS_OK;
+  }
+
+ private:
+  virtual ~HostVisitedSinceCallback() { Resolve(Nothing()); }
+
+  void Resolve(mozilla::Maybe<bool> aVisited) {
+    if (mResolve) {
+      std::function<void(mozilla::Maybe<bool>)> resolve = std::move(mResolve);
+      mResolve = nullptr;
+      resolve(aVisited);
+    }
+  }
+
+  std::function<void(mozilla::Maybe<bool>)> mResolve;
+};
+
+NS_IMPL_ISUPPORTS(HostVisitedSinceCallback, nsIGeckoViewEventCallback)
+
+void GeckoViewHistory::QueryHostVisitedSince(
+    nsIWidget* aWidget, const nsACString& aHost, int64_t aAfterEpochMillis,
+    int64_t aBeforeEpochMillis,
+    std::function<void(mozilla::Maybe<bool>)>&& aCallback) {
+  MOZ_ASSERT(XRE_IsParentProcess());
+  AssertIsOnMainThread();
+
+  RefPtr<nsWindow> window = nsWindow::From(aWidget);
+  widget::EventDispatcher* dispatcher =
+      window ? window->GetEventDispatcher() : nullptr;
+  if (NS_WARN_IF(!dispatcher) ||
+      !dispatcher->HasEmbedderListener(kGetHostVisitedSinceMessage)) {
+    aCallback(Nothing());
+    return;
+  }
+
+  dom::AutoJSAPI jsapi;
+  if (NS_WARN_IF(!jsapi.Init(xpc::PrivilegedJunkScope()))) {
+    aCallback(Nothing());
+    return;
+  }
+  JSContext* cx = jsapi.cx();
+
+  JS::Rooted<JS::Value> host(cx);
+  JS::Rooted<JSObject*> bundle(cx, JS_NewPlainObject(cx));
+  if (NS_WARN_IF(!bundle) ||
+      NS_WARN_IF(!ToJSValue(cx, NS_ConvertUTF8toUTF16(aHost), &host)) ||
+      NS_WARN_IF(!JS_SetProperty(cx, bundle, "host", host))) {
+    aCallback(Nothing());
+    return;
+  }
+
+  JS::Rooted<JS::Value> after(cx, JS::NumberValue(double(aAfterEpochMillis)));
+  JS::Rooted<JS::Value> before(cx, JS::NumberValue(double(aBeforeEpochMillis)));
+  if (NS_WARN_IF(!JS_SetProperty(cx, bundle, "after", after)) ||
+      NS_WARN_IF(!JS_SetProperty(cx, bundle, "before", before))) {
+    aCallback(Nothing());
+    return;
+  }
+
+  // HostVisitedSinceCallback resolves Nothing from its destructor if the
+  // dispatch never delivers a response, so aCallback always runs exactly once.
+  nsCOMPtr<nsIGeckoViewEventCallback> callback =
+      new HostVisitedSinceCallback(std::move(aCallback));
+  (void)NS_WARN_IF(NS_FAILED(
+      dispatcher->Dispatch(kGetHostVisitedSinceMessage, bundle, callback)));
+}
+
 /**
  * Queries the history delegate to find which URIs have been visited. This
  * is always called in the parent process: from `GetVisited` in non-e10s, and
@@ -481,7 +575,7 @@ void GeckoViewHistory::QueryVisitedState(nsIWidget* aWidget,
   nsCOMPtr<nsIGeckoViewEventCallback> callback =
       new GetVisitedCallback(this, aInterestedProcess, std::move(aURIs));
 
-  Unused << NS_WARN_IF(
+  (void)NS_WARN_IF(
       NS_FAILED(dispatcher->Dispatch(kGetVisitedMessage, bundle, callback)));
 }
 

@@ -1,50 +1,52 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-*/
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "MediaTrackGraphImpl.h"
-#include "mozilla/MathAlgorithms.h"
-#include "mozilla/Unused.h"
-
+#include "AudioCaptureTrack.h"
+#include "AudioDeviceInfo.h"
+#include "AudioNodeExternalInputTrack.h"
+#include "AudioNodeTrack.h"
 #include "AudioSegment.h"
 #include "CrossGraphPort.h"
+#include "CubebDeviceEnumerator.h"
+#include "ErrorList.h"
+#include "ForwardedInputTrack.h"
+#include "ImageContainer.h"
+#include "MediaTrackGraphImpl.h"
 #include "VideoSegment.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/Logging.h"
 #include "nsContentUtils.h"
 #include "nsGlobalWindowInner.h"
+#include "nsISerialEventTarget.h"
 #include "nsPrintfCString.h"
 #include "nsServiceManagerUtils.h"
 #include "prerror.h"
-#include "mozilla/Logging.h"
-#include "mozilla/Attributes.h"
-#include "ForwardedInputTrack.h"
-#include "ImageContainer.h"
-#include "AudioCaptureTrack.h"
-#include "AudioDeviceInfo.h"
-#include "AudioNodeTrack.h"
-#include "AudioNodeExternalInputTrack.h"
 #if defined(MOZ_WEBRTC)
 #  include "MediaEngineWebRTCAudio.h"
 #endif  // MOZ_WEBRTC
+#include <algorithm>
+
+#include "GeckoProfiler.h"
+#include "GraphRunner.h"
 #include "MediaTrackListener.h"
+#include "Tracing.h"
+#include "UnderrunHandler.h"
+#include "VideoFrameContainer.h"
+#include "VideoUtils.h"
+#include "mozilla/AbstractThread.h"
+#include "mozilla/AppShutdown.h"
+#include "mozilla/CycleCollectedJSRuntime.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/StaticPrefs_media.h"
+#include "mozilla/TaskDispatcher.h"
 #include "mozilla/dom/BaseAudioContextBinding.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/WorkletThread.h"
+#include "mozilla/ipc/IOThread.h"
 #include "mozilla/media/MediaUtils.h"
-#include <algorithm>
-#include "GeckoProfiler.h"
-#include "VideoFrameContainer.h"
-#include "mozilla/AbstractThread.h"
-#include "mozilla/StaticPrefs_dom.h"
-#include "mozilla/StaticPrefs_media.h"
 #include "transport/runnable_utils.h"
-#include "VideoUtils.h"
-#include "GraphRunner.h"
-#include "Tracing.h"
-#include "UnderrunHandler.h"
-#include "mozilla/CycleCollectedJSRuntime.h"
-#include "mozilla/Preferences.h"
-
 #include "webaudio/blink/DenormalDisabler.h"
 #include "webaudio/blink/HRTFDatabaseLoader.h"
 
@@ -59,10 +61,8 @@ using AudioDeviceID = CubebUtils::AudioDeviceID;
 using IsInShutdown = MediaTrack::IsInShutdown;
 
 LazyLogModule gMediaTrackGraphLog("MediaTrackGraph");
-#ifdef LOG
-#  undef LOG
-#endif  // LOG
-#define LOG(type, msg) MOZ_LOG(gMediaTrackGraphLog, type, msg)
+#define LOG(type, ...) \
+  MOZ_LOG_FMT(gMediaTrackGraphLog, type, MOZ_LOG_EXPAND_ARGS __VA_ARGS__)
 
 NativeInputTrack* DeviceInputTrackManager::GetNativeInputTrack() {
   return mNativeInputTrack.get();
@@ -188,7 +188,10 @@ MediaTrackGraphImpl::~MediaTrackGraphImpl() {
   MOZ_ASSERT(mTracks.IsEmpty() && mSuspendedTracks.IsEmpty(),
              "All tracks should have been destroyed by messages from the main "
              "thread");
-  LOG(LogLevel::Debug, ("MediaTrackGraph %p destroyed", this));
+  MOZ_ASSERT(
+      mDirectMessages.IsEmpty(),
+      "All direct tasks should have been drained in the final iteration");
+  LOG(LogLevel::Debug, ("MediaTrackGraph {} destroyed", fmt::ptr(this)));
   LOG(LogLevel::Debug, ("MediaTrackGraphImpl::~MediaTrackGraphImpl"));
 }
 
@@ -199,12 +202,12 @@ void MediaTrackGraphImpl::AddTrackGraphThread(MediaTrack* aTrack) {
   if (aTrack->IsSuspended()) {
     mSuspendedTracks.AppendElement(aTrack);
     LOG(LogLevel::Debug,
-        ("%p: Adding media track %p, in the suspended track array", this,
-         aTrack));
+        ("{}: Adding media track {}, in the suspended track array",
+         fmt::ptr(this), fmt::ptr(aTrack)));
   } else {
     mTracks.AppendElement(aTrack);
-    LOG(LogLevel::Debug, ("%p:  Adding media track %p, count %zu", this, aTrack,
-                          mTracks.Length()));
+    LOG(LogLevel::Debug, ("{}:  Adding media track {}, count {}",
+                          fmt::ptr(this), fmt::ptr(aTrack), mTracks.Length()));
   }
 
   SetTrackOrderDirty();
@@ -230,13 +233,21 @@ void MediaTrackGraphImpl::RemoveTrackGraphThread(MediaTrack* aTrack) {
   UnregisterAllAudioOutputs(aTrack);
 
   if (aTrack->IsSuspended()) {
-    mSuspendedTracks.RemoveElement(aTrack);
+    const bool removed = mSuspendedTracks.RemoveElement(aTrack);
+    MOZ_DIAGNOSTIC_ASSERT(removed, "Suspended track not in mSuspendedTracks");
+    if (!removed) {
+      mTracks.RemoveElement(aTrack);
+    }
   } else {
-    mTracks.RemoveElement(aTrack);
+    const bool removed = mTracks.RemoveElement(aTrack);
+    MOZ_DIAGNOSTIC_ASSERT(removed, "Non-suspended track not in mTracks");
+    if (!removed) {
+      mSuspendedTracks.RemoveElement(aTrack);
+    }
   }
 
-  LOG(LogLevel::Debug, ("%p: Removed media track %p, count %zu", this, aTrack,
-                        mTracks.Length()));
+  LOG(LogLevel::Debug, ("{}: Removed media track {}, count {}", fmt::ptr(this),
+                        fmt::ptr(aTrack), mTracks.Length()));
 
   NS_RELEASE(aTrack);  // probably destroying it
 }
@@ -264,8 +275,8 @@ void MediaTrackGraphImpl::UpdateCurrentTimeForTracks(
     track->AdvanceTimeVaryingValuesToCurrentTime(mStateComputedTime,
                                                  blockedTime);
     LOG(LogLevel::Verbose,
-        ("%p: MediaTrack %p bufferStartTime=%f blockedTime=%f", this, track,
-         MediaTimeToSeconds(track->mStartTime),
+        ("{}: MediaTrack {} bufferStartTime={} blockedTime={}", fmt::ptr(this),
+         fmt::ptr(track), MediaTimeToSeconds(track->mStartTime),
          MediaTimeToSeconds(blockedTime)));
     track->mStartBlocking = mStateComputedTime;
 
@@ -312,9 +323,9 @@ void MediaTrackGraphImpl::ProcessChunkMetadataForInterval(MediaTrack* aTrack,
     if (principalHandle != aSegment.GetLastPrincipalHandle()) {
       aSegment.SetLastPrincipalHandle(principalHandle);
       LOG(LogLevel::Debug,
-          ("%p: MediaTrack %p, principalHandle "
-           "changed in %sChunk with duration %lld",
-           this, aTrack,
+          ("{}: MediaTrack {}, principalHandle "
+           "changed in {}Chunk with duration {}",
+           fmt::ptr(this), fmt::ptr(aTrack),
            aSegment.GetType() == MediaSegment::AUDIO ? "Audio" : "Video",
            (long long)chunk->GetDuration()));
       for (const auto& listener : aTrack->mTrackListeners) {
@@ -358,12 +369,12 @@ GraphTime MediaTrackGraphImpl::WillUnderrun(MediaTrack* aTrack,
   GraphTime bufferEnd = aTrack->GetEnd() + aTrack->mStartTime;
 #ifdef DEBUG
   if (bufferEnd < mProcessedTime) {
-    LOG(LogLevel::Error, ("%p: MediaTrack %p underrun, "
-                          "bufferEnd %f < mProcessedTime %f (%" PRId64
-                          " < %" PRId64 "), TrackTime %" PRId64,
-                          this, aTrack, MediaTimeToSeconds(bufferEnd),
-                          MediaTimeToSeconds(mProcessedTime), bufferEnd,
-                          mProcessedTime, aTrack->GetEnd()));
+    LOG(LogLevel::Error,
+        ("{}: MediaTrack {} underrun, "
+         "bufferEnd {} < mProcessedTime {} ({} < {}), TrackTime {}",
+         fmt::ptr(this), fmt::ptr(aTrack), MediaTimeToSeconds(bufferEnd),
+         MediaTimeToSeconds(mProcessedTime), bufferEnd, mProcessedTime,
+         aTrack->GetEnd()));
     NS_ASSERTION(bufferEnd >= mProcessedTime, "Buffer underran");
   }
 #endif
@@ -405,8 +416,7 @@ bool MediaTrackGraphImpl::AudioTrackPresent() {
 void MediaTrackGraphImpl::CheckDriver() {
   MOZ_ASSERT(OnGraphThread());
   // An offline graph has only one driver.
-  // Otherwise, if a switch is already pending, let that happen.
-  if (!mRealtime || Switching()) {
+  if (!mRealtime) {
     return;
   }
 
@@ -454,32 +464,30 @@ void MediaTrackGraphImpl::CheckDriver() {
     return;
   }
 
-  bool needInputProcessingParamUpdate =
-      processingRequest &&
-      processingRequest->mGeneration !=
-          audioCallbackDriver->RequestedInputProcessingParams().mGeneration;
-
-  // Check if this graph should switch to a different number of output channels.
-  // Generally, a driver switch is explicitly made by an event (e.g., setting
+  // Check if a new driver is required for a configuration change.  Generally,
+  // a driver switch is explicitly triggered by an event (e.g., setting
   // the AudioDestinationNode channelCount), but if an HTMLMediaElement is
   // directly playing back via another HTMLMediaElement, the number of channels
   // of the media determines how many channels to output, and it can change
   // dynamically.
-  if (primaryOutputChannelCount != audioCallbackDriver->OutputChannelCount()) {
-    if (needInputProcessingParamUpdate) {
-      needInputProcessingParamUpdate = false;
-    }
+  if (primaryOutputChannelCount != audioCallbackDriver->OutputChannelCount() ||
+      inputDevice != audioCallbackDriver->InputDeviceID() ||
+      inputChannelCount != audioCallbackDriver->InputChannelCount() ||
+      inputPreference != audioCallbackDriver->InputDevicePreference()) {
     AudioCallbackDriver* driver = new AudioCallbackDriver(
         this, CurrentDriver(), mSampleRate, primaryOutputChannelCount,
         inputChannelCount, PrimaryOutputDeviceID(), inputDevice,
         inputPreference, processingRequest);
     SwitchAtNextIteration(driver);
+    return;
   }
 
-  if (needInputProcessingParamUpdate) {
-    needInputProcessingParamUpdate = false;
+  if (processingRequest &&
+      processingRequest->mGeneration !=
+          audioCallbackDriver->RequestedInputProcessingParams().mGeneration) {
     LOG(LogLevel::Debug,
-        ("%p: Setting on the fly requested processing params %s (Gen %d)", this,
+        ("{}: Setting on the fly requested processing params {} (Gen {})",
+         fmt::ptr(this),
          CubebUtils::ProcessingParamsToString(processingRequest->mParams).get(),
          processingRequest->mGeneration));
     audioCallbackDriver->RequestInputProcessingParams(*processingRequest);
@@ -707,19 +715,19 @@ TrackTime MediaTrackGraphImpl::PlayAudio(const TrackAndVolume& aOutput,
       output.InsertNullDataAtStart(toWrite);
       ticksWritten += toWrite;
       LOG(LogLevel::Verbose,
-          ("%p: MediaTrack %p writing %" PRId64 " blocking-silence samples for "
-           "%f to %f (%" PRId64 " to %" PRId64 ")",
-           this, track, toWrite, MediaTimeToSeconds(t), MediaTimeToSeconds(end),
-           offset, offset + toWrite));
+          ("{}: MediaTrack {} writing {} blocking-silence samples for "
+           "{} to {} ({} to {})",
+           fmt::ptr(this), fmt::ptr(track), toWrite, MediaTimeToSeconds(t),
+           MediaTimeToSeconds(end), offset, offset + toWrite));
     } else {
       TrackTime endTicksNeeded = offset + toWrite;
       TrackTime endTicksAvailable = audio->GetDuration();
 
       if (endTicksNeeded <= endTicksAvailable) {
         LOG(LogLevel::Verbose,
-            ("%p: MediaTrack %p writing %" PRId64 " samples for %f to %f "
-             "(samples %" PRId64 " to %" PRId64 ")",
-             this, track, toWrite, MediaTimeToSeconds(t),
+            ("{}: MediaTrack {} writing {} samples for {} to {} "
+             "(samples {} to {})",
+             fmt::ptr(this), fmt::ptr(track), toWrite, MediaTimeToSeconds(t),
              MediaTimeToSeconds(end), offset, endTicksNeeded));
         output.AppendSlice(*audio, offset, endTicksNeeded);
         ticksWritten += toWrite;
@@ -732,9 +740,9 @@ TrackTime MediaTrackGraphImpl::PlayAudio(const TrackAndVolume& aOutput,
           output.AppendSlice(*audio, offset, endTicksAvailable);
 
           LOG(LogLevel::Verbose,
-              ("%p: MediaTrack %p writing %" PRId64 " samples for %f to %f "
-               "(samples %" PRId64 " to %" PRId64 ")",
-               this, track, toWrite, MediaTimeToSeconds(t),
+              ("{}: MediaTrack {} writing {} samples for {} to {} "
+               "(samples {} to {})",
+               fmt::ptr(this), fmt::ptr(track), toWrite, MediaTimeToSeconds(t),
                MediaTimeToSeconds(end), offset, endTicksNeeded));
           uint32_t available = endTicksAvailable - offset;
           ticksWritten += available;
@@ -743,9 +751,9 @@ TrackTime MediaTrackGraphImpl::PlayAudio(const TrackAndVolume& aOutput,
         }
         output.AppendNullData(toWrite);
         LOG(LogLevel::Verbose,
-            ("%p MediaTrack %p writing %" PRId64 " padding slsamples for %f to "
-             "%f (samples %" PRId64 " to %" PRId64 ")",
-             this, track, toWrite, MediaTimeToSeconds(t),
+            ("{} MediaTrack {} writing {} padding slsamples for {} to "
+             "{} (samples {} to {})",
+             fmt::ptr(this), fmt::ptr(track), toWrite, MediaTimeToSeconds(t),
              MediaTimeToSeconds(end), offset, endTicksNeeded));
         ticksWritten += toWrite;
       }
@@ -773,42 +781,34 @@ NativeInputTrack* MediaTrackGraph::GetNativeInputTrackMainThread() {
 
 void MediaTrackGraphImpl::OpenAudioInputImpl(DeviceInputTrack* aTrack) {
   MOZ_ASSERT(OnGraphThread());
-  LOG(LogLevel::Debug,
-      ("%p OpenAudioInputImpl: device %p", this, aTrack->mDeviceId));
+  LOG(LogLevel::Debug, ("{} OpenAudioInputImpl: device {}", fmt::ptr(this),
+                        fmt::ptr(aTrack->mDeviceId)));
 
   mDeviceInputTrackManagerGraphThread.Add(aTrack);
 
   if (aTrack->AsNativeInputTrack()) {
-    // Switch Drivers since we're adding input (to input-only or full-duplex)
-    AudioCallbackDriver* driver = new AudioCallbackDriver(
-        this, CurrentDriver(), mSampleRate, PrimaryOutputChannelCount(),
-        AudioInputChannelCount(aTrack->mDeviceId), PrimaryOutputDeviceID(),
-        aTrack->mDeviceId, AudioInputDevicePreference(aTrack->mDeviceId),
-        Some(aTrack->UpdateRequestedProcessingParams()));
-    LOG(LogLevel::Debug,
-        ("%p OpenAudioInputImpl: starting new AudioCallbackDriver(input) %p",
-         this, driver));
-    SwitchAtNextIteration(driver);
-  } else {
-    NonNativeInputTrack* nonNative = aTrack->AsNonNativeInputTrack();
-    MOZ_ASSERT(nonNative);
-    // Start non-native input right away.
-    nonNative->StartAudio(MakeRefPtr<AudioInputSource>(
-        MakeRefPtr<AudioInputSourceListener>(nonNative),
-        nonNative->GenerateSourceId(), nonNative->mDeviceId,
-        AudioInputChannelCount(nonNative->mDeviceId),
-        AudioInputDevicePreference(nonNative->mDeviceId) ==
-            AudioInputType::Voice,
-        nonNative->mPrincipalHandle, nonNative->mSampleRate, GraphRate()));
+    // CheckDriver() will check for changes, after all control messages are
+    // processed.
+    return;
   }
+  NonNativeInputTrack* nonNative = aTrack->AsNonNativeInputTrack();
+  MOZ_ASSERT(nonNative);
+  // Start non-native input right away.
+  nonNative->StartAudio(MakeRefPtr<AudioInputSource>(
+      MakeRefPtr<AudioInputSourceListener>(nonNative),
+      nonNative->GenerateSourceId(), nonNative->mDeviceId,
+      AudioInputChannelCount(nonNative->mDeviceId),
+      AudioInputDevicePreference(nonNative->mDeviceId) == AudioInputType::Voice,
+      nonNative->mPrincipalHandle, nonNative->mSampleRate, GraphRate()));
 }
 
 void MediaTrackGraphImpl::OpenAudioInput(DeviceInputTrack* aTrack) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aTrack);
 
-  LOG(LogLevel::Debug, ("%p OpenInput: DeviceInputTrack %p for device %p", this,
-                        aTrack, aTrack->mDeviceId));
+  LOG(LogLevel::Debug,
+      ("{} OpenInput: DeviceInputTrack {} for device {}", fmt::ptr(this),
+       fmt::ptr(aTrack), fmt::ptr(aTrack->mDeviceId)));
 
   class Message : public ControlMessage {
    public:
@@ -823,6 +823,7 @@ void MediaTrackGraphImpl::OpenAudioInput(DeviceInputTrack* aTrack) {
   };
 
   mDeviceInputTrackManagerMainThread.Add(aTrack);
+  UpdateEnumeratorDefaultDeviceTracking();
 
   this->AppendMessage(MakeUnique<Message>(this, aTrack));
 }
@@ -830,8 +831,8 @@ void MediaTrackGraphImpl::OpenAudioInput(DeviceInputTrack* aTrack) {
 void MediaTrackGraphImpl::CloseAudioInputImpl(DeviceInputTrack* aTrack) {
   MOZ_ASSERT(OnGraphThread());
 
-  LOG(LogLevel::Debug,
-      ("%p CloseAudioInputImpl: device %p", this, aTrack->mDeviceId));
+  LOG(LogLevel::Debug, ("{} CloseAudioInputImpl: device {}", fmt::ptr(this),
+                        fmt::ptr(aTrack->mDeviceId)));
 
   if (NonNativeInputTrack* nonNative = aTrack->AsNonNativeInputTrack()) {
     nonNative->StopAudio();
@@ -842,30 +843,8 @@ void MediaTrackGraphImpl::CloseAudioInputImpl(DeviceInputTrack* aTrack) {
   MOZ_ASSERT(aTrack->AsNativeInputTrack());
 
   mDeviceInputTrackManagerGraphThread.Remove(aTrack);
-
-  // Switch Drivers since we're adding or removing an input (to nothing/system
-  // or output only)
-  bool audioTrackPresent = AudioTrackPresent();
-
-  GraphDriver* driver;
-  if (audioTrackPresent) {
-    // We still have audio output
-    LOG(LogLevel::Debug,
-        ("%p: CloseInput: output present (AudioCallback)", this));
-
-    driver = new AudioCallbackDriver(
-        this, CurrentDriver(), mSampleRate, PrimaryOutputChannelCount(),
-        AudioInputChannelCount(aTrack->mDeviceId), PrimaryOutputDeviceID(),
-        nullptr, AudioInputDevicePreference(aTrack->mDeviceId),
-        Some(aTrack->UpdateRequestedProcessingParams()));
-    SwitchAtNextIteration(driver);
-  } else if (CurrentDriver()->AsAudioCallbackDriver()) {
-    LOG(LogLevel::Debug,
-        ("%p: CloseInput: no output present (SystemClockCallback)", this));
-
-    driver = new SystemClockDriver(this, CurrentDriver(), mSampleRate);
-    SwitchAtNextIteration(driver);
-  }  // else SystemClockDriver->SystemClockDriver, no switch
+  // CheckDriver() will check for changes, after all control messages are
+  // processed.
 }
 
 void MediaTrackGraphImpl::UnregisterAllAudioOutputs(MediaTrack* aTrack) {
@@ -882,8 +861,9 @@ void MediaTrackGraphImpl::CloseAudioInput(DeviceInputTrack* aTrack) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aTrack);
 
-  LOG(LogLevel::Debug, ("%p CloseInput: DeviceInputTrack %p for device %p",
-                        this, aTrack, aTrack->mDeviceId));
+  LOG(LogLevel::Debug,
+      ("{} CloseInput: DeviceInputTrack {} for device {}", fmt::ptr(this),
+       fmt::ptr(aTrack), fmt::ptr(aTrack->mDeviceId)));
 
   class Message : public ControlMessage {
    public:
@@ -901,12 +881,13 @@ void MediaTrackGraphImpl::CloseAudioInput(DeviceInputTrack* aTrack) {
   // aTrack->Destroy() is called after this. See DeviceInputTrack::CloseAudio
   // for more details.
   mDeviceInputTrackManagerMainThread.Remove(aTrack);
+  UpdateEnumeratorDefaultDeviceTracking();
 
   this->AppendMessage(MakeUnique<Message>(this, aTrack));
 
   if (aTrack->AsNativeInputTrack()) {
-    LOG(LogLevel::Debug,
-        ("%p Native input device %p is closed!", this, aTrack->mDeviceId));
+    LOG(LogLevel::Debug, ("{} Native input device {} is closed!",
+                          fmt::ptr(this), fmt::ptr(aTrack->mDeviceId)));
     SetNewNativeInput();
   }
 }
@@ -1039,7 +1020,7 @@ void MediaTrackGraphImpl::DeviceChanged() {
   NS_DispatchBackgroundTask(NS_NewRunnableFunction(
       "MaxChannelCountUpdateOnBgThread", [self{std::move(self)}]() {
         uint32_t maxChannelCount = CubebUtils::MaxNumberOfChannels();
-        self->Dispatch(NS_NewRunnableFunction(
+        self->DispatchToMainThread(NS_NewRunnableFunction(
             "MaxChannelCountUpdateToMainThread",
             [self{self}, maxChannelCount]() {
               class MessageToGraph : public ControlMessage {
@@ -1083,88 +1064,50 @@ void MediaTrackGraph::ReevaluateInputDevice(CubebUtils::AudioDeviceID aID) {
 
 void MediaTrackGraphImpl::ReevaluateInputDevice(CubebUtils::AudioDeviceID aID) {
   MOZ_ASSERT(OnGraphThread());
-  LOG(LogLevel::Debug, ("%p: ReevaluateInputDevice: device %p", this, aID));
+  LOG(LogLevel::Debug,
+      ("{}: ReevaluateInputDevice: device {}", fmt::ptr(this), fmt::ptr(aID)));
 
   DeviceInputTrack* track =
       mDeviceInputTrackManagerGraphThread.GetDeviceInputTrack(aID);
   if (!track) {
     LOG(LogLevel::Debug,
-        ("%p: No DeviceInputTrack for this device. Ignore", this));
+        ("{}: No DeviceInputTrack for this device. Ignore", fmt::ptr(this)));
     return;
   }
-
+  if (track->AsNativeInputTrack()) {
+    // CheckDriver() will check for changes, after all control messages are
+    // processed.
+    return;
+  }
   bool needToSwitch = false;
 
-  if (NonNativeInputTrack* nonNative = track->AsNonNativeInputTrack()) {
-    if (nonNative->NumberOfChannels() != AudioInputChannelCount(aID)) {
-      LOG(LogLevel::Debug,
-          ("%p: %u-channel non-native input device %p (track %p) is "
-           "re-configured to %d-channel",
-           this, nonNative->NumberOfChannels(), aID, track,
-           AudioInputChannelCount(aID)));
-      needToSwitch = true;
-    }
-    if (nonNative->DevicePreference() != AudioInputDevicePreference(aID)) {
-      LOG(LogLevel::Debug,
-          ("%p: %s-type non-native input device %p (track %p) is re-configured "
-           "to %s-type",
-           this, GetAudioInputTypeString(nonNative->DevicePreference()), aID,
-           track, GetAudioInputTypeString(AudioInputDevicePreference(aID))));
-      needToSwitch = true;
-    }
-
-    if (needToSwitch) {
-      nonNative->StopAudio();
-      nonNative->StartAudio(MakeRefPtr<AudioInputSource>(
-          MakeRefPtr<AudioInputSourceListener>(nonNative),
-          nonNative->GenerateSourceId(), aID, AudioInputChannelCount(aID),
-          AudioInputDevicePreference(aID) == AudioInputType::Voice,
-          nonNative->mPrincipalHandle, nonNative->mSampleRate, GraphRate()));
-    }
-
-    return;
+  NonNativeInputTrack* nonNative = track->AsNonNativeInputTrack();
+  MOZ_ASSERT(nonNative);
+  if (nonNative->NumberOfChannels() != AudioInputChannelCount(aID)) {
+    LOG(LogLevel::Debug,
+        ("{}: {}-channel non-native input device {} (track {}) is "
+         "re-configured to {}-channel",
+         fmt::ptr(this), nonNative->NumberOfChannels(), fmt::ptr(aID),
+         fmt::ptr(track), AudioInputChannelCount(aID)));
+    needToSwitch = true;
   }
-
-  MOZ_ASSERT(track->AsNativeInputTrack());
-
-  if (AudioCallbackDriver* audioCallbackDriver =
-          CurrentDriver()->AsAudioCallbackDriver()) {
-    if (audioCallbackDriver->InputChannelCount() !=
-        AudioInputChannelCount(aID)) {
-      LOG(LogLevel::Debug,
-          ("%p: ReevaluateInputDevice: %u-channel AudioCallbackDriver %p is "
-           "re-configured to %d-channel",
-           this, audioCallbackDriver->InputChannelCount(), audioCallbackDriver,
-           AudioInputChannelCount(aID)));
-      needToSwitch = true;
-    }
-    if (audioCallbackDriver->InputDevicePreference() !=
-        AudioInputDevicePreference(aID)) {
-      LOG(LogLevel::Debug,
-          ("%p: ReevaluateInputDevice: %s-type AudioCallbackDriver %p is "
-           "re-configured to %s-type",
-           this,
-           GetAudioInputTypeString(
-               audioCallbackDriver->InputDevicePreference()),
-           audioCallbackDriver,
-           GetAudioInputTypeString(AudioInputDevicePreference(aID))));
-      needToSwitch = true;
-    }
-  } else if (Switching() && NextDriver()->AsAudioCallbackDriver()) {
-    // We're already in the process of switching to a audio callback driver,
-    // which will happen at the next iteration.
-    // However, maybe it's not the correct number of channels. Re-query the
-    // correct channel amount at this time.
+  if (nonNative->DevicePreference() != AudioInputDevicePreference(aID)) {
+    LOG(LogLevel::Debug,
+        ("{}: {}-type non-native input device {} (track {}) is re-configured "
+         "to {}-type",
+         fmt::ptr(this), GetAudioInputTypeString(nonNative->DevicePreference()),
+         fmt::ptr(aID), fmt::ptr(track),
+         GetAudioInputTypeString(AudioInputDevicePreference(aID))));
     needToSwitch = true;
   }
 
   if (needToSwitch) {
-    AudioCallbackDriver* newDriver = new AudioCallbackDriver(
-        this, CurrentDriver(), mSampleRate, PrimaryOutputChannelCount(),
-        AudioInputChannelCount(aID), PrimaryOutputDeviceID(), aID,
-        AudioInputDevicePreference(aID),
-        Some(track->UpdateRequestedProcessingParams()));
-    SwitchAtNextIteration(newDriver);
+    nonNative->StopAudio();
+    nonNative->StartAudio(MakeRefPtr<AudioInputSource>(
+        MakeRefPtr<AudioInputSourceListener>(nonNative),
+        nonNative->GenerateSourceId(), aID, AudioInputChannelCount(aID),
+        AudioInputDevicePreference(aID) == AudioInputType::Voice,
+        nonNative->mPrincipalHandle, nonNative->mSampleRate, GraphRate()));
   }
 }
 
@@ -1198,8 +1141,7 @@ bool MediaTrackGraphImpl::ShouldUpdateMainThread() {
   TimeStamp now = TimeStamp::Now();
   // For offline graphs, update now if it has been long enough since the last
   // update, or if it has reached the end.
-  if ((now - mLastMainThreadUpdate).ToMilliseconds() >
-          CurrentDriver()->IterationDuration() ||
+  if (now - mLastMainThreadUpdate > CurrentDriver()->IterationDuration() ||
       mStateComputedTime >= mEndTime) {
     mLastMainThreadUpdate = now;
     return true;
@@ -1266,17 +1208,21 @@ void MediaTrackGraphImpl::PrepareUpdatesToMainThreadState(bool aFinalUpdate) {
   }
 }
 
-GraphTime MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(GraphTime aTime) {
+MediaTime MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(MediaTime aTime) {
   if (aTime % WEBAUDIO_BLOCK_SIZE == 0) {
     return aTime;
   }
   return RoundUpToNextAudioBlock(aTime);
 }
 
-GraphTime MediaTrackGraphImpl::RoundUpToNextAudioBlock(GraphTime aTime) {
+MediaTime MediaTrackGraphImpl::RoundUpToNextAudioBlock(MediaTime aTime) {
+  // >> on negative signed integers is implementation-defined behavior, where
+  // implementations perform an arithmetic right shift, which rounds toward
+  // negative infinity.
   uint64_t block = aTime >> WEBAUDIO_BLOCK_SIZE_BITS;
   uint64_t nextBlock = block + 1;
   GraphTime nextTime = nextBlock << WEBAUDIO_BLOCK_SIZE_BITS;
+  MOZ_ASSERT(nextTime > aTime);
   return nextTime;
 }
 
@@ -1286,9 +1232,24 @@ void MediaTrackGraphImpl::ProduceDataForTracksBlockByBlock(
   MOZ_ASSERT(aTrackIndex <= mFirstCycleBreaker,
              "Cycle breaker is not AudioNodeTrack?");
 
+  // Only graph threads with a JS context, such as AudioWorklet threads, can run
+  // script. Avoid toggling denormals per block otherwise, as it is expensive
+  // on some platforms.
+  const bool canRunScript = !!CycleCollectedJSContext::Get();
+
   while (mProcessedTime < mStateComputedTime) {
-    // Microtask checkpoints are in between render quanta.
+    // Microtask checkpoints run script which must run with denormals enabled.
+    // Re-enable denormals around the checkpoint and disable them again for
+    // rendering.
+    Maybe<WebCore::DenormalEnabler> enableForMicroTasks;
+    if (canRunScript) {
+      enableForMicroTasks.emplace();
+    }
     nsAutoMicroTask mt;
+    Maybe<WebCore::DenormalDisabler> disableForRendering;
+    if (canRunScript) {
+      disableForRendering.emplace();
+    }
 
     GraphTime next = RoundUpToNextAudioBlock(mProcessedTime);
     for (uint32_t i = mFirstCycleBreaker; i < mTracks.Length(); ++i) {
@@ -1306,21 +1267,14 @@ void MediaTrackGraphImpl::ProduceDataForTracksBlockByBlock(
     }
     mProcessedTime = next;
   }
-  NS_ASSERTION(mProcessedTime == mStateComputedTime,
-               "Something went wrong with rounding to block boundaries");
+  MOZ_ASSERT(mProcessedTime == mStateComputedTime,
+             "Something went wrong with rounding to block boundaries");
 }
 
 void MediaTrackGraphImpl::RunMessageAfterProcessing(
-    UniquePtr<ControlMessageInterface> aMessage) {
+    already_AddRefed<nsIRunnable> aMessage) {
   MOZ_ASSERT(OnGraphThread());
-
-  if (mFrontMessageQueue.IsEmpty()) {
-    mFrontMessageQueue.AppendElement();
-  }
-
-  // Only one block is used for messages from the graph thread.
-  MOZ_ASSERT(mFrontMessageQueue.Length() == 1);
-  mFrontMessageQueue[0].mMessages.AppendElement(std::move(aMessage));
+  DispatchDirectTask(std::move(aMessage));
 }
 
 void MediaTrackGraphImpl::RunMessagesInQueue() {
@@ -1329,16 +1283,12 @@ void MediaTrackGraphImpl::RunMessagesInQueue() {
   // Calculate independent action times for each batch of messages (each
   // batch corresponding to an event loop task). This isolates the performance
   // of different scripts to some extent.
-  for (uint32_t i = 0; i < mFrontMessageQueue.Length(); ++i) {
-    nsTArray<UniquePtr<ControlMessageInterface>>& messages =
-        mFrontMessageQueue[i].mMessages;
-
-    for (uint32_t j = 0; j < messages.Length(); ++j) {
-      TRACE("ControlMessage::Run");
-      messages[j]->Run();
-    }
+  for (const auto& message : mFrontMessageQueue) {
+    LogRunnable::Run log(message);
+    AUTO_PROFILE_FOLLOWING_RUNNABLE(message);
+    message->Run();
   }
-  mFrontMessageQueue.Clear();
+  mFrontMessageQueue.ClearAndRetainStorage();
 }
 
 void MediaTrackGraphImpl::UpdateGraph(GraphTime aEndBlockingDecisions) {
@@ -1368,13 +1318,15 @@ void MediaTrackGraphImpl::UpdateGraph(GraphTime aEndBlockingDecisions) {
       GraphTime endTime = track->GetEnd() + track->mStartTime;
       if (endTime <= mStateComputedTime) {
         LOG(LogLevel::Verbose,
-            ("%p: MediaTrack %p is blocked due to being ended", this, track));
+            ("{}: MediaTrack {} is blocked due to being ended", fmt::ptr(this),
+             fmt::ptr(track)));
         track->mStartBlocking = mStateComputedTime;
       } else {
         LOG(LogLevel::Verbose,
-            ("%p: MediaTrack %p has ended, but is not blocked yet (current "
-             "time %f, end at %f)",
-             this, track, MediaTimeToSeconds(mStateComputedTime),
+            ("{}: MediaTrack {} has ended, but is not blocked yet (current "
+             "time {}, end at {})",
+             fmt::ptr(this), fmt::ptr(track),
+             MediaTimeToSeconds(mStateComputedTime),
              MediaTimeToSeconds(endTime)));
         // Data can't be added to a ended track, so underruns are irrelevant.
         MOZ_ASSERT(endTime <= aEndBlockingDecisions);
@@ -1399,11 +1351,11 @@ void MediaTrackGraphImpl::UpdateGraph(GraphTime aEndBlockingDecisions) {
         if (track->GetEnd() <
             track->GraphTimeToTrackTime(aEndBlockingDecisions)) {
           LOG(LogLevel::Error,
-              ("%p: SourceMediaTrack %p (%s) is live and pulled, "
+              ("{}: SourceMediaTrack {} ({}) is live and pulled, "
                "but wasn't fed "
-               "enough data. TrackListeners=%zu. Track-end=%f, "
-               "Iteration-end=%f",
-               this, track,
+               "enough data. TrackListeners={}. Track-end={}, "
+               "Iteration-end={}",
+               fmt::ptr(this), fmt::ptr(track),
                (track->mType == MediaSegment::AUDIO ? "audio" : "video"),
                track->mTrackListeners.Length(),
                MediaTimeToSeconds(track->GetEnd()),
@@ -1422,8 +1374,8 @@ void MediaTrackGraphImpl::UpdateGraph(GraphTime aEndBlockingDecisions) {
     track->mStartBlocking = mStateComputedTime;
   }
 
-  // If the loop is woken up so soon that IterationEnd() barely advances or
-  // if an offline graph is not currently rendering, we end up having
+  // If the loop is woken up so soon that mStateComputedTime does not advance
+  // or if an offline graph is not currently rendering, we end up having
   // aEndBlockingDecisions == mStateComputedTime.
   // Since the process interval [mStateComputedTime, aEndBlockingDecision) is
   // empty, Process() will not find any unblocked track and so will not
@@ -1441,9 +1393,10 @@ void MediaTrackGraphImpl::SelectOutputDeviceForAEC() {
   if (currentDeviceIndex == mOutputDevices.NoIndex) {
     // Outputs for this device have been removed.
     // Fall back to the primary output device.
-    LOG(LogLevel::Info, ("%p: No remaining outputs to device %p. "
-                         "Switch to primary output device %p for AEC",
-                         this, mOutputDeviceForAEC, PrimaryOutputDeviceID()));
+    LOG(LogLevel::Info, ("{}: No remaining outputs to device {}. "
+                         "Switch to primary output device {} for AEC",
+                         fmt::ptr(this), fmt::ptr(mOutputDeviceForAEC),
+                         fmt::ptr(PrimaryOutputDeviceID())));
     mOutputDeviceForAEC = PrimaryOutputDeviceID();
     currentDeviceIndex = 0;
     MOZ_ASSERT(mOutputDevices[0].mDeviceID == mOutputDeviceForAEC);
@@ -1477,8 +1430,9 @@ void MediaTrackGraphImpl::SelectOutputDeviceForAEC() {
       if (HasNonNullAudio(output)) {
         // Switch to this device.
         LOG(LogLevel::Info,
-            ("%p: Switch output device for AEC from silent %p to non-null %p",
-             this, mOutputDeviceForAEC, outputDeviceEntry.mDeviceID));
+            ("{}: Switch output device for AEC from silent {} to non-null {}",
+             fmt::ptr(this), fmt::ptr(mOutputDeviceForAEC),
+             fmt::ptr(outputDeviceEntry.mDeviceID)));
         mOutputDeviceForAEC = outputDeviceEntry.mDeviceID;
         return;
       }
@@ -1493,6 +1447,8 @@ void MediaTrackGraphImpl::Process(MixerCallbackReceiver* aMixerReceiver) {
   if (mStateComputedTime == mProcessedTime) {  // No frames to render.
     return;
   }
+
+  WebCore::DenormalDisabler disabler;
 
   // Play track contents.
   bool allBlockedForever = true;
@@ -1614,7 +1570,6 @@ bool MediaTrackGraphImpl::UpdateMainThreadState() {
         mForceShutDownReceived || (IsEmpty() && mBackMessageQueue.IsEmpty());
     PrepareUpdatesToMainThreadState(finalUpdate);
     if (!finalUpdate) {
-      SwapMessageQueues();
       return true;
     }
     // The JSContext will not be used again.
@@ -1629,21 +1584,55 @@ bool MediaTrackGraphImpl::UpdateMainThreadState() {
 }
 
 auto MediaTrackGraphImpl::OneIteration(GraphTime aStateTime,
-                                       GraphTime aIterationEnd,
                                        MixerCallbackReceiver* aMixerReceiver)
     -> IterationResult {
   if (mGraphRunner) {
-    return mGraphRunner->OneIteration(aStateTime, aIterationEnd,
-                                      aMixerReceiver);
+    return mGraphRunner->OneIteration(aStateTime, aMixerReceiver);
   }
 
-  return OneIterationImpl(aStateTime, aIterationEnd, aMixerReceiver);
+  return OneIterationImpl(aStateTime, aMixerReceiver);
 }
 
 auto MediaTrackGraphImpl::OneIterationImpl(
-    GraphTime aStateTime, GraphTime aIterationEnd,
-    MixerCallbackReceiver* aMixerReceiver) -> IterationResult {
+    GraphTime aStateTime, MixerCallbackReceiver* aMixerReceiver)
+    -> IterationResult {
   TRACE("MTG::OneIterationImpl");
+  TRACE_AUDIO_CALLBACK_FRAME_COUNT(
+      "MTG graph advance", aStateTime - mStateComputedTime, mSampleRate);
+
+  class MOZ_RAII DispatchGuard {
+    NS_DECL_OWNINGTHREAD
+    MediaTrackGraphImpl* mGraph;
+    const SerialEventTargetGuard mGuard;
+    AbstractThread* mLastCurrentThread;
+    Maybe<AutoTaskDispatcher> mTaskDispatcher;
+
+   public:
+    explicit DispatchGuard(MediaTrackGraphImpl* aGraph)
+        : mGraph(aGraph),
+          mGuard(aGraph),
+          mLastCurrentThread(sCurrentThreadTLS.get()) {
+      MOZ_ASSERT(mGraph->OnGraphThread());
+      MOZ_ASSERT(mGraph->mTaskDispatcher.isNothing());
+
+      sCurrentThreadTLS.set(mGraph);
+      mTaskDispatcher.emplace(aGraph, aGraph->mTailDispatcherPolicy);
+      mGraph->mTaskDispatcher.emplace(*mTaskDispatcher);
+    }
+    ~DispatchGuard() {
+      NS_ASSERT_OWNINGTHREAD(DispatchGuard);
+      MOZ_ASSERT(mTaskDispatcher);
+      MOZ_ASSERT(mGraph->mTaskDispatcher.isSome());
+
+      // Destroy mTaskDispatcher, i.e. fire tail dispatcher, prior to clearing
+      // current-thread/target state.
+      mGraph->mTaskDispatcher = Nothing();
+      mTaskDispatcher.reset();
+      sCurrentThreadTLS.set(mLastCurrentThread);
+    }
+  };
+
+  Maybe<DispatchGuard> guard(std::in_place, this);
 
   if (SoftRealTimeLimitReached()) {
     TRACE("MTG::Demoting real-time thread!");
@@ -1666,9 +1655,8 @@ auto MediaTrackGraphImpl::OneIterationImpl(
 
   MOZ_ASSERT(OnGraphThread());
 
-  WebCore::DenormalDisabler disabler;
-
   // Process graph message from the main thread for this iteration.
+  SwapMessageQueues();
   RunMessagesInQueue();
 
   // Process MessagePort events.
@@ -1678,24 +1666,36 @@ auto MediaTrackGraphImpl::OneIterationImpl(
     NS_ProcessPendingEvents(nullptr);
   }
 
-  GraphTime stateTime = std::min(aStateTime, GraphTime(mEndTime));
-  UpdateGraph(stateTime);
+  UpdateGraph(aStateTime);
 
-  mStateComputedTime = stateTime;
+  mStateComputedTime = aStateTime;
 
   GraphTime oldProcessedTime = mProcessedTime;
   Process(aMixerReceiver);
-  MOZ_ASSERT(mProcessedTime == stateTime);
+  MOZ_ASSERT(mProcessedTime == aStateTime);
 
   UpdateCurrentTimeForTracks(oldProcessedTime);
 
   ProcessChunkMetadata(oldProcessedTime);
 
-  // Process graph messages queued from RunMessageAfterProcessing() on this
-  // thread during the iteration.
-  RunMessagesInQueue();
+  // Note that after draining, no more direct tasks may be added, as asserted by
+  // AutoTaskDispatcher.
+  DrainDirectTasks();
 
-  if (!UpdateMainThreadState()) {
+  bool stillProcessing = UpdateMainThreadState();
+  // The main thread state update runnable has been dispatched. Fire the tail
+  // dispatcher now.
+  // NOTE that ideally we'd fire the tail dispatcher at the end of the
+  // IterationResult callbacks below, but because of the OneIteration proxying
+  // through GraphRunner the callbacks will be called on a different physical
+  // thread. We could std::move() the DispatchGuard there, but this won't work
+  // since it interacts with TLS.
+  // This is normally not a problem -- SignalMainThreadCleanup just causes an
+  // extra main thread non-tail-dispatch after all audio has been processed. But
+  // it's something to be aware of in gtests that drive the graph manually from
+  // main thread.
+  guard.reset();
+  if (!stillProcessing) {
     if (Switching()) {
       // We'll never get to do this switch. Clear mNextDriver to break the
       // ref-cycle graph->nextDriver->currentDriver->graph.
@@ -1733,7 +1733,7 @@ void MediaTrackGraphImpl::ApplyTrackUpdate(TrackUpdate* aUpdate) {
 
 void MediaTrackGraphImpl::ForceShutDown() {
   MOZ_ASSERT(NS_IsMainThread(), "Must be called on main thread");
-  LOG(LogLevel::Debug, ("%p: MediaTrackGraph::ForceShutdown", this));
+  LOG(LogLevel::Debug, ("{}: MediaTrackGraph::ForceShutdown", fmt::ptr(this)));
 
   if (mShutdownBlocker) {
     // Avoid waiting forever for a graph to shut down
@@ -1772,6 +1772,7 @@ MediaTrackGraphImpl::Notify(nsITimer* aTimer) {
   // Sigh, graph took too long to shut down.  Stop blocking system
   // shutdown and hope all is well.
   RemoveShutdownBlocker();
+  mOutputDevicesChangedListener.DisconnectIfExists();
   return NS_OK;
 }
 
@@ -1798,7 +1799,8 @@ MediaTrackGraphImpl::Observe(nsISupports* aSubject, const char* aTopic,
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(strcmp(aTopic, "document-title-changed") == 0);
   nsCString streamName = GetDocumentTitle(mWindowID);
-  LOG(LogLevel::Debug, ("%p: document title: %s", this, streamName.get()));
+  LOG(LogLevel::Debug,
+      ("{}: document title: {}", fmt::ptr(this), streamName.get()));
   if (streamName.IsEmpty()) {
     return NS_OK;
   }
@@ -1831,8 +1833,8 @@ bool MediaTrackGraphImpl::AddShutdownBlocker() {
   if (!barrier) {
     // We're already shutting down, we won't be able to add a blocker, bail.
     LOG(LogLevel::Error,
-        ("%p: Couldn't get shutdown barrier, won't add shutdown blocker",
-         this));
+        ("{}: Couldn't get shutdown barrier, won't add shutdown blocker",
+         fmt::ptr(this)));
     return false;
   }
 
@@ -1875,7 +1877,7 @@ class MediaTrackGraphShutDownRunnable : public Runnable {
     MOZ_ASSERT(!mGraph->mGraphDriverRunning && mGraph->mDriver,
                "We should know the graph thread control loop isn't running!");
 
-    LOG(LogLevel::Debug, ("%p: Shutting down graph", mGraph.get()));
+    LOG(LogLevel::Debug, ("{}: Shutting down graph", fmt::ptr(mGraph.get())));
 
     // We've asserted the graph isn't running.  Use mDriver instead of
     // CurrentDriver to avoid thread-safety checks
@@ -1930,13 +1932,18 @@ class MediaTrackGraphShutDownRunnable : public Runnable {
       track->RemoveAllResourcesAndListenersImpl();
     }
 
-#ifdef DEBUG
+    TargetShutdownTaskSet::TasksArray shutdownTasks;
     {
       MonitorAutoLock lock(mGraph->mMonitor);
       MOZ_ASSERT(mGraph->mUpdateRunnables.IsEmpty());
+      shutdownTasks = mGraph->mShutdownTasks.Extract();
     }
-#endif
+
     mGraph->mPendingUpdateRunnables.Clear();
+
+    for (auto& shutdownTask : shutdownTasks) {
+      shutdownTask->TargetShutdown();
+    }
 
     mGraph->RemoveShutdownBlocker();
 
@@ -1952,7 +1959,8 @@ class MediaTrackGraphShutDownRunnable : public Runnable {
       // Some later AppendMessage will detect that the graph has
       // been emptied, and delete it.
       NS_ASSERTION(mGraph->mForceShutDownReceived, "Not in forced shutdown?");
-      mGraph->LifecycleStateRef() =
+      MonitorAutoLock lock(mGraph->mMonitor);
+      mGraph->mLifecycleState =
           MediaTrackGraphImpl::LIFECYCLE_WAITING_FOR_TRACK_DESTRUCTION;
     }
     return NS_OK;
@@ -2006,11 +2014,10 @@ void MediaTrackGraphImpl::RunInStableState(bool aSourceIsMTG) {
   MOZ_ASSERT(NS_IsMainThread(), "Must be called on main thread");
 
   nsTArray<nsCOMPtr<nsIRunnable>> runnables;
-  // When we're doing a forced shutdown, pending control messages may be
-  // run on the main thread via RunDuringShutdown. Those messages must
+  // When we're doing a forced shutdown, pending runnables may be
+  // run on the main thread opt-in through OnDiscard. Those runnables must
   // run without the graph monitor being held. So, we collect them here.
-  nsTArray<UniquePtr<ControlMessageInterface>>
-      controlMessagesToRunDuringShutdown;
+  nsTArray<nsCOMPtr<nsIRunnable>> runnablesToRunDuringShutdown;
 
   {
     MonitorAutoLock lock(mMonitor);
@@ -2027,10 +2034,10 @@ void MediaTrackGraphImpl::RunInStableState(bool aSourceIsMTG) {
         "LIFECYCLE_WAITING_FOR_THREAD_SHUTDOWN",
         "LIFECYCLE_WAITING_FOR_TRACK_DESTRUCTION"};
 
-    if (LifecycleStateRef() != LIFECYCLE_RUNNING) {
+    if (LifecycleState() != LIFECYCLE_RUNNING) {
       LOG(LogLevel::Debug,
-          ("%p: Running stable state callback. Current state: %s", this,
-           LifecycleState_str[LifecycleStateRef()]));
+          ("{}: Running stable state callback. Current state: {}",
+           fmt::ptr(this), LifecycleState_str[LifecycleState()]));
     }
 
     runnables = std::move(mUpdateRunnables);
@@ -2044,48 +2051,40 @@ void MediaTrackGraphImpl::RunInStableState(bool aSourceIsMTG) {
 
     mMainThreadGraphTime = mNextMainThreadGraphTime;
 
-    if (mCurrentTaskMessageQueue.IsEmpty()) {
-      if (LifecycleStateRef() == LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP &&
-          IsEmpty()) {
-        // Complete shutdown. First, ensure that this graph is no longer used.
-        // A new graph graph will be created if one is needed.
-        // Asynchronously clean up old graph. We don't want to do this
-        // synchronously because it spins the event loop waiting for threads
-        // to shut down, and we don't want to do that in a stable state handler.
-        LifecycleStateRef() = LIFECYCLE_WAITING_FOR_THREAD_SHUTDOWN;
-        LOG(LogLevel::Debug,
-            ("%p: Sending MediaTrackGraphShutDownRunnable", this));
-        nsCOMPtr<nsIRunnable> event = new MediaTrackGraphShutDownRunnable(this);
-        mMainThread->Dispatch(event.forget());
-      }
-    } else {
-      if (LifecycleStateRef() <= LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP) {
-        MessageBlock* block = mBackMessageQueue.AppendElement();
-        block->mMessages = std::move(mCurrentTaskMessageQueue);
-        EnsureNextIteration();
-      }
-
-      // If this MediaTrackGraph has entered regular (non-forced) shutdown it
-      // is not able to process any more messages. Those messages being added to
-      // the graph in the first place is an error.
-      MOZ_DIAGNOSTIC_ASSERT(LifecycleStateRef() <
-                                LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP ||
-                            mForceShutDownReceived);
+    if (LifecycleState() == LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP &&
+        IsEmpty()) {
+      MOZ_ASSERT(!AbstractThread::GetCurrent()->HasTailTasksFor(this));
+      MOZ_ASSERT(mBackMessageQueue.IsEmpty());
+      // Complete shutdown. First, ensure that this graph is no longer used.
+      // A new graph graph will be created if one is needed.
+      // Asynchronously clean up old graph. We don't want to do this
+      // synchronously because it spins the event loop waiting for threads
+      // to shut down, and we don't want to do that in a stable state handler.
+      mLifecycleState = LIFECYCLE_WAITING_FOR_THREAD_SHUTDOWN;
+      LOG(LogLevel::Debug,
+          ("{}: Sending MediaTrackGraphShutDownRunnable", fmt::ptr(this)));
+      nsCOMPtr<nsIRunnable> event = new MediaTrackGraphShutDownRunnable(this);
+      mMainThread->Dispatch(event.forget());
     }
 
-    if (LifecycleStateRef() == LIFECYCLE_THREAD_NOT_STARTED) {
+    // If this MediaTrackGraph has entered regular (non-forced) shutdown it
+    // is not able to process any more messages. Those messages being added to
+    // the graph in the first place is an error.
+    MOZ_DIAGNOSTIC_ASSERT(LifecycleState() <
+                              LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP ||
+                          mForceShutDownReceived || IsEmpty());
+
+    if (LifecycleState() == LIFECYCLE_THREAD_NOT_STARTED) {
       // Start the driver now. We couldn't start it earlier because the graph
       // might exit immediately on finding it has no tracks. The first message
-      // for a new graph must create a track. Ensure that his message runs on
-      // the first iteration.
+      // for a new graph must create a track.
       MOZ_ASSERT(MessagesQueued());
-      SwapMessageQueues();
 
       LOG(LogLevel::Debug,
-          ("%p: Starting a graph with a %s", this,
+          ("{}: Starting a graph with a {}", fmt::ptr(this),
            CurrentDriver()->AsAudioCallbackDriver() ? "AudioCallbackDriver"
                                                     : "SystemClockDriver"));
-      LifecycleStateRef() = LIFECYCLE_RUNNING;
+      mLifecycleState = LIFECYCLE_RUNNING;
       mGraphDriverRunning = true;
       RefPtr<GraphDriver> driver = CurrentDriver();
       driver->Start();
@@ -2097,24 +2096,38 @@ void MediaTrackGraphImpl::RunInStableState(bool aSourceIsMTG) {
                              true);  // always proxy
     }
 
-    if (LifecycleStateRef() == LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP &&
+    if (LifecycleState() == LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP &&
         mForceShutDownReceived) {
+      // The main thread is taking over the graph thread's messages. Messages
+      // queued after the tail dispatcher last fired, e.g. from a microtask,
+      // are still held by it, so hand them over too rather than leave them to
+      // a dispatcher that may not fire again before the graph is gone.
+      if (AbstractThread* current = AbstractThread::GetCurrent()) {
+        // Unlock here because TailDispatchMessage grabs the monitor. State
+        // mutated under the monitor above is mainly mUpdateRunnables and
+        // mTrackUpdates. But we've entered forced shutdown. The graph won't
+        // iterate again, and cannot mutate those members while we're unlocked.
+        MonitorAutoUnlock unlock(mMonitor);
+        MOZ_ALWAYS_SUCCEEDS(current->TailDispatchTasksFor(this));
+      }
+      // Lifecycle state does not change while the monitor is dropped, because
+      // the graph thread is not running and TailDispatchTasksFor() does not
+      // spin nested event loops.
+      MOZ_ASSERT(LifecycleState() == LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP);
+      MOZ_ASSERT(mForceShutDownReceived);
       // Defer calls to RunDuringShutdown() to happen while mMonitor is not
       // held.
-      for (uint32_t i = 0; i < mBackMessageQueue.Length(); ++i) {
-        MessageBlock& mb = mBackMessageQueue[i];
-        controlMessagesToRunDuringShutdown.AppendElements(
-            std::move(mb.mMessages));
+      for (auto& message : mBackMessageQueue) {
+        runnablesToRunDuringShutdown.AppendElement(std::move(message));
       }
       mBackMessageQueue.Clear();
-      MOZ_ASSERT(mCurrentTaskMessageQueue.IsEmpty());
       // Stop MediaTrackGraph threads.
-      LifecycleStateRef() = LIFECYCLE_WAITING_FOR_THREAD_SHUTDOWN;
+      mLifecycleState = LIFECYCLE_WAITING_FOR_THREAD_SHUTDOWN;
       nsCOMPtr<nsIRunnable> event = new MediaTrackGraphShutDownRunnable(this);
       mMainThread->Dispatch(event.forget());
     }
 
-    mGraphDriverRunning = LifecycleStateRef() == LIFECYCLE_RUNNING;
+    mGraphDriverRunning = LifecycleState() == LIFECYCLE_RUNNING;
   }
 
   // Make sure we get a new current time in the next event loop task
@@ -2123,18 +2136,22 @@ void MediaTrackGraphImpl::RunInStableState(bool aSourceIsMTG) {
     mPostedRunInStableState = false;
   }
 
-  for (uint32_t i = 0; i < controlMessagesToRunDuringShutdown.Length(); ++i) {
-    controlMessagesToRunDuringShutdown[i]->RunDuringShutdown();
+  for (const auto& runnable : runnablesToRunDuringShutdown) {
+    nsCOMPtr<nsIDiscardableRunnable> discardable = do_QueryInterface(runnable);
+    if (discardable) {
+      discardable->OnDiscard();
+    }
   }
 
 #ifdef DEBUG
   mCanRunMessagesSynchronously =
       !mGraphDriverRunning &&
-      LifecycleStateRef() >= LIFECYCLE_WAITING_FOR_THREAD_SHUTDOWN;
+      LifecycleState() >= LIFECYCLE_WAITING_FOR_THREAD_SHUTDOWN;
 #endif
 
-  for (uint32_t i = 0; i < runnables.Length(); ++i) {
-    runnables[i]->Run();
+  for (const auto& runnable : runnables) {
+    AUTO_PROFILE_FOLLOWING_RUNNABLE(runnable);
+    runnable->Run();
   }
 }
 
@@ -2167,8 +2184,8 @@ void MediaTrackGraphImpl::SignalMainThreadCleanup() {
   // graphs that have not started.
   MOZ_DIAGNOSTIC_ASSERT(mLifecycleState <= LIFECYCLE_RUNNING);
   LOG(LogLevel::Debug,
-      ("%p: MediaTrackGraph waiting for main thread cleanup", this));
-  LifecycleStateRef() =
+      ("{}: MediaTrackGraph waiting for main thread cleanup", fmt::ptr(this)));
+  mLifecycleState =
       MediaTrackGraphImpl::LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP;
   EnsureStableStateEventPosted();
 }
@@ -2176,35 +2193,15 @@ void MediaTrackGraphImpl::SignalMainThreadCleanup() {
 void MediaTrackGraphImpl::AppendMessage(
     UniquePtr<ControlMessageInterface> aMessage) {
   MOZ_ASSERT(NS_IsMainThread(), "main thread only");
-  MOZ_DIAGNOSTIC_ASSERT(mMainThreadTrackCount > 0 || mMainThreadPortCount > 0);
+  MOZ_ASSERT(mMainThreadTrackCount > 0 || mMainThreadPortCount > 0);
 
-  if (!mGraphDriverRunning &&
-      LifecycleStateRef() > LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP) {
-    // The graph control loop is not running and main thread cleanup has
-    // happened. From now on we can't append messages to
-    // mCurrentTaskMessageQueue, because that will never be processed again, so
-    // just RunDuringShutdown this message. This should only happen during
-    // forced shutdown, or after a non-realtime graph has finished processing.
-#ifdef DEBUG
-    MOZ_ASSERT(mCanRunMessagesSynchronously);
-    mCanRunMessagesSynchronously = false;
-#endif
-    aMessage->RunDuringShutdown();
-#ifdef DEBUG
-    mCanRunMessagesSynchronously = true;
-#endif
-    if (IsEmpty() &&
-        LifecycleStateRef() >= LIFECYCLE_WAITING_FOR_TRACK_DESTRUCTION) {
-      Destroy();
-    }
-    return;
-  }
-
-  mCurrentTaskMessageQueue.AppendElement(std::move(aMessage));
-  EnsureRunInStableState();
+  MOZ_ALWAYS_SUCCEEDS(QueueMessageForTailDispatch(
+      MakeAndAddRef<ControlMessageWrapper>(std::move(aMessage))));
 }
 
-void MediaTrackGraphImpl::Dispatch(already_AddRefed<nsIRunnable>&& aRunnable) {
+void MediaTrackGraphImpl::DispatchToMainThread(
+    already_AddRefed<nsIRunnable> aRunnable) {
+  MOZ_ASSERT(RequiresTailDispatch(mMainThread));
   mMainThread->Dispatch(std::move(aRunnable));
 }
 
@@ -2268,10 +2265,12 @@ void MediaTrack::IncrementSuspendCount() {
   for (uint32_t i = 0; i < mConsumers.Length(); ++i) {
     mConsumers[i]->Suspended();
   }
-  MOZ_ASSERT(graph->mTracks.Contains(this));
-  graph->mTracks.RemoveElement(this);
-  graph->mSuspendedTracks.AppendElement(this);
-  graph->SetTrackOrderDirty();
+  const bool removed = graph->mTracks.RemoveElement(this);
+  MOZ_DIAGNOSTIC_ASSERT(removed, "Track not in mTracks at suspend transition");
+  if (removed) {
+    graph->mSuspendedTracks.AppendElement(this);
+    graph->SetTrackOrderDirty();
+  }
 }
 
 void MediaTrack::DecrementSuspendCount() {
@@ -2286,10 +2285,13 @@ void MediaTrack::DecrementSuspendCount() {
   for (uint32_t i = 0; i < mConsumers.Length(); ++i) {
     mConsumers[i]->Resumed();
   }
-  MOZ_ASSERT(graph->mSuspendedTracks.Contains(this));
-  graph->mSuspendedTracks.RemoveElement(this);
-  graph->mTracks.AppendElement(this);
-  graph->SetTrackOrderDirty();
+  const bool removed = graph->mSuspendedTracks.RemoveElement(this);
+  MOZ_DIAGNOSTIC_ASSERT(removed,
+                        "Track not in mSuspendedTracks at resume transition");
+  if (removed) {
+    graph->mTracks.AppendElement(this);
+    graph->SetTrackOrderDirty();
+  }
 }
 
 void ProcessedMediaTrack::DecrementSuspendCount() {
@@ -2407,7 +2409,7 @@ void MediaTrack::AddAudioOutput(void* aKey, CubebUtils::AudioDeviceID aDeviceID,
   if (mMainThreadDestroyed) {
     return;
   }
-  LOG(LogLevel::Info, ("MediaTrack %p adding AudioOutput", this));
+  LOG(LogLevel::Info, ("MediaTrack {} adding AudioOutput", fmt::ptr(this)));
   GraphImpl()->RegisterAudioOutput(this, aKey, aDeviceID, aPreferredSampleRate);
 }
 
@@ -2436,7 +2438,7 @@ void MediaTrack::RemoveAudioOutput(void* aKey) {
   if (mMainThreadDestroyed) {
     return;
   }
-  LOG(LogLevel::Info, ("MediaTrack %p removing AudioOutput", this));
+  LOG(LogLevel::Info, ("MediaTrack {} removing AudioOutput", fmt::ptr(this)));
   GraphImpl()->UnregisterAudioOutput(this, aKey);
 }
 
@@ -2534,7 +2536,7 @@ void MediaTrackGraphImpl::IncrementOutputDeviceRefCnt(
                 /*aShouldResistFingerprinting*/ false));
   MediaTrackGraph* newGraph = MediaTrackGraphImpl::GetInstance(
       MediaTrackGraph::AUDIO_THREAD_DRIVER, mWindowID, sampleRate, aDeviceID,
-      GetMainThreadSerialEventTarget());
+      AbstractThread::MainThread());
   // CreateCrossGraphReceiver wants the sample rate of this graph.
   RefPtr receiver = newGraph->CreateCrossGraphReceiver(mSampleRate);
   receiver->AddAudioOutput(nullptr, aDeviceID, sampleRate);
@@ -2630,6 +2632,7 @@ RefPtr<GenericPromise> MediaTrack::RemoveListener(
     MediaTrackListener* aListener) {
   MozPromiseHolder<GenericPromise> promiseHolder;
   RefPtr<GenericPromise> p = promiseHolder.Ensure(__func__);
+  promiseHolder.RequireTailDispatch(__func__);
   if (mMainThreadDestroyed) {
     promiseHolder.Reject(NS_ERROR_FAILURE, __func__);
     return p;
@@ -2701,7 +2704,7 @@ void MediaTrack::RunAfterPendingUpdates(
           // assume that there are no remaining
           // controlMessagesToRunDuringShutdown.
           MOZ_ASSERT(NS_IsMainThread());
-          GraphImpl()->Dispatch(runnable.forget());
+          GraphImpl()->DispatchToMainThread(runnable.forget());
         }
       });
 }
@@ -2765,7 +2768,7 @@ void MediaTrack::AddMainThreadListener(
   };
 
   nsCOMPtr<nsIRunnable> runnable = new NotifyRunnable(this);
-  GraphImpl()->Dispatch(runnable.forget());
+  GraphImpl()->DispatchToMainThread(runnable.forget());
 }
 
 void MediaTrack::AdvanceTimeVaryingValuesToCurrentTime(GraphTime aCurrentTime,
@@ -2814,7 +2817,7 @@ void MediaTrack::QueueMessage(UniquePtr<ControlMessageInterface> aMessage) {
 }
 
 void MediaTrack::RunMessageAfterProcessing(
-    UniquePtr<ControlMessageInterface> aMessage) {
+    already_AddRefed<nsIRunnable> aMessage) {
   AssertOnGraphThread();
   GraphImpl()->RunMessageAfterProcessing(std::move(aMessage));
 }
@@ -2898,8 +2901,9 @@ bool SourceMediaTrack::PullNewData(GraphTime aDesiredUpToTime) {
   if (t <= current) {
     return false;
   }
-  LOG(LogLevel::Verbose, ("%p: Calling NotifyPull track=%p t=%f current end=%f",
-                          GraphImpl(), this, GraphImpl()->MediaTimeToSeconds(t),
+  LOG(LogLevel::Verbose, ("{}: Calling NotifyPull track={} t={} current end={}",
+                          fmt::ptr(GraphImpl()), fmt::ptr(this),
+                          GraphImpl()->MediaTimeToSeconds(t),
                           GraphImpl()->MediaTimeToSeconds(current)));
   for (auto& l : mTrackListeners) {
     l->NotifyPull(Graph(), current, t);
@@ -2997,9 +3001,9 @@ void SourceMediaTrack::ExtractPendingInput(GraphTime aCurrentTime,
     endTime = std::min(trackDesiredUpToTime,
                        GetEnd() + mUpdateTrack->mData->GetDuration());
   }
-  LOG(LogLevel::Verbose,
-      ("%p: SourceMediaTrack %p advancing end from %" PRId64 " to %" PRId64,
-       GraphImpl(), this, int64_t(trackCurrentTime), int64_t(endTime)));
+  LOG(LogLevel::Verbose, ("{}: SourceMediaTrack {} advancing end from {} to {}",
+                          fmt::ptr(GraphImpl()), fmt::ptr(this),
+                          int64_t(trackCurrentTime), int64_t(endTime)));
   MoveToSegment(this, mUpdateTrack->mData.get(), mSegment.get(),
                 trackCurrentTime, endTime);
   if (mUpdateTrack->mEnded && GetEnd() < trackDesiredUpToTime) {
@@ -3015,9 +3019,11 @@ void SourceMediaTrack::ResampleAudioToGraphSampleRate(MediaSegment* aSegment) {
     return;
   }
   AudioSegment* segment = static_cast<AudioSegment*>(aSegment);
-  segment->ResampleChunks(mUpdateTrack->mResampler,
-                          &mUpdateTrack->mResamplerChannelCount,
-                          mUpdateTrack->mInputRate, GraphImpl()->GraphRate());
+  // 10 ms of 48 kHz audio always yields a representable size at GraphRate().
+  DebugOnly<nsresult> rv = segment->ResampleChunks(
+      mUpdateTrack->mResampler, &mUpdateTrack->mResamplerChannelCount,
+      mUpdateTrack->mInputRate, GraphImpl()->GraphRate());
+  MOZ_ASSERT(NS_SUCCEEDED(rv));
 }
 
 void SourceMediaTrack::AdvanceTimeVaryingValuesToCurrentTime(
@@ -3105,8 +3111,8 @@ void SourceMediaTrack::AddDirectListenerImpl(
 
   RefPtr<DirectMediaTrackListener> listener = aListener;
   LOG(LogLevel::Debug,
-      ("%p: Adding direct track listener %p to source track %p", GraphImpl(),
-       listener.get(), this));
+      ("{}: Adding direct track listener {} to source track {}",
+       fmt::ptr(GraphImpl()), fmt::ptr(listener.get()), fmt::ptr(this)));
 
   MOZ_ASSERT(mType == MediaSegment::VIDEO);
   for (const auto& l : mDirectTrackListeners) {
@@ -3119,8 +3125,8 @@ void SourceMediaTrack::AddDirectListenerImpl(
 
   mDirectTrackListeners.AppendElement(listener);
 
-  LOG(LogLevel::Debug,
-      ("%p: Added direct track listener %p", GraphImpl(), listener.get()));
+  LOG(LogLevel::Debug, ("{}: Added direct track listener {}",
+                        fmt::ptr(GraphImpl()), fmt::ptr(listener.get())));
   listener->NotifyDirectListenerInstalled(
       DirectMediaTrackListener::InstallationResult::SUCCESS);
 
@@ -3156,9 +3162,10 @@ void SourceMediaTrack::AddDirectListenerImpl(
   }
 
   LOG(LogLevel::Info,
-      ("%p: Notifying direct listener %p of %zu video frames and duration "
-       "%" PRId64,
-       GraphImpl(), listener.get(), videoFrames, bufferedData.GetDuration()));
+      ("{}: Notifying direct listener {} of {} video frames and duration "
+       "{}",
+       fmt::ptr(GraphImpl()), fmt::ptr(listener.get()), videoFrames,
+       bufferedData.GetDuration()));
   listener->NotifyRealtimeTrackData(Graph(), 0, bufferedData);
 }
 
@@ -3203,14 +3210,14 @@ void SourceMediaTrack::SetDisabledTrackModeImpl(DisabledTrackMode aMode) {
     mDirectDisabledMode = aMode;
     for (const auto& l : mDirectTrackListeners) {
       if (!oldEnabled && enabled) {
-        LOG(LogLevel::Debug, ("%p: SourceMediaTrack %p setting "
+        LOG(LogLevel::Debug, ("{}: SourceMediaTrack {} setting "
                               "direct listener enabled",
-                              GraphImpl(), this));
+                              fmt::ptr(GraphImpl()), fmt::ptr(this)));
         l->DecreaseDisabled(oldMode);
       } else if (oldEnabled && !enabled) {
-        LOG(LogLevel::Debug, ("%p: SourceMediaTrack %p setting "
+        LOG(LogLevel::Debug, ("{}: SourceMediaTrack {} setting "
                               "direct listener disabled",
-                              GraphImpl(), this));
+                              fmt::ptr(GraphImpl()), fmt::ptr(this)));
         l->IncreaseDisabled(aMode);
       }
     }
@@ -3251,8 +3258,9 @@ SourceMediaTrack::~SourceMediaTrack() = default;
 
 void MediaInputPort::Init() {
   mGraph->AssertOnGraphThreadOrNotRunning();
-  LOG(LogLevel::Debug, ("%p: Adding MediaInputPort %p (from %p to %p)", mGraph,
-                        this, mSource, mDest));
+  LOG(LogLevel::Debug,
+      ("{}: Adding MediaInputPort {} (from {} to {})", fmt::ptr(mGraph),
+       fmt::ptr(this), fmt::ptr(mSource), fmt::ptr(mDest)));
   // Only connect the port if it wasn't disconnected on allocation.
   if (mSource) {
     mSource->AddConsumer(this);
@@ -3347,10 +3355,7 @@ MediaTrackGraphImpl* MediaInputPort::GraphImpl() const {
   return mGraph;
 }
 
-MediaTrackGraph* MediaInputPort::Graph() const {
-  mGraph->AssertOnGraphThreadOrNotRunning();
-  return mGraph;
-}
+MediaTrackGraph* MediaInputPort::Graph() const { return mGraph; }
 
 void MediaInputPort::SetGraphImpl(MediaTrackGraphImpl* aGraph) {
   MOZ_ASSERT(!mGraph || !aGraph, "Should only be set once");
@@ -3372,7 +3377,7 @@ already_AddRefed<MediaInputPort> ProcessedMediaTrack::AllocateInputPort(
       mPort->Init();
       // The graph holds its reference implicitly
       mPort->GraphImpl()->SetTrackOrderDirty();
-      Unused << mPort.forget();
+      NS_ADDREF(mPort.get());
     }
     void RunDuringShutdown() override { Run(); }
     RefPtr<MediaInputPort> mPort;
@@ -3432,8 +3437,9 @@ void ProcessedMediaTrack::DestroyImpl() {
 MediaTrackGraphImpl::MediaTrackGraphImpl(uint64_t aWindowID,
                                          TrackRate aSampleRate,
                                          AudioDeviceID aPrimaryOutputDeviceID,
-                                         nsISerialEventTarget* aMainThread)
+                                         AbstractThread* aMainThread)
     : MediaTrackGraph(aSampleRate, aPrimaryOutputDeviceID),
+      AbstractThread(TailDispatchPolicy::TargetAtomicity),
       mWindowID(aWindowID),
       mFirstCycleBreaker(0)
       // An offline graph is not initially processing.
@@ -3454,7 +3460,7 @@ MediaTrackGraphImpl::MediaTrackGraphImpl(uint64_t aWindowID,
       ,
       mMainThreadGraphTime(0, "MediaTrackGraphImpl::mMainThreadGraphTime"),
       mAudioOutputLatency(0.0),
-      mMaxOutputChannelCount(CubebUtils::MaxNumberOfChannels()) {
+      mMaxOutputChannelCount(0) {
 }
 
 void MediaTrackGraphImpl::Init(GraphDriverType aDriverRequested,
@@ -3463,6 +3469,10 @@ void MediaTrackGraphImpl::Init(GraphDriverType aDriverRequested,
   mSelfRef = this;
   mEndTime = aDriverRequested == OFFLINE_THREAD_DRIVER ? 0 : GRAPH_TIME_MAX;
   mRealtime = aDriverRequested != OFFLINE_THREAD_DRIVER;
+  // The caller queries the default output device's channel count off the graph
+  // thread and passes it in. Offline graphs have no audio output device, so
+  // they pass 0 here and avoid the (potentially expensive) query entirely.
+  mMaxOutputChannelCount = aChannelCount;
   // The primary output device always exists because an AudioCallbackDriver
   // may exist, and want to be fed data, even when no tracks have audio
   // outputs.
@@ -3504,11 +3514,11 @@ void MediaTrackGraphImpl::Init(GraphDriverType aDriverRequested,
       mDriver = new SystemClockDriver(this, nullptr, mSampleRate);
     }
     nsCString streamName = GetDocumentTitle(mWindowID);
-    LOG(LogLevel::Debug, ("%p: document title: %s", this, streamName.get()));
+    LOG(LogLevel::Debug,
+        ("{}: document title: {}", fmt::ptr(this), streamName.get()));
     mDriver->SetStreamName(streamName);
   } else {
-    mDriver =
-        new OfflineClockDriver(this, mSampleRate, MEDIA_GRAPH_TARGET_PERIOD_MS);
+    mDriver = new OfflineClockDriver(this, mSampleRate);
   }
 
   mLastMainThreadUpdate = TimeStamp::Now();
@@ -3565,17 +3575,16 @@ MediaTrackGraph* MediaTrackGraph::GetInstanceIfExists(
 MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstance(
     GraphDriverType aGraphDriverRequested, uint64_t aWindowID,
     TrackRate aSampleRate, AudioDeviceID aPrimaryOutputDeviceID,
-    nsISerialEventTarget* aMainThread) {
+    AbstractThread* aMainThread) {
   MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
   MOZ_ASSERT(aSampleRate > 0);
   MOZ_ASSERT(aGraphDriverRequested != OFFLINE_THREAD_DRIVER,
              "Use CreateNonRealtimeInstance() for offline graphs");
 
-  GraphHashSet* graphs = Graphs();
-  GraphHashSet::AddPtr addPtr =
-      graphs->lookupForAdd({aWindowID, aSampleRate, aPrimaryOutputDeviceID});
-  if (addPtr) {  // graph already exists
-    return *addPtr;
+  MediaTrackGraphImpl* graph =
+      GetInstanceIfExists(aWindowID, aSampleRate, aPrimaryOutputDeviceID);
+  if (graph) {  // graph already exists
+    return graph;
   }
 
   GraphRunType runType = DIRECT_DRIVER;
@@ -3586,13 +3595,14 @@ MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstance(
   // In a real time graph, the number of output channels is determined by
   // the underlying number of channel of the default audio output device.
   uint32_t channelCount = CubebUtils::MaxNumberOfChannels();
-  MediaTrackGraphImpl* graph = new MediaTrackGraphImpl(
-      aWindowID, aSampleRate, aPrimaryOutputDeviceID, aMainThread);
+  graph = new MediaTrackGraphImpl(aWindowID, aSampleRate,
+                                  aPrimaryOutputDeviceID, aMainThread);
   graph->Init(aGraphDriverRequested, runType, channelCount);
-  MOZ_ALWAYS_TRUE(graphs->add(addPtr, graph));
+  MOZ_ALWAYS_TRUE(Graphs()->putNew(
+      {aWindowID, aSampleRate, aPrimaryOutputDeviceID}, graph));
 
-  LOG(LogLevel::Debug, ("Starting up MediaTrackGraph %p for window 0x%" PRIx64,
-                        graph, aWindowID));
+  LOG(LogLevel::Debug, ("Starting up MediaTrackGraph {} for window 0x{:x}",
+                        fmt::ptr(graph), aWindowID));
 
   return graph;
 }
@@ -3608,21 +3618,21 @@ MediaTrackGraph* MediaTrackGraph::GetInstance(
                             RFPTarget::AudioSampleRate));
   return MediaTrackGraphImpl::GetInstance(
       aGraphDriverRequested, aWindow->WindowID(), sampleRate,
-      aPrimaryOutputDeviceID, GetMainThreadSerialEventTarget());
+      aPrimaryOutputDeviceID, AbstractThread::MainThread());
 }
 
 MediaTrackGraph* MediaTrackGraphImpl::CreateNonRealtimeInstance(
     TrackRate aSampleRate) {
   MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
 
-  nsISerialEventTarget* mainThread = GetMainThreadSerialEventTarget();
   // Offline graphs have 0 output channel count: they write the output to a
   // buffer, not an audio output track.
   MediaTrackGraphImpl* graph = new MediaTrackGraphImpl(
-      0, aSampleRate, DEFAULT_OUTPUT_DEVICE, mainThread);
+      0, aSampleRate, DEFAULT_OUTPUT_DEVICE, AbstractThread::MainThread());
   graph->Init(OFFLINE_THREAD_DRIVER, DIRECT_DRIVER, 0);
 
-  LOG(LogLevel::Debug, ("Starting up Offline MediaTrackGraph %p", graph));
+  LOG(LogLevel::Debug,
+      ("Starting up Offline MediaTrackGraph {}", fmt::ptr(graph)));
 
   return graph;
 }
@@ -3640,7 +3650,8 @@ void MediaTrackGraph::ForceShutDown() {
   graph->ForceShutDown();
 }
 
-NS_IMPL_ISUPPORTS(MediaTrackGraphImpl, nsIMemoryReporter, nsIObserver,
+NS_IMPL_ISUPPORTS(MediaTrackGraphImpl, nsISerialEventTarget, nsIEventTarget,
+                  nsIDirectTaskDispatcher, nsIMemoryReporter, nsIObserver,
                   nsIThreadObserver, nsITimerCallback, nsINamed)
 
 NS_IMETHODIMP
@@ -3815,7 +3826,7 @@ void MediaTrackGraph::AddTrack(MediaTrack* aTrack) {
     MOZ_DIAGNOSTIC_ASSERT(p, "Graph must not be shutting down");
   }
 #endif
-  if (graph->mMainThreadTrackCount == 0) {
+  if (graph->mMainThreadTrackCount == 0 && graph->mRealtime) {
     nsCOMPtr<nsIObserverService> observerService =
         mozilla::services::GetObserverService();
     if (observerService) {
@@ -3843,9 +3854,9 @@ void MediaTrackGraphImpl::RemoveTrack(MediaTrack* aTrack) {
       });
 
   if (--mMainThreadTrackCount == 0) {
-    LOG(LogLevel::Info, ("MediaTrackGraph %p, last track %p removed from "
+    LOG(LogLevel::Info, ("MediaTrackGraph {}, last track {} removed from "
                          "main thread. Graph will shut down.",
-                         this, aTrack));
+                         fmt::ptr(this), fmt::ptr(aTrack)));
     if (mRealtime) {
       // Find the graph in the hash table and remove it.
       GraphHashSet* graphs = Graphs();
@@ -3876,6 +3887,7 @@ auto MediaTrackGraphImpl::NotifyWhenDeviceStarted(AudioDeviceID aDeviceID)
 
   MozPromiseHolder<GraphStartedPromise> h;
   RefPtr<GraphStartedPromise> p = h.Ensure(__func__);
+  h.RequireTailDispatch(__func__);
 
   if (CrossGraphReceiver* receiver = mOutputDeviceRefCnts[index].mReceiver) {
     receiver->GraphImpl()->NotifyWhenPrimaryDeviceStarted(std::move(h));
@@ -3914,12 +3926,7 @@ void MediaTrackGraphImpl::NotifyWhenPrimaryDeviceStarted(
         if (CurrentDriver()->AsAudioCallbackDriver() &&
             CurrentDriver()->ThreadRunning() &&
             !CurrentDriver()->AsAudioCallbackDriver()->OnFallback()) {
-          // Avoid Resolve's locking on the graph thread by doing it on main.
-          Dispatch(NS_NewRunnableFunction(
-              "MediaTrackGraphImpl::NotifyWhenPrimaryDeviceStarted::Resolver",
-              [holder = std::move(holder)]() mutable {
-                holder.Resolve(true, __func__);
-              }));
+          holder.Resolve(true, __func__);
         } else {
           DispatchToMainThreadStableState(
               NewRunnableMethod<
@@ -4009,12 +4016,7 @@ void MediaTrackGraphImpl::ApplyAudioContextOperationImpl(
   for (MediaTrack* track : aMessage->mTracks) {
     track->IncrementSuspendCount();
   }
-  // Resolve after main thread state is up to date with completed processing.
-  DispatchToMainThreadStableState(NS_NewRunnableFunction(
-      "MediaTrackGraphImpl::ApplyAudioContextOperationImpl",
-      [holder = std::move(aMessage->mHolder), state]() mutable {
-        holder.Resolve(state, __func__);
-      }));
+  aMessage->mHolder.Resolve(state, __func__);
 }
 
 MediaTrackGraphImpl::PendingResumeOperation::PendingResumeOperation(
@@ -4027,22 +4029,19 @@ MediaTrackGraphImpl::PendingResumeOperation::PendingResumeOperation(
 
 void MediaTrackGraphImpl::PendingResumeOperation::Apply(
     MediaTrackGraphImpl* aGraph) {
+  // The graph is provided through the parameter so that it is available even
+  // when mDestinationTrack is destroyed.
   MOZ_ASSERT(aGraph->OnGraphThread());
   for (MediaTrack* track : mTracks) {
     track->DecrementSuspendCount();
   }
-  // The graph is provided through the parameter so that it is available even
-  // when the track is destroyed.
-  aGraph->DispatchToMainThreadStableState(NS_NewRunnableFunction(
-      "PendingResumeOperation::Apply", [holder = std::move(mHolder)]() mutable {
-        holder.Resolve(AudioContextState::Running, __func__);
-      }));
+  mHolder.Resolve(AudioContextState::Running, __func__);
 }
 
 void MediaTrackGraphImpl::PendingResumeOperation::Abort() {
   // The graph is shutting down before the operation completed.
   MOZ_ASSERT(!mDestinationTrack->GraphImpl() ||
-             mDestinationTrack->GraphImpl()->LifecycleStateRef() ==
+             mDestinationTrack->GraphImpl()->LifecycleState() ==
                  MediaTrackGraphImpl::LIFECYCLE_WAITING_FOR_THREAD_SHUTDOWN);
   mHolder.Reject(false, __func__);
 }
@@ -4052,6 +4051,7 @@ auto MediaTrackGraph::ApplyAudioContextOperation(
     AudioContextOperation aOperation) -> RefPtr<AudioContextOperationPromise> {
   MozPromiseHolder<AudioContextOperationPromise> holder;
   RefPtr<AudioContextOperationPromise> p = holder.Ensure(__func__);
+  holder.RequireTailDispatch(__func__);
   MediaTrackGraphImpl* graphImpl = static_cast<MediaTrackGraphImpl*>(this);
   graphImpl->AppendMessage(MakeUnique<AudioContextOperationControlMessage>(
       aDestinationTrack, std::move(aTracks), aOperation, std::move(holder)));
@@ -4111,6 +4111,9 @@ double MediaTrackGraphImpl::AudioOutputLatency() {
 bool MediaTrackGraph::OutputForAECMightDrift() {
   return static_cast<MediaTrackGraphImpl*>(this)->OutputForAECMightDrift();
 }
+bool MediaTrackGraph::OutputForAECIsPrimary() {
+  return static_cast<MediaTrackGraphImpl*>(this)->OutputForAECIsPrimary();
+}
 bool MediaTrackGraph::IsNonRealtime() const {
   return !static_cast<const MediaTrackGraphImpl*>(this)->mRealtime;
 }
@@ -4121,25 +4124,17 @@ void MediaTrackGraph::StartNonRealtimeProcessing(uint32_t aTicksToProcess) {
   MediaTrackGraphImpl* graph = static_cast<MediaTrackGraphImpl*>(this);
   NS_ASSERTION(!graph->mRealtime, "non-realtime only");
 
-  class Message : public ControlMessage {
-   public:
-    explicit Message(MediaTrackGraphImpl* aGraph, uint32_t aTicksToProcess)
-        : ControlMessage(nullptr),
-          mGraph(aGraph),
-          mTicksToProcess(aTicksToProcess) {}
-    void Run() override {
-      TRACE("MTG::StartNonRealtimeProcessing ControlMessage");
-      MOZ_ASSERT(mGraph->mEndTime == 0,
-                 "StartNonRealtimeProcessing should be called only once");
-      mGraph->mEndTime = mGraph->RoundUpToEndOfAudioBlock(
-          mGraph->mStateComputedTime + mTicksToProcess);
-    }
-    // The graph owns this message.
-    MediaTrackGraphImpl* MOZ_NON_OWNING_REF mGraph;
-    uint32_t mTicksToProcess;
-  };
-
-  graph->AppendMessage(MakeUnique<Message>(graph, aTicksToProcess));
+  graph->QueueControlMessageWithNoShutdown([graph = RefPtr{graph},
+                                            aTicksToProcess]() {
+    TRACE("MTG::StartNonRealtimeProcessing ControlMessage");
+    MOZ_ASSERT(graph->mStateComputedTime == 0);
+    MOZ_ASSERT(graph->mEndTime == 0,
+               "StartNonRealtimeProcessing should be called only once");
+    graph->mEndTime = aTicksToProcess;
+    OfflineClockDriver* driver = graph->CurrentDriver()->AsOfflineClockDriver();
+    MOZ_ASSERT(driver);
+    driver->SetTickCountToRender(aTicksToProcess);
+  });
 }
 
 void MediaTrackGraphImpl::InterruptJS() {
@@ -4200,11 +4195,12 @@ void ProcessedMediaTrack::InputResumed(MediaInputPort* aPort) {
 
 void MediaTrackGraphImpl::SwitchAtNextIteration(GraphDriver* aNextDriver) {
   MOZ_ASSERT(OnGraphThread());
-  LOG(LogLevel::Debug, ("%p: Switching to new driver: %p", this, aNextDriver));
+  LOG(LogLevel::Debug, ("{}: Switching to new driver: {}", fmt::ptr(this),
+                        fmt::ptr(aNextDriver)));
   if (GraphDriver* nextDriver = NextDriver()) {
     if (nextDriver != CurrentDriver()) {
-      LOG(LogLevel::Debug,
-          ("%p: Discarding previous next driver: %p", this, nextDriver));
+      LOG(LogLevel::Debug, ("{}: Discarding previous next driver: {}",
+                            fmt::ptr(this), fmt::ptr(nextDriver)));
     }
   }
   mNextDriver = aNextDriver;
@@ -4299,20 +4295,21 @@ void MediaTrackGraphImpl::SetNewNativeInput() {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(!mDeviceInputTrackManagerMainThread.GetNativeInputTrack());
 
-  LOG(LogLevel::Debug, ("%p SetNewNativeInput", this));
+  LOG(LogLevel::Debug, ("{} SetNewNativeInput", fmt::ptr(this)));
 
   NonNativeInputTrack* track =
       mDeviceInputTrackManagerMainThread.GetFirstNonNativeInputTrack();
   if (!track) {
-    LOG(LogLevel::Debug, ("%p No other devices opened. Do nothing", this));
+    LOG(LogLevel::Debug,
+        ("{} No other devices opened. Do nothing", fmt::ptr(this)));
     return;
   }
 
   const CubebUtils::AudioDeviceID deviceId = track->mDeviceId;
   const PrincipalHandle principal = track->mPrincipalHandle;
 
-  LOG(LogLevel::Debug,
-      ("%p Select device %p as the new native input device", this, deviceId));
+  LOG(LogLevel::Debug, ("{} Select device {} as the new native input device",
+                        fmt::ptr(this), fmt::ptr(deviceId)));
 
   struct TrackListener {
     DeviceInputConsumerTrack* track;
@@ -4334,14 +4331,63 @@ void MediaTrackGraphImpl::SetNewNativeInput() {
   for (TrackListener& pair : pairs) {
     pair.track->ConnectDeviceInput(deviceId, pair.listener.get(), principal);
     LOG(LogLevel::Debug,
-        ("%p: Reinitialize AudioProcessingTrack %p for device %p", this,
-         pair.track, deviceId));
+        ("{}: Reinitialize AudioProcessingTrack {} for device {}",
+         fmt::ptr(this), fmt::ptr(pair.track), fmt::ptr(deviceId)));
   }
 
-  LOG(LogLevel::Debug,
-      ("%p Native input device is set to device %p now", this, deviceId));
+  LOG(LogLevel::Debug, ("{} Native input device is set to device {} now",
+                        fmt::ptr(this), fmt::ptr(deviceId)));
 
   MOZ_ASSERT(mDeviceInputTrackManagerMainThread.GetNativeInputTrack());
+}
+
+void MediaTrackGraphImpl::UpdateEnumeratorDefaultDeviceTracking() {
+  MOZ_ASSERT(NS_IsMainThread());
+  auto onExit = MakeScopeExit([&] { UpdateDefaultDevice(); });
+
+  if (!mDeviceInputTrackManagerMainThread.GetNativeInputTrack()) {
+    mEnumeratorMainThread = nullptr;
+    mOutputDevicesChangedListener.DisconnectIfExists();
+    LOG(LogLevel::Debug,
+        ("{} No longer tracking system default output device", fmt::ptr(this)));
+    return;
+  }
+
+  if (mEnumeratorMainThread) {
+    onExit.release();
+    return;
+  }
+
+  mEnumeratorMainThread = CubebDeviceEnumerator::GetInstance();
+  mOutputDevicesChangedListener =
+      mEnumeratorMainThread->OnAudioOutputDeviceListChange().Connect(
+          GetCurrentSerialEventTarget(), this,
+          &MediaTrackGraphImpl::UpdateDefaultDevice);
+  LOG(LogLevel::Debug,
+      ("{} Now tracking system default output device", fmt::ptr(this)));
+}
+
+void MediaTrackGraphImpl::UpdateDefaultDevice() {
+  MOZ_ASSERT(NS_IsMainThread());
+  CubebUtils::AudioDeviceID id = nullptr;
+  auto onExit = MakeScopeExit([&] {
+    mDefaultOutputDeviceID.store(id, std::memory_order_relaxed);
+    LOG(LogLevel::Debug,
+        ("{} Tracked system default output device ID is now {}", fmt::ptr(this),
+         fmt::ptr(id)));
+  });
+
+  if (!mEnumeratorMainThread) {
+    return;
+  }
+
+  auto dev =
+      mEnumeratorMainThread->DefaultDevice(CubebDeviceEnumerator::Side::OUTPUT);
+  if (!dev) {
+    return;
+  }
+
+  id = dev->DeviceID();
 }
 
 // nsIThreadObserver methods
@@ -4351,9 +4397,11 @@ MediaTrackGraphImpl::OnDispatchedEvent() {
   MonitorAutoLock lock(mMonitor);
   GraphDriver* driver = CurrentDriver();
   if (!driver) {
-    // The ipc::BackgroundChild started by `UniqueMessagePortId()` destruction
-    // can queue messages on the thread used for the graph after graph
-    // shutdown.  See bug 1955768.
+    // After the graph thread enters shutdown mode, the main thread triggers
+    // shutdown of the ThreadedDriver and then sets the current driver to null.
+    // GraphRunner shutdown is currently synchronous, but OfflineAudioContext is
+    // asynchronous so there is a possibility of events queued on its thread
+    // while driver is null.
     //
     // Other threads may have already taken a reference to this graph as the
     // observer, so clearing the thread's observer (on the graph thread) would
@@ -4374,4 +4422,248 @@ NS_IMETHODIMP
 MediaTrackGraphImpl::AfterProcessNextEvent(nsIThreadInternal*, bool) {
   return NS_OK;
 }
+
+// nsIDirectTaskDispatcher methods
+
+NS_IMETHODIMP
+MediaTrackGraphImpl::DispatchDirectTask(already_AddRefed<nsIRunnable> aTask) {
+  MOZ_ASSERT(OnGraphThread());
+  nsCOMPtr task = aTask;
+  PROFILER_MARKER("MediaTrackGraphImpl::DispatchDirectTask", OTHER,
+                  {MarkerStack::Capture()}, FlowMarker,
+                  Flow::FromPointer(task.get()));
+  mDirectMessages.AppendElement(task.forget());
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+MediaTrackGraphImpl::DrainDirectTasks() {
+  MOZ_ASSERT(OnGraphThread());
+  // Run all tasks in mDirectMessages. This continues even if one direct task
+  // adds another.
+  for (size_t i = 0; i < mDirectMessages.Length(); ++i) {
+    nsCOMPtr<nsIRunnable> message = std::move(mDirectMessages[i]);
+    AUTO_PROFILE_FOLLOWING_RUNNABLE(message);
+    message->Run();
+  }
+  mDirectMessages.ClearAndRetainStorage();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+MediaTrackGraphImpl::HaveDirectTasks(bool* aResult) {
+  if (!OnGraphThread()) {
+    return NS_ERROR_FAILURE;
+  }
+  *aResult = !mDirectMessages.IsEmpty();
+  return NS_OK;
+}
+
+// AbstractThread methods
+
+/* Whether the caller is running on the IPC I/O thread, which dispatches to the
+ * graph on behalf of ipc::MessageChannels opened on the graph thread. */
+[[maybe_unused]] static bool OnIPCIOThread() {
+  ipc::IOThread* ioThread = ipc::IOThread::Get();
+  return ioThread &&
+         ioThread->GetEventTarget() == GetCurrentSerialEventTarget();
+}
+
+nsresult MediaTrackGraphImpl::Dispatch(
+    already_AddRefed<nsIRunnable> aEvent,
+    DispatchReason aReason /*= NormalDispatch*/) {
+  nsCOMPtr<nsIRunnable> event(aEvent);
+  if (!nsCOMPtr<nsIDiscardableRunnable>(do_QueryInterface(event))) {
+    class DefaultShutdownRunnableWrapper : public DiscardableRunnable {
+      nsCOMPtr<nsIRunnable> mEvent;
+
+     public:
+      explicit DefaultShutdownRunnableWrapper(
+          already_AddRefed<nsIRunnable> aEvent)
+          : DiscardableRunnable(
+                "MediaTrackGraphImpl::DefaultShutdownRunnableWrapper"),
+            mEvent(aEvent) {}
+
+      NS_IMETHODIMP Run() override {
+        AUTO_PROFILE_FOLLOWING_RUNNABLE(mEvent);
+        return mEvent->Run();
+      }
+
+      void OnDiscard() override { Run(); }
+    };
+    event = MakeAndAddRef<DefaultShutdownRunnableWrapper>(event.forget());
+  }
+
+  // Enforce tail-dispatch. The IOThread is exempt as it dispatches messages to
+  // AudioWorklet from JS.
+  MOZ_ASSERT_IF(!OnIPCIOThread(), RequiresTailDispatchFromCurrentThread());
+
+  if (aReason == TailDispatch || !RequiresTailDispatchFromCurrentThread()) {
+    return TailDispatchMessage(event.forget());
+  }
+  return QueueMessageForTailDispatch(event.forget());
+}
+
+bool MediaTrackGraphImpl::IsCurrentThreadIn() const {
+  // While the graph is not running, its state is owned by the main thread.
+  // Note that this must not use mDriver unconditionally, as OnGraphThread()
+  // does: mDriver is cleared on the main thread while consumers of the graph
+  // as an event target, e.g. an ipc::MessageChannel opened on the graph
+  // thread, may still be tearing down.
+  return OnGraphThreadOrNotRunning();
+}
+
+TaskDispatcher& MediaTrackGraphImpl::TailDispatcher() {
+  MOZ_ASSERT(OnGraphThread());
+  MOZ_ASSERT(mTaskDispatcher);
+  return *mTaskDispatcher;
+}
+
+NS_IMETHODIMP MediaTrackGraphImpl::RegisterShutdownTask(
+    nsITargetShutdownTask* aTask) {
+  MonitorAutoLock lock(mMonitor);
+  return mShutdownTasks.AddTask(aTask);
+}
+
+NS_IMETHODIMP MediaTrackGraphImpl::UnregisterShutdownTask(
+    nsITargetShutdownTask* aTask) {
+  MonitorAutoLock lock(mMonitor);
+  return mShutdownTasks.RemoveTask(aTask);
+}
+
+nsIEventTarget::FeatureFlags MediaTrackGraphImpl::GetFeatures() {
+  MOZ_ASSERT(SupportsTailDispatch());
+  return SUPPORTS_SHUTDOWN_TASKS | SUPPORTS_TAIL_DISPATCH;
+}
+
+nsresult MediaTrackGraphImpl::TailDispatchMessage(
+    already_AddRefed<nsIRunnable> aEvent) {
+  nsCOMPtr event = aEvent;
+  MOZ_ASSERT(
+      nsCOMPtr<nsIDiscardableRunnable>(do_QueryInterface(event)),
+      "Events dispatched to the graph must be discardable as discard "
+      "controls whether the runnable can run during shutdown. Whether or not "
+      "to run during shutdown should be a conscious decision by most "
+      "callers.");
+
+  LOG(LogLevel::Verbose, ("MediaTrackGraph {} moving tail-dispatched group "
+                          "to back message queue",
+                          fmt::ptr(this)));
+
+  if (NS_IsMainThread()) {
+    // The stable state runnable starts the graph thread when adding the first
+    // ControlMessage, which is supposed to add a track, which must happen on
+    // main thread.
+    EnsureRunInStableState();
+  }
+
+  MonitorAutoLock lock(mMonitor);
+  if (!NS_IsMainThread()) {
+    // The IPC I/O thread is exempt. An ipc::MessageChannel opened on the graph
+    // thread holds a strong reference to the graph as its worker thread, so
+    // the graph outlives these dispatches. The channel is closed when the
+    // graph shuts down, which is necessarily after the main-thread track and
+    // port counts have reached zero. Its runnables are cancelable, so they are
+    // discarded below once the graph no longer processes messages.
+    MOZ_DIAGNOSTIC_ASSERT(
+        mMainThreadTrackCount > 0 || mMainThreadPortCount > 0 ||
+            OnIPCIOThread(),
+        "Clients must guarantee that any non-main thread tail dispatches to "
+        "the graph are outlived by a main-thread controlled track or port");
+  }
+
+  if (!mGraphDriverRunning &&
+      mLifecycleState > LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP) {
+    MOZ_ASSERT(!NS_IsMainThread(),
+               "Main thread may not dispatch after removing the last track");
+    // Once main-thread has control of the graph, run events from non-main
+    // threads on the main thread. This guarantees consistent event ordering
+    // with events dispatched before shutdown that didn't run until in shutdown,
+    // in the stable state runnable.
+    NS_DispatchToMainThread(NS_NewRunnableFunction(
+        "MediaTrackGraphImpl::NonMainThreadDispatch",
+        [this, self = RefPtr(this), event = std::move(event)] {
+#ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
+          const size_t trackCount = mMainThreadTrackCount;
+          const size_t portCount = mMainThreadPortCount;
+#endif
+#ifdef DEBUG
+          MOZ_ASSERT(mCanRunMessagesSynchronously);
+          mCanRunMessagesSynchronously = false;
+#endif
+          if (nsCOMPtr<nsIDiscardableRunnable> discardable =
+                  do_QueryInterface(event)) {
+            discardable->OnDiscard();
+          }
+#ifdef DEBUG
+          mCanRunMessagesSynchronously = true;
+#endif
+          MOZ_DIAGNOSTIC_ASSERT(trackCount == mMainThreadTrackCount);
+          MOZ_DIAGNOSTIC_ASSERT(portCount == mMainThreadPortCount);
+          if (IsEmpty() &&
+              LifecycleState() >= LIFECYCLE_WAITING_FOR_TRACK_DESTRUCTION) {
+            Destroy();
+          }
+        }));
+    return NS_OK;
+  }
+
+  mBackMessageQueue.EmplaceBack(std::move(event));
+  EnsureNextIteration();
+  return NS_OK;
+}
+
+nsresult MediaTrackGraphImpl::QueueMessageForTailDispatch(
+    already_AddRefed<nsIRunnable> aEvent) {
+  nsCOMPtr event = aEvent;
+  MOZ_ASSERT(
+      nsCOMPtr<nsIDiscardableRunnable>(do_QueryInterface(event)),
+      "Events dispatched to the graph must be discardable as discard "
+      "controls whether the runnable can run during shutdown. Whether or not "
+      "to run during shutdown should be a conscious decision by most callers.");
+  MOZ_DIAGNOSTIC_ASSERT(
+      mMainThreadTrackCount > 0 || mMainThreadPortCount > 0,
+      "Clients must guarantee that any dispatches to the graph are "
+      "outlived by a main-thread controlled track or port");
+
+  if (NS_IsMainThread()) {
+    // Run messages synchronously here as opposed to async on main thread in
+    // TailDispatchMessage, because the main thread event queue will not be
+    // available late in shutdown when objects may still be releasing tracks.
+    if (!mGraphDriverRunning &&
+        LifecycleState() > LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP) {
+      // The graph control loop is not running and main thread cleanup has
+      // happened. From now on we can't tail dispatch to the graph, because
+      // messages will never be processed again, so just RunDuringShutdown this
+      // message. This should only happen during forced shutdown, or after a
+      // non-realtime graph has finished processing.
+#ifdef DEBUG
+      MOZ_ASSERT(mCanRunMessagesSynchronously);
+      mCanRunMessagesSynchronously = false;
+#endif
+      if (nsCOMPtr<nsIDiscardableRunnable> discardable =
+              do_QueryInterface(event)) {
+        discardable->OnDiscard();
+      }
+#ifdef DEBUG
+      mCanRunMessagesSynchronously = true;
+#endif
+      if (IsEmpty() &&
+          LifecycleState() >= LIFECYCLE_WAITING_FOR_TRACK_DESTRUCTION) {
+        Destroy();
+      }
+      return NS_OK;
+    }
+    if (AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownNetTeardown)) {
+      // Tail dispatcher may not be available on main thread once shutdown has
+      // started, since shutdown is handled off the event loop.
+      MOZ_ASSERT(!AbstractThread::GetCurrent()->HasTailTasksFor(this));
+      return TailDispatchMessage(event.forget());
+    }
+  }
+  return AbstractThread::GetCurrent()->TailDispatcher().AddTask(this,
+                                                                event.forget());
+}
 }  // namespace mozilla
+
+#undef LOG

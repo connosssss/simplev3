@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,8 +7,9 @@
 #include "EMEUtils.h"
 #include "GMPUtils.h"
 #include "KeySystemNames.h"
-#include "mozilla/dom/Promise.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "mozilla/dom/ChromeUtilsBinding.h"
+#include "mozilla/dom/Promise.h"
 #include "nsPrintfCString.h"
 
 #ifdef XP_WIN
@@ -18,9 +17,8 @@
 #  include "WMFDecoderModule.h"
 #endif
 #ifdef MOZ_WIDGET_ANDROID
-#  include "AndroidDecoderModule.h"
-#  include "mozilla/java/MediaDrmProxyWrappers.h"
-#  include "nsMimeTypes.h"
+#  include "MediaCodecsSupport.h"
+#  include "mozilla/gfx/gfxVars.h"
 #endif
 
 #ifdef MOZ_WMF_CDM
@@ -32,10 +30,15 @@ namespace mozilla {
 /* static */
 bool KeySystemConfig::Supports(const nsAString& aKeySystem) {
 #ifdef MOZ_WIDGET_ANDROID
-  // No GMP on Android, check if we can use MediaDrm for this keysystem.
-  if (mozilla::java::MediaDrmProxy::IsSchemeSupported(
-          NS_ConvertUTF16toUTF8(aKeySystem))) {
+  // Check if we can use MediaDrm for this keysystem.
+  if (IsWidevineKeySystem(aKeySystem) &&
+      gfx::gfxVars::WidevineSupport() == media::DrmSchemeSupport::Supported) {
     return true;
+  }
+  // Check if we can use our bundled Clearkey plugin.
+  if (IsClearkeyKeySystem(aKeySystem)) {
+    return HaveGMPFor(nsCString(CHROMIUM_CDM_API),
+                      {NS_ConvertUTF16toUTF8(aKeySystem)});
   }
 #else
 #  ifdef MOZ_WMF_CDM
@@ -98,16 +101,12 @@ bool KeySystemConfig::Supports(const nsAString& aKeySystem) {
   config->mMP4.SetCanDecrypt(EME_CODEC_FLAC);
   config->mMP4.SetCanDecrypt(EME_CODEC_OPUS);
   config->mMP4.SetCanDecrypt(EME_CODEC_VP9);
-#ifdef MOZ_AV1
   config->mMP4.SetCanDecrypt(EME_CODEC_AV1);
-#endif
   config->mWebM.SetCanDecrypt(EME_CODEC_VORBIS);
   config->mWebM.SetCanDecrypt(EME_CODEC_OPUS);
   config->mWebM.SetCanDecrypt(EME_CODEC_VP8);
   config->mWebM.SetCanDecrypt(EME_CODEC_VP9);
-#ifdef MOZ_AV1
   config->mWebM.SetCanDecrypt(EME_CODEC_AV1);
-#endif
 
   if (StaticPrefs::media_clearkey_test_key_systems_enabled()) {
     // Add testing key systems. These offer the same capabilities as the
@@ -138,55 +137,33 @@ bool KeySystemConfig::Supports(const nsAString& aKeySystem) {
   config->mVideoRobustness.AppendElement(u"SW_SECURE_DECODE"_ns);
 
 #if defined(MOZ_WIDGET_ANDROID)
-  // MediaDrm.isCryptoSchemeSupported only allows passing
-  // "video/mp4" or "video/webm" for mimetype string.
-  // See
-  // https://developer.android.com/reference/android/media/MediaDrm.html#isCryptoSchemeSupported(java.util.UUID,
-  // java.lang.String) for more detail.
-  typedef struct {
-    const nsCString& mMimeType;
-    const nsCString& mEMECodecType;
-    const char16_t* mCodecType;
-    KeySystemConfig::ContainerSupport* mSupportType;
-  } DataForValidation;
+  if (gfx::gfxVars::WidevineSupport() != media::DrmSchemeSupport::Supported) {
+    return;
+  }
 
-  DataForValidation validationList[] = {
-      {nsCString(VIDEO_MP4), EME_CODEC_H264, java::MediaDrmProxy::AVC,
-       &config->mMP4},
-      {nsCString(VIDEO_MP4), EME_CODEC_VP9, java::MediaDrmProxy::AVC,
-       &config->mMP4},
-#  ifdef MOZ_AV1
-      {nsCString(VIDEO_MP4), EME_CODEC_AV1, java::MediaDrmProxy::AV1,
-       &config->mMP4},
-#  endif
-      {nsCString(AUDIO_MP4), EME_CODEC_AAC, java::MediaDrmProxy::AAC,
-       &config->mMP4},
-      {nsCString(AUDIO_MP4), EME_CODEC_FLAC, java::MediaDrmProxy::FLAC,
-       &config->mMP4},
-      {nsCString(AUDIO_MP4), EME_CODEC_OPUS, java::MediaDrmProxy::OPUS,
-       &config->mMP4},
-      {nsCString(VIDEO_WEBM), EME_CODEC_VP8, java::MediaDrmProxy::VP8,
-       &config->mWebM},
-      {nsCString(VIDEO_WEBM), EME_CODEC_VP9, java::MediaDrmProxy::VP9,
-       &config->mWebM},
-#  ifdef MOZ_AV1
-      {nsCString(VIDEO_WEBM), EME_CODEC_AV1, java::MediaDrmProxy::AV1,
-       &config->mWebM},
-#  endif
-      {nsCString(AUDIO_WEBM), EME_CODEC_VORBIS, java::MediaDrmProxy::VORBIS,
-       &config->mWebM},
-      {nsCString(AUDIO_WEBM), EME_CODEC_OPUS, java::MediaDrmProxy::OPUS,
-       &config->mWebM},
+  struct {
+    const nsLiteralCString& mEMECodecType;
+    media::MediaCodec mCodec;
+    KeySystemConfig::ContainerSupport* mSupportType;
+  } validationList[] = {
+      {EME_CODEC_H264, media::MediaCodec::H264, &config->mMP4},
+      {EME_CODEC_VP9, media::MediaCodec::VP9, &config->mMP4},
+      {EME_CODEC_AV1, media::MediaCodec::AV1, &config->mMP4},
+      {EME_CODEC_AAC, media::MediaCodec::AAC, &config->mMP4},
+      {EME_CODEC_FLAC, media::MediaCodec::FLAC, &config->mMP4},
+      {EME_CODEC_OPUS, media::MediaCodec::Opus, &config->mMP4},
+      {EME_CODEC_VP8, media::MediaCodec::VP8, &config->mWebM},
+      {EME_CODEC_VP9, media::MediaCodec::VP9, &config->mWebM},
+      {EME_CODEC_AV1, media::MediaCodec::AV1, &config->mWebM},
+      {EME_CODEC_VORBIS, media::MediaCodec::Vorbis, &config->mWebM},
+      {EME_CODEC_OPUS, media::MediaCodec::Opus, &config->mWebM},
   };
 
+  const auto supported = gfx::gfxVars::PlatformMediaCodecsSupported();
   for (const auto& data : validationList) {
-    if (java::MediaDrmProxy::IsCryptoSchemeSupported(kWidevineKeySystemName,
-                                                     data.mMimeType)) {
-      if (!AndroidDecoderModule::SupportsMimeType(data.mMimeType).isEmpty()) {
-        data.mSupportType->SetCanDecryptAndDecode(data.mEMECodecType);
-      } else {
-        data.mSupportType->SetCanDecrypt(data.mEMECodecType);
-      }
+    if (media::MCSInfo::SupportsSoftwareDecode(supported, data.mCodec) ||
+        media::MCSInfo::SupportsHardwareDecode(supported, data.mCodec)) {
+      data.mSupportType->SetCanDecryptAndDecode(data.mEMECodecType);
     }
   }
 #else
@@ -206,16 +183,12 @@ bool KeySystemConfig::Supports(const nsAString& aKeySystem) {
   config->mMP4.SetCanDecrypt(EME_CODEC_OPUS);
   config->mMP4.SetCanDecryptAndDecode(EME_CODEC_H264);
   config->mMP4.SetCanDecryptAndDecode(EME_CODEC_VP9);
-#  ifdef MOZ_AV1
   config->mMP4.SetCanDecryptAndDecode(EME_CODEC_AV1);
-#  endif
   config->mWebM.SetCanDecrypt(EME_CODEC_VORBIS);
   config->mWebM.SetCanDecrypt(EME_CODEC_OPUS);
   config->mWebM.SetCanDecryptAndDecode(EME_CODEC_VP8);
   config->mWebM.SetCanDecryptAndDecode(EME_CODEC_VP9);
-#  ifdef MOZ_AV1
   config->mWebM.SetCanDecryptAndDecode(EME_CODEC_AV1);
-#  endif
 #endif
 }
 
@@ -313,8 +286,6 @@ void KeySystemConfig::GetGMPKeySystemConfigs(dom::Promise* aPromise) {
             info->mKeySystemName = config.mKeySystem;
             info->mCapabilities = config.GetDebugInfo();
             info->mClearlead = DoesKeySystemSupportClearLead(config.mKeySystem);
-            // TODO : ask real CDM for HDCP
-            info->mIsHDCP22Compatible = false;
             // GMP-based CDM doesn't support hardware decryption.
             info->mIsHardwareDecryption = false;
           }
@@ -368,7 +339,6 @@ nsString KeySystemConfig::GetDebugInfo() const {
   debugInfo.AppendLiteral(" WEBM={");
   debugInfo.Append(NS_ConvertUTF8toUTF16(mWebM.GetDebugInfo()));
   debugInfo.AppendLiteral("}");
-  debugInfo.AppendPrintf(" isHDCP22Compatible=%d", mIsHDCP22Compatible);
   return debugInfo;
 }
 

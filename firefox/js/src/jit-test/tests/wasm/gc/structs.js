@@ -1,4 +1,4 @@
-// |jit-test| test-also=--gc-zeal=2
+// |jit-test| test-also=--gc-zeal=2; test-also=--setpref=wasm_baseline_debug=true; skip-variant-if: --setpref=wasm_baseline_debug=true, wasmCompileMode() == "ion"
 
 // This tests a bunch of wasm struct stuff, but not i8 or i16 fields.
 // See structs2.js for i8/i16 field tests.
@@ -573,7 +573,7 @@ assertErrorMessage(() => wasmEvalText(`
  (type $f (func (param i32) (result i32)))
  (func (type 0) (param i32) (result i32) (unreachable)))
 `),
-WebAssembly.CompileError, /signature index references non-signature/);
+SyntaxError, /not a function type/);
 
 // Can't set immutable fields from JS
 

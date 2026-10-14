@@ -11,6 +11,10 @@ const { JsonSchema } = ChromeUtils.importESModule(
 );
 
 ChromeUtils.defineESModuleGetters(this, {
+  ASRouterTargeting: "resource:///modules/asrouter/ASRouterTargeting.sys.mjs",
+  MessagingSystemAllowlists:
+    "resource://messaging-system/lib/MessagingSystemAllowlists.sys.mjs",
+  Referrals: "moz-src:///browser/components/referrals/Referrals.sys.mjs",
   SpecialMessageActions:
     "resource://messaging-system/lib/SpecialMessageActions.sys.mjs",
 });
@@ -31,6 +35,7 @@ const EXAMPLE_URL = "https://example.com/";
 const SMATestUtils = {
   /**
    * Checks if an action is valid acording to existing schemas
+   *
    * @param {SpecialMessageAction} action
    */
   async validateAction(action) {
@@ -52,11 +57,12 @@ const SMATestUtils = {
 
   /**
    * Executes a Special Message Action after validating it
+   *
    * @param {SpecialMessageAction} action
    * @param {Browser} browser
    */
   async executeAndValidateAction(action, browser = gBrowser) {
     await SMATestUtils.validateAction(action);
-    await SpecialMessageActions.handleAction(action, browser);
+    return SpecialMessageActions.handleAction(action, browser);
   },
 };

@@ -8,8 +8,8 @@ ChromeUtils.defineESModuleGetters(lazy, {
   AppInfo: "chrome://remote/content/shared/AppInfo.sys.mjs",
   error: "chrome://remote/content/shared/webdriver/Errors.sys.mjs",
   EventPromise: "chrome://remote/content/shared/Sync.sys.mjs",
-  MessageManagerDestroyedPromise:
-    "chrome://remote/content/marionette/sync.sys.mjs",
+  MessageManagerDestroyedPromise: "chrome://remote/content/shared/Sync.sys.mjs",
+  NavigableManager: "chrome://remote/content/shared/NavigableManager.sys.mjs",
   TabManager: "chrome://remote/content/shared/TabManager.sys.mjs",
   windowManager: "chrome://remote/content/shared/WindowManager.sys.mjs",
 });
@@ -107,6 +107,13 @@ browser.Context = class {
     return null;
   }
 
+  /**
+   * Return the unique id of the content browser.
+   */
+  get contentBrowserId() {
+    return lazy.NavigableManager.getIdForBrowser(this.contentBrowser);
+  }
+
   get messageManager() {
     if (this.contentBrowser) {
       return this.contentBrowser.messageManager;
@@ -127,21 +134,6 @@ browser.Context = class {
    */
   get closed() {
     return this.contentBrowser === null;
-  }
-
-  /**
-   * Gets the position and dimensions of the top-level browsing context.
-   *
-   * @returns {Map.<string, number>}
-   *     Object with |x|, |y|, |width|, and |height| properties.
-   */
-  get rect() {
-    return {
-      x: this.window.screenX,
-      y: this.window.screenY,
-      width: this.window.outerWidth,
-      height: this.window.outerHeight,
-    };
   }
 
   /**
@@ -265,7 +257,7 @@ browser.Context = class {
    * @param {ChromeWindow=} window
    *     Switch to this window before selecting the tab.
    * @param {boolean=} focus
-   *      A boolean value which determins whether to focus
+   *      A boolean value which determines whether to focus
    *      the window. Defaults to true.
    *
    * @returns {Tab}

@@ -1,22 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "QuotaClientImpl.h"
-
 #include "DBAction.h"
 #include "FileUtilsImpl.h"
-#include "mozilla/DebugOnly.h"
+#include "QuotaClientImpl.h"
+#include "mozilla/GeckoTrace.h"
 #include "mozilla/ResultExtensions.h"
-#include "mozilla/Unused.h"
 #include "mozilla/dom/cache/DBSchema.h"
 #include "mozilla/dom/cache/Manager.h"
 #include "mozilla/dom/quota/PersistenceType.h"
 #include "mozilla/dom/quota/QuotaCommon.h"
 #include "mozilla/dom/quota/QuotaManager.h"
 #include "mozilla/dom/quota/UsageInfo.h"
+#include "mozilla/glean/DomCacheMetrics.h"
 #include "mozilla/ipc/BackgroundParent.h"
 #include "nsIFile.h"
 #include "nsThreadUtils.h"
@@ -36,6 +33,12 @@ using mozilla::dom::quota::UsageInfo;
 using mozilla::ipc::AssertIsOnBackgroundThread;
 
 namespace {
+
+constexpr bool IsNonFatalSchemaError(const nsresult aRv) {
+  return aRv == NS_ERROR_STORAGE_BUSY || aRv == NS_ERROR_FILE_IS_LOCKED ||
+         aRv == NS_ERROR_FILE_ACCESS_DENIED || aRv == NS_ERROR_ABORT ||
+         aRv == NS_ERROR_FILE_NO_DEVICE_SPACE || aRv == NS_ERROR_OUT_OF_MEMORY;
+}
 
 template <typename StepFunc>
 Result<UsageInfo, nsresult> ReduceUsageInfo(nsIFile& aDir,
@@ -82,7 +85,20 @@ Result<int64_t, nsresult> GetPaddingSizeFromDB(
   // from it. We have to do this because GetPaddingSizeFromDB is called
   // by InitOrigin. And it means that SetupAction::RunSyncWithDBOnTarget hasn't
   // checked the schema for the given origin yet).
-  QM_TRY(MOZ_TO_RESULT(db::CreateOrMigrateSchema(aDir, *conn)));
+  QM_TRY(QM_OR_ELSE_WARN_IF(
+      // Expression.
+      MOZ_TO_RESULT(db::CreateOrMigrateSchema(aDir, *conn)),
+      // Predicate.
+      ([](const nsresult rv) { return !IsNonFatalSchemaError(rv); }),
+      // Fallback.
+      ([](const nsresult rv) -> Result<Ok, nsresult> {
+        if (rv == NS_ERROR_DOM_NOT_SUPPORTED_ERR) {
+          glean::cache::schema_init_error.Get("future_version"_ns).Add();
+        } else {
+          glean::cache::schema_init_error.Get("other"_ns).Add();
+        }
+        return Err(NS_ERROR_FILE_CORRUPTED);
+      })));
 
   QM_TRY_RETURN(DirectoryPaddingRestore(aDir, *conn,
                                         /* aMustRestore */ false));
@@ -115,7 +131,20 @@ Result<int64_t, nsresult> GetTotalDiskUsageFromDB(
   // from it. We have to do this because GetTotalDiskUsageFromDB is called
   // by InitOrigin. And it means that SetupAction::RunSyncWithDBOnTarget hasn't
   // checked the schema for the given origin yet).
-  QM_TRY(MOZ_TO_RESULT(db::CreateOrMigrateSchema(aDir, *conn)));
+  QM_TRY(QM_OR_ELSE_WARN_IF(
+      // Expression.
+      MOZ_TO_RESULT(db::CreateOrMigrateSchema(aDir, *conn)),
+      // Predicate.
+      ([](const nsresult rv) { return !IsNonFatalSchemaError(rv); }),
+      // Fallback.
+      ([](const nsresult rv) -> Result<Ok, nsresult> {
+        if (rv == NS_ERROR_DOM_NOT_SUPPORTED_ERR) {
+          glean::cache::schema_init_error.Get("future_version"_ns).Add();
+        } else {
+          glean::cache::schema_init_error.Get("other"_ns).Add();
+        }
+        return Err(NS_ERROR_FILE_CORRUPTED);
+      })));
 
   QM_TRY_RETURN(db::GetTotalDiskUsage(*conn));
 }
@@ -142,6 +171,8 @@ CacheQuotaClient::Type CacheQuotaClient::GetType() { return DOMCACHE; }
 Result<UsageInfo, nsresult> CacheQuotaClient::InitOrigin(
     PersistenceType aPersistenceType, const OriginMetadata& aOriginMetadata,
     const AtomicBool& aCanceled) {
+  GECKO_TRACE_SCOPE("dom::cache", "CacheQuotaClient::InitOrigin");
+
   AssertIsOnIOThread();
   MOZ_ASSERT(aOriginMetadata.mPersistenceType == aPersistenceType);
 
@@ -428,7 +459,7 @@ nsresult CacheQuotaClient::RestorePaddingFileInternal(
   QM_TRY_INSPECT(const int64_t& dummyPaddingSize,
                  DirectoryPaddingRestore(*aBaseDir, *aConn,
                                          /* aMustRestore */ true));
-  Unused << dummyPaddingSize;
+  (void)dummyPaddingSize;
 
   return NS_OK;
 }

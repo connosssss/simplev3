@@ -1,24 +1,22 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/XRSystem.h"
 
-#include "mozilla/StaticPrefs_dom.h"
-#include "mozilla/dom/XRPermissionRequest.h"
-#include "mozilla/dom/XRSession.h"
-#include "mozilla/dom/BindingCallContext.h"
-#include "mozilla/dom/Document.h"
-#include "mozilla/dom/Promise.h"
-#include "mozilla/dom/FeaturePolicyUtils.h"
-#include "mozilla/dom/PermissionMessageUtils.h"
-#include "nsGlobalWindowInner.h"
-#include "nsThreadUtils.h"
-#include "gfxVR.h"
 #include "VRDisplayClient.h"
 #include "VRManagerChild.h"
+#include "gfxVR.h"
+#include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/dom/BindingCallContext.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/PermissionMessageUtils.h"
+#include "mozilla/dom/PermissionsPolicyUtils.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/XRPermissionRequest.h"
+#include "mozilla/dom/XRSession.h"
+#include "nsGlobalWindowInner.h"
+#include "nsThreadUtils.h"
 
 namespace mozilla::dom {
 
@@ -253,7 +251,7 @@ bool XRSystem::OnXRPermissionRequestAllow() {
   if (!mEnumerationInFlight) {
     mEnumerationInFlight = true;
     gfx::VRManagerChild* vm = gfx::VRManagerChild::Get();
-    Unused << vm->EnumerateVRDisplays();
+    (void)vm->EnumerateVRDisplays();
   }
   return mEnumerationInFlight ||
          !mRequestSessionRequestsWaitingForEnumeration.IsEmpty();
@@ -271,7 +269,7 @@ void XRSystem::OnXRPermissionRequestCancel() {
   }
 }
 
-bool XRSystem::FeaturePolicyBlocked() const {
+bool XRSystem::PermissionsPolicyBlocked() const {
   nsGlobalWindowInner* win = GetOwnerWindow();
   if (!win) {
     return true;
@@ -364,13 +362,13 @@ void XRSystem::ResolveIsSessionSupportedRequests() {
   gfx::VRManagerChild* vm = gfx::VRManagerChild::Get();
   nsTArray<RefPtr<IsSessionSupportedRequest>> isSessionSupportedRequests(
       std::move(mIsSessionSupportedRequests));
-  bool featurePolicyBlocked = FeaturePolicyBlocked();
+  bool permissionsPolicyBlocked = PermissionsPolicyBlocked();
 
   for (RefPtr<IsSessionSupportedRequest>& request :
        isSessionSupportedRequests) {
-    if (featurePolicyBlocked) {
+    if (permissionsPolicyBlocked) {
       request->mPromise->MaybeRejectWithSecurityError(
-          "The xr-spatial-tracking feature policy is required.");
+          "The xr-spatial-tracking permissions policy is required.");
       continue;
     }
 
@@ -392,7 +390,7 @@ void XRSystem::ResolveIsSessionSupportedRequests() {
 void XRSystem::ProcessSessionRequestsWaitingForRuntimeDetection() {
   bool alreadyRequestedPermission =
       !mRequestSessionRequestsWaitingForEnumeration.IsEmpty();
-  bool featurePolicyBlocked = FeaturePolicyBlocked();
+  bool permissionsPolicyBlocked = PermissionsPolicyBlocked();
   gfx::VRManagerChild* vm = gfx::VRManagerChild::Get();
 
   nsTArray<RefPtr<RequestSessionRequest>> sessionRequests(
@@ -423,11 +421,11 @@ void XRSystem::ProcessSessionRequestsWaitingForRuntimeDetection() {
       }
       continue;
     }
-    if (featurePolicyBlocked) {
-      // Don't show a permission prompt if blocked by feature policy.
+    if (permissionsPolicyBlocked) {
+      // Don't show a permission prompt if blocked by permissions policy.
       if (CancelHardwareRequest(request)) {
         request->mPromise->MaybeRejectWithSecurityError(
-            "The xr-spatial-tracking feature policy is required.");
+            "The xr-spatial-tracking permissions policy is required.");
       }
       continue;
     }

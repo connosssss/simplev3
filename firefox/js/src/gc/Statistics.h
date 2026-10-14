@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -21,6 +19,7 @@
 #include "js/GCAPI.h"
 #include "js/SliceBudget.h"
 #include "js/Vector.h"
+#include "vm/Logging.h"
 
 namespace js {
 
@@ -69,6 +68,10 @@ enum Stat {
 
   // Number of BigInts promoted.
   STAT_BIGINTS_PROMOTED,
+
+  // Maximum mark stack capacity (in words) reached by any marker during
+  // the marking phase of a major GC.
+  STAT_MARK_STACK_MAX_CAPACITY,
 
   STAT_LIMIT
 };
@@ -180,7 +183,7 @@ struct Statistics {
   void beginSlice(const ZoneGCStats& zoneStats, JS::GCOptions options,
                   const JS::SliceBudget& budget, JS::GCReason reason,
                   bool budgetWasIncreased);
-  void endSlice();
+  void endSlice(const JS::SliceBudget& budget);
 
   [[nodiscard]] bool startTimingMutator();
   [[nodiscard]] bool stopTimingMutator(double& mutator_ms, double& gc_ms);
@@ -201,7 +204,7 @@ struct Statistics {
   void nonincremental(GCAbortReason reason) {
     MOZ_ASSERT(reason != GCAbortReason::None);
     nonincrementalReason_ = reason;
-    log("Non-incremental reason: %s", nonincrementalReason());
+    JS_LOG(gc, Info, "non-incremental for reason %s", nonincrementalReason());
   }
 
   bool nonincremental() const {
@@ -324,21 +327,11 @@ struct Statistics {
 
   bool bufferAllocStatsEnabled() const { return enableBufferAllocStats_; }
 
-#ifdef DEBUG
-  // Print a logging message.
-  void log(const char* fmt, ...);
-#else
-  void log(const char* fmt, ...) {};
-#endif
-
  private:
   gc::GCRuntime* const gc;
 
   /* File used for MOZ_GCTIMER output. */
   FILE* gcTimerFile;
-
-  /* File used for JS_GC_DEBUG output. */
-  FILE* gcDebugFile;
 
   /* File used for JS_GC_PROFILE output. */
   FILE* gcProfileFile;
@@ -516,16 +509,18 @@ struct Statistics {
                                 Sprinter& sprinter);
 };
 
-struct MOZ_RAII AutoGCSlice {
+class MOZ_RAII AutoGCSlice {
+  Statistics& stats;
+  const JS::SliceBudget& budget;
+
+ public:
   AutoGCSlice(Statistics& stats, const ZoneGCStats& zoneStats,
               JS::GCOptions options, const JS::SliceBudget& budget,
               JS::GCReason reason, bool budgetWasIncreased)
-      : stats(stats) {
+      : stats(stats), budget(budget) {
     stats.beginSlice(zoneStats, options, budget, reason, budgetWasIncreased);
   }
-  ~AutoGCSlice() { stats.endSlice(); }
-
-  Statistics& stats;
+  ~AutoGCSlice() { stats.endSlice(budget); }
 };
 
 struct MOZ_RAII AutoPhase {

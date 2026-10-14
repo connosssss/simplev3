@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -9,11 +8,8 @@
 
 [Exposed=(Window,Worker)]
 interface Response {
-  // This should be constructor(optional BodyInit... but BodyInit doesn't
-  // include ReadableStream yet because we don't want to expose Streams API to
-  // Request.
   [Throws]
-  constructor(optional (Blob or BufferSource or FormData or URLSearchParams or ReadableStream or USVString)? body = null,
+  constructor(optional BodyInit? body = null,
               optional ResponseInit init = {});
 
   [NewObject] static Response error();
@@ -41,8 +37,9 @@ interface Response {
 };
 Response includes Body;
 
-// This should be part of Body but we don't want to expose body to request yet.
-// See bug 1387483.
+// This should be part of the Body mixin, but Request's copy is gated on
+// dom.fetch.streaming_upload while this one ships unconditionally, so the two
+// are declared separately. See Request.webidl.
 partial interface Response {
   [GetterThrows]
   readonly attribute ReadableStream? body;

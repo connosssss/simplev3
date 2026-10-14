@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -26,11 +24,13 @@
 #define TYPED_ARGS1(t1) t1 arg1
 #define TYPED_ARGS2(t1, t2) TYPED_ARGS1(t1), t2 arg2
 #define TYPED_ARGS3(t1, t2, t3) TYPED_ARGS2(t1, t2), t3 arg3
+#define TYPED_ARGS4(t1, t2, t3, t4) TYPED_ARGS3(t1, t2, t3), t4 arg4
 
 #define ARGS0()
 #define ARGS1(t1) arg1
 #define ARGS2(t1, t2) ARGS1(t1), arg2
 #define ARGS3(t1, t2, t3) ARGS2(t1, t2), arg3
+#define ARGS4(t1, t2, t3, t4) ARGS3(t1, t2, t3), arg4
 
 #ifdef MOZ_MEMORY
 
@@ -161,9 +161,10 @@ struct DummyArenaAllocator {
 
   static bool moz_enable_deferred_purge(bool aEnable) { return false; }
 
-  static may_purge_now_result_t moz_may_purge_now(
-      bool aPeekOnly, uint32_t aReuseGraceMS,
-      const mozilla::Maybe<std::function<bool()>>& aKeepGoing) {
+  static may_purge_now_result_t moz_may_purge_now(bool aPeekOnly,
+                                                  uint32_t aReuseGraceMS,
+                                                  purge_keep_going_t aKeepGoing,
+                                                  void* aClosure) {
     return may_purge_now_result_t::Done;
   }
 

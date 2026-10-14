@@ -1,4 +1,4 @@
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+// Copyright 2012 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -16,8 +16,9 @@ namespace {
 // guaranteed to be untouched in case of failure. Succeeds with no side-effects
 // if source is NULL.
 bool CheckAndDuplicateHandle(HANDLE source, ScopedHandle* target) {
-  if (!source)
+  if (!source) {
     return true;
+  }
 
   HANDLE temp = nullptr;
   if (!::DuplicateHandle(::GetCurrentProcess(), source, ::GetCurrentProcess(),
@@ -40,13 +41,19 @@ ScopedProcessInformation::ScopedProcessInformation(
   Set(process_info);
 }
 
+ScopedProcessInformation::ScopedProcessInformation(ScopedProcessInformation&&) =
+    default;
+
+ScopedProcessInformation& ScopedProcessInformation::operator=(
+    ScopedProcessInformation&&) = default;
+
 ScopedProcessInformation::~ScopedProcessInformation() {
   Close();
 }
 
 bool ScopedProcessInformation::IsValid() const {
-  return process_id_ || process_handle_.Get() || thread_id_ ||
-         thread_handle_.Get();
+  return process_id_ || process_handle_.get() || thread_id_ ||
+         thread_handle_.get();
 }
 
 void ScopedProcessInformation::Close() {
@@ -57,8 +64,9 @@ void ScopedProcessInformation::Close() {
 }
 
 void ScopedProcessInformation::Set(const PROCESS_INFORMATION& process_info) {
-  if (IsValid())
+  if (IsValid()) {
     Close();
+  }
 
   process_handle_.Set(process_info.hProcess);
   thread_handle_.Set(process_info.hThread);
@@ -83,8 +91,8 @@ bool ScopedProcessInformation::DuplicateFrom(
 
 PROCESS_INFORMATION ScopedProcessInformation::Take() {
   PROCESS_INFORMATION process_information = {};
-  process_information.hProcess = process_handle_.Take();
-  process_information.hThread = thread_handle_.Take();
+  process_information.hProcess = process_handle_.release();
+  process_information.hThread = thread_handle_.release();
   process_information.dwProcessId = process_id();
   process_information.dwThreadId = thread_id();
   process_id_ = 0;
@@ -95,12 +103,12 @@ PROCESS_INFORMATION ScopedProcessInformation::Take() {
 
 HANDLE ScopedProcessInformation::TakeProcessHandle() {
   process_id_ = 0;
-  return process_handle_.Take();
+  return process_handle_.release();
 }
 
 HANDLE ScopedProcessInformation::TakeThreadHandle() {
   thread_id_ = 0;
-  return thread_handle_.Take();
+  return thread_handle_.release();
 }
 
 }  // namespace win

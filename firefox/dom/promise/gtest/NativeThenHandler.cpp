@@ -1,15 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "gtest/gtest.h"
-
 #include "js/TypeDecls.h"
 #include "js/Value.h"
-#include "mozilla/dom/Promise.h"
 #include "mozilla/dom/Promise-inl.h"
+#include "mozilla/dom/Promise.h"
 #include "xpcpublic.h"
 
 using namespace mozilla;
@@ -76,8 +73,9 @@ TEST(NativeThenHandler, TraceValue)
 
   // Explicit type for backward compatibility with clang<7 / gcc<8
   using HandlerType =
-      NativeThenHandler<decltype(onResolve), decltype(onReject), std::tuple<>,
-                        std::tuple<JS::HandleValue>>;
+      promise_detail::NativeThenHandler<decltype(onResolve), decltype(onReject),
+                                        std::tuple<>,
+                                        std::tuple<JS::HandleValue>>;
   RefPtr<HandlerType> handler = new HandlerType(
       nullptr, Some(onResolve), Some(onReject), std::make_tuple(),
       std::make_tuple(JS::UndefinedHandleValue));
@@ -107,8 +105,9 @@ TEST(NativeThenHandler, TraceObject)
 
   // Explicit type for backward compatibility with clang<7 / gcc<8
   using HandlerType =
-      NativeThenHandler<decltype(onResolve), decltype(onReject), std::tuple<>,
-                        std::tuple<JS::HandleObject>>;
+      promise_detail::NativeThenHandler<decltype(onResolve), decltype(onReject),
+                                        std::tuple<>,
+                                        std::tuple<JS::HandleObject>>;
   RefPtr<HandlerType> handler = new HandlerType(
       nullptr, Some(onResolve), Some(onReject), std::make_tuple(),
       std::make_tuple(JS::HandleObject(obj)));
@@ -142,10 +141,10 @@ TEST(NativeThenHandler, TraceMixed)
   RefPtr<Promise> promise = Promise::Create(global, IgnoreErrors());
 
   // Explicit type for backward compatibility with clang<7 / gcc<8
-  using HandlerType =
-      NativeThenHandler<decltype(onResolve), decltype(onReject),
-                        std::tuple<nsCOMPtr<nsIGlobalObject>, RefPtr<Promise>>,
-                        std::tuple<JS::HandleValue, JS::HandleObject>>;
+  using HandlerType = promise_detail::NativeThenHandler<
+      decltype(onResolve), decltype(onReject),
+      std::tuple<nsCOMPtr<nsIGlobalObject>, RefPtr<Promise>>,
+      std::tuple<JS::HandleValue, JS::HandleObject>>;
   RefPtr<HandlerType> handler = new HandlerType(
       nullptr, Some(onResolve), Some(onReject),
       std::make_tuple(global, promise),

@@ -4,11 +4,13 @@
 
 /**
  * This module exports a component used to register search providers and manage
- * the connection between such providers and a UrlbarController.
+ * the connection between such providers and a UrlbarParentController.
  */
 
 /**
- * @typedef {import("UrlbarUtils.sys.mjs").UrlbarProvider} UrlbarProvider
+ * @import { UrlbarProvider } from "./UrlbarUtils.sys.mjs"
+ * @import { UrlbarMuxer } from "./UrlbarUtils.sys.mjs"
+ * @import { UrlbarSearchStringTokenData } from "./UrlbarTokenizer.sys.mjs"
  */
 
 const lazy = {};
@@ -16,129 +18,318 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   ObjectUtils: "resource://gre/modules/ObjectUtils.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
-  SkippableTimer: "resource:///modules/UrlbarUtils.sys.mjs",
-  UrlbarMuxer: "resource:///modules/UrlbarUtils.sys.mjs",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
-  UrlbarProvider: "resource:///modules/UrlbarUtils.sys.mjs",
-  UrlbarSearchUtils: "resource:///modules/UrlbarSearchUtils.sys.mjs",
-  UrlbarTokenizer: "resource:///modules/UrlbarTokenizer.sys.mjs",
-  UrlbarUtils: "resource:///modules/UrlbarUtils.sys.mjs",
+  Region: "resource://gre/modules/Region.sys.mjs",
+  SkippableTimer: "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs",
+  UrlbarMuxer: "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs",
+  UrlbarPrefs: "moz-src:///browser/components/urlbar/UrlbarPrefs.sys.mjs",
+  UrlbarProvider: "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs",
+  UrlbarSearchUtils:
+    "moz-src:///browser/components/urlbar/UrlbarSearchUtils.sys.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
+  UrlbarTokenizer:
+    "moz-src:///browser/components/urlbar/UrlbarTokenizer.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "logger", () =>
-  lazy.UrlbarUtils.getLogger({ prefix: "ProvidersManager" })
+  lazy.UrlbarShared.getLogger({ prefix: "ProvidersManager" })
 );
 
-// List of available local providers, each is implemented in its own jsm module
-// and will track different queries internally by queryContext.
+// List of available local providers, each is implemented in its own module and
+// will track different queries internally by queryContext.
 // When adding new providers please remember to update the list in metrics.yaml.
-var localProviderModules = {
-  UrlbarProviderAboutPages:
-    "resource:///modules/UrlbarProviderAboutPages.sys.mjs",
-  UrlbarProviderActionsSearchMode:
-    "resource:///modules/UrlbarProviderActionsSearchMode.sys.mjs",
-  UrlbarProviderGlobalActions:
-    "resource:///modules/UrlbarProviderGlobalActions.sys.mjs",
-  UrlbarProviderAliasEngines:
-    "resource:///modules/UrlbarProviderAliasEngines.sys.mjs",
-  UrlbarProviderAutofill: "resource:///modules/UrlbarProviderAutofill.sys.mjs",
-  UrlbarProviderBookmarkKeywords:
-    "resource:///modules/UrlbarProviderBookmarkKeywords.sys.mjs",
-  UrlbarProviderCalculator:
-    "resource:///modules/UrlbarProviderCalculator.sys.mjs",
-  UrlbarProviderClipboard:
-    "resource:///modules/UrlbarProviderClipboard.sys.mjs",
-  UrlbarProviderHeuristicFallback:
-    "resource:///modules/UrlbarProviderHeuristicFallback.sys.mjs",
-  UrlbarProviderHistoryUrlHeuristic:
-    "resource:///modules/UrlbarProviderHistoryUrlHeuristic.sys.mjs",
-  UrlbarProviderInputHistory:
-    "resource:///modules/UrlbarProviderInputHistory.sys.mjs",
-  UrlbarProviderInterventions:
-    "resource:///modules/UrlbarProviderInterventions.sys.mjs",
-  UrlbarProviderOmnibox: "resource:///modules/UrlbarProviderOmnibox.sys.mjs",
-  UrlbarProviderPlaces: "resource:///modules/UrlbarProviderPlaces.sys.mjs",
-  UrlbarProviderPrivateSearch:
-    "resource:///modules/UrlbarProviderPrivateSearch.sys.mjs",
-  UrlbarProviderQuickSuggest:
-    "resource:///modules/UrlbarProviderQuickSuggest.sys.mjs",
-  UrlbarProviderQuickSuggestContextualOptIn:
-    "resource:///modules/UrlbarProviderQuickSuggestContextualOptIn.sys.mjs",
-  UrlbarProviderRecentSearches:
-    "resource:///modules/UrlbarProviderRecentSearches.sys.mjs",
-  UrlbarProviderRemoteTabs:
-    "resource:///modules/UrlbarProviderRemoteTabs.sys.mjs",
-  UrlbarProviderRestrictKeywords:
-    "resource:///modules/UrlbarProviderRestrictKeywords.sys.mjs",
-  UrlbarProviderRestrictKeywordsAutofill:
-    "resource:///modules/UrlbarProviderRestrictKeywordsAutofill.sys.mjs",
-  UrlbarProviderSearchTips:
-    "resource:///modules/UrlbarProviderSearchTips.sys.mjs",
-  UrlbarProviderSearchSuggestions:
-    "resource:///modules/UrlbarProviderSearchSuggestions.sys.mjs",
-  UrlbarProviderSemanticHistorySearch:
-    "resource:///modules/UrlbarProviderSemanticHistorySearch.sys.mjs",
-  UrlbarProviderTabToSearch:
-    "resource:///modules/UrlbarProviderTabToSearch.sys.mjs",
-  UrlbarProviderTokenAliasEngines:
-    "resource:///modules/UrlbarProviderTokenAliasEngines.sys.mjs",
-  UrlbarProviderTopSites: "resource:///modules/UrlbarProviderTopSites.sys.mjs",
-  UrlbarProviderUnitConversion:
-    "resource:///modules/UrlbarProviderUnitConversion.sys.mjs",
-};
+var localProviderModules = [
+  {
+    name: "UrlbarProviderAboutPages",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderAboutPages.sys.mjs",
+    supportedSAPs: ["smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderActionsSearchMode",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderActionsSearchMode.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderGlobalActions",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderGlobalActions.sys.mjs",
+    supportedSAPs: ["searchbar", "urlbar", "smartbar"],
+  },
+  {
+    name: "UrlbarProviderAddonsShortcutMoved",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderAddonsShortcutMoved.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderAliasEngines",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderAliasEngines.sys.mjs",
+    supportedSAPs: ["newtab_searchbar", "searchbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderAutofill",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderAutofill.sys.mjs",
+    supportedSAPs: ["newtab_searchbar", "smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderBookmarkKeywords",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderBookmarkKeywords.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderCalculator",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderCalculator.sys.mjs",
+    supportedSAPs: ["newtab_searchbar", "searchbar", "smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderAiChat",
+    module: "moz-src:///browser/components/urlbar/UrlbarProviderAiChat.sys.mjs",
+    supportedSAPs: ["smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderClipboard",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderClipboard.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderHeuristicFallback",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderHeuristicFallback.sys.mjs",
+    supportedSAPs: ["newtab_searchbar", "searchbar", "smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderHistoryUrlHeuristic",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderHistoryUrlHeuristic.sys.mjs",
+    supportedSAPs: ["newtab_searchbar", "smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderInputHistory",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderInputHistory.sys.mjs",
+    supportedSAPs: ["smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderInterventions",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderInterventions.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderOmnibox",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderOmnibox.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderPlaces",
+    module: "moz-src:///browser/components/urlbar/UrlbarProviderPlaces.sys.mjs",
+    supportedSAPs: ["smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderPrivateSearch",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderPrivateSearch.sys.mjs",
+    supportedSAPs: ["searchbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderQuickSuggest",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderQuickSuggest.sys.mjs",
+    supportedSAPs: ["newtab_searchbar", "smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderQuickSuggestContextualOptIn",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderQuickSuggestContextualOptIn.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderRecentSearches",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderRecentSearches.sys.mjs",
+    supportedSAPs: ["newtab_searchbar", "searchbar", "smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderRemoteTabs",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderRemoteTabs.sys.mjs",
+    supportedSAPs: ["smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderRestrictKeywords",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderRestrictKeywords.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderRestrictKeywordsAutofill",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderRestrictKeywordsAutofill.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderSearchTips",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderSearchTips.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderSearchSuggestions",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderSearchSuggestions.sys.mjs",
+    supportedSAPs: ["newtab_searchbar", "searchbar", "smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderSemanticHistorySearch",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderSemanticHistorySearch.sys.mjs",
+    supportedSAPs: ["smartbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderTabToSearch",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderTabToSearch.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderTokenAliasEngines",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderTokenAliasEngines.sys.mjs",
+    supportedSAPs: ["newtab_searchbar", "searchbar", "urlbar"],
+  },
+  {
+    name: "UrlbarProviderTopSites",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderTopSites.sys.mjs",
+    supportedSAPs: ["urlbar"],
+  },
+  {
+    name: "UrlbarProviderUnitConversion",
+    module:
+      "moz-src:///browser/components/urlbar/UrlbarProviderUnitConversion.sys.mjs",
+    supportedSAPs: ["newtab_searchbar", "searchbar", "smartbar", "urlbar"],
+  },
+];
 
 // List of available local muxers, each is implemented in its own jsm module.
 var localMuxerModules = {
-  UrlbarMuxerStandard: "resource:///modules/UrlbarMuxerStandard.sys.mjs",
+  UrlbarMuxerStandard:
+    "moz-src:///browser/components/urlbar/UrlbarMuxerStandard.sys.mjs",
 };
 
+/**
+ * Map of ProvidersManager instances per SAP name.
+ *
+ * @type {Map<string,ProvidersManager>}
+ */
+var gProvidersManagerPerSap = new Map();
+
+// Monotonically increasing id stamped on every result as it is finalized, so a
+// result can be matched to its context entry and view row across the actor
+// boundary without relying on its position. Never reset, so a stale
+// notification from a superseded query can't collide with a new query's result.
+let gNextResultId = 0;
+
 const DEFAULT_MUXER = "UnifiedComplete";
+const DEFAULT_CHUNK_RESULTS_DELAY_MS = 16;
 
 /**
- * Class used to create a manager.
- * The manager is responsible to keep a list of providers, instantiate query
- * objects and pass those to the providers.
+ * Class used to create a manager. There always exists one manager instance
+ * per input type. It is responsible to keep a list of provider instances,
+ * instantiate query objects and pass those to the providers.
  */
-class ProvidersManager {
-  constructor() {
-    // Tracks the available providers.  This is a sorted array, with HEURISTIC
-    // providers at the front.
+export class ProvidersManager {
+  /**
+   * Interrupt() allows to stop any running SQL query, some provider may be
+   * running a query that shouldn't be interrupted, and if so it should
+   * bump this through disableInterrupt and enableInterrupt.
+   */
+  static interruptLevel = 0;
+
+  /**
+   * @param {string} sapName
+   *  The SAP name this manager is for, e.g. "urlbar", "searchbar", ...
+   * @param {object} muxerModules
+   *   Object with symbol names as keys and module paths as values.
+   *   Symbols should be UrlbarMuxer instances.
+   */
+  constructor(sapName, muxerModules = localMuxerModules) {
     /**
+     * Tracks the available providers. This is a sorted array, with HEURISTIC
+     * providers at the front.
+     *
      * @type {UrlbarProvider[]}
      */
     this.providers = [];
+
+    /**
+     * @type {{onEngagement: Set<UrlbarProvider>, onImpression: Set<UrlbarProvider>, onAbandonment: Set<UrlbarProvider>, onSearchSessionEnd: Set<UrlbarProvider>}}
+     */
     this.providersByNotificationType = {
       onEngagement: new Set(),
       onImpression: new Set(),
       onAbandonment: new Set(),
       onSearchSessionEnd: new Set(),
     };
-    for (let [symbol, module] of Object.entries(localProviderModules)) {
-      let { [symbol]: provider } = ChromeUtils.importESModule(module);
-      this.registerProvider(provider);
+
+    for (let providerInfo of localProviderModules.filter(info =>
+      info.supportedSAPs.includes(sapName)
+    )) {
+      let { [providerInfo.name]: providerClass } = ChromeUtils.importESModule(
+        providerInfo.module
+      );
+      this.registerProvider(new providerClass());
     }
 
-    // Tracks ongoing Query instances by queryContext.
+    /**
+     * Tracks ongoing Query instances by queryContext.
+     *
+     * @type {Map<object, Query>}
+     */
     this.queries = new Map();
 
-    // Interrupt() allows to stop any running SQL query, some provider may be
-    // running a query that shouldn't be interrupted, and if so it should
-    // bump this through disableInterrupt and enableInterrupt.
-    this.interruptLevel = 0;
-
-    // This maps muxer names to muxers.
+    /**
+     * This maps muxer names to muxers.
+     *
+     * @type {Map<string, UrlbarMuxer>}
+     */
     this.muxers = new Map();
-    for (let [symbol, module] of Object.entries(localMuxerModules)) {
+
+    for (let [symbol, module] of Object.entries(muxerModules)) {
       let { [symbol]: muxer } = ChromeUtils.importESModule(module);
       this.registerMuxer(muxer);
     }
+  }
 
-    // These can be set by tests to increase or reduce the chunk delays.
-    // See _notifyResultsFromProvider for additional details.
-    // To improve dataflow and reduce UI work, when a result is added we may notify
-    // it to the controller after a delay, so that we can chunk results in that
-    // timeframe into a single call. See _notifyResultsFromProvider for details.
-    this.CHUNK_RESULTS_DELAY_MS = 16;
+  /**
+   * This can be set by tests to increase or reduce the chunk delays.
+   * See _notifyResultsFromProvider for additional details.
+   * To improve dataflow and reduce UI work, when a result is added we may notify
+   * it to the controller after a delay, so that we can chunk results in that
+   * timeframe into a single call. See _notifyResultsFromProvider for details.
+   */
+  static chunkResultsDelayMs = DEFAULT_CHUNK_RESULTS_DELAY_MS;
+
+  /**
+   * Gets a cached ProvidersManager for the given SAP name, or creates a new one.
+   *
+   * @param {string} sapName The SAP name.
+   * @returns {ProvidersManager} The ProvidersManager instance.
+   */
+  static getInstanceForSap(sapName) {
+    let manager = gProvidersManagerPerSap.get(sapName);
+    if (!manager) {
+      manager = new ProvidersManager(sapName);
+      gProvidersManagerPerSap.set(sapName, manager);
+    }
+    return manager;
   }
 
   /**
@@ -152,17 +343,17 @@ class ProvidersManager {
       throw new Error(`Trying to register an invalid provider`);
     }
     if (
-      !Object.values(lazy.UrlbarUtils.PROVIDER_TYPE).includes(provider.type)
+      !Object.values(lazy.UrlbarShared.PROVIDER_TYPE).includes(provider.type)
     ) {
       throw new Error(`Unknown provider type ${provider.type}`);
     }
     lazy.logger.info(`Registering provider ${provider.name}`);
     let index = -1;
-    if (provider.type == lazy.UrlbarUtils.PROVIDER_TYPE.HEURISTIC) {
+    if (provider.type == lazy.UrlbarShared.PROVIDER_TYPE.HEURISTIC) {
       // Keep heuristic providers in order at the front of the array.  Find the
       // first non-heuristic provider and insert the new provider there.
       index = this.providers.findIndex(
-        p => p.type != lazy.UrlbarUtils.PROVIDER_TYPE.HEURISTIC
+        p => p.type != lazy.UrlbarShared.PROVIDER_TYPE.HEURISTIC
       );
     }
     if (index < 0) {
@@ -202,7 +393,8 @@ class ProvidersManager {
    *
    * @param {string} name
    *   The provider name.
-   * @returns {UrlbarProvider} The provider.
+   * @returns {UrlbarProvider | undefined}
+   *   The provider.
    */
   getProvider(name) {
     return this.providers.find(p => p.name == name);
@@ -211,7 +403,7 @@ class ProvidersManager {
   /**
    * Registers a muxer object with the manager.
    *
-   * @param {object} muxer
+   * @param {UrlbarMuxer} muxer
    *   a UrlbarMuxer object
    */
   registerMuxer(muxer) {
@@ -225,7 +417,7 @@ class ProvidersManager {
   /**
    * Unregisters a previously registered muxer object.
    *
-   * @param {object} muxer
+   * @param {UrlbarMuxer|string} muxer
    *   a UrlbarMuxer object or name.
    */
   unregisterMuxer(muxer) {
@@ -237,10 +429,10 @@ class ProvidersManager {
   /**
    * Starts querying.
    *
-   * @param {object} queryContext
+   * @param {UrlbarQueryContext} queryContext
    *   The query context object
-   * @param {object} [controller]
-   *   a UrlbarController instance
+   * @param {?UrlbarParentController} [controller]
+   *   a UrlbarParentController instance
    */
   async startQuery(queryContext, controller = null) {
     lazy.logger.info(`Query start "${queryContext.searchString}"`);
@@ -278,7 +470,8 @@ class ProvidersManager {
     }
 
     // Apply tokenization.
-    lazy.UrlbarTokenizer.tokenize(queryContext);
+    let tokens = lazy.UrlbarTokenizer.tokenize(queryContext);
+    queryContext.tokens = tokens;
 
     // If there's a single source, we are in restriction mode.
     if (queryContext.sources && queryContext.sources.length == 1) {
@@ -295,7 +488,7 @@ class ProvidersManager {
       queryContext.restrictToken = restrictToken;
       // If the restriction token has an equivalent source, then set it as
       // restrictSource.
-      if (lazy.UrlbarTokenizer.SEARCH_MODE_RESTRICT.has(restrictToken.value)) {
+      if (lazy.UrlbarShared.SEARCH_MODE_RESTRICT.has(restrictToken.value)) {
         queryContext.restrictSource = queryContext.sources[0];
       }
     }
@@ -314,6 +507,15 @@ class ProvidersManager {
       // history and bookmarks even if search engines are not available.
     }
 
+    // Some providers depend on Region/Locale info and must access Region.home
+    // synchronously, so we ensure Region is initialized.
+    try {
+      await lazy.Region.init();
+    } catch (ex) {
+      // We continue anyway, region will be null and providers should handle
+      // that gracefully.
+    }
+
     if (query.canceled) {
       return;
     }
@@ -324,7 +526,7 @@ class ProvidersManager {
   /**
    * Cancels a running query.
    *
-   * @param {object} queryContext The query context object
+   * @param {UrlbarQueryContext} queryContext The query context object
    */
   cancelQuery(queryContext) {
     lazy.logger.info(`Query cancel "${queryContext.searchString}"`);
@@ -337,7 +539,7 @@ class ProvidersManager {
       return;
     }
     query.cancel();
-    if (!this.interruptLevel) {
+    if (!ProvidersManager.interruptLevel) {
       try {
         let db = lazy.PlacesUtils.promiseLargeCacheDBConnection();
         db.interrupt();
@@ -353,7 +555,7 @@ class ProvidersManager {
    *
    * @param {Function} taskFn a Task to execute in the critical section.
    */
-  async runInCriticalSection(taskFn) {
+  static async runInCriticalSection(taskFn) {
     this.interruptLevel++;
     try {
       await taskFn();
@@ -367,22 +569,34 @@ class ProvidersManager {
    * This function centralizes the dispatch of engagement-related events to the
    * appropriate providers based on the current state of interaction.
    *
-   * @param {string} state
+   * @param {"engagement"|"abandonment"} state
    *   The state of the engagement, one of: engagement, abandonment
    * @param {UrlbarQueryContext} queryContext
    *   The engagement's query context, if available.
    * @param {object} details
    *   An object that describes the search string and the picked result, if any.
-   * @param {UrlbarController} controller
+   * @param {UrlbarParentController} controller
    *   The controller associated with the engagement
+   * @param {UrlbarResult[]} [visibleResults]
+   *   The results shown at engagement. Passed on the message path, where the
+   *   parent's view has none; falls back to the view on the direct path.
    */
-  notifyEngagementChange(state, queryContext, details = {}, controller) {
+  notifyEngagementChange(
+    state,
+    queryContext,
+    details = {},
+    controller,
+    visibleResults
+  ) {
     if (!["engagement", "abandonment"].includes(state)) {
       lazy.logger.error(`Unsupported state for engagement change: ${state}`);
       return;
     }
 
-    const visibleResults = controller.view?.visibleResults ?? [];
+    // On the message path the parent's view has no results; the caller passes
+    // the results shown content-side. Fall back to the view for the direct path.
+    visibleResults ??=
+      "visibleResults" in controller.view ? controller.view.visibleResults : [];
     const visibleResultsByProviderName = new Map();
 
     visibleResults.forEach((result, index) => {
@@ -438,6 +652,7 @@ class ProvidersManager {
     for (const provider of engagementProviders) {
       if (details.result.providerName == provider.name) {
         provider.tryMethod("onEngagement", queryContext, controller, details);
+        controller.notify(lazy.UrlbarShared.NOTIFICATIONS.PROVIDER_ENGAGEMENT);
         break;
       }
     }
@@ -498,8 +713,6 @@ class ProvidersManager {
   }
 }
 
-export var UrlbarProvidersManager = new ProvidersManager();
-
 /**
  * Tracks a query status.
  * Multiple queries can potentially be executed at the same time by different
@@ -511,13 +724,13 @@ export class Query {
    * Initializes the query object.
    *
    * @param {UrlbarQueryContext} queryContext
-   *        The query context
-   * @param {UrlbarController} controller
-   *        The controller to be notified
-   * @param {object} muxer
-   *        The muxer to sort results
+   *   The query context.
+   * @param {?UrlbarParentController} controller
+   *   The controller to be notified. May be null.
+   * @param {UrlbarMuxer} muxer
+   *   The muxer to sort results.
    * @param {UrlbarProvider[]} providers
-   *        Array of all the providers.
+   *   Array of all the providers.
    */
   constructor(queryContext, controller, muxer, providers) {
     this.context = queryContext;
@@ -598,15 +811,24 @@ export class Query {
     }
 
     // Start querying active providers.
+    /**
+     * @type {(provider: UrlbarProvider) => Promise<void>}
+     */
     let startQuery = async provider => {
       provider.logger.debug(
         `Starting query for "${this.context.searchString}"`
       );
       let addedResult = false;
-      await provider.tryMethod("startQuery", this.context, (...args) => {
-        addedResult = true;
-        this.add(...args);
-      });
+      await provider.tryMethod(
+        "startQuery",
+        this.context,
+        /** @type {Parameters<UrlbarProvider['startQuery']>[1]} */
+        (innerProvider, result) => {
+          addedResult = true;
+          this.add(innerProvider, result);
+        },
+        this.controller
+      );
       if (!addedResult) {
         this.context.deferUserSelectionProviders.delete(provider.name);
       }
@@ -616,7 +838,7 @@ export class Query {
     for (let provider of activeProviders) {
       // Track heuristic providers. later we'll use this Set to wait for them
       // before returning results to the user.
-      if (provider.type == lazy.UrlbarUtils.PROVIDER_TYPE.HEURISTIC) {
+      if (provider.type == lazy.UrlbarShared.PROVIDER_TYPE.HEURISTIC) {
         this.context.pendingHeuristicProviders.add(provider.name);
         queryPromises.push(
           startQuery(provider).finally(() => {
@@ -690,7 +912,7 @@ export class Query {
    * Adds a result returned from a provider to the results set.
    *
    * @param {UrlbarProvider} provider The provider that returned the result.
-   * @param {object} result The result object.
+   * @param {UrlbarResult} result The result object.
    */
   add(provider, result) {
     if (!(provider instanceof lazy.UrlbarProvider)) {
@@ -728,16 +950,16 @@ export class Query {
       !this.acceptableSources.includes(result.source) &&
       !result.heuristic &&
       // Treat form history as searches for the purpose of acceptableSources.
-      (result.type != lazy.UrlbarUtils.RESULT_TYPE.SEARCH ||
-        result.source != lazy.UrlbarUtils.RESULT_SOURCE.HISTORY ||
+      (result.type != lazy.UrlbarShared.RESULT_TYPE.SEARCH ||
+        result.source != lazy.UrlbarShared.RESULT_SOURCE.HISTORY ||
         !this.acceptableSources.includes(
-          lazy.UrlbarUtils.RESULT_SOURCE.SEARCH
+          lazy.UrlbarShared.RESULT_SOURCE.SEARCH
         )) &&
       // To enable tab group search in tabs mode, allow actions to bypass
       // acceptableSources.
       !(
-        result.source == lazy.UrlbarUtils.RESULT_SOURCE.ACTIONS &&
-        this.acceptableSources.includes(lazy.UrlbarUtils.RESULT_SOURCE.TABS)
+        result.source == lazy.UrlbarShared.RESULT_SOURCE.ACTIONS &&
+        this.acceptableSources.includes(lazy.UrlbarShared.RESULT_SOURCE.TABS)
       )
     ) {
       return;
@@ -746,7 +968,7 @@ export class Query {
     // Filter out javascript results for safety. The provider is supposed to do
     // it, but we don't want to risk leaking these out.
     if (
-      result.type != lazy.UrlbarUtils.RESULT_TYPE.KEYWORD &&
+      result.type != lazy.UrlbarShared.RESULT_TYPE.KEYWORD &&
       result.payload.url &&
       result.payload.url.startsWith("javascript:") &&
       !this.context.searchString.startsWith("javascript:") &&
@@ -755,8 +977,33 @@ export class Query {
       return;
     }
 
+    result.id = gNextResultId++;
     result.providerName = provider.name;
     result.providerType = provider.type;
+
+    // Pre-compute the view's per-result data now so the view can read it
+    // synchronously later without calling back into the provider, which may
+    // live in another process.
+    if (result.type == lazy.UrlbarShared.RESULT_TYPE.DYNAMIC) {
+      result.payload.viewTemplate = provider.getViewTemplate(result);
+      result.payload.viewUpdate = provider.getViewUpdate(
+        result,
+        this.controller
+      );
+    }
+    let commands = provider.tryMethod(
+      "getResultCommands",
+      result,
+      this.context.isPrivate
+    );
+    if (commands) {
+      result.commands = commands;
+    }
+
+    if (result.payload.url) {
+      result.isSERP = lazy.UrlbarSearchUtils.resultIsSERP(result);
+    }
+
     this.unsortedResults.push(result);
 
     this._notifyResultsFromProvider(provider);
@@ -771,12 +1018,12 @@ export class Query {
       this._chunkTimer = new lazy.SkippableTimer({
         name: "chunking",
         callback: () => this._notifyResults(),
-        time: UrlbarProvidersManager.CHUNK_RESULTS_DELAY_MS,
+        time: ProvidersManager.chunkResultsDelayMs,
         logger: provider.logger,
       });
     } else if (
       !this.context.pendingHeuristicProviders.size &&
-      provider.type == lazy.UrlbarUtils.PROVIDER_TYPE.HEURISTIC
+      provider.type == lazy.UrlbarShared.PROVIDER_TYPE.HEURISTIC
     ) {
       // All the active heuristic providers have returned results, we can skip
       // the heuristic chunk timer and start showing results immediately.
@@ -806,69 +1053,81 @@ export class Query {
       this.controller.receiveResults(this.context);
     }
   }
+
+  /**
+   * Returns the provider with the given name.
+   *
+   * @param {string} name
+   *   The provider name.
+   * @returns {UrlbarProvider | undefined}
+   *   The provider.
+   */
+  getProvider(name) {
+    return this.providers.find(p => p.name == name);
+  }
 }
 
 /**
  * Updates in place the sources for a given UrlbarQueryContext.
  *
  * @param {UrlbarQueryContext} context The query context to examine
- * @returns {object} The restriction token that was used to set sources, or
- *          undefined if there's no restriction token.
+ * @returns {UrlbarSearchStringTokenData|undefined} The restriction token that
+ *   was used to set sources, or undefined if there's no restriction token.
  */
 function updateSourcesIfEmpty(context) {
   if (context.sources && context.sources.length) {
-    return false;
+    return undefined;
   }
   let acceptedSources = [];
   // There can be only one restrict token per query.
-  let restrictToken = context.tokens.find(t =>
-    [
-      lazy.UrlbarTokenizer.TYPE.RESTRICT_HISTORY,
-      lazy.UrlbarTokenizer.TYPE.RESTRICT_BOOKMARK,
-      lazy.UrlbarTokenizer.TYPE.RESTRICT_TAG,
-      lazy.UrlbarTokenizer.TYPE.RESTRICT_OPENPAGE,
-      lazy.UrlbarTokenizer.TYPE.RESTRICT_SEARCH,
-      lazy.UrlbarTokenizer.TYPE.RESTRICT_TITLE,
-      lazy.UrlbarTokenizer.TYPE.RESTRICT_URL,
-      lazy.UrlbarTokenizer.TYPE.RESTRICT_ACTION,
-    ].includes(t.type)
-  );
+  let restrictToken =
+    context.sapName != "urlbar"
+      ? undefined
+      : context.tokens.find(t =>
+          [
+            lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_HISTORY,
+            lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_BOOKMARK,
+            lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_TAG,
+            lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_OPENPAGE,
+            lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_SEARCH,
+            lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_TITLE,
+            lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_URL,
+            lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_ACTION,
+          ].includes(t.type)
+        );
 
   // RESTRICT_TITLE and RESTRICT_URL do not affect query sources.
   let restrictTokenType =
     restrictToken &&
-    restrictToken.type != lazy.UrlbarTokenizer.TYPE.RESTRICT_TITLE &&
-    restrictToken.type != lazy.UrlbarTokenizer.TYPE.RESTRICT_URL
+    restrictToken.type != lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_TITLE &&
+    restrictToken.type != lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_URL
       ? restrictToken.type
       : undefined;
 
-  for (let source of Object.values(lazy.UrlbarUtils.RESULT_SOURCE)) {
-    // Skip sources that the context doesn't care about.
-    if (context.sources && !context.sources.includes(source)) {
-      continue;
-    }
+  for (let source of Object.values(lazy.UrlbarShared.RESULT_SOURCE)) {
     // Check prefs and restriction tokens.
     switch (source) {
-      case lazy.UrlbarUtils.RESULT_SOURCE.BOOKMARKS:
+      case lazy.UrlbarShared.RESULT_SOURCE.BOOKMARKS:
         if (
-          restrictTokenType === lazy.UrlbarTokenizer.TYPE.RESTRICT_BOOKMARK ||
-          restrictTokenType === lazy.UrlbarTokenizer.TYPE.RESTRICT_TAG ||
+          restrictTokenType ===
+            lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_BOOKMARK ||
+          restrictTokenType === lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_TAG ||
           (!restrictTokenType && lazy.UrlbarPrefs.get("suggest.bookmark"))
         ) {
           acceptedSources.push(source);
         }
         break;
-      case lazy.UrlbarUtils.RESULT_SOURCE.HISTORY:
+      case lazy.UrlbarShared.RESULT_SOURCE.HISTORY:
         if (
-          restrictTokenType === lazy.UrlbarTokenizer.TYPE.RESTRICT_HISTORY ||
+          restrictTokenType === lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_HISTORY ||
           (!restrictTokenType && lazy.UrlbarPrefs.get("suggest.history"))
         ) {
           acceptedSources.push(source);
         }
         break;
-      case lazy.UrlbarUtils.RESULT_SOURCE.SEARCH:
+      case lazy.UrlbarShared.RESULT_SOURCE.SEARCH:
         if (
-          restrictTokenType === lazy.UrlbarTokenizer.TYPE.RESTRICT_SEARCH ||
+          restrictTokenType === lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_SEARCH ||
           !restrictTokenType
         ) {
           // We didn't check browser.urlbar.suggest.searches here, because it
@@ -879,21 +1138,22 @@ function updateSourcesIfEmpty(context) {
           acceptedSources.push(source);
         }
         break;
-      case lazy.UrlbarUtils.RESULT_SOURCE.TABS:
+      case lazy.UrlbarShared.RESULT_SOURCE.TABS:
         if (
-          restrictTokenType === lazy.UrlbarTokenizer.TYPE.RESTRICT_OPENPAGE ||
+          restrictTokenType ===
+            lazy.UrlbarShared.TOKEN_TYPE.RESTRICT_OPENPAGE ||
           (!restrictTokenType && lazy.UrlbarPrefs.get("suggest.openpage"))
         ) {
           acceptedSources.push(source);
         }
         break;
-      case lazy.UrlbarUtils.RESULT_SOURCE.OTHER_NETWORK:
+      case lazy.UrlbarShared.RESULT_SOURCE.OTHER_NETWORK:
         if (!context.isPrivate && !restrictTokenType) {
           acceptedSources.push(source);
         }
         break;
-      case lazy.UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL:
-      case lazy.UrlbarUtils.RESULT_SOURCE.ADDON:
+      case lazy.UrlbarShared.RESULT_SOURCE.OTHER_LOCAL:
+      case lazy.UrlbarShared.RESULT_SOURCE.ADDON:
       default:
         if (!restrictTokenType) {
           acceptedSources.push(source);

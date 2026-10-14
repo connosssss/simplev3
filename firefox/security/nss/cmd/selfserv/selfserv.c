@@ -225,16 +225,49 @@ PrintParameterUsage()
         "-G enables the extended master secret extension [RFC7627]\n"
         "-Q enables ALPN for HTTP/1.1 [RFC7301]\n"
         "-I comma separated list of enabled groups for TLS key exchange.\n"
-        "   The following values are valid:\n"
-        "   P256, P384, P521, x25519, FF2048, FF3072, FF4096, FF6144, FF8192,\n"
-        "   xyber768d00, mlkem768x25519\n"
+        "   The following values are valid",
+        stderr);
+    char comma = ':';
+    const char *groupName;
+    int total = SECU_MAX_COL_LEN;
+    for (size_t i = 0; (groupName = SECU_NamedGroupGetNextName(i)) != NULL; i++) {
+        int len = strlen(groupName);
+        /* 2 represents a comma and a space */
+        if ((total + len + 2) > SECU_MAX_COL_LEN) {
+            fprintf(stderr, "%c\n     %s", comma, groupName);
+            /* 5 represents 5 spaces */
+            total = len + 5;
+        } else {
+            fprintf(stderr, "%c %s", comma, groupName);
+            /* 2 represents a comma and a space */
+            total += len + 2;
+        }
+        comma = ',';
+    }
+    fprintf(stderr, "\n");
+    fputs(
         "-J comma separated list of enabled signature schemes in preference order.\n"
-        "   The following values are valid:\n"
-        "     rsa_pkcs1_sha1, rsa_pkcs1_sha256, rsa_pkcs1_sha384, rsa_pkcs1_sha512,\n"
-        "     ecdsa_sha1, ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384,\n"
-        "     ecdsa_secp521r1_sha512,\n"
-        "     rsa_pss_rsae_sha256, rsa_pss_rsae_sha384, rsa_pss_rsae_sha512,\n"
-        "     rsa_pss_pss_sha256, rsa_pss_pss_sha384, rsa_pss_pss_sha512,\n"
+        "   The following values are valid",
+        stderr);
+    comma = ':';
+    const char *schemeName;
+    total = SECU_MAX_COL_LEN;
+    for (size_t i = 0; (schemeName = SECU_SignatureSchemeGetNextScheme(i)) != NULL; i++) {
+        int len = strlen(schemeName);
+        /* 2 represents a comma and a space */
+        if ((total + len + 2) > SECU_MAX_COL_LEN) {
+            fprintf(stderr, "%c\n     %s", comma, schemeName);
+            /* 5 represents 5 spaces */
+            total = len + 5;
+        } else {
+            fprintf(stderr, "%c %s", comma, schemeName);
+            /* 2 represents a comma and a space */
+            total += len + 2;
+        }
+        comma = ',';
+    }
+    fprintf(stderr, "\n");
+    fputs(
         "-Z enable 0-RTT (for TLS 1.3; also use -u)\n"
         "-E enable post-handshake authentication\n"
         "   (for TLS 1.3; only has an effect with 3 or more -r options)\n"
@@ -410,11 +443,15 @@ printSecurityInfo(PRFileDesc *fd)
                     channel.isFIPS ? " FIPS" : "");
             FPRINTF(stderr,
                     "selfserv: Server Auth: %d-bit %s, Key Exchange: %d-bit %s\n"
-                    "          Compression: %s, Extended Master Secret: %s\n",
+                    "          Key Exchange Group: %s\n"
+                    "          Compression: %s, Extended Master Secret: %s\n"
+                    "          Signature Scheme: %s\n",
                     channel.authKeyBits, suite.authAlgorithmName,
                     channel.keaKeyBits, suite.keaTypeName,
+                    SECU_NamedGroupToGroupName(channel.keaGroup),
                     channel.compressionMethodName,
-                    channel.extendedMasterSecretUsed ? "Yes" : "No");
+                    channel.extendedMasterSecretUsed ? "Yes" : "No",
+                    SECU_SignatureSchemeName(channel.signatureScheme));
         }
     }
     if (verbose) {
@@ -539,11 +576,11 @@ typedef struct jobStr {
     PRFileDesc *model_sock;
 } JOB;
 
-static PZLock *qLock;             /* this lock protects all data immediately below */
+static PRLock *qLock;             /* this lock protects all data immediately below */
 static PRLock *lastLoadedCrlLock; /* this lock protects lastLoadedCrl variable */
-static PZCondVar *jobQNotEmptyCv;
-static PZCondVar *freeListNotEmptyCv;
-static PZCondVar *threadCountChangeCv;
+static PRCondVar *jobQNotEmptyCv;
+static PRCondVar *freeListNotEmptyCv;
+static PRCondVar *threadCountChangeCv;
 static int threadCount;
 static PRCList jobQ;
 static PRCList freeJobs;
@@ -593,11 +630,11 @@ thread_wrapper(void *arg)
     slot->rv = (*slot->startFunc)(slot->a, slot->b);
 
     /* notify the thread exit handler. */
-    PZ_Lock(qLock);
+    PR_Lock(qLock);
     slot->state = rs_zombie;
     --threadCount;
-    PZ_NotifyAllCondVar(threadCountChangeCv);
-    PZ_Unlock(qLock);
+    PR_NotifyAllCondVar(threadCountChangeCv);
+    PR_Unlock(qLock);
 }
 
 int
@@ -606,25 +643,25 @@ jobLoop(PRFileDesc *a, PRFileDesc *b)
     PRCList *myLink = 0;
     JOB *myJob;
 
-    PZ_Lock(qLock);
+    PR_Lock(qLock);
     do {
         myLink = 0;
         while (PR_CLIST_IS_EMPTY(&jobQ) && !stopping) {
-            PZ_WaitCondVar(jobQNotEmptyCv, PR_INTERVAL_NO_TIMEOUT);
+            PR_WaitCondVar(jobQNotEmptyCv, PR_INTERVAL_NO_TIMEOUT);
         }
         if (!PR_CLIST_IS_EMPTY(&jobQ)) {
             myLink = PR_LIST_HEAD(&jobQ);
             PR_REMOVE_AND_INIT_LINK(myLink);
         }
-        PZ_Unlock(qLock);
+        PR_Unlock(qLock);
         myJob = (JOB *)myLink;
         /* myJob will be null when stopping is true and jobQ is empty */
         if (!myJob)
             break;
         handle_connection(myJob->tcp_sock, myJob->model_sock);
-        PZ_Lock(qLock);
+        PR_Lock(qLock);
         PR_APPEND_LINK(myLink, &freeJobs);
-        PZ_NotifyCondVar(freeListNotEmptyCv);
+        PR_NotifyCondVar(freeListNotEmptyCv);
     } while (PR_TRUE);
     return 0;
 }
@@ -640,10 +677,10 @@ launch_threads(
     SECStatus rv = SECSuccess;
 
     /* create the thread management serialization structs */
-    qLock = PZ_NewLock(nssILockSelfServ);
-    jobQNotEmptyCv = PZ_NewCondVar(qLock);
-    freeListNotEmptyCv = PZ_NewCondVar(qLock);
-    threadCountChangeCv = PZ_NewCondVar(qLock);
+    qLock = PR_NewLock();
+    jobQNotEmptyCv = PR_NewCondVar(qLock);
+    freeListNotEmptyCv = PR_NewCondVar(qLock);
+    threadCountChangeCv = PR_NewCondVar(qLock);
 
     /* create monitor for crl reload procedure */
     lastLoadedCrlLock = PR_NewLock();
@@ -662,7 +699,7 @@ launch_threads(
     if (rv != SECSuccess)
         return rv;
 
-    PZ_Lock(qLock);
+    PR_Lock(qLock);
     for (i = 0; i < maxThreads; ++i) {
         perThread *slot = threads + i;
 
@@ -686,19 +723,19 @@ launch_threads(
 
         ++threadCount;
     }
-    PZ_Unlock(qLock);
+    PR_Unlock(qLock);
 
     return rv;
 }
 
 #define DESTROY_CONDVAR(name)    \
     if (name) {                  \
-        PZ_DestroyCondVar(name); \
+        PR_DestroyCondVar(name); \
         name = NULL;             \
     }
 #define DESTROY_LOCK(name)    \
     if (name) {               \
-        PZ_DestroyLock(name); \
+        PR_DestroyLock(name); \
         name = NULL;          \
     }
 
@@ -708,9 +745,9 @@ terminateWorkerThreads(void)
     int i;
 
     VLOG(("selfserv: server_thread: waiting on stopping"));
-    PZ_Lock(qLock);
-    PZ_NotifyAllCondVar(jobQNotEmptyCv);
-    PZ_Unlock(qLock);
+    PR_Lock(qLock);
+    PR_NotifyAllCondVar(jobQNotEmptyCv);
+    PR_Unlock(qLock);
 
     /* Wait for worker threads to terminate. */
     for (i = 0; i < maxThreads; ++i) {
@@ -721,10 +758,10 @@ terminateWorkerThreads(void)
     }
 
     /* The worker threads empty the jobQ before they terminate. */
-    PZ_Lock(qLock);
+    PR_Lock(qLock);
     PORT_Assert(threadCount == 0);
     PORT_Assert(PR_CLIST_IS_EMPTY(&jobQ));
-    PZ_Unlock(qLock);
+    PR_Unlock(qLock);
 
     DESTROY_CONDVAR(jobQNotEmptyCv);
     DESTROY_CONDVAR(freeListNotEmptyCv);
@@ -865,13 +902,50 @@ savecipher(int c)
         cipherlist[nciphers++] = (PRUint16)c;
 }
 
+/* How long to let the peer finish sending before giving up on it. */
+#define CLOSE_DRAIN_SECONDS 1
+
+/* Close a connection the way the peer expects it to be closed.
+ *
+ * Closing a socket that still holds unread data in its receive queue makes
+ * Windows reset the connection rather than shut it down, and the peer then
+ * sees PR_CONNECT_RESET_ERROR where it expected end of file. The tail of what
+ * a client sends can still be arriving when we are finished with it -- a
+ * post-handshake authentication flight runs to several kilobytes with a large
+ * signature algorithm -- so send close_notify and our FIN first, then read to
+ * end of file before closing.
+ */
+static void
+closeConnection(PRFileDesc *fd)
+{
+    /* Deliberately not the caller's buffer: handle_connection still needs
+     * what is in its own after this returns. */
+    char drain[512];
+    PRIntervalTime timeout = PR_SecondsToInterval(CLOSE_DRAIN_SECONDS);
+    PRIntervalTime start = PR_IntervalNow();
+    PRIntervalTime elapsed;
+
+    /* This fails when the send side is already down, in which case there is
+     * nothing left of ours to flush and no reason to wait. */
+    if (PR_Shutdown(fd, PR_SHUTDOWN_SEND) == PR_SUCCESS) {
+        while ((elapsed = PR_IntervalNow() - start) < timeout) {
+            /* Whatever is left is of no interest; we only need the peer to
+             * have stopped sending before the socket goes away. */
+            if (PR_Recv(fd, drain, sizeof drain, 0, timeout - elapsed) <= 0) {
+                break;
+            }
+        }
+    }
+    PR_Close(fd);
+}
+
 #ifdef FULL_DUPLEX_CAPABLE
 
 struct lockedVarsStr {
-    PZLock *lock;
+    PRLock *lock;
     int count;
     int waiters;
-    PZCondVar *condVar;
+    PRCondVar *condVar;
 };
 
 typedef struct lockedVarsStr lockedVars;
@@ -881,28 +955,28 @@ lockedVars_Init(lockedVars *lv)
 {
     lv->count = 0;
     lv->waiters = 0;
-    lv->lock = PZ_NewLock(nssILockSelfServ);
-    lv->condVar = PZ_NewCondVar(lv->lock);
+    lv->lock = PR_NewLock();
+    lv->condVar = PR_NewCondVar(lv->lock);
 }
 
 void
 lockedVars_Destroy(lockedVars *lv)
 {
-    PZ_DestroyCondVar(lv->condVar);
+    PR_DestroyCondVar(lv->condVar);
     lv->condVar = NULL;
 
-    PZ_DestroyLock(lv->lock);
+    PR_DestroyLock(lv->lock);
     lv->lock = NULL;
 }
 
 void
 lockedVars_WaitForDone(lockedVars *lv)
 {
-    PZ_Lock(lv->lock);
+    PR_Lock(lv->lock);
     while (lv->count > 0) {
-        PZ_WaitCondVar(lv->condVar, PR_INTERVAL_NO_TIMEOUT);
+        PR_WaitCondVar(lv->condVar, PR_INTERVAL_NO_TIMEOUT);
     }
-    PZ_Unlock(lv->lock);
+    PR_Unlock(lv->lock);
 }
 
 int /* returns count */
@@ -910,12 +984,12 @@ lockedVars_AddToCount(lockedVars *lv, int addend)
 {
     int rv;
 
-    PZ_Lock(lv->lock);
+    PR_Lock(lv->lock);
     rv = lv->count += addend;
     if (rv <= 0) {
-        PZ_NotifyCondVar(lv->condVar);
+        PR_NotifyCondVar(lv->condVar);
     }
-    PZ_Unlock(lv->lock);
+    PR_Unlock(lv->lock);
     return rv;
 }
 
@@ -1012,9 +1086,9 @@ handle_fdx_connection(
 
 cleanup:
     if (ssl_sock) {
-        PR_Close(ssl_sock);
+        closeConnection(ssl_sock);
     } else if (tcp_sock) {
-        PR_Close(tcp_sock);
+        closeConnection(tcp_sock);
     }
 
     VLOG(("selfserv: handle_fdx_connection: exiting"));
@@ -1074,7 +1148,6 @@ stop_server()
 {
     stopping = 1;
     PR_Interrupt(acceptorThread);
-    PZ_TraceFlush();
 }
 
 SECItemArray *
@@ -1592,9 +1665,9 @@ handle_connection(PRFileDesc *tcp_sock, PRFileDesc *model_sock)
 
 cleanup:
     if (ssl_sock) {
-        PR_Close(ssl_sock);
+        closeConnection(ssl_sock);
     } else if (tcp_sock) {
-        PR_Close(tcp_sock);
+        closeConnection(tcp_sock);
     }
     if (local_file_fd)
         PR_Close(local_file_fd);
@@ -1673,12 +1746,12 @@ do_accepts(
             PR_ATOMIC_INCREMENT(&loggerOps);
         }
 
-        PZ_Lock(qLock);
+        PR_Lock(qLock);
         while (PR_CLIST_IS_EMPTY(&freeJobs) && !stopping) {
-            PZ_WaitCondVar(freeListNotEmptyCv, PR_INTERVAL_NO_TIMEOUT);
+            PR_WaitCondVar(freeListNotEmptyCv, PR_INTERVAL_NO_TIMEOUT);
         }
         if (stopping) {
-            PZ_Unlock(qLock);
+            PR_Unlock(qLock);
             if (tcp_sock) {
                 PR_Close(tcp_sock);
             }
@@ -1696,8 +1769,8 @@ do_accepts(
         }
 
         PR_APPEND_LINK(myLink, &jobQ);
-        PZ_NotifyCondVar(jobQNotEmptyCv);
-        PZ_Unlock(qLock);
+        PR_NotifyCondVar(jobQNotEmptyCv);
+        PR_Unlock(qLock);
     }
 
     FPRINTF(stderr, "selfserv: Closing listen socket.\n");
@@ -1726,6 +1799,18 @@ getBoundListenSocket(unsigned short port)
         addr.inet.family = PR_AF_INET;
         addr.inet.ip = PR_htonl(PR_INADDR_ANY);
         addr.inet.port = PR_htons(port);
+    } else if (addr.raw.family == PR_AF_INET6) {
+        // Check if this is a dual-stack host. If it is, listen on the IPv6
+        // wildcard, instead of loopback, so that we can receive connections
+        // from IPv4 clients.
+        PRFileDesc *ipv4_probe = PR_NewTCPSocket();
+        if (ipv4_probe) {
+            PR_Close(ipv4_probe);
+            prStatus = PR_SetNetAddr(PR_IpAddrAny, PR_AF_INET6, port, &addr);
+            if (prStatus != PR_SUCCESS) {
+                errExit("PR_SetNetAddr");
+            }
+        }
     }
 
     if (addr.inet.family == PR_AF_INET6) {
@@ -2080,9 +2165,9 @@ zlibCertificateDecode(const SECItem *input,
         return SECFailure;
     }
 
-    *usedLen = outputLen;
-
-    int ret = uncompress(output, (unsigned long *)usedLen, input->data, input->len);
+    unsigned long outputLenUL = outputLen;
+    int ret = uncompress(output, &outputLenUL, input->data, input->len);
+    *usedLen = outputLenUL;
     if (ret != Z_OK) {
         PR_SetError(SEC_ERROR_BAD_DATA, 0);
         return SECFailure;
@@ -2102,7 +2187,9 @@ zlibCertificateEncode(const SECItem *input, SECItem *output)
     unsigned long maxCompressedLen = compressBound(input->len);
     SECITEM_AllocItem(NULL, output, maxCompressedLen);
 
-    int ret = compress(output->data, (unsigned long *)&output->len, input->data, input->len);
+    unsigned long outputLenUL = output->len;
+    int ret = compress(output->data, &outputLenUL, input->data, input->len);
+    output->len = outputLenUL;
     if (ret != Z_OK) {
         PR_SetError(SEC_ERROR_LIBRARY_FAILURE, 0);
         return SECFailure;
@@ -2968,19 +3055,9 @@ main(int argc, char **argv)
         listen_sock = PR_GetInheritedFD(inheritableSockName);
         if (!listen_sock)
             errExit("PR_GetInheritedFD");
-#ifndef WINNT
-        /* we can't do this on NT because it breaks NSPR and
-    PR_Accept will fail on the socket in the child process if
-    the socket state is change to non inheritable
-    It is however a security issue to leave it accessible,
-    but it is OK for a test server such as selfserv.
-    NSPR should fix it eventually . see bugzilla 101617
-    and 102077
-    */
         prStatus = PR_SetFDInheritable(listen_sock, PR_FALSE);
         if (prStatus != PR_SUCCESS)
             errExit("PR_SetFDInheritable");
-#endif
         rv = SSL_InheritMPServerSIDCache(envString);
         if (rv != SECSuccess)
             errExit("SSL_InheritMPServerSIDCache");

@@ -11,14 +11,14 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.MainScope
+import java.util.concurrent.CancellationException
 import kotlinx.coroutines.launch
 import mozilla.components.feature.addons.Addon
 import mozilla.components.feature.addons.AddonManagerException
+import mozilla.components.feature.addons.R as addonsR
 import mozilla.components.feature.addons.ui.AddonInstallationDialogFragment
 import mozilla.components.feature.addons.ui.AddonsManagerAdapter
 import mozilla.components.feature.addons.ui.AddonsManagerAdapterDelegate
@@ -28,21 +28,15 @@ import org.mozilla.samples.browser.R
 import org.mozilla.samples.browser.databinding.FragmentAddOnsBinding
 import org.mozilla.samples.browser.databinding.OverlayAddOnProgressBinding
 import org.mozilla.samples.browser.ext.components
-import java.util.concurrent.CancellationException
-import androidx.browser.R as androidxBrowserR
-import mozilla.components.browser.menu.R as menuR
-import mozilla.components.feature.addons.R as addonsR
 
-/**
- * Fragment use for managing add-ons.
- */
+/** Fragment use for managing add-ons. */
 class AddonsFragment : Fragment(), AddonsManagerAdapterDelegate {
     private lateinit var recyclerView: RecyclerView
-    private val scope = CoroutineScope(Dispatchers.IO)
     private var adapter: AddonsManagerAdapter? = null
 
     private var _binding: FragmentAddOnsBinding? = null
-    private val binding get() = _binding!!
+    private val binding
+        get() = _binding!!
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -61,10 +55,6 @@ class AddonsFragment : Fragment(), AddonsManagerAdapterDelegate {
     override fun onStart() {
         super.onStart()
 
-        this@AddonsFragment.view?.let { view ->
-            bindRecyclerView(view)
-        }
-
         findPreviousPermissionDialogFragment()?.let { dialog ->
             dialog.onPositiveButtonClicked = onConfirmPermissionButtonClicked
         }
@@ -73,37 +63,30 @@ class AddonsFragment : Fragment(), AddonsManagerAdapterDelegate {
     private fun bindRecyclerView(rootView: View) {
         recyclerView = rootView.findViewById(R.id.add_ons_list)
         recyclerView.layoutManager = LinearLayoutManager(requireContext())
-        scope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val context = requireContext()
+                // Call getAddons directly. It will internally switch to ioDispatcher.
                 val addons = context.components.addonManager.getAddons()
 
-                val style = AddonsManagerAdapter.Style(
-                    dividerColor = androidxBrowserR.color.browser_actions_divider_color,
-                    dividerHeight = menuR.dimen.mozac_browser_menu_item_divider_height,
-                )
-
-                scope.launch(Dispatchers.Main) {
-                    if (adapter == null) {
-                        adapter = AddonsManagerAdapter(
+                if (adapter == null) {
+                    adapter =
+                        AddonsManagerAdapter(
                             addonsManagerDelegate = this@AddonsFragment,
                             addons = addons,
-                            style = style,
                             store = context.components.store,
                         )
-                        recyclerView.adapter = adapter
-                    } else {
-                        adapter?.updateAddons(addons)
-                    }
+                    recyclerView.adapter = adapter
+                } else {
+                    adapter?.updateAddons(addons)
                 }
             } catch (e: AddonManagerException) {
-                scope.launch(Dispatchers.Main) {
-                    Toast.makeText(
+                Toast.makeText(
                         activity,
-                        addonsR.string.mozac_feature_addons_failed_to_query_extensions,
+                        addonsR.string.mozac_feature_addons_failed_to_load_extensions,
                         Toast.LENGTH_SHORT,
-                    ).show()
-                }
+                    )
+                    .show()
             }
         }
     }
@@ -137,15 +120,12 @@ class AddonsFragment : Fragment(), AddonsManagerAdapterDelegate {
     }
 
     private fun findPreviousPermissionDialogFragment(): PermissionsDialogFragment? {
-        return parentFragmentManager.findFragmentByTag(
-            PERMISSIONS_DIALOG_FRAGMENT_TAG,
-        ) as? PermissionsDialogFragment
+        return parentFragmentManager.findFragmentByTag(PERMISSIONS_DIALOG_FRAGMENT_TAG) as? PermissionsDialogFragment
     }
 
     private fun findPreviousInstallationDialogFragment(): AddonInstallationDialogFragment? {
-        return parentFragmentManager.findFragmentByTag(
-            INSTALLATION_DIALOG_FRAGMENT_TAG,
-        ) as? AddonInstallationDialogFragment
+        return parentFragmentManager.findFragmentByTag(INSTALLATION_DIALOG_FRAGMENT_TAG)
+            as? AddonInstallationDialogFragment
     }
 
     private fun showPermissionDialog(addon: Addon) {
@@ -153,15 +133,17 @@ class AddonsFragment : Fragment(), AddonsManagerAdapterDelegate {
             return
         }
 
-        val dialog = PermissionsDialogFragment.newInstance(
-            addon = addon,
-            onPositiveButtonClicked = onConfirmPermissionButtonClicked,
-            permissions = addon.permissions,
-            origins = addon.optionalOrigins.map {
-                it.name
-            },
-            dataCollectionPermissions = emptyList(),
-        )
+        val dialog =
+            PermissionsDialogFragment.newInstance(
+                addon = addon,
+                onPositiveButtonClicked = onConfirmPermissionButtonClicked,
+                permissions = addon.permissions,
+                origins =
+                    addon.optionalOrigins.map {
+                        it.name
+                    },
+                dataCollectionPermissions = emptyList(),
+            )
 
         if (!isAlreadyADialogCreated() && isAdded) {
             dialog.show(parentFragmentManager, PERMISSIONS_DIALOG_FRAGMENT_TAG)
@@ -172,9 +154,7 @@ class AddonsFragment : Fragment(), AddonsManagerAdapterDelegate {
         if (isInstallationInProgress) {
             return
         }
-        val dialog = AddonInstallationDialogFragment.newInstance(
-            addon = addon,
-        )
+        val dialog = AddonInstallationDialogFragment.newInstance(addon = addon)
 
         if (!isAlreadyADialogCreated() && isAdded) {
             dialog.show(parentFragmentManager, INSTALLATION_DIALOG_FRAGMENT_TAG)
@@ -187,36 +167,41 @@ class AddonsFragment : Fragment(), AddonsManagerAdapterDelegate {
         includedBinding.root.visibility = View.VISIBLE
         isInstallationInProgress = true
 
-        val installOperation = requireContext().components.addonManager.installAddon(
-            url = addon.downloadUrl,
-            onSuccess = { installedAddon ->
-                context?.let {
-                    adapter?.updateAddon(installedAddon)
-                    includedBinding.root.visibility = View.GONE
-                    isInstallationInProgress = false
-                    showInstallationDialog(installedAddon)
-                }
-            },
-            onError = { e ->
-                // No need to display an error message if installation was cancelled by the user.
-                if (e !is CancellationException) {
-                    Toast.makeText(
-                        requireContext(),
-                        getString(
-                            addonsR.string.mozac_feature_addons_failed_to_install,
-                            addon.translateName(requireContext()),
-                        ),
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                }
+        val installOperation =
+            requireContext()
+                .components
+                .addonManager
+                .installAddon(
+                    url = addon.downloadUrl,
+                    onSuccess = { installedAddon ->
+                        context?.let {
+                            adapter?.updateAddon(installedAddon)
+                            includedBinding.root.visibility = View.GONE
+                            isInstallationInProgress = false
+                            showInstallationDialog(installedAddon)
+                        }
+                    },
+                    onError = { e ->
+                        // No need to display an error message if installation was cancelled by the user.
+                        if (e !is CancellationException) {
+                            Toast.makeText(
+                                    requireContext(),
+                                    getString(
+                                        addonsR.string.mozac_feature_addons_failed_to_install,
+                                        addon.translateName(requireContext()),
+                                    ),
+                                    Toast.LENGTH_SHORT,
+                                )
+                                .show()
+                        }
 
-                includedBinding.root.visibility = View.GONE
-                isInstallationInProgress = false
-            },
-        )
+                        includedBinding.root.visibility = View.GONE
+                        isInstallationInProgress = false
+                    },
+                )
 
         includedBinding.cancelButton.setOnClickListener {
-            MainScope().launch {
+            viewLifecycleOwner.lifecycleScope.launch {
                 // Hide the installation progress overlay once cancellation is successful.
                 if (installOperation.cancel().await()) {
                     includedBinding.root.visibility = View.GONE
@@ -230,9 +215,7 @@ class AddonsFragment : Fragment(), AddonsManagerAdapterDelegate {
         _binding = null
     }
 
-    /**
-     * Whether or not an add-on installation is in progress.
-     */
+    /** Whether or not an add-on installation is in progress. */
     private var isInstallationInProgress = false
 
     companion object {

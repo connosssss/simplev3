@@ -8,22 +8,33 @@ const { AppConstants } = ChromeUtils.importESModule(
   "resource://gre/modules/AppConstants.sys.mjs"
 );
 
-var { UrlbarMuxer, UrlbarProvider, UrlbarQueryContext, UrlbarUtils } =
-  ChromeUtils.importESModule("resource:///modules/UrlbarUtils.sys.mjs");
+var { UrlbarMuxer, UrlbarProvider, UrlbarUtils } = ChromeUtils.importESModule(
+  "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs"
+);
+var { UrlbarQueryContext } = ChromeUtils.importESModule(
+  "chrome://browser/content/urlbar/UrlbarQueryContext.mjs"
+);
 
 ChromeUtils.defineESModuleGetters(this, {
   HttpServer: "resource://testing-common/httpd.sys.mjs",
   PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
   SearchTestUtils: "resource://testing-common/SearchTestUtils.sys.mjs",
   TestUtils: "resource://testing-common/TestUtils.sys.mjs",
-  UrlbarController: "resource:///modules/UrlbarController.sys.mjs",
-  UrlbarInput: "resource:///modules/UrlbarInput.sys.mjs",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
-  UrlbarProviderOpenTabs: "resource:///modules/UrlbarProviderOpenTabs.sys.mjs",
-  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.sys.mjs",
-  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
-  UrlbarTokenizer: "resource:///modules/UrlbarTokenizer.sys.mjs",
+  UrlbarParentController:
+    "moz-src:///browser/components/urlbar/UrlbarParentController.sys.mjs",
+  UrlbarPrefs: "moz-src:///browser/components/urlbar/UrlbarPrefs.sys.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
+  UrlbarProviderOpenTabs:
+    "moz-src:///browser/components/urlbar/UrlbarProviderOpenTabs.sys.mjs",
+  UrlbarProviderSearchSuggestions:
+    "moz-src:///browser/components/urlbar/UrlbarProviderSearchSuggestions.sys.mjs",
+  ProvidersManager:
+    "moz-src:///browser/components/urlbar/UrlbarProvidersManager.sys.mjs",
+  UrlbarResult: "chrome://browser/content/urlbar/UrlbarResult.mjs",
+  UrlbarTokenizer:
+    "moz-src:///browser/components/urlbar/UrlbarTokenizer.sys.mjs",
   sinon: "resource://testing-common/Sinon.sys.mjs",
 });
 
@@ -46,6 +57,14 @@ ChromeUtils.defineLazyGetter(this, "MerinoTestUtils", () => {
 ChromeUtils.defineLazyGetter(this, "UrlbarTestUtils", () => {
   const { UrlbarTestUtils: module } = ChromeUtils.importESModule(
     "resource://testing-common/UrlbarTestUtils.sys.mjs"
+  );
+  module.init(this);
+  return module;
+});
+
+ChromeUtils.defineLazyGetter(this, "GeolocationTestUtils", () => {
+  const { GeolocationTestUtils: module } = ChromeUtils.importESModule(
+    "resource://testing-common/GeolocationTestUtils.sys.mjs"
   );
   module.init(this);
   return module;
@@ -115,19 +134,21 @@ function createContext(searchString = "foo", properties = {}) {
         allowAutofill: UrlbarPrefs.get("autoFill"),
         isPrivate: true,
         maxResults: UrlbarPrefs.get("maxRichResults"),
+        sapName: "urlbar",
         searchString,
       },
       properties
     )
   );
-  UrlbarTokenizer.tokenize(context);
+  let tokens = UrlbarTokenizer.tokenize(context);
+  context.tokens = tokens;
   return context;
 }
 
 /**
  * Waits for the given notification from the supplied controller.
  *
- * @param {UrlbarController} controller The controller to wait for a response from.
+ * @param {UrlbarParentController} controller The controller to wait for a response from.
  * @param {string} notification The name of the notification to wait for.
  * @param {boolean} expected Wether the notification is expected.
  * @returns {Promise} A promise that is resolved with the arguments supplied to
@@ -172,7 +193,7 @@ function convertToUtf8(str) {
  * @param {Array} results The results for the provider to return.
  * @param {Function} [onCancel] Optional, called when the query provider
  *                              receives a cancel instruction.
- * @param {UrlbarUtils.PROVIDER_TYPE} type The provider type.
+ * @param {UrlbarShared.PROVIDER_TYPE} type The provider type.
  * @param {string} [name] Optional, use as the provider name.
  *                        If none, a default name is chosen.
  * @returns {UrlbarProvider} The provider
@@ -184,10 +205,9 @@ function registerBasicTestProvider(results = [], onCancel, type, name) {
     type,
     name,
   });
-  UrlbarProvidersManager.registerProvider(provider);
-  registerCleanupFunction(() =>
-    UrlbarProvidersManager.unregisterProvider(provider)
-  );
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  providersManager.registerProvider(provider);
+  registerCleanupFunction(() => providersManager.unregisterProvider(provider));
   return provider;
 }
 
@@ -210,7 +230,7 @@ function makeTestServer(port = -1) {
  *   Options for the check.
  * @param {string} [options.name]
  *   The name of the engine to install.
- * @returns {nsISearchEngine} The new engine.
+ * @returns {SearchEngine} The new engine.
  */
 async function addTestSuggestionsEngine(
   suggestionsFn = null,
@@ -234,7 +254,7 @@ async function addTestSuggestionsEngine(
     suggest_url: `http://localhost:${server.identity.primaryPort}/suggest`,
     suggest_url_get_params: "?q={searchTerms}",
   });
-  let engine = Services.search.getEngineByName(name);
+  let engine = SearchService.getEngineByName(name);
   return engine;
 }
 
@@ -247,7 +267,7 @@ async function addTestSuggestionsEngine(
  *        responses. See bug 1626897.
  *        NOTE: Consumers specifying suggestionsFn must include searchStr as a
  *              part of the array returned by suggestionsFn.
- * @returns {nsISearchEngine} The new engine.
+ * @returns {SearchEngine} The new engine.
  */
 async function addTestTailSuggestionsEngine(suggestionsFn = null) {
   // This port number should match the number in engine-tail-suggestions.xml.
@@ -289,7 +309,7 @@ async function addTestTailSuggestionsEngine(suggestionsFn = null) {
     suggest_url: `http://localhost:${server.identity.primaryPort}/suggest`,
     suggest_url_get_params: "?q={searchTerms}",
   });
-  let engine = Services.search.getEngineByName("Tail Suggestions");
+  let engine = SearchService.getEngineByName("Tail Suggestions");
   return engine;
 }
 
@@ -371,26 +391,23 @@ function testEngine_setup() {
   add_setup(async () => {
     await cleanupPlaces();
     let engine = await addTestSuggestionsEngine();
-    let oldDefaultEngine = await Services.search.getDefault();
+    let oldDefaultEngine = await SearchService.getDefault();
 
     registerCleanupFunction(async () => {
       Services.prefs.clearUserPref("browser.urlbar.suggest.searches");
       Services.prefs.clearUserPref("browser.urlbar.contextualSearch.enabled");
       Services.prefs.clearUserPref(
-        "browser.search.separatePrivateDefault.ui.enabled"
+        "browser.search.separatePrivateDefault.featureGate"
       );
-      Services.search.setDefault(
+      SearchService.setDefault(
         oldDefaultEngine,
-        Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+        SearchService.CHANGE_REASON.UNKNOWN
       );
     });
 
-    Services.search.setDefault(
-      engine,
-      Ci.nsISearchService.CHANGE_REASON_UNKNOWN
-    );
+    SearchService.setDefault(engine, SearchService.CHANGE_REASON.UNKNOWN);
     Services.prefs.setBoolPref(
-      "browser.search.separatePrivateDefault.ui.enabled",
+      "browser.search.separatePrivateDefault.featureGate",
       false
     );
     Services.prefs.setBoolPref("browser.urlbar.suggest.searches", false);
@@ -415,7 +432,7 @@ async function cleanupPlaces() {
  *   The context that this result will be displayed in.
  * @param {object} options
  *   Options for the result.
- * @param {string} options.title
+ * @param {string} [options.title]
  *   The page title.
  * @param {string} options.uri
  *   The page URI.
@@ -426,7 +443,27 @@ async function cleanupPlaces() {
  * @param {boolean} [options.heuristic]
  *   True if this is a heuristic result. Defaults to false.
  * @param {number} [options.source]
- *   Where the results should be sourced from. See {@link UrlbarUtils.RESULT_SOURCE}.
+ *   Where the results should be sourced from. See {@link UrlbarShared.RESULT_SOURCE}.
+ * @param {number} [options.bookmarkDateMs]
+ *   The date the bookmark was added in ms since epoch.
+ *   For `check_results()`, leave this undefined to ignore the actual value.
+ *   Pass zero to assert that the actual value is falsey.
+ * @param {number} [options.lastVisit]
+ *   The date the bookmark was last visited in ms since epoch.
+ *   For `check_results()`, leave this undefined to ignore the actual value.
+ *   Pass zero to assert that the actual value is falsey.
+ * @param {boolean} [options.isPinned]
+ *   Whether the result is pinned. Relevant to results from
+ *   UrlbarProviderTopSites.
+ * @param {boolean} [options.isSponsored]
+ *   Whether the result is sponsored. Relevant to results from
+ *   UrlbarProviderTopSites.
+ * @param {boolean} [options.isBlockable]
+ *   Whether the result can be dismissed. Pass a value to override the default,
+ *   which is based on the result's source.
+ * @param {string} [options.providerName]
+ *   The name of the provider offering this result. The test suite will not
+ *   check which provider offered a result unless this option is specified.
  * @returns {UrlbarResult}
  */
 function makeBookmarkResult(
@@ -437,34 +474,57 @@ function makeBookmarkResult(
     iconUri,
     tags = [],
     heuristic = false,
-    source = UrlbarUtils.RESULT_SOURCE.BOOKMARKS,
+    source = UrlbarShared.RESULT_SOURCE.BOOKMARKS,
+    bookmarkDateMs = undefined,
+    lastVisit = undefined,
+    isPinned = undefined,
+    isSponsored = undefined,
+    isBlockable = undefined,
+    providerName = undefined,
   }
 ) {
-  let result = new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.URL,
-    source,
-    ...UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, {
-      url: [uri, UrlbarUtils.HIGHLIGHT.TYPED],
-      // Check against undefined so consumers can pass in the empty string.
-      icon: [typeof iconUri != "undefined" ? iconUri : `page-icon:${uri}`],
-      title: [title, UrlbarUtils.HIGHLIGHT.TYPED],
-      tags: [tags, UrlbarUtils.HIGHLIGHT.TYPED],
-      isBlockable:
-        source == UrlbarUtils.RESULT_SOURCE.HISTORY ? true : undefined,
-      blockL10n:
-        source == UrlbarUtils.RESULT_SOURCE.HISTORY
-          ? { id: "urlbar-result-menu-remove-from-history" }
-          : undefined,
-      helpUrl:
-        source == UrlbarUtils.RESULT_SOURCE.HISTORY
-          ? Services.urlFormatter.formatURLPref("app.support.baseURL") +
-            "awesome-bar-result-menu"
-          : undefined,
-    })
-  );
+  let payload = {
+    url: uri,
+    title,
+    tags,
+    // Check against undefined so consumers can pass in the empty string.
+    icon: typeof iconUri != "undefined" ? iconUri : `page-icon:${uri}`,
+    isBlockable:
+      source == UrlbarShared.RESULT_SOURCE.HISTORY ? true : undefined,
+    blockL10n:
+      source == UrlbarShared.RESULT_SOURCE.HISTORY
+        ? { id: "urlbar-result-menu-remove-from-history2" }
+        : undefined,
+    helpUrl:
+      source == UrlbarShared.RESULT_SOURCE.HISTORY
+        ? Services.urlFormatter.formatURLPref("app.support.baseURL") +
+          "awesome-bar-result-menu"
+        : undefined,
+  };
 
-  result.heuristic = heuristic;
-  return result;
+  if (bookmarkDateMs !== undefined) {
+    payload.bookmarkDateMs = bookmarkDateMs;
+  }
+  if (lastVisit !== undefined) {
+    payload.lastVisit = lastVisit;
+  }
+  if (isPinned !== undefined) {
+    payload.isPinned = isPinned;
+  }
+  if (isSponsored !== undefined) {
+    payload.isSponsored = isSponsored;
+  }
+  if (isBlockable !== undefined) {
+    payload.isBlockable = isBlockable;
+  }
+
+  return new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.URL,
+    source,
+    heuristic,
+    payload,
+    providerName,
+  });
 }
 
 /**
@@ -481,20 +541,21 @@ function makeBookmarkResult(
  * @returns {UrlbarResult}
  */
 function makeFormHistoryResult(queryContext, { suggestion, engineName }) {
-  return new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.SEARCH,
-    UrlbarUtils.RESULT_SOURCE.HISTORY,
-    ...UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, {
+  return new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.SEARCH,
+    source: UrlbarShared.RESULT_SOURCE.HISTORY,
+    payload: {
       engine: engineName,
-      suggestion: [suggestion, UrlbarUtils.HIGHLIGHT.SUGGESTED],
+      suggestion,
+      title: suggestion,
       lowerCaseSuggestion: suggestion.toLocaleLowerCase(),
       isBlockable: true,
-      blockL10n: { id: "urlbar-result-menu-remove-from-history" },
+      blockL10n: { id: "urlbar-result-menu-remove-from-history2" },
       helpUrl:
         Services.urlFormatter.formatURLPref("app.support.baseURL") +
         "awesome-bar-result-menu",
-    })
-  );
+    },
+  });
 }
 
 /**
@@ -520,20 +581,17 @@ function makeOmniboxResult(
   queryContext,
   { content, description, keyword, heuristic = false }
 ) {
-  let payload = {
-    title: [description, UrlbarUtils.HIGHLIGHT.TYPED],
-    content: [content, UrlbarUtils.HIGHLIGHT.TYPED],
-    keyword: [keyword, UrlbarUtils.HIGHLIGHT.TYPED],
-    icon: [UrlbarUtils.ICON.EXTENSION],
-  };
-  let result = new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.OMNIBOX,
-    UrlbarUtils.RESULT_SOURCE.ADDON,
-    ...UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, payload)
-  );
-  result.heuristic = heuristic;
-
-  return result;
+  return new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.OMNIBOX,
+    source: UrlbarShared.RESULT_SOURCE.ADDON,
+    heuristic,
+    payload: {
+      title: description,
+      content,
+      keyword,
+      icon: UrlbarShared.ICON.EXTENSION,
+    },
+  });
 }
 
 /**
@@ -553,24 +611,49 @@ function makeOmniboxResult(
  *   An id of the userContext in which the tab is located.
  * @param {string} [options.tabGroup]
  *   An id of the tab group in which the tab is located.
+ * @param {number} [options.bookmarkDateMs]
+ *   If the URL is bookmarked, the date the bookmark was added in ms since epoch.
+ *   For `check_results()`, leave this undefined to ignore the actual value.
+ *   Pass zero to assert that the actual value is falsey.
+ * @param {number} [options.lastVisit]
+ *   The date the URL was last visited in ms since epoch.
+ *   For `check_results()`, leave this undefined to ignore the actual value.
+ *   Pass zero to assert that the actual value is falsey.
  * @returns {UrlbarResult}
  */
 function makeTabSwitchResult(
   queryContext,
-  { uri, title, iconUri, userContextId, tabGroup }
+  {
+    uri,
+    title,
+    iconUri,
+    userContextId,
+    tabGroup,
+    bookmarkDateMs = undefined,
+    lastVisit = undefined,
+  }
 ) {
-  return new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
-    UrlbarUtils.RESULT_SOURCE.TABS,
-    ...UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, {
-      url: [uri, UrlbarUtils.HIGHLIGHT.TYPED],
-      title: [title, UrlbarUtils.HIGHLIGHT.TYPED],
-      // Check against undefined so consumers can pass in the empty string.
-      icon: typeof iconUri != "undefined" ? iconUri : `page-icon:${uri}`,
-      userContextId: [userContextId || 0],
-      tabGroup: [tabGroup || null],
-    })
-  );
+  let payload = {
+    url: uri,
+    title,
+    // Check against undefined so consumers can pass in the empty string.
+    icon: typeof iconUri != "undefined" ? iconUri : `page-icon:${uri}`,
+    userContext: UrlbarUtils.getUserContextData(userContextId || 0),
+    tabGroup,
+  };
+
+  if (bookmarkDateMs !== undefined) {
+    payload.bookmarkDateMs = bookmarkDateMs;
+  }
+  if (lastVisit !== undefined) {
+    payload.lastVisit = lastVisit;
+  }
+
+  return new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.TAB_SWITCH,
+    source: UrlbarShared.RESULT_SOURCE.TABS,
+    payload,
+  });
 }
 
 /**
@@ -598,23 +681,19 @@ function makeKeywordSearchResult(
   queryContext,
   { uri, keyword, title, iconUri, postData, heuristic = false }
 ) {
-  let result = new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.KEYWORD,
-    UrlbarUtils.RESULT_SOURCE.BOOKMARKS,
-    ...UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, {
-      title: [title ? title : uri, UrlbarUtils.HIGHLIGHT.TYPED],
-      url: [uri, UrlbarUtils.HIGHLIGHT.TYPED],
-      keyword: [keyword, UrlbarUtils.HIGHLIGHT.TYPED],
-      input: [queryContext.searchString, UrlbarUtils.HIGHLIGHT.TYPED],
+  return new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.KEYWORD,
+    source: UrlbarShared.RESULT_SOURCE.BOOKMARKS,
+    heuristic,
+    payload: {
+      title: title || uri,
+      url: uri,
+      keyword,
+      input: queryContext.searchString,
       postData: postData || null,
       icon: typeof iconUri != "undefined" ? iconUri : `page-icon:${uri}`,
-    })
-  );
-
-  if (heuristic) {
-    result.heuristic = heuristic;
-  }
-  return result;
+    },
+  });
 }
 
 /**
@@ -642,8 +721,8 @@ function makeRemoteTabResult(
   { uri, device, title, iconUri, lastUsed = 0 }
 ) {
   let payload = {
-    url: [uri, UrlbarUtils.HIGHLIGHT.TYPED],
-    device: [device, UrlbarUtils.HIGHLIGHT.TYPED],
+    url: uri,
+    device,
     // Check against undefined so consumers can pass in the empty string.
     icon: typeof iconUri != "undefined" ? iconUri : `page-icon:${uri}`,
     lastUsed: lastUsed * 1000,
@@ -651,18 +730,16 @@ function makeRemoteTabResult(
 
   // Check against undefined so consumers can pass in the empty string.
   if (typeof title != "undefined") {
-    payload.title = [title, UrlbarUtils.HIGHLIGHT.TYPED];
+    payload.title = title;
   } else {
-    payload.title = [uri, UrlbarUtils.HIGHLIGHT.TYPED];
+    payload.title = uri;
   }
 
-  let result = new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.REMOTE_TAB,
-    UrlbarUtils.RESULT_SOURCE.TABS,
-    ...UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, payload)
-  );
-
-  return result;
+  return new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.REMOTE_TAB,
+    source: UrlbarShared.RESULT_SOURCE.TABS,
+    payload,
+  });
 }
 
 /**
@@ -710,9 +787,9 @@ function makeRemoteTabResult(
  *   For tab-to-search results, the search engine domain without the public
  *   suffix.
  * @param {number} [options.type]
- *   The type of the search result. Defaults to UrlbarUtils.RESULT_TYPE.SEARCH.
+ *   The type of the search result. Defaults to UrlbarShared.RESULT_TYPE.SEARCH.
  * @param {number} [options.source]
- *   The source of the search result. Defaults to UrlbarUtils.RESULT_SOURCE.SEARCH.
+ *   The source of the search result. Defaults to UrlbarShared.RESULT_SOURCE.SEARCH.
  * @param {boolean} [options.satisfiesAutofillThreshold]
  *   If this search should appear in the autofill section of the box
  * @param {boolean} [options.trending]
@@ -741,8 +818,8 @@ function makeSearchResult(
     heuristic = false,
     trending = false,
     isRichSuggestion = false,
-    type = UrlbarUtils.RESULT_TYPE.SEARCH,
-    source = UrlbarUtils.RESULT_SOURCE.SEARCH,
+    type = UrlbarShared.RESULT_TYPE.SEARCH,
+    source = UrlbarShared.RESULT_SOURCE.SEARCH,
     satisfiesAutofillThreshold = false,
   }
 ) {
@@ -757,34 +834,36 @@ function makeSearchResult(
   }
 
   let payload = {
-    engine: [engineName, UrlbarUtils.HIGHLIGHT.TYPED],
-    suggestion: [suggestion, UrlbarUtils.HIGHLIGHT.SUGGESTED],
+    engine: engineName,
+    suggestion,
     tailPrefix,
-    tail: [tail, UrlbarUtils.HIGHLIGHT.SUGGESTED],
+    tail,
     tailOffsetIndex,
-    keyword: [
-      alias,
-      providesSearchMode
-        ? UrlbarUtils.HIGHLIGHT.TYPED
-        : UrlbarUtils.HIGHLIGHT.NONE,
-    ],
+    keyword: alias,
     // Check against undefined so consumers can pass in the empty string.
-    query: [
+    query:
       typeof query != "undefined" ? query : queryContext.trimmedSearchString,
-      UrlbarUtils.HIGHLIGHT.TYPED,
-    ],
     icon: engineIconUri,
     providesSearchMode,
     inPrivateWindow,
     isPrivateEngine,
   };
 
-  // Passing even an undefined URL in the payload creates a potentially-unwanted
-  // displayUrl parameter, so we add it only if specified.
+  if (providesSearchMode) {
+    // No title.
+  } else if (payload.tail && payload.tailOffsetIndex >= 0) {
+    payload.title = payload.tail;
+  } else if (payload.suggestion != undefined) {
+    payload.title = payload.suggestion;
+  } else if (payload.query != undefined) {
+    payload.title = payload.query;
+  }
+
   if (uri) {
     payload.url = uri;
   }
-  if (providerName == "TabToSearch") {
+
+  if (providerName == "UrlbarProviderTabToSearch") {
     if (searchUrlDomainWithoutSuffix.startsWith("www.")) {
       searchUrlDomainWithoutSuffix = searchUrlDomainWithoutSuffix.substring(4);
     }
@@ -793,35 +872,31 @@ function makeSearchResult(
     payload.isGeneralPurposeEngine = false;
   }
 
-  if (providerName == "TokenAliasEngines") {
+  if (providerName == "UrlbarProviderTokenAliasEngines") {
     payload.keywords = alias?.toLowerCase();
   }
 
-  let result = new UrlbarResult(
-    type,
-    source,
-    ...UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, payload)
-  );
-
   if (typeof suggestion == "string") {
-    result.payload.lowerCaseSuggestion =
-      result.payload.suggestion.toLocaleLowerCase();
-    result.payload.trending = trending;
-    result.isRichSuggestion = isRichSuggestion;
+    payload.lowerCaseSuggestion = suggestion.toLocaleLowerCase();
+    payload.trending = trending;
   }
 
   if (isRichSuggestion) {
-    result.payload.icon =
-      "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
-    result.payload.description = "description";
+    payload.icon = UrlbarUtils.getRemoteImageUrl({
+      url: "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==",
+      size: UrlbarProviderSearchSuggestions.RICH_ICON_SIZE,
+    });
+    payload.description = "description";
   }
 
-  if (providerName) {
-    result.providerName = providerName;
-  }
-
-  result.heuristic = heuristic;
-  return result;
+  return new UrlbarResult({
+    type,
+    source,
+    heuristic,
+    isRichSuggestion,
+    providerName,
+    payload,
+  });
 }
 
 /**
@@ -832,9 +907,6 @@ function makeSearchResult(
  * @param {object} options Options for the result.
  * @param {string} options.title
  *   The page title.
- * @param {string} [options.fallbackTitle]
- *   The provider has capability to use the actual page title though,
- *   when the provider can’t get the page title, use this value as the fallback.
  * @param {string} options.uri
  *   The page URI.
  * @param {Array} [options.tags]
@@ -848,71 +920,106 @@ function makeSearchResult(
  *   check which provider offered a result unless this option is specified.
  * @param {number} [options.source]
  *   The source of the result
+ * @param {boolean} [options.isAutofillFallback]
+ *   Whether it's a result of being a fallback for the autofill result.
+ * @param {number} [options.bookmarkDateMs]
+ *   If the URL is bookmarked, the date the bookmark was added in ms since epoch.
+ *   For `check_results()`, leave this undefined to ignore the actual value.
+ *   Pass zero to assert that the actual value is falsey.
+ * @param {number} [options.lastVisit]
+ *   The date the URL was last visited in ms since epoch.
+ *   For `check_results()`, leave this undefined to ignore the actual value.
+ *   Pass zero to assert that the actual value is falsey.
+ * @param {boolean} [options.isPinned]
+ *   Whether the result is pinned. Relevant to results from
+ *   UrlbarProviderTopSites.
+ * @param {boolean} [options.isSponsored]
+ *   Whether the result is sponsored. Relevant to results from
+ *   UrlbarProviderTopSites.
+ * @param {boolean} [options.isBlockable]
+ *   Whether the result can be dismissed. Pass a value to override the default,
+ *   which is based on the result's source and provider.
  * @returns {UrlbarResult}
  */
 function makeVisitResult(
   queryContext,
   {
     title,
-    fallbackTitle,
     uri,
     iconUri,
     providerName,
     tags = [],
     heuristic = false,
-    source = UrlbarUtils.RESULT_SOURCE.HISTORY,
+    source = UrlbarShared.RESULT_SOURCE.HISTORY,
+    isAutofillFallback = false,
+    bookmarkDateMs = undefined,
+    lastVisit = undefined,
+    isPinned = undefined,
+    isSponsored = undefined,
+    isBlockable = undefined,
   }
 ) {
   let payload = {
-    url: [uri, UrlbarUtils.HIGHLIGHT.TYPED],
+    url: uri,
   };
 
-  if (title) {
-    payload.title = [title, UrlbarUtils.HIGHLIGHT.TYPED];
+  if (title != undefined) {
+    payload.title = title;
   }
-
-  if (fallbackTitle) {
-    payload.fallbackTitle = [fallbackTitle, UrlbarUtils.HIGHLIGHT.TYPED];
+  if (bookmarkDateMs !== undefined) {
+    payload.bookmarkDateMs = bookmarkDateMs;
+  }
+  if (lastVisit !== undefined) {
+    payload.lastVisit = lastVisit;
+  }
+  if (isPinned !== undefined) {
+    payload.isPinned = isPinned;
+  }
+  if (isSponsored !== undefined) {
+    payload.isSponsored = isSponsored;
   }
 
   if (
     !heuristic &&
-    providerName != "AboutPages" &&
-    providerName != "PreloadedSites" &&
-    source == UrlbarUtils.RESULT_SOURCE.HISTORY
+    providerName != "UrlbarProviderAboutPages" &&
+    providerName != "UrlbarProviderTopSites" &&
+    source == UrlbarShared.RESULT_SOURCE.HISTORY
   ) {
     payload.isBlockable = true;
-    payload.blockL10n = { id: "urlbar-result-menu-remove-from-history" };
+    payload.blockL10n = { id: "urlbar-result-menu-remove-from-history2" };
     payload.helpUrl =
       Services.urlFormatter.formatURLPref("app.support.baseURL") +
       "awesome-bar-result-menu";
+  }
+
+  if (isBlockable !== undefined) {
+    payload.isBlockable = isBlockable;
   }
 
   if (iconUri) {
     payload.icon = iconUri;
   } else if (
     iconUri === undefined &&
-    source != UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL
+    source != UrlbarShared.RESULT_SOURCE.OTHER_LOCAL
   ) {
     payload.icon = `page-icon:${uri}`;
   }
 
   if (!heuristic && tags) {
-    payload.tags = [tags, UrlbarUtils.HIGHLIGHT.TYPED];
+    payload.tags = tags;
   }
 
-  let result = new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.URL,
+  if (isAutofillFallback) {
+    payload.isAutofillFallback = true;
+  }
+
+  return new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.URL,
     source,
-    ...UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, payload)
-  );
-
-  if (providerName) {
-    result.providerName = providerName;
-  }
-
-  result.heuristic = heuristic;
-  return result;
+    heuristic,
+    providerName,
+    payload,
+  });
 }
 
 /**
@@ -927,20 +1034,57 @@ function makeVisitResult(
  * @returns {UrlbarResult}
  */
 function makeCalculatorResult(queryContext, { value }) {
-  const result = new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.DYNAMIC,
-    UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-    {
+  return new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.DYNAMIC,
+    source: UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+    payload: {
       value,
       input: queryContext.searchString,
       dynamicType: "calculator",
-    }
-  );
-  return result;
+    },
+  });
 }
 
 /**
- * Checks that the results returned by a UrlbarController match those in
+ * Creates a UrlbarResult for a global action result.
+ *
+ * @param {object} options
+ * @param {Array} [options.actionsResults]
+ *   An array of action descriptors.
+ * @param {string} [options.query]
+ *  The query passed to actions when they run.
+ *  It is "" for contextual search, otherwise it is queryContext.searchString.
+ * @param {number} [options.inputLength]
+ *  Original input length.
+ * @param {boolean} [options.showOnboardingLabel]
+ *   Whether the “press Tab” hint should appear.
+ * @returns {UrlbarResult}
+ */
+function makeGlobalActionsResult({
+  actionsResults,
+  query,
+  inputLength,
+  showOnboardingLabel = false,
+}) {
+  const payload = {
+    actionsResults,
+    dynamicType: "actions",
+    query,
+    input: query,
+    inputLength,
+    showOnboardingLabel,
+  };
+
+  return new UrlbarResult({
+    type: UrlbarShared.RESULT_TYPE.DYNAMIC,
+    source: UrlbarShared.RESULT_SOURCE.ACTIONS,
+    providerName: "UrlbarProviderGlobalActions",
+    payload,
+  });
+}
+
+/**
+ * Checks that the results returned by a UrlbarParentController match those in
  * the param `matches`.
  *
  * @param {object} options Options for the check.
@@ -954,6 +1098,9 @@ function makeCalculatorResult(queryContext, { value }) {
  * @param {string} [options.completed]
  *   The value that would be filled if the autofill result was confirmed.
  *   Has no effect if `autofilled` is not specified.
+ * @param {object} [options.payloadRules]
+ *   An object mapping payload keys to validation rules. Each rule is an object
+ *   `{ optional, ignore, validate }`. See the code below.
  * @param {Array} options.matches
  *   An array of UrlbarResults.
  */
@@ -963,6 +1110,7 @@ async function check_results({
   autofilled,
   completed,
   matches = [],
+  payloadRules = {},
 } = {}) {
   if (!context) {
     return;
@@ -974,16 +1122,13 @@ async function check_results({
   // return reliable resultsets, thus we have to wait.
   await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
 
-  const controller = UrlbarTestUtils.newMockController({
+  const controller = UrlbarTestUtils.mockChildController({
     input: {
       isPrivate: context.isPrivate,
-      onFirstResult() {
-        return false;
-      },
       getSearchSource() {
         return "dummy-search-source";
       },
-      window: {
+      browserWindow: {
         location: {
           href: AppConstants.BROWSER_CHROME_URL,
         },
@@ -997,6 +1142,7 @@ async function check_results({
     controller: {
       removeResult() {},
     },
+    clearTopSitesCache() {},
   });
 
   if (incompleteSearch) {
@@ -1048,30 +1194,84 @@ async function check_results({
     richSuggestionIconVariation: { optional: true },
   };
 
-  // Payload properties to conditionally check. Properties not specified here
-  // will always be checked.
+  // A validator object to check optional date payload properties. If the
+  // expected date is undefined, the actual date won't be checked. If the
+  // expected date is zero, the actual date is asserted to be falsey.
+  let optionalDateValidator = {
+    optional: true,
+    validate(resultIndex, actualResult, payloadKey) {
+      if (matches[resultIndex].payload[payloadKey] === 0) {
+        Assert.ok(
+          !actualResult.payload[payloadKey],
+          `result.payload.${payloadKey} should be falsey at result index ${resultIndex}`
+        );
+        return true;
+      }
+      return false;
+    },
+  };
+
+  // Payload validation rules. Payload properties not specified here will be
+  // validated in a default manner. For each entry in this object, the key is
+  // the payload key and the value is a validation rule, which is an object that
+  // can have the following optional keys:
   //
-  // ignore:
-  //   Always ignore the property.
-  // optional:
-  //   Ignore the property if it's not in the expected result.
-  let conditionalPayloadProperties = {
+  // {Function} validate
+  //   A validation function. It will be called before any other validation is
+  //   performed for the given payload property, like this:
+  //
+  //   ```
+  //   validate(resultIndex, actualResult, payloadKey)
+  //   ```
+  //
+  //   It should return true if the function handled the validation, and in that
+  //   case no other validation will be performed for the property. Otherwise it
+  //   should return false, and in that case validation will continue as usual
+  //   for the property.
+  // {boolean} ignore
+  //   Whether the payload property should always be ignored.
+  // {boolean} optional
+  //   When true, the payload property will be ignored if it's not in the
+  //   payload of the expected result.
+  payloadRules = {
+    bookmarkDateMs: optionalDateValidator,
     frecency: { optional: true },
-    lastVisit: { optional: true },
+    lastVisit: optionalDateValidator,
     // `suggestionObject` is only used for dismissing Suggest Rust results, and
     // important properties in this object are reflected in the top-level
     // payload object, so ignore it. There are Suggest tests specifically for
     // dismissals that indirectly test the important aspects of this property.
     suggestionObject: { ignore: true },
+    // Set by the providers manager on dynamic results, not by their provider.
+    viewTemplate: { optional: true },
+    viewUpdate: { optional: true },
+    icon: {
+      validate(resultIndex, actualResult, _payloadKey) {
+        let actualIcon = actualResult.payload.icon;
+        let expectedIcon = matches[resultIndex].payload.icon;
+        if (!actualIcon || !expectedIcon) {
+          return false;
+        }
+        UrlbarTestUtils.checkImageUrl(actualIcon, expectedIcon);
+        return true;
+      },
+    },
+    ...payloadRules,
   };
 
   for (let i = 0; i < matches.length; i++) {
     let actual = context.results[i];
+
+    let actualJsonable = { payload: actual.payload };
+    for (let key of Object.keys(propertiesToCheck)) {
+      actualJsonable[key] = actual[key];
+    }
+
     let expected = matches[i];
     info(
       `Comparing results at index ${i}:` +
         " actual=" +
-        JSON.stringify(actual) +
+        JSON.stringify(actualJsonable) +
         " expected=" +
         JSON.stringify(expected)
     );
@@ -1088,9 +1288,9 @@ async function check_results({
     }
 
     if (
-      actual.type == UrlbarUtils.RESULT_TYPE.SEARCH &&
-      actual.source == UrlbarUtils.RESULT_SOURCE.SEARCH &&
-      actual.providerName == "HeuristicFallback"
+      actual.type == UrlbarShared.RESULT_TYPE.SEARCH &&
+      actual.source == UrlbarShared.RESULT_SOURCE.SEARCH &&
+      actual.providerName == "UrlbarProviderHeuristicFallback"
     ) {
       expected.payload.icon = SEARCH_GLASS_ICON;
     }
@@ -1099,10 +1299,10 @@ async function check_results({
       try {
         const payloadUrlProtocol = new URL(actual.payload.url).protocol;
         if (
-          !UrlbarUtils.PROTOCOLS_WITH_ICONS.includes(payloadUrlProtocol) &&
-          actual.source != UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL
+          !UrlbarShared.PROTOCOLS_WITH_ICONS.includes(payloadUrlProtocol) &&
+          actual.source != UrlbarShared.RESULT_SOURCE.OTHER_LOCAL
         ) {
-          expected.payload.icon = UrlbarUtils.ICON.DEFAULT;
+          expected.payload.icon = UrlbarShared.ICON.DEFAULT;
         }
       } catch (e) {
         console.error(e);
@@ -1114,10 +1314,16 @@ async function check_results({
       let actualKeys = new Set(Object.keys(actual.payload));
 
       for (let key of actualKeys.union(expectedKeys)) {
-        let condition = conditionalPayloadProperties[key];
+        let rule = payloadRules[key];
+
+        if (rule?.validate?.(i, actual, key)) {
+          // The function consumed this validation.
+          continue;
+        }
+
         if (
-          condition?.ignore ||
-          (condition?.optional && !expected.hasOwnProperty(key))
+          rule?.ignore ||
+          (rule?.optional && !expected.payload.hasOwnProperty(key))
         ) {
           continue;
         }
@@ -1130,6 +1336,30 @@ async function check_results({
       }
     }
   }
+}
+
+/**
+ * Reads a single column from moz_origins for the origin that matches the url.
+ *
+ * @param {string} url
+ *   A URL whose origin row should be looked up.
+ * @param {string} column
+ *   The column name to read from moz_origins.
+ */
+async function getOriginColumn(url, column) {
+  let db = await PlacesUtils.promiseDBConnection();
+  let rows = await db.executeCached(
+    `SELECT o.${column}
+     FROM moz_origins o
+     JOIN moz_places h ON h.origin_id = o.id
+     WHERE h.url_hash = hash(:url) AND h.url = :url
+     LIMIT 1`,
+    { url }
+  );
+  if (!rows.length) {
+    return undefined;
+  }
+  return rows[0].getResultByIndex(0);
 }
 
 /**
@@ -1185,4 +1415,10 @@ async function checkOriginsOrder(host, prefixOrder) {
     ).map(r => r.getResultByIndex(0));
     Assert.deepEqual(prefixes, prefixOrder);
   });
+}
+
+function daysAgo(days) {
+  let date = new Date();
+  date.setDate(date.getDate() - days);
+  return date;
 }

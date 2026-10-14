@@ -1,4 +1,3 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // Any copyright is dedicated to the Public Domain.
 // http://creativecommons.org/publicdomain/zero/1.0/
 
@@ -190,7 +189,7 @@ function startClient(port, tlsFlags, expectSuccess) {
 add_task(async function () {
   Services.prefs.setIntPref("security.tls.version.max", 4);
   Services.prefs.setCharPref("network.dns.localDomains", hostname);
-  let cert = getTestServerCertificate();
+  let cert = await getTestServerCertificate();
 
   // server that accepts 1.1->1.3 and a client max 1.3. expect 1.3
   info("TEST 1");

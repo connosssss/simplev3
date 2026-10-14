@@ -1,12 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "LoaderObserver.h"
 
-#include "mozilla/AutoProfilerLabel.h"
 #include "mozilla/BaseProfilerMarkers.h"
 #include "mozilla/glue/WindowsUnicode.h"
 #include "mozilla/StackWalk_windows.h"
@@ -22,14 +19,12 @@ namespace glue {
 void LoaderObserver::OnBeginDllLoad(void** aContext,
                                     PCUNICODE_STRING aRequestedDllName) {
   MOZ_ASSERT(aContext);
-  if (IsProfilerPresent()) {
-    UniquePtr<char[]> utf8RequestedDllName(WideToUTF8(aRequestedDllName));
-    BASE_PROFILER_MARKER_TEXT(
-        "DllLoad", OTHER, MarkerTiming::IntervalStart(),
-        mozilla::ProfilerString8View::WrapNullTerminatedString(
-            utf8RequestedDllName.get()));
-    *aContext = utf8RequestedDllName.release();
-  }
+  UniquePtr<char[]> utf8RequestedDllName(WideToUTF8(aRequestedDllName));
+  BASE_PROFILER_MARKER_TEXT(
+      "DllLoad", OTHER, MarkerTiming::IntervalStart(),
+      mozilla::ProfilerString8View::WrapNullTerminatedString(
+          utf8RequestedDllName.get()));
+  *aContext = utf8RequestedDllName.release();
 
 #if defined(_M_AMD64) || defined(_M_ARM64)
   // Prevent the stack walker from suspending this thread when LdrLoadDll
@@ -58,6 +53,10 @@ void LoaderObserver::OnEndDllLoad(void* aContext, NTSTATUS aNtStatus,
             utf8RequestedDllName.get()));
   }
 
+  if (!aModuleLoadInfo.HasCompatibleLayout()) {
+    return;
+  }
+
   // We want to record a denied DLL load regardless of |aNtStatus| because
   // |aNtStatus| is set to access-denied when DLL load was blocked.
   if ((!NT_SUCCESS(aNtStatus) && !aModuleLoadInfo.WasDenied()) ||
@@ -83,7 +82,7 @@ void LoaderObserver::OnEndDllLoad(void* aContext, NTSTATUS aNtStatus,
     mModuleLoads = new ModuleLoadInfoVec();
   }
 
-  Unused << mModuleLoads->emplaceBack(
+  (void)mModuleLoads->emplaceBack(
       std::forward<ModuleLoadInfo>(aModuleLoadInfo));
 }
 
@@ -129,6 +128,10 @@ void LoaderObserver::Disable() {
 }
 
 void LoaderObserver::OnForward(ModuleLoadInfoVec&& aInfo) {
+  if (aInfo.empty() || !aInfo.begin()->HasCompatibleLayout()) {
+    return;
+  }
+
   AutoExclusiveLock lock(mLock);
   if (!mModuleLoads) {
     mModuleLoads = new ModuleLoadInfoVec();
@@ -140,7 +143,7 @@ void LoaderObserver::OnForward(ModuleLoadInfoVec&& aInfo) {
   } else {
     // This should not happen, but we can handle it
     for (auto&& item : aInfo) {
-      Unused << mModuleLoads->append(std::move(item));
+      (void)mModuleLoads->append(std::move(item));
     }
   }
 }

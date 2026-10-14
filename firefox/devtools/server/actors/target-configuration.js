@@ -30,21 +30,28 @@ const LOG_DISABLED = -1;
 // List of options supported by this target configuration actor.
 /* eslint sort-keys: "error" */
 const SUPPORTED_OPTIONS = {
+  // Set a custom animations playback rate (called from Animations panel)
+  animationsPlayBackRateMultiplier: true,
   // Disable network request caching.
   cacheDisabled: true,
-  // Enable color scheme simulation.
+  // Enable color scheme emulation.
   colorSchemeSimulation: true,
   // Enable custom formatters
   customFormatters: true,
   // Set a custom user agent
   customUserAgent: true,
+  // List of highlighters enabled globally, which should be preserved across navigations
+  enabledHighlighters: true,
   // Is the tracer experimental feature manually enabled by the user?
   isTracerFeatureEnabled: true,
   // Enable JavaScript
   javascriptEnabled: true,
+  // Maximum number of bytes used to save all network request/response body
+  // Set it to 0 to have unlimited recording.
+  networkBodyLimit: true,
   // Force a custom device pixel ratio (used in RDM). Set to null to restore origin ratio.
   overrideDPPX: true,
-  // Enable print simulation mode.
+  // Enable print emulation mode.
   printSimulationEnabled: true,
   // Override navigator.maxTouchPoints (used in RDM and doesn't apply if RDM isn't enabled)
   rdmPaneMaxTouchPoints: true,
@@ -52,6 +59,8 @@ const SUPPORTED_OPTIONS = {
   rdmPaneOrientation: true,
   // Enable allocation tracking, if set, contains an object defining the tracking configurations
   recordAllocations: true,
+  // Enable prefers-reduced-motion emulation.
+  reducedMotionEmulation: true,
   // Reload the page when the touch simulation state changes (only works alongside touchEventsOverride)
   reloadOnTouchSimulationToggle: true,
   // Restore focus in the page after closing DevTools.
@@ -80,8 +89,7 @@ const SUPPORTED_OPTIONS = {
  * (see _updateParentProcessConfiguration), and others will be set from the target actor,
  * in the content process.
  *
- * @constructor
- *
+ * @class
  */
 class TargetConfigurationActor extends Actor {
   constructor(watcherActor) {
@@ -108,7 +116,7 @@ class TargetConfigurationActor extends Actor {
       this._onBfCacheNavigation
     );
 
-    this._browsingContext = this.watcherActor.browserElement?.browsingContext;
+    this._browsingContext = this.watcherActor.browsingContext;
   }
 
   // Value of `logging.console` pref, before starting recording JS Traces
@@ -128,7 +136,7 @@ class TargetConfigurationActor extends Actor {
    * Returns whether or not this actor should handle the flag that should be set on the
    * BrowsingContext in the parent process.
    *
-   * @returns {Boolean}
+   * @returns {boolean}
    */
   _shouldHandleConfigurationInParentProcess() {
     // Only handle parent process configuration if the watcherActor is tied to a
@@ -184,7 +192,7 @@ class TargetConfigurationActor extends Actor {
       this._restoreParentProcessConfiguration();
     }
 
-    // We need to store the browsing context as this.watcherActor.browserElement.browsingContext
+    // We need to store the browsing context as this.watcherActor.browsingContext
     // can still refer to the previous browsing context at this point.
     this._browsingContext = browsingContext;
 
@@ -218,7 +226,7 @@ class TargetConfigurationActor extends Actor {
 
   /**
    *
-   * @param {Object} configuration
+   * @param {object} configuration
    * @returns Promise<Object> Applied configuration object
    */
   async updateConfiguration(configuration) {
@@ -243,12 +251,15 @@ class TargetConfigurationActor extends Actor {
 
   /**
    *
-   * @param {Object} configuration: See `updateConfiguration`
+   * @param {object} configuration: See `updateConfiguration`
    */
   _updateParentProcessConfiguration(configuration) {
-    // Process "tracerOptions" for all session types, as this isn't specific to tab debugging
+    // Process "tracerOptions" and "networkBodyLimit" for all session types, as this isn't specific to tab debugging
     if ("tracerOptions" in configuration) {
       this._setTracerOptions(configuration.tracerOptions);
+    }
+    if ("networkBodyLimit" in configuration) {
+      this._setNetworkBodyLimit(configuration.networkBodyLimit);
     }
 
     if (!this._shouldHandleConfigurationInParentProcess()) {
@@ -258,8 +269,11 @@ class TargetConfigurationActor extends Actor {
     let shouldReload = false;
     for (const [key, value] of Object.entries(configuration)) {
       switch (key) {
+        case "animationsPlayBackRateMultiplier":
+          this._setAnimationsPlayBackRateMultiplier(value);
+          break;
         case "colorSchemeSimulation":
-          this._setColorSchemeSimulation(value);
+          this._setColorSchemeEmulation(value);
           break;
         case "customUserAgent":
           this._setCustomUserAgent(value);
@@ -278,7 +292,10 @@ class TargetConfigurationActor extends Actor {
           this._setDPPXOverride(value);
           break;
         case "printSimulationEnabled":
-          this._setPrintSimulationEnabled(value);
+          this._setPrintEmulationEnabled(value);
+          break;
+        case "reducedMotionEmulation":
+          this._setReducedMotionEmulation(value);
           break;
         case "rdmPaneMaxTouchPoints":
           this._setRDMPaneMaxTouchPoints(value);
@@ -317,19 +334,25 @@ class TargetConfigurationActor extends Actor {
     }
 
     this._setServiceWorkersTestingEnabled(false);
-    this._setPrintSimulationEnabled(false);
+    this._setPrintEmulationEnabled(false);
     if (this._resetCacheDisabledOnDestroy) {
       this._setCacheDisabled(false);
     }
     this._setTabOffline(false);
 
-    // Restore the color scheme simulation only if it was explicitly updated
+    // Restore the color scheme emulation only if it was explicitly updated
     // by this actor. This will avoid side effects caused when destroying additional
     // targets (e.g. RDM target, WebExtension target, …).
     // TODO: We may want to review other configuration values to see if we should use
     // the same pattern (Bug 1701553).
-    if (this._resetColorSchemeSimulationOnDestroy) {
-      this._setColorSchemeSimulation(null);
+    if (this._resetColorSchemeEmulationOnDestroy) {
+      this._setColorSchemeEmulation(null);
+    }
+
+    // Restore the reduced motion emulation only if it was explicitly updated
+    // by this actor.
+    if (this._resetReducedMotionEmulationOnDestroy) {
+      this._setReducedMotionEmulation(null);
     }
 
     // Restore the user agent only if it was explicitly updated by this specific actor.
@@ -350,6 +373,8 @@ class TargetConfigurationActor extends Actor {
     if (this._initialTouchEventsOverride !== undefined) {
       this._setTouchEventsOverride(this._initialTouchEventsOverride);
     }
+
+    this._setAnimationsPlayBackRateMultiplier(1);
   }
 
   /**
@@ -362,9 +387,9 @@ class TargetConfigurationActor extends Actor {
   }
 
   /**
-   * Disable or enable the print simulation.
+   * Disable or enable the print emulation.
    */
-  _setPrintSimulationEnabled(enabled) {
+  _setPrintEmulationEnabled(enabled) {
     const value = enabled ? "print" : "";
     if (this._browsingContext.mediumOverride != value) {
       this._browsingContext.mediumOverride = value;
@@ -372,22 +397,33 @@ class TargetConfigurationActor extends Actor {
   }
 
   /**
-   * Disable or enable the color-scheme simulation.
+   * Disable or enable the color-scheme emulation.
    */
-  _setColorSchemeSimulation(override) {
+  _setColorSchemeEmulation(override) {
     const value = override || "none";
     if (this._browsingContext.prefersColorSchemeOverride != value) {
       this._browsingContext.prefersColorSchemeOverride = value;
-      this._resetColorSchemeSimulationOnDestroy = true;
+      this._resetColorSchemeEmulationOnDestroy = true;
+    }
+  }
+
+  /**
+   * Disable or enable the reduced-motion emulation.
+   */
+  _setReducedMotionEmulation(override) {
+    const value = override || "none";
+    if (this._browsingContext.prefersReducedMotionOverride != value) {
+      this._browsingContext.prefersReducedMotionOverride = value;
+      this._resetReducedMotionEmulationOnDestroy = true;
     }
   }
 
   /**
    * Set a custom user agent on the page
    *
-   * @param {String} userAgent: The user agent to set on the page. If null, will reset the
+   * @param {string} userAgent: The user agent to set on the page. If null, will reset the
    *                 user agent to its original value.
-   * @returns {Boolean} Whether the user agent was changed or not.
+   * @returns {boolean} Whether the user agent was changed or not.
    */
   _setCustomUserAgent(userAgent = "") {
     if (this._browsingContext.customUserAgent === userAgent) {
@@ -434,7 +470,7 @@ class TargetConfigurationActor extends Actor {
   /**
    * Set the touchEventsOverride on the browsing context.
    *
-   * @param {String} flag: See BrowsingContext.webidl `TouchEventsOverride` enum for values.
+   * @param {string} flag: See BrowsingContext.webidl `TouchEventsOverride` enum for values.
    */
   _setTouchEventsOverride(flag) {
     if (this._browsingContext.touchEventsOverride === flag) {
@@ -471,18 +507,20 @@ class TargetConfigurationActor extends Actor {
    * Set an orientation and an angle on the browsing context. This will be applied only
    * if Responsive Design Mode is enabled.
    *
-   * @param {Object} options
-   * @param {String} options.type: The orientation type of the rotated device.
-   * @param {Number} options.angle: The rotated angle of the device.
+   * @param {object} options
+   * @param {string} options.type: The orientation type of the rotated device.
+   * @param {number} options.angle: The rotated angle of the device.
    */
   _setRDMPaneOrientation({ type, angle }) {
-    this._browsingContext.setRDMPaneOrientation(type, angle);
+    if (this._browsingContext.inRDMPane) {
+      this._browsingContext.setOrientationOverride(type, angle);
+    }
   }
 
   /**
    * Disable or enable the cache via the browsing context.
    *
-   * @param {Boolean} disabled: The state the cache should be changed to
+   * @param {boolean} disabled: The state the cache should be changed to
    */
   _setCacheDisabled(disabled) {
     const value = disabled
@@ -497,7 +535,7 @@ class TargetConfigurationActor extends Actor {
   /**
    * Set the browsing context to offline.
    *
-   * @param {Boolean} offline: Whether the network throttling is set to offline
+   * @param {boolean} offline: Whether the network throttling is set to offline
    */
   _setTabOffline(offline) {
     if (!this._browsingContext.isDiscarded) {
@@ -526,7 +564,7 @@ class TargetConfigurationActor extends Actor {
    * Note that when `options` is defined, it is meant to be enabled.
    * It may not actually be tracing yet depending on the passed options.
    *
-   * @param {Object} options
+   * @param {object} options
    */
   _setTracerOptions(options) {
     if (!options) {
@@ -570,6 +608,38 @@ class TargetConfigurationActor extends Actor {
       LOG_DISABLED
     );
     Services.prefs.setIntPref("logging.PageMessages", LOG_VERBOSE);
+  }
+
+  _setNetworkBodyLimit(networkBodyLimit) {
+    const networkParentActor =
+      this.watcherActor.getExistingNetworkParentActor();
+    if (networkParentActor) {
+      networkParentActor.setBodyLimit(networkBodyLimit);
+    }
+  }
+
+  /**
+   * Queried by network observing logic to know about current request/response body limit.
+   *
+   * @return {number}
+   */
+  getNetworkBodyLimit() {
+    return this._getConfiguration().networkBodyLimit;
+  }
+
+  /**
+   * Sets browsingContext's animationsPlayBackRateMultiplier, that allows to speed up/down
+   * all the animations on the page.
+   *
+   * @param {number} animationsPlayBackRateMultiplier
+   */
+  _setAnimationsPlayBackRateMultiplier(animationsPlayBackRateMultiplier) {
+    // Avoid trying to set the multiplier if the related context is being destroyed
+    if (!this._browsingContext || this._browsingContext.isDiscarded) {
+      return;
+    }
+    this._browsingContext.animationsPlayBackRateMultiplier =
+      animationsPlayBackRateMultiplier;
   }
 }
 

@@ -9,6 +9,9 @@ use std::result;
 
 use rkv::StoreError;
 
+#[cfg(feature = "sqlite")]
+use crate::database::sqlite::{OpenError, SchemaError};
+
 /// A specialized [`Result`] type for this crate's operations.
 ///
 /// This is generally used to avoid writing out [`Error`] directly and
@@ -62,6 +65,17 @@ pub enum ErrorKind {
 
     /// Ping request body size overflowed
     PingBodyOverflow(usize),
+
+    /// Parsing a UUID from a string failed
+    UuidError(uuid::Error),
+
+    /// Database/SQLite error
+    #[cfg(feature = "sqlite")]
+    SQLite(rusqlite::Error),
+
+    /// Schema error
+    #[cfg(feature = "sqlite")]
+    Schema(SchemaError),
 }
 
 /// A specialized [`Error`] type for this crate's operations.
@@ -117,6 +131,11 @@ impl Display for Error {
                 "Ping request body size exceeded maximum size allowed: {}kB.",
                 s / 1024
             ),
+            UuidError(e) => write!(f, "Failed to parse UUID: {}", e),
+            #[cfg(feature = "sqlite")]
+            SQLite(e) => write!(f, "SQLite error: {}", e),
+            #[cfg(feature = "sqlite")]
+            Schema(e) => write!(f, "Schema error: {}", e),
         }
     }
 }
@@ -151,6 +170,31 @@ impl From<serde_json::error::Error> for Error {
     }
 }
 
+#[cfg(feature = "sqlite")]
+impl From<rusqlite::Error> for Error {
+    fn from(error: rusqlite::Error) -> Error {
+        Error {
+            kind: ErrorKind::SQLite(error),
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl From<OpenError> for Error {
+    fn from(error: OpenError) -> Error {
+        match error {
+            OpenError::IncompatibleVersion(v) => Error {
+                kind: ErrorKind::Schema(SchemaError::UnsupportedSchemaVersion(v)),
+            },
+            OpenError::Corrupt => Error {
+                kind: ErrorKind::NotInitialized,
+            },
+            OpenError::SqlError(error) => error.into(),
+            OpenError::RecoveryError(error) => error.into(),
+        }
+    }
+}
+
 impl From<OsString> for Error {
     fn from(error: OsString) -> Error {
         Error {
@@ -165,5 +209,56 @@ impl From<OsString> for Error {
 impl From<std::convert::Infallible> for Error {
     fn from(_: std::convert::Infallible) -> Error {
         unreachable!()
+    }
+}
+
+impl From<uuid::Error> for Error {
+    fn from(error: uuid::Error) -> Self {
+        Error {
+            kind: ErrorKind::UuidError(error),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ClientIdFileError {
+    /// The file could not be found.
+    NotFound,
+    /// Can't access the file due to permissions
+    PermissionDenied,
+    /// Another io error happened
+    IoError(io::Error),
+    /// Parsing the content into a UUID failed
+    ParseError(uuid::Error),
+}
+
+impl Display for ClientIdFileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use ClientIdFileError::*;
+        match self {
+            NotFound => write!(f, "File not found"),
+            PermissionDenied => write!(
+                f,
+                "The operation lacked the necessary privileges to complete."
+            ),
+            IoError(e) => write!(f, "IO error occurred: {e}"),
+            ParseError(e) => write!(f, "Parse error occurred: {e}"),
+        }
+    }
+}
+
+impl From<io::Error> for ClientIdFileError {
+    fn from(error: io::Error) -> Self {
+        match error.kind() {
+            io::ErrorKind::NotFound => ClientIdFileError::NotFound,
+            io::ErrorKind::PermissionDenied => ClientIdFileError::PermissionDenied,
+            _ => ClientIdFileError::IoError(error),
+        }
+    }
+}
+
+impl From<uuid::Error> for ClientIdFileError {
+    fn from(error: uuid::Error) -> Self {
+        ClientIdFileError::ParseError(error)
     }
 }

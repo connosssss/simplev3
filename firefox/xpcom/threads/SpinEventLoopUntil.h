@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef xpcom_threads_SpinEventLoopUntil_h__
-#define xpcom_threads_SpinEventLoopUntil_h__
+#ifndef xpcom_threads_SpinEventLoopUntil_h_
+#define xpcom_threads_SpinEventLoopUntil_h_
 
 #include "MainThreadUtils.h"
 #include "mozilla/Maybe.h"
@@ -112,6 +110,10 @@ struct MOZ_STACK_CLASS AutoNestedEventLoopAnnotation {
     }
   }
 
+  AutoNestedEventLoopAnnotation(const AutoNestedEventLoopAnnotation&) = delete;
+  AutoNestedEventLoopAnnotation& operator=(
+      const AutoNestedEventLoopAnnotation&) = delete;
+
   static void CopyCurrentStack(nsCString& aNestedSpinStack) {
     // We need to copy this behind a mutex as the
     // memory for our instances is stack-bound and
@@ -125,10 +127,6 @@ struct MOZ_STACK_CLASS AutoNestedEventLoopAnnotation {
   }
 
  private:
-  AutoNestedEventLoopAnnotation(const AutoNestedEventLoopAnnotation&) = delete;
-  AutoNestedEventLoopAnnotation& operator=(
-      const AutoNestedEventLoopAnnotation&) = delete;
-
   // The declarations of these statics live in nsThreadManager.cpp.
   static AutoNestedEventLoopAnnotation* sCurrent MOZ_GUARDED_BY(sStackMutex);
   static StaticMutex sStackMutex;
@@ -188,4 +186,4 @@ bool SpinEventLoopUntil(const nsACString& aVeryGoodReasonToDoThis,
 
 }  // namespace mozilla
 
-#endif  // xpcom_threads_SpinEventLoopUntil_h__
+#endif  // xpcom_threads_SpinEventLoopUntil_h_

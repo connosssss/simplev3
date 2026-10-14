@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, Alliance for Open Media. All rights reserved.
+ * Copyright (c) 2017, Alliance for Open Media. All rights reserved.
  *
  * This source code is subject to the terms of the BSD 2 Clause License and
  * the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -57,6 +57,9 @@ void aom_blend_a64_vmask_c(uint8_t *dst, uint32_t dst_stride, const uint8_t *src
 void aom_blend_a64_vmask_neon(uint8_t *dst, uint32_t dst_stride, const uint8_t *src0, uint32_t src0_stride, const uint8_t *src1, uint32_t src1_stride, const uint8_t *mask, int w, int h);
 #define aom_blend_a64_vmask aom_blend_a64_vmask_neon
 
+int64_t aom_calc_variance_stat_c(const uint8_t *src, int stride, int bw, int bh);
+#define aom_calc_variance_stat aom_calc_variance_stat_c
+
 void aom_comp_avg_pred_c(uint8_t *comp_pred, const uint8_t *pred, int width, int height, const uint8_t *ref, int ref_stride);
 void aom_comp_avg_pred_neon(uint8_t *comp_pred, const uint8_t *pred, int width, int height, const uint8_t *ref, int ref_stride);
 #define aom_comp_avg_pred aom_comp_avg_pred_neon
@@ -68,8 +71,8 @@ void aom_comp_mask_pred_neon(uint8_t *comp_pred, const uint8_t *pred, int width,
 double aom_compute_correlation_c(const unsigned char *frame1, int stride1, int x1, int y1, double mean1, double one_over_stddev1, const unsigned char *frame2, int stride2, int x2, int y2, double mean2, double one_over_stddev2);
 #define aom_compute_correlation aom_compute_correlation_c
 
-void aom_compute_flow_at_point_c(const uint8_t *src, const uint8_t *ref, int x, int y, int width, int height, int stride, double *u, double *v);
-void aom_compute_flow_at_point_neon(const uint8_t *src, const uint8_t *ref, int x, int y, int width, int height, int stride, double *u, double *v);
+void aom_compute_flow_at_point_c(const uint8_t *src, int src_stride, const uint8_t *ref, int ref_stride, int x, int y, int width, int height, double *u, double *v);
+void aom_compute_flow_at_point_neon(const uint8_t *src, int src_stride, const uint8_t *ref, int ref_stride, int x, int y, int width, int height, double *u, double *v);
 #define aom_compute_flow_at_point aom_compute_flow_at_point_neon
 
 bool aom_compute_mean_stddev_c(const unsigned char *frame, int stride, int x, int y, double *mean, double *one_over_stddev);
@@ -2199,6 +2202,9 @@ void aom_highbd_blend_a64_mask_neon(uint8_t *dst, uint32_t dst_stride, const uin
 void aom_highbd_blend_a64_vmask_c(uint8_t *dst, uint32_t dst_stride, const uint8_t *src0, uint32_t src0_stride, const uint8_t *src1, uint32_t src1_stride, const uint8_t *mask, int w, int h, int bd);
 void aom_highbd_blend_a64_vmask_neon(uint8_t *dst, uint32_t dst_stride, const uint8_t *src0, uint32_t src0_stride, const uint8_t *src1, uint32_t src1_stride, const uint8_t *mask, int w, int h, int bd);
 #define aom_highbd_blend_a64_vmask aom_highbd_blend_a64_vmask_neon
+
+int64_t aom_highbd_calc_variance_stat_c(const uint16_t *src, int stride, int bw, int bh);
+#define aom_highbd_calc_variance_stat aom_highbd_calc_variance_stat_c
 
 void aom_highbd_comp_avg_pred_c(uint8_t *comp_pred8, const uint8_t *pred8, int width, int height, const uint8_t *ref8, int ref_stride);
 void aom_highbd_comp_avg_pred_neon(uint8_t *comp_pred8, const uint8_t *pred8, int width, int height, const uint8_t *ref8, int ref_stride);
@@ -5294,51 +5300,63 @@ uint32_t aom_sub_pixel_avg_variance8x8_neon(const uint8_t *src_ptr, int source_s
 
 uint32_t aom_sub_pixel_variance128x128_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance128x128_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance128x128 aom_sub_pixel_variance128x128_neon
+uint32_t aom_sub_pixel_variance128x128_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance128x128)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance128x64_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance128x64_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance128x64 aom_sub_pixel_variance128x64_neon
+uint32_t aom_sub_pixel_variance128x64_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance128x64)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance16x16_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance16x16_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance16x16 aom_sub_pixel_variance16x16_neon
+uint32_t aom_sub_pixel_variance16x16_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance16x16)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance16x32_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance16x32_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance16x32 aom_sub_pixel_variance16x32_neon
+uint32_t aom_sub_pixel_variance16x32_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance16x32)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance16x4_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance16x4_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance16x4 aom_sub_pixel_variance16x4_neon
+uint32_t aom_sub_pixel_variance16x4_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance16x4)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance16x64_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance16x64_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance16x64 aom_sub_pixel_variance16x64_neon
+uint32_t aom_sub_pixel_variance16x64_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance16x64)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance16x8_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance16x8_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance16x8 aom_sub_pixel_variance16x8_neon
+uint32_t aom_sub_pixel_variance16x8_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance16x8)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance32x16_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance32x16_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance32x16 aom_sub_pixel_variance32x16_neon
+uint32_t aom_sub_pixel_variance32x16_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance32x16)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance32x32_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance32x32_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance32x32 aom_sub_pixel_variance32x32_neon
+uint32_t aom_sub_pixel_variance32x32_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance32x32)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance32x64_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance32x64_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance32x64 aom_sub_pixel_variance32x64_neon
+uint32_t aom_sub_pixel_variance32x64_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance32x64)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance32x8_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance32x8_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance32x8 aom_sub_pixel_variance32x8_neon
+uint32_t aom_sub_pixel_variance32x8_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance32x8)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance4x16_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance4x16_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance4x16 aom_sub_pixel_variance4x16_neon
+uint32_t aom_sub_pixel_variance4x16_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance4x16)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance4x4_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance4x4_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
@@ -5346,39 +5364,48 @@ uint32_t aom_sub_pixel_variance4x4_neon(const uint8_t *src_ptr, int source_strid
 
 uint32_t aom_sub_pixel_variance4x8_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance4x8_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance4x8 aom_sub_pixel_variance4x8_neon
+uint32_t aom_sub_pixel_variance4x8_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance4x8)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance64x128_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance64x128_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance64x128 aom_sub_pixel_variance64x128_neon
+uint32_t aom_sub_pixel_variance64x128_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance64x128)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance64x16_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance64x16_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance64x16 aom_sub_pixel_variance64x16_neon
+uint32_t aom_sub_pixel_variance64x16_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance64x16)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance64x32_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance64x32_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance64x32 aom_sub_pixel_variance64x32_neon
+uint32_t aom_sub_pixel_variance64x32_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance64x32)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance64x64_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance64x64_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance64x64 aom_sub_pixel_variance64x64_neon
+uint32_t aom_sub_pixel_variance64x64_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance64x64)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance8x16_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance8x16_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance8x16 aom_sub_pixel_variance8x16_neon
+uint32_t aom_sub_pixel_variance8x16_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance8x16)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance8x32_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance8x32_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance8x32 aom_sub_pixel_variance8x32_neon
+uint32_t aom_sub_pixel_variance8x32_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance8x32)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance8x4_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance8x4_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance8x4 aom_sub_pixel_variance8x4_neon
+uint32_t aom_sub_pixel_variance8x4_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance8x4)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 uint32_t aom_sub_pixel_variance8x8_c(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 uint32_t aom_sub_pixel_variance8x8_neon(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
-#define aom_sub_pixel_variance8x8 aom_sub_pixel_variance8x8_neon
+uint32_t aom_sub_pixel_variance8x8_neon_dotprod(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
+RTCD_EXTERN uint32_t (*aom_sub_pixel_variance8x8)(const uint8_t *src_ptr, int source_stride, int xoffset, int  yoffset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
 
 void aom_subtract_block_c(int rows, int cols, int16_t *diff_ptr, ptrdiff_t diff_stride, const uint8_t *src_ptr, ptrdiff_t src_stride, const uint8_t *pred_ptr, ptrdiff_t pred_stride);
 void aom_subtract_block_neon(int rows, int cols, int16_t *diff_ptr, ptrdiff_t diff_stride, const uint8_t *src_ptr, ptrdiff_t src_stride, const uint8_t *pred_ptr, ptrdiff_t pred_stride);
@@ -5543,8 +5570,7 @@ RTCD_EXTERN unsigned int (*aom_variance4x16)(const uint8_t *src_ptr, int source_
 
 unsigned int aom_variance4x4_c(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
 unsigned int aom_variance4x4_neon(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
-unsigned int aom_variance4x4_neon_dotprod(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
-RTCD_EXTERN unsigned int (*aom_variance4x4)(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
+#define aom_variance4x4 aom_variance4x4_neon
 
 unsigned int aom_variance4x8_c(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
 unsigned int aom_variance4x8_neon(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
@@ -5804,6 +5830,48 @@ static void setup_rtcd_internal(void)
     if (flags & HAS_NEON_I8MM) aom_scaled_2d = aom_scaled_2d_neon_i8mm;
     aom_sse = aom_sse_neon;
     if (flags & HAS_NEON_DOTPROD) aom_sse = aom_sse_neon_dotprod;
+    aom_sub_pixel_variance128x128 = aom_sub_pixel_variance128x128_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance128x128 = aom_sub_pixel_variance128x128_neon_dotprod;
+    aom_sub_pixel_variance128x64 = aom_sub_pixel_variance128x64_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance128x64 = aom_sub_pixel_variance128x64_neon_dotprod;
+    aom_sub_pixel_variance16x16 = aom_sub_pixel_variance16x16_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance16x16 = aom_sub_pixel_variance16x16_neon_dotprod;
+    aom_sub_pixel_variance16x32 = aom_sub_pixel_variance16x32_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance16x32 = aom_sub_pixel_variance16x32_neon_dotprod;
+    aom_sub_pixel_variance16x4 = aom_sub_pixel_variance16x4_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance16x4 = aom_sub_pixel_variance16x4_neon_dotprod;
+    aom_sub_pixel_variance16x64 = aom_sub_pixel_variance16x64_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance16x64 = aom_sub_pixel_variance16x64_neon_dotprod;
+    aom_sub_pixel_variance16x8 = aom_sub_pixel_variance16x8_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance16x8 = aom_sub_pixel_variance16x8_neon_dotprod;
+    aom_sub_pixel_variance32x16 = aom_sub_pixel_variance32x16_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance32x16 = aom_sub_pixel_variance32x16_neon_dotprod;
+    aom_sub_pixel_variance32x32 = aom_sub_pixel_variance32x32_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance32x32 = aom_sub_pixel_variance32x32_neon_dotprod;
+    aom_sub_pixel_variance32x64 = aom_sub_pixel_variance32x64_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance32x64 = aom_sub_pixel_variance32x64_neon_dotprod;
+    aom_sub_pixel_variance32x8 = aom_sub_pixel_variance32x8_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance32x8 = aom_sub_pixel_variance32x8_neon_dotprod;
+    aom_sub_pixel_variance4x16 = aom_sub_pixel_variance4x16_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance4x16 = aom_sub_pixel_variance4x16_neon_dotprod;
+    aom_sub_pixel_variance4x8 = aom_sub_pixel_variance4x8_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance4x8 = aom_sub_pixel_variance4x8_neon_dotprod;
+    aom_sub_pixel_variance64x128 = aom_sub_pixel_variance64x128_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance64x128 = aom_sub_pixel_variance64x128_neon_dotprod;
+    aom_sub_pixel_variance64x16 = aom_sub_pixel_variance64x16_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance64x16 = aom_sub_pixel_variance64x16_neon_dotprod;
+    aom_sub_pixel_variance64x32 = aom_sub_pixel_variance64x32_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance64x32 = aom_sub_pixel_variance64x32_neon_dotprod;
+    aom_sub_pixel_variance64x64 = aom_sub_pixel_variance64x64_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance64x64 = aom_sub_pixel_variance64x64_neon_dotprod;
+    aom_sub_pixel_variance8x16 = aom_sub_pixel_variance8x16_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance8x16 = aom_sub_pixel_variance8x16_neon_dotprod;
+    aom_sub_pixel_variance8x32 = aom_sub_pixel_variance8x32_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance8x32 = aom_sub_pixel_variance8x32_neon_dotprod;
+    aom_sub_pixel_variance8x4 = aom_sub_pixel_variance8x4_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance8x4 = aom_sub_pixel_variance8x4_neon_dotprod;
+    aom_sub_pixel_variance8x8 = aom_sub_pixel_variance8x8_neon;
+    if (flags & HAS_NEON_DOTPROD) aom_sub_pixel_variance8x8 = aom_sub_pixel_variance8x8_neon_dotprod;
     aom_var_2d_u8 = aom_var_2d_u8_neon;
     if (flags & HAS_NEON_DOTPROD) aom_var_2d_u8 = aom_var_2d_u8_neon_dotprod;
     aom_variance128x128 = aom_variance128x128_neon;
@@ -5830,8 +5898,6 @@ static void setup_rtcd_internal(void)
     if (flags & HAS_NEON_DOTPROD) aom_variance32x8 = aom_variance32x8_neon_dotprod;
     aom_variance4x16 = aom_variance4x16_neon;
     if (flags & HAS_NEON_DOTPROD) aom_variance4x16 = aom_variance4x16_neon_dotprod;
-    aom_variance4x4 = aom_variance4x4_neon;
-    if (flags & HAS_NEON_DOTPROD) aom_variance4x4 = aom_variance4x4_neon_dotprod;
     aom_variance4x8 = aom_variance4x8_neon;
     if (flags & HAS_NEON_DOTPROD) aom_variance4x8 = aom_variance4x8_neon_dotprod;
     aom_variance64x128 = aom_variance64x128_neon;

@@ -1,10 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/HTMLSharedElement.h"
+
+#include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/dom/BindContext.h"
 #include "mozilla/dom/HTMLBaseElementBinding.h"
 #include "mozilla/dom/HTMLDirectoryElementBinding.h"
@@ -12,8 +12,7 @@
 #include "mozilla/dom/HTMLHtmlElementBinding.h"
 #include "mozilla/dom/HTMLParamElementBinding.h"
 #include "mozilla/dom/HTMLQuoteElementBinding.h"
-
-#include "mozilla/AsyncEventDispatcher.h"
+#include "mozilla/dom/PolicyContainer.h"
 #include "nsContentUtils.h"
 #include "nsIContentSecurityPolicy.h"
 #include "nsIURI.h"
@@ -38,7 +37,7 @@ void HTMLSharedElement::GetHref(nsAString& aValue) {
                                             doc->GetFallbackBaseURI());
 
   if (!uri) {
-    aValue = href;
+    aValue = std::move(href);
     return;
   }
 
@@ -94,7 +93,8 @@ static void SetBaseURIUsingFirstBaseWithHref(Document* aDocument,
       }
 
       // Check if CSP allows this base-uri
-      nsCOMPtr<nsIContentSecurityPolicy> csp = aDocument->GetCsp();
+      nsCOMPtr<nsIContentSecurityPolicy> csp =
+          PolicyContainer::GetCSP(aDocument->GetPolicyContainer());
       if (csp && newBaseURI) {
         // base-uri is only enforced if explicitly defined in the
         // policy - do *not* consult default-src, see:

@@ -1,12 +1,11 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsWindowMap.h"
-#include "nsObjCExceptions.h"
 #include "nsChildView.h"
 #include "nsCocoaWindow.h"
+#include "nsObjCExceptions.h"
 
 @interface WindowDataMap (Private)
 
@@ -21,6 +20,15 @@
 - (void)windowWillClose:(NSNotification*)inNotification;
 
 @end
+
+// The Picture-in-Picture player is a non-activating window (bug 1688932).
+// Clicking it while it floats over another application's fullscreen Space makes
+// it key without bringing our application forward, and in that state AppKit
+// refuses to make it (or any of our windows) the main window. Like a sheet,
+// such a window must therefore count as active for as long as it is key.
+static bool IsNonactivatingWindow(NSWindow* aWindow) {
+  return (aWindow.styleMask & NSWindowStyleMaskNonactivatingPanel) != 0;
+}
 
 #pragma mark -
 
@@ -237,7 +245,8 @@
   id delegate = window.delegate;
   if (!delegate || ![delegate isKindOfClass:[WindowDelegate class]]) {
     [TopLevelWindowData activateInWindowViews:window];
-  } else if (window.isSheet || window.isMainWindow) {
+  } else if (window.isSheet || window.isMainWindow ||
+             IsNonactivatingWindow(window)) {
     [TopLevelWindowData activateInWindow:window];
   }
 }
@@ -248,7 +257,8 @@
   id delegate = window.delegate;
   if (!delegate || ![delegate isKindOfClass:[WindowDelegate class]]) {
     [TopLevelWindowData deactivateInWindowViews:window];
-  } else if (window.isSheet || window.isMainWindow) {
+  } else if (window.isSheet || window.isMainWindow ||
+             IsNonactivatingWindow(window)) {
     [TopLevelWindowData deactivateInWindow:window];
   }
 }
@@ -271,8 +281,11 @@
 - (void)windowResignedMain:(NSNotification*)inNotification {
   NSWindow* window = inNotification.object;
   id delegate = window.delegate;
+  // A non-activating window that is still key stays active (see
+  // IsNonactivatingWindow); it is deactivated when it resigns key.
   if (delegate && [delegate isKindOfClass:[WindowDelegate class]] &&
-      ![window attachedSheet] && ![NSApp modalWindow]) {
+      ![window attachedSheet] && ![NSApp modalWindow] &&
+      !(IsNonactivatingWindow(window) && window.isKeyWindow)) {
     [TopLevelWindowData deactivateInWindow:window];
   }
 }

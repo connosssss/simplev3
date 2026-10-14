@@ -5,7 +5,6 @@
 package mozilla.components.support.ktx.kotlinx.coroutines
 
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -14,12 +13,13 @@ import org.junit.Test
 class UtilsKtTest {
 
     @Test
-    fun throttle() = runTest(UnconfinedTestDispatcher()) {
+    fun throttle() = runTest {
         val skipTime = 300L
         var value = 0
-        val throttleBlock = throttleLatest<Int>(skipTime, coroutineScope = this) {
-            value = it
-        }
+        val throttleBlock =
+            throttleLatest<Int>(skipTime, coroutineScope = this) {
+                value = it
+            }
 
         for (n in 1..300) {
             throttleBlock(n)
@@ -32,6 +32,8 @@ class UtilsKtTest {
             delay(skipTime)
             throttleBlock(n)
         }
+
+        testScheduler.advanceUntilIdle()
 
         assertEquals(300, value)
     }

@@ -16,6 +16,7 @@ import codecs
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -37,6 +38,9 @@ class GeckoInstance:
     required_prefs = {
         # Make sure Shield doesn't hit the network.
         "app.normandy.api_url": "",
+        # Disable scroll axis lock, WebDriver should be able to scroll arbitrary
+        # directions.
+        "apz.axis_lock.mode": 0,
         # Increase the APZ content response timeout in tests to 1 minute.
         # This is to accommodate the fact that test environments tends to be slower
         # than production environments (with the b2g emulator being the slowest of them
@@ -44,30 +48,35 @@ class GeckoInstance:
         # and causing false-positive test failures. See bug 1176798, bug 1177018,
         # bug 1210465.
         "apz.content_response_timeout": 60000,
+        # Use zero movement tolerance before a touch is treated as a pan, so that in
+        # automation touch events scroll from exactly the position they are dispatched
+        # without small movements first being absorbed.
+        "apz.touch_move_tolerance": "0.0",
+        "apz.touch_start_tolerance": "0.0",
+        # Disable extension discovery
+        "browser.discovery.enabled": False,
         # Make sure error page is not shown for blank pages with 4xx or 5xx response code
         "browser.http.blank_page_with_error_response.enabled": True,
-        # Don't pull weather data from the network
-        "browser.newtabpage.activity-stream.discoverystream.region-weather-config": "",
-        # Don't pull wallpaper content from the network
-        "browser.newtabpage.activity-stream.newtabWallpapers.enabled": False,
-        # Remove once Firefox 140 is no longer supported (see bug 1902921)
-        "browser.newtabpage.activity-stream.newtabWallpapers.v2.enabled": False,
+        # Disable CFR features for automated tests.
+        "browser.newtabpage.activity-stream.asrouter.userprefs.cfr.features": False,
         # Don't pull sponsored Top Sites content from the network
         "browser.newtabpage.activity-stream.showSponsoredTopSites": False,
         # Disable geolocation ping (#1)
         "browser.region.network.url": "",
         # Don't pull Top Sites content from the network
         "browser.topsites.contile.enabled": False,
+        # Disable translations
+        "browser.translations.enable": False,
         # Disable UI tour
         "browser.uitour.enabled": False,
-        # Disable captive portal
-        "captivedetect.canonicalURL": "",
         # Defensively disable data reporting systems
         "datareporting.healthreport.documentServerURI": "http://%(server)s/dummy/healthreport/",
         "datareporting.healthreport.logging.consoleEnabled": False,
         "datareporting.healthreport.service.enabled": False,
         "datareporting.healthreport.service.firstRun": False,
         "datareporting.healthreport.uploadEnabled": False,
+        "datareporting.usage.uploadEnabled": False,
+        "telemetry.fog.test.localhost_port": -1,
         # Do not show datareporting policy notifications which can interfere with tests
         "datareporting.policy.dataSubmissionEnabled": False,
         "datareporting.policy.dataSubmissionPolicyBypassNotification": True,
@@ -86,6 +95,8 @@ class GeckoInstance:
         "dom.max_script_run_time": 0,
         # Disable navigation change rate limitation
         "dom.navigation.navigationRateLimit.count": 0,
+        # Disable system permission checks for navigator.permissions.query
+        "dom.permissions.testing.enabled": True,
         # DOM Push
         "dom.push.connection.enabled": False,
         # Screen Orientation API
@@ -96,6 +107,9 @@ class GeckoInstance:
         # AddonManager.SCOPE_PROFILE + AddonManager.SCOPE_APPLICATION
         "extensions.autoDisableScopes": 0,
         "extensions.enabledScopes": 5,
+        # Disable form autofill for extensions and credit cards
+        "extensions.formautofill.addresses.enabled": False,
+        "extensions.formautofill.creditCards.enabled": False,
         # Disable metadata caching for installed add-ons by default
         "extensions.getAddons.cache.enabled": False,
         # Disable intalling any distribution add-ons
@@ -124,6 +138,8 @@ class GeckoInstance:
         "focusmanager.testmode": True,
         # Disable useragent updates
         "general.useragent.updates.enabled": False,
+        # Do not open system settings when geolocation is requested without OS permission
+        "geo.prompt.open_system_prefs": False,
         # Disable geolocation ping (#2)
         "geo.provider.network.url": "",
         # Always use network provider for geolocation tests
@@ -143,6 +159,11 @@ class GeckoInstance:
         # Disable the GFX sanity window
         "media.sanity-test.disabled": True,
         "media.volume_scale": "0.01",
+        # Allow scroll amount larger than one page on a single mouse wheel
+        # event.
+        "mousewheel.allow_scrolling_more_than_one_page": True,
+        # Disable captive portal
+        "network.captive-portal-service.enabled": False,
         # Disable connectivity service pings
         "network.connectivity-service.enabled": False,
         # Do not prompt for temporary redirects
@@ -155,6 +176,7 @@ class GeckoInstance:
         "network.dns.native_https_query": False,
         # Privacy and Tracking Protection
         "privacy.trackingprotection.enabled": False,
+        "privacy.trackingprotection.pbmode.enabled": False,
         # Disable recommended automation prefs in CI
         "remote.prefs.recommended": False,
         # Don't do network connections for mitm priming
@@ -165,18 +187,27 @@ class GeckoInstance:
         "security.remote_settings.intermediates.enabled": False,
         # Disable logging for remote settings
         "services.settings.loglevel": "off",
+        # Disable the WebAuthn consents prompt
+        "security.webauthn.related_origin_requests_mode": 1,
         # Ensure blocklist updates don't hit the network
         "services.settings.server": "data:,#remote-settings-dummy/v1",
         # Disable password capture, so that tests that include forms aren"t
         # influenced by the presence of the persistent doorhanger notification
         "signon.rememberSignons": False,
+        # Disable alerts for credential issues
+        "signon.management.page.breach-alerts.enabled": False,
+        "signon.management.page.vulnerable-passwords.enabled": False,
         # Prevent starting into safe mode after application crashes
+        # Do not show TOU new user modal which can interfere with tests
+        "termsofuse.bypassNotification": True,
         "toolkit.startup.max_resumed_crashes": -1,
         # Disable most telemetry pings
         "toolkit.telemetry.server": "https://%(server)s/telemetry-dummy/",
         # Disable window occlusion on Windows, see Bug 1802473.
         "widget.windows.window_occlusion_tracking.enabled": False,
     }
+
+    _appdata_tmpdir = None
 
     def __init__(
         self,
@@ -186,6 +217,7 @@ class GeckoInstance:
         profile=None,
         addons=None,
         app_args=None,
+        debugger_info=None,
         symbols_path=None,
         gecko_log=None,
         prefs=None,
@@ -195,6 +227,7 @@ class GeckoInstance:
     ):
         self.runner_class = Runner
         self.app_args = app_args or []
+        self.debugger_info = debugger_info
         self.runner = None
         self.symbols_path = symbols_path
         self.binary = bin
@@ -330,15 +363,13 @@ class GeckoInstance:
             args["preferences"]["remote.log.level"] = level
 
         if "-jsdebugger" in self.app_args:
-            args["preferences"].update(
-                {
-                    "devtools.browsertoolbox.panel": "jsdebugger",
-                    "devtools.chrome.enabled": True,
-                    "devtools.debugger.prompt-connection": False,
-                    "devtools.debugger.remote-enabled": True,
-                    "devtools.testing": True,
-                }
-            )
+            args["preferences"].update({
+                "devtools.browsertoolbox.panel": "jsdebugger",
+                "devtools.chrome.enabled": True,
+                "devtools.debugger.prompt-connection": False,
+                "devtools.debugger.remote-enabled": True,
+                "devtools.testing": True,
+            })
 
         if self.addons:
             args["addons"] = self.addons
@@ -363,11 +394,21 @@ class GeckoInstance:
     def start(self):
         self._update_profile(self.profile)
         self.runner = self.runner_class(**self._get_runner_args())
-        self.runner.start()
+
+        # debugger information
+        debug_args = None
+        interactive = False
+
+        if self.debugger_info:
+            debug_args = [self.debugger_info.path] + self.debugger_info.args
+            interactive = self.debugger_info.interactive
+
+        self.runner.start(debug_args, interactive)
 
     def _get_runner_args(self):
         process_args = {
             "processOutputLine": [NullOutput()],
+            "storeOutput": False,
             "universal_newlines": True,
         }
 
@@ -398,19 +439,32 @@ class GeckoInstance:
 
         # environment variables needed for crashreporting
         # https://developer.mozilla.org/docs/Environment_variables_affecting_crash_reporting
-        env.update(
-            {
-                "MOZ_CRASHREPORTER": "1",
-                "MOZ_CRASHREPORTER_NO_REPORT": "1",
-                "MOZ_CRASHREPORTER_SHUTDOWN": "1",
-            }
-        )
+        env.update({
+            "MOZ_CRASHREPORTER": "1",
+            "MOZ_CRASHREPORTER_NO_REPORT": "1",
+            "MOZ_CRASHREPORTER_SHUTDOWN": "1",
+        })
 
-        extra_args = ["-marionette", "-remote-allow-system-access"]
+        if "MOZ_APP_DATA" not in env:
+            if not self._appdata_tmpdir:
+                self._appdata_tmpdir = tempfile.mkdtemp(
+                    suffix=".moz-appdata", dir=self.workspace
+                )
+            env["MOZ_APP_DATA"] = os.path.normpath(
+                os.path.join(self._appdata_tmpdir, "AppData", "Roaming")
+            )
+            env["MOZ_LOCAL_APP_DATA"] = os.path.normpath(
+                os.path.join(self._appdata_tmpdir, "Local")
+            )
+
+        # Default to allow system access unless it is already set.
+        if env.get("MOZ_REMOTE_ALLOW_SYSTEM_ACCESS") is None:
+            env.update({"MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "1"})
+
         args = {
             "binary": self.binary,
             "profile": self.profile,
-            "cmdargs": extra_args + self.app_args,
+            "cmdargs": self.app_args + ["-marionette"],
             "env": env,
             "symbols_path": self.symbols_path,
             "process_args": process_args,
@@ -441,6 +495,11 @@ class GeckoInstance:
             if isinstance(self.profile, Profile):
                 self.profile.cleanup()
             self.profile = None
+
+    def __del__(self):
+        if self._appdata_tmpdir and os.path.exists(self._appdata_tmpdir):
+            shutil.rmtree(self._appdata_tmpdir, ignore_errors=True)
+            self._appdata_tmpdir = None
 
     def restart(self, prefs=None, clean=True):
         """
@@ -498,7 +557,7 @@ class FennecInstance(GeckoInstance):
         required_prefs = deepcopy(FennecInstance.fennec_prefs)
         required_prefs.update(kwargs.get("prefs", {}))
 
-        super(FennecInstance, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.required_prefs.update(required_prefs)
 
         self.runner_class = FennecEmulatorRunner
@@ -548,6 +607,7 @@ class FennecInstance(GeckoInstance):
     def _get_runner_args(self):
         process_args = {
             "processOutputLine": [NullOutput()],
+            "storeOutput": False,
             "universal_newlines": True,
         }
 
@@ -580,7 +640,7 @@ class FennecInstance(GeckoInstance):
 
         :param clean: If True, also perform runner cleanup.
         """
-        super(FennecInstance, self).close(clean)
+        super().close(clean)
         if clean and self.runner and self.runner.device.connected:
             try:
                 self.runner.device.device.remove_forwards(f"tcp:{self.marionette_port}")
@@ -602,6 +662,8 @@ class DesktopInstance(GeckoInstance):
         # !!! For backward compatibility up to Firefox 64. Only remove
         # when this Firefox version is no longer supported by the client !!!
         "app.update.auto": False,
+        # Disable the profile backup service.
+        "browser.backup.enabled": False,
         # Don't show the content blocking introduction panel
         # We use a larger number than the default 22 to have some buffer
         # This can be removed once Firefox 69 and 68 ESR and are no longer supported.
@@ -609,18 +671,27 @@ class DesktopInstance(GeckoInstance):
         # Enable output for dump() and chrome console API
         "browser.dom.window.dump.enabled": True,
         "devtools.console.stdout.chrome": True,
+        # Don't open the downloads panel every time a download begins.
+        # The first download ever run in a new profile will still open the panel,
+        # but because "browser.download.panel.shown" is set to true,
+        # this preference is going to act as the first download already happened.
+        "browser.download.focusPanelOnOpen": False,
         # Indicate that the download panel has been shown once so that whichever
         # download test runs first doesn"t show the popup inconsistently
         "browser.download.panel.shown": True,
         # Do not show the EULA notification which can interfer with tests
         "browser.EULA.override": True,
-        # Disable Activity Stream telemetry pings
-        "browser.newtabpage.activity-stream.telemetry": False,
-        # Always display a blank page
-        "browser.newtabpage.enabled": False,
+        # Disable all machine learning features by default
+        "browser.ml.enable": False,
+        # Do not initialize any activitystream features
+        "browser.newtabpage.activity-stream.testing.shouldInitializeFeeds": False,
+        # Do not render or load any New Tab widget
+        "browser.newtabpage.activity-stream.widgets.enabled": False,
         # Background thumbnails in particular cause grief, and disabling thumbnails
         # in general can"t hurt - we re-enable them when tests need them
         "browser.pagethumbnails.capturing_disabled": True,
+        # Do not show the preonboarding modal/splash which can interfere with tests
+        "browser.preonboarding.enabled": False,
         # Disable safe browsing / tracking protection updates
         "browser.safebrowsing.update.enabled": False,
         # Disable updates to search engines
@@ -653,6 +724,8 @@ class DesktopInstance(GeckoInstance):
         # Turn off Merino suggestions in the location bar so as not to trigger network
         # connections.
         "browser.urlbar.merino.endpointURL": "",
+        "browser.urlbar.merino.ohttpConfigURL": "",
+        "browser.urlbar.merino.ohttpRelayURL": "",
         # Turn off search suggestions in the location bar so as not to trigger network
         # connections.
         "browser.urlbar.suggest.searches": False,
@@ -665,6 +738,9 @@ class DesktopInstance(GeckoInstance):
         # TODO: Should be considered to get removed once bug 1960741 is fixed.
         "threads.lower_mainthread_priority_in_background.enabled": False,
         "dom.ipc.processPriorityManager.enabled": False,
+        # Turn off semantic history search as it triggers network connections to
+        # download ML models.
+        "places.semanticHistory.featureGate": False,
         # Disable first-run welcome page
         "startup.homepage_welcome_url": "about:blank",
         "startup.homepage_welcome_url.additional": "",
@@ -674,13 +750,13 @@ class DesktopInstance(GeckoInstance):
         required_prefs = deepcopy(DesktopInstance.desktop_prefs)
         required_prefs.update(kwargs.get("prefs", {}))
 
-        super(DesktopInstance, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.required_prefs.update(required_prefs)
 
 
 class ThunderbirdInstance(GeckoInstance):
     def __init__(self, *args, **kwargs):
-        super(ThunderbirdInstance, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         try:
             # Copied alongside in the test archive
             from .thunderbirdinstance import thunderbird_prefs

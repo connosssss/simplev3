@@ -8,7 +8,7 @@ XPCOMUtils.defineLazyServiceGetter(
   this,
   "IdentityCredentialStorageService",
   "@mozilla.org/browser/identity-credential-storage-service;1",
-  "nsIIdentityCredentialStorageService"
+  Ci.nsIIdentityCredentialStorageService
 );
 
 const TEST_URL = "https://example.com/";
@@ -36,6 +36,13 @@ add_task(
       Services.io.newURI("https://example.com"),
       {}
     );
+    registerCleanupFunction(() => {
+      for (let perm of Services.perms.getAllForPrincipal(rpPrincipal)) {
+        if (perm.type.startsWith("credential-allow-silent-access")) {
+          Services.perms.removePermission(perm);
+        }
+      }
+    });
 
     // Set two accounts as registered
     IdentityCredentialStorageService.setState(

@@ -16,10 +16,6 @@ ChromeUtils.defineESModuleGetters(this, {
 });
 
 add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-
   let oldBlocklistValue = Services.prefs.getStringPref(
     "places.interactions.customBlocklist",
     "[]"
@@ -43,7 +39,7 @@ add_setup(async function () {
 async function loadBlockedUrl(expectRecording) {
   await Interactions.reset();
   await BrowserTestUtils.withNewTab(ALLOWED_TEST_URL, async browser => {
-    Interactions._pageViewStartTime = Cu.now() - 10000;
+    Interactions._pageViewStartTime = ChromeUtils.now() - 10000;
 
     BrowserTestUtils.startLoadingURIString(browser, BLOCKED_TEST_URL);
     await BrowserTestUtils.browserLoaded(browser, false, BLOCKED_TEST_URL);
@@ -55,7 +51,7 @@ async function loadBlockedUrl(expectRecording) {
       },
     ]);
 
-    Interactions._pageViewStartTime = Cu.now() - 20000;
+    Interactions._pageViewStartTime = ChromeUtils.now() - 20000;
 
     BrowserTestUtils.startLoadingURIString(browser, "about:blank");
     await BrowserTestUtils.browserLoaded(browser, false, "about:blank");

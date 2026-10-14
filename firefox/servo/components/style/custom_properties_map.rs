@@ -10,6 +10,7 @@ use crate::selector_map::PrecomputedHasher;
 use indexmap::IndexMap;
 use servo_arc::Arc;
 use std::hash::BuildHasherDefault;
+use std::sync::LazyLock;
 
 /// A map for a set of custom properties, which implements copy-on-write behavior on insertion with
 /// cheap copying.
@@ -23,19 +24,17 @@ impl Default for CustomPropertiesMap {
 }
 
 /// We use None in the value to represent a removed entry.
-type OwnMap =
+pub type OwnMap =
     IndexMap<Name, Option<ComputedRegisteredValue>, BuildHasherDefault<PrecomputedHasher>>;
 
-lazy_static! {
-    static ref EMPTY: Arc<Inner> = {
-        Arc::new_leaked(Inner {
-            own_properties: Default::default(),
-            parent: None,
-            len: 0,
-            ancestor_count: 0,
-        })
-    };
-}
+static EMPTY: LazyLock<Arc<Inner>> = LazyLock::new(|| {
+    Arc::new_leaked(Inner {
+        own_properties: Default::default(),
+        parent: None,
+        len: 0,
+        ancestor_count: 0,
+    })
+});
 
 #[derive(Debug, Clone)]
 struct Inner {
@@ -84,6 +83,23 @@ impl<'a> Iterator for Iter<'a> {
     }
 }
 
+#[inline]
+fn can_deduplicate_values(
+    a: Option<&ComputedRegisteredValue>,
+    b: Option<&ComputedRegisteredValue>,
+) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            // TODO(emilio): Seems we should compare `url_data` as well? It doesn't seem to matter
+            // much in practice since url values would be already-computed against the right base
+            // URI here, I think...
+            a == b && a.attr_tainted == b.attr_tainted
+        },
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 impl PartialEq for Inner {
     fn eq(&self, other: &Self) -> bool {
         if self.len != other.len {
@@ -96,20 +112,31 @@ impl PartialEq for Inner {
         // This is a performance trade-off, on the assumption that if the ordering is different,
         // there's likely a different value as well, but might over-invalidate.
         //
-        // Doing the slow thing (checking all the keys) shows up a lot in profiles, see
-        // bug 1926423.
+        // Doing the slow thing (checking all the keys) shows up a lot in profiles, see bug 1926423.
         //
         // Note that self.own_properties != other.own_properties is not the same, as by default
         // IndexMap comparison is not order-aware.
-        if self.own_properties.as_slice() != other.own_properties.as_slice() {
-            return false;
+        //
+        // Note also that for this comparison we do care about e.g. attribute-tainting being
+        // different.
+        {
+            let own = self.own_properties.as_slice();
+            let other = other.own_properties.as_slice();
+            if own.len() != other.len() {
+                return false;
+            }
+            for ((own_k, own_v), (other_k, other_v)) in own.iter().zip(other.iter()) {
+                if own_k != other_k || !can_deduplicate_values(own_v.as_ref(), other_v.as_ref()) {
+                    return false;
+                }
+            }
         }
         self.parent == other.parent
     }
 }
 
 impl Inner {
-    fn iter(&self) -> Iter {
+    fn iter(&self) -> Iter<'_> {
         Iter {
             current: self,
             current_iter: self.own_properties.iter(),
@@ -134,7 +161,7 @@ impl Inner {
 
     fn insert(&mut self, name: &Name, value: Option<ComputedRegisteredValue>) {
         let new = self.own_properties.insert(name.clone(), value).is_none();
-        if new && self.parent.as_ref().map_or(true, |p| p.get(name).is_none()) {
+        if new && self.parent.as_ref().is_none_or(|p| p.get(name).is_none()) {
             self.len += 1;
         }
     }
@@ -215,7 +242,7 @@ impl CustomPropertiesMap {
     }
 
     /// Return iterator to go through all properties.
-    pub fn iter(&self) -> Iter {
+    pub fn iter(&self) -> Iter<'_> {
         self.0.iter()
     }
 }

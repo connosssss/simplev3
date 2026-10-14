@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+/** @import {Store} from "resource://newtab/lib/Store.sys.mjs" */
+
 import {
   actionCreators as ac,
   actionTypes as at,
@@ -21,6 +23,9 @@ const PREF_STARTUPCACHE_FEED = "feeds.startupcacheinit";
  *                    We render this feed inert after hydrating from cache or not.
  */
 export class StartupCacheInit {
+  /** @type {Store} */
+  store = null;
+
   constructor() {
     // Internal state for checking if we've intialized this feed.
     this.loaded = false;
@@ -28,6 +33,7 @@ export class StartupCacheInit {
     this.DiscoveryStreamSpocsUpdateReply = false;
     this.WeatherUpdateReply = false;
     this.CustomWallpaperUpdateReply = false;
+    this.PrefChangesReply = new Map();
   }
 
   stateRequestReply(target) {
@@ -46,6 +52,10 @@ export class StartupCacheInit {
     // Reply with any updates if we have them.
     if (this.CustomWallpaperUpdateReply) {
       this.sendCustomWallpaperUpdateReply(target);
+    }
+    // Reply with any pref changes if we have them.
+    if (this.PrefChangesReply.size > 0) {
+      this.sendPrefChangesReply(target);
     }
   }
 
@@ -71,6 +81,8 @@ export class StartupCacheInit {
       data: {
         lastUpdated: spocsState.lastUpdated,
         spocs: spocsState.data,
+        spocsOnDemand: spocsState.onDemand.enabled,
+        spocsCacheUpdateTime: spocsState.cacheUpdateTime,
       },
     };
     this.store.dispatch(ac.OnlyToOneContent(action, target));
@@ -102,6 +114,17 @@ export class StartupCacheInit {
     this.store.dispatch(ac.OnlyToOneContent(action, target));
   }
 
+  // Sends queued preference changes to the startup cache content process.
+  sendPrefChangesReply(target) {
+    for (const [name, value] of this.PrefChangesReply) {
+      const action = {
+        type: at.PREF_CHANGED,
+        data: { name, value },
+      };
+      this.store.dispatch(ac.OnlyToOneContent(action, target));
+    }
+  }
+
   uninitFeed() {
     this.store.uninitFeed(PREF_STARTUPCACHE_FEED, { type: at.UNINIT });
   }
@@ -117,6 +140,7 @@ export class StartupCacheInit {
         this.DiscoveryStreamSpocsUpdateReply = false;
         this.WeatherUpdateReply = false;
         this.CustomWallpaperUpdateReply = false;
+        this.PrefChangesReply.clear();
         break;
       // We either get NEW_TAB_STATE_REQUEST_STARTUPCACHE
       // or NEW_TAB_STATE_REQUEST_WITHOUT_STARTUPCACHE
@@ -163,6 +187,15 @@ export class StartupCacheInit {
         if (this.loaded) {
           // We are receiving a Custom Wallpaper event and have not yet replied, store this and reply later.
           this.CustomWallpaperUpdateReply = true;
+        }
+        break;
+      case at.PREF_CHANGED:
+        if (this.loaded && action.data) {
+          // Queue preference changes that may need to be sent to the startup cache.
+          // This is particularly important for activation window state changes that
+          // can occur after the cache has loaded but before it requests state.
+          const { name, value } = action.data;
+          this.PrefChangesReply.set(name, value);
         }
         break;
     }

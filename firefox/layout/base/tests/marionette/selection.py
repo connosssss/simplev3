@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -103,7 +102,7 @@ class SelectionManager(object):
 
     ::
 
-        element = marionette.find_element(By.ID, 'input')
+        element = marionette.find_element(By.ID, "input")
         sel = SelectionManager(element)
         sel.move_caret_to_front()
 
@@ -147,9 +146,7 @@ class SelectionManager(object):
               for (let i = 0; i < {0}; ++i) {{
                   sel.modify("move", "{1}", "character");
               }}
-              """.format(
-                offset, "backward" if backward else "forward"
-            )
+              """.format(offset, "backward" if backward else "forward")
         )
 
         self.element.marionette.execute_script(

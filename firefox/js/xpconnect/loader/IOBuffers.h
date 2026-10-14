@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,7 +10,7 @@
 #include "mozilla/EndianUtils.h"
 #include "mozilla/EnumSet.h"
 #include "mozilla/Range.h"
-#include "mozilla/Span.h"
+
 #include "nsString.h"
 #include "nsTArray.h"
 
@@ -20,7 +19,7 @@ namespace loader {
 
 class OutputBuffer {
  public:
-  OutputBuffer() {}
+  OutputBuffer() = default;
 
   uint8_t* write(size_t size) {
     auto buf = data.AppendElements(size);

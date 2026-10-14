@@ -1,15 +1,14 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-*/
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "OSXRunLoopSingleton.h"
-#include <mozilla/StaticMutex.h>
 
 #include <AudioUnit/AudioUnit.h>
 #include <CoreAudio/AudioHardware.h>
 #include <CoreAudio/HostTime.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <mozilla/StaticMutex.h>
 
 static bool gRunLoopSet = false;
 static mozilla::StaticMutex gMutex MOZ_UNANNOTATED;
@@ -31,7 +30,7 @@ void mozilla_set_coreaudio_notification_runloop_if_needed() {
 
   OSStatus r;
   r = AudioObjectSetPropertyData(kAudioObjectSystemObject, &runloop_address, 0,
-                                 NULL, sizeof(CFRunLoopRef), &run_loop);
+                                 nullptr, sizeof(CFRunLoopRef), &run_loop);
   if (r != noErr) {
     NS_WARNING(
         "Could not make global CoreAudio notifications use their own thread.");

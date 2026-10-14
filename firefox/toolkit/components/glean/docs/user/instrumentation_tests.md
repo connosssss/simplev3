@@ -38,6 +38,12 @@ you're going to want to write some automated tests.
         * If your instrumentation isn't on the parent process,
           you should call `await Services.fog.testFlushAllChildren()` before `testResetFOG`.
           That will ensure all pending data makes it to the parent process to be cleared.
+        * In a browser-chrome (`browser_*.js`) test this reaches beyond your own test:
+          mochitest gives one browser to a whole manifest,
+          so it also clears `lifetime: application` metrics recorded once during startup,
+          for every test that follows yours, and those cannot be recorded again.
+          A test that reads such a metric needs a manifest of its own
+          (see `browser/components/sessionstore/test/browser_startup_telemetry.toml`).
     * You shouldn't have to do this in C++ or Rust since there you should use the
       `FOGFixture` test fixture.
 * If your metric is based on timing (`timespan`, `timing_distribution`),
@@ -68,12 +74,18 @@ version of those metrics and pings that was current at the time the artifacts we
 
 This isn't a problem unless:
 * You are changing a metric or ping that is used in instrumentation in the compiled code, or
-* You are using `testBeforeNextSubmit` in JavaScript for a ping submitted in the compiled code.
+* You are using `testSubmission` or
+  `testBeforeNextSubmit` in JavaScript for a ping submitted in the Rust code, or
+* You are testing whether an `object` metric's value matches its schema.
+  JOG doesn't validate object schemas
+  (see [bug 2050219](https://bugzilla.mozilla.org/show_bug.cgi?id=2050219)),
+  so values that don't match can be stored without an `invalid_value` error.
+  You'll need a full build to test schema validation.
 
 When in doubt, simply test your new test in artifact mode
 (by e.g. passing `--enable-artifact-builds` to `mach try`)
 before submitting it.
-If it doesn't pass in artifact mode because of one of these two cases,
+If it doesn't pass in artifact mode because of one of these cases,
 you may need to skip your test whenever FOG's artifact build support is enabled:
 * xpcshell:
 ```js
@@ -93,6 +105,15 @@ add_task(function () {
   }
   // ... your test ...
 });
+```
+* Skipping an entire test file
+  (doesn't catch all cases when FOG's artifact build support is enabled,
+  but anyone setting the pref outside of artifact mode will understand) :
+```toml
+[my_test_name.js]
+skip-if = [
+  "artifact", # Bug 1836686 - Known limitation of FOG ping test APIs
+]
 ```
 
 ## The Usual Test Format
@@ -221,7 +242,16 @@ for updates on a better design and implementation for ping tests. ))
 
 `browser-chrome`-flavoured mochitests can be tested very similarly to `xpcshell`,
 though you do not need to request a profile or initialize FOG.
-`plain`-flavoured mochitests can use [`GleanTest.js`](https://searchfox.org/mozilla-central/source/testing/mochitest/tests/SimpleTest/GleanTest.js).
+
+### mochitest-plain (partial asynchronous support)
+
+`plain`-flavoured mochitests can't actually reach the `Glean` global objects,
+so you may wish to prefer `browser-chrome`-flavoured mochitests instead.
+
+If you wish to continue with `plain`-flavoured mochitests,
+you will need to use
+[`GleanTest.js`](https://searchfox.org/firefox-main/source/testing/mochitest/tests/SimpleTest/GleanTest.js)
+to gain access to testing APIs.
 It doesn't support all the features, only the `testResetFOG`,
 `testFlushAllChildren` (as `flush`), and `testGetValue` functions.
 
@@ -258,9 +288,9 @@ their results as they make the trip over IPC and back again.
 </html>
 ```
 
-If you're testing in `mochitest`, your instrumentation (or your test)
-might not be running in the parent process.
-This means you get to learn the IPC test APIs.
+If you have ideas for how to improve instrumentation testing in
+`plain`-flavoured mochitests, please comment in
+[bug 1799977](https://bugzilla.mozilla.org/show_bug.cgi?id=1799977).
 
 ### IPC
 

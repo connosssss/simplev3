@@ -48,7 +48,7 @@ tasks:
             - full
         fetches:
             build:
-                - artifact: target.condprof.tests.tar.gz
+                - artifact: target.condprof.tests.tar.zst
                 - artifact: target.zip
             toolchain:
                 - win64-geckodriver
@@ -58,6 +58,7 @@ tasks:
                 ${EXTRA_ARGS}
                 --geckodriver ${MOZ_FETCHES_DIR}/geckodriver.exe
                 --firefox ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+                --force-new
                 --scenario ${SCENARIO}
                 ../../archive
         worker:
@@ -66,7 +67,7 @@ tasks:
                   path: archive
                   type: directory
     linux64-firefox:
-        worker-type: b-linux-gcp
+        worker-type: b-linux
         description: Creates or updates conditioned profiles on Linux
         run-on-projects: ['mozilla-central']
         treeherder:
@@ -82,7 +83,7 @@ tasks:
             - full
         fetches:
             build:
-                - artifact: target.condprof.tests.tar.gz
+                - artifact: target.condprof.tests.tar.zst
                 - artifact: target.tar.xz
             toolchain:
                 - linux64-geckodriver
@@ -93,29 +94,33 @@ tasks:
                 ${EXTRA_ARGS}
                 --geckodriver ${MOZ_FETCHES_DIR}/geckodriver
                 --firefox ${MOZ_FETCHES_DIR}/firefox/firefox-bin
+                --force-new
                 --scenario ${SCENARIO}
                 ../../archive
         worker:
-            docker-image: {in-tree: condprof}
+            docker-image: {in-tree: ubuntu2404-test}
             artifacts:
                 - name: public/condprof
                   path: /builds/worker/archive
                   type: directory
     macosx64-firefox:
-        worker-type: t-osx-1015-r8
+        worker-type: t-osx-1500-m-vms
         description: Creates or updates conditioned profiles on macOS
         run-on-projects: ['mozilla-central']
         treeherder:
             symbol: condprof(firefox)
-            platform: macosx1015-64-qr/opt
+            platform: macosx1500-aarch64-vms/opt
         index:
             product: firefox
             job-name: condprof-macosx64
         dependencies:
             build: build-macosx64-shippable/opt
+        scenarios:
+            - settled
+            - full
         fetches:
             build:
-                - artifact: target.condprof.tests.tar.gz
+                - artifact: target.condprof.tests.tar.zst
                 - artifact: target.dmg
                   extract: false
             toolchain:
@@ -127,6 +132,7 @@ tasks:
                 ${EXTRA_ARGS}
                 --geckodriver ${MOZ_FETCHES_DIR}/geckodriver
                 --firefox ${MOZ_FETCHES_DIR}/target.dmg
+                --force-new
                 --scenario ${SCENARIO}
                 ../../archive
         worker:

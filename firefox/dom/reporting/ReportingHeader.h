@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,11 +9,13 @@
 #include "nsClassHashtable.h"
 #include "nsIObserver.h"
 #include "nsITimer.h"
+#include "nsIURI.h"
+#include "nsTHashMap.h"
 #include "nsTObserverArray.h"
 
+class nsIChannel;
 class nsIHttpChannel;
 class nsIPrincipal;
-class nsIURI;
 
 namespace mozilla {
 
@@ -26,6 +26,8 @@ class PrincipalInfo;
 }
 
 namespace dom {
+
+class EndpointsList;
 
 class ReportingHeader final : public nsIObserver,
                               public nsITimerCallback,
@@ -40,18 +42,24 @@ class ReportingHeader final : public nsIObserver,
 
   // Exposed structs for gtests
 
+  // https://w3c.github.io/reporting/#endpoint
   struct Endpoint {
     nsCOMPtr<nsIURI> mUrl;
     nsCString mEndpointName;
-    uint32_t mPriority;
-    uint32_t mWeight;
-    uint32_t mFailures;
+    // Initialize for default-construction in AppendElement()
+    uint32_t mPriority = 1;
+    uint32_t mWeight = 1;
+    uint32_t mFailures = 0;
+    static Endpoint Create(already_AddRefed<nsIURI> aURL,
+                           const nsACString& aEndpointName) {
+      return Endpoint{aURL, nsCString{aEndpointName}, 1, 1, 0};
+    }
   };
 
   struct Group {
-    nsString mName;
-    bool mIncludeSubdomains;
-    int32_t mTTL;
+    nsCString mName;
+    bool mIncludeSubdomains = false;
+    int32_t mTTL = 0;
     TimeStamp mCreationTime;
     nsTObserverArray<Endpoint> mEndpoints;
   };
@@ -60,10 +68,16 @@ class ReportingHeader final : public nsIObserver,
     nsTObserverArray<Group> mGroups;
   };
 
+  // https://w3c.github.io/reporting/#process-header
+  static EndpointsList ProcessReportingEndpointsListFromResponse(
+      nsIHttpChannel* aChannel);
+
   // Parses the Reporting-Endpoints of a given header according to the algorithm
   // in https://www.w3.org/TR/reporting-1/#header
-  static UniquePtr<Client> ParseReportingEndpointsHeader(
-      const nsACString& aHeaderValue, nsIURI* aURI);
+  static size_t ParseReportingEndpointsHeader(
+      const nsACString& aHeaderValue, nsIURI* aURI,
+      std::function<void(const nsACString&, nsCOMPtr<nsIURI>)>&&
+          aOnParsedItemCallback);
 
   // [Deprecated] Parses the contents of a given header according to the
   // algorithm in https://www.w3.org/TR/2018/WD-reporting-1-20180925/#header
@@ -72,17 +86,25 @@ class ReportingHeader final : public nsIObserver,
                                                const nsACString& aHeaderValue);
 
   static void GetEndpointForReport(
-      const nsAString& aGroupName,
+      const nsACString& aGroupName,
       const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
       nsACString& aEndpointURI);
 
-  static void GetEndpointForReport(const nsAString& aGroupName,
+  static void GetEndpointForReport(const nsACString& aGroupName,
                                    nsIPrincipal* aPrincipal,
                                    nsACString& aEndpointURI);
 
-  static void RemoveEndpoint(const nsAString& aGroupName,
+  // Used for network-error-logging
+  // If no endpoint is found for aPrincipal and aIncludeSubdomains is true
+  // we'll check all parent origins for groups that have mIncludeSubdomains
+  // equal to true.
+  static void GetEndpointForReportIncludeSubdomains(
+      const nsACString& aGroupName, nsIPrincipal* aPrincipal,
+      bool aIncludeSubdomains, nsACString& aEndpointURI);
+
+  static void RemoveEndpoint(const nsACString& aGroupName,
                              const nsACString& aEndpointURL,
-                             const mozilla::ipc::PrincipalInfo& aPrincipalInfo);
+                             nsIPrincipal* aPrincipal);
 
   // ChromeOnly-WebIDL methods
 
@@ -96,10 +118,6 @@ class ReportingHeader final : public nsIObserver,
 
   // Checks if a channel contains a Report-To header and parses its value.
   void ReportingFromChannel(nsIHttpChannel* aChannel);
-
-  // This method checks if the protocol handler of the URI has the
-  // URI_IS_POTENTIALLY_TRUSTWORTHY flag.
-  static bool IsSecureURI(nsIURI* aURI);
 
   void RemoveOriginsFromHost(const nsAString& aHost);
 
@@ -117,21 +135,21 @@ class ReportingHeader final : public nsIObserver,
   static void LogToConsoleInvalidJSON(nsIHttpChannel* aChannel, nsIURI* aURI);
 
   static void LogToConsoleDuplicateGroup(nsIHttpChannel* aChannel, nsIURI* aURI,
-                                         const nsAString& aName);
+                                         const nsACString& aName);
 
   static void LogToConsoleInvalidNameItem(nsIHttpChannel* aChannel,
                                           nsIURI* aURI);
 
   static void LogToConsoleIncompleteItem(nsIHttpChannel* aChannel, nsIURI* aURI,
-                                         const nsAString& aName);
+                                         const nsACString& aName);
 
   static void LogToConsoleIncompleteEndpoint(nsIHttpChannel* aChannel,
                                              nsIURI* aURI,
-                                             const nsAString& aName);
+                                             const nsACString& aName);
 
   static void LogToConsoleInvalidURLEndpoint(nsIHttpChannel* aChannel,
                                              nsIURI* aURI,
-                                             const nsAString& aName,
+                                             const nsACString& aName,
                                              const nsAString& aURL);
 
   static void LogToConsoleInternal(nsIHttpChannel* aChannel, nsIURI* aURI,
@@ -144,6 +162,15 @@ class ReportingHeader final : public nsIObserver,
   nsClassHashtable<nsCStringHashKey, Client> mOrigins;
 
   nsCOMPtr<nsITimer> mCleanupTimer;
+};
+
+class EndpointsList {
+ public:
+  ReportingHeader::Endpoint* GetEndpointWithName(
+      const nsACString& aEndpointName);
+  void RemoveEndpoint(const nsACString& aEndpointName);
+
+  nsTArray<ReportingHeader::Endpoint> mData;
 };
 
 }  // namespace dom

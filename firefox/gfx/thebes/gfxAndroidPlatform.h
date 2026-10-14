@@ -1,11 +1,11 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef GFX_PLATFORM_ANDROID_H
 #define GFX_PLATFORM_ANDROID_H
 
+#include "MediaCodecsSupport.h"
 #include "gfxPlatform.h"
 #include "gfxUserFontSet.h"
 #include "nsCOMPtr.h"
@@ -40,7 +40,7 @@ class gfxAndroidPlatform final : public gfxPlatform {
   already_AddRefed<mozilla::gfx::VsyncSource> CreateGlobalHardwareVsyncSource()
       override;
 
-  static bool CheckVariationFontSupport();
+  static bool CheckVariationFontSupport() { return true; }
 
   // From Android 12, Font API doesn't read XML files only. To handle updated
   // font, initializing font API causes that it analyzes all font files. So we
@@ -50,8 +50,12 @@ class gfxAndroidPlatform final : public gfxPlatform {
 
   static bool IsFontAPIDisabled(bool aDontCheckPref = false);
 
+  static bool IsHwCodecSupported(mozilla::media::MediaCodec aCodec,
+                                 bool aEncoder);
+
  protected:
   void InitAcceleration() override;
+  void InitPlatformHardwareVideoConfig() override;
 
   bool AccelerateLayersByDefault() override { return true; }
 

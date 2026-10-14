@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -217,7 +215,7 @@ class LiveRange : public TempObject, public InlineForwardListNode<LiveRange> {
 
   // The bundle containing this range, null if liveness information is being
   // constructed and we haven't started allocating bundles yet.
-  LiveBundle* bundle_;
+  LiveBundle* bundle_ = nullptr;
 
   // The code positions in this range.
   Range range_;
@@ -225,28 +223,19 @@ class LiveRange : public TempObject, public InlineForwardListNode<LiveRange> {
   // All uses of the virtual register in this range, ordered by location.
   InlineForwardList<UsePosition> uses_;
 
-  // Total spill weight that calculate from all the uses' policy. Because the
-  // use's policy can't be changed after initialization, we can update the
-  // weight whenever a use is added to or remove from this range. This way, we
-  // don't need to iterate all the uses every time computeSpillWeight() is
-  // called.
-  size_t usesSpillWeight_;
-
-  // Number of uses that have policy LUse::FIXED.
-  uint32_t numFixedUses_;
+  // Number of uses that have policy LUse::FIXED, LUse::REGISTER and LUse::ANY.
+  // Because a use's policy can't change after initialization, these are
+  // maintained as uses are added to and removed from this range, so that
+  // ::computeRequirement and ::computeSpillWeight don't have to iterate all the
+  // uses every time they're called.
+  uint32_t numFixedUses_ = 0;
+  uint32_t numRegisterUses_ = 0;
+  uint32_t numAnyUses_ = 0;
 
   // Whether this range contains the virtual register's definition.
-  bool hasDefinition_;
+  bool hasDefinition_ = false;
 
-  LiveRange(VirtualRegister* vreg, Range range)
-      : vreg_(vreg),
-        bundle_(nullptr),
-        range_(range),
-        usesSpillWeight_(0),
-        numFixedUses_(0),
-        hasDefinition_(false)
-
-  {
+  LiveRange(VirtualRegister* vreg, Range range) : vreg_(vreg), range_(range) {
     MOZ_ASSERT(!range.empty());
   }
 
@@ -310,8 +299,9 @@ class LiveRange : public TempObject, public InlineForwardListNode<LiveRange> {
     hasDefinition_ = true;
   }
 
-  size_t usesSpillWeight() { return usesSpillWeight_; }
-  uint32_t numFixedUses() { return numFixedUses_; }
+  uint32_t numFixedUses() const { return numFixedUses_; }
+  uint32_t numRegisterUses() const { return numRegisterUses_; }
+  uint32_t numAnyUses() const { return numAnyUses_; }
 
 #ifdef JS_JITSPEW
   // Return a string describing this range.
@@ -537,9 +527,6 @@ class VirtualRegister {
   // If true, the |ranges_| vector is guaranteed to be sorted.
   bool rangesSorted_ = true;
 
-  void operator=(const VirtualRegister&) = delete;
-  VirtualRegister(const VirtualRegister&) = delete;
-
 #ifdef DEBUG
   void assertRangesSorted() const;
 #else
@@ -553,6 +540,9 @@ class VirtualRegister {
 
  public:
   VirtualRegister() = default;
+
+  void operator=(const VirtualRegister&) = delete;
+  VirtualRegister(const VirtualRegister&) = delete;
 
   void init(LNode* ins, LDefinition* def, bool isTemp) {
     MOZ_ASSERT(!ins_);
@@ -679,7 +669,7 @@ class MOZ_STACK_CLASS BacktrackingAllocator : protected RegisterAllocator {
   using IsStackAllocated = std::true_type;
 
  private:
-  friend class JSONSpewer;
+  friend class GraphSpewer;
 
   // Computed data
   InstructionDataMap insData;
@@ -869,7 +859,7 @@ class MOZ_STACK_CLASS BacktrackingAllocator : protected RegisterAllocator {
 
   // Merging and queueing of LiveRange groups
   void tryMergeBundles(LiveBundle* bundle0, LiveBundle* bundle1);
-  void allocateStackDefinition(VirtualRegister& reg);
+  [[nodiscard]] bool allocateStackDefinition(VirtualRegister& reg);
   [[nodiscard]] bool tryMergeReusedRegister(VirtualRegister& def,
                                             VirtualRegister& input);
   [[nodiscard]] bool mergeAndQueueRegisters();

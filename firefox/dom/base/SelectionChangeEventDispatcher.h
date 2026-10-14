@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,18 +6,17 @@
 #define mozilla_SelectionChangeEventDispatcher_h
 
 #include "mozilla/Attributes.h"
-#include "nsCycleCollectionParticipant.h"
-#include "nsTArray.h"
 #include "nsCOMPtr.h"
+#include "nsCycleCollectionParticipant.h"
 #include "nsDirection.h"
-
-class nsINode;
-class nsRange;
+#include "nsINode.h"
+#include "nsTArray.h"
 
 namespace mozilla {
 
 namespace dom {
 class Document;
+class Range;
 class Selection;
 }  // namespace dom
 
@@ -48,18 +45,23 @@ class SelectionChangeEventDispatcher final {
     nsCOMPtr<nsINode> mStartContainer;
     nsCOMPtr<nsINode> mEndContainer;
 
-    // XXX These are int32_ts on nsRange, but uint32_ts in the return value
-    // of GetStart_, so I use uint32_ts here. See bug 1194256.
+    // XXX These are int32_ts on dom::Range, but uint32_ts in the return
+    // value of GetStart_, so I use uint32_ts here. See bug 1194256.
     uint32_t mStartOffset;
     uint32_t mEndOffset;
 
-    explicit RawRangeData(const nsRange* aRange);
-    bool Equals(const nsRange* aRange);
+    explicit RawRangeData(const dom::Range* aRange);
+    bool Equals(const dom::Range* aRange);
   };
+
+  void SelectionRangeObservedMutation() {
+    mSelectionRangeObservedMutation = true;
+  }
 
  private:
   nsTArray<RawRangeData> mOldRanges;
   nsDirection mOldDirection;
+  bool mSelectionRangeObservedMutation = false;
 
   ~SelectionChangeEventDispatcher() = default;
 };

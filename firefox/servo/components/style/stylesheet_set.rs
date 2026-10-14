@@ -4,15 +4,14 @@
 
 //! A centralized set of stylesheets for a document.
 
-use crate::dom::TElement;
+use crate::derives::*;
+use crate::device::Device;
 use crate::invalidation::stylesheets::{RuleChangeKind, StylesheetInvalidationSet};
-use crate::media_queries::Device;
-use crate::selector_parser::SnapshotMap;
-use crate::shared_lock::SharedRwLockReadGuard;
+use crate::shared_lock::{SharedRwLockReadGuard, StylesheetGuards};
 use crate::stylesheets::{
-    CssRule, Origin, OriginSet, OriginSetIterator, PerOrigin, StylesheetInDocument,
+    CssRule, CssRuleRef, CustomMediaMap, Origin, OriginSet, PerOrigin, StylesheetInDocument,
 };
-use std::{mem, slice};
+use std::mem;
 
 /// Entry for a StylesheetSet.
 #[derive(MallocSizeOf)]
@@ -39,80 +38,12 @@ where
     }
 }
 
-/// A iterator over the stylesheets of a list of entries in the StylesheetSet.
-pub struct StylesheetCollectionIterator<'a, S>(slice::Iter<'a, StylesheetSetEntry<S>>)
-where
-    S: StylesheetInDocument + PartialEq + 'static;
-
-impl<'a, S> Clone for StylesheetCollectionIterator<'a, S>
-where
-    S: StylesheetInDocument + PartialEq + 'static,
-{
-    fn clone(&self) -> Self {
-        StylesheetCollectionIterator(self.0.clone())
-    }
-}
-
-impl<'a, S> Iterator for StylesheetCollectionIterator<'a, S>
-where
-    S: StylesheetInDocument + PartialEq + 'static,
-{
-    type Item = &'a S;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|entry| &entry.sheet)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.0.size_hint()
-    }
-}
-
-/// An iterator over the flattened view of the stylesheet collections.
-#[derive(Clone)]
-pub struct StylesheetIterator<'a, S>
-where
-    S: StylesheetInDocument + PartialEq + 'static,
-{
-    origins: OriginSetIterator,
-    collections: &'a PerOrigin<SheetCollection<S>>,
-    current: Option<(Origin, StylesheetCollectionIterator<'a, S>)>,
-}
-
-impl<'a, S> Iterator for StylesheetIterator<'a, S>
-where
-    S: StylesheetInDocument + PartialEq + 'static,
-{
-    type Item = (&'a S, Origin);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if self.current.is_none() {
-                let next_origin = self.origins.next()?;
-
-                self.current = Some((
-                    next_origin,
-                    self.collections.borrow_for_origin(&next_origin).iter(),
-                ));
-            }
-
-            {
-                let (origin, ref mut iter) = *self.current.as_mut().unwrap();
-                if let Some(s) = iter.next() {
-                    return Some((s, origin));
-                }
-            }
-
-            self.current = None;
-        }
-    }
-}
-
 /// The validity of the data in a given cascade origin.
-#[derive(Clone, Copy, Debug, Eq, MallocSizeOf, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, Eq, MallocSizeOf, Ord, PartialEq, PartialOrd)]
 pub enum DataValidity {
     /// The origin is clean, all the data already there is valid, though we may
     /// have new sheets at the end.
+    #[default]
     Valid = 0,
 
     /// The cascade data is invalid, but not the invalidation data (which is
@@ -123,19 +54,12 @@ pub enum DataValidity {
     FullyInvalid = 2,
 }
 
-impl Default for DataValidity {
-    fn default() -> Self {
-        DataValidity::Valid
-    }
-}
-
 /// A struct to iterate over the different stylesheets to be flushed.
 pub struct DocumentStylesheetFlusher<'a, S>
 where
     S: StylesheetInDocument + PartialEq + 'static,
 {
     collections: &'a mut PerOrigin<SheetCollection<S>>,
-    had_invalidations: bool,
 }
 
 /// The type of rebuild that we need to do for a given stylesheet.
@@ -159,22 +83,15 @@ where
     S: StylesheetInDocument + PartialEq + 'static,
 {
     /// Returns a flusher for `origin`.
-    pub fn flush_origin(&mut self, origin: Origin) -> SheetCollectionFlusher<S> {
+    pub fn flush_origin(&mut self, origin: Origin) -> SheetCollectionFlusher<'_, S> {
         self.collections.borrow_mut_for_origin(&origin).flush()
     }
 
     /// Returns the list of stylesheets for `origin`.
     ///
     /// Only used for UA sheets.
-    pub fn origin_sheets(&mut self, origin: Origin) -> StylesheetCollectionIterator<S> {
-        self.collections.borrow_mut_for_origin(&origin).iter()
-    }
-
-    /// Returns whether any DOM invalidations were processed as a result of the
-    /// stylesheet flush.
-    #[inline]
-    pub fn had_invalidations(&self) -> bool {
-        self.had_invalidations
+    pub fn origin_sheets(&self, origin: Origin) -> impl Iterator<Item = &S> {
+        self.collections.borrow_for_origin(&origin).iter()
     }
 }
 
@@ -208,7 +125,7 @@ where
     }
 
     /// Returns an iterator over the remaining list of sheets to consume.
-    pub fn sheets<'b>(&'b self) -> impl Iterator<Item = &'b S> {
+    pub fn sheets(&self) -> impl Iterator<Item = &S> {
         self.entries.iter().map(|entry| &entry.sheet)
     }
 }
@@ -299,15 +216,21 @@ where
     }
 
     fn find_sheet_index(&self, sheet: &S) -> Option<usize> {
-        let rev_pos = self.entries.iter().rev().position(|entry| entry.sheet == *sheet);
+        let rev_pos = self
+            .entries
+            .iter()
+            .rev()
+            .position(|entry| entry.sheet == *sheet);
         rev_pos.map(|i| self.entries.len() - i - 1)
     }
 
-    fn remove(&mut self, sheet: &S) {
+    /// Removes a sheet from the collection, returning whether the sheet had
+    /// been committed (that is, whether it has been part of a flush).
+    fn remove(&mut self, sheet: &S) -> bool {
         let index = self.find_sheet_index(sheet);
         if cfg!(feature = "gecko") && index.is_none() {
             // FIXME(emilio): Make Gecko's PresShell::AddUserSheet not suck.
-            return;
+            return false;
         }
         let sheet = self.entries.remove(index.unwrap());
         // Removing sheets makes us tear down the whole cascade and invalidation
@@ -322,6 +245,7 @@ where
         } else {
             self.dirty = true;
         }
+        sheet.committed
     }
 
     fn contains(&self, sheet: &S) -> bool {
@@ -343,7 +267,8 @@ where
     fn insert_before(&mut self, sheet: S, before_sheet: &S) {
         debug_assert!(!self.contains(&sheet));
 
-        let index = self.find_sheet_index(before_sheet)
+        let index = self
+            .find_sheet_index(before_sheet)
             .expect("`before_sheet` stylesheet not found");
 
         // Inserting stylesheets somewhere but at the end changes the validity
@@ -362,11 +287,36 @@ where
     }
 
     /// Returns an iterator over the current list of stylesheets.
-    fn iter(&self) -> StylesheetCollectionIterator<S> {
-        StylesheetCollectionIterator(self.entries.iter())
+    fn iter(&self) -> impl Iterator<Item = &S> {
+        self.entries.iter().map(|e| &e.sheet)
     }
 
-    fn flush(&mut self) -> SheetCollectionFlusher<S> {
+    /// Returns a mutable iterator over the current list of stylesheets.
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut S> {
+        self.entries.iter_mut().map(|e| &mut e.sheet)
+    }
+
+    /// Collects invalidations for the sheets that have been added (i.e. sheets not yet committed)
+    /// since the last flush.
+    fn collect_pending_invalidations(
+        &self,
+        invalidations: &mut StylesheetInvalidationSet,
+        device: &Device,
+        custom_media: &CustomMediaMap,
+        guard: &SharedRwLockReadGuard,
+    ) {
+        if !self.dirty {
+            return;
+        }
+        for entry in &self.entries {
+            if entry.committed {
+                continue;
+            }
+            invalidations.collect_invalidations_for(device, custom_media, &entry.sheet, guard);
+        }
+    }
+
+    fn flush(&mut self) -> SheetCollectionFlusher<'_, S> {
         let dirty = mem::replace(&mut self.dirty, false);
         let validity = mem::replace(&mut self.data_validity, DataValidity::Valid);
 
@@ -379,7 +329,7 @@ where
 }
 
 /// The set of stylesheets effective for a given document.
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
+#[derive(MallocSizeOf)]
 pub struct DocumentStylesheetSet<S>
 where
     S: StylesheetInDocument + PartialEq + 'static,
@@ -402,57 +352,56 @@ macro_rules! sheet_set_methods {
         fn collect_invalidations_for(
             &mut self,
             device: Option<&Device>,
+            custom_media: &CustomMediaMap,
             sheet: &S,
             guard: &SharedRwLockReadGuard,
         ) {
             if let Some(device) = device {
                 self.invalidations
-                    .collect_invalidations_for(device, sheet, guard);
+                    .collect_invalidations_for(device, custom_media, sheet, guard);
             }
         }
 
         /// Appends a new stylesheet to the current set.
         ///
-        /// No device implies not computing invalidations.
-        pub fn append_stylesheet(
-            &mut self,
-            device: Option<&Device>,
-            sheet: S,
-            guard: &SharedRwLockReadGuard,
-        ) {
+        /// Invalidations for the new sheet are collected when flushing.
+        pub fn append_stylesheet(&mut self, sheet: S, guard: &SharedRwLockReadGuard) {
             debug!(concat!($set_name, "::append_stylesheet"));
-            self.collect_invalidations_for(device, &sheet, guard);
-            let collection = self.collection_for(&sheet);
+            let collection = self.collection_for(&sheet, guard);
             collection.append(sheet);
         }
 
         /// Insert a given stylesheet before another stylesheet in the document.
+        ///
+        /// Invalidations for the new sheet are collected when flushing.
         pub fn insert_stylesheet_before(
             &mut self,
-            device: Option<&Device>,
             sheet: S,
             before_sheet: S,
             guard: &SharedRwLockReadGuard,
         ) {
             debug!(concat!($set_name, "::insert_stylesheet_before"));
-            self.collect_invalidations_for(device, &sheet, guard);
-
-            let collection = self.collection_for(&sheet);
+            let collection = self.collection_for(&sheet, guard);
             collection.insert_before(sheet, &before_sheet);
         }
 
         /// Remove a given stylesheet from the set.
+        ///
+        /// No device implies not computing invalidations.
         pub fn remove_stylesheet(
             &mut self,
             device: Option<&Device>,
+            custom_media: &CustomMediaMap,
             sheet: S,
             guard: &SharedRwLockReadGuard,
         ) {
             debug!(concat!($set_name, "::remove_stylesheet"));
-            self.collect_invalidations_for(device, &sheet, guard);
-
-            let collection = self.collection_for(&sheet);
-            collection.remove(&sheet)
+            let collection = self.collection_for(&sheet, guard);
+            // If the sheet never made it to a flush, it never affected the document styles, so
+            // nothing to invalidate.
+            if collection.remove(&sheet) {
+                self.collect_invalidations_for(device, custom_media, &sheet, guard);
+            }
         }
 
         /// Notify the set that a rule from a given stylesheet has changed
@@ -460,10 +409,12 @@ macro_rules! sheet_set_methods {
         pub fn rule_changed(
             &mut self,
             device: Option<&Device>,
+            custom_media: &CustomMediaMap,
             sheet: &S,
             rule: &CssRule,
             guard: &SharedRwLockReadGuard,
             change_kind: RuleChangeKind,
+            ancestors: &[CssRuleRef],
         ) {
             if let Some(device) = device {
                 let quirks_mode = device.quirks_mode();
@@ -473,7 +424,9 @@ macro_rules! sheet_set_methods {
                     guard,
                     device,
                     quirks_mode,
+                    custom_media,
                     change_kind,
+                    ancestors,
                 );
             }
 
@@ -498,13 +451,24 @@ macro_rules! sheet_set_methods {
                 // Maybe we could record whether we saw a clone in this flush,
                 // and if so do the conservative thing, otherwise just
                 // early-return.
-                RuleChangeKind::StyleRuleDeclarations => DataValidity::FullyInvalid,
+                RuleChangeKind::PositionTryDeclarations | RuleChangeKind::StyleRuleDeclarations => {
+                    DataValidity::FullyInvalid
+                },
             };
 
-            let collection = self.collection_for(&sheet);
+            let collection = self.collection_for(&sheet, guard);
             collection.set_data_validity_at_least(validity);
         }
     };
+}
+
+impl<S> Default for DocumentStylesheetSet<S>
+where
+    S: StylesheetInDocument + PartialEq + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<S> DocumentStylesheetSet<S>
@@ -519,8 +483,12 @@ where
         }
     }
 
-    fn collection_for(&mut self, sheet: &S) -> &mut SheetCollection<S> {
-        let origin = sheet.contents().origin;
+    fn collection_for(
+        &mut self,
+        sheet: &S,
+        guard: &SharedRwLockReadGuard,
+    ) -> &mut SheetCollection<S> {
+        let origin = sheet.contents(guard).origin;
         self.collections.borrow_mut_for_origin(&origin)
     }
 
@@ -547,30 +515,39 @@ where
 
     /// Returns whether the given set has changed from the last flush.
     pub fn has_changed(&self) -> bool {
-        !self.invalidations.is_empty() ||
-            self.collections
+        !self.invalidations.is_empty()
+            || self
+                .collections
                 .iter_origins()
                 .any(|(collection, _)| collection.dirty)
     }
 
-    /// Flush the current set, unmarking it as dirty, and returns a
-    /// `DocumentStylesheetFlusher` in order to rebuild the stylist.
-    pub fn flush<E>(
+    /// Flush the current set, unmarking it as dirty, and returns a `DocumentStylesheetFlusher` in
+    /// order to rebuild the stylist and the invalidation set.
+    ///
+    /// `custom_media_for_origin` is used to compute the invalidations for the sheets added since
+    /// the last flush.
+    pub fn flush<'a>(
         &mut self,
-        document_element: Option<E>,
-        snapshots: Option<&SnapshotMap>,
-    ) -> DocumentStylesheetFlusher<S>
-    where
-        E: TElement,
-    {
+        device: &Device,
+        guards: &StylesheetGuards,
+        custom_media_for_origin: impl Fn(Origin) -> &'a CustomMediaMap,
+    ) -> (DocumentStylesheetFlusher<'_, S>, StylesheetInvalidationSet) {
         debug!("DocumentStylesheetSet::flush");
-
-        let had_invalidations = self.invalidations.flush(document_element, snapshots);
-
-        DocumentStylesheetFlusher {
-            collections: &mut self.collections,
-            had_invalidations,
+        for (collection, origin) in self.collections.iter_origins() {
+            collection.collect_pending_invalidations(
+                &mut self.invalidations,
+                device,
+                custom_media_for_origin(origin),
+                guards.for_origin(origin),
+            );
         }
+        (
+            DocumentStylesheetFlusher {
+                collections: &mut self.collections,
+            },
+            std::mem::take(&mut self.invalidations),
+        )
     }
 
     /// Flush stylesheets, but without running any of the invalidation passes.
@@ -579,7 +556,7 @@ where
         debug!("DocumentStylesheetSet::flush_without_invalidation");
 
         let mut origins = OriginSet::empty();
-        self.invalidations.clear();
+        std::mem::take(&mut self.invalidations);
 
         for (collection, origin) in self.collections.iter_mut_origins() {
             if collection.flush().dirty() {
@@ -591,12 +568,17 @@ where
     }
 
     /// Return an iterator over the flattened view of all the stylesheets.
-    pub fn iter(&self) -> StylesheetIterator<S> {
-        StylesheetIterator {
-            origins: OriginSet::all().iter_origins(),
-            collections: &self.collections,
-            current: None,
-        }
+    pub fn iter(&self) -> impl Iterator<Item = (&S, Origin)> {
+        self.collections
+            .iter_origins()
+            .flat_map(|(c, o)| c.iter().map(move |s| (s, o)))
+    }
+
+    /// Return an iterator over the flattened view of all the stylesheets, mutably.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut S, Origin)> {
+        self.collections
+            .iter_mut_origins()
+            .flat_map(|(c, o)| c.iter_mut().map(move |s| (s, o)))
     }
 
     /// Mark the stylesheets for the specified origin as dirty, because
@@ -631,8 +613,15 @@ where
 {
     /// The actual flusher for the collection.
     pub sheets: SheetCollectionFlusher<'a, S>,
-    /// Whether any sheet invalidation matched.
-    pub had_invalidations: bool,
+}
+
+impl<S> Default for AuthorStylesheetSet<S>
+where
+    S: StylesheetInDocument + PartialEq + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<S> AuthorStylesheetSet<S>
@@ -668,15 +657,20 @@ where
         self.collection.len()
     }
 
-    fn collection_for(&mut self, _sheet: &S) -> &mut SheetCollection<S> {
+    fn collection_for(&mut self, _: &S, _: &SharedRwLockReadGuard) -> &mut SheetCollection<S> {
         &mut self.collection
     }
 
     sheet_set_methods!("AuthorStylesheetSet");
 
     /// Iterate over the list of stylesheets.
-    pub fn iter(&self) -> StylesheetCollectionIterator<S> {
+    pub fn iter(&self) -> impl Iterator<Item = &S> {
         self.collection.iter()
+    }
+
+    /// Returns a mutable iterator over the current list of stylesheets.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut S> {
+        self.collection.iter_mut()
     }
 
     /// Mark the sheet set dirty, as appropriate.
@@ -688,20 +682,26 @@ where
 
     /// Flush the stylesheets for this author set.
     ///
-    /// `host` is the root of the affected subtree, like the shadow host, for
-    /// example.
-    pub fn flush<E>(
+    /// No device implies not computing invalidations.
+    pub fn flush(
         &mut self,
-        host: Option<E>,
-        snapshots: Option<&SnapshotMap>,
-    ) -> AuthorStylesheetFlusher<S>
-    where
-        E: TElement,
-    {
-        let had_invalidations = self.invalidations.flush(host, snapshots);
-        AuthorStylesheetFlusher {
-            sheets: self.collection.flush(),
-            had_invalidations,
+        device: Option<&Device>,
+        custom_media: &CustomMediaMap,
+        guard: &SharedRwLockReadGuard,
+    ) -> (AuthorStylesheetFlusher<'_, S>, StylesheetInvalidationSet) {
+        if let Some(device) = device {
+            self.collection.collect_pending_invalidations(
+                &mut self.invalidations,
+                device,
+                custom_media,
+                guard,
+            );
         }
+        (
+            AuthorStylesheetFlusher {
+                sheets: self.collection.flush(),
+            },
+            std::mem::take(&mut self.invalidations),
+        )
     }
 }

@@ -6,7 +6,7 @@ package org.mozilla.fenix.settings.quicksettings
 
 import io.mockk.MockKAnnotations
 import io.mockk.every
-import io.mockk.impl.annotations.MockK
+import io.mockk.impl.annotations.RelaxedMockK
 import io.mockk.mockk
 import mozilla.components.concept.engine.permission.SitePermissions
 import mozilla.components.concept.engine.permission.SitePermissions.AutoplayStatus
@@ -25,8 +25,7 @@ import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class AutoplayValueTest {
-    @MockK(relaxed = true)
-    private lateinit var settings: Settings
+    @RelaxedMockK private lateinit var settings: Settings
 
     @Before
     fun setup() {
@@ -35,182 +34,209 @@ class AutoplayValueTest {
 
     @Test
     fun `AllowAll - isSelected`() {
-        var rules = getRules().copy(
-            autoplayAudible = AutoplayAction.ALLOWED,
-            autoplayInaudible = AutoplayAction.ALLOWED,
-        )
+        var rules =
+            getRules()
+                .copy(
+                    autoplayAudible = AutoplayAction.ALLOWED,
+                    autoplayInaudible = AutoplayAction.ALLOWED,
+                )
 
-        var value = AutoplayValue.AllowAll(
-            label = "label",
-            rules = rules,
-            sitePermission = null,
-        )
+        var value =
+            AutoplayValue.AllowAll(
+                label = "label",
+                rules = rules,
+                sitePermission = null,
+            )
 
         assertTrue(value.isSelected())
 
-        rules = rules.copy(
-            autoplayAudible = AutoplayAction.BLOCKED,
-        )
+        rules = rules.copy(autoplayAudible = AutoplayAction.BLOCKED)
 
-        value = AutoplayValue.AllowAll(
-            label = "label",
-            rules = rules,
-            sitePermission = null,
-        )
+        value =
+            AutoplayValue.AllowAll(
+                label = "label",
+                rules = rules,
+                sitePermission = null,
+            )
 
         assertFalse(value.isSelected())
 
-        value = AutoplayValue.AllowAll(
-            label = "label",
-            rules = rules,
-            sitePermission = SitePermissions(
-                origin = "",
-                savedAt = 0L,
-                autoplayAudible = AutoplayStatus.ALLOWED,
-                autoplayInaudible = AutoplayStatus.ALLOWED,
-            ),
-        )
+        value =
+            AutoplayValue.AllowAll(
+                label = "label",
+                rules = rules,
+                sitePermission =
+                    SitePermissions(
+                        origin = "",
+                        savedAt = 0L,
+                        autoplayAudible = AutoplayStatus.ALLOWED,
+                        autoplayInaudible = AutoplayStatus.ALLOWED,
+                    ),
+            )
 
         assertTrue(value.isSelected())
 
-        value = AutoplayValue.AllowAll(
-            label = "label",
-            rules = rules,
-            sitePermission = SitePermissions(
-                origin = "",
-                savedAt = 0L,
-                autoplayAudible = AutoplayStatus.BLOCKED,
-                autoplayInaudible = AutoplayStatus.BLOCKED,
-            ),
-        )
+        value =
+            AutoplayValue.AllowAll(
+                label = "label",
+                rules = rules,
+                sitePermission =
+                    SitePermissions(
+                        origin = "",
+                        savedAt = 0L,
+                        autoplayAudible = AutoplayStatus.BLOCKED,
+                        autoplayInaudible = AutoplayStatus.BLOCKED,
+                    ),
+            )
 
         assertFalse(value.isSelected())
     }
 
     @Test
     fun `BlockAll - isSelected`() {
-        var rules = getRules().copy(
-            autoplayAudible = AutoplayAction.BLOCKED,
-            autoplayInaudible = AutoplayAction.BLOCKED,
-        )
+        var rules =
+            getRules()
+                .copy(
+                    autoplayAudible = AutoplayAction.BLOCKED,
+                    autoplayInaudible = AutoplayAction.BLOCKED,
+                )
 
-        var value = AutoplayValue.BlockAll(
-            label = "label",
-            rules = rules,
-            sitePermission = null,
-        )
+        var value =
+            AutoplayValue.BlockAll(
+                label = "label",
+                rules = rules,
+                sitePermission = null,
+            )
 
         assertTrue(value.isSelected())
 
-        rules = rules.copy(
-            autoplayAudible = AutoplayAction.BLOCKED,
-            autoplayInaudible = AutoplayAction.ALLOWED,
-        )
+        rules =
+            rules.copy(
+                autoplayAudible = AutoplayAction.BLOCKED,
+                autoplayInaudible = AutoplayAction.ALLOWED,
+            )
 
-        value = AutoplayValue.BlockAll(
-            label = "label",
-            rules = rules,
-            sitePermission = null,
-        )
+        value =
+            AutoplayValue.BlockAll(
+                label = "label",
+                rules = rules,
+                sitePermission = null,
+            )
 
         assertFalse(value.isSelected())
 
-        value = AutoplayValue.BlockAll(
-            label = "label",
-            rules = rules,
-            sitePermission = SitePermissions(
-                origin = "",
-                savedAt = 0L,
-                autoplayAudible = AutoplayStatus.BLOCKED,
-                autoplayInaudible = AutoplayStatus.BLOCKED,
-            ),
-        )
+        value =
+            AutoplayValue.BlockAll(
+                label = "label",
+                rules = rules,
+                sitePermission =
+                    SitePermissions(
+                        origin = "",
+                        savedAt = 0L,
+                        autoplayAudible = AutoplayStatus.BLOCKED,
+                        autoplayInaudible = AutoplayStatus.BLOCKED,
+                    ),
+            )
 
         assertTrue(value.isSelected())
 
-        value = AutoplayValue.BlockAll(
-            label = "label",
-            rules = rules,
-            sitePermission = SitePermissions(
-                origin = "",
-                savedAt = 0L,
-                autoplayAudible = AutoplayStatus.ALLOWED,
-                autoplayInaudible = AutoplayStatus.BLOCKED,
-            ),
-        )
+        value =
+            AutoplayValue.BlockAll(
+                label = "label",
+                rules = rules,
+                sitePermission =
+                    SitePermissions(
+                        origin = "",
+                        savedAt = 0L,
+                        autoplayAudible = AutoplayStatus.ALLOWED,
+                        autoplayInaudible = AutoplayStatus.BLOCKED,
+                    ),
+            )
 
         assertFalse(value.isSelected())
     }
 
     @Test
     fun `BlockAudible - isSelected`() {
-        var rules = getRules().copy(
-            autoplayAudible = AutoplayAction.BLOCKED,
-            autoplayInaudible = AutoplayAction.ALLOWED,
-        )
+        var rules =
+            getRules()
+                .copy(
+                    autoplayAudible = AutoplayAction.BLOCKED,
+                    autoplayInaudible = AutoplayAction.ALLOWED,
+                )
 
-        var value = AutoplayValue.BlockAudible(
-            label = "label",
-            rules = rules,
-            sitePermission = null,
-        )
+        var value =
+            AutoplayValue.BlockAudible(
+                label = "label",
+                rules = rules,
+                sitePermission = null,
+            )
 
         assertTrue(value.isSelected())
 
-        rules = rules.copy(
-            autoplayAudible = AutoplayAction.BLOCKED,
-            autoplayInaudible = AutoplayAction.BLOCKED,
-        )
+        rules =
+            rules.copy(
+                autoplayAudible = AutoplayAction.BLOCKED,
+                autoplayInaudible = AutoplayAction.BLOCKED,
+            )
 
-        value = AutoplayValue.BlockAudible(
-            label = "label",
-            rules = rules,
-            sitePermission = null,
-        )
+        value =
+            AutoplayValue.BlockAudible(
+                label = "label",
+                rules = rules,
+                sitePermission = null,
+            )
 
         assertFalse(value.isSelected())
 
-        value = AutoplayValue.BlockAudible(
-            label = "label",
-            rules = rules,
-            sitePermission = SitePermissions(
-                origin = "",
-                savedAt = 0L,
-                autoplayAudible = AutoplayStatus.BLOCKED,
-                autoplayInaudible = AutoplayStatus.ALLOWED,
-            ),
-        )
+        value =
+            AutoplayValue.BlockAudible(
+                label = "label",
+                rules = rules,
+                sitePermission =
+                    SitePermissions(
+                        origin = "",
+                        savedAt = 0L,
+                        autoplayAudible = AutoplayStatus.BLOCKED,
+                        autoplayInaudible = AutoplayStatus.ALLOWED,
+                    ),
+            )
 
         assertTrue(value.isSelected())
 
-        value = AutoplayValue.BlockAudible(
-            label = "label",
-            rules = rules,
-            sitePermission = SitePermissions(
-                origin = "",
-                savedAt = 0L,
-                autoplayAudible = AutoplayStatus.ALLOWED,
-                autoplayInaudible = AutoplayStatus.ALLOWED,
-            ),
-        )
+        value =
+            AutoplayValue.BlockAudible(
+                label = "label",
+                rules = rules,
+                sitePermission =
+                    SitePermissions(
+                        origin = "",
+                        savedAt = 0L,
+                        autoplayAudible = AutoplayStatus.ALLOWED,
+                        autoplayInaudible = AutoplayStatus.ALLOWED,
+                    ),
+            )
 
         assertFalse(value.isSelected())
     }
 
     @Test
     fun `AllowAll - createSitePermissionsFromCustomRules`() {
-        val rules = getRules().copy(
-            autoplayAudible = AutoplayAction.BLOCKED,
-            autoplayInaudible = AutoplayAction.BLOCKED,
-        )
+        val rules =
+            getRules()
+                .copy(
+                    autoplayAudible = AutoplayAction.BLOCKED,
+                    autoplayInaudible = AutoplayAction.BLOCKED,
+                )
 
         every { settings.getSitePermissionsCustomSettingsRules() } returns rules
 
-        val value = AutoplayValue.AllowAll(
-            label = "label",
-            rules = rules,
-            sitePermission = null,
-        )
+        val value =
+            AutoplayValue.AllowAll(
+                label = "label",
+                rules = rules,
+                sitePermission = null,
+            )
 
         val result = value.createSitePermissionsFromCustomRules("mozilla.org", settings)
 
@@ -227,18 +253,21 @@ class AutoplayValueTest {
 
     @Test
     fun `BlockAll - createSitePermissionsFromCustomRules`() {
-        val rules = getRules().copy(
-            autoplayAudible = AutoplayAction.ALLOWED,
-            autoplayInaudible = AutoplayAction.ALLOWED,
-        )
+        val rules =
+            getRules()
+                .copy(
+                    autoplayAudible = AutoplayAction.ALLOWED,
+                    autoplayInaudible = AutoplayAction.ALLOWED,
+                )
 
         every { settings.getSitePermissionsCustomSettingsRules() } returns rules
 
-        val value = AutoplayValue.BlockAll(
-            label = "label",
-            rules = rules,
-            sitePermission = null,
-        )
+        val value =
+            AutoplayValue.BlockAll(
+                label = "label",
+                rules = rules,
+                sitePermission = null,
+            )
 
         val result = value.createSitePermissionsFromCustomRules("mozilla.org", settings)
 
@@ -255,18 +284,21 @@ class AutoplayValueTest {
 
     @Test
     fun `BlockAudible - createSitePermissionsFromCustomRules`() {
-        val rules = getRules().copy(
-            autoplayAudible = AutoplayAction.ALLOWED,
-            autoplayInaudible = AutoplayAction.ALLOWED,
-        )
+        val rules =
+            getRules()
+                .copy(
+                    autoplayAudible = AutoplayAction.ALLOWED,
+                    autoplayInaudible = AutoplayAction.ALLOWED,
+                )
 
         every { settings.getSitePermissionsCustomSettingsRules() } returns rules
 
-        val value = AutoplayValue.BlockAudible(
-            label = "label",
-            rules = rules,
-            sitePermission = null,
-        )
+        val value =
+            AutoplayValue.BlockAudible(
+                label = "label",
+                rules = rules,
+                sitePermission = null,
+            )
 
         val result = value.createSitePermissionsFromCustomRules("mozilla.org", settings)
 
@@ -283,18 +315,20 @@ class AutoplayValueTest {
 
     @Test
     fun `AllowAll - updateSitePermissions`() {
-        val sitePermissions = SitePermissions(
-            origin = "origin",
-            savedAt = 0L,
-            autoplayAudible = AutoplayStatus.BLOCKED,
-            autoplayInaudible = AutoplayStatus.BLOCKED,
-        )
+        val sitePermissions =
+            SitePermissions(
+                origin = "origin",
+                savedAt = 0L,
+                autoplayAudible = AutoplayStatus.BLOCKED,
+                autoplayInaudible = AutoplayStatus.BLOCKED,
+            )
 
-        val value = AutoplayValue.AllowAll(
-            label = "label",
-            rules = mockk(),
-            sitePermission = null,
-        )
+        val value =
+            AutoplayValue.AllowAll(
+                label = "label",
+                rules = mockk(),
+                sitePermission = null,
+            )
 
         val result = value.updateSitePermissions(sitePermissions)
 
@@ -306,22 +340,26 @@ class AutoplayValueTest {
         assertEquals(sitePermissions.notification, result.notification)
         assertEquals(sitePermissions.localStorage, result.localStorage)
         assertEquals(sitePermissions.mediaKeySystemAccess, result.mediaKeySystemAccess)
+        assertEquals(sitePermissions.localDeviceAccess, result.localDeviceAccess)
+        assertEquals(sitePermissions.localNetworkAccess, result.localNetworkAccess)
     }
 
     @Test
     fun `BlockAll - updateSitePermissions`() {
-        val sitePermissions = SitePermissions(
-            origin = "origin",
-            savedAt = 0L,
-            autoplayAudible = AutoplayStatus.ALLOWED,
-            autoplayInaudible = AutoplayStatus.ALLOWED,
-        )
+        val sitePermissions =
+            SitePermissions(
+                origin = "origin",
+                savedAt = 0L,
+                autoplayAudible = AutoplayStatus.ALLOWED,
+                autoplayInaudible = AutoplayStatus.ALLOWED,
+            )
 
-        val value = AutoplayValue.BlockAll(
-            label = "label",
-            rules = mockk(),
-            sitePermission = null,
-        )
+        val value =
+            AutoplayValue.BlockAll(
+                label = "label",
+                rules = mockk(),
+                sitePermission = null,
+            )
 
         val result = value.updateSitePermissions(sitePermissions)
 
@@ -333,22 +371,26 @@ class AutoplayValueTest {
         assertEquals(sitePermissions.notification, result.notification)
         assertEquals(sitePermissions.localStorage, result.localStorage)
         assertEquals(sitePermissions.mediaKeySystemAccess, result.mediaKeySystemAccess)
+        assertEquals(sitePermissions.localDeviceAccess, result.localDeviceAccess)
+        assertEquals(sitePermissions.localNetworkAccess, result.localNetworkAccess)
     }
 
     @Test
     fun `BlockAudible - updateSitePermissions`() {
-        val sitePermissions = SitePermissions(
-            origin = "origin",
-            savedAt = 0L,
-            autoplayAudible = AutoplayStatus.ALLOWED,
-            autoplayInaudible = AutoplayStatus.BLOCKED,
-        )
+        val sitePermissions =
+            SitePermissions(
+                origin = "origin",
+                savedAt = 0L,
+                autoplayAudible = AutoplayStatus.ALLOWED,
+                autoplayInaudible = AutoplayStatus.BLOCKED,
+            )
 
-        val value = AutoplayValue.BlockAudible(
-            label = "label",
-            rules = mockk(),
-            sitePermission = null,
-        )
+        val value =
+            AutoplayValue.BlockAudible(
+                label = "label",
+                rules = mockk(),
+                sitePermission = null,
+            )
 
         val result = value.updateSitePermissions(sitePermissions)
 
@@ -360,6 +402,8 @@ class AutoplayValueTest {
         assertEquals(sitePermissions.notification, result.notification)
         assertEquals(sitePermissions.localStorage, result.localStorage)
         assertEquals(sitePermissions.mediaKeySystemAccess, result.mediaKeySystemAccess)
+        assertEquals(sitePermissions.localDeviceAccess, result.localDeviceAccess)
+        assertEquals(sitePermissions.localNetworkAccess, result.localNetworkAccess)
     }
 
     @Test
@@ -371,15 +415,18 @@ class AutoplayValueTest {
         assertTrue(values.any { it is AutoplayValue.BlockAudible })
     }
 
-    private fun getRules() = SitePermissionsRules(
-        camera = Action.ASK_TO_ALLOW,
-        location = Action.ASK_TO_ALLOW,
-        microphone = Action.ASK_TO_ALLOW,
-        notification = Action.ASK_TO_ALLOW,
-        autoplayAudible = AutoplayAction.BLOCKED,
-        autoplayInaudible = AutoplayAction.BLOCKED,
-        persistentStorage = Action.ASK_TO_ALLOW,
-        mediaKeySystemAccess = Action.ASK_TO_ALLOW,
-        crossOriginStorageAccess = Action.ASK_TO_ALLOW,
-    )
+    private fun getRules() =
+        SitePermissionsRules(
+            camera = Action.ASK_TO_ALLOW,
+            location = Action.ASK_TO_ALLOW,
+            microphone = Action.ASK_TO_ALLOW,
+            notification = Action.ASK_TO_ALLOW,
+            autoplayAudible = AutoplayAction.BLOCKED,
+            autoplayInaudible = AutoplayAction.BLOCKED,
+            persistentStorage = Action.ASK_TO_ALLOW,
+            mediaKeySystemAccess = Action.ASK_TO_ALLOW,
+            crossOriginStorageAccess = Action.ASK_TO_ALLOW,
+            localDeviceAccess = Action.ASK_TO_ALLOW,
+            localNetworkAccess = Action.ASK_TO_ALLOW,
+        )
 }

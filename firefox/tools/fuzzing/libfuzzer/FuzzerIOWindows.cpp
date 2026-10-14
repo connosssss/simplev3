@@ -76,6 +76,18 @@ static bool IsDir(DWORD FileAttrs) {
   return FileAttrs & FILE_ATTRIBUTE_DIRECTORY;
 }
 
+bool IsDirectory(const std::string &Path) {
+  DWORD Att = GetFileAttributesA(Path.c_str());
+
+  if (Att == INVALID_FILE_ATTRIBUTES) {
+    Printf("GetFileAttributesA() failed for \"%s\" (Error code: %lu).\n",
+           Path.c_str(), GetLastError());
+    return false;
+  }
+
+  return IsDir(Att);
+}
+
 std::string Basename(const std::string &Path) {
   size_t Pos = Path.find_last_of("/\\");
   if (Pos == std::string::npos) return Path;
@@ -99,8 +111,7 @@ size_t FileSize(const std::string &Path) {
 }
 
 int ListFilesInDirRecursive(const std::string &Dir, long *Epoch,
-                             Vector<std::string> *V, bool TopDir) {
-  int Res;
+                             std::vector<std::string> *V, bool TopDir) {
   auto E = GetEpoch(Dir);
   if (Epoch)
     if (E && *Epoch >= E) return 0;
@@ -150,7 +161,6 @@ int ListFilesInDirRecursive(const std::string &Dir, long *Epoch,
     *Epoch = E;
   return 0;
 }
-
 
 void IterateDirRecursive(const std::string &Dir,
                          void (*DirPreCallback)(const std::string &Dir),
@@ -231,7 +241,7 @@ intptr_t GetHandleFromFd(int fd) {
   return _get_osfhandle(fd);
 }
 
-static bool IsSeparator(char C) {
+bool IsSeparator(char C) {
   return C == '\\' || C == '/';
 }
 
@@ -289,9 +299,8 @@ static size_t ParseServerAndShare(const std::string &FileName,
   return Pos - Offset;
 }
 
-// Parse the given Ref string from the position Offset, to exactly match the given
-// string Patt.
-// Returns number of characters considered if successful.
+// Parse the given Ref string from the position Offset, to exactly match the
+// given string Patt. Returns number of characters considered if successful.
 static size_t ParseCustomString(const std::string &Ref, size_t Offset,
                                 const char *Patt) {
   size_t Len = strlen(Patt);

@@ -1,17 +1,15 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <thread>
-#include "gtest/gtest.h"
 
+#include "gtest/gtest.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/SpinEventLoopUntil.h"
-#include "nsMemoryPressure.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
+#include "nsMemoryPressure.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
 
@@ -68,7 +66,7 @@ class MemoryPressureObserver final : public nsIObserver {
     }
 
     if (event) {
-      Unused << mEvents.emplaceBack(event.value());
+      (void)mEvents.emplaceBack(event.value());
     }
     return NS_OK;
   }
@@ -169,16 +167,14 @@ TEST(MemoryPressure, Multithread)
   Atomic<bool> shouldContinue(true);
   Vector<std::thread> threads;
   for (int i = 0; i < kNumThreads; ++i) {
-    Unused << threads.emplaceBack(
-        PressureSender<MemoryPressureState::LowMemory>,
-        std::ref(shouldContinue));
-    Unused << threads.emplaceBack(
-        PressureSender<MemoryPressureState::NoPressure>,
-        std::ref(shouldContinue));
-    Unused << threads.emplaceBack(
+    (void)threads.emplaceBack(PressureSender<MemoryPressureState::LowMemory>,
+                              std::ref(shouldContinue));
+    (void)threads.emplaceBack(PressureSender<MemoryPressureState::NoPressure>,
+                              std::ref(shouldContinue));
+    (void)threads.emplaceBack(
         PressureSenderQuick<MemoryPressureState::LowMemory>,
         std::ref(shouldContinue));
-    Unused << threads.emplaceBack(
+    (void)threads.emplaceBack(
         PressureSenderQuick<MemoryPressureState::NoPressure>,
         std::ref(shouldContinue));
   }

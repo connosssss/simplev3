@@ -4,11 +4,12 @@
 
 //! Specified types for UI properties.
 
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::values::generics::ui as generics;
+use crate::values::specified::Number;
 use crate::values::specified::color::Color;
 use crate::values::specified::image::Image;
-use crate::values::specified::Number;
 use cssparser::Parser;
 use std::fmt::{self, Write};
 use style_traits::{
@@ -23,10 +24,7 @@ pub type CursorImage = generics::GenericCursorImage<Image, Number>;
 
 impl Parse for Cursor {
     /// cursor: [<url> [<number> <number>]?]# [auto | default | ...]
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let mut images = vec![];
         loop {
             match input.try_parse(|input| CursorImage::parse(context, input)) {
@@ -43,10 +41,7 @@ impl Parse for Cursor {
 }
 
 impl Parse for CursorImage {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         use crate::Zero;
 
         let image = Image::parse_only_url(context, input)?;
@@ -87,8 +82,10 @@ impl SpecifiedValueInfo for CursorImage {
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(transparent)]
+#[typed(todo_derive_fields)]
 pub struct BoolInteger(pub bool);
 
 impl BoolInteger {
@@ -100,15 +97,12 @@ impl BoolInteger {
 }
 
 impl Parse for BoolInteger {
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         // We intentionally don't support calc values here.
         match input.expect_integer()? {
             0 => Ok(Self(false)),
             1 => Ok(Self(true)),
-            _ => Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError)),
+            _ => Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError)),
         }
     }
 }
@@ -126,10 +120,7 @@ impl ToCss for BoolInteger {
 pub type ScrollbarColor = generics::ScrollbarColor<Color>;
 
 impl Parse for ScrollbarColor {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
             return Ok(generics::ScrollbarColor::Auto);
         }
@@ -157,6 +148,7 @@ impl Parse for ScrollbarColor {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum UserSelect {
@@ -164,6 +156,8 @@ pub enum UserSelect {
     Text,
     #[parse(aliases = "-moz-none")]
     None,
+    #[cfg(feature = "servo")]
+    Contain,
     /// Force selection of all children.
     All,
 }
@@ -186,6 +180,7 @@ pub enum UserSelect {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum CursorKind {
@@ -246,6 +241,7 @@ pub enum CursorKind {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum MozTheme {
@@ -272,6 +268,7 @@ pub enum MozTheme {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum PointerEvents {
@@ -312,35 +309,12 @@ pub enum PointerEvents {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum Inert {
     None,
     Inert,
-}
-
-/// Non-standard user-input property.
-/// https://developer.mozilla.org/en-US/docs/Web/CSS/-moz-user-input
-#[allow(missing_docs)]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    FromPrimitive,
-    MallocSizeOf,
-    Parse,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToCss,
-    ToResolvedValue,
-    ToShmem,
-)]
-#[repr(u8)]
-pub enum UserInput {
-    Auto,
-    None,
 }
 
 /// Internal -moz-user-focus property.
@@ -360,10 +334,151 @@ pub enum UserInput {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum UserFocus {
     Normal,
     None,
     Ignore,
+}
+
+/// https://drafts.csswg.org/css-ui/#input-method-editor
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum ImeMode {
+    Auto,
+    Normal,
+    Active,
+    Disabled,
+    Inactive,
+}
+
+/// https://drafts.csswg.org/css-scrollbars-1/#scrollbar-width
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum ScrollbarWidth {
+    Auto,
+    Thin,
+    None,
+}
+
+/// Privileged property to control titlebar dragging area.
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum WindowDragging {
+    Default,
+    Drag,
+    NoDrag,
+}
+
+/// None (Nonstandard internal property)
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum WindowShadow {
+    Auto,
+    None,
+}
+
+/// https://drafts.csswg.org/css-ui/#field-sizing
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FieldSizing {
+    Fixed,
+    Content,
 }

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,13 +7,11 @@
 
 #include <array>
 #include <bitset>
-#include <vector>
-
-#include "mozilla/IntegerRange.h"
 
 #include "CacheInvalidator.h"
 #include "WebGLObjectModel.h"
 #include "WebGLStrongTypes.h"
+#include "mozilla/IntegerRange.h"
 
 namespace mozilla {
 
@@ -65,7 +62,7 @@ class WebGLVertexArray : public WebGLContextBoundObject {
   bool mHasBeenBound = false;
 
  public:
-  static WebGLVertexArray* Create(WebGLContext* webgl);
+  static RefPtr<WebGLVertexArray> Create(WebGLContext* webgl);
 
  protected:
   explicit WebGLVertexArray(WebGLContext* webgl);
@@ -88,19 +85,7 @@ class WebGLVertexArray : public WebGLContextBoundObject {
 
   void AttribPointer(const uint32_t index, WebGLBuffer* const buffer,
                      const webgl::VertAttribPointerDesc& desc,
-                     const webgl::VertAttribPointerCalculated& calc) {
-    mDescs[index] = desc;
-
-    auto& binding = mBindings.at(index);
-    binding.buffer = buffer;
-    binding.layout.byteSize = calc.byteSize;
-    binding.layout.byteStride = calc.byteStride;
-    binding.layout.baseType = calc.baseType;
-    binding.layout.byteOffset = desc.byteOffset;
-
-    mAttribIsArrayWithNullBuffer[index] =
-        binding.layout.isArray && !binding.buffer;
-  }
+                     const webgl::VertAttribPointerCalculated& calc);
 
   const auto& AttribBinding(const uint32_t index) const {
     return mBindings.at(index);
@@ -111,7 +96,9 @@ class WebGLVertexArray : public WebGLContextBoundObject {
 
   Maybe<uint32_t> GetAttribIsArrayWithNullBuffer() const {
     const auto& bitset = mAttribIsArrayWithNullBuffer;
-    if (MOZ_LIKELY(bitset.none())) return {};
+    if (bitset.none()) [[likely]] {
+      return {};
+    }
     for (const auto i : IntegerRange(bitset.size())) {
       if (bitset[i]) return Some(i);
     }

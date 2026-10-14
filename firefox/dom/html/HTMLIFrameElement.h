@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,22 +6,21 @@
 #define mozilla_dom_HTMLIFrameElement_h
 
 #include "mozilla/Attributes.h"
+#include "nsDOMTokenList.h"
 #include "nsGenericHTMLElement.h"
 #include "nsGenericHTMLFrameElement.h"
-#include "nsDOMTokenList.h"
 
 namespace mozilla::dom {
 
 class OwningTrustedHTMLOrString;
 class TrustedHTMLOrString;
 
-class FeaturePolicy;
+class PermissionsPolicy;
 
 class HTMLIFrameElement final : public nsGenericHTMLFrameElement {
  public:
-  explicit HTMLIFrameElement(
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
-      FromParser aFromParser = NOT_FROM_PARSER);
+  explicit HTMLIFrameElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo,
+                             FromParser aFromParser = NOT_FROM_PARSER);
 
   NS_IMPL_FROMNODE_HTML_WITH_TAG(HTMLIFrameElement, iframe)
 
@@ -40,13 +37,11 @@ class HTMLIFrameElement final : public nsGenericHTMLFrameElement {
                               const nsAString& aValue,
                               nsIPrincipal* aMaybeScriptedPrincipal,
                               nsAttrValue& aResult) override;
-  NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
+  bool IsNoNamespaceAttrMapped(const nsAtom* aAttribute) const override;
   virtual nsMapRuleToAttributesFunc GetAttributeMappingFunction()
       const override;
 
   virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
-
-  void NodeInfoChanged(Document* aOldDoc) override;
 
   void BindToBrowsingContext(BrowsingContext* aBrowsingContext);
 
@@ -157,15 +152,15 @@ class HTMLIFrameElement final : public nsGenericHTMLFrameElement {
   bool FullscreenFlag() const { return mFullscreenFlag; }
   void SetFullscreenFlag(bool aValue) { mFullscreenFlag = aValue; }
 
-  mozilla::dom::FeaturePolicy* FeaturePolicy() const;
+  mozilla::dom::PermissionsPolicy* PermissionsPolicy() const;
 
   void SetLoading(const nsAString& aLoading, ErrorResult& aError) {
     SetHTMLAttr(nsGkAtoms::loading, aLoading, aError);
   }
 
   void SetLazyLoading();
-  void StopLazyLoading();
-  void CancelLazyLoading(bool aClearLazyLoadState);
+  enum class TriggerLoad : bool { No, Yes };
+  void StopLazyLoading(TriggerLoad);
 
   const LazyLoadFrameResumptionState& GetLazyLoadFrameResumptionState() const {
     return mLazyLoadState;
@@ -174,31 +169,32 @@ class HTMLIFrameElement final : public nsGenericHTMLFrameElement {
  protected:
   virtual ~HTMLIFrameElement();
 
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext*, JS::Handle<JSObject*> aGivenProto) override;
 
-  virtual void AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
-                            const nsAttrValue* aValue,
-                            const nsAttrValue* aOldValue,
-                            nsIPrincipal* aMaybeScriptedPrincipal,
-                            bool aNotify) override;
-  virtual void OnAttrSetButNotChanged(int32_t aNamespaceID, nsAtom* aName,
-                                      const nsAttrValueOrString& aValue,
-                                      bool aNotify) override;
+  void AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
+                    const nsAttrValue* aValue, const nsAttrValue* aOldValue,
+                    nsIPrincipal* aMaybeScriptedPrincipal,
+                    bool aNotify) override;
+  void OnAttrSetButNotChanged(int32_t aNamespaceID, nsAtom* aName,
+                              const nsAttrValueOrString& aValue,
+                              bool aNotify) override;
   nsresult BindToTree(BindContext&, nsINode& aParent) override;
+  void UnbindFromTree(UnbindContext&) override;
+  void NodeInfoChanged(Document* aOldDoc) override;
 
  private:
   static void MapAttributesIntoRule(MappedDeclarationsBuilder&);
 
   static const DOMTokenListSupportedToken sSupportedSandboxTokens[];
 
-  void RefreshFeaturePolicy(bool aParseAllowAttribute);
+  void RefreshPermissionsPolicy(bool aParseAllowAttribute);
+  void RefreshEmbedderReferrerPolicy(ReferrerPolicy aPolicy);
 
   // If this iframe has a 'srcdoc' attribute, the document's origin will be
   // returned. Otherwise, if this iframe has a 'src' attribute, the origin will
   // be the parsing of its value as URL. If the URL is invalid, or 'src'
   // attribute doesn't exist, the origin will be the document's origin.
-  already_AddRefed<nsIPrincipal> GetFeaturePolicyDefaultOrigin() const;
+  already_AddRefed<nsIPrincipal> GetPermissionsPolicyDefaultOrigin() const;
 
   /**
    * This function is called by AfterSetAttr and OnAttrSetButNotChanged.
@@ -212,12 +208,12 @@ class HTMLIFrameElement final : public nsGenericHTMLFrameElement {
   void AfterMaybeChangeAttr(int32_t aNamespaceID, nsAtom* aName, bool aNotify);
 
   /**
-   * Feature policy inheritance is broken in cross process model, so we may
-   * have to store feature policy in browsingContext when neccesary.
+   * Permissions policy inheritance is broken in cross process model, so we may
+   * have to store permissions policy in browsingContext when neccesary.
    */
-  void MaybeStoreCrossOriginFeaturePolicy();
+  void MaybeStoreCrossOriginPermissionsPolicy();
 
-  RefPtr<dom::FeaturePolicy> mFeaturePolicy;
+  RefPtr<dom::PermissionsPolicy> mPermissionsPolicy;
   RefPtr<nsDOMTokenList> mSandbox;
 
   /**

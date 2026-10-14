@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- *
+/*
  * Copyright 2016 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,6 +17,7 @@
 #include "wasm/WasmValidate.h"
 
 #include "mozilla/CheckedInt.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/Span.h"
 #include "mozilla/Utf8.h"
 
@@ -26,6 +25,8 @@
 #include "js/String.h"  // JS::MaxStringLength
 #include "vm/JSContext.h"
 #include "vm/Realm.h"
+#include "wasm/WasmCompile.h"
+#include "wasm/WasmConstants.h"
 #include "wasm/WasmDump.h"
 #include "wasm/WasmInitExpr.h"
 #include "wasm/WasmOpIter.h"
@@ -914,6 +915,97 @@ bool wasm::ValidateOps(ValidatingOpIter& iter, T& dumper,
         }
         break;
       }
+#ifdef ENABLE_WASM_JSPI
+      case uint16_t(Op::ContNew): {
+        if (!codeMeta.stackSwitchingEnabled()) {
+          return iter.unrecognizedOpcode(&op);
+        }
+        uint32_t contTypeIndex;
+        if (!iter.readContNew(&contTypeIndex, &nothing)) {
+          return false;
+        }
+        dumper.dumpTypeIndex(contTypeIndex);
+        break;
+      }
+      case uint16_t(Op::ContBind): {
+        if (!codeMeta.stackSwitchingEnabled()) {
+          return iter.unrecognizedOpcode(&op);
+        }
+        uint32_t inputContTypeIndex;
+        uint32_t outputContTypeIndex;
+        if (!iter.readContBind(&inputContTypeIndex, &outputContTypeIndex,
+                               &nothings, &nothing)) {
+          return false;
+        }
+        dumper.dumpTypeIndex(inputContTypeIndex);
+        dumper.dumpTypeIndex(outputContTypeIndex);
+        break;
+      }
+      case uint16_t(Op::Suspend): {
+        if (!codeMeta.stackSwitchingEnabled()) {
+          return iter.unrecognizedOpcode(&op);
+        }
+        uint32_t tagIndex;
+        if (!iter.readSuspend(&tagIndex, &nothings)) {
+          return false;
+        }
+        dumper.dumpTagIndex(tagIndex);
+        break;
+      }
+      case uint16_t(Op::Resume): {
+        if (!codeMeta.stackSwitchingEnabled()) {
+          return iter.unrecognizedOpcode(&op);
+        }
+        HandlerExprVector handlers;
+        uint32_t contTypeIndex;
+        if (!iter.readResume(&contTypeIndex, &handlers, &nothings, &nothing)) {
+          return false;
+        }
+        dumper.dumpTypeIndex(contTypeIndex);
+        break;
+      }
+      case uint16_t(Op::ResumeThrow): {
+        if (!codeMeta.stackSwitchingEnabled()) {
+          return iter.unrecognizedOpcode(&op);
+        }
+        HandlerExprVector handlers;
+        uint32_t contTypeIndex;
+        uint32_t tagIndex;
+        if (!iter.readResumeThrow(&contTypeIndex, &tagIndex, &handlers,
+                                  &nothings, &nothing)) {
+          return false;
+        }
+        dumper.dumpTypeIndex(contTypeIndex);
+        dumper.dumpTagIndex(tagIndex);
+        break;
+      }
+      case uint16_t(Op::ResumeThrowRef): {
+        if (!codeMeta.stackSwitchingEnabled()) {
+          return iter.unrecognizedOpcode(&op);
+        }
+        HandlerExprVector handlers;
+        uint32_t contTypeIndex;
+        if (!iter.readResumeThrowRef(&contTypeIndex, &handlers, &nothing,
+                                     &nothing)) {
+          return false;
+        }
+        dumper.dumpTypeIndex(contTypeIndex);
+        break;
+      }
+      case uint16_t(Op::Switch): {
+        if (!codeMeta.stackSwitchingEnabled()) {
+          return iter.unrecognizedOpcode(&op);
+        }
+        uint32_t contTypeIndex;
+        uint32_t tagIndex;
+        if (!iter.readSwitch(&contTypeIndex, &tagIndex, &nothings, &nothing)) {
+          return false;
+        }
+        dumper.dumpTypeIndex(contTypeIndex);
+        dumper.dumpTagIndex(tagIndex);
+        break;
+      }
+#endif  // ENABLE_WASM_JSPI
       case uint16_t(Op::GcPrefix): {
         switch (op.b1) {
           case uint32_t(GcOp::StructNew): {
@@ -1205,7 +1297,7 @@ bool wasm::ValidateOps(ValidatingOpIter& iter, T& dumper,
         break;
       }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
       case uint16_t(Op::SimdPrefix): {
         if (!codeMeta.simdAvailable()) {
           return iter.unrecognizedOpcode(&op);
@@ -1817,7 +1909,7 @@ bool wasm::ValidateOps(ValidatingOpIter& iter, T& dumper,
         }
         break;
       }
-#endif  // ENABLE_WASM_SIMD
+#endif  // ENABLE_JIT_SIMD
 
       case uint16_t(Op::MiscPrefix): {
         switch (op.b1) {
@@ -1959,6 +2051,26 @@ bool wasm::ValidateOps(ValidatingOpIter& iter, T& dumper,
             dumper.dumpTableIndex(tableIndex);
             break;
           }
+          case uint32_t(MiscOp::I64Add128):
+          case uint32_t(MiscOp::I64Sub128): {
+            if (!codeMeta.wideArithmeticEnabled()) {
+              return iter.unrecognizedOpcode(&op);
+            }
+            if (!iter.readBinaryI128(&nothing, &nothing, &nothing, &nothing)) {
+              return false;
+            }
+            break;
+          }
+          case uint32_t(MiscOp::I64MulWideS):
+          case uint32_t(MiscOp::I64MulWideU): {
+            if (!codeMeta.wideArithmeticEnabled()) {
+              return iter.unrecognizedOpcode(&op);
+            }
+            if (!iter.readBinaryI64Wide(&nothing, &nothing)) {
+              return false;
+            }
+            break;
+          }
           default:
             return iter.unrecognizedOpcode(&op);
         }
@@ -2010,7 +2122,8 @@ bool wasm::ValidateOps(ValidatingOpIter& iter, T& dumper,
       }
       case uint16_t(Op::RefIsNull): {
         Nothing nothing;
-        if (!iter.readRefIsNull(&nothing)) {
+        RefType unusedRefType;
+        if (!iter.readRefIsNull(&nothing, &unusedRefType)) {
           return false;
         }
         break;
@@ -2434,20 +2547,24 @@ bool wasm::ValidateFunctionBody(const CodeMetadata& codeMeta,
 
 // Section macros.
 
-static bool DecodePreamble(Decoder& d) {
+static bool DecodePreamble(Decoder& d, uint32_t expectedVersion) {
   if (d.bytesRemain() > MaxModuleBytes) {
     return d.fail("module too big");
   }
 
-  uint32_t u32;
-  if (!d.readFixedU32(&u32) || u32 != MagicNumber) {
+  uint32_t magic;
+  if (!d.readFixedU32(&magic) || magic != MagicNumber) {
     return d.fail("failed to match magic number");
   }
 
-  if (!d.readFixedU32(&u32) || u32 != EncodingVersion) {
+  uint32_t version;
+  if (!d.readFixedU32(&version)) {
+    return d.fail("failed to read version");
+  }
+  if (version != expectedVersion) {
     return d.failf("binary version 0x%" PRIx32
                    " does not match expected version 0x%" PRIx32,
-                   u32, EncodingVersion);
+                   version, expectedVersion);
   }
 
   return true;
@@ -2560,6 +2677,26 @@ static bool DecodeArrayType(Decoder& d, CodeMetadata* codeMeta,
   return true;
 }
 
+#ifdef ENABLE_WASM_JSPI
+static bool DecodeContType(Decoder& d, CodeMetadata* codeMeta,
+                           ContType* contType) {
+  uint32_t typeIndex;
+  if (!d.readTypeIndex(&typeIndex)) {
+    return false;
+  }
+
+  if (typeIndex >= codeMeta->types->length()) {
+    return d.fail("type index out of range");
+  }
+
+  // We don't validate that a continuation points at a function type until we've
+  // decoded the whole recursion group.
+  const TypeDef& typeDef = codeMeta->types->type(typeIndex);
+  *contType = ContType(&typeDef);
+  return true;
+}
+#endif  // ENABLE_WASM_JSPI
+
 static bool DecodeTypeSection(Decoder& d, CodeMetadata* codeMeta) {
   MaybeBytecodeRange range;
   if (!d.startSection(SectionId::Type, codeMeta, &range, "type")) {
@@ -2613,6 +2750,12 @@ static bool DecodeTypeSection(Decoder& d, CodeMetadata* codeMeta) {
     if (!recGroup) {
       return false;
     }
+
+    // Cancel the pending rec group if we return early due to a validation
+    // error, so that the bad group is not left in recGroups_ for ~TypeContext
+    // to hash during cleanup.
+    auto cancelRecGroup =
+        mozilla::MakeScopeExit([&] { codeMeta->types->cancelStartRecGroup(); });
 
     // First, iterate over the types, validate them and set super types.
     // Subtyping relationship will be checked in a second iteration.
@@ -2698,6 +2841,19 @@ static bool DecodeTypeSection(Decoder& d, CodeMetadata* codeMeta) {
           *typeDef = std::move(arrayType);
           break;
         }
+#ifdef ENABLE_WASM_JSPI
+        case uint8_t(TypeCode::Cont): {
+          if (!codeMeta->stackSwitchingEnabled()) {
+            return d.fail("stack switching is not enabled");
+          }
+          ContType contType;
+          if (!DecodeContType(d, codeMeta, &contType)) {
+            return false;
+          }
+          *typeDef = std::move(contType);
+          break;
+        }
+#endif  // ENABLE_WASM_JSPI
         default:
           return d.fail("expected type form");
       }
@@ -2718,6 +2874,22 @@ static bool DecodeTypeSection(Decoder& d, CodeMetadata* codeMeta) {
       }
     }
 
+#ifdef ENABLE_WASM_JSPI
+    // Continuation types must refer to function types. We can only validate
+    // this after we've decoded all the types in the recursion group though.
+    for (uint32_t recGroupTypeIndex = 0; recGroupTypeIndex < recGroupLength;
+         recGroupTypeIndex++) {
+      TypeDef* typeDef = &recGroup->type(recGroupTypeIndex);
+      if (!typeDef->isContType()) {
+        continue;
+      }
+
+      if (!typeDef->contType().funcTypeDef().isFuncType()) {
+        return d.fail("cont must reference a func type");
+      }
+    }
+#endif  // ENABLE_WASM_JSPI
+
     // Check the super types to make sure they are compatible with their
     // subtypes. This is done in a second iteration to avoid dealing with not
     // yet loaded types.
@@ -2733,6 +2905,7 @@ static bool DecodeTypeSection(Decoder& d, CodeMetadata* codeMeta) {
     }
 
     // Finish the recursion group, which will canonicalize the types.
+    cancelRecGroup.release();
     if (!codeMeta->types->endRecGroup()) {
       return false;
     }
@@ -2747,25 +2920,10 @@ static bool DecodeTypeSection(Decoder& d, CodeMetadata* codeMeta) {
     return false;
   }
 
-  if (numBytes > MaxStringBytes) {
-    return false;
-  }
-
-  const uint8_t* bytes;
-  if (!d.readBytes(numBytes, &bytes)) {
-    return false;
-  }
-
-  if (!IsUtf8(AsChars(Span(bytes, numBytes)))) {
-    return false;
-  }
-
   UTF8Bytes utf8Bytes;
-  if (!utf8Bytes.resizeUninitialized(numBytes)) {
+  if (!d.readUTF8Bytes(numBytes, &utf8Bytes)) {
     return false;
   }
-  memcpy(utf8Bytes.begin(), bytes, numBytes);
-
   *name = CacheableName(std::move(utf8Bytes));
   return true;
 }
@@ -2804,7 +2962,8 @@ static bool DecodeLimitBound(Decoder& d, AddressType addressType,
   return true;
 }
 
-static bool DecodeLimits(Decoder& d, LimitsKind kind, Limits* limits) {
+static bool DecodeLimits(Decoder& d, const CodeMetadata* codeMeta,
+                         LimitsKind kind, Limits* limits) {
   uint8_t flags;
   if (!d.readFixedU8(&flags)) {
     return d.fail("expected flags");
@@ -2859,19 +3018,43 @@ static bool DecodeLimits(Decoder& d, LimitsKind kind, Limits* limits) {
     limits->maximum.emplace(maximum);
   }
 
+  if (kind == LimitsKind::Memory) {
+    limits->pageSize = PageSize::Standard;
+#ifdef ENABLE_WASM_CUSTOM_PAGE_SIZES
+    if (flags & uint8_t(LimitsFlags::HasCustomPageSize)) {
+      if (!codeMeta->customPageSizesEnabled()) {
+        return d.fail("custom page sizes are disabled");
+      }
+
+      uint32_t customPageSize;
+      if (!d.readVarU32(&customPageSize)) {
+        return d.fail("failed to decode custom page size");
+      }
+
+      if (customPageSize == static_cast<uint32_t>(PageSize::Tiny)) {
+        limits->pageSize = PageSize::Tiny;
+      } else if (customPageSize != static_cast<uint32_t>(PageSize::Standard)) {
+        return d.fail("bad custom page size");
+      }
+    }
+#endif
+  }
+
   return true;
 }
 
 // Combined decoding for both table types and the augmented form of table types
 // that can include init expressions:
 //
-// https://wasm-dsl.github.io/spectec/core/binary/types.html#table-types
-// https://wasm-dsl.github.io/spectec/core/binary/modules.html#table-section
+// https://webassembly.github.io/spec/core/binary/types.html#table-types
+// https://webassembly.github.io/spec/core/binary/modules.html#table-section
 //
 // Only defined tables are therefore allowed to have init expressions, not
 // imported tables.
-static bool DecodeTableType(Decoder& d, CodeMetadata* codeMeta, bool isImport) {
-  bool initExprPresent = false;
+static bool DecodeTableType(Decoder& d, const CodeMetadata* codeMeta,
+                            bool isImport, TableType* tableType,
+                            bool* initExprPresent) {
+  *initExprPresent = false;
   uint8_t typeCode;
   if (!d.peekByte(&typeCode)) {
     return d.fail("expected type code");
@@ -2885,56 +3068,39 @@ static bool DecodeTableType(Decoder& d, CodeMetadata* codeMeta, bool isImport) {
     if (!d.readFixedU8(&flags) || flags != 0) {
       return d.fail("expected reserved byte to be 0");
     }
-    initExprPresent = true;
+    *initExprPresent = true;
   }
 
-  RefType tableElemType;
-  if (!d.readRefType(*codeMeta->types, codeMeta->features(), &tableElemType)) {
+  if (!d.readRefType(*codeMeta->types, codeMeta->features(),
+                     &tableType->elemType)) {
     return false;
   }
-
-  Limits limits;
-  if (!DecodeLimits(d, LimitsKind::Table, &limits)) {
+  if (!DecodeLimits(d, codeMeta, LimitsKind::Table, &tableType->limits)) {
     return false;
   }
 
   // If there's a maximum, check it is in range.  The check to exclude
   // initial > maximum is carried out by the DecodeLimits call above, so
   // we don't repeat it here.
-  if (limits.initial > MaxTableElemsValidation(limits.addressType) ||
-      ((limits.maximum.isSome() &&
-        limits.maximum.value() >
-            MaxTableElemsValidation(limits.addressType)))) {
+  if (tableType->limits.initial >
+          MaxTableElemsValidation(tableType->limits.addressType) ||
+      ((tableType->limits.maximum.isSome() &&
+        tableType->limits.maximum.value() >
+            MaxTableElemsValidation(tableType->limits.addressType)))) {
     return d.fail("too many table elements");
   }
 
-  if (codeMeta->tables.length() >= MaxTables) {
-    return d.fail("too many tables");
+  if (!tableType->elemType.isNullable() && !isImport && !*initExprPresent) {
+    return d.fail("table with non-nullable references requires initializer");
   }
 
-  Maybe<InitExpr> initExpr;
-  if (initExprPresent) {
-    InitExpr initializer;
-    if (!InitExpr::decodeAndValidate(d, codeMeta, tableElemType,
-                                     &initializer)) {
-      return false;
-    }
-    initExpr = Some(std::move(initializer));
-  } else {
-    if (!tableElemType.isNullable() && !isImport) {
-      return d.fail("table with non-nullable references requires initializer");
-    }
-  }
-
-  return codeMeta->tables.emplaceBack(limits, tableElemType,
-                                      std::move(initExpr),
-                                      /* isAsmJS */ false, isImport);
+  return true;
 }
 
-static bool DecodeGlobalType(Decoder& d, const SharedTypeContext& types,
-                             const FeatureArgs& features, ValType* type,
-                             bool* isMutable) {
-  if (!d.readValType(*types, features, type)) {
+static bool DecodeGlobalType(Decoder& d, const CodeMetadata* codeMeta,
+                             GlobalType* globalType) {
+  if (!d.readValType(*codeMeta->types, codeMeta->features(),
+                     &globalType->type)) {
     return d.fail("expected global type");
   }
 
@@ -2947,50 +3113,44 @@ static bool DecodeGlobalType(Decoder& d, const SharedTypeContext& types,
     return d.fail("unexpected bits set in global flags");
   }
 
-  *isMutable = flags & uint8_t(GlobalTypeImmediate::IsMutable);
+  globalType->isMutable = flags & uint8_t(GlobalTypeImmediate::IsMutable);
   return true;
 }
 
-static bool DecodeMemoryTypeAndLimits(Decoder& d, CodeMetadata* codeMeta,
-                                      MemoryDescVector* memories) {
-  if (codeMeta->numMemories() >= MaxMemories) {
-    return d.fail("too many memories");
-  }
-
-  Limits limits;
-  if (!DecodeLimits(d, LimitsKind::Memory, &limits)) {
+static bool DecodeMemoryType(Decoder& d, const CodeMetadata* codeMeta,
+                             Limits* limits) {
+  if (!DecodeLimits(d, codeMeta, LimitsKind::Memory, limits)) {
     return false;
   }
 
-  uint64_t maxField = MaxMemoryPagesValidation(limits.addressType);
+  uint64_t maxField =
+      MaxMemoryPagesValidation(limits->addressType, limits->pageSize);
 
-  if (limits.initial > maxField) {
+  if (limits->initial > maxField) {
     return d.fail("initial memory size too big");
   }
 
-  if (limits.maximum && *limits.maximum > maxField) {
+  if (limits->maximum && *limits->maximum > maxField) {
     return d.fail("maximum memory size too big");
   }
 
-  if (limits.shared == Shareable::True &&
+  if (limits->shared == Shareable::True &&
       codeMeta->sharedMemoryEnabled() == Shareable::False) {
     return d.fail("shared memory is disabled");
   }
 
-  return memories->emplaceBack(MemoryDesc(limits));
+  return true;
 }
 
-static bool DecodeTag(Decoder& d, CodeMetadata* codeMeta, TagKind* tagKind,
-                      uint32_t* funcTypeIndex) {
+static bool DecodeTagType(Decoder& d, const CodeMetadata* codeMeta,
+                          uint32_t* funcTypeIndex) {
   uint32_t tagCode;
   if (!d.readVarU32(&tagCode)) {
     return d.fail("expected tag kind");
   }
-
   if (TagKind(tagCode) != TagKind::Exception) {
     return d.fail("illegal tag kind");
   }
-  *tagKind = TagKind(tagCode);
 
   if (!d.readVarU32(funcTypeIndex)) {
     return d.fail("expected function index in tag");
@@ -3001,91 +3161,212 @@ static bool DecodeTag(Decoder& d, CodeMetadata* codeMeta, TagKind* tagKind,
   if (!(*codeMeta->types)[*funcTypeIndex].isFuncType()) {
     return d.fail("function type index must index a function type");
   }
-  if ((*codeMeta->types)[*funcTypeIndex].funcType().results().length() != 0) {
+  // Stack switching relaxes the restriction that tags cannot have results.
+  if (!codeMeta->stackSwitchingEnabled() &&
+      (*codeMeta->types)[*funcTypeIndex].funcType().results().length() != 0) {
     return d.fail("tag function types must not return anything");
   }
+
   return true;
 }
 
-static bool DecodeImport(Decoder& d, CodeMetadata* codeMeta,
-                         ModuleMetadata* moduleMeta) {
-  CacheableName moduleName;
-  if (!DecodeName(d, &moduleName)) {
-    return d.fail("expected valid import module name");
+struct ExternType {
+ private:
+  DefinitionKind kind_ = DefinitionKind(-1);
+  union {
+    uint32_t funcTypeIndex;
+    TableType tableType;
+    Limits memType;
+    GlobalType globalType;
+    uint32_t tagFuncTypeIndex;
+  };
+
+ public:
+  ExternType() : funcTypeIndex() {}
+
+  static ExternType func(uint32_t funcTypeIndex) {
+    ExternType result;
+    result.kind_ = DefinitionKind::Function;
+    result.funcTypeIndex = funcTypeIndex;
+    return result;
   }
 
-  CacheableName fieldName;
-  if (!DecodeName(d, &fieldName)) {
-    return d.fail("expected valid import field name");
+  static ExternType table(TableType& tableType) {
+    ExternType result;
+    result.kind_ = DefinitionKind::Table;
+    result.tableType = tableType;
+    return result;
   }
 
-  uint8_t rawImportKind;
-  if (!d.readFixedU8(&rawImportKind)) {
-    return d.fail("failed to read import kind");
+  static ExternType memory(Limits& memType) {
+    ExternType result;
+    result.kind_ = DefinitionKind::Memory;
+    result.memType = memType;
+    return result;
   }
 
-  DefinitionKind importKind = DefinitionKind(rawImportKind);
+  static ExternType global(GlobalType& globalType) {
+    ExternType result;
+    result.kind_ = DefinitionKind::Global;
+    result.globalType = globalType;
+    return result;
+  }
 
+  static ExternType tag(uint32_t tagFuncTypeIndex) {
+    ExternType result;
+    result.kind_ = DefinitionKind::Tag;
+    result.tagFuncTypeIndex = tagFuncTypeIndex;
+    return result;
+  }
+
+  DefinitionKind kind() const { return kind_; }
+
+  uint32_t asFunc() const {
+    MOZ_RELEASE_ASSERT(kind_ == DefinitionKind::Function);
+    return funcTypeIndex;
+  }
+
+  const TableType& asTable() const {
+    MOZ_RELEASE_ASSERT(kind_ == DefinitionKind::Table);
+    return tableType;
+  }
+
+  const Limits& asMemory() const {
+    MOZ_RELEASE_ASSERT(kind_ == DefinitionKind::Memory);
+    return memType;
+  }
+
+  const GlobalType& asGlobal() const {
+    MOZ_RELEASE_ASSERT(kind_ == DefinitionKind::Global);
+    return globalType;
+  }
+
+  uint32_t asTag() const {
+    MOZ_RELEASE_ASSERT(kind_ == DefinitionKind::Tag);
+    return tagFuncTypeIndex;
+  }
+};
+
+[[nodiscard]]
+static bool DecodeImportType(Decoder& d, DefinitionKind importKind,
+                             const CodeMetadata* codeMeta,
+                             const ModuleMetadata* moduleMeta,
+                             ExternType* importType) {
   switch (importKind) {
     case DefinitionKind::Function: {
       uint32_t funcTypeIndex;
       if (!DecodeFuncTypeIndex(d, codeMeta->types, &funcTypeIndex)) {
         return false;
       }
-      if (!codeMeta->funcs.append(FuncDesc(funcTypeIndex))) {
+      *importType = ExternType::func(funcTypeIndex);
+      break;
+    }
+    case DefinitionKind::Table: {
+      TableType tableType;
+      bool hasInitExpr;
+      if (!DecodeTableType(d, codeMeta, /*isImport=*/true, &tableType,
+                           &hasInitExpr)) {
         return false;
       }
-      if (codeMeta->funcs.length() > MaxFuncs) {
+      MOZ_ASSERT(!hasInitExpr,
+                 "we should have failed because imported tables cannot have "
+                 "import expressions");
+      *importType = ExternType::table(tableType);
+      break;
+    }
+    case DefinitionKind::Memory: {
+      Limits memType;
+      if (!DecodeMemoryType(d, codeMeta, &memType)) {
+        return false;
+      }
+      *importType = ExternType::memory(memType);
+      break;
+    }
+    case DefinitionKind::Global: {
+      GlobalType globalType;
+      if (!DecodeGlobalType(d, codeMeta, &globalType)) {
+        return false;
+      }
+      *importType = ExternType::global(globalType);
+      break;
+    }
+    case DefinitionKind::Tag: {
+      uint32_t tagFuncTypeIndex;
+      if (!DecodeTagType(d, codeMeta, &tagFuncTypeIndex)) {
+        return false;
+      }
+      *importType = ExternType::tag(tagFuncTypeIndex);
+      break;
+    }
+    default:
+      return d.fail("unsupported import kind");
+  }
+
+  return true;
+}
+
+[[nodiscard]]
+static bool AddImport(Decoder& d, CacheableName& moduleName,
+                      CacheableName& itemName, ExternType importType,
+                      CodeMetadata* codeMeta, ModuleMetadata* moduleMeta) {
+  uint32_t importIndex = moduleMeta->imports.length();
+  if (!moduleMeta->imports.emplaceBack(
+          std::move(moduleName), std::move(itemName), importType.kind())) {
+    return false;
+  }
+
+  switch (importType.kind()) {
+    case DefinitionKind::Function: {
+      if (codeMeta->funcs.length() >= MaxFuncs) {
         return d.fail("too many functions");
+      }
+      if (!codeMeta->funcs.emplaceBack(importType.asFunc())) {
+        return false;
       }
       break;
     }
     case DefinitionKind::Table: {
-      if (!DecodeTableType(d, codeMeta, /*isImport=*/true)) {
+      if (codeMeta->numTables() >= MaxTables) {
+        return d.fail("too many tables");
+      }
+      if (!codeMeta->tables.emplaceBack(importType.asTable(),
+                                        mozilla::Nothing(),
+                                        /*isImported=*/true)) {
         return false;
       }
       break;
     }
     case DefinitionKind::Memory: {
-      if (!DecodeMemoryTypeAndLimits(d, codeMeta, &codeMeta->memories)) {
+      if (codeMeta->numMemories() >= MaxMemories) {
+        return d.fail("too many memories");
+      }
+      if (!codeMeta->memories.emplaceBack(MemoryDesc(importType.asMemory()))) {
         return false;
       }
-      codeMeta->memories.back().importIndex =
-          Some(moduleMeta->imports.length());
+      codeMeta->memories.back().importIndex = Some(importIndex);
       break;
     }
     case DefinitionKind::Global: {
-      ValType type;
-      bool isMutable;
-      if (!DecodeGlobalType(d, codeMeta->types, codeMeta->features(), &type,
-                            &isMutable)) {
-        return false;
-      }
-      if (!codeMeta->globals.append(
-              GlobalDesc(type, isMutable, codeMeta->globals.length()))) {
-        return false;
-      }
-      if (codeMeta->globals.length() > MaxGlobals) {
+      if (codeMeta->globals.length() >= MaxGlobals) {
         return d.fail("too many globals");
+      }
+      if (!codeMeta->globals.emplaceBack(importType.asGlobal(),
+                                         codeMeta->globals.length())) {
+        return false;
       }
       break;
     }
     case DefinitionKind::Tag: {
-      TagKind tagKind;
-      uint32_t funcTypeIndex;
-      if (!DecodeTag(d, codeMeta, &tagKind, &funcTypeIndex)) {
-        return false;
-      }
       MutableTagType tagType = js_new<TagType>();
       if (!tagType ||
-          !tagType->initialize(&(*codeMeta->types)[funcTypeIndex])) {
+          !tagType->initialize(&(*codeMeta->types)[importType.asTag()])) {
         return false;
       }
-      if (!codeMeta->tags.emplaceBack(tagKind, tagType)) {
-        return false;
-      }
-      if (codeMeta->tags.length() > MaxTags) {
+      if (codeMeta->tags.length() >= MaxTags) {
         return d.fail("too many tags");
+      }
+      if (!codeMeta->tags.emplaceBack(TagKind::Exception, tagType)) {
+        return false;
       }
       break;
     }
@@ -3093,8 +3374,125 @@ static bool DecodeImport(Decoder& d, CodeMetadata* codeMeta,
       return d.fail("unsupported import kind");
   }
 
-  return moduleMeta->imports.emplaceBack(std::move(moduleName),
-                                         std::move(fieldName), importKind);
+  return true;
+}
+
+static bool DecodeImportGroup(Decoder& d, CodeMetadata* codeMeta,
+                              ModuleMetadata* moduleMeta) {
+  CacheableName moduleName;
+  if (!DecodeName(d, &moduleName)) {
+    return d.fail("expected valid import module name");
+  }
+  CacheableName itemName;
+  if (!DecodeName(d, &itemName)) {
+    return d.fail("expected valid import name");
+  }
+  uint8_t rawImportKind;
+  if (!d.readFixedU8(&rawImportKind)) {
+    return d.fail("failed to read import kind");
+  }
+
+#ifdef ENABLE_WASM_COMPACT_IMPORTS
+  // Compact encoding 1: one module name, many (item name, externtype) pairs
+  if (codeMeta->compactImportsEnabled() && itemName.isEmpty() &&
+      rawImportKind == uint8_t(CompactImportKind::ModuleName)) {
+    uint32_t numImports;
+    if (!d.readVarU32(&numImports)) {
+      return d.fail("failed to read number of compact imports");
+    }
+
+    mozilla::CheckedUint32 numImportsSoFar(moduleMeta->imports.length());
+    numImportsSoFar += numImports;
+    if (!numImportsSoFar.isValid() || numImportsSoFar.value() > MaxImports) {
+      return d.fail("too many imports");
+    }
+
+    for (uint32_t i = 0; i < numImports; i++) {
+      CacheableName clonedModuleName;
+      if (!moduleName.clone(&clonedModuleName)) {
+        return false;
+      }
+
+      CacheableName compactItemName;
+      if (!DecodeName(d, &compactItemName)) {
+        return d.fail("expected valid import name");
+      }
+
+      uint8_t importKind;
+      if (!d.readFixedU8(&importKind)) {
+        return d.fail("failed to read import kind");
+      }
+      ExternType importType;
+      if (!DecodeImportType(d, DefinitionKind(importKind), codeMeta, moduleMeta,
+                            &importType)) {
+        return false;
+      }
+
+      if (!AddImport(d, clonedModuleName, compactItemName, importType, codeMeta,
+                     moduleMeta)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Compact encoding 2: one module name and externtype, many item names
+  if (codeMeta->compactImportsEnabled() && itemName.isEmpty() &&
+      rawImportKind == uint8_t(CompactImportKind::ModuleNameAndExternType)) {
+    uint8_t importKind;
+    if (!d.readFixedU8(&importKind)) {
+      return d.fail("failed to read import kind");
+    }
+
+    ExternType importType;
+    if (!DecodeImportType(d, DefinitionKind(importKind), codeMeta, moduleMeta,
+                          &importType)) {
+      return false;
+    }
+
+    uint32_t numImports;
+    if (!d.readVarU32(&numImports)) {
+      return d.fail("failed to read number of compact imports");
+    }
+
+    mozilla::CheckedUint32 numImportsSoFar(moduleMeta->imports.length());
+    numImportsSoFar += numImports;
+    if (!numImportsSoFar.isValid() || numImportsSoFar.value() > MaxImports) {
+      return d.fail("too many imports");
+    }
+
+    for (uint32_t i = 0; i < numImports; i++) {
+      CacheableName clonedModuleName;
+      if (!moduleName.clone(&clonedModuleName)) {
+        return false;
+      }
+
+      CacheableName compactItemName;
+      if (!DecodeName(d, &compactItemName)) {
+        return d.fail("expected valid import name");
+      }
+
+      if (!AddImport(d, clonedModuleName, compactItemName, importType, codeMeta,
+                     moduleMeta)) {
+        return false;
+      }
+    }
+    return true;
+  }
+#endif
+
+  // Single-item encoding
+  mozilla::CheckedUint32 numImportsSoFar(moduleMeta->imports.length());
+  numImportsSoFar += 1;
+  if (!numImportsSoFar.isValid() || numImportsSoFar.value() > MaxImports) {
+    return d.fail("too many imports");
+  }
+  ExternType importType;
+  if (!DecodeImportType(d, DefinitionKind(rawImportKind), codeMeta, moduleMeta,
+                        &importType)) {
+    return false;
+  }
+  return AddImport(d, moduleName, itemName, importType, codeMeta, moduleMeta);
 }
 
 static bool CheckImportsAgainstBuiltinModules(Decoder& d,
@@ -3118,6 +3516,8 @@ static bool CheckImportsAgainstBuiltinModules(Decoder& d,
         const FuncDesc& func = codeMeta->funcs[importFuncIndex];
         uint32_t funcIndex = importFuncIndex;
         importFuncIndex += 1;
+        MOZ_ASSERT(codeMeta->knownFuncImports[funcIndex] ==
+                   BuiltinModuleFuncId::None);
 
         // Skip this import if it doesn't refer to a builtin module. We do have
         // to increment the import function index regardless though.
@@ -3128,10 +3528,12 @@ static bool CheckImportsAgainstBuiltinModules(Decoder& d,
         // Check if this import refers to a builtin module function
         const BuiltinModuleFunc* builtinFunc = nullptr;
         BuiltinModuleFuncId builtinFuncId;
-        if (!ImportMatchesBuiltinModuleFunc(import.field.utf8Bytes(),
-                                            *builtinModule, &builtinFunc,
-                                            &builtinFuncId)) {
-          return d.fail("unrecognized builtin module field");
+        if (!ImportFieldMatchesBuiltinModuleDefinition(
+                import.field.utf8Bytes(), *builtinModule,
+                DefinitionKind::Function, &builtinFunc, &builtinFuncId)) {
+          // Polyfillability: if the field is not found in the builtin module,
+          // it will be resolved from the imports object at instantiation.
+          continue;
         }
 
         const TypeDef& importTypeDef = (*codeMeta->types)[func.typeIndex];
@@ -3179,6 +3581,53 @@ static bool CheckImportsAgainstBuiltinModules(Decoder& d,
   return true;
 }
 
+// A standalone validation pass that occurs after we have finished decoding all
+// memories and therefore can determine if any imported builtin functions are
+// invalid due to lack of memory.
+static bool CheckBuiltinImportsHaveMemory(Decoder& d, CodeMetadata* codeMeta) {
+  // Skip this pass if there are no builtin modules enabled.
+  if (codeMeta->features().builtinModules.hasNone()) {
+#ifdef DEBUG
+    for (BuiltinModuleFuncId& id : codeMeta->knownFuncImports) {
+      MOZ_ASSERT(id == BuiltinModuleFuncId::None);
+    }
+#endif
+    return true;
+  }
+
+  for (size_t i = 0; i < codeMeta->knownFuncImports.length(); i++) {
+    BuiltinModuleFuncId builtinFuncId = codeMeta->knownFuncImports[i];
+    if (builtinFuncId == BuiltinModuleFuncId::None) {
+      continue;
+    }
+
+    const BuiltinModuleFunc& builtinModuleFunc =
+        BuiltinModuleFuncs::getFromId(builtinFuncId);
+    if (builtinModuleFunc.usesMemory()) {
+      if (codeMeta->memories.length() == 0) {
+        return d.failf("func %zu is a builtin function that requires a memory",
+                       i);
+      }
+
+      // NOTE(bvisness): As of today, no builtins use shared memory. If this
+      // changes in the future, you will need to update this to pick up the
+      // expected shared-ness from the associated builtin module. Unfortunately
+      // this is currently defined exclusively by which BuiltinMemory we
+      // construct in CompileBuiltinModule in WasmBuiltinModule.cpp, and there
+      // is no straightforward way to map from a BuiltinModuleFuncId to a
+      // BuiltinModuleId, much less to know what kind of memory it expects. It
+      // would be nice to have some kind of BuiltinModuleDesc that holistically
+      // describes what kind of module to construct and what functions it
+      // contains, but we are not building this today :)
+      if (codeMeta->memories[0].isShared()) {
+        return d.fail("builtin funcs are not compatible with shared memories");
+      }
+    }
+  }
+
+  return true;
+}
+
 static bool DecodeImportSection(Decoder& d, CodeMetadata* codeMeta,
                                 ModuleMetadata* moduleMeta) {
   MaybeBytecodeRange range;
@@ -3189,17 +3638,12 @@ static bool DecodeImportSection(Decoder& d, CodeMetadata* codeMeta,
     return true;
   }
 
-  uint32_t numImports;
-  if (!d.readVarU32(&numImports)) {
+  uint32_t numImportGroups;
+  if (!d.readVarU32(&numImportGroups)) {
     return d.fail("failed to read number of imports");
   }
-
-  if (numImports > MaxImports) {
-    return d.fail("too many imports");
-  }
-
-  for (uint32_t i = 0; i < numImports; i++) {
-    if (!DecodeImport(d, codeMeta, moduleMeta)) {
+  for (uint32_t i = 0; i < numImportGroups; i++) {
+    if (!DecodeImportGroup(d, codeMeta, moduleMeta)) {
       return false;
     }
   }
@@ -3260,15 +3704,40 @@ static bool DecodeTableSection(Decoder& d, CodeMetadata* codeMeta) {
     return true;
   }
 
-  uint32_t numTables;
-  if (!d.readVarU32(&numTables)) {
+  uint32_t numDefs;
+  if (!d.readVarU32(&numDefs)) {
     return d.fail("failed to read number of tables");
   }
 
-  for (uint32_t i = 0; i < numTables; ++i) {
-    if (!DecodeTableType(d, codeMeta, /*isImport=*/false)) {
+  CheckedInt<uint32_t> numTables = codeMeta->tables.length();
+  numTables += numDefs;
+  if (!numTables.isValid() || numTables.value() > MaxTables) {
+    return d.fail("too many tables");
+  }
+
+  if (!codeMeta->tables.reserve(numTables.value())) {
+    return false;
+  }
+
+  for (uint32_t i = 0; i < numDefs; ++i) {
+    TableType tableType;
+    bool initExprPresent;
+    if (!DecodeTableType(d, codeMeta, /*isImport=*/false, &tableType,
+                         &initExprPresent)) {
       return false;
     }
+    mozilla::Maybe<InitExpr> initExpr;
+    if (initExprPresent) {
+      InitExpr initializer;
+      if (!InitExpr::decodeAndValidate(d, codeMeta, tableType.elemType,
+                                       &initializer)) {
+        return false;
+      }
+      initExpr = mozilla::Some(std::move(initializer));
+    }
+
+    codeMeta->tables.infallibleEmplaceBack(tableType, std::move(initExpr),
+                                           /*isImported=*/false);
   }
 
   return d.finishSection(*range, "table");
@@ -3283,15 +3752,27 @@ static bool DecodeMemorySection(Decoder& d, CodeMetadata* codeMeta) {
     return true;
   }
 
-  uint32_t numMemories;
-  if (!d.readVarU32(&numMemories)) {
+  uint32_t numDefs;
+  if (!d.readVarU32(&numDefs)) {
     return d.fail("failed to read number of memories");
   }
 
-  for (uint32_t i = 0; i < numMemories; ++i) {
-    if (!DecodeMemoryTypeAndLimits(d, codeMeta, &codeMeta->memories)) {
+  CheckedInt<uint32_t> numMemories = codeMeta->memories.length();
+  numMemories += numDefs;
+  if (!numMemories.isValid() || numMemories.value() > MaxMemories) {
+    return d.fail("too many memories");
+  }
+
+  if (!codeMeta->memories.reserve(numMemories.value())) {
+    return false;
+  }
+
+  for (uint32_t i = 0; i < numDefs; ++i) {
+    Limits limits;
+    if (!DecodeMemoryType(d, codeMeta, &limits)) {
       return false;
     }
+    codeMeta->memories.infallibleEmplaceBack(limits);
   }
 
   return d.finishSection(*range, "memory");
@@ -3322,20 +3803,18 @@ static bool DecodeGlobalSection(Decoder& d, CodeMetadata* codeMeta) {
   }
 
   for (uint32_t i = 0; i < numDefs; i++) {
-    ValType type;
-    bool isMutable;
-    if (!DecodeGlobalType(d, codeMeta->types, codeMeta->features(), &type,
-                          &isMutable)) {
+    GlobalType type;
+    if (!DecodeGlobalType(d, codeMeta, &type)) {
       return false;
     }
 
     InitExpr initializer;
-    if (!InitExpr::decodeAndValidate(d, codeMeta, type, &initializer)) {
+    if (!InitExpr::decodeAndValidate(d, codeMeta, type.type, &initializer)) {
       return false;
     }
 
-    codeMeta->globals.infallibleAppend(
-        GlobalDesc(std::move(initializer), isMutable));
+    codeMeta->globals.infallibleEmplaceBack(std::move(initializer),
+                                            type.isMutable);
   }
 
   return d.finishSection(*range, "global");
@@ -3366,16 +3845,15 @@ static bool DecodeTagSection(Decoder& d, CodeMetadata* codeMeta) {
   }
 
   for (uint32_t i = 0; i < numDefs; i++) {
-    TagKind tagKind;
     uint32_t funcTypeIndex;
-    if (!DecodeTag(d, codeMeta, &tagKind, &funcTypeIndex)) {
+    if (!DecodeTagType(d, codeMeta, &funcTypeIndex)) {
       return false;
     }
     MutableTagType tagType = js_new<TagType>();
     if (!tagType || !tagType->initialize(&(*codeMeta->types)[funcTypeIndex])) {
       return false;
     }
-    codeMeta->tags.infallibleEmplaceBack(tagKind, tagType);
+    codeMeta->tags.infallibleEmplaceBack(TagKind::Exception, tagType);
   }
 
   return d.finishSection(*range, "tag");
@@ -3656,7 +4134,7 @@ static bool DecodeElemSegment(Decoder& d, CodeMetadata* codeMeta,
   // For active segments, check if the element type is compatible with the
   // destination table type.
   if (seg.active()) {
-    RefType tblElemType = codeMeta->tables[seg.tableIndex].elemType;
+    RefType tblElemType = codeMeta->tables[seg.tableIndex].elemType();
     if (!CheckIsSubtypeOf(d, *codeMeta, d.currentOffset(),
                           ValType(elemType).storageType(),
                           ValType(tblElemType).storageType())) {
@@ -3673,8 +4151,6 @@ static bool DecodeElemSegment(Decoder& d, CodeMetadata* codeMeta,
   if (numElems > MaxElemSegmentLength) {
     return d.fail("too many elements in element segment");
   }
-
-  bool isAsmJS = seg.active() && codeMeta->tables[seg.tableIndex].isAsmJS;
 
   switch (payload) {
     case ElemSegmentPayload::Indices: {
@@ -3694,10 +4170,8 @@ static bool DecodeElemSegment(Decoder& d, CodeMetadata* codeMeta,
         }
 
         seg.elemIndices.infallibleAppend(elemIndex);
-        if (!isAsmJS) {
-          codeMeta->funcs[elemIndex].declareFuncExported(/*eager=*/false,
-                                                         /*canRefFunc=*/true);
-        }
+        codeMeta->funcs[elemIndex].declareFuncExported(/*eager=*/false,
+                                                       /*canRefFunc=*/true);
       }
     } break;
     case ElemSegmentPayload::Expressions: {
@@ -3780,7 +4254,7 @@ bool wasm::StartsCodeSection(const uint8_t* begin, const uint8_t* end,
   UniqueChars unused;
   Decoder d(begin, end, 0, &unused);
 
-  if (!DecodePreamble(d)) {
+  if (!DecodePreamble(d, EncodingVersionModule)) {
     return false;
   }
 
@@ -3898,9 +4372,25 @@ static bool DecodeBranchHintingSection(Decoder& d, CodeMetadata* codeMeta) {
 }
 #endif
 
+#ifdef ENABLE_WASM_COMPONENTS
+bool wasm::IsComponent(Decoder& d) {
+  uint32_t magic;
+  if (!d.readFixedU32(&magic) || magic != MagicNumber) {
+    return false;
+  }
+
+  uint32_t version;
+  if (!d.readFixedU32(&version)) {
+    return false;
+  }
+
+  return version == EncodingVersionComponent;
+}
+#endif
+
 bool wasm::DecodeModuleEnvironment(Decoder& d, CodeMetadata* codeMeta,
                                    ModuleMetadata* moduleMeta) {
-  if (!DecodePreamble(d)) {
+  if (!DecodePreamble(d, EncodingVersionModule)) {
     return false;
   }
 
@@ -3927,6 +4417,10 @@ bool wasm::DecodeModuleEnvironment(Decoder& d, CodeMetadata* codeMeta,
   }
 
   if (!DecodeMemorySection(d, codeMeta)) {
+    return false;
+  }
+
+  if (!CheckBuiltinImportsHaveMemory(d, codeMeta)) {
     return false;
   }
 
@@ -4098,7 +4592,7 @@ static bool DecodeDataSection(Decoder& d, CodeMetadata* codeMeta,
       return d.fail("expected segment size");
     }
 
-    if (segRange.length > MaxDataSegmentLengthPages * PageSize) {
+    if (segRange.length > MaxDataSegmentLengthPages * StandardPageSizeBytes) {
       return d.fail("segment size too big");
     }
 
@@ -4116,102 +4610,223 @@ static bool DecodeDataSection(Decoder& d, CodeMetadata* codeMeta,
   return d.finishSection(*range, "data");
 }
 
-static bool DecodeModuleNameSubsection(Decoder& d,
-                                       const CustomSectionRange& nameSection,
-                                       CodeMetadata* codeMeta,
-                                       ModuleMetadata* moduleMeta) {
-  Maybe<uint32_t> endOffset;
-  if (!d.startNameSubsection(NameType::Module, &endOffset)) {
-    return false;
-  }
-  if (!endOffset) {
-    return true;
-  }
-
-  Name moduleName;
-  if (!d.readVarU32(&moduleName.length)) {
-    return d.fail("failed to read module name length");
+static bool DecodeNameSectionName(Decoder& d,
+                                  const CustomSectionRange& nameSection,
+                                  const char* thing, Name* result) {
+  uint32_t length;
+  if (!d.readVarU32(&length)) {
+    return d.failf("failed to read %s name length", thing);
   }
 
   MOZ_ASSERT(d.currentOffset() >= nameSection.payload.start);
-  moduleName.offsetInNamePayload =
-      d.currentOffset() - nameSection.payload.start;
+  uint32_t offsetInNamePayload = d.currentOffset() - nameSection.payload.start;
 
-  const uint8_t* bytes;
-  if (!d.readBytes(moduleName.length, &bytes)) {
-    return d.fail("failed to read module name bytes");
+  const uint8_t* nameBytes;
+  if (!d.readBytes(length, &nameBytes)) {
+    return d.failf("failed to read %s name", thing);
   }
 
-  if (!d.finishNameSubsection(*endOffset)) {
-    return false;
+  if (!IsUtf8(AsChars(mozilla::Span(nameBytes, length)))) {
+    return d.failf("%s name was not valid UTF-8", thing);
   }
 
-  // Only save the module name if the whole subsection validates.
-  codeMeta->nameSection->moduleName = moduleName;
+  result->offsetInNamePayload = offsetInNamePayload;
+  result->length = length;
   return true;
 }
 
-static bool DecodeFunctionNameSubsection(Decoder& d,
-                                         const CustomSectionRange& nameSection,
-                                         CodeMetadata* codeMeta,
-                                         ModuleMetadata* moduleMeta) {
-  Maybe<uint32_t> endOffset;
-  if (!d.startNameSubsection(NameType::Function, &endOffset)) {
-    return false;
+template <typename F>
+static bool DecodeNameMapEntries(Decoder& d,
+                                 const CustomSectionRange& nameSection,
+                                 const char* thing, uint32_t maxThings,
+                                 const F& addName) {
+  uint32_t numNames;
+  if (!d.readVarU32(&numNames)) {
+    return d.failf("expected number of %s names", thing);
   }
-  if (!endOffset) {
-    return true;
+  if (numNames > maxThings) {
+    return d.failf("too many %s names", thing);
   }
-
-  uint32_t nameCount = 0;
-  if (!d.readVarU32(&nameCount) || nameCount > MaxFuncs) {
-    return d.fail("bad function name count");
-  }
-
-  NameVector funcNames;
-
-  for (uint32_t i = 0; i < nameCount; ++i) {
-    uint32_t funcIndex = 0;
-    if (!d.readVarU32(&funcIndex)) {
-      return d.fail("unable to read function index");
+  uint32_t minIdx = 0;
+  for (uint32_t i = 0; i < numNames; i++) {
+    uint32_t idx;
+    if (!d.readVarU32(&idx)) {
+      return d.failf("expected %s index", thing);
     }
-
-    // Names must refer to real functions and be given in ascending order.
-    if (funcIndex >= codeMeta->numFuncs() || funcIndex < funcNames.length()) {
-      return d.fail("invalid function index");
+    if (idx >= maxThings) {
+      return d.failf("%s index %" PRIu32 " is too large", thing, idx);
     }
-
-    Name funcName;
-    if (!d.readVarU32(&funcName.length) ||
-        funcName.length > JS::MaxStringLength) {
-      return d.fail("unable to read function name length");
+    if (idx < minIdx) {
+      return d.failf("out of order %s index", thing);
     }
+    minIdx = idx + 1;
 
-    if (!funcName.length) {
-      continue;
-    }
-
-    if (!funcNames.resize(funcIndex + 1)) {
+    Name name;
+    if (!DecodeNameSectionName(d, nameSection, thing, &name)) {
       return false;
     }
 
-    MOZ_ASSERT(d.currentOffset() >= nameSection.payload.start);
-    funcName.offsetInNamePayload =
-        d.currentOffset() - nameSection.payload.start;
-
-    if (!d.readBytes(funcName.length)) {
-      return d.fail("unable to read function name bytes");
+    if (!addName(idx, name)) {
+      return false;
     }
-
-    funcNames[funcIndex] = funcName;
   }
 
-  if (!d.finishNameSubsection(*endOffset)) {
-    return false;
+  return true;
+}
+
+template <typename F>
+static bool DecodeIndirectNameMapEntries(
+    Decoder& d, const CustomSectionRange& nameSection, const char* outerThing,
+    uint32_t maxOuterThings, const char* innerThing, uint32_t maxInnerThings,
+    const F& addName) {
+  uint32_t numOuterThingLists;
+  if (!d.readVarU32(&numOuterThingLists)) {
+    return d.failf("expected number of %s name lists", outerThing);
+  }
+  if (numOuterThingLists > maxOuterThings) {
+    return d.failf("too many %s name lists", outerThing);
+  }
+  uint32_t minOuterIdx = 0;
+  for (uint32_t i = 0; i < numOuterThingLists; i++) {
+    uint32_t outerIdx;
+    if (!d.readVarU32(&outerIdx)) {
+      return d.failf("expected %s index", outerThing);
+    }
+    if (outerIdx >= maxOuterThings) {
+      return d.failf("%s index %" PRIu32 " is too large", outerThing, outerIdx);
+    }
+    if (outerIdx < minOuterIdx) {
+      return d.failf("out of order %s index", outerThing);
+    }
+    minOuterIdx = outerIdx + 1;
+
+    if (!DecodeNameMapEntries(d, nameSection, innerThing, maxInnerThings,
+                              [&](uint32_t innerIdx, const Name& name) {
+                                return addName(
+                                    IndirectNameKey(outerIdx, innerIdx), name);
+                              })) {
+      return false;
+    }
   }
 
-  // Only save names if the entire subsection decoded correctly.
-  codeMeta->nameSection->funcNames = std::move(funcNames);
+  return true;
+}
+
+static bool DecodeNameMap(Decoder& d, const CustomSectionRange& nameSection,
+                          const char* thing, uint32_t maxThings,
+                          NameMap& result) {
+  return DecodeNameMapEntries(d, nameSection, thing, maxThings,
+                              [&](uint32_t idx, const Name& name) -> bool {
+                                return result.put(idx, name);
+                              });
+}
+
+static bool ValidateNameMap(Decoder& d, const CustomSectionRange& nameSection,
+                            const char* thing, uint32_t maxThings) {
+  return DecodeNameMapEntries(
+      d, nameSection, thing, maxThings,
+      [&](uint32_t idx, const Name& name) -> bool { return true; });
+}
+
+// Right now we have no need to actually save any indirect name maps, but to do
+// so in the future you can just copy ValidateIndirectNameMap and change the
+// lambda to actually save names into a map.
+
+static bool ValidateIndirectNameMap(
+    Decoder& d, const CustomSectionRange& nameSection, const char* outerThing,
+    uint32_t maxOuterThings, const char* innerThing, uint32_t maxInnerThings) {
+  return DecodeIndirectNameMapEntries(
+      d, nameSection, outerThing, maxOuterThings, innerThing, maxInnerThings,
+      [&](IndirectNameKey&& key, const Name& name) { return true; });
+}
+
+static bool DecodeNameSubsection(Decoder& d,
+                                 const CustomSectionRange& nameSection,
+                                 CodeMetadata* codeMeta, NameType nameType) {
+  switch (NameType(nameType)) {
+    case NameType::Module: {
+      Name moduleName;
+      if (!DecodeNameSectionName(d, nameSection, "module", &moduleName)) {
+        return false;
+      }
+      codeMeta->nameSection->moduleName = moduleName;
+    } break;
+    case NameType::Function: {
+      NameMap funcNames;
+      if (!DecodeNameMap(d, nameSection, "function", MaxFuncs, funcNames)) {
+        return false;
+      }
+      codeMeta->nameSection->funcNames = std::move(funcNames);
+    } break;
+    case NameType::Local: {
+      if (!ValidateIndirectNameMap(d, nameSection, "func", MaxFuncs, "local",
+                                   MaxLocals)) {
+        return false;
+      }
+    } break;
+    case NameType::Label: {
+      if (!ValidateIndirectNameMap(d, nameSection, "func", MaxFuncs, "label",
+                                   MaxFunctionBytes / 2)) {
+        return false;
+      }
+    } break;
+    case NameType::Type: {
+      if (!ValidateNameMap(d, nameSection, "type", MaxTypes)) {
+        return false;
+      }
+    } break;
+    case NameType::Table: {
+      if (!ValidateNameMap(d, nameSection, "table", MaxTables)) {
+        return false;
+      }
+    } break;
+    case NameType::Memory: {
+      if (!ValidateNameMap(d, nameSection, "memory", MaxMemories)) {
+        return false;
+      }
+    } break;
+    case NameType::Global: {
+      if (!ValidateNameMap(d, nameSection, "global", MaxGlobals)) {
+        return false;
+      }
+    } break;
+    case NameType::ElemSegment: {
+      if (!ValidateNameMap(d, nameSection, "elem segment", MaxElemSegments)) {
+        return false;
+      }
+    } break;
+    case NameType::DataSegment: {
+      if (!ValidateNameMap(d, nameSection, "data segment", MaxDataSegments)) {
+        return false;
+      }
+    } break;
+    case NameType::Field: {
+      if (!ValidateIndirectNameMap(d, nameSection, "type", MaxTypes, "field",
+                                   MaxStructFields)) {
+        return false;
+      }
+    } break;
+    case NameType::Tag: {
+      if (!ValidateNameMap(d, nameSection, "tag", MaxTags)) {
+        return false;
+      }
+    } break;
+    case NameType::Param: {
+      if (!ValidateIndirectNameMap(d, nameSection, "type", MaxTypes, "param",
+                                   MaxParams)) {
+        return false;
+      }
+    } break;
+    case NameType::TagParam: {
+      if (!ValidateIndirectNameMap(d, nameSection, "tag", MaxTags, "param",
+                                   MaxParams)) {
+        return false;
+      }
+    } break;
+    case NameType::Last:
+    default:
+      MOZ_CRASH();
+  }
   return true;
 }
 
@@ -4225,29 +4840,61 @@ static bool DecodeNameSection(Decoder& d, CodeMetadata* codeMeta,
     return true;
   }
 
-  codeMeta->nameSection.emplace((NameSection){
-      .customSectionIndex =
-          uint32_t(codeMeta->customSectionRanges.length() - 1),
-  });
+  codeMeta->nameSection.emplace();
+  codeMeta->nameSection->customSectionIndex =
+      uint32_t(codeMeta->customSectionRanges.length() - 1);
   const CustomSectionRange& nameSection = codeMeta->customSectionRanges.back();
 
-  // Once started, custom sections do not report validation errors.
+  Decoder nameSectionDecoder(d.currentPosition(),
+                             d.currentPosition() + nameSection.payload.size(),
+                             d.currentOffset(), d.error(), d.warnings());
+  {
+    Decoder& d = nameSectionDecoder;
+    // Once started, custom sections do not report validation errors.
 
-  if (!DecodeModuleNameSubsection(d, nameSection, codeMeta, moduleMeta)) {
-    goto finish;
-  }
+    uint8_t minNameType = 0;
+    while (true) {
+      if (d.done()) {
+        break;
+      }
 
-  if (!DecodeFunctionNameSubsection(d, nameSection, codeMeta, moduleMeta)) {
-    goto finish;
-  }
+      uint8_t nameTypeValue;
+      if (!d.readFixedU8(&nameTypeValue)) {
+        d.fail("expected name subsection type");
+        break;
+      }
+      if (nameTypeValue < minNameType) {
+        d.fail("out of order name subsections");
+        break;
+      }
+      if (nameTypeValue >= uint8_t(NameType::Last)) {
+        d.fail("invalid name subsection id");
+        break;
+      }
+      minNameType = nameTypeValue + 1;
 
-  while (d.currentOffset() < range->end) {
-    if (!d.skipNameSubsection()) {
-      goto finish;
+      uint32_t payloadLength;
+      if (!d.readVarU32(&payloadLength) || payloadLength > d.bytesRemain()) {
+        d.fail("bad name subsection payload length");
+        break;
+      }
+
+      Decoder nameSubsectionDecoder(d.currentPosition(),
+                                    d.currentPosition() + payloadLength,
+                                    d.currentOffset(), d.error(), d.warnings());
+      if (!DecodeNameSubsection(nameSubsectionDecoder, nameSection, codeMeta,
+                                NameType(nameTypeValue))) {
+        break;
+      }
+      if (!nameSubsectionDecoder.done()) {
+        d.fail("unconsumed bytes in name subsection");
+        break;
+      }
+      MOZ_RELEASE_ASSERT(d.readBytes(payloadLength));
     }
   }
+  MOZ_RELEASE_ASSERT(d.readBytes(nameSection.payload.size()));
 
-finish:
   if (!d.finishCustomSection(NameSectionName, *range)) {
     codeMeta->nameSection = mozilla::Nothing();
   }
@@ -4273,11 +4920,2383 @@ bool wasm::DecodeModuleTail(Decoder& d, CodeMetadata* codeMeta,
   return true;
 }
 
+#ifdef ENABLE_WASM_COMPONENTS
+
+enum class ComponentNameFragmentKind {
+  Unknown = 0,
+  Word,
+  Acronym,
+};
+
+// In the component model, names consist primarily of
+// series-OF-possibly-UPPERCASE-fragments, where each fragment is all lowercase
+// or all uppercase. A lowercase fragment is called a "word"; an uppercase
+// fragment is called an "acronym". Additionally, names cannot start with
+// digits. To give you a flavor, here are some of the grammar rules for names:
+//
+//     plainname         ::= <label>
+//                         | '[constructor]' <label>
+//                         | '[method]' <label> '.' <label>
+//                         | '[static]' <label> '.' <label>
+//     interfacename     ::= <namespace> <words> <projection> ...
+//     namespace         ::= <words> ':'
+//     projection        ::= '/' <label>
+//
+//     label             ::= <first-fragment> ( '-' <fragment> )*
+//     words             ::= <first-word> ( '-' <word> )*
+//
+//     first-word        ::= [a-z] [0-9a-z]*
+//     first-acronym     ::= [A-Z] [0-9A-Z]*
+//     first-fragment    ::= <first-word>
+//                         | <first-acronym>
+//     word              ::= [0-9a-z]+
+//     acronym           ::= [0-9A-Z]+
+//     fragment          ::= <word>
+//                         | <acronym>
+//
+// This is a maze, but at the end of the day it boils down to: parse a series of
+// hyphen-separated identifiers, sometimes allowing uppercase letters (as in
+// `plainname`) and sometimes not (as in `namespace`). For our own sanity, we
+// just call everything a "label" in our code and explicitly indicate whether
+// uppercase is allowed.
+[[nodiscard]] static bool DecodeComponentLabel(Decoder& d, const char* thing,
+                                               bool allowUppercase) {
+  // The first fragment in a label must start with a letter. Other fragments can
+  // start with a digit.
+  bool isFirstFragment = true;
+  ComponentNameFragmentKind fragmentKind;
+
+  while (true) {
+    fragmentKind = ComponentNameFragmentKind::Unknown;
+
+    uint8_t firstChar;
+    if (!d.readFixedU8(&firstChar)) {
+      return d.failf("%s name ended unexpectedly", thing);
+    }
+    bool firstLowercase = 'a' <= firstChar && firstChar <= 'z';
+    bool firstUppercase = 'A' <= firstChar && firstChar <= 'Z';
+    bool firstDigit = '0' <= firstChar && firstChar <= '9';
+    if (!firstLowercase && !firstUppercase && !firstDigit) {
+      return d.failf("invalid character in %s name", thing);
+    }
+    if (isFirstFragment && !(firstLowercase || firstUppercase)) {
+      return d.failf("%s name must start with a letter", thing);
+    }
+    if (firstUppercase && !allowUppercase) {
+      return d.failf("%s name had unexpected uppercase letter", thing);
+    }
+
+    if (firstLowercase) {
+      fragmentKind = ComponentNameFragmentKind::Word;
+    } else if (firstUppercase) {
+      fragmentKind = ComponentNameFragmentKind::Acronym;
+    }
+
+    uint8_t b;
+    while (d.peekByte(&b)) {
+      if (b == '-') {
+        break;
+      }
+
+      bool lowercase = 'a' <= b && b <= 'z';
+      bool uppercase = 'A' <= b && b <= 'Z';
+      bool digit = '0' <= b && b <= '9';
+      if (!lowercase && !uppercase && !digit) {
+        // We are immediately done because we encountered a non-word symbol at
+        // the end of something that could be valid.
+        return true;
+      }
+      if ((lowercase && fragmentKind == ComponentNameFragmentKind::Acronym) ||
+          (uppercase && fragmentKind == ComponentNameFragmentKind::Word)) {
+        return d.failf("mixed case in %s name", thing);
+      }
+
+      if (fragmentKind == ComponentNameFragmentKind::Unknown) {
+        if (lowercase) {
+          fragmentKind = ComponentNameFragmentKind::Word;
+        } else if (uppercase) {
+          fragmentKind = ComponentNameFragmentKind::Acronym;
+        }
+        // If a digit, the state remains Unknown.
+      }
+
+      MOZ_RELEASE_ASSERT(d.readBytes(1));
+    }
+    if (d.done()) {
+      return true;
+    }
+
+    MOZ_RELEASE_ASSERT(d.readLiteral("-"));
+    isFirstFragment = false;
+  }
+}
+
+[[nodiscard]] static bool DecodeComponentName(Decoder& d, const char* thing,
+                                              ComponentName* name) {
+  using Attr = ComponentNameAttribute;
+
+  uint32_t len;
+  if (!d.readVarU32(&len)) {
+    return d.fail("expected name");
+  }
+  if (len == 0) {
+    return d.failf("%s name cannot be empty", thing);
+  }
+  if (len > d.bytesRemain()) {
+    return d.fail("over-long name");
+  }
+
+  ComponentNameAttributes attrs;
+  uint8_t attributesLength = 0;
+  uint32_t resourceNameLength = 0;
+  Decoder nameDecoder(d.currentPosition(), d.currentPosition() + len,
+                      d.currentOffset(), d.error(), d.warnings());
+  {
+    Decoder& d = nameDecoder;
+
+    // Get some unusual kinds of component names out of the way. In the future
+    // we could choose to support some of these.
+    if (d.peekLiteral("url=")) {
+      return d.fail("URL names are not supported");
+    } else if (d.peekLiteral("integrity=")) {
+      return d.fail("hash names are not supported");
+    } else if (d.peekLiteral("unlocked-dep=") || d.peekLiteral("locked-dep=")) {
+      return d.fail("dependency names are not supported");
+    }
+
+    // Now all we have to deal with are plain names and interface names.
+    // Examples of each would be:
+    //
+    // - Plain names: foo-BAR-baz, [constructor]FOO-BAR, [method]foo.BAR,
+    //   [static]foo-BAR.BEEP-boop, [get]prop, [method][get]foo.prop,
+    //   [static][set]foo.prop-2
+    // - Interface names: wasi:cli/stdout,
+    //   wasi:clocks/imports@0.3.0-rc-2026-03-15,
+    //   foo-bar:BEEP-boop/boop-BEEP@<[a-zA-Z0-9.+-]+>
+    //
+    // For interface names, all three of namespace (e.g. "wasi:"), name (e.g.
+    // "cli"), and "projection" (e.g. "/stdout") are required, while the
+    // version (e.g. "@0.3.0") is optional.
+    //
+    // We can't distinguish up front between a plain or interface name (unless
+    // there is an annotation like "[constructor]"), so parsing must be ready
+    // to accommodate either.
+    //
+    // TODO(wasm-cm): Today we reject interface names entirely; the parser
+    // does not recognize the symbols used to delimit namespaces, projections,
+    // or versions.
+
+    const uint8_t* beforeAttributes = d.currentPosition();
+
+    // [constructor]/[method]/[static] must come first and are mutually
+    // exclusive
+    if (d.readLiteral("[constructor]")) {
+      attrs += Attr::Constructor;
+    } else if (d.readLiteral("[method]")) {
+      attrs += Attr::Method;
+    } else if (d.readLiteral("[static]")) {
+      attrs += Attr::Static;
+    }
+
+    // Then we can see [get] or [set]
+    if (d.readLiteral("[get]")) {
+      attrs += Attr::Get;
+    } else if (d.readLiteral("[set]")) {
+      attrs += Attr::Set;
+    }
+
+    const uint8_t* afterAttributes = d.currentPosition();
+    MOZ_ASSERT(afterAttributes - beforeAttributes <=
+               std::numeric_limits<decltype(attributesLength)>::max());
+    attributesLength = afterAttributes - beforeAttributes;
+
+    if (attrs.contains(Attr::Constructor)) {
+      if (attrs.contains(Attr::Get) || attrs.contains(Attr::Set)) {
+        return d.fail("cannot use [get] or [set] with [constructor]");
+      }
+      if (!DecodeComponentLabel(d, thing, /*allowUppercase=*/true)) {
+        return false;
+      }
+      resourceNameLength = d.currentPosition() - afterAttributes;
+    } else if (attrs.contains(Attr::Method) || attrs.contains(Attr::Static)) {
+      if (!DecodeComponentLabel(d, thing, /*allowUppercase=*/true)) {
+        return false;
+      }
+      resourceNameLength = d.currentPosition() - afterAttributes;
+      if (d.done()) {
+        return d.failf("%s name ended unexpectedly", thing);
+      } else if (!d.readLiteral(".")) {
+        return d.failf("invalid character in %s name", thing);
+      }
+      if (!DecodeComponentLabel(d, thing, /*allowUppercase=*/true)) {
+        return false;
+      }
+    } else {
+      if (!DecodeComponentLabel(d, thing, /*allowUppercase=*/true)) {
+        return false;
+      }
+    }
+
+    if (!d.done()) {
+      return d.failf("invalid characters in %s name", thing);
+    }
+  }
+
+  UTF8Bytes utf8Bytes;
+  if (!d.readUTF8Bytes(len, &utf8Bytes)) {
+    MOZ_CRASH("full name should have been decoded earlier");
+  }
+  *name = ComponentName(std::move(utf8Bytes), attrs, attributesLength,
+                        resourceNameLength);
+
+  return true;
+}
+
+[[nodiscard]] static bool DecodeComponentNameNoAttributes(Decoder& d,
+                                                          const char* thing,
+                                                          CacheableName* name) {
+  ComponentName nameEx;
+  if (!DecodeComponentName(d, thing, &nameEx)) {
+    return false;
+  }
+  if (!nameEx.attributes.isEmpty()) {
+    return d.failf("attributes are not allowed in %s names", thing);
+  }
+
+  *name = std::move(nameEx.name);
+  return true;
+}
+
+// TODO(wasm-cm): Documentation
+//
+// Note that this function need not concern itself with canonicalization,
+// because primitives don't need to be canonicalized and types already in the
+// type section will have been canonicalized on their way in.
+static bool DecodeComponentValType(Decoder& d, MutableComponent& c,
+                                   ComponentType* t) {
+  // Types in the binary are organized so that negative numbers are
+  // primitives, while positive numbers are type indices.
+
+  uint8_t nextByte;
+  if (!d.peekByte(&nextByte)) {
+    return d.fail("expected value type");
+  }
+
+  if ((nextByte & SLEB128SignMask) == SLEB128SignBit) {
+    uint8_t rawKind;
+    if (!d.readFixedU8(&rawKind)) {
+      return false;
+    }
+
+    ComponentTypeKind primKind = ComponentTypeKind(rawKind);
+    if (!ComponentTypeKindIsPrimitive(primKind)) {
+      return d.failf("invalid value type 0x%02x", rawKind);
+    }
+    *t = ComponentType::primitive(primKind);
+    return true;
+  }
+
+  int32_t typeIndex;
+  if (!d.readVarS32(&typeIndex) || typeIndex < 0 ||
+      c->types().length() <= size_t(typeIndex)) {
+    return d.failf("invalid type index %d", typeIndex);
+  }
+  ComponentType referencedType = c->getType(typeIndex);
+  if (!ComponentTypeKindIsValueType(referencedType.kind())) {
+    return d.failf("type %d is not a value type", typeIndex);
+  }
+  *t = referencedType;
+  return true;
+}
+
+enum class ComponentTypeKindRaw : uint8_t {
+  Bool = 0x7f,
+  S8 = 0x7e,
+  U8 = 0x7d,
+  S16 = 0x7c,
+  U16 = 0x7b,
+  S32 = 0x7a,
+  U32 = 0x79,
+  S64 = 0x78,
+  U64 = 0x77,
+  F32 = 0x76,
+  F64 = 0x75,
+  Char = 0x74,
+  String = 0x73,
+
+  Record = 0x72,
+  Variant = 0x71,
+  List = 0x70,
+  Tuple = 0x6f,
+  Flags = 0x6e,
+  Enum = 0x6d,
+  Option = 0x6b,
+  Result = 0x6a,
+  Own = 0x69,
+  Borrow = 0x68,
+
+  Func = 0x40,
+  AsyncFunc = 0x43,
+
+  Component = 0x41,
+  Instance = 0x42,
+
+  Resource = 0x3f,
+};
+
+[[nodiscard]] static bool DecodeComponentType(Decoder& d, MutableComponent& c) {
+  uint8_t kind;
+  if (!d.readFixedU8(&kind)) {
+    return d.fail("expected type kind");
+  }
+
+  ComponentType t;
+  switch (kind) {
+    case uint8_t(ComponentTypeKindRaw::Bool):
+    case uint8_t(ComponentTypeKindRaw::S8):
+    case uint8_t(ComponentTypeKindRaw::U8):
+    case uint8_t(ComponentTypeKindRaw::S16):
+    case uint8_t(ComponentTypeKindRaw::U16):
+    case uint8_t(ComponentTypeKindRaw::S32):
+    case uint8_t(ComponentTypeKindRaw::U32):
+    case uint8_t(ComponentTypeKindRaw::S64):
+    case uint8_t(ComponentTypeKindRaw::U64):
+    case uint8_t(ComponentTypeKindRaw::F32):
+    case uint8_t(ComponentTypeKindRaw::F64):
+    case uint8_t(ComponentTypeKindRaw::Char):
+    case uint8_t(ComponentTypeKindRaw::String): {
+      t = ComponentType::primitive(ComponentTypeKind(kind));
+    } break;
+
+    case uint8_t(ComponentTypeKindRaw::Record): {
+      ComponentRecordFieldVector fields;
+
+      // Record fields have the same name uniqueness requirement as imports.
+      StronglyUniqueNameSet fieldNameDedup;
+
+      uint32_t numFields;
+      if (!d.readVarU32(&numFields)) {
+        return d.fail("expected number of record fields");
+      }
+      if (numFields == 0) {
+        return d.fail("records must have at least one field");
+      }
+      if (numFields > MaxComponentRecordFields) {
+        return d.failf("too many record fields (max %d)",
+                       MaxComponentRecordFields);
+      }
+
+      if (!fields.reserve(numFields)) {
+        return false;
+      }
+
+      for (uint32_t i = 0; i < numFields; i++) {
+        CacheableName name;
+        if (!DecodeComponentNameNoAttributes(d, "record field", &name)) {
+          return false;
+        }
+        ComponentType type;
+        if (!DecodeComponentValType(d, c, &type)) {
+          return false;
+        }
+
+        bool duplicate;
+        if (!fieldNameDedup.add(name.utf8Bytes(), &duplicate)) {
+          return false;
+        }
+        if (duplicate) {
+          return d.failf("record field name \"%.*s\" is not strongly-unique",
+                         ComponentName_Printf(name));
+        }
+        fields.infallibleEmplaceBack(std::move(name), type);
+      }
+
+      if (!ComponentType::record(std::move(fields), &t)) {
+        return false;
+      }
+    } break;
+
+    case uint8_t(ComponentTypeKindRaw::Variant): {
+      ComponentVariantCaseVector cases;
+
+      // Variant cases have the same name uniqueness requirement as imports.
+      StronglyUniqueNameSet caseNameDedup;
+
+      uint32_t numCases;
+      if (!d.readVarU32(&numCases)) {
+        return d.fail("expected number of variant cases");
+      }
+      if (numCases == 0) {
+        return d.fail("variants must have at least one case");
+      }
+      if (numCases > MaxComponentVariantCases) {
+        return d.failf("too many variant cases (max %d)",
+                       MaxComponentVariantCases);
+      }
+
+      if (!cases.reserve(numCases)) {
+        return false;
+      }
+
+      for (uint32_t i = 0; i < numCases; i++) {
+        CacheableName name;
+        bool duplicate;
+        if (!DecodeComponentNameNoAttributes(d, "variant case", &name)) {
+          return false;
+        }
+        if (!caseNameDedup.add(name.utf8Bytes(), &duplicate)) {
+          return false;
+        }
+        if (duplicate) {
+          return d.failf("variant case name \"%.*s\" is not strongly-unique",
+                         ComponentName_Printf(name));
+        }
+
+        mozilla::Maybe<ComponentType> type;
+        bool hasType;
+        if (!d.readBool(&hasType)) {
+          return d.fail("expected optional variant case type");
+        }
+        if (hasType) {
+          ComponentType t;
+          if (!DecodeComponentValType(d, c, &t)) {
+            return false;
+          }
+          type = mozilla::Some(t);
+        }
+
+        uint8_t dummy;
+        if (!d.readFixedU8(&dummy) || dummy != 0x00) {
+          return d.fail("expected trailing zero on variant case");
+        }
+
+        cases.infallibleAppend(ComponentVariantCase{std::move(name), type});
+      }
+
+      if (!ComponentType::variant(std::move(cases), &t)) {
+        return false;
+      }
+    } break;
+
+    case uint8_t(ComponentTypeKindRaw::List): {
+      ComponentType type;
+      if (!DecodeComponentValType(d, c, &type)) {
+        return false;
+      }
+      if (!ComponentType::list(std::move(type), &t)) {
+        return false;
+      }
+    } break;
+
+    case uint8_t(ComponentTypeKindRaw::Tuple): {
+      uint32_t numTypes;
+      if (!d.readVarU32(&numTypes)) {
+        return d.fail("expected number of types in tuple");
+      }
+      if (numTypes == 0) {
+        return d.fail("tuples must have at least one type");
+      }
+      if (numTypes > MaxComponentTupleTypes) {
+        return d.failf("too many types in tuple (max %d)",
+                       MaxComponentTupleTypes);
+      }
+
+      ComponentTypeVector types;
+      if (!types.reserve(numTypes)) {
+        return false;
+      }
+      for (uint32_t i = 0; i < numTypes; i++) {
+        ComponentType type;
+        if (!DecodeComponentValType(d, c, &type)) {
+          return false;
+        }
+        types.infallibleAppend(type);
+      }
+
+      if (!ComponentType::tuple(std::move(types), &t)) {
+        return false;
+      }
+    } break;
+
+    case uint8_t(ComponentTypeKindRaw::Flags): {
+      uint32_t numLabels;
+      if (!d.readVarU32(&numLabels)) {
+        return false;
+      }
+      if (numLabels == 0) {
+        return d.fail("flag type must have at least one label");
+      }
+      if (numLabels > MaxComponentFlagLabels) {
+        return d.fail("too many labels for flag type");
+      }
+
+      CacheableNameVector labels;
+      StronglyUniqueNameSet labelDedup;
+      if (!labels.reserve(numLabels)) {
+        return false;
+      }
+      for (uint32_t i = 0; i < numLabels; i++) {
+        CacheableName name;
+        if (!DecodeComponentNameNoAttributes(d, "flag label", &name)) {
+          return false;
+        }
+        bool duplicate;
+        if (!labelDedup.add(name.utf8Bytes(), &duplicate)) {
+          return false;
+        }
+        if (duplicate) {
+          return d.failf("flag label \"%.*s\" is not strongly-unique",
+                         ComponentName_Printf(name));
+        }
+
+        labels.infallibleAppend(std::move(name));
+      }
+
+      if (!ComponentType::flags(std::move(labels), &t)) {
+        return false;
+      }
+    } break;
+
+    case uint8_t(ComponentTypeKindRaw::Enum): {
+      uint32_t numCases;
+      if (!d.readVarU32(&numCases)) {
+        return false;
+      }
+      if (numCases == 0) {
+        return d.fail("enum must have at least one case");
+      }
+      if (numCases > MaxComponentEnumCases) {
+        return d.failf("too many enum cases (max %d)", MaxComponentEnumCases);
+      }
+
+      CacheableNameVector labels;
+      StronglyUniqueNameSet caseLabelDedup;
+      if (!labels.reserve(numCases)) {
+        return false;
+      }
+      for (uint32_t i = 0; i < numCases; i++) {
+        CacheableName name;
+        if (!DecodeComponentNameNoAttributes(d, "enum case", &name)) {
+          return false;
+        }
+        bool duplicate;
+        if (!caseLabelDedup.add(name.utf8Bytes(), &duplicate)) {
+          return false;
+        }
+        if (duplicate) {
+          return d.failf("enum case label \"%.*s\" is not strongly-unique",
+                         ComponentName_Printf(name));
+        }
+
+        labels.infallibleAppend(std::move(name));
+      }
+
+      if (!ComponentType::enum_(std::move(labels), &t)) {
+        return false;
+      }
+    } break;
+
+    case uint8_t(ComponentTypeKindRaw::Option): {
+      ComponentType type;
+      if (!DecodeComponentValType(d, c, &type)) {
+        return false;
+      }
+      if (!ComponentType::option(std::move(type), &t)) {
+        return false;
+      }
+    } break;
+
+    case uint8_t(ComponentTypeKindRaw::Result): {
+      mozilla::Maybe<ComponentType> type;
+      mozilla::Maybe<ComponentType> errorType;
+
+      bool hasType;
+      if (!d.readBool(&hasType)) {
+        return d.fail("expected optional result type");
+      }
+      if (hasType) {
+        ComponentType theType;
+        if (!DecodeComponentValType(d, c, &theType)) {
+          return false;
+        }
+        type = mozilla::Some(theType);
+      }
+
+      bool hasErrorType;
+      if (!d.readBool(&hasErrorType)) {
+        return d.fail("expected optional result error type");
+      }
+      if (hasErrorType) {
+        ComponentType theErrorType;
+        if (!DecodeComponentValType(d, c, &theErrorType)) {
+          return false;
+        }
+        errorType = mozilla::Some(theErrorType);
+      }
+
+      if (!ComponentType::result(
+              ComponentResultType{.type = type, .errorType = errorType}, &t)) {
+        return false;
+      }
+    } break;
+
+    case uint8_t(ComponentTypeKindRaw::Own):
+    case uint8_t(ComponentTypeKindRaw::Borrow): {
+      uint32_t typeIndex;
+      if (!d.readVarU32(&typeIndex)) {
+        return d.fail("expected resource type index");
+      }
+
+      if (c->types().length() <= typeIndex) {
+        return d.failf("invalid type index %d", typeIndex);
+      }
+      ComponentType rt = c->getType(typeIndex);
+      if (rt.kind() != ComponentTypeKind::Resource &&
+          rt.kind() != ComponentTypeKind::SubResource) {
+        return d.failf("type %d is not a resource type", typeIndex);
+      }
+
+      if (kind == uint8_t(ComponentTypeKindRaw::Own)) {
+        if (!ComponentType::own(std::move(rt), &t)) {
+          return false;
+        }
+      } else {
+        if (!ComponentType::borrow(std::move(rt), &t)) {
+          return false;
+        }
+      }
+    } break;
+
+    case uint8_t(ComponentTypeKindRaw::Func): {
+      ComponentFuncType ft;
+
+      uint32_t numParams;
+      StronglyUniqueNameSet paramDeduper;
+      if (!d.readVarU32(&numParams)) {
+        return d.fail("expected number of params");
+      }
+      if (numParams > MaxComponentParams) {
+        return d.failf("too many params (max %d)", MaxComponentParams);
+      }
+      if (!ft.paramTypes.reserve(numParams) ||
+          !ft.paramNames.reserve(numParams)) {
+        return false;
+      }
+
+      for (uint32_t i = 0; i < numParams; i++) {
+        CacheableName name;
+        if (!DecodeComponentNameNoAttributes(d, "param", &name)) {
+          return false;
+        }
+        ComponentType type;
+        if (!DecodeComponentValType(d, c, &type)) {
+          return false;
+        }
+
+        bool duplicate;
+        if (!paramDeduper.add(name.utf8Bytes(), &duplicate)) {
+          return false;
+        }
+        if (duplicate) {
+          return d.failf("param name \"%.*s\" is not strongly-unique",
+                         ComponentName_Printf(name));
+        }
+
+        ft.paramNames.infallibleAppend(std::move(name));
+        ft.paramTypes.infallibleAppend(std::move(type));
+      }
+
+      // There is a result type if the byte is zero. It is not clear why this
+      // is, but we can only hope it is fixed when the binary format is
+      // eventually reshuffled.
+      bool hasNoResultType;
+      if (!d.readBool(&hasNoResultType)) {
+        return d.fail("expected result type");
+      }
+      if (hasNoResultType) {
+        uint8_t dummy;
+        if (!d.readFixedU8(&dummy) || dummy != 0) {
+          return d.fail("expected result type");
+        }
+      } else {
+        ComponentType resultType;
+        if (!DecodeComponentValType(d, c, &resultType)) {
+          return false;
+        }
+        ft.resultType = mozilla::Some(resultType);
+      }
+
+      if (!ComponentType::func(std::move(ft), &t)) {
+        return false;
+      }
+    } break;
+    case uint8_t(ComponentTypeKindRaw::AsyncFunc):
+      return d.fail("async functions are not supported");
+
+    case uint8_t(ComponentTypeKindRaw::Resource): {
+      uint8_t repType;
+      if (!d.readFixedU8(&repType)) {
+        return d.fail("expected rep type for resource type");
+      }
+
+      // Require (rep i32)
+      // TODO(wasm-cm): Update for memory64 support
+      if (repType != 0x7f) {
+        return d.failf("unexpected rep type 0x%02x for resource type", repType);
+      }
+
+      uint8_t hasDtor;
+      mozilla::Maybe<uint32_t> dtorIndex;
+      if (!d.readFixedU8(&hasDtor) || hasDtor > 0x01) {
+        return d.fail("expected destructor for resource type");
+      }
+      if (hasDtor) {
+        uint32_t dtorIndexRaw;
+        if (!d.readVarU32(&dtorIndexRaw)) {
+          return d.fail("expected index of destructor for resource type");
+        }
+
+        if (c->coreFuncs().length() <= dtorIndexRaw) {
+          return d.failf("invalid core func index %d", dtorIndexRaw);
+        }
+        const FuncType& dtorType =
+            c->getTypeForCoreFunc(dtorIndexRaw).funcType();
+
+        if (!dtorType.isValidComponentDestructor()) {
+          return d.fail("destructor has invalid signature");
+        }
+
+        dtorIndex.emplace(dtorIndexRaw);
+      }
+
+      if (!ComponentType::resource(ComponentResourceType(dtorIndex), &t)) {
+        return false;
+      }
+    } break;
+
+    default:
+      return d.failf("unexpected type 0x%02x", kind);
+  }
+
+  ComponentType canonical;
+  if (!CanonicalizeComponentType(t, &canonical)) {
+    return false;
+  }
+  if (!c->addType(std::move(canonical))) {
+    return false;
+  }
+
+  return true;
+}
+
+enum class ComponentSortRaw : uint8_t {
+  CoreSort = 0x00,
+  Function = 0x01,
+  Type = 0x03,
+  Component = 0x04,
+  Instance = 0x05,
+};
+
+enum class ComponentCoreSortRaw : uint8_t {
+  Function = 0x00,
+  Table = 0x01,
+  Memory = 0x02,
+  Global = 0x03,
+  Tag = 0x04,
+  Type = 0x10,
+  Module = 0x11,
+  Instance = 0x12,
+};
+
+[[nodiscard]] static bool DecodeComponentCoreSort(Decoder& d,
+                                                  ComponentSort* sort) {
+  uint8_t coreSort;
+  if (!d.readFixedU8(&coreSort)) {
+    return d.fail("expected core sort");
+  }
+
+  switch (coreSort) {
+    case uint8_t(ComponentCoreSortRaw::Function): {
+      *sort = ComponentSort::CoreFunction;
+    } break;
+    case uint8_t(ComponentCoreSortRaw::Table): {
+      *sort = ComponentSort::CoreTable;
+    } break;
+    case uint8_t(ComponentCoreSortRaw::Memory): {
+      *sort = ComponentSort::CoreMemory;
+    } break;
+    case uint8_t(ComponentCoreSortRaw::Global): {
+      *sort = ComponentSort::CoreGlobal;
+    } break;
+    case uint8_t(ComponentCoreSortRaw::Tag): {
+      *sort = ComponentSort::CoreTag;
+    } break;
+    case uint8_t(ComponentCoreSortRaw::Type): {
+      *sort = ComponentSort::CoreType;
+    } break;
+    case uint8_t(ComponentCoreSortRaw::Module): {
+      *sort = ComponentSort::CoreModule;
+    } break;
+    case uint8_t(ComponentCoreSortRaw::Instance): {
+      *sort = ComponentSort::CoreInstance;
+    } break;
+    default:
+      return d.failf("unexpected core externtype %d", coreSort);
+  }
+
+  return true;
+}
+
+[[nodiscard]] static bool DecodeComponentSort(Decoder& d, ComponentSort* sort,
+                                              bool forExterndesc) {
+  uint8_t kind;
+  if (!d.readFixedU8(&kind)) {
+    return d.fail("expected sort");
+  }
+
+  switch (kind) {
+    case uint8_t(ComponentSortRaw::CoreSort): {
+      if (!DecodeComponentCoreSort(d, sort)) {
+        return false;
+      }
+    } break;
+    case uint8_t(ComponentSortRaw::Function): {
+      *sort = ComponentSort::Func;
+    } break;
+    case uint8_t(ComponentSortRaw::Type): {
+      *sort = ComponentSort::Type;
+    } break;
+    case uint8_t(ComponentSortRaw::Component): {
+      *sort = ComponentSort::Component;
+    } break;
+    case uint8_t(ComponentSortRaw::Instance): {
+      *sort = ComponentSort::Instance;
+    } break;
+    default:
+      return d.failf("unexpected sort 0x%02x", kind);
+  }
+
+  if (forExterndesc && !ComponentSortValidForExternDesc(*sort)) {
+    return d.failf("unexpected sort 0x%02x", kind);
+  }
+
+  return true;
+}
+
+enum class ComponentTypeBoundKindRaw : uint8_t {
+  Eq = 0x00,
+  SubResource = 0x01,
+};
+
+[[nodiscard]] static bool DecodeComponentExternDesc(Decoder& d,
+                                                    MutableComponent c,
+                                                    ComponentExternDesc* desc,
+                                                    bool* isNewSubResource) {
+  *isNewSubResource = false;
+
+  ComponentSort kind;
+  if (!DecodeComponentSort(d, &kind, /*forExterndesc=*/true)) {
+    return false;
+  }
+
+  switch (kind) {
+    case ComponentSort::Func: {
+      uint32_t funcTypeIndex;
+      if (!d.readVarU32(&funcTypeIndex)) {
+        return d.fail("expected func type index");
+      }
+
+      if (c->types().length() <= funcTypeIndex) {
+        return d.failf("invalid type index %d", funcTypeIndex);
+      }
+      ComponentType funcType = c->getType(funcTypeIndex);
+      if (funcType.kind() != ComponentTypeKind::Func) {
+        return d.failf("type %d is not a func type", funcTypeIndex);
+      }
+
+      *desc = ComponentExternDesc::func(std::move(funcType));
+    } break;
+    case ComponentSort::Type: {
+      uint8_t kind;
+      if (!d.readFixedU8(&kind)) {
+        return d.fail("expected kind of type bound");
+      }
+
+      switch (kind) {
+        case uint8_t(ComponentTypeBoundKindRaw::Eq): {
+          uint32_t typeIndex;
+          if (!d.readVarU32(&typeIndex)) {
+            return d.fail("expected type index");
+          }
+
+          if (c->types().length() <= typeIndex) {
+            return d.failf("invalid type index %d", typeIndex);
+          }
+
+          *desc = ComponentExternDesc::type(c->getType(typeIndex));
+        } break;
+        case uint8_t(ComponentTypeBoundKindRaw::SubResource): {
+          // We do not need to canonicalize this new type, as all resource types
+          // are unique anyway.
+          ComponentType subResourceType;
+          if (!ComponentType::subResource(&subResourceType)) {
+            return false;
+          }
+          *desc = ComponentExternDesc::type(std::move(subResourceType));
+          *isNewSubResource = true;
+        } break;
+        default:
+          return d.failf("invalid kind 0x%02x for type bound", kind);
+      }
+    } break;
+    case ComponentSort::Component: {
+      // TODO(wasm-cm): Add support for these
+      return d.fail("extern components are not supported yet");
+    } break;
+    case ComponentSort::Instance: {
+      // TODO(wasm-cm): Add support for these
+      return d.fail("extern instances are not supported yet");
+    } break;
+    case ComponentSort::CoreModule: {
+      // TODO(wasm-cm): Add support for these
+      return d.fail("extern core modules are not supported yet");
+    } break;
+    default:
+      MOZ_CRASH(
+          "all externdesc-compatible ComponentSorts should have been handled");
+  }
+
+  return true;
+}
+
+// Validates that a `(core:)?sortidx` from the component spec corresponds to a
+// valid item in the component's index space.
+[[nodiscard]] static bool ValidateComponentSortIdx(
+    Decoder& d, const Component& c, ComponentSortIndex sortIndex) {
+  switch (sortIndex.sort) {
+    case ComponentSort::Func: {
+      if (c.funcs().length() <= sortIndex.index) {
+        return d.failf("invalid function index %d", sortIndex.index);
+      }
+    } break;
+    case ComponentSort::Type: {
+      if (c.types().length() <= sortIndex.index) {
+        return d.failf("invalid type index %d", sortIndex.index);
+      }
+    } break;
+    case ComponentSort::Component:
+      // TODO(wasm-cm): Support nested components
+      return d.fail("nested components are not supported yet");
+    case ComponentSort::Instance:
+      // TODO(wasm-cm): Support nested components
+      return d.fail("nested components are not supported yet");
+
+    case ComponentSort::CoreFunction: {
+      if (c.coreFuncs().length() <= sortIndex.index) {
+        return d.failf("invalid core function index %d", sortIndex.index);
+      }
+    } break;
+    case ComponentSort::CoreTable: {
+      if (c.coreTables().length() <= sortIndex.index) {
+        return d.failf("invalid table index %d", sortIndex.index);
+      }
+    } break;
+    case ComponentSort::CoreMemory: {
+      if (c.coreMemories().length() <= sortIndex.index) {
+        return d.failf("invalid memory index %d", sortIndex.index);
+      }
+    } break;
+    case ComponentSort::CoreGlobal: {
+      if (c.coreGlobals().length() <= sortIndex.index) {
+        return d.failf("invalid global index %d", sortIndex.index);
+      }
+    } break;
+    case ComponentSort::CoreTag: {
+      if (c.coreTags().length() <= sortIndex.index) {
+        return d.failf("invalid tag index %d", sortIndex.index);
+      }
+    } break;
+
+    case ComponentSort::CoreType:
+      // TODO(wasm-cm): Support core type aliases as part of outer aliases.
+      return d.fail("core type aliases are not supported yet");
+    case ComponentSort::CoreModule: {
+      if (c.coreModules().length() <= sortIndex.index) {
+        return d.failf("invalid core module index %d", sortIndex.index);
+      }
+    } break;
+    case ComponentSort::CoreInstance: {
+      if (c.coreInstances().length() <= sortIndex.index) {
+        return d.failf("invalid core instance index %d", sortIndex.index);
+      }
+    } break;
+
+    default:
+      MOZ_CRASH();
+  }
+
+  return true;
+}
+
+enum class CoreInstanceExprKind : uint8_t {
+  InstantiateModule = 0x00,
+  InlineExports = 0x01,
+};
+
+[[nodiscard]] static bool DecodeCoreInstance(Decoder& d, MutableComponent& c) {
+  uint8_t exprType;
+  if (!d.readFixedU8(&exprType)) {
+    return false;
+  }
+
+  switch (exprType) {
+    case uint8_t(CoreInstanceExprKind::InstantiateModule): {
+      uint32_t moduleIndex;
+      if (!d.readVarU32(&moduleIndex)) {
+        return d.fail("expected core module index");
+      }
+      if (moduleIndex >= c->coreModules().length()) {
+        return d.failf("invalid core module index %d", moduleIndex);
+      }
+
+      uint32_t numArgs;
+      if (!d.readVarU32(&numArgs)) {
+        return d.fail("expected number of instantiate arguments");
+      }
+      if (numArgs > MaxComponentCoreInstantiateArgs) {
+        return d.failf("too many core instantiate args (max %d)",
+                       MaxComponentCoreInstantiateArgs);
+      }
+
+      CoreInstanceInstantiateArgs args;
+      for (uint32_t i = 0; i < numArgs; i++) {
+        CacheableName importName;
+        if (!DecodeName(d, &importName)) {
+          return d.fail("expected import name");
+        }
+
+        auto p = args.lookupForAdd(importName.utf8Bytes());
+        if (p) {
+          return d.fail("duplicate core instantiate arg name");
+        }
+
+        uint8_t instanceIndicator;
+        if (!d.readFixedU8(&instanceIndicator) ||
+            instanceIndicator != uint8_t(ComponentCoreSortRaw::Instance)) {
+          return d.fail("expected core instance index");
+        }
+
+        uint32_t instanceIndex;
+        if (!d.readVarU32(&instanceIndex)) {
+          return d.fail("expected core instance index");
+        }
+        if (c->coreInstances().length() <= instanceIndex) {
+          return d.failf("invalid core instance index %d", instanceIndex);
+        }
+
+        if (!args.add(p, std::move(importName), instanceIndex)) {
+          return false;
+        }
+      }
+
+      // Validate that the instantiate args satisfy the module's imports. (How
+      // wonderful it is that we can do this statically for components!)
+      {
+        SharedModule mod = c->getCoreModule(moduleIndex);
+        uint32_t functionIndex = 0;
+        uint32_t tableIndex = 0;
+        uint32_t memoryIndex = 0;
+        uint32_t globalIndex = 0;
+        uint32_t tagIndex = 0;
+        for (const Import& imp : mod->moduleMeta().imports) {
+          auto p = args.lookup(imp.module.utf8Bytes());
+          if (!p) {
+            return d.fail("no instantiate arg found");
+          }
+          uint32_t instanceIndex = p->value();
+          const CoreInstanceDesc& instance = c->getCoreInstance(instanceIndex);
+          mozilla::Maybe<ComponentSortIndex> maybeExp =
+              instance.getExport(imp.field);
+          if (!maybeExp) {
+            return d.fail("no matching export for core module import");
+          }
+          ComponentSortIndex exp = *maybeExp;
+
+          switch (imp.kind) {
+            case DefinitionKind::Function: {
+              if (exp.sort != ComponentSort::CoreFunction) {
+                return d.failf("expected a core function");
+              }
+
+              uint32_t index = functionIndex++;
+              const TypeDef& importType = mod->codeMeta().getFuncTypeDef(index);
+              const TypeDef& exportType = instance.getCoreFuncType(exp.index);
+              if (!TypeDef::isSubTypeOf(&exportType, &importType)) {
+                return d.fail("incompatible function type for import");
+              }
+            } break;
+            case DefinitionKind::Table: {
+              if (exp.sort != ComponentSort::CoreTable) {
+                return d.failf("expected a table");
+              }
+
+              uint32_t index = tableIndex++;
+              const TableDesc& importTable = mod->codeMeta().tables[index];
+              const TableDesc& exportTable = instance.getTable(exp.index);
+              if (!TableType::matches(exportTable.type, importTable.type)) {
+                return d.fail("incompatible table type for import");
+              }
+            } break;
+            case DefinitionKind::Memory: {
+              if (exp.sort != ComponentSort::CoreMemory) {
+                return d.failf("expected a memory");
+              }
+
+              uint32_t index = memoryIndex++;
+              MemoryDesc importMemory = mod->codeMeta().memories[index];
+              MemoryDesc exportMemory = instance.getMemory(exp.index);
+              if (!MemoryDesc::matches(exportMemory, importMemory)) {
+                return d.fail("incompatible memory type for import");
+              }
+            } break;
+            case DefinitionKind::Global: {
+              if (exp.sort != ComponentSort::CoreGlobal) {
+                return d.failf("expected a global");
+              }
+
+              uint32_t index = globalIndex++;
+              const GlobalDesc& importGlobal = mod->codeMeta().globals[index];
+              const GlobalDesc& exportGlobal = instance.getGlobal(exp.index);
+              if (!GlobalDesc::matches(exportGlobal, importGlobal)) {
+                return d.fail("incompatible global type for import");
+              }
+            } break;
+            case DefinitionKind::Tag: {
+              if (exp.sort != ComponentSort::CoreTag) {
+                return d.failf("expected a tag");
+              }
+
+              uint32_t index = tagIndex++;
+              const TagDesc& importTag = mod->codeMeta().tags[index];
+              const TagDesc& exportTag = instance.getTag(exp.index);
+              if (!TagType::matches(*exportTag.type, *importTag.type)) {
+                return d.fail("incompatible tag type for import");
+              }
+            } break;
+            default:
+              MOZ_CRASH();
+          }
+        }
+      }
+
+      CoreInstanceDesc desc(c, CoreInstanceDescFromModule{
+                                   .moduleIndex = moduleIndex,
+                                   .args = std::move(args),
+                               });
+      if (!c->addCoreInstance(std::move(desc))) {
+        return false;
+      }
+    } break;
+    case uint8_t(CoreInstanceExprKind::InlineExports): {
+      uint32_t numExports;
+      if (!d.readVarU32(&numExports)) {
+        return d.fail("expected number of inline exports");
+      }
+      if (numExports > MaxComponentInlineExports) {
+        return d.failf("too many inline exports (max %d)",
+                       MaxComponentInlineExports);
+      }
+
+      ComponentInlineExports inlineExports;
+      ComponentInlineExports::Builder builder;
+      NameSet exportNames;
+      for (uint32_t i = 0; i < numExports; i++) {
+        CacheableName name;
+        ComponentSortIndex sortIndex;
+        {
+          ComponentSort sort;
+          uint32_t index;
+          if (!DecodeName(d, &name)) {
+            return d.fail("expected inline export name");
+          }
+          if (!DecodeComponentCoreSort(d, &sort)) {
+            return false;
+          }
+          if (!d.readVarU32(&index)) {
+            return d.fail("expected inline export item index");
+          }
+          sortIndex = ComponentSortIndex(sort, index);
+        }
+
+        // Check for duplicate names
+        auto p = exportNames.lookupForAdd(name.utf8Bytes());
+        if (p) {
+          return d.fail("duplicate name of inline export");
+        }
+        if (!exportNames.add(p, name.utf8Bytes())) {
+          return false;
+        }
+
+        // Component-level sorts like Func and CoreModule are not allowed for
+        // core instances.
+        if (!ComponentSortIsCoreSort(sortIndex.sort)) {
+          return d.failf("invalid sort %d for core inline export",
+                         uint8_t(sortIndex.sort));
+        }
+
+        // Check that index refers to a valid item
+        if (!ValidateComponentSortIdx(d, *c, sortIndex)) {
+          return false;
+        }
+
+        if (!inlineExports.addExport(&builder, std::move(name), sortIndex)) {
+          return false;
+        }
+      }
+
+      if (!c->addCoreInstance(CoreInstanceDesc(c, std::move(inlineExports)))) {
+        return false;
+      }
+    } break;
+    default:
+      return d.failf("expected type of instance expression but got %d",
+                     exprType);
+  }
+
+  return true;
+}
+
+enum class AliasKindRaw : uint8_t {
+  ComponentExport = 0x00,
+  CoreExport = 0x01,
+  Outer = 0x02,
+};
+
+[[nodiscard]] static bool DecodeComponentAlias(Decoder& d,
+                                               MutableComponent& c) {
+  ComponentSort sort;
+  if (!DecodeComponentSort(d, &sort, /*forExterndesc=*/false)) {
+    return false;
+  }
+
+  uint8_t targetType;
+  if (!d.readFixedU8(&targetType)) {
+    return d.fail("expected alias target");
+  }
+
+  switch (targetType) {
+    case uint8_t(AliasKindRaw::ComponentExport): {
+      // TODO(wasm-cm)
+      return d.fail("component export aliases are not yet supported");
+    } break;
+    case uint8_t(AliasKindRaw::CoreExport): {
+      uint32_t instanceIndex;
+      if (!d.readVarU32(&instanceIndex)) {
+        return d.fail("expected instance index");
+      }
+
+      CacheableName exportName;
+      if (!DecodeName(d, &exportName)) {
+        return d.fail("expected instance export name");
+      }
+
+      if (c->coreInstances().length() <= instanceIndex) {
+        return d.failf("invalid core instance index %d", instanceIndex);
+      }
+      const CoreInstanceDesc& instance = c->getCoreInstance(instanceIndex);
+      mozilla::Maybe<ComponentSortIndex> maybeExp =
+          instance.getExport(exportName);
+      if (maybeExp.isNothing()) {
+        return d.failf("core instance %d has no export \"%.*s\"", instanceIndex,
+                       ComponentName_Printf(exportName));
+      }
+      ComponentSortIndex exp = *maybeExp;
+
+      ComponentItem newAlias = instance.desc().match(
+          [&](const CoreInstanceDescFromModule&) {
+            return ComponentItem::alias(ComponentAliasKind::CoreExport, sort,
+                                        instanceIndex, exp.index);
+          },
+          [&](const ComponentInlineExports& inlineExports) {
+            // If you alias an export of an inline-export instance, then you can
+            // just turn the alias into an outer alias of the original thing and
+            // call it a day. This saves some unnecessary indirection, prevents
+            // terrible chains of aliases, and also ensures that we never have
+            // to build index spaces for inline-export instances.
+            //
+            // TODO(wasm-cm): In principle you could also do this analysis on
+            // normal modules. If a module simply re-exports an item, the same
+            // trick could be performed.
+            ComponentSortIndex original = inlineExports.resolveOriginal(exp);
+            ComponentItem originalItem = c->resolveSortIndex(original);
+            if (originalItem.isOuterAlias()) {
+              // Never let an outer alias point at an outer alias; always just
+              // point it at the original item.
+              MOZ_ASSERT(
+                  !c->resolveSortIndex(originalItem.outerAliasSortIndex())
+                       .isOuterAlias());
+              return originalItem;
+            } else {
+              return ComponentItem::alias(ComponentAliasKind::Outer,
+                                          original.sort, 0, original.index);
+            }
+          });
+
+      ComponentSortIndex newAliasSortIndex;
+      switch (sort) {
+        case ComponentSort::CoreFunction: {
+          if (c->coreFuncs().length() >= MaxComponentCoreFuncs) {
+            return d.failf("too many core funcs (max %d)",
+                           MaxComponentCoreFuncs);
+          }
+          if (exp.sort != ComponentSort::CoreFunction) {
+            return d.failf(
+                "export \"%.*s\" of core instance %d is not a function",
+                ComponentName_Printf(exportName), instanceIndex);
+          }
+          newAliasSortIndex = ComponentSortIndex(ComponentSort::CoreFunction,
+                                                 c->coreFuncs().length());
+          if (!c->addAliasOfExportedCoreFunc(newAlias)) {
+            return false;
+          }
+        } break;
+        case ComponentSort::CoreTable: {
+          if (c->coreTables().length() >= MaxComponentCoreTables) {
+            return d.failf("too many core tables (max %d)",
+                           MaxComponentCoreTables);
+          }
+          if (exp.sort != ComponentSort::CoreTable) {
+            return d.failf("export \"%.*s\" of core instance %d is not a table",
+                           ComponentName_Printf(exportName), instanceIndex);
+          }
+          newAliasSortIndex = ComponentSortIndex(ComponentSort::CoreTable,
+                                                 c->coreTables().length());
+          if (!c->addCoreTable(newAlias)) {
+            return false;
+          }
+        } break;
+        case ComponentSort::CoreMemory: {
+          if (c->coreMemories().length() >= MaxComponentCoreMemories) {
+            return d.failf("too many core memories (max %d)",
+                           MaxComponentCoreMemories);
+          }
+          if (exp.sort != ComponentSort::CoreMemory) {
+            return d.failf(
+                "export \"%.*s\" of core instance %d is not a memory",
+                ComponentName_Printf(exportName), instanceIndex);
+          }
+          newAliasSortIndex = ComponentSortIndex(ComponentSort::CoreMemory,
+                                                 c->coreMemories().length());
+          if (!c->addCoreMemory(newAlias)) {
+            return false;
+          }
+        } break;
+        case ComponentSort::CoreGlobal: {
+          if (c->coreGlobals().length() >= MaxComponentCoreGlobals) {
+            return d.failf("too many core globals (max %d)",
+                           MaxComponentCoreGlobals);
+          }
+          if (exp.sort != ComponentSort::CoreGlobal) {
+            return d.failf(
+                "export \"%.*s\" of core instance %d is not a global",
+                ComponentName_Printf(exportName), instanceIndex);
+          }
+          newAliasSortIndex = ComponentSortIndex(ComponentSort::CoreGlobal,
+                                                 c->coreGlobals().length());
+          if (!c->addCoreGlobal(newAlias)) {
+            return false;
+          }
+        } break;
+        case ComponentSort::CoreTag: {
+          if (c->coreTags().length() >= MaxComponentCoreTags) {
+            return d.failf("too many core tags (max %d)", MaxComponentCoreTags);
+          }
+          if (exp.sort != ComponentSort::CoreTag) {
+            return d.failf("export \"%.*s\" of core instance %d is not a tag",
+                           ComponentName_Printf(exportName), instanceIndex);
+          }
+          newAliasSortIndex = ComponentSortIndex(ComponentSort::CoreTag,
+                                                 c->coreTags().length());
+          if (!c->addCoreTag(newAlias)) {
+            return false;
+          }
+        } break;
+        default:
+          return d.failf("invalid alias sort 0x%02x", uint8_t(sort));
+      }
+
+      if (newAlias.aliasKind() == ComponentAliasKind::CoreExport &&
+          !c->saveExportNameForAlias(newAliasSortIndex,
+                                     std::move(exportName))) {
+        return false;
+      }
+    } break;
+    case uint8_t(AliasKindRaw::Outer): {
+      // TODO(wasm-cm): Support 0-depth outer aliases
+      // TODO(wasm-cm): Support all depths of outer aliases once nested
+      // components are supported
+      return d.fail("outer aliases are not yet supported");
+    } break;
+    default:
+      return d.failf("unexpected alias target 0x%02x", targetType);
+  }
+
+  return true;
+}
+
+enum class CanonOptKindRaw : uint8_t {
+  StringEncodingUTF8 = uint8_t(ComponentStringEncoding::UTF8),
+  StringEncodingUTF16 = uint8_t(ComponentStringEncoding::UTF16),
+  StringEncodingLatin1PlusUTF16 =
+      uint8_t(ComponentStringEncoding::Latin1PlusUTF16),
+  Memory = 0x03,
+  Realloc = 0x04,
+  PostReturn = 0x05,
+};
+
+// Decodes a list of canonopts in the binary format.
+[[nodiscard]] static bool DecodeCanonOpts(Decoder& d, const Component& c,
+                                          ComponentCanonOpts* opts,
+                                          CanonMode mode) {
+  *opts = {};
+
+  uint32_t count;
+  if (!d.readVarU32(&count)) {
+    return d.fail("expected number of canonopts");
+  }
+
+  // TODO(wasm-cm): Do you need max canonopts when each kind of canonopt can
+  // only be set once?
+  if (count > MaxComponentCanonOpts) {
+    return d.failf("too many canonopts (max %d)", MaxComponentCanonOpts);
+  }
+
+  bool hasStringEncoding = false;
+  bool hasMemory = false;
+  bool hasRealloc = false;
+  bool hasPostReturn = false;
+  for (uint32_t i = 0; i < count; i++) {
+    uint8_t kind;
+    if (!d.readFixedU8(&kind)) {
+      return d.fail("expected canonopt");
+    }
+    switch (kind) {
+      case uint8_t(CanonOptKindRaw::StringEncodingUTF8):
+      case uint8_t(CanonOptKindRaw::StringEncodingUTF16):
+      case uint8_t(CanonOptKindRaw::StringEncodingLatin1PlusUTF16): {
+        if (hasStringEncoding) {
+          return d.fail("string encoding already specified");
+        }
+        hasStringEncoding = true;
+        opts->stringEncoding = ComponentStringEncoding(kind);
+      } break;
+      case uint8_t(CanonOptKindRaw::Memory): {
+        if (hasMemory) {
+          return d.fail("memory already specified");
+        }
+        hasMemory = true;
+        uint32_t memoryIndex;
+        if (!d.readVarU32(&memoryIndex)) {
+          return d.fail("expected memory index");
+        }
+        if (c.coreMemories().length() <= memoryIndex) {
+          return d.failf("invalid memory index %d", memoryIndex);
+        }
+        if (c.getCoreMemory(memoryIndex).addressType() != AddressType::I32) {
+          return d.fail("memory for canonical ABI must be 32-bit");
+        }
+        opts->memoryIndex.emplace(memoryIndex);
+      } break;
+      case uint8_t(CanonOptKindRaw::Realloc): {
+        if (hasRealloc) {
+          return d.fail("realloc already specified");
+        }
+        hasRealloc = true;
+        uint32_t reallocIndex;
+        if (!d.readVarU32(&reallocIndex)) {
+          return d.fail("expected realloc index");
+        }
+        if (c.coreFuncs().length() <= reallocIndex) {
+          return d.failf("invalid index %d for realloc function", reallocIndex);
+        }
+        const FuncType& reallocType =
+            c.getTypeForCoreFunc(reallocIndex).funcType();
+        if (reallocType.args().length() != 4 ||
+            reallocType.args()[0] != ValType::i32() ||
+            reallocType.args()[1] != ValType::i32() ||
+            reallocType.args()[2] != ValType::i32() ||
+            reallocType.args()[3] != ValType::i32() ||
+            reallocType.results().length() != 1 ||
+            reallocType.results()[0] != ValType::i32()) {
+          return d.fail("invalid signature for realloc function");
+        }
+        opts->reallocIndex.emplace(reallocIndex);
+      } break;
+      case uint8_t(CanonOptKindRaw::PostReturn): {
+        if (mode != CanonMode::Lift) {
+          return d.fail("post-return only valid for canon lift");
+        }
+        if (hasPostReturn) {
+          return d.fail("post-return already specified");
+        }
+        hasPostReturn = true;
+        uint32_t postReturnIndex;
+        if (!d.readVarU32(&postReturnIndex)) {
+          return d.fail("expected post-return index");
+        }
+        if (c.coreFuncs().length() <= postReturnIndex) {
+          return d.failf("invalid index %d for post-return function",
+                         postReturnIndex);
+        }
+        opts->postReturnIndex.emplace(postReturnIndex);
+      } break;
+      default:
+        return d.failf("unexpected canonopt 0x%02x", kind);
+    }
+  }
+
+  return true;
+}
+
+enum class CanonDefKindRaw : uint8_t {
+  Lift = 0x00,
+  Lower = 0x01,
+  ResourceNew = 0x02,
+  ResourceDrop = 0x03,
+  ResourceRep = 0x04,
+};
+
+[[nodiscard]] static bool DecodeComponentCanonDef(Decoder& d,
+                                                  MutableComponent& c) {
+  uint8_t kind;
+  if (!d.readFixedU8(&kind)) {
+    return d.fail("expected canonical definition");
+  }
+
+  switch (kind) {
+    case uint8_t(CanonDefKindRaw::Lift): {
+      if (c->funcs().length() >= MaxComponentFuncs) {
+        return d.failf("too many funcs (max %d)", MaxComponentFuncs);
+      }
+
+      uint8_t dummy;
+      if (!d.readFixedU8(&dummy) || dummy != 0) {
+        return d.fail("expected canonical definition");
+      }
+
+      uint32_t coreFuncIndex;
+      if (!d.readVarU32(&coreFuncIndex)) {
+        return d.fail("expected core function index");
+      }
+      if (c->coreFuncs().length() <= coreFuncIndex) {
+        return d.failf("invalid core function index %d", coreFuncIndex);
+      }
+
+      ComponentCanonOpts opts;
+      if (!DecodeCanonOpts(d, *c, &opts, CanonMode::Lift)) {
+        return false;
+      }
+
+      uint32_t typeIndex;
+      if (!d.readVarU32(&typeIndex)) {
+        return d.fail("expected type index");
+      }
+      if (c->types().length() <= typeIndex) {
+        return d.failf("invalid type index %d", typeIndex);
+      }
+
+      const ComponentType& t = c->getType(typeIndex);
+      if (t.kind() != ComponentTypeKind::Func) {
+        return d.fail("canon lift requires a func type");
+      }
+
+      const ComponentFuncType& ft = t.asFunc();
+      bool memoryRequired = false;
+      bool reallocRequired = false;
+      bool tooDeep = false;
+      mozilla::Maybe<FuncType> flattened = FlattenFuncType(
+          ft, CanonMode::Lift, &memoryRequired, &reallocRequired, &tooDeep);
+      if (flattened.isNothing()) {
+        if (tooDeep) {
+          return d.fail("flattening exceeded maximum depth");
+        }
+        return false;
+      }
+
+      // Because flattened func types use only primitive types, there will never
+      // be any type references and a strict comparison will suffice.
+      if (!FuncType::strictlyEquals(
+              flattened.ref(),
+              c->getTypeForCoreFunc(coreFuncIndex).funcType())) {
+        return d.fail(
+            "could not lift core func (component func type did not match)");
+      }
+
+      // Verify presence of (memory) and (realloc) if required.
+      if (memoryRequired && opts.memoryIndex.isNothing()) {
+        return d.fail("memory required for canon lift");
+      }
+      if (reallocRequired && opts.reallocIndex.isNothing()) {
+        return d.fail("realloc required for canon lift");
+      }
+
+      // Verify post-return signature, if present. The post-return function is
+      // required to have params matching the actual function's results (after
+      // flattening).
+      if (opts.postReturnIndex.isSome()) {
+        const FuncType& postReturnType =
+            c->getTypeForCoreFunc(*opts.postReturnIndex).funcType();
+        if (postReturnType.args().length() != flattened->results().length() ||
+            postReturnType.results().length() != 0) {
+          return d.fail("invalid signature for post-return function");
+        }
+        for (size_t i = 0; i < postReturnType.args().length(); i++) {
+          if (postReturnType.args()[i] != flattened->results()[i]) {
+            return d.fail("invalid signature for post-return function");
+          }
+        }
+      }
+
+      if (!c->addFunc(ComponentLiftedFuncDesc(typeIndex, std::move(opts)))) {
+        return false;
+      }
+    } break;
+    case uint8_t(CanonDefKindRaw::Lower): {
+      if (c->coreFuncs().length() >= MaxComponentCoreFuncs) {
+        return d.failf("too many core funcs (max %d)", MaxComponentCoreFuncs);
+      }
+
+      uint8_t dummy;
+      if (!d.readFixedU8(&dummy) || dummy != 0) {
+        return d.fail("expected canonical definition");
+      }
+
+      uint32_t funcIndex;
+      if (!d.readVarU32(&funcIndex)) {
+        return d.fail("expected function index");
+      }
+      if (c->funcs().length() <= funcIndex) {
+        return d.failf("invalid function index %d", funcIndex);
+      }
+
+      ComponentCanonOpts opts;
+      if (!DecodeCanonOpts(d, *c, &opts, CanonMode::Lower)) {
+        return false;
+      }
+
+      const ComponentFuncType& ft = c->getTypeForFunc(funcIndex).asFunc();
+      bool memoryRequired = false;
+      bool reallocRequired = false;
+      bool tooDeep = false;
+      mozilla::Maybe<FuncType> flattened = FlattenFuncType(
+          ft, CanonMode::Lower, &memoryRequired, &reallocRequired, &tooDeep);
+      if (flattened.isNothing()) {
+        if (tooDeep) {
+          return d.fail("flattening exceeded maximum depth");
+        }
+        return false;
+      }
+      SharedTypeDef flattenedCanonical =
+          TypeContext::canonicalizeSingleType(flattened.extract());
+      if (!flattenedCanonical) {
+        return false;
+      }
+
+      // Verify presence of (memory) and (realloc) if required.
+      if (memoryRequired && opts.memoryIndex.isNothing()) {
+        return d.fail("memory required for canon lower");
+      }
+      if (reallocRequired && opts.reallocIndex.isNothing()) {
+        return d.fail("realloc required for canon lower");
+      }
+
+      if (!c->addDefinedCoreFunc(ComponentCoreFuncDesc::lowered(
+              funcIndex, std::move(flattenedCanonical)))) {
+        return false;
+      }
+    } break;
+    case uint8_t(CanonDefKindRaw::ResourceNew):
+    case uint8_t(CanonDefKindRaw::ResourceDrop):
+    case uint8_t(CanonDefKindRaw::ResourceRep): {
+      if (c->coreFuncs().length() >= MaxComponentCoreFuncs) {
+        return d.failf("too many core funcs (max %d)", MaxComponentCoreFuncs);
+      }
+
+      uint32_t resourceTypeIndex;
+      if (!d.readVarU32(&resourceTypeIndex)) {
+        return d.fail("expected resource type index");
+      }
+      if (c->types().length() <= resourceTypeIndex) {
+        return d.failf("invalid type index %d", resourceTypeIndex);
+      }
+
+      ComponentItem resourceTypeItem = c->types()[resourceTypeIndex];
+      ComponentType resourceType = c->getType(resourceTypeIndex);
+      switch (kind) {
+        case uint8_t(CanonDefKindRaw::ResourceNew):
+        case uint8_t(CanonDefKindRaw::ResourceRep): {
+          // resource.new and resource.rep require a resource type defined in
+          // this component.
+          if (resourceTypeItem.kind() != ComponentItem::ItemKind::Defined) {
+            return d.fail("expected a defined resource type");
+          }
+          if (resourceType.kind() != ComponentTypeKind::Resource) {
+            return d.fail("expected a resource type");
+          }
+        } break;
+        case uint8_t(CanonDefKindRaw::ResourceDrop): {
+          // resource.drop allows any resource type (including imported).
+          if (resourceType.kind() != ComponentTypeKind::Resource &&
+              resourceType.kind() != ComponentTypeKind::SubResource) {
+            return d.fail("expected a resource type");
+          }
+        } break;
+      }
+
+      // The values for the Kind enum are chosen to align with the binary
+      // format.
+      ComponentResourceBuiltin builtin(ComponentResourceBuiltin::Kind(kind),
+                                       resourceType);
+
+      ValTypeVector args;
+      ValTypeVector results;
+      switch (builtin.kind()) {
+        case ComponentResourceBuiltin::Kind::ResourceNew: {
+          // TODO(wasm-cm): Update for memory64 support
+          if (!args.append(ValType::i32())) {
+            return false;
+          }
+          if (!results.append(ValType::i32())) {
+            return false;
+          }
+        } break;
+        case ComponentResourceBuiltin::Kind::ResourceDrop: {
+          if (!args.append(ValType::i32())) {
+            return false;
+          }
+        } break;
+        case ComponentResourceBuiltin::Kind::ResourceRep: {
+          if (!args.append(ValType::i32())) {
+            return false;
+          }
+          // TODO(wasm-cm): Update for memory64 support
+          if (!results.append(ValType::i32())) {
+            return false;
+          }
+        } break;
+        default:
+          MOZ_CRASH();
+      }
+      SharedTypeDef coreFuncType = TypeContext::canonicalizeSingleType(
+          FuncType(std::move(args), std::move(results)));
+
+      if (!c->addDefinedCoreFunc(ComponentCoreFuncDesc::builtin(
+              std::move(builtin), std::move(coreFuncType)))) {
+        return false;
+      }
+    } break;
+    default:
+      return d.failf("unexpected canonical definition kind 0x%02x", kind);
+  }
+
+  return true;
+}
+
+// [constructor], [method], and [static] must reference a preceding resource
+// type in their name, and [constructor] and [method] have additional
+// restrictions on results/params.
+template <typename HasFunc, typename GetFunc>
+static bool ValidateResourceFuncs(Decoder& d, const ComponentName& name,
+                                  const ComponentFuncType& funcType,
+                                  const HasFunc& hasItemWithName,
+                                  const GetFunc& getItemByName) {
+  if (!name.attributes.contains(ComponentNameAttribute::Constructor) &&
+      !name.attributes.contains(ComponentNameAttribute::Method) &&
+      !name.attributes.contains(ComponentNameAttribute::Static)) {
+    return true;
+  }
+
+  mozilla::Span<const char> resourceName = name.resourceName();
+
+  bool resourceOk = false;
+  ComponentType resourceType;
+  if (hasItemWithName(resourceName)) {
+    const ComponentExternDesc& resourceTypeDesc = getItemByName(resourceName);
+    if (resourceTypeDesc.sort() == ComponentSort::Type &&
+        resourceTypeDesc.asType().isAnyResource()) {
+      resourceOk = true;
+      resourceType = resourceTypeDesc.asType();
+    }
+  }
+  if (!resourceOk) {
+    return d.failf(
+        "no preceding resource type named \"%.*s\" for func \"%.*s\"",
+        ComponentNameSpan_Printf(resourceName),
+        ComponentName_Printf(name.name));
+  }
+  MOZ_ASSERT(resourceType.isValid());
+
+  if (name.attributes.contains(ComponentNameAttribute::Constructor)) {
+    bool resultOk = false;
+    if (funcType.resultType.isSome()) {
+      bool isOwn = funcType.resultType->kind() == ComponentTypeKind::Own &&
+                   funcType.resultType->asOwn() == resourceType;
+      bool isResultOwn =
+          funcType.resultType->kind() == ComponentTypeKind::Result &&
+          funcType.resultType->asResult().type.isSome() &&
+          funcType.resultType->asResult().type->kind() ==
+              ComponentTypeKind::Own &&
+          funcType.resultType->asResult().type->asOwn() == resourceType;
+      if (isOwn || isResultOwn) {
+        resultOk = true;
+      }
+    }
+    if (!resultOk) {
+      return d.failf("constructor \"%.*s\" must return (own %.*s)",
+                     ComponentName_Printf(name.name),
+                     ComponentNameSpan_Printf(resourceName));
+    }
+  } else if (name.attributes.contains(ComponentNameAttribute::Method)) {
+    if (funcType.paramTypes.length() == 0 ||
+        funcType.paramNames[0].utf8Bytes() !=
+            mozilla::Span<const char>("self", strlen("self")) ||
+        funcType.paramTypes[0].kind() != ComponentTypeKind::Borrow ||
+        funcType.paramTypes[0].asBorrow() != resourceType) {
+      return d.failf(
+          "method \"%.*s\" must have a first parameter (param \"self\" "
+          "(borrow %.*s))",
+          ComponentName_Printf(name.name),
+          ComponentNameSpan_Printf(resourceName));
+    }
+  }
+
+  return true;
+}
+
+// [get] and [set] have restrictions on the number and type of their
+// params/results.
+template <typename HasFunc, typename GetFunc>
+static bool ValidateAccessors(Decoder& d, const ComponentName& name,
+                              const ComponentFuncType& funcType,
+                              const HasFunc& hasItemWithName,
+                              const GetFunc& getItemByName) {
+  bool isMethod = name.attributes.contains(ComponentNameAttribute::Method);
+  if (name.attributes.contains(ComponentNameAttribute::Get)) {
+    // [get] must have no parameters (except "self" for [method])
+    if (funcType.paramTypes.length() != (isMethod ? 1 : 0)) {
+      return d.failf("getter \"%.*s\" must have no parameters%s",
+                     ComponentName_Printf(name.name),
+                     isMethod ? " besides self" : "");
+    }
+    // [get] must return something, and if it returns result<T> then it must
+    // have an inner type
+    if (funcType.resultType.isNothing() ||
+        (funcType.resultType->kind() == ComponentTypeKind::Result &&
+         funcType.resultType->asResult().type.isNothing())) {
+      return d.failf("getter \"%.*s\" must return a value",
+                     ComponentName_Printf(name.name));
+    }
+  } else if (name.attributes.contains(ComponentNameAttribute::Set)) {
+    // [set] must be preceded by a matching getter
+    CacheableName getterName;
+    if (!name.getterForSetter(&getterName)) {
+      return false;
+    }
+    if (!hasItemWithName(getterName.utf8Bytes())) {
+      return d.failf("setter \"%.*s\" must be preceded by getter \"%.*s\"",
+                     ComponentName_Printf(name.name),
+                     ComponentName_Printf(getterName));
+    }
+
+    // We know the getter previously validated.
+    const ComponentFuncType& getterType =
+        getItemByName(getterName.utf8Bytes()).asFunc().asFunc();
+    ComponentType getterPropertyType =
+        getterType.resultType->kind() == ComponentTypeKind::Result
+            ? getterType.resultType->asResult().type.value()
+            : getterType.resultType.value();
+
+    // [set] must have exactly one parameter (besides "self" for [method]),
+    // and this parameter must match the getter's property type
+    if (funcType.paramTypes.length() != (isMethod ? 2 : 1)) {
+      return d.failf("setter \"%.*s\" must have only one parameter%s",
+                     ComponentName_Printf(name.name),
+                     isMethod ? " besides self" : "");
+    }
+    if (funcType.paramTypes[isMethod ? 1 : 0] != getterPropertyType) {
+      return d.failf("setter \"%.*s\"'s parameter must match its getter",
+                     ComponentName_Printf(name.name));
+    }
+
+    // [set] must return nothing or result<E?> (no value type)
+    if (funcType.resultType.isSome() &&
+        (funcType.resultType->kind() != ComponentTypeKind::Result ||
+         funcType.resultType->asResult().type.isSome())) {
+      return d.failf("setter \"%.*s\" must return nothing",
+                     ComponentName_Printf(name.name));
+    }
+  }
+
+  return true;
+}
+
+// Validate extra conditions from name annotations like [constructor], [method],
+// [static], [get], and [set].
+template <typename HasFunc, typename GetFunc>
+static bool ValidateComponentNameAnnotations(
+    Decoder& d, const ComponentName& name,
+    const ComponentExternDesc& externDesc, const HasFunc& hasItemWithName,
+    const GetFunc& getItemByName) {
+  if (name.attributes.isEmpty()) {
+    return true;
+  }
+
+  if (externDesc.sort() != ComponentSort::Func) {
+    return d.fail("name annotations can only be used with functions");
+  }
+  const ComponentFuncType& funcType = externDesc.asFunc().asFunc();
+
+  if (!ValidateResourceFuncs(d, name, funcType, hasItemWithName,
+                             getItemByName)) {
+    return false;
+  }
+
+  if (!ValidateAccessors(d, name, funcType, hasItemWithName, getItemByName)) {
+    return false;
+  }
+
+  return true;
+}
+
+enum class ComponentImportFlagsRaw : uint8_t {
+  // Strangely, the binary encoding currently allows either 0x00 or 0x01 for the
+  // flags. Both do exactly the same thing. This is supposed to be cleaned up
+  // eventually.
+  Plain1 = 0x00,
+  Plain2 = 0x01,
+  VersionSuffix = 0x02,
+};
+
+static bool DecodeComponentImport(Decoder& d, MutableComponent& c,
+                                  StronglyUniqueNameSet& nameDedup) {
+  uint8_t importFlags;
+  if (!d.readFixedU8(&importFlags)) {
+    return d.fail("expected import flags");
+  }
+
+  switch (importFlags) {
+    case uint8_t(ComponentImportFlagsRaw::Plain1):
+    case uint8_t(ComponentImportFlagsRaw::Plain2):
+      break;
+    case uint8_t(ComponentImportFlagsRaw::VersionSuffix):
+      // TODO(wasm-cm): Support semver?
+      return d.fail("version suffixes on imports are not allowed");
+    default:
+      return d.failf("invalid import flags %#x", importFlags);
+  }
+
+  ComponentName importName;
+  if (!DecodeComponentName(d, "import", &importName)) {
+    return false;
+  }
+
+  ComponentExternDesc externDesc;
+  bool unused;
+  if (!DecodeComponentExternDesc(d, c, &externDesc, &unused)) {
+    return false;
+  }
+  if (externDesc.sort() == ComponentSort::Type) {
+    ComponentType t = externDesc.asType();
+    if (t.kind() == ComponentTypeKind::Resource) {
+      return d.fail("cannot import a type equal to a defined resource type");
+    }
+  }
+
+  bool duplicate;
+  if (!nameDedup.add(importName.name.utf8Bytes(), &duplicate)) {
+    return false;
+  }
+  if (duplicate) {
+    return d.failf("import name \"%.*s\" is not strongly-unique",
+                   ComponentName_Printf(importName.name));
+  }
+
+  if (!ValidateComponentNameAnnotations(
+          d, importName, externDesc,
+          [&](mozilla::Span<const char> name) -> bool {
+            return c->hasImportWithName(name);
+          },
+          [&](mozilla::Span<const char> name) -> const ComponentExternDesc& {
+            return c->getImportByName(name).externDesc();
+          })) {
+    return false;
+  }
+
+  return c->addImport(ComponentImport(std::move(importName), externDesc));
+}
+
+enum class ComponentExportFlagsRaw : uint8_t {
+  // As with imports, 0x00 and 0x01 are equivalent flags For Now.
+  Plain1 = 0x00,
+  Plain2 = 0x01,
+  VersionSuffix = 0x02,
+};
+
+[[nodiscard]] static bool DecodeComponentExport(
+    Decoder& d, MutableComponent& c, StronglyUniqueNameSet& nameDedup) {
+  uint8_t exportFlags;
+  if (!d.readFixedU8(&exportFlags)) {
+    return d.fail("expected export flags");
+  }
+
+  switch (exportFlags) {
+    case uint8_t(ComponentImportFlagsRaw::Plain1):
+    case uint8_t(ComponentImportFlagsRaw::Plain2):
+      break;
+    case uint8_t(ComponentImportFlagsRaw::VersionSuffix):
+      // TODO(wasm-cm): Support semver?
+      return d.fail("version suffixes on exports are not allowed");
+    default:
+      return d.failf("invalid export flags %#x", exportFlags);
+  }
+
+  ComponentName exportName;
+  if (!DecodeComponentName(d, "export", &exportName)) {
+    return false;
+  }
+
+  ComponentSortIndex exported;
+  {
+    ComponentSort exportSort;
+    if (!DecodeComponentSort(d, &exportSort, /*forExterndesc=*/true)) {
+      return false;
+    }
+    uint32_t exportIndex;
+    if (!d.readVarU32(&exportIndex)) {
+      return d.fail("expected export index");
+    }
+    exported = ComponentSortIndex(exportSort, exportIndex);
+  }
+
+  if (!ValidateComponentSortIdx(d, *c, exported)) {
+    return false;
+  }
+
+  ComponentExternDesc externDesc;
+  switch (exported.sort) {
+    case ComponentSort::Func: {
+      externDesc = ComponentExternDesc::func(c->getTypeForFunc(exported.index));
+    } break;
+    case ComponentSort::Type: {
+      externDesc = ComponentExternDesc::type(c->getType(exported.index));
+    } break;
+    case ComponentSort::Component: {
+      // TODO(wasm-cm): Support all export sorts
+      return d.fail("exported components are not supported yet");
+    } break;
+    case ComponentSort::Instance: {
+      // TODO(wasm-cm): Support all export sorts
+      return d.fail("exported component instances are not supported yet");
+    } break;
+    case ComponentSort::CoreModule: {
+      externDesc = ComponentExternDesc::coreModule(exported.index);
+    } break;
+    default:
+      MOZ_CRASH("all cases from DecodeComponentSort should have been handled");
+  }
+
+  uint8_t hasExplicitExternDesc;
+  if (!d.readFixedU8(&hasExplicitExternDesc) || hasExplicitExternDesc > 0x01) {
+    return d.fail("expected possible explicit external type");
+  }
+  if (hasExplicitExternDesc) {
+    ComponentExternDesc explicitExternDesc;
+    bool isNewSubResource;
+    if (!DecodeComponentExternDesc(d, c, &explicitExternDesc,
+                                   &isNewSubResource)) {
+      return false;
+    }
+
+    if (!ComponentExternDesc::compatible(externDesc, explicitExternDesc,
+                                         isNewSubResource)) {
+      return d.fail(
+          "exported item's type did not match explicitly-provided type");
+    }
+    externDesc = explicitExternDesc;
+  }
+
+  // TODO(wasm-cm): Validate that all resource types used (transitively!) in the
+  // exported thing's type came from a preceding import or were previously
+  // exported. (From talking with Luke, it sounds like actually some (but not
+  // all) value types are considered "tricky" enough to fall under this
+  // restriction as well, including e.g. records but excluding e.g. s32. What is
+  // this list? Who knows.)
+
+  bool duplicate;
+  if (!nameDedup.add(exportName.name.utf8Bytes(), &duplicate)) {
+    return false;
+  }
+  if (duplicate) {
+    return d.failf("export name \"%.*s\" is not strongly-unique",
+                   ComponentName_Printf(exportName.name));
+  }
+
+  if (!ValidateComponentNameAnnotations(
+          d, exportName, externDesc,
+          [&](mozilla::Span<const char> name) -> bool {
+            return c->hasExportWithName(name);
+          },
+          [&](mozilla::Span<const char> name) -> const ComponentExternDesc& {
+            return c->getExportByName(name).externDesc();
+          })) {
+    return false;
+  }
+
+  return c->addExport(ComponentExport(std::move(exportName), externDesc));
+}
+
+[[nodiscard]] static bool DecodeComponentCoreModuleSection(
+    Decoder& d, MutableComponent& c, const BytecodeSpan& moduleBytes,
+    const CompileArgs& args, JS::OptimizedEncodingListener* listener) {
+  if (c->coreModules().length() >= MaxComponentCoreModules) {
+    return d.failf("too many core modules (max %d)", MaxComponentCoreModules);
+  }
+
+  BytecodeSource moduleSource(moduleBytes.data(), moduleBytes.size());
+  SharedModule module =
+      CompileModule(args, BytecodeBufferOrSource(moduleSource), d.error(),
+                    d.warnings(), listener);
+  if (!module) {
+    return false;
+  }
+  if (!c->addCoreModule(module)) {
+    return false;
+  }
+
+  MOZ_RELEASE_ASSERT(d.readBytes(moduleBytes.Length()));
+
+  return true;
+}
+
+[[nodiscard]] static bool DecodeComponentCoreInstanceSection(
+    Decoder& d, MutableComponent& c) {
+  uint32_t numInstances;
+  if (!d.readVarU32(&numInstances)) {
+    return d.fail("expected number of instances");
+  }
+  if (c->coreInstances().length() + uint64_t(numInstances) >
+      MaxComponentCoreInstances) {
+    return d.failf("too many core instances (max %d)",
+                   MaxComponentCoreInstances);
+  }
+
+  for (uint32_t i = 0; i < numInstances; i++) {
+    if (!DecodeCoreInstance(d, c)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+[[nodiscard]] static bool DecodeComponentAliasSection(Decoder& d,
+                                                      MutableComponent& c) {
+  uint32_t numAliases;
+  if (!d.readVarU32(&numAliases)) {
+    return d.fail("expected number of aliases");
+  }
+  // We do not check an implementation limit here because each alias
+  // adds entries to a different index space with its own limit.
+
+  for (uint32_t i = 0; i < numAliases; i++) {
+    if (!DecodeComponentAlias(d, c)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+[[nodiscard]] static bool DecodeComponentTypeSection(Decoder& d,
+                                                     MutableComponent& c) {
+  uint32_t numTypes;
+  if (!d.readVarU32(&numTypes)) {
+    return d.fail("expected number of types");
+  }
+  if (c->types().length() + uint64_t(numTypes) > MaxComponentTypes) {
+    return d.failf("too many types (max %d)", MaxComponentTypes);
+  }
+
+  for (uint32_t i = 0; i < numTypes; i++) {
+    if (!DecodeComponentType(d, c)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+[[nodiscard]] static bool DecodeComponentCanonSection(Decoder& d,
+                                                      MutableComponent& c) {
+  uint32_t numCanonDefs;
+  if (!d.readVarU32(&numCanonDefs)) {
+    return d.fail("expected number of canonical definitions");
+  }
+  // Implementation limits are checked in DecodeComponentCanonDef.
+
+  for (uint32_t i = 0; i < numCanonDefs; i++) {
+    if (!DecodeComponentCanonDef(d, c)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+[[nodiscard]] static bool DecodeComponentImportSection(
+    Decoder& d, MutableComponent& c, StronglyUniqueNameSet& nameDedup) {
+  uint32_t numImports;
+  if (!d.readVarU32(&numImports)) {
+    return d.fail("expected number of imports");
+  }
+  if (c->imports().length() + uint64_t(numImports) > MaxComponentImports) {
+    return d.failf("too many imports (max %d)", MaxComponentImports);
+  }
+
+  for (uint32_t i = 0; i < numImports; i++) {
+    if (!DecodeComponentImport(d, c, nameDedup)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+[[nodiscard]] static bool DecodeComponentExportSection(
+    Decoder& d, MutableComponent& c, StronglyUniqueNameSet& nameDedup) {
+  uint32_t numExports;
+  if (!d.readVarU32(&numExports)) {
+    return d.fail("expected number of exports");
+  }
+  if (c->exports().length() + uint64_t(numExports) > MaxComponentExports) {
+    return d.failf("too many exports (max %d)", MaxComponentExports);
+  }
+
+  for (uint32_t i = 0; i < numExports; i++) {
+    if (!DecodeComponentExport(d, c, nameDedup)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool wasm::DecodeComponent(Decoder& d, MutableComponent c,
+                           const CompileArgs& args,
+                           JS::OptimizedEncodingListener* listener) {
+  if (!DecodePreamble(d, EncodingVersionComponent)) {
+    return false;
+  }
+
+  StronglyUniqueNameSet importNameDedup;
+  StronglyUniqueNameSet exportNameDedup;
+
+  while (!d.done()) {
+    uint8_t sectionID;
+    if (!d.readFixedU8(&sectionID)) {
+      return d.fail("expected section ID");
+    }
+
+    uint32_t sectionLength;
+    if (!d.readVarU32(&sectionLength)) {
+      return d.fail("expected section length");
+    }
+
+    BytecodeSpan sectionBytes;
+    size_t sectionOffset;
+    if (!d.readBytesSpan(sectionLength, &sectionBytes, &sectionOffset)) {
+      return d.failf("invalid section length: expected %" PRIu64
+                     " bytes, but only %" PRIu64 " remain",
+                     uint64_t(sectionLength), uint64_t(d.bytesRemain()));
+    }
+
+    // Decode the section with its own decoder.
+    Decoder sectionDecoder(sectionBytes, sectionOffset, d.error(),
+                           d.warnings());
+    {
+      Decoder& d = sectionDecoder;
+
+      switch (sectionID) {
+        case uint8_t(ComponentSectionId::Custom): {
+          if (!d.readBytes(sectionLength)) {
+            return d.fail("expected custom section");
+          }
+
+          // TODO(wasm-cm): Parse custom section name, warn if it is "malformed"
+          // TODO(wasm-cm): Parse component name section
+        } break;
+
+        case uint8_t(ComponentSectionId::CoreModule): {
+          if (!DecodeComponentCoreModuleSection(d, c, sectionBytes, args,
+                                                listener)) {
+            return false;
+          }
+        } break;
+        case uint8_t(ComponentSectionId::CoreInstance): {
+          if (!DecodeComponentCoreInstanceSection(d, c)) {
+            return false;
+          }
+        } break;
+        case uint8_t(ComponentSectionId::Alias): {
+          if (!DecodeComponentAliasSection(d, c)) {
+            return false;
+          }
+        } break;
+        case uint8_t(ComponentSectionId::Type): {
+          if (!DecodeComponentTypeSection(d, c)) {
+            return false;
+          }
+        } break;
+        case uint8_t(ComponentSectionId::Canon): {
+          if (!DecodeComponentCanonSection(d, c)) {
+            return false;
+          }
+        } break;
+        case uint8_t(ComponentSectionId::Import): {
+          if (!DecodeComponentImportSection(d, c, importNameDedup)) {
+            return false;
+          }
+        } break;
+        case uint8_t(ComponentSectionId::Export): {
+          if (!DecodeComponentExportSection(d, c, exportNameDedup)) {
+            return false;
+          }
+        } break;
+
+        default: {
+          return d.failf("unexpected section ID %d", sectionID);
+        }
+      }
+
+      if (!d.done()) {
+        return d.failf("too many bytes in section (%zu extra)",
+                       d.bytesRemain());
+      }
+    }
+  }
+
+  return true;
+}
+
+#endif  // ENABLE_WASM_COMPONENTS
+
 // Validate algorithm.
 
-bool wasm::Validate(JSContext* cx, const BytecodeSource& bytecode,
-                    const FeatureOptions& options, UniqueChars* error) {
-  FeatureArgs features = FeatureArgs::build(cx, options);
+[[nodiscard]] static bool ValidateModule(JSContext* cx,
+                                         const BytecodeSource& bytecode,
+                                         const FeatureArgs& features,
+                                         const FeatureOptions& options,
+                                         UniqueChars* error) {
   SharedCompileArgs compileArgs = CompileArgs::buildForValidation(features);
   if (!compileArgs) {
     return false;
@@ -4332,4 +7351,46 @@ bool wasm::Validate(JSContext* cx, const BytecodeSource& bytecode,
 
   MOZ_ASSERT(!*error, "unreported error in decoding");
   return true;
+}
+
+#ifdef ENABLE_WASM_COMPONENTS
+[[nodiscard]] static bool ValidateComponent(JSContext* cx,
+                                            const BytecodeSource& bytecode,
+                                            const FeatureOptions& options,
+                                            UniqueChars* error) {
+  MutableComponent c = js_new<Component>();
+  if (!c) {
+    return false;
+  }
+
+  CompileArgsError compileArgsError;
+  SharedCompileArgs compileArgs =
+      CompileArgs::build(cx, ScriptedCaller(), options, &compileArgsError);
+  if (!compileArgs) {
+    return false;
+  }
+  Decoder d(bytecode.envSpan(), bytecode.envRange().start, error);
+  if (!DecodeComponent(d, c, *compileArgs)) {
+    return false;
+  }
+
+  MOZ_ASSERT(!*error, "unreported error in decoding");
+  return true;
+}
+#endif  // ENABLE_WASM_COMPONENTS
+
+bool wasm::Validate(JSContext* cx, const BytecodeSource& bytecode,
+                    const FeatureOptions& options, UniqueChars* error) {
+  FeatureArgs features = FeatureArgs::build(cx, options);
+
+#ifdef ENABLE_WASM_COMPONENTS
+  if (features.components) {
+    Decoder preambleDecoder(bytecode.envSpan(), bytecode.envRange().start,
+                            error);
+    if (IsComponent(preambleDecoder)) {
+      return ValidateComponent(cx, bytecode, options, error);
+    }
+  }
+#endif
+  return ValidateModule(cx, bytecode, features, options, error);
 }

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,7 +12,7 @@
 #include "mozInlineSpellWordUtil.h"
 #include "mozilla/EditorDOMPoint.h"
 #include "mozilla/Result.h"
-#include "nsRange.h"
+#include "mozilla/dom/Range.h"
 #include "nsWeakReference.h"
 
 class InitEditorSpellCheckCallback;
@@ -51,8 +50,10 @@ class mozInlineSpellStatus {
   static mozilla::UniquePtr<mozInlineSpellStatus> CreateForSelection(
       mozInlineSpellChecker& aSpellChecker);
 
+  enum class SetAnchorToCaret : bool { No, Yes };
   static mozilla::UniquePtr<mozInlineSpellStatus> CreateForRange(
-      mozInlineSpellChecker& aSpellChecker, nsRange* aRange);
+      mozInlineSpellChecker& aSpellChecker, mozilla::dom::Range* aRange,
+      SetAnchorToCaret aSetAnchorToCaret = SetAnchorToCaret::No);
 
   nsresult FinishInitOnEvent(mozInlineSpellWordUtil& aWordUtil);
 
@@ -76,13 +77,13 @@ class mozInlineSpellStatus {
 
   // Used for events where we have already computed the range to use. It can
   // also be nullptr in these cases where we need to check the entire range.
-  RefPtr<nsRange> mRange;
+  RefPtr<mozilla::dom::Range> mRange;
 
   // See `mCreatedRange`.
-  const nsRange* GetCreatedRange() const { return mCreatedRange; }
+  const mozilla::dom::Range* GetCreatedRange() const { return mCreatedRange; }
 
   // See `mNoCheckRange`.
-  const nsRange* GetNoCheckRange() const { return mNoCheckRange; }
+  const mozilla::dom::Range* GetNoCheckRange() const { return mNoCheckRange; }
 
  private:
   // @param aSpellChecker must be non-nullptr.
@@ -92,12 +93,13 @@ class mozInlineSpellStatus {
   // @param aAnchorRange see mAnchorRange.
   // @param aForceNavigationWordCheck see mForceNavigationWordCheck.
   // @param aNewNavigationPositionOffset see mNewNavigationPositionOffset.
-  explicit mozInlineSpellStatus(mozInlineSpellChecker* aSpellChecker,
-                                Operation aOp, RefPtr<nsRange>&& aRange,
-                                RefPtr<nsRange>&& aCreatedRange,
-                                RefPtr<nsRange>&& aAnchorRange,
-                                bool aForceNavigationWordCheck,
-                                int32_t aNewNavigationPositionOffset);
+  explicit mozInlineSpellStatus(
+      mozInlineSpellChecker* aSpellChecker, Operation aOp,
+      RefPtr<mozilla::dom::Range>&& aRange,
+      RefPtr<mozilla::dom::Range>&& aCreatedRange,
+      RefPtr<mozilla::dom::Range>&& aAnchorRange,
+      bool aForceNavigationWordCheck, int32_t aNewNavigationPositionOffset,
+      SetAnchorToCaret aSetAnchorToCaret = SetAnchorToCaret::No);
 
   // For resuming a previously started check.
   const Operation mOp;
@@ -106,17 +108,17 @@ class mozInlineSpellStatus {
   // If we happen to know something was inserted, this is that range.
   // Can be nullptr (this only allows an optimization, so not setting doesn't
   // hurt)
-  const RefPtr<const nsRange> mCreatedRange;
+  const RefPtr<const mozilla::dom::Range> mCreatedRange;
 
   // Contains the range computed for the current word. Can be nullptr.
-  RefPtr<nsRange> mNoCheckRange;
+  RefPtr<mozilla::dom::Range> mNoCheckRange;
 
   // Indicates the position of the cursor for the event (so we can compute
   // mNoCheckRange). It can be nullptr if we don't care about the cursor
   // position (such as for the intial check of everything).
   //
   // For mOp == eOpNavigation, this is the NEW position of the cursor
-  const RefPtr<const nsRange> mAnchorRange;
+  RefPtr<const mozilla::dom::Range> mAnchorRange;
 
   // -----
   // The following members are only for navigation events and are only
@@ -124,12 +126,16 @@ class mozInlineSpellStatus {
   // -----
 
   // this is the OLD position of the cursor
-  RefPtr<nsRange> mOldNavigationAnchorRange;
+  RefPtr<mozilla::dom::Range> mOldNavigationAnchorRange;
 
   // Set when we should force checking the current word. See
   // mozInlineSpellChecker::HandleNavigationEvent for a description of why we
   // have this.
   const bool mForceNavigationWordCheck;
+
+  // Set mAnchorRange to document selection if it is collapsed
+  // when spell check occurs.
+  SetAnchorToCaret mSetAnchorToCaret;
 
   // Contains the offset passed in to HandleNavigationEvent
   const int32_t mNewNavigationPositionOffset;
@@ -139,8 +145,8 @@ class mozInlineSpellStatus {
   nsresult FillNoCheckRangeFromAnchor(mozInlineSpellWordUtil& aWordUtil);
 
   mozilla::dom::Document* GetDocument() const;
-  static already_AddRefed<nsRange> PositionToCollapsedRange(nsINode* aNode,
-                                                            uint32_t aOffset);
+  static already_AddRefed<mozilla::dom::Range> PositionToCollapsedRange(
+      nsINode* aNode, uint32_t aOffset);
 };
 
 class mozInlineSpellChecker final : public nsIInlineSpellChecker,
@@ -171,7 +177,7 @@ class mozInlineSpellChecker final : public nsIInlineSpellChecker,
   // so we can spell check the old word when the user clicks around the
   // document.
   nsCOMPtr<nsINode> mCurrentSelectionAnchorNode;
-  uint32_t mCurrentSelectionOffset;
+  uint32_t mCurrentSelectionOffset = 0;
 
   // Tracks the number of pending spell checks *and* async operations that may
   // lead to spell checks, like updating the current dictionary.  This is
@@ -252,9 +258,11 @@ class mozInlineSpellChecker final : public nsIInlineSpellChecker,
   // selection.
   static nsresult IsPointInSelection(mozilla::dom::Selection& aSelection,
                                      nsINode* aNode, uint32_t aOffset,
-                                     nsRange** aRange);
+                                     mozilla::dom::Range** aRange);
 
   nsresult CleanupRangesInSelection(mozilla::dom::Selection* aSelection);
+
+  nsresult SpellCheckRangeIgnoringWordAtCaret(mozilla::dom::Range* aRange);
 
   /**
    * @param aRange needs to be kept alive by the caller.
@@ -262,17 +270,19 @@ class mozInlineSpellChecker final : public nsIInlineSpellChecker,
   // TODO: annotate with `MOZ_CAN_RUN_SCRIPT` instead
   // (https://bugzilla.mozilla.org/show_bug.cgi?id=1620540).
   MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult
-  RemoveRange(mozilla::dom::Selection* aSpellCheckSelection, nsRange* aRange);
+  RemoveRange(mozilla::dom::Selection* aSpellCheckSelection,
+              mozilla::dom::Range* aRange);
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult
-  AddRange(mozilla::dom::Selection* aSpellCheckSelection, nsRange* aRange);
+  AddRange(mozilla::dom::Selection* aSpellCheckSelection,
+           mozilla::dom::Range* aRange);
   bool IsSpellCheckSelectionFull() const {
     return mNumWordsInSpellSelection >= mMaxNumWordsInSpellSelection;
   }
 
   nsresult MakeSpellCheckRange(nsINode* aStartNode, int32_t aStartOffset,
                                nsINode* aEndNode, int32_t aEndOffset,
-                               nsRange** aRange) const;
+                               mozilla::dom::Range** aRange) const;
 
   // DOM and editor event registration helper routines
   nsresult RegisterEventListeners();
@@ -313,7 +323,7 @@ class mozInlineSpellChecker final : public nsIInlineSpellChecker,
   // @param aIsMisspelled indicates which words are misspelled.
   MOZ_CAN_RUN_SCRIPT_BOUNDARY void UpdateRangesForMisspelledWords(
       const nsTArray<NodeOffsetRange>& aNodeOffsetRangesForWords,
-      const nsTArray<RefPtr<nsRange>>& aOldRangesForSomeWords,
+      const nsTArray<RefPtr<mozilla::dom::Range>>& aOldRangesForSomeWords,
       const nsTArray<bool>& aIsMisspelled,
       mozilla::dom::Selection& aSpellCheckerSelection);
 

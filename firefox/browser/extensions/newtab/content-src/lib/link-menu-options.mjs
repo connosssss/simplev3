@@ -13,9 +13,25 @@ const _OpenInPrivateWindow = site => ({
   action: ac.OnlyToMain({
     type: at.OPEN_PRIVATE_WINDOW,
     data: {
+      card_type: site.card_type,
       url: site.url,
       referrer: site.referrer,
       event_source: "CONTEXT_MENU",
+      topic: site.topic,
+      tile_id: site.tile_id,
+      scheduled_corpus_item_id: site.scheduled_corpus_item_id,
+      corpus_item_id: site.corpus_item_id,
+      received_rank: site.received_rank,
+      recommended_at: site.recommended_at,
+      format: site.format,
+      is_pocket_card: site.type === "CardGrid",
+      ...(site.section
+        ? {
+            section: site.section,
+            section_position: site.section_position,
+            is_section_followed: site.is_section_followed,
+          }
+        : {}),
     },
   }),
   userEvent: "OPEN_PRIVATE_WINDOW",
@@ -79,12 +95,10 @@ export const LinkMenuOptions = {
         referrer: site.referrer,
         typedBonus: site.typedBonus,
         url: site.url,
-        sponsored_tile_id: site.sponsored_tile_id,
+        is_sponsored: !!site.sponsored_tile_id,
         event_source: "CONTEXT_MENU",
         topic: site.topic,
-        firstVisibleTimestamp: site.firstVisibleTimestamp,
         tile_id: site.tile_id,
-        recommendation_id: site.recommendation_id,
         scheduled_corpus_item_id: site.scheduled_corpus_item_id,
         corpus_item_id: site.corpus_item_id,
         received_rank: site.received_rank,
@@ -92,7 +106,6 @@ export const LinkMenuOptions = {
         format: site.format,
         ...(site.flight_id ? { flight_id: site.flight_id } : {}),
         is_pocket_card: site.type === "CardGrid",
-        is_list_card: site.is_list_card,
         ...(site.section
           ? {
               section: site.section,
@@ -125,7 +138,6 @@ export const LinkMenuOptions = {
         pocket_id: site.pocket_id,
         tile_id: site.tile_id,
         ...(site.block_key ? { block_key: site.block_key } : {}),
-        recommendation_id: site.recommendation_id,
         scheduled_corpus_item_id: site.scheduled_corpus_item_id,
         corpus_item_id: site.corpus_item_id,
         received_rank: site.received_rank,
@@ -148,7 +160,6 @@ export const LinkMenuOptions = {
         position: pos,
         ...(site.sponsored_tile_id ? { tile_id: site.sponsored_tile_id } : {}),
         is_pocket_card: site.type === "CardGrid",
-        is_list_card: site.is_list_card,
         ...(site.format ? { format: site.format } : {}),
         ...(site.section
           ? {
@@ -159,36 +170,16 @@ export const LinkMenuOptions = {
           : {}),
       })),
     }),
-    impression: ac.ImpressionStats({
-      source: eventSource,
-      block: 0,
-      tiles: tiles.map((site, index) => ({
-        id: site.guid,
-        pos: pos + index,
-        ...(site.shim && site.shim.delete ? { shim: site.shim.delete } : {}),
-      })),
-    }),
     userEvent: "BLOCK",
   }),
 
   // This is the "Dismiss" action for leaderboard/billboard ads.
-  BlockAdUrl: (site, pos, eventSource) => ({
+  BlockAdUrl: site => ({
     id: "newtab-menu-dismiss",
     icon: "dismiss",
     action: ac.AlsoToMain({
       type: at.BLOCK_URL,
       data: [site],
-    }),
-    impression: ac.ImpressionStats({
-      source: eventSource,
-      block: 0,
-      tiles: [
-        {
-          id: site.guid,
-          pos,
-          ...(site.shim && site.shim.save ? { shim: site.shim.save } : {}),
-        },
-      ],
     }),
     userEvent: "BLOCK",
   }),
@@ -208,6 +199,7 @@ export const LinkMenuOptions = {
   DeleteUrl: (site, index, eventSource, isEnabled, siteInfo) => ({
     id: "newtab-menu-delete-history",
     icon: "delete",
+    ariaHasPopup: "dialog",
     action: {
       type: at.DIALOG_OPEN,
       data: {
@@ -218,6 +210,7 @@ export const LinkMenuOptions = {
               url: site.url,
               pocket_id: site.pocket_id,
               forceBlock: site.bookmarkGuid,
+              original_url: site.original_url,
             },
           }),
           ac.UserEvent(
@@ -309,9 +302,20 @@ export const LinkMenuOptions = {
   EditTopSite: (site, index) => ({
     id: "newtab-menu-edit-topsites",
     icon: "edit",
+    ariaHasPopup: "dialog",
     action: {
       type: at.TOP_SITES_EDIT,
       data: { index },
+    },
+  }),
+  // Opens the "New Shortcut" dialog. index -1 routes through the feed's insert
+  // path (append to the pinned group / first free slot), like the add button.
+  AddTopSite: () => ({
+    id: "newtab-menu-add-topsite",
+    ariaHasPopup: "dialog",
+    action: {
+      type: at.TOP_SITES_EDIT,
+      data: { index: -1 },
     },
   }),
   CheckBookmark: site =>
@@ -324,93 +328,6 @@ export const LinkMenuOptions = {
       : LinkMenuOptions.PinTopSite(site, index),
   OpenInPrivateWindow: (site, index, eventSource, isEnabled) =>
     isEnabled ? _OpenInPrivateWindow(site) : LinkMenuOptions.EmptyItem(),
-  ChangeWeatherLocation: () => ({
-    id: "newtab-weather-menu-change-location",
-    action: ac.BroadcastToContent({
-      type: at.WEATHER_SEARCH_ACTIVE,
-      data: true,
-    }),
-  }),
-  ChangeWeatherDisplaySimple: () => ({
-    id: "newtab-weather-menu-change-weather-display-simple",
-    action: ac.OnlyToMain({
-      type: at.SET_PREF,
-      data: {
-        name: "weather.display",
-        value: "simple",
-      },
-    }),
-  }),
-  ChangeWeatherDisplayDetailed: () => ({
-    id: "newtab-weather-menu-change-weather-display-detailed",
-    action: ac.OnlyToMain({
-      type: at.SET_PREF,
-      data: {
-        name: "weather.display",
-        value: "detailed",
-      },
-    }),
-  }),
-  ChangeTempUnitFahrenheit: () => ({
-    id: "newtab-weather-menu-change-temperature-units-fahrenheit",
-    action: ac.OnlyToMain({
-      type: at.SET_PREF,
-      data: {
-        name: "weather.temperatureUnits",
-        value: "f",
-      },
-    }),
-  }),
-  ChangeTempUnitCelsius: () => ({
-    id: "newtab-weather-menu-change-temperature-units-celsius",
-    action: ac.OnlyToMain({
-      type: at.SET_PREF,
-      data: {
-        name: "weather.temperatureUnits",
-        value: "c",
-      },
-    }),
-  }),
-  HideWeather: () => ({
-    id: "newtab-weather-menu-hide-weather",
-    action: ac.OnlyToMain({
-      type: at.SET_PREF,
-      data: {
-        name: "showWeather",
-        value: false,
-      },
-    }),
-  }),
-  OpenLearnMoreURL: site => ({
-    id: "newtab-weather-menu-learn-more",
-    action: ac.OnlyToMain({
-      type: at.OPEN_LINK,
-      data: { url: site.url },
-    }),
-  }),
-  FakespotDismiss: () => ({
-    id: "newtab-menu-dismiss",
-    action: ac.OnlyToMain({
-      type: at.SET_PREF,
-      data: {
-        name: "discoverystream.contextualContent.fakespot.enabled",
-        value: false,
-      },
-    }),
-    impression: ac.OnlyToMain({
-      type: at.FAKESPOT_DISMISS,
-    }),
-  }),
-  AboutFakespot: site => ({
-    id: "newtab-menu-about-fakespot",
-    action: ac.OnlyToMain({
-      type: at.OPEN_LINK,
-      data: { url: site.url },
-    }),
-    impression: ac.OnlyToMain({
-      type: at.OPEN_ABOUT_FAKESPOT,
-    }),
-  }),
   SectionBlock: ({
     sectionPersonalization,
     sectionKey,
@@ -419,6 +336,7 @@ export const LinkMenuOptions = {
   }) => ({
     id: "newtab-menu-section-block",
     icon: "delete",
+    ariaHasPopup: "dialog",
     action: {
       // Open the confirmation dialog to block a section.
       type: at.DIALOG_OPEN,
@@ -433,6 +351,7 @@ export const LinkMenuOptions = {
               [sectionKey]: {
                 isBlocked: true,
                 isFollowed: false,
+                title,
               },
             },
           }),
@@ -450,6 +369,20 @@ export const LinkMenuOptions = {
           ac.AlsoToMain({
             type: at.DIALOG_CLOSE,
           }),
+          ac.OnlyToOneContent(
+            {
+              type: at.SHOW_TOAST_MESSAGE,
+              data: {
+                toastId: "blockSectionToast",
+                showNotifications: true,
+                toastData: {
+                  l10nId: "newtab-section-toast-block",
+                  topic: title,
+                },
+              },
+            },
+            "ActivityStream:Content"
+          ),
         ],
         // Pass Fluent strings to ConfirmDialog component for the copy
         // of the prompt to block sections.
@@ -459,7 +392,7 @@ export const LinkMenuOptions = {
         ],
         confirm_button_string_id: "newtab-section-block-topic-button",
         confirm_button_string_args: { topic: title },
-        cancel_button_string_id: "newtab-section-cancel-button",
+        cancel_button_string_id: "newtab-section-block-cancel-button",
       },
     },
     userEvent: "DIALOG_OPEN",
@@ -468,11 +401,12 @@ export const LinkMenuOptions = {
     sectionPersonalization,
     sectionKey,
     sectionPosition,
+    title,
   }) => ({
-    id: "newtab-menu-section-unfollow",
+    id: "newtab-menu-section-unfollow-topic",
     action: ac.AlsoToMain({
       type: at.SECTION_PERSONALIZATION_SET,
-      data: (({ sectionKey: _sectionKey, ...remaining }) => remaining)(
+      data: (({ [sectionKey]: _sectionKey, ...remaining }) => remaining)(
         sectionPersonalization
       ),
     }),
@@ -484,18 +418,51 @@ export const LinkMenuOptions = {
         event_source: "CONTEXT_MENU",
       },
     }),
+    toast: ac.OnlyToOneContent(
+      {
+        type: at.SHOW_TOAST_MESSAGE,
+        data: {
+          toastId: "unfollowSectionToast",
+          showNotifications: true,
+          toastData: { l10nId: "newtab-section-toast-unfollow", topic: title },
+        },
+      },
+      "ActivityStream:Content"
+    ),
+    userEvent: "SECTION_UNFOLLOW",
   }),
   ManageSponsoredContent: () => ({
     id: "newtab-menu-manage-sponsored-content",
     action: ac.OnlyToMain({ type: at.SETTINGS_OPEN }),
     userEvent: "OPEN_NEWTAB_PREFS",
   }),
-  OurSponsorsAndYourPrivacy: () => ({
+  SectionLearnMore: ({ learnMoreUrl }) => ({
+    id: "newtab-menu-section-learn-more",
+    action: ac.OnlyToMain({
+      type: at.OPEN_LINK,
+      data: { url: learnMoreUrl },
+    }),
+    impression: ac.OnlyToMain({
+      type: at.CLICK_SECTION_LEARN_MORE,
+      data: {},
+    }),
+    userEvent: "CLICK_SECTION_LEARN_MORE",
+  }),
+  // eslint-disable-next-line max-params
+  OurSponsorsAndYourPrivacy: (
+    site,
+    index,
+    source,
+    isPrivateBrowsingEnabled,
+    siteInfo,
+    platform,
+    privacyInfoUrl
+  ) => ({
     id: "newtab-menu-our-sponsors-and-your-privacy",
     action: ac.OnlyToMain({
       type: at.OPEN_LINK,
       data: {
-        url: "https://support.mozilla.org/kb/pocket-sponsored-stories-new-tabs",
+        url: privacyInfoUrl,
       },
     }),
     userEvent: "CLICK_PRIVACY_INFO",
@@ -508,7 +475,7 @@ export const LinkMenuOptions = {
         data: {
           card_type: site.card_type,
           position: site.position,
-          reporting_url: site.shim.report,
+          reporting_url: site.shim?.report,
           url: site.url,
         },
       }),
@@ -523,9 +490,6 @@ export const LinkMenuOptions = {
         data: {
           card_type: site.card_type,
           corpus_item_id: site.corpus_item_id,
-          is_section_followed: site.is_section_followed,
-          received_rank: site.received_rank,
-          recommended_at: site.recommended_at,
           scheduled_corpus_item_id: site.scheduled_corpus_item_id,
           section_position: site.section_position,
           section: site.section,
@@ -536,33 +500,147 @@ export const LinkMenuOptions = {
       }),
     };
   },
-  TrendingSearchLearnMore: site => ({
-    id: "newtab-trending-searches-learn-more",
-    action: ac.OnlyToMain({
-      type: at.OPEN_LINK,
-      data: { url: site.url },
-    }),
-    impression: ac.OnlyToMain({
-      type: at.TRENDING_SEARCH_LEARN_MORE,
-      data: {
-        variant: site.variant,
-      },
-    }),
-  }),
-  TrendingSearchDismiss: site => ({
-    id: "newtab-trending-searches-dismiss",
-    action: ac.OnlyToMain({
-      type: at.SET_PREF,
-      data: {
-        name: "trendingSearch.enabled",
-        value: false,
-      },
-    }),
-    impression: ac.OnlyToMain({
-      type: at.TRENDING_SEARCH_DISMISS,
-      data: {
-        variant: site.variant,
-      },
-    }),
-  }),
 };
+
+const DEFAULT_SITE_MENU_OPTIONS = [
+  "CheckPinTopSite",
+  "EditTopSite",
+  "AddTopSite",
+  "Separator",
+  "OpenInNewWindow",
+  "OpenInPrivateWindow",
+  "Separator",
+  "BlockUrl",
+];
+
+/**
+ * Turns a list of option keys (e.g. "CheckPinTopSite") into concrete
+ * LinkMenuOptions entries with onClick handlers wired up to dispatch/
+ * telemetry. Shared by any menu renderer (ContextMenu- or panel-list-based)
+ * that needs the same option-building behavior.
+ */
+export function getLinkMenuOptions(props) {
+  const {
+    site,
+    index,
+    source,
+    isPrivateBrowsingEnabled,
+    siteInfo,
+    platform,
+    privacyInfoUrl,
+    dispatch,
+    options,
+    shouldSendImpressionStats,
+    userEvent = ac.UserEvent,
+  } = props;
+
+  // Handle special case of default site
+  const propOptions =
+    site.isDefault && !site.searchTopSite && !site.sponsored_position
+      ? DEFAULT_SITE_MENU_OPTIONS
+      : options;
+
+  const linkMenuOptions = propOptions
+    .map(o =>
+      LinkMenuOptions[o](
+        site,
+        index,
+        source,
+        isPrivateBrowsingEnabled,
+        siteInfo,
+        platform,
+        privacyInfoUrl
+      )
+    )
+    .map(option => {
+      const {
+        action,
+        impression,
+        toast,
+        id,
+        type,
+        userEvent: eventName,
+      } = option;
+      if (!type && id) {
+        option.onClick = (event = {}) => {
+          const { ctrlKey, metaKey, shiftKey, button } = event;
+          // Only send along event info if there's something non-default to send
+          if (ctrlKey || metaKey || shiftKey || button === 1) {
+            action.data = Object.assign(
+              {
+                event: { ctrlKey, metaKey, shiftKey, button },
+              },
+              action.data
+            );
+          }
+          dispatch(action);
+          if (toast) {
+            dispatch(toast);
+          }
+          if (eventName) {
+            let value;
+            // Bug 1958135: Pass additional info to ac.OPEN_NEW_WINDOW event
+            if (
+              action.type === "OPEN_NEW_WINDOW" ||
+              action.type === "OPEN_PRIVATE_WINDOW"
+            ) {
+              const {
+                card_type,
+                corpus_item_id,
+                event_source,
+                format,
+                is_section_followed,
+                received_rank,
+                recommended_at,
+                scheduled_corpus_item_id,
+                section_position,
+                section,
+                selected_topics,
+                tile_id,
+                topic,
+              } = action.data;
+
+              value = {
+                card_type,
+                corpus_item_id,
+                event_source,
+                format,
+                received_rank,
+                recommended_at,
+                scheduled_corpus_item_id,
+                ...(section
+                  ? { is_section_followed, section_position, section }
+                  : {}),
+                selected_topics: selected_topics ? selected_topics : "",
+                tile_id,
+                topic,
+              };
+            } else {
+              value = { card_type: site.flight_id ? "spoc" : "organic" };
+            }
+            const userEventData = Object.assign(
+              {
+                event: eventName,
+                source,
+                action_position: index,
+                value,
+              },
+              siteInfo
+            );
+            dispatch(userEvent(userEventData));
+            if (impression && shouldSendImpressionStats) {
+              dispatch(impression);
+            }
+          }
+        };
+      }
+      return option;
+    });
+
+  // This is for accessibility to support making each item tabbable.
+  // We want to know which item is the first and which item
+  // is the last, so we can close the context menu accordingly.
+  linkMenuOptions[0].first = true;
+  linkMenuOptions[linkMenuOptions.length - 1].last = true;
+  return linkMenuOptions;
+}

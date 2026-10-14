@@ -1,52 +1,75 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Per JSRuntime object */
 
-#include "mozilla/ArrayUtils.h"
-#include "mozilla/AutoRestore.h"
 #include "mozilla/AppShutdown.h"
+#include "mozilla/ArrayUtils.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/AutoRestore.h"
+#include "mozilla/BasePrincipal.h"
+#include "mozilla/dom/AbortSignalBinding.h"
+#include "mozilla/dom/BindingUtils.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/FetchUtil.h"
+#include "mozilla/dom/GeneratedAtomList.h"
+#include "mozilla/dom/NodeBinding.h"
+#include "mozilla/dom/ScriptLoader.h"
+#include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/dom/WindowBinding.h"
+#include "mozilla/glean/JsXpconnectMetrics.h"
+#include "mozilla/glean/XpcomMetrics.h"
 #include "mozilla/MemoryReporting.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/ProcessHangMonitor.h"
+#include "mozilla/ProfilerLabels.h"
+#include "mozilla/Services.h"
+#include "mozilla/Sprintf.h"
 #include "mozilla/UniquePtr.h"
 
-#include "xpcprivate.h"
-#include "xpcpublic.h"
-#include "XPCMaps.h"
-#include "XPCJSMemoryReporter.h"
-#include "XrayWrapper.h"
-#include "WrapperFactory.h"
-#include "mozJSModuleLoader.h"
-#include "nsNetUtil.h"
-#include "nsContentSecurityUtils.h"
+#include <memory>
 
+#include "AccessCheck.h"
+#include "ExpandedPrincipal.h"
+#include "jsapi.h"
+#include "mozJSModuleLoader.h"
+#include "NodeUbiReporting.h"
+#include "nsAboutProtocolUtils.h"
+#include "nsCCUncollectableMarker.h"
+#include "nsContentSecurityUtils.h"
+#include "nsContentUtils.h"
+#include "nsCycleCollectionNoteRootCallback.h"
+#include "nsCycleCollector.h"
 #include "nsExceptionHandler.h"
+#include "nsGlobalWindowInner.h"
+#include "nsIInputStream.h"
 #include "nsIMemoryInfoDumper.h"
 #include "nsIMemoryReporter.h"
 #include "nsIObserverService.h"
-#include "mozilla/dom/Document.h"
 #include "nsIRunnable.h"
+#include "nsJSEnvironment.h"
+#include "nsJSPrincipals.h"
+#include "nsNetUtil.h"
 #include "nsPIDOMWindow.h"
 #include "nsPrintfCString.h"
 #include "nsScriptSecurityManager.h"
 #include "nsWindowSizes.h"
-#include "mozilla/BasePrincipal.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/Services.h"
-#include "mozilla/dom/ScriptLoader.h"
-#include "mozilla/dom/ScriptSettings.h"
-#include "mozilla/glean/JsXpconnectMetrics.h"
-#include "mozilla/glean/XpcomMetrics.h"
+#include "WrapperFactory.h"
+#include "XPCInlines.h"
+#include "XPCJSMemoryReporter.h"
+#include "XPCMaps.h"
+#include "xpcprivate.h"
+#include "xpcpublic.h"
+#include "XrayWrapper.h"
 
-#include "nsContentUtils.h"
-#include "nsCCUncollectableMarker.h"
-#include "nsCycleCollectionNoteRootCallback.h"
-#include "nsCycleCollector.h"
-#include "jsapi.h"
 #include "js/BuildId.h"  // JS::BuildIdCharVector, JS::SetProcessBuildIdOp
 #include "js/experimental/SourceHook.h"  // js::{,Set}SourceHook
+#include "js/friend/UsageStatistics.h"  // JSMetric, JS_SetAccumulateTelemetryCallback
+#include "js/friend/WindowProxy.h"  // js::SetWindowProxyClass
+#include "js/friend/Wrapper.h"      // js::NukeCrossCompartmentWrappers
+#include "js/friend/XrayJitInfo.h"  // JS::SetXrayJitInfo
 #include "js/GCAPI.h"
 #include "js/MemoryFunctions.h"
 #include "js/MemoryMetrics.h"
@@ -55,33 +78,7 @@
 #include "js/SliceBudget.h"
 #include "js/UbiNode.h"
 #include "js/UbiNodeUtils.h"
-#include "js/friend/UsageStatistics.h"  // JSMetric, JS_SetAccumulateTelemetryCallback
-#include "js/friend/WindowProxy.h"  // js::SetWindowProxyClass
-#include "js/friend/XrayJitInfo.h"  // JS::SetXrayJitInfo
-#include "js/Utility.h"             // JS::UniqueTwoByteChars
-#include "mozilla/dom/AbortSignalBinding.h"
-#include "mozilla/dom/GeneratedAtomList.h"
-#include "mozilla/dom/BindingUtils.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/dom/FetchUtil.h"
-#include "mozilla/dom/WindowBinding.h"
-#include "mozilla/Atomics.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/ProcessHangMonitor.h"
-#include "mozilla/ProfilerLabels.h"
-#include "mozilla/Sprintf.h"
-#include "mozilla/UniquePtrExtensions.h"
-#include "mozilla/Unused.h"
-#include "AccessCheck.h"
-#include "nsGlobalWindowInner.h"
-#include "nsAboutProtocolUtils.h"
-
-#include "NodeUbiReporting.h"
-#include "ExpandedPrincipal.h"
-#include "nsIInputStream.h"
-#include "nsJSPrincipals.h"
-#include "nsJSEnvironment.h"
-#include "XPCInlines.h"
+#include "js/Utility.h"  // JS::UniqueTwoByteChars
 
 #ifdef XP_WIN
 #  include <windows.h>
@@ -138,10 +135,8 @@ const char* const XPCJSRuntime::mStrings[] = {
     "indexedDB",        // IDX_INDEXEDDB
     "structuredClone",  // IDX_STRUCTUREDCLONE
     "locks",            // IDX_LOCKS
-#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
-    "suppressed",  // IDX_SUPPRESSED
-    "error",       // IDX_ERROR
-#endif
+    "suppressed",       // IDX_SUPPRESSED
+    "error",            // IDX_ERROR
 };
 
 /***************************************************************************/
@@ -157,13 +152,14 @@ class AsyncFreeSnowWhite : public Runnable {
     AUTO_PROFILER_LABEL_RELEVANT_FOR_JS("Incremental CC", GCCC);
     AUTO_PROFILER_LABEL("AsyncFreeSnowWhite::Run", GCCC_FreeSnowWhite);
 
-    auto timerId = glean::cycle_collector::async_snow_white_freeing.Start();
+    auto timerId =
+        glean::cycle_collector::async_snow_white_freeing.ProcessGet().Start();
     // 2 ms budget, given that kICCSliceBudget is only 3 ms
-    SliceBudget budget = SliceBudget(TimeBudget(2));
+    SliceBudget budget = SliceBudget(TimeDuration::FromMilliseconds(2));
     bool hadSnowWhiteObjects =
         nsCycleCollector_doDeferredDeletionWithBudget(budget);
-    glean::cycle_collector::async_snow_white_freeing.StopAndAccumulate(
-        std::move(timerId));
+    glean::cycle_collector::async_snow_white_freeing.ProcessGet()
+        .StopAndAccumulate(std::move(timerId));
     if (hadSnowWhiteObjects && !mContinuation) {
       mContinuation = true;
       if (NS_FAILED(Dispatch())) {
@@ -656,6 +652,28 @@ JSObject* SandboxPrototypeOrNull(JSContext* aCx, JSObject* aObj) {
   return js::CheckedUnwrapDynamic(proto, aCx, /* stopAtWindowProxy = */ false);
 }
 
+already_AddRefed<nsGlobalWindowInner> SandboxAssociatedWindowOrNull(
+    JSObject* aObj) {
+  MOZ_ASSERT(aObj);
+
+  if (!IsSandbox(aObj)) {
+    return nullptr;
+  }
+
+  SandboxPrivate* priv = SandboxPrivate::GetPrivate(aObj);
+  if (!priv) {
+    return nullptr;
+  }
+
+  nsCOMPtr<nsPIDOMWindowInner> window = priv->GetAssociatedWindow();
+  if (!window) {
+    return nullptr;
+  }
+
+  RefPtr<nsGlobalWindowInner> win = nsGlobalWindowInner::Cast(window);
+  return win.forget();
+}
+
 nsGlobalWindowInner* CurrentWindowOrNull(JSContext* cx) {
   JSObject* glob = JS::CurrentGlobalOrNull(cx);
   return glob ? WindowOrNull(glob) : nullptr;
@@ -834,13 +852,6 @@ void XPCJSRuntime::DoCycleCollectionCallback(JSContext* cx) {
   }
 }
 
-void XPCJSRuntime::CustomGCCallback(JSGCStatus status) {
-  nsTArray<xpcGCCallback> callbacks(extraGCCallbacks.Clone());
-  for (uint32_t i = 0; i < callbacks.Length(); ++i) {
-    callbacks[i](status);
-  }
-}
-
 /* static */
 void XPCJSRuntime::FinalizeCallback(JS::GCContext* gcx, JSFinalizeStatus status,
                                     void* data) {
@@ -955,6 +966,8 @@ void XPCJSRuntime::WeakPointerZonesCallback(JSTracer* trc, void* data) {
 
   self->mWrappedJSMap->UpdateWeakPointersAfterGC(trc);
   self->mUAWidgetScopeMap.traceWeak(trc);
+
+  BrowsingContext::SweepWindowProxies(trc);
 }
 
 /* static */
@@ -1223,14 +1236,6 @@ extern void xpc::GetCurrentRealmName(JSContext* cx, nsCString& name) {
   GetRealmName(realm, name, &anonymizeID, false);
 }
 
-void xpc::AddGCCallback(xpcGCCallback cb) {
-  XPCJSRuntime::Get()->AddGCCallback(cb);
-}
-
-void xpc::RemoveGCCallback(xpcGCCallback cb) {
-  XPCJSRuntime::Get()->RemoveGCCallback(cb);
-}
-
 static int64_t JSMainRuntimeGCHeapDistinguishedAmount() {
   JSContext* cx = danger::GetJSContext();
   return int64_t(JS_GetGCParameter(cx, JSGC_TOTAL_CHUNKS)) * js::gc::ChunkSize;
@@ -1423,8 +1428,8 @@ static void ReportZoneStats(const JS::ZoneStats& zStats,
   ZRREPORT_GC_BYTES(pathPrefix + "bigints/gc-heap"_ns, zStats.bigIntsGCHeap,
                     "BigInt values.");
 
-  ZRREPORT_BYTES(pathPrefix + "bigints/malloc-heap"_ns,
-                 zStats.bigIntsMallocHeap, "BigInt values.");
+  ZRREPORT_NONHEAP_BYTES(pathPrefix + "bigints/gc-buffers"_ns,
+                         zStats.bigIntsGCBuffers, "BigInt values.");
 
   ZRREPORT_GC_BYTES(pathPrefix + "jit-codes-gc-heap"_ns, zStats.jitCodesGCHeap,
                     "References to executable code pools used by the JITs.");
@@ -1454,8 +1459,9 @@ static void ReportZoneStats(const JS::ZoneStats& zStats,
   ZRREPORT_GC_BYTES(pathPrefix + "scopes/gc-heap"_ns, zStats.scopesGCHeap,
                     "Scope information for scripts.");
 
-  ZRREPORT_BYTES(pathPrefix + "scopes/malloc-heap"_ns, zStats.scopesMallocHeap,
-                 "Arrays of binding names and other binding-related data.");
+  ZRREPORT_NONHEAP_BYTES(
+      pathPrefix + "scopes/gc-buffers"_ns, zStats.scopesGCBuffers,
+      "Arrays of binding names and other binding-related data.");
 
   ZRREPORT_GC_BYTES(pathPrefix + "regexp-shareds/gc-heap"_ns,
                     zStats.regExpSharedsGCHeap, "Shared compiled regexp data.");
@@ -1463,11 +1469,6 @@ static void ReportZoneStats(const JS::ZoneStats& zStats,
   ZRREPORT_BYTES(pathPrefix + "regexp-shareds/malloc-heap"_ns,
                  zStats.regExpSharedsMallocHeap,
                  "Shared compiled regexp data.");
-
-  // zStats.smallBuffersGCHeap is not reported as a separate item here as it's
-  // reported as part of the owning cell. We must still count it as part of the
-  // total heap size.
-  gcTotal += zStats.smallBuffersGCHeap;
 
   ZRREPORT_BYTES(pathPrefix + "zone-object"_ns, zStats.zoneObject,
                  "The JS::Zone object itself.");
@@ -1477,8 +1478,8 @@ static void ReportZoneStats(const JS::ZoneStats& zStats,
 
   ZRREPORT_BYTES(pathPrefix + "jit-zone"_ns, zStats.jitZone, "The JIT zone.");
 
-  ZRREPORT_BYTES(pathPrefix + "cacheir-stubs"_ns, zStats.cacheIRStubs,
-                 "The JIT's IC stubs (excluding code).");
+  ZRREPORT_BYTES(pathPrefix + "object-fuses"_ns, zStats.objectFuses,
+                 "Information about constant object properties.");
 
   ZRREPORT_BYTES(pathPrefix + "script-counts-map"_ns, zStats.scriptCountsMap,
                  "Profiling-related information for scripts.");
@@ -1628,6 +1629,18 @@ static void ReportZoneStats(const JS::ZoneStats& zStats,
         "is refreshed.");
   }
 
+  if (zStats.stringsDeduplicationTruncated) {
+    MOZ_ASSERT(!zStats.isTotals);
+    nsAutoCString desc;
+    desc.AppendPrintf(
+        "Number of JS strings seen in zones where notable string detection was "
+        "cut off before it could finish.");
+    handleReport->Callback(""_ns, "js-notable-truncated-strings-count"_ns,
+                           nsIMemoryReporter::KIND_OTHER,
+                           nsIMemoryReporter::UNITS_COUNT,
+                           zStats.stringsTotalCount, desc, data);
+  }
+
   const JS::ShapeInfo& shapeInfo = zStats.shapeInfo;
   if (shapeInfo.shapesGCHeapShared > 0) {
     REPORT_GC_BYTES(pathPrefix + "shapes/gc-heap/shared"_ns,
@@ -1693,21 +1706,21 @@ static void ReportClassStats(const ClassInfo& classInfo, const nsACString& path,
                     "Objects, including fixed slots.");
   }
 
-  if (classInfo.objectsMallocHeapSlots > 0) {
+  if (classInfo.objectsGCBufferSlots > 0) {
     REPORT_BYTES(path + "objects/gc-buffers/slots"_ns, KIND_NONHEAP,
-                 classInfo.objectsMallocHeapSlots, "Non-fixed object slots.");
+                 classInfo.objectsGCBufferSlots, "Non-fixed object slots.");
   }
 
-  if (classInfo.objectsMallocHeapElementsNormal > 0) {
+  if (classInfo.objectsGCBufferElementsNormal > 0) {
     REPORT_BYTES(path + "objects/gc-buffers/elements/normal"_ns, KIND_NONHEAP,
-                 classInfo.objectsMallocHeapElementsNormal,
+                 classInfo.objectsGCBufferElementsNormal,
                  "Normal (non-wasm) indexed elements.");
   }
 
-  if (classInfo.objectsMallocHeapElementsAsmJS > 0) {
-    REPORT_BYTES(path + "objects/malloc-heap/elements/asm.js"_ns, KIND_HEAP,
-                 classInfo.objectsMallocHeapElementsAsmJS,
-                 "asm.js array buffer elements allocated in the malloc heap.");
+  if (classInfo.objectsMallocHeapElementsArrayBuffer > 0) {
+    REPORT_BYTES(path + "objects/malloc-heap/elements/array-buffer"_ns,
+                 KIND_HEAP, classInfo.objectsMallocHeapElementsArrayBuffer,
+                 "JS array buffer elements allocated in the malloc heap.");
   }
 
   if (classInfo.objectsMallocHeapGlobalData > 0) {
@@ -1743,14 +1756,14 @@ static void ReportClassStats(const ClassInfo& classInfo, const nsACString& path,
   if (classInfo.objectsNonHeapElementsWasm > 0) {
     REPORT_BYTES(path + "objects/non-heap/elements/wasm"_ns, KIND_NONHEAP,
                  classInfo.objectsNonHeapElementsWasm,
-                 "wasm/asm.js array buffer elements allocated outside both the "
+                 "wasm array buffer elements allocated outside both the "
                  "malloc heap and the GC heap.");
   }
   if (classInfo.objectsNonHeapElementsWasmShared > 0) {
     REPORT_BYTES(
         path + "objects/non-heap/elements/wasm-shared"_ns, KIND_NONHEAP,
         classInfo.objectsNonHeapElementsWasmShared,
-        "wasm/asm.js array buffer elements allocated outside both the "
+        "wasm array buffer elements allocated outside both the "
         "malloc heap and the GC heap. These elements are shared between "
         "one or more runtimes; the reported size is divided by the "
         "buffer's refcount.");
@@ -1758,8 +1771,12 @@ static void ReportClassStats(const ClassInfo& classInfo, const nsACString& path,
 
   if (classInfo.objectsNonHeapCodeWasm > 0) {
     REPORT_BYTES(path + "objects/non-heap/code/wasm"_ns, KIND_NONHEAP,
-                 classInfo.objectsNonHeapCodeWasm,
-                 "AOT-compiled wasm/asm.js code.");
+                 classInfo.objectsNonHeapCodeWasm, "AOT-compiled wasm code.");
+  }
+
+  if (classInfo.objectsGCBufferMisc > 0) {
+    REPORT_BYTES(path + "objects/non-heap/misc"_ns, KIND_NONHEAP,
+                 classInfo.objectsGCBufferMisc, "Miscellaneous object data.");
   }
 }
 
@@ -1807,8 +1824,8 @@ static void ReportRealmStats(const JS::RealmStats& realmStats,
       "JSScript instances. There is one per user-defined function in a "
       "script, and one for the top-level code in a script.");
 
-  ZRREPORT_BYTES(realmJSPathPrefix + "scripts/malloc-heap/data"_ns,
-                 realmStats.scriptsMallocHeapData,
+  ZRREPORT_BYTES(realmJSPathPrefix + "scripts/gc-buffers"_ns,
+                 realmStats.scriptsGCBuffers,
                  "Various variable-length tables in JSScripts.");
 
   ZRREPORT_BYTES(realmJSPathPrefix + "baseline/data"_ns,
@@ -1817,6 +1834,10 @@ static void ReportRealmStats(const JS::RealmStats& realmStats,
 
   ZRREPORT_BYTES(realmJSPathPrefix + "alloc-sites"_ns, realmStats.allocSites,
                  "GC allocation site data associated with IC stubs.");
+
+  ZRREPORT_BYTES(realmJSPathPrefix + "cacheir-stubs"_ns,
+                 realmStats.cacheIRStubs,
+                 "The JIT's IC stubs (excluding code).");
 
   ZRREPORT_BYTES(realmJSPathPrefix + "ion-data"_ns, realmStats.ionData,
                  "The IonMonkey JIT's compilation data (IonScripts).");
@@ -1827,9 +1848,8 @@ static void ReportRealmStats(const JS::RealmStats& realmStats,
   ZRREPORT_BYTES(realmJSPathPrefix + "realm-object"_ns, realmStats.realmObject,
                  "The JS::Realm object itself.");
 
-  ZRREPORT_BYTES(
-      realmJSPathPrefix + "realm-tables"_ns, realmStats.realmTables,
-      "Realm-wide tables storing object group information and wasm instances.");
+  ZRREPORT_BYTES(realmJSPathPrefix + "realm-tables"_ns, realmStats.realmTables,
+                 "Realm-wide tables storing wasm instances.");
 
   ZRREPORT_BYTES(realmJSPathPrefix + "inner-views"_ns,
                  realmStats.innerViewsTable,
@@ -2074,7 +2094,7 @@ class JSMainRuntimeRealmsReporter final : public nsIMemoryReporter {
     path.Insert(js::IsSystemRealm(realm) ? "js-main-runtime-realms/system/"_ns
                                          : "js-main-runtime-realms/user/"_ns,
                 0);
-    mozilla::Unused << data->paths.append(path);
+    (void)data->paths.append(path);
   }
 
   NS_IMETHOD CollectReports(nsIHandleReportCallback* handleReport,
@@ -2173,6 +2193,7 @@ class XPCJSRuntimeStats : public JS::RuntimeStats {
                                   const JS::AutoRequireNoGC& nogc) override {
     xpc::ZoneStatsExtras* extras = new xpc::ZoneStatsExtras;
     extras->pathPrefix.AssignLiteral("explicit/js-non-window/zones/");
+    extras->zoneName = nsPrintfCString("zone(0x%p)/", (void*)zone);
 
     // Get some global in this zone.
     Rooted<Realm*> realm(dom::RootingCx(), js::GetAnyRealmInZone(zone));
@@ -2190,7 +2211,7 @@ class XPCJSRuntimeStats : public JS::RuntimeStats {
       }
     }
 
-    extras->pathPrefix += nsPrintfCString("zone(0x%p)/", (void*)zone);
+    extras->pathPrefix += extras->zoneName;
 
     MOZ_ASSERT(StartsWithExplicit(extras->pathPrefix));
 
@@ -2348,6 +2369,13 @@ void JSReporter::CollectReports(WindowPaths* windowPaths,
         " to RSS, only vsize.");
   }
 
+  if (rtStats.runtime.wasmContStacks > 0) {
+    REPORT_BYTES(
+        "wasm-cont-stacks"_ns, KIND_OTHER, rtStats.runtime.wasmContStacks,
+        "Memory mapped for wasm continuation stacks (JS Promise Integration "
+        "and stack-switching), including guard pages.");
+  }
+
   // Report the numbers for memory outside of realms.
 
   REPORT_BYTES("js-main-runtime/gc-heap/unused-chunks"_ns, KIND_OTHER,
@@ -2424,11 +2452,6 @@ void JSReporter::CollectReports(WindowPaths* windowPaths,
       KIND_OTHER, rtStats.zTotals.unusedGCThings.regExpShared,
       "Unused regexpshared cells within non-empty arenas.");
 
-  REPORT_BYTES(
-      "js-main-runtime-gc-heap-committed/unused/gc-things/small-buffers"_ns,
-      KIND_OTHER, rtStats.zTotals.unusedGCThings.smallBuffer,
-      "Unused small buffer cells within non-empty arenas.");
-
   REPORT_BYTES("js-main-runtime-gc-heap-committed/used/chunk-admin"_ns,
                KIND_OTHER, rtStats.gcHeapChunkAdmin,
                "The same as 'explicit/js-non-window/gc-heap/chunk-admin'.");
@@ -2495,27 +2518,37 @@ void JSReporter::CollectReports(WindowPaths* windowPaths,
       KIND_OTHER, rtStats.zTotals.regExpSharedsGCHeap,
       "Used regexpshared cells.");
 
-  MREPORT_BYTES(
-      "js-main-runtime-gc-heap-committed/used/gc-things/small-buffers"_ns,
-      KIND_OTHER, rtStats.zTotals.smallBuffersGCHeap,
-      "Used small buffer cells.");
-
   MOZ_ASSERT(gcThingTotal == rtStats.gcHeapGCThings);
   (void)gcThingTotal;
 
   // Report totals from per-zone GC buffer allocators.
 
-  MREPORT_BYTES("js-main-runtime-gc-buffers/used"_ns, KIND_OTHER,
-                rtStats.zTotals.gcBuffers.usedBytes,
-                "Bookeeping information and padding within GC buffer memeory.");
+  for (const auto& zStats : rtStats.zoneStatsVector) {
+    const xpc::ZoneStatsExtras* extras =
+        static_cast<const xpc::ZoneStatsExtras*>(zStats.extra);
 
-  MREPORT_BYTES("js-main-runtime-gc-buffers/free"_ns, KIND_OTHER,
-                rtStats.zTotals.gcBuffers.freeBytes,
-                "Free space within GC buffer memeory.");
+    nsCString pathPrefix;
+    pathPrefix.AssignLiteral("js-main-runtime-gc-buffers/");
+    pathPrefix += extras->zoneName;
 
-  MREPORT_BYTES("js-main-runtime-gc-buffers/admin"_ns, KIND_OTHER,
-                rtStats.zTotals.gcBuffers.adminBytes,
-                "Bookeeping information and padding within GC buffer memeory.");
+    nsCString usedPath =
+        pathPrefix +
+        nsPrintfCString("used (in %zu chunks and %zu large allocs)",
+                        zStats.gcBuffers.totalChunks,
+                        zStats.gcBuffers.largeAllocs);
+    MREPORT_BYTES(usedPath, KIND_OTHER, zStats.gcBuffers.usedBytes,
+                  "Allocated memory within GC buffer memeory.");
+
+    nsCString freePath =
+        pathPrefix +
+        nsPrintfCString("free (in %zu regions)", zStats.gcBuffers.freeRegions);
+    MREPORT_BYTES(freePath, KIND_OTHER, zStats.gcBuffers.freeBytes,
+                  "Free space within GC buffer memeory.");
+
+    MREPORT_BYTES(
+        pathPrefix + "admin"_ns, KIND_OTHER, zStats.gcBuffers.adminBytes,
+        "Bookeeping information and padding within GC buffer memeory.");
+  }
 
   REPORT("js-main-runtime-zone-count"_ns, KIND_OTHER, UNITS_COUNT,
          rtStats.zoneStatsVector.length(), "Count of GC zones in the runtime.");
@@ -2561,17 +2594,21 @@ void JSReporter::CollectReports(WindowPaths* windowPaths,
                "The memory used by the JSContexts in HelperThreadState.");
 }
 
-static nsresult JSSizeOfTab(JSObject* objArg, size_t* jsObjectsSize,
+static nsresult JSSizeOfTab(JSObject* obj, size_t* jsObjectsSize,
                             size_t* jsStringsSize, size_t* jsPrivateSize,
                             size_t* jsOtherSize) {
   JSContext* cx = XPCJSContext::Get()->Context();
-  JS::RootedObject obj(cx, objArg);
+  JS::Zone* zone = JS::GetObjectZone(obj);
+  if (JS::IsIncrementalGCInProgress(cx)) {
+    JS::FinishIncrementalGC(cx, JS::GCReason::PREPARE_FOR_TRACING);
+  }
+  JS::AutoCheckCannotGC nogc(cx);
 
   TabSizes sizes;
   OrphanReporter orphanReporter(XPCConvert::GetISupportsFromJSObject);
-  NS_ENSURE_TRUE(
-      JS::AddSizeOfTab(cx, obj, moz_malloc_size_of, &orphanReporter, &sizes),
-      NS_ERROR_OUT_OF_MEMORY);
+  NS_ENSURE_TRUE(JS::AddSizeOfTab(cx, zone, moz_malloc_size_of, &orphanReporter,
+                                  &sizes, nogc),
+                 NS_ERROR_OUT_OF_MEMORY);
 
   *jsObjectsSize = sizes.objects_;
   *jsStringsSize = sizes.strings_;
@@ -2582,130 +2619,150 @@ static nsresult JSSizeOfTab(JSObject* objArg, size_t* jsObjectsSize,
 
 }  // namespace xpc
 
-static void AccumulateTelemetryCallback(JSMetric id, uint32_t sample) {
+static void AccumulateTelemetryCallback(JSMetric id,
+                                        const JSTelemetryData& sample) {
   switch (id) {
     case JSMetric::GC_MS:
-      glean::javascript_gc::total_time.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::total_time.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_MINOR_US:
-      glean::javascript_gc::minor_time.AccumulateRawDuration(
-          TimeDuration::FromMicroseconds(sample));
+      glean::javascript_gc::minor_time.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_PREPARE_MS:
-      glean::javascript_gc::prepare_time.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::prepare_time.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_MARK_ROOTS_US:
-      glean::javascript_gc::mark_roots_time.AccumulateRawDuration(
-          TimeDuration::FromMicroseconds(sample));
+      glean::javascript_gc::mark_roots_time.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_MARK_MS:
-      glean::javascript_gc::mark_time.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::mark_time.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_SWEEP_MS:
-      glean::javascript_gc::sweep_time.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::sweep_time.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_COMPACT_MS:
-      glean::javascript_gc::compact_time.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::compact_time.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_SLICE_MS:
-      glean::javascript_gc::slice_time.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::slice_time.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::ION_COMPILE_TIME:
       glean::javascript_ion::compile_time.AccumulateRawDuration(
-          TimeDuration::FromMicroseconds(sample));
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_BUDGET_MS_2:
-      glean::javascript_gc::budget.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::budget.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_BUDGET_OVERRUN:
-      glean::javascript_gc::budget_overrun.AccumulateRawDuration(
-          TimeDuration::FromMicroseconds(sample));
+      glean::javascript_gc::budget_overrun.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_ANIMATION_MS:
-      glean::javascript_gc::animation.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::animation.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_MAX_PAUSE_MS_2:
-      glean::javascript_gc::max_pause.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::max_pause.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_MARK_GRAY_MS_2:
-      glean::javascript_gc::mark_gray.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::mark_gray.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_MARK_WEAK_MS:
-      glean::javascript_gc::mark_weak.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::mark_weak.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_TIME_BETWEEN_S:
-      glean::javascript_gc::time_between.AccumulateRawDuration(
-          TimeDuration::FromSeconds(sample));
+      glean::javascript_gc::time_between.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_TIME_BETWEEN_SLICES_MS:
-      glean::javascript_gc::time_between_slices.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::time_between_slices.ProcessGet()
+          .AccumulateRawDuration(sample.as<TimeDuration>());
       break;
     case JSMetric::GC_TIME_BETWEEN_MINOR_MS:
-      glean::javascript_gc::time_between_minor.AccumulateRawDuration(
-          TimeDuration::FromMilliseconds(sample));
+      glean::javascript_gc::time_between_minor.ProcessGet()
+          .AccumulateRawDuration(sample.as<TimeDuration>());
       break;
     case JSMetric::GC_TASK_START_DELAY_US:
-      glean::javascript_gc::task_start_delay.AccumulateRawDuration(
-          TimeDuration::FromMicroseconds(sample));
+      glean::javascript_gc::task_start_delay.ProcessGet().AccumulateRawDuration(
+          sample.as<TimeDuration>());
       break;
     case JSMetric::GC_MMU_50:
-      glean::javascript_gc::mmu_50.AccumulateSingleSample(sample);
+      glean::javascript_gc::mmu_50.AccumulateSingleSample(sample.as<size_t>());
       break;
     case JSMetric::GC_NURSERY_PROMOTION_RATE:
       glean::javascript_gc::nursery_promotion_rate.AccumulateSingleSample(
-          sample);
+          sample.as<size_t>());
       break;
     case JSMetric::GC_TENURED_SURVIVAL_RATE:
       glean::javascript_gc::tenured_survival_rate.AccumulateSingleSample(
-          sample);
+          sample.as<size_t>());
       break;
     case JSMetric::GC_PARALLEL_MARK_UTILIZATION:
       glean::javascript_gc::parallel_mark_utilization.AccumulateSingleSample(
-          sample);
+          sample.as<size_t>());
       break;
     case JSMetric::GC_NURSERY_BYTES_2:
-      glean::javascript_gc::nursery_bytes.Accumulate(sample);
+      glean::javascript_gc::nursery_bytes.ProcessGet().Accumulate(
+          sample.as<size_t>());
       break;
     case JSMetric::GC_EFFECTIVENESS:
-      glean::javascript_gc::effectiveness.AccumulateSingleSample(sample);
+      glean::javascript_gc::effectiveness.AccumulateSingleSample(
+          sample.as<size_t>());
+      break;
+    case JSMetric::GC_BUFFER_ALLOC_HEAP_BYTES:
+      glean::javascript_gc::buffer_alloc_heap_bytes.ProcessGet().Accumulate(
+          sample.as<size_t>());
+      break;
+    case JSMetric::GC_BUFFER_ALLOC_HEAP_DENSITY:
+      glean::javascript_gc::buffer_alloc_heap_density.AccumulateSingleSample(
+          sample.as<size_t>());
       break;
     case JSMetric::GC_ZONE_COUNT:
-      glean::javascript_gc::zone_count.AccumulateSingleSample(sample);
+      glean::javascript_gc::zone_count.AccumulateSingleSample(
+          sample.as<size_t>());
       break;
     case JSMetric::GC_ZONES_COLLECTED:
-      glean::javascript_gc::zones_collected.AccumulateSingleSample(sample);
+      glean::javascript_gc::zones_collected.AccumulateSingleSample(
+          sample.as<size_t>());
       break;
     case JSMetric::GC_PRETENURE_COUNT_2:
-      glean::javascript_gc::pretenure_count.AccumulateSingleSample(sample);
+      glean::javascript_gc::pretenure_count.AccumulateSingleSample(
+          sample.as<size_t>());
+      break;
+    case JSMetric::GC_MARK_STACK_MAX_CAPACITY:
+      glean::javascript_gc::mark_stack_max_capacity.ProcessGet().Accumulate(
+          sample.as<size_t>());
       break;
     case JSMetric::GC_MARK_RATE_2:
-      glean::javascript_gc::mark_rate.AccumulateSingleSample(sample);
+      glean::javascript_gc::mark_rate.AccumulateSingleSample(
+          sample.as<size_t>());
       break;
     case JSMetric::GC_SLICE_COUNT:
-      glean::javascript_gc::slice_count.AccumulateSingleSample(sample);
+      glean::javascript_gc::slice_count.AccumulateSingleSample(
+          sample.as<size_t>());
       break;
     case JSMetric::GC_PARALLEL_MARK_SPEEDUP:
       glean::javascript_gc::parallel_mark_speedup.AccumulateSingleSample(
-          sample);
+          sample.as<size_t>());
       break;
     case JSMetric::GC_PARALLEL_MARK_INTERRUPTIONS:
       glean::javascript_gc::parallel_mark_interruptions.AccumulateSingleSample(
-          sample);
+          sample.as<size_t>());
       break;
     case JSMetric::GC_IS_COMPARTMENTAL:
-      if (sample) {
+      if (sample.as<bool>()) {
         glean::javascript_gc::is_zone_gc
             .EnumGet(glean::javascript_gc::IsZoneGcLabel::eTrue)
             .Add(1);
@@ -2716,7 +2773,7 @@ static void AccumulateTelemetryCallback(JSMetric id, uint32_t sample) {
       }
       break;
     case JSMetric::GC_BUDGET_WAS_INCREASED:
-      if (sample) {
+      if (sample.as<bool>()) {
         glean::javascript_gc::budget_was_increased
             .EnumGet(glean::javascript_gc::BudgetWasIncreasedLabel::eTrue)
             .Add(1);
@@ -2727,7 +2784,7 @@ static void AccumulateTelemetryCallback(JSMetric id, uint32_t sample) {
       }
       break;
     case JSMetric::GC_SLICE_WAS_LONG:
-      if (sample) {
+      if (sample.as<bool>()) {
         glean::javascript_gc::slice_was_long
             .EnumGet(glean::javascript_gc::SliceWasLongLabel::eTrue)
             .Add(1);
@@ -2738,7 +2795,7 @@ static void AccumulateTelemetryCallback(JSMetric id, uint32_t sample) {
       }
       break;
     case JSMetric::GC_RESET:
-      if (sample) {
+      if (sample.as<bool>()) {
         glean::javascript_gc::reset
             .EnumGet(glean::javascript_gc::ResetLabel::eTrue)
             .Add(1);
@@ -2749,7 +2806,7 @@ static void AccumulateTelemetryCallback(JSMetric id, uint32_t sample) {
       }
       break;
     case JSMetric::GC_NON_INCREMENTAL:
-      if (sample) {
+      if (sample.as<bool>()) {
         glean::javascript_gc::non_incremental
             .EnumGet(glean::javascript_gc::NonIncrementalLabel::eTrue)
             .Add(1);
@@ -2760,7 +2817,7 @@ static void AccumulateTelemetryCallback(JSMetric id, uint32_t sample) {
       }
       break;
     case JSMetric::GC_PARALLEL_MARK:
-      if (sample) {
+      if (sample.as<bool>()) {
         glean::javascript_gc::parallel_mark_used
             .EnumGet(glean::javascript_gc::ParallelMarkUsedLabel::eTrue)
             .Add(1);
@@ -2772,80 +2829,83 @@ static void AccumulateTelemetryCallback(JSMetric id, uint32_t sample) {
       break;
     case JSMetric::GC_REASON_2: {
       // Assert that every reason has an associated glean label.
-      static_assert(static_cast<uint8_t>(JS::GCReason::LAST_FIREFOX_REASON) ==
-                        static_cast<uint8_t>(
-                            glean::javascript_gc::ReasonLabel::e__Other__),
-                    "GC reason enum and glean::javascript_gc::reason labels do "
-                    "not match.");
-      MOZ_ASSERT(static_cast<JS::GCReason>(sample) <=
+      static_assert(
+          static_cast<uint8_t>(JS::GCReason::LAST_FIREFOX_REASON) + 1 ==
+              static_cast<uint8_t>(
+                  glean::javascript_gc::ReasonLabel::e__Other__),
+          "GC reason enum and glean::javascript_gc::reason labels do "
+          "not match.");
+      MOZ_ASSERT(static_cast<JS::GCReason>(sample.as<size_t>()) <=
                      JS::GCReason::LAST_FIREFOX_REASON,
                  "Invalid GC Reason.");
 
       nsAutoCString reason(
-          JS::ExplainGCReason(static_cast<JS::GCReason>(sample)));
+          JS::ExplainGCReason(static_cast<JS::GCReason>(sample.as<size_t>())));
       glean::javascript_gc::reason.Get(reason).Add(1);
     } break;
     case JSMetric::GC_RESET_REASON: {
-      MOZ_ASSERT(
-          sample < static_cast<uint32_t>(
-                       glean::javascript_gc::ResetReasonLabel::e__Other__),
-          "Reason does not exist in the reset_reason labels list.");
-      nsAutoCString reason(JS::ExplainGCAbortReason(sample));
+      MOZ_ASSERT(sample.as<size_t>() <
+                     static_cast<uint32_t>(
+                         glean::javascript_gc::ResetReasonLabel::e__Other__),
+                 "Reason does not exist in the reset_reason labels list.");
+      nsAutoCString reason(JS::ExplainGCAbortReason(sample.as<size_t>()));
       glean::javascript_gc::reset_reason.Get(reason).Add(1);
     } break;
     case JSMetric::GC_NON_INCREMENTAL_REASON: {
       MOZ_ASSERT(
-          sample <
+          sample.as<size_t>() <
               static_cast<uint32_t>(
                   glean::javascript_gc::NonIncrementalReasonLabel::e__Other__),
           "Reason does not exist in the non_incremental_reason labels list.");
-      nsAutoCString reason(JS::ExplainGCAbortReason(sample));
+      nsAutoCString reason(JS::ExplainGCAbortReason(sample.as<size_t>()));
       glean::javascript_gc::non_incremental_reason.Get(reason).Add(1);
     } break;
     case JSMetric::GC_MINOR_REASON: {
       // Assert that every reason has an associated glean label.
       static_assert(
-          static_cast<uint8_t>(JS::GCReason::LAST_FIREFOX_REASON) ==
+          static_cast<uint8_t>(JS::GCReason::LAST_FIREFOX_REASON) + 1 ==
               static_cast<uint8_t>(
                   glean::javascript_gc::MinorReasonLabel::e__Other__),
           "GC reason enum and glean::javascript_gc::reason labels do not "
           "match.");
-      MOZ_ASSERT(static_cast<JS::GCReason>(sample) <=
+      MOZ_ASSERT(static_cast<JS::GCReason>(sample.as<size_t>()) <=
                      JS::GCReason::LAST_FIREFOX_REASON,
                  "Invalid GC Reason.");
 
       nsAutoCString reason(
-          JS::ExplainGCReason(static_cast<JS::GCReason>(sample)));
+          JS::ExplainGCReason(static_cast<JS::GCReason>(sample.as<size_t>())));
       glean::javascript_gc::minor_reason.Get(reason).Add(1);
     } break;
     case JSMetric::GC_MINOR_REASON_LONG: {
       // Assert that every reason has an associated glean label.
       static_assert(
-          static_cast<uint8_t>(JS::GCReason::LAST_FIREFOX_REASON) ==
+          static_cast<uint8_t>(JS::GCReason::LAST_FIREFOX_REASON) + 1 ==
               static_cast<uint8_t>(
                   glean::javascript_gc::MinorReasonLongLabel::e__Other__),
           "GC reason enum and glean::javascript_gc::reason labels do not "
           "match.");
-      MOZ_ASSERT(static_cast<JS::GCReason>(sample) <=
+      MOZ_ASSERT(static_cast<JS::GCReason>(sample.as<size_t>()) <=
                      JS::GCReason::LAST_FIREFOX_REASON,
                  "Invalid GC Reason.");
 
       nsAutoCString reason(
-          JS::ExplainGCReason(static_cast<JS::GCReason>(sample)));
+          JS::ExplainGCReason(static_cast<JS::GCReason>(sample.as<size_t>())));
       glean::javascript_gc::minor_reason_long.Get(reason).Add(1);
     } break;
     case JSMetric::GC_SLOW_PHASE: {
-      MOZ_ASSERT(sample < static_cast<uint32_t>(
-                              glean::javascript_gc::SlowPhaseLabel::e__Other__),
+      MOZ_ASSERT(sample.as<size_t>() <
+                     static_cast<uint32_t>(
+                         glean::javascript_gc::SlowPhaseLabel::e__Other__),
                  "Phase does not exist in the slow_phase labels list.");
-      nsAutoCString phase(JS::GetGCPhaseName(sample));
+      nsAutoCString phase(JS::GetGCPhaseName(sample.as<size_t>()));
       glean::javascript_gc::slow_phase.Get(phase).Add(1);
     } break;
     case JSMetric::GC_SLOW_TASK: {
-      MOZ_ASSERT(sample < static_cast<uint32_t>(
-                              glean::javascript_gc::SlowTaskLabel::e__Other__),
+      MOZ_ASSERT(sample.as<size_t>() <
+                     static_cast<uint32_t>(
+                         glean::javascript_gc::SlowTaskLabel::e__Other__),
                  "Phase does not exist in the slow_task labels list.");
-      nsAutoCString phase(JS::GetGCPhaseName(sample));
+      nsAutoCString phase(JS::GetGCPhaseName(sample.as<size_t>()));
       glean::javascript_gc::slow_task.Get(phase).Add(1);
     } break;
 
@@ -2857,9 +2917,6 @@ static void AccumulateTelemetryCallback(JSMetric id, uint32_t sample) {
 
 static void SetUseCounterCallback(JSObject* obj, JSUseCounter counter) {
   switch (counter) {
-    case JSUseCounter::ASMJS:
-      SetUseCounter(obj, eUseCounter_custom_JS_asmjs);
-      return;
     case JSUseCounter::WASM:
       SetUseCounter(obj, eUseCounter_custom_JS_wasm);
       return;
@@ -2878,18 +2935,6 @@ static void SetUseCounterCallback(JSObject* obj, JSUseCounter counter) {
     case JSUseCounter::OPTIMIZE_PROMISE_LOOKUP_FUSE:
       SetUseCounter(obj, eUseCounter_custom_JS_optimizePromiseLookup_fuse);
       return;
-    case JSUseCounter::THENABLE_USE:
-      SetUseCounter(obj, eUseCounter_custom_JS_thenable);
-      return;
-    case JSUseCounter::THENABLE_USE_PROTO:
-      SetUseCounter(obj, eUseCounter_custom_JS_thenable_proto);
-      return;
-    case JSUseCounter::THENABLE_USE_STANDARD_PROTO:
-      SetUseCounter(obj, eUseCounter_custom_JS_thenable_standard_proto);
-      return;
-    case JSUseCounter::THENABLE_USE_OBJECT_PROTO:
-      SetUseCounter(obj, eUseCounter_custom_JS_thenable_object_proto);
-      return;
     case JSUseCounter::LEGACY_LANG_SUBTAG:
       SetUseCounter(obj, eUseCounter_custom_JS_legacy_lang_subtag);
       return;
@@ -2904,20 +2949,6 @@ static void SetUseCounterCallback(JSObject* obj, JSUseCounter counter) {
       return;
     case JSUseCounter::DATEPARSE_IMPL_DEF:
       SetUseCounter(obj, eUseCounter_custom_JS_dateparse_impl_def);
-      return;
-    case JSUseCounter::REGEXP_SYMBOL_PROTOCOL_ON_PRIMITIVE:
-      SetUseCounter(obj,
-                    eUseCounter_custom_JS_regexp_symbol_protocol_on_primitive);
-      return;
-    case JSUseCounter::ERROR_CAPTURESTACKTRACE:
-      SetUseCounter(obj, eUseCounter_custom_JS_error_capturestacktrace);
-      return;
-    case JSUseCounter::ERROR_CAPTURESTACKTRACE_CTOR:
-      SetUseCounter(obj, eUseCounter_custom_JS_error_capturestacktrace_ctor);
-      return;
-    case JSUseCounter::ERROR_CAPTURESTACKTRACE_UNCALLABLE_CTOR:
-      SetUseCounter(
-          obj, eUseCounter_custom_JS_error_capturestacktrace_uncallable_ctor);
       return;
     case JSUseCounter::COUNT:
       break;
@@ -2946,19 +2977,15 @@ static void DestroyRealm(JS::GCContext* gcx, JS::Realm* realm) {
   JS::SetRealmPrivate(realm, nullptr);
 }
 
-static bool PreserveWrapper(JSContext* cx, JS::Handle<JSObject*> obj) {
+static void PreserveWrapper(JSContext* cx, JS::Handle<JSObject*> obj) {
   MOZ_ASSERT(cx);
   MOZ_ASSERT(obj);
   MOZ_ASSERT(mozilla::dom::IsDOMObject(obj));
 
-  if (!mozilla::dom::TryPreserveWrapper(obj)) {
-    return false;
-  }
+  mozilla::dom::TryPreserveWrapper(obj);
 
   MOZ_ASSERT(!mozilla::dom::HasReleasedWrapper(obj),
              "There should be no released wrapper since we just preserved it");
-
-  return true;
 }
 
 static nsresult ReadSourceFromFilename(JSContext* cx, const char* filename,
@@ -3027,7 +3054,7 @@ static nsresult ReadSourceFromFilename(JSContext* cx, const char* filename,
   // Allocate a buffer the size of the file to initially fill with the UTF-8
   // contents of the file.  Use the JS allocator so that if UTF-8 source was
   // requested, we can return this memory directly.
-  JS::UniqueChars buf(js_pod_malloc<char>(rawLen));
+  JS::UniqueChars buf(js_pod_malloc<char>(static_cast<size_t>(rawLen)));
   if (!buf) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
@@ -3245,12 +3272,14 @@ void XPCJSRuntime::Initialize(JSContext* cx) {
   // isRunOnce mode and compiled function bodies (from
   // JS::CompileFunction). In practice, this means content scripts and event
   // handlers.
-  mozilla::UniquePtr<XPCJSSourceHook> hook(new XPCJSSourceHook);
+  mozilla::UniquePtr<XPCJSSourceHook> hook =
+      std::make_unique<XPCJSSourceHook>();
   js::SetSourceHook(cx, std::move(hook));
 
   // Register memory reporters and distinguished amount functions.
-  RegisterStrongMemoryReporter(new JSMainRuntimeRealmsReporter());
-  RegisterStrongMemoryReporter(new JSMainRuntimeTemporaryPeakReporter());
+  RegisterStrongMemoryReporter(MakeAndAddRef<JSMainRuntimeRealmsReporter>());
+  RegisterStrongMemoryReporter(
+      MakeAndAddRef<JSMainRuntimeTemporaryPeakReporter>());
   RegisterJSMainRuntimeGCHeapDistinguishedAmount(
       JSMainRuntimeGCHeapDistinguishedAmount);
   RegisterJSMainRuntimeTemporaryPeakDistinguishedAmount(
@@ -3293,12 +3322,16 @@ bool XPCJSRuntime::InitializeStrings(JSContext* cx) {
 }
 
 bool XPCJSRuntime::DescribeCustomObjects(JSObject* obj, const JSClass* clasp,
-                                         char (&name)[72]) const {
+                                         char (&name)[512]) const {
   if (clasp != &XPC_WN_Proto_JSClass) {
     return false;
   }
 
   XPCWrappedNativeProto* p = XPCWrappedNativeProto::Get(obj);
+  if (!p) {
+    // Can be null if XPC shutdown has already happened.
+    return false;
+  }
   // Nothing here can GC. The analysis would otherwise think that ~nsCOMPtr
   // could GC, but that's only possible if nsIXPCScriptable::GetJSClass()
   // somehow released a reference to the nsIXPCScriptable, which isn't going to
@@ -3374,19 +3407,6 @@ void XPCJSRuntime::DebugDump(int16_t depth) {
 }
 
 /***************************************************************************/
-
-void XPCJSRuntime::AddGCCallback(xpcGCCallback cb) {
-  MOZ_ASSERT(cb, "null callback");
-  extraGCCallbacks.AppendElement(cb);
-}
-
-void XPCJSRuntime::RemoveGCCallback(xpcGCCallback cb) {
-  MOZ_ASSERT(cb, "null callback");
-  bool found = extraGCCallbacks.RemoveElement(cb);
-  if (!found) {
-    NS_ERROR("Removing a callback which was never added.");
-  }
-}
 
 JSObject* XPCJSRuntime::GetUAWidgetScope(JSContext* cx,
                                          nsIPrincipal* principal) {

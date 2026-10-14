@@ -1,14 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "frontend/FrontendContext.h"
 
 #ifdef _WIN32
+// clang-format off
 #  include "util/WindowsWrapper.h"
 #  include <process.h>  // GetCurrentThreadId
+// clang-format on
 #else
 #  include <pthread.h>  // pthread_self
 #endif
@@ -30,13 +30,12 @@ void FrontendErrors::clearErrors() {
   overRecursed = false;
   outOfMemory = false;
   allocationOverflow = false;
+  cancelled = false;
 }
 
 void FrontendErrors::clearWarnings() { warnings.clear(); }
 
-void FrontendAllocator::reportAllocationOverflow() {
-  fc_->onAllocationOverflow();
-}
+void FrontendAllocator::reportAllocOverflow() { fc_->onAllocationOverflow(); }
 
 void* FrontendAllocator::onOutOfMemory(AllocFunction allocFunc,
                                        arena_id_t arena, size_t nbytes,
@@ -130,6 +129,22 @@ void FrontendContext::onOutOfMemory() { addPendingOutOfMemory(); }
 
 void FrontendContext::onOverRecursed() { errors_.overRecursed = true; }
 
+void FrontendContext::requestCompilationCancellation() {
+  MOZ_ASSERT(allowCancellingCompilation_);
+  MOZ_ASSERT(!maybeCx_);
+
+  compilationCancellationRequested_ = true;
+}
+
+bool FrontendContext::checkCompilationCancellation() {
+  if (MOZ_LIKELY(!compilationCancellationRequested_)) {
+    return true;
+  }
+
+  errors_.cancelled = true;
+  return false;
+}
+
 void FrontendContext::recoverFromOutOfMemory() {
   MOZ_ASSERT_IF(maybeCx_, !maybeCx_->isThrowingOutOfMemory());
 
@@ -182,6 +197,7 @@ void FrontendContext::addPendingOutOfMemory() { errors_.outOfMemory = true; }
 
 void FrontendContext::setCurrentJSContext(JSContext* cx) {
   MOZ_ASSERT(!nameCollectionPool_);
+  MOZ_ASSERT(!allowCancellingCompilation_);
 
   maybeCx_ = cx;
   nameCollectionPool_ = &cx->frontendCollectionPool();
@@ -201,6 +217,12 @@ bool FrontendContext::convertToRuntimeError(
     return false;
   }
 
+  MOZ_ASSERT(!isCompilationCancellationRequested(),
+             "a cancelled compilation's result must be discarded");
+  if (hadCancelled()) {
+    return false;
+  }
+
   if (maybeError()) {
     if (!maybeError()->throwError(cx)) {
       return false;
@@ -208,9 +230,16 @@ bool FrontendContext::convertToRuntimeError(
   }
   if (warning == Warning::Report) {
     for (CompileError& error : warnings()) {
+#ifdef DEBUG
+      bool hadException = cx->isExceptionPending();
+#endif
       if (!error.throwError(cx)) {
         return false;
       }
+
+      // The warning reporter shouldn't clear the exception set by
+      // other errors.
+      MOZ_ASSERT_IF(hadException, cx->isExceptionPending());
     }
   }
   if (hadOverRecursed()) {
@@ -301,11 +330,24 @@ FrontendContext* js::NewFrontendContext() {
   return fc.release();
 }
 
-JS_PUBLIC_API FrontendContext* JS::NewFrontendContext() {
+JS_PUBLIC_API FrontendContext* JS::NewFrontendContext(
+    JS::AllowCancellingCompilation allowCancellingCompilation
+    /* = AllowCancellingCompilation::No */) {
   MOZ_ASSERT(JS::detail::libraryInitState == JS::detail::InitState::Running,
              "must call JS_Init prior to creating any FrontendContexts");
 
-  return js::NewFrontendContext();
+  FrontendContext* fc = js::NewFrontendContext();
+  if (!fc) {
+    return nullptr;
+  }
+
+#ifdef DEBUG
+  if (allowCancellingCompilation == JS::AllowCancellingCompilation::Yes) {
+    fc->setAllowCancellingCompilation();
+  }
+#endif
+
+  return fc;
 }
 
 void js::DestroyFrontendContext(FrontendContext* fc) { js_delete_poison(fc); }
@@ -366,6 +408,15 @@ JS_PUBLIC_API bool JS::HadFrontendOutOfMemory(JS::FrontendContext* fc) {
 
 JS_PUBLIC_API bool JS::HadFrontendAllocationOverflow(JS::FrontendContext* fc) {
   return fc->hadAllocationOverflow();
+}
+
+JS_PUBLIC_API void JS::RequestFrontendCompilationCancellation(
+    JS::FrontendContext* fc) {
+  fc->requestCompilationCancellation();
+}
+
+JS_PUBLIC_API bool JS::HadFrontendCancelled(JS::FrontendContext* fc) {
+  return fc->hadCancelled();
 }
 
 JS_PUBLIC_API size_t JS::GetFrontendWarningCount(JS::FrontendContext* fc) {

@@ -5,7 +5,6 @@
 "use strict";
 
 add_task(async function () {
-  await pushPref("dom.element.commandfor.enabled", true);
   await pushPref("dom.events.textevent.enabled", true);
   await pushPref("dom.closewatcher.enabled", true);
 
@@ -60,6 +59,9 @@ add_task(async function () {
 
   await toggleEventBreakpoint(dbg, "Control", "event.control.focusin");
   await toggleEventBreakpoint(dbg, "Control", "event.control.focusout");
+  // Not awaited here, nor for #invoker and #popover-toggle below: the invoked
+  // action pauses the debuggee inside the SpecialPowers.spawn callback, so the
+  // promise it returns only settles once the test resumes.
   invokeOnElement("#focus-text", "focus");
   await waitForPaused(dbg);
   await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 47);
@@ -113,7 +115,7 @@ add_task(async function () {
     "Keyboard",
     "event.keyboard.compositionstart"
   );
-  invokeOnElement("#focus-text", "focus");
+  await invokeOnElement("#focus-text", "focus");
 
   info("Type some characters during composition");
   invokeComposition();
@@ -121,6 +123,7 @@ add_task(async function () {
   await waitForPaused(dbg);
   await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 57);
   await resume(dbg);
+  await flushPendingContentEvents();
 
   info("Deselect compositionstart and select compositionupdate");
   await toggleEventBreakpoint(
@@ -134,7 +137,7 @@ add_task(async function () {
     "event.keyboard.compositionupdate"
   );
 
-  invokeOnElement("#focus-text", "focus");
+  await invokeOnElement("#focus-text", "focus");
 
   info("Type some characters during composition");
   invokeComposition();
@@ -142,6 +145,7 @@ add_task(async function () {
   await waitForPaused(dbg);
   await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 62);
   await resume(dbg);
+  await flushPendingContentEvents();
 
   info("Deselect compositionupdate and select compositionend");
   await toggleEventBreakpoint(
@@ -150,7 +154,7 @@ add_task(async function () {
     "event.keyboard.compositionupdate"
   );
   await toggleEventBreakpoint(dbg, "Keyboard", "event.keyboard.compositionend");
-  invokeOnElement("#focus-text", "focus");
+  await invokeOnElement("#focus-text", "focus");
 
   info("Type some characters during composition");
   invokeComposition();
@@ -165,9 +169,13 @@ add_task(async function () {
   await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 67);
   await resume(dbg);
 
+  info("Deselect compositionend");
+  await toggleEventBreakpoint(dbg, "Keyboard", "event.keyboard.compositionend");
+  await flushPendingContentEvents();
+
   info("Test textInput");
   await toggleEventBreakpoint(dbg, "Keyboard", "event.keyboard.textInput");
-  invokeOnElement("#focus-text", "focus");
+  await invokeOnElement("#focus-text", "focus");
   EventUtils.sendChar("N");
   await waitForPaused(dbg);
   await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 102);
@@ -244,6 +252,16 @@ add_task(async function () {
   await wait(100);
   assertNotPaused(dbg);
 
+  // The XHR load and the 50ms timer above outlive their `wait(100)` on a slow
+  // machine. Turn their breakpoints off while the source is still blackboxed:
+  // otherwise one of them pauses just after it is unblackboxed, the navigation
+  // below then fires "beforeunload" inside that pause, and the engine refuses
+  // to run the debuggee there, so the breakpoint the test waits for never hits.
+  await toggleEventBreakpoint(dbg, "Mouse", "event.mouse.click");
+  await toggleEventBreakpoint(dbg, "XHR", "event.xhr.load");
+  await toggleEventBreakpoint(dbg, "Timer", "timer.timeout.set");
+  await toggleEventBreakpoint(dbg, "Timer", "timer.timeout.fire");
+
   // Cleanup - unblackbox the source
   await clickElement(dbg, "blackbox");
   await waitForDispatch(dbg.store, "UNBLACKBOX_WHOLE_SOURCES");
@@ -255,6 +273,12 @@ add_task(async function () {
   await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 82);
   await resume(dbg);
   await onReload;
+  // The reload function waits for the sources to be available, but it doesn't
+  // wait for the breakpoint checkboxes to be restored, and they're done
+  // asynchronously.
+  // Wait for the checkbox state, so that the next toggle unchecks it as a
+  // cleanup.
+  await waitForEventBreakpointChecked(dbg, "Load", "event.load.beforeunload");
   await toggleEventBreakpoint(dbg, "Load", "event.load.beforeunload");
 
   info(`Check that breakpoint can be set on "unload" event`);
@@ -264,6 +288,7 @@ add_task(async function () {
   await assertPausedAtSourceAndLine(dbg, eventBreakpointsSource.id, 87);
   await resume(dbg);
   await onReload;
+  await waitForEventBreakpointChecked(dbg, "Load", "event.load.unload");
   await toggleEventBreakpoint(dbg, "Load", "event.load.unload");
 });
 
@@ -308,70 +333,8 @@ add_task(async function () {
   is(timerGroupCheckbox.checked, true);
 });
 
-function getEventListenersPanel(dbg) {
-  return findElementWithSelector(dbg, ".event-listeners-pane .event-listeners");
-}
-
-async function toggleEventBreakpoint(
-  dbg,
-  eventBreakpointGroup,
-  eventBreakpointName
-) {
-  const eventCheckbox = await getEventBreakpointCheckbox(
-    dbg,
-    eventBreakpointGroup,
-    eventBreakpointName
-  );
-  eventCheckbox.scrollIntoView();
-  info(`Toggle ${eventBreakpointName} breakpoint`);
-  const onEventListenersUpdate = waitForDispatch(
-    dbg.store,
-    "UPDATE_EVENT_LISTENERS"
-  );
-  const checked = eventCheckbox.checked;
-  eventCheckbox.click();
-  await onEventListenersUpdate;
-
-  info("Wait for the event breakpoint checkbox to be toggled");
-  // Wait for he UI to be toggled, otherwise, the reducer may not be fully updated
-  await waitFor(() => {
-    return eventCheckbox.checked == !checked;
-  });
-}
-
-async function getEventBreakpointCheckbox(
-  dbg,
-  eventBreakpointGroup,
-  eventBreakpointName
-) {
-  if (!getEventListenersPanel(dbg)) {
-    // Event listeners panel is collapsed, expand it
-    findElementWithSelector(
-      dbg,
-      `.event-listeners-pane ._header .header-label`
-    ).click();
-    await waitFor(() => getEventListenersPanel(dbg));
-  }
-
-  const groupCheckbox = findElementWithSelector(
-    dbg,
-    `input[value="${eventBreakpointGroup}"]`
-  );
-  const groupEl = groupCheckbox.closest(".event-listener-group");
-  let groupEventsUl = groupEl.querySelector("ul");
-  if (!groupEventsUl) {
-    info(
-      `Expand ${eventBreakpointGroup} and wait for the sub list to be displayed`
-    );
-    groupEl.querySelector(".event-listener-expand").click();
-    groupEventsUl = await waitFor(() => groupEl.querySelector("ul"));
-  }
-
-  return findElementWithSelector(dbg, `input[value="${eventBreakpointName}"]`);
-}
-
 async function invokeOnElement(selector, action) {
-  await SpecialPowers.focus(gBrowser.selectedBrowser);
+  gBrowser.selectedBrowser.focus();
   await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
     [selector, action],
@@ -379,6 +342,13 @@ async function invokeOnElement(selector, action) {
       content.document.querySelector(_selector)[_action]();
     }
   );
+}
+
+// An empty spawn used as a flush: composition events reach the content process at
+// input priority, ahead of this round trip's normal-priority message on the same
+// channel, so anything queued before it has been handled once it resolves.
+function flushPendingContentEvents() {
+  return SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {});
 }
 
 function invokeComposition() {

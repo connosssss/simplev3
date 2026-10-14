@@ -4,114 +4,20 @@
 
 package mozilla.components.service.pocket.ext
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import java.util.Locale
+import mozilla.appservices.merino.CuratedRecommendationLocale
+import mozilla.appservices.merino.CuratedRecommendationsResponse
 import mozilla.components.service.pocket.helpers.PocketTestResources
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import kotlin.reflect.full.memberProperties
+import org.junit.runner.RunWith
 
+@RunWith(AndroidJUnit4::class)
 class MappersKtTest {
-    @Test
-    fun `GIVEN a PocketApiStory WHEN toPocketLocalStory is called THEN a one to one mapping is performed and timesShown is set to 0`() {
-        val apiStory = PocketTestResources.apiExpectedPocketStoriesRecommendations[0]
-
-        val result = apiStory.toPocketLocalStory()
-
-        assertNotEquals(apiStory::class.memberProperties, result::class.memberProperties)
-        assertSame(apiStory.url, result.url)
-        assertSame(apiStory.title, result.title)
-        assertSame(apiStory.imageUrl, result.imageUrl)
-        assertSame(apiStory.publisher, result.publisher)
-        assertSame(apiStory.category, result.category)
-        assertSame(apiStory.timeToRead, result.timeToRead)
-        assertEquals(DEFAULT_TIMES_SHOWN, result.timesShown)
-    }
-
-    @Test
-    fun `GIVEN a PocketLocalStory WHEN toPocketRecommendedStory is called THEN a one to one mapping is performed`() {
-        val localStory = PocketTestResources.dbExpectedPocketStory
-
-        val result = localStory.toPocketRecommendedStory()
-
-        assertNotEquals(localStory::class.memberProperties, result::class.memberProperties)
-        assertSame(localStory.url, result.url)
-        assertSame(localStory.title, result.title)
-        assertSame(localStory.imageUrl, result.imageUrl)
-        assertSame(localStory.publisher, result.publisher)
-        assertSame(localStory.category, result.category)
-        assertSame(localStory.timeToRead, result.timeToRead)
-        assertEquals(localStory.timesShown, result.timesShown)
-    }
-
-    @Test
-    fun `GIVEN a PocketLocalStory with no category WHEN toPocketRecommendedStory is called THEN a one to one mapping is performed and the category is set to general`() {
-        val localStory = PocketTestResources.dbExpectedPocketStory.copy(category = "")
-
-        val result = localStory.toPocketRecommendedStory()
-
-        assertNotEquals(localStory::class.memberProperties, result::class.memberProperties)
-        assertSame(localStory.url, result.url)
-        assertSame(localStory.title, result.title)
-        assertSame(localStory.imageUrl, result.imageUrl)
-        assertSame(localStory.publisher, result.publisher)
-        assertSame(DEFAULT_CATEGORY, result.category)
-        assertSame(localStory.timeToRead, result.timeToRead)
-        assertEquals(localStory.timesShown, result.timesShown)
-    }
-
-    @Test
-    fun `GIVEN a PcoketRecommendedStory WHEN toPartialTimeShownUpdate is called THEN only the url and timesShown properties are kept`() {
-        val story = PocketTestResources.clientExpectedPocketStory
-
-        val result = story.toPartialTimeShownUpdate()
-
-        assertNotEquals(story::class.memberProperties, result::class.memberProperties)
-        assertEquals(2, result::class.memberProperties.size)
-        assertSame(story.url, result.url)
-        assertSame(story.timesShown, result.timesShown)
-    }
-
-    @Test
-    fun `GIVEN a spoc downloaded from Internet WHEN it is converted to a local spoc THEN a one to one mapping is made`() {
-        val apiStory = PocketTestResources.apiExpectedPocketSpocs[0]
-
-        val result = apiStory.toLocalSpoc()
-
-        assertEquals(apiStory.id, result.id)
-        assertSame(apiStory.title, result.title)
-        assertSame(apiStory.url, result.url)
-        assertSame(apiStory.imageSrc, result.imageUrl)
-        assertSame(apiStory.sponsor, result.sponsor)
-        assertSame(apiStory.shim.click, result.clickShim)
-        assertSame(apiStory.shim.impression, result.impressionShim)
-        assertEquals(apiStory.priority, result.priority)
-        assertEquals(apiStory.caps.lifetimeCount, result.lifetimeCapCount)
-        assertEquals(apiStory.caps.flightCount, result.flightCapCount)
-        assertEquals(apiStory.caps.flightPeriod, result.flightCapPeriod)
-    }
-
-    @Test
-    fun `GIVEN a local spoc WHEN it is converted to be exposed to clients THEN a one to one mapping is made`() {
-        val localStory = PocketTestResources.dbExpectedPocketSpoc
-
-        val result = localStory.toPocketSponsoredStory()
-
-        assertEquals(localStory.id, result.id)
-        assertSame(localStory.title, result.title)
-        assertSame(localStory.url, result.url)
-        assertSame(localStory.imageUrl, result.imageUrl)
-        assertSame(localStory.sponsor, result.sponsor)
-        assertSame(localStory.clickShim, result.shim.click)
-        assertSame(localStory.impressionShim, result.shim.impression)
-        assertEquals(localStory.priority, result.priority)
-        assertEquals(localStory.lifetimeCapCount, result.caps.lifetimeCount)
-        assertEquals(localStory.flightCapCount, result.caps.flightCount)
-        assertEquals(localStory.flightCapPeriod, result.caps.flightPeriod)
-        assertTrue(result.caps.currentImpressions.isEmpty())
-    }
-
     @Test
     fun `GIVEN a ContentRecommendationEntity WHEN it is converted to be exposed to clients THEN a one to one mapping is made`() {
         val recommendation = PocketTestResources.contentRecommendationEntity
@@ -202,5 +108,85 @@ class MappersKtTest {
         assertEquals(marsSpocsResponseItem.caps.day, result.flightCapCount)
         assertEquals(DEFAULT_FLIGHT_CAP_PERIOD_IN_SECONDS, result.flightCapPeriod)
         assertEquals(marsSpocsResponseItem.ranking.priority, result.priority)
+    }
+
+    @Test
+    fun `GIVEN a RecommendationDataItem WHEN it is converted to the response item type THEN a one to one mapping is made`() {
+        assertEquals(
+            PocketTestResources.contentRecommendationResponseItem,
+            PocketTestResources.recommendationDataItem.toContentRecommendationResponseItem(),
+        )
+    }
+
+    @Test
+    fun `GIVEN a null scheduled corpus item id and tile id WHEN a RecommendationDataItem is converted to the response item type THEN the defaults are used`() {
+        val result =
+            PocketTestResources.recommendationDataItem
+                .copy(scheduledCorpusItemId = null, tileId = null)
+                .toContentRecommendationResponseItem()
+
+        assertEquals("", result.scheduledCorpusItemId)
+        assertEquals(DEFAULT_TILE_ID, result.tileId)
+    }
+
+    @Test
+    fun `GIVEN a CuratedRecommendationsResponse WHEN it is converted to the response item type THEN a one to one mapping is made`() {
+        val result =
+            CuratedRecommendationsResponse(
+                    recommendedAt = 1L,
+                    data = listOf(PocketTestResources.recommendationDataItem),
+                )
+                .toContentRecommendationsResponse()
+
+        assertEquals(1L, result.recommendedAt)
+        assertEquals(listOf(PocketTestResources.contentRecommendationResponseItem), result.data)
+    }
+
+    @Test
+    fun `GIVEN locales with supported language and region WHEN a locale is mapped THEN return the matching curated recommendation locale`() {
+        val locales =
+            mapOf(
+                Locale.forLanguageTag("fr-FR") to CuratedRecommendationLocale.FR_FR,
+                Locale.forLanguageTag("es-ES") to CuratedRecommendationLocale.ES_ES,
+                Locale.forLanguageTag("it-IT") to CuratedRecommendationLocale.IT_IT,
+                Locale.forLanguageTag("en-CA") to CuratedRecommendationLocale.EN_CA,
+                Locale.forLanguageTag("en-GB") to CuratedRecommendationLocale.EN_GB,
+                Locale.forLanguageTag("en-IE") to CuratedRecommendationLocale.EN_IE,
+                Locale.forLanguageTag("en-US") to CuratedRecommendationLocale.EN_US,
+                Locale.forLanguageTag("de-DE") to CuratedRecommendationLocale.DE_DE,
+                Locale.forLanguageTag("de-AT") to CuratedRecommendationLocale.DE_AT,
+                Locale.forLanguageTag("de-CH") to CuratedRecommendationLocale.DE_CH,
+                Locale.forLanguageTag("pl-PL") to CuratedRecommendationLocale.PL_PL,
+            )
+
+        locales.forEach { (locale, curatedRecommendationLocale) ->
+            assertEquals(curatedRecommendationLocale, locale.toCuratedRecommendationLocale())
+        }
+
+        assertEquals(
+            CuratedRecommendationLocale.EN_US,
+            Locale.forLanguageTag("en-US-u-va-posix").toCuratedRecommendationLocale(),
+        )
+    }
+
+    @Test
+    fun `GIVEN locales without a region WHEN it is mapped THEN null is returned`() {
+        listOf("fr", "es", "it", "en", "de", "pl").forEach {
+            assertNull(it, Locale.forLanguageTag(it).toCuratedRecommendationLocale())
+        }
+    }
+
+    @Test
+    fun `GIVEN an unsupported region WHEN a locale is mapped THEN null is returned`() {
+        assertNull(Locale.forLanguageTag("es-AR").toCuratedRecommendationLocale())
+        assertNull(Locale.forLanguageTag("en-AU").toCuratedRecommendationLocale())
+        assertNull(Locale.forLanguageTag("de-LI").toCuratedRecommendationLocale())
+    }
+
+    @Test
+    fun `GIVEN an unsupported language WHEN a locale is mapped THEN null is returned`() {
+        assertNull(Locale.JAPAN.toCuratedRecommendationLocale())
+        assertNull(Locale.forLanguageTag("").toCuratedRecommendationLocale())
+        assertNull(Locale.forLanguageTag("zh-Hans-CN").toCuratedRecommendationLocale())
     }
 }

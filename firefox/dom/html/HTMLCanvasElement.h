@@ -1,25 +1,21 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#if !defined(mozilla_dom_HTMLCanvasElement_h)
-#  define mozilla_dom_HTMLCanvasElement_h
+#ifndef mozilla_dom_HTMLCanvasElement_h
+#define mozilla_dom_HTMLCanvasElement_h
 
-#  include "LayoutConstants.h"
-#  include "mozilla/Attributes.h"
-#  include "mozilla/StateWatching.h"
-#  include "mozilla/WeakPtr.h"
-#  include "nsIDOMEventListener.h"
-#  include "nsIObserver.h"
-#  include "nsGenericHTMLElement.h"
-#  include "nsGkAtoms.h"
-#  include "nsSize.h"
-#  include "nsError.h"
-
-#  include "mozilla/dom/CanvasRenderingContextHelper.h"
-#  include "mozilla/gfx/Rect.h"
-#  include "mozilla/layers/LayersTypes.h"
+#include "LayoutConstants.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/StateWatching.h"
+#include "mozilla/WeakPtr.h"
+#include "mozilla/dom/CanvasRenderingContextHelper.h"
+#include "mozilla/gfx/Rect.h"
+#include "mozilla/layers/LayersTypes.h"
+#include "nsError.h"
+#include "nsGenericHTMLElement.h"
+#include "nsGkAtoms.h"
+#include "nsIObserver.h"
+#include "nsSize.h"
 
 class nsICanvasRenderingContextInternal;
 class nsIInputStream;
@@ -118,7 +114,7 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
 
  public:
   explicit HTMLCanvasElement(
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+      already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
 
   NS_IMPL_FROMNODE_HTML_WITH_TAG(HTMLCanvasElement, canvas)
 
@@ -229,6 +225,11 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
       gfxAlphaType* aOutAlphaType = nullptr,
       gfx::DrawTarget* aTarget = nullptr);
 
+  using SurfaceSnapshotPromise =
+      MozPromise<RefPtr<gfx::SourceSurface>, nsresult, true>;
+
+  RefPtr<SurfaceSnapshotPromise> GetSurfaceSnapshotAsync();
+
   /*
    * Register a FrameCaptureListener with this canvas.
    * The canvas hooks into the RefreshDriver while there are
@@ -264,13 +265,15 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
                               const nsAString& aValue,
                               nsIPrincipal* aMaybeScriptedPrincipal,
                               nsAttrValue& aResult) override;
-  NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
+  bool IsNoNamespaceAttrMapped(const nsAtom* aAttribute) const override;
   nsChangeHint GetAttributeChangeHint(const nsAtom* aAttribute,
-                                      int32_t aModType) const override;
+                                      AttrModType aModType) const override;
   nsMapRuleToAttributesFunc GetAttributeMappingFunction() const override;
 
   virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
   nsresult CopyInnerTo(HTMLCanvasElement* aDest);
+
+  void DestroyContent() override;
 
   static void MapAttributesIntoRule(MappedDeclarationsBuilder&);
 
@@ -319,6 +322,8 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
 
   CSSIntSize GetWidthHeight() override;
 
+  bool CanCreateContext() const override { return !mOffscreenCanvas; }
+
   virtual already_AddRefed<nsICanvasRenderingContextInternal> CreateContext(
       CanvasContextType aContextType) override;
 
@@ -333,10 +338,12 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
                          const nsAString& aMimeType,
                          const JS::Value& aEncoderOptions, nsAString& aDataURL);
 
-  UniquePtr<uint8_t[]> GetImageBuffer(int32_t* aOutFormat,
-                                      gfx::IntSize* aOutImageSize) override;
+  UniquePtr<uint8_t[]> GetImageBuffer(
+      CanvasUtils::ImageExtraction aExtractionBehavior, int32_t* aOutFormat,
+      gfx::IntSize* aOutImageSize) override;
 
-  MOZ_CAN_RUN_SCRIPT void CallPrintCallback();
+  MOZ_CAN_RUN_SCRIPT void CallPrintCallback(
+      RefPtr<HTMLCanvasPrintState> aPrintState);
 
   virtual void AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
                             const nsAttrValue* aValue,
@@ -354,6 +361,12 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   bool IsOffscreen() const { return !!mOffscreenCanvas; }
   OffscreenCanvas* GetOffscreenCanvas() const { return mOffscreenCanvas; }
   void FlushOffscreenCanvas();
+
+  // Only canvases which have been transferred to an OffscreenCanvas observe
+  // the document activity, to let the display helper know whether the frames
+  // it produces would end up on the screen at all.
+  void NotifyOwnerDocumentActivityChanged();
+  void NodeInfoChanged(Document* aOldDoc) override;
 
   layers::ImageContainer* GetImageContainer() const { return mImageContainer; }
 
@@ -373,13 +386,13 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   RefPtr<layers::ImageContainer> mImageContainer;
   RefPtr<HTMLCanvasElementObserver> mContextObserver;
 
- public:
   // Record whether this canvas should be write-only or not.
   // We set this when script paints an image from a different origin.
   // We also transitively set it when script paints a canvas which
   // is itself write-only.
   bool mWriteOnly;
 
+ public:
   // When this canvas is (only) tainted by an image from an extension
   // content script, allow reads from the same extension afterwards.
   RefPtr<nsIPrincipal> mExpandedReader;
@@ -432,7 +445,7 @@ class HTMLCanvasPrintState final : public nsWrapperCache {
   virtual JSObject* WrapObject(JSContext* cx,
                                JS::Handle<JSObject*> aGivenProto) override;
 
-  HTMLCanvasElement* GetParentObject() { return mCanvas; }
+  HTMLCanvasElement* GetParentObject();
 
  private:
   ~HTMLCanvasPrintState();

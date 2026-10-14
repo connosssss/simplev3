@@ -1,44 +1,32 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "WebGLContext.h"
-#include "WebGLContextUtils.h"
+#include "CanvasUtils.h"
+#include "GLContext.h"
 #include "WebGLBuffer.h"
-#include "WebGLShader.h"
-#include "WebGLProgram.h"
-#include "WebGLFramebuffer.h"
-#include "WebGLRenderbuffer.h"
-#include "WebGLTexture.h"
+#include "WebGLContext.h"
 #include "WebGLExtensions.h"
+#include "WebGLFramebuffer.h"
+#include "WebGLProgram.h"
+#include "WebGLRenderbuffer.h"
+#include "WebGLShader.h"
+#include "WebGLTexelConversions.h"
+#include "WebGLTexture.h"
+#include "WebGLValidateStrings.h"
 #include "WebGLVertexArray.h"
-
-#include "nsString.h"
-#include "nsDebug.h"
-#include "nsReadableUtils.h"
-
 #include "gfxContext.h"
 #include "gfxPlatform.h"
-#include "GLContext.h"
-
-#include "nsContentUtils.h"
-#include "nsError.h"
-#include "nsLayoutUtils.h"
-
-#include "CanvasUtils.h"
 #include "gfxUtils.h"
-
 #include "jsfriendapi.h"
-
-#include "WebGLTexelConversions.h"
-#include "WebGLValidateStrings.h"
-#include <algorithm>
-
-#include "mozilla/DebugOnly.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/ImageData.h"
-#include "mozilla/EndianUtils.h"
+#include "nsContentUtils.h"
+#include "nsDebug.h"
+#include "nsError.h"
+#include "nsLayoutUtils.h"
+#include "nsReadableUtils.h"
+#include "nsString.h"
 
 namespace mozilla {
 
@@ -67,8 +55,6 @@ void WebGLContext::BindTexture(GLenum rawTarget, WebGLTexture* newTex) {
   FuncScope funcScope(*this, "bindTexture");
   if (IsContextLost()) return;
   funcScope.mBindFailureGuard = true;
-
-  if (newTex && !ValidateObject("tex", *newTex)) return;
 
   // Need to check rawTarget first before comparing against newTex->Target() as
   // newTex->Target() returns a TexTarget, which will assert on invalid value.
@@ -209,7 +195,7 @@ void WebGLContext::TexImage(uint32_t level, GLenum respecFormat, uvec3 offset,
 void WebGLContext::CompressedTexImage(bool sub, GLenum imageTarget,
                                       uint32_t level, GLenum format,
                                       uvec3 offset, uvec3 size,
-                                      const Range<const uint8_t>& src,
+                                      const mozilla::Range<const uint8_t>& src,
                                       const uint32_t pboImageSize,
                                       const Maybe<uint64_t>& pboOffset) const {
   const WebGLContext::FuncScope funcScope(

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -19,8 +17,9 @@ inline const Value& ArgumentsObject::element(uint32_t i) const {
   MOZ_ASSERT(isElement(i));
   const Value& v = data()->args[i];
   if (IsMagicScopeSlotValue(v)) {
+    MOZ_RELEASE_ASSERT(anyArgIsForwarded());
     CallObject& callobj =
-        getFixedSlot(MAYBE_CALL_SLOT).toObject().as<CallObject>();
+        getFixedSlotTyped(MAYBE_CALL_SLOT).toObject().as<CallObject>();
     return callobj.aliasedFormalFromArguments(v);
   }
   return v;
@@ -30,8 +29,9 @@ inline void ArgumentsObject::setElement(uint32_t i, const Value& v) {
   MOZ_ASSERT(isElement(i));
   Value value = data()->args[i];
   if (IsMagicScopeSlotValue(value)) {
+    MOZ_RELEASE_ASSERT(anyArgIsForwarded());
     CallObject& callobj =
-        getFixedSlot(MAYBE_CALL_SLOT).toObject().as<CallObject>();
+        getFixedSlotTyped(MAYBE_CALL_SLOT).toObject().as<CallObject>();
     callobj.setAliasedFormalFromArguments(value, v);
   } else {
     setArg(i, v);

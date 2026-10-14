@@ -47,9 +47,11 @@ const Template = ({
   hasSlottedDescription,
   accesskey,
   supportPage,
+  title,
   hasSlottedSupportLink,
   nestedFields,
   ellipsized,
+  value,
 }) => {
   let checkboxTemplate = html`
     <moz-checkbox
@@ -61,6 +63,8 @@ const Template = ({
       ?disabled=${disabled}
       accesskey=${ifDefined(accesskey)}
       support-page=${ifDefined(supportPage)}
+      title=${ifDefined(title || null)}
+      value=${ifDefined(value)}
       class=${classMap({ "text-truncated-ellipsis": ellipsized })}
     >
       ${hasSlottedDescription
@@ -95,6 +99,7 @@ Default.args = {
   disabled: false,
   iconSrc: "",
   description: "",
+  title: "",
   label: "",
   accesskey: "",
   supportPage: "",

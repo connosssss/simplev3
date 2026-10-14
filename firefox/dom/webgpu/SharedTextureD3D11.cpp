@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,9 +8,8 @@
 
 #include "mozilla/gfx/DeviceManagerDx.h"
 #include "mozilla/gfx/Logging.h"
+#include "mozilla/layers/CompositeProcessFencesHolderMap.h"
 #include "mozilla/layers/FenceD3D11.h"
-#include "mozilla/layers/CompositeProcessD3D11FencesHolderMap.h"
-#include "mozilla/layers/ImageDataSerializer.h"
 #include "mozilla/webgpu/WebGPUParent.h"
 
 namespace mozilla::webgpu {
@@ -22,7 +20,7 @@ UniquePtr<SharedTextureD3D11> SharedTextureD3D11::Create(
     const uint32_t aWidth, const uint32_t aHeight,
     const struct ffi::WGPUTextureFormat aFormat,
     const ffi::WGPUTextureUsages aUsage) {
-  auto* fencesHolderMap = layers::CompositeProcessD3D11FencesHolderMap::Get();
+  auto* fencesHolderMap = layers::CompositeProcessFencesHolderMap::Get();
   if (!fencesHolderMap) {
     MOZ_ASSERT_UNREACHABLE("unexpected to be called");
     gfxCriticalNoteOnce << "Failed to get FencesHolderMap";
@@ -117,23 +115,23 @@ SharedTextureD3D11::SharedTextureD3D11(
 }
 
 SharedTextureD3D11::~SharedTextureD3D11() {
-  auto* fencesHolderMap = layers::CompositeProcessD3D11FencesHolderMap::Get();
+  auto* fencesHolderMap = layers::CompositeProcessFencesHolderMap::Get();
   if (fencesHolderMap) {
     fencesHolderMap->Unregister(mFencesHolderId);
   } else {
-    gfxCriticalNoteOnce
-        << "CompositeProcessD3D11FencesHolderMap does not exist";
+    gfxCriticalNoteOnce << "CompositeProcessFencesHolderMap does not exist";
   }
 }
 
 void* SharedTextureD3D11::GetSharedTextureHandle() {
   RefPtr<ID3D11Device> device;
   mTexture->GetDevice(getter_AddRefs(device));
-  auto* fencesHolderMap = layers::CompositeProcessD3D11FencesHolderMap::Get();
+  auto* fencesHolderMap = layers::CompositeProcessFencesHolderMap::Get();
   MOZ_ASSERT(fencesHolderMap);
 
   // XXX deliver fences to wgpu
-  fencesHolderMap->WaitAllFencesAndForget(mFencesHolderId, device);
+  auto fences = fencesHolderMap->TakeAllFencesAndForget(mFencesHolderId);
+  layers::FenceD3D11::WaitD3D11Fences(fences, device);
 
   return mSharedHandle->GetHandle();
 }
@@ -143,7 +141,7 @@ Maybe<layers::SurfaceDescriptor> SharedTextureD3D11::ToSurfaceDescriptor() {
 
   mWriteFence->Update(mSubmissionIndex);
 
-  auto* fencesHolderMap = layers::CompositeProcessD3D11FencesHolderMap::Get();
+  auto* fencesHolderMap = layers::CompositeProcessFencesHolderMap::Get();
   MOZ_ASSERT(fencesHolderMap);
   fencesHolderMap->SetWriteFence(mFencesHolderId, mWriteFence);
 
@@ -153,11 +151,13 @@ Maybe<layers::SurfaceDescriptor> SharedTextureD3D11::ToSurfaceDescriptor() {
       /* gpuProcessTextureId */ Nothing(),
       /* arrayIndex */ 0, format, gfx::IntSize(mWidth, mHeight),
       gfx::ColorSpace2::SRGB, gfx::ColorRange::FULL,
+      gfx::TransferFunction::SRGB,
+      /* hdrMetadata */ Nothing(),
       /* hasKeyedMutex */ false, Some(mFencesHolderId)));
 }
 
 void SharedTextureD3D11::GetSnapshot(const ipc::Shmem& aDestShmem,
-                                     const gfx::IntSize& aSize) {
+                                     size_t aDestStride) {
   RefPtr<ID3D11Device> device;
   mTexture->GetDevice(getter_AddRefs(device));
   if (!device) {
@@ -202,18 +202,21 @@ void SharedTextureD3D11::GetSnapshot(const ipc::Shmem& aDestShmem,
     return;
   }
 
-  const uint32_t stride = layers::ImageDataSerializer::ComputeRGBStride(
-      gfx::SurfaceFormat::B8G8R8A8, aSize.width);
   uint8_t* src = static_cast<uint8_t*>(map.pData);
   uint8_t* dst = aDestShmem.get<uint8_t>();
 
-  MOZ_ASSERT(stride * aSize.height <= aDestShmem.Size<uint8_t>());
-  MOZ_ASSERT(map.RowPitch >= stride);
+  const size_t src_stride = static_cast<size_t>(map.RowPitch);
+  const size_t bytesPerRow = static_cast<size_t>(mWidth) * 4;
+  MOZ_RELEASE_ASSERT(src_stride >= bytesPerRow);
+  MOZ_RELEASE_ASSERT(aDestStride >= bytesPerRow);
 
-  for (int y = 0; y < aSize.height; y++) {
-    memcpy(dst, src, stride);
-    src += map.RowPitch;
-    dst += stride;
+  for (uint32_t y = 0; y < mHeight; y++) {
+    memcpy(dst, src, bytesPerRow);
+    if (bytesPerRow < aDestStride) {
+      memset(dst + bytesPerRow, 0, aDestStride - bytesPerRow);
+    }
+    src += src_stride;
+    dst += aDestStride;
   }
   deviceContext->Unmap(cpuTexture, 0);
 }

@@ -10,7 +10,7 @@ const { sinon } = ChromeUtils.importESModule(
 const NEW_VIDEO_ASPECT_RATIO = 1.334;
 
 async function switchVideoSource(browser, src) {
-  await ContentTask.spawn(browser, { src }, async ({ src }) => {
+  await SpecialPowers.spawn(browser, [{ src }], async ({ src }) => {
     let doc = content.document;
     let video = doc.getElementById("no-controls");
     video.src = src;
@@ -18,10 +18,47 @@ async function switchVideoSource(browser, src) {
 }
 
 /**
+ * The size and position a fullscreen player is expected to have on `screen`.
+ * A native fullscreen window on a Mac with a camera housing is laid out below
+ * the top safe area, the strip Apple sizes the menu bar to, rather than under
+ * it. nsIScreen reports that inset, and zero everywhere else, so the same
+ * expectation holds on notched and unnotched displays alike.
  *
- * @param {Object} actual The actual size and position of the window
- * @param {Object} expected The expected size and position of the window
- * @param {String} message A message to print before asserting the size and position
+ * @param {Screen} screen The DOM screen the player window is on
+ * @returns {object} The expected width, height, left and top
+ */
+function assertFullscreenEvent(actual, screen, message) {
+  info(message);
+  // A Mac with a camera housing lays a native fullscreen window out below the
+  // housing rather than under it, so the top edge and the height depend on the
+  // machine. Assert the edges the housing does not move: the full width, the
+  // left edge and the bottom edge.
+  isfuzzy(
+    actual.width,
+    screen.width,
+    ACCEPTABLE_DIFFERENCE,
+    `The actual width: ${actual.width}. The expected width: ${screen.width}`
+  );
+  isfuzzy(
+    actual.left,
+    screen.left,
+    ACCEPTABLE_DIFFERENCE,
+    `The actual left: ${actual.left}. The expected left: ${screen.left}`
+  );
+  let expectedBottom = screen.top + screen.height;
+  isfuzzy(
+    actual.top + actual.height,
+    expectedBottom,
+    ACCEPTABLE_DIFFERENCE,
+    `The actual bottom: ${actual.top + actual.height}. The expected bottom: ${expectedBottom}`
+  );
+}
+
+/**
+ *
+ * @param {object} actual The actual size and position of the window
+ * @param {object} expected The expected size and position of the window
+ * @param {string} message A message to print before asserting the size and position
  */
 function assertEvent(actual, expected, message) {
   info(message);
@@ -88,7 +125,7 @@ add_task(async function testNoSrcChangeFullscreen() {
       let top = 100;
       pipWin.moveTo(left, top);
 
-      await BrowserTestUtils.waitForCondition(
+      await TestUtils.waitForCondition(
         () => pipWin.screenLeft === 100 && pipWin.screenTop === 100,
         "Waiting for PiP to move to 100, 100"
       );
@@ -130,21 +167,15 @@ add_task(async function testNoSrcChangeFullscreen() {
         "Double-click caused us to enter fullscreen."
       );
 
-      await BrowserTestUtils.waitForCondition(
+      await TestUtils.waitForCondition(
         () => resizeEventArray.length === 1,
         "Waiting for resizeEventArray to have 1 event"
       );
 
       actualEvent = resizeEventArray.splice(0, 1)[0];
-      expectedEvent = {
-        width: screen.width,
-        height: screen.height,
-        left: screen.left,
-        top: screen.top,
-      };
-      assertEvent(
+      assertFullscreenEvent(
         actualEvent,
-        expectedEvent,
+        screen,
         "The PiP window has been correctly fullscreened before switching source"
       );
 
@@ -163,7 +194,7 @@ add_task(async function testNoSrcChangeFullscreen() {
         "Double-click caused us to exit fullscreen."
       );
 
-      await BrowserTestUtils.waitForCondition(
+      await TestUtils.waitForCondition(
         () => resizeEventArray.length >= 1,
         "Waiting for resizeEventArray to have 1 event, got " +
           resizeEventArray.length
@@ -225,7 +256,7 @@ add_task(async function testChangingSameSizeVideoSrcFullscreen() {
       let top = 100;
       pipWin.moveTo(left, top);
 
-      await BrowserTestUtils.waitForCondition(
+      await TestUtils.waitForCondition(
         () => pipWin.screenLeft === 100 && pipWin.screenTop === 100,
         "Waiting for PiP to move to 100, 100"
       );
@@ -267,27 +298,21 @@ add_task(async function testChangingSameSizeVideoSrcFullscreen() {
         "Double-click caused us to enter fullscreen."
       );
 
-      await BrowserTestUtils.waitForCondition(
+      await TestUtils.waitForCondition(
         () => resizeEventArray.length === 1,
         "Waiting for resizeEventArray to have 1 event"
       );
 
       actualEvent = resizeEventArray.splice(0, 1)[0];
-      expectedEvent = {
-        width: screen.width,
-        height: screen.height,
-        left: screen.left,
-        top: screen.top,
-      };
-      assertEvent(
+      assertFullscreenEvent(
         actualEvent,
-        expectedEvent,
+        screen,
         "The PiP window has been correctly fullscreened before switching source"
       );
 
       await switchVideoSource(browser, "test-video.mp4");
 
-      await BrowserTestUtils.waitForCondition(
+      await TestUtils.waitForCondition(
         () => resizeToVideoSpy.calledOnce,
         "Waiting for deferredResize to be updated"
       );
@@ -307,7 +332,7 @@ add_task(async function testChangingSameSizeVideoSrcFullscreen() {
         "Double-click caused us to exit fullscreen."
       );
 
-      await BrowserTestUtils.waitForCondition(
+      await TestUtils.waitForCondition(
         () => resizeEventArray.length >= 1,
         "Waiting for resizeEventArray to have 1 event, got " +
           resizeEventArray.length
@@ -370,7 +395,7 @@ add_task(async function testChangingDifferentSizeVideoSrcFullscreen() {
       let top = 100;
       pipWin.moveTo(left, top);
 
-      await BrowserTestUtils.waitForCondition(
+      await TestUtils.waitForCondition(
         () => pipWin.screenLeft === 100 && pipWin.screenTop === 100,
         "Waiting for PiP to move to 100, 100"
       );
@@ -412,21 +437,15 @@ add_task(async function testChangingDifferentSizeVideoSrcFullscreen() {
         "Double-click caused us to enter fullscreen."
       );
 
-      await BrowserTestUtils.waitForCondition(
+      await TestUtils.waitForCondition(
         () => resizeEventArray.length === 1,
         "Waiting for resizeEventArray to have 1 event"
       );
 
       actualEvent = resizeEventArray.splice(0, 1)[0];
-      expectedEvent = {
-        width: screen.width,
-        height: screen.height,
-        left: screen.left,
-        top: screen.top,
-      };
-      assertEvent(
+      assertFullscreenEvent(
         actualEvent,
-        expectedEvent,
+        screen,
         "The PiP window has been correctly fullscreened before switching source"
       );
 
@@ -435,13 +454,13 @@ add_task(async function testChangingDifferentSizeVideoSrcFullscreen() {
       await switchVideoSource(browser, "test-video-long.mp4");
 
       // Confirm that we are updating the `deferredResize` and not actually resizing
-      await BrowserTestUtils.waitForCondition(
+      await TestUtils.waitForCondition(
         () => resizeToVideoSpy.calledOnce,
         "Waiting for deferredResize to be updated"
       );
 
       // Confirm that we updated the deferredResize to the new width
-      await BrowserTestUtils.waitForCondition(
+      await TestUtils.waitForCondition(
         () => previousWidth !== pipWin.getDeferredResize().width,
         "Waiting for deferredResize to update"
       );
@@ -455,7 +474,7 @@ add_task(async function testChangingDifferentSizeVideoSrcFullscreen() {
         "Escape key caused us to exit fullscreen."
       );
 
-      await BrowserTestUtils.waitForCondition(
+      await TestUtils.waitForCondition(
         () => resizeEventArray.length >= 1,
         "Waiting for resizeEventArray to have 1 event, got " +
           resizeEventArray.length
@@ -488,7 +507,7 @@ add_task(async function testChangingDifferentSizeVideoSrcFullscreen() {
       } else {
         // For some reason the exit fullscreen resize events weren't "coalesced"
         // so we have to wait for the next resize event.
-        await BrowserTestUtils.waitForCondition(
+        await TestUtils.waitForCondition(
           () => resizeEventArray.length === 1,
           "Waiting for resizeEventArray to have 1 event"
         );

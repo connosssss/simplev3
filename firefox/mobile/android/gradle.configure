@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -23,9 +21,6 @@ def with_gradle(value):
             "Building --without-gradle is no longer supported: "
             "see https://bugzilla.mozilla.org/show_bug.cgi?id=1414415."
         )
-
-    if value:
-        return True
 
 
 @depends(host, "--with-gradle", build_environment)
@@ -82,8 +77,8 @@ def gradle_android_build_config():
 
 
 @depends(gradle_android_build_config)
-def gradle_android_intermediates_folder(build_config):
-    """Path to intermediates classes folder."""
+def gradle_android_apilint_folder(build_config):
+    """Path to the apilint plugin's output folder."""
 
     def uncapitalize(s):
         if s:
@@ -91,23 +86,14 @@ def gradle_android_intermediates_folder(build_config):
         else:
             return s
 
-    def capitalize(s):
-        # str.capitalize lower cases trailing letters.
-        if s:
-            return s[0].upper() + s[1:]
-        else:
-            return s
-
     buildType = uncapitalize(build_config.geckoview.variant.buildType)
 
-    return "gradle/build/mobile/android/geckoview/intermediates/javac/{}".format(
+    return "gradle/build/mobile/android/geckoview/apilint/{}".format(
         buildType,
     )
 
 
-set_config(
-    "GRADLE_ANDROID_GECKOVIEW_APILINT_FOLDER", gradle_android_intermediates_folder
-)
+set_config("GRADLE_ANDROID_GECKOVIEW_APILINT_FOLDER", gradle_android_apilint_folder)
 
 
 @depends(gradle_android_build_config)
@@ -243,6 +229,12 @@ def gradle_android_lint_tasks(build_config):
         "geckoview:lint{geckoview.variant.name}".format(
             geckoview=build_config.geckoview
         ),
+        # Lint the included Gradle plugin builds, which carry the AndroidX
+        # lint-gradle checks for our build logic.
+        ":conventions:lint",
+        ":dependencies:lint",
+        ":publicsuffixlist:lint",
+        ":apksize:lint",
     ]
 
 
@@ -252,26 +244,58 @@ set_config("GRADLE_ANDROID_LINT_TASKS", gradle_android_lint_tasks)
 @depends(gradle_android_build_config)
 def gradle_android_api_lint_tasks(build_config):
     """Gradle tasks run by |mach android api-lint|."""
-    # --no-configuration-cache will be removed in bug 1950099
     return [
         "geckoview:apiLint{geckoview.variant.name}".format(
             geckoview=build_config.geckoview
         ),
-        "--no-configuration-cache",
     ]
 
 
 set_config("GRADLE_ANDROID_API_LINT_TASKS", gradle_android_api_lint_tasks)
 
 
+def spotless_projects():
+    return [
+        "geckoview",
+        "geckoview_example",
+        "annotations",
+        "messaging_example",
+        "port_messaging_example",
+        "test_runner",
+    ]
+
+
+@dependable
+def gradle_android_format_lint_apply_tasks():
+    tasks = []
+    for project in spotless_projects():
+        for spotless_task in ["spotlessJavaApply", "spotlessKotlinApply"]:
+            tasks.append(
+                "{project}:{spotless_task}".format(
+                    project=project,
+                    spotless_task=spotless_task,
+                )
+            )
+    return tasks
+
+
 set_config(
-    "GRADLE_ANDROID_FORMAT_LINT_FIX_TASKS", ["spotlessJavaApply", "spotlessKotlinApply"]
+    "GRADLE_ANDROID_FORMAT_LINT_FIX_TASKS", gradle_android_format_lint_apply_tasks
 )
 
 
 @dependable
 def gradle_android_format_lint_check_tasks():
-    return ["spotlessJavaCheck", "spotlessKotlinCheck"]
+    tasks = []
+    for project in spotless_projects():
+        for spotless_task in ["spotlessJavaCheck", "spotlessKotlinCheck"]:
+            tasks.append(
+                "{project}:{spotless_task}".format(
+                    project=project,
+                    spotless_task=spotless_task,
+                )
+            )
+    return tasks
 
 
 set_config(
@@ -335,8 +359,8 @@ option(
 imply_option("--disable-android-bundle", False, when="--enable-address-sanitizer")
 
 
-@depends(gradle_android_build_config)
-def gradle_android_archive_geckoview_tasks(build_config):
+@depends(gradle_android_build_config, enable_appservices_in_tree)
+def gradle_android_archive_geckoview_tasks(build_config, appservices_in_tree):
     """Gradle tasks run by |mach android archive-geckoview|."""
     tasks = [
         "geckoview:assemble{geckoview.variant.name}".format(
@@ -354,8 +378,12 @@ def gradle_android_archive_geckoview_tasks(build_config):
         "geckoview:publish{geckoview.variant.name}PublicationToMavenRepository".format(
             geckoview=build_config.geckoview
         ),
-        "exoplayer2:publishDebugPublicationToMavenRepository",
     ]
+
+    if appservices_in_tree:
+        tasks.extend([
+            ":publishAppServicesAndroid",
+        ])
     return tasks
 
 
@@ -391,45 +419,6 @@ def gradle_android_archive_geckoview_subproject_tasks(build_config, aab_enabled)
 set_config(
     "GRADLE_ANDROID_ARCHIVE_GECKOVIEW_SUBPROJECT_TASKS",
     gradle_android_archive_geckoview_subproject_tasks,
-)
-
-
-@depends(gradle_android_build_config, "--disable-android-bundle")
-def gradle_android_archive_fenix_subproject_tasks(build_config, aab_enabled):
-    """Gradle tasks run by |mach android archive-geckoview| if just building fenix."""
-    tasks = [
-        "fenix:assemble{fenix.variant.name}".format(fenix=build_config.fenix),
-    ]
-
-    if aab_enabled:
-        tasks += [
-            "fenix:bundle{fenix.variant.name}".format(fenix=build_config.fenix),
-        ]
-    return tasks
-
-
-set_config(
-    "GRADLE_ANDROID_ARCHIVE_FENIX_SUBPROJECT_TASKS",
-    gradle_android_archive_fenix_subproject_tasks,
-)
-
-
-@depends(gradle_android_build_config, "--disable-android-bundle")
-def gradle_android_archive_focus_subproject_tasks(build_config, aab_enabled):
-    """Gradle tasks run by |mach android archive-geckoview| if just building focus."""
-    tasks = [
-        "focus-android:assemble{focus.variant.name}".format(focus=build_config.focus),
-    ]
-    if aab_enabled:
-        tasks += [
-            "focus-android:bundle{focus.variant.name}".format(focus=build_config.focus),
-        ]
-    return tasks
-
-
-set_config(
-    "GRADLE_ANDROID_ARCHIVE_FOCUS_SUBPROJECT_TASKS",
-    gradle_android_archive_focus_subproject_tasks,
 )
 
 
@@ -484,23 +473,6 @@ def gradle_android_geckoview_docs_output_files(build_config):
 set_config(
     "GRADLE_ANDROID_GECKOVIEW_DOCS_OUTPUT_FILES",
     gradle_android_geckoview_docs_output_files,
-)
-
-
-@depends(gradle_android_build_config)
-def gradle_android_archive_coverage_artifacts_tasks(build_config):
-    """Gradle tasks run by |mach android archive-coverage-artifacts|."""
-    return [
-        "geckoview:archiveClassfiles{geckoview.variant.name}".format(
-            geckoview=build_config.geckoview
-        ),
-        "geckoview:copyCoverageDependencies",
-    ]
-
-
-set_config(
-    "GRADLE_ANDROID_ARCHIVE_COVERAGE_ARTIFACTS_TASKS",
-    gradle_android_archive_coverage_artifacts_tasks,
 )
 
 
@@ -561,19 +533,25 @@ def gradle_android_compile_all_tasks(build_config):
         f"compileTestKotlin",
     ]
 
-    # "" is for GeckoView
-    for app in ["", "Fenix", "Focus", "Klar"]:
+    # Apps without product flavors (GeckoView, Fenix) use just `buildType` in task names
+    tasks += [
+        f"compile{buildType}Sources",
+        f"compile{buildType}UnitTestSources",
+    ]
+
+    # Apps with product flavors include `flavor` name and `buildType` in task names
+    for flavor in ["Focus", "Klar"]:
         tasks += [
-            f"compile{app}{buildType}Sources",
-            f"compile{app}{buildType}UnitTestSources",
+            f"compile{flavor}{buildType}Sources",
+            f"compile{flavor}{buildType}UnitTestSources",
         ]
 
-    # those tasks do not appear to have a Release variant
+    # These tasks do not appear to have a Release variant
     if buildType == "Debug":
-        for app in ["", "Fenix", "Focus", "Klar"]:
-            tasks += [
-                f"compile{app}{buildType}AndroidTestSources",
-            ]
+        tasks += [f"compile{buildType}AndroidTestSources"]
+
+        for flavor in ["Focus", "Klar"]:
+            tasks += [f"compile{flavor}{buildType}AndroidTestSources"]
 
         for app in ["Gecko", "System"]:
             tasks += [
@@ -637,23 +615,6 @@ set_config(
     "GRADLE_ANDROID_INSTALL_GECKOVIEW_EXAMPLE_TASKS",
     gradle_android_install_geckoview_example_tasks,
 )
-
-
-@depends(
-    gradle_android_api_lint_tasks,
-    gradle_android_format_lint_check_tasks,
-    gradle_android_checkstyle_tasks,
-)
-@imports(_from="itertools", _import="chain")
-def gradle_android_dependencies_tasks(*tasks):
-    """Gradle tasks run by |mach android dependencies|."""
-
-    # The union, plus a bit more, of all of the Gradle tasks
-    # invoked by the android-* automation jobs.
-    return list(t for t in chain(*tasks))
-
-
-set_config("GRADLE_ANDROID_DEPENDENCIES_TASKS", gradle_android_dependencies_tasks)
 
 
 # Automation uses this to change log levels, not use the daemon, and use

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +5,9 @@
 #ifndef mozilla_BorderCache_h_
 #define mozilla_BorderCache_h_
 
-#include "mozilla/gfx/2D.h"
-#include "mozilla/HashFunctions.h"
 #include "PLDHashTable.h"
+#include "mozilla/HashFunctions.h"
+#include "mozilla/gfx/2D.h"
 
 namespace mozilla {
 // Cache for best overlap and best dashLength.
@@ -33,10 +31,7 @@ struct FourFloats {
     n[3] = d;
   }
 
-  bool operator==(const FourFloats& aOther) const {
-    return n[0] == aOther.n[0] && n[1] == aOther.n[1] && n[2] == aOther.n[2] &&
-           n[3] == aOther.n[3];
-  }
+  bool operator==(const FourFloats&) const = default;
 };
 
 class FourFloatsHashKey : public PLDHashEntryHdr {

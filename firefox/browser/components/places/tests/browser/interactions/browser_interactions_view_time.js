@@ -11,15 +11,9 @@ const TEST_URL2 = "https://example.com/browser";
 const TEST_URL3 = "https://example.com/browser/browser";
 const TEST_URL4 = "https://example.com/browser/browser/components";
 
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
-
 add_task(async function test_interactions_simple_load_and_navigate_away() {
   await BrowserTestUtils.withNewTab(TEST_URL, async browser => {
-    Interactions._pageViewStartTime = Cu.now() - 10000;
+    Interactions._pageViewStartTime = ChromeUtils.now() - 10000;
 
     BrowserTestUtils.startLoadingURIString(browser, TEST_URL2);
     await BrowserTestUtils.browserLoaded(browser, false, TEST_URL2);
@@ -31,7 +25,7 @@ add_task(async function test_interactions_simple_load_and_navigate_away() {
       },
     ]);
 
-    Interactions._pageViewStartTime = Cu.now() - 20000;
+    Interactions._pageViewStartTime = ChromeUtils.now() - 20000;
 
     BrowserTestUtils.startLoadingURIString(browser, "about:blank");
     await BrowserTestUtils.browserLoaded(browser, false, "about:blank");
@@ -52,7 +46,7 @@ add_task(async function test_interactions_simple_load_and_navigate_away() {
 add_task(async function test_interactions_simple_load_and_change_to_non_http() {
   await Interactions.reset();
   await BrowserTestUtils.withNewTab(TEST_URL, async browser => {
-    Interactions._pageViewStartTime = Cu.now() - 10000;
+    Interactions._pageViewStartTime = ChromeUtils.now() - 10000;
 
     BrowserTestUtils.startLoadingURIString(browser, "about:support");
     await BrowserTestUtils.browserLoaded(browser, false, "about:support");
@@ -69,7 +63,7 @@ add_task(async function test_interactions_simple_load_and_change_to_non_http() {
 add_task(async function test_interactions_close_tab() {
   await Interactions.reset();
   await BrowserTestUtils.withNewTab(TEST_URL, async () => {
-    Interactions._pageViewStartTime = Cu.now() - 20000;
+    Interactions._pageViewStartTime = ChromeUtils.now() - 20000;
   });
 
   await assertDatabaseValues([
@@ -90,7 +84,7 @@ add_task(async function test_interactions_background_tab() {
   let tab2 = BrowserTestUtils.addTab(gBrowser, TEST_URL2);
   await BrowserTestUtils.browserLoaded(tab2.linkedBrowser, false, TEST_URL2);
 
-  Interactions._pageViewStartTime = Cu.now() - 10000;
+  Interactions._pageViewStartTime = ChromeUtils.now() - 10000;
 
   BrowserTestUtils.removeTab(tab2);
 
@@ -126,7 +120,7 @@ add_task(async function test_interactions_switch_tabs() {
   await BrowserTestUtils.browserLoaded(tab2.linkedBrowser, false, TEST_URL2);
 
   info("Switch to second tab");
-  Interactions._pageViewStartTime = Cu.now() - 10000;
+  Interactions._pageViewStartTime = ChromeUtils.now() - 10000;
   gBrowser.selectedTab = tab2;
 
   // Only the interaction of the first tab should be recorded so far.
@@ -139,7 +133,7 @@ add_task(async function test_interactions_switch_tabs() {
   let tab1ViewTime = await getDatabaseValue(TEST_URL, "totalViewTime");
 
   info("Switch back to first tab");
-  Interactions._pageViewStartTime = Cu.now() - 20000;
+  Interactions._pageViewStartTime = ChromeUtils.now() - 20000;
   gBrowser.selectedTab = tab1;
 
   // The interaction of the second tab should now be recorded.
@@ -155,7 +149,7 @@ add_task(async function test_interactions_switch_tabs() {
   ]);
 
   info("Switch to second tab again");
-  Interactions._pageViewStartTime = Cu.now() - 30000;
+  Interactions._pageViewStartTime = ChromeUtils.now() - 30000;
   gBrowser.selectedTab = tab2;
 
   // The interaction of the second tab should now be recorded.
@@ -184,7 +178,7 @@ add_task(async function test_interactions_switch_windows() {
   });
 
   // and then load the second window.
-  Interactions._pageViewStartTime = Cu.now() - 10000;
+  Interactions._pageViewStartTime = ChromeUtils.now() - 10000;
 
   let otherWin = await BrowserTestUtils.openNewBrowserWindow();
 
@@ -210,7 +204,7 @@ add_task(async function test_interactions_switch_windows() {
   );
 
   info("Switch back to original window");
-  Interactions._pageViewStartTime = Cu.now() - 20000;
+  Interactions._pageViewStartTime = ChromeUtils.now() - 20000;
   await SimpleTest.promiseFocus(window);
   await assertDatabaseValues([
     {
@@ -225,7 +219,7 @@ add_task(async function test_interactions_switch_windows() {
   let newWindowViewTime = await getDatabaseValue(TEST_URL2, "totalViewTime");
 
   info("Switch back to new window");
-  Interactions._pageViewStartTime = Cu.now() - 30000;
+  Interactions._pageViewStartTime = ChromeUtils.now() - 30000;
   await SimpleTest.promiseFocus(otherWin);
   await assertDatabaseValues([
     {
@@ -257,7 +251,7 @@ add_task(async function test_interactions_loading_in_unfocused_windows() {
     TEST_URL
   );
 
-  Interactions._pageViewStartTime = Cu.now() - 10000;
+  Interactions._pageViewStartTime = ChromeUtils.now() - 10000;
 
   BrowserTestUtils.startLoadingURIString(
     otherWin.gBrowser.selectedBrowser,
@@ -285,7 +279,7 @@ add_task(async function test_interactions_loading_in_unfocused_windows() {
     url: TEST_URL3,
   });
 
-  Interactions._pageViewStartTime = Cu.now() - 20000;
+  Interactions._pageViewStartTime = ChromeUtils.now() - 20000;
 
   BrowserTestUtils.startLoadingURIString(
     tabInOriginalWindow.linkedBrowser,
@@ -319,7 +313,7 @@ add_task(async function test_interactions_private_browsing() {
   });
 
   // and then load the second window.
-  Interactions._pageViewStartTime = Cu.now() - 10000;
+  Interactions._pageViewStartTime = ChromeUtils.now() - 10000;
 
   let privateWin = await BrowserTestUtils.openNewBrowserWindow({
     private: true,
@@ -347,7 +341,7 @@ add_task(async function test_interactions_private_browsing() {
   );
 
   info("Switch back to original window");
-  Interactions._pageViewStartTime = Cu.now() - 20000;
+  Interactions._pageViewStartTime = ChromeUtils.now() - 20000;
   // As we're checking for a non-action, wait for the focus to have definitely
   // completed, and then let the event queues clear.
   await SimpleTest.promiseFocus(window);
@@ -362,7 +356,7 @@ add_task(async function test_interactions_private_browsing() {
   ]);
 
   info("Switch back to new window");
-  Interactions._pageViewStartTime = Cu.now() - 30000;
+  Interactions._pageViewStartTime = ChromeUtils.now() - 30000;
   await SimpleTest.promiseFocus(privateWin);
   await assertDatabaseValues([
     {
@@ -380,7 +374,7 @@ add_task(async function test_interactions_idle() {
   let lastViewTime;
 
   await BrowserTestUtils.withNewTab(TEST_URL, async () => {
-    Interactions._pageViewStartTime = Cu.now() - 10000;
+    Interactions._pageViewStartTime = ChromeUtils.now() - 10000;
 
     Interactions.observe(null, "idle", "");
 
@@ -392,7 +386,7 @@ add_task(async function test_interactions_idle() {
     ]);
     lastViewTime = await getDatabaseValue(TEST_URL, "totalViewTime");
 
-    Interactions._pageViewStartTime = Cu.now() - 20000;
+    Interactions._pageViewStartTime = ChromeUtils.now() - 20000;
 
     Interactions.observe(null, "active", "");
 
@@ -403,7 +397,7 @@ add_task(async function test_interactions_idle() {
       },
     ]);
 
-    Interactions._pageViewStartTime = Cu.now() - 30000;
+    Interactions._pageViewStartTime = ChromeUtils.now() - 30000;
   });
 
   await assertDatabaseValues([

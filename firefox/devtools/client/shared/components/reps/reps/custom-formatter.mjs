@@ -8,11 +8,10 @@ import PropTypes from "resource://devtools/client/shared/vendor/react-prop-types
 import {
   Component,
   createElement,
-  createFactory,
 } from "resource://devtools/client/shared/vendor/react.mjs";
 
-import { cleanupStyle } from "resource://devtools/client/shared/components/reps/reps/rep-utils.mjs";
-import { MODE } from "resource://devtools/client/shared/components/reps/reps/constants.mjs";
+import { cleanupStyle } from "./rep-utils.mjs";
+import { MODE } from "./constants.mjs";
 
 const ALLOWED_TAGS = new Set([
   "span",
@@ -24,6 +23,8 @@ const ALLOWED_TAGS = new Set([
   "tr",
   "td",
 ]);
+
+const EXPAND_BUTTON_LABEL = "Expand";
 
 class CustomFormatter extends Component {
   static get propTypes() {
@@ -165,6 +166,7 @@ function renderJsonMl(jsonMl, props, index = 0) {
     childElements.push(
       createElement("button", {
         "aria-expanded": props.open,
+        "aria-label": EXPAND_BUTTON_LABEL,
         className: `collapse-button jsonml-header-collapse-button${
           props.open ? " expanded" : ""
         }`,
@@ -255,7 +257,8 @@ function supportsObject(grip) {
   return grip?.useCustomFormatter === true && Array.isArray(grip?.header);
 }
 
-const rep = createFactory(CustomFormatter);
+// Don't use createFactory as it's being deprecated
+const rep = (...args) => createElement(CustomFormatter, ...args);
 
 // Exports from this module
 export { rep, supportsObject };

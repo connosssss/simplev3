@@ -1,22 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef XULFrameElement_h__
-#define XULFrameElement_h__
+#ifndef XULFrameElement_h_
+#define XULFrameElement_h_
 
-#include "mozilla/Attributes.h"
+#include "js/TypeDecls.h"
 #include "mozilla/dom/Nullable.h"
 #include "mozilla/dom/WindowProxyHolder.h"
-#include "js/TypeDecls.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsIOpenWindowInfo.h"
-#include "nsWrapperCache.h"
-#include "nsString.h"
-#include "nsXULElement.h"
 #include "nsFrameLoaderOwner.h"
+#include "nsIOpenWindowInfo.h"
+#include "nsString.h"
+#include "nsWrapperCache.h"
+#include "nsXULElement.h"
 
 class nsIWebNavigation;
 class nsFrameLoader;
@@ -30,7 +27,7 @@ class BrowsingContext;
 
 class XULFrameElement final : public nsXULElement, public nsFrameLoaderOwner {
  public:
-  explicit XULFrameElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
+  explicit XULFrameElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo)
       : nsXULElement(std::move(aNodeInfo)) {}
 
   NS_DECL_ISUPPORTS_INHERITED
@@ -45,12 +42,13 @@ class XULFrameElement final : public nsXULElement, public nsFrameLoaderOwner {
   nsIOpenWindowInfo* GetOpenWindowInfo() const;
   void SetOpenWindowInfo(nsIOpenWindowInfo* aInfo);
 
-  void SwapFrameLoaders(mozilla::dom::HTMLIFrameElement& aOtherLoaderOwner,
-                        mozilla::ErrorResult& rv);
-  void SwapFrameLoaders(XULFrameElement& aOtherLoaderOwner,
-                        mozilla::ErrorResult& rv);
-  void SwapFrameLoaders(nsFrameLoaderOwner* aOtherLoaderOwner,
-                        mozilla::ErrorResult& rv);
+  MOZ_CAN_RUN_SCRIPT void SwapFrameLoaders(
+      mozilla::dom::HTMLIFrameElement& aOtherLoaderOwner,
+      mozilla::ErrorResult& rv);
+  MOZ_CAN_RUN_SCRIPT void SwapFrameLoaders(XULFrameElement& aOtherLoaderOwner,
+                                           mozilla::ErrorResult& rv);
+  MOZ_CAN_RUN_SCRIPT void SwapFrameLoaders(
+      nsFrameLoaderOwner* aOtherLoaderOwner, mozilla::ErrorResult& rv);
 
   // nsIContent
   nsresult BindToTree(BindContext&, nsINode& aParent) override;

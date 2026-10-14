@@ -6,17 +6,16 @@
  * This module exports a provider that offers restrict keywords for search mode.
  */
 
-import {
-  UrlbarProvider,
-  UrlbarUtils,
-} from "resource:///modules/UrlbarUtils.sys.mjs";
+import { UrlbarProvider } from "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs";
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
-  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
-  UrlbarTokenizer: "resource:///modules/UrlbarTokenizer.sys.mjs",
+  UrlbarPrefs: "moz-src:///browser/components/urlbar/UrlbarPrefs.sys.mjs",
+  UrlbarResult: "chrome://browser/content/urlbar/UrlbarResult.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
+  UrlbarTokenizer:
+    "moz-src:///browser/components/urlbar/UrlbarTokenizer.sys.mjs",
 });
 
 const RESTRICT_KEYWORDS_FEATURE_GATE = "searchRestrictKeywords.featureGate";
@@ -24,20 +23,16 @@ const RESTRICT_KEYWORDS_FEATURE_GATE = "searchRestrictKeywords.featureGate";
 /**
  * Class used to create the provider.
  */
-class ProviderRestrictKeywords extends UrlbarProvider {
+export class UrlbarProviderRestrictKeywords extends UrlbarProvider {
   constructor() {
     super();
   }
 
-  get name() {
-    return "RestrictKeywords";
-  }
-
   /**
-   * @returns {Values<typeof UrlbarUtils.PROVIDER_TYPE>}
+   * @returns {Values<typeof lazy.UrlbarShared.PROVIDER_TYPE>}
    */
   get type() {
-    return UrlbarUtils.PROVIDER_TYPE.HEURISTIC;
+    return lazy.UrlbarShared.PROVIDER_TYPE.HEURISTIC;
   }
 
   getPriority() {
@@ -49,9 +44,19 @@ class ProviderRestrictKeywords extends UrlbarProvider {
       return false;
     }
 
-    return !queryContext.searchMode && queryContext.trimmedSearchString == "@";
+    return (
+      !queryContext.restrictInSearchMode() &&
+      queryContext.trimmedSearchString == "@"
+    );
   }
 
+  /**
+   * Starts querying.
+   *
+   * @param {UrlbarQueryContext} queryContext
+   * @param {(provider: UrlbarProvider, result: UrlbarResult) => void} addCallback
+   *   Callback invoked by the provider to add a new result.
+   */
   async startQuery(queryContext, addCallback) {
     let instance = this.queryInstance;
     let tokenToKeyword = await lazy.UrlbarTokenizer.getL10nRestrictKeywords();
@@ -61,26 +66,25 @@ class ProviderRestrictKeywords extends UrlbarProvider {
     }
 
     for (const [token, l10nRestrictKeywords] of tokenToKeyword.entries()) {
-      let icon = UrlbarUtils.LOCAL_SEARCH_MODES.find(
+      let icon = lazy.UrlbarShared.LOCAL_SEARCH_MODES.find(
         mode => mode.restrict == token
       )?.icon;
 
-      let result = new lazy.UrlbarResult(
-        UrlbarUtils.RESULT_TYPE.RESTRICT,
-        UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-        ...lazy.UrlbarResult.payloadAndSimpleHighlights(queryContext.tokens, {
+      let result = new lazy.UrlbarResult({
+        type: lazy.UrlbarShared.RESULT_TYPE.RESTRICT,
+        source: lazy.UrlbarShared.RESULT_SOURCE.OTHER_LOCAL,
+        hideRowLabel: true,
+        payload: {
           icon,
           keyword: token,
-          l10nRestrictKeywords: [
-            l10nRestrictKeywords,
-            UrlbarUtils.HIGHLIGHT.TYPED,
-          ],
+          l10nRestrictKeywords,
           providesSearchMode: true,
-        })
-      );
+        },
+        highlights: {
+          l10nRestrictKeywords: lazy.UrlbarShared.HIGHLIGHT.TYPED,
+        },
+      });
       addCallback(this, result);
     }
   }
 }
-
-export var UrlbarProviderRestrictKeywords = new ProviderRestrictKeywords();

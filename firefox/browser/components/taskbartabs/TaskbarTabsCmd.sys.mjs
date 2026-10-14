@@ -5,8 +5,9 @@
 let lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  TaskbarTabs: "resource:///modules/taskbartabs/TaskbarTabs.sys.mjs",
-  TaskbarTabsUtils: "resource:///modules/taskbartabs/TaskbarTabsUtils.sys.mjs",
+  TaskbarTabs: "moz-src:///browser/components/taskbartabs/TaskbarTabs.sys.mjs",
+  TaskbarTabsUtils:
+    "moz-src:///browser/components/taskbartabs/TaskbarTabsUtils.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "logConsole", () => {
@@ -37,13 +38,17 @@ export class CommandLineHandler {
       return;
     }
 
+    let context = { id };
+
     // Handle the commands before entering an async context so that they're not
     // handled by other nsICommandLine handlers.
-    let context = {
-      id,
-      url: aCmdLine.handleFlagWithParam("new-window", false),
-      userContextId: aCmdLine.handleFlagWithParam("container", false),
-    };
+    let urlParam = aCmdLine.handleFlagWithParam("new-window", false);
+    context.url = Services.io.newURI(urlParam);
+
+    let containerParam = aCmdLine.handleFlagWithParam("container", false);
+    if (containerParam !== null) {
+      context.userContextId = Number(containerParam);
+    }
 
     lazy.logConsole.info(
       `Handling command line invoation for Taskbar Tab ${id}`
@@ -79,7 +84,7 @@ async function launchTaskbarTab(aContext) {
       `Taskbar Tab for ID ${aContext.id} doesn't exist, reconstructing it.`
     );
 
-    if (!aContext.userContextId) {
+    if (!Object.hasOwn(aContext, "userContextId")) {
       lazy.logConsole.error(
         "Expected -container flag, but found none. Using the default container."
       );
@@ -88,10 +93,10 @@ async function launchTaskbarTab(aContext) {
         Services.scriptSecurityManager.DEFAULT_USER_CONTEXT_ID;
     }
 
-    taskbarTab = await lazy.TaskbarTabs.findOrCreateTaskbarTab(
+    ({ taskbarTab } = await lazy.TaskbarTabs.findOrCreateTaskbarTab(
       aContext.url,
       aContext.userContextId
-    );
+    ));
   }
 
   await lazy.TaskbarTabs.openWindow(taskbarTab);

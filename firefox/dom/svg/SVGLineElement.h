@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,7 +9,7 @@
 #include "SVGGeometryElement.h"
 
 nsresult NS_NewSVGLineElement(
-    nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+    nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
 
 namespace mozilla::dom {
 
@@ -19,11 +17,11 @@ using SVGLineElementBase = SVGGeometryElement;
 
 class SVGLineElement final : public SVGLineElementBase {
  protected:
-  explicit SVGLineElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+  explicit SVGLineElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
   JSObject* WrapNode(JSContext* cx, JS::Handle<JSObject*> aGivenProto) override;
   friend nsresult(::NS_NewSVGLineElement(
       nsIContent** aResult,
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
+      already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo));
   // If the input line has length zero and linecaps aren't butt, adjust |aX2| by
   // a tiny amount to a barely-nonzero-length line that all of our draw targets
   // will render
@@ -33,11 +31,10 @@ class SVGLineElement final : public SVGLineElementBase {
   // SVGGeometryElement methods:
   bool IsMarkable() override { return true; }
   void GetMarkPoints(nsTArray<SVGMark>* aMarks) override;
-  void GetAsSimplePath(SimplePath* aSimplePath) override;
+  void GetAsSimpleShape(SimpleShape* aShape) override;
   already_AddRefed<Path> BuildPath(PathBuilder* aBuilder) override;
-  bool GetGeometryBounds(
-      Rect* aBounds, const StrokeOptions& aStrokeOptions,
-      const Matrix& aToBoundsSpace,
+  Maybe<Rect> GetGeometryBounds(
+      const StrokeOptions& aStrokeOptions, const Matrix& aToBoundsSpace,
       const Matrix* aToNonScalingStrokeSpace = nullptr) override;
 
   nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;

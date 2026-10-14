@@ -12,9 +12,34 @@
  */
 
 const fs = require("fs");
+const { RESERVED_WORDS } = require("peggy");
 
-const TAGLIST = require.resolve("../../parser/htmlparser/nsHTMLTagList.h");
+const TAGLIST = require.resolve("../../parser/htmlparser/nsHTMLTagList.inc");
 const BINDINGS = require.resolve("../../dom/bindings/Bindings.conf");
+
+// TODO Bug 2022802: Ideally we should get details about the generated files from
+// the build system.
+// This list should match the list of `GeneratedFile` in dom/bindings/moz.build.
+const GENERATED_WEDIDL_FILES = [
+  "CSSPageDescriptors.webidl",
+  "CSSPositionTryDescriptors.webidl",
+  "CSSStyleProperties.webidl",
+  "CSSFontFaceDescriptors.webidl",
+  "CSSCounterStyleRule.webidl",
+];
+
+// Support overrides using the syntax from @typescript/dom-lib-generator which
+// is parsing our webidl files and generating types.
+// https://github.com/microsoft/TypeScript-DOM-lib-generator/blob/main/inputfiles/overridingTypes.jsonc
+const OVERRIDE_TYPES = {
+  callbackFunctions: {
+    callbackFunction: {
+      CustomElementConstructor: {
+        overrideSignatures: ["new (...params: any[]): HTMLElement"],
+      },
+    },
+  },
+};
 
 const HEADER = `/**
  * NOTE: Do not modify this file by hand.
@@ -43,7 +68,7 @@ function preprocess(webidl) {
 }
 
 function customize(all, baseTypes) {
-  // Parse HTML element interfaces from nsHTMLTagList.h.
+  // Parse HTML element interfaces from nsHTMLTagList.inc.
   const RE = /^HTML_(HTMLELEMENT_)?TAG\((\w+)(, \w+, (\w*))?\)/gm;
   for (let match of fs.readFileSync(TAGLIST, "utf8").matchAll(RE)) {
     let iface = all.interfaces.interface[`HTML${match[4] ?? ""}Element`];
@@ -84,22 +109,146 @@ function customize(all, baseTypes) {
       baseTypes.delete(name);
     }
   }
+
+  function addToComment(item, contentToAdd) {
+    if (item.comment) {
+      item.comment = `${item.comment}\n\n${contentToAdd}`;
+    } else {
+      item.comment = contentToAdd;
+    }
+  }
+
+  function bindingAnnotation(kind, symbol) {
+    return `<!-- binding_to(idl, ${kind}, ${symbol}) -->`;
+  }
+
+  function addInterfaceBindingAnnotations(iface) {
+    addToComment(iface, bindingAnnotation("class", `WEBIDL_${iface.name}`));
+
+    for (const method of Object.values(iface.methods.method)) {
+      addToComment(
+        method,
+        bindingAnnotation("method", `WEBIDL_${iface.name}_${method.name}`)
+      );
+    }
+
+    for (const property of Object.values(iface.properties.property)) {
+      addToComment(
+        property,
+        bindingAnnotation("attribute", `WEBIDL_${iface.name}_${property.name}`)
+      );
+    }
+
+    if (iface.constants) {
+      for (const constant of Object.values(iface.constants.constant)) {
+        addToComment(
+          constant,
+          bindingAnnotation("const", `WEBIDL_${iface.name}_${constant.name}`)
+        );
+      }
+    }
+  }
+
+  for (const callbackFunction of Object.values(
+    all.callbackFunctions.callbackFunction
+  )) {
+    // NOTE: as of writing, dom-lib-generator doesn't emit comments for the interface generated for callback functions
+    addToComment(
+      callbackFunction,
+      bindingAnnotation("method", `WEBIDL_${callbackFunction.name}`)
+    );
+
+    for (const signature of callbackFunction.signature) {
+      addToComment(
+        signature,
+        bindingAnnotation("method", `WEBIDL_${callbackFunction.name}`)
+      );
+    }
+  }
+
+  for (const callbackInterface of Object.values(
+    all.callbackInterfaces.interface
+  )) {
+    // NOTE: as of writing, dom-lib-generator doesn't emit comments for callback interfaces
+    addInterfaceBindingAnnotations(callbackInterface);
+  }
+
+  for (const dictionary of Object.values(all.dictionaries.dictionary)) {
+    // NOTE: as of writing, dom-lib-generator doesn't emit comments for the interface generated for dictionaries
+    addToComment(
+      dictionary,
+      bindingAnnotation("class", `WEBIDL_${dictionary.name}`)
+    );
+
+    for (const member of Object.values(dictionary.members.member)) {
+      addToComment(
+        member,
+        bindingAnnotation(
+          "attribute",
+          `WEBIDL_${dictionary.name}_${member.name}`
+        )
+      );
+    }
+  }
+
+  for (const enumeration of Object.values(all.enums.enum)) {
+    // NOTE: as of writing, dom-lib-generator doesn't emit comments for enums
+    addToComment(
+      enumeration,
+      bindingAnnotation("class", `WEBIDL_${enumeration.name}`)
+    );
+  }
+
+  for (const iface of Object.values(all.interfaces.interface)) {
+    addInterfaceBindingAnnotations(iface);
+  }
+
+  for (const mixin of Object.values(all.mixins.mixin)) {
+    addInterfaceBindingAnnotations(mixin);
+  }
+
+  for (const typedef of all.typedefs.typedef) {
+    addToComment(typedef, bindingAnnotation("class", `WEBIDL_${typedef.name}`));
+  }
+
+  for (const namespace of all.namespaces) {
+    addInterfaceBindingAnnotations(namespace);
+  }
+
+  // Some namespaces have methods that use reserved words. Prefix them with
+  // `_` and keep a list, so that we can export them properly later.
+  let additionalExports = new Map();
+  for (let namespace of all.namespaces) {
+    if (!namespace.methods) {
+      continue;
+    }
+    for (let reserved of RESERVED_WORDS) {
+      if (reserved in namespace.methods.method) {
+        namespace.methods.method["_" + reserved] =
+          namespace.methods.method[reserved];
+        namespace.methods.method["_" + reserved].name = "_" + reserved;
+        delete namespace.methods.method[reserved];
+        if (additionalExports.has(namespace.name)) {
+          additionalExports.get(namespace.name).push(reserved);
+        } else {
+          additionalExports.set(namespace.name, [reserved]);
+        }
+      }
+    }
+  }
+  return additionalExports;
 }
 
 // Preprocess, convert, merge and customize webidl, emit and postprocess dts.
 async function emitDom(webidls, builtin = "builtin.webidl") {
-  const { merge, baseTypeConversionMap } = await import(
-    "@typescript/dom-lib-generator/lib/build/helpers.js"
-  );
-  const { emitWebIdl } = await import(
-    "@typescript/dom-lib-generator/lib/build/emitter.js"
-  );
-  const { convert } = await import(
-    "@typescript/dom-lib-generator/lib/build/widlprocess.js"
-  );
-  const { getExposedTypes } = await import(
-    "@typescript/dom-lib-generator/lib/build/expose.js"
-  );
+  const { merge, baseTypeConversionMap } =
+    await import("@typescript/dom-lib-generator/lib/build/helpers.js");
+  const { emitWebIdl } =
+    await import("@typescript/dom-lib-generator/lib/build/emitter.js");
+  const { convert } =
+    await import("@typescript/dom-lib-generator/lib/build/widlprocess.js");
+  const { getExposedTypes } =
+    await import("@typescript/dom-lib-generator/lib/build/expose.js");
 
   function mergePartial(partials, bases) {
     for (let p of partials) {
@@ -135,20 +284,32 @@ async function emitDom(webidls, builtin = "builtin.webidl") {
     }
   }
 
-  customize(all, baseTypeConversionMap);
+  merge(all, OVERRIDE_TYPES);
+
+  let additionalExports = customize(all, baseTypeConversionMap);
   let exposed = getExposedTypes(all, ["Window"], new Set());
   let dts = await Promise.all([
     emitWebIdl(exposed, "Window", "", {}),
     emitWebIdl(exposed, "Window", "sync", {}),
     emitWebIdl(exposed, "Window", "async", {}),
   ]);
-  return postprocess(dts.join("\n"));
+  return postprocess(additionalExports, dts.join("\n"));
 }
 exports.emitDom = emitDom;
 
 // Post-process dom.generated.d.ts into lib.gecko.dom.d.ts.
-function postprocess(generated) {
+function postprocess(additionalExports, generated) {
   let text = `${HEADER}\n${generated}`;
+
+  // Re-export any reserved word functions.
+  for (let [namespace, functions] of additionalExports) {
+    text += `\ndeclare namespace ${namespace} {\n  export {`;
+    for (let functionName of functions) {
+      text += `\n    _${functionName} as ${functionName},\n`;
+    }
+    text += "  };\n}\n";
+  }
+
   return text
     .replaceAll(/declare var isInstance: /g, "// @ts-ignore\n$&")
     .replace(/interface BeforeUnloadEvent /, "// @ts-ignore\n$&")
@@ -159,8 +320,12 @@ function postprocess(generated) {
 }
 
 // Build and save the dom lib.
-async function main(lib_dts, webidl_dir, ...webidl_files) {
-  let dts = await emitDom(webidl_files.map(f => `${webidl_dir}/${f}`));
+async function main(lib_dts, webidl_dir, objdir_webidl, ...webidl_files) {
+  let files = [
+    ...GENERATED_WEDIDL_FILES.map(f => `${objdir_webidl}/${f}`),
+    ...webidl_files.map(f => `${webidl_dir}/${f}`),
+  ];
+  let dts = await emitDom(files);
   console.log(`[INFO] ${lib_dts} (${dts.length.toLocaleString()} bytes)`);
   fs.writeFileSync(lib_dts, dts);
 }

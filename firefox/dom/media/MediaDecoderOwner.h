@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -92,6 +90,10 @@ class MediaDecoderOwner {
   // when the resource has completed seeking.
   virtual void SeekCompleted() = 0;
 
+  // Called by the video decoder object, on the main thread, before a seek
+  // operation to update the played time ranges.
+  virtual void UpdatePlayedRangesBeforeSeek(double aRangeEndTime) = 0;
+
   // Called by the video decoder object, on the main thread,
   // when the resource has aborted seeking.
   virtual void SeekAborted() = 0;
@@ -163,8 +165,13 @@ class MediaDecoderOwner {
   // for some other reason.
   enum class ImageSizeChanged { No, Yes };
   enum class ForceInvalidate { No, Yes };
+  // aNewIntrinsicSize stays in raw (unrotated) pixel dimensions here, matching
+  // how MediaInfo::mDisplay is used for regular (non-WebRTC) playback.
+  // Implementations fall back to their own already-applied value for
+  // whichever of aNewIntrinsicSize/aNewRotation is Nothing here.
   virtual void Invalidate(ImageSizeChanged aImageSizeChanged,
                           const Maybe<nsIntSize>& aNewIntrinsicSize,
+                          const Maybe<VideoRotation>& aNewRotation,
                           ForceInvalidate aForceInvalidate) {}
 
   // Called after the MediaStream we're playing rendered a frame to aContainer

@@ -7,7 +7,6 @@ package mozilla.components.feature.contextmenu
 import android.annotation.SuppressLint
 import android.app.Dialog
 import android.content.DialogInterface
-import android.os.Build
 import android.os.Bundle
 import android.text.Html
 import android.view.LayoutInflater
@@ -15,12 +14,12 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
 import androidx.annotation.VisibleForTesting
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.widget.AppCompatTextView
 import androidx.core.text.HtmlCompat
 import androidx.fragment.app.DialogFragment
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textview.MaterialTextView
 import mozilla.components.browser.state.state.SessionState
 
@@ -31,57 +30,61 @@ private const val KEY_IDS = "ids"
 private const val KEY_LABELS = "labels"
 private const val KEY_ADDITIONAL_NOTE = "additional_note"
 
-/**
- * [DialogFragment] implementation to display the actual context menu dialog.
- */
+/** [DialogFragment] implementation to display the actual context menu dialog. */
 class ContextMenuFragment : DialogFragment() {
     internal var feature: ContextMenuFeature? = null
 
-    @VisibleForTesting internal val itemIds: List<String> by lazy {
+    @VisibleForTesting
+    internal val itemIds: List<String> by lazy {
         requireArguments().getStringArrayList(KEY_IDS)!!
     }
 
-    @VisibleForTesting internal val itemLabels: List<String> by lazy {
+    @VisibleForTesting
+    internal val itemLabels: List<String> by lazy {
         requireArguments().getStringArrayList(KEY_LABELS)!!
     }
 
-    @VisibleForTesting internal val sessionId: String by lazy {
+    @VisibleForTesting
+    internal val sessionId: String by lazy {
         requireArguments().getString(KEY_SESSION_ID)!!
     }
 
-    @VisibleForTesting internal val title: String by lazy {
+    @VisibleForTesting
+    internal val title: String by lazy {
         requireArguments().getString(KEY_TITLE)!!
     }
 
-    @VisibleForTesting internal val additionalNote: String? by lazy {
+    @VisibleForTesting
+    internal val additionalNote: String? by lazy {
         requireArguments().getString(KEY_ADDITIONAL_NOTE)
     }
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
-        @SuppressLint("UseGetLayoutInflater")
-        val inflater = LayoutInflater.from(requireContext())
+        @SuppressLint("UseGetLayoutInflater") val inflater = LayoutInflater.from(requireContext())
 
-        val builder = AlertDialog.Builder(requireContext())
-            .setCustomTitle(createDialogTitleView(inflater))
-            .setView(createDialogContentView(inflater))
+        val builder =
+            MaterialAlertDialogBuilder(requireContext())
+                .setCustomTitle(createDialogTitleView(inflater))
+                .setView(createDialogContentView(inflater))
 
         return builder.create()
     }
 
     @SuppressLint("InflateParams")
     internal fun createDialogTitleView(inflater: LayoutInflater): View {
-        return inflater.inflate(
-            R.layout.mozac_feature_contextmenu_title,
-            null,
-        ).findViewById<AppCompatTextView>(
-            R.id.titleView,
-        ).apply {
-            text = title
+        return inflater
+            .inflate(
+                R.layout.mozac_feature_contextmenu_title,
+                null,
+            )
+            .findViewById<AppCompatTextView>(R.id.titleView)
+            .apply {
+                text = title
 
-            setOnClickListener {
-                maxLines = EXPANDED_TITLE_MAX_LINES
+                setOnClickListener {
+                    maxLines = EXPANDED_TITLE_MAX_LINES
+                }
             }
-        }
     }
 
     @SuppressLint("InflateParams")
@@ -102,12 +105,7 @@ class ContextMenuFragment : DialogFragment() {
         return view
     }
 
-    private fun getSpannedValueOfString(value: String) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-        Html.fromHtml(value, HtmlCompat.FROM_HTML_MODE_LEGACY)
-    } else {
-        @Suppress("Deprecation")
-        Html.fromHtml(value)
-    }
+    private fun getSpannedValueOfString(value: String) = Html.fromHtml(value, HtmlCompat.FROM_HTML_MODE_LEGACY)
 
     internal fun onItemSelected(position: Int) {
         feature?.onMenuItemSelected(sessionId, itemIds[position])
@@ -120,9 +118,7 @@ class ContextMenuFragment : DialogFragment() {
     }
 
     companion object {
-        /**
-         * Create a new [ContextMenuFragment].
-         */
+        /** Create a new [ContextMenuFragment]. */
         fun create(
             tab: SessionState,
             title: String,
@@ -144,16 +140,13 @@ class ContextMenuFragment : DialogFragment() {
     }
 }
 
-/**
- * RecyclerView adapter for displaying the context menu.
- */
+/** RecyclerView adapter for displaying the context menu. */
 internal class ContextMenuAdapter(
     private val fragment: ContextMenuFragment,
     private val inflater: LayoutInflater,
 ) : RecyclerView.Adapter<ContextMenuViewHolder>() {
-    override fun onCreateViewHolder(parent: ViewGroup, position: Int) = ContextMenuViewHolder(
-        inflater.inflate(R.layout.mozac_feature_contextmenu_item, parent, false),
-    )
+    override fun onCreateViewHolder(parent: ViewGroup, position: Int) =
+        ContextMenuViewHolder(inflater.inflate(R.layout.mozac_feature_contextmenu_item, parent, false))
 
     override fun getItemCount(): Int = fragment.itemIds.size
 
@@ -165,9 +158,7 @@ internal class ContextMenuAdapter(
     }
 }
 
-/**
- * View holder for a context menu item.
- */
+/** View holder for a context menu item. */
 internal class ContextMenuViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
     internal val labelView = itemView.findViewById<TextView>(R.id.labelView)
 }

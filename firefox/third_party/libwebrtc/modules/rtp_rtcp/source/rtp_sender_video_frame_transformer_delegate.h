@@ -14,10 +14,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
+#include <span>
+#include <string>
 #include <vector>
 
-#include "api/array_view.h"
 #include "api/frame_transformer_interface.h"
 #include "api/scoped_refptr.h"
 #include "api/sequence_checker.h"
@@ -39,16 +39,25 @@ namespace webrtc {
 // have been applied.
 class RTPVideoFrameSenderInterface {
  public:
+  [[deprecated("Use SendVideoFrame instead.")]]
   virtual bool SendVideo(int payload_type,
-                         std::optional<VideoCodecType> codec_type,
+                         VideoCodecType codec_type,
                          uint32_t rtp_timestamp,
                          Timestamp capture_time,
-                         rtc::ArrayView<const uint8_t> payload,
+                         std::span<const uint8_t> payload,
                          size_t encoder_output_size,
                          RTPVideoHeader video_header,
                          TimeDelta expected_retransmission_time,
                          std::vector<uint32_t> csrcs) = 0;
-
+  virtual bool SendVideoFrame(int payload_type,
+                              VideoCodecType codec_type,
+                              RtpTimestampInfo rtp_timestamp_info,
+                              Timestamp capture_time,
+                              std::span<const uint8_t> payload,
+                              size_t encoder_output_size,
+                              RTPVideoHeader video_header,
+                              TimeDelta expected_retransmission_time,
+                              std::vector<uint32_t> csrcs) = 0;
   virtual void SetVideoStructureAfterTransformation(
       const FrameDependencyStructure* video_structure) = 0;
   virtual void SetVideoLayersAllocationAfterTransformation(
@@ -65,20 +74,23 @@ class RTPSenderVideoFrameTransformerDelegate : public TransformedFrameCallback {
  public:
   RTPSenderVideoFrameTransformerDelegate(
       RTPVideoFrameSenderInterface* sender,
-      rtc::scoped_refptr<FrameTransformerInterface> frame_transformer,
+      scoped_refptr<FrameTransformerInterface> frame_transformer,
       uint32_t ssrc,
-      const std::string& rid,
-      TaskQueueFactory* send_transport_queue);
+      std::string rid,
+      TaskQueueFactory* send_transport_queue,
+      TaskQueueFactory::Priority transformation_queue_priority =
+          TaskQueueFactory::Priority::kNormal);
 
   void Init();
 
   // Delegates the call to FrameTransformerInterface::TransformFrame.
   bool TransformFrame(int payload_type,
-                      std::optional<VideoCodecType> codec_type,
+                      VideoCodecType codec_type,
                       uint32_t rtp_timestamp,
                       const EncodedImage& encoded_image,
                       RTPVideoHeader video_header,
-                      TimeDelta expected_retransmission_time);
+                      TimeDelta expected_retransmission_time,
+                      const std::vector<uint32_t>& csrcs = {});
 
   // Implements TransformedFrameCallback. Can be called on any thread. Posts
   // the transformed frame to be sent on the `encoder_queue_`.
@@ -114,7 +126,7 @@ class RTPSenderVideoFrameTransformerDelegate : public TransformedFrameCallback {
 
   mutable Mutex sender_lock_;
   RTPVideoFrameSenderInterface* sender_ RTC_GUARDED_BY(sender_lock_);
-  rtc::scoped_refptr<FrameTransformerInterface> frame_transformer_;
+  scoped_refptr<FrameTransformerInterface> frame_transformer_;
   const uint32_t ssrc_;
   const std::string rid_;
   // Used when the encoded frames arrives without a current task queue. This can
@@ -126,6 +138,14 @@ class RTPSenderVideoFrameTransformerDelegate : public TransformedFrameCallback {
 // Method to support cloning a Sender frame from another frame
 std::unique_ptr<TransformableVideoFrameInterface> CloneSenderVideoFrame(
     TransformableVideoFrameInterface* original);
+
+std::unique_ptr<TransformableVideoFrameInterface> CreateSenderVideoFrame(
+    const EncodedImage& encoded_image,
+    const RTPVideoHeader& video_header,
+    uint8_t payload_type,
+    VideoCodecType codec_type,
+    RtpTimestampInfo rtp_timestamp_info,
+    const std::vector<uint32_t>& csrcs);
 
 }  // namespace webrtc
 

@@ -1,20 +1,18 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/TextDecoderStream.h"
 
-#include "nsContentUtils.h"
-#include "nsIGlobalObject.h"
 #include "mozilla/Encoding.h"
 #include "mozilla/dom/BufferSourceBinding.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/TextDecoderStreamBinding.h"
-#include "mozilla/dom/TransformerCallbackHelpers.h"
 #include "mozilla/dom/TransformStream.h"
+#include "mozilla/dom/TransformerCallbackHelpers.h"
 #include "mozilla/dom/UnionTypes.h"
+#include "nsContentUtils.h"
+#include "nsIGlobalObject.h"
 
 namespace mozilla::dom {
 
@@ -95,7 +93,7 @@ class TextDecoderStreamAlgorithms : public TransformerAlgorithmsWrapper {
 
   // https://encoding.spec.whatwg.org/#dom-textdecoderstream
   MOZ_CAN_RUN_SCRIPT void TransformCallbackImpl(
-      JS::Handle<JS::Value> aChunk,
+      JSContext* aCx, JS::Handle<JS::Value> aChunk,
       TransformStreamDefaultController& aController,
       ErrorResult& aRv) override {
     // Step 7. Let transformAlgorithm be an algorithm which takes a chunk
@@ -104,43 +102,29 @@ class TextDecoderStreamAlgorithms : public TransformerAlgorithmsWrapper {
 
     // https://encoding.spec.whatwg.org/#decode-and-enqueue-a-chunk
 
-    AutoJSAPI jsapi;
-    if (!jsapi.Init(aController.GetParentObject())) {
-      aRv.ThrowUnknownError("Internal error");
-      return;
-    }
-    JSContext* cx = jsapi.cx();
-
     // Step 1. Let bufferSource be the result of converting chunk to an
     // [AllowShared] BufferSource.
-    RootedUnion<OwningBufferSource> bufferSource(cx);
-    if (!bufferSource.Init(cx, aChunk)) {
+    RootedUnion<OwningBufferSource> bufferSource(aCx);
+    if (!bufferSource.Init(aCx, aChunk)) {
       aRv.MightThrowJSException();
-      aRv.StealExceptionFromJSContext(cx);
+      aRv.StealExceptionFromJSContext(aCx);
       return;
     }
 
-    DecodeBufferSourceAndEnqueue(cx, &bufferSource, false, aController, aRv);
+    DecodeBufferSourceAndEnqueue(aCx, &bufferSource, false, aController, aRv);
   }
 
   // https://encoding.spec.whatwg.org/#dom-textdecoderstream
   MOZ_CAN_RUN_SCRIPT void FlushCallbackImpl(
-      TransformStreamDefaultController& aController,
+      JSContext* aCx, TransformStreamDefaultController& aController,
       ErrorResult& aRv) override {
     // Step 8. Let flushAlgorithm be an algorithm which takes no arguments and
     // runs the flush and enqueue algorithm with this.
 
-    AutoJSAPI jsapi;
-    if (!jsapi.Init(aController.GetParentObject())) {
-      aRv.ThrowUnknownError("Internal error");
-      return;
-    }
-    JSContext* cx = jsapi.cx();
-
     // https://encoding.spec.whatwg.org/#flush-and-enqueue
     // (The flush and enqueue algorithm is basically a subset of decode and
     // enqueue one, so let's reuse it)
-    DecodeBufferSourceAndEnqueue(cx, nullptr, true, aController, aRv);
+    DecodeBufferSourceAndEnqueue(aCx, nullptr, true, aController, aRv);
   }
 
  private:

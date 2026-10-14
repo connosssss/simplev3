@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,21 +7,20 @@
 
 #include <stdint.h>
 
-#include "ActiveElementManager.h"
+#include <functional>
+
+#include "ElementStateManager.h"
 #include "Units.h"
 #include "mozilla/EventForwards.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/StaticPrefs_ui.h"
 #include "mozilla/layers/GeckoContentControllerTypes.h"  // for APZStateChange
 #include "mozilla/layers/ScrollableLayerGuid.h"  // for ScrollableLayerGuid
 #include "mozilla/layers/TouchCounter.h"         // for TouchCounter
-#include "mozilla/RefPtr.h"
-#include "mozilla/StaticPrefs_ui.h"
 #include "nsCOMPtr.h"
 #include "nsISupportsImpl.h"  // for NS_INLINE_DECL_REFCOUNTING
 #include "nsITimer.h"
 #include "nsIWeakReferenceUtils.h"  // for nsWeakPtr
-
-#include <functional>
-#include <unordered_map>
 
 template <class>
 class nsCOMPtr;
@@ -37,7 +34,7 @@ enum class PreventDefaultResult : uint8_t;
 
 namespace layers {
 
-class ActiveElementManager;
+class ElementStateManager;
 
 enum class SynthesizeForTests : bool;  // Defined in APZCCallbackHelper.cpp
 
@@ -109,7 +106,7 @@ class APZEventState final {
 
  private:
   nsWeakPtr mWidget;
-  RefPtr<ActiveElementManager> mActiveElementManager;
+  RefPtr<ElementStateManager> mElementStateManager;
   ContentReceivedInputBlockCallback mContentReceivedInputBlockCallback;
   TouchCounter mTouchCounter;
   ScrollableLayerGuid mPendingTouchPreventedGuid;

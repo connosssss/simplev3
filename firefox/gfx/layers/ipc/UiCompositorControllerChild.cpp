@@ -1,25 +1,24 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/layers/UiCompositorControllerChild.h"
 
+#include "mozilla/StaticPrefs_layers.h"
+#include "mozilla/StaticPtr.h"
 #include "mozilla/dom/ContentChild.h"
+#include "mozilla/gfx/GPUProcessManager.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/SynchronousTask.h"
 #include "mozilla/layers/UiCompositorControllerMessageTypes.h"
 #include "mozilla/layers/UiCompositorControllerParent.h"
-#include "mozilla/gfx/GPUProcessManager.h"
-#include "mozilla/ipc/Endpoint.h"
-#include "mozilla/StaticPrefs_layers.h"
-#include "mozilla/StaticPtr.h"
-#include "nsBaseWidget.h"
+#include "nsIWidget.h"
 #include "nsProxyRelease.h"
 #include "nsThreadUtils.h"
 
 #if defined(MOZ_WIDGET_ANDROID)
+#  include "mozilla/layers/AndroidHardwareBuffer.h"
 #  include "mozilla/widget/AndroidUiThread.h"
 
 static RefPtr<nsThread> GetUiThread() { return mozilla::GetAndroidUiThread(); }
@@ -37,7 +36,7 @@ namespace layers {
 /* static */
 RefPtr<UiCompositorControllerChild>
 UiCompositorControllerChild::CreateForSameProcess(
-    const LayersId& aRootLayerTreeId, nsBaseWidget* aWidget) {
+    const LayersId& aRootLayerTreeId, nsIWidget* aWidget) {
   RefPtr<UiCompositorControllerChild> child =
       new UiCompositorControllerChild(0, aWidget);
   child->mParent = new UiCompositorControllerParent(aRootLayerTreeId);
@@ -53,7 +52,7 @@ UiCompositorControllerChild::CreateForSameProcess(
 RefPtr<UiCompositorControllerChild>
 UiCompositorControllerChild::CreateForGPUProcess(
     const uint64_t& aProcessToken,
-    Endpoint<PUiCompositorControllerChild>&& aEndpoint, nsBaseWidget* aWidget) {
+    Endpoint<PUiCompositorControllerChild>&& aEndpoint, nsIWidget* aWidget) {
   RefPtr<UiCompositorControllerChild> child =
       new UiCompositorControllerChild(aProcessToken, aWidget);
 
@@ -102,15 +101,6 @@ bool UiCompositorControllerChild::InvalidateAndRender() {
   return SendInvalidateAndRender();
 }
 
-bool UiCompositorControllerChild::SetMaxToolbarHeight(const int32_t& aHeight) {
-  if (!mIsOpen) {
-    mMaxToolbarHeight = Some(aHeight);
-    // Since we are caching this value, pretend the call succeeded.
-    return true;
-  }
-  return SendMaxToolbarHeight(aHeight);
-}
-
 bool UiCompositorControllerChild::SetFixedBottomOffset(int32_t aOffset) {
   return SendFixedBottomOffset(aOffset);
 }
@@ -138,13 +128,50 @@ bool UiCompositorControllerChild::SetDefaultClearColor(const uint32_t& aColor) {
   return SendDefaultClearColor(aColor);
 }
 
-bool UiCompositorControllerChild::RequestScreenPixels() {
+#ifdef MOZ_WIDGET_ANDROID
+RefPtr<UiCompositorControllerChild::ScreenPixelsPromise>
+UiCompositorControllerChild::RequestScreenPixels(gfx::IntRect aSourceRect,
+                                                 gfx::IntSize aDestSize) {
   if (!mIsOpen) {
-    return false;
+    return ScreenPixelsPromise::CreateAndReject(NS_ERROR_NOT_AVAILABLE,
+                                                __func__);
   }
 
-  return SendRequestScreenPixels();
+  // We only support one request at a time. If an old request is still
+  // outstanding when a new request is made, just reject the old request.
+  if (mScreenPixelsRequest) {
+    mScreenPixelsRequest.extract().mPromise->Reject(NS_ERROR_ABORT, __func__);
+  }
+
+  RefPtr<layers::AndroidHardwareBuffer> hardwareBuffer =
+      layers::AndroidHardwareBuffer::Create(aDestSize,
+                                            gfx::SurfaceFormat::R8G8B8A8);
+  if (!hardwareBuffer) {
+    return ScreenPixelsPromise::CreateAndReject(NS_ERROR_OUT_OF_MEMORY,
+                                                __func__);
+  }
+
+  UniqueFileHandle bufferFd = hardwareBuffer->SerializeToFileDescriptor();
+  if (!bufferFd) {
+    return ScreenPixelsPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
+  }
+
+  static uint64_t nextRequestId = 0;
+  const uint64_t requestId = nextRequestId++;
+  auto promise = MakeRefPtr<ScreenPixelsPromise::Private>(__func__);
+  mScreenPixelsRequest.emplace(ScreenPixelsRequest{
+      .mRequestId = requestId,
+      .mHardwareBuffer = hardwareBuffer,
+      .mPromise = promise,
+  });
+  if (!SendRequestScreenPixels(requestId, aSourceRect,
+                               ipc::FileDescriptor(std::move(bufferFd)))) {
+    mScreenPixelsRequest.extract().mPromise->Reject(NS_ERROR_NOT_AVAILABLE,
+                                                    __func__);
+  }
+  return promise;
 }
+#endif
 
 bool UiCompositorControllerChild::EnableLayerUpdateNotifications(
     const bool& aEnable) {
@@ -188,15 +215,16 @@ void UiCompositorControllerChild::Destroy() {
   task.Wait();
 }
 
-bool UiCompositorControllerChild::DeallocPixelBuffer(Shmem& aMem) {
-  return DeallocShmem(aMem);
-}
-
 // protected:
 void UiCompositorControllerChild::ActorDestroy(ActorDestroyReason aWhy) {
   mIsOpen = false;
   mParent = nullptr;
 
+#ifdef MOZ_WIDGET_ANDROID
+  if (mScreenPixelsRequest) {
+    mScreenPixelsRequest->mPromise->Reject(NS_ERROR_ABORT, __func__);
+  }
+#endif
   if (mProcessToken) {
     gfx::GPUProcessManager::Get()->NotifyRemoteActorDestroyed(mProcessToken);
     mProcessToken = 0;
@@ -228,21 +256,36 @@ UiCompositorControllerChild::RecvToolbarAnimatorMessageFromCompositor(
 }
 
 mozilla::ipc::IPCResult
-UiCompositorControllerChild::RecvNotifyCompositorScrollUpdate(
-    const CompositorScrollUpdate& aUpdate) {
+UiCompositorControllerChild::RecvNotifyCompositorScrollUpdates(
+    const nsTArray<mozilla::layers::CompositorScrollUpdate>& aUpdates) {
   if (mWidget) {
-    mWidget->NotifyCompositorScrollUpdate(aUpdate);
+    mWidget->NotifyCompositorScrollUpdates(aUpdates);
   }
 
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult UiCompositorControllerChild::RecvScreenPixels(
-    ipc::Shmem&& aMem, const ScreenIntSize& aSize, bool aNeedsYFlip) {
+    uint64_t aRequestId, bool aSuccess,
+    Maybe<ipc::FileDescriptor>&& aAcquireFence) {
 #if defined(MOZ_WIDGET_ANDROID)
-  if (mWidget) {
-    mWidget->RecvScreenPixels(std::move(aMem), aSize, aNeedsYFlip);
+  if (!mScreenPixelsRequest || mScreenPixelsRequest->mRequestId != aRequestId) {
+    // Response is for an outdated request whose promise will have already been
+    // rejected. Just ignore it.
+    return IPC_OK();
   }
+
+  auto request = mScreenPixelsRequest.extract();
+  if (!aSuccess) {
+    request.mPromise->Reject(NS_ERROR_FAILURE, __func__);
+    return IPC_OK();
+  }
+
+  if (aAcquireFence) {
+    request.mHardwareBuffer->SetAcquireFence(
+        aAcquireFence->TakePlatformHandle());
+  }
+  request.mPromise->Resolve(std::move(request.mHardwareBuffer), __func__);
 #endif  // defined(MOZ_WIDGET_ANDROID)
 
   return IPC_OK();
@@ -250,7 +293,7 @@ mozilla::ipc::IPCResult UiCompositorControllerChild::RecvScreenPixels(
 
 // private:
 UiCompositorControllerChild::UiCompositorControllerChild(
-    const uint64_t& aProcessToken, nsBaseWidget* aWidget)
+    const uint64_t& aProcessToken, nsIWidget* aWidget)
     : mIsOpen(false), mProcessToken(aProcessToken), mWidget(aWidget) {}
 
 UiCompositorControllerChild::~UiCompositorControllerChild() = default;
@@ -302,10 +345,6 @@ void UiCompositorControllerChild::SendCachedValues() {
                         mResize.ref().height, &resumed);
     mResize.reset();
   }
-  if (mMaxToolbarHeight) {
-    SendMaxToolbarHeight(mMaxToolbarHeight.ref());
-    mMaxToolbarHeight.reset();
-  }
   if (mDefaultClearColor) {
     SendDefaultClearColor(mDefaultClearColor.ref());
     mDefaultClearColor.reset();
@@ -321,9 +360,6 @@ void UiCompositorControllerChild::SetCompositorSurfaceManager(
     java::CompositorSurfaceManager::Param aCompositorSurfaceManager) {
   MOZ_ASSERT(!mCompositorSurfaceManager,
              "SetCompositorSurfaceManager must only be called once.");
-  MOZ_ASSERT(mProcessToken != 0,
-             "SetCompositorSurfaceManager must only be called for GPU process "
-             "controllers.");
   mCompositorSurfaceManager = aCompositorSurfaceManager;
 };
 

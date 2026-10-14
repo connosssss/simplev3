@@ -1,5 +1,6 @@
 [DEFAULT]
 scheme = "https"
+prefs = ["dom.webcrypto.encapsulation.enabled=true"]
 support-files = [
   "file_indexedDB.html",
   "test-array.js",
@@ -25,6 +26,8 @@ support-files = [
 
 ["test_WebCrypto_JWK.html"]
 
+["test_WebCrypto_MLKEM.html"]
+
 ["test_WebCrypto_Normalize.html"]
 
 ["test_WebCrypto_PBKDF2.html"]
@@ -42,5 +45,9 @@ support-files = [
 ["test_WebCrypto_Wrap_Unwrap.html"]
 
 ["test_indexedDB.html"]
-skip-if = ["!fission"] # Requires iframes to run in separate processes.
-fail-if = ["xorigin"] # JavaScript error: https://example.org/tests/dom/crypto/test/test_indexedDB.html?currentTestURL=dom%2Fcrypto%2Ftest%2Ftest_indexedDB.html&closeWhenDone=undefined&showTestReport=true&expected=pass, line 27: SecurityError: Permission denied to access property "frameElement" on cross-origin object
+skip-if = [
+  "!fission", # Requires iframes to run in separate processes.
+]
+fail-if = [
+  "xorigin", # JavaScript error: https://example.org/tests/dom/crypto/test/test_indexedDB.html?currentTestURL=dom%2Fcrypto%2Ftest%2Ftest_indexedDB.html&closeWhenDone=undefined&showTestReport=true&expected=pass, line 27: SecurityError: Permission denied to access property "frameElement" on cross-origin object
+]

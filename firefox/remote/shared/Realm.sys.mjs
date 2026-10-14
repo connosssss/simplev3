@@ -4,7 +4,7 @@
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
-  addDebuggerToGlobal: "resource://gre/modules/jsdebugger.sys.mjs",
+  addDebuggerToGlobal: "moz-src:///devtools/platform/jsdebugger.sys.mjs",
 
   generateUUID: "chrome://remote/content/shared/UUID.sys.mjs",
 });
@@ -197,6 +197,10 @@ export class WindowRealm extends Realm {
     return this.#window.browsingContext;
   }
 
+  get globalObject() {
+    return this.#globalObject;
+  }
+
   get globalObjectReference() {
     return this.#globalObjectReference;
   }
@@ -228,7 +232,10 @@ export class WindowRealm extends Realm {
     this.#userActivationEnabled = enable;
   }
 
-  #createDebuggerObject(obj) {
+  #createDebuggerObject(obj, debuggerEnvironment) {
+    if (debuggerEnvironment) {
+      return debuggerEnvironment.global.makeDebuggeeValue(obj);
+    }
     return this.#globalObjectReference.makeDebuggeeValue(obj);
   }
 
@@ -271,6 +278,9 @@ export class WindowRealm extends Realm {
    *
    * @param {string} expression
    *     The expression to evaluate.
+   * @param {DebuggerEnvironment=} debuggerEnvironment
+   *     The current paused debugger environment to use for the evaluation
+   *     (optional).
    *
    * @returns {object}
    *     - evaluationStatus {EvaluationStatus} One of "normal", "throw".
@@ -279,9 +289,22 @@ export class WindowRealm extends Realm {
    *     - result {RemoteValue=} the result of the evaluation serialized as a
    *       RemoteValue if the evaluation status was "normal".
    */
-  executeInGlobal(expression) {
+  executeInRealm(expression, debuggerEnvironment) {
     this.#enableRealmAutomationFeatures();
+
+    if (debuggerEnvironment) {
+      return debuggerEnvironment.frame.evalWithBindings(
+        expression,
+        {},
+        {
+          bypassCSP: true,
+          url: this.#window.document.baseURI,
+        }
+      );
+    }
+
     return this.#globalObjectReference.executeInGlobal(expression, {
+      bypassCSP: true,
       url: this.#window.document.baseURI,
     });
   }
@@ -295,6 +318,9 @@ export class WindowRealm extends Realm {
    *     The arguments to pass to the function call.
    * @param {object} thisParameter
    *     The value of the `this` keyword for the function call.
+   * @param {DebuggerEnvironment=} debuggerEnvironment
+   *     The current paused debugger environment to use for the evaluation
+   *     (optional).
    *
    * @returns {object}
    *     - evaluationStatus {EvaluationStatus} One of "normal", "throw".
@@ -303,10 +329,11 @@ export class WindowRealm extends Realm {
    *     - result {RemoteValue=} the result of the evaluation serialized as a
    *       RemoteValue if the evaluation status was "normal".
    */
-  executeInGlobalWithBindings(
+  executeInRealmWithBindings(
     functionDeclaration,
     functionArguments,
-    thisParameter
+    thisParameter,
+    debuggerEnvironment
   ) {
     this.#enableRealmAutomationFeatures();
     const expression = `(${functionDeclaration}).apply(__bidi_this, __bidi_args)`;
@@ -316,13 +343,26 @@ export class WindowRealm extends Realm {
       args.push(arg);
     }
 
+    const bindings = {
+      __bidi_args: this.#createDebuggerObject(args, debuggerEnvironment),
+      __bidi_this: this.#createDebuggerObject(
+        thisParameter,
+        debuggerEnvironment
+      ),
+    };
+
+    if (debuggerEnvironment) {
+      return debuggerEnvironment.frame.evalWithBindings(expression, bindings, {
+        bypassCSP: true,
+        url: this.#window.document.baseURI,
+      });
+    }
+
     return this.#globalObjectReference.executeInGlobalWithBindings(
       expression,
+      bindings,
       {
-        __bidi_args: this.#createDebuggerObject(args),
-        __bidi_this: this.#createDebuggerObject(thisParameter),
-      },
-      {
+        bypassCSP: true,
         url: this.#window.document.baseURI,
       }
     );

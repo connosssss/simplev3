@@ -92,7 +92,7 @@ impl<'a> FromReader<'a> for ComponentAlias<'a> {
 fn component_outer_alias_kind_from_bytes(
     byte1: u8,
     byte2: Option<u8>,
-    offset: usize,
+    offset: u64,
 ) -> Result<ComponentOuterAliasKind> {
     Ok(match byte1 {
         0x00 => match byte2.unwrap() {
@@ -103,7 +103,7 @@ fn component_outer_alias_kind_from_bytes(
                     x,
                     "component outer alias kind",
                     offset + 1,
-                ))
+                ));
             }
         },
         0x03 => ComponentOuterAliasKind::Type,
@@ -113,7 +113,7 @@ fn component_outer_alias_kind_from_bytes(
                 x,
                 "component outer alias kind",
                 offset,
-            ))
+            ));
         }
     })
 }

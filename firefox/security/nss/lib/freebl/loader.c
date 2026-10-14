@@ -22,7 +22,7 @@ static const char *NameOfThisSharedLib =
 
 static PRLibrary *blLib = NULL;
 
-#define LSB(x) ((x)&0xff)
+#define LSB(x) ((x) & 0xff)
 #define MSB(x) ((x) >> 8)
 
 static const FREEBLVector *vector;
@@ -197,7 +197,7 @@ DH_GenParam(int primeLen, DHParams **params)
 {
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return SECFailure;
-    return (vector->p_DH_GenParam)(primeLen, params);
+    return SECFailure;
 }
 
 SECStatus
@@ -2901,4 +2901,78 @@ EC_DerivePublicKey(const SECItem *privateKey, const ECParams *ecParams, SECItem 
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return SECFailure;
     return (vector->p_EC_DerivePublicKey)(privateKey, ecParams, publicKey);
+}
+
+/* ============== New for 3.0031 =============================== */
+
+SECStatus
+MLDSA_NewKey(CK_ML_DSA_PARAMETER_SET_TYPE paramSet, SECItem *seed,
+             MLDSAPrivateKey *privKey, MLDSAPublicKey *pubKey)
+{
+    if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
+        return SECFailure;
+    return (vector->p_MLDSA_NewKey)(paramSet, seed, privKey, pubKey);
+}
+SECStatus
+MLDSA_SignInit(MLDSAPrivateKey *key, CK_HEDGE_TYPE hedgeType,
+               const SECItem *sgnCtx, MLDSAContext **ctx)
+{
+    if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
+        return SECFailure;
+    return (vector->p_MLDSA_SignInit)(key, hedgeType, sgnCtx, ctx);
+}
+SECStatus
+MLDSA_SignUpdate(MLDSAContext *ctx, const SECItem *data)
+{
+    if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
+        return SECFailure;
+    return (vector->p_MLDSA_SignUpdate)(ctx, data);
+}
+SECStatus
+MLDSA_SignFinal(MLDSAContext *ctx, SECItem *signature)
+{
+    if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
+        return SECFailure;
+    return (vector->p_MLDSA_SignFinal)(ctx, signature);
+}
+
+SECStatus
+MLDSA_VerifyInit(MLDSAPublicKey *key, const SECItem *sgnCtx,
+                 MLDSAContext **ctx)
+{
+    if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
+        return SECFailure;
+    return (vector->p_MLDSA_VerifyInit)(key, sgnCtx, ctx);
+}
+SECStatus
+MLDSA_VerifyUpdate(MLDSAContext *ctx, const SECItem *data)
+{
+    if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
+        return SECFailure;
+    return (vector->p_MLDSA_VerifyUpdate)(ctx, data);
+}
+SECStatus
+MLDSA_VerifyFinal(MLDSAContext *ctx, const SECItem *signature)
+{
+    if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
+        return SECFailure;
+    return (vector->p_MLDSA_VerifyFinal)(ctx, signature);
+}
+
+/* ============== New for 3.0032 =============================== */
+SECStatus
+EC_DecompressPublicKey(const SECItem *publicCompressed, const ECParams *params, SECItem *publicUncompressed)
+{
+    if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
+        return SECFailure;
+    return (vector->p_EC_DecompressPublicKey)(publicCompressed, params, publicUncompressed);
+}
+
+/* ============== New for 3.0033 =============================== */
+void
+MLDSA_DestroyContext(MLDSAContext *ctx)
+{
+    if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
+        return;
+    (vector->p_MLDSA_DestroyContext)(ctx);
 }

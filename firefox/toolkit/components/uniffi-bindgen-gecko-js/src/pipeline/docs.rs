@@ -4,20 +4,17 @@
 
 use super::*;
 
-pub fn pass(root: &mut Root) -> Result<()> {
+pub fn api_module_docs(namespaces: &[Namespace]) -> Result<Vec<ApiModuleDocs>> {
     let mut module_docs = vec![];
-    root.visit_mut(|module: &mut Module| {
-        if module.fixture {
-            return;
-        }
+    for namespace in namespaces {
         let mut docs = ApiModuleDocs {
-            filename: format!("{}.md", module.name),
-            jsdoc_module_name: format!("{}.sys", module.js_name),
-            module_name: format!("{}.sys.mjs", module.js_name),
+            filename: format!("{}.md", namespace.name),
+            jsdoc_module_name: format!("{}.sys", namespace.js_name()),
+            module_name: format!("{}.sys.mjs", namespace.js_name()),
             classes: vec![],
             functions: vec![],
         };
-        module.visit(|type_def: &TypeDefinition| {
+        namespace.visit(|type_def: &TypeDefinition| {
             match type_def {
                 TypeDefinition::Interface(Interface {
                     name, docstring, ..
@@ -27,10 +24,8 @@ pub fn pass(root: &mut Root) -> Result<()> {
                 })
                 | TypeDefinition::Custom(CustomType {
                     name, docstring, ..
-                }) => {
-                    if docstring.is_some() {
-                        docs.classes.push(name.clone());
-                    }
+                }) if docstring.is_some() => {
+                    docs.classes.push(name.clone());
                 }
                 TypeDefinition::Enum(Enum {
                     name,
@@ -54,14 +49,12 @@ pub fn pass(root: &mut Root) -> Result<()> {
                 _ => (),
             }
         });
-        module.visit(|func: &Function| {
-            docs.functions.push(func.name.clone());
+        namespace.visit(|func: &Function| {
+            docs.functions.push(func.callable.name.clone());
         });
         docs.classes.sort();
         docs.functions.sort();
         module_docs.push(docs);
-    });
-    root.module_docs = module_docs;
-
-    Ok(())
+    }
+    Ok(module_docs)
 }

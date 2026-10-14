@@ -1,14 +1,13 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
 function backgroundScript() {
   browser.runtime.getPlatformInfo(info => {
     let validOSs = ["mac", "win", "android", "cros", "linux", "openbsd"];
     let validArchs = [
-      "aarch64",
       "arm",
+      "arm64",
       "ppc64",
+      "riscv64",
       "s390x",
       "sparc64",
       "x86-32",

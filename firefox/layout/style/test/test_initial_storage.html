@@ -20,8 +20,10 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=375363
 <pre id="test">
 <script class="testbody" type="text/javascript">
 
-/** Test for parsing, storage, and serialization of CSS 'initial' on all
-    properties and 'unset' on reset properties **/
+/**
+ * Test for parsing, storage, and serialization of CSS 'initial' on all
+ * properties and 'unset' on reset properties
+ */
 
 var gDeclaration = document.getElementById("testnode").style;
 
@@ -32,6 +34,9 @@ var gDeclaration = document.getElementById("testnode").style;
 function check_consistency(sproperty, valFromGetPropertyValue, messagePrefix)
 {
   var sinfo = gCSSProperties[sproperty];
+  if (sinfo.domPropDisabled) {
+    return;
+  }
   is(valFromGetPropertyValue, gDeclaration[sinfo.domProp],
      `(${messagePrefix}) consistency between ` +
      `decl.getPropertyValue(${sproperty}) and decl.${sinfo.domProp}`);
@@ -82,6 +87,9 @@ function test_property(property)
     // semicolons, but for simplicity we'll test the current behavior.
     if ("alias_for" in info) {
       is(gDeclaration.cssText, info.alias_for + ": " + keyword + ";",
+        "declaration should serialize to exactly what went in (for " + keyword + ")");
+    } else if (property == "-webkit-line-clamp") {
+      is(gDeclaration.cssText, property + ": " + keyword + ";",
         "declaration should serialize to exactly what went in (for " + keyword + ")");
     } else if (info.type == CSS_TYPE_LEGACY_SHORTHAND) {
       // We can't assert anything more meaningful here, really.

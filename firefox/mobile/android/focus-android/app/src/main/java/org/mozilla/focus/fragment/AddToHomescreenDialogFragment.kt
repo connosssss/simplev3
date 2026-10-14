@@ -14,11 +14,11 @@ import android.widget.EditText
 import android.widget.ImageView
 import androidx.appcompat.app.AlertDialog
 import androidx.constraintlayout.widget.ConstraintLayout
-import androidx.core.content.edit
 import androidx.core.view.isVisible
 import androidx.fragment.app.DialogFragment
-import androidx.preference.PreferenceManager
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import mozilla.components.browser.icons.IconRequest
+import mozilla.components.ui.icons.R as iconsR
 import mozilla.telemetry.glean.private.NoExtras
 import org.mozilla.focus.GleanMetrics.AddToHomeScreen
 import org.mozilla.focus.R
@@ -26,12 +26,9 @@ import org.mozilla.focus.ext.components
 import org.mozilla.focus.shortcut.HomeScreen
 import org.mozilla.focus.shortcut.IconGenerator
 
-/**
- * Fragment displaying a dialog where a user can change the title for a homescreen shortcut
- */
+/** Fragment displaying a dialog where a user can change the title for a homescreen shortcut */
 class AddToHomescreenDialogFragment : DialogFragment() {
 
-    @Suppress("LongMethod")
     override fun onCreateDialog(bundle: Bundle?): AlertDialog {
         AddToHomeScreen.dialogDisplayed.record(NoExtras())
         val url = requireArguments().getString(URL)!!
@@ -39,36 +36,39 @@ class AddToHomescreenDialogFragment : DialogFragment() {
         val blockingEnabled = requireArguments().getBoolean(BLOCKING_ENABLED)
         val requestDesktop = requireArguments().getBoolean(REQUEST_DESKTOP)
 
-        val builder = AlertDialog.Builder(requireActivity(), R.style.DialogStyle)
+        val builder = MaterialAlertDialogBuilder(requireActivity(), R.style.DialogStyle)
         builder.setCancelable(true)
         val inflater = requireActivity().layoutInflater
         val dialogView = inflater.inflate(R.layout.dialog_add_to_homescreen2, null)
         builder.setView(dialogView)
 
         val iconView = dialogView.findViewById<ImageView>(R.id.homescreen_icon)
-        requireContext().components.icons.loadIntoView(
-            iconView,
-            IconRequest(url, isPrivate = true),
-        )
+        requireContext()
+            .components
+            .icons
+            .loadIntoView(
+                iconView,
+                IconRequest(url, isPrivate = true),
+            )
 
         val blockIcon = dialogView.findViewById<ImageView>(R.id.homescreen_dialog_block_icon)
-        blockIcon.setImageResource(R.drawable.mozac_ic_shield_slash_24)
-        val warning =
-            dialogView.findViewById<ConstraintLayout>(R.id.homescreen_dialog_warning_layout)
+        blockIcon.setImageResource(iconsR.drawable.mozac_ic_shield_slash_24)
+        val warning = dialogView.findViewById<ConstraintLayout>(R.id.homescreen_dialog_warning_layout)
         warning.isVisible = !blockingEnabled
 
         val editableTitle = dialogView.findViewById<EditText>(R.id.edit_title)
 
-        title?.takeIf { it.isNotEmpty() }?.let {
-            editableTitle.setText(it)
-        }
+        title
+            ?.takeIf { it.isNotEmpty() }
+            ?.let {
+                editableTitle.setText(it)
+            }
 
         setButtons(dialogView, editableTitle, url, blockingEnabled, requestDesktop, title)
 
         return builder.create()
     }
 
-    @Suppress("LongParameterList")
     private fun setButtons(
         parentView: View,
         editableTitle: EditText,
@@ -77,10 +77,8 @@ class AddToHomescreenDialogFragment : DialogFragment() {
         requestDesktop: Boolean,
         initialTitle: String?,
     ) {
-        val addToHomescreenDialogCancelButton =
-            parentView.findViewById<Button>(R.id.addtohomescreen_dialog_cancel)
-        val addToHomescreenDialogConfirmButton =
-            parentView.findViewById<Button>(R.id.addtohomescreen_dialog_add)
+        val addToHomescreenDialogCancelButton = parentView.findViewById<Button>(R.id.addtohomescreen_dialog_cancel)
+        val addToHomescreenDialogConfirmButton = parentView.findViewById<Button>(R.id.addtohomescreen_dialog_add)
 
         addToHomescreenDialogCancelButton.setOnClickListener {
             AddToHomeScreen.cancelButtonTapped.record(NoExtras())
@@ -100,17 +98,9 @@ class AddToHomescreenDialogFragment : DialogFragment() {
 
             val hasEditedTitle = initialTitle != editableTitle.text.toString().trim()
             AddToHomeScreen.addButtonTapped.record(
-                AddToHomeScreen.AddButtonTappedExtra(
-                    hasEditedTitle = hasEditedTitle,
-                ),
+                AddToHomeScreen.AddButtonTappedExtra(hasEditedTitle = hasEditedTitle)
             )
 
-            PreferenceManager.getDefaultSharedPreferences(requireContext()).edit {
-                putBoolean(
-                    requireContext().getString(R.string.has_added_to_home_screen),
-                    true,
-                )
-            }
             dismiss()
         }
     }
@@ -127,6 +117,15 @@ class AddToHomescreenDialogFragment : DialogFragment() {
         private const val BLOCKING_ENABLED = "blocking_enabled"
         private const val REQUEST_DESKTOP = "request_desktop"
 
+        /**
+         * Creates a new instance of [AddToHomescreenDialogFragment].
+         *
+         * @param url The URL of the website to add to the homescreen.
+         * @param title The initial title for the homescreen shortcut.
+         * @param blockingEnabled Whether content blocking is enabled for this site.
+         * @param requestDesktop Whether the desktop version of the site should be requested.
+         * @return A new instance of [AddToHomescreenDialogFragment].
+         */
         fun newInstance(
             url: String,
             title: String,

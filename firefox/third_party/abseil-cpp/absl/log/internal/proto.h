@@ -79,6 +79,9 @@ inline bool EncodeVarint(uint64_t tag, uint32_t value, absl::Span<char> *buf) {
 inline bool EncodeVarint(uint64_t tag, int32_t value, absl::Span<char> *buf) {
   return EncodeVarint(tag, static_cast<uint64_t>(value), buf);
 }
+inline bool EncodeVarint(uint64_t tag, bool value, absl::Span<char>* buf) {
+  return EncodeVarint(tag, static_cast<uint64_t>(value), buf);
+}
 
 // Encodes the specified integer as a varint field using ZigZag encoding and
 // returns true if it fits.
@@ -169,9 +172,9 @@ inline bool EncodeStringTruncate(uint64_t tag, absl::string_view value,
 // safe to pass to `EncodeMessageLength` but need not be.
 // Used for string, bytes, message, and packed-repeated field type.
 // Consumes up to kMaxVarintSize * 2 bytes (20).
-ABSL_MUST_USE_RESULT absl::Span<char> EncodeMessageStart(uint64_t tag,
-                                                         uint64_t max_size,
-                                                         absl::Span<char> *buf);
+[[nodiscard]] absl::Span<char> EncodeMessageStart(uint64_t tag,
+                                                  uint64_t max_size,
+                                                  absl::Span<char> *buf);
 
 // Finalizes the length field in `msg` so that it encompasses all data encoded
 // since the call to `EncodeMessageStart` which returned `msg`.  Does nothing if

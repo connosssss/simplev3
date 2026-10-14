@@ -26,7 +26,7 @@ ChromeUtils.defineLazyGetter(lazy, "logger", () => lazy.Log.get());
  *     The type of context
  * @property {string=} id
  *     Unique id of a given context for the provided type.
- *     For ContextDescriptorType.All, id can be ommitted.
+ *     For ContextDescriptorType.All, id can be omitted.
  *     For ContextDescriptorType.TopBrowsingContext, the id should be the
  *     browserId corresponding to a top-level browsing context.
  *     For ContextDescriptorType.UserContext, the id should be the
@@ -68,8 +68,8 @@ export const ContextDescriptorType = {
  * MessageHandler instances are designed to form a network, where each instance
  * should allow to inspect a specific context (eg. a BrowsingContext, a Worker,
  * etc). Those instances might live in different processes and threads but
- * should be linked together by the usage of a single sessionId, shared by all
- * the instances of a single MessageHandler network.
+ * should be linked together by the usage of a single internalSessionId, shared
+ * by all the instances of a single MessageHandler network.
  *
  * MessageHandler instances will be dynamically spawned depending on which
  * Command or which Event needs to be processed and should therefore not be
@@ -82,36 +82,39 @@ export const ContextDescriptorType = {
  * However, even to create this ROOT MessageHandler, consumers should use the
  * RootMessageHandlerRegistry. This singleton will ensure that MessageHandler
  * instances are properly registered and can be retrieved based on a given
- * session id as well as some other context information.
+ * internal session id as well as some other context information.
  */
 export class MessageHandler extends EventEmitter {
   #context;
   #contextId;
   #eventsDispatcher;
+  #internalSessionId;
   #moduleCache;
   #registry;
-  #sessionId;
 
   /**
    * Create a new MessageHandler instance.
    *
-   * @param {string} sessionId
-   *     ID of the session the handler is used for.
+   * @param {string} internalSessionId
+   *     ID of the MessageHandler network the handler is part of. This ID
+   *     is shared with content processes, so it must never be the public
+   *     WebDriver session id.
    * @param {object} context
    *     The context linked to this MessageHandler instance.
    * @param {MessageHandlerRegistry} registry
    *     The MessageHandlerRegistry which owns this MessageHandler instance.
    */
-  constructor(sessionId, context, registry) {
+  constructor(internalSessionId, context, registry) {
     super();
 
     this.#moduleCache = new lazy.ModuleCache(this);
 
-    this.#sessionId = sessionId;
     this.#context = context;
+    this.#internalSessionId = internalSessionId;
+    this.#registry = registry;
+
     this.#contextId = this.constructor.getIdFromContext(context);
     this.#eventsDispatcher = new lazy.EventsDispatcher(this);
-    this.#registry = registry;
   }
 
   get context() {
@@ -131,20 +134,22 @@ export class MessageHandler extends EventEmitter {
   }
 
   get name() {
-    return [this.sessionId, this.constructor.type, this.contextId].join("-");
+    return [this.internalSessionId, this.constructor.type, this.contextId].join(
+      "-"
+    );
   }
 
   get registry() {
     return this.#registry;
   }
 
-  get sessionId() {
-    return this.#sessionId;
+  get internalSessionId() {
+    return this.#internalSessionId;
   }
 
   destroy() {
     lazy.logger.trace(
-      `MessageHandler ${this.constructor.type} for session ${this.sessionId} is being destroyed`
+      `MessageHandler ${this.constructor.type} ${this.internalSessionId} is being destroyed`
     );
     this.#eventsDispatcher.destroy();
     this.#moduleCache.destroy();
@@ -152,6 +157,30 @@ export class MessageHandler extends EventEmitter {
     // At least the MessageHandlerRegistry will be expecting this event in order
     // to remove the instance from the registry when destroyed.
     this.emit("message-handler-destroyed", this);
+  }
+
+  /**
+   * Check if any of the provided contexts match the provided contextDescriptor.
+   *
+   * @param {Array<BrowsingContext>} browsingContexts
+   *     The browsing contexts to verify.
+   * @param {ContextDescriptor} contextDescriptor
+   *     The context descriptor to match.
+   *
+   * @returns {boolean}
+   *     Return "true" if any context matches the context descriptor,
+   *     "false" otherwise.
+   */
+  contextsMatchDescriptor(browsingContexts, contextDescriptor) {
+    return (
+      contextDescriptor.type === ContextDescriptorType.All ||
+      (contextDescriptor.type === ContextDescriptorType.TopBrowsingContext &&
+        browsingContexts.some(bc => contextDescriptor.id === bc.browserId)) ||
+      (contextDescriptor.type === ContextDescriptorType.UserContext &&
+        browsingContexts.some(
+          bc => contextDescriptor.id === bc.originAttributes.userContextId
+        ))
+    );
   }
 
   /**
@@ -164,25 +193,26 @@ export class MessageHandler extends EventEmitter {
    *     form [module name].[event name].
    * @param {object} data
    *     The event's data.
-   * @param {ContextInfo=} contextInfo
-   *     The event's context info, used to identify the origin of the event.
+   * @param {Array<ContextInfo>=} relatedContexts
+   *     The event's related contexts info, used to identify the navigables
+   *     related to the event.
    *     If not provided, the context info of the current MessageHandler will be
-   *     used.
+   *     used as single related context info.
    */
-  emitEvent(name, data, contextInfo) {
-    // If no contextInfo field is provided on the event, extract it from the
+  emitEvent(name, data, relatedContexts) {
+    // If no relatedContexts field is provided on the event, extract it from the
     // MessageHandler instance.
-    contextInfo = contextInfo || this.#getContextInfo();
+    relatedContexts = relatedContexts || [this.#getContextInfo()];
 
     // Events are emitted both under their own name for consumers listening to
     // a specific and as `message-handler-event` for consumers which need to
     // catch all events.
-    this.emit(name, data, contextInfo);
+    this.emit(name, data, relatedContexts);
     this.emit("message-handler-event", {
       name,
-      contextInfo,
+      relatedContexts,
       data,
-      sessionId: this.sessionId,
+      internalSessionId: this.internalSessionId,
     });
   }
 
@@ -210,12 +240,20 @@ export class MessageHandler extends EventEmitter {
    *     Optional command parameters.
    * @property {CommandDestination} destination
    *     The destination describing a debuggable context.
+   * @property {boolean=} fromContentProcess
+   *     Optional. Should be set on commands originating from content processes.
    * @property {boolean=} retryOnAbort
    *     Optional. When true, commands will be retried upon AbortError, which
    *     can occur when the underlying JSWindowActor pair is destroyed.
    *     If not explicitly set, the framework will automatically retry if the
    *     destination is likely to be replaced (e.g. browsingContext on the
    *     initial document or loading a document).
+   * @property {boolean=} skipPrivilegeCheck
+   *     Optional. When true, the command is allowed to be forwarded to a
+   *     privileged browsing context even without system access. Defaults to
+   *     false, which prevents the command from reaching a browsing context
+   *     that became privileged after it was dispatched. Should only be set for
+   *     commands that are safe regardless of the context's privilege level.
    */
 
   /**
@@ -244,7 +282,8 @@ export class MessageHandler extends EventEmitter {
    *     command once it has been executed.
    */
   handleCommand(command) {
-    const { moduleName, commandName, params, destination } = command;
+    const { moduleName, commandName, fromContentProcess, params, destination } =
+      command;
     lazy.logger.trace(
       `Received command ${moduleName}.${commandName} for destination ${destination.type}`
     );
@@ -256,7 +295,7 @@ export class MessageHandler extends EventEmitter {
     }
 
     const module = this.#moduleCache.getModuleInstance(moduleName, destination);
-    if (module && module.supportsMethod(commandName)) {
+    if (module && module.supportsMethod(commandName, fromContentProcess)) {
       return module[commandName](params, destination);
     }
 
@@ -268,7 +307,7 @@ export class MessageHandler extends EventEmitter {
   }
 
   /**
-   * Execute the required initialization steps, inlcluding apply the initial session data items
+   * Execute the required initialization steps, including apply the initial session data items
    * provided to this MessageHandler on startup. Implementation is specific to each MessageHandler class.
    *
    * By default the implementation is a no-op.

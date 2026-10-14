@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsIConstraintValidition_h___
-#define nsIConstraintValidition_h___
+#ifndef nsIConstraintValidition_h_
+#define nsIConstraintValidition_h_
 
 #include "nsISupports.h"
 
@@ -54,7 +52,12 @@ class nsIConstraintValidation : public nsISupports {
     VALIDITY_STATE_CUSTOM_ERROR = 0x1 << 9,
   };
 
-  void SetValidityState(ValidityStateType aState, bool aValue);
+  void SetValidityState(ValidityStateType aState, bool aValue) {
+    if (GetValidityState(aState) == aValue) {
+      return;
+    }
+    DoSetValidityState(aState, aValue);
+  }
 
   /**
    * Check the validity of this object. If it is not valid, file a "invalid"
@@ -65,13 +68,13 @@ class nsIConstraintValidation : public nsISupports {
    *                       see EventTarget::DispatchEvent.
    * @return whether it's valid.
    */
-  bool CheckValidity(nsIContent& aEventTarget,
-                     bool* aEventDefaultAction = nullptr) const;
+  MOZ_CAN_RUN_SCRIPT bool CheckValidity(
+      nsIContent& aEventTarget, bool* aEventDefaultAction = nullptr) const;
 
   // Web IDL binding methods
   bool WillValidate() const { return IsCandidateForConstraintValidation(); }
   mozilla::dom::ValidityState* Validity();
-  bool ReportValidity();
+  MOZ_CAN_RUN_SCRIPT bool ReportValidity();
 
  protected:
   // You can't instantiate an object from that class.
@@ -89,6 +92,9 @@ class nsIConstraintValidation : public nsISupports {
   RefPtr<mozilla::dom::ValidityState> mValidity;
 
  private:
+  // Internal, possibly not-inlined version to call if the new state differs.
+  void DoSetValidityState(ValidityStateType aState, bool aValue);
+
   /**
    * A bitfield representing the current validity state of the element.
    * Each bit represent an error. All bits to zero means the element is valid.

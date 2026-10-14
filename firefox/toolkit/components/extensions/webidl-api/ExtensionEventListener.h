@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -63,7 +61,7 @@ class ExtensionEventListener final : public mozIExtensionEventListener {
 
   dom::WorkerPrivate* GetWorkerPrivate() const;
 
-  RefPtr<dom::Function> GetCallback() const { return mCallback; }
+  RefPtr<dom::Function> GetCallback() const;
 
   nsCOMPtr<nsIGlobalObject> GetGlobalObject() const {
     nsCOMPtr<nsIGlobalObject> global = do_QueryReferent(mGlobal);
@@ -72,36 +70,17 @@ class ExtensionEventListener final : public mozIExtensionEventListener {
 
   ExtensionBrowser* GetExtensionBrowser() const { return mExtensionBrowser; }
 
-  void Cleanup() {
-    if (mWorkerRef) {
-      MutexAutoLock lock(mMutex);
-
-      mWorkerRef->Private()->AssertIsOnWorkerThread();
-      mWorkerRef = nullptr;
-    }
-
-    mGlobal = nullptr;
-    mCallback = nullptr;
-    mExtensionBrowser = nullptr;
-  }
+  void Cleanup();
 
  private:
   ExtensionEventListener(nsIGlobalObject* aGlobal,
                          ExtensionBrowser* aExtensionBrowser,
-                         dom::Function* aCallback)
-      : mGlobal(do_GetWeakReference(aGlobal)),
-        mExtensionBrowser(aExtensionBrowser),
-        mCallback(aCallback),
-        mMutex("ExtensionEventListener::mMutex") {
-    MOZ_ASSERT(aGlobal);
-    MOZ_ASSERT(aExtensionBrowser);
-    MOZ_ASSERT(aCallback);
-  };
+                         dom::Function* aCallback);
 
   static UniquePtr<dom::StructuredCloneHolder> SerializeCallArguments(
       const nsTArray<JS::Value>& aArgs, JSContext* aCx, ErrorResult& aRv);
 
-  ~ExtensionEventListener() { Cleanup(); };
+  ~ExtensionEventListener();
 
   // Accessed on the main and on the owning threads.
   RefPtr<dom::ThreadSafeWorkerRef> mWorkerRef;
@@ -182,7 +161,7 @@ class ExtensionListenerCallWorkerRunnable final
   RefPtr<dom::Promise> mPromiseResult;
   bool mIsCallResultCancelled = false;
   // Call Options.
-  bool mAPIObjectPrepended;
+  bool mAPIObjectPrepended = false;
   APIObjectType mAPIObjectType;
   CallbackType mCallbackArgType;
 };

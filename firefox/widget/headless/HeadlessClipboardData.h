@@ -5,8 +5,8 @@
 #ifndef mozilla_widget_HeadlessClipboardData_h
 #define mozilla_widget_HeadlessClipboardData_h
 
-#include "mozilla/RefPtr.h"
 #include "nsString.h"
+#include "nsTArray.h"
 
 namespace mozilla {
 namespace widget {
@@ -26,6 +26,10 @@ class HeadlessClipboardData final {
   bool HasHTML() const;
   const nsAString& GetHTML() const;
 
+  void SetPNG(nsTArray<uint8_t>&& aPNG);
+  bool HasPNG() const;
+  const nsTArray<uint8_t>& GetPNG() const;
+
   int32_t GetChangeCount() const;
 
   // For other APIs
@@ -34,6 +38,7 @@ class HeadlessClipboardData final {
  private:
   nsString mPlain;
   nsString mHTML;
+  nsTArray<uint8_t> mPNG;
 
   int32_t mChangeCount = 0;
 };

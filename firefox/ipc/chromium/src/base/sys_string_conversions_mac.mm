@@ -28,10 +28,10 @@ static StringType CFStringToSTLStringWithEncodingT(CFStringRef cfstring,
   CFRange whole_string = CFRangeMake(0, length);
   CFIndex out_size;
   CFIndex converted = CFStringGetBytes(cfstring, whole_string, encoding,
-                                       0,      // lossByte
-                                       false,  // isExternalRepresentation
-                                       NULL,   // buffer
-                                       0,      // maxBufLen
+                                       0,        // lossByte
+                                       false,    // isExternalRepresentation
+                                       nullptr,  // buffer
+                                       0,        // maxBufLen
                                        &out_size);
   if (converted == 0 || out_size == 0) return StringType();
 
@@ -49,7 +49,7 @@ static StringType CFStringToSTLStringWithEncodingT(CFStringRef cfstring,
                        0,      // lossByte
                        false,  // isExternalRepresentation
                        reinterpret_cast<UInt8*>(&out_buffer[0]), out_size,
-                       NULL);  // usedBufLen
+                       nullptr);  // usedBufLen
   if (converted == 0) return StringType();
 
   out_buffer[elements - 1] = '\0';
@@ -69,26 +69,13 @@ static OutStringType STLStringToSTLStringWithEncodingsT(
   if (in_length == 0) return OutStringType();
 
   scoped_cftyperef<CFStringRef> cfstring(CFStringCreateWithBytesNoCopy(
-      NULL, reinterpret_cast<const UInt8*>(in.data()),
+      nullptr, reinterpret_cast<const UInt8*>(in.data()),
       in_length * sizeof(typename InStringType::value_type), in_encoding, false,
       kCFAllocatorNull));
   if (!cfstring) return OutStringType();
 
   return CFStringToSTLStringWithEncodingT<OutStringType>(cfstring,
                                                          out_encoding);
-}
-
-// Given an STL string |in| with an encoding specified by |in_encoding|,
-// return it as a CFStringRef.  Returns NULL on failure.
-template <typename StringType>
-static CFStringRef STLStringToCFStringWithEncodingsT(
-    const StringType& in, CFStringEncoding in_encoding) {
-  typename StringType::size_type in_length = in.length();
-  if (in_length == 0) return CFSTR("");
-
-  return CFStringCreateWithBytes(
-      kCFAllocatorDefault, reinterpret_cast<const UInt8*>(in.data()),
-      in_length * sizeof(typename StringType::value_type), in_encoding, false);
 }
 
 // Specify the byte ordering explicitly, otherwise CFString will be confused

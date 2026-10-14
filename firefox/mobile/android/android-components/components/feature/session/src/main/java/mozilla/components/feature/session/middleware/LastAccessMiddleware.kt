@@ -11,59 +11,59 @@ import mozilla.components.browser.state.action.TabListAction
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.state.TabSessionState
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
+import mozilla.components.lib.state.Store
 
-/**
- * [Middleware] that handles updating the [TabSessionState.lastAccess] when a tab is selected.
- */
-class LastAccessMiddleware : Middleware<BrowserState, BrowserAction> {
+/** [Middleware] that handles updating the [TabSessionState.lastAccess] when a tab is selected. */
+class LastAccessMiddleware(private val currentTimeMillis: () -> Long = { System.currentTimeMillis() }) :
+    Middleware<BrowserState, BrowserAction> {
     override fun invoke(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         next: (BrowserAction) -> Unit,
         action: BrowserAction,
     ) {
         // Since tab removal can affect tab selection we save the
         // selected tab ID before removal to determine if it changed.
-        val selectionBeforeRemoval = when (action) {
-            is TabListAction.RemoveTabAction,
-            is TabListAction.RemoveTabsAction,
-            // NB: RemoveAllNormalTabsAction and RemoveAllPrivateTabsAction never update tab selection
-            -> {
-                context.state.selectedTabId
+        val selectionBeforeRemoval =
+            when (action) {
+                is TabListAction.RemoveTabAction,
+                is TabListAction.RemoveTabsAction
+                // NB: RemoveAllNormalTabsAction and RemoveAllPrivateTabsAction never update tab selection
+                -> {
+                    store.state.selectedTabId
+                }
+                else -> null
             }
-            else -> null
-        }
 
         next(action)
 
         when (action) {
             is TabListAction.RemoveTabAction,
-            is TabListAction.RemoveTabsAction,
+            is TabListAction.RemoveTabsAction
             // NB: RemoveAllNormalTabsAction and RemoveAllPrivateTabsAction never updates tab selection
             -> {
                 // If the selected tab changed during removal we make sure to update
                 // the lastAccess state of the newly selected tab.
-                val newSelection = context.state.selectedTabId
+                val newSelection = store.state.selectedTabId
                 if (newSelection != null && newSelection != selectionBeforeRemoval) {
-                    context.dispatchUpdateActionForId(newSelection)
+                    store.dispatchUpdateActionForId(newSelection)
                 }
             }
             is TabListAction.SelectTabAction -> {
-                context.dispatchUpdateActionForId(action.tabId)
+                store.dispatchUpdateActionForId(action.tabId)
             }
             is TabListAction.AddTabAction -> {
                 if (action.select) {
-                    context.dispatchUpdateActionForId(action.tab.id)
+                    store.dispatchUpdateActionForId(action.tab.id)
                 }
             }
             is TabListAction.RestoreAction -> {
                 action.selectedTabId?.let {
-                    context.dispatchUpdateActionForId(it)
+                    store.dispatchUpdateActionForId(it)
                 }
             }
             is ContentAction.UpdateUrlAction -> {
-                if (action.sessionId == context.state.selectedTabId) {
-                    context.dispatchUpdateActionForId(action.sessionId)
+                if (action.sessionId == store.state.selectedTabId) {
+                    store.dispatchUpdateActionForId(action.sessionId)
                 }
             }
             else -> {
@@ -72,7 +72,7 @@ class LastAccessMiddleware : Middleware<BrowserState, BrowserAction> {
         }
     }
 
-    private fun MiddlewareContext<BrowserState, BrowserAction>.dispatchUpdateActionForId(id: String) {
-        dispatch(LastAccessAction.UpdateLastAccessAction(id, System.currentTimeMillis()))
+    private fun Store<BrowserState, BrowserAction>.dispatchUpdateActionForId(id: String) {
+        dispatch(LastAccessAction.UpdateLastAccessAction(id, currentTimeMillis()))
     }
 }

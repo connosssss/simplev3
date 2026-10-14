@@ -22,18 +22,14 @@ async function fake_profile_change() {
       Services.obs.removeObserver(waitForDBClose, "cookie-db-closed");
       resolve();
     }, "cookie-db-closed");
-    Services.cookies
-      .QueryInterface(Ci.nsIObserver)
-      .observe(null, "profile-before-change", null);
+    Services.cookies.testCloseCookieDB();
   });
   await new Promise(resolve => {
     Services.obs.addObserver(function waitForDBOpen() {
       Services.obs.removeObserver(waitForDBOpen, "cookie-db-read");
       resolve();
     }, "cookie-db-read");
-    Services.cookies
-      .QueryInterface(Ci.nsIObserver)
-      .observe(null, "profile-do-change", "");
+    Services.cookies.testOpenCookieDB();
   });
 }
 
@@ -72,12 +68,12 @@ async function test_cookie_settings({
     expectedThirdPartyCookies = 0;
   }
   is(
-    Services.cookies.countCookiesFromHost(firstPartyURI.host),
+    Services.cookies.getCookiesFromHost(firstPartyURI.host, {}).length,
     expectedFirstPartyCookies,
     "Number of first-party cookies should match expected"
   );
   is(
-    Services.cookies.countCookiesFromHost(thirdPartyURI.host),
+    Services.cookies.getCookiesFromHost(thirdPartyURI.host, {}).length,
     expectedThirdPartyCookies,
     "Number of third-party cookies should match expected"
   );
@@ -99,7 +95,7 @@ async function test_cookie_settings({
     expectedCookieCount = 0;
   }
   is(
-    Services.cookies.countCookiesFromHost(firstPartyURI.host),
+    Services.cookies.getCookiesFromHost(firstPartyURI.host, {}).length,
     expectedCookieCount,
     "Number of cookies was not what expected after restarting session"
   );

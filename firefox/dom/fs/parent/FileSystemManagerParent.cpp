@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -198,6 +196,12 @@ mozilla::ipc::IPCResult FileSystemManagerParent::RecvGetWritable(
   AssertIsOnIOTarget();
   MOZ_ASSERT(mDataManager);
 
+  // TODO: The implementation should support PBM.
+  if (mDataManager->OriginMetadataRef().mIsPrivate) {
+    aResolver(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
+    return IPC_OK();
+  }
+
   const fs::FileMode mode = mDataManager->GetMode(aRequest.keepData());
 
   auto reportError = [aResolver](const auto& aRv) {
@@ -276,6 +280,13 @@ mozilla::ipc::IPCResult FileSystemManagerParent::RecvGetWritable(
 IPCResult FileSystemManagerParent::RecvGetFile(
     FileSystemGetFileRequest&& aRequest, GetFileResolver&& aResolver) {
   AssertIsOnIOTarget();
+  MOZ_ASSERT(mDataManager);
+
+  // TODO: The implementation should support PBM.
+  if (mDataManager->OriginMetadataRef().mIsPrivate) {
+    aResolver(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
+    return IPC_OK();
+  }
 
   // XXX Spec https://www.w3.org/TR/FileAPI/#dfn-file wants us to snapshot the
   // state of the file at getFile() time

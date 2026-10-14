@@ -10,9 +10,10 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.ComposeView
 import androidx.fragment.app.Fragment
-import androidx.navigation.findNavController
+import androidx.fragment.compose.content
+import androidx.navigation.fragment.findNavController
+import java.util.Locale
 import mozilla.components.browser.state.action.TranslationsAction
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.engine.translate.LanguageModel
@@ -23,24 +24,19 @@ import mozilla.components.concept.engine.translate.OperationLevel
 import mozilla.components.concept.engine.translate.TranslationError
 import mozilla.components.lib.state.ext.observeAsComposableState
 import mozilla.components.support.base.feature.ViewBoundFeatureWrapper
-import org.mozilla.fenix.BrowserDirection
-import org.mozilla.fenix.HomeActivity
 import org.mozilla.fenix.R
+import org.mozilla.fenix.e2e.SystemInsetsPaddedFragment
 import org.mozilla.fenix.ext.components
+import org.mozilla.fenix.ext.openToBrowser
 import org.mozilla.fenix.ext.requireComponents
-import org.mozilla.fenix.ext.settings
 import org.mozilla.fenix.ext.showToolbar
 import org.mozilla.fenix.settings.SupportUtils
 import org.mozilla.fenix.theme.FirefoxTheme
 import org.mozilla.fenix.utils.AccessibilityUtils.moveFocusToBackNavButton
-import java.util.Locale
 
-/**
- * A fragment displaying Download Languages screen.
- */
-class DownloadLanguagesPreferenceFragment : Fragment() {
-    private val downloadLanguagesFeature =
-        ViewBoundFeatureWrapper<DownloadLanguagesFeature>()
+/** A fragment displaying Download Languages screen. */
+class DownloadLanguagesPreferenceFragment : Fragment(), SystemInsetsPaddedFragment {
+    private val downloadLanguagesFeature = ViewBoundFeatureWrapper<DownloadLanguagesFeature>()
     private var isDataSaverEnabledAndWifiDisabled = false
     private val browserStore: BrowserStore by lazy { requireComponents.core.store }
 
@@ -49,134 +45,131 @@ class DownloadLanguagesPreferenceFragment : Fragment() {
         showToolbar(getString(R.string.download_languages_translations_toolbar_title_preference))
     }
 
+    @Suppress("CognitiveComplexMethod")
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
         savedInstanceState: Bundle?,
-    ): View = ComposeView(requireContext()).apply {
-        setContent {
-            FirefoxTheme {
-                val learnMoreUrl = SupportUtils.getSumoURLForTopic(
+    ) = content {
+        FirefoxTheme {
+            val learnMoreUrl =
+                SupportUtils.getSumoURLForTopic(
                     requireContext(),
                     SupportUtils.SumoTopic.TRANSLATIONS,
                 )
-                val downloadLanguageItemsPreference = getDownloadLanguageItemsPreference()
+            val downloadLanguageItemsPreference = getDownloadLanguageItemsPreference()
 
-                val engineError = browserStore.observeAsComposableState { state ->
-                    state.translationEngine.engineError
-                }.value
+            val engineError =
+                browserStore
+                    .observeAsComposableState { state ->
+                        state.translationEngine.engineError
+                    }
+                    .value
 
-                DownloadLanguagesPreference(
-                    downloadLanguageItemPreferences = downloadLanguageItemsPreference,
-                    learnMoreUrl = learnMoreUrl,
-                    fileSizeFormatter = requireComponents.core.fileSizeFormatter,
-                    downloadLanguagesError = engineError as? TranslationError.ModelCouldNotRetrieveError,
-                    onLearnMoreClicked = { openBrowserAndLoad(learnMoreUrl) },
-                    onItemClick = { downloadLanguageItemPreference ->
-                        if (downloadLanguageItemPreference.languageModel.status ==
-                            ModelState.DOWNLOADED ||
-                            shouldShowPrefDownloadLanguageFileDialog(
-                                downloadLanguageItemPreference,
-                            )
-                        ) {
-                            var size = 0L
-                            downloadLanguageItemPreference.languageModel.size?.let { size = it }
+            DownloadLanguagesPreference(
+                downloadLanguageItemPreferences = downloadLanguageItemsPreference,
+                learnMoreUrl = learnMoreUrl,
+                fileSizeFormatter = requireComponents.core.fileSizeFormatter,
+                downloadLanguagesError = engineError as? TranslationError.ModelCouldNotRetrieveError,
+                onLearnMoreClicked = { openBrowserAndLoad(learnMoreUrl) },
+                onItemClick = { downloadLanguageItemPreference ->
+                    if (
+                        downloadLanguageItemPreference.languageModel.status == ModelState.DOWNLOADED ||
+                            shouldShowPrefDownloadLanguageFileDialog(downloadLanguageItemPreference)
+                    ) {
+                        var size = 0L
+                        downloadLanguageItemPreference.languageModel.size?.let { size = it }
 
-                            findNavController().navigate(
+                        findNavController()
+                            .navigate(
                                 DownloadLanguagesPreferenceFragmentDirections
                                     .actionDownloadLanguagesPreferenceToDownloadLanguagesDialogPreference(
                                         modelState = downloadLanguageItemPreference.languageModel.status,
                                         itemType = downloadLanguageItemPreference.type,
                                         languageCode = downloadLanguageItemPreference.languageModel.language?.code,
                                         languageDisplayName =
-                                        downloadLanguageItemPreference.languageModel.language?.localizedDisplayName,
+                                            downloadLanguageItemPreference.languageModel.language?.localizedDisplayName,
                                         modelSize = size,
-                                    ),
+                                    )
                             )
-                        } else {
-                            if (
-                                downloadLanguageItemPreference.type ==
-                                DownloadLanguageItemTypePreference.AllLanguages
-                            ) {
-                                val options = ModelManagementOptions(
-                                    operation = if (
-                                        downloadLanguageItemPreference.languageModel.status ==
-                                        ModelState.NOT_DOWNLOADED
-                                    ) {
-                                        ModelOperation.DOWNLOAD
-                                    } else {
-                                        ModelOperation.DELETE
-                                    },
+                    } else {
+                        if (downloadLanguageItemPreference.type == DownloadLanguageItemTypePreference.AllLanguages) {
+                            val options =
+                                ModelManagementOptions(
+                                    operation =
+                                        if (
+                                            downloadLanguageItemPreference.languageModel.status ==
+                                                ModelState.NOT_DOWNLOADED
+                                        ) {
+                                            ModelOperation.DOWNLOAD
+                                        } else {
+                                            ModelOperation.DELETE
+                                        },
                                     operationLevel = OperationLevel.ALL,
                                 )
-                                browserStore.dispatch(
-                                    TranslationsAction.ManageLanguageModelsAction(
-                                        options = options,
-                                    ),
-                                )
-                            } else {
-                                deleteOrDownloadModel(downloadLanguageItemPreference)
-                            }
-
-                            val activity = activity as? AppCompatActivity
-                            if (activity != null) {
-                                moveFocusToBackNavButton(activity)
-                            }
+                            browserStore.dispatch(TranslationsAction.ManageLanguageModelsAction(options = options))
+                        } else {
+                            deleteOrDownloadModel(downloadLanguageItemPreference)
                         }
-                    },
-                )
-            }
+
+                        val activity = activity as? AppCompatActivity
+                        if (activity != null) {
+                            moveFocusToBackNavButton(activity)
+                        }
+                    }
+                },
+            )
         }
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         downloadLanguagesFeature.set(
-            feature = DownloadLanguagesFeature(
-                context = requireContext(),
-                wifiConnectionMonitor = requireContext().components.wifiConnectionMonitor,
-                onDataSaverAndWifiChanged = {
-                    isDataSaverEnabledAndWifiDisabled = it
-                },
-            ),
+            feature =
+                DownloadLanguagesFeature(
+                    context = requireContext(),
+                    wifiConnectionMonitor = requireContext().components.wifiConnectionMonitor,
+                    onDataSaverAndWifiChanged = {
+                        isDataSaverEnabledAndWifiDisabled = it
+                    },
+                ),
             owner = this,
             view = view,
         )
     }
 
     private fun deleteOrDownloadModel(downloadLanguageItemPreference: DownloadLanguageItemPreference) {
-        val options = ModelManagementOptions(
-            languageToManage = downloadLanguageItemPreference.languageModel.language?.code,
-            operation = if (
-                downloadLanguageItemPreference.languageModel.status ==
-                ModelState.NOT_DOWNLOADED
-            ) {
-                ModelOperation.DOWNLOAD
-            } else {
-                ModelOperation.DELETE
-            },
-            operationLevel = OperationLevel.LANGUAGE,
-        )
-        browserStore.dispatch(
-            TranslationsAction.ManageLanguageModelsAction(
-                options = options,
-            ),
-        )
+        val options =
+            ModelManagementOptions(
+                languageToManage = downloadLanguageItemPreference.languageModel.language?.code,
+                operation =
+                    if (downloadLanguageItemPreference.languageModel.status == ModelState.NOT_DOWNLOADED) {
+                        ModelOperation.DOWNLOAD
+                    } else {
+                        ModelOperation.DELETE
+                    },
+                operationLevel = OperationLevel.LANGUAGE,
+            )
+        browserStore.dispatch(TranslationsAction.ManageLanguageModelsAction(options = options))
     }
 
     private fun openBrowserAndLoad(learnMoreUrl: String) {
-        (requireActivity() as HomeActivity).openToBrowserAndLoad(
+        findNavController().openToBrowser()
+        requireComponents.useCases.fenixBrowserUseCases.loadUrlOrSearch(
             searchTermOrURL = learnMoreUrl,
             newTab = true,
-            from = BrowserDirection.FromDownloadLanguagesPreferenceFragment,
         )
     }
 
     @Composable
     private fun getDownloadLanguageItemsPreference(): List<DownloadLanguageItemPreference> {
-        val languageModels = browserStore.observeAsComposableState { state ->
-            state.translationEngine.languageModels
-        }.value?.toMutableList()
+        val languageModels =
+            browserStore
+                .observeAsComposableState { state ->
+                    state.translationEngine.languageModels
+                }
+                .value
+                ?.toMutableList()
         val languageItemPreferenceList = mutableListOf<DownloadLanguageItemPreference>()
 
         languageModels?.let {
@@ -186,9 +179,7 @@ class DownloadLanguagesPreferenceFragment : Fragment() {
                 var size = 0L
                 languageModel.size?.let { size = it }
 
-                if (
-                    languageModel.status == ModelState.DOWNLOADED
-                ) {
+                if (languageModel.status == ModelState.DOWNLOADED) {
                     allLanguagesSizeDownloaded += size
                 }
             }
@@ -201,16 +192,13 @@ class DownloadLanguagesPreferenceFragment : Fragment() {
             val iterator = languageModels.iterator()
             while (iterator.hasNext()) {
                 val languageModel = iterator.next()
-                if (languageModel.language?.code.equals(
-                        Locale.ENGLISH.language,
-                    )
-                ) {
+                if (languageModel.language?.code.equals(Locale.ENGLISH.language)) {
                     languageItemPreferenceList.add(
                         DownloadLanguageItemPreference(
                             languageModel = languageModel,
                             type = DownloadLanguageItemTypePreference.PivotLanguage,
                             enabled = allLanguagesSizeDownloaded == 0L,
-                        ),
+                        )
                     )
                     iterator.remove()
                 }
@@ -221,7 +209,7 @@ class DownloadLanguagesPreferenceFragment : Fragment() {
                             languageModel = languageModel,
                             type = DownloadLanguageItemTypePreference.GeneralLanguage,
                             enabled = languageModel.status != ModelState.DELETION_IN_PROGRESS,
-                        ),
+                        )
                     )
                 }
             }
@@ -236,22 +224,21 @@ class DownloadLanguagesPreferenceFragment : Fragment() {
         if (allLanguagesSizeDownloaded != 0L) {
             languageItemPreferenceList.add(
                 DownloadLanguageItemPreference(
-                    languageModel = LanguageModel(
-                        status = ModelState.DOWNLOADED,
-                        size = allLanguagesSizeDownloaded,
-                    ),
+                    languageModel =
+                        LanguageModel(
+                            status = ModelState.DOWNLOADED,
+                            size = allLanguagesSizeDownloaded,
+                        ),
                     type = DownloadLanguageItemTypePreference.AllLanguages,
-                ),
+                )
             )
         }
     }
 
     private fun shouldShowPrefDownloadLanguageFileDialog(
-        downloadLanguageItemPreference: DownloadLanguageItemPreference,
+        downloadLanguageItemPreference: DownloadLanguageItemPreference
     ) =
-        (
-            downloadLanguageItemPreference.languageModel.status == ModelState.NOT_DOWNLOADED &&
-                isDataSaverEnabledAndWifiDisabled &&
-                !requireContext().settings().ignoreTranslationsDataSaverWarning
-            )
+        (downloadLanguageItemPreference.languageModel.status == ModelState.NOT_DOWNLOADED &&
+            isDataSaverEnabledAndWifiDisabled &&
+            !requireComponents.settings.ignoreTranslationsDataSaverWarning)
 }

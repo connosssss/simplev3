@@ -15,13 +15,13 @@ happen on mozilla-beta and mozilla-release.
 
 Additional configuration is found in the :ref:`graph config <taskgraph-graph-config>`.
 """
+
 import functools
 import itertools
 import os
 from datetime import datetime
 
 import jsone
-from mozbuild.util import memoize
 from taskgraph.util.copy import deepcopy
 from taskgraph.util.schema import resolve_keyed_by
 from taskgraph.util.taskcluster import get_artifact_prefix
@@ -56,6 +56,8 @@ SIGNING_SCOPE_ALIAS_TO_PROJECT = [
             "larch",
             # maple is also an L3 branch: https://phabricator.services.mozilla.com/D184833
             "maple",
+            # bug 1988213: cypress project branch
+            "cypress",
         },
     ],
     [
@@ -64,13 +66,12 @@ SIGNING_SCOPE_ALIAS_TO_PROJECT = [
             "mozilla-beta",
             "mozilla-release",
             "mozilla-esr115",
-            "mozilla-esr128",
             "mozilla-esr140",
+            "mozilla-esr153",
             "comm-beta",
             "comm-release",
-            "comm-esr115",
-            "comm-esr128",
             "comm-esr140",
+            "comm-esr153",
         },
     ],
 ]
@@ -110,6 +111,8 @@ BEETMOVER_SCOPE_ALIAS_TO_PROJECT = [
             "pine",
             # bug 1877483: larch has similar needs for nightlies
             "larch",
+            # bug 1988213: cypress project branch
+            "cypress",
         },
     ],
     [
@@ -118,13 +121,12 @@ BEETMOVER_SCOPE_ALIAS_TO_PROJECT = [
             "mozilla-beta",
             "mozilla-release",
             "mozilla-esr115",
-            "mozilla-esr128",
             "mozilla-esr140",
+            "mozilla-esr153",
             "comm-beta",
             "comm-release",
-            "comm-esr115",
-            "comm-esr128",
             "comm-esr140",
+            "comm-esr153",
         },
     ],
 ]
@@ -146,6 +148,15 @@ BEETMOVER_APT_REPO_SCOPES = {
     "default": "beetmover:apt-repo:dep",
 }
 
+"""Map the beetmover scope aliases to the actual scopes.
+These are the scopes needed to import artifacts into the product delivery YUM repos.
+"""
+BEETMOVER_YUM_REPO_SCOPES = {
+    "all-release-branches": "beetmover:yum-repo:release",
+    "all-nightly-branches": "beetmover:yum-repo:nightly",
+    "default": "beetmover:yum-repo:dep",
+}
+
 """Map the beetmover tasks aliases to the actual action scopes.
 """
 BEETMOVER_ACTION_SCOPES = {
@@ -155,6 +166,8 @@ BEETMOVER_ACTION_SCOPES = {
     "nightly-pine": "beetmover:action:push-to-nightly",
     # bug 1877483: larch has similar needs for nightlies
     "nightly-larch": "beetmover:action:push-to-nightly",
+    # bug 1988213: cypress project branch
+    "nightly-cypress": "beetmover:action:push-to-nightly",
     "default": "beetmover:action:push-to-candidates",
 }
 
@@ -189,6 +202,8 @@ BALROG_SCOPE_ALIAS_TO_PROJECT = [
             "pine",
             # bug 1877483: larch has similar needs for nightlies
             "larch",
+            # bug 1988213: cypress project branch
+            "cypress",
         },
     ],
     [
@@ -213,17 +228,17 @@ BALROG_SCOPE_ALIAS_TO_PROJECT = [
         },
     ],
     [
-        "esr128",
-        {
-            "mozilla-esr128",
-            "comm-esr128",
-        },
-    ],
-    [
         "esr140",
         {
             "mozilla-esr140",
             "comm-esr140",
+        },
+    ],
+    [
+        "esr153",
+        {
+            "mozilla-esr153",
+            "comm-esr153",
         },
     ],
 ]
@@ -236,8 +251,8 @@ BALROG_SERVER_SCOPES = {
     "beta": "balrog:server:beta",
     "release": "balrog:server:release",
     "esr115": "balrog:server:esr",
-    "esr128": "balrog:server:esr",
     "esr140": "balrog:server:esr",
+    "esr153": "balrog:server:esr",
     "default": "balrog:server:dep",
 }
 
@@ -389,6 +404,12 @@ get_beetmover_apt_repo_scope = functools.partial(
     alias_to_scope_map=BEETMOVER_APT_REPO_SCOPES,
 )
 
+get_beetmover_yum_repo_scope = functools.partial(
+    get_scope_from_project,
+    alias_to_project_map=BEETMOVER_SCOPE_ALIAS_TO_PROJECT,
+    alias_to_scope_map=BEETMOVER_YUM_REPO_SCOPES,
+)
+
 get_beetmover_repo_action_scope = functools.partial(
     get_scope_from_release_type,
     release_type_to_scope_map=BEETMOVER_REPO_ACTION_SCOPES,
@@ -405,39 +426,7 @@ get_balrog_server_scope = functools.partial(
     alias_to_scope_map=BALROG_SERVER_SCOPES,
 )
 
-cached_load_yaml = memoize(load_yaml)
-
-
-# release_config {{{1
-def get_release_config(config):
-    """Get the build number and version for a release task.
-
-    Currently only applies to beetmover tasks.
-
-    Args:
-        config (TransformConfig): The configuration for the kind being transformed.
-
-    Returns:
-        dict: containing both `build_number` and `version`.  This can be used to
-            update `task.payload`.
-    """
-    release_config = {
-        "version": config.params["version"],
-        "appVersion": config.params["app_version"],
-        "next_version": config.params["next_version"],
-        "build_number": config.params["build_number"],
-    }
-    if pv := config.params.get("partial_versions") and config.kind in (
-        "release-bouncer-sub",
-        "release-bouncer-check",
-        "release-update-verify-config",
-        "release-secondary-update-verify-config",
-        "release-balrog-submit-toplevel",
-        "release-secondary-balrog-submit-toplevel",
-    ):
-        release_config["partial_versions"] = pv
-
-    return release_config
+cached_load_yaml = functools.cache(load_yaml)
 
 
 def get_signing_type_per_platform(build_platform, is_shippable, config):
@@ -491,7 +480,7 @@ def generate_beetmover_upstream_artifacts(
         else:
             raise Exception(f"Unsupported type of dependency. Got job: {job}")
 
-    for locale, dep in itertools.product(locales, dependencies):
+    for current_locale, dep in itertools.product(locales, dependencies):
         paths = list()
 
         for filename in map_config["mapping"]:
@@ -500,10 +489,14 @@ def generate_beetmover_upstream_artifacts(
                 "from",
                 f"beetmover filename {filename}",
                 platform=platform,
+                level=str(config.params.get("level", "1")),
             )
             if dep not in map_config["mapping"][filename]["from"]:
                 continue
-            if locale != "en-US" and not map_config["mapping"][filename]["all_locales"]:
+            if (
+                current_locale not in ("en-US", "multi")
+                and not map_config["mapping"][filename]["all_locales"]
+            ):
                 continue
             if (
                 "only_for_platforms" in map_config["mapping"][filename]
@@ -516,6 +509,11 @@ def generate_beetmover_upstream_artifacts(
                 and platform in map_config["mapping"][filename]["not_for_platforms"]
             ):
                 continue
+            if (
+                "not_for_locales" in map_config["mapping"][filename]
+                and current_locale in map_config["mapping"][filename]["not_for_locales"]
+            ):
+                continue
             if "partials_only" in map_config["mapping"][filename]:
                 continue
             # The next time we look at this file it might be a different locale.
@@ -524,10 +522,10 @@ def generate_beetmover_upstream_artifacts(
                 file_config,
                 "source_path_modifier",
                 "source path modifier",
-                locale=locale,
+                locale=current_locale,
             )
 
-            kwargs["locale"] = locale
+            kwargs["locale"] = current_locale
 
             paths.append(
                 os.path.join(
@@ -551,14 +549,12 @@ def generate_beetmover_upstream_artifacts(
         if not paths:
             continue
 
-        upstream_artifacts.append(
-            {
-                "taskId": {"task-reference": f"<{dep}>"},
-                "taskType": map_config["tasktype_map"].get(dep),
-                "paths": sorted(paths),
-                "locale": locale,
-            }
-        )
+        upstream_artifacts.append({
+            "taskId": {"task-reference": f"<{dep}>"},
+            "taskType": map_config["tasktype_map"].get(dep),
+            "paths": sorted(paths),
+            "locale": current_locale,
+        })
 
     upstream_artifacts.sort(key=lambda u: u["paths"])
     return upstream_artifacts
@@ -581,6 +577,24 @@ def generate_artifact_registry_gcs_sources(dep):
             gcs_sources.append(
                 config["paths"][repackage_deb_artifact]["destinations"][0]
             )
+    return gcs_sources
+
+
+def generate_artifact_registry_gcs_sources_rpm(dep):
+    """Generate GCS sources for RPM packages from beetmover-repackage-rpm task.
+
+    The beetmover-repackage-rpm task contains all RPM packages (firefox + langpacks)
+    for a given platform in its artifactMap, alongside non-package artifacts such as
+    RPM-KEY. This function extracts the destinations of the packages themselves, which
+    are the only thing to upload to the YUM repository.
+    """
+    gcs_sources = []
+    for config in dep.task["payload"]["artifactMap"]:
+        if config["taskId"]["task-reference"] == "<repackage-rpm-signing>":
+            for path_info in config["paths"].values():
+                destinations = path_info.get("destinations")
+                if destinations and destinations[0].endswith(".rpm"):
+                    gcs_sources.append(destinations[0])
     return gcs_sources
 
 
@@ -628,19 +642,31 @@ def generate_beetmover_artifact_map(config, job, **kwargs):
     else:
         locales = map_config["default_locales"]
 
-    resolve_keyed_by(map_config, "s3_bucket_paths", job["label"], platform=platform)
+    keyed_by_kwargs = {
+        "platform": platform,
+        "build-type": job["attributes"].get("build-type", ""),
+    }
+    resolve_keyed_by(map_config, "bucket_paths", job["label"], **keyed_by_kwargs)
+    resolve_keyed_by(map_config, "folder_prefix", job["label"], **keyed_by_kwargs)
 
     for locale, dep in sorted(itertools.product(locales, dependencies)):
         paths = dict()
         for filename in map_config["mapping"]:
             # Relevancy checks
             resolve_keyed_by(
-                map_config["mapping"][filename], "from", "blah", platform=platform
+                map_config["mapping"][filename],
+                "from",
+                "blah",
+                platform=platform,
+                level=str(config.params.get("level", "1")),
             )
             if dep not in map_config["mapping"][filename]["from"]:
                 # We don't get this file from this dependency.
                 continue
-            if locale != "en-US" and not map_config["mapping"][filename]["all_locales"]:
+            if (
+                locale not in ("en-US", "multi")
+                and not map_config["mapping"][filename]["all_locales"]
+            ):
                 # This locale either doesn't produce or shouldn't upload this file.
                 continue
             if (
@@ -655,6 +681,12 @@ def generate_beetmover_artifact_map(config, job, **kwargs):
                 and platform in map_config["mapping"][filename]["not_for_platforms"]
             ):
                 # This platform either doesn't produce or shouldn't upload this file.
+                continue
+            if (
+                "not_for_locales" in map_config["mapping"][filename]
+                and locale in map_config["mapping"][filename]["not_for_locales"]
+            ):
+                # This locale either doesn't produce or shouldn't upload this file
                 continue
             if "partials_only" in map_config["mapping"][filename]:
                 continue
@@ -677,14 +709,14 @@ def generate_beetmover_artifact_map(config, job, **kwargs):
             # This format string should ideally be in the configuration file,
             # but this would mean keeping variable names in sync between code + config.
             destinations = [
-                "{s3_bucket_path}/{dest_path}/{locale_prefix}{filename}".format(
-                    s3_bucket_path=bucket_path,
+                "{bucket_path}/{dest_path}/{locale_prefix}{filename}".format(
+                    bucket_path=bucket_path,
                     dest_path=dest_path,
                     locale_prefix=file_config["locale_prefix"],
                     filename=file_config.get("pretty_name", filename),
                 )
                 for dest_path, bucket_path in itertools.product(
-                    file_config["destinations"], map_config["s3_bucket_paths"]
+                    file_config["destinations"], map_config["bucket_paths"]
                 )
             ]
             # Creating map entries
@@ -724,26 +756,27 @@ def generate_beetmover_artifact_map(config, job, **kwargs):
 
         upload_date = datetime.fromtimestamp(config.params["build_date"])
 
-        kwargs.update(
-            {
-                "locale": locale,
-                "version": config.params["version"],
-                "branch": config.params["project"],
-                "build_number": config.params["build_number"],
-                "year": upload_date.year,
-                "month": upload_date.strftime("%m"),  # zero-pad the month
-                "upload_date": upload_date.strftime("%Y-%m-%d-%H-%M-%S"),
-            }
-        )
+        kwargs.update({
+            "locale": locale,
+            "version": config.params["version"],
+            "branch": config.params["project"],
+            "build_number": config.params["build_number"],
+            "year": upload_date.year,
+            "month": upload_date.strftime("%m"),  # zero-pad the month
+            "day": upload_date.strftime("%d"),
+            "upload_date": upload_date.strftime("%Y-%m-%d-%H-%M-%S"),
+            "head_rev": config.params["head_rev"],
+        })
+
+        if "folder_prefix" in map_config:
+            kwargs["folder_prefix"] = jsone.render(map_config["folder_prefix"], kwargs)
         kwargs.update(**platforms)
         paths = jsone.render(paths, kwargs)
-        artifacts.append(
-            {
-                "taskId": {"task-reference": f"<{dep}>"},
-                "locale": locale,
-                "paths": paths,
-            }
-        )
+        artifacts.append({
+            "taskId": {"task-reference": f"<{dep}>"},
+            "locale": locale,
+            "paths": paths,
+        })
 
     return artifacts
 
@@ -789,9 +822,7 @@ def generate_beetmover_partials_artifact_map(config, job, partials_info, **kwarg
     else:
         locales = map_config["default_locales"]
 
-    resolve_keyed_by(
-        map_config, "s3_bucket_paths", "s3_bucket_paths", platform=platform
-    )
+    resolve_keyed_by(map_config, "bucket_paths", "bucket_paths", platform=platform)
 
     platforms = deepcopy(map_config.get("platform_names", {}))
     if platform:
@@ -830,14 +861,14 @@ def generate_beetmover_partials_artifact_map(config, job, partials_info, **kwarg
             # This format string should ideally be in the configuration file,
             # but this would mean keeping variable names in sync between code + config.
             destinations = [
-                "{s3_bucket_path}/{dest_path}/{locale_prefix}{filename}".format(
-                    s3_bucket_path=bucket_path,
+                "{bucket_path}/{dest_path}/{locale_prefix}{filename}".format(
+                    bucket_path=bucket_path,
                     dest_path=dest_path,
                     locale_prefix=file_config["locale_prefix"],
                     filename=file_config.get("pretty_name", filename),
                 )
                 for dest_path, bucket_path in itertools.product(
-                    file_config["destinations"], map_config["s3_bucket_paths"]
+                    file_config["destinations"], map_config["bucket_paths"]
                 )
             ]
             # Creating map entries
@@ -876,34 +907,30 @@ def generate_beetmover_partials_artifact_map(config, job, partials_info, **kwarg
                     }
 
                 # render buildid
-                kwargs.update(
-                    {
-                        "partial": pname,
-                        "from_buildid": info["buildid"],
-                        "previous_version": info.get("previousVersion"),
-                        "buildid": str(config.params["moz_build_date"]),
-                        "locale": locale,
-                        "version": config.params["version"],
-                        "branch": config.params["project"],
-                        "build_number": config.params["build_number"],
-                        "year": upload_date.year,
-                        "month": upload_date.strftime("%m"),  # zero-pad the month
-                        "upload_date": upload_date.strftime("%Y-%m-%d-%H-%M-%S"),
-                    }
-                )
+                kwargs.update({
+                    "partial": pname,
+                    "from_buildid": info["buildid"],
+                    "previous_version": info.get("previousVersion"),
+                    "buildid": str(config.params["moz_build_date"]),
+                    "locale": locale,
+                    "version": config.params["version"],
+                    "branch": config.params["project"],
+                    "build_number": config.params["build_number"],
+                    "year": upload_date.year,
+                    "month": upload_date.strftime("%m"),  # zero-pad the month
+                    "upload_date": upload_date.strftime("%Y-%m-%d-%H-%M-%S"),
+                })
                 kwargs.update(**platforms)
                 paths.update(jsone.render(partials_paths, kwargs))
 
         if not paths:
             continue
 
-        artifacts.append(
-            {
-                "taskId": {"task-reference": f"<{dep}>"},
-                "locale": locale,
-                "paths": paths,
-            }
-        )
+        artifacts.append({
+            "taskId": {"task-reference": f"<{dep}>"},
+            "locale": locale,
+            "paths": paths,
+        })
 
     artifacts.sort(key=lambda a: sorted(a["paths"].items()))
     return artifacts

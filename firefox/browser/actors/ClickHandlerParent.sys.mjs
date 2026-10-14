@@ -1,4 +1,3 @@
-/* -*- mode: js; indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -39,7 +38,7 @@ export class MiddleMousePasteHandlerParent extends JSWindowActorParent {
         return;
       }
       fillInClickEvent(this, message.data);
-      browser.ownerGlobal.middleMousePaste(message.data);
+      browser.documentGlobal.middleMousePaste(message.data);
     }
   }
 }
@@ -66,8 +65,8 @@ export class ClickHandlerParent extends JSWindowActorParent {
   /**
    * Handles clicks in the content area.
    *
-   * @param data {Object} object that looks like an Event
-   * @param browser {Element<browser>}
+   * @param {object} data
+   *   An Object that looks like an Event.
    */
   contentAreaClick(data) {
     // This is heavily based on contentAreaClick from browser.js (Bug 903016)
@@ -78,7 +77,7 @@ export class ClickHandlerParent extends JSWindowActorParent {
       // Just bail.
       return;
     }
-    let window = browser.ownerGlobal;
+    let window = browser.documentGlobal;
 
     // If the browser is not in a place where we can open links, bail out.
     // This can happen in osx sheets, dialogs, etc. that are not browser
@@ -114,7 +113,9 @@ export class ClickHandlerParent extends JSWindowActorParent {
       originPrincipal: data.originPrincipal,
       originStoragePrincipal: data.originStoragePrincipal,
       triggeringPrincipal: data.triggeringPrincipal,
-      csp: data.csp ? lazy.E10SUtils.deserializeCSP(data.csp) : null,
+      policyContainer: data.policyContainer
+        ? lazy.E10SUtils.deserializePolicyContainer(data.policyContainer)
+        : null,
       frameID: data.frameID,
       openerBrowser: browser,
       // The child ensures that untrusted events have a valid user activation.
@@ -131,6 +132,7 @@ export class ClickHandlerParent extends JSWindowActorParent {
         triggeringSponsoredURLVisitTimeMS: browser.getAttribute(
           "triggeringSponsoredURLVisitTimeMS"
         ),
+        triggeringSource: browser.getAttribute("triggeringSource"),
       };
     }
 

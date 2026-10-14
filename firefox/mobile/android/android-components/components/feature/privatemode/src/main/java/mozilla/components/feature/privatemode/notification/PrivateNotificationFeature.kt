@@ -6,7 +6,10 @@ package mozilla.components.feature.privatemode.notification
 
 import android.content.Context
 import android.content.Intent
+import kotlin.reflect.KClass
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -14,7 +17,6 @@ import mozilla.components.browser.state.selector.privateTabs
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.lib.state.ext.flowScoped
 import mozilla.components.support.base.feature.LifecycleAwareFeature
-import kotlin.reflect.KClass
 
 /**
  * Starts up a [AbstractPrivateNotificationService] once a private tab is opened.
@@ -26,21 +28,24 @@ class PrivateNotificationFeature<T : AbstractPrivateNotificationService>(
     context: Context,
     private val store: BrowserStore,
     private val notificationServiceClass: KClass<T>,
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
 ) : LifecycleAwareFeature {
 
     private val applicationContext = context.applicationContext
     private var scope: CoroutineScope? = null
 
     override fun start() {
-        scope = store.flowScoped { flow ->
-            flow.map { state -> state.privateTabs.isNotEmpty() }
-                .distinctUntilChanged()
-                .collect { hasPrivateTabs ->
-                    if (hasPrivateTabs) {
-                        applicationContext.startService(Intent(applicationContext, notificationServiceClass.java))
+        scope =
+            store.flowScoped(dispatcher = mainDispatcher) { flow ->
+                flow
+                    .map { state -> state.privateTabs.isNotEmpty() }
+                    .distinctUntilChanged()
+                    .collect { hasPrivateTabs ->
+                        if (hasPrivateTabs) {
+                            applicationContext.startService(Intent(applicationContext, notificationServiceClass.java))
+                        }
                     }
-                }
-        }
+            }
     }
 
     override fun stop() {

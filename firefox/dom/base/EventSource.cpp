@@ -1,58 +1,57 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/ArrayUtils.h"
+#include "mozilla/dom/EventSource.h"
+
+#include "ReferrerInfo.h"
 #include "mozilla/Components.h"
+#include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/DataMutex.h"
 #include "mozilla/DebugOnly.h"
-#include "mozilla/LoadInfo.h"
-#include "mozilla/DOMEventTargetHelper.h"
+#include "mozilla/Encoding.h"
 #include "mozilla/GlobalFreezeObserver.h"
-#include "mozilla/dom/EventSource.h"
+#include "mozilla/LoadInfo.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/Try.h"
+#include "mozilla/dom/ClientInfo.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/EventSourceBinding.h"
+#include "mozilla/dom/EventSourceEventService.h"
 #include "mozilla/dom/MessageEvent.h"
 #include "mozilla/dom/MessageEventBinding.h"
 #include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/dom/ServiceWorkerDescriptor.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/dom/WorkerRunnable.h"
 #include "mozilla/dom/WorkerScope.h"
-#include "mozilla/dom/EventSourceEventService.h"
-#include "mozilla/ScopeExit.h"
-#include "mozilla/Try.h"
-#include "mozilla/UniquePtrExtensions.h"
 #include "nsComponentManagerUtils.h"
-#include "nsIThreadRetargetableStreamListener.h"
-#include "nsNetUtil.h"
+#include "nsContentUtils.h"
+#include "nsError.h"
+#include "nsGlobalWindowInner.h"
+#include "nsIAsyncVerifyRedirectCallback.h"
 #include "nsIAuthPrompt.h"
 #include "nsIAuthPrompt2.h"
+#include "nsIConsoleService.h"
 #include "nsIHttpChannel.h"
 #include "nsIInputStream.h"
 #include "nsIInterfaceRequestorUtils.h"
-#include "nsMimeTypes.h"
 #include "nsIPromptFactory.h"
+#include "nsIScriptError.h"
+#include "nsIScriptObjectPrincipal.h"
+#include "nsIStringBundle.h"
+#include "nsIThreadRetargetableRequest.h"
+#include "nsIThreadRetargetableStreamListener.h"
 #include "nsIWindowWatcher.h"
+#include "nsJSUtils.h"
+#include "nsMimeTypes.h"
+#include "nsNetUtil.h"
 #include "nsPresContext.h"
 #include "nsProxyRelease.h"
-#include "nsContentPolicyUtils.h"
-#include "nsIStringBundle.h"
-#include "nsIConsoleService.h"
-#include "nsIScriptObjectPrincipal.h"
-#include "nsJSUtils.h"
-#include "nsIThreadRetargetableRequest.h"
-#include "nsIAsyncVerifyRedirectCallback.h"
-#include "nsIScriptError.h"
-#include "nsContentUtils.h"
-#include "xpcpublic.h"
 #include "nsWrapperCacheInlines.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/StaticPrefs_dom.h"
-#include "nsError.h"
-#include "mozilla/Encoding.h"
-#include "ReferrerInfo.h"
+#include "xpcpublic.h"
 
 namespace mozilla::dom {
 
@@ -121,11 +120,11 @@ class EventSourceImpl final : public nsIChannelEventSink,
     Close();
     GlobalTeardownObserver::DisconnectFromOwner();
   }
-  void FrozenCallback(nsIGlobalObject* aOwner) override {
+  void FrozenCallback(nsIGlobalObject* aGlobal) override {
     DebugOnly<nsresult> rv = Freeze();
     MOZ_ASSERT(NS_SUCCEEDED(rv), "Freeze() failed");
   }
-  void ThawedCallback(nsIGlobalObject* aOwner) override {
+  void ThawedCallback(nsIGlobalObject* aGlobal) override {
     DebugOnly<nsresult> rv = Thaw();
     MOZ_ASSERT(NS_SUCCEEDED(rv), "Thaw() failed");
   }
@@ -244,7 +243,8 @@ class EventSourceImpl final : public nsIChannelEventSink,
   nsCOMPtr<nsIURI> mSrc;
   uint32_t mReconnectionTime;  // in ms
   nsCOMPtr<nsIPrincipal> mPrincipal;
-  nsString mOrigin;
+  Maybe<ClientInfo> mClientInfo;
+  Maybe<ServiceWorkerDescriptor> mController;
   nsCOMPtr<nsITimer> mTimer;
   nsCOMPtr<nsIHttpChannel> mHttpChannel;
 
@@ -257,6 +257,10 @@ class EventSourceImpl final : public nsIChannelEventSink,
     // We can't check for the 1st state with a simple nsString.
     Maybe<nsString> mLastEventID;
     nsString mData;
+    // Origin of the connection this message was parsed from. Copied per
+    // message because a reconnect can change it while older messages are
+    // still queued.
+    nsString mOrigin;
   };
 
   // Message related data members. May be set / initialized when initializing
@@ -335,6 +339,8 @@ class EventSourceImpl final : public nsIChannelEventSink,
   struct SharedData {
     RefPtr<EventSource> mEventSource;
     UniquePtr<EventSourceServiceNotifier> mServiceNotifier;
+    // Origin of the current connection's final URL, i.e. after redirects.
+    nsString mOrigin;
   };
 
   DataMutex<SharedData> mSharedData;
@@ -350,6 +356,10 @@ class EventSourceImpl final : public nsIChannelEventSink,
   JSCallingLocation mCallingLocation;
   uint64_t mInnerWindowID;
 
+  // prevent bad usage
+  EventSourceImpl(const EventSourceImpl& x) = delete;
+  EventSourceImpl& operator=(const EventSourceImpl& x) = delete;
+
  private:
   nsCOMPtr<nsICookieJarSettings> mCookieJarSettings;
 
@@ -360,9 +370,6 @@ class EventSourceImpl final : public nsIChannelEventSink,
   // and must not be dereferenced.
   nsIThread* mTargetThread;
 
-  // prevent bad usage
-  EventSourceImpl(const EventSourceImpl& x) = delete;
-  EventSourceImpl& operator=(const EventSourceImpl& x) = delete;
   ~EventSourceImpl() {
     if (IsClosed()) {
       return;
@@ -541,10 +548,6 @@ nsresult EventSourceImpl::ParseURL(const nsAString& aURL) {
 
   NS_ENSURE_SUCCESS(rv, NS_ERROR_DOM_SYNTAX_ERR);
 
-  nsAutoString origin;
-  rv = nsContentUtils::GetWebExposedOriginSerialization(srcURI, origin);
-  NS_ENSURE_SUCCESS(rv, rv);
-
   nsAutoCString spec;
   rv = srcURI->GetSpec(spec);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -559,8 +562,7 @@ nsresult EventSourceImpl::ParseURL(const nsAString& aURL) {
     auto lock = mSharedData.Lock();
     lock->mEventSource->mOriginalURL = NS_ConvertUTF8toUTF16(spec);
   }
-  mSrc = srcURI;
-  mOrigin = origin;
+  mSrc = std::move(srcURI);
   return NS_OK;
 }
 
@@ -569,8 +571,8 @@ nsresult EventSourceImpl::AddGlobalObservers(nsIGlobalObject* aGlobal) {
   MOZ_ASSERT(mIsMainThread);
   MOZ_ASSERT(!mIsShutDown);
 
-  GlobalTeardownObserver::BindToOwner(aGlobal);
-  GlobalFreezeObserver::BindToOwner(aGlobal);
+  GlobalTeardownObserver::BindToGlobal(aGlobal);
+  GlobalFreezeObserver::BindToGlobal(aGlobal);
 
   return NS_OK;
 }
@@ -680,8 +682,17 @@ EventSourceImpl::OnStartRequest(nsIRequest* aRequest) {
     }
   }
 
+  nsCOMPtr<nsIURI> finalURI;
+  rv = NS_GetFinalChannelURI(httpChannel, getter_AddRefs(finalURI));
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  nsAutoString origin;
+  rv = nsContentUtils::GetWebExposedOriginSerialization(finalURI, origin);
+  NS_ENSURE_SUCCESS(rv, rv);
+
   {
     auto lock = mSharedData.Lock();
+    lock->mOrigin = origin;
     lock->mServiceNotifier = MakeUnique<EventSourceServiceNotifier>(
         this, mHttpChannel->ChannelId(), mInnerWindowID);
   }
@@ -777,6 +788,27 @@ EventSourceImpl::OnStopRequest(nsIRequest* aRequest, nsresult aStatusCode) {
   // There could be additional network errors that are not covered in the above
   // checks
   //  See Bug 1808511
+  if (aStatusCode == NS_BINDING_ABORTED) {
+    nsAutoCString cancelReason;
+    if (mHttpChannel) {
+      mHttpChannel->GetCanceledReason(cancelReason);
+    }
+    if (cancelReason.EqualsLiteral("navigation")) {
+      nsresult rv = Dispatch(NewRunnableMethod("dom::EventSourceImpl::Close",
+                                               this, &EventSourceImpl::Close),
+                             NS_DISPATCH_NORMAL);
+      NS_ENSURE_SUCCESS(rv, rv);
+    } else {
+      // window.stop() or manual cancellation: fail the connection per spec
+      // (fires onerror + CLOSED) but suppress the console error.
+      nsresult rv =
+          Dispatch(NewRunnableMethod("dom::EventSourceImpl::FailConnection",
+                                     this, &EventSourceImpl::FailConnection),
+                   NS_DISPATCH_NORMAL);
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
+    return NS_OK;
+  }
   if (NS_FAILED(aStatusCode) && aStatusCode != NS_ERROR_CONNECTION_REFUSED &&
       aStatusCode != NS_ERROR_NET_TIMEOUT &&
       aStatusCode != NS_ERROR_NET_RESET &&
@@ -964,7 +996,7 @@ void EventSourceImpl::SetupHttpChannel() {
             ("SetupHttpChannel. rv=%x (%s)", uint32_t(rv), eventId.get()));
   }
 #endif
-  Unused << rv;
+  (void)rv;
 }
 
 nsresult EventSourceImpl::SetupReferrerInfo(
@@ -1037,6 +1069,26 @@ nsresult EventSourceImpl::InitChannelAndRequestEventSource(
                        loadGroup,
                        nullptr,     // aCallbacks
                        loadFlags);  // aLoadFlags
+  } else if (mClientInfo.isSome()) {
+    // Use the ClientInfo overload so the channel is associated with the
+    // correct client (e.g. the worker global that created this EventSource).
+    rv = NS_NewChannel(getter_AddRefs(channel), mSrc, mPrincipal,
+                       mClientInfo.ref(), mController, securityFlags,
+                       nsIContentPolicy::TYPE_INTERNAL_EVENTSOURCE,
+                       mCookieJarSettings,
+                       nullptr,     // aPerformanceStorage
+                       nullptr,     // loadGroup
+                       nullptr,     // aCallbacks
+                       loadFlags);  // aLoadFlags
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    auto workerRef = mWorkerRef.Lock();
+
+    if (*workerRef) {
+      nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
+      loadInfo->SetIsInThirdPartyContext(
+          (*workerRef)->Private()->IsThirdPartyContext());
+    }
   } else {
     // otherwise use the principal
     rv = NS_NewChannel(getter_AddRefs(channel), mSrc, mPrincipal, securityFlags,
@@ -1184,7 +1236,13 @@ void EventSourceImpl::ReestablishConnection() {
     return;
   }
 
-  rv = GetEventSource()->CheckCurrentGlobalCorrectness();
+  RefPtr<EventSource> source = GetEventSource();
+  if (!source) {
+    NS_WARNING("Event source is null");
+    return;
+  }
+
+  rv = source->CheckCurrentGlobalCorrectness();
   if (NS_FAILED(rv)) {
     return;
   }
@@ -1193,7 +1251,7 @@ void EventSourceImpl::ReestablishConnection() {
   ResetDecoder();
   // We can't hold the mutex while dispatching the event because the mutex is
   // not reentrant, and content might call back into our code.
-  rv = GetEventSource()->CreateAndDispatchSimpleEvent(u"error"_ns);
+  rv = source->CreateAndDispatchSimpleEvent(u"error"_ns);
   if (NS_FAILED(rv)) {
     NS_WARNING("Failed to dispatch the error event!!!");
     return;
@@ -1407,6 +1465,11 @@ nsresult EventSourceImpl::DispatchCurrentMessageEvent() {
     message->mEventName.AssignLiteral("message");
   }
 
+  {
+    auto lock = mSharedData.Lock();
+    message->mOrigin = lock->mOrigin;
+  }
+
   mMessagesToDispatch.Push(message.release());
 
   if (!mGoingToDispatchAllMessages) {
@@ -1440,7 +1503,7 @@ void EventSourceImpl::DispatchAllMessageEvents() {
       return;
     }
 
-    if (NS_WARN_IF(!jsapi.Init(lock->mEventSource->GetOwnerGlobal()))) {
+    if (NS_WARN_IF(!jsapi.Init(lock->mEventSource->GetRelevantGlobal()))) {
       return;
     }
   }
@@ -1486,8 +1549,9 @@ void EventSourceImpl::DispatchAllMessageEvents() {
         new MessageEvent(eventSource, nullptr, nullptr);
 
     event->InitMessageEvent(nullptr, message->mEventName, CanBubble::eNo,
-                            Cancelable::eNo, jsData, mOrigin, mLastEventID,
-                            nullptr, Sequence<OwningNonNull<MessagePort>>());
+                            Cancelable::eNo, jsData, message->mOrigin,
+                            mLastEventID, nullptr,
+                            Sequence<OwningNonNull<MessagePort>>());
     event->SetTrusted(true);
 
     // We can't hold the mutex while dispatching the event because the mutex is
@@ -1831,17 +1895,19 @@ void EventSourceImpl::ReleaseWorkerRef() {
 // EventSourceImpl::nsIEventTarget
 //-----------------------------------------------------------------------------
 NS_IMETHODIMP
-EventSourceImpl::DispatchFromScript(nsIRunnable* aEvent, uint32_t aFlags) {
+EventSourceImpl::DispatchFromScript(nsIRunnable* aEvent, DispatchFlags aFlags) {
   nsCOMPtr<nsIRunnable> event(aEvent);
   return Dispatch(event.forget(), aFlags);
 }
 
 NS_IMETHODIMP
 EventSourceImpl::Dispatch(already_AddRefed<nsIRunnable> aEvent,
-                          uint32_t aFlags) {
+                          DispatchFlags aFlags) {
+  // FIXME: This dispatch implementation has inconsistent leaking behaviour when
+  // `NS_DISPATCH_FALLIBLE` is not specified.
   nsCOMPtr<nsIRunnable> event_ref(aEvent);
   if (mIsMainThread) {
-    return NS_DispatchToMainThread(event_ref.forget());
+    return NS_DispatchToMainThread(event_ref.forget(), aFlags);
   }
 
   if (mIsShutDown) {
@@ -1881,6 +1947,10 @@ EventSourceImpl::RegisterShutdownTask(nsITargetShutdownTask*) {
 NS_IMETHODIMP
 EventSourceImpl::UnregisterShutdownTask(nsITargetShutdownTask*) {
   return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+nsIEventTarget::FeatureFlags EventSourceImpl::GetFeatures() {
+  return SUPPORTS_BASE;
 }
 
 //-----------------------------------------------------------------------------
@@ -1987,6 +2057,10 @@ already_AddRefed<EventSource> EventSource::Constructor(
     MOZ_ASSERT(workerPrivate);
 
     eventSource->mESImpl->mInnerWindowID = workerPrivate->WindowID();
+    eventSource->mESImpl->mClientInfo =
+        workerPrivate->GlobalScope()->GetClientInfo();
+    eventSource->mESImpl->mController =
+        workerPrivate->GlobalScope()->GetController();
 
     eventSource->mESImpl->Init(nullptr, workerPrivate->GetPrincipal(), aURL,
                                aRv);

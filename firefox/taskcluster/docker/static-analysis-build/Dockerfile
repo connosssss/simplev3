@@ -9,7 +9,6 @@ ENV XZ_OPT=-T0
 
 RUN apt-get update && \
     apt-get install \
-      autoconf2.13 \
       automake \
       bison \
       bzip2 \
@@ -28,7 +27,6 @@ RUN apt-get update && \
       nasm \
       opam \
       patch \
-      p7zip-full \
       procps \
       python3-dev \
       rsync \
@@ -44,8 +42,7 @@ RUN apt-get update && \
       xvfb \
       linux-libc-dev \
       libfontconfig1-dev \
-      libfreetype6-dev \
-      libgconf2-dev \
+      libfreetype-dev \
       libgmp-dev \
       libgtk-3-dev \
       libpango1.0-dev \

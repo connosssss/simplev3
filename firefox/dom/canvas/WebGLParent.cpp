@@ -1,22 +1,21 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "WebGLParent.h"
 
+#include "HostWebGLContext.h"
+#include "ImageContainer.h"
 #include "WebGLChild.h"
+#include "WebGLMethodDispatcher.h"
 #include "mozilla/layers/SharedSurfacesParent.h"
 #include "mozilla/layers/TextureClientSharedSurface.h"
-#include "ImageContainer.h"
-#include "HostWebGLContext.h"
-#include "WebGLMethodDispatcher.h"
 
 namespace mozilla::dom {
 
 mozilla::ipc::IPCResult WebGLParent::RecvInitialize(
     const webgl::InitContextDesc& desc, webgl::InitContextResult* const out) {
-  mHost = HostWebGLContext::Create({nullptr, this}, desc, out);
+  mHost = HostWebGLContext::Create(this, desc, out);
 
   if (!mHost) {
     MOZ_ASSERT(!out->error->empty());
@@ -46,10 +45,10 @@ IPCResult WebGLParent::RecvDispatchCommands(BigBuffer&& shmem,
   const gl::GLContext::TlsScope tlsIsCurrent(gl);
 
   MOZ_ASSERT(cmdsByteSize);
-  const auto shmemBytes = Range<uint8_t>{shmem.AsSpan()};
+  const auto shmemBytes = mozilla::Range<uint8_t>{shmem.AsSpan()};
   const auto byteSize = std::min<uint64_t>(shmemBytes.length(), cmdsByteSize);
-  const auto cmdsBytes =
-      Range<const uint8_t>{shmemBytes.begin(), shmemBytes.begin() + byteSize};
+  const auto cmdsBytes = mozilla::Range<const uint8_t>{
+      shmemBytes.begin(), shmemBytes.begin() + byteSize};
   auto view = webgl::RangeConsumerView{cmdsBytes};
 
   if (kIsDebug) {
@@ -191,7 +190,7 @@ IPCResult WebGLParent::RecvGetBufferSubData(const GLenum target,
 
   const auto shmemRange = shmem.ByteRange();
   const auto dataRange =
-      Range<uint8_t>{shmemRange.begin() + 1, shmemRange.end()};
+      mozilla::Range<uint8_t>{shmemRange.begin() + 1, shmemRange.end()};
 
   // We need to always send the shmem:
   // https://bugzilla.mozilla.org/show_bug.cgi?id=1463831#c2
@@ -230,6 +229,39 @@ IPCResult WebGLParent::RecvReadPixels(const webgl::ReadPixelsDesc& desc,
 
   const auto res = mHost->ReadPixelsInto(desc, range);
   *ret = {res, Some(shmem.Extract())};
+  return IPC_OK();
+}
+
+IPCResult WebGLParent::RecvReadPixelsAsync(const webgl::ReadPixelsDesc& aDesc,
+                                           uint64_t aByteSize,
+                                           ReadPixelsAsyncResolver&& aResolve) {
+  AUTO_PROFILER_LABEL("WebGLParent::RecvReadPixelsAsync", GRAPHICS);
+
+  if (!mHost) {
+    return IPC_FAIL(this, "HostWebGLContext is not initialized.");
+  }
+
+  CheckedInt<size_t> checkedSize(aByteSize);
+  if (!checkedSize.isValid()) {
+    return IPC_FAIL(this, "Invalid ReadPixels byte size.");
+  }
+
+  const size_t allocSize = std::max<size_t>(1, checkedSize.value());
+
+  auto shmem = webgl::RaiiShmem::Alloc(this, allocSize);
+  if (!shmem) {
+    NS_WARNING("Failed to allocate shmem for RecvReadPixelsAsync.");
+    aResolve(webgl::ReadPixelsResultIpc{});
+    return IPC_OK();
+  }
+
+  const auto res = mHost->ReadPixelsInto(aDesc, shmem.ByteRange());
+
+  aResolve(webgl::ReadPixelsResultIpc{
+      res,
+      Some(shmem.Extract()),
+  });
+
   return IPC_OK();
 }
 

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,12 +13,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "mozilla/Ashmem.h"
+#include <android/sharedmem.h>
 
 #ifdef MOZ_VALGRIND
 #  include <valgrind/valgrind.h>
 #endif
 
+#include "mozilla/DebugOnly.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/UniquePtrExtensions.h"
 #include "prenv.h"
@@ -31,7 +30,7 @@ namespace mozilla::ipc::shared_memory {
 static Maybe<PlatformHandle> CreateImpl(size_t aSize, bool aFreezable) {
   MOZ_ASSERT(aSize > 0);
 
-  int fd = mozilla::android::ashmem_create(nullptr, aSize);
+  int fd = ASharedMemory_create(nullptr, aSize);
   if (fd < 0) {
     MOZ_LOG_FMT(gSharedMemoryLog, LogLevel::Warning, "failed to open shm: {}",
                 strerror(errno));
@@ -63,19 +62,18 @@ bool Platform::CreateFreezable(FreezableHandle& aHandle, size_t aSize) {
 }
 
 PlatformHandle Platform::CloneHandle(const PlatformHandle& aHandle) {
-  const int new_fd = dup(aHandle.get());
-  if (new_fd < 0) {
+  auto rv = DuplicateFileHandle(aHandle);
+  if (!rv) {
     MOZ_LOG_FMT(gSharedMemoryLog, LogLevel::Warning,
                 "failed to duplicate file descriptor: {}", strerror(errno));
-    return nullptr;
   }
-  return mozilla::UniqueFileHandle(new_fd);
+  return rv;
 }
 
 bool Platform::Freeze(FreezableHandle& aHandle) {
-  if (mozilla::android::ashmem_setProt(aHandle.mHandle.get(), PROT_READ) != 0) {
+  if (ASharedMemory_setProt(aHandle.mHandle.get(), PROT_READ) != 0) {
     MOZ_LOG_FMT(gSharedMemoryLog, LogLevel::Warning,
-                "failed to set ashmem read-only: {}", strerror(errno));
+                "failed to set sharedmem read-only: {}", strerror(errno));
     return false;
   }
   return true;
@@ -128,6 +126,15 @@ size_t Platform::PageSize() { return sysconf(_SC_PAGESIZE); }
 
 size_t Platform::AllocationGranularity() { return PageSize(); }
 
-bool Platform::IsSafeToMap(const PlatformHandle&) { return true; }
+bool Platform::IsSafeToMap(const PlatformHandle& aHandle, uint64_t aSize) {
+  size_t memSize = ASharedMemory_getSize(aHandle.get());
+  // errors return 0, which will fail this check
+  if (memSize < aSize) {
+    MOZ_LOG_FMT(gSharedMemoryLog, LogLevel::Warning,
+                "shm is too short ({} < {})", memSize, aSize);
+    return false;
+  }
+  return true;
+}
 
 }  // namespace mozilla::ipc::shared_memory

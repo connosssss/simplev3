@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,24 +6,22 @@
 
 #include "nsCSSValue.h"
 
+#include "gfxFontConstants.h"
+#include "imgRequestProxy.h"
 #include "mozilla/CORSMode.h"
 #include "mozilla/FontPropertyTypes.h"
 #include "mozilla/ServoBindings.h"
 #include "mozilla/ServoStyleSet.h"
 #include "mozilla/ServoTypes.h"
 #include "mozilla/StyleSheetInlines.h"
-#include "mozilla/Likely.h"
-#include "mozilla/MemoryReporting.h"
 #include "mozilla/css/ImageLoader.h"
-#include "gfxFontConstants.h"
-#include "imgRequestProxy.h"
 #include "mozilla/dom/Document.h"
 #include "nsCSSProps.h"
+#include "nsContentUtils.h"
+#include "nsDeviceContext.h"
 #include "nsNetUtil.h"
 #include "nsPresContext.h"
 #include "nsStyleUtil.h"
-#include "nsDeviceContext.h"
-#include "nsContentUtils.h"
 
 using namespace mozilla;
 using namespace mozilla::css;

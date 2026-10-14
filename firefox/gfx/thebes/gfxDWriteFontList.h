@@ -1,25 +1,21 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef GFX_DWRITEFONTLIST_H
 #define GFX_DWRITEFONTLIST_H
 
-#include "mozilla/FontPropertyTypes.h"
-#include "mozilla/MathAlgorithms.h"
-#include "mozilla/MemoryReporting.h"
-#include "gfxDWriteCommon.h"
-#include "dwrite_3.h"
-
-#include "gfxFont.h"
-#include "gfxUserFontSet.h"
-#include "cairo-win32.h"
-
-#include "gfxPlatformFontList.h"
-#include "gfxPlatform.h"
 #include <algorithm>
 
+#include "cairo-win32.h"
+#include "dwrite_3.h"
+#include "gfxDWriteCommon.h"
+#include "gfxFont.h"
+#include "gfxPlatform.h"
+#include "gfxPlatformFontList.h"
+#include "gfxUserFontSet.h"
+#include "mozilla/FontPropertyTypes.h"
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/gfx/UnscaledFontDWrite.h"
 
 /**
@@ -31,7 +27,7 @@
  */
 class gfxDWriteFontFamily final : public gfxFontFamily {
  public:
-  typedef mozilla::FontStretch FontStretch;
+  typedef mozilla::FontWidth FontWidth;
   typedef mozilla::FontSlantStyle FontSlantStyle;
   typedef mozilla::FontWeight FontWeight;
 
@@ -110,8 +106,7 @@ class gfxDWriteFontEntry final : public gfxFontEntry {
                                        : FontSlantStyle::NORMAL));
     mStyleRange = SlantStyleRange(style);
 
-    mStretchRange =
-        StretchRange(FontStretchFromDWriteStretch(aFont->GetStretch()));
+    mWidthRange = WidthRange(FontWidthFromDWriteStretch(aFont->GetStretch()));
 
     int weight = mozilla::RoundUpToMultiple(aFont->GetWeight() - 50, 100);
     weight = std::clamp(weight, 100, 900);
@@ -128,11 +123,11 @@ class gfxDWriteFontEntry final : public gfxFontEntry {
    * \param aFaceName The name of the corresponding font face.
    * \param aFont DirectWrite font object
    * \param aWeight Weight of the font
-   * \param aStretch Stretch of the font
+   * \param aWidth Width of the font
    * \param aStyle italic or oblique of font
    */
   gfxDWriteFontEntry(const nsACString& aFaceName, IDWriteFont* aFont,
-                     WeightRange aWeight, StretchRange aStretch,
+                     WeightRange aWeight, WidthRange aWidth,
                      SlantStyleRange aStyle)
       : gfxFontEntry(aFaceName),
         mFont(aFont),
@@ -142,7 +137,7 @@ class gfxDWriteFontEntry final : public gfxFontEntry {
         mHasVariations(false),
         mHasVariationsInitialized(false) {
     mWeightRange = aWeight;
-    mStretchRange = aStretch;
+    mWidthRange = aWidth;
     mStyleRange = aStyle;
     mIsLocalUserFont = true;
     mIsCJK = UNINITIALIZED_VALUE;
@@ -155,12 +150,12 @@ class gfxDWriteFontEntry final : public gfxFontEntry {
    * \param aFontFile DirectWrite fontfile object
    * \param aFontFileStream DirectWrite fontfile stream object
    * \param aWeight Weight of the font
-   * \param aStretch Stretch of the font
+   * \param aWidth Width of the font
    * \param aStyle italic or oblique of font
    */
   gfxDWriteFontEntry(const nsACString& aFaceName, IDWriteFontFile* aFontFile,
-                     IDWriteFontFileStream* aFontFileStream,
-                     WeightRange aWeight, StretchRange aStretch,
+                     gfxDWriteFontFileStream* aFontFileStream,
+                     WeightRange aWeight, WidthRange aWidth,
                      SlantStyleRange aStyle)
       : gfxFontEntry(aFaceName),
         mFont(nullptr),
@@ -171,7 +166,7 @@ class gfxDWriteFontEntry final : public gfxFontEntry {
         mHasVariations(false),
         mHasVariationsInitialized(false) {
     mWeightRange = aWeight;
-    mStretchRange = aStretch;
+    mWidthRange = aWidth;
     mStyleRange = aStyle;
     mIsDataUserFont = true;
     mIsCJK = UNINITIALIZED_VALUE;
@@ -179,18 +174,9 @@ class gfxDWriteFontEntry final : public gfxFontEntry {
 
   gfxFontEntry* Clone() const override;
 
-  virtual ~gfxDWriteFontEntry();
-
-  hb_blob_t* GetFontTable(uint32_t aTableTag) override;
-
   nsresult ReadCMAP(FontInfoData* aFontInfoData = nullptr) override;
 
   bool IsCJKFont();
-
-  bool HasVariations() override;
-  void GetVariationAxes(nsTArray<gfxFontVariationAxis>& aAxes) override;
-  void GetVariationInstances(
-      nsTArray<gfxFontVariationInstance>& aInstances) override;
 
   void SetForceGDIClassic(bool aForce) { mForceGDIClassic = aForce; }
   bool GetForceGDIClassic() { return mForceGDIClassic; }
@@ -200,10 +186,27 @@ class gfxDWriteFontEntry final : public gfxFontEntry {
   void AddSizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf,
                               FontListSizes* aSizes) const override;
 
+  size_t ComputedSizeOfExcludingThis(
+      mozilla::MallocSizeOf aMallocSizeOf) override;
+
  protected:
   friend class gfxDWriteFont;
   friend class gfxDWriteFontList;
   friend class gfxDWriteFontFamily;
+
+  // Protected destructor, to discourage deletion outside of Release():
+  virtual ~gfxDWriteFontEntry();
+
+#if MOZ_FONTATIONS
+  void InitSkrifaFontFace() override;
+#endif
+
+  bool HasVariationsInternal() override;
+  void GetVariationAxesInternal(nsTArray<gfxFontVariationAxis>& aAxes) override;
+  void GetVariationInstancesInternal(
+      nsTArray<gfxFontVariationInstance>& aInstances) override;
+
+  hb_blob_t* GetFontTableInternal(uint32_t aTableTag) override;
 
   virtual nsresult CopyFontTable(uint32_t aTableTag,
                                  nsTArray<uint8_t>& aBuffer) override;
@@ -216,6 +219,8 @@ class gfxDWriteFontEntry final : public gfxFontEntry {
       const nsTArray<gfxFontVariation>* aVariations = nullptr);
 
   static bool InitLogFont(IDWriteFont* aFont, LOGFONTW* aLogFont);
+
+  FontTableCache* GetFontTableCache(bool aCreate) override;
 
   /**
    * A fontentry only needs to have either of these. If it has both only
@@ -230,11 +235,18 @@ class gfxDWriteFontEntry final : public gfxFontEntry {
 
   // font face corresponding to the mFont/mFontFile *without* any DWrite
   // style simulations applied
-  RefPtr<IDWriteFontFace> mFontFace;
+  RefPtr<IDWriteFontFace> mFontFace MOZ_GUARDED_BY(mLock);
   // Extended fontface interface if supported, else null
-  RefPtr<IDWriteFontFace5> mFontFace5;
+  RefPtr<IDWriteFontFace5> mFontFace5 MOZ_GUARDED_BY(mLock);
 
   DWRITE_FONT_FACE_TYPE mFaceType;
+
+  mozilla::Atomic<FontTableCache*> mFontTableCache;
+
+#if MOZ_FONTATIONS
+  // File fragment backing our Skrifa font, if unable to mmap the file.
+  void* mFragmentContext = nullptr;
+#endif
 
   int8_t mIsCJK;
   bool mIsSystemFont;
@@ -246,9 +258,10 @@ class gfxDWriteFontEntry final : public gfxFontEntry {
   // faces can be reliably identified via a GDI LOGFONT structure.
   bool mMayUseGDIAccess = false;
 
-  mozilla::ThreadSafeWeakPtr<mozilla::gfx::UnscaledFontDWrite> mUnscaledFont;
-  mozilla::ThreadSafeWeakPtr<mozilla::gfx::UnscaledFontDWrite>
-      mUnscaledFontBold;
+  mozilla::ThreadSafeWeakPtr<mozilla::gfx::UnscaledFontDWrite> mUnscaledFont
+      MOZ_GUARDED_BY(mLock);
+  mozilla::ThreadSafeWeakPtr<mozilla::gfx::UnscaledFontDWrite> mUnscaledFontBold
+      MOZ_GUARDED_BY(mLock);
 };
 
 // custom text renderer used to determine the fallback font for a given char
@@ -261,7 +274,7 @@ class DWriteFontFallbackRenderer final : public IDWriteTextRenderer {
     (void)hr;
   }
 
-  ~DWriteFontFallbackRenderer() {}
+  ~DWriteFontFallbackRenderer() = default;
 
   // If we don't have an mSystemFonts pointer, this renderer is unusable.
   bool IsValid() const { return mSystemFonts; }
@@ -369,10 +382,10 @@ class gfxDWriteFontList final : public gfxPlatformFontList {
 
   FontVisibility GetVisibilityForFamily(const nsACString& aName) const;
 
-  gfxFontFamily* CreateFontFamily(const nsACString& aName,
-                                  FontVisibility aVisibility) const override;
+  already_AddRefed<gfxFontFamily> CreateFontFamily(
+      const nsACString& aName, FontVisibility aVisibility) const override;
 
-  gfxFontEntry* CreateFontEntry(
+  already_AddRefed<gfxFontEntry> CreateFontEntry(
       mozilla::fontlist::Face* aFace,
       const mozilla::fontlist::Family* aFamily) override;
 
@@ -389,28 +402,22 @@ class gfxDWriteFontList final : public gfxPlatformFontList {
       nsTArray<mozilla::fontlist::Face::InitData>& aFaces,
       bool aLoadCmaps) const override;
 
-  gfxFontEntry* LookupLocalFont(nsPresContext* aPresContext,
-                                const nsACString& aFontName,
-                                WeightRange aWeightForEntry,
-                                StretchRange aStretchForEntry,
-                                SlantStyleRange aStyleForEntry) override;
+  already_AddRefed<gfxFontEntry> LookupLocalFont(
+      FontVisibilityProvider* aFontVisibilityProvider,
+      const nsACString& aFontName, WeightRange aWeightForEntry,
+      WidthRange aWidthForEntry, SlantStyleRange aStyleForEntry) override;
 
-  gfxFontEntry* MakePlatformFont(const nsACString& aFontName,
-                                 WeightRange aWeightForEntry,
-                                 StretchRange aStretchForEntry,
-                                 SlantStyleRange aStyleForEntry,
-                                 const uint8_t* aFontData,
-                                 uint32_t aLength) override;
-
-  IDWriteGdiInterop* GetGDIInterop() { return mGDIInterop; }
-  bool UseGDIFontTableAccess() const;
+  already_AddRefed<gfxFontEntry> MakePlatformFont(
+      const nsACString& aFontName, WeightRange aWeightForEntry,
+      WidthRange aWidthForEntry, SlantStyleRange aStyleForEntry,
+      FontData* aFontData) override;
 
   bool FindAndAddFamiliesLocked(
-      nsPresContext* aPresContext, mozilla::StyleGenericFontFamily aGeneric,
-      const nsACString& aFamily, nsTArray<FamilyAndGeneric>* aOutput,
-      FindFamiliesFlags aFlags, gfxFontStyle* aStyle = nullptr,
-      nsAtom* aLanguage = nullptr, gfxFloat aDevToCssSize = 1.0)
-      MOZ_REQUIRES(mLock) override;
+      FontVisibilityProvider* aFontVisibilityProvider,
+      mozilla::StyleGenericFontFamily aGeneric, const nsACString& aFamily,
+      nsTArray<FamilyAndGeneric>* aOutput, FindFamiliesFlags aFlags,
+      gfxFontStyle* aStyle = nullptr, nsAtom* aLanguage = nullptr,
+      gfxFloat aDevToCssSize = 1.0) MOZ_REQUIRES(mLock) override;
 
   gfxFloat GetForceGDIClassicMaxFontSize() {
     return mForceGDIClassicMaxFontSize;
@@ -422,19 +429,17 @@ class gfxDWriteFontList final : public gfxPlatformFontList {
                                       FontListSizes* aSizes) const;
 
  protected:
-  FontFamily GetDefaultFontForPlatform(nsPresContext* aPresContext,
-                                       const gfxFontStyle* aStyle,
-                                       nsAtom* aLanguage = nullptr)
+  FontFamily GetDefaultFontForPlatform(
+      FontVisibilityProvider* aFontVisibilityProvider,
+      const gfxFontStyle* aStyle, nsAtom* aLanguage = nullptr)
       MOZ_REQUIRES(mLock) override;
 
   // attempt to use platform-specific fallback for the given character,
   // return null if no usable result found
-  gfxFontEntry* PlatformGlobalFontFallback(nsPresContext* aPresContext,
-                                           const uint32_t aCh,
-                                           Script aRunScript,
-                                           const gfxFontStyle* aMatchStyle,
-                                           FontFamily& aMatchedFamily)
-      MOZ_REQUIRES(mLock) override;
+  gfxFontEntry* PlatformGlobalFontFallback(
+      FontVisibilityProvider* aFontVisibilityProvider, const uint32_t aCh,
+      Script aRunScript, const gfxFontStyle* aMatchStyle,
+      FontFamily& aMatchedFamily) MOZ_REQUIRES(mLock) override;
 
   nsTArray<std::pair<const char**, uint32_t>> GetFilteredPlatformFontLists()
       override;
@@ -489,10 +494,6 @@ class gfxDWriteFontList final : public gfxPlatformFontList {
   virtual already_AddRefed<FontInfoData> CreateFontInfoData();
 
   gfxFloat mForceGDIClassicMaxFontSize;
-
-  // whether to use GDI font table access routines
-  bool mGDIFontTableAccess;
-  RefPtr<IDWriteGdiInterop> mGDIInterop;
 
   RefPtr<DWriteFontFallbackRenderer> mFallbackRenderer;
   RefPtr<IDWriteTextFormat> mFallbackFormat;

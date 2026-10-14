@@ -55,6 +55,11 @@ known_errors = [
     },
     {
         # Triggered as soon as anything tries to use shortcut keys.
+        # Bug 1936426 to reconsider warning as we want ctrl-alt-u for open tabs.
+        "message": "viewOpenTabsSidebarKb",
+    },
+    {
+        # Triggered as soon as anything tries to use shortcut keys.
         # Bug 1936426 to reconsider warning as we want ctrl-z / ctrl-alt-z
         # for sidebar.
         "message": "toggleSidebarKb",
@@ -82,7 +87,7 @@ class TestNoErrorsNewProfile(MarionetteTestCase):
         self.marionette.execute_async_script(
             """
             let resolve = arguments[0];
-            let { BrowserInitState } = ChromeUtils.importESModule("resource:///modules/BrowserGlue.sys.mjs");
+            let { BrowserInitState } = ChromeUtils.importESModule("moz-src:///browser/components/BrowserGlue.sys.mjs");
             let promises = [
               BrowserInitState.startupIdleTaskPromise,
               gBrowserInit.idleTasksFinished.promise,

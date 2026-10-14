@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
 const { newURI } = Services.io;
@@ -617,4 +615,263 @@ add_task(async function test_WebExtensionPolicy_static_themes_resources() {
   );
 
   staticThemePolicy.active = false;
+});
+
+add_task(async function test_aboutnewtab_access_to_mozextension_url() {
+  const aboutNewtabURI = newURI("about:newtab");
+  const aboutHomeURI = newURI("about:home");
+  const aboutBlankURI = newURI("about:blank");
+
+  function makeWebExtensionPolicy({
+    id,
+    uuid,
+    isPrivileged,
+    webAccessibleResources = [],
+  }) {
+    let policy = new WebExtensionPolicy({
+      id,
+      mozExtensionHostname: uuid,
+      baseURL: "file:///foo/",
+      manifestVersion: 3,
+      isPrivileged,
+      localizeCallback() {},
+      allowedOrigins: new MatchPatternSet([]),
+      permissions: [],
+      webAccessibleResources,
+    });
+    policy.active = true;
+    return policy;
+  }
+
+  let privilegedPolicy = makeWebExtensionPolicy({
+    id: "privileged@test",
+    uuid: "b1f1c1f4-4b7a-4a3a-9b3a-7a1c8f0a1a11",
+    isPrivileged: true,
+  });
+
+  ok(
+    privilegedPolicy.sourceMayAccessPath(aboutNewtabURI, "/ext-asset.html"),
+    "about:newtab should have access to privileged extension resources without them being listed as web accessible"
+  );
+  ok(
+    privilegedPolicy.sourceMayAccessPath(aboutHomeURI, "/ext-asset.html"),
+    "about:home should have access to privileged extension resources without them being listed as web accessible"
+  );
+  ok(
+    !privilegedPolicy.sourceMayAccessPath(aboutBlankURI, "/ext-asset.html"),
+    "Other about: pages should not have access to non-'web accessible' extension resources"
+  );
+
+  privilegedPolicy.active = false;
+
+  let unprivilegedPolicy = makeWebExtensionPolicy({
+    id: "unprivileged@test",
+    uuid: "2e6c8e2a-9b3e-4f7a-8a3a-1a2b3c4d5e6f",
+    isPrivileged: false,
+  });
+
+  // NOTE: let's not allow about:newtab to embed frames pointing to non-privileged extensions
+  // (we will change that after moz-extension:// sub-frames are loaded in the extension process,
+  // to ensure they will not be running in the privilegedabout process).
+  ok(
+    !unprivilegedPolicy.sourceMayAccessPath(aboutNewtabURI, "/ext-asset.html"),
+    "about:newtab should NOT have access to non-'web accessible' resources from non-privileged extensions"
+  );
+
+  unprivilegedPolicy.active = false;
+
+  // Even resources explicitly listed as web accessible must not be
+  // reachable from about:newtab/about:home while a non-privileged
+  // extension subframe would still be running in the privilegedabout
+  // process (i.e. until subframes have been isolated in the extension
+  // process).
+  let unprivilegedPolicyWithWebAccessibleResources = makeWebExtensionPolicy({
+    id: "unprivileged-with-war@test",
+    uuid: "3f7d9e2a-1b3e-4f7a-8a3a-1a2b3c4d5e70",
+    isPrivileged: false,
+    webAccessibleResources: [{ resources: [new MatchGlob("/ext-asset.html")] }],
+  });
+
+  ok(
+    !unprivilegedPolicyWithWebAccessibleResources.sourceMayAccessPath(
+      aboutNewtabURI,
+      "/ext-asset.html"
+    ),
+    "about:newtab should NOT have access to web accessible resources from non-privileged extensions"
+  );
+
+  unprivilegedPolicyWithWebAccessibleResources.active = false;
+});
+
+add_task(async function test_guardSets() {
+  const id = "applied-policies@test";
+  const uuid = "deadbeef-0000-0000-0000-000000000001";
+  const baseURL = "file:///ext/";
+
+  let policy = new WebExtensionPolicy({
+    id,
+    mozExtensionHostname: uuid,
+    baseURL,
+    localizeCallback(str) {
+      return str;
+    },
+    allowedOrigins: new MatchPatternSet([]),
+  });
+  policy.active = true;
+
+  // Initially empty.
+  deepEqual(policy.guardSets, [], "guardSets starts empty");
+  strictEqual(
+    policy.checkGuarded(newURI("https://example.com/")),
+    null,
+    "checkGuarded returns null when no guards set"
+  );
+
+  // Set guards.
+  const globalGuard = new ExtensionGuardSet({
+    deny: ["https://*.example.com/*"],
+    source: "enterprise-global",
+  });
+  const perExtGuard = new ExtensionGuardSet({
+    deny: ["https://*.example.org/*", "http://internal/"],
+    source: "enterprise-per-extension",
+  });
+  policy.guardSets = [globalGuard, perExtGuard];
+
+  const roundTripped = policy.guardSets;
+  equal(roundTripped.length, 2, "guardSets round-trips with correct length");
+  equal(
+    roundTripped[0].source,
+    "enterprise-global",
+    "first guard source round-trips"
+  );
+  equal(
+    roundTripped[1].source,
+    "enterprise-per-extension",
+    "second guard source round-trips"
+  );
+
+  // checkGuarded returns source of first matching guard.
+  strictEqual(
+    policy.checkGuarded(newURI("https://example.com/page")),
+    "enterprise-global",
+    "Returns source of first matching guard"
+  );
+  strictEqual(
+    policy.checkGuarded(newURI("https://other.example.org/page")),
+    "enterprise-per-extension",
+    "Returns source of second matching guard"
+  );
+  strictEqual(
+    policy.checkGuarded(newURI("http://internal/")),
+    "enterprise-per-extension",
+    "Returns source for internal URL"
+  );
+  strictEqual(
+    policy.checkGuarded(newURI("https://unrelated.example/")),
+    null,
+    "Returns null when no guard matches"
+  );
+
+  // First match wins when guards overlap.
+  const overlappingGuard = new ExtensionGuardSet({
+    deny: ["https://*.example.com/*"],
+    source: "enterprise-per-extension",
+  });
+  policy.guardSets = [globalGuard, overlappingGuard];
+  strictEqual(
+    policy.checkGuarded(newURI("https://example.com/page")),
+    "enterprise-global",
+    "First matching guard wins"
+  );
+
+  // except overrides deny.
+  const guardWithExcept = new ExtensionGuardSet({
+    deny: ["https://*.example.com/*"],
+    except: ["https://allowed.example.com/*"],
+    source: "enterprise-global",
+  });
+  policy.guardSets = [guardWithExcept];
+  strictEqual(
+    policy.checkGuarded(newURI("https://blocked.example.com/")),
+    "enterprise-global",
+    "Returns source for URL in deny but not in except"
+  );
+  strictEqual(
+    policy.checkGuarded(newURI("https://allowed.example.com/")),
+    null,
+    "Returns null for URL covered by except"
+  );
+
+  // Clearing the list.
+  policy.guardSets = [];
+  strictEqual(
+    policy.checkGuarded(newURI("https://example.com/page")),
+    null,
+    "Returns null after clearing guardSets"
+  );
+
+  policy.active = false;
+});
+
+add_task(async function test_canAccessURI_with_guardSets() {
+  const policy = new WebExtensionPolicy({
+    id: "guard-test@bar.baz",
+    mozExtensionHostname: "guard-test-uuid",
+    baseURL: "file:///guard-test/",
+    localizeCallback(str) {
+      return str;
+    },
+    allowedOrigins: new MatchPatternSet([
+      "https://*.example.com/*",
+      "https://*.example.org/*",
+    ]),
+    permissions: [],
+    webAccessibleResources: [],
+  });
+  policy.active = true;
+
+  ok(
+    policy.canAccessURI(newURI("https://example.com/page")),
+    "canAccessURI returns true before any guardSets"
+  );
+
+  const guard = new ExtensionGuardSet({
+    deny: ["https://*.example.com/*"],
+    source: "enterprise-global",
+  });
+  policy.guardSets = [guard];
+
+  ok(
+    !policy.canAccessURI(newURI("https://example.com/page")),
+    "canAccessURI returns false when URI is denied by a guard"
+  );
+  ok(
+    policy.canAccessURI(newURI("https://other.example.org/page")),
+    "canAccessURI returns true for URI not covered by the guard"
+  );
+
+  const guardWithExcept = new ExtensionGuardSet({
+    deny: ["https://*.example.com/*"],
+    except: ["https://other.example.com/*"],
+    source: "enterprise-global",
+  });
+  policy.guardSets = [guardWithExcept];
+
+  ok(
+    !policy.canAccessURI(newURI("https://example.com/page")),
+    "canAccessURI returns false for domain in deny but not in except"
+  );
+  ok(
+    policy.canAccessURI(newURI("https://other.example.com/page")),
+    "canAccessURI returns true for domain covered by except"
+  );
+
+  policy.guardSets = [];
+  ok(
+    policy.canAccessURI(newURI("https://example.com/page")),
+    "canAccessURI returns true again after clearing guardSets"
+  );
+
+  policy.active = false;
 });

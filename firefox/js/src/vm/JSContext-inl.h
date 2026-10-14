@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -61,19 +59,19 @@ class ContextChecks {
   }
 
   void check(JS::Realm* r, int argIndex) {
-    if (r && r != realm()) {
+    if (r && MOZ_UNLIKELY(r != realm())) {
       fail(realm(), r, argIndex);
     }
   }
 
   void check(JS::Compartment* c, int argIndex) {
-    if (c && c != compartment()) {
+    if (c && MOZ_UNLIKELY(c != compartment())) {
       fail(compartment(), c, argIndex);
     }
   }
 
   void check(JS::Zone* z, int argIndex) {
-    if (zone() && z != zone()) {
+    if (zone() && MOZ_UNLIKELY(z != zone())) {
       fail(zone(), z, argIndex);
     }
   }
@@ -95,16 +93,34 @@ class ContextChecks {
     static_assert(std::is_same_v<T, JSAtom> || std::is_same_v<T, JS::Symbol>,
                   "Should only be called with JSAtom* or JS::Symbol* argument");
 
+    JS::AssertCellIsNotGray(thing);
+
 #ifdef DEBUG
-    // Atoms which move across zone boundaries need to be marked in the new
-    // zone, see JS_MarkCrossZoneId.
-    if (zone()) {
-      if (!cx->runtime()->gc.atomMarking.atomIsMarked(zone(), thing)) {
+    // Atoms which move across zone boundaries need to be recorded in the atom
+    // reference bitmap for the new zone, see JS_WrapId. Note that the atom
+    // reference state may not be up-to-date if incremental marking is taking
+    // place.
+    gc::GCRuntime* gc = &cx->runtime()->gc;
+    bool isGCMarking =
+        gc->state() >= gc::State::Prepare && gc->state() <= gc::State::Sweep;
+    if (zone() && !isGCMarking) {
+      if (!gc->atomReferences.hasRef(zone(), thing)) {
         MOZ_CRASH_UNSAFE_PRINTF(
-            "*** Atom not marked for zone %p at argument %d", zone(), argIndex);
+            "*** Atom has no recorded reference from zone %p at argument %d",
+            zone(), argIndex);
       }
     }
 #endif
+  }
+
+  void checkSymbol(JS::Symbol* symbol, int argIndex) {
+    JS::AssertCellIsNotGray(symbol);
+    if (symbol->isUnique()) {
+      MOZ_RELEASE_ASSERT(symbol->isLocal());
+      check(symbol->zone(), argIndex);
+    } else {
+      checkAtom(symbol, argIndex);
+    }
   }
 
   void check(JSString* str, int argIndex) {
@@ -116,7 +132,9 @@ class ContextChecks {
     }
   }
 
-  void check(JS::Symbol* symbol, int argIndex) { checkAtom(symbol, argIndex); }
+  void check(JS::Symbol* symbol, int argIndex) {
+    checkSymbol(symbol, argIndex);
+  }
 
   void check(JS::BigInt* bi, int argIndex) { check(bi->zone(), argIndex); }
 
@@ -159,7 +177,7 @@ class ContextChecks {
     if (id.isAtom()) {
       checkAtom(id.toAtom(), argIndex);
     } else if (id.isSymbol()) {
-      checkAtom(id.toSymbol(), argIndex);
+      checkSymbol(id.toSymbol(), argIndex);
     } else {
       MOZ_ASSERT(!id.isGCThing());
     }
@@ -247,6 +265,17 @@ MOZ_ALWAYS_INLINE bool CallNativeImpl(JSContext* cx, NativeImpl impl,
     MOZ_ASSERT_IF(!alreadyThrowing, !cx->isExceptionPending());
   }
   return ok;
+}
+
+// OOM interrupts don't call the interrupt callbacks, so we don't need
+// to worry about if there is an exception pending. We do want to handle
+// the interrupt sooner than for other interrupts so we capture a precise
+// stack trace.
+MOZ_ALWAYS_INLINE bool CheckForOOMStackTraceInterrupt(JSContext* cx) {
+  if (MOZ_UNLIKELY(cx->hasPendingInterrupt(InterruptReason::OOMStackTrace))) {
+    return cx->handleInterruptNoCallbacks();
+  }
+  return true;
 }
 
 MOZ_ALWAYS_INLINE bool CheckForInterrupt(JSContext* cx) {

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,18 +6,19 @@
 #define mozilla_dom_localstorage_LSSnapshot_h
 
 #include <cstdint>
-#include <cstdlib>
+
 #include "ErrorList.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
 #include "nsCOMPtr.h"
-#include "nsTHashMap.h"
 #include "nsHashKeys.h"
 #include "nsIRunnable.h"
 #include "nsISupports.h"
 #include "nsStringFwd.h"
 #include "nsTArrayForwardDeclare.h"
+#include "nsTHashMap.h"
 #include "nsTHashSet.h"
 
 class nsITimer;
@@ -97,6 +96,26 @@ class LSSnapshot final : public nsIRunnable {
   nsTHashSet<nsString> mLoadedItems;
   nsTHashSet<nsString> mUnknownItems;
   nsTHashMap<nsStringHashKey, nsString> mValues;
+  /**
+   * Cursor remembering where the last GetKey() call left off, so that walking
+   * the keys in order doesn't restart the mValues iteration every time.
+   * mKeyCursorIndex is the index it currently refers to.
+   *
+   * mValues iterates in an arbitrary order which only holds still while the
+   * table isn't mutated, but that is all we owe callers: the specification's
+   * storage reorder operation lets an implementation reshuffle the map on
+   * insertion of a new key or removal of an existing one.
+   *
+   * Every mutation of mValues must therefore call InvalidateKeyCursor() first,
+   * and that is not merely about returning stale keys: a live iterator keeps
+   * the table in a read state, and PLDHashTable's checker, enabled in DEBUG and
+   * FUZZING builds, release-asserts on writes while one is outstanding.
+   *
+   * Declared after mValues so that it is destroyed before the table it points
+   * into.
+   */
+  Maybe<nsTHashMap<nsStringHashKey, nsString>::ConstIterator> mKeyCursor;
+  uint32_t mKeyCursorIndex;
   UniquePtr<SnapshotWriteOptimizer> mWriteOptimizer;
   UniquePtr<nsTArray<LSWriteAndNotifyInfo>> mWriteAndNotifyInfos;
 
@@ -173,6 +192,15 @@ class LSSnapshot final : public nsIRunnable {
                            nsAString& aResult);
 
   nsresult EnsureAllKeys();
+
+  /**
+   * Must be called before every mutation of mValues.  See the comment on
+   * mKeyCursor.
+   */
+  void InvalidateKeyCursor() {
+    mKeyCursor.reset();
+    mKeyCursorIndex = 0;
+  }
 
   nsresult UpdateUsage(int64_t aDelta);
 

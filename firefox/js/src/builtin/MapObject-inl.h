@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -28,17 +26,9 @@ template <MapOrSet IsMapOrSet>
 
   // For the Map and WeakMap constructors, ensure the elements are also packed
   // arrays with at least two elements (key and value).
-  //
-  // Limit this to relatively short arrays to avoid adding overhead for large
-  // arrays in the worst case, when this check fails for one of the last
-  // elements.
   if constexpr (IsMapOrSet == MapOrSet::Map) {
     ArrayObject* array = &iterable->as<ArrayObject>();
     size_t len = array->length();
-    static constexpr size_t MaxLength = 100;
-    if (len > MaxLength) {
-      return false;
-    }
     for (size_t i = 0; i < len; i++) {
       Value elem = array->getDenseElement(i);
       if (!elem.isObject()) {

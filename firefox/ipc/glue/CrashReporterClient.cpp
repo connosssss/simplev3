@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -36,10 +34,18 @@ void CrashReporterClient::InitSingleton() {
   }
 }
 
+static dom::NativeThreadId CurrentNativeThreadId() {
+#if defined(XP_DARWIN)
+  return mozilla::UniqueMachSendRight{CrashReporter::CurrentThreadId()};
+#else
+  return CrashReporter::CurrentThreadId();
+#endif  // defined(XP_DARWIN)
+}
+
 /*static*/
 CrashReporter::CrashReporterInitArgs CrashReporterClient::CreateInitArgs() {
   CrashReporter::CrashReporterInitArgs initArgs;
-  initArgs.threadId() = CrashReporter::CurrentThreadId();
+  initArgs.threadId() = CurrentNativeThreadId();
 
 #if defined(XP_LINUX) && defined(MOZ_CRASHREPORTER) && \
     defined(MOZ_OXIDIZED_BREAKPAD)

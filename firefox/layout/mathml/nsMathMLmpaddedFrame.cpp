@@ -1,17 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsMathMLmpaddedFrame.h"
 
-#include "mozilla/dom/MathMLElement.h"
-#include "mozilla/gfx/2D.h"
+#include <algorithm>
+
 #include "mozilla/PresShell.h"
 #include "mozilla/TextUtils.h"
+#include "mozilla/dom/MathMLElement.h"
+#include "mozilla/gfx/2D.h"
 #include "nsLayoutUtils.h"
-#include <algorithm>
 
 using namespace mozilla;
 
@@ -34,14 +33,15 @@ nsMathMLmpaddedFrame::InheritAutomaticData(nsIFrame* aParent) {
   // let the base class get the default from our parent
   nsMathMLContainerFrame::InheritAutomaticData(aParent);
 
-  mPresentationData.flags |= NS_MATHML_STRETCH_ALL_CHILDREN_VERTICALLY;
+  mPresentationData.flags +=
+      MathMLPresentationFlag::StretchAllChildrenVertically;
 
   return NS_OK;
 }
 
 nsresult nsMathMLmpaddedFrame::AttributeChanged(int32_t aNameSpaceID,
                                                 nsAtom* aAttribute,
-                                                int32_t aModType) {
+                                                AttrModType aModType) {
   if (aNameSpaceID == kNameSpaceID_None) {
     bool hasDirtyAttributes = false;
     IntrinsicDirty intrinsicDirty = IntrinsicDirty::None;
@@ -183,8 +183,8 @@ bool nsMathMLmpaddedFrame::ParseAttribute(nsString& aString,
 
     // see if the unit is a named-space
     if (dom::MathMLElement::ParseNamedSpaceValue(
-            unit, aAttribute.mValue, dom::MathMLElement::PARSE_ALLOW_NEGATIVE,
-            *mContent->OwnerDoc())) {
+            unit, aAttribute.mValue, *mContent->OwnerDoc(),
+            dom::MathMLElement::ParseFlag::AllowNegative)) {
       // re-scale properly, and we know that the unit of the named-space is 'em'
       floatValue *= aAttribute.mValue.GetFloatValue();
       aAttribute.mValue.SetFloatValue(floatValue, eCSSUnit_EM);
@@ -198,8 +198,8 @@ bool nsMathMLmpaddedFrame::ParseAttribute(nsString& aString,
     // value here.
     number.Append(unit);  // leave the sign out if it was there
     if (dom::MathMLElement::ParseNumericValue(
-            number, aAttribute.mValue,
-            dom::MathMLElement::PARSE_SUPPRESS_WARNINGS, nullptr)) {
+            number, aAttribute.mValue, nullptr,
+            dom::MathMLElement::ParseFlag::SuppressWarnings)) {
       aAttribute.mState = Attribute::ParsingState::Valid;
       return true;
     }
@@ -262,11 +262,11 @@ void nsMathMLmpaddedFrame::UpdateValue(const Attribute& aAttribute,
     }
 
     if (eCSSUnit_Number == unit) {
-      amount =
-          NSToCoordRound(float(scaler) * aAttribute.mValue.GetFloatValue());
+      amount = NSToCoordRoundWithClamp(float(scaler) *
+                                       aAttribute.mValue.GetFloatValue());
     } else if (eCSSUnit_Percent == unit) {
-      amount =
-          NSToCoordRound(float(scaler) * aAttribute.mValue.GetPercentValue());
+      amount = NSToCoordRoundWithClamp(float(scaler) *
+                                       aAttribute.mValue.GetPercentValue());
     } else {
       amount = CalcLength(aAttribute.mValue, aFontSizeInflation, this);
     }
@@ -286,18 +286,14 @@ void nsMathMLmpaddedFrame::UpdateValue(const Attribute& aAttribute,
 }
 
 /* virtual */
-nsresult nsMathMLmpaddedFrame::Place(DrawTarget* aDrawTarget,
-                                     const PlaceFlags& aFlags,
-                                     ReflowOutput& aDesiredSize) {
+void nsMathMLmpaddedFrame::Place(DrawTarget* aDrawTarget,
+                                 const PlaceFlags& aFlags,
+                                 ReflowOutput& aDesiredSize) {
   // First perform normal row layout without border/padding.
   PlaceFlags flags = aFlags + PlaceFlag::MeasureOnly +
                      PlaceFlag::IgnoreBorderPadding +
                      PlaceFlag::DoNotAdjustForWidthAndHeight;
-  nsresult rv = nsMathMLContainerFrame::Place(aDrawTarget, flags, aDesiredSize);
-  if (NS_FAILED(rv)) {
-    DidReflowChildren(PrincipalChildList().FirstChild());
-    return rv;
-  }
+  nsMathMLContainerFrame::Place(aDrawTarget, flags, aDesiredSize);
 
   nscoord height = aDesiredSize.BlockStartAscent();
   nscoord depth = aDesiredSize.Height() - aDesiredSize.BlockStartAscent();
@@ -370,7 +366,7 @@ nsresult nsMathMLmpaddedFrame::Place(DrawTarget* aDrawTarget,
   // there are attributes, tweak our metrics and move children to achieve the
   // desired visual effects.
 
-  const bool isRTL = StyleVisibility()->mDirection == StyleDirection::Rtl;
+  const bool isRTL = GetWritingMode().IsBidiRTL();
   if (isRTL ? mWidth.IsValid() : mLeadingSpace.IsValid()) {
     // there was padding on the left. dismiss the left italic correction now
     // (so that our parent won't correct us)
@@ -411,6 +407,4 @@ nsresult nsMathMLmpaddedFrame::Place(DrawTarget* aDrawTarget,
     // Finish reflowing child frames, positioning their origins.
     PositionRowChildFrames(dx, aDesiredSize.BlockStartAscent() - voffset);
   }
-
-  return NS_OK;
 }

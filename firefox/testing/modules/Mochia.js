@@ -4,11 +4,8 @@
 
 /**
  * Define Mochia's helpers on the given scope.
- *
- * @param {object} scope
- *        The `globalThis` of the running test, where `add_task` is defined.
  */
-const Mochia = (function () {
+(() => {
   /**
    * The context of each test suite.
    */
@@ -203,25 +200,33 @@ const Mochia = (function () {
         [name]: async () => {
           _testScope.info(name);
 
-          for (const before of ctx.beforeEach) {
-            const p = before();
-            if (p?.then) {
-              await p;
+          try {
+            for (const before of ctx.beforeEach) {
+              const p = before();
+              if (p?.then) {
+                await p;
+              }
             }
-          }
 
-          {
             const p = fn();
             if (p?.then) {
               await p;
             }
-          }
+          } finally {
+            for (let i = ctx.afterEach.length - 1; i >= 0; i--) {
+              try {
+                const after = ctx.afterEach[i];
+                const p = after();
+                if (p?.then) {
+                  await p;
+                }
+              } catch (error) {
+                _testScope.ok(false, `afterEach failed for ${name}: ${error}`);
 
-          for (let i = ctx.afterEach.length - 1; i >= 0; i--) {
-            const after = ctx.afterEach[i];
-            const p = after();
-            if (p?.then) {
-              await p;
+                if (error?.stack) {
+                  _testScope.info(error.stack);
+                }
+              }
             }
           }
         },
@@ -242,18 +247,16 @@ const Mochia = (function () {
     },
     skipIf: {
       configurable: false,
-      get: MochiaImpl.skipIf,
+      value: MochiaImpl.skipIf,
     },
   });
 
-  return function (scope) {
-    _testScope = scope;
+  _testScope = this;
 
-    Object.assign(_testScope, {
-      describe: MochiaImpl.describe,
-      beforeEach: MochiaImpl.beforeEach,
-      afterEach: MochiaImpl.afterEach,
-      it: MochiaImpl.it,
-    });
-  };
+  Object.assign(_testScope, {
+    describe: MochiaImpl.describe,
+    beforeEach: MochiaImpl.beforeEach,
+    afterEach: MochiaImpl.afterEach,
+    it: MochiaImpl.it,
+  });
 })();

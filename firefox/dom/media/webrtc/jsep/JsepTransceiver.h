@@ -2,18 +2,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _JSEPTRANSCEIVER_H_
-#define _JSEPTRANSCEIVER_H_
+#ifndef JSEPTRANSCEIVER_H_
+#define JSEPTRANSCEIVER_H_
 
 #include <string>
 
+#include "jsep/JsepTrack.h"
+#include "jsep/JsepTransport.h"
+#include "mozilla/UniquePtr.h"
+#include "nsError.h"
+#include "sdp/Sdp.h"
 #include "sdp/SdpAttribute.h"
 #include "sdp/SdpMediaSection.h"
-#include "sdp/Sdp.h"
-#include "jsep/JsepTransport.h"
-#include "jsep/JsepTrack.h"
-
-#include "nsError.h"
 
 namespace mozilla {
 
@@ -21,7 +21,7 @@ class JsepUuidGenerator {
  public:
   virtual ~JsepUuidGenerator() = default;
   virtual bool Generate(std::string* id) = 0;
-  virtual JsepUuidGenerator* Clone() const = 0;
+  virtual UniquePtr<JsepUuidGenerator> Clone() const = 0;
 };
 
 class JsepTransceiver {
@@ -133,6 +133,21 @@ class JsepTransceiver {
 
   void ClearBundleLevel() { mBundleLevel = SIZE_MAX; }
 
+  // Whether, as of the last SetLocalDescription() call, this transceiver's
+  // current transport owner for this round (the bundle tag it's grouped
+  // under, or itself if unbundled) had itself completed a prior negotiation
+  // round as a transport owner (HasOwnTransport()) -- ie; there's a live
+  // transport this transceiver could actually be using. Recomputed from
+  // scratch every SetLocalDescription() call; a stale value left over from
+  // a rolled-back round is harmless, since this is only ever consulted
+  // while in have-local-offer for the round that set it. Will need
+  // revisiting once bug 2065274 changes what "owns the transport" means.
+  bool CanUseExistingTransport() const { return mCanUseExistingTransport; }
+
+  void SetCanUseExistingTransport(bool aValue) {
+    mCanUseExistingTransport = aValue;
+  }
+
   size_t GetTransportLevel() const {
     MOZ_ASSERT(HasLevel());
     if (HasBundleLevel()) {
@@ -203,6 +218,7 @@ class JsepTransceiver {
   size_t mLevel = SIZE_MAX;  // SIZE_MAX if no level
   // Is this track pair sharing a transport with another?
   size_t mBundleLevel = SIZE_MAX;  // SIZE_MAX if no bundle level
+  bool mCanUseExistingTransport = false;
   // The w3c and IETF specs have a lot of "magical" behavior that happens
   // when addTrack is used to create a transceiver. This was a deliberate
   // design choice. Sadface.
@@ -217,4 +233,4 @@ class JsepTransceiver {
 
 }  // namespace mozilla
 
-#endif  // _JSEPTRANSCEIVER_H_
+#endif  // JSEPTRANSCEIVER_H_

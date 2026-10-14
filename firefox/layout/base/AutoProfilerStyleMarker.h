@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,10 +22,8 @@ class MOZ_RAII AutoProfilerStyleMarker {
     if (!mActive) {
       return;
     }
-    MOZ_ASSERT(!ServoTraversalStatistics::sActive,
-               "Nested AutoProfilerStyleMarker");
-    ServoTraversalStatistics::sSingleton = ServoTraversalStatistics();
-    ServoTraversalStatistics::sActive = true;
+    mPreviousSingleton = ServoTraversalStatistics::sSingleton;
+    ServoTraversalStatistics::sSingleton = &mStats;
 
     mStartTime = TimeStamp::Now();
   }
@@ -37,57 +33,46 @@ class MOZ_RAII AutoProfilerStyleMarker {
       return;
     }
 
-    struct StyleMarker {
-      static constexpr mozilla::Span<const char> MarkerTypeName() {
-        return mozilla::MakeStringSpan("Styles");
-      }
-      static void StreamJSONMarkerData(
-          baseprofiler::SpliceableJSONWriter& aWriter,
-          uint32_t aElementsTraversed, uint32_t aElementsStyled,
-          uint32_t aElementsMatched, uint32_t aStylesShared,
-          uint32_t aStylesReused) {
-        aWriter.IntProperty("elementsTraversed", aElementsTraversed);
-        aWriter.IntProperty("elementsStyled", aElementsStyled);
-        aWriter.IntProperty("elementsMatched", aElementsMatched);
-        aWriter.IntProperty("stylesShared", aStylesShared);
-        aWriter.IntProperty("stylesReused", aStylesReused);
-      }
-      static MarkerSchema MarkerTypeDisplay() {
-        using MS = MarkerSchema;
-        MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable,
-                  MS::Location::TimelineOverview};
-        schema.AddKeyLabelFormat("elementsTraversed", "Elements traversed",
-                                 MS::Format::Integer);
-        schema.AddKeyLabelFormat("elementsStyled", "Elements styled",
-                                 MS::Format::Integer);
-        schema.AddKeyLabelFormat("elementsMatched", "Elements matched",
-                                 MS::Format::Integer);
-        schema.AddKeyLabelFormat("stylesShared", "Styles shared",
-                                 MS::Format::Integer);
-        schema.AddKeyLabelFormat("stylesReused", "Styles reused",
-                                 MS::Format::Integer);
-        return schema;
-      }
-    };
-
-    ServoTraversalStatistics::sActive = false;
+    ServoTraversalStatistics::sSingleton = mPreviousSingleton;
     profiler_add_marker("Styles", geckoprofiler::category::LAYOUT,
                         {MarkerTiming::IntervalUntilNowFrom(mStartTime),
                          MarkerStack::TakeBacktrace(std::move(mCause)),
                          MarkerInnerWindowId(mInnerWindowID)},
-                        StyleMarker{},
-                        ServoTraversalStatistics::sSingleton.mElementsTraversed,
-                        ServoTraversalStatistics::sSingleton.mElementsStyled,
-                        ServoTraversalStatistics::sSingleton.mElementsMatched,
-                        ServoTraversalStatistics::sSingleton.mStylesShared,
-                        ServoTraversalStatistics::sSingleton.mStylesReused);
+                        StyleMarker{}, mStats.mElementsTraversed,
+                        mStats.mElementsStyled, mStats.mElementsMatched,
+                        mStats.mStylesShared, mStats.mStylesReused);
   }
 
  private:
+  struct StyleMarker : public BaseMarkerType<StyleMarker> {
+    static constexpr const char* Name = "Styles";
+    using MS = MarkerSchema;
+    static constexpr MS::Location Locations[] = {
+        MS::Location::MarkerChart,
+        MS::Location::MarkerTable,
+        MS::Location::TimelineOverview,
+    };
+    static constexpr MS::PayloadField PayloadFields[] = {
+        {"elementsTraversed", MS::InputType::Uint32, "Elements traversed",
+         MS::Format::Integer},
+        {"elementsStyled", MS::InputType::Uint32, "Elements styled",
+         MS::Format::Integer},
+        {"elementsMatched", MS::InputType::Uint32, "Elements matched",
+         MS::Format::Integer},
+        {"stylesShared", MS::InputType::Uint32, "Styles shared",
+         MS::Format::Integer},
+        {"stylesReused", MS::InputType::Uint32, "Styles reused",
+         MS::Format::Integer},
+    };
+    static constexpr bool IsStackBased = true;
+  };
+
   bool mActive;
   TimeStamp mStartTime;
   UniquePtr<ProfileChunkedBuffer> mCause;
   Maybe<uint64_t> mInnerWindowID;
+  ServoTraversalStatistics mStats;
+  ServoTraversalStatistics* mPreviousSingleton = nullptr;
 };
 
 }  // namespace mozilla

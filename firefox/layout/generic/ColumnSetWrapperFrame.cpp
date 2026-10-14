@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -98,16 +96,8 @@ nsresult ColumnSetWrapperFrame::GetFrameName(nsAString& aResult) const {
 }
 #endif
 
-// Disallow any append, insert, or remove operations after building the
-// column hierarchy since any change to the column hierarchy in the column
-// sub-tree need to be re-created.
 void ColumnSetWrapperFrame::AppendFrames(ChildListID aListID,
                                          nsFrameList&& aFrameList) {
-#ifdef DEBUG
-  MOZ_ASSERT(!mFinishedBuildingColumns, "Should only call once!");
-  mFinishedBuildingColumns = true;
-#endif
-
   nsBlockFrame::AppendFrames(aListID, std::move(aFrameList));
 
 #ifdef DEBUG
@@ -251,10 +241,6 @@ Maybe<nscoord> ColumnSetWrapperFrame::GetBaselineBOffset(
                  (*aStart == PrincipalChildList().LastChild() &&
                   aBaselineGroup == BaselineSharingGroup::Last),
              "Iterator direction must match baseline sharing group.");
-  if (StyleDisplay()->IsContainLayout()) {
-    return Nothing{};
-  }
-
   // Start from start/end of principal child list, and use the first valid
   // baseline.
   for (auto itr = aStart; itr != aEnd; ++itr) {
@@ -281,6 +267,9 @@ Maybe<nscoord> ColumnSetWrapperFrame::GetBaselineBOffset(
 Maybe<nscoord> ColumnSetWrapperFrame::GetNaturalBaselineBOffset(
     WritingMode aWM, BaselineSharingGroup aBaselineGroup,
     BaselineExportContext aExportContext) const {
+  if (StyleDisplay()->IsContainLayout()) {
+    return Nothing{};
+  }
   if (aBaselineGroup == BaselineSharingGroup::First) {
     return GetBaselineBOffset(PrincipalChildList().cbegin(),
                               PrincipalChildList().cend(), aWM, aBaselineGroup,
@@ -306,7 +295,7 @@ void ColumnSetWrapperFrame::AssertColumnSpanWrapperSubtreeIsSane(
   }
 
   MOZ_ASSERT(
-      aFrame->Style()->GetPseudoType() == PseudoStyleType::columnSpanWrapper,
+      aFrame->Style()->GetPseudoType() == PseudoStyleType::MozColumnSpanWrapper,
       "aFrame should be ::-moz-column-span-wrapper");
 
   MOZ_ASSERT(!aFrame->HasAnyStateBits(NS_FRAME_OWNS_ANON_BOXES),

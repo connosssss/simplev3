@@ -1,4 +1,3 @@
-/* vim:set ts=2 sw=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,13 +9,13 @@
 #include "ScopedNSSTypes.h"
 #include "md4.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/Base64.h"
 #include "mozilla/Casting.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/EndianUtils.h"
 #include "mozilla/Likely.h"
 #include "mozilla/Logging.h"
-#include "mozilla/Preferences.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/StaticPrefs_network.h"
 #include "mozilla/glean/SecurityManagerSslMetrics.h"
@@ -486,7 +485,6 @@ static nsresult GenerateType3Msg(const nsString& domain,
                                  uint32_t inLen, void** outBuf,
                                  uint32_t* outLen) {
   // inBuf contains Type-2 msg (the challenge) from server
-  MOZ_ASSERT(NS_IsMainThread());
   nsresult rv;
   Type2Msg msg{};
 
@@ -560,10 +558,10 @@ static nsresult GenerateType3Msg(const nsString& domain,
   // get workstation name
   // (do not use local machine's hostname after bug 1046421)
   //
-  rv = mozilla::Preferences::GetCString("network.generic-ntlm-auth.workstation",
-                                        hostBuf);
-  if (NS_FAILED(rv)) {
-    return rv;
+  {
+    const auto prefLock =
+        mozilla::StaticPrefs::network_generic_ntlm_auth_workstation();
+    hostBuf = *prefLock;
   }
 
   if (unicode) {
@@ -890,16 +888,26 @@ nsNTLMAuthModule::Init(const nsACString& serviceName, uint32_t serviceFlags,
   mPassword = password;
   mNTLMNegotiateSent = false;
 
-  static bool sTelemetrySent = false;
-  if (!sTelemetrySent) {
+  // Init runs on background threads, so several auths may reach this
+  // concurrently.
+  static mozilla::Atomic<bool> sTelemetrySent{false};
+  if (sTelemetrySent.compareExchange(false, true)) {
     mozilla::glean::security::ntlm_module_used.AccumulateSingleSample(
         serviceFlags & nsIAuthModule::REQ_PROXY_AUTH
             ? NTLM_MODULE_GENERIC_PROXY
             : NTLM_MODULE_GENERIC_DIRECT);
-    sTelemetrySent = true;
   }
 
   return NS_OK;
+}
+
+NS_IMETHODIMP
+nsNTLMAuthModule::InitAsync(const nsACString& aServiceName,
+                            uint32_t aServiceFlags, const nsAString& aDomain,
+                            const nsAString& aUsername,
+                            const nsAString& aPassword,
+                            nsIAuthModuleInitCallback* aCallback) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP

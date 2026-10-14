@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,10 +5,10 @@
 #ifndef mozilla_widget_GeckoViewSupport_h
 #define mozilla_widget_GeckoViewSupport_h
 
+#include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "mozilla/java/GeckoResultWrappers.h"
 #include "mozilla/java/GeckoSessionNatives.h"
 #include "mozilla/java/WebResponseWrappers.h"
-#include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "mozilla/widget/WindowEvent.h"
 
 class nsPIDOMWindowOuter;
@@ -61,16 +59,15 @@ class GeckoViewSupport final
 
  public:
   // Create and attach a window.
-  static void Open(const jni::Class::LocalRef& aCls,
-                   java::GeckoSession::Window::Param aWindow,
-                   jni::Object::Param aQueue, jni::Object::Param aCompositor,
-                   jni::Object::Param aDispatcher,
-                   jni::Object::Param aSessionAccessibility,
-                   jni::Object::Param aInitData, jni::String::Param aId,
-                   jni::String::Param aChromeURI, bool aPrivateMode);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY static void Open(
+      const jni::Class::LocalRef& aCls,
+      java::GeckoSession::Window::Param aWindow, jni::Object::Param aQueue,
+      jni::Object::Param aCompositor, jni::Object::Param aDispatcher,
+      jni::Object::Param aSessionAccessibility, jni::Object::Param aInitData,
+      jni::String::Param aId, jni::String::Param aChromeURI, bool aPrivateMode);
 
   // Close and destroy the nsWindow.
-  void Close();
+  MOZ_CAN_RUN_SCRIPT void Close();
 
   // Transfer this nsWindow to new GeckoSession objects.
   void Transfer(const java::GeckoSession::Window::LocalRef& inst,
@@ -117,6 +114,21 @@ class GeckoViewSupport final
   MOZ_CAN_RUN_SCRIPT void PrintToPdf(
       const java::GeckoSession::Window::LocalRef& inst,
       jni::Object::Param aStream);
+
+  void RequestFullScreenshot(const java::GeckoSession::Window::LocalRef& inst,
+                             jni::Object::Param aResult,
+                             jni::Object::Param aTarget, int32_t aX, int32_t aY,
+                             int32_t aWidth, int32_t aHeight,
+                             float aRenderingScale);
+
+  // Query content for the top document's scroll size (in CSS pixels)
+  // and device pixel ratio (for calculating the size in device pixels)
+  void RequestContentMetrics(const java::GeckoSession::Window::LocalRef& inst,
+                             jni::Object::Param aResult,
+                             jni::Object::Param aMetrics);
+
+  // See nsIHapticFeedback::HapticFeedbackType for available effects.
+  void PerformHapticFeedback(int32_t aEffect);
 };
 
 }  // namespace widget

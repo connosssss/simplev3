@@ -1,18 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/BrowserHost.h"
 
-#include "mozilla/Unused.h"
+#include "mozilla/ProcessPriorityManager.h"
 #include "mozilla/dom/BrowsingContextGroup.h"
 #include "mozilla/dom/CancelContentJSOptionsBinding.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/WindowGlobalParent.h"
-#include "mozilla/ProcessPriorityManager.h"
-
 #include "nsIObserverService.h"
 
 namespace mozilla::dom {
@@ -49,12 +45,7 @@ BrowsingContext* BrowserHost::GetBrowsingContext() const {
   return mRoot->GetBrowsingContext();
 }
 
-nsILoadContext* BrowserHost::GetLoadContext() const {
-  RefPtr<nsILoadContext> loadContext = mRoot->GetLoadContext();
-  return loadContext;
-}
-
-bool BrowserHost::CanRecv() const { return mRoot && mRoot->CanRecv(); }
+bool BrowserHost::CanSend() const { return mRoot && mRoot->CanSend(); }
 
 a11y::DocAccessibleParent* BrowserHost::GetTopLevelDocAccessible() const {
   return mRoot ? mRoot->GetTopLevelDocAccessible() : nullptr;
@@ -101,7 +92,7 @@ void BrowserHost::UpdateEffects(EffectsInfo aEffects) {
     return;
   }
   mEffectsInfo = aEffects;
-  Unused << mRoot->SendUpdateEffects(mEffectsInfo);
+  (void)mRoot->SendUpdateEffects(mEffectsInfo);
 }
 
 /* attribute boolean renderLayers; */
@@ -236,15 +227,6 @@ BrowserHost::GetHasPresented(bool* aHasPresented) {
   return NS_OK;
 }
 
-/* void transmitPermissionsForPrincipal (in nsIPrincipal aPrincipal); */
-NS_IMETHODIMP
-BrowserHost::TransmitPermissionsForPrincipal(nsIPrincipal* aPrincipal) {
-  if (!mRoot) {
-    return NS_OK;
-  }
-  return GetContentParent()->TransmitPermissionsForPrincipal(aPrincipal);
-}
-
 /* void createAboutBlankDocumentViewer(in nsIPrincipal aPrincipal, in
  * nsIPrincipal aPartitionedPrincipal); */
 NS_IMETHODIMP
@@ -256,15 +238,16 @@ BrowserHost::CreateAboutBlankDocumentViewer(
 
   // Before creating the viewer in-content, ensure that the process is allowed
   // to load this principal.
-  if (NS_WARN_IF(!mRoot->Manager()->ValidatePrincipal(aPrincipal))) {
+  if (NS_WARN_IF(!mRoot->Manager()->ValidatePrincipal(
+          aPrincipal, {ValidatePrincipalOptions::AllowNotLoadedOrigin}))) {
     ContentParent::LogAndAssertFailedPrincipalValidationInfo(
         aPrincipal, "BrowserHost::CreateAboutBlankDocumentViewer");
     return NS_ERROR_DOM_SECURITY_ERR;
   }
 
-  // Ensure the content process has permisisons for the new document we're about
-  // to create in it.
-  nsresult rv = GetContentParent()->TransmitPermissionsForPrincipal(aPrincipal);
+  // Ensure the content process has permisisons, blob URLs, etc. for the new
+  // document we're about to create in it.
+  nsresult rv = GetContentParent()->AboutToLoadOrigin(aPrincipal);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -275,8 +258,8 @@ BrowserHost::CreateAboutBlankDocumentViewer(
   mRoot->GetBrowsingContext()->Group()->EnsureUsesOriginAgentClusterInitialized(
       aPrincipal);
 
-  Unused << mRoot->SendCreateAboutBlankDocumentViewer(aPrincipal,
-                                                      aPartitionedPrincipal);
+  (void)mRoot->SendCreateAboutBlankDocumentViewer(aPrincipal,
+                                                  aPartitionedPrincipal);
   return NS_OK;
 }
 

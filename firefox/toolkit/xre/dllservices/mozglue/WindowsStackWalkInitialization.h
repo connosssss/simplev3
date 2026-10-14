@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,6 +12,13 @@ namespace mozilla {
 
 #if defined(_M_AMD64) || defined(_M_ARM64)
 MFBT_API void WindowsStackWalkInitialization();
+
+/**
+ * Part of WindowsStackWalkInitialization(). Independently callable to allow
+ * sandboxed processes to set up the hooks before delayed mitigations that may
+ * restrict dynamic code usage kick in.
+ */
+MFBT_API bool InstallStackWalkSuppressionHooks();
 
 MFBT_API bool CollectStackWalkLocks(Array<void*, 2>& aStackWalkLocks);
 

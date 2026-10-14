@@ -1,7 +1,6 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
-/* eslint-env browser */
 "use strict";
 
 const {
@@ -431,8 +430,8 @@ class Tree extends Component {
   /**
    * Expands current row.
    *
-   * @param {Object} item
-   * @param {Boolean} expandAllChildren
+   * @param {object} item
+   * @param {boolean} expandAllChildren
    */
   _onExpand(item, expandAllChildren) {
     if (this.props.onExpand) {
@@ -451,7 +450,7 @@ class Tree extends Component {
   /**
    * Collapses current row.
    *
-   * @param {Object} item
+   * @param {object} item
    */
   _onCollapse(item) {
     if (this.props.onCollapse) {
@@ -464,12 +463,12 @@ class Tree extends Component {
    * we might have to calculate the position of the item based on its index and
    * the item height.
    *
-   * @param {Object} item
+   * @param {object} item
    *        The item to be scrolled into view.
-   * @param {Number|undefined} index
+   * @param {number | undefined} index
    *        The index of the item in a full DFS traversal (ignoring collapsed
    *        nodes) or undefined.
-   * @param {Object} options
+   * @param {object} options
    *        Optional information regarding item's requested alignement when
    *        scrolling.
    */
@@ -516,11 +515,11 @@ class Tree extends Component {
   /**
    * Sets the passed in item to be the focused item.
    *
-   * @param {Number} index
+   * @param {number} index
    *        The index of the item in a full DFS traversal (ignoring collapsed
    *        nodes). Ignored if `item` is undefined.
    *
-   * @param {Object|undefined} item
+   * @param {object | undefined} item
    *        The item to be focused, or undefined to focus no item.
    */
   _focus(index, item, options = {}) {
@@ -744,6 +743,18 @@ class Tree extends Component {
     this._focus(parentIndex, parent, { alignTo: "top" });
   }
 
+  /**
+   * The item to focus when the tree is focused while no item is focused yet.
+   *
+   * @param {Array} traversalSlice
+   *        The slice of the traversal that is currently rendered.
+   * @return {*}
+   *         The first rendered item, or undefined when none is rendered.
+   */
+  _getDefaultSelectedItem(traversalSlice) {
+    return traversalSlice[0]?.item;
+  }
+
   render() {
     const traversal = this._dfsFromRoots();
 
@@ -822,6 +833,21 @@ class Tree extends Component {
       })
     );
 
+    // Only set aria-activedescendant if the tree can manage focus (i.e. if
+    // `onFocus` is passed)
+    let activeDescendantId;
+    if (this.props.onFocus) {
+      if (focused != null) {
+        activeDescendantId = this.props.getKey(focused);
+      } else {
+        // Fall back to the item onFocus would select.
+        const defaultItem = this._getDefaultSelectedItem(toRender);
+        if (defaultItem != null) {
+          activeDescendantId = this.props.getKey(defaultItem);
+        }
+      }
+    }
+
     return dom.div(
       {
         className: "tree",
@@ -835,14 +861,14 @@ class Tree extends Component {
         onMouseDown: () => this.setState({ mouseDown: true }),
         onMouseUp: () => this.setState({ mouseDown: false }),
         onFocus: () => {
-          if (focused || this.state.mouseDown) {
+          if (focused != null || this.state.mouseDown) {
             return;
           }
 
           // Only set default focus to the first tree node if focused node is
           // not yet set and the focus event is not the result of a mouse
           // interarction.
-          this._focus(begin, toRender[0].item);
+          this._focus(begin, this._getDefaultSelectedItem(toRender));
         },
         onBlur: e => {
           if (active != null) {
@@ -858,7 +884,7 @@ class Tree extends Component {
         },
         "aria-label": this.props.label,
         "aria-labelledby": this.props.labelledby,
-        "aria-activedescendant": focused && this.props.getKey(focused),
+        "aria-activedescendant": activeDescendantId,
         style: {
           padding: 0,
           margin: 0,

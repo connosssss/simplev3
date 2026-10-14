@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-// vim:cindent:tabstop=4:expandtab:shiftwidth=4:
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,24 +7,23 @@
 #endif
 
 #include "nsFxrCommandLineHandler.h"
-#include "FxRWindowManager.h"
-
-#include "nsICommandLine.h"
-#include "nsIWindowWatcher.h"
-#include "mozIDOMWindow.h"
-#include "nsPIDOMWindow.h"
-#include "mozilla/WidgetUtils.h"
-#include "nsIWidget.h"
-#include "nsServiceManagerUtils.h"
-#include "nsString.h"
-#include "nsArray.h"
-#include "nsCOMPtr.h"
-#include "mozilla/StaticPrefs_extensions.h"
 
 #include <windows.h>
-#include "WinUtils.h"
 
+#include "FxRWindowManager.h"
 #include "VRShMem.h"
+#include "WinUtils.h"
+#include "mozIDOMWindow.h"
+#include "mozilla/StaticPrefs_extensions.h"
+#include "mozilla/WidgetUtils.h"
+#include "nsArray.h"
+#include "nsCOMPtr.h"
+#include "nsICommandLine.h"
+#include "nsIWidget.h"
+#include "nsIWindowWatcher.h"
+#include "nsPIDOMWindow.h"
+#include "nsServiceManagerUtils.h"
+#include "nsString.h"
 
 NS_IMPL_ISUPPORTS(nsFxrCommandLineHandler, nsICommandLineHandler)
 
@@ -83,7 +80,7 @@ nsFxrCommandLineHandler::Handle(nsICommandLine* aCmdLine) {
     result = wwatch->OpenWindow(
         nullptr,                                        // aParent
         "chrome://fxr/content/fxrui.html"_ns,           // aUrl
-        "_blank"_ns,                                    // aName
+        u"_blank"_ns,                                   // aName
         "chrome,dialog=no,all,private,alwaysontop"_ns,  // aFeatures
         nullptr,                                        // aArguments
         getter_AddRefs(newWindow));

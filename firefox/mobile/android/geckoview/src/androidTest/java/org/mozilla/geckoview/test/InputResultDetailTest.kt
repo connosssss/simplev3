@@ -5,6 +5,7 @@ import android.view.MotionEvent
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.MediumTest
 import org.hamcrest.Matchers.equalTo
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.geckoview.GeckoResult
@@ -26,25 +27,27 @@ class InputResultDetailTest : BaseSessionTest() {
 
     private fun sendDownEvent(x: Float, y: Float): GeckoResult<InputResultDetail> {
         val downTime = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_DOWN,
-            x,
-            y,
-            0,
-        )
+        val down =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_DOWN,
+                x,
+                y,
+                0,
+            )
 
         val result = mainSession.panZoomController.onTouchEventForDetailResult(down)
 
-        val up = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP,
-            x,
-            y,
-            0,
-        )
+        val up =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_UP,
+                x,
+                y,
+                0,
+            )
 
         mainSession.panZoomController.onTouchEvent(up)
 
@@ -103,25 +106,29 @@ class InputResultDetailTest : BaseSessionTest() {
                         // Since sendDownEvent() just sends a touch-down, APZ doesn't
                         // yet know the direction, hence it allows scrolling in both
                         // the pan-x and pan-y cases.
-                        var expectedPlace = if (touchAction == "none") {
-                            PanZoomController.INPUT_RESULT_HANDLED_CONTENT
-                        } else if (scrollable && descendants != "subframe") {
-                            PanZoomController.INPUT_RESULT_HANDLED
-                        } else {
-                            PanZoomController.INPUT_RESULT_UNHANDLED
-                        }
+                        var expectedPlace =
+                            if (touchAction == "none") {
+                                PanZoomController.INPUT_RESULT_HANDLED_CONTENT
+                            } else if (scrollable && descendants != "subframe") {
+                                PanZoomController.INPUT_RESULT_HANDLED
+                            } else {
+                                PanZoomController.INPUT_RESULT_UNHANDLED
+                            }
 
-                        var expectedScrollableDirections = if (scrollable) {
-                            PanZoomController.SCROLLABLE_FLAG_BOTTOM
-                        } else {
-                            PanZoomController.SCROLLABLE_FLAG_NONE
-                        }
+                        var expectedScrollableDirections =
+                            if (scrollable) {
+                                PanZoomController.SCROLLABLE_FLAG_BOTTOM
+                            } else {
+                                PanZoomController.SCROLLABLE_FLAG_NONE
+                            }
 
-                        var expectedOverscrollDirections = if (touchAction == "none") {
-                            PanZoomController.OVERSCROLL_FLAG_NONE
-                        } else {
-                            (PanZoomController.OVERSCROLL_FLAG_HORIZONTAL or PanZoomController.OVERSCROLL_FLAG_VERTICAL)
-                        }
+                        var expectedOverscrollDirections =
+                            if (touchAction == "none") {
+                                PanZoomController.OVERSCROLL_FLAG_NONE
+                            } else {
+                                (PanZoomController.OVERSCROLL_FLAG_HORIZONTAL or
+                                    PanZoomController.OVERSCROLL_FLAG_VERTICAL)
+                            }
 
                         var value = sessionRule.waitForResult(sendDownEvent(50f, 20f))
                         assertResultDetail(
@@ -158,15 +165,17 @@ class InputResultDetailTest : BaseSessionTest() {
         )
 
         // Prepare a resize event listener.
-        val resizePromise = mainSession.evaluatePromiseJS(
-            """
-            new Promise(resolve => {
-                window.visualViewport.addEventListener('resize', () => {
-                    resolve(true);
-                }, { once: true });
-            });
-            """.trimIndent(),
-        )
+        val resizePromise =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve => {
+                    window.visualViewport.addEventListener('resize', () => {
+                        resolve(true);
+                    }, { once: true });
+                });
+                """
+                    .trimIndent()
+            )
 
         // Hide the dynamic toolbar.
         sessionRule.display?.run { setVerticalClipping(-20) }
@@ -238,23 +247,26 @@ class InputResultDetailTest : BaseSessionTest() {
     // NOTE: This function requires #scroll element in the target document.
     private fun scrollToBottom() {
         // Prepare a scroll event listener.
-        val scrollPromise = mainSession.evaluatePromiseJS(
-            """
-            new Promise(resolve => {
-                const scroll = document.getElementById('scroll');
-                scroll.addEventListener('scroll', () => {
-                    resolve(true);
-                }, { once: true });
-            });
-            """.trimIndent(),
-        )
+        val scrollPromise =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve => {
+                    const scroll = document.getElementById('scroll');
+                    scroll.addEventListener('scroll', () => {
+                        resolve(true);
+                    }, { once: true });
+                });
+                """
+                    .trimIndent()
+            )
 
         // Scroll to the bottom edge of the scroll container.
         mainSession.evaluateJS(
             """
             const scroll = document.getElementById('scroll');
             scroll.scrollTo(0, scroll.scrollHeight);
-            """.trimIndent(),
+            """
+                .trimIndent()
         )
         assertThat("scroll", scrollPromise.value as Boolean, equalTo(true))
         mainSession.flushApzRepaints()
@@ -299,9 +311,7 @@ class InputResultDetailTest : BaseSessionTest() {
     @WithDisplay(width = 100, height = 100)
     @Test
     fun testOverscrollBehaviorNoneOnNonRoot() {
-        var files = arrayOf(
-            OVERSCROLL_BEHAVIOR_NONE_NON_ROOT_HTML_PATH,
-        )
+        var files = arrayOf(OVERSCROLL_BEHAVIOR_NONE_NON_ROOT_HTML_PATH)
 
         for (file in files) {
             setupDocument(file)
@@ -337,9 +347,7 @@ class InputResultDetailTest : BaseSessionTest() {
     fun testOverscrollBehaviorNoneOnNonRootWithDynamicToolbar() {
         sessionRule.display?.run { setDynamicToolbarMaxHeight(20) }
 
-        var files = arrayOf(
-            OVERSCROLL_BEHAVIOR_NONE_NON_ROOT_HTML_PATH,
-        )
+        var files = arrayOf(OVERSCROLL_BEHAVIOR_NONE_NON_ROOT_HTML_PATH)
 
         for (file in files) {
             setupDocument(file)
@@ -392,11 +400,7 @@ class InputResultDetailTest : BaseSessionTest() {
     @WithDisplay(width = 1080, height = 2160)
     @Test
     fun testFractionalScrollPortSize() {
-        sessionRule.setPrefsUntilTestEnd(
-            mapOf(
-                "browser.viewport.desktopWidth" to 980,
-            ),
-        )
+        sessionRule.setPrefsUntilTestEnd(mapOf("browser.viewport.desktopWidth" to 980))
         sessionRule.display?.run { setDynamicToolbarMaxHeight(59) }
 
         setupDocument(NO_META_VIEWPORT_HTML_PATH)
@@ -413,6 +417,7 @@ class InputResultDetailTest : BaseSessionTest() {
         )
     }
 
+    @Ignore("https://bugzilla.mozilla.org/show_bug.cgi?id=1988041")
     @WithDisplay(width = 100, height = 100)
     @Test
     fun testPreventTouchMoveAfterLongTap() {
@@ -421,28 +426,32 @@ class InputResultDetailTest : BaseSessionTest() {
         setupDocument(ROOT_100VH_HTML_PATH)
 
         // Setup a touchmove event listener preventing scrolling.
-        val touchmovePromise = mainSession.evaluatePromiseJS(
-            """
-            new Promise(resolve => {
-                window.addEventListener('touchmove', (e) => {
-                    e.preventDefault();
-                    resolve(true);
-                }, { passive: false });
-            });
-            """.trimIndent(),
-        )
+        val touchmovePromise =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve => {
+                    window.addEventListener('touchmove', (e) => {
+                        e.preventDefault();
+                        resolve(true);
+                    }, { passive: false });
+                });
+                """
+                    .trimIndent()
+            )
 
         // Setup a contextmenu event.
-        val contextmenuPromise = mainSession.evaluatePromiseJS(
-            """
-            new Promise(resolve => {
-                window.addEventListener('contextmenu', (e) => {
-                    e.preventDefault();
-                    resolve(true);
-                }, { once: true });
-            });
-            """.trimIndent(),
-        )
+        val contextmenuPromise =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve => {
+                    window.addEventListener('contextmenu', (e) => {
+                        e.preventDefault();
+                        resolve(true);
+                    }, { once: true });
+                });
+                """
+                    .trimIndent()
+            )
 
         // Explicitly call `waitForRoundTrip()` to make sure the above event listeners
         // have set up in the content.
@@ -451,28 +460,30 @@ class InputResultDetailTest : BaseSessionTest() {
         mainSession.flushApzRepaints()
 
         val downTime = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_DOWN,
-            50f,
-            50f,
-            0,
-        )
+        val down =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_DOWN,
+                50f,
+                50f,
+                0,
+            )
         val result = mainSession.panZoomController.onTouchEventForDetailResult(down)
 
         // Wait until a contextmenu event happens.
         assertThat("contextmenu", contextmenuPromise.value as Boolean, equalTo(true))
 
         // Start moving.
-        val move = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_MOVE,
-            50f,
-            70f,
-            0,
-        )
+        val move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                70f,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(move)
 
         assertThat("touchmove", touchmovePromise.value as Boolean, equalTo(true))
@@ -489,14 +500,15 @@ class InputResultDetailTest : BaseSessionTest() {
             (PanZoomController.OVERSCROLL_FLAG_HORIZONTAL or PanZoomController.OVERSCROLL_FLAG_VERTICAL),
         )
 
-        val up = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP,
-            50f,
-            70f,
-            0,
-        )
+        val up =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_UP,
+                50f,
+                70f,
+                0,
+            )
 
         mainSession.panZoomController.onTouchEvent(up)
     }
@@ -512,7 +524,8 @@ class InputResultDetailTest : BaseSessionTest() {
             window.addEventListener('touchmove', (e) => {
                 e.preventDefault();
             }, { passive: false });
-            """.trimIndent(),
+            """
+                .trimIndent()
         )
 
         // Explicitly call `waitForRoundTrip()` to make sure the above event listener
@@ -524,25 +537,27 @@ class InputResultDetailTest : BaseSessionTest() {
         // Send a touchstart. The result will not be produced yet because
         // we will wait for the first touchmove.
         val downTime = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_DOWN,
-            50f,
-            50f,
-            0,
-        )
+        val down =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_DOWN,
+                50f,
+                50f,
+                0,
+            )
         val result = mainSession.panZoomController.onTouchEventForDetailResult(down)
 
         // Before any touchmove, send a touchcancel.
-        val cancel = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_CANCEL,
-            50f,
-            50f,
-            0,
-        )
+        val cancel =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_CANCEL,
+                50f,
+                50f,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(cancel)
 
         // Check that the touchcancel results in the same response as if
@@ -571,24 +586,27 @@ class InputResultDetailTest : BaseSessionTest() {
 
                     setupDocument(url)
 
-                    var expectedPlace = if (overflow == "auto" && tall) {
-                        PanZoomController.INPUT_RESULT_HANDLED
-                    } else {
-                        PanZoomController.INPUT_RESULT_UNHANDLED
-                    }
+                    var expectedPlace =
+                        if (overflow == "auto" && tall) {
+                            PanZoomController.INPUT_RESULT_HANDLED
+                        } else {
+                            PanZoomController.INPUT_RESULT_UNHANDLED
+                        }
 
-                    var expectedScrollableDirections = if (overflow == "auto" && tall) {
-                        PanZoomController.SCROLLABLE_FLAG_BOTTOM
-                    } else {
-                        PanZoomController.SCROLLABLE_FLAG_NONE
-                    }
+                    var expectedScrollableDirections =
+                        if (overflow == "auto" && tall) {
+                            PanZoomController.SCROLLABLE_FLAG_BOTTOM
+                        } else {
+                            PanZoomController.SCROLLABLE_FLAG_NONE
+                        }
 
                     // pull-to-refresh should be disabled for an overflow:hidden
                     // page (specified on body or html) by NOT setting OVERSCROLL_FLAG_VERTICAL.
                     // It should be enabeld on overflow:auto pages eve if the page is short.
                     var expectedOverscrollDirections = PanZoomController.OVERSCROLL_FLAG_HORIZONTAL
                     if (overflow == "auto") {
-                        expectedOverscrollDirections = expectedOverscrollDirections or PanZoomController.OVERSCROLL_FLAG_VERTICAL
+                        expectedOverscrollDirections =
+                            expectedOverscrollDirections or PanZoomController.OVERSCROLL_FLAG_VERTICAL
                     }
 
                     var value = sessionRule.waitForResult(sendDownEvent(50f, 20f))
@@ -623,54 +641,60 @@ class InputResultDetailTest : BaseSessionTest() {
             mapOf(
                 "apz.touch_start_tolerance" to "0", // To avoid touch events fall into slop state.
                 "apz.fling_min_velocity_threshold" to "0", // To trigger fling animations easier.
-                "apz.android.chrome_fling_physics.friction" to "0.0001", // To keep the fling animation alive for a while.
-            ),
+                "apz.android.chrome_fling_physics.friction" to
+                    "0.0001", // To keep the fling animation alive for a while.
+            )
         )
         setupDocument(BUG1912358_HTML_PATH)
 
         // Prepare a scroll event listener.
-        val scrollPromise = mainSession.evaluatePromiseJS(
-            """
-            new Promise(resolve => {
-                window.addEventListener('scroll', () => {
-                    resolve(true);
-                }, { once: true });
-            });
-            """.trimIndent(),
-        )
+        val scrollPromise =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve => {
+                    window.addEventListener('scroll', () => {
+                        resolve(true);
+                    }, { once: true });
+                });
+                """
+                    .trimIndent()
+            )
 
         // Send a series of touch events to trigger a fast fling animation.
         var downTime = SystemClock.uptimeMillis()
-        var down = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_DOWN,
-            50f,
-            50f,
-            0,
-        )
+        var down =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_DOWN,
+                50f,
+                50f,
+                0,
+            )
         var result = mainSession.panZoomController.onTouchEventForDetailResult(down)
 
         // Send two touch move events here since with "apz.touch_start_tolerance=0"
         // a touch move event doesn't scroll.
-        var move = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_MOVE,
-            50f,
-            40f,
-            0,
-        )
+        var move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                40f,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(move)
 
-        move = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_MOVE,
-            50f,
-            30f,
-            0,
-        )
+        move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                30f,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(move)
 
         // Make sure the content has been scrolled.
@@ -684,46 +708,50 @@ class InputResultDetailTest : BaseSessionTest() {
             (PanZoomController.OVERSCROLL_FLAG_HORIZONTAL or PanZoomController.OVERSCROLL_FLAG_VERTICAL),
         )
 
-        var up = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP,
-            50f,
-            10f,
-            0,
-        )
+        var up =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_UP,
+                50f,
+                10f,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(up)
 
         // Send a new series of upward touch events during the fling animation.
         downTime = SystemClock.uptimeMillis()
-        down = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_DOWN,
-            50f,
-            50f,
-            0,
-        )
+        down =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_DOWN,
+                50f,
+                50f,
+                0,
+            )
         result = mainSession.panZoomController.onTouchEventForDetailResult(down)
 
-        move = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_MOVE,
-            50f,
-            60f,
-            0,
-        )
+        move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                60f,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(move)
 
-        up = MotionEvent.obtain(
-            downTime,
-            SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP,
-            50f,
-            60f,
-            0,
-        )
+        up =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_UP,
+                50f,
+                60f,
+                0,
+            )
         mainSession.panZoomController.onTouchEvent(up)
 
         value = sessionRule.waitForResult(result)
@@ -733,6 +761,170 @@ class InputResultDetailTest : BaseSessionTest() {
             value,
             PanZoomController.INPUT_RESULT_HANDLED,
             (PanZoomController.SCROLLABLE_FLAG_BOTTOM or PanZoomController.SCROLLABLE_FLAG_TOP),
+            (PanZoomController.OVERSCROLL_FLAG_HORIZONTAL or PanZoomController.OVERSCROLL_FLAG_VERTICAL),
+        )
+    }
+
+    @WithDisplay(width = 100, height = 100)
+    @Test
+    fun testDisallowPullToRefreshOnSubScroller() {
+        sessionRule.setPrefsUntilTestEnd(
+            mapOf(
+                "apz.touch_start_tolerance" to "0", // To avoid touch events fall into slop state.
+                "apz.fling_min_velocity_threshold" to "10000", // Never trigger fling.
+            )
+        )
+        setupDocument(BUG1985669_HTML_PATH)
+
+        // Try to scroll up to see whether pull-to-refresh can be triggered or not,
+        // i.e. either `INPUT_RESULT_UNHANDLED` is not set or.
+        // `OVERSCROLL_FLAG_VERTICAL` is not set.
+        var downTime = SystemClock.uptimeMillis()
+        var down =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_DOWN,
+                50f,
+                50f,
+                0,
+            )
+        var result = mainSession.panZoomController.onTouchEventForDetailResult(down)
+
+        // Send two touch move events here since with "apz.touch_start_tolerance=0"
+        // a touch move event is not consumed by any APZC.
+        var move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                60f,
+                0,
+            )
+        mainSession.panZoomController.onTouchEvent(move)
+
+        move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                70f,
+                0,
+            )
+        mainSession.panZoomController.onTouchEvent(move)
+        var value = sessionRule.waitForResult(result)
+
+        assertResultDetail(
+            BUG1985669_HTML_PATH,
+            value,
+            // The upwards scrolling touch events was consumsed by the sub
+            // scroll container, thus pull-to-refresh will never be triggered.
+            PanZoomController.INPUT_RESULT_HANDLED_CONTENT,
+            PanZoomController.SCROLLABLE_FLAG_BOTTOM,
+            // The sub scroll container can be overscrolled in both directions.
+            (PanZoomController.OVERSCROLL_FLAG_HORIZONTAL or PanZoomController.OVERSCROLL_FLAG_VERTICAL),
+        )
+
+        // Lift up the finger once.
+        var up =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_UP,
+                50f,
+                70f,
+                0,
+            )
+        mainSession.panZoomController.onTouchEvent(up)
+
+        // Try to scroll down once and then scroll up without lifting
+        // the finger.
+
+        // Setup a scroll event listener to detect scrolling.
+        val scrollPromise =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve => {
+                    document.querySelector("#subscroller").addEventListener('scroll', () => {
+                        resolve(true);
+                    }, { once: true });
+                });
+                """
+                    .trimIndent()
+            )
+        // Explicitly call `waitForRoundTrip()` and `flushApzRepaints()` to make sure
+        // the above event listener has been set up in the content.
+        mainSession.waitForRoundTrip()
+        mainSession.flushApzRepaints()
+
+        downTime = SystemClock.uptimeMillis()
+        down =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_DOWN,
+                50f,
+                50f,
+                0,
+            )
+        result = mainSession.panZoomController.onTouchEventForDetailResult(down)
+
+        move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                40f,
+                0,
+            )
+        mainSession.panZoomController.onTouchEvent(move)
+        move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                30f,
+                0,
+            )
+        mainSession.panZoomController.onTouchEvent(move)
+
+        // Make sure the subscroller has scrolled down.
+        assertThat("scroll", scrollPromise.value as Boolean, equalTo(true))
+
+        // Now scroll up without lifting the finger.
+        move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                40f,
+                0,
+            )
+        mainSession.panZoomController.onTouchEvent(move)
+        move =
+            MotionEvent.obtain(
+                downTime,
+                SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE,
+                50f,
+                50f,
+                0,
+            )
+        mainSession.panZoomController.onTouchEvent(move)
+        value = sessionRule.waitForResult(result)
+
+        assertResultDetail(
+            BUG1985669_HTML_PATH,
+            value,
+            PanZoomController.INPUT_RESULT_HANDLED_CONTENT,
+            // The result is for the initial ACTION_DOWN so that
+            // at that moment the subscroller is not scrollable to top.
+            PanZoomController.SCROLLABLE_FLAG_BOTTOM,
             (PanZoomController.OVERSCROLL_FLAG_HORIZONTAL or PanZoomController.OVERSCROLL_FLAG_VERTICAL),
         )
     }

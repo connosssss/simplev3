@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -20,6 +18,8 @@
 #include "jit/MacroAssembler.h"
 #include "jit/PerfSpewer.h"
 #include "js/HeapAPI.h"
+#include "js/Prefs.h"
+#include "util/Denormals.h"
 #include "vm/JSContext.h"
 
 #ifdef JS_CODEGEN_ARM64
@@ -51,6 +51,8 @@ static JitContext* CurrentJitContext() {
 
 void jit::SetJitContext(JitContext* ctx) {
   MOZ_ASSERT(!TlsJitContext.get());
+  // Compilers should always run with denormals enabled.
+  MOZ_ASSERT(!DenormalsDisabled());
   TlsJitContext.set(ctx);
 }
 
@@ -109,6 +111,22 @@ bool jit::InitializeJit() {
 #ifdef JS_CODEGEN_ARM64
   // Initialize instruction cache flushing.
   vixl::CPU::SetUp();
+
+  // Initialize supported CPU features.
+  ARM64Flags::Init();
+#endif
+
+#ifdef JS_CODEGEN_MIPS64
+  // Compute flags.
+  MIPSFlags::Init();
+#endif
+
+#ifdef JS_CODEGEN_RISCV64
+  RVFlags::Init();
+#endif
+
+#ifdef JS_CODEGEN_LOONG64
+  LOONG64Flags::Init();
 #endif
 
 #ifndef JS_CODEGEN_NONE
@@ -121,8 +139,15 @@ bool jit::InitializeJit() {
   if (!MacroAssembler::SupportsFloatingPoint()) {
     JitOptions.disableJitBackend = true;
   }
-  JitOptions.supportsUnalignedAccesses =
-      MacroAssembler::SupportsUnalignedAccesses();
+
+  bool supportsUnaligned = MacroAssembler::SupportsUnalignedAccesses();
+  JitOptions.supportsUnalignedAccesses = supportsUnaligned;
+  JitOptions.enable_regexp_unaligned_accesses = supportsUnaligned;
+
+#ifdef NIGHTLY_BUILD
+  JitOptions.js_regexp_buffer_boundaries =
+      JS::Prefs::experimental_regexp_buffer_boundaries();
+#endif
 
   if (HasJitBackend()) {
     if (!InitProcessExecutableMemory()) {
@@ -141,7 +166,7 @@ void jit::ShutdownJit() {
 }
 
 bool jit::JitSupportsWasmSimd() {
-#if defined(ENABLE_WASM_SIMD)
+#if defined(ENABLE_JIT_SIMD)
   return js::jit::MacroAssembler::SupportsWasmSimd();
 #else
   return false;

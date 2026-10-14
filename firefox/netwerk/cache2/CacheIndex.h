@@ -2,26 +2,27 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef CacheIndex__h__
-#define CacheIndex__h__
+#ifndef CacheIndex_h_
+#define CacheIndex_h_
 
-#include "CacheLog.h"
 #include "CacheFileIOManager.h"
-#include "nsIRunnable.h"
 #include "CacheHashUtils.h"
-#include "nsICacheStorageService.h"
-#include "nsICacheEntry.h"
-#include "nsILoadContextInfo.h"
-#include "nsIWeakReferenceUtils.h"
-#include "nsTHashtable.h"
-#include "nsThreadUtils.h"
+#include "CacheLog.h"
+#include "gtest/MozGtestFriend.h"
+#include "mozilla/EndianUtils.h"
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/SHA1.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
-#include "mozilla/EndianUtils.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
+#include "nsICacheEntry.h"
+#include "nsICacheStorageService.h"
+#include "nsILoadContextInfo.h"
+#include "nsIRunnable.h"
+#include "nsIWeakReferenceUtils.h"
+#include "nsTHashtable.h"
+#include "nsThreadUtils.h"
 
 class nsIFile;
 class nsIDirectoryEnumerator;
@@ -37,9 +38,6 @@ namespace net {
 class CacheFileMetadata;
 class FileOpenHelper;
 class CacheIndexIterator;
-
-const uint16_t kIndexTimeNotAvailable = 0xFFFFU;
-const uint16_t kIndexTimeOutOfBound = 0xFFFEU;
 
 using CacheIndexHeader = struct {
   // Version of the index. The index must be ignored and deleted when the file
@@ -63,12 +61,20 @@ using CacheIndexHeader = struct {
   // kTelemetryReportBytesLimit a telemetry report is sent and the counter is
   // reset.
   uint32_t mKBWritten;
+
+  // Whether the entries on disk are encrypted at rest (see
+  // browser.cache.disk.encryption.enabled). Stored so that a change to the
+  // encryption setting can be detected at startup: when it no longer matches
+  // the pref the whole cache is purged, since it would otherwise hold a mix of
+  // encrypted and plaintext entries.
+  uint32_t mIsEncrypted;
 };
 
 static_assert(sizeof(CacheIndexHeader::mVersion) +
                       sizeof(CacheIndexHeader::mTimeStamp) +
                       sizeof(CacheIndexHeader::mIsDirty) +
-                      sizeof(CacheIndexHeader::mKBWritten) ==
+                      sizeof(CacheIndexHeader::mKBWritten) +
+                      sizeof(CacheIndexHeader::mIsEncrypted) ==
                   sizeof(CacheIndexHeader),
               "Unexpected sizeof(CacheIndexHeader)!");
 
@@ -77,8 +83,8 @@ struct CacheIndexRecord {
   SHA1Sum::Hash mHash{};
   uint32_t mFrecency{0};
   OriginAttrsHash mOriginAttrsHash{0};
-  uint16_t mOnStartTime{kIndexTimeNotAvailable};
-  uint16_t mOnStopTime{kIndexTimeNotAvailable};
+  uint32_t mLastFetched{0};
+  uint32_t mFetchCount{0};
   uint8_t mContentType{nsICacheEntry::CONTENT_TYPE_UNKNOWN};
 
   /*
@@ -89,8 +95,9 @@ struct CacheIndexRecord {
    *    0000 1000 0000 0000 0000 0000 0000 0000 : fresh
    *    0000 0100 0000 0000 0000 0000 0000 0000 : pinned
    *    0000 0010 0000 0000 0000 0000 0000 0000 : has cached alt data
-   *    0000 0001 0000 0000 0000 0000 0000 0000 : reserved
+   *    0000 0001 0000 0000 0000 0000 0000 0000 : is a dictionary
    *    0000 0000 1111 1111 1111 1111 1111 1111 : file size (in kB)
+   *    Max file size is 16GiB
    */
   uint32_t mFlags{0};
 
@@ -98,11 +105,21 @@ struct CacheIndexRecord {
 };
 #pragma pack(pop)
 
+// For Compression Dictionaries, we make special entries in the cache for
+// each origin with a dictionary.  In the data or metadata for each of
+// these entries, we store the hashes of the dictionary, the match value
+// (required), the match-dest value (optional), the id (optional) and the
+// type (optional).
+
+// We mark an entry if it's a dictionary (use-as-dictionary); if it is,
+// when the entry is removed, we remove it from the origin's dictionary
+// entry.  If the origin's dictionary list is empty, we remove the origin.
+
 static_assert(sizeof(CacheIndexRecord::mHash) +
                       sizeof(CacheIndexRecord::mFrecency) +
                       sizeof(CacheIndexRecord::mOriginAttrsHash) +
-                      sizeof(CacheIndexRecord::mOnStartTime) +
-                      sizeof(CacheIndexRecord::mOnStopTime) +
+                      sizeof(CacheIndexRecord::mLastFetched) +
+                      sizeof(CacheIndexRecord::mFetchCount) +
                       sizeof(CacheIndexRecord::mContentType) +
                       sizeof(CacheIndexRecord::mFlags) ==
                   sizeof(CacheIndexRecord),
@@ -110,17 +127,14 @@ static_assert(sizeof(CacheIndexRecord::mHash) +
 
 class CacheIndexRecordWrapper final {
  public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_DESTROY(
-      CacheIndexRecordWrapper, DispatchDeleteSelfToCurrentThread());
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(CacheIndexRecordWrapper)
 
   CacheIndexRecordWrapper() : mRec(MakeUnique<CacheIndexRecord>()) {}
   CacheIndexRecord* Get() { return mRec.get(); }
 
  private:
-  ~CacheIndexRecordWrapper();
-  void DispatchDeleteSelfToCurrentThread();
+  ~CacheIndexRecordWrapper() = default;
   UniquePtr<CacheIndexRecord> mRec;
-  friend class DeleteCacheIndexRecordWrapper;
 };
 
 class CacheIndexEntry : public PLDHashEntryHdr {
@@ -170,8 +184,8 @@ class CacheIndexEntry : public PLDHashEntryHdr {
                       sizeof(SHA1Sum::Hash)) == 0);
     mRec->Get()->mFrecency = aOther.mRec->Get()->mFrecency;
     mRec->Get()->mOriginAttrsHash = aOther.mRec->Get()->mOriginAttrsHash;
-    mRec->Get()->mOnStartTime = aOther.mRec->Get()->mOnStartTime;
-    mRec->Get()->mOnStopTime = aOther.mRec->Get()->mOnStopTime;
+    mRec->Get()->mLastFetched = aOther.mRec->Get()->mLastFetched;
+    mRec->Get()->mFetchCount = aOther.mRec->Get()->mFetchCount;
     mRec->Get()->mContentType = aOther.mRec->Get()->mContentType;
     mRec->Get()->mFlags = aOther.mRec->Get()->mFlags;
     return *this;
@@ -180,8 +194,8 @@ class CacheIndexEntry : public PLDHashEntryHdr {
   void InitNew() {
     mRec->Get()->mFrecency = 0;
     mRec->Get()->mOriginAttrsHash = 0;
-    mRec->Get()->mOnStartTime = kIndexTimeNotAvailable;
-    mRec->Get()->mOnStopTime = kIndexTimeNotAvailable;
+    mRec->Get()->mLastFetched = 0;
+    mRec->Get()->mFetchCount = 0;
     mRec->Get()->mContentType = nsICacheEntry::CONTENT_TYPE_UNKNOWN;
     mRec->Get()->mFlags = 0;
   }
@@ -189,8 +203,8 @@ class CacheIndexEntry : public PLDHashEntryHdr {
   void Init(OriginAttrsHash aOriginAttrsHash, bool aAnonymous, bool aPinned) {
     MOZ_ASSERT(mRec->Get()->mFrecency == 0);
     MOZ_ASSERT(mRec->Get()->mOriginAttrsHash == 0);
-    MOZ_ASSERT(mRec->Get()->mOnStartTime == kIndexTimeNotAvailable);
-    MOZ_ASSERT(mRec->Get()->mOnStopTime == kIndexTimeNotAvailable);
+    MOZ_ASSERT(mRec->Get()->mLastFetched == 0);
+    MOZ_ASSERT(mRec->Get()->mFetchCount == 0);
     MOZ_ASSERT(mRec->Get()->mContentType ==
                nsICacheEntry::CONTENT_TYPE_UNKNOWN);
     // When we init the entry it must be fresh and may be dirty
@@ -241,11 +255,23 @@ class CacheIndexEntry : public PLDHashEntryHdr {
     return !!(mRec->Get()->mFlags & kHasAltDataMask);
   }
 
-  void SetOnStartTime(uint16_t aTime) { mRec->Get()->mOnStartTime = aTime; }
-  uint16_t GetOnStartTime() const { return mRec->Get()->mOnStartTime; }
+  void SetHasNoVarySearch(bool aVal) {
+    aVal ? mRec->Get()->mFlags |= kHasNoVarySearchMask
+         : mRec->Get()->mFlags &= ~kHasNoVarySearchMask;
+  }
+  bool HasNoVarySearch() const {
+    return !!(mRec->Get()->mFlags & kHasNoVarySearchMask);
+  }
 
-  void SetOnStopTime(uint16_t aTime) { mRec->Get()->mOnStopTime = aTime; }
-  uint16_t GetOnStopTime() const { return mRec->Get()->mOnStopTime; }
+  void SetLastFetched(uint32_t aLastFetched) {
+    mRec->Get()->mLastFetched = aLastFetched;
+  }
+  uint32_t GetLastFetched() const { return mRec->Get()->mLastFetched; }
+
+  void SetFetchCount(uint32_t aFetchCount) {
+    mRec->Get()->mFetchCount = aFetchCount;
+  }
+  uint32_t GetFetchCount() const { return mRec->Get()->mFetchCount; }
 
   void SetContentType(uint8_t aType) { mRec->Get()->mContentType = aType; }
   uint8_t GetContentType() const { return GetContentType(mRec->Get()); }
@@ -290,10 +316,10 @@ class CacheIndexEntry : public PLDHashEntryHdr {
     ptr += sizeof(uint32_t);
     NetworkEndian::writeUint64(ptr, mRec->Get()->mOriginAttrsHash);
     ptr += sizeof(uint64_t);
-    NetworkEndian::writeUint16(ptr, mRec->Get()->mOnStartTime);
-    ptr += sizeof(uint16_t);
-    NetworkEndian::writeUint16(ptr, mRec->Get()->mOnStopTime);
-    ptr += sizeof(uint16_t);
+    NetworkEndian::writeUint32(ptr, mRec->Get()->mLastFetched);
+    ptr += sizeof(uint32_t);
+    NetworkEndian::writeUint32(ptr, mRec->Get()->mFetchCount);
+    ptr += sizeof(uint32_t);
     *ptr = mRec->Get()->mContentType;
     ptr += sizeof(uint8_t);
     // Dirty and fresh flags should never go to disk, since they make sense only
@@ -310,10 +336,10 @@ class CacheIndexEntry : public PLDHashEntryHdr {
     ptr += sizeof(uint32_t);
     mRec->Get()->mOriginAttrsHash = NetworkEndian::readUint64(ptr);
     ptr += sizeof(uint64_t);
-    mRec->Get()->mOnStartTime = NetworkEndian::readUint16(ptr);
-    ptr += sizeof(uint16_t);
-    mRec->Get()->mOnStopTime = NetworkEndian::readUint16(ptr);
-    ptr += sizeof(uint16_t);
+    mRec->Get()->mLastFetched = NetworkEndian::readUint32(ptr);
+    ptr += sizeof(uint32_t);
+    mRec->Get()->mFetchCount = NetworkEndian::readUint32(ptr);
+    ptr += sizeof(uint32_t);
     mRec->Get()->mContentType = *ptr;
     ptr += sizeof(uint8_t);
     mRec->Get()->mFlags = NetworkEndian::readUint32(ptr);
@@ -324,10 +350,10 @@ class CacheIndexEntry : public PLDHashEntryHdr {
         ("CacheIndexEntry::Log() [this=%p, hash=%08x%08x%08x%08x%08x, fresh=%u,"
          " initialized=%u, removed=%u, dirty=%u, anonymous=%u, "
          "originAttrsHash=%" PRIx64 ", frecency=%u, hasAltData=%u, "
-         "onStartTime=%u, onStopTime=%u, contentType=%u, size=%u]",
+         "lastFetched=%u, fetchCount=%u, contentType=%u, size=%u]",
          this, LOGSHA1(mRec->Get()->mHash), IsFresh(), IsInitialized(),
          IsRemoved(), IsDirty(), Anonymous(), OriginAttrsHash(), GetFrecency(),
-         GetHasAltData(), GetOnStartTime(), GetOnStopTime(), GetContentType(),
+         GetHasAltData(), GetLastFetched(), GetFetchCount(), GetContentType(),
          GetFileSize()));
   }
 
@@ -377,10 +403,16 @@ class CacheIndexEntry : public PLDHashEntryHdr {
 
   // Indicates there is cached alternative data in the entry.
   static const uint32_t kHasAltDataMask = 0x02000000;
-  static const uint32_t kReservedMask = 0x01000000;
 
-  // FileSize in kilobytes
-  static const uint32_t kFileSizeMask = 0x00FFFFFF;
+  // Indicates that this entry is a dictionary
+  static const uint32_t kDictionaryMask = 0x01000000;
+
+  // Indicates that this entry has a No-Vary-Search response header stored
+  // in its metadata. Used to warm mNoVarySearchIndex on startup.
+  static const uint32_t kHasNoVarySearchMask = 0x00800000;
+
+  // FileSize in kilobytes (max 8GB)
+  static const uint32_t kFileSizeMask = 0x007FFFFF;
 
   RefPtr<CacheIndexRecordWrapper> mRec;
 };
@@ -407,7 +439,7 @@ class CacheIndexEntryUpdate : public CacheIndexEntry {
 
   void InitNew() {
     mUpdateFlags = kFrecencyUpdatedMask | kHasAltDataUpdatedMask |
-                   kOnStartTimeUpdatedMask | kOnStopTimeUpdatedMask |
+                   kLastFetchedUpdatedMask | kFetchCountUpdatedMask |
                    kContentTypeUpdatedMask | kFileSizeUpdatedMask;
     CacheIndexEntry::InitNew();
   }
@@ -422,14 +454,14 @@ class CacheIndexEntryUpdate : public CacheIndexEntry {
     CacheIndexEntry::SetHasAltData(aHasAltData);
   }
 
-  void SetOnStartTime(uint16_t aTime) {
-    mUpdateFlags |= kOnStartTimeUpdatedMask;
-    CacheIndexEntry::SetOnStartTime(aTime);
+  void SetLastFetched(uint32_t aLastFetched) {
+    mUpdateFlags |= kLastFetchedUpdatedMask;
+    CacheIndexEntry::SetLastFetched(aLastFetched);
   }
 
-  void SetOnStopTime(uint16_t aTime) {
-    mUpdateFlags |= kOnStopTimeUpdatedMask;
-    CacheIndexEntry::SetOnStopTime(aTime);
+  void SetFetchCount(uint32_t aFetchCount) {
+    mUpdateFlags |= kFetchCountUpdatedMask;
+    CacheIndexEntry::SetFetchCount(aFetchCount);
   }
 
   void SetContentType(uint8_t aType) {
@@ -449,11 +481,11 @@ class CacheIndexEntryUpdate : public CacheIndexEntry {
       aDst->mRec->Get()->mFrecency = mRec->Get()->mFrecency;
     }
     aDst->mRec->Get()->mOriginAttrsHash = mRec->Get()->mOriginAttrsHash;
-    if (mUpdateFlags & kOnStartTimeUpdatedMask) {
-      aDst->mRec->Get()->mOnStartTime = mRec->Get()->mOnStartTime;
+    if (mUpdateFlags & kLastFetchedUpdatedMask) {
+      aDst->mRec->Get()->mLastFetched = mRec->Get()->mLastFetched;
     }
-    if (mUpdateFlags & kOnStopTimeUpdatedMask) {
-      aDst->mRec->Get()->mOnStopTime = mRec->Get()->mOnStopTime;
+    if (mUpdateFlags & kFetchCountUpdatedMask) {
+      aDst->mRec->Get()->mFetchCount = mRec->Get()->mFetchCount;
     }
     if (mUpdateFlags & kContentTypeUpdatedMask) {
       aDst->mRec->Get()->mContentType = mRec->Get()->mContentType;
@@ -464,15 +496,16 @@ class CacheIndexEntryUpdate : public CacheIndexEntry {
       aDst->mRec->Get()->mFlags ^= kHasAltDataMask;
     }
 
-    if (mUpdateFlags & kFileSizeUpdatedMask) {
-      // Copy all flags except |HasAltData|.
-      aDst->mRec->Get()->mFlags |= (mRec->Get()->mFlags & ~kHasAltDataMask);
-    } else {
-      // Copy all flags except |HasAltData| and file size.
-      aDst->mRec->Get()->mFlags &= kFileSizeMask;
-      aDst->mRec->Get()->mFlags |=
-          (mRec->Get()->mFlags & ~kHasAltDataMask & ~kFileSizeMask);
+    // mFlags packs the file size alongside the boolean flags, so this must be
+    // an assignment and not a merge. Keep |HasAltData|, which the toggle above
+    // has already set, and keep the file size unless the update carries a new
+    // one; take every other bit from the update.
+    uint32_t keepMask = kHasAltDataMask;
+    if (!(mUpdateFlags & kFileSizeUpdatedMask)) {
+      keepMask |= kFileSizeMask;
     }
+    aDst->mRec->Get()->mFlags = (aDst->mRec->Get()->mFlags & keepMask) |
+                                (mRec->Get()->mFlags & ~keepMask);
   }
 
  private:
@@ -480,8 +513,8 @@ class CacheIndexEntryUpdate : public CacheIndexEntry {
   static const uint32_t kContentTypeUpdatedMask = 0x00000002;
   static const uint32_t kFileSizeUpdatedMask = 0x00000004;
   static const uint32_t kHasAltDataUpdatedMask = 0x00000008;
-  static const uint32_t kOnStartTimeUpdatedMask = 0x00000010;
-  static const uint32_t kOnStopTimeUpdatedMask = 0x00000020;
+  static const uint32_t kLastFetchedUpdatedMask = 0x00000010;
+  static const uint32_t kFetchCountUpdatedMask = 0x00000020;
 
   uint32_t mUpdateFlags;
 };
@@ -701,10 +734,22 @@ class CacheIndex final : public CacheFileIOListener, public nsIRunnable {
   NS_DECL_NSIRUNNABLE
 
   CacheIndex();
+  FRIEND_TEST(FrecencyStorageTest, AppendRemoveRecordTest);
+  FRIEND_TEST(FrecencyStorageTest, ReplaceRecordTest);
+  FRIEND_TEST(FrecencyStorageTest, ClearTest);
+  FRIEND_TEST(FrecencyStorageTest, GetSortedSnapshotForEvictionTest);
+  FRIEND_TEST(FrecencyStorageTest, PerformanceTest);
 
   static nsresult Init(nsIFile* aCacheDirectory);
   static nsresult PreShutdown();
   static nsresult Shutdown();
+
+  // Force the in-memory index to be persisted to disk without shutting the
+  // cache down, used when the app is backgrounded (e.g. on Android, where the
+  // process is typically killed rather than cleanly shut down). The write is
+  // dispatched to the IO thread; the dirty flag is intentionally left set so a
+  // subsequent kill still triggers the normal recovery/update pass on restart.
+  static void WriteIndexToDiskNow();
 
   // Following methods can be called only on IO thread.
 
@@ -728,7 +773,9 @@ class CacheIndex final : public CacheFileIOListener, public nsIRunnable {
                             bool aPinned);
 
   // Remove entry from index. The entry should be present in index.
-  static nsresult RemoveEntry(const SHA1Sum::Hash* aHash);
+  static nsresult RemoveEntry(const SHA1Sum::Hash* aHash,
+                              const nsACString& aKey,
+                              bool aClearDictionary = true);
 
   // Update some information in entry. The entry MUST be present in index and
   // MUST be initialized. Call to AddEntry() or EnsureEntryExists() and to
@@ -737,15 +784,23 @@ class CacheIndex final : public CacheFileIOListener, public nsIRunnable {
   static nsresult UpdateEntry(const SHA1Sum::Hash* aHash,
                               const uint32_t* aFrecency,
                               const bool* aHasAltData,
-                              const uint16_t* aOnStartTime,
-                              const uint16_t* aOnStopTime,
+                              const uint32_t* aLastFetched,
+                              const uint32_t* aFetchCount,
                               const uint8_t* aContentType,
                               const uint32_t* aSize);
+
+  // Mark entries so we won't find them.  Used to implement synchronous
+  // clearing for Clear-Site-Data: cache for Compression Dictionaries
+  static void EvictByContext(const nsAString& aOrigin,
+                             const nsAString& aBaseDomain);
 
   // Remove all entries from the index. Called when clearing the whole cache.
   static nsresult RemoveAll();
 
   enum EntryStatus { EXISTS = 0, DOES_NOT_EXIST = 1, DO_NOT_KNOW = 2 };
+
+  // Used to store a snapshot of the frecency storage
+  using EvictionSortedSnapshot = nsTArray<RefPtr<CacheIndexRecordWrapper>>;
 
   // Returns status of the entry in index for the given key. It can be called
   // on any thread.
@@ -759,16 +814,15 @@ class CacheIndex final : public CacheFileIOListener, public nsIRunnable {
       const std::function<void(const CacheIndexEntry*)>& aCB = nullptr);
 
   // Returns a hash of the least important entry that should be evicted if the
-  // cache size is over limit and also returns a total number of all entries in
-  // the index minus the number of forced valid entries and unpinned entries
-  // that we encounter when searching (see below)
-  static nsresult GetEntryForEviction(bool aIgnoreEmptyEntries,
+  // cache size is over limit and also returns the number of entries we had to
+  // reject -- pinned, in use, or of the wrong content type -- before finding
+  // one we could evict.
+  static nsresult GetEntryForEviction(EvictionSortedSnapshot& aSnapshot,
+                                      bool aIgnoreEmptyEntries,
                                       SHA1Sum::Hash* aHash, uint32_t* aCnt);
 
-  // Checks if a cache entry is currently forced valid. Used to prevent an entry
-  // (that has been forced valid) from being evicted when the cache size reaches
-  // its limit.
-  static bool IsForcedValidEntry(const SHA1Sum::Hash* aHash);
+  // Returns a sorted snapshot of the frecency storage.
+  static EvictionSortedSnapshot GetSortedSnapshotForEviction();
 
   // Returns cache size in kB.
   static nsresult GetCacheSize(uint32_t* _retval);
@@ -816,7 +870,6 @@ class CacheIndex final : public CacheFileIOListener, public nsIRunnable {
   friend class FileOpenHelper;
   friend class CacheIndexIterator;
   friend class CacheIndexRecordWrapper;
-  friend class DeleteCacheIndexRecordWrapper;
 
   virtual ~CacheIndex();
 
@@ -851,8 +904,8 @@ class CacheIndex final : public CacheFileIOListener, public nsIRunnable {
   static bool HasEntryChanged(CacheIndexEntry* aEntry,
                               const uint32_t* aFrecency,
                               const bool* aHasAltData,
-                              const uint16_t* aOnStartTime,
-                              const uint16_t* aOnStopTime,
+                              const uint32_t* aLastFetched,
+                              const uint32_t* aFetchCount,
                               const uint8_t* aContentType,
                               const uint32_t* aSize);
 
@@ -863,15 +916,18 @@ class CacheIndex final : public CacheFileIOListener, public nsIRunnable {
   // Following methods perform writing of the index file.
   //
   // The index is written periodically, but not earlier than once in
-  // kMinDumpInterval and there must be at least kMinUnwrittenChanges
-  // differences between index on disk and in memory. Index is always first
-  // written to a temporary file and the old index file is replaced when the
-  // writing process succeeds.
+  // browser.cache.disk.index.min_dump_interval_ms and there must be at least
+  // browser.cache.disk.index.min_unwritten_changes differences between index on
+  // disk and in memory. Index is always first written to a temporary file and
+  // the old index file is replaced when the writing process succeeds.
   //
   // Starts writing of index when both limits (minimal delay between writes and
   // minimum number of changes in index) were exceeded.
   bool WriteIndexToDiskIfNeeded(const StaticMutexAutoLock& aProofOfLock)
       MOZ_REQUIRES(sLock);
+  // IO-thread half of WriteIndexToDiskNow(): force a write if the index is
+  // READY and has any dirty entry.
+  void WriteIndexToDiskNowInternal();
   // Starts writing of index file.
   void WriteIndexToDisk(const StaticMutexAutoLock& aProofOfLock)
       MOZ_REQUIRES(sLock);
@@ -1131,6 +1187,13 @@ class CacheIndex final : public CacheFileIOListener, public nsIRunnable {
   // in hashtable that are initialized and are not marked as removed when
   // writing begins.
   uint32_t mProcessEntries MOZ_GUARDED_BY(sLock){0};
+  // The entries WriteRecords() is writing, captured when the write begins so
+  // that each buffer-sized chunk can resume where the previous one stopped
+  // instead of walking mIndex from the start again. mIndex is not mutated while
+  // mState is WRITING -- AddEntry(), RemoveEntry(), InitEntry() and
+  // UpdateEntry() all stage their changes in mPendingUpdates -- so these
+  // pointers, and the flags that selected them, stay valid for the whole write.
+  nsTArray<CacheIndexEntry*> mRWEntries MOZ_GUARDED_BY(sLock);
   char* mRWBuf MOZ_GUARDED_BY(sLock){nullptr};
   uint32_t mRWBufSize MOZ_GUARDED_BY(sLock){0};
   uint32_t mRWBufPos MOZ_GUARDED_BY(sLock){0};
@@ -1173,76 +1236,48 @@ class CacheIndex final : public CacheFileIOListener, public nsIRunnable {
   // of the journal fails or the hash does not match.
   nsTHashtable<CacheIndexEntry> mTmpJournal MOZ_GUARDED_BY(sLock);
 
-  // FrecencyArray maintains order of entry records for eviction. Ideally, the
-  // records would be ordered by frecency all the time, but since this would be
-  // quite expensive, we allow certain amount of entries to be out of order.
-  // When the frecency is updated the new value is always bigger than the old
-  // one. Instead of keeping updated entries at the same position, we move them
-  // at the end of the array. This protects recently updated entries from
-  // eviction. The array is sorted once we hit the limit of maximum unsorted
-  // entries.
-  class FrecencyArray {
-    class Iterator {
-     public:
-      explicit Iterator(nsTArray<RefPtr<CacheIndexRecordWrapper>>* aRecs)
-          : mRecs(aRecs), mIdx(0) {
-        while (!Done() && !(*mRecs)[mIdx]) {
-          mIdx++;
-        }
-      }
-
-      bool Done() const { return mIdx == mRecs->Length(); }
-
-      CacheIndexRecordWrapper* Get() const {
-        MOZ_ASSERT(!Done());
-        return (*mRecs)[mIdx];
-      }
-
-      void Next() {
-        MOZ_ASSERT(!Done());
-        ++mIdx;
-        while (!Done() && !(*mRecs)[mIdx]) {
-          mIdx++;
-        }
-      }
-
-     private:
-      nsTArray<RefPtr<CacheIndexRecordWrapper>>* mRecs;
-      uint32_t mIdx;
-    };
+  // FrecencyStorage maintains records for eviction. Due to the massive amount
+  // of calls at startup to the "Contains" method,
+  // we keep the records in a hashtable for faster lookup. Sorting is always
+  // done during eviction. This allows us to keep the hashtable fast and
+  // efficient, while still being able to evict entries based on frecency.
+  class FrecencyStorage final {
+    FRIEND_TEST(FrecencyStorageTest, AppendRemoveRecordTest);
+    FRIEND_TEST(FrecencyStorageTest, ReplaceRecordTest);
+    FRIEND_TEST(FrecencyStorageTest, ClearTest);
+    FRIEND_TEST(FrecencyStorageTest, GetSortedSnapshotForEvictionTest);
+    FRIEND_TEST(FrecencyStorageTest, PerformanceTest);
 
    public:
-    Iterator Iter() { return Iterator(&mRecs); }
+    FrecencyStorage() = default;
 
-    FrecencyArray() = default;
-
-    // Methods used by CacheIndexEntryAutoManage to keep the array up to date.
+    // Methods used by CacheIndexEntryAutoManage to keep the storage up to date.
     void AppendRecord(CacheIndexRecordWrapper* aRecord,
                       const StaticMutexAutoLock& aProofOfLock);
+
     void RemoveRecord(CacheIndexRecordWrapper* aRecord,
                       const StaticMutexAutoLock& aProofOfLock);
+
     void ReplaceRecord(CacheIndexRecordWrapper* aOldRecord,
                        CacheIndexRecordWrapper* aNewRecord,
                        const StaticMutexAutoLock& aProofOfLock);
-    void SortIfNeeded(const StaticMutexAutoLock& aProofOfLock);
+
     bool RecordExistedUnlocked(CacheIndexRecordWrapper* aRecord);
 
-    size_t Length() const { return mRecs.Length() - mRemovedElements; }
+    // EvictionSortedSnapshot is used to transform FrecencyStorage into a sorted
+    // array which is then used for eviction.
+    EvictionSortedSnapshot GetSortedSnapshotForEviction();
+
+    size_t Length() const { return mRecs.Count(); }
+
     void Clear(const StaticMutexAutoLock& aProofOfLock) { mRecs.Clear(); }
 
    private:
     friend class CacheIndex;
-
-    nsTArray<RefPtr<CacheIndexRecordWrapper>> mRecs;
-    uint32_t mUnsortedElements{0};
-    // Instead of removing elements from the array immediately, we null them out
-    // and the iterator skips them when accessing the array. The null pointers
-    // are placed at the end during sorting and we strip them out all at once.
-    // This saves moving a lot of memory in nsTArray::RemoveElementsAt.
-    uint32_t mRemovedElements{0};
+    nsTHashtable<nsRefPtrHashKey<CacheIndexRecordWrapper>> mRecs;
   };
 
-  FrecencyArray mFrecencyArray MOZ_GUARDED_BY(sLock);
+  FrecencyStorage mFrecencyStorage MOZ_GUARDED_BY(sLock);
 
   nsTArray<CacheIndexIterator*> mIterators MOZ_GUARDED_BY(sLock);
 

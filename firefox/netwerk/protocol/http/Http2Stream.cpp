@@ -1,22 +1,20 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // HttpLog.h should generally be included first
-#include "HttpLog.h"
-
 #include "Http2Stream.h"
+
+#include "Http2Session.h"
+#include "HttpLog.h"
+#include "mozilla/glean/NetwerkProtocolHttpMetrics.h"
 #include "nsHttp.h"
 #include "nsHttpConnectionInfo.h"
 #include "nsHttpRequestHead.h"
-#include "nsISocketTransport.h"
-#include "Http2Session.h"
-#include "nsIRequestContext.h"
 #include "nsHttpTransaction.h"
+#include "nsIRequestContext.h"
+#include "nsISocketTransport.h"
 #include "nsSocketTransportService2.h"
-#include "mozilla/glean/NetwerkProtocolHttpMetrics.h"
 
 namespace mozilla::net {
 
@@ -30,11 +28,19 @@ Http2Stream::Http2Stream(nsAHttpTransaction* httpTransaction,
   LOG1(("Http2Stream::Http2Stream %p trans=%p", this, httpTransaction));
 }
 
-Http2Stream::~Http2Stream() {}
+Http2Stream::~Http2Stream() = default;
 
 void Http2Stream::CloseStream(nsresult reason) {
+  if (reason == NS_ERROR_NET_RESET &&
+      mTransaction->ConnectionInfo()->IsHttp3ProxyConnection()) {
+    // If we got NS_ERROR_NET_RESET, the transaction will be retried. When
+    // MASQUE proxy is used, keep the Alt-Svc in the connection info. Dropping
+    // it could trigger an unintended proxy connection fallback.
+    mTransaction->DoNotRemoveAltSvc();
+  }
   mTransaction->Close(reason);
   mSession = nullptr;
+  mClosed = true;
 }
 
 uint32_t Http2Stream::GetWireStreamId() {
@@ -74,7 +80,7 @@ nsresult Http2Stream::CallToWriteData(uint32_t count, uint32_t* countWritten) {
 // This is really a headers frame, but open is pretty clear from a workflow pov
 nsresult Http2Stream::GenerateHeaders(nsCString& aCompressedData,
                                       uint8_t& firstFrameFlags) {
-  nsHttpRequestHead* head = mTransaction->RequestHead();
+  const nsHttpRequestHead* head = mTransaction->RequestHead();
   nsAutoCString requestURI;
   head->RequestURI(requestURI);
   RefPtr<Http2Session> session = Session();
@@ -114,7 +120,16 @@ nsresult Http2Stream::GenerateHeaders(nsCString& aCompressedData,
   int64_t clVal = session->Compressor()->GetParsedContentLength();
   if (clVal != -1) {
     mRequestBodyLenRemaining = clVal;
+  } else if (nsHttpTransaction* trans = HttpTransaction();
+             trans && trans->RequestBodyIsStreaming()) {
+    // A streaming upload has no Content-Length, so its length is unknown up
+    // front; END_STREAM will be driven by the 0-byte read that ends the body.
+    // Only streaming uploads take this path: for every other
+    // Content-Length-less request (CONNECT tunnels in particular)
+    // mRequestBodyLenRemaining keeps its previous meaning.
+    mRequestBodyLenRemaining = -1;
   }
+  // Otherwise leave mRequestBodyLenRemaining at its default 0 (no body).
 
   // Determine whether to put the fin bit on the header frame or whether
   // to wait for a data packet to put it on.
@@ -130,13 +145,6 @@ nsresult Http2Stream::GenerateHeaders(nsCString& aCompressedData,
     // to determine whether or not to put fin on headers
     firstFrameFlags |= Http2Session::kFlag_END_STREAM;
   }
-
-  // The size of the input headers is approximate
-  uint32_t ratio =
-      aCompressedData.Length() * 100 /
-      (11 + requestURI.Length() + mFlatHttpRequestHeaders.Length());
-
-  glean::spdy::syn_ratio.AccumulateSingleSample(ratio);
 
   return NS_OK;
 }

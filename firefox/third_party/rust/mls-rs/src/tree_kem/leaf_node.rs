@@ -60,7 +60,7 @@ pub struct ConfigProperties {
 
 impl LeafNode {
     #[cfg_attr(not(mls_build_async), maybe_async::must_be_sync)]
-    pub async fn generate<CSP>(
+    pub(crate) async fn generate<CSP>(
         cipher_suite_provider: &CSP,
         properties: ConfigProperties,
         signing_identity: SigningIdentity,
@@ -97,8 +97,10 @@ impl LeafNode {
         Ok((leaf_node, secret_key))
     }
 
+    // Used to generate test leaves
+    #[cfg(any(feature = "by_ref_proposal", test))]
     #[cfg_attr(not(mls_build_async), maybe_async::must_be_sync)]
-    pub async fn update<P: CipherSuiteProvider>(
+    pub(crate) async fn update<P: CipherSuiteProvider>(
         &mut self,
         cipher_suite_provider: &P,
         group_id: &[u8],
@@ -139,7 +141,7 @@ impl LeafNode {
 
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(not(mls_build_async), maybe_async::must_be_sync)]
-    pub async fn commit<P: CipherSuiteProvider>(
+    pub(crate) async fn commit<P: CipherSuiteProvider>(
         &mut self,
         cipher_suite_provider: &P,
         group_id: &[u8],
@@ -296,7 +298,7 @@ pub(crate) mod test_utils {
             secret,
             capabilities.unwrap_or_else(get_test_capabilities),
             extensions.unwrap_or_default(),
-            Lifetime::years(1).unwrap(),
+            Lifetime::years(1, None).unwrap(),
         )
         .await
     }
@@ -357,7 +359,7 @@ pub(crate) mod test_utils {
             },
             signing_identity,
             &signature_key,
-            Lifetime::years(1).unwrap(),
+            Lifetime::years(1, None).unwrap(),
         )
         .await
         .map(|(leaf, hpke_secret_key)| (leaf, hpke_secret_key, signature_key))
@@ -421,7 +423,7 @@ mod tests {
     async fn test_node_generation() {
         let capabilities = get_test_capabilities();
         let extensions = get_test_extensions();
-        let lifetime = Lifetime::years(1).unwrap();
+        let lifetime = Lifetime::years(1, None).unwrap();
 
         for cipher_suite in TestCryptoProvider::all_supported_cipher_suites() {
             let (signing_identity, secret) = get_test_signing_identity(cipher_suite, b"foo").await;
@@ -462,7 +464,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(opened, test_data);
+            assert_eq!(*opened, test_data);
 
             leaf_node
                 .verify(
@@ -543,6 +545,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "by_ref_proposal")]
     #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
     async fn test_node_update_meta_changes() {
         let cipher_suite = TEST_CIPHER_SUITE;

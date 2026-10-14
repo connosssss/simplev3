@@ -1,65 +1,65 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#include "nsCSPContext.h"
 
 #include <string>
 #include <unordered_set>
 #include <utility>
 
-#include "nsCOMPtr.h"
-#include "nsContentPolicyUtils.h"
-#include "nsContentSecurityUtils.h"
-#include "nsContentUtils.h"
-#include "nsCSPContext.h"
-#include "nsCSPParser.h"
-#include "nsCSPService.h"
-#include "nsCSPUtils.h"
-#include "nsGlobalWindowOuter.h"
-#include "nsError.h"
-#include "nsIAsyncVerifyRedirectCallback.h"
-#include "nsIClassInfoImpl.h"
-#include "mozilla/dom/Document.h"
-#include "nsIHttpChannel.h"
-#include "nsIInterfaceRequestor.h"
-#include "nsIInterfaceRequestorUtils.h"
-#include "nsIObjectInputStream.h"
-#include "nsIObjectOutputStream.h"
-#include "nsIObserver.h"
-#include "nsIObserverService.h"
-#include "nsIStringStream.h"
-#include "nsISupportsPrimitives.h"
-#include "nsIUploadChannel.h"
-#include "nsIURIMutator.h"
-#include "nsIScriptError.h"
-#include "nsMimeTypes.h"
-#include "nsNetUtil.h"
-#include "nsIContentPolicy.h"
-#include "nsSupportsPrimitives.h"
-#include "nsThreadUtils.h"
-#include "nsScriptSecurityManager.h"
-#include "nsStreamUtils.h"
-#include "nsString.h"
-#include "nsStringStream.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_security.h"
 #include "mozilla/dom/CSPDictionariesBinding.h"
 #include "mozilla/dom/CSPReportBinding.h"
 #include "mozilla/dom/CSPViolationReportBody.h"
+#include "mozilla/dom/DocGroup.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/LinkStyle.h"
 #include "mozilla/dom/ReportingUtils.h"
 #include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/glean/DomSecurityMetrics.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
-#include "nsINetworkInterceptController.h"
-#include "nsSandboxFlags.h"
-#include "nsIScriptElement.h"
+#include "nsCOMPtr.h"
+#include "nsCSPParser.h"
+#include "nsCSPService.h"
+#include "nsCSPUtils.h"
+#include "nsContentPolicyUtils.h"
+#include "nsContentSecurityUtils.h"
+#include "nsContentUtils.h"
+#include "nsError.h"
+#include "nsGlobalWindowOuter.h"
+#include "nsIAsyncVerifyRedirectCallback.h"
+#include "nsIClassInfoImpl.h"
+#include "nsIContentPolicy.h"
 #include "nsIEventTarget.h"
-#include "mozilla/dom/DocGroup.h"
-#include "mozilla/dom/Element.h"
-#include "nsXULAppAPI.h"
+#include "nsIHttpChannel.h"
+#include "nsIInterfaceRequestor.h"
+#include "nsIInterfaceRequestorUtils.h"
+#include "nsINetworkInterceptController.h"
+#include "nsIObjectInputStream.h"
+#include "nsIObjectOutputStream.h"
+#include "nsIObserver.h"
+#include "nsIObserverService.h"
+#include "nsIScriptElement.h"
+#include "nsIScriptError.h"
+#include "nsIStringStream.h"
+#include "nsISupportsPrimitives.h"
+#include "nsIURIMutator.h"
+#include "nsIUploadChannel.h"
 #include "nsJSUtils.h"
+#include "nsMimeTypes.h"
+#include "nsNetUtil.h"
+#include "nsSandboxFlags.h"
+#include "nsScriptSecurityManager.h"
+#include "nsStreamUtils.h"
+#include "nsString.h"
+#include "nsStringStream.h"
+#include "nsSupportsPrimitives.h"
+#include "nsThreadUtils.h"
+#include "nsXULAppAPI.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -93,10 +93,8 @@ static LogModule* GetCspOriginLogLog() {
 static bool ValidateDirectiveName(const nsAString& aDirective) {
   static const auto directives = []() {
     std::unordered_set<std::string> directives;
-    constexpr size_t dirLen =
-        sizeof(CSPStrDirectives) / sizeof(CSPStrDirectives[0]);
-    for (size_t i = 0; i < dirLen; ++i) {
-      directives.insert(CSPStrDirectives[i]);
+    for (const char* directive : CSPStrDirectives) {
+      directives.insert(directive);
     }
     return directives;
   }();
@@ -347,7 +345,7 @@ nsCSPContext::EnsureIPCPoliciesRead() {
     for (auto& policy : mIPCPolicies) {
       rv = AppendPolicy(policy.policy(), policy.reportOnlyFlag(),
                         policy.deliveredViaMetaTagFlag());
-      Unused << NS_WARN_IF(NS_FAILED(rv));
+      (void)NS_WARN_IF(NS_FAILED(rv));
     }
     mIPCPolicies.Clear();
   }
@@ -516,8 +514,14 @@ nsCSPContext::GetAllowsEval(bool* outShouldReportViolation,
     }
   }
 
+  bool trustedTypesRequired = (mRequireTrustedTypesForDirectiveState ==
+                               RequireTrustedTypesForDirectiveState::ENFORCE);
+
   for (uint32_t i = 0; i < mPolicies.Length(); i++) {
-    if (!mPolicies[i]->allows(SCRIPT_SRC_DIRECTIVE, CSP_UNSAFE_EVAL, u""_ns)) {
+    if (!(trustedTypesRequired &&
+          mPolicies[i]->allows(SCRIPT_SRC_DIRECTIVE, CSP_TRUSTED_TYPES_EVAL,
+                               u""_ns)) &&
+        !mPolicies[i]->allows(SCRIPT_SRC_DIRECTIVE, CSP_UNSAFE_EVAL, u""_ns)) {
       // policy is violated: must report the violation and allow the inline
       // script if the policy is report-only.
       *outShouldReportViolation = true;
@@ -631,7 +635,7 @@ nsCSPContext::GetAllowsInline(CSPDirective aDirective, bool aHasUnsafeHash,
                               const nsAString& aNonce, bool aParserCreated,
                               Element* aTriggeringElement,
                               nsICSPEventListener* aCSPEventListener,
-                              const nsAString& aContentOfPseudoScript,
+                              const nsAString& aSourceText,
                               uint32_t aLineNumber, uint32_t aColumnNumber,
                               bool* outAllowsInline) {
   *outAllowsInline = true;
@@ -683,14 +687,21 @@ nsCSPContext::GetAllowsInline(CSPDirective aDirective, bool aHasUnsafeHash,
     // once. Even though we are in a for loop, it is probable that there is only
     // one policy, so this check may be unnecessary.
     if (content.IsEmpty()) {
-      if (aContentOfPseudoScript.IsVoid()) {
-        // Lazily retrieve the text of inline script, see bug 1376651.
-        nsCOMPtr<nsIScriptElement> element =
-            do_QueryInterface(aTriggeringElement);
-        MOZ_ASSERT(element);
-        element->GetScriptText(content);
+      if (aSourceText.IsVoid()) {
+        // Lazily retrieve inline script / stylesheets, see bug 1376651.
+        if (nsCOMPtr<nsIScriptElement> element =
+                do_QueryInterface(aTriggeringElement)) {
+          element->GetScriptText(content);
+        } else if (auto* style = LinkStyle::FromNode(*aTriggeringElement)) {
+          if (!style->GetInlineSheetText(content)) {
+            // TODO: Could fall back more reasonably perhaps.
+            MOZ_CRASH("OOM when getting sheet text for CSP reporting");
+          }
+        } else {
+          MOZ_ASSERT_UNREACHABLE("No way to get the actual source text?");
+        }
       } else {
-        content = aContentOfPseudoScript;
+        content = aSourceText;
       }
     }
 
@@ -984,7 +995,7 @@ void nsCSPContext::logToConsole(const char* aName,
     nsAutoString msg;
     CSP_GetLocalizedStr(aName, aParams, msg);
     ConsoleMsgQueueElem& elem = *mConsoleMsgQueue.AppendElement();
-    elem.mMsg = msg;
+    elem.mMsg = std::move(msg);
     elem.mSourceName = sourceName;
     elem.mSourceLine = PromiseFlatString(aSourceLine);
     elem.mLineNumber = aLineNumber;
@@ -1122,7 +1133,7 @@ nsresult nsCSPContext::GatherSecurityPolicyViolationEventData(
   rv = this->GetPolicyString(aCSPViolationData.mViolatedPolicyIndex,
                              originalPolicy);
   NS_ENSURE_SUCCESS(rv, rv);
-  aViolationEventInit.mOriginalPolicy = originalPolicy;
+  aViolationEventInit.mOriginalPolicy = std::move(originalPolicy);
 
   // source-file
   if (!aCSPViolationData.mSourceFile.IsEmpty()) {
@@ -1180,17 +1191,16 @@ nsresult nsCSPContext::GatherSecurityPolicyViolationEventData(
 
 bool nsCSPContext::ShouldThrottleReport(
     const mozilla::dom::SecurityPolicyViolationEventInit& aViolationEventInit) {
-  // Fetch rate limiting preferences
+  // Fetch the rate limit preference.
   const uint32_t kLimitCount =
       StaticPrefs::security_csp_reporting_limit_count();
-  const uint32_t kTimeSpanSeconds =
-      StaticPrefs::security_csp_reporting_limit_timespan();
 
-  // Disable throttling if either of the preferences is set to 0.
-  if (kLimitCount == 0 || kTimeSpanSeconds == 0) {
+  // Disable throttling if the preference is set to 0.
+  if (kLimitCount == 0) {
     return false;
   }
 
+  const uint32_t kTimeSpanSeconds = 2;
   TimeDuration throttleSpan = TimeDuration::FromSeconds(kTimeSpanSeconds);
   if (mSendReportLimitSpanStart.IsNull() ||
       ((TimeStamp::Now() - mSendReportLimitSpanStart) > throttleSpan)) {
@@ -1264,8 +1274,10 @@ nsresult nsCSPContext::SendReportsToEndpoints(
   RefPtr<CSPViolationReportBody> body =
       new CSPViolationReportBody(window->AsGlobal(), aViolationEventInit);
 
-  ReportingUtils::Report(window->AsGlobal(), nsGkAtoms::cspViolation,
-                         reportGroup, aViolationEventInit.mDocumentURI, body);
+  ReportingUtils::Report(
+      window->AsGlobal(), nsGkAtoms::cspViolation,
+      NS_ConvertUTF16toUTF8(reportGroup),
+      NS_ConvertUTF16toUTF8(aViolationEventInit.mDocumentURI), body);
   return NS_OK;
 }
 
@@ -1465,12 +1477,22 @@ void nsCSPContext::HandleInternalPageViolation(
     const CSPViolationData& aCSPViolationData,
     const SecurityPolicyViolationEventInit& aInit,
     const nsAString& aViolatedDirectiveNameAndValue) {
-  if (!mSelfURI || !mSelfURI->SchemeIs("chrome")) {
+  nsCOMPtr<nsIURI> selfURI = mSelfURI;
+  if (!selfURI) {
+    return;
+  }
+  if (nsContentUtils::IsPDFJS(mLoadingPrincipal)) {
+    // The pdf.js viewer is loaded via a stream converter that keeps the PDF
+    // URL as the document URI, so mSelfURI is not the internal-page URL.
+    // Use the loading principal's URI (resource://pdf.js/web/viewer.html)
+    // instead.
+    selfURI = mLoadingPrincipal->GetURI();
+  } else if (!selfURI->SchemeIs("chrome")) {
     return;
   }
 
   nsAutoCString selfURISpec;
-  mSelfURI->GetSpec(selfURISpec);
+  selfURI->GetSpec(selfURISpec);
 
   glean::security::CspViolationInternalPageExtra extra;
   extra.directive = Some(NS_ConvertUTF16toUTF8(aInit.mEffectiveDirective));
@@ -1507,6 +1529,10 @@ void nsCSPContext::HandleInternalPageViolation(
     extra.blockeduridetails = blocked.second;
   }
 
+  extra.baseline =
+      Some(aCSPViolationData.mViolatedPolicyIndex == 0 &&
+           aInit.mOriginalPolicy == nsContentSecurityUtils::kBaselineSystemCSP);
+
   glean::security::csp_violation_internal_page.Record(Some(extra));
 
 #ifdef DEBUG
@@ -1516,10 +1542,10 @@ void nsCSPContext::HandleInternalPageViolation(
     effectiveDirective.Assign(
         CSP_CSPDirectiveToString(aCSPViolationData.mEffectiveDirective));
     nsFmtCString s(
-        FMT_STRING("Unexpected CSP violation on page {} caused by {} (URL: {}, "
-                   "Source: {}) violating the directive: \"{}\" (file: {} "
-                   "line: {}). For debugging you can set the pref "
-                   "security.csp.testing.allow_internal_csp_violation=true."),
+        "Unexpected CSP violation on page {} caused by {} (URL: {}, "
+        "Source: {}) violating the directive: \"{}\" (file: {} "
+        "line: {}). For debugging you can set the pref "
+        "security.csp.testing.allow_internal_csp_violation=true.",
         selfURISpec.get(), effectiveDirective.get(),
         NS_ConvertUTF16toUTF8(aInit.mBlockedURI).get(),
         NS_ConvertUTF16toUTF8(aCSPViolationData.mSample).get(), directive.get(),
@@ -1531,11 +1557,12 @@ void nsCSPContext::HandleInternalPageViolation(
 
 nsresult nsCSPContext::FireViolationEvent(
     Element* aTriggeringElement, nsICSPEventListener* aCSPEventListener,
-    const mozilla::dom::SecurityPolicyViolationEventInit& aViolationEventInit) {
+    const mozilla::dom::SecurityPolicyViolationEventInit& aViolationEventInit,
+    const nsAString& aReportGroupName) {
   if (aCSPEventListener) {
     nsAutoString json;
     if (aViolationEventInit.ToJSON(json)) {
-      aCSPEventListener->OnCSPViolationEvent(json);
+      aCSPEventListener->OnCSPViolationEvent(json, aReportGroupName);
     }
 
     return NS_OK;
@@ -1562,7 +1589,8 @@ nsresult nsCSPContext::FireViolationEvent(
             WindowGlobalParent::GetByInnerWindowId(mInnerWindowID)) {
       nsAutoString json;
       if (aViolationEventInit.ToJSON(json)) {
-        Unused << parent->SendDispatchSecurityPolicyViolation(json);
+        (void)parent->SendDispatchSecurityPolicyViolation(json,
+                                                          aReportGroupName);
       }
     }
     return NS_OK;
@@ -1670,8 +1698,10 @@ class CSPReportSenderRunnable final : public Runnable {
     // A frame-ancestors violation has occurred, but we should not dispatch
     // the violation event to a potentially cross-origin ancestor.
     if (!mViolatedDirectiveName.EqualsLiteral("frame-ancestors")) {
-      mCSPContext->FireViolationEvent(mCSPViolationData.mElement,
-                                      mCSPEventListener, init);
+      mCSPContext->FireViolationEvent(
+          mCSPViolationData.mElement, mCSPEventListener, init,
+          mCSPContext->GetReportGroupFor(
+              mCSPViolationData.mViolatedPolicyIndex));
     }
 
     return NS_OK;
@@ -1801,7 +1831,8 @@ class CSPReportSenderRunnable final : public Runnable {
         }
 
         AutoTArray<nsString, 3> params = {mViolatedDirectiveNameAndValue,
-                                          source, effectiveDirective};
+                                          std::move(source),
+                                          effectiveDirective};
         mCSPContext->logToConsole(
             errorName, params, mCSPViolationData.mSourceFile,
             mCSPViolationData.mSample, mCSPViolationData.mLineNumber,
@@ -2042,7 +2073,7 @@ nsCSPContext::GetCSPSandboxFlags(uint32_t* aOutSandboxFlags) {
            "sandbox in: %s",
            NS_ConvertUTF16toUTF8(policy).get()));
 
-      AutoTArray<nsString, 1> params = {policy};
+      AutoTArray<nsString, 1> params = {std::move(policy)};
       logToConsole("ignoringReportOnlyDirective", params, ""_ns, u""_ns, 0, 1,
                    nsIScriptError::warningFlag);
     }
@@ -2152,6 +2183,15 @@ void CSPReportRedirectSink::SetInterceptController(
 
 NS_IMETHODIMP
 nsCSPContext::Read(nsIObjectInputStream* aStream) {
+  return ReadImpl(aStream, false);
+}
+
+nsresult nsCSPContext::PolicyContainerRead(nsIObjectInputStream* aInputStream) {
+  return ReadImpl(aInputStream, true);
+}
+
+nsresult nsCSPContext::ReadImpl(nsIObjectInputStream* aStream,
+                                bool aForPolicyContainer) {
   CSPCONTEXTLOG(("nsCSPContext::Read"));
 
   nsresult rv;
@@ -2179,29 +2219,57 @@ nsCSPContext::Read(nsIObjectInputStream* aStream) {
     return NS_OK;
   }
 
+  if (aForPolicyContainer) {
+    return TryReadPolicies(PolicyDataVersion::Post136, aStream, numPolicies,
+                           true);
+  }
+
   // Note: This assume that there is no other data following the CSP!
   // E10SUtils.deserializeCSP is the only user of this logic.
   nsTArray<uint8_t> data;
   rv = NS_ConsumeStream(aStream, UINT32_MAX, data);
   NS_ENSURE_SUCCESS(rv, rv);
 
+  auto createStreamFromData =
+      [&data]() -> already_AddRefed<nsIObjectInputStream> {
+    nsCOMPtr<nsIInputStream> binaryStream;
+    nsresult rv = NS_NewByteInputStream(
+        getter_AddRefs(binaryStream),
+        Span(reinterpret_cast<const char*>(data.Elements()), data.Length()),
+        NS_ASSIGNMENT_DEPEND);
+    NS_ENSURE_SUCCESS(rv, nullptr);
+
+    nsCOMPtr<nsIObjectInputStream> stream =
+        NS_NewObjectInputStream(binaryStream);
+
+    return stream.forget();
+  };
+
   // Because of accidental backwards incompatible changes we have to try and
   // parse multiple different versions of the CSP data. Starting with the
   // current data format.
-  if (NS_SUCCEEDED(TryReadPolicies(PolicyDataVersion::Post136, Span(data),
-                                   numPolicies))) {
+
+  nsCOMPtr<nsIObjectInputStream> stream = createStreamFromData();
+  NS_ENSURE_TRUE(stream, NS_ERROR_FAILURE);
+
+  if (NS_SUCCEEDED(TryReadPolicies(PolicyDataVersion::Post136, stream,
+                                   numPolicies, false))) {
     CSPCONTEXTLOG(("nsCSPContext::Read: Data was in version ::Post136."));
     return NS_OK;
   }
 
-  if (NS_SUCCEEDED(TryReadPolicies(PolicyDataVersion::Pre136, Span(data),
-                                   numPolicies))) {
+  stream = createStreamFromData();
+  NS_ENSURE_TRUE(stream, NS_ERROR_FAILURE);
+  if (NS_SUCCEEDED(TryReadPolicies(PolicyDataVersion::Pre136, stream,
+                                   numPolicies, false))) {
     CSPCONTEXTLOG(("nsCSPContext::Read: Data was in version ::Pre136."));
     return NS_OK;
   }
 
-  if (NS_SUCCEEDED(TryReadPolicies(PolicyDataVersion::V138_9PreRelease,
-                                   Span(data), numPolicies))) {
+  stream = createStreamFromData();
+  NS_ENSURE_TRUE(stream, NS_ERROR_FAILURE);
+  if (NS_SUCCEEDED(TryReadPolicies(PolicyDataVersion::V138_9PreRelease, stream,
+                                   numPolicies, false))) {
     CSPCONTEXTLOG(
         ("nsCSPContext::Read: Data was in version ::V138_9PreRelease."));
     return NS_OK;
@@ -2212,22 +2280,13 @@ nsCSPContext::Read(nsIObjectInputStream* aStream) {
 }
 
 nsresult nsCSPContext::TryReadPolicies(PolicyDataVersion aVersion,
-                                       Span<const uint8_t> aData,
-                                       uint32_t aNumPolicies) {
-  nsCOMPtr<nsIInputStream> binaryStream;
-  nsresult rv = NS_NewByteInputStream(
-      getter_AddRefs(binaryStream),
-      Span(reinterpret_cast<const char*>(aData.Elements()), aData.Length()),
-      NS_ASSIGNMENT_DEPEND);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsCOMPtr<nsIObjectInputStream> stream = NS_NewObjectInputStream(binaryStream);
-
+                                       nsIObjectInputStream* aStream,
+                                       uint32_t aNumPolicies,
+                                       bool aForPolicyContainer) {
   // Like ReadBoolean, but ensures the byte is actually 0 or 1.
-  auto ReadBooleanSafe = [stream](bool* aBoolean) {
+  auto ReadBooleanSafe = [aStream](bool* aBoolean) -> nsresult {
     uint8_t raw = 0;
-    nsresult rv = stream->Read8(&raw);
-    NS_ENSURE_SUCCESS(rv, rv);
+    MOZ_TRY(aStream->Read8(&raw));
     if (!(raw == 0 || raw == 1)) {
       CSPCONTEXTLOG(("nsCSPContext::TryReadPolicies: Bad boolean value"));
       return NS_ERROR_FAILURE;
@@ -2242,8 +2301,7 @@ nsresult nsCSPContext::TryReadPolicies(PolicyDataVersion aVersion,
   while (aNumPolicies > 0) {
     aNumPolicies--;
 
-    rv = stream->ReadString(policyString);
-    NS_ENSURE_SUCCESS(rv, rv);
+    MOZ_TRY(aStream->ReadString(policyString));
 
     // nsCSPParser::policy removed all non-ASCII tokens while parsing the CSP
     // that was serialized, so we shouldn't have any in this string. A non-ASCII
@@ -2257,27 +2315,23 @@ nsresult nsCSPContext::TryReadPolicies(PolicyDataVersion aVersion,
     }
 
     bool reportOnly = false;
-    rv = ReadBooleanSafe(&reportOnly);
-    NS_ENSURE_SUCCESS(rv, rv);
+    MOZ_TRY(ReadBooleanSafe(&reportOnly));
 
     bool deliveredViaMetaTag = false;
-    rv = ReadBooleanSafe(&deliveredViaMetaTag);
-    NS_ENSURE_SUCCESS(rv, rv);
+    MOZ_TRY(ReadBooleanSafe(&deliveredViaMetaTag));
 
     bool hasRequireTrustedTypesForDirective = false;
     if (aVersion == PolicyDataVersion::Post136 ||
         aVersion == PolicyDataVersion::V138_9PreRelease) {
       // Added in bug 1901492.
-      rv = ReadBooleanSafe(&hasRequireTrustedTypesForDirective);
-      NS_ENSURE_SUCCESS(rv, rv);
+      MOZ_TRY(ReadBooleanSafe(&hasRequireTrustedTypesForDirective));
     }
 
     if (aVersion == PolicyDataVersion::V138_9PreRelease) {
       // This was added in bug 1942306, but wasn't really necessary.
       // Removed again in bug 1958259.
       uint32_t numExpressions;
-      rv = stream->Read32(&numExpressions);
-      NS_ENSURE_SUCCESS(rv, rv);
+      MOZ_TRY(aStream->Read32(&numExpressions));
       // We assume that because Trusted Types was disabled by default
       // that no "trusted type expressions" were written during that time.
       if (numExpressions != 0) {
@@ -2290,16 +2344,18 @@ nsresult nsCSPContext::TryReadPolicies(PolicyDataVersion aVersion,
                               hasRequireTrustedTypesForDirective));
   }
 
-  // Make sure all data was consumed.
-  uint64_t available = 0;
-  rv = stream->Available(&available);
-  NS_ENSURE_SUCCESS(rv, rv);
-  if (available) {
-    return NS_ERROR_FAILURE;
+  // PolicyContainer may contain extra stuff.
+  if (!aForPolicyContainer) {
+    // Make sure all data was consumed.
+    uint64_t available = 0;
+    MOZ_TRY(aStream->Available(&available));
+    if (available) {
+      return NS_ERROR_FAILURE;
+    }
   }
 
   // Success! Add the policies now.
-  for (auto policy : policies) {
+  for (const auto& policy : policies) {
     AddIPCPolicy(policy);
   }
   return NS_OK;
@@ -2307,17 +2363,15 @@ nsresult nsCSPContext::TryReadPolicies(PolicyDataVersion aVersion,
 
 NS_IMETHODIMP
 nsCSPContext::Write(nsIObjectOutputStream* aStream) {
-  nsresult rv = NS_WriteOptionalCompoundObject(aStream, mSelfURI,
-                                               NS_GET_IID(nsIURI), true);
-  NS_ENSURE_SUCCESS(rv, rv);
+  MOZ_TRY(NS_WriteOptionalCompoundObject(aStream, mSelfURI, NS_GET_IID(nsIURI),
+                                         true));
 
   nsAutoCString JSON;
   BasePrincipal::Cast(mLoadingPrincipal)->ToJSON(JSON);
-  rv = aStream->WriteStringZ(JSON.get());
-  NS_ENSURE_SUCCESS(rv, rv);
+  MOZ_TRY(aStream->WriteStringZ(JSON.get()));
 
   // Serialize all the policies.
-  aStream->Write32(mPolicies.Length() + mIPCPolicies.Length());
+  MOZ_TRY(aStream->Write32(mPolicies.Length() + mIPCPolicies.Length()));
 
   // WARNING: Any change here needs to be backwards compatible because
   // the serialized CSP data is used across different Firefox versions.
@@ -2328,16 +2382,17 @@ nsCSPContext::Write(nsIObjectOutputStream* aStream) {
   for (uint32_t p = 0; p < mPolicies.Length(); p++) {
     polStr.Truncate();
     mPolicies[p]->toString(polStr);
-    aStream->WriteWStringZ(polStr.get());
-    aStream->WriteBoolean(mPolicies[p]->getReportOnlyFlag());
-    aStream->WriteBoolean(mPolicies[p]->getDeliveredViaMetaTagFlag());
-    aStream->WriteBoolean(mPolicies[p]->hasRequireTrustedTypesForDirective());
+    MOZ_TRY(aStream->WriteWStringZ(polStr.get()));
+    MOZ_TRY(aStream->WriteBoolean(mPolicies[p]->getReportOnlyFlag()));
+    MOZ_TRY(aStream->WriteBoolean(mPolicies[p]->getDeliveredViaMetaTagFlag()));
+    MOZ_TRY(aStream->WriteBoolean(
+        mPolicies[p]->hasRequireTrustedTypesForDirective()));
   }
   for (auto& policy : mIPCPolicies) {
-    aStream->WriteWStringZ(policy.policy().get());
-    aStream->WriteBoolean(policy.reportOnlyFlag());
-    aStream->WriteBoolean(policy.deliveredViaMetaTagFlag());
-    aStream->WriteBoolean(policy.hasRequireTrustedTypesForDirective());
+    MOZ_TRY(aStream->WriteWStringZ(policy.policy().get()));
+    MOZ_TRY(aStream->WriteBoolean(policy.reportOnlyFlag()));
+    MOZ_TRY(aStream->WriteBoolean(policy.deliveredViaMetaTagFlag()));
+    MOZ_TRY(aStream->WriteBoolean(policy.hasRequireTrustedTypesForDirective()));
   }
 
   return NS_OK;
@@ -2368,4 +2423,14 @@ void nsCSPContext::SerializePolicies(
   }
 
   aPolicies.AppendElements(mIPCPolicies);
+}
+
+nsString nsCSPContext::GetReportGroupFor(uint64_t aPolicyIndex) const {
+  nsString result;
+  if (aPolicyIndex >= mPolicies.Length()) {
+    return EmptyString();
+  }
+
+  mPolicies[aPolicyIndex]->getReportGroup(result);
+  return result;
 }

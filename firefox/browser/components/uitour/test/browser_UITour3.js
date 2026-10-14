@@ -268,13 +268,9 @@ add_UITour_task(async function test_info_target_callback() {
 });
 
 add_UITour_task(async function test_getConfiguration_selectedSearchEngine() {
-  let engine = await Services.search.getDefault();
+  let engine = await SearchService.getDefault();
   let data = await getConfigurationPromise("selectedSearchEngine");
-  is(
-    data.searchEngineIdentifier,
-    engine.identifier,
-    "Correct engine identifier"
-  );
+  is(data.searchEngineIdentifier, engine.id, "Correct engine identifier");
 });
 
 add_UITour_task(async function test_setSearchTerm() {
@@ -286,7 +282,7 @@ add_UITour_task(async function test_setSearchTerm() {
 
   // The UITour gets to the searchbar element through a promise, so the value setting
   // only happens after a tick.
-  await waitForConditionPromise(
+  await TestUtils.waitForCondition(
     () => searchbar.value == TERM,
     "Correct term set"
   );
@@ -302,7 +298,7 @@ add_UITour_task(async function test_clearSearchTerm() {
 
   // The UITour gets to the searchbar element through a promise, so the value setting
   // only happens after a tick.
-  await waitForConditionPromise(
+  await TestUtils.waitForCondition(
     () => searchbar.value == "",
     "Search term cleared"
   );

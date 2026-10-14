@@ -1,4 +1,3 @@
-/* -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil; tab-width: 8 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,6 +20,15 @@ interface nsIFOG : nsISupports
    *        Default: false.
    */
   void initializeFOG([optional] in AUTF8String aDataPathOverride, [optional] in AUTF8String aAppIdOverride, [optional] in boolean aDisableInternalPings);
+
+  /**
+   * Whether FOG has been initialized.
+   *
+   * Recording metrics beforehand is safe because it is buffered, but the
+   * blocking test APIs (e.g. `testGetValue`) deadlock the calling thread if
+   * used before this is true. Tests that read metrics early should wait on it.
+   */
+  readonly attribute boolean initialized;
 
   /**
    * Register custom pings.
@@ -105,7 +113,7 @@ interface nsIFOG : nsISupports
   /**
    * Set remote-configuration for metrics' disabled property.
    *
-   * See [`glean_core::Glean::set_metrics_enabled_config`]
+   * See [`glean_core::Glean::apply_server_knobs_config`]
    *
    * Logs on error, but does not throw.
    *
@@ -131,6 +139,13 @@ interface nsIFOG : nsISupports
    * Reset FOG and the Glean SDK, clearing storage.
    */
   void testResetFOG([optional] in AUTF8String aDataPathOverride, [optional] in AUTF8String aAppIdOverride);
+
+  /**
+   * ** Test-only Method **
+   *
+   * Shutdown FOG and the Glean SDK.
+   */
+  void testShutdownFOG();
 
   /**
    * ** Test-only Method **
@@ -161,6 +176,7 @@ interface nsIFOG : nsISupports
    * @param aPings - The pings to send it in.
    * @param aLifetime - The metric's lifetime.
    * @param aDisabled - Whether the metric, though existing, isn't enabled.
+   * @param aInSession - Whether the metric should be considered for automatic session handling.
    * @param aExtraArgs - Optional JSON string of extra args.
    */
   uint32_t testRegisterRuntimeMetric(in ACString aType,
@@ -169,6 +185,7 @@ interface nsIFOG : nsISupports
                                  in Array<ACString> aPings,
                                  in ACString aLifetime,
                                  in boolean aDisabled,
+                                 in boolean aInSession,
                                  [optional] in ACString aExtraArgs);
 
   /**
@@ -199,6 +216,12 @@ interface nsIFOG : nsISupports
                                    in Array<ACString> aUploaderCapabilities);
 
   /**
+   * Clear the core attribution metrics in Glean.
+   * Does not clear glean.attribution.ext.
+   */
+  void clearAttribution();
+
+  /**
    * Update the core attribution metrics in Glean.
    *
    * @param aSource - The product's attribution source (e.g. "google-play").
@@ -223,6 +246,12 @@ interface nsIFOG : nsISupports
    */
   [implicit_jscontext]
   jsval testGetAttribution();
+
+  /**
+   * Clear the core distribution metrics in Glean.
+   * Does not clear glean.distribution.ext.
+   */
+  void clearDistribution();
 
   /**
    * Update the core distribution metrics in Glean.
@@ -257,6 +286,7 @@ interface nsIFOG : nsISupports
    * @param aPings - The pings to send this metric in
    * @param aLifetime - The metric's lifetime (e.g., "ping", "application", "user")
    * @param aDisabled - Whether the metric is disabled
+   * @param aInSession - Whether the metric should be considered for automatic session handling
    * @param aExtraArgs - Optional JSON string of additional configuration
    * @throws NS_ERROR_INVALID_ARG if required arguments are missing
    * @throws NS_ERROR_FAILURE if registration fails
@@ -267,6 +297,7 @@ interface nsIFOG : nsISupports
                             in Array<ACString> aPings,
                             in ACString aLifetime,
                             in boolean aDisabled,
+                            in boolean aInSession,
                             [optional] in ACString aExtraArgs);
 
   /**
@@ -302,4 +333,14 @@ interface nsIFOG : nsISupports
                           in Array<ACString> aReasonCodes,
                           in boolean aFollowsCollectionEnabled,
                           in Array<ACString> aUploaderCapabilities);
+
+  void setStoreSubmittedPingsEnabled(in boolean aEnabled);
+
+  [implicit_jscontext]
+  jsval getAllStoredSubmittedPings();
+
+  [implicit_jscontext]
+  jsval getStoredSubmittedPingsByName(in ACString aPing);
+
+  void clearStoredSubmittedPings();
 };

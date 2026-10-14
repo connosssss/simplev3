@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,12 +5,12 @@
 #include "WebGLExtensions.h"
 
 #include "GLContext.h"
-#include "mozilla/Casting.h"
-#include "mozilla/dom/WebGLRenderingContextBinding.h"
-#include "mozilla/ScopeExit.h"
-#include "mozilla/StaticPrefs_webgl.h"
 #include "WebGLContext.h"
 #include "WebGLFormats.h"
+#include "mozilla/Casting.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/StaticPrefs_webgl.h"
+#include "mozilla/dom/WebGLRenderingContextBinding.h"
 
 namespace mozilla {
 
@@ -670,6 +669,28 @@ void main() {}
 
 // -
 
+WebGLExtensionPolygonOffsetClamp::WebGLExtensionPolygonOffsetClamp(
+    WebGLContext* webgl)
+    : WebGLExtensionBase(webgl) {
+  MOZ_ASSERT(IsSupported(webgl), "Don't construct extension if unsupported.");
+}
+
+bool WebGLExtensionPolygonOffsetClamp::IsSupported(
+    const WebGLContext* const webgl) {
+  return webgl->GL()->IsSupported(gl::GLFeature::polygon_offset_clamp);
+}
+
+WebGLExtensionClipControl::WebGLExtensionClipControl(WebGLContext* webgl)
+    : WebGLExtensionBase(webgl) {
+  MOZ_ASSERT(IsSupported(webgl), "Don't construct extension if unsupported.");
+}
+
+bool WebGLExtensionClipControl::IsSupported(const WebGLContext* const webgl) {
+  return webgl->GL()->IsSupported(gl::GLFeature::clip_control);
+}
+
+// -
+
 WebGLExtensionInstancedArrays::WebGLExtensionInstancedArrays(
     WebGLContext* webgl)
     : WebGLExtensionBase(webgl) {
@@ -1052,15 +1073,8 @@ WebGLExtensionTextureHalfFloatLinear::WebGLExtensionTextureHalfFloatLinear(
 // -
 
 bool WebGLExtensionTextureNorm16::IsSupported(const WebGLContext* const webgl) {
-  if (!StaticPrefs::webgl_enable_draft_extensions()) return false;
-  if (!webgl->IsWebGL2()) return false;
-
-  const auto& gl = webgl->gl;
-
-  // ANGLE's support is broken in our checkout.
-  if (gl->IsANGLE()) return false;
-
-  return gl->IsSupported(gl::GLFeature::texture_norm16);
+  gl::GLContext* gl = webgl->GL();
+  return webgl->IsWebGL2() && gl->IsSupported(gl::GLFeature::texture_norm16);
 }
 
 WebGLExtensionTextureNorm16::WebGLExtensionTextureNorm16(WebGLContext* webgl)
@@ -1085,7 +1099,6 @@ WebGLExtensionTextureNorm16::WebGLExtensionTextureNorm16(WebGLContext* webgl)
     fua.AddTexUnpack(&usage, pi, dui);
 
     fua.AllowSizedTexFormat(format.sizedFormat, &usage);
-    fua.AllowUnsizedTexFormat(pi, &usage);
 
     if (renderable) {
       usage.SetRenderable();

@@ -1,44 +1,36 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsDeviceContextSpecG.h"
 
-#include "mozilla/gfx/PrintPromise.h"
-#include "mozilla/gfx/PrintTargetPDF.h"
-#include "mozilla/Logging.h"
-#include "mozilla/Services.h"
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
 #include "mozilla/GUniquePtr.h"
+#include "mozilla/Logging.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/Services.h"
+#include "mozilla/StaticPrefs_print.h"
 #include "mozilla/WidgetUtilsGtk.h"
-
-#include "prenv.h" /* for PR_GetEnv */
-
+#include "mozilla/gfx/PrintPromise.h"
+#include "mozilla/gfx/PrintTargetSkPDF.h"
+#include "nsCUPSShim.h"
 #include "nsComponentManagerUtils.h"
+#include "nsIFile.h"
+#include "nsIFileStreams.h"
 #include "nsIObserverService.h"
+#include "nsPrintSettingsGTK.h"
+#include "nsPrinterCUPS.h"
 #include "nsPrintfCString.h"
 #include "nsQueryObject.h"
 #include "nsReadableUtils.h"
-#include "nsThreadUtils.h"
-
-#include "nsCUPSShim.h"
-#include "nsPrinterCUPS.h"
-
-#include "nsPrintSettingsGTK.h"
-
-#include "nsIFileStreams.h"
-#include "nsIFile.h"
 #include "nsTArray.h"
 #include "nsThreadUtils.h"
-
-#include "mozilla/Preferences.h"
-#include "mozilla/StaticPrefs_print.h"
-
-#include <dlfcn.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
+#include "prenv.h" /* for PR_GetEnv */
 
 // To check if we need to use flatpak portal for printing
 #include "nsIGIOService.h"
@@ -48,7 +40,7 @@ using namespace mozilla;
 using mozilla::gfx::IntSize;
 using mozilla::gfx::PrintEndDocumentPromise;
 using mozilla::gfx::PrintTarget;
-using mozilla::gfx::PrintTargetPDF;
+using mozilla::gfx::PrintTargetSkPDF;
 
 nsDeviceContextSpecGTK::nsDeviceContextSpecGTK()
     : mGtkPrintSettings(nullptr), mGtkPageSetup(nullptr) {}
@@ -113,7 +105,7 @@ already_AddRefed<PrintTarget> nsDeviceContextSpecGTK::MakePrintTarget() {
     return stream;
   }();
 
-  return PrintTargetPDF::CreateOrNull(stream, IntSize::Ceil(width, height));
+  return PrintTargetSkPDF::CreateOrNull(stream, IntSize::Ceil(width, height));
 }
 
 #define DECLARE_KNOWN_MONOCHROME_SETTING(key_, value_) {"cups-" key_, value_},
@@ -243,7 +235,14 @@ NS_IMETHODIMP nsDeviceContextSpecGTK::Init(nsIPrintSettings* aPS,
   mGtkPageSetup = gtk_page_setup_copy(mGtkPageSetup);
   mGtkPrintSettings = gtk_print_settings_copy(mGtkPrintSettings);
 
-  if (!aPS->GetPrintInColor() && StaticPrefs::print_cups_monochrome_enabled()) {
+  gtk_print_settings_set(mGtkPrintSettings, "cups-" CUPS_PRINT_COLOR_MODE,
+                         aPS->GetPrintInColor()
+                             ? CUPS_PRINT_COLOR_MODE_COLOR
+                             : CUPS_PRINT_COLOR_MODE_MONOCHROME);
+  // Try with a wide set of known monochrome settings too, because the generic
+  // setting is not honored consistently for all printers, see bug 2030650 for
+  // at least one example.
+  if (!aPS->GetPrintInColor()) {
     for (const auto& setting : kKnownMonochromeSettings) {
       gtk_print_settings_set(mGtkPrintSettings, setting.mKey, setting.mValue);
     }
@@ -338,7 +337,8 @@ void nsDeviceContextSpecGTK::EnumeratePrinters() {
 NS_IMETHODIMP
 nsDeviceContextSpecGTK::BeginDocument(const nsAString& aTitle,
                                       const nsAString& aPrintToFileName,
-                                      int32_t aStartPage, int32_t aEndPage) {
+                                      dom::WindowContext*, int32_t aStartPage,
+                                      int32_t aEndPage) {
   // Print job names exceeding 255 bytes are safe with GTK version 3.18.2 or
   // newer. This is a workaround for old GTK.
   if (gtk_check_version(3, 18, 2) != nullptr) {

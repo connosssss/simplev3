@@ -7,7 +7,6 @@
 
 import json
 import sys
-from collections import OrderedDict
 from os import path
 
 import buildconfig
@@ -174,29 +173,25 @@ def generate_JSON_definitions(output, *filenames):
     """
     scalars = parse_scalar_definitions(filenames)
 
-    scalar_definitions = OrderedDict()
+    scalar_definitions = {}
     for scalar in scalars:
         category = scalar.category
 
         if category not in scalar_definitions:
-            scalar_definitions[category] = OrderedDict()
+            scalar_definitions[category] = {}
 
-        scalar_definitions[category][scalar.name] = OrderedDict(
-            {
-                "kind": scalar.nsITelemetry_kind,
-                "keyed": scalar.keyed,
-                "keys": scalar.keys,
-                "record_on_release": (
-                    True if scalar.dataset_short == "opt-out" else False
-                ),
-                # We don't expire dynamic-builtin scalars: they're only meant for
-                # use in local developer builds anyway. They will expire when rebuilding.
-                "expired": False,
-                "stores": scalar.record_into_store,
-                "expires": scalar.expires,
-                "products": scalar.products,
-            }
-        )
+        scalar_definitions[category][scalar.name] = {
+            "kind": scalar.nsITelemetry_kind,
+            "keyed": scalar.keyed,
+            "keys": scalar.keys,
+            "record_on_release": (True if scalar.dataset_short == "opt-out" else False),
+            # We don't expire dynamic-builtin scalars: they're only meant for
+            # use in local developer builds anyway. They will expire when rebuilding.
+            "expired": False,
+            "stores": scalar.record_into_store,
+            "expires": scalar.expires,
+            "products": scalar.products,
+        }
 
     json.dump(scalar_definitions, output)
 

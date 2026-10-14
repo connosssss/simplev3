@@ -14,7 +14,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=147777
 <pre id="test">
 <script type="application/javascript">
 
-/** Test for Bug 147777 **/
+/** Test for Bug 147777 */
 
 // Because link-coloring for visited links is asynchronous, running
 // reftests that involve link coloring requires that we poll for the
@@ -96,6 +96,7 @@ var gTests = [
   "== logical-box-border-color-visited-link-003.html logical-box-border-color-visited-link-ref.html",
   "== svg-paint-currentcolor-visited.svg svg-paint-currentcolor-visited-ref.svg",
   "== variables-visited.html variables-visited-ref.html",
+  "== visited-rule-cache-1.html visited-rule-cache-1-ref.html",
 ];
 
 // We record the maximum number of times we had to look at a test before

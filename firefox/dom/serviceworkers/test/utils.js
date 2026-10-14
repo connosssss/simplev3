@@ -19,7 +19,7 @@ function waitForState(worker, state, context) {
 /**
  * Helper for browser tests to issue register calls from the content global and
  * wait for the SW to progress to the active state, as most tests desire.
- * From the ContentTask.spawn, use via
+ * From the SpecialPowers.spawn, use via
  * `content.wrappedJSObject.registerAndWaitForActive`.
  */
 async function registerAndWaitForActive(script, maybeScope) {
@@ -115,6 +115,10 @@ async function fillStorage(cacheBytes, idbBytes) {
   await cache.put("fill", new Response(makeRandomBlob(cacheBytes)));
 
   // ## Fill IDB
+  if (!idbBytes) {
+    return;
+  }
+
   const storeName = "filler";
   let db = await new Promise((resolve, reject) => {
     let openReq = indexedDB.open("filler", 1);
@@ -133,6 +137,8 @@ async function fillStorage(cacheBytes, idbBytes) {
       store.put({ blob: makeRandomBlob(idbBytes) }, "filler-blob");
     };
   });
+
+  db.close();
 }
 
 const messagingChannels = {};

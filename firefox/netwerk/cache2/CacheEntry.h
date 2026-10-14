@@ -2,28 +2,27 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef CacheEntry__h__
-#define CacheEntry__h__
+#ifndef CacheEntry_h_
+#define CacheEntry_h_
 
-#include "mozilla/LinkedList.h"
-#include "nsICacheEntry.h"
 #include "CacheFile.h"
-
-#include "nsIRunnable.h"
-#include "nsIOutputStream.h"
-#include "nsICacheEntryOpenCallback.h"
-#include "nsICacheEntryDoomCallback.h"
-#include "nsITransportSecurityInfo.h"
-
-#include "nsCOMPtr.h"
-#include "nsRefPtrHashtable.h"
-#include "nsHashKeys.h"
-#include "nsString.h"
-#include "nsCOMArray.h"
-#include "nsThreadUtils.h"
-#include "mozilla/Attributes.h"
+#include "Dictionary.h"
+#include "mozilla/LinkedList.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/TimeStamp.h"
+#include "nsCOMArray.h"
+#include "nsCOMPtr.h"
+#include "nsHashKeys.h"
+#include "nsICacheEntry.h"
+#include "nsICacheEntryDoomCallback.h"
+#include "nsICacheEntryOpenCallback.h"
+#include "nsIOutputStream.h"
+#include "nsIRunnable.h"
+#include "nsITransportSecurityInfo.h"
+#include "nsIURI.h"
+#include "nsRefPtrHashtable.h"
+#include "nsString.h"
+#include "nsThreadUtils.h"
 
 static inline uint32_t PRTimeToSeconds(PRTime t_usec) {
   return uint32_t(t_usec / PR_USEC_PER_SEC);
@@ -53,16 +52,19 @@ class CacheEntry final : public nsIRunnable,
 
   static uint64_t GetNextId();
 
-  CacheEntry(const nsACString& aStorageID, const nsACString& aURI,
+  CacheEntry(const nsACString& aStorageID, nsIURI* aURI,
              const nsACString& aEnhanceID, bool aUseDisk, bool aSkipSizeCheck,
              bool aPin);
 
   void AsyncOpen(nsICacheEntryOpenCallback* aCallback, uint32_t aFlags);
+#ifdef NS_FREE_PERMANENT_DATA
+  void ClearCallbacks();
+#endif
 
-  CacheEntryHandle* NewHandle();
+  already_AddRefed<CacheEntryHandle> NewHandle();
   // For a new and recreated entry w/o a callback, we need to wrap it
   // with a handle to detect writing consumer is gone.
-  CacheEntryHandle* NewWriteHandle();
+  already_AddRefed<CacheEntryHandle> NewWriteHandle();
 
   // Forwarded to from CacheEntryHandle : nsICacheEntry
   nsresult GetKey(nsACString& aKey);
@@ -75,6 +77,7 @@ class CacheEntry final : public nsIRunnable,
   nsresult SetExpirationTime(uint32_t expirationTime);
   nsresult GetOnStartTime(uint64_t* aTime);
   nsresult GetOnStopTime(uint64_t* aTime);
+  nsresult GetReadyOrRevalidating(bool* aReady);
   nsresult SetNetworkTimes(uint64_t onStartTime, uint64_t onStopTime);
   nsresult SetContentType(uint8_t aContentType);
   nsresult ForceValidFor(uint32_t aSecondsToTheFuture);
@@ -89,6 +92,7 @@ class CacheEntry final : public nsIRunnable,
   nsresult AsyncDoom(nsICacheEntryDoomCallback* aCallback);
   nsresult GetMetaDataElement(const char* key, char** aRetval);
   nsresult SetMetaDataElement(const char* key, const char* value);
+  nsresult GetIsEmpty(bool* aEmpty);
   nsresult VisitMetaData(nsICacheEntryMetaDataVisitor* visitor);
   nsresult MetaDataReady(void);
   nsresult SetValid(void);
@@ -104,17 +108,25 @@ class CacheEntry final : public nsIRunnable,
                                       nsIInputStream** _retval);
   nsresult GetLoadContextInfo(nsILoadContextInfo** aInfo);
 
+  nsresult SetDictionary(DictionaryCacheEntry* aDict);
+
  public:
   uint32_t GetMetadataMemoryConsumption();
   nsCString const& GetStorageID() const { return mStorageID; }
   nsCString const& GetEnhanceID() const { return mEnhanceID; }
-  nsCString const& GetURI() const { return mURI; }
+  nsIURI* GetURI() const { return mURI; }
   // Accessible at any time
   bool IsUsingDisk() const { return mUseDisk; }
   bool IsReferenced() const MOZ_NO_THREAD_SAFETY_ANALYSIS;
   bool IsFileDoomed();
   bool IsDoomed() const { return mIsDoomed; }
   bool IsPinned() const { return mPinned; }
+
+  // Mark entry to allow bypassing writer lock for new listeners
+  void SetBypassWriterLock(bool aBypass);
+  bool ShouldBypassWriterLock() const MOZ_REQUIRES(mLock) {
+    return mBypassWriterLock;
+  }
 
   // Methods for entry management (eviction from memory),
   // called only on the management thread.
@@ -143,6 +155,8 @@ class CacheEntry final : public nsIRunnable,
 
   nsresult HashingKeyWithStorage(nsACString& aResult) const;
   nsresult HashingKey(nsACString& aResult) const;
+
+  void NoteNoVarySearchEntry(nsIURI* aURI);
 
   static nsresult HashingKey(const nsACString& aStorageID,
                              const nsACString& aEnhanceID, nsIURI* aURI,
@@ -177,7 +191,8 @@ class CacheEntry final : public nsIRunnable,
   class Callback {
    public:
     Callback(CacheEntry* aEntry, nsICacheEntryOpenCallback* aCallback,
-             bool aReadOnly, bool aCheckOnAnyThread, bool aSecret);
+             bool aReadOnly, bool aReadAlways, bool aCheckOnAnyThread,
+             bool aSecret);
     // Special constructor for Callback objects added to the chain
     // just to ensure proper defer dooming (recreation) of this entry.
     Callback(CacheEntry* aEntry, bool aDoomWhenFoundInPinStatus);
@@ -200,6 +215,7 @@ class CacheEntry final : public nsIRunnable,
     nsCOMPtr<nsICacheEntryOpenCallback> mCallback;
     nsCOMPtr<nsIEventTarget> mTarget;
     bool mReadOnly : 1;
+    bool mReadAlways : 1;  // used for dictionary reads
     bool mRevalidating : 1;
     bool mCheckOnAnyThread : 1;
     bool mRecheckAfterWrite : 1;
@@ -317,7 +333,7 @@ class CacheEntry final : public nsIRunnable,
   ::mozilla::ThreadSafeAutoRefCnt mHandlesCount MOZ_GUARDED_BY(mLock);
 
   nsTArray<Callback> mCallbacks MOZ_GUARDED_BY(mLock);
-  nsCOMPtr<nsICacheEntryDoomCallback> mDoomCallback;
+  nsCOMPtr<nsICacheEntryDoomCallback> mDoomCallback MOZ_GUARDED_BY(mLock);
 
   // Set in CacheEntry::Load(), only - shouldn't need to be under lock
   // XXX FIX?  is this correct?
@@ -327,8 +343,9 @@ class CacheEntry final : public nsIRunnable,
   // When mFileStatus is read and found success it is ensured there is mFile and
   // that it is after a successful call to Init().
   Atomic<nsresult, ReleaseAcquire> mFileStatus{NS_ERROR_NOT_INITIALIZED};
-  // Set in constructor
-  nsCString const mURI;
+  // Set in constructor. nsIURI is immutable and thread-safe, so this can be
+  // read from any thread without a lock.
+  nsCOMPtr<nsIURI> const mURI;
   nsCString const mEnhanceID;
   nsCString const mStorageID;
 
@@ -362,6 +379,8 @@ class CacheEntry final : public nsIRunnable,
   // Whether the pinning state of the entry is known (equals to the actual state
   // of the cache file)
   bool mPinningKnown : 1 MOZ_GUARDED_BY(mLock);
+  // Whether to bypass writer lock for new listeners (when writer is suspended)
+  bool mBypassWriterLock : 1 MOZ_GUARDED_BY(mLock);
 
   static char const* StateString(uint32_t aState);
 
@@ -414,9 +433,9 @@ class CacheEntry final : public nsIRunnable,
       return flags;
     }
     bool Set(uint32_t aFlags) {
-      if (mFlags & aFlags) return false;
+      bool needsDispatch = !mFlags;
       mFlags |= aFlags;
-      return true;
+      return needsDispatch;
     }
 
    private:
@@ -425,7 +444,13 @@ class CacheEntry final : public nsIRunnable,
 
   nsCOMPtr<nsITransportSecurityInfo> mSecurityInfo;
   mozilla::TimeStamp mLoadStart;
+  // Set when mState transitions to REVALIDATING, cleared when it leaves that
+  // state.  Used to self-heal an entry whose revalidating writer went away
+  // without ever calling OnHandleClosed (see bug 2062281).
+  mozilla::TimeStamp mRevalidatingSince MOZ_GUARDED_BY(mLock);
   uint32_t mUseCount{0};
+
+  RefPtr<DictionaryCacheEntry> mDict;
 
   const uint64_t mCacheEntryId;
 };
@@ -465,6 +490,9 @@ class CacheEntryHandle final : public nsICacheEntry {
   }
   NS_IMETHOD GetOnStopTime(uint64_t* aOnStopTime) override {
     return mEntry->GetOnStopTime(aOnStopTime);
+  }
+  NS_IMETHOD GetReadyOrRevalidating(bool* aReady) override {
+    return mEntry->GetReadyOrRevalidating(aReady);
   }
   NS_IMETHOD SetNetworkTimes(uint64_t onStartTime,
                              uint64_t onStopTime) override {
@@ -509,6 +537,9 @@ class CacheEntryHandle final : public nsICacheEntry {
   NS_IMETHOD SetMetaDataElement(const char* key, const char* value) override {
     return mEntry->SetMetaDataElement(key, value);
   }
+  NS_IMETHOD GetIsEmpty(bool* empty) override {
+    return mEntry->GetIsEmpty(empty);
+  }
   NS_IMETHOD VisitMetaData(nsICacheEntryMetaDataVisitor* visitor) override {
     return mEntry->VisitMetaData(visitor);
   }
@@ -541,6 +572,13 @@ class CacheEntryHandle final : public nsICacheEntry {
   NS_IMETHOD GetLoadContextInfo(
       nsILoadContextInfo** aLoadContextInfo) override {
     return mEntry->GetLoadContextInfo(aLoadContextInfo);
+  }
+  NS_IMETHOD SetDictionary(DictionaryCacheEntry* aDict) override {
+    return mEntry->SetDictionary(aDict);
+  }
+  NS_IMETHOD SetBypassWriterLock(bool aBypass) override {
+    mEntry->SetBypassWriterLock(aBypass);
+    return NS_OK;
   }
 
   // Specific implementation:

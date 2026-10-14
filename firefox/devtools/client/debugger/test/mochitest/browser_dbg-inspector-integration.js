@@ -182,7 +182,7 @@ add_task(async function () {
       const boxModelInfoBarEl = getBoxModelHighlighterInfoBarEl(boxModelRoot);
       return (
         // wait for the infobar to be displayed
-        boxModelInfoBarEl.getAttribute("hidden") === null &&
+        !boxModelInfoBarEl.hasAttribute("hidden") &&
         // and make sure it's shown for the hovered element
         boxModelInfoBarEl.querySelector(".box-model-infobar-id")
           ?.textContent === "#clicky"
@@ -193,8 +193,9 @@ add_task(async function () {
   // Wait for a bit and check that the same thread is still selected
   await wait(1000);
   ok(dbg.selectors.getIsCurrentThreadPaused(), "current thread is paused");
-  ok(
-    findElement(dbg, "threadsPaneItemPause", 2).classList.contains("selected"),
+  is(
+    findElement(dbg, "threadsPaneItemPause", 2).getAttribute("aria-pressed"),
+    "true",
     `iframe thread is still selected`
   );
 

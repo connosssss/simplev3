@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -152,12 +150,16 @@ class LIRGeneratorShared {
   // the value fits in an int32.
   inline LAllocation useRegisterOrInt32Constant(MDefinition* mir);
   inline LAllocation useAnyOrInt32Constant(MDefinition* mir);
+  inline LAllocation useAnyOrInt32ConstantAtStart(MDefinition* mir);
 
   // Like useRegisterOrInt32Constant, but uses a constant only if
-  // |int32val * Scalar::byteSize(type) + offsetAdjustment| doesn't overflow
-  // int32.
+  // |int32val * Scalar::byteSize(type)| doesn't overflow int32.
   LAllocation useRegisterOrIndexConstant(MDefinition* mir, Scalar::Type type,
-                                         int32_t offsetAdjustment = 0);
+                                         bool useAtStart = false);
+  LAllocation useRegisterOrIndexConstantAtStart(MDefinition* mir,
+                                                Scalar::Type type) {
+    return useRegisterOrIndexConstant(mir, type, /* useAtStart= */ true);
+  }
 
   inline LUse useRegisterForTypedLoad(MDefinition* mir, MIRType type);
 
@@ -166,11 +168,6 @@ class LIRGeneratorShared {
   inline LUse usePayload(MDefinition* mir, LUse::Policy policy);
   inline LUse usePayloadAtStart(MDefinition* mir, LUse::Policy policy);
   inline LUse usePayloadInRegisterAtStart(MDefinition* mir);
-
-  // Adds a box input to an instruction, setting operand |n| to the type and
-  // |n+1| to the payload. Does not modify the operands, instead expecting a
-  // policy to already be set.
-  inline void fillBoxUses(LInstruction* lir, size_t n, MDefinition* mir);
 #endif
 
   // Test whether mir1 and mir2 may give rise to different LIR nodes even if
@@ -188,9 +185,10 @@ class LIRGeneratorShared {
                           LDefinition::Policy policy = LDefinition::REGISTER);
   inline LInt64Definition tempInt64(
       LDefinition::Policy policy = LDefinition::REGISTER);
+  inline LBoxDefinition tempBox();
   inline LDefinition tempFloat32();
   inline LDefinition tempDouble();
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   inline LDefinition tempSimd128();
 #endif
   inline LDefinition tempCopy(MDefinition* input, uint32_t reusedInput);
@@ -275,6 +273,7 @@ class LIRGeneratorShared {
 
   inline LInt64Allocation useInt64RegisterAtStart(MDefinition* mir);
   inline LInt64Allocation useInt64RegisterOrConstantAtStart(MDefinition* mir);
+  inline LInt64Allocation useInt64RegisterOrZeroAtStart(MDefinition* mir);
   inline LInt64Allocation useInt64OrConstantAtStart(MDefinition* mir);
 
 #ifdef JS_NUNBOX32
@@ -307,10 +306,18 @@ class LIRGeneratorShared {
     return vreg;
   }
 
-  template <typename T>
-  void annotate(T* ins);
-  template <typename T>
-  void add(T* ins, MInstruction* mir = nullptr);
+  inline void annotate(LNode* ins);
+  inline void addUnchecked(LInstruction* ins, MInstruction* mir = nullptr);
+
+  // The template parameter ensures this can only be called for LIR instructions
+  // with no outputs. Call addUnchecked directly to ignore this check for code
+  // that sets the output manually with setDef or for LIR instructions with an
+  // optional output register.
+  template <size_t Temps>
+  void add(details::LInstructionFixedDefsTempsHelper<0, Temps>* ins,
+           MInstruction* mir = nullptr) {
+    addUnchecked(ins, mir);
+  }
 
   void lowerTypedPhiInput(MPhi* phi, uint32_t inputPosition, LBlock* block,
                           size_t lirIndex);
@@ -361,6 +368,14 @@ class LIRGeneratorShared {
 
   inline void lowerConstantDouble(double d, MInstruction* mir);
   inline void lowerConstantFloat32(float f, MInstruction* mir);
+
+  // Lower the Int32 |op| as a single instruction that shifts one operand by a
+  // constant, if that operand is a shift deferred by lowerForShift. Returns
+  // false if |mir| still needs lowering.
+  bool lowerForALUWithShiftedOperand(JSOp op, MBinaryInstruction* mir,
+                                     MDefinition* lhs, MDefinition* rhs) {
+    return false;
+  }
 
   bool canSpecializeWasmCompareAndSelect(MCompare::CompareType compTy,
                                          MIRType insTy);

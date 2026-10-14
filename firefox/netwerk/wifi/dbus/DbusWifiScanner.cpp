@@ -2,12 +2,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <gio/gio.h>
 #include "DbusWifiScanner.h"
-#include "nsWifiAccessPoint.h"
+
+#include <gio/gio.h>
+
+#include "mozilla/GRefPtr.h"
 #include "mozilla/GUniquePtr.h"
 #include "mozilla/RefPtr.h"
-#include "mozilla/GRefPtr.h"
+#include "nsAppShell.h"
+#include "nsWifiAccessPoint.h"
 
 namespace mozilla {
 
@@ -17,6 +20,7 @@ WifiScannerImpl::~WifiScannerImpl() { MOZ_COUNT_DTOR(WifiScannerImpl); }
 
 nsresult WifiScannerImpl::GetAccessPointsFromWLAN(
     AccessPointArray& aAccessPoints) {
+  nsAppShell::DBusConnectionCheck();
   RefPtr<GDBusProxy> proxy = dont_AddRef(g_dbus_proxy_new_for_bus_sync(
       G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, nullptr,
       "org.freedesktop.NetworkManager", "/org/freedesktop/NetworkManager",
@@ -46,6 +50,7 @@ nsresult WifiScannerImpl::GetAccessPointsFromWLAN(
 
 bool WifiScannerImpl::AddDevice(const char* aDevicePath,
                                 AccessPointArray& aAccessPoints) {
+  nsAppShell::DBusConnectionCheck();
   RefPtr<GDBusProxy> proxy = dont_AddRef(g_dbus_proxy_new_for_bus_sync(
       G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, nullptr,
       "org.freedesktop.NetworkManager", aDevicePath,
@@ -68,6 +73,7 @@ bool WifiScannerImpl::AddDevice(const char* aDevicePath,
     return true;
   }
 
+  nsAppShell::DBusConnectionCheck();
   proxy = dont_AddRef(g_dbus_proxy_new_for_bus_sync(
       G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, nullptr,
       "org.freedesktop.NetworkManager", aDevicePath,
@@ -96,6 +102,7 @@ bool WifiScannerImpl::AddDevice(const char* aDevicePath,
 
 bool WifiScannerImpl::AddAPProperties(const char* aApPath,
                                       AccessPointArray& aAccessPoints) {
+  nsAppShell::DBusConnectionCheck();
   RefPtr<GDBusProxy> proxy = dont_AddRef(g_dbus_proxy_new_for_bus_sync(
       G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, nullptr,
       "org.freedesktop.NetworkManager", aApPath,

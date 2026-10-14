@@ -4,7 +4,6 @@
 
 package org.mozilla.fenix.settings.doh.root
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -18,7 +17,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -32,18 +34,24 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
-import mozilla.components.compose.base.Divider
 import mozilla.components.compose.base.Dropdown
-import mozilla.components.compose.base.annotation.FlexibleWindowLightDarkPreview
+import mozilla.components.compose.base.LinkText
+import mozilla.components.compose.base.LinkTextState
+import mozilla.components.compose.base.annotation.FlexibleWindowPreview
+import mozilla.components.compose.base.button.IconButton
+import mozilla.components.compose.base.button.RadioButton
 import mozilla.components.compose.base.button.TextButton
 import mozilla.components.compose.base.menu.MenuItem
 import mozilla.components.compose.base.text.Text
 import mozilla.components.compose.base.textfield.TextField
+import mozilla.components.compose.base.theme.PreviewThemeProvider
+import mozilla.components.compose.base.theme.Theme
+import mozilla.components.ui.icons.R as iconsR
 import org.mozilla.fenix.R
-import org.mozilla.fenix.compose.LinkText
-import org.mozilla.fenix.compose.LinkTextState
-import org.mozilla.fenix.compose.button.RadioButton
+import org.mozilla.fenix.compose.list.IconListItem
 import org.mozilla.fenix.settings.SupportUtils
 import org.mozilla.fenix.settings.doh.CustomProviderErrorState
 import org.mozilla.fenix.settings.doh.DohSettingsState
@@ -78,88 +86,67 @@ internal fun DohSettingsScreen(
     onIncreasedInfoClicked: () -> Unit = {},
     onMaxInfoClicked: () -> Unit = {},
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(FirefoxTheme.colors.layer1)
-            .verticalScroll(rememberScrollState()),
-    ) {
-        DohSummary(
-            onLearnMoreClicked = onLearnMoreClicked,
-        )
+    Surface {
+        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            DohSummary(onLearnMoreClicked = onLearnMoreClicked)
 
-        DohSelection(
-            state = state,
-            onDohOptionSelected = onDohOptionSelected,
-            onCustomClicked = onCustomClicked,
-            onCustomCancelClicked = onCustomCancelClicked,
-            onCustomAddClicked = onCustomAddClicked,
-            onDefaultInfoClicked = onDefaultInfoClicked,
-            onIncreasedInfoClicked = onIncreasedInfoClicked,
-            onMaxInfoClicked = onMaxInfoClicked,
-        )
+            DohSelection(
+                state = state,
+                onDohOptionSelected = onDohOptionSelected,
+                onCustomClicked = onCustomClicked,
+                onCustomCancelClicked = onCustomCancelClicked,
+                onCustomAddClicked = onCustomAddClicked,
+                onDefaultInfoClicked = onDefaultInfoClicked,
+                onIncreasedInfoClicked = onIncreasedInfoClicked,
+                onMaxInfoClicked = onMaxInfoClicked,
+            )
 
-        Divider(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
-        )
+            HorizontalDivider(modifier = Modifier.padding(8.dp))
 
-        ExceptionsRow(onExceptionsClicked = onExceptionsClicked)
+            ExceptionsRow(onExceptionsClicked = onExceptionsClicked)
+        }
     }
 }
 
 @Composable
-private fun DohSummary(
-    onLearnMoreClicked: (String) -> Unit,
-) {
-    val summary = stringResource(
-        R.string.preference_doh_summary,
-        stringResource(id = R.string.preference_doh_learn_more),
-    )
+private fun DohSummary(onLearnMoreClicked: (String) -> Unit) {
+    val summary =
+        stringResource(
+            R.string.preference_doh_summary,
+            stringResource(id = R.string.preference_doh_learn_more),
+        )
 
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp, horizontal = 16.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Column(
-            modifier = Modifier.weight(1f),
-        ) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                color = FirefoxTheme.colors.textPrimary,
-                style = FirefoxTheme.typography.subtitle1,
+                style = FirefoxTheme.typography.body1,
                 text = stringResource(R.string.preference_doh_title),
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
-
             LinkText(
                 text = summary,
-                linkTextStates = listOf(
-                    LinkTextState(
-                        text = stringResource(R.string.preference_doh_learn_more),
-                        url = SupportUtils.getGenericSumoURLForTopic(SupportUtils.SumoTopic.DNS_OVER_HTTPS),
-                        onClick = {
-                            onLearnMoreClicked(it)
-                        },
+                linkTextStates =
+                    listOf(
+                        LinkTextState(
+                            text = stringResource(R.string.preference_doh_learn_more),
+                            url = SupportUtils.getGenericSumoURLForTopic(SupportUtils.SumoTopic.DNS_OVER_HTTPS),
+                            onClick = {
+                                onLearnMoreClicked(it)
+                            },
+                        )
                     ),
-                ),
                 linkTextDecoration = TextDecoration.Underline,
-                style = FirefoxTheme.typography.body2.copy(
-                    textAlign = TextAlign.Left,
-                    color = FirefoxTheme.colors.textSecondary,
-                ),
+                textAlign = TextAlign.Start,
             )
         }
     }
 }
 
-/**
- * Protection level composable - used for all levels of protection
- */
+/** Protection level composable - used for all levels of protection */
 @Composable
 private fun DohProtectionLevel(
     modifier: Modifier = Modifier,
@@ -173,8 +160,8 @@ private fun DohProtectionLevel(
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier
-            .padding(
+        modifier =
+            modifier.padding(
                 start = 72.dp,
                 top = 6.dp,
                 end = 16.dp,
@@ -184,15 +171,12 @@ private fun DohProtectionLevel(
         RadioButton(
             selected = selected,
             onClick = onClick,
-            modifier = Modifier.align(Alignment.Top),
         )
 
         Spacer(modifier = Modifier.width(8.dp))
 
         Column(
-            modifier = Modifier
-                .weight(1f)
-                .align(Alignment.Top),
+            modifier = Modifier.weight(1f).align(Alignment.Top),
             horizontalAlignment = Alignment.Start,
         ) {
             ProviderSummary(label, summary)
@@ -201,17 +185,15 @@ private fun DohProtectionLevel(
         }
 
         if (showInfoIcon) {
-            Icon(
-                painter = painterResource(R.drawable.mozac_ic_information_24),
+            IconButton(
+                onClick = onInfoClick,
                 contentDescription = stringResource(R.string.preference_doh_info_description),
-                tint = FirefoxTheme.colors.iconPrimary,
-                modifier = Modifier
-                    .padding(16.dp)
-                    .align(Alignment.Top)
-                    .clickable {
-                        onInfoClick()
-                    },
-            )
+            ) {
+                Icon(
+                    painter = painterResource(iconsR.drawable.mozac_ic_information_24),
+                    contentDescription = null,
+                )
+            }
         }
     }
 }
@@ -230,107 +212,116 @@ private fun DohSelection(
 ) {
     state.allProtectionLevels.forEach { protectionLevel ->
         when (protectionLevel) {
-            is ProtectionLevel.Default -> DohProtectionLevel(
-                modifier = Modifier.fillMaxWidth(),
-                selected = protectionLevel == state.selectedProtectionLevel,
-                label = stringResource(R.string.preference_doh_default_protection),
-                summary = stringResource(
-                    R.string.preference_doh_default_protection_summary,
-                    stringResource(id = R.string.app_name),
-                ),
-                showInfoIcon = true,
-                onInfoClick = onDefaultInfoClicked,
-                onClick = {
-                    onDohOptionSelected(protectionLevel, null)
-                },
-            )
+            is ProtectionLevel.Default ->
+                DohProtectionLevel(
+                    modifier = Modifier.fillMaxWidth(),
+                    selected = protectionLevel == state.selectedProtectionLevel,
+                    label = stringResource(R.string.preference_doh_default_protection),
+                    summary =
+                        stringResource(
+                            R.string.preference_doh_default_protection_summary,
+                            stringResource(id = R.string.app_name),
+                        ),
+                    showInfoIcon = true,
+                    onInfoClick = onDefaultInfoClicked,
+                    onClick = {
+                        onDohOptionSelected(protectionLevel, null)
+                    },
+                )
 
-            is ProtectionLevel.Increased -> DohProtectionLevel(
-                modifier = Modifier.fillMaxWidth(),
-                selected = protectionLevel == state.selectedProtectionLevel,
-                label = stringResource(R.string.preference_doh_increased_protection),
-                summary = stringResource(R.string.preference_doh_increased_protection_summary),
-                showInfoIcon = true,
-                provider = if (protectionLevel == state.selectedProtectionLevel) {
-                    {
-                        state.selectedProvider?.let {
-                            ProviderDropdown(
-                                selectedProviderOption = it,
-                                onProviderSelected = { provider ->
-                                    onDohOptionSelected(
-                                        protectionLevel,
-                                        provider,
+            is ProtectionLevel.Increased ->
+                DohProtectionLevel(
+                    modifier = Modifier.fillMaxWidth(),
+                    selected = protectionLevel == state.selectedProtectionLevel,
+                    label = stringResource(R.string.preference_doh_increased_protection),
+                    summary = stringResource(R.string.preference_doh_increased_protection_summary),
+                    showInfoIcon = true,
+                    provider =
+                        if (protectionLevel == state.selectedProtectionLevel) {
+                            {
+                                state.selectedProvider?.let {
+                                    ProviderDropdown(
+                                        selectedProviderOption = it,
+                                        onProviderSelected = { provider ->
+                                            onDohOptionSelected(
+                                                protectionLevel,
+                                                provider,
+                                            )
+                                        },
+                                        providers = state.providers,
+                                        onCustomClicked = onCustomClicked,
                                     )
-                                },
-                                providers = state.providers,
-                                onCustomClicked = onCustomClicked,
-                            )
-                        }
-                    }
-                } else {
-                    null
-                },
-                onInfoClick = onIncreasedInfoClicked,
-                onClick = {
-                    onDohOptionSelected(
-                        protectionLevel,
-                        state.selectedProvider ?: state.providers.first(),
-                    )
-                },
-            )
+                                }
+                            }
+                        } else {
+                            null
+                        },
+                    onInfoClick = onIncreasedInfoClicked,
+                    onClick = {
+                        onDohOptionSelected(
+                            protectionLevel,
+                            state.selectedProvider ?: state.providers.first(),
+                        )
+                    },
+                )
 
-            is ProtectionLevel.Max -> DohProtectionLevel(
-                modifier = Modifier.fillMaxWidth(),
-                selected = protectionLevel == state.selectedProtectionLevel,
-                label = stringResource(R.string.preference_doh_max_protection),
-                summary = stringResource(
-                    R.string.preference_doh_max_protection_summary,
-                    stringResource(id = R.string.app_name),
-                ),
-                showInfoIcon = true,
-                provider = if (protectionLevel == state.selectedProtectionLevel) {
-                    {
-                        state.selectedProvider?.let {
-                            ProviderDropdown(
-                                selectedProviderOption = it,
-                                onProviderSelected = { provider ->
-                                    onDohOptionSelected(
-                                        protectionLevel,
-                                        provider,
+            is ProtectionLevel.Max ->
+                DohProtectionLevel(
+                    modifier = Modifier.fillMaxWidth(),
+                    selected = protectionLevel == state.selectedProtectionLevel,
+                    label = stringResource(R.string.preference_doh_max_protection),
+                    summary =
+                        stringResource(
+                            R.string.preference_doh_max_protection_summary,
+                            stringResource(id = R.string.app_name),
+                        ),
+                    showInfoIcon = true,
+                    provider =
+                        if (protectionLevel == state.selectedProtectionLevel) {
+                            {
+                                state.selectedProvider?.let {
+                                    ProviderDropdown(
+                                        selectedProviderOption = it,
+                                        onProviderSelected = { provider ->
+                                            onDohOptionSelected(
+                                                protectionLevel,
+                                                provider,
+                                            )
+                                        },
+                                        providers = state.providers,
+                                        onCustomClicked = onCustomClicked,
                                     )
-                                },
-                                providers = state.providers,
-                                onCustomClicked = onCustomClicked,
-                            )
-                        }
-                    }
-                } else {
-                    null
-                },
-                onInfoClick = onMaxInfoClicked,
-                onClick = {
-                    onDohOptionSelected(
-                        protectionLevel,
-                        state.selectedProvider ?: state.providers.first(),
-                    )
-                },
-            )
+                                }
+                            }
+                        } else {
+                            null
+                        },
+                    onInfoClick = onMaxInfoClicked,
+                    onClick = {
+                        onDohOptionSelected(
+                            protectionLevel,
+                            state.selectedProvider ?: state.providers.first(),
+                        )
+                    },
+                )
 
-            is ProtectionLevel.Off -> DohProtectionLevel(
-                modifier = Modifier.fillMaxWidth(),
-                selected = protectionLevel == state.selectedProtectionLevel,
-                label = stringResource(R.string.preference_doh_off),
-                summary = stringResource(R.string.preference_doh_off_summary),
-                showInfoIcon = false,
-                onClick = {
-                    onDohOptionSelected(protectionLevel, null)
-                },
-            )
+            is ProtectionLevel.Off ->
+                DohProtectionLevel(
+                    modifier = Modifier.fillMaxWidth(),
+                    selected = protectionLevel == state.selectedProtectionLevel,
+                    label = stringResource(R.string.preference_doh_off),
+                    summary = stringResource(R.string.preference_doh_off_summary),
+                    showInfoIcon = false,
+                    onClick = {
+                        onDohOptionSelected(protectionLevel, null)
+                    },
+                )
         }
     }
 
     if (state.selectedProvider is Provider.Custom && state.isCustomProviderDialogOn) {
         AlertDialogAddCustomProvider(
+            customProviderUrl = state.selectedProvider.url,
             customProviderErrorState = state.customProviderErrorState,
             onCustomCancelClicked = { onCustomCancelClicked() },
             onCustomAddClicked = { url ->
@@ -346,21 +337,19 @@ private fun ProviderSummary(
     summary: String,
 ) {
     Text(
-        color = FirefoxTheme.colors.textPrimary,
-        style = FirefoxTheme.typography.subtitle1,
         text = label,
+        style = FirefoxTheme.typography.body1,
     )
 
-    Spacer(modifier = Modifier.height(8.dp))
-
     Text(
-        color = FirefoxTheme.colors.textSecondary,
-        style = FirefoxTheme.typography.body2,
         text = summary,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = FirefoxTheme.typography.body2,
     )
 }
 
 @Composable
+@Suppress("Deprecation")
 private fun ProviderDropdown(
     selectedProviderOption: Provider,
     onProviderSelected: (Provider) -> Unit = {},
@@ -370,26 +359,26 @@ private fun ProviderDropdown(
     val customText = stringResource(R.string.preference_doh_provider_custom)
     val defaultText = stringResource(R.string.preference_doh_provider_default)
 
-    val placeholder = if (selectedProviderOption is Provider.BuiltIn) {
-        selectedProviderOption.name + if (selectedProviderOption.default) " $defaultText" else ""
-    } else {
-        customText
-    }
+    val placeholder =
+        if (selectedProviderOption is Provider.BuiltIn) {
+            selectedProviderOption.name + if (selectedProviderOption.default) " $defaultText" else ""
+        } else {
+            customText
+        }
 
-    val dropdownItems = buildProviderMenuItems(
-        providers = providers,
-        selectedProvider = selectedProviderOption,
-        customText = customText,
-        defaultText = defaultText,
-        onProviderSelected = onProviderSelected,
-        onCustomClicked = onCustomClicked,
-    )
+    val dropdownItems =
+        buildProviderMenuItems(
+            providers = providers,
+            selectedProvider = selectedProviderOption,
+            customText = customText,
+            defaultText = defaultText,
+            onProviderSelected = onProviderSelected,
+            onCustomClicked = onCustomClicked,
+        )
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 16.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
     ) {
         Dropdown(
             label = stringResource(R.string.preference_doh_choose_provider),
@@ -406,9 +395,7 @@ private fun ProviderDropdown(
     }
 }
 
-/**
- * Returns a list of [MenuItem.CheckableItem] based on the providers.
- */
+/** Returns a list of [MenuItem.CheckableItem] based on the providers. */
 private fun buildProviderMenuItems(
     providers: List<Provider>,
     selectedProvider: Provider,
@@ -419,13 +406,14 @@ private fun buildProviderMenuItems(
 ): List<MenuItem.CheckableItem> {
     return providers.map { provider ->
         // Determine the label to display
-        val text = when (provider) {
-            is Provider.BuiltIn -> {
-                provider.name + if (provider.default) " $defaultText" else ""
-            }
+        val text =
+            when (provider) {
+                is Provider.BuiltIn -> {
+                    provider.name + if (provider.default) " $defaultText" else ""
+                }
 
-            is Provider.Custom -> customText
-        }
+                is Provider.Custom -> customText
+            }
 
         MenuItem.CheckableItem(
             text = Text.String(text),
@@ -442,11 +430,12 @@ private fun buildProviderMenuItems(
 
 @Composable
 private fun AlertDialogAddCustomProvider(
+    customProviderUrl: String,
     customProviderErrorState: CustomProviderErrorState,
     onCustomCancelClicked: () -> Unit,
     onCustomAddClicked: (String) -> Unit,
 ) {
-    var customProviderInput by remember { mutableStateOf("") }
+    var customProviderInput by remember { mutableStateOf(customProviderUrl) }
     val onCustomProviderInputChange: (String) -> Unit = { it -> customProviderInput = it }
     val nonHttpsString = stringResource(R.string.preference_doh_provider_custom_dialog_error_https)
     val invalidString = stringResource(R.string.preference_doh_provider_custom_dialog_error_invalid)
@@ -455,7 +444,7 @@ private fun AlertDialogAddCustomProvider(
         title = {
             Text(
                 text = stringResource(R.string.preference_doh_provider_custom_dialog_title),
-                style = FirefoxTheme.typography.headline7,
+                style = FirefoxTheme.typography.headline5,
             )
         },
         text = {
@@ -465,11 +454,12 @@ private fun AlertDialogAddCustomProvider(
                     onCustomProviderInputChange(it)
                 },
                 placeholder = "",
-                errorText = when (customProviderErrorState) {
-                    CustomProviderErrorState.NonHttps -> nonHttpsString
-                    CustomProviderErrorState.Invalid -> invalidString
-                    else -> ""
-                },
+                errorText =
+                    when (customProviderErrorState) {
+                        CustomProviderErrorState.NonHttps -> nonHttpsString
+                        CustomProviderErrorState.Invalid -> invalidString
+                        else -> ""
+                    },
                 label = stringResource(R.string.preference_doh_provider_custom_dialog_textfield),
                 isError = customProviderErrorState != CustomProviderErrorState.Valid,
                 singleLine = true,
@@ -481,14 +471,12 @@ private fun AlertDialogAddCustomProvider(
             TextButton(
                 text = stringResource(R.string.preference_doh_provider_custom_dialog_add),
                 onClick = { onCustomAddClicked(customProviderInput) },
-                upperCaseText = false,
             )
         },
         dismissButton = {
             TextButton(
                 text = stringResource(R.string.preference_doh_provider_custom_dialog_cancel),
                 onClick = onCustomCancelClicked,
-                upperCaseText = false,
             )
         },
     )
@@ -496,32 +484,25 @@ private fun AlertDialogAddCustomProvider(
 
 @Composable
 private fun TextWithUnderline(
-    showCustomProviderDialog: () -> Unit = {},
     text: String,
     modifier: Modifier = Modifier,
-    textColor: Color = FirefoxTheme.colors.textPrimary,
-    underlineColor: Color = FirefoxTheme.colors.formDefault,
+    showCustomProviderDialog: () -> Unit = {},
+    underlineColor: Color = MaterialTheme.colorScheme.outline,
 ) {
-    Column(
-        modifier = modifier,
-    ) {
+    Column(modifier = modifier) {
         Text(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable {
+            modifier =
+                Modifier.fillMaxWidth().clickable {
                     showCustomProviderDialog()
                 },
-            color = textColor,
             style = FirefoxTheme.typography.body2,
             text = text,
         )
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        Divider(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp),
+        HorizontalDivider(
+            modifier = Modifier.fillMaxWidth().height(1.dp),
             color = underlineColor,
         )
     }
@@ -529,76 +510,91 @@ private fun TextWithUnderline(
 
 @Composable
 private fun ExceptionsRow(onExceptionsClicked: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onExceptionsClicked() },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            painter = painterResource(R.drawable.ic_internet),
-            contentDescription = stringResource(R.string.preference_doh_exceptions_description),
-            tint = FirefoxTheme.colors.iconPrimary,
-            modifier = Modifier.padding(16.dp),
-        )
-        Text(
-            text = stringResource(R.string.preference_doh_exceptions),
-            color = FirefoxTheme.colors.textPrimary,
-            style = FirefoxTheme.typography.subtitle1,
-        )
-    }
+    IconListItem(
+        label = stringResource(R.string.preference_doh_exceptions),
+        onClick = onExceptionsClicked,
+        beforeIconPainter = painterResource(iconsR.drawable.mozac_ic_globe_24),
+        beforeIconDescription = stringResource(R.string.preference_doh_exceptions_description),
+    )
 }
 
+@FlexibleWindowPreview
 @Composable
-@FlexibleWindowLightDarkPreview
-private fun DohScreenDefaultProviderPreview() {
-    FirefoxTheme {
-        val provider = Provider.BuiltIn(
-            url = "https://mozilla.cloudflare-dns.com/dns-query",
-            name = "Cloudflare",
-            default = true,
-        )
+private fun DohScreenDefaultProviderPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
+        val provider =
+            Provider.BuiltIn(
+                url = "https://mozilla.cloudflare-dns.com/dns-query",
+                name = "Cloudflare",
+                default = true,
+            )
         DohSettingsScreen(
-            state = DohSettingsState(
-                allProtectionLevels = listOf(
-                    ProtectionLevel.Default,
-                    ProtectionLevel.Increased,
-                    ProtectionLevel.Max,
-                    ProtectionLevel.Off,
-                ),
-                selectedProtectionLevel = ProtectionLevel.Increased,
-                providers = listOf(
-                    provider,
-                ),
-                selectedProvider = provider,
-                exceptionsList = emptyList(),
-                isUserExceptionValid = true,
-            ),
+            state =
+                DohSettingsState(
+                    allProtectionLevels =
+                        listOf(
+                            ProtectionLevel.Default,
+                            ProtectionLevel.Increased,
+                            ProtectionLevel.Max,
+                            ProtectionLevel.Off,
+                        ),
+                    selectedProtectionLevel = ProtectionLevel.Increased,
+                    providers = listOf(provider),
+                    selectedProvider = provider,
+                    exceptionsList = emptyList(),
+                    isUserExceptionValid = true,
+                )
         )
     }
 }
 
+@FlexibleWindowPreview
 @Composable
-@FlexibleWindowLightDarkPreview
-private fun DohScreenCustomProviderPreview() {
-    FirefoxTheme {
+private fun DohScreenCustomProviderPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
         val provider = Provider.Custom(url = "")
         DohSettingsScreen(
-            state = DohSettingsState(
-                allProtectionLevels = listOf(
-                    ProtectionLevel.Default,
-                    ProtectionLevel.Increased,
-                    ProtectionLevel.Max,
-                    ProtectionLevel.Off,
-                ),
-                selectedProtectionLevel = ProtectionLevel.Increased,
-                providers = listOf(
-                    provider,
-                ),
-                selectedProvider = provider,
-                exceptionsList = emptyList(),
-                isUserExceptionValid = true,
-            ),
+            state =
+                DohSettingsState(
+                    allProtectionLevels =
+                        listOf(
+                            ProtectionLevel.Default,
+                            ProtectionLevel.Increased,
+                            ProtectionLevel.Max,
+                            ProtectionLevel.Off,
+                        ),
+                    selectedProtectionLevel = ProtectionLevel.Increased,
+                    providers = listOf(provider),
+                    selectedProvider = provider,
+                    exceptionsList = emptyList(),
+                    isUserExceptionValid = true,
+                )
+        )
+    }
+}
+
+@Preview
+@Composable
+private fun AlertDialogAddCustomProviderPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
+        AlertDialogAddCustomProvider(
+            customProviderUrl = "https://mozilla.cloudflare-dns.com/dns-query",
+            customProviderErrorState = CustomProviderErrorState.Valid,
+            onCustomCancelClicked = {},
+            onCustomAddClicked = {},
+        )
+    }
+}
+
+@Preview
+@Composable
+private fun AlertDialogAddCustomProviderErrorPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
+        AlertDialogAddCustomProvider(
+            customProviderUrl = "https://mozilla.cloudflare-dns.com/dns-query",
+            customProviderErrorState = CustomProviderErrorState.Invalid,
+            onCustomCancelClicked = {},
+            onCustomAddClicked = {},
         )
     }
 }

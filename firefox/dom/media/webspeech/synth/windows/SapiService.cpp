@@ -1,21 +1,19 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsISupports.h"
 #include "SapiService.h"
-#include "nsServiceManagerUtils.h"
-#include "nsEscape.h"
-#include "nsXULAppAPI.h"
 
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/dom/nsSynthVoiceRegistry.h"
-#include "mozilla/dom/nsSpeechTask.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/ProfilerLabels.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "mozilla/dom/nsSpeechTask.h"
+#include "mozilla/dom/nsSynthVoiceRegistry.h"
+#include "nsEscape.h"
+#include "nsISupports.h"
+#include "nsServiceManagerUtils.h"
+#include "nsXULAppAPI.h"
 
 namespace mozilla::dom {
 
@@ -37,7 +35,7 @@ class SapiCallback final : public nsISpeechTaskCallback {
     mStartingTime = TimeStamp::Now();
   }
 
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(SapiCallback, nsISpeechTaskCallback)
 
   NS_DECL_NSISPEECHTASKCALLBACK
@@ -48,7 +46,7 @@ class SapiCallback final : public nsISpeechTaskCallback {
   void OnSpeechEvent(const SPEVENT& speechEvent);
 
  private:
-  ~SapiCallback() {}
+  ~SapiCallback() = default;
 
   float GetTimeDurationFromStart() const {
     TimeDuration duration = TimeStamp::Now() - mStartingTime;
@@ -85,7 +83,7 @@ SapiCallback::OnPause() {
     return NS_ERROR_FAILURE;
   }
   if (!mTask) {
-    // When calling pause() on child porcess, it may not receive end event
+    // When calling pause() on child process, it may not receive end event
     // from chrome process yet.
     return NS_ERROR_FAILURE;
   }
@@ -99,7 +97,7 @@ SapiCallback::OnResume() {
     return NS_ERROR_FAILURE;
   }
   if (!mTask) {
-    // When calling resume() on child porcess, it may not receive end event
+    // When calling resume() on child process, it may not receive end event
     // from chrome process yet.
     return NS_ERROR_FAILURE;
   }
@@ -191,7 +189,7 @@ NS_IMPL_RELEASE(SapiService)
 
 SapiService::SapiService() : mInitialized(false) {}
 
-SapiService::~SapiService() {}
+SapiService::~SapiService() = default;
 
 bool SapiService::Init() {
   AUTO_PROFILER_LABEL("SapiService::Init", OTHER);

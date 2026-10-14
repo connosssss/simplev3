@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -293,12 +291,7 @@ class AppendOnlyListIterator {
   }
   T* operator*() const { return static_cast<T*>(iter); }
   T* operator->() const { return static_cast<T*>(iter); }
-  bool operator!=(const AppendOnlyListIterator<T>& where) const {
-    return iter != where.iter;
-  }
-  bool operator==(const AppendOnlyListIterator<T>& where) const {
-    return iter == where.iter;
-  }
+  bool operator==(const AppendOnlyListIterator& where) const = default;
   explicit operator bool() const { return iter != nullptr; }
 
  private:
@@ -476,12 +469,7 @@ class InlineListIterator {
   }
   T* operator*() const { return static_cast<T*>(iter); }
   T* operator->() const { return static_cast<T*>(iter); }
-  bool operator!=(const InlineListIterator<T>& where) const {
-    return iter != where.iter;
-  }
-  bool operator==(const InlineListIterator<T>& where) const {
-    return iter == where.iter;
-  }
+  bool operator==(const InlineListIterator<T>& where) const = default;
 
  private:
   Node* iter;
@@ -518,12 +506,7 @@ class InlineListReverseIterator {
   }
   T* operator*() { return static_cast<T*>(iter); }
   T* operator->() { return static_cast<T*>(iter); }
-  bool operator!=(const InlineListReverseIterator<T>& where) const {
-    return iter != where.iter;
-  }
-  bool operator==(const InlineListReverseIterator<T>& where) const {
-    return iter == where.iter;
-  }
+  bool operator==(const InlineListReverseIterator<T>& where) const = default;
 
  private:
   Node* iter;
@@ -602,12 +585,7 @@ class InlineSpaghettiStackIterator {
   }
   T* operator*() const { return static_cast<T*>(iter); }
   T* operator->() const { return static_cast<T*>(iter); }
-  bool operator!=(const InlineSpaghettiStackIterator<T>& where) const {
-    return iter != where.iter;
-  }
-  bool operator==(const InlineSpaghettiStackIterator<T>& where) const {
-    return iter == where.iter;
-  }
+  bool operator==(const InlineSpaghettiStackIterator<T>& where) const = default;
 
  private:
   Node* iter;

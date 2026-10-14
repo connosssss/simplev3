@@ -4,26 +4,8 @@
 
 package org.mozilla.fenix.home.toolbar
 
-/**
- * Interface for toolbar related actions.
- */
+/** Interface for toolbar related actions. */
 interface ToolbarInteractor {
-    /**
-     * Navigates to browser with clipboard text.
-     *
-     * @param clipboardText The current text content of the clipboard.
-     */
-    fun onPasteAndGo(clipboardText: String)
-
-    /**
-     * Navigates to search with clipboard text.
-     *
-     * @param clipboardText The current text content of the clipboard.
-     */
-    fun onPaste(clipboardText: String)
-
-    /**
-     * Navigates to the search dialog.
-     */
+    /** Navigates to the search dialog. */
     fun onNavigateSearch()
 }

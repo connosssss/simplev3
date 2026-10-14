@@ -14,14 +14,13 @@
 
 #include "sslimpl.h"
 #include "sslproto.h"
-#include "nssilock.h"
 #include "sslencode.h"
 #if defined(XP_UNIX) || defined(XP_WIN) || defined(_WINDOWS)
 #include <time.h>
 #endif
 
 static sslSessionID *cache = NULL;
-static PZLock *cacheLock = NULL;
+static PRLock *cacheLock = NULL;
 
 /* sids can be in one of 5 states:
  *
@@ -33,12 +32,12 @@ static PZLock *cacheLock = NULL;
  */
 
 #define LOCK_CACHE lock_cache()
-#define UNLOCK_CACHE PZ_Unlock(cacheLock)
+#define UNLOCK_CACHE PR_Unlock(cacheLock)
 
 static SECStatus
 ssl_InitClientSessionCacheLock(void)
 {
-    cacheLock = PZ_NewLock(nssILockCache);
+    cacheLock = PR_NewLock();
     return cacheLock ? SECSuccess : SECFailure;
 }
 
@@ -46,7 +45,7 @@ static SECStatus
 ssl_FreeClientSessionCacheLock(void)
 {
     if (cacheLock) {
-        PZ_DestroyLock(cacheLock);
+        PR_DestroyLock(cacheLock);
         cacheLock = NULL;
         return SECSuccess;
     }
@@ -158,7 +157,7 @@ static void
 lock_cache(void)
 {
     ssl_InitSessionCacheLocks(PR_TRUE);
-    PZ_Lock(cacheLock);
+    PR_Lock(cacheLock);
 }
 
 /* BEWARE: This function gets called for both client and server SIDs !!
@@ -168,8 +167,8 @@ void
 ssl_DestroySID(sslSessionID *sid, PRBool freeIt)
 {
     SSL_TRC(8, ("SSL: destroy sid: sid=0x%x cached=%d", sid, sid->cached));
-    PORT_Assert(sid->references == 0);
-    PORT_Assert(sid->cached != in_client_cache);
+    PORT_ReleaseAssert(sid->references == 0);
+    PORT_ReleaseAssert(sid->cached != in_client_cache);
 
     if (sid->u.ssl3.locked.sessionTicket.ticket.data) {
         SECITEM_FreeItem(&sid->u.ssl3.locked.sessionTicket.ticket,
@@ -189,8 +188,8 @@ ssl_DestroySID(sslSessionID *sid, PRBool freeIt)
     PORT_Free((void *)sid->peerID);
     PORT_Free((void *)sid->urlSvrName);
 
-    if (sid->peerCert) {
-        CERT_DestroyCertificate(sid->peerCert);
+    if (sid->peerCertDER.data) {
+        SECITEM_FreeItem(&sid->peerCertDER, PR_FALSE);
     }
     if (sid->peerCertStatus.items) {
         SECITEM_FreeArray(&sid->peerCertStatus, PR_FALSE);
@@ -217,7 +216,7 @@ ssl_DestroySID(sslSessionID *sid, PRBool freeIt)
 static void
 ssl_FreeLockedSID(sslSessionID *sid)
 {
-    PORT_Assert(sid->references >= 1);
+    PORT_ReleaseAssert(sid->references >= 1);
     if (--sid->references == 0) {
         ssl_DestroySID(sid, PR_TRUE);
     }
@@ -243,7 +242,65 @@ sslSessionID *
 ssl_ReferenceSID(sslSessionID *sid)
 {
     LOCK_CACHE;
+    PORT_ReleaseAssert(sid->references > 0);
     sid->references++;
+    UNLOCK_CACHE;
+    return sid;
+}
+
+/* Install |sid| as the socket's session ID: the caller's reference passes to
+ * the socket, and the socket's reference to the previous session is released.
+ * |sid| may already be the socket's session, in which case the caller must
+ * still hold a reference of its own.
+ *
+ * Swapping and releasing under the cache lock is what makes
+ * ssl_ReferenceSocketSID safe: a reader on another thread can never observe a
+ * pointer whose last reference has already been dropped.
+ */
+void
+ssl_SetSocketSID(sslSocket *ss, sslSessionID *sid)
+{
+    sslSessionID *old;
+
+    LOCK_CACHE;
+    old = ss->sec.ci.sid;
+    ss->sec.ci.sid = sid;
+    if (old) {
+        ssl_FreeLockedSID(old);
+    }
+    UNLOCK_CACHE;
+}
+
+/* Clear the socket's session ID and return it, transferring the socket's
+ * reference to the caller.
+ */
+sslSessionID *
+ssl_TakeSocketSID(sslSocket *ss)
+{
+    sslSessionID *sid;
+
+    LOCK_CACHE;
+    sid = ss->sec.ci.sid;
+    ss->sec.ci.sid = NULL;
+    UNLOCK_CACHE;
+    return sid;
+}
+
+/* Return the socket's session ID with an extra reference, or NULL. The caller
+ * must release it with ssl_FreeSID. Safe to call from any thread; in
+ * particular it takes no socket lock, so it can be used from application
+ * callbacks that NSS invokes while holding them.
+ */
+sslSessionID *
+ssl_ReferenceSocketSID(sslSocket *ss)
+{
+    sslSessionID *sid;
+
+    LOCK_CACHE;
+    sid = ss->sec.ci.sid;
+    if (sid) {
+        sid->references++;
+    }
     UNLOCK_CACHE;
     return sid;
 }
@@ -506,13 +563,10 @@ ssl_DecodeResumptionToken(sslSessionID *sid, const PRUint8 *encodedToken,
         return SECFailure;
     }
     if (readerBuffer.len) {
-        PORT_Assert(!sid->peerCert);
+        PORT_Assert(!sid->peerCertDER.data);
         SECItem tempItem = { siBuffer, (unsigned char *)readerBuffer.buf,
                              readerBuffer.len };
-        sid->peerCert = CERT_NewTempCertificate(NULL, /* dbHandle */
-                                                &tempItem,
-                                                NULL, PR_FALSE, PR_TRUE);
-        if (!sid->peerCert) {
+        if (SECITEM_CopyItem(NULL, &sid->peerCertDER, &tempItem) != SECSuccess) {
             return SECFailure;
         }
     }
@@ -528,7 +582,9 @@ ssl_DecodeResumptionToken(sslSessionID *sid, const PRUint8 *encodedToken,
         }
         SECItem tempItem = { siBuffer, (unsigned char *)readerBuffer.buf,
                              readerBuffer.len };
-        SECITEM_CopyItem(NULL, &sid->peerCertStatus.items[0], &tempItem);
+        if (SECITEM_CopyItem(NULL, &sid->peerCertStatus.items[0], &tempItem) != SECSuccess) {
+            return SECFailure;
+        }
     }
 
     if (sslRead_ReadVariable(&reader, 1, &readerBuffer) != SECSuccess) {
@@ -540,7 +596,11 @@ ssl_DecodeResumptionToken(sslSessionID *sid, const PRUint8 *encodedToken,
         if (sid->peerID) {
             PORT_Free((void *)sid->peerID);
         }
-        sid->peerID = PORT_Strdup((const char *)readerBuffer.buf);
+        sid->peerID = PORT_ZAlloc(readerBuffer.len + 1);
+        if (!sid->peerID) {
+            return SECFailure;
+        }
+        PORT_Memcpy((void *)sid->peerID, readerBuffer.buf, readerBuffer.len);
     }
 
     if (sslRead_ReadVariable(&reader, 1, &readerBuffer) != SECSuccess) {
@@ -552,7 +612,11 @@ ssl_DecodeResumptionToken(sslSessionID *sid, const PRUint8 *encodedToken,
             PORT_Free((void *)sid->urlSvrName);
         }
         PORT_Assert(readerBuffer.buf);
-        sid->urlSvrName = PORT_Strdup((const char *)readerBuffer.buf);
+        sid->urlSvrName = PORT_ZAlloc(readerBuffer.len + 1);
+        if (!sid->urlSvrName) {
+            return SECFailure;
+        }
+        PORT_Memcpy((void *)sid->urlSvrName, readerBuffer.buf, readerBuffer.len);
     }
 
     if (sslRead_ReadVariable(&reader, 3, &readerBuffer) != SECSuccess) {
@@ -566,6 +630,9 @@ ssl_DecodeResumptionToken(sslSessionID *sid, const PRUint8 *encodedToken,
         sid->localCert = CERT_NewTempCertificate(NULL, /* dbHandle */
                                                  &tempItem,
                                                  NULL, PR_FALSE, PR_TRUE);
+        if (!sid->localCert) {
+            return SECFailure;
+        }
     }
 
     if (sslRead_ReadNumber(&reader, 8, &sid->addr.pr_s6_addr64[0]) != SECSuccess) {
@@ -626,6 +693,10 @@ ssl_DecodeResumptionToken(sslSessionID *sid, const PRUint8 *encodedToken,
     }
     if (readerBuffer.len) {
         PORT_Assert(readerBuffer.buf);
+        if (readerBuffer.len > SSL3_SESSIONID_BYTES) {
+            PORT_SetError(SEC_ERROR_INVALID_ARGS);
+            return SECFailure;
+        }
         PORT_Memcpy(sid->u.ssl3.sessionID, readerBuffer.buf, readerBuffer.len);
     }
 
@@ -652,6 +723,10 @@ ssl_DecodeResumptionToken(sslSessionID *sid, const PRUint8 *encodedToken,
                 readerBuffer.len);
 
     if (sslRead_ReadNumber(&reader, 1, &tmpInt) != SECSuccess) {
+        return SECFailure;
+    }
+    if (tmpInt > WRAPPED_MASTER_SECRET_SIZE) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
         return SECFailure;
     }
     sid->u.ssl3.keys.wrapped_master_secret_len = (PRUint8)tmpInt;
@@ -828,8 +903,8 @@ ssl_EncodeResumptionToken(sslSessionID *sid, sslBuffer *encodedTokenBuf)
         return SECFailure;
     }
 
-    rv = sslBuffer_AppendVariable(encodedTokenBuf, sid->peerCert->derCert.data,
-                                  sid->peerCert->derCert.len, 3);
+    rv = sslBuffer_AppendVariable(encodedTokenBuf, sid->peerCertDER.data,
+                                  sid->peerCertDER.len, 3);
     if (rv != SECSuccess) {
         return SECFailure;
     }

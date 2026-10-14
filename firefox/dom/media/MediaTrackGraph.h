@@ -1,10 +1,11 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-*/
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef MOZILLA_MEDIATRACKGRAPH_H_
 #define MOZILLA_MEDIATRACKGRAPH_H_
+
+#include <speex/speex_resampler.h>
 
 #include "AudioSampleFormat.h"
 #include "CubebUtils.h"
@@ -18,7 +19,6 @@
 #include "nsAutoRef.h"
 #include "nsIRunnable.h"
 #include "nsTArray.h"
-#include <speex/speex_resampler.h>
 
 class nsIRunnable;
 class nsIGlobalObject;
@@ -554,8 +554,8 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
    */
   template <typename Function>
   void RunAfterProcessing(Function&& aFunction) {
-    RunMessageAfterProcessing(WrapUnique(
-        new ControlMessageWithNoShutdown(std::forward<Function>(aFunction))));
+    RunMessageAfterProcessing(NS_NewRunnableFunction(
+        "MediaTrack::RunAfterProcessing", std::forward<Function>(aFunction)));
   }
 
   class ControlMessageInterface;
@@ -575,9 +575,10 @@ class MediaTrack : public mozilla::LinkedListElement<MediaTrack> {
   class ControlMessageWithNoShutdown;
   template <typename Function>
   class ControlOrShutdownMessage;
+  class ControlMessageWrapper;
 
   void QueueMessage(UniquePtr<ControlMessageInterface> aMessage);
-  void RunMessageAfterProcessing(UniquePtr<ControlMessageInterface> aMessage);
+  void RunMessageAfterProcessing(already_AddRefed<nsIRunnable> aMessage);
 
   void NotifyMainThreadListeners() {
     NS_ASSERTION(NS_IsMainThread(), "Call only on main thread");
@@ -1152,7 +1153,7 @@ class MediaTrackGraph {
   /* From the main thread, ask the MTG to resolve the returned promise when
    * the device specified has started.
    * A null aDeviceID indicates the default audio output device.
-   * The promise is rejected with NS_ERROR_INVALID_ARG if aSink does not
+   * The promise is rejected with NS_ERROR_INVALID_ARG if aDeviceID does not
    * correspond to any output devices used by the graph, or
    * NS_ERROR_NOT_AVAILABLE if outputs to the device are removed or
    * NS_ERROR_ILLEGAL_DURING_SHUTDOWN if the graph is force shut down
@@ -1231,6 +1232,13 @@ class MediaTrackGraph {
    * reverse stream might drift from the clock for this MediaTrackGraph.
    * Graph thread only. */
   bool OutputForAECMightDrift();
+  /* Return whether the audio output device used for the aec reverse stream
+   * corresponds to the primary output device, explicitly or implicitly,
+   * implicitly meaning when the primary output device is the system default
+   * output device, and the output device used for the aec reverse stream is
+   * explicit and matches the current system default output device.
+   * Graph thread only. */
+  bool OutputForAECIsPrimary();
 
   void RegisterCaptureTrackForWindow(uint64_t aWindowId,
                                      ProcessedMediaTrack* aCaptureTrack);
@@ -1270,6 +1278,10 @@ class MediaTrackGraph {
    * get the existing NativeInputTrackMain thread only.*/
   NativeInputTrack* GetNativeInputTrackMainThread();
 
+  /* Return a positive monotonically increasing graph-unique generation id for
+   * AudioInputProcessingParamsRequest::mGeneration. */
+  int ProcessingParamsGeneration() { return ++mProcessingParamsGeneration; }
+
  protected:
   explicit MediaTrackGraph(TrackRate aSampleRate,
                            CubebUtils::AudioDeviceID aPrimaryOutputDeviceID)
@@ -1298,6 +1310,10 @@ class MediaTrackGraph {
    * This is the device specified when creating the graph.
    */
   const CubebUtils::AudioDeviceID mPrimaryOutputDeviceID;
+
+  /* A monotonically increasing graph-unique generation for
+   * AudioInputProcessingParamsRequest::mGeneration. */
+  int mProcessingParamsGeneration = 0;
 };
 
 inline void MediaTrack::AssertOnGraphThread() const {
@@ -1338,7 +1354,7 @@ class MediaTrack::ControlMessageWithNoShutdown
     : public ControlMessageInterface {
  public:
   explicit ControlMessageWithNoShutdown(Function&& aFunction)
-      : mFunction(std::forward<Function>(aFunction)) {}
+      : mFunction(std::move(aFunction)) {}
 
   void Run() override {
     static_assert(std::is_void_v<decltype(mFunction())>,
@@ -1355,13 +1371,14 @@ template <typename Function>
 class MediaTrack::ControlOrShutdownMessage : public ControlMessageInterface {
  public:
   explicit ControlOrShutdownMessage(Function&& aFunction)
-      : mFunction(std::forward<Function>(aFunction)) {}
+      : mFunction(std::move(aFunction)) {}
 
   void Run() override {
     static_assert(std::is_void_v<decltype(mFunction(IsInShutdown()))>,
                   "The lambda must return void!");
     mFunction(IsInShutdown::No);
   }
+
   void RunDuringShutdown() override { mFunction(IsInShutdown::Yes); }
 
  private:
@@ -1369,6 +1386,31 @@ class MediaTrack::ControlOrShutdownMessage : public ControlMessageInterface {
   // variables are available in both cases.
   using StoredFunction = std::decay_t<Function>;
   StoredFunction mFunction;
+};
+
+class MediaTrack::ControlMessageWrapper final : public DiscardableRunnable {
+  std::unique_ptr<ControlMessageInterface> mMessage;
+
+ public:
+  explicit ControlMessageWrapper(
+      std::unique_ptr<ControlMessageInterface>&& aMessage)
+      : DiscardableRunnable("ControlMessageWrapper"),
+        mMessage(std::move(aMessage)) {}
+
+  NS_IMETHODIMP Run() override {
+    if (mMessage) {
+      mMessage->Run();
+      mMessage = nullptr;
+    }
+    return NS_OK;
+  }
+
+  void OnDiscard() override {
+    if (mMessage) {
+      mMessage->RunDuringShutdown();
+      mMessage = nullptr;
+    }
+  }
 };
 
 }  // namespace mozilla

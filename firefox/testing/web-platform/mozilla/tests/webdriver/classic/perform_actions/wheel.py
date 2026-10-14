@@ -1,41 +1,26 @@
-from copy import deepcopy
-
 import pytest
-from tests.classic.perform_actions.support.refine import get_events
-
-pytestmark = pytest.mark.asyncio
+from tests.classic.perform_actions import assert_scroll_position
 
 
+@pytest.mark.geckodriver(allow_system_access=True)
 @pytest.mark.parametrize("device_pixel_ratio", ["1.0", "2.0", "0.5"])
-async def test_scroll_delta_device_pixel(
-    configuration, url, geckodriver, device_pixel_ratio
+def test_scroll_delta_device_pixel(
+    session,
+    new_tab_classic,
+    test_actions_wheel_page,
+    wheel_chain,
+    use_pref,
+    device_pixel_ratio,
 ):
-    config = deepcopy(configuration)
+    use_pref("layout.css.devPixelsPerPx", device_pixel_ratio)
 
-    prefs = config["capabilities"]["moz:firefoxOptions"].get("prefs", {})
-    prefs.update({"layout.css.devPixelsPerPx": device_pixel_ratio})
-    config["capabilities"]["moz:firefoxOptions"]["prefs"] = prefs
+    session.url = test_actions_wheel_page()
 
-    try:
-        driver = geckodriver(config=config)
-        driver.new_session()
+    assert session.execute_script("return window.devicePixelRatio") == float(
+        device_pixel_ratio
+    )
 
-        driver.session.url = url(
-            "/webdriver/tests/support/html/test_actions_scroll.html"
-        )
+    target = session.find.css("#scrollable", all=False)
+    wheel_chain.scroll(0, 0, 50, 70, origin=target).perform()
 
-        target = driver.session.find.css("#scrollable", all=False)
-
-        chain = driver.session.actions.sequence("wheel", "wheel_id")
-        chain.scroll(0, 0, 5, 10, origin=target).perform()
-
-        events = get_events(driver.session)
-        assert len(events) == 1
-        assert events[0]["type"] == "wheel"
-        assert events[0]["deltaX"] == 5
-        assert events[0]["deltaY"] == 10
-        assert events[0]["deltaZ"] == 0
-        assert events[0]["target"] == "scrollable-content"
-
-    finally:
-        await driver.stop()
+    assert_scroll_position(session, target, 50, 70)

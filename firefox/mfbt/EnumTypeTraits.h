@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +7,7 @@
 #ifndef mozilla_EnumTypeTraits_h
 #define mozilla_EnumTypeTraits_h
 
-#include <stddef.h>
+#include <cstddef>
 #include <type_traits>
 
 namespace mozilla {
@@ -53,12 +52,10 @@ struct EnumFitsWithinHelper<EnumSize, false, StorageSize, false>
 template <typename T, typename Storage>
 struct EnumTypeFitsWithin
     : public detail::EnumFitsWithinHelper<
-          sizeof(T),
-          std::is_signed<typename std::underlying_type<T>::type>::value,
-          sizeof(Storage), std::is_signed<Storage>::value> {
-  static_assert(std::is_enum<T>::value, "must provide an enum type");
-  static_assert(std::is_integral<Storage>::value,
-                "must provide an integral type");
+          sizeof(T), std::is_signed_v<std::underlying_type_t<T>>,
+          sizeof(Storage), std::is_signed_v<Storage>> {
+  static_assert(std::is_enum_v<T>, "must provide an enum type");
+  static_assert(std::is_integral_v<Storage>, "must provide an integral type");
 };
 
 /**
@@ -83,7 +80,7 @@ struct EnumTypeFitsWithin
 template <typename T>
 inline constexpr auto UnderlyingValue(const T v) {
   static_assert(std::is_enum_v<T>);
-  return static_cast<typename std::underlying_type<T>::type>(v);
+  return static_cast<std::underlying_type_t<T>>(v);
 }
 
 /*
@@ -116,17 +113,13 @@ inline constexpr auto UnderlyingValue(const T v) {
  */
 
 template <typename T>
-struct MinContiguousEnumValue {
-  static constexpr T value = static_cast<T>(0);
-};
+struct MinContiguousEnumValue : std::integral_constant<T, T(0)> {};
 
 template <typename T>
 struct MaxContiguousEnumValue;
 
 template <typename T>
-struct MaxEnumValue {
-  static constexpr auto value = MaxContiguousEnumValue<T>::value;
-};
+struct MaxEnumValue : MaxContiguousEnumValue<T> {};
 
 // Provides the min and max values for a contiguous enum (requires at least
 // MaxContiguousEnumValue to be defined).

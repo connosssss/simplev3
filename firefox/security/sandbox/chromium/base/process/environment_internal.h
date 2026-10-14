@@ -1,4 +1,4 @@
-// Copyright 2019 The Chromium Authors. All rights reserved.
+// Copyright 2019 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -8,15 +8,15 @@
 #ifndef BASE_PROCESS_ENVIRONMENT_INTERNAL_H_
 #define BASE_PROCESS_ENVIRONMENT_INTERNAL_H_
 
-#include <memory>
-
+#include "base/base_export.h"
+#include "base/containers/heap_array.h"
 #include "base/environment.h"
 #include "build/build_config.h"
 
 namespace base {
 namespace internal {
 
-#if defined(OS_POSIX) || defined(OS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 // Returns a modified environment vector constructed from the given environment
 // and the list of changes given in |changes|. Each key in the environment is
 // matched against the first element of the pairs. In the event of a match, the
@@ -28,10 +28,10 @@ namespace internal {
 // returned array will have appended to it the storage for the array itself so
 // there is only one pointer to manage, but this means that you can't copy the
 // array without keeping the original around.
-BASE_EXPORT std::unique_ptr<char*[]> AlterEnvironment(
+BASE_EXPORT base::HeapArray<char*> AlterEnvironment(
     const char* const* env,
     const EnvironmentMap& changes);
-#elif defined(OS_WIN)
+#elif BUILDFLAG(IS_WIN)
 // Returns a modified environment vector constructed from the given environment
 // and the list of changes given in |changes|. Each key in the environment is
 // matched against the first element of the pairs. In the event of a match, the

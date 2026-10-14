@@ -1,12 +1,8 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "jit/Snapshots.h"
-
 #include "jsapi-tests/tests.h"
 
 using namespace js;
@@ -57,11 +53,7 @@ class Fibonacci {
       return *this;
     }
 
-    bool operator==(const Iterator& other) const {
-      return value_ == other.value_ && last_ == other.last_;
-    }
-
-    bool operator!=(const Iterator& other) const { return !(*this == other); }
+    bool operator==(const Iterator& other) const = default;
 
     auto operator*() const { return static_cast<int32_t>(value_); }
   };
@@ -336,6 +328,15 @@ BEGIN_TEST(testJitRValueAlloc_Int64Stack) {
   return true;
 }
 END_TEST(testJitRValueAlloc_Int64Stack)
+
+BEGIN_TEST(testJitRValueAlloc_Int64Int32Stack) {
+  for (auto i : Fibonacci{}) {
+    auto s = RValueAllocation::Int64Int32(i);
+    CHECK(s == Read(s));
+  }
+  return true;
+}
+END_TEST(testJitRValueAlloc_Int64Int32Stack)
 #endif
 
 BEGIN_TEST(testJitRValueAlloc_IntPtrCst) {

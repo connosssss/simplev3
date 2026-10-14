@@ -52,22 +52,23 @@ useful as proposals often make inconvenient and breaking changes.
 ### Operation
 
 ```bash
+# From the root of the repo, navigate into js/src/jit-test/etc/wasm/
 # Add, remove, or modify proposals
 vim generate-spectests/config.toml
 # Remove locks for any proposals you wish to pull the latest changes on
 vim generate-spectests/config-lock.toml
 # Import the tests
-make update
+./generate-and-patch.sh
 # View the tests that were imported
-hg stat
+git status
 # Run the imported tests and note failures
 ./jit-test.py dist/bin/js wasm/spec/
 # Exclude test failures
 vim generate-spectests/config.toml
 # Re-import the tests to exclude failing tests
-make update
+./generate-and-patch.sh
 # Commit the changes
-hg commit
+git commit
 ```
 
 ### Debugging import failures
@@ -78,6 +79,6 @@ and the test importer will fallback to building tests on an unmerged tree.
 This will likely result in extra tests being imported due to spurious
 differences between the proposal and upstream, but generally is okay.
 
-The import tool uses `RUST_LOG` to output debug information. `Makefile`
-automatically uses `RUST_LOG=info`. Change that to `RUST_LOG=debug` to get
-verbose output of all the commands run.
+The import tool uses `RUST_LOG` to output debug information.
+`generate-and-patch.sh` defaults to `RUST_LOG=info`. Run it with
+`RUST_LOG=debug` to get verbose output of all the commands run.

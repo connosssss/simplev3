@@ -12,7 +12,8 @@ export default {
     btoa: "readonly",
     RPMAddTRRExcludedDomain: "readonly",
     RPMGetAppBuildID: "readonly",
-    RPMGetInnerMostURI: "readonly",
+    RPMGetHostForDisplay: "readonly",
+    RPMGetInnermostAsciiHost: "readonly",
     RPMGetIntPref: "readonly",
     RPMGetStringPref: "readonly",
     RPMGetBoolPref: "readonly",
@@ -37,5 +38,6 @@ export default {
     RPMIsSiteSpecificTRRError: "readonly",
     RPMSetTRRDisabledLoadFlags: "readonly",
     RPMShowOSXLocalNetworkPermissionWarning: "readonly",
+    RPMIsSSLKeyLoggingEnabled: "readonly",
   },
 };

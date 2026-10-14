@@ -5,7 +5,6 @@
 "use strict";
 
 const {
-  openDocLink,
   openTrustedLink,
 } = require("resource://devtools/client/shared/link.js");
 const {
@@ -25,13 +24,19 @@ const {
 const FluentReact = require("resource://devtools/client/shared/vendor/fluent-react.js");
 const Localized = createFactory(FluentReact.Localized);
 
+const MDNLink = createFactory(
+  require("resource://devtools/client/shared/components/MdnLink.js")
+);
+
 const {
   services,
 } = require("resource://devtools/client/application/src/modules/application-services.js");
-
+const { getMdnLinkParams } = ChromeUtils.importESModule(
+  "resource://devtools/shared/mdn.mjs"
+);
 const DOC_URL =
-  "https://developer.mozilla.org/docs/Web/API/Service_Worker_API/Using_Service_Workers" +
-  "?utm_source=devtools&utm_medium=sw-panel-blank";
+  "https://developer.mozilla.org/docs/Web/API/Service_Worker_API/Using_Service_Workers?" +
+  getMdnLinkParams("sw-panel-blank");
 
 /**
  * This component displays help information when no service workers are found for the
@@ -48,10 +53,6 @@ class RegistrationListEmpty extends PureComponent {
 
   openAboutDebugging() {
     openTrustedLink("about:debugging#workers");
-  }
-
-  openDocumentation() {
-    openDocLink(DOC_URL);
   }
 
   render() {
@@ -98,9 +99,7 @@ class RegistrationListEmpty extends PureComponent {
           {},
           Localized(
             { id: "serviceworker-empty-intro-link" },
-            a({
-              onClick: () => this.openDocumentation(),
-            })
+            MDNLink({ url: DOC_URL })
           )
         ),
         p(

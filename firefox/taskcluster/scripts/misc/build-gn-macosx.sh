@@ -1,19 +1,21 @@
 #!/bin/bash
 set -e -v
 
-# This script is for building GN.
+# This script is for building GN for macOS.
 
 WORKSPACE=$HOME/workspace
 
-CROSS_SYSROOT=$MOZ_FETCHES_DIR/MacOSX15.4.sdk
-export MACOSX_DEPLOYMENT_TARGET=10.12
+# The target triple selects the CPU architecture of the resulting binary
+# (x86_64-apple-darwin for Intel, aarch64-apple-darwin for Apple Silicon).
+MACOS_TARGET="${1:-x86_64-apple-darwin}"
+. $GECKO_PATH/taskcluster/scripts/misc/macos-setup.sh
 
-export CC=$MOZ_FETCHES_DIR/clang/bin/clang
-export CXX=$MOZ_FETCHES_DIR/clang/bin/clang++
-export AR=$MOZ_FETCHES_DIR/clang/bin/llvm-ar
-export CFLAGS="-target x86_64-apple-darwin -isysroot ${CROSS_SYSROOT} -I${CROSS_SYSROOT}/usr/include -iframework ${CROSS_SYSROOT}/System/Library/Frameworks"
+export CC=$MACOS_CC
+export CXX=$MACOS_CXX
+export AR=$MACOS_AR
+export CFLAGS="${MACOS_CFLAGS}"
 export CXXFLAGS="-stdlib=libc++ ${CFLAGS}"
-export LDFLAGS="-fuse-ld=lld ${CXXFLAGS} -Wl,-syslibroot,${CROSS_SYSROOT} -Wl,-dead_strip"
+export LDFLAGS="${CXXFLAGS} -Wl,-dead_strip"
 
 # We patch tools/gn/bootstrap/bootstrap.py to detect this.
 export MAC_CROSS=1

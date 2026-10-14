@@ -5,7 +5,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { loadMetadataForSuite } from '../framework/metadata.js';
 import { SpecFile } from '../internal/file_loader.js';
 import { TestQueryMultiCase, TestQueryMultiFile } from '../internal/query/query.js';
 import { validQueryPart } from '../internal/query/validQueryPart.js';
@@ -47,22 +46,14 @@ async function crawlFilesRecursively(dir: string): Promise<string[]> {
 
 export async function crawl(
   suiteDir: string,
-  opts: { validate: boolean; printMetadataWarnings: boolean } | null = null
+  opts: { validate: boolean; printCaseCountReport: boolean } | null = null
 ): Promise<TestSuiteListingEntry[]> {
   if (!fs.existsSync(suiteDir)) {
     throw new Error(`Could not find suite: ${suiteDir}`);
   }
 
-  let validateTimingsEntries;
-  if (opts?.validate) {
-    const metadata = loadMetadataForSuite(suiteDir);
-    if (metadata) {
-      validateTimingsEntries = {
-        metadata,
-        testsFoundInFiles: new Set<string>(),
-      };
-    }
-  }
+  let totalCases = 0;
+  let totalSubcases = 0;
 
   // Crawl files and convert paths to be POSIX-style, relative to suiteDir.
   const filesToEnumerate = (await crawlFilesRecursively(suiteDir))
@@ -76,9 +67,8 @@ export async function crawl(
       const filepathWithoutExtension = file.substring(0, file.length - specFileSuffix.length);
       const pathSegments = filepathWithoutExtension.split('/');
 
-      const suite = path.basename(suiteDir);
-
       if (opts?.validate) {
+        const suite = path.basename(suiteDir);
         const filename = `../../${suite}/${filepathWithoutExtension}.spec.js`;
 
         assert(!process.env.STANDALONE_DEV_SERVER);
@@ -88,10 +78,26 @@ export async function crawl(
 
         mod.g.validate(new TestQueryMultiFile(suite, pathSegments));
 
-        for (const { testPath } of mod.g.collectNonEmptyTests()) {
-          const testQuery = new TestQueryMultiCase(suite, pathSegments, testPath, {}).toString();
-          if (validateTimingsEntries) {
-            validateTimingsEntries.testsFoundInFiles.add(testQuery);
+        if (opts?.printCaseCountReport) {
+          for (const t of mod.g.iterate()) {
+            const testQuery = new TestQueryMultiCase(
+              suite,
+              pathSegments,
+              t.testPath,
+              {}
+            ).toString();
+
+            let cases = 0;
+            let subcases = 0;
+            for (const c of t.iterate(null)) {
+              cases++;
+              subcases += c.computeSubcaseCount();
+            }
+
+            const perCase = (subcases / cases).toFixed(0);
+            console.log(`${testQuery} - ${cases} cases, ${subcases} subcases (~${perCase}/case)`);
+            totalCases += cases;
+            totalSubcases += subcases;
           }
         }
       }
@@ -99,6 +105,7 @@ export async function crawl(
       for (const p of pathSegments) {
         assert(validQueryPart.test(p), `Invalid directory name ${p}; must match ${validQueryPart}`);
       }
+
       entries.push({ file: pathSegments });
     } else if (path.basename(file) === 'README.txt') {
       const dirname = path.dirname(file);
@@ -111,54 +118,8 @@ export async function crawl(
     }
   }
 
-  if (validateTimingsEntries) {
-    const zeroEntries = [];
-    const staleEntries = [];
-    for (const [metadataKey, metadataValue] of Object.entries(validateTimingsEntries.metadata)) {
-      if (metadataKey.startsWith('_')) {
-        // Ignore json "_comments".
-        continue;
-      }
-      if (metadataValue.subcaseMS <= 0) {
-        zeroEntries.push(metadataKey);
-      }
-      if (!validateTimingsEntries.testsFoundInFiles.has(metadataKey)) {
-        staleEntries.push(metadataKey);
-      }
-    }
-    if (zeroEntries.length && opts?.printMetadataWarnings) {
-      console.warn(
-        'WARNING: subcaseMS ≤ 0 found in listing_meta.json (see docs/adding_timing_metadata.md):'
-      );
-      for (const metadataKey of zeroEntries) {
-        console.warn(`  ${metadataKey}`);
-      }
-    }
-
-    if (opts?.printMetadataWarnings) {
-      const missingEntries = [];
-      for (const metadataKey of validateTimingsEntries.testsFoundInFiles) {
-        if (!(metadataKey in validateTimingsEntries.metadata)) {
-          missingEntries.push(metadataKey);
-        }
-      }
-      if (missingEntries.length) {
-        console.error(
-          'WARNING: Tests missing from listing_meta.json (see docs/adding_timing_metadata.md):'
-        );
-        for (const metadataKey of missingEntries) {
-          console.error(`  ${metadataKey}`);
-        }
-      }
-    }
-
-    if (staleEntries.length) {
-      console.error('ERROR: Non-existent tests found in listing_meta.json. Please update:');
-      for (const metadataKey of staleEntries) {
-        console.error(`  ${metadataKey}`);
-      }
-      unreachable();
-    }
+  if (opts?.printCaseCountReport) {
+    console.log(`-----\nTOTAL: ${totalCases} cases, ${totalSubcases} subcases`);
   }
 
   return entries;

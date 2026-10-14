@@ -7,12 +7,13 @@ support-files = [
   "helper_serviceworker.js",
   "network_requests_iframe.html",
   "sandboxed_iframe.html",
+  "sandboxed_iframe_inner.html",
   "console-test-worker.js",
-  "!/browser/base/content/test/general/browser_star_hsts.sjs",
+  "!/browser/base/content/test/browser-general/browser_star_hsts.sjs",
 ]
 prefs = [
+  "devtools.chrome.enabled=true",
   "devtools.console.stdout.chrome=false",
-  "javascript.options.experimental.explicit_resource_management=true",
 ]
 
 ["test_basics.html"]
@@ -24,10 +25,14 @@ prefs = [
 ["test_console_group_styling.html"]
 
 ["test_console_serviceworker.html"]
-skip-if = ["release_or_beta"] # requires dom.postMessage.sharedArrayBuffer.bypassCOOP_COEP.insecure.enabled
+skip-if = [
+  "release_or_beta", # requires dom.postMessage.sharedArrayBuffer.bypassCOOP_COEP.insecure.enabled
+]
 
 ["test_console_serviceworker_cached.html"]
-skip-if = ["release_or_beta"] # requires dom.postMessage.sharedArrayBuffer.bypassCOOP_COEP.insecure.enabled
+skip-if = [
+  "release_or_beta", # requires dom.postMessage.sharedArrayBuffer.bypassCOOP_COEP.insecure.enabled
+]
 
 ["test_console_styling.html"]
 
@@ -44,7 +49,6 @@ skip-if = ["release_or_beta"] # requires dom.postMessage.sharedArrayBuffer.bypas
 ["test_jsterm_autocomplete.html"]
 
 ["test_network_get.html"]
-skip-if = ["verify"]
 
 ["test_network_post.html"]
 

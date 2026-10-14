@@ -4,7 +4,6 @@
 
 package mozilla.components.feature.downloads
 
-import android.os.Environment
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import mozilla.components.browser.state.state.content.DownloadState
 import org.junit.Assert.assertFalse
@@ -16,14 +15,14 @@ import org.junit.runner.RunWith
 class DownloadStorageTest {
     @Test
     fun isSameDownload() {
-        val download = DownloadState(
-            id = "1",
-            url = "url",
-            contentType = "application/zip",
-            contentLength = 5242880,
-            status = DownloadState.Status.DOWNLOADING,
-            destinationDirectory = Environment.DIRECTORY_MUSIC,
-        )
+        val download =
+            DownloadState(
+                id = "1",
+                url = "url",
+                contentType = "application/zip",
+                contentLength = 5242880,
+                status = DownloadState.Status.DOWNLOADING,
+            )
 
         assertTrue(DownloadStorage.isSameDownload(download, download))
         assertFalse(DownloadStorage.isSameDownload(download, download.copy(id = "2")))
@@ -31,6 +30,6 @@ class DownloadStorageTest {
         assertFalse(DownloadStorage.isSameDownload(download, download.copy(contentType = "contentType")))
         assertFalse(DownloadStorage.isSameDownload(download, download.copy(contentLength = 0)))
         assertFalse(DownloadStorage.isSameDownload(download, download.copy(status = DownloadState.Status.COMPLETED)))
-        assertFalse(DownloadStorage.isSameDownload(download, download.copy(destinationDirectory = Environment.DIRECTORY_DOWNLOADS)))
+        assertFalse(DownloadStorage.isSameDownload(download, download.copy(directoryPath = "directoryPath")))
     }
 }

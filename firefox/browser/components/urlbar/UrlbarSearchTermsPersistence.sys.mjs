@@ -4,10 +4,12 @@
 
 const lazy = {};
 
-import { UrlbarUtils } from "resource:///modules/UrlbarUtils.sys.mjs";
-
 ChromeUtils.defineESModuleGetters(lazy, {
+  ConfigSearchEngine:
+    "moz-src:///toolkit/components/search/ConfigSearchEngine.sys.mjs",
   RemoteSettings: "resource://services-settings/remote-settings.sys.mjs",
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
 });
 
 /**
@@ -17,13 +19,17 @@ ChromeUtils.defineESModuleGetters(lazy, {
 /**
  * @typedef {object} PersistedTermsProviderInfo
  * @property {string} providerId
+ *   The search engine provider id associated with the persisted terms.
  * @property {RegExp} [searchPageRegexp]
+ *   The regular expression for determining if the search page URL matches.
  * @property {{key: string, values: string[], canBeMissing: boolean}[]} includeParams
+ *   The parameters that should be included in determining if the search page URL matches.
  * @property {{key: string, values: string[]}[]} excludeParams
+ *   The parameters that should be excluded in determining if the search page URL matches.
  */
 
 ChromeUtils.defineLazyGetter(lazy, "logger", () =>
-  UrlbarUtils.getLogger({ prefix: "UrlbarSearchTermsPersistence" })
+  lazy.UrlbarShared.getLogger({ prefix: "UrlbarSearchTermsPersistence" })
 );
 
 const URLBAR_PERSISTENCE_SETTINGS_KEY = "urlbar-persisted-search-terms";
@@ -124,8 +130,8 @@ class _UrlbarSearchTermsPersistence {
   }
 
   /**
-   * Determines if the URIs represent an application provided search
-   * engine results page (SERP) and retrieves the search terms used.
+   * Determines if the URIs represent an config search engine
+   * results page (SERP) and retrieves the search terms used.
    *
    * @param {nsIURI} uri
    *   The primary URI that is checked to determine if it matches the expected
@@ -137,7 +143,7 @@ class _UrlbarSearchTermsPersistence {
    *   or the default engine hasn't been initialized.
    */
   getSearchTerm(uri) {
-    if (!Services.search.hasSuccessfullyInitialized || !uri?.spec) {
+    if (!lazy.SearchService.hasSuccessfullyInitialized || !uri?.spec) {
       return "";
     }
 
@@ -152,20 +158,23 @@ class _UrlbarSearchTermsPersistence {
     // understand changes to params.
     let provider = this.#getProviderInfoForURL(uri.spec);
     if (provider) {
-      let result = Services.search.parseSubmissionURL(uri.spec);
-      if (!result.engine?.isAppProvided || !this.isDefaultPage(uri, provider)) {
+      let result = lazy.SearchService.parseSubmissionURL(uri.spec);
+      if (
+        !(result.engine instanceof lazy.ConfigSearchEngine) ||
+        !this.isDefaultPage(uri, provider)
+      ) {
         return "";
       }
       searchTerm = result.terms;
     } else {
-      let result = Services.search.parseSubmissionURL(uri.spec);
-      if (!result.engine?.isAppProvided) {
+      let result = lazy.SearchService.parseSubmissionURL(uri.spec);
+      if (!(result.engine instanceof lazy.ConfigSearchEngine)) {
         return "";
       }
       searchTerm = result.engine.searchTermFromResult(uri);
     }
 
-    if (!searchTerm || searchTerm.length > UrlbarUtils.MAX_TEXT_LENGTH) {
+    if (!searchTerm || searchTerm.length > lazy.UrlbarShared.MAX_TEXT_LENGTH) {
       return "";
     }
 
@@ -242,17 +251,21 @@ class _UrlbarSearchTermsPersistence {
       return false;
     }
 
-    let origin;
+    let origin, pathname;
     try {
-      origin = URL.fromURI(uri)?.origin;
+      let url = URL.fromURI(uri);
+      origin = url.origin;
+      pathname = url.pathname;
     } catch (ex) {
       return false;
     }
 
     // Bug 1972464: Prevent search terms from persisting across different origin
-    // due to a possible race condition. This check prevents cross-origin
-    // persistence until the persistence logic is refactored.
-    if (origin !== state.persist.origin) {
+    // or pathnames. This should be refactored later to be simplified.
+    if (
+      origin !== state.persist.origin ||
+      pathname !== state.persist.pathname
+    ) {
       return false;
     }
 
@@ -265,12 +278,17 @@ class _UrlbarSearchTermsPersistence {
       // Whether the engine that loaded the URI is the default search engine.
       isDefaultEngine: null,
 
-      // Temporary until we resolve Bug 1972464: Cache origin for validation
-      // checks. This should be removed once the architecture is refactored.
+      // Temporary until we resolve Bug 1972464 - refactor the architecture.
       origin: null,
 
       // The name of the engine that was used to load the URI.
       originalEngineName: null,
+
+      // Temporary until we resolve Bug 1972464 - refactor the architecture.
+      originalURI: null,
+
+      // Temporary until we resolve Bug 1972464 - refactor the architecture.
+      path: null,
 
       // The search provider associated with the URI. If one exists, it means
       // we have custom rules for this search provider to determine whether or
@@ -284,21 +302,25 @@ class _UrlbarSearchTermsPersistence {
       shouldPersist: null,
     };
 
-    let origin;
+    let origin, pathname;
     try {
-      origin = URL.fromURI(uri)?.origin;
+      let url = URL.fromURI(uri);
+      origin = url.origin;
+      pathname = url.pathname;
     } catch (ex) {
       return;
     }
 
     let searchTerms = this.getSearchTerm(uri);
     // Avoid setting state if either are missing.
-    if (!searchTerms || !origin) {
+    if (!searchTerms || !origin || !pathname) {
       return;
     }
 
     state.persist.origin = origin;
     state.persist.searchTerms = searchTerms;
+    state.persist.pathname = pathname;
+    state.persist.originalURI = uri;
 
     let provider = this.#getProviderInfoForURL(uri?.spec);
     // If we have specific Remote Settings defined providers for the URL,
@@ -337,11 +359,7 @@ class _UrlbarSearchTermsPersistence {
   }
 
   onSearchModeChanged(window) {
-    let urlbar = window.gURLBar;
-    if (!urlbar) {
-      return;
-    }
-    let state = urlbar.getBrowserState(window.gBrowser.selectedBrowser);
+    let state = window.gURLBar.getBrowserState(window.gBrowser.selectedBrowser);
     if (!state?.persist) {
       return;
     }
@@ -353,7 +371,7 @@ class _UrlbarSearchTermsPersistence {
       !this.searchModeMatchesState(state.searchModes?.confirmed, state)
     ) {
       state.persist.shouldPersist = false;
-      urlbar.removeAttribute("persistsearchterms");
+      window.gURLBar.removeAttribute("persistsearchterms");
     }
   }
 
@@ -378,16 +396,16 @@ class _UrlbarSearchTermsPersistence {
    */
   #searchModeForUrl(url) {
     // If there's no default engine, no engines are available.
-    if (!Services.search.defaultEngine) {
+    if (!lazy.SearchService.defaultEngine) {
       return null;
     }
-    let result = Services.search.parseSubmissionURL(url);
-    if (!result.engine?.isAppProvided) {
+    let result = lazy.SearchService.parseSubmissionURL(url);
+    if (!(result.engine instanceof lazy.ConfigSearchEngine)) {
       return null;
     }
     return {
       engineName: result.engine.name,
-      isDefaultEngine: result.engine === Services.search.defaultEngine,
+      isDefaultEngine: result.engine === lazy.SearchService.defaultEngine,
     };
   }
 
@@ -439,7 +457,8 @@ class _UrlbarSearchTermsPersistence {
     if (!searchParams.size) {
       return false;
     }
-    if (provider.includeParams) {
+
+    if (provider.includeParams?.length) {
       let foundMatch = false;
       for (let param of provider.includeParams) {
         // The param might not be present on page load.

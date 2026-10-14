@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef TelemetryUserInteraction_h__
-#define TelemetryUserInteraction_h__
+#ifndef TelemetryUserInteraction_h_
+#define TelemetryUserInteraction_h_
 
 #include "nsStringFwd.h"
 
@@ -14,7 +13,8 @@ void InitializeGlobalState(bool canRecord);
 void DeInitializeGlobalState();
 
 bool CanRecord(const nsAString& aName);
+bool IsRecordingEnabled();
 
 }  // namespace TelemetryUserInteraction
 
-#endif  // TelemetryUserInteraction_h__
+#endif  // TelemetryUserInteraction_h_

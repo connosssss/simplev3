@@ -2,16 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _JSEPTRANSPORT_H_
-#define _JSEPTRANSPORT_H_
+#ifndef JSEPTRANSPORT_H_
+#define JSEPTRANSPORT_H_
+
+#include <mozilla/RefPtr.h>
+#include <mozilla/UniquePtr.h>
 
 #include <string>
 #include <vector>
 
-#include <mozilla/RefPtr.h>
-#include <mozilla/UniquePtr.h>
 #include "nsISupportsImpl.h"
-
 #include "sdp/SdpAttribute.h"
 
 namespace mozilla {
@@ -20,7 +20,7 @@ class JsepDtlsTransport {
  public:
   JsepDtlsTransport() : mRole(kJsepDtlsInvalidRole) {}
 
-  virtual ~JsepDtlsTransport() {}
+  virtual ~JsepDtlsTransport() = default;
 
   enum Role { kJsepDtlsClient, kJsepDtlsServer, kJsepDtlsInvalidRole };
 
@@ -39,9 +39,9 @@ class JsepDtlsTransport {
 
 class JsepIceTransport {
  public:
-  JsepIceTransport() {}
+  JsepIceTransport() = default;
 
-  virtual ~JsepIceTransport() {}
+  virtual ~JsepIceTransport() = default;
 
   const std::string& GetUfrag() const { return mUfrag; }
   const std::string& GetPassword() const { return mPwd; }
@@ -61,7 +61,7 @@ class JsepTransport {
 
   JsepTransport(const JsepTransport& orig) { *this = orig; }
 
-  ~JsepTransport() {}
+  ~JsepTransport() = default;
 
   JsepTransport& operator=(const JsepTransport& orig) {
     if (this != &orig) {

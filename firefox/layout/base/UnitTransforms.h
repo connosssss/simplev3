@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,8 +6,8 @@
 #define MOZ_UNIT_TRANSFORMS_H_
 
 #include "Units.h"
-#include "mozilla/gfx/Matrix.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/gfx/Matrix.h"
 #include "nsRegion.h"
 
 namespace mozilla {
@@ -259,33 +257,33 @@ TypedMatrix ViewAs(const gfx::Matrix4x4& aMatrix) {
 // Convenience functions for transforming an entity from one strongly-typed
 // coordinate system to another using the provided transformation matrix.
 template <typename TargetUnits, typename SourceUnits>
-static gfx::PointTyped<TargetUnits> TransformBy(
+gfx::PointTyped<TargetUnits> TransformBy(
     const gfx::Matrix4x4Typed<SourceUnits, TargetUnits>& aTransform,
     const gfx::PointTyped<SourceUnits>& aPoint) {
   return aTransform.TransformPoint(aPoint);
 }
 template <typename TargetUnits, typename SourceUnits>
-static gfx::IntPointTyped<TargetUnits> TransformBy(
+gfx::IntPointTyped<TargetUnits> TransformBy(
     const gfx::Matrix4x4Typed<SourceUnits, TargetUnits>& aTransform,
     const gfx::IntPointTyped<SourceUnits>& aPoint) {
   return RoundedToInt(
       TransformBy(aTransform, gfx::PointTyped<SourceUnits>(aPoint)));
 }
 template <typename TargetUnits, typename SourceUnits>
-static gfx::RectTyped<TargetUnits> TransformBy(
+gfx::RectTyped<TargetUnits> TransformBy(
     const gfx::Matrix4x4Typed<SourceUnits, TargetUnits>& aTransform,
     const gfx::RectTyped<SourceUnits>& aRect) {
   return aTransform.TransformBounds(aRect);
 }
 template <typename TargetUnits, typename SourceUnits>
-static gfx::IntRectTyped<TargetUnits> TransformBy(
+gfx::IntRectTyped<TargetUnits> TransformBy(
     const gfx::Matrix4x4Typed<SourceUnits, TargetUnits>& aTransform,
     const gfx::IntRectTyped<SourceUnits>& aRect) {
   return RoundedToInt(
       TransformBy(aTransform, gfx::RectTyped<SourceUnits>(aRect)));
 }
 template <typename TargetUnits, typename SourceUnits>
-static gfx::IntRegionTyped<TargetUnits> TransformBy(
+gfx::IntRegionTyped<TargetUnits> TransformBy(
     const gfx::Matrix4x4Typed<SourceUnits, TargetUnits>& aTransform,
     const gfx::IntRegionTyped<SourceUnits>& aRegion) {
   return ViewAs<TargetUnits>(
@@ -297,7 +295,7 @@ static gfx::IntRegionTyped<TargetUnits> TransformBy(
 // The anchor is necessary because with 3D tranforms, the location of the
 // vector can affect the result of the transform.
 template <typename TargetUnits, typename SourceUnits>
-static gfx::PointTyped<TargetUnits> TransformVector(
+gfx::PointTyped<TargetUnits> TransformVector(
     const gfx::Matrix4x4Typed<SourceUnits, TargetUnits>& aTransform,
     const gfx::PointTyped<SourceUnits>& aVector,
     const gfx::PointTyped<SourceUnits>& aAnchor) {
@@ -316,7 +314,7 @@ static gfx::PointTyped<TargetUnits> TransformVector(
 // return a Maybe object which contains a value if and only if the
 // result is meaningful
 template <typename TargetUnits, typename SourceUnits>
-static Maybe<gfx::PointTyped<TargetUnits>> UntransformBy(
+Maybe<gfx::PointTyped<TargetUnits>> UntransformBy(
     const gfx::Matrix4x4Typed<SourceUnits, TargetUnits>& aTransform,
     const gfx::PointTyped<SourceUnits>& aPoint) {
   gfx::Point4DTyped<TargetUnits> point = aTransform.ProjectPoint(aPoint);
@@ -326,7 +324,7 @@ static Maybe<gfx::PointTyped<TargetUnits>> UntransformBy(
   return Some(point.As2DPoint());
 }
 template <typename TargetUnits, typename SourceUnits>
-static Maybe<gfx::IntPointTyped<TargetUnits>> UntransformBy(
+Maybe<gfx::IntPointTyped<TargetUnits>> UntransformBy(
     const gfx::Matrix4x4Typed<SourceUnits, TargetUnits>& aTransform,
     const gfx::IntPointTyped<SourceUnits>& aPoint) {
   gfx::PointTyped<SourceUnits> p = aPoint;
@@ -342,7 +340,7 @@ static Maybe<gfx::IntPointTyped<TargetUnits>> UntransformBy(
 // result of the transform is intersected with this clip, and is considered
 // meaningful if the intersection is not empty.
 template <typename TargetUnits, typename SourceUnits>
-static Maybe<gfx::RectTyped<TargetUnits>> UntransformBy(
+Maybe<gfx::RectTyped<TargetUnits>> UntransformBy(
     const gfx::Matrix4x4Typed<SourceUnits, TargetUnits>& aTransform,
     const gfx::RectTyped<SourceUnits>& aRect,
     const gfx::RectTyped<TargetUnits>& aClip) {
@@ -353,7 +351,7 @@ static Maybe<gfx::RectTyped<TargetUnits>> UntransformBy(
   return Some(rect);
 }
 template <typename TargetUnits, typename SourceUnits>
-static Maybe<gfx::IntRectTyped<TargetUnits>> UntransformBy(
+Maybe<gfx::IntRectTyped<TargetUnits>> UntransformBy(
     const gfx::Matrix4x4Typed<SourceUnits, TargetUnits>& aTransform,
     const gfx::IntRectTyped<SourceUnits>& aRect,
     const gfx::IntRectTyped<TargetUnits>& aClip) {
@@ -365,7 +363,7 @@ static Maybe<gfx::IntRectTyped<TargetUnits>> UntransformBy(
 }
 
 template <typename TargetUnits, typename SourceUnits>
-static Maybe<gfx::PointTyped<TargetUnits>> UntransformVector(
+Maybe<gfx::PointTyped<TargetUnits>> UntransformVector(
     const gfx::Matrix4x4Typed<SourceUnits, TargetUnits>& aTransform,
     const gfx::PointTyped<SourceUnits>& aVector,
     const gfx::PointTyped<SourceUnits>& aAnchor) {

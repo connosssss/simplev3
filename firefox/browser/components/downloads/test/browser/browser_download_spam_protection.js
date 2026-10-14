@@ -6,7 +6,8 @@
 
 ChromeUtils.defineESModuleGetters(this, {
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
-  DownloadSpamProtection: "resource:///modules/DownloadSpamProtection.sys.mjs",
+  DownloadSpamProtection:
+    "moz-src:///browser/components/downloads/DownloadSpamProtection.sys.mjs",
   PermissionTestUtils: "resource://testing-common/PermissionTestUtils.sys.mjs",
 });
 
@@ -31,10 +32,7 @@ add_setup(async function () {
     Services.perms.UNKNOWN_ACTION
   );
   await SpecialPowers.pushPrefEnv({
-    set: [
-      ["test.wait300msAfterTabSwitch", true],
-      ["browser.download.enable_spam_prevention", true],
-    ],
+    set: [["browser.download.enable_spam_prevention", true]],
     clear: [
       ["browser.download.alwaysOpenPanel"],
       ["browser.download.always_ask_before_handling_new_types"],
@@ -42,6 +40,7 @@ add_setup(async function () {
   });
 
   registerCleanupFunction(async () => {
+    PermissionTestUtils.remove(TEST_URI, "automatic-download");
     Services.prefs.clearUserPref("browser.download.folderList");
     Services.prefs.clearUserPref("browser.download.dir");
     await IOUtils.remove(tempDir.path, { recursive: true });

@@ -4,14 +4,21 @@ const { getAddonAndLocalAPIsMocker } = ChromeUtils.importESModule(
   "resource://testing-common/LangPackMatcherTestUtils.sys.mjs"
 );
 
-const { AWScreenUtils } = ChromeUtils.importESModule(
-  "resource:///modules/aboutwelcome/AWScreenUtils.sys.mjs"
+const { ASRouterScreenUtils } = ChromeUtils.importESModule(
+  "resource:///modules/asrouter/ASRouterScreenUtils.sys.mjs"
+);
+
+const { EASY_SETUP_TARGETING } = ChromeUtils.importESModule(
+  "resource:///modules/aboutwelcome/AboutWelcomeDefaults.sys.mjs"
 );
 
 const sandbox = sinon.createSandbox();
 const mockAddonAndLocaleAPIs = getAddonAndLocalAPIsMocker(this, sandbox);
 add_task(function initSandbox() {
   registerCleanupFunction(() => {
+    Services.prefs.clearUserPref(
+      "messaging-system-action.showRestoreFromBackup"
+    );
     sandbox.restore();
   });
 });
@@ -51,21 +58,24 @@ async function openAboutWelcome() {
   );
   await setAboutWelcomePref(true);
 
-  sandbox.stub(AWScreenUtils, "evaluateScreenTargeting").callsFake(args => {
-    info(`evaluateScreenTargeting called with args: ${args}`);
-    // Renders easy setup import screen as first screen to prevent pin/default dialog boxes breaking tests
-    const falseTargeting = [
-      "isRTAMO",
-      "doesAppNeedPin && (unhandledCampaignAction != 'SET_DEFAULT_BROWSER') && 'browser.shell.checkDefaultBrowser'|preferenceValue && !isDefaultBrowser",
-      "!doesAppNeedPin && (unhandledCampaignAction != 'SET_DEFAULT_BROWSER') && 'browser.shell.checkDefaultBrowser'|preferenceValue && !isDefaultBrowser",
-      "doesAppNeedPin && (!'browser.shell.checkDefaultBrowser'|preferenceValue || isDefaultBrowser || (unhandledCampaignAction == 'SET_DEFAULT_BROWSER'))",
-      "isDeviceMigration",
-    ];
-    if (falseTargeting.includes(args)) {
-      return Promise.resolve(false);
-    }
-    return Promise.resolve(true);
-  });
+  sandbox
+    .stub(ASRouterScreenUtils, "evaluateScreenTargeting")
+    .callsFake(args => {
+      info(`evaluateScreenTargeting called with args: ${args}`);
+      // Renders easy setup import screen as first screen to prevent pin/default dialog boxes breaking tests
+      const falseTargeting = [
+        "isSmartWindowOnboarding",
+        EASY_SETUP_TARGETING,
+        "isDeviceMigration",
+        "backupRestoreEnabled && 'messaging-system-action.showRestoreFromBackup' |preferenceValue == true",
+        "backupRestoreEnabled && !hasSelectableProfiles && (backupsInfo.found && !backupsInfo.multipleBackupsFound)",
+        "backupRestoreEnabled && !hasSelectableProfiles && backupsInfo.multipleBackupsFound",
+      ];
+      if (falseTargeting.includes(args)) {
+        return Promise.resolve(false);
+      }
+      return Promise.resolve(true);
+    });
 
   info("Opening about:welcome");
   let tab = await BrowserTestUtils.openNewForegroundTab(
@@ -74,10 +84,10 @@ async function openAboutWelcome() {
     true
   );
 
-  await ContentTask.spawn(tab.linkedBrowser, {}, async () => {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], async () => {
     await ContentTaskUtils.waitForCondition(
-      () => content.document.querySelector(".AW_EASY_SETUP_ONLY_IMPORT"),
-      `Should render AW_EASY_SETUP_ONLY_IMPORT when opening about:welcome, current screen is: ${
+      () => content.document.querySelector(".RETURN_TO_AMO"),
+      `Should render RETURN_TO_AMO when opening about:welcome, current screen is: ${
         content.document.querySelector(".screen")?.classList?.[1]
       }`
     );
@@ -99,7 +109,7 @@ async function openAboutWelcome() {
 
 async function clickVisibleButton(browser, selector) {
   // eslint-disable-next-line no-shadow
-  await ContentTask.spawn(browser, { selector }, async ({ selector }) => {
+  await SpecialPowers.spawn(browser, [{ selector }], async ({ selector }) => {
     function getVisibleElement() {
       for (const el of content.document.querySelectorAll(selector)) {
         if (el.offsetParent !== null) {
@@ -128,9 +138,9 @@ async function testScreenContent(
   expectedSelectors = [],
   unexpectedSelectors = []
 ) {
-  await ContentTask.spawn(
+  await SpecialPowers.spawn(
     browser,
-    { expectedSelectors, name, unexpectedSelectors },
+    [{ expectedSelectors, name, unexpectedSelectors }],
     async ({
       expectedSelectors: expected,
       name: experimentName,
@@ -216,8 +226,11 @@ add_task(async function test_aboutwelcome_languageSwitcher_accept() {
     []
   );
 
-  info("Clicking the primary button to start the onboarding process.");
-  await clickVisibleButton(browser, `button.primary[value="primary_button"]`);
+  info("Clicking the secondary button to start the onboarding process.");
+  await clickVisibleButton(
+    browser,
+    `button.secondary[value="secondary_button"]`
+  );
 
   await testScreenContent(
     browser,
@@ -335,8 +348,11 @@ add_task(async function test_aboutwelcome_languageSwitcher_decline() {
     []
   );
 
-  info("Clicking the primary button to view language switching page.");
-  await clickVisibleButton(browser, `button.primary[value="primary_button"]`);
+  info("Clicking the secondary button to view language switching page.");
+  await clickVisibleButton(
+    browser,
+    `button.secondary[value="secondary_button"]`
+  );
 
   await testScreenContent(
     browser,
@@ -478,8 +494,11 @@ add_task(async function test_aboutwelcome_languageSwitcher_noMatch() {
 
   const { browser } = await openAboutWelcome();
 
-  info("Clicking the primary button to start installing the langpack.");
-  await clickVisibleButton(browser, `button.primary[value="primary_button"]`);
+  info("Clicking the secondary button to start installing the langpack.");
+  await clickVisibleButton(
+    browser,
+    `button.secondary[value="secondary_button"]`
+  );
 
   // Klingon is not supported.
   await resolveLangPacks(["es-MX", "es-ES", "fr-FR"]);
@@ -512,8 +531,11 @@ add_task(async function test_aboutwelcome_languageSwitcher_bidiNotSupported() {
 
   const { browser } = await openAboutWelcome();
 
-  info("Clicking the primary button to start installing the langpack.");
-  await clickVisibleButton(browser, `button.primary[value="primary_button"]`);
+  info("Clicking the secondary button to start installing the langpack.");
+  await clickVisibleButton(
+    browser,
+    `button.secondary[value="secondary_button"]`
+  );
 
   await testScreenContent(
     browser,
@@ -547,8 +569,11 @@ add_task(
 
     const { browser } = await openAboutWelcome();
 
-    info("Clicking the primary button to start installing the langpack.");
-    await clickVisibleButton(browser, `button.primary[value="primary_button"]`);
+    info("Clicking the secondary button to start installing the langpack.");
+    await clickVisibleButton(
+      browser,
+      `button.secondary[value="secondary_button"]`
+    );
 
     await testScreenContent(
       browser,
@@ -581,8 +606,11 @@ add_task(async function test_aboutwelcome_languageSwitcher_bidiNotSupported() {
 
   const { browser } = await openAboutWelcome();
 
-  info("Clicking the primary button to start installing the langpack.");
-  await clickVisibleButton(browser, `button.primary[value="primary_button"]`);
+  info("Clicking the secondary button to start installing the langpack.");
+  await clickVisibleButton(
+    browser,
+    `button.secondary[value="secondary_button"]`
+  );
 
   await resolveLangPacks(["ar-EG", "es-ES", "fr-FR"]);
 
@@ -612,8 +640,11 @@ add_task(async function test_aboutwelcome_languageSwitcher_cancelWaiting() {
 
   const { browser, flushClickTelemetry } = await openAboutWelcome();
 
-  info("Clicking the primary button to start the onboarding process.");
-  await clickVisibleButton(browser, `button.primary[value="primary_button"]`);
+  info("Clicking the secondary button to start the onboarding process.");
+  await clickVisibleButton(
+    browser,
+    `button.secondary[value="secondary_button"]`
+  );
   await resolveLangPacks(["es-MX", "es-ES", "fr-FR"]);
 
   await testScreenContent(
@@ -688,8 +719,11 @@ add_task(async function test_aboutwelcome_languageSwitcher_MR() {
 
   const { browser } = await openAboutWelcome(true);
 
-  info("Clicking the primary button to view language switching screen.");
-  await clickVisibleButton(browser, `button.primary[value="primary_button"]`);
+  info("Clicking the secondary button to view language switching screen.");
+  await clickVisibleButton(
+    browser,
+    `button.secondary[value="secondary_button"]`
+  );
 
   await resolveLangPacks(["es-AR"]);
   await testScreenContent(

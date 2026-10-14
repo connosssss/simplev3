@@ -18,7 +18,6 @@
 #include "keyi.h"
 #include "nss.h"
 #include "prenv.h"
-
 /*
 ** Recover the DigestInfo from an RSA PKCS#1 signature.
 **
@@ -147,8 +146,7 @@ struct VFYContextStr {
     /* the encoded DigestInfo from a RSA PKCS#1 signature */
     unsigned char *pkcs1RSADigestInfo;
     void *wincx;
-    void *hashcx;
-    const SECHashObject *hashobj;
+    PK11Context *hashcx;
     PK11Context *vfycx;
     SECOidTag encAlg; /* enc alg */
     CK_MECHANISM_TYPE mech;
@@ -188,7 +186,11 @@ checkedSignatureLen(const SECKEYPublicKey *pubk)
             maxSigLen = DSA_MAX_SIGNATURE_LEN;
             break;
         case ecKey:
+        case edKey:
             maxSigLen = 2 * MAX_ECKEY_LEN;
+            break;
+        case mldsaKey:
+            maxSigLen = MAX_ML_DSA_SIGNATURE_LEN;
             break;
         default:
             PORT_SetError(SEC_ERROR_UNSUPPORTED_KEYALG);
@@ -294,6 +296,11 @@ sec_GetEncAlgFromSigAlg(SECOidTag sigAlg)
         case SEC_OID_ANSIX962_ECDSA_SIGNATURE_RECOMMENDED_DIGEST:
         case SEC_OID_ANSIX962_ECDSA_SIGNATURE_SPECIFIED_DIGEST:
             return SEC_OID_ANSIX962_EC_PUBLIC_KEY;
+        case SEC_OID_ML_DSA_44:
+        case SEC_OID_ML_DSA_65:
+        case SEC_OID_ML_DSA_87:
+        case SEC_OID_ED25519:
+            return sigAlg;
         /* we don't implement MD4 hashes */
         case SEC_OID_PKCS1_MD4_WITH_RSA_ENCRYPTION:
         default:
@@ -397,6 +404,20 @@ sec_GetCombinedMech(SECOidTag encalg, SECOidTag hashalg)
             return sec_ECDSAGetCombinedMech(hashalg);
         case SEC_OID_ANSIX9_DSA_SIGNATURE:
             return sec_DSAGetCombinedMech(hashalg);
+        case SEC_OID_ML_DSA_44:
+        case SEC_OID_ML_DSA_65:
+        case SEC_OID_ML_DSA_87:
+            /* make sure the hashAlg is rational */
+            if ((hashalg == SEC_OID_UNKNOWN) || (hashalg == encalg)) {
+                return CKM_ML_DSA;
+            }
+            break;
+        case SEC_OID_ED25519:
+            /* make sure the hashAlg is rational */
+            if ((hashalg == SEC_OID_UNKNOWN) || (hashalg == encalg)) {
+                return CKM_EDDSA;
+            }
+            break;
         default:
             break;
     }
@@ -430,6 +451,7 @@ sec_DecodeSigAlg(const SECKEYPublicKey *key, SECOidTag sigAlg,
     SECStatus rv;
     SECItem oid;
     SECOidTag encalg;
+    PRBool comboRequired = PR_FALSE;
     char *evp;
 
     PR_ASSERT(hashalg != NULL);
@@ -588,6 +610,21 @@ sec_DecodeSigAlg(const SECKEYPublicKey *key, SECOidTag sigAlg,
             }
             *mechp = sec_ECDSAGetCombinedMech(*hashalg);
             break;
+        case SEC_OID_ML_DSA_44:
+        case SEC_OID_ML_DSA_65:
+        case SEC_OID_ML_DSA_87:
+        case SEC_OID_ED25519:
+            /* RFC 9881 requires the parameters component to be absent, so
+             * there is nothing to decode and nowhere to carry a signing
+             * context; a caller that needs a non-empty context has to supply
+             * it out of band. Reject anything present rather than ignore it. */
+            if (param != NULL && param->len != 0) {
+                PORT_SetError(SEC_ERROR_INVALID_ALGORITHM);
+                return SECFailure;
+            }
+            comboRequired = PR_TRUE;
+            *hashalg = sigAlg;
+            break;
         /* we don't implement MD4 hashes */
         case SEC_OID_PKCS1_MD4_WITH_RSA_ENCRYPTION:
         default:
@@ -611,7 +648,7 @@ sec_DecodeSigAlg(const SECKEYPublicKey *key, SECOidTag sigAlg,
      * We know if we are signing or verifying based on the value of 'key'.
      * Since key is a public key, then it's set to NULL for signing */
     evp = PR_GetEnvSecure("NSS_COMBO_SIGNATURES");
-    if (evp) {
+    if (evp && !comboRequired) {
         if (PORT_Strcasecmp(evp, "none") == 0) {
             *mechp = CKM_INVALID_MECHANISM;
         } else if (key && (PORT_Strcasecmp(evp, "signonly") == 0)) {
@@ -620,6 +657,11 @@ sec_DecodeSigAlg(const SECKEYPublicKey *key, SECOidTag sigAlg,
             *mechp = CKM_INVALID_MECHANISM;
         }
         /* anything else we take as use combo, which is the default */
+    }
+    /* now enforce the combo requires requirement */
+    if (comboRequired && (*mechp == CKM_INVALID_MECHANISM)) {
+        SECITEM_FreeItem(mechparamsp, PR_FALSE);
+        return SECFailure;
     }
 
     return SECSuccess;
@@ -734,6 +776,20 @@ vfy_CreateContext(const SECKEYPublicKey *key, const SECItem *sig,
         PORT_SetError(SEC_ERROR_PKCS7_KEYALG_MISMATCH);
         return NULL;
     }
+    /* For mldsa the OID is the parameter set, and policy is per parameter set.
+     * All three OIDs map to mldsaKey, so bind the label to the key here,
+     * before the policy checks, or a signature relabelled as an enabled
+     * parameter set would be verified under the key's disabled one. */
+    if ((type == mldsaKey) && (encAlg != key->u.mldsa.paramSet)) {
+        SECITEM_FreeItem(mechparamsp, PR_FALSE);
+        PORT_SetError(SEC_ERROR_PKCS7_KEYALG_MISMATCH);
+        return NULL;
+    }
+    /* for mldsa, the hash has to match the paramset anyway, so a caller of
+     * the *Direct entry points may leave it unnamed */
+    if (((type == mldsaKey) || (type == edKey)) && (hashAlg == SEC_OID_UNKNOWN)) {
+        hashAlg = encAlg;
+    }
     if (NSS_OptionGet(NSS_KEY_SIZE_POLICY_FLAGS, &optFlags) != SECFailure) {
         if (optFlags & NSS_KEY_SIZE_POLICY_VERIFY_FLAG) {
             rv = SECKEY_EnforceKeySize(key->keyType,
@@ -810,7 +866,9 @@ vfy_CreateContext(const SECKEYPublicKey *key, const SECItem *sig,
     }
 
     /* check hash alg again, RSA may have changed it.*/
-    if (HASH_GetHashTypeByOidTag(cx->hashAlg) == HASH_AlgNULL) {
+    /* combo mechs set the hash to the sigAlg */
+    if ((cx->hashAlg != cx->encAlg) &&
+        (HASH_GetHashTypeByOidTag(cx->hashAlg) == HASH_AlgNULL)) {
         /* error set by HASH_GetHashTypeByOidTag */
         goto loser;
     }
@@ -885,11 +943,11 @@ VFY_DestroyContext(VFYContext *cx, PRBool freeit)
 {
     if (cx) {
         if (cx->hashcx != NULL) {
-            (*cx->hashobj->destroy)(cx->hashcx, PR_TRUE);
+            PK11_DestroyContext(cx->hashcx, PR_TRUE);
             cx->hashcx = NULL;
         }
         if (cx->vfycx != NULL) {
-            (void)PK11_DestroyContext(cx->vfycx, PR_TRUE);
+            PK11_DestroyContext(cx->vfycx, PR_TRUE);
             cx->vfycx = NULL;
         }
         if (cx->key) {
@@ -909,29 +967,41 @@ SECStatus
 VFY_Begin(VFYContext *cx)
 {
     if (cx->hashcx != NULL) {
-        (*cx->hashobj->destroy)(cx->hashcx, PR_TRUE);
+        PK11_DestroyContext(cx->hashcx, PR_TRUE);
         cx->hashcx = NULL;
     }
     if (cx->vfycx != NULL) {
-        (void)PK11_DestroyContext(cx->vfycx, PR_TRUE);
+        PK11_DestroyContext(cx->vfycx, PR_TRUE);
         cx->vfycx = NULL;
     }
     if (cx->mech != CKM_INVALID_MECHANISM) {
-        cx->vfycx = PK11_CreateContextByPubKey(cx->mech, CKA_VERIFY, cx->key,
-                                               &cx->mechparams, cx->wincx);
+        PK11SlotInfo *slot = cx->key->pkcs11Slot;
+        if (cx->hasSignature &&
+            (PK11_CheckPKCS11Version(slot, 3, 2, PR_TRUE) >= 0)) {
+            SECItem sig = { siBuffer, cx->u.gensig, cx->signatureLen };
+            cx->vfycx = PK11_CreateSignatureContextByPubKey(cx->mech,
+                                                            CKA_NSS_VERIFY_SIGNATURE,
+                                                            cx->key,
+                                                            &cx->mechparams,
+                                                            &sig, cx->wincx);
+        } else {
+            cx->vfycx = PK11_CreateContextByPubKey(cx->mech, CKA_VERIFY,
+                                                   cx->key, &cx->mechparams,
+                                                   cx->wincx);
+        }
         if (!cx->vfycx)
             return SECFailure;
         return SECSuccess;
     }
-    cx->hashobj = HASH_GetHashObjectByOidTag(cx->hashAlg);
-    if (!cx->hashobj)
+    cx->hashcx = PK11_CreateDigestContext(cx->hashAlg);
+    if (cx->hashcx == NULL)
         return SECFailure; /* error code is set */
 
-    cx->hashcx = (*cx->hashobj->create)();
-    if (cx->hashcx == NULL)
-        return SECFailure;
-
-    (*cx->hashobj->begin)(cx->hashcx);
+    if (PK11_DigestBegin(cx->hashcx) != SECSuccess) {
+        PK11_DestroyContext(cx->hashcx, PR_TRUE);
+        cx->hashcx = NULL;
+        return SECFailure; /* error code is set */
+    }
     return SECSuccess;
 }
 
@@ -945,8 +1015,7 @@ VFY_Update(VFYContext *cx, const unsigned char *input, unsigned inputLen)
         }
         return PK11_DigestOp(cx->vfycx, input, inputLen);
     }
-    (*cx->hashobj->update)(cx->hashcx, input, inputLen);
-    return SECSuccess;
+    return PK11_DigestOp(cx->hashcx, input, inputLen);
 }
 
 static SECStatus
@@ -975,7 +1044,8 @@ SECStatus
 VFY_EndWithSignature(VFYContext *cx, SECItem *sig)
 {
     unsigned char final[HASH_LENGTH_MAX];
-    unsigned part;
+    unsigned int part = 0;
+    unsigned int expectedLen;
     SECStatus rv;
 
     /* make sure our signature is set (either previously nor now) */
@@ -998,10 +1068,17 @@ VFY_EndWithSignature(VFYContext *cx, SECItem *sig)
         return PK11_DigestFinal(cx->vfycx, cx->u.gensig, &dummy,
                                 cx->signatureLen);
     }
-    (*cx->hashobj->end)(cx->hashcx, final, &part, sizeof(final));
+    rv = PK11_DigestFinal(cx->hashcx, final, &part, sizeof(final));
+    if (rv != SECSuccess) {
+        return SECFailure;
+    }
+    expectedLen = HASH_ResultLenByOidTag(cx->hashAlg);
+    if (expectedLen == 0 || part != expectedLen) {
+        PORT_SetError(SEC_ERROR_LIBRARY_FAILURE);
+        return SECFailure;
+    }
     SECItem gensig = { siBuffer, cx->u.gensig, cx->signatureLen };
     SECItem hash = { siBuffer, final, part };
-    PORT_Assert(part <= sizeof(final));
     /* handle the algorithm specific final call */
     switch (cx->key->keyType) {
         case ecKey:
@@ -1092,7 +1169,10 @@ vfy_VerifyDigest(const SECItem *digest, const SECKEYPublicKey *key,
                     PORT_SetError(SEC_ERROR_BAD_SIGNATURE);
                 }
                 break;
+            case edKey:
+            case mldsaKey:
             default:
+                PORT_SetError(SEC_ERROR_UNSUPPORTED_KEYALG);
                 break;
         }
         VFY_DestroyContext(cx, PR_TRUE);

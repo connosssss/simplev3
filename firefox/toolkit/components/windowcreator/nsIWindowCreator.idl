@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -39,6 +38,7 @@ interface nsIWindowCreator : nsISupports {
                     to any possible backup scheme for creating the window.
       @return the new window. Will be null if canceled or an error occurred.
   */
+  [can_run_script]
   nsIWebBrowserChrome createChromeWindow(in nsIWebBrowserChrome parent,
                                          in uint32_t chromeFlags,
                                          in nsIOpenWindowInfo aOpenWindowInfo,

@@ -4,12 +4,10 @@
 
 import { createSelector } from "devtools/client/shared/vendor/reselect";
 
-import { getPrettySourceURL, isPretty, isJavaScript } from "../utils/source";
+import { getPrettySourceURL, isNotPrettyPrintable } from "../utils/source";
 
-import { findPosition } from "../utils/breakpoint/breakpointPositions";
 import { isFulfilled } from "../utils/async-value";
 
-import { originalToGeneratedId } from "devtools/client/shared/source-map-loader/index";
 import { prefs } from "../utils/prefs";
 import { UNDEFINED_LOCATION, NO_LOCATION } from "../reducers/sources";
 
@@ -19,7 +17,10 @@ import {
   getBreakableLinesForSourceActors,
   isSourceActorWithSourceMap,
 } from "./source-actors";
-import { getSourceTextContent } from "./sources-content";
+import {
+  getSourceTextContentForLocation,
+  getSourceTextContentForSource,
+} from "./sources-content";
 
 export function hasSource(state, id) {
   return state.sources.mutableSources.has(id);
@@ -33,6 +34,7 @@ export function getSourceFromId(state, id) {
   const source = getSource(state, id);
   if (!source) {
     console.warn(`source ${id} does not exist`);
+    dump(`>> ${new Error().stack}\n`);
   }
   return source;
 }
@@ -42,7 +44,7 @@ export function getSourceByActorId(state, actorId) {
     return null;
   }
 
-  return getSource(state, getSourceActor(state, actorId).source);
+  return getSourceActor(state, actorId).sourceObject;
 }
 
 function getSourcesByURL(state, url) {
@@ -66,18 +68,6 @@ function getOriginalSourceByURL(state, url) {
 
 export function getGeneratedSourceByURL(state, url) {
   return getSpecificSourceByURL(state, url, false);
-}
-
-export function getGeneratedSource(state, source) {
-  if (!source) {
-    return null;
-  }
-
-  if (!source.isOriginal) {
-    return source;
-  }
-
-  return getSourceFromId(state, originalToGeneratedId(source.id));
 }
 
 export function getPendingSelectedLocation(state) {
@@ -153,14 +143,14 @@ export function getSelectedMappedSource(state) {
     return null;
   }
 
-  const mappedSource = getGeneratedSource(state, selectedLocation.source);
-  // getGeneratedSource will return the exact same source object on sources
-  // that don't map to any original source. In this case, return null
-  // as that's most likely a regular source, not using source maps.
-  if (mappedSource == selectedLocation.source) {
+  // For non original source, which don't have selectedOriginalLocation provided,
+  // don't try to map to anything.
+  if (!selectedLocation.source.isOriginal) {
     return null;
   }
-  return mappedSource || null;
+
+  // Otherwise, for original source, simply map to their related generated source
+  return selectedLocation.source.generatedSource;
 }
 
 /**
@@ -206,13 +196,12 @@ export function getShouldScrollToSelectedLocation(state) {
  * Gets the first source actor for the source and/or thread
  * provided.
  *
- * @param {Object} state
- * @param {String} sourceId
+ * @param {object} state
+ * @param {string} sourceId
  *         The source used
- * @param {String} [threadId]
+ * @param {string} [threadId]
  *         The thread to check, this is optional.
- * @param {Object} sourceActor
- *
+ * @param {object} sourceActor
  */
 export function getFirstSourceActorForGeneratedSource(
   state,
@@ -225,7 +214,7 @@ export function getFirstSourceActorForGeneratedSource(
     return null;
   }
   if (source.isOriginal) {
-    source = getSource(state, originalToGeneratedId(source.id));
+    source = source.generatedSource;
   }
   const actors = getSourceActorsForSource(state, source.id);
   if (threadId) {
@@ -235,12 +224,54 @@ export function getFirstSourceActorForGeneratedSource(
 }
 
 /**
+ * Return the list of source actors we should get data from (for breakable lines/columns,...)
+ * for a given location. Except for HTML pages, this is a single source actor.
+ *
+ * @param {object} state
+ * @param {object} location
+ * @return {Array<object>}
+ *         List of source actors
+ */
+export function getRelevantSourceActorsForLocation(state, location) {
+  if (!location) {
+    return [];
+  }
+  // For original source, query the bundle's source. Otherwise use the location's source as-is.
+  const generatedSource = location.source.isOriginal
+    ? location.source.generatedSource
+    : location.source;
+
+  let sourceActors;
+  if (generatedSource.isHTML) {
+    // The location may either be on the original pretty printed HTML,
+    // or be non-original and be on a HTML page.
+    //
+    // For HTML file may have many inline <script>'s and need to consider all their source actors.
+    sourceActors = getSourceActorsForSource(state, generatedSource.id);
+  } else {
+    // Otherwise for all other case, use the explicit source actor set on the location object (perfect),
+    // or, fallback to the first actor matching the selected source (best effort).
+    //
+    // We may have many matching source actors if the source, or its bundle is
+    // evaluated many times within the same thread (many script tags/evals like with hotreload addons),
+    // or evaluated many times in distinct threads (many iframes/workers).
+    // Picking the first is brittle as the user may expect to see a precise one.
+    sourceActors = [
+      location.sourceActor ||
+        getFirstSourceActorForGeneratedSource(state, generatedSource.id),
+    ];
+  }
+
+  return sourceActors;
+}
+
+/**
  * Get the source actor of the source
  *
- * @param {Object} state
- * @param {String} id
+ * @param {object} state
+ * @param {string} id
  *        The source id
- * @return {Array<Object>}
+ * @return {Array<object>}
  *         List of source actors
  */
 export function getSourceActorsForSource(state, id) {
@@ -252,25 +283,20 @@ export function isSourceWithMap(state, id) {
   return actors.some(actor => isSourceActorWithSourceMap(state, actor.id));
 }
 
-export function canPrettyPrintSource(state, location) {
-  const sourceId = location.source.id;
-  const source = getSource(state, sourceId);
+export function canPrettyPrintSource(state, source, sourceActor) {
   if (
     !source ||
-    isPretty(source) ||
+    source.isPrettyPrinted ||
     source.isOriginal ||
-    (prefs.clientSourceMapsEnabled && isSourceWithMap(state, sourceId))
+    (prefs.clientSourceMapsEnabled && isSourceWithMap(state, source.id))
   ) {
     return false;
   }
 
-  const content = getSourceTextContent(state, location);
+  const content = getSourceTextContentForSource(state, source, sourceActor);
   const sourceContent = content && isFulfilled(content) ? content.value : null;
 
-  if (
-    !sourceContent ||
-    (!isJavaScript(source, sourceContent) && !source.isHTML)
-  ) {
+  if (!sourceContent || isNotPrettyPrintable(source, sourceContent)) {
     return false;
   }
 
@@ -283,8 +309,8 @@ export function getPrettyPrintMessage(state, location) {
     return L10N.getStr("sourceTabs.prettyPrint");
   }
 
-  if (isPretty(source)) {
-    return L10N.getStr("sourceFooter.prettyPrint.isPrettyPrintedMessage");
+  if (source.isPrettyPrinted) {
+    return L10N.getStr("sourceTabs.removePrettyPrint");
   }
 
   if (source.isOriginal) {
@@ -295,70 +321,52 @@ export function getPrettyPrintMessage(state, location) {
     return L10N.getStr("sourceFooter.prettyPrint.hasSourceMapMessage");
   }
 
-  const content = getSourceTextContent(state, location);
+  const content = getSourceTextContentForLocation(state, location);
 
   const sourceContent = content && isFulfilled(content) ? content.value : null;
   if (!sourceContent) {
     return L10N.getStr("sourceFooter.prettyPrint.noContentMessage");
   }
 
-  if (!isJavaScript(source, sourceContent) && !source.isHTML) {
-    return L10N.getStr("sourceFooter.prettyPrint.isNotJavascriptMessage");
+  if (isNotPrettyPrintable(source, sourceContent)) {
+    return L10N.getStr(
+      "sourceFooter.prettyPrint.isNotPrettyPrintableSourceMessage"
+    );
   }
 
   return L10N.getStr("sourceTabs.prettyPrint");
 }
 
-export function getBreakpointPositionsForSource(state, sourceId) {
-  return state.sources.mutableBreakpointPositions.get(sourceId);
-}
-
-// This is only used by one test
-export function hasBreakpointPositions(state, sourceId) {
-  return !!getBreakpointPositionsForSource(state, sourceId);
-}
-
-export function getBreakpointPositionsForLine(state, sourceId, line) {
-  const positions = getBreakpointPositionsForSource(state, sourceId);
-  return positions?.[line];
-}
-
-export function getBreakpointPositionsForLocation(state, location) {
-  const sourceId = location.source.id;
-  const positions = getBreakpointPositionsForSource(state, sourceId);
-  return findPosition(positions, location);
-}
-
-export function getBreakableLines(state, sourceId) {
-  if (!sourceId) {
-    return null;
+export function getBreakableLines(state, selectedLocation) {
+  if (selectedLocation.source.isOriginal) {
+    return state.sources.mutableOriginalBreakableLines.get(
+      selectedLocation.source.id
+    );
   }
-  const source = getSource(state, sourceId);
-  if (!source) {
-    return null;
-  }
-
-  if (source.isOriginal) {
-    return state.sources.mutableOriginalBreakableLines.get(sourceId);
-  }
-
-  const sourceActors = getSourceActorsForSource(state, sourceId);
+  const sourceActors = getRelevantSourceActorsForLocation(
+    state,
+    selectedLocation
+  );
   if (!sourceActors.length) {
     return null;
   }
 
   // We pull generated file breakable lines directly from the source actors
   // so that breakable lines can be added as new source actors on HTML loads.
-  return getBreakableLinesForSourceActors(state, sourceActors, source.isHTML);
+  return getBreakableLinesForSourceActors(
+    state,
+    sourceActors,
+    selectedLocation.source.isHTML
+  );
 }
 
 export const getSelectedBreakableLines = createSelector(
   state => {
-    const sourceId = getSelectedSourceId(state);
-    if (!sourceId) {
+    const selectedLocation = getSelectedLocation(state);
+    if (!selectedLocation) {
       return null;
     }
-    const breakableLines = getBreakableLines(state, sourceId);
+    const breakableLines = getBreakableLines(state, selectedLocation);
     // Ignore the breakable lines if they are still being fetched from the server
     if (!breakableLines || breakableLines instanceof Promise) {
       return null;
@@ -379,9 +387,9 @@ export function isSourceOverridden(toolboxState, source) {
  * Compute the list of source actors and source objects to be removed
  * when removing a given target/thread.
  *
- * @param {String} threadActorID
+ * @param {string} threadActorID
  *        The thread to be removed.
- * @return {Object}
+ * @return {object}
  *         An object with two arrays:
  *         - actors: list of source actor objects to remove
  *         - sources: list of source objects to remove
@@ -429,4 +437,12 @@ export function getSourcesToRemoveForThread(state, threadActorID) {
     actors: actorsToRemove,
     sources: sourcesToRemove,
   };
+}
+
+export function isStyleSheetDisabled(state, source) {
+  // Pretty printed source are disabling their unique related minimized source.
+  if (source.isPrettyPrinted) {
+    source = source.generatedSource;
+  }
+  return state.sources.mutableDisabledStylesheetsIDs.has(source.id);
 }

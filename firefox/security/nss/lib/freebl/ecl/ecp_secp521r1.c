@@ -230,7 +230,7 @@ ec_secp521r1_sign_digest(ECPrivateKey *ecPrivKey, SECItem *signature,
     bool b = Hacl_P521_ecdsa_sign_p521_without_hash(
         signature->data, 66, hash, key, nonce);
 #else
-    bool b = key != NULL;     /* Avoiding unused variable warnings */
+    bool b = key != NULL; /* Avoiding unused variable warnings */
 #endif
 
     if (!b) {
@@ -306,7 +306,7 @@ ec_secp521r1_verify_digest(ECPublicKey *key, const SECItem *signature,
     bool b = Hacl_P521_ecdsa_verif_without_hash(
         66, hash, key->publicValue.data + 1, sig, sig + 66);
 #else
-    bool b = sig != NULL;     /* Avoiding unused variable warnings */
+    bool b = sig != NULL; /* Avoiding unused variable warnings */
 #endif
 
     if (!b) {
@@ -316,4 +316,53 @@ ec_secp521r1_verify_digest(ECPublicKey *key, const SECItem *signature,
     }
 
     return res;
+}
+
+/*
+    Point decompression for P-521.
+
+    publicCompressed must be 67 bytes (1 byte for a sign and 66 bytes for the x coordinate.
+    publicUncompressed must be 132 bytes (66 * 2).
+    The function returns SECSuccess if the decompression was success and the decompresse
+    point is a valid P-521 curve point.
+*/
+
+SECStatus
+ec_secp521r1_decompress(const SECItem *publicCompressed, SECItem *publicUncompressed)
+{
+    if (!publicCompressed || !publicCompressed->data) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return SECFailure;
+    }
+
+    if (publicCompressed->len != 67) {
+        PORT_SetError(SEC_ERROR_BAD_KEY);
+        return SECFailure;
+    }
+
+    if (!publicUncompressed || !publicUncompressed->data) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return SECFailure;
+    }
+
+    if (publicUncompressed->len != 133) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return SECFailure;
+    }
+
+    if (publicCompressed->data[0] != EC_POINT_FORM_COMPRESSED_Y0 &&
+        publicCompressed->data[0] != EC_POINT_FORM_COMPRESSED_Y1) {
+        PORT_SetError(SEC_ERROR_UNSUPPORTED_EC_POINT_FORM);
+        return SECFailure;
+    }
+
+    bool b = Hacl_P521_compressed_to_raw(publicCompressed->data, publicUncompressed->data + 1);
+
+    if (!b) {
+        PORT_SetError(SEC_ERROR_BAD_KEY);
+        return SECFailure;
+    }
+
+    publicUncompressed->data[0] = EC_POINT_FORM_UNCOMPRESSED;
+    return SECSuccess;
 }

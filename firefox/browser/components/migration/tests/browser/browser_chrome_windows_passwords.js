@@ -4,7 +4,7 @@
 "use strict";
 
 const { ChromeProfileMigrator } = ChromeUtils.importESModule(
-  "resource:///modules/ChromeProfileMigrator.sys.mjs"
+  "moz-src:///browser/components/migration/ChromeProfileMigrator.sys.mjs"
 );
 const { LoginCSVImport } = ChromeUtils.importESModule(
   "resource://gre/modules/LoginCSVImport.sys.mjs"
@@ -18,7 +18,7 @@ const TEST_FILE_PATH = getTestFilePath("dummy_file.csv");
 const { MockFilePicker } = SpecialPowers;
 
 add_setup(async function () {
-  MockFilePicker.init(window.browsingContext);
+  MockFilePicker.init();
   registerCleanupFunction(() => {
     MockFilePicker.cleanup();
   });
@@ -168,6 +168,7 @@ async function testChromePasswordHelper(
       wizard,
       "MigrationWizard:DoneMigration"
     );
+    await new Promise(r => prefsWin.requestAnimationFrame(r));
 
     let shadow = wizard.openOrClosedShadowRoot;
 

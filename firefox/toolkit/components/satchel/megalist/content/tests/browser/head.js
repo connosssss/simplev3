@@ -8,7 +8,11 @@ const { LoginTestUtils } = ChromeUtils.importESModule(
 );
 
 const { LoginBreaches } = ChromeUtils.importESModule(
-  "resource:///modules/LoginBreaches.sys.mjs"
+  "moz-src:///browser/components/aboutlogins/LoginBreaches.sys.mjs"
+);
+
+const { BreachAlertsData } = ChromeUtils.importESModule(
+  "moz-src:///toolkit/components/passwordmgr/BreachAlertsData.sys.mjs"
 );
 
 const { RemoteSettings } = ChromeUtils.importESModule(
@@ -34,7 +38,8 @@ const gBrowserGlue = Cc["@mozilla.org/browser/browserglue;1"].getService(
 );
 
 ChromeUtils.defineESModuleGetters(this, {
-  LoginBreaches: "resource:///modules/LoginBreaches.sys.mjs",
+  LoginBreaches:
+    "moz-src:///browser/components/aboutlogins/LoginBreaches.sys.mjs",
 });
 
 const BREACH_EXAMPLE = {
@@ -113,14 +118,14 @@ async function addMockPasswords() {
 async function addBreach() {
   info("Adding breach");
   async function emitSync() {
-    await RemoteSettings(LoginBreaches.REMOTE_SETTINGS_COLLECTION).emit(
+    await RemoteSettings(BreachAlertsData.REMOTE_SETTINGS_COLLECTION).emit(
       "sync",
       { data: { current: [BREACH_EXAMPLE] } }
     );
   }
 
   gBrowserGlue.observe(null, "browser-glue-test", "add-breaches-sync-handler");
-  const db = RemoteSettings(LoginBreaches.REMOTE_SETTINGS_COLLECTION).db;
+  const db = RemoteSettings(BreachAlertsData.REMOTE_SETTINGS_COLLECTION).db;
   await db.importChanges({}, Date.now(), [BREACH_EXAMPLE]);
   await emitSync();
 }
@@ -141,7 +146,7 @@ async function openPasswordsSidebar(aWindow = window) {
 async function checkAllLoginsRendered(megalist) {
   info("Check that all logins are rendered.");
   const logins = await Services.logins.getAllLogins();
-  await BrowserTestUtils.waitForCondition(() => {
+  await TestUtils.waitForCondition(() => {
     const passwordsList = megalist.querySelector(".passwords-list");
     return (
       passwordsList?.querySelectorAll("password-card").length === logins.length
@@ -151,11 +156,11 @@ async function checkAllLoginsRendered(megalist) {
   ok(true, `${logins.length} password cards are rendered.`);
 }
 
-async function addLocalOriginLogin() {
+async function addNavigableOriginLogin() {
   LoginTestUtils.addLogin({
     username: "john",
     password: "pass4",
-    origin: "about:preferences#privacy",
+    origin: "https://example.com",
   });
 }
 
@@ -178,7 +183,7 @@ async function ensureNoNotifications(megalist, notificationId) {
 
 function waitForNotification(megalist, notificationId) {
   info(`Wait for notification with id ${notificationId}.`);
-  const notifcationPromise = BrowserTestUtils.waitForCondition(() => {
+  const notifcationPromise = TestUtils.waitForCondition(() => {
     const notifMsgBars = Array.from(
       megalist.querySelectorAll("notification-message-bar")
     );
@@ -222,8 +227,8 @@ async function checkNotificationInteractionTelemetry(
 function setInputValue(loginForm, fieldElement, value) {
   info(`Filling ${fieldElement} with value '${value}'.`);
   const field = loginForm.shadowRoot.querySelector(fieldElement);
-  field.input.value = value;
-  field.input.dispatchEvent(
+  field.inputEl.value = value;
+  field.inputEl.dispatchEvent(
     new InputEvent("input", {
       composed: true,
       bubbles: true,
@@ -232,7 +237,7 @@ function setInputValue(loginForm, fieldElement, value) {
 }
 
 function getMegalistParent() {
-  const megalistChromeWindow = gBrowser.ownerGlobal[0];
+  const megalistChromeWindow = gBrowser.documentGlobal[0];
   return megalistChromeWindow.browsingContext.currentWindowGlobal.getActor(
     "Megalist"
   );
@@ -241,11 +246,23 @@ function getMegalistParent() {
 async function waitForReauth(callBackFn) {
   const authExpirationTime = getMegalistParent().authExpirationTime();
   let reauthObserved = Promise.resolve();
+  // FIXME: we still wait for reauth event even if OS auth not enabled.
+  const isOSAuthEnabled = Services.prefs.getBoolPref(
+    "signon.management.page.os-auth.locked.enabled",
+    false
+  );
 
-  if (OSKeyStore.canReauth() && Date.now() > authExpirationTime) {
+  if (
+    isOSAuthEnabled &&
+    OSKeyStore.canReauth() &&
+    Date.now() > authExpirationTime
+  ) {
+    info("Can reauth");
     reauthObserved = OSKeyStoreTestUtils.waitForOSKeyStoreLogin(true);
   }
   await callBackFn();
+
+  info("Waiting for reauth event");
   return reauthObserved;
 }
 
@@ -267,14 +284,14 @@ function waitForSnapshots() {
   const sidebar = document.getElementById("sidebar");
   const megalistComponent =
     sidebar.contentDocument.querySelector("megalist-alpha");
-  return BrowserTestUtils.waitForCondition(
+  return TestUtils.waitForCondition(
     () => megalistComponent.header,
     "Megalist header loaded."
   );
 }
 
 async function checkEmptyState(selector, megalist) {
-  return await BrowserTestUtils.waitForCondition(() => {
+  return await TestUtils.waitForCondition(() => {
     const emptyStateCard = megalist.querySelector(".empty-state-card");
     return !!emptyStateCard?.querySelector(selector);
   }, "Empty state card failed to render");

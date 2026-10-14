@@ -7,24 +7,9 @@ package org.mozilla.fenix.browser.store
 import mozilla.components.lib.state.Action
 import org.mozilla.fenix.browser.PageTranslationStatus
 import org.mozilla.fenix.browser.ReaderModeStatus
-import org.mozilla.fenix.browser.store.BrowserScreenStore.Environment
 
-/**
- * Actions related to the browser screen.
- */
+/** Actions related to the browser screen. */
 sealed class BrowserScreenAction : Action {
-    /**
-     * Signals a new valid [Environment] has been set.
-     *
-     * @property environment The new [Environment].
-     */
-    data class EnvironmentRehydrated(val environment: Environment) : BrowserScreenAction()
-
-    /**
-     * Signals the current [Environment] is not valid anymore.
-     */
-    data object EnvironmentCleared : BrowserScreenAction()
-
     /**
      * [Action] for when the last private tab is about to be closed.
      *
@@ -37,8 +22,8 @@ sealed class BrowserScreenAction : Action {
     ) : BrowserScreenAction()
 
     /**
-     * [Action] for when the user has accepted the cancellation of private downloads
-     * in the scenario of closing all private tabs.
+     * [Action] for when the user has accepted the cancellation of private downloads in the scenario of closing all
+     * private tabs.
      */
     data object CancelPrivateDownloadsOnPrivateTabsClosedAccepted : BrowserScreenAction()
 
@@ -47,18 +32,14 @@ sealed class BrowserScreenAction : Action {
      *
      * @property readerModeStatus The new reader mode status of the current page.
      */
-    data class ReaderModeStatusUpdated(
-        val readerModeStatus: ReaderModeStatus,
-    ) : BrowserScreenAction()
+    data class ReaderModeStatusUpdated(val readerModeStatus: ReaderModeStatus) : BrowserScreenAction()
 
     /**
      * [Action] for when the translation status of a page has been updated.
      *
      * @property pageTranslationStatus The new translation status of the current page.
      */
-    data class PageTranslationStatusUpdated(
-        val pageTranslationStatus: PageTranslationStatus,
-    ) : BrowserScreenAction()
+    data class PageTranslationStatusUpdated(val pageTranslationStatus: PageTranslationStatus) : BrowserScreenAction()
 
     /**
      * Custom colors configuration when browsing in custom tab is updated.
@@ -66,4 +47,11 @@ sealed class BrowserScreenAction : Action {
      * @property customTabColors The new colors configuration.
      */
     data class CustomTabColorsUpdated(val customTabColors: CustomTabColors?) : BrowserScreenAction()
+
+    /**
+     * [Action] for when the tab-reload preview cover is shown or dismissed over the engine view.
+     *
+     * @property isVisible Whether the cover is currently displayed.
+     */
+    data class TabReloadCoverVisibilityUpdated(val isVisible: Boolean) : BrowserScreenAction()
 }

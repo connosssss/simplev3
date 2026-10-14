@@ -8,6 +8,8 @@
 
 "use strict";
 
+const TEST_TOP_SITE = "https://fake.example.com";
+
 add_setup(async function () {
   let sidebarRevampEnabled = Services.prefs.getBoolPref(
     "sidebar.revamp",
@@ -15,10 +17,13 @@ add_setup(async function () {
   );
   await SpecialPowers.pushPrefEnv({
     set: [
-      ["browser.urlbar.suggest.quickactions", false],
-      ["browser.urlbar.scotchBonnet.enableOverride", false],
+      ["browser.urlbar.tabToSearch.onboard.interactionsLeft", 0],
+      // Ensure there is one top site in the list.
+      ["browser.newtabpage.activity-stream.default.sites", TEST_TOP_SITE],
     ],
   });
+
+  await updateTopSites(sites => sites?.length == 1);
 
   for (let i = 0; i < UrlbarPrefs.get("maxRichResults"); i++) {
     await PlacesTestUtils.addVisits("http://example.com/" + i);
@@ -187,6 +192,10 @@ add_task(async function tabSearchModePreview() {
 });
 
 add_task(async function tabTabToSearch() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.suggest.quickactions", false]],
+  });
+
   info("Tab past a tab-to-search result after focusing with the keyboard.");
   await SearchTestUtils.installSearchExtension();
 
@@ -209,7 +218,7 @@ add_task(async function tabTabToSearch() {
   ).result;
   Assert.equal(
     tabToSearchResult.providerName,
-    "TabToSearch",
+    "UrlbarProviderTabToSearch",
     "The second result is a tab-to-search result."
   );
 
@@ -220,20 +229,29 @@ add_task(async function tabTabToSearch() {
     await UrlbarTestUtils.assertSearchMode(window, null);
   });
   await PlacesUtils.history.clear();
+  await SpecialPowers.popPrefEnv();
 });
 
 add_task(async function tabNoSearchStringSearchMode() {
   info(
     "Tab through the toolbar when refocusing a Urlbar in search mode with the keyboard."
   );
+  await PlacesTestUtils.addVisits("https://example.com/");
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
     value: "",
   });
-  // Enter history search mode to avoid hitting the network.
-  await UrlbarTestUtils.enterSearchMode(window, {
-    source: UrlbarUtils.RESULT_SOURCE.HISTORY,
+
+  await UrlbarTestUtils.activateSearchModeSwitcherItem(
+    window,
+    'panel-item[data-restrict="^"]'
+  );
+
+  await UrlbarTestUtils.assertSearchMode(window, {
+    source: UrlbarShared.RESULT_SOURCE.HISTORY,
+    entry: "searchbutton",
   });
+
   await UrlbarTestUtils.promisePopupClose(window);
   await UrlbarTestUtils.promisePopupOpen(window, () => {
     EventUtils.synthesizeKey("l", { accelKey: true });
@@ -242,13 +260,11 @@ add_task(async function tabNoSearchStringSearchMode() {
 
   await expectTabThroughToolbar();
 
-  // We have to reopen the view to exit search mode.
-  await UrlbarTestUtils.promiseAutocompleteResultPopup({
-    window,
-    value: "",
-  });
-  await UrlbarTestUtils.exitSearchMode(window);
+  await exitSearchMode();
+
+  gURLBar.blur();
   await UrlbarTestUtils.promisePopupClose(window);
+  await PlacesUtils.history.clear();
 });
 
 add_task(async function tabOnTopSites() {
@@ -279,6 +295,48 @@ add_task(async function tabOnTopSites() {
   }
 });
 
+add_task(async function tabActionsSearchMode() {
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "@actions",
+  });
+  EventUtils.synthesizeKey("KEY_Enter");
+
+  await UrlbarTestUtils.assertSearchMode(window, {
+    source: UrlbarShared.RESULT_SOURCE.ACTIONS,
+    isPreview: false,
+    entry: "keywordoffer",
+    restrictType: "keyword",
+  });
+
+  await UrlbarTestUtils.promiseSearchComplete(window);
+
+  await expectTabThroughResults();
+
+  await exitSearchMode();
+
+  gURLBar.blur();
+  await UrlbarTestUtils.promisePopupClose(window);
+});
+
+// Mirrors UrlbarView's KEYBOARD_SELECTABLE_ELEMENT_SELECTOR to skip disabled rows.
+const KEYBOARD_SELECTABLE_ELEMENT_SELECTOR =
+  '[role=button]:not([keyboard-inaccessible]):not([aria-disabled="true"]), [selectable], a';
+
+function getKeyboardSelectableRowIndexes() {
+  let indexes = [];
+  for (let i = 0; i < UrlbarTestUtils.getResultCount(window); i++) {
+    if (
+      UrlbarTestUtils.getRowAt(window, i).querySelector(
+        KEYBOARD_SELECTABLE_ELEMENT_SELECTOR
+      )
+    ) {
+      indexes.push(i);
+    }
+  }
+  return indexes;
+}
+
 async function expectTabThroughResults(options = { reverse: false }) {
   let resultCount = UrlbarTestUtils.getResultCount(window);
   Assert.greater(resultCount, 0, "There should be results");
@@ -292,12 +350,31 @@ async function expectTabThroughResults(options = { reverse: false }) {
     "Check the initial selection."
   );
 
-  for (let i = initiallySelectedIndex + 1; i < resultCount; i++) {
+  let selectableIndexes = getKeyboardSelectableRowIndexes();
+  Assert.greater(
+    selectableIndexes.length,
+    0,
+    "There should be selectable results"
+  );
+
+  let expectedIndexes = selectableIndexes.filter(
+    index => index != initiallySelectedIndex
+  );
+  if (options.reverse) {
+    expectedIndexes.reverse();
+  }
+
+  for (let expectedIndex of expectedIndexes) {
     EventUtils.synthesizeKey("KEY_Tab", { shiftKey: options.reverse });
+    if (
+      document.activeElement == document.querySelector(".searchmode-switcher")
+    ) {
+      EventUtils.synthesizeKey("KEY_Tab", { shiftKey: options.reverse });
+    }
     if (
       UrlbarTestUtils.getButtonForResultIndex(
         window,
-        "menu",
+        "result-menu",
         UrlbarTestUtils.getSelectedRowIndex(window)
       )
     ) {
@@ -305,17 +382,21 @@ async function expectTabThroughResults(options = { reverse: false }) {
     }
     Assert.equal(
       UrlbarTestUtils.getSelectedRowIndex(window),
-      options.reverse ? resultCount - i : i
+      expectedIndex,
+      `Tab should have selected the row at index ${expectedIndex}.`
     );
   }
 
   EventUtils.synthesizeKey("KEY_Tab");
 
+  // Tab out of the unified search button
+  EventUtils.synthesizeKey("KEY_Tab");
+
   if (!options.reverse) {
     Assert.equal(
       UrlbarTestUtils.getSelectedRowIndex(window),
-      initiallySelectedIndex,
-      "Should be back at the initial selection."
+      selectableIndexes[0],
+      "Should be back at the first selectable row after tabbing out of the unified search button."
     );
   }
 
@@ -332,6 +413,14 @@ async function expectTabThroughToolbar(options = { reverse: false }) {
   } else {
     let focusPromise = waitForFocusOnNextFocusableElement(options.reverse);
     EventUtils.synthesizeKey("KEY_Tab", { shiftKey: options.reverse });
+
+    // Skip over unified search button.
+    if (
+      document.activeElement == document.querySelector(".searchmode-switcher")
+    ) {
+      EventUtils.synthesizeKey("KEY_Tab", { shiftKey: options.reverse });
+    }
+
     await focusPromise;
   }
   Assert.ok(!gURLBar.view.isOpen, "The urlbar view should be closed.");
@@ -342,14 +431,17 @@ async function waitForFocusOnNextFocusableElement(reverse = false) {
     "sidebar.revamp",
     false
   );
+  let sidebarLauncherVisible =
+    sidebarRevampEnabled &&
+    BrowserTestUtils.isVisible(document.querySelector("sidebar-main"));
   if (
     !Services.prefs.getBoolPref("browser.toolbars.keyboard_navigation", true)
   ) {
     let sidebar = document.querySelector("sidebar-main");
-    return BrowserTestUtils.waitForCondition(
+    return TestUtils.waitForCondition(
       () =>
         document.activeElement ==
-        (!sidebarRevampEnabled ? gBrowser.selectedBrowser : sidebar)
+        (!sidebarLauncherVisible ? gBrowser.selectedBrowser : sidebar)
     );
   }
   let urlbar = document.getElementById("urlbar-container");
@@ -376,7 +468,14 @@ async function waitForFocusOnNextFocusableElement(reverse = false) {
     "We should have a reference to the next focusable element after the Urlbar."
   );
 
-  return BrowserTestUtils.waitForCondition(
-    () => nextFocusableElement.tabIndex == -1
-  );
+  return TestUtils.waitForCondition(() => nextFocusableElement.tabIndex == -1);
+}
+
+async function exitSearchMode() {
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "",
+  });
+  EventUtils.synthesizeKey("KEY_Backspace");
+  await UrlbarTestUtils.assertSearchMode(window, null);
 }

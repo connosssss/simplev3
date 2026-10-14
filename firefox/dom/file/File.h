@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -77,11 +75,20 @@ class File final : public Blob {
       const ChromeFilePropertyBag& aBag, SystemCallerGuarantee aGuarantee,
       ErrorResult& aRv);
 
+  // ChromeOnly
+  static already_AddRefed<File> CreateFromNsIInputStream(
+      const GlobalObject& aGlobal, nsIInputStream* aInputStream, uint64_t aSize,
+      const ChromeFilePropertyBag& aBag, SystemCallerGuarantee aGuarantee,
+      ErrorResult& aRv);
+
   void GetName(nsAString& aFileName) const;
 
   int64_t GetLastModified(ErrorResult& aRv);
 
   void GetRelativePath(nsAString& aPath) const;
+
+  // ChromeOnly
+  void SetMozRelativePath(const nsAString& aPath);
 
   void GetMozFullPath(nsAString& aFilename, SystemCallerGuarantee aGuarantee,
                       ErrorResult& aRv);

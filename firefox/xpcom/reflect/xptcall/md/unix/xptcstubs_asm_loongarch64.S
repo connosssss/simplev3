@@ -14,7 +14,7 @@ SharedStub:
     .cfi_startproc
     move      $t0, $sp
     addi.d    $sp, $sp, -8*(NGPRGES+NFPREGS)-16
-    .cfi_def_cfa_offset 8*(NGPRGES+NFPREGS)+16
+    .cfi_adjust_cfa_offset 8*(NGPRGES+NFPREGS)+16
     st.d      $a0, $sp, 0
     st.d      $a1, $sp, 8
     st.d      $a2, $sp, 16
@@ -32,7 +32,7 @@ SharedStub:
     fst.d     $fa6, $sp, 112
     fst.d     $fa7, $sp, 120
     st.d      $ra, $sp, 136
-    .cfi_offset 1, 136
+    .cfi_rel_offset 1, 136
 
     /* methodIndex is passed from stub */
     move      $a1, $t6
@@ -40,13 +40,13 @@ SharedStub:
     move      $a3, $sp
     addi.d    $a4, $sp, 8*NGPRGES
 
-    bl        PrepareAndDispatch
+    call36    PrepareAndDispatch
 
     ld.d      $ra, $sp, 136
     .cfi_restore 1
     addi.d    $sp, $sp, 8*(NGPRGES+NFPREGS)+16
-    .cfi_def_cfa_offset -8*(NGPRGES+NFPREGS)-16
-    jirl      $zero, $ra, 0
+    .cfi_adjust_cfa_offset -8*(NGPRGES+NFPREGS)-16
+    ret
     .cfi_endproc
 
     .size SharedStub, .-SharedStub

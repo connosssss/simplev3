@@ -11,28 +11,28 @@ import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.state.TabSessionState
 import mozilla.components.concept.engine.mediasession.MediaSession
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
+import mozilla.components.lib.state.Store
 
 /**
- * [Middleware] that updates [TabSessionState.lastMediaAccessState] everytime the user starts playing media or
- * the [MediaSession] gets deactivated as when the user navigates to other URL or starts playing media
- * in another tab.
+ * [Middleware] that updates [TabSessionState.lastMediaAccessState] everytime the user starts playing media or the
+ * [MediaSession] gets deactivated as when the user navigates to other URL or starts playing media in another tab.
  */
 class LastMediaAccessMiddleware : Middleware<BrowserState, BrowserAction> {
     @Suppress("ComplexCondition")
     override fun invoke(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         next: (BrowserAction) -> Unit,
         action: BrowserAction,
     ) {
         next(action)
 
-        if (action is MediaSessionAction.UpdateMediaPlaybackStateAction &&
-            action.playbackState == MediaSession.PlaybackState.PLAYING
+        if (
+            action is MediaSessionAction.UpdateMediaPlaybackStateAction &&
+                action.playbackState == MediaSession.PlaybackState.PLAYING
         ) {
-            context.dispatch(LastAccessAction.UpdateLastMediaAccessAction(action.tabId))
+            store.dispatch(LastAccessAction.UpdateLastMediaAccessAction(action.tabId))
         } else if (action is MediaSessionAction.DeactivatedMediaSessionAction) {
-            context.dispatch(LastAccessAction.ResetLastMediaSessionAction(action.tabId))
+            store.dispatch(LastAccessAction.ResetLastMediaSessionAction(action.tabId))
         }
     }
 }

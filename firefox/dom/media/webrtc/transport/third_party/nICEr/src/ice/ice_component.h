@@ -34,10 +34,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef _ice_component_h
 #define _ice_component_h
-#ifdef __cplusplus
-using namespace std;
-extern "C" {
-#endif /* __cplusplus */
 
 typedef struct nr_ice_pre_answer_request_ {
   nr_stun_server_request req;
@@ -95,7 +91,7 @@ int nr_ice_component_service_pre_answer_requests(nr_ice_peer_ctx *pctx, nr_ice_c
 int nr_ice_component_nominated_pair(nr_ice_component *comp, nr_ice_cand_pair *pair);
 void nr_ice_component_failed_pair(nr_ice_component *comp, nr_ice_cand_pair *pair);
 void nr_ice_component_check_if_failed(nr_ice_component *comp);
-int nr_ice_component_select_pair(nr_ice_peer_ctx *pctx, nr_ice_component *comp);
+void nr_ice_component_maybe_select_pair(nr_ice_peer_ctx *pctx, nr_ice_component *comp);
 int nr_ice_component_set_failed(nr_ice_component *comp);
 int nr_ice_component_finalize(nr_ice_component *lcomp, nr_ice_component *rcomp);
 int nr_ice_component_insert_pair(nr_ice_component *pcomp, nr_ice_cand_pair *pair);
@@ -105,7 +101,4 @@ void nr_ice_component_refresh_consent_now(nr_ice_component *comp);
 void nr_ice_component_disconnected(nr_ice_component *comp);
 void nr_ice_component_dump_state(nr_ice_component *comp, int log_level);
 
-#ifdef __cplusplus
-}
-#endif /* __cplusplus */
 #endif

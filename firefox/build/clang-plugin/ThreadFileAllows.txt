@@ -24,11 +24,14 @@ xpcom/threads/nsThreadPool.cpp
 
 # Tests for XPCOM threads themselves.
 xpcom/tests/gtest/TestThreadManager.cpp
+xpcom/tests/gtest/TestThreadShutdownAnnotations.cpp
 xpcom/tests/gtest/TestThreads.cpp
 xpcom/tests/gtest/TestThreadUtils.cpp
+xpcom/tests/gtest/TestTaskQueue.cpp
 
 # Tests which use dynamic thread names.
 xpcom/tests/gtest/TestHandleWatcher.cpp
+xpcom/tests/gtest/TestThreadPoolIdleTimeout.cpp
 
 ######
 # Unsorted release files
@@ -71,5 +74,6 @@ xpcom/tests/gtest/TestLogging.cpp
 xpcom/tests/gtest/TestPipes.cpp
 xpcom/tests/gtest/TestRacingServiceManager.cpp
 xpcom/tests/gtest/TestRWLock.cpp
+xpcom/tests/gtest/TestTargetShutdownTask.cpp
 xpcom/tests/gtest/TestThrottledEventQueue.cpp
 xpcom/tests/gtest/TestTimers.cpp

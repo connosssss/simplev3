@@ -19,7 +19,7 @@ const MenuButton = require("resource://devtools/client/shared/components/menu/Me
 const MenuItem = require("resource://devtools/client/shared/components/menu/MenuItem.js");
 const MenuList = require("resource://devtools/client/shared/components/menu/MenuList.js");
 import { prefs } from "../../utils/prefs";
-import { createLocation } from "../../utils/location";
+import { sourceTree } from "../../constants";
 
 // Selectors
 import {
@@ -38,7 +38,7 @@ import actions from "../../actions/index";
 
 // Components
 import SourcesTreeItem from "./SourcesTreeItem";
-import AccessibleImage from "../shared/AccessibleImage";
+import DebuggerImage from "devtools/client/shared/components/DebuggerImage";
 
 const classnames = require("resource://devtools/client/shared/classnames.js");
 const Tree = require("resource://devtools/client/shared/components/Tree.js");
@@ -46,7 +46,9 @@ const Tree = require("resource://devtools/client/shared/components/Tree.js");
 function shouldAutoExpand(item, mainThreadHost) {
   // There is only one case where we want to force auto expand,
   // when we are on the group of the page's domain.
-  return item.type == "group" && item.groupName === mainThreadHost;
+  return (
+    item.type == sourceTree.itemTypes.GROUP && item.groupName === mainThreadHost
+  );
 }
 
 class SourcesTree extends Component {
@@ -69,7 +71,7 @@ class SourcesTree extends Component {
       focusItem: PropTypes.func.isRequired,
       focused: PropTypes.object,
       projectRoot: PropTypes.string.isRequired,
-      selectMayBePrettyPrintedLocation: PropTypes.func.isRequired,
+      selectSource: PropTypes.func.isRequired,
       setExpandedState: PropTypes.func.isRequired,
       rootItems: PropTypes.array.isRequired,
       clearProjectDirectoryRoot: PropTypes.func.isRequired,
@@ -107,12 +109,10 @@ class SourcesTree extends Component {
   }
 
   selectSourceItem = item => {
-    // Use a dedicated selection method to handle edgecases around pretty printed sources
-    // When a source is pretty printed, the `item.source` still refers to the minified source,
-    // whereas we expect to open the pretty printed version (if it exists).
-    this.props.selectMayBePrettyPrintedLocation(
-      createLocation({ source: item.source, sourceActor: item.sourceActor })
-    );
+    // Note that when the source is pretty printed, `item.source` still refers to the minified source.
+    // `mayBeSelectMappedSource` function within selectSource/selectLocation action will handle this edgecase
+    // and ensure selecting the pretty printed source, if relevant.
+    this.props.selectSource(item.source, item.sourceActor);
   };
 
   onFocus = item => {
@@ -120,7 +120,7 @@ class SourcesTree extends Component {
   };
 
   onActivate = item => {
-    if (item.type == "source") {
+    if (item.type == sourceTree.itemTypes.SOURCE) {
       this.selectSourceItem(item);
     }
   };
@@ -202,27 +202,30 @@ class SourcesTree extends Component {
     // This is the precial magic that coalesce "empty" folders,
     // i.e folders which have only one sub-folder as children.
     function skipEmptyDirectories(directory) {
-      if (directory.type != "directory") {
+      if (directory.type != sourceTree.itemTypes.DIRECTORY) {
         return directory;
       }
       if (
         directory.children.length == 1 &&
-        directory.children[0].type == "directory"
+        directory.children[0].type == sourceTree.itemTypes.DIRECTORY
       ) {
         return skipEmptyDirectories(directory.children[0]);
       }
       return directory;
     }
-    if (item.type == "thread") {
+    if (item.type == sourceTree.itemTypes.THREAD) {
       return item.children;
-    } else if (item.type == "group" || item.type == "directory") {
+    } else if (
+      item.type == sourceTree.itemTypes.GROUP ||
+      item.type == sourceTree.itemTypes.DIRECTORY
+    ) {
       return item.children.map(skipEmptyDirectories);
     }
     return [];
   };
 
   getParent = item => {
-    if (item.type == "thread") {
+    if (item.type == sourceTree.itemTypes.THREAD) {
       return null;
     }
     const { rootItems } = this.props;
@@ -230,15 +233,15 @@ class SourcesTree extends Component {
     // (See getChildren comment)
     function skipEmptyDirectories(directory) {
       if (
-        directory.type == "group" ||
-        directory.type == "thread" ||
+        directory.type == sourceTree.itemTypes.GROUP ||
+        directory.type == sourceTree.itemTypes.THREAD ||
         rootItems.includes(directory)
       ) {
         return directory;
       }
       if (
         directory.children.length == 1 &&
-        directory.children[0].type == "directory"
+        directory.children[0].type == sourceTree.itemTypes.DIRECTORY
       ) {
         return skipEmptyDirectories(directory.parent);
       }
@@ -264,8 +267,8 @@ class SourcesTree extends Component {
           onClick: () => this.props.clearProjectDirectoryRoot(),
           title: L10N.getFormatStr("removeDirectoryRoot.label"),
         },
-        React.createElement(AccessibleImage, {
-          className: "back",
+        React.createElement(DebuggerImage, {
+          name: "back",
         })
       ),
       div({ className: "devtools-separator" }),
@@ -447,7 +450,7 @@ const mapStateToProps = state => {
 };
 
 export default connect(mapStateToProps, {
-  selectMayBePrettyPrintedLocation: actions.selectMayBePrettyPrintedLocation,
+  selectSource: actions.selectSource,
   setExpandedState: actions.setExpandedState,
   focusItem: actions.focusItem,
   clearProjectDirectoryRoot: actions.clearProjectDirectoryRoot,

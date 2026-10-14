@@ -1,15 +1,13 @@
-/* -*- Mode: C++; tab-width: 9; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // This is included first to ensure it doesn't implicitly depend on anything
 // else.
-#include "mozilla/SegmentedVector.h"
-
 #include "mozilla/Alignment.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/CheckedArithmetic.h"
+#include "mozilla/SegmentedVector.h"
 
 using mozilla::SegmentedVector;
 
@@ -19,10 +17,11 @@ class InfallibleAllocPolicy {
  public:
   template <typename T>
   T* pod_malloc(size_t aNumElems) {
-    if (aNumElems & mozilla::tl::MulOverflowMask<sizeof(T)>::value) {
+    size_t size;
+    if (!mozilla::SafeMul(aNumElems, sizeof(T), &size)) {
       MOZ_CRASH("TestSegmentedVector.cpp: overflow");
     }
-    T* rv = static_cast<T*>(malloc(aNumElems * sizeof(T)));
+    T* rv = static_cast<T*>(malloc(size));
     if (!rv) {
       MOZ_CRASH("TestSegmentedVector.cpp: out of memory");
     }
@@ -46,12 +45,9 @@ void CheckContents(Vector& vector, size_t expectedLength) {
   MOZ_RELEASE_ASSERT(n == expectedLength);
 }
 
-// We want to test Append(), which is fallible and marked with
-// [[nodiscard]]. But we're using an infallible alloc policy, and so
-// don't really need to check the result. Casting to |void| works with clang
-// but not GCC, so we instead use this dummy variable which works with both
-// compilers.
-static int gDummy;
+// We want to test Append(), which is fallible and marked with [[nodiscard]].
+// But we're using an infallible alloc policy, and so don't really need to check
+// the result, hence the casts to |void| below.
 
 // This tests basic segmented vector construction and iteration.
 void TestBasics() {
@@ -65,7 +61,7 @@ void TestBasics() {
   // Add 100 elements, then check various things.
   i = 0;
   for (; i < 100; i++) {
-    gDummy = v.Append(std::move(i));
+    (void)v.Append(std::move(i));
   }
   MOZ_RELEASE_ASSERT(!v.IsEmpty());
   CheckContents(v, 100);
@@ -187,11 +183,11 @@ void TestConstructorsAndDestructors() {
     SegmentedVector<NonPOD, segmentSize, InfallibleAllocPolicy> v;
     // default constructor called 0 times
     MOZ_RELEASE_ASSERT(v.IsEmpty());
-    gDummy = v.Append(x);  // copy constructor called
+    (void)v.Append(x);  // copy constructor called
     copyCtorCalls++;
     NonPOD y(1);  // explicit constructor called
     explicitCtorCalls++;
-    gDummy = v.Append(std::move(y));  // move constructor called
+    (void)v.Append(std::move(y));  // move constructor called
     moveCtorCalls++;
     NonPOD z(1);  // explicit constructor called
     explicitCtorCalls++;
@@ -213,7 +209,7 @@ void TestConstructorsAndDestructors() {
 
     size_t nonFullLastSegmentSize = segmentSize - 1;
     for (size_t i = 0; i < nonFullLastSegmentSize; ++i) {
-      gDummy = v.Append(x);  // copy constructor called
+      (void)v.Append(x);  // copy constructor called
       copyCtorCalls++;
     }
     MOZ_RELEASE_ASSERT(gNumCopyCtors == copyCtorCalls);
@@ -245,7 +241,7 @@ void TestConstructorsAndDestructors() {
 
     size_t multipleSegmentsSize = (segmentSize * 3) / 2;
     for (size_t i = 0; i < multipleSegmentsSize; ++i) {
-      gDummy = v.Append(x);  // copy constructor called
+      (void)v.Append(x);  // copy constructor called
       copyCtorCalls++;
     }
     MOZ_RELEASE_ASSERT(gNumCopyCtors == copyCtorCalls);
@@ -322,7 +318,7 @@ void TestIterator() {
   MOZ_RELEASE_ASSERT(iter.Done());
   MOZ_RELEASE_ASSERT(iterFromLast.Done());
 
-  gDummy = v.Append(1);
+  (void)v.Append(1);
   iter = v.Iter();
   iterFromLast = v.IterFromLast();
   MOZ_RELEASE_ASSERT(!iter.Done());
@@ -344,10 +340,10 @@ void TestIterator() {
   MOZ_RELEASE_ASSERT(iterFromLast.Done());
 
   // Append enough entries to ensure we have at least two segments.
-  gDummy = v.Append(1);
-  gDummy = v.Append(1);
-  gDummy = v.Append(1);
-  gDummy = v.Append(1);
+  (void)v.Append(1);
+  (void)v.Append(1);
+  (void)v.Append(1);
+  (void)v.Append(1);
 
   iter = v.Iter();
   iterFromLast = v.IterFromLast();
@@ -380,9 +376,9 @@ void TestIterator() {
 
   // Modify the vector while using the iterator.
   iterFromLast = v.IterFromLast();
-  gDummy = v.Append(2);
-  gDummy = v.Append(3);
-  gDummy = v.Append(4);
+  (void)v.Append(2);
+  (void)v.Append(3);
+  (void)v.Append(4);
   iterFromLast.Next();
   MOZ_RELEASE_ASSERT(!iterFromLast.Done());
   MOZ_RELEASE_ASSERT(iterFromLast.Get() == 2);

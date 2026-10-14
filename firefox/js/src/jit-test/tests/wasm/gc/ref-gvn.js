@@ -1,3 +1,5 @@
+// |jit-test| test-also=--setpref=wasm_baseline_debug=true; skip-variant-if: --setpref=wasm_baseline_debug=true, wasmCompileMode() == "ion"
+
 // Tests that exercise GVN and LICM. The general pattern for these tests is to
 // create values near the top of the function and then create situations where
 // equivalent values are created below, including in loops.
@@ -835,4 +837,652 @@
 
   assertEq(numAnyref, 1100);
   assertEq(numExternref, 1100);
+}
+
+// Test uses of ref.null, which always produces nodes of type (ref null none)
+{
+  new WebAssembly.Module(wasmTextToBinary(`(module
+    (type $s1 (struct (field anyref)))
+    (type $s2 (struct (field i31ref)))
+    (type $s3 (struct (field structref)))
+    (func
+      ref.null $s1
+      struct.get $s1 0
+      drop
+
+      ref.null $s2
+      struct.get $s2 0
+      drop
+    )
+    (func
+      ref.null $s2
+      struct.get $s2 0
+      drop
+
+      ref.null $s3
+      struct.get $s3 0
+      drop
+    )
+    (func
+      ref.null $s1
+      struct.get $s1 0
+      drop
+
+      ref.null $s2
+      struct.get $s2 0
+      drop
+
+      ref.null $s3
+      struct.get $s3 0
+      drop
+    )
+  )`));
+}
+{
+  const { test0, test1 } = wasmEvalText(`(module
+    (type $s (struct (field i32)))
+    (func (export "test0") (param i32) (result anyref anyref)
+      local.get 0
+      if (result anyref anyref)
+        ref.null any
+        (select (result anyref) (struct.new $s (i32.const 1337)) (ref.null any) (i32.const 0))
+      else
+        ref.null any
+        ref.null any
+      end
+    )
+    (func (export "test1") (param i32) (result anyref anyref)
+      local.get 0
+      if (result anyref anyref)
+        ref.null any
+        (select (result anyref) (struct.new $s (i32.const 1337)) (ref.null any) (i32.const 1))
+      else
+        ref.null any
+        ref.null any
+      end
+    )
+  )`).exports;
+  const [a00, b00] = test0(0);
+  assertEq(a00, null);
+  assertEq(b00, null);
+  const [a01, b01] = test0(1);
+  assertEq(a01, null);
+  assertEq(b01, null);
+  const [a10, b10] = test1(0);
+  assertEq(a10, null);
+  assertEq(b10, null);
+  const [a11, b11] = test1(1);
+  assertEq(a11, null);
+  assertEq(wasmGcReadField(b11, 0), 1337);
+}
+
+if (getBuildConfiguration("jitspew")) {
+  // GVN should not combine definitions whose GLB is uninhabitable
+  {
+    const code = wasmTextToBinary(`(module
+      (func
+        ref.null any
+        ref.as_non_null
+        drop
+
+        ref.null eq
+        ref.as_non_null
+        drop
+      )
+    )`);
+    const ionJSON = wasmGetIon(code, 0);
+    const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+    const optimized = wasmIonGetLastMIRPass(ionJSON);
+
+    assertOpcodesInOrder(unoptimized, [
+      "WasmNullConstant", "WasmRefAsNonNull",
+      "WasmNullConstant", "WasmRefAsNonNull",
+    ]);
+    assertOpcodesInOrder(optimized, [
+      "WasmNullConstant", "WasmRefAsNonNull",
+      "!WasmNullConstant", "WasmRefAsNonNull",
+    ]);
+
+    wasmEvalBinary(code);
+  }
+  // GVN should not fold to an uninhabitable definition (even though
+  // uninhabitable definitions are permitted by construction)
+  {
+    const code = wasmTextToBinary(`(module
+      (func (param (ref null none))
+        local.get 0
+        ref.cast anyref ;; this should be folded away, since it is trivial
+        drop
+      )
+      (func (param (ref none))
+        local.get 0
+        ref.cast anyref ;; this should not be folded away, even though (ref none) is a subtype
+        drop
+      )
+    )`);
+    {
+      const ionJSON = wasmGetIon(code, 0);
+      const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+      const optimized = wasmIonGetLastMIRPass(ionJSON);
+
+      assertOpcodesInOrder(unoptimized, ["WasmParameter", "WasmRefCastAbstract", "WasmReturn"]);
+      assertOpcodesInOrder(optimized, ["WasmParameter", "!WasmRefCastAbstract", "WasmReturn"]);
+    }
+    {
+      const ionJSON = wasmGetIon(code, 1);
+      const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+      const optimized = wasmIonGetLastMIRPass(ionJSON);
+
+      assertOpcodesInOrder(unoptimized, ["WasmParameter", "WasmRefCastAbstract", "WasmReturn"]);
+      assertOpcodesInOrder(optimized, ["WasmParameter", "WasmRefCastAbstract", "WasmReturn"]);
+    }
+
+    wasmEvalBinary(code);
+  }
+
+  // Test type calculations from phis (uses LUB to compute common type for all values)
+  {
+    const code = wasmTextToBinary(`(module
+      (type $s1 (struct (field i32)))
+      (type $s2 (struct (field i64)))
+      (func (param i32) (result structref)
+        (local $v anyref)
+
+        local.get 0
+        if
+          (struct.new $s1 (i32.const 1))
+          local.set $v
+        else
+          (struct.new $s2 (i64.const 1))
+          local.set $v
+        end
+
+        ;; Because two different values are pulled together into one phi, the LUB
+        ;; will be used to compute a value for the phi, which should be
+        ;; (ref struct).
+
+        ;; This test will fold to a constant 0 and the branch will be eliminated.
+        local.get $v
+        ref.test arrayref
+        if
+          unreachable
+        end
+
+        ;; This cast is trivial and will be eliminated.
+        local.get $v
+        ref.cast (ref struct)
+
+        ;; However, this cast is not trivial and must be preserved.
+        ref.cast (ref $s1)
+      )
+    )`);
+    const ionJSON = wasmGetIon(code, 0);
+    const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+    const optimized = wasmIonGetLastMIRPass(ionJSON);
+
+    assertOpcodesInOrder(unoptimized, [
+      "WasmNewStructObject", "WasmNewStructObject",
+      "Phi",
+      "WasmRefTestAbstract",
+      "WasmTrap",
+      "WasmRefCastAbstract",
+      "WasmRefCastConcrete",
+    ]);
+    assertOpcodesInOrder(optimized, [
+      "WasmNewStructObject", "WasmNewStructObject",
+      "Phi",
+      "!WasmRefTestAbstract",
+      "!WasmTrap",
+      "!WasmRefCastAbstract",
+      "WasmRefCastConcrete",
+    ]);
+  }
+
+  // Test cases of tests/casts dominating tests/casts for the same value.
+  {
+    // test -> cast
+    const code = wasmTextToBinary(`(module
+      (type $s (struct (field i32)))
+      (func (export "test") (param anyref) (result i32)
+        local.get 0
+        ref.test (ref null $s)
+        if
+          local.get 0
+          ref.cast (ref null $s)
+          struct.get $s 0
+          return
+        end
+        i32.const -1
+      )
+      (func (export "make") (result anyref)
+        (struct.new $s (i32.const 123))
+      )
+    )`);
+    const ionJSON = wasmGetIon(code, 0);
+    const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+    const optimized = wasmIonGetLastMIRPass(ionJSON);
+
+    assertOpcodesInOrder(unoptimized, ["WasmRefTestConcrete", "WasmRefCastConcrete"]);
+    assertOpcodesInOrder(optimized, ["WasmRefTestConcrete", "WasmRefCastInfallible"]);
+
+    const { test, make } = wasmEvalBinary(code).exports;
+    assertEq(test(make()), 123);
+  }
+  {
+    // test -> test
+    const code = wasmTextToBinary(`(module
+      (type $s (struct (field i32)))
+      (func (export "test") (param anyref) (result i32)
+        local.get 0
+        ref.test (ref $s)
+        if
+          local.get 0
+          ref.test (ref $s) ;; known to succeed
+          if
+            local.get 0
+            ref.cast (ref null $s) ;; note: wider type than the test
+            struct.get $s 0
+            return
+          end
+        else
+          local.get 0
+          ref.test (ref $s) ;; known to fail
+          if
+            unreachable
+          end
+        end
+        i32.const -1
+      )
+      (func (export "make") (result anyref)
+        (struct.new $s (i32.const 123))
+      )
+    )`);
+    const ionJSON = wasmGetIon(code, 0);
+    const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+    const optimized = wasmIonGetLastMIRPass(ionJSON);
+
+    assertOpcodesInOrder(unoptimized, [
+      "WasmRefTestConcrete",
+      "WasmRefTestConcrete",
+      "WasmRefCastConcrete",
+      "WasmRefTestConcrete",
+      "WasmTrap",
+      "WasmReturn",
+    ]);
+    assertOpcodesInOrder(optimized, [
+      "WasmRefTestConcrete",
+      "!WasmRefTestConcrete",
+      "!WasmRefCastConcrete", "WasmRefCastInfallible",
+      "!WasmRefTestConcrete",
+      "!WasmTrap",
+      "WasmReturn",
+    ]);
+
+    const { test, make } = wasmEvalBinary(code).exports;
+    assertEq(test(make()), 123);
+  }
+  {
+    // cast -> cast
+    const code = wasmTextToBinary(`(module
+      (type $s (struct (field i32)))
+      (func (export "test") (param anyref) (result i32)
+        local.get 0
+        ref.cast (ref $s)
+        struct.get $s 0
+        if
+          local.get 0
+          ref.cast (ref null $s) ;; note: wider type than the previous cast
+          struct.get $s 0
+          return
+        end
+        i32.const -1
+      )
+      (func (export "make") (result anyref)
+        (struct.new $s (i32.const 123))
+      )
+    )`);
+    const ionJSON = wasmGetIon(code, 0);
+    const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+    const optimized = wasmIonGetLastMIRPass(ionJSON);
+
+    assertOpcodesInOrder(unoptimized, ["WasmRefCastConcrete", "WasmRefCastConcrete"]);
+    assertOpcodesInOrder(optimized, ["WasmRefCastConcrete", "!WasmRefCastConcrete", "!WasmRefCastInfallible"]);
+
+    const { test, make } = wasmEvalBinary(code).exports;
+    assertEq(test(make()), 123);
+  }
+  {
+    // cast -> test
+    const code = wasmTextToBinary(`(module
+      (type $s (struct (field i32)))
+      (func (export "test") (param anyref) (result i32)
+        local.get 0
+        ref.cast (ref $s)
+        struct.get $s 0
+        if
+          local.get 0
+          ref.test (ref null $s) ;; note: wider type than the cast
+          if
+            local.get 0
+            ref.cast (ref $s)
+            struct.get $s 0
+            return
+          end
+        end
+        i32.const -1
+      )
+      (func (export "make") (result anyref)
+        (struct.new $s (i32.const 123))
+      )
+    )`);
+    const ionJSON = wasmGetIon(code, 0);
+    const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+    const optimized = wasmIonGetLastMIRPass(ionJSON);
+
+    assertOpcodesInOrder(unoptimized, ["WasmRefCastConcrete", "WasmRefTestConcrete", "WasmRefCastConcrete"]);
+    assertOpcodesInOrder(optimized, ["WasmRefCastConcrete", "!WasmRefTestConcrete", "!WasmRefCastConcrete", "!WasmRefCastInfallible"]);
+
+    const { test, make } = wasmEvalBinary(code).exports;
+    assertEq(test(make()), 123);
+  }
+  {
+    // ref.is_null is emitted as `ref.test nullref`, so it should participate in
+    // the same kinds of optimizations.
+    const code = wasmTextToBinary(`(module
+      (type $s (struct (field i32)))
+      (func (export "test") (param anyref) (result i32)
+        local.get 0
+        ref.is_null
+        if
+          local.get 0
+          ref.cast nullref ;; trivial, will disappear
+          struct.get $s 0
+          return
+        else
+          local.get 0
+          ref.is_null ;; known to fail
+          if
+            unreachable
+          end
+        end
+        i32.const -1
+      )
+      (func (export "make") (result anyref)
+        (struct.new $s (i32.const 123))
+      )
+    )`);
+    const ionJSON = wasmGetIon(code, 0);
+    const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+    const optimized = wasmIonGetLastMIRPass(ionJSON);
+
+    assertOpcodesInOrder(unoptimized, [
+      "WasmRefTestAbstract",
+      "WasmRefCastAbstract",
+      "WasmRefTestAbstract",
+      "WasmTrap",
+      "WasmReturn",
+    ]);
+    assertOpcodesInOrder(optimized, [
+      "WasmRefTestAbstract",
+      "!WasmRefCastAbstract",
+      "!WasmRefTestAbstract",
+      "!WasmTrap",
+      "WasmReturn",
+    ]);
+
+    const { test, make } = wasmEvalBinary(code).exports;
+    assertEq(test(make()), -1);
+    assertErrorMessage(() => test(null), WebAssembly.RuntimeError, /null/);
+  }
+
+  // Uninhabitable types (e.g. (ref none)) are not touched by these
+  // optimizations.
+  {
+    // cast -> cast with (ref none)
+    const code = wasmTextToBinary(`(module
+      (func (param anyref)
+        local.get 0
+        ref.cast nullref
+        drop
+
+        local.get 0
+        ref.cast eqref   ;; will be eliminated
+        drop
+      )
+      (func (param anyref)
+        local.get 0
+        ref.cast (ref none)
+        drop
+
+        local.get 0
+        ref.cast eqref   ;; must not be eliminated
+        drop
+      )
+    )`);
+
+    {
+      const ionJSON = wasmGetIon(code, 0);
+      const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+      const optimized = wasmIonGetLastMIRPass(ionJSON);
+      assertOpcodesInOrder(unoptimized, ["WasmRefCastAbstract", "WasmRefCastAbstract"]);
+      assertOpcodesInOrder(optimized, ["WasmRefCastAbstract", "!WasmRefCastAbstract"]);
+    }
+    {
+      const ionJSON = wasmGetIon(code, 1);
+      const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+      const optimized = wasmIonGetLastMIRPass(ionJSON);
+      assertOpcodesInOrder(unoptimized, ["WasmRefCastAbstract", "WasmRefCastAbstract"]);
+      assertOpcodesInOrder(optimized, ["WasmRefCastAbstract", "WasmRefCastAbstract"]);
+    }
+
+    wasmEvalBinary(code);
+  }
+  {
+    // cast -> test with (ref none)
+    const code = wasmTextToBinary(`(module
+      (func (param anyref) (result i32)
+        local.get 0
+        ref.cast nullref
+        drop
+
+        local.get 0
+        ref.test eqref      ;; will be replaced
+      )
+      (func (param anyref) (result i32)
+        local.get 0
+        ref.cast (ref none)
+        drop
+
+        local.get 0
+        ref.test eqref      ;; must not be replaced with constant 1
+      )
+    )`);
+
+    {
+      const ionJSON = wasmGetIon(code, 0);
+      const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+      const optimized = wasmIonGetLastMIRPass(ionJSON);
+      assertOpcodesInOrder(unoptimized, ["WasmRefCastAbstract", "WasmRefTestAbstract"]);
+      assertOpcodesInOrder(optimized, ["WasmRefCastAbstract", "!WasmRefTestAbstract", "Constant"]);
+    }
+    {
+      const ionJSON = wasmGetIon(code, 1);
+      const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+      const optimized = wasmIonGetLastMIRPass(ionJSON);
+      assertOpcodesInOrder(unoptimized, ["WasmRefCastAbstract", "WasmRefTestAbstract"]);
+      assertOpcodesInOrder(optimized, ["WasmRefCastAbstract", "WasmRefTestAbstract"]);
+    }
+
+    wasmEvalBinary(code);
+  }
+  // ref.test of (ref none) gets folded into a constant 0 by GVN, so we can't
+  // test it the same way.
+
+  // br_on_cast and br_on_cast_fail generate test and cast nodes and get optimized accordingly
+  {
+    const code = wasmTextToBinary(`(module
+      (type $a (sub (struct (field i32))))
+      (type $b (sub $a (struct (field i32) (field i64))))
+
+      (global $g32 (mut i32) (i32.const 0))
+      (global $g64 (mut i64) (i64.const 0))
+
+      (func (export "makeA") (result (ref $a))
+        (struct.new $a (i32.const 123))
+      )
+      (func (export "makeB") (result (ref $b))
+        (struct.new $b (i32.const 123) (i64.const 234))
+      )
+      (func (export "test1") (param $p (ref $a)) (param $n i32) (result i64)
+        (struct.get $a 0 (local.get $p))
+        global.set $g32
+
+        loop
+          block
+            block (result (ref $b))
+              (br_on_cast 0 (ref $a) (ref $b) (local.get $p))
+              (global.set $g64 (i64.const -1))
+              br 1
+            end
+            struct.get $b 1
+            global.set $g64
+          end
+
+          (i32.sub (local.get $n) (i32.const 1))
+          local.tee $n
+          br_if 0
+        end
+
+        global.get $g64
+      )
+      (func (export "test2") (param $p (ref $a)) (param $n i32) (result i64)
+        (struct.get $a 0 (local.get $p))
+        global.set $g32
+
+        loop
+          block
+            block (result (ref $a))
+              (br_on_cast_fail 0 (ref $a) (ref $b) (local.get $p))
+              struct.get $b 1
+              global.set $g64
+              br 1
+            end
+            drop
+            (global.set $g64 (i64.const -1))
+          end
+
+          (i32.sub (local.get $n) (i32.const 1))
+          local.tee $n
+          br_if 0
+        end
+
+        global.get $g64
+      )
+    )`);
+
+    const { makeA, makeB, test1, test2 } = wasmEvalBinary(code).exports;
+    assertEq(test1(makeA(), 10), -1n);
+    assertEq(test2(makeA(), 10), -1n);
+    assertEq(test1(makeB(), 10), 234n);
+    assertEq(test2(makeB(), 10), 234n);
+
+    {
+      const ionJSON = wasmGetIon(code, 2);
+      const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+      const optimized = wasmIonGetLastMIRPass(ionJSON);
+      assertOpcodesInOrder(unoptimized, ["WasmRefTestConcrete", "Test", "WasmRefCastConcrete", "WasmLoadField"]);
+      assertOpcodesInOrder(optimized, ["WasmRefTestConcrete", "Test", "WasmRefCastInfallible", "WasmLoadField"]);
+    }
+    {
+      const ionJSON = wasmGetIon(code, 3);
+      const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+      const optimized = wasmIonGetLastMIRPass(ionJSON);
+      assertOpcodesInOrder(unoptimized, ["WasmRefTestConcrete", "Test", "WasmRefCastConcrete", "WasmLoadField"]);
+      assertOpcodesInOrder(optimized, ["WasmRefTestConcrete", "Test", "WasmRefCastInfallible", "WasmLoadField"]);
+    }
+  }
+
+  // same as above but with OOL fields
+  {
+    const code = wasmTextToBinary(`(module
+      (type $a (sub (struct ${"(field i32)".repeat(60)})))
+      (type $b (sub $a (struct ${"(field i32)".repeat(60)} (field i64))))
+
+      (global $g32 (mut i32) (i32.const 0))
+      (global $g64 (mut i64) (i64.const 0))
+
+      (func (export "makeA") (result (ref $a))
+        (struct.new $a ${"(i32.const 123)".repeat(60)})
+      )
+      (func (export "makeB") (result (ref $b))
+        (struct.new $b ${"(i32.const 123)".repeat(60)} (i64.const 234))
+      )
+      (func (export "test1") (param $p (ref $a)) (param $n i32) (result i64)
+        (struct.get $a 59 (local.get $p))
+        global.set $g32
+
+        loop
+          block
+            block (result (ref $b))
+              (br_on_cast 0 (ref $a) (ref $b) (local.get $p))
+              (global.set $g64 (i64.const -1))
+              br 1
+            end
+            struct.get $b 60
+            global.set $g64
+          end
+
+          (i32.sub (local.get $n) (i32.const 1))
+          local.tee $n
+          br_if 0
+        end
+
+        global.get $g64
+      )
+      (func (export "test2") (param $p (ref $a)) (param $n i32) (result i64)
+        (struct.get $a 59 (local.get $p))
+        global.set $g32
+
+        loop
+          block
+            block (result (ref $a))
+              (br_on_cast_fail 0 (ref $a) (ref $b) (local.get $p))
+              struct.get $b 60
+              global.set $g64
+              br 1
+            end
+            drop
+            (global.set $g64 (i64.const -1))
+          end
+
+          (i32.sub (local.get $n) (i32.const 1))
+          local.tee $n
+          br_if 0
+        end
+
+        global.get $g64
+      )
+    )`);
+
+    const { makeA, makeB, test1, test2 } = wasmEvalBinary(code).exports;
+    assertEq(test1(makeA(), 10), -1n);
+    assertEq(test2(makeA(), 10), -1n);
+    assertEq(test1(makeB(), 10), 234n);
+    assertEq(test2(makeB(), 10), 234n);
+
+    {
+      const ionJSON = wasmGetIon(code, 2);
+      const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+      const optimized = wasmIonGetLastMIRPass(ionJSON);
+      assertOpcodesInOrder(unoptimized, ["WasmRefTestConcrete", "Test", "WasmRefCastConcrete", "WasmLoadField", "WasmLoadField"]);
+      assertOpcodesInOrder(optimized, ["WasmRefTestConcrete", "Test", "WasmRefCastInfallible", "WasmLoadField", "WasmLoadField"]);
+    }
+    {
+      const ionJSON = wasmGetIon(code, 3);
+      const unoptimized = wasmIonGetFirstMIRPass(ionJSON);
+      const optimized = wasmIonGetLastMIRPass(ionJSON);
+      assertOpcodesInOrder(unoptimized, ["WasmRefTestConcrete", "Test", "WasmRefCastConcrete", "WasmLoadField", "WasmLoadField"]);
+      assertOpcodesInOrder(optimized, ["WasmRefTestConcrete", "Test", "WasmRefCastInfallible", "WasmLoadField", "WasmLoadField"]);
+    }
+  }
 }

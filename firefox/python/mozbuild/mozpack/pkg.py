@@ -2,6 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import annotations
+
 import concurrent.futures
 import lzma
 import plistlib
@@ -17,6 +19,13 @@ from mozbuild.util import cpu_count
 
 TEMPLATE_DIRECTORY = Path(__file__).parent / "apple_pkg"
 PBZX_CHUNK_SIZE = 16 * 1024 * 1024  # 16MB chunks
+
+
+def chmod(dir):
+    "Set permissions of contents"
+    perms = "a+rX,a-st,ug+w,o-w"
+    print(f"Setting app permissions to: {perms}")
+    subprocess.check_call(["chmod", "-R", perms, dir])
 
 
 def get_apple_template(name: str) -> Template:
@@ -104,6 +113,7 @@ def create_payload(destination: Path, root_path: Path, cpio_tool: str):
                     "--owner",
                     "0:80",  # clean ownership
                 ],
+                check=False,
                 stdout=tmp_payload,
                 stderr=subprocess.PIPE,
                 input="\n".join(file_list) + "\n",
@@ -164,17 +174,15 @@ def create_bom(bom_path: Path, root_path: Path, mkbom_tool: Path):
         mkbom_tool: Path, mkbom tool Path
     """
     print(f"Creating BOM file from {root_path} to {bom_path}")
-    subprocess.check_call(
-        [
-            mkbom_tool,
-            "-u",
-            "0",
-            "-g",
-            "80",
-            str(root_path),
-            str(bom_path),
-        ]
-    )
+    subprocess.check_call([
+        mkbom_tool,
+        "-u",
+        "0",
+        "-g",
+        "80",
+        str(root_path),
+        str(bom_path),
+    ])
     print(f"Created BOM File size: {bom_path.stat().st_size // 1024}kb")
 
 
@@ -255,14 +263,12 @@ def create_pkg(
         root_path.mkdir(parents=True, exist_ok=True)
 
         # Copy files over
-        subprocess.check_call(
-            [
-                "cp",
-                "-R",
-                str(source_app),
-                str(root_path),
-            ]
-        )
+        subprocess.check_call([
+            "cp",
+            "-R",
+            str(source_app),
+            str(root_path),
+        ])
 
         # Count all files (innards + itself)
         file_count = len(list(source_app.glob("**/*"))) + 1
@@ -289,6 +295,8 @@ def create_pkg(
         distribution_tmp = get_apple_template("Distribution.template")
         distribution = distribution_tmp.substitute(app_info)
         save_text_file(distribution, flat_path / "Distribution")
+
+        chmod(root_path)
 
         payload_path = flat_path / f"{app_name}.pkg/Payload"
         create_payload(payload_path, root_path, cpio_tool)

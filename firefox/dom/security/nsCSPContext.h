@@ -1,16 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsCSPContext_h___
-#define nsCSPContext_h___
+#ifndef nsCSPContext_h_
+#define nsCSPContext_h_
 
-#include "mozilla/dom/CSPViolationData.h"
-#include "mozilla/dom/nsCSPUtils.h"
-#include "mozilla/dom/SecurityPolicyViolationEvent.h"
 #include "mozilla/StaticPrefs_security.h"
+#include "mozilla/dom/CSPViolationData.h"
+#include "mozilla/dom/SecurityPolicyViolationEvent.h"
+#include "mozilla/dom/nsCSPUtils.h"
 #include "nsIChannel.h"
 #include "nsIChannelEventSink.h"
 #include "nsIContentSecurityPolicy.h"
@@ -42,6 +40,8 @@ class nsCSPContext : public nsIContentSecurityPolicy {
   NS_DECL_ISUPPORTS
   NS_DECL_NSICONTENTSECURITYPOLICY
   NS_DECL_NSISERIALIZABLE
+
+  NS_DEFINE_STATIC_CID_ACCESSOR(NS_CSPCONTEXT_CID)
 
  protected:
   virtual ~nsCSPContext();
@@ -114,8 +114,8 @@ class nsCSPContext : public nsIContentSecurityPolicy {
   nsresult FireViolationEvent(
       mozilla::dom::Element* aTriggeringElement,
       nsICSPEventListener* aCSPEventListener,
-      const mozilla::dom::SecurityPolicyViolationEventInit&
-          aViolationEventInit);
+      const mozilla::dom::SecurityPolicyViolationEventInit& aViolationEventInit,
+      const nsAString& aReportGroupName);
 
   /**
    * Asynchronously notifies any nsIObservers listening to the CSP violation
@@ -157,6 +157,16 @@ class nsCSPContext : public nsIContentSecurityPolicy {
   void AddIPCPolicy(const mozilla::ipc::ContentSecurityPolicy& aPolicy);
   void SerializePolicies(
       nsTArray<mozilla::ipc::ContentSecurityPolicy>& aPolicies);
+
+  // Returns an empty string if aPolicyIndex > num of policies.
+  nsString GetReportGroupFor(uint64_t aPolicyIndex) const;
+
+  static nsCSPContext* Cast(nsIContentSecurityPolicy* aCSP) {
+    return static_cast<nsCSPContext*>(aCSP);
+  }
+
+  [[nodiscard]] nsresult PolicyContainerRead(
+      nsIObjectInputStream* aInputStream);
 
  private:
   enum class ForceReportSample { Yes, No };
@@ -203,8 +213,11 @@ class nsCSPContext : public nsIContentSecurityPolicy {
   };
 
   nsresult TryReadPolicies(PolicyDataVersion aVersion,
-                           mozilla::Span<const uint8_t> aData,
-                           uint32_t aNumPolicies);
+                           nsIObjectInputStream* aStream, uint32_t aNumPolicies,
+                           bool aForPolicyContainer);
+
+  [[nodiscard]] nsresult ReadImpl(nsIObjectInputStream* aStream,
+                                  bool aForPolicyContainer);
 
   nsCString mReferrer;
   uint64_t mInnerWindowID;          // See `nsPIDOMWindowInner::mWindowID`.
@@ -273,4 +286,4 @@ class CSPReportRedirectSink final : public nsIChannelEventSink,
   nsCOMPtr<nsINetworkInterceptController> mInterceptController;
 };
 
-#endif /* nsCSPContext_h___ */
+#endif /* nsCSPContext_h_ */

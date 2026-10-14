@@ -4,8 +4,6 @@
 
 package org.mozilla.fenix.home.recentsyncedtabs.view
 
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,9 +18,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -38,21 +36,25 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import mozilla.components.compose.base.button.SecondaryButton
+import mozilla.components.compose.base.button.FilledButton
 import mozilla.components.compose.base.menu.DropdownMenu
 import mozilla.components.compose.base.menu.MenuItem
 import mozilla.components.compose.base.text.Text
 import mozilla.components.concept.base.images.ImageLoadRequest
 import mozilla.components.concept.sync.DeviceType
 import mozilla.components.support.ktx.kotlin.trimmed
+import mozilla.components.ui.icons.R as iconsR
 import org.mozilla.fenix.R
 import org.mozilla.fenix.compose.Image
 import org.mozilla.fenix.compose.ThumbnailCard
 import org.mozilla.fenix.home.recentsyncedtabs.RecentSyncedTab
+import org.mozilla.fenix.home.topsites.ui.HomepageCard
+import org.mozilla.fenix.home.topsites.ui.homepageCardImageShape
 import org.mozilla.fenix.theme.FirefoxTheme
+import org.mozilla.fenix.wallpapers.WallpaperTheme
 
 private const val THUMBNAIL_SIZE = 108
 
@@ -67,14 +69,13 @@ private const val THUMBNAIL_SIZE = 108
  * @param onSeeAllSyncedTabsButtonClick Invoked when user clicks on the "See all" button in the synced tab card.
  * @param onRemoveSyncedTab Invoked when user clicks on the "Remove" dropdown menu option.
  */
-@OptIn(ExperimentalFoundationApi::class)
-@Suppress("LongMethod")
+@Suppress("LongMethod", "CognitiveComplexMethod")
 @Composable
 fun RecentSyncedTab(
     tab: RecentSyncedTab?,
-    backgroundColor: Color = FirefoxTheme.colors.layer2,
-    buttonBackgroundColor: Color = FirefoxTheme.colors.actionSecondary,
-    buttonTextColor: Color = FirefoxTheme.colors.textActionSecondary,
+    backgroundColor: Color = WallpaperTheme.cardBackgroundColor,
+    buttonBackgroundColor: Color = ButtonDefaults.buttonColors().containerColor,
+    buttonTextColor: Color = ButtonDefaults.buttonColors().contentColor,
     onRecentSyncedTabClick: (RecentSyncedTab) -> Unit,
     onSeeAllSyncedTabsButtonClick: () -> Unit,
     onRemoveSyncedTab: (RecentSyncedTab) -> Unit,
@@ -86,25 +87,21 @@ fun RecentSyncedTab(
         onRemoveSyncedTab(recentSyncedTab)
     }
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                onClick = { tab?.let { onRecentSyncedTabClick(tab) } },
-                onLongClick = { isDropdownExpanded = true },
-            ),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = backgroundColor),
-        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+    HomepageCard(
+        modifier =
+            Modifier.fillMaxWidth()
+                .combinedClickable(
+                    onClick = { tab?.let { onRecentSyncedTabClick(tab) } },
+                    onLongClick = { isDropdownExpanded = true },
+                ),
+        backgroundColor = backgroundColor,
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(FirefoxTheme.layout.space.static200)) {
             Row(modifier = Modifier.height(IntrinsicSize.Min)) {
                 if (tab == null) {
                     RecentTabImagePlaceholder()
                 } else {
-                    val imageModifier = Modifier
-                        .size(108.dp, 80.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                    val imageModifier = Modifier.size(108.dp, 80.dp).clip(homepageCardImageShape)
 
                     if (tab.previewImageUrl != null) {
                         Image(
@@ -115,11 +112,12 @@ fun RecentSyncedTab(
                     } else {
                         ThumbnailCard(
                             url = tab.url,
-                            request = ImageLoadRequest(
-                                id = tab.url.hashCode().toString(),
-                                size = LocalDensity.current.run { THUMBNAIL_SIZE.dp.toPx().toInt() },
-                                isPrivate = false,
-                            ),
+                            request =
+                                ImageLoadRequest(
+                                    id = tab.url.hashCode().toString(),
+                                    size = LocalDensity.current.run { THUMBNAIL_SIZE.dp.toPx().toInt() },
+                                    isPrivate = false,
+                                ),
                             modifier = imageModifier,
                         )
                     }
@@ -136,7 +134,7 @@ fun RecentSyncedTab(
                     } else {
                         Text(
                             text = tab.title.trimmed(),
-                            color = FirefoxTheme.colors.textPrimary,
+                            color = MaterialTheme.colorScheme.onSurface,
                             fontSize = 14.sp,
                             overflow = TextOverflow.Ellipsis,
                             maxLines = 2,
@@ -146,16 +144,14 @@ fun RecentSyncedTab(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (tab == null) {
                             Box(
-                                modifier = Modifier
-                                    .background(FirefoxTheme.colors.layer3)
-                                    .size(18.dp),
+                                modifier =
+                                    Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest).size(18.dp)
                             )
                         } else {
-                            Image(
-                                painter = painterResource(R.drawable.ic_synced_tabs),
-                                contentDescription = stringResource(
-                                    R.string.recent_tabs_synced_device_icon_content_description,
-                                ),
+                            Icon(
+                                painter = painterResource(iconsR.drawable.mozac_ic_sync_tabs_24),
+                                contentDescription =
+                                    stringResource(R.string.recent_tabs_synced_device_icon_content_description),
                                 modifier = Modifier.size(18.dp),
                             )
                         }
@@ -167,7 +163,7 @@ fun RecentSyncedTab(
                         } else {
                             Text(
                                 text = tab.deviceDisplayName,
-                                color = FirefoxTheme.colors.textSecondary,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 12.sp,
                                 overflow = TextOverflow.Ellipsis,
                                 maxLines = 1,
@@ -179,47 +175,45 @@ fun RecentSyncedTab(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            SecondaryButton(
-                text = if (tab != null) {
-                    stringResource(R.string.recent_tabs_see_all_synced_tabs_button_text)
-                } else {
-                    ""
-                },
+            FilledButton(
+                text =
+                    if (tab != null) {
+                        stringResource(R.string.recent_tabs_see_all_synced_tabs_button_text)
+                    } else {
+                        ""
+                    },
                 modifier = Modifier.fillMaxWidth(),
-                textColor = buttonTextColor,
-                backgroundColor = buttonBackgroundColor,
+                contentColor = buttonTextColor,
+                containerColor = buttonBackgroundColor,
                 onClick = onSeeAllSyncedTabsButtonClick,
             )
         }
     }
 
     DropdownMenu(
-        menuItems = listOf(
-            MenuItem.TextItem(Text.Resource(R.string.recent_synced_tab_menu_item_remove)) {
-                tab?.let { removeSyncedTab(it) }
-            },
-        ),
+        menuItems =
+            listOf(
+                MenuItem.TextItem(Text.Resource(R.string.recent_synced_tab_menu_item_remove)) {
+                    tab?.let { removeSyncedTab(it) }
+                }
+            ),
         expanded = isDropdownExpanded && tab != null,
         onDismissRequest = { isDropdownExpanded = false },
     )
 }
 
-/**
- * A placeholder for a recent tab image.
- */
+/** A placeholder for a recent tab image. */
 @Composable
 private fun RecentTabImagePlaceholder() {
     Box(
-        modifier = Modifier
-            .size(108.dp, 80.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(color = FirefoxTheme.colors.layer3),
+        modifier =
+            Modifier.size(108.dp, 80.dp)
+                .clip(homepageCardImageShape)
+                .background(color = MaterialTheme.colorScheme.surfaceContainerHighest)
     )
 }
 
-/**
- * A placeholder for a tab title.
- */
+/** A placeholder for a tab title. */
 @Composable
 private fun RecentTabTitlePlaceholder() {
     Column {
@@ -231,29 +225,23 @@ private fun RecentTabTitlePlaceholder() {
     }
 }
 
-/**
- * A placeholder for a single line of text.
- */
+/** A placeholder for a single line of text. */
 @Composable
 private fun TextLinePlaceHolder() {
-    Box(
-        modifier = Modifier
-            .height(12.dp)
-            .fillMaxWidth()
-            .background(FirefoxTheme.colors.layer3),
-    )
+    Box(modifier = Modifier.height(12.dp).fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHighest))
 }
 
-@Preview
+@PreviewLightDark
 @Composable
 private fun LoadedRecentSyncedTab() {
-    val tab = RecentSyncedTab(
-        deviceDisplayName = "Firefox on MacBook",
-        deviceType = DeviceType.DESKTOP,
-        title = "This is a long site title",
-        url = "https://mozilla.org",
-        previewImageUrl = "https://mozilla.org",
-    )
+    val tab =
+        RecentSyncedTab(
+            deviceDisplayName = "Firefox on MacBook",
+            deviceType = DeviceType.DESKTOP,
+            title = "This is a long site title",
+            url = "https://mozilla.org",
+            previewImageUrl = "https://mozilla.org",
+        )
     FirefoxTheme {
         RecentSyncedTab(
             tab = tab,
@@ -264,13 +252,13 @@ private fun LoadedRecentSyncedTab() {
     }
 }
 
-@Preview
+@PreviewLightDark
 @Composable
 private fun LoadingRecentSyncedTab() {
     FirefoxTheme {
         RecentSyncedTab(
             tab = null,
-            buttonBackgroundColor = FirefoxTheme.colors.layer3,
+            buttonBackgroundColor = MaterialTheme.colorScheme.surfaceContainerHighest,
             onRecentSyncedTabClick = {},
             onSeeAllSyncedTabsButtonClick = {},
             onRemoveSyncedTab = {},

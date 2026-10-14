@@ -1,12 +1,25 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "NetworkLoadHandler.h"
-#include "CacheLoadHandler.h"  // CachePromiseHandler
 
+#include <memory>
+
+#include "CacheLoadHandler.h"  // CachePromiseHandler
+#include "js/loader/ModuleLoadRequest.h"
+#include "js/loader/ScriptLoadRequest.h"
+#include "mozilla/Encoding.h"
+#include "mozilla/StaticPrefs_extensions.h"
+#include "mozilla/StaticPrefs_javascript.h"
+#include "mozilla/dom/BlobURLProtocolHandler.h"
+#include "mozilla/dom/InternalResponse.h"
+#include "mozilla/dom/Response.h"
+#include "mozilla/dom/ScriptLoader.h"
+#include "mozilla/dom/ServiceWorkerBinding.h"
+#include "mozilla/dom/ServiceWorkerManager.h"
+#include "mozilla/dom/WorkerScope.h"
+#include "mozilla/dom/workerinternals/ScriptLoader.h"  // WorkerScriptLoader
 #include "nsContentUtils.h"
 #include "nsIChannel.h"
 #include "nsIHttpChannel.h"
@@ -14,17 +27,6 @@
 #include "nsIPrincipal.h"
 #include "nsIScriptError.h"
 #include "nsNetUtil.h"
-
-#include "mozilla/Encoding.h"
-#include "mozilla/dom/BlobURLProtocolHandler.h"
-#include "mozilla/dom/InternalResponse.h"
-#include "mozilla/dom/ServiceWorkerBinding.h"
-#include "mozilla/dom/ServiceWorkerManager.h"
-#include "mozilla/dom/ScriptLoader.h"
-#include "mozilla/dom/Response.h"
-#include "mozilla/dom/WorkerScope.h"
-
-#include "mozilla/dom/workerinternals/ScriptLoader.h"  // WorkerScriptLoader
 
 using mozilla::ipc::PrincipalInfo;
 
@@ -53,9 +55,13 @@ NetworkLoadHandler::OnStreamComplete(nsIStreamLoader* aLoader,
                                      nsISupports* aContext, nsresult aStatus,
                                      uint32_t aStringLen,
                                      const uint8_t* aString) {
-  // If we have cancelled, or we have no mRequest, it means that the loader has
-  // shut down and we can exit early. If the cancel result is still NS_OK
-  if (mRequestHandle->IsEmpty()) {
+  AssertIsOnMainThread();
+
+  // If the request has been handed over to the worker thread, it means that
+  // the loader has shut down and we can exit early. This happens when
+  // cancelling the channel failed and the load was finished without us; see
+  // ScriptLoaderRunnable::CancelMainThread().
+  if (mRequestHandle->ExecutionScheduled()) {
     return NS_OK;
   }
   nsresult rv = DataReceivedFromNetwork(aLoader, aStatus, aStringLen, aString);
@@ -67,12 +73,44 @@ nsresult NetworkLoadHandler::DataReceivedFromNetwork(nsIStreamLoader* aLoader,
                                                      uint32_t aStringLen,
                                                      const uint8_t* aString) {
   AssertIsOnMainThread();
-  MOZ_ASSERT(!mRequestHandle->IsEmpty());
+  MOZ_ASSERT(!mRequestHandle->ExecutionScheduled());
+
+  if (aStringLen > GetWorkerScriptMaxSizeInBytes()) {
+    Document* parentDoc = mWorkerRef->Private()->GetDocument();
+    nsContentUtils::ReportToConsole(nsIScriptError::errorFlag, "DOM"_ns,
+                                    parentDoc, PropertiesFile::DOM_PROPERTIES,
+                                    "WorkerScriptTooLargeError");
+    return NS_ERROR_DOM_ABORT_ERR;
+  }
+
   WorkerLoadContext* loadContext = mRequestHandle->GetContext();
 
   if (!loadContext->mChannel) {
     return NS_BINDING_ABORTED;
   }
+
+#ifdef NIGHTLY_BUILD
+  if (StaticPrefs::javascript_options_experimental_wasm_esm_integration()) {
+    if (mRequestHandle->GetRequest()->IsModuleRequest()) {
+      // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
+      // Extract the content-type. If its essence is wasm, we'll attempt to
+      // compile this module as a wasm module. (Steps 13.2, 13.6)
+      nsAutoCString mimeType;
+      if (NS_SUCCEEDED(loadContext->mChannel->GetContentType(mimeType))) {
+        if (nsContentUtils::HasWasmMimeTypeEssence(
+                NS_ConvertUTF8toUTF16(mimeType))) {
+          mRequestHandle->GetRequest()
+              ->AsModuleRequest()
+              ->SetHasWasmMimeTypeEssence();
+          loadContext->mRequest->SetWasmBytes();
+          if (!loadContext->mRequest->WasmBytes().append(aString, aStringLen)) {
+            return NS_ERROR_OUT_OF_MEMORY;
+          }
+        }
+      }
+    }
+  }
+#endif
 
   loadContext->mChannel = nullptr;
 
@@ -117,9 +155,16 @@ nsresult NetworkLoadHandler::DataReceivedFromNetwork(nsIStreamLoader* aLoader,
     // if we are not in a ServiceWorker, and the principal is not null, then
     // the loading principal must subsume the worker principal if it is not a
     // nullPrincipal (sandbox).
-    MOZ_ASSERT(!loadingPrincipal || loadingPrincipal->GetIsNullPrincipal() ||
-               principal->GetIsNullPrincipal() ||
-               loadingPrincipal->Subsumes(principal));
+    //
+    // This does not hold for an addon worker principal when
+    // extensions.web_accessible_workers.deprecated_behavior is enabled; see
+    // bug 1767455.
+    MOZ_ASSERT(
+        !loadingPrincipal || loadingPrincipal->GetIsNullPrincipal() ||
+        principal->GetIsNullPrincipal() ||
+        loadingPrincipal->Subsumes(principal) ||
+        (StaticPrefs::extensions_web_accessible_workers_deprecated_behavior() &&
+         principal->GetIsAddonPrincipal()));
   }
 #endif
 
@@ -144,38 +189,40 @@ nsresult NetworkLoadHandler::DataReceivedFromNetwork(nsIStreamLoader* aLoader,
       return NS_ERROR_NOT_AVAILABLE;
     }
 
-    Unused << httpChannel->GetResponseHeader("content-security-policy"_ns,
-                                             tCspHeaderValue);
+    (void)httpChannel->GetResponseHeader("content-security-policy"_ns,
+                                         tCspHeaderValue);
 
-    Unused << httpChannel->GetResponseHeader(
+    (void)httpChannel->GetResponseHeader(
         "content-security-policy-report-only"_ns, tCspROHeaderValue);
 
-    Unused << httpChannel->GetResponseHeader("referrer-policy"_ns,
-                                             tRPHeaderCValue);
+    (void)httpChannel->GetResponseHeader("referrer-policy"_ns, tRPHeaderCValue);
 
     nsAutoCString sourceMapURL;
     if (nsContentUtils::GetSourceMapURL(httpChannel, sourceMapURL)) {
-      loadContext->mRequest->mSourceMapURL =
-          Some(NS_ConvertUTF8toUTF16(sourceMapURL));
+      loadContext->mRequest->SetSourceMapURL(
+          NS_ConvertUTF8toUTF16(sourceMapURL));
     }
   }
 
   // May be null.
   Document* parentDoc = mWorkerRef->Private()->GetDocument();
 
-  // Set the Source type to "text" for decoding.
-  loadContext->mRequest->SetTextSource(loadContext);
+  // We only decode source text, not wasm bytecode.
+  if (!loadContext->mRequest->IsWasmBytes()) {
+    // Set the Source type to "text" for decoding.
+    loadContext->mRequest->SetTextSource(loadContext);
 
-  // Use the regular ScriptDecoder Decoder for this grunt work! Should be just
-  // fine because we're running on the main thread.
-  rv = mDecoder->DecodeRawData(loadContext->mRequest, aString, aStringLen,
-                               /* aEndOfStream = */ true);
-  NS_ENSURE_SUCCESS(rv, rv);
+    // Use the regular ScriptDecoder Decoder for this grunt work! Should be just
+    // fine because we're running on the main thread.
+    rv = mDecoder->DecodeRawData(loadContext->mRequest, aString, aStringLen,
+                                 /* aEndOfStream = */ true);
+    NS_ENSURE_SUCCESS(rv, rv);
 
-  if (!loadContext->mRequest->ScriptTextLength()) {
-    nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "DOM"_ns,
-                                    parentDoc, nsContentUtils::eDOM_PROPERTIES,
-                                    "EmptyWorkerSourceWarning");
+    if (!loadContext->mRequest->ScriptTextLength()) {
+      nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "DOM"_ns,
+                                      parentDoc, PropertiesFile::DOM_PROPERTIES,
+                                      "EmptyWorkerSourceWarning");
+    }
   }
 
   // For modules, we need to store the base URI on the module request object,
@@ -216,6 +263,14 @@ nsresult NetworkLoadHandler::DataReceivedFromNetwork(nsIStreamLoader* aLoader,
   if (loadContext->IsTopLevel() && !isDynamic) {
     // Take care of the base URI first.
     mWorkerRef->Private()->SetBaseURI(finalURI);
+
+    if (httpChannel) {
+      nsCString reportingEndpoints;
+      if (NS_SUCCEEDED(httpChannel->GetResponseHeader("Reporting-Endpoints"_ns,
+                                                      reportingEndpoints))) {
+        mWorkerRef->Private()->SetReportingEndpointsHeader(reportingEndpoints);
+      }
+    }
 
     // Store the channel info if needed.
     mWorkerRef->Private()->InitChannelInfo(channel);
@@ -288,14 +343,16 @@ NetworkLoadHandler::OnStartRequest(nsIRequest* aRequest) {
 
 nsresult NetworkLoadHandler::PrepareForRequest(nsIRequest* aRequest) {
   AssertIsOnMainThread();
-  MOZ_ASSERT(!mRequestHandle->IsEmpty());
-  WorkerLoadContext* loadContext = mRequestHandle->GetContext();
 
   // If one load info cancels or hits an error, it can race with the start
-  // callback coming from another load info.
-  if (mRequestHandle->IsCancelled()) {
+  // callback coming from another load info. The request may even have been
+  // handed over to the worker thread already, in which case we must not touch
+  // it any more and let the caller cancel this channel.
+  if (mRequestHandle->ExecutionScheduled() || mRequestHandle->IsCancelled()) {
     return NS_ERROR_FAILURE;
   }
+
+  WorkerLoadContext* loadContext = mRequestHandle->GetContext();
 
   nsCOMPtr<nsIChannel> channel = do_QueryInterface(aRequest);
 
@@ -310,19 +367,39 @@ nsresult NetworkLoadHandler::PrepareForRequest(nsIRequest* aRequest) {
     nsAutoCString mimeType;
     channel->GetContentType(mimeType);
 
-    if (!nsContentUtils::IsJavascriptMIMEType(
-            NS_ConvertUTF8toUTF16(mimeType))) {
-      const nsCString& scope = mWorkerRef->Private()
-                                   ->GetServiceWorkerRegistrationDescriptor()
-                                   .Scope();
+    auto mimeTypeUTF16 = NS_ConvertUTF8toUTF16(mimeType);
+    if (!nsContentUtils::IsJavascriptMIMEType(mimeTypeUTF16)) {
+      // JSON is only allowed for non-toplevel JSON module imports, not for
+      // classic importScripts() or the top-level worker script.
+      if (!((!loadContext->IsTopLevel() &&
+             loadContext->mRequest->IsModuleRequest() &&
+             loadContext->mRequest->AsModuleRequest()->mModuleType ==
+                 JS::ModuleType::JSON &&
+             nsContentUtils::IsJsonMimeType(mimeTypeUTF16))
+#ifdef NIGHTLY_BUILD
+            // Allow wasm modules.
+            || (StaticPrefs::
+                    javascript_options_experimental_wasm_esm_integration() &&
+                nsContentUtils::HasWasmMimeTypeEssence(mimeTypeUTF16))
+#endif
+            // Allow non-toplevel text modules
+            || (JS::Prefs::experimental_import_text() &&
+                !loadContext->IsTopLevel() &&
+                loadContext->mRequest->IsModuleRequest() &&
+                loadContext->mRequest->AsModuleRequest()->mModuleType ==
+                    JS::ModuleType::Text))) {
+        const nsCString& scope = mWorkerRef->Private()
+                                     ->GetServiceWorkerRegistrationDescriptor()
+                                     .Scope();
 
-      ServiceWorkerManager::LocalizeAndReportToAllClients(
-          scope, "ServiceWorkerRegisterMimeTypeError2",
-          nsTArray<nsString>{
-              NS_ConvertUTF8toUTF16(scope), NS_ConvertUTF8toUTF16(mimeType),
-              NS_ConvertUTF8toUTF16(loadContext->mRequest->mURL)});
+        ServiceWorkerManager::LocalizeAndReportToAllClients(
+            scope, "ServiceWorkerRegisterMimeTypeError2",
+            nsTArray<nsString>{
+                NS_ConvertUTF8toUTF16(scope), NS_ConvertUTF8toUTF16(mimeType),
+                NS_ConvertUTF8toUTF16(loadContext->mRequest->mURL)});
 
-      return NS_ERROR_DOM_NETWORK_ERR;
+        return NS_ERROR_DOM_NETWORK_ERR;
+      }
     }
   }
 
@@ -349,19 +426,24 @@ nsresult NetworkLoadHandler::PrepareForRequest(nsIRequest* aRequest) {
   MOZ_TRY(ssm->GetChannelResultPrincipal(channel,
                                          getter_AddRefs(channelPrincipal)));
 
-  UniquePtr<PrincipalInfo> principalInfo(new PrincipalInfo());
+  auto principalInfo = std::make_unique<PrincipalInfo>();
   MOZ_TRY(PrincipalToPrincipalInfo(channelPrincipal, principalInfo.get()));
 
   ir->SetPrincipalInfo(std::move(principalInfo));
   ir->Headers()->FillResponseHeaders(channel);
 
+  RefPtr<CacheCreator> cacheCreator = mRequestHandle->GetCacheCreator();
+  if (NS_WARN_IF(!cacheCreator)) {
+    return NS_ERROR_FAILURE;
+  }
+
   RefPtr<mozilla::dom::Response> response = new mozilla::dom::Response(
-      mRequestHandle->GetCacheCreator()->Global(), std::move(ir), nullptr);
+      cacheCreator->Global(), std::move(ir), nullptr);
 
   mozilla::dom::RequestOrUTF8String request;
 
   MOZ_ASSERT(!loadContext->mFullURL.IsEmpty());
-  request.SetAsUTF8String().ShareOrDependUpon(loadContext->mFullURL);
+  request.SetAsUTF8String() = loadContext->mFullURL;
 
   // This JSContext will not end up executing JS code because here there are
   // no ReadableStreams involved.
@@ -370,8 +452,7 @@ nsresult NetworkLoadHandler::PrepareForRequest(nsIRequest* aRequest) {
 
   ErrorResult error;
   RefPtr<Promise> cachePromise =
-      mRequestHandle->GetCacheCreator()->Cache_()->Put(jsapi.cx(), request,
-                                                       *response, error);
+      cacheCreator->Cache_()->Put(jsapi.cx(), request, *response, error);
   error.WouldReportJSException();
   if (NS_WARN_IF(error.Failed())) {
     return error.StealNSResult();

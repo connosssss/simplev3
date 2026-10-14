@@ -10,6 +10,10 @@ import android.content.DialogInterface
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.text.SpannableStringBuilder
+import android.text.method.LinkMovementMethod
+import android.text.style.ClickableSpan
+import android.text.style.URLSpan
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
@@ -22,11 +26,13 @@ import androidx.annotation.VisibleForTesting
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toDrawable
+import androidx.core.text.HtmlCompat
+import androidx.core.text.HtmlCompat.FROM_HTML_MODE_COMPACT
+import androidx.core.text.getSpans
 import androidx.fragment.app.FragmentManager
 import mozilla.components.feature.addons.Addon
 import mozilla.components.feature.addons.R
 import mozilla.components.feature.addons.databinding.MozacFeatureAddonsFragmentDialogAddonInstalledBinding
-import mozilla.components.support.ktx.android.content.appName
 import mozilla.components.support.utils.ext.getParcelableCompat
 
 @VisibleForTesting internal const val KEY_INSTALLED_ADDON = "KEY_INSTALLED_ADDON"
@@ -38,25 +44,22 @@ private const val KEY_CONFIRM_BUTTON_RADIUS = "KEY_CONFIRM_BUTTON_RADIUS"
 
 private const val DEFAULT_VALUE = Int.MAX_VALUE
 
-/**
- * A dialog that shows [Addon] installation confirmation.
- */
+/** A dialog that shows [Addon] installation confirmation. */
 class AddonInstallationDialogFragment : AddonDialogFragment() {
-    /**
-     * A lambda called when the confirm button is clicked.
-     */
+    /** A lambda called when the confirm button is clicked. */
     var onConfirmButtonClicked: ((Addon) -> Unit)? = null
 
-    /**
-     * A lambda called when the dialog is dismissed.
-     */
+    /** A lambda called when the dialog is dismissed. */
     var onDismissed: (() -> Unit)? = null
 
-    internal val addon get() = requireNotNull(safeArguments.getParcelableCompat(KEY_INSTALLED_ADDON, Addon::class.java))
+    /** A lambda called when the link to the extension settings in the description is clicked. */
+    var onExtensionSettingsLinkClicked: ((Addon) -> Unit)? = null
+
+    internal val addon
+        get() = requireNotNull(safeArguments.getParcelableCompat(KEY_INSTALLED_ADDON, Addon::class.java))
 
     internal val confirmButtonRadius
-        get() =
-            safeArguments.getFloat(KEY_CONFIRM_BUTTON_RADIUS, DEFAULT_VALUE.toFloat())
+        get() = safeArguments.getFloat(KEY_CONFIRM_BUTTON_RADIUS, DEFAULT_VALUE.toFloat())
 
     internal val dialogGravity: Int
         get() =
@@ -64,9 +67,9 @@ class AddonInstallationDialogFragment : AddonDialogFragment() {
                 KEY_DIALOG_GRAVITY,
                 DEFAULT_VALUE,
             )
+
     internal val dialogShouldWidthMatchParent: Boolean
-        get() =
-            safeArguments.getBoolean(KEY_DIALOG_WIDTH_MATCH_PARENT)
+        get() = safeArguments.getBoolean(KEY_DIALOG_WIDTH_MATCH_PARENT)
 
     internal val confirmButtonBackgroundColor
         get() =
@@ -127,27 +130,32 @@ class AddonInstallationDialogFragment : AddonDialogFragment() {
 
     @SuppressLint("InflateParams")
     private fun createContainer(): View {
-        val rootView = LayoutInflater.from(requireContext()).inflate(
-            R.layout.mozac_feature_addons_fragment_dialog_addon_installed,
-            null,
-            false,
-        )
+        val rootView =
+            LayoutInflater.from(requireContext())
+                .inflate(
+                    R.layout.mozac_feature_addons_fragment_dialog_addon_installed,
+                    null,
+                    false,
+                )
 
         val binding = MozacFeatureAddonsFragmentDialogAddonInstalledBinding.bind(rootView)
 
         val addonName = addon.translateName(requireContext())
         rootView.findViewById<TextView>(R.id.title).text =
-            requireContext().getString(
-                R.string.mozac_feature_addons_installed_dialog_title,
-                addonName,
-                requireContext().appName,
-            )
-        rootView.findViewById<TextView>(R.id.description).text =
-            requireContext().getString(
-                R.string.mozac_feature_addons_installed_dialog_description_2,
-                addonName,
-                requireContext().appName,
-            )
+            requireContext().getString(R.string.mozac_feature_addons_installed_dialog_title_2, addonName)
+        // The description is some text with a clickable link.
+        rootView.findViewById<TextView>(R.id.description).apply {
+            text =
+                combineDescriptionTextWithLink(
+                    textId = R.string.mozac_feature_addons_installed_dialog_description_3,
+                    linkId = R.string.mozac_feature_addons_installed_dialog_description_link_text,
+                    onLinkClicked = {
+                        onExtensionSettingsLinkClicked?.invoke(addon)
+                        dismiss()
+                    },
+                )
+            movementMethod = LinkMovementMethod.getInstance()
+        }
 
         loadIcon(addon = addon, iconView = binding.icon)
 
@@ -175,13 +183,51 @@ class AddonInstallationDialogFragment : AddonDialogFragment() {
                 ContextCompat.getColor(
                     requireContext(),
                     confirmButtonBackgroundColor,
-                ),
+                )
             )
             shape.cornerRadius = confirmButtonRadius
             confirmButton.background = shape
         }
 
         return rootView
+    }
+
+    private fun combineDescriptionTextWithLink(
+        textId: Int,
+        linkId: Int,
+        onLinkClicked: () -> Unit,
+    ): SpannableStringBuilder? {
+        val rawTextWithLink =
+            HtmlCompat.fromHtml(
+                requireContext()
+                    .getString(
+                        textId,
+                        // This empty link is used to construct a spannable string with a `ClickableSpan`
+                        // below.
+                        "<a href=\"\">${requireContext().getString(linkId)}</a>",
+                    ),
+                FROM_HTML_MODE_COMPACT,
+            )
+
+        // We build a spannable string with an active link that allows us to both style the link
+        // part of the text and react to a click to this link.
+        val spannableString = SpannableStringBuilder.valueOf(rawTextWithLink)
+        val link = spannableString.getSpans<URLSpan>()[0]
+        val linkStart = spannableString.getSpanStart(link)
+        val linkEnd = spannableString.getSpanEnd(link)
+        val linkFlags = spannableString.getSpanFlags(link)
+        val linkClickListener: ClickableSpan =
+            object : ClickableSpan() {
+                override fun onClick(view: View) {
+                    view.setOnClickListener {
+                        onLinkClicked()
+                    }
+                }
+            }
+        spannableString.setSpan(linkClickListener, linkStart, linkEnd, linkFlags)
+        spannableString.removeSpan(link)
+
+        return spannableString
     }
 
     override fun show(manager: FragmentManager, tag: String?) {
@@ -200,19 +246,24 @@ class AddonInstallationDialogFragment : AddonDialogFragment() {
     companion object {
         /**
          * Returns a new instance of [AddonInstallationDialogFragment].
+         *
          * @param addon The addon to show in the dialog.
          * @param promptsStyling Styling properties for the dialog.
          * @param onDismissed A lambda called when the dialog is dismissed.
          * @param onConfirmButtonClicked A lambda called when the confirm button is clicked.
+         * @param onExtensionSettingsLinkClicked A lambda called when the extension settings link in the description is
+         *   clicked.
          */
         fun newInstance(
             addon: Addon,
-            promptsStyling: PromptsStyling? = PromptsStyling(
-                gravity = Gravity.BOTTOM,
-                shouldWidthMatchParent = true,
-            ),
+            promptsStyling: PromptsStyling? =
+                PromptsStyling(
+                    gravity = Gravity.BOTTOM,
+                    shouldWidthMatchParent = true,
+                ),
             onDismissed: (() -> Unit)? = null,
             onConfirmButtonClicked: ((Addon) -> Unit)? = null,
+            onExtensionSettingsLinkClicked: ((Addon) -> Unit)? = null,
         ): AddonInstallationDialogFragment {
             val fragment = AddonInstallationDialogFragment()
             val arguments = fragment.arguments ?: Bundle()
@@ -237,6 +288,7 @@ class AddonInstallationDialogFragment : AddonDialogFragment() {
             fragment.onConfirmButtonClicked = onConfirmButtonClicked
             fragment.onDismissed = onDismissed
             fragment.arguments = arguments
+            fragment.onExtensionSettingsLinkClicked = onExtensionSettingsLinkClicked
             return fragment
         }
     }

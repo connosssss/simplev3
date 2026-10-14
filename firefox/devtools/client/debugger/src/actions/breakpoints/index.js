@@ -4,16 +4,19 @@
 
 /**
  * Redux actions for breakpoints
+ *
  * @module actions/breakpoints
  */
 
-import { PROMISE } from "../utils/middleware/promise";
+const {
+  PROMISE,
+} = require("resource://devtools/client/shared/redux/middleware/promise.js");
 import { asyncStore } from "../../utils/prefs";
 import { createLocation } from "../../utils/location";
 import {
   getBreakpointsList,
   getXHRBreakpoints,
-  getSelectedSource,
+  getSelectedLocation,
   getBreakpointAtLocation,
   getBreakpointsForSource,
   getBreakpointsAtLine,
@@ -167,7 +170,7 @@ export function removeBreakpointsInSource(source) {
  * non-pretty-printed (generated) source to the related pretty-printed
  * (original) source by querying the SourceMap service.
  *
- * @param {String} source - the generated source
+ * @param {string} source - the generated source
  */
 export function updateBreakpointsForNewPrettyPrintedSource(source) {
   return async thunkArgs => {
@@ -206,9 +209,9 @@ export function updateBreakpointsForNewPrettyPrintedSource(source) {
 export function toggleBreakpointAtLine(line) {
   return async ({ dispatch, getState }) => {
     const state = getState();
-    const selectedSource = getSelectedSource(state);
+    const selectedLocation = getSelectedLocation(state);
 
-    if (!selectedSource) {
+    if (!selectedLocation) {
       return null;
     }
 
@@ -223,7 +226,8 @@ export function toggleBreakpointAtLine(line) {
     return dispatch(
       addBreakpoint(
         createLocation({
-          source: selectedSource,
+          source: selectedLocation.source,
+          sourceActor: selectedLocation.sourceActor,
           line,
         })
       )
@@ -234,13 +238,14 @@ export function toggleBreakpointAtLine(line) {
 export function addBreakpointAtLine(line, shouldLog = false, disabled = false) {
   return async ({ dispatch, getState }) => {
     const state = getState();
-    const source = getSelectedSource(state);
+    const selectedLocation = getSelectedLocation(state);
 
-    if (!source) {
+    if (!selectedLocation) {
       return null;
     }
     const breakpointLocation = createLocation({
-      source,
+      source: selectedLocation.source,
+      sourceActor: selectedLocation.sourceActor,
       column: undefined,
       line,
     });

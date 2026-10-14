@@ -1,20 +1,20 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef FONT_PALETTE_CACHE_H
 #define FONT_PALETTE_CACHE_H
 
-#include "mozilla/gfx/Types.h"
-#include "mozilla/MruCache.h"
-#include "mozilla/HashFunctions.h"
-#include "mozilla/RefPtr.h"
-#include "nsAtom.h"
-#include "nsTArray.h"
 #include <utility>
 
-class gfxFontEntry;
+#include "gfxFontEntry.h"
+#include "harfbuzz/hb.h"
+#include "mozilla/HashFunctions.h"
+#include "mozilla/MruCache.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/gfx/Types.h"
+#include "nsAtom.h"
+#include "nsTArray.h"
 
 namespace mozilla::gfx {
 
@@ -26,15 +26,15 @@ class FontPalette {
 
  public:
   FontPalette() = default;
-  explicit FontPalette(nsTArray<mozilla::gfx::sRGBColor>&& aColors)
+  explicit FontPalette(nsTArray<hb_color_t>&& aColors)
       : mColors(std::move(aColors)) {}
 
-  const nsTArray<mozilla::gfx::sRGBColor>* Colors() const { return &mColors; }
+  const nsTArray<hb_color_t>* Colors() const { return &mColors; }
 
  private:
   ~FontPalette() = default;
 
-  nsTArray<mozilla::gfx::sRGBColor> mColors;
+  nsTArray<hb_color_t> mColors;
 };
 
 // MRU cache used for resolved color-font palettes, to avoid reconstructing
@@ -56,6 +56,7 @@ class PaletteCache
   already_AddRefed<FontPalette> GetPaletteFor(gfxFontEntry* aFontEntry,
                                               nsAtom* aPaletteName);
 
+  static bool IsEmpty(const CacheData& aVal) { return !aVal.mKey.first; }
   static mozilla::HashNumber Hash(const CacheKey& aKey) {
     return mozilla::HashGeneric(aKey.first.get(), aKey.second.get());
   }

@@ -13,7 +13,7 @@
 
 import sys
 
-MINIMUM_MINOR_VERSION = 9
+MINIMUM_MINOR_VERSION = 10
 
 major, minor = sys.version_info[:2]
 if (major < 3) or (major == 3 and minor < MINIMUM_MINOR_VERSION):
@@ -31,17 +31,8 @@ import tempfile
 from optparse import OptionParser
 from pathlib import Path
 
-CLONE_MERCURIAL_PULL_FAIL = """
-Failed to pull from hg.mozilla.org.
-
-This is most likely because of unstable network connection.
-Try running `cd %s && hg pull https://hg.mozilla.org/mozilla-unified` manually,
-or download a mercurial bundle and use it:
-https://firefox-source-docs.mozilla.org/contributing/vcs/mercurial_bundles.html"""
-
 WINDOWS = sys.platform.startswith("win32") or sys.platform.startswith("msys")
 VCS_HUMAN_READABLE = {
-    "hg": "Mercurial",
     "git": "Git",
     "git-cinnabar": "Git",
 }
@@ -70,6 +61,26 @@ def which(name):
 
 def validate_clone_dest(dest: Path):
     dest = dest.resolve()
+
+    if WINDOWS:
+        # Keep in sync with the path length checks in configure.py.
+        WIN32_MAX_PATH = 260
+        LONGEST_KNOWN_OBJDIR_RELATIVE_PATH = 170
+        DEFAULT_OBJDIR_NAME_LEN = 28  # /obj-x86_64-pc-windows-msvc/
+        max_srcdir_len = (
+            WIN32_MAX_PATH
+            - LONGEST_KNOWN_OBJDIR_RELATIVE_PATH
+            - DEFAULT_OBJDIR_NAME_LEN
+        )
+        dest_len = len(str(dest))
+        if dest_len > max_srcdir_len:
+            print(
+                f"ERROR! Destination path ({dest}) is {dest_len} characters, "
+                f"which exceeds the Windows limit of {max_srcdir_len}. "
+                f"This will cause build failures due to path length restrictions.\n"
+                f"Please choose a shorter path (e.g. D:\\mozilla-source\\firefox)."
+            )
+            return None
 
     if not dest.exists():
         return dest
@@ -108,68 +119,6 @@ def input_clone_dest(vcs, no_interactive):
             return None
 
 
-def hg_clone_firefox(hg: Path, dest: Path, head_repo, head_rev):
-    # We create an empty repo then modify the config before adding data.
-    # This is necessary to ensure storage settings are optimally
-    # configured.
-    args = [
-        str(hg),
-        # The unified repo is generaldelta, so ensure the client is as
-        # well.
-        "--config",
-        "format.generaldelta=true",
-        "init",
-        str(dest),
-    ]
-    res = subprocess.call(args)
-    if res:
-        print("unable to create destination repo; please try cloning manually")
-        return None
-
-    # Strictly speaking, this could overwrite a config based on a template
-    # the user has installed. Let's pretend this problem doesn't exist
-    # unless someone complains about it.
-    with open(dest / ".hg" / "hgrc", "a") as fh:
-        fh.write("[paths]\n")
-        fh.write(f"default = {HG_REPO}\n")
-        fh.write("\n")
-
-        # The server uses aggressivemergedeltas which can blow up delta chain
-        # length. This can cause performance to tank due to delta chains being
-        # too long. Limit the delta chain length to something reasonable
-        # to bound revlog read time.
-        fh.write("[format]\n")
-        fh.write("# This is necessary to keep performance in check\n")
-        fh.write("maxchainlen = 10000\n")
-
-    # Pulling a specific revision into an empty repository induces a lot of
-    # load on the Mercurial server, so we always pull from mozilla-unified (which,
-    # when done from an empty repository, is equivalent to a clone), and then pull
-    # the specific revision we want (if we want a specific one, otherwise we just
-    # use the "central" bookmark), at which point it will be an incremental pull,
-    # that the server can process more easily.
-    # This is the same thing that robustcheckout does on automation.
-    res = subprocess.call([str(hg), "pull", HG_REPO], cwd=str(dest))
-    if not res and head_repo:
-        res = subprocess.call(
-            [str(hg), "pull", head_repo, "-r", head_rev], cwd=str(dest)
-        )
-    print("")
-    if res:
-        print(CLONE_MERCURIAL_PULL_FAIL % dest)
-        return None
-
-    head_rev = head_rev or "central"
-    print(f'updating to "{head_rev}" - the development head of Gecko and Firefox')
-    res = subprocess.call([str(hg), "update", "-r", head_rev], cwd=str(dest))
-    if res:
-        print(
-            f"error updating; you will need to `cd {dest} && hg update -r central` "
-            "manually"
-        )
-    return dest
-
-
 def git_clone_firefox(git: Path, dest: Path, head_repo, head_rev):
     if head_repo and "hg.mozilla.org" in head_repo:
         print("GECKO_HEAD_REPOSITORY cannot be a Mercurial repository when using Git")
@@ -195,6 +144,8 @@ def git_clone_firefox(git: Path, dest: Path, head_repo, head_rev):
     subprocess.check_call(
         [
             str(git),
+            "-c",
+            "checkout.workers=0",
             "checkout",
             "FETCH_HEAD" if head_rev else "main",
             "--",
@@ -289,6 +240,8 @@ def git_cinnabar_clone_firefox(git: Path, dest: Path, head_repo, head_rev):
         subprocess.check_call(
             [
                 str(git),
+                "-c",
+                "checkout.workers=0",
                 "checkout",
                 "FETCH_HEAD" if head_rev else "main",
                 "--",
@@ -352,32 +305,11 @@ def clone(options):
     no_interactive = options.no_interactive
     no_system_changes = options.no_system_changes
 
-    if vcs == "hg":
-        hg = which("hg")
-        if not hg:
-            print("Mercurial is not installed. Mercurial is required to clone Firefox.")
-            try:
-                # We're going to recommend people install the Mercurial package with
-                # pip3. That will work if `pip3` installs binaries to a location
-                # that's in the PATH, but it might not be. To help out, if we CAN
-                # import "mercurial" (in which case it's already been installed),
-                # offer that as a solution.
-                import mercurial  # noqa: F401
-
-                print(
-                    "Hint: have you made sure that Mercurial is installed to a "
-                    "location in your PATH?"
-                )
-            except ImportError:
-                print("Try installing hg with `pip3 install Mercurial`.")
-            return None
-        binary = hg
-    else:
-        binary = which("git")
-        if not binary:
-            print("Git is not installed.")
-            print("Try installing git using your system package manager.")
-            return None
+    binary = which("git")
+    if not binary:
+        print("Git is not installed.")
+        print("Try installing git using your system package manager.")
+        return None
 
     dest = input_clone_dest(vcs, no_interactive)
     if not dest:
@@ -390,9 +322,7 @@ def clone(options):
     head_repo = os.environ.get("GECKO_HEAD_REPOSITORY")
     head_rev = os.environ.get("GECKO_HEAD_REV")
 
-    if vcs == "hg":
-        return hg_clone_firefox(binary, dest, head_repo, head_rev)
-    elif vcs == "git-cinnabar":
+    if vcs == "git-cinnabar":
         return git_cinnabar_clone_firefox(binary, dest, head_repo, head_rev)
     else:
         return git_clone_firefox(binary, dest, head_repo, head_rev)
@@ -430,9 +360,8 @@ def main(args):
         "--vcs",
         dest="vcs",
         default="git",
-        choices=["git", "git-cinnabar", "hg"],
-        help="VCS (hg or git) to use for downloading the source code, "
-        "instead of using the default interactive prompt.",
+        choices=["git", "git-cinnabar"],
+        help="VCS (git or git-cinnabar) to use for downloading the source code.",
     )
     parser.add_option(
         "--no-interactive",
@@ -444,7 +373,7 @@ def main(args):
         "--no-system-changes",
         dest="no_system_changes",
         action="store_true",
-        help="Only executes actions that leave the system " "configuration alone.",
+        help="Only executes actions that leave the system configuration alone.",
     )
 
     options, leftover = parser.parse_args(args)

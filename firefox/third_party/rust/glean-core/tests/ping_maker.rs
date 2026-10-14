@@ -41,10 +41,10 @@ fn ping_info_must_contain_a_nonempty_start_and_end_time() {
     let ping_info = ping.content["ping_info"].as_object().unwrap();
 
     let start_time_str = ping_info["start_time"].as_str().unwrap();
-    let start_time_date = iso8601_to_chrono(&iso8601::datetime(start_time_str).unwrap());
+    let start_time_date = chrono::DateTime::parse_from_rfc3339(start_time_str).unwrap();
 
     let end_time_str = ping_info["end_time"].as_str().unwrap();
-    let end_time_date = iso8601_to_chrono(&iso8601::datetime(end_time_str).unwrap());
+    let end_time_date = chrono::DateTime::parse_from_rfc3339(end_time_str).unwrap();
 
     assert!(start_time_date <= end_time_date);
 }
@@ -96,6 +96,13 @@ fn test_metrics_must_report_experimentation_id() {
         ping_schedule: Default::default(),
         ping_lifetime_threshold: 0,
         ping_lifetime_max_time: 0,
+        max_pending_pings_count: None,
+        max_pending_pings_directory_size: None,
+        session_mode: glean_core::SessionMode::Auto,
+        session_sample_rate: 1.0,
+        session_inactivity_timeout_ms: 1_800_000,
+        events_ping_acceleration_factor: None,
+        enable_store_submitted_pings: false,
     })
     .unwrap();
     let ping_maker = PingMaker::new();
@@ -151,6 +158,13 @@ fn experimentation_id_is_removed_if_send_if_empty_is_false() {
         ping_schedule: Default::default(),
         ping_lifetime_threshold: 0,
         ping_lifetime_max_time: 0,
+        max_pending_pings_count: None,
+        max_pending_pings_directory_size: None,
+        session_mode: glean_core::SessionMode::Auto,
+        session_sample_rate: 1.0,
+        session_inactivity_timeout_ms: 1_800_000,
+        events_ping_acceleration_factor: None,
+        enable_store_submitted_pings: false,
     })
     .unwrap();
     let ping_maker = PingMaker::new();
@@ -372,4 +386,16 @@ fn attribution_and_distribution_appear_in_client_info() {
         }),
         client_info["attribution"]
     );
+
+    // Now let's test clearing.
+    glean.clear_attribution();
+    glean.clear_distribution();
+
+    let ping = ping_maker
+        .collect(&glean, &ping_type, None, "", "")
+        .unwrap();
+    let client_info = ping.content["client_info"].as_object().unwrap();
+
+    assert_eq!(None, client_info.get("distribution"));
+    assert_eq!(None, client_info.get("attribution"));
 }

@@ -7,7 +7,8 @@ package mozilla.components.lib.state.ext
 import android.view.View
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.LifecycleOwner
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.launch
 import mozilla.components.lib.state.Action
@@ -16,21 +17,21 @@ import mozilla.components.lib.state.Store
 import mozilla.components.support.ktx.android.view.toScope
 
 /**
- * Helper extension method for consuming [State] from a [Store] sequentially in order scoped to the
- * lifetime of the [View]. The [block] function will get invoked for every [State] update.
+ * Helper extension method for consuming [State] from a [Store] sequentially in order scoped to the lifetime of the
+ * [View]. The [block] function will get invoked for every [State] update.
  *
- * This helper will automatically stop observing the [Store] once the [View] gets detached. The
- * provided [LifecycleOwner] is used to determine when observing should be stopped or resumed.
+ * This helper will automatically stop observing the [Store] once the [View] gets detached. The provided
+ * [LifecycleOwner] is used to determine when observing should be stopped or resumed.
  *
  * Inside a [Fragment] prefer to use [Fragment.consumeFrom].
  */
-@ExperimentalCoroutinesApi // Channel
 fun <S : State, A : Action> View.consumeFrom(
     store: Store<S, A>,
     owner: LifecycleOwner,
+    mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
     block: (S) -> Unit,
 ) {
-    val scope = toScope()
+    val scope = toScope(mainDispatcher)
     val channel = store.channel(owner)
 
     scope.launch {

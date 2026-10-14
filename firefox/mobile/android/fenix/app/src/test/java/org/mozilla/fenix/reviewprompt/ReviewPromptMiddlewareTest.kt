@@ -4,64 +4,116 @@
 
 package org.mozilla.fenix.reviewprompt
 
-import androidx.test.ext.junit.runners.AndroidJUnit4
-import mozilla.components.support.test.ext.joinBlocking
-import mozilla.components.support.test.robolectric.testContext
+import kotlin.test.assertIs
+import mozilla.components.support.test.assertUnused
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.junit.runner.RunWith
+import org.mozilla.experiments.nimbus.NimbusMessagingHelperInterface
 import org.mozilla.fenix.components.AppStore
 import org.mozilla.fenix.components.appstate.AppAction.ReviewPromptAction
 import org.mozilla.fenix.components.appstate.AppState
+import org.mozilla.fenix.nimbus.FakeNimbusEventStore
+import org.mozilla.fenix.nimbus.RecordEventMode.CompleteSuccessfully
+import org.mozilla.fenix.nimbus.RecordEventMode.ThrowException
 import org.mozilla.fenix.reviewprompt.ReviewPromptState.Eligible.Type
-import org.mozilla.fenix.utils.Settings
 
-@RunWith(AndroidJUnit4::class)
 class ReviewPromptMiddlewareTest {
 
-    val settings = Settings(testContext).apply {
-        numberOfAppLaunches = 5
-        isDefaultBrowser = true
-        lastReviewPromptTimeInMillis = 0L
-        isTelemetryEnabled = false
-    }
+    private val eventStore = FakeNimbusEventStore()
 
-    val store = AppStore(
-        middlewares = listOf(
-            ReviewPromptMiddleware(
-                settings = settings,
-                timeNowInMillis = { TEST_TIME_NOW },
-            ),
-        ),
-    )
+    private var continuousOnboardingInProgress = false
+    private var shouldShowCustomPrompt = true
+    private lateinit var mainCriteria: Sequence<Boolean>
+    private lateinit var subCriteria: Sequence<Boolean>
 
-    @Test
-    fun `GIVEN prompt has never been shown AND other criteria satisfied WHEN check requested THEN sets eligible for Play Store prompt`() {
-        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt).joinBlocking()
+    private val store =
+        AppStore(
+            middlewares =
+                listOf(
+                    ReviewPromptMiddleware(
+                        continuousOnboardingInProgress = { continuousOnboardingInProgress },
+                        shouldShowCustomPrompt = { shouldShowCustomPrompt },
+                        disableCustomPrompt = { shouldShowCustomPrompt = false },
+                        createJexlHelper = {
+                            object : NimbusMessagingHelperInterface {
+                                override fun evalJexl(expression: String) = assertUnused()
 
-        assertEquals(
-            AppState(reviewPrompt = ReviewPromptState.Eligible(Type.PlayStore)),
-            store.state,
+                                override fun evalJexlDebug(expression: String) = assertUnused()
+
+                                override fun getUuid(template: String) = assertUnused()
+
+                                override fun stringFormat(template: String, uuid: String?) = assertUnused()
+                            }
+                        },
+                        buildTriggerMainCriteria = { mainCriteria },
+                        buildTriggerSubCriteria = { subCriteria },
+                        nimbusEventStore = eventStore,
+                    )
+                )
         )
+
+    @Test
+    fun `WHEN check requested THEN main and sub-criteria are checked`() {
+        var mainCriteriaChecked = false
+        var subCriteriaChecked = false
+        mainCriteria = sequence {
+            mainCriteriaChecked = true
+            yield(true)
+        }
+        subCriteria = sequence {
+            subCriteriaChecked = true
+            yield(true)
+        }
+
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
+
+        assertTrue(mainCriteriaChecked)
+        assertTrue(subCriteriaChecked)
     }
 
     @Test
-    fun `GIVEN prompt has been shown more than 4 months ago AND other criteria satisfied WHEN check requested THEN sets eligible for Play Store prompt`() {
-        settings.lastReviewPromptTimeInMillis = MORE_THAN_4_MONTHS_FROM_TEST_TIME_NOW
+    fun `GIVEN main criteria satisfied AND one of sub-criteria satisfied WHEN check requested THEN sets eligible`() {
+        mainCriteria = sequenceOf(true)
+        subCriteria = sequenceOf(false, true, false)
 
-        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt).joinBlocking()
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
 
-        assertEquals(
-            AppState(reviewPrompt = ReviewPromptState.Eligible(Type.PlayStore)),
-            store.state,
-        )
+        assertIs<ReviewPromptState.Eligible>(store.state.reviewPrompt)
     }
 
     @Test
-    fun `GIVEN app isn't the default browser WHEN check requested THEN sets not eligible`() {
-        settings.isDefaultBrowser = false
+    fun `GIVEN main criteria satisfied AND first sub-criteria satisfied WHEN check requested THEN other sub-criteria are not checked`() {
+        mainCriteria = sequenceOf(true)
+        var continuedPastFirstSatisfied = false
+        subCriteria = sequence {
+            yield(true)
+            continuedPastFirstSatisfied = true
+            yield(true)
+        }
 
-        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt).joinBlocking()
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
+
+        assertFalse(continuedPastFirstSatisfied)
+    }
+
+    @Test
+    fun `GIVEN no main criteria AND one of sub-criteria satisfied WHEN check requested THEN sets eligible`() {
+        mainCriteria = emptySequence()
+        subCriteria = sequenceOf(false, true, false)
+
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
+
+        assertIs<ReviewPromptState.Eligible>(store.state.reviewPrompt)
+    }
+
+    @Test
+    fun `GIVEN main criteria satisfied AND no sub-criteria satisfied WHEN check requested THEN sets not eligible`() {
+        mainCriteria = sequenceOf(true)
+        subCriteria = sequenceOf(false)
+
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
 
         assertEquals(
             AppState(reviewPrompt = ReviewPromptState.NotEligible),
@@ -70,10 +122,11 @@ class ReviewPromptMiddlewareTest {
     }
 
     @Test
-    fun `GIVEN app launched less than 5 times WHEN check requested THEN sets not eligible`() {
-        settings.numberOfAppLaunches = 4
+    fun `GIVEN main criteria satisfied AND no sub-criteria WHEN check requested THEN sets not eligible`() {
+        mainCriteria = sequenceOf(true)
+        subCriteria = emptySequence()
 
-        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt).joinBlocking()
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
 
         assertEquals(
             AppState(reviewPrompt = ReviewPromptState.NotEligible),
@@ -82,42 +135,113 @@ class ReviewPromptMiddlewareTest {
     }
 
     @Test
-    fun `GIVEN prompt has been shown less than 4 months ago WHEN check requested THEN sets not eligible`() {
-        settings.lastReviewPromptTimeInMillis = LESS_THAN_4_MONTHS_FROM_TEST_TIME_NOW
+    fun `GIVEN one of main criteria not satisfied AND sub-criteria satisfied WHEN check requested THEN sets not eligible`() {
+        mainCriteria = sequenceOf(true, false, true)
+        subCriteria = sequenceOf(true)
 
-        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt).joinBlocking()
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
 
         assertEquals(
             AppState(reviewPrompt = ReviewPromptState.NotEligible),
             store.state,
         )
+    }
+
+    @Test
+    fun `GIVEN one of main criteria not satisfied WHEN check requested THEN other criteria not checked`() {
+        var continuedPastFirstNotSatisfied = false
+        mainCriteria = sequence {
+            yield(false)
+            continuedPastFirstNotSatisfied = true
+            yield(false)
+        }
+        subCriteria = sequence {
+            continuedPastFirstNotSatisfied = true
+            yield(false)
+        }
+
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
+
+        assertFalse(continuedPastFirstNotSatisfied)
     }
 
     @Test
     fun `GIVEN check ran WHEN check requested again THEN does nothing`() {
-        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt).joinBlocking()
+        mainCriteria = sequenceOf()
+        subCriteria = sequenceOf()
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
         val expectedState = store.state
 
-        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt).joinBlocking()
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
 
         assertEquals(expectedState, store.state)
+    }
+
+    @Test
+    fun `GIVEN continuous onboarding in progress WHEN check requested THEN sets not eligible without checking criteria`() {
+        continuousOnboardingInProgress = true
+        var criteriaChecked = false
+        mainCriteria = sequence {
+            criteriaChecked = true
+            yield(true)
+        }
+        subCriteria = sequence {
+            criteriaChecked = true
+            yield(true)
+        }
+
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
+
+        assertFalse(criteriaChecked)
+        assertEquals(
+            AppState(reviewPrompt = ReviewPromptState.NotEligible),
+            store.state,
+        )
+    }
+
+    @Test
+    fun `GIVEN check ran while continuous onboarding in progress WHEN onboarding completes AND check requested again THEN stays not eligible`() {
+        continuousOnboardingInProgress = true
+        mainCriteria = sequenceOf(true)
+        subCriteria = sequenceOf(true)
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
+
+        continuousOnboardingInProgress = false
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
+
+        assertEquals(
+            AppState(reviewPrompt = ReviewPromptState.NotEligible),
+            store.state,
+        )
     }
 
     @Test
     fun `GIVEN review prompt shown WHEN check requested THEN does nothing`() {
-        store.dispatch(ReviewPromptAction.ReviewPromptShown).joinBlocking()
+        store.dispatch(ReviewPromptAction.ReviewPromptShown)
         val expectedState = store.state
 
-        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt).joinBlocking()
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
 
         assertEquals(expectedState, store.state)
     }
 
     @Test
-    fun `WHEN review prompt shown THEN last review prompt time updated`() {
-        store.dispatch(ReviewPromptAction.ReviewPromptShown).joinBlocking()
+    fun `WHEN review prompt shown THEN an event is recorded`() {
+        eventStore.recordEventMode = CompleteSuccessfully
 
-        assertEquals(TEST_TIME_NOW, settings.lastReviewPromptTimeInMillis)
+        store.dispatch(ReviewPromptAction.ReviewPromptShown)
+
+        eventStore.assertRecorded("review_prompt_shown")
+    }
+
+    @Test
+    fun `WHEN recordEvent fails THEN disables custom prompt`() {
+        shouldShowCustomPrompt = true
+        eventStore.recordEventMode = ThrowException
+
+        store.dispatch(ReviewPromptAction.ReviewPromptShown)
+
+        assertFalse(shouldShowCustomPrompt)
     }
 
     @Test
@@ -136,10 +260,12 @@ class ReviewPromptMiddlewareTest {
     }
 
     @Test
-    fun `GIVEN telemetry enabled AND other criteria satisfied WHEN check requested THEN sets eligible for Custom prompt`() {
-        settings.isTelemetryEnabled = true
+    fun `GIVEN custom prompt enabled AND criteria satisfied WHEN check requested THEN sets eligible for Custom prompt`() {
+        shouldShowCustomPrompt = true
+        mainCriteria = sequenceOf(true)
+        subCriteria = sequenceOf(true)
 
-        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt).joinBlocking()
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
 
         assertEquals(
             AppState(reviewPrompt = ReviewPromptState.Eligible(Type.Custom)),
@@ -147,22 +273,30 @@ class ReviewPromptMiddlewareTest {
         )
     }
 
+    @Test
+    fun `GIVEN custom prompt disabled AND criteria satisfied WHEN check requested THEN sets eligible for Play Store prompt`() {
+        shouldShowCustomPrompt = false
+        mainCriteria = sequenceOf(true)
+        subCriteria = sequenceOf(true)
+
+        store.dispatch(ReviewPromptAction.CheckIfEligibleForReviewPrompt)
+
+        assertEquals(
+            AppState(reviewPrompt = ReviewPromptState.Eligible(Type.PlayStore)),
+            store.state,
+        )
+    }
+
     private fun assertNoOp(action: ReviewPromptAction) {
         val withoutMiddleware = AppStore()
-        withoutMiddleware.dispatch(action).joinBlocking()
+        withoutMiddleware.dispatch(action)
         val expectedState = withoutMiddleware.state
 
-        store.dispatch(action).joinBlocking()
+        store.dispatch(action)
 
         assertEquals(
             expectedState,
             store.state,
         )
-    }
-
-    companion object {
-        private const val TEST_TIME_NOW = 1598416882805L
-        private const val MORE_THAN_4_MONTHS_FROM_TEST_TIME_NOW = 1588048882804L
-        private const val LESS_THAN_4_MONTHS_FROM_TEST_TIME_NOW = 1595824882905L
     }
 }

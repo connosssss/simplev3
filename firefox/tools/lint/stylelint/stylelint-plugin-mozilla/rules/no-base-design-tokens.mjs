@@ -2,10 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-env node */
-
 import stylelint from "stylelint";
-import { namespace } from "../helpers.mjs";
+import { isCustomPropertyDefinition, namespace } from "../helpers.mjs";
 
 const {
   utils: { report, ruleMessages, validateOptions },
@@ -21,8 +19,6 @@ let meta = {
 };
 
 let colorTokenRegex = /var\((?<token>--color-[a-zA-Z]+-\d+)\)/g;
-let isCustomPropertyDefinition = decl =>
-  decl.prop.startsWith("--") || decl.prop.startsWith("$");
 
 let ruleFunction = primaryOption => {
   return (root, result) => {

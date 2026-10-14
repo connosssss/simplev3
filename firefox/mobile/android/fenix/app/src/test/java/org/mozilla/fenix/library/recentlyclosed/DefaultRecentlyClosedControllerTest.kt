@@ -6,36 +6,39 @@ package org.mozilla.fenix.library.recentlyclosed
 
 import androidx.navigation.NavController
 import androidx.navigation.NavOptions
-import io.mockk.Runs
-import io.mockk.coEvery
+import io.mockk.coJustRun
 import io.mockk.coVerify
 import io.mockk.every
-import io.mockk.just
 import io.mockk.mockk
 import io.mockk.verify
+import kotlin.test.assertNotNull
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import mozilla.components.browser.state.action.BrowserAction
 import mozilla.components.browser.state.action.RecentlyClosedAction
+import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.state.recover.TabState
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.engine.prompt.ShareData
 import mozilla.components.feature.recentlyclosed.RecentlyClosedTabsStorage
 import mozilla.components.feature.tabs.TabsUseCases
+import mozilla.components.support.test.middleware.CaptureActionsMiddleware
 import mozilla.components.support.test.robolectric.testContext
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.mozilla.fenix.BrowserDirection
 import org.mozilla.fenix.GleanMetrics.RecentlyClosedTabs
-import org.mozilla.fenix.HomeActivity
 import org.mozilla.fenix.R
 import org.mozilla.fenix.browser.browsingmode.BrowsingMode
+import org.mozilla.fenix.components.AppStore
+import org.mozilla.fenix.components.appstate.AppState
+import org.mozilla.fenix.components.share.ShareSheetChooserAction
+import org.mozilla.fenix.components.share.ShareSource
+import org.mozilla.fenix.components.usecases.ShareUseCases
 import org.mozilla.fenix.ext.directionsEq
 import org.mozilla.fenix.ext.optionsEq
 import org.mozilla.fenix.helpers.FenixGleanTestRule
@@ -44,17 +47,19 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class DefaultRecentlyClosedControllerTest {
     private val navController: NavController = mockk(relaxed = true)
-    private val activity: HomeActivity = mockk(relaxed = true)
-    private val browserStore: BrowserStore = mockk(relaxed = true)
+    private var currentMode: BrowsingMode = BrowsingMode.Normal
+
+    private val captureActionsMiddleware = CaptureActionsMiddleware<BrowserState, BrowserAction>()
+    private val browserStore: BrowserStore = BrowserStore(middleware = listOf(captureActionsMiddleware))
     private val recentlyClosedStore: RecentlyClosedFragmentStore = mockk(relaxed = true)
     private val tabsUseCases: TabsUseCases = mockk(relaxed = true)
+    private val shareUseCases: ShareUseCases = mockk(relaxed = true)
 
-    @get:Rule
-    val gleanTestRule = FenixGleanTestRule(testContext)
+    @get:Rule val gleanTestRule = FenixGleanTestRule(testContext)
 
     @Before
     fun setUp() {
-        coEvery { tabsUseCases.restore.invoke(any(), any(), true) } just Runs
+        coJustRun { tabsUseCases.restore.invoke(any(), any(), true) }
     }
 
     @Test
@@ -62,27 +67,16 @@ class DefaultRecentlyClosedControllerTest {
         val item: TabState = mockk(relaxed = true)
 
         var tabUrl: String? = null
-        var actualBrowsingMode: BrowsingMode? = null
 
-        val controller = createController(
-            openToBrowser = { url, browsingMode ->
-                tabUrl = url
-                actualBrowsingMode = browsingMode
-            },
-        )
+        val controller =
+            createController(
+                openToBrowser = { url ->
+                    tabUrl = url
+                }
+            )
 
-        controller.handleOpen(item, BrowsingMode.Private)
-
+        controller.handleOpen(item)
         assertEquals(item.url, tabUrl)
-        assertEquals(actualBrowsingMode, BrowsingMode.Private)
-
-        tabUrl = null
-        actualBrowsingMode = null
-
-        controller.handleOpen(item, BrowsingMode.Normal)
-
-        assertEquals(item.url, tabUrl)
-        assertEquals(actualBrowsingMode, BrowsingMode.Normal)
     }
 
     @Test
@@ -90,36 +84,30 @@ class DefaultRecentlyClosedControllerTest {
         val tabs = createFakeTabList(2)
 
         val tabUrls = mutableListOf<String>()
-        val actualBrowsingModes = mutableListOf<BrowsingMode?>()
 
-        val controller = createController(
-            openToBrowser = { url, mode ->
-                tabUrls.add(url)
-                actualBrowsingModes.add(mode)
-            },
-        )
+        currentMode = BrowsingMode.Normal
+        var controller = createController(openToBrowser = { url -> tabUrls.add(url) })
         assertNull(RecentlyClosedTabs.menuOpenInNormalTab.testGetValue())
 
-        controller.handleOpen(tabs.toSet(), BrowsingMode.Normal)
+        controller.handleOpen(tabs.toSet())
 
         assertEquals(2, tabUrls.size)
         assertEquals(tabs[0].url, tabUrls[0])
         assertEquals(tabs[1].url, tabUrls[1])
-        assertEquals(BrowsingMode.Normal, actualBrowsingModes[0])
-        assertEquals(BrowsingMode.Normal, actualBrowsingModes[1])
         assertNotNull(RecentlyClosedTabs.menuOpenInNormalTab.testGetValue())
         assertNull(RecentlyClosedTabs.menuOpenInNormalTab.testGetValue()!!.last().extra)
 
         tabUrls.clear()
-        actualBrowsingModes.clear()
 
-        controller.handleOpen(tabs.toSet(), BrowsingMode.Private)
+        currentMode = BrowsingMode.Private
+        controller = createController(openToBrowser = { url -> tabUrls.add(url) })
+        assertNull(RecentlyClosedTabs.menuOpenInPrivateTab.testGetValue())
+
+        controller.handleOpen(tabs.toSet())
 
         assertEquals(2, tabUrls.size)
         assertEquals(tabs[0].url, tabUrls[0])
         assertEquals(tabs[1].url, tabUrls[1])
-        assertEquals(BrowsingMode.Private, actualBrowsingModes[0])
-        assertEquals(BrowsingMode.Private, actualBrowsingModes[1])
         assertNotNull(RecentlyClosedTabs.menuOpenInPrivateTab.testGetValue())
         assertEquals(1, RecentlyClosedTabs.menuOpenInPrivateTab.testGetValue()!!.size)
         assertNull(RecentlyClosedTabs.menuOpenInPrivateTab.testGetValue()!!.single().extra)
@@ -182,9 +170,10 @@ class DefaultRecentlyClosedControllerTest {
 
         createController().handleDelete(item)
 
-        verify {
-            browserStore.dispatch(RecentlyClosedAction.RemoveClosedTabAction(item))
+        captureActionsMiddleware.assertFirstAction(RecentlyClosedAction.RemoveClosedTabAction::class) { action ->
+            assertEquals(item, action.tab)
         }
+
         assertNotNull(RecentlyClosedTabs.deleteTab.testGetValue())
         assertEquals(1, RecentlyClosedTabs.deleteTab.testGetValue()!!.size)
         assertNull(RecentlyClosedTabs.deleteTab.testGetValue()!!.single().extra)
@@ -197,10 +186,14 @@ class DefaultRecentlyClosedControllerTest {
 
         createController().handleDelete(tabs.toSet())
 
-        verify {
-            browserStore.dispatch(RecentlyClosedAction.RemoveClosedTabAction(tabs[0]))
-            browserStore.dispatch(RecentlyClosedAction.RemoveClosedTabAction(tabs[1]))
+        captureActionsMiddleware.assertFirstAction(RecentlyClosedAction.RemoveClosedTabAction::class) { action ->
+            assertEquals(tabs[0], action.tab)
         }
+
+        captureActionsMiddleware.assertLastAction(RecentlyClosedAction.RemoveClosedTabAction::class) { action ->
+            assertEquals(tabs[1], action.tab)
+        }
+
         assertNotNull(RecentlyClosedTabs.menuDelete.testGetValue())
         assertNull(RecentlyClosedTabs.menuDelete.testGetValue()!!.last().extra)
     }
@@ -213,9 +206,7 @@ class DefaultRecentlyClosedControllerTest {
 
         verify {
             navController.navigate(
-                directionsEq(
-                    RecentlyClosedFragmentDirections.actionGlobalHistoryFragment(),
-                ),
+                directionsEq(RecentlyClosedFragmentDirections.actionGlobalHistoryFragment()),
                 optionsEq(NavOptions.Builder().setPopUpTo(R.id.historyFragment, true).build()),
             )
         }
@@ -225,19 +216,44 @@ class DefaultRecentlyClosedControllerTest {
     }
 
     @Test
-    fun `share multiple tabs`() {
+    fun `WHEN a single tab is shared THEN record telemetry and call share use cases with send to devices and QR code chooser actions`() {
+        val tabs = createFakeTabList(1)
+        assertNull(RecentlyClosedTabs.menuShare.testGetValue())
+
+        createController().handleShare(tabs.toSet())
+
+        val items = listOf(ShareData(url = tabs[0].url, title = tabs[0].title, private = tabs[0].private))
+        verify {
+            shareUseCases.shareItems(
+                items = items,
+                source = ShareSource.RECENTLY_CLOSED,
+                chooserActions = listOf(ShareSheetChooserAction.SEND_TO_DEVICES, ShareSheetChooserAction.QR_CODE),
+                navigateToShareFragment = any(),
+            )
+        }
+        assertNotNull(RecentlyClosedTabs.menuShare.testGetValue())
+        assertEquals(1, RecentlyClosedTabs.menuShare.testGetValue()!!.size)
+        assertNull(RecentlyClosedTabs.menuShare.testGetValue()!!.single().extra)
+    }
+
+    @Test
+    fun `WHEN multiple tabs are shared THEN record telemetry and call share use cases with send to devices chooser action`() {
         val tabs = createFakeTabList(2)
         assertNull(RecentlyClosedTabs.menuShare.testGetValue())
 
         createController().handleShare(tabs.toSet())
 
-        verify {
-            val data = arrayOf(
-                ShareData(title = tabs[0].title, url = tabs[0].url),
-                ShareData(title = tabs[1].title, url = tabs[1].url),
+        val items =
+            listOf(
+                ShareData(url = tabs[0].url, title = tabs[0].title, private = tabs[0].private),
+                ShareData(url = tabs[1].url, title = tabs[1].title, private = tabs[1].private),
             )
-            navController.navigate(
-                directionsEq(RecentlyClosedFragmentDirections.actionGlobalShareFragment(data)),
+        verify {
+            shareUseCases.shareItems(
+                items = items,
+                source = ShareSource.RECENTLY_CLOSED,
+                chooserActions = listOf(ShareSheetChooserAction.SEND_TO_DEVICES),
+                navigateToShareFragment = any(),
             )
         }
         assertNotNull(RecentlyClosedTabs.menuShare.testGetValue())
@@ -248,55 +264,64 @@ class DefaultRecentlyClosedControllerTest {
     @Test
     fun handleRestore() = runTest {
         val item: TabState = mockk(relaxed = true)
-        every { activity.browsingModeManager.mode } returns BrowsingMode.Normal
+        currentMode = BrowsingMode.Normal
 
         assertNull(RecentlyClosedTabs.openTab.testGetValue())
 
         createController(scope = this).handleRestore(item)
-        runCurrent()
+        testScheduler.advanceUntilIdle()
 
         coVerify { tabsUseCases.restore.invoke(eq(item), any(), true) }
+        verify { navController.navigate(R.id.browserFragment) }
         assertNotNull(RecentlyClosedTabs.openTab.testGetValue())
         assertEquals(1, RecentlyClosedTabs.openTab.testGetValue()!!.size)
         assertNull(RecentlyClosedTabs.openTab.testGetValue()!!.single().extra)
     }
 
     @Test
-    fun `GIVEN normal browsing mode WHEN handleRestore is called THEN openToBrowser is invoked`() = runTest {
-        val item: TabState = mockk(relaxed = true)
-       val controller = createController(scope = this)
-
-        assertNull(RecentlyClosedTabs.openTab.testGetValue())
-
-        every { activity.browsingModeManager.mode } returns BrowsingMode.Normal
-
-        controller.handleRestore(item)
-
-        runCurrent()
-
-        coVerify { tabsUseCases.restore.invoke(eq(item), any(), true) }
-
-        verify {
-            browserStore.dispatch(RecentlyClosedAction.RemoveClosedTabAction(item))
-        }
-        verify { activity.openToBrowser(from = eq(BrowserDirection.FromRecentlyClosed)) }
-    }
-
-    @Test
-    fun `GIVEN private browsing mode WHEN handleRestore is called THEN handleOpen is invoked with private mode`() = runTest {
+    fun `GIVEN normal browsing mode WHEN handleRestore is called THEN restore and nav to browser`() = runTest {
         val item: TabState = mockk(relaxed = true)
         val controller = createController(scope = this)
 
         assertNull(RecentlyClosedTabs.openTab.testGetValue())
 
-        every { activity.browsingModeManager.mode } returns BrowsingMode.Private
+        currentMode = BrowsingMode.Normal
 
         controller.handleRestore(item)
 
-        runCurrent()
+        testScheduler.advanceUntilIdle()
 
-        verify { controller.handleOpen(item, BrowsingMode.Private) }
+        coVerify { tabsUseCases.restore.invoke(eq(item), any(), true) }
+
+        captureActionsMiddleware.assertFirstAction(RecentlyClosedAction.RemoveClosedTabAction::class) { action ->
+            assertEquals(item, action.tab)
+        }
+
+        verify { navController.navigate(R.id.browserFragment) }
     }
+
+    @Test
+    fun `GIVEN private browsing mode WHEN handleRestore is called THEN handleOpen is invoked with private mode`() =
+        runTest {
+            val item: TabState = mockk(relaxed = true)
+            var capturedUrl: String? = null
+            currentMode = BrowsingMode.Private
+            val controller =
+                createController(
+                    scope = this,
+                    openToBrowser = { url ->
+                        capturedUrl = url
+                    },
+                )
+
+            assertNull(RecentlyClosedTabs.openTab.testGetValue())
+
+            controller.handleRestore(item)
+
+            testScheduler.advanceUntilIdle()
+
+            assertEquals(item.url, capturedUrl)
+        }
 
     @Test
     fun `exist multi-select mode when back is pressed`() {
@@ -326,22 +351,23 @@ class DefaultRecentlyClosedControllerTest {
 
     private fun createController(
         scope: CoroutineScope = CoroutineScope(Dispatchers.IO),
-        openToBrowser: (String, BrowsingMode?) -> Unit = { _, _ -> },
+        openToBrowser: (String) -> Unit = { _ -> },
     ): RecentlyClosedController {
+        val appStore = AppStore(initialState = AppState(mode = currentMode))
         return DefaultRecentlyClosedController(
-            navController,
-            browserStore,
-            recentlyClosedStore,
-            RecentlyClosedTabsStorage(testContext, mockk(), mockk()),
-            tabsUseCases,
-            activity,
-            scope,
-            openToBrowser,
+            appStore = appStore,
+            navController = navController,
+            browserStore = browserStore,
+            recentlyClosedStore = recentlyClosedStore,
+            recentlyClosedTabsStorage = RecentlyClosedTabsStorage(testContext, mockk(), mockk()),
+            tabsUseCases = tabsUseCases,
+            shareUseCases = shareUseCases,
+            lifecycleScope = scope,
+            openToBrowser = openToBrowser,
         )
     }
 
-    private fun createFakeTab(id: String = "FakeId", url: String = "www.fake.com"): TabState =
-        TabState(id, url)
+    private fun createFakeTab(id: String = "FakeId", url: String = "www.fake.com"): TabState = TabState(id, url)
 
     private fun createFakeTabList(size: Int): List<TabState> {
         val fakeTabs = mutableListOf<TabState>()

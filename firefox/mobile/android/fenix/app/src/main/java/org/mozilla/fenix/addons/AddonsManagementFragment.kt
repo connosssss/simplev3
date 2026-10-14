@@ -18,6 +18,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.R as materialR
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.launch
@@ -25,24 +26,22 @@ import mozilla.components.concept.engine.webextension.InstallationMethod
 import mozilla.components.feature.addons.Addon
 import mozilla.components.feature.addons.AddonManager
 import mozilla.components.feature.addons.AddonManagerException
+import mozilla.components.feature.addons.R as addonsR
 import mozilla.components.feature.addons.ui.AddonsManagerAdapter
-import org.mozilla.fenix.BrowserDirection
-import org.mozilla.fenix.HomeActivity
 import org.mozilla.fenix.R
-import org.mozilla.fenix.browser.browsingmode.BrowsingMode
 import org.mozilla.fenix.databinding.FragmentAddOnsManagementBinding
+import org.mozilla.fenix.e2e.SystemInsetsPaddedFragment
 import org.mozilla.fenix.ext.components
+import org.mozilla.fenix.ext.openToBrowser
 import org.mozilla.fenix.ext.requireComponents
 import org.mozilla.fenix.ext.runIfFragmentIsAttached
 import org.mozilla.fenix.ext.showToolbar
 import org.mozilla.fenix.settings.SupportUtils.AMO_HOMEPAGE_FOR_ANDROID
 import org.mozilla.fenix.theme.ThemeManager
 
-/**
- * Fragment use for managing add-ons.
- */
+/** Fragment use for managing add-ons. */
 @Suppress("TooManyFunctions", "LargeClass")
-class AddonsManagementFragment : Fragment(R.layout.fragment_add_ons_management) {
+class AddonsManagementFragment : Fragment(R.layout.fragment_add_ons_management), SystemInsetsPaddedFragment {
 
     private var binding: FragmentAddOnsManagementBinding? = null
 
@@ -50,19 +49,10 @@ class AddonsManagementFragment : Fragment(R.layout.fragment_add_ons_management) 
 
     private var adapter: AddonsManagerAdapter? = null
 
-    private val browsingModeManager by lazy {
-        (activity as HomeActivity).browsingModeManager
-    }
-
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         binding = FragmentAddOnsManagementBinding.bind(view)
         bindRecyclerView()
-        (activity as HomeActivity).webExtensionPromptFeature.onAddonChanged = {
-            runIfFragmentIsAttached {
-                adapter?.updateAddon(it)
-            }
-        }
     }
 
     override fun onResume() {
@@ -75,23 +65,19 @@ class AddonsManagementFragment : Fragment(R.layout.fragment_add_ons_management) 
         // letting go of the resources to avoid memory leak.
         adapter = null
         binding = null
-        (activity as HomeActivity).webExtensionPromptFeature.onAddonChanged = {}
     }
 
+    @Suppress("CognitiveComplexMethod")
     private fun bindRecyclerView() {
-        val managementView = AddonsManagementView(
-            navController = findNavController(),
-            onInstallButtonClicked = ::installAddon,
-            onMoreAddonsButtonClicked = ::openAMO,
-            onLearnMoreClicked = { link, addon ->
-                openLearnMoreLink(
-                    activity as HomeActivity,
-                    link,
-                    addon,
-                    BrowserDirection.FromAddonsManagementFragment,
-                )
-            },
-        )
+        val managementView =
+            AddonsManagementView(
+                navController = findNavController(),
+                onInstallButtonClicked = ::installAddon,
+                onMoreAddonsButtonClicked = ::openAMO,
+                onLearnMoreClicked = { link, addon ->
+                    binding?.root?.openLearnMoreLink(link, addon)
+                },
+            )
 
         val recyclerView = binding?.addOnsList
         recyclerView?.layoutManager = LinearLayoutManager(requireContext())
@@ -103,39 +89,46 @@ class AddonsManagementFragment : Fragment(R.layout.fragment_add_ons_management) 
                 lifecycleScope.launch(Dispatchers.Main) {
                     runIfFragmentIsAttached {
                         if (!shouldRefresh) {
-                            adapter = AddonsManagerAdapter(
-                                addonsManagerDelegate = managementView,
-                                addons = addons,
-                                style = createAddonStyle(requireContext()),
-                                store = requireComponents.core.store,
-                            )
+                            adapter =
+                                AddonsManagerAdapter(
+                                    addonsManagerDelegate = managementView,
+                                    addons = addons,
+                                    style = createAddonStyle(requireContext()),
+                                    store = requireComponents.core.store,
+                                )
                         }
                         binding?.addOnsProgressBar?.isVisible = false
                         binding?.addOnsEmptyMessage?.isVisible = false
 
                         recyclerView?.adapter = adapter
-                        recyclerView?.accessibilityDelegate = object : View.AccessibilityDelegate() {
-                            override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
-                                super.onInitializeAccessibilityNodeInfo(host, info)
+                        recyclerView?.accessibilityDelegate =
+                            object : View.AccessibilityDelegate() {
+                                override fun onInitializeAccessibilityNodeInfo(
+                                    host: View,
+                                    info: AccessibilityNodeInfo,
+                                ) {
+                                    super.onInitializeAccessibilityNodeInfo(host, info)
 
-                                adapter?.let {
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                        info.collectionInfo = AccessibilityNodeInfo.CollectionInfo(
-                                            it.itemCount,
-                                            1,
-                                            false,
-                                        )
-                                    } else {
-                                        @Suppress("DEPRECATION")
-                                        info.collectionInfo = AccessibilityNodeInfo.CollectionInfo.obtain(
-                                            it.itemCount,
-                                            1,
-                                            false,
-                                        )
+                                    adapter?.let {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                            info.collectionInfo =
+                                                AccessibilityNodeInfo.CollectionInfo(
+                                                    it.itemCount,
+                                                    1,
+                                                    false,
+                                                )
+                                        } else {
+                                            @Suppress("DEPRECATION")
+                                            info.collectionInfo =
+                                                AccessibilityNodeInfo.CollectionInfo.obtain(
+                                                    it.itemCount,
+                                                    1,
+                                                    false,
+                                                )
+                                        }
                                     }
                                 }
                             }
-                        }
 
                         if (shouldRefresh) {
                             adapter?.updateAddons(addons)
@@ -148,7 +141,7 @@ class AddonsManagementFragment : Fragment(R.layout.fragment_add_ons_management) 
                         binding?.let {
                             showSnackBar(
                                 it.root,
-                                getString(R.string.mozac_feature_addons_failed_to_query_extensions),
+                                getString(addonsR.string.mozac_feature_addons_failed_to_load_extensions),
                             )
                         }
                         binding?.addOnsProgressBar?.isVisible = false
@@ -160,16 +153,17 @@ class AddonsManagementFragment : Fragment(R.layout.fragment_add_ons_management) 
     }
 
     private fun createAddonStyle(context: Context): AddonsManagerAdapter.Style {
-        val sectionsTypeFace = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            Typeface.create(Typeface.DEFAULT, FONT_WEIGHT_MEDIUM, false)
-        } else {
-            Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        }
+        val sectionsTypeFace =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                Typeface.create(Typeface.DEFAULT, FONT_WEIGHT_MEDIUM, false)
+            } else {
+                Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            }
 
         return AddonsManagerAdapter.Style(
-            sectionsTextColor = ThemeManager.resolveAttribute(R.attr.textPrimary, context),
-            addonNameTextColor = ThemeManager.resolveAttribute(R.attr.textPrimary, context),
-            addonSummaryTextColor = ThemeManager.resolveAttribute(R.attr.textSecondary, context),
+            sectionsTextColor = ThemeManager.resolveAttribute(materialR.attr.colorOnSurface, context),
+            addonNameTextColor = ThemeManager.resolveAttribute(materialR.attr.colorOnSurface, context),
+            addonSummaryTextColor = ThemeManager.resolveAttribute(materialR.attr.colorOnSurfaceVariant, context),
             sectionsTypeFace = sectionsTypeFace,
             addonAllowPrivateBrowsingLabelDrawableRes = R.drawable.ic_add_on_private_browsing_label,
         )
@@ -183,28 +177,33 @@ class AddonsManagementFragment : Fragment(R.layout.fragment_add_ons_management) 
     internal fun installAddon(addon: Addon) {
         binding?.addonProgressOverlay?.overlayCardView?.visibility = View.VISIBLE
 
-        if (browsingModeManager.mode == BrowsingMode.Private) {
-            binding?.addonProgressOverlay?.overlayCardView?.setBackgroundColor(
-                ContextCompat.getColor(
-                    requireContext(),
-                    R.color.fx_mobile_private_layer_color_3,
-                ),
-            )
+        if (requireComponents.appStore.state.mode.isPrivate) {
+            binding
+                ?.addonProgressOverlay
+                ?.overlayCardView
+                ?.setBackgroundColor(
+                    ContextCompat.getColor(
+                        requireContext(),
+                        R.color.fx_mobile_private_layer_color_3,
+                    )
+                )
         }
 
-        val installOperation = provideAddonManager().installAddon(
-            url = addon.downloadUrl,
-            installationMethod = InstallationMethod.MANAGER,
-            onSuccess = {
-                runIfFragmentIsAttached {
-                    adapter?.updateAddon(it)
-                    binding?.addonProgressOverlay?.overlayCardView?.visibility = View.GONE
-                }
-            },
-            onError = { _ ->
-                binding?.addonProgressOverlay?.overlayCardView?.visibility = View.GONE
-            },
-        )
+        val installOperation =
+            provideAddonManager()
+                .installAddon(
+                    url = addon.downloadUrl,
+                    installationMethod = InstallationMethod.MANAGER,
+                    onSuccess = {
+                        runIfFragmentIsAttached {
+                            adapter?.updateAddon(it)
+                            binding?.addonProgressOverlay?.overlayCardView?.visibility = View.GONE
+                        }
+                    },
+                    onError = { _ ->
+                        binding?.addonProgressOverlay?.overlayCardView?.visibility = View.GONE
+                    },
+                )
         binding?.addonProgressOverlay?.cancelButton?.setOnClickListener {
             lifecycleScope.launch(Dispatchers.Main) {
                 val safeBinding = binding
@@ -217,10 +216,10 @@ class AddonsManagementFragment : Fragment(R.layout.fragment_add_ons_management) 
     }
 
     private fun openAMO() {
-        openLinkInNewTab(
-            activity as HomeActivity,
-            AMO_HOMEPAGE_FOR_ANDROID,
-            BrowserDirection.FromAddonsManagementFragment,
+        findNavController().openToBrowser()
+        requireComponents.useCases.fenixBrowserUseCases.loadUrlOrSearch(
+            searchTermOrURL = AMO_HOMEPAGE_FOR_ANDROID,
+            newTab = true,
         )
     }
 }

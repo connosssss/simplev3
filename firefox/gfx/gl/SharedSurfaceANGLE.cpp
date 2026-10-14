@@ -1,4 +1,3 @@
-/* -*- Mode: c++; c-basic-offset: 2; indent-tabs-mode: nil; tab-width: 4; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,11 +5,12 @@
 #include "SharedSurfaceANGLE.h"
 
 #include <d3d11.h>
+
 #include "GLContextEGL.h"
 #include "GLLibraryEGL.h"
 #include "mozilla/gfx/DeviceManagerDx.h"
 #include "mozilla/gfx/FileHandleWrapper.h"
-#include "mozilla/layers/CompositeProcessD3D11FencesHolderMap.h"
+#include "mozilla/layers/CompositeProcessFencesHolderMap.h"
 #include "mozilla/layers/FenceD3D11.h"
 #include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor, etc
 
@@ -52,7 +52,7 @@ static EGLSurface CreatePBufferSurface(EglDisplay* egl, EGLConfig config,
     EGLint err = egl->mLib->fGetError();
     gfxCriticalError() << "Failed to create Pbuffer surface error: "
                        << gfx::hexa(err) << " Size : " << size;
-    return 0;
+    return nullptr;
   }
 
   return surface;
@@ -73,7 +73,7 @@ SharedSurface_ANGLEShareHandle::Create(const SharedSurfaceDesc& desc) {
   }
 
   // Create a texture in case we need to readback.
-  auto* fencesHolderMap = layers::CompositeProcessD3D11FencesHolderMap::Get();
+  auto* fencesHolderMap = layers::CompositeProcessFencesHolderMap::Get();
   const bool useFence =
       fencesHolderMap && layers::FenceD3D11::IsSupported(device);
   const DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -133,7 +133,7 @@ SharedSurface_ANGLEShareHandle::Create(const SharedSurfaceDesc& desc) {
   if (!pbuffer) return nullptr;
 
   if (useFence) {
-    auto* fencesHolderMap = layers::CompositeProcessD3D11FencesHolderMap::Get();
+    auto* fencesHolderMap = layers::CompositeProcessFencesHolderMap::Get();
     fencesHolderMap->Register(fencesHolderId.ref());
   }
 
@@ -174,12 +174,11 @@ SharedSurface_ANGLEShareHandle::~SharedSurface_ANGLEShareHandle() {
   }
 
   if (mFencesHolderId.isSome()) {
-    auto* fencesHolderMap = layers::CompositeProcessD3D11FencesHolderMap::Get();
+    auto* fencesHolderMap = layers::CompositeProcessFencesHolderMap::Get();
     if (fencesHolderMap) {
       fencesHolderMap->Unregister(mFencesHolderId.ref());
     } else {
-      gfxCriticalNoteOnce
-          << "CompositeProcessD3D11FencesHolderMap does not exist";
+      gfxCriticalNoteOnce << "CompositeProcessFencesHolderMap does not exist";
     }
   }
 }
@@ -193,8 +192,10 @@ void SharedSurface_ANGLEShareHandle::UnlockProdImpl() {}
 
 void SharedSurface_ANGLEShareHandle::ProducerAcquireImpl() {
   if (mFencesHolderId.isSome()) {
-    auto* fencesHolderMap = layers::CompositeProcessD3D11FencesHolderMap::Get();
-    fencesHolderMap->WaitAllFencesAndForget(mFencesHolderId.ref(), mDevice);
+    auto* fencesHolderMap = layers::CompositeProcessFencesHolderMap::Get();
+    auto fences =
+        fencesHolderMap->TakeAllFencesAndForget(mFencesHolderId.ref());
+    layers::FenceD3D11::WaitD3D11Fences(fences, mDevice);
   }
   if (mKeyedMutex) {
     HRESULT hr = mKeyedMutex->AcquireSync(0, 10000);
@@ -212,7 +213,7 @@ void SharedSurface_ANGLEShareHandle::ProducerReleaseImpl() {
   gl->fFlush();
   if (mFencesHolderId.isSome()) {
     mWriteFence->IncrementAndSignal();
-    auto* fencesHolderMap = layers::CompositeProcessD3D11FencesHolderMap::Get();
+    auto* fencesHolderMap = layers::CompositeProcessFencesHolderMap::Get();
     fencesHolderMap->SetWriteFence(mFencesHolderId.ref(), mWriteFence);
   }
   if (mKeyedMutex) {
@@ -236,7 +237,8 @@ SharedSurface_ANGLEShareHandle::ToSurfaceDescriptor() {
   return Some(layers::SurfaceDescriptorD3D10(
       mSharedHandle, /* gpuProcessTextureId */ Nothing(),
       /* arrayIndex */ 0, format, mDesc.size, mDesc.colorSpace,
-      gfx::ColorRange::FULL, !!mKeyedMutex, mFencesHolderId));
+      gfx::ColorRange::FULL, mDesc.transferFunction,
+      /* hdrMetadata */ Nothing(), !!mKeyedMutex, mFencesHolderId));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

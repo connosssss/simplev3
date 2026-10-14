@@ -1,16 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "RemoteVideoDecoder.h"
 
+#include "AOMDecoder.h"
+#include "DAV1DDecoder.h"
 #include "mozilla/layers/ImageDataSerializer.h"
-
-#ifdef MOZ_AV1
-#  include "AOMDecoder.h"
-#  include "DAV1DDecoder.h"
-#endif
 #ifdef XP_WIN
 #  include "WMFDecoderModule.h"
 #endif
@@ -19,12 +14,17 @@
 #include "MediaDataDecoderProxy.h"
 #include "MediaInfo.h"
 #include "PDMFactory.h"
-#include "RemoteMediaManagerParent.h"
+#include "RemoteCDMParent.h"
+#include "RemoteDecodeUtils.h"
 #include "RemoteImageHolder.h"
+#include "RemoteMediaManagerParent.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/layers/ImageClient.h"
 #include "mozilla/layers/TextureClient.h"
 #include "mozilla/layers/VideoBridgeChild.h"
+#ifdef MOZ_WIDGET_ANDROID
+#  include "mozilla/layers/VideoBridgeParent.h"
+#endif
 
 namespace mozilla {
 
@@ -32,18 +32,18 @@ using namespace layers;  // for PlanarYCbCrData and BufferRecycleBin
 using namespace ipc;
 using namespace gfx;
 
-layers::TextureForwarder* KnowsCompositorVideo::GetTextureForwarder() {
-  auto* vbc = VideoBridgeChild::GetSingleton();
+RefPtr<layers::TextureForwarder> KnowsCompositorVideo::GetTextureForwarder() {
+  auto vbc = VideoBridgeChild::GetSingleton();
   return (vbc && vbc->CanSend()) ? vbc : nullptr;
 }
 layers::LayersIPCActor* KnowsCompositorVideo::GetLayersIPCActor() {
-  return GetTextureForwarder();
+  return GetTextureForwarder().get();
 }
 
 /* static */ already_AddRefed<KnowsCompositorVideo>
 KnowsCompositorVideo::TryCreateForIdentifier(
     const layers::TextureFactoryIdentifier& aIdentifier) {
-  VideoBridgeChild* child = VideoBridgeChild::GetSingleton();
+  auto child = VideoBridgeChild::GetSingleton();
   if (!child) {
     return nullptr;
   }
@@ -71,6 +71,9 @@ MediaResult RemoteVideoDecoderChild::ProcessOutput(
           data.base().offset(), data.base().time(), data.base().duration()));
       continue;
     }
+    MOZ_LOG_FMT(
+        gRemoteDecodeLog, LogLevel::Verbose, "Remote video ts={} received: {}",
+        data.base().time().ToMicroseconds(), data.image().ToString().get());
     RefPtr<Image> image = data.image().TransferToImage(mBufferRecycleBin);
 
     RefPtr<VideoData> video = VideoData::CreateFromImage(
@@ -91,8 +94,8 @@ MediaResult RemoteVideoDecoderChild::InitIPDL(
     const VideoInfo& aVideoInfo, float aFramerate,
     const CreateDecoderParams::OptionSet& aOptions,
     Maybe<layers::TextureFactoryIdentifier> aIdentifier,
-    const Maybe<uint64_t>& aMediaEngineId,
-    const Maybe<TrackingId>& aTrackingId) {
+    const Maybe<uint64_t>& aMediaEngineId, const Maybe<TrackingId>& aTrackingId,
+    PRemoteCDMActor* aCDM) {
   MOZ_ASSERT_IF(mLocation == RemoteMediaIn::GpuProcess, aIdentifier);
 
   RefPtr<RemoteMediaManagerChild> manager =
@@ -109,8 +112,7 @@ MediaResult RemoteVideoDecoderChild::InitIPDL(
   if (!manager->CanSend()) {
     if (mLocation == RemoteMediaIn::GpuProcess) {
       // The manager doesn't support sending messages because we've just crashed
-      // and are working on reinitialization. Don't initialize mIPDLSelfRef and
-      // leave us in an error state. We'll then immediately reject the promise
+      // and are working on reinitialization. We immediately reject the promise
       // when Init() is called and the caller can try again. Hopefully by then
       // the new manager is ready, or we've notified the caller of it being no
       // longer available. If not, then the cycle repeats until we're ready.
@@ -121,10 +123,32 @@ MediaResult RemoteVideoDecoderChild::InitIPDL(
                        RESULT_DETAIL("RemoteMediaManager unable to send."));
   }
 
-  mIPDLSelfRef = this;
+  // If we are given a remote CDM, we need to make sure that it has been remoted
+  // into the same process as the decoder.
+  PRemoteCDMChild* cdm = nullptr;
+  if (aCDM) {
+    if (aCDM->GetLocation() != mLocation) {
+      return MediaResult(
+          NS_ERROR_DOM_MEDIA_FATAL_ERR,
+          RESULT_DETAIL("PRemoteCDMActor is not in same process."));
+    }
+
+    cdm = aCDM->AsPRemoteCDMChild();
+    if (!cdm) {
+      return MediaResult(
+          NS_ERROR_DOM_MEDIA_FATAL_ERR,
+          RESULT_DETAIL("PRemoteCDMActor is not PRemoteCDMChild."));
+    }
+  }
+
   VideoDecoderInfoIPDL decoderInfo(aVideoInfo, aFramerate);
-  MOZ_ALWAYS_TRUE(manager->SendPRemoteDecoderConstructor(
-      this, decoderInfo, aOptions, aIdentifier, aMediaEngineId, aTrackingId));
+  if (!manager->SendPRemoteDecoderConstructor(this, decoderInfo, aOptions,
+                                              aIdentifier, aMediaEngineId,
+                                              aTrackingId, cdm)) {
+    return MediaResult(
+        NS_ERROR_DOM_MEDIA_FATAL_ERR,
+        RESULT_DETAIL("RemoteMediaManager unable to construct."));
+  }
 
   return NS_OK;
 }
@@ -134,9 +158,10 @@ RemoteVideoDecoderParent::RemoteVideoDecoderParent(
     float aFramerate, const CreateDecoderParams::OptionSet& aOptions,
     const Maybe<layers::TextureFactoryIdentifier>& aIdentifier,
     nsISerialEventTarget* aManagerThread, TaskQueue* aDecodeTaskQueue,
-    const Maybe<uint64_t>& aMediaEngineId, Maybe<TrackingId> aTrackingId)
+    const Maybe<uint64_t>& aMediaEngineId, Maybe<TrackingId> aTrackingId,
+    RemoteCDMParent* aCDM)
     : RemoteDecoderParent(aParent, aOptions, aManagerThread, aDecodeTaskQueue,
-                          aMediaEngineId, std::move(aTrackingId)),
+                          aMediaEngineId, std::move(aTrackingId), aCDM),
       mVideoInfo(aVideoInfo),
       mFramerate(aFramerate) {
   if (aIdentifier) {
@@ -151,6 +176,11 @@ RemoteVideoDecoderParent::RemoteVideoDecoderParent(
 
 IPCResult RemoteVideoDecoderParent::RecvConstruct(
     ConstructResolver&& aResolver) {
+  if (mDecoder || mShutdown) {
+    aResolver(MediaResult(NS_ERROR_ALREADY_INITIALIZED, __func__));
+    return IPC_OK();
+  }
+
   auto imageContainer = MakeRefPtr<layers::ImageContainer>(
       layers::ImageUsageType::RemoteVideoDecoder,
       layers::ImageContainer::SYNCHRONOUS);
@@ -159,10 +189,16 @@ IPCResult RemoteVideoDecoderParent::RecvConstruct(
     imageContainer->EnsureRecycleAllocatorForRDD(mKnowsCompositor);
   }
   auto params = CreateDecoderParams{
-      mVideoInfo,     mKnowsCompositor,
-      imageContainer, CreateDecoderParams::VideoFrameRate(mFramerate),
-      mOptions,       CreateDecoderParams::WrapperSet({/* No wrapper */}),
-      mMediaEngineId, mTrackingId,
+      mVideoInfo,
+      mKnowsCompositor,
+      imageContainer,
+      static_cast<PRemoteCDMActor*>(mCDM.get()),
+      CreateDecoderParams::VideoFrameRate(mFramerate),
+      mOptions,
+      CreateDecoderParams::WrapperSet({/* No wrapper */}),
+      mMediaEngineId,
+      mTrackingId,
+      mCDM,
   };
 
   mParent->EnsurePDMFactory().CreateDecoder(params)->Then(
@@ -175,6 +211,11 @@ IPCResult RemoteVideoDecoderParent::RecvConstruct(
           return;
         }
         MOZ_ASSERT(aValue.ResolveValue());
+        if (self->mDecoder || self->mShutdown) {
+          aValue.ResolveValue()->Shutdown();
+          resolver(MediaResult(NS_ERROR_ALREADY_INITIALIZED, __func__));
+          return;
+        }
         self->mDecoder =
             new MediaDataDecoderProxy(aValue.ResolveValue().forget(),
                                       do_AddRef(self->mDecodeTaskQueue.get()));
@@ -219,10 +260,13 @@ MediaResult RemoteVideoDecoderParent::ProcessDecodedData(
     IntSize size;
     bool needStorage = false;
 
-    YUVColorSpace YUVColorSpace = gfx::YUVColorSpace::Default;
+    YUVColorSpace yuvColorSpace = gfx::YUVColorSpace::Default;
     ColorSpace2 colorPrimaries = gfx::ColorSpace2::UNKNOWN;
     TransferFunction transferFunction = gfx::TransferFunction::BT709;
     ColorRange colorRange = gfx::ColorRange::LIMITED;
+
+    PlanarYCbCrImage* image = video->mImage->AsPlanarYCbCrImage();
+    const PlanarYCbCrData* imageData = image ? image->GetData() : nullptr;
 
     if (mKnowsCompositor) {
       texture = video->mImage->GetTextureClient(mKnowsCompositor);
@@ -249,16 +293,11 @@ MediaResult RemoteVideoDecoderParent::ProcessDecodedData(
     // copying frames via shmem.
     if (!IsSurfaceDescriptorValid(sd)) {
       needStorage = false;
-      PlanarYCbCrImage* image = video->mImage->AsPlanarYCbCrImage();
       if (!image) {
         return MediaResult(NS_ERROR_UNEXPECTED,
                            "Expected Planar YCbCr image in "
                            "RemoteVideoDecoderParent::ProcessDecodedData");
       }
-      YUVColorSpace = image->GetData()->mYUVColorSpace;
-      colorPrimaries = image->GetData()->mColorPrimaries;
-      transferFunction = image->GetData()->mTransferFunction;
-      colorRange = image->GetData()->mColorRange;
 
       SurfaceDescriptorBuffer sdBuffer;
       nsresult rv = image->BuildSurfaceDescriptorBuffer(
@@ -281,26 +320,38 @@ MediaResult RemoteVideoDecoderParent::ProcessDecodedData(
       size = image->GetSize();
     }
 
+    if ((!needStorage ||
+         StaticPrefs::media_decoder_frame_color_metadata_enabled()) &&
+        imageData) {
+      yuvColorSpace = imageData->mYUVColorSpace;
+      colorPrimaries = imageData->mColorPrimaries;
+      transferFunction = imageData->mTransferFunction;
+      colorRange = imageData->mColorRange;
+    }
+
     if (needStorage) {
       MOZ_ASSERT(sd.type() != SurfaceDescriptor::TSurfaceDescriptorBuffer);
       mParent->StoreImage(static_cast<const SurfaceDescriptorGPUVideo&>(sd),
                           video->mImage, texture);
     }
 
+    RemoteImageHolder imageHolder(
+        mParent,
+        XRE_IsGPUProcess()
+            ? VideoBridgeSource::GpuProcess
+            : (XRE_IsRDDProcess() ? VideoBridgeSource::RddProcess
+                                  : VideoBridgeSource::MFMediaEngineCDMProcess),
+        size, video->mImage->GetColorDepth(), sd, yuvColorSpace, colorPrimaries,
+        transferFunction, colorRange);
+    MOZ_LOG_FMT(
+        gRemoteDecodeLog, LogLevel::Verbose,
+        "Remote video ts={} send via {}: {}", video->mTime.ToMicroseconds(),
+        needStorage ? "texture" : "shmem", imageHolder.ToString().get());
+
     RemoteVideoData output(
         MediaDataIPDL(data->mOffset, data->mTime, data->mTimecode,
                       data->mDuration, data->mKeyframe),
-        video->mDisplay,
-        RemoteImageHolder(
-            mParent,
-            XRE_IsGPUProcess()
-                ? VideoBridgeSource::GpuProcess
-                : (XRE_IsRDDProcess()
-                       ? VideoBridgeSource::RddProcess
-                       : VideoBridgeSource::MFMediaEngineCDMProcess),
-            size, video->mImage->GetColorDepth(), sd, YUVColorSpace,
-            colorPrimaries, transferFunction, colorRange),
-        video->mFrameID);
+        video->mDisplay, std::move(imageHolder), video->mFrameID);
 
     array.AppendElement(std::move(output));
   }

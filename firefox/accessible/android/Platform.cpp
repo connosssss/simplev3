@@ -1,25 +1,24 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Platform.h"
+
 #include "DocAccessibleWrap.h"
 #include "SessionAccessibility.h"
-#include "mozilla/a11y/RemoteAccessible.h"
+#include "TextLeafRange.h"
 #include "mozilla/Components.h"
+#include "mozilla/a11y/RemoteAccessible.h"
 #include "nsIAccessibleEvent.h"
 #include "nsIAccessiblePivot.h"
 #include "nsIStringBundle.h"
-#include "TextLeafRange.h"
 
 #define ROLE_STRINGS_URL "chrome://global/locale/AccessFu.properties"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
 
-MOZ_RUNINIT static nsTHashMap<nsStringHashKey, nsString> sLocalizedStrings;
+constinit static nsTHashMap<nsStringHashKey, nsString> sLocalizedStrings;
 
 void a11y::PlatformInit() {
   nsresult rv = NS_OK;
@@ -47,6 +46,12 @@ void a11y::PlatformInit() {
     sLocalizedStrings.InsertOrUpdate(u"stateRequired"_ns, localizedStr);
   }
 
+  // Preload the state mixed localized string.
+  rv = stringBundle->GetStringFromName("statePartiallyChecked", localizedStr);
+  if (NS_SUCCEEDED(rv)) {
+    sLocalizedStrings.InsertOrUpdate(u"statePartiallyChecked"_ns, localizedStr);
+  }
+
   // Preload heading level localized descriptions 1 thru 6.
   for (int32_t level = 1; level <= 6; level++) {
     nsAutoString token;
@@ -67,12 +72,17 @@ void a11y::PlatformInit() {
 #define ROLE(geckoRole, stringRole, ariaRole, atkRole, macRole, macSubrole, \
              msaaRole, ia2Role, androidClass, iosIsElement, uiaControlType, \
              nameRule)                                                      \
-  rv = stringBundle->GetStringFromName(stringRole, localizedStr);           \
-  if (NS_SUCCEEDED(rv)) {                                                   \
-    sLocalizedStrings.InsertOrUpdate(u##stringRole##_ns, localizedStr);     \
+  {                                                                         \
+    nsAutoString stringRoleToken(u##stringRole##_ns);                       \
+    stringRoleToken.StripWhitespace();                                      \
+    rv = stringBundle->GetStringFromName(                                   \
+        NS_ConvertUTF16toUTF8(stringRoleToken).get(), localizedStr);        \
+    if (NS_SUCCEEDED(rv)) {                                                 \
+      sLocalizedStrings.InsertOrUpdate(stringRoleToken, localizedStr);      \
+    }                                                                       \
   }
 
-#include "RoleMap.h"
+#include "RoleMap.inc"
 #undef ROLE
 }
 
@@ -103,6 +113,15 @@ void a11y::PlatformEvent(Accessible* aTarget, uint32_t aEventType) {
               true, true)) {
         sessionAcc->SendAccessibilityFocusedEvent(result, false);
       }
+      break;
+    case nsIAccessibleEvent::EVENT_TEXT_VALUE_CHANGE:
+    case nsIAccessibleEvent::EVENT_VALUE_CHANGE:
+      if (aTarget->HasNumericValue()) {
+        sessionAcc->SendValueChangedEvent(aTarget);
+      }
+      break;
+    case nsIAccessibleEvent::EVENT_NAME_CHANGE:
+      sessionAcc->MaybeSendLiveRegionEvents(aTarget);
       break;
     default:
       break;
@@ -140,8 +159,7 @@ void a11y::PlatformStateChangeEvent(Accessible* aTarget, uint64_t aState,
   }
 }
 
-void a11y::PlatformFocusEvent(Accessible* aTarget,
-                              const LayoutDeviceIntRect& aCaretRect) {
+void a11y::PlatformFocusEvent(Accessible* aTarget) {
   if (RefPtr<SessionAccessibility> sessionAcc =
           SessionAccessibility::GetInstanceFor(aTarget)) {
     sessionAcc->SendFocusEvent(aTarget);
@@ -150,9 +168,7 @@ void a11y::PlatformFocusEvent(Accessible* aTarget,
 
 void a11y::PlatformCaretMoveEvent(Accessible* aTarget, int32_t aOffset,
                                   bool aIsSelectionCollapsed,
-                                  int32_t aGranularity,
-                                  const LayoutDeviceIntRect& aCaretRect,
-                                  bool aFromUser) {
+                                  int32_t aGranularity, bool aFromUser) {
   RefPtr<SessionAccessibility> sessionAcc =
       SessionAccessibility::GetInstanceFor(aTarget);
   if (!sessionAcc) {
@@ -163,7 +179,6 @@ void a11y::PlatformCaretMoveEvent(Accessible* aTarget, int32_t aOffset,
     // Pivot to the caret's position if it has an expanded selection.
     // This is used mostly for find in page.
     Accessible* leaf = TextLeafPoint::GetCaret(aTarget).mAcc;
-    MOZ_ASSERT(leaf);
     if (leaf) {
       if (Accessible* result = AccessibleWrap::DoPivot(
               leaf, java::SessionAccessibility::HTML_GRANULARITY_DEFAULT, true,
@@ -190,8 +205,17 @@ void a11y::PlatformTextChangeEvent(Accessible* aTarget, const nsAString& aStr,
 
 void a11y::PlatformShowHideEvent(Accessible* aTarget, Accessible* aParent,
                                  bool aInsert, bool aFromUser) {
-  // We rely on the window content changed events to be dispatched
-  // after the viewport cache is refreshed.
+  RefPtr<SessionAccessibility> sessionAcc =
+      SessionAccessibility::GetInstanceFor(aTarget);
+
+  if (sessionAcc) {
+    if (aInsert && !aFromUser && !aTarget->IsTextLeaf()) {
+      // If this was a non-user show event, it may be inside of a live region.
+      // If this is a text leaf, we will handle that case in the text change
+      // event of its parent.
+      sessionAcc->MaybeSendLiveRegionEvents(aTarget);
+    }
+  }
 }
 
 void a11y::PlatformSelectionEvent(Accessible*, Accessible*, uint32_t) {}
@@ -234,9 +258,12 @@ bool a11y::LocalizeString(const nsAString& aToken, nsAString& aLocalized) {
 }
 
 uint64_t a11y::GetCacheDomainsForKnownClients(uint64_t aCacheDomains) {
-  Unused << aCacheDomains;
-
+  (void)aCacheDomains;
   // XXX: Respond to clients such as TalkBack. For now, be safe and default to
   // caching all domains.
   return CacheDomain::All;
+}
+
+void a11y::GetHumanReadableInstantiatorStr(nsAString& aResult) {
+  aResult.Truncate();
 }

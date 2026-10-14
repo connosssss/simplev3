@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,6 +12,10 @@
 #include "nsString.h"
 #include "prtime.h"
 #include "mozilla/intl/DateTimeFormat.h"
+
+namespace mozilla::dom {
+class Document;
+}
 
 namespace mozilla::intl {
 
@@ -50,15 +53,24 @@ class AppDateTimeFormat {
                          nsAString& aStringOut);
 
   /**
+   * Format a DateTime for a document, respecting the privacy.spoof_english
+   * preference.
+   */
+  static nsresult FormatForDocument(const DateTimeFormat::ComponentsBag& aStyle,
+                                    const PRExplodedTime* aExplodedTime,
+                                    const dom::Document* aForDocument,
+                                    nsAString& aStringOut);
+
+  /**
    * If the app locale changes, the cached locale needs to be reset.
    */
   static void ClearLocaleCache();
 
   static void Shutdown();
 
- private:
   AppDateTimeFormat() = delete;
 
+ private:
   static nsresult Initialize();
   static void DeleteCache();
   static const size_t kMaxCachedFormats = 15;

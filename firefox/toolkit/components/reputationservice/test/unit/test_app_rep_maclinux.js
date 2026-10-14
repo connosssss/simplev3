@@ -1,5 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
@@ -184,8 +182,9 @@ function waitForUpdates() {
     // Resolve the promise once processing the updates is complete.
     function updateSuccess(aEvent) {
       // Timeout of n:1000 is constructed in processUpdateRequest above and
-      // passed back in the callback in nsIUrlClassifierStreamUpdater on success.
-      Assert.equal("1000", aEvent);
+      // passed back in the callback in nsIUrlClassifierStreamUpdater on
+      // success, as a "table:seconds" pair.
+      Assert.equal("goog-downloadwhite-digest256:1000", aEvent);
       info("All data processed");
       resolve(true);
     }
@@ -197,7 +196,9 @@ function waitForUpdates() {
     streamUpdater.downloadUpdates(
       "goog-downloadwhite-digest256",
       "goog-downloadwhite-digest256;\n",
+      "",
       true,
+      "test",
       "http://localhost:4444/downloads",
       updateSuccess,
       handleError,

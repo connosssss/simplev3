@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20,14 +18,27 @@ typedef struct FFLCEVCContext {
 
 struct AVFrame;
 
-static int ff_lcevc_alloc(FFLCEVCContext **plcevc) {
+typedef struct FFLCEVCFrame {
+    FFLCEVCContext *lcevc;
+    struct AVFrame *frame;
+} FFLCEVCFrame;
+
+static inline int ff_lcevc_alloc(FFLCEVCContext **plcevc, int loglevel) {
+    (void)plcevc; (void)loglevel;
     return 0;
 }
 
-static int ff_lcevc_process(void *logctx, struct AVFrame *frame) {
+static inline int ff_lcevc_process(void *logctx, struct AVFrame *frame) {
+    (void)logctx; (void)frame;
     return 0;
 }
 
-static void ff_lcevc_unref(void *opaque) {}
+static inline int ff_lcevc_parse_frame(FFLCEVCContext *lcevc,
+                                       const struct AVFrame *frame,
+                                       enum AVPixelFormat *format,
+                                       int *width, int *height) {
+    (void)lcevc; (void)frame; (void)format; (void)width; (void)height;
+    return 0;
+}
 
 #endif /* AVCODEC_LCEVCDEC_H */

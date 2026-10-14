@@ -11,8 +11,11 @@ import mozilla.components.browser.state.state.recover.RecoverableTab
  *
  * @param tabs The list of restored tabs.
  * @param selectedTabId The ID of the selected tab in [tabs]. Or `null` if no selection was restored.
+ * @param isTranslationsEngineSupported The last persisted value of whether the translations engine supports the device
+ *   architecture, or `null` if it was never determined before persisting.
  */
 data class RecoverableBrowserState(
     val tabs: List<RecoverableTab>,
     val selectedTabId: String?,
+    val isTranslationsEngineSupported: Boolean? = null,
 )

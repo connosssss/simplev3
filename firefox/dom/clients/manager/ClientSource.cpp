@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,31 +10,32 @@
 #include "ClientSourceChild.h"
 #include "ClientState.h"
 #include "ClientValidation.h"
+#include "mozilla/SchedulerGroup.h"
+#include "mozilla/StaticPrefs_privacy.h"
+#include "mozilla/StorageAccess.h"
 #include "mozilla/Try.h"
 #include "mozilla/dom/BlobURLProtocolHandler.h"
 #include "mozilla/dom/ClientIPCTypes.h"
+#include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/DOMMozPromiseRequestHolder.h"
-#include "mozilla/dom/ipc/StructuredCloneData.h"
 #include "mozilla/dom/JSExecutionManager.h"
 #include "mozilla/dom/MessageEvent.h"
 #include "mozilla/dom/MessageEventBinding.h"
 #include "mozilla/dom/Navigator.h"
-#include "mozilla/dom/WorkerScope.h"
-#include "mozilla/dom/WorkerRef.h"
+#include "mozilla/dom/PolicyContainer.h"
 #include "mozilla/dom/ServiceWorker.h"
 #include "mozilla/dom/ServiceWorkerContainer.h"
 #include "mozilla/dom/ServiceWorkerManager.h"
 #include "mozilla/dom/ServiceWorkerUtils.h"
-#include "mozilla/SchedulerGroup.h"
-#include "mozilla/StaticPrefs_privacy.h"
-#include "mozilla/StorageAccess.h"
-#include "nsIContentSecurityPolicy.h"
+#include "mozilla/dom/WorkerRef.h"
+#include "mozilla/dom/WorkerScope.h"
+#include "mozilla/dom/ipc/StructuredCloneData.h"
+#include "mozilla/ipc/BackgroundUtils.h"
 #include "nsContentUtils.h"
 #include "nsFocusManager.h"
+#include "nsIContentSecurityPolicy.h"
 #include "nsIDocShell.h"
 #include "nsPIDOMWindow.h"
-
-#include "mozilla/ipc/BackgroundUtils.h"
 
 namespace mozilla::dom {
 
@@ -183,7 +182,9 @@ void ClientSource::Activate(PClientManagerChild* aActor) {
   // This can happen since we use MozURL for validation which does not handle
   // some of the more obscure internal principal/url combinations.  Normal
   // content pages will pass this check.
-  if (NS_WARN_IF(!ClientIsValidPrincipalInfo(mClientInfo.PrincipalInfo()))) {
+  RefPtr<LoadedOriginSet> loadedOrigins = CurrentLoadedOriginSet();
+  if (NS_WARN_IF(!ClientIsValidPrincipalInfo(mClientInfo.PrincipalInfo(),
+                                             loadedOrigins))) {
     Shutdown();
     return;
   }
@@ -255,10 +256,10 @@ nsresult ClientSource::WindowExecutionReady(nsPIDOMWindowInner* aInnerWindow) {
   }
 
   Document* doc = aInnerWindow->GetExtantDoc();
-  NS_ENSURE_TRUE(doc, NS_ERROR_UNEXPECTED);
+  NS_ENSURE_TRUE(doc, NS_ERROR_DOM_INVALID_STATE_ERR);
 
   nsIURI* uri = doc->GetOriginalURI();
-  NS_ENSURE_TRUE(uri, NS_ERROR_UNEXPECTED);
+  NS_ENSURE_TRUE(uri, NS_ERROR_NOT_AVAILABLE);
 
   // Don't use nsAutoCString here since IPC requires a full nsCString anyway.
   nsCString spec;
@@ -520,11 +521,12 @@ RefPtr<ClientOpPromise> ClientSource::Focus(const ClientFocusArgs& aArgs) {
     return ClientOpPromise::CreateAndReject(rv, __func__);
   }
   nsCOMPtr<nsPIDOMWindowOuter> outer;
-  nsPIDOMWindowInner* inner = GetInnerWindow();
+  nsCOMPtr<nsPIDOMWindowInner> inner = GetInnerWindow();
+  nsIDocShell* docshell = nullptr;
   if (inner) {
     outer = inner->GetOuterWindow();
   } else {
-    nsIDocShell* docshell = GetDocShell();
+    docshell = GetDocShell();
     if (docshell) {
       outer = docshell->GetWindow();
     }
@@ -537,9 +539,48 @@ RefPtr<ClientOpPromise> ClientSource::Focus(const ClientFocusArgs& aArgs) {
   }
 
   MOZ_ASSERT(NS_IsMainThread());
+
+  // Inlined from `ClientSource::SnapshotWindowState()`:
+  // Should not be necessary after bug 543435. Clean this up in bug 2025284.
+  if (docshell) {
+    // Force the creation of the initial document if it does not yet exist.
+    if (!docshell->GetDocument()) {
+      CopyableErrorResult rv;
+      rv.ThrowInvalidStateError("No document available.");
+      return ClientOpPromise::CreateAndReject(rv, __func__);
+    }
+    inner = GetInnerWindow();
+  }
+
   nsFocusManager::FocusWindow(outer, aArgs.callerType());
 
-  Result<ClientState, ErrorResult> state = SnapshotState();
+  Result<ClientState, ErrorResult> state =
+      [&]() -> Result<ClientState, ErrorResult> {
+    if (!inner) {
+      // Inlined from `ClientSource::SnapshotWindowState()`:
+      return ClientState(ClientWindowState(VisibilityState::Hidden, TimeStamp(),
+                                           StorageAccess::eDeny, false));
+    }
+    if (inner->GetClientSource() == this) {
+      // The pointer comparison assumes that an inner window
+      // cannot gain a new ClientSource other than this same
+      // `ClientSource` having moved from a docshell owner to an
+      // inner window owner gained via `outer`, so we don't need to worry
+      // about a newly-allocated ClientSource occupying the same
+      // memory as the one pointed to by `this`. That is, in the case
+      // of the pointers being unequal, `inner->GetClientSource()`
+      // returns `nullptr` and `this` is an invalid pointer.
+      // Per [expr.eq], it's not UB to compare a pointer to a deleted
+      // object, since no pointer comparisons are UB anymore. The
+      // case about pointer-past-end for a different object being
+      // _unspecified_ behavior does not apply here.
+      return SnapshotState();
+    }
+    ErrorResult rv;
+    rv.ThrowInvalidStateError("Client destroyed during focus");
+    return Err(std::move(rv));
+  }();
+
   if (state.isErr()) {
     return ClientOpPromise::CreateAndReject(
         CopyableErrorResult(state.unwrapErr()), __func__);
@@ -606,18 +647,17 @@ Result<ClientState, ErrorResult> ClientSource::SnapshotState() {
 
 nsISerialEventTarget* ClientSource::EventTarget() const { return mEventTarget; }
 
-void ClientSource::SetCsp(nsIContentSecurityPolicy* aCsp) {
+void ClientSource::SetPolicyContainer(nsIPolicyContainer* aPolicyContainer) {
   NS_ASSERT_OWNINGTHREAD(ClientSource);
-  if (!aCsp) {
+  if (!aPolicyContainer) {
     return;
   }
 
-  CSPInfo cspInfo;
-  nsresult rv = CSPToCSPInfo(aCsp, &cspInfo);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return;
-  }
-  mClientInfo.SetCspInfo(cspInfo);
+  mozilla::ipc::PolicyContainerArgs policyContainerArgs;
+  PolicyContainer::ToArgs(PolicyContainer::Cast(aPolicyContainer),
+                          policyContainerArgs);
+
+  SetPolicyContainerArgs(policyContainerArgs);
 }
 
 void ClientSource::SetPreloadCsp(nsIContentSecurityPolicy* aPreloadCsp) {
@@ -634,14 +674,16 @@ void ClientSource::SetPreloadCsp(nsIContentSecurityPolicy* aPreloadCsp) {
   mClientInfo.SetPreloadCspInfo(cspPreloadInfo);
 }
 
-void ClientSource::SetCspInfo(const CSPInfo& aCSPInfo) {
+void ClientSource::SetPolicyContainerArgs(
+    const mozilla::ipc::PolicyContainerArgs& aPolicyContainer) {
   NS_ASSERT_OWNINGTHREAD(ClientSource);
-  mClientInfo.SetCspInfo(aCSPInfo);
+  mClientInfo.SetPolicyContainerArgs(aPolicyContainer);
 }
 
-const Maybe<mozilla::ipc::CSPInfo>& ClientSource::GetCspInfo() {
+const Maybe<mozilla::ipc::PolicyContainerArgs>&
+ClientSource::GetPolicyContainerArgs() {
   NS_ASSERT_OWNINGTHREAD(ClientSource);
-  return mClientInfo.GetCspInfo();
+  return mClientInfo.GetPolicyContainerArgs();
 }
 
 void ClientSource::Traverse(nsCycleCollectionTraversalCallback& aCallback,

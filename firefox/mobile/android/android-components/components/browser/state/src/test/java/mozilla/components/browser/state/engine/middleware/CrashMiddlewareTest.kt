@@ -4,6 +4,7 @@
 
 package mozilla.components.browser.state.engine.middleware
 
+import kotlinx.coroutines.test.runTest
 import mozilla.components.browser.state.action.CrashAction
 import mozilla.components.browser.state.engine.EngineMiddleware
 import mozilla.components.browser.state.state.BrowserState
@@ -12,95 +13,69 @@ import mozilla.components.browser.state.state.createTab
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.engine.Engine
 import mozilla.components.concept.engine.EngineSession
-import mozilla.components.support.test.ext.joinBlocking
 import mozilla.components.support.test.mock
-import mozilla.components.support.test.rule.MainCoroutineRule
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Rule
 import org.junit.Test
 import org.mockito.Mockito.doReturn
 
 class CrashMiddlewareTest {
-    @get:Rule
-    val coroutinesTestRule = MainCoroutineRule()
-    private val dispatcher = coroutinesTestRule.testDispatcher
-    private val scope = coroutinesTestRule.scope
 
     @Test
-    fun `Crash and restore scenario`() {
+    fun `Crash and restore scenario`() = runTest {
         val engineSession1: EngineSession = mock()
         val engineSession2: EngineSession = mock()
         val engineSession3: EngineSession = mock()
 
         val engine: Engine = mock()
 
-        val store = BrowserStore(
-            middleware = EngineMiddleware.create(
-                engine = engine,
-                scope = scope,
-            ),
-            initialState = BrowserState(
-                tabs = listOf(
-                    createTab("https://www.mozilla.org", id = "tab1").copy(
-                        engineState = EngineState(engineSession1),
+        val store =
+            BrowserStore(
+                middleware =
+                    EngineMiddleware.create(
+                        engine = engine,
+                        scope = this,
                     ),
-                    createTab("https://www.firefox.com", id = "tab2").copy(
-                        engineState = EngineState(engineSession2),
+                initialState =
+                    BrowserState(
+                        tabs =
+                            listOf(
+                                createTab("https://www.mozilla.org", id = "tab1")
+                                    .copy(engineState = EngineState(engineSession1)),
+                                createTab("https://www.firefox.com", id = "tab2")
+                                    .copy(engineState = EngineState(engineSession2)),
+                                createTab("https://getpocket.com", id = "tab3")
+                                    .copy(engineState = EngineState(engineSession3)),
+                            )
                     ),
-                    createTab("https://getpocket.com", id = "tab3").copy(
-                        engineState = EngineState(engineSession3),
-                    ),
-                ),
-            ),
-        )
+            )
 
-        store.dispatch(
-            CrashAction.SessionCrashedAction(
-                "tab1",
-            ),
-        ).joinBlocking()
+        store.dispatch(CrashAction.SessionCrashedAction("tab1"))
 
-        store.dispatch(
-            CrashAction.SessionCrashedAction(
-                "tab3",
-            ),
-        ).joinBlocking()
+        store.dispatch(CrashAction.SessionCrashedAction("tab3"))
 
         assertTrue(store.state.tabs[0].engineState.crashed)
         assertFalse(store.state.tabs[1].engineState.crashed)
         assertTrue(store.state.tabs[2].engineState.crashed)
 
         // Restoring crashed session
-        store.dispatch(
-            CrashAction.RestoreCrashedSessionAction(
-                "tab1",
-            ),
-        ).joinBlocking()
+        store.dispatch(CrashAction.RestoreCrashedSessionAction("tab1"))
 
-        dispatcher.scheduler.advanceUntilIdle()
+        testScheduler.advanceUntilIdle()
 
         assertFalse(store.state.tabs[0].engineState.crashed)
         assertFalse(store.state.tabs[1].engineState.crashed)
         assertTrue(store.state.tabs[2].engineState.crashed)
 
         // Restoring a non crashed session
-        store.dispatch(
-            CrashAction.RestoreCrashedSessionAction(
-                "tab2",
-            ),
-        ).joinBlocking()
+        store.dispatch(CrashAction.RestoreCrashedSessionAction("tab2"))
 
-        dispatcher.scheduler.advanceUntilIdle()
+        testScheduler.advanceUntilIdle()
 
         // Restoring unknown session
-        store.dispatch(
-            CrashAction.RestoreCrashedSessionAction(
-                "unknown",
-            ),
-        ).joinBlocking()
+        store.dispatch(CrashAction.RestoreCrashedSessionAction("unknown"))
 
-        dispatcher.scheduler.advanceUntilIdle()
+        testScheduler.advanceUntilIdle()
 
         assertFalse(store.state.tabs[0].engineState.crashed)
         assertFalse(store.state.tabs[1].engineState.crashed)
@@ -108,40 +83,30 @@ class CrashMiddlewareTest {
     }
 
     @Test
-    fun `Restoring a crashed session without an engine session`() {
+    fun `Restoring a crashed session without an engine session`() = runTest {
         val engineSession: EngineSession = mock()
         val engine: Engine = mock()
         doReturn(engineSession).`when`(engine).createSession()
 
-        val store = BrowserStore(
-            middleware = EngineMiddleware.create(
-                engine = engine,
-                scope = scope,
-            ),
-            initialState = BrowserState(
-                tabs = listOf(
-                    createTab("https://www.mozilla.org", id = "tab1"),
-                ),
-            ),
-        )
+        val store =
+            BrowserStore(
+                middleware =
+                    EngineMiddleware.create(
+                        engine = engine,
+                        scope = this,
+                    ),
+                initialState = BrowserState(tabs = listOf(createTab("https://www.mozilla.org", id = "tab1"))),
+            )
 
-        store.dispatch(
-            CrashAction.SessionCrashedAction(
-                "tab1",
-            ),
-        ).joinBlocking()
+        store.dispatch(CrashAction.SessionCrashedAction("tab1"))
 
-        dispatcher.scheduler.advanceUntilIdle()
+        testScheduler.advanceUntilIdle()
 
         assertTrue(store.state.tabs[0].engineState.crashed)
 
-        store.dispatch(
-            CrashAction.RestoreCrashedSessionAction(
-                "tab1",
-            ),
-        ).joinBlocking()
+        store.dispatch(CrashAction.RestoreCrashedSessionAction("tab1"))
 
-        dispatcher.scheduler.advanceUntilIdle()
+        testScheduler.advanceUntilIdle()
 
         assertFalse(store.state.tabs[0].engineState.crashed)
     }

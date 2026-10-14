@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,21 +5,21 @@
 #ifndef mozilla_ipc_CrashReporterHost_h
 #define mozilla_ipc_CrashReporterHost_h
 
-#include <functional>
-
-#include "mozilla/UniquePtr.h"
-#include "base/process.h"
 #include "nsExceptionHandler.h"
 #include "nsIFile.h"
-#include "nsThreadUtils.h"
 #include "mozilla/ipc/GeckoChildProcessHost.h"
-#include "mozilla/ipc/ProtocolUtils.h"
 
 namespace CrashReporter {
 class CrashReporterInitArgs;
 }
 
 namespace mozilla::ipc {
+
+#if defined(XP_DARWIN)
+typedef mozilla::UniqueMachSendRight ChildThreadId;
+#else
+typedef CrashReporter::ThreadId ChildThreadId;
+#endif  // defined(XP_DARWIN)
 
 // This is the newer replacement for CrashReporterParent. It is created in
 // response to a InitCrashReporter message on a top-level actor. When the
@@ -31,7 +29,7 @@ class CrashReporterHost {
   typedef CrashReporter::AnnotationTable AnnotationTable;
 
  public:
-  CrashReporterHost(GeckoProcessType aProcessType, base::ProcessId aPid,
+  CrashReporterHost(GeckoProcessType aProcessType, GeckoChildID aChildID,
                     const CrashReporter::CrashReporterInitArgs& aInitArgs);
   ~CrashReporterHost();
 
@@ -58,35 +56,8 @@ class CrashReporterHost {
 
   // Generate a paired minidump. This does not take the crash report, as
   // GenerateCrashReport does. After this, FinalizeCrashReport may be called.
-  //
-  // This calls TakeCrashedChildMinidump and FinalizeCrashReport.
   bool GenerateMinidumpAndPair(GeckoChildProcessHost* aChildProcessHost,
-                               const nsACString& aPairName) {
-    auto childHandle = base::kInvalidProcessHandle;
-    const auto cleanup = MakeScopeExit([&]() {
-      if (childHandle && childHandle != base::kInvalidProcessHandle) {
-        base::CloseProcessHandle(childHandle);
-      }
-    });
-#ifdef XP_MACOSX
-    childHandle = aChildProcessHost->GetChildTask();
-#else
-    if (!base::OpenPrivilegedProcessHandle(
-            aChildProcessHost->GetChildProcessId(), &childHandle)) {
-      NS_WARNING("Failed to open child process handle.");
-      return false;
-    }
-#endif
-
-    nsCOMPtr<nsIFile> targetDump;
-    if (!CrashReporter::CreateMinidumpsAndPair(childHandle, mThreadId,
-                                               aPairName, mExtraAnnotations,
-                                               getter_AddRefs(targetDump))) {
-      return false;
-    }
-
-    return CrashReporter::GetIDFromMinidump(targetDump, mDumpID);
-  }
+                               const nsACString& aPairName);
 
   void AddAnnotationBool(CrashReporter::Annotation aKey, bool aValue);
   void AddAnnotationU32(CrashReporter::Annotation aKey, uint32_t aValue);
@@ -112,8 +83,13 @@ class CrashReporterHost {
                           const nsString& aChildDumpID);
 
  private:
-  // Get the nsICrashService crash type to use for an impending crash.
-  int32_t GetCrashType();
+  CrashReporter::ThreadId GetRawThreadId() const {
+#if defined(XP_DARWIN)
+    return mThreadId.get();
+#else
+    return mThreadId;
+#endif  // defined(XP_DARWIN)
+  }
 
   static void RecordCrashWithTelemetry(GeckoProcessType aProcessType,
                                        int32_t aCrashType);
@@ -123,8 +99,8 @@ class CrashReporterHost {
 
  private:
   GeckoProcessType mProcessType;
-  base::ProcessId mPid;
-  CrashReporter::ThreadId mThreadId;
+  GeckoChildID mChildID;
+  ChildThreadId mThreadId;
   time_t mStartTime;
   AnnotationTable mExtraAnnotations;
   nsString mDumpID;

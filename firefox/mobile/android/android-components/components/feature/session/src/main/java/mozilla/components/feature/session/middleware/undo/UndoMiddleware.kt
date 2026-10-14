@@ -4,6 +4,7 @@
 
 package mozilla.components.feature.session.middleware.undo
 
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -21,16 +22,14 @@ import mozilla.components.browser.state.state.TabSessionState
 import mozilla.components.browser.state.state.recover.RecoverableTab
 import mozilla.components.browser.state.state.recover.toRecoverableTab
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
 import mozilla.components.lib.state.Store
-import mozilla.components.support.base.log.logger.Logger
-import java.util.UUID
 import mozilla.components.support.base.coroutines.Dispatchers as MozillaDispatchers
+import mozilla.components.support.base.log.logger.Logger
 
 /**
- * [Middleware] implementation that adds removed tabs to [BrowserState.undoHistory] for a short
- * amount of time ([clearAfterMillis]). Dispatching [UndoAction.RestoreRecoverableTabs] will restore
- * the tabs from [BrowserState.undoHistory].
+ * [Middleware] implementation that adds removed tabs to [BrowserState.undoHistory] for a short amount of time
+ * ([clearAfterMillis]). Dispatching [UndoAction.RestoreRecoverableTabs] will restore the tabs from
+ * [BrowserState.undoHistory].
  */
 class UndoMiddleware(
     private val clearAfterMillis: Long = 5000, // For comparison: a LENGTH_LONG Snackbar takes 2750.
@@ -41,50 +40,55 @@ class UndoMiddleware(
     private var clearJob: Job? = null
 
     override fun invoke(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         next: (BrowserAction) -> Unit,
         action: BrowserAction,
     ) {
-        val state = context.state
+        val state = store.state
 
         when (action) {
             // Remember removed tabs
-            is TabListAction.RemoveAllNormalTabsAction -> onTabsRemoved(
-                context,
-                state.normalTabs,
-                state.selectedTabId,
-            )
-            is TabListAction.RemoveAllPrivateTabsAction -> onTabsRemoved(
-                context,
-                state.privateTabs,
-                state.selectedTabId,
-            )
+            is TabListAction.RemoveAllNormalTabsAction ->
+                onTabsRemoved(
+                    store,
+                    state.normalTabs,
+                    state.selectedTabId,
+                )
+            is TabListAction.RemoveAllPrivateTabsAction ->
+                onTabsRemoved(
+                    store,
+                    state.privateTabs,
+                    state.selectedTabId,
+                )
             is TabListAction.RemoveAllTabsAction -> {
                 if (action.recoverable) {
-                    onTabsRemoved(context, state.tabs, state.selectedTabId)
+                    onTabsRemoved(store, state.tabs, state.selectedTabId)
                 }
             }
-            is TabListAction.RemoveTabAction -> state.findTab(action.tabId)?.let {
-                onTabsRemoved(context, listOf(it), state.selectedTabId)
-            }
+            is TabListAction.RemoveTabAction ->
+                state.findTab(action.tabId)?.let {
+                    onTabsRemoved(store, listOf(it), state.selectedTabId)
+                }
             is TabListAction.RemoveTabsAction -> {
-                action.tabIds.mapNotNull { state.findTab(it) }.let {
-                    onTabsRemoved(context, it, state.selectedTabId)
-                }
+                action.tabIds
+                    .mapNotNull { state.findTab(it) }
+                    .let {
+                        onTabsRemoved(store, it, state.selectedTabId)
+                    }
             }
 
             // Restore
-            is UndoAction.RestoreRecoverableTabs -> restore(context.store, context.state)
+            is UndoAction.RestoreRecoverableTabs -> restore(store, store.state)
 
             // Do nothing when an action different from above is passed in.
-            else -> { }
+            else -> {}
         }
 
         next(action)
     }
 
     private fun onTabsRemoved(
-        context: MiddlewareContext<BrowserState, BrowserAction>,
+        store: Store<BrowserState, BrowserAction>,
         tabs: List<SessionState>,
         selectedTabId: String?,
     ) {
@@ -93,7 +97,7 @@ class UndoMiddleware(
         val recoverableTabs = mutableListOf<RecoverableTab>()
         tabs.forEach { tab ->
             if (tab is TabSessionState) {
-                val index = context.state.tabs.indexOfFirst { it.id == tab.id }
+                val index = store.state.tabs.indexOfFirst { it.id == tab.id }
                 recoverableTabs.add(tab.toRecoverableTab(index))
             }
         }
@@ -109,11 +113,7 @@ class UndoMiddleware(
             recoverableTabs.find { it.state.id == selectedTabId }?.state?.id
         }
 
-        context.dispatch(
-            UndoAction.AddRecoverableTabs(tag, recoverableTabs, selectionToRestore),
-        )
-
-        val store = context.store
+        store.dispatch(UndoAction.AddRecoverableTabs(tag, recoverableTabs, selectionToRestore))
 
         clearJob = waitScope.launch {
             delay(clearAfterMillis)
@@ -134,15 +134,15 @@ class UndoMiddleware(
         val undoHistory = state.undoHistory
         val tabs = undoHistory.tabs
         if (tabs.isEmpty()) {
-            logger.debug("No recoverable tabs for undo.")
+            logger.debug("No recoverable tabs or tab partitions for undo.")
             return@launch
         }
 
         store.dispatch(
             TabListAction.RestoreAction(
-                tabs,
+                tabs = tabs,
                 restoreLocation = TabListAction.RestoreAction.RestoreLocation.AT_INDEX,
-            ),
+            )
         )
 
         // Restore the previous selection if needed.

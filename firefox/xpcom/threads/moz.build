@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -59,6 +57,7 @@ EXPORTS.mozilla += [
     "InputTaskManager.h",
     "LazyIdleThread.h",
     "MainThreadIdlePeriod.h",
+    "MaybeLeakRefPtr.h",
     "Monitor.h",
     "MozPromise.h",
     "Mutex.h",
@@ -71,9 +70,12 @@ EXPORTS.mozilla += [
     "SpinEventLoopUntil.h",
     "StateMirroring.h",
     "StateWatching.h",
+    "StaticBackgroundTaskQueue.h",
     "StaticString.h",
+    "StopGapEventTarget.h",
     "SynchronizedEventQueue.h",
     "SyncRunnable.h",
+    "TargetShutdownTaskSet.h",
     "TaskController.h",
     "TaskDispatcher.h",
     "TaskQueue.h",
@@ -88,6 +90,13 @@ SOURCES += [
     "IdleTaskRunner.cpp",
     "ThreadDelay.cpp",
 ]
+
+if CONFIG["OS_ARCH"] == "WINNT":
+    SOURCES += ["TimerThreadMonitor_windows.cpp"]
+elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
+    SOURCES += ["TimerThreadMonitor_darwin.cpp"]
+else:
+    SOURCES += ["TimerThreadMonitor_posix.cpp"]
 
 UNIFIED_SOURCES += [
     "AbstractThread.cpp",
@@ -111,6 +120,8 @@ UNIFIED_SOURCES += [
     "RWLock.cpp",
     "SchedulerGroup.cpp",
     "SharedThreadPool.cpp",
+    "StaticBackgroundTaskQueue.cpp",
+    "StopGapEventTarget.cpp",
     "SynchronizedEventQueue.cpp",
     "TaskController.cpp",
     "TaskQueue.cpp",
@@ -144,3 +155,13 @@ LOCAL_INCLUDES += [
 FINAL_LIBRARY = "xul"
 
 include("/ipc/chromium/chromium-config.mozbuild")
+
+SOURCE_HEADERS += [
+    "nsEnvironment.h",
+    "nsThreadSyncDispatch.h",
+    "nsTimerImpl.h",
+    "ThreadDelay.h",
+    "ThreadEventTarget.h",
+    "TimerThread.h",
+    "TimerThreadMonitor.h",
+]

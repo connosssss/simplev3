@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,12 +5,6 @@
 #include "WebGLProgram.h"
 
 #include "GLContext.h"
-#include "mozilla/CheckedInt.h"
-#include "mozilla/dom/WebGL2RenderingContextBinding.h"
-#include "mozilla/dom/WebGLRenderingContextBinding.h"
-#include "mozilla/gfx/Logging.h"
-#include "mozilla/RefPtr.h"
-#include "nsPrintfCString.h"
 #include "WebGLBuffer.h"
 #include "WebGLContext.h"
 #include "WebGLFormats.h"
@@ -20,6 +13,12 @@
 #include "WebGLTransformFeedback.h"
 #include "WebGLValidateStrings.h"
 #include "WebGLVertexArray.h"
+#include "mozilla/CheckedInt.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/dom/WebGL2RenderingContextBinding.h"
+#include "mozilla/dom/WebGLRenderingContextBinding.h"
+#include "mozilla/gfx/Logging.h"
+#include "nsPrintfCString.h"
 
 namespace mozilla {
 
@@ -610,6 +609,8 @@ const char* webgl::ToString(const webgl::UniformBaseType x) {
   MOZ_CRASH("pacify gcc6 warning");
 }
 
+static uint8_t NumUsedLocationsByElemType(GLenum elemType);
+
 const webgl::CachedDrawFetchLimits*
 webgl::LinkedProgramInfo::GetDrawFetchLimits() const {
   const auto& webgl = prog->mContext;
@@ -644,46 +645,50 @@ webgl::LinkedProgramInfo::GetDrawFetchLimits() const {
     if (loc == -1) continue;
     hasActiveAttrib |= true;
 
-    const auto& binding = vao->AttribBinding(loc);
-    const auto& buffer = binding.buffer;
-    const auto& layout = binding.layout;
-    hasActiveDivisor0 |= (layout.divisor == 0);
+    const auto numUsedLocs = NumUsedLocationsByElemType(progAttrib.elemType);
+    for (uint8_t locOffset = 0; locOffset < numUsedLocs; locOffset++) {
+      const auto usedLoc = static_cast<uint32_t>(loc) + locOffset;
 
-    webgl::AttribBaseType attribDataBaseType;
-    if (layout.isArray) {
-      MOZ_ASSERT(buffer);
-      fetchLimits.usedBuffers.push_back(
-          {buffer.get(), static_cast<uint32_t>(loc)});
+      const auto& binding = vao->AttribBinding(usedLoc);
+      const auto& buffer = binding.buffer;
+      const auto& layout = binding.layout;
+      hasActiveDivisor0 |= (layout.divisor == 0);
 
-      attribDataBaseType = layout.baseType;
+      webgl::AttribBaseType attribDataBaseType;
+      if (layout.isArray) {
+        MOZ_ASSERT(buffer);
+        fetchLimits.usedBuffers.push_back({buffer.get(), usedLoc});
 
-      const auto availBytes = buffer->ByteLength();
-      const auto availElems = AvailGroups(availBytes, layout.byteOffset,
-                                          layout.byteSize, layout.byteStride);
-      if (layout.divisor) {
-        const auto availInstances =
-            CheckedInt<uint64_t>(availElems) * layout.divisor;
-        if (availInstances.isValid()) {
-          fetchLimits.maxInstances =
-              std::min(fetchLimits.maxInstances, availInstances.value());
-        }  // If not valid, it overflowed too large, so we're super safe.
+        attribDataBaseType = layout.baseType;
+
+        const auto availBytes = buffer->ByteLength();
+        const auto availElems = AvailGroups(availBytes, layout.byteOffset,
+                                            layout.byteSize, layout.byteStride);
+        if (layout.divisor) {
+          const auto availInstances =
+              CheckedInt<uint64_t>(availElems) * layout.divisor;
+          if (availInstances.isValid()) {
+            fetchLimits.maxInstances =
+                std::min(fetchLimits.maxInstances, availInstances.value());
+          }  // If not valid, it overflowed too large, so we're super safe.
+        } else {
+          fetchLimits.maxVerts = std::min(fetchLimits.maxVerts, availElems);
+        }
       } else {
-        fetchLimits.maxVerts = std::min(fetchLimits.maxVerts, availElems);
+        attribDataBaseType = webgl->mGenericVertexAttribTypes[usedLoc];
       }
-    } else {
-      attribDataBaseType = webgl->mGenericVertexAttribTypes[loc];
-    }
 
-    const auto& progBaseType = progAttrib.baseType;
-    if ((attribDataBaseType != progBaseType) &&
-        (progBaseType != webgl::AttribBaseType::Boolean)) {
-      const auto& dataType = ToString(attribDataBaseType);
-      const auto& progType = ToString(progBaseType);
-      webgl->ErrorInvalidOperation(
-          "Vertex attrib %u requires data of type %s,"
-          " but is being supplied with type %s.",
-          loc, progType, dataType);
-      return nullptr;
+      const auto& progBaseType = progAttrib.baseType;
+      if ((attribDataBaseType != progBaseType) &&
+          (progBaseType != webgl::AttribBaseType::Boolean)) {
+        const auto& dataType = ToString(attribDataBaseType);
+        const auto& progType = ToString(progBaseType);
+        webgl->ErrorInvalidOperation(
+            "Vertex attrib %u requires data of type %s,"
+            " but is being supplied with type %s.",
+            usedLoc, progType, dataType);
+        return nullptr;
+      }
     }
   }
 
@@ -753,7 +758,7 @@ void WebGLProgram::BindAttribLocation(GLuint loc, const std::string& name) {
     return;
   }
 
-  if (name.find("gl_") == 0) {
+  if (name.starts_with("gl_")) {
     mContext->ErrorInvalidOperation(
         "Can't set the location of a"
         " name that starts with 'gl_'.");
@@ -845,7 +850,7 @@ bool WebGLProgram::ValidateForLink() {
 
   nsCString errInfo;
   if (!fragInfo.CanLinkTo(vertInfo, &errInfo)) {
-    mLinkLog = errInfo.BeginReading();
+    mLinkLog = errInfo.get();
     return false;
   }
 
@@ -897,6 +902,7 @@ void WebGLProgram::LinkProgram() {
   // (Work around for bug seen on nVidia drivers.)
   std::vector<std::string> scopedMappedTFVaryings;
 
+  bool allowLink = true;
   if (mContext->IsWebGL2()) {
     mVertShader->MapTransformFeedbackVaryings(
         mNextLink_TransformFeedbackVaryings, &scopedMappedTFVaryings);
@@ -907,19 +913,29 @@ void WebGLProgram::LinkProgram() {
       driverVaryings.push_back(cur.c_str());
     }
 
+    // If the driver rejects the varyings (e.g. reserved gl_* names), the
+    // program object keeps the previous link's pending transform-feedback
+    // state. Instead, avoid trying to link with the stale state.
+    gl::GLContext::LocalErrorScope errorScope(*mContext->gl);
     mContext->gl->fTransformFeedbackVaryings(
         mGLName, driverVaryings.size(), driverVaryings.data(),
         mNextLink_TransformFeedbackBufferMode);
+    if (errorScope.GetError()) {
+      allowLink = false;
+      mLinkLog = "Driver rejected the requested transform feedback varyings.";
+    }
   }
 
-  LinkAndUpdate();
+  if (allowLink) {
+    LinkAndUpdate();
 
-  if (mMostRecentLinkInfo) {
-    std::string postLinkLog;
-    if (ValidateAfterTentativeLink(&postLinkLog)) return;
+    if (mMostRecentLinkInfo) {
+      std::string postLinkLog;
+      if (ValidateAfterTentativeLink(&postLinkLog)) return;
 
-    mMostRecentLinkInfo = nullptr;
-    mLinkLog = std::move(postLinkLog);
+      mMostRecentLinkInfo = nullptr;
+      mLinkLog = std::move(postLinkLog);
+    }
   }
 
   // Failed link.
@@ -1053,7 +1069,7 @@ bool WebGLProgram::ValidateAfterTentativeLink(
                              "Attrib \"%s\" aliases locations used by"
                              " attrib \"%s\".",
                              aliasingName.c_str(), existingName.c_str())
-                             .BeginReading();
+                             .get();
           return false;
         }
       }
@@ -1062,8 +1078,14 @@ bool WebGLProgram::ValidateAfterTentativeLink(
 
   // Forbid too many components for specified buffer mode
   const auto& activeTfVaryings = linkInfo->active.activeTfVaryings;
-  MOZ_ASSERT(mNextLink_TransformFeedbackVaryings.size() ==
-             activeTfVaryings.size());
+  // The driver reported different varyings than requested, which might occur
+  // if there was somehow stale or invalid transform-feedback state.
+  if (mNextLink_TransformFeedbackVaryings.size() != activeTfVaryings.size()) {
+    *out_linkLog =
+        "Mismatch between requested and driver-reported active transform"
+        " feedback varyings.";
+    return false;
+  }
   if (!activeTfVaryings.empty()) {
     GLuint maxComponentsPerIndex = 0;
     switch (linkInfo->transformFeedbackBufferMode) {
@@ -1101,7 +1123,7 @@ bool WebGLProgram::ValidateAfterTentativeLink(
                            " pushed `componentsForIndex` over the"
                            " limit of %u.",
                            cur.name.c_str(), maxComponentsPerIndex)
-                           .BeginReading();
+                           .get();
         return false;
       }
     }
@@ -1193,6 +1215,10 @@ void WebGLProgram::TransformFeedbackVaryings(
       GLuint maxAttribs = 0;
       gl->GetUIntegerv(LOCAL_GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS,
                        &maxAttribs);
+      // While we report the conservative constant limit, the driver might
+      // support less. Try to catch that here early rather than at link.
+      maxAttribs = std::min(
+          maxAttribs, GLuint(webgl::kMaxTransformFeedbackSeparateAttribs));
       if (varyings.size() > maxAttribs) {
         mContext->ErrorInvalidValue("Length of `varyings` exceeds %s.",
                                     "TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS");

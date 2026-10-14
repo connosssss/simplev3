@@ -196,14 +196,14 @@
 //!
 //! ## Debugging
 //!
-//! Most of the information on the wiki [Debugging wgpu Applications][wiki-debug]
-//! page still applies to this API, with the exception of API tracing/replay
-//! functionality, which is only available in `wgpu-core`.
+//! Most of the information in the [Debugging wgpu Applications][debug-docs]
+//! documentation still applies to this API, with the exception of API
+//! tracing/replay functionality, which is only available in `wgpu-core`.
 //!
-//! [wiki-debug]: https://github.com/gfx-rs/wgpu/wiki/Debugging-wgpu-Applications
+//! [debug-docs]: https://docs.rs/wgpu/latest/wgpu/documentation/debugging/debugging_applications/index.html
 
 #![no_std]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(
     // this happens on the GL backend, where it is both thread safe and non-thread safe in the same code.
     clippy::arc_with_non_send_sync,
@@ -219,12 +219,12 @@
     clippy::single_match,
     // Push commands are more regular than macros.
     clippy::vec_init_then_push,
-    // We unsafe impl `Send` for a reason.
-    clippy::non_send_fields_in_send_ty,
     // TODO!
     clippy::missing_safety_doc,
     // It gets in the way a lot and does not prevent bugs in practice.
     clippy::pattern_type_mismatch,
+    // We should investigate these.
+    clippy::large_enum_variant
 )]
 #![warn(
     clippy::alloc_instead_of_core,
@@ -239,9 +239,11 @@
 )]
 
 extern crate alloc;
+#[allow(unused_extern_crates)]
+extern crate naga_types as nt;
 extern crate wgpu_types as wgt;
 // Each of these backends needs `std` in some fashion; usually `std::thread` functions.
-#[cfg(any(dx12, gles_with_std, metal, vulkan))]
+#[cfg(any(dx12, gles_with_std, metal, vulkan, test))]
 #[macro_use]
 extern crate std;
 
@@ -286,8 +288,9 @@ pub use dynamic::{
     DynAccelerationStructure, DynAcquiredSurfaceTexture, DynAdapter, DynBindGroup,
     DynBindGroupLayout, DynBuffer, DynCommandBuffer, DynCommandEncoder, DynComputePipeline,
     DynDevice, DynExposedAdapter, DynFence, DynInstance, DynOpenDevice, DynPipelineCache,
-    DynPipelineLayout, DynQuerySet, DynQueue, DynRenderPipeline, DynResource, DynSampler,
-    DynShaderModule, DynSurface, DynSurfaceTexture, DynTexture, DynTextureView,
+    DynPipelineLayout, DynQuerySet, DynQueue, DynRayTracingPipeline, DynRenderPipeline,
+    DynResource, DynSampler, DynShaderModule, DynSurface, DynSurfaceTexture, DynTexture,
+    DynTextureView,
 };
 
 #[allow(unused)]
@@ -303,16 +306,10 @@ use core::{
 };
 
 use bitflags::bitflags;
+use raw_window_handle::DisplayHandle;
 use thiserror::Error;
+use wgpu_sync::Arc;
 use wgt::WasmNotSendSync;
-
-cfg_if::cfg_if! {
-    if #[cfg(supports_ptr_atomics)] {
-        use alloc::sync::Arc;
-    } else if #[cfg(feature = "portable-atomic")] {
-        use portable_atomic_util::Arc;
-    }
-}
 
 // - Vertex + Fragment
 // - Compute
@@ -326,34 +323,70 @@ pub const MAX_MIP_LEVELS: u32 = 16;
 /// Size of a single occlusion/timestamp query, when copied into a buffer, in bytes.
 /// cbindgen:ignore
 pub const QUERY_SIZE: wgt::BufferAddress = 8;
+// The struct itself is defined in core, but we need to know the size.
+// There is a const assert for correctness located with the struct definition.
+#[doc(hidden)]
+pub const EXTERNAL_TEXTURE_PARAMS_SIZE: wgt::BufferAddress = 208;
+/// Universally safe value for buffer size alignment.
+///
+/// This is determined by `D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT`.
+pub const UNIVERSAL_BUFFER_SIZE_ALIGNMENT: wgt::BufferAddress = 256;
 
 pub type Label<'a> = Option<&'a str>;
 pub type MemoryRange = Range<wgt::BufferAddress>;
 pub type FenceValue = u64;
-#[cfg(supports_64bit_atomics)]
-pub type AtomicFenceValue = core::sync::atomic::AtomicU64;
-#[cfg(not(supports_64bit_atomics))]
-pub type AtomicFenceValue = portable_atomic::AtomicU64;
+pub type AtomicFenceValue = wgpu_sync::atomic::AtomicU64;
 
 /// A callback to signal that wgpu is no longer using a resource.
-#[cfg(any(gles, vulkan))]
+#[cfg(all(any(gles, vulkan, metal, dx12), not(webgl)))]
 pub type DropCallback = Box<dyn FnOnce() + Send + Sync + 'static>;
 
-#[cfg(any(gles, vulkan))]
+/// A callback to signal that wgpu is no longer using a resource.
+///
+/// On WebGL the callback is not required to be `Send + Sync`, so it can
+/// capture JS handles — e.g. to `gl.deleteTexture` an imported
+/// `web_sys::WebGlTexture` once wgpu is done with it.
+#[cfg(webgl)]
+pub type DropCallback = Box<dyn FnOnce() + 'static>;
+
+#[cfg(any(gles, vulkan, metal, dx12))]
 pub struct DropGuard {
     callback: Option<DropCallback>,
 }
 
-#[cfg(all(any(gles, vulkan), any(native, Emscripten)))]
+// SAFETY: On WebGL the callback may capture JS values, which are neither
+// `Send` nor `Sync`. Claiming both under the `send_sync` cfg follows the
+// `fragile-send-sync-non-atomic-wasm` contract: that feature promises the
+// program runs on a single thread (wasm without atomics).
+#[cfg(all(webgl, send_sync))]
+unsafe impl Send for DropGuard {}
+#[cfg(all(webgl, send_sync))]
+unsafe impl Sync for DropGuard {}
+
+#[cfg(any(gles, vulkan, metal, dx12))]
 impl DropGuard {
+    #[cfg(any(native, Emscripten))]
     fn from_option(callback: Option<DropCallback>) -> Option<Self> {
-        callback.map(|callback| Self {
+        callback.map(Self::new)
+    }
+
+    /// A guard that may carry no callback, for resources that are externally
+    /// owned regardless of whether the caller wants a notification: the
+    /// guard's presence is what marks the resource as never-deleted-by-wgpu.
+    #[cfg(webgl)]
+    fn external(callback: Option<DropCallback>) -> Self {
+        Self { callback }
+    }
+
+    #[cfg(any(native, Emscripten))]
+    fn new(callback: DropCallback) -> Self {
+        Self {
             callback: Some(callback),
-        })
+        }
     }
 }
 
-#[cfg(any(gles, vulkan))]
+#[cfg(any(gles, vulkan, metal, dx12))]
 impl Drop for DropGuard {
     fn drop(&mut self) {
         if let Some(cb) = self.callback.take() {
@@ -362,7 +395,7 @@ impl Drop for DropGuard {
     }
 }
 
-#[cfg(any(gles, vulkan))]
+#[cfg(any(gles, vulkan, metal, dx12))]
 impl fmt::Debug for DropGuard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DropGuard").finish()
@@ -379,13 +412,126 @@ pub enum DeviceError {
     Unexpected,
 }
 
-#[allow(dead_code)] // may be unused on some platforms
+#[cfg(any(dx12, vulkan))]
+impl From<gpu_allocator::AllocationError> for DeviceError {
+    fn from(result: gpu_allocator::AllocationError) -> Self {
+        match result {
+            gpu_allocator::AllocationError::OutOfMemory => Self::OutOfMemory,
+            gpu_allocator::AllocationError::FailedToMap(e) => {
+                log::error!("gpu-allocator: Failed to map: {e}");
+                Self::Lost
+            }
+            gpu_allocator::AllocationError::NoCompatibleMemoryTypeFound => {
+                log::error!("gpu-allocator: No Compatible Memory Type Found");
+                Self::Lost
+            }
+            gpu_allocator::AllocationError::InvalidAllocationCreateDesc => {
+                log::error!("gpu-allocator: Invalid Allocation Creation Description");
+                Self::Lost
+            }
+            gpu_allocator::AllocationError::InvalidAllocatorCreateDesc(e) => {
+                log::error!("gpu-allocator: Invalid Allocator Creation Description: {e}");
+                Self::Lost
+            }
+
+            gpu_allocator::AllocationError::Internal(e) => {
+                log::error!("gpu-allocator: Internal Error: {e}");
+                Self::Lost
+            }
+            gpu_allocator::AllocationError::BarrierLayoutNeedsDevice10
+            | gpu_allocator::AllocationError::CastableFormatsRequiresEnhancedBarriers
+            | gpu_allocator::AllocationError::CastableFormatsRequiresAtLeastDevice12 => {
+                unreachable!()
+            }
+        }
+    }
+}
+
+// A copy of gpu_allocator::AllocationSizes, allowing to read the configured value for
+// the dx12 backend, we should instead add getters to gpu_allocator::AllocationSizes
+// and remove this type.
+// https://github.com/Traverse-Research/gpu-allocator/issues/295
+#[cfg_attr(not(any(dx12, vulkan)), expect(dead_code))]
+#[derive(Clone, Copy)]
+pub(crate) struct AllocationSizes {
+    pub(crate) min_device_memblock_size: u64,
+    pub(crate) max_device_memblock_size: u64,
+    pub(crate) min_host_memblock_size: u64,
+    pub(crate) max_host_memblock_size: u64,
+}
+
+impl AllocationSizes {
+    #[allow(dead_code, reason = "may be unused on some platforms")]
+    pub(crate) fn from_memory_hints(memory_hints: &wgt::MemoryHints) -> Self {
+        // TODO: the allocator's configuration should take hardware capability into
+        // account.
+        const MB: u64 = 1024 * 1024;
+
+        match memory_hints {
+            wgt::MemoryHints::Performance => Self {
+                min_device_memblock_size: 128 * MB,
+                max_device_memblock_size: 256 * MB,
+                min_host_memblock_size: 64 * MB,
+                max_host_memblock_size: 128 * MB,
+            },
+            wgt::MemoryHints::MemoryUsage => Self {
+                min_device_memblock_size: 8 * MB,
+                max_device_memblock_size: 64 * MB,
+                min_host_memblock_size: 4 * MB,
+                max_host_memblock_size: 32 * MB,
+            },
+            wgt::MemoryHints::Manual {
+                suballocated_device_memory_block_size,
+            } => {
+                // TODO: https://github.com/gfx-rs/wgpu/issues/8625
+                // Would it be useful to expose the host size in memory hints
+                // instead of always using half of the device size?
+                let device_size = suballocated_device_memory_block_size;
+                let host_size = device_size.start / 2..device_size.end / 2;
+
+                // gpu_allocator clamps the sizes between 4MiB and 256MiB, but we clamp them ourselves since we use
+                // the sizes when detecting high memory pressure and there is no way to query the values otherwise.
+                Self {
+                    min_device_memblock_size: device_size.start.clamp(4 * MB, 256 * MB),
+                    max_device_memblock_size: device_size.end.clamp(4 * MB, 256 * MB),
+                    min_host_memblock_size: host_size.start.clamp(4 * MB, 256 * MB),
+                    max_host_memblock_size: host_size.end.clamp(4 * MB, 256 * MB),
+                }
+            }
+        }
+    }
+
+    /// Sizes for the transient pool. Minimum block sizes are reduced because
+    /// gpu-allocator never frees the last block of a memory type.
+    #[allow(dead_code, reason = "only the vulkan backend has a transient pool")]
+    pub(crate) fn transient(self) -> Self {
+        Self {
+            min_device_memblock_size: self.min_device_memblock_size / 4,
+            min_host_memblock_size: self.min_host_memblock_size / 4,
+            ..self
+        }
+    }
+}
+
+#[cfg(any(dx12, vulkan))]
+impl From<AllocationSizes> for gpu_allocator::AllocationSizes {
+    fn from(value: AllocationSizes) -> gpu_allocator::AllocationSizes {
+        gpu_allocator::AllocationSizes::new(
+            value.min_device_memblock_size,
+            value.min_host_memblock_size,
+        )
+        .with_max_device_memblock_size(value.max_device_memblock_size)
+        .with_max_host_memblock_size(value.max_host_memblock_size)
+    }
+}
+
+#[allow(dead_code, reason = "may be unused on some platforms")]
 #[cold]
 fn hal_usage_error<T: fmt::Display>(txt: T) -> ! {
     panic!("wgpu-hal invariant was violated (usage error): {txt}")
 }
 
-#[allow(dead_code)] // may be unused on some platforms
+#[allow(dead_code, reason = "may be unused on some platforms")]
 #[cold]
 fn hal_internal_error<T: fmt::Display>(txt: T) -> ! {
     panic!("wgpu-hal ran into a preventable internal error: {txt}")
@@ -423,6 +569,10 @@ pub enum SurfaceError {
     Lost,
     #[error("Surface is outdated, needs to be re-created")]
     Outdated,
+    #[error("Timed out waiting for a surface texture")]
+    Timeout,
+    #[error("The window is occluded (e.g. minimized or behind another window). Try again once the window is no longer occluded.")]
+    Occluded,
     #[error(transparent)]
     Device(#[from] DeviceError),
     #[error("Other reason: {0}")]
@@ -447,17 +597,17 @@ pub struct InstanceError {
 }
 
 impl InstanceError {
-    #[allow(dead_code)] // may be unused on some platforms
+    #[allow(dead_code, reason = "may be unused on some platforms")]
     pub(crate) fn new(message: String) -> Self {
         Self {
             message,
             source: None,
         }
     }
-    #[allow(dead_code)] // may be unused on some platforms
+    #[allow(dead_code, reason = "may be unused on some platforms")]
     pub(crate) fn with_source(message: String, source: impl Error + Send + Sync + 'static) -> Self {
         cfg_if::cfg_if! {
-            if #[cfg(supports_ptr_atomics)] {
+            if #[cfg(target_has_atomic = "ptr")] {
                 let source = Arc::new(source);
             } else {
                 // TODO(https://github.com/rust-lang/rust/issues/18598): avoid indirection via Box once arbitrary types support unsized coercion
@@ -472,7 +622,16 @@ impl InstanceError {
     }
 }
 
-pub trait Api: Clone + fmt::Debug + Sized {
+/// All the types and methods that make up a implementation on top of a backend.
+///
+/// Only the types that have non-dyn trait bounds have methods on them. Most methods
+/// are either on [`CommandEncoder`] or [`Device`].
+///
+/// The api can either be used through generics (through use of this trait and associated
+/// types) or dynamically through using the `Dyn*` traits.
+pub trait Api: Clone + fmt::Debug + Sized + WasmNotSendSync + 'static {
+    const VARIANT: wgt::Backend;
+
     type Instance: DynInstance + Instance<A = Self>;
     type Surface: DynSurface + Surface<A = Self>;
     type Adapter: DynAdapter + Adapter<A = Self>;
@@ -515,6 +674,9 @@ pub trait Api: Clone + fmt::Debug + Sized {
     /// before a lower-valued operation, then waiting for the fence to reach the
     /// lower value could return before the lower-valued operation has actually
     /// finished.
+    ///
+    /// Fences are internally synchronised by the hal, and so should not need to be
+    /// contained in external synchronisation primitives.
     type Fence: DynFence;
 
     type BindGroupLayout: DynBindGroupLayout;
@@ -523,6 +685,7 @@ pub trait Api: Clone + fmt::Debug + Sized {
     type ShaderModule: DynShaderModule;
     type RenderPipeline: DynRenderPipeline;
     type ComputePipeline: DynComputePipeline;
+    type RayTracingPipeline: DynRayTracingPipeline;
     type PipelineCache: DynPipelineCache;
 
     type AccelerationStructure: DynAccelerationStructure + 'static;
@@ -531,7 +694,7 @@ pub trait Api: Clone + fmt::Debug + Sized {
 pub trait Instance: Sized + WasmNotSendSync {
     type A: Api;
 
-    unsafe fn init(desc: &InstanceDescriptor) -> Result<Self, InstanceError>;
+    unsafe fn init(desc: &InstanceDescriptor<'_>) -> Result<Self, InstanceError>;
     unsafe fn create_surface(
         &self,
         display_handle: raw_window_handle::RawDisplayHandle,
@@ -578,8 +741,8 @@ pub trait Surface: WasmNotSendSync {
     /// `self`.
     ///
     /// If `timeout` elapses before `self` has a texture ready to be acquired,
-    /// return `Ok(None)`. If `timeout` is `None`, wait indefinitely, with no
-    /// timeout.
+    /// return `Err(SurfaceError::Timeout)`. If `timeout` is `None`, wait
+    /// indefinitely, with no timeout.
     ///
     /// # Using an [`AcquiredSurfaceTexture`]
     ///
@@ -598,10 +761,16 @@ pub trait Surface: WasmNotSendSync {
     /// [`SurfaceTexture`] to [`self.discard_texture`], so that it can be reused
     /// by future acquisitions.
     ///
+    /// The fence is internally synchronised by the hal.
+    ///
     /// # Portability
     ///
     /// Some backends can't support a timeout when acquiring a texture. On these
     /// backends, `timeout` is ignored.
+    ///
+    /// On macOS, this returns `Err(SurfaceError::Timeout)` when the window is
+    /// not visible (minimized, fully occluded, or on another virtual desktop)
+    /// to avoid blocking in `CAMetalLayer.nextDrawable()`.
     ///
     /// # Safety
     ///
@@ -611,7 +780,7 @@ pub trait Surface: WasmNotSendSync {
     ///   [`Queue::submit`] that used [`Texture`]s acquired from this surface.
     ///
     /// - You may only have one texture acquired from `self` at a time. When
-    ///   `acquire_texture` returns `Ok(Some(ast))`, you must pass the returned
+    ///   `acquire_texture` returns `Ok(ast)`, you must pass the returned
     ///   [`SurfaceTexture`] `ast.texture` to either [`Queue::present`] or
     ///   [`Surface::discard_texture`] before calling `acquire_texture` again.
     ///
@@ -625,7 +794,7 @@ pub trait Surface: WasmNotSendSync {
         &self,
         timeout: Option<core::time::Duration>,
         fence: &<Self::A as Api>::Fence,
-    ) -> Result<Option<AcquiredSurfaceTexture<Self::A>>, SurfaceError>;
+    ) -> Result<AcquiredSurfaceTexture<Self::A>, SurfaceError>;
 
     /// Relinquish an acquired texture without presenting it.
     ///
@@ -669,10 +838,37 @@ pub trait Adapter: WasmNotSendSync {
         surface: &<Self::A as Api>::Surface,
     ) -> Option<SurfaceCapabilities>;
 
+    /// Returns the HDR / luminance characteristics of the display backing
+    /// `surface`, queried from the OS on each call.
+    ///
+    /// `None` means no information is available; wgpu-core maps it to
+    /// [`wgt::DisplayHdrInfo::default`]. Implementors must not panic; degrade any
+    /// OS-query failure to `None`. The default implementation returns `None`.
+    ///
+    /// Implemented by Metal (macOS only, and only from the main thread), DX12, and
+    /// Vulkan (Win32 `HWND` surfaces only); GLES and noop keep the default `None`.
+    unsafe fn surface_display_hdr_info(
+        &self,
+        surface: &<Self::A as Api>::Surface,
+    ) -> Option<wgt::DisplayHdrInfo> {
+        let _ = surface;
+        None
+    }
+
     /// Creates a [`PresentationTimestamp`] using the adapter's WSI.
     ///
     /// [`PresentationTimestamp`]: wgt::PresentationTimestamp
     unsafe fn get_presentation_timestamp(&self) -> wgt::PresentationTimestamp;
+
+    /// The combination of all usages that the are guaranteed to be be ordered by the hardware.
+    /// If a usage is ordered, then if the buffer state doesn't change between draw calls,
+    /// there are no barriers needed for synchronization.
+    fn get_ordered_buffer_usages(&self) -> wgt::BufferUses;
+
+    /// The combination of all usages that the are guaranteed to be be ordered by the hardware.
+    /// If a usage is ordered, then if the buffer state doesn't change between draw calls,
+    /// there are no barriers needed for synchronization.
+    fn get_ordered_texture_usages(&self) -> wgt::TextureUses;
 }
 
 /// A connection to a GPU and a pool of resources to use with it.
@@ -745,10 +941,22 @@ pub trait Device: WasmNotSendSync {
     /// Creates a new buffer.
     ///
     /// The initial usage is `wgt::BufferUses::empty()`.
+    ///
+    /// `wgpu_hal` may adjust the size in `desc` to a larger value if required
+    /// by the platform. On success, it returns a tuple of the buffer itself
+    /// and its actual allocated size. `wgpu-core` is responsible for
+    /// initializing any portion of the buffer that may be accessed, including
+    /// any padding added by `create_buffer`.
+    ///
+    /// Platform-dependent padding is currently required for uniform buffers on
+    /// dx12. Support for zero-size vertex and index bindings is also platform
+    /// dependent, but presently, `wgpu-core` adds padding to the end of all
+    /// buffers with vertex or index usage, and redirects all zero-size bindings
+    /// to that padding region, regardless of platform.
     unsafe fn create_buffer(
         &self,
         desc: &BufferDescriptor,
-    ) -> Result<<Self::A as Api>::Buffer, DeviceError>;
+    ) -> Result<(<Self::A as Api>::Buffer, wgt::BufferAddress), DeviceError>;
 
     /// Free `buffer` and any GPU resources it owns.
     ///
@@ -911,6 +1119,12 @@ pub trait Device: WasmNotSendSync {
     ) -> Result<<Self::A as Api>::ShaderModule, ShaderError>;
     unsafe fn destroy_shader_module(&self, module: <Self::A as Api>::ShaderModule);
 
+    /// Create a render pipeline according to `desc`.
+    ///
+    /// The returned pipeline's lifetime is independent of that of
+    /// `desc.layout`, `desc.cache`, and all the shader modules in any
+    /// [`ProgrammableStage`] values in `desc`. The pipeline is safe to use even
+    /// after those resources have been destroyed.
     #[allow(clippy::type_complexity)]
     unsafe fn create_render_pipeline(
         &self,
@@ -920,17 +1134,13 @@ pub trait Device: WasmNotSendSync {
             <Self::A as Api>::PipelineCache,
         >,
     ) -> Result<<Self::A as Api>::RenderPipeline, PipelineError>;
-    #[allow(clippy::type_complexity)]
-    unsafe fn create_mesh_pipeline(
-        &self,
-        desc: &MeshPipelineDescriptor<
-            <Self::A as Api>::PipelineLayout,
-            <Self::A as Api>::ShaderModule,
-            <Self::A as Api>::PipelineCache,
-        >,
-    ) -> Result<<Self::A as Api>::RenderPipeline, PipelineError>;
     unsafe fn destroy_render_pipeline(&self, pipeline: <Self::A as Api>::RenderPipeline);
 
+    /// Create a compute pipeline according to `desc`.
+    ///
+    /// The returned pipeline's lifetime is independent of that of
+    /// `desc.layout`, `desc.stage.module`, and `desc.cache`. The pipeline is
+    /// safe to use even after those resources have been destroyed.
     #[allow(clippy::type_complexity)]
     unsafe fn create_compute_pipeline(
         &self,
@@ -941,6 +1151,30 @@ pub trait Device: WasmNotSendSync {
         >,
     ) -> Result<<Self::A as Api>::ComputePipeline, PipelineError>;
     unsafe fn destroy_compute_pipeline(&self, pipeline: <Self::A as Api>::ComputePipeline);
+
+    /// Create a ray tracing pipeline according to `desc`.
+    ///
+    /// The returned pipeline's lifetime is independent of that of
+    /// `desc.layout`, `desc.cache`, and all the shader modules in any
+    /// [`ProgrammableStage`] values in `desc`. The pipeline is safe to use even
+    /// after those resources have been destroyed.
+    #[allow(clippy::type_complexity)]
+    unsafe fn create_ray_tracing_pipeline(
+        &self,
+        desc: &RayTracingPipelineDescriptor<
+            <Self::A as Api>::PipelineLayout,
+            <Self::A as Api>::ShaderModule,
+            <Self::A as Api>::PipelineCache,
+        >,
+    ) -> Result<<Self::A as Api>::RayTracingPipeline, PipelineError>;
+    unsafe fn destroy_ray_tracing_pipeline(&self, pipeline: <Self::A as Api>::RayTracingPipeline);
+    /// Obtain the opaque data from each group, behaves as if group 0 is the ray generation, group 1
+    /// is the miss shader, and group 2.. are the intersection groups.
+    unsafe fn get_raytracing_pipeline_group_data(
+        &self,
+        pipeline: &<Self::A as Api>::RayTracingPipeline,
+        groups: Range<u32>,
+    ) -> Result<Vec<u8>, DeviceError>;
 
     unsafe fn create_pipeline_cache(
         &self,
@@ -969,15 +1203,18 @@ pub trait Device: WasmNotSendSync {
     /// [`FenceValue`] to store in it, so you can use this `wait` function
     /// to wait for a given queue submission to finish execution.
     ///
-    /// The `value` argument must be a value that some actual operation you have
-    /// already presented to the device is going to store in `fence`. You cannot
-    /// wait for values yet to be submitted. (This restriction accommodates
-    /// implementations like the `vulkan` backend's [`FencePool`] that must
-    /// allocate a distinct synchronization object for each fence value one is
-    /// able to wait for.)
+    /// The `value` argument must not exceed the highest value that an actual
+    /// operation you have already presented to the device is going to store in
+    /// `fence`. You cannot wait for values yet to be submitted. (This
+    /// restriction accommodates implementations like the `vulkan` backend's
+    /// [`FencePool`] that must allocate a distinct synchronization object for
+    /// each fence value one is able to wait for.)
     ///
     /// Calling `wait` with a lower [`FenceValue`] than `fence`'s current value
     /// returns immediately.
+    ///
+    /// If `timeout` is not provided, the function will block indefinitely or until
+    /// an error is encountered.
     ///
     /// Returns `Ok(true)` on success and `Ok(false)` on timeout.
     ///
@@ -987,7 +1224,7 @@ pub trait Device: WasmNotSendSync {
         &self,
         fence: &<Self::A as Api>::Fence,
         value: FenceValue,
-        timeout_ms: u32,
+        timeout: Option<core::time::Duration>,
     ) -> Result<bool, DeviceError>;
 
     /// Start a graphics debugger capture.
@@ -1032,7 +1269,10 @@ pub trait Device: WasmNotSendSync {
         &self,
         acceleration_structure: <Self::A as Api>::AccelerationStructure,
     );
-    fn tlas_instance_to_bytes(&self, instance: TlasInstance) -> Vec<u8>;
+    /// Converts the `TlasInstance` into a implementation defined format, appending it to
+    /// `to_extend`. The vector must be have a length exactly the old length plus
+    /// `Alignments::raw_tlas_instance_size`
+    fn tlas_instance_to_bytes(&self, instance: TlasInstance, to_extend: &mut Vec<u8>);
 
     fn get_internal_counters(&self) -> wgt::HalCounters;
 
@@ -1051,9 +1291,9 @@ pub trait Queue: WasmNotSendSync {
     /// Update `fence` to `value` when the operation is complete. See
     /// [`Fence`] for details.
     ///
-    /// A `wgpu_hal` queue is "single threaded": all command buffers are
-    /// executed in the order they're submitted, with each buffer able to see
-    /// previous buffers' results. Specifically:
+    /// All command buffers submitted to a `wgpu_hal` queue are executed in the
+    /// order they're submitted, with each buffer able to observe the effects of
+    /// previous buffers' execution. Specifically:
     ///
     /// - If two calls to `submit` on a single `Queue` occur in a particular
     ///   order (that is, they happen on the same thread, or on two threads that
@@ -1118,13 +1358,47 @@ pub trait Queue: WasmNotSendSync {
         &self,
         command_buffers: &[&<Self::A as Api>::CommandBuffer],
         surface_textures: &[&<Self::A as Api>::SurfaceTexture],
-        signal_fence: (&mut <Self::A as Api>::Fence, FenceValue),
+        signal_fence: (&<Self::A as Api>::Fence, FenceValue),
     ) -> Result<(), DeviceError>;
+    /// Present a surface texture to the screen.
+    ///
+    /// This consumes the surface texture, returning it to the swapchain.
+    ///
+    /// # Safety
+    ///
+    /// - `texture` must have been acquired from `surface` via
+    ///   [`Surface::acquire_texture`] and not yet presented or discarded.
+    /// - `surface` must be configured for use with the [`Device`][d] associated
+    ///   with this [`Queue`].
+    /// - `texture` must be in the "present" state. Either:
+    ///   - It was passed in [`submit`][s]'s `surface_textures` argument
+    ///     (which transitions it to the present state), or
+    ///   - The caller has otherwise transitioned it (e.g. via a clear +
+    ///     barrier to `PRESENT` for textures that were never rendered to).
+    /// - Any command buffers that write to `texture` must have been submitted
+    ///   via [`submit`][s] before this call. The submissions do not need to
+    ///   have completed on the GPU; platform-level synchronization handles the
+    ///   ordering between rendering and display.
+    /// - Must be externally synchronized with all other queue operations
+    ///   ([`submit`][s], [`present`][Queue::present],
+    ///   [`wait_for_idle`][Queue::wait_for_idle]) on the same queue.
+    ///
+    /// [d]: Api::Device
+    /// [s]: Queue::submit
     unsafe fn present(
         &self,
         surface: &<Self::A as Api>::Surface,
         texture: <Self::A as Api>::SurfaceTexture,
     ) -> Result<(), SurfaceError>;
+    /// Block until all previously submitted work on this queue has completed,
+    /// including any pending presentations.
+    ///
+    /// # Safety
+    ///
+    /// - Must be externally synchronized with all other queue operations
+    ///   ([`submit`][Queue::submit], [`present`][Queue::present],
+    ///   [`wait_for_idle`][Queue::wait_for_idle]) on the same queue.
+    unsafe fn wait_for_idle(&self) -> Result<(), DeviceError>;
     unsafe fn get_timestamp_period(&self) -> f32;
 }
 
@@ -1361,18 +1635,17 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
         dynamic_offsets: &[wgt::DynamicOffset],
     );
 
-    /// Sets a range in push constant data.
+    /// Sets a range in immediate data.
     ///
     /// IMPORTANT: while the data is passed as words, the offset is in bytes!
     ///
     /// # Safety
     ///
     /// - `offset_bytes` must be a multiple of 4.
-    /// - The range of push constants written must be valid for the pipeline layout at draw time.
-    unsafe fn set_push_constants(
+    /// - The range of immediates written must be valid for the pipeline layout at draw time.
+    unsafe fn set_immediates(
         &mut self,
         layout: &<Self::A as Api>::PipelineLayout,
-        stages: wgt::ShaderStages,
         offset_bytes: u32,
         data: &[u32],
     );
@@ -1409,7 +1682,7 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
     /// This clears any bindings established by the following calls:
     ///
     /// - [`set_bind_group`](CommandEncoder::set_bind_group)
-    /// - [`set_push_constants`](CommandEncoder::set_push_constants)
+    /// - [`set_immediates`](CommandEncoder::set_immediates)
     /// - [`begin_query`](CommandEncoder::begin_query)
     /// - [`set_render_pipeline`](CommandEncoder::set_render_pipeline)
     /// - [`set_index_buffer`](CommandEncoder::set_index_buffer)
@@ -1423,10 +1696,15 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
     /// - All prior calls to [`begin_compute_pass`] on this [`CommandEncoder`] must have been followed
     ///   by a call to [`end_compute_pass`].
     ///
+    /// - All prior calls to [`begin_ray_tracing_pass`] on this [`CommandEncoder`] must have been followed
+    ///   by a call to [`end_ray_tracing_pass`].
+    ///
     /// [`begin_render_pass`]: CommandEncoder::begin_render_pass
     /// [`begin_compute_pass`]: CommandEncoder::begin_compute_pass
+    /// [`begin_ray_tracing_pass`]: CommandEncoder::begin_ray_tracing_pass
     /// [`end_render_pass`]: CommandEncoder::end_render_pass
     /// [`end_compute_pass`]: CommandEncoder::end_compute_pass
+    /// [`end_ray_tracing_pass`]: CommandEncoder::end_ray_tracing_pass
     unsafe fn begin_render_pass(
         &mut self,
         desc: &RenderPassDescriptor<<Self::A as Api>::QuerySet, <Self::A as Api>::TextureView>,
@@ -1445,15 +1723,43 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
 
     unsafe fn set_render_pipeline(&mut self, pipeline: &<Self::A as Api>::RenderPipeline);
 
+    /// Register an index buffer binding.
+    ///
+    /// The binding offset must be 4B-aligned and strictly less than the buffer
+    /// size. On some backends, the binding size is ignored. This means that
+    /// zero-size bindings must be simulated by binding a region of zeros
+    /// spanning from the provided offset to the end of the buffer. See
+    /// [`CommandEncoder::set_vertex_buffer`] for more detail.
     unsafe fn set_index_buffer<'a>(
         &mut self,
-        binding: BufferBinding<'a, <Self::A as Api>::Buffer>,
+        binding: BufferBinding<'a, <Self::A as Api>::Buffer, wgt::BufferAddress>,
         format: wgt::IndexFormat,
     );
+    /// Register a vertex buffer binding.
+    ///
+    /// The binding offset must be 4B-aligned and strictly less than the buffer
+    /// size. On some backends, the binding size is ignored. This means that
+    /// zero-size bindings must be simulated by binding a region of zeros
+    /// spanning from the provided offset to the end of the buffer.
+    ///
+    /// These restrictions arise from Vulkan's `vkCmdBindVertexBuffers` and
+    /// `vkCmdBindIndexBuffer`, which:
+    ///
+    ///  1. Do not support specifying the size of the binding.
+    ///  2. Require that the binding offset is strictly less than the buffer size.
+    ///
+    /// A read at any offset from a zero-size binding is out-of-bounds, and
+    /// should return zero. Because the binding size is not respected, this
+    /// means there may not be non-zero data between the binding offset and
+    /// the end of the buffer.
+    ///
+    /// Because the binding offset must be strictly less than the buffer size,
+    /// supporting zero-size bindings requires zero padding at the end of the
+    /// buffer.
     unsafe fn set_vertex_buffer<'a>(
         &mut self,
         index: u32,
-        binding: BufferBinding<'a, <Self::A as Api>::Buffer>,
+        binding: BufferBinding<'a, <Self::A as Api>::Buffer, wgt::BufferAddress>,
     );
     unsafe fn set_viewport(&mut self, rect: &Rect<f32>, depth_range: Range<f32>);
     unsafe fn set_scissor_rect(&mut self, rect: &Rect<u32>);
@@ -1531,7 +1837,7 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
     /// This clears any bindings established by the following calls:
     ///
     /// - [`set_bind_group`](CommandEncoder::set_bind_group)
-    /// - [`set_push_constants`](CommandEncoder::set_push_constants)
+    /// - [`set_immediates`](CommandEncoder::set_immediates)
     /// - [`begin_query`](CommandEncoder::begin_query)
     /// - [`set_compute_pipeline`](CommandEncoder::set_compute_pipeline)
     ///
@@ -1543,10 +1849,15 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
     /// - All prior calls to [`begin_compute_pass`] on this [`CommandEncoder`] must have been followed
     ///   by a call to [`end_compute_pass`].
     ///
+    /// - All prior calls to [`begin_ray_tracing_pass`] on this [`CommandEncoder`] must have been followed
+    ///   by a call to [`end_ray_tracing_pass`].
+    ///
     /// [`begin_render_pass`]: CommandEncoder::begin_render_pass
     /// [`begin_compute_pass`]: CommandEncoder::begin_compute_pass
+    /// [`begin_ray_tracing_pass`]: CommandEncoder::begin_ray_tracing_pass
     /// [`end_render_pass`]: CommandEncoder::end_render_pass
     /// [`end_compute_pass`]: CommandEncoder::end_compute_pass
+    /// [`end_ray_tracing_pass`]: CommandEncoder::end_ray_tracing_pass
     unsafe fn begin_compute_pass(
         &mut self,
         desc: &ComputePassDescriptor<<Self::A as Api>::QuerySet>,
@@ -1565,11 +1876,63 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
 
     unsafe fn set_compute_pipeline(&mut self, pipeline: &<Self::A as Api>::ComputePipeline);
 
-    unsafe fn dispatch(&mut self, count: [u32; 3]);
-    unsafe fn dispatch_indirect(
+    unsafe fn dispatch_workgroups(&mut self, count: [u32; 3]);
+    unsafe fn dispatch_workgroups_indirect(
         &mut self,
         buffer: &<Self::A as Api>::Buffer,
         offset: wgt::BufferAddress,
+    );
+
+    /// Begin a new ray tracing pass, clearing all active bindings.
+    ///
+    /// This clears any bindings established by the following calls:
+    ///
+    /// - [`set_bind_group`](CommandEncoder::set_bind_group)
+    /// - [`set_immediates`](CommandEncoder::set_immediates)
+    /// - [`begin_query`](CommandEncoder::begin_query)
+    /// - [`set_ray_tracing_pipeline`](CommandEncoder::set_compute_pipeline)
+    ///
+    /// # Safety
+    ///
+    /// - All prior calls to [`begin_render_pass`] on this [`CommandEncoder`] must have been followed
+    ///   by a call to [`end_render_pass`].
+    ///
+    /// - All prior calls to [`begin_compute_pass`] on this [`CommandEncoder`] must have been followed
+    ///   by a call to [`end_compute_pass`].
+    ///
+    /// - All prior calls to [`begin_ray_tracing_pass`] on this [`CommandEncoder`] must have been followed
+    ///   by a call to [`end_ray_tracing_pass`].
+    ///
+    /// [`begin_render_pass`]: CommandEncoder::begin_render_pass
+    /// [`begin_compute_pass`]: CommandEncoder::begin_compute_pass
+    /// [`begin_ray_tracing_pass`]: CommandEncoder::begin_ray_tracing_pass
+    /// [`end_render_pass`]: CommandEncoder::end_render_pass
+    /// [`end_compute_pass`]: CommandEncoder::end_compute_pass
+    /// [`end_ray_tracing_pass`]: CommandEncoder::end_ray_tracing_pass
+    unsafe fn begin_ray_tracing_pass(&mut self, desc: &RayTracingPassDescriptor);
+
+    /// End the current compute pass.
+    ///
+    /// # Safety
+    ///
+    /// - There must have been a prior call to [`begin_ray_tracing_pass`] on this [`CommandEncoder`]
+    ///   that has not been followed by a call to [`end_ray_tracing_pass`].
+    ///
+    /// [`begin_ray_tracing_pass`]: CommandEncoder::begin_ray_tracing_pass
+    /// [`end_ray_tracing_pass`]: CommandEncoder::end_ray_tracing_pass
+    unsafe fn end_ray_tracing_pass(&mut self);
+
+    /// # Safety
+    ///
+    /// - Pipeline must not be destroyed
+    unsafe fn set_ray_tracing_pipeline(&mut self, pipeline: &<Self::A as Api>::RayTracingPipeline);
+
+    unsafe fn trace_rays<'a>(
+        &mut self,
+        count: [u32; 3],
+        ray_generation_group_data: PipelineGroupData<'a, <Self::A as Api>::Buffer>,
+        miss_group_data: PipelineGroupData<'a, <Self::A as Api>::Buffer>,
+        intersection_group_data: PipelineGroupData<'a, <Self::A as Api>::Buffer>,
     );
 
     /// To get the required sizes for the buffer allocations use `get_acceleration_structure_build_sizes` per descriptor
@@ -1592,7 +1955,6 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
                 <Self::A as Api>::AccelerationStructure,
             >,
         >;
-
     unsafe fn place_acceleration_structure_barrier(
         &mut self,
         barrier: AccelerationStructureBarrier,
@@ -1603,6 +1965,10 @@ pub trait CommandEncoder: WasmNotSendSync + fmt::Debug {
         acceleration_structure: &<Self::A as Api>::AccelerationStructure,
         buf: &<Self::A as Api>::Buffer,
     );
+    unsafe fn set_acceleration_structure_dependencies(
+        command_buffers: &[&<Self::A as Api>::CommandBuffer],
+        dependencies: &[&<Self::A as Api>::AccelerationStructure],
+    );
 }
 
 bitflags!(
@@ -1610,9 +1976,9 @@ bitflags!(
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     pub struct PipelineLayoutFlags: u32 {
         /// D3D12: Add support for `first_vertex` and `first_instance` builtins
-        /// via push constants for direct execution.
+        /// via immediates for direct execution.
         const FIRST_VERTEX_INSTANCE = 1 << 0;
-        /// D3D12: Add support for `num_workgroups` builtins via push constants
+        /// D3D12: Add support for `num_workgroups` builtins via immediates
         /// for direct execution.
         const NUM_WORK_GROUPS = 1 << 1;
         /// D3D12: Add support for the builtins that the other flags enable for
@@ -1732,7 +2098,7 @@ impl From<wgt::TextureFormat> for FormatAspects {
             wgt::TextureFormat::Depth32FloatStencil8 | wgt::TextureFormat::Depth24PlusStencil8 => {
                 Self::DEPTH_STENCIL
             }
-            wgt::TextureFormat::NV12 => Self::PLANE_0 | Self::PLANE_1,
+            wgt::TextureFormat::NV12 | wgt::TextureFormat::P010 => Self::PLANE_0 | Self::PLANE_1,
             _ => Self::COLOR,
         }
     }
@@ -1741,27 +2107,41 @@ impl From<wgt::TextureFormat> for FormatAspects {
 bitflags!(
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     pub struct MemoryFlags: u32 {
+        /// The resource is short-lived and may be placed in a separate memory pool.
         const TRANSIENT = 1 << 0;
         const PREFER_COHERENT = 1 << 1;
     }
 );
 
-//TODO: it's not intuitive for the backends to consider `LOAD` being optional.
-
 bitflags!(
+    /// Attachment load and store operations.
+    ///
+    /// There must be at least one flag from the LOAD group and one from the STORE group set.
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     pub struct AttachmentOps: u8 {
+        /// Load the existing contents of the attachment.
         const LOAD = 1 << 0;
-        const STORE = 1 << 1;
+        /// Clear the attachment to a specified value.
+        const LOAD_CLEAR = 1 << 1;
+        /// The contents of the attachment are undefined.
+        const LOAD_DONT_CARE = 1 << 2;
+        /// Store the contents of the attachment.
+        const STORE = 1 << 3;
+        /// The contents of the attachment are undefined after the pass.
+        const STORE_DISCARD = 1 << 4;
     }
 );
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct InstanceDescriptor<'a> {
     pub name: &'a str,
     pub flags: wgt::InstanceFlags,
     pub memory_budget_thresholds: wgt::MemoryBudgetThresholds,
     pub backend_options: wgt::BackendOptions,
+    pub telemetry: Option<Telemetry>,
+    /// This is a borrow because the surrounding `core::Instance` keeps the owned display handle
+    /// alive already.
+    pub display: Option<DisplayHandle<'a>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1791,10 +2171,24 @@ pub struct Alignments {
     pub uniform_bounds_check_alignment: wgt::BufferSize,
 
     /// The size of the raw TLAS instance
-    pub raw_tlas_instance_size: usize,
+    pub raw_tlas_instance_size: u32,
 
     /// What the scratch buffer for building an acceleration structure must be aligned to
     pub ray_tracing_scratch_buffer_alignment: u32,
+
+    /// How large a single piece of group data is. That is, how large the vector returned
+    /// from `device.get_raytracing_pipeline_group_data(&pipeline, n..(n+1))` is.
+    ///
+    /// If ray tracing pipelines are implemented, this must be non zero.
+    pub ray_tracing_pipeline_group_data_size: u32,
+
+    /// If ray tracing pipelines are implemented, this must be a power of two (and non zero).
+    pub ray_tracing_pipeline_group_data_alignment: u32,
+
+    /// If ray tracing pipelines are implemented, this must be a power of two (and non zero).
+    ///
+    /// The offset within `PipelineGroupData` must be a multiple of this
+    pub ray_tracing_pipeline_data_offset_alignment: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -1802,8 +2196,16 @@ pub struct Capabilities {
     pub limits: wgt::Limits,
     pub alignments: Alignments,
     pub downlevel: wgt::DownlevelCapabilities,
+    /// Supported cooperative matrix configurations.
+    ///
+    /// Empty if cooperative matrices are not supported.
+    pub cooperative_matrix_properties: Vec<wgt::CooperativeMatrixProperties>,
 }
 
+/// An adapter with all the information needed to reason about its capabilities.
+///
+/// These are either made by [`Instance::enumerate_adapters`] or by backend specific
+/// methods on the backend [`Instance`] or [`Adapter`].
 #[derive(Debug)]
 pub struct ExposedAdapter<A: Api> {
     pub adapter: A::Adapter,
@@ -1816,10 +2218,12 @@ pub struct ExposedAdapter<A: Api> {
 /// Fetch this with [Adapter::surface_capabilities].
 #[derive(Debug, Clone)]
 pub struct SurfaceCapabilities {
-    /// List of supported texture formats.
+    /// List of supported texture formats together with the color spaces
+    /// supported for each format.
     ///
-    /// Must be at least one.
-    pub formats: Vec<wgt::TextureFormat>,
+    /// Must be at least one. At most one entry per format, each with a
+    /// non-empty set of color spaces.
+    pub formats: Vec<wgt::SurfaceFormatCapabilities>,
 
     /// Range for the number of queued frames.
     ///
@@ -1849,6 +2253,14 @@ pub struct SurfaceCapabilities {
     pub composite_alpha_modes: Vec<wgt::CompositeAlphaMode>,
 }
 
+impl SurfaceCapabilities {
+    /// Returns the supported texture formats, dropping the per-format color-space
+    /// information carried in [`Self::formats`].
+    pub fn texture_formats(&self) -> impl Iterator<Item = wgt::TextureFormat> + '_ {
+        self.formats.iter().map(|fc| fc.format)
+    }
+}
+
 #[derive(Debug)]
 pub struct AcquiredSurfaceTexture<A: Api> {
     pub texture: A::SurfaceTexture,
@@ -1858,6 +2270,10 @@ pub struct AcquiredSurfaceTexture<A: Api> {
     pub suboptimal: bool,
 }
 
+/// An open connection to a device and a queue.
+///
+/// This can be created from [`Adapter::open`] or backend
+/// specific methods on the backend's [`Instance`] or [`Adapter`].
 #[derive(Debug)]
 pub struct OpenDevice<A: Api> {
     pub device: A::Device,
@@ -1873,6 +2289,15 @@ pub struct BufferMapping {
 #[derive(Clone, Debug)]
 pub struct BufferDescriptor<'a> {
     pub label: Label<'a>,
+
+    /// The requested size of the buffer.
+    ///
+    /// `wgpu-hal` may allocate more bytes than requested, if required by the
+    /// platform. The actual allocation size is returned by `create_buffer`.
+    /// Where platforms offer bounds checking, it will operate based on the
+    /// allocated size, not the requested size, so other means may be necessary
+    /// to prevent access beyond the original requested size. The content of
+    /// newly-created buffers is undefined.
     pub size: wgt::BufferAddress,
     pub usage: wgt::BufferUses,
     pub memory_flags: MemoryFlags,
@@ -1900,7 +2325,7 @@ impl TextureDescriptor<'_> {
 
     pub fn is_cube_compatible(&self) -> bool {
         self.dimension == wgt::TextureDimension::D2
-            && self.size.depth_or_array_layers % 6 == 0
+            && self.size.depth_or_array_layers.is_multiple_of(6)
             && self.sample_count == 1
             && self.size.width == self.size.height
     }
@@ -1927,6 +2352,7 @@ pub struct TextureViewDescriptor<'a> {
     pub dimension: wgt::TextureViewDimension,
     pub usage: wgt::TextureUses,
     pub range: wgt::ImageSubresourceRange,
+    pub swizzle: wgt::TextureComponentSwizzle,
 }
 
 #[derive(Clone, Debug)]
@@ -1935,7 +2361,7 @@ pub struct SamplerDescriptor<'a> {
     pub address_modes: [wgt::AddressMode; 3],
     pub mag_filter: wgt::FilterMode,
     pub min_filter: wgt::FilterMode,
-    pub mipmap_filter: wgt::FilterMode,
+    pub mipmap_filter: wgt::MipmapFilterMode,
     pub lod_clamp: Range<f32>,
     pub compare: Option<wgt::CompareFunction>,
     // Must in the range [1, 16].
@@ -1960,19 +2386,26 @@ pub struct BindGroupLayoutDescriptor<'a> {
 pub struct PipelineLayoutDescriptor<'a, B: DynBindGroupLayout + ?Sized> {
     pub label: Label<'a>,
     pub flags: PipelineLayoutFlags,
-    pub bind_group_layouts: &'a [&'a B],
-    pub push_constant_ranges: &'a [wgt::PushConstantRange],
+    pub bind_group_layouts: &'a [Option<&'a B>],
+    pub immediate_size: u32,
 }
 
 /// A region of a buffer made visible to shaders via a [`BindGroup`].
 ///
 /// [`BindGroup`]: Api::BindGroup
 ///
+/// ## Construction
+///
+/// The recommended way to construct a `BufferBinding` is using the `binding`
+/// method on a wgpu-core `Buffer`, which will validate the binding size
+/// against the buffer size. A `new_unchecked` constructor is also provided for
+/// cases where direct construction is necessary.
+///
 /// ## Accessible region
 ///
 /// `wgpu_hal` guarantees that shaders compiled with
 /// [`ShaderModuleDescriptor::runtime_checks`] set to `true` cannot read or
-/// write data via this binding outside the *accessible region* of [`buffer`]:
+/// write data via this binding outside the *accessible region* of a buffer:
 ///
 /// - The accessible region starts at [`offset`].
 ///
@@ -1992,45 +2425,84 @@ pub struct PipelineLayoutDescriptor<'a, B: DynBindGroupLayout + ?Sized> {
 /// parts of which buffers shaders might observe. This optimization is only
 /// sound if shader access is bounds-checked.
 ///
-/// [`buffer`]: BufferBinding::buffer
+/// ## Zero-length bindings
+///
+/// Some platform APIs do not accept zero-length regions; for example, see
+/// [VUID-VkDescriptorBufferInfo-offset-00340][340],
+/// [VUID-VkDescriptorBufferInfo-range-00341][341], or the
+/// documentation for GLES's [glBindBufferRange][bbr]. For
+/// [VUID-VkCmdBindVertexBuffers-pOffsets-00626][626], no size is specified,
+/// the binding extends from the offset to the end of the buffer, and the offset
+/// must be strictly less than the buffer size.
+///
+/// WebGPU does not allow zero-length storage/uniform buffer bindings, but does
+/// allow zero-length vertex/index buffer bindings. `wgpu-core` ensures that
+/// buffers supporting vertex/index usage have 4B of naturally-aligned padding at
+/// the end, to enable simulating a zero-length binding at the end of the buffer.
+///
 /// [`offset`]: BufferBinding::offset
 /// [`size`]: BufferBinding::size
 /// [`Storage`]: wgt::BufferBindingType::Storage
 /// [`Uniform`]: wgt::BufferBindingType::Uniform
+/// [340]: https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#VUID-VkDescriptorBufferInfo-offset-00340
+/// [341]: https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#VUID-VkDescriptorBufferInfo-range-00341
+/// [626]: https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#VUID-vkCmdBindVertexBuffers-pOffsets-00626
+/// [bbr]: https://registry.khronos.org/OpenGL-Refpages/es3.0/html/glBindBufferRange.xhtml
 /// [woob]: https://gpuweb.github.io/gpuweb/wgsl/#out-of-bounds-access-sec
 #[derive(Debug)]
-pub struct BufferBinding<'a, B: DynBuffer + ?Sized> {
+pub struct BufferBinding<'a, B: DynBuffer + ?Sized, S> {
     /// The buffer being bound.
-    pub buffer: &'a B,
+    ///
+    /// This is not fully `pub` to prevent direct construction of
+    /// `BufferBinding`s, while still allowing public read access to the `offset`
+    /// and `size` properties. Read access to the buffer is available via
+    /// [`Self::buffer`].
+    pub(crate) buffer: &'a B,
 
     /// The offset at which the bound region starts.
     ///
-    /// This must be less than the size of the buffer. Some back ends
-    /// cannot tolerate zero-length regions; for example, see
-    /// [VUID-VkDescriptorBufferInfo-offset-00340][340] and
-    /// [VUID-VkDescriptorBufferInfo-range-00341][341], or the
-    /// documentation for GLES's [glBindBufferRange][bbr].
-    ///
-    /// [340]: https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#VUID-VkDescriptorBufferInfo-offset-00340
-    /// [341]: https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#VUID-VkDescriptorBufferInfo-range-00341
-    /// [bbr]: https://registry.khronos.org/OpenGL-Refpages/es3.0/html/glBindBufferRange.xhtml
+    /// This must be less or equal to the size of the buffer.
     pub offset: wgt::BufferAddress,
 
     /// The size of the region bound, in bytes.
-    ///
-    /// If `None`, the region extends from `offset` to the end of the
-    /// buffer. Given the restrictions on `offset`, this means that
-    /// the size is always greater than zero.
-    pub size: Option<wgt::BufferSize>,
+    pub size: S,
 }
 
-impl<'a, T: DynBuffer + ?Sized> Clone for BufferBinding<'a, T> {
+// We must implement this manually because `B` is not necessarily `Clone`.
+impl<B: DynBuffer + ?Sized, S: Copy> Clone for BufferBinding<'_, B, S> {
     fn clone(&self) -> Self {
         BufferBinding {
             buffer: self.buffer,
             offset: self.offset,
             size: self.size,
         }
+    }
+}
+
+impl<'a, B: DynBuffer + ?Sized, S> BufferBinding<'a, B, S> {
+    /// Construct a `BufferBinding` with the given contents.
+    ///
+    /// When possible, use the `binding` method on a wgpu-core `Buffer` instead
+    /// of this method. `Buffer::binding` validates the size of the binding
+    /// against the size of the buffer.
+    ///
+    /// It is more difficult to provide a validating constructor here, due to
+    /// not having direct access to the size of a `DynBuffer`.
+    ///
+    /// SAFETY: The caller is responsible for ensuring that a binding of `size`
+    /// bytes starting at `offset` is contained within the buffer. `size`
+    /// may be zero only for vertex/index buffer bindings.
+    pub fn new_unchecked(buffer: &'a B, offset: wgt::BufferAddress, size: S) -> Self {
+        Self {
+            buffer,
+            offset,
+            size,
+        }
+    }
+
+    /// The buffer being bound.
+    pub fn buffer(&self) -> &'a B {
+        self.buffer
     }
 }
 
@@ -2045,6 +2517,23 @@ impl<'a, T: DynTextureView + ?Sized> Clone for TextureBinding<'a, T> {
         TextureBinding {
             view: self.view,
             usage: self.usage,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ExternalTextureBinding<'a, B: DynBuffer + ?Sized, T: DynTextureView + ?Sized> {
+    pub planes: [TextureBinding<'a, T>; 3],
+    pub params: BufferBinding<'a, B, wgt::BufferSize>,
+}
+
+impl<'a, B: DynBuffer + ?Sized, T: DynTextureView + ?Sized> Clone
+    for ExternalTextureBinding<'a, B, T>
+{
+    fn clone(&self) -> Self {
+        ExternalTextureBinding {
+            planes: self.planes.clone(),
+            params: self.params.clone(),
         }
     }
 }
@@ -2077,11 +2566,12 @@ pub struct BindGroupDescriptor<
 > {
     pub label: Label<'a>,
     pub layout: &'a Bgl,
-    pub buffers: &'a [BufferBinding<'a, B>],
+    pub buffers: &'a [BufferBinding<'a, B, wgt::BufferSize>],
     pub samplers: &'a [&'a S],
     pub textures: &'a [TextureBinding<'a, T>],
     pub entries: &'a [BindGroupEntry],
     pub acceleration_structures: &'a [&'a A],
+    pub external_textures: &'a [ExternalTextureBinding<'a, B, T>],
 }
 
 #[derive(Clone, Debug)]
@@ -2110,27 +2600,45 @@ impl fmt::Debug for NagaShader {
 }
 
 /// Shader input.
-#[allow(clippy::large_enum_variant)]
 pub enum ShaderInput<'a> {
     Naga(NagaShader),
+    MetalLib {
+        file: &'a [u8],
+        num_workgroups: hashbrown::HashMap<String, (u32, u32, u32)>,
+    },
     Msl {
-        shader: String,
-        entry_point: String,
-        num_workgroups: (u32, u32, u32),
+        shader: &'a str,
+        num_workgroups: hashbrown::HashMap<String, (u32, u32, u32)>,
     },
     SpirV(&'a [u32]),
     Dxil {
         shader: &'a [u8],
-        entry_point: String,
-        num_workgroups: (u32, u32, u32),
     },
     Hlsl {
         shader: &'a str,
-        entry_point: String,
-        num_workgroups: (u32, u32, u32),
+    },
+    Glsl {
+        shader: &'a str,
     },
 }
 
+impl fmt::Debug for ShaderInput<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            // Don't include the entire shader source, especially for binary formats, because it
+            // would be spammy.
+            Self::Naga { .. } => f.debug_tuple("Naga").finish_non_exhaustive(),
+            Self::MetalLib { .. } => f.debug_tuple("MetalLib").finish_non_exhaustive(),
+            Self::Msl { .. } => f.debug_tuple("Msl").finish_non_exhaustive(),
+            Self::SpirV { .. } => f.debug_tuple("SpirV").finish_non_exhaustive(),
+            Self::Dxil { .. } => f.debug_tuple("Dxil").finish_non_exhaustive(),
+            Self::Hlsl { .. } => f.debug_tuple("Hlsl").finish_non_exhaustive(),
+            Self::Glsl { .. } => f.debug_tuple("Glsl").finish_non_exhaustive(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct ShaderModuleDescriptor<'a> {
     pub label: Label<'a>,
 
@@ -2193,6 +2701,7 @@ pub struct ComputePipelineDescriptor<
     pub cache: Option<&'a Pc>,
 }
 
+#[derive(Debug)]
 pub struct PipelineCacheDescriptor<'a> {
     pub label: Label<'a>,
     pub data: Option<&'a [u8]>,
@@ -2209,6 +2718,20 @@ pub struct VertexBufferLayout<'a> {
     pub attributes: &'a [wgt::VertexAttribute],
 }
 
+#[derive(Clone, Debug)]
+pub enum VertexProcessor<'a, M: DynShaderModule + ?Sized> {
+    Standard {
+        /// The format of any vertex buffers used with this pipeline.
+        vertex_buffers: &'a [Option<VertexBufferLayout<'a>>],
+        /// The vertex stage for this pipeline.
+        vertex_stage: ProgrammableStage<'a, M>,
+    },
+    Mesh {
+        task_stage: Option<ProgrammableStage<'a, M>>,
+        mesh_stage: ProgrammableStage<'a, M>,
+    },
+}
+
 /// Describes a render (graphics) pipeline.
 #[derive(Clone, Debug)]
 pub struct RenderPipelineDescriptor<
@@ -2220,10 +2743,8 @@ pub struct RenderPipelineDescriptor<
     pub label: Label<'a>,
     /// The layout of bind groups for this pipeline.
     pub layout: &'a Pl,
-    /// The format of any vertex buffers used with this pipeline.
-    pub vertex_buffers: &'a [VertexBufferLayout<'a>],
-    /// The vertex stage for this pipeline.
-    pub vertex_stage: ProgrammableStage<'a, M>,
+    /// The vertex processing state(vertex shader + buffers or task + mesh shaders)
+    pub vertex_processor: VertexProcessor<'a, M>,
     /// The properties of the pipeline at the primitive assembly and rasterization level.
     pub primitive: wgt::PrimitiveState,
     /// The effect of draw calls on the depth and stencil aspects of the output target, if any.
@@ -2236,11 +2757,20 @@ pub struct RenderPipelineDescriptor<
     pub color_targets: &'a [Option<wgt::ColorTargetState>],
     /// If the pipeline will be used with a multiview render pass, this indicates how many array
     /// layers the attachments will have.
-    pub multiview: Option<NonZeroU32>,
+    pub multiview_mask: Option<NonZeroU32>,
     /// The cache which will be used and filled when compiling this pipeline
     pub cache: Option<&'a Pc>,
 }
-pub struct MeshPipelineDescriptor<
+
+#[derive(Clone, Debug)]
+pub struct RayObjectIntersectionState<'a, M: DynShaderModule + ?Sized> {
+    pub closest_hit: ProgrammableStage<'a, M>,
+    pub any_hit: Option<ProgrammableStage<'a, M>>,
+}
+
+/// Describes a ray tracing pipeline.
+#[derive(Clone, Debug)]
+pub struct RayTracingPipelineDescriptor<
     'a,
     Pl: DynPipelineLayout + ?Sized,
     M: DynShaderModule + ?Sized,
@@ -2249,21 +2779,14 @@ pub struct MeshPipelineDescriptor<
     pub label: Label<'a>,
     /// The layout of bind groups for this pipeline.
     pub layout: &'a Pl,
-    pub task_stage: Option<ProgrammableStage<'a, M>>,
-    pub mesh_stage: ProgrammableStage<'a, M>,
-    /// The properties of the pipeline at the primitive assembly and rasterization level.
-    pub primitive: wgt::PrimitiveState,
-    /// The effect of draw calls on the depth and stencil aspects of the output target, if any.
-    pub depth_stencil: Option<wgt::DepthStencilState>,
-    /// The multi-sampling properties of the pipeline.
-    pub multisample: wgt::MultisampleState,
-    /// The fragment stage for this pipeline.
-    pub fragment_stage: Option<ProgrammableStage<'a, M>>,
-    /// The effect of draw calls on the color aspect of the output target.
-    pub color_targets: &'a [Option<wgt::ColorTargetState>],
-    /// If the pipeline will be used with a multiview render pass, this indicates how many array
-    /// layers the attachments will have.
-    pub multiview: Option<NonZeroU32>,
+    /// The ray generation stage.
+    pub ray_generation: ProgrammableStage<'a, M>,
+    /// The miss stage.
+    pub miss: ProgrammableStage<'a, M>,
+    /// All the object intersection stages.
+    pub intersection: &'a [RayObjectIntersectionState<'a, M>],
+    /// The maximum recursion depth allowed for the ray tracing (ray_generation shader counts as depth 0).
+    pub max_recursion_depth: u32,
     /// The cache which will be used and filled when compiling this pipeline
     pub cache: Option<&'a Pc>,
 }
@@ -2279,6 +2802,12 @@ pub struct SurfaceConfiguration {
     pub composite_alpha_mode: wgt::CompositeAlphaMode,
     /// Format of the surface textures.
     pub format: wgt::TextureFormat,
+    /// Color space in which the presentation engine interprets the surface
+    /// textures. Never [`wgt::SurfaceColorSpace::Auto`]; `wgpu-core` resolves
+    /// `Auto` to a concrete color space before configuring the surface, and
+    /// the (format, color space) pair must be listed in
+    /// `SurfaceCapabilities::formats`.
+    pub color_space: wgt::SurfaceColorSpace,
     /// Requested texture extent. Must be in
     /// `SurfaceCapabilities::extents` range.
     pub extent: wgt::Extent3d,
@@ -2309,11 +2838,78 @@ pub struct BufferBarrier<'a, B: DynBuffer + ?Sized> {
     pub usage: StateTransition<wgt::BufferUses>,
 }
 
-#[derive(Debug, Clone)]
+/// One side of a [`QueueFamilyOwnershipTransfer`].
+///
+/// The named variants stand for the queue families that Vulkan reserves for
+/// resources shared outside the current device; [`Explicit`] carries an
+/// ordinary queue family index, such as the one returned by
+/// `vulkan::Device::queue_family_index`.
+///
+/// [`Explicit`]: QueueFamily::Explicit
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueFamily {
+    /// A specific queue family, identified by its index.
+    Explicit(u32),
+
+    /// The queue family of an external, non-Vulkan API
+    /// (`VK_QUEUE_FAMILY_EXTERNAL`).
+    External,
+
+    /// The queue family of a foreign consumer of the memory, such as a
+    /// different device or the kernel (`VK_QUEUE_FAMILY_FOREIGN_EXT`).
+    ///
+    /// Requires the `VK_EXT_queue_family_foreign` extension.
+    Foreign,
+}
+
+/// A queue family ownership transfer to perform as part of a [`TextureBarrier`].
+///
+/// This is only honored by the Vulkan backend; every other backend ignores it.
+/// It exists so that textures imported from external memory (for example via
+/// `VK_KHR_external_memory`) can have their backing image transferred between
+/// wgpu's queue family and a queue family outside of wgpu's control when the
+/// image is acquired for use and released afterwards.
+///
+/// `src` becomes `VkImageMemoryBarrier::srcQueueFamilyIndex` and `dst` becomes
+/// `VkImageMemoryBarrier::dstQueueFamilyIndex`. To acquire an externally owned
+/// image, set `src` to [`QueueFamily::External`] or [`QueueFamily::Foreign`]
+/// and `dst` to [`QueueFamily::Explicit`] with wgpu's own family, obtained from
+/// `vulkan::Device::queue_family_index`. To release it again, swap the two.
+///
+/// A queue family ownership transfer requires a matching barrier to be recorded
+/// on *both* queues; wgpu-hal only records the barrier on its own queue, so the
+/// owner of the other queue is responsible for recording the complementary one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueFamilyOwnershipTransfer {
+    /// The queue family that currently owns the image (`srcQueueFamilyIndex`).
+    pub src: QueueFamily,
+    /// The queue family that should own the image afterwards (`dstQueueFamilyIndex`).
+    pub dst: QueueFamily,
+}
+
+#[derive(Debug)]
 pub struct TextureBarrier<'a, T: DynTexture + ?Sized> {
     pub texture: &'a T,
     pub range: wgt::ImageSubresourceRange,
     pub usage: StateTransition<wgt::TextureUses>,
+    /// An optional Vulkan queue family ownership transfer to perform alongside
+    /// the layout/access transition described by `usage`.
+    ///
+    /// This is honored only by the Vulkan backend; all other backends ignore
+    /// it. Leave it as `None` for the common case where no ownership transfer
+    /// is required. See [`QueueFamilyOwnershipTransfer`] for details.
+    pub queue_family_ownership_transfer: Option<QueueFamilyOwnershipTransfer>,
+}
+
+impl<'a, T: DynTexture + ?Sized> Clone for TextureBarrier<'a, T> {
+    fn clone(&self) -> Self {
+        Self {
+            texture: self.texture,
+            range: self.range,
+            queue_family_ownership_transfer: self.queue_family_ownership_transfer,
+            usage: self.usage.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2338,6 +2934,36 @@ pub struct CopyExtent {
     pub width: u32,
     pub height: u32,
     pub depth: u32,
+}
+
+impl From<wgt::Extent3d> for CopyExtent {
+    fn from(value: wgt::Extent3d) -> Self {
+        let wgt::Extent3d {
+            width,
+            height,
+            depth_or_array_layers,
+        } = value;
+        Self {
+            width,
+            height,
+            depth: depth_or_array_layers,
+        }
+    }
+}
+
+impl From<CopyExtent> for wgt::Extent3d {
+    fn from(value: CopyExtent) -> Self {
+        let CopyExtent {
+            width,
+            height,
+            depth,
+        } = value;
+        Self {
+            width,
+            height,
+            depth_or_array_layers: depth,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2376,6 +3002,8 @@ pub struct DepthStencilAttachment<'a, T: DynTextureView + ?Sized> {
     pub target: Attachment<'a, T>,
     pub depth_ops: AttachmentOps,
     pub stencil_ops: AttachmentOps,
+    pub depth_read_only: bool,
+    pub stencil_read_only: bool,
     pub clear_value: (f32, u32),
 }
 
@@ -2393,7 +3021,7 @@ pub struct RenderPassDescriptor<'a, Q: DynQuerySet + ?Sized, T: DynTextureView +
     pub sample_count: u32,
     pub color_attachments: &'a [Option<ColorAttachment<'a, T>>],
     pub depth_stencil_attachment: Option<DepthStencilAttachment<'a, T>>,
-    pub multiview: Option<NonZeroU32>,
+    pub multiview_mask: Option<NonZeroU32>,
     pub timestamp_writes: Option<PassTimestampWrites<'a, Q>>,
     pub occlusion_query_set: Option<&'a Q>,
 }
@@ -2402,6 +3030,11 @@ pub struct RenderPassDescriptor<'a, Q: DynQuerySet + ?Sized, T: DynTextureView +
 pub struct ComputePassDescriptor<'a, Q: DynQuerySet + ?Sized> {
     pub label: Label<'a>,
     pub timestamp_writes: Option<PassTimestampWrites<'a, Q>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RayTracingPassDescriptor<'a> {
+    pub label: Label<'a>,
 }
 
 #[test]
@@ -2415,6 +3048,8 @@ pub struct AccelerationStructureDescriptor<'a> {
     pub label: Label<'a>,
     pub size: wgt::BufferAddress,
     pub format: AccelerationStructureFormat,
+    /// Backends may allocate the structure as a short-lived resource, since it is
+    /// usually replaced by its compacted copy.
     pub allow_compaction: bool,
 }
 
@@ -2502,6 +3137,7 @@ pub struct AccelerationStructureAABBs<'a, B: DynBuffer + ?Sized> {
     pub flags: AccelerationStructureGeometryFlags,
 }
 
+#[derive(Clone, Debug)]
 pub struct AccelerationStructureCopy {
     pub copy_flags: wgt::AccelerationStructureCopy,
     pub type_flags: wgt::AccelerationStructureType,
@@ -2563,4 +3199,36 @@ pub struct TlasInstance {
     pub custom_data: u32,
     pub mask: u8,
     pub blas_address: u64,
+    /// The offset for the index into the intersection hit
+    /// group calculation. Number is in hit groups.
+    pub pipeline_intersection_data_offset: u32,
+}
+
+#[cfg(dx12)]
+#[derive(Debug)]
+pub enum D3D12ExposeAdapterResult {
+    CreateDeviceError(dx12::CreateDeviceError),
+    UnknownFeatureLevel(i32),
+    ResourceBindingTier2Requirement,
+    ShaderModel6Requirement,
+    Success(dx12::FeatureLevel, dx12::ShaderModel),
+}
+
+/// Pluggable telemetry, mainly to be used by Firefox.
+#[derive(Debug, Clone, Copy)]
+pub struct Telemetry {
+    #[cfg(dx12)]
+    pub d3d12_expose_adapter: fn(
+        desc: &windows::Win32::Graphics::Dxgi::DXGI_ADAPTER_DESC2,
+        driver_version: Result<[u16; 4], windows_core::HRESULT>,
+        result: D3D12ExposeAdapterResult,
+    ),
+}
+
+#[derive(Debug)]
+pub struct PipelineGroupData<'a, B: DynBuffer + ?Sized> {
+    pub buffer: &'a B,
+    pub offset: wgt::BufferAddress,
+    pub stride: u64,
+    pub count: u64,
 }

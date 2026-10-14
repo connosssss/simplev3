@@ -53,10 +53,9 @@ impl FfiDefault for crate::RustBuffer {
     }
 }
 
-impl FfiDefault for crate::ForeignFuture {
+impl FfiDefault for crate::ForeignBytes {
     fn ffi_default() -> Self {
-        extern "C" fn free(_handle: u64) {}
-        crate::ForeignFuture { handle: 0, free }
+        unsafe { crate::ForeignBytes::from_raw_parts(std::ptr::null(), 0) }
     }
 }
 

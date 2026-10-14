@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,38 +6,17 @@
 #define WEBGPU_TYPES_H_
 
 #include <cstdint>
-#include "mozilla/Maybe.h"
-#include "nsString.h"
-#include "mozilla/dom/BindingDeclarations.h"
 
-namespace mozilla::dom {
-enum class GPUErrorFilter : uint8_t;
-}  // namespace mozilla::dom
+#include "ipc/IPCMessageUtils.h"
+#include "mozilla/GfxMessageUtils.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/layers/LayersSurfaces.h"
+#include "nsString.h"
 
 namespace mozilla::webgpu {
 
 using RawId = uint64_t;
 using BufferAddress = uint64_t;
-
-struct ErrorScope {
-  dom::GPUErrorFilter filter;
-  Maybe<nsCString> firstMessage;
-};
-
-enum class PopErrorScopeResultType : uint8_t {
-  NoError,
-  ThrowOperationError,
-  ValidationError,
-  OutOfMemory,
-  InternalError,
-  DeviceLost,
-  _LAST = DeviceLost,
-};
-
-struct PopErrorScopeResult {
-  PopErrorScopeResultType resultType;
-  nsCString message;
-};
 
 enum class WebGPUCompilationMessageType { Error, Warning, Info };
 
@@ -77,6 +55,24 @@ class StringHelper {
   Maybe<NS_ConvertUTF16toUTF8> mNarrow;
 };
 
+// Used to create an ExternalTextureSourceHost.
+struct ExternalTextureSourceDescriptor {
+  std::array<RawId, 3> mTextureIds;
+  std::array<RawId, 3> mViewIds;
+  layers::SurfaceDescriptor mSurfaceDescriptor;
+  gfx::IntSize mSize;
+  std::array<float, 6> mSampleTransform;
+  std::array<float, 6> mLoadTransform;
+};
+
 }  // namespace mozilla::webgpu
+
+namespace IPC {
+
+DEFINE_IPC_SERIALIZER_WITH_FIELDS(
+    mozilla::webgpu::ExternalTextureSourceDescriptor, mTextureIds, mViewIds,
+    mSurfaceDescriptor, mSize, mSampleTransform, mLoadTransform);
+
+}  // namespace IPC
 
 #endif  // WEBGPU_TYPES_H_

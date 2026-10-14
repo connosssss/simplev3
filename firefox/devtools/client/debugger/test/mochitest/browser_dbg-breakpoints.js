@@ -85,8 +85,8 @@ add_task(async function testBreakpointsKeyboardEvents() {
   await addBreakpoint(dbg, "simple2.js", 3);
   await addBreakpoint(dbg, "simple2.js", 4);
 
-  info("Add conditional breakpoint to line 4");
-  setEditorCursorAt(dbg, 4, 2);
+  info("Add conditional breakpoint to line 5");
+  await setEditorCursorAt(dbg, 5, 2);
   await setConditionalBreakpointWithKeyboardShortcut(dbg, "3");
   pressKey(dbg, "Enter");
   await waitForCondition(dbg, "3");
@@ -117,6 +117,52 @@ add_task(async function testBreakpointsKeyboardEvents() {
   await waitForCondition(dbg, "35");
 
   // Cleanup
+  await cleanupBreakpoints(dbg);
+});
+
+// Test enabling and disabling all breakpoint using a shortcut
+add_task(async function testEnableDisableAllBreakpointsWithShortcut() {
+  const dbg = await initDebugger("doc-scripts.html", "simple2.js");
+
+  await selectSource(dbg, "simple2.js");
+
+  await addBreakpoint(dbg, "simple2.js", 3);
+  await addBreakpoint(dbg, "simple2.js", 4);
+  await addBreakpoint(dbg, "simple2.js", 5);
+
+  pressKey(dbg, "toggleAllBreakpoints");
+
+  info("After the toggle, all breakpoints shortcut should be disabled");
+  await waitForState(dbg, () =>
+    dbg.selectors.getBreakpointsList().every(bp => bp.disabled)
+  );
+
+  info("Enable the first breakpoint");
+  await enableBreakpoint(dbg, 0);
+
+  is(
+    findBreakpoint(dbg, "simple2.js", 3).disabled,
+    false,
+    "first breakpoint is enabled"
+  );
+  is(
+    findBreakpoint(dbg, "simple2.js", 4).disabled,
+    true,
+    "second breakpoint is disabled"
+  );
+  is(
+    findBreakpoint(dbg, "simple2.js", 5).disabled,
+    true,
+    "third breakpoint is disabled"
+  );
+
+  pressKey(dbg, "toggleAllBreakpoints");
+
+  info("After the toggle all the other breakpoints should also be enabled");
+  await waitForState(dbg, () =>
+    dbg.selectors.getBreakpointsList().every(bp => !bp.disabled)
+  );
+
   await cleanupBreakpoints(dbg);
 });
 

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,13 +5,12 @@
 #ifndef NSDISPLAYLISTINVALIDATION_H_
 #define NSDISPLAYLISTINVALIDATION_H_
 
-#include "mozilla/Attributes.h"
-#include "mozilla/layers/WebRenderUserData.h"
 #include "ImgDrawResult.h"
-#include "nsRect.h"
-#include "nsColor.h"
 #include "gfxRect.h"
 #include "mozilla/gfx/MatrixFwd.h"
+#include "mozilla/layers/WebRenderUserData.h"
+#include "nsColor.h"
+#include "nsRect.h"
 
 namespace mozilla {
 class nsDisplayBackgroundImage;
@@ -173,9 +170,9 @@ class nsDisplaySVGEffectGeometry : public nsDisplayItemGeometry {
   void MoveBy(const nsPoint& aOffset) override;
 
   gfxRect mBBox;
-  gfxPoint mUserSpaceOffset;
+  CSSPoint mUserSpaceOffset;
   nsPoint mFrameOffsetToReferenceFrame;
-  bool mHandleOpacity;
+  bool mHandleOpacity = false;
 };
 
 class nsDisplayMasksAndClipPathsGeometry : public nsDisplaySVGEffectGeometry {

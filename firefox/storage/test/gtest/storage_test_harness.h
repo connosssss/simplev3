@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=2 et lcs=trail\:.,tab\:>~ :
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef storage_test_harness_h__
-#define storage_test_harness_h__
+#ifndef storage_test_harness_h_
+#define storage_test_harness_h_
 
 #include "gtest/gtest.h"
 
@@ -19,6 +17,7 @@
 #include "nsThreadUtils.h"
 #include "mozilla/ReentrantMonitor.h"
 #include "mozilla/AutoSQLiteLifetime.h"
+#include "mozilla/FOG.h"
 
 #include "mozIStorageService.h"
 #include "mozIStorageConnection.h"
@@ -145,6 +144,11 @@ extern "C" int wrapped_MutexTry(sqlite3_mutex* mutex);
 class HookSqliteMutex {
  public:
   HookSqliteMutex() {
+    // FOG/Glean uses SQLite now and runs in a separate thread,
+    // which might do work in parallel to the tests here, causing issues if the
+    // SQLite internals are switched out.
+    RefPtr<mozilla::FOG>(mozilla::FOG::GetSingleton())->TestShutdownFOG();
+
     // We need to initialize and teardown SQLite to get it to set up the
     // default mutex handlers for us so we can steal them and wrap them.
     do_check_ok(sqlite3_initialize());
@@ -163,6 +167,11 @@ class HookSqliteMutex {
     mozilla::AutoSQLiteLifetime::Init();
     int rc = mozilla::AutoSQLiteLifetime::getInitResult();
     MOZ_RELEASE_ASSERT(rc == SQLITE_OK);
+
+    // Reset FOG to leave things in a state expected by other tests.
+    const nsCString empty;
+    RefPtr<mozilla::FOG>(mozilla::FOG::GetSingleton())
+        ->TestResetFOG(empty, empty);
   }
 };
 
@@ -223,4 +232,4 @@ class ThreadWedger : public mozilla::Runnable {
  */
 already_AddRefed<nsIThread> get_conn_async_thread(mozIStorageConnection* db);
 
-#endif  // storage_test_harness_h__
+#endif  // storage_test_harness_h_

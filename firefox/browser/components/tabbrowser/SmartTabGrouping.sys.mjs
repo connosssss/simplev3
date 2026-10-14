@@ -3,13 +3,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
-import { createEngine } from "chrome://global/content/ml/EngineProcess.sys.mjs";
+import {
+  createEngine,
+  FEATURES,
+} from "chrome://global/content/ml/EngineProcess.sys.mjs";
 import {
   cosSim,
   KeywordExtractor,
 } from "chrome://global/content/ml/NLPUtils.sys.mjs";
 
 import {
+  agglomerativeClusterCosine,
   computeCentroidFrom2DArray,
   computeRandScore,
   euclideanDistance,
@@ -18,13 +22,45 @@ import {
   silhouetteCoefficients,
 } from "chrome://global/content/ml/ClusterAlgos.sys.mjs";
 
-const lazy = {};
+import { AIFeature } from "chrome://global/content/ml/AIFeature.sys.mjs";
+import { embeddingsGeneratorFactory } from "chrome://global/content/ml/EmbeddingsGenerator.sys.mjs";
 
-ChromeUtils.defineESModuleGetters(lazy, {
+/**
+ * @typedef {import("chrome://global/content/ml/EmbeddingsGenerator.sys.mjs").EmbeddingsGenerator} EmbeddingsGenerator
+ * @typedef {import("moz-src:///toolkit/components/ml/actors/MLEngineParent.sys.mjs").MLEngine} MLEngine
+ * @typedef {import("chrome://global/content/ml/Utils.sys.mjs").ProgressAndStatusCallbackParams} ProgressAndStatusCallbackParams
+ */
+
+const lazy = XPCOMUtils.declareLazy({
   NLP: "resource://gre/modules/NLP.sys.mjs",
-  MLEngineParent: "resource://gre/actors/MLEngineParent.sys.mjs",
+  MLEngineParent:
+    "moz-src:///toolkit/components/ml/actors/MLEngineParent.sys.mjs",
   MultiProgressAggregator: "chrome://global/content/ml/Utils.sys.mjs",
   Progress: "chrome://global/content/ml/Utils.sys.mjs",
+  MLUninstallService: "chrome://global/content/ml/Utils.sys.mjs",
+  suggestOtherTabsMethod: {
+    pref: "browser.tabs.groups.smart.suggestOtherTabsMethod",
+    default: "LOGISTIC_REGRESSION",
+  },
+  topicModelRevision: {
+    pref: "browser.tabs.groups.smart.topicModelRevision",
+    default: "latest",
+  },
+  // Test/Nimbus override to pick the clustering method, e.g. "AGGLOMERATIVE".
+  clusterMethod: {
+    pref: "browser.tabs.groups.smart.clusterMethod",
+    default: "",
+  },
+  // AGGLOMERATIVE cosine-distance cutoff, as an int in thousandths (800 => 0.80).
+  // 0 keeps the config default. Stored as an int since prefs have no float type.
+  agglomerativeThresholdInt: {
+    pref: "browser.tabs.groups.smart.agglomerativeThresholdInt",
+    default: 0,
+  },
+  nearestNeighborThresholdInt: {
+    pref: "browser.tabs.groups.smart.nearestNeighborThresholdInt",
+    default: 275,
+  },
 });
 
 const LATEST_MODEL_REVISION = "latest";
@@ -36,33 +72,13 @@ export const SUGGEST_OTHER_TABS_METHODS = {
   LOGISTIC_REGRESSION: "LOGISTIC_REGRESSION",
 };
 
-XPCOMUtils.defineLazyPreferenceGetter(
-  lazy,
-  "suggestOtherTabsMethod",
-  "browser.tabs.groups.smart.suggestOtherTabsMethod"
-);
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  lazy,
-  "topicModelRevision",
-  "browser.tabs.groups.smart.topicModelRevision"
-);
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  lazy,
-  "embeddingModelRevision",
-  "browser.tabs.groups.smart.embeddingModelRevision"
-);
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  lazy,
-  "nearestNeighborThresholdInt",
-  "browser.tabs.groups.smart.nearestNeighborThresholdInt"
-);
-
 const EMBED_TEXT_KEY = "combined_text";
+// Cap the items compared when scoring cluster cohesion so the O(n^2) pairwise
+// cost stays bounded for unexpectedly large clusters (20 items => 190 pairs).
+const MAX_COHESION_ITEMS = 20;
 export const CLUSTER_METHODS = {
   KMEANS: "KMEANS",
+  AGGLOMERATIVE: "AGGLOMERATIVE", // hierarchical, average-linkage cosine + threshold
 };
 
 // Methods for finding similar items for an existing cluster
@@ -78,12 +94,15 @@ export const PREGROUPED_HANDLING_METHODS = {
 };
 
 const EXPECTED_TOPIC_MODEL_OBJECTS = 6;
-const EXPECTED_EMBEDDING_MODEL_OBJECTS = 4;
+
+const MAX_NON_SUMMARIZED_SEARCH_LENGTH = 26;
 
 export const DIM_REDUCTION_METHODS = {};
 const MISSING_ANCHOR_IN_CLUSTER_PENALTY = 0.2;
-const MAX_NN_GROUPED_TABS = 4;
+const MAX_GROUPED_TABS = 3;
 const MAX_SUGGESTED_TABS = 10;
+// limit number of tabs to be processed so inference process doesn't crash
+const MAX_TABS_TO_PROCESS = 300;
 
 const DISSIMILAR_TAB_LABEL = "none";
 const ADULT_TAB_LABEL = "adult content";
@@ -92,6 +111,9 @@ const LABELS_TO_EXCLUDE = [DISSIMILAR_TAB_LABEL, ADULT_TAB_LABEL];
 const ML_TASK_FEATURE_EXTRACTION = "feature-extraction";
 const ML_TASK_TEXT2TEXT = "text2text-generation";
 
+const STG_FEATURE_ID = "smart-tab-grouping";
+const STG_TOPIC_FEATURE_ID = "smart-tab-topic";
+
 const LABEL_REASONS = {
   DEFAULT: "DEFAULT",
   LOW_CONFIDENCE: "LOW_CONFIDENCE",
@@ -99,20 +121,16 @@ const LABEL_REASONS = {
   ERROR: "ERROR",
 };
 
-const SMART_TAB_GROUPING_CONFIG = {
-  embedding: {
-    dtype: "q8",
-    timeoutMS: 2 * 60 * 1000, // 2 minutes
-    taskName: ML_TASK_FEATURE_EXTRACTION,
-    featureId: "smart-tab-embedding",
-    backend: "onnx-native",
-  },
+export const SMART_TAB_GROUPING_CONFIG = {
+  // Embeddings use the shared embeddingsGeneratorFactory.forGeneral() model;
+  // see _generateEmbeddings.
   topicGeneration: {
     dtype: "q8",
     timeoutMS: 2 * 60 * 1000, // 2 minutes
     taskName: ML_TASK_TEXT2TEXT,
-    featureId: "smart-tab-topic",
-    backend: "onnx-native",
+    featureId: STG_TOPIC_FEATURE_ID,
+    engineId: FEATURES[STG_TOPIC_FEATURE_ID].engineId,
+    backend: "best-onnx",
   },
   dataConfig: {
     titleKey: "label",
@@ -120,8 +138,11 @@ const SMART_TAB_GROUPING_CONFIG = {
   },
   clustering: {
     dimReductionMethod: null, // Not completed.
-    clusterImplementation: CLUSTER_METHODS.KMEANS,
+    clusterImplementation: CLUSTER_METHODS.AGGLOMERATIVE,
     clusteringTriesPerK: 3,
+    // AGGLOMERATIVE cosine-distance cutoff; lower = stricter (more, smaller
+    // groups), higher = more lenient (fewer, larger groups).
+    agglomerativeThreshold: 0.85,
     anchorMethod: ANCHOR_METHODS.FIXED,
     pregroupedHandlingMethod: PREGROUPED_HANDLING_METHODS.EXCLUDE,
     pregroupedSilhouetteBoost: 2, // Relative weight of the cluster's score and all other cluster's combined
@@ -131,19 +152,25 @@ const SMART_TAB_GROUPING_CONFIG = {
 
 // these parameters were generated by training a logistic regression
 // model on synthetic data. see https://github.com/mozilla/smart-tab-grouping
-// for more info
+// and https://github.com/mozilla/smart-tab-grouping/pull/12 for more info
 const LOGISTIC_REGRESSION_PARAMS = {
+  // Logistic WITH group name
+  // Features: s_gc, s_tt_max, s_dd in [0, 1]
   TITLE_WITH_GROUP_NAME: {
-    GROUP_SIMILARITY_WEIGHT: 6.76420017,
-    TITLE_SIMILARITY_WEIGHT: 2.95779555,
-    INTERCEPT: -3.06862155,
-    THRESHOLD: 0.45,
+    GROUP_SIMILARITY_WEIGHT: 0.10249,
+    TITLE_SIMILARITY_WEIGHT: 0.54897,
+    DOMAIN_SIMILARITY_WEIGHT: 0.34854,
+    INTERCEPT: -0.07397,
+    THRESHOLD: 0.59,
   },
+  // Logistic WITHOUT group name
+  // Features: s_tt_max, s_dd in [0, 1]
   TITLE_ONLY: {
-    GROUP_SIMILARITY_WEIGHT: 0,
-    TITLE_SIMILARITY_WEIGHT: 2.50596721,
-    INTERCEPT: -0.54293376,
-    THRESHOLD: 0.6,
+    GROUP_SIMILARITY_WEIGHT: 0, // unused in this variant
+    TITLE_SIMILARITY_WEIGHT: 0.92513,
+    DOMAIN_SIMILARITY_WEIGHT: 0.07487,
+    INTERCEPT: -2.58574,
+    THRESHOLD: 0.123,
   },
 };
 
@@ -153,7 +180,10 @@ const TAB_URLS_TO_EXCLUDE = [
   "about:privatebrowsing",
   "chrome://browser/content/blanktab.html",
   "about:firefoxview",
+  "about:opentabs",
 ];
+
+const TITLE_DELIMETER_SET = new Set(["-", "|", "—"]);
 
 /**
  * For a given set of clusters represented by indices, returns the index of the cluster
@@ -179,13 +209,193 @@ export function getBestAnchorClusterInfo(groupIndices, anchorItems) {
   return { anchorClusterIndex, numAnchorItemsInCluster };
 }
 
-export class SmartTabGroupingManager {
+/**
+ * Check tab to see if it's a search page
+ *
+ * @param {object} tab
+ * @returns {boolean} Returns true if the tab is a web search from the Firefox search UI and the user is still on the original page.
+ * Changes in search query after search is made is supported.
+ * Returns false if user started from a hompepage of a site rather than the New Tab / browser UI
+ */
+export function isSearchTab(tab) {
+  const linkedBrowser = tab?.linkedBrowser;
+  if (!linkedBrowser) {
+    return false;
+  }
+  const searchURL = linkedBrowser.getAttribute("triggeringSearchEngineURL");
+  const curURL = linkedBrowser.currentURI?.spec;
+  if (!searchURL) {
+    return false;
+  }
+  const queryFieldsMarker = searchURL.indexOf("?");
+
+  if (
+    queryFieldsMarker > 0 &&
+    searchURL.substring(0, queryFieldsMarker) ===
+      curURL.substring(0, queryFieldsMarker)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export class SmartTabGroupingManager extends AIFeature {
   /**
    * Creates the SmartTabGroupingManager object.
+   *
    * @param {object} config configuration options
    */
   constructor(config) {
-    this.config = config || SMART_TAB_GROUPING_CONFIG;
+    super();
+    this.config = config || structuredClone(SMART_TAB_GROUPING_CONFIG);
+    // Optional pref overrides for the clustering method and AGGLOMERATIVE tau.
+    const clustering = this.config.clustering;
+    if (lazy.clusterMethod in CLUSTER_METHODS) {
+      clustering.clusterImplementation = lazy.clusterMethod;
+    }
+    if (lazy.agglomerativeThresholdInt > 0) {
+      clustering.agglomerativeThreshold = lazy.agglomerativeThresholdInt / 1000;
+    }
+  }
+
+  /**
+   * Returns the feature identifier for Smart Tab Grouping.
+   *
+   * @returns {string}
+   */
+  static get id() {
+    return STG_FEATURE_ID;
+  }
+
+  /**
+   * Returns whether Smart Tab Grouping exposes a distinct "Enabled" AI
+   * Controls state.
+   *
+   * @returns {boolean}
+   */
+  static get hasDistinctEnabledState() {
+    // Smart Tab Grouping has a distinct opt-in flow in the tab group UI.
+    // It is not immediately enabled when the feature is "Available" and must
+    // still be manually enabled by the user.
+    return true;
+  }
+
+  /**
+   * Returns whether the current device can run Smart Tab Grouping.
+   *
+   * @returns {boolean}
+   */
+  static get canRunOnDevice() {
+    // Smart Tab Grouping has no known restrictions based on device hardware.
+    return true;
+  }
+
+  /**
+   * Enables Smart Tab Grouping.
+   *
+   * @returns {Promise<void>}
+   */
+  static async enable() {
+    Services.prefs.setBoolPref("browser.tabs.groups.smart.enabled", true);
+    Services.prefs.setBoolPref("browser.tabs.groups.smart.userEnabled", true);
+    Services.prefs.setBoolPref("browser.tabs.groups.smart.optin", true);
+  }
+
+  /**
+   * Blocks Smart Tab Grouping and deletes its model artifacts.
+   *
+   * @returns {Promise<void>}
+   */
+  static async block() {
+    // disable prefs associated with stg
+    // opt-in flow is kept as in unless we decide to disable and re-enable later
+    // which would make the user have to go through the flow twice
+    Services.prefs.setBoolPref("browser.tabs.groups.smart.enabled", false);
+    Services.prefs.setBoolPref("browser.tabs.groups.smart.userEnabled", false);
+    Services.prefs.setBoolPref("browser.tabs.groups.smart.optin", false);
+
+    // delete models associated with stg
+    await SmartTabGroupingManager.deleteSmartTabModels();
+  }
+
+  /**
+   * Returns whether Smart Tab Grouping is enabled.
+   *
+   * @returns {boolean}
+   */
+  static get isEnabled() {
+    // note that both `browser.tabs.groups.smart.enabled` and
+    // `browser.tabs.smart.userEnabled` disable the UI but not
+    // `browser.tabs.groups.smart.optin`
+    return (
+      Services.prefs.getBoolPref("browser.ml.enable") &&
+      Services.prefs.getBoolPref("browser.tabs.groups.smart.enabled") &&
+      Services.prefs.getBoolPref("browser.tabs.groups.smart.userEnabled") &&
+      Services.prefs.getBoolPref("browser.tabs.groups.smart.optin")
+    );
+  }
+
+  /**
+   * Returns whether Smart Tab Grouping is allowed.
+   *
+   * @returns {boolean}
+   */
+  static get isAllowed() {
+    return Services.locale.appLocaleAsBCP47.startsWith("en");
+  }
+
+  /**
+   * Makes Smart Tab Grouping available and removes artifacts.
+   *
+   * @returns {Promise<void>}
+   */
+  static async makeAvailable() {
+    // Set explicitly rather than clearing, so that a non-locked policy default
+    // of "blocked" does not prevent the user from switching back to "available".
+    Services.prefs.setBoolPref("browser.tabs.groups.smart.enabled", true);
+    Services.prefs.setBoolPref("browser.tabs.groups.smart.userEnabled", true);
+    Services.prefs.setBoolPref("browser.tabs.groups.smart.optin", false);
+
+    // remove local models
+    await SmartTabGroupingManager.deleteSmartTabModels();
+  }
+
+  /**
+   * Returns whether Smart Tab Grouping is blocked.
+   *
+   * @returns {boolean}
+   */
+  static get isBlocked() {
+    return (
+      !Services.prefs.getBoolPref("browser.tabs.groups.smart.enabled") ||
+      !Services.prefs.getBoolPref("browser.tabs.groups.smart.userEnabled")
+    );
+  }
+
+  /**
+   * Checks if the feature is managed by enterprise policy.
+   *
+   * @returns {boolean}
+   */
+  static get isManagedByPolicy() {
+    return Services.prefs.prefIsLocked("browser.tabs.groups.smart.userEnabled");
+  }
+
+  /**
+   * Deletes model artifacts associated with Smart Tab Grouping.
+   *
+   * @returns {Promise<void>}
+   */
+  static async deleteSmartTabModels() {
+    // The embedding model is shared (forGeneral); only the topic model is
+    // STG-owned, so don't uninstall the embedding model here.
+    const engineIds = [FEATURES[STG_TOPIC_FEATURE_ID].engineId];
+    // Remove all ML Engine files associated with this feature.
+    await lazy.MLUninstallService.uninstall({
+      engineIds,
+      // Used only for attribution/telemetry; the specific value is not significant.
+      actor: "SmartTabGrouping",
+    });
   }
 
   /**
@@ -198,34 +408,47 @@ export class SmartTabGroupingManager {
   }
 
   /**
-   * Initializes the embedding engine by running a test request
-   * This helps remove the init latency
+   * Shared embeddings generator (forGeneral), created on first use.
+   *
+   * @returns {EmbeddingsGenerator}
+   */
+  getEmbeddingsGenerator() {
+    if (!this.embeddingsGenerator) {
+      this.embeddingsGenerator = embeddingsGeneratorFactory.forGeneral();
+    }
+    return this.embeddingsGenerator;
+  }
+
+  /**
+   * Warms up the embedding engine to remove first-use init latency.
    */
   async initEmbeddingEngine() {
-    if (!SmartTabGroupingManager.isEngineClosed(this.embeddingEngine)) {
-      return;
-    }
     try {
-      this.embeddingEngine = await this._createMLEngine(this.config.embedding);
-      const request = {
-        args: ["Test"],
-        options: { pooling: "mean", normalize: true },
-      };
-      this.embeddingEngine.run(request);
+      await this.getEmbeddingsGenerator().ensureEngine();
+      // warm up the engine
+      await this.getEmbeddingsGenerator().embedMany(["test"]);
     } catch (e) {}
   }
 
   /**
-   * Generates suggested tabs for an existing or provisional group
-   * @param {object} group active group we are adding tabs to
-   * @param {array} tabs list of tabs from gbrowser, some of which may be grouped in other groups
+   * Generates tabs to process with a limit. First MAX_GROUPED_TABS are tabs that are
+   * present in the group of the anchor tab. The remaining "ungrouped" tabs fill the
+   * slots up to MAX_TABS_TO_PROCESS
+   *
+   * @param {Array} tabsInGroup active tabs in anchor group we are adding tabs to
+   * @param {Array} allTabs list of tabs from gbrowser, some of which may be grouped in other groups
+   * @param {number} max_limit_to_process max number of tabs we want to process as part of the flow
    * @returns a list of suggested new tabs. If no new tabs are suggested an empty list is returned.
    */
-  async smartTabGroupingForGroup(group, tabs) {
-    // Add tabs to suggested group
-    const groupTabs = group.tabs;
-    const allTabs = tabs.filter(tab => {
-      // Don't include tabs already pinned
+  getTabsToProcess(
+    tabsInGroup,
+    allTabs,
+    max_limit_to_process = MAX_TABS_TO_PROCESS
+  ) {
+    const seen = new Set();
+    let tabsToProcess = [];
+
+    const shouldInclude = tab => {
       if (tab.pinned) {
         return false;
       }
@@ -233,12 +456,58 @@ export class SmartTabGroupingManager {
         return false;
       }
       return true;
-    });
+    };
 
-    // find tabs that are part of the group
-    const groupIndices = groupTabs
-      .map(a => allTabs.indexOf(a))
-      .filter(a => a >= 0);
+    // include tabs in the anchor group first
+    for (const tab of tabsInGroup) {
+      if (!shouldInclude(tab)) {
+        continue;
+      }
+      if (!seen.has(tab)) {
+        // make sure we have "seen" all the
+        // tabs already in the current group
+        seen.add(tab);
+        tabsToProcess.push(tab);
+      }
+    }
+
+    // when generating embeddings, we only look at the first MAX_GROUPED_TABS
+    // so use that limit here
+    tabsToProcess = tabsToProcess.slice(0, MAX_GROUPED_TABS);
+    // fill remaining slots with ungrouped tabs from the window
+    for (const tab of allTabs) {
+      if (tabsToProcess.length >= max_limit_to_process) {
+        break;
+      }
+      if (!shouldInclude(tab)) {
+        continue;
+      }
+      if (!seen.has(tab)) {
+        seen.add(tab);
+        tabsToProcess.push(tab);
+      }
+    }
+    return tabsToProcess;
+  }
+
+  /**
+   * Generates suggested tabs for an existing or provisional group
+   *
+   * @param {object} group active group we are adding tabs to
+   * @param {Array} tabs list of tabs from gbrowser, some of which may be grouped in other groups
+   * @returns a list of suggested new tabs. If no new tabs are suggested an empty list is returned.
+   */
+  async smartTabGroupingForGroup(group, tabs) {
+    // Add tabs to suggested group
+    const groupTabs = group.tabs;
+    const allTabs = this.getTabsToProcess(groupTabs, tabs, MAX_TABS_TO_PROCESS);
+    // first (1 up to MAX_GROUPED_TABS) are tabs in the group
+    const groupIndices = [];
+    for (let i = 0; i < MAX_GROUPED_TABS; i++) {
+      if (groupTabs.includes(allTabs[i])) {
+        groupIndices.push(i);
+      }
+    }
 
     // find tabs that are part of other groups
     const alreadyGroupedIndices = allTabs
@@ -292,10 +561,11 @@ export class SmartTabGroupingManager {
 
   /**
    * Get tabs that need to be included in suggestions
-   * @param {array} allTabs all tabs that are part of the window
-   * @param {array} groupedIndices indices of tabs that are already part of the group
-   * @param {array} alreadyGroupedIndices indices of tabs that are part of other groups
-   * @returns {array} tabs indices to be considered for suggestions
+   *
+   * @param {Array} allTabs all tabs that are part of the window
+   * @param {Array} groupedIndices indices of tabs that are already part of the group
+   * @param {Array} alreadyGroupedIndices indices of tabs that are part of other groups
+   * @returns {Array} tabs indices to be considered for suggestions
    */
   getTabsToSuggest(allTabs, groupedIndices, alreadyGroupedIndices) {
     // tabs to be excluded
@@ -315,13 +585,17 @@ export class SmartTabGroupingManager {
       .filter(i => !excludedTabIndices.includes(i));
   }
 
-  /*
+  /**
    * Generates similar tabs a grouped list of tabs
-   * @param {array} allTabs all tabs that are part of the window
-   * @param {array} groupedIndices indices of tabs that are already part of the group
-   * @param {array} alreadyGroupedIndices indices of tabs that are part of other groups
-   * @param {string} groupLabel name of group if present
-   * @param {number} threshold for nearest neighbor similarity
+   *
+   * @param {object} options
+   * @param {Array} options.allTabs all tabs that are part of the window
+   * @param {Array} options.groupedIndices indices of tabs that are already part of the group
+   * @param {Array} options.alreadyGroupedIndices indices of tabs that are part of other groups
+   * @param {string} [options.groupLabel] name of group if present
+   * @param {number} [options.thresholdMills] threshold for nearest neighbor similarity, in thousandths
+   * @param {Array} [options.precomputedEmbeddings]
+   * @param {number} [options.depth]
    * @returns a list of suggested tabs that are similar to the groupedIndices tabs
    */
   async findNearestNeighbors({
@@ -362,7 +636,7 @@ export class SmartTabGroupingManager {
       let closestScore = null;
       for (
         let j = 0;
-        j < Math.min(groupedIndices.length, MAX_NN_GROUPED_TABS);
+        j < Math.min(groupedIndices.length, MAX_GROUPED_TABS);
         j++
       ) {
         const cosineSim = cosSim(
@@ -401,8 +675,9 @@ export class SmartTabGroupingManager {
 
   /**
    * Calculates the average similarity between the anchor embeddings and the candidate embeddings
-   * @param {list[Number]} anchorEmbeddings title embeddings for the anchor tabs
-   * @param {list[Number]} candidateEmbeddings title embeddings for the candidate tabs
+   *
+   * @param {number[][]} anchorEmbeddings title embeddings for the anchor tabs
+   * @param {number[][]} candidateEmbeddings title embeddings for the candidate tabs
    */
   getAverageSimilarity(anchorEmbeddings, candidateEmbeddings) {
     let averageSimilarities = [];
@@ -417,10 +692,100 @@ export class SmartTabGroupingManager {
   }
 
   /**
+   * Calculates the max similarity between the anchor embeddings and the candidate embeddings
+   * (used for s_tt_max).
+   *
+   * @param {number[][]} anchorEmbeddings title embeddings for the anchor tabs
+   * @param {number[][]} candidateEmbeddings title embeddings for the candidate tabs
+   */
+  getMaxSimilarity(anchorEmbeddings, candidateEmbeddings) {
+    let maxSimilarities = [];
+    for (let candidate_embedding of candidateEmbeddings) {
+      let maxSimilarity = -1;
+      for (let anchor_embedding of anchorEmbeddings) {
+        const sim = cosSim(candidate_embedding, anchor_embedding);
+        if (sim > maxSimilarity) {
+          maxSimilarity = sim;
+        }
+      }
+      maxSimilarities.push(maxSimilarity);
+    }
+    return maxSimilarities;
+  }
+
+  /**
+   * Extract base domain from a URL with error handling
+   *
+   * @param {string} url
+   * @return {string}
+   */
+  static getBaseDomain(url) {
+    if (!url) {
+      return "";
+    }
+
+    let hostname;
+    try {
+      ({ hostname } = new URL(url));
+    } catch (_e) {
+      // invalid URL
+      return "";
+    }
+
+    if (!hostname) {
+      return "";
+    }
+
+    try {
+      // additionalParts = 1 → one label above the registrable domain
+      // then remove 'www'
+      // https://www.example.com -> www.example.com -> example.com
+      // https://www.docs.google.com -> docs.google.com
+      // https://localhost -> error
+      return Services.eTLD
+        .getBaseDomain(Services.io.newURI(url.toLowerCase()), 1)
+        .replace(/^www\./, "");
+    } catch (_e) {
+      // localhost, IPs, internal hosts, etc.
+      // bucket by the hostname.
+      return hostname.toLowerCase();
+    }
+  }
+
+  /**
+   * For each candidate tab, compute s_dd = fraction of anchors whose base domain
+   * matches the candidate's base domain.
+   *
+   * @param {Array} anchorTabsPrep  output of _prepareTabData for anchor tabs
+   * @param {Array} candidateTabsPrep output of _prepareTabData for candidate tabs
+   * @return {number[]} array of s_dd values in [0, 1]
+   */
+  getDomainMatchFractions(anchorTabsPrep, candidateTabsPrep) {
+    const anchorDomains = anchorTabsPrep.map(t =>
+      SmartTabGroupingManager.getBaseDomain(t.url)
+    );
+    const numAnchors = anchorDomains.length || 1;
+
+    return candidateTabsPrep.map(tab => {
+      const candDomain = SmartTabGroupingManager.getBaseDomain(tab.url);
+      if (!candDomain) {
+        return 0;
+      }
+      let same = 0;
+      for (const ad of anchorDomains) {
+        if (ad && ad === candDomain) {
+          same++;
+        }
+      }
+      return same / numAnchors;
+    });
+  }
+
+  /**
    * Calculates the sigmoid value of the input
    *
-   * @param {Number} z
-   * @return {Number}
+   * @param {number} z
+   * @return {number}
    */
   sigmoid(z) {
     return 1 / (1 + Math.exp(-z));
@@ -429,38 +794,62 @@ export class SmartTabGroupingManager {
   /**
    * Calculates the probability using the linear combination of the parameters
    *
-   * @param {Number} groupSimilarity how similar a candidate tab is to the group name
-   * @param {Number} titleSimilarity how similar a candidate tab is to the anchors
-   * @param {Object} params the logistic regression weights assigned to each parameter
-   * @return {Number}
+   * @param {number} groupSimilarity s_gc in [0,1]
+   * @param {number} titleSimilarity s_tt_max in [0,1]
+   * @param {number} domainSimilarity s_dd in [0,1]
+   * @param {object} params the logistic regression weights assigned to each parameter
+   * @return {number}
    */
-  calculateProbability(groupSimilarity, titleSimilarity, params) {
-    return this.sigmoid(
-      groupSimilarity * params.GROUP_SIMILARITY_WEIGHT +
-        titleSimilarity * params.TITLE_SIMILARITY_WEIGHT +
-        params.INTERCEPT
-    );
+  calculateProbability(
+    groupSimilarity,
+    titleSimilarity,
+    domainSimilarity,
+    params
+  ) {
+    const wGroup = params.GROUP_SIMILARITY_WEIGHT || 0;
+    const wTitle = params.TITLE_SIMILARITY_WEIGHT || 0;
+    const wDomain = params.DOMAIN_SIMILARITY_WEIGHT || 0;
+    const z =
+      groupSimilarity * wGroup +
+      titleSimilarity * wTitle +
+      domainSimilarity * wDomain +
+      params.INTERCEPT;
+    return this.sigmoid(z);
   }
 
   /**
-   * Calculates the probabilities given two lists of the same length
+   * Calculates the probabilities given similarity lists (cosine) and domain fractions.
    *
-   * @param {list[Number]} groupSimilarities cosine similarity between the candidate tabs and the group name
-   * @param {list[Number]} titleSimilarities average cosine similarity between the candidate tabs and anchors
-   * @return {list[Number]} probabilities for each candidate tab
+   * @param {number[]|null} groupSimilaritiesCos cosine(group, candidate) in [-1,1] or null
+   * @param {number[]} titleSimilaritiesCos max cosine(anchor, candidate) in [-1,1]
+   * @param {number[]} domainSimilarities s_dd in [0,1]
+   * @return {number[]} probabilities for each candidate tab
    */
-  calculateAllProbabilities(groupSimilarities, titleSimilarities) {
-    const hasGroupSimilarity = Boolean(groupSimilarities);
-    let probabilities = [];
-    for (let i = 0; i < titleSimilarities.length; i++) {
+  calculateAllProbabilities(
+    groupSimilaritiesCos,
+    titleSimilaritiesCos,
+    domainSimilarities
+  ) {
+    const hasGroupSimilarity =
+      Array.isArray(groupSimilaritiesCos) && groupSimilaritiesCos.length;
+    const useDomain =
+      Array.isArray(domainSimilarities) && domainSimilarities.length;
+
+    const probabilities = [];
+    for (let i = 0; i < titleSimilaritiesCos.length; i++) {
+      // groupTitleSim and titleSim are (cos + 1)/2 -> [0,1]
+      const groupTitleSim = hasGroupSimilarity
+        ? 0.5 * (groupSimilaritiesCos[i] + 1)
+        : 0;
+      const titleSim = 0.5 * (titleSimilaritiesCos[i] + 1);
+      const domainSim = useDomain ? domainSimilarities[i] : 0;
+
+      const params = hasGroupSimilarity
+        ? LOGISTIC_REGRESSION_PARAMS.TITLE_WITH_GROUP_NAME
+        : LOGISTIC_REGRESSION_PARAMS.TITLE_ONLY;
+
       probabilities.push(
-        this.calculateProbability(
-          hasGroupSimilarity ? groupSimilarities[i] : 0,
-          titleSimilarities[i],
-          hasGroupSimilarity
-            ? LOGISTIC_REGRESSION_PARAMS.TITLE_WITH_GROUP_NAME
-            : LOGISTIC_REGRESSION_PARAMS.TITLE_ONLY
-        )
+        this.calculateProbability(groupTitleSim, titleSim, domainSim, params)
       );
     }
     return probabilities;
@@ -469,10 +858,11 @@ export class SmartTabGroupingManager {
   /**
    * Generates similar tabs to a grouped list of tabs using a logistic regression "model"
    *
-   * @param {array} allTabs all tabs that are part of the window
-   * @param {array} groupedIndices indices of tabs that are already part of the group
-   * @param {array} alreadyGroupedIndices indices of tabs that are part of other groups
-   * @param {string} groupLabel name of group if present
+   * @param {object} options
+   * @param {Array} options.allTabs all tabs that are part of the window
+   * @param {Array} options.groupedIndices indices of tabs that are already part of the group
+   * @param {Array} options.alreadyGroupedIndices indices of tabs that are part of other groups
+   * @param {string} [options.groupLabel] name of group if present
    */
   async findSimilarTabsLogisticRegression({
     allTabs,
@@ -492,7 +882,7 @@ export class SmartTabGroupingManager {
 
     const anchorTabsPrep = groupedIndices
       .map(gi => tabData[gi])
-      .slice(0, MAX_NN_GROUPED_TABS);
+      .slice(0, MAX_GROUPED_TABS);
 
     // generate embeddings for both anchor and candidate titles
     const titleEmbeddings = await this._generateEmbeddings(
@@ -502,28 +892,35 @@ export class SmartTabGroupingManager {
     );
 
     let groupEmbedding;
-    let groupSimilarities;
+    let groupSimilaritiesCos = null;
     if (groupLabel) {
       groupEmbedding = await this._generateEmbeddings([groupLabel]);
-      // calculate similarity between the group and the candidate tabs if group name is present
-      groupSimilarities = this.getAverageSimilarity(
+      // cosine(group, candidate_title) in [-1,1]
+      groupSimilaritiesCos = this.getAverageSimilarity(
         groupEmbedding,
         titleEmbeddings.slice(anchorTabsPrep.length)
       );
     }
 
-    // calculate the similarity between the anchors and candidate titles
-    const titleSimilarities = this.getAverageSimilarity(
+    // s_tt_max: max cosine(anchor_title, candidate_title) in [-1,1]
+    const titleSimilaritiesCos = this.getMaxSimilarity(
       titleEmbeddings.slice(0, anchorTabsPrep.length),
       titleEmbeddings.slice(anchorTabsPrep.length)
     );
 
-    const candidateProbabilities = this.calculateAllProbabilities(
-      groupSimilarities,
-      titleSimilarities
+    // s_dd: fraction of anchors sharing the candidate's base domain
+    const domainSimilarities = this.getDomainMatchFractions(
+      anchorTabsPrep,
+      candidateTabsPrep
     );
 
-    // get proper params depending on group name availability
+    const candidateProbabilities = this.calculateAllProbabilities(
+      groupSimilaritiesCos,
+      titleSimilaritiesCos,
+      domainSimilarities
+    );
+
+    // get matching params depending on the group name availability
     const probabilityThreshold = groupEmbedding
       ? LOGISTIC_REGRESSION_PARAMS.TITLE_WITH_GROUP_NAME.THRESHOLD
       : LOGISTIC_REGRESSION_PARAMS.TITLE_ONLY.THRESHOLD;
@@ -555,6 +952,7 @@ export class SmartTabGroupingManager {
 
   /**
    * Changes the clustering method. Must be one of supported methods.
+   *
    * @param {string} method Name of method
    */
   setClusteringMethod(method) {
@@ -582,6 +980,7 @@ export class SmartTabGroupingManager {
 
   /**
    * Sets method to reduce dimensionality of embeddings prior to clustering
+   *
    * @param {string} method Name of method
    */
   setDimensionReductionMethod(method) {
@@ -594,6 +993,7 @@ export class SmartTabGroupingManager {
   /**
    * Sets the field name of the title of a page to be used when clustering or generating embeddings
    * This is useful when clustering test data that is not a tab object
+   *
    * @param {string} titleKey KEY FOR THE TITLE
    */
   setDataTitleKey(titleKey) {
@@ -602,14 +1002,15 @@ export class SmartTabGroupingManager {
 
   /**
    * Logs to the appropriate place for debugging. Console for now
-   * @param {string} msg Message to log
-   * @param {boolean} useDescription Whether to add description to the final text
+   *
+   * @param {string} _msg Message to log
    */
   log(_msg) {}
 
   /**
    * Prepares data to be used by the ml models
-   * @param {Object[]} tabList list of tabs in the current window
+   *
+   * @param {object[]} tabList list of tabs in the current window
    * @param {boolean} useDescription whether we should combined the title and description
    * @return {Promise<*[Object]>}
    * @private
@@ -653,20 +1054,16 @@ export class SmartTabGroupingManager {
       lazy.topicModelRevision !== LATEST_MODEL_REVISION
     ) {
       initData.modelRevision = lazy.topicModelRevision;
-    } else if (
-      featureId === SMART_TAB_GROUPING_CONFIG.embedding.featureId &&
-      lazy.embeddingModelRevision !== LATEST_MODEL_REVISION
-    ) {
-      initData.modelRevision = lazy.embeddingModelRevision;
     }
     return initData;
   }
 
   /**
    * Creates an ML engine for a given config.
+   *
    * @param {*} engineConfig
-   * @param {function} progressCallback
-   * @returns MLEngine
+   * @param {function(ProgressAndStatusCallbackParams):void} [progressCallback]
+   * @returns {Promise<MLEngine>}
    */
   async _createMLEngine(engineConfig, progressCallback) {
     const {
@@ -691,41 +1088,42 @@ export class SmartTabGroupingManager {
     };
 
     initData = SmartTabGroupingManager.getUpdatedInitData(initData, featureId);
-    return await createEngine(initData, progressCallback);
+    const engine = await createEngine(initData, progressCallback);
+    // For "best-onnx" (and similar) the actual backend is decided in the
+    // inference child and reported back via EnginePort:EngineReady, so
+    // read it off the engine. We deliberately don't fall back to the
+    // requested backend here: telemetry consumers only care about which
+    // concrete backend ran, never the "best-*" sentinel.
+    this.backend = engine.pipelineOptions?.backend;
+    return engine;
   }
 
   /**
    * Generates embeddings from a list of tab data structures
+   *
    * @param  tabList List of tabs with label (title) and description keys
    * @returns {Promise<*[]>} List of embeddings (2d array)
    * @private
    */
   async _generateEmbeddings(textToEmbedList) {
-    const inputData = {
-      inputArgs: textToEmbedList,
-      runOptions: {
-        pooling: "mean",
-        normalize: true,
-      },
-    };
-
-    if (SmartTabGroupingManager.isEngineClosed(this.embeddingEngine)) {
-      this.embeddingEngine = await this._createMLEngine(this.config.embedding);
+    if (!textToEmbedList?.length) {
+      return [];
     }
-    const request = {
-      args: [inputData.inputArgs],
-      options: inputData.runOptions,
-    };
-    return await this.embeddingEngine.run(request);
+    // embedMany mean-pools + normalizes and returns one vector per string.
+    return this.getEmbeddingsGenerator().embedMany(textToEmbedList);
   }
 
   /**
    * Clusters in desired methods
    * based on the config of the class
-   * @param tabList List of tabs as array
-   * @param docEmbeddings Precomputed embeddings for the Tab as two dimensional array
-   * @param k Desired number of clusters. Tries a range of sizes if 0.
-   * @param {function} randomFunc Optional seeded random number generator for testing
+   *
+   * @param {object} options
+   * @param {Array} options.tabs List of tabs as array
+   * @param {number[][]} options.embeddings Precomputed embeddings for the Tab as two dimensional array
+   * @param {number} options.k Desired number of clusters. Tries a range of sizes if 0.
+   * @param {function():number} [options.randomFunc] Optional seeded random number generator for testing
+   * @param {number[]} [options.anchorIndices]
+   * @param {number[]} [options.alreadyGroupedIndices]
    * @returns {SmartTabGroupingResult}
    * @private
    */
@@ -873,15 +1271,37 @@ export class SmartTabGroupingManager {
   }
 
   /**
+   * Clusters embeddings agglomeratively (average-linkage cosine). The number of
+   * groups emerges from `agglomerativeThreshold`, so there is no k-sweep.
+   *
+   * @param {object} params
+   * @param {object[]} params.tabs
+   * @param {number[][]} params.embeddings
+   * @returns {SmartTabGroupingResult}
+   */
+  _clusterEmbeddingsHAC({ tabs, embeddings }) {
+    const indices = agglomerativeClusterCosine(
+      embeddings,
+      this.config.clustering.agglomerativeThreshold
+    );
+    return new SmartTabGroupingResult({
+      indices,
+      tabs,
+      embeddings,
+      config: this.config,
+    });
+  }
+
+  /**
    * Generates clusters for a given list of tabs using precomputed embeddings or newly generated ones.
    *
-   * @param {Object[]} tabList - List of tab objects to be clustered.
+   * @param {object[]} tabList - List of tab objects to be clustered.
    * @param {number[][]} [precomputedEmbeddings] - Precomputed embeddings for tab titles and descriptions.
-   * @param {number} numClusters - Number of clusters to form.
-   * @param {Function} randFunc - Random function used for clustering initialization.
+   * @param {number} [numClusters] - Number of clusters to form.
+   * @param {function():number} [randFunc] - Random function used for clustering initialization.
    * @param {number[]} [anchorIndices=[]] - Indices of anchor tabs that should be prioritized in clustering.
    * @param {number[]} [alreadyGroupedIndices=[]] - Indices of tabs that are already assigned to groups.
-   * @returns {SmartTabGroupingResult} - The best clustering result based on centroid inertia.
+   * @returns {Promise<SmartTabGroupingResult>} - The best clustering result based on centroid inertia.
    */
   async generateClusters(
     tabList,
@@ -899,7 +1319,9 @@ export class SmartTabGroupingManager {
       this.docEmbeddings = precomputedEmbeddings;
     } else {
       this.docEmbeddings = await this._generateEmbeddings(
-        structuredData.map(a => a[EMBED_TEXT_KEY])
+        structuredData.map(a =>
+          SmartTabGroupingManager.preprocessText(a[EMBED_TEXT_KEY])
+        )
       );
     }
     let bestResultCluster;
@@ -907,25 +1329,38 @@ export class SmartTabGroupingManager {
 
     const NUM_RUNS = 1;
     for (let i = 0; i < NUM_RUNS; i++) {
-      const curResult = this._clusterEmbeddings({
-        tabs: tabList,
-        embeddings: this.docEmbeddings,
-        k: numClusters,
-        randomFunc: randFunc,
-        anchorIndices,
-        alreadyGroupedIndices,
-      });
+      const curResult =
+        this.config.clustering.clusterImplementation ===
+        CLUSTER_METHODS.AGGLOMERATIVE
+          ? this._clusterEmbeddingsHAC({
+              tabs: tabList,
+              embeddings: this.docEmbeddings,
+            })
+          : this._clusterEmbeddings({
+              tabs: tabList,
+              embeddings: this.docEmbeddings,
+              k: numClusters,
+              randomFunc: randFunc,
+              anchorIndices,
+              alreadyGroupedIndices,
+            });
       const distance = curResult.getCentroidInertia();
       if (distance < bestResultDistance) {
         bestResultDistance = distance;
         bestResultCluster = curResult;
       }
     }
+    // Attach a per-group quality score (average pairwise cosine similarity) so
+    // callers can rank/threshold the suggested groups by confidence.
+    bestResultCluster?.clusterRepresentations.forEach(rep => {
+      rep.cohesion = rep.getCohesion();
+    });
     return bestResultCluster;
   }
 
   /**
    * Create static cluster from a list of tabs. A single tab is Ok. Returns null for 0 tabs
+   *
    * @param tabs
    * @returns {SmartTabGroupingResult} groupingResult
    */
@@ -941,15 +1376,17 @@ export class SmartTabGroupingManager {
     });
   }
 
-  /***
+  /**
    * Utility function that loads all required engines for Smart Tab Grouping and any dependent models
-   * @param {(progress: { percentage: number }) => void} progressCallback callback function to call.
+   *
+   * @param {(progress: { percentage: number }) => void} [progressCallback] callback function to call.
    * Callback passes a dict with percentage indicating best effort 0.0-100.0 progress in model download.
+   * Optional: callers that don't surface progress can omit it.
    */
   async preloadAllModels(progressCallback) {
     let previousProgress = -1;
-    const expectedObjects =
-      EXPECTED_TOPIC_MODEL_OBJECTS + EXPECTED_EMBEDDING_MODEL_OBJECTS;
+    // Embedding download isn't wired into this aggregator; track topic only.
+    const expectedObjects = EXPECTED_TOPIC_MODEL_OBJECTS;
     // TODO - Find a way to get these fields. Add as a transformers js callback or within remotesettings
 
     const UPDATE_THRESHOLD_PERCENTAGE = 0.5;
@@ -974,7 +1411,7 @@ export class SmartTabGroupingManager {
           Math.abs(previousProgress - progress) > UPDATE_THRESHOLD_PERCENTAGE
         ) {
           // Update only once changes are above a threshold to avoid throttling the UI with events.
-          progressCallback({
+          progressCallback?.({
             percentage: progress,
           });
           previousProgress = progress;
@@ -986,26 +1423,22 @@ export class SmartTabGroupingManager {
       ],
     });
 
-    const [topicEngine, embeddingEngine] = await Promise.all([
+    const [topicEngine] = await Promise.all([
       this._createMLEngine(
         this.config.topicGeneration,
         mutliProgressAggregator?.aggregateCallback.bind(
           mutliProgressAggregator
         ) || null
       ),
-      this._createMLEngine(
-        this.config.embedding,
-        mutliProgressAggregator?.aggregateCallback.bind(
-          mutliProgressAggregator
-        ) || null
-      ),
+      // Warm up the shared embedding engine in parallel
+      this.initEmbeddingEngine(),
     ]);
     this.topicEngine = topicEngine;
-    this.embeddingEngine = embeddingEngine;
   }
 
   /**
    * Generate model input from keywords and documents
+   *
    * @param {string []} keywords
    * @param {string []} documents
    */
@@ -1020,6 +1453,7 @@ export class SmartTabGroupingManager {
    * One artifact of the LLM output is that sometimes words are duplicated
    * This function cuts the phrase when it sees the first duplicate word.
    * Handles simple singluar / plural duplicates (-s only).
+   *
    * @param {string} phrase Input phrase
    * @returns {string} phrase cut before any duplicate word
    */
@@ -1049,6 +1483,7 @@ export class SmartTabGroupingManager {
   /**
    * Removes trailing domain-related text such as '... - Mail' or '... | News'
    * If there's not enough information remaining after, we keep the text as is
+   *
    * @param {string} text tab title with potential domain information
    * @return {string}
    */
@@ -1084,6 +1519,7 @@ export class SmartTabGroupingManager {
 
   /**
    * Postprocessing of raw output from Topic Model ML Engine
+   *
    * @param {string | undefined} topic Raw topic phrase from topic model or undefined in case of an error
    */
   processTopicModelResult(topic) {
@@ -1104,10 +1540,26 @@ export class SmartTabGroupingManager {
    * item that represents all other ungrouped tabs.
    *
    * In the future this may be updated to more generally find labels for a set of clusters.
+   *
    * @param {SmartTabGroupingResult} groupingResult The cluster we are generating the label for
    * @param {SmartTabGroupingResult} otherGroupingResult A 'made up' cluster representing all other tabs in the window
    */
   async generateGroupLabels(groupingResult, otherGroupingResult = null) {
+    // Special case for a search page
+    const searchTopicSpecialCase = Services.prefs.getBoolPref(
+      "browser.tabs.groups.smart.searchTopicEnabled",
+      true
+    );
+    if (
+      searchTopicSpecialCase &&
+      groupingResult.clusterRepresentations.length == 1 &&
+      groupingResult.clusterRepresentations[0].isSingleTabSearch
+    ) {
+      if (groupingResult.clusterRepresentations[0].setSingleTabSearchLabel()) {
+        return;
+      }
+    }
+
     const { keywords, documents } =
       groupingResult.getRepresentativeDocsAndKeywords(
         otherGroupingResult
@@ -1152,11 +1604,12 @@ export class SmartTabGroupingManager {
    * Generates glean metrics for ml smart tab label / topic.
    * This is currently called when the user saves or cancels the "suggest label" flow.
    *
-   * @param {string} action "save" or "cancel"
-   * @param {number} numTabsInGroup Number of tabs used to generate the label
-   * @param {string} mlLabel ML generated label for the tab group
-   * @param {string} userLabel User saved label for the tab group
-   * @param {string} id The id of the group
+   * @param {object} options
+   * @param {string} options.action "save" or "cancel"
+   * @param {number} options.numTabsInGroup Number of tabs used to generate the label
+   * @param {string} options.mlLabel ML generated label for the tab group
+   * @param {string} options.userLabel User saved label for the tab group
+   * @param {string} [options.id] The id of the group
    */
   async handleLabelTelemetry({
     action,
@@ -1177,9 +1630,13 @@ export class SmartTabGroupingManager {
         userLabel || "",
         mlLabel || ""
       ),
-      model_revision: topicEngineConfig.modelRevision || "",
+      model_revision:
+        ("modelRevision" in topicEngineConfig &&
+          topicEngineConfig.modelRevision) ||
+        "",
       id,
       label_reason: labelReason,
+      backend: this.backend || "onnx-native",
     });
     this.labelReason = LABEL_REASONS.DEFAULT;
   }
@@ -1188,13 +1645,14 @@ export class SmartTabGroupingManager {
    * Generates glean metrics for ml smart tab label / topic.
    * This is currently called when the user saves or cancels the "suggest other tabs" flow
    *
-   * @param {string} action "save" or "cancel"
-   * @param {number} numTabsInWindow Number of tabs in the current window
-   * @param {number} numTabsInGroup Number of tabs in the current group
-   * @param {number} numTabsSuggested Number of tabs suggested by the model
-   * @param {number} numTabsApproved Number of tabs approved by the user
-   * @param {number} numTabsRemoved Number of tabs removed by the user
-   * @param {string} id The id of the group
+   * @param {object} options
+   * @param {string} options.action "save" or "cancel"
+   * @param {number} options.numTabsInWindow Number of tabs in the current window
+   * @param {number} options.numTabsInGroup Number of tabs in the current group
+   * @param {number} options.numTabsSuggested Number of tabs suggested by the model
+   * @param {number} options.numTabsApproved Number of tabs approved by the user
+   * @param {number} options.numTabsRemoved Number of tabs removed by the user
+   * @param {string} [options.id] The id of the group
    */
   async handleSuggestTelemetry({
     action,
@@ -1214,15 +1672,17 @@ export class SmartTabGroupingManager {
       tabs_suggested: numTabsSuggested,
       tabs_approved: numTabsApproved,
       tabs_removed: numTabsRemoved,
-      model_revision: embeddingEngineConfig.modelRevision || "",
+      model_revision:
+        ("modelRevision" in embeddingEngineConfig &&
+          embeddingEngineConfig.modelRevision) ||
+        "",
       id,
+      backend: this.getEmbeddingsGenerator().options.backend || "onnx-native",
     });
   }
 
   /**
    * Gets config that engine was initialized with
-   *
-   * @return {Promise<{"[ML_TASK_TEXT2TEXT]", "[ML_TASK_FEATURE_EXTRACTION]"}>}
    */
   async getEngineConfigs() {
     if (!this.topicEngineConfig) {
@@ -1232,11 +1692,9 @@ export class SmartTabGroupingManager {
       );
     }
     if (!this.embeddingEngineConfig) {
+      const { featureId, taskName } = this.getEmbeddingsGenerator().options;
       this.embeddingEngineConfig =
-        await lazy.MLEngineParent.getInferenceOptions(
-          this.config.embedding.featureId,
-          this.config.embedding.taskName
-        );
+        await lazy.MLEngineParent.getInferenceOptions(featureId, taskName);
     }
     return {
       [ML_TASK_TEXT2TEXT]: this.topicEngineConfig,
@@ -1251,10 +1709,12 @@ export class SmartTabGroupingResult {
   /**
    * Creates a result from indices and complete tab and embedding lists.
    * This may create some extra data for management later
-   * @param indices indices of clusters (eg [[2,4], [1], [3]]_
-   * @param tabItems 1D array of tabs
-   * @param embeddingItems Two dimensional array of embeddings
-   * @param config Cluster config
+   *
+   * @param {object} options
+   * @param {number[][]} [options.indices] indices of clusters (eg [[2,4], [1], [3]]_
+   * @param {Array} [options.tabs] One-dimensional array of tabs
+   * @param {number[][]} [options.embeddings] Two dimensional array of embeddings
+   * @param {object} options.config Cluster config
    */
   constructor({ indices = [], tabs, embeddings, config }) {
     this.embeddingItems = embeddings;
@@ -1285,7 +1745,8 @@ export class SmartTabGroupingResult {
   /**
    * Returns a list of documents for each cluster. Currently it is a list of documents picked
    * in no particular order.
-   * @return {[strings]} Title and description that represent the cluster. (If no docs are in the class, then titles are returned)
+   *
+   * @return {string[]} Title and description that represent the cluster. (If no docs are in the class, then titles are returned)
    */
   getRepresentativeDocuments() {
     if (!this.documents) {
@@ -1300,7 +1761,8 @@ export class SmartTabGroupingResult {
   /**
    * Returns the keywords and documents for the cluster, computing if needed
    * Does not return keywods if only one document is passed to the function.
-   * @param{string[]} otherDocuments other clusters that we'll compare against
+   *
+   * @param {string[]} otherDocuments other clusters that we'll compare against
    * @return keywords and documents that represent the cluster
    */
   getRepresentativeDocsAndKeywords(otherDocuments = []) {
@@ -1324,6 +1786,7 @@ export class SmartTabGroupingResult {
 
   /**
    * Get the cluster we originally are grouping around (finding additinoal item)
+   *
    * @returns ClusterRepresentation
    */
   getAnchorCluster() {
@@ -1368,6 +1831,7 @@ export class SmartTabGroupingResult {
 
   /**
    * Computes the inertia of the cluster which is the sum of square total distance.
+   *
    * @returns {number}
    */
   getCentroidInertia() {
@@ -1381,7 +1845,8 @@ export class SmartTabGroupingResult {
   /**
    * Converts a cluster representation to a flat list of tabs, with clusterID key in each
    * tab representing the id of the cluster it was part of.
-   * @returns {[Object]}
+   *
+   * @returns {object[]}
    */
   _flatMapItemsInClusters() {
     return this.clusterRepresentations.reduce((result, clusterRep) => {
@@ -1398,6 +1863,7 @@ export class SmartTabGroupingResult {
   /**
    * Get rand score which describes the accuracy versus a user labeled
    * annotation on the dataset. Requires the dataset to be labeled.
+   *
    * @param labelKey Key in the tabs that represent a unique label ID for the cluster.
    * @returns {number} The rand score.
    */
@@ -1408,9 +1874,10 @@ export class SmartTabGroupingResult {
 
   /**
    * Get accuracy for a specific cluster
+   *
    * @param labelKey Key in the tabs that represent a unique label ID for the cluster.
    * @param clusterValue is the cluster we are comparing
-   * @returns {number} The rand score.
+   * @returns {{accuracy: number, kappa: number}} The accuracy and kappa values.
    */
   getAccuracyStatsForCluster(labelKey = "annotatedLabel", clusterValue) {
     const combinedItems = this._flatMapItemsInClusters();
@@ -1451,6 +1918,7 @@ export class SmartTabGroupingResult {
 
 /**
  * Utility function to generate a random ID string
+ *
  * @param len Length of the string
  * @returns {string}
  */
@@ -1464,6 +1932,12 @@ function genHexString(len) {
 }
 
 class EmbeddingCluster {
+  /**
+   * @param {object} options
+   * @param {Array} [options.tabs]
+   * @param {number[][]} [options.embeddings]
+   * @param {number[]} [options.centroid]
+   */
   constructor({ tabs, embeddings, centroid }) {
     this.embeddings = embeddings;
     this.centroid =
@@ -1486,8 +1960,48 @@ class EmbeddingCluster {
   }
 
   /**
+   * Cohesion of the cluster: the average pairwise cosine similarity between its
+   * items' embeddings. Ranges from ~0 (unrelated) to 1 (near-identical). Used as
+   * a quality/confidence score for the group. Returns 0 for clusters with fewer
+   * than two items (no pair to compare).
+   *
+   * The pairwise comparison is O(n^2). Clusters larger than MAX_COHESION_ITEMS
+   * are first reduced to that many items, sampled evenly across the cluster, and
+   * those are compared exhaustively, so an unexpectedly large cluster can't cause
+   * a quadratic blow-up and no pair is measured twice.
+   *
+   * @returns {number}
+   */
+  getCohesion() {
+    const all = this.embeddings;
+    const total = all ? all.length : 0;
+    if (total < 2) {
+      return 0;
+    }
+    let embeddings = all;
+    if (total > MAX_COHESION_ITEMS) {
+      embeddings = [];
+      const step = total / MAX_COHESION_ITEMS;
+      for (let i = 0; i < MAX_COHESION_ITEMS; i++) {
+        embeddings.push(all[Math.floor(i * step)]);
+      }
+    }
+    const n = embeddings.length;
+    let sum = 0;
+    let pairs = 0;
+    for (let a = 0; a < n; a++) {
+      for (let b = a + 1; b < n; b++) {
+        sum += cosSim(embeddings[a], embeddings[b]);
+        pairs++;
+      }
+    }
+    return sum / pairs;
+  }
+
+  /**
    * Returns number of items in the cluster
-   * @returns {int}
+   *
+   * @returns {number}
    */
   numItems() {
     return this.tabs.length;
@@ -1498,6 +2012,13 @@ class EmbeddingCluster {
  * Represents a single cluster with additional saved metadata
  */
 export class ClusterRepresentation extends EmbeddingCluster {
+  /**
+   * @param {object} options
+   * @param {Array} [options.tabs]
+   * @param {number[][]} [options.embeddings]
+   * @param {number[]} [options.centroid]
+   * @param {object} options.config
+   */
   constructor({ tabs, embeddings, centroid, config }) {
     super({ tabs, embeddings, centroid });
     this.config = config;
@@ -1508,6 +2029,37 @@ export class ClusterRepresentation extends EmbeddingCluster {
     this.keywords = null;
     this.documents = null;
     this.clusterID = genHexString(10);
+    this.isSingleTabSearch = tabs?.length == 1 && isSearchTab(tabs[0]);
+    // Set by SmartTabGroupingManager.generateClusters.
+    /** @type {number|undefined} */
+    this.cohesion;
+  }
+
+  /**
+   * For a single tab cluster with a search field, set the predicted topic
+   * to be the title of the page
+   *
+   * @returns {boolean} True if we updated the cluster label successfully
+   */
+  setSingleTabSearchLabel() {
+    if (this.tabs.length !== 1) {
+      return false;
+    }
+    const pageTitle = this.tabs[0][this.config.dataConfig.titleKey] || "";
+    for (let i = pageTitle.length - 1; i > 0; i--) {
+      if (TITLE_DELIMETER_SET.has(pageTitle[i])) {
+        const topicString = pageTitle.substring(0, i).trim();
+        if (topicString.length > MAX_NON_SUMMARIZED_SEARCH_LENGTH) {
+          return false;
+        }
+        // Capitalize first character of each word. Regex returns first char of each word
+        this.predictedTopicLabel = topicString.replace(/(^|\s)\S/g, t =>
+          t.toUpperCase()
+        );
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -1523,6 +2075,7 @@ export class ClusterRepresentation extends EmbeddingCluster {
   /**
    * Returns representative text for a cluster.
    * For this in initial implementation it simply returns title from a few tabs
+   *
    * @returns {string}
    * @private
    */

@@ -113,8 +113,6 @@ NetworkControlUpdate PccNetworkController::CreateRateUpdate(
   target_rate_msg.network_estimate.round_trip_time = rtt_tracker_.GetRtt();
   // TODO(koloskova): Add correct estimate.
   target_rate_msg.network_estimate.loss_rate_ratio = 0;
-  target_rate_msg.network_estimate.bwe_period =
-      monitor_interval_duration_ratio_ * rtt_tracker_.GetRtt();
 
   target_rate_msg.target_rate = sending_rate;
   update.target_rate = target_rate_msg;
@@ -161,7 +159,7 @@ NetworkControlUpdate PccNetworkController::OnSentPacket(SentPacket msg) {
       received_size += last_received_packets_[i].sent_packet.size;
     }
     TimeDelta sending_time = TimeDelta::Zero();
-    if (last_received_packets_.size() > 0)
+    if (!last_received_packets_.empty())
       sending_time = last_received_packets_.back().receive_time -
                      last_received_packets_.front().receive_time;
     DataRate receiving_rate = bandwidth_estimate_;
@@ -179,7 +177,7 @@ NetworkControlUpdate PccNetworkController::OnSentPacket(SentPacket msg) {
       received_size += last_received_packets_[i].sent_packet.size;
     }
     TimeDelta sending_time = TimeDelta::Zero();
-    if (last_received_packets_.size() > 0)
+    if (!last_received_packets_.empty())
       sending_time = last_received_packets_.back().receive_time -
                      last_received_packets_.front().receive_time;
     DataRate receiving_rate = bandwidth_estimate_;

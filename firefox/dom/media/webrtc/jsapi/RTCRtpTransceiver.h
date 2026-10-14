@@ -1,22 +1,23 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
-#ifndef _TRANSCEIVERIMPL_H_
-#define _TRANSCEIVERIMPL_H_
+#ifndef TRANSCEIVERIMPL_H_
+#define TRANSCEIVERIMPL_H_
 
 #include <string>
-#include "mozilla/dom/RTCRtpCapabilitiesBinding.h"
-#include "mozilla/StateMirroring.h"
+
+#include "ErrorList.h"
+#include "RTCStatsReport.h"
+#include "jsep/JsepSession.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/StateMirroring.h"
+#include "mozilla/dom/MediaStreamTrack.h"
+#include "mozilla/dom/RTCRtpCapabilitiesBinding.h"
+#include "mozilla/dom/RTCRtpTransceiverBinding.h"
 #include "nsCOMPtr.h"
 #include "nsISerialEventTarget.h"
 #include "nsTArray.h"
-#include "mozilla/dom/MediaStreamTrack.h"
-#include "ErrorList.h"
-#include "jsep/JsepSession.h"
 #include "transport/transportlayer.h"  // For TransportLayer::State
-#include "mozilla/dom/RTCRtpTransceiverBinding.h"
-#include "RTCStatsReport.h"
 
 class nsIPrincipal;
 
@@ -33,6 +34,7 @@ class MediaPipelineFilter;
 class MediaTransportHandler;
 class RTCStatsIdGenerator;
 class WebrtcCallWrapper;
+class JsepTrack;
 class JsepTrackNegotiatedDetails;
 class PeerConnectionImpl;
 enum class PrincipalPrivacy : uint8_t;
@@ -171,6 +173,17 @@ class RTCRtpTransceiver : public nsISupports, public nsWrapperCache {
       const JsepTrackNegotiatedDetails& aDetails,
       std::vector<VideoCodecConfig>* aConfigs);
 
+  // Like NegotiatedDetailsTo{Audio,Video}CodecConfigs, but works from a
+  // recv JsepTrack's frozen snapshot of what it last offered (not yet
+  // negotiated), taken in JsepTrack::AddToOffer(). Used for early media,
+  // where we want to start receiving based on what we offered, before an
+  // answer exists.
+  static void EarlyRecvCodecsToAudioCodecConfigs(
+      JsepTrack& aTrack, std::vector<AudioCodecConfig>* aConfigs);
+
+  static void EarlyRecvCodecsToVideoCodecConfigs(
+      JsepTrack& aTrack, std::vector<VideoCodecConfig>* aConfigs);
+
   static void ToDomRtpCodec(const JsepCodecDescription& aCodec,
                             RTCRtpCodec* aDomCodec);
 
@@ -184,6 +197,10 @@ class RTCRtpTransceiver : public nsISupports, public nsWrapperCache {
   static void ToDomRtpCodecParametersRtx(
       const JsepVideoCodecDescription& aCodec,
       RTCRtpCodecParameters* aDomCodecParameters);
+
+  static void ToDomHeaderExtensions(
+      const JsepTrackNegotiatedDetails& aDetails,
+      Sequence<RTCRtpHeaderExtensionParameters>& aExtensions);
 
   /* Returns a promise that will contain the stats in aStats, along with the
    * codec stats (which is a PC-wide thing) */
@@ -206,7 +223,7 @@ class RTCRtpTransceiver : public nsISupports, public nsWrapperCache {
   Canonical<std::string>& CanonicalMid() { return mMid; }
   Canonical<std::string>& CanonicalSyncGroup() { return mSyncGroup; }
 
-  const std::vector<UniquePtr<JsepCodecDescription>>& GetPreferredCodecs() {
+  const nsTArray<UniquePtr<JsepCodecDescription>>& GetPreferredCodecs() {
     return mPreferredCodecs;
   }
 
@@ -273,9 +290,9 @@ class RTCRtpTransceiver : public nsISupports, public nsWrapperCache {
 
   // Preferred codecs to be negotiated set by calling
   // setCodecPreferences.
-  std::vector<UniquePtr<JsepCodecDescription>> mPreferredCodecs;
+  nsTArray<UniquePtr<JsepCodecDescription>> mPreferredCodecs;
   // Identifies if a preferred list and order of codecs is to be used.
-  // This is true if setCodecPreferences was called succesfully and passed
+  // This is true if setCodecPreferences was called successfully and passed
   // codecs (not empty).
   bool mPreferredCodecsInUse = false;
 };
@@ -284,4 +301,4 @@ class RTCRtpTransceiver : public nsISupports, public nsWrapperCache {
 
 }  // namespace mozilla
 
-#endif  // _TRANSCEIVERIMPL_H_
+#endif  // TRANSCEIVERIMPL_H_

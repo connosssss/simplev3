@@ -42,8 +42,8 @@ export const LoginTestUtils = {
   /**
    * Erases all the data stored by the Login Manager service.
    */
-  clearData() {
-    Services.logins.removeAllUserFacingLogins();
+  async clearData() {
+    await Services.logins.removeAllUserFacingLoginsAsync();
     for (let origin of Services.logins.getAllDisabledHosts()) {
       Services.logins.setLoginSavingEnabled(origin, true);
     }
@@ -71,7 +71,7 @@ export const LoginTestUtils = {
    * Removes a login from the store
    */
   async removeLogin(login) {
-    return Services.logins.removeLogin(login);
+    return Services.logins.removeLoginAsync(login);
   },
 
   async modifyLogin(oldLogin, newLogin) {
@@ -79,7 +79,7 @@ export const LoginTestUtils = {
       "passwordmgr-storage-changed",
       (_, data) => data == "modifyLogin"
     );
-    Services.logins.modifyLogin(oldLogin, newLogin);
+    await Services.logins.modifyLoginAsync(oldLogin, newLogin);
     await storageChangedPromise;
   },
 
@@ -506,7 +506,7 @@ LoginTestUtils.recipes = {
 LoginTestUtils.primaryPassword = {
   primaryPassword: "omgsecret!",
 
-  _set(enable, stayLoggedIn) {
+  async _set(enable, stayLoggedIn) {
     let oldPW, newPW;
     if (enable) {
       oldPW = "";
@@ -516,20 +516,13 @@ LoginTestUtils.primaryPassword = {
       newPW = "";
     }
     try {
-      let pk11db = Cc["@mozilla.org/security/pk11tokendb;1"].getService(
-        Ci.nsIPK11TokenDB
+      let token = Cc["@mozilla.org/security/internalkeytoken;1"].createInstance(
+        Ci.nsIPKCS11Token
       );
-      let token = pk11db.getInternalKeyToken();
-      if (token.needsUserInit) {
-        dump("MP initialized to " + newPW + "\n");
-        token.initPassword(newPW);
-      } else {
-        token.checkPassword(oldPW);
-        dump("MP change from " + oldPW + " to " + newPW + "\n");
-        token.changePassword(oldPW, newPW);
-        if (!stayLoggedIn) {
-          token.logoutSimple();
-        }
+      dump("MP change from " + oldPW + " to " + newPW + "\n");
+      await token.changePassword(oldPW, newPW);
+      if (!stayLoggedIn) {
+        await token.logout();
       }
     } catch (e) {
       dump(
@@ -538,12 +531,12 @@ LoginTestUtils.primaryPassword = {
     }
   },
 
-  enable(stayLoggedIn = false) {
-    this._set(true, stayLoggedIn);
+  async enable(stayLoggedIn = false) {
+    await this._set(true, stayLoggedIn);
   },
 
-  disable() {
-    this._set(false);
+  async disable() {
+    await this._set(false);
   },
 };
 

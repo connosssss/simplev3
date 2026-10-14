@@ -7,11 +7,13 @@
 /* import-globals-from head_cache.js */
 /* import-globals-from head_cookies.js */
 /* import-globals-from head_channels.js */
-/* import-globals-from head_servers.js */
 
 const { MockRegistrar } = ChromeUtils.importESModule(
   "resource://testing-common/MockRegistrar.sys.mjs"
 );
+
+const { NodeHTTPProxyServer, NodeHTTPSProxyServer, NodeHTTP2ProxyServer } =
+  ChromeUtils.importESModule("resource://testing-common/NodeServer.sys.mjs");
 
 const certOverrideService = Cc[
   "@mozilla.org/security/certoverride;1"
@@ -130,7 +132,7 @@ add_setup(async function setup() {
     clientAuthDialogService
   );
 
-  let cert = getTestServerCertificate();
+  let cert = await getTestServerCertificate();
   ok(!!cert, "Got self-signed cert");
   server = startServer(cert);
 

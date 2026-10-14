@@ -5,14 +5,120 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.14.0 (2026-06-21)
+
+### Chore
+
+ - <csr-id-ef36a8ee5df641399eee33a5c767c9c866fc2152/> update rust crate syn to v2.0.115
+ - <csr-id-93febde3dd3f1ac67b1259967f3899f68deab54e/> bump MSRV to 1.68
+ - <csr-id-17bce845aed852ccba597f99e5db853a4a6afa1f/> Fix clippy warnings
+ - <csr-id-e4e1556f40a25c1d50e4467dc9312c9b04beecd9/> Remove criterion from deps
+ - <csr-id-03a930696231da01005e762425841f91587b3e04/> Update version number
+
+### New Features
+
+ - <csr-id-dbd34dec1b195e1a5a4f0b6fa047633a4463a9ec/> add `FmtConst` support for `Vec`/slice keys
+ - <csr-id-81257954b089048bd5409ada47cc4562ba346334/> migrate to 2024 edition
+   * feat: migrate to 2024 edition
+   
+   * update cargo.lock
+ - <csr-id-c628ed45358dc78a3c3df5c2972ebf49fb9409c6/> add experimental ptrhash feature
+ - <csr-id-180b9c32934619c4eb62365b4cb9a2634265e794/> Add tuple support for key
+
+### Bug Fixes
+
+ - <csr-id-4ffa9f06e6b3eff6cef6221fab586af6326bdeea/> implement `PhfEq` to address tuple lifetime issue
 
 ### Commit Statistics
 
 <csr-read-only-do-not-edit/>
 
- - 7 commits contributed to the release over the course of 269 calendar days.
- - 320 days passed between releases.
+ - 19 commits contributed to the release over the course of 366 calendar days.
+ - 366 days passed between releases.
+ - 10 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 7 unique issues were worked on: [#377](https://github.com/rust-phf/rust-phf/issues/377), [#392](https://github.com/rust-phf/rust-phf/issues/392), [#396](https://github.com/rust-phf/rust-phf/issues/396), [#397](https://github.com/rust-phf/rust-phf/issues/397), [#415](https://github.com/rust-phf/rust-phf/issues/415), [#416](https://github.com/rust-phf/rust-phf/issues/416), [#420](https://github.com/rust-phf/rust-phf/issues/420)
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **[#377](https://github.com/rust-phf/rust-phf/issues/377)**
+    - Update rust crate syn to v2.0.115 ([`ef36a8e`](https://github.com/rust-phf/rust-phf/commit/ef36a8ee5df641399eee33a5c767c9c866fc2152))
+ * **[#392](https://github.com/rust-phf/rust-phf/issues/392)**
+    - Add experimental ptrhash feature ([`c628ed4`](https://github.com/rust-phf/rust-phf/commit/c628ed45358dc78a3c3df5c2972ebf49fb9409c6))
+ * **[#396](https://github.com/rust-phf/rust-phf/issues/396)**
+    - Fix portable PHF hashing for slices and pointer-sized integers ([`0544e74`](https://github.com/rust-phf/rust-phf/commit/0544e748da7eef2c4ae9b78fbcf063b3a30f167e))
+ * **[#397](https://github.com/rust-phf/rust-phf/issues/397)**
+    - Update minimal required unicase version to 2.8.1 ([`ddb6f6f`](https://github.com/rust-phf/rust-phf/commit/ddb6f6f1bcaedf6a0d5bccfd6f5b516a60edf88c))
+ * **[#415](https://github.com/rust-phf/rust-phf/issues/415)**
+    - Migrate to 2024 edition ([`8125795`](https://github.com/rust-phf/rust-phf/commit/81257954b089048bd5409ada47cc4562ba346334))
+ * **[#416](https://github.com/rust-phf/rust-phf/issues/416)**
+    - Add `FmtConst` support for `Vec`/slice keys ([`dbd34de`](https://github.com/rust-phf/rust-phf/commit/dbd34dec1b195e1a5a4f0b6fa047633a4463a9ec))
+ * **[#420](https://github.com/rust-phf/rust-phf/issues/420)**
+    - Implement `PhfEq` to address tuple lifetime issue ([`4ffa9f0`](https://github.com/rust-phf/rust-phf/commit/4ffa9f06e6b3eff6cef6221fab586af6326bdeea))
+ * **Uncategorized**
+    - Merge pull request #367 from JohnTitor/msrv-1.68 ([`2629d9b`](https://github.com/rust-phf/rust-phf/commit/2629d9b47d9ef3d4caeb1c27ff16cd3d1c7bccc6))
+    - Bump MSRV to 1.68 ([`93febde`](https://github.com/rust-phf/rust-phf/commit/93febde3dd3f1ac67b1259967f3899f68deab54e))
+    - Prepare a release for v0.13.1 ([`1e518a6`](https://github.com/rust-phf/rust-phf/commit/1e518a6e94a2444b8df7d89078cfc69859537971))
+    - Merge pull request #350 from JohnTitor/release-0.13.0 ([`6e87a16`](https://github.com/rust-phf/rust-phf/commit/6e87a1678ad11e6c75f7c861bba82ff5e67408b4))
+    - Prepare a release for v0.13.0 ([`a8e8d69`](https://github.com/rust-phf/rust-phf/commit/a8e8d69580e5525fd0c0089f5fd0603b6c85bd09))
+    - Merge pull request #344 from JohnTitor/feat/tuple-support ([`478afb4`](https://github.com/rust-phf/rust-phf/commit/478afb45413571f56688ae446cc53fe3f5b81b44))
+    - Add tuple support for key ([`180b9c3`](https://github.com/rust-phf/rust-phf/commit/180b9c32934619c4eb62365b4cb9a2634265e794))
+    - Merge pull request #343 from JohnTitor/chore/fix-clippy ([`4bcbfbc`](https://github.com/rust-phf/rust-phf/commit/4bcbfbcafd618297790ecf689ab375444ed8629c))
+    - Fix clippy warnings ([`17bce84`](https://github.com/rust-phf/rust-phf/commit/17bce845aed852ccba597f99e5db853a4a6afa1f))
+    - Merge pull request #340 from JohnTitor/chore/rm-criterion ([`1e892e8`](https://github.com/rust-phf/rust-phf/commit/1e892e8f5be8e1a6345cc4877baf7ef0796c34e1))
+    - Remove criterion from deps ([`e4e1556`](https://github.com/rust-phf/rust-phf/commit/e4e1556f40a25c1d50e4467dc9312c9b04beecd9))
+    - Update version number ([`03a9306`](https://github.com/rust-phf/rust-phf/commit/03a930696231da01005e762425841f91587b3e04))
+</details>
+
+## 0.12.0 (2025-06-19)
+
+<csr-id-08e74647f00f7d77cbb81e0cb73ed663798d000f/>
+<csr-id-51d6baaa6ffce658fb9b56a96affaf0ddd0603e5/>
+
+### Chore
+
+ - <csr-id-08e74647f00f7d77cbb81e0cb73ed663798d000f/> Update version number in docs
+
+### Chore
+
+ - <csr-id-51d6baaa6ffce658fb9b56a96affaf0ddd0603e5/> Update changelog
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 7 commits contributed to the release over the course of 138 calendar days.
+ - 163 days passed between releases.
+ - 2 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Release phf_shared v0.12.0, phf_generator v0.12.0, phf_macros v0.12.0, phf v0.12.0, phf_codegen v0.12.0, safety bump 4 crates ([`e309f28`](https://github.com/rust-phf/rust-phf/commit/e309f286acbfc238d7fec17c7c5f4328557566f8))
+    - Update changelog ([`51d6baa`](https://github.com/rust-phf/rust-phf/commit/51d6baaa6ffce658fb9b56a96affaf0ddd0603e5))
+    - Update version number in docs ([`08e7464`](https://github.com/rust-phf/rust-phf/commit/08e74647f00f7d77cbb81e0cb73ed663798d000f))
+    - Merge pull request #289 from thaliaarchi/master ([`a6df856`](https://github.com/rust-phf/rust-phf/commit/a6df856ade4cfbf2666fcabbd70c666ea8234abf))
+    - Add support for unicase::Ascii type ([`2806801`](https://github.com/rust-phf/rust-phf/commit/28068018dec5aab9b6ddc0da918431285db8cd34))
+    - Merge branch 'master' into no-wasteful-allocations ([`33b8aff`](https://github.com/rust-phf/rust-phf/commit/33b8affe77cea8bdeccb5c8d6c730c78231fc138))
+    - Merge branch 'master' into fastrand ([`576dd47`](https://github.com/rust-phf/rust-phf/commit/576dd47858a2db74eb4ef67a8385039ef17b867d))
+</details>
+
+## 0.11.3 (2025-01-07)
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 10 commits contributed to the release.
+ - 562 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -23,6 +129,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Adjusting changelogs prior to release of phf_shared v0.11.3, phf_generator v0.11.3, phf_macros v0.11.3, phf v0.11.3, phf_codegen v0.11.3 ([`e111f4b`](https://github.com/rust-phf/rust-phf/commit/e111f4b53a965c188fdcbf03950321107d9b3987))
+    - Merge branch 'master' into master ([`43e9bb6`](https://github.com/rust-phf/rust-phf/commit/43e9bb69aca9ab8ddf8e2041d33d4ec08a6a0ce1))
+    - Merge pull request #314 from TGODiamond/master ([`4abd9a0`](https://github.com/rust-phf/rust-phf/commit/4abd9a0a5eaddb1b4c18d678b2924a1cda818f85))
+    - Add `PhfBorrow<[u8; N]>` ([`e44fb71`](https://github.com/rust-phf/rust-phf/commit/e44fb714ea4d5fb85bfad1496dd887313cbfa3b5))
+    - Merge pull request #304 from serprex/master ([`999e6a2`](https://github.com/rust-phf/rust-phf/commit/999e6a260f03d82aa9d159465113294e7ed019e7))
+    - Update siphasher to 1.0 ([`7e0482e`](https://github.com/rust-phf/rust-phf/commit/7e0482e8e80e14d66cd46dde5ee6a16f34630ab3))
+    - Merge pull request #300 from JohnTitor/msrv-1.61 ([`323366d`](https://github.com/rust-phf/rust-phf/commit/323366d03966ddad2eaa3432df79c9da8339e319))
+    - Bump MSRV to 1.61 ([`1795f7b`](https://github.com/rust-phf/rust-phf/commit/1795f7b66b16af0191f221dc957bc8a090c891ad))
+    - Merge pull request #291 from Manishearth/uncased-transmute ([`b7116ff`](https://github.com/rust-phf/rust-phf/commit/b7116ff519415d302c070aa313831cd473b1a911))
+    - Bump uncased dep; remove generated transmute ([`c70bb63`](https://github.com/rust-phf/rust-phf/commit/c70bb636dea1c5902ca0cae68df2ec387eb1d2bc))
+</details>
+
+## 0.11.2 (2023-06-24)
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 9 commits contributed to the release over the course of 268 calendar days.
+ - 319 days passed between releases.
+ - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Release phf_shared v0.11.2, phf_generator v0.11.2, phf_macros v0.11.2, phf v0.11.2, phf_codegen v0.11.2 ([`c9c35fd`](https://github.com/rust-phf/rust-phf/commit/c9c35fd8ba3f1bc228388b0cef6e3814a02a72c0))
+    - Update changelogs ([`a1e5072`](https://github.com/rust-phf/rust-phf/commit/a1e5072b8e84b108f06389a1d41ac868426a03f7))
     - Merge pull request #274 from ankane/license-files ([`21baa73`](https://github.com/rust-phf/rust-phf/commit/21baa73941a0694ec48f437c0c0a6abfcc2f32d2))
     - Include license files in crates ([`1229b2f`](https://github.com/rust-phf/rust-phf/commit/1229b2faa6b97542ab4850a1723b1723dea92814))
     - Merge pull request #273 from drewkett/impl-phf-hash-for-slices ([`757012b`](https://github.com/rust-phf/rust-phf/commit/757012bba5eb5056a29c30c708e5c37993c2be1d))
@@ -50,7 +188,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 197 commits contributed to the release over the course of 2946 calendar days.
+ - 197 commits contributed to the release.
  - 2 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -259,4 +397,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Make publishable on crates.io ([`4ad2bb2`](https://github.com/rust-phf/rust-phf/commit/4ad2bb27be35015b3f37ec7025c46df9170b3ef9))
     - Pull shared code into a module ([`19c4f8d`](https://github.com/rust-phf/rust-phf/commit/19c4f8d420d3a9ff8e3ace0256198f5db9fccae0))
 </details>
-

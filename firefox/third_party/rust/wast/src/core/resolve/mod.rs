@@ -1,6 +1,6 @@
+use crate::Error;
 use crate::core::*;
 use crate::token::Index;
-use crate::{gensym, Error};
 
 mod deinline_import_export;
 mod names;
@@ -20,10 +20,6 @@ pub enum Ns {
 }
 
 pub fn resolve<'a>(fields: &mut Vec<ModuleField<'a>>) -> Result<Names<'a>, Error> {
-    // Ensure that each resolution of a module is deterministic in the names
-    // that it generates by resetting our thread-local symbol generator.
-    gensym::reset();
-
     // First up, de-inline import/export annotations.
     //
     // This ensures we only have to deal with inline definitions and to
@@ -38,7 +34,7 @@ pub fn resolve<'a>(fields: &mut Vec<ModuleField<'a>>) -> Result<Names<'a>, Error
         match field {
             ModuleField::Import(i) => {
                 if let Some(name) = last {
-                    return Err(Error::new(i.span, format!("import after {}", name)));
+                    return Err(Error::new(i.span, format!("import after {name}")));
                 }
             }
             ModuleField::Memory(_) => last = Some("memory"),

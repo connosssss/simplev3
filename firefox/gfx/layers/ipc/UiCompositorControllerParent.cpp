@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,13 +5,13 @@
 
 #if defined(MOZ_WIDGET_ANDROID)
 #  include "apz/src/APZCTreeManager.h"
+#  include "mozilla/layers/AndroidHardwareBuffer.h"
 #  include "mozilla/widget/AndroidCompositorWidget.h"
 #endif
 #include <utility>
 
 #include "FrameMetrics.h"
 #include "SynchronousTask.h"
-#include "mozilla/Unused.h"
 #include "mozilla/gfx/Types.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/layers/Compositor.h"
@@ -32,7 +30,7 @@ RefPtr<UiCompositorControllerParent>
 UiCompositorControllerParent::GetFromRootLayerTreeId(
     const LayersId& aRootLayerTreeId) {
   RefPtr<UiCompositorControllerParent> controller;
-  CompositorBridgeParent::CallWithIndirectShadowTree(
+  CompositorBridgeParent::CallWithLayerTreeState(
       aRootLayerTreeId, [&](LayerTreeState& aState) -> void {
         controller = aState.mUiControllerParent;
       });
@@ -107,13 +105,6 @@ UiCompositorControllerParent::RecvInvalidateAndRender() {
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult UiCompositorControllerParent::RecvMaxToolbarHeight(
-    const int32_t& aHeight) {
-  mMaxToolbarHeight = aHeight;
-
-  return IPC_OK();
-}
-
 mozilla::ipc::IPCResult UiCompositorControllerParent::RecvFixedBottomOffset(
     const int32_t& aOffset) {
 #if defined(MOZ_WIDGET_ANDROID)
@@ -131,7 +122,7 @@ mozilla::ipc::IPCResult UiCompositorControllerParent::RecvFixedBottomOffset(
 mozilla::ipc::IPCResult UiCompositorControllerParent::RecvDefaultClearColor(
     const uint32_t& aColor) {
   LayerTreeState* state =
-      CompositorBridgeParent::GetIndirectShadowTree(mRootLayerTreeId);
+      CompositorBridgeParent::GetLayerTreeState(mRootLayerTreeId);
 
   if (state && state->mWrBridge) {
     state->mWrBridge->SetClearColor(gfx::DeviceColor::UnusualFromARGB(aColor));
@@ -140,15 +131,40 @@ mozilla::ipc::IPCResult UiCompositorControllerParent::RecvDefaultClearColor(
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult
-UiCompositorControllerParent::RecvRequestScreenPixels() {
+mozilla::ipc::IPCResult UiCompositorControllerParent::RecvRequestScreenPixels(
+    uint64_t aRequestId, gfx::IntRect aSourceRect,
+    ipc::FileDescriptor&& aHardwareBuffer) {
 #if defined(MOZ_WIDGET_ANDROID)
+  RefPtr<AndroidHardwareBuffer> hardwareBuffer =
+      AndroidHardwareBuffer::DeserializeFromFileDescriptor(
+          aHardwareBuffer.TakePlatformHandle());
+  if (!hardwareBuffer) {
+    (void)SendScreenPixels(aRequestId, false, Nothing());
+    return IPC_OK();
+  }
+
   LayerTreeState* state =
-      CompositorBridgeParent::GetIndirectShadowTree(mRootLayerTreeId);
+      CompositorBridgeParent::GetLayerTreeState(mRootLayerTreeId);
 
   if (state && state->mWrBridge) {
-    state->mWrBridge->RequestScreenPixels(this);
+    state->mWrBridge->RequestScreenPixels(aSourceRect, hardwareBuffer)
+        ->Then(
+            GetCurrentSerialEventTarget(), __func__,
+            [target = RefPtr{this}, aRequestId,
+             hardwareBuffer = std::move(hardwareBuffer)](Ok) {
+              UniqueFileHandle fenceFd =
+                  hardwareBuffer->GetAndResetAcquireFence();
+              (void)target->SendScreenPixels(
+                  aRequestId, true,
+                  fenceFd ? Some(ipc::FileDescriptor(std::move(fenceFd)))
+                          : Nothing());
+            },
+            [target = RefPtr{this}, aRequestId](nsresult aError) {
+              (void)target->SendScreenPixels(aRequestId, false, Nothing());
+            });
     state->mWrBridge->ScheduleForcedGenerateFrame(wr::RenderReasons::OTHER);
+  } else {
+    (void)SendScreenPixels(aRequestId, false, Nothing());
   }
 #endif  // defined(MOZ_WIDGET_ANDROID)
 
@@ -184,13 +200,7 @@ void UiCompositorControllerParent::ToolbarAnimatorMessageFromCompositor(
     return;
   }
 
-  Unused << SendToolbarAnimatorMessageFromCompositor(aMessage);
-}
-
-bool UiCompositorControllerParent::AllocPixelBuffer(const int32_t aSize,
-                                                    ipc::Shmem* aMem) {
-  MOZ_ASSERT(aSize > 0);
-  return AllocShmem(aSize, aMem);
+  (void)SendToolbarAnimatorMessageFromCompositor(aMessage);
 }
 
 void UiCompositorControllerParent::NotifyLayersUpdated() {
@@ -205,12 +215,14 @@ void UiCompositorControllerParent::NotifyFirstPaint() {
   ToolbarAnimatorMessageFromCompositor(FIRST_PAINT);
 }
 
-void UiCompositorControllerParent::NotifyCompositorScrollUpdate(
-    const CompositorScrollUpdate& aUpdate) {
-  CompositorThread()->Dispatch(NewRunnableMethod<CompositorScrollUpdate>(
-      "UiCompositorControllerParent::SendNotifyCompositorScrollUpdate", this,
-      &UiCompositorControllerParent::SendNotifyCompositorScrollUpdate,
-      aUpdate));
+void UiCompositorControllerParent::NotifyCompositorScrollUpdates(
+    nsTArray<CompositorScrollUpdate>&& aUpdates) {
+  CompositorThread()->Dispatch(
+      NewRunnableMethod<nsTArray<CompositorScrollUpdate>>(
+          "UiCompositorControllerParent::SendNotifyCompositorScrollUpdates",
+          this,
+          &UiCompositorControllerParent::SendNotifyCompositorScrollUpdates,
+          std::move(aUpdates)));
 }
 
 UiCompositorControllerParent::UiCompositorControllerParent(
@@ -220,8 +232,7 @@ UiCompositorControllerParent::UiCompositorControllerParent(
       ,
       mCompositorLayersUpdateEnabled(false)
 #endif
-      ,
-      mMaxToolbarHeight(0) {
+{
   MOZ_COUNT_CTOR(UiCompositorControllerParent);
 }
 
@@ -258,7 +269,7 @@ void UiCompositorControllerParent::InitializeForOutOfProcess() {
 void UiCompositorControllerParent::Initialize() {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   LayerTreeState* state =
-      CompositorBridgeParent::GetIndirectShadowTree(mRootLayerTreeId);
+      CompositorBridgeParent::GetLayerTreeState(mRootLayerTreeId);
   MOZ_ASSERT(state);
   MOZ_ASSERT(state->mParent);
   if (!state || !state->mParent) {
@@ -280,7 +291,7 @@ void UiCompositorControllerParent::Open(
 void UiCompositorControllerParent::Shutdown() {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   LayerTreeState* state =
-      CompositorBridgeParent::GetIndirectShadowTree(mRootLayerTreeId);
+      CompositorBridgeParent::GetLayerTreeState(mRootLayerTreeId);
   if (state) {
     state->mUiControllerParent = nullptr;
   }

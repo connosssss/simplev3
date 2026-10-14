@@ -42,12 +42,15 @@ let wasmGlobalInterfaces = [
   { name: "Memory", insecureContext: true },
   { name: "Module", insecureContext: true },
   { name: "RuntimeError", insecureContext: true },
+  { name: "SuspendError", insecureContext: true },
+  { name: "Suspending", insecureContext: true },
   { name: "Table", insecureContext: true },
   { name: "Tag", insecureContext: true },
   { name: "compile", insecureContext: true },
   { name: "compileStreaming", insecureContext: true },
   { name: "instantiate", insecureContext: true },
   { name: "instantiateStreaming", insecureContext: true },
+  { name: "promising", insecureContext: true },
   { name: "validate", insecureContext: true },
 ];
 // IMPORTANT: Do not change this list without review from
@@ -138,6 +141,58 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "ByteLengthQueuingStrategy",
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSImageValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSKeywordValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathClamp", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathInvert", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathMax", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathMin", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathNegate", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathProduct", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathSum", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMathValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSMatrixComponent", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSNumericArray", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSNumericValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSPerspective", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSRotate", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSScale", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSSkew", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSSkewX", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSSkewY", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSStyleValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSTransformComponent", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSTransformValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSTranslate", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSUnitValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSUnparsedValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "CSSVariableReferenceValue", insecureContext: true, nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   "Cache",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "CacheStorage",
@@ -227,84 +282,164 @@ let interfaceNamesInGlobalScope = [
   "FormData",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPU", earlyBetaOrEarlier: true },
+  { name: "GPU", windows: true },
+  { name: "GPU", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUAdapter", earlyBetaOrEarlier: true },
+  { name: "GPUAdapter", windows: true },
+  { name: "GPUAdapter", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUAdapterInfo", earlyBetaOrEarlier: true },
+  { name: "GPUAdapterInfo", windows: true },
+  { name: "GPUAdapterInfo", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUBindGroup", earlyBetaOrEarlier: true },
+  { name: "GPUBindGroup", windows: true },
+  { name: "GPUBindGroup", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUBindGroupLayout", earlyBetaOrEarlier: true },
+  { name: "GPUBindGroupLayout", windows: true },
+  { name: "GPUBindGroupLayout", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUBuffer", earlyBetaOrEarlier: true },
+  { name: "GPUBuffer", windows: true },
+  { name: "GPUBuffer", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUBufferUsage", earlyBetaOrEarlier: true },
+  { name: "GPUBufferUsage", windows: true },
+  { name: "GPUBufferUsage", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUCanvasContext", earlyBetaOrEarlier: true },
+  { name: "GPUCanvasContext", windows: true },
+  { name: "GPUCanvasContext", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUColorWrite", earlyBetaOrEarlier: true },
+  { name: "GPUColorWrite", windows: true },
+  { name: "GPUColorWrite", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUCommandBuffer", earlyBetaOrEarlier: true },
+  { name: "GPUCommandBuffer", windows: true },
+  { name: "GPUCommandBuffer", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUCommandEncoder", earlyBetaOrEarlier: true },
+  { name: "GPUCommandEncoder", windows: true },
+  { name: "GPUCommandEncoder", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUCompilationInfo", earlyBetaOrEarlier: true },
+  { name: "GPUCompilationInfo", windows: true },
+  { name: "GPUCompilationInfo", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUCompilationMessage", earlyBetaOrEarlier: true },
+  { name: "GPUCompilationMessage", windows: true },
+  { name: "GPUCompilationMessage", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUComputePassEncoder", earlyBetaOrEarlier: true },
+  { name: "GPUComputePassEncoder", windows: true },
+  { name: "GPUComputePassEncoder", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUComputePipeline", earlyBetaOrEarlier: true },
+  { name: "GPUComputePipeline", windows: true },
+  { name: "GPUComputePipeline", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUDevice", earlyBetaOrEarlier: true },
+  { name: "GPUDevice", windows: true },
+  { name: "GPUDevice", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUDeviceLostInfo", earlyBetaOrEarlier: true },
+  { name: "GPUDeviceLostInfo", windows: true },
+  { name: "GPUDeviceLostInfo", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUError", earlyBetaOrEarlier: true },
+  { name: "GPUError", windows: true },
+  { name: "GPUError", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUExternalTexture", earlyBetaOrEarlier: true },
+  { name: "GPUExternalTexture", windows: true },
+  { name: "GPUExternalTexture", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUInternalError", earlyBetaOrEarlier: true },
+  { name: "GPUInternalError", windows: true },
+  { name: "GPUInternalError", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUMapMode", earlyBetaOrEarlier: true },
+  { name: "GPUMapMode", windows: true },
+  { name: "GPUMapMode", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUOutOfMemoryError", earlyBetaOrEarlier: true },
+  { name: "GPUOutOfMemoryError", windows: true },
+  { name: "GPUOutOfMemoryError", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUPipelineError", earlyBetaOrEarlier: true },
+  { name: "GPUPipelineError", windows: true },
+  { name: "GPUPipelineError", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUPipelineLayout", earlyBetaOrEarlier: true },
+  { name: "GPUPipelineLayout", windows: true },
+  { name: "GPUPipelineLayout", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUQuerySet", earlyBetaOrEarlier: true },
+  { name: "GPUQuerySet", windows: true },
+  { name: "GPUQuerySet", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUQueue", earlyBetaOrEarlier: true },
+  { name: "GPUQueue", windows: true },
+  { name: "GPUQueue", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPURenderBundle", earlyBetaOrEarlier: true },
+  { name: "GPURenderBundle", windows: true },
+  { name: "GPURenderBundle", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPURenderBundleEncoder", earlyBetaOrEarlier: true },
+  { name: "GPURenderBundleEncoder", windows: true },
+  { name: "GPURenderBundleEncoder", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPURenderPassEncoder", earlyBetaOrEarlier: true },
+  { name: "GPURenderPassEncoder", windows: true },
+  { name: "GPURenderPassEncoder", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPURenderPipeline", earlyBetaOrEarlier: true },
+  { name: "GPURenderPipeline", windows: true },
+  { name: "GPURenderPipeline", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUSampler", earlyBetaOrEarlier: true },
+  { name: "GPUSampler", windows: true },
+  { name: "GPUSampler", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUShaderModule", earlyBetaOrEarlier: true },
+  { name: "GPUShaderModule", windows: true },
+  { name: "GPUShaderModule", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUShaderStage", earlyBetaOrEarlier: true },
+  { name: "GPUShaderStage", windows: true },
+  { name: "GPUShaderStage", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUSupportedFeatures", earlyBetaOrEarlier: true },
+  { name: "GPUSupportedFeatures", windows: true },
+  { name: "GPUSupportedFeatures", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUSupportedLimits", earlyBetaOrEarlier: true },
+  { name: "GPUSupportedLimits", windows: true },
+  { name: "GPUSupportedLimits", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUTexture", earlyBetaOrEarlier: true },
+  { name: "GPUTexture", windows: true },
+  { name: "GPUTexture", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUTextureUsage", earlyBetaOrEarlier: true },
+  { name: "GPUTextureUsage", windows: true },
+  { name: "GPUTextureUsage", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUTextureView", earlyBetaOrEarlier: true },
+  { name: "GPUTextureView", windows: true },
+  { name: "GPUTextureView", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUUncapturedErrorEvent", earlyBetaOrEarlier: true },
+  { name: "GPUUncapturedErrorEvent", windows: true },
+  { name: "GPUUncapturedErrorEvent", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "GPUValidationError", earlyBetaOrEarlier: true },
+  { name: "GPUValidationError", windows: true },
+  { name: "GPUValidationError", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "Headers",
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -323,6 +458,8 @@ let interfaceNamesInGlobalScope = [
   "IDBObjectStore",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "IDBOpenDBRequest",
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  "IDBRecord",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "IDBRequest",
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -410,6 +547,10 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "ReadableStreamDefaultReader",
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "ReportBody", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "ReportingObserver", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   "Request",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "Response",
@@ -425,6 +566,8 @@ let interfaceNamesInGlobalScope = [
   "ServiceWorkerRegistration",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "StorageManager", fennec: false },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "StylePropertyMapReadOnly", insecureContext: true, nightly: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "SubtleCrypto",
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -448,6 +591,16 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "TransformStreamDefaultController",
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "TrustedHTML", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "TrustedScript", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "TrustedScriptURL", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "TrustedTypePolicy", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "TrustedTypePolicyFactory", insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   "URL",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "URLPattern",
@@ -455,6 +608,8 @@ let interfaceNamesInGlobalScope = [
   "URLSearchParams",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "WGSLLanguageFeatures", earlyBetaOrEarlier: true },
+  { name: "WGSLLanguageFeatures", windows: true },
+  { name: "WGSLLanguageFeatures", mac: true, aarch64: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "WebGL2RenderingContext",
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -498,9 +653,13 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "WebTransportDatagramDuplexStream",
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  "WebTransportDatagramsWritable",
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   "WebTransportError",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "WebTransportReceiveStream",
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  "WebTransportSendGroup",
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "WebTransportSendStream",
   // IMPORTANT: Do not change this list without review from a DOM peer!

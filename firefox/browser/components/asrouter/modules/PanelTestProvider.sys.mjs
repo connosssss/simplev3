@@ -20,20 +20,383 @@ const isMSIX =
 
 const MESSAGES = () => [
   {
-    id: "CLOSE_TAB_GROUP_TEST_CALLOUT",
-    template: "feature_callout",
-    groups: ["cfr"],
+    id: "WELCOME_BACK_SPOTLIGHT",
+    skip_in_tests: "it's not tested in automation",
+    template: "spotlight",
     content: {
-      id: "CLOSE_TAB_GROUP_TEST_CALLOUT",
+      id: "WELCOME_BACK_SPOTLIGHT",
       template: "multistage",
       backdrop: "transparent",
       transitions: false,
       screens: [
         {
-          id: "CLOSE_TAB_GROUP_TEST_CALLOUT",
+          id: "CAROUSEL",
+          content: {
+            title: "New features built to help you do more",
+            tiles: {
+              type: "single-select",
+              selected: "vertical-tabs",
+              pill_nav_label: { raw: "Feature highlights" },
+              data: [
+                {
+                  id: "split-view",
+                  inert: true,
+                  targeting: "firefoxVersion >= 150",
+                  type: "carousel-card",
+                  pill: {
+                    label: { raw: "Split View" },
+                    icon: "chrome://browser/skin/split-view-left-16.svg",
+                  },
+                  icon: {
+                    background:
+                      "url('chrome://activity-stream/content/data/content/assets/mr-kit-smart-window.svg') center / cover no-repeat light-dark(rgb(240, 240, 244), rgb(43, 42, 51))",
+                    darkModeBackground:
+                      "url('chrome://activity-stream/content/data/content/assets/fox-doodle-backup-restore.svg') center / cover no-repeat light-dark(rgb(240, 240, 244), rgb(43, 42, 51))",
+                  },
+                  label: { raw: "Split View" },
+                  body: {
+                    raw: "Two tabs side by side, right where you need them. Finally.",
+                  },
+                  tilebutton: {
+                    label: {
+                      raw: "Try it now",
+                    },
+                    style: "secondary",
+                    action: {
+                      type: "OPEN_URL",
+                      data: {
+                        args: "https://support.mozilla.org/kb/split-view-firefox",
+                        where: "tabshifted",
+                      },
+                    },
+                  },
+                },
+                {
+                  id: "vertical-tabs",
+                  inert: true,
+                  type: "carousel-card",
+                  targeting: "firefoxVersion <= 140",
+                  pill: {
+                    label: { raw: "Vertical Tabs" },
+                    icon: "chrome://browser/skin/tabs.svg",
+                  },
+                  icon: {
+                    background:
+                      "url('chrome://activity-stream/content/data/content/assets/nuo-taborientation.svg') center / cover no-repeat light-dark(rgb(240, 240, 244), rgb(43, 42, 51))",
+                  },
+                  label: { raw: "Vertical Tabs" },
+                  body: {
+                    raw: "Stack your tabs down the side for calmer browsing.",
+                  },
+                },
+                {
+                  id: "tab-groups",
+                  inert: true,
+                  type: "carousel-card",
+                  pill: {
+                    label: { raw: "Tab Groups" },
+                    icon: "chrome://browser/skin/tabbrowser/tab-groups.svg",
+                  },
+                  icon: {
+                    background:
+                      "url('chrome://activity-stream/content/data/content/assets/euo-tab-orientation.svg') center / cover no-repeat light-dark(rgb(240, 240, 244), rgb(43, 42, 51))",
+                  },
+                  label: { raw: "Tab Groups" },
+                  body: { raw: "Keep related tabs together in named groups." },
+                  tilebutton: {
+                    label: {
+                      raw: "Try it now",
+                    },
+                    style: "secondary",
+                    action: {
+                      type: "OPEN_URL",
+                      data: {
+                        args: "https://support.mozilla.org/kb/split-view-firefox",
+                        where: "tabshifted",
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+            primary_button: {
+              label: { raw: "Start browsing" },
+              action: {
+                dismiss: true,
+              },
+            },
+            secondary_button: {
+              label: { raw: "Learn more" },
+              action: {
+                dismiss: true,
+              },
+            },
+          },
+        },
+      ],
+    },
+  },
+  {
+    weight: 100,
+    id: "FEATURE_CALLOUT_REFERRAL_TEST",
+    template: "feature_callout",
+    description: "Test referral code generation from a message",
+    content: {
+      id: "FEATURE_CALLOUT_REFERRAL_TEST",
+      template: "multistage",
+      backdrop: "transparent",
+      transitions: false,
+      disableHistoryUpdates: true,
+      metrics: "block",
+      screens: [
+        {
+          id: "FEATURE_CALLOUT_REFERRAL_TEST",
           anchors: [
             {
-              selector: "#alltabs-button",
+              selector: "#PanelUI-menu-button",
+              panel_position: {
+                anchor_attachment: "bottomcenter",
+                callout_attachment: "topright",
+              },
+            },
+          ],
+          content: {
+            position: "callout",
+            title: {
+              raw: "This callout will link to about:referrals",
+              marginInline: "0 42px",
+            },
+            above_button_content: [
+              {
+                type: "text",
+                text: [
+                  "Click ",
+                  {
+                    raw: "here",
+                    link_key: "here",
+                  },
+                  " to generate a referral code.",
+                ],
+                textAlign: "start",
+                fontSize: "0.8125em",
+                marginBlock: "0",
+              },
+            ],
+            here: {
+              action: {
+                type: "GET_REFERRAL_CODE",
+                data: {
+                  entrypoint: "test",
+                  where: "tab",
+                },
+              },
+            },
+            dismiss_button: {
+              action: {
+                dismiss: true,
+              },
+            },
+          },
+        },
+      ],
+    },
+    targeting: "providerCohorts.panel_local_testing == 'SHOW_TEST'",
+    groups: [],
+    provider: "panel_local_testing",
+  },
+  {
+    weight: 100,
+    id: "FEATURE_CALLOUT_EMBEDDED_LINKS_TEST",
+    template: "feature_callout",
+    description: "Test embedded links in above_button_content paragraphs",
+    content: {
+      id: "FEATURE_CALLOUT_EMBEDDED_LINKS_TEST",
+      template: "multistage",
+      backdrop: "transparent",
+      transitions: false,
+      disableHistoryUpdates: true,
+      metrics: "block",
+      screens: [
+        {
+          id: "FEATURE_CALLOUT_EMBEDDED_LINKS_TEST",
+          anchors: [
+            {
+              selector: "#PanelUI-menu-button",
+              panel_position: {
+                anchor_attachment: "bottomcenter",
+                callout_attachment: "topright",
+              },
+            },
+          ],
+          content: {
+            position: "callout",
+            title: {
+              raw: "I'm an example of embedded links",
+              marginInline: "0 42px",
+            },
+            above_button_content: [
+              {
+                type: "text",
+                text: [
+                  "Read the release notes ",
+                  {
+                    raw: {
+                      $l10n: {
+                        id: "id",
+                        text: "here",
+                        comment: "text",
+                      },
+                    },
+                    href: "https://www.mozilla.org/en-US/firefox/releases/",
+                    where: "tabshifted",
+                  },
+                  ", or open ",
+                  {
+                    raw: "settings",
+                    link_key: "settings",
+                  },
+                  ".",
+                ],
+                textAlign: "start",
+                fontSize: "0.8125em",
+                marginBlock: "0",
+              },
+            ],
+            settings: {
+              action: {
+                type: "OPEN_ABOUT_PAGE",
+                data: {
+                  args: "preferences",
+                  where: "tab",
+                },
+              },
+            },
+            dismiss_button: {
+              action: {
+                dismiss: true,
+              },
+            },
+          },
+        },
+      ],
+    },
+    targeting: 'providerCohorts.panel_local_testing == "SHOW_TEST"',
+    groups: [],
+    provider: "panel_local_testing",
+  },
+  {
+    id: "WRITE_IN_MICROSURVEY_TEST",
+    template: "feature_callout",
+    groups: [],
+    content: {
+      id: "WRITE_IN_MICROSURVEY_TEST",
+      template: "multistage",
+      backdrop: "transparent",
+      transitions: false,
+      write_in_microsurvey: true,
+      screens: [
+        {
+          id: "WRITE_IN_MICROSURVEY_TEST_SCREEN_1",
+          force_hide_steps_indicator: true,
+          anchors: [
+            {
+              selector: "hbox#browser",
+              no_open_on_anchor: true,
+              hide_arrow: true,
+              panel_position: {
+                anchor_attachment: "bottomright",
+                callout_attachment: "bottomright",
+                offset_y: -24,
+                offset_x: -20,
+              },
+            },
+          ],
+          content: {
+            position: "callout",
+            width: "312px",
+            padding: 24,
+            title_logo: {
+              imageURL: "chrome://branding/content/about-logo.png",
+              alignment: "top",
+            },
+            title: {
+              raw: "Help Firefox improve this feature",
+            },
+            subtitle: {
+              raw: "Is there anything you'd like to add? (optional)",
+              fontSize: "0.9375em",
+            },
+            tiles: {
+              type: "textarea",
+              data: {
+                id: "feature-feedback",
+                character_limit: 1000,
+                rows: 4,
+              },
+            },
+            above_button_content: [
+              {
+                type: "text",
+                text: {
+                  raw: "Note: Do not include personal information.",
+                  color: "var(--text-color-deemphasized)",
+                  fontSize: "0.6875em",
+                  textAlign: "start",
+                  marginBlock: "-4px",
+                },
+              },
+            ],
+            secondary_button: {
+              label: { raw: "Submit" },
+              style: "primary",
+              action: {
+                type: "MULTI_ACTION",
+                collectTextInput: true,
+                data: { actions: [] },
+              },
+              disabled: "hasTextInput",
+            },
+            additional_button: {
+              label: { raw: "Privacy notice" },
+              style: "link",
+              alignment: "space-between",
+              action: {
+                data: {
+                  args: "https://www.mozilla.org/privacy/firefox/",
+                  where: "tabshifted",
+                },
+                type: "OPEN_URL",
+              },
+            },
+            dismiss_button: {
+              action: {
+                dismiss: true,
+              },
+              background: true,
+              size: "small",
+              marginInline: "0 20px",
+              marginBlock: "20px 0",
+            },
+          },
+        },
+      ],
+    },
+  },
+  {
+    id: "TASKBAR_TAB_TEST_CALLOUT",
+    template: "feature_callout",
+    groups: ["cfr"],
+    content: {
+      id: "TASKBAR_TAB_TEST_CALLOUT",
+      template: "multistage",
+      backdrop: "transparent",
+      transitions: false,
+      screens: [
+        {
+          id: "TASKBAR_TAB_TEST_CALLOUT",
+          anchors: [
+            {
+              selector: "#taskbar-tabs-button",
               panel_position: {
                 anchor_attachment: "bottomcenter",
                 callout_attachment: "topright",
@@ -53,27 +416,102 @@ const MESSAGES = () => [
               alignment: "top",
             },
             title: {
-              raw: "If you close a tab group, you can reopen it here anytime.",
+              raw: "Taskbar tabs action test",
             },
             primary_button: {
               label: {
-                raw: "Got it",
+                raw: "Create taskbar tab",
               },
+              action: {
+                type: "CREATE_TASKBAR_TAB",
+              },
+            },
+            dismiss_button: {
               action: {
                 dismiss: true,
               },
+              background: true,
+              size: "small",
+              marginInline: "0 20px",
+              marginBlock: "20px 0",
             },
           },
         },
       ],
     },
-    targeting: "tabGroupsClosedCount == 1",
+    targeting: "visitsCount >= 1",
     trigger: {
-      id: "tabGroupClosed",
+      id: "openURL",
+      params: ["wikipedia.org", "www.wikipedia.org"],
     },
     frequency: {
       lifetime: 1,
     },
+    skip_in_tests: "it's not tested in automation",
+  },
+  {
+    id: "FREQUENCY_CAP_CLEANUP_TEST",
+    profileScope: "single",
+    template: "feature_callout",
+    groups: [],
+    content: {
+      id: "FREQUENCY_CAP_CLEANUP_TEST",
+      padding: "16",
+      template: "multistage",
+      backdrop: "transparent",
+      transitions: false,
+      disableHistoryUpdates: true,
+      screens: [
+        {
+          id: "FREQUENCY_CAP_CLEANUP_TEST",
+          anchors: [
+            {
+              selector: "#fxa-toolbar-menu-button",
+              panel_position: {
+                anchor_attachment: "bottomcenter",
+                callout_attachment: "topright",
+              },
+            },
+          ],
+          content: {
+            position: "callout",
+            width: "400px",
+            padding: 16,
+            title: {
+              raw: "Frequency Cap Test",
+            },
+            subtitle: {
+              raw: "This callout has a very short frequency cap.",
+            },
+            additional_button: {
+              action: {
+                dismiss: true,
+              },
+              label: {
+                string_id: "dismiss-button-label",
+                fontWeight: "590",
+                fontSize: "11px",
+              },
+              style: "secondary",
+            },
+          },
+        },
+      ],
+    },
+    frequency: {
+      custom: [
+        {
+          cap: 1,
+          period: 120000,
+        },
+      ],
+    },
+    trigger: {
+      id: "defaultBrowserCheck",
+    },
+    targeting:
+      "(region in ['CA', 'US']) && previousSessionEnd && !willShowDefaultPrompt && !activeNotifications && userPrefs.cfrFeatures",
+    skip_in_tests: "it's not tested in automation",
   },
   {
     id: "CONTENT_TILES_TEST",
@@ -233,148 +671,6 @@ const MESSAGES = () => [
     provider: "panel_local_testing",
   },
   {
-    id: "TAB_GROUP_TEST_CALLOUT_HORIZONTAL",
-    template: "feature_callout",
-    groups: ["cfr"],
-    content: {
-      id: "TAB_GROUP_TEST_CALLOUT_HORIZONTAL",
-      template: "multistage",
-      backdrop: "transparent",
-      transitions: false,
-      screens: [
-        {
-          id: "TAB_GROUP_TEST_CALLOUT_HORIZONTAL",
-          anchors: [
-            {
-              selector: ".tab-content[selected]",
-              panel_position: {
-                anchor_attachment: "bottomcenter",
-                callout_attachment: "topright",
-              },
-            },
-          ],
-          content: {
-            position: "callout",
-            width: "333px",
-            padding: 16,
-            logo: {
-              imageURL:
-                "chrome://browser/content/asrouter/assets/tabgroups/hort-animated-light.svg",
-              darkModeImageURL:
-                "chrome://browser/content/asrouter/assets/tabgroups/hort-animated-dark.svg",
-              reducedMotionImageURL:
-                "chrome://browser/content/asrouter/assets/tabgroups/hort-static-light.svg",
-              darkModeReducedMotionImageURL:
-                "chrome://browser/content/asrouter/assets/tabgroups/hort-static-dark.svg",
-              height: "172px",
-              width: "300px",
-            },
-            title: {
-              raw: "Try tab groups for less clutter, more focus",
-            },
-            subtitle: {
-              raw: "Organize your tabs by dragging one tab on top of another to create your first tab group.",
-            },
-            primary_button: {
-              label: {
-                raw: "Got it",
-              },
-              action: {
-                dismiss: true,
-              },
-            },
-            dismiss_button: {
-              action: {
-                dismiss: true,
-              },
-              size: "small",
-              marginInline: "0 20px",
-              marginBlock: "20px 0",
-            },
-          },
-        },
-      ],
-    },
-    targeting: "tabsClosedCount >= 2 && currentTabsOpen >= 4",
-    trigger: {
-      id: "nthTabClosed",
-    },
-    frequency: {
-      lifetime: 1,
-    },
-  },
-  {
-    id: "TAB_GROUP_TEST_CALLOUT_VERTICAL",
-    template: "feature_callout",
-    groups: ["cfr"],
-    content: {
-      id: "TAB_GROUP_TEST_CALLOUT_VERTICAL",
-      template: "multistage",
-      backdrop: "transparent",
-      transitions: false,
-      screens: [
-        {
-          id: "TAB_GROUP_TEST_CALLOUT_VERTICAL",
-          anchors: [
-            {
-              selector: ".tab-content[selected]",
-              panel_position: {
-                anchor_attachment: "rightcenter",
-                callout_attachment: "topleft",
-              },
-            },
-          ],
-          content: {
-            position: "callout",
-            width: "333px",
-            padding: 16,
-            logo: {
-              imageURL:
-                "chrome://browser/content/asrouter/assets/tabgroups/vert-animated-light.svg",
-              darkModeImageURL:
-                "chrome://browser/content/asrouter/assets/tabgroups/vert-animated-dark.svg",
-              reducedMotionImageURL:
-                "chrome://browser/content/asrouter/assets/tabgroups/vert-static-light.svg",
-              darkModeReducedMotionImageURL:
-                "chrome://browser/content/asrouter/assets/tabgroups/vert-static-dark.svg",
-              height: "172px",
-              width: "300px",
-            },
-            title: {
-              raw: "Try tab groups for less clutter, more focus",
-            },
-            subtitle: {
-              raw: "Organize your tabs by dragging one tab on top of another to create your first tab group.",
-            },
-            primary_button: {
-              label: {
-                raw: "Got it",
-              },
-              action: {
-                dismiss: true,
-              },
-            },
-            dismiss_button: {
-              action: {
-                dismiss: true,
-              },
-              size: "small",
-              marginInline: "0 20px",
-              marginBlock: "20px 0",
-            },
-          },
-        },
-      ],
-    },
-    targeting: "tabsClosedCount >= 2 && currentTabsOpen >= 4",
-    trigger: {
-      id: "nthTabClosed",
-    },
-    frequency: {
-      lifetime: 1,
-    },
-  },
-  {
     id: "SET_DEFAULT_SPOTLIGHT_TEST",
     template: "spotlight",
     content: {
@@ -473,54 +769,82 @@ const MESSAGES = () => [
     },
   },
   {
-    id: "NEW_PROFILE_SPOTLIGHT",
-    groups: [],
-    targeting: "canCreateSelectableProfiles && !hasSelectableProfiles",
-    trigger: {
-      id: "defaultBrowserCheck",
-    },
-    template: "spotlight",
+    id: "FEATURE_CALLOUT_ADDON_TEST",
+    template: "feature_callout",
+    description: "Test ASRouter support for installing or updating addons.",
     content: {
-      template: "multistage",
-      modal: "tab",
+      id: "FEATURE_CALLOUT_ADDON_TEST",
+      position: "callout",
+      backdrop: "transparent",
+      transitions: false,
+      disableHistoryUpdates: true,
+      metrics: "block",
       screens: [
         {
-          id: "SCREEN_1",
+          id: "FEATURE_CALLOUT_ADDON_TEST",
+          anchors: [
+            {
+              selector: "#unified-extensions-button",
+              panel_position: {
+                anchor_attachment: "bottomcenter",
+                callout_attachment: "topright",
+              },
+            },
+          ],
           content: {
+            position: "callout",
+            width: "332px",
             logo: {
               imageURL:
-                "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/a3c640c8-7594-4bb2-bc18-8b4744f3aaf2.gif",
+                "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/7dee7c77-1940-4d21-8e56-f1a4dd3c35f4.svg",
+              darkModeImageURL:
+                "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/dbbff09d-3c15-4d59-8f8d-cc7eebb9979c.svg",
+              height: "182px",
+            },
+            tiles: {
+              type: "addons-picker",
+              data: [
+                {
+                  id: "d634138d-c276-4fc8-924b-40a0ea21d284",
+                  name: "1Password",
+                  icon: "https://addons.mozilla.org/user-media/addon_icons/950/950528-64.png?modified=bd35add9",
+                  type: "extension",
+                  description:
+                    "Easily sign in to sites, generate passwords, and store secure information, including logins, credit cards, notes, and more.",
+                  source_id: "ADD_EXTENSION_BUTTON",
+                  action: {
+                    type: "INSTALL_ADDON_FROM_URL",
+                    advance_screens: { direction: 1 },
+                    data: {
+                      url: "https://addons.mozilla.org/firefox/downloads/file/4321525/1password_x_password_manager-2.26.1.xpi",
+                      telemetrySource: "featurecallout-addon",
+                    },
+                  },
+                },
+              ],
             },
             title: {
-              raw: "Say hello to Firefox profiles",
-              paddingBlock: "8px",
+              string_id: "amo-picker-title",
             },
             subtitle: {
-              raw: "Easily switch between browsing for work and fun. Profiles keep your browsing info, including search history and passwords, totally separate so you can stay organized.",
+              string_id: "amo-picker-subtitle",
             },
             dismiss_button: {
+              size: "small",
               action: {
                 dismiss: true,
               },
-            },
-            primary_button: {
-              label: "Create a profile",
-              action: {
-                navigate: true,
-                type: "CREATE_NEW_SELECTABLE_PROFILE",
-              },
-            },
-            secondary_button: {
-              label: "Not now",
-              action: {
-                dismiss: true,
-              },
+              background: true,
+              marginInline: "0 24px",
+              marginBlock: "24px 0",
             },
           },
         },
       ],
-      transitions: true,
     },
+    targeting: 'providerCohorts.panel_local_testing == "SHOW_TEST"',
+    groups: [],
+    provider: "panel_local_testing",
   },
   {
     id: "WNP_THANK_YOU",
@@ -535,67 +859,6 @@ const MESSAGES = () => [
       },
     },
     trigger: { id: "momentsUpdate" },
-  },
-  {
-    id: "PERSONALIZED_CFR_MESSAGE",
-    template: "cfr_doorhanger",
-    groups: ["cfr"],
-    content: {
-      layout: "icon_and_message",
-      category: "cfrFeatures",
-      bucket_id: "PERSONALIZED_CFR_MESSAGE",
-      notification_text: "Personalized CFR Recommendation",
-      heading_text: { string_id: "cfr-doorhanger-bookmark-fxa-header" },
-      info_icon: {
-        label: {
-          attributes: {
-            tooltiptext: { string_id: "cfr-doorhanger-fxa-close-btn-tooltip" },
-          },
-        },
-        sumo_path: "https://example.com",
-      },
-      text: { string_id: "cfr-doorhanger-bookmark-fxa-body-2" },
-      icon: "chrome://branding/content/icon64.png",
-      icon_class: "cfr-doorhanger-large-icon",
-      persistent_doorhanger: true,
-      buttons: {
-        primary: {
-          label: { string_id: "cfr-doorhanger-milestone-ok-button" },
-          action: {
-            type: "OPEN_URL",
-            data: {
-              args: "https://send.firefox.com/login/?utm_source=activity-stream&entrypoint=activity-stream-cfr-pdf",
-              where: "tabshifted",
-            },
-          },
-        },
-        secondary: [
-          {
-            label: { string_id: "cfr-doorhanger-extension-cancel-button" },
-            action: { type: "CANCEL" },
-          },
-          {
-            label: {
-              string_id: "cfr-doorhanger-extension-never-show-recommendation",
-            },
-          },
-          {
-            label: {
-              string_id: "cfr-doorhanger-extension-manage-settings-button",
-            },
-            action: {
-              type: "OPEN_PREFERENCES_PAGE",
-              data: { category: "general-cfrfeatures" },
-            },
-          },
-        ],
-      },
-    },
-    targeting: "scores.PERSONALIZED_CFR_MESSAGE.score > scoreThreshold",
-    trigger: {
-      id: "openURL",
-      patterns: ["*://*/*.pdf"],
-    },
   },
   {
     id: "TEST_BMB_BUTTON",
@@ -747,7 +1010,7 @@ const MESSAGES = () => [
             progress_bar: true,
             logo: {
               imageURL:
-                "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/a3c640c8-7594-4bb2-bc18-8b4744f3aaf2.gif",
+                "chrome://activity-stream/content/data/content/assets/fox-doodle-waving-static.png",
             },
             title: "A dialog with a background",
             subtitle:
@@ -775,7 +1038,8 @@ const MESSAGES = () => [
             progress_bar: true,
             logo: {
               height: "200px",
-              imageURL: "",
+              imageURL:
+                "chrome://activity-stream/content/data/content/assets/fox-doodle-tail.png",
             },
             title: {
               fontSize: "36px",
@@ -886,46 +1150,10 @@ const MESSAGES = () => [
     trigger: { id: "defaultBrowserCheck" },
   },
   {
-    id: "PB_NEWTAB_VPN_PROMO",
-    template: "pb_newtab",
-    content: {
-      promoEnabled: true,
-      promoType: "VPN",
-      infoEnabled: true,
-      infoBody: "fluent:about-private-browsing-info-description-private-window",
-      infoLinkText: "fluent:about-private-browsing-learn-more-link",
-      infoTitleEnabled: false,
-      promoLinkType: "button",
-      promoLinkText: "fluent:about-private-browsing-prominent-cta",
-      promoSectionStyle: "below-search",
-      promoHeader: "fluent:about-private-browsing-get-privacy",
-      promoTitle: "fluent:about-private-browsing-hide-activity-1",
-      promoTitleEnabled: true,
-      promoImageLarge: "chrome://browser/content/assets/moz-vpn.svg",
-      promoButton: {
-        action: {
-          type: "OPEN_URL",
-          data: {
-            args: "https://vpn.mozilla.org/",
-          },
-        },
-      },
-    },
-    groups: ["panel-test-provider", "pbNewtab"],
-    targeting: "region != 'CN' && !hasActiveEnterprisePolicies",
-    frequency: { lifetime: 3 },
-  },
-  {
     id: "PB_PIN_PROMO",
     template: "pb_newtab",
     groups: ["pbNewtab"],
     content: {
-      infoBody: "fluent:about-private-browsing-info-description-simplified",
-      infoEnabled: true,
-      infoIcon: "chrome://global/skin/icons/indicator-private-browsing.svg",
-      infoLinkText: "fluent:about-private-browsing-learn-more-link",
-      infoTitle: "",
-      infoTitleEnabled: false,
       promoEnabled: true,
       promoType: "PIN",
       promoHeader: "Private browsing freedom in one click",
@@ -987,7 +1215,6 @@ const MESSAGES = () => [
   },
   {
     id: "TEST_TOAST_NOTIFICATION1",
-    weight: 100,
     template: "toast_notification",
     content: {
       title: {
@@ -995,7 +1222,7 @@ const MESSAGES = () => [
       },
       body: "Body",
       image_url:
-        "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/a3c640c8-7594-4bb2-bc18-8b4744f3aaf2.gif",
+        "chrome://browser/content/asrouter/assets/fox-with-profiles.svg",
       launch_url: "https://mozilla.org",
       requireInteraction: true,
       actions: [
@@ -1015,18 +1242,17 @@ const MESSAGES = () => [
     },
     groups: ["panel-test-provider"],
     targeting: "!hasActiveEnterprisePolicies",
-    trigger: { id: "backgroundTaskMessage" },
+    trigger: { id: "backgroundTask" },
     frequency: { lifetime: 3 },
   },
   {
     id: "TEST_TOAST_NOTIFICATION2",
-    weight: 100,
     template: "toast_notification",
     content: {
       title: "Launch action on toast click and on action button click",
       body: "Body",
       image_url:
-        "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/a3c640c8-7594-4bb2-bc18-8b4744f3aaf2.gif",
+        "chrome://browser/content/asrouter/assets/fox-with-profiles.svg",
       launch_action: {
         type: "OPEN_URL",
         data: { args: "https://mozilla.org", where: "window" },
@@ -1053,43 +1279,49 @@ const MESSAGES = () => [
     },
     groups: ["panel-test-provider"],
     targeting: "!hasActiveEnterprisePolicies",
-    trigger: { id: "backgroundTaskMessage" },
+    trigger: { id: "backgroundTask" },
     frequency: { lifetime: 3 },
   },
   {
-    id: "MR2022_BACKGROUND_UPDATE_TOAST_NOTIFICATION",
-    weight: 100,
+    id: "TEST_TOAST_NOTIFICATION_DYNAMIC_IMAGE",
     template: "toast_notification",
     content: {
-      title: {
-        string_id: "mr2022-background-update-toast-title",
-      },
-      body: {
-        string_id: "mr2022-background-update-toast-text",
-      },
+      title: "Dynamic image toast",
+      body: "This notification shows different images based on dark mode and reduced motion settings.",
       image_url:
-        "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/673d2808-e5d8-41b9-957e-f60d53233b97.png",
-      requireInteraction: true,
-      actions: [
-        {
-          action: "open",
-          title: {
-            string_id: "mr2022-background-update-toast-primary-button-label",
-          },
-        },
-        {
-          action: "snooze",
-          windowsSystemActivationType: true,
-          title: {
-            string_id: "mr2022-background-update-toast-secondary-button-label",
-          },
-        },
-      ],
-      tag: "mr2022_background_update",
+        "chrome://browser/content/asrouter/assets/tabgroups/hort-animated-light.svg",
+      dark_mode_image_url:
+        "chrome://browser/content/asrouter/assets/tabgroups/hort-animated-dark.svg",
+      reduced_motion_image_url:
+        "chrome://browser/content/asrouter/assets/tabgroups/hort-static-light.svg",
+      dark_mode_reduced_motion_image_url:
+        "chrome://browser/content/asrouter/assets/tabgroups/hort-static-dark.svg",
+      tag: "test_toast_notification_dynamic_image",
     },
     groups: ["panel-test-provider"],
     targeting: "!hasActiveEnterprisePolicies",
-    trigger: { id: "backgroundTaskMessage" },
+    trigger: { id: "backgroundTask" },
+    frequency: { lifetime: 3 },
+  },
+  {
+    id: "TEST_TOAST_NOTIFICATION_DYNAMIC_IMAGE_GIF",
+    template: "toast_notification",
+    content: {
+      title: "Dynamic image toast (animated GIF)",
+      body: "Each variant (dark mode, reduced motion) shows a different animated GIF.",
+      image_url:
+        "chrome://activity-stream/content/data/content/assets/fox-doodle-waving.gif",
+      dark_mode_image_url:
+        "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/de2349f0-3853-454e-a7c6-100679604cab.gif",
+      reduced_motion_image_url:
+        "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/8dc86aae-17d1-4803-b7cc-5369210a9cf8.gif",
+      dark_mode_reduced_motion_image_url:
+        "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/94615589-5b64-4028-99d0-5b34f20331c4.gif",
+      tag: "test_toast_notification_dynamic_image_gif",
+    },
+    groups: ["panel-test-provider"],
+    targeting: "!hasActiveEnterprisePolicies",
+    trigger: { id: "backgroundTask" },
     frequency: { lifetime: 3 },
   },
   {
@@ -1149,13 +1381,20 @@ const MESSAGES = () => [
                 callout_attachment: "topright",
               },
             },
+            {
+              selector: "#PanelUI-menu-button",
+              panel_position: {
+                anchor_attachment: "leftcenter",
+                callout_attachment: "rightcenter",
+              },
+            },
           ],
           content: {
             position: "callout",
             title: { raw: "Panel Feature Callout" },
             subtitle: { raw: "Hello!" },
             secondary_button: {
-              label: { raw: "Advance" },
+              label: { raw: "Cancel" },
               action: { advance_screens: { direction: 1 } },
             },
             submenu_button: {
@@ -1197,6 +1436,10 @@ const MESSAGES = () => [
                 },
               ],
               attached_to: "secondary_button",
+            },
+            primary_button: {
+              label: { raw: "Advance" },
+              action: { advance_screens: { direction: 1 } },
             },
             dismiss_button: { action: { dismiss: true } },
           },
@@ -1395,6 +1638,124 @@ const MESSAGES = () => [
     },
   },
   {
+    id: "TEST_MULTI_TILES_SURVEY",
+    template: "feature_callout",
+    groups: [],
+    content: {
+      id: "TEST_MULTI_TILES_SURVEY",
+      template: "multistage",
+      backdrop: "transparent",
+      transitions: false,
+      disableHistoryUpdates: true,
+      screens: [
+        {
+          id: "SCREEN_1",
+          force_hide_steps_indicator: true,
+          anchors: [
+            {
+              selector: "hbox#browser",
+              hide_arrow: true,
+              absolute_position: {
+                bottom: "20px",
+                right: "20px",
+              },
+            },
+          ],
+          content: {
+            position: "callout",
+            title: {
+              raw: "Test title",
+            },
+            width: "297px",
+            title_logo: {
+              imageURL:
+                "chrome://browser/content/asrouter/assets/smiling-fox-icon.svg",
+            },
+            subtitle: {
+              raw: "Answer two questions!",
+            },
+            primary_button: {
+              label: "Submit",
+              action: {
+                dismiss: true,
+              },
+            },
+            dismiss_button: {
+              action: {
+                dismiss: true,
+              },
+            },
+            tiles_container: {
+              style: {
+                marginBlock: "6px",
+              },
+            },
+            tiles: [
+              {
+                type: "multiselect",
+                title: {
+                  raw: "Question 1",
+                },
+                data: [
+                  {
+                    id: "checkbox-1",
+                    defaultValue: false,
+                    label: {
+                      raw: "Checkbox 1",
+                    },
+                  },
+                  {
+                    id: "checkbox-2",
+                    defaultValue: false,
+                    label: {
+                      raw: "Checkbox 2",
+                    },
+                  },
+                  {
+                    id: "checkbox-3",
+                    defaultValue: false,
+                    label: {
+                      raw: "Checkbox 3",
+                    },
+                  },
+                  {
+                    id: "checkbox-4",
+                    defaultValue: false,
+                    label: {
+                      raw: "Checkbox 4",
+                    },
+                  },
+                ],
+              },
+              {
+                type: "multiselect",
+                title: {
+                  raw: "Question 2",
+                },
+                data: [
+                  {
+                    id: "checkbox-1",
+                    defaultValue: false,
+                    label: {
+                      raw: "Checkbox 1",
+                    },
+                  },
+                  {
+                    id: "checkbox-2",
+                    defaultValue: false,
+                    label: {
+                      raw: "Checkbox 2",
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    },
+  },
+  {
     id: "EXPERIMENT_L10N_TEST",
     template: "feature_callout",
     description:
@@ -1505,10 +1866,11 @@ const MESSAGES = () => [
     },
   },
   {
-    id: "FXA_ACCOUNTS_APPMENU_PROTECT_BROWSING_DATA",
+    id: "FXA_ACCOUNTS_PXIMENU_ROW_LAYOUT",
     template: "menu_message",
     content: {
       messageType: "fxa_cta",
+      layout: "row",
       primaryText: "Bounce between devices",
       secondaryText:
         "Sync and encrypt your bookmarks, passwords, and more on all your devices.",
@@ -1532,15 +1894,17 @@ const MESSAGES = () => [
           id: "FXA_ACCOUNTS_APPMENU_PROTECT_BROWSING_DATA",
         },
       },
-      imageURL:
-        "chrome://browser/content/asrouter/assets/fox-with-box-on-cloud.svg",
-      imageVerticalTopOffset: -20,
+      imageURL: "chrome://browser/content/asrouter/assets/fox-with-devices.svg",
+      imageVerticalBottomOffset: -32,
+      imageVerticalTopOffset: -4,
+      containerVerticalBottomOffset: 20,
+      imageWidth: 100,
     },
     skip_in_tests: "TODO",
     trigger: {
       id: "menuOpened",
     },
-    testingTriggerContext: "app_menu",
+    testingTriggerContext: "pxi_menu",
   },
   {
     id: "TEST_NEWTAB_MESSAGE",
@@ -1571,20 +1935,1112 @@ const MESSAGES = () => [
     groups: [],
   },
   {
+    id: "TEST_ACTIVATION_WINDOW_ENTER_MESSAGE",
+    template: "newtab_message",
+    content: {
+      messageType: "ActivationWindowMessage",
+      heading: "On your terms, from the start",
+      message:
+        "Every tab you open helps supports an independent internet—powered by people like you. Settle in and make Firefox your own.",
+      primaryButton: {
+        label: "Begin Customizing",
+        action: { type: "SHOW_PERSONALIZE" },
+      },
+    },
+    trigger: {
+      id: "newtabMessageCheck",
+    },
+    groups: [],
+  },
+  {
+    id: "TEST_ACTIVATION_WINDOW_EXIT_MESSAGE",
+    template: "newtab_message",
+    content: {
+      messageType: "ActivationWindowMessage",
+      heading:
+        "We've updated your New Tab with more content we think you'll like",
+      message:
+        "To make changes, select the pencil icon in the bottom right corner.",
+      primaryButton: {
+        label: "Got It",
+        action: { dismiss: true },
+      },
+    },
+    trigger: {
+      id: "newtabMessageCheck",
+    },
+    groups: [],
+  },
+  {
+    id: "TEST_ACTIVATION_WINDOW_FULL_BLEED_IMAGE",
+    template: "newtab_message",
+    content: {
+      messageType: "ActivationWindowMessage",
+      heading: "Welcome to your New Tab!",
+      message:
+        "To make changes, select the pencil icon in the bottom right corner.",
+      imageSrc: "chrome://browser/content/asrouter/assets/kit-peek.svg",
+      imageSrcResponsive:
+        "chrome://browser/content/asrouter/assets/kit-peek-bottom.svg",
+      primaryButton: {
+        label: "Got It",
+        action: { dismiss: true },
+      },
+    },
+    trigger: {
+      id: "newtabMessageCheck",
+    },
+    groups: [],
+  },
+  {
+    id: "TEST_ASROUTER_NEWTAB_MESSAGE",
+    template: "newtab_message",
+    content: {
+      messageType: "ASRouterNewTabMessage",
+      // eslint-disable-next-line mozilla/no-newtab-refs-outside-newtab
+      imageSrc: "chrome://newtab/content/data/content/assets/kit-in-circle.svg",
+      heading: "Most browsers track you. Firefox blocks that.",
+      body: "Many browsers track you. Firefox blocks a lot of that automatically, without extra work.",
+      hideDismissButton: false,
+      primaryButton: {
+        label: "Label",
+        action: {
+          type: "OPEN_URL",
+          data: { args: "https://www.mozilla.org/" },
+        },
+      },
+      secondaryButton: {
+        label: "Label",
+        action: {
+          dismiss: true,
+        },
+      },
+      position: "ABOVE_TOPSITES",
+    },
+    frequency: {
+      lifetime: 3,
+    },
+    trigger: {
+      id: "newtabMessageCheck",
+    },
+    targeting: `!isDefaultBrowser`,
+    groups: ["cfr"],
+  },
+  {
+    id: "TEST_ASROUTER_NEWTAB_MESSAGE_POLL_DEFAULT",
+    template: "newtab_message",
+    content: {
+      messageType: "ASRouterNewTabMessage",
+      // eslint-disable-next-line mozilla/no-newtab-refs-outside-newtab
+      imageSrc: "chrome://newtab/content/data/content/assets/kit-in-circle.svg",
+      heading: "Make Firefox your own",
+      body: "Set Firefox as your default browser and pin it so it's always a click away.",
+      hideDismissButton: false,
+      // Declarative variants: each entry's `targeting` is re-evaluated against
+      // the live ASRouter environment (the "uncached" attributes read live
+      // shell state), and the first match's content overlays the base content.
+      // A `final` entry stops the re-evaluation poll once reached. Here, each
+      // state drops whichever step is already satisfied, so only the still-
+      // relevant button(s) show: both when neither is done (base content), only
+      // "Pin to taskbar" once we're the default, only "Set as default" once
+      // we're pinned, and the completed state once both are true.
+      states: [
+        {
+          // Already the default but not pinned: drop the "Set as default" step
+          // and only ask to pin.
+          targeting: "isDefaultBrowserUncached && doesAppNeedPinUncached",
+          content: {
+            primaryButton: null,
+          },
+        },
+        {
+          // Already pinned but not the default: drop the "Pin to taskbar" step
+          // and only ask to set as default.
+          targeting: "!isDefaultBrowserUncached && !doesAppNeedPinUncached",
+          content: {
+            secondaryButton: null,
+          },
+        },
+        {
+          // Default and pinned: everything's done. Show the completed state
+          // and stop polling.
+          targeting: "isDefaultBrowserUncached && !doesAppNeedPinUncached",
+          final: true,
+          content: {
+            heading: "You're all set",
+            body: "Firefox is now your default browser and pinned. Thanks!",
+            // No `type`, so this renders in the primary style.
+            primaryButton: {
+              label: "Go to settings to try it out!",
+              action: {
+                type: "OPEN_ABOUT_PAGE",
+                data: { args: "settings#browserIcon", where: "tab" },
+              },
+            },
+            secondaryButton: null,
+          },
+        },
+      ],
+      // The base content (neither step done) shows both steps, rendered non-
+      // primary (`type: "default"`) since neither is the single call-to-action.
+      // The states above swap in narrower content as each step is satisfied.
+      primaryButton: {
+        label: "Set as default",
+        type: "default",
+        action: {
+          type: "SET_DEFAULT_BROWSER",
+        },
+      },
+      secondaryButton: {
+        label: "Pin to taskbar",
+        type: "default",
+        action: {
+          type: "PIN_FIREFOX_TO_TASKBAR",
+        },
+      },
+      position: "ABOVE_TOPSITES",
+    },
+    frequency: {
+      lifetime: 3,
+    },
+    trigger: {
+      id: "newtabMessageCheck",
+    },
+    targeting: "true",
+    groups: ["cfr"],
+  },
+  {
+    id: "TEST_ASROUTER_MULTISTAGE_MESSAGE",
+    template: "newtab_message",
+    groups: ["cfr"],
+    content: {
+      messageType: "ASRouterMultistageMessage",
+      id: "TEST_ASROUTER_MULTISTAGE_MESSAGE",
+      transitions: false,
+      backdrop: "transparent",
+      screens: [
+        {
+          id: "SCREEN_1",
+          force_hide_steps_indicator: true,
+          content: {
+            position: "center",
+            screen_style: {
+              width: "650px",
+              height: "500px",
+            },
+            split_content_padding_block: "32px",
+            title: {
+              string_id: "create-backup-screen-1-title",
+              letterSpacing: "revert",
+              whiteSpace: "preserve-breaks",
+              lineHeight: "28px",
+              marginBlock: "0",
+            },
+            subtitle: {
+              string_id: "create-backup-screen-1-subtitle",
+              fontSize: "0.8125em",
+              letterSpacing: "revert",
+              marginBlock: "12px 0",
+            },
+            cta_paragraph: {
+              text: {
+                string_id: "create-backup-learn-more-link",
+                string_name: "learn-more-label",
+                fontSize: "0.8125em",
+              },
+              style: {
+                marginBlock: "0",
+                lineHeight: "100%",
+                letterSpacing: "revert",
+              },
+              action: {
+                type: "OPEN_URL",
+                data: {
+                  args: "https://support.mozilla.org/1/firefox/%VERSION%/%OS%/%LOCALE%/firefox-backup?utm_medium=firefox-desktop&utm_source=spotlight&utm_campaign=fx-backup-onboarding&utm_content=backup-turn-on-scheduled-learn-more-link&utm_term=fx-backup-onboarding-spotlight-1",
+                  where: "tabshifted",
+                },
+              },
+            },
+            tiles: {
+              type: "single-select",
+              autoTrigger: false,
+              selected: "sync",
+              action: {
+                picker: "<event>",
+              },
+              data: [
+                {
+                  inert: true,
+                  type: "backup",
+                  icon: {
+                    background:
+                      "center / contain no-repeat url('chrome://browser/content/asrouter/assets/fox-with-box-on-cloud.svg')",
+                    width: "133.9601px",
+                    height: "90.1186px",
+                    marginBlockStart: "8px",
+                    borderRadius: "5px",
+                  },
+                  id: "sync",
+                  flair: {
+                    centered: true,
+                    text: {
+                      string_id: "create-backup-screen-1-flair",
+                      fontSize: "0.625em",
+                      fontWeight: "600",
+                      lineHeight: "normal",
+                    },
+                  },
+                  label: {
+                    string_id: "create-backup-screen-1-sync-label",
+                    fontSize: 17,
+                    fontWeight: 600,
+                  },
+                  body: {
+                    string_id: "create-backup-screen-1-sync-body",
+                    fontSize: "0.625em",
+                    fontWeight: "400",
+                    marginBlock: "-6px 16px",
+                    color: "var(--text-color-deemphasized)",
+                  },
+                  tilebutton: {
+                    label: {
+                      string_id: "create-backup-select-tile-button-label",
+                      minHeight: "24px",
+                      minWidth: "revert",
+                      lineHeight: "100%",
+                      paddingBlock: "4px",
+                      paddingInline: "16px",
+                      marginBlock: "0 16px",
+                    },
+                    style: "primary",
+                    action: {
+                      type: "FXA_SIGNIN_FLOW",
+                      dismiss: "actionResult",
+                      needsAwait: true,
+                      data: {
+                        autoClose: false,
+                        entrypoint: "spotlight-create-backup",
+                        extraParams: {
+                          service: "sync",
+                          entrypoint_experiment: "fx-backup-onboarding",
+                          entrypoint_variation: "1",
+                          utm_medium: "firefox-desktop",
+                          utm_source: "spotlight",
+                          utm_campaign: "fx-backup-onboarding",
+                          utm_term: "fx-backup-onboarding-spotlight-1",
+                        },
+                      },
+                    },
+                  },
+                },
+                {
+                  inert: true,
+                  type: "backup",
+                  icon: {
+                    background:
+                      "center / contain no-repeat url('chrome://browser/content/asrouter/assets/fox-with-devices.svg')",
+                    width: "114.475px",
+                    height: "90.1186px",
+                    marginBlockStart: "8px",
+                    borderRadius: "5px",
+                  },
+                  id: "backup",
+                  flair: {
+                    centered: true,
+                    spacer: true,
+                  },
+                  label: {
+                    string_id: "create-backup-screen-1-backup-label",
+                    fontSize: 17,
+                    fontWeight: 600,
+                  },
+                  body: {
+                    string_id: "create-backup-screen-1-backup-body",
+                    fontSize: "0.625em",
+                    fontWeight: "400",
+                    marginBlock: "-6px 16px",
+                    color: "var(--text-color-deemphasized)",
+                  },
+                  tilebutton: {
+                    label: {
+                      string_id: "create-backup-select-tile-button-label",
+                      minHeight: "24px",
+                      minWidth: "revert",
+                      lineHeight: "100%",
+                      paddingBlock: "4px",
+                      paddingInline: "16px",
+                      marginBlock: "0 16px",
+                    },
+                    style: "secondary",
+                    action: {
+                      navigate: true,
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+        {
+          id: "SCREEN_2",
+          force_hide_steps_indicator: true,
+          content: {
+            position: "center",
+            screen_style: {
+              width: "650px",
+              height: "560px",
+            },
+            split_content_padding_block: "32px",
+            title: {
+              string_id: "create-backup-screen-2-title",
+              letterSpacing: "revert",
+              lineHeight: "28px",
+              marginBlock: "0",
+            },
+            subtitle: {
+              string_id: "create-backup-screen-2-subtitle",
+              fontSize: "0.8125em",
+              letterSpacing: "revert",
+              marginBlock: "8px 0",
+            },
+            tiles: {
+              type: "single-select",
+              selected: "all",
+              action: {
+                picker: "<event>",
+              },
+              data: [
+                {
+                  inert: true,
+                  type: "backup",
+                  icon: {
+                    background:
+                      "center / contain no-repeat url('chrome://browser/content/asrouter/assets/shield-checkmark-16.svg')",
+                    width: "54px",
+                    height: "54px",
+                    marginBlockStart: "22px",
+                    borderRadius: "5px",
+                  },
+                  id: "easy",
+                  label: {
+                    string_id: "create-backup-screen-2-easy-label",
+                    fontSize: 17,
+                    fontWeight: 600,
+                    marginBlock: "3px 10px",
+                  },
+                  body: {
+                    items: [
+                      {
+                        icon: {
+                          background:
+                            "center / contain no-repeat url('chrome://browser/content/asrouter/assets/checkmark-16.svg')",
+                          height: "18px",
+                          width: "18px",
+                        },
+                        text: {
+                          string_id: "create-backup-screen-2-easy-list-1",
+                          marginBlock: "4px",
+                          fontSize: "13px",
+                        },
+                      },
+                      {
+                        icon: {
+                          background:
+                            "center / contain no-repeat url('chrome://browser/content/asrouter/assets/close-16.svg')",
+                          height: "18px",
+                          width: "18px",
+                        },
+                        text: {
+                          string_id: "create-backup-screen-2-easy-list-2",
+                          marginBlock: "4px",
+                          fontSize: "13px",
+                        },
+                      },
+                      {
+                        icon: {
+                          background:
+                            "center / contain no-repeat url('chrome://browser/content/asrouter/assets/close-16.svg')",
+                          height: "18px",
+                          width: "18px",
+                        },
+                        text: {
+                          string_id: "create-backup-screen-2-easy-list-3",
+                          marginBlock: "4px",
+                          fontSize: "13px",
+                          fontWeight: "600",
+                        },
+                      },
+                    ],
+                  },
+                  tilebutton: {
+                    label: {
+                      string_id: "create-backup-select-tile-button-label",
+                      minHeight: "24px",
+                      minWidth: "revert",
+                      lineHeight: "100%",
+                      paddingBlock: "4px",
+                      paddingInline: "16px",
+                      marginBlock: "0 16px",
+                    },
+                    style: "primary",
+                    action: {
+                      type: "SET_PREF",
+                      navigate: true,
+                      data: {
+                        pref: {
+                          name: "messaging-system-action.backupChooser",
+                          value: "easy",
+                        },
+                      },
+                    },
+                  },
+                },
+                {
+                  inert: true,
+                  type: "backup",
+                  icon: {
+                    background:
+                      "center / contain no-repeat url('chrome://browser/content/asrouter/assets/shield-checkmark-16.svg')",
+                    width: "54px",
+                    height: "54px",
+                    marginBlockStart: "22px",
+                    borderRadius: "5px",
+                  },
+                  id: "all",
+                  label: {
+                    string_id: "create-backup-screen-2-all-label",
+                    fontSize: 17,
+                    fontWeight: 600,
+                    marginBlock: "3px 10px",
+                  },
+                  body: {
+                    items: [
+                      {
+                        icon: {
+                          background:
+                            "center / contain no-repeat url('chrome://browser/content/asrouter/assets/checkmark-16.svg')",
+                          height: "18px",
+                          width: "18px",
+                        },
+                        text: {
+                          string_id: "create-backup-screen-2-easy-list-1",
+                          marginBlock: "4px",
+                          fontSize: "13px",
+                        },
+                      },
+                      {
+                        icon: {
+                          background:
+                            "center / contain no-repeat url('chrome://browser/content/asrouter/assets/checkmark-16.svg')",
+                          height: "18px",
+                          width: "18px",
+                        },
+                        text: {
+                          string_id: "create-backup-screen-2-all-list-2",
+                          marginBlock: "4px",
+                          fontSize: "13px",
+                        },
+                      },
+                      {
+                        icon: {
+                          background:
+                            "center / contain no-repeat url('chrome://browser/content/asrouter/assets/shield-checkmark-16.svg')",
+                          height: "18px",
+                          width: "18px",
+                        },
+                        text: {
+                          string_id: "create-backup-screen-2-all-list-3",
+                          marginBlock: "4px",
+                          fontSize: "13px",
+                          fontWeight: 500,
+                        },
+                      },
+                    ],
+                  },
+                  tilebutton: {
+                    label: {
+                      string_id: "create-backup-select-tile-button-label",
+                      minHeight: "24px",
+                      minWidth: "revert",
+                      lineHeight: "100%",
+                      paddingBlock: "4px",
+                      paddingInline: "16px",
+                      marginBlock: "0 16px",
+                    },
+                    marginBlock: "0 16px",
+                    style: "primary",
+                    action: {
+                      type: "SET_PREF",
+                      navigate: true,
+                      data: {
+                        pref: {
+                          name: "messaging-system-action.backupChooser",
+                          value: "full",
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+            additional_button: {
+              style: "secondary",
+              label: {
+                string_id: "create-backup-back-button-label",
+                fontSize: "0.75em",
+                minHeight: "24px",
+                minWidth: "revert",
+                lineHeight: "100%",
+                paddingBlock: "4px",
+                paddingInline: "12px",
+              },
+              action: {
+                navigate: true,
+                goBack: true,
+              },
+            },
+          },
+        },
+        {
+          id: "SCREEN_3A",
+          force_hide_steps_indicator: true,
+          targeting: "!isEncryptedBackup",
+          content: {
+            logo: {
+              imageURL:
+                "chrome://browser/content/asrouter/assets/fox-with-locked-box.svg",
+              height: "110px",
+            },
+            title: {
+              raw: "Where do you want your backup saved?",
+              paddingBlock: "8px",
+              fontSize: "24px",
+              fontWeight: 600,
+            },
+            isEncryptedBackup: false,
+            screen_style: {
+              width: "650px",
+              height: "560px",
+            },
+            tiles: {
+              type: "fx_backup_file_path",
+              options: {
+                hide_password_input: true,
+                file_path_label: "fx-backup-opt-in-filepath-label",
+                turn_on_backup_header: "fx-backup-opt-in-header",
+                turn_on_backup_confirm_btn_label:
+                  "fx-backup-opt-in-confirm-btn-label",
+              },
+            },
+            additional_button: {
+              style: "secondary",
+              label: {
+                raw: "Back",
+                fontSize: "0.75em",
+                minHeight: "24px",
+                minWidth: "revert",
+                lineHeight: "100%",
+                paddingBlock: "4px",
+                paddingInline: "12px",
+              },
+              action: {
+                navigate: true,
+                goBack: true,
+              },
+            },
+          },
+        },
+        {
+          id: "SCREEN_3B",
+          force_hide_steps_indicator: true,
+          targeting: "isEncryptedBackup",
+          content: {
+            isEncryptedBackup: true,
+            logo: {
+              imageURL:
+                "chrome://browser/content/asrouter/assets/fox-with-locked-box.svg",
+              height: "110px",
+            },
+            title: {
+              raw: "Where do you want your backup saved?",
+            },
+            screen_style: {
+              width: "650px",
+              height: "560px",
+            },
+            tiles: {
+              type: "fx_backup_file_path",
+              options: {
+                hide_password_input: true,
+                hide_secondary_button: true,
+                file_path_label: "fx-backup-opt-in-filepath-label",
+                turn_on_backup_header: "fx-backup-opt-in-header",
+                turn_on_backup_confirm_btn_label:
+                  "fx-backup-opt-in-confirm-btn-label",
+              },
+            },
+            additional_button: {
+              style: "secondary",
+              flow: "row",
+              label: {
+                raw: "Back",
+                fontSize: "0.75em",
+                minHeight: "24px",
+                minWidth: "revert",
+                lineHeight: "100%",
+                paddingBlock: "4px",
+                paddingInline: "12px",
+              },
+              action: {
+                navigate: true,
+                goBack: true,
+              },
+            },
+          },
+        },
+        {
+          id: "FX_BACKUP_ENCRYPTION",
+          force_hide_steps_indicator: true,
+          targeting: "isEncryptedBackup",
+          content: {
+            isEncryptedBackup: true,
+            title: {
+              raw: "Create a backup file password",
+            },
+            subtitle: {
+              raw: "Required to encrypt your data. Store it in a place you’ll remember.",
+              fontSize: "13px",
+            },
+            screen_style: {
+              width: "664px",
+              height: "620px",
+            },
+            logo: {
+              imageURL:
+                "chrome://browser/content/asrouter/assets/fox-with-locked-box.svg",
+              height: "130px",
+            },
+            tiles: {
+              type: "fx_backup_password",
+              options: {
+                hide_secondary_button: true,
+                create_password_label: "fx-backup-opt-in-create-password-label",
+                turn_on_backup_confirm_btn_label:
+                  "fx-backup-opt-in-confirm-btn-label",
+              },
+            },
+            additional_button: {
+              style: "secondary",
+              label: {
+                raw: "Back",
+                fontSize: "0.75em",
+                minHeight: "24px",
+                minWidth: "revert",
+                lineHeight: "100%",
+                paddingBlock: "4px",
+                paddingInline: "12px",
+              },
+              action: {
+                navigate: true,
+                goBack: true,
+              },
+            },
+          },
+        },
+        {
+          id: "BACKUP_CONFIRMATION_SCREEN_EASY",
+          force_hide_steps_indicator: true,
+          targeting: "!isEncryptedBackup",
+          content: {
+            screen_style: {
+              width: "664px",
+              height: "620px",
+            },
+            logo: {
+              imageURL:
+                "chrome://browser/content/asrouter/assets/fox-with-checkmark.svg",
+              height: "96px",
+            },
+            title: {
+              string_id: "fx-backup-confirmation-screen-title",
+            },
+            tiles: {
+              type: "confirmation-checklist",
+              data: {
+                inert: true,
+                style: { width: "500px" },
+                items: [
+                  {
+                    icon: {
+                      background:
+                        "center / contain no-repeat url('chrome://browser/content/asrouter/assets/checkmark-16.svg')",
+                      height: "18px",
+                      width: "18px",
+                    },
+                    text: {
+                      string_id:
+                        "fx-backup-confirmation-screen-easy-setup-item-text-1",
+                    },
+                    subtext: {
+                      string_id: "fx-backup-confirmation-screen-item-subtext-1",
+                    },
+                    link_keys: ["settings"],
+                  },
+                  {
+                    icon: {
+                      background:
+                        "center / contain no-repeat url('chrome://browser/content/asrouter/assets/checkmark-16.svg')",
+                      height: "18px",
+                      width: "18px",
+                    },
+                    text: {
+                      string_id:
+                        "fx-backup-confirmation-screen-easy-setup-item-text-2",
+                    },
+                    subtext: {
+                      string_id: "fx-backup-confirmation-screen-item-subtext-2",
+                    },
+                  },
+                  {
+                    icon: {
+                      background:
+                        "center / contain no-repeat url('chrome://browser/content/asrouter/assets/subtract-16.svg')",
+                      height: "18px",
+                      width: "18px",
+                    },
+                    text: {
+                      string_id:
+                        "fx-backup-confirmation-screen-easy-setup-item-text-3",
+                    },
+                    subtext: {
+                      string_id:
+                        "fx-backup-confirmation-screen-easy-setup-item-subtext-3",
+                    },
+                    link_keys: ["settings"],
+                  },
+                ],
+              },
+            },
+            settings: {
+              action: {
+                type: "OPEN_ABOUT_PAGE",
+                data: {
+                  args: "preferences#sync-backup",
+                  where: "tab",
+                },
+              },
+            },
+            additional_button: {
+              label: {
+                string_id: "fx-backup-confirmation-screen-close-button",
+              },
+              style: "secondary",
+              action: { dismiss: true },
+            },
+          },
+        },
+        {
+          id: "BACKUP_CONFIRMATION_SCREEN_ENCRYPTED",
+          force_hide_steps_indicator: true,
+          targeting: "isEncryptedBackup",
+          content: {
+            isEncryptedBackup: true,
+            screen_style: {
+              width: "664px",
+              height: "620px",
+            },
+            logo: {
+              imageURL:
+                "chrome://browser/content/asrouter/assets/fox-with-checkmark.svg",
+              height: "96px",
+            },
+            title: {
+              string_id: "fx-backup-confirmation-screen-title",
+            },
+            tiles: {
+              type: "confirmation-checklist",
+              data: {
+                inert: true,
+                style: { width: "500px" },
+                items: [
+                  {
+                    icon: {
+                      background:
+                        "center / contain no-repeat url('chrome://browser/content/asrouter/assets/checkmark-16.svg')",
+                      height: "18px",
+                      width: "18px",
+                    },
+                    text: {
+                      string_id:
+                        "fx-backup-confirmation-screen-all-data-item-text-1",
+                    },
+                    subtext: {
+                      string_id: "fx-backup-confirmation-screen-item-subtext-1",
+                    },
+                    link_keys: ["settings"],
+                  },
+                  {
+                    icon: {
+                      background:
+                        "center / contain no-repeat url('chrome://browser/content/asrouter/assets/checkmark-16.svg')",
+                      height: "18px",
+                      width: "18px",
+                    },
+                    text: {
+                      string_id:
+                        "fx-backup-confirmation-screen-all-data-item-text-2",
+                    },
+                    subtext: {
+                      string_id: "fx-backup-confirmation-screen-item-subtext-2",
+                    },
+                  },
+                  {
+                    icon: {
+                      background:
+                        "center / contain no-repeat url('chrome://browser/content/asrouter/assets/checkmark-16.svg')",
+                      height: "18px",
+                      width: "18px",
+                    },
+                    text: {
+                      string_id:
+                        "fx-backup-confirmation-screen-all-data-item-text-3",
+                    },
+                  },
+                ],
+              },
+            },
+            settings: {
+              action: {
+                type: "OPEN_ABOUT_PAGE",
+                data: {
+                  args: "preferences#sync-backup",
+                  where: "tab",
+                },
+              },
+            },
+            additional_button: {
+              label: {
+                string_id: "fx-backup-confirmation-screen-close-button",
+              },
+              style: "secondary",
+              action: { dismiss: true },
+            },
+          },
+        },
+      ],
+    },
+    frequency: {
+      lifetime: 3,
+    },
+    trigger: {
+      id: "newtabMessageCheck",
+    },
+  },
+  // TEST_NOVA_MULTISTAGE_SPLIT exercises the OMC-owned embedded multi-stage
+  // (spotlight) New Tab surface for the Nova design-token audit. Force it on via
+  // about:asrouter while Nova is enabled to check token, spacing, and layout
+  // rendering. This surface is bundled / multi-stage, so notify HNT of changes.
+  {
+    id: "TEST_NOVA_MULTISTAGE_SPLIT",
+    template: "newtab_message",
+    groups: [],
+    content: {
+      messageType: "ASRouterMultistageMessage",
+      id: "TEST_NOVA_MULTISTAGE_SPLIT",
+      transitions: false,
+      backdrop: "transparent",
+      screens: [
+        {
+          id: "NOVA_SPLIT_SCREEN_1",
+          content: {
+            position: "split",
+            screen_style: { height: "500px" },
+            hero_text: {
+              title: {
+                raw: "Nova multistage, split layout",
+                fontSize: "24px",
+              },
+              subtitle: {
+                raw: "First of two screens. Verifies the steps indicator and split hero area under Nova.",
+              },
+            },
+            title: {
+              raw: "Screen one",
+            },
+            subtitle: {
+              raw: "Check spacing and contrast of the content column.",
+            },
+            primary_button: {
+              label: { raw: "Next" },
+              action: { navigate: true },
+            },
+          },
+        },
+        {
+          id: "NOVA_SPLIT_SCREEN_2",
+          content: {
+            position: "split",
+            screen_style: { height: "500px" },
+            hero_text: {
+              title: {
+                raw: "Almost done",
+                fontSize: "24px",
+              },
+            },
+            title: {
+              raw: "Screen two",
+            },
+            subtitle: {
+              raw: "Final screen, confirm the primary and secondary button styling under Nova.",
+            },
+            primary_button: {
+              label: { raw: "Finish" },
+              action: { dismiss: true },
+            },
+            secondary_button: {
+              label: { raw: "Not now" },
+              // navigate on the last screen falls through to AWFinish (dismiss);
+              // this matches the pattern shipping split-screen messages use.
+              action: { navigate: true },
+            },
+          },
+        },
+      ],
+    },
+    trigger: {
+      id: "newtabMessageCheck",
+    },
+  },
+  // The base template for the new tab card stack component (bug 2069986).
+  {
+    id: "TEST_HNT_CARD_STACK",
+    template: "newtab_message",
+    groups: [],
+    content: {
+      messageType: "ASRouterMultistageMessage",
+      id: "TEST_HNT_CARD_STACK",
+      transitions: true,
+      backdrop: "transparent",
+      screens: [
+        {
+          id: "CARD_STACK_SCREEN_1",
+          targeting:
+            "('messaging-system-action.hnt-card-stack.screen'|preferenceValue(1)) <= 1",
+          force_hide_steps_indicator: true,
+          content: {
+            position: "card-stack",
+            background:
+              "url('chrome://activity-stream/content/data/content/assets/br-set-default-fox-heart.svg') center / contain no-repeat",
+            title: { raw: "This is a card-stack headline" },
+            subtitle: {
+              raw: "This is a card-stack subtitle, lower in the visual hierarchy.",
+            },
+            primary_button: {
+              label: { raw: "Primary action" },
+              action: {
+                type: "SET_PREF",
+                data: {
+                  pref: {
+                    name: "messaging-system-action.hnt-card-stack.screen",
+                    value: 2,
+                  },
+                },
+                navigate: true,
+              },
+            },
+            secondary_button: {
+              label: { raw: "Dismiss" },
+              action: {
+                type: "SET_PREF",
+                data: {
+                  pref: {
+                    name: "messaging-system-action.hnt-card-stack.screen",
+                    value: 2,
+                  },
+                },
+                navigate: true,
+              },
+            },
+          },
+        },
+        {
+          id: "CARD_STACK_SCREEN_2",
+          targeting:
+            "('messaging-system-action.hnt-card-stack.screen'|preferenceValue(1)) <= 2",
+          force_hide_steps_indicator: true,
+          content: {
+            position: "card-stack",
+            background:
+              "url('chrome://activity-stream/content/data/content/assets/br-import-fox-house.svg') center / contain no-repeat",
+            title: {
+              raw: "This is a card-stack headline, on the second screen",
+            },
+            subtitle: {
+              raw: "This is a card-stack subtitle, lower in the visual hierarchy, on the second screen.",
+            },
+            primary_button: {
+              label: { raw: "Primary action" },
+              action: {
+                type: "SET_PREF",
+                data: {
+                  pref: {
+                    name: "messaging-system-action.hnt-card-stack.screen",
+                    value: 3,
+                  },
+                },
+                navigate: true,
+              },
+            },
+            secondary_button: {
+              label: { raw: "Dismiss" },
+              action: {
+                type: "SET_PREF",
+                data: {
+                  pref: {
+                    name: "messaging-system-action.hnt-card-stack.screen",
+                    value: 3,
+                  },
+                },
+                navigate: true,
+              },
+            },
+          },
+        },
+        // The unique "last card" layout (bug 2069997).
+        {
+          id: "CARD_STACK_SCREEN_3",
+          targeting:
+            "('messaging-system-action.hnt-card-stack.screen'|preferenceValue(1)) <= 3",
+          force_hide_steps_indicator: true,
+          content: {
+            position: "card-stack",
+            layout: "last-card",
+            title: { raw: "Tracking protection is on." },
+            subtitle: { raw: "Say hello to a better web." },
+            center_image: {
+              imageURL:
+                "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260923193621--fox-peeking--a7cb53ba-228f-4b81-a92f-6ad34474872b.svg",
+              alt: "",
+              marginBlock: "40px 0",
+            },
+          },
+        },
+      ],
+    },
+    trigger: { id: "newtabMessageCheck" },
+  },
+  {
     id: "UNIVERSAL_INFOBAR_WITH_EMBEDDED_LINKS",
     content: {
       text: [
-        {
-          string_id: "existing-user-tou-update",
-        },
-        " - Read the release notes ",
+        "Read the release notes ",
         {
           raw: "here",
           href: "https://www.mozilla.org/en-US/firefox/releases/",
         },
         ". ",
         {
-          string_id: "cookie-banner-blocker-onboarding-learn-more",
+          string_id: "etp-strict-exceptions-infobar-learn-more",
           href: "https://mozilla.org/privacy/firefox/?v=product",
         },
         "!",
@@ -1616,15 +3072,706 @@ const MESSAGES = () => [
       lifetime: 100,
     },
   },
+  {
+    id: "INFOBAR_ACTION_86",
+    groups: [],
+    targeting: "false",
+    template: "infobar",
+    content: {
+      type: "global",
+      text: { string_id: "default-browser-notification-message" },
+      buttons: [
+        {
+          label: { string_id: "default-browser-notification-button" },
+          primary: true,
+          accessKey: "O",
+          action: {
+            type: "SET_DEFAULT_BROWSER",
+          },
+        },
+      ],
+    },
+    trigger: { id: "defaultBrowserCheck" },
+  },
+  {
+    id: "TEST_PROFILE_SPOTLIGHT",
+    groups: [],
+    targeting: "canCreateSelectableProfiles",
+    trigger: {
+      id: "defaultBrowserCheck",
+    },
+    template: "spotlight",
+    profileScope: "single",
+    frequency: {
+      lifetime: 1,
+    },
+    content: {
+      template: "multistage",
+      modal: "tab",
+      screens: [
+        {
+          id: "SCREEN_1",
+          content: {
+            logo: {
+              imageURL:
+                "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/a3c640c8-7594-4bb2-bc18-8b4744f3aaf2.gif",
+            },
+            title: {
+              raw: "Firefox profiles Test Message",
+            },
+            subtitle: {
+              raw: "Profiles keep you organized.",
+            },
+            dismiss_button: {
+              action: {
+                dismiss: true,
+              },
+            },
+            secondary_button: {
+              label: "Close",
+              action: {
+                dismiss: true,
+              },
+            },
+          },
+        },
+      ],
+      transitions: true,
+    },
+  },
+  {
+    id: "TEST_ADDRESS_BAR_MESSAGING_OPEN_NEW_TAB_TRY_NEW_WAY_GOOGLE",
+    groups: ["cfr"],
+    content: {
+      id: "TEST_ADDRESS_BAR_MESSAGING_OPEN_NEW_TAB_TRY_NEW_WAY_GOOGLE",
+      screens: [
+        {
+          id: "TRY_NEW_WAY_SCREEN_GOOGLE",
+          anchors: [
+            {
+              selector: ".urlbar-input-container",
+              arrow_width: "26.9",
+              no_open_on_anchor: true,
+              panel_position: {
+                offset_x: 60,
+                anchor_attachment: "bottomleft",
+                callout_attachment: "topleft",
+              },
+            },
+          ],
+          content: {
+            title: {
+              raw: {
+                $l10n: {
+                  id: "messaging-new-tab-title-try-new-way",
+                  text: "Try a new way to search",
+                  comment:
+                    "Title for a callout that introduces a new search experience in the address bar",
+                },
+              },
+              paddingInline: "0 40px",
+              fontSize: "0.85em",
+            },
+            width: "300px",
+            padding: 16,
+            position: "callout",
+            subtitle: {
+              raw: {
+                $l10n: {
+                  id: "messaging-new-tab-subtitle-try-new-way-google",
+                  text: "Type what you’re looking for in the address bar to get results from your history and from Google.com.",
+                  comment:
+                    "Subtitle for a callout that introduces a new search experience in the address bar (Google)",
+                },
+              },
+              textAlign: "start",
+              fontSize: "0.8em",
+              marginBlock: "-4px 0",
+            },
+            primary_button: {
+              label: {
+                raw: {
+                  $l10n: {
+                    id: "messaging-try-it-label",
+                    text: "Try it",
+                    comment:
+                      "Label for the button that dismisses a callout that introduces search suggestions in the address bar",
+                  },
+                },
+                paddingBlock: "4px",
+                paddingInline: "16px",
+              },
+              action: {
+                type: "FOCUS_URLBAR",
+                dismiss: true,
+              },
+            },
+            secondary_button: {
+              label: {
+                raw: {
+                  $l10n: {
+                    id: "messaging-no-thanks-label",
+                    text: "No thanks",
+                    comment:
+                      "Label for the button that dismisses a callout that introduces search suggestions in the address bar",
+                  },
+                },
+              },
+              action: {
+                dismiss: true,
+              },
+            },
+          },
+        },
+      ],
+    },
+    trigger: {
+      id: "defaultBrowserCheck",
+    },
+    template: "feature_callout",
+    frequency: {
+      custom: [
+        {
+          cap: 1,
+          period: 86400000 * 7,
+        },
+      ],
+      lifetime: 3,
+    },
+    targeting:
+      "source == 'newtab' && !isMajorUpgrade && !activeNotifications && userPrefs.cfrFeatures && previousSessionEnd && !hasActiveEnterprisePolicies",
+  },
+  {
+    id: "TEST_ADDRESS_BAR_MESSAGING_OPEN_NEW_TAB_TIP_SAVE_STEP_GOOGLE",
+    groups: ["cfr"],
+    content: {
+      id: "TEST_ADDRESS_BAR_MESSAGING_OPEN_NEW_TAB_TIP_SAVE_STEP_GOOGLE",
+      screens: [
+        {
+          id: "TIP_SAVE_STEP_SCREEN_GOOGLE",
+          anchors: [
+            {
+              selector: ".urlbar-input-container",
+              arrow_width: "26.9",
+              no_open_on_anchor: true,
+              panel_position: {
+                offset_x: 60,
+                anchor_attachment: "bottomleft",
+                callout_attachment: "topleft",
+              },
+            },
+          ],
+          content: {
+            title: {
+              raw: {
+                $l10n: {
+                  id: "messaging-new-tab-title-tip-save-step",
+                  text: "Search here to save a step",
+                  comment:
+                    "Title for a callout that introduces search suggestions in the address bar",
+                },
+              },
+              paddingInline: "0 40px",
+              fontSize: "0.85em",
+            },
+            width: "300px",
+            padding: 16,
+            position: "callout",
+            subtitle: {
+              raw: {
+                $l10n: {
+                  id: "messaging-new-tab-subtitle-tip-save-step-google",
+                  text: "Firefox never tracks your searches. Type what you’re looking for in the address bar to get results from Google.",
+                  comment:
+                    "Subtitle for a callout that introduces search suggestions in the address bar (Google)",
+                },
+              },
+              textAlign: "start",
+              fontSize: "0.8em",
+              marginBlock: "-4px 0",
+            },
+            primary_button: {
+              label: {
+                raw: {
+                  $l10n: {
+                    id: "messaging-try-it-label",
+                    text: "Try it",
+                    comment:
+                      "Label for the button that dismisses a callout that introduces search suggestions in the address bar",
+                  },
+                },
+                paddingBlock: "4px",
+                paddingInline: "16px",
+              },
+              action: {
+                type: "FOCUS_URLBAR",
+                dismiss: true,
+              },
+            },
+            secondary_button: {
+              label: {
+                raw: {
+                  $l10n: {
+                    id: "messaging-no-thanks-label",
+                    text: "No thanks",
+                    comment:
+                      "Label for the button that dismisses a callout that introduces search suggestions in the address bar",
+                  },
+                },
+              },
+              action: {
+                dismiss: true,
+              },
+            },
+          },
+        },
+      ],
+    },
+    trigger: {
+      id: "defaultBrowserCheck",
+    },
+    template: "feature_callout",
+    frequency: {
+      custom: [
+        {
+          cap: 1,
+          period: 86400000 * 7,
+        },
+      ],
+      lifetime: 3,
+    },
+    targeting:
+      "source == 'newtab' && !isMajorUpgrade && !activeNotifications && userPrefs.cfrFeatures && previousSessionEnd && !hasActiveEnterprisePolicies",
+  },
+  {
+    id: "TEST_CONTENT_ANCHOR",
+    template: "feature_callout",
+    content: {
+      id: "TEST_CONTENT_ANCHOR",
+      padding: "16",
+      template: "multistage",
+      backdrop: "transparent",
+      transitions: false,
+      disableHistoryUpdates: true,
+      screens: [
+        {
+          id: "TEST_CONTENT_ANCHOR_SCREEN",
+          anchors: [
+            {
+              selector:
+                "hbox.deck-selected browser::%document%ai-window::%shadow%context-icon-button::%shadow% .context-icon-button",
+              panel_position: {
+                anchor_attachment: "bottomcenter",
+                callout_attachment: "topright",
+              },
+            },
+          ],
+          content: {
+            position: "callout",
+            width: "400px",
+            padding: 16,
+            title: {
+              raw: "Test Content Anchor",
+            },
+            subtitle: {
+              raw: "This callout is for testing content anchors.",
+            },
+            additional_button: {
+              action: {
+                dismiss: true,
+              },
+              label: {
+                string_id: "dismiss-button-label",
+                fontWeight: "590",
+                fontSize: "11px",
+              },
+              style: "secondary",
+            },
+          },
+        },
+      ],
+    },
+    frequency: {
+      lifetime: 2,
+    },
+    trigger: {
+      id: "smartWindowNewTab",
+    },
+    targeting: "isAIWindow",
+  },
+  {
+    id: "WORLD_CUP_TASKBAR_TABS_SPOTLIGHT",
+    groups: ["panel-test-provider"],
+    template: "spotlight",
+    content: {
+      id: "WORLD_CUP_TASKBAR_TABS_SPOTLIGHT",
+      template: "multistage",
+      modal: "tab",
+      transitions: false,
+      screens: [
+        {
+          id: "SCREEN_1",
+          force_hide_steps_indicator: true,
+          content: {
+            position: "split",
+            zap_border: true,
+            zap_shadow: true,
+            main_content_style: {
+              paddingBlockStart: "40px",
+            },
+            main_content_style_narrow: {
+              paddingInline: "40px",
+            },
+            background:
+              "center / contain no-repeat light-dark(url('https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260602011346--visuals-worldcup-light--12288900-f5e6-4193-8b66-da63b6cfe806.svg'), url('https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260602011258--visuals-worldcup-dark--a975f19d-f186-40bb-8d86-98f450ad5462.svg'))",
+            hero_text: {
+              title: {
+                raw: "Follow the World Cup in Firefox",
+                fontSize: "24px",
+              },
+              subtitle: {
+                raw: "One click launches your most used sites in a streamlined window with all of Firefox’s protections.",
+                textAlign: "initial",
+                marginInline: "40px",
+                fontSize: "13px",
+              },
+            },
+            tiles: {
+              type: "pinnable_sites",
+              title: {
+                raw: "Select to add to your taskbar",
+                fontSize: "18px",
+              },
+              pinButtonLabel: { raw: "Add" },
+              alwaysShowPinButton: true,
+              data: [
+                {
+                  id: "fifa-plus",
+                  name: "FIFA+",
+                  description: "plus.fifa.com",
+                  iconUrl:
+                    "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260602010406--fifa-plus-icon--a3fb720e-4604-43c9-9c7a-aabca6ba5bbb.png",
+                  url: "https://plus.fifa.com",
+                },
+                {
+                  id: "fox-sports",
+                  name: "Fox Sports",
+                  description: "foxsports.com",
+                  iconUrl:
+                    "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260602010635--fox-sports-icon--f0dd8f03-f5c7-4930-94db-f002eca5c3e5.png",
+                  url: "https://www.foxsports.com/",
+                },
+                {
+                  id: "telemundo-deportes",
+                  name: "Telemundo Deportes",
+                  description: "telemundodeportes.com",
+                  iconUrl:
+                    "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260602010447--telemundo-deportes-icon--710f3661-b2f2-4e2b-9fa4-c791b9cdb303.png",
+                  url: "https://telemundodeportes.com/",
+                },
+                {
+                  id: "r-soccer-reddit",
+                  name: "r/soccer Reddit",
+                  description: "reddit.com/r/soccer",
+                  iconUrl:
+                    "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260602010522--reddit-soccer-icon--63d9ec11-d281-42ff-8382-b635cce58864.png",
+                  url: "http://reddit.com/r/soccer",
+                },
+                {
+                  id: "fubo-tv",
+                  name: "FuboTV",
+                  description: "fubo.tv",
+                  iconUrl:
+                    "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260602010600--fubo-tv-icon--2f47927e-d29c-4000-bb39-9f4a03e1c2e6.png",
+                  url: "http://fubo.tv/",
+                },
+              ],
+            },
+            primary_button: {
+              label: { raw: "Done" },
+              disabled: "hasPinnedSite",
+              action: { dismiss: true },
+            },
+            dismiss_button: {
+              action: {
+                dismiss: true,
+              },
+            },
+          },
+        },
+      ],
+    },
+    frequency: {
+      lifetime: 100,
+    },
+    targeting: "true",
+  },
+  {
+    id: "PERSONALIZED_TASKBAR_TABS_SPOTLIGHT",
+    groups: ["panel-test-provider"],
+    template: "spotlight",
+    content: {
+      id: "PERSONALIZED_TASKBAR_TABS_SPOTLIGHT",
+      template: "multistage",
+      modal: "tab",
+      transitions: false,
+      screens: [
+        {
+          id: "SCREEN_1",
+          force_hide_steps_indicator: true,
+          content: {
+            position: "split",
+            main_content_style: {
+              paddingBlockStart: "40px",
+            },
+            main_content_style_narrow: {
+              paddingInline: "40px",
+            },
+            background:
+              "center 80% / 70% no-repeat url('chrome://activity-stream/content/data/content/assets/br-set-default-fox-heart.svg'), linear-gradient(0deg, light-dark(rgb(252, 245, 240), var(--onboarding-dark-backdrop-color)) 0%, light-dark(rgb(250, 236, 241), var(--onboarding-dark-backdrop-color)) 57%, light-dark(rgb(245, 212, 245), var(--onboarding-dark-backdrop-color)) 100%)",
+            hero_text: {
+              title: {
+                raw: "Open your favorite sites like an app",
+                fontWeight: "600",
+                marginBlockEnd: "10px",
+              },
+              subtitle: {
+                raw: "One click launches your most used sites in a streamlined window with all of Firefox’s protections.",
+                textAlign: "initial",
+                marginInline: "40px",
+                fontSize: "13px",
+              },
+            },
+            tiles: {
+              type: "pinnable_sites",
+              source: "topFrecentSites",
+              slots: 5,
+              backfill: true,
+              title: {
+                raw: "Select to add to your taskbar",
+                fontSize: "15px",
+              },
+              pinButtonLabel: { raw: "Add" },
+              alwaysShowPinButton: true,
+              data: [
+                {
+                  id: "gmail",
+                  name: "Gmail",
+                  description: "mail.google.com",
+                  iconUrl:
+                    "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260619150452--gmail-icon--cf899b8b-e43a-4ace-a096-498c05399267.png",
+                  url: "https://mail.google.com",
+                },
+                {
+                  id: "youtube",
+                  name: "YouTube",
+                  description: "youtube.com",
+                  iconUrl:
+                    "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260619150358--youtube-icon--229fd481-16ab-40d7-8508-cd8f66999687.png",
+                  url: "https://www.youtube.com/",
+                },
+                {
+                  id: "whatsapp",
+                  name: "WhatsApp Web",
+                  description: "web.whatsapp.com",
+                  iconUrl:
+                    "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260619150420--whatsapp-icon--9269d113-1124-4168-b08a-540cf36c2778.png",
+                  url: "https://web.whatsapp.com/",
+                },
+                {
+                  id: "google-calendar",
+                  name: "Google Calendar",
+                  description: "calendar.google.com",
+                  iconUrl:
+                    "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260619150331--calendar-icon--356c3951-23d0-4a45-8f2a-03cb55b33972.png",
+                  url: "https://calendar.google.com",
+                },
+                {
+                  id: "spotify",
+                  name: "Spotify",
+                  description: "spotify.com",
+                  iconUrl:
+                    "https://firefox-settings-attachments.cdn.mozilla.net/main-workspace/ms-images/20260619150511--spotify-icon--70d1131d-26c6-463f-876b-85e476430e14.png",
+                  url: "https://open.spotify.com/",
+                },
+              ],
+            },
+            primary_button: {
+              label: { raw: "I'm done" },
+              disabled: "hasPinnedSite",
+              action: { dismiss: true },
+            },
+            dismiss_button: {
+              action: {
+                dismiss: true,
+              },
+            },
+          },
+        },
+      ],
+    },
+    frequency: {
+      lifetime: 100,
+    },
+    targeting: "true",
+  },
+  // For manually testing the splitViewUsed trigger. See the "trigger" field.
+  {
+    id: "SPLIT_VIEW_SMART_WINDOW_CALLOUT",
+    template: "feature_callout",
+    groups: [],
+    provider: "panel_local_testing",
+    content: {
+      id: "SPLIT_VIEW_SMART_WINDOW_CALLOUT",
+      template: "multistage",
+      backdrop: "transparent",
+      transitions: false,
+      screens: [
+        {
+          id: "SPLIT_VIEW_SMART_WINDOW_CALLOUT",
+          anchors: [
+            {
+              selector: "#split-view-button",
+              panel_position: {
+                anchor_attachment: "bottomcenter",
+                callout_attachment: "topright",
+              },
+            },
+          ],
+          content: {
+            position: "callout",
+            padding: 16,
+            width: "330px",
+            title: "Working across multiple tabs?",
+            subtitle: "Try Smart Window to compare or reason across them.",
+            primary_button: {
+              label: "Try Smart Window",
+              action: {
+                type: "MULTI_ACTION",
+                dismiss: true,
+                data: {
+                  actions: [
+                    {
+                      type: "OPEN_ABOUT_PAGE",
+                      data: {
+                        args: "newtab",
+                        where: "tab",
+                      },
+                    },
+                    { type: "FXA_AIWINDOW_SIGNIN_FLOW" },
+                  ],
+                },
+              },
+            },
+            dismiss_button: { action: { dismiss: true } },
+          },
+        },
+      ],
+    },
+    // Example of message targeting on the trigger's splitViewCreateCount
+    // context, to exclude users who are creating a Split View for the first
+    // time.
+    targeting: "splitViewCreateCount > 1",
+    trigger: {
+      id: "splitViewUsed",
+    },
+    frequency: {
+      lifetime: 2,
+    },
+  },
+  {
+    id: "SIDEBAR_CHATBOT_PROMO_TEST",
+    template: "sidebar_chatbot_promo",
+    content: {
+      type: "default",
+      heading: "Give your AI the full picture",
+      message:
+        "In Smart Window, AI reads every page and tab you have open, not just this sidebar. Skip the copy-paste and just ask.",
+      primary_button: {
+        label: "Try Smart Window",
+        action: {
+          type: "FXA_AIWINDOW_SIGNIN_FLOW",
+        },
+      },
+      additional_button: {
+        label: "Dismiss",
+        action: {
+          type: "CANCEL",
+        },
+      },
+    },
+    trigger: {
+      id: "sidebarToolOpened",
+    },
+    frequency: {
+      lifetime: 3,
+    },
+  },
+  {
+    id: "SMARTWINDOW_NEWTAB_PROMO_DISMISSABLE_TEST",
+    template: "smart_window_newtab_promo",
+    content: {
+      type: "vibrant",
+      heading: "Smart Window Default Dismiss-able Test Message",
+      message: "Firefox will open in Smart Window every time.",
+      imageSrc:
+        "chrome://browser/content/aiwindow/assets/smart-window-promo-default.svg",
+      imageAlignment: "start",
+      imageWidth: "small",
+      imageDisplay: "padded",
+      dismissable: true,
+      primary_button: {
+        label: "Set as default",
+        action: {
+          type: "SET_PREF",
+          data: {
+            pref: {
+              name: "browser.smartwindow.isDefaultWindow",
+              value: true,
+            },
+          },
+        },
+      },
+      additional_button: {
+        label: "Not now",
+        action: {
+          type: "CANCEL",
+        },
+      },
+    },
+    trigger: {
+      id: "smartWindowNewTab",
+    },
+    targeting: "isAIWindow",
+    frequency: {
+      lifetime: 3,
+    },
+  },
 ];
 
 export const PanelTestProvider = {
+  /**
+   * Tag a message with the panel_local_testing provider and set
+   * its targeting.
+   *
+   * @param {object} message A message object
+   * @returns {object} The mutated message
+   */
+  tagMessageForTesting(message) {
+    message.provider = "panel_local_testing";
+    message.targeting =
+      typeof message.targeting === "string" &&
+      message.targeting?.includes("isAIWindow")
+        ? `isAIWindow && providerCohorts.panel_local_testing == "SHOW_TEST"`
+        : `providerCohorts.panel_local_testing == "SHOW_TEST"`;
+    return message;
+  },
+
   getMessages() {
     return Promise.resolve(
-      MESSAGES().map(message => ({
-        ...message,
-        targeting: `providerCohorts.panel_local_testing == "SHOW_TEST"`,
-      }))
+      MESSAGES().map(message =>
+        PanelTestProvider.tagMessageForTesting({ ...message })
+      )
     );
   },
 };

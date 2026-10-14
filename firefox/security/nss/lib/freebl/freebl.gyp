@@ -7,53 +7,6 @@
   ],
   'targets': [
     {
-      'target_name': 'intel-gcm-s_lib',
-      'type': 'static_library',
-      'sources': [
-        'intel-aes.s',
-        'intel-gcm.s',
-      ],
-      'dependencies': [
-        '<(DEPTH)/exports.gyp:nss_exports'
-      ],
-      'conditions': [
-        [ 'cc_is_clang==1 and force_integrated_as!=1', {
-          'cflags': [
-            '-no-integrated-as',
-          ],
-          'cflags_mozilla': [
-            '-no-integrated-as',
-          ],
-          'asflags_mozilla': [
-            '-no-integrated-as',
-          ],
-        }],
-      ],
-    },
-    {
-      'target_name': 'intel-gcm-wrap_c_lib',
-      'type': 'static_library',
-      'sources': [
-        'intel-gcm-wrap.c',
-      ],
-      'dependencies': [
-        '<(DEPTH)/exports.gyp:nss_exports'
-      ],
-      'conditions': [
-        [ '(OS=="linux" or OS=="android") and target_arch=="x64"', {
-          'dependencies': [
-            'intel-gcm-s_lib',
-          ],
-        }],
-      ],
-      'cflags': [
-        '-mssse3',
-      ],
-      'cflags_mozilla': [
-        '-mssse3'
-      ],
-    },
-    {
       'target_name': 'hw-acc-crypto-avx',
       'type': 'static_library',
       # 'sources': [
@@ -189,37 +142,6 @@
       ],
     },
     {
-      'target_name': 'gcm-aes-x86_c_lib',
-      'type': 'static_library',
-      'sources': [
-        'gcm-x86.c', 'aes-x86.c'
-      ],
-      'dependencies': [
-        '<(DEPTH)/exports.gyp:nss_exports'
-      ],
-      # Enable isa option for pclmul and aes-ni; supported since gcc 4.4.
-      # This is only supported by x84/x64. It's not needed for Windows,
-      # unless clang-cl is used.
-      'cflags_mozilla': [
-        '-mpclmul', '-maes'
-      ],
-      'conditions': [
-        [ 'OS=="linux" or OS=="android" or OS=="dragonfly" or OS=="freebsd" or OS=="netbsd" or OS=="openbsd"', {
-          'cflags': [
-            '-mpclmul', '-maes'
-          ],
-        }],
-        # macOS build doesn't use cflags.
-        [ 'OS=="mac" or OS=="ios"', {
-          'xcode_settings': {
-            'OTHER_CFLAGS': [
-              '-mpclmul', '-maes'
-            ],
-          },
-        }]
-      ]
-    },
-    {
       'target_name': 'sha-x86_c_lib',
       'type': 'static_library',
       'sources': [
@@ -252,124 +174,7 @@
       ]
     },
     {
-      'target_name': 'gcm-aes-arm32-neon_c_lib',
-      'type': 'static_library',
-      'sources': [
-        'gcm-arm32-neon.c'
-      ],
-      'dependencies': [
-        '<(DEPTH)/exports.gyp:nss_exports'
-      ],
-      'cflags': [
-        '-march=armv7',
-        '-mfpu=neon',
-        '<@(softfp_cflags)',
-      ],
-      'cflags_mozilla': [
-        '-mfpu=neon',
-        '<@(softfp_cflags)',
-      ]
-    },
-    {
-      'target_name': 'gcm-aes-aarch64_c_lib',
-      'type': 'static_library',
-      'sources': [
-        'gcm-aarch64.c'
-      ],
-      'dependencies': [
-        '<(DEPTH)/exports.gyp:nss_exports'
-      ],
-      'cflags': [
-        '-march=armv8-a+crypto'
-      ],
-      'cflags_mozilla': [
-        '-march=armv8-a+crypto'
-      ]
-    },
-    {
-      'target_name': 'gcm-aes-ppc_c_lib',
-      'type': 'static_library',
-      'sources': [
-        'gcm-ppc.c',
-      ],
-      'dependencies': [
-        '<(DEPTH)/exports.gyp:nss_exports'
-      ],
-      'conditions': [
-        [ 'disable_crypto_vsx==0', {
-          'cflags': [
-            '-mcrypto',
-            '-maltivec'
-           ],
-           'cflags_mozilla': [
-             '-mcrypto',
-             '-maltivec'
-           ],
-        }, 'disable_crypto_vsx==1', {
-          'cflags': [
-            '-maltivec'
-          ],
-          'cflags_mozilla': [
-            '-maltivec'
-          ],
-        }],
-        [ 'ppc_abi==2', {
-          'sources': [
-            'sha512-p8.s',
-          ],
-        }],
-      ]
-    },
-    {
-      'target_name': 'gcm-aes-ppc_lib',
-      'type': 'static_library',
-      'sources': [
-        'ppc-gcm.s',
-      ],
-      'dependencies': [
-        '<(DEPTH)/exports.gyp:nss_exports'
-      ],
-      'conditions': [
-        [ 'cc_is_clang==1 and force_integrated_as!=1', {
-          'cflags': [
-            '-no-integrated-as',
-          ],
-          'cflags_mozilla': [
-            '-no-integrated-as',
-          ],
-          'asflags_mozilla': [
-            '-no-integrated-as',
-          ],
-        }],
-      ],
-    },
-    {
-      'target_name': 'ppc-gcm-wrap-nodepend_c_lib',
-      'type': 'static_library',
-      'sources': [
-        'ppc-gcm-wrap.c',
-      ],
-      'dependencies': [
-        '<(DEPTH)/exports.gyp:nss_exports',
-        'gcm-aes-ppc_lib',
-      ],
-    },
-    {
-      'target_name': 'ppc-gcm-wrap_c_lib',
-      'type': 'static_library',
-      'sources': [
-        'ppc-gcm-wrap.c',
-      ],
-      'dependencies': [
-        '<(DEPTH)/exports.gyp:nss_exports',
-        'gcm-aes-ppc_lib',
-      ],
-      'defines!': [
-        'FREEBL_NO_DEPEND',
-      ],
-    },
-    {
-      'target_name': 'gcm-sha512-nodepend-ppc_c_lib',
+      'target_name': 'sha512-ppc-nodepend_c_lib',
       'type': 'static_library',
       'sources': [
         'sha512.c',
@@ -378,6 +183,11 @@
         '<(DEPTH)/exports.gyp:nss_exports'
       ],
       'conditions': [
+        [ 'ppc_abi==2', {
+          'sources': [
+            'sha512-p8.s',
+          ],
+        }],
         [ 'disable_crypto_vsx==0', {
           'cflags': [
             '-mcrypto',
@@ -408,7 +218,7 @@
       ]
     },
     {
-      'target_name': 'gcm-sha512-ppc_c_lib',
+      'target_name': 'sha512-ppc_c_lib',
       'type': 'static_library',
       'sources': [
         'sha512.c',
@@ -417,6 +227,11 @@
         '<(DEPTH)/exports.gyp:nss_exports'
       ],
       'conditions': [
+        [ 'ppc_abi==2', {
+          'sources': [
+            'sha512-p8.s',
+          ],
+        }],
         [ 'disable_crypto_vsx==0', {
           'cflags': [
             '-mcrypto',
@@ -500,6 +315,134 @@
         '<(DEPTH)/exports.gyp:nss_exports'
       ]
     },
+    # The vendored libcrux ML-KEM + ML-DSA combined extraction (lib/freebl/libcrux/)
+    # is built with an isolated include scope: the verified/ dirs are removed so
+    # libcrux's krml/eurydice headers can't collide with the HACL* extraction that
+    # still lives in verified/. The libcrux .c are self-contained (no PORT_/RNG_),
+    # so a single mode-agnostic library serves every freebl variant. The freebl
+    # wrappers that DO call PORT_/RNG_ (kyber.c, ml_dsa.c) live in the 'pqcwrap'
+    # targets, which mirror the FREEBL_NO_DEPEND split of the freebl libs that
+    # link them. The target is named 'crux' rather than 'libcrux': Firefox's
+    # build system treats a "lib" prefix on a LIBRARY_NAME specially, so a
+    # 'libcrux' target can't be named in USE_LIBS there.
+    {
+      'target_name': 'crux',
+      'type': 'static_library',
+      'sources': [
+        'libcrux/combined_core.c',
+        'libcrux/libcrux_ct_ops.c',
+        'libcrux/libcrux_sha3_portable.c',
+        'libcrux/libcrux_mlkem_core.c',
+        'libcrux/libcrux_mlkem_portable.c',
+        'libcrux/libcrux_mlkem512_portable.c',
+        'libcrux/libcrux_mlkem768_portable.c',
+        'libcrux/libcrux_mlkem1024_portable.c',
+        'libcrux/libcrux_mldsa_core.c',
+        'libcrux/libcrux_mldsa_portable.c',
+        'libcrux/libcrux_mldsa44_portable.c',
+        'libcrux/libcrux_mldsa65_portable.c',
+        'libcrux/libcrux_mldsa87_portable.c',
+      ],
+      'dependencies': [
+        '<(DEPTH)/exports.gyp:nss_exports',
+      ],
+      'include_dirs!': [
+        'verified',
+        'verified/internal',
+        'verified/karamel/include',
+        'verified/karamel/krmllib/dist/minimal',
+      ],
+      'include_dirs': [
+        'libcrux',
+        'libcrux/internal',
+        'libcrux/karamel',
+      ],
+      'conditions': [
+        [ 'OS=="win"', {
+          # C4146: unary minus applied to an unsigned type. eurydice_glue.h
+          # does this deliberately in its wrapping_neg helpers. The extraction
+          # is kept byte-identical to upstream (CI diffs it), so silence the
+          # warning rather than patching the header.
+          'msvs_settings': {
+            'VCCLCompilerTool': {
+              'AdditionalOptions': [ '/wd4146' ],
+            },
+          },
+        }],
+      ],
+    },
+    {
+      'target_name': 'pqcwrap',
+      'type': 'static_library',
+      'sources': [
+        'kyber.c',
+        'ml_dsa.c',
+      ],
+      'dependencies': [
+        '<(DEPTH)/exports.gyp:nss_exports',
+        'crux',
+      ],
+      'include_dirs!': [
+        'verified',
+        'verified/internal',
+        'verified/karamel/include',
+        'verified/karamel/krmllib/dist/minimal',
+      ],
+      'include_dirs': [
+        'libcrux',
+        'libcrux/internal',
+        'libcrux/karamel',
+      ],
+      'conditions': [
+        [ 'OS=="win"', {
+          # See the crux target: eurydice_glue.h trips C4146.
+          'msvs_settings': {
+            'VCCLCompilerTool': {
+              'AdditionalOptions': [ '/wd4146' ],
+            },
+          },
+        }],
+      ],
+    },
+    {
+      'target_name': 'pqcwrap_static',
+      'type': 'static_library',
+      'sources': [
+        'kyber.c',
+        'ml_dsa.c',
+      ],
+      'dependencies': [
+        '<(DEPTH)/exports.gyp:nss_exports',
+        'crux',
+      ],
+      'include_dirs!': [
+        'verified',
+        'verified/internal',
+        'verified/karamel/include',
+        'verified/karamel/krmllib/dist/minimal',
+      ],
+      'include_dirs': [
+        'libcrux',
+        'libcrux/internal',
+        'libcrux/karamel',
+      ],
+      'conditions': [
+        [ 'OS=="win"', {
+          # See the crux target: eurydice_glue.h trips C4146.
+          'msvs_settings': {
+            'VCCLCompilerTool': {
+              'AdditionalOptions': [ '/wd4146' ],
+            },
+          },
+        }],
+        [ 'OS=="linux"', {
+          'defines!': [
+            'FREEBL_NO_DEPEND',
+            'FREEBL_LOWHASH',
+          ],
+        }],
+      ],
+    },
     # Build a static freebl library so we can statically link it into
     # the binary. This way we don't have to dlopen() the shared lib
     # but can directly call freebl functions.
@@ -513,13 +456,12 @@
         '<(DEPTH)/exports.gyp:nss_exports',
         'hw-acc-crypto-avx',
         'hw-acc-crypto-avx2',
+        'crux',
+        'pqcwrap_static',
+        'gcm.gyp:gcm'
       ],
       'conditions': [
-        [ 'target_arch=="ia32" or target_arch=="x64"', {
-          'dependencies': [
-            'gcm-aes-x86_c_lib',
-          ],
-        }, '(disable_arm_hw_aes==0 or disable_arm_hw_sha1==0 or disable_arm_hw_sha2==0) and (target_arch=="arm" or target_arch=="arm64" or target_arch=="aarch64")', {
+        [ '(disable_arm_hw_aes==0 or disable_arm_hw_sha1==0 or disable_arm_hw_sha2==0) and (target_arch=="arm" or target_arch=="arm64" or target_arch=="aarch64")', {
           'dependencies': [
             'armv8_c_lib'
           ],
@@ -529,42 +471,29 @@
             'sha-x86_c_lib',
           ],
         }],
-        [ 'disable_arm32_neon==0 and target_arch=="arm"', {
-          'dependencies': [
-            'gcm-aes-arm32-neon_c_lib',
-          ],
-        }],
         [ 'disable_arm32_neon==1 and target_arch=="arm"', {
           'defines!': [
             'NSS_DISABLE_ARM32_NEON',
           ],
         }],
-        [ 'target_arch=="arm64" or target_arch=="aarch64"', {
-          'dependencies': [
-            'gcm-aes-aarch64_c_lib',
-          ],
-        }],
         [ 'disable_altivec==0 and target_arch=="ppc64"', {
           'dependencies': [
-            'gcm-aes-ppc_c_lib',
-            'gcm-sha512-ppc_c_lib',
+            'sha512-ppc_c_lib',
           ],
         }],
         [ 'disable_altivec==0 and target_arch=="ppc64le"', {
           'dependencies': [
-            'gcm-aes-ppc_c_lib',
-            'gcm-sha512-ppc_c_lib',
+            'sha512-ppc_c_lib',
             'chacha20-ppc_lib',
-            'ppc-gcm-wrap_c_lib',
           ],
         }],
         [ 'disable_altivec==1 and (target_arch=="ppc64" or target_arch=="ppc64le")', {
-          'defines!': [
+          'defines': [
             'NSS_DISABLE_ALTIVEC',
           ],
         }],
         [ 'disable_crypto_vsx==1 and (target_arch=="ppc" or target_arch=="ppc64" or target_arch=="ppc64le")', {
-          'defines!': [
+          'defines': [
             'NSS_DISABLE_CRYPTO_VSX',
           ],
         }],
@@ -572,20 +501,6 @@
           'defines!': [
             'FREEBL_NO_DEPEND',
             'FREEBL_LOWHASH',
-            'USE_HW_AES',
-            'INTEL_GCM',
-            'PPC_GCM',
-          ],
-          'conditions': [
-            [ 'target_arch=="x64"', {
-              # The AES assembler code doesn't work in static builds.
-              # The linker complains about non-relocatable code, and I
-              # currently don't know how to fix this properly.
-              'sources!': [
-                'intel-aes.s',
-                'intel-gcm.s',
-              ],
-            }],
           ],
         }],
       ],
@@ -600,13 +515,12 @@
         '<(DEPTH)/exports.gyp:nss_exports',
         'hw-acc-crypto-avx',
         'hw-acc-crypto-avx2',
+        'crux',
+        'pqcwrap',
+        'gcm.gyp:gcm-nodepend',
       ],
       'conditions': [
-        [ 'target_arch=="ia32" or target_arch=="x64"', {
-          'dependencies': [
-            'gcm-aes-x86_c_lib',
-          ]
-        }, 'target_arch=="arm" or target_arch=="arm64" or target_arch=="aarch64"', {
+        [ 'target_arch=="arm" or target_arch=="arm64" or target_arch=="aarch64"', {
           'dependencies': [
             'armv8_c_lib',
           ],
@@ -616,44 +530,31 @@
             'sha-x86_c_lib',
           ],
         }],
-        [ 'disable_arm32_neon==0 and target_arch=="arm"', {
-          'dependencies': [
-            'gcm-aes-arm32-neon_c_lib',
-          ],
-        }],
         [ 'disable_arm32_neon==1 and target_arch=="arm"', {
           'defines!': [
             'NSS_DISABLE_ARM32_NEON',
-          ],
-        }],
-        [ 'target_arch=="arm64" or target_arch=="aarch64"', {
-          'dependencies': [
-            'gcm-aes-aarch64_c_lib',
           ],
         }],
         [ 'disable_altivec==0', {
           'conditions': [
             [ 'target_arch=="ppc64"', {
               'dependencies': [
-                'gcm-aes-ppc_c_lib',
-                'gcm-sha512-nodepend-ppc_c_lib',
+                'sha512-ppc-nodepend_c_lib',
               ],
             }, 'target_arch=="ppc64le"', {
                'dependencies': [
-                 'gcm-aes-ppc_c_lib',
-                 'gcm-sha512-nodepend-ppc_c_lib',
-                 'ppc-gcm-wrap-nodepend_c_lib',
+                 'sha512-ppc-nodepend_c_lib',
                ],
             }],
           ],
         }],
         [ 'disable_altivec==1 and (target_arch=="ppc64" or target_arch=="ppc64le")', {
-          'defines!': [
+          'defines': [
             'NSS_DISABLE_ALTIVEC',
           ],
         }],
         [ 'disable_crypto_vsx==1 and (target_arch=="ppc" or target_arch=="ppc64" or target_arch=="ppc64le")', {
-          'defines!': [
+          'defines': [
             'NSS_DISABLE_CRYPTO_VSX',
           ],
         }],
@@ -668,16 +569,6 @@
                 '<(moz_folded_library_name)',
               ],
             }],
-          ],
-        }],
-        [ '(OS=="linux" or OS=="android") and target_arch=="x64"', {
-          'dependencies': [
-            'intel-gcm-wrap_c_lib',
-          ],
-        }],
-        [ 'OS=="win" and (target_arch=="ia32" or target_arch=="x64") and cc_is_clang==1', {
-          'dependencies': [
-            'intel-gcm-wrap_c_lib',
           ],
         }],
         [ 'OS=="linux"', {
@@ -707,6 +598,8 @@
         '<(DEPTH)/exports.gyp:nss_exports',
         'hw-acc-crypto-avx',
         'hw-acc-crypto-avx2',
+        'crux',
+        'pqcwrap',
       ],
     },
     {
@@ -724,6 +617,9 @@
         '<(DEPTH)/exports.gyp:nss_exports',
         'hw-acc-crypto-avx',
         'hw-acc-crypto-avx2',
+        'crux',
+        'pqcwrap',
+        'gcm.gyp:gcm',
       ],
       'asflags_mozilla': [
         '-mcpu=v9', '-Wa,-xarch=v9a'
@@ -769,7 +665,6 @@
       'verified/karamel/include',
       'verified/karamel/krmllib/dist/minimal',
       'deprecated',
-      'verified/eurydice',
     ],
     'defines': [
       'SHLIB_SUFFIX=\"<(dll_suffix)\"',
@@ -797,7 +692,6 @@
               'MP_USE_UINT_DIGIT',
               'MP_NO_MP_WORD',
               'USE_HW_AES',
-              'INTEL_GCM',
             ],
           },
         },
@@ -808,13 +702,11 @@
             #TODO: -Ox optimize flags
             'PreprocessorDefinitions': [
               # Should be copied to mingw defines below
-              'MP_IS_LITTLE_ENDIAN',
               'NSS_BEVAND_ARCFOUR',
               'MPI_AMD64',
               'MP_ASSEMBLY_MULTIPLY',
               'NSS_USE_COMBA',
               'USE_HW_AES',
-              'INTEL_GCM',
             ],
           },
         },
@@ -838,12 +730,6 @@
         'defines': [
           'USE_HW_SHA2',
         ],
-      }],
-      [ 'cc_use_gnu_ld==1 and OS=="win" and target_arch=="x64"', {
-        # mingw x64
-        'defines': [
-          'MP_IS_LITTLE_ENDIAN',
-         ],
       }],
       # Poly1305_256 requires the flag to run
       ['target_arch=="x64"', {
@@ -871,19 +757,11 @@
           'FREEBL_LOWHASH',
           'FREEBL_NO_DEPEND',
         ],
-        'conditions': [
-          [ 'disable_altivec==0 and target_arch=="ppc64le"', {
-            'defines': [
-              'PPC_GCM',
-            ],
-          }],
-        ],
       }],
       [ 'OS=="linux" or OS=="android"', {
         'conditions': [
           [ 'target_arch=="x64"', {
             'defines': [
-              'MP_IS_LITTLE_ENDIAN',
               'NSS_BEVAND_ARCFOUR',
               'MPI_AMD64',
               'MP_ASSEMBLY_MULTIPLY',
@@ -893,12 +771,10 @@
           [ 'target_arch=="x64"', {
             'defines': [
               'USE_HW_AES',
-              'INTEL_GCM',
             ],
           }],
           [ 'target_arch=="ia32"', {
             'defines': [
-              'MP_IS_LITTLE_ENDIAN',
               'MP_ASSEMBLY_MULTIPLY',
               'MP_ASSEMBLY_SQUARE',
               'MP_ASSEMBLY_DIV_2DX1D',

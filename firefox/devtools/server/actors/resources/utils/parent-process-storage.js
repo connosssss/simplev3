@@ -47,14 +47,10 @@ class ParentProcessStorage {
     Services.obs.addObserver(this, "window-global-created");
     Services.obs.addObserver(this, "window-global-destroyed");
 
-    // bfcacheInParent is only enabled when fission is enabled
-    // and when Session History In Parent is enabled. (all three modes should now enabled all together)
-    loader.lazyGetter(
-      this,
-      "isBfcacheInParentEnabled",
-      () =>
-        Services.appinfo.sessionHistoryInParent &&
-        Services.prefs.getBoolPref("fission.bfcacheInParent", false)
+    // bfcacheInParent is only enabled when fission is enabled.
+    // (all three modes should now enabled all together)
+    loader.lazyGetter(this, "isBfcacheInParentEnabled", () =>
+      Services.prefs.getBoolPref("fission.bfcacheInParent", false)
     );
   }
 
@@ -71,9 +67,11 @@ class ParentProcessStorage {
     );
 
     if (watcherActor.sessionContext.type == "browser-element") {
-      const { browsingContext, innerWindowID: innerWindowId } =
-        watcherActor.browserElement;
-      await this._spawnActor(browsingContext.id, innerWindowId);
+      const { browsingContext } = watcherActor;
+      await this._spawnActor(
+        browsingContext.id,
+        browsingContext.currentWindowGlobal.innerWindowId
+      );
     } else if (watcherActor.sessionContext.type == "webextension") {
       // As the top level actor may change over time for the web extension,
       // we don't have a good browsingContextID/innerWindowId to reference.
@@ -201,7 +199,7 @@ class ParentProcessStorage {
    * - <bf-cache-navigation-pageshow> (to cover history navications)
    *
    * @param {WindowGlobal} windowGlobal
-   * @param {Boolean} isBfCacheNavigation
+   * @param {boolean} isBfCacheNavigation
    */
   async _onNewWindowGlobal(windowGlobal, isBfCacheNavigation) {
     // We instantiate only one instance of parent process storage actors per toolbox
@@ -216,7 +214,7 @@ class ParentProcessStorage {
       !isWindowGlobalPartOfContext(
         windowGlobal,
         this.watcherActor.sessionContext,
-        { acceptNoWindowGlobal: true, acceptSameProcessIframes: true }
+        { acceptNoWindowGlobal: true }
       )
     ) {
       return;
@@ -349,9 +347,7 @@ class StorageActorMock extends EventEmitter {
   get windows() {
     return (
       this.watcherActor
-        .getAllBrowsingContexts({
-          acceptSameProcessIframes: true,
-        })
+        .getAllBrowsingContexts()
         .map(x => {
           const uri = x.currentWindowGlobal.documentURI;
           return { location: uri };
@@ -383,7 +379,7 @@ class StorageActorMock extends EventEmitter {
 
   getWindowFromHost(host) {
     const hostBrowsingContext = this.watcherActor
-      .getAllBrowsingContexts({ acceptSameProcessIframes: true })
+      .getAllBrowsingContexts()
       .find(x => {
         const hostName = this.getHostName(x.currentWindowGlobal.documentURI);
         return hostName === host;
@@ -407,12 +403,12 @@ class StorageActorMock extends EventEmitter {
   /**
    * Get the browsing contexts matching the given host.
    *
-   * @param {String} host: The host for which we want the browsing contexts
+   * @param {string} host: The host for which we want the browsing contexts
    * @returns Array<BrowsingContext>
    */
   getBrowsingContextsFromHost(host) {
     return this.watcherActor
-      .getAllBrowsingContexts({ acceptSameProcessIframes: true })
+      .getAllBrowsingContexts()
       .filter(
         bc => this.getHostName(bc.currentWindowGlobal.documentURI) === host
       );
@@ -435,7 +431,7 @@ class StorageActorMock extends EventEmitter {
       !isWindowGlobalPartOfContext(
         windowGlobal,
         this.watcherActor.sessionContext,
-        { acceptNoWindowGlobal: true, acceptSameProcessIframes: true }
+        { acceptNoWindowGlobal: true }
       )
     ) {
       return;

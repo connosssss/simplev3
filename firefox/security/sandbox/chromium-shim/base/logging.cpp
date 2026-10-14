@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20,16 +18,14 @@
 
 #if defined(OS_POSIX)
 #include <errno.h>
-#endif
-
-#if defined(OS_WIN)
-#include "base/strings/utf_string_conversions.h"
+#include <string.h>
 #endif
 
 #include <algorithm>
 
+#include "base/logging/logging_settings.h"
+#include "base/strings/stringprintf.h"
 #include "mozilla/Assertions.h"
-#include "mozilla/Unused.h"
 
 namespace logging {
 
@@ -40,12 +36,31 @@ int g_min_log_level = 0;
 LoggingDestination g_logging_destination = LOG_DEFAULT;
 
 // For LOG_ERROR and above, always print to stderr.
-const int kAlwaysPrintErrorLevel = LOG_ERROR;
+const int kAlwaysPrintErrorLevel = LOGGING_ERROR;
 
 // A log message handler that gets notified of every log message we process.
-LogMessageHandlerFunction log_message_handler = nullptr;
+LogMessageHandlerFunction g_log_message_handler = nullptr;
 
 }  // namespace
+
+std::string BuildCrashString(const char* file, int line,
+                             const char* message_without_prefix) {
+  // Only log last path component.
+  if (file) {
+    const char* slash = UNSAFE_TODO(strrchr(file,
+#if BUILDFLAG(IS_WIN)
+                                            '\\'
+#else
+                                            '/'
+#endif  // BUILDFLAG(IS_WIN)
+                                            ));
+    if (slash) {
+      file = UNSAFE_TODO(slash + 1);
+    }
+  }
+
+  return base::StringPrintf("%s:%d: %s", file, line, message_without_prefix);
+}
 
 // This is never instantiated, it's just used for EAT_STREAM_PARAMETERS to have
 // an object of the correct type on the LHS of the unused part of the ternary
@@ -53,7 +68,7 @@ LogMessageHandlerFunction log_message_handler = nullptr;
 std::ostream* g_swallow_stream;
 
 void SetMinLogLevel(int level) {
-  g_min_log_level = std::min(LOG_FATAL, level);
+  g_min_log_level = std::min(LOGGING_FATAL, level);
 }
 
 int GetMinLogLevel() {
@@ -61,13 +76,14 @@ int GetMinLogLevel() {
 }
 
 bool ShouldCreateLogMessage(int severity) {
-  if (severity < g_min_log_level)
+  if (severity < g_min_log_level) {
     return false;
+  }
 
   // Return true here unless we know ~LogMessage won't do anything. Note that
   // ~LogMessage writes to stderr if severity_ >= kAlwaysPrintErrorLevel, even
   // when g_logging_destination is LOG_NONE.
-  return g_logging_destination != LOG_NONE || log_message_handler ||
+  return g_logging_destination != LOG_NONE || g_log_message_handler ||
          severity >= kAlwaysPrintErrorLevel;
 }
 
@@ -75,41 +91,24 @@ int GetVlogLevelHelper(const char* file, size_t N) {
   return 0;
 }
 
-// Explicit instantiations for commonly used comparisons.
-template std::string* MakeCheckOpString<int, int>(
-    const int&, const int&, const char* names);
-template std::string* MakeCheckOpString<unsigned long, unsigned long>(
-    const unsigned long&, const unsigned long&, const char* names);
-template std::string* MakeCheckOpString<unsigned long, unsigned int>(
-    const unsigned long&, const unsigned int&, const char* names);
-template std::string* MakeCheckOpString<unsigned int, unsigned long>(
-    const unsigned int&, const unsigned long&, const char* names);
-template std::string* MakeCheckOpString<std::string, std::string>(
-    const std::string&, const std::string&, const char* name);
-
 LogMessage::LogMessage(const char* file, int line, LogSeverity severity)
     : severity_(severity), file_(file), line_(line) {
-}
-
-LogMessage::LogMessage(const char* file, int line, const char* condition)
-    : severity_(LOG_FATAL), file_(file), line_(line) {
-}
-
-LogMessage::LogMessage(const char* file, int line, std::string* result)
-    : severity_(LOG_FATAL), file_(file), line_(line) {
-  delete result;
-}
-
-LogMessage::LogMessage(const char* file, int line, LogSeverity severity,
-                       std::string* result)
-    : severity_(severity), file_(file), line_(line) {
-  delete result;
+  message_start_ = stream_.str().length();
 }
 
 LogMessage::~LogMessage() {
-  if (severity_ == LOG_FATAL) {
+  if (severity_ == LOGGING_FATAL) {
     MOZ_CRASH("Hit fatal chromium sandbox condition.");
   }
+}
+
+std::string LogMessage::BuildCrashString() const {
+  return logging::BuildCrashString(file(), line(),
+                                   UNSAFE_TODO(str().c_str() + message_start_));
+}
+
+LogMessageFatal::~LogMessageFatal() {
+  MOZ_CRASH("Hit fatal chromium sandbox condition.");
 }
 
 SystemErrorCode GetLastSystemErrorCode() {
@@ -122,39 +121,29 @@ SystemErrorCode GetLastSystemErrorCode() {
 #endif
 }
 
-#if defined(OS_WIN)
-Win32ErrorLogMessage::Win32ErrorLogMessage(const char* file,
-                                           int line,
+#if BUILDFLAG(IS_WIN)
+Win32ErrorLogMessage::Win32ErrorLogMessage(const char* file, int line,
                                            LogSeverity severity,
                                            SystemErrorCode err)
-    : err_(err),
-      log_message_(file, line, severity) {
-  mozilla::Unused << err_;
+    : LogMessage(file, line, severity), err_(err) {
+  (void)err_;
 }
 
-Win32ErrorLogMessage::~Win32ErrorLogMessage() {
-}
-#elif defined(OS_POSIX)
+Win32ErrorLogMessage::~Win32ErrorLogMessage() {}
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 ErrnoLogMessage::ErrnoLogMessage(const char* file,
                                  int line,
                                  LogSeverity severity,
                                  SystemErrorCode err)
-    : err_(err),
-      log_message_(file, line, severity) {
-  mozilla::Unused << err_;
+    : LogMessage(file, line, severity), err_(err) {
+  (void)err_;
 }
 
 ErrnoLogMessage::~ErrnoLogMessage() {
 }
-#endif  // OS_WIN
+#endif  // BUILDFLAG(IS_WIN))
 
 void RawLog(int level, const char* message) {
 }
 
 } // namespace logging
-
-#if defined(OS_WIN)
-std::ostream& std::operator<<(std::ostream& out, const wchar_t* wstr) {
-  return out << base::WideToUTF8(std::wstring(wstr));
-}
-#endif

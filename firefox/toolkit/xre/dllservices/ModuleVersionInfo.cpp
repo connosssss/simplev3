@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -35,6 +33,12 @@ static bool QueryStringValue(const void* aBlock, DWORD aTranslation,
   if (!::VerQueryValueW(aBlock, path.get(), (PVOID*)&lpBuffer, &len)) {
     return false;
   }
+
+  // len includes the terminating NUL, so must be greater than 0 when valid.
+  if (!lpBuffer || !len) {
+    return false;
+  }
+
   aResult.Assign(lpBuffer, (size_t)len - 1);
   return true;
 }
@@ -81,7 +85,8 @@ bool ModuleVersionInfo::GetFromImage(const nsAString& aPath) {
 
   VS_FIXEDFILEINFO* vInfo = nullptr;
   UINT vInfoLen = 0;
-  if (::VerQueryValueW(verInfo.get(), L"\\", (LPVOID*)&vInfo, &vInfoLen)) {
+  if (::VerQueryValueW(verInfo.get(), L"\\", (LPVOID*)&vInfo, &vInfoLen) &&
+      vInfo && vInfoLen >= sizeof(VS_FIXEDFILEINFO)) {
     mFileVersion =
         VersionNumber(vInfo->dwFileVersionMS, vInfo->dwFileVersionLS);
     mProductVersion =

@@ -5,6 +5,7 @@
 package org.mozilla.samples.browser.integration
 
 import android.content.Context
+import android.os.Environment
 import android.view.View
 import androidx.fragment.app.FragmentManager
 import mozilla.components.browser.state.store.BrowserStore
@@ -25,7 +26,7 @@ import mozilla.components.support.base.feature.LifecycleAwareFeature
 import mozilla.components.ui.widgets.DefaultSnackbarDelegate
 import org.mozilla.samples.browser.databinding.FragmentBrowserBinding
 
-@Suppress("LongParameterList", "UndocumentedPublicClass")
+@Suppress("UndocumentedPublicClass")
 class ContextMenuIntegration(
     context: Context,
     fragmentManager: FragmentManager,
@@ -48,36 +49,48 @@ class ContextMenuIntegration(
                     parentView,
                     snackbarDelegate,
                 ),
-                createSaveImageCandidate(context, contextMenuUseCases),
+                createSaveImageCandidate(
+                    context = context,
+                    contextMenuUseCases = contextMenuUseCases,
+                    downloadsLocation = {
+                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).path
+                    },
+                ),
                 createCopyImageLocationCandidate(context, parentView, snackbarDelegate),
                 createAddContactCandidate(context),
                 createShareEmailAddressCandidate(context),
                 createCopyEmailAddressCandidate(context, parentView, snackbarDelegate),
             )
         } else {
-            val appLinksCandidate = ContextMenuCandidate.createOpenInExternalAppCandidate(
-                context = context,
-                appLinksUseCases = AppLinksUseCases(
+            val appLinksCandidate =
+                ContextMenuCandidate.createOpenInExternalAppCandidate(
                     context = context,
-                    launchInApp = { true },
-                ),
-            )
+                    appLinksUseCases =
+                        AppLinksUseCases(
+                            context = context,
+                            launchInApp = { true },
+                        ),
+                )
             ContextMenuCandidate.defaultCandidates(
-                context,
-                tabsUseCases,
-                contextMenuUseCases,
-                parentView,
+                context = context,
+                tabsUseCases = tabsUseCases,
+                contextMenuUseCases = contextMenuUseCases,
+                snackBarParentView = parentView,
+                downloadsLocation = {
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).path
+                },
             ) + appLinksCandidate
         }
     }
 
-    private val feature = ContextMenuFeature(
-        fragmentManager,
-        browserStore,
-        candidates,
-        FragmentBrowserBinding.bind(parentView).engineView,
-        contextMenuUseCases,
-    )
+    private val feature =
+        ContextMenuFeature(
+            fragmentManager,
+            browserStore,
+            candidates,
+            FragmentBrowserBinding.bind(parentView).engineView,
+            contextMenuUseCases,
+        )
 
     override fun start() {
         feature.start()

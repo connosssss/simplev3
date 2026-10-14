@@ -15,17 +15,16 @@ import mozilla.components.lib.crash.CrashReporter
 import mozilla.components.lib.crash.ui.AbstractCrashListFragment
 import org.mozilla.focus.ext.components
 
-/**
- * Fragment showing list of past crashes.
- */
-class CrashListFragment(private val paddingNeeded: Boolean = false) : AbstractCrashListFragment() {
+/** Fragment showing list of past crashes. */
+class CrashListFragment : AbstractCrashListFragment() {
     override val reporter: CrashReporter by lazy { requireContext().components.crashReporter }
 
     override fun onCrashServiceSelected(url: String) {
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            data = url.toUri()
-            `package` = requireContext().packageName
-        }
+        val intent =
+            Intent(Intent.ACTION_VIEW).apply {
+                data = url.toUri()
+                `package` = requireContext().packageName
+            }
         startActivity(intent)
         requireActivity().finish()
     }
@@ -33,7 +32,9 @@ class CrashListFragment(private val paddingNeeded: Boolean = false) : AbstractCr
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        if (paddingNeeded) {
+        val showAll = arguments?.getBoolean(ARG_SHOW_ALL, false) ?: false
+
+        if (showAll) {
             val originalTopPadding = view.paddingTop
 
             ViewCompat.setOnApplyWindowInsetsListener(view) { _, windowInsets ->
@@ -43,5 +44,10 @@ class CrashListFragment(private val paddingNeeded: Boolean = false) : AbstractCr
                 windowInsets
             }
         }
+    }
+
+    companion object {
+        const val FRAGMENT_TAG = "crash-list-fragment"
+        const val ARG_SHOW_ALL = "show_all"
     }
 }

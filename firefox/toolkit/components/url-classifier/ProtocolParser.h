@@ -1,13 +1,13 @@
-//* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef ProtocolParser_h__
-#define ProtocolParser_h__
+#ifndef ProtocolParser_h_
+#define ProtocolParser_h_
 
 #include "HashStore.h"
 #include "chromium/safebrowsing.pb.h"
+#include "chromium/safebrowsing_v5.pb.h"
 
 namespace mozilla {
 namespace safebrowsing {
@@ -37,7 +37,11 @@ class ProtocolParser {
                  const nsTArray<nsCString>& aUpdateTables);
   virtual nsresult AppendStream(const nsACString& aData) = 0;
 
-  uint32_t UpdateWaitSec() { return mUpdateWaitSec; }
+  // V5 carries a wait duration per list, while V2 and V4 carry a single
+  // response-level one. For the latter, the same duration is reported for
+  // every requested table so that callers only deal with per-table values.
+  // Consumes the durations, so it can only be called once.
+  nsTArray<TableWaitDuration> TakeUpdateWaits();
 
   // Notify that the inbound data is ready for parsing if progressive
   // parsing is not supported, for example in V4.
@@ -75,8 +79,13 @@ class ProtocolParser {
   // The table names that failed to update and need to be reset.
   nsTArray<nsCString> mTablesToReset;
 
-  // How long we should wait until the next update.
+  // How long we should wait until the next update. Only used by the protocols
+  // carrying a single response-level duration (V2 and V4).
   uint32_t mUpdateWaitSec;
+
+  // How long we should wait until the next update, per table. Only used by
+  // the protocols carrying a duration per list (V5).
+  nsTArray<TableWaitDuration> mUpdateWaits;
 };
 
 /**
@@ -193,6 +202,45 @@ class ProtocolParserProtobuf final : public ProtocolParser {
 
   nsresult ProcessEncodedRemoval(TableUpdateV4& aTableUpdate,
                                  const ThreatEntrySet& aRemoval);
+};
+
+class ProtocolParserProtobufV5 final : public ProtocolParser {
+ public:
+  ProtocolParserProtobufV5();
+
+  virtual void SetCurrentTable(const nsACString& aTable) override;
+  virtual nsresult AppendStream(const nsACString& aData) override;
+  virtual void End() override;
+
+ private:
+  virtual ~ProtocolParserProtobufV5();
+
+  virtual RefPtr<TableUpdate> CreateTableUpdate(
+      const nsACString& aTableName) const override;
+
+  // Process a single hash list in the response.
+  nsresult ProcessOneResponse(const v5::HashList& aHashList,
+                              nsACString& aListName);
+
+  // Process the additions for a 4-byte encoded prefixes.
+  nsresult ProcessAddition4Bytes(TableUpdateV4& aTableUpdate,
+                                 const v5::RiceDeltaEncoded32Bit& aAddition);
+
+  // Process the additions for a 8-byte encoded prefixes.
+  nsresult ProcessAddition8Bytes(TableUpdateV4& aTableUpdate,
+                                 const v5::RiceDeltaEncoded64Bit& aAddition);
+
+  // Process the additions for a 16-byte encoded prefixes.
+  nsresult ProcessAddition16Bytes(TableUpdateV4& aTableUpdate,
+                                  const v5::RiceDeltaEncoded128Bit& aAddition);
+
+  // Process the additions for a 32-byte encoded prefixes.
+  nsresult ProcessAddition32Bytes(TableUpdateV4& aTableUpdate,
+                                  const v5::RiceDeltaEncoded256Bit& aAddition);
+
+  // Process the removals for a encoded prefixes.
+  nsresult ProcessRemoval(TableUpdateV4& aTableUpdate,
+                          const v5::RiceDeltaEncoded32Bit& aRemoval);
 };
 
 }  // namespace safebrowsing

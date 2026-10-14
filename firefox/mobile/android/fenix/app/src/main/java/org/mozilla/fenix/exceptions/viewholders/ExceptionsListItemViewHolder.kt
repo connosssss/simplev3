@@ -4,17 +4,17 @@
 
 package org.mozilla.fenix.exceptions.viewholders
 
+import androidx.annotation.LayoutRes
 import androidx.recyclerview.widget.RecyclerView
 import mozilla.components.browser.icons.BrowserIcons
+import mozilla.components.ui.icons.R as iconsR
 import mozilla.components.ui.widgets.WidgetSiteItemView
 import org.mozilla.fenix.R
 import org.mozilla.fenix.exceptions.ExceptionsInteractor
 import org.mozilla.fenix.ext.components
 import org.mozilla.fenix.ext.loadIntoView
 
-/**
- * View holder for a single website that is exempted from Tracking Protection or Logins.
- */
+/** View holder for a single website that is exempted from Tracking Protection or Logins. */
 class ExceptionsListItemViewHolder<T : Any>(
     private val view: WidgetSiteItemView,
     private val interactor: ExceptionsInteractor<T>,
@@ -25,7 +25,7 @@ class ExceptionsListItemViewHolder<T : Any>(
 
     init {
         view.setSecondaryButton(
-            icon = R.drawable.ic_close,
+            icon = iconsR.drawable.mozac_ic_cross_24,
             contentDescription = R.string.history_delete_item,
         ) {
             interactor.onDeleteOne(item)
@@ -39,6 +39,6 @@ class ExceptionsListItemViewHolder<T : Any>(
     }
 
     companion object {
-        const val LAYOUT_ID = R.layout.site_list_item
+        @LayoutRes val LAYOUT_ID = R.layout.site_list_item
     }
 }

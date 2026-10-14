@@ -712,7 +712,7 @@ bool ExceptionHandler::DoDump(pid_t crashing_process, const void* context,
                                           context,
                                           context_size,
                                           mapping_list_,
-                                          app_memory_list_,
+                                          AppMemoryList(),
                                           may_skip_dump,
                                           principal_mapping_address,
                                           sanitize_stacks);
@@ -723,7 +723,7 @@ bool ExceptionHandler::DoDump(pid_t crashing_process, const void* context,
                                         context,
                                         context_size,
                                         mapping_list_,
-                                        app_memory_list_,
+                                        AppMemoryList(),
                                         may_skip_dump,
                                         principal_mapping_address,
                                         sanitize_stacks);
@@ -841,28 +841,6 @@ void ExceptionHandler::AddMappingInfo(const string& name,
   mapping_list_.push_back(mapping);
 }
 
-void ExceptionHandler::RegisterAppMemory(void* ptr, size_t length) {
-  AppMemoryList::iterator iter =
-    std::find(app_memory_list_.begin(), app_memory_list_.end(), ptr);
-  if (iter != app_memory_list_.end()) {
-    // Don't allow registering the same pointer twice.
-    return;
-  }
-
-  AppMemory app_memory;
-  app_memory.ptr = ptr;
-  app_memory.length = length;
-  app_memory_list_.push_back(app_memory);
-}
-
-void ExceptionHandler::UnregisterAppMemory(void* ptr) {
-  AppMemoryList::iterator iter =
-    std::find(app_memory_list_.begin(), app_memory_list_.end(), ptr);
-  if (iter != app_memory_list_.end()) {
-    app_memory_list_.erase(iter);
-  }
-}
-
 // static
 bool ExceptionHandler::WriteMinidumpForChild(pid_t child,
                                              pid_t child_blamed_thread,
@@ -884,7 +862,7 @@ bool ExceptionHandler::WriteMinidumpForChild(pid_t child,
   if (auxv_info) {
     minidump_writer_set_direct_auxv_dump_info(minidump_writer, auxv_info);
   }
-  if (!minidump_writer_dump(minidump_writer, nullptr)) {
+  if (!minidump_writer_dump(minidump_writer, /*extra_data*/ nullptr)) {
     return false;
   }
 #else

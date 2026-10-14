@@ -1,18 +1,18 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "txPatternParser.h"
-#include "txExprLexer.h"
-#include "nsGkAtoms.h"
-#include "nsError.h"
-#include "txStringUtils.h"
-#include "txXSLTPatterns.h"
-#include "txStylesheetCompiler.h"
-#include "txPatternOptimizer.h"
 
-#include "mozilla/UniquePtrExtensions.h"
+#include <memory>
+
+#include "nsError.h"
+#include "nsGkAtoms.h"
+#include "txExprLexer.h"
+#include "txPatternOptimizer.h"
+#include "txStringUtils.h"
+#include "txStylesheetCompiler.h"
+#include "txXSLTPatterns.h"
 
 using mozilla::UniquePtr;
 
@@ -26,7 +26,7 @@ nsresult txPatternParser::createPattern(const nsString& aPattern,
     return rv;
   }
   UniquePtr<txPattern> pattern;
-  rv = createUnionPattern(lexer, aContext, *getter_Transfers(pattern));
+  rv = createUnionPattern(lexer, aContext, *mozilla::getter_Transfers(pattern));
   if (NS_FAILED(rv)) {
     // XXX error report parsing error
     return rv;
@@ -45,7 +45,7 @@ nsresult txPatternParser::createUnionPattern(txExprLexer& aLexer,
                                              txIParseContext* aContext,
                                              txPattern*& aPattern) {
   nsresult rv = NS_OK;
-  txPattern* locPath = 0;
+  txPattern* locPath = nullptr;
 
   rv = createLocPathPattern(aLexer, aContext, locPath);
   if (NS_FAILED(rv)) return rv;
@@ -91,8 +91,8 @@ nsresult txPatternParser::createLocPathPattern(txExprLexer& aLexer,
 
   bool isChild = true;
   bool isAbsolute = false;
-  txPattern* stepPattern = 0;
-  txLocPathPattern* pathPattern = 0;
+  txPattern* stepPattern = nullptr;
+  txLocPathPattern* pathPattern = nullptr;
 
   Token::Type type = aLexer.peek()->mType;
   switch (type) {
@@ -147,7 +147,7 @@ nsresult txPatternParser::createLocPathPattern(txExprLexer& aLexer,
   }
 
   pathPattern->addStep(stepPattern, isChild);
-  stepPattern = 0;  // stepPattern is part of pathPattern now
+  stepPattern = nullptr;  // stepPattern is part of pathPattern now
 
   while (type == Token::PARENT_OP || type == Token::ANCESTOR_OP) {
     isChild = type == Token::PARENT_OP;
@@ -158,7 +158,7 @@ nsresult txPatternParser::createLocPathPattern(txExprLexer& aLexer,
       return rv;
     }
     pathPattern->addStep(stepPattern, isChild);
-    stepPattern = 0;  // stepPattern is part of pathPattern now
+    stepPattern = nullptr;  // stepPattern is part of pathPattern now
     type = aLexer.peek()->mType;
   }
   aPattern = pathPattern;
@@ -250,7 +250,8 @@ nsresult txPatternParser::createStepPattern(txExprLexer& aLexer,
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
-  UniquePtr<txStepPattern> step(new txStepPattern(nodeTest, isAttr));
+  UniquePtr<txStepPattern> step =
+      std::make_unique<txStepPattern>(nodeTest, isAttr);
   rv = parsePredicates(step.get(), aLexer, aContext);
   NS_ENSURE_SUCCESS(rv, rv);
 

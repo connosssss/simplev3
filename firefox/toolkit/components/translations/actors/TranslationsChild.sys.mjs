@@ -8,8 +8,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
     "chrome://global/content/translations/translations-document.sys.mjs",
   LRUCache:
     "chrome://global/content/translations/translations-document.sys.mjs",
-  LanguageDetector:
-    "resource://gre/modules/translations/LanguageDetector.sys.mjs",
+});
+
+ChromeUtils.defineLazyGetter(lazy, "console", () => {
+  return console.createInstance({
+    maxLogLevelPref: "browser.translations.logLevel",
+    prefix: "Translations",
+  });
 });
 
 /**
@@ -35,16 +40,14 @@ export class TranslationsChild extends JSWindowActorChild {
 
   #isDestroyed = false;
 
-  handleEvent(event) {
-    if (this.#isDestroyed) {
-      return;
-    }
+  actorCreated() {
+    const isTopLevelActor = this.browsingContext === this.browsingContext?.top;
+    const innerWindowId = this.contentWindow?.windowGlobalChild?.innerWindowId;
 
-    if (event.type === "DOMContentLoaded") {
-      this.sendAsyncMessage("Translations:ReportLangTags", {
-        documentElementLang: this.document.documentElement.lang,
-      });
-    }
+    lazy.console.debug(
+      `Created ${isTopLevelActor ? "top-level" : "sub-frame"} TranslationsChild actor.`,
+      { innerWindowId }
+    );
   }
 
   didDestroy() {
@@ -89,7 +92,7 @@ export class TranslationsChild extends JSWindowActorChild {
           return undefined;
         }
 
-        const { isFindBarOpen, languagePair, port } = data;
+        const { isFindBarOpen, languagePair, port, subFrameSchedulerId } = data;
 
         if (
           !TranslationsChild.#translationsCache ||
@@ -109,44 +112,19 @@ export class TranslationsChild extends JSWindowActorChild {
           () => this.sendAsyncMessage("Translations:RequestPort"),
           () => this.sendAsyncMessage("Translations:ReportFirstVisibleChange"),
           TranslationsChild.#translationsCache,
-          isFindBarOpen
+          isFindBarOpen,
+          subFrameSchedulerId
         );
 
         return undefined;
       }
-      case "Translations:GetDocumentElementLang": {
-        return this.document.documentElement.lang;
-      }
-      case "Translations:IdentifyLanguage": {
-        // Wait for idle callback as the page will be more settled if it has
-        // dynamic content, like on a React app.
-        if (this.contentWindow) {
-          await new Promise(resolve => {
-            this.contentWindow.requestIdleCallback(resolve);
-          });
-        }
-
-        if (this.#isDestroyed) {
-          return undefined;
-        }
-
-        const startTime = Cu.now();
-        const detectionResult =
-          await lazy.LanguageDetector.detectLanguageFromDocument(this.document);
-
-        if (this.#isDestroyed) {
-          return undefined;
-        }
-
-        this.addProfilerMarker(
-          `Detect language from document: ${detectionResult.language}`,
-          startTime
-        );
-        return detectionResult;
-      }
       case "Translations:AcquirePort": {
         this.addProfilerMarker("Acquired a port, resuming translations");
         this.#translatedDoc.acquirePort(data.port);
+        return undefined;
+      }
+      case "Translations:EngineTerminated": {
+        this.#translatedDoc?.handleEngineTerminated();
         return undefined;
       }
       default:

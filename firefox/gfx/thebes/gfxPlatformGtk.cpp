@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,53 +7,53 @@
 
 #include "gfxPlatformGtk.h"
 
-#include <gtk/gtk.h>
 #include <fontconfig/fontconfig.h>
+#include <gtk/gtk.h>
 
+#include "GLContextProvider.h"
+#include "VsyncSource.h"
+#include "base/message_loop.h"
 #include "base/task.h"
 #include "base/thread.h"
-#include "base/message_loop.h"
 #include "cairo.h"
 #include "gfx2DGlue.h"
-#include "gfxFcPlatformFontList.h"
 #include "gfxConfig.h"
 #include "gfxContext.h"
+#include "gfxFT2FontBase.h"
+#include "gfxFcPlatformFontList.h"
 #include "gfxImageSurface.h"
+#include "gfxTextRun.h"
 #include "gfxUserFontSet.h"
 #include "gfxUtils.h"
-#include "gfxFT2FontBase.h"
-#include "gfxTextRun.h"
-#include "GLContextProvider.h"
-#include "mozilla/Atomics.h"
 #include "mozilla/Components.h"
-#include "mozilla/dom/ContentChild.h"
 #include "mozilla/FontPropertyTypes.h"
-#include "mozilla/gfx/2D.h"
-#include "mozilla/gfx/Logging.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/StaticPrefs_layers.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "mozilla/WidgetUtilsGtk.h"
+#include "mozilla/dom/ContentChild.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/Logging.h"
 #include "nsAppRunner.h"
 #include "nsIGfxInfo.h"
 #include "nsMathUtils.h"
 #include "nsUnicharUtils.h"
 #include "nsUnicodeProperties.h"
 #include "prenv.h"
-#include "VsyncSource.h"
-#include "mozilla/WidgetUtilsGtk.h"
 
 #ifdef MOZ_X11
-#  include "mozilla/gfx/XlibDisplay.h"
-#  include <gdk/gdkx.h>
 #  include <X11/extensions/Xrandr.h>
-#  include "cairo-xlib.h"
-#  include "gfxXlibSurface.h"
+#  include <gdk/gdkx.h>
+
 #  include "GLContextGLX.h"
 #  include "GLXLibrary.h"
-#  include "mozilla/X11Util.h"
 #  include "SoftwareVsyncSource.h"
+#  include "cairo-xlib.h"
+#  include "gfxXlibSurface.h"
+#  include "mozilla/X11Util.h"
+#  include "mozilla/gfx/XlibDisplay.h"
 
 /* Undefine the Status from Xlib since it will conflict with system headers on
  * OSX */
@@ -65,11 +64,12 @@
 
 #ifdef MOZ_WAYLAND
 #  include <gdk/gdkwayland.h>
+
 #  include "mozilla/widget/nsWaylandDisplay.h"
 #endif
 #ifdef MOZ_WIDGET_GTK
-#  include "mozilla/widget/DMABufDevice.h"
 #  include "mozilla/StaticPrefs_widget.h"
+#  include "mozilla/widget/DMABufDevice.h"
 #endif
 
 #define GDK_PIXMAP_SIZE_MAX 32767
@@ -125,6 +125,8 @@ gfxPlatformGtk::gfxPlatformGtk() {
   // Bug 1714483: Force disable FXAA Antialiasing on NV drivers. This is a
   // temporary workaround for a driver bug.
   PR_SetEnv("__GL_ALLOW_FXAA_USAGE=0");
+
+  InitMesaThreading();
 }
 
 gfxPlatformGtk::~gfxPlatformGtk() {
@@ -173,11 +175,6 @@ void gfxPlatformGtk::InitX11EGLConfig() {
   if (testType != u"EGL") {
     feature.ForceDisable(FeatureStatus::Broken, "glxtest could not use EGL",
                          "FEATURE_FAILURE_GLXTEST_NO_EGL"_ns);
-  }
-
-  if (feature.IsEnabled() && IsX11Display()) {
-    // Enabling glthread crashes on X11/EGL, see bug 1670545
-    PR_SetEnv("mesa_glthread=false");
   }
 #else
   feature.DisableByDefault(FeatureStatus::Unavailable, "X11 support missing",
@@ -229,7 +226,7 @@ void gfxPlatformGtk::InitDmabufConfig() {
                            failureId);
     }
     // Make sure we have DMABuf formats available.
-    Unused << GetGlobalDMABufFormats();
+    (void)GetGlobalDMABufFormats();
   }
 }
 
@@ -242,6 +239,13 @@ void gfxPlatformGtk::InitPlatformHardwareVideoConfig() {
     gfxConfig::ForceDisable(Feature::HARDWARE_VIDEO_ENCODING,
                             FeatureStatus::Unavailable, "Requires EGL",
                             "FEATURE_FAILURE_REQUIRES_EGL"_ns);
+  }
+  if (!gfxVars::UseDMABuf()) {
+    featureDec.ForceDisable(FeatureStatus::Unavailable, "Requires DMABUF",
+                            "FEATURE_FAILURE_REQUIRES_DMABUF"_ns);
+    gfxConfig::ForceDisable(Feature::HARDWARE_VIDEO_ENCODING,
+                            FeatureStatus::Unavailable, "Requires DMABUF",
+                            "FEATURE_FAILURE_REQUIRES_DMABUF"_ns);
   }
 
   if (!featureDec.IsEnabled()) {
@@ -294,11 +298,7 @@ void gfxPlatformGtk::InitWebRenderConfig() {
   // HDR requires compositor to work
 #if defined(MOZ_WAYLAND)
   if (feature.IsEnabled()) {
-    if (!StaticPrefs::gfx_wayland_hdr_AtStartup()) {
-      feature.ForceDisable(FeatureStatus::Unavailable, "HDR mode is disabled",
-                           "FEATURE_FAILURE_NO_HDR"_ns);
-
-    } else if (!IsWaylandDisplay()) {
+    if (!IsWaylandDisplay()) {
       feature.ForceDisable(FeatureStatus::Unavailable,
                            "Wayland support missing",
                            "FEATURE_FAILURE_NO_WAYLAND"_ns);
@@ -314,10 +314,6 @@ void gfxPlatformGtk::InitWebRenderConfig() {
       feature.ForceDisable(FeatureStatus::Unavailable,
                            "Requires wp_viewporter protocol support",
                            "FEATURE_FAILURE_REQUIRES_WPVIEWPORTER"_ns);
-    } else if (!GetGlobalDMABufFormats()->SupportsHDRComposition()) {
-      feature.ForceDisable(FeatureStatus::Unavailable,
-                           "Requires HDR format direct composition",
-                           "FEATURE_FAILURE_REQUIRES_FORMAT_COMPOSITION"_ns);
     }
   }
 #else  // MOZ_WAYLAND
@@ -337,6 +333,36 @@ void gfxPlatformGtk::InitPlatformGPUProcessPrefs() {
                          "FEATURE_FAILURE_WAYLAND"_ns);
   }
 #endif
+}
+
+void gfxPlatformGtk::InitMesaThreading() {
+  FeatureState& featureMesaThreading =
+      gfxConfig::GetFeature(Feature::MESA_THREADING);
+  featureMesaThreading.EnableByDefault();
+
+  nsCString failureId;
+  int32_t status;
+  nsCOMPtr<nsIGfxInfo> gfxInfo = components::GfxInfo::Service();
+  if (NS_FAILED(gfxInfo->GetFeatureStatus(nsIGfxInfo::FEATURE_MESA_THREADING,
+                                          failureId, &status))) {
+    featureMesaThreading.Disable(FeatureStatus::BlockedNoGfxInfo,
+                                 "gfxInfo is broken",
+                                 "FEATURE_FAILURE_NO_GFX_INFO"_ns);
+  } else if (status != nsIGfxInfo::FEATURE_STATUS_OK) {
+    featureMesaThreading.Disable(FeatureStatus::Blocklisted,
+                                 "Blocklisted by gfxInfo", failureId);
+  }
+
+  // Enabling glthread crashes on X11/EGL, see bug 1670545
+  if (gfxConfig::IsEnabled(Feature::X11_EGL) && IsX11Display()) {
+    featureMesaThreading.Disable(FeatureStatus::Failed,
+                                 "No glthread with EGL and X11",
+                                 "FEATURE_FAILURE_EGL_X11"_ns);
+  }
+
+  if (!featureMesaThreading.IsEnabled()) {
+    PR_SetEnv("mesa_glthread=false");
+  }
 }
 
 already_AddRefed<gfxASurface> gfxPlatformGtk::CreateOffscreenSurface(
@@ -475,7 +501,7 @@ static nsTArray<uint8_t> GetDisplayICCProfile(Display* dpy, Window& root) {
 
   if (XGetWindowProperty(dpy, root, iccAtom, 0, INT_MAX /* length */, X11False,
                          AnyPropertyType, &retAtom, &retFormat, &retLength,
-                         &retAfter, &retProperty) != Success) {
+                         &retAfter, &retProperty) != X11Success) {
     return nsTArray<uint8_t>();
   }
 
@@ -544,7 +570,7 @@ nsTArray<uint8_t> gfxPlatformGtk::GetPlatformCMSOutputProfileData() {
 
   if (XGetWindowProperty(dpy, root, edidAtom, 0, 32, X11False, AnyPropertyType,
                          &retAtom, &retFormat, &retLength, &retAfter,
-                         &retProperty) != Success) {
+                         &retProperty) != X11Success) {
     return nsTArray<uint8_t>();
   }
 

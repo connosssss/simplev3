@@ -7,57 +7,75 @@ with either `platform` or a list of `platforms`, and set the appropriate
 treeherder configuration and attributes for that platform.
 """
 
-
 import copy
+import functools
 import os
+from typing import Optional, Union
 
 from taskgraph.transforms.base import TransformSequence
 from taskgraph.util.attributes import keymatch
 from taskgraph.util.schema import Schema, optionally_keyed_by, resolve_keyed_by
 from taskgraph.util.treeherder import join_symbol, split_symbol
-from voluptuous import Any, Extra, Optional, Required
+from taskgraph.util.yaml import load_yaml
 
-from gecko_taskgraph.transforms.job import job_description_schema
+from gecko_taskgraph import GECKO
+from gecko_taskgraph.transforms.job import JobDescriptionSchema
+from gecko_taskgraph.util.hash import get_file_finder
 
-source_test_description_schema = Schema(
-    {
-        # most fields are passed directly through as job fields, and are not
-        # repeated here
-        Extra: object,
-        # The platform on which this task runs.  This will be used to set up attributes
-        # (for try selection) and treeherder metadata (for display).  If given as a list,
-        # the job will be "split" into multiple tasks, one with each platform.
-        Required("platform"): Any(str, [str]),
-        # Build labels required for the task. If this key is provided it must
-        # contain a build label for the task platform.
-        # The task will then depend on a build task, and the installer url will be
-        # saved to the GECKO_INSTALLER_URL environment variable.
-        Optional("require-build"): optionally_keyed_by("project", {str: str}),
-        # These fields can be keyed by "platform", and are otherwise identical to
-        # job descriptions.
-        Required("worker-type"): optionally_keyed_by(
-            "platform", job_description_schema["worker-type"]
-        ),
-        Required("worker"): optionally_keyed_by(
-            "platform", job_description_schema["worker"]
-        ),
-        Optional("python-version"): [int],
-        Optional("dependencies"): {
-            k: optionally_keyed_by("platform", v)
-            for k, v in job_description_schema["dependencies"].items()
-        },
-        # A list of artifacts to install from 'fetch' tasks.
-        Optional("fetches"): {
-            str: optionally_keyed_by(
-                "platform", job_description_schema["fetches"][str]
+
+class SourceTestDescriptionSchema(Schema, forbid_unknown_fields=False, kw_only=True):
+    # most fields are passed directly through as job fields, and are not repeated here
+    # The platform on which this task runs.  This will be used to set up attributes
+    # (for try selection) and treeherder metadata (for display).  If given as a list,
+    # the job will be "split" into multiple tasks, one with each platform.
+    platform: Union[str, list[str]]
+    # Build labels required for the task. If this key is provided it must
+    # contain a build label for the task platform.
+    # The task will then depend on a build task, and the installer url will be
+    # saved to the GECKO_INSTALLER_URL environment variable.
+    require_build: Optional[  # type: ignore
+        optionally_keyed_by("project", dict[str, str], use_msgspec=True)
+    ] = None
+    # These fields can be keyed by "platform", and are otherwise identical to
+    # job descriptions.
+    worker_type: optionally_keyed_by(
+        "platform",
+        JobDescriptionSchema.__annotations__["worker_type"],
+        use_msgspec=True,
+    )
+    worker: optionally_keyed_by(
+        "platform", JobDescriptionSchema.__annotations__["worker"], use_msgspec=True
+    )
+    dependencies: Optional[  # type: ignore
+        dict[
+            str,
+            optionally_keyed_by(
+                "platform",
+                JobDescriptionSchema.__annotations__["dependencies"],
+                use_msgspec=True,
             ),
-        },
-    }
-)
+        ]
+    ] = None
+    # For vendoring-verification tasks: the moz.yaml files this task checks. The
+    # run command and the files-changed patterns are built from this list, in
+    # vendor_verify_members below.
+    members: Optional[list[str]] = None
+    # A list of artifacts to install from 'fetch' tasks.
+    fetches: Optional[  # type: ignore
+        dict[
+            str,
+            optionally_keyed_by(
+                "platform",
+                JobDescriptionSchema.__annotations__["fetches"],
+                use_msgspec=True,
+            ),
+        ]
+    ] = None
+
 
 transforms = TransformSequence()
 
-transforms.add_validate(source_test_description_schema)
+transforms.add_validate(SourceTestDescriptionSchema)
 
 
 @transforms.add
@@ -66,6 +84,76 @@ def set_job_name(config, jobs):
         if "task-from" in job and job["task-from"] != "kind.yml":
             from_name = os.path.splitext(job["task-from"])[0]
             job["name"] = "{}-{}".format(from_name, job["name"])
+        yield job
+
+
+VENDOR_VERIFY_TASKS_FILE = "vendor-verify.yml"
+VENDOR_VERIFY_WRAPPER = "taskcluster/scripts/misc/verify-vendored-library.py"
+VENDOR_VERIFY_EXPECTED_FAIL = "taskcluster/scripts/misc/vendor-verify-expected-fail.yml"
+# A change to any of these can affect every library's re-vendoring, so they
+# trigger every group: the vendoring machinery, the version-control layer it uses
+# to detect changes (add_remove_files / working_directory_clean / diff), the
+# wrapper, and the annotations it reads.
+VENDOR_VERIFY_SHARED_WHEN = [
+    "python/mozbuild/mozbuild/vendor/**",
+    "python/mozversioncontrol/**",
+    VENDOR_VERIFY_WRAPPER,
+    VENDOR_VERIFY_EXPECTED_FAIL,
+]
+# Some libraries' update-actions run a tool by name rather than by path, so the
+# toolchains the tasks fetch also have to be on PATH. gn is found by path and so
+# needs no entry here.
+VENDOR_VERIFY_TOOL_PATH = "$MOZ_FETCHES_DIR/rustc/bin:$MOZ_FETCHES_DIR/node/bin"
+
+
+def vendor_verify_triggers(member):
+    """files-changed patterns for one vendored library.
+
+    Its moz.yaml directory, which covers the moz.yaml, its patches and any in-tree
+    generated files, plus its vendor-directory -- for some libraries (e.g. gfx/angle
+    vendors into third_party/angle) that lives elsewhere in the tree, so the moz.yaml
+    directory alone would miss changes to the sources.
+    """
+    dirs = {os.path.dirname(member)}
+    try:
+        manifest = load_yaml(os.path.join(GECKO, member)) or {}
+        vendor_dir = (manifest.get("vendoring") or {}).get("vendor-directory")
+        if vendor_dir:
+            dirs.add(vendor_dir.rstrip("/"))
+    except Exception:
+        pass
+    return [f"{d}/**" for d in dirs]
+
+
+@transforms.add
+def vendor_verify_members(config, jobs):
+    """Build the command and triggers for vendoring-verification tasks.
+
+    Tasks in vendor-verify.yml name the libraries they check in `members`. Neither
+    field can be expressed in the yaml: the command has to join the list, and the
+    triggers need each library's moz.yaml read to find its vendor-directory.
+    """
+    for job in jobs:
+        if job.get("task-from") != VENDOR_VERIFY_TASKS_FILE:
+            yield job
+            continue
+        members = sorted(job.pop("members", []))
+        if members:
+            job["run"]["command"] = (
+                f'PATH="{VENDOR_VERIFY_TOOL_PATH}:$PATH" '
+                f"./mach python {VENDOR_VERIFY_WRAPPER} "
+                f"--expected-fail {VENDOR_VERIFY_EXPECTED_FAIL} " + " ".join(members)
+            )
+            triggers = [p for m in members for p in vendor_verify_triggers(m)]
+            job["when"] = {
+                "files-changed": sorted(set(triggers) | set(VENDOR_VERIFY_SHARED_WHEN))
+            }
+        else:
+            # The coverage task verifies no library, so it needs none of the
+            # toolchains, and it is the most frequently triggered of these tasks.
+            # Fetches inherited from task-defaults merge additively, so they cannot
+            # be cleared in the yaml.
+            job.pop("fetches", None)
         yield job
 
 
@@ -88,24 +176,17 @@ def expand_platforms(config, jobs):
 
 
 @transforms.add
-def split_python(config, jobs):
+def nightly_only_codereview(config, jobs):
     for job in jobs:
-        key = "python-version"
-        versions = job.pop(key, [])
-        if not versions:
-            yield job
-            continue
-        for version in versions:
-            group = f"py{version}"
-            pyjob = copy.deepcopy(job)
-            if "name" in pyjob:
-                pyjob["name"] += f"-{group}"
-            else:
-                pyjob["label"] += f"-{group}"
-            symbol = split_symbol(pyjob["treeherder"]["symbol"])[1]
-            pyjob["treeherder"]["symbol"] = join_symbol(group, symbol)
-            pyjob["run"][key] = version
-            yield pyjob
+        # No easy way to determine if the try run is from nightly, or another
+        # branch like beta/release/esr
+        if "perfdocs-verify" in job["name"] and (
+            config.params.get("release_type", "").lower() != "nightly"
+            or "a" not in config.params.get("version", "150.0a0")
+        ):
+            job.setdefault("attributes", {})["code-review"] = False
+            job["always-target"] = False
+        yield job
 
 
 @transforms.add
@@ -222,13 +303,22 @@ def handle_shell(config, jobs):
 
 
 @transforms.add
-def set_code_review_env(config, jobs):
+def handle_code_review(config, jobs):
     """
-    Add a CODE_REVIEW environment variable when running in code-review bot mode
+    Resolve code-review attribute and add a CODE_REVIEW environment variable when
+    running in code-review bot mode.
     """
     is_code_review = config.params["target_tasks_method"] == "codereview"
 
     for job in jobs:
+        resolve_keyed_by(
+            job,
+            "attributes.code-review",
+            item_name=job["name"],
+            project=config.params["project"],
+            level=config.params["level"],
+        )
+
         attrs = job.get("attributes", {})
         if is_code_review and attrs.get("code-review") is True:
             env = job["worker"].setdefault("env", {})
@@ -259,4 +349,28 @@ def remove_optimization_on_central(config, jobs):
             del job["when"]
         if "optimization" in job and "skip-unless-mozlint" in job["optimization"]:
             del job["optimization"]
+        yield job
+
+
+@functools.cache
+def root_json_files():
+    """Tracked JSON files at the root of the tree, minus try_task_config.json."""
+    finder = get_file_finder(GECKO)
+    return sorted(
+        path for path, _ in finder.find("*.json") if path != "try_task_config.json"
+    )
+
+
+@transforms.add
+def ignore_try_task_config(config, jobs):
+    """
+    ``**/*.json`` also matches the try_task_config.json that ``mach try`` commits
+    on top of every try push. Globs don't support negation, so narrow it to
+    JSON files in subdirectories plus the ones tracked at the root.
+    """
+    for job in jobs:
+        patterns = (job.get("when") or {}).get("files-changed") or []
+        if "**/*.json" in patterns:
+            i = patterns.index("**/*.json")
+            patterns[i : i + 1] = ["*/**/*.json", *root_json_files()]
         yield job

@@ -3,19 +3,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use api::{ExternalScrollId, PropertyBinding, ReferenceFrameKind, TransformStyle, PropertyBindingId};
-use api::{APZScrollGeneration, HasScrollLinkedEffect, PipelineId, SampledScrollOffset, SpatialTreeItemKey};
+use api::{APZScrollGeneration, HasScrollLinkedEffect, PipelineId, SampledScrollOffset};
 use api::units::*;
 use euclid::Transform3D;
-use crate::gpu_types::TransformPalette;
-use crate::internal_types::{FastHashMap, FastHashSet, FrameMemory, PipelineInstanceId};
+use crate::transform::TransformPalette;
+use crate::internal_types::{FastHashMap, FrameMemory};
 use crate::print_tree::{PrintableTree, PrintTree, PrintTreePrinter};
 use crate::scene::SceneProperties;
-use crate::spatial_node::{ReferenceFrameInfo, SpatialNode, SpatialNodeType, StickyFrameInfo, SpatialNodeDescriptor};
-use crate::spatial_node::{SpatialNodeUid, ScrollFrameKind, SceneSpatialNode, SpatialNodeInfo, SpatialNodeUidKind};
-use std::{ops, u32};
+use crate::spatial_node::{ReferenceFrameInfo, SpatialNode, SpatialNodeDescriptor, SpatialNodeType, StickyFrameInfo};
+use crate::spatial_node::{ScrollFrameInfo, ScrollFrameKind, SceneSpatialNode, SpatialNodeInfo};
 use crate::util::{FastTransform, LayoutToWorldFastTransform, MatrixHelpers, ScaleOffset, scale_factors};
 use smallvec::SmallVec;
-use std::collections::hash_map::Entry;
 use crate::util::TransformedRectKind;
 use peek_poke::PeekPoke;
 
@@ -24,10 +22,16 @@ use peek_poke::PeekPoke;
 /// coordinate system has an id and those ids will be shared when the coordinates
 /// system are the same or are in the same axis-aligned space. This allows
 /// for optimizing mask generation.
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct CoordinateSystemId(pub u32);
+
+impl std::fmt::Debug for CoordinateSystemId {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
 
 /// A node in the hierarchy of coordinate system
 /// transforms.
@@ -52,7 +56,7 @@ impl CoordinateSystem {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, Hash, MallocSizeOf, PartialEq, PeekPoke, Default)]
+#[derive(Copy, Clone, Eq, Hash, MallocSizeOf, PartialEq, PeekPoke, Default)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct SpatialNodeIndex(pub u32);
@@ -68,6 +72,18 @@ impl SpatialNodeIndex {
     pub const UNKNOWN: SpatialNodeIndex = SpatialNodeIndex(u32::MAX - 1);
 }
 
+impl std::fmt::Debug for SpatialNodeIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if *self == Self::INVALID {
+            write!(f, "<invalid>")
+        } else if *self == Self::UNKNOWN {
+            write!(f, "<unknown>")
+        } else {
+            write!(f, "#{}", self.0)
+        }
+    }
+}
+
 // In some cases, the conversion from CSS pixels to device pixels can result in small
 // rounding errors when calculating the scrollable distance of a scroll frame. Apply
 // a small epsilon so that we don't detect these frames as "real" scroll frames.
@@ -76,9 +92,29 @@ const MIN_SCROLLABLE_AMOUNT: f32 = 0.01;
 // The minimum size for a scroll frame for it to be considered for a scroll root.
 const MIN_SCROLL_ROOT_SIZE: f32 = 128.0;
 
+/// Whether an explicit scroll frame is a real scroll root, as opposed to a
+/// redundant one that is not worth a picture cache slice of its own.
+///
+/// A frame with no scrollable area is skipped. This helps pages that have a
+/// nested scroll root within a redundant scroll root to avoid selecting the
+/// wrong reference spatial node for a picture cache.
+///
+/// Since we are skipping redundant scroll roots, we may end up selecting inner
+/// scroll roots that are very small. There is no performance benefit to
+/// creating a slice for these roots, as they are cheap to rasterize. The size
+/// comparison is in local-space, but makes for a reasonable estimate. The value
+/// is arbitrary, but is generally small enough to ignore things like scroll
+/// roots around text input elements.
+fn is_real_scroll_root(info: &ScrollFrameInfo) -> bool {
+    (info.scrollable_size.width > MIN_SCROLLABLE_AMOUNT ||
+     info.scrollable_size.height > MIN_SCROLLABLE_AMOUNT) &&
+    info.viewport_rect.width() > MIN_SCROLL_ROOT_SIZE &&
+    info.viewport_rect.height() > MIN_SCROLL_ROOT_SIZE
+}
+
 impl SpatialNodeIndex {
     pub fn new(index: usize) -> Self {
-        debug_assert!(index < ::std::u32::MAX as usize);
+        debug_assert!(index < u32::MAX as usize);
         SpatialNodeIndex(index as u32)
     }
 }
@@ -101,7 +137,7 @@ impl Default for VisibleFace {
     }
 }
 
-impl ops::Not for VisibleFace {
+impl std::ops::Not for VisibleFace {
     type Output = Self;
     fn not(self) -> Self {
         match self {
@@ -118,113 +154,23 @@ pub trait SpatialNodeContainer {
     fn get_node_info(&self, index: SpatialNodeIndex) -> SpatialNodeInfo;
 }
 
-#[cfg_attr(feature = "capture", derive(Serialize))]
-#[cfg_attr(feature = "replay", derive(Deserialize))]
-enum StoreElement<T> {
-    Empty,
-    Occupied(T),
-}
-
-#[cfg_attr(feature = "capture", derive(Serialize))]
-#[cfg_attr(feature = "replay", derive(Deserialize))]
-struct Store<T> {
-    elements: Vec<StoreElement<T>>,
-    free_indices: Vec<usize>,
-}
-
-impl<T> Store<T> {
-    fn new() -> Self {
-        Store {
-            elements: Vec::new(),
-            free_indices: Vec::new(),
-        }
-    }
-
-    fn insert(&mut self, element: T) -> usize {
-        match self.free_indices.pop() {
-            Some(index) => {
-                match &mut self.elements[index] {
-                    e @ StoreElement::Empty => *e = StoreElement::Occupied(element),
-                    StoreElement::Occupied(..) => panic!("bug: slot already occupied"),
-                };
-                index
-            }
-            None => {
-                let index = self.elements.len();
-                self.elements.push(StoreElement::Occupied(element));
-                index
-            }
-        }
-    }
-
-    fn set(&mut self, index: usize, element: T) {
-        match &mut self.elements[index] {
-            StoreElement::Empty => panic!("bug: set on empty element!"),
-            StoreElement::Occupied(ref mut entry) => *entry = element,
-        }
-    }
-
-    fn free(&mut self, index: usize) -> T {
-        self.free_indices.push(index);
-
-        let value = std::mem::replace(&mut self.elements[index], StoreElement::Empty);
-
-        match value {
-            StoreElement::Occupied(value) => value,
-            StoreElement::Empty => panic!("bug: freeing an empty slot"),
-        }
-    }
-}
-
-impl<T> ops::Index<usize> for Store<T> {
-    type Output = T;
-    fn index(&self, index: usize) -> &Self::Output {
-        match self.elements[index] {
-            StoreElement::Occupied(ref e) => e,
-            StoreElement::Empty => panic!("bug: indexing an empty element!"),
-        }
-    }
-}
-
-impl<T> ops::IndexMut<usize> for Store<T> {
-    fn index_mut(&mut self, index: usize) -> &mut T {
-        match self.elements[index] {
-            StoreElement::Occupied(ref mut e) => e,
-            StoreElement::Empty => panic!("bug: indexing an empty element!"),
-        }
-    }
-}
-
-#[cfg_attr(feature = "capture", derive(Serialize))]
-#[cfg_attr(feature = "replay", derive(Deserialize))]
-struct SpatialNodeEntry {
-    index: usize,
-    last_used: u64,
-}
-
 /// The representation of the spatial tree during scene building, which is
 /// mostly write-only, with a small number of queries for snapping,
-/// picture cache building
+/// picture cache building.
+///
+/// Each `SceneBuilder::build` call calls `reset()` to start the tree fresh,
+/// then emits a complete list of `SpatialTreeUpdate::Insert` ops that the
+/// frame-side `SpatialTree::apply_updates` consumes verbatim.
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct SceneSpatialTree {
     /// Nodes which determine the positions (offsets and transforms) for primitives
     /// and clips.
-    spatial_nodes: Store<SceneSpatialNode>,
-
-    /// A set of the uids we've encountered for spatial nodes, used to assert that
-    /// we're not seeing duplicates. Likely to be removed once we rely on this feature.
-    spatial_node_map: FastHashMap<SpatialNodeUid, SpatialNodeEntry>,
+    spatial_nodes: Vec<SceneSpatialNode>,
 
     root_reference_frame_index: SpatialNodeIndex,
 
-    frame_counter: u64,
     updates: SpatialTreeUpdates,
-
-    /// A debug check that the caller never adds a spatial node with duplicate
-    /// uid, since that can cause badness if it occurs (e.g. a malformed spatial
-    /// tree and infinite loops in is_ancestor etc)
-    spatial_nodes_set: FastHashSet<SpatialNodeUid>,
 }
 
 impl SpatialNodeContainer for SceneSpatialTree {
@@ -234,7 +180,6 @@ impl SpatialNodeContainer for SceneSpatialTree {
         SpatialNodeInfo {
             parent: node.parent,
             node_type: &node.descriptor.node_type,
-            snapping_transform: node.snapping_transform,
         }
     }
 }
@@ -242,14 +187,25 @@ impl SpatialNodeContainer for SceneSpatialTree {
 impl SceneSpatialTree {
     pub fn new() -> Self {
         let mut tree = SceneSpatialTree {
-            spatial_nodes: Store::new(),
-            spatial_node_map: FastHashMap::default(),
+            spatial_nodes: Vec::new(),
             root_reference_frame_index: SpatialNodeIndex(0),
-            frame_counter: 0,
             updates: SpatialTreeUpdates::new(),
-            spatial_nodes_set: FastHashSet::default(),
         };
 
+        tree.add_root_reference_frame();
+
+        tree
+    }
+
+    /// Reset the tree to an empty state with just the root reference frame.
+    /// Called at the start of each scene build.
+    pub fn reset(&mut self) {
+        self.spatial_nodes.clear();
+        self.updates = SpatialTreeUpdates::new();
+        self.add_root_reference_frame();
+    }
+
+    fn add_root_reference_frame(&mut self) {
         let node = SceneSpatialNode::new_reference_frame(
             None,
             TransformStyle::Flat,
@@ -265,43 +221,23 @@ impl SceneSpatialTree {
             true,
         );
 
-        tree.add_spatial_node(node, SpatialNodeUid::root());
-
-        tree
+        let index = self.add_spatial_node(node);
+        debug_assert_eq!(index, SpatialNodeIndex(0));
     }
 
     pub fn is_root_coord_system(&self, index: SpatialNodeIndex) -> bool {
         self.spatial_nodes[index.0 as usize].is_root_coord_system
     }
 
+    /// Record that a picture cache slice was built for this spatial node.
+    pub fn add_slice_root(&mut self, index: SpatialNodeIndex) {
+        self.updates.slice_roots.push(index);
+    }
+
     /// Complete building this scene, return the updates to apply to the frame spatial tree
     pub fn end_frame_and_get_pending_updates(&mut self) -> SpatialTreeUpdates {
         self.updates.root_reference_frame_index = self.root_reference_frame_index;
-        self.spatial_nodes_set.clear();
-
-        let now = self.frame_counter;
-        let spatial_nodes = &mut self.spatial_nodes;
-        let updates = &mut self.updates;
-
-        self.spatial_node_map.get_mut(&SpatialNodeUid::root()).unwrap().last_used = now;
-
-        self.spatial_node_map.retain(|_, entry| {
-            if entry.last_used + 10 < now {
-                spatial_nodes.free(entry.index);
-                updates.updates.push(SpatialTreeUpdate::Remove {
-                    index: entry.index,
-                });
-                return false;
-            }
-
-            true
-        });
-
-        let updates = std::mem::replace(&mut self.updates, SpatialTreeUpdates::new());
-
-        self.frame_counter += 1;
-
-        updates
+        std::mem::replace(&mut self.updates, SpatialTreeUpdates::new())
     }
 
     /// Check if a given spatial node is an ancestor of another spatial node.
@@ -387,27 +323,8 @@ impl SceneSpatialTree {
                             // If the previously identified scroll root is sticky then we don't
                             // want to choose an ancestor scroll root, as we want the sticky item
                             // to have its own picture cache slice.
-                            if !current_scroll_root_is_sticky {
-                                // If the scroll root has no scrollable area, we don't want to
-                                // consider it. This helps pages that have a nested scroll root
-                                // within a redundant scroll root to avoid selecting the wrong
-                                // reference spatial node for a picture cache.
-                                if info.scrollable_size.width > MIN_SCROLLABLE_AMOUNT ||
-                                   info.scrollable_size.height > MIN_SCROLLABLE_AMOUNT {
-                                    // Since we are skipping redundant scroll roots, we may end up
-                                    // selecting inner scroll roots that are very small. There is
-                                    // no performance benefit to creating a slice for these roots,
-                                    // as they are cheap to rasterize. The size comparison is in
-                                    // local-space, but makes for a reasonable estimate. The value
-                                    // is arbitrary, but is generally small enough to ignore things
-                                    // like scroll roots around text input elements.
-                                    if info.viewport_rect.width() > MIN_SCROLL_ROOT_SIZE &&
-                                       info.viewport_rect.height() > MIN_SCROLL_ROOT_SIZE {
-                                        // If we've found a root that is scrollable, and a reasonable
-                                        // size, select that as the current root for this node
-                                        real_scroll_root = node_index;
-                                    }
-                                }
+                            if !current_scroll_root_is_sticky && is_real_scroll_root(info) {
+                                real_scroll_root = node_index;
                             }
                         }
                     }
@@ -428,6 +345,20 @@ impl SceneSpatialTree {
         }
     }
 
+    /// Whether a scroll root returned by `find_scroll_root` is worth its own
+    /// picture cache slice. A redundant scroll frame (see `is_real_scroll_root`)
+    /// is only selected through the `outermost_scroll_root` fallback; a slice
+    /// boundary at it splits content that would otherwise composite as one
+    /// surface.
+    pub fn is_slice_worthy_scroll_root(&self, spatial_node_index: SpatialNodeIndex) -> bool {
+        match self.get_node_info(spatial_node_index).node_type {
+            SpatialNodeType::ScrollFrame(ref info) if info.frame_kind == ScrollFrameKind::Explicit => {
+                is_real_scroll_root(info)
+            }
+            _ => true,
+        }
+    }
+
     /// The root reference frame, which is the true root of the SpatialTree.
     pub fn root_reference_frame_index(&self) -> SpatialNodeIndex {
         self.root_reference_frame_index
@@ -435,64 +366,19 @@ impl SceneSpatialTree {
 
     fn add_spatial_node(
         &mut self,
-        mut node: SceneSpatialNode,
-        uid: SpatialNodeUid,
+        node: SceneSpatialNode,
     ) -> SpatialNodeIndex {
-        let parent_snapping_transform = match node.parent {
-            Some(parent_index) => {
-                self.get_node_info(parent_index).snapping_transform
-            }
-            None => {
-                Some(ScaleOffset::identity())
-            }
-        };
+        let descriptor = node.descriptor.clone();
+        let parent = node.parent;
 
-        node.snapping_transform = calculate_snapping_transform(
-            parent_snapping_transform,
-            &node.descriptor.node_type,
-        );
+        let index = self.spatial_nodes.len();
+        self.spatial_nodes.push(node);
 
-        // Ensure a node with the same uid hasn't been added during this scene build
-        assert!(self.spatial_nodes_set.insert(uid), "duplicate key {:?}", uid);
-
-        let index = match self.spatial_node_map.entry(uid) {
-            Entry::Occupied(mut e) => {
-                let e = e.get_mut();
-                e.last_used = self.frame_counter;
-
-                let existing_node = &self.spatial_nodes[e.index];
-
-                if *existing_node != node {
-                    self.updates.updates.push(SpatialTreeUpdate::Update {
-                        index: e.index,
-                        parent: node.parent,
-                        descriptor: node.descriptor.clone(),
-                    });
-                    self.spatial_nodes.set(e.index, node);
-                }
-
-                e.index
-            }
-            Entry::Vacant(e) => {
-                let descriptor = node.descriptor.clone();
-                let parent = node.parent;
-
-                let index = self.spatial_nodes.insert(node);
-
-                e.insert(SpatialNodeEntry {
-                    index,
-                    last_used: self.frame_counter,
-                });
-
-                self.updates.updates.push(SpatialTreeUpdate::Insert {
-                    index,
-                    descriptor,
-                    parent,
-                });
-
-                index
-            }
-        };
+        self.updates.updates.push(SpatialTreeUpdate {
+            index,
+            descriptor,
+            parent,
+        });
 
         SpatialNodeIndex(index as u32)
     }
@@ -505,7 +391,7 @@ impl SceneSpatialTree {
         kind: ReferenceFrameKind,
         origin_in_parent_reference_frame: LayoutVector2D,
         pipeline_id: PipelineId,
-        uid: SpatialNodeUid,
+        is_pipeline_root: bool,
     ) -> SpatialNodeIndex {
         // Determine if this reference frame creates a new static coordinate system
         let new_static_coord_system = match kind {
@@ -531,10 +417,6 @@ impl SceneSpatialTree {
 
         let is_root_coord_system = !new_static_coord_system &&
             self.spatial_nodes[parent_index.0 as usize].is_root_coord_system;
-        let is_pipeline_root = match uid.kind {
-            SpatialNodeUidKind::InternalReferenceFrame { .. } => true,
-            _ => false,
-        };
 
         let node = SceneSpatialNode::new_reference_frame(
             Some(parent_index),
@@ -546,7 +428,7 @@ impl SceneSpatialTree {
             is_root_coord_system,
             is_pipeline_root,
         );
-        self.add_spatial_node(node, uid)
+        self.add_spatial_node(node)
     }
 
     pub fn add_scroll_frame(
@@ -560,7 +442,6 @@ impl SceneSpatialTree {
         external_scroll_offset: LayoutVector2D,
         scroll_offset_generation: APZScrollGeneration,
         has_scroll_linked_effect: HasScrollLinkedEffect,
-        uid: SpatialNodeUid,
     ) -> SpatialNodeIndex {
         // Scroll frames are only 2d translations - they can't introduce a new static coord system
         let is_root_coord_system = self.spatial_nodes[parent_index.0 as usize].is_root_coord_system;
@@ -577,7 +458,7 @@ impl SceneSpatialTree {
             has_scroll_linked_effect,
             is_root_coord_system,
         );
-        self.add_spatial_node(node, uid)
+        self.add_spatial_node(node)
     }
 
     pub fn add_sticky_frame(
@@ -585,12 +466,9 @@ impl SceneSpatialTree {
         parent_index: SpatialNodeIndex,
         sticky_frame_info: StickyFrameInfo,
         pipeline_id: PipelineId,
-        key: SpatialTreeItemKey,
-        instance_id: PipelineInstanceId,
     ) -> SpatialNodeIndex {
         // Sticky frames are only 2d translations - they can't introduce a new static coord system
         let is_root_coord_system = self.spatial_nodes[parent_index.0 as usize].is_root_coord_system;
-        let uid = SpatialNodeUid::external(key, pipeline_id, instance_id);
 
         let node = SceneSpatialNode::new_sticky_frame(
             parent_index,
@@ -598,38 +476,27 @@ impl SceneSpatialTree {
             pipeline_id,
             is_root_coord_system,
         );
-        self.add_spatial_node(node, uid)
+        self.add_spatial_node(node)
     }
 }
 
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
-pub enum SpatialTreeUpdate {
-    Insert {
-        index: usize,
-        parent: Option<SpatialNodeIndex>,
-        descriptor: SpatialNodeDescriptor,
-    },
-    Update {
-        index: usize,
-        parent: Option<SpatialNodeIndex>,
-        descriptor: SpatialNodeDescriptor,
-    },
-    Remove {
-        index: usize,
-    },
+pub struct SpatialTreeUpdate {
+    pub index: usize,
+    pub parent: Option<SpatialNodeIndex>,
+    pub descriptor: SpatialNodeDescriptor,
 }
 
-/// The delta updates to apply after building a new scene to the retained frame building
-/// tree.
-// TODO(gw): During the initial scaffolding work, this is the exact same as previous
-//           behavior - that is, a complete list of new spatial nodes. In future, this
-//           will instead be a list of deltas to apply to the frame spatial tree.
+/// The full set of spatial nodes for the scene that just finished building.
+/// `apply_updates` consumes this by replacing the frame-side tree wholesale.
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct SpatialTreeUpdates {
     root_reference_frame_index: SpatialNodeIndex,
     updates: Vec<SpatialTreeUpdate>,
+    /// Spatial nodes of the picture cache slices built for this scene.
+    slice_roots: Vec<SpatialNodeIndex>,
 }
 
 impl SpatialTreeUpdates {
@@ -637,6 +504,7 @@ impl SpatialTreeUpdates {
         SpatialTreeUpdates {
             root_reference_frame_index: SpatialNodeIndex::INVALID,
             updates: Vec::new(),
+            slice_roots: Vec::new(),
         }
     }
 }
@@ -689,6 +557,9 @@ pub struct TransformUpdateState {
 
     /// True if the any parent nodes are currently zooming
     pub is_ancestor_or_self_zooming: bool,
+
+    /// True if this node or any parent node has an animated (property-bound) transform
+    pub is_ancestor_or_self_animating: bool,
 
     /// Set to true if this state represents a scroll node with external id
     pub external_id: Option<ExternalScrollId>,
@@ -755,6 +626,14 @@ impl<Src, Dst> CoordinateSpaceMapping<Src, Dst> {
         }
     }
 
+    pub fn coplanar_scale_factors(&self) -> Option<(f32, f32)> {
+        match *self {
+            CoordinateSpaceMapping::Local => Some((1.0, 1.0)),
+            CoordinateSpaceMapping::ScaleOffset(ref scale_offset) => Some((scale_offset.scale.x.abs(), scale_offset.scale.y.abs())),
+            CoordinateSpaceMapping::Transform(ref transform) => transform.coplanar_scale_factors(),
+        }
+    }
+
     pub fn inverse(&self) -> Option<CoordinateSpaceMapping<Dst, Src>> {
         match *self {
             CoordinateSpaceMapping::Local => Some(CoordinateSpaceMapping::Local),
@@ -793,7 +672,6 @@ impl SpatialNodeContainer for SpatialTree {
         SpatialNodeInfo {
             parent: node.parent,
             node_type: &node.node_type,
-            snapping_transform: node.snapping_transform,
         }
     }
 }
@@ -856,82 +734,41 @@ impl SpatialTree {
         self.visit_node_impl_mut(self.root_reference_frame_index, &mut f);
     }
 
-    /// Apply updates from a new scene to the frame spatial tree
+    /// Replace this tree with the contents of a freshly-built scene.
     pub fn apply_updates(
         &mut self,
         updates: SpatialTreeUpdates,
     ) {
         self.root_reference_frame_index = updates.root_reference_frame_index;
+        self.spatial_nodes.clear();
 
-        for update in updates.updates {
-            match update {
-                SpatialTreeUpdate::Insert { index, parent, descriptor } => {
-                    if let Some(parent) = parent {
-                        self.get_spatial_node_mut(parent).add_child(SpatialNodeIndex(index as u32));
-                    }
+        for SpatialTreeUpdate { index, parent, descriptor } in updates.updates {
+            debug_assert_eq!(index, self.spatial_nodes.len());
 
-                    let node = SpatialNode {
-                        viewport_transform: ScaleOffset::identity(),
-                        content_transform: ScaleOffset::identity(),
-                        snapping_transform: None,
-                        coordinate_system_id: CoordinateSystemId(0),
-                        transform_kind: TransformedRectKind::AxisAligned,
-                        parent,
-                        children: Vec::new(),
-                        pipeline_id: descriptor.pipeline_id,
-                        node_type: descriptor.node_type,
-                        invertible: true,
-                        is_async_zooming: false,
-                        is_ancestor_or_self_zooming: false,
-                    };
-
-                    assert!(index <= self.spatial_nodes.len());
-                    if index < self.spatial_nodes.len() {
-                        self.spatial_nodes[index] = node;
-                    } else {
-                        self.spatial_nodes.push(node);
-                    }
-                }
-                SpatialTreeUpdate::Update { index, descriptor, parent } => {
-                    let current_parent = self.spatial_nodes[index].parent;
-
-                    if current_parent != parent {
-                        if let Some(current_parent) = current_parent {
-                            let i = self.spatial_nodes[current_parent.0 as usize]
-                                .children
-                                .iter()
-                                .position(|e| e.0 as usize == index)
-                                .expect("bug: not found!");
-                            self.spatial_nodes[current_parent.0 as usize].children.remove(i);
-                        }
-
-                        let new_parent = parent.expect("todo: is this valid?");
-                        self.spatial_nodes[new_parent.0 as usize].add_child(SpatialNodeIndex(index as u32));
-                    }
-
-                    let node = &mut self.spatial_nodes[index];
-
-                    node.node_type = descriptor.node_type;
-                    node.pipeline_id = descriptor.pipeline_id;
-                    node.parent = parent;
-                }
-                SpatialTreeUpdate::Remove { index, .. } => {
-                    let node = &mut self.spatial_nodes[index];
-
-                    // Set the pipeline id to be invalid, so that even though this array
-                    // entry still exists we can easily see it's invalid when debugging.
-                    node.pipeline_id = PipelineId::dummy();
-
-                    if let Some(parent) = node.parent {
-                        let i = self.spatial_nodes[parent.0 as usize]
-                            .children
-                            .iter()
-                            .position(|e| e.0 as usize == index)
-                            .expect("bug: not found!");
-                        self.spatial_nodes[parent.0 as usize].children.remove(i);
-                    }
-                }
+            if let Some(parent) = parent {
+                self.get_spatial_node_mut(parent).add_child(SpatialNodeIndex(index as u32));
             }
+
+            self.spatial_nodes.push(SpatialNode {
+                viewport_transform: ScaleOffset::identity(),
+                content_transform: ScaleOffset::identity(),
+                coordinate_system_id: CoordinateSystemId(0),
+                transform_kind: TransformedRectKind::AxisAligned,
+                parent,
+                children: Vec::new(),
+                pipeline_id: descriptor.pipeline_id,
+                node_type: descriptor.node_type,
+                invertible: true,
+                is_async_zooming: false,
+                is_ancestor_or_self_zooming: false,
+                is_ancestor_or_self_animating: false,
+                is_slice_root: false,
+                slice_root_snap_offset: WorldVector2D::zero(),
+            });
+        }
+
+        for index in updates.slice_roots {
+            self.get_spatial_node_mut(index).is_slice_root = true;
         }
 
         self.visit_nodes_mut(|_, node| {
@@ -1004,8 +841,40 @@ impl SpatialTree {
         node_index
     }
 
+    /// Whether `get_relative_transform(child_index, parent_index)` can be
+    /// computed, i.e. whether `parent_index`'s coordinate system is an ancestor
+    /// of (or the same as) `child_index`'s.
+    ///
+    /// Relative transforms are only available in that direction. Building one
+    /// walks from the child's coordinate system up to the parent's, accumulating
+    /// each system's transform, so there is nothing to walk when the parent is
+    /// not on that path. The other direction is deliberately not offered rather
+    /// than merely missing: a transform away from the root is not always
+    /// invertible, so there is not always a transform to return. A caller that
+    /// needs the reverse has to handle the answer not existing.
+    pub fn can_get_relative_transform(
+        &self,
+        child_index: SpatialNodeIndex,
+        parent_index: SpatialNodeIndex,
+    ) -> bool {
+        let target = self.get_spatial_node(parent_index).coordinate_system_id;
+        let mut current = self.get_spatial_node(child_index).coordinate_system_id;
+
+        loop {
+            if current == target {
+                return true;
+            }
+
+            match self.coord_systems[current.0 as usize].parent {
+                Some(parent) => current = parent,
+                None => return false,
+            }
+        }
+    }
+
     /// Calculate the relative transform from `child_index` to `parent_index`.
-    /// This method will panic if the nodes are not connected!
+    /// This method will panic if the nodes are not connected! See
+    /// `can_get_relative_transform` for what "connected" means here.
     pub fn get_relative_transform(
         &self,
         child_index: SpatialNodeIndex,
@@ -1042,6 +911,13 @@ impl SpatialTree {
 
         if child.coordinate_system_id == parent.coordinate_system_id {
             let scale_offset = child.content_transform.then(&parent.content_transform.inverse());
+
+            // Optimization - detect identity scale-offsets and treat them as
+            // local to skip following math
+            if scale_offset.is_identity() {
+                return CoordinateSpaceMapping::Local;
+            }
+
             return CoordinateSpaceMapping::ScaleOffset(scale_offset);
         }
 
@@ -1106,10 +982,10 @@ impl SpatialTree {
             if index == self.root_reference_frame_index {
                 CoordinateSpaceMapping::Local
             } else {
-              match scroll {
-                TransformScroll::Scrolled => CoordinateSpaceMapping::ScaleOffset(child.content_transform),
-                TransformScroll::Unscrolled => CoordinateSpaceMapping::ScaleOffset(child.viewport_transform),
-              }
+                match scroll {
+                    TransformScroll::Scrolled => CoordinateSpaceMapping::ScaleOffset(child.content_transform),
+                    TransformScroll::Unscrolled => CoordinateSpaceMapping::ScaleOffset(child.viewport_transform),
+                }
             }
         } else {
             let system = &self.coord_systems[child.coordinate_system_id.0 as usize];
@@ -1171,7 +1047,7 @@ impl SpatialTree {
             return;
         }
 
-        profile_scope!("update_tree");
+        tracy_rs::profile_scope!("update_tree");
         self.coord_systems.clear();
         self.coord_systems.push(CoordinateSystem::root());
 
@@ -1188,6 +1064,7 @@ impl SpatialTree {
             invertible: true,
             preserves_3d: false,
             is_ancestor_or_self_zooming: false,
+            is_ancestor_or_self_animating: false,
             external_id: None,
             scroll_offset: LayoutVector2D::zero(),
         };
@@ -1206,21 +1083,7 @@ impl SpatialTree {
         node_index: SpatialNodeIndex,
         scene_properties: &SceneProperties,
     ) {
-        let parent_snapping_transform = match self.get_spatial_node(node_index).parent {
-            Some(parent_index) => {
-                self.get_node_info(parent_index).snapping_transform
-            }
-            None => {
-                Some(ScaleOffset::identity())
-            }
-        };
-
         let node = &mut self.spatial_nodes[node_index.0 as usize];
-
-        node.snapping_transform = calculate_snapping_transform(
-            parent_snapping_transform,
-            &node.node_type,
-        );
 
         node.update(
             &self.update_state_stack,
@@ -1248,7 +1111,7 @@ impl SpatialTree {
     }
 
     pub fn build_transform_palette(&self, memory: &FrameMemory) -> TransformPalette {
-        profile_scope!("build_transform_palette");
+        tracy_rs::profile_scope!("build_transform_palette");
         TransformPalette::new(self.spatial_nodes.len(), memory)
     }
 
@@ -1287,7 +1150,6 @@ impl SpatialTree {
         pt.add_item(format!("index: {:?}", index));
         pt.add_item(format!("content_transform: {:?}", node.content_transform));
         pt.add_item(format!("viewport_transform: {:?}", node.viewport_transform));
-        pt.add_item(format!("snapping_transform: {:?}", node.snapping_transform));
         pt.add_item(format!("coordinate_system_id: {:?}", node.coordinate_system_id));
 
         for child_index in &node.children {
@@ -1332,17 +1194,27 @@ impl SpatialTree {
     }
 
     #[allow(dead_code)]
-    pub fn print(&self) {
+    pub fn print_to_string(&self) -> String {
+        let mut result = String::new();
+
         if self.root_reference_frame_index != SpatialNodeIndex::INVALID {
             let mut buf = Vec::<u8>::new();
             {
                 let mut pt = PrintTree::new_with_sink("spatial tree", &mut buf);
                 self.print_with(&mut pt);
             }
-            // If running in Gecko, set RUST_LOG=webrender::spatial_tree=debug
-            // to get this logging to be emitted to stderr/logcat.
-            debug!("{}", std::str::from_utf8(&buf).unwrap_or("(Tree printer emitted non-utf8)"));
+            result = std::str::from_utf8(&buf).unwrap_or("(Tree printer emitted non-utf8)").to_string();
         }
+
+        result
+    }
+
+    #[allow(dead_code)]
+    pub fn print(&self) {
+        let result = self.print_to_string();
+        // If running in Gecko, set RUST_LOG=webrender::spatial_tree=debug
+        // to get this logging to be emitted to stderr/logcat.
+        debug!("{}", result);
     }
 }
 
@@ -1354,90 +1226,13 @@ impl PrintableTree for SpatialTree {
     }
 }
 
-/// Calculate the accumulated external scroll offset for a given spatial node.
-pub fn get_external_scroll_offset<S: SpatialNodeContainer>(
-    spatial_tree: &S,
-    node_index: SpatialNodeIndex,
-) -> LayoutVector2D {
-    let mut offset = LayoutVector2D::zero();
-    let mut current_node = Some(node_index);
-
-    while let Some(node_index) = current_node {
-        let node_info = spatial_tree.get_node_info(node_index);
-
-        match node_info.node_type {
-            SpatialNodeType::ScrollFrame(ref scrolling) => {
-                offset += scrolling.external_scroll_offset;
-            }
-            SpatialNodeType::StickyFrame(..) => {
-                // Doesn't provide any external scroll offset
-            }
-            SpatialNodeType::ReferenceFrame(..) => {
-                // External scroll offsets are not propagated across
-                // reference frames.
-                break;
-            }
-        }
-
-        current_node = node_info.parent;
-    }
-
-    offset
-}
-
-fn calculate_snapping_transform(
-    parent_snapping_transform: Option<ScaleOffset>,
-    node_type: &SpatialNodeType,
-) -> Option<ScaleOffset> {
-    // We need to incorporate the parent scale/offset with the child.
-    // If the parent does not have a scale/offset, then we know we are
-    // not 2d axis aligned and thus do not need to snap its children
-    // either.
-    let parent_scale_offset = match parent_snapping_transform {
-        Some(parent_snapping_transform) => parent_snapping_transform,
-        None => return None,
-    };
-
-    let scale_offset = match node_type {
-        SpatialNodeType::ReferenceFrame(ref info) => {
-            match info.source_transform {
-                PropertyBinding::Value(ref value) => {
-                    // We can only get a ScaleOffset if the transform is 2d axis
-                    // aligned.
-                    match ScaleOffset::from_transform(value) {
-                        Some(scale_offset) => {
-                            let origin_offset = info.origin_in_parent_reference_frame;
-                            scale_offset.then(&ScaleOffset::from_offset(origin_offset.to_untyped()))
-                        }
-                        None => return None,
-                    }
-                }
-
-                // Assume animations start at the identity transform for snapping purposes.
-                // We still want to incorporate the reference frame offset however.
-                // TODO(aosmond): Is there a better known starting point?
-                PropertyBinding::Binding(..) => {
-                    let origin_offset = info.origin_in_parent_reference_frame;
-                    ScaleOffset::from_offset(origin_offset.to_untyped())
-                }
-            }
-        }
-        _ => ScaleOffset::identity(),
-    };
-
-    Some(scale_offset.then(&parent_scale_offset))
-}
-
 #[cfg(test)]
 fn add_reference_frame(
     cst: &mut SceneSpatialTree,
     parent: SpatialNodeIndex,
     transform: LayoutTransform,
     origin_in_parent_reference_frame: LayoutVector2D,
-    key: SpatialTreeItemKey,
 ) -> SpatialNodeIndex {
-    let pid = PipelineInstanceId::new(0);
-
     cst.add_reference_frame(
         parent,
         TransformStyle::Preserve3D,
@@ -1449,7 +1244,7 @@ fn add_reference_frame(
         },
         origin_in_parent_reference_frame,
         PipelineId::dummy(),
-        SpatialNodeUid::external(key, PipelineId::dummy(), pid),
+        false,
     )
 }
 
@@ -1488,7 +1283,6 @@ fn test_cst_simple_translation() {
         root_reference_frame_index,
         LayoutTransform::identity(),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 0),
     );
 
     let child1 = add_reference_frame(
@@ -1496,7 +1290,6 @@ fn test_cst_simple_translation() {
         root,
         LayoutTransform::translation(100.0, 0.0, 0.0),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 1),
     );
 
     let child2 = add_reference_frame(
@@ -1504,7 +1297,6 @@ fn test_cst_simple_translation() {
         child1,
         LayoutTransform::translation(0.0, 50.0, 0.0),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 2),
     );
 
     let child3 = add_reference_frame(
@@ -1512,7 +1304,6 @@ fn test_cst_simple_translation() {
         child2,
         LayoutTransform::translation(200.0, 200.0, 0.0),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 3),
     );
 
     let mut st = SpatialTree::new();
@@ -1537,7 +1328,6 @@ fn test_cst_simple_scale() {
         root_reference_frame_index,
         LayoutTransform::identity(),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 0),
     );
 
     let child1 = add_reference_frame(
@@ -1545,7 +1335,6 @@ fn test_cst_simple_scale() {
         root,
         LayoutTransform::scale(4.0, 1.0, 1.0),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 1),
     );
 
     let child2 = add_reference_frame(
@@ -1553,7 +1342,6 @@ fn test_cst_simple_scale() {
         child1,
         LayoutTransform::scale(1.0, 2.0, 1.0),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 2),
     );
 
     let child3 = add_reference_frame(
@@ -1561,7 +1349,6 @@ fn test_cst_simple_scale() {
         child2,
         LayoutTransform::scale(2.0, 2.0, 1.0),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 3),
     );
 
     let mut st = SpatialTree::new();
@@ -1587,7 +1374,6 @@ fn test_cst_scale_translation() {
         root_reference_frame_index,
         LayoutTransform::identity(),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 0),
     );
 
     let child1 = add_reference_frame(
@@ -1595,7 +1381,6 @@ fn test_cst_scale_translation() {
         root,
         LayoutTransform::translation(100.0, 50.0, 0.0),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 1),
     );
 
     let child2 = add_reference_frame(
@@ -1603,7 +1388,6 @@ fn test_cst_scale_translation() {
         child1,
         LayoutTransform::scale(2.0, 4.0, 1.0),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 2),
     );
 
     let child3 = add_reference_frame(
@@ -1611,7 +1395,6 @@ fn test_cst_scale_translation() {
         child2,
         LayoutTransform::translation(200.0, -100.0, 0.0),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 3),
     );
 
     let child4 = add_reference_frame(
@@ -1619,7 +1402,6 @@ fn test_cst_scale_translation() {
         child3,
         LayoutTransform::scale(3.0, 2.0, 1.0),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 4),
     );
 
     let mut st = SpatialTree::new();
@@ -1650,7 +1432,6 @@ fn test_cst_translation_rotate() {
         root_reference_frame_index,
         LayoutTransform::identity(),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 0),
     );
 
     let child1 = add_reference_frame(
@@ -1658,7 +1439,6 @@ fn test_cst_translation_rotate() {
         root,
         LayoutTransform::rotation(0.0, 0.0, 1.0, Angle::degrees(-90.0)),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 1),
     );
 
     let mut st = SpatialTree::new();
@@ -1678,7 +1458,6 @@ fn test_is_ancestor1() {
         root_reference_frame_index,
         LayoutTransform::identity(),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 0),
     );
 
     let child1_0 = add_reference_frame(
@@ -1686,7 +1465,6 @@ fn test_is_ancestor1() {
         root,
         LayoutTransform::identity(),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 1),
     );
 
     let child1_1 = add_reference_frame(
@@ -1694,7 +1472,6 @@ fn test_is_ancestor1() {
         child1_0,
         LayoutTransform::identity(),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 2),
     );
 
     let child2 = add_reference_frame(
@@ -1702,7 +1479,6 @@ fn test_is_ancestor1() {
         root,
         LayoutTransform::identity(),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 3),
     );
 
     assert!(!st.is_ancestor(root, root));
@@ -1727,11 +1503,72 @@ fn test_is_ancestor1() {
     assert!(!st.is_ancestor(child2, child1_1));
 }
 
+/// A slice root scroll frame under a reference frame at a fractional offset is
+/// snapped to the device pixel grid, and its descendants move with it. A scroll
+/// frame that isn't a slice root keeps the fractional offset.
+#[test]
+fn test_slice_root_snapped() {
+    fn build(mark_slice_root: bool) -> (SpatialTree, SpatialNodeIndex, SpatialNodeIndex) {
+        let mut cst = SceneSpatialTree::new();
+        let frame = cst.add_reference_frame(
+            cst.root_reference_frame_index(),
+            TransformStyle::Flat,
+            PropertyBinding::Value(LayoutTransform::identity()),
+            ReferenceFrameKind::Transform {
+                is_2d_scale_translation: true,
+                should_snap: false,
+                paired_with_perspective: false,
+            },
+            LayoutVector2D::new(0.0, 37.5),
+            PipelineId::dummy(),
+            false,
+        );
+        let scroll = cst.add_scroll_frame(
+            frame,
+            ExternalScrollId(1, PipelineId::dummy()),
+            PipelineId::dummy(),
+            &LayoutRect::from_size(LayoutSize::new(400.0, 400.0)),
+            &LayoutSize::new(400.0, 800.0),
+            ScrollFrameKind::Explicit,
+            LayoutVector2D::zero(),
+            APZScrollGeneration::default(),
+            HasScrollLinkedEffect::No,
+        );
+        let child = cst.add_reference_frame(
+            scroll,
+            TransformStyle::Flat,
+            PropertyBinding::Value(LayoutTransform::identity()),
+            ReferenceFrameKind::Transform {
+                is_2d_scale_translation: true,
+                should_snap: false,
+                paired_with_perspective: false,
+            },
+            LayoutVector2D::new(0.0, 10.25),
+            PipelineId::dummy(),
+            false,
+        );
+        if mark_slice_root {
+            cst.add_slice_root(scroll);
+        }
+        let mut st = SpatialTree::new();
+        st.apply_updates(cst.end_frame_and_get_pending_updates());
+        st.update_tree(&SceneProperties::new());
+        (st, scroll, child)
+    }
+
+    let (st, scroll, child) = build(true);
+    assert_eq!(st.get_spatial_node(scroll).content_transform.offset.y, 38.0);
+    assert_eq!(st.get_spatial_node(child).content_transform.offset.y, 48.25);
+
+    let (st, scroll, child) = build(false);
+    assert_eq!(st.get_spatial_node(scroll).content_transform.offset.y, 37.5);
+    assert_eq!(st.get_spatial_node(child).content_transform.offset.y, 47.75);
+}
+
 /// Tests that we select the correct scroll root in the simple case.
 #[test]
 fn test_find_scroll_root_simple() {
     let mut st = SceneSpatialTree::new();
-    let pid = PipelineInstanceId::new(0);
 
     let root = st.add_reference_frame(
         st.root_reference_frame_index(),
@@ -1744,7 +1581,7 @@ fn test_find_scroll_root_simple() {
         },
         LayoutVector2D::new(0.0, 0.0),
         PipelineId::dummy(),
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 0), PipelineId::dummy(), pid),
+        false,
     );
 
     let scroll = st.add_scroll_frame(
@@ -1757,7 +1594,6 @@ fn test_find_scroll_root_simple() {
         LayoutVector2D::new(0.0, 0.0),
         APZScrollGeneration::default(),
         HasScrollLinkedEffect::No,
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 1), PipelineId::dummy(), pid),
     );
 
     assert_eq!(st.find_scroll_root(scroll, true), scroll);
@@ -1767,7 +1603,6 @@ fn test_find_scroll_root_simple() {
 #[test]
 fn test_find_scroll_root_sub_scroll_frame() {
     let mut st = SceneSpatialTree::new();
-    let pid = PipelineInstanceId::new(0);
 
     let root = st.add_reference_frame(
         st.root_reference_frame_index(),
@@ -1780,7 +1615,7 @@ fn test_find_scroll_root_sub_scroll_frame() {
         },
         LayoutVector2D::new(0.0, 0.0),
         PipelineId::dummy(),
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 0), PipelineId::dummy(), pid),
+        false,
     );
 
     let root_scroll = st.add_scroll_frame(
@@ -1793,7 +1628,6 @@ fn test_find_scroll_root_sub_scroll_frame() {
         LayoutVector2D::new(0.0, 0.0),
         APZScrollGeneration::default(),
         HasScrollLinkedEffect::No,
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 1), PipelineId::dummy(), pid),
     );
 
     let sub_scroll = st.add_scroll_frame(
@@ -1806,7 +1640,6 @@ fn test_find_scroll_root_sub_scroll_frame() {
         LayoutVector2D::new(0.0, 0.0),
         APZScrollGeneration::default(),
         HasScrollLinkedEffect::No,
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 2), PipelineId::dummy(), pid),
     );
 
     assert_eq!(st.find_scroll_root(sub_scroll, true), root_scroll);
@@ -1816,7 +1649,6 @@ fn test_find_scroll_root_sub_scroll_frame() {
 #[test]
 fn test_find_scroll_root_not_scrollable() {
     let mut st = SceneSpatialTree::new();
-    let pid = PipelineInstanceId::new(0);
 
     let root = st.add_reference_frame(
         st.root_reference_frame_index(),
@@ -1829,7 +1661,7 @@ fn test_find_scroll_root_not_scrollable() {
         },
         LayoutVector2D::new(0.0, 0.0),
         PipelineId::dummy(),
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 0), PipelineId::dummy(), pid),
+        false,
     );
 
     let root_scroll = st.add_scroll_frame(
@@ -1842,7 +1674,6 @@ fn test_find_scroll_root_not_scrollable() {
         LayoutVector2D::new(0.0, 0.0),
         APZScrollGeneration::default(),
         HasScrollLinkedEffect::No,
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 1), PipelineId::dummy(), pid),
     );
 
     let sub_scroll = st.add_scroll_frame(
@@ -1855,7 +1686,6 @@ fn test_find_scroll_root_not_scrollable() {
         LayoutVector2D::new(0.0, 0.0),
         APZScrollGeneration::default(),
         HasScrollLinkedEffect::No,
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 2), PipelineId::dummy(), pid),
     );
 
     assert_eq!(st.find_scroll_root(sub_scroll, true), sub_scroll);
@@ -1865,7 +1695,6 @@ fn test_find_scroll_root_not_scrollable() {
 #[test]
 fn test_find_scroll_root_too_small() {
     let mut st = SceneSpatialTree::new();
-    let pid = PipelineInstanceId::new(0);
 
     let root = st.add_reference_frame(
         st.root_reference_frame_index(),
@@ -1878,7 +1707,7 @@ fn test_find_scroll_root_too_small() {
         },
         LayoutVector2D::new(0.0, 0.0),
         PipelineId::dummy(),
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 0), PipelineId::dummy(), pid),
+        false,
     );
 
     let root_scroll = st.add_scroll_frame(
@@ -1891,7 +1720,6 @@ fn test_find_scroll_root_too_small() {
         LayoutVector2D::new(0.0, 0.0),
         APZScrollGeneration::default(),
         HasScrollLinkedEffect::No,
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 1), PipelineId::dummy(), pid),
     );
 
     let sub_scroll = st.add_scroll_frame(
@@ -1904,7 +1732,6 @@ fn test_find_scroll_root_too_small() {
         LayoutVector2D::new(0.0, 0.0),
         APZScrollGeneration::default(),
         HasScrollLinkedEffect::No,
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 2), PipelineId::dummy(), pid),
     );
 
     assert_eq!(st.find_scroll_root(sub_scroll, true), sub_scroll);
@@ -1915,7 +1742,6 @@ fn test_find_scroll_root_too_small() {
 #[test]
 fn test_find_scroll_root_perspective() {
     let mut st = SceneSpatialTree::new();
-    let pid = PipelineInstanceId::new(0);
 
     let root = st.add_reference_frame(
         st.root_reference_frame_index(),
@@ -1928,7 +1754,7 @@ fn test_find_scroll_root_perspective() {
         },
         LayoutVector2D::new(0.0, 0.0),
         PipelineId::dummy(),
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 0), PipelineId::dummy(), pid),
+        false,
     );
 
     let root_scroll = st.add_scroll_frame(
@@ -1941,7 +1767,6 @@ fn test_find_scroll_root_perspective() {
         LayoutVector2D::new(0.0, 0.0),
         APZScrollGeneration::default(),
         HasScrollLinkedEffect::No,
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 1), PipelineId::dummy(), pid),
     );
 
     let perspective = st.add_reference_frame(
@@ -1953,7 +1778,7 @@ fn test_find_scroll_root_perspective() {
         },
         LayoutVector2D::new(0.0, 0.0),
         PipelineId::dummy(),
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 2), PipelineId::dummy(), pid),
+        false,
     );
 
     let sub_scroll = st.add_scroll_frame(
@@ -1966,7 +1791,6 @@ fn test_find_scroll_root_perspective() {
         LayoutVector2D::new(0.0, 0.0),
         APZScrollGeneration::default(),
         HasScrollLinkedEffect::No,
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 3), PipelineId::dummy(), pid),
     );
 
     assert_eq!(st.find_scroll_root(sub_scroll, true), root_scroll);
@@ -1977,7 +1801,6 @@ fn test_find_scroll_root_perspective() {
 #[test]
 fn test_find_scroll_root_2d_scale() {
     let mut st = SceneSpatialTree::new();
-    let pid = PipelineInstanceId::new(0);
 
     let root = st.add_reference_frame(
         st.root_reference_frame_index(),
@@ -1990,7 +1813,7 @@ fn test_find_scroll_root_2d_scale() {
         },
         LayoutVector2D::new(0.0, 0.0),
         PipelineId::dummy(),
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 0), PipelineId::dummy(), pid),
+        false,
     );
 
     let root_scroll = st.add_scroll_frame(
@@ -2003,7 +1826,6 @@ fn test_find_scroll_root_2d_scale() {
         LayoutVector2D::new(0.0, 0.0),
         APZScrollGeneration::default(),
         HasScrollLinkedEffect::No,
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 1), PipelineId::dummy(), pid),
     );
 
     let scale = st.add_reference_frame(
@@ -2017,7 +1839,7 @@ fn test_find_scroll_root_2d_scale() {
         },
         LayoutVector2D::new(0.0, 0.0),
         PipelineId::dummy(),
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 2), PipelineId::dummy(), pid),
+        false,
     );
 
     let sub_scroll = st.add_scroll_frame(
@@ -2030,7 +1852,6 @@ fn test_find_scroll_root_2d_scale() {
         LayoutVector2D::new(0.0, 0.0),
         APZScrollGeneration::default(),
         HasScrollLinkedEffect::No,
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 3), PipelineId::dummy(), pid),
     );
 
     assert_eq!(st.find_scroll_root(sub_scroll, true), sub_scroll);
@@ -2041,7 +1862,6 @@ fn test_find_scroll_root_2d_scale() {
 #[test]
 fn test_find_scroll_root_sticky() {
     let mut st = SceneSpatialTree::new();
-    let pid = PipelineInstanceId::new(0);
 
     let root = st.add_reference_frame(
         st.root_reference_frame_index(),
@@ -2054,7 +1874,7 @@ fn test_find_scroll_root_sticky() {
         },
         LayoutVector2D::new(0.0, 0.0),
         PipelineId::dummy(),
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 0), PipelineId::dummy(), pid),
+        false,
     );
 
     let scroll = st.add_scroll_frame(
@@ -2067,7 +1887,6 @@ fn test_find_scroll_root_sticky() {
         LayoutVector2D::new(0.0, 0.0),
         APZScrollGeneration::default(),
         HasScrollLinkedEffect::No,
-        SpatialNodeUid::external(SpatialTreeItemKey::new(0, 1), PipelineId::dummy(), pid),
     );
 
     let sticky = st.add_sticky_frame(
@@ -2077,13 +1896,10 @@ fn test_find_scroll_root_sticky() {
             margins: euclid::SideOffsets2D::new(Some(0.0), None, None, None),
             vertical_offset_bounds: api::StickyOffsetBounds::new(0.0, 0.0),
             horizontal_offset_bounds: api::StickyOffsetBounds::new(0.0, 0.0),
-            previously_applied_offset: LayoutVector2D::zero(),
             current_offset: LayoutVector2D::zero(),
             transform: None
         },
         PipelineId::dummy(),
-        SpatialTreeItemKey::new(0, 2),
-        pid,
     );
 
     assert_eq!(st.find_scroll_root(sticky, true), sticky);
@@ -2094,18 +1910,16 @@ fn test_find_scroll_root_sticky() {
 fn test_world_transforms() {
   // Create a spatial tree with a scroll frame node with scroll offset (0, 200).
   let mut cst = SceneSpatialTree::new();
-  let pid = PipelineInstanceId::new(0);
   let scroll = cst.add_scroll_frame(
       cst.root_reference_frame_index(),
       ExternalScrollId(1, PipelineId::dummy()),
       PipelineId::dummy(),
       &LayoutRect::from_size(LayoutSize::new(400.0, 400.0)),
       &LayoutSize::new(400.0, 800.0),
-      ScrollFrameKind::Explicit, 
+      ScrollFrameKind::Explicit,
       LayoutVector2D::new(0.0, 200.0),
       APZScrollGeneration::default(),
-      HasScrollLinkedEffect::No,
-      SpatialNodeUid::external(SpatialTreeItemKey::new(0, 1), PipelineId::dummy(), pid));
+      HasScrollLinkedEffect::No);
 
   let mut st = SpatialTree::new();
   st.apply_updates(cst.end_frame_and_get_pending_updates());
@@ -2137,21 +1951,18 @@ fn test_is_ancestor_or_self_zooming() {
         root_reference_frame_index,
         LayoutTransform::identity(),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 0),
     );
     let child1 = add_reference_frame(
         &mut cst,
         root,
         LayoutTransform::identity(),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 1),
     );
     let child2 = add_reference_frame(
         &mut cst,
         child1,
         LayoutTransform::identity(),
         LayoutVector2D::zero(),
-        SpatialTreeItemKey::new(0, 2),
     );
 
     let mut st = SpatialTree::new();
@@ -2166,4 +1977,122 @@ fn test_is_ancestor_or_self_zooming() {
     assert!(st.get_spatial_node(root).is_ancestor_or_self_zooming);
     assert!(st.get_spatial_node(child1).is_ancestor_or_self_zooming);
     assert!(st.get_spatial_node(child2).is_ancestor_or_self_zooming);
+}
+
+/// Tests the `is_ancestor_or_self_animating` policy: a CSS-transform reference
+/// frame counts as animating (and propagates that to its descendants) only once
+/// its bound transform has been observed to actually move. A bound-but-static
+/// transform, an APZ scale/translation frame, and static ancestors are not.
+#[test]
+fn test_is_ancestor_or_self_animating() {
+    let mut cst = SceneSpatialTree::new();
+    let root_reference_frame_index = cst.root_reference_frame_index();
+
+    // A static reference frame ...
+    let root = add_reference_frame(
+        &mut cst,
+        root_reference_frame_index,
+        LayoutTransform::identity(),
+        LayoutVector2D::zero(),
+    );
+    // ... a CSS-transform reference frame below it whose bound transform moves ...
+    let animated = cst.add_reference_frame(
+        root,
+        TransformStyle::Flat,
+        PropertyBinding::Binding(api::PropertyBindingKey::new(1), LayoutTransform::identity()),
+        ReferenceFrameKind::Transform {
+            is_2d_scale_translation: false,
+            should_snap: false,
+            paired_with_perspective: false,
+        },
+        LayoutVector2D::zero(),
+        PipelineId::dummy(),
+        false,
+    );
+    // ... and a static child of the animated frame.
+    let child = add_reference_frame(
+        &mut cst,
+        animated,
+        LayoutTransform::identity(),
+        LayoutVector2D::zero(),
+    );
+
+    // A CSS-transform reference frame whose bound transform never changes value
+    // (e.g. a `hold` animation): it must NOT be treated as animating, so its
+    // text stays device-snapped (bug 2051166).
+    let static_bound = cst.add_reference_frame(
+        root,
+        TransformStyle::Flat,
+        PropertyBinding::Binding(api::PropertyBindingKey::new(3), LayoutTransform::identity()),
+        ReferenceFrameKind::Transform {
+            is_2d_scale_translation: false,
+            should_snap: false,
+            paired_with_perspective: false,
+        },
+        LayoutVector2D::zero(),
+        PipelineId::dummy(),
+        false,
+    );
+
+    // A bound reference frame marked `is_2d_scale_translation` is an APZ
+    // async-zoom / fixed-position frame, not a CSS animation: it must NOT be
+    // treated as animating (and must not propagate that to its children) even if
+    // its bound transform moves.
+    let apz = cst.add_reference_frame(
+        root,
+        TransformStyle::Flat,
+        PropertyBinding::Binding(api::PropertyBindingKey::new(2), LayoutTransform::identity()),
+        ReferenceFrameKind::Transform {
+            is_2d_scale_translation: true,
+            should_snap: true,
+            paired_with_perspective: false,
+        },
+        LayoutVector2D::zero(),
+        PipelineId::dummy(),
+        false,
+    );
+    let apz_child = add_reference_frame(
+        &mut cst,
+        apz,
+        LayoutTransform::identity(),
+        LayoutVector2D::zero(),
+    );
+
+    let mut st = SpatialTree::new();
+    st.apply_updates(cst.end_frame_and_get_pending_updates());
+
+    // Feed two frames of dynamic properties: the id 1 (animated) and id 2 (APZ)
+    // transforms move, while id 3 (static_bound) holds a constant value.
+    let mut props = SceneProperties::new();
+    let sample = |props: &mut SceneProperties, moving: LayoutTransform| {
+        props.reset_properties();
+        props.add_transforms(vec![
+            api::PropertyValue { key: api::PropertyBindingKey::new(1), value: moving },
+            api::PropertyValue { key: api::PropertyBindingKey::new(2), value: moving },
+            api::PropertyValue { key: api::PropertyBindingKey::new(3), value: LayoutTransform::identity() },
+        ]);
+        props.flush_pending_updates();
+    };
+    sample(&mut props, LayoutTransform::identity());
+    sample(&mut props, LayoutTransform::translation(10.0, 0.0, 0.0));
+    st.update_tree(&props);
+
+    // The static ancestor above the animated frame is unaffected.
+    assert!(!st.get_spatial_node(root).is_ancestor_or_self_animating);
+    // The moving CSS-transform frame and everything below it are marked.
+    assert!(st.get_spatial_node(animated).is_ancestor_or_self_animating);
+    assert!(st.get_spatial_node(child).is_ancestor_or_self_animating);
+    // A bound-but-static transform is not animating.
+    assert!(!st.get_spatial_node(static_bound).is_ancestor_or_self_animating);
+    // The APZ (async-zoom / fixed) frame and its children are not, despite the
+    // bound transform moving.
+    assert!(!st.get_spatial_node(apz).is_ancestor_or_self_animating);
+    assert!(!st.get_spatial_node(apz_child).is_ancestor_or_self_animating);
+
+    // The latch is monotonic while the binding exists: once id 1 has moved it
+    // stays animating even on a frame where its value is unchanged.
+    sample(&mut props, LayoutTransform::translation(10.0, 0.0, 0.0));
+    st.update_tree(&props);
+    assert!(st.get_spatial_node(animated).is_ancestor_or_self_animating);
+    assert!(!st.get_spatial_node(static_bound).is_ancestor_or_self_animating);
 }

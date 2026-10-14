@@ -69,8 +69,8 @@ export let ON_PASSWORD_CHANGED_NOTIFICATION = "fxaccounts:password_changed";
 export let ON_PASSWORD_RESET_NOTIFICATION = "fxaccounts:password_reset";
 export let ON_ACCOUNT_DESTROYED_NOTIFICATION = "fxaccounts:account_destroyed";
 export let ON_COLLECTION_CHANGED_NOTIFICATION = "sync:collection_changed";
-export let ON_VERIFY_LOGIN_NOTIFICATION = "fxaccounts:verify_login";
 export let ON_COMMAND_RECEIVED_NOTIFICATION = "fxaccounts:command_received";
+export let ON_SERVICE_ENABLED_NOTIFICATION = "fxaccounts:service_enabled";
 
 export let FXA_PUSH_SCOPE_ACCOUNT_UPDATE = "chrome://fxa-device-update";
 
@@ -98,6 +98,9 @@ export let OAUTH_CLIENT_ID = CLIENT_IS_THUNDERBIRD
   : FX_OAUTH_CLIENT_ID;
 export let SCOPE_PROFILE = "profile";
 export let SCOPE_PROFILE_WRITE = "profile:write";
+export let SCOPE_PROFILE_UID = "profile:uid";
+export let SCOPE_SMART_WINDOW = "https://identity.mozilla.com/apps/smartwindow";
+
 // Sync scope in Firefox.
 export let SCOPE_OLD_SYNC = "https://identity.mozilla.com/apps/oldsync";
 // Sync scope in Thunderbird.
@@ -134,11 +137,19 @@ export let COMMAND_PAIR_SUPP_METADATA = "fxaccounts:pair_supplicant_metadata";
 export let COMMAND_PAIR_AUTHORIZE = "fxaccounts:pair_authorize";
 export let COMMAND_PAIR_DECLINE = "fxaccounts:pair_decline";
 export let COMMAND_PAIR_COMPLETE = "fxaccounts:pair_complete";
+// Asks the browser to start an OAuth flow on behalf of a pairing supplicant
+// and to hand the resulting OAuth parameters back to FxA.
+export let COMMAND_PAIR_OAUTH_START = "fxaccounts:pair_oauth_start";
+// Asks the browser, acting as the pairing authority, to grant an OAuth
+// authorization code for the supplicant's OAuth parameters.
+export let COMMAND_PAIR_OAUTH_FINISH = "fxaccounts:pair_oauth_finish";
 
 export let COMMAND_PROFILE_CHANGE = "profile:change";
 export let COMMAND_CAN_LINK_ACCOUNT = "fxaccounts:can_link_account";
 export let COMMAND_LOGIN = "fxaccounts:login";
 export let COMMAND_OAUTH = "fxaccounts:oauth_login";
+export let COMMAND_OAUTH_FLOW_IS_ACTIVE = "fxaccounts:oauth_flow_is_active";
+export let COMMAND_OAUTH_FLOW_BEGIN = "fxaccounts:oauth_flow_begin";
 export let COMMAND_LOGOUT = "fxaccounts:logout";
 export let COMMAND_DELETE = "fxaccounts:delete";
 export let COMMAND_SYNC_PREFERENCES = "fxaccounts:sync_preferences";
@@ -151,7 +162,13 @@ export let COMMAND_FIREFOX_VIEW = "fxaccounts:firefox_view";
 // be stored. This branch will be reset on account signout and signin.
 export let PREF_ACCOUNT_ROOT = "identity.fxaccounts.account.";
 
-export let PREF_LAST_FXA_USER = "identity.fxaccounts.lastSignedInUserHash";
+// Where we store the hashed uid of the previous user.
+export let PREF_LAST_FXA_USER_UID =
+  "identity.fxaccounts.lastSignedInUserIdHash";
+// Where we used to store the hashed email of the previous user. We now store the
+// uid, but need to migrate from this.
+export let PREF_LAST_FXA_USER_EMAIL =
+  "identity.fxaccounts.lastSignedInUserHash";
 export let PREF_REMOTE_PAIRING_URI = "identity.fxaccounts.remote.pairing.uri";
 
 // Server errno.

@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 //! A piecewise linear function, following CSS linear easing
+use crate::derives::*;
 use crate::values::computed::Percentage;
 use core::slice::Iter;
 /// draft as in https://github.com/w3c/csswg-drafts/pull/6533.
@@ -92,7 +93,7 @@ impl PiecewiseLinearFunction {
             return next.y;
         }
         let slope = (next.y - prev.y) / (next.x - prev.x);
-        return slope * (x - asymptote.x) + asymptote.y;
+        slope * (x - asymptote.x) + asymptote.y
     }
 
     /// Get the y value of the piecewise linear function given the x value, as per
@@ -138,7 +139,7 @@ impl PiecewiseLinearFunction {
     }
 
     #[allow(missing_docs)]
-    pub fn iter(&self) -> Iter<PiecewiseLinearFunctionEntry> {
+    pub fn iter(&self) -> Iter<'_, PiecewiseLinearFunctionEntry> {
         self.entries.iter()
     }
 }

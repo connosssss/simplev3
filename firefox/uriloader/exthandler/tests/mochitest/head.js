@@ -155,7 +155,7 @@ async function waitForSubDialog(browser, url, state) {
     eventTarget = browser.tabContainer.ownerDocument.documentElement;
   } else {
     // Individual browser. Get its box:
-    let tabDialogBox = browser.ownerGlobal.gBrowser.getTabDialogBox(browser);
+    let tabDialogBox = browser.documentGlobal.gBrowser.getTabDialogBox(browser);
     eventTarget = tabDialogBox.getTabDialogManager()._dialogStack;
   }
 
@@ -184,6 +184,7 @@ async function waitForSubDialog(browser, url, state) {
 
 /**
  * Wait for protocol permission dialog open/close.
+ *
  * @param {MozBrowser} browser - Browser element the dialog belongs to.
  * @param {boolean} state - true: dialog open, false: dialog close
  * @returns {Promise<SubDialog>} - Returns a promise which resolves with the
@@ -199,6 +200,7 @@ async function waitForProtocolPermissionDialog(browser, state) {
 
 /**
  * Get the dialog element which is a child of the SubDialogs browser frame.
+ *
  * @param {SubDialog} subDialog - Dialog to get the dialog element for.
  */
 function getDialogElementFromSubDialog(subDialog) {
@@ -209,12 +211,12 @@ function getDialogElementFromSubDialog(subDialog) {
 
 /**
  * Accept the next protocol permission dialog.
+ *
  * @param {MozBrowser} browser - Browser element the dialog belongs to.
  * @returns {Promise} - Returns a promise which resolves once the dialog has
  * been accepted.
  *
  * Note: This function will bypass the security delay.
- *
  */
 async function acceptNextProtocolPermissionDialog(browser) {
   let dialog = await waitForProtocolPermissionDialog(browser, true);
@@ -226,7 +228,7 @@ async function acceptNextProtocolPermissionDialog(browser) {
   let dialogEl = getDialogElementFromSubDialog(dialog);
 
   // Bypass the security delay.
-  dialogEl.setAttribute("buttondisabledaccept", "false");
+  dialogEl.removeAttribute("buttondisabledaccept");
   dialogEl.acceptDialog();
 
   await dialogWindowClosePromise;
@@ -234,6 +236,7 @@ async function acceptNextProtocolPermissionDialog(browser) {
 
 /**
  * Wait for protocol app chooser dialog open/close.
+ *
  * @param {MozBrowser} browser - Browser element the dialog belongs to.
  * @param {boolean} state - true: dialog open, false: dialog close
  * @returns {Promise<SubDialog>} - Returns a promise which resolves with the
@@ -247,10 +250,71 @@ async function waitForProtocolAppChooserDialog(browser, state) {
   );
 }
 
+/**
+ * Wait for either protocol dialog (app chooser or permission) to open/close.
+ * Use when a test only cares that some confirmation dialog appears (e.g. for
+ * its placement), not which one: without user activation mailto now shows the
+ * permission dialog, with activation the app chooser (bug 299116).
+ *
+ * @param {MozBrowser} browser - Browser element the dialog belongs to.
+ * @param {boolean} state - true: dialog open, false: dialog close
+ * @returns {Promise<SubDialog>} - Returns a promise which resolves with the
+ * SubDialog object of the dialog which closed or opened.
+ */
+async function waitForProtocolDialog(browser, state) {
+  let eventStr = state ? "dialogopen" : "dialogclose";
+
+  let eventTarget;
+  if (browser.tabContainer) {
+    eventTarget = browser.tabContainer.ownerDocument.documentElement;
+  } else {
+    let tabDialogBox = browser.documentGlobal.gBrowser.getTabDialogBox(browser);
+    eventTarget = tabDialogBox.getTabDialogManager()._dialogStack;
+  }
+
+  let checkFn;
+  if (state) {
+    checkFn = dialogEvent =>
+      [
+        "chrome://mozapps/content/handling/appChooser.xhtml",
+        "chrome://mozapps/content/handling/permissionDialog.xhtml",
+      ].includes(dialogEvent.detail.dialog?._openedURL);
+  }
+
+  let event = await BrowserTestUtils.waitForEvent(
+    eventTarget,
+    eventStr,
+    true,
+    checkFn
+  );
+
+  let { dialog } = event.detail;
+  if (!state) {
+    await dialog._closingPromise;
+  }
+  return dialog;
+}
+
+/**
+ * Promise that resolves when a download is added to the list and then
+ * finishes. Note: will ignore downloads already present when this is called,
+ * so make sure to call it before starting/creating your download.
+ */
 async function promiseDownloadFinished(list, stopFromOpening) {
   return new Promise(resolve => {
-    list.addView({
+    // Downloads already in the list must be ignored: otherwise a later,
+    // unrelated change to one of them (e.g. from a previous caller cleaning
+    // up its file) would be mistaken for the completion of the download this
+    // call is actually waiting for.
+    let preExistingDownloads = new Set();
+    let view = {
+      onDownloadAdded(download) {
+        preExistingDownloads.add(download);
+      },
       onDownloadChanged(download) {
+        if (preExistingDownloads.has(download)) {
+          return;
+        }
         if (stopFromOpening) {
           download.launchWhenSucceeded = false;
         }
@@ -261,7 +325,11 @@ async function promiseDownloadFinished(list, stopFromOpening) {
           resolve(download);
         }
       },
-    });
+    };
+    list.addView(view);
+    // onDownloadAdded has now been called for every pre-existing download;
+    // remove it so it doesn't also swallow the new download we're waiting for.
+    delete view.onDownloadAdded;
   });
 }
 
@@ -340,9 +408,9 @@ async function setDownloadDir() {
 
 add_setup(async function test_common_initialize() {
   gDownloadDir = await setDownloadDir();
-  Services.prefs.setCharPref("browser.download.loglevel", "Debug");
+  Services.prefs.setCharPref("toolkit.download.loglevel", "Debug");
   registerCleanupFunction(function () {
-    Services.prefs.clearUserPref("browser.download.loglevel");
+    Services.prefs.clearUserPref("toolkit.download.loglevel");
   });
 });
 
@@ -362,6 +430,7 @@ const EXT_PROTO_URI_MAILTO = "mailto:test@example.com";
 
 /**
  * Creates and iframe and navigate to an external protocol from the iframe.
+ *
  * @param {MozBrowser} browser - Browser to spawn iframe in.
  * @param {string} sandboxAttr - Sandbox attribute value for the iframe.
  * @param {'trustedClick'|'untrustedClick'|'trustedLocationAPI'|'untrustedLocationAPI'|'frameSrc'|'frameSrcRedirect'} triggerMethod
@@ -474,7 +543,7 @@ async function navigateExternalProtoFromIframe(
                 () => link,
                 "wait for link to be present"
               );
-              await EventUtils.synthesizeMouseAtCenter(link, {}, content);
+              EventUtils.synthesizeMouseAtCenter(link, {}, content);
             }
           }
         );
@@ -486,6 +555,7 @@ async function navigateExternalProtoFromIframe(
 /**
  * Wait for the sandbox error message which is shown in the web console when an
  * external protocol navigation from a sandboxed context is blocked.
+ *
  * @returns {Promise} - Promise which resolves once message has been logged.
  */
 function waitForExtProtocolSandboxError() {
@@ -510,7 +580,8 @@ function waitForExtProtocolSandboxError() {
 
 /**
  * Run the external protocol sandbox test using iframes.
- * @param {Object} options
+ *
+ * @param {object} options
  * @param {boolean} options.blocked - Whether the navigation should be blocked.
  * @param {string} options.sandbox -   See {@link navigateExternalProtoFromIframe}.
  * @param {string} options.useCSPSandbox -  See {@link navigateExternalProtoFromIframe}.
@@ -524,6 +595,18 @@ function runExtProtocolSandboxTest(options) {
     "chrome://mochitests/content",
     "https://example.com"
   );
+
+  // Only triggers backed by a real user gesture take the mailto silent-launch
+  // shortcut (and would reach the app chooser directly). Without activation,
+  // mailto falls back to the permission dialog (bug 299116). The default
+  // triggerMethod ("trustedClick") carries activation.
+  let hasUserActivation =
+    triggerMethod == undefined ||
+    triggerMethod == "trustedClick" ||
+    triggerMethod == "trustedLocationAPI";
+  let waitForDialog = hasUserActivation
+    ? waitForProtocolAppChooserDialog
+    : waitForProtocolPermissionDialog;
 
   info("runSandboxTest options: " + JSON.stringify(options));
   return BrowserTestUtils.withNewTab(
@@ -544,10 +627,7 @@ function runExtProtocolSandboxTest(options) {
           "Should not show the dialog for iframe with sandbox " + sandbox
         );
       } else {
-        let dialogWindowOpenPromise = waitForProtocolAppChooserDialog(
-          browser,
-          true
-        );
+        let dialogWindowOpenPromise = waitForDialog(browser, true);
         await navigateExternalProtoFromIframe(
           browser,
           sandbox,
@@ -559,14 +639,24 @@ function runExtProtocolSandboxTest(options) {
         ok(dialog, "Should show the dialog for sandbox " + sandbox);
 
         // Close dialog before closing the tab to avoid intermittent failures.
-        let dialogWindowClosePromise = waitForProtocolAppChooserDialog(
-          browser,
-          false
-        );
+        let dialogWindowClosePromise = waitForDialog(browser, false);
 
         dialog.close();
         await dialogWindowClosePromise;
       }
     }
   );
+}
+
+function getSystemProtocol() {
+  if (AppConstants.platform == "macosx") {
+    return "itunes";
+  } else if (AppConstants.platform == "win") {
+    return "ms-settings";
+  }
+
+  info(
+    "Skipping this test since there isn't a suitable default protocol on this platform"
+  );
+  return null;
 }

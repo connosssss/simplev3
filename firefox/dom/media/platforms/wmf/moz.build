@@ -1,8 +1,9 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+with Files("**"):
+    SCHEDULES.exclusive = ["windows"]
 
 EXPORTS += [
     "DXVA2Manager.h",
@@ -36,6 +37,10 @@ if CONFIG["MOZ_WMF_MEDIA_ENGINE"]:
         "MFMediaEngineVideoStream.cpp",
         "MFMediaSource.cpp",
     ]
+    SOURCE_HEADERS += [
+        "MFMediaEngineExtension.h",
+        "MFMediaEngineNotify.h",
+    ]
 
 if CONFIG["MOZ_WMF_CDM"]:
     EXPORTS += [
@@ -44,12 +49,14 @@ if CONFIG["MOZ_WMF_CDM"]:
         "MFCDMSession.h",
         "MFContentProtectionManager.h",
         "MFPMPHostWrapper.h",
+        "MFProtectedPathReadinessMonitor.h",
     ]
     UNIFIED_SOURCES += [
         "MFCDMProxy.cpp",
         "MFCDMSession.cpp",
         "MFContentProtectionManager.cpp",
         "MFPMPHostWrapper.cpp",
+        "MFProtectedPathReadinessMonitor.cpp",
     ]
 
 UNIFIED_SOURCES += [
@@ -85,3 +92,7 @@ FINAL_LIBRARY = "xul"
 
 # Add libFuzzer configuration directives
 include("/tools/fuzzing/libfuzzer-config.mozbuild")
+
+SOURCE_HEADERS += [
+    "MFTEncoder.h",
+]

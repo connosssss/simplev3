@@ -14,6 +14,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
 
+const BASE64_PREFIX = "data:image/png;base64,";
 const STRINGS_URI = "devtools/shared/locales/screenshot.properties";
 const L10N = new LocalizationHelper(STRINGS_URI);
 
@@ -23,20 +24,20 @@ const L10N = new LocalizationHelper(STRINGS_URI);
  *
  * @param {TargetFront} targetFront: The targetFront of the frame we want to take a screenshot of.
  * @param {Window} window: The DevTools Client window.
- * @param {Object} args
- * @param {Boolean} args.fullpage: Should the screenshot be the height of the whole page
- * @param {String} args.filename: Expected filename for the screenshot
- * @param {Boolean} args.clipboard: Whether or not the screenshot should be saved to the clipboard.
- * @param {Number} args.dpr: Scale of the screenshot. Defaults to the window `devicePixelRatio`.
+ * @param {object} args
+ * @param {boolean} args.fullpage: Should the screenshot be the height of the whole page
+ * @param {string} args.filename: Expected filename for the screenshot
+ * @param {boolean} args.clipboard: Whether or not the screenshot should be saved to the clipboard.
+ * @param {number} args.dpr: Scale of the screenshot. Defaults to the window `devicePixelRatio`.
  *                           ⚠️ Note that the scale might be decreased if the resulting
  *                           image would be too big to draw safely. Warning will be emitted
  *                           to the console if that's the case.
- * @param {Number} args.delay: Number of seconds to wait before taking the screenshot
- * @param {Boolean} args.help: Set to true to receive a message with the screenshot command
+ * @param {number} args.delay: Number of seconds to wait before taking the screenshot
+ * @param {boolean} args.help: Set to true to receive a message with the screenshot command
  *                             documentation.
- * @param {Boolean} args.disableFlash: Set to true to disable the flash animation when the
+ * @param {boolean} args.disableFlash: Set to true to disable the flash animation when the
  *                  screenshot is taken.
- * @param {Boolean} args.ignoreDprForFileScale: Set to true to if the resulting screenshot
+ * @param {boolean} args.ignoreDprForFileScale: Set to true to if the resulting screenshot
  *                  file size shouldn't be impacted by the dpr. Note that the dpr will still
  *                  be taken into account when taking the screenshot, only the size of the
  *                  file will be different.
@@ -61,8 +62,9 @@ async function captureAndSaveScreenshot(targetFront, window, args = {}) {
 
 /**
  * Take a screenshot of a browser element matching the passed target
+ *
  * @param {TargetFront} targetFront: The targetFront of the frame we want to take a screenshot of.
- * @param {Object} args: See args param in captureAndSaveScreenshot
+ * @param {object} args: See args param in captureAndSaveScreenshot
  */
 async function captureScreenshot(targetFront, args) {
   // @backward-compat { version 87 } The screenshot-content actor was introduced in 87,
@@ -295,7 +297,7 @@ function saveToClipboard(base64URI) {
       Ci.imgITools
     );
 
-    const base64Data = base64URI.replace("data:image/png;base64,", "");
+    const base64Data = base64URI.replace(BASE64_PREFIX, "");
 
     const image = atob(base64Data);
     const img = imageTools.decodeImageFromBuffer(
@@ -330,7 +332,7 @@ let _outputDirectory = null;
  * For consistency with the Firefox Screenshots feature, this will default to
  * the preferred downloads directory.
  *
- * @return {Promise<String>} Resolves the path as a string
+ * @return {Promise<string>} Resolves the path as a string
  */
 async function getOutputDirectory() {
   if (_outputDirectory) {
@@ -339,6 +341,27 @@ async function getOutputDirectory() {
 
   _outputDirectory = await lazy.Downloads.getPreferredScreenshotsDirectory();
   return _outputDirectory;
+}
+
+/**
+ * Convert a base64 encoded image/png data to a blob URL.
+ * Makes creating the download much faster than feeding the full data URI.
+ *
+ * @param {string} base64data
+ *     Base 64 encoded data for the image, expected to start with "data:image/png;base64,"
+ * @return {string}
+ *     The URL to use for the download, or null if base64data has an unexpected
+ *     format.
+ */
+function getImageDataAsBlobURL(base64Data) {
+  if (!base64Data.startsWith(BASE64_PREFIX)) {
+    // In case we received an unexpected format, return null explicitly.
+    return null;
+  }
+
+  const data = Uint8Array.fromBase64(base64Data.slice(BASE64_PREFIX.length));
+  const imageBlob = new Blob([data], { type: "image/png" });
+  return URL.createObjectURL(imageBlob);
 }
 
 /**
@@ -380,10 +403,14 @@ async function saveToFile(window, image) {
   const targetFile = new lazy.FileUtils.File(filename);
 
   // Create download and track its progress.
+  let blobURL = null;
   try {
+    blobURL = getImageDataAsBlobURL(image.data);
     const download = await lazy.Downloads.createDownload({
       source: {
-        url: image.data,
+        // If blobURL is null, image data could not be converted to a blob url.
+        // Fallback to using the raw image data.
+        url: blobURL !== null ? blobURL : image.data,
         // Here we want to know if the window in which the screenshot is taken is private.
         // We have a ChromeWindow when this is called from Browser Console (:screenshot) and
         // RDM (screenshot button).
@@ -407,6 +434,11 @@ async function saveToFile(window, image) {
       level: "error",
       text: L10N.getFormatStr("screenshotErrorSavingToFile", filename),
     };
+  } finally {
+    if (blobURL) {
+      // If created, revove the blob URL created earlier.
+      URL.revokeObjectURL(blobURL);
+    }
   }
 }
 

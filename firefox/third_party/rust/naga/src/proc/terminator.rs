@@ -43,7 +43,10 @@ pub fn ensure_block_returns(block: &mut crate::Block) {
             | S::SubgroupCollectiveOperation { .. }
             | S::SubgroupGather { .. }
             | S::ControlBarrier(_)
-            | S::MemoryBarrier(_)),
+            | S::MemoryBarrier(_)
+            | S::CooperativeStore { .. }
+            | S::RayPipelineFunction(_)
+            | S::DebugPrintf { .. }),
         )
         | None => block.push(S::Return { value: None }, Default::default()),
     }

@@ -106,7 +106,17 @@ p:first-letter {
     left:0;
 }
 
-#list::marker {
+#list::after {
+    content: "suffix";
+    display: list-item;
+}
+
+#list::after::marker {
+    content: "+";
+    color: tomato;
+}
+
+#list-item::marker {
     color: purple;
 }
 
@@ -156,6 +166,56 @@ details[open]::details-content {
     border: 4px solid darkmagenta;
 }
 
+html:active-view-transition {
+    color: peachpuff;
+}
+
+::view-transition {
+    color: lime;
+}
+
+/* Use very long animation-duration so the view-transition pseudo elements are available
+   during the whole test */
+::view-transition-old(root),
+::view-transition-new(root) {
+    animation-duration: 1000s;
+    top: 1em;
+    gap: 10px;
+}
+
+::view-transition-new(root) {
+    /* This should override the previous rule declaration when ::view-transition-new(root) is selected */
+    animation-duration: 3600s;
+    color: thistle;
+}
+
+#with-unmatched-selector::before,
+unknown::before,
+#with-unmatched-selector::after,
+anotherunknown {
+    content: "unmatched pseudo";
+}
+
+#customizable-select {
+    appearance: base-select;
+}
+
+/* stylelint-disable-next-line selector-pseudo-element-no-unknown */
+#customizable-select::picker-icon {
+    color: purple;
+}
+
+/* stylelint-disable-next-line selector-pseudo-element-no-unknown */
+#customizable-select::picker(select) {
+    border: 1px solid purple;
+}
+
+/* stylelint-disable-next-line selector-pseudo-element-no-unknown */
+#customizable-select option::checkmark {
+    color: tomato;
+    content: "-";
+}
+
     </style>
   </head>
   <body>
@@ -177,8 +237,10 @@ details[open]::details-content {
         <p>Bottom Left<br />Position</p>
     </div>
 
-    <ol>
-        <li id="list" class="box">List element</li>
+    <div id="with-unmatched-selector">Some unmatched pseudo-element selector part</div>
+
+    <ol id="list">
+        <li id="list-item" class="box">List element</li>
     </ol>
 
     <dialog>
@@ -204,11 +266,14 @@ details[open]::details-content {
         <p>In details</p>
     </details>
 
+    <select id="customizable-select">
+        <option id="customizable-select-option">Option</option>
+    </select>
+
+    <aside class="transition">Transition</section>
+
     <script>
         "use strict";
-        // This is the only way to have the ::backdrop style to be applied
-        document.querySelector("dialog").showModal()
-        document.querySelector("#in-dialog").showPopover()
 
         // Register highlights for ::highlight pseudo elements
         const highlightsContainer = document.querySelector(".highlights-container");

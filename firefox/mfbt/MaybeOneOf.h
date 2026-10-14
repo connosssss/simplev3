@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,12 +12,12 @@
 
 #include <stddef.h>  // for size_t
 
+#include <algorithm>
 #include <new>  // for placement new
 #include <utility>
 
 #include "mozilla/Assertions.h"
 #include "mozilla/OperatorNewExtensions.h"
-#include "mozilla/TemplateLib.h"
 
 namespace mozilla {
 
@@ -40,9 +38,8 @@ namespace mozilla {
  */
 template <class T1, class T2>
 class MOZ_NON_PARAM MaybeOneOf {
-  static constexpr size_t StorageAlignment =
-      tl::Max<alignof(T1), alignof(T2)>::value;
-  static constexpr size_t StorageSize = tl::Max<sizeof(T1), sizeof(T2)>::value;
+  static constexpr size_t StorageAlignment = std::max(alignof(T1), alignof(T2));
+  static constexpr size_t StorageSize = std::max(sizeof(T1), sizeof(T2));
 
   alignas(StorageAlignment) unsigned char storage[StorageSize];
 
@@ -148,7 +145,6 @@ class MOZ_NON_PARAM MaybeOneOf {
     return std::forward<Func>(aFunc)(as<T2>());
   }
 
- private:
   MaybeOneOf(const MaybeOneOf& aOther) = delete;
   const MaybeOneOf& operator=(const MaybeOneOf& aOther) = delete;
 };

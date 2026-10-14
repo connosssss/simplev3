@@ -2,14 +2,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsCRT.h"
+#include "nsICOEncoder.h"
+
+#include "BMPHeaders.h"
 #include "mozilla/EndianUtils.h"
 #include "nsBMPEncoder.h"
-#include "BMPHeaders.h"
+#include "nsCRT.h"
 #include "nsPNGEncoder.h"
-#include "nsICOEncoder.h"
-#include "nsString.h"
 #include "nsStreamUtils.h"
+#include "nsString.h"
 #include "nsTArray.h"
 
 using namespace mozilla;
@@ -22,7 +23,7 @@ nsICOEncoder::nsICOEncoder()
     : mICOFileHeader{},
       mICODirEntry{},
       mImageBufferStart(nullptr),
-      mImageBufferCurr(0),
+      mImageBufferCurr(nullptr),
       mImageBufferSize(0),
       mImageBufferReadPoint(0),
       mFinished(false),
@@ -37,6 +38,13 @@ nsICOEncoder::~nsICOEncoder() {
   }
 }
 
+NS_IMETHODIMP
+nsICOEncoder::SetColorSpaceInfo(imgIEncoder::CICPColourPrimaries,
+                                imgIEncoder::CICPTransferCharacteristics,
+                                imgIEncoder::CICPMatrixCoefficients, bool) {
+  return NS_OK;
+}
+
 // nsICOEncoder::InitFromData
 // Two output options are supported: format=<png|bmp>;bpp=<bpp_value>
 // format specifies whether to use png or bitmap format
@@ -45,7 +53,8 @@ NS_IMETHODIMP
 nsICOEncoder::InitFromData(const uint8_t* aData, uint32_t aLength,
                            uint32_t aWidth, uint32_t aHeight, uint32_t aStride,
                            uint32_t aInputFormat,
-                           const nsAString& aOutputOptions) {
+                           const nsAString& aOutputOptions,
+                           const nsACString& aRandomizationKey) {
   // validate input format
   if (aInputFormat != INPUT_FORMAT_RGB && aInputFormat != INPUT_FORMAT_RGBA &&
       aInputFormat != INPUT_FORMAT_HOSTARGB) {
@@ -100,7 +109,8 @@ nsICOEncoder::AddImageFrame(const uint8_t* aData, uint32_t aLength,
     nsresult rv;
     nsAutoString noParams;
     rv = mContainedEncoder->InitFromData(aData, aLength, aWidth, aHeight,
-                                         aStride, aInputFormat, noParams);
+                                         aStride, aInputFormat, noParams,
+                                         VoidCString());
     NS_ENSURE_SUCCESS(rv, rv);
 
     uint32_t PNGImageBufferSize;
@@ -131,7 +141,8 @@ nsICOEncoder::AddImageFrame(const uint8_t* aData, uint32_t aLength,
     params.AppendInt(mICODirEntry.mBitCount);
 
     rv = mContainedEncoder->InitFromData(aData, aLength, aWidth, aHeight,
-                                         aStride, aInputFormat, params);
+                                         aStride, aInputFormat, params,
+                                         VoidCString());
     NS_ENSURE_SUCCESS(rv, rv);
 
     uint32_t andMaskSize = ((GetRealWidth() + 31) / 32) * 4 *  // row AND mask

@@ -1,4 +1,3 @@
-/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, V. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -115,7 +114,7 @@ extern "C" nsresult ATTRIBUTE_USED PrepareAndDispatch(nsXPTCStubBase* self,
   return result;
 }
 
-// Load $t6 with the constant 'n' and branch to SharedStub().
+// Load $t6 with the constant 'n' and branch (via scratch $t7) to SharedStub().
 // clang-format off
 #define STUB_ENTRY(n)                                                 \
   __asm__(                                                            \
@@ -139,7 +138,7 @@ extern "C" nsresult ATTRIBUTE_USED PrepareAndDispatch(nsXPTCStubBase* self,
       ".err   \"stub number "#n" >= 1000 not yet supported\"\n"       \
       ".endif \n\t"                                                   \
       "li.d   $t6, "#n" \n\t"                                         \
-      "b      SharedStub \n"                                          \
+      "tail36 $t7, SharedStub \n"                                     \
       ".if "#n" < 10 \n\t"                                            \
       ".size   _ZN14nsXPTCStubBase5Stub"#n"Ev,.-_ZN14nsXPTCStubBase5Stub"#n"Ev\n\t" \
       ".elseif "#n" < 100 \n\t"                                                     \

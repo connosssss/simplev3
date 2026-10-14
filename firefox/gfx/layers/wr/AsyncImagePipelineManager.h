@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,11 +8,10 @@
 #include <vector>
 
 #include "CompositableHost.h"
-#include "mozilla/UniquePtrExtensions.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/gfx/Point.h"
 #include "mozilla/layers/RemoteTextureMap.h"
 #include "mozilla/layers/TextureHost.h"
-#include "mozilla/Maybe.h"
 #include "mozilla/webrender/WebRenderAPI.h"
 #include "mozilla/webrender/WebRenderTypes.h"
 #include "nsClassHashtable.h"
@@ -72,7 +69,7 @@ class AsyncImagePipelineManager final {
   void NotifyPipelinesUpdated(RefPtr<const wr::WebRenderPipelineInfo> aInfo,
                               wr::RenderedFrameId aLatestFrameId,
                               wr::RenderedFrameId aLastCompletedFrameId,
-                              RefPtr<Fence>&& aFence);
+                              RefPtr<Fence>&& aReadFence);
 
   // This is run on the compositor thread to process mRenderSubmittedUpdates. We
   // make this public because we need to invoke it from other places.
@@ -101,6 +98,15 @@ class AsyncImagePipelineManager final {
 
   void AddAsyncImagePipeline(const wr::PipelineId& aPipelineId,
                              WebRenderImageHost* aImageHost);
+  // Whether aPipelineId is currently registered by a live pipeline, which may
+  // be another bridge's root pipeline (registered via AddPipeline) as well as
+  // an async image pipeline. A holder that is merely waiting to be destroyed
+  // does not count: its id may legitimately be re-registered while the old
+  // holder drains, e.g. when a tab moves between windows.
+  bool HasLivePipeline(const wr::PipelineId& aPipelineId) const {
+    auto* holder = mPipelineTexturesHolders.Get(wr::AsUint64(aPipelineId));
+    return holder && holder->mDestroyedEpoch.isNothing();
+  }
   void RemoveAsyncImagePipeline(const wr::PipelineId& aPipelineId,
                                 AsyncImagePipelineOps* aPendingOps,
                                 wr::TransactionBuilder& aTxn);
@@ -261,6 +267,7 @@ class AsyncImagePipelineManager final {
 #ifdef XP_WIN
   bool mUseWebRenderDCompVideoHwOverlayWin;
   bool mUseWebRenderDCompVideoSwOverlayWin;
+  bool mUseWebRenderDCompositionTextureOverlayWin;
 #endif
 
   // Render time for the current composition.
@@ -278,11 +285,11 @@ class AsyncImagePipelineManager final {
 
   struct WebRenderPipelineInfoHolder {
     WebRenderPipelineInfoHolder(RefPtr<const wr::WebRenderPipelineInfo>&& aInfo,
-                                RefPtr<Fence>&& aFence);
+                                RefPtr<Fence>&& aReadFence);
     ~WebRenderPipelineInfoHolder();
     WebRenderPipelineInfoHolder(WebRenderPipelineInfoHolder&&) = default;
     RefPtr<const wr::WebRenderPipelineInfo> mInfo;
-    RefPtr<Fence> mFence;
+    RefPtr<Fence> mReadFence;
   };
 
   std::vector<std::pair<wr::RenderedFrameId, WebRenderPipelineInfoHolder>>
@@ -293,7 +300,7 @@ class AsyncImagePipelineManager final {
   std::vector<std::pair<wr::RenderedFrameId,
                         std::vector<UniquePtr<ForwardingTextureHost>>>>
       mTexturesInUseByGPU;
-  RefPtr<Fence> mReleaseFence;
+  RefPtr<Fence> mReadFence;
 };
 
 }  // namespace layers

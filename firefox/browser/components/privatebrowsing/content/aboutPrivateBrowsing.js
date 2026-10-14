@@ -2,10 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-env mozilla/remote-page */
-
 /**
  * Determines whether a given value is a fluent id or plain text and adds it to an element
+ *
  * @param {Array<[HTMLElement, string]>} items An array of [element, value] where value is
  *                                       a fluent id starting with "fluent:" or plain text
  */
@@ -25,58 +24,6 @@ function translateElements(items) {
   });
 }
 
-function renderInfo({
-  infoEnabled,
-  infoTitle,
-  infoTitleEnabled,
-  infoBody,
-  infoLinkText,
-  infoLinkUrl,
-  infoIcon,
-} = {}) {
-  const container = document.querySelector(".info");
-  if (infoEnabled === false) {
-    container.hidden = true;
-    return;
-  }
-  container.hidden = false;
-
-  const titleEl = document.getElementById("info-title");
-  const bodyEl = document.getElementById("info-body");
-  const linkEl = document.getElementById("private-browsing-myths");
-
-  let feltPrivacyEnabled = RPMGetBoolPref(
-    "browser.privatebrowsing.felt-privacy-v1",
-    false
-  );
-
-  if (infoIcon && !feltPrivacyEnabled) {
-    container.style.backgroundImage = `url(${infoIcon})`;
-  }
-
-  if (feltPrivacyEnabled) {
-    // Record exposure event for Felt Privacy experiment
-    window.FeltPrivacyExposureTelemetry();
-
-    infoTitleEnabled = true;
-    infoTitle = "fluent:about-private-browsing-felt-privacy-v1-info-header";
-    infoBody = "fluent:about-private-browsing-felt-privacy-v1-info-body";
-    infoLinkText = "fluent:about-private-browsing-felt-privacy-v1-info-link";
-  }
-
-  titleEl.hidden = !infoTitleEnabled;
-
-  translateElements([
-    [titleEl, infoTitle],
-    [bodyEl, infoBody],
-    [linkEl, infoLinkText],
-  ]);
-
-  if (infoLinkUrl) {
-    linkEl.setAttribute("href", infoLinkUrl);
-  }
-}
-
 async function renderPromo({
   messageId = null,
   promoEnabled = false,
@@ -91,62 +38,219 @@ async function renderPromo({
   promoImageSmall,
   promoButton = null,
 } = {}) {
-  const shouldShow = await RPMSendQuery("ShouldShowPromo", { type: promoType });
-  const container = document.querySelector(".promo");
+  const shouldShowPromo = await RPMSendQuery("ShouldShowPromo", {
+    type: promoType,
+  });
+  const novaEnabled = RPMGetBoolPref("browser.nova.enabled", false);
+  const legacyContainer = document.querySelector(".promo");
+  const novaContainer = document.querySelector(".nova-promo-wrapper");
 
-  if (!promoEnabled || !shouldShow) {
+  // Only one promo layout is ever shown; drop the inactive subtree so that the
+  // rest of the page (CSS, preload checks, telemetry) only sees the active one.
+  (novaEnabled ? legacyContainer : novaContainer)?.remove();
+  const container = novaEnabled ? novaContainer : legacyContainer;
+
+  if (!promoEnabled || !shouldShowPromo) {
     container.remove();
     return false;
   }
 
+  const onLinkClick = async event => {
+    event.preventDefault();
+
+    // Set metrics as allow for spotlight modal opened on promo click if user
+    // is enrolled in an experiment
+    let isExperiment = window.PrivateBrowsingIsEnrolledInExperiment();
+    const promoButtonData = promoButton?.action?.data;
+    if (
+      promoButton?.action?.type === "SHOW_SPOTLIGHT" &&
+      promoButtonData?.content
+    ) {
+      promoButtonData.content.metrics = isExperiment ? "allow" : "block";
+    }
+
+    await RPMSendQuery("SpecialMessageActionDispatch", promoButton.action);
+  };
+
+  const onDismiss = () => {
+    window.ASRouterMessage({
+      type: "BLOCK_MESSAGE_BY_ID",
+      data: { id: messageId },
+    });
+    container.remove();
+  };
+
+  if (!novaEnabled && messageId) {
+    container
+      .querySelector(".promo-dismiss")
+      ?.addEventListener("click", onDismiss, { once: true });
+  }
+
+  // Without an action the promo link does nothing, so don't show the promo.
+  if (!promoButton?.action) {
+    container.remove();
+    return false;
+  }
+
+  if (novaEnabled) {
+    await renderNovaPromo({
+      container,
+      promoTitle,
+      promoTitleEnabled,
+      promoLinkText,
+      promoLinkType,
+      promoHeader,
+      promoImageLarge,
+      onLinkClick,
+      onDismiss,
+      dismissable: !!messageId,
+    });
+  } else {
+    renderLegacyPromo({
+      container,
+      promoTitle,
+      promoTitleEnabled,
+      promoLinkText,
+      promoLinkType,
+      promoSectionStyle,
+      promoHeader,
+      promoImageLarge,
+      promoImageSmall,
+      onLinkClick,
+    });
+  }
+
+  return true;
+}
+
+/**
+ * Resolves a promo text value to a plain string. Values may either be a
+ * "fluent:"-prefixed localization id or already-localized plain text.
+ *
+ * A missing Fluent message resolves to an empty string rather than throwing,
+ * matching the legacy layout (which uses data-l10n-id and simply renders
+ * nothing for a missing message). Throwing here would abort promo rendering
+ * before the call-to-action click handler is attached.
+ *
+ * @param {string} value The "fluent:"-prefixed id or plain text.
+ * @returns {Promise<string>} The localized string.
+ */
+async function resolvePromoText(value) {
+  if (!value) {
+    return "";
+  }
+  const fluentId = value.replace(/^fluent:/, "");
+  if (fluentId !== value) {
+    try {
+      return (await document.l10n.formatValue(fluentId)) ?? "";
+    } catch (e) {
+      // formatValue throws for a missing message under automation; fall back to
+      // empty text so the promo still renders and stays interactive.
+      console.error(e);
+      return "";
+    }
+  }
+  return value;
+}
+
+/**
+ * Populates and reveals the Nova <moz-promo> layout. Regardless of the
+ * promoSectionStyle requested by the message, the Nova promo is always shown
+ * below the search box so the Nova design is used consistently.
+ *
+ * The message's promoLinkType decides which call to action is shown: a link
+ * for navigational actions and a button otherwise. The unused element is
+ * removed so its slot stays empty.
+ */
+async function renderNovaPromo({
+  container,
+  promoTitle,
+  promoTitleEnabled,
+  promoLinkText,
+  promoLinkType,
+  promoHeader,
+  promoImageLarge,
+  onLinkClick,
+  onDismiss,
+  dismissable,
+}) {
+  const promoEl = container.querySelector("#nova-promo");
+  const linkEl = container.querySelector("#nova-promo-link");
+  const buttonEl = container.querySelector("#nova-promo-button");
+
+  // moz-promo (and the moz-button it slots) is loaded as a deferred module, so
+  // it may not be upgraded yet. Wait for it before setting reactive properties.
+  await customElements.whenDefined("moz-promo");
+  await customElements.whenDefined("moz-button");
+
+  promoEl.dismissable = dismissable;
+  if (dismissable) {
+    promoEl.addEventListener(
+      "promo:user-dismissed",
+      event => {
+        event.preventDefault();
+        onDismiss();
+      },
+      { once: true }
+    );
+  }
+
+  if (promoHeader) {
+    promoEl.heading = await resolvePromoText(promoHeader);
+  }
+  if (promoTitleEnabled) {
+    promoEl.message = await resolvePromoText(promoTitle);
+  }
+  if (promoImageLarge) {
+    promoEl.imageSrc = promoImageLarge;
+  }
+
+  const ctaText = await resolvePromoText(promoLinkText);
+  const useButton = promoLinkType === "button";
+  const ctaEl = useButton ? buttonEl : linkEl;
+  (useButton ? linkEl : buttonEl).remove();
+
+  if (useButton) {
+    ctaEl.label = ctaText;
+  } else {
+    ctaEl.textContent = ctaText;
+  }
+  ctaEl.addEventListener("click", onLinkClick);
+
+  const infoBorderEl = document.querySelector(".info-border");
+  infoBorderEl?.insertAdjacentElement("beforebegin", container);
+
+  container.hidden = false;
+}
+
+/**
+ * Populates and reveals the legacy promo layout.
+ */
+function renderLegacyPromo({
+  container,
+  promoTitle,
+  promoTitleEnabled,
+  promoLinkText,
+  promoLinkType,
+  promoSectionStyle,
+  promoHeader,
+  promoImageLarge,
+  promoImageSmall,
+  onLinkClick,
+}) {
   const titleEl = document.getElementById("private-browsing-promo-text");
   const linkEl = document.getElementById("private-browsing-promo-link");
   const promoHeaderEl = document.getElementById("promo-header");
   const infoContainerEl = document.querySelector(".info");
   const promoImageLargeEl = document.querySelector(".promo-image-large img");
   const promoImageSmallEl = document.querySelector(".promo-image-small img");
-  const dismissBtn = document.querySelector("#dismiss-btn");
 
   if (promoLinkType === "link") {
     linkEl.classList.remove("primary");
     linkEl.classList.add("text-link", "promo-link");
   }
 
-  if (promoButton?.action) {
-    linkEl.addEventListener("click", async event => {
-      event.preventDefault();
-
-      // Record promo click telemetry and set metrics as allow for spotlight
-      // modal opened on promo click if user is enrolled in an experiment
-      let isExperiment = window.PrivateBrowsingRecordClick("PromoLink");
-      const promoButtonData = promoButton?.action?.data;
-      if (
-        promoButton?.action?.type === "SHOW_SPOTLIGHT" &&
-        promoButtonData?.content
-      ) {
-        promoButtonData.content.metrics = isExperiment ? "allow" : "block";
-      }
-
-      await RPMSendQuery("SpecialMessageActionDispatch", promoButton.action);
-    });
-  } else {
-    // If the action doesn't exist, remove the promo completely
-    container.remove();
-    return false;
-  }
-
-  const onDismissBtnClick = () => {
-    window.ASRouterMessage({
-      type: "BLOCK_MESSAGE_BY_ID",
-      data: { id: messageId },
-    });
-    window.PrivateBrowsingRecordClick("DismissButton");
-    container.remove();
-  };
-
-  if (dismissBtn && messageId) {
-    dismissBtn.addEventListener("click", onDismissBtnClick, { once: true });
-  }
+  linkEl.addEventListener("click", onLinkClick);
 
   if (promoSectionStyle) {
     container.classList.add(promoSectionStyle);
@@ -191,6 +295,7 @@ async function renderPromo({
   // Only make promo section visible after adding content
   // and translations to prevent layout shifting in page
   container.classList.add("promo-visible");
+  container.hidden = false;
   return true;
 }
 
@@ -230,8 +335,8 @@ function handlePromoOnPreload(message) {
     if (document.visibilityState === "visible") {
       let blocked = await RPMSendQuery("IsPromoBlocked", message);
       if (blocked) {
-        const container = document.querySelector(".promo");
-        container.remove();
+        const container = document.querySelector(".promo, .nova-promo-wrapper");
+        container?.remove();
       }
     }
     document.removeEventListener("visibilitychange", removePromoIfBlocked);
@@ -247,10 +352,14 @@ async function setupMessageConfig(config = null) {
 
   if (!config) {
     let hideDefault = window.PrivateBrowsingShouldHideDefault();
+    let introPlaying =
+      document.documentElement.classList.contains("intro-playing");
     try {
       let response = await window.ASRouterMessage({
         type: "PBNEWTAB_MESSAGE_REQUEST",
-        data: { hideDefault: !!hideDefault },
+        // introPlaying suppresses messaging for the run the intro animation
+        // plays on, without spending the message's frequency allocation.
+        data: { hideDefault: !!hideDefault, introPlaying },
       });
       message = response?.message;
       config = message?.content;
@@ -258,7 +367,6 @@ async function setupMessageConfig(config = null) {
     } catch (e) {}
   }
 
-  renderInfo(config);
   let hasRendered = await renderPromo(config);
   if (hasRendered && message) {
     recordOnceVisible(message);
@@ -300,9 +408,76 @@ document.addEventListener("DOMContentLoaded", function () {
     "href",
     RPMGetFormatURLPref("app.support.baseURL") + "private-browsing-myths"
   );
-  linkEl.addEventListener("click", () => {
-    window.PrivateBrowsingRecordClick("InfoLink");
-  });
+
+  const isNovaEnabled = RPMGetBoolPref("browser.nova.enabled", false);
+  const isPrivateWindowRedesignEnabled =
+    window.PrivateBrowsingRedesignEnabled?.();
+
+  // privateWindowRedesign requires Nova to be enabled
+  if (isPrivateWindowRedesignEnabled && isNovaEnabled) {
+    // For privateWindowRedesign: use custom subheader and hide info-body
+    document.getElementById("info-title").hidden = true;
+    const subheader = document.querySelector(".nova-subheader");
+    if (subheader) {
+      document.l10n.setAttributes(
+        subheader,
+        "about-private-browsing-private-window-redesign-subheader"
+      );
+    }
+    document.getElementById("info-body").hidden = true;
+    document.getElementById("private-browsing-myths").hidden = true;
+
+    const basicsLink = document.getElementById("private-window-basics");
+    basicsLink.hidden = false;
+    basicsLink.addEventListener("click", async e => {
+      e.preventDefault();
+      window.PrivateBrowsingRecordRedesignClick("PrivateWindowBasicsLink");
+      // Trigger the spotlight
+      await RPMSendAsyncMessage("TRIGGER_MESSAGING_EVENT", {
+        id: "privateWindowBasicsLinkClick",
+      });
+    });
+  } else if (isNovaEnabled) {
+    // For nova.enabled only: use nova strings
+    document.getElementById("info-title").hidden = true;
+    document.l10n.setAttributes(
+      document.getElementById("info-body"),
+      "about-private-browsing-nova-info-body"
+    );
+    document.l10n.setAttributes(
+      document.getElementById("private-browsing-myths"),
+      "about-private-browsing-nova-info-link"
+    );
+  }
+
+  // Redesign experiment: swap the static mask for the animated intro, played
+  // once per profile (seen-once flag persisted via RPMSetPref) and skipped
+  // under reduced motion.
+  if (RPMGetBoolPref("browser.privateWindowRedesign.enabled", false)) {
+    const maskIntro = document.getElementById(
+      "about-private-browsing-mask-intro"
+    );
+    window.PrivateBrowsingRedesignExposure();
+
+    const staticLogo = document.getElementById("about-private-browsing-logo");
+    staticLogo.hidden = true;
+    maskIntro.hidden = false;
+
+    const alreadyShown = RPMGetBoolPref(
+      "browser.privatebrowsing.introAnimationShown",
+      false
+    );
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)"
+    ).matches;
+
+    if (!alreadyShown && !reduceMotion) {
+      maskIntro.play = true;
+      document.documentElement.classList.add("intro-playing");
+      window.PrivateBrowsingRecordIntroAnimation();
+      RPMSetPref("browser.privatebrowsing.introAnimationShown", true);
+    }
+  }
 
   // We don't do this setup until now, because we don't want to record any impressions until we're
   // sure we're actually running a private window, not just about:privatebrowsing in a normal window.
@@ -352,55 +527,4 @@ document.addEventListener("DOMContentLoaded", function () {
   };
   openSearchOptions.addEventListener("click", openSearchOptionsEvtHandler);
   openSearchOptions.addEventListener("keypress", openSearchOptionsEvtHandler);
-
-  // Setup the search hand-off box.
-  let btn = document.getElementById("search-handoff-button");
-
-  let editable = document.getElementById("fake-editable");
-  let DISABLE_SEARCH_TOPIC = "DisableSearch";
-  let SHOW_SEARCH_TOPIC = "ShowSearch";
-  let SEARCH_HANDOFF_TOPIC = "SearchHandoff";
-
-  function showSearch() {
-    btn.classList.remove("focused");
-    btn.classList.remove("disabled");
-    RPMRemoveMessageListener(SHOW_SEARCH_TOPIC, showSearch);
-  }
-
-  function disableSearch() {
-    btn.classList.add("disabled");
-  }
-
-  function handoffSearch(text) {
-    RPMSendAsyncMessage(SEARCH_HANDOFF_TOPIC, { text });
-    RPMAddMessageListener(SHOW_SEARCH_TOPIC, showSearch);
-    if (text) {
-      disableSearch();
-    } else {
-      btn.classList.add("focused");
-      RPMAddMessageListener(DISABLE_SEARCH_TOPIC, disableSearch);
-    }
-  }
-  btn.addEventListener("focus", function () {
-    handoffSearch();
-  });
-  btn.addEventListener("click", function () {
-    handoffSearch();
-  });
-
-  // Hand-off any text that gets dropped or pasted
-  editable.addEventListener("drop", function (ev) {
-    ev.preventDefault();
-    let text = ev.dataTransfer.getData("text");
-    if (text) {
-      handoffSearch(text);
-    }
-  });
-  editable.addEventListener("paste", function (ev) {
-    ev.preventDefault();
-    handoffSearch(ev.clipboardData.getData("Text"));
-  });
-
-  // Load contentSearchUI so it sets the search engine icon and name for us.
-  new window.ContentSearchHandoffUIController();
 });

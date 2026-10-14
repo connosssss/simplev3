@@ -705,10 +705,6 @@ support-files = [
 ["test_bug465498.html"]
 
 ["test_bug495145.html"]
-skip-if = [
-  "win10_2009", #Bug 1404373
-  "win11_2009", #Bug 1404373
-] 
 
 ["test_bug495300.html"]
 
@@ -721,7 +717,9 @@ skip-if = [
 ["test_bug874897.html"]
 
 ["test_bug879717.html"]
-skip-if = ["os == 'android'"] # bug 1285441, android(bug 1232305)
+skip-if = [
+  "os == 'android'", # bug 1285441, android(bug 1232305)
+]
 tags = "capturestream"
 
 ["test_bug895305.html"]
@@ -729,13 +727,6 @@ tags = "capturestream"
 ["test_bug919265.html"]
 
 ["test_bug1113600.html"]
-skip-if = [
-  "apple_catalina", # Bug 1198168
-  "apple_silicon", # Bug 1198168
-  "win10_2009 && debug", # Bug 1713410
-  "win11_2009 && debug", # Bug 1713410
-  "os == 'mac' && os_version == '14.70' && processor == 'x86_64' && debug && socketprocess_e10s", # Bug 1713410
-]
 
 ["test_bug1120222.html"]
 tags = "capturestream"
@@ -750,3 +741,9 @@ tags = "mtg capturestream"
 
 ["test_bug1553262.html"]
 tags = "mtg capturestream"
+
+["test_bug1735300.html"]
+support-files = [
+  "bug1735300-vp9-flac-edit-list.mp4",
+  "rms-utils.js",
+]

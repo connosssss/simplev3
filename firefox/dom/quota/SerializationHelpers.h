@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,12 +7,12 @@
 
 #include "ipc/EnumSerializer.h"
 #include "ipc/IPCMessageUtils.h"
-
+#include "ipc/IPCMessageUtilsSpecializations.h"
+#include "mozilla/OriginAttributes.h"
 #include "mozilla/dom/quota/Client.h"
 #include "mozilla/dom/quota/CommonMetadata.h"
 #include "mozilla/dom/quota/PersistenceType.h"
 #include "mozilla/dom/quota/UsageInfo.h"
-#include "mozilla/OriginAttributes.h"
 
 namespace IPC {
 
@@ -32,90 +30,45 @@ struct ParamTraits<mozilla::dom::quota::Client::Type>
                                       mozilla::dom::quota::Client::TYPE_MAX> {};
 
 template <>
-struct ParamTraits<mozilla::dom::quota::FullOriginMetadata> {
-  using ParamType = mozilla::dom::quota::FullOriginMetadata;
+struct ParamTraits<mozilla::dom::quota::ClientUsageArray> {
+  using ParamType = mozilla::dom::quota::ClientUsageArray;
 
   static void Write(MessageWriter* aWriter, const ParamType& aParam) {
-    WriteParam(aWriter, aParam.mSuffix);
-    WriteParam(aWriter, aParam.mGroup);
-    WriteParam(aWriter, aParam.mOrigin);
-    WriteParam(aWriter, aParam.mStorageOrigin);
-    WriteParam(aWriter, aParam.mIsPrivate);
-    WriteParam(aWriter, aParam.mPersistenceType);
-    WriteParam(aWriter, aParam.mPersisted);
-    WriteParam(aWriter, aParam.mLastAccessTime);
+    for (size_t index = 0; index < mozilla::dom::quota::Client::TypeMax();
+         index++) {
+      WriteParam(aWriter, aParam[index]);
+    }
   }
 
   static bool Read(MessageReader* aReader, ParamType* aResult) {
-    return ReadParam(aReader, &aResult->mSuffix) &&
-           ReadParam(aReader, &aResult->mGroup) &&
-           ReadParam(aReader, &aResult->mOrigin) &&
-           ReadParam(aReader, &aResult->mStorageOrigin) &&
-           ReadParam(aReader, &aResult->mIsPrivate) &&
-           ReadParam(aReader, &aResult->mPersistenceType) &&
-           ReadParam(aReader, &aResult->mPersisted) &&
-           ReadParam(aReader, &aResult->mLastAccessTime);
+    for (size_t index = 0; index < mozilla::dom::quota::Client::TypeMax();
+         index++) {
+      if (!ReadParam(aReader, &aResult->operator[](index))) {
+        return false;
+      }
+    }
+    return true;
   }
 };
 
-template <>
-struct ParamTraits<mozilla::dom::quota::OriginUsageMetadata> {
-  using ParamType = mozilla::dom::quota::OriginUsageMetadata;
+DEFINE_IPC_SERIALIZER_WITH_FIELDS(mozilla::dom::quota::FullOriginMetadata,
+                                  mSuffix, mGroup, mOrigin, mStorageOrigin,
+                                  mIsPrivate, mPersistenceType, mLastAccessTime,
+                                  mLastMaintenanceDate, mAccessed, mPersisted,
+                                  mClientUsages, mOriginUsage, mQuotaVersion);
 
-  static void Write(MessageWriter* aWriter, const ParamType& aParam) {
-    ParamTraits<mozilla::dom::quota::FullOriginMetadata>::Write(aWriter,
-                                                                aParam);
-    WriteParam(aWriter, aParam.mUsage);
-  }
+DEFINE_IPC_SERIALIZER_WITH_SUPER_CLASS_AND_FIELDS(
+    mozilla::dom::quota::OriginUsageMetadata,
+    mozilla::dom::quota::FullOriginMetadata, mUsage);
 
-  static bool Read(MessageReader* aReader, ParamType* aResult) {
-    return ParamTraits<mozilla::dom::quota::FullOriginMetadata>::Read(
-               aReader, aResult) &&
-           ReadParam(aReader, &aResult->mUsage);
-  }
-};
+DEFINE_IPC_SERIALIZER_WITH_FIELDS(mozilla::OriginAttributesPattern,
+                                  mFirstPartyDomain, mPrivateBrowsingId,
+                                  mUserContextId, mGeckoViewSessionContextId,
+                                  mPartitionKey, mPartitionKeyPattern);
 
-template <>
-struct ParamTraits<mozilla::OriginAttributesPattern> {
-  typedef mozilla::OriginAttributesPattern paramType;
-
-  static void Write(MessageWriter* aWriter, const paramType& aParam) {
-    WriteParam(aWriter, aParam.mFirstPartyDomain);
-    WriteParam(aWriter, aParam.mPrivateBrowsingId);
-    WriteParam(aWriter, aParam.mUserContextId);
-    WriteParam(aWriter, aParam.mGeckoViewSessionContextId);
-    WriteParam(aWriter, aParam.mPartitionKey);
-    WriteParam(aWriter, aParam.mPartitionKeyPattern);
-  }
-
-  static bool Read(MessageReader* aReader, paramType* aResult) {
-    return ReadParam(aReader, &aResult->mFirstPartyDomain) &&
-           ReadParam(aReader, &aResult->mPrivateBrowsingId) &&
-           ReadParam(aReader, &aResult->mUserContextId) &&
-           ReadParam(aReader, &aResult->mGeckoViewSessionContextId) &&
-           ReadParam(aReader, &aResult->mPartitionKey) &&
-           ReadParam(aReader, &aResult->mPartitionKeyPattern);
-  }
-};
-
-template <>
-struct ParamTraits<mozilla::dom::PartitionKeyPatternDictionary> {
-  typedef mozilla::dom::PartitionKeyPatternDictionary paramType;
-
-  static void Write(MessageWriter* aWriter, const paramType& aParam) {
-    WriteParam(aWriter, aParam.mScheme);
-    WriteParam(aWriter, aParam.mBaseDomain);
-    WriteParam(aWriter, aParam.mPort);
-    WriteParam(aWriter, aParam.mForeignByAncestorContext);
-  }
-
-  static bool Read(MessageReader* aReader, paramType* aResult) {
-    return ReadParam(aReader, &aResult->mScheme) &&
-           ReadParam(aReader, &aResult->mBaseDomain) &&
-           ReadParam(aReader, &aResult->mPort) &&
-           ReadParam(aReader, &aResult->mForeignByAncestorContext);
-  }
-};
+DEFINE_IPC_SERIALIZER_WITH_FIELDS(mozilla::dom::PartitionKeyPatternDictionary,
+                                  mScheme, mBaseDomain, mPort,
+                                  mForeignByAncestorContext);
 
 template <>
 struct ParamTraits<mozilla::dom::quota::DatabaseUsageType> {

@@ -4,30 +4,30 @@
 package org.mozilla.focus.activity
 
 import androidx.test.internal.runner.junit4.AndroidJUnit4ClassRunner
+import mozilla.components.browser.errorpages.R as errorpagesR
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.mozilla.focus.R
 import org.mozilla.focus.activity.robots.searchScreen
 import org.mozilla.focus.helpers.FeatureSettingsHelper
+import org.mozilla.focus.helpers.FocusTestRule
 import org.mozilla.focus.helpers.MainActivityFirstrunTestRule
 import org.mozilla.focus.helpers.TestHelper.getStringResource
 import org.mozilla.focus.helpers.TestHelper.setNetworkEnabled
-import org.mozilla.focus.helpers.TestSetup
 
 // This tests verify invalid URL and no network connection error pages
 @RunWith(AndroidJUnit4ClassRunner::class)
-class ErrorPagesTest : TestSetup() {
+class ErrorPagesTest {
     private val featureSettingsHelper = FeatureSettingsHelper()
 
-    @get:Rule
-    val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
+    @get:Rule(order = 0) val focusTestRule: FocusTestRule = FocusTestRule()
+
+    @get:Rule val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
 
     @Before
-    override fun setUp() {
-        super.setUp()
+    fun setUp() {
         featureSettingsHelper.setCfrForTrackingProtectionEnabled(false)
     }
 
@@ -40,11 +40,11 @@ class ErrorPagesTest : TestSetup() {
     fun badURLCheckTest() {
         val badURl = "bad.url"
 
-        searchScreen {
-        }.loadPage(badURl) {
-            verifyPageContent(getStringResource(R.string.mozac_browser_errorpages_unknown_host_title))
-            verifyPageContent("Try Again")
-        }
+        searchScreen {}
+            .loadPage(badURl) {
+                verifyPageContent(getStringResource(errorpagesR.string.mozac_browser_errorpages_unknown_host_title))
+                verifyPageContent("Try Again")
+            }
     }
 
     @Test
@@ -52,11 +52,11 @@ class ErrorPagesTest : TestSetup() {
         val pageUrl = "mozilla.org"
 
         setNetworkEnabled(false)
-        searchScreen {
-        }.loadPage(pageUrl) {
-            verifyPageContent(getStringResource(R.string.mozac_browser_errorpages_unknown_host_title))
-            verifyPageContent("Try Again")
-            setNetworkEnabled(true)
-        }
+        searchScreen {}
+            .loadPage(pageUrl) {
+                verifyPageContent(getStringResource(errorpagesR.string.mozac_browser_errorpages_unknown_host_title))
+                verifyPageContent("Try Again")
+                setNetworkEnabled(true)
+            }
     }
 }

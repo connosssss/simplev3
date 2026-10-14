@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,9 +8,9 @@
 #include "nsIObserver.h"
 #include "nsRefPtrHashtable.h"
 // Needed for GamepadMappingType
+
 #include "mozilla/dom/GamepadBinding.h"
 #include "mozilla/dom/GamepadHandle.h"
-#include <utility>
 
 class nsGlobalWindowInner;
 class nsIGlobalObject;
@@ -49,9 +47,8 @@ class GamepadManager final : public nsIObserver {
   // Add a gamepad to the list of known gamepads.
   void AddGamepad(GamepadHandle aHandle, const nsAString& aID,
                   GamepadMappingType aMapping, GamepadHand aHand,
-                  uint32_t aDisplayID, uint32_t aNumButtons, uint32_t aNumAxes,
-                  uint32_t aNumHaptics, uint32_t aNumLightIndicator,
-                  uint32_t aNumTouchEvents);
+                  uint32_t aNumButtons, uint32_t aNumAxes, uint32_t aNumHaptics,
+                  uint32_t aNumLightIndicator, uint32_t aNumTouchEvents);
 
   // Remove the gamepad at |aIndex| from the list of known gamepads.
   void RemoveGamepad(GamepadHandle aHandle);
@@ -126,13 +123,22 @@ class GamepadManager final : public nsIObserver {
                                              nsGlobalWindowInner* aWindow);
 
   bool SetGamepadByEvent(const GamepadChangeEvent& aEvent,
-                         nsGlobalWindowInner* aWindow = nullptr);
+                         nsGlobalWindowInner* aWindow = nullptr,
+                         bool aContainsUserGesture = false);
   // To avoid unintentionally causing the gamepad be activated.
   // Returns false if this gamepad hasn't been seen by this window
   // and the axis move data is less than AXIS_FIRST_INTENT_THRESHOLD_VALUE.
   bool AxisMoveIsFirstIntent(nsGlobalWindowInner* aWindow,
                              GamepadHandle aHandle,
                              const GamepadChangeEvent& aEvent);
+  // https://w3c.github.io/gamepad/#dfn-gamepad-user-gesture
+  // Returns true if applying |aEvent| to |aGamepad| is a gamepad user
+  // gesture: a button press transition, or an axis move crossing
+  // AXIS_FIRST_INTENT_THRESHOLD_VALUE. Must be called before the
+  // corresponding SetButton()/SetAxis() call overwrites |aGamepad|'s
+  // previous state, since it compares against that state.
+  bool EventContainsUserGesture(Gamepad* aGamepad,
+                                const GamepadChangeEvent& aEvent);
   bool MaybeWindowHasSeenGamepad(nsGlobalWindowInner* aWindow,
                                  GamepadHandle aHandle);
   // Returns true if we have already sent data from this gamepad

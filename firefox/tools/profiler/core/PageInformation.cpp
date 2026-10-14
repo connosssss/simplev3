@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,12 +15,6 @@ PageInformation::PageInformation(uint64_t aTabID, uint64_t aInnerWindowID,
       mUrl(aUrl),
       mEmbedderInnerWindowID(aEmbedderInnerWindowID),
       mIsPrivateBrowsing(aIsPrivateBrowsing) {}
-
-bool PageInformation::Equals(PageInformation* aOtherPageInfo) const {
-  // It's enough to check inner window IDs because they are unique for each
-  // page. Therefore, we don't have to check the tab ID or url.
-  return InnerWindowID() == aOtherPageInfo->InnerWindowID();
-}
 
 void PageInformation::StreamJSON(SpliceableJSONWriter& aWriter) const {
   // Here, we are converting uint64_t to double. Both tab and Inner

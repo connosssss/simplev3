@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -26,14 +24,7 @@
  * template instantiations wherever possible, mean that Parser exhibits much of
  * the same unholy template/inheritance complexity as token streams.
  *
- * == ParserSharedBase ==
- *
- * ParserSharedBase is the base class for both regular JS and BinAST parsing.
- * This class contains common fields and methods between both parsers. There is
- * currently no BinAST parser here so this can potentially be merged into the
- * ParserBase type below.
- *
- * == ParserBase → ParserSharedBase, ErrorReportMixin ==
+ * == ParserBase → ErrorReportMixin ==
  *
  * ParserBase is the base class for regular JS parser, shared by all regular JS
  * parsers of all character types and parse-handling behavior.  It stores
@@ -238,13 +229,8 @@ class AutoAwaitIsKeyword;
 template <class ParseHandler, typename Unit>
 class AutoInParametersOfAsyncFunction;
 
-class MOZ_STACK_CLASS ParserSharedBase {
- public:
-  enum class Kind { Parser };
-
-  ParserSharedBase(FrontendContext* fc, CompilationState& compilationState,
-                   Kind kind);
-  ~ParserSharedBase();
+class MOZ_STACK_CLASS ParserBase : public ErrorReportMixin {
+  using Base = ErrorReportMixin;
 
  public:
   FrontendContext* fc_;
@@ -259,7 +245,10 @@ class MOZ_STACK_CLASS ParserSharedBase {
   // For tracking used names in this parsing session.
   UsedNameTracker& usedNames_;
 
- public:
+  TokenStreamAnyChars anyChars;
+
+  ScriptSource* ss;
+
   CompilationState& getCompilationState() { return compilationState_; }
 
   ParserAtomsTable& parserAtoms() { return compilationState_.parserAtoms; }
@@ -279,16 +268,6 @@ class MOZ_STACK_CLASS ParserSharedBase {
 #if defined(DEBUG) || defined(JS_JITSPEW)
   void dumpAtom(TaggedParserAtomIndex index) const;
 #endif
-};
-
-class MOZ_STACK_CLASS ParserBase : public ParserSharedBase,
-                                   public ErrorReportMixin {
-  using Base = ErrorReportMixin;
-
- public:
-  TokenStreamAnyChars anyChars;
-
-  ScriptSource* ss;
 
  protected:
 #if DEBUG
@@ -844,7 +823,7 @@ class MOZ_STACK_CLASS GeneralParser : public PerHandlerParser<ParseHandler> {
    */
   class MOZ_STACK_CLASS PossibleError {
    private:
-    enum class ErrorKind { Expression, Destructuring, DestructuringWarning };
+    enum class ErrorKind { Expression, Destructuring };
 
     enum class ErrorState { None, Pending };
 
@@ -859,7 +838,6 @@ class MOZ_STACK_CLASS GeneralParser : public PerHandlerParser<ParseHandler> {
     GeneralParser<ParseHandler, Unit>& parser_;
     Error exprError_;
     Error destructuringError_;
-    Error destructuringWarning_;
 
     // Returns the error report.
     Error& error(ErrorKind kind);
@@ -892,12 +870,6 @@ class MOZ_STACK_CLASS GeneralParser : public PerHandlerParser<ParseHandler> {
     // won't overwrite the existing pending error.
     void setPendingDestructuringErrorAt(const TokenPos& pos,
                                         unsigned errorNumber);
-
-    // Set a pending destructuring warning. Only a single warning may be
-    // set per instance, i.e. subsequent calls to this method are ignored
-    // and won't overwrite the existing pending warning.
-    void setPendingDestructuringWarningAt(const TokenPos& pos,
-                                          unsigned errorNumber);
 
     // Set a pending expression error. Only a single error may be set per
     // instance, i.e. subsequent calls to this method are ignored and won't
@@ -1527,9 +1499,6 @@ class MOZ_STACK_CLASS GeneralParser : public PerHandlerParser<ParseHandler> {
   bool noteDeclaredPrivateName(Node nameNode, TaggedParserAtomIndex name,
                                PropertyType propType, FieldPlacement placement,
                                TokenPos pos);
-
- private:
-  inline bool asmJS(ListNodeType list);
 };
 
 template <typename Unit>
@@ -1663,8 +1632,6 @@ class MOZ_STACK_CLASS Parser<SyntaxParseHandler, Unit> final
 
   bool skipLazyInnerFunction(FunctionNodeType funNode, uint32_t toStringStart,
                              bool tryAnnexB);
-
-  bool asmJS(ListNodeType list);
 
   // Functions present only in Parser<SyntaxParseHandler, Unit>.
 };
@@ -1847,8 +1814,6 @@ class MOZ_STACK_CLASS Parser<FullParseHandler, Unit> final
   bool checkLocalExportName(TaggedParserAtomIndex ident, uint32_t offset) {
     return checkLabelOrIdentifierReference(ident, offset, YieldIsName);
   }
-
-  bool asmJS(ListNodeType list);
 };
 
 template <class Parser>

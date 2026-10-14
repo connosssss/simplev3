@@ -18,8 +18,10 @@ class nsHtml5TreeOpExecutor;
 class nsHtml5DocumentBuilder;
 namespace mozilla {
 class Encoding;
-
+template <typename T>
+class Maybe;
 namespace dom {
+class CustomElementRegistry;
 class Text;
 }  // namespace dom
 }  // namespace mozilla
@@ -283,18 +285,22 @@ struct opGetShadowRootFromHost {
   nsIContent** mHost;
   nsIContent** mFragHandle;
   nsIContent** mTemplateNode;
+  nsString mShadowRootReferenceTarget;
   mozilla::dom::ShadowRootMode mShadowRootMode;
+  mozilla::dom::SlotAssignmentMode mShadowRootSlotAssignment;
   bool mShadowRootIsClonable;
   bool mShadowRootIsSerializable;
   bool mShadowRootDelegatesFocus;
+  bool mShadowRootCustomElementRegistry;
 
-  explicit opGetShadowRootFromHost(nsIContentHandle* aHost,
-                                   nsIContentHandle* aFragHandle,
-                                   nsIContentHandle* aTemplateNode,
-                                   mozilla::dom::ShadowRootMode aShadowRootMode,
-                                   bool aShadowRootIsClonable,
-                                   bool aShadowRootIsSerializable,
-                                   bool aShadowRootDelegatesFocus) {
+  explicit opGetShadowRootFromHost(
+      nsIContentHandle* aHost, nsIContentHandle* aFragHandle,
+      nsIContentHandle* aTemplateNode,
+      mozilla::dom::ShadowRootMode aShadowRootMode, bool aShadowRootIsClonable,
+      bool aShadowRootIsSerializable, bool aShadowRootDelegatesFocus,
+      bool aShadowRootCustomElementRegistry,
+      mozilla::dom::SlotAssignmentMode aShadowRootSlotAssignment,
+      nsAString& aShadowRootReferenceTarget) {
     mHost = static_cast<nsIContent**>(aHost);
     mFragHandle = static_cast<nsIContent**>(aFragHandle);
     mTemplateNode = static_cast<nsIContent**>(aTemplateNode);
@@ -302,6 +308,9 @@ struct opGetShadowRootFromHost {
     mShadowRootIsClonable = aShadowRootIsClonable;
     mShadowRootIsSerializable = aShadowRootIsSerializable;
     mShadowRootDelegatesFocus = aShadowRootDelegatesFocus;
+    mShadowRootCustomElementRegistry = aShadowRootCustomElementRegistry;
+    mShadowRootSlotAssignment = aShadowRootSlotAssignment;
+    mShadowRootReferenceTarget = aShadowRootReferenceTarget;
   }
 };
 
@@ -541,6 +550,8 @@ struct opStartLayout {};
 
 struct opEnableEncodingMenu {};
 
+struct opMicrotaskCheckpoint {};
+
 typedef mozilla::Variant<
     uninitialized,
     // main HTML5 ops
@@ -560,7 +571,8 @@ typedef mozilla::Variant<
     opSetScriptLineAndColumnNumberAndFreeze, opSvgLoad,
     opMaybeComplainAboutCharset, opMaybeComplainAboutDeepTree, opAddClass,
     opAddViewSourceHref, opAddViewSourceBase, opAddErrorType, opAddLineNumberId,
-    opStartLayout, opEnableEncodingMenu, opShallowCloneInto>
+    opStartLayout, opEnableEncodingMenu, opMicrotaskCheckpoint,
+    opShallowCloneInto>
     treeOperation;
 
 class nsHtml5TreeOperation final {
@@ -585,6 +597,34 @@ class nsHtml5TreeOperation final {
                          mozilla::dom::FromParser aFromParser,
                          nsHtml5DocumentBuilder* aBuilder);
 
+  // The insertion variants below insert before aBefore, which has to be a
+  // child of aParent, or append when aBefore is null. Unlike Append() above
+  // they never run custom element reactions. Only sanitizing while parsing
+  // uses them, and that is limited to the parses that nsHtml5StringParser
+  // drives through the op-less builder, i.e. the fragment and document parses
+  // behind setHTML() and Document.parseHTML(), which run no custom element
+  // reactions in the first place.
+  static nsresult InsertBefore(nsIContent* aNode, nsIContent* aParent,
+                               nsIContent* aBefore,
+                               nsHtml5DocumentBuilder* aBuilder);
+
+  static nsresult InsertTextBefore(const char16_t* aBuffer, uint32_t aLength,
+                                   nsIContent* aParent, nsIContent* aBefore,
+                                   nsHtml5DocumentBuilder* aBuilder);
+
+  static nsresult InsertCommentBefore(nsIContent* aParent, char16_t* aBuffer,
+                                      int32_t aLength, nsIContent* aBefore,
+                                      nsHtml5DocumentBuilder* aBuilder);
+
+  // Undoes the form association that element creation gave aNode, for a node
+  // that ends up not being inserted after all.
+  static void AbortNodeInsertion(nsINode* aNode);
+
+  // "If it is not possible to insert element at the adjusted insertion
+  // location, abort these steps." Reports whether inserting aNode into
+  // aParent is possible, without touching either of them.
+  static bool CanInsert(nsIContent* aNode, nsIContent* aParent);
+
   static nsresult AppendToDocument(nsIContent* aNode,
                                    nsHtml5DocumentBuilder* aBuilder);
 
@@ -603,14 +643,19 @@ class nsHtml5TreeOperation final {
                                 nsHtml5DocumentBuilder* aBuilder);
 
   static void SetHTMLElementAttributes(mozilla::dom::Element* aElement,
-                                       nsAtom* aName,
                                        nsHtml5HtmlAttributes* aAttributes);
+
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY static void SetHTMLElementAttributesFast(
+      mozilla::dom::Element* aElement, nsHtml5HtmlAttributes* aAttributes);
 
   static nsIContent* CreateHTMLElement(
       nsAtom* aName, nsHtml5HtmlAttributes* aAttributes,
       mozilla::dom::FromParser aFromParser, nsNodeInfoManager* aNodeInfoManager,
       nsHtml5DocumentBuilder* aBuilder,
-      mozilla::dom::HTMLContentCreatorFunction aCreator);
+      mozilla::dom::HTMLContentCreatorFunction aCreator,
+      nsINode* aIntendedParent,
+      mozilla::Maybe<RefPtr<mozilla::dom::CustomElementRegistry>>
+          aContextRegistry);
 
   static nsIContent* CreateSVGElement(
       nsAtom* aName, nsHtml5HtmlAttributes* aAttributes,
@@ -649,6 +694,11 @@ class nsHtml5TreeOperation final {
   static void SetDocumentFragmentForTemplate(nsIContent* aNode,
                                              nsIContent* aDocumentFragment);
 
+  // The node that foster parented content is inserted into immediately before
+  // aTable, or nullptr when there is none, in which case the content is
+  // appended to the stack parent instead.
+  static nsIContent* GetFosterParentForInsertBefore(nsIContent* aTable);
+
   static nsIContent* GetFosterParent(nsIContent* aTable,
                                      nsIContent* aStackParent);
 
@@ -665,6 +715,9 @@ class nsHtml5TreeOperation final {
   nsHtml5TreeOperation();
 
   ~nsHtml5TreeOperation();
+
+  nsHtml5TreeOperation(const nsHtml5TreeOperation&) = delete;
+  nsHtml5TreeOperation& operator=(const nsHtml5TreeOperation&) = delete;
 
   inline void Init(const treeOperation& aOperation) {
     NS_ASSERTION(mOperation.is<uninitialized>(),
@@ -694,9 +747,6 @@ class nsHtml5TreeOperation final {
                    bool* aInterrupted, bool* aStreamEnded);
 
  private:
-  nsHtml5TreeOperation(const nsHtml5TreeOperation&) = delete;
-  nsHtml5TreeOperation& operator=(const nsHtml5TreeOperation&) = delete;
-
   treeOperation mOperation;
 };
 

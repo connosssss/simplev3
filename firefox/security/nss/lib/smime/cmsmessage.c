@@ -137,19 +137,6 @@ NSS_CMSMessage_Copy(NSSCMSMessage *cmsg)
 }
 
 /*
- * NSS_CMSMessage_GetArena - return a pointer to the message's arena pool
- */
-PLArenaPool *
-NSS_CMSMessage_GetArena(NSSCMSMessage *cmsg)
-{
-    if (cmsg == NULL) {
-        return NULL;
-    }
-
-    return cmsg->poolp;
-}
-
-/*
  * NSS_CMSMessage_GetContentInfo - return a pointer to the top level contentInfo
  */
 NSSCMSContentInfo *
@@ -228,32 +215,6 @@ NSS_CMSMessage_ContentLevel(NSSCMSMessage *cmsg, int n)
 }
 
 /*
- * NSS_CMSMessage_ContainsCertsOrCrls - see if message contains certs along the way
- */
-PRBool
-NSS_CMSMessage_ContainsCertsOrCrls(NSSCMSMessage *cmsg)
-{
-    NSSCMSContentInfo *cinfo;
-
-    if (cmsg == NULL) {
-        return PR_FALSE;
-    }
-
-    /* descend into CMS message */
-    for (cinfo = &(cmsg->contentInfo); cinfo != NULL;
-         cinfo = NSS_CMSContentInfo_GetChildContentInfo(cinfo)) {
-        SECOidTag tag = NSS_CMSContentInfo_GetContentTypeTag(cinfo);
-        if (tag != SEC_OID_PKCS7_SIGNED_DATA)
-            continue; /* next level */
-
-        if (NSS_CMSSignedData_ContainsCertsOrCrls(NSS_CMSContentInfo_GetContent(cinfo)))
-            return PR_TRUE;
-        /* callback here for generic wrappers? */
-    }
-    return PR_FALSE;
-}
-
-/*
  * NSS_CMSMessage_IsEncrypted - see if message contains a encrypted submessage
  */
 PRBool
@@ -270,6 +231,7 @@ NSS_CMSMessage_IsEncrypted(NSSCMSMessage *cmsg)
          cinfo = NSS_CMSContentInfo_GetChildContentInfo(cinfo)) {
         switch (NSS_CMSContentInfo_GetContentTypeTag(cinfo)) {
             case SEC_OID_PKCS7_ENVELOPED_DATA:
+            case SEC_OID_CMS_AUTH_ENVELOPED_DATA:
             case SEC_OID_PKCS7_ENCRYPTED_DATA:
                 return PR_TRUE;
             default:
@@ -316,31 +278,5 @@ NSS_CMSMessage_IsSigned(NSSCMSMessage *cmsg)
                 break;
         }
     }
-    return PR_FALSE;
-}
-
-/*
- * NSS_CMSMessage_IsContentEmpty - see if content is empty
- *
- * returns PR_TRUE is innermost content length is < minLen
- * XXX need the encrypted content length (why?)
- */
-PRBool
-NSS_CMSMessage_IsContentEmpty(NSSCMSMessage *cmsg, unsigned int minLen)
-{
-    SECItem *item = NULL;
-
-    if (cmsg == NULL) {
-        return PR_TRUE;
-    }
-
-    item = NSS_CMSContentInfo_GetContent(NSS_CMSMessage_GetContentInfo(cmsg));
-
-    if (!item) {
-        return PR_TRUE;
-    } else if (item->len <= minLen) {
-        return PR_TRUE;
-    }
-
     return PR_FALSE;
 }

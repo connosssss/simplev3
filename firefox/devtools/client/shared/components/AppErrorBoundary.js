@@ -12,6 +12,12 @@ const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-t
 const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 const { div, h1, h2, h3, p, a, button } = dom;
 
+loader.lazyRequireGetter(
+  this,
+  "Telemetry",
+  "resource://devtools/client/shared/telemetry.js"
+);
+
 // Localized strings for (devtools/client/locales/en-US/components.properties)
 loader.lazyGetter(this, "L10N", function () {
   const { LocalizationHelper } = require("resource://devtools/shared/l10n.js");
@@ -28,12 +34,6 @@ loader.lazyGetter(this, "RELOAD_PAGE_INFO", function () {
   return L10N.getStr("appErrorBoundary.reloadPanelInfo");
 });
 
-// File a bug for the selected component specifically
-// Add format=__default__ to make sure users without EDITBUGS permission still
-// use the regular UI to create bugs, including the prefilled description.
-const bugLink =
-  "https://bugzilla.mozilla.org/enter_bug.cgi?format=__default__&product=DevTools&component=";
-
 /**
  * Error boundary that wraps around the a given component.
  */
@@ -44,8 +44,13 @@ class AppErrorBoundary extends Component {
       panel: PropTypes.any.isRequired,
       componentName: PropTypes.string.isRequired,
       openLink: PropTypes.func,
+      disableVerticalOverflow: PropTypes.bool,
     };
   }
+
+  // Keep a flag to avoid submitting extra pings in case several components
+  // fail in cascade.
+  #pingSubmitted = false;
 
   constructor(props) {
     super(props);
@@ -54,6 +59,8 @@ class AppErrorBoundary extends Component {
       errorMsg: "No error",
       errorStack: null,
       errorInfo: null,
+      // Will be used to provide a button to close the toolbox.
+      toolbox: null,
     };
   }
 
@@ -88,19 +95,40 @@ class AppErrorBoundary extends Component {
                     .split("\n")
                     .map((part, idx) => p({ key: `strace${idx}` }, part))
                 : null;
+
+              // DevToolsProcessParent may receive stacktraces from the content process
+              // and put them onto the exception's contentProcessStack attribute
+              // which protocol.js Actor and Front layer will preserve so that we ultimately
+              // can read it from here.
+              // This is for server codebases using DevToolsProcess JS Actor to communicate
+              // with the content processes from the parent process. Typically most methods
+              // of the Watcher Actor.
+              const contentProcessStack = info[obj].contentProcessStack;
+              const contentProcessTraceParts = contentProcessStack
+                ? contentProcessStack
+                    .split("\n")
+                    .map((part, idx) =>
+                      p({ key: `contentProcessStrace${idx}` }, part)
+                    )
+                : null;
+
               return div(
                 { className: "stack-trace-section" },
                 h3(
                   {},
                   obj == "clientPacket" ? "Client packet" : "Server packet"
                 ),
-                // Display the packet as JSON, while removing the artifical `stack` attribute from it
+                // Display the packet as JSON, while removing the artificial `stack` attribute from it
                 p(
                   {},
                   JSON.stringify({ ...info[obj], stack: undefined }, null, 2)
                 ),
                 stack ? h3({}, "Server stack") : null,
-                traceParts
+                traceParts,
+                contentProcessStack
+                  ? h3({}, "Server content process stack")
+                  : null,
+                contentProcessTraceParts
               );
             }
           }
@@ -157,20 +185,98 @@ class AppErrorBoundary extends Component {
     return infoObj;
   }
 
-  // Called when a child component throws an error.
+  // Called automatically by React when a child component throws an error.
   componentDidCatch(error, info) {
     const validInfo = this.getValidInfo(info);
+    const errorMessage = error.toString();
+
     this.setState({
-      errorMsg: error.toString(),
+      errorMsg: errorMessage,
       errorStack: error.stack,
       errorInfo: validInfo,
     });
+
+    if (this.#pingSubmitted) {
+      // If the component already sent the telemetry ping for this session, skip
+      // recording a new event.
+      return;
+    }
+
+    const extras = Telemetry.sanitizeEventExtras(
+      {
+        component_stack: validInfo.componentStack || "",
+        error_name: error.name,
+        stack: error.stack || "",
+      },
+      "devtoolsMain.toolboxComponentError",
+      // Allow up to 500 characters for each extra value (maximum value
+      // supported by Glean events).
+      { limit: 500 }
+    );
+    Glean.devtoolsMain.toolboxComponentError.record(extras);
+    this.#pingSubmitted = true;
+  }
+
+  // Manually called by devtools code when an exception is triggered before
+  // or outside of React render codepath.
+  handleException(exception, toolbox, showToolboxCloseButton = false) {
+    const errorMessage = exception.toString();
+    const clientPacket = exception.clientPacket || {};
+    const serverPacket = exception.serverPacket || {};
+
+    this.setState({
+      errorMsg: errorMessage,
+      errorStack: exception.stack,
+      errorInfo: {
+        clientPacket,
+        serverPacket,
+      },
+      showToolboxCloseButton,
+      toolbox,
+    });
+
+    if (this.#pingSubmitted) {
+      // If the component already sent the telemetry ping for this session, skip
+      // recording a new event.
+      return;
+    }
+
+    const descriptorFront = toolbox.commands?.descriptorFront;
+    const extras = Telemetry.sanitizeEventExtras(
+      {
+        descriptor_type: descriptorFront?.descriptorType,
+        error_name: exception.name,
+        host_type: toolbox.hostType,
+        is_destroying: toolbox.isDestroying(),
+        is_local_tab: descriptorFront?.isLocalTab,
+        is_window_closed: !!toolbox.win?.closed,
+        packet_error: serverPacket.error,
+        packet_target: serverPacket.from,
+        packet_type: clientPacket.type,
+        server_stack: serverPacket.stack || "",
+        server_content_process_stack: serverPacket.contentProcessStack || "",
+        session_duration: Math.floor(toolbox.telemetry.msSinceSessionStart()),
+        session_id: toolbox.sessionId,
+        stack: exception.stack || "",
+      },
+      "devtoolsMain.toolboxServerError",
+      // Allow up to 500 characters for each extra value (maximum value
+      // supported by Glean events).
+      { limit: 500 }
+    );
+    Glean.devtoolsMain.toolboxServerError.record(extras);
+    this.#pingSubmitted = true;
   }
 
   getBugLink() {
     const { componentStack, clientPacket, serverPacket } = this.state.errorInfo;
 
-    let msg = `## Error in ${this.props.panel}: \n${this.state.errorMsg}\n\n`;
+    let msg =
+      "## Steps to reproduce:\n\n" +
+      "If possible, please share specific steps to reproduce the error.\n" +
+      "Otherwise add any additional information useful to investigate the issue.\n\n";
+
+    msg += `## Error in ${this.props.panel}: \n${this.state.errorMsg}\n\n`;
 
     if (componentStack) {
       msg += `## React Component Stack:${componentStack}\n\n`;
@@ -180,17 +286,41 @@ class AppErrorBoundary extends Component {
       msg += `## Client Packet:\n\`\`\`\n${JSON.stringify(clientPacket, null, 2)}\n\`\`\`\n\n`;
     }
 
+    // Some stacks might be long enough to trigger a "414 URI Too Long" response
+    // from Bugzilla, so let's crop them when they're too long
+    const cropStackIfNeeded = stackStr => {
+      // The max length seems to be 10000 chars, and we're calling this function for 3
+      // stacks, so let them be at most 3000 to leave some room for the other strings
+      // we set in the comment.
+      const limit = 3000;
+      if (!stackStr || stackStr.length < limit) {
+        return stackStr;
+      }
+      const croppedStr = ` (…)`;
+      return stackStr.substring(0, limit - croppedStr.length) + croppedStr;
+    };
+
     if (serverPacket) {
-      // Display the packet as JSON, while removing the artifical `stack` attribute from it
-      msg += `## Server Packet:\n\`\`\`\n${JSON.stringify({ ...serverPacket, stack: undefined }, null, 2)}\n\`\`\`\n\n`;
-      msg += `## Server Stack:\n\`\`\`\n${serverPacket.stack}\n\`\`\`\n\n`;
+      // Display the packet as JSON, while removing the artificial `stack`/`contentProcessStack` attributes from it
+      msg += `## Server Packet:\n\`\`\`\n${JSON.stringify({ ...serverPacket, stack: undefined, contentProcessStack: undefined }, null, 2)}\n\`\`\`\n\n`;
+      msg += `## Server Stack:\n\`\`\`\n${cropStackIfNeeded(serverPacket.stack)}\n\`\`\`\n\n`;
+      if (serverPacket.contentProcessStack) {
+        msg += `## Server Content Process Stack:\n\`\`\`\n${cropStackIfNeeded(serverPacket.contentProcessStack)}\n\`\`\`\n\n`;
+      }
     }
 
-    msg += `## Stacktrace: \n\`\`\`\n${this.state.errorStack}\n\`\`\``;
+    msg += `## Stacktrace: \n\`\`\`\n${cropStackIfNeeded(this.state.errorStack)}\n\`\`\``;
 
-    return `${bugLink}${this.props.componentName}&comment=${encodeURIComponent(
-      msg
-    )}`;
+    const bugLinkSearchParams = new URLSearchParams({
+      //  make sure users without EDITBUGS permission still
+      // use the regular UI to create bugs, including the prefilled description.
+      format: "__default__",
+      blocked: "devtools-toolbox-crash",
+      product: "DevTools",
+      component: this.props.componentName,
+      comment: msg,
+    });
+    return `https://bugzilla.mozilla.org/enter_bug.cgi?${bugLinkSearchParams}`;
   }
 
   render() {
@@ -205,7 +335,7 @@ class AppErrorBoundary extends Component {
 
       return div(
         {
-          className: `app-error-panel`,
+          className: `app-error-panel${this.props.disableVerticalOverflow ? " disable-vertical-overflow" : ""}`,
         },
         h1({ className: "error-panel-header" }, errorDescription),
         a(
@@ -219,7 +349,7 @@ class AppErrorBoundary extends Component {
           },
           FILE_BUG_BUTTON
         ),
-        this.state.toolbox
+        this.state.showToolboxCloseButton
           ? button({
               className: "devtools-tabbar-button error-panel-close",
               onClick: () => {

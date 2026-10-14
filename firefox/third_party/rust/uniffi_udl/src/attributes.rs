@@ -15,7 +15,7 @@
 //! if we grow significantly more complicated attribute handling.
 
 use anyhow::{bail, Result};
-use uniffi_meta::{Checksum, ObjectImpl};
+use uniffi_meta::{Checksum, ObjectImpl, TraitKind};
 
 /// Represents an attribute parsed from UDL, like `[ByRef]` or `[Throws]`.
 ///
@@ -159,6 +159,16 @@ impl DictionaryAttributes {
     pub fn contains_remote(&self) -> bool {
         self.0.iter().any(|attr| matches!(attr, Attribute::Remote))
     }
+
+    pub fn get_uniffi_traits(&self) -> Vec<String> {
+        self.0
+            .iter()
+            .find_map(|attr| match attr {
+                Attribute::Traits(inner) => Some(inner.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
 }
 
 impl TryFrom<&weedle::attribute::ExtendedAttributeList<'_>> for DictionaryAttributes {
@@ -168,6 +178,7 @@ impl TryFrom<&weedle::attribute::ExtendedAttributeList<'_>> for DictionaryAttrib
     ) -> Result<Self, Self::Error> {
         let attrs = parse_attributes(weedle_attributes, |attr| match attr {
             Attribute::Remote => Ok(()),
+            Attribute::Traits(_) => Ok(()),
             _ => bail!(format!("{attr:?} not supported for dictionaries")),
         })?;
         Ok(Self(attrs))
@@ -204,6 +215,16 @@ impl EnumAttributes {
     pub fn contains_remote(&self) -> bool {
         self.0.iter().any(|attr| matches!(attr, Attribute::Remote))
     }
+
+    pub fn get_uniffi_traits(&self) -> Vec<String> {
+        self.0
+            .iter()
+            .find_map(|attr| match attr {
+                Attribute::Traits(inner) => Some(inner.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
 }
 
 impl TryFrom<&weedle::attribute::ExtendedAttributeList<'_>> for EnumAttributes {
@@ -218,6 +239,7 @@ impl TryFrom<&weedle::attribute::ExtendedAttributeList<'_>> for EnumAttributes {
             // Allow `[Enum]`, since we may be parsing an attribute list from an interface with the
             // `[Enum]` attribute.
             Attribute::Enum => Ok(()),
+            Attribute::Traits(_) => Ok(()),
             _ => bail!(format!("{attr:?} not supported for enums")),
         })?;
         Ok(Self(attrs))
@@ -356,8 +378,8 @@ impl InterfaceAttributes {
     pub fn object_impl(&self) -> Result<ObjectImpl> {
         Ok(
             match (self.contains_trait(), self.contains_with_foreign()) {
-                (true, true) => ObjectImpl::CallbackTrait,
-                (true, false) => ObjectImpl::Trait,
+                (true, true) => ObjectImpl::Trait(TraitKind::Both),
+                (true, false) => ObjectImpl::Trait(TraitKind::RustOnly),
                 (false, false) => ObjectImpl::Struct,
                 (false, true) => bail!("WithForeign can't be specified without Trait"),
             },
@@ -388,8 +410,10 @@ impl TryFrom<&weedle::attribute::ExtendedAttributeList<'_>> for InterfaceAttribu
             Attribute::Remote => Ok(()),
             _ => bail!(format!("{attr:?} not supported for interface definition")),
         })?;
-        if attrs.iter().any(|a| matches!(a, Attribute::Enum)) && attrs.len() != 1 {
-            // If `[Enum]` is specified it must be the only attribute.
+        // If `[Enum]` can only also have `[Traits]`
+        let ok_for_enum =
+            attrs.len() == 1 || attrs.iter().any(|a| matches!(a, Attribute::Traits(_)));
+        if attrs.iter().any(|a| matches!(a, Attribute::Enum)) && !ok_for_enum {
             bail!("conflicting attributes on interface definition");
         }
         Ok(Self(attrs))
@@ -840,12 +864,18 @@ mod test {
     fn test_trait_attribute() {
         let (_, node) = weedle::attribute::ExtendedAttributeList::parse("[Trait]").unwrap();
         let attrs = InterfaceAttributes::try_from(&node).unwrap();
-        assert_eq!(attrs.object_impl().unwrap(), ObjectImpl::Trait);
+        assert_eq!(
+            attrs.object_impl().unwrap(),
+            ObjectImpl::Trait(TraitKind::RustOnly)
+        );
 
         let (_, node) =
             weedle::attribute::ExtendedAttributeList::parse("[Trait, WithForeign]").unwrap();
         let attrs = InterfaceAttributes::try_from(&node).unwrap();
-        assert_eq!(attrs.object_impl().unwrap(), ObjectImpl::CallbackTrait);
+        assert_eq!(
+            attrs.object_impl().unwrap(),
+            ObjectImpl::Trait(TraitKind::Both)
+        );
 
         let (_, node) = weedle::attribute::ExtendedAttributeList::parse("[]").unwrap();
         let attrs = InterfaceAttributes::try_from(&node).unwrap();
@@ -861,6 +891,10 @@ mod test {
         let (_, node) = weedle::attribute::ExtendedAttributeList::parse("[Remote]").unwrap();
         let attrs = DictionaryAttributes::try_from(&node).unwrap();
         assert!(attrs.contains_remote());
+
+        let (_, node) =
+            weedle::attribute::ExtendedAttributeList::parse("[Traits=(Debug)]").unwrap();
+        DictionaryAttributes::try_from(&node).unwrap();
 
         let (_, node) = weedle::attribute::ExtendedAttributeList::parse("[Trait]").unwrap();
         let err = DictionaryAttributes::try_from(&node).unwrap_err();
@@ -881,6 +915,10 @@ mod test {
         let attrs = InterfaceAttributes::try_from(&node).unwrap();
         assert!(!attrs.contains_enum_attr());
 
+        let (_, node) =
+            weedle::attribute::ExtendedAttributeList::parse("[Traits=(Debug), Enum]").unwrap();
+        InterfaceAttributes::try_from(&node).unwrap();
+
         let (_, node) = weedle::attribute::ExtendedAttributeList::parse("[Trait, Enum]").unwrap();
         let err = InterfaceAttributes::try_from(&node).unwrap_err();
         assert_eq!(
@@ -899,6 +937,10 @@ mod test {
         assert!(attrs.contains_error_attr());
         assert!(attrs.contains_non_exhaustive_attr());
         assert!(attrs.contains_remote());
+
+        let (_, node) =
+            weedle::attribute::ExtendedAttributeList::parse("[Traits=(Display)]").unwrap();
+        EnumAttributes::try_from(&node).unwrap();
 
         let (_, node) = weedle::attribute::ExtendedAttributeList::parse("[Trait]").unwrap();
         let err = EnumAttributes::try_from(&node).unwrap_err();

@@ -13,7 +13,6 @@ ChromeUtils.defineESModuleGetters(lazy, {
     "resource:///modules/FirefoxBridgeExtensionUtils.sys.mjs",
   LoginHelper: "resource://gre/modules/LoginHelper.sys.mjs",
   PlacesUIUtils: "moz-src:///browser/components/places/PlacesUIUtils.sys.mjs",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
   UsageReporting: "resource://gre/modules/UsageReporting.sys.mjs",
 });
 
@@ -263,7 +262,7 @@ export let ProfileDataUpgrader = {
       // from default placement. This is done early enough that it doesn't
       // impact adding new managed bookmarks.
       const { CustomizableUI } = ChromeUtils.importESModule(
-        "resource:///modules/CustomizableUI.sys.mjs"
+        "moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs"
       );
       CustomizableUI.removeWidgetFromArea("managed-bookmarks");
     }
@@ -316,11 +315,6 @@ export let ProfileDataUpgrader = {
         !oldPrefValue
       );
       Services.prefs.clearUserPref(oldPrefName);
-    }
-
-    // Initialize the new browser.urlbar.showSuggestionsBeforeGeneral pref.
-    if (existingDataVersion < 106) {
-      lazy.UrlbarPrefs.initializeShowSearchSuggestionsFirstPref();
     }
 
     if (existingDataVersion < 107) {
@@ -903,6 +897,248 @@ export let ProfileDataUpgrader = {
     if (AppConstants.NIGHTLY_BUILD && existingDataVersion === 158) {
       lazy.LoginHelper.setOSAuthEnabled(false);
       lazy.FormAutofillUtils.setOSAuthEnabled(false);
+    }
+
+    if (existingDataVersion < 159) {
+      // Bug 1979014 / bug 1980398 - autohide attribute becomes a real boolean attribute.
+      let menubarWasEnabled =
+        Services.xulStore.getValue(
+          BROWSER_DOCURL,
+          "toolbar-menubar",
+          "autohide"
+        ) == "false";
+      if (menubarWasEnabled) {
+        Services.xulStore.setValue(
+          BROWSER_DOCURL,
+          "toolbar-menubar",
+          "autohide",
+          "-moz-missing\n"
+        );
+      }
+    }
+
+    if (existingDataVersion < 160) {
+      // Force all logins to be re-encrypted to make use of more modern crypto.
+      // This pref is checked in the initialization of the LoginManagerStorage.
+      Services.prefs.setBoolPref("signon.reencryptionNeeded", true);
+    }
+
+    if (existingDataVersion < 164) {
+      const { PREF_BOOL, PREF_INT, PREF_STRING } = Services.prefs;
+      const METHODS = {
+        [PREF_BOOL]: ["getBoolPref", "setBoolPref"],
+        [PREF_INT]: ["getIntPref", "setIntPref"],
+        [PREF_STRING]: ["getStringPref", "setStringPref"],
+      };
+      const OLD_PREFIX = "browser.aiwindow.";
+      for (let oldPref of Services.prefs.getChildList(OLD_PREFIX)) {
+        let prefType = Services.prefs.getPrefType(oldPref);
+        if (
+          !Services.prefs.prefHasUserValue(oldPref) ||
+          !Object.hasOwn(METHODS, prefType)
+        ) {
+          continue;
+        }
+        let newPref =
+          "browser.smartwindow." + oldPref.substring(OLD_PREFIX.length);
+        let [getter, setter] = METHODS[prefType];
+        Services.prefs[setter](newPref, Services.prefs[getter](oldPref));
+        Services.prefs.clearUserPref(oldPref);
+      }
+    }
+
+    if (existingDataVersion < 166) {
+      // Bug 1978550: Migrate Local Network Access permissions from old
+      // "localhost" type to new "loopback-network" type.
+      try {
+        Services.perms.getAllByTypes(["localhost"]).forEach(permission => {
+          Services.perms.removePermission(permission);
+          Services.perms.addFromPrincipal(
+            permission.principal,
+            "loopback-network",
+            permission.capability,
+            permission.expireType,
+            permission.expireTime
+          );
+        });
+      } catch (e) {
+        console.error("Error migrating localhost permission", e);
+      }
+
+      // Migrate permissions.default.localhost preference to
+      // permissions.default.loopback-network
+      try {
+        const oldValue = Services.prefs.getIntPref(
+          "permissions.default.localhost"
+        );
+        Services.prefs.setIntPref(
+          "permissions.default.loopback-network",
+          oldValue
+        );
+        Services.prefs.clearUserPref("permissions.default.localhost");
+      } catch (e) {}
+    }
+
+    if (existingDataVersion < 169) {
+      // Clear prefs removed by bug 2018089 and bug 2018516.
+      Services.prefs.clearUserPref("widget.macos.native-anchored-menulists");
+      Services.prefs.clearUserPref("widget.macos.native-anchored-select");
+    }
+
+    if (existingDataVersion < 172) {
+      if (Services.prefs.getBoolPref("browser.smartwindow.enabled", false)) {
+        Services.prefs.setBoolPref(
+          "places.semanticHistory.smartwindow.featureGate",
+          true
+        );
+      }
+    }
+
+    // The migration for 173 was applied in Nightly but was removed
+    // for causing failures Bug 2043185
+
+    if (existingDataVersion < 174) {
+      // Remove same-site (ABA) 3rdPartyFrameStorage permissions that were
+      // unnecessarily saved when a same-site-to-top iframe called
+      // requestStorageAccess().
+      for (let perm of Services.perms.getAllWithTypePrefix(
+        "3rdPartyFrameStorage^"
+      )) {
+        let typeSite = perm.type.substring("3rdPartyFrameStorage^".length);
+        try {
+          let originSite = Services.eTLD.getSite(perm.principal.URI);
+          if (typeSite === originSite) {
+            Services.perms.removePermission(perm);
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+    }
+
+    // 170 and 171 were updated to 175 to retrigger the migrations of the Rusts store.
+    if (existingDataVersion < 175) {
+      // Force all logins to be re-migrated to the rust store.
+      Services.prefs.setBoolPref("signon.rustMirror.migrationNeeded", true);
+    }
+
+    if (existingDataVersion < 176) {
+      // Bug 1767271: cookie ALLOW permissions used to exempt sites from
+      // clear-on-shutdown. That exception is now its own permission type,
+      // persist-data-on-shutdown. Duplicate existing ALLOW exceptions over
+      // so users keep their shutdown protection after the split.
+      // Only migrate durable, user-set permissions. Anything that expires
+      // (session/time) or is re-applied from an enterprise policy on every
+      // startup (EXPIRE_POLICY) must not be persisted as a regular permission.
+      Services.perms.getAllByTypes(["cookie"]).forEach(p => {
+        if (p.expireType != Services.perms.EXPIRE_NEVER) {
+          return;
+        }
+        if (p.capability == Ci.nsICookiePermission.ACCESS_ALLOW) {
+          Services.perms.addFromPrincipal(
+            p.principal,
+            "persist-data-on-shutdown",
+            Ci.nsICookiePermission.ACCESS_ALLOW
+          );
+        }
+      });
+    }
+
+    if (
+      existingDataVersion < 177 &&
+      !Services.prefs.getBoolPref("sidebar.verticalTabs", false) &&
+      Services.prefs.getStringPref("sidebar.visibility", "") === "hide-sidebar"
+    ) {
+      // Bug 2047653: the legacy horizontal-tabs default was stored as
+      // "hide-sidebar", a value now reserved for vertical tabs. Horizontal tabs
+      // now have their own default value, "hide-on-close".
+      Services.prefs.setStringPref("sidebar.visibility", "hide-on-close");
+    }
+
+    if (existingDataVersion < 178) {
+      // The settings redesign promo has been removed.
+      Services.prefs.clearUserPref("browser.settings-redesign.promo.dismissed");
+    }
+
+    if (existingDataVersion < 179) {
+      // Bug 2058143: cookie banner handling has been removed. Drop the per-site
+      // exceptions it stored in content prefs. A null nsILoadContext clears
+      // both normal and private browsing data.
+      try {
+        let contentPrefs = Cc["@mozilla.org/content-pref/service;1"].getService(
+          Ci.nsIContentPrefService2
+        );
+        contentPrefs.removeByName("cookiebanner", null, null);
+        contentPrefs.removeByName("cookiebannerprivate", null, null);
+      } catch (e) {
+        console.error("Error removing cookie banner content prefs", e);
+      }
+
+      Services.prefs.clearUserBranch("cookiebanners.");
+      Services.prefs.clearUserBranch("browser.promo.cookiebanners.");
+    }
+
+    if (existingDataVersion < 180) {
+      // Bug 2056232: the IP Protection UI is now gated on the l10n coverage of
+      // browser/ipProtection.ftl, and only for users who have never seen the
+      // feature. Existing profiles are assumed to have already seen it, so the
+      // gate never takes it away from them.
+      const IPP_HAS_SEEN_FEATURE_PREF = "browser.ipProtection.hasSeenFeature";
+      if (!Services.prefs.prefHasUserValue(IPP_HAS_SEEN_FEATURE_PREF)) {
+        Services.prefs.setBoolPref(IPP_HAS_SEEN_FEATURE_PREF, true);
+      }
+    }
+
+    if (existingDataVersion < 181) {
+      // Bug 2058359 - Re-enable "update service" setting for auto-disabled installations
+      if (
+        AppConstants.MOZ_MAINTENANCE_SERVICE &&
+        Services.prefs.prefHasUserValue("app.update.service.enabled") &&
+        !Services.prefs.getBoolPref("app.update.service.enabled", true)
+      ) {
+        Services.prefs.clearUserPref("app.update.service.enabled");
+        Glean.update.autoReenableStagedUpdates.record();
+      }
+    }
+
+    if (existingDataVersion < 182) {
+      // Bug 2031836 - Rename preferences related to a separate search engine
+      // in default private browsing mode.
+      const OLD_ENABLED_PREF = "browser.search.separatePrivateDefault";
+      const OLD_UI_ENABLED_PREF =
+        "browser.search.separatePrivateDefault.ui.enabled";
+
+      const uiEnabled = Services.prefs.getBoolPref(OLD_UI_ENABLED_PREF, false);
+
+      Services.prefs.setBoolPref(
+        "browser.search.separatePrivateDefault.featureGate",
+        uiEnabled
+      );
+      if (uiEnabled && Services.prefs.getBoolPref(OLD_ENABLED_PREF, true)) {
+        Services.prefs.setBoolPref(
+          "browser.search.separatePrivateDefault.enabled",
+          true
+        );
+      }
+
+      Services.prefs.clearUserPref(OLD_ENABLED_PREF);
+      Services.prefs.clearUserPref(OLD_UI_ENABLED_PREF);
+    }
+
+    if (existingDataVersion < 183) {
+      // Migrate old sidebar users to the switcher visibility setting
+      // We have two cases we can address: old sidebar users in beta & release who never switched/tried
+      // out the new sidebar OR users in Nightly who have flipped the pref to revert to the old one
+      if (
+        Services.prefs.getBoolPref("sidebar.old-sidebar.has-used") &&
+        (!Services.prefs.getBoolPref("sidebar.new-sidebar.has-used") ||
+          !Services.prefs.getBoolPref("sidebar.revamp", true))
+      ) {
+        Services.prefs.setCharPref("sidebar.visibility", "hide-launcher");
+      }
+
+      // We need to override this in order to roll the new sidebar out to everyone
+      Services.prefs.clearUserPref("sidebar.revamp");
     }
 
     // Update the migration version.

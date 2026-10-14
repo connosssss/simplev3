@@ -9,9 +9,8 @@
 #ifndef NSSERIALIZATIONHELPER_H_
 #define NSSERIALIZATIONHELPER_H_
 
-#include "nsStringFwd.h"
 #include "nsISerializationHelper.h"
-#include "mozilla/Attributes.h"
+#include "nsStringFwd.h"
 
 class nsISerializable;
 

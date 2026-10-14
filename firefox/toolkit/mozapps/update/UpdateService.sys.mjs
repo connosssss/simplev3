@@ -1,5 +1,3 @@
-/* -*- Mode: javascript; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,7 +10,7 @@ import {
   BitsRequest,
   BitsUnknownError,
   BitsVerificationError,
-} from "resource://gre/modules/Bits.sys.mjs";
+} from "moz-src:///toolkit/components/bitsdownload/Bits.sys.mjs";
 import { FileUtils } from "resource://gre/modules/FileUtils.sys.mjs";
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
@@ -32,31 +30,31 @@ XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "AUS",
   "@mozilla.org/updates/update-service;1",
-  "nsIApplicationUpdateService"
+  Ci.nsIApplicationUpdateService
 );
 XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "UM",
   "@mozilla.org/updates/update-manager;1",
-  "nsIUpdateManager"
+  Ci.nsIUpdateManager
 );
 XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "CheckSvc",
   "@mozilla.org/updates/update-checker;1",
-  "nsIUpdateChecker"
+  Ci.nsIUpdateChecker
 );
 XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "UpdateServiceStub",
   "@mozilla.org/updates/update-service-stub;1",
-  "nsIApplicationUpdateServiceStub"
+  Ci.nsIApplicationUpdateServiceStub
 );
 XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "UpdateMutex",
   "@mozilla.org/updates/update-mutex;1",
-  "nsIUpdateMutex"
+  Ci.nsIUpdateMutex
 );
 
 const UPDATESERVICE_CID = Components.ID(
@@ -84,6 +82,11 @@ const PREF_APP_UPDATE_ELEVATE_NEVER = "app.update.elevate.never";
 const PREF_APP_UPDATE_ELEVATE_VERSION = "app.update.elevate.version";
 const PREF_APP_UPDATE_ELEVATE_ATTEMPTS = "app.update.elevate.attempts";
 const PREF_APP_UPDATE_ELEVATE_MAXATTEMPTS = "app.update.elevate.maxAttempts";
+const PREF_APP_UPDATE_LOCKEDOUT_COUNT = "app.update.lockedOut.count";
+const PREF_APP_UPDATE_LOCKEDOUT_DEBOUNCETIME =
+  "app.update.lockedOut.debounceTimeMs";
+const PREF_APP_UPDATE_LOCKEDOUT_MAXCOUNT = "app.update.lockedOut.maxCount";
+const PREF_APP_UPDATE_LOCKEDOUT_MAXAGE = "app.update.lockedOut.maxAgeMs";
 const PREF_APP_UPDATE_LANGPACK_ENABLED = "app.update.langpack.enabled";
 const PREF_APP_UPDATE_LANGPACK_TIMEOUT = "app.update.langpack.timeout";
 const PREF_APP_UPDATE_NOTIFYDURINGDOWNLOAD = "app.update.notifyDuringDownload";
@@ -247,6 +250,11 @@ const HTTP_ERROR_OFFSET = 1000;
 // attempting to access a job created by a different user.
 const HRESULT_E_ACCESSDENIED = -2147024891;
 
+// HRESULT for HTTP 406 defined in bitsmsg.rs as:
+// pub const BG_E_HTTP_ERROR_406: DWORD = 0x80190196;
+// Represented in JavaScript as signed 32-bit integer
+const BG_E_HTTP_ERROR_406 = -2145844842;
+
 const DOWNLOAD_CHUNK_SIZE = 300000; // bytes
 
 // The number of consecutive failures when updating using the service before
@@ -305,6 +313,8 @@ var gBITSInUseByAnotherUser = false;
 let gOnlyDownloadUpdatesThisSession = false;
 // This will be the backing for `nsIApplicationUpdateService.currentState`
 var gUpdateState = Ci.nsIApplicationUpdateService.STATE_IDLE;
+
+let gLastLockoutDebouncedAt = 0;
 
 /**
  * Simple container and constructor for a Promise and its resolve function.
@@ -819,7 +829,7 @@ function getCanStageUpdates(transient = true) {
   return lazy.gCanStageUpdatesSession;
 }
 
-/*
+/**
  * Whether or not the application can use BITS to download updates.
  *
  * @param {boolean} [transient] Whether transient factors such as the update
@@ -874,6 +884,7 @@ function getCanUseBits(transient = true) {
 /**
  * Logs a string to the error console. If enabled, also logs to the update
  * messages file.
+ *
  * @param   string
  *          The string to write to the error console.
  */
@@ -884,6 +895,7 @@ function LOG(string) {
 /**
  * Gets the specified directory at the specified hierarchy under the
  * update root directory and creates it if it doesn't exist.
+ *
  * @param   pathArray
  *          An array of path components to locate beneath the directory
  *          specified by |key|
@@ -956,6 +968,7 @@ function getInstallDirRoot() {
 
 /**
  * Gets the file at the specified hierarchy under the update root directory.
+ *
  * @param   pathArray
  *          An array of path components to locate beneath the directory
  *          specified by |key|. The last item in this array must be the
@@ -991,6 +1004,7 @@ function maybeMapErrorCode(code) {
 /**
  * Returns human readable status text from the updates.properties bundle
  * based on an error code
+ *
  * @param   code
  *          The error code to look up human readable status text for
  * @param   defaultCode
@@ -1026,6 +1040,7 @@ function getStatusTextFromCode(code, defaultCode) {
  * Get the Ready Update directory. This is the directory that an update
  * should reside in after download has completed but before it has been
  * installed and cleaned up.
+ *
  * @return The ready updates directory, as a nsIFile object
  */
 function getReadyUpdateDir() {
@@ -1036,6 +1051,7 @@ function getReadyUpdateDir() {
  * Get the Downloading Update directory. This is the directory that an update
  * should reside in during download. Once download is completed, it will be
  * moved to the Ready Update directory.
+ *
  * @return The downloading update directory, as a nsIFile object
  */
 function getDownloadingUpdateDir() {
@@ -1043,8 +1059,95 @@ function getDownloadingUpdateDir() {
 }
 
 /**
+ * If there is a problem with accessing the status file, it may be a transient
+ * issue, such as another process checking for updates holding a lock,
+ * or it may be a persistent problem that needs attention.
+ * This function tries to determine if we should prompt the user to fix the
+ * issue.
+ *
+ * @param   file
+ *          An nsIFile object for the file with the issue
+ * @param   ex
+ *          The Exception object that was thrown when attempting to access the
+ *          file.
+ */
+function onStateAccessFailure(file, ex) {
+  LOG("onStateAccessFailure. Ex: " + ex);
+  if (
+    ex.result == Cr.NS_ERROR_FILE_ACCESS_DENIED ||
+    ex.result == Cr.NS_ERROR_FILE_IS_LOCKED
+  ) {
+    // Looks like we can't access the file. If it hasn't changed in
+    // a long time, notify the user that we are persistently unable to update.
+    const oneMinMs = 60 * 1000;
+    const oneDayMs = 24 * 60 * oneMinMs;
+    const now = Date.now();
+
+    // A single update check can attempt to read and write the update state
+    // multiple times. We want `lockoutCount` to count the number of times that
+    // an update check fails, not the number of times that we fail to access the
+    // state. To deal with this, we will implement a debouncing period after
+    // each failure.
+    let debounceTimeMs = Services.prefs.getIntPref(
+      PREF_APP_UPDATE_LOCKEDOUT_DEBOUNCETIME,
+      5 * oneMinMs
+    );
+    debounceTimeMs = Math.min(debounceTimeMs, oneDayMs);
+    const debounceEnd = gLastLockoutDebouncedAt + debounceTimeMs;
+    if (now < debounceEnd) {
+      LOG(`onStateAccessFailure: debounced! (${debounceEnd - now}ms left)`);
+      return;
+    }
+    gLastLockoutDebouncedAt = now;
+
+    // Not really the age, just the interval since last modified.
+    const fileAgeMs = now - file.lastModifiedTime;
+
+    let lockoutCount = Services.prefs.getIntPref(
+      PREF_APP_UPDATE_LOCKEDOUT_COUNT,
+      0
+    );
+    lockoutCount += 1;
+    Services.prefs.setIntPref(PREF_APP_UPDATE_LOCKEDOUT_COUNT, lockoutCount);
+
+    let maxLockoutCount = Services.prefs.getIntPref(
+      PREF_APP_UPDATE_LOCKEDOUT_MAXCOUNT,
+      4
+    );
+    maxLockoutCount = Math.min(maxLockoutCount, 20);
+    LOG(
+      `onStateAccessFailure: lockoutCount is ${lockoutCount}, maxLockoutCount is ${maxLockoutCount}`
+    );
+
+    let maxFileAgeMs = Services.prefs.getIntPref(
+      PREF_APP_UPDATE_LOCKEDOUT_MAXAGE,
+      oneDayMs * 2
+    );
+    maxFileAgeMs = Math.min(maxFileAgeMs, oneDayMs * 14);
+    LOG(
+      `onStateAccessFailure: fileAgeMs = ${fileAgeMs} maxFileAgeMs = ${maxFileAgeMs}`
+    );
+
+    if (lockoutCount >= maxLockoutCount && fileAgeMs >= maxFileAgeMs) {
+      Glean.update.stateWriteFailure.add();
+      // Create an empty Update object for messaging.
+      let update = new Update(null);
+      LOG("onStateAccessFailure: reporting permission issue");
+      Services.obs.notifyObservers(update, "update-error", "bad-perms");
+      Services.prefs.setIntPref(PREF_APP_UPDATE_LOCKEDOUT_COUNT, 0);
+    }
+  }
+}
+
+function onStateAccessSuccess() {
+  LOG("onStateAccessSuccess");
+  Services.prefs.setIntPref(PREF_APP_UPDATE_LOCKEDOUT_COUNT, 0);
+}
+
+/**
  * Reads the update state from the update.status file in the specified
  * directory.
+ *
  * @param   dir
  *          The dir to look for an update.status file in
  * @return  The status value of the update.
@@ -1061,16 +1164,31 @@ function readStatusFile(dir) {
  * Writes the current update operation/state to a file in the patch
  * directory, indicating to the patching system that operations need
  * to be performed.
+ *
+ * This function does not throw on errors. It just returns the error.
+ *
  * @param   dir
  *          The patch directory where the update.status file should be
  *          written.
  * @param   state
  *          The state value to write.
+ * @returns `null` on success or a JS exception on failure.
  */
 function writeStatusFile(dir, state) {
   let statusFile = dir.clone();
   statusFile.append(FILE_UPDATE_STATUS);
-  writeStringToFile(statusFile, state);
+  try {
+    writeStringToFile(statusFile, state);
+    LOG("writeStatusFile - status: " + state + ", path: " + statusFile.path);
+    try {
+      onStateAccessSuccess();
+    } catch {}
+  } catch (ex) {
+    LOG("writeStatusFile failed: " + ex);
+    onStateAccessFailure(statusFile, ex);
+    return ex;
+  }
+  return null;
 }
 
 /**
@@ -1081,6 +1199,9 @@ function writeStatusFile(dir, state) {
  * the update should be applied. Note that this won't provide protection from
  * downgrade of the application for the nightly user case where the application
  * version doesn't change.
+ *
+ * This function fails silently.
+ *
  * @param   dir
  *          The patch directory where the update.version file should be
  *          written.
@@ -1091,7 +1212,11 @@ function writeStatusFile(dir, state) {
 function writeVersionFile(dir, version) {
   let versionFile = dir.clone();
   versionFile.append(FILE_UPDATE_VERSION);
-  writeStringToFile(versionFile, version);
+  try {
+    writeStringToFile(versionFile, version);
+  } catch (ex) {
+    LOG("writeVersionFile failed: " + ex);
+  }
 }
 
 /**
@@ -1104,12 +1229,12 @@ function shouldUseService() {
   // This function will return true if the mantenance service should be used if
   // all of the following conditions are met:
   // 1) This build was done with the maintenance service enabled
-  // 2) The maintenance service is installed
+  // 2) The maintenance service is installed (this is skipped in automation)
   // 3) The pref for using the service is enabled
   if (
     !AppConstants.MOZ_MAINTENANCE_SERVICE ||
-    !isServiceInstalled() ||
-    !Services.prefs.getBoolPref(PREF_APP_UPDATE_SERVICE_ENABLED, false)
+    (!Cu.isInAutomation && !isServiceInstalled()) ||
+    !Services.prefs.getBoolPref(PREF_APP_UPDATE_SERVICE_ENABLED, true)
   ) {
     LOG("shouldUseService - returning false");
     return false;
@@ -1423,21 +1548,23 @@ async function cleanupActiveUpdates() {
 /**
  * Writes a string of text to a file.  A newline will be appended to the data
  * written to the file.  This function only works with ASCII text.
+ *
  * @param file An nsIFile indicating what file to write to.
  * @param text A string containing the text to write to the file.
- * @return true on success, false on failure.
+ * @throws Errors from file stream will be propagated.
  */
 function writeStringToFile(file, text) {
+  let fos = FileUtils.openSafeFileOutputStream(file);
+  text += "\n";
+  fos.write(text, text.length);
+  // Don't use `FileUtils.closeSafeFileOutputStream` because it swallows errors,
+  // which we don't want to do here.
   try {
-    let fos = FileUtils.openSafeFileOutputStream(file);
-    text += "\n";
-    fos.write(text, text.length);
-    FileUtils.closeSafeFileOutputStream(fos);
-  } catch (e) {
-    LOG(`writeStringToFile - Failed to write to file: "${file}". Error: ${e}"`);
-    return false;
+    fos.QueryInterface(Ci.nsISafeOutputStream);
+    fos.finish();
+  } finally {
+    fos.close();
   }
-  return true;
 }
 
 function readStringFromInputStream(inputStream) {
@@ -1632,14 +1759,13 @@ function handleUpdateFailure(update) {
       PREF_APP_UPDATE_SERVICE_MAXERRORS,
       DEFAULT_SERVICE_MAX_ERRORS
     );
-    // Prevent the preference from setting a value greater than 10.
-    maxFail = Math.min(maxFail, 10);
     // As a safety, when the service reaches maximum failures, it will
     // disable itself and fallback to using the normal update mechanism
     // without the service.
     if (failCount >= maxFail) {
       Services.prefs.setBoolPref(PREF_APP_UPDATE_SERVICE_ENABLED, false);
       Services.prefs.clearUserPref(PREF_APP_UPDATE_SERVICE_ERRORS);
+      Glean.update.autoDisableStagedUpdates.record();
     } else {
       failCount++;
       Services.prefs.setIntPref(PREF_APP_UPDATE_SERVICE_ERRORS, failCount);
@@ -1663,6 +1789,7 @@ function handleUpdateFailure(update) {
 
 /**
  * Return the first UpdatePatch with the given type.
+ *
  * @param   update
  *          A nsIUpdate object to search through for a patch of the desired
  *          type.
@@ -1808,12 +1935,14 @@ function pingStateAndStatusCodes(aUpdate, aStartup, aStatus) {
         stateCode = 1;
     }
 
-    if (parts.length > 1) {
-      let statusErrorCode = INVALID_UPDATER_STATE_CODE;
-      if (parts[0] == STATE_FAILED) {
-        statusErrorCode = parseInt(parts[1]) || INVALID_UPDATER_STATUS_CODE;
-      }
-      AUSTLMY.pingStatusErrorCode(suffix, statusErrorCode);
+    if (parts[0] == STATE_FAILED) {
+      // Record a missing or non-numeric error code rather than nothing.
+      AUSTLMY.pingStatusErrorCode(
+        suffix,
+        parseInt(parts[1]) || INVALID_UPDATER_STATUS_CODE
+      );
+    } else if (parts.length > 1) {
+      AUSTLMY.pingStatusErrorCode(suffix, INVALID_UPDATER_STATE_CODE);
     }
   }
   AUSTLMY.pingStateCode(suffix, stateCode);
@@ -1969,6 +2098,25 @@ function pollForStagingEnd() {
   lazy.setTimeout(pollingFn, pollingIntervalMs);
 }
 
+function submitUpdateReadyPing(aUpdate) {
+  const ALLOWED_STATES = [
+    STATE_APPLIED,
+    STATE_APPLIED_SERVICE,
+    STATE_PENDING,
+    STATE_PENDING_SERVICE,
+    STATE_PENDING_ELEVATE,
+  ];
+  if (!ALLOWED_STATES.includes(aUpdate.state)) {
+    return;
+  }
+
+  Glean.update.targetChannel.set(aUpdate.channel);
+  Glean.update.targetVersion.set(aUpdate.appVersion);
+  Glean.update.targetBuildId.set(aUpdate.buildID);
+  Glean.update.targetDisplayVersion.set(aUpdate.displayVersion);
+  GleanPings.update.submit("ready");
+}
+
 class UpdatePatch {
   // nsIUpdatePatch attribute names used to prevent nsIWritablePropertyBag from
   // over writing nsIUpdatePatch attributes.
@@ -1986,7 +2134,7 @@ class UpdatePatch {
    * @param   patch
    *          A <patch> element to initialize this object with
    * @throws if patch has a size of 0
-   * @constructor
+   * @class
    */
   constructor(patch) {
     this._properties = {};
@@ -2195,10 +2343,11 @@ class Update {
 
   /**
    * Implements nsIUpdate
+   *
    * @param   update
    *          An <update> element to initialize this object with
    * @throws if the update contains no patches
-   * @constructor
+   * @class
    */
   constructor(update) {
     this._patches = [];
@@ -2574,7 +2723,8 @@ export class UpdateService {
   /**
    * UpdateService
    * A Service for managing the discovery and installation of software updates.
-   * @constructor
+   *
+   * @class
    */
   constructor() {
     LOG("Creating UpdateService");
@@ -2622,6 +2772,7 @@ export class UpdateService {
 
   /**
    * Handle Observer Service notifications
+   *
    * @param   subject
    *          The subject of the notification
    * @param   topic
@@ -2720,9 +2871,11 @@ export class UpdateService {
       return;
     }
     const readyUpdateDir = getReadyUpdateDir();
-    let status = readStatusFile(readyUpdateDir);
-    let statusParts = status.split(":");
-    status = statusParts[0];
+    // pingStateAndStatusCodes() needs the error code after the colon
+    // (ex. "failed: 7"), so keep the untruncated status too.
+    const fullStatus = readStatusFile(readyUpdateDir);
+    const statusParts = fullStatus.split(":");
+    const status = statusParts[0];
     LOG(`UpdateService:#asyncInit - status = "${status}"`);
     if (!this.canUsuallyApplyUpdates) {
       LOG(
@@ -2821,9 +2974,25 @@ export class UpdateService {
       }
       case STATE_SUCCEEDED:
       case STATE_FAILED:
-        // There is more handing and validation to be done in this state, so
-        // we never want to return early here or lose any of the available state
-        // information, even if it is inconsistent.
+        {
+          // There is more handing and validation to be done in this state, so
+          // we never want to return early here or lose any of the available state
+          // information, even if it is inconsistent.
+          let history = null;
+          try {
+            history = this._getUpdates();
+          } catch (ex) {
+            LOG(
+              "UpdateService:#asyncInit: couldn't read update type from updates.xml"
+            );
+          }
+          Glean.update.updateOutcome.record({
+            is_success: status == STATE_SUCCEEDED,
+            can_stage: getCanStageUpdates(false),
+            is_background: lazy.gIsBackgroundTaskMode,
+            ...lazy.UpdateUtils.summarizeLatestUpdate(history),
+          });
+        }
         break;
       case STATE_DOWNLOAD_FAILED:
         // This is an odd state to start up in since we usually handle this
@@ -2952,7 +3121,7 @@ export class UpdateService {
         ? lazy.UM.internal.downloadingUpdate
         : lazy.UM.internal.readyUpdate,
       true,
-      status
+      fullStatus
     );
     if (lazy.UM.internal.downloadingUpdate || status == STATE_DOWNLOADING) {
       if (status == STATE_SUCCEEDED) {
@@ -3145,9 +3314,23 @@ export class UpdateService {
               "pending-elevate. Showing Update elevation dialog."
           );
           let uri = "chrome://mozapps/content/update/updateElevation.xhtml";
-          let features =
-            "chrome,centerscreen,resizable=no,titlebar,toolbar=no,dialog=no";
-          Services.ww.openWindow(null, uri, "Update:Elevation", features, null);
+          let features = "chrome,centerscreen,resizable=no,titlebar,dialog=no";
+
+          // The following timeout is intended to make the elevation dialog
+          // appear on top of any browser windows after startup. In the past,
+          // this dialog would frequently be displayed first, then getting
+          // obscured by browser windows. The timeout period is arbitrary and
+          // may be adjusted, but this seemed to work well during initial
+          // testing. See bug 1273536 for more info.
+          lazy.setTimeout(() => {
+            Services.ww.openWindow(
+              null,
+              uri,
+              "Update:Elevation",
+              features,
+              null
+            );
+          }, 2000);
         }
       }
     } else if (
@@ -3365,6 +3548,7 @@ export class UpdateService {
 
   /**
    * Notified when a timer fires
+   *
    * @param   _timer
    *          The timer that fired
    */
@@ -3393,6 +3577,7 @@ export class UpdateService {
 
   /**
    * Checks for updates in the background.
+   *
    * @param   isNotify
    *          Whether or not a background update check was initiated by the
    *          application update timer notification.
@@ -3401,7 +3586,7 @@ export class UpdateService {
     await this.init();
 
     if (!this.disabled && AppConstants.NIGHTLY_BUILD) {
-      // Scalar ID: update.suppress_prompts
+      // Metric ID: update.suppress_prompts
       AUSTLMY.pingSuppressPrompts();
     }
     if (this.disabled || this.manualUpdateOnly) {
@@ -3442,7 +3627,7 @@ export class UpdateService {
     // Glean.update.cannotStageExternal
     // Glean.update.cannotStageNotify
     // Glean.update.cannotStageSubsequent
-    if (!getCanApplyUpdates()) {
+    if (!getCanStageUpdates()) {
       Glean.update["cannotStage" + this._pingSuffix].add();
     }
     if (AppConstants.platform == "win") {
@@ -3599,6 +3784,7 @@ export class UpdateService {
    * Determine the update from the specified updates that should be offered.
    * If both valid major and minor updates are available the minor update will
    * be offered.
+   *
    * @param   updates
    *          An array of available nsIUpdate items
    * @return  The nsIUpdate to offer.
@@ -3777,6 +3963,7 @@ export class UpdateService {
   /**
    * Determine which of the specified updates should be installed and begin the
    * download/installation process or notify the user about the update.
+   *
    * @param   updates
    *          An array of available updates
    */
@@ -4475,7 +4662,8 @@ export class UpdateManager {
 
   /**
    * A service to manage active and past updates.
-   * @constructor
+   *
+   * @class
    */
   constructor() {
     this.internal = {
@@ -4521,7 +4709,7 @@ export class UpdateManager {
       let activeUpdates = this._loadXMLFileIntoArray(FILE_ACTIVE_UPDATE_XML);
       if (activeUpdates.length) {
         const status = readStatusFile(getReadyUpdateDir());
-
+        console.error(`CPD: got update status: ${status}`);
         // If there are two updates, the first one is the ready update.
         // If there is only 1 update, we don't know which is which. We use the
         // state to figure it out.
@@ -4581,7 +4769,9 @@ export class UpdateManager {
           this._downloadingUpdate.state
       );
     }
-    LOG("UpdateManager:#reload - Reloaded readyUpdate as " + this._readyUpdate);
+    LOG(
+      `UpdateManager:#reload - Reloaded readyUpdate as ${JSON.stringify(this._readyUpdate)}`
+    );
     if (this._readyUpdate) {
       LOG(
         "UpdateManager:#reload - Reloaded readyUpdate state as " +
@@ -4596,6 +4786,7 @@ export class UpdateManager {
 
   /**
    * Loads an updates.xml formatted file into an array of nsIUpdate items.
+   *
    * @param   fileName
    *          The file name in the updates directory to load.
    * @return  The array of nsIUpdate items held in the file.
@@ -4768,6 +4959,7 @@ export class UpdateManager {
   /**
    * Serializes an array of updates to an XML file or removes the file if the
    * array length is 0.
+   *
    * @param   updates
    *          An array of nsIUpdate objects
    * @param   fileName
@@ -5024,6 +5216,7 @@ export class UpdateManager {
           update.state
       );
       Services.obs.notifyObservers(update, "update-staged", update.state);
+      submitUpdateReadyPing(update);
     } finally {
       // This function being called is the one thing that tells us that staging
       // is done so be very sure that we don't exit it leaving the current
@@ -5316,7 +5509,7 @@ export class CheckerService {
         if ("AppUpdatePin" in policies) {
           updatePin = policies.AppUpdatePin;
 
-          // Scalar ID: update.version_pin
+          // Metric ID: update.version_pin
           AUSTLMY.pingPinPolicy(updatePin);
         }
       }
@@ -5817,12 +6010,13 @@ class Downloader {
 
   /**
    * Manages the download of updates
+   *
    * @param   background
    *          Whether or not this downloader is operating in background
    *          update mode.
    * @param   updateService
    *          The update service that created this downloader.
-   * @constructor
+   * @class
    */
   constructor(updateService) {
     LOG("Creating Downloader");
@@ -5921,6 +6115,7 @@ class Downloader {
   /**
    * Select the patch to use given the current state of updateDir and the given
    * set of update patches.
+   *
    * @param   update
    *          A nsIUpdate object to select a patch from
    * @return  A nsIUpdatePatch object to download
@@ -6189,6 +6384,7 @@ class Downloader {
 
   /**
    * Download and stage the given update.
+   *
    * @param   update
    *          A nsIUpdate object to download a patch for. Cannot be null.
    */
@@ -6400,8 +6596,14 @@ class Downloader {
     }
 
     if (!lazy.UM.internal.readyUpdate) {
-      LOG("Downloader:downloadUpdate - Setting status to downloading");
-      writeStatusFile(getReadyUpdateDir(), STATE_DOWNLOADING);
+      const error = writeStatusFile(getReadyUpdateDir(), STATE_DOWNLOADING);
+      if (error) {
+        LOG("Downloader:downloadUpdate - Failed to set status to downloading");
+        await cleanupActiveUpdates();
+        return Ci.nsIApplicationUpdateService
+          .DOWNLOAD_FAILURE_CANNOT_WRITE_STATE;
+      }
+      LOG("Downloader:downloadUpdate - Set status to downloading");
     }
     if (this._patch.state != STATE_DOWNLOADING) {
       LOG("Downloader:downloadUpdate - Setting state to downloading");
@@ -6532,6 +6734,7 @@ class Downloader {
 
   /**
    * When the async request begins
+   *
    * @param   request
    *          The nsIRequest object for the transfer
    */
@@ -6559,6 +6762,7 @@ class Downloader {
 
   /**
    * When new data has been downloaded
+   *
    * @param   request
    *          The nsIRequest object for the transfer
    * @param   progress
@@ -6612,6 +6816,7 @@ class Downloader {
 
   /**
    * When we have new status text
+   *
    * @param   request
    *          The nsIRequest object for the transfer
    * @param   status
@@ -6633,6 +6838,7 @@ class Downloader {
 
   /**
    * When data transfer ceases
+   *
    * @param   request
    *          The nsIRequest object for the transfer
    * @param   status
@@ -6921,6 +7127,11 @@ class Downloader {
           error = request.transferError;
           if (!error) {
             error = new BitsUnknownError();
+          } else if (
+            error.codeType == Ci.nsIBits.ERROR_CODE_TYPE_HRESULT &&
+            error.code == BG_E_HTTP_ERROR_406
+          ) {
+            Glean.update.blocked.add();
           }
         }
         AUSTLMY.pingBitsError(this.isCompleteUpdate, error);
@@ -7143,6 +7354,7 @@ class Downloader {
         );
         transitionState(Ci.nsIApplicationUpdateService.STATE_PENDING);
         Services.obs.notifyObservers(update, "update-downloaded", update.state);
+        submitUpdateReadyPing(update);
       });
     }
 

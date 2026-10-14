@@ -3,26 +3,28 @@
 // This program is made available under an ISC-style license.  See the
 // accompanying file LICENSE for details.
 
-use backend::*;
+use crate::backend::*;
 use cubeb_backend::{
-    ffi, log_enabled, Context, ContextOps, DeviceCollectionRef, DeviceId, DeviceType, Error,
-    InputProcessingParams, Ops, Result, Stream, StreamParams, StreamParamsRef,
+    ffi, log_enabled, ContextOps, DeviceId, DeviceInfo, DeviceType, Error, InputProcessingParams,
+    Ops, Result, Stream, StreamParams, StreamParamsRef,
 };
 use pulse::{self, ProplistExt};
 use pulse_ffi::*;
-use semver;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::default::Default;
 use std::ffi::{CStr, CString};
-use std::mem;
-use std::os::raw::c_void;
+use std::os::raw::{c_char, c_void};
 use std::ptr;
 
 #[derive(Debug)]
 pub struct DefaultInfo {
     pub sample_spec: pulse::SampleSpec,
     pub channel_map: pulse::ChannelMap,
-    pub flags: pulse::SinkFlags,
+}
+
+fn log_cstr(s: *const c_char) -> Cow<'static, str> {
+    try_cstr_from(s).map_or(Cow::Borrowed("<null>"), CStr::to_string_lossy)
 }
 
 pub const PULSE_OPS: Ops = capi_new!(PulseContext, PulseStream);
@@ -39,6 +41,8 @@ pub struct PulseContext {
     pub input_collection_changed_user_ptr: *mut c_void,
     pub output_collection_changed_callback: ffi::cubeb_device_collection_changed_callback,
     pub output_collection_changed_user_ptr: *mut c_void,
+    pub default_sink_name: Option<CString>,
+    pub default_source_name: Option<CString>,
     pub error: bool,
     pub version_2_0_0: bool,
     pub version_0_9_8: bool,
@@ -50,15 +54,23 @@ pub struct PulseContext {
 impl PulseContext {
     #[cfg(feature = "pulse-dlopen")]
     fn _new(name: Option<CString>) -> Result<Box<Self>> {
-        let libpulse = unsafe { open() };
-        if libpulse.is_none() {
-            cubeb_log!("libpulse not found");
-            return Err(Error::error());
+        let libpulse = match unsafe { open() } {
+            Some(libpulse) => libpulse,
+            None => {
+                cubeb_log!("libpulse not found");
+                return Err(Error::Error);
+            }
+        };
+
+        if let Some(path) = libpulse.path() {
+            cubeb_log!("libpulse loaded from {}", path.to_string_lossy());
+        } else {
+            cubeb_log!("libpulse loaded from unknown path");
         }
 
         let ctx = Box::new(PulseContext {
             _ops: &PULSE_OPS,
-            libpulse: libpulse.unwrap(),
+            libpulse,
             mainloop: pulse::ThreadedMainloop::new(),
             context: None,
             default_sink_info: None,
@@ -67,6 +79,8 @@ impl PulseContext {
             input_collection_changed_user_ptr: ptr::null_mut(),
             output_collection_changed_callback: None,
             output_collection_changed_user_ptr: ptr::null_mut(),
+            default_sink_name: None,
+            default_source_name: None,
             error: true,
             version_0_9_8: false,
             version_2_0_0: false,
@@ -88,6 +102,8 @@ impl PulseContext {
             input_collection_changed_user_ptr: ptr::null_mut(),
             output_collection_changed_callback: None,
             output_collection_changed_user_ptr: ptr::null_mut(),
+            default_sink_name: None,
+            default_source_name: None,
             error: true,
             version_0_9_8: false,
             version_2_0_0: false,
@@ -100,22 +116,69 @@ impl PulseContext {
             let ctx = unsafe { &mut *(u as *mut PulseContext) };
             if eol == 0 {
                 let info = unsafe { &*i };
-                let flags = pulse::SinkFlags::from_bits_truncate(info.flags);
+                cubeb_log!(
+                    "PulseAudio default sink info: name={}, description={}, driver={}, latency={}",
+                    log_cstr(info.name),
+                    log_cstr(info.description),
+                    log_cstr(info.driver),
+                    info.latency
+                );
                 ctx.default_sink_info = Some(DefaultInfo {
                     sample_spec: info.sample_spec,
                     channel_map: info.channel_map,
-                    flags,
                 });
             }
             ctx.mainloop.signal();
         }
 
         if let Some(info) = info {
-            let _ = context.get_sink_info_by_name(
+            let ctx = unsafe { &mut *(u as *mut PulseContext) };
+            cubeb_log!(
+                "PulseAudio server info: server_name={}, server_version={}, default_sink_name={}, default_source_name={}",
+                log_cstr(info.server_name),
+                log_cstr(info.server_version),
+                log_cstr(info.default_sink_name),
+                log_cstr(info.default_source_name)
+            );
+
+            // Check if default devices changed, and call the appropriate callback if present.
+            let new_sink_name = try_cstr_from(info.default_sink_name).map(|s| s.to_owned());
+            let new_source_name = try_cstr_from(info.default_source_name).map(|s| s.to_owned());
+
+            let sink_changed = ctx.default_sink_name != new_sink_name;
+            let source_changed = ctx.default_source_name != new_source_name;
+
+            ctx.default_sink_name = new_sink_name;
+            ctx.default_source_name = new_source_name;
+
+            if sink_changed && ctx.output_collection_changed_callback.is_some() {
+                unsafe {
+                    ctx.output_collection_changed_callback.unwrap()(
+                        ctx as *mut _ as *mut _,
+                        ctx.output_collection_changed_user_ptr,
+                    );
+                }
+            }
+
+            if source_changed && ctx.input_collection_changed_callback.is_some() {
+                unsafe {
+                    ctx.input_collection_changed_callback.unwrap()(
+                        ctx as *mut _ as *mut _,
+                        ctx.input_collection_changed_user_ptr,
+                    );
+                }
+            }
+
+            // Fire-and-forget: detach to release our ref without canceling.
+            // PulseAudio holds its own ref while the operation is in flight;
+            // context_destroy's drain ensures it completes before teardown.
+            if let Ok(o) = context.get_sink_info_by_name(
                 try_cstr_from(info.default_sink_name),
                 sink_info_cb,
                 u,
-            );
+            ) {
+                o.detach();
+            }
         } else {
             // If info is None, then an error occured.
             let ctx = unsafe { &mut *(u as *mut PulseContext) };
@@ -130,13 +193,13 @@ impl PulseContext {
         if ctx.mainloop.start().is_err() {
             ctx.destroy();
             cubeb_log!("Error: couldn't start pulse's mainloop");
-            return Err(Error::error());
+            return Err(Error::Error);
         }
 
         if ctx.context_init().is_err() {
             ctx.destroy();
             cubeb_log!("Error: couldn't init pulse's context");
-            return Err(Error::error());
+            return Err(Error::Error);
         }
 
         ctx.mainloop.lock();
@@ -226,9 +289,13 @@ impl PulseContext {
                 cubeb_log!("Server changed {}", index as i32);
                 let user_data: *mut c_void = ctx as *mut _ as *mut _;
                 if let Some(ref context) = ctx.context {
-                    if let Err(e) = context.get_server_info(PulseContext::server_info_cb, user_data)
-                    {
-                        cubeb_log!("Error: get_server_info ignored failure: {}", e);
+                    // Fire-and-forget: detach to release our ref without canceling.
+                    // context_destroy's drain ensures it completes before teardown.
+                    match context.get_server_info(PulseContext::server_info_cb, user_data) {
+                        Ok(o) => o.detach(),
+                        Err(e) => {
+                            cubeb_log!("Error: get_server_info ignored failure: {}", e);
+                        }
                     }
                 }
             }
@@ -253,7 +320,7 @@ impl PulseContext {
             } else {
                 self.mainloop.unlock();
                 cubeb_log!("Error: context subscribe failed");
-                return Err(Error::error());
+                return Err(Error::Error);
             }
 
             self.mainloop.unlock();
@@ -264,13 +331,16 @@ impl PulseContext {
 }
 
 impl ContextOps for PulseContext {
-    fn init(context_name: Option<&CStr>) -> Result<Context> {
-        let ctx = PulseContext::new(context_name)?;
-        Ok(unsafe { Context::from_ptr(Box::into_raw(ctx) as *mut _) })
+    fn init(context_name: Option<&CStr>) -> Result<Box<Self>> {
+        PulseContext::new(context_name)
     }
 
     fn backend_id(&mut self) -> &'static CStr {
-        unsafe { CStr::from_ptr(b"pulse-rust\0".as_ptr() as *const _) }
+        // https://github.com/rust-lang/rust-clippy/issues/13531
+        #[allow(clippy::manual_c_str_literals)]
+        unsafe {
+            CStr::from_ptr(b"pulse-rust\0".as_ptr() as *const _)
+        }
     }
 
     fn max_channel_count(&mut self) -> Result<u32> {
@@ -278,7 +348,7 @@ impl ContextOps for PulseContext {
             Some(ref info) => Ok(u32::from(info.channel_map.channels)),
             None => {
                 cubeb_log!("Error: couldn't get the max channel count");
-                Err(Error::error())
+                Err(Error::Error)
             }
         }
     }
@@ -293,7 +363,7 @@ impl ContextOps for PulseContext {
             Some(ref info) => Ok(info.sample_spec.rate),
             None => {
                 cubeb_log!("Error: Couldn't get the preferred sample rate");
-                Err(Error::error())
+                Err(Error::Error)
             }
         }
     }
@@ -302,11 +372,7 @@ impl ContextOps for PulseContext {
         Ok(InputProcessingParams::NONE)
     }
 
-    fn enumerate_devices(
-        &mut self,
-        devtype: DeviceType,
-        collection: &DeviceCollectionRef,
-    ) -> Result<()> {
+    fn enumerate_devices(&mut self, devtype: DeviceType) -> Result<Box<[DeviceInfo]>> {
         fn add_output_device(
             _: &pulse::Context,
             i: *const pulse::SinkInfo,
@@ -365,7 +431,7 @@ impl ContextOps for PulseContext {
                 latency_lo: 0,
                 latency_hi: 0,
             };
-            list_data.devinfo.push(devinfo);
+            list_data.devinfo.push(devinfo.into());
         }
 
         fn add_input_device(
@@ -427,7 +493,7 @@ impl ContextOps for PulseContext {
                 latency_hi: 0,
             };
 
-            list_data.devinfo.push(devinfo);
+            list_data.devinfo.push(devinfo.into());
         }
 
         fn default_device_names(
@@ -479,38 +545,21 @@ impl ContextOps for PulseContext {
             self.mainloop.unlock();
         }
 
-        // Extract the array of cubeb_device_info from
-        // PulseDevListData and convert it into C representation.
-        let mut tmp = Vec::new();
-        mem::swap(&mut user_data.devinfo, &mut tmp);
-        let mut devices = tmp.into_boxed_slice();
-        let coll = unsafe { &mut *collection.as_ptr() };
-        coll.device = devices.as_mut_ptr();
-        coll.count = devices.len();
-
-        // Giving away the memory owned by devices.  Don't free it!
-        mem::forget(devices);
-        Ok(())
+        Ok(user_data.devinfo.into_boxed_slice())
     }
 
-    fn device_collection_destroy(&mut self, collection: &mut DeviceCollectionRef) -> Result<()> {
-        debug_assert!(!collection.as_ptr().is_null());
-        unsafe {
-            let coll = &mut *collection.as_ptr();
-            let mut devices = Vec::from_raw_parts(coll.device, coll.count, coll.count);
-            for dev in &mut devices {
-                if !dev.group_id.is_null() {
-                    let _ = CString::from_raw(dev.group_id as *mut _);
-                }
-                if !dev.vendor_name.is_null() {
-                    let _ = CString::from_raw(dev.vendor_name as *mut _);
-                }
-                if !dev.friendly_name.is_null() {
-                    let _ = CString::from_raw(dev.friendly_name as *mut _);
-                }
+    fn device_collection_destroy(&mut self, collection: Box<[DeviceInfo]>) -> Result<()> {
+        for dev in collection {
+            let dev = ffi::cubeb_device_info::from(dev);
+            if !dev.group_id.is_null() {
+                let _ = unsafe { CString::from_raw(dev.group_id as *mut _) };
             }
-            coll.device = ptr::null_mut();
-            coll.count = 0;
+            if !dev.vendor_name.is_null() {
+                let _ = unsafe { CString::from_raw(dev.vendor_name as *mut _) };
+            }
+            if !dev.friendly_name.is_null() {
+                let _ = unsafe { CString::from_raw(dev.friendly_name as *mut _) };
+            }
         }
         Ok(())
     }
@@ -553,6 +602,11 @@ impl ContextOps for PulseContext {
         cb: ffi::cubeb_device_collection_changed_callback,
         user_ptr: *mut c_void,
     ) -> Result<()> {
+        let old_input_cb = self.input_collection_changed_callback;
+        let old_input_ptr = self.input_collection_changed_user_ptr;
+        let old_output_cb = self.output_collection_changed_callback;
+        let old_output_ptr = self.output_collection_changed_user_ptr;
+
         if devtype.contains(DeviceType::INPUT) {
             self.input_collection_changed_callback = cb;
             self.input_collection_changed_user_ptr = user_ptr;
@@ -573,7 +627,19 @@ impl ContextOps for PulseContext {
          * `default_sink_info` when the default device changes. */
         mask |= pulse::SubscriptionMask::SERVER;
 
-        self.subscribe_notifications(mask)
+        if let Err(e) = self.subscribe_notifications(mask) {
+            if devtype.contains(DeviceType::INPUT) {
+                self.input_collection_changed_callback = old_input_cb;
+                self.input_collection_changed_user_ptr = old_input_ptr;
+            }
+            if devtype.contains(DeviceType::OUTPUT) {
+                self.output_collection_changed_callback = old_output_cb;
+                self.output_collection_changed_user_ptr = old_output_ptr;
+            }
+            return Err(e);
+        }
+
+        Ok(())
     }
 }
 
@@ -607,7 +673,7 @@ impl PulseContext {
         let context_ptr: *mut c_void = self as *mut _ as *mut _;
         if self.context.is_none() {
             cubeb_log!("Error: couldn't create pulse's context");
-            return Err(Error::error());
+            return Err(Error::Error);
         }
 
         self.mainloop.lock();
@@ -624,7 +690,7 @@ impl PulseContext {
             self.mainloop.unlock();
             self.context_destroy();
             cubeb_log!("Error: error while waiting for pulse's context to be ready");
-            return Err(Error::error());
+            return Err(Error::Error);
         }
 
         self.mainloop.unlock();
@@ -649,16 +715,18 @@ impl PulseContext {
         }
 
         let context_ptr: *mut c_void = self as *mut _ as *mut _;
-        if let Some(ctx) = self.context.take() {
-            self.mainloop.lock();
-            if let Ok(o) = ctx.drain(drain_complete, context_ptr) {
+        self.mainloop.lock();
+        if let Some(ref context) = self.context {
+            if let Ok(o) = context.drain(drain_complete, context_ptr) {
                 self.operation_wait(None, &o);
             }
+        }
+        if let Some(ctx) = self.context.take() {
             ctx.clear_state_callback();
             ctx.disconnect();
             ctx.unref();
-            self.mainloop.unlock();
         }
+        self.mainloop.unlock();
     }
 
     pub fn operation_wait<'a, S>(&self, s: S, o: &pulse::Operation) -> bool
@@ -667,7 +735,6 @@ impl PulseContext {
     {
         let stream = s.into();
         while o.get_state() == PA_OPERATION_RUNNING {
-            self.mainloop.wait();
             if let Some(ref context) = self.context {
                 if !context.get_state().is_good() {
                     return false;
@@ -679,6 +746,7 @@ impl PulseContext {
                     return false;
                 }
             }
+            self.mainloop.wait();
         }
 
         true
@@ -718,7 +786,7 @@ impl PulseContext {
 struct PulseDevListData<'a> {
     default_sink_name: CString,
     default_source_name: CString,
-    devinfo: Vec<ffi::cubeb_device_info>,
+    devinfo: Vec<DeviceInfo>,
     context: &'a PulseContext,
 }
 
@@ -732,14 +800,6 @@ impl<'a> PulseDevListData<'a> {
             default_source_name: CString::default(),
             devinfo: Vec::new(),
             context,
-        }
-    }
-}
-
-impl<'a> Drop for PulseDevListData<'a> {
-    fn drop(&mut self) {
-        for elem in &mut self.devinfo {
-            let _ = unsafe { Box::from_raw(elem) };
         }
     }
 }

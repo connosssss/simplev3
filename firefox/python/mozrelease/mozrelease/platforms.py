@@ -5,10 +5,8 @@
 update_platform_map = {
     "android": ["Android_arm-eabi-gcc3"],
     "android-arm": ["Android_arm-eabi-gcc3"],
-    "android-x86": ["Android_x86-gcc3"],
     "android-x86_64": ["Android_x86-64-gcc3"],
     "android-aarch64": ["Android_aarch64-gcc3"],
-    "linux-i686": ["Linux_x86-gcc3"],
     "linux-x86_64": ["Linux_x86_64-gcc3"],
     "linux-aarch64": ["Linux_aarch64-gcc3"],
     "mac": [
@@ -25,7 +23,6 @@ update_platform_map = {
 
 # ftp -> shipped locales map
 sl_platform_map = {
-    "linux-i686": "linux",
     "linux-x86_64": "linux",
     "linux-aarch64": "linux",
     "mac": "osx",
@@ -35,13 +32,29 @@ sl_platform_map = {
 
 # ftp -> info file platform map
 info_file_platform_map = {
-    "linux-i686": "linux",
     "linux-x86_64": "linux64",
     "linux-aarch64": "linux64-aarch64",
     "mac": "macosx64",
     "win32": "win32",
     "win64": "win64",
     "win64-aarch64": "win64_aarch64",
+}
+
+
+# build platform -> ftp platform map
+build_platform_map = {
+    "linux64-shippable": "linux-x86_64",
+    "linux64-aarch64-shippable": "linux-aarch64",
+    "macosx64-shippable": "mac",
+    "win32-shippable": "win32",
+    "win64-shippable": "win64",
+    "win64-aarch64-shippable": "win64-aarch64",
+    "linux64-devedition": "linux-x86_64",
+    "linux64-aarch64-devedition": "linux-aarch64",
+    "macosx64-devedition": "mac",
+    "win32-devedition": "win32",
+    "win64-devedition": "win64",
+    "win64-aarch64-devedition": "win64-aarch64",
 }
 
 
@@ -55,3 +68,15 @@ def ftp2shippedLocales(platform):
 
 def ftp2infoFile(platform):
     return info_file_platform_map.get(platform, platform)
+
+
+def updatePlatform2ftp(platform):
+    for ftp_platform, update_platforms in update_platform_map.items():
+        if platform in update_platforms:
+            return ftp_platform
+
+    raise Exception(f"Couldn't find ftp platform for update platform {platform}!")
+
+
+def buildPlatform2ftp(platform):
+    return build_platform_map[platform]

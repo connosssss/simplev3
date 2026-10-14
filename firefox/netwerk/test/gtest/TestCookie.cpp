@@ -1,34 +1,33 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "Cookie.h"
+#include "CookieDBWriteQueue.h"
+#include "CookieParser.h"
+#include "CookieStorage.h"
 #include "TestCommon.h"
 #include "gtest/gtest.h"
-#include "nsContentUtils.h"
-#include "nsICookieService.h"
-#include "nsICookieManager.h"
-#include "nsICookie.h"
-#include <stdio.h>
-#include "plstr.h"
-#include "nsNetUtil.h"
-#include "nsIChannel.h"
-#include "nsIPrincipal.h"
-#include "nsIScriptSecurityManager.h"
-#include "nsServiceManagerUtils.h"
-#include "nsNetCID.h"
-#include "nsIPrefBranch.h"
-#include "nsIPrefService.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/gtest/MozAssertions.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/Unused.h"
 #include "mozilla/net/CookieJarSettings.h"
 #include "mozilla/net/CookieValidation.h"
-#include "Cookie.h"
-#include "CookieParser.h"
-#include "nsIURI.h"
+#include "nsContentUtils.h"
+#include "nsIChannel.h"
 #include "nsIConsoleReportCollector.h"
+#include "nsICookie.h"
+#include "nsICookieManager.h"
+#include "nsICookieService.h"
+#include "nsIPrefBranch.h"
+#include "nsIPrefService.h"
+#include "nsIPrincipal.h"
+#include "nsIScriptSecurityManager.h"
+#include "nsIURI.h"
+#include "nsNetCID.h"
+#include "nsNetUtil.h"
+#include "nsServiceManagerUtils.h"
+#include "plstr.h"
 
 using namespace mozilla;
 using namespace mozilla::net;
@@ -107,12 +106,12 @@ void GetACookie(nsICookieService* aCookieService, const char* aSpec,
   nsCOMPtr<nsIIOService> service = do_GetIOService();
 
   nsCOMPtr<nsIChannel> channel;
-  Unused << service->NewChannelFromURI(
+  (void)service->NewChannelFromURI(
       uri, nullptr, nsContentUtils::GetSystemPrincipal(),
       nsContentUtils::GetSystemPrincipal(), 0, nsIContentPolicy::TYPE_DOCUMENT,
       getter_AddRefs(channel));
 
-  Unused << aCookieService->GetCookieStringFromHttp(uri, channel, aCookie);
+  (void)aCookieService->GetCookieStringFromHttp(uri, channel, aCookie);
 }
 
 // The cookie string is returned via aCookie.
@@ -126,15 +125,16 @@ void GetACookieNoHttp(nsICookieService* aCookieService, const char* aSpec,
   MOZ_RELEASE_ASSERT(principal);
 
   nsCOMPtr<mozilla::dom::Document> document;
-  nsresult rv = NS_NewDOMDocument(getter_AddRefs(document),
-                                  u""_ns,   // aNamespaceURI
-                                  u""_ns,   // aQualifiedName
-                                  nullptr,  // aDoctype
-                                  uri, uri, principal,
-                                  false,    // aLoadedAsData
-                                  nullptr,  // aEventObject
-                                  DocumentFlavor::HTML);
-  Unused << NS_WARN_IF(NS_FAILED(rv));
+  nsresult rv =
+      NS_NewDOMDocument(getter_AddRefs(document),
+                        u""_ns,   // aNamespaceURI
+                        u""_ns,   // aQualifiedName
+                        nullptr,  // aDoctype
+                        uri, uri, principal,
+                        mozilla::dom::LoadedAsData::No,  // aLoadedAsData
+                        nullptr,                         // aEventObject
+                        DocumentFlavor::HTML);
+  (void)NS_WARN_IF(NS_FAILED(rv));
 
   nsAutoString cookie;
   ErrorResult err;
@@ -596,21 +596,45 @@ TEST(TestCookie, TestCookieMain)
   GetACookie(cookieService, "http://parser.test/", cookie);
   EXPECT_TRUE(CheckResult(cookie.get(), MUST_BE_NULL));
 
-  // test the handling of VALUE-only cookies (see bug 169091),
-  // i.e. "six" should assume an empty NAME, which allows other VALUE-only
-  // cookies to overwrite it
-  SetACookie(cookieService, "http://parser.test/", "six");
-  GetACookie(cookieService, "http://parser.test/", cookie);
-  EXPECT_TRUE(CheckResult(cookie.get(), MUST_EQUAL, "six"));
-  SetACookie(cookieService, "http://parser.test/", "seven");
-  GetACookie(cookieService, "http://parser.test/", cookie);
-  EXPECT_TRUE(CheckResult(cookie.get(), MUST_EQUAL, "seven"));
-  SetACookie(cookieService, "http://parser.test/", " =eight");
-  GetACookie(cookieService, "http://parser.test/", cookie);
-  EXPECT_TRUE(CheckResult(cookie.get(), MUST_EQUAL, "eight"));
-  SetACookie(cookieService, "http://parser.test/", "test=six");
-  GetACookie(cookieService, "http://parser.test/", cookie);
+  // test the handling of valueless cookies (no '=' in cookie string).
+  // With network.cookie.valueless_cookie=true (default), "six" is parsed as
+  // name="six", value="" and serialized as "six=". Each valueless cookie has a
+  // distinct name, so they don't overwrite each other.
+  Preferences::SetBool("network.cookie.valueless_cookie", true);
+  SetACookie(cookieService, "http://valueless.parser.test/", "six");
+  GetACookie(cookieService, "http://valueless.parser.test/", cookie);
+  EXPECT_TRUE(CheckResult(cookie.get(), MUST_CONTAIN, "six="));
+  SetACookie(cookieService, "http://valueless.parser.test/", "seven");
+  GetACookie(cookieService, "http://valueless.parser.test/", cookie);
+  EXPECT_TRUE(CheckResult(cookie.get(), MUST_CONTAIN, "six="));
+  EXPECT_TRUE(CheckResult(cookie.get(), MUST_CONTAIN, "seven="));
+  // " =eight" parses as name="" value="eight" (nameless), which is rejected
+  // when valueless_cookie=true, so only the previous two cookies remain.
+  SetACookie(cookieService, "http://valueless.parser.test/", " =eight");
+  GetACookie(cookieService, "http://valueless.parser.test/", cookie);
+  EXPECT_TRUE(CheckResult(cookie.get(), MUST_CONTAIN, "six="));
+  EXPECT_TRUE(CheckResult(cookie.get(), MUST_CONTAIN, "seven="));
+  EXPECT_TRUE(CheckResult(cookie.get(), MUST_NOT_CONTAIN, "eight"));
+  SetACookie(cookieService, "http://valueless.parser.test/", "test=six");
+  GetACookie(cookieService, "http://valueless.parser.test/", cookie);
   EXPECT_TRUE(CheckResult(cookie.get(), MUST_CONTAIN, "test=six"));
+
+  // With network.cookie.valueless_cookie=false (legacy), "six" is parsed as
+  // name="", value="six", so valueless cookies overwrite each other.
+  Preferences::SetBool("network.cookie.valueless_cookie", false);
+  SetACookie(cookieService, "http://nameless.parser.test/", "six");
+  GetACookie(cookieService, "http://nameless.parser.test/", cookie);
+  EXPECT_TRUE(CheckResult(cookie.get(), MUST_EQUAL, "six"));
+  SetACookie(cookieService, "http://nameless.parser.test/", "seven");
+  GetACookie(cookieService, "http://nameless.parser.test/", cookie);
+  EXPECT_TRUE(CheckResult(cookie.get(), MUST_EQUAL, "seven"));
+  SetACookie(cookieService, "http://nameless.parser.test/", " =eight");
+  GetACookie(cookieService, "http://nameless.parser.test/", cookie);
+  EXPECT_TRUE(CheckResult(cookie.get(), MUST_EQUAL, "eight"));
+  SetACookie(cookieService, "http://nameless.parser.test/", "test=six");
+  GetACookie(cookieService, "http://nameless.parser.test/", cookie);
+  EXPECT_TRUE(CheckResult(cookie.get(), MUST_CONTAIN, "test=six"));
+  Preferences::SetBool("network.cookie.valueless_cookie", true);
 
   // *** path ordering tests
 
@@ -657,7 +681,7 @@ TEST(TestCookie, TestCookieMain)
   SetACookie(cookieService, "https://prefixed.test/",
              "__Secure-test=test; secure");
   SetACookie(cookieService, "https://prefixed.test/",
-             "__Host-test=test; secure");
+             "__Host-test=test; secure; path=/");
   GetACookie(cookieService, "https://prefixed.test/", cookie);
   EXPECT_TRUE(CheckResult(cookie.get(), MUST_CONTAIN, "__Secure-test=test"));
   EXPECT_TRUE(CheckResult(cookie.get(), MUST_CONTAIN, "__Host-test=test"));
@@ -687,6 +711,21 @@ TEST(TestCookie, TestCookieMain)
              "__Host-g=test; secure; path=/some");
   GetACookie(cookieService, "https://host.prefixed.test/", cookie);
   EXPECT_TRUE(CheckResult(cookie.get(), MUST_EQUAL, "__Host-f=test"));
+
+  // Host-prefixed cookies require an explicit Path attribute of "/": a default
+  // path that happens to be "/" is not enough.
+  SetACookie(cookieService, "https://explicit.prefixed.test/",
+             "__Host-h=test; secure");
+  SetACookie(cookieService, "https://explicit.prefixed.test/",
+             "__Host-i=test; secure; path=");
+  SetACookie(cookieService, "https://explicit.prefixed.test/",
+             "__Host-j=test; secure; path");
+  SetACookie(cookieService, "https://explicit.prefixed.test/",
+             "__Host-k=test; secure; path=relative");
+  SetACookie(cookieService, "https://explicit.prefixed.test/",
+             "__Host-l=test; secure; path=/");
+  GetACookie(cookieService, "https://explicit.prefixed.test/", cookie);
+  EXPECT_TRUE(CheckResult(cookie.get(), MUST_EQUAL, "__Host-l=test"));
 
   // *** leave-secure-alone tests
 
@@ -838,11 +877,11 @@ TEST(TestCookie, TestCookieMain)
   EXPECT_TRUE(CheckResult(cookie.get(), MUST_CONTAIN, "test2=yes"));
   GetACookieNoHttp(cookieService, "http://cookiemgr.test/foo/", cookie);
   EXPECT_TRUE(CheckResult(cookie.get(), MUST_NOT_CONTAIN, "test2=yes"));
-  // check CountCookiesFromHost()
-  uint32_t hostCookies = 0;
-  EXPECT_TRUE(NS_SUCCEEDED(
-      cookieMgr2->CountCookiesFromHost("cookiemgr.test"_ns, &hostCookies)));
-  EXPECT_EQ(hostCookies, 2u);
+  // check GetCookiesFromHostNative()
+  nsTArray<RefPtr<nsICookie>> hostCookies;
+  EXPECT_TRUE(NS_SUCCEEDED(cookieMgr2->GetCookiesFromHostNative(
+      "cookiemgr.test"_ns, &attrs, false, hostCookies)));
+  EXPECT_EQ(hostCookies.Length(), 2u);
   // check CookieExistsNative() using the third cookie
   bool found;
   EXPECT_TRUE(NS_SUCCEEDED(cookieMgr2->CookieExistsNative(
@@ -851,14 +890,20 @@ TEST(TestCookie, TestCookieMain)
 
   // sleep four seconds, to make sure the second cookie has expired
   PR_Sleep(4 * PR_TicksPerSecond());
-  // check that both CountCookiesFromHost() and CookieExistsNative() count the
-  // expired cookie
-  EXPECT_TRUE(NS_SUCCEEDED(
-      cookieMgr2->CountCookiesFromHost("cookiemgr.test"_ns, &hostCookies)));
-  EXPECT_EQ(hostCookies, 2u);
+  // check that the expired cookie is not exposed by the cookie manager
+  hostCookies.Clear();
+  EXPECT_TRUE(NS_SUCCEEDED(cookieMgr2->GetCookiesFromHostNative(
+      "cookiemgr.test"_ns, &attrs, false, hostCookies)));
+  EXPECT_EQ(hostCookies.Length(), 1u);
   EXPECT_TRUE(NS_SUCCEEDED(cookieMgr2->CookieExistsNative(
       "cookiemgr.test"_ns, "/foo"_ns, "test2"_ns, &attrs, &found)));
-  EXPECT_TRUE(found);
+  EXPECT_FALSE(found);
+  cookies.SetLength(0);
+  EXPECT_NS_SUCCEEDED(cookieMgr->GetCookies(cookies));
+  EXPECT_EQ(cookies.Length(), 2ul);
+  cookies.SetLength(0);
+  EXPECT_NS_SUCCEEDED(cookieMgr->GetSessionCookies(cookies));
+  EXPECT_EQ(cookies.Length(), 2ul);
   // double-check RemoveAll() using the enumerator
   EXPECT_NS_SUCCEEDED(cookieMgr->RemoveAll());
   cookies.SetLength(0);
@@ -1157,7 +1202,7 @@ TEST(TestCookie, MaxAgeParser)
   nsCOMPtr<nsIIOService> service = do_GetIOService();
 
   nsCOMPtr<nsIChannel> channel;
-  Unused << service->NewChannelFromURI(
+  (void)service->NewChannelFromURI(
       uri, nullptr, nsContentUtils::GetSystemPrincipal(),
       nsContentUtils::GetSystemPrincipal(), 0, nsIContentPolicy::TYPE_DOCUMENT,
       getter_AddRefs(channel));
@@ -1225,3 +1270,214 @@ TEST(TestCookie, MaxAgeParser)
   GetACookie(cookieService, "http://maxage.net/", cookieStr);
   EXPECT_TRUE(CheckResult(cookieStr.get(), MUST_EQUAL, ""));
 }
+
+// Minimal CookieStorage subclass to expose internals for testing.
+class TestableCookieStorage final : public CookieStorage {
+ public:
+  static already_AddRefed<TestableCookieStorage> Create() {
+    RefPtr<TestableCookieStorage> storage = new TestableCookieStorage();
+    storage->Init();
+    return storage.forget();
+  }
+
+  using CookieStorage::AddCookieToList;
+  using CookieStorage::mHostTable;
+
+  void StaleCookies(const nsTArray<RefPtr<Cookie>>&, int64_t) override {}
+  void Close() override {}
+  void EnsureInitialized() override {}
+
+ protected:
+  const char* NotificationTopic() const override { return "test-cookie"; }
+  void NotifyChangedInternal(nsICookieNotification*, bool) override {}
+  void RemoveAllInternal() override {}
+  void RemoveCookieFromDB(Cookie*) override {}
+  void StoreCookie(const nsACString&, const OriginAttributes&,
+                   Cookie*) override {}
+
+ private:
+  ~TestableCookieStorage() = default;
+  void CollectCookieJarSizeData() override {}
+  already_AddRefed<nsIArray> PurgeCookies(int64_t, uint16_t, int64_t) override {
+    return nullptr;
+  }
+};
+
+// Regression test for Bug 2022369: RemoveOlderCookiesByBytes must re-lookup the
+// CookieEntry after pass 1 (insecure removal) because it may have been freed if
+// pass 1 emptied the entry.
+TEST(TestCookie, RemoveOlderCookiesByBytesEntryFreed)
+{
+  RefPtr<TestableCookieStorage> storage = TestableCookieStorage::Create();
+
+  nsAutoCString baseDomain("localhost"_ns);
+  OriginAttributes attrs;
+  attrs.mPartitionKey = u"(http,example.com)"_ns;
+
+  // Add a single insecure cookie to the partition.
+  CookieStruct cookieData;
+  cookieData.name() = "B"_ns;
+  cookieData.value() = "xx"_ns;
+  cookieData.host() = "localhost"_ns;
+  cookieData.path() = "/"_ns;
+  cookieData.expiryInMSec() = PR_Now() / PR_USEC_PER_MSEC + 86400 * 1000;
+  cookieData.lastAccessedInUSec() = 0;
+  cookieData.creationTimeInUSec() = 0;
+  cookieData.updateTimeInUSec() = 0;
+  cookieData.isHttpOnly() = false;
+  cookieData.isSession() = true;
+  cookieData.isSecure() = false;
+  cookieData.isPartitioned() = true;
+  cookieData.sameSite() = nsICookie::SAMESITE_LAX;
+  cookieData.schemeMap() = 2;
+
+  RefPtr<Cookie> cookie = Cookie::Create(cookieData, attrs);
+  ASSERT_TRUE(cookie);
+
+  storage->AddCookieToList(baseDomain, attrs, cookie);
+
+  CookieKey key(baseDomain, attrs);
+  CookieEntry* entry = storage->mHostTable.GetEntry(key);
+  ASSERT_TRUE(entry);
+  EXPECT_EQ(entry->GetCookies().Length(), 1u);
+
+  uint32_t cookieBytes = cookie->NameAndValueBytes();
+  ASSERT_GT(cookieBytes, 0u);
+
+  // Ask to remove more bytes than the single insecure cookie provides.
+  // Pass 1 removes the insecure cookie (the only one), freeing the entry.
+  // Without the fix, pass 2 would dereference the freed entry (UAF).
+  nsCOMPtr<nsIArray> purgedList;
+  storage->RemoveOlderCookiesByBytes(entry, cookieBytes + 100, purgedList);
+
+  // The entry should be gone from the hash table.
+  EXPECT_FALSE(storage->mHostTable.GetEntry(key));
+}
+
+// Regression test for Bug 2041131: HasCookiesForSite must find cookies stored
+// under any OriginAttributes matching the pattern (containers, partitionKey,
+// …), not just the default-OA bucket.
+TEST(TestCookie, HasCookiesForSite)
+{
+  RefPtr<TestableCookieStorage> storage = TestableCookieStorage::Create();
+
+  nsAutoCString baseDomain("example.com"_ns);
+
+  const int64_t nowInMSec = PR_Now() / PR_USEC_PER_MSEC;
+  const int64_t kFuture = nowInMSec + 86400 * 1000;
+  const int64_t kPast = nowInMSec - 1;
+
+  auto addCookie = [&](const OriginAttributes& aAttrs, int64_t aExpiryInMSec) {
+    CookieStruct cookieData;
+    cookieData.name() = "c"_ns;
+    cookieData.value() = "v"_ns;
+    cookieData.host() = "example.com"_ns;
+    cookieData.path() = "/"_ns;
+    cookieData.expiryInMSec() = aExpiryInMSec;
+    cookieData.lastAccessedInUSec() = 0;
+    cookieData.creationTimeInUSec() = 0;
+    cookieData.updateTimeInUSec() = 0;
+    cookieData.isHttpOnly() = false;
+    cookieData.isSession() = true;
+    cookieData.isSecure() = false;
+    cookieData.isPartitioned() = false;
+    cookieData.sameSite() = nsICookie::SAMESITE_LAX;
+    cookieData.schemeMap() = 2;
+
+    RefPtr<Cookie> cookie = Cookie::Create(cookieData, aAttrs);
+    ASSERT_TRUE(cookie);
+    storage->AddCookieToList(baseDomain, aAttrs, cookie);
+  };
+
+  OriginAttributesPattern nonPbPattern;
+  nonPbPattern.mPrivateBrowsingId.Construct(0);
+
+  // No cookies at all → false.
+  EXPECT_FALSE(storage->HasCookies(baseDomain, nonPbPattern));
+  EXPECT_FALSE(storage->HasCookies("other.test"_ns, nonPbPattern));
+
+  // Cookie in the default-OA bucket → true.
+  OriginAttributes defaultAttrs;
+  addCookie(defaultAttrs, kFuture);
+  EXPECT_TRUE(storage->HasCookies(baseDomain, nonPbPattern));
+
+  // Different base domain still gets false.
+  EXPECT_FALSE(storage->HasCookies("other.test"_ns, nonPbPattern));
+
+  // Cookie only in a container (userContextId != 0) → true. This is the
+  // direct regression case from Bug 2041131.
+  RefPtr<TestableCookieStorage> containerOnly = TestableCookieStorage::Create();
+  storage = containerOnly;
+  OriginAttributes containerAttrs;
+  containerAttrs.mUserContextId = 1;
+  addCookie(containerAttrs, kFuture);
+  EXPECT_TRUE(storage->HasCookies(baseDomain, nonPbPattern));
+
+  // PB-only cookie must NOT be visible to a non-PB pattern.
+  RefPtr<TestableCookieStorage> pbOnly = TestableCookieStorage::Create();
+  storage = pbOnly;
+  OriginAttributes pbAttrs;
+  pbAttrs.mPrivateBrowsingId = 1;
+  addCookie(pbAttrs, kFuture);
+  EXPECT_FALSE(storage->HasCookies(baseDomain, nonPbPattern));
+  // And IS visible to a PB-matching pattern.
+  OriginAttributesPattern pbPattern;
+  pbPattern.mPrivateBrowsingId.Construct(1);
+  EXPECT_TRUE(storage->HasCookies(baseDomain, pbPattern));
+
+  // Partitioned-only cookie (non-default partitionKey) → true under
+  // privateBrowsingId=0 pattern.
+  RefPtr<TestableCookieStorage> partitionedOnly =
+      TestableCookieStorage::Create();
+  storage = partitionedOnly;
+  OriginAttributes partAttrs;
+  partAttrs.mPartitionKey = u"(http,other.test)"_ns;
+  addCookie(partAttrs, kFuture);
+  EXPECT_TRUE(storage->HasCookies(baseDomain, nonPbPattern));
+
+  RefPtr<TestableCookieStorage> expiredOnly = TestableCookieStorage::Create();
+  storage = expiredOnly;
+  addCookie(defaultAttrs, kPast);
+  EXPECT_FALSE(storage->HasCookies(baseDomain, nonPbPattern));
+
+  OriginAttributes otherAttrs;
+  otherAttrs.mUserContextId = 2;
+  addCookie(otherAttrs, kFuture);
+  EXPECT_TRUE(storage->HasCookies(baseDomain, nonPbPattern));
+}
+
+namespace mozilla::net {
+
+TEST(TestCookieDBWriteQueue, Coalesce)
+{
+  using OpType = CookieDBWriteQueue::OpType;
+
+  EXPECT_EQ(CookieDBWriteQueue::Coalesce(OpType::Remove, OpType::Insert),
+            Some(OpType::RemoveAndInsert));
+  EXPECT_EQ(
+      CookieDBWriteQueue::Coalesce(OpType::RemoveAndInsert, OpType::Insert),
+      Some(OpType::RemoveAndInsert));
+
+  EXPECT_EQ(CookieDBWriteQueue::Coalesce(OpType::Insert, OpType::Update),
+            Some(OpType::Insert));
+  EXPECT_EQ(CookieDBWriteQueue::Coalesce(OpType::Update, OpType::Update),
+            Some(OpType::Update));
+  EXPECT_EQ(
+      CookieDBWriteQueue::Coalesce(OpType::RemoveAndInsert, OpType::Update),
+      Some(OpType::RemoveAndInsert));
+
+  // The insertion is still in this batch, so it never reached the disk and
+  // the row cancels out entirely.
+  EXPECT_EQ(CookieDBWriteQueue::Coalesce(OpType::Insert, OpType::Remove),
+            Nothing());
+
+  EXPECT_EQ(CookieDBWriteQueue::Coalesce(OpType::Update, OpType::Remove),
+            Some(OpType::Remove));
+  EXPECT_EQ(CookieDBWriteQueue::Coalesce(OpType::Remove, OpType::Remove),
+            Some(OpType::Remove));
+  EXPECT_EQ(
+      CookieDBWriteQueue::Coalesce(OpType::RemoveAndInsert, OpType::Remove),
+      Some(OpType::Remove));
+}
+
+}  // namespace mozilla::net

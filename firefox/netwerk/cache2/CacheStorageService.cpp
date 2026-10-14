@@ -1,43 +1,49 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "CacheLog.h"
 #include "CacheStorageService.h"
-#include <iterator>
+
+#include "CacheEntry.h"
 #include "CacheFileIOManager.h"
-#include "CacheObserver.h"
+#include "CacheFileUtils.h"
 #include "CacheIndex.h"
 #include "CacheIndexIterator.h"
+#include "CacheLog.h"
+#include "CacheObserver.h"
 #include "CacheStorage.h"
-#include "CacheEntry.h"
-#include "CacheFileUtils.h"
-
+#include "Dictionary.h"
 #include "ErrorList.h"
-#include "nsICacheStorageVisitor.h"
-#include "nsIObserverService.h"
-#include "nsIFile.h"
-#include "nsIURI.h"
-#include "nsINetworkPredictor.h"
+#include "LoadContextInfo.h"
+#include "mozilla/AtomicBitfields.h"
+#include "mozilla/DebugOnly.h"
+#include "mozilla/IntegerPrintfMacros.h"
+#include "mozilla/OriginAttributes.h"
+#include "mozilla/Services.h"
+#include "mozilla/StaticPrefs_network.h"
+#include "mozilla/StoragePrincipalHelper.h"
+#include "mozilla/TimeStamp.h"
+#include "mozilla/glean/NetwerkCache2Metrics.h"
+#include "mozilla/glean/NetwerkMetrics.h"
+#include "mozilla/glean/NetwerkProtocolHttpMetrics.h"
+#include "mozilla/net/NoVarySearchUtils.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
+#include "nsICacheStorageVisitor.h"
+#include "nsIFile.h"
+#include "nsIObserverService.h"
+#include "nsIURI.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
+#include "nsQueryObject.h"
 #include "nsServiceManagerUtils.h"
 #include "nsXULAppAPI.h"
-#include "mozilla/AtomicBitfields.h"
-#include "mozilla/TimeStamp.h"
-#include "mozilla/DebugOnly.h"
-#include "mozilla/glean/NetwerkMetrics.h"
-#include "mozilla/Services.h"
-#include "mozilla/StoragePrincipalHelper.h"
-#include "mozilla/IntegerPrintfMacros.h"
-#include "mozilla/glean/NetwerkCache2Metrics.h"
-#include "mozilla/StaticPrefs_network.h"
 
 namespace mozilla::net {
+
+// static
+GlobalEntryTables* CacheStorageService::sGlobalEntryTables = nullptr;
+StaticMutex CacheStorageService::sLock;
 
 namespace {
 
@@ -49,21 +55,6 @@ void AppendMemoryStorageTag(nsAutoCString& key) {
 }
 
 }  // namespace
-
-// Not defining as static or class member of CacheStorageService since
-// it would otherwise need to include CacheEntry.h and that then would
-// need to be exported to make nsNetModule.cpp compilable.
-using GlobalEntryTables = nsClassHashtable<nsCStringHashKey, CacheEntryTable>;
-
-/**
- * Keeps tables of entries.  There is one entries table for each distinct load
- * context type.  The distinction is based on following load context info
- * states: <isPrivate|isAnon|inIsolatedMozBrowser> which builds a mapping
- * key.
- *
- * Thread-safe to access, protected by the service mutex.
- */
-static GlobalEntryTables* sGlobalEntryTables;
 
 CacheMemoryConsumer::CacheMemoryConsumer(uint32_t aFlags) {
   StoreFlags(aFlags);
@@ -124,7 +115,7 @@ CacheStorageService::CacheStorageService() {
   sSelf = this;
   sGlobalEntryTables = new GlobalEntryTables();
 
-  RegisterStrongMemoryReporter(this);
+  RegisterStrongMemoryReporter(do_AddRef(this));
 }
 
 CacheStorageService::~CacheStorageService() {
@@ -133,7 +124,7 @@ CacheStorageService::~CacheStorageService() {
 }
 
 void CacheStorageService::Shutdown() {
-  mozilla::MutexAutoLock lock(mLock);
+  StaticMutexAutoLock lock(sLock);
 
   if (mShutdown) return;
 
@@ -147,6 +138,15 @@ void CacheStorageService::Shutdown() {
   Dispatch(event);
 
 #ifdef NS_FREE_PERMANENT_DATA
+  // Clear pending callbacks on all entries before dropping them.
+  // Each pending Callback holds a RefPtr<CacheEntry> back to its owning
+  // entry, forming a prevent-release cycle that the destructor alone
+  // cannot break.
+  for (const auto& table : sGlobalEntryTables->Values()) {
+    for (const auto& entry : table->Values()) {
+      entry->ClearCallbacks();
+    }
+  }
   sGlobalEntryTables->Clear();
   delete sGlobalEntryTables;
 #endif
@@ -161,7 +161,7 @@ void CacheStorageService::ShutdownBackground() {
   MOZ_ASSERT(IsOnManagementThread());
 
   {
-    mozilla::MutexAutoLock lock(mLock);
+    StaticMutexAutoLock lock(sLock);
 
     // Cancel purge timer to avoid leaking.
     if (mPurgeTimer) {
@@ -171,8 +171,16 @@ void CacheStorageService::ShutdownBackground() {
   }
 
 #ifdef NS_FREE_PERMANENT_DATA
-  Pool(MemoryPool::EType::DISK).mManagedEntries.clear();
-  Pool(MemoryPool::EType::MEMORY).mManagedEntries.clear();
+  // Properly unregister entries before clearing the lists to maintain
+  // the invariant that IsRegistered() reflects actual list membership.
+  // This prevents crashes if pending UNREGISTER operations run after shutdown.
+  RefPtr<CacheEntry> entry;
+  while ((entry = Pool(MemoryPool::EType::DISK).mManagedEntries.popFirst())) {
+    entry->SetRegistered(false);
+  }
+  while ((entry = Pool(MemoryPool::EType::MEMORY).mManagedEntries.popFirst())) {
+    entry->SetRegistered(false);
+  }
 #endif
 
   LOG(("CacheStorageService::ShutdownBackground - done"));
@@ -180,7 +188,7 @@ void CacheStorageService::ShutdownBackground() {
 
 // Internal management methods
 
-namespace {
+namespace CacheStorageServiceInternal {
 
 // WalkCacheRunnable
 // Base class for particular storage entries visiting
@@ -237,13 +245,14 @@ class WalkMemoryCacheRunnable : public WalkCacheRunnable {
       LOG(("WalkMemoryCacheRunnable::Run - collecting [this=%p]", this));
       // First, walk, count and grab all entries from the storage
 
-      mozilla::MutexAutoLock lock(CacheStorageService::Self()->Lock());
+      StaticMutexAutoLock lock(CacheStorageService::sLock);
 
       if (!CacheStorageService::IsRunning()) return NS_ERROR_NOT_INITIALIZED;
 
       // Count the entries to allocate the array memory all at once.
       size_t numEntries = 0;
-      for (const auto& entries : sGlobalEntryTables->Values()) {
+      for (const auto& entries :
+           CacheStorageService::sGlobalEntryTables->Values()) {
         if (entries->Type() != CacheEntryTable::MEMORY_ONLY) {
           continue;
         }
@@ -252,7 +261,8 @@ class WalkMemoryCacheRunnable : public WalkCacheRunnable {
       mEntryArray.SetCapacity(numEntries);
 
       // Collect the entries.
-      for (const auto& entries : sGlobalEntryTables->Values()) {
+      for (const auto& entries :
+           CacheStorageService::sGlobalEntryTables->Values()) {
         if (entries->Type() != CacheEntryTable::MEMORY_ONLY) {
           continue;
         }
@@ -528,10 +538,10 @@ class WalkDiskCacheRunnable : public WalkCacheRunnable {
   uint32_t mCount;
 };
 
-}  // namespace
+}  // namespace CacheStorageServiceInternal
 
 void CacheStorageService::DropPrivateBrowsingEntries() {
-  mozilla::MutexAutoLock lock(mLock);
+  StaticMutexAutoLock lock(sLock);
 
   if (mShutdown) return;
 
@@ -673,7 +683,7 @@ NS_IMETHODIMP CacheStorageService::Clear() {
   // when all the context have been removed from disk.
   CacheIndex::OnAsyncEviction(true);
 
-  mozilla::MutexAutoLock lock(mLock);
+  StaticMutexAutoLock lock(sLock);
 
   {
     mozilla::MutexAutoLock forcedValidEntriesLock(mForcedValidEntriesLock);
@@ -706,6 +716,8 @@ NS_IMETHODIMP CacheStorageService::ClearOriginsByPrincipal(
   nsAutoString origin;
   rv = nsContentUtils::GetWebExposedOriginSerialization(aPrincipal, origin);
   NS_ENSURE_SUCCESS(rv, rv);
+  LOG(("CacheStorageService::ClearOriginsByPrincipal %s",
+       NS_ConvertUTF16toUTF8(origin).get()));
 
   rv = ClearOriginInternal(origin, aPrincipal->OriginAttributesRef(), true);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -719,6 +731,8 @@ NS_IMETHODIMP CacheStorageService::ClearOriginsByPrincipal(
 NS_IMETHODIMP CacheStorageService::ClearOriginsByOriginAttributes(
     const nsAString& aOriginAttributes) {
   nsresult rv;
+  LOG(("CacheStorageService::ClearOriginsByOriginAttributes %s",
+       NS_ConvertUTF16toUTF8(aOriginAttributes).get()));
 
   if (NS_WARN_IF(aOriginAttributes.IsEmpty())) {
     return NS_ERROR_FAILURE;
@@ -756,9 +770,10 @@ static bool RemoveExactEntry(CacheEntryTable* aEntries, nsACString const& aKey,
 
 NS_IMETHODIMP CacheStorageService::ClearBaseDomain(
     const nsAString& aBaseDomain) {
+  LOG(("CacheStorageService::ClearBaseDomain %s",
+       NS_ConvertUTF16toUTF8(aBaseDomain).get()));
+  StaticMutexAutoLock lock(sLock);
   if (sGlobalEntryTables) {
-    mozilla::MutexAutoLock lock(mLock);
-
     if (mShutdown) return NS_ERROR_NOT_AVAILABLE;
 
     nsCString cBaseDomain = NS_ConvertUTF16toUTF8(aBaseDomain);
@@ -788,14 +803,13 @@ NS_IMETHODIMP CacheStorageService::ClearBaseDomain(
       nsTArray<RefPtr<CacheEntry>> entriesToDelete;
 
       for (CacheEntry* entry : table->Values()) {
-        nsCOMPtr<nsIURI> uri;
-        nsresult rv = NS_NewURI(getter_AddRefs(uri), entry->GetURI());
-        if (NS_WARN_IF(NS_FAILED(rv))) {
+        nsIURI* uri = entry->GetURI();
+        if (NS_WARN_IF(!uri)) {
           continue;
         }
 
         nsAutoCString host;
-        rv = uri->GetHost(host);
+        nsresult rv = uri->GetHost(host);
         // Some entries may not have valid hosts. We can skip them.
         if (NS_FAILED(rv) || host.IsEmpty()) {
           continue;
@@ -826,6 +840,7 @@ NS_IMETHODIMP CacheStorageService::ClearBaseDomain(
 
     // Clear matched keys.
     for (uint32_t i = 0; i < keys.Length(); ++i) {
+      LOG(("CacheStorageService::ClearBaseDomain Dooming %s", keys[i].get()));
       DoomStorageEntries(keys[i], nullptr, true, false, nullptr);
     }
   }
@@ -845,7 +860,7 @@ nsresult CacheStorageService::ClearOriginInternal(
     return NS_ERROR_FAILURE;
   }
 
-  mozilla::MutexAutoLock lock(mLock);
+  StaticMutexAutoLock lock(sLock);
 
   if (sGlobalEntryTables) {
     for (const auto& globalEntry : *sGlobalEntryTables) {
@@ -863,9 +878,8 @@ nsresult CacheStorageService::ClearOriginInternal(
       nsTArray<RefPtr<CacheEntry>> entriesToDelete;
 
       for (CacheEntry* entry : table->Values()) {
-        nsCOMPtr<nsIURI> uri;
-        rv = NS_NewURI(getter_AddRefs(uri), entry->GetURI());
-        NS_ENSURE_SUCCESS(rv, rv);
+        nsIURI* uri = entry->GetURI();
+        NS_ENSURE_TRUE(uri, NS_ERROR_UNEXPECTED);
 
         nsAutoString origin;
         rv = nsContentUtils::GetWebExposedOriginSerialization(uri, origin);
@@ -896,6 +910,19 @@ nsresult CacheStorageService::ClearOriginInternal(
   }
   NS_ENSURE_SUCCESS(rv, rv);
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP CacheStorageService::ClearOriginDictionary(nsIURI* aURI) {
+  LOG(("CacheStorageService::ClearOriginDictionary"));
+  // Note: due to cookie samesite rules, we need to clean for all ports
+  DictionaryCache::RemoveDictionariesForOrigin(aURI);
+  return NS_OK;
+}
+
+NS_IMETHODIMP CacheStorageService::ClearAllOriginDictionaries() {
+  LOG(("CacheStorageService::ClearAllOriginDictionaries"));
+  DictionaryCache::RemoveAllDictionaries();
   return NS_OK;
 }
 
@@ -978,8 +1005,9 @@ NS_IMETHODIMP CacheStorageService::AsyncVisitAllStorages(
   NS_ENSURE_FALSE(mShutdown, NS_ERROR_NOT_INITIALIZED);
 
   // Walking the disk cache also walks the memory cache.
-  RefPtr<WalkDiskCacheRunnable> event =
-      new WalkDiskCacheRunnable(nullptr, aVisitEntries, aVisitor);
+  RefPtr<CacheStorageServiceInternal::WalkDiskCacheRunnable> event =
+      new CacheStorageServiceInternal::WalkDiskCacheRunnable(
+          nullptr, aVisitEntries, aVisitor);
   return event->Walk();
 }
 
@@ -1041,7 +1069,7 @@ bool CacheStorageService::RemoveEntry(CacheEntry* aEntry,
     return false;
   }
 
-  mozilla::MutexAutoLock lock(mLock);
+  StaticMutexAutoLock lock(sLock);
 
   if (mShutdown) {
     LOG(("  after shutdown"));
@@ -1089,7 +1117,7 @@ void CacheStorageService::RecordMemoryOnlyEntry(CacheEntry* aEntry,
   // not is always recorded in the storage master hash table, the one identified
   // by CacheEntry.StorageID().
 
-  mLock.AssertCurrentThreadOwns();
+  sLock.AssertCurrentThreadOwns();
 
   if (mShutdown) {
     LOG(("  after shutdown"));
@@ -1160,11 +1188,6 @@ bool CacheStorageService::IsForcedValidEntry(
   // Entry timeout has been reached
   mForcedValidEntries.Remove(aContextEntryKey);
 
-  if (!data.viewed) {
-    glean::predictor::prefetch_use_status
-        .EnumGet(glean::predictor::PrefetchUseStatusLabel::eWaitedtoolong)
-        .Add();
-  }
   return false;
 }
 
@@ -1180,6 +1203,39 @@ void CacheStorageService::MarkForcedValidEntryUse(nsACString const& aContextKey,
 
   data.viewed = true;
   mForcedValidEntries.InsertOrUpdate(aContextKey + aEntryKey, data);
+}
+
+// Registers a cache entry in the No-Vary-Search secondary index so that
+// future cache lookups for variant URLs can find it without scanning the
+// entire entry table.
+//
+// When a response carrying a No-Vary-Search header is stored, this method
+// is called to record the mapping:
+//   aBasePath (scheme://host:port/path) → aFullKey (the full cache entry key)
+//
+// On a subsequent exact-key cache miss, AddStorageEntry() consults this index
+// to find candidate entries sharing the same base path and checks each one for
+// URL equivalence under its stored NVS header
+// (see "equivalent modulo variation config",
+// https://www.ietf.org/archive/id/draft-ietf-httpbis-no-vary-search-05.html#section-6).
+//
+// Must be called with sLock NOT held; acquires sLock internally.
+void CacheStorageService::NoteNoVarySearchEntry(const nsACString& aContextKey,
+                                                const nsACString& aBasePath,
+                                                const nsACString& aFullKey) {
+  StaticMutexAutoLock lock(sLock);
+  CacheEntryTable* entries = sGlobalEntryTables->Get(aContextKey);
+  if (entries) {
+    entries->NoteNoVarySearchEntry(aBasePath, aFullKey);
+  }
+}
+
+void CacheStorageService::NoteNoVarySearchEntry(nsICacheEntry* aEntry,
+                                                nsIURI* aURI) {
+  RefPtr<CacheEntryHandle> handle = do_QueryObject(aEntry);
+  if (handle) {
+    handle->Entry()->NoteNoVarySearchEntry(aURI);
+  }
 }
 
 // Allows a cache entry to be loaded directly from cache without further
@@ -1204,14 +1260,8 @@ void CacheStorageService::RemoveEntryForceValid(nsACString const& aContextKey,
   mozilla::MutexAutoLock lock(mForcedValidEntriesLock);
 
   LOG(("CacheStorageService::RemoveEntryForceValid context='%s' entryKey=%s",
-       aContextKey.BeginReading(), aEntryKey.BeginReading()));
-  ForcedValidData data;
-  bool ok = mForcedValidEntries.Get(aContextKey + aEntryKey, &data);
-  if (ok && !data.viewed) {
-    glean::predictor::prefetch_use_status
-        .EnumGet(glean::predictor::PrefetchUseStatusLabel::eWaitedtoolong)
-        .Add();
-  }
+       PromiseFlatCString(aContextKey).get(),
+       PromiseFlatCString(aEntryKey).get()));
   mForcedValidEntries.Remove(aContextKey + aEntryKey);
 }
 
@@ -1223,11 +1273,6 @@ void CacheStorageService::ForcedValidEntriesPrune(TimeStamp& now) {
 
   for (auto iter = mForcedValidEntries.Iter(); !iter.Done(); iter.Next()) {
     if (iter.Data().validUntil < now) {
-      if (!iter.Data().viewed) {
-        glean::predictor::prefetch_use_status
-            .EnumGet(glean::predictor::PrefetchUseStatusLabel::eWaitedtoolong)
-            .Add();
-      }
       iter.Remove();
     }
   }
@@ -1291,7 +1336,7 @@ bool CacheStorageService::MemoryPool::OnMemoryConsumptionChange(
 void CacheStorageService::SchedulePurgeOverMemoryLimit() {
   LOG(("CacheStorageService::SchedulePurgeOverMemoryLimit"));
 
-  mozilla::MutexAutoLock lock(mLock);
+  StaticMutexAutoLock lock(sLock);
 
   if (mShutdown) {
     LOG(("  past shutdown"));
@@ -1318,7 +1363,7 @@ NS_IMETHODIMP
 CacheStorageService::Notify(nsITimer* aTimer) {
   LOG(("CacheStorageService::Notify"));
 
-  mozilla::MutexAutoLock lock(mLock);
+  StaticMutexAutoLock lock(sLock);
 
   if (aTimer == mPurgeTimer) {
 #ifdef MOZ_TSAN
@@ -1367,6 +1412,9 @@ void CacheStorageService::PurgeExpiredOrOverMemoryLimit() {
 }
 
 void CacheStorageService::MemoryPool::PurgeExpiredOrOverMemoryLimit() {
+  if (StaticPrefs::network_cache_purge_disable()) {
+    return;
+  }
   TimeStamp start(TimeStamp::Now());
 
   uint32_t const memoryLimit = Limit();
@@ -1388,16 +1436,6 @@ void CacheStorageService::MemoryPool::PurgeExpiredOrOverMemoryLimit() {
     // deliver entries.
     if (minprogress == 0 && CacheIOThread::YieldAndRerun()) {
       return;
-    }
-
-    if (mType == EType::DISK) {
-      mozilla::glean::networking::cache_purge_due_to_memory_limit
-          .Get("meta_data_file_size_limit"_ns)
-          .Add(1);
-    } else if (mType == EType::MEMORY) {
-      mozilla::glean::networking::cache_purge_due_to_memory_limit
-          .Get("cache_memory_limit"_ns)
-          .Add(1);
     }
 
     auto r = PurgeByFrecency(minprogress);
@@ -1489,14 +1527,27 @@ Result<size_t, nsresult> CacheStorageService::MemoryPool::PurgeByFrecency(
     return Err(NS_ERROR_OUT_OF_MEMORY);
   }
   {
-    mozilla::MutexAutoLock lock(CacheStorageService::Self()->Lock());
+    StaticMutexAutoLock lock(CacheStorageService::Self()->Lock());
 
     for (const auto& entry : mManagedEntries) {
-      // Referenced items cannot be purged and we deliberately want to not look
-      // at '0' frecency entries, these are new entries and can be ignored.
-      if (!entry->IsReferenced() && entry->GetFrecency() > 0.0) {
+      // Referenced items cannot be purged and we deliberately want to not
+      // look at '0' frecency entries, these are new entries and can be
+      // ignored.  Also, any dict: (CompressionDictionary) entries for an
+      // origin should not be purged unless empty - they will empty out as
+      // the cache entries referenced by them are purged until they are empty.
+      if (!entry->IsReferenced() && entry->GetFrecency() > 0.0 &&
+          (!entry->GetEnhanceID().EqualsLiteral("dict:") ||
+           entry->GetMetadataMemoryConsumption() == 0)) {
         mayPurgeEntry copy(entry);
         mayPurgeSorted.AppendElement(std::move(copy));
+      } else {
+        if (entry->GetEnhanceID().EqualsLiteral("dict:")) {
+          LOG(
+              ("*** Ignored Entry is a dictionary origin, metadata size %d, "
+               "referenced %d, Frecency %f",
+               entry->GetMetadataMemoryConsumption(), entry->IsReferenced(),
+               entry->GetFrecency()));
+        }
       }
     }
   }
@@ -1512,7 +1563,9 @@ Result<size_t, nsresult> CacheStorageService::MemoryPool::PurgeByFrecency(
       break;
     }
 
-    RefPtr<CacheEntry> entry = checkPurge.mEntry;
+    // Ensure it's deleted immediately if purged so we can record the
+    // mMemorySize savings
+    RefPtr<CacheEntry> entry = std::move(checkPurge.mEntry);
 
     if (entry->Purge(CacheEntry::PURGE_WHOLE)) {
       numPurged++;
@@ -1526,7 +1579,10 @@ Result<size_t, nsresult> CacheStorageService::MemoryPool::PurgeByFrecency(
     }
   }
 
-  LOG(("MemoryPool::PurgeByFrecency done"));
+  LOG(
+      ("MemoryPool::PurgeByFrecency done, purged %zu - mMemorySize %u, "
+       "memoryLimit %u",
+       numPurged, (uint32_t)mMemorySize, memoryLimit));
 
   return numPurged;
 }
@@ -1559,7 +1615,7 @@ size_t CacheStorageService::MemoryPool::PurgeAll(uint32_t aWhat,
 // Methods exposed to and used by CacheStorage.
 
 nsresult CacheStorageService::AddStorageEntry(CacheStorage const* aStorage,
-                                              const nsACString& aURI,
+                                              nsIURI* aURI,
                                               const nsACString& aIdExtension,
                                               uint32_t aFlags,
                                               CacheEntryHandle** aResult) {
@@ -1576,9 +1632,11 @@ nsresult CacheStorageService::AddStorageEntry(CacheStorage const* aStorage,
 }
 
 nsresult CacheStorageService::AddStorageEntry(
-    const nsACString& aContextKey, const nsACString& aURI,
-    const nsACString& aIdExtension, bool aWriteToDisk, bool aSkipSizeCheck,
-    bool aPin, uint32_t aFlags, CacheEntryHandle** aResult) {
+    const nsACString& aContextKey, nsIURI* aURI, const nsACString& aIdExtension,
+    bool aWriteToDisk, bool aSkipSizeCheck, bool aPin, uint32_t aFlags,
+    CacheEntryHandle** aResult) {
+  NS_ENSURE_ARG(aURI);
+
   nsresult rv;
 
   nsAutoCString entryKey;
@@ -1586,13 +1644,17 @@ nsresult CacheStorageService::AddStorageEntry(
   NS_ENSURE_SUCCESS(rv, rv);
 
   LOG(("CacheStorageService::AddStorageEntry [entryKey=%s, contextKey=%s]",
-       entryKey.get(), aContextKey.BeginReading()));
+       entryKey.get(), PromiseFlatCString(aContextKey).get()));
 
   RefPtr<CacheEntry> entry;
   RefPtr<CacheEntryHandle> handle;
 
+  bool nvsHadCandidates = false;
+  bool nvsMatched = false;
+  nsAutoCString nvsMatchedRuleLabel;
+
   {
-    mozilla::MutexAutoLock lock(mLock);
+    StaticMutexAutoLock lock(sLock);
 
     NS_ENSURE_FALSE(mShutdown, NS_ERROR_NOT_INITIALIZED);
 
@@ -1603,7 +1665,7 @@ nsresult CacheStorageService::AddStorageEntry(
                 aContextKey,
                 [&aContextKey] {
                   LOG(("  new storage entries table for context '%s'",
-                       aContextKey.BeginReading()));
+                       PromiseFlatCString(aContextKey).get()));
                   return MakeUnique<CacheEntryTable>(
                       CacheEntryTable::ALL_ENTRIES);
                 })
@@ -1614,6 +1676,74 @@ nsresult CacheStorageService::AddStorageEntry(
         (aFlags & nsICacheStorage::OPEN_SECRETLY) &&
         StaticPrefs::network_cache_bug1708673()) {
       return NS_ERROR_CACHE_KEY_NOT_FOUND;
+    }
+
+    // No-Vary-Search secondary lookup on exact-key miss.
+    // Implements the "equivalent modulo variation config" algorithm:
+    // https://www.ietf.org/archive/id/draft-ietf-httpbis-no-vary-search-05.html#section-6
+    //
+    // On an exact-key miss, consult mNoVarySearchIndex to find cached entries
+    // that share the same base path (scheme://host:port/path) and carry a
+    // No-Vary-Search header. For each candidate, parse its stored NVS header
+    // and check whether the incoming URL is equivalent to the candidate URL
+    // under those NVS rules. The first matching candidate is used as the cache
+    // hit. OPEN_TRUNCATE is excluded because truncation always creates a new
+    // entry regardless of equivalence.
+    if (StaticPrefs::network_cache_no_vary_search() && !entryExists &&
+        !(aFlags & nsICacheStorage::OPEN_TRUNCATE)) {
+      nsAutoCString basePath;
+      if (NS_SUCCEEDED(ExtractNoVarySearchBasePath(aURI, basePath))) {
+        auto candidates = entries->mNoVarySearchIndex.Lookup(basePath);
+        if (candidates) {
+          nvsHadCandidates = true;
+          for (const auto& fullKey : *candidates) {
+            RefPtr<CacheEntry> candidate;
+            if (!entries->Get(fullKey, getter_AddRefs(candidate))) {
+              continue;
+            }
+
+            if (!candidate->GetEnhanceID().Equals(aIdExtension)) {
+              continue;
+            }
+
+            // A candidate is stored under a different URL than the one being
+            // opened, so it can only ever be reused as it is.  Taking one that
+            // would have to be replaced below would doom another URL's
+            // representation and remove entryKey - which is ours, not the
+            // candidate's - from the table, leaving the doomed entry behind.
+            if (MOZ_UNLIKELY(!aWriteToDisk) && candidate->IsUsingDisk()) {
+              continue;
+            }
+
+            nsAutoCString nvsVal;
+            candidate->GetMetaDataElement("no-vary-search",
+                                          getter_Copies(nvsVal));
+            if (nvsVal.IsEmpty()) {
+              continue;
+            }
+
+            auto data = ParseNoVarySearchHeader(nvsVal);
+            if (URLsAreEquivalentModuloVariationConfig(
+                    aURI, candidate->GetURI(), data)) {
+              nvsMatched = true;
+              nvsMatchedRuleLabel = NoVarySearchRuleLabel(data.paramsRule);
+              entry = candidate;
+              entryExists = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (entryExists && (aFlags & nsICacheStorage::OPEN_COMPLETE_ONLY)) {
+      bool ready = false;
+      // We're looking for complete files, even if they're being revalidated
+      // (for dictionaries)
+      entry->GetReadyOrRevalidating(&ready);
+      if (!ready) {
+        return NS_ERROR_CACHE_KEY_NOT_FOUND;
+      }
     }
 
     bool replace = aFlags & nsICacheStorage::OPEN_TRUNCATE;
@@ -1628,6 +1758,10 @@ nsresult CacheStorageService::AddStorageEntry(
 
     // If truncate is demanded, delete and doom the current entry
     if (entryExists && replace) {
+      // Everything below keys off entryKey, so it must be the key entry is
+      // actually stored under.  The No-Vary-Search lookup never hands out an
+      // entry that can reach this point.
+      MOZ_ASSERT(!nvsMatched, "replacing a No-Vary-Search candidate");
       entries->Remove(entryKey);
 
       LOG(("  dooming entry %p for %s because of OPEN_TRUNCATE", entry.get(),
@@ -1667,14 +1801,28 @@ nsresult CacheStorageService::AddStorageEntry(
     }
   }
 
+  // Glean must not be called while holding sLock, so record the NVS outcome
+  // here, after the lock has been released.
+  if (nvsHadCandidates) {
+    if (nvsMatched) {
+      glean::network::no_vary_search_match.Get("matched"_ns).Add(1);
+      glean::network::no_vary_search_hit_by_rule.Get(nvsMatchedRuleLabel)
+          .Add(1);
+    } else {
+      glean::network::no_vary_search_match.Get("not_matched"_ns).Add(1);
+    }
+  }
+
   handle.forget(aResult);
   return NS_OK;
 }
 
 nsresult CacheStorageService::CheckStorageEntry(CacheStorage const* aStorage,
-                                                const nsACString& aURI,
+                                                nsIURI* aURI,
                                                 const nsACString& aIdExtension,
                                                 bool* aResult) {
+  NS_ENSURE_ARG(aURI);
+
   nsresult rv;
 
   nsAutoCString contextKey;
@@ -1685,10 +1833,11 @@ nsresult CacheStorageService::CheckStorageEntry(CacheStorage const* aStorage,
   }
 
   LOG(("CacheStorageService::CheckStorageEntry [uri=%s, eid=%s, contextKey=%s]",
-       aURI.BeginReading(), aIdExtension.BeginReading(), contextKey.get()));
+       aURI->GetSpecOrDefault().get(), PromiseFlatCString(aIdExtension).get(),
+       contextKey.get()));
 
   {
-    mozilla::MutexAutoLock lock(mLock);
+    StaticMutexAutoLock lock(sLock);
 
     NS_ENSURE_FALSE(mShutdown, NS_ERROR_NOT_INITIALIZED);
 
@@ -1727,8 +1876,10 @@ nsresult CacheStorageService::CheckStorageEntry(CacheStorage const* aStorage,
 }
 
 nsresult CacheStorageService::GetCacheIndexEntryAttrs(
-    CacheStorage const* aStorage, const nsACString& aURI,
-    const nsACString& aIdExtension, bool* aHasAltData, uint32_t* aFileSizeKb) {
+    CacheStorage const* aStorage, nsIURI* aURI, const nsACString& aIdExtension,
+    bool* aHasAltData, uint32_t* aFileSizeKb) {
+  NS_ENSURE_ARG(aURI);
+
   nsresult rv;
 
   nsAutoCString contextKey;
@@ -1737,7 +1888,8 @@ nsresult CacheStorageService::GetCacheIndexEntryAttrs(
   LOG(
       ("CacheStorageService::GetCacheIndexEntryAttrs [uri=%s, eid=%s, "
        "contextKey=%s]",
-       aURI.BeginReading(), aIdExtension.BeginReading(), contextKey.get()));
+       aURI->GetSpecOrDefault().get(), PromiseFlatCString(aIdExtension).get(),
+       contextKey.get()));
 
   nsAutoCString fileKey;
   rv = CacheEntry::HashingKey(contextKey, aIdExtension, aURI, fileKey);
@@ -1834,9 +1986,12 @@ NS_IMPL_ISUPPORTS(CacheEntryDoomByKeyCallback, CacheFileIOListener,
 }  // namespace
 
 nsresult CacheStorageService::DoomStorageEntry(
-    CacheStorage const* aStorage, const nsACString& aURI,
-    const nsACString& aIdExtension, nsICacheEntryDoomCallback* aCallback) {
-  LOG(("CacheStorageService::DoomStorageEntry"));
+    CacheStorage const* aStorage, nsIURI* aURI, const nsACString& aIdExtension,
+    nsICacheEntryDoomCallback* aCallback) {
+  NS_ENSURE_ARG(aURI);
+
+  LOG(("CacheStorageService::DoomStorageEntry %s",
+       aURI->GetSpecOrDefault().get()));
 
   NS_ENSURE_ARG(aStorage);
 
@@ -1849,7 +2004,7 @@ nsresult CacheStorageService::DoomStorageEntry(
 
   RefPtr<CacheEntry> entry;
   {
-    mozilla::MutexAutoLock lock(mLock);
+    StaticMutexAutoLock lock(sLock);
 
     NS_ENSURE_FALSE(mShutdown, NS_ERROR_NOT_INITIALIZED);
 
@@ -1936,7 +2091,7 @@ nsresult CacheStorageService::DoomStorageEntries(
   nsAutoCString contextKey;
   CacheFileUtils::AppendKeyPrefix(aStorage->LoadInfo(), contextKey);
 
-  mozilla::MutexAutoLock lock(mLock);
+  StaticMutexAutoLock lock(sLock);
 
   return DoomStorageEntries(contextKey, aStorage->LoadInfo(),
                             aStorage->WriteToDisk(), aStorage->Pinning(),
@@ -1947,9 +2102,9 @@ nsresult CacheStorageService::DoomStorageEntries(
     const nsACString& aContextKey, nsILoadContextInfo* aContext,
     bool aDiskStorage, bool aPinned, nsICacheEntryDoomCallback* aCallback) {
   LOG(("CacheStorageService::DoomStorageEntries [context=%s]",
-       aContextKey.BeginReading()));
+       PromiseFlatCString(aContextKey).get()));
 
-  mLock.AssertCurrentThreadOwns();
+  sLock.AssertCurrentThreadOwns();
 
   NS_ENSURE_TRUE(!mShutdown, NS_ERROR_NOT_INITIALIZED);
 
@@ -1957,7 +2112,8 @@ nsresult CacheStorageService::DoomStorageEntries(
   AppendMemoryStorageTag(memoryStorageID);
 
   if (aDiskStorage) {
-    LOG(("  dooming disk+memory storage of %s", aContextKey.BeginReading()));
+    LOG(("  dooming disk+memory storage of %s",
+         PromiseFlatCString(aContextKey).get()));
 
     // Walk one by one and remove entries according their pin status
     CacheEntryTable *diskEntries, *memoryEntries;
@@ -1973,6 +2129,7 @@ nsresult CacheStorageService::DoomStorageEntries(
         if (memoryEntries) {
           RemoveExactEntry(memoryEntries, iter.Key(), entry, false);
         }
+        diskEntries->RemoveNoVarySearchEntryByKey(iter.Key());
         iter.Remove();
       }
     }
@@ -1982,7 +2139,8 @@ nsresult CacheStorageService::DoomStorageEntries(
       CacheFileIOManager::EvictByContext(aContext, aPinned, u""_ns);
     }
   } else {
-    LOG(("  dooming memory-only storage of %s", aContextKey.BeginReading()));
+    LOG(("  dooming memory-only storage of %s",
+         PromiseFlatCString(aContextKey).get()));
 
     // Remove the memory entries table from the global tables.
     // Since we store memory entries also in the disk entries table
@@ -2054,17 +2212,20 @@ nsresult CacheStorageService::WalkStorageEntries(
   NS_ENSURE_ARG(aStorage);
 
   if (aStorage->WriteToDisk()) {
-    RefPtr<WalkDiskCacheRunnable> event = new WalkDiskCacheRunnable(
-        aStorage->LoadInfo(), aVisitEntries, aVisitor);
+    RefPtr<CacheStorageServiceInternal::WalkDiskCacheRunnable> event =
+        new CacheStorageServiceInternal::WalkDiskCacheRunnable(
+            aStorage->LoadInfo(), aVisitEntries, aVisitor);
     return event->Walk();
   }
 
-  RefPtr<WalkMemoryCacheRunnable> event = new WalkMemoryCacheRunnable(
-      aStorage->LoadInfo(), aVisitEntries, aVisitor);
+  RefPtr<CacheStorageServiceInternal::WalkMemoryCacheRunnable> event =
+      new CacheStorageServiceInternal::WalkMemoryCacheRunnable(
+          aStorage->LoadInfo(), aVisitEntries, aVisitor);
   return event->Walk();
 }
 
-void CacheStorageService::CacheFileDoomed(nsILoadContextInfo* aLoadContextInfo,
+void CacheStorageService::CacheFileDoomed(const nsACString& aKey,
+                                          nsILoadContextInfo* aLoadContextInfo,
                                           const nsACString& aIdExtension,
                                           const nsACString& aURISpec) {
   nsAutoCString contextKey;
@@ -2073,7 +2234,7 @@ void CacheStorageService::CacheFileDoomed(nsILoadContextInfo* aLoadContextInfo,
   nsAutoCString entryKey;
   CacheEntry::HashingKey(""_ns, aIdExtension, aURISpec, entryKey);
 
-  mozilla::MutexAutoLock lock(mLock);
+  StaticMutexAutoLock lock(sLock);
 
   if (mShutdown) {
     return;
@@ -2110,7 +2271,7 @@ bool CacheStorageService::GetCacheEntryInfo(
 
   RefPtr<CacheEntry> entry;
   {
-    mozilla::MutexAutoLock lock(mLock);
+    StaticMutexAutoLock lock(sLock);
 
     if (mShutdown) {
       return false;
@@ -2133,7 +2294,10 @@ bool CacheStorageService::GetCacheEntryInfo(
 // static
 void CacheStorageService::GetCacheEntryInfo(CacheEntry* aEntry,
                                             EntryInfoCallback* aCallback) {
-  nsCString const uriSpec = aEntry->GetURI();
+  nsAutoCString uriSpec;
+  if (nsIURI* uri = aEntry->GetURI()) {
+    uri->GetAsciiSpec(uriSpec);
+  }
   nsCString const enhanceId = aEntry->GetEnhanceID();
 
   nsAutoCString entryKey;
@@ -2188,7 +2352,7 @@ bool TelemetryEntryKey(CacheEntry const* entry, nsAutoCString& key) {
 
   if (entry->GetStorageID().IsEmpty()) {
     // Hopefully this will be const-copied, saves some memory
-    key = entryKey;
+    key = std::move(entryKey);
   } else {
     key.Assign(entry->GetStorageID());
     key.Append(':');
@@ -2261,15 +2425,17 @@ void CacheStorageService::TelemetryRecordEntryRemoval(CacheEntry* entry) {
 
   glean::network::http_cache_entry_reuse_count.AccumulateSingleSample(
       entry->UseCount());
-  glean::network::http_cache_entry_alive_time.AccumulateRawDuration(
-      TimeStamp::NowLoRes() - entry->LoadStart());
+  if (Telemetry::CanRecordPrereleaseData()) {
+    glean::network::http_cache_entry_alive_time.AccumulateRawDuration(
+        TimeStamp::NowLoRes() - entry->LoadStart());
+  }
 }
 
 // nsIMemoryReporter
 
 size_t CacheStorageService::SizeOfExcludingThis(
     mozilla::MallocSizeOf mallocSizeOf) const {
-  CacheStorageService::Self()->Lock().AssertCurrentThreadOwns();
+  sLock.AssertCurrentThreadOwns();
 
   size_t n = 0;
   // The elemets are referenced by sGlobalEntryTables and are reported from
@@ -2292,7 +2458,7 @@ size_t CacheStorageService::SizeOfIncludingThis(
 NS_IMETHODIMP
 CacheStorageService::CollectReports(nsIHandleReportCallback* aHandleReport,
                                     nsISupports* aData, bool aAnonymize) {
-  MutexAutoLock lock(mLock);
+  StaticMutexAutoLock lock(sLock);
   MOZ_COLLECT_REPORT("explicit/network/cache2/io", KIND_HEAP, UNITS_BYTES,
                      CacheFileIOManager::SizeOfIncludingThis(MallocSizeOf),
                      "Memory used by the cache IO manager.");
@@ -2346,7 +2512,7 @@ CacheStorageService::CollectReports(nsIHandleReportCallback* aHandleReport,
               "explicit/network/cache2/%s-storage(%s)",
               table->Type() == CacheEntryTable::MEMORY_ONLY ? "memory" : "disk",
               aAnonymize ? "<anonymized>"
-                         : globalEntry.GetKey().BeginReading()),
+                         : PromiseFlatCString(globalEntry.GetKey()).get()),
           nsIMemoryReporter::KIND_HEAP, nsIMemoryReporter::UNITS_BYTES, size,
           "Memory used by the cache storage."_ns, aData);
     }
@@ -2420,6 +2586,88 @@ CacheStorageService::Flush(nsIObserver* aObserver) {
                                                        CacheEntry::PURGE_WHOLE);
 
   return thread->Dispatch(r, CacheIOThread::WRITE);
+}
+
+NS_IMETHODIMP
+CacheStorageService::ShutdownCacheForTesting() {
+  // Drop the in-memory entry table so that entries must be re-loaded from disk
+  // after the simulated restart; otherwise post-restart opens would find the
+  // original CacheEntry objects (with their data/metadata still in memory) and
+  // never exercise the disk index rebuild / metadata reload paths.
+  {
+    StaticMutexAutoLock lock(sLock);
+    if (sGlobalEntryTables) {
+#ifdef NS_FREE_PERMANENT_DATA
+      // Break the pending-callback prevent-release cycle before dropping the
+      // table; ClearCallbacks() only exists in NS_FREE_PERMANENT_DATA builds.
+      for (const auto& table : sGlobalEntryTables->Values()) {
+        for (const auto& entry : table->Values()) {
+          entry->ClearCallbacks();
+        }
+      }
+#endif
+      sGlobalEntryTables->Clear();
+    }
+  }
+  return CacheFileIOManager::Shutdown();
+}
+
+NS_IMETHODIMP
+CacheStorageService::StartupCacheForTesting() {
+  // ShutdownCacheForTesting() went through CacheFileIOManager::Shutdown(),
+  // which permanently shuts the DictionaryCache down; undo that so it works
+  // again.
+  DictionaryCache::ResetShutdownForTesting();
+
+  nsresult rv = CacheFileIOManager::Init();
+  NS_ENSURE_SUCCESS(rv, rv);
+  return CacheFileIOManager::OnProfile();
+}
+
+NS_IMETHODIMP
+CacheStorageService::ClearDictionaryCacheMemory() {
+  LOG(("CacheStorageService::ClearDictionaryCacheMemory"));
+  RefPtr<DictionaryCache> cache = DictionaryCache::GetInstance();
+  if (cache) {
+    cache->Clear();
+  }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+CacheStorageService::CorruptDictionaryHash(
+    const nsACString& aURI, JS::Handle<JS::Value> aOriginAttributes,
+    JSContext* aCx) {
+  LOG(("CacheStorageService::CorruptDictionaryHash [uri=%s]",
+       PromiseFlatCString(aURI).get()));
+  OriginAttributes attrs;
+  if (!attrs.Init(aCx, aOriginAttributes)) {
+    return NS_ERROR_INVALID_ARG;
+  }
+  RefPtr<DictionaryCache> cache = DictionaryCache::GetInstance();
+  if (cache) {
+    RefPtr<LoadContextInfo> lci = GetLoadContextInfo(false, attrs);
+    cache->CorruptHashForTesting(aURI, lci);
+  }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+CacheStorageService::ClearDictionaryDataForTesting(
+    const nsACString& aURI, JS::Handle<JS::Value> aOriginAttributes,
+    JSContext* aCx) {
+  LOG(("CacheStorageService::ClearDictionaryDataForTesting [uri=%s]",
+       PromiseFlatCString(aURI).get()));
+  OriginAttributes attrs;
+  if (!attrs.Init(aCx, aOriginAttributes)) {
+    return NS_ERROR_INVALID_ARG;
+  }
+  RefPtr<DictionaryCache> cache = DictionaryCache::GetInstance();
+  if (cache) {
+    RefPtr<LoadContextInfo> lci = GetLoadContextInfo(false, attrs);
+    cache->ClearDictionaryDataForTesting(aURI, lci);
+  }
+  return NS_OK;
 }
 
 }  // namespace mozilla::net

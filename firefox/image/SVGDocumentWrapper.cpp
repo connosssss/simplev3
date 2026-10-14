@@ -1,10 +1,11 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SVGDocumentWrapper.h"
 
+#include "mozilla/AutoRestore.h"
+#include "mozilla/Components.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/SMILAnimationController.h"
 #include "mozilla/SVGObserverUtils.h"
@@ -14,20 +15,19 @@
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/SVGDocument.h"
 #include "mozilla/dom/SVGSVGElement.h"
+#include "nsComponentManagerUtils.h"
 #include "nsICategoryManager.h"
 #include "nsIChannel.h"
-#include "nsIDocumentViewer.h"
 #include "nsIDocumentLoaderFactory.h"
+#include "nsIDocumentViewer.h"
 #include "nsIHttpChannel.h"
 #include "nsIObserverService.h"
 #include "nsIParser.h"
 #include "nsIRequest.h"
 #include "nsIStreamListener.h"
 #include "nsIXMLContentSink.h"
-#include "nsNetCID.h"
-#include "nsComponentManagerUtils.h"
-#include "nsServiceManagerUtils.h"
 #include "nsMimeTypes.h"
+#include "nsNetCID.h"
 #include "nsRefreshDriver.h"
 
 namespace mozilla {
@@ -55,30 +55,49 @@ SVGDocumentWrapper::~SVGDocumentWrapper() {
 void SVGDocumentWrapper::DestroyViewer() {
   MOZ_ASSERT(NS_IsMainThread());
   if (mViewer) {
-    mViewer->GetDocument()->OnPageHide(false, nullptr);
-    mViewer->Close(nullptr);
+    const RefPtr<Document> doc = mViewer->GetDocument();
+    doc->OnPageHide(false, nullptr);
+    mViewer->Close();
     mViewer->Destroy();
     mViewer = nullptr;
   }
 }
 
-nsIFrame* SVGDocumentWrapper::GetRootLayoutFrame() {
-  Element* rootElem = GetRootSVGElem();
+nsIFrame* SVGDocumentWrapper::GetRootLayoutFrame() const {
+  Element* rootElem = GetSVGRootElement();
   return rootElem ? rootElem->GetPrimaryFrame() : nullptr;
 }
 
-void SVGDocumentWrapper::UpdateViewportBounds(const nsIntSize& aViewportSize) {
+void SVGDocumentWrapper::UpdateViewportBounds(const CSSSize& aViewportSize) {
   MOZ_ASSERT(!mIgnoreInvalidation, "shouldn't be reentrant");
   mIgnoreInvalidation = true;
+
+  // We want to make sure our (maybe fractional) viewport gets used as-is.
+  // However, the document viewer deals with whole device pixels.
+  //
+  // Ceil our doc viewer bounds (to avoid any potential clipping), and set the
+  // layout viewport explicitly as well.
+  const auto intSize =
+      LayoutDeviceIntSize::Ceil(aViewportSize.width, aViewportSize.height);
+  const nsSize maybeFractionalSize = CSSPixel::ToAppUnits(aViewportSize);
 
   LayoutDeviceIntRect currentBounds;
   mViewer->GetBounds(currentBounds);
 
+  bool changed = false;
+  if (currentBounds.Size() != intSize) {
+    mViewer->SetBounds(LayoutDeviceIntRect(LayoutDeviceIntPoint(), intSize));
+    changed = true;
+  }
+
+  if (RefPtr ps = GetPresShell();
+      ps && ps->GetLayoutViewportSize() != maybeFractionalSize) {
+    ps->SetLayoutViewportSize(maybeFractionalSize, /* aDelay = */ false);
+    changed = true;
+  }
+
   // If the bounds have changed, we need to do a layout flush.
-  if (currentBounds.Size().ToUnknownSize() != aViewportSize) {
-    mViewer->SetBounds(LayoutDeviceIntRect(
-        LayoutDeviceIntPoint(),
-        LayoutDeviceIntSize::FromUnknownSize(aViewportSize)));
+  if (changed) {
     FlushLayout();
   }
 
@@ -88,7 +107,7 @@ void SVGDocumentWrapper::UpdateViewportBounds(const nsIntSize& aViewportSize) {
 void SVGDocumentWrapper::FlushImageTransformInvalidation() {
   MOZ_ASSERT(!mIgnoreInvalidation, "shouldn't be reentrant");
 
-  SVGSVGElement* svgElem = GetRootSVGElem();
+  SVGSVGElement* svgElem = GetSVGRootElement();
   if (!svgElem) {
     return;
   }
@@ -99,7 +118,7 @@ void SVGDocumentWrapper::FlushImageTransformInvalidation() {
   mIgnoreInvalidation = false;
 }
 
-bool SVGDocumentWrapper::IsAnimated() {
+bool SVGDocumentWrapper::IsAnimated() const {
   // Can be called for animated images during shutdown, after we've
   // already Observe()'d XPCOM shutdown and cleared out our mViewer pointer.
   if (!mViewer) {
@@ -135,7 +154,7 @@ void SVGDocumentWrapper::StartAnimation() {
   if (doc) {
     SMILAnimationController* controller = doc->GetAnimationController();
     if (controller) {
-      controller->Resume(SMILTimeContainer::PAUSE_IMAGE);
+      controller->Resume(SMILTimeContainer::PauseType::Image);
     }
     doc->SetImageAnimationState(true);
   }
@@ -151,14 +170,14 @@ void SVGDocumentWrapper::StopAnimation() {
   if (Document* doc = mViewer->GetDocument()) {
     SMILAnimationController* controller = doc->GetAnimationController();
     if (controller) {
-      controller->Pause(SMILTimeContainer::PAUSE_IMAGE);
+      controller->Pause(SMILTimeContainer::PauseType::Image);
     }
     doc->SetImageAnimationState(false);
   }
 }
 
 void SVGDocumentWrapper::ResetAnimation() {
-  SVGSVGElement* svgElem = GetRootSVGElem();
+  SVGSVGElement* svgElem = GetSVGRootElement();
   if (!svgElem) {
     return;
   }
@@ -166,19 +185,23 @@ void SVGDocumentWrapper::ResetAnimation() {
   svgElem->SetCurrentTime(0.0f);
 }
 
-float SVGDocumentWrapper::GetCurrentTimeAsFloat() {
-  SVGSVGElement* svgElem = GetRootSVGElem();
+float SVGDocumentWrapper::GetCurrentTimeAsFloat() const {
+  SVGSVGElement* svgElem = GetSVGRootElement();
   return svgElem ? svgElem->GetCurrentTimeAsFloat() : 0.0f;
 }
 
 void SVGDocumentWrapper::SetCurrentTime(float aTime) {
-  SVGSVGElement* svgElem = GetRootSVGElem();
+  SVGSVGElement* svgElem = GetSVGRootElement();
   if (svgElem && svgElem->GetCurrentTimeAsFloat() != aTime) {
     svgElem->SetCurrentTime(aTime);
   }
 }
 
 void SVGDocumentWrapper::TickRefreshDriver() {
+  // The tick flushes our document, so nested draws of it must be refused.
+  AutoRestore<bool> isDrawing(mIsDrawing);
+  mIsDrawing = true;
+
   if (RefPtr<PresShell> presShell = mViewer->GetPresShell()) {
     if (RefPtr<nsPresContext> presContext = presShell->GetPresContext()) {
       if (RefPtr<nsRefreshDriver> driver = presContext->RefreshDriver()) {
@@ -193,23 +216,27 @@ void SVGDocumentWrapper::TickRefreshDriver() {
 NS_IMETHODIMP
 SVGDocumentWrapper::OnDataAvailable(nsIRequest* aRequest, nsIInputStream* inStr,
                                     uint64_t sourceOffset, uint32_t count) {
-  return mListener->OnDataAvailable(aRequest, inStr, sourceOffset, count);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  return listener->OnDataAvailable(aRequest, inStr, sourceOffset, count);
 }
 
 /** nsIRequestObserver methods **/
 
 NS_IMETHODIMP
-SVGDocumentWrapper::OnStartRequest(nsIRequest* aRequest) {
+SVGDocumentWrapper::OnStartRequest(nsIRequest* aRequest)
+    MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   nsresult rv = SetupViewer(aRequest, getter_AddRefs(mViewer),
                             getter_AddRefs(mLoadGroup));
 
-  if (NS_SUCCEEDED(rv) && NS_SUCCEEDED(mListener->OnStartRequest(aRequest))) {
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  if (NS_SUCCEEDED(rv) && NS_SUCCEEDED(listener->OnStartRequest(aRequest))) {
     mViewer->GetDocument()->SetIsBeingUsedAsImage();
     StopAnimation();  // otherwise animations start automatically in helper doc
 
-    rv = mViewer->Init(nullptr, LayoutDeviceIntRect(), nullptr);
+    const nsCOMPtr<nsIDocumentViewer> viewer = mViewer;
+    rv = viewer->Init(nullptr, LayoutDeviceIntRect(), nullptr);
     if (NS_SUCCEEDED(rv)) {
-      rv = mViewer->Open(nullptr, nullptr);
+      rv = viewer->Open();
     }
   }
   return rv;
@@ -217,8 +244,8 @@ SVGDocumentWrapper::OnStartRequest(nsIRequest* aRequest) {
 
 NS_IMETHODIMP
 SVGDocumentWrapper::OnStopRequest(nsIRequest* aRequest, nsresult status) {
-  if (mListener) {
-    mListener->OnStopRequest(aRequest, status);
+  if (nsCOMPtr<nsIStreamListener> listener = mListener) {
+    listener->OnStopRequest(aRequest, status);
     mListener = nullptr;
   }
 
@@ -228,10 +255,10 @@ SVGDocumentWrapper::OnStopRequest(nsIRequest* aRequest, nsresult status) {
 /** nsIObserver Methods **/
 NS_IMETHODIMP
 SVGDocumentWrapper::Observe(nsISupports* aSubject, const char* aTopic,
-                            const char16_t* aData) {
+                            const char16_t* aData) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   if (!strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
     // Sever ties from rendering observers to helper-doc's root SVG node
-    SVGSVGElement* svgElem = GetRootSVGElem();
+    SVGSVGElement* svgElem = GetSVGRootElement();
     if (svgElem) {
       SVGObserverUtils::RemoveAllRenderingObservers(svgElem);
     }
@@ -307,7 +334,7 @@ nsresult SVGDocumentWrapper::SetupViewer(nsIRequest* aRequest,
   // For a root document, DocShell would do these sort of things
   // automatically. Since there is no DocShell for this wrapped SVG document,
   // we must set it up manually.
-  RefPtr<nsDOMNavigationTiming> timing = new nsDOMNavigationTiming(nullptr);
+  auto timing = MakeRefPtr<nsDOMNavigationTiming>(nullptr);
   timing->NotifyNavigationStart(
       nsDOMNavigationTiming::DocShellState::eInactive);
   viewer->SetNavigationTiming(timing);
@@ -334,7 +361,7 @@ void SVGDocumentWrapper::RegisterForXPCOMShutdown() {
   // until imgLoader::Shutdown, which can happen after the JAR service
   // and RDF service have been unregistered.)
   nsresult rv;
-  nsCOMPtr<nsIObserverService> obsSvc = do_GetService(OBSERVER_SVC_CID, &rv);
+  nsCOMPtr<nsIObserverService> obsSvc = components::Observer::Service(&rv);
   if (NS_FAILED(rv) || NS_FAILED(obsSvc->AddObserver(
                            this, NS_XPCOM_SHUTDOWN_OBSERVER_ID, true))) {
     NS_WARNING("Failed to register as observer of XPCOM shutdown");
@@ -348,7 +375,7 @@ void SVGDocumentWrapper::UnregisterForXPCOMShutdown() {
              "unregistering for XPCOM shutdown w/out being registered");
 
   nsresult rv;
-  nsCOMPtr<nsIObserverService> obsSvc = do_GetService(OBSERVER_SVC_CID, &rv);
+  nsCOMPtr<nsIObserverService> obsSvc = components::Observer::Service(&rv);
   if (NS_FAILED(rv) ||
       NS_FAILED(obsSvc->RemoveObserver(this, NS_XPCOM_SHUTDOWN_OBSERVER_ID))) {
     NS_WARNING("Failed to unregister as observer of XPCOM shutdown");
@@ -363,7 +390,7 @@ void SVGDocumentWrapper::FlushLayout() {
   }
 }
 
-SVGDocument* SVGDocumentWrapper::GetDocument() {
+SVGDocument* SVGDocumentWrapper::GetDocument() const {
   if (!mViewer) {
     return nullptr;
   }
@@ -374,22 +401,13 @@ SVGDocument* SVGDocumentWrapper::GetDocument() {
   return doc->AsSVGDocument();
 }
 
-SVGSVGElement* SVGDocumentWrapper::GetRootSVGElem() {
+SVGSVGElement* SVGDocumentWrapper::GetSVGRootElement() const {
   if (!mViewer) {
     return nullptr;  // Can happen during destruction
   }
 
   Document* doc = mViewer->GetDocument();
-  if (!doc) {
-    return nullptr;  // Can happen during destruction
-  }
-
-  Element* rootElem = mViewer->GetDocument()->GetRootElement();
-  if (!rootElem || !rootElem->IsSVGElement(nsGkAtoms::svg)) {
-    return nullptr;
-  }
-
-  return static_cast<SVGSVGElement*>(rootElem);
+  return doc ? doc->GetSVGRootElement() : nullptr;
 }
 
 }  // namespace image

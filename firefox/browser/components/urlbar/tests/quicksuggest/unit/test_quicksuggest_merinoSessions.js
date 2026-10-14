@@ -11,7 +11,8 @@ add_setup(async () => {
   await QuickSuggestTestUtils.ensureQuickSuggestInit({
     prefs: [
       ["suggest.quicksuggest.sponsored", true],
-      ["quicksuggest.dataCollection.enabled", true],
+      ["quicksuggest.online.available", true],
+      ["quicksuggest.online.enabled", true],
     ],
   });
 });
@@ -19,7 +20,7 @@ add_setup(async () => {
 // In a single engagement, all requests should use the same session ID and the
 // sequence number should be incremented.
 add_task(async function singleEngagement() {
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
 
   for (let i = 0; i < 3; i++) {
     let searchString = "search" + i;
@@ -58,7 +59,7 @@ add_task(async function manyEngagements_abandonment() {
 });
 
 async function doManyEngagementsTest(state) {
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
 
   for (let i = 0; i < 3; i++) {
     let searchString = "search" + i;
@@ -84,7 +85,7 @@ async function doManyEngagementsTest(state) {
 // When a search is canceled after the request is sent and before the Merino
 // response is received, the sequence number should still be incremented.
 add_task(async function canceledQueries() {
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
 
   for (let i = 0; i < 3; i++) {
     // Send the first response after a delay to make sure the client will not
@@ -146,18 +147,22 @@ function endEngagement({ controller, context = null, state = "engagement" }) {
     isPrivate: false,
   });
   let details = { selIndex: -1, result: { payload: {} } };
+  let providersManager = ProvidersManager.getInstanceForSap("urlbar");
+  let quickSuggestProviderInstance = providersManager.getProvider(
+    UrlbarProviderQuickSuggest.name
+  );
 
   switch (state) {
     case "engagement":
-      UrlbarProviderQuickSuggest.onEngagement(context, controller, details);
-      UrlbarProviderQuickSuggest.onSearchSessionEnd(
+      quickSuggestProviderInstance.onEngagement(context, controller, details);
+      quickSuggestProviderInstance.onSearchSessionEnd(
         context,
         controller,
         details
       );
       break;
     case "abandonment":
-      UrlbarProviderQuickSuggest.onSearchSessionEnd(
+      quickSuggestProviderInstance.onSearchSessionEnd(
         context,
         controller,
         details

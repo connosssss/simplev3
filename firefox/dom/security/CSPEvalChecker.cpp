@@ -1,18 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/CSPEvalChecker.h"
+
+#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/dom/PolicyContainer.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRunnable.h"
-#include "mozilla/ErrorResult.h"
-#include "nsGlobalWindowInner.h"
+#include "nsCOMPtr.h"
 #include "nsContentSecurityUtils.h"
 #include "nsContentUtils.h"
-#include "nsCOMPtr.h"
+#include "nsGlobalWindowInner.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -33,14 +33,12 @@ nsresult CheckInternal(nsIContentSecurityPolicy* aCSP,
   *aAllowed = false;
 
   // This is the non-CSP check for gating eval() use in the SystemPrincipal
-#if !defined(ANDROID)
   JSContext* cx = nsContentUtils::GetCurrentJSContext();
   if (!nsContentSecurityUtils::IsEvalAllowed(
           cx, aSubjectPrincipal->IsSystemPrincipal(), aExpression)) {
     *aAllowed = false;
     return NS_OK;
   }
-#endif
 
   if (!aCSP) {
     *aAllowed = true;
@@ -124,7 +122,8 @@ nsresult CSPEvalChecker::CheckForWindow(JSContext* aCx,
   nsresult rv = NS_OK;
 
   auto location = JSCallingLocation::Get(aCx);
-  nsCOMPtr<nsIContentSecurityPolicy> csp = doc->GetCsp();
+  nsCOMPtr<nsIContentSecurityPolicy> csp =
+      PolicyContainer::GetCSP(doc->GetPolicyContainer());
   rv = CheckInternal(csp, nullptr /* no CSPEventListener for window */,
                      doc->NodePrincipal(), aExpression, location, aAllowEval);
   if (NS_WARN_IF(NS_FAILED(rv))) {

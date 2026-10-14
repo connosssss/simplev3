@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,6 +9,7 @@
 #include "mozilla/ErrorResult.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/DOMStringList.h"
 #include "mozilla/dom/LocationBase.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsString.h"
@@ -22,6 +21,10 @@ class nsIURI;
 class nsPIDOMWindowInner;
 
 namespace mozilla::dom {
+
+// Serializes principals to strings for location.ancestorOrigin purposes.
+nsTArray<nsString> ProduceAncestorOriginsList(
+    const nsTArray<nsCOMPtr<nsIPrincipal>>& aPrincipals);
 
 //*****************************************************************************
 // Location: Script "location" object
@@ -40,6 +43,7 @@ class Location final : public nsISupports,
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Location)
 
   // WebIDL API:
+  MOZ_CAN_RUN_SCRIPT
   void Assign(const nsACString& aUrl, nsIPrincipal& aSubjectPrincipal,
               ErrorResult& aError);
 
@@ -63,44 +67,54 @@ class Location final : public nsISupports,
   void GetProtocol(nsACString& aProtocol, nsIPrincipal& aSubjectPrincipal,
                    ErrorResult& aError);
 
+  MOZ_CAN_RUN_SCRIPT
   void SetProtocol(const nsACString& aProtocol, nsIPrincipal& aSubjectPrincipal,
                    ErrorResult& aError);
 
   void GetHost(nsACString& aHost, nsIPrincipal& aSubjectPrincipal,
                ErrorResult& aError);
 
+  MOZ_CAN_RUN_SCRIPT
   void SetHost(const nsACString& aHost, nsIPrincipal& aSubjectPrincipal,
                ErrorResult& aError);
 
   void GetHostname(nsACString& aHostname, nsIPrincipal& aSubjectPrincipal,
                    ErrorResult& aError);
 
+  MOZ_CAN_RUN_SCRIPT
   void SetHostname(const nsACString& aHostname, nsIPrincipal& aSubjectPrincipal,
                    ErrorResult& aError);
 
   void GetPort(nsACString& aPort, nsIPrincipal& aSubjectPrincipal,
                ErrorResult& aError);
 
+  MOZ_CAN_RUN_SCRIPT
   void SetPort(const nsACString& aPort, nsIPrincipal& aSubjectPrincipal,
                ErrorResult& aError);
 
   void GetPathname(nsACString& aPathname, nsIPrincipal& aSubjectPrincipal,
                    ErrorResult& aError);
 
+  MOZ_CAN_RUN_SCRIPT
   void SetPathname(const nsACString& aPathname, nsIPrincipal& aSubjectPrincipal,
                    ErrorResult& aError);
 
   void GetSearch(nsACString& aSeach, nsIPrincipal& aSubjectPrincipal,
                  ErrorResult& aError);
 
+  MOZ_CAN_RUN_SCRIPT
   void SetSearch(const nsACString& aSeach, nsIPrincipal& aSubjectPrincipal,
                  ErrorResult& aError);
 
   void GetHash(nsACString& aHash, nsIPrincipal& aSubjectPrincipal,
                ErrorResult& aError);
 
+  MOZ_CAN_RUN_SCRIPT
   void SetHash(const nsACString& aHash, nsIPrincipal& aSubjectPrincipal,
                ErrorResult& aError);
+
+  RefPtr<DOMStringList> GetAncestorOrigins(nsIPrincipal& aSubjectPrincipal,
+                                           ErrorResult& aRv);
 
   nsPIDOMWindowInner* GetParentObject() const { return mInnerWindow; }
 
@@ -130,6 +144,7 @@ class Location final : public nsISupports,
 
   nsCString mCachedHash;
   nsCOMPtr<nsPIDOMWindowInner> mInnerWindow;
+  RefPtr<DOMStringList> mRelevantDocNullAncestorOriginsList;
 };
 
 }  // namespace mozilla::dom

@@ -56,6 +56,15 @@ const PingServer = {
     return this._httpServer.identity.primaryHost;
   },
 
+  // The server's URL using the IPv4 loopback address explicitly rather than
+  // "localhost". Tests that point Telemetry at a stopped server should use this
+  // so the connection is refused immediately: "localhost" may resolve to ::1
+  // first and stall on the connection timeout (notably on Windows), making each
+  // failing ping send take several seconds.
+  get ipv4URL() {
+    return "http://127.0.0.1:" + this.port;
+  },
+
   get started() {
     return this._started;
   },
@@ -141,8 +150,9 @@ const PingServer = {
 
 /**
  * Decode the payload of an HTTP request into a ping.
- * @param {Object} request The data representing an HTTP request (nsIHttpRequest).
- * @return {Object} The decoded ping payload.
+ *
+ * @param {object} request The data representing an HTTP request (nsIHttpRequest).
+ * @return {object} The decoded ping payload.
  */
 function decodeRequestPayload(request) {
   let s = request.bodyInputStream;
@@ -507,16 +517,6 @@ function generateString(length) {
   return new Array(length + 1).join("a");
 }
 
-// Short-hand for retrieving the histogram with that id.
-function getHistogram(histogramId) {
-  return Telemetry.getHistogramById(histogramId);
-}
-
-// Short-hand for retrieving the snapshot of the Histogram with that id.
-function getSnapshot(histogramId) {
-  return Telemetry.getHistogramById(histogramId).snapshot();
-}
-
 // Helper for setting an empty list of Environment preferences to watch.
 function setEmptyPrefWatchlist() {
   const { TelemetryEnvironment } = ChromeUtils.importESModule(
@@ -525,6 +525,22 @@ function setEmptyPrefWatchlist() {
   return TelemetryEnvironment.onInitialized().then(() =>
     TelemetryEnvironment.testWatchPreferences(new Map())
   );
+}
+
+// macOS has the app.update.channel pref locked. Check if it needs to be
+// unlocked before proceeding with the test.
+function maybeUnlockAppUpdateChannelPref() {
+  if (Services.prefs.getDefaultBranch("").prefIsLocked("app.update.channel")) {
+    Services.prefs.getDefaultBranch("").unlockPref("app.update.channel");
+    registerCleanupFunction(() => {
+      Services.prefs.getDefaultBranch("").lockPref("app.update.channel");
+    });
+  }
+}
+
+function getDateInSeconds(date) {
+  const MS_IN_SEC = 1000;
+  return Math.floor(date / MS_IN_SEC);
 }
 
 if (runningInParent) {
@@ -577,6 +593,17 @@ if (runningInParent) {
       true
     );
   }
+
+  // Disable TOU pre-onboarding in xpcshell so Telemetry isn't gated on Browser
+  // UI.
+  const TOS_ENABLED_PREF = "browser.preonboarding.enabled";
+  const previous = Services.prefs.getBoolPref(TOS_ENABLED_PREF, false);
+
+  Services.prefs.setBoolPref(TOS_ENABLED_PREF, false);
+
+  registerCleanupFunction(() => {
+    Services.prefs.setBoolPref(TOS_ENABLED_PREF, previous);
+  });
 
   fakePingSendTimer(
     callback => {

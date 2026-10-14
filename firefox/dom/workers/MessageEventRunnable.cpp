@@ -1,16 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "MessageEventRunnable.h"
 
+#include "WorkerScope.h"
 #include "mozilla/dom/MessageEvent.h"
 #include "mozilla/dom/MessageEventBinding.h"
 #include "mozilla/dom/RootedDictionary.h"
 #include "nsQueryObject.h"
-#include "WorkerScope.h"
 
 namespace mozilla::dom {
 
@@ -19,10 +17,9 @@ MessageEventRunnable::MessageEventRunnable(WorkerPrivate* aWorkerPrivate)
       StructuredCloneHolder(CloningSupported, TransferringSupported,
                             StructuredCloneScope::SameProcess) {}
 
-bool MessageEventRunnable::DispatchDOMEvent(JSContext* aCx,
-                                            WorkerPrivate* aWorkerPrivate,
-                                            DOMEventTargetHelper* aTarget,
-                                            bool aIsMainThread) {
+bool MessageEventRunnable::DispatchDOMEvent(
+    JSContext* aCx, WorkerPrivate* aWorkerPrivate,
+    RefPtr<DOMEventTargetHelper> aTarget, bool aIsMainThread) {
   nsCOMPtr<nsIGlobalObject> parent = aTarget->GetParentObject();
 
   // For some workers without window, parent is null and we try to find it
@@ -56,7 +53,7 @@ bool MessageEventRunnable::DispatchDOMEvent(JSContext* aCx,
     cloneDataPolicy.allowSharedMemoryObjects();
   }
 
-  Read(parent, aCx, &messageData, cloneDataPolicy, rv);
+  Read(aCx, &messageData, cloneDataPolicy, rv);
 
   if (NS_WARN_IF(rv.Failed())) {
     DispatchError(aCx, aTarget);
@@ -84,16 +81,15 @@ bool MessageEventRunnable::DispatchDOMEvent(JSContext* aCx,
 bool MessageEventRunnable::WorkerRun(JSContext* aCx,
                                      WorkerPrivate* aWorkerPrivate) {
   MOZ_ASSERT(aWorkerPrivate == GetWorkerPrivateFromContext(aCx));
-  MOZ_ASSERT(aWorkerPrivate->GlobalScope());
 
-  // If the worker start shutting down, don't dispatch the message event.
-  if (NS_FAILED(
-          aWorkerPrivate->GlobalScope()->CheckCurrentGlobalCorrectness())) {
+  // If the worker global failed to be created or the worker start shutting
+  // down, don't dispatch the message event.
+  WorkerGlobalScope* globalScope = aWorkerPrivate->GlobalScope();
+  if (!globalScope || NS_FAILED(globalScope->CheckCurrentGlobalCorrectness())) {
     return true;
   }
 
-  return DispatchDOMEvent(aCx, aWorkerPrivate, aWorkerPrivate->GlobalScope(),
-                          false);
+  return DispatchDOMEvent(aCx, aWorkerPrivate, globalScope, false);
 }
 
 void MessageEventRunnable::DispatchError(JSContext* aCx,
@@ -117,7 +113,7 @@ MessageEventToParentRunnable::MessageEventToParentRunnable(
 
 bool MessageEventToParentRunnable::DispatchDOMEvent(
     JSContext* aCx, WorkerPrivate* aWorkerPrivate,
-    DOMEventTargetHelper* aTarget, bool aIsMainThread) {
+    RefPtr<DOMEventTargetHelper> aTarget, bool aIsMainThread) {
   nsCOMPtr<nsIGlobalObject> parent = aTarget->GetParentObject();
 
   // For some workers without window, parent is null and we try to find it
@@ -151,7 +147,7 @@ bool MessageEventToParentRunnable::DispatchDOMEvent(
     cloneDataPolicy.allowSharedMemoryObjects();
   }
 
-  Read(parent, aCx, &messageData, cloneDataPolicy, rv);
+  Read(aCx, &messageData, cloneDataPolicy, rv);
 
   if (NS_WARN_IF(rv.Failed())) {
     DispatchError(aCx, aTarget);

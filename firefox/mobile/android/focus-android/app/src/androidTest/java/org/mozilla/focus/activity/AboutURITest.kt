@@ -4,37 +4,29 @@
 
 package org.mozilla.focus.activity
 
-import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.mozilla.focus.activity.robots.searchScreen
 import org.mozilla.focus.helpers.FeatureSettingsHelper
+import org.mozilla.focus.helpers.FocusTestRule
 import org.mozilla.focus.helpers.MainActivityFirstrunTestRule
-import org.mozilla.focus.helpers.MockWebServerHelper
-import org.mozilla.focus.helpers.TestSetup
 
-class AboutURITest : TestSetup() {
-    private lateinit var webServer: MockWebServer
+class AboutURITest {
     private val featureSettingsHelper = FeatureSettingsHelper()
 
-    @get:Rule
-    val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
+    @get:Rule(order = 0) val focusTestRule: FocusTestRule = FocusTestRule()
+
+    @get:Rule val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
 
     @Before
-    override fun setUp() {
-        super.setUp()
+    fun setUp() {
         featureSettingsHelper.setCfrForTrackingProtectionEnabled(false)
-        webServer = MockWebServer().apply {
-            dispatcher = MockWebServerHelper.AndroidAssetDispatcher()
-            start()
-        }
     }
 
     @After
     fun tearDown() {
-        webServer.shutdown()
         featureSettingsHelper.resetAllFeatureFlags()
     }
 
@@ -42,19 +34,19 @@ class AboutURITest : TestSetup() {
     fun verifyWebCompatPageIsLoadingTest() {
         val webCompatPage = "about:compat"
 
-        searchScreen {
-        }.loadPage(webCompatPage) {
-            verifyPageURL(webCompatPage)
+        searchScreen {}
+            .loadPage(webCompatPage) {
+                verifyPageURL(webCompatPage)
 
-            verifyPageContent("More Information: Bug")
-            verifyPageContent("Interventions")
-            verifyPageContent("Disable", alsoClick = true)
-            verifyPageContent("Enable", alsoClick = true)
-            verifyPageContent("Disable", alsoClick = true)
+                verifyPageContent("More Information: Bug")
+                verifyPageContent("Interventions")
+                verifyPageContent("Disable", alsoClick = true)
+                verifyPageContent("Enable", alsoClick = true)
+                verifyPageContent("Disable", alsoClick = true)
 
-            verifyPageContent("SmartBlock Fixes", alsoClick = true)
-            verifyPageContent("More Information: Bug")
-            verifyPageContent("Disable")
-        }
+                verifyPageContent("SmartBlock Fixes", alsoClick = true)
+                verifyPageContent("More Information: Bug")
+                verifyPageContent("Disable")
+            }
     }
 }

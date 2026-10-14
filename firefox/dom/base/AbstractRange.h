@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,13 +7,13 @@
 
 #include <cstdint>
 #include <ostream>
+
 #include "ErrorList.h"
 #include "js/RootingAPI.h"
-#include "mozilla/Assertions.h"
-#include "mozilla/Maybe.h"
 #include "mozilla/RangeBoundary.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/WeakPtr.h"
+#include "mozilla/dom/RangeBinding.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsISupports.h"
 #include "nsWrapperCache.h"
@@ -23,11 +21,14 @@
 class JSObject;
 class nsIContent;
 class nsINode;
-class nsRange;
 struct JSContext;
 
-namespace mozilla::dom {
+namespace mozilla {
+class RectCallback;
+
+namespace dom {
 class Document;
+class Range;
 class Selection;
 class StaticRange;
 class HTMLSlotElement;
@@ -42,9 +43,12 @@ class AbstractRange : public nsISupports,
       mozilla::dom::AllowRangeCrossShadowBoundary;
 
  protected:
-  explicit AbstractRange(nsINode* aNode, bool aIsDynamicRange,
+  explicit AbstractRange(nsINode* aNode, bool aIsRange,
                          TreeKind aBoundaryTreeKind);
   virtual ~AbstractRange();
+
+  using DOMRect = mozilla::dom::DOMRect;
+  using DOMRectList = mozilla::dom::DOMRectList;
 
  public:
   enum class IsUnlinking : bool { No, Yes };
@@ -72,7 +76,7 @@ class AbstractRange : public nsISupports,
   const RangeBoundary& EndRef() const { return mEnd; }
   const RangeBoundary& MayCrossShadowBoundaryEndRef() const;
 
-  nsIContent* GetChildAtStartOffset() const {
+  [[nodiscard]] inline nsIContent* GetChildAtStartOffset() const {
     return mStart.GetChildAtOffset();
   }
   nsIContent* GetMayCrossShadowBoundaryChildAtStartOffset() const;
@@ -124,6 +128,33 @@ class AbstractRange : public nsISupports,
 
   bool MayCrossShadowBoundary() const;
 
+  already_AddRefed<DOMRect> GetBoundingClientRect(bool aClampToEdge = true,
+                                                  bool aFlushLayout = true);
+  already_AddRefed<DOMRectList> GetClientRects(bool aClampToEdge = true,
+                                               bool aFlushLayout = true);
+  // ChromeOnly
+  already_AddRefed<DOMRectList> GetAllowCrossShadowBoundaryClientRects(
+      bool aClampToEdge = true, bool aFlushLayout = true);
+
+  void GetClientRectsAndTexts(mozilla::dom::ClientRectsAndTexts& aResult,
+                              ErrorResult& aErr);
+  /**
+   * Invokes aCallback.AddRect() for each client rect of this range.
+   * Layout must have been flushed by the caller.
+   */
+  void CollectClientRects(mozilla::RectCallback& aCallback,
+                          bool aClampToEdge = true) const;
+
+  /**
+   * This helper function gets rects and correlated text for the given range.
+   * @param aTextList optional where nullptr = don't retrieve text
+   */
+  static void CollectClientRectsAndText(
+      mozilla::RectCallback* aCollector,
+      mozilla::dom::Sequence<nsString>* aTextList, AbstractRange* aRange,
+      nsINode* aStartContainer, uint32_t aStartOffset, nsINode* aEndContainer,
+      uint32_t aEndOffset, bool aClampToEdge, bool aFlushLayout);
+
   Document* GetComposedDocOfContainers() const {
     return mStart.GetComposedDoc();
   }
@@ -142,6 +173,98 @@ class AbstractRange : public nsISupports,
   }
   uint32_t MayCrossShadowBoundaryEndOffset() const;
 
+  /**
+   * Return the stored start offset only when it's valid in the current DOM.
+   * Otherwise, return Nothing.
+   */
+  [[nodiscard]] inline Maybe<uint32_t> ValidStartOffset() const {
+    return mStart.Offset(RangeBoundary::OffsetFilter::kValidOffsets);
+  }
+  /**
+   * Return the stored end offset only when it's valid in the current DOM.
+   * Otherwise, return Nothing.
+   */
+  [[nodiscard]] inline Maybe<uint32_t> ValidEndOffset() const {
+    return mEnd.Offset(RangeBoundary::OffsetFilter::kValidOffsets);
+  }
+
+  /**
+   * Accessors with RangeBoundarySide. These members can be template methods
+   * too. However, templating the handlers for start and end boundaries means
+   * that we'd run 2 different paths for them. If you call both handlers in a
+   * place in a hot path, each templated handler may be considered as not in a
+   * hot path because the number of calling is half comparing with methods
+   * checking RangeBoundarySide at the runtime. Actually, making these accessors
+   * and the handlers of Range::CharacterDataChanged() templated got worse
+   * performance on Windows PGO build. Therefore, we now have only dynamic check
+   * accessors only.
+   */
+
+  /**
+   * Return the result of StartRef() or EndRef().
+   */
+  [[nodiscard]] const RangeBoundary& BoundaryRef(
+      RangeBoundarySide aSide) const {
+    return aSide == RangeBoundarySide::Start ? StartRef() : EndRef();
+  }
+  /**
+   * Return the result of GetChildAtStartOffset() or GetChildAtEndOffset().
+   */
+  [[nodiscard]] nsIContent* GetChildAtOffset(RangeBoundarySide aSide) const {
+    return aSide == RangeBoundarySide::Start ? GetChildAtStartOffset()
+                                             : GetChildAtEndOffset();
+  }
+  /**
+   * Return the result of GetMayCrossShadowBoundaryChildAtStartOffset() or
+   * GetMayCrossShadowBoundaryChildAtEndOffset().
+   */
+  [[nodiscard]] nsIContent* GetMayCrossShadowBoundaryChildAtOffset(
+      RangeBoundarySide aSide) const {
+    return aSide == RangeBoundarySide::Start
+               ? GetMayCrossShadowBoundaryChildAtStartOffset()
+               : GetMayCrossShadowBoundaryChildAtEndOffset();
+  }
+  /**
+   * Return the result of GetStartContainer() or GetEndContainer().
+   */
+  [[nodiscard]] nsINode* GetContainer(RangeBoundarySide aSide) const {
+    return aSide == RangeBoundarySide::Start ? GetStartContainer()
+                                             : GetEndContainer();
+  }
+  /**
+   * Return the result of GetMayCrossShadowBoundaryStartContainer() or
+   * GetMayCrossShadowBoundaryEndContainer().
+   */
+  [[nodiscard]] nsINode* GetMayCrossShadowBoundaryContainer(
+      RangeBoundarySide aSide) const {
+    return aSide == RangeBoundarySide::Start
+               ? GetMayCrossShadowBoundaryStartContainer()
+               : GetMayCrossShadowBoundaryEndContainer();
+  }
+  /**
+   * Return the result of StartOffset() or EndOffset().
+   */
+  [[nodiscard]] uint32_t Offset(RangeBoundarySide aSide) const {
+    return aSide == RangeBoundarySide::Start ? StartOffset() : EndOffset();
+  }
+  /**
+   * Return the result of MayCrossShadowBoundaryStartOffset() or
+   * MayCrossShadowBoundaryEndOffset().
+   */
+  [[nodiscard]] uint32_t MayCrossShadowBoundaryOffset(
+      RangeBoundarySide aSide) const {
+    return aSide == RangeBoundarySide::Start
+               ? MayCrossShadowBoundaryStartOffset()
+               : MayCrossShadowBoundaryEndOffset();
+  }
+  /**
+   * Return the result of ValidStartOffset() or ValidEndOffset().
+   */
+  [[nodiscard]] Maybe<uint32_t> ValidOffset(RangeBoundarySide aSide) const {
+    return aSide == RangeBoundarySide::Start ? ValidStartOffset()
+                                             : ValidEndOffset();
+  }
+
   bool Collapsed() const {
     return !mIsPositioned || (mStart.GetContainer() == mEnd.GetContainer() &&
                               StartOffset() == EndOffset());
@@ -156,10 +279,10 @@ class AbstractRange : public nsISupports,
   bool HasEqualBoundaries(const AbstractRange& aOther) const {
     return (mStart == aOther.mStart) && (mEnd == aOther.mEnd);
   }
-  bool IsDynamicRange() const { return mIsDynamicRange; }
-  bool IsStaticRange() const { return !mIsDynamicRange; }
-  inline nsRange* AsDynamicRange();
-  inline const nsRange* AsDynamicRange() const;
+  bool IsRange() const { return mIsRange; }
+  bool IsStaticRange() const { return !mIsRange; }
+  inline Range* AsRange();
+  inline const Range* AsRange() const;
   inline StaticRange* AsStaticRange();
   inline const StaticRange* AsStaticRange() const;
 
@@ -169,8 +292,7 @@ class AbstractRange : public nsISupports,
    */
   bool IsInAnySelection() const { return !mSelections.IsEmpty(); }
 
-  MOZ_CAN_RUN_SCRIPT void RegisterSelection(
-      mozilla::dom::Selection& aSelection);
+  [[nodiscard]] nsresult RegisterSelection(mozilla::dom::Selection& aSelection);
 
   void UnregisterSelection(const mozilla::dom::Selection& aSelection,
                            IsUnlinking aIsUnlinking = IsUnlinking::No);
@@ -190,6 +312,13 @@ class AbstractRange : public nsISupports,
    */
   static bool IsRootUAWidget(const nsINode* aRoot);
 
+  /**
+   * Return a shrunken range computed by
+   * SelectionMoveUtils::GetFirstVisiblePointAtLeaf() and
+   * SelectionMoveUtils::GetLastVisiblePointAtLeaf().
+   */
+  already_AddRefed<StaticRange> GetShrunkenRangeToVisibleLeaves() const;
+
  protected:
   template <typename SPT, typename SRT, typename EPT, typename ERT,
             typename RangeType>
@@ -204,19 +333,29 @@ class AbstractRange : public nsISupports,
 
   void Init(nsINode* aNode);
 
+  friend auto format_as(const AbstractRange& aRange) {
+    if (aRange.MayCrossShadowBoundary()) {
+      return fmt::format(
+          "{{ MayCrossShadowBoundaryStartRef()={}, mIsGenerated={}, "
+          "mCalledByJS={}, mIsRange={} }}",
+          aRange.Collapsed()
+              ? fmt::format("MayCrossShadowBoundaryEndRef()={}",
+                            aRange.MayCrossShadowBoundaryStartRef())
+              : fmt::format("{}, MayCrossShadowBoundaryEndRef()={}",
+                            aRange.MayCrossShadowBoundaryStartRef(),
+                            aRange.MayCrossShadowBoundaryEndRef()),
+          aRange.mIsGenerated, aRange.mIsPositioned, aRange.mIsRange);
+    }
+    return fmt::format(
+        "{{ mStart={}, mIsGenerated={}, mCalledByJS={}, mIsRange={} }}",
+        aRange.Collapsed()
+            ? fmt::format("mEnd={}", aRange.mStart)
+            : fmt::format("{}, mEnd={}", aRange.mStart, aRange.mEnd),
+        aRange.mIsGenerated, aRange.mIsPositioned, aRange.mIsRange);
+  }
   friend std::ostream& operator<<(std::ostream& aStream,
                                   const AbstractRange& aRange) {
-    if (aRange.Collapsed()) {
-      aStream << "{ mStart=mEnd=" << aRange.mStart;
-    } else {
-      aStream << "{ mStart=" << aRange.mStart << ", mEnd=" << aRange.mEnd;
-    }
-    return aStream << ", mIsGenerated="
-                   << (aRange.mIsGenerated ? "true" : "false")
-                   << ", mCalledByJS="
-                   << (aRange.mIsPositioned ? "true" : "false")
-                   << ", mIsDynamicRange="
-                   << (aRange.mIsDynamicRange ? "true" : "false") << " }";
+    return aStream << format_as(aRange);
   }
 
   /**
@@ -236,10 +375,11 @@ class AbstractRange : public nsISupports,
 
   static void UpdateDescendantsInFlattenedTree(nsINode& aNode,
                                                bool aMarkDescendants);
-  friend void mozilla::SlotAssignedNodeAdded(dom::HTMLSlotElement* aSlot,
-                                             nsIContent& aAssignedNode);
-  friend void mozilla::SlotAssignedNodeRemoved(dom::HTMLSlotElement* aSlot,
-                                               nsIContent& aUnassignedNode);
+  friend class HTMLSlotElement;
+
+  already_AddRefed<DOMRectList> GetClientRectsInner(
+      AllowRangeCrossShadowBoundary = AllowRangeCrossShadowBoundary::No,
+      bool aClampToEdge = true, bool aFlushLayout = true);
 
  private:
   void ClearForReuse();
@@ -256,20 +396,21 @@ class AbstractRange : public nsISupports,
   nsCOMPtr<nsINode> mRegisteredClosestCommonInclusiveAncestor;
 
   // `true` if `mStart` and `mEnd` are set for StaticRange or set and valid
-  // for nsRange.
+  // for Range.
   bool mIsPositioned;
 
-  // Used by nsRange, but this should have this for minimizing the size.
+  // Used by Range, but this should have this for minimizing the size.
   bool mIsGenerated;
-  // Used by nsRange, but this should have this for minimizing the size.
+  // Used by Range, but this should have this for minimizing the size.
   bool mCalledByJS;
 
-  // true if this is an `nsRange` object.
-  const bool mIsDynamicRange;
+  // true if this is a `Range` object.
+  const bool mIsRange;
 
   static bool sHasShutDown;
 };
 
-}  // namespace mozilla::dom
+}  // namespace dom
+}  // namespace mozilla
 
 #endif  // #ifndef mozilla_dom_AbstractRange_h

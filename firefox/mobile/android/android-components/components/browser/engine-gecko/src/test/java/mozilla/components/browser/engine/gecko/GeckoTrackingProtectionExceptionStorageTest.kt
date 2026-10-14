@@ -5,8 +5,6 @@ package mozilla.components.browser.engine.gecko
 
 import android.os.Looper.getMainLooper
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import mozilla.components.browser.engine.gecko.content.blocking.GeckoTrackingProtectionException
 import mozilla.components.browser.engine.gecko.permission.geckoContentPermission
 import mozilla.components.concept.engine.EngineSession
@@ -45,7 +43,6 @@ class GeckoTrackingProtectionExceptionStorageTest {
         runtime = mock()
         whenever(runtime.settings).thenReturn(mock())
         storage = spy(GeckoTrackingProtectionExceptionStorage(runtime))
-        storage.scope = CoroutineScope(Dispatchers.Main)
     }
 
     @Test
@@ -67,7 +64,7 @@ class GeckoTrackingProtectionExceptionStorageTest {
                 override fun onExcludedOnTrackingProtectionChange(excluded: Boolean) {
                     excludedOnTrackingProtection = excluded
                 }
-            },
+            }
         )
 
         storage.add(session)
@@ -95,7 +92,7 @@ class GeckoTrackingProtectionExceptionStorageTest {
                 override fun onExcludedOnTrackingProtectionChange(excluded: Boolean) {
                     excludedOnTrackingProtection = excluded
                 }
-            },
+            }
         )
 
         storage.add(session, persistInPrivateMode = true)
@@ -120,7 +117,7 @@ class GeckoTrackingProtectionExceptionStorageTest {
                 override fun onExcludedOnTrackingProtectionChange(excluded: Boolean) {
                     excludedOnTrackingProtection = excluded
                 }
-            },
+            }
         )
 
         storage.remove(session)
@@ -166,8 +163,7 @@ class GeckoTrackingProtectionExceptionStorageTest {
 
     @Test
     fun `WHEN removing an exception by URL THEN try to find it in the gecko store and remove it`() {
-        val contentPermission =
-            geckoContentPermission("https://example.com/", PERMISSION_TRACKING, VALUE_ALLOW)
+        val contentPermission = geckoContentPermission("https://example.com/", PERMISSION_TRACKING, VALUE_ALLOW)
         val storageController = mock<StorageController>()
         val geckoResult = GeckoResult<List<ContentPermission>>()
 
@@ -187,8 +183,7 @@ class GeckoTrackingProtectionExceptionStorageTest {
         val mockGeckoSession = mock<GeckoSession>()
         val session = GeckoEngineSession(runtime, geckoSessionProvider = { mockGeckoSession })
 
-        val contentPermission =
-            geckoContentPermission("https://example.com/", PERMISSION_TRACKING, VALUE_ALLOW)
+        val contentPermission = geckoContentPermission("https://example.com/", PERMISSION_TRACKING, VALUE_ALLOW)
         val storageController = mock<StorageController>()
         val geckoResult = GeckoResult<List<ContentPermission>>()
         var excludedOnTrackingProtection = true
@@ -198,7 +193,7 @@ class GeckoTrackingProtectionExceptionStorageTest {
                 override fun onExcludedOnTrackingProtectionChange(excluded: Boolean) {
                     excludedOnTrackingProtection = excluded
                 }
-            },
+            }
         )
 
         whenever(runtime.storageController).thenReturn(storageController)
@@ -215,8 +210,7 @@ class GeckoTrackingProtectionExceptionStorageTest {
 
     @Test
     fun `WHEN querying all exceptions THEN all the exceptions in the gecko store should be fetched`() {
-        val contentPermission =
-            geckoContentPermission("https://example.com/", PERMISSION_TRACKING, VALUE_ALLOW)
+        val contentPermission = geckoContentPermission("https://example.com/", PERMISSION_TRACKING, VALUE_ALLOW)
         val storageController = mock<StorageController>()
         val geckoResult = GeckoResult<List<ContentPermission>>()
         var exceptionList: List<TrackingProtectionException>? = null
@@ -232,7 +226,7 @@ class GeckoTrackingProtectionExceptionStorageTest {
         shadowOf(getMainLooper()).idle()
 
         assertTrue(exceptionList!!.isNotEmpty())
-        val exception = exceptionList!!.first() as GeckoTrackingProtectionException
+        val exception = exceptionList.first() as GeckoTrackingProtectionException
 
         assertEquals("https://example.com/", exception.url)
         assertEquals(contentPermission, exception.contentPermission)
@@ -243,8 +237,7 @@ class GeckoTrackingProtectionExceptionStorageTest {
         val session = mock<GeckoEngineSession>()
         val mockGeckoSession = mock<GeckoSession>()
         var containsException = false
-        val contentPermission =
-            geckoContentPermission("https://example.com/", PERMISSION_TRACKING, VALUE_ALLOW)
+        val contentPermission = geckoContentPermission("https://example.com/", PERMISSION_TRACKING, VALUE_ALLOW)
         val storageController = mock<StorageController>()
         val geckoResult = GeckoResult<List<ContentPermission>>()
 

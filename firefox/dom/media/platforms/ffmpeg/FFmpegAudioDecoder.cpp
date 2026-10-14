@@ -1,16 +1,15 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "FFmpegAudioDecoder.h"
-#include "FFmpegUtils.h"
+
 #include "AudioSampleFormat.h"
+#include "BufferReader.h"
 #include "FFmpegLog.h"
+#include "FFmpegUtils.h"
 #include "TimeUnits.h"
 #include "VideoUtils.h"
-#include "BufferReader.h"
 #include "libavutil/dict.h"
 #include "libavutil/samplefmt.h"
 #if defined(FFVPX_VERSION)
@@ -18,14 +17,21 @@
 #endif
 #include "mozilla/StaticPrefs_media.h"
 
+#ifdef MOZ_WIDGET_ANDROID
+#  include "ffvpx/hwcontext_mediacodec.h"
+#  include "ffvpx/mediacodec.h"
+#endif
+
 namespace mozilla {
 
 using TimeUnit = media::TimeUnit;
 
 FFmpegAudioDecoder<LIBAV_VER>::FFmpegAudioDecoder(
-    FFmpegLibWrapper* aLib, const CreateDecoderParams& aDecoderParams)
-    : FFmpegDataDecoder(aLib, GetCodecId(aDecoderParams.AudioConfig().mMimeType,
-                                         aDecoderParams.AudioConfig())),
+    const FFmpegLibWrapper* aLib, const CreateDecoderParams& aDecoderParams)
+    : FFmpegDataDecoder(aLib,
+                        GetCodecId(aDecoderParams.AudioConfig().mMimeType,
+                                   aDecoderParams.AudioConfig()),
+                        aDecoderParams.mCDM),
       mAudioInfo(aDecoderParams.AudioConfig()) {
   MOZ_COUNT_CTOR(FFmpegAudioDecoder);
 
@@ -85,15 +91,23 @@ FFmpegAudioDecoder<LIBAV_VER>::FFmpegAudioDecoder(
 }
 
 RefPtr<MediaDataDecoder::InitPromise> FFmpegAudioDecoder<LIBAV_VER>::Init() {
+  AUTO_PROFILER_LABEL("FFmpegAudioDecoder::Init", MEDIA_PLAYBACK);
+
+  if (mAudioInfo.mChannels == 0 || mAudioInfo.mRate == 0) {
+    FFMPEG_LOG("Invalid audio configuration: channels={}, rate={}",
+               mAudioInfo.mChannels, mAudioInfo.mRate);
+    return InitPromise::CreateAndReject(
+        MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
+                    RESULT_DETAIL("Invalid channel count or sample rate")),
+        __func__);
+  }
+
   AVDictionary* options = nullptr;
   if (mCodecID == AV_CODEC_ID_OPUS) {
     // Opus has a special feature for stereo coding where it represent wide
     // stereo channels by 180-degree out of phase. This improves quality, but
-    // needs to be disabled when the output is downmixed to mono. Playback
-    // number of channels are set in AudioSink, using the same method
-    // `DecideAudioPlaybackChannels()`, and triggers downmix if needed.
-    if (mDefaultPlaybackDeviceMono ||
-        DecideAudioPlaybackChannels(mAudioInfo) == 1) {
+    // needs to be disabled when the output is downmixed to mono.
+    if (mDefaultPlaybackDeviceMono || AudioPlaybackChannels(mAudioInfo) == 1) {
       mLib->av_dict_set(&options, "apply_phase_inv", "false", 0);
     }
     // extradata is required for Opus when the number of channels is > 2.
@@ -102,14 +116,29 @@ RefPtr<MediaDataDecoder::InitPromise> FFmpegAudioDecoder<LIBAV_VER>::Init() {
     if (mAudioInfo.mChannels > 2 &&
         (!mExtraData || mExtraData->Length() < 10)) {
       FFMPEG_LOG(
-          "Cannot initialize decoder with %d channels without extradata of at "
+          "Cannot initialize decoder with {} channels without extradata of at "
           "least 10 bytes",
           mAudioInfo.mChannels);
       return InitPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
     }
   }
 
-  MediaResult rv = InitSWDecoder(&options);
+  MediaResult rv(NS_ERROR_NOT_AVAILABLE);
+#if defined(MOZ_WIDGET_ANDROID) && defined(USING_MOZFFVPX)
+  if ((mCDM || mCodecID == AV_CODEC_ID_AAC) &&
+      (XRE_IsRDDProcess() || XRE_IsUtilityProcess())) {
+    AVCodec* codec = FindHardwareAVCodec(mLib, mCodecID, AV_HWDEVICE_TYPE_NONE);
+    if (codec) {
+      rv = InitDecoder(codec, &options);
+      mIsMediaCodec = NS_SUCCEEDED(rv);
+    }
+  }
+
+  if (NS_FAILED(rv))
+#endif
+  {
+    rv = InitSWDecoder(&options);
+  }
 
   mLib->av_dict_free(&options);
 
@@ -162,7 +191,8 @@ static AlignedAudioBuffer CopyAndPackAudio(AVFrame* aFrame,
   } else if (aFrame->format == AV_SAMPLE_FMT_FLTP) {
     // Planar audio data. Pack it into something we can understand.
     AudioDataValue* tmp = audio.get();
-    AudioDataValue** data = reinterpret_cast<AudioDataValue**>(aFrame->data);
+    AudioDataValue** data =
+        reinterpret_cast<AudioDataValue**>(aFrame->extended_data);
     for (uint32_t frame = 0; frame < aNumAFrames; frame++) {
       for (uint32_t channel = 0; channel < aNumChannels; channel++) {
         *tmp++ = data[channel][frame];
@@ -181,7 +211,7 @@ static AlignedAudioBuffer CopyAndPackAudio(AVFrame* aFrame,
     // Planar audio data. Convert it from S16 to 32 bits float
     // and pack it into something we can understand.
     AudioDataValue* tmp = audio.get();
-    int16_t** data = reinterpret_cast<int16_t**>(aFrame->data);
+    int16_t** data = reinterpret_cast<int16_t**>(aFrame->extended_data);
     for (uint32_t frame = 0; frame < aNumAFrames; frame++) {
       for (uint32_t channel = 0; channel < aNumChannels; channel++) {
         *tmp++ = ConvertAudioSample<float>(data[channel][frame]);
@@ -200,7 +230,7 @@ static AlignedAudioBuffer CopyAndPackAudio(AVFrame* aFrame,
     // Planar audio data. Convert it from S32 to 32 bits float
     // and pack it into something we can understand.
     AudioDataValue* tmp = audio.get();
-    int32_t** data = reinterpret_cast<int32_t**>(aFrame->data);
+    int32_t** data = reinterpret_cast<int32_t**>(aFrame->extended_data);
     for (uint32_t frame = 0; frame < aNumAFrames; frame++) {
       for (uint32_t channel = 0; channel < aNumChannels; channel++) {
         *tmp++ = ConvertAudioSample<float>(data[channel][frame]);
@@ -219,7 +249,7 @@ static AlignedAudioBuffer CopyAndPackAudio(AVFrame* aFrame,
     // Planar audio data. Convert it from u8 to the expected sample-format
     // and pack it into something we can understand.
     AudioDataValue* tmp = audio.get();
-    uint8_t** data = reinterpret_cast<uint8_t**>(aFrame->data);
+    uint8_t** data = reinterpret_cast<uint8_t**>(aFrame->extended_data);
     for (uint32_t frame = 0; frame < aNumAFrames; frame++) {
       for (uint32_t channel = 0; channel < aNumChannels; channel++) {
         *tmp++ = ConvertAudioSample<float>(data[channel][frame]);
@@ -232,10 +262,52 @@ static AlignedAudioBuffer CopyAndPackAudio(AVFrame* aFrame,
 
 using ChannelLayout = AudioConfig::ChannelLayout;
 
+RefPtr<MediaDataDecoder::FlushPromise>
+FFmpegAudioDecoder<LIBAV_VER>::ProcessFlush() {
+  MOZ_ASSERT(mTaskQueue->IsOnCurrentThread());
+  mInputTimes.Clear();
+#if defined(MOZ_WIDGET_ANDROID) && defined(USING_MOZFFVPX)
+  mHasSentDrainPacket = false;
+#endif
+  return FFmpegDataDecoder::ProcessFlush();
+}
+
+TimeUnit FFmpegAudioDecoder<LIBAV_VER>::ExtractFramePts(
+    MediaRawData* aSample, const media::NullableTimeUnit& aPreviousEnd) {
+  // For software decoders implemented within ffvpx, the frame pts and the
+  // sample pts will always be the same. For platform decoders wrapped by ffvpx,
+  // for example on Android, the frame for a sample may be delayed, and will be
+  // yielded in a subsequent call. As such, we should prefer the frame pts if
+  // given, the previous frame pts plus its duration if not given, and finally
+  // the sample time if we have neither. This avoids mismatching the wrong time
+  // on a given frame.
+  const int64_t framePts = GetFramePts(mFrame);
+  if (framePts != int64_t(AV_NOPTS_VALUE)) {
+    // Try to recover original timestamp to keep sub-microsecond precision.
+    // If missing from the map, there must be a reporting error and future
+    // frames are unlikely to be correct either, so clear the map.
+    if (Maybe<TimeUnit> submitted = mInputTimes.Take(framePts)) {
+      return submitted.extract();
+    } else {
+      FFMPEG_LOG("No matching sample for pts {}, clearing input map", framePts);
+      mInputTimes.Clear();
+    }
+    return TimeUnit::FromMicroseconds(framePts);
+  }
+  if (aPreviousEnd) {
+    // ffmpeg may only stamp the first frame decoded from a packet.
+    return *aPreviousEnd;
+  }
+  FFMPEG_LOGV("Frame has no pts, using sample time and clearing input map");
+  mInputTimes.Clear();
+  return aSample->mTime;
+}
+
 MediaResult FFmpegAudioDecoder<LIBAV_VER>::PostProcessOutput(
     bool aDecoded, MediaRawData* aSample, DecodedData& aResults,
-    bool* aGotFrame, int32_t aSubmitted) {
-  media::TimeUnit pts = aSample->mTime;
+    bool* aGotFrame, int32_t aSubmitted,
+    media::NullableTimeUnit& aPreviousEnd) {
+  TimeUnit pts = ExtractFramePts(aSample, aPreviousEnd);
 
   if (mFrame->format != AV_SAMPLE_FMT_FLT &&
       mFrame->format != AV_SAMPLE_FMT_FLTP &&
@@ -251,14 +323,8 @@ MediaResult FFmpegAudioDecoder<LIBAV_VER>::PostProcessOutput(
   }
 
   if (aSubmitted < 0) {
-    FFMPEG_LOG("Got %d more frame from packet", mFrame->nb_samples);
+    FFMPEG_LOG("Got {} more frame from packet", mFrame->nb_samples);
   }
-
-  FFMPEG_LOG("FFmpegAudioDecoder decoded: [%s,%s] (Duration: %s) [%s]",
-             aSample->mTime.ToString().get(),
-             aSample->GetEndTime().ToString().get(),
-             aSample->mDuration.ToString().get(),
-             mLib->av_get_sample_fmt_name(mFrame->format));
 
   uint32_t numChannels = ChannelCount(mCodecContext);
   uint32_t samplingRate = mCodecContext->sample_rate;
@@ -268,6 +334,14 @@ MediaResult FFmpegAudioDecoder<LIBAV_VER>::PostProcessOutput(
   if (!samplingRate) {
     samplingRate = mAudioInfo.mRate;
   }
+
+  if (!numChannels || !samplingRate) {
+    FFMPEG_LOG("Invalid audio configuration: channels={}, rate={}", numChannels,
+               samplingRate);
+    return MediaResult(NS_ERROR_DOM_MEDIA_DECODE_ERR,
+                       RESULT_DETAIL("Invalid audio configuration"));
+  }
+
   AlignedAudioBuffer audio =
       CopyAndPackAudio(mFrame, numChannels, mFrame->nb_samples);
   if (!audio) {
@@ -277,7 +351,7 @@ MediaResult FFmpegAudioDecoder<LIBAV_VER>::PostProcessOutput(
 
   media::TimeUnit duration = TimeUnit(mFrame->nb_samples, samplingRate);
   if (!duration.IsValid()) {
-    FFMPEG_LOG("Duration isn't valid (%d + %d)", mFrame->nb_samples,
+    FFMPEG_LOG("Duration isn't valid ({} + {})", mFrame->nb_samples,
                samplingRate);
     return MediaResult(NS_ERROR_DOM_MEDIA_OVERFLOW_ERR,
                        RESULT_DETAIL("Invalid sample duration"));
@@ -285,12 +359,17 @@ MediaResult FFmpegAudioDecoder<LIBAV_VER>::PostProcessOutput(
 
   media::TimeUnit newpts = pts + duration;
   if (!newpts.IsValid()) {
-    FFMPEG_LOG("New pts isn't valid (%lf + %lf)", pts.ToSeconds(),
+    FFMPEG_LOG("New pts isn't valid ({} + {})", pts.ToSeconds(),
                duration.ToSeconds());
     return MediaResult(
         NS_ERROR_DOM_MEDIA_OVERFLOW_ERR,
         RESULT_DETAIL("Invalid count of accumulated audio samples"));
   }
+
+  FFMPEG_LOG("FFmpegAudioDecoder decoded: [{},{}] (Duration: {}) [{}]",
+             pts.ToString().get(), newpts.ToString().get(),
+             duration.ToString().get(),
+             mLib->av_get_sample_fmt_name(mFrame->format));
 
   RefPtr<AudioData> data =
       new AudioData(aSample->mOffset, pts, std::move(audio), numChannels,
@@ -298,7 +377,7 @@ MediaResult FFmpegAudioDecoder<LIBAV_VER>::PostProcessOutput(
   MOZ_ASSERT(duration == data->mDuration, "must be equal");
   aResults.AppendElement(std::move(data));
 
-  pts = newpts;
+  aPreviousEnd = Some(newpts);
 
   if (aGotFrame) {
     *aGotFrame = true;
@@ -319,7 +398,8 @@ MediaResult FFmpegAudioDecoder<LIBAV_VER>::DecodeUsingFFmpeg(
     return MediaResult(NS_ERROR_DOM_MEDIA_DECODE_ERR,
                        RESULT_DETAIL("FFmpeg audio error"));
   }
-  PostProcessOutput(decoded, aSample, aResults, aGotFrame, 0);
+  media::NullableTimeUnit previousEnd;
+  PostProcessOutput(decoded, aSample, aResults, aGotFrame, 0, previousEnd);
   return NS_OK;
 }
 #else
@@ -334,26 +414,37 @@ MediaResult FFmpegAudioDecoder<LIBAV_VER>::DecodeUsingFFmpeg(
   // This is used to ensure that pts and duration are correctly set on the
   // resulting audio buffers.
   int32_t submitted = 0;
-  int ret = mLib->avcodec_send_packet(mCodecContext, aPacket);
-  switch (ret) {
-    case AVRESULT_OK:
-      submitted++;
-      break;
-    case AVERROR(EAGAIN):
-      FFMPEG_LOG("  av_codec_send_packet: EAGAIN.");
-      MOZ_ASSERT(false, "EAGAIN");
-      break;
-    case AVERROR_EOF:
-      FFMPEG_LOG("  End of stream.");
-      return MediaResult(NS_ERROR_DOM_MEDIA_END_OF_STREAM,
-                         RESULT_DETAIL("End of stream"));
-    default:
-      NS_WARNING("FFmpeg audio decoder error (avcodec_send_packet).");
-      return MediaResult(NS_ERROR_DOM_MEDIA_DECODE_ERR,
-                         RESULT_DETAIL("FFmpeg audio error"));
+  int ret = 0;
+#  if defined(MOZ_WIDGET_ANDROID) && defined(USING_MOZFFVPX)
+  // ProcessDrain submits an empty packet to flush the decoder.
+  const bool draining = aPacket->size == 0;
+  if (!draining || !mHasSentDrainPacket) {
+#  endif
+    ret = mLib->avcodec_send_packet(mCodecContext, aPacket);
+    switch (ret) {
+      case AVRESULT_OK:
+        submitted++;
+        break;
+      case AVERROR(EAGAIN):
+        FFMPEG_LOG("  av_codec_send_packet: EAGAIN.");
+        MOZ_ASSERT(false, "EAGAIN");
+        break;
+      case AVERROR_EOF:
+        FFMPEG_LOG("  End of stream.");
+        return MediaResult(NS_ERROR_DOM_MEDIA_END_OF_STREAM,
+                           RESULT_DETAIL("End of stream"));
+      default:
+        NS_WARNING("FFmpeg audio decoder error (avcodec_send_packet).");
+        return MediaResult(NS_ERROR_DOM_MEDIA_DECODE_ERR,
+                           RESULT_DETAIL("FFmpeg audio error"));
+    }
+#  if defined(MOZ_WIDGET_ANDROID) && defined(USING_MOZFFVPX)
+    mHasSentDrainPacket = draining && ret == AVRESULT_OK;
   }
+#  endif
 
   MediaResult rv;
+  media::NullableTimeUnit previousEnd;
 
   while (ret == 0) {
     aDecoded = false;
@@ -374,8 +465,21 @@ MediaResult FFmpegAudioDecoder<LIBAV_VER>::DecodeUsingFFmpeg(
               new AudioData(0, TimeUnit::Zero(), std::move(buf),
                             mAudioInfo.mChannels, mAudioInfo.mRate));
         }
-        FFMPEG_LOG("  EAGAIN (packets submitted: %" PRIu32 ").", submitted);
+        FFMPEG_LOG("  EAGAIN (packets submitted: {}).", submitted);
         rv = NS_OK;
+#  if defined(MOZ_WIDGET_ANDROID) && defined(USING_MOZFFVPX)
+        // Any call that consumed a MediaCodec event rather than a buffer, such
+        // as the output format change reported before the first frame, returns
+        // EAGAIN even though frames are still held. Wait until the drain times
+        // out or we reach EOS.
+        if (draining && mIsMediaCodec &&
+            !mLib->moz_avcodec_mediacodec_is_eos(mCodecContext) &&
+            MaybeDeferDrain(aResults)) {
+          FFMPEG_LOG("  MediaCodec still holding frames, polling for them");
+          return MediaResult(NS_ERROR_NOT_AVAILABLE,
+                             RESULT_DETAIL("Drain deferred"));
+        }
+#  endif
         break;
       }
       case AVERROR_EOF: {
@@ -391,7 +495,8 @@ MediaResult FFmpegAudioDecoder<LIBAV_VER>::DecodeUsingFFmpeg(
                          RESULT_DETAIL("FFmpeg audio error"));
     }
     if (aDecoded) {
-      PostProcessOutput(aDecoded, aSample, aResults, aGotFrame, submitted);
+      PostProcessOutput(aDecoded, aSample, aResults, aGotFrame, submitted,
+                        previousEnd);
     }
   }
 
@@ -415,13 +520,24 @@ MediaResult FFmpegAudioDecoder<LIBAV_VER>::DoDecode(MediaRawData* aSample,
   mLib->av_init_packet(packet);
 #endif
 
-  FFMPEG_LOG("FFmpegAudioDecoder::DoDecode: %d bytes, [%s,%s] (Duration: %s)",
+#if defined(MOZ_WIDGET_ANDROID) && defined(USING_MOZFFVPX)
+  MediaResult ret = MaybeAttachCryptoInfo(aSample, packet);
+  if (NS_FAILED(ret)) {
+    return ret;
+  }
+#endif
+
+  FFMPEG_LOG("FFmpegAudioDecoder::DoDecode: {} bytes, [{},{}] (Duration: {})",
              aSize, aSample->mTime.ToString().get(),
              aSample->GetEndTime().ToString().get(),
              aSample->mDuration.ToString().get());
 
   packet->data = const_cast<uint8_t*>(aData);
   packet->size = aSize;
+  packet->pts = aSample->mTime.ToMicroseconds();
+  if (aSize > 0) {
+    mInputTimes.Insert(aSample->mTime.ToMicroseconds(), aSample->mTime);
+  }
 
   if (aGotFrame) {
     *aGotFrame = false;

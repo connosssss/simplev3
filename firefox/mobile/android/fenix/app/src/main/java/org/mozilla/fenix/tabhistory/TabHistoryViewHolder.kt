@@ -5,10 +5,10 @@
 package org.mozilla.fenix.tabhistory
 
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.R as materialR
 import mozilla.components.browser.icons.BrowserIcons
 import mozilla.components.support.ktx.android.content.getColorFromAttr
 import mozilla.components.ui.widgets.WidgetSiteItemView
-import org.mozilla.fenix.R
 import org.mozilla.fenix.ext.components
 import org.mozilla.fenix.ext.loadIntoView
 
@@ -31,9 +31,7 @@ class TabHistoryViewHolder(
         icons.loadIntoView(view.iconView, item.url)
 
         if (item.isSelected) {
-            view.setBackgroundColor(
-                view.context.getColorFromAttr(R.attr.layerNonOpaque),
-            )
+            view.setBackgroundColor(view.context.getColorFromAttr(materialR.attr.colorPrimaryContainer))
         } else {
             view.background = null
         }

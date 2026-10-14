@@ -1,33 +1,36 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsThread_h__
-#define nsThread_h__
+#ifndef nsThread_h_
+#define nsThread_h_
 
 #include "MainThreadUtils.h"
 #include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Atomics.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/DataMutex.h"
 #include "mozilla/EventQueue.h"
 #include "mozilla/LinkedList.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/NotNull.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/TaskDispatcher.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/UniquePtr.h"
 #include "nsIDirectTaskDispatcher.h"
 #include "nsIEventTarget.h"
 #include "nsISerialEventTarget.h"
 #include "nsISupportsPriority.h"
 #include "nsIThread.h"
 #include "nsIThreadInternal.h"
+#include "nsString.h"
 #include "nsTArray.h"
+
+#ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
+#  define NS_THREAD_SHUTDOWN_ANNOTATIONS_ENABLED
+#  include "mozilla/StaticMutex.h"
+#endif
 
 namespace mozilla {
 class CycleCollectedJSContext;
@@ -204,9 +207,9 @@ class nsThread : public nsIThreadInternal,
   bool ShutdownRequired() { return mShutdownRequired; }
 
   // Lets GetRunningEventDelay() determine if the pool this is part
-  // of has an unstarted thread
+  // of has an idle or unstarted thread.
   void SetPoolThreadFreePtr(mozilla::Atomic<bool, mozilla::Relaxed>* aPtr) {
-    mIsAPoolThreadFree = aPtr;
+    mIsAPoolThreadFreePtr = aPtr;
   }
 
   void SetScriptObserver(mozilla::CycleCollectedJSContext* aScriptObserver);
@@ -216,6 +219,32 @@ class nsThread : public nsIThreadInternal,
   void ShutdownComplete(NotNull<nsThreadShutdownContext*> aContext);
 
   void WaitForAllAsynchronousShutdowns();
+
+#ifdef NS_THREAD_SHUTDOWN_ANNOTATIONS_ENABLED
+  enum class ShutdownAnnotationPhase : uint8_t { None, Joining, Recv, Ack };
+
+  struct ShutdownHandshakeInfo {
+    uint32_t mJoiningTid = 0;
+    nsCString mJoiningName;
+    uint32_t mClosingTid = 0;
+    nsCString mClosingName;
+    ShutdownAnnotationPhase mPhase = ShutdownAnnotationPhase::None;
+    int64_t mPhaseSinceEpochSec = 0;
+  };
+
+  static void CollectShutdownHangAnnotation();
+
+  // Nothing if the state could not be read without blocking; see
+  // mozilla::CollectShutdownHangAnnotations.
+  static mozilla::Maybe<nsTArray<ShutdownHandshakeInfo>>
+  CollectShutdownHandshakes();
+  static nsCString BuildShutdownAnnotationJson(
+      const nsTArray<ShutdownHandshakeInfo>& aEntries);
+
+  // Same shape as BuildShutdownAnnotationJson, holding a single entry that
+  // says the state could not be read instead of the handshakes.
+  static nsCString BuildContendedAnnotationJson();
+#endif  // NS_THREAD_SHUTDOWN_ANNOTATIONS_ENABLED
 
   static const uint32_t kRunnableNameBufSize = 1000;
   static mozilla::Array<char, kRunnableNameBufSize> sMainThreadRunnableName;
@@ -283,7 +312,18 @@ class nsThread : public nsIThreadInternal,
 
   void* mStackBase = nullptr;
   uint32_t mStackSize;
+  // Set by InitCommon() running on the new thread; undefined before that point.
   uint32_t mThreadId;
+
+#ifdef NS_THREAD_SHUTDOWN_ANNOTATIONS_ENABLED
+  static mozilla::StaticMutex sShutdownAnnotationMutex;
+  ShutdownAnnotationPhase mShutdownAnnotationPhase
+      MOZ_GUARDED_BY(sShutdownAnnotationMutex) = ShutdownAnnotationPhase::None;
+  uint32_t mShutdownJoiningTid MOZ_GUARDED_BY(sShutdownAnnotationMutex) = 0;
+  int64_t mShutdownPhaseSinceEpochSec MOZ_GUARDED_BY(sShutdownAnnotationMutex) =
+      0;
+  nsCString mShutdownJoiningName MOZ_GUARDED_BY(sShutdownAnnotationMutex);
+#endif  // NS_THREAD_SHUTDOWN_ANNOTATIONS_ENABLED
 
   uint32_t mNestedEventLoopDepth;
 
@@ -294,7 +334,7 @@ class nsThread : public nsIThreadInternal,
   const bool mIsMainThread;
   bool mUseHangMonitor;
   const bool mIsUiThread;
-  mozilla::Atomic<bool, mozilla::Relaxed>* mIsAPoolThreadFree;
+  mozilla::Atomic<bool, mozilla::Relaxed>* mIsAPoolThreadFreePtr = nullptr;
 
   // Set to true if this thread creates a JSRuntime.
   bool mCanInvokeJS;
@@ -327,7 +367,7 @@ class nsThreadShutdownContext final : public nsIThreadShutdown {
         mJoiningThreadMutex("nsThreadShutdownContext::mJoiningThreadMutex"),
         mJoiningThread(aJoiningThread) {}
 
-  ~nsThreadShutdownContext() = default;
+  ~nsThreadShutdownContext();
 
   // Must be called on the joining thread.
   void MarkCompleted();
@@ -355,4 +395,4 @@ class nsThreadShutdownContext final : public nsIThreadShutdown {
 extern int sCanaryOutputFD;
 #endif
 
-#endif  // nsThread_h__
+#endif  // nsThread_h_

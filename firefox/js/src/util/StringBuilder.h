@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,7 +6,9 @@
 #define util_StringBuilder_h
 
 #include "mozilla/CheckedInt.h"
+#include "mozilla/Latin1.h"
 #include "mozilla/MaybeOneOf.h"
+#include "mozilla/Span.h"
 #include "mozilla/Utf8.h"
 
 #include "frontend/FrontendContext.h"
@@ -96,21 +96,28 @@ class StringBuilderAllocPolicy {
 
   // See ComputeGrowth in mfbt/Vector.h.
   template <size_t EltSize>
-  static size_t computeGrowth(size_t aOldElts, size_t aIncr) {
-    return detail::GrowEltsAggressively<EltSize>(aOldElts, aIncr);
+  static size_t computeGrowth(size_t oldElts, size_t incr) {
+    // Make a best effort to catch runaway string growth. Since this method
+    // almost always returns more than the requested size (and the string can
+    // then grow into it) it's unlikely we will catch this immediately.
+    if (oldElts + incr >= size_t(JSString::MAX_LENGTH)) {
+      return 0;
+    }
+    return detail::GrowEltsAggressively<EltSize>(oldElts, incr);
   }
 };
 
 /*
- * String builder that eagerly checks for over-allocation past the maximum
- * string length.
+ * String builder used to create a JSString by appending segments to a growable
+ * buffer.
  *
- * Any operation which would exceed the maximum string length causes an
- * exception report on the context and results in a failed return value.
+ * This has some basic checks for over-allocation past the maximum string length
+ * but does not check on every append. If this condition is detected it will set
+ * an exception on the context and the operation will fail.
  *
- * Well-sized extractions (which waste no more than 1/4 of their char
- * buffer space) are guaranteed for strings built by this interface.
- * See |extractWellSized|.
+ * Well-sized extractions (which waste no more than 1/4 of their char buffer
+ * space) are guaranteed for strings built by this interface.  See
+ * |extractWellSized|.
  */
 class StringBuilder {
  protected:
@@ -146,9 +153,6 @@ class StringBuilder {
   // and |length| return the actual string contents/length without these extra
   // characters.
   uint8_t numHeaderChars_ = 0;
-
-  StringBuilder(const StringBuilder& other) = delete;
-  void operator=(const StringBuilder& other) = delete;
 
   // Returns the number of characters to prepend to reserve enough space for the
   // mozilla::StringBuffer header.
@@ -197,6 +201,32 @@ class StringBuilder {
 
   [[nodiscard]] bool inflateChars();
 
+  void inflateLatin1Into(size_t destOffset, const Latin1Char* chars,
+                         size_t len) {
+    mozilla::ConvertLatin1toUtf16(
+        mozilla::AsChars(mozilla::Span<const Latin1Char>(chars, len)),
+        mozilla::Span<char16_t>(twoByteChars()).From(destOffset));
+  }
+
+  // Vector's element-wise copy does not vectorize, so inflate in bulk instead.
+  [[nodiscard]] bool appendLatin1ToTwoByte(const Latin1Char* chars,
+                                           size_t len) {
+    MOZ_ASSERT(isTwoByte());
+    size_t destOffset = twoByteChars().length();
+    if (!twoByteChars().growByUninitialized(len)) {
+      return false;
+    }
+    inflateLatin1Into(destOffset, chars, len);
+    return true;
+  }
+
+  void infallibleAppendLatin1ToTwoByte(const Latin1Char* chars, size_t len) {
+    MOZ_ASSERT(isTwoByte());
+    size_t destOffset = twoByteChars().length();
+    twoByteChars().infallibleGrowByUninitialized(len);
+    inflateLatin1Into(destOffset, chars, len);
+  }
+
   template <typename CharT>
   JSLinearString* finishStringInternal(JSContext* cx, gc::Heap heap);
 
@@ -219,11 +249,14 @@ class StringBuilder {
     cb.construct<Latin1CharBuffer>(StringBuilderAllocPolicy{fc, arenaId});
   }
 
+  StringBuilder(const StringBuilder& other) = delete;
+  void operator=(const StringBuilder& other) = delete;
+
   void clear() { shrinkTo(0); }
 
   [[nodiscard]] bool reserve(size_t len) {
     auto lenWithHeader = mozilla::CheckedInt<size_t>(len) + numHeaderChars_;
-    if (MOZ_UNLIKELY(!lenWithHeader.isValid())) {
+    if (MOZ_UNLIKELY(!lenWithHeader.isValid() || len > JSString::MAX_LENGTH)) {
       ReportAllocationOverflow(maybeCx_);
       return false;
     }
@@ -253,11 +286,22 @@ class StringBuilder {
       twoByteChars().shrinkTo(newLength);
     }
   }
+  void shrinkBy(size_t incr) {
+    if (isLatin1()) {
+      latin1Chars().shrinkBy(incr);
+    } else {
+      twoByteChars().shrinkBy(incr);
+    }
+  }
   bool empty() const { return length() == 0; }
   size_t length() const {
     size_t len = isLatin1() ? latin1Chars().length() : twoByteChars().length();
     MOZ_ASSERT(len >= numHeaderChars_);
     return len - numHeaderChars_;
+  }
+  size_t spareCapacity() const {
+    return isLatin1() ? latin1Chars().capacity() - latin1Chars().length()
+                      : twoByteChars().capacity() - twoByteChars().length();
   }
   char16_t getChar(size_t idx) const {
     idx += numHeaderChars_;
@@ -291,8 +335,9 @@ class StringBuilder {
   }
 
   [[nodiscard]] bool append(const Latin1Char* begin, const Latin1Char* end) {
+    MOZ_ASSERT(begin <= end);
     return isLatin1() ? latin1Chars().append(begin, end)
-                      : twoByteChars().append(begin, end);
+                      : appendLatin1ToTwoByte(begin, end - begin);
   }
   [[nodiscard]] bool append(const Latin1Char* chars, size_t len) {
     return append(chars, chars + len);
@@ -345,7 +390,7 @@ class StringBuilder {
     if (isLatin1()) {
       latin1Chars().infallibleAppend(chars, len);
     } else {
-      twoByteChars().infallibleAppend(chars, len);
+      infallibleAppendLatin1ToTwoByte(chars, len);
     }
   }
   void infallibleAppend(const char* chars, size_t len) {
@@ -463,7 +508,7 @@ inline bool StringBuilder::append(const JSLinearString* str) {
     }
   }
   return str->hasLatin1Chars()
-             ? twoByteChars().append(str->latin1Chars(nogc), str->length())
+             ? appendLatin1ToTwoByte(str->latin1Chars(nogc), str->length())
              : twoByteChars().append(str->twoByteChars(nogc), str->length());
 }
 
@@ -494,7 +539,7 @@ inline bool StringBuilder::appendSubstring(const JSLinearString* base,
     }
   }
   return base->hasLatin1Chars()
-             ? twoByteChars().append(base->latin1Chars(nogc) + off, len)
+             ? appendLatin1ToTwoByte(base->latin1Chars(nogc) + off, len)
              : twoByteChars().append(base->twoByteChars(nogc) + off, len);
 }
 

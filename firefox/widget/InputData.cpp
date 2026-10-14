@@ -1,23 +1,23 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "InputData.h"
 
-#include "mozilla/dom/MouseEventBinding.h"
-#include "mozilla/dom/Touch.h"
-#include "mozilla/dom/WheelEventBinding.h"
+#include <type_traits>
+
+#include "UnitTransforms.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/SwipeTracker.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/TouchEvents.h"
+#include "mozilla/dom/MouseEventBinding.h"
+#include "mozilla/dom/Touch.h"
+#include "mozilla/dom/WheelEventBinding.h"
 #include "nsContentUtils.h"
 #include "nsDebug.h"
 #include "nsThreadUtils.h"
-#include "UnitTransforms.h"
-#include <type_traits>
 
 namespace mozilla {
 
@@ -41,6 +41,15 @@ InputData::InputData(InputType aInputType, TimeStamp aTimeStamp,
       mTimeStamp(aTimeStamp),
       mFocusSequenceNumber(0),
       mLayersId{0},
+      modifiers(aModifiers) {}
+
+InputData::InputData(InputType aInputType, TimeStamp aTimeStamp,
+                     const Maybe<uint64_t>& aCallback, Modifiers aModifiers)
+    : mInputType(aInputType),
+      mTimeStamp(aTimeStamp),
+      mFocusSequenceNumber(0),
+      mLayersId{0},
+      mCallbackId(aCallback),
       modifiers(aModifiers) {}
 
 SingleTouchData::SingleTouchData(int32_t aIdentifier,
@@ -69,13 +78,16 @@ SingleTouchData::SingleTouchData()
 already_AddRefed<Touch> SingleTouchData::ToNewDOMTouch() const {
   MOZ_ASSERT(NS_IsMainThread(),
              "Can only create dom::Touch instances on main thread");
-  RefPtr<Touch> touch =
-      new Touch(mIdentifier,
-                LayoutDeviceIntPoint::Truncate(mScreenPoint.x, mScreenPoint.y),
-                LayoutDeviceIntPoint::Truncate(mRadius.width, mRadius.height),
-                mRotationAngle, mForce);
-  touch->tiltX = mTiltX;
-  touch->tiltY = mTiltY;
+  auto touch = MakeRefPtr<Touch>(
+      mIdentifier,
+      LayoutDeviceIntPoint::Truncate(mScreenPoint.x, mScreenPoint.y),
+      LayoutDeviceIntPoint::Truncate(mRadius.width, mRadius.height),
+      mRotationAngle, mForce);
+  if (mAngle) {
+    touch->mAngle = mAngle;
+  } else {
+    touch->mTilt.emplace(mTiltX, mTiltY);
+  }
   touch->twist = mTwist;
   return touch.forget();
 }
@@ -93,7 +105,7 @@ MultiTouchInput::MultiTouchInput()
 
 MultiTouchInput::MultiTouchInput(const WidgetTouchEvent& aTouchEvent)
     : InputData(MULTITOUCH_INPUT, aTouchEvent.mTimeStamp,
-                aTouchEvent.mModifiers),
+                aTouchEvent.mCallbackId, aTouchEvent.mModifiers),
       mHandledByAPZ(aTouchEvent.mFlags.mHandledByAPZ),
       mButton(aTouchEvent.mButton),
       mButtons(aTouchEvent.mButtons),
@@ -139,6 +151,13 @@ MultiTouchInput::MultiTouchInput(const WidgetTouchEvent& aTouchEvent)
             domTouch->mRefPoint,
             PixelCastJustification::LayoutDeviceIsScreenForUntransformedEvent),
         ScreenSize((float)radiusX, (float)radiusY), rotationAngle, force);
+
+    if (domTouch->mTilt) {
+      data.mTiltX = domTouch->mTilt->mX;
+      data.mTiltY = domTouch->mTilt->mY;
+    }
+    data.mTwist = domTouch->twist;
+    data.mAngle = domTouch->mAngle;
 
     mTouches.AppendElement(data);
   }
@@ -259,10 +278,12 @@ MouseInput::MouseInput(MouseType aType, ButtonType aButtonType,
       mIgnoreCapturingContent(false),
       mSynthesizeMoveAfterDispatch(false) {}
 
-MouseInput::MouseInput(const WidgetMouseEventBase& aMouseEvent)
-    : InputData(MOUSE_INPUT, aMouseEvent.mTimeStamp, aMouseEvent.mModifiers),
+MouseInput::MouseInput(const WidgetMouseEvent& aMouseEvent)
+    : InputData(MOUSE_INPUT, aMouseEvent.mTimeStamp, aMouseEvent.mCallbackId,
+                aMouseEvent.mModifiers),
       mType(MOUSE_NONE),
       mButtonType(NONE),
+      mClickCount(aMouseEvent.mClickCount),
       mInputSource(aMouseEvent.mInputSource),
       mButtons(aMouseEvent.mButtons),
       mHandledByAPZ(aMouseEvent.mFlags.mHandledByAPZ),
@@ -371,11 +392,11 @@ WidgetMouseOrPointerEvent MouseInput::ToWidgetEvent(nsIWidget* aWidget) const {
              "Can only convert To WidgetTouchEvent on main thread");
 
   const DebugOnly<bool> isPointerEvent =
-      std::is_same<WidgetMouseOrPointerEvent, WidgetPointerEvent>::value;
+      std::is_same_v<WidgetMouseOrPointerEvent, WidgetPointerEvent>;
   const DebugOnly<bool> isMouseEvent =
-      std::is_same<WidgetMouseOrPointerEvent, WidgetMouseEvent>::value;
+      std::is_same_v<WidgetMouseOrPointerEvent, WidgetMouseEvent>;
   const DebugOnly<bool> isDragEvent =
-      std::is_same<WidgetMouseOrPointerEvent, WidgetDragEvent>::value;
+      std::is_same_v<WidgetMouseOrPointerEvent, WidgetDragEvent>;
   MOZ_ASSERT(!IsPointerEventType() || isPointerEvent,
              "Please use ToWidgetEvent<WidgetPointerEvent>() for the instance");
   MOZ_ASSERT(IsPointerEventType() || isMouseEvent || isDragEvent,
@@ -383,7 +404,6 @@ WidgetMouseOrPointerEvent MouseInput::ToWidgetEvent(nsIWidget* aWidget) const {
              "ToWidgetEvent<WidgetDragEvent>() for the instance");
 
   EventMessage msg = eVoidEvent;
-  uint32_t clickCount = 0;
   Maybe<WidgetMouseEvent::ExitFrom> exitFrom;
   switch (mType) {
     case MOUSE_MOVE:
@@ -391,11 +411,9 @@ WidgetMouseOrPointerEvent MouseInput::ToWidgetEvent(nsIWidget* aWidget) const {
       break;
     case MOUSE_UP:
       msg = eMouseUp;
-      clickCount = 1;
       break;
     case MOUSE_DOWN:
       msg = eMouseDown;
-      clickCount = 1;
       break;
     case MOUSE_DRAG_START:
       msg = eDragStart;
@@ -467,13 +485,14 @@ WidgetMouseOrPointerEvent MouseInput::ToWidgetEvent(nsIWidget* aWidget) const {
   event.mRefPoint = RoundedToInt(ViewAs<LayoutDevicePixel>(
       mOrigin,
       PixelCastJustification::LayoutDeviceIsScreenForUntransformedEvent));
-  event.mClickCount = clickCount;
+  event.mClickCount = mClickCount;
   event.mInputSource = mInputSource;
   event.mFocusSequenceNumber = mFocusSequenceNumber;
-  event.mExitFrom = exitFrom;
+  event.mExitFrom = std::move(exitFrom);
   event.mClickEventPrevented = mPreventClickEvent;
   event.mIgnoreCapturingContent = mIgnoreCapturingContent;
   event.mSynthesizeMoveAfterDispatch = mSynthesizeMoveAfterDispatch;
+  event.mCallbackId = mCallbackId;
 
   return event;
 }
@@ -852,7 +871,7 @@ ScrollWheelInput::ScrollWheelInput(
 
 ScrollWheelInput::ScrollWheelInput(const WidgetWheelEvent& aWheelEvent)
     : InputData(SCROLLWHEEL_INPUT, aWheelEvent.mTimeStamp,
-                aWheelEvent.mModifiers),
+                aWheelEvent.mCallbackId, aWheelEvent.mModifiers),
       mDeltaType(DeltaTypeForDeltaMode(aWheelEvent.mDeltaMode)),
       mScrollMode(SCROLLMODE_INSTANT),
       mHandledByAPZ(aWheelEvent.mFlags.mHandledByAPZ),
@@ -940,6 +959,7 @@ WidgetWheelEvent ScrollWheelInput::ToWidgetEvent(nsIWidget* aWidget) const {
       mAllowToOverrideSystemScrollSpeed;
   wheelEvent.mFlags.mHandledByAPZ = mHandledByAPZ;
   wheelEvent.mFocusSequenceNumber = mFocusSequenceNumber;
+  wheelEvent.mCallbackId = mCallbackId;
   return wheelEvent;
 }
 

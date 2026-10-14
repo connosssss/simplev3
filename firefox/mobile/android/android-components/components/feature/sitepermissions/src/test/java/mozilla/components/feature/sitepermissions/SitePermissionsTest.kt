@@ -13,6 +13,8 @@ import mozilla.components.concept.engine.permission.SitePermissionsStorage.Permi
 import mozilla.components.concept.engine.permission.SitePermissionsStorage.Permission.AUTOPLAY_INAUDIBLE
 import mozilla.components.concept.engine.permission.SitePermissionsStorage.Permission.BLUETOOTH
 import mozilla.components.concept.engine.permission.SitePermissionsStorage.Permission.CAMERA
+import mozilla.components.concept.engine.permission.SitePermissionsStorage.Permission.LOCAL_DEVICE_ACCESS
+import mozilla.components.concept.engine.permission.SitePermissionsStorage.Permission.LOCAL_NETWORK_ACCESS
 import mozilla.components.concept.engine.permission.SitePermissionsStorage.Permission.LOCAL_STORAGE
 import mozilla.components.concept.engine.permission.SitePermissionsStorage.Permission.LOCATION
 import mozilla.components.concept.engine.permission.SitePermissionsStorage.Permission.MICROPHONE
@@ -31,16 +33,21 @@ class SitePermissionsTest {
         assertEquals(NO_DECISION, sitePermissions[MICROPHONE])
         assertEquals(NO_DECISION, sitePermissions[BLUETOOTH])
         assertEquals(NO_DECISION, sitePermissions[CAMERA])
+        assertEquals(NO_DECISION, sitePermissions[LOCAL_DEVICE_ACCESS])
+        assertEquals(NO_DECISION, sitePermissions[LOCAL_NETWORK_ACCESS])
         assertEquals(BLOCKED, sitePermissions[AUTOPLAY_AUDIBLE])
         assertEquals(ALLOWED, sitePermissions[AUTOPLAY_INAUDIBLE])
 
-        sitePermissions = sitePermissions.copy(
-            location = ALLOWED,
-            notification = BLOCKED,
-            microphone = NO_DECISION,
-            autoplayAudible = AutoplayStatus.ALLOWED,
-            autoplayInaudible = AutoplayStatus.BLOCKED,
-        )
+        sitePermissions =
+            sitePermissions.copy(
+                location = ALLOWED,
+                notification = BLOCKED,
+                microphone = NO_DECISION,
+                autoplayAudible = AutoplayStatus.ALLOWED,
+                autoplayInaudible = AutoplayStatus.BLOCKED,
+                localDeviceAccess = ALLOWED,
+                localNetworkAccess = ALLOWED,
+            )
 
         assertEquals(BLOCKED, sitePermissions[NOTIFICATION])
         assertEquals(ALLOWED, sitePermissions[LOCATION])
@@ -48,26 +55,30 @@ class SitePermissionsTest {
         assertEquals(NO_DECISION, sitePermissions[BLUETOOTH])
         assertEquals(NO_DECISION, sitePermissions[CAMERA])
         assertEquals(NO_DECISION, sitePermissions[LOCAL_STORAGE])
+        assertEquals(ALLOWED, sitePermissions[LOCAL_DEVICE_ACCESS])
+        assertEquals(ALLOWED, sitePermissions[LOCAL_NETWORK_ACCESS])
         assertEquals(ALLOWED, sitePermissions[AUTOPLAY_AUDIBLE])
         assertEquals(BLOCKED, sitePermissions[AUTOPLAY_INAUDIBLE])
     }
 
     @Test
     fun `AutoplayStatus - toStatus`() {
-        var sitePermissions = SitePermissions(
-            origin = "mozilla.dev",
-            autoplayInaudible = AutoplayStatus.BLOCKED,
-            autoplayAudible = AutoplayStatus.BLOCKED,
-            savedAt = 0,
-        )
+        var sitePermissions =
+            SitePermissions(
+                origin = "mozilla.dev",
+                autoplayInaudible = AutoplayStatus.BLOCKED,
+                autoplayAudible = AutoplayStatus.BLOCKED,
+                savedAt = 0,
+            )
 
         assertEquals(BLOCKED, sitePermissions.autoplayAudible.toStatus())
         assertEquals(BLOCKED, sitePermissions.autoplayInaudible.toStatus())
 
-        sitePermissions = sitePermissions.copy(
-            autoplayAudible = AutoplayStatus.ALLOWED,
-            autoplayInaudible = AutoplayStatus.ALLOWED,
-        )
+        sitePermissions =
+            sitePermissions.copy(
+                autoplayAudible = AutoplayStatus.ALLOWED,
+                autoplayInaudible = AutoplayStatus.ALLOWED,
+            )
 
         assertEquals(ALLOWED, sitePermissions.autoplayAudible.toStatus())
         assertEquals(ALLOWED, sitePermissions.autoplayInaudible.toStatus())

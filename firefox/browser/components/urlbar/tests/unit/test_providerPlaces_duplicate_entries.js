@@ -11,7 +11,7 @@ add_task(async function test_duplicates() {
     { uri: TEST_URL + "#", title: "Test history" },
   ]);
 
-  let controller = UrlbarTestUtils.newMockController();
+  let controller = UrlbarTestUtils.mockChildController();
   let searchString = "^Hist";
   let context = createContext(searchString, { isPrivate: false });
   await controller.startQuery(context);
@@ -29,7 +29,7 @@ add_task(async function test_duplicates() {
   );
   Assert.equal(
     context.results[1].type,
-    UrlbarUtils.RESULT_TYPE.URL,
+    UrlbarShared.RESULT_TYPE.URL,
     "Should have a history  result"
   );
   Assert.equal(

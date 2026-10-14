@@ -32,7 +32,7 @@ add_task(async function () {
     childCount: 1,
     domNodeType: 1,
     indexInParent: 1,
-    states: ["focusable", "opaque", "enabled", "sensitive"],
+    states: ["focusable", "selectable text", "opaque", "enabled", "sensitive"],
     actions: ["Press"],
     attributes: {
       "margin-top": "0px",
@@ -43,6 +43,7 @@ add_task(async function () {
       tag: "button",
       "margin-right": "0px",
       id: "button",
+      formatting: "block",
       "margin-bottom": "0px",
     },
   });
@@ -87,13 +88,13 @@ add_task(async function () {
   );
 
   const controlRelations = await controlAccessibleFront.getRelations();
-  is(controlRelations.length, 3, "Control has correct number of relations");
-  is(controlRelations[2].type, "details", "Control has a details relation");
-  is(controlRelations[2].targets.length, 1, "Control has one details target");
+  is(controlRelations.length, 4, "Control has correct number of relations");
+  is(controlRelations[3].type, "details", "Control has a details relation");
+  is(controlRelations[3].targets.length, 1, "Control has one details target");
   const detailsNode = await walker.querySelector(walker.rootNode, "#details");
   const detailsAccessibleFront = await a11yWalker.getAccessibleFor(detailsNode);
   is(
-    controlRelations[2].targets[0],
+    controlRelations[3].targets[0],
     detailsAccessibleFront,
     "Control has correct details target"
   );
@@ -133,6 +134,7 @@ add_task(async function () {
       "margin-right": "0px",
       display: "inline-block",
       "explicit-name": "true",
+      "details-from": "aria-details",
     },
   });
 

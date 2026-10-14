@@ -7,7 +7,6 @@
 #ifndef _LGDB_H_
 #define _LGDB_H_ 1
 
-#include "nssilock.h"
 #include "seccomon.h"
 #include "secoidt.h"
 #include "lowkeyti.h"
@@ -77,7 +76,8 @@ PRBool lg_FIPSEntryOK(void);
 #define LG_TOKEN_TYPE_PUB 0x10000000L
 #define LG_TOKEN_TYPE_KEY 0x18000000L
 /* certdb (high bit == 1) */
-#define LG_TOKEN_TYPE_TRUST 0x20000000L
+#define LG_TOKEN_TYPE_TRUST 0x00000000L
+#define LG_TOKEN_TYPE_NSS_TRUST 0x20000000L
 #define LG_TOKEN_TYPE_CRL 0x28000000L
 #define LG_TOKEN_TYPE_SMIME 0x30000000L
 #define LG_TOKEN_TYPE_CERT 0x38000000L

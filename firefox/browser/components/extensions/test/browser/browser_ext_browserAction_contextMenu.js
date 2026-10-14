@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
 XPCOMUtils.defineLazyPreferenceGetter(
@@ -33,11 +31,14 @@ let extData = {
   },
 
   background: function () {
-    browser.contextMenus.create({
-      id: "clickme-page",
-      title: "Click me!",
-      contexts: ["all"],
-    });
+    browser.contextMenus.create(
+      {
+        id: "clickme-page",
+        title: "Click me!",
+        contexts: ["all"],
+      },
+      () => browser.test.sendMessage("menus-created")
+    );
   },
 };
 
@@ -75,6 +76,9 @@ add_setup(async function test_setup() {
         "extensions.abuseReport.amoFormURL",
         "https://example.org/%LOCALE%/firefox/feedback/addon/%addonID%/",
       ],
+      // Right-clicking text selects the word under the cursor on macOS, which
+      // adds a selection to the context menu this test checks.
+      ["ui.mouse.right_click.select_under_cursor", false],
     ],
   });
 });
@@ -82,6 +86,7 @@ add_setup(async function test_setup() {
 async function browseraction_popup_contextmenu_helper() {
   let extension = ExtensionTestUtils.loadExtension(extData);
   await extension.startup();
+  await extension.awaitMessage("menus-created");
 
   await clickBrowserAction(extension);
 
@@ -101,6 +106,7 @@ async function browseraction_popup_contextmenu_helper() {
 async function browseraction_popup_contextmenu_hidden_items_helper() {
   let extension = ExtensionTestUtils.loadExtension(extData);
   await extension.startup();
+  await extension.awaitMessage("menus-created");
 
   await clickBrowserAction(extension);
 
@@ -134,6 +140,7 @@ async function browseraction_popup_contextmenu_hidden_items_helper() {
 async function browseraction_popup_image_contextmenu_helper() {
   let extension = ExtensionTestUtils.loadExtension(extData);
   await extension.startup();
+  await extension.awaitMessage("menus-created");
 
   await clickBrowserAction(extension);
 
@@ -159,9 +166,9 @@ function openContextMenu(menuId, targetId) {
 }
 
 function waitForElementShown(element) {
-  let win = element.ownerGlobal;
+  let win = element.documentGlobal;
   let dwu = win.windowUtils;
-  return BrowserTestUtils.waitForCondition(() => {
+  return TestUtils.waitForCondition(() => {
     info("Waiting for overflow button to have non-0 size");
     let bounds = dwu.getBoundsWithoutFlushing(element);
     return bounds.width > 0 && bounds.height > 0;
@@ -714,11 +721,7 @@ add_task(async function test_unified_extensions_toolbar_pinning() {
   );
   let pinToToolbar = menu.querySelector(".customize-context-pinToToolbar");
   Assert.ok(!pinToToolbar.hidden, "Pin to Toolbar is visible.");
-  Assert.equal(
-    pinToToolbar.getAttribute("checked"),
-    "true",
-    "Pin to Toolbar is checked."
-  );
+  Assert.ok(pinToToolbar.hasAttribute("checked"), "Pin to Toolbar is checked.");
 
   info("Pinning addon to the addons panel.");
   await closeChromeContextMenu(TOOLBAR_CONTEXT_MENU, pinToToolbar);
@@ -743,9 +746,8 @@ add_task(async function test_unified_extensions_toolbar_pinning() {
   );
 
   Assert.ok(!pinToToolbar.hidden, "Pin to Toolbar is visible.");
-  Assert.equal(
-    pinToToolbar.getAttribute("checked"),
-    "false",
+  Assert.ok(
+    !pinToToolbar.hasAttribute("checked"),
     "Pin to Toolbar is not checked."
   );
   await closeChromeContextMenu(UNIFIED_CONTEXT_MENU, pinToToolbar);
@@ -793,7 +795,8 @@ add_task(async function test_unified_extensions_item_no_pinning() {
     ".unified-extensions-context-menu-pin-to-toolbar"
   );
   Assert.ok(pinToToolbar.hidden, "Pin to Toolbar is hidden.");
-  menu.hidePopup();
+  await closeChromeContextMenu(UNIFIED_CONTEXT_MENU);
+  await closeExtensionsPanel();
 
   await extension.unload();
 });

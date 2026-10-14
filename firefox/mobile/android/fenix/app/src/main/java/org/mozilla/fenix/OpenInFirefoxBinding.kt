@@ -5,6 +5,8 @@
 package org.mozilla.fenix
 
 import android.content.Intent
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -21,11 +23,13 @@ import org.mozilla.fenix.components.appstate.AppState
  *
  * @param activity The [HomeActivity] used to switch to the actual browser.
  * @param appStore The [AppStore] used to observe [AppState.openInFirefoxRequested].
- * @param customTabSessionId Optional custom tab session ID if navigating from a custom tab or null
- * if the selected session should be used.
+ * @param customTabSessionId Optional custom tab session ID if navigating from a custom tab or null if the selected
+ *   session should be used.
  * @param customTabsUseCases The [CustomTabsUseCases] used to turn the session into a regular tab and select it.
  * @param openInFenixIntent The [Intent] used to open the tab in the browser.
  * @param sessionFeature The [SessionFeature] used to release the session from the EngineView.
+ * @param mainDispatcher The [CoroutineDispatcher] on which the state observation and updates will occur. Defaults to
+ *   [Dispatchers.Main].
  */
 class OpenInFirefoxBinding(
     private val activity: HomeActivity,
@@ -34,10 +38,12 @@ class OpenInFirefoxBinding(
     private val customTabsUseCases: CustomTabsUseCases,
     private val openInFenixIntent: Intent,
     private val sessionFeature: ViewBoundFeatureWrapper<SessionFeature>,
-) : AbstractBinding<AppState>(appStore) {
+    mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
+) : AbstractBinding<AppState>(appStore, mainDispatcher) {
 
     override suspend fun onState(flow: Flow<AppState>) {
-        flow.map { state -> state.openInFirefoxRequested }
+        flow
+            .map { state -> state.openInFirefoxRequested }
             .distinctUntilChanged()
             .collect { state ->
                 when (state) {
@@ -59,7 +65,7 @@ class OpenInFirefoxBinding(
                                     // right thing and take care of routing to an already existing browser and avoid
                                     // cloning a new one.
                                     flags = flags or Intent.FLAG_ACTIVITY_NEW_TASK
-                                },
+                                }
                             )
 
                             // Close this activity (and the task) since it is no longer displaying any session

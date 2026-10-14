@@ -4,10 +4,14 @@
 
 #include "PeerConnectionCtx.h"
 
+#include <span>
+
+#include "PeerConnectionImpl.h"
+#include "WebrtcGlobalChild.h"
+#include "WebrtcGlobalInformation.h"
 #include "WebrtcGlobalStatsHistory.h"
 #include "api/audio/audio_mixer.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
-#include "modules/rtp_rtcp/source/rtp_header_extensions.h"
 #include "call/audio_state.h"
 #include "common/browser_logging/CSFLog.h"
 #include "common/browser_logging/WebRtcLog.h"
@@ -15,23 +19,21 @@
 #include "gmp-video-encode.h"  // GMP_API_VIDEO_ENCODER
 #include "libwebrtcglue/WebrtcTaskQueueWrapper.h"
 #include "modules/audio_device/include/fake_audio_device.h"
-#include "modules/audio_processing/include/audio_processing.h"
 #include "modules/audio_processing/include/aec_dump.h"
-#include "mozilla/UniquePtr.h"
+#include "modules/audio_processing/include/audio_processing.h"
+#include "modules/rtp_rtcp/source/rtp_header_extensions.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
-#include "mozilla/glean/DomMediaWebrtcMetrics.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/RTCStatsReportBinding.h"
+#include "mozilla/glean/DomMediaWebrtcMetrics.h"
 #include "nsCRTGlue.h"
 #include "nsIEventTarget.h"
 #include "nsIIOService.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
 #include "nsServiceManagerUtils.h"  // do_GetService
-#include "PeerConnectionImpl.h"
 #include "transport/runnable_utils.h"
-#include "WebrtcGlobalChild.h"
-#include "WebrtcGlobalInformation.h"
 
 static const char* pccLogTag = "PeerConnectionCtx";
 #ifdef LOGTAG
@@ -110,8 +112,7 @@ class DummyAudioProcessing : public AudioProcessing {
     MOZ_CRASH("Unexpected call");
     return kNoError;
   }
-  bool GetLinearAecOutput(
-      rtc::ArrayView<std::array<float, 160>>) const override {
+  bool GetLinearAecOutput(std::span<std::array<float, 160>>) const override {
     MOZ_CRASH("Unexpected call");
     return false;
   }
@@ -130,12 +131,12 @@ class DummyAudioProcessing : public AudioProcessing {
   }
   void set_stream_key_pressed(bool) override { MOZ_CRASH("Unexpected call"); }
   bool CreateAndAttachAecDump(absl::string_view, int64_t,
-                              absl::Nonnull<TaskQueueBase*>) override {
+                              TaskQueueBase* absl_nonnull) override {
     MOZ_CRASH("Unexpected call");
     return false;
   }
   bool CreateAndAttachAecDump(FILE*, int64_t,
-                              absl::Nonnull<TaskQueueBase*>) override {
+                              TaskQueueBase* absl_nonnull) override {
     MOZ_CRASH("Unexpected call");
     return false;
   }
@@ -174,7 +175,7 @@ class PeerConnectionCtxObserver : public nsIObserver {
  public:
   NS_DECL_ISUPPORTS
 
-  PeerConnectionCtxObserver() {}
+  PeerConnectionCtxObserver() = default;
 
   void Init() {
     nsCOMPtr<nsIObserverService> observerService =
@@ -441,7 +442,7 @@ void PeerConnectionCtx::UpdateNetworkState(bool online) {
   if (ctx->mPeerConnections.empty()) {
     return;
   }
-  for (auto pc : ctx->mPeerConnections) {
+  for (const auto& pc : ctx->mPeerConnections) {
     pc.second->UpdateNetworkState(online);
   }
 }
@@ -489,23 +490,22 @@ void PeerConnectionCtx::AddPeerConnection(const std::string& aKey,
              "PeerConnection with this key should not already exist");
   if (mPeerConnections.empty()) {
     AudioState::Config audioStateConfig;
-    audioStateConfig.audio_mixer = new rtc::RefCountedObject<DummyAudioMixer>();
+    audioStateConfig.audio_mixer =
+        new webrtc::RefCountedObject<DummyAudioMixer>();
     audioStateConfig.audio_processing =
-        new rtc::RefCountedObject<DummyAudioProcessing>();
+        new webrtc::RefCountedObject<DummyAudioProcessing>();
     audioStateConfig.audio_device_module =
-        new rtc::RefCountedObject<FakeAudioDeviceModule>();
+        new webrtc::RefCountedObject<FakeAudioDeviceModule>();
 
-    constexpr bool supportTailDispatch = true;
     // This task queue is passed into libwebrtc by means of
     // webrtc::TaskQueueBase::GetCurrent() while running on it.
     // WebrtcCallWrapper guarantees that it outlives its webrtc::Call instance.
     // Outside of libwebrtc it works as a regular TaskQueue.
     auto callWorkerThread = CreateWebrtcTaskQueueWrapper(
         GetMediaThreadPool(MediaThreadType::WEBRTC_CALL_THREAD),
-        "CallWorker"_ns, supportTailDispatch);
+        "CallWorker"_ns, TailDispatchPolicy::ConsistentOrdering);
 
-    UniquePtr<webrtc::FieldTrialsView> trials =
-        WrapUnique(new MozTrialsConfig());
+    auto trials = MakeUnique<MozTrialsConfig>();
 
     mSharedWebrtcState = MakeAndAddRef<SharedWebrtcState>(
         std::move(callWorkerThread), std::move(audioStateConfig),
@@ -539,7 +539,7 @@ PeerConnectionImpl* PeerConnectionCtx::GetPeerConnection(
 
 void PeerConnectionCtx::ClearClosedStats() {
   for (auto& [id, pc] : mPeerConnections) {
-    Unused << id;
+    (void)id;
     if (pc->IsClosed()) {
       // Rare case
       pc->DisableLongTermStats();
@@ -569,7 +569,7 @@ nsresult PeerConnectionCtx::StartTelemetryTimer() {
   return NS_NewTimerWithFuncCallback(getter_AddRefs(mTelemetryTimer),
                                      EverySecondTelemetryCallback_m, this, 1000,
                                      nsITimer::TYPE_REPEATING_PRECISE_CAN_SKIP,
-                                     "EverySecondTelemetryCallback_m");
+                                     "EverySecondTelemetryCallback_m"_ns);
 }
 
 void PeerConnectionCtx::StopTelemetryTimer() {

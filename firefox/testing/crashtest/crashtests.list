@@ -37,6 +37,7 @@ include ../../dom/streams/crashtests/crashtests.list
 include ../../dom/svg/crashtests/crashtests.list
 include ../../dom/vr/test/crashtests/crashtests.list
 include ../../dom/webgpu/crashtests/crashtests.list
+include ../../dom/webscheduling/tests/crashtests/crashtests.list
 include ../../dom/workers/test/crashtests/crashtests.list
 include ../../dom/xhr/tests/crashtests/crashtests.list
 include ../../dom/xml/crashtests/crashtests.list
@@ -76,8 +77,6 @@ include ../../netwerk/test/crashtests/crashtests.list
 include ../../parser/htmlparser/tests/crashtests/crashtests.list
 
 include ../../security/manager/ssl/crashtests/crashtests.list
-
-include ../../view/crashtests/crashtests.list
 
 include ../../widget/cocoa/crashtests/crashtests.list
 include ../../widget/crashtests/crashtests.list

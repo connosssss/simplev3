@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,6 +9,7 @@ ChromeUtils.defineESModuleGetters(this, {
   ExtensionTelemetry: "resource://gre/modules/ExtensionTelemetry.sys.mjs",
   PageActions: "resource:///modules/PageActions.sys.mjs",
   PanelPopup: "resource:///modules/ExtensionPopups.sys.mjs",
+  isGloballyBlockingOpenPopup: "resource:///modules/ExtensionPopups.sys.mjs",
 });
 
 var { DefaultWeakMap } = ExtensionUtils;
@@ -33,7 +32,7 @@ class PageAction extends PageActionBase {
   }
 
   updateOnChange(target) {
-    this.buttonDelegate.updateButton(target.ownerGlobal);
+    this.buttonDelegate.updateButton(target.documentGlobal);
   }
 
   dispatchClick(tab, clickInfo) {
@@ -45,6 +44,14 @@ class PageAction extends PageActionBase {
       return tabTracker.getTab(tabId);
     }
     return null;
+  }
+
+  isPanelShownBlockingOpenPopup(window) {
+    const panel = this.buttonDelegate.popupNode?.panel;
+    if (isGloballyBlockingOpenPopup(window)) {
+      return true;
+    }
+    return panel && panel.documentGlobal === window && panel.state !== "closed";
   }
 }
 
@@ -102,7 +109,7 @@ this.pageAction = class extends ExtensionAPIPersistent {
           if (isPanel) {
             buttonNode.closest("#pageActionPanel").hidePopup();
           }
-          let window = event.target.ownerGlobal;
+          let window = event.target.documentGlobal;
           let tab = window.gBrowser.selectedTab;
           this.tabManager.addActiveTabPermission(tab);
           this.action.dispatchClick(tab, {
@@ -121,7 +128,7 @@ this.pageAction = class extends ExtensionAPIPersistent {
           pinnedToUrlbar: this.action.getPinned(),
           disabled: !this.action.getProperty(null, "enabled"),
           onCommand: event => {
-            this.handleClick(event.target.ownerGlobal, {
+            this.handleClick(event.target.documentGlobal, {
               button: event.button || 0,
               modifiers: clickModifiersFromEvent(event),
             });
@@ -236,7 +243,7 @@ this.pageAction = class extends ExtensionAPIPersistent {
 
   handleEvent(event) {
     switch (event.type) {
-      case "popupshowing":
+      case "popupshowing": {
         const menu = event.target;
         const trigger = menu.triggerNode;
         const getActionId = () => {
@@ -263,7 +270,7 @@ this.pageAction = class extends ExtensionAPIPersistent {
           menu.id === "pageActionContextMenu" &&
           trigger &&
           getActionId() === this.browserPageAction.id &&
-          !this.browserPageAction.getDisabled(trigger.ownerGlobal) &&
+          !this.browserPageAction.getDisabled(trigger.documentGlobal) &&
           (this.extension.hasPermission("contextMenus") ||
             this.extension.hasPermission("menus"))
         ) {
@@ -274,6 +281,7 @@ this.pageAction = class extends ExtensionAPIPersistent {
           });
         }
         break;
+      }
     }
   }
 
@@ -304,25 +312,47 @@ this.pageAction = class extends ExtensionAPIPersistent {
         return;
       }
 
-      this.popupNode = new PanelPopup(
+      // Hold the popup in a local: another activation while we await below
+      // would replace this.popupNode, and we must clean up the one we created.
+      let popup = (this.popupNode = new PanelPopup(
         extension,
         window.document,
         popupURL,
         this.browserStyle
-      );
+      ));
       // Remove popupNode when it is closed.
-      this.popupNode.panel.addEventListener(
+      popup.panel.addEventListener(
         "popuphiding",
         () => {
           this.popupNode = undefined;
         },
         { once: true }
       );
-      await this.popupNode.contentReady;
-      window.BrowserPageActions.togglePanelForAction(
-        this.browserPageAction,
-        this.popupNode.panel
-      );
+      await popup.contentReady;
+      if (popup.destroyed) {
+        // The extension shut down while its popup was loading, which destroyed
+        // the popup and removed the page action we would anchor it to.
+        if (this.popupNode === popup) {
+          this.popupNode = undefined;
+        }
+        ExtensionTelemetry.pageActionPopupOpen.stopwatchCancel(extension, this);
+        return;
+      }
+      try {
+        window.BrowserPageActions.togglePanelForAction(
+          this.browserPageAction,
+          popup.panel
+        );
+      } catch (e) {
+        // The popup's browser would otherwise keep a refresh driver ticking,
+        // and vsync enabled, for the lifetime of the window.
+        popup.destroy();
+        if (this.popupNode === popup) {
+          this.popupNode = undefined;
+        }
+        ExtensionTelemetry.pageActionPopupOpen.stopwatchCancel(extension, this);
+        throw e;
+      }
       ExtensionTelemetry.pageActionPopupOpen.stopwatchFinish(extension, this);
     } else {
       ExtensionTelemetry.pageActionPopupOpen.stopwatchCancel(extension, this);
@@ -375,6 +405,7 @@ this.pageAction = class extends ExtensionAPIPersistent {
 
         openPopup: () => {
           let window = windowTracker.topWindow;
+          action.throwIfOpenPopupIsBlockedByAnyAction(window);
           this.triggerAction(window);
         },
       },

@@ -4,6 +4,8 @@
 
 package org.mozilla.fenix.library.history
 
+import android.os.Build
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.core.view.isInvisible
@@ -11,22 +13,19 @@ import androidx.core.view.isVisible
 import androidx.paging.LoadState
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.SimpleItemAnimator
+import com.google.android.material.R as materialR
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import mozilla.components.service.fxa.SyncEngine
+import mozilla.components.concept.sync.SyncEngine
 import mozilla.components.service.fxa.manager.FxaAccountManager
 import mozilla.components.service.fxa.sync.SyncReason
 import org.mozilla.fenix.R
-import org.mozilla.fenix.components.appstate.AppState
 import org.mozilla.fenix.databinding.ComponentHistoryBinding
 import org.mozilla.fenix.ext.components
 import org.mozilla.fenix.library.LibraryPageView
 import org.mozilla.fenix.theme.ThemeManager
 
-/**
- * View that contains and configures the History List
- */
-@Suppress("LongParameterList")
+/** View that contains and configures the History List */
 class HistoryView(
     container: ViewGroup,
     val store: HistoryFragmentStore,
@@ -39,38 +38,40 @@ class HistoryView(
     private val scope: CoroutineScope,
 ) : LibraryPageView(container) {
 
-    val binding = ComponentHistoryBinding.inflate(
-        LayoutInflater.from(container.context),
-        container,
-        true,
-    )
+    val binding =
+        ComponentHistoryBinding.inflate(
+            LayoutInflater.from(container.context),
+            container,
+            true,
+        )
 
     var mode: HistoryFragmentState.Mode = HistoryFragmentState.Mode.Normal
         private set
 
-    val historyAdapter = HistoryAdapter(
-        store = store,
-        onHistoryItemClicked = onHistoryItemClicked,
-        onRecentlyClosedClicked = onRecentlyClosedClicked,
-        onDeleteInitiated = onDeleteInitiated,
-    ) { isEmpty ->
-        onEmptyStateChanged(isEmpty)
-    }.apply {
-        addLoadStateListener {
-            // First call will always have itemCount == 0, but we want to keep adapterItemCount
-            // as null until we can distinguish an empty list from populated, so updateEmptyState()
-            // could work correctly.
-            if (itemCount > 0) {
-                adapterItemCount = itemCount
-            } else if (it.source.refresh is LoadState.NotLoading &&
-                it.append.endOfPaginationReached &&
-                itemCount < 1
-            ) {
-                adapterItemCount = 0
-                onZeroItemsLoaded.invoke()
+    val historyAdapter =
+        HistoryAdapter(
+                store = store,
+                onHistoryItemClicked = onHistoryItemClicked,
+                onRecentlyClosedClicked = onRecentlyClosedClicked,
+                onDeleteInitiated = onDeleteInitiated,
+            ) { isEmpty ->
+                onEmptyStateChanged(isEmpty)
             }
-        }
-    }
+            .apply {
+                addLoadStateListener {
+                    // First call will always have itemCount == 0, but we want to keep adapterItemCount
+                    // as null until we can distinguish an empty list from populated, so updateEmptyState()
+                    // could work correctly.
+                    if (itemCount > 0) {
+                        adapterItemCount = itemCount
+                    } else if (
+                        it.source.refresh is LoadState.NotLoading && it.append.endOfPaginationReached && itemCount < 1
+                    ) {
+                        adapterItemCount = 0
+                        onZeroItemsLoaded.invoke()
+                    }
+                }
+            }
     private val layoutManager = LinearLayoutManager(container.context)
     private var adapterItemCount: Int? = null
 
@@ -81,13 +82,17 @@ class HistoryView(
             (itemAnimator as SimpleItemAnimator).supportsChangeAnimations = false
         }
 
-        val primaryTextColor = ThemeManager.resolveAttribute(R.attr.textPrimary, context)
-        val primaryBackgroundColor = ThemeManager.resolveAttribute(R.attr.layer2, context)
+        val primaryTextColor = ThemeManager.resolveAttribute(materialR.attr.colorOnSurface, context)
+        val primaryBackgroundColor = ThemeManager.resolveAttribute(materialR.attr.colorSurfaceContainerLowest, context)
         binding.swipeRefresh.apply {
             setColorSchemeResources(primaryTextColor)
             setProgressBackgroundColorSchemeResource(primaryBackgroundColor)
         }
+
         binding.swipeRefresh.setOnRefreshListener {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                binding.swipeRefresh.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+            }
             store.dispatch(HistoryFragmentAction.StartSync)
             scope.launch {
                 accountManager.syncNow(
@@ -121,27 +126,15 @@ class HistoryView(
 
         when (val mode = state.mode) {
             is HistoryFragmentState.Mode.Normal -> {
-                setUiForNormalMode(
-                    context.getString(R.string.library_history),
-                )
+                setUiForNormalMode(context.getString(R.string.library_history))
             }
             is HistoryFragmentState.Mode.Editing -> {
-                setUiForSelectingMode(
-                    context.getString(R.string.history_multi_select_title, mode.selectedItems.size),
-                )
+                setUiForSelectingMode(context.getString(R.string.history_multi_select_title, mode.selectedItems.size))
             }
             else -> {
                 // no-op
             }
         }
-    }
-
-    /**
-     * Updates the View with the latest changes to [AppState].
-     */
-    fun update(state: AppState) {
-        historyAdapter.updatePendingDeletionItems(state.pendingDeletionHistoryItems)
-        historyAdapter.notifyDataSetChanged()
     }
 
     private fun updateEmptyState(userHasHistory: Boolean) {
@@ -154,16 +147,17 @@ class HistoryView(
                 onRecentlyClosedClicked()
             }
             val numRecentTabs = recentlyClosedNav.context.components.core.store.state.closedTabs.size
-            recentlyClosedTabsDescription.text = String.format(
-                context.getString(
-                    if (numRecentTabs == 1) {
-                        R.string.recently_closed_tab
-                    } else {
-                        R.string.recently_closed_tabs
-                    },
-                ),
-                numRecentTabs,
-            )
+            recentlyClosedTabsDescription.text =
+                String.format(
+                    context.getString(
+                        if (numRecentTabs == 1) {
+                            R.string.recently_closed_tab
+                        } else {
+                            R.string.recently_closed_tabs
+                        }
+                    ),
+                    numRecentTabs,
+                )
             recentlyClosedNav.isVisible = !userHasHistory
         }
     }

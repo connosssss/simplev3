@@ -15,7 +15,8 @@ contains the code for converting executed mozbuild files into these data
 structures.
 """
 
-from collections import OrderedDict, defaultdict
+import os
+from collections import defaultdict
 
 import mozpack.path as mozpath
 from mozpack.chrome.manifest import ManifestEntry
@@ -23,7 +24,7 @@ from mozpack.chrome.manifest import ManifestEntry
 from mozbuild.frontend.context import ObjDirPath, SourcePath
 
 from ..testing import all_test_flavors
-from ..util import group_unified_files
+from ..util import get_rust_build_kind, group_unified_files
 from .context import FinalTargetValue
 
 
@@ -49,6 +50,7 @@ class ContextDerived(TreeMetadata):
         "topsrcdir",
         "topobjdir",
         "relsrcdir",
+        "relobjdir",
         "srcdir",
         "objdir",
         "config",
@@ -69,6 +71,7 @@ class ContextDerived(TreeMetadata):
         self.relsrcdir = context.relsrcdir
         self.srcdir = context.srcdir
         self.objdir = context.objdir
+        self.relobjdir = mozpath.relpath(self.objdir, self.topobjdir)
 
         self.config = context.config
 
@@ -86,10 +89,6 @@ class ContextDerived(TreeMetadata):
     def defines(self):
         defines = self._context["DEFINES"]
         return Defines(self._context, defines) if defines else None
-
-    @property
-    def relobjdir(self):
-        return mozpath.relpath(self.objdir, self.topobjdir)
 
 
 class HostMixin:
@@ -376,6 +375,7 @@ class Linkable(ContextDerived):
 
     __slots__ = (
         "cxx_link",
+        "extra_link_deps",
         "lib_defines",
         "linked_libraries",
         "linked_system_libs",
@@ -387,8 +387,9 @@ class Linkable(ContextDerived):
         self.cxx_link = False
         self.linked_libraries = []
         self.linked_system_libs = []
-        self.lib_defines = Defines(context, OrderedDict())
+        self.lib_defines = Defines(context, {})
         self.sources = defaultdict(list)
+        self.extra_link_deps = []
 
     @property
     def output_path(self):
@@ -550,14 +551,14 @@ class HostSimpleProgram(HostMixin, BaseProgram):
         return []
 
 
-def cargo_output_directory(context, target_var):
+def cargo_output_directory(context, target_var, profile_suffix=""):
     # cargo creates several directories and places its build artifacts
     # in those directories.  The directory structure depends not only
     # on the target, but also what sort of build we are doing.
-    rust_build_kind = "release"
-    if context.config.substs.get("MOZ_DEBUG_RUST"):
-        rust_build_kind = "debug"
-    return mozpath.join(context.config.substs[target_var], rust_build_kind)
+    return mozpath.join(
+        context.config.substs[target_var],
+        get_rust_build_kind(context.config.substs, profile_suffix=profile_suffix),
+    )
 
 
 # We pretend Rust programs are Linkable, despite Cargo handling all the details
@@ -566,16 +567,19 @@ class BaseRustProgram(Linkable):
     __slots__ = (
         "name",
         "cargo_file",
+        "features",
         "location",
+        "output_category",
         "SUFFIX_VAR",
         "KIND",
         "TARGET_SUBST_VAR",
     )
 
-    def __init__(self, context, name, cargo_file):
+    def __init__(self, context, name, cargo_file, features):
         Linkable.__init__(self, context)
         self.name = name
         self.cargo_file = cargo_file
+        self.output_category = context.get(self.OUTPUT_CATEGORY_VAR)
         # Skip setting properties below which depend on cargo
         # when we don't have a compile environment. The required
         # config keys won't be available, but the instance variables
@@ -586,28 +590,45 @@ class BaseRustProgram(Linkable):
         cargo_dir = cargo_output_directory(context, self.TARGET_SUBST_VAR)
         exe_file = "%s%s" % (name, context.config.substs.get(self.SUFFIX_VAR, ""))
         self.location = mozpath.join(cargo_dir, exe_file)
+        self.features = features
 
 
 class RustProgram(BaseRustProgram):
     SUFFIX_VAR = "BIN_SUFFIX"
     KIND = "target"
     TARGET_SUBST_VAR = "RUST_TARGET"
+    FEATURES_VAR = "RUST_PROGRAM_FEATURES"
+    OUTPUT_CATEGORY_VAR = "RUST_PROGRAM_OUTPUT_CATEGORY"
 
 
 class HostRustProgram(BaseRustProgram):
     SUFFIX_VAR = "HOST_BIN_SUFFIX"
     KIND = "host"
     TARGET_SUBST_VAR = "RUST_HOST_TARGET"
+    FEATURES_VAR = "HOST_RUST_PROGRAM_FEATURES"
+    OUTPUT_CATEGORY_VAR = "HOST_RUST_PROGRAM_OUTPUT_CATEGORY"
 
 
-class RustTests(ContextDerived):
+class RustTests(Linkable):
+    """Context derived container object for Rust test targets."""
+
+    KIND = "target"
     __slots__ = ("names", "features", "output_category")
 
     def __init__(self, context, names, features):
-        ContextDerived.__init__(self, context)
+        Linkable.__init__(self, context)
         self.names = names
         self.features = features
         self.output_category = "rusttests"
+
+
+class LegacyRunTests(ContextDerived):
+    __slots__ = ("tests", "output_category")
+
+    def __init__(self, context, tests):
+        ContextDerived.__init__(self, context)
+        self.tests = tests
+        self.output_category = "runtests"
 
 
 class BaseLibrary(Linkable):
@@ -655,14 +676,21 @@ class Library(BaseLibrary):
 class StaticLibrary(Library):
     """Context derived container object for a static library"""
 
-    __slots__ = ("link_into", "no_expand_lib")
+    __slots__ = ("link_into", "no_expand_lib", "build_static_lib_archive")
 
     def __init__(
-        self, context, basename, real_name=None, link_into=None, no_expand_lib=False
+        self,
+        context,
+        basename,
+        real_name=None,
+        link_into=None,
+        no_expand_lib=False,
+        build_static_lib_archive=False,
     ):
         Library.__init__(self, context, basename, real_name)
         self.link_into = link_into
         self.no_expand_lib = no_expand_lib
+        self.build_static_lib_archive = build_static_lib_archive or no_expand_lib
 
 
 class SandboxedWasmLibrary(Library):
@@ -670,6 +698,7 @@ class SandboxedWasmLibrary(Library):
 
     # This is a real static library; make it known to the build system.
     no_expand_lib = True
+    build_static_lib_archive = True
     KIND = "wasm"
 
     def __init__(self, context, basename, real_name=None):
@@ -698,6 +727,9 @@ class BaseRustLibrary:
         "features",
         "output_category",
         "is_gkrust",
+        "cargo_profile_suffix",
+        "cargo_crate_type",
+        "no_lto",
     )
 
     def init(
@@ -709,8 +741,14 @@ class BaseRustLibrary:
         dependencies,
         features,
         is_gkrust,
+        cargo_profile_suffix,
+        cargo_crate_type,
+        no_lto,
     ):
         self.is_gkrust = is_gkrust
+        self.cargo_profile_suffix = cargo_profile_suffix
+        self.cargo_crate_type = cargo_crate_type
+        self.no_lto = no_lto
         self.cargo_file = cargo_file
         self.crate_type = crate_type
         # We need to adjust our naming here because cargo replaces '-' in
@@ -741,7 +779,9 @@ class BaseRustLibrary:
             self._context,
             "!/"
             + mozpath.join(
-                cargo_output_directory(self._context, self.TARGET_SUBST_VAR),
+                cargo_output_directory(
+                    self._context, self.TARGET_SUBST_VAR, self.cargo_profile_suffix
+                ),
                 self.import_name,
             ),
         )
@@ -765,6 +805,9 @@ class RustLibrary(BaseRustLibrary, StaticLibrary):
         dependencies,
         features,
         is_gkrust=False,
+        cargo_profile_suffix="",
+        cargo_crate_type="",
+        no_lto=False,
         link_into=None,
     ):
         StaticLibrary.__init__(
@@ -785,6 +828,9 @@ class RustLibrary(BaseRustLibrary, StaticLibrary):
             dependencies,
             features,
             is_gkrust,
+            cargo_profile_suffix,
+            cargo_crate_type,
+            no_lto,
         )
 
 
@@ -928,6 +974,7 @@ class HostLibrary(HostMixin, BaseLibrary):
 
     KIND = "host"
     no_expand_lib = False
+    build_static_lib_archive = False
 
 
 class HostRustLibrary(BaseRustLibrary, HostLibrary):
@@ -939,6 +986,7 @@ class HostRustLibrary(BaseRustLibrary, HostLibrary):
     LIB_FILE_VAR = "HOST_RUST_LIBRARY_FILE"
     __slots__ = BaseRustLibrary.slots
     no_expand_lib = True
+    build_static_lib_archive = True
 
     def __init__(
         self,
@@ -949,6 +997,9 @@ class HostRustLibrary(BaseRustLibrary, HostLibrary):
         dependencies,
         features,
         is_gkrust,
+        cargo_profile_suffix="",
+        cargo_crate_type="",
+        no_lto=False,
     ):
         HostLibrary.__init__(self, context, basename)
         BaseRustLibrary.init(
@@ -960,6 +1011,9 @@ class HostRustLibrary(BaseRustLibrary, HostLibrary):
             dependencies,
             features,
             is_gkrust,
+            cargo_profile_suffix,
+            cargo_crate_type,
+            no_lto,
         )
 
 
@@ -1101,6 +1155,17 @@ class Sources(BaseSources):
         )
 
 
+class Headers(ContextDerived):
+    """Represents headers to be handled during the build."""
+
+    def __init__(self, context, static_files, generated_files, canonical_suffix):
+        super().__init__(context)
+        self.static_files = sorted(static_files)
+        self.generated_files = sorted(generated_files)
+        self.files = self.static_files + self.generated_files
+        self.canonical_suffix = canonical_suffix
+
+
 class PgoGenerateOnlySources(BaseSources):
     """Represents files to be compiled during the build.
 
@@ -1215,13 +1280,18 @@ class FinalTargetPreprocessedFiles(ContextDerived):
     this object fills that role. It just has a reference to the underlying
     HierarchicalStringList, which is created when parsing
     FINAL_TARGET_PP_FILES.
+
+    `extra_deps` carries the per-directory ``PP_FILES_EXTRA_DEPS`` value
+    so backends can wire it as build-graph order on the preprocess edge
+    for each file in ``files``.
     """
 
-    __slots__ = ("files",)
+    __slots__ = ("files", "extra_deps")
 
-    def __init__(self, sandbox, files):
+    def __init__(self, sandbox, files, extra_deps=()):
         ContextDerived.__init__(self, sandbox)
         self.files = files
+        self.extra_deps = list(extra_deps)
 
     @staticmethod
     def get_obj_basename(f):
@@ -1264,6 +1334,36 @@ class MozSrcFiles(FinalTargetFiles):
         # and/or XPI_NAME, whereas we want all moz-src content packaged in
         # the same place.
         return mozpath.join("dist/bin/moz-src", self._context.relsrcdir)
+
+
+class JsShellArchive(ContextDerived):
+    """Sandbox container object for JS_SHELL_ARCHIVE_FILES.
+
+    Holds the list of basenames (relative to $(DIST)/bin) that the build
+    backend should pack into the JS shell zip archive.
+    """
+
+    __slots__ = ("files",)
+
+    def __init__(self, context, files):
+        ContextDerived.__init__(self, context)
+        self.files = tuple(files)
+
+
+class MacOSBundle(ContextDerived):
+    """Sandbox container object for a MACOS_BUNDLE entry.
+
+    Holds the description of one ``.app`` bundle to assemble: the output
+    path, the skeleton directory, optional generated ``Info.plist`` and
+    ``InfoPlist.strings``, the ``.lproj`` subdirectory, and the binaries to
+    install into ``Contents/MacOS``.
+    """
+
+    __slots__ = ("bundle",)
+
+    def __init__(self, context, bundle):
+        ContextDerived.__init__(self, context)
+        self.bundle = bundle
 
 
 class ObjdirFiles(FinalTargetFiles):
@@ -1310,6 +1410,94 @@ class Exports(FinalTargetFiles):
         return "dist/include"
 
 
+class LicenseError(Exception):
+    """A LICENSES declaration is inconsistent."""
+
+
+class DeclaredLicenseNotice(ContextDerived):
+    """One ``LICENSES[id]`` declaration: a third-party license notice
+    reproduced in about:license.
+
+    ``id`` doubles as the anchor on the generated page. ``text_path``
+    is the absolute path of the file holding the verbatim notice, named either
+    by the declaration's ``text`` field or, for a vendored library, by the
+    ``origin.license-file`` of its ``moz.yaml``. ``paths`` are
+    the topsrcdir-relative paths this notice is attributed to, taken verbatim
+    from the declaration's own ``paths`` field, which is topsrcdir-relative for
+    that reason; a ``LICENSED_UNDER`` naming this id contributes its own
+    directory-relative paths through ``DeclaredLicensedPaths`` instead.
+
+    The slot names are the keys of the aggregated record, so ``asdict`` needs
+    no field list of its own.
+    """
+
+    __slots__ = (
+        "id",
+        "title",
+        "text_path",
+        "notice",
+        "spdx",
+        "url",
+        "paths",
+        "subcomponent",
+        "acknowledgement",
+    )
+
+    def __init__(
+        self,
+        context,
+        id,
+        title,
+        text_path,
+        notice=None,
+        spdx=None,
+        url=None,
+        paths=(),
+        subcomponent=False,
+        acknowledgement=None,
+    ):
+        ContextDerived.__init__(self, context)
+        if not title:
+            raise LicenseError(f'LICENSES["{id}"] requires a title.')
+        if not text_path:
+            raise LicenseError(
+                f'LICENSES["{id}"] requires a text file: set `text`, or declare '
+                "`origin.license-file` in the moz.yaml covering this directory."
+            )
+        if not os.path.exists(text_path):
+            raise LicenseError(
+                f'LICENSES["{id}"] names a text file that does not exist: {text_path}'
+            )
+        self.id = id
+        self.title = title
+        self.text_path = text_path
+        self.notice = notice
+        self.spdx = spdx
+        self.url = url
+        self.paths = list(paths)
+        self.subcomponent = subcomponent
+        self.acknowledgement = acknowledgement
+
+    def asdict(self):
+        return {name: getattr(self, name) for name in self.__slots__}
+
+
+class DeclaredLicensedPaths(ContextDerived):
+    """One ``LICENSED_UNDER[id]`` declaration: code in the declaring directory
+    covered by ``id``.
+
+    ``paths`` are topsrcdir-relative. An empty list means the whole declaring
+    directory is covered.
+    """
+
+    __slots__ = ("id", "paths")
+
+    def __init__(self, context, id, paths=()):
+        ContextDerived.__init__(self, context)
+        self.id = id
+        self.paths = list(paths)
+
+
 class GeneratedFile(ContextDerived):
     """Represents a generated file."""
 
@@ -1318,13 +1506,13 @@ class GeneratedFile(ContextDerived):
         "method",
         "outputs",
         "inputs",
+        "extra_deps",
         "flags",
         "required_before_export",
         "required_before_compile",
         "required_during_compile",
         "localized",
         "force",
-        "py2",
     )
 
     def __init__(
@@ -1337,8 +1525,8 @@ class GeneratedFile(ContextDerived):
         flags=(),
         localized=False,
         force=False,
-        py2=False,
         required_during_compile=None,
+        extra_deps=(),
     ):
         ContextDerived.__init__(self, context)
         self.script = script
@@ -1346,14 +1534,22 @@ class GeneratedFile(ContextDerived):
         self.outputs = outputs if isinstance(outputs, tuple) else (outputs,)
         self.inputs = inputs
         self.flags = flags
+        self.extra_deps = extra_deps
         self.localized = localized
         self.force = force
-        self.py2 = py2
 
         if self.config.substs.get("MOZ_WIDGET_TOOLKIT") == "android":
-            # In GeckoView builds we process Jinja files during pre-export
+            # In GeckoView builds, the gradle build is done during export to
+            # extract JNI wrapping details, so make sure generated Java and
+            # Android manifest files are created during pre-export.
             self.required_before_export = [
-                f for f in self.inputs if f.endswith(".jinja")
+                f
+                for f in self.outputs
+                if f.endswith((".java", ".kt"))
+                or mozpath.match(f, "**/AndroidManifest*.xml")
+                # Special-case for the webcompat addon, for files it automatically
+                # generates with GenerateWebCompatAddonFiles in /mobile/android/moz.build.
+                or mozpath.match(f, "**/webcompat_addon_generated_files/**")
             ]
         else:
             self.required_before_export = False
@@ -1385,15 +1581,25 @@ class GeneratedFile(ContextDerived):
         ]
 
         if required_during_compile is None:
-            self.required_during_compile = [
-                f
-                for f in self.outputs
-                if f.endswith(
-                    (".asm", ".c", ".cpp", ".inc", ".m", ".mm", ".def", "symverscript")
-                )
-            ]
-        else:
-            self.required_during_compile = required_during_compile
+            required_during_compile = ()
+        self.required_during_compile = [
+            f
+            for f in self.outputs
+            if f in required_during_compile
+            or f.endswith((
+                ".asm",
+                ".c",
+                ".cpp",
+                ".inc",
+                ".m",
+                ".mm",
+                ".def",
+                ".plist",
+                ".s",
+                ".S",
+                "symverscript",
+            ))
+        ]
         if self.required_during_compile and self.required_before_compile:
             self.required_before_compile += self.required_during_compile
             self.required_during_compile = []

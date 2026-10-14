@@ -74,7 +74,7 @@ export var PageThumbUtils = {
       let windowScale = aWindow ? aWindow.devicePixelRatio : primaryScale;
       let scale = Math.max(primaryScale, windowScale);
 
-      /** *
+      /**
        * THESE VALUES ARE DEFINED IN newtab.css and hard coded.
        * If you change these values from the prefs,
        * ALSO CHANGE THEM IN newtab.css
@@ -103,7 +103,7 @@ export var PageThumbUtils = {
     return [this._thumbnailWidth, this._thumbnailHeight];
   },
 
-  /** *
+  /**
    * Given a browser window, return the size of the content
    * minus the scroll bars.
    */
@@ -197,10 +197,10 @@ export var PageThumbUtils = {
    * It's actually better to the eye to have small blurry text than sharp
    * jagged pixels to represent text.
    *
-   * @params aBrowser - the browser to create a snapshot of.
-   * @params aDestCanvas destination canvas to draw the final
+   * @param aBrowser - the browser to create a snapshot of.
+   * @param aDestCanvas destination - canvas to draw the final
    *   snapshot to. Can be null.
-   * @param aArgs (optional) Additional named parameters:
+   * @param [aArgs] - Additional named parameters:
    *   fullScale - request that a non-downscaled image be returned.
    * @return Canvas with a scaled thumbnail of the window.
    */
@@ -224,17 +224,6 @@ export var PageThumbUtils = {
       if (aDestCanvas) {
         aDestCanvas.width = contentWidth;
         aDestCanvas.height = contentHeight;
-      }
-    } else if (contentHeight && aArgs.preserveAspectRatio) {
-      // Calculate the thumbnail height based on thumbnail width
-      // and content aspect ratio
-      if (aArgs.targetWidth) {
-        thumbnailWidth = aArgs.targetWidth;
-      }
-      thumbnailHeight = thumbnailWidth / (contentWidth / contentHeight);
-      if (aDestCanvas) {
-        aDestCanvas.width = thumbnailWidth;
-        aDestCanvas.height = thumbnailHeight;
       }
     }
 
@@ -267,17 +256,13 @@ export var PageThumbUtils = {
     // content dims.
     // Also by default, canvas does not draw the scrollbars, so no need to
     // remove the scrollbar sizes.
-    let targetScale;
-    if (aArgs.preserveAspectRatio) {
-      // always scale based on width, as we resize height to accommodate
-      targetScale = intermediateWidth / contentWidth;
-    } else {
-      targetScale = Math.max(
+    let scale = Math.min(
+      Math.max(
         intermediateWidth / contentWidth,
         intermediateHeight / contentHeight
-      );
-    }
-    let scale = Math.min(targetScale, 1);
+      ),
+      1
+    );
 
     let snapshotCtx = snapshotCanvas.getContext("2d");
     snapshotCtx.save();

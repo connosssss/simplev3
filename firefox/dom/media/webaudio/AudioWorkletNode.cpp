@@ -1,37 +1,36 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "AudioWorkletNode.h"
 
+#include "AudioDestinationNode.h"
 #include "AudioNodeEngine.h"
+#include "AudioParam.h"
 #include "AudioParamMap.h"
 #include "AudioWorklet.h"
 #include "AudioWorkletImpl.h"
+#include "PlayingRefChangeHandler.h"
+#include "Tracing.h"
+#include "blink/DenormalDisabler.h"
 #include "js/Array.h"  // JS::{Get,Set}ArrayLength, JS::NewArrayLength
 #include "js/CallAndConstruct.h"  // JS::Call, JS::IsCallable
 #include "js/Exception.h"
-#include "js/experimental/TypedData.h"  // JS_NewFloat32Array, JS_GetFloat32ArrayData, JS_GetTypedArrayLength, JS_GetArrayBufferViewBuffer
 #include "js/PropertyAndElement.h"  // JS_DefineElement, JS_DefineUCProperty, JS_GetProperty
-#include "mozilla/dom/AudioWorkletNodeBinding.h"
+#include "js/experimental/TypedData.h"  // JS_NewFloat32Array, JS_GetFloat32ArrayData, JS_GetTypedArrayLength, JS_GetArrayBufferViewBuffer
+#include "mozilla/ScopeExit.h"
+#include "mozilla/Span.h"
 #include "mozilla/dom/AudioParamMapBinding.h"
+#include "mozilla/dom/AudioWorkletNodeBinding.h"
 #include "mozilla/dom/AutoEntryScript.h"
-#include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/ErrorEvent.h"
-#include "mozilla/dom/Worklet.h"
-#include "nsIScriptGlobalObject.h"
-#include "AudioParam.h"
-#include "AudioDestinationNode.h"
 #include "mozilla/dom/MessageChannel.h"
 #include "mozilla/dom/MessagePort.h"
-#include "mozilla/ScopeExit.h"
-#include "nsReadableUtils.h"
-#include "mozilla/Span.h"
-#include "PlayingRefChangeHandler.h"
+#include "mozilla/dom/RootedDictionary.h"
+#include "mozilla/dom/Worklet.h"
+#include "nsIScriptGlobalObject.h"
 #include "nsPrintfCString.h"
-#include "Tracing.h"
+#include "nsReadableUtils.h"
 
 namespace mozilla::dom {
 
@@ -507,6 +506,10 @@ void WorkletNodeEngine::ProcessBlocksOnPorts(AudioNodeTrack* aTrack,
     }
   }
 
+  // Undo the graph thread's DenormalDisabler. SpiderMonkey manages disabling
+  // denormals.
+  WebCore::DenormalEnabler denormals;
+
   AutoEntryScript aes(mGlobal, "Worklet Process");
   JSContext* cx = aes.cx();
   auto produceSilenceWithError = MakeScopeExit([this, aTrack, cx, &aOutput] {
@@ -767,7 +770,10 @@ already_AddRefed<AudioWorkletNode> AudioWorkletNode::Constructor(
   // can share memory.
   JS::CloneDataPolicy cloneDataPolicy;
   cloneDataPolicy.allowIntraClusterClonableSharedObjects();
-  cloneDataPolicy.allowSharedMemoryObjects();
+  nsIGlobalObject* currentGlobal = xpc::CurrentNativeGlobal(cx);
+  if (currentGlobal->IsSharedMemoryAllowed()) {
+    cloneDataPolicy.allowSharedMemoryObjects();
+  }
 
   // StructuredCloneHolder does not have a move constructor.  Instead allocate
   // memory so that the pointer can be passed to the rendering thread.

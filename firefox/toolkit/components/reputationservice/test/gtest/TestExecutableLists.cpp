@@ -2,7 +2,6 @@
  * http://creativecommons.org/publicdomain/zero/3.0/ */
 
 #include "gtest/gtest.h"
-#include "mozilla/ArrayUtils.h"
 #include "nsLocalFileCommon.h"
 #include "ApplicationReputation.h"
 
@@ -22,6 +21,7 @@ static const char* const kTestFileExtensions[] = {
     ".air",     // Adobe Air (ignored for app rep)
     ".apk",     // Android package
     ".app",     // Executable application
+    ".appcontent-ms",
     ".applescript",
     ".application",  // MS ClickOnce
     ".appref-ms",    // MS ClickOnce
@@ -213,7 +213,8 @@ static const char* const kTestFileExtensions[] = {
     ".scptd",              // AppleScript
     ".scr",                // Windows
     ".sct",                // Windows shell
-    ".search-ms",          // Windows
+    ".search-ms",          // Windows Saved Search
+    ".searchConnector-ms", // Windows Search Connector
     ".seplugin",           // AppleScript
     ".service",            // Systemd service unit file
     ".settingcontent-ms",  // Windows settings
@@ -276,6 +277,7 @@ static const char* const kTestFileExtensions[] = {
     ".wim",       // Windows Imaging
     ".workflow",  // Mac Automator
     ".ws",        // Windows script
+    ".wsb",       // Windows Sandbox configuration
     ".wsc",       // Windows script
     ".wsf",       // Windows script
     ".wsh",       // Windows script

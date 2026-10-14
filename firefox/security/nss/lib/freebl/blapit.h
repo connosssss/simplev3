@@ -9,9 +9,12 @@
 #define _BLAPIT_H_
 
 #include "seccomon.h"
+#include "eccutil.h"
 #include "prlink.h"
 #include "plarena.h"
 #include "ecl-exp.h"
+#include "pkcs11t.h"
+#include "ml_dsat.h"
 
 /* RC2 operation modes */
 #define NSS_RC2 0
@@ -86,13 +89,6 @@ typedef int __BLAPI_DEPRECATED __attribute__((deprecated));
 #define ECD_MAX_KEY_BITS 255 /* in bits */
 #define ECD_MIN_KEY_BITS 255 /* in bits */
 
-/* EC point compression format */
-#define EC_POINT_FORM_COMPRESSED_Y0 0x02
-#define EC_POINT_FORM_COMPRESSED_Y1 0x03
-#define EC_POINT_FORM_UNCOMPRESSED 0x04
-#define EC_POINT_FORM_HYBRID_Y0 0x06
-#define EC_POINT_FORM_HYBRID_Y1 0x07
-
 /*
  * Number of bytes each hash algorithm produces
  */
@@ -155,8 +151,8 @@ typedef int __BLAPI_DEPRECATED __attribute__((deprecated));
 #define DH_MAX_P_BITS 16384
 
 /* max signature for all our supported signatures */
-/* currently RSA is the biggest */
-#define MAX_SIGNATURE_LEN ((RSA_MAX_MODULUS_BITS + 7) / 8)
+/* currently ML-DSA is the biggest */
+#define MAX_SIGNATURE_LEN MAX_ML_DSA_SIGNATURE_LEN
 
 /*
  * The FIPS 186-1 algorithm for generating primes P and Q allows only 9
@@ -208,7 +204,7 @@ typedef int __BLAPI_DEPRECATED __attribute__((deprecated));
  * returns index (0..8) or -1 if number of bits is invalid.
  */
 #define PQG_PBITS_TO_INDEX(bits) \
-    (((bits) < 512 || (bits) > 1024 || (bits) % 64) ? -1 : (int)((bits)-512) / 64)
+    (((bits) < 512 || (bits) > 1024 || (bits) % 64) ? -1 : (int)((bits) - 512) / 64)
 
 /*
  * function takes index (0-8)
@@ -309,6 +305,7 @@ struct RSAPublicKeyStr {
     PLArenaPool *arena;
     SECItem modulus;
     SECItem publicExponent;
+    PRBool needVerify;
 };
 typedef struct RSAPublicKeyStr RSAPublicKey;
 
@@ -360,6 +357,26 @@ struct DSAPrivateKeyStr {
     SECItem privateValue;
 };
 typedef struct DSAPrivateKeyStr DSAPrivateKey;
+
+/* ML DSA structures */
+typedef struct MLDSAPrivateKeyStr MLDSAPrivateKey;
+typedef struct MLDSAPublicKeyStr MLDSAPublicKey;
+typedef struct MLDSAContextStr MLDSAContext;
+
+/* MLDSA keys are 'public' to softoken, while MLDSAContexts are opaque */
+struct MLDSAPrivateKeyStr {
+    CK_ML_DSA_PARAMETER_SET_TYPE paramSet;
+    unsigned char keyVal[MAX_ML_DSA_PRIVATE_KEY_LEN];
+    unsigned int keyValLen;
+    unsigned char seed[ML_DSA_SEED_LEN];
+    unsigned int seedLen;
+};
+
+struct MLDSAPublicKeyStr {
+    CK_ML_DSA_PARAMETER_SET_TYPE paramSet;
+    unsigned char keyVal[MAX_ML_DSA_PUBLIC_KEY_LEN];
+    unsigned int keyValLen;
+};
 
 /***************************************************************************
 ** Diffie-Hellman Public and Private Key and related structures

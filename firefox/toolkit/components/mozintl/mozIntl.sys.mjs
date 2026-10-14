@@ -47,8 +47,8 @@ const day = 864e5;
  * Allows for defining a cached getter to perform
  * calculations only once.
  *
- * @param {Object} obj - Object to place the getter on.
- * @param {String} prop - Name of the property.
+ * @param {object} obj - Object to place the getter on.
+ * @param {string} prop - Name of the property.
  * @param {Function} get - Function that will be used as a getter.
  */
 function defineCachedGetter(obj, prop, get) {
@@ -65,8 +65,8 @@ function defineCachedGetter(obj, prop, get) {
  *
  * Defines a getter on an object
  *
- * @param {Object} obj - Object to place the getter on.
- * @param {String} prop - Name of the property.
+ * @param {object} obj - Object to place the getter on.
+ * @param {string} prop - Name of the property.
  * @param {Function} get - Function that will be used as a getter.
  */
 function defineGetter(obj, prop, get) {
@@ -80,7 +80,7 @@ function defineGetter(obj, prop, get) {
  * a period for discrete distances.
  *
  * @param {Date} date - Date of which we're looking to find a start of.
- * @param {String} unit - Period to calculate the start of.
+ * @param {string} unit - Period to calculate the start of.
  *
  * @returns {Date}
  */
@@ -114,9 +114,9 @@ function startOf(date, unit) {
  * Calculates the best fit unit to use for an absolute diff distance based
  * on thresholds.
  *
- * @param {Object} absDiff - Object with absolute diff per unit calculated.
+ * @param {object} absDiff - Object with absolute diff per unit calculated.
  *
- * @returns {String}
+ * @returns {string}
  */
 function bestFit(absDiff) {
   switch (true) {
@@ -1042,19 +1042,20 @@ export class MozIntl {
   }
 
   getScriptDirection(locale) {
-    // This is a crude implementation until Bug 1693576 lands.
-    // See justification in toolkit/components/mozintl/mozIMozIntl.idl
-    const { language } = new Intl.Locale(locale);
-    if (
-      language == "ar" ||
-      language == "ckb" ||
-      language == "fa" ||
-      language == "he" ||
-      language == "ur"
-    ) {
-      return "rtl";
-    }
-    return "ltr";
+    // TODO(Bug 2079006): Consider removing getScriptDirection in Favor of getTextInfo
+    //
+    // This function used to be a custom implementation to serve Firefox's internal
+    // use cases for determining the script direction of a locale during a time when
+    // no standardized API existed for this behavior.
+    //
+    // As of Firefox 153 (July 2026), the Intl.Locale.prototype.getTextInfo() API has shipped,
+    // and this function has been rewritten to be a thin wrapper over the new standardized API.
+    //
+    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Locale/getTextInfo
+    //
+    // We should consider removing this funciton entirely in favor of replacing its call sites
+    // with direct calls to the new standardized API.
+    return new Intl.Locale(locale).getTextInfo().direction ?? "ltr";
   }
 
   stringHasRTLChars(str) {
@@ -1071,7 +1072,7 @@ export class MozIntl {
         constructor(locales, options, ...args) {
           let resolvedLocales = DateTimeFormat.supportedLocalesOf(locales);
           if (options) {
-            if (options.dateStyle || options.timeStyle) {
+            if (!locales && (options.dateStyle || options.timeStyle)) {
               options.pattern = osPrefs.getDateTimePattern(
                 getDateTimePatternStyle(options.dateStyle),
                 getDateTimePatternStyle(options.timeStyle),

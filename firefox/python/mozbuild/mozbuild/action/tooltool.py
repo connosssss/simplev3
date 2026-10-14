@@ -99,8 +99,7 @@ def retrier(attempts=5, sleeptime=10, max_sleeptime=300, sleepscale=1.5, jitter=
 
         sleeptime *= sleepscale
 
-        if sleeptime_real > max_sleeptime:
-            sleeptime_real = max_sleeptime
+        sleeptime_real = min(sleeptime_real, max_sleeptime)
 
         # Don't need to sleep the last time
         if _ < attempts - 1:
@@ -133,7 +132,7 @@ def retry(
     action_name = getattr(action, "__name__", action)
     if log_args and (args or kwargs):
         log_attempt_args = (
-            "retry: calling %s with args: %s," " kwargs: %s, attempt #%d",
+            "retry: calling %s with args: %s, kwargs: %s, attempt #%d",
             action_name,
             args,
             kwargs,
@@ -331,24 +330,22 @@ def normalize_string(
     port,
     content_hash,
 ):
-    return "\n".join(
-        [
-            normalize_header_attr(header)
-            # The blank lines are important. They follow what the Node Hawk lib does.
-            for header in [
-                "hawk." + str(HAWK_VER) + "." + mac_type,
-                timestamp,
-                nonce,
-                method or "",
-                name or "",
-                host,
-                port,
-                content_hash or "",
-                "",  # for ext which is empty in this case
-                "",  # Add trailing new line.
-            ]
+    return "\n".join([
+        normalize_header_attr(header)
+        # The blank lines are important. They follow what the Node Hawk lib does.
+        for header in [
+            "hawk." + str(HAWK_VER) + "." + mac_type,
+            timestamp,
+            nonce,
+            method or "",
+            name or "",
+            host,
+            port,
+            content_hash or "",
+            "",  # for ext which is empty in this case
+            "",  # Add trailing new line.
         ]
-    )
+    ])
 
 
 def calculate_mac(
@@ -985,30 +982,34 @@ class TarFile(tarfile.TarFile):
                     shutil.copy(source, targetpath)
                     self.chown(member, targetpath, numeric_owner)
                 else:
-                    deferred_links.setdefault(source, []).append(
-                        (member, targetpath, numeric_owner)
-                    )
+                    deferred_links.setdefault(source, []).append((
+                        member,
+                        targetpath,
+                        numeric_owner,
+                    ))
             return
 
         extract(member, path, set_attrs, numeric_owner=numeric_owner, **kwargs)
         if deferred_links is not None:
-            for tarinfo, linkpath, numeric_owner in deferred_links.pop(targetpath, []):
+            for tarinfo, linkpath, deferred_numeric_owner in deferred_links.pop(
+                targetpath, []
+            ):
                 shutil.copy(targetpath, linkpath)
-                self.chown(tarinfo, linkpath, numeric_owner)
+                self.chown(tarinfo, linkpath, deferred_numeric_owner)
             self._extracted_members.add(targetpath)
 
     def extract(self, *args, **kwargs):
-        self._tooltool_do_extract(super(TarFile, self).extract, *args, **kwargs)
+        self._tooltool_do_extract(super().extract, *args, **kwargs)
 
     # extractall in versions for cpython that implement PEP 706 call _extract_one
     # instead of extract.
     def _extract_one(self, *args, **kwargs):
-        self._tooltool_do_extract(super(TarFile, self)._extract_one, *args, **kwargs)
+        self._tooltool_do_extract(super()._extract_one, *args, **kwargs)
 
     def extractall(self, *args, **kwargs):
         self._deferred_links = {}
         self._extracted_members = set()
-        super(TarFile, self).extractall(*args, **kwargs)
+        super().extractall(*args, **kwargs)
         for links in self._deferred_links.values():
             for tarinfo, linkpath, numeric_owner in links:
                 log.warn("Cannot create dangling symbolic link: %s", linkpath)
@@ -1636,8 +1637,7 @@ Supported commands are:
         default=False,
         dest="unpack",
         action="store_true",
-        help="Request unpacking this file after fetch."
-        " This is helpful with tarballs.",
+        help="Request unpacking this file after fetch. This is helpful with tarballs.",
     )
     parser.add_option(
         "--version",
@@ -1660,8 +1660,7 @@ Supported commands are:
         "--url",
         dest="base_url",
         action="append",
-        help="RelengAPI URL ending with /tooltool/; default "
-        "is appropriate for Mozilla",
+        help="RelengAPI URL ending with /tooltool/; default is appropriate for Mozilla",
     )
     parser.add_option(
         "-c", "--cache-folder", dest="cache_folder", help="Local cache folder"
@@ -1677,7 +1676,7 @@ Supported commands are:
     parser.add_option(
         "-r",
         "--region",
-        help="Preferred AWS region for upload or fetch; " "example: --region=us-west-2",
+        help="Preferred AWS region for upload or fetch; example: --region=us-west-2",
     )
     parser.add_option(
         "--message",

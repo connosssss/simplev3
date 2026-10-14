@@ -1,17 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsContentAreaDragDrop_h__
-#define nsContentAreaDragDrop_h__
+#ifndef nsContentAreaDragDrop_h_
+#define nsContentAreaDragDrop_h_
 
 #include "nsCOMPtr.h"
-
 #include "nsITransferable.h"
 
-class nsIContentSecurityPolicy;
+class nsIPolicyContainer;
 class nsICookieJarSettings;
 class nsPIDOMWindowOuter;
 class nsITransferable;
@@ -45,7 +42,7 @@ class nsContentAreaDragDrop {
    *                    selection is being dragged.
    * aDragNode - [out] the link, image or area being dragged, or null if the
    *             drag occurred on another element.
-   * aCSP       - [out] set to the CSP of the Drag, or null if
+   * aPolicyContainer - [out] set to the policyContainer of the Drag, or null if
    *                    it's from browser chrome or OS
    * aCookieJarSettings - [out] set to the cookieJarSetting of the Drag, or null
    *                            if it's from browser chrome or OS
@@ -57,7 +54,7 @@ class nsContentAreaDragDrop {
                               bool* aCanDrag,
                               mozilla::dom::Selection** aSelection,
                               nsIContent** aDragNode,
-                              nsIContentSecurityPolicy** aCsp,
+                              nsIPolicyContainer** aPolicyContainer,
                               nsICookieJarSettings** aCookieJarSettings);
 };
 
@@ -78,4 +75,4 @@ class nsContentAreaDragDropDataProvider : public nsIFlavorDataProvider {
                          bool isPrivate);
 };
 
-#endif /* nsContentAreaDragDrop_h__ */
+#endif /* nsContentAreaDragDrop_h_ */

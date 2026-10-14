@@ -59,49 +59,98 @@ event.MouseButton = {
 };
 
 /**
- * Synthesise a mouse event at a point.
+ * Synthesize a mouse event in `win` at a point.
  *
- * If the type is specified in opts, an mouse event of that type is
+ * If the type is specified in `event`, a mouse event of that type is
  * fired. Otherwise, a mousedown followed by a mouseup is performed.
  *
- * @param {number} left
- *     Offset from viewport left, in CSS pixels
- * @param {number} top
- *     Offset from viewport top, in CSS pixels
- * @param {object} opts
- *     Object which may contain the properties "shiftKey", "ctrlKey",
- *     "altKey", "metaKey", "accessKey", "clickCount", "button", and
- *     "type".
- * @param {Window} win
- *     Window object.
+ * @param {number} left - Value for the X offset in CSS pixels.
+ * @param {number} top - Value for the Y offset in CSS pixels.
+ * @param {module:EventUtils~MouseEventData} event - Details of the mouse event
+ *     to dispatch.
+ * @param {DOMWindow} win - DOM window used to dispatch the event.
  *
- * @returns {boolean} defaultPrevented
+ * @returns {Promise<boolean>} Promise that resolves to a boolean,
+ *     indicating whether the event had preventDefault() called on it.
  */
-event.synthesizeMouseAtPoint = function (left, top, opts, win) {
-  return _getEventUtils(win).synthesizeMouseAtPoint(left, top, opts, win);
+event.synthesizeMouseAtPoint = function (left, top, event, win) {
+  if (!event.asyncEnabled) {
+    return Promise.resolve(
+      _getEventUtils(win).synthesizeMouseAtPoint(left, top, event, win)
+    );
+  }
+
+  // A callback must be used when handling events with the `asyncEnabled`
+  // flag set to `true`, as these events are synthesized in the parent process.
+  // We need to wait for them to be fully dispatched to the content process
+  // before continuing.
+  const { promise, resolve } = Promise.withResolvers();
+  const preventDefaultFlag = _getEventUtils(win).synthesizeMouseAtPoint(
+    left,
+    top,
+    event,
+    win,
+    () => resolve()
+  );
+
+  return promise.then(() => preventDefaultFlag);
 };
 
 /**
- * Synthesize a touch event at a point.
+ * Synthesize one or more touch events in `win` at the points.
  *
- * If the type is specified in opts, a touch event of that type is
+ * If the type is specified in `event`, a touch event of that type is
  * fired. Otherwise, a touchstart followed by a touchend is performed.
  *
- * @param {number} left
- *     Offset from viewport left, in CSS pixels
- * @param {number} top
- *     Offset from viewport top, in CSS pixels
- * @param {object} opts
- *     Object which may contain the properties "id", "rx", "ry", "angle",
- *     "force", "shiftKey", "ctrlKey", "altKey", "metaKey", "accessKey",
- *     "type".
- * @param {Window} win
- *     Window object.
+ * @param {module:EventUtils~TouchEventData} event - Details of the touch event(s)
+ *     to dispatch.
+ * @param {DOMWindow} win - DOM window used to dispatch the event.
  *
- * @returns {boolean} defaultPrevented
+ * @returns {Promise<boolean>} Promise that resolves to a boolean,
+ *     indicating whether the event had preventDefault() called on it.
  */
-event.synthesizeTouchAtPoint = function (left, top, opts, win) {
-  return _getEventUtils(win).synthesizeTouchAtPoint(left, top, opts, win);
+event.synthesizeTouchAtPoint = function (event, win) {
+  const touchData = {
+    type: event.type,
+    asyncEnabled: event.asyncEnabled,
+    id: event.id,
+    rx: event.rx,
+    ry: event.ry,
+    angle: event.angle,
+    force: event.force,
+    tiltX: event.tiltx,
+    tiltY: event.tilty,
+    twist: event.twist,
+    altitudeAngle: event.altitudeAngle,
+    azimuthAngle: event.azimuthAngle,
+    modifiers: _getEventUtils(win)._parseModifiers(event),
+  };
+
+  if (!event.asyncEnabled) {
+    return Promise.resolve(
+      _getEventUtils(win).synthesizeTouchAtPoint(
+        event.x,
+        event.y,
+        touchData,
+        win
+      )
+    );
+  }
+
+  // A callback must be used when handling events with the `asyncEnabled`
+  // flag set to `true`, as these events are synthesized in the parent process.
+  // We need to wait for them to be fully dispatched to the content process
+  // before continuing.
+  const { promise, resolve } = Promise.withResolvers();
+  const preventDefaultFlag = _getEventUtils(win).synthesizeTouchAtPoint(
+    event.x,
+    event.y,
+    touchData,
+    win,
+    () => resolve()
+  );
+
+  return promise.then(() => preventDefaultFlag);
 };
 
 /**
@@ -133,24 +182,6 @@ event.synthesizeWheelAtPoint = function (left, top, event, win) {
 
   return new Promise(resolve =>
     _getEventUtils(win).synthesizeWheelAtPoint(left, top, event, win, resolve)
-  );
-};
-
-event.synthesizeMultiTouch = function (opts, win) {
-  const modifiers = _getEventUtils(win)._parseModifiers(opts);
-  win.windowUtils.sendTouchEvent(
-    opts.type,
-    opts.id,
-    opts.x,
-    opts.y,
-    opts.rx,
-    opts.ry,
-    opts.angle,
-    opts.force,
-    opts.tiltx,
-    opts.tilty,
-    opts.twist,
-    modifiers
   );
 };
 

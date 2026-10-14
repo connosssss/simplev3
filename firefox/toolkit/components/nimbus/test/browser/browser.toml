@@ -1,12 +1,19 @@
 [DEFAULT]
-support-files = ["head.js"]
+support-files = [
+  "head.js",
+  "!/toolkit/components/aboutconfig/test/browser/head.js"
+]
 prefs = [
   "app.normandy.run_interval_seconds=0", # This turns off the update interval for fetching recipes from Remote Settings
+  "messaging-system.log=all", # Enable all Nimbus logging.
 ]
 skip-if = [
-  "os == 'android'",
   "appname == 'thunderbird'",
 ]
+
+["browser_SharedDataMap.js"]
+
+["browser_about_config_pref_change.js"]
 
 ["browser_experiment_evaluate_jexl.js"]
 
@@ -22,5 +29,3 @@ tags = "remote-settings"
 ["browser_remotesettingsexperimentloader_init.js"]
 
 ["browser_remotesettingsexperimentloader_remote_defaults.js"]
-
-["browser_SharedDataMap.js"]

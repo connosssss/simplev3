@@ -1,6 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 ft=c: */
-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,11 +13,12 @@ include ProtocolTypes;
 
 include "mozilla/dom/DomSecurityIPCUtils.h";
 include "mozilla/dom/FetchIPCTypes.h";
-include "mozilla/dom/FeaturePolicyUtils.h";
+include "mozilla/dom/PermissionsPolicyUtils.h";
 include "mozilla/dom/NavigationAPIIPCUtils.h";
 include "mozilla/dom/PropertyBagUtils.h";
 include "mozilla/dom/ReferrerInfoUtils.h";
 include "mozilla/ipc/URIUtils.h";
+include "mozilla/dom/ConsoleReportIPCUtils.h";
 include "mozilla/net/CacheInfoIPCTypes.h";
 include "mozilla/AntiTrackingIPCUtils.h";
 include "mozilla/net/ClassOfService.h";
@@ -35,17 +33,21 @@ using class mozilla::TimeStamp from "mozilla/TimeStamp.h";
 [RefCounted] using class nsDocShellLoadState from "nsDocShellLoadState.h";
 using nsContentPolicyType from "nsIContentPolicy.h";
 using mozilla::net::PreferredAlternativeDataDeliveryTypeIPC from "nsICacheInfoChannel.h";
+using mozilla::dom::ForceMediaDocument from "mozilla/dom/LoadURIOptionsBinding.h";
 using nsILoadInfo::CrossOriginEmbedderPolicy from "nsILoadInfo.h";
 using nsILoadInfo::StoragePermissionState from "nsILoadInfo.h";
 using nsILoadInfo::IPAddressSpace from "nsILoadInfo.h";
 using struct mozilla::dom::LoadingSessionHistoryInfo from "mozilla/dom/SessionHistoryEntry.h";
 using mozilla::dom::RequestMode from "mozilla/dom/RequestBinding.h";
 using mozilla::net::LinkHeader from "nsNetUtil.h";
-using mozilla::dom::FeaturePolicyInfo from "mozilla/dom/FeaturePolicy.h";
+using mozilla::dom::PermissionsPolicyInfo from "mozilla/dom/PermissionsPolicy.h";
 using nsILoadInfo::HTTPSUpgradeTelemetryType from "nsILoadInfo.h";
 using nsILoadInfo::SchemelessInputType from "nsILoadInfo.h";
 using mozilla::dom::UserNavigationInvolvement from "mozilla/dom/UserNavigationInvolvement.h";
 using mozilla::RFPTargetSet from "nsRFPService.h";
+using PropertiesFile from "nsContentUtils.h";
+[RefCounted] using mozilla::dom::ParentProcessChannelHandle from "mozilla/dom/ParentProcessChannelHandle.h";
+using struct mozilla::dom::RemoteType from "mozilla/dom/RemoteType.h";
 
 namespace mozilla {
 namespace net {
@@ -73,6 +75,17 @@ struct CookieJarSettingsArgs
   bool hasFingerprintingRandomizationKey;
   uint8_t[] fingerprintingRandomizationKey;
   uint64_t topLevelWindowContextId;
+};
+
+//-----------------------------------------------------------------------------
+// CookieChange
+//-----------------------------------------------------------------------------
+
+struct CookieChange
+{
+  bool added;
+  CookieStruct cookie;
+  OriginAttributes originAttributes;
 };
 
 //-----------------------------------------------------------------------------
@@ -112,13 +125,12 @@ struct LoadInfoArgs
   PrincipalInfo?              principalToInheritInfo;
   PrincipalInfo?              topLevelPrincipalInfo;
   URIParams?                  resultPrincipalURI;
-  nsCString                   triggeringRemoteType;
+  RemoteType                  triggeringRemoteType;
   nsID                        sandboxedNullPrincipalID;
   uint32_t                    securityFlags;
   uint32_t                    sandboxFlags;
   uint32_t                    triggeringSandboxFlags;
   uint64_t                    triggeringWindowId;
-  bool                        triggeringStorageAccess;
   uint32_t                    triggeringFirstPartyClassificationFlags;
   uint32_t                    triggeringThirdPartyClassificationFlags;
   nsContentPolicyType         contentPolicyType;
@@ -130,11 +142,13 @@ struct LoadInfoArgs
   bool                        browserWouldUpgradeInsecureRequests;
   bool                        forceAllowDataURI;
   bool                        allowInsecureRedirectToDataURI;
+  ForceMediaDocument          forceMediaDocument;
   bool                        skipContentPolicyCheckForWebRequest;
   bool                        originalFrameSrcLoad;
   bool                        forceInheritPrincipalDropped;
   uint64_t                    innerWindowID;
   uint64_t                    browsingContextID;
+  uint64_t                    associatedBrowsingContextID;
   uint64_t                    frameBrowsingContextID;
   bool                        initialSecurityCheckDone;
   bool                        isInThirdPartyContext;
@@ -146,7 +160,6 @@ struct LoadInfoArgs
   OriginAttributes            originAttributes;
   RedirectHistoryEntryInfo[]  redirectChainIncludingInternalRedirects;
   RedirectHistoryEntryInfo[]  redirectChain;
-  bool                        hasInjectedCookieForCookieBannerHandling;
   SchemelessInputType         schemelessInput;
   HTTPSUpgradeTelemetryType   httpsUpgradeTelemetry;
 
@@ -194,22 +207,24 @@ struct LoadInfoArgs
   RequestMode?                requestMode;
   bool                        isFromProcessingFrameAttributes;
   bool                        isMediaRequest;
-  bool                        isMediaInitialRequest;
-  bool                        isFromObjectOrEmbed;
   CookieJarSettingsArgs       cookieJarSettings;
   uint32_t                    requestBlockingReason;
-  CSPInfo?                    cspToInheritInfo;
+  PolicyContainerArgs?        policyContainerToInherit;
   StoragePermissionState      storagePermission;
   IPAddressSpace              parentIPAddressSpace;
   IPAddressSpace              ipAddressSpace;
   RFPTargetSet?               overriddenFingerprintingSettings;
   bool                        isMetaRefresh;
+  bool                        activatedFromNavigationalPrefetch;
   CrossOriginEmbedderPolicy   loadingEmbedderPolicy;
   bool                        originTrialCoepCredentiallessEnabledForTopLevel;
   nullable nsIURI             unstrippedURI;
   InterceptionInfoArg?        interceptionInfo;
   bool                        isNewWindowTarget;
   UserNavigationInvolvement   userNavigationInvolvement;
+  PermissionsPolicyInfo?       containerPermissionsPolicyInfo;
+  // https://html.spec.whatwg.org/#dom-location-ancestororigins
+  PrincipalInfo?[]             ancestorOrigins;
 };
 
 /**
@@ -274,11 +289,8 @@ struct ParentLoadInfoForwarderArgs
   // Sandbox Flags of the Document that triggered the load
   uint32_t triggeringSandboxFlags;
 
-  // Window ID and UsingStorageAccess of the Document that triggered the load.
-  // Used by the Storage Access API to determine if SubDocument loads should
-  // be partitioned or not.
+  // Window ID of the Document that triggered the load.
   uint64_t triggeringWindowId;
-  bool triggeringStorageAccess;
 
   // We must also note that the tainting value was explicitly set
   // by the service worker.
@@ -289,7 +301,7 @@ struct ParentLoadInfoForwarderArgs
 
   CookieJarSettingsArgs? cookieJarSettings;
 
-  FeaturePolicyInfo? containerFeaturePolicyInfo;
+  PermissionsPolicyInfo? containerPermissionsPolicyInfo;
 
   uint32_t requestBlockingReason;
 
@@ -353,7 +365,6 @@ struct HttpChannelOpenArgs
   nullable nsIURI             original;
   nullable nsIURI             doc;
   nullable nsIReferrerInfo    referrerInfo;
-  nullable nsIURI             apiRedirectTo;
   nullable nsIURI             topWindowURI;
   RequestHeaderTuples         requestHeaders;
   PreferredAlternativeDataTypeParams[] preferredAlternativeTypes;
@@ -385,8 +396,7 @@ struct HttpChannelOpenArgs
   uint32_t                    initialRwin;
   uint32_t                    redirectMode;
   int16_t                     priority;
-  bool                        uploadStreamHasHeaders;
-  bool                        allowSTS;
+  bool                        uploadStreamIsStreaming;
   bool                        resumeAt;
   bool                        allowSpdy;
   bool                        allowHttp3;
@@ -398,7 +408,6 @@ struct HttpChannelOpenArgs
   RequestMode                 requestMode;
   bool                        forceValidateCacheContent;
   bool                        preferCacheLoadOverBypass;
-  bool                        forceMainDocumentChannel;
   uint8_t                     redirectionLimit;
   nsString                    classicScriptHintCharset;
   nsString                    documentCharacterSet;
@@ -422,6 +431,8 @@ struct ProxyInfoCloneArgs
   nsCString type;
   nsCString host;
   int32_t port;
+  nsCString masqueTemplate;
+  nsCString alpn;
   nsCString username;
   nsCString password;
   uint32_t flags;
@@ -455,19 +466,21 @@ struct HttpConnectionInfoCloneArgs
   uint8_t trrMode;
   bool isIPv4Disabled;
   bool isIPv6Disabled;
+  uint8_t http3Policy;
   nsCString topWindowOrigin;
   bool isHttp3;
   bool webTransport;
   uint64_t webTransportId;
   bool hasIPHintAddress;
   nsCString echConfig;
+  bool happyEyeballsEnabled;
   ProxyInfoCloneArgs[] proxyInfo;
 };
 
 struct ConsoleReportCollected {
   uint32_t errorFlags;
   nsCString category;
-  uint32_t propertiesFile;
+  PropertiesFile propertiesFile;
   nsCString sourceFileURI;
   uint32_t lineNumber;
   uint32_t columnNumber;
@@ -481,9 +494,10 @@ struct CookieStruct
   nsCString value;
   nsCString host;
   nsCString path;
-  int64_t   expiry;
-  int64_t   lastAccessed;
-  int64_t   creationTime;
+  int64_t   expiryInMSec;
+  int64_t   lastAccessedInUSec;
+  int64_t   creationTimeInUSec;
+  int64_t   updateTimeInUSec;
   bool      isHttpOnly;
   bool      isSession;
   bool      isSecure;
@@ -556,6 +570,8 @@ struct RedirectToRealChannelArgs {
   nsCString? originalUriString;
   EarlyHintConnectArgs[] earlyHints;
   uint32_t earlyHintLinkType;
+  nullable nsIReferrerInfo referrerInfo;
+  nullable ParentProcessChannelHandle channelHandle;
 };
 
 struct TimingStructArgs {
@@ -567,6 +583,8 @@ struct TimingStructArgs {
   TimeStamp connectEnd;
   TimeStamp requestStart;
   TimeStamp responseStart;
+  TimeStamp firstInterimResponseStart;
+  TimeStamp finalResponseHeadersStart;
   TimeStamp responseEnd;
   TimeStamp transactionPending;
 };
@@ -580,12 +598,15 @@ struct ResourceTimingStructArgs {
   TimeStamp connectEnd;
   TimeStamp requestStart;
   TimeStamp responseStart;
+  TimeStamp firstInterimResponseStart;
+  TimeStamp finalResponseHeadersStart;
   TimeStamp responseEnd;
   TimeStamp fetchStart;
   TimeStamp redirectStart;
   TimeStamp redirectEnd;
   uint64_t transferSize;
   uint64_t encodedBodySize;
+  uint64_t decodedBodySize;
 
   // Not actually part of resource timing, but not part of the transaction
   // timings either. These need to be passed to HttpChannelChild along with
@@ -630,7 +651,6 @@ struct TransactionObserverResult
 struct SpeculativeConnectionOverriderArgs {
   uint32_t parallelSpeculativeConnectLimit;
   bool ignoreIdle;
-  bool isFromPredictor;
   bool allow1918;
 };
 
@@ -671,6 +691,28 @@ struct FileChannelInfo
   LoadInfoArgs           loadInfo;
   nsCString              contentType;
   uint64_t               channelId;
+};
+
+//-----------------------------------------------------------------------------
+// GeckoView's Android Content IPDL structs
+//-----------------------------------------------------------------------------
+
+struct GeckoViewContentChannelOpenArgs
+{
+  URIParams uri;
+  LoadInfoArgs loadInfo;
+  uint32_t loadFlags;
+};
+
+struct GeckoViewContentChannelConnectArgs
+{
+  uint32_t channelId;
+};
+
+union GeckoViewContentChannelArgs
+{
+  GeckoViewContentChannelOpenArgs;
+  GeckoViewContentChannelConnectArgs;
 };
 
 struct RemoteStreamInfo {

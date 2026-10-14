@@ -56,14 +56,13 @@
  * both require the content (= title) before actually creating it.
  */
 
-import { NetUtil } from "resource://gre/modules/NetUtil.sys.mjs";
-
 import { FileUtils } from "resource://gre/modules/FileUtils.sys.mjs";
 import { PlacesUtils } from "resource://gre/modules/PlacesUtils.sys.mjs";
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  BrowserUtils: "resource://gre/modules/BrowserUtils.sys.mjs",
   PlacesBackups: "resource://gre/modules/PlacesBackups.sys.mjs",
 });
 
@@ -76,31 +75,6 @@ const Container_Places = 4;
 const MICROSEC_PER_SEC = 1000000;
 
 const EXPORT_INDENT = "    "; // four spaces
-
-/**
- * Provides HTML escaping for use in HTML attributes and body of the bookmarks
- * file, compatible with the old bookmarks system.
- *
- * @param {string} aText
- */
-function escapeHtmlEntities(aText) {
-  return (aText || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-/**
- * Provides URL escaping for use in HTML attributes of the bookmarks file,
- * compatible with the old bookmarks system.
- *
- * @param {string} aText
- */
-function escapeUrl(aText) {
-  return (aText || "").replace(/"/g, "%22");
-}
 
 function notifyObservers(aTopic, aInitialImport) {
   Services.obs.notifyObservers(
@@ -947,7 +921,11 @@ BookmarkExporter.prototype = {
 
   async _writeContainer(aItem, aIndent = "") {
     if (aItem == this._root) {
-      this._writeLine("<H1>" + escapeHtmlEntities(this._root.title) + "</H1>");
+      this._writeLine(
+        "<H1>" +
+          lazy.BrowserUtils.escapeHtmlEntities(this._root.title) +
+          "</H1>"
+      );
       this._writeLine("");
     } else {
       this._write(aIndent + "<DT><H3");
@@ -958,7 +936,9 @@ BookmarkExporter.prototype = {
       } else if (aItem.root === "unfiledBookmarksFolder") {
         this._writeAttribute("UNFILED_BOOKMARKS_FOLDER", "true");
       }
-      this._writeLine(">" + escapeHtmlEntities(aItem.title) + "</H3>");
+      this._writeLine(
+        ">" + lazy.BrowserUtils.escapeHtmlEntities(aItem.title) + "</H3>"
+      );
     }
 
     this._writeLine(aIndent + "<DL><p>");
@@ -990,38 +970,58 @@ BookmarkExporter.prototype = {
     this._write(aIndent + "<HR");
     // We keep exporting separator titles, but don't support them anymore.
     if (aItem.title) {
-      this._writeAttribute("NAME", escapeHtmlEntities(aItem.title));
+      this._writeAttribute(
+        "NAME",
+        lazy.BrowserUtils.escapeHtmlEntities(aItem.title)
+      );
     }
     this._write(">");
   },
 
   async _writeItem(aItem, aIndent) {
     try {
-      NetUtil.newURI(aItem.uri);
+      Services.io.newURI(aItem.uri);
     } catch (ex) {
       // If the item URI is invalid, skip the item instead of failing later.
       return;
     }
 
     this._write(aIndent + "<DT><A");
-    this._writeAttribute("HREF", escapeUrl(aItem.uri));
+    this._writeAttribute(
+      "HREF",
+      lazy.BrowserUtils.escapeHtmlEntities(aItem.uri)
+    );
     this._writeDateAttributes(aItem);
     await this._writeFaviconAttribute(aItem);
 
     if (aItem.keyword) {
-      this._writeAttribute("SHORTCUTURL", escapeHtmlEntities(aItem.keyword));
+      this._writeAttribute(
+        "SHORTCUTURL",
+        lazy.BrowserUtils.escapeHtmlEntities(aItem.keyword)
+      );
       if (aItem.postData) {
-        this._writeAttribute("POST_DATA", escapeHtmlEntities(aItem.postData));
+        this._writeAttribute(
+          "POST_DATA",
+          lazy.BrowserUtils.escapeHtmlEntities(aItem.postData)
+        );
       }
     }
 
     if (aItem.charset) {
-      this._writeAttribute("LAST_CHARSET", escapeHtmlEntities(aItem.charset));
+      this._writeAttribute(
+        "LAST_CHARSET",
+        lazy.BrowserUtils.escapeHtmlEntities(aItem.charset)
+      );
     }
     if (aItem.tags) {
-      this._writeAttribute("TAGS", escapeHtmlEntities(aItem.tags));
+      this._writeAttribute(
+        "TAGS",
+        lazy.BrowserUtils.escapeHtmlEntities(aItem.tags)
+      );
     }
-    this._writeLine(">" + escapeHtmlEntities(aItem.title) + "</A>");
+    this._writeLine(
+      ">" + lazy.BrowserUtils.escapeHtmlEntities(aItem.title) + "</A>"
+    );
   },
 
   _writeDateAttributes(aItem) {
@@ -1049,10 +1049,16 @@ BookmarkExporter.prototype = {
         PlacesUtils.toURI(aItem.uri)
       );
 
-      this._writeAttribute("ICON_URI", escapeUrl(favicon.uri.spec));
+      this._writeAttribute(
+        "ICON_URI",
+        lazy.BrowserUtils.escapeHtmlEntities(favicon.uri.spec)
+      );
 
       if (favicon?.rawData.length && !favicon.uri.schemeIs("chrome")) {
-        this._writeAttribute("ICON", favicon.dataURI.spec);
+        this._writeAttribute(
+          "ICON",
+          lazy.BrowserUtils.escapeHtmlEntities(favicon.dataURI.spec)
+        );
       }
     } catch (ex) {
       console.error("Unexpected Error trying to fetch icon data");

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 use mls_rs_codec::{MlsDecode, MlsEncode, MlsSize};
+use mls_rs_core::time::MlsTime;
 use mls_rs_core::{
     crypto::SignatureSecretKey, error::IntoAnyError, extension::ExtensionList, group::Member,
     identity::IdentityProvider,
@@ -35,6 +36,13 @@ use crate::{
     tree_kem::{node::LeafIndex, path_secret::PathSecret, TreeKemPrivate},
     CryptoProvider, KeyPackage, MlsMessage,
 };
+
+#[cfg(all(
+    feature = "by_ref_proposal",
+    feature = "custom_proposal",
+    feature = "self_remove_proposal"
+))]
+use crate::group::proposal::SelfRemoveProposal;
 
 #[cfg(feature = "by_ref_proposal")]
 use crate::{
@@ -113,6 +121,7 @@ impl<C: ExternalClientConfig + Clone> ExternalGroup<C> {
         signing_data: Option<(SignatureSecretKey, SigningIdentity)>,
         group_info: MlsMessage,
         tree_data: Option<ExportedTree<'_>>,
+        maybe_time: Option<MlsTime>,
     ) -> Result<Self, MlsError> {
         let protocol_version = group_info.version;
 
@@ -135,6 +144,7 @@ impl<C: ExternalClientConfig + Clone> ExternalGroup<C> {
             tree_data,
             &config.identity_provider(),
             &cipher_suite_provider,
+            maybe_time,
         )
         .await?;
 
@@ -187,6 +197,34 @@ impl<C: ExternalClientConfig + Clone> ExternalGroup<C> {
             message,
             #[cfg(feature = "by_ref_proposal")]
             self.config.cache_proposals(),
+        )
+        .await
+    }
+
+    /// Process an inbound message for this group, providing additional context
+    /// with a message timestamp.
+    ///
+    /// Providing a timestamp is useful when the
+    /// [`IdentityProvider`](crate::IdentityProvider) in use by the group can
+    /// determine validity based on a timestamp. For example, this allows for
+    /// checking X.509 certificate expiration at the time when `message` was
+    /// received by a server rather than when a specific client asynchronously
+    /// received `message`
+    ///
+    /// See [`process_incoming_message`](Self::process_incoming_message) for
+    /// full details.
+    #[cfg_attr(not(mls_build_async), maybe_async::must_be_sync)]
+    pub async fn process_incoming_message_with_time(
+        &mut self,
+        message: MlsMessage,
+        time: MlsTime,
+    ) -> Result<ExternalReceivedMessage, MlsError> {
+        MessageProcessor::process_incoming_message_with_time(
+            self,
+            message,
+            #[cfg(feature = "by_ref_proposal")]
+            self.config.cache_proposals(),
+            Some(time),
         )
         .await
     }
@@ -274,7 +312,7 @@ impl<C: ExternalClientConfig + Clone> ExternalGroup<C> {
         index: u32,
         authenticated_data: Vec<u8>,
     ) -> Result<MlsMessage, MlsError> {
-        let to_remove = LeafIndex(index);
+        let to_remove = LeafIndex::try_from(index)?;
 
         // Verify that this leaf is actually in the tree
         self.group_state().public_tree.get_leaf_node(to_remove)?;
@@ -482,6 +520,24 @@ impl<C: ExternalClientConfig + Clone> ExternalGroup<C> {
         self.state.proposals.clear()
     }
 
+    /// Returns all by-reference proposals that have been cached for this group.
+    ///
+    /// The returned [`CachedProposal`] values contain the proposal content,
+    /// sender, and proposal reference.
+    #[cfg(feature = "by_ref_proposal")]
+    pub fn get_cached_proposals(&self) -> Vec<CachedProposal> {
+        self.state
+            .proposals
+            .proposals
+            .iter()
+            .map(|(proposal_ref, cached)| CachedProposal {
+                proposal: cached.proposal.clone(),
+                proposal_ref: proposal_ref.clone(),
+                sender: cached.sender,
+            })
+            .collect()
+    }
+
     #[inline(always)]
     pub(crate) fn group_state(&self) -> &GroupState {
         &self.state
@@ -502,9 +558,20 @@ impl<C: ExternalClientConfig + Clone> ExternalGroup<C> {
             .map_err(Into::into)
     }
 
+    /// Get a zero-copy, borrowed view of the current ratchet tree used within the group.
+    ///
+    /// Unlike [`export_tree`](Self::export_tree), this does not serialize the tree and
+    /// is suitable for inspecting tree structure (e.g. via
+    /// [`ExportedTree::nodes`](crate::group::ExportedTree::nodes)) without a
+    /// serialize/deserialize round trip.
+    #[inline(always)]
+    pub fn exported_tree(&self) -> ExportedTree<'_> {
+        ExportedTree::new_borrowed(&self.group_state().public_tree.nodes)
+    }
+
     /// Get the current roster of the group.
     #[inline(always)]
-    pub fn roster(&self) -> Roster {
+    pub fn roster(&self) -> Roster<'_> {
         self.group_state().public_tree.roster()
     }
 
@@ -590,11 +657,22 @@ where
             &self.cipher_suite_provider,
             message,
             None,
-            &self.state,
+            &self.state.context,
+            crate::group::message_verifier::SignaturePublicKeysContainer::RatchetTree(
+                &self.state.public_tree,
+            ),
         )
         .await?;
 
         Ok(EventOrContent::Content(auth_content))
+    }
+
+    #[cfg(all(feature = "export_key_generation", feature = "private_message"))]
+    async fn get_unauthenticated_key_generation_from_sender_data(
+        &mut self,
+        _cipher_text: &PrivateMessage,
+    ) -> Result<Option<u32>, MlsError> {
+        Ok(None)
     }
 
     #[cfg(feature = "private_message")]
@@ -647,6 +725,18 @@ where
         None
     }
 
+    #[cfg(all(
+        feature = "by_ref_proposal",
+        feature = "custom_proposal",
+        feature = "self_remove_proposal"
+    ))]
+    fn self_removal_proposal(
+        &self,
+        _provisional_state: &ProvisionalState,
+    ) -> Option<ProposalInfo<SelfRemoveProposal>> {
+        None
+    }
+
     #[cfg(feature = "private_message")]
     fn min_epoch_available(&self) -> Option<u64> {
         self.config
@@ -664,7 +754,6 @@ where
 pub struct ExternalSnapshot {
     version: u16,
     pub(crate) state: RawGroupState,
-    signing_data: Option<(SignatureSecretKey, SigningIdentity)>,
 }
 
 impl ExternalSnapshot {
@@ -693,7 +782,6 @@ where
         ExternalSnapshot {
             state: RawGroupState::export(self.group_state()),
             version: 1,
-            signing_data: self.signing_data.clone(),
         }
     }
 
@@ -706,39 +794,11 @@ where
         let snapshot = ExternalSnapshot {
             state: RawGroupState::export(&self.state),
             version: 1,
-            signing_data: self.signing_data.clone(),
         };
 
         self.state.public_tree.nodes = tree;
 
         snapshot
-    }
-
-    #[cfg_attr(not(mls_build_async), maybe_async::must_be_sync)]
-    pub(crate) async fn from_snapshot(
-        config: C,
-        snapshot: ExternalSnapshot,
-    ) -> Result<Self, MlsError> {
-        #[cfg(feature = "tree_index")]
-        let identity_provider = config.identity_provider();
-
-        let cipher_suite_provider = cipher_suite_provider(
-            config.crypto_provider(),
-            snapshot.state.context.cipher_suite,
-        )?;
-
-        Ok(ExternalGroup {
-            config,
-            signing_data: snapshot.signing_data,
-            state: snapshot
-                .state
-                .import(
-                    #[cfg(feature = "tree_index")]
-                    &identity_provider,
-                )
-                .await?,
-            cipher_suite_provider,
-        })
     }
 }
 
@@ -813,6 +873,7 @@ pub(crate) mod test_utils {
                 .await
                 .unwrap(),
             None,
+            None,
         )
         .await
         .unwrap()
@@ -840,16 +901,18 @@ mod tests {
             message_processor::CommitEffect,
             proposal::{AddProposal, Proposal, ProposalOrRef},
             proposal_ref::ProposalRef,
+            snapshot::RawGroupState,
             test_utils::{test_group, TestGroup},
             CommitMessageDescription, ExportedTree, ProposalMessageDescription,
         },
         identity::{test_utils::get_test_signing_identity, SigningIdentity},
         key_package::test_utils::{test_key_package, test_key_package_message},
         protocol_version::ProtocolVersion,
+        tree_kem::node::LeafIndex,
         ExtensionList, MlsMessage,
     };
     use assert_matches::assert_matches;
-    use mls_rs_codec::{MlsDecode, MlsEncode};
+    use mls_rs_codec::{MlsDecode, MlsEncode, MlsSize};
 
     #[cfg_attr(not(mls_build_async), maybe_async::must_be_sync)]
     async fn test_group_with_one_commit(v: ProtocolVersion, cs: CipherSuite) -> TestGroup {
@@ -1065,6 +1128,7 @@ mod tests {
                 .await
                 .unwrap(),
             None,
+            None,
         )
         .await
         .map(|_| ());
@@ -1088,7 +1152,7 @@ mod tests {
 
         group_info.version = ProtocolVersion::from(64);
 
-        let res = ExternalGroup::join(config, None, group_info, None)
+        let res = ExternalGroup::join(config, None, group_info, None, None)
             .await
             .map(|_| ());
 
@@ -1298,6 +1362,110 @@ mod tests {
     }
 
     #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
+    async fn external_group_cached_proposals_returns_pending_proposals() {
+        let mut alice = test_group_with_one_commit(TEST_PROTOCOL_VERSION, TEST_CIPHER_SUITE).await;
+        let mut server = make_external_group(&alice).await;
+
+        assert!(server.get_cached_proposals().is_empty());
+
+        let proposal = alice.propose_update(vec![]).await.unwrap();
+        server.process_incoming_message(proposal).await.unwrap();
+
+        let cached = server.get_cached_proposals();
+        assert_eq!(cached.len(), 1);
+        assert!(matches!(cached[0].proposal(), Proposal::Update(_)));
+        assert!(!cached[0].proposal_ref().is_empty());
+
+        let commit_output = alice.commit(vec![]).await.unwrap();
+        alice.apply_pending_commit().await.unwrap();
+        server
+            .process_incoming_message(commit_output.commit_message)
+            .await
+            .unwrap();
+
+        assert!(server.get_cached_proposals().is_empty());
+    }
+
+    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
+    async fn external_group_cached_proposals_returns_independent_copies() {
+        let mut alice = test_group_with_one_commit(TEST_PROTOCOL_VERSION, TEST_CIPHER_SUITE).await;
+        let mut server = make_external_group(&alice).await;
+
+        let proposal = alice.propose_update(vec![]).await.unwrap();
+        server.process_incoming_message(proposal).await.unwrap();
+
+        let mut cached1 = server.get_cached_proposals();
+        let cached2 = server.get_cached_proposals();
+
+        assert_eq!(cached1.len(), 1);
+        assert_eq!(cached2.len(), 1);
+        assert_eq!(cached1[0].proposal_ref(), cached2[0].proposal_ref());
+
+        cached1.clear();
+        assert!(cached1.is_empty());
+        assert_eq!(cached2.len(), 1);
+
+        let cached3 = server.get_cached_proposals();
+        assert_eq!(cached3.len(), 1);
+        assert_eq!(cached2[0].proposal_ref(), cached3[0].proposal_ref());
+    }
+
+    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
+    async fn external_group_exported_tree_matches_export_tree_bytes() {
+        let mut alice = test_group_two_members(
+            TEST_PROTOCOL_VERSION,
+            TEST_CIPHER_SUITE,
+            #[cfg(feature = "by_ref_proposal")]
+            None,
+        )
+        .await;
+
+        let mut server = make_external_group(&alice).await;
+
+        // Add carol so bob is not the last leaf; removing the last leaf
+        // shrinks the tree instead of leaving a blank in place.
+        let (_, add_commit) = alice.join("carol").await;
+        server.process_incoming_message(add_commit).await.unwrap();
+
+        // Remove bob to create a blank leaf, giving the tree a mix of
+        // occupied and blank nodes.
+        let commit_output = alice
+            .commit_builder()
+            .remove_member(1)
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        alice.process_pending_commit().await.unwrap();
+
+        server
+            .process_incoming_message(commit_output.commit_message)
+            .await
+            .unwrap();
+
+        let borrowed = server.exported_tree();
+
+        // Zero-copy accessor should agree with the byte-encoding accessor.
+        let expected_bytes = server.export_tree().unwrap();
+        assert_eq!(borrowed.to_bytes().unwrap(), expected_bytes);
+
+        // Bob's leaf (index 1) is now blank; Alice's (index 0) and carol's
+        // (index 2) are still occupied.
+        assert!(borrowed
+            .get_leaf(LeafIndex::unchecked(1))
+            .unwrap()
+            .is_none());
+        assert!(borrowed
+            .get_leaf(LeafIndex::unchecked(0))
+            .unwrap()
+            .is_some());
+        assert!(borrowed
+            .get_leaf(LeafIndex::unchecked(2))
+            .unwrap()
+            .is_some());
+    }
+
+    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
     async fn external_group_can_observe_since_creation() {
         let mut alice = test_group(TEST_PROTOCOL_VERSION, TEST_CIPHER_SUITE).await;
 
@@ -1307,7 +1475,9 @@ mod tests {
             .unwrap();
 
         let config = TestExternalClientBuilder::new_for_test().build_config();
-        let mut server = ExternalGroup::join(config, None, info, None).await.unwrap();
+        let mut server = ExternalGroup::join(config, None, info, None, None)
+            .await
+            .unwrap();
 
         for _ in 0..2 {
             let commit = alice.commit(vec![]).await.unwrap().commit_message;
@@ -1324,12 +1494,32 @@ mod tests {
         let snapshot = server.snapshot().mls_encode_to_vec().unwrap();
         let snapshot_restored = ExternalSnapshot::mls_decode(&mut snapshot.as_slice()).unwrap();
 
-        let server_restored =
-            ExternalGroup::from_snapshot(server.config.clone(), snapshot_restored)
-                .await
-                .unwrap();
+        assert_eq!(server.snapshot(), snapshot_restored);
+    }
 
-        assert_eq!(server.group_state(), server_restored.group_state());
+    #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]
+    async fn legacy_snapshot_migration() {
+        #[derive(MlsSize, MlsEncode)]
+        struct LegacyExternalSnapshot {
+            version: u16,
+            state: RawGroupState,
+            signing_data: Option<(SignatureSecretKey, SigningIdentity)>,
+        }
+
+        let (server_identity, server_key, alice) = setup_extern_proposal_test(true).await;
+        let server = make_external_group(&alice).await;
+
+        let legacy_snapshot = LegacyExternalSnapshot {
+            version: *TEST_PROTOCOL_VERSION,
+            state: server.snapshot().state,
+            signing_data: Some((server_key, server_identity)),
+        };
+
+        let legacy_snapshot_bytes = legacy_snapshot.mls_encode_to_vec().unwrap();
+        let migrated_snapshot = ExternalSnapshot::mls_decode(&mut &*legacy_snapshot_bytes).unwrap();
+
+        assert_eq!(legacy_snapshot.state, migrated_snapshot.state);
+        assert_eq!(*TEST_PROTOCOL_VERSION, migrated_snapshot.version);
     }
 
     #[maybe_async::test(not(mls_build_async), async(mls_build_async, crate::futures_test))]

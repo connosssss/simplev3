@@ -1,18 +1,16 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "base/basictypes.h"
-
-#include "nsNetCID.h"
-#include "nsNetUtil.h"
-#include "nsIClassInfoImpl.h"
 #include "nsSimpleNestedURI.h"
+
+#include "base/basictypes.h"
+#include "mozilla/ipc/URIUtils.h"
+#include "nsIClassInfoImpl.h"
 #include "nsIObjectInputStream.h"
 #include "nsIObjectOutputStream.h"
-
-#include "mozilla/ipc/URIUtils.h"
+#include "nsNetCID.h"
+#include "nsNetUtil.h"
 
 namespace mozilla {
 namespace net {
@@ -41,7 +39,7 @@ nsresult nsSimpleNestedURI::SetPathQueryRef(const nsACString& aPathQueryRef) {
   rv = nsSimpleURI::SetPathQueryRef(aPathQueryRef);
   NS_ENSURE_SUCCESS(rv, rv);
   // If the regular SetPathQueryRef worked, also set it on the inner URI
-  mInnerURI = inner;
+  mInnerURI = std::move(inner);
   return NS_OK;
 }
 
@@ -54,7 +52,7 @@ nsresult nsSimpleNestedURI::SetQuery(const nsACString& aQuery) {
   rv = nsSimpleURI::SetQuery(aQuery);
   NS_ENSURE_SUCCESS(rv, rv);
   // If the regular SetQuery worked, also set it on the inner URI
-  mInnerURI = inner;
+  mInnerURI = std::move(inner);
   return NS_OK;
 }
 
@@ -67,7 +65,7 @@ nsresult nsSimpleNestedURI::SetRef(const nsACString& aRef) {
   rv = nsSimpleURI::SetRef(aRef);
   NS_ENSURE_SUCCESS(rv, rv);
   // If the regular SetRef worked, also set it on the inner URI
-  mInnerURI = inner;
+  mInnerURI = std::move(inner);
   return NS_OK;
 }
 
@@ -90,7 +88,12 @@ nsresult nsSimpleNestedURI::ReadPrivate(nsIObjectInputStream* aStream) {
   mInnerURI = do_QueryInterface(supports, &rv);
   if (NS_FAILED(rv)) return rv;
 
-  return rv;
+  // Sanity check.
+  if (!IsValidInnerURI(mInnerURI)) {
+    return NS_ERROR_MALFORMED_URI;
+  }
+
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -108,8 +111,7 @@ nsSimpleNestedURI::Write(nsIObjectOutputStream* aStream) {
   return rv;
 }
 
-NS_IMETHODIMP_(void)
-nsSimpleNestedURI::Serialize(mozilla::ipc::URIParams& aParams) {
+void nsSimpleNestedURI::Serialize(mozilla::ipc::URIParams& aParams) {
   using namespace mozilla::ipc;
 
   SimpleNestedURIParams params;
@@ -134,8 +136,41 @@ bool nsSimpleNestedURI::Deserialize(const mozilla::ipc::URIParams& aParams) {
   const SimpleNestedURIParams& params = aParams.get_SimpleNestedURIParams();
   if (!nsSimpleURI::Deserialize(params.simpleParams())) return false;
 
-  mInnerURI = DeserializeURI(params.innerURI());
-  return true;
+  nsCOMPtr<nsIURI> innerURI = DeserializeURI(params.innerURI());
+  if (!innerURI || !IsValidInnerURI(innerURI)) {
+    return false;
+  }
+
+  if (!XRE_IsParentProcess()) {
+    // A content process can trust the serialized URI
+    mInnerURI = innerURI;
+    return true;
+  }
+
+  nsAutoCString innerSpec;
+  if (NS_FAILED(innerURI->GetAsciiSpec(innerSpec))) {
+    return false;
+  }
+  mInnerURI = nullptr;
+  return NS_SUCCEEDED(NS_NewURI(getter_AddRefs(mInnerURI), innerSpec));
+}
+
+bool nsSimpleNestedURI::IsValidInnerURI(nsIURI* aInnerURI) {
+  if (!Scheme().EqualsLiteral("view-source")) {
+    return false;
+  }
+
+  nsAutoCString innerSpec;
+  if (NS_FAILED(aInnerURI->GetAsciiSpec(innerSpec))) {
+    return false;
+  }
+
+  nsAutoCString pathQueryRef;
+  if (NS_FAILED(GetPathQueryRef(pathQueryRef))) {
+    return false;
+  }
+
+  return innerSpec == pathQueryRef;
 }
 
 // nsINestedURI

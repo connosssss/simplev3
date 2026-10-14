@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -7,6 +6,8 @@
 
 #ifndef GFX_FONT_CONSTANTS_H
 #define GFX_FONT_CONSTANTS_H
+
+#include <cstdint>
 
 /*
  * This file is separate from gfxFont.h so that layout can include it
@@ -20,29 +21,6 @@
 #define NS_FONT_WEIGHT_NORMAL 400
 #define NS_FONT_WEIGHT_BOLD 700
 #define NS_FONT_WEIGHT_THIN 100
-
-#define NS_FONT_STRETCH_ULTRA_CONDENSED 50
-#define NS_FONT_STRETCH_EXTRA_CONDENSED 62
-#define NS_FONT_STRETCH_CONDENSED 75
-#define NS_FONT_STRETCH_SEMI_CONDENSED 87
-#define NS_FONT_STRETCH_NORMAL 100
-#define NS_FONT_STRETCH_SEMI_EXPANDED 112
-#define NS_FONT_STRETCH_EXPANDED 125
-#define NS_FONT_STRETCH_EXTRA_EXPANDED 150
-#define NS_FONT_STRETCH_ULTRA_EXPANDED 200
-
-#define NS_FONT_SMOOTHING_AUTO 0
-#define NS_FONT_SMOOTHING_GRAYSCALE 1
-/* For -webkit-font-smoothing; behaves the same as AUTO, but not aliased for
-   parsing/serialization because that would confuse tests. */
-#define NS_FONT_SMOOTHING_SUBPIXEL_ANTIALIASED 2
-
-#define NS_FONT_KERNING_AUTO 0
-#define NS_FONT_KERNING_NONE 1
-#define NS_FONT_KERNING_NORMAL 2
-
-#define NS_FONT_OPTICAL_SIZING_AUTO 0
-#define NS_FONT_OPTICAL_SIZING_NONE 1
 
 #define NS_FONT_VARIANT_ALTERNATES_NORMAL 0
 // alternates - simple enumerated values
@@ -67,25 +45,11 @@
    NS_FONT_VARIANT_ALTERNATES_SWASH | NS_FONT_VARIANT_ALTERNATES_ORNAMENTS | \
    NS_FONT_VARIANT_ALTERNATES_ANNOTATION)
 
-#define NS_FONT_VARIANT_CAPS_NORMAL 0
-#define NS_FONT_VARIANT_CAPS_SMALLCAPS 1
-#define NS_FONT_VARIANT_CAPS_ALLSMALL 2
-#define NS_FONT_VARIANT_CAPS_PETITECAPS 3
-#define NS_FONT_VARIANT_CAPS_ALLPETITE 4
-#define NS_FONT_VARIANT_CAPS_TITLING 5
-#define NS_FONT_VARIANT_CAPS_UNICASE 6
-
-#define NS_FONT_VARIANT_POSITION_NORMAL 0
-#define NS_FONT_VARIANT_POSITION_SUPER 1
-#define NS_FONT_VARIANT_POSITION_SUB 2
-
 #define NS_FONT_VARIANT_WIDTH_NORMAL 0
 #define NS_FONT_VARIANT_WIDTH_FULL 1
 #define NS_FONT_VARIANT_WIDTH_HALF 2
 #define NS_FONT_VARIANT_WIDTH_THIRD 3
 #define NS_FONT_VARIANT_WIDTH_QUARTER 4
-
-enum class StyleFontVariantEmoji : uint8_t { Normal, Text, Emoji, Unicode };
 
 // based on fixed offset values used within WebKit
 #define NS_FONT_SUBSCRIPT_OFFSET_RATIO (0.20)
@@ -101,9 +65,9 @@ enum class StyleFontVariantEmoji : uint8_t { Normal, Text, Emoji, Unicode };
 #define NS_FONT_SUB_SUPER_LARGE_SIZE (45.0)
 
 // pref lang id's for font prefs
-enum eFontPrefLang {
+enum eFontPrefLang : uint8_t {
 #define FONT_PREF_LANG(enum_id_, str_, atom_id_) eFontPrefLang_##enum_id_
-#include "gfxFontPrefLangList.h"
+#include "gfxFontPrefLangList.inc"
 #undef FONT_PREF_LANG
 
   ,

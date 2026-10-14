@@ -28,14 +28,15 @@ import {
   areSourceMapsEnabled,
   getShouldSelectOriginalLocation,
   isSourceActorWithSourceMap,
+  isStyleSheetDisabled,
   getSourceMapResolvedURL,
   isSelectedMappedSourceLoading,
 } from "../../selectors/index";
 
-import { isPretty, shouldBlackbox } from "../../utils/source";
+import { shouldBlackbox } from "../../utils/source";
 
 import { PaneToggleButton } from "../shared/Button/index";
-import AccessibleImage from "../shared/AccessibleImage";
+import DebuggerImage from "devtools/client/shared/components/DebuggerImage";
 
 const classnames = require("resource://devtools/client/shared/classnames.js");
 const MenuButton = require("resource://devtools/client/shared/components/menu/MenuButton.js");
@@ -57,9 +58,42 @@ class SourceFooter extends PureComponent {
       sourceLoaded: PropTypes.bool.isRequired,
       toggleBlackBox: PropTypes.func.isRequired,
       togglePaneCollapse: PropTypes.func.isRequired,
+      toggleStylesheetVisibility: PropTypes.func.isRequired,
       prettyPrintAndSelectSource: PropTypes.func.isRequired,
       isSourceOnIgnoreList: PropTypes.bool.isRequired,
+      isSelectedStyleSheetDisabled: PropTypes.func.isRequired,
     };
+  }
+
+  toggleVisibilityButton() {
+    const {
+      selectedLocation,
+      toggleStylesheetVisibility,
+      isSelectedStyleSheetDisabled,
+      selectedSource,
+    } = this.props;
+    if (
+      !selectedSource?.isStyleSheet ||
+      // There's a limitation with toggling non pretty printed original stylesheets,
+      // these will likely just toggle the whole bundle.
+      (selectedSource.isOriginal && !selectedSource.isPrettyPrinted)
+    ) {
+      return null;
+    }
+    return button(
+      {
+        onClick: () => {
+          toggleStylesheetVisibility(selectedLocation.sourceActor);
+        },
+        className: classnames("action", "toggleStyleSheetVisibility"),
+        key: "toggleStyleSheetVisibility",
+        title: L10N.getStr("sourceFooter.toggleStyleSheetVisibility"),
+        "aria-label": L10N.getStr("sourceFooter.toggleStyleSheetVisibility"),
+      },
+      React.createElement(DebuggerImage, {
+        name: isSelectedStyleSheetDisabled ? "eye-closed" : "eye-opened",
+      })
+    );
   }
 
   prettyPrintButton() {
@@ -68,6 +102,7 @@ class SourceFooter extends PureComponent {
       canPrettyPrint,
       prettyPrintMessage,
       prettyPrintAndSelectSource,
+      removePrettyPrintedSource,
       sourceLoaded,
     } = this.props;
 
@@ -81,8 +116,9 @@ class SourceFooter extends PureComponent {
           className: "action",
           key: "pretty-loader",
         },
-        React.createElement(AccessibleImage, {
-          className: "loader spin",
+        React.createElement(DebuggerImage, {
+          name: "loader",
+          className: "spin",
         })
       );
     }
@@ -91,22 +127,25 @@ class SourceFooter extends PureComponent {
     return button(
       {
         onClick: () => {
+          if (selectedSource.isPrettyPrinted) {
+            removePrettyPrintedSource(selectedSource);
+            return;
+          }
           if (!canPrettyPrint) {
             return;
           }
           prettyPrintAndSelectSource(selectedSource);
         },
         className: classnames("action", type, {
-          active: sourceLoaded && canPrettyPrint,
-          pretty: isPretty(selectedSource),
+          pretty: selectedSource.isPrettyPrinted,
         }),
         key: type,
         title: prettyPrintMessage,
         "aria-label": prettyPrintMessage,
-        disabled: !canPrettyPrint,
+        disabled: !canPrettyPrint && !selectedSource.isPrettyPrinted,
       },
-      React.createElement(AccessibleImage, {
-        className: type,
+      React.createElement(DebuggerImage, {
+        name: type,
       })
     );
   }
@@ -145,8 +184,8 @@ class SourceFooter extends PureComponent {
         "aria-label": tooltip,
         disabled: isSourceOnIgnoreList,
       },
-      React.createElement(AccessibleImage, {
-        className: "blackBox",
+      React.createElement(DebuggerImage, {
+        name: "blackBox",
       })
     );
   }
@@ -166,6 +205,7 @@ class SourceFooter extends PureComponent {
 
   renderCommands() {
     const commands = [
+      this.toggleVisibilityButton(),
       this.blackBoxButton(),
       this.prettyPrintButton(),
       this.renderSourceMapButton(),
@@ -190,8 +230,8 @@ class SourceFooter extends PureComponent {
 
     const tooltip = L10N.getFormatStr(
       mappedSource.isOriginal
-        ? "sourceFooter.mappedOriginalSource.tooltip"
-        : "sourceFooter.mappedGeneratedSource.tooltip",
+        ? "sourceFooter.mappedGeneratedSource.tooltip"
+        : "sourceFooter.mappedOriginalSource.tooltip",
       mappedSource.url
     );
     const label = L10N.getFormatStr(
@@ -251,7 +291,10 @@ class SourceFooter extends PureComponent {
     if (!this.props.isSourceActorWithSourceMap) {
       return L10N.getStr("sourceFooter.sourceMapButton.sourceNotMapped");
     }
-    if (this.props.selectedLocation.source.isOriginal) {
+    if (
+      this.props.selectedLocation.source.isOriginal &&
+      !this.props.selectedLocation.source.isPrettyPrinted
+    ) {
       return L10N.getStr("sourceFooter.sourceMapButton.isOriginalSource");
     }
     return L10N.getStr("sourceFooter.sourceMapButton.isBundleSource");
@@ -273,6 +316,7 @@ class SourceFooter extends PureComponent {
   renderSourceMapButton() {
     const { toolboxDoc } = this.context;
 
+    const selectedSource = this.props.selectedLocation?.source;
     return React.createElement(
       MenuButton,
       {
@@ -284,9 +328,10 @@ class SourceFooter extends PureComponent {
           loading: this.props.isSourceMapLoading,
           disabled: !this.props.areSourceMapsEnabled,
           "not-mapped":
-            !this.props.selectedLocation?.source.isOriginal &&
+            (!selectedSource?.isOriginal || selectedSource?.isPrettyPrinted) &&
             !this.props.isSourceActorWithSourceMap,
-          original: this.props.selectedLocation?.source.isOriginal,
+          original:
+            selectedSource?.isOriginal && !selectedSource.isPrettyPrinted,
         }),
         title: this.getSourceMapTitle(),
         label: this.getSourceMapLabel(),
@@ -406,7 +451,7 @@ class SourceFooter extends PureComponent {
 SourceFooter.contextTypes = {
   toolboxDoc: PropTypes.object,
 };
-
+// eslint-disable-next-line complexity
 const mapStateToProps = state => {
   const selectedSource = getSelectedSource(state);
   const selectedLocation = getSelectedLocation(state);
@@ -427,7 +472,8 @@ const mapStateToProps = state => {
     // `mappedSource` will be null while loading, we need another way to know when it is done computing
     !mappedSource &&
     isSelectedMappedSourceLoading(state) &&
-    !sourceMapError;
+    !sourceMapError &&
+    !selectedSource?.isPrettyPrinted;
 
   return {
     selectedSource,
@@ -438,6 +484,9 @@ const mapStateToProps = state => {
     isSourceOnIgnoreList:
       isSourceMapIgnoreListEnabled(state) &&
       isSourceOnSourceMapIgnoreList(state, selectedSource),
+    isSelectedStyleSheetDisabled: selectedSource?.isStyleSheet
+      ? isStyleSheetDisabled(state, selectedSource)
+      : false,
     sourceLoaded: !!sourceTextContent,
     mappedSource,
     isSourceMapLoading,
@@ -447,7 +496,11 @@ const mapStateToProps = state => {
     ),
     endPanelCollapsed: getPaneCollapse(state, "end"),
     canPrettyPrint: selectedLocation
-      ? canPrettyPrintSource(state, selectedLocation)
+      ? canPrettyPrintSource(
+          state,
+          selectedSource,
+          selectedLocation.sourceActor
+        )
       : false,
     prettyPrintMessage: selectedLocation
       ? getPrettyPrintMessage(state, selectedLocation)
@@ -465,11 +518,13 @@ const mapStateToProps = state => {
 };
 
 export default connect(mapStateToProps, {
+  removePrettyPrintedSource: actions.removePrettyPrintedSource,
   prettyPrintAndSelectSource: actions.prettyPrintAndSelectSource,
   toggleBlackBox: actions.toggleBlackBox,
   jumpToMappedLocation: actions.jumpToMappedLocation,
   togglePaneCollapse: actions.togglePaneCollapse,
   toggleSourceMapsEnabled: actions.toggleSourceMapsEnabled,
+  toggleStylesheetVisibility: actions.toggleStylesheetVisibility,
   setDefaultSelectedLocation: actions.setDefaultSelectedLocation,
   jumpToMappedSelectedLocation: actions.jumpToMappedSelectedLocation,
   openSourceMap: actions.openSourceMap,

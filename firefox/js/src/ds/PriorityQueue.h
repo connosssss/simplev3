@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -24,12 +22,12 @@ template <class T, class P, size_t MinInlineCapacity = 0,
 class PriorityQueue {
   Vector<T, MinInlineCapacity, AllocPolicy> heap;
 
-  PriorityQueue(const PriorityQueue&) = delete;
-  PriorityQueue& operator=(const PriorityQueue&) = delete;
-
  public:
   explicit PriorityQueue(AllocPolicy ap = AllocPolicy())
       : heap(std::move(ap)) {}
+
+  PriorityQueue(const PriorityQueue&) = delete;
+  PriorityQueue& operator=(const PriorityQueue&) = delete;
 
   [[nodiscard]] bool reserve(size_t capacity) { return heap.reserve(capacity); }
 
@@ -55,19 +53,6 @@ class PriorityQueue {
     heap.popBack();
     siftDown(0);
   }
-
-  // removeHighest cannot be used with UniquePtrs, and should only be used for
-  // other datatypes.
-  T removeHighest() {
-    T highest = heap[0];
-    T last = heap.popCopy();
-    if (!heap.empty()) {
-      heap[0] = last;
-      siftDown(0);
-    }
-    return highest;
-  }
-
   [[nodiscard]] bool insert(T&& v) {
     if (!heap.append(std::move(v))) {
       return false;

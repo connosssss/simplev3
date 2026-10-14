@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,24 +5,23 @@
 #ifndef mozilla_dom_KeyframeEffect_h
 #define mozilla_dom_KeyframeEffect_h
 
-#include "nsChangeHint.h"
-#include "nsCSSPropertyID.h"
-#include "nsCSSPropertyIDSet.h"
-#include "nsCSSValue.h"
-#include "nsCycleCollectionParticipant.h"
-#include "nsRefPtrHashtable.h"
-#include "nsTArray.h"
-#include "nsWrapperCache.h"
-#include "mozilla/AnimatedPropertyID.h"
+#include "NonCustomCSSPropertyId.h"
 #include "mozilla/AnimatedPropertyIDSet.h"
 #include "mozilla/AnimationPerformanceWarning.h"
 #include "mozilla/AnimationPropertySegment.h"
 #include "mozilla/AnimationTarget.h"
-#include "mozilla/Attributes.h"
+#include "mozilla/CSSPropertyId.h"
 #include "mozilla/EffectCompositor.h"
 #include "mozilla/Keyframe.h"
 #include "mozilla/KeyframeEffectParams.h"
 #include "mozilla/PostRestyleMode.h"
+#include "nsCSSPropertyIDSet.h"
+#include "nsCSSValue.h"
+#include "nsChangeHint.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsRefPtrHashtable.h"
+#include "nsTArray.h"
+#include "nsWrapperCache.h"
 // StyleLockedDeclarationBlock and associated RefPtrTraits
 #include "mozilla/ServoBindingTypes.h"
 #include "mozilla/StyleAnimationValue.h"
@@ -57,7 +54,7 @@ struct AnimationPropertyDetails;
 }  // namespace dom
 
 struct AnimationProperty {
-  AnimatedPropertyID mProperty;
+  CSSPropertyId mProperty;
 
   // If true, the propery is currently being animated on the compositor.
   //
@@ -105,6 +102,7 @@ struct AnimationProperty {
 namespace dom {
 
 class Animation;
+class CSSAnimationKeyframeEffect;
 class Document;
 
 class KeyframeEffect : public AnimationEffect {
@@ -123,6 +121,9 @@ class KeyframeEffect : public AnimationEffect {
                                JS::Handle<JSObject*> aGivenProto) override;
 
   KeyframeEffect* AsKeyframeEffect() override { return this; }
+  virtual CSSAnimationKeyframeEffect* AsCSSAnimationKeyframeEffect() {
+    return nullptr;
+  }
 
   bool IsValidTransition() const {
     return Properties().Length() == 1 &&
@@ -157,8 +158,7 @@ class KeyframeEffect : public AnimationEffect {
       SetDOMStringToNull(aRetVal);
       return;
     }
-    aRetVal =
-        nsCSSPseudoElements::PseudoRequestAsString(mTarget.mPseudoRequest);
+    mTarget.mPseudoRequest.ToString(aRetVal);
   }
 
   // These two setters call GetTargetComputedStyle which is not safe to use when
@@ -172,7 +172,10 @@ class KeyframeEffect : public AnimationEffect {
   void SetPseudoElement(const nsAString& aPseudoElement, ErrorResult& aRv);
 
   void GetKeyframes(JSContext* aCx, nsTArray<JSObject*>& aResult,
-                    ErrorResult& aRv) const;
+                    ErrorResult& aRv);
+  virtual bool GetComputedKeyframes(nsTArray<Keyframe>& aKeyframes) const {
+    return false;
+  }
   void GetProperties(nsTArray<AnimationPropertyDetails>& aProperties,
                      ErrorResult& aRv) const;
 
@@ -194,7 +197,8 @@ class KeyframeEffect : public AnimationEffect {
                             JS::Handle<JSObject*> aKeyframes, ErrorResult& aRv);
   void SetKeyframes(nsTArray<Keyframe>&& aKeyframes,
                     const ComputedStyle* aStyle,
-                    const AnimationTimeline* aTimeline);
+                    const AnimationTimeline* aTimeline,
+                    const AnimationRange* aRange);
 
   // Replace the start value of the transition. This is used for updating
   // transitions running on the compositor.
@@ -223,12 +227,12 @@ class KeyframeEffect : public AnimationEffect {
   // properties where an !important rule on another transform property may
   // cause all transform properties to be run on the main thread. That check is
   // performed by GetPropertiesForCompositor.
-  bool HasEffectiveAnimationOfProperty(const AnimatedPropertyID& aProperty,
+  bool HasEffectiveAnimationOfProperty(const CSSPropertyId& aProperty,
                                        const EffectSet& aEffect) const {
     return GetEffectiveAnimationOfProperty(aProperty, aEffect) != nullptr;
   }
   const AnimationProperty* GetEffectiveAnimationOfProperty(
-      const AnimatedPropertyID&, const EffectSet&) const;
+      const CSSPropertyId&, const EffectSet&) const;
 
   // Similar to HasEffectiveAnimationOfProperty, above, but for
   // an nsCSSPropertyIDSet. Returns true if this keyframe effect has at least
@@ -261,7 +265,8 @@ class KeyframeEffect : public AnimationEffect {
 
   // Update |mProperties| by recalculating from |mKeyframes| using
   // |aComputedStyle| to resolve specified values.
-  // Note: we use |aTimeline| to check if we need to ensure the base styles.
+  // Note: we use |aTimeline| to check if we need to ensure the base styles and
+  // used to check if we have to skip the generated keyframes.
   // If it is nullptr, we use the timeline from |mAnimation|.
   void UpdateProperties(const ComputedStyle* aStyle,
                         const AnimationTimeline* aTimeline = nullptr);
@@ -282,7 +287,8 @@ class KeyframeEffect : public AnimationEffect {
 
   // Returns true if at least one property is being animated on compositor.
   bool IsRunningOnCompositor() const;
-  void SetIsRunningOnCompositor(nsCSSPropertyID aProperty, bool aIsRunning);
+  void SetIsRunningOnCompositor(NonCustomCSSPropertyId aProperty,
+                                bool aIsRunning);
   void SetIsRunningOnCompositor(const nsCSSPropertyIDSet& aPropertySet,
                                 bool aIsRunning);
   void ResetIsRunningOnCompositor();
@@ -330,7 +336,7 @@ class KeyframeEffect : public AnimationEffect {
   // |aFrame| is used for calculation of scale values.
   bool ContainsAnimatedScale(const nsIFrame* aFrame) const;
 
-  AnimationValue BaseStyle(const AnimatedPropertyID& aProperty) const {
+  AnimationValue BaseStyle(const CSSPropertyId& aProperty) const {
     AnimationValue result;
     bool hasProperty = false;
     // We cannot use getters_AddRefs on StyleAnimationValue because it is
@@ -371,6 +377,11 @@ class KeyframeEffect : public AnimationEffect {
 
   bool HasOpacityChange() const { return mCumulativeChanges.mOpacity; }
 
+  double AnimationsPlayBackRateMultiplier() const;
+
+  void MaybeUpdateKeyframeComputedOffsets(const AnimationTimeline* aTimelne,
+                                          const AnimationRange& aRange);
+
  protected:
   ~KeyframeEffect() override = default;
 
@@ -383,7 +394,8 @@ class KeyframeEffect : public AnimationEffect {
   // Build properties by recalculating from |mKeyframes| using |aComputedStyle|
   // to resolve specified values. This function also applies paced spacing if
   // needed.
-  nsTArray<AnimationProperty> BuildProperties(const ComputedStyle* aStyle);
+  nsTArray<AnimationProperty> BuildProperties(
+      const ComputedStyle* aStyle, const AnimationTimeline* aTimeline);
 
   // Helper for SetTarget() and SetPseudoElement().
   void UpdateTarget(Element* aElement,
@@ -434,6 +446,10 @@ class KeyframeEffect : public AnimationEffect {
 
   // The specified keyframes.
   nsTArray<Keyframe> mKeyframes;
+  // The into about whether there are any range-based keyframes in |mKeyframes|,
+  // to avoid any unnecessary passes of |mKeyframes|.
+  KeyframeOffsetsHasRangeOffset mKeyframeOffsetsHasRangeOffset =
+      KeyframeOffsetsHasRangeOffset::No;
 
   // A set of per-property value arrays, derived from |mKeyframes|.
   nsTArray<AnimationProperty> mProperties;
@@ -461,8 +477,7 @@ class KeyframeEffect : public AnimationEffect {
   // least one animation value that is composited with the underlying value
   // (i.e. it uses the additive or accumulate composite mode).
   using BaseValuesHashmap =
-      nsRefPtrHashtable<nsGenericHashKey<AnimatedPropertyID>,
-                        StyleAnimationValue>;
+      nsRefPtrHashtable<nsGenericHashKey<CSSPropertyId>, StyleAnimationValue>;
   BaseValuesHashmap mBaseValues;
 
  private:
@@ -478,13 +493,16 @@ class KeyframeEffect : public AnimationEffect {
     bool mOverflow : 1;
     // True if there is any current-color for background color.
     bool mHasBackgroundColorCurrentColor : 1;
+    // Whether the display property is changing.
+    bool mDisplay : 1;
 
     CumulativeChanges()
         : mOpacity(false),
           mVisibility(false),
           mLayout(false),
           mOverflow(false),
-          mHasBackgroundColorCurrentColor(false) {}
+          mHasBackgroundColorCurrentColor(false),
+          mDisplay(false) {}
   };
   CumulativeChanges mCumulativeChanges;
 
@@ -494,7 +512,7 @@ class KeyframeEffect : public AnimationEffect {
                         const ComputedTiming& aComputedTiming);
 
   already_AddRefed<const ComputedStyle> CreateComputedStyleForAnimationValue(
-      nsCSSPropertyID aProperty, const AnimationValue& aValue,
+      NonCustomCSSPropertyId aProperty, const AnimationValue& aValue,
       nsPresContext* aPresContext, const ComputedStyle* aBaseComputedStyle);
 
   // Return the primary frame for the target (pseudo-)element.
@@ -502,6 +520,13 @@ class KeyframeEffect : public AnimationEffect {
   // Returns the frame which is used for styling.
   nsIFrame* GetStyleFrame() const;
 
+  // Returns true if this effect can skip its main-thread restyle for this tick,
+  // e.g. because it has no visible result (no frame, invisible, or scrolled out
+  // of view) or is running entirely on the compositor.
+  //
+  // Special Case: when animating from `display:none`, the animation might
+  // animate back to a non-none display value, so we must not throttle so the
+  // result can reappear.
   bool CanThrottle() const;
   bool CanThrottleOverflowChanges(const nsIFrame& aFrame) const;
   bool CanThrottleOverflowChangesInScrollable(nsIFrame& aFrame) const;
@@ -517,7 +542,7 @@ class KeyframeEffect : public AnimationEffect {
   static bool CanAnimateTransformOnCompositor(
       const nsIFrame* aFrame,
       AnimationPerformanceWarning::Type& aPerformanceWarning /* out */);
-  static bool IsGeometricProperty(const nsCSSPropertyID aProperty);
+  static bool IsGeometricProperty(const NonCustomCSSPropertyId aProperty);
 
   static const TimeDuration OverflowRegionRefreshInterval();
 

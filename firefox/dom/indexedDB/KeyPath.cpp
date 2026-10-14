@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,7 +11,6 @@
 #include "js/Array.h"  // JS::NewArrayObject
 #include "js/PropertyAndElement.h"  // JS_DefineElement, JS_DefineUCProperty, JS_DeleteUCProperty
 #include "js/PropertyDescriptor.h"  // JS::PropertyDescriptor, JS_GetOwnUCPropertyDescriptor
-#include "mozilla/ResultExtensions.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/Blob.h"
 #include "mozilla/dom/BlobBinding.h"
@@ -118,13 +115,15 @@ nsresult GetJSValFromKeyPathString(
         // only through getters but we still want to support them for key
         // extraction. So they need to be handled manually.
         Blob* blob;
-        if (NS_SUCCEEDED(UNWRAP_OBJECT(Blob, &obj, blob))) {
+        // UNWRAP_OBJECT calls might mutate this.
+        JS::Rooted<JSObject*> blobObj(aCx, obj);
+        if (NS_SUCCEEDED(UNWRAP_OBJECT(Blob, &blobObj, blob))) {
           if (token.EqualsLiteral("size")) {
             ErrorResult rv;
             uint64_t size = blob->GetSize(rv);
             MOZ_ALWAYS_TRUE(!rv.Failed());
 
-            intermediate = JS_NumberValue(size);
+            intermediate = JS::NumberValue(size);
             hasProp = true;
           } else if (token.EqualsLiteral("type")) {
             nsString type;
@@ -152,7 +151,7 @@ nsresult GetJSValFromKeyPathString(
                 int64_t lastModifiedDate = file->GetLastModified(rv);
                 MOZ_ALWAYS_TRUE(!rv.Failed());
 
-                intermediate = JS_NumberValue(lastModifiedDate);
+                intermediate = JS::NumberValue(lastModifiedDate);
                 hasProp = true;
               }
               // The spec also lists "lastModifiedDate", but we deprecated and

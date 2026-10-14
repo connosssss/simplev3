@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,7 +11,6 @@
 #include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/WindowGlobalParent.h"
-#include "mozilla/Unused.h"
 #include "nsError.h"
 #include "nsContentSecurityManager.h"
 #include "nsDocShellLoadTypes.h"
@@ -38,7 +35,7 @@ MaybeCloseWindowHelper::MaybeCloseWindowHelper(BrowsingContext* aContentContext)
       mTimer(nullptr),
       mShouldCloseWindow(false) {}
 
-MaybeCloseWindowHelper::~MaybeCloseWindowHelper() {}
+MaybeCloseWindowHelper::~MaybeCloseWindowHelper() = default;
 
 void MaybeCloseWindowHelper::SetShouldCloseWindow(bool aShouldCloseWindow) {
   mShouldCloseWindow = aShouldCloseWindow;
@@ -90,11 +87,11 @@ MaybeCloseWindowHelper::ChooseNewBrowsingContext(BrowsingContext* aBC) {
 }
 
 NS_IMETHODIMP
-MaybeCloseWindowHelper::Notify(nsITimer* timer) {
+MaybeCloseWindowHelper::Notify(nsITimer* timer) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   NS_ASSERTION(mBCToClose, "No window to close after timer fired");
 
-  mBCToClose->Close(CallerType::System, IgnoreErrors());
-  mBCToClose = nullptr;
+  const RefPtr<BrowsingContext> bc = std::move(mBCToClose);
+  bc->Close(CallerType::System, IgnoreErrors());
   mTimer = nullptr;
 
   return NS_OK;
@@ -111,7 +108,7 @@ nsDSURIContentListener::nsDSURIContentListener(nsDocShell* aDocShell)
       mExistingJPEGRequest(nullptr),
       mParentContentListener(nullptr) {}
 
-nsDSURIContentListener::~nsDSURIContentListener() {}
+nsDSURIContentListener::~nsDSURIContentListener() = default;
 
 NS_IMPL_ADDREF(nsDSURIContentListener)
 NS_IMPL_RELEASE(nsDSURIContentListener)
@@ -123,15 +120,14 @@ NS_INTERFACE_MAP_BEGIN(nsDSURIContentListener)
 NS_INTERFACE_MAP_END
 
 NS_IMETHODIMP
-nsDSURIContentListener::DoContent(const nsACString& aContentType,
-                                  bool aIsContentPreferred,
-                                  nsIRequest* aRequest,
-                                  nsIStreamListener** aContentHandler,
-                                  bool* aAbortProcess) {
+nsDSURIContentListener::DoContent(
+    const nsACString& aContentType, bool aIsContentPreferred,
+    nsIRequest* aRequest, nsIStreamListener** aContentHandler,
+    bool* aAbortProcess) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   nsresult rv;
   NS_ENSURE_ARG_POINTER(aContentHandler);
   NS_ENSURE_TRUE(mDocShell, NS_ERROR_FAILURE);
-  RefPtr<nsDocShell> docShell = mDocShell;
+  RefPtr<nsDocShell> docShell = mDocShell.get();
 
   *aAbortProcess = false;
 

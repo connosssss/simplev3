@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,14 +6,7 @@
  * JS function support.
  */
 
-#include "vm/JSFunction-inl.h"
-
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/Maybe.h"
-#include "mozilla/Range.h"
-
-#include <algorithm>
-#include <string.h>
 
 #include "jsapi.h"
 #include "jstypes.h"
@@ -59,10 +50,11 @@
 #include "vm/SelfHosting.h"
 #include "vm/Shape.h"
 #include "vm/StringObject.h"
-#include "wasm/AsmJS.h"
 #include "wasm/WasmCode.h"
 #include "wasm/WasmInstance.h"
+
 #include "vm/Interpreter-inl.h"
+#include "vm/JSFunction-inl.h"
 #include "vm/JSScript-inl.h"
 
 using namespace js;
@@ -104,7 +96,7 @@ static bool fun_enumerate(JSContext* cx, HandleObject obj) {
   return true;
 }
 
-bool IsFunction(HandleValue v) {
+static bool IsFunction(HandleValue v) {
   return v.isObject() && v.toObject().is<JSFunction>();
 }
 
@@ -144,20 +136,14 @@ static bool IsSloppyNormalFunction(JSFunction* fun) {
     return !fun->strict();
   }
 
-  // Or asm.js function in sloppy mode.
-  if (fun->kind() == FunctionFlags::AsmJS) {
-    return !IsAsmJSStrictModeModuleOrFunction(fun);
-  }
-
   return false;
 }
 
 // Beware: this function can be invoked on *any* function! That includes
 // natives, strict mode functions, bound functions, arrow functions,
-// self-hosted functions and constructors, asm.js functions, functions with
-// destructuring arguments and/or a rest argument, and probably a few more I
-// forgot. Turn back and save yourself while you still can. It's too late for
-// me.
+// self-hosted functions and constructors, functions with destructuring
+// arguments and/or a rest argument, and probably a few more I forgot.
+// Turn back and save yourself while you still can. It's too late for me.
 static bool ArgumentsRestrictions(JSContext* cx, HandleFunction fun) {
   // Throw unless the function is a sloppy, normal function.
   // TODO (bug 1057208): ensure semantics are correct for all possible
@@ -170,7 +156,7 @@ static bool ArgumentsRestrictions(JSContext* cx, HandleFunction fun) {
   return true;
 }
 
-bool ArgumentsGetterImpl(JSContext* cx, const CallArgs& args) {
+static bool ArgumentsGetterImpl(JSContext* cx, const CallArgs& args) {
   MOZ_ASSERT(IsFunction(args.thisv()));
 
   RootedFunction fun(cx, &args.thisv().toObject().as<JSFunction>());
@@ -216,7 +202,7 @@ static bool ArgumentsGetter(JSContext* cx, unsigned argc, Value* vp) {
   return CallNonGenericMethod<IsFunction, ArgumentsGetterImpl>(cx, args);
 }
 
-bool ArgumentsSetterImpl(JSContext* cx, const CallArgs& args) {
+static bool ArgumentsSetterImpl(JSContext* cx, const CallArgs& args) {
   MOZ_ASSERT(IsFunction(args.thisv()));
 
   RootedFunction fun(cx, &args.thisv().toObject().as<JSFunction>());
@@ -236,10 +222,9 @@ static bool ArgumentsSetter(JSContext* cx, unsigned argc, Value* vp) {
 
 // Beware: this function can be invoked on *any* function! That includes
 // natives, strict mode functions, bound functions, arrow functions,
-// self-hosted functions and constructors, asm.js functions, functions with
-// destructuring arguments and/or a rest argument, and probably a few more I
-// forgot. Turn back and save yourself while you still can. It's too late for
-// me.
+// self-hosted functions and constructors, functions with destructuring
+// arguments and/or a rest argument, and probably a few more I forgot.
+// Turn back and save yourself while you still can. It's too late for me.
 static bool CallerRestrictions(JSContext* cx, HandleFunction fun) {
   // Throw unless the function is a sloppy, normal function.
   // TODO (bug 1057208): ensure semantics are correct for all possible
@@ -252,7 +237,7 @@ static bool CallerRestrictions(JSContext* cx, HandleFunction fun) {
   return true;
 }
 
-bool CallerGetterImpl(JSContext* cx, const CallArgs& args) {
+static bool CallerGetterImpl(JSContext* cx, const CallArgs& args) {
   MOZ_ASSERT(IsFunction(args.thisv()));
 
   // Beware!  This function can be invoked on *any* function!  It can't
@@ -322,7 +307,7 @@ static bool CallerGetter(JSContext* cx, unsigned argc, Value* vp) {
   return CallNonGenericMethod<IsFunction, CallerGetterImpl>(cx, args);
 }
 
-bool CallerSetterImpl(JSContext* cx, const CallArgs& args) {
+static bool CallerSetterImpl(JSContext* cx, const CallArgs& args) {
   MOZ_ASSERT(IsFunction(args.thisv()));
 
   // We just have to return |undefined|, but first we call CallerGetterImpl
@@ -350,7 +335,7 @@ static const JSPropertySpec function_properties[] = {
 static bool ResolveInterpretedFunctionPrototype(JSContext* cx,
                                                 HandleFunction fun,
                                                 HandleId id) {
-  MOZ_ASSERT(fun->isInterpreted() || fun->isAsmJSNative());
+  MOZ_ASSERT(fun->isInterpreted());
   MOZ_ASSERT(id == NameToId(cx->names().prototype));
 
   // Assert that fun is not a compiler-created function object, which
@@ -377,7 +362,7 @@ static bool ResolveInterpretedFunctionPrototype(JSContext* cx,
   }
 
   Rooted<PlainObject*> proto(
-      cx, NewPlainObjectWithProto(cx, objProto, TenuredObject));
+      cx, NewPlainObjectWithProto(cx, objProto, {.newKind = TenuredObject}));
   if (!proto) {
     return false;
   }
@@ -452,7 +437,7 @@ bool JSFunction::hasNonConfigurablePrototypeDataProperty() {
 }
 
 uint32_t JSFunction::wasmFuncIndex() const {
-  MOZ_ASSERT(isWasm() || isAsmJSNative());
+  MOZ_ASSERT(isWasm());
   if (!isNativeWithJitEntry()) {
     uintptr_t tagged = uintptr_t(nativeJitInfoOrInterpretedScript());
     MOZ_ASSERT(tagged & 1);
@@ -464,7 +449,7 @@ uint32_t JSFunction::wasmFuncIndex() const {
 void JSFunction::initWasm(uint32_t funcIndex, wasm::Instance* instance,
                           const wasm::SuperTypeVector* superTypeVector,
                           void* uncheckedCallEntry) {
-  MOZ_ASSERT(isWasm() || isAsmJSNative());
+  MOZ_ASSERT(isWasm());
   MOZ_ASSERT(!isWasmWithJitEntry());
   MOZ_ASSERT(!nativeJitInfoOrInterpretedScript());
 
@@ -697,11 +682,6 @@ static bool fun_resolve(JSContext* cx, HandleObject obj, HandleId id,
 static bool fun_symbolHasInstance(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
 
-  if (args.length() < 1) {
-    args.rval().setBoolean(false);
-    return true;
-  }
-
   /* Step 1. */
   HandleValue func = args.thisv();
 
@@ -716,7 +696,8 @@ static bool fun_symbolHasInstance(JSContext* cx, unsigned argc, Value* vp) {
 
   /* Step 2. */
   bool result;
-  if (!OrdinaryHasInstance(cx, obj, args[0], &result)) {
+  HandleValue arg = args.length() > 0 ? args[0] : JS::UndefinedHandleValue;
+  if (!OrdinaryHasInstance(cx, obj, arg, &result)) {
     return false;
   }
 
@@ -800,9 +781,9 @@ inline void JSFunction::trace(JSTracer* trc) {
       }
     }
   }
-  // wasm/asm.js exported functions need to keep WasmInstantObject alive,
+  // wasm exported functions need to keep WasmInstantObject alive,
   // access it via WASM_INSTANCE_SLOT extended slot.
-  if (isAsmJSNative() || isWasm()) {
+  if (isWasm()) {
     const Value& v = getExtendedSlot(FunctionExtended::WASM_INSTANCE_SLOT);
     if (!v.isUndefined()) {
       auto* instance = static_cast<wasm::Instance*>(v.toPrivate());
@@ -858,13 +839,6 @@ void js::FunctionToStringCache::put(BaseScript* script, JSString* string) {
 
 JSString* js::FunctionToString(JSContext* cx, HandleFunction fun,
                                bool isToSource) {
-  if (IsAsmJSModule(fun)) {
-    return AsmJSModuleToString(cx, fun, isToSource);
-  }
-  if (IsAsmJSFunction(fun)) {
-    return AsmJSFunctionToString(cx, fun);
-  }
-
   // Self-hosted built-ins should not expose their source code.
   bool haveSource = fun->isInterpreted() && !fun->isSelfHostedBuiltin();
 
@@ -873,11 +847,15 @@ JSString* js::FunctionToString(JSContext* cx, HandleFunction fun,
   bool addParentheses =
       haveSource && isToSource && (fun->isLambda() && !fun->isArrow());
 
+  mozilla::Maybe<ScriptSource::DataReader> reader;
+
   if (haveSource) {
-    if (!ScriptSource::loadSource(cx, fun->baseScript()->scriptSource(),
-                                  &haveSource)) {
+    ScriptSource* ss = fun->baseScript()->scriptSource();
+    if (!ss->tryLoadSource(cx, reader, &haveSource)) {
       return nullptr;
     }
+    MOZ_ASSERT_IF(haveSource, reader.isSome());
+    MOZ_ASSERT_IF(haveSource, (*reader).hasSourceText());
   }
 
   // Fast path for the common case, to avoid StringBuilder overhead.
@@ -890,10 +868,9 @@ JSString* js::FunctionToString(JSContext* cx, HandleFunction fun,
     BaseScript* script = fun->baseScript();
     size_t start = script->toStringStart();
     size_t end = script->toStringEnd();
-    JSString* str =
-        (end - start <= ScriptSource::SourceDeflateLimit)
-            ? script->scriptSource()->substring(cx, start, end)
-            : script->scriptSource()->substringDontDeflate(cx, start, end);
+    JSString* str = (end - start <= ScriptSource::SourceDeflateLimit)
+                        ? (*reader)->substring(cx, start, end)
+                        : (*reader)->substringDontDeflate(cx, start, end);
     if (!str) {
       return nullptr;
     }
@@ -1016,7 +993,8 @@ JSString* js::FunctionToString(JSContext* cx, HandleFunction fun,
   return out.finishString();
 }
 
-JSString* fun_toStringHelper(JSContext* cx, HandleObject obj, bool isToSource) {
+JSString* js::fun_toStringHelper(JSContext* cx, HandleObject obj,
+                                 bool isToSource) {
   if (!obj->is<JSFunction>()) {
     if (JSFunToStringOp op = obj->getOpsFunToString()) {
       return op(cx, obj, isToSource);
@@ -1174,16 +1152,10 @@ static const JSFunctionSpec function_methods[] = {
 };
 
 static const JSClassOps JSFunctionClassOps = {
-    nullptr,         // addProperty
-    nullptr,         // delProperty
-    fun_enumerate,   // enumerate
-    nullptr,         // newEnumerate
-    fun_resolve,     // resolve
-    fun_mayResolve,  // mayResolve
-    nullptr,         // finalize
-    nullptr,         // call
-    nullptr,         // construct
-    fun_trace,       // trace
+    .enumerate = fun_enumerate,
+    .resolve = fun_resolve,
+    .mayResolve = fun_mayResolve,
+    .trace = fun_trace,
 };
 
 static const ClassSpec JSFunctionClassSpec = {
@@ -1385,6 +1357,11 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
 
   JSStringBuilder sb(cx);
 
+  // The parser only accepts two byte strings.
+  if (!sb.ensureTwoByteChars()) {
+    return false;
+  }
+
   if (isAsync) {
     if (!sb.append("async ")) {
       return false;
@@ -1419,16 +1396,39 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
         return false;
       }
 
-      // Steps 14.a-b, 14.d.i-ii.
-      str = ToString<CanGC>(cx, args[i]);
-      if (!str) {
-        return false;
+      // Dynamic Code Brand Checks Proposal
+      //
+      // CreateDynamicFunction ( constructor, newTarget, kind, parameterArgs,
+      //                         bodyArg )
+      // https://tc39.es/proposal-dynamic-code-brand-checks/#sec-createdynamicfunction
+      //
+      // Step 8.b. Let parameterString be no-code.
+      str = nullptr;
+
+      // Step 8.c. If arg is an Object, set parameterString to
+      //           HostGetCodeForEval(arg).
+      if (args[i].isObject()) {
+        JS::Rooted<JSObject*> obj(cx, &args[i].toObject());
+        if (!cx->getCodeForEval(obj, &str)) {
+          return false;
+        }
       }
 
+      // Step 8.d. If parameterString is no-code, set parameterString to
+      //           ? ToString(arg).
+      if (!str) {
+        str = ToString<CanGC>(cx, args[i]);
+        if (!str) {
+          return false;
+        }
+      }
+
+      // Step 8.e. Append parameterString to parameterStrings.
       if (!parameterStrings.append(str)) {
         return false;
       }
 
+      // ES2018 draft
       // Steps 14.b, 14.d.iii.
       if (!sb.append(str)) {
         return false;
@@ -1457,12 +1457,36 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
   }
 
   JS::RootedValue bodyArg(cx);
-  RootedString bodyString(cx);
+
+  // Dynamic Code Brand Checks Proposal
+  //
+  // CreateDynamicFunction ( constructor, newTarget, kind, parameterArgs,
+  //                         bodyArg )
+  // https://tc39.es/proposal-dynamic-code-brand-checks/#sec-createdynamicfunction
+  //
+  // Step 10. Let bodyString be no-code.
+  JS::Rooted<JSString*> bodyString(cx);
   if (args.length() > 0) {
-    // Steps 13, 14.e, 15.
     bodyArg = args[args.length() - 1];
-    bodyString = ToString<CanGC>(cx, bodyArg);
-    if (!bodyString || !sb.append(bodyString)) {
+
+    // Step 11. If bodyArg is an Object, set bodyString to
+    //          HostGetCodeForEval(bodyArg).
+    if (bodyArg.isObject()) {
+      JS::Rooted<JSObject*> obj(cx, &bodyArg.toObject());
+      if (!cx->getCodeForEval(obj, &bodyString)) {
+        return false;
+      }
+    }
+
+    // Step 12. If bodyString is no-code, set bodyString to ? ToString(bodyArg).
+    if (!bodyString) {
+      bodyString = ToString<CanGC>(cx, bodyArg);
+      if (!bodyString) {
+        return false;
+      }
+    }
+
+    if (!sb.append(bodyString)) {
       return false;
     }
   }
@@ -1472,19 +1496,26 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
     return false;
   }
 
-  // The parser only accepts two byte strings.
-  if (!sb.ensureTwoByteChars()) {
-    return false;
-  }
-
   RootedString functionText(cx, sb.finishString());
   if (!functionText) {
     return false;
   }
 
+  // Dynamic Code Brand Checks Proposal
+  //
+  // CreateDynamicFunction ( constructor, newTarget, kind, parameterArgs,
+  //                         bodyArg )
+  // https://tc39.es/proposal-dynamic-code-brand-checks/#sec-createdynamicfunction
+  //
+  // Step 19. Perform ? HostEnsureCanCompileStrings(
+  //             currentRealm, parameterStrings, bodyString, sourceString,
+  //             FUNCTION, parameterArgs, bodyArg )
+  //
   // Block this call if security callbacks forbid it.
-  bool canCompileStrings = false;
-  if (!cx->isRuntimeCodeGenEnabled(JS::RuntimeCode::JS, functionText,
+  bool canCompileStrings = cx->bypassCSPForDebugger;
+
+  if (!canCompileStrings &&
+      !cx->isRuntimeCodeGenEnabled(JS::RuntimeCode::JS, functionText,
                                    JS::CompilationType::Function,
                                    parameterStrings, bodyString, parameterArgs,
                                    bodyArg, &canCompileStrings)) {
@@ -1496,6 +1527,7 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
     return false;
   }
 
+  // ES2018 draft
   // Steps 7.a-b, 8.a-b, 9.a-b, 16-28.
   AutoStableStringChars linearChars(cx);
   if (!linearChars.initTwoByte(cx, functionText)) {
@@ -1910,7 +1942,7 @@ static inline JSFunction* NewFunctionClone(JSContext* cx, HandleFunction fun,
   clone->setArgCount(fun->nargs());
   clone->setFlags(fun->flags());
 
-  // Note: |clone| and |fun| are same-zone so we don't need to call markAtom.
+  // Note: |clone| and |fun| are same-zone so we don't need to call recordRef.
   clone->initAtom(fun->maybePartialDisplayAtom());
 
 #ifdef DEBUG
@@ -1948,30 +1980,6 @@ JSFunction* js::CloneFunctionReuseScript(JSContext* cx, HandleFunction fun,
     }
   }
 #endif
-
-  return clone;
-}
-
-JSFunction* js::CloneAsmJSModuleFunction(JSContext* cx, HandleFunction fun) {
-  MOZ_ASSERT(fun->isNativeFun());
-  MOZ_ASSERT(IsAsmJSModule(fun));
-  MOZ_ASSERT(fun->isExtended());
-  MOZ_ASSERT(cx->compartment() == fun->compartment());
-
-  RootedObject proto(cx, fun->staticPrototype());
-  JSFunction* clone = NewFunctionClone(cx, fun, proto);
-  if (!clone) {
-    return nullptr;
-  }
-
-  MOZ_ASSERT(fun->native() == InstantiateAsmJS);
-  MOZ_ASSERT(!fun->hasJitInfo());
-  clone->initNative(InstantiateAsmJS, nullptr);
-
-  JSObject* moduleObj =
-      &fun->getExtendedSlot(FunctionExtended::ASMJS_MODULE_SLOT).toObject();
-  clone->initExtendedSlot(FunctionExtended::ASMJS_MODULE_SLOT,
-                          ObjectValue(*moduleObj));
 
   return clone;
 }

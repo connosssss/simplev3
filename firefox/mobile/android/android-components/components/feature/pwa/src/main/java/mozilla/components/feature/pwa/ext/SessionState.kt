@@ -9,8 +9,8 @@ import mozilla.components.concept.engine.manifest.WebAppManifest
 import mozilla.components.concept.engine.manifest.WebAppManifest.DisplayMode.BROWSER
 
 /**
- * Checks if the current session represents an installable web app.
- * If so, return the web app manifest. Otherwise, return null.
+ * Checks if the current session represents an installable web app. If so, return the web app manifest. Otherwise,
+ * return null.
  *
  * Websites are installable if:
  * - The site is served over HTTPS
@@ -20,7 +20,7 @@ import mozilla.components.concept.engine.manifest.WebAppManifest.DisplayMode.BRO
  */
 fun SessionState.installableManifest(): WebAppManifest? {
     val manifest = content.webAppManifest ?: return null
-    return if (content.securityInfo.secure && manifest.display != BROWSER && manifest.hasLargeIcons()) {
+    return if (content.securityInfo.isSecure && manifest.display != BROWSER && manifest.hasLargeIcons()) {
         manifest
     } else {
         null

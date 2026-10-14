@@ -6,10 +6,10 @@ task-defaults:
     worker-type: win11-64-24h2-hw
     fetches:
         build:
-            - artifact: target.condprof.tests.tar.gz
-            - artifact: target.common.tests.tar.gz
-            - artifact: target.mochitest.tests.tar.gz
-            - artifact: target.perftests.tests.tar.gz
+            - artifact: target.condprof.tests.tar.zst
+            - artifact: target.common.tests.tar.zst
+            - artifact: target.mochitest.tests.tar.zst
+            - artifact: target.perftests.tests.tar.zst
             - artifact: target.zip
         toolchain:
             - win64-node
@@ -36,6 +36,26 @@ try-browsertime:
             --browsertime-geckodriver ${MOZ_FETCHES_DIR}/geckodriver.exe
             --browsertime-node ${MOZ_FETCHES_DIR}/node/node.exe
             --output $MOZ_FETCHES_DIR/../artifacts
+
+browsertime-sample:
+    description: Run the sample browsertime sample test in CI
+    treeherder:
+        symbol: perftest(bt-sample)
+        tier: 2
+    attributes:
+        cron: false
+    run-on-projects: [mozilla-central]
+    run:
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $MOZ_FETCHES_DIR &&
+            python3.exe python/mozperftest/mozperftest/runner.py
+            --browsertime-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor desktop-browser
+            --browsertime-geckodriver ${MOZ_FETCHES_DIR}/geckodriver.exe
+            --browsertime-node ${MOZ_FETCHES_DIR}/node/node.exe
+            --output $MOZ_FETCHES_DIR/../artifacts
+            python/mozperftest/mozperftest/tests/data/samples/perftest_example.js
 
 # We'd like not to have to specify each test separately here.  See bug 1865852.
 service-worker:
@@ -78,7 +98,7 @@ domcount:
         symbol: perftest(dom)
     attributes:
         batch: false
-        cron: true
+        cron: false
     run:
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
@@ -269,19 +289,22 @@ record-websites:
             --hooks testing/performance/hooks_recording.py
             testing/performance/perftest_record.js
 
-ml-perf:
+ml-perf-wasm: &ml-perf
     fetches:
         fetch:
             - ort.jsep.wasm
             - xenova-all-minilm-l6-v2
-    description: Run ML Models Perf Tests
+    description: Run ML Models Perf Tests (wasm onnx backend)
     treeherder:
-        symbol: perftest(ml-perf)
+        symbol: perftest(ml-perf-w)
         tier: 2
     attributes:
         batch: false
         cron: false
-    run-on-projects: [autoland, mozilla-central]
+    run-on-projects: [mozilla-central]
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx
     run:
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
@@ -293,20 +316,29 @@ ml-perf:
             --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
             toolkit/components/ml/tests/browser/browser_ml_engine_perf.js
 
-ml-summarizer-perf:
+ml-perf-native:
+    <<: *ml-perf
+    description: Run ML Models Perf Tests (native onnxruntime backend)
+    treeherder:
+        symbol: perftest(ml-perf-n)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx-native
+
+speech-recognition-perf:
     fetches:
         fetch:
-            - ort.jsep.wasm
-            - qwen2.5-0.5-instruct
-            - distilbart-cnn-12-6
-    description: Run ML Models Perf Tests
+            - parakeet-eou-120m
+            - parakeet-nemotron-0.6b
+    description: Latency, real-time factor and memory of on-device speech recognition
     treeherder:
-        symbol: perftest(ml-sum-perf)
+        symbol: perftest(sr-perf)
         tier: 2
     attributes:
         batch: false
         cron: false
-    run-on-projects: [autoland, mozilla-central]
+    run-on-projects: [mozilla-central]
     run:
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
@@ -315,22 +347,21 @@ ml-summarizer-perf:
             --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
             --flavor mochitest
             --output $MOZ_FETCHES_DIR/../artifacts
-            --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
-            toolkit/components/ml/tests/browser/browser_ml_summarizer_perf.js
+            dom/media/webspeech/recognition/test/browser_speech_recognition_perf.js
 
-ml-llama-summarizer-perf:
+ml-llama-summarizer-perf: &ml-llama-summarizer-perf
     fetches:
         fetch:
-            - wllama.wasm
             - smollm2-360-instruct-gguf
-    description: Run ML Summarizer Model Using Wllama
+            - Qwen3-0.6B-GGUF
+    description: Run ML Summarizer Model Using llama.cpp
     treeherder:
         symbol: perftest(ml-llama-sum-perf)
         tier: 2
     attributes:
         batch: false
         cron: false
-    run-on-projects: []
+    run-on-projects: [mozilla-central]
     run:
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
@@ -342,21 +373,162 @@ ml-llama-summarizer-perf:
             --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
             toolkit/components/ml/tests/browser/browser_ml_llama_summarizer_perf.js
 
-ml-multi-perf:
+ml-llama-summarizer-perf-hwinference:
+    <<: *ml-llama-summarizer-perf
+    description: Run ML Summarizer Model Using llama.cpp in the HWInference utility process
+    treeherder:
+        symbol: perftest(ml-llama-sum-perf-hw)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_LLAMA_HWINFERENCE: "1"
+
+linkpreview-perf: &linkpreview-perf
+    description: Run the Link Preview key points end-to-end performance test
+    treeherder:
+        symbol: perftest(linkpreview)
+        tier: 2
+    attributes:
+        batch: false
+        cron: false
+    run-on-projects: [mozilla-central]
+    run:
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $MOZ_FETCHES_DIR &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            browser/components/genai/tests/browser/browser_link_preview_perf.js
+
+linkpreview-perf-hwinference:
+    <<: *linkpreview-perf
+    description: Run the Link Preview key points end-to-end performance test in the HWInference utility process
+    treeherder:
+        symbol: perftest(linkpreview-hw)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_LLAMA_HWINFERENCE: "1"
+
+semantichistory-perf-wasm: &semantichistory-perf
+    description: Run the semantic history search end-to-end performance test (wasm ONNX backend)
+    treeherder:
+        symbol: perftest(semantichistory-w)
+        tier: 2
+    attributes:
+        batch: false
+        cron: false
+    run-on-projects: [mozilla-central]
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx
+    run:
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $MOZ_FETCHES_DIR &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            browser/components/urlbar/tests/browser-ml/browser_urlbar_semantic_history_perf.js
+
+semantichistory-perf-native:
+    <<: *semantichistory-perf
+    description: Run the semantic history search end-to-end performance test (native ONNX backend)
+    treeherder:
+        symbol: perftest(semantichistory-n)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx-native
+
+mlsuggest-perf-wasm: &mlsuggest-perf
+    description: Run the ML-backed Firefox Suggest end-to-end performance test (wasm ONNX backend)
+    treeherder:
+        symbol: perftest(mlsuggest-w)
+        tier: 2
+    attributes:
+        batch: false
+        cron: false
+    run-on-projects: [mozilla-central]
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx
+    run:
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $MOZ_FETCHES_DIR &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            browser/components/urlbar/tests/browser-ml/browser_quicksuggest_ml_perf.js
+
+mlsuggest-perf-native:
+    <<: *mlsuggest-perf
+    description: Run the ML-backed Firefox Suggest end-to-end performance test (native ONNX backend)
+    treeherder:
+        symbol: perftest(mlsuggest-n)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx-native
+
+ml-llama-smollm2-smoke: &ml-llama-smollm2-smoke
+    fetches:
+        fetch:
+            - smollm2-360-instruct-gguf
+    description: Structural smoke for the native llama.cpp backend with SmolLM2 360M Instruct GGUF
+    treeherder:
+        symbol: perftest(ml-llama-smollm2-smk)
+        tier: 2
+    attributes:
+        batch: false
+        cron: false
+    run-on-projects: [autoland, mozilla-central]
+    run:
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $MOZ_FETCHES_DIR &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
+            toolkit/components/ml/tests/browser/browser_ml_llama_smollm2_smoke.js
+
+
+ml-llama-smollm2-smoke-hwinference:
+    <<: *ml-llama-smollm2-smoke
+    description: Structural smoke for the native llama.cpp backend with SmolLM2 360M Instruct GGUF in the HWInference utility process
+    treeherder:
+        symbol: perftest(ml-llama-smollm2-smk-hw)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_LLAMA_HWINFERENCE: "1"
+
+ml-multi-perf-wasm: &ml-multi-perf
     fetches:
         fetch:
             - ort.jsep.wasm
             - xenova-all-minilm-l6-v2
             - mozilla-ner
             - mozilla-intent
-    description: Run ML Models Perf Tests
+            - mozilla-smart-intent
+    description: Run ML Models Perf Tests (wasm onnx backend)
     treeherder:
-        symbol: perftest(ml-multi-perf)
+        symbol: perftest(ml-multi-perf-w)
         tier: 2
     attributes:
         batch: false
         cron: false
-    run-on-projects: [autoland, mozilla-central]
+    run-on-projects: [mozilla-central]
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx
     run:
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
@@ -368,16 +540,29 @@ ml-multi-perf:
             --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
             toolkit/components/ml/tests/browser/browser_ml_engine_multi_perf.js
 
-ml-perf-semantic-ft:
+ml-multi-perf-native:
+    <<: *ml-multi-perf
+    description: Run ML Models Perf Tests (native onnxruntime backend)
+    treeherder:
+        symbol: perftest(ml-multi-perf-n)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx-native
+
+ml-perf-semantic-ft-wasm: &ml-perf-semantic-ft
     fetches:
         fetch:
             - ort.jsep.wasm
             - xenova-all-minilm-l6-v2
-    description: Run ML Semantic Search Feature
+    description: Run ML Semantic Search Feature (wasm onnx backend)
     treeherder:
-        symbol: perftest(ml-perf-semantic-ft)
+        symbol: perftest(ml-perf-semantic-ft-w)
         tier: 2
     run-on-projects: [autoland, mozilla-central]
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx
     run:
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
@@ -387,23 +572,37 @@ ml-perf-semantic-ft:
             --flavor mochitest
             --output $MOZ_FETCHES_DIR/../artifacts
             --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
+            --mochitest-extra-args setenv=MOZ_DISABLE_CONTENT_SANDBOX=1
             --mochitest-name-change
             toolkit/components/ml/tests/browser/browser_ml_semantic_history_search_perf.js
 
-ml-perf-suggest-ft:
+ml-perf-semantic-ft-native:
+    <<: *ml-perf-semantic-ft
+    description: Run ML Semantic Search Feature (native onnxruntime backend)
+    treeherder:
+        symbol: perftest(ml-perf-semantic-ft-n)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx-native
+
+ml-perf-suggest-ft-wasm: &ml-perf-suggest-ft
     fetches:
         fetch:
             - ort.jsep.wasm
             - mozilla-ner
             - mozilla-intent
-    description: Run ML Suggest Feature
+    description: Run ML Suggest Feature (wasm onnx backend)
     treeherder:
-        symbol: perftest(ml-perf-suggest-ft)
+        symbol: perftest(ml-perf-suggest-ft-w)
         tier: 2
     attributes:
         batch: false
         cron: false
     run-on-projects: [autoland, mozilla-central]
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx
     run:
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
@@ -415,20 +614,33 @@ ml-perf-suggest-ft:
             --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
             toolkit/components/ml/tests/browser/browser_ml_suggest_feature_perf.js
 
-ml-perf-suggest-inf:
+ml-perf-suggest-ft-native:
+    <<: *ml-perf-suggest-ft
+    description: Run ML Suggest Feature (native onnxruntime backend)
+    treeherder:
+        symbol: perftest(ml-perf-suggest-ft-n)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx-native
+
+ml-perf-suggest-inf-wasm: &ml-perf-suggest-inf
     fetches:
         fetch:
             - ort.jsep.wasm
             - mozilla-ner
             - mozilla-intent
-    description: Run ML Suggest Inference Model
+    description: Run ML Suggest Inference Model (wasm onnx backend)
     treeherder:
-        symbol: perftest(ml-perf-suggest-inf)
+        symbol: perftest(ml-perf-suggest-inf-w)
         tier: 2
     attributes:
         batch: false
         cron: false
     run-on-projects: []
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx
     run:
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
@@ -440,19 +652,34 @@ ml-perf-suggest-inf:
             --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
             toolkit/components/ml/tests/browser/browser_ml_suggest_inference.js
 
-ml-perf-autofill:
+ml-perf-suggest-inf-native:
+    <<: *ml-perf-suggest-inf
+    description: Run ML Suggest Inference Model (native onnxruntime backend)
+    treeherder:
+        symbol: perftest(ml-perf-suggest-inf-n)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx-native
+
+ml-perf-autofill-wasm: &ml-perf-autofill
     fetches:
         fetch:
             - ort.jsep.wasm
             - mozilla-autofill
-    description: Run ML Autofill Model
+            - mozilla-autofill-embed
+            - mozilla-autofill-head
+    description: Run ML Autofill Model (wasm onnx backend)
     treeherder:
-        symbol: perftest(ml-perf-autofill)
+        symbol: perftest(ml-perf-autofill-w)
         tier: 2
     attributes:
         batch: false
         cron: false
-    run-on-projects: [autoland, mozilla-central]
+    run-on-projects: [mozilla-central]
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx
     run:
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
@@ -464,16 +691,92 @@ ml-perf-autofill:
             --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
             toolkit/components/ml/tests/browser/browser_ml_autofill_perf.js
 
-tr8ns-perf-es-en:
+ml-perf-autofill-native:
+    <<: *ml-perf-autofill
+    description: Run ML Autofill Model (native onnxruntime backend)
+    treeherder:
+        symbol: perftest(ml-perf-autofill-n)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx-native
+
+formautofill-ml-perf-wasm: &formautofill-ml-perf
+    description: Run integrated ML Form Autofill performance test (wasm ONNX backend)
+    treeherder:
+        symbol: perftest(formautofill-ml-w)
+        tier: 2
+    attributes:
+        batch: false
+        cron: false
+    run-on-projects: [mozilla-central]
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx
+    run:
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $MOZ_FETCHES_DIR &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            browser/extensions/formautofill/test/browser/performance/browser_formautofill_ml_perf.js
+
+formautofill-ml-perf-native:
+    <<: *formautofill-ml-perf
+    description: Run integrated ML Form Autofill performance test (native ONNX backend)
+    treeherder:
+        symbol: perftest(formautofill-ml-n)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx-native
+
+smarttabgrouping-perf-wasm: &smarttabgrouping-perf
+    description: Run ML Smart Tab Grouping end to end (wasm onnx backend)
+    treeherder:
+        symbol: perftest(smarttabgrouping-w)
+        tier: 2
+    attributes:
+        batch: false
+        cron: false
+    run-on-projects: [mozilla-central]
+    worker:
+        max-run-time: 900
+        env:
+            MOZ_ML_BACKENDS: onnx
+    run:
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $MOZ_FETCHES_DIR &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            browser/components/tabbrowser/test/browser/smarttabgrouping/performance/browser_smart_tab_grouping_perf.js
+
+smarttabgrouping-perf-native:
+    <<: *smarttabgrouping-perf
+    description: Run ML Smart Tab Grouping end to end (native onnxruntime backend)
+    treeherder:
+        symbol: perftest(smarttabgrouping-n)
+        tier: 2
+    worker:
+        max-run-time: 900
+        env:
+            MOZ_ML_BACKENDS: onnx-native
+
+tr8ns-perf-tiny:
     fetches:
         fetch:
-            - translations.inference
-            - translations.esen.lex
-            - translations.esen.model
-            - translations.esen.vocab
-    description: Run Full-Page Translations with the Spanish-to-English model
+            - tr8ns.inference
+            - tr8ns.T.enru.lex
+            - tr8ns.T.enru.model
+            - tr8ns.T.enru.vocab
+    description: Run Full-Page Translations with a tiny-architecture model
     treeherder:
-        symbol: perftest(tr8ns-perf-es-en)
+        symbol: perftest(tr8ns-perf-T)
         tier: 2
     attributes:
         batch: false
@@ -487,22 +790,75 @@ tr8ns-perf-es-en:
             --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
             --flavor mochitest
             --output $MOZ_FETCHES_DIR/../artifacts
-            browser/components/translations/tests/browser/browser_translations_perf_es_en.js
+            browser/components/translations/tests/browser/browser_translations_perf_tiny.js
 
-ml-perf-smart-tab:
+tr8ns-perf-basememory:
     fetches:
         fetch:
-            - ort.jsep.wasm
-            - mozilla-smart-tab-topic
-            - mozilla-smart-tab-emb
-    description: Run ML Smart Tab Model
+            - tr8ns.inference
+            - tr8ns.BM.enru.lex
+            - tr8ns.BM.enru.model
+            - tr8ns.BM.enru.vocab
+    description: Run Full-Page Translations with a base-memory-architecture model
     treeherder:
-        symbol: perftest(ml-perf-smart-tab)
+        symbol: perftest(tr8ns-perf-BM)
         tier: 2
     attributes:
         batch: false
         cron: false
     run-on-projects: [autoland, mozilla-central]
+    run:
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $MOZ_FETCHES_DIR &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            browser/components/translations/tests/browser/browser_translations_perf_basememory.js
+
+tr8ns-perf-base:
+    fetches:
+        fetch:
+            - tr8ns.inference
+            - tr8ns.B.enru.lex
+            - tr8ns.B.enru.model
+            - tr8ns.B.enru.vocab
+    description: Run Full-Page Translations with a base-architecture model
+    treeherder:
+        symbol: perftest(tr8ns-perf-B)
+        tier: 2
+    attributes:
+        batch: false
+        cron: false
+    run-on-projects: [autoland, mozilla-central]
+    run:
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $MOZ_FETCHES_DIR &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            browser/components/translations/tests/browser/browser_translations_perf_base.js
+
+ml-perf-smart-tab-wasm: &ml-perf-smart-tab
+    fetches:
+        fetch:
+            - ort.jsep.wasm
+            - mozilla-smart-tab-topic
+            - mozilla-smart-tab-emb
+    description: Run ML Smart Tab Model (wasm onnx backend)
+    treeherder:
+        symbol: perftest(ml-perf-smart-tab-w)
+        tier: 2
+    attributes:
+        batch: false
+        cron: false
+    run-on-projects: [mozilla-central]
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx
     run:
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
@@ -514,22 +870,34 @@ ml-perf-smart-tab:
             --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
             toolkit/components/ml/tests/browser/browser_ml_smart_tab_perf.js
 
-ml-perf-smart-tab-cluster:
+ml-perf-smart-tab-native:
+    <<: *ml-perf-smart-tab
+    description: Run ML Smart Tab Model (native onnxruntime backend)
+    treeherder:
+        symbol: perftest(ml-perf-smart-tab-n)
+        tier: 2
+    worker:
+        env:
+            MOZ_ML_BACKENDS: onnx-native
+
+ml-perf-smart-tab-cluster-wasm: &ml-perf-smart-tab-cluster
     fetches:
         fetch:
             - ort.jsep.wasm
             - mozilla-smart-tab-topic
             - mozilla-smart-tab-emb
-    description: Run ML Smart Tab Clustering
+    description: Run ML Smart Tab Clustering (wasm onnx backend)
     worker:
-        max-run-time: 14400
+        env:
+            MOZ_ML_BACKENDS: onnx
+        max-run-time: 900
     treeherder:
-        symbol: perftest(ml-perf-stg-cluster)
+        symbol: perftest(ml-perf-stg-cluster-w)
         tier: 2
     attributes:
         batch: false
         cron: false
-    run-on-projects: [autoland, mozilla-central]
+    run-on-projects: [mozilla-central]
     run:
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
@@ -542,18 +910,22 @@ ml-perf-smart-tab-cluster:
             --mochitest-name-change
             toolkit/components/ml/tests/browser/browser_ml_smart_tab_clustering_perf.js
 
-ml-perf-speecht5-tts:
-    fetches:
-        fetch:
-            - ort.jsep.wasm
-            - speecht5-tts
-            - speecht5-tts-vocoder
-            - speecht5-tts-speaker
-    description: Run ML speecht5-tts Model
+ml-perf-smart-tab-cluster-native:
+    <<: *ml-perf-smart-tab-cluster
+    description: Run ML Smart Tab Clustering (native onnxruntime backend)
+    treeherder:
+        symbol: perftest(ml-perf-stg-cluster-n)
+        tier: 2
     worker:
         max-run-time: 900
+        env:
+            MOZ_ML_BACKENDS: onnx-native
+
+# XXX: We can consolidate this once bug 1865852 lands.
+perftest-accessibility:
+    description: Run accessibility performance tests
     treeherder:
-        symbol: perftest(ml-perf-speecht5)
+        symbol: perftest(a11y)
         tier: 2
     attributes:
         batch: false
@@ -567,6 +939,65 @@ ml-perf-speecht5-tts:
             --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
             --flavor mochitest
             --output $MOZ_FETCHES_DIR/../artifacts
+            accessible/tests/browser/performance/browser_addManyIds.js
+            && python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            accessible/tests/browser/performance/browser_addManyNodes.js
+            && python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            accessible/tests/browser/performance/browser_reflowPseudoelements.js
+            && python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            accessible/tests/browser/performance/browser_removeManySpellingErrors.js
+            && python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            accessible/tests/browser/performance/browser_implicitRoleARIAExpanded.js
+            && python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            accessible/tests/browser/performance/browser_bounds.js
+            && python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            accessible/tests/browser/performance/browser_displayContentsBounds.js
+            && python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            accessible/tests/browser/performance/browser_panManySVGShapes.js
+
+smartwindow-perf:
+    fetches:
+        fetch:
+            - ort.jsep.wasm
+            - xenova-all-minilm-l6-v2
+            - mozilla-query-intent
+    description: Run Smart Window end-to-end responsiveness performance tests
+    treeherder:
+        symbol: perftest(smartwindow)
+        tier: 2
+    attributes:
+        batch: false
+        cron: false
+    run-on-projects: [mozilla-central]
+    run:
+        clone-with: hg
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $MOZ_FETCHES_DIR &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
             --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
-            --mochitest-name-change
-            toolkit/components/ml/tests/browser/browser_ml_speecht5_tts.js
+            browser/components/aiwindow/ui/test/browser_perf/browser_smartwindow_perf.js

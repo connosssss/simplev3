@@ -15,7 +15,7 @@ from mozpack.unify import UnifiedFinder
 
 class UnifiedTestFinder(UnifiedFinder):
     def unify_file(self, path, file1, file2):
-        unified = super(UnifiedTestFinder, self).unify_file(path, file1, file2)
+        unified = super().unify_file(path, file1, file2)
         basename = mozpath.basename(path)
         if basename == "mozinfo.json":
             # The mozinfo.json files contain processor info, which differs
@@ -25,13 +25,6 @@ class UnifiedTestFinder(UnifiedFinder):
             errors.ignore_errors()
             self._report_difference(path, file1, file2)
             errors.ignore_errors(False)
-            return file1
-        elif basename == "dump_syms_mac":
-            # At the moment, the dump_syms_mac executable is a x86_64 binary
-            # on both ends. We can't create a universal executable from twice
-            # the same executable.
-            # When this assert hits, remove this block.
-            assert file1.open().read() == file2.open().read()
             return file1
         return unified
 

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,11 @@
 #define nsPrintJob_h
 
 #include "mozilla/Attributes.h"
-#include "mozilla/layout/RemotePrintJobChild.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/MozPrintCallbackRunner.h"
 #include "mozilla/UniquePtr.h"
-
+#include "mozilla/layout/RemotePrintJobChild.h"
 #include "nsCOMPtr.h"
-
 #include "nsHashKeys.h"
 #include "nsIFrame.h"  // For WeakFrame
 #include "nsSize.h"
@@ -26,6 +23,7 @@
 
 // Classes
 class nsIFrame;
+class nsSubDocumentFrame;
 class nsIPrintSettings;
 class nsPrintData;
 class nsPagePrintTimer;
@@ -36,7 +34,6 @@ class nsPrintObject;
 class nsIDocShell;
 class nsPageSequenceFrame;
 class nsPIDOMWindowOuter;
-class nsView;
 
 namespace mozilla {
 class PresShell;
@@ -92,6 +89,8 @@ class nsPrintJob final : public nsIWebProgressListener,
    */
   nsPrintJob(nsIDocumentViewerPrint& aDocViewerPrint, nsIDocShell& aDocShell,
              Document& aOriginalDoc, float aScreenDPI);
+
+  nsPrintJob& operator=(const nsPrintJob& aOther) = delete;
 
   // Our nsIWebBrowserPrint implementation (nsDocumentViewer) defers to the
   // following methods.
@@ -157,8 +156,6 @@ class nsPrintJob final : public nsIWebProgressListener,
   void DestroyPrintingData();
 
  private:
-  nsPrintJob& operator=(const nsPrintJob& aOther) = delete;
-
   ~nsPrintJob();
 
   MOZ_CAN_RUN_SCRIPT nsresult DocumentReadyForPrinting();
@@ -225,9 +222,8 @@ class nsPrintJob final : public nsIWebProgressListener,
 
   bool ShouldResumePrint() const;
 
-  nsresult SetRootView(nsPrintObject* aPO, bool& aDoReturn,
-                       bool& aDocumentIsTopLevel, nsSize& aAdjSize);
-  nsView* GetParentViewForRoot();
+  nsresult SetRootView(nsPrintObject* aPO, bool aDocumentIsTopLevel,
+                       bool& aDoReturn, nsSize& aAdjSize);
   void UpdateZoomRatio(nsPrintObject* aPO);
   MOZ_CAN_RUN_SCRIPT nsresult ReconstructAndReflow();
   MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult UpdateSelectionAndShrinkPrintObject(
@@ -253,6 +249,10 @@ class nsPrintJob final : public nsIWebProgressListener,
   RefPtr<nsPrintData> mPrt;
 
   RefPtr<nsPagePrintTimer> mPagePrintTimer;
+
+  // Runs the mozPrintCallback of the canvases in the sheet being printed. This
+  // lives here rather than in the page sequence frame so that it outlives it.
+  mozilla::MozPrintCallbackRunner mPrintCallbackRunner;
 
   // Only set if this nsPrintJob was created for a real print.
   RefPtr<RemotePrintJobChild> mRemotePrintJob;

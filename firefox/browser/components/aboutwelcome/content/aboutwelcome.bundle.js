@@ -5,27 +5,29 @@
  *
  */
 /******/ (() => { // webpackBootstrap
-/******/ 	"use strict";
 /******/ 	var __webpack_modules__ = ([
 /* 0 */,
 /* 1 */
 /***/ ((module) => {
 
+"use strict";
 module.exports = React;
 
 /***/ }),
 /* 2 */
 /***/ ((module) => {
 
+"use strict";
 module.exports = ReactDOM;
 
 /***/ }),
 /* 3 */
 /***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
-/* harmony export */   AboutWelcomeUtils: () => (/* binding */ AboutWelcomeUtils)
+/* harmony export */   MultiStageUtils: () => (/* binding */ MultiStageUtils)
 /* harmony export */ });
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -39,11 +41,26 @@ const page =
     "#multi-stage-message-root.onboardingContainer[data-page]"
   )?.dataset.page || document.location.href;
 
-const AboutWelcomeUtils = {
+const MultiStageUtils = {
   handleUserAction(action) {
     return window.AWSendToParent("SPECIAL_ACTION", action);
   },
-  sendImpressionTelemetry(messageId, context) {
+  handleImpressionAction(action, messageId, screenId) {
+    return Promise.resolve(
+      window.AWSendImpressionAction?.({
+        action,
+        message_id: messageId,
+        screen_id: screenId,
+      })
+    ).then(fired => {
+      // Record action telemetry only when the parent actually ran the action;
+      // it may be rejected by the allowlist or suppressed by `once`.
+      if (fired) {
+        this.sendActionTelemetry(messageId, action.type, "IMPRESSION_ACTION");
+      }
+    });
+  },
+  sendImpressionTelemetry(messageId, context = {}) {
     window.AWSendEventTelemetry?.({
       event: "IMPRESSION",
       event_context: {
@@ -53,22 +70,28 @@ const AboutWelcomeUtils = {
       message_id: messageId,
     });
   },
-  sendActionTelemetry(messageId, elementId, eventName = "CLICK_BUTTON") {
+  sendActionTelemetry(
+    messageId,
+    elementId,
+    eventName = "CLICK_BUTTON",
+    context = {}
+  ) {
     const ping = {
       event: eventName,
       event_context: {
         source: elementId,
         page,
+        ...context,
       },
       message_id: messageId,
     };
     window.AWSendEventTelemetry?.(ping);
   },
-  sendDismissTelemetry(messageId, elementId) {
+  sendDismissTelemetry(messageId, elementId, context = {}) {
     // Don't send DISMISS telemetry in spotlight modals since they already send
     // their own equivalent telemetry.
     if (page !== "spotlight") {
-      this.sendActionTelemetry(messageId, elementId, "DISMISS");
+      this.sendActionTelemetry(messageId, elementId, "DISMISS", context);
     }
   },
   async fetchFlowParams(metricsFlowUri) {
@@ -99,10 +122,15 @@ const AboutWelcomeUtils = {
   getLoadingStrategyFor(url) {
     return url?.startsWith("http") ? "lazy" : "eager";
   },
-  handleCampaignAction(action, messageId) {
+  handleCampaignAction(action, messageId, context) {
     window.AWSendToParent("HANDLE_CAMPAIGN_ACTION", action).then(handled => {
       if (handled) {
-        this.sendActionTelemetry(messageId, "CAMPAIGN_ACTION");
+        this.sendActionTelemetry(
+          messageId,
+          "CAMPAIGN_ACTION",
+          "CLICK_BUTTON",
+          context
+        );
       }
     });
   },
@@ -119,6 +147,16 @@ const AboutWelcomeUtils = {
         return obj;
       }, {});
   },
+  getTileStyle(tile, validStyle) {
+    const preferredTileStyle = tile?.style;
+    const legacyTileStyle = tile?.tiles?.style ?? null;
+
+    return this.getValidStyle(
+      preferredTileStyle ?? legacyTileStyle,
+      validStyle,
+      true
+    );
+  },
 };
 
 
@@ -126,8 +164,10 @@ const AboutWelcomeUtils = {
 /* 4 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   CARD_STACK_TRANSITION_OUT_TIME: () => (/* binding */ CARD_STACK_TRANSITION_OUT_TIME),
 /* harmony export */   MultiStageAboutWelcome: () => (/* binding */ MultiStageAboutWelcome),
 /* harmony export */   ProgressBar: () => (/* binding */ ProgressBar),
 /* harmony export */   SecondaryCTA: () => (/* binding */ SecondaryCTA),
@@ -137,11 +177,12 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
-/* harmony import */ var _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
 /* harmony import */ var _MultiStageProtonScreen__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(6);
-/* harmony import */ var _LanguageSwitcher__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(7);
-/* harmony import */ var _SubmenuButton__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(12);
-/* harmony import */ var _lib_addUtmParams_mjs__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(23);
+/* harmony import */ var _ContentTiles__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(15);
+/* harmony import */ var _LanguageSwitcher__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(8);
+/* harmony import */ var _SubmenuButton__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(13);
+/* harmony import */ var _lib_addUtmParams_mjs__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(35);
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -154,18 +195,25 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
+
 // Amount of milliseconds for all transitions to complete (including delays).
 const TRANSITION_OUT_TIME = 1000;
+// Keep in sync with --card-stack-duration in _multistage.scss.
+const CARD_STACK_TRANSITION_OUT_TIME = 400;
 const LANGUAGE_MISMATCH_SCREEN_ID = "AW_LANGUAGE_MISMATCH";
 const MultiStageAboutWelcome = props => {
+  const gateInitialPaint = props.gateInitialPaint ?? false;
   let {
     defaultScreens
   } = props;
   const didFilter = (0,react__WEBPACK_IMPORTED_MODULE_0__.useRef)(false);
   const [didMount, setDidMount] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
+  const [contentToggleChecked, setContentToggleChecked] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(true);
   const [screens, setScreens] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(defaultScreens);
   const [index, setScreenIndex] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(props.startScreen);
   const [previousOrder, setPreviousOrder] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(props.startScreen - 1);
+  // Gate first paint until we've finished the initial filtering pass.
+  const [ready, setReady] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
   (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
     (async () => {
       // If we want to load index from history state, we don't want to send impression yet
@@ -183,8 +231,12 @@ const MultiStageAboutWelcome = props => {
 
       // Use existing screen for the filtered screen to carry over any modification
       // e.g. if AW_LANGUAGE_MISMATCH exists, use it from existing screens
-      setScreens(filteredScreens.map(filtered => screens.find(s => s.id === filtered.id) ?? filtered));
-      didFilter.current = true;
+      setScreens(filteredScreens.map(filtered => filtered.id === LANGUAGE_MISMATCH_SCREEN_ID ? screens.find(s => s.id === filtered.id) ?? filtered : filtered));
+      // Mark the initial filter pass complete and allow the first paint.
+      if (!didFilter.current) {
+        didFilter.current = true;
+        setReady(true);
+      }
 
       // After completing screen filtering, trigger any unhandled campaign
       // action present in the attribution campaign data. This updates the
@@ -194,7 +246,7 @@ const MultiStageAboutWelcome = props => {
       // blocking the thread.
       window.AWGetUnhandledCampaignAction?.().then(action => {
         if (typeof action === "string") {
-          _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.handleCampaignAction(action, props.message_id);
+          _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.handleCampaignAction(action, props.message_id);
         }
       }).catch(error => {
         console.error("Failed to get unhandled campaign action:", error);
@@ -207,12 +259,20 @@ const MultiStageAboutWelcome = props => {
       filteredScreens.forEach((screen, order) => {
         if (index === order) {
           const messageId = `${props.message_id}_${order}_${screen.id}_${screenInitials}`;
-          _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.sendImpressionTelemetry(messageId, {
+          _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.sendImpressionTelemetry(messageId, {
             screen_family: props.message_id,
             screen_index: order,
             screen_id: screen.id,
-            screen_initials: screenInitials
+            screen_initials: screenInitials,
+            ...(0,_ContentTiles__WEBPACK_IMPORTED_MODULE_4__.getTileImpressionContext)(screen.content?.tiles)
           });
+
+          // Impression actions should be fired before recording the
+          // impression, so the check that ensures that actions run only once
+          // has an accurate count of how many impressions have actually occured
+          if (screen.content?.impression_action) {
+            _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.handleImpressionAction(screen.content.impression_action, messageId, screen.id);
+          }
           window.AWAddScreenImpression?.(screen);
         }
       });
@@ -234,7 +294,7 @@ const MultiStageAboutWelcome = props => {
   (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
     (async () => {
       if (metricsFlowUri) {
-        setFlowParams(await _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.fetchFlowParams(metricsFlowUri));
+        setFlowParams(await _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.fetchFlowParams(metricsFlowUri));
       }
     })();
   }, [metricsFlowUri]);
@@ -247,11 +307,20 @@ const MultiStageAboutWelcome = props => {
       requestAnimationFrame(() => requestAnimationFrame(() => setTransition("")));
     }
   }, [transition]);
+  const isCardStack = defaultScreens?.[0]?.content?.position === "card-stack";
+  const transitionOutTime = isCardStack ? CARD_STACK_TRANSITION_OUT_TIME : TRANSITION_OUT_TIME;
 
   // Transition to next screen, opening about:home on last screen button CTA
-  const handleTransition = () => {
+  const handleTransition = goBack => {
     // Only handle transitioning out from a screen once.
     if (transition === "out") {
+      return;
+    }
+
+    // The card stack plays a single exit animation on teardown, so finishing
+    // from its last screen would otherwise wait for that twice.
+    if (isCardStack && !goBack && index >= screens.length - 1) {
+      window.AWFinish();
       return;
     }
 
@@ -260,13 +329,16 @@ const MultiStageAboutWelcome = props => {
 
     // Actually move forwards after all transitions finish.
     setTimeout(() => {
-      if (index < screens.length - 1) {
+      if (goBack) {
+        setTransition(props.transitions ? "in" : "");
+        setScreenIndex(prevState => prevState - 1);
+      } else if (index < screens.length - 1) {
         setTransition(props.transitions ? "in" : "");
         setScreenIndex(prevState => prevState + 1);
       } else {
         window.AWFinish();
       }
-    }, props.transitions ? TRANSITION_OUT_TIME : 0);
+    }, props.transitions ? transitionOutTime : 0);
   };
   (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
     // When about:welcome loads (on refresh or pressing back button
@@ -287,7 +359,7 @@ const MultiStageAboutWelcome = props => {
         setTimeout(() => {
           setTransition(props.transitions ? "in" : "");
           setScreenIndex(Math.min(state, screens.length - 1));
-        }, props.transitions ? TRANSITION_OUT_TIME : 0);
+        }, props.transitions ? transitionOutTime : 0);
       };
 
       // Handle page load, e.g., going back to about:welcome from about:home
@@ -303,7 +375,9 @@ const MultiStageAboutWelcome = props => {
       window.addEventListener("popstate", handler);
       return () => window.removeEventListener("popstate", handler);
     }
-    return false;
+    // React calls a non-undefined return value on unmount, so `false` here
+    // throws when the message is torn down.
+    return undefined;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [multiSelects, setMultiSelects] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)({});
@@ -322,6 +396,22 @@ const MultiStageAboutWelcome = props => {
   // screens, and allows us to have multiple single selects on a screen.
   const [activeSingleSelectSelections, setActiveSingleSelectSelections] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)({});
 
+  // Save textarea inputs for each screen as an object keyed by screen id. It's
+  // structured like this: { screenId: { textareaId: { value, isValid } } }
+  const [textInputs, setTextInputs] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)({});
+
+  // Track whether each screen has had at least one successful pin, keyed by
+  // screen id. This is a boolean (there is no "unpin"), used to gate a
+  // primary button with `disabled: "hasPinnedSite"`.
+  const [pinnedSites, setPinnedSites] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)({});
+
+  // Whether animated backgrounds/illustrations are paused for this session.
+  // Defaults to paused when the user has prefers-reduced-motion: reduce set,
+  // so we never autoplay motion for those users. The toggle stays consistent
+  // among screens once the user interacts with it.
+  const [animationsPaused, setAnimationsPaused] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(() => typeof window !== "undefined" && typeof window.matchMedia === "function" ? window.matchMedia("(prefers-reduced-motion: reduce)").matches : false);
+  const toggleAnimationsPaused = () => setAnimationsPaused(prev => !prev);
+
   // Get the active theme so the rendering code can make it selected
   // by default.
   const [activeTheme, setActiveTheme] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(null);
@@ -333,11 +423,27 @@ const MultiStageAboutWelcome = props => {
       setActiveTheme(theme);
     })();
   }, []);
+  const [activeThemeId, setActiveThemeId] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(null);
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    let mounted = true;
+    const refreshActiveThemeId = async () => {
+      let themeId = await window.AWGetActiveThemeId?.();
+      if (mounted) {
+        setActiveThemeId(themeId);
+      }
+    };
+    refreshActiveThemeId();
+    window.addEventListener("LightweightTheme:Set", refreshActiveThemeId);
+    return () => {
+      mounted = false;
+      window.removeEventListener("LightweightTheme:Set", refreshActiveThemeId);
+    };
+  }, []);
   const {
     negotiatedLanguage,
     langPackInstallPhase,
     languageFilteredScreens
-  } = (0,_LanguageSwitcher__WEBPACK_IMPORTED_MODULE_4__.useLanguageSwitcher)(props.appAndSystemLocaleInfo, screens, index, setScreenIndex);
+  } = (0,_LanguageSwitcher__WEBPACK_IMPORTED_MODULE_5__.useLanguageSwitcher)(props.appAndSystemLocaleInfo, screens, index, setScreenIndex);
   (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
     setScreens(languageFilteredScreens);
   }, [languageFilteredScreens]);
@@ -348,6 +454,12 @@ const MultiStageAboutWelcome = props => {
       setInstalledAddons(addons);
     })();
   }, [index]);
+
+  // Do not render anything until the first filtering pass completes if gating
+  // initial paint is enabled.
+  if (gateInitialPaint && !ready) {
+    return null;
+  }
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement((react__WEBPACK_IMPORTED_MODULE_0___default().Fragment), null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: `outer-wrapper onboardingContainer proton transition-${transition}`,
     style: props.backdrop ? {
@@ -394,6 +506,24 @@ const MultiStageAboutWelcome = props => {
         };
       });
     };
+    const setPinnedSite = () => {
+      setPinnedSites(prevState => ({
+        ...prevState,
+        [currentScreen.id]: true
+      }));
+    };
+    const setTextInput = (value, inputId) => {
+      setTextInputs(prevState => {
+        const currentScreenInputs = prevState[currentScreen.id] || {};
+        return {
+          ...prevState,
+          [currentScreen.id]: {
+            ...currentScreenInputs,
+            [inputId]: value
+          }
+        };
+      });
+    };
     return index === order ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(WelcomeScreen, {
       key: currentScreen.id + order,
       id: currentScreen.id,
@@ -405,10 +535,13 @@ const MultiStageAboutWelcome = props => {
       previousOrder: previousOrder,
       content: currentScreen.content,
       navigate: handleTransition,
+      autoAdvance: currentScreen.auto_advance,
+      advanceOnExperimentLoad: currentScreen.advance_on_experiment_load,
       messageId: `${props.message_id}_${order}_${currentScreen.id}`,
       UTMTerm: props.utm_term,
       flowParams: flowParams,
       activeTheme: activeTheme,
+      activeThemeId: activeThemeId,
       initialTheme: initialTheme,
       setActiveTheme: setActiveTheme,
       setInitialTheme: setInitialTheme,
@@ -416,13 +549,19 @@ const MultiStageAboutWelcome = props => {
       setScreenMultiSelects: setScreenMultiSelects,
       activeMultiSelect: activeMultiSelects[currentScreen.id],
       setActiveMultiSelect: setActiveMultiSelect,
-      autoAdvance: currentScreen.auto_advance,
       activeSingleSelectSelections: activeSingleSelectSelections[currentScreen.id],
       setActiveSingleSelectSelection: setActiveSingleSelectSelection,
+      textInputs: textInputs[currentScreen.id],
+      setTextInput: setTextInput,
+      pinnedSites: pinnedSites[currentScreen.id],
+      setPinnedSite: setPinnedSite,
+      contentToggleChecked: contentToggleChecked,
+      setContentToggleChecked: setContentToggleChecked,
       negotiatedLanguage: negotiatedLanguage,
       langPackInstallPhase: langPackInstallPhase,
       forceHideStepsIndicator: currentScreen.force_hide_steps_indicator,
       ariaRole: props.ariaRole,
+      requireAction: props.requireAction,
       aboveButtonStepsIndicator: currentScreen.above_button_steps_indicator,
       installedAddons: installedAddons,
       setInstalledAddons: setInstalledAddons,
@@ -432,59 +571,152 @@ const MultiStageAboutWelcome = props => {
       addonURL: props.addonURL,
       addonIconURL: props.addonIconURL,
       themeScreenshots: props.themeScreenshots,
-      isRtamo: currentScreen.content.isRtamo
+      isRtamo: currentScreen.content.isRtamo,
+      animationsPaused: animationsPaused,
+      toggleAnimationsPaused: toggleAnimationsPaused
     }) : null;
   })));
 };
-const SecondaryCTA = props => {
-  const targetElement = props.position ? `secondary_button_${props.position}` : `secondary_button`;
-  let buttonStyling = props.content.secondary_button?.has_arrow_icon ? `secondary arrow-icon` : `secondary`;
-  const isPrimary = props.content.secondary_button?.style === "primary";
-  const isTextLink = !["split", "callout"].includes(props.content.position) && props.content.tiles?.type !== "addons-picker" && !isPrimary;
-  const isSplitButton = props.content.submenu_button?.attached_to === targetElement;
+const renderSingleSecondaryCTAButton = ({
+  content,
+  button,
+  targetElement,
+  position,
+  handleAction,
+  activeMultiSelect,
+  textInputs,
+  isArrayItem,
+  index = null
+}) => {
+  let buttonStyling = button?.has_arrow_icon ? `secondary arrow-icon` : `secondary`;
+  const isPrimary = button?.style === "primary";
+  const isTextLink = !["split", "callout", "center-large", "card-stack"].includes(content.position) && content.tiles?.type !== "addons-picker" && !isPrimary;
+  const isSplitButton = content.submenu_button?.attached_to === targetElement;
   let className = "secondary-cta";
-  if (props.position) {
-    className += ` ${props.position}`;
+  if (position) {
+    className += ` ${position}`;
   }
   if (isSplitButton) {
     className += " split-button-container";
   }
-  const isDisabled = react__WEBPACK_IMPORTED_MODULE_0___default().useCallback(disabledValue => {
+  const computeDisabled = disabledValue => {
     if (disabledValue === "hasActiveMultiSelect") {
-      if (!props.activeMultiSelect) {
+      if (!activeMultiSelect) {
         return true;
       }
-      for (const key in props.activeMultiSelect) {
-        if (props.activeMultiSelect[key]?.length > 0) {
+      for (const key in activeMultiSelect) {
+        if (activeMultiSelect[key]?.length > 0) {
           return false;
         }
       }
       return true;
     }
+    if (disabledValue === "hasTextInput") {
+      // For text input, we check if the user has entered any text in the
+      // textarea(s) present on the screen.
+      if (!textInputs) {
+        return true;
+      }
+      return Object.values(textInputs).every(input => !input.isValid || input.value.trim().length === 0);
+    }
     return disabledValue;
-  }, [props.activeMultiSelect]);
+  };
   if (isTextLink) {
     buttonStyling += " text-link";
   }
   if (isPrimary) {
-    buttonStyling = props.content.secondary_button?.has_arrow_icon ? `primary arrow-icon` : `primary`;
+    buttonStyling = button?.has_arrow_icon ? `primary arrow-icon` : `primary`;
   }
+
+  // We have to provide handleAction with the expected action here,
+  // since the data doesn't actually exist in JSON content
+  const shimmedHandleAction = event => {
+    if (isArrayItem && button?.action) {
+      return handleAction(event, button.action);
+    }
+    return handleAction(event);
+  };
+  let buttonId = "secondary_button";
+  buttonId += index !== null ? `_${index}` : "";
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
-    className: className
+    className: className,
+    key: targetElement
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
-    text: props.content[targetElement].text
+    text: button?.text
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
-    text: props.content[targetElement].label
+    text: button?.label
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
-    id: "secondary_button",
+    id: buttonId,
     className: buttonStyling,
     value: targetElement,
-    disabled: isDisabled(props.content.secondary_button?.disabled),
-    onClick: props.handleAction
-  })), isSplitButton ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_SubmenuButton__WEBPACK_IMPORTED_MODULE_5__.SubmenuButton, {
-    content: props.content,
-    handleAction: props.handleAction
+    disabled: computeDisabled(button?.disabled),
+    onClick: shimmedHandleAction
+  })), isSplitButton ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_SubmenuButton__WEBPACK_IMPORTED_MODULE_6__.SubmenuButton, {
+    content: content,
+    handleAction: handleAction
   }) : null);
+};
+const SecondaryCTA = props => {
+  const {
+    content,
+    position
+  } = props;
+  const targetElement = position ? `secondary_button_${position}` : "secondary_button";
+  const buttonData = content[targetElement];
+  if (!buttonData) {
+    return null;
+  }
+  const buttons = react__WEBPACK_IMPORTED_MODULE_0___default().useMemo(() => Array.isArray(buttonData) ? buttonData : [buttonData], [buttonData]);
+  const [visibleButtons, setVisibleButtons] = react__WEBPACK_IMPORTED_MODULE_0___default().useState([]);
+  react__WEBPACK_IMPORTED_MODULE_0___default().useEffect(() => {
+    (async () => {
+      const filteredButtons = [];
+      for (const button of buttons) {
+        // No targeting, show by default for backwards compatibility
+        if (!button?.targeting) {
+          filteredButtons.push(button);
+          continue;
+        }
+        try {
+          const shouldShowButton = await window.AWEvaluateAttributeTargeting(button.targeting);
+          if (shouldShowButton) {
+            filteredButtons.push(button);
+          }
+        } catch (e) {
+          console.error("SecondaryCTA targeting failed:", button.targeting, e);
+        }
+      }
+      setVisibleButtons(filteredButtons);
+    })();
+  }, [buttons]);
+  if (!visibleButtons.length) {
+    return null;
+  }
+  if (Array.isArray(buttonData)) {
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      className: "secondary-buttons-top-container"
+    }, visibleButtons.map((button, index) => renderSingleSecondaryCTAButton({
+      content,
+      button,
+      targetElement: `${targetElement}_${index}`,
+      position,
+      handleAction: props.handleAction,
+      activeMultiSelect: props.activeMultiSelect,
+      textInputs: props.textInputs,
+      isArrayItem: true,
+      index
+    })));
+  }
+  return renderSingleSecondaryCTAButton({
+    content,
+    button: visibleButtons[0],
+    targetElement,
+    position,
+    handleAction: props.handleAction,
+    activeMultiSelect: props.activeMultiSelect,
+    textInputs: props.textInputs,
+    isArrayItem: false
+  });
 };
 const StepsIndicator = props => {
   let steps = [];
@@ -529,7 +761,7 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
     } = action;
     if (type === "SHOW_FIREFOX_ACCOUNTS") {
       let params = {
-        ..._lib_addUtmParams_mjs__WEBPACK_IMPORTED_MODULE_6__.BASE_PARAMS,
+        ..._lib_addUtmParams_mjs__WEBPACK_IMPORTED_MODULE_7__.BASE_PARAMS,
         utm_term: `${UTMTerm}-screen`
       };
       if (action.addFlowParams && flowParams) {
@@ -540,11 +772,14 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
       }
       data = {
         ...data,
-        extraParams: params
+        extraParams: {
+          ...params,
+          ...data?.extraParams
+        }
       };
     } else if (type === "OPEN_URL") {
       let url = new URL(data.args);
-      (0,_lib_addUtmParams_mjs__WEBPACK_IMPORTED_MODULE_6__.addUtmParams)(url, `${UTMTerm}-screen`);
+      (0,_lib_addUtmParams_mjs__WEBPACK_IMPORTED_MODULE_7__.addUtmParams)(url, `${UTMTerm}-screen`);
       if (action.addFlowParams && flowParams) {
         url.searchParams.append("device_id", flowParams.deviceId);
         url.searchParams.append("flow_id", flowParams.flowId);
@@ -555,31 +790,16 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
         args: url.toString()
       };
     }
-    return _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.handleUserAction({
+    return _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.handleUserAction({
       type,
       data
     });
-  }
-  logTelemetry({
-    value,
-    event,
-    source,
-    props
-  }) {
-    _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.sendActionTelemetry(props.messageId, source, event.name);
-
-    // Send additional telemetry if a messaging surface like feature callout is
-    // dismissed via the dismiss button. Other causes of dismissal will be
-    // handled separately by the messaging surface's own code.
-    if (value === "dismiss_button" && !event.name) {
-      _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.sendDismissTelemetry(props.messageId, source);
-    }
   }
   async handleMigrationIfNeeded(action, props) {
     const hasMigrate = a => a.type === "SHOW_MIGRATION_WIZARD" || a.type === "MULTI_ACTION" && a.data?.actions?.some(hasMigrate);
     if (hasMigrate(action)) {
       await window.AWWaitForMigrationClose();
-      _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.sendActionTelemetry(props.messageId, "migrate_close");
+      _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.sendActionTelemetry(props.messageId, "migrate_close", "CLICK_BUTTON");
     }
   }
   applyThemeIfNeeded(action, event) {
@@ -598,74 +818,78 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
       }
       for (const opt of tile.data) {
         if (opt.id === value) {
-          _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.handleUserAction(opt.action);
+          _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.handleUserAction(opt.action);
           return;
         }
       }
     }
   }
-  async handleAction(event) {
+  resolveActionFromContent(value, event, props) {
+    if (["submenu_button", "more_button", "tile_button"].includes(value) && event.action) {
+      return event.action;
+    }
+    const {
+      content
+    } = props;
+    const targetContent = content[value] || content.tiles || content.languageSwitcher;
+    if (!targetContent) {
+      return null;
+    }
+    if (Array.isArray(targetContent)) {
+      for (const tile of targetContent) {
+        const matchedTile = tile.data.find(t => t.id === value);
+        if (matchedTile?.action) {
+          return matchedTile.action;
+        }
+      }
+      return null;
+    }
+    return targetContent.action ?? null;
+  }
+  async handleAction(event, providedAction = null) {
     const {
       props
     } = this;
     const value = event.currentTarget.value ?? event.currentTarget.getAttribute("value");
     const source = event.source || value;
-    let targetContent = props.content[value] || props.content.tiles || props.content.languageSwitcher;
-    if (value === "submenu_button" && event.action) {
-      targetContent = {
-        action: event.action
-      };
+    let action = providedAction || this.resolveActionFromContent(value, event, props);
+    let actionResult;
+    if (!action) {
+      console.error("Failed to resolve action");
+      return actionResult;
     }
-    if (!targetContent) {
-      return;
-    }
-    let action;
-    if (Array.isArray(targetContent)) {
-      for (const tile of targetContent) {
-        const matchedTile = tile.data.find(t => t.id === value);
-        if (matchedTile?.action) {
-          action = matchedTile.action;
-          break;
-        }
-      }
-    } else if (!targetContent.action) {
-      return;
-    } else {
-      action = targetContent.action;
-    }
-    // Send telemetry before waiting on actions
-    this.logTelemetry({
-      value,
-      event,
-      source,
-      props
-    });
     action = JSON.parse(JSON.stringify(action));
+    const context = {};
+    if (action.collectContentToggleState) {
+      context.contentToggleState = props.contentToggleChecked;
+    }
+    _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.sendActionTelemetry(props.messageId, source, event.name, context);
+    if (value === "dismiss_button" && !event.name || action.sendDismissTelemetry) {
+      _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.sendDismissTelemetry(props.messageId, source);
+    }
     if (action.collectSelect) {
       this.setMultiSelectActions(action);
     }
-    let actionResult;
+    if (action.collectTextInput && Object.values(props.textInputs).length) {
+      this.setTextInputActions(action);
+    }
     if (["OPEN_URL", "SHOW_FIREFOX_ACCOUNTS"].includes(action.type)) {
       this.handleOpenURL(action, props.flowParams, props.UTMTerm);
+    } else if (action.type === "INSTALL_ADDON_FROM_URL") {
+      const url = props.addonURL && props.isRtamo ? props.addonURL : action.data?.url;
+      // Set add-on url in action.data.url property from JSON
+      action.data = {
+        ...action.data,
+        url
+      };
+      _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.handleUserAction(action);
     } else if (action.type) {
-      let actionPromise = _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.handleUserAction(action);
+      let actionPromise = _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.handleUserAction(action);
       if (action.needsAwait) {
         actionResult = await actionPromise;
       }
       if (action.type === "FXA_SIGNIN_FLOW") {
-        _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.sendActionTelemetry(props.messageId, actionResult ? "sign_in" : "sign_in_cancel", "FXA_SIGNIN_FLOW");
-      }
-      if (action.type === "INSTALL_ADDON_FROM_URL") {
-        const url = props.addonURL;
-        if (!action.data) {
-          return;
-        }
-        // Set add-on url in action.data.url property from JSON
-        action.data = {
-          ...action.data,
-          url
-        };
-        _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.handleUserAction(action);
+        _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.sendActionTelemetry(props.messageId, actionResult ? "sign_in" : "sign_in_cancel", "FXA_SIGNIN_FLOW");
       }
       // Wait until migration closes to complete the action
       await this.handleMigrationIfNeeded(action, props);
@@ -683,7 +907,7 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
       this.props.setInitialTheme(this.props.activeTheme);
     }
 
-    // `navigate` and `dismiss` can be true/false/undefined, or they can be a
+    // `navigate`, `goBack` and `dismiss` can be true/false/undefined, or they can be a
     // string "actionResult" in which case we should use the actionResult
     // (boolean resolved by handleUserAction)
     const shouldDoBehavior = behavior => {
@@ -697,7 +921,7 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
       return false;
     };
     if (shouldDoBehavior(action.navigate)) {
-      props.navigate();
+      props.navigate(action.goBack);
     }
 
     // Used by FeatureCallout to advance screens by re-rendering the whole
@@ -711,6 +935,7 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
     if (shouldDoBehavior(action.dismiss)) {
       window.AWFinish();
     }
+    return actionResult;
   }
   setMultiSelectActions(action) {
     let {
@@ -744,7 +969,7 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
         return;
       }
       const multiSelectId = `tile-${tileIndex}`;
-      const activeSelections = props.activeMultiSelect[multiSelectId] || [];
+      const activeSelections = props.activeMultiSelect?.[multiSelectId] || [];
       for (const checkbox of tile.data) {
         let checkboxAction;
         if (activeSelections.includes(checkbox.id)) {
@@ -771,10 +996,67 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
 
     // Prepend the collected multi-select actions to the CTA's actions array
     action.data.actions.unshift(...multiSelectActions);
-    for (const value of Object.values(props.activeMultiSelect)) {
+    for (const value of Object.values(props.activeMultiSelect || {})) {
       // Send telemetry with selected checkbox ids
-      _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.sendActionTelemetry(props.messageId, value.flat(), "SELECT_CHECKBOX");
+      _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.sendActionTelemetry(props.messageId, value.flat(), "SELECT_CHECKBOX");
     }
+  }
+  setTextInputActions(action) {
+    let {
+      props
+    } = this;
+    if (action.type !== "MULTI_ACTION") {
+      console.error("collectTextInput is only supported for MULTI_ACTION type actions");
+      action.type = "MULTI_ACTION";
+    }
+    if (!Array.isArray(action.data?.actions)) {
+      console.error("collectTextInput is only supported for MULTI_ACTION type actions with an array of actions");
+      action.data = {
+        actions: []
+      };
+    }
+    const collectedActions = [];
+
+    // If there is no character_limit, we still need to limit the size of the
+    // input to avoid sending huge payloads. We'll go with 8KB.
+    const truncateToByteSize = (str, maxBytes) => {
+      const encoder = new TextEncoder();
+      const encoded = encoder.encode(str);
+      if (encoded.length <= maxBytes) {
+        return str;
+      }
+      let end = maxBytes;
+      // Step back until we find a valid UTF-8 start byte
+      while (end > 0 && (encoded[end] & 0b11000000) === 0b10000000) {
+        end--; // this is a continuation byte
+      }
+      return new TextDecoder().decode(encoded.subarray(0, end));
+    };
+    const processTile = (tile, tileIndex) => {
+      if (tile?.type !== "textarea" || !tile.data) {
+        return;
+      }
+      const inputId = tile.data.id || `tile-${tileIndex}`;
+      const inputData = props.textInputs[inputId];
+      if (inputData?.isValid && inputData.value.trim().length) {
+        if (tile.data.action) {
+          collectedActions.push(tile.data.action);
+        }
+        _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.sendActionTelemetry(props.messageId, inputId, "TEXT_INPUT", {
+          value: truncateToByteSize(inputData.value, 8192)
+        });
+      }
+    };
+    if (props.content?.tiles) {
+      if (Array.isArray(props.content.tiles)) {
+        for (const [index, tile] of props.content.tiles.entries()) {
+          processTile(tile, index);
+        }
+      } else {
+        processTile(props.content.tiles, 0);
+      }
+    }
+    action.data.actions.unshift(...collectedActions);
   }
   render() {
     return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MultiStageProtonScreen__WEBPACK_IMPORTED_MODULE_3__.MultiStageProtonScreen, {
@@ -783,6 +1065,7 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
       order: this.props.order,
       previousOrder: this.props.previousOrder,
       activeTheme: this.props.activeTheme,
+      activeThemeId: this.props.activeThemeId,
       installedAddons: this.props.installedAddons,
       screenMultiSelects: this.props.screenMultiSelects,
       setScreenMultiSelects: this.props.setScreenMultiSelects,
@@ -790,6 +1073,12 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
       setActiveMultiSelect: this.props.setActiveMultiSelect,
       activeSingleSelectSelections: this.props.activeSingleSelectSelections,
       setActiveSingleSelectSelection: this.props.setActiveSingleSelectSelection,
+      textInputs: this.props.textInputs,
+      setTextInput: this.props.setTextInput,
+      pinnedSites: this.props.pinnedSites,
+      setPinnedSite: this.props.setPinnedSite,
+      contentToggleChecked: this.props.contentToggleChecked,
+      setContentToggleChecked: this.props.setContentToggleChecked,
       totalNumberOfScreens: this.props.totalNumberOfScreens,
       appAndSystemLocaleInfo: this.props.appAndSystemLocaleInfo,
       negotiatedLanguage: this.props.negotiatedLanguage,
@@ -801,8 +1090,11 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
       isSingleScreen: this.props.isSingleScreen,
       startsWithCorner: this.props.startsWithCorner,
       autoAdvance: this.props.autoAdvance,
+      advanceOnExperimentLoad: this.props.advanceOnExperimentLoad,
+      navigate: this.props.navigate,
       forceHideStepsIndicator: this.props.forceHideStepsIndicator,
       ariaRole: this.props.ariaRole,
+      requireAction: this.props.requireAction,
       aboveButtonStepsIndicator: this.props.aboveButtonStepsIndicator,
       addonId: this.props.addonId,
       addonType: this.props.addonType,
@@ -810,7 +1102,9 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
       addonURL: this.props.addonURL,
       addonIconURL: this.props.addonIconURL,
       themeScreenshots: this.props.themeScreenshots,
-      isRtamo: this.props.content.isRtamo
+      isRtamo: this.props.content.isRtamo,
+      animationsPaused: this.props.animationsPaused,
+      toggleAnimationsPaused: this.props.toggleAnimationsPaused
     });
   }
 }
@@ -819,10 +1113,13 @@ class WelcomeScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCo
 /* 5 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   CONFIGURABLE_STYLES: () => (/* binding */ CONFIGURABLE_STYLES),
-/* harmony export */   Localized: () => (/* binding */ Localized)
+/* harmony export */   Localized: () => (/* binding */ Localized),
+/* harmony export */   pickConfigurableStyles: () => (/* binding */ pickConfigurableStyles),
+/* harmony export */   resolveImageSrc: () => (/* binding */ resolveImageSrc)
 /* harmony export */ });
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
@@ -831,8 +1128,33 @@ __webpack_require__.r(__webpack_exports__);
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 
-const CONFIGURABLE_STYLES = ["color", "display", "fontSize", "fontWeight", "letterSpacing", "lineHeight", "marginBlock", "marginBlockStart", "marginBlockEnd", "marginInline", "paddingBlock", "paddingBlockStart", "paddingBlockEnd", "paddingInline", "paddingInlineStart", "paddingInlineEnd", "textAlign", "whiteSpace", "width", "borderBlockStart", "borderBlockEnd"];
+const CONFIGURABLE_STYLES = ["background", "color", "display", "fontSize", "fontWeight", "letterSpacing", "lineHeight", "marginBlock", "marginBlockStart", "marginBlockEnd", "marginInline", "paddingBlock", "paddingBlockStart", "paddingBlockEnd", "paddingInline", "paddingInlineStart", "paddingInlineEnd", "textAlign", "whiteSpace", "width", "height", "border", "borderBlockStart", "borderBlockEnd", "top", "bottom", "left", "right", "inset", "insetBlock", "insetInline", "minHeight", "minWidth", "maxWidth"];
 const ZAP_SIZE_THRESHOLD = 160;
+
+/**
+ * Picks the CONFIGURABLE_STYLES entries present on `source` into a style
+ * object.
+ */
+function pickConfigurableStyles(source) {
+  const style = {};
+  for (const styleProp of CONFIGURABLE_STYLES) {
+    if (source[styleProp] !== undefined) {
+      style[styleProp] = source[styleProp];
+    }
+  }
+  return style;
+}
+
+/**
+ * Resolves which icon URL to use.
+ */
+function resolveImageSrc({
+  imageURL,
+  rtlImageURL
+}) {
+  const isRTL = typeof document !== "undefined" && document.documentElement.matches(":dir(rtl)");
+  return isRTL && rtlImageURL ? rtlImageURL : imageURL;
+}
 
 /**
  * Based on the .text prop, localizes an inner element if a string_id
@@ -855,6 +1177,21 @@ const ZAP_SIZE_THRESHOLD = 160;
  *   <Localized text={{raw: "Welcome"}}><h1 /></Localized>
  * output:
  *   <h1>Welcome</h1>
+ *
+ * Localized text with inline icons
+ * ftl:
+ *  subtitle = Use <img data-l10n-name="my-icon" alt="My icon"/> for every account
+ * jsx:
+ *   <Localized text={{
+ *     string_id: "subtitle",
+ *     inline_icons: {
+ *       "my-icon": { imageURL: "chrome://...", rtlImageURL: "chrome://..." }
+ *     }
+ *   }}><p /></Localized>
+ * output:
+ *   <p data-l10n-id="subtitle">
+ *     Use <img data-l10n-name="my-icon" class="inline-icon" src="chrome://..." alt="My icon"/> for every account
+ *   </p>
  */
 
 const Localized = ({
@@ -910,16 +1247,26 @@ const Localized = ({
       ref: zapRef
     }, text.zap));
   }
+
+  // Slot inline icons into the localized string. Each entry maps a Fluent
+  // data-l10n-name to an icon object, and Fluent inserts the matching <img>
+  // wherever <img data-l10n-name="..."/> appears in the string.
+  if (text.string_id && text.inline_icons) {
+    for (const [l10nName, icon] of Object.entries(text.inline_icons)) {
+      textNodes.push(/*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("img", {
+        key: l10nName,
+        "data-l10n-name": l10nName,
+        className: "inline-icon",
+        src: resolveImageSrc(icon)
+      }));
+    }
+  }
   if (text.aria_label) {
     props["aria-label"] = text.aria_label;
   }
 
   // Apply certain configurable styles.
-  CONFIGURABLE_STYLES.forEach(style => {
-    if (text[style] !== undefined) {
-      props.style[style] = text[style];
-    }
-  });
+  Object.assign(props.style, pickConfigurableStyles(text));
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().cloneElement(
   // Provide a default container for the text if necessary.
   children ?? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null), props,
@@ -931,25 +1278,30 @@ const Localized = ({
 /* 6 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   MultiStageProtonScreen: () => (/* binding */ MultiStageProtonScreen),
 /* harmony export */   ProtonScreen: () => (/* binding */ ProtonScreen),
-/* harmony export */   ProtonScreenActionButtons: () => (/* binding */ ProtonScreenActionButtons)
+/* harmony export */   ProtonScreenActionButtons: () => (/* binding */ ProtonScreenActionButtons),
+/* harmony export */   screenContentShape: () => (/* binding */ screenContentShape)
 /* harmony export */ });
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */ var prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13__ = __webpack_require__(7);
+/* harmony import */ var prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default = /*#__PURE__*/__webpack_require__.n(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13__);
 /* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
-/* harmony import */ var _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
 /* harmony import */ var _MultiStageAboutWelcome__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(4);
-/* harmony import */ var _LanguageSwitcher__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(7);
-/* harmony import */ var _CTAParagraph__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(8);
-/* harmony import */ var _HeroImage__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(9);
-/* harmony import */ var _OnboardingVideo__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(10);
-/* harmony import */ var _AdditionalCTA__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(11);
-/* harmony import */ var _LinkParagraph__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(13);
-/* harmony import */ var _ContentTiles__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(14);
-/* harmony import */ var _InstallButton__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(16);
+/* harmony import */ var _LanguageSwitcher__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(8);
+/* harmony import */ var _CTAParagraph__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(9);
+/* harmony import */ var _HeroImage__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(10);
+/* harmony import */ var _OnboardingVideo__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(11);
+/* harmony import */ var _AdditionalCTA__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(12);
+/* harmony import */ var _LinkParagraph__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(14);
+/* harmony import */ var _ContentTiles__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(15);
+/* harmony import */ var _InstallButton__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(17);
+/* harmony import */ var _SubmenuButton__WEBPACK_IMPORTED_MODULE_12__ = __webpack_require__(13);
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -966,26 +1318,141 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
+
+
+const DEFAULT_AUTO_ADVANCE_MS = 20000;
+const CORNER_IMAGE_POSITIONS = new Set(["bottom-left", "bottom-right", "top-left", "top-right"]);
+const DEFAULT_CORNER_IMAGE_POSITION = "bottom-right";
+const CORNER_IMAGE_ENTRANCE_ANIMATIONS = new Set(["none", "fade", "slide-block", "slide-inline", "slide-corner", "zoom"]);
+const DEFAULT_CORNER_IMAGE_ENTRANCE_ANIMATION = "none";
+// Direction-relative aliases for the positions above, mapped to [ltr, rtl] so
+// that `*-end` follows the reading direction the way inset-inline-end would.
+const CORNER_IMAGE_LOGICAL_POSITIONS = new Map([["bottom-start", ["bottom-left", "bottom-right"]], ["bottom-end", ["bottom-right", "bottom-left"]], ["top-start", ["top-left", "top-right"]], ["top-end", ["top-right", "top-left"]]]);
+
+/**
+ * Resolves a corner_image position to one of CORNER_IMAGE_POSITIONS, so the
+ * rendered class is always a physical corner. Unsupported values fall back
+ * to bottom-right.
+ */
+function resolveCornerImagePosition(position) {
+  const logical = CORNER_IMAGE_LOGICAL_POSITIONS.get(position);
+  if (logical) {
+    const isRTL = typeof document !== "undefined" && document.documentElement.matches(":dir(rtl)");
+    return logical[isRTL ? 1 : 0];
+  }
+  return CORNER_IMAGE_POSITIONS.has(position) ? position : DEFAULT_CORNER_IMAGE_POSITION;
+}
+
+/**
+ * Applies an image's `rtl` overrides when the document is right-to-left.
+ */
+function resolveDirectionalImage(image) {
+  const isRTL = typeof document !== "undefined" && document.documentElement.matches(":dir(rtl)");
+  return isRTL && image?.rtl ? {
+    ...image,
+    ...image.rtl
+  } : image;
+}
 const MultiStageProtonScreen = props => {
   const {
     autoAdvance,
+    advanceOnExperimentLoad,
     handleAction,
+    messageId,
+    navigate,
     order
   } = props;
   (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    if (!autoAdvance && !advanceOnExperimentLoad) {
+      return () => {};
+    }
     if (autoAdvance) {
+      const value = autoAdvance?.actionEl ?? autoAdvance;
+      const timeout = autoAdvance?.actionTimeMS ?? DEFAULT_AUTO_ADVANCE_MS;
       const timer = setTimeout(() => {
         handleAction({
           currentTarget: {
-            value: autoAdvance
+            value
           },
           name: "AUTO_ADVANCE"
         });
-      }, 20000);
+      }, timeout);
       return () => clearTimeout(timer);
     }
-    return () => {};
-  }, [autoAdvance, handleAction, order]);
+
+    // If not doing a standard auto advance, handle auto advancing when experiments load.
+
+    // Defaults for when advance_on_experiment_load is true.
+    const minMsDefault = 3000;
+    const maxMsDefault = 8000;
+    let minMs = advanceOnExperimentLoad?.minDisplayMs ?? minMsDefault;
+    let maxMs = advanceOnExperimentLoad?.maxDisplayMs ?? maxMsDefault;
+
+    // Ensure max >= min.
+    if (maxMs < minMs) {
+      maxMs = minMs;
+    }
+    const startTime = performance.now();
+    let cancelled = false;
+    let advanced = false;
+    let minDone = false;
+    let experimentsDone = false;
+    let nimbusResult = null;
+    let maxTimeoutFired = false;
+    const doAdvance = () => {
+      if (cancelled || advanced) {
+        return;
+      }
+      advanced = true;
+      const screen_duration = Math.round(performance.now() - startTime);
+      let reason;
+      if (maxTimeoutFired) {
+        reason = "max_display_timeout";
+      } else if (nimbusResult === "error") {
+        reason = "nimbus_error";
+      } else if (nimbusResult === "timeout") {
+        reason = "nimbus_timeout";
+      } else {
+        reason = "nimbus_ready";
+      }
+      _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.sendActionTelemetry(messageId, "advance_on_experiment_load", "SPLASH_DISMISSED", {
+        reason,
+        screen_duration
+      });
+      navigate(false);
+    };
+    const maybeAdvance = () => {
+      if (minDone && experimentsDone) {
+        doAdvance();
+      }
+    };
+    const minTimerId = window.setTimeout(() => {
+      minDone = true;
+      maybeAdvance();
+    }, minMs);
+    const maxTimerId = window.setTimeout(() => {
+      maxTimeoutFired = true;
+      doAdvance();
+    }, maxMs);
+
+    // Use an IIFE to keep the effect itself synchronous
+    (async () => {
+      try {
+        if (typeof window.AWWaitForNimbus === "function") {
+          nimbusResult = await window.AWWaitForNimbus();
+        }
+        // If AWWaitForNimbus is missing, treat as "done" immediately.
+      } catch (e) {} finally {
+        experimentsDone = true;
+        maybeAdvance();
+      }
+    })();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(minTimerId);
+      window.clearTimeout(maxTimerId);
+    };
+  }, [autoAdvance, advanceOnExperimentLoad, handleAction, messageId, order, navigate]);
 
   // Set narrow on an outer element to allow for use of SCSS outer selector and
   // consolidation of styles for small screen widths with those for messages
@@ -1012,6 +1479,7 @@ const MultiStageProtonScreen = props => {
     id: props.id,
     order: props.order,
     activeTheme: props.activeTheme,
+    activeThemeId: props.activeThemeId,
     installedAddons: props.installedAddons,
     screenMultiSelects: props.screenMultiSelects,
     setScreenMultiSelects: props.setScreenMultiSelects,
@@ -1019,6 +1487,12 @@ const MultiStageProtonScreen = props => {
     setActiveMultiSelect: props.setActiveMultiSelect,
     activeSingleSelectSelections: props.activeSingleSelectSelections,
     setActiveSingleSelectSelection: props.setActiveSingleSelectSelection,
+    textInputs: props.textInputs,
+    setTextInput: props.setTextInput,
+    pinnedSites: props.pinnedSites,
+    setPinnedSite: props.setPinnedSite,
+    contentToggleChecked: props.contentToggleChecked,
+    setContentToggleChecked: props.setContentToggleChecked,
     totalNumberOfScreens: props.totalNumberOfScreens,
     handleAction: props.handleAction,
     isFirstScreen: props.isFirstScreen,
@@ -1026,6 +1500,8 @@ const MultiStageProtonScreen = props => {
     isSingleScreen: props.isSingleScreen,
     previousOrder: props.previousOrder,
     autoAdvance: props.autoAdvance,
+    advanceOnExperimentLoad: props.advanceOnExperimentLoad,
+    navigate: props.navigate,
     isRtamo: props.isRtamo,
     addonId: props.addonId,
     addonType: props.addonType,
@@ -1039,7 +1515,10 @@ const MultiStageProtonScreen = props => {
     forceHideStepsIndicator: props.forceHideStepsIndicator,
     ariaRole: props.ariaRole,
     aboveButtonStepsIndicator: props.aboveButtonStepsIndicator,
-    isWideScreen: isWideScreen
+    requireAction: props.requireAction,
+    isWideScreen: isWideScreen,
+    animationsPaused: props.animationsPaused,
+    toggleAnimationsPaused: props.toggleAnimationsPaused
   });
 };
 const ProtonScreenActionButtons = props => {
@@ -1050,6 +1529,9 @@ const ProtonScreenActionButtons = props => {
     addonType,
     addonName,
     activeMultiSelect,
+    activeSingleSelectSelections,
+    textInputs,
+    pinnedSites,
     installedAddons
   } = props;
   const defaultValue = content.checkbox?.defaultValue;
@@ -1070,8 +1552,8 @@ const ProtonScreenActionButtons = props => {
 
   // If we have a multi-select screen, we want to disable the primary button
   // until the user has selected at least one item.
-  const isPrimaryDisabled = primaryDisabledValue => {
-    if (primaryDisabledValue === "hasActiveMultiSelect") {
+  const isPrimaryDisabled = disabledValue => {
+    if (disabledValue === "hasActiveMultiSelect") {
       if (!activeMultiSelect) {
         return true;
       }
@@ -1084,7 +1566,27 @@ const ProtonScreenActionButtons = props => {
       }
       return true;
     }
-    return primaryDisabledValue;
+    // Only disables the primary button until at least one single-select
+    // option is chosen.
+    if (disabledValue === "hasActiveSingleSelect") {
+      if (!activeSingleSelectSelections) {
+        return true;
+      }
+      return !Object.values(activeSingleSelectSelections).some(val => val && val !== "none");
+    }
+    if (disabledValue === "hasTextInput") {
+      // For text input, we check if the user has entered any text in the
+      // textarea(s) present on the screen.
+      if (!textInputs) {
+        return true;
+      }
+      return Object.values(textInputs).every(input => !input.isValid || input.value.trim().length === 0);
+    }
+    // Disables the primary button until the user has pinned at least one site.
+    if (disabledValue === "hasPinnedSite") {
+      return !pinnedSites;
+    }
+    return disabledValue;
   };
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: `action-buttons ${content.additional_button ? "additional-cta-container" : ""}`,
@@ -1118,7 +1620,9 @@ const ProtonScreenActionButtons = props => {
     }) : ""
   })), content.additional_button ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_AdditionalCTA__WEBPACK_IMPORTED_MODULE_8__.AdditionalCTA, {
     content: content,
-    handleAction: props.handleAction
+    handleAction: props.handleAction,
+    activeMultiSelect: activeMultiSelect,
+    textInputs: textInputs
   }) : null, content.checkbox ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "checkbox-container"
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", {
@@ -1135,27 +1639,48 @@ const ProtonScreenActionButtons = props => {
   }))) : null, content.secondary_button ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MultiStageAboutWelcome__WEBPACK_IMPORTED_MODULE_3__.SecondaryCTA, {
     content: content,
     handleAction: props.handleAction,
-    activeMultiSelect: activeMultiSelect
+    activeMultiSelect: activeMultiSelect,
+    textInputs: textInputs
   }) : null);
 };
 class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureComponent) {
   componentDidMount() {
-    this.mainContentHeader.focus();
+    // Don't focus on main content if it is a feature callout
+    // See Bug 1985939
+    if (this.props.content?.position === "callout") {
+      return;
+    }
+
+    // For requireAction screens, focus the title heading instead of the
+    // alertdialog container.
+    // Prevents Orca from misreading tab navigated elements.
+    if (this.props.requireAction && this.titleHeader) {
+      this.titleHeader.focus();
+    } else {
+      this.mainContentHeader.focus();
+    }
   }
-  getScreenClassName(isFirstScreen, isLastScreen, includeNoodles, isVideoOnboarding, isAddonsPicker) {
-    const screenClass = `screen-${this.props.order % 2 !== 0 ? 1 : 2}`;
+  getScreenClassName(includeNoodles, hasZapBorder, hasZapShadow, isVideoOnboarding, isAddonsPicker) {
     if (isVideoOnboarding) {
       return "with-video";
     }
     if (isAddonsPicker) {
       return "addons-picker";
     }
-    return `${isFirstScreen ? `dialog-initial` : ``} ${isLastScreen ? `dialog-last` : ``} ${includeNoodles ? `with-noodles` : ``} ${screenClass}`;
+    const screenClass = `screen-${this.props.order % 2 !== 0 ? 1 : 2}`;
+    const dialogInitial = this.props.isFirstScreen && this.props.previousOrder < 0 ? `dialog-initial` : ``;
+    const dialogLast = this.props.isLastScreen ? `dialog-last` : ``;
+    const zapBorder = hasZapBorder ? `zap-border` : ``;
+    const zapShadow = hasZapShadow ? `zap-shadow` : ``;
+    return `${screenClass} ${dialogInitial} ${dialogLast} ${zapBorder} ${zapShadow} ${includeNoodles ? `with-noodles` : ``}`;
   }
   renderTitle({
     title,
     title_logo
   }) {
+    const titleRef = this.props.requireAction ? input => {
+      this.titleHeader = input;
+    } : null;
     if (title_logo) {
       const {
         alignment,
@@ -1169,41 +1694,78 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
       }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
         text: title
       }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h1", {
-        id: "mainContentHeader"
+        id: "mainContentHeader",
+        tabIndex: this.props.requireAction ? -1 : undefined,
+        ref: titleRef
       })));
     }
     return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
       text: title
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h1", {
-      id: "mainContentHeader"
+      id: "mainContentHeader",
+      tabIndex: this.props.requireAction ? -1 : undefined,
+      ref: titleRef
     }));
   }
-  renderPicture({
-    imageURL = "chrome://branding/content/about-logo.svg",
-    darkModeImageURL,
-    reducedMotionImageURL,
-    darkModeReducedMotionImageURL,
-    alt = "",
-    width,
-    height,
-    marginBlock,
-    marginInline,
-    className = "logo-container"
-  }) {
+  renderPicture(image) {
+    const {
+      imageURL = "chrome://branding/content/about-logo.svg",
+      darkModeImageURL,
+      reducedMotionImageURL,
+      darkModeReducedMotionImageURL,
+      videoURL,
+      alt = "",
+      width,
+      height,
+      marginBlock,
+      marginInline,
+      style,
+      imgStyle,
+      className = "logo-container"
+    } = resolveDirectionalImage(image);
     function getLoadingStrategy() {
       for (let url of [imageURL, darkModeImageURL, reducedMotionImageURL, darkModeReducedMotionImageURL]) {
-        if (_lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.getLoadingStrategyFor(url) === "lazy") {
+        if (_lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.getLoadingStrategyFor(url) === "lazy") {
           return "lazy";
         }
       }
       return "eager";
     }
+    const containerStyle = {
+      marginInline,
+      marginBlock,
+      ...style
+    };
+
+    // videoURL lets this render a one-shot animation instead of a static image.
+    // It plays once and holds its last frame. Users who prefer reduced motion
+    // fall through to the static <picture>/<img> below.
+    const prefersReducedMotion = typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (videoURL && !prefersReducedMotion) {
+      return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+        className: className,
+        style: containerStyle
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+        text: alt
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+        className: "sr-only logo-alt"
+      })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("video", {
+        className: "brand-logo",
+        style: {
+          height,
+          width,
+          ...imgStyle
+        },
+        src: videoURL,
+        autoPlay: true,
+        muted: true,
+        playsInline: true,
+        role: alt ? null : "presentation"
+      }));
+    }
     return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("picture", {
       className: className,
-      style: {
-        marginInline,
-        marginBlock
-      }
+      style: containerStyle
     }, darkModeReducedMotionImageURL ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("source", {
       srcset: darkModeReducedMotionImageURL,
       media: "(prefers-color-scheme: dark) and (prefers-reduced-motion: reduce)"
@@ -1221,7 +1783,8 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
       className: "brand-logo",
       style: {
         height,
-        width
+        width,
+        ...imgStyle
       },
       src: imageURL,
       alt: "",
@@ -1240,6 +1803,55 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
       className: "noodle outline-L"
     }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       className: "noodle yellow-circle"
+    }));
+  }
+  renderLastCardImage(content) {
+    const {
+      width,
+      height,
+      marginBlock,
+      marginInline,
+      ...image
+    } = content.center_image ?? {};
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      className: "last-card-image",
+      style: {
+        "--last-card-image-width": width,
+        "--last-card-image-height": height,
+        "--last-card-picture-margin-block": marginBlock,
+        "--last-card-picture-margin-inline": marginInline
+      }
+    }, content.center_image ? this.renderPicture({
+      ...image,
+      className: "center-image"
+    }) : null);
+  }
+  renderCornerImage(anchor) {
+    const cornerImage = this.props.content.corner_image;
+    const position = resolveCornerImagePosition(cornerImage.position);
+    const entranceAnimation = cornerImage.entrance_animation ?? {};
+    const entranceType = CORNER_IMAGE_ENTRANCE_ANIMATIONS.has(entranceAnimation.type) ? entranceAnimation.type : DEFAULT_CORNER_IMAGE_ENTRANCE_ANIMATION;
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      className: "corner-image-container"
+    }, this.renderPicture({
+      imageURL: cornerImage.imageURL,
+      darkModeImageURL: cornerImage.darkModeImageURL,
+      reducedMotionImageURL: cornerImage.reducedMotionImageURL,
+      darkModeReducedMotionImageURL: cornerImage.darkModeReducedMotionImageURL,
+      rtl: cornerImage.rtl,
+      height: cornerImage.height,
+      width: cornerImage.width,
+      marginBlock: cornerImage.marginBlock,
+      marginInline: cornerImage.marginInline,
+      style: {
+        // Read indirectly by _multistage.scss, so reduced motion can
+        // override them. Undefined values fall through to its defaults.
+        "--corner-image-entrance-distance": entranceAnimation.distance,
+        "--corner-image-entrance-duration": entranceAnimation.duration,
+        "--corner-image-entrance-delay": entranceAnimation.delay,
+        ...cornerImage.style
+      },
+      className: `corner-image ${position}${anchor === "screen" ? ` entrance-${entranceType}` : ""}`
     }));
   }
   renderLanguageSwitcher() {
@@ -1269,6 +1881,13 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
         marginBlock,
         marginInline
       }
+    });
+  }
+  renderMoreButton() {
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_SubmenuButton__WEBPACK_IMPORTED_MODULE_12__.SubmenuButton, {
+      content: this.props.content,
+      handleAction: this.props.handleAction,
+      buttonType: "more"
     });
   }
   renderStepsIndicator() {
@@ -1304,11 +1923,56 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
       totalNumberOfScreens: total
     }));
   }
+
+  // We consider a screen to have animated content when it includes both
+  // default and _static versions of its background image or hero_image url.
+  // The pause toggle swaps the rendered asset to the _static asset when activated.
+  // Without _both_ default and static, there is nothing for the toggle to
+  // switch to, so we don't render the toggle button at all.
+  hasAnimatedContent(content) {
+    return !!(content.background && content.background_static || content.hero_image?.url && content.hero_image?.static_url);
+  }
+  getEffectiveBackground(content) {
+    if (content.position !== "split") {
+      const gradient = content.zap_border_gradient || "linear-gradient(96deg, #B89CFF 20.68%, #FF9565 79.34%)";
+      const combinedBackground = content.background && content.zap_border ? `${gradient} border-box border-area, image(${content.background}) padding-box` : content.background;
+      const combinedBackgroundStatic = content.background_static && content.zap_border ? `${gradient} border-box border-area, image(${content.background_static}) padding-box` : content.background_static;
+      return this.props.animationsPaused && content.background_static ? combinedBackgroundStatic : combinedBackground;
+    }
+    return this.props.animationsPaused && content.background_static ? content.background_static : content.background;
+  }
+  getEffectiveHeroImageUrl(content) {
+    if (!content.hero_image) {
+      return null;
+    }
+    return this.props.animationsPaused && content.hero_image.static_url ? content.hero_image.static_url : content.hero_image.url;
+  }
+  renderAnimationPlayPauseButton() {
+    const {
+      toggleAnimationsPaused
+    } = this.props;
+    const paused = !!this.props.animationsPaused;
+    const labelId = paused ? "onboarding-animation-play-button" : "onboarding-animation-pause-button";
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
+      className: `animation-play-pause-button${paused ? " paused" : ""}`,
+      type: "button",
+      "aria-pressed": paused,
+      "data-l10n-id": labelId,
+      onClick: toggleAnimationsPaused
+    });
+  }
   renderSecondarySection(content) {
+    const background = this.getEffectiveBackground(content);
+    const heroImageUrl = this.getEffectiveHeroImageUrl(content);
+    // pinnable_sites exposes its background through a custom property so the
+    // stylesheet can swap the wide-layout image for a narrow gradient without
+    // overriding an inline `background` shorthand.
+    const tiles = Array.isArray(content.tiles) ? content.tiles : [content.tiles];
+    const isPinnableSites = tiles.some(tile => tile?.type === "pinnable_sites");
     return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       className: `section-secondary ${content.hide_secondary_section ? "with-secondary-section-hidden" : ""}`,
-      style: content.background ? {
-        background: content.background,
+      style: background ? {
+        [isPinnableSites ? "--pinnable-sites-bkg" : "background"]: background,
         "--mr-secondary-background-position-y": content.split_narrow_bkg_position
       } : {}
     }, content.dismiss_button && content.reverse_split ? this.renderDismissButton() : null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
@@ -1317,8 +1981,8 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
       className: "sr-only image-alt",
       role: "img"
     })), content.hero_image ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_HeroImage__WEBPACK_IMPORTED_MODULE_6__.HeroImage, {
-      url: content.hero_image.url
-    }) : this.renderHeroText(content.hero_text));
+      url: heroImageUrl
+    }) : this.renderHeroText(content.hero_text), this.hasAnimatedContent(content) ? this.renderAnimationPlayPauseButton() : null);
   }
   renderHeroText(hero_text) {
     if (!hero_text) {
@@ -1327,10 +1991,10 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
 
     // Check if hero_text is a string or an object with string_id property
     // essentially checking if we're using old or new design
-    const isSimpleText = typeof hero_text === "string" || typeof hero_text === "object" && hero_text !== null && "string_id" in hero_text;
+    const isSimpleText = typeof hero_text === "string" || typeof hero_text === "object" && hero_text !== null && ("string_id" in hero_text || "raw" in hero_text);
     const HeroTextWrapper = ({
       children,
-      className = ""
+      className
     }) => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement((react__WEBPACK_IMPORTED_MODULE_0___default().Fragment), null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       className: `message-text ${className}`
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
@@ -1339,7 +2003,9 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
       className: "spacer-bottom"
     })));
     if (isSimpleText) {
-      return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(HeroTextWrapper, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+      return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(HeroTextWrapper, {
+        className: "simple"
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
         text: hero_text
       }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h1", null)));
     }
@@ -1353,16 +2019,19 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
   }
   renderOrderedContent(content) {
     const elements = [];
-    for (const item of content) {
+    for (const [index, item] of content.entries()) {
       switch (item.type) {
         case "text":
           elements.push(/*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_LinkParagraph__WEBPACK_IMPORTED_MODULE_9__.LinkParagraph, {
+            key: index,
             text_content: item,
             handleAction: this.props.handleAction
           }));
           break;
         case "image":
-          elements.push(this.renderPicture({
+          elements.push(/*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement((react__WEBPACK_IMPORTED_MODULE_0___default().Fragment), {
+            key: index
+          }, this.renderPicture({
             imageURL: item.url,
             darkModeImageURL: item.darkModeImageURL,
             height: item.height,
@@ -1370,7 +2039,7 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
             alt: item.alt_text,
             marginInline: item.marginInline,
             className: "inline-image"
-          }));
+          })));
       }
     }
     return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement((react__WEBPACK_IMPORTED_MODULE_0___default().Fragment), null, elements);
@@ -1381,19 +2050,46 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("img", {
       className: `${addonType?.includes("theme") ? "rtamo-theme-icon" : "brand-logo"}`,
       src: addonType?.includes("theme") ? themeScreenshots[0].url : addonIconURL,
-      loading: _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.getLoadingStrategyFor(addonIconURL),
+      loading: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.getLoadingStrategyFor(addonIconURL),
       alt: "",
       role: "presentation"
     }));
   }
   getCombinedInnerStyles(content, isWideScreen) {
-    const CONFIGURABLE_STYLES = ["overflow", "display", "paddingInline", "paddingInlineStart", "paddingInlineEnd", "paddingBlock", "paddingBlockStart", "paddingBlockEnd"];
+    const INNER_CONTENT_CONFIGURABLE_STYLES = ["overflow", "display", "paddingInline", "paddingInlineStart", "paddingInlineEnd", "paddingBlock", "paddingBlockStart", "paddingBlockEnd", "width", "minHeight", "flexGrow"];
     const innerContentStyles = isWideScreen ? content.main_content_style || {} : content.main_content_style_narrow || {};
-    const validInnerStyles = _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.getValidStyle(innerContentStyles, CONFIGURABLE_STYLES) || {};
+    const validInnerStyles = _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.getValidStyle(innerContentStyles, INNER_CONTENT_CONFIGURABLE_STYLES) || {};
     return {
       ...validInnerStyles,
       justifyContent: content.split_content_justify_content
     };
+  }
+  getActionButtonsPosition(content) {
+    const VALID_POSITIONS = ["after_subtitle", "after_supporting_content", "end"];
+    if (VALID_POSITIONS.includes(content.action_buttons_position)) {
+      return content.action_buttons_position;
+    }
+    // Legacy mapping
+    if (content.action_buttons_above_content) {
+      return "after_subtitle";
+    }
+    // Default
+    return "end";
+  }
+  renderActionButtons(position, content) {
+    return this.getActionButtonsPosition(content) === position ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(ProtonScreenActionButtons, {
+      content: content,
+      isRtamo: this.props.isRtamo,
+      installedAddons: this.props.installedAddons,
+      addonId: this.props.addonId,
+      addonName: this.props.addonName,
+      addonType: this.props.addonType,
+      handleAction: this.props.handleAction,
+      activeMultiSelect: this.props.activeMultiSelect,
+      activeSingleSelectSelections: this.props.activeSingleSelectSelections,
+      textInputs: this.props.textInputs,
+      pinnedSites: this.props.pinnedSites
+    }) : null;
   }
 
   // eslint-disable-next-line complexity
@@ -1403,8 +2099,6 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
       content,
       isRtamo,
       addonType,
-      isFirstScreen,
-      isLastScreen,
       isSingleScreen,
       forceHideStepsIndicator,
       ariaRole,
@@ -1412,55 +2106,82 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
       isWideScreen
     } = this.props;
     const includeNoodles = content.has_noodles;
+    const isCenterLargeFullscreen = content.position === "center-large" && !!content.fullscreen;
+    // Where the corner image is anchored, which decides where it gets rendered.
+    // The fullscreen FRO layout anchors to the window, so its container stays a
+    // child of .screen. Every other layout anchors to the card instead, which
+    // means rendering inside .section-main (the positioned card wrapper).
+    let cornerImageAnchor = null;
+    if (content.corner_image) {
+      cornerImageAnchor = isCenterLargeFullscreen ? "screen" : "card";
+    }
+    const secondaryCTATop = content.secondary_button_top ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MultiStageAboutWelcome__WEBPACK_IMPORTED_MODULE_3__.SecondaryCTA, {
+      content: content,
+      handleAction: this.props.handleAction,
+      position: "top"
+    }) : null;
+    const hasZapBorder = content.zap_border;
+    const hasZapShadow = content.zap_shadow;
     // The default screen position is "center"
-    const isCenterPosition = content.position === "center" || !content.position;
+    const isCenterPosition = ["center", "center-large"].includes(content.position) || !content.position;
     const hideStepsIndicator = autoAdvance || content?.video_container || isSingleScreen || forceHideStepsIndicator;
     const textColorClass = content.text_color ? `${content.text_color}-text` : "";
     // Assign proton screen style 'screen-1' or 'screen-2' to centered screens
     // by checking if screen order is even or odd.
-    const screenClassName = isCenterPosition ? this.getScreenClassName(isFirstScreen, isLastScreen, includeNoodles, content?.video_container, content.tiles?.type === "addons-picker") : "";
+    const screenClassName = isCenterPosition ? this.getScreenClassName(includeNoodles, hasZapBorder, hasZapShadow, content?.video_container, content.tiles?.type === "addons-picker") : `${hasZapBorder ? "zap-border" : ""} ${hasZapShadow ? " zap-shadow" : ""}`;
     const isEmbeddedMigration = content.tiles?.type === "migration-wizard";
     const isSystemPromptStyleSpotlight = content.isSystemPromptStyleSpotlight === true;
     const combinedStyles = this.getCombinedInnerStyles(content, isWideScreen);
+    // content.screen_style is a shared mix of screen-level layout tweaks
+    // consumed by three different elements below (.screen, .section-main,
+    // .main-content), each pulling its own allowlisted subset of it.
+    const screenStyleJustifyContent = content.screen_style && _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.getValidStyle(content.screen_style, ["justifyContent"]).justifyContent;
     return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("main", {
       className: `screen ${this.props.id || ""}
           ${screenClassName} ${textColorClass}`,
       "reverse-split": content.reverse_split ? "" : null,
       fullscreen: content.fullscreen ? "" : null,
-      style: content.screen_style && _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.getValidStyle(content.screen_style, ["overflow", "display"]),
+      style: {
+        ...(content.screen_style && _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.getValidStyle(content.screen_style, ["overflow", "display"])),
+        // center-large-fullscreen renders its background here, at the
+        // full-viewport screen level, rather than on .main-content, so it
+        // isn't confined to that inset card and can show behind the
+        // blurred glow (see .main-content below).
+        background: isCenterLargeFullscreen ? this.getEffectiveBackground(content) : null
+      },
       role: ariaRole ?? "alertdialog",
       layout: content.layout,
       pos: content.position || "center",
+      "data-theme": content.position === "card-stack" && this.props.activeThemeId ? this.props.activeThemeId : null,
       tabIndex: "-1",
-      "aria-labelledby": "mainContentHeader",
+      "aria-labelledby": `mainContentHeader${content.subtitle ? " mainContentSubheader" : ""}`,
+      "aria-describedby": "mainContentInner",
       ref: input => {
         this.mainContentHeader = input;
       },
       "no-rdm": content.no_rdm ? "" : null
-    }, isCenterPosition ? null : this.renderSecondarySection(content), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    }, cornerImageAnchor === "screen" ? this.renderCornerImage("screen") : null, isCenterPosition ? null : this.renderSecondarySection(content), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       className: `section-main ${isEmbeddedMigration ? "embedded-migration" : ""}${isSystemPromptStyleSpotlight ? "system-prompt-spotlight" : ""}`,
       "hide-secondary-section": content.hide_secondary_section ? String(content.hide_secondary_section) : null,
       role: "document",
-      style: content.screen_style && _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.getValidStyle(content.screen_style, ["width", "padding"])
-    }, content.secondary_button_top ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MultiStageAboutWelcome__WEBPACK_IMPORTED_MODULE_3__.SecondaryCTA, {
-      content: content,
-      handleAction: this.props.handleAction,
-      position: "top"
-    }) : null, includeNoodles ? this.renderNoodles() : null, content.dismiss_button && !content.reverse_split ? this.renderDismissButton() : null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      style: content.screen_style && _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.getValidStyle(content.screen_style, ["width", "padding", "height"])
+    }, cornerImageAnchor === "card" ? this.renderCornerImage("card") : null, isCenterLargeFullscreen ? null : secondaryCTATop, includeNoodles ? this.renderNoodles() : null, content.more_button ? this.renderMoreButton() : null, content.dismiss_button && !content.reverse_split ? this.renderDismissButton() : null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       className: `main-content ${hideStepsIndicator ? "no-steps" : ""}`,
       style: {
-        background: content.background && isCenterPosition ? content.background : null,
-        width: content.width && content.position !== "split" ? content.width : null,
+        background: isCenterPosition && !isCenterLargeFullscreen && this.getEffectiveBackground(content) ? this.getEffectiveBackground(content) : null,
+        width: content.width && !["split", "card-stack"].includes(content.position) ? content.width : null,
         paddingBlock: content.split_content_padding_block ? content.split_content_padding_block : null,
-        paddingInline: content.split_content_padding_inline ? content.split_content_padding_inline : null
+        paddingInline: content.split_content_padding_inline ? content.split_content_padding_inline : null,
+        justifyContent: screenStyleJustifyContent
       }
-    }, content.logo && !content.fullscreen ? this.renderPicture(content.logo) : null, isRtamo && !content.fullscreen ? this.renderRTAMOIcon(addonType, this.props.themeScreenshots, this.props.addonIconURL) : null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    }, isCenterLargeFullscreen ? secondaryCTATop : null, isCenterPosition && this.hasAnimatedContent(content) ? this.renderAnimationPlayPauseButton() : null, content.logo && !content.fullscreen ? this.renderPicture(content.logo) : null, isRtamo && !content.fullscreen ? this.renderRTAMOIcon(addonType, this.props.themeScreenshots, this.props.addonIconURL) : null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       className: "main-content-inner",
+      id: "mainContentInner",
       style: combinedStyles
     }, content.logo && content.fullscreen ? this.renderPicture(content.logo) : null, isRtamo && content.fullscreen ? this.renderRTAMOIcon(addonType, this.props.themeScreenshots, this.props.addonIconURL) : null, content.title || content.subtitle ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       id: "multi-stage-message-welcome-text",
       className: `welcome-text ${content.title_style || ""}`
-    }, content.title ? this.renderTitle(content) : null, content.subtitle ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+    }, content.title ? this.renderTitle(content) : null, content.layout === "last-card" ? this.renderLastCardImage(content) : null, content.subtitle ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
       text: content.subtitle
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h2", {
       "data-l10n-args": JSON.stringify({
@@ -1469,31 +2190,13 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
       }),
       "aria-flowto": this.props.messageId?.includes("FEATURE_TOUR") ? "steps" : "",
       id: "mainContentSubheader"
-    })) : null, content.action_buttons_above_content && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(ProtonScreenActionButtons, {
-      content: content,
-      isRtamo: this.props.isRtamo,
-      installedAddons: this.props.installedAddons,
-      addonId: this.props.addonId,
-      addonName: this.props.addonName,
-      addonType: this.props.addonType,
-      handleAction: this.props.handleAction,
-      activeMultiSelect: this.props.activeMultiSelect
-    }), content.cta_paragraph ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_CTAParagraph__WEBPACK_IMPORTED_MODULE_5__.CTAParagraph, {
+    })) : null, this.renderActionButtons("after_subtitle", content), content.cta_paragraph ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_CTAParagraph__WEBPACK_IMPORTED_MODULE_5__.CTAParagraph, {
       content: content.cta_paragraph,
       handleAction: this.props.handleAction
     }) : null) : null, content.video_container ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_OnboardingVideo__WEBPACK_IMPORTED_MODULE_7__.OnboardingVideo, {
       content: content.video_container,
       handleAction: this.props.handleAction
-    }) : null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_ContentTiles__WEBPACK_IMPORTED_MODULE_10__.ContentTiles, this.props), this.renderLanguageSwitcher(), content.above_button_content ? this.renderOrderedContent(content.above_button_content) : null, !hideStepsIndicator && aboveButtonStepsIndicator ? this.renderStepsIndicator() : null, !content.action_buttons_above_content && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(ProtonScreenActionButtons, {
-      content: content,
-      isRtamo: this.props.isRtamo,
-      installedAddons: this.props.installedAddons,
-      addonId: this.props.addonId,
-      addonName: this.props.addonName,
-      addonType: this.props.addonType,
-      handleAction: this.props.handleAction,
-      activeMultiSelect: this.props.activeMultiSelect
-    }),
+    }) : null, this.renderLanguageSwitcher(), content?.tiles_container?.position !== "after_supporting_content" ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_ContentTiles__WEBPACK_IMPORTED_MODULE_10__.ContentTiles, this.props) : null, content.above_button_content ? this.renderOrderedContent(content.above_button_content) : null, this.renderActionButtons("after_supporting_content", content), content?.tiles_container?.position === "after_supporting_content" ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_ContentTiles__WEBPACK_IMPORTED_MODULE_10__.ContentTiles, this.props) : null, !hideStepsIndicator && aboveButtonStepsIndicator ? this.renderStepsIndicator() : null, this.renderActionButtons("end", content),
     /* Fullscreen dot-style step indicator should sit inside the
     main inner content to share its padding, which will be
     configurable with Bug 1956042 */
@@ -1504,11 +2207,1873 @@ class ProtonScreen extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
     })));
   }
 }
+const localizableThingPropTypes = prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string), prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().exact({
+  // A raw, untranslated string or a $l10n object.
+  raw: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object)]),
+  // Fluent string identifier from a .ftl file.
+  string_id: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // Arguments for Fluent strings that have variables.
+  args: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+  // A string to use as the element's aria-label attribute value.
+  aria_label: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // CSS overrides for configurable styles.
+  ...Object.fromEntries(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.CONFIGURABLE_STYLES.map(key => [key, prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().number)])]))
+})]);
+const actionPropTypes = prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().exact({
+  // The special message action id.
+  type: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // The data to pass to the action if needed.
+  data: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+  // If true, dismisses the screen. Can be used in addition to or instead of
+  // a special message action type. If set to 'actionResult', the callout
+  // will only be dismissed after the special message action has resolved
+  // successfully, will only take effect for certain special message ids, and
+  // requires setting 'needsAwait' to true.
+  dismiss: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool)]),
+  // If true, the action needs to be awaited. Must be true if 'dismiss' is
+  // set to 'actionResult'.
+  needsAwait: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // If true, navigates to the next step.
+  navigate: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool)]),
+  // If true, go back to the previous step.
+  goBack: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool)]),
+  // If true, the actions for selected checkbox/radio selections are
+  // performed in series. Set to true if this action is for the primary
+  // button and the 'multiselect' tile is used.
+  collectSelect: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // If true, collects all text input on action.
+  collectTextInput: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // If true, collects content toggle state on action.
+  collectContentToggleState: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // Indicates that the action should navigate to a different screen.
+  advance_screens: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // The behavior of the screen navigation. Behaves like 'dismiss'.
+    behavior: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool)]),
+    // How many screens and in which direction to advance. Positive integers
+    // advance forward while negative integers advance backward.
+    direction: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().number),
+    // The id of the screen to advance to. Id takes priority if both id and
+    // direction are provided.
+    id: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+  })
+});
+const buttonPropTypes = prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().exact({
+  // The text to show inside the button.
+  label: localizableThingPropTypes,
+  // The JEXL targeting for conditional button display.
+  targeting: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // The special message action invoked if the button is clicked.
+  action: actionPropTypes,
+  // If true, shows an arrow icon next to the label.
+  has_arrow_icon: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // If true, disables the button. If set to 'hasActiveMultiSelect', disables
+  // the button until the user selects something in the multiselect tiles. If
+  // set to 'hasTextInput', disables the button while the textarea tile is
+  // empty or exceeds the character limit. If set to 'hasActiveSingleSelect',
+  // disables the button until the user selects an option in the single-select
+  // tile.
+  disabled: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool)]),
+  // Overrides the style of the primary or secondary button.
+  style: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["primary", "secondary", "link"]),
+  // The text for the RTAMO install button, provided in the primary_button.
+  install_complete_label: localizableThingPropTypes,
+  // If true, the primary_button will be focused when the screen is displayed.
+  should_focus_button: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // If there are several buttons, this property of an additional_button can
+  // control the orientation of all the buttons.
+  flow: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["row", "column"]),
+  // Extra text to show before a secondary button.
+  text: localizableThingPropTypes,
+  // If there are several buttons, this property of an additional_button can
+  // control the justification and alignment of the buttons row/column.
+  // Defaults to 'end'.
+  alignment: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["end", "start", "space-between"]),
+  // The size of the dismiss_button (20px, 24px, 32px). Defaults to 32px.
+  size: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["x-small", "small", "large"]),
+  // If true, adds a background to the dismiss_button.
+  background: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // CSS override for the marginBlock property.
+  marginBlock: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // CSS override for the marginInline property.
+  marginInline: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+});
+const screenContentShape = {
+  // The layout position of the screen.
+  position: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["center", "center-large", "split", "callout", "card-stack"]),
+  // If true, the screens are displayed in fullscreen.
+  fullscreen: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // If true, the progress bar will be shown. Defaults to true.
+  progress_bar: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)]),
+  // The default CSS background for the screen.
+  background: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // The static CSS background for the screen, provided if the default
+  // background has any animated content.
+  background_static: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // The hero image in the content.
+  hero_image: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // The default URL of the hero image.
+    static_url: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The URL of the static hero image, provided if the default hero image
+    // has animated content.
+    url: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+  }),
+  // A single checkbox action.
+  checkbox: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // The text to show next to the checkbox.
+    label: localizableThingPropTypes,
+    // The default value of the checkbox.
+    defaultValue: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+    // The special message action invoked if the checkbox is selected.
+    action: actionPropTypes
+  }),
+  // The primary button.
+  primary_button: buttonPropTypes,
+  // The secondary button.
+  secondary_button: buttonPropTypes,
+  // The secondary button(s) that are displayed at the top of the screen, above
+  // the main content.
+  secondary_button_top: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().array)]),
+  // The additional button.
+  additional_button: buttonPropTypes,
+  // The dismiss button.
+  dismiss_button: buttonPropTypes,
+  // A submenu button that can be attached to another button.
+  submenu_button: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // Optionally used to control the aria label and can be used to override
+    // CSS styles.
+    label: localizableThingPropTypes,
+    // Overrides the style of the button. Should be set to the same style as
+    // the button it's attached to.
+    style: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["primary", "secondary"]),
+    // The dropdown menu that appears when the user clicks the split button.
+    submenu: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().arrayOf(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+      // Submenu can have 3 types of items.
+      type: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["action", "menu", "separator"]),
+      // The id used to identify the submenu item in telemetry.
+      id: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      // The text to show inside the submenu item.
+      label: localizableThingPropTypes,
+      // Used only for type 'action'. The special message action invoked if
+      // the submenu item is clicked.
+      action: actionPropTypes,
+      // An optional URL specifying an icon to show next to the label.
+      icon: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      // Used only for type 'menu'. The submenu items to show when the user
+      // hovers over this item. Recursive.
+      submenu: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().arrayOf((prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object))
+    })),
+    // The button that the submenu split button is attached to.
+    attached_to: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["secondary_button", "additional_button"])
+  }),
+  // Hides the secondary section.
+  hide_secondary_section: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // The background position for narrow split layouts.
+  split_narrow_bkg_position: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // If true, the callout hides on outside clicks.
+  autohide: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // The callout card width as a CSS value.
+  width: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // The callout card padding as a CSS value.
+  padding: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().number)]),
+  // A layout variant for the screen. 'inline' is a single row layout that
+  // works well in tandem with title_logo. 'last-card' is the final card-stack
+  // screen, with the title and subtitle split around a centered image slot.
+  layout: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // If true, adds a colorful gradient border to the screen. This is only
+  // supported for screens with 'hide_arrow' set to true. There is no effect
+  // if HCM or a custom theme add-on is enabled.
+  zap_border: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // If true, adds a colorful gradient shadow to the screen. This is only
+  // supported for screens with 'hide_arrow' set to true and either
+  // 'absolute_position' or 'arrow_position'. There is no effect if HCM or a
+  // custom theme add-on is enabled.
+  zap_shadow: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // If present, a custom gradient to use in conjuction with the
+  // 'background' and 'zap_border' properties. Only applied if
+  // both other properties are present.
+  zap_border_gradient: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // An optional object representing a large illustration to show above other
+  // content.
+  logo: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // The image URL.
+    imageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The dark mode image URL.
+    darkModeImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The reduced motion image URL.
+    reducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The dark mode reduced motion image URL.
+    darkModeReducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // A video URL, played once, rendered instead of the image ones above.
+    // Ignored (falls back to the image URLs above) for users who prefer reduced
+    // motion.
+    videoURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // Right-to-left replacements for any of the URLs above, applied over them
+    // when the document is RTL. Omitted keys keep their base value.
+    rtl: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+      imageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      darkModeImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      reducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      darkModeReducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      videoURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+    }),
+    // The <img> alt text.
+    alt: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object)]),
+    // The CSS style overriding the width property.
+    width: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The CSS style overriding the height property.
+    height: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+  }),
+  // An optional object representing an illustration anchored to a corner of the
+  // screen. The fullscreen center-large layout anchors it to the window; every
+  // other layout anchors it to the card.
+  corner_image: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // The image URL.
+    imageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The dark mode image URL.
+    darkModeImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The reduced motion image URL.
+    reducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The dark mode reduced motion image URL.
+    darkModeReducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // Right-to-left replacements for any of the URLs above, applied over them
+    // when the document is RTL. Omitted keys keep their base value.
+    rtl: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+      imageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      darkModeImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      reducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      darkModeReducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+    }),
+    // The corner the illustration is anchored to. Defaults to 'bottom-right'.
+    // The -start/-end values are direction-relative and resolve against the
+    // text direction, so they mirror in RTL; the left/right values are always
+    // that physical corner.
+    position: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["bottom-left", "bottom-right", "top-left", "top-right", "bottom-start", "bottom-end", "top-start", "top-end"]),
+    // The CSS style overriding the width property.
+    width: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The CSS style overriding the height property.
+    height: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The CSS style overriding the marginBlock property.
+    marginBlock: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The CSS style overriding the marginInline property.
+    marginInline: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // CSS overrides applied to the illustration container. Avoid 'translate'
+    // and 'scale' when using 'entrance_animation', which animates those two
+    // properties and would be overridden by them. 'transform' is unaffected.
+    style: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+    // How the illustration animates in each time the screen is entered. The
+    // direction is derived from 'position', so a 'bottom-left' illustration
+    // rises and a 'top-left' one descends. Every type degrades to an
+    // opacity-only fade for users who prefer reduced motion.
+    entrance_animation: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+      // The animation to run. Defaults to 'none'.
+      type: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["none", "fade", "slide-block", "slide-inline", "slide-corner", "zoom"]),
+      // The CSS length the illustration travels, for the 'slide-*' types.
+      distance: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      // The CSS time the animation takes.
+      duration: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      // The CSS time to wait before starting, for staggering the illustration
+      // against the screen's other content.
+      delay: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+    })
+  }),
+  // An optional image shown in the center image slot of the 'last-card'
+  // layout, revealed once the text split animation completes.
+  center_image: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // The image URL.
+    imageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The dark mode image URL.
+    darkModeImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The reduced motion image URL.
+    reducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The dark mode reduced motion image URL.
+    darkModeReducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // Right-to-left replacements for any of the URLs above, applied over them
+    // when the document is RTL. Any keys ommitted keep their base values.
+    rtl: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+      imageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      darkModeImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      reducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      darkModeReducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+    }),
+    // The <img> alt text.
+    alt: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object)]),
+    // The CSS width of the image slot. The split animation and margins adapt
+    // to it. Defaults to 120px.
+    width: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The CSS height of the image slot. Defaults to 120px.
+    height: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The CSS style overriding the marginBlock property. Useful for aligning
+    // the image's focal point with the text. Only applies when the text is
+    // split around the image, not when stacked at narrow breakpoints.
+    marginBlock: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The CSS style overriding the marginInline property. Only applies when
+    // the text is split around the image, not when stacked at narrow breakpoints.
+    marginInline: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+  }),
+  // The text for the headline.
+  title: localizableThingPropTypes,
+  // An optional object representing an icon to show next to the title.
+  title_logo: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // The image URL.
+    imageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The dark mode image URL.
+    darkModeImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The reduced motion image URL.
+    reducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The dark mode reduced motion image URL.
+    darkModeReducedMotionImageURL: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The <img> alt text.
+    alt: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object)]),
+    // The CSS style overriding the width property.
+    width: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The CSS style overriding the height property.
+    height: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The logo alignment relative to the title.
+    alignment: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["top", "center", "bottom"])
+  }),
+  // Optional styling for the title.
+  title_style: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // The text to show below the title.
+  subtitle: localizableThingPropTypes,
+  // An extra block of configurable content below the title/subtitle but above
+  // the main buttons. Can be placed above the 'tiles' by setting
+  // 'tiles_container.position' to 'after_supporting_content'.
+  above_button_content: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().arrayOf(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // The type of content.
+    type: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["text", "image"]),
+    // The paragraph text. Can be either a localizableThing that can be
+    // combined with 'link_key's to attach actions to the
+    // `<a data-l10n-name='...'> or an array of either raw strings or a
+    // localizableThing with 'href'/'link_key'/neither.
+    text: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([localizableThingPropTypes, (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().array)]),
+    // A list of the link keys that exist in screen.content. The value of
+    // that key must be an object with an 'action' property and the
+    // 'string_id' in the 'text' object must refer to a Fluent string that
+    // contains an anchor element with `data-l10n-name='LINK_KEY_NAME'`.
+    link_keys: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().arrayOf((prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)),
+    // Optional paragraph style.
+    font_styles: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+  })),
+  // Optionally used to override the aria attributes or tooltip of the steps
+  // indicator. Not recommended.
+  steps_indicator: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    string_id: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+  }),
+  // Tile object(s) to display in the screen.
+  tiles: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().array), prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // The type of tile. More details can be found in ContentTiles.jsx.
+    type: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["link", "textbox", "multiselect", "single-select", "theme", "backup_restore", "addons-picker", "migration-wizard", "mobile_downloads", "textarea", "theme-picker", "embedded_browser", "fx_backup_file_path", "fx_backup_password", "confirmation-checklist", "pinnable_sites", "content-toggle", "action_checklist"]).isRequired,
+    // CSS overrides of the tile container. Any CSS properties starting with
+    // '--' are also allowed.
+    style: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+    // Accessible name for the optional carousel pill navigation.
+    pill_nav_label: localizableThingPropTypes,
+    // Array of tile configurations needed for the tile type.
+    data: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().array), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object)])
+  })]),
+  // The tiles container.
+  tiles_container: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // The position of the tiles container relative to supporting content like
+    // 'above_button_content'. By default, it comes before the supporting
+    // content.
+    position: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // CSS overrides.
+    style: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object)
+  }),
+  // The header for a tiles container.
+  tiles_header: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().exact({
+    title: localizableThingPropTypes
+  }),
+  // If true, applies the reverse split layout onto the screen (i.e. inverts
+  // the visual order of the split screens).
+  reverse_split: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // The <img> alt text.
+  image_alt_text: localizableThingPropTypes,
+  // The hero text.
+  hero_text: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([localizableThingPropTypes, prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    title: localizableThingPropTypes,
+    subtitle: localizableThingPropTypes
+  })]),
+  // CSS overrides for the main content style on wide screens.
+  main_content_style: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+  // CSS overrides for the main content style on narrow screens.
+  main_content_style_narrow: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+  // A CSS override allowing custom justify content on split screens.
+  split_content_justify_content: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // The action button position.
+  action_buttons_position: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["after_subtitle", "after_supporting_content", "end"]),
+  // If true, displays action buttons above main content.
+  action_buttons_above_content: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOfType([(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool), (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)]),
+  // If true, adds noodle illustrations that peek out behind the screen.
+  has_noodles: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // If true, sets narrow attribute to the outer element of the screen.
+  narrow: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // The language switcher component that appears of there is a language
+  // mismatch screen.
+  languageSwitcher: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().exact({
+    downloading: localizableThingPropTypes,
+    cancel: localizableThingPropTypes,
+    waiting: localizableThingPropTypes,
+    skip: localizableThingPropTypes,
+    switch: localizableThingPropTypes,
+    continue: localizableThingPropTypes,
+    action: actionPropTypes
+  }),
+  // Displays the OnboardingVideo component.
+  video_container: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+  // Overrides all text color of the screen.
+  text_color: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["light", "dark"]),
+  // If true, overrides the spotlight screen styling to look like the system
+  // prompt style.
+  isSystemPromptStyleSpotlight: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // CSS overrides for the screen style.
+  screen_style: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().exact({
+    overflow: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    display: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    height: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    width: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    padding: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+  }),
+  // If true, prevents the spotlight from entering responsive design mode at
+  // widths less than 800px.
+  no_rdm: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // The CSS override for the paddingBlock styling for split layout contents.
+  split_content_padding_block: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // The CSS override for the paddingInline styling for split layout contents.
+  split_content_padding_inline: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+  // Text below the subtitle that can include hyperlinks.
+  cta_paragraph: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    text: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+      // The Fluent string id for the paragraph text.
+      string_id: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      // The name of the '<a data-l10n-name'=''></a>' marker inside the
+      // string_id.
+      string_name: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string)
+    }),
+    // The special message action to be invoked when the cta text is clicked.
+    action: actionPropTypes
+  }),
+  // Info text displayed at the bottom of the screen.
+  info_text: localizableThingPropTypes,
+  // If true, displays the encrypted backup method as part of the
+  // 'fx_backup_file_path' or 'fx_backup_password' tile type.
+  isEncryptedBackup: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+  // The action for the migration start event as part of the embedded migration
+  // wizard component within about:welcome.
+  migrate_start: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    action: actionPropTypes
+  }),
+  // The action for the migration close event as part of the embedded migration
+  // wizard component within about:welcome.
+  migrate_close: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    action: actionPropTypes
+  }),
+  // The subtitle text for the action checklist.
+  action_checklist_subtitle: localizableThingPropTypes,
+  // The remove checklist button in the action checklist.
+  remove_checklist_button: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // The text inside the remove checklist button.
+    label: localizableThingPropTypes,
+    // The id used to identify the button in telemetry.
+    source_id: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The special message action to invoke when the button is clicked.
+    action: actionPropTypes
+  }),
+  // A submenu button with a button type of 'more'.
+  more_button: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    // Submenu can have 3 types of items.
+    type: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().oneOf(["action", "menu", "separator"]),
+    // The id used to identify the submenu item in telemetry.
+    id: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // The text to show inside the submenu item.
+    label: localizableThingPropTypes,
+    // Used only for type 'action'. The special message action invoked if
+    // the submenu item is clicked.
+    action: actionPropTypes,
+    // An optional URL specifying an icon to show next to the label.
+    icon: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+    // Used only for type 'menu'. The submenu items to show when the user
+    // hovers over this item. Recursive.
+    submenu: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().arrayOf((prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object))
+  }),
+  // An optional array of event listeners to add to the page where the screen
+  // is shown.
+  page_event_listeners: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().arrayOf(prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+    params: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+      // The event type string. Supports any DOM event type, timeout and
+      // interval for timers, internal feature callout events 'touradvance'
+      // and 'tourend'.
+      type: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      // The target selector.
+      selector: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string),
+      options: prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().shape({
+        // If true, handles events in capturing phase.
+        capture: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+        // If true, removes listener after first event.
+        once: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+        // If true, prevents default action in event handler.
+        preventDefault: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool),
+        // Used only for timeout and interval event types to invoke the action
+        // on a timer.
+        interval: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().number),
+        // If true, extends addEventListener to all windows.
+        every_window: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().bool)
+      })
+    }),
+    action: actionPropTypes
+  })),
+  // Add any `link_key` properties that are used in messages in
+  //    OnboardingMessageProvider.sys.mjs
+  //    FeatureCalloutMessages.sys.mjs
+  //    PanelTestProvider.sys.mjs
+  // to prevent the propTypes validation unit test from throwing an invalid
+  // prop error.
+  here: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+  settings: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+  ios: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+  android: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+  terms_of_use: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+  privacy_notice: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+  "learn-more": (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object),
+  email_link: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().object)
+};
+const screenContentPropTypes = prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().exact(screenContentShape);
+
+// Update PropTypes here and in `screenContentShape` whenever any content
+// properties are added/removed. See MultiStageProtonScreenSchemas.json for a
+// more detailed, non-enforcing schema of the multistage screen content
+// properties.
+MultiStageProtonScreen.propTypes = {
+  // The unique identifier of the screen content. Each screen in a
+  // message should have a different ID, which can be referenced in
+  // actions to update the tour pref and advance screens.
+  id: (prop_types_prop_types__WEBPACK_IMPORTED_MODULE_13___default().string).isRequired,
+  // The main content of this screen.
+  content: screenContentPropTypes
+};
 
 /***/ }),
 /* 7 */
+/***/ ((module) => {
+
+(function(f){if(true){module.exports=f()}else { var g; }})(function(){var define,module,exports;return (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c=undefined;if(!f&&c)return require(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u=undefined,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
+/**
+ * Copyright (c) 2013-present, Facebook, Inc.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+'use strict';
+
+var printWarning = function() {};
+
+if (true) {
+  var ReactPropTypesSecret = require('./lib/ReactPropTypesSecret');
+  var loggedTypeFailures = {};
+  var has = require('./lib/has');
+
+  printWarning = function(text) {
+    var message = 'Warning: ' + text;
+    if (typeof console !== 'undefined') {
+      console.error(message);
+    }
+    try {
+      // --- Welcome to debugging React ---
+      // This error was thrown as a convenience so that you can use this stack
+      // to find the callsite that caused this warning to fire.
+      throw new Error(message);
+    } catch (x) { /**/ }
+  };
+}
+
+/**
+ * Assert that the values match with the type specs.
+ * Error messages are memorized and will only be shown once.
+ *
+ * @param {object} typeSpecs Map of name to a ReactPropType
+ * @param {object} values Runtime values that need to be type-checked
+ * @param {string} location e.g. "prop", "context", "child context"
+ * @param {string} componentName Name of the component for error messages.
+ * @param {?Function} getStack Returns the component stack.
+ * @private
+ */
+function checkPropTypes(typeSpecs, values, location, componentName, getStack) {
+  if (true) {
+    for (var typeSpecName in typeSpecs) {
+      if (has(typeSpecs, typeSpecName)) {
+        var error;
+        // Prop type validation may throw. In case they do, we don't want to
+        // fail the render phase where it didn't fail before. So we log it.
+        // After these have been cleaned up, we'll let them throw.
+        try {
+          // This is intentionally an invariant that gets caught. It's the same
+          // behavior as without this statement except with a better message.
+          if (typeof typeSpecs[typeSpecName] !== 'function') {
+            var err = Error(
+              (componentName || 'React class') + ': ' + location + ' type `' + typeSpecName + '` is invalid; ' +
+              'it must be a function, usually from the `prop-types` package, but received `' + typeof typeSpecs[typeSpecName] + '`.' +
+              'This often happens because of typos such as `PropTypes.function` instead of `PropTypes.func`.'
+            );
+            err.name = 'Invariant Violation';
+            throw err;
+          }
+          error = typeSpecs[typeSpecName](values, typeSpecName, componentName, location, null, ReactPropTypesSecret);
+        } catch (ex) {
+          error = ex;
+        }
+        if (error && !(error instanceof Error)) {
+          printWarning(
+            (componentName || 'React class') + ': type specification of ' +
+            location + ' `' + typeSpecName + '` is invalid; the type checker ' +
+            'function must return `null` or an `Error` but returned a ' + typeof error + '. ' +
+            'You may have forgotten to pass an argument to the type checker ' +
+            'creator (arrayOf, instanceOf, objectOf, oneOf, oneOfType, and ' +
+            'shape all require an argument).'
+          );
+        }
+        if (error instanceof Error && !(error.message in loggedTypeFailures)) {
+          // Only monitor this failure once because there tends to be a lot of the
+          // same error.
+          loggedTypeFailures[error.message] = true;
+
+          var stack = getStack ? getStack() : '';
+
+          printWarning(
+            'Failed ' + location + ' type: ' + error.message + (stack != null ? stack : '')
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Resets warning cache when testing.
+ *
+ * @private
+ */
+checkPropTypes.resetWarningCache = function() {
+  if (true) {
+    loggedTypeFailures = {};
+  }
+}
+
+module.exports = checkPropTypes;
+
+},{"./lib/ReactPropTypesSecret":5,"./lib/has":6}],2:[function(require,module,exports){
+/**
+ * Copyright (c) 2013-present, Facebook, Inc.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+'use strict';
+
+var ReactPropTypesSecret = require('./lib/ReactPropTypesSecret');
+
+function emptyFunction() {}
+function emptyFunctionWithReset() {}
+emptyFunctionWithReset.resetWarningCache = emptyFunction;
+
+module.exports = function() {
+  function shim(props, propName, componentName, location, propFullName, secret) {
+    if (secret === ReactPropTypesSecret) {
+      // It is still safe when called from React.
+      return;
+    }
+    var err = new Error(
+      'Calling PropTypes validators directly is not supported by the `prop-types` package. ' +
+      'Use PropTypes.checkPropTypes() to call them. ' +
+      'Read more at http://fb.me/use-check-prop-types'
+    );
+    err.name = 'Invariant Violation';
+    throw err;
+  };
+  shim.isRequired = shim;
+  function getShim() {
+    return shim;
+  };
+  // Important!
+  // Keep this list in sync with production version in `./factoryWithTypeCheckers.js`.
+  var ReactPropTypes = {
+    array: shim,
+    bigint: shim,
+    bool: shim,
+    func: shim,
+    number: shim,
+    object: shim,
+    string: shim,
+    symbol: shim,
+
+    any: shim,
+    arrayOf: getShim,
+    element: shim,
+    elementType: shim,
+    instanceOf: getShim,
+    node: shim,
+    objectOf: getShim,
+    oneOf: getShim,
+    oneOfType: getShim,
+    shape: getShim,
+    exact: getShim,
+
+    checkPropTypes: emptyFunctionWithReset,
+    resetWarningCache: emptyFunction
+  };
+
+  ReactPropTypes.PropTypes = ReactPropTypes;
+
+  return ReactPropTypes;
+};
+
+},{"./lib/ReactPropTypesSecret":5}],3:[function(require,module,exports){
+/**
+ * Copyright (c) 2013-present, Facebook, Inc.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+'use strict';
+
+var ReactIs = require('react-is');
+var assign = require('object-assign');
+
+var ReactPropTypesSecret = require('./lib/ReactPropTypesSecret');
+var has = require('./lib/has');
+var checkPropTypes = require('./checkPropTypes');
+
+var printWarning = function() {};
+
+if (true) {
+  printWarning = function(text) {
+    var message = 'Warning: ' + text;
+    if (typeof console !== 'undefined') {
+      console.error(message);
+    }
+    try {
+      // --- Welcome to debugging React ---
+      // This error was thrown as a convenience so that you can use this stack
+      // to find the callsite that caused this warning to fire.
+      throw new Error(message);
+    } catch (x) {}
+  };
+}
+
+function emptyFunctionThatReturnsNull() {
+  return null;
+}
+
+module.exports = function(isValidElement, throwOnDirectAccess) {
+  /* global Symbol */
+  var ITERATOR_SYMBOL = typeof Symbol === 'function' && Symbol.iterator;
+  var FAUX_ITERATOR_SYMBOL = '@@iterator'; // Before Symbol spec.
+
+  /**
+   * Returns the iterator method function contained on the iterable object.
+   *
+   * Be sure to invoke the function with the iterable as context:
+   *
+   *     var iteratorFn = getIteratorFn(myIterable);
+   *     if (iteratorFn) {
+   *       var iterator = iteratorFn.call(myIterable);
+   *       ...
+   *     }
+   *
+   * @param {?object} maybeIterable
+   * @return {?function}
+   */
+  function getIteratorFn(maybeIterable) {
+    var iteratorFn = maybeIterable && (ITERATOR_SYMBOL && maybeIterable[ITERATOR_SYMBOL] || maybeIterable[FAUX_ITERATOR_SYMBOL]);
+    if (typeof iteratorFn === 'function') {
+      return iteratorFn;
+    }
+  }
+
+  /**
+   * Collection of methods that allow declaration and validation of props that are
+   * supplied to React components. Example usage:
+   *
+   *   var Props = require('ReactPropTypes');
+   *   var MyArticle = React.createClass({
+   *     propTypes: {
+   *       // An optional string prop named "description".
+   *       description: Props.string,
+   *
+   *       // A required enum prop named "category".
+   *       category: Props.oneOf(['News','Photos']).isRequired,
+   *
+   *       // A prop named "dialog" that requires an instance of Dialog.
+   *       dialog: Props.instanceOf(Dialog).isRequired
+   *     },
+   *     render: function() { ... }
+   *   });
+   *
+   * A more formal specification of how these methods are used:
+   *
+   *   type := array|bool|func|object|number|string|oneOf([...])|instanceOf(...)
+   *   decl := ReactPropTypes.{type}(.isRequired)?
+   *
+   * Each and every declaration produces a function with the same signature. This
+   * allows the creation of custom validation functions. For example:
+   *
+   *  var MyLink = React.createClass({
+   *    propTypes: {
+   *      // An optional string or URI prop named "href".
+   *      href: function(props, propName, componentName) {
+   *        var propValue = props[propName];
+   *        if (propValue != null && typeof propValue !== 'string' &&
+   *            !(propValue instanceof URI)) {
+   *          return new Error(
+   *            'Expected a string or an URI for ' + propName + ' in ' +
+   *            componentName
+   *          );
+   *        }
+   *      }
+   *    },
+   *    render: function() {...}
+   *  });
+   *
+   * @internal
+   */
+
+  var ANONYMOUS = '<<anonymous>>';
+
+  // Important!
+  // Keep this list in sync with production version in `./factoryWithThrowingShims.js`.
+  var ReactPropTypes = {
+    array: createPrimitiveTypeChecker('array'),
+    bigint: createPrimitiveTypeChecker('bigint'),
+    bool: createPrimitiveTypeChecker('boolean'),
+    func: createPrimitiveTypeChecker('function'),
+    number: createPrimitiveTypeChecker('number'),
+    object: createPrimitiveTypeChecker('object'),
+    string: createPrimitiveTypeChecker('string'),
+    symbol: createPrimitiveTypeChecker('symbol'),
+
+    any: createAnyTypeChecker(),
+    arrayOf: createArrayOfTypeChecker,
+    element: createElementTypeChecker(),
+    elementType: createElementTypeTypeChecker(),
+    instanceOf: createInstanceTypeChecker,
+    node: createNodeChecker(),
+    objectOf: createObjectOfTypeChecker,
+    oneOf: createEnumTypeChecker,
+    oneOfType: createUnionTypeChecker,
+    shape: createShapeTypeChecker,
+    exact: createStrictShapeTypeChecker,
+  };
+
+  /**
+   * inlined Object.is polyfill to avoid requiring consumers ship their own
+   * https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/is
+   */
+  /*eslint-disable no-self-compare*/
+  function is(x, y) {
+    // SameValue algorithm
+    if (x === y) {
+      // Steps 1-5, 7-10
+      // Steps 6.b-6.e: +0 != -0
+      return x !== 0 || 1 / x === 1 / y;
+    } else {
+      // Step 6.a: NaN == NaN
+      return x !== x && y !== y;
+    }
+  }
+  /*eslint-enable no-self-compare*/
+
+  /**
+   * We use an Error-like object for backward compatibility as people may call
+   * PropTypes directly and inspect their output. However, we don't use real
+   * Errors anymore. We don't inspect their stack anyway, and creating them
+   * is prohibitively expensive if they are created too often, such as what
+   * happens in oneOfType() for any type before the one that matched.
+   */
+  function PropTypeError(message, data) {
+    this.message = message;
+    this.data = data && typeof data === 'object' ? data: {};
+    this.stack = '';
+  }
+  // Make `instanceof Error` still work for returned errors.
+  PropTypeError.prototype = Error.prototype;
+
+  function createChainableTypeChecker(validate) {
+    if (true) {
+      var manualPropTypeCallCache = {};
+      var manualPropTypeWarningCount = 0;
+    }
+    function checkType(isRequired, props, propName, componentName, location, propFullName, secret) {
+      componentName = componentName || ANONYMOUS;
+      propFullName = propFullName || propName;
+
+      if (secret !== ReactPropTypesSecret) {
+        if (throwOnDirectAccess) {
+          // New behavior only for users of `prop-types` package
+          var err = new Error(
+            'Calling PropTypes validators directly is not supported by the `prop-types` package. ' +
+            'Use `PropTypes.checkPropTypes()` to call them. ' +
+            'Read more at http://fb.me/use-check-prop-types'
+          );
+          err.name = 'Invariant Violation';
+          throw err;
+        } else if ( true && typeof console !== 'undefined') {
+          // Old behavior for people using React.PropTypes
+          var cacheKey = componentName + ':' + propName;
+          if (
+            !manualPropTypeCallCache[cacheKey] &&
+            // Avoid spamming the console because they are often not actionable except for lib authors
+            manualPropTypeWarningCount < 3
+          ) {
+            printWarning(
+              'You are manually calling a React.PropTypes validation ' +
+              'function for the `' + propFullName + '` prop on `' + componentName + '`. This is deprecated ' +
+              'and will throw in the standalone `prop-types` package. ' +
+              'You may be seeing this warning due to a third-party PropTypes ' +
+              'library. See https://fb.me/react-warning-dont-call-proptypes ' + 'for details.'
+            );
+            manualPropTypeCallCache[cacheKey] = true;
+            manualPropTypeWarningCount++;
+          }
+        }
+      }
+      if (props[propName] == null) {
+        if (isRequired) {
+          if (props[propName] === null) {
+            return new PropTypeError('The ' + location + ' `' + propFullName + '` is marked as required ' + ('in `' + componentName + '`, but its value is `null`.'));
+          }
+          return new PropTypeError('The ' + location + ' `' + propFullName + '` is marked as required in ' + ('`' + componentName + '`, but its value is `undefined`.'));
+        }
+        return null;
+      } else {
+        return validate(props, propName, componentName, location, propFullName);
+      }
+    }
+
+    var chainedCheckType = checkType.bind(null, false);
+    chainedCheckType.isRequired = checkType.bind(null, true);
+
+    return chainedCheckType;
+  }
+
+  function createPrimitiveTypeChecker(expectedType) {
+    function validate(props, propName, componentName, location, propFullName, secret) {
+      var propValue = props[propName];
+      var propType = getPropType(propValue);
+      if (propType !== expectedType) {
+        // `propValue` being instance of, say, date/regexp, pass the 'object'
+        // check, but we can offer a more precise error message here rather than
+        // 'of type `object`'.
+        var preciseType = getPreciseType(propValue);
+
+        return new PropTypeError(
+          'Invalid ' + location + ' `' + propFullName + '` of type ' + ('`' + preciseType + '` supplied to `' + componentName + '`, expected ') + ('`' + expectedType + '`.'),
+          {expectedType: expectedType}
+        );
+      }
+      return null;
+    }
+    return createChainableTypeChecker(validate);
+  }
+
+  function createAnyTypeChecker() {
+    return createChainableTypeChecker(emptyFunctionThatReturnsNull);
+  }
+
+  function createArrayOfTypeChecker(typeChecker) {
+    function validate(props, propName, componentName, location, propFullName) {
+      if (typeof typeChecker !== 'function') {
+        return new PropTypeError('Property `' + propFullName + '` of component `' + componentName + '` has invalid PropType notation inside arrayOf.');
+      }
+      var propValue = props[propName];
+      if (!Array.isArray(propValue)) {
+        var propType = getPropType(propValue);
+        return new PropTypeError('Invalid ' + location + ' `' + propFullName + '` of type ' + ('`' + propType + '` supplied to `' + componentName + '`, expected an array.'));
+      }
+      for (var i = 0; i < propValue.length; i++) {
+        var error = typeChecker(propValue, i, componentName, location, propFullName + '[' + i + ']', ReactPropTypesSecret);
+        if (error instanceof Error) {
+          return error;
+        }
+      }
+      return null;
+    }
+    return createChainableTypeChecker(validate);
+  }
+
+  function createElementTypeChecker() {
+    function validate(props, propName, componentName, location, propFullName) {
+      var propValue = props[propName];
+      if (!isValidElement(propValue)) {
+        var propType = getPropType(propValue);
+        return new PropTypeError('Invalid ' + location + ' `' + propFullName + '` of type ' + ('`' + propType + '` supplied to `' + componentName + '`, expected a single ReactElement.'));
+      }
+      return null;
+    }
+    return createChainableTypeChecker(validate);
+  }
+
+  function createElementTypeTypeChecker() {
+    function validate(props, propName, componentName, location, propFullName) {
+      var propValue = props[propName];
+      if (!ReactIs.isValidElementType(propValue)) {
+        var propType = getPropType(propValue);
+        return new PropTypeError('Invalid ' + location + ' `' + propFullName + '` of type ' + ('`' + propType + '` supplied to `' + componentName + '`, expected a single ReactElement type.'));
+      }
+      return null;
+    }
+    return createChainableTypeChecker(validate);
+  }
+
+  function createInstanceTypeChecker(expectedClass) {
+    function validate(props, propName, componentName, location, propFullName) {
+      if (!(props[propName] instanceof expectedClass)) {
+        var expectedClassName = expectedClass.name || ANONYMOUS;
+        var actualClassName = getClassName(props[propName]);
+        return new PropTypeError('Invalid ' + location + ' `' + propFullName + '` of type ' + ('`' + actualClassName + '` supplied to `' + componentName + '`, expected ') + ('instance of `' + expectedClassName + '`.'));
+      }
+      return null;
+    }
+    return createChainableTypeChecker(validate);
+  }
+
+  function createEnumTypeChecker(expectedValues) {
+    if (!Array.isArray(expectedValues)) {
+      if (true) {
+        if (arguments.length > 1) {
+          printWarning(
+            'Invalid arguments supplied to oneOf, expected an array, got ' + arguments.length + ' arguments. ' +
+            'A common mistake is to write oneOf(x, y, z) instead of oneOf([x, y, z]).'
+          );
+        } else {
+          printWarning('Invalid argument supplied to oneOf, expected an array.');
+        }
+      }
+      return emptyFunctionThatReturnsNull;
+    }
+
+    function validate(props, propName, componentName, location, propFullName) {
+      var propValue = props[propName];
+      for (var i = 0; i < expectedValues.length; i++) {
+        if (is(propValue, expectedValues[i])) {
+          return null;
+        }
+      }
+
+      var valuesString = JSON.stringify(expectedValues, function replacer(key, value) {
+        var type = getPreciseType(value);
+        if (type === 'symbol') {
+          return String(value);
+        }
+        return value;
+      });
+      return new PropTypeError('Invalid ' + location + ' `' + propFullName + '` of value `' + String(propValue) + '` ' + ('supplied to `' + componentName + '`, expected one of ' + valuesString + '.'));
+    }
+    return createChainableTypeChecker(validate);
+  }
+
+  function createObjectOfTypeChecker(typeChecker) {
+    function validate(props, propName, componentName, location, propFullName) {
+      if (typeof typeChecker !== 'function') {
+        return new PropTypeError('Property `' + propFullName + '` of component `' + componentName + '` has invalid PropType notation inside objectOf.');
+      }
+      var propValue = props[propName];
+      var propType = getPropType(propValue);
+      if (propType !== 'object') {
+        return new PropTypeError('Invalid ' + location + ' `' + propFullName + '` of type ' + ('`' + propType + '` supplied to `' + componentName + '`, expected an object.'));
+      }
+      for (var key in propValue) {
+        if (has(propValue, key)) {
+          var error = typeChecker(propValue, key, componentName, location, propFullName + '.' + key, ReactPropTypesSecret);
+          if (error instanceof Error) {
+            return error;
+          }
+        }
+      }
+      return null;
+    }
+    return createChainableTypeChecker(validate);
+  }
+
+  function createUnionTypeChecker(arrayOfTypeCheckers) {
+    if (!Array.isArray(arrayOfTypeCheckers)) {
+       true ? printWarning('Invalid argument supplied to oneOfType, expected an instance of array.') : 0;
+      return emptyFunctionThatReturnsNull;
+    }
+
+    for (var i = 0; i < arrayOfTypeCheckers.length; i++) {
+      var checker = arrayOfTypeCheckers[i];
+      if (typeof checker !== 'function') {
+        printWarning(
+          'Invalid argument supplied to oneOfType. Expected an array of check functions, but ' +
+          'received ' + getPostfixForTypeWarning(checker) + ' at index ' + i + '.'
+        );
+        return emptyFunctionThatReturnsNull;
+      }
+    }
+
+    function validate(props, propName, componentName, location, propFullName) {
+      var expectedTypes = [];
+      for (var i = 0; i < arrayOfTypeCheckers.length; i++) {
+        var checker = arrayOfTypeCheckers[i];
+        var checkerResult = checker(props, propName, componentName, location, propFullName, ReactPropTypesSecret);
+        if (checkerResult == null) {
+          return null;
+        }
+        if (checkerResult.data.hasOwnProperty('expectedType')) {
+          expectedTypes.push(checkerResult.data.expectedType);
+        }
+      }
+      var expectedTypesMessage = (expectedTypes.length > 0) ? ', expected one of type [' + expectedTypes.join(', ') + ']': '';
+      return new PropTypeError('Invalid ' + location + ' `' + propFullName + '` supplied to ' + ('`' + componentName + '`' + expectedTypesMessage + '.'));
+    }
+    return createChainableTypeChecker(validate);
+  }
+
+  function createNodeChecker() {
+    function validate(props, propName, componentName, location, propFullName) {
+      if (!isNode(props[propName])) {
+        return new PropTypeError('Invalid ' + location + ' `' + propFullName + '` supplied to ' + ('`' + componentName + '`, expected a ReactNode.'));
+      }
+      return null;
+    }
+    return createChainableTypeChecker(validate);
+  }
+
+  function invalidValidatorError(componentName, location, propFullName, key, type) {
+    return new PropTypeError(
+      (componentName || 'React class') + ': ' + location + ' type `' + propFullName + '.' + key + '` is invalid; ' +
+      'it must be a function, usually from the `prop-types` package, but received `' + type + '`.'
+    );
+  }
+
+  function createShapeTypeChecker(shapeTypes) {
+    function validate(props, propName, componentName, location, propFullName) {
+      var propValue = props[propName];
+      var propType = getPropType(propValue);
+      if (propType !== 'object') {
+        return new PropTypeError('Invalid ' + location + ' `' + propFullName + '` of type `' + propType + '` ' + ('supplied to `' + componentName + '`, expected `object`.'));
+      }
+      for (var key in shapeTypes) {
+        var checker = shapeTypes[key];
+        if (typeof checker !== 'function') {
+          return invalidValidatorError(componentName, location, propFullName, key, getPreciseType(checker));
+        }
+        var error = checker(propValue, key, componentName, location, propFullName + '.' + key, ReactPropTypesSecret);
+        if (error) {
+          return error;
+        }
+      }
+      return null;
+    }
+    return createChainableTypeChecker(validate);
+  }
+
+  function createStrictShapeTypeChecker(shapeTypes) {
+    function validate(props, propName, componentName, location, propFullName) {
+      var propValue = props[propName];
+      var propType = getPropType(propValue);
+      if (propType !== 'object') {
+        return new PropTypeError('Invalid ' + location + ' `' + propFullName + '` of type `' + propType + '` ' + ('supplied to `' + componentName + '`, expected `object`.'));
+      }
+      // We need to check all keys in case some are required but missing from props.
+      var allKeys = assign({}, props[propName], shapeTypes);
+      for (var key in allKeys) {
+        var checker = shapeTypes[key];
+        if (has(shapeTypes, key) && typeof checker !== 'function') {
+          return invalidValidatorError(componentName, location, propFullName, key, getPreciseType(checker));
+        }
+        if (!checker) {
+          return new PropTypeError(
+            'Invalid ' + location + ' `' + propFullName + '` key `' + key + '` supplied to `' + componentName + '`.' +
+            '\nBad object: ' + JSON.stringify(props[propName], null, '  ') +
+            '\nValid keys: ' + JSON.stringify(Object.keys(shapeTypes), null, '  ')
+          );
+        }
+        var error = checker(propValue, key, componentName, location, propFullName + '.' + key, ReactPropTypesSecret);
+        if (error) {
+          return error;
+        }
+      }
+      return null;
+    }
+
+    return createChainableTypeChecker(validate);
+  }
+
+  function isNode(propValue) {
+    switch (typeof propValue) {
+      case 'number':
+      case 'string':
+      case 'undefined':
+        return true;
+      case 'boolean':
+        return !propValue;
+      case 'object':
+        if (Array.isArray(propValue)) {
+          return propValue.every(isNode);
+        }
+        if (propValue === null || isValidElement(propValue)) {
+          return true;
+        }
+
+        var iteratorFn = getIteratorFn(propValue);
+        if (iteratorFn) {
+          var iterator = iteratorFn.call(propValue);
+          var step;
+          if (iteratorFn !== propValue.entries) {
+            while (!(step = iterator.next()).done) {
+              if (!isNode(step.value)) {
+                return false;
+              }
+            }
+          } else {
+            // Iterator will provide entry [k,v] tuples rather than values.
+            while (!(step = iterator.next()).done) {
+              var entry = step.value;
+              if (entry) {
+                if (!isNode(entry[1])) {
+                  return false;
+                }
+              }
+            }
+          }
+        } else {
+          return false;
+        }
+
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  function isSymbol(propType, propValue) {
+    // Native Symbol.
+    if (propType === 'symbol') {
+      return true;
+    }
+
+    // falsy value can't be a Symbol
+    if (!propValue) {
+      return false;
+    }
+
+    // 19.4.3.5 Symbol.prototype[@@toStringTag] === 'Symbol'
+    if (propValue['@@toStringTag'] === 'Symbol') {
+      return true;
+    }
+
+    // Fallback for non-spec compliant Symbols which are polyfilled.
+    if (typeof Symbol === 'function' && propValue instanceof Symbol) {
+      return true;
+    }
+
+    return false;
+  }
+
+  // Equivalent of `typeof` but with special handling for array and regexp.
+  function getPropType(propValue) {
+    var propType = typeof propValue;
+    if (Array.isArray(propValue)) {
+      return 'array';
+    }
+    if (propValue instanceof RegExp) {
+      // Old webkits (at least until Android 4.0) return 'function' rather than
+      // 'object' for typeof a RegExp. We'll normalize this here so that /bla/
+      // passes PropTypes.object.
+      return 'object';
+    }
+    if (isSymbol(propType, propValue)) {
+      return 'symbol';
+    }
+    return propType;
+  }
+
+  // This handles more types than `getPropType`. Only used for error messages.
+  // See `createPrimitiveTypeChecker`.
+  function getPreciseType(propValue) {
+    if (typeof propValue === 'undefined' || propValue === null) {
+      return '' + propValue;
+    }
+    var propType = getPropType(propValue);
+    if (propType === 'object') {
+      if (propValue instanceof Date) {
+        return 'date';
+      } else if (propValue instanceof RegExp) {
+        return 'regexp';
+      }
+    }
+    return propType;
+  }
+
+  // Returns a string that is postfixed to a warning about an invalid type.
+  // For example, "undefined" or "of type array"
+  function getPostfixForTypeWarning(value) {
+    var type = getPreciseType(value);
+    switch (type) {
+      case 'array':
+      case 'object':
+        return 'an ' + type;
+      case 'boolean':
+      case 'date':
+      case 'regexp':
+        return 'a ' + type;
+      default:
+        return type;
+    }
+  }
+
+  // Returns class name of the object, if any.
+  function getClassName(propValue) {
+    if (!propValue.constructor || !propValue.constructor.name) {
+      return ANONYMOUS;
+    }
+    return propValue.constructor.name;
+  }
+
+  ReactPropTypes.checkPropTypes = checkPropTypes;
+  ReactPropTypes.resetWarningCache = checkPropTypes.resetWarningCache;
+  ReactPropTypes.PropTypes = ReactPropTypes;
+
+  return ReactPropTypes;
+};
+
+},{"./checkPropTypes":1,"./lib/ReactPropTypesSecret":5,"./lib/has":6,"object-assign":7,"react-is":11}],4:[function(require,module,exports){
+/**
+ * Copyright (c) 2013-present, Facebook, Inc.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+if (true) {
+  var ReactIs = require('react-is');
+
+  // By explicitly using `prop-types` you are opting into new development behavior.
+  // http://fb.me/prop-types-in-prod
+  var throwOnDirectAccess = true;
+  module.exports = require('./factoryWithTypeCheckers')(ReactIs.isElement, throwOnDirectAccess);
+} else {}
+
+},{"./factoryWithThrowingShims":2,"./factoryWithTypeCheckers":3,"react-is":11}],5:[function(require,module,exports){
+/**
+ * Copyright (c) 2013-present, Facebook, Inc.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+'use strict';
+
+var ReactPropTypesSecret = 'SECRET_DO_NOT_PASS_THIS_OR_YOU_WILL_BE_FIRED';
+
+module.exports = ReactPropTypesSecret;
+
+},{}],6:[function(require,module,exports){
+module.exports = Function.call.bind(Object.prototype.hasOwnProperty);
+
+},{}],7:[function(require,module,exports){
+/*
+object-assign
+(c) Sindre Sorhus
+@license MIT
+*/
+
+'use strict';
+/* eslint-disable no-unused-vars */
+var getOwnPropertySymbols = Object.getOwnPropertySymbols;
+var hasOwnProperty = Object.prototype.hasOwnProperty;
+var propIsEnumerable = Object.prototype.propertyIsEnumerable;
+
+function toObject(val) {
+	if (val === null || val === undefined) {
+		throw new TypeError('Object.assign cannot be called with null or undefined');
+	}
+
+	return Object(val);
+}
+
+function shouldUseNative() {
+	try {
+		if (!Object.assign) {
+			return false;
+		}
+
+		// Detect buggy property enumeration order in older V8 versions.
+
+		// https://bugs.chromium.org/p/v8/issues/detail?id=4118
+		var test1 = new String('abc');  // eslint-disable-line no-new-wrappers
+		test1[5] = 'de';
+		if (Object.getOwnPropertyNames(test1)[0] === '5') {
+			return false;
+		}
+
+		// https://bugs.chromium.org/p/v8/issues/detail?id=3056
+		var test2 = {};
+		for (var i = 0; i < 10; i++) {
+			test2['_' + String.fromCharCode(i)] = i;
+		}
+		var order2 = Object.getOwnPropertyNames(test2).map(function (n) {
+			return test2[n];
+		});
+		if (order2.join('') !== '0123456789') {
+			return false;
+		}
+
+		// https://bugs.chromium.org/p/v8/issues/detail?id=3056
+		var test3 = {};
+		'abcdefghijklmnopqrst'.split('').forEach(function (letter) {
+			test3[letter] = letter;
+		});
+		if (Object.keys(Object.assign({}, test3)).join('') !==
+				'abcdefghijklmnopqrst') {
+			return false;
+		}
+
+		return true;
+	} catch (err) {
+		// We don't expect any of the above to throw, but better to be safe.
+		return false;
+	}
+}
+
+module.exports = shouldUseNative() ? Object.assign : function (target, source) {
+	var from;
+	var to = toObject(target);
+	var symbols;
+
+	for (var s = 1; s < arguments.length; s++) {
+		from = Object(arguments[s]);
+
+		for (var key in from) {
+			if (hasOwnProperty.call(from, key)) {
+				to[key] = from[key];
+			}
+		}
+
+		if (getOwnPropertySymbols) {
+			symbols = getOwnPropertySymbols(from);
+			for (var i = 0; i < symbols.length; i++) {
+				if (propIsEnumerable.call(from, symbols[i])) {
+					to[symbols[i]] = from[symbols[i]];
+				}
+			}
+		}
+	}
+
+	return to;
+};
+
+},{}],8:[function(require,module,exports){
+// shim for using process in browser
+var process = module.exports = {};
+
+// cached from whatever global is present so that test runners that stub it
+// don't break things.  But we need to wrap it in a try catch in case it is
+// wrapped in strict mode code which doesn't define any globals.  It's inside a
+// function because try/catches deoptimize in certain engines.
+
+var cachedSetTimeout;
+var cachedClearTimeout;
+
+function defaultSetTimout() {
+    throw new Error('setTimeout has not been defined');
+}
+function defaultClearTimeout () {
+    throw new Error('clearTimeout has not been defined');
+}
+(function () {
+    try {
+        if (typeof setTimeout === 'function') {
+            cachedSetTimeout = setTimeout;
+        } else {
+            cachedSetTimeout = defaultSetTimout;
+        }
+    } catch (e) {
+        cachedSetTimeout = defaultSetTimout;
+    }
+    try {
+        if (typeof clearTimeout === 'function') {
+            cachedClearTimeout = clearTimeout;
+        } else {
+            cachedClearTimeout = defaultClearTimeout;
+        }
+    } catch (e) {
+        cachedClearTimeout = defaultClearTimeout;
+    }
+} ())
+function runTimeout(fun) {
+    if (cachedSetTimeout === setTimeout) {
+        //normal enviroments in sane situations
+        return setTimeout(fun, 0);
+    }
+    // if setTimeout wasn't available but was latter defined
+    if ((cachedSetTimeout === defaultSetTimout || !cachedSetTimeout) && setTimeout) {
+        cachedSetTimeout = setTimeout;
+        return setTimeout(fun, 0);
+    }
+    try {
+        // when when somebody has screwed with setTimeout but no I.E. maddness
+        return cachedSetTimeout(fun, 0);
+    } catch(e){
+        try {
+            // When we are in I.E. but the script has been evaled so I.E. doesn't trust the global object when called normally
+            return cachedSetTimeout.call(null, fun, 0);
+        } catch(e){
+            // same as above but when it's a version of I.E. that must have the global object for 'this', hopfully our context correct otherwise it will throw a global error
+            return cachedSetTimeout.call(this, fun, 0);
+        }
+    }
+
+
+}
+function runClearTimeout(marker) {
+    if (cachedClearTimeout === clearTimeout) {
+        //normal enviroments in sane situations
+        return clearTimeout(marker);
+    }
+    // if clearTimeout wasn't available but was latter defined
+    if ((cachedClearTimeout === defaultClearTimeout || !cachedClearTimeout) && clearTimeout) {
+        cachedClearTimeout = clearTimeout;
+        return clearTimeout(marker);
+    }
+    try {
+        // when when somebody has screwed with setTimeout but no I.E. maddness
+        return cachedClearTimeout(marker);
+    } catch (e){
+        try {
+            // When we are in I.E. but the script has been evaled so I.E. doesn't  trust the global object when called normally
+            return cachedClearTimeout.call(null, marker);
+        } catch (e){
+            // same as above but when it's a version of I.E. that must have the global object for 'this', hopfully our context correct otherwise it will throw a global error.
+            // Some versions of I.E. have different rules for clearTimeout vs setTimeout
+            return cachedClearTimeout.call(this, marker);
+        }
+    }
+
+
+
+}
+var queue = [];
+var draining = false;
+var currentQueue;
+var queueIndex = -1;
+
+function cleanUpNextTick() {
+    if (!draining || !currentQueue) {
+        return;
+    }
+    draining = false;
+    if (currentQueue.length) {
+        queue = currentQueue.concat(queue);
+    } else {
+        queueIndex = -1;
+    }
+    if (queue.length) {
+        drainQueue();
+    }
+}
+
+function drainQueue() {
+    if (draining) {
+        return;
+    }
+    var timeout = runTimeout(cleanUpNextTick);
+    draining = true;
+
+    var len = queue.length;
+    while(len) {
+        currentQueue = queue;
+        queue = [];
+        while (++queueIndex < len) {
+            if (currentQueue) {
+                currentQueue[queueIndex].run();
+            }
+        }
+        queueIndex = -1;
+        len = queue.length;
+    }
+    currentQueue = null;
+    draining = false;
+    runClearTimeout(timeout);
+}
+
+process.nextTick = function (fun) {
+    var args = new Array(arguments.length - 1);
+    if (arguments.length > 1) {
+        for (var i = 1; i < arguments.length; i++) {
+            args[i - 1] = arguments[i];
+        }
+    }
+    queue.push(new Item(fun, args));
+    if (queue.length === 1 && !draining) {
+        runTimeout(drainQueue);
+    }
+};
+
+// v8 likes predictible objects
+function Item(fun, array) {
+    this.fun = fun;
+    this.array = array;
+}
+Item.prototype.run = function () {
+    this.fun.apply(null, this.array);
+};
+process.title = 'browser';
+process.browser = true;
+process.env = {};
+process.argv = [];
+process.version = ''; // empty string to avoid regexp issues
+process.versions = {};
+
+function noop() {}
+
+process.on = noop;
+process.addListener = noop;
+process.once = noop;
+process.off = noop;
+process.removeListener = noop;
+process.removeAllListeners = noop;
+process.emit = noop;
+process.prependListener = noop;
+process.prependOnceListener = noop;
+
+process.listeners = function (name) { return [] }
+
+process.binding = function (name) {
+    throw new Error('process.binding is not supported');
+};
+
+process.cwd = function () { return '/' };
+process.chdir = function (dir) {
+    throw new Error('process.chdir is not supported');
+};
+process.umask = function() { return 0; };
+
+},{}],9:[function(require,module,exports){
+(function (process){(function (){
+/** @license React v16.13.1
+ * react-is.development.js
+ *
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+'use strict';
+
+
+
+if (process.env.NODE_ENV !== "production") {
+  (function() {
+'use strict';
+
+// The Symbol used to tag the ReactElement-like types. If there is no native Symbol
+// nor polyfill, then a plain number is used for performance.
+var hasSymbol = typeof Symbol === 'function' && Symbol.for;
+var REACT_ELEMENT_TYPE = hasSymbol ? Symbol.for('react.element') : 0xeac7;
+var REACT_PORTAL_TYPE = hasSymbol ? Symbol.for('react.portal') : 0xeaca;
+var REACT_FRAGMENT_TYPE = hasSymbol ? Symbol.for('react.fragment') : 0xeacb;
+var REACT_STRICT_MODE_TYPE = hasSymbol ? Symbol.for('react.strict_mode') : 0xeacc;
+var REACT_PROFILER_TYPE = hasSymbol ? Symbol.for('react.profiler') : 0xead2;
+var REACT_PROVIDER_TYPE = hasSymbol ? Symbol.for('react.provider') : 0xeacd;
+var REACT_CONTEXT_TYPE = hasSymbol ? Symbol.for('react.context') : 0xeace; // TODO: We don't use AsyncMode or ConcurrentMode anymore. They were temporary
+// (unstable) APIs that have been removed. Can we remove the symbols?
+
+var REACT_ASYNC_MODE_TYPE = hasSymbol ? Symbol.for('react.async_mode') : 0xeacf;
+var REACT_CONCURRENT_MODE_TYPE = hasSymbol ? Symbol.for('react.concurrent_mode') : 0xeacf;
+var REACT_FORWARD_REF_TYPE = hasSymbol ? Symbol.for('react.forward_ref') : 0xead0;
+var REACT_SUSPENSE_TYPE = hasSymbol ? Symbol.for('react.suspense') : 0xead1;
+var REACT_SUSPENSE_LIST_TYPE = hasSymbol ? Symbol.for('react.suspense_list') : 0xead8;
+var REACT_MEMO_TYPE = hasSymbol ? Symbol.for('react.memo') : 0xead3;
+var REACT_LAZY_TYPE = hasSymbol ? Symbol.for('react.lazy') : 0xead4;
+var REACT_BLOCK_TYPE = hasSymbol ? Symbol.for('react.block') : 0xead9;
+var REACT_FUNDAMENTAL_TYPE = hasSymbol ? Symbol.for('react.fundamental') : 0xead5;
+var REACT_RESPONDER_TYPE = hasSymbol ? Symbol.for('react.responder') : 0xead6;
+var REACT_SCOPE_TYPE = hasSymbol ? Symbol.for('react.scope') : 0xead7;
+
+function isValidElementType(type) {
+  return typeof type === 'string' || typeof type === 'function' || // Note: its typeof might be other than 'symbol' or 'number' if it's a polyfill.
+  type === REACT_FRAGMENT_TYPE || type === REACT_CONCURRENT_MODE_TYPE || type === REACT_PROFILER_TYPE || type === REACT_STRICT_MODE_TYPE || type === REACT_SUSPENSE_TYPE || type === REACT_SUSPENSE_LIST_TYPE || typeof type === 'object' && type !== null && (type.$$typeof === REACT_LAZY_TYPE || type.$$typeof === REACT_MEMO_TYPE || type.$$typeof === REACT_PROVIDER_TYPE || type.$$typeof === REACT_CONTEXT_TYPE || type.$$typeof === REACT_FORWARD_REF_TYPE || type.$$typeof === REACT_FUNDAMENTAL_TYPE || type.$$typeof === REACT_RESPONDER_TYPE || type.$$typeof === REACT_SCOPE_TYPE || type.$$typeof === REACT_BLOCK_TYPE);
+}
+
+function typeOf(object) {
+  if (typeof object === 'object' && object !== null) {
+    var $$typeof = object.$$typeof;
+
+    switch ($$typeof) {
+      case REACT_ELEMENT_TYPE:
+        var type = object.type;
+
+        switch (type) {
+          case REACT_ASYNC_MODE_TYPE:
+          case REACT_CONCURRENT_MODE_TYPE:
+          case REACT_FRAGMENT_TYPE:
+          case REACT_PROFILER_TYPE:
+          case REACT_STRICT_MODE_TYPE:
+          case REACT_SUSPENSE_TYPE:
+            return type;
+
+          default:
+            var $$typeofType = type && type.$$typeof;
+
+            switch ($$typeofType) {
+              case REACT_CONTEXT_TYPE:
+              case REACT_FORWARD_REF_TYPE:
+              case REACT_LAZY_TYPE:
+              case REACT_MEMO_TYPE:
+              case REACT_PROVIDER_TYPE:
+                return $$typeofType;
+
+              default:
+                return $$typeof;
+            }
+
+        }
+
+      case REACT_PORTAL_TYPE:
+        return $$typeof;
+    }
+  }
+
+  return undefined;
+} // AsyncMode is deprecated along with isAsyncMode
+
+var AsyncMode = REACT_ASYNC_MODE_TYPE;
+var ConcurrentMode = REACT_CONCURRENT_MODE_TYPE;
+var ContextConsumer = REACT_CONTEXT_TYPE;
+var ContextProvider = REACT_PROVIDER_TYPE;
+var Element = REACT_ELEMENT_TYPE;
+var ForwardRef = REACT_FORWARD_REF_TYPE;
+var Fragment = REACT_FRAGMENT_TYPE;
+var Lazy = REACT_LAZY_TYPE;
+var Memo = REACT_MEMO_TYPE;
+var Portal = REACT_PORTAL_TYPE;
+var Profiler = REACT_PROFILER_TYPE;
+var StrictMode = REACT_STRICT_MODE_TYPE;
+var Suspense = REACT_SUSPENSE_TYPE;
+var hasWarnedAboutDeprecatedIsAsyncMode = false; // AsyncMode should be deprecated
+
+function isAsyncMode(object) {
+  {
+    if (!hasWarnedAboutDeprecatedIsAsyncMode) {
+      hasWarnedAboutDeprecatedIsAsyncMode = true; // Using console['warn'] to evade Babel and ESLint
+
+      console['warn']('The ReactIs.isAsyncMode() alias has been deprecated, ' + 'and will be removed in React 17+. Update your code to use ' + 'ReactIs.isConcurrentMode() instead. It has the exact same API.');
+    }
+  }
+
+  return isConcurrentMode(object) || typeOf(object) === REACT_ASYNC_MODE_TYPE;
+}
+function isConcurrentMode(object) {
+  return typeOf(object) === REACT_CONCURRENT_MODE_TYPE;
+}
+function isContextConsumer(object) {
+  return typeOf(object) === REACT_CONTEXT_TYPE;
+}
+function isContextProvider(object) {
+  return typeOf(object) === REACT_PROVIDER_TYPE;
+}
+function isElement(object) {
+  return typeof object === 'object' && object !== null && object.$$typeof === REACT_ELEMENT_TYPE;
+}
+function isForwardRef(object) {
+  return typeOf(object) === REACT_FORWARD_REF_TYPE;
+}
+function isFragment(object) {
+  return typeOf(object) === REACT_FRAGMENT_TYPE;
+}
+function isLazy(object) {
+  return typeOf(object) === REACT_LAZY_TYPE;
+}
+function isMemo(object) {
+  return typeOf(object) === REACT_MEMO_TYPE;
+}
+function isPortal(object) {
+  return typeOf(object) === REACT_PORTAL_TYPE;
+}
+function isProfiler(object) {
+  return typeOf(object) === REACT_PROFILER_TYPE;
+}
+function isStrictMode(object) {
+  return typeOf(object) === REACT_STRICT_MODE_TYPE;
+}
+function isSuspense(object) {
+  return typeOf(object) === REACT_SUSPENSE_TYPE;
+}
+
+exports.AsyncMode = AsyncMode;
+exports.ConcurrentMode = ConcurrentMode;
+exports.ContextConsumer = ContextConsumer;
+exports.ContextProvider = ContextProvider;
+exports.Element = Element;
+exports.ForwardRef = ForwardRef;
+exports.Fragment = Fragment;
+exports.Lazy = Lazy;
+exports.Memo = Memo;
+exports.Portal = Portal;
+exports.Profiler = Profiler;
+exports.StrictMode = StrictMode;
+exports.Suspense = Suspense;
+exports.isAsyncMode = isAsyncMode;
+exports.isConcurrentMode = isConcurrentMode;
+exports.isContextConsumer = isContextConsumer;
+exports.isContextProvider = isContextProvider;
+exports.isElement = isElement;
+exports.isForwardRef = isForwardRef;
+exports.isFragment = isFragment;
+exports.isLazy = isLazy;
+exports.isMemo = isMemo;
+exports.isPortal = isPortal;
+exports.isProfiler = isProfiler;
+exports.isStrictMode = isStrictMode;
+exports.isSuspense = isSuspense;
+exports.isValidElementType = isValidElementType;
+exports.typeOf = typeOf;
+  })();
+}
+
+}).call(this)}).call(this,require('_process'))
+},{"_process":8}],10:[function(require,module,exports){
+/** @license React v16.13.1
+ * react-is.production.min.js
+ *
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+'use strict';var b="function"===typeof Symbol&&Symbol.for,c=b?Symbol.for("react.element"):60103,d=b?Symbol.for("react.portal"):60106,e=b?Symbol.for("react.fragment"):60107,f=b?Symbol.for("react.strict_mode"):60108,g=b?Symbol.for("react.profiler"):60114,h=b?Symbol.for("react.provider"):60109,k=b?Symbol.for("react.context"):60110,l=b?Symbol.for("react.async_mode"):60111,m=b?Symbol.for("react.concurrent_mode"):60111,n=b?Symbol.for("react.forward_ref"):60112,p=b?Symbol.for("react.suspense"):60113,q=b?
+Symbol.for("react.suspense_list"):60120,r=b?Symbol.for("react.memo"):60115,t=b?Symbol.for("react.lazy"):60116,v=b?Symbol.for("react.block"):60121,w=b?Symbol.for("react.fundamental"):60117,x=b?Symbol.for("react.responder"):60118,y=b?Symbol.for("react.scope"):60119;
+function z(a){if("object"===typeof a&&null!==a){var u=a.$$typeof;switch(u){case c:switch(a=a.type,a){case l:case m:case e:case g:case f:case p:return a;default:switch(a=a&&a.$$typeof,a){case k:case n:case t:case r:case h:return a;default:return u}}case d:return u}}}function A(a){return z(a)===m}exports.AsyncMode=l;exports.ConcurrentMode=m;exports.ContextConsumer=k;exports.ContextProvider=h;exports.Element=c;exports.ForwardRef=n;exports.Fragment=e;exports.Lazy=t;exports.Memo=r;exports.Portal=d;
+exports.Profiler=g;exports.StrictMode=f;exports.Suspense=p;exports.isAsyncMode=function(a){return A(a)||z(a)===l};exports.isConcurrentMode=A;exports.isContextConsumer=function(a){return z(a)===k};exports.isContextProvider=function(a){return z(a)===h};exports.isElement=function(a){return"object"===typeof a&&null!==a&&a.$$typeof===c};exports.isForwardRef=function(a){return z(a)===n};exports.isFragment=function(a){return z(a)===e};exports.isLazy=function(a){return z(a)===t};
+exports.isMemo=function(a){return z(a)===r};exports.isPortal=function(a){return z(a)===d};exports.isProfiler=function(a){return z(a)===g};exports.isStrictMode=function(a){return z(a)===f};exports.isSuspense=function(a){return z(a)===p};
+exports.isValidElementType=function(a){return"string"===typeof a||"function"===typeof a||a===e||a===m||a===g||a===f||a===p||a===q||"object"===typeof a&&null!==a&&(a.$$typeof===t||a.$$typeof===r||a.$$typeof===h||a.$$typeof===k||a.$$typeof===n||a.$$typeof===w||a.$$typeof===x||a.$$typeof===y||a.$$typeof===v)};exports.typeOf=z;
+
+},{}],11:[function(require,module,exports){
+(function (process){(function (){
+'use strict';
+
+if (process.env.NODE_ENV === 'production') {
+  module.exports = require('./cjs/react-is.production.min.js');
+} else {
+  module.exports = require('./cjs/react-is.development.js');
+}
+
+}).call(this)}).call(this,require('_process'))
+},{"./cjs/react-is.development.js":9,"./cjs/react-is.production.min.js":10,"_process":8}]},{},[4])(4)
+});
+
+
+/***/ }),
+/* 8 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   LanguageSwitcher: () => (/* binding */ LanguageSwitcher),
@@ -1517,7 +4082,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
-/* harmony import */ var _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -1741,7 +4306,7 @@ function LanguageSwitcher(props) {
     className: "primary",
     value: "primary_button",
     onClick: () => {
-      _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.sendActionTelemetry(messageId, "download_langpack");
+      _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.sendActionTelemetry(messageId, "download_langpack", "CLICK_BUTTON");
       setIsAwaitingLangpack(true);
     }
   }, content.languageSwitcher.switch ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
@@ -1764,9 +4329,10 @@ function LanguageSwitcher(props) {
 }
 
 /***/ }),
-/* 8 */
+/* 9 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   CTAParagraph: () => (/* binding */ CTAParagraph)
@@ -1774,9 +4340,11 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 
 
 
@@ -1788,35 +4356,47 @@ const CTAParagraph = props => {
   if (!content?.text) {
     return null;
   }
+  const onClick = react__WEBPACK_IMPORTED_MODULE_0___default().useCallback(event => {
+    handleAction(event);
+    event.preventDefault();
+  }, [handleAction]);
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h2", {
-    className: "cta-paragraph"
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+    className: `cta-paragraph ${content?.info_tile ? "info-tile" : ""}`,
+    style: {
+      ..._lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.getValidStyle(content?.style, _MSLocalized__WEBPACK_IMPORTED_MODULE_1__.CONFIGURABLE_STYLES)
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "cta-paragraph-icon-wrapper"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("img", {
+    className: "cta-paragraph-icon",
+    src: content?.icon?.iconURL,
+    style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.getValidStyle(content?.icon, _MSLocalized__WEBPACK_IMPORTED_MODULE_1__.CONFIGURABLE_STYLES)
+  })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
     text: content.text
   }, content.text.string_name && typeof handleAction === "function" ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
     "data-l10n-id": content.text.string_id,
-    onClick: handleAction,
-    onKeyUp: event => ["Enter", " "].includes(event.key) ? handleAction(event) : null,
-    value: "cta_paragraph",
+    onClick: onClick,
+    onKeyUp: event => ["Enter", " "].includes(event.key) ? onClick(event) : null,
+    value: "cta_paragraph"
+  }, " ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("a", {
+    "data-l10n-name": content.text.string_name,
     tabIndex: "0",
     role: "link"
-  }, " ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("a", {
-    href: "",
-    tabIndex: "0",
-    "data-l10n-name": content.text.string_name
-  }, " ")) : null));
+  })) : null));
 };
 
 /***/ }),
-/* 9 */
+/* 10 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   HeroImage: () => (/* binding */ HeroImage)
 /* harmony export */ });
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
-/* harmony import */ var _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(3);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(3);
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -1839,16 +4419,17 @@ const HeroImage = props => {
       height
     } : null,
     src: url,
-    loading: _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.AboutWelcomeUtils.getLoadingStrategyFor(url),
+    loading: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.getLoadingStrategyFor(url),
     alt: alt || "",
     role: alt ? null : "presentation"
   }));
 };
 
 /***/ }),
-/* 10 */
+/* 11 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   OnboardingVideo: () => (/* binding */ OnboardingVideo)
@@ -1885,9 +4466,10 @@ const OnboardingVideo = props => {
 };
 
 /***/ }),
-/* 11 */
+/* 12 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   AdditionalCTA: () => (/* binding */ AdditionalCTA)
@@ -1895,7 +4477,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
-/* harmony import */ var _SubmenuButton__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(12);
+/* harmony import */ var _SubmenuButton__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(13);
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -1905,7 +4487,9 @@ __webpack_require__.r(__webpack_exports__);
 
 const AdditionalCTA = ({
   content,
-  handleAction
+  handleAction,
+  activeMultiSelect,
+  textInputs
 }) => {
   let buttonStyle = "";
   const isSplitButton = content.submenu_button?.attached_to === "additional_button";
@@ -1918,6 +4502,28 @@ const AdditionalCTA = ({
   } else {
     buttonStyle = content.additional_button?.style === "link" ? "cta-link" : content.additional_button?.style;
   }
+  const computeDisabled = react__WEBPACK_IMPORTED_MODULE_0___default().useCallback(disabledValue => {
+    if (disabledValue === "hasActiveMultiSelect") {
+      if (!activeMultiSelect) {
+        return true;
+      }
+      for (const key in activeMultiSelect) {
+        if (activeMultiSelect[key]?.length > 0) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (disabledValue === "hasTextInput") {
+      // For text input, we check if the user has entered any text in the
+      // textarea(s) present on the screen.
+      if (!textInputs) {
+        return true;
+      }
+      return Object.values(textInputs).every(input => !input.isValid || input.value.trim().length === 0);
+    }
+    return disabledValue;
+  }, [activeMultiSelect, textInputs]);
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: className
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
@@ -1927,7 +4533,7 @@ const AdditionalCTA = ({
     className: `${buttonStyle} additional-cta`,
     onClick: handleAction,
     value: "additional_button",
-    disabled: content.additional_button?.disabled === true
+    disabled: computeDisabled(content.additional_button?.disabled)
   })), isSplitButton ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_SubmenuButton__WEBPACK_IMPORTED_MODULE_2__.SubmenuButton, {
     content: content,
     handleAction: handleAction
@@ -1935,9 +4541,10 @@ const AdditionalCTA = ({
 };
 
 /***/ }),
-/* 12 */
+/* 13 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   SubmenuButton: () => (/* binding */ SubmenuButton)
@@ -1987,44 +4594,59 @@ function addMenuitems(items, popup) {
         popup.appendChild(document.createXULElement("menuseparator"));
         break;
       case "menu":
-        let menu = document.createXULElement("menu");
-        menu.className = "fxms-multi-stage-menu";
-        translateMenuitem(item, menu);
-        if (item.id) {
-          menu.value = item.id;
+        {
+          let menu = document.createXULElement("menu");
+          menu.className = "fxms-multi-stage-menu";
+          translateMenuitem(item, menu);
+          if (item.id) {
+            menu.value = item.id;
+          }
+          if (item.icon) {
+            menu.classList.add("menu-iconic");
+            menu.setAttribute("image", item.icon);
+          }
+          popup.appendChild(menu);
+          let submenuPopup = document.createXULElement("menupopup");
+          menu.appendChild(submenuPopup);
+          addMenuitems(item.submenu, submenuPopup);
+          break;
         }
-        if (item.icon) {
-          menu.classList.add("menu-iconic");
-          menu.setAttribute("image", item.icon);
-        }
-        popup.appendChild(menu);
-        let submenuPopup = document.createXULElement("menupopup");
-        menu.appendChild(submenuPopup);
-        addMenuitems(item.submenu, submenuPopup);
-        break;
       case "action":
-        let menuitem = document.createXULElement("menuitem");
-        translateMenuitem(item, menuitem);
-        menuitem.config = item;
-        if (item.id) {
-          menuitem.value = item.id;
+        {
+          let menuitem = document.createXULElement("menuitem");
+          translateMenuitem(item, menuitem);
+          menuitem.config = item;
+          if (item.id) {
+            menuitem.value = item.id;
+          }
+          if (item.icon) {
+            menuitem.classList.add("menuitem-iconic");
+            menuitem.setAttribute("image", item.icon);
+          }
+          popup.appendChild(menuitem);
+          break;
         }
-        if (item.icon) {
-          menuitem.classList.add("menuitem-iconic");
-          menuitem.setAttribute("image", item.icon);
-        }
-        popup.appendChild(menuitem);
-        break;
     }
   }
 }
 const SubmenuButtonInner = ({
   content,
-  handleAction
+  handleAction,
+  buttonType = "submenu"
 }) => {
   const ref = (0,react__WEBPACK_IMPORTED_MODULE_0__.useRef)(null);
   const [isSubmenuExpanded, setIsSubmenuExpanded] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
-  const isPrimary = content.submenu_button?.style === "primary";
+  const hasDismissButton = content.dismiss_button;
+  const buttonConfig = buttonType === "submenu" ? content.submenu_button : content.more_button;
+  const isMoreButton = buttonType === "more";
+  if (isMoreButton && hasDismissButton) {
+    return null;
+  }
+  const isPrimary = buttonConfig?.style === "primary";
+  const submenuItems = buttonConfig?.submenu || [];
+  const buttonId = isMoreButton ? "more_button" : "submenu_button";
+  const buttonValue = isMoreButton ? "more_button" : "submenu_button";
+  const buttonClassName = isMoreButton ? "more-button" : `submenu-button ${isPrimary ? "primary" : "secondary"}`;
   const onCommand = (0,react__WEBPACK_IMPORTED_MODULE_0__.useCallback)(event => {
     let {
       config
@@ -2053,7 +4675,7 @@ const SubmenuButtonInner = ({
     }
     let menupopup = document.createXULElement("menupopup");
     menupopup.className = "fxms-multi-stage-submenu";
-    addMenuitems(content.submenu_button.submenu, menupopup);
+    addMenuitems(submenuItems, menupopup);
     button.appendChild(menupopup);
     let stylesheet;
     if (!document.head.querySelector(`link[href="chrome://global/content/widgets.css"], link[href="chrome://global/skin/global.css"]`)) {
@@ -2084,24 +4706,29 @@ const SubmenuButtonInner = ({
     };
   }, [onCommand]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Don't render the button if there's no button config, or no items
+  if (!buttonConfig || !submenuItems.length) {
+    return null;
+  }
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
-    text: content.submenu_button.label ?? {}
+    text: buttonConfig.label ?? {}
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
-    id: "submenu_button",
-    className: `submenu-button ${isPrimary ? "primary" : "secondary"}`,
-    value: "submenu_button",
+    id: buttonId,
+    className: buttonClassName,
+    value: buttonValue,
     onClick: onClick,
     ref: ref,
     "aria-haspopup": "menu",
     "aria-expanded": isSubmenuExpanded,
-    "aria-labelledby": `${content.submenu_button.attached_to} submenu_button`
+    "aria-labelledby": !isMoreButton ? `${buttonConfig.attached_to || content.attached_to || ""} submenu_button`.trim() : null
   }));
 };
 
 /***/ }),
-/* 13 */
+/* 14 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   LinkParagraph: () => (/* binding */ LinkParagraph)
@@ -2115,16 +4742,99 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
+function renderSegment(segment, index, handleAction) {
+  if (typeof segment === "string") {
+    return segment;
+  }
+  if (segment?.imageURL) {
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("img", {
+      key: index,
+      className: "inline-icon",
+      src: (0,_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.resolveImageSrc)(segment),
+      alt: segment.alt ?? "",
+      style: (0,_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.pickConfigurableStyles)(segment)
+    });
+  }
+  if (segment?.action) {
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("a", {
+      key: index,
+      href: segment.href,
+      value: segment.id,
+      role: segment.href ? null : "link",
+      className: "text-link",
+      tabIndex: "0",
+      onClick: event => {
+        event.preventDefault();
+        handleAction(event, segment.action);
+      },
+      onKeyPress: event => {
+        if (event.key === "Enter" && !event.repeat) {
+          event.preventDefault();
+          handleAction(event, segment.action);
+        }
+      }
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+      text: segment
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null)));
+  }
+  if (segment?.href) {
+    const action = {
+      type: "OPEN_URL",
+      data: {
+        args: segment.href,
+        where: segment.where || "tab"
+      }
+    };
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("a", {
+      key: index,
+      href: segment.href,
+      className: "text-link",
+      onClick: event => {
+        event.preventDefault();
+        handleAction(event, action);
+      }
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+      text: segment
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null)));
+  }
+  if (segment?.link_key) {
+    return (
+      /*#__PURE__*/
+      // eslint-disable-next-line jsx-a11y/anchor-is-valid
+      react__WEBPACK_IMPORTED_MODULE_0___default().createElement("a", {
+        key: index,
+        value: segment.link_key,
+        role: "link",
+        className: "text-link",
+        tabIndex: "0",
+        onClick: handleAction,
+        onKeyPress: event => {
+          if (event.key === "Enter" && !event.repeat) {
+            handleAction(event);
+          }
+        }
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+        text: segment
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null)))
+    );
+  }
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+    key: index,
+    text: segment
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null));
+}
 const LinkParagraph = props => {
   const {
     text_content,
     handleAction
   } = props;
+  const text = text_content?.text;
   const handleParagraphAction = (0,react__WEBPACK_IMPORTED_MODULE_0__.useCallback)(event => {
-    if (event.target.closest("a")) {
+    const anchor = event.target.closest("a");
+    if (anchor) {
       handleAction({
         ...event,
-        currentTarget: event.target
+        currentTarget: anchor
       });
     }
   }, [handleAction]);
@@ -2133,10 +4843,17 @@ const LinkParagraph = props => {
       handleParagraphAction(event);
     }
   }, [handleParagraphAction]);
+  const paragraphClassName = text_content?.font_styles === "legal" ? "legal-paragraph" : "link-paragraph";
+  if (Array.isArray(text)) {
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+      className: paragraphClassName,
+      style: (0,_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.pickConfigurableStyles)(text_content)
+    }, text.map((segment, index) => renderSegment(segment, index, handleAction)));
+  }
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
-    text: text_content.text
+    text: text
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
-    className: text_content.font_styles === "legal" ? "legal-paragraph" : "link-paragraph",
+    className: paragraphClassName,
     onClick: handleParagraphAction,
     value: "link_paragraph",
     onKeyPress: onKeyPress
@@ -2153,24 +4870,36 @@ const LinkParagraph = props => {
 };
 
 /***/ }),
-/* 14 */
+/* 15 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
-/* harmony export */   ContentTiles: () => (/* binding */ ContentTiles)
+/* harmony export */   ContentTiles: () => (/* binding */ ContentTiles),
+/* harmony export */   getTileImpressionContext: () => (/* binding */ getTileImpressionContext)
 /* harmony export */ });
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
-/* harmony import */ var _AddonsPicker__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(15);
-/* harmony import */ var _SingleSelect__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(17);
-/* harmony import */ var _MobileDownloads__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(18);
-/* harmony import */ var _MultiSelect__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(19);
-/* harmony import */ var _EmbeddedMigrationWizard__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(20);
-/* harmony import */ var _ActionChecklist__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(21);
-/* harmony import */ var _EmbeddedBrowser__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(22);
-/* harmony import */ var _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(3);
+/* harmony import */ var _AddonsPicker__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(16);
+/* harmony import */ var _SingleSelect__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(18);
+/* harmony import */ var _MobileDownloads__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(22);
+/* harmony import */ var _MultiSelect__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(23);
+/* harmony import */ var _TextAreaTile__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(24);
+/* harmony import */ var _EmbeddedMigrationWizard__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(25);
+/* harmony import */ var _EmbeddedThemePicker__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(26);
+/* harmony import */ var _EmbeddedFxBackupOptIn__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(27);
+/* harmony import */ var _ActionChecklist__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(28);
+/* harmony import */ var _EmbeddedBrowser__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(29);
+/* harmony import */ var _ConfirmationChecklist__WEBPACK_IMPORTED_MODULE_12__ = __webpack_require__(30);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_13__ = __webpack_require__(3);
+/* harmony import */ var _EmbeddedBackupRestore__WEBPACK_IMPORTED_MODULE_14__ = __webpack_require__(31);
+/* harmony import */ var _PinnableSitesList__WEBPACK_IMPORTED_MODULE_15__ = __webpack_require__(32);
+/* harmony import */ var _ContentToggle__WEBPACK_IMPORTED_MODULE_16__ = __webpack_require__(33);
+/* harmony import */ var _TextBoxTile__WEBPACK_IMPORTED_MODULE_17__ = __webpack_require__(34);
+/* harmony import */ var _LinkParagraph__WEBPACK_IMPORTED_MODULE_18__ = __webpack_require__(14);
+function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2185,8 +4914,33 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
+
+
+
+
+
+
+
+
+
 const HEADER_STYLES = ["backgroundColor", "border", "padding", "margin", "width", "height"];
-const TILE_STYLES = ["marginBlock", "marginInline", "paddingBlock", "paddingInline"];
+const TILE_STYLES = ["border", "borderRadius", "marginBlock", "marginInline", "paddingBlock", "paddingInline"];
+const CONTAINER_STYLES = ["padding", "margin", "marginBlock", "marginInline", "paddingBlock", "paddingInline", "flexDirection", "flexWrap", "flexFlow", "flexGrow", "flexShrink", "justifyContent", "alignItems", "gap"];
+
+/**
+ * @param {object|object[]} tiles - The tiles of the screen being shown.
+ * @returns {object} Impression context, if any.
+ */
+function getTileImpressionContext(tiles) {
+  const pinnableSites = (Array.isArray(tiles) ? tiles : [tiles]).find(tile => tile?.type === "pinnable_sites" && Array.isArray(tile.data));
+  if (!pinnableSites) {
+    return {};
+  }
+  return {
+    total_sites: pinnableSites.data.length,
+    personalized_sites: pinnableSites.data.filter(item => item?.personalized).length
+  };
+}
 const ContentTiles = props => {
   const {
     content
@@ -2227,14 +4981,108 @@ const ContentTiles = props => {
     }
   }, [tiles]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    /**
+     * In Spotlight dialogs, the VO cursor can move without changing DOM focus.
+     * When a user lands on content tiles, or a tile re-renders, DOM focus often
+     * stays on or "snaps back" to the dialog’s first tabbable control by
+     * SubDialog’s focus enforcement. Pressing Space/Enter then activates that
+     * outside control instead of the VO target.
+     *
+     * To address this, we remember the last real DOM-focused element inside
+     * #content-tiles-container. If focus jumps outside tiles without a recent
+     * tab, such as with a VO focus move, restore focus to that element on the
+     * next rAF. Tab navigation is unaffected.
+     */
+    const page = document.querySelector("#multi-stage-message-root.onboardingContainer[data-page]")?.dataset.page || document.location.href;
+    if (page !== "spotlight") {
+      return () => {};
+    }
+    const tilesEl = document.getElementById("content-tiles-container");
+    const dialog = tilesEl?.closest('main[role="alertdialog"]') || null;
+    if (!tilesEl || !dialog) {
+      return () => {};
+    }
+
+    // We use 250ms to tell “intentional tab navigation” from a programmatic
+    // snap. It’s long enough to cover a human Tab press (and a quick double-tab
+    // / key repeat), but short enough that we don’t delay correcting unintended
+    // focus jumps.
+    const TAB_GRACE_WINDOW_MS = 250;
+    let lastTilesEl = null;
+    let lastTabAt = 0;
+    let restoring = false;
+    let tabFromTiles = false;
+    function onKeyDown(e) {
+      if (e.key === "Tab") {
+        lastTabAt = performance.now();
+        if (tilesEl.contains(document.activeElement)) {
+          tabFromTiles = true;
+        }
+      }
+    }
+    function onFocusIn(event) {
+      const {
+        target
+      } = event;
+
+      // Track true DOM focus inside tiles.
+      if (tilesEl.contains(target)) {
+        lastTilesEl = target;
+        // Reset when focus enters tiles
+        tabFromTiles = false;
+        return;
+      }
+
+      // If focus left tiles without a recent tab, treat as a programmatic snap.
+      const tabRecently = performance.now() - lastTabAt < TAB_GRACE_WINDOW_MS;
+      if (tabRecently || !lastTilesEl || !document.contains(lastTilesEl) || restoring) {
+        tabFromTiles = false;
+        return;
+      }
+
+      // If tab was pressed while in tiles and focus moved to action buttons, don't restore focus for the intended keyboard navigation
+      const actionButtons = dialog.querySelector(".action-buttons");
+      if (actionButtons?.contains(target) && tabFromTiles) {
+        tabFromTiles = false;
+        return;
+      }
+
+      // Restore immediately (before paint) to avoid visible flicker.
+      restoring = true;
+      try {
+        lastTilesEl.focus({
+          preventScroll: true
+        });
+      } finally {
+        restoring = false;
+      }
+    }
+
+    // Preempt other dialog handlers.
+    dialog.addEventListener("keydown", onKeyDown, true);
+    dialog.addEventListener("focusin", onFocusIn, true);
+    return () => {
+      dialog.removeEventListener("keydown", onKeyDown, true);
+      dialog.removeEventListener("focusin", onFocusIn, true);
+    };
+  }, []);
   const toggleTile = (index, tile) => {
     const tileId = `${tile.type}${tile.id ? "_" : ""}${tile.id ?? ""}_header`;
-    setExpandedTileIndex(prevIndex => prevIndex === index ? null : index);
-    _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_9__.AboutWelcomeUtils.sendActionTelemetry(props.messageId, tileId);
+    _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_13__.MultiStageUtils.sendActionTelemetry(props.messageId, tileId, "CLICK_BUTTON");
+    if (tile.type === "link" && tile.action) {
+      props.handleAction({
+        currentTarget: {
+          value: tileId
+        }
+      }, tile.action);
+    } else {
+      setExpandedTileIndex(prevIndex => prevIndex === index ? null : index);
+    }
   };
   const toggleTiles = () => {
     setTilesHeaderExpanded(prev => !prev);
-    _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_9__.AboutWelcomeUtils.sendActionTelemetry(props.messageId, "content_tiles_header");
+    _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_13__.MultiStageUtils.sendActionTelemetry(props.messageId, "content_tiles_header", "CLICK_BUTTON");
   };
   function getTileMultiSelects(screenMultiSelects, index) {
     return screenMultiSelects?.[`tile-${index}`];
@@ -2249,20 +5097,26 @@ const ContentTiles = props => {
       title,
       subtitle
     } = tile;
+    const tileHeaderProps = tile.type === "link" ? {
+      role: "link"
+    } : {
+      "aria-expanded": isExpanded,
+      "aria-controls": `tile-content-${index}`
+    };
+    const headerTitle = tile.type === "textbox" && props.contentToggleChecked === false ? header?.alternateTitle ?? header?.title : header?.title;
     return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       key: index,
       className: `content-tile ${header ? "has-header" : ""}`,
-      style: _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_9__.AboutWelcomeUtils.getValidStyle(tile.style, TILE_STYLES)
-    }, header?.title && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
-      className: "tile-header secondary",
-      onClick: () => toggleTile(index, tile),
-      "aria-expanded": isExpanded,
-      "aria-controls": `tile-content-${index}`,
-      style: _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_9__.AboutWelcomeUtils.getValidStyle(header.style, HEADER_STYLES)
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_13__.MultiStageUtils.getTileStyle(tile, TILE_STYLES)
+    }, header?.title && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", _extends({
+      className: `tile-header secondary${header.linkStyle ? " link-style" : ""}`,
+      onClick: () => toggleTile(index, tile)
+    }, tileHeaderProps, {
+      style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_13__.MultiStageUtils.getValidStyle(header.style, HEADER_STYLES)
+    }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       className: "header-text-container"
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
-      text: header.title
+      text: headerTitle
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
       className: "header-title"
     })), header.subtitle && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
@@ -2270,7 +5124,7 @@ const ContentTiles = props => {
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
       className: "header-subtitle"
     }))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
-      className: "arrow-icon"
+      className: tile.type === "link" ? "external-link-icon" : "arrow-icon"
     })), (title || subtitle) && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       className: "tile-title-container",
       id: `tile-title-container-${index}`
@@ -2283,7 +5137,7 @@ const ContentTiles = props => {
       text: subtitle
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
       className: "tile-subtitle"
-    }))), isExpanded || !header ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    }))), tile.type !== "link" && (isExpanded || !header) ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       className: "tile-content",
       id: `tile-content-${index}`
     }, tile.type === "addons-picker" && tile.data && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_AddonsPicker__WEBPACK_IMPORTED_MODULE_2__.AddonsPicker, {
@@ -2315,23 +5169,74 @@ const ContentTiles = props => {
       activeMultiSelect: getTileActiveMultiSelect(props.activeMultiSelect, index),
       setActiveMultiSelect: props.setActiveMultiSelect,
       multiSelectId: `tile-${index}`
-    }), tile.type === "migration-wizard" && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_EmbeddedMigrationWizard__WEBPACK_IMPORTED_MODULE_6__.EmbeddedMigrationWizard, {
+    }), tile.type === "textarea" && tile.data && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_TextAreaTile__WEBPACK_IMPORTED_MODULE_6__.TextAreaTile, {
+      content: {
+        tiles: tile
+      },
+      textInputs: props.textInputs,
+      setTextInput: props.setTextInput,
+      tileIndex: index
+    }), tile.type === "migration-wizard" && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_EmbeddedMigrationWizard__WEBPACK_IMPORTED_MODULE_7__.EmbeddedMigrationWizard, {
       handleAction: props.handleAction,
       content: {
         tiles: tile
       }
-    }), tile.type === "action_checklist" && tile.data && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_ActionChecklist__WEBPACK_IMPORTED_MODULE_7__.ActionChecklist, {
+    }), tile.type === "theme-picker" && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_EmbeddedThemePicker__WEBPACK_IMPORTED_MODULE_8__.EmbeddedThemePicker, {
+      handleAction: props.handleAction,
+      installSource: tile.data?.installSource
+    }), tile.type === "action_checklist" && tile.data && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_ActionChecklist__WEBPACK_IMPORTED_MODULE_10__.ActionChecklist, {
       content: content,
-      message_id: props.messageId
-    }), tile.type === "embedded_browser" && tile.data?.url && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_EmbeddedBrowser__WEBPACK_IMPORTED_MODULE_8__.EmbeddedBrowser, {
+      message_id: props.messageId,
+      handleAction: props.handleAction
+    }), tile.type === "embedded_browser" && tile.data?.url && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_EmbeddedBrowser__WEBPACK_IMPORTED_MODULE_11__.EmbeddedBrowser, {
       url: tile.data.url,
       style: tile.data.style
+    }), tile.type === "backup_restore" && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_EmbeddedBackupRestore__WEBPACK_IMPORTED_MODULE_14__.EmbeddedBackupRestore, {
+      handleAction: props.handleAction,
+      content: {
+        tiles: tile
+      },
+      skipButton: props.content.skip_button
+    }), tile.type === "fx_backup_file_path" && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_EmbeddedFxBackupOptIn__WEBPACK_IMPORTED_MODULE_9__.EmbeddedFxBackupOptIn, {
+      handleAction: props.handleAction,
+      isEncryptedBackup: content.isEncryptedBackup,
+      options: tile.options,
+      messageId: props.messageId
+    }), tile.type === "fx_backup_password" && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_EmbeddedFxBackupOptIn__WEBPACK_IMPORTED_MODULE_9__.EmbeddedFxBackupOptIn, {
+      handleAction: props.handleAction,
+      isEncryptedBackup: content.isEncryptedBackup,
+      options: tile.options,
+      messageId: props.messageId
+    }), tile.type === "confirmation-checklist" && tile.data && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_ConfirmationChecklist__WEBPACK_IMPORTED_MODULE_12__.ConfirmationChecklist, {
+      content: tile.data,
+      handleAction: props.handleAction
+    }), tile.type === "pinnable_sites" && tile.data && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_PinnableSitesList__WEBPACK_IMPORTED_MODULE_15__.PinnableSitesList, {
+      tile: tile,
+      messageId: props.messageId,
+      handleAction: props.handleAction,
+      setPinnedSite: props.setPinnedSite
+    }), tile.type === "content-toggle" && tile.data && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_ContentToggle__WEBPACK_IMPORTED_MODULE_16__.ContentToggle, {
+      content: {
+        tiles: tile
+      },
+      toggled: props.contentToggleChecked,
+      onToggle: props.setContentToggleChecked
+    }), tile.type === "textbox" && tile.data && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_TextBoxTile__WEBPACK_IMPORTED_MODULE_17__.TextBoxTile, {
+      content: {
+        tiles: tile
+      },
+      contentToggled: props.contentToggleChecked
+    }), tile.type === "text" && tile.text && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_LinkParagraph__WEBPACK_IMPORTED_MODULE_18__.LinkParagraph, {
+      text_content: tile,
+      handleAction: props.handleAction
     })) : null);
   };
   const renderContentTiles = () => {
     if (Array.isArray(tiles)) {
+      const containerStyle = content?.tiles_container?.style;
       return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
-        id: "content-tiles-container"
+        id: "content-tiles-container",
+        style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_13__.MultiStageUtils.getValidStyle(containerStyle, CONTAINER_STYLES)
       }, tiles.map((tile, index) => renderContentTile(tile, index)));
     }
     // If tiles is not an array render the tile alone without a container
@@ -2355,18 +5260,19 @@ const ContentTiles = props => {
 };
 
 /***/ }),
-/* 15 */
+/* 16 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   AddonsPicker: () => (/* binding */ AddonsPicker)
 /* harmony export */ });
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
-/* harmony import */ var _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(3);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(3);
 /* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(5);
-/* harmony import */ var _InstallButton__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(16);
+/* harmony import */ var _InstallButton__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(17);
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2379,12 +5285,13 @@ const AddonsPicker = props => {
   const {
     content,
     installedAddons,
-    layout
+    layout,
+    handleAction
   } = props;
   if (!content) {
     return null;
   }
-  function handleAction(event) {
+  function handleInstallClick(event) {
     const {
       message_id
     } = props;
@@ -2392,24 +5299,17 @@ const AddonsPicker = props => {
       action,
       source_id
     } = content.tiles.data[event.currentTarget.value];
-    let {
-      type,
-      data
-    } = action;
-    if (type === "INSTALL_ADDON_FROM_URL") {
-      if (!data) {
+    if (action.type === "INSTALL_ADDON_FROM_URL") {
+      if (!action.data) {
         return;
       }
     }
-    _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.AboutWelcomeUtils.handleUserAction({
-      type,
-      data
-    });
-    _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.AboutWelcomeUtils.sendActionTelemetry(message_id, source_id);
+    handleAction(event, action);
+    _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.sendActionTelemetry(message_id, source_id, "CLICK_BUTTON");
   }
   function handleAuthorClick(event, authorId) {
     event.stopPropagation();
-    _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.AboutWelcomeUtils.handleUserAction({
+    _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.handleUserAction({
       type: "OPEN_URL",
       data: {
         args: `https://addons.mozilla.org/firefox/user/${authorId}/`,
@@ -2463,7 +5363,7 @@ const AddonsPicker = props => {
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null, author.name)))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_InstallButton__WEBPACK_IMPORTED_MODULE_3__.InstallButton, {
     key: id,
     addonId: id,
-    handleAction: handleAction,
+    handleAction: handleInstallClick,
     index: index,
     installedAddons: installedAddons,
     install_label: install_label,
@@ -2487,7 +5387,7 @@ const AddonsPicker = props => {
   }))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_InstallButton__WEBPACK_IMPORTED_MODULE_3__.InstallButton, {
     key: id,
     addonId: id,
-    handleAction: handleAction,
+    handleAction: handleInstallClick,
     index: index,
     installedAddons: installedAddons,
     install_label: install_label,
@@ -2496,9 +5396,10 @@ const AddonsPicker = props => {
 };
 
 /***/ }),
-/* 16 */
+/* 17 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   InstallButton: () => (/* binding */ InstallButton),
@@ -2581,9 +5482,10 @@ const InstallButton = props => {
 };
 
 /***/ }),
-/* 17 */
+/* 18 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   SingleSelect: () => (/* binding */ SingleSelect)
@@ -2591,10 +5493,16 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
-/* harmony import */ var _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
+/* harmony import */ var _TileButton__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(19);
+/* harmony import */ var _TileList__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(20);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(3);
+/* harmony import */ var _CarouselNav__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(21);
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+
+
 
 
 
@@ -2612,6 +5520,17 @@ const SingleSelect = ({
 }) => {
   const category = content.tiles?.category?.type || content.tiles?.type;
   const isSingleSelect = category === "single-select";
+  const cardRefs = (0,react__WEBPACK_IMPORTED_MODULE_0__.useRef)(new Map());
+  const handlePillSelect = id => {
+    setActiveSingleSelectSelection(id, singleSelectId);
+    const card = cardRefs.current.get(id);
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    card?.scrollIntoView?.({
+      behavior: reduceMotion ? "auto" : "smooth",
+      inline: "center",
+      block: "nearest"
+    });
+  };
   const autoTriggerAllowed = itemAction => {
     // Currently only enabled for sidebar experiment prefs
     const allowedActions = ["SET_PREF"];
@@ -2651,33 +5570,48 @@ const SingleSelect = ({
     }
   }, [activeSingleSelectSelections]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const CONFIGURABLE_STYLES = ["background", "borderRadius", "height", "marginBlock", "marginBlockStart", "marginBlockEnd", "marginInline", "paddingBlock", "paddingBlockStart", "paddingBlockEnd", "paddingInline", "paddingInlineStart", "paddingInlineEnd", "width"];
+  const CONFIGURABLE_STYLES = ["background", "border", "borderRadius", "height", "marginBlock", "marginBlockStart", "marginBlockEnd", "marginInline", "paddingBlock", "paddingBlockStart", "paddingBlockEnd", "paddingInline", "paddingInlineStart", "paddingInlineEnd", "width"];
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: `tiles-single-select-container`
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("fieldset", {
+  }, isSingleSelect ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_CarouselNav__WEBPACK_IMPORTED_MODULE_5__.CarouselNav, {
+    items: content.tiles?.data,
+    activeId: activeSingleSelectSelections[singleSelectId],
+    onSelect: handlePillSelect,
+    navLabel: content.tiles?.pill_nav_label
+  }) : null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("fieldset", {
     className: `tiles-single-select-section ${category}`
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
-    text: content.subtitle
+    text: content.tiles?.subtitle || content.subtitle
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("legend", {
     className: "sr-only"
   })), content.tiles.data.map(({
     description,
+    inert,
     icon,
     id,
     label = "",
+    body = "",
+    subtitle = "",
     theme,
     tooltip,
     type = "",
     flair,
-    style
+    style,
+    tilebutton
   }) => {
     const value = id || theme;
-    let inputName = "select-item";
+    let inputName = `select-item-${id}`;
     if (!isSingleSelect) {
       inputName = category === "theme" ? "theme" : id; // unique names per item are currently used in the wallpaper picker
     }
     const selected = theme && theme === activeTheme || isSingleSelect && activeSingleSelectSelections[singleSelectId] === value;
     const valOrObj = val => typeof val === "object" ? val : {};
+    const iconStyle = _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_4__.MultiStageUtils.getValidStyle(icon, CONFIGURABLE_STYLES);
+    if (icon?.darkModeBackground) {
+      iconStyle["--single-select-icon-background"] = icon.background;
+      iconStyle["--single-select-icon-background-dark"] = icon.darkModeBackground;
+      delete iconStyle.background;
+    }
     const handleClick = evt => {
       if (isSingleSelect) {
         setActiveSingleSelectSelection(value, singleSelectId); // Update selection for the specific component
@@ -2695,11 +5629,17 @@ const SingleSelect = ({
       key: value + (isSingleSelect ? "" : label),
       text: valOrObj(tooltip)
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("label", {
-      className: `select-item ${type}`,
-      title: value,
+      className: `select-item ${type} ${selected ? " selected" : ""}`,
+      ref: el => {
+        if (el) {
+          cardRefs.current.set(value, el);
+        } else {
+          cardRefs.current.delete(value);
+        }
+      },
       onKeyDown: e => handleKeyDown(e),
       style: {
-        ..._lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.getValidStyle(style, CONFIGURABLE_STYLES),
+        ..._lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_4__.MultiStageUtils.getValidStyle(style, CONFIGURABLE_STYLES),
         ...(icon?.width ? {
           minWidth: icon.width
         } : {})
@@ -2707,7 +5647,7 @@ const SingleSelect = ({
     }, flair ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
       text: valOrObj(flair.text)
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
-      className: "flair"
+      className: `flair ${flair.centered ? "centered" : ""} ${flair.spacer ? "spacer" : ""} ${type}`
     })) : "", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
       text: valOrObj(description)
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", {
@@ -2716,22 +5656,198 @@ const SingleSelect = ({
       name: inputName,
       checked: selected,
       className: "sr-only input",
+      disabled: inert,
       onClick: e => handleClick(e)
     })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
-      className: `icon ${selected ? " selected" : ""} ${value}`,
-      style: _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.getValidStyle(icon, CONFIGURABLE_STYLES)
+      className: `icon ${icon?.darkModeBackground ? " has-dark-background" : ""} ${selected ? " selected" : ""} ${value}`,
+      style: iconStyle
     }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
       text: label
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
-      className: "text"
-    }))));
+      className: "text label-text"
+    })), body.items ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_TileList__WEBPACK_IMPORTED_MODULE_3__.TileList, {
+      content: body
+    }) : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+      text: body
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      className: "text body-text"
+    })), subtitle && selected ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+      text: subtitle
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      className: "text subtitle-text"
+    })) : "", tilebutton ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_TileButton__WEBPACK_IMPORTED_MODULE_2__.TileButton, {
+      content: tilebutton,
+      handleAction: handleAction,
+      inputName: inputName
+    }) : ""));
   }))));
 };
 
 /***/ }),
-/* 18 */
+/* 19 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   TileButton: () => (/* binding */ TileButton)
+/* harmony export */ });
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+
+
+const TileButton = props => {
+  const {
+    content,
+    handleAction,
+    inputName
+  } = props;
+  const ref = (0,react__WEBPACK_IMPORTED_MODULE_0__.useRef)(null);
+  if (!content) {
+    return null;
+  }
+  function onClick(event) {
+    let mockEvent = {
+      currentTarget: ref.current,
+      source: event.target.id,
+      action: content.action
+    };
+    handleAction(mockEvent);
+  }
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+    text: content.label
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
+    id: `tile-button-${inputName}`,
+    onClick: onClick,
+    value: "tile_button",
+    ref: ref,
+    className: `${content.style} tile-button slim`
+  }));
+};
+
+/***/ }),
+/* 20 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   TileList: () => (/* binding */ TileList)
+/* harmony export */ });
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(3);
+/* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(5);
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+
+
+
+const TileList = props => {
+  const {
+    content
+  } = props;
+  if (!content) {
+    return null;
+  }
+  const CONFIGURABLE_STYLES = ["background", "borderRadius", "color", "display", "height", "listStyle", "marginBlock", "marginBlockStart", "marginBlockEnd", "marginInline", "marginInlineStart", "paddingBlock", "paddingBlockStart", "paddingBlockEnd", "paddingInline", "paddingInlineStart", "paddingInlineEnd", "width"];
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "tile-list-container"
+  }, content.items.map(({
+    icon,
+    text,
+    style
+  }, index) => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    key: index,
+    className: "tile-list-item",
+    style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.getValidStyle(style, CONFIGURABLE_STYLES)
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "tile-list-icon-wrapper"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "tile-list-icon",
+    style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.getValidStyle(icon, CONFIGURABLE_STYLES)
+  })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "tile-list-text"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_2__.Localized, {
+    text: text
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "text body-text"
+  }))))));
+};
+
+/***/ }),
+/* 21 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   CarouselNav: () => (/* binding */ CarouselNav)
+/* harmony export */ });
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+
+const CarouselNav = ({
+  items = [],
+  activeId,
+  onSelect,
+  navLabel
+}) => {
+  const groupRef = (0,react__WEBPACK_IMPORTED_MODULE_0__.useRef)(null);
+  const onSelectRef = (0,react__WEBPACK_IMPORTED_MODULE_0__.useRef)(onSelect);
+  onSelectRef.current = onSelect;
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    const group = groupRef.current;
+    if (!group) {
+      return undefined;
+    }
+    const handleChange = () => onSelectRef.current?.(group.value);
+    group.addEventListener("change", handleChange);
+    return () => group.removeEventListener("change", handleChange);
+  }, []);
+  const pillItems = items.filter(item => item?.pill && item.id);
+  if (pillItems.length < 2) {
+    return null;
+  }
+  const labelProps = navLabel?.raw ? {
+    "aria-label": navLabel.raw
+  } : {
+    "data-l10n-id": navLabel?.string_id ?? "onboarding-carousel-nav"
+  };
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "carousel-nav"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("moz-segmented-control", _extends({
+    ref: groupRef,
+    value: activeId
+  }, labelProps), pillItems.map(({
+    id,
+    pill
+  }) => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("moz-segmented-control-item", {
+    key: id,
+    value: id,
+    label: pill.label?.raw,
+    "data-l10n-id": pill.label?.string_id,
+    iconsrc: pill.icon
+  }))));
+};
+
+/***/ }),
+/* 22 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   MarketplaceButtons: () => (/* binding */ MarketplaceButtons),
@@ -2740,7 +5856,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
-/* harmony import */ var _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2777,7 +5893,7 @@ const MobileDownloads = props => {
     className: "qr-code-image",
     alt: typeof QRCode.alt_text === "string" ? QRCode.alt_text : "",
     src: QRCode.image_url,
-    loading: _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.getLoadingStrategyFor(QRCode.image_url)
+    loading: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.getLoadingStrategyFor(QRCode.image_url)
   }) : null, showEmailLink ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
     text: props.data.email.link_text
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
@@ -2791,9 +5907,10 @@ const MobileDownloads = props => {
 };
 
 /***/ }),
-/* 19 */
+/* 23 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   MultiSelect: () => (/* binding */ MultiSelect)
@@ -2801,7 +5918,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
-/* harmony import */ var _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2819,6 +5936,52 @@ for (let i = MULTI_SELECT_STYLES.length - 1; i >= 0; i--) {
   }
 }
 const MULTI_SELECT_ICON_STYLES = [..._MSLocalized__WEBPACK_IMPORTED_MODULE_1__.CONFIGURABLE_STYLES, "width", "height", "background", "backgroundColor", "backgroundImage", "backgroundSize", "backgroundPosition", "backgroundRepeat", "backgroundOrigin", "backgroundClip", "border", "borderRadius", "appearance", "fill", "stroke", "outline", "outlineOffset", "boxShadow"];
+
+/**
+ * A note shown beneath a multi select item while that item is unchecked, used
+ * to explain what the user gives up by leaving it unchecked.
+ *
+ * The live region wrapper is always rendered, even when the notice is hidden,
+ * so that assistive technology announces the notice when it later appears.
+ *
+ * The notice is laid out as a full-width row beneath its item, so it is not
+ * compatible with `multiSelectItemDesign: "picker"`, whose items are
+ * pill-shaped chips.
+ *
+ * @param {object} notice the item's `uncheckedNotice` config
+ * @param {boolean} isShown whether the notice content should be rendered
+ */
+const UncheckedNotice = ({
+  notice,
+  isShown
+}) => {
+  const {
+    title,
+    subtitle,
+    iconURL
+  } = notice;
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "multi-select-notice-region",
+    role: "status"
+  }, isShown ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "multi-select-notice"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "multi-select-notice-icon",
+    style: iconURL ? {
+      backgroundImage: `url("${iconURL}")`
+    } : null
+  }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "multi-select-notice-content"
+  }, title ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+    text: title
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+    className: "multi-select-notice-title"
+  })) : null, subtitle ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+    text: subtitle
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+    className: "multi-select-notice-subtitle"
+  })) : null)) : null);
+};
 const MultiSelect = ({
   content,
   screenMultiSelects,
@@ -2859,7 +6022,7 @@ const MultiSelect = ({
     return getOrderedIds().map(id => data.find(item => item.id === id));
   }, [] // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const containerStyle = (0,react__WEBPACK_IMPORTED_MODULE_0__.useMemo)(() => _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.getValidStyle(content.tiles.style, MULTI_SELECT_STYLES, true), [content.tiles.style]);
+  const containerStyle = (0,react__WEBPACK_IMPORTED_MODULE_0__.useMemo)(() => _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.getTileStyle(content.tiles, MULTI_SELECT_STYLES), [content.tiles]);
   const PickerIcon = ({
     emoji,
     bgColor,
@@ -2940,49 +6103,143 @@ const MultiSelect = ({
     group,
     style,
     pickerEmoji,
-    pickerEmojiBackgroundColor
-  }) => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
-    key: id + label,
-    className: "checkbox-container multi-select-item",
-    style: _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.getValidStyle(style, MULTI_SELECT_STYLES),
-    tabIndex: isPicker ? "0" : null,
-    onClick: isPicker ? handleCheckboxContainerInteraction : null,
-    onKeyDown: isPicker ? handleCheckboxContainerInteraction : null,
-    role: isPicker ? "checkbox" : null,
-    "aria-checked": isPicker ? activeMultiSelect?.includes(id) : null
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", {
-    type: type // checkbox or radio
-    ,
-    id: id,
-    value: id,
-    name: group,
-    checked: activeMultiSelect?.includes(id),
-    style: _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.getValidStyle(icon?.style, MULTI_SELECT_ICON_STYLES),
-    onChange: handleChange,
-    ref: el => refs.current[id] = el,
-    "aria-describedby": description ? `${id}-description` : null,
-    "aria-labelledby": description ? `${id}-label` : null,
-    tabIndex: isPicker ? "-1" : "0"
-  }), isPicker && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(PickerIcon, {
-    emoji: pickerEmoji,
-    bgColor: pickerEmojiBackgroundColor,
-    isChecked: activeMultiSelect?.includes(id)
-  }), label ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
-    text: label
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("label", {
-    id: `${id}-label`,
-    htmlFor: id
-  })) : null, description ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
-    text: description
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
-    id: `${id}-description`
-  })) : null)));
+    pickerEmojiBackgroundColor,
+    uncheckedNotice
+  }) => {
+    const checkboxContainer = /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      key: id + label,
+      className: "checkbox-container multi-select-item",
+      style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.getValidStyle(style, MULTI_SELECT_STYLES),
+      tabIndex: isPicker ? "0" : null,
+      onClick: isPicker ? handleCheckboxContainerInteraction : null,
+      onKeyDown: isPicker ? handleCheckboxContainerInteraction : null,
+      role: isPicker ? "checkbox" : null,
+      "aria-checked": isPicker ? activeMultiSelect?.includes(id) : null
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", {
+      type: type // checkbox or radio
+      ,
+      id: id,
+      value: id,
+      name: group,
+      checked: activeMultiSelect?.includes(id),
+      style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.getValidStyle(icon?.style, MULTI_SELECT_ICON_STYLES),
+      onChange: handleChange,
+      ref: el => refs.current[id] = el,
+      "aria-describedby": description ? `${id}-description` : null,
+      "aria-labelledby": description ? `${id}-label` : null,
+      tabIndex: isPicker ? "-1" : "0"
+    }), isPicker && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(PickerIcon, {
+      emoji: pickerEmoji,
+      bgColor: pickerEmojiBackgroundColor,
+      isChecked: activeMultiSelect?.includes(id)
+    }), label ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+      text: label
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("label", {
+      id: `${id}-label`,
+      htmlFor: id
+    })) : null, description ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+      text: description
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+      id: `${id}-description`
+    })) : null);
+    if (!uncheckedNotice) {
+      return checkboxContainer;
+    }
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      className: "multi-select-item-group",
+      key: id + label
+    }, checkboxContainer, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(UncheckedNotice, {
+      notice: uncheckedNotice,
+      isShown: !activeMultiSelect?.includes(id)
+    }));
+  }), content.tiles.footer ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+    text: items.some(i => activeMultiSelect?.includes(i.id)) ? content.tiles.footer.checkedLabel : content.tiles.footer.unCheckAllLabel
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h2", {
+    id: "multi-stage-multi-select-footer-label"
+  })) : null);
 };
 
 /***/ }),
-/* 20 */
+/* 24 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   TextAreaTile: () => (/* binding */ TextAreaTile)
+/* harmony export */ });
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(3);
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+
+
+const CONFIGURABLE_STYLES = ["color", "display", "fontSize", "fontWeight", "letterSpacing", "lineHeight", "marginBlock", "marginInline", "paddingBlock", "paddingInline", "textAlign", "whiteSpace", "width", "border", "borderRadius", "minHeight", "minWidth"];
+const TextAreaTile = ({
+  content,
+  textInputs,
+  setTextInput,
+  tileIndex
+}) => {
+  const {
+    data
+  } = content.tiles;
+  const id = data.id || `tile-${tileIndex}`;
+  const [isValid, setIsValid] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(true);
+  const [charCounter, setCharCounter] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(data.character_limit || 0);
+  const textInput = (0,react__WEBPACK_IMPORTED_MODULE_0__.useMemo)(() => {
+    if (textInputs) {
+      return textInputs?.[id];
+    }
+    return null;
+  }, [textInputs, id]);
+  const handleChange = (0,react__WEBPACK_IMPORTED_MODULE_0__.useCallback)(event => {
+    let valid = isValid;
+    if (data.character_limit) {
+      setCharCounter(data.character_limit - event.target.value.length);
+      valid = event.target.value.length <= data.character_limit;
+    }
+    setIsValid(valid);
+    setTextInput({
+      value: event.target.value,
+      isValid: valid
+    }, id);
+  }, [isValid, data.character_limit, id, setTextInput]);
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    if (!textInput) {
+      setTextInput({
+        value: "",
+        isValid: true
+      }, id);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "textarea-container",
+    style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.getValidStyle(data.container_style, CONFIGURABLE_STYLES, true)
+  }, data.character_limit && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: `textarea-char-counter ${isValid ? "" : "invalid"}`,
+    style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.getValidStyle(data.char_counter_style, CONFIGURABLE_STYLES, true)
+  }, charCounter), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("textarea", {
+    name: id,
+    className: `textarea-input ${isValid ? "" : "invalid"}`,
+    rows: data.rows,
+    cols: data.cols,
+    onChange: handleChange,
+    value: textInput?.value || "",
+    placeholder: data.placeholder,
+    style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.getValidStyle(data.textarea_style, CONFIGURABLE_STYLES, true)
+  }));
+};
+
+/***/ }),
+/* 25 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   EmbeddedMigrationWizard: () => (/* binding */ EmbeddedMigrationWizard)
@@ -2994,12 +6251,40 @@ __webpack_require__.r(__webpack_exports__);
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 
+
+/**
+ * Embeds a migration wizard component within About:Welcome,
+ * and passes configuration options from content to the migration-wizard element
+ *
+ * @param {function} handleAction - The action handler function that processes migration events
+ * @param {object} content - The content object that contains tiles configuration
+ * @param {object} content.tiles - The tiles configuration object
+ * @param {object} content.tiles.migration_wizard_options - Configuration options for the migration wizard
+ *   All options, including migration_wizard_options itself, are optional and have fallback values:
+ *   - {boolean} force_show_import_all - Whether to force show import all option
+ *   - {string} option_expander_title_string - Title string for the option expander
+ *   - {boolean} hide_option_expander_subtitle - Whether or not to hide the option expander subtitle
+ *   - {string} data_import_complete_success_string - Success message string after import completion
+ *   - {string} selection_header_string - Header string for the selection section
+ *   - {string} selection_subheader_string - Subheader string for the selection section
+ *   - {boolean} hide_select_all - Whether to hide the select all option
+ *   - {string} checkbox_margin_inline - Inline margin for checkboxes
+ *   - {string} checkbox_margin_block - Block margin for checkboxes
+ *   - {string} import_button_string - Text string for the import button
+ *   - {string} import_button_class - CSS class for the import button
+ *   - {string} header_font_size - Font size for the header
+ *   - {string} header_font_weight - Font weight for the header
+ *   - {string} header_margin_block - Block margin for the header
+ *   - {string} subheader_font_size - Font size for the subheader
+ *   - {string} subheader_font_weight - Font weight for the subheader
+ *   - {string} subheader_margin_block - Block margin for the subheader
+ */
 const EmbeddedMigrationWizard = ({
   handleAction,
   content
 }) => {
   const ref = (0,react__WEBPACK_IMPORTED_MODULE_0__.useRef)();
-  const options = content.migration_wizard_options;
+  const options = content.tiles?.migration_wizard_options;
   (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
     const handleBeginMigration = () => {
       handleAction({
@@ -3031,10 +6316,10 @@ const EmbeddedMigrationWizard = ({
     "force-show-import-all": options?.force_show_import_all || "false",
     "auto-request-state": "",
     ref: ref,
-    "option-expander-title-string": options?.option_expander_title_string || "",
+    "option-expander-title-string": options?.option_expander_title_string,
     "hide-option-expander-subtitle": options?.hide_option_expander_subtitle || false,
     "data-import-complete-success-string": options?.data_import_complete_success_string || "",
-    "selection-header-string": options?.selection_header_string,
+    "selection-header-string": options?.selection_header_string || "",
     "selection-subheader-string": options?.selection_subheader_string || "",
     "hide-select-all": options?.hide_select_all || false,
     "checkbox-margin-inline": options?.checkbox_margin_inline || "",
@@ -3051,9 +6336,150 @@ const EmbeddedMigrationWizard = ({
 };
 
 /***/ }),
-/* 21 */
+/* 26 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   EmbeddedThemePicker: () => (/* binding */ EmbeddedThemePicker)
+/* harmony export */ });
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+
+const EmbeddedThemePicker = ({
+  installSource
+}) => {
+  const themePickerRef = (0,react__WEBPACK_IMPORTED_MODULE_0__.useRef)(null);
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    if (installSource !== "about:welcome") {
+      return;
+    }
+    // The widget may not be upgraded from a plain element yet when this
+    // mounts, so wait for its class definition before calling `shown()`.
+    customElements.whenDefined("theme-picker").then(() => {
+      themePickerRef.current?.shown();
+    });
+  }, [installSource]);
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("theme-picker", {
+    ref: themePickerRef,
+    installsource: installSource
+  });
+};
+
+/***/ }),
+/* 27 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   EmbeddedFxBackupOptIn: () => (/* binding */ EmbeddedFxBackupOptIn)
+/* harmony export */ });
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+
+const EmbeddedFxBackupOptIn = ({
+  handleAction,
+  isEncryptedBackup,
+  options,
+  messageId
+}) => {
+  const backupRef = (0,react__WEBPACK_IMPORTED_MODULE_0__.useRef)(null);
+  const {
+    // hide_password_input means it is the file chooser screen
+    hide_password_input,
+    hide_secondary_button,
+    file_path_label,
+    turn_on_backup_header,
+    create_password_label,
+    turn_on_backup_confirm_btn_label,
+    turn_on_backup_cancel_btn_label
+  } = options || {};
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    const {
+      current
+    } = backupRef;
+    const handleEnableScheduledBackups = () => {
+      handleAction({
+        currentTarget: {
+          value: "tile_button"
+        },
+        action: {
+          navigate: true
+        },
+        source: "backup_enabled"
+      });
+    };
+    const handleAdvanceScreens = () => {
+      handleAction({
+        currentTarget: {
+          value: "tile_button"
+        },
+        action: {
+          navigate: true
+        },
+        source: "advance_screens"
+      });
+    };
+    const handleStateUpdate = ({
+      detail: {
+        state
+      }
+    }) => {
+      if (!current || !state) {
+        return;
+      }
+      let {
+        fileName,
+        path,
+        iconURL
+      } = state.defaultParent;
+      current.setAttribute("defaultlabel", fileName);
+      current.setAttribute("defaultpath", path);
+      current.setAttribute("defaulticonurl", iconURL);
+      current.supportBaseLink = state.supportBaseLink;
+    };
+    current?.addEventListener("BackupUI:StateWasUpdated", handleStateUpdate);
+    current?.addEventListener("BackupUI:EnableScheduledBackups", handleEnableScheduledBackups);
+    current?.addEventListener("SpotlightOnboardingAdvanceScreens", handleAdvanceScreens);
+    return () => {
+      current?.removeEventListener("BackupUI:EnableScheduledBackups", handleEnableScheduledBackups);
+      current?.removeEventListener("BackupUI:StateWasUpdated", handleStateUpdate);
+      current?.removeEventListener("SpotlightOnboardingAdvanceScreens", handleAdvanceScreens);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("turn-on-scheduled-backups", {
+    ref: backupRef,
+    source: messageId,
+    "hide-headers": "",
+    "hide-password-input": !isEncryptedBackup || hide_password_input ? "" : undefined,
+    "hide-secondary-button": !isEncryptedBackup || hide_secondary_button ? "" : undefined,
+    "hide-file-path-chooser": isEncryptedBackup && !hide_password_input ? "" : undefined,
+    "embedded-fx-backup-opt-in": "",
+    "backup-is-encrypted": isEncryptedBackup ? "" : undefined,
+    "file-path-label-l10n-id": file_path_label,
+    "turn-on-backup-header-l10n-id": turn_on_backup_header,
+    "create-password-label-l10n-id": create_password_label,
+    "turn-on-backup-confirm-btn-l10n-id": turn_on_backup_confirm_btn_label,
+    "turn-on-backup-cancel-btn-l10n-id": turn_on_backup_cancel_btn_label
+  });
+};
+
+/***/ }),
+/* 28 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   ActionChecklist: () => (/* binding */ ActionChecklist),
@@ -3063,7 +6489,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
-/* harmony import */ var _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3077,8 +6503,7 @@ async function evaluateTargeting(targeting) {
 const ActionChecklistItem = ({
   item,
   index,
-  handleAction,
-  showExternalLinkIcon
+  handleAction
 }) => {
   const [actionTargeting, setActionTargeting] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(true);
   (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
@@ -3107,25 +6532,23 @@ const ActionChecklistItem = ({
       onClick: onButtonClick
     }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       className: "action-checklist-label-container"
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+      text: item.label
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       className: "check-icon-container"
     }, actionTargeting ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
       className: "check-filled"
     }) : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
-      className: "check-empty"
-    })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
-      text: item.label
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null))), !actionTargeting && showExternalLinkIcon && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
-      className: "external-link-icon-container"
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
-      className: "external-link-icon"
-    })))
+      className: "action-arrow"
+    }))))
   );
 };
 const ActionChecklistProgressBar = ({
   progress
 }) => {
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "action-checklist-progress-bar-container"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "action-checklist-progress-bar"
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("progress", {
     className: "sr-only",
@@ -3137,15 +6560,19 @@ const ActionChecklistProgressBar = ({
     style: {
       "--action-checklist-progress-bar-progress": `${progress || 0}%`
     }
-  }));
+  })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
+    className: "action-checklist-progress-text"
+  }, Math.round(progress || 0), "%"));
 };
 const ActionChecklist = ({
   content,
-  message_id
+  message_id,
+  handleAction
 }) => {
   const tiles = content.tiles.data;
   const [progressValue, setProgressValue] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(0);
   const [numberOfCompletedActions, setNumberOfCompletedActions] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(0);
+  const allComplete = !!tiles.length && numberOfCompletedActions === tiles.length;
   function determineProgressValue() {
     let newValue = numberOfCompletedActions / tiles.length * 100;
     setProgressValue(newValue);
@@ -3171,7 +6598,7 @@ const ActionChecklist = ({
     determineProgressValue();
   }, [numberOfCompletedActions]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function handleAction(event) {
+  function handleTileClick(event) {
     let {
       action,
       source_id
@@ -3181,11 +6608,21 @@ const ActionChecklist = ({
       data
     } = action;
     setNumberOfCompletedActions(numberOfCompletedActions + 1);
-    _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.handleUserAction({
+    _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.handleUserAction({
       type,
       data
     });
-    _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.sendActionTelemetry(message_id, source_id);
+    _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.sendActionTelemetry(message_id, source_id, "CLICK_BUTTON");
+  }
+  function handleRemoveChecklistClick(event) {
+    let {
+      action,
+      source_id
+    } = content[event.currentTarget.value];
+    handleAction({
+      currentTarget: event.currentTarget,
+      source: source_id
+    }, action);
   }
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "action-checklist"
@@ -3203,15 +6640,22 @@ const ActionChecklist = ({
     key: item.id,
     index: index,
     item: item,
-    handleAction: handleAction,
+    handleAction: handleTileClick,
     showExternalLinkIcon: item.showExternalLinkIcon
-  }))));
+  }))), allComplete && content.remove_checklist_button && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
+    className: "action-checklist-complete-button",
+    value: "remove_checklist_button",
+    onClick: handleRemoveChecklistClick
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+    text: content.remove_checklist_button.label
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null))));
 };
 
 /***/ }),
-/* 22 */
+/* 29 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   EmbeddedBrowser: () => (/* binding */ EmbeddedBrowser),
@@ -3219,7 +6663,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony export */ });
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
-/* harmony import */ var _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(3);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(3);
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -3243,7 +6687,6 @@ const EmbeddedBrowserInner = ({
     }
     const browserEl = document.createXULElement("browser");
     const remoteType = window.AWPredictRemoteType({
-      browserEl,
       url
     });
     const attributes = [["disableglobalhistory", "true"], ["type", "content"], ["remote", "true"], ["maychangeremoteness", "true"], ["nodefaultsrc", "true"], ["remoteType", remoteType]];
@@ -3263,7 +6706,7 @@ const EmbeddedBrowserInner = ({
   }, [url]);
   (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
     if (browserRef.current && style) {
-      const validStyles = _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.AboutWelcomeUtils.getValidStyle(style, BROWSER_STYLES);
+      const validStyles = _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.getValidStyle(style, BROWSER_STYLES);
       Object.keys(validStyles).forEach(key => {
         browserRef.current.style.setProperty(key, style[key]);
       });
@@ -3277,9 +6720,339 @@ const EmbeddedBrowserInner = ({
 /* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (EmbeddedBrowser);
 
 /***/ }),
-/* 23 */
+/* 30 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   ConfirmationChecklist: () => (/* binding */ ConfirmationChecklist)
+/* harmony export */ });
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(3);
+/* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(5);
+/* harmony import */ var _LinkParagraph__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(14);
+/* This Source Code Form is subject to the terms of the Mozilla Public * License, v. 2.0. If a copy of the MPL was not distributed with this file, * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+
+
+
+const ConfirmationChecklist = props => {
+  const {
+    content,
+    handleAction
+  } = props;
+  if (!content) {
+    return null;
+  }
+  const CONFIGURABLE_STYLES = ["background", "borderRadius", "display", "height", "marginBlock", "marginBlockStart", "marginBlockEnd", "marginInline", "paddingBlock", "paddingBlockStart", "paddingBlockEnd", "paddingInline", "paddingInlineStart", "paddingInlineEnd", "width"];
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: `confirmation-checklist-section`
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: `confirmation-checklist-container`,
+    style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.getValidStyle(content.style, CONFIGURABLE_STYLES)
+  }, content.items.map(({
+    icon,
+    text,
+    subtext,
+    link_keys
+  }, index) => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    key: index,
+    className: "confirmation-checklist-item"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "confirmation-checklist-icon-wrapper"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "confirmation-checklist-icon",
+    style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.getValidStyle(icon, CONFIGURABLE_STYLES)
+  }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "confirmation-checklist-text"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_2__.Localized, {
+    text: text
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "text body-text"
+  })))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "confirmation-checklist-subtext"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_LinkParagraph__WEBPACK_IMPORTED_MODULE_3__.LinkParagraph, {
+    text_content: {
+      text: subtext,
+      link_keys
+    },
+    handleAction: handleAction
+  }))))));
+};
+
+/***/ }),
+/* 31 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   EmbeddedBackupRestore: () => (/* binding */ EmbeddedBackupRestore)
+/* harmony export */ });
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(3);
+/* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(5);
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+
+
+
+const EmbeddedBackupRestore = ({
+  handleAction,
+  skipButton
+}) => {
+  const [recoveryInProgress, setRecoveryInProgress] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
+  const ref = (0,react__WEBPACK_IMPORTED_MODULE_0__.useRef)(null);
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    const loadRestore = async () => {
+      await window.AWFindBackupsInWellKnownLocations?.();
+    };
+    loadRestore();
+    // Clear the pref used to target the restore screen so that users will not
+    // automatically see it again the next time they visit about:welcome.
+    _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.handleUserAction({
+      type: "SET_PREF",
+      data: {
+        pref: {
+          name: "showRestoreFromBackup",
+          value: false
+        }
+      }
+    });
+  }, []);
+  const onRecoveryProgressChange = (0,react__WEBPACK_IMPORTED_MODULE_0__.useCallback)(e => {
+    setRecoveryInProgress(e.detail.recoveryInProgress);
+  }, []);
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    const backupRef = ref.current;
+    if (backupRef.backupServiceState) {
+      setRecoveryInProgress(backupRef.backupServiceState.recoveryInProgress);
+    }
+    backupRef.addEventListener("BackupUI:RecoveryProgress", onRecoveryProgressChange);
+    return () => {
+      backupRef.removeEventListener("BackupUI:RecoveryProgress", onRecoveryProgressChange);
+    };
+  }, [onRecoveryProgressChange]);
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "embedded-backup-restore-container"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("restore-from-backup", {
+    aboutWelcomeEmbedded: "true",
+    labelFontWeight: "600",
+    ref: ref
+  }), skipButton ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "action-buttons"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "secondary-cta"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_2__.Localized, {
+    text: skipButton.label
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
+    id: "secondary_button",
+    className: skipButton?.has_arrow_icon ? "secondary arrow-icon" : "secondary",
+    value: "skip_button",
+    disabled: recoveryInProgress,
+    "aria-busy": recoveryInProgress || undefined,
+    onClick: handleAction
+  })))) : null);
+};
+
+/***/ }),
+/* 32 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   PinnableSitesList: () => (/* binding */ PinnableSitesList)
+/* harmony export */ });
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+
+
+
+
+// Per-item button states.
+const IDLE = "idle";
+const PENDING = "pending";
+const PINNED = "pinned";
+const PinnableSitesList = ({
+  tile,
+  messageId,
+  handleAction,
+  setPinnedSite
+}) => {
+  const items = tile?.data;
+  const pinButtonLabel = tile?.pinButtonLabel;
+  const alwaysShow = tile?.alwaysShowPinButton;
+  const [itemStates, setItemStates] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(() => Object.fromEntries((items ?? []).map(item => [item.id, IDLE])));
+  if (!items?.length) {
+    return null;
+  }
+  const setItemState = (id, state) => setItemStates(prev => ({
+    ...prev,
+    [id]: state
+  }));
+  const handlePin = async (event, item, position) => {
+    setItemState(item.id, PENDING);
+    const result = await handleAction(event, {
+      type: "PIN_TASKBAR_TAB",
+      needsAwait: true,
+      data: {
+        url: item.url,
+        name: item.name,
+        iconUrl: item.iconUrl
+      }
+    });
+    let pinResultLabel;
+    if (result === true) {
+      pinResultLabel = "success";
+    } else if (result === null) {
+      pinResultLabel = "already_pinned";
+    } else {
+      pinResultLabel = "failure";
+    }
+    _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.sendActionTelemetry(messageId, item.id, "PIN_SITE", {
+      result: pinResultLabel,
+      position,
+      personalized: !!item.personalized
+    });
+
+    // Re-enable the button only on explicit failure so the user can retry.
+    setItemState(item.id, result === false ? IDLE : PINNED);
+
+    // Latch the screen as having at least one pinned site so a gated primary
+    // button can enable. A failure leaves the latch untouched.
+    if (result !== false) {
+      setPinnedSite?.();
+    }
+  };
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("ul", {
+    className: `pinnable-sites-list${alwaysShow ? " always-visible" : ""}`
+  }, items.map((item, index) => {
+    const nameId = `pinnable-site-name-${item.id}`;
+    const state = itemStates[item.id] ?? IDLE;
+    const isPendingOrPinned = state === PENDING || state === PINNED;
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("li", {
+      key: item.id,
+      className: "pinnable-sites-item"
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("img", {
+      className: "pinnable-sites-icon",
+      src: item.iconUrl,
+      alt: ""
+    }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      className: "pinnable-sites-text"
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+      text: item.title ?? item.name
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
+      id: nameId,
+      className: "pinnable-sites-name"
+    })), item.description && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+      text: item.description
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
+      className: "pinnable-sites-description"
+    }))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
+      className: "pinnable-sites-pin-button primary",
+      value: item.id,
+      disabled: isPendingOrPinned,
+      onClick: e => handlePin(e, item, index + 1),
+      "aria-describedby": nameId
+    }, pinButtonLabel && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+      text: pinButtonLabel
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null))));
+  }));
+};
+
+/***/ }),
+/* 33 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   ContentToggle: () => (/* binding */ ContentToggle)
+/* harmony export */ });
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */ var _MSLocalized__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(5);
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+
+
+const ContentToggle = ({
+  content,
+  toggled,
+  onToggle
+}) => {
+  const {
+    data
+  } = content.tiles;
+  const onChange = react__WEBPACK_IMPORTED_MODULE_0___default().useCallback(e => onToggle?.(e.target.checked), [onToggle]);
+  if (!data.visible) {
+    return null;
+  }
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("label", {
+    className: "content-toggle-label"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", {
+    type: "checkbox",
+    checked: toggled,
+    onChange: onChange
+  }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_MSLocalized__WEBPACK_IMPORTED_MODULE_1__.Localized, {
+    text: data.label
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null)));
+};
+
+/***/ }),
+/* 34 */
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   TextBoxTile: () => (/* binding */ TextBoxTile)
+/* harmony export */ });
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
+/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */ var _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(3);
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+
+
+const TEXTBOX_STYLES = ["backgroundColor", "maxHeight"];
+const TextBoxTile = ({
+  content,
+  contentToggled
+}) => {
+  const {
+    data
+  } = content.tiles;
+  const activeContent = contentToggled ? data.content : data.alternateContent;
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "textbox-container"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "textbox-input",
+    style: _lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_1__.MultiStageUtils.getValidStyle(data.style, TEXTBOX_STYLES)
+  }, activeContent ?? ""));
+};
+
+/***/ }),
+/* 35 */
 /***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
 
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   BASE_PARAMS: () => (/* binding */ BASE_PARAMS),
@@ -3314,7 +7087,9 @@ function addUtmParams(url, utmTerm) {
       returnUrl.searchParams.append(key, value);
     }
   }
-  returnUrl.searchParams.append("utm_term", utmTerm);
+  if (!returnUrl.searchParams.has("utm_term")) {
+    returnUrl.searchParams.append("utm_term", utmTerm);
+  }
   return returnUrl;
 }
 
@@ -3389,15 +7164,16 @@ function addUtmParams(url, utmTerm) {
 /******/ 	
 /************************************************************************/
 var __webpack_exports__ = {};
-// This entry needs to be wrapped in an IIFE because it needs to be isolated against other modules in the chunk.
+// This entry needs to be wrapped in an IIFE because it needs to be in strict mode.
 (() => {
+"use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var react_dom__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(2);
 /* harmony import */ var react_dom__WEBPACK_IMPORTED_MODULE_1___default = /*#__PURE__*/__webpack_require__.n(react_dom__WEBPACK_IMPORTED_MODULE_1__);
-/* harmony import */ var _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
-/* harmony import */ var _components_MultiStageAboutWelcome__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(4);
+/* harmony import */ var _asrouter_content_src_lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(3);
+/* harmony import */ var _asrouter_content_src_components_MultiStageAboutWelcome__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(4);
 function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -3431,7 +7207,7 @@ class AboutWelcome extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
           domComplete,
           domInteractive
         } = performance.getEntriesByType("navigation").pop();
-        _lib_aboutwelcome_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.AboutWelcomeUtils.sendImpressionTelemetry(this.props.messageId, {
+        _asrouter_content_src_lib_multistage_utils_mjs__WEBPACK_IMPORTED_MODULE_2__.MultiStageUtils.sendImpressionTelemetry(this.props.messageId, {
           domComplete,
           domInteractive,
           mountStart: performance.getEntriesByName("mount").pop().startTime,
@@ -3459,7 +7235,7 @@ class AboutWelcome extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
     const {
       props
     } = this;
-    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_components_MultiStageAboutWelcome__WEBPACK_IMPORTED_MODULE_3__.MultiStageAboutWelcome, {
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_asrouter_content_src_components_MultiStageAboutWelcome__WEBPACK_IMPORTED_MODULE_3__.MultiStageAboutWelcome, {
       addonId: props.addonId,
       addonType: props.type,
       addonName: props.name || "",
@@ -3475,7 +7251,9 @@ class AboutWelcome extends (react__WEBPACK_IMPORTED_MODULE_0___default().PureCom
       backdrop: props.backdrop,
       startScreen: props.startScreen || 0,
       appAndSystemLocaleInfo: props.appAndSystemLocaleInfo,
-      ariaRole: props.aria_role
+      ariaRole: props.aria_role,
+      requireAction: props.requireAction,
+      gateInitialPaint: true
     });
   }
 }
@@ -3496,6 +7274,17 @@ function ComputeTelemetryInfo(welcomeContent, experimentId, branchId) {
   };
 }
 async function retrieveRenderContent() {
+  // If supported, wait for Nimbus to be ready (or a maximum timeout to be
+  // reached) before loading about:welcome.
+  if (document.location.href === "about:welcome" && window.AWWaitForNimbus) {
+    try {
+      await window.AWWaitForNimbus();
+    } catch (e) {
+      // If Nimbus gating throws, proceed with whatever feature state we
+      // currently have.
+      console.error("AWWaitForNimbus failed", e);
+    }
+  }
   // Feature config includes RTAMO attribution data if exists
   // else below data in order specified
   // user prefs

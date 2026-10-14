@@ -9,78 +9,79 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.focus.activity.robots.homeScreen
+import org.mozilla.focus.helpers.FocusTestRule
 import org.mozilla.focus.helpers.MainActivityFirstrunTestRule
-import org.mozilla.focus.helpers.TestSetup
 import org.mozilla.focus.testAnnotations.SmokeTest
 
 // This test checks all the headings in the Settings menu are there
 @RunWith(AndroidJUnit4ClassRunner::class)
-class SettingsTest : TestSetup() {
-    @get:Rule
-    val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
+class SettingsTest {
+    @get:Rule(order = 0) val focusTestRule: FocusTestRule = FocusTestRule()
+
+    @get:Rule val mActivityTestRule = MainActivityFirstrunTestRule(showFirstRun = false)
 
     @SmokeTest
     @Test
     fun accessSettingsMenuTest() {
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-            verifySettingsMenuItems()
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {
+                verifySettingsMenuItems()
+            }
     }
 
     @SmokeTest
     @Test
     fun verifyGeneralSettingsMenuTest() {
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openGeneralSettingsMenu {
-            verifyGeneralSettingsItems()
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openGeneralSettingsMenu {
+                verifyGeneralSettingsItems()
+            }
     }
 
     @SmokeTest
     @Test
     fun verifyPrivacySettingsMenuTest() {
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openPrivacySettingsMenu {
-            verifyPrivacySettingsItems()
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openPrivacySettingsMenu {
+                verifyPrivacySettingsItems()
+            }
     }
 
     @SmokeTest
     @Test
     fun verifySearchSettingsMenuTest() {
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openSearchSettingsMenu {
-            verifySearchSettingsItems()
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openSearchSettingsMenu {
+                verifySearchSettingsItems()
+            }
     }
 
     @SmokeTest
     @Test
     fun verifyAdvancedSettingsMenuTest() {
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openAdvancedSettingsMenu {
-            verifyAdvancedSettingsItems()
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openAdvancedSettingsMenu {
+                verifyAdvancedSettingsItems()
+            }
     }
 
     @SmokeTest
     @Test
     fun verifyMozillaMenuTest() {
-        homeScreen {
-        }.openMainMenu {
-        }.openSettings {
-        }.openMozillaSettingsMenu {
-            verifyMozillaMenuItems()
-        }
+        homeScreen {}
+            .openMainMenu {}
+            .openSettings {}
+            .openMozillaSettingsMenu {
+                verifyMozillaMenuItems()
+            }
     }
 }

@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _SIPCC_SDP_H_
-#define _SIPCC_SDP_H_
+#ifndef SIPCCSDP_H_
+#define SIPCCSDP_H_
 
 #include "sdp_os_defs.h"
 #include "ccsdp.h"
@@ -423,6 +423,9 @@ typedef enum {
     SDP_RTX_TIME,
     SDP_LEVEL_IDX,
     SDP_TIER,
+    SDP_OPUS_PTIME,
+    SDP_OPUS_MINPTIME,
+    SDP_OPUS_MAXPTIME,
     SDP_MAX_FMTP_PARAM,
     SDP_FMTP_PARAM_UNKNOWN
 } sdp_fmtp_codec_param_e;
@@ -675,6 +678,9 @@ typedef struct sdp_fmtp {
     uint16_t                       useinbandfec;
     char                      maxcodedaudiobandwidth[SDP_MAX_STRING_LEN+1];
     uint16_t                       cbr;
+    uint32_t                       opus_ptime;
+    uint32_t                       opus_minptime;
+    uint32_t                       opus_maxptime;
 
     /* BEGIN - All Video related FMTP parameters */
     uint16_t                       qcif;
@@ -1842,4 +1848,4 @@ sdp_attr_get_extmap_id(sdp_t *sdp_p, uint16_t level, uint16_t inst);
 sdp_result_e
 sdp_attr_set_extmap(sdp_t *sdp_p, uint16_t level, uint16_t id, const char* uri, uint16_t inst);
 
-#endif /* _SDP_H_ */
+#endif /* SDP_H_ */

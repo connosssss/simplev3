@@ -23,9 +23,9 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include <stdlib.h>
-#include <stdint.h>
 #include <gdk/gdkwayland.h>
+#include <stdlib.h>
+
 #include "wayland-util.h"
 
 #ifndef __has_attribute

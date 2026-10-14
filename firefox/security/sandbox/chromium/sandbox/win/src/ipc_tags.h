@@ -1,14 +1,16 @@
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+// Copyright 2012 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef SANDBOX_SRC_IPC_TAGS_H__
-#define SANDBOX_SRC_IPC_TAGS_H__
+#ifndef SANDBOX_WIN_SRC_IPC_TAGS_H_
+#define SANDBOX_WIN_SRC_IPC_TAGS_H_
+
+#include <cstdint>
 
 namespace sandbox {
 
-enum class IpcTag {
-  UNUSED = 0,
+enum class IpcTag : uint32_t {
+  UNUSED,
   PING1,  // Takes a cookie in parameters and returns the cookie
           // multiplied by 2 and the tick_count. Used for testing only.
   PING2,  // Takes an in/out cookie in parameters and modify the cookie
@@ -18,14 +20,8 @@ enum class IpcTag {
   NTQUERYATTRIBUTESFILE,
   NTQUERYFULLATTRIBUTESFILE,
   NTSETINFO_RENAME,
-  CREATENAMEDPIPEW,
   NTOPENTHREAD,
-  NTOPENPROCESS,
-  NTOPENPROCESSTOKEN,
   NTOPENPROCESSTOKENEX,
-  CREATEPROCESSW,
-  CREATEEVENT,
-  OPENEVENT,
   NTCREATEKEY,
   NTOPENKEY,
   GDI_GDIDLLINITIALIZE,
@@ -33,27 +29,13 @@ enum class IpcTag {
   USER_GETFOREGROUNDWINDOW,
   USER_REGISTERCLASSW,
   CREATETHREAD,
-  USER_ENUMDISPLAYMONITORS,
-  USER_ENUMDISPLAYDEVICES,
-  USER_GETMONITORINFO,
-  GDI_CREATEOPMPROTECTEDOUTPUTS,
-  GDI_GETCERTIFICATE,
-  GDI_GETCERTIFICATESIZE,
-  GDI_DESTROYOPMPROTECTEDOUTPUT,
-  GDI_CONFIGUREOPMPROTECTEDOUTPUT,
-  GDI_GETOPMINFORMATION,
-  GDI_GETOPMRANDOMNUMBER,
-  GDI_GETSUGGESTEDOPMPROTECTEDOUTPUTARRAYSIZE,
-  GDI_SETOPMSIGNINGKEYANDSEQUENCENUMBERS,
   NTCREATESECTION,
-  GETCOMPLEXLINEBREAKS,
-  LAST
+  kMaxValue = NTCREATESECTION,
 };
 
-constexpr size_t kMaxServiceCount = 64;
-constexpr size_t kMaxIpcTag = static_cast<size_t>(IpcTag::LAST);
-static_assert(kMaxIpcTag <= kMaxServiceCount, "kMaxServiceCount is too low");
-
+// The number of IpcTag services that are defined.
+inline constexpr size_t kSandboxIpcCount =
+    static_cast<size_t>(IpcTag::kMaxValue) + 1;
 }  // namespace sandbox
 
-#endif  // SANDBOX_SRC_IPC_TAGS_H__
+#endif  // SANDBOX_WIN_SRC_IPC_TAGS_H_

@@ -49,7 +49,7 @@ let login2B = new nsLoginInfo(
   "pass"
 );
 
-requestLongerTimeout(2);
+requestLongerTimeout(3);
 
 add_setup(async function () {
   // We do not want http://example.com etc. to be upgraded to https
@@ -247,7 +247,7 @@ add_task(async function test_clickRemember() {
   checkOnlyLoginWasUsedTwice({ justChanged: false });
 
   // remove that login
-  Services.logins.removeLogin(login1);
+  await Services.logins.removeLoginAsync(login1);
   await cleanupDoorhanger();
 });
 
@@ -437,6 +437,11 @@ add_task(async function test_pwOnlyNewLoginMatchesUPForm() {
   info("Check for update popup when new existing pw-only login matches form.");
   await Services.logins.addLoginAsync(login2);
 
+  let storageChangedPromise = TestUtils.topicObserved(
+    "passwordmgr-storage-changed",
+    (_, data) => data == "modifyLogin"
+  );
+
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_1.html",
     async fieldValues => {
@@ -469,6 +474,8 @@ add_task(async function test_pwOnlyNewLoginMatchesUPForm() {
     }
   );
 
+  await storageChangedPromise;
+
   let logins = await Services.logins.getAllLogins();
   Assert.equal(logins.length, 1, "Should only have 1 login");
   let login = logins[0].QueryInterface(Ci.nsILoginMetaInfo);
@@ -476,7 +483,7 @@ add_task(async function test_pwOnlyNewLoginMatchesUPForm() {
   Assert.equal(login.password, "notifyp1", "Check the password");
   Assert.equal(login.timesUsed, 2, "Check times used");
 
-  Services.logins.removeLogin(login);
+  await Services.logins.removeLoginAsync(login);
 });
 
 add_task(async function test_pwOnlyOldLoginMatchesUPForm() {
@@ -486,13 +493,18 @@ add_task(async function test_pwOnlyOldLoginMatchesUPForm() {
   // Change the timePasswordChanged to be old so that the password won't be
   // revealed in the doorhanger.
   let oldTimeMS = new Date("2009-11-15").getTime();
-  Services.logins.modifyLogin(
+  await Services.logins.modifyLoginAsync(
     login2,
     LoginHelper.newPropertyBag({
       timeCreated: oldTimeMS,
       timeLastUsed: oldTimeMS + 1,
       timePasswordChanged: oldTimeMS,
     })
+  );
+
+  let storageChangedPromise = TestUtils.topicObserved(
+    "passwordmgr-storage-changed",
+    (_, data) => data == "modifyLogin"
   );
 
   await testSubmittingLoginFormHTTP(
@@ -527,6 +539,8 @@ add_task(async function test_pwOnlyOldLoginMatchesUPForm() {
     }
   );
 
+  await storageChangedPromise;
+
   let logins = await Services.logins.getAllLogins();
   Assert.equal(logins.length, 1, "Should only have 1 login");
   let login = logins[0].QueryInterface(Ci.nsILoginMetaInfo);
@@ -534,7 +548,7 @@ add_task(async function test_pwOnlyOldLoginMatchesUPForm() {
   Assert.equal(login.password, "notifyp1", "Check the password");
   Assert.equal(login.timesUsed, 2, "Check times used");
 
-  Services.logins.removeLogin(login);
+  await Services.logins.removeLoginAsync(login);
 });
 
 add_task(async function test_pwOnlyFormMatchesLogin() {
@@ -542,6 +556,11 @@ add_task(async function test_pwOnlyFormMatchesLogin() {
     "Check for no notification popup when pw-only form matches existing login."
   );
   await Services.logins.addLoginAsync(login1);
+
+  let storageChangedPromise = TestUtils.topicObserved(
+    "passwordmgr-storage-changed",
+    (_, data) => data == "modifyLogin"
+  );
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_6.html",
@@ -557,6 +576,8 @@ add_task(async function test_pwOnlyFormMatchesLogin() {
     }
   );
 
+  await storageChangedPromise;
+
   let logins = await Services.logins.getAllLogins();
   Assert.equal(logins.length, 1, "Should only have 1 login");
   let login = logins[0].QueryInterface(Ci.nsILoginMetaInfo);
@@ -564,7 +585,7 @@ add_task(async function test_pwOnlyFormMatchesLogin() {
   Assert.equal(login.password, "notifyp1", "Check the password");
   Assert.equal(login.timesUsed, 2, "Check times used");
 
-  Services.logins.removeLogin(login1);
+  await Services.logins.removeLoginAsync(login1);
 });
 
 add_task(async function test_pwOnlyFormDoesntMatchExisting() {
@@ -596,7 +617,7 @@ add_task(async function test_pwOnlyFormDoesntMatchExisting() {
   Assert.equal(login.password, "notifyp1B", "Check the password unchanged");
   Assert.equal(login.timesUsed, 1, "Check times used");
 
-  Services.logins.removeLogin(login1B);
+  await Services.logins.removeLoginAsync(login1B);
 });
 
 add_task(async function test_changeUPLoginOnUPForm_dont() {
@@ -637,7 +658,7 @@ add_task(async function test_changeUPLoginOnUPForm_dont() {
   Assert.equal(login.password, "notifyp1", "Check the password unchanged");
   Assert.equal(login.timesUsed, 1, "Check times used");
 
-  Services.logins.removeLogin(login1);
+  await Services.logins.removeLoginAsync(login1);
 });
 
 add_task(async function test_changeUPLoginOnUPForm_remove() {
@@ -673,11 +694,10 @@ add_task(async function test_changeUPLoginOnUPForm_remove() {
       const forceClosePopup = false;
       // Make sure confirmation hint was shown
       info("waiting for verifyConfirmationHint");
-      await verifyConfirmationHint(
-        browser,
-        forceClosePopup,
-        "identity-icon-box"
-      );
+      await verifyConfirmationHint(browser, forceClosePopup, [
+        "identity-icon-box",
+        "trust-icon-container",
+      ]);
     }
   );
 
@@ -737,13 +757,18 @@ add_task(async function test_changeUPLoginOnUPForm_change() {
 
   // cleanup
   login1.password = "pass2";
-  Services.logins.removeLogin(login1);
+  await Services.logins.removeLoginAsync(login1);
   login1.password = "notifyp1";
 });
 
 add_task(async function test_changePLoginOnUPForm() {
   info("Check for change-password popup, p-only login on u+p form (empty u).");
   await Services.logins.addLoginAsync(login2);
+
+  let storageChangedPromise = TestUtils.topicObserved(
+    "passwordmgr-storage-changed",
+    (_, data) => data == "modifyLogin"
+  );
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_9.html",
@@ -773,6 +798,8 @@ add_task(async function test_changePLoginOnUPForm() {
     }
   );
 
+  await storageChangedPromise;
+
   let logins = await Services.logins.getAllLogins();
   Assert.equal(logins.length, 1, "Should only have 1 login");
   let login = logins[0].QueryInterface(Ci.nsILoginMetaInfo);
@@ -785,6 +812,11 @@ add_task(async function test_changePLoginOnUPForm() {
 
 add_task(async function test_changePLoginOnPForm() {
   info("Check for change-password popup, p-only login on p-only form.");
+
+  let storageChangedPromise = TestUtils.topicObserved(
+    "passwordmgr-storage-changed",
+    (_, data) => data == "modifyLogin"
+  );
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_10.html",
@@ -814,6 +846,8 @@ add_task(async function test_changePLoginOnPForm() {
     }
   );
 
+  await storageChangedPromise;
+
   let logins = await Services.logins.getAllLogins();
   Assert.equal(logins.length, 1, "Should only have 1 login");
   let login = logins[0].QueryInterface(Ci.nsILoginMetaInfo);
@@ -821,7 +855,7 @@ add_task(async function test_changePLoginOnPForm() {
   Assert.equal(login.password, "notifyp1", "Check the password changed");
   Assert.equal(login.timesUsed, 3, "Check times used");
 
-  Services.logins.removeLogin(login2);
+  await Services.logins.removeLoginAsync(login2);
 });
 
 add_task(async function test_checkUPSaveText() {
@@ -956,7 +990,7 @@ add_task(async function test_change2pw0unExistingDifferentUP() {
   Assert.equal(login.password, "notifyp1B", "Check the password unchanged");
   Assert.equal(login.timesUsed, 1, "Check times used");
 
-  Services.logins.removeLogin(login1B);
+  await Services.logins.removeLoginAsync(login1B);
 });
 
 add_task(async function test_change2pw0unExistingDifferentP() {
@@ -990,7 +1024,7 @@ add_task(async function test_change2pw0unExistingDifferentP() {
   Assert.equal(login.password, "notifyp1B", "Check the password unchanged");
   Assert.equal(login.timesUsed, 1, "Check times used");
 
-  Services.logins.removeLogin(login2B);
+  await Services.logins.removeLoginAsync(login2B);
 });
 
 add_task(async function test_change2pw0unExistingWithSameP() {
@@ -1024,12 +1058,17 @@ add_task(async function test_change2pw0unExistingWithSameP() {
 
   await checkOnlyLoginWasUsedTwice({ justChanged: false });
 
-  Services.logins.removeLogin(login2);
+  await Services.logins.removeLoginAsync(login2);
 });
 
 add_task(async function test_changeUPLoginOnPUpdateForm() {
   info("Check for change-password popup, u+p login on password update form.");
   await Services.logins.addLoginAsync(login1);
+
+  let storageChangedPromise = TestUtils.topicObserved(
+    "passwordmgr-storage-changed",
+    (_, data) => data == "modifyLogin"
+  );
 
   await testSubmittingLoginFormHTTP(
     "subtst_notifications_change_p.html",
@@ -1054,6 +1093,8 @@ add_task(async function test_changeUPLoginOnPUpdateForm() {
     }
   );
 
+  await storageChangedPromise;
+
   let logins = await Services.logins.getAllLogins();
   Assert.equal(logins.length, 1, "Should only have 1 login");
   let login = logins[0].QueryInterface(Ci.nsILoginMetaInfo);
@@ -1065,7 +1106,7 @@ add_task(async function test_changeUPLoginOnPUpdateForm() {
 
   // cleanup
   login1.password = "pass2";
-  Services.logins.removeLogin(login1);
+  await Services.logins.removeLoginAsync(login1);
   login1.password = "notifyp1";
 });
 
@@ -1149,7 +1190,7 @@ add_task(async function test_recipeCaptureFields_ExistingLogin() {
   Assert.equal(login.password, "notifyp1", "Check the password unchanged");
   Assert.equal(login.timesUsed, 2, "Check times used incremented");
 
-  Services.logins.removeAllUserFacingLogins();
+  await Services.logins.removeAllUserFacingLoginsAsync();
 });
 
 add_task(async function test_saveUsingEnter() {
@@ -1206,7 +1247,7 @@ add_task(async function test_saveUsingEnter() {
     );
     Assert.equal(login.timesUsed, 1, "Check times used on new entry");
 
-    Services.logins.removeAllUserFacingLogins();
+    await Services.logins.removeAllUserFacingLoginsAsync();
   }
 
   await testWithTextboxSelector("#password-notification-password");

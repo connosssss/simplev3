@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,6 +8,7 @@
 #include <algorithm>
 #include <ctime>
 
+#include "mozilla/fallible.h"
 #include "mozilla/gfx/2D.h"
 
 using std::swap;
@@ -27,7 +27,7 @@ Downscaler::Downscaler(const nsIntSize& aTargetSize)
       mPrevInvalidatedLine(0),
       mCurrentOutLine(0),
       mCurrentInLine(0),
-      mHasAlpha(true),
+      mFormat(gfx::SurfaceFormat::UNKNOWN),
       mFlipVertically(false) {
   MOZ_ASSERT(mTargetSize.width > 0 && mTargetSize.height > 0,
              "Invalid target size");
@@ -50,7 +50,8 @@ void Downscaler::ReleaseWindow() {
 
 nsresult Downscaler::BeginFrame(const nsIntSize& aOriginalSize,
                                 const Maybe<nsIntRect>& aFrameRect,
-                                uint8_t* aOutputBuffer, bool aHasAlpha,
+                                uint8_t* aOutputBuffer,
+                                gfx::SurfaceFormat aFormat,
                                 bool aFlipVertically /* = false */) {
   MOZ_ASSERT(aOutputBuffer);
   MOZ_ASSERT(mTargetSize != aOriginalSize,
@@ -78,14 +79,14 @@ nsresult Downscaler::BeginFrame(const nsIntSize& aOriginalSize,
              "Frame rect must fit inside image");
   MOZ_ASSERT_IF(!nsIntRect(0, 0, aOriginalSize.width, aOriginalSize.height)
                      .IsEqualEdges(mFrameRect),
-                aHasAlpha);
+                !gfx::IsOpaque(aFormat));
 
   mOriginalSize = aOriginalSize;
   mScale = gfx::MatrixScalesDouble(
       double(mOriginalSize.width) / mTargetSize.width,
       double(mOriginalSize.height) / mTargetSize.height);
   mOutputBuffer = aOutputBuffer;
-  mHasAlpha = aHasAlpha;
+  mFormat = aFormat;
   mFlipVertically = aFlipVertically;
 
   ReleaseWindow();
@@ -189,7 +190,7 @@ void Downscaler::CommitRow() {
       MOZ_RELEASE_ASSERT(mLinesInBuffer < mWindowCapacity,
                          "Need more rows than capacity!");
       mXFilter.ConvolveHorizontally(mRowBuffer.get(), mWindow[mLinesInBuffer++],
-                                    mHasAlpha);
+                                    mFormat);
     }
 
     MOZ_ASSERT(mCurrentOutLine < mTargetSize.height,
@@ -267,7 +268,7 @@ void Downscaler::DownscaleInputLine() {
   uint8_t* outputLine =
       &mOutputBuffer[currentOutLine * mTargetSize.width * sizeof(uint32_t)];
   mYFilter.ConvolveVertically(mWindow.get(), outputLine, mCurrentOutLine,
-                              mXFilter.NumValues(), mHasAlpha);
+                              mXFilter.NumValues(), mFormat);
 
   mCurrentOutLine += 1;
 

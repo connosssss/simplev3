@@ -2,18 +2,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-#include <time.h>
-#include <unistd.h>
-#include <cstring>
-
-#include "SandboxInfo.h"
-
-#include "SandboxProfilerChild.h"
 #include "SandboxProfiler.h"
 
+#include <time.h>
+#include <unistd.h>
+
+#include "SandboxInfo.h"
+#include "SandboxProfilerChild.h"
 #include "mozilla/Atomics.h"
-#include "mozilla/StaticPtr.h"
+#include "mozilla/DebugOnly.h"
 #include "mozilla/PodOperations.h"
+#include "mozilla/StaticPtr.h"
+#include "public/GeckoTraceEvent.h"
 
 namespace mozilla {
 
@@ -66,11 +66,11 @@ void SandboxProfiler::Create() {
   }
 
   if (!gSyscallsQueue) {
-    gSyscallsQueue = new SandboxProfilerQueue(15);
+    gSyscallsQueue = new SandboxProfilerQueue();
   }
 
   if (!gLogsQueue) {
-    gLogsQueue = new SandboxProfilerQueue(15);
+    gLogsQueue = new SandboxProfilerQueue();
   }
 
   if (!gProfiler) {

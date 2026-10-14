@@ -8,19 +8,19 @@ add_setup(async function () {
     set: [
       ["browser.contextual-password-manager.enabled", true],
       ["signon.rememberSignons", true],
+      ["toolkit.osKeyStore.unofficialBuildOnlyLogin", ""],
     ],
   });
-  registerCleanupFunction(LoginTestUtils.clearData);
+  registerCleanupFunction(() => {
+    LoginTestUtils.clearData();
+    Services.prefs.clearUserPref("sidebar.new-sidebar.has-used");
+  });
 });
 
-async function close_sidebar(megalist) {
+function close_sidebar() {
   LoginTestUtils.clearData();
   info("Closing the sidebar");
   SidebarController.hide();
-  const notifMsgBar = await waitForNotification(megalist, "discard-changes");
-  notifMsgBar.shadowRoot
-    .querySelector("moz-button[type='destructive']")
-    .click();
 }
 
 function testNotificationInteractionTelemetry(notificationId) {
@@ -61,13 +61,13 @@ add_task(async function test_breached_origin_alert() {
   const editBtn = notifMsgBar.shadowRoot.querySelector("moz-button");
   await waitForReauth(() => editBtn.click());
 
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => megalist.querySelector("login-form"),
     "Login form failed to render"
   );
   testNotificationInteractionTelemetry("breached_origin_warning");
 
-  await close_sidebar(megalist);
+  close_sidebar();
 
   await Services.fog.testFlushAllChildren();
   Services.fog.testResetFOG();
@@ -105,14 +105,14 @@ add_task(async function test_no_username_alert() {
   info("Click on add username.");
   const editBtn = notifMsgBar.shadowRoot.querySelector("moz-button");
   await waitForReauth(() => editBtn.click());
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => megalist.querySelector("login-form"),
     "Login form failed to render"
   );
 
   testNotificationInteractionTelemetry("no_username_warning");
 
-  await close_sidebar(megalist);
+  close_sidebar();
 
   await Services.fog.testFlushAllChildren();
   Services.fog.testResetFOG();
@@ -147,13 +147,13 @@ add_task(async function test_vulnerable_password_alert() {
   info("Click on change password.");
   const editBtn = notifMsgBar.shadowRoot.querySelector("moz-button");
   await waitForReauth(() => editBtn.click());
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => megalist.querySelector("login-form"),
     "Login form failed to render"
   );
 
   testNotificationInteractionTelemetry("vulnerable_password_warning");
-  await close_sidebar(megalist);
+  close_sidebar();
 
   await Services.fog.testFlushAllChildren();
   Services.fog.testResetFOG();

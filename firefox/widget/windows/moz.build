@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -26,6 +24,9 @@ with Files("OSK*"):
 with Files("*TSF*"):
     BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
+with Files("*permission_monitor.rs"):
+    BUG_COMPONENT = ("Core", "Permission Manager")
+
 DIRS += [
     "filedialog",
 ]
@@ -50,15 +51,14 @@ EXPORTS.mozilla += [
 ]
 
 EXPORTS.mozilla.widget += [
-    "AudioSession.h",
     "CompositorWidgetChild.h",
     "CompositorWidgetParent.h",
     "InProcessWinCompositorWidget.h",
     "JumpListBuilder.h",
     "nsWindowLoggedMessages.h",
+    "WinAudioSession.h",
     "WinCompositorWidget.h",
     "WinCompositorWindowThread.h",
-    "WindowsEMF.h",
     "WindowsSMTCProvider.h",
     "WinEventObserver.h",
     "WinMessages.h",
@@ -69,7 +69,6 @@ EXPORTS.mozilla.widget += [
 ]
 
 UNIFIED_SOURCES += [
-    "AudioSession.cpp",
     "CompositorWidgetChild.cpp",
     "DirectManipulationOwner.cpp",
     "GfxInfo.cpp",
@@ -83,11 +82,16 @@ UNIFIED_SOURCES += [
     "nsColorPicker.cpp",
     "nsDataObj.cpp",
     "nsDataObjCollection.cpp",
+    "nsDeviceContextSpecWin.cpp",
     "nsDragService.cpp",
     "nsLookAndFeel.cpp",
     "nsNativeDragSource.cpp",
     "nsNativeDragTarget.cpp",
     "nsNativeThemeWin.cpp",
+    "nsPrintDialogWin.cpp",
+    "nsPrinterWin.cpp",
+    "nsPrintSettingsServiceWin.cpp",
+    "nsPrintSettingsWin.cpp",
     "nsSound.cpp",
     "nsToolkit.cpp",
     "nsUserIdleServiceWin.cpp",
@@ -111,9 +115,11 @@ UNIFIED_SOURCES += [
     "TSFStaticSink.cpp",
     "TSFTextStore.cpp",
     "TSFTextStoreBase.cpp",
+    "WinAudioSession.cpp",
     "WinCompositorWindowThread.cpp",
     "WindowHook.cpp",
     "WindowsConsole.cpp",
+    "WindowsTestDebug.cpp",
     "WinEventObserver.cpp",
     "WinIMEHandler.cpp",
     "WinMouseScrollHandler.cpp",
@@ -132,6 +138,7 @@ SOURCES += [
     "MediaKeysEventSourceFactory.cpp",
     "nsBidiKeyboard.cpp",
     "nsFilePicker.cpp",
+    "nsPrintDialogUtil.cpp",
     "nsSharePicker.cpp",
     "nsWidgetFactory.cpp",
     "OSKInputPaneManager.cpp",
@@ -146,25 +153,16 @@ SOURCES += [
     "TSFUtils.cpp",
 ]
 
-if CONFIG["NS_PRINTING"]:
-    UNIFIED_SOURCES += [
-        "nsDeviceContextSpecWin.cpp",
-        "nsPrintDialogWin.cpp",
-        "nsPrinterWin.cpp",
-        "nsPrintSettingsServiceWin.cpp",
-        "nsPrintSettingsWin.cpp",
-    ]
-    SOURCES += [
-        "nsPrintDialogUtil.cpp",
-    ]
-
-if CONFIG["MOZ_ENABLE_SKIA_PDF"]:
-    UNIFIED_SOURCES += [
-        "WindowsEMF.cpp",
-    ]
+# Needs winrt exceptions since we're calling into the
+# Windows App SDK.
+SOURCES["WindowsUIUtils.cpp"].flags += [
+    "-Xclang",
+    "-fcxx-exceptions",
+]
 
 XPIDL_SOURCES += [
     "nsIAlertsServiceRust.idl",
+    "nsIWindowsTestDebug.idl",
 ]
 
 XPIDL_MODULE = "widget_windows"
@@ -177,8 +175,7 @@ include("/ipc/chromium/chromium-config.mozbuild")
 
 FINAL_LIBRARY = "xul"
 
-if CONFIG["MOZ_ENABLE_SKIA_PDF"]:
-    LOCAL_INCLUDES += CONFIG["SKIA_INCLUDES"]
+LOCAL_INCLUDES += CONFIG["SKIA_INCLUDES"]
 
 LOCAL_INCLUDES += [
     "/gfx/cairo/cairo/src",
@@ -207,16 +204,110 @@ USE_LIBS += [
 
 OS_LIBS += [
     "ktmw32",
+    "pathcch",
     "rpcrt4",
+    "shcore",
     "urlmon",
     "winmm",
 ]
 
-# mingw is missing Windows toast notification definitions.
+# mingw-w64 is missing the WRL headers the toast notification code uses.
 if CONFIG["CC_TYPE"] == "clang-cl":
     SOURCES += [
         "ToastNotification.cpp",
         "ToastNotificationHandler.cpp",
     ]
+    SOURCE_HEADERS += [
+        "ToastNotification.h",
+        "ToastNotificationHandler.h",
+    ]
 
 SPHINX_TREES["/widget/windows"] = "docs"
+
+if CONFIG["MOZ_WINDOWSAPPSDK_DIR"]:
+    # These are the few DLLs that Firefox needs instead of the
+    # whole Windows App SDK.
+    FINAL_TARGET_FILES += [
+        f"%{CONFIG['MOZ_WINDOWSAPPSDK_DIR']}/{f}"
+        for f in (
+            "CoreMessagingXP.dll",
+            "marshal.dll",
+            "Microsoft.InputStateManager.dll",
+            "Microsoft.Internal.FrameworkUdk.dll",
+            "Microsoft.UI.Composition.OSSupport.dll",
+            "Microsoft.UI.Input.dll",
+            "Microsoft.UI.Windowing.Core.dll",
+            "Microsoft.UI.Windowing.dll",
+            "Microsoft.WindowsAppRuntime.dll",
+            "Microsoft.WindowsAppRuntime.Insights.Resource.dll",
+        )
+    ]
+
+LICENSED_UNDER += ["chromium"]
+LICENSED_UNDER["chromium"].paths = [
+    "nsWindow.cpp",
+]
+
+SOURCE_HEADERS += [
+    "CheckInvariantWrapper.h",
+    "DirectManipulationOwner.h",
+    "GfxInfo.h",
+    "IEnumFE.h",
+    "IMMHandler.h",
+    "InputDeviceUtils.h",
+    "KeyboardLayout.h",
+    "nsBidiKeyboard.h",
+    "nsClipboard.h",
+    "nsColorPicker.h",
+    "nsDataObj.h",
+    "nsDataObjCollection.h",
+    "nsDeviceContextSpecWin.h",
+    "nsDragService.h",
+    "nsFilePicker.h",
+    "nsLookAndFeel.h",
+    "nsNativeDragSource.h",
+    "nsNativeDragTarget.h",
+    "nsNativeThemeWin.h",
+    "nsPrintDialogUtil.h",
+    "nsPrintDialogWin.h",
+    "nsPrinterWin.h",
+    "nsPrintSettingsServiceWin.h",
+    "nsPrintSettingsWin.h",
+    "nsSharePicker.h",
+    "nsSound.h",
+    "nsToolkit.h",
+    "nsUserIdleServiceWin.h",
+    "nsUXThemeConstants.h",
+    "nsWidgetFactory.h",
+    "nsWindow.h",
+    "nsWindowDbg.h",
+    "nsWindowDefs.h",
+    "nsWindowGfx.h",
+    "nsWindowTaskbarConcealer.h",
+    "nsWinGesture.h",
+    "OSKInputPaneManager.h",
+    "OSKTabTipManager.h",
+    "OSKVRManager.h",
+    "RemoteBackbuffer.h",
+    "resource.h",
+    "SystemStatusBar.h",
+    "TaskbarPreview.h",
+    "TaskbarPreviewButton.h",
+    "TaskbarTabPreview.h",
+    "TaskbarWindowPreview.h",
+    "touchinjection_sdk80.h",
+    "TSFEmptyTextStore.h",
+    "TSFInputScope.h",
+    "TSFStaticSink.h",
+    "TSFTextInputProcessorList.h",
+    "TSFTextStore.h",
+    "TSFTextStoreBase.h",
+    "TSFUtils.h",
+    "WindowsTestDebug.h",
+    "WindowsUIUtils.h",
+    "WinIMEHandler.h",
+    "WinMouseScrollHandler.h",
+    "WinOLELock.h",
+    "WinPointerEvents.h",
+    "WinTextEventDispatcherListener.h",
+]

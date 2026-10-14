@@ -1,18 +1,21 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "gfxFT2FontBase.h"
+
+#include <dlfcn.h>
+
+#include <algorithm>
+#include <limits>
+
 #include "gfxFT2Utils.h"
-#include "harfbuzz/hb.h"
-#include "mozilla/Likely.h"
-#include "mozilla/StaticPrefs_gfx.h"
 #include "gfxFontConstants.h"
 #include "gfxFontUtils.h"
 #include "gfxHarfBuzzShaper.h"
-#include <algorithm>
-#include <dlfcn.h>
+#include "harfbuzz/hb.h"
+#include "mozilla/Likely.h"
+#include "mozilla/StaticPrefs_gfx.h"
 
 #include FT_TRUETYPE_TAGS_H
 #include FT_TRUETYPE_TABLES_H
@@ -47,8 +50,19 @@ FT_Face gfxFT2FontBase::LockFTFace() const
   if (!mFTFace->Lock(this)) {
     FT_Set_Transform(mFTFace->GetFace(), nullptr, nullptr);
 
-    FT_F26Dot6 charSize = NS_lround(mFTSize * 64.0);
-    FT_Set_Char_Size(mFTFace->GetFace(), charSize, charSize, 0, 0);
+    // This more closely matches the conversion to fixed-point happening in
+    // Cairo and Skia. Avoid overflow during the conversion. FT_Set_Char_Size
+    // may still decide the value is out of range and reject the scale as being
+    // too large or not matching a strike.
+    FT_F26Dot6 charSize =
+        (int32_t)std::min(std::max(mFTSize * 64.0 + 0.5, 0.0),
+                          (double)std::numeric_limits<int32_t>::max());
+    FT_Error error =
+        FT_Set_Char_Size(mFTFace->GetFace(), charSize, charSize, 0, 0);
+    if (error) {
+      // Even if this returns null, caller must ensure UnlockFTFace is called.
+      return nullptr;
+    }
   }
   return mFTFace->GetFace();
 }
@@ -131,6 +145,19 @@ uint32_t gfxFT2FontEntryBase::GetGlyph(uint32_t aCharCode,
     slot.mGlyphIndex = gfxFT2LockedFace(aFont).GetGlyph(aCharCode);
   }
   return slot.mGlyphIndex;
+}
+
+size_t gfxFT2FontEntryBase::ComputedSizeOfExcludingThis(
+    MallocSizeOf aMallocSizeOf) {
+  size_t result = gfxFontEntry::ComputedSizeOfExcludingThis(aMallocSizeOf);
+
+  if (const auto* ufd = GetUserFontData()) {
+    if (const auto* data = ufd->GetData()) {
+      result += aMallocSizeOf(data);
+    }
+  }
+
+  return result;
 }
 
 // aScale is intended for a 16.16 x/y_scale of an FT_Size_Metrics
@@ -226,7 +253,6 @@ void gfxFT2FontBase::InitMetrics() {
   mFUnitsConvFactor = 0.0;
 
   if (MOZ_UNLIKELY(mStyle.AdjustedSizeMustBeZero())) {
-    memset(&mMetrics, 0, sizeof(mMetrics));  // zero initialize
     mSpaceGlyph = GetGlyph(' ');
     return;
   }
@@ -288,6 +314,13 @@ void gfxFT2FontBase::InitMetrics() {
   // size here for later scaling of the metrics.
   mFTSize = FindClosestSize(mFTFace->GetFace(), GetAdjustedSize());
 
+#ifdef MOZ_FONTATIONS
+  if (InitMetricsFromSkrifa()) {
+    InitExtraMetrics(GetAdjustedSize(), 0);
+    return;
+  }
+#endif
+
   // Explicitly lock the face so we can release it early before calling
   // back into Cairo below.
   FT_Face face = LockFTFace();
@@ -317,7 +350,7 @@ void gfxFT2FontBase::InitMetrics() {
     mMetrics.strikeoutOffset = 0.25 * emHeight;
     mMetrics.strikeoutSize = underlineSize;
 
-    SanitizeMetrics(&mMetrics, false);
+    SanitizeMetrics(false);
     UnlockFTFace();
     return;
   }
@@ -328,6 +361,12 @@ void gfxFT2FontBase::InitMetrics() {
   mMetrics.maxDescent = -FLOAT_FROM_26_6(ftMetrics.descender);
   mMetrics.maxAdvance = FLOAT_FROM_26_6(ftMetrics.max_advance);
   gfxFloat lineHeight = FLOAT_FROM_26_6(ftMetrics.height);
+
+  // Negative maxDescent here almost certainly indicates a font with a sign
+  // error in the descent field of the 'hhea' table; invert it.
+  if (mMetrics.maxDescent < 0.0) {
+    mMetrics.maxDescent = -mMetrics.maxDescent;
+  }
 
   gfxFloat emHeight;
   // Scale for vertical design metric conversion: pixels per design unit.
@@ -441,11 +480,6 @@ void gfxFT2FontBase::InitMetrics() {
 
   if (os2 && os2->sxHeight && yScale > 0.0) {
     mMetrics.xHeight = os2->sxHeight * yScale;
-  } else {
-    // CSS 2.1, section 4.3.2 Lengths: "In the cases where it is
-    // impossible or impractical to determine the x-height, a value of
-    // 0.5em should be used."
-    mMetrics.xHeight = 0.5 * emHeight;
   }
 
   // aveCharWidth is used for the width of text input elements so be
@@ -461,14 +495,17 @@ void gfxFT2FontBase::InitMetrics() {
 
   if (os2 && os2->sCapHeight && yScale > 0.0) {
     mMetrics.capHeight = os2->sCapHeight * yScale;
-  } else {
-    mMetrics.capHeight = mMetrics.maxAscent;
   }
 
   // Release the face lock to safely load glyphs with GetCharExtents if
   // necessary without recursively locking.
   UnlockFTFace();
 
+  InitExtraMetrics(emHeight, lineHeight);
+}
+
+void gfxFT2FontBase::InitExtraMetrics(gfxFloat aEmHeight,
+                                      gfxFloat aLineHeight) {
   gfxFloat width;
   mSpaceGlyph = GetCharExtents(' ', &width);
   if (mSpaceGlyph) {
@@ -503,12 +540,19 @@ void gfxFT2FontBase::InitMetrics() {
     if (GetCharExtents('x', &xWidth, &xBounds) && xBounds.y < 0.0) {
       mMetrics.xHeight = -xBounds.y;
       mMetrics.aveCharWidth = std::max(mMetrics.aveCharWidth, xWidth);
+    } else {
+      // CSS 2.1, section 4.3.2 Lengths: "In the cases where it is
+      // impossible or impractical to determine the x-height, a value of
+      // 0.5em should be used."
+      mMetrics.xHeight = 0.5 * aEmHeight;
     }
   }
 
   if (mMetrics.capHeight == 0.0) {
     if (GetCharExtents('H', nullptr, &xBounds) && xBounds.y < 0.0) {
       mMetrics.capHeight = -xBounds.y;
+    } else {
+      mMetrics.capHeight = mMetrics.maxAscent;
     }
   }
 
@@ -523,11 +567,11 @@ void gfxFT2FontBase::InitMetrics() {
 
   // Make the line height an integer number of pixels so that lines will be
   // equally spaced (rather than just being snapped to pixels, some up and
-  // some down).  Layout calculates line height from the emHeight +
+  // some down).  Layout calculates line height from the aEmHeight +
   // internalLeading + externalLeading, but first each of these is rounded
   // to layout units.  To ensure that the result is an integer number of
   // pixels, round each of the components to pixels.
-  mMetrics.emHeight = floor(emHeight + 0.5);
+  mMetrics.emHeight = floor(aEmHeight + 0.5);
 
   // maxHeight will normally be an integer, but round anyway in case
   // FreeType is configured differently.
@@ -536,7 +580,8 @@ void gfxFT2FontBase::InitMetrics() {
 
   // Text input boxes currently don't work well with lineHeight
   // significantly less than maxHeight (with Verdana, for example).
-  lineHeight = floor(std::max(lineHeight, mMetrics.maxHeight) + 0.5);
+  const gfxFloat lineHeight =
+      floor(std::max(aLineHeight, mMetrics.maxHeight) + 0.5);
   mMetrics.externalLeading =
       lineHeight - mMetrics.internalLeading - mMetrics.emHeight;
 
@@ -546,7 +591,7 @@ void gfxFT2FontBase::InitMetrics() {
       sum > 0.0 ? mMetrics.emAscent * mMetrics.emHeight / sum : 0.0;
   mMetrics.emDescent = mMetrics.emHeight - mMetrics.emAscent;
 
-  SanitizeMetrics(&mMetrics, false);
+  SanitizeMetrics(false);
 
 #if 0
     //    printf("font name: %s %f\n", NS_ConvertUTF16toUTF8(GetName()).get(), GetStyle()->size);
@@ -747,7 +792,7 @@ bool gfxFT2FontBase::GetFTGlyphExtents(uint16_t aGID, int32_t* aAdvance,
  * Get the cached glyph metrics for the glyph id if available. Otherwise, query
  * FreeType for the glyph extents and initialize the glyph metrics.
  */
-const gfxFT2FontBase::GlyphMetrics& gfxFT2FontBase::GetCachedGlyphMetrics(
+gfxFT2FontBase::GlyphMetrics gfxFT2FontBase::GetCachedGlyphMetrics(
     uint16_t aGID, IntRect* aBounds) {
   {
     // Try to read cached metrics without exclusive locking.
@@ -782,7 +827,7 @@ const gfxFT2FontBase::GlyphMetrics& gfxFT2FontBase::GetCachedGlyphMetrics(
 bool gfxFT2FontBase::GetGlyphBounds(uint16_t aGID, gfxRect* aBounds,
                                     bool aTight) {
   IntRect bounds;
-  const GlyphMetrics& metrics = GetCachedGlyphMetrics(aGID, &bounds);
+  const GlyphMetrics metrics = GetCachedGlyphMetrics(aGID, &bounds);
   if (!metrics.HasValidBounds()) {
     return false;
   }
@@ -813,8 +858,8 @@ void gfxFT2FontBase::SetupVarCoords(
   for (unsigned i = 0; i < aMMVar->num_axis; ++i) {
     coords.AppendElement(aMMVar->axis[i].def);
     for (const auto& v : aVariations) {
-      if (aMMVar->axis[i].tag == v.mTag) {
-        FT_Fixed val = v.mValue * 0x10000;
+      if (aMMVar->axis[i].tag == v.tag) {
+        FT_Fixed val = v.value * 0x10000;
         val = std::min(val, aMMVar->axis[i].maximum);
         val = std::max(val, aMMVar->axis[i].minimum);
         coords[i] = val;

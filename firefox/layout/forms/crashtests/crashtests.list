@@ -42,8 +42,8 @@ load 498698-1.html
 load 513113-1.html
 load 538062-1.xhtml
 load 570624-1.html
-asserts(1) load 578604-1.html # bug 584564
-asserts(4-7) load 590302-1.xhtml # bug 584564
+load 578604-1.html
+load 590302-1.xhtml
 load 626014.xhtml
 load 639733.xhtml
 load 669767.html
@@ -68,7 +68,7 @@ load 1405830.html
 load 1418477.html
 load 1432853.html
 asserts(1-4) load 1460787-1.html
-asserts(1-4) load 1464165-1.html # Big sizes.
+load 1464165-1.html
 load 1471157.html
 load 1488219.html
 load 1600207.html

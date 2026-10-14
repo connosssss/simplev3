@@ -4,11 +4,12 @@
 
 //! Specified @page at-rule properties and named-page style properties
 
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::values::generics::size::Size2D;
 use crate::values::specified::length::NonNegativeLength;
-use crate::values::{generics, CustomIdent};
-use cssparser::Parser;
+use crate::values::{CustomIdent, generics};
+use cssparser::{Parser, match_ignore_ascii_case};
 use style_traits::ParseError;
 
 pub use generics::page::PageOrientation;
@@ -18,10 +19,7 @@ pub use generics::page::PaperSize;
 pub type PageSize = generics::page::PageSize<Size2D<NonNegativeLength>>;
 
 impl Parse for PageSize {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         // Try to parse as <page-size> [ <orientation> ]
         if let Ok(paper_size) = input.try_parse(PaperSize::parse) {
             let orientation = input
@@ -61,6 +59,7 @@ impl Parse for PageSize {
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(C, u8)]
 pub enum PageName {
@@ -71,15 +70,11 @@ pub enum PageName {
 }
 
 impl Parse for PageName {
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        let location = input.current_source_location();
+    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let ident = input.expect_ident()?;
         Ok(match_ignore_ascii_case! { ident,
             "auto" => PageName::auto(),
-            _ => PageName::PageName(CustomIdent::from_ident(location, ident, &[])?),
+            _ => PageName::PageName(CustomIdent::from_ident(ident, &[])?),
         })
     }
 }

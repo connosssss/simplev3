@@ -31,9 +31,9 @@ add_task(async function () {
   // Helper to send a request from the content page to /count and return the
   // count.
   async function fetchCount() {
-    return ContentTask.spawn(
+    return SpecialPowers.spawn(
       tab.linkedBrowser,
-      `http://localhost:${port}/count`,
+      [`http://localhost:${port}/count`],
       async function (url) {
         const response = await content.wrappedJSObject.fetch(url);
         const _count = await response.text();
@@ -68,7 +68,7 @@ add_task(async function () {
 
   info("Unblock requests matching the pattern 'count'");
   const requestItems = document.querySelectorAll(".request-list-item");
-  EventUtils.sendMouseEvent({ type: "mousedown" }, requestItems[1]);
+  clickOnRequestRow(requestItems[1]);
   await toggleBlockedUrl(requestItems[1], monitor, store, "unblock");
 
   info("Send a last request to /count, non-blocked");

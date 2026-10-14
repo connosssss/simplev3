@@ -4,28 +4,32 @@
 
 //! Specified values for font properties
 
+use crate::Atom;
 use crate::context::QuirksMode;
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
-use crate::values::computed::font::{FamilyName, FontFamilyList, SingleFontFamily};
+use crate::typed_om::NumericBaseType;
 use crate::values::computed::Percentage as ComputedPercentage;
-use crate::values::computed::{font as computed, Length, NonNegativeLength};
+use crate::values::computed::font::{FamilyName, FontFamilyList, SingleFontFamily};
 use crate::values::computed::{CSSPixelLength, Context, ToComputedValue};
+use crate::values::computed::{Length, NonNegativeLength, font as computed};
+use crate::values::generics::NonNegative;
 use crate::values::generics::font::{
     self as generics, FeatureTagValue, FontSettings, FontTag, GenericLineHeight, VariationValue,
 };
-use crate::values::generics::NonNegative;
-use crate::values::specified::length::{FontBaseSize, LineHeightBase, PX_PER_PT};
+use crate::values::specified::calc::{Leaf, PercentageContext};
+use crate::values::specified::length::{FontBaseSize, LengthUnit, LineHeightBase, PX_PER_PT};
+use crate::values::specified::number::parse_number_with_clamping_mode;
 use crate::values::specified::{AllowQuirks, Angle, Integer, LengthPercentage};
 use crate::values::specified::{
-    FontRelativeLength, NoCalcLength, NonNegativeLengthPercentage, NonNegativeNumber,
-    NonNegativePercentage, Number,
+    NoCalcLength, NonNegativeLengthPercentage, NonNegativeNumber, NonNegativePercentage, Number,
 };
-use crate::values::{serialize_atom_identifier, CustomIdent, SelectorParseErrorKind};
-use crate::Atom;
-use cssparser::{Parser, Token};
+use crate::values::{CustomIdent, SelectorParseErrorKind, serialize_atom_identifier};
+use cssparser::{Parser, Token, match_ignore_ascii_case};
 #[cfg(feature = "gecko")]
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps, MallocUnconditionalSizeOf};
 use std::fmt::{self, Write};
+use style_traits::values::specified::AllowedNumericType;
 use style_traits::{CssWriter, KeywordsCollectFn, ParseError};
 use style_traits::{SpecifiedValueInfo, StyleParseErrorKind, ToCss};
 
@@ -105,17 +109,20 @@ pub enum SystemFont {
 // we have a dummy system font module that does nothing
 
 #[derive(
-    Clone, Copy, Debug, Eq, Hash, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem
+    Clone, Copy, Debug, Eq, Hash, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem,
 )]
 #[allow(missing_docs)]
 #[cfg(feature = "servo")]
-/// void enum for system font, can never exist
-pub enum SystemFont {}
+/// Dummy struct for system font, can never be constructed.
+pub struct SystemFont {
+    #[css(skip)]
+    _forbid_construction: (),
+}
 
 #[allow(missing_docs)]
 #[cfg(feature = "servo")]
 impl SystemFont {
-    pub fn parse(_: &mut Parser) -> Result<Self, ()> {
+    pub fn parse(_context: &ParserContext, _input: &mut Parser) -> Result<Self, ()> {
         Err(())
     }
 }
@@ -137,7 +144,7 @@ pub const MAX_FONT_WEIGHT: f32 = 1000.;
 ///
 /// https://drafts.csswg.org/css-fonts-4/#propdef-font-weight
 #[derive(
-    Clone, Copy, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem,
+    Clone, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped,
 )]
 pub enum FontWeight {
     /// `<font-weight-absolute>`
@@ -162,7 +169,7 @@ impl FontWeight {
 
     /// Get a specified FontWeight from a gecko keyword
     pub fn from_gecko_keyword(kw: u32) -> Self {
-        debug_assert!(kw % 100 == 0);
+        debug_assert!(kw.is_multiple_of(100));
         debug_assert!(kw as f32 <= MAX_FONT_WEIGHT);
         FontWeight::Absolute(AbsoluteFontWeight::Weight(Number::new(kw as f32)))
     }
@@ -174,16 +181,12 @@ impl ToComputedValue for FontWeight {
     #[inline]
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
         match *self {
-            FontWeight::Absolute(ref abs) => abs.compute(),
-            FontWeight::Bolder => context
-                .builder
-                .get_parent_font()
-                .clone_font_weight()
-                .bolder(),
+            FontWeight::Absolute(ref abs) => abs.to_computed_value(context),
+            FontWeight::Bolder => context.builder.get_parent_font().get_font_weight().bolder(),
             FontWeight::Lighter => context
                 .builder
                 .get_parent_font()
-                .clone_font_weight()
+                .get_font_weight()
                 .lighter(),
             FontWeight::System(_) => self.compute_system(context),
         }
@@ -191,16 +194,14 @@ impl ToComputedValue for FontWeight {
 
     #[inline]
     fn from_computed_value(computed: &computed::FontWeight) -> Self {
-        FontWeight::Absolute(AbsoluteFontWeight::Weight(Number::from_computed_value(
-            &computed.value(),
-        )))
+        FontWeight::Absolute(AbsoluteFontWeight::from_computed_value(computed))
     }
 }
 
 /// An absolute font-weight value for a @font-face rule.
 ///
 /// https://drafts.csswg.org/css-fonts-4/#font-weight-absolute-values
-#[derive(Clone, Copy, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped)]
 pub enum AbsoluteFontWeight {
     /// A `<number>`, with the additional constraints specified in:
     ///
@@ -213,29 +214,46 @@ pub enum AbsoluteFontWeight {
 }
 
 impl AbsoluteFontWeight {
-    /// Returns the computed value for this absolute font weight.
-    pub fn compute(&self) -> computed::FontWeight {
-        match *self {
-            AbsoluteFontWeight::Weight(weight) => computed::FontWeight::from_float(weight.get()),
-            AbsoluteFontWeight::Normal => computed::FontWeight::NORMAL,
-            AbsoluteFontWeight::Bold => computed::FontWeight::BOLD,
+    /// Returns the computed weight for use when computed value context is unavailable.
+    /// Returns None if the weight is a calc expression that requires computed-value context.
+    pub fn compute(&self) -> Option<computed::FontWeight> {
+        match self {
+            AbsoluteFontWeight::Weight(weight) => {
+                Some(computed::FontWeight::from_float(weight.resolve()?))
+            },
+            AbsoluteFontWeight::Normal => Some(computed::FontWeight::NORMAL),
+            AbsoluteFontWeight::Bold => Some(computed::FontWeight::BOLD),
         }
     }
 }
 
+impl ToComputedValue for AbsoluteFontWeight {
+    type ComputedValue = computed::FontWeight;
+
+    fn to_computed_value(&self, context: &Context) -> computed::FontWeight {
+        match self {
+            AbsoluteFontWeight::Weight(weight) => {
+                computed::FontWeight::from_float(weight.to_computed_value(context))
+            },
+            AbsoluteFontWeight::Normal => computed::FontWeight::NORMAL,
+            AbsoluteFontWeight::Bold => computed::FontWeight::BOLD,
+        }
+    }
+
+    fn from_computed_value(computed: &computed::FontWeight) -> Self {
+        AbsoluteFontWeight::Weight(Number::from_computed_value(&computed.value()))
+    }
+}
+
 impl Parse for AbsoluteFontWeight {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         if let Ok(number) = input.try_parse(|input| Number::parse(context, input)) {
             // We could add another AllowedNumericType value, but it doesn't
             // seem worth it just for a single property with such a weird range,
             // so we do the clamping here manually.
-            if !number.was_calc() &&
-                (number.get() < MIN_FONT_WEIGHT || number.get() > MAX_FONT_WEIGHT)
+            if matches!(number.get(), Some(v) if !(MIN_FONT_WEIGHT..=MAX_FONT_WEIGHT).contains(&v))
             {
-                return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
             }
             return Ok(AbsoluteFontWeight::Weight(number));
         }
@@ -277,10 +295,7 @@ impl ToCss for SpecifiedFontStyle {
 }
 
 impl Parse for SpecifiedFontStyle {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         Ok(try_match_ident_ignore_ascii_case! { input,
             "normal" => generics::FontStyle::normal(),
             "italic" => generics::FontStyle::Italic,
@@ -297,10 +312,12 @@ impl Parse for SpecifiedFontStyle {
 impl ToComputedValue for SpecifiedFontStyle {
     type ComputedValue = computed::FontStyle;
 
-    fn to_computed_value(&self, _: &Context) -> Self::ComputedValue {
+    fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
         match *self {
             Self::Italic => computed::FontStyle::ITALIC,
-            Self::Oblique(ref angle) => computed::FontStyle::oblique(angle.degrees()),
+            Self::Oblique(ref angle) => {
+                computed::FontStyle::oblique(angle.to_computed_value(context).degrees())
+            },
         }
     }
 
@@ -309,7 +326,7 @@ impl ToComputedValue for SpecifiedFontStyle {
             return Self::Italic;
         }
         let degrees = computed.oblique_degrees();
-        generics::FontStyle::Oblique(Angle::from_degrees(degrees, /* was_calc = */ false))
+        generics::FontStyle::Oblique(Angle::from_degrees(degrees))
     }
 }
 
@@ -325,47 +342,35 @@ pub const FONT_STYLE_OBLIQUE_MAX_ANGLE_DEGREES: f32 = 90.;
 pub const FONT_STYLE_OBLIQUE_MIN_ANGLE_DEGREES: f32 = -90.;
 
 impl SpecifiedFontStyle {
-    /// Gets a clamped angle in degrees from a specified Angle.
-    pub fn compute_angle_degrees(angle: &Angle) -> f32 {
-        angle
-            .degrees()
-            .max(FONT_STYLE_OBLIQUE_MIN_ANGLE_DEGREES)
-            .min(FONT_STYLE_OBLIQUE_MAX_ANGLE_DEGREES)
-    }
-
     /// Parse a suitable angle for font-style: oblique.
-    pub fn parse_angle<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Angle, ParseError<'i>> {
+    pub fn parse_angle(context: &ParserContext, input: &mut Parser) -> Result<Angle, ParseError> {
         let angle = Angle::parse(context, input)?;
-        if angle.was_calc() {
+        // Calc angles can exceed the range and are clamped at computed-value time.
+        if angle.is_calc() {
             return Ok(angle);
         }
 
-        let degrees = angle.degrees();
-        if degrees < FONT_STYLE_OBLIQUE_MIN_ANGLE_DEGREES ||
-            degrees > FONT_STYLE_OBLIQUE_MAX_ANGLE_DEGREES
+        let degrees = angle.degrees().unwrap();
+        if !(FONT_STYLE_OBLIQUE_MIN_ANGLE_DEGREES..=FONT_STYLE_OBLIQUE_MAX_ANGLE_DEGREES)
+            .contains(&degrees)
         {
-            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+            return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
         }
-        return Ok(angle);
+        Ok(angle)
     }
 
     /// The default angle for `font-style: oblique`.
     pub fn default_angle() -> Angle {
-        Angle::from_degrees(
-            computed::FontStyle::DEFAULT_OBLIQUE_DEGREES as f32,
-            /* was_calc = */ false,
-        )
+        Angle::from_degrees(computed::FontStyle::DEFAULT_OBLIQUE_DEGREES as f32)
     }
 }
 
 /// The specified value of the `font-style` property.
 #[derive(
-    Clone, Copy, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem,
+    Clone, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped,
 )]
 #[allow(missing_docs)]
+#[typed(todo_derive_fields)]
 pub enum FontStyle {
     Specified(SpecifiedFontStyle),
     #[css(skip)]
@@ -397,26 +402,26 @@ impl ToComputedValue for FontStyle {
     }
 }
 
-/// A value for the `font-stretch` property.
+/// A value for the `font-width` property.
 ///
-/// https://drafts.csswg.org/css-fonts-4/#font-stretch-prop
+/// https://drafts.csswg.org/css-fonts-4/#font-width-prop
 #[allow(missing_docs)]
 #[derive(
-    Clone, Copy, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem,
+    Clone, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped,
 )]
-pub enum FontStretch {
-    Stretch(NonNegativePercentage),
-    Keyword(FontStretchKeyword),
+pub enum FontWidth {
+    Width(NonNegativePercentage),
+    Keyword(FontWidthKeyword),
     #[css(skip)]
     System(SystemFont),
 }
 
-/// A keyword value for `font-stretch`.
+/// A keyword value for `font-width`.
 #[derive(
-    Clone, Copy, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem,
+    Clone, Copy, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped,
 )]
 #[allow(missing_docs)]
-pub enum FontStretchKeyword {
+pub enum FontWidthKeyword {
     Normal,
     Condensed,
     UltraCondensed,
@@ -428,44 +433,44 @@ pub enum FontStretchKeyword {
     UltraExpanded,
 }
 
-impl FontStretchKeyword {
+impl FontWidthKeyword {
     /// Turns the keyword into a computed value.
-    pub fn compute(&self) -> computed::FontStretch {
-        computed::FontStretch::from_keyword(*self)
+    pub fn compute(&self) -> computed::FontWidth {
+        computed::FontWidth::from_keyword(*self)
     }
 
     /// Does the opposite operation to `compute`, in order to serialize keywords
     /// if possible.
     pub fn from_percentage(p: f32) -> Option<Self> {
-        computed::FontStretch::from_percentage(p).as_keyword()
+        computed::FontWidth::from_percentage(p).as_keyword()
     }
 }
 
-impl FontStretch {
+impl FontWidth {
     /// `normal`.
     pub fn normal() -> Self {
-        FontStretch::Keyword(FontStretchKeyword::Normal)
+        FontWidth::Keyword(FontWidthKeyword::Normal)
     }
 
-    system_font_methods!(FontStretch, font_stretch);
+    system_font_methods!(FontWidth, font_width);
 }
 
-impl ToComputedValue for FontStretch {
-    type ComputedValue = computed::FontStretch;
+impl ToComputedValue for FontWidth {
+    type ComputedValue = computed::FontWidth;
 
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
         match *self {
-            FontStretch::Stretch(ref percentage) => {
+            FontWidth::Width(ref percentage) => {
                 let percentage = percentage.to_computed_value(context).0;
-                computed::FontStretch::from_percentage(percentage.0)
+                computed::FontWidth::from_percentage(percentage.0)
             },
-            FontStretch::Keyword(ref kw) => kw.compute(),
-            FontStretch::System(_) => self.compute_system(context),
+            FontWidth::Keyword(ref kw) => kw.compute(),
+            FontWidth::System(_) => self.compute_system(context),
         }
     }
 
     fn from_computed_value(computed: &Self::ComputedValue) -> Self {
-        FontStretch::Stretch(NonNegativePercentage::from_computed_value(&NonNegative(
+        FontWidth::Width(NonNegativePercentage::from_computed_value(&NonNegative(
             computed.to_percentage(),
         )))
     }
@@ -478,6 +483,7 @@ impl ToComputedValue for FontStretch {
     ComputeSquaredDistance,
     Copy,
     Debug,
+    Default,
     MallocSizeOf,
     Parse,
     PartialEq,
@@ -490,6 +496,7 @@ impl ToComputedValue for FontStretch {
     ToShmem,
     Serialize,
     Deserialize,
+    ToTyped,
 )]
 #[allow(missing_docs)]
 #[repr(u8)]
@@ -498,6 +505,7 @@ pub enum FontSizeKeyword {
     XXSmall,
     XSmall,
     Small,
+    #[default]
     Medium,
     Large,
     XLarge,
@@ -533,28 +541,24 @@ impl FontSizeKeyword {
     }
 }
 
-impl Default for FontSizeKeyword {
-    fn default() -> Self {
-        FontSizeKeyword::Medium
-    }
-}
-
 #[derive(
     Animate,
     Clone,
     ComputeSquaredDistance,
     Copy,
     Debug,
+    Deserialize,
     MallocSizeOf,
     PartialEq,
+    Serialize,
     ToAnimatedValue,
     ToAnimatedZero,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
-#[cfg_attr(feature = "servo", derive(Serialize, Deserialize))]
 /// Additional information for keyword-derived font sizes.
 pub struct KeywordInfo {
     /// The keyword used
@@ -591,11 +595,12 @@ impl KeywordInfo {
     /// text-zoom.
     fn to_computed_value(&self, context: &Context) -> CSSPixelLength {
         debug_assert_ne!(self.kw, FontSizeKeyword::None);
-        #[cfg(feature="gecko")]
+        #[cfg(feature = "gecko")]
         debug_assert_ne!(self.kw, FontSizeKeyword::Math);
         let base = context.maybe_zoom_text(self.kw.to_length(context).0);
         let zoom_factor = context.style().effective_zoom.value();
-        CSSPixelLength::new(base.px() * self.factor * zoom_factor) + context.maybe_zoom_text(self.offset)
+        CSSPixelLength::new(base.px() * self.factor * zoom_factor)
+            + context.maybe_zoom_text(self.offset)
     }
 
     /// Given a parent keyword info (self), apply an additional factor/offset to
@@ -618,7 +623,7 @@ impl SpecifiedValueInfo for KeywordInfo {
     }
 }
 
-#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped)]
 /// A specified font-size value
 pub enum FontSize {
     /// A length; e.g. 10px.
@@ -644,8 +649,8 @@ pub enum FontSize {
 }
 
 /// Specifies a prioritized list of font family names or generic family names.
-#[derive(Clone, Debug, Eq, PartialEq, ToCss, ToShmem)]
-#[cfg_attr(feature = "servo", derive(Hash))]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, ToCss, ToShmem, ToTyped)]
+#[typed(todo_derive_fields)]
 pub enum FontFamily {
     /// List of `font-family`
     #[css(comma)]
@@ -696,10 +701,7 @@ impl Parse for FontFamily {
     /// <family-name>#
     /// <family-name> = <string> | [ <ident>+ ]
     /// TODO: <generic-family>
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<FontFamily, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<FontFamily, ParseError> {
         let values =
             input.parse_comma_separated(|input| SingleFontFamily::parse(context, input))?;
         Ok(FontFamily::Values(FontFamilyList {
@@ -713,14 +715,11 @@ impl SpecifiedValueInfo for FontFamily {}
 /// `FamilyName::parse` is based on `SingleFontFamily::parse` and not the other
 /// way around because we want the former to exclude generic family keywords.
 impl Parse for FamilyName {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         match SingleFontFamily::parse(context, input) {
             Ok(SingleFontFamily::FamilyName(name)) => Ok(name),
             Ok(SingleFontFamily::Generic(_)) => {
-                Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+                Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError))
             },
             Err(e) => Err(e),
         }
@@ -730,7 +729,7 @@ impl Parse for FamilyName {
 /// A factor for one of the font-size-adjust metrics, which may be either a number
 /// or the `from-font` keyword.
 #[derive(
-    Clone, Copy, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem,
+    Clone, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped,
 )]
 pub enum FontSizeAdjustFactor {
     /// An explicitly-specified number.
@@ -746,11 +745,7 @@ pub enum FontSizeAdjustFactor {
 pub type FontSizeAdjust = generics::GenericFontSizeAdjust<FontSizeAdjustFactor>;
 
 impl Parse for FontSizeAdjust {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        let location = input.current_source_location();
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         // First check if we have an adjustment factor without a metrics-basis keyword.
         if let Ok(factor) = input.try_parse(|i| FontSizeAdjustFactor::parse(context, i)) {
             return Ok(Self::ExHeight(factor));
@@ -766,8 +761,8 @@ impl Parse for FontSizeAdjust {
             "ic-width" => Self::IcWidth,
             "ic-height" => Self::IcHeight,
             // Unknown keyword.
-            _ => return Err(location.new_custom_error(
-                SelectorParseErrorKind::UnexpectedIdent(ident.clone())
+            _ => return Err(ParseError::custom(
+                SelectorParseErrorKind::UnexpectedIdent
             )),
         };
 
@@ -783,6 +778,18 @@ const LARGER_FONT_SIZE_RATIO: f32 = 1.2;
 pub const FONT_MEDIUM_PX: f32 = 16.0;
 /// The default line height.
 pub const FONT_MEDIUM_LINE_HEIGHT_PX: f32 = FONT_MEDIUM_PX * 1.2;
+/// The default ex height -- https://drafts.csswg.org/css-values/#ex
+/// > In the cases where it is impossible or impractical to determine the x-height, a value of 0.5em must be assumed
+pub const FONT_MEDIUM_EX_PX: f32 = FONT_MEDIUM_PX * 0.5;
+/// The default cap height -- https://drafts.csswg.org/css-values/#cap
+/// > In the cases where it is impossible or impractical to determine the cap-height, the font’s ascent must be used
+pub const FONT_MEDIUM_CAP_PX: f32 = FONT_MEDIUM_PX;
+/// The default advance measure -- https://drafts.csswg.org/css-values/#ch
+/// > Thus, the ch unit falls back to 0.5em in the general case
+pub const FONT_MEDIUM_CH_PX: f32 = FONT_MEDIUM_PX * 0.5;
+/// The default idographic advance measure -- https://drafts.csswg.org/css-values/#ic
+/// > In the cases where it is impossible or impractical to determine the ideographic advance measure, it must be assumed to be 1em
+pub const FONT_MEDIUM_IC_PX: f32 = FONT_MEDIUM_PX;
 
 impl FontSizeKeyword {
     #[inline]
@@ -799,11 +806,9 @@ impl FontSizeKeyword {
             .unwrap_or(computed::GenericFontFamily::None);
 
         #[cfg(feature = "gecko")]
-        let base_size = unsafe {
-            Atom::with(font.mLanguage.mRawPtr, |language| {
-                cx.device().base_size_for_generic(language, generic)
-            })
-        };
+        let base_size = cx
+            .device()
+            .base_size_for_generic(&font.mLanguage.0, generic);
         #[cfg(feature = "servo")]
         let base_size = cx.device().base_size_for_generic(generic);
 
@@ -864,7 +869,7 @@ impl FontSizeKeyword {
         static FONT_SIZE_FACTORS: [i32; 8] = [60, 75, 89, 100, 120, 150, 200, 300];
         let base_size_px = base_size.px().round() as i32;
         let html_size = self.html_size() as usize;
-        NonNegative(if base_size_px >= 9 && base_size_px <= 16 {
+        NonNegative(if (9..=16).contains(&base_size_px) {
             let mapping = if quirks_mode == QuirksMode::Quirks {
                 QUIRKS_FONT_SIZE_MAPPING
             } else {
@@ -904,94 +909,120 @@ impl FontSize {
             context
                 .style()
                 .get_parent_font()
-                .clone_font_size()
+                .slow_clone_font_size()
                 .keyword_info
                 .compose(factor)
         };
         let mut info = KeywordInfo::none();
-        let size = match *self {
-            FontSize::Length(LengthPercentage::Length(ref l)) => {
-                if let NoCalcLength::FontRelative(ref value) = *l {
-                    if let FontRelativeLength::Em(em) = *value {
+        let size =
+            match *self {
+                FontSize::Length(LengthPercentage::Length(ref l)) => {
+                    if l.length_unit() == LengthUnit::Em {
                         // If the parent font was keyword-derived, this is
                         // too. Tack the em unit onto the factor
-                        info = compose_keyword(em);
+                        info = compose_keyword(l.unitless_value());
                     }
-                }
-                let result =
-                    l.to_computed_value_with_base_size(context, base_size, line_height_base);
-                if l.should_zoom_text() {
-                    context.maybe_zoom_text(result)
-                } else {
-                    result
-                }
-            },
-            FontSize::Length(LengthPercentage::Percentage(pc)) => {
-                // If the parent font was keyword-derived, this is too.
-                // Tack the % onto the factor
-                info = compose_keyword(pc.0);
-                (base_size.resolve(context).computed_size() * pc.0).normalized()
-            },
-            FontSize::Length(LengthPercentage::Calc(ref calc)) => {
-                let calc = calc.to_computed_value_zoomed(context, base_size, line_height_base);
-                calc.resolve(base_size.resolve(context).computed_size())
-            },
-            FontSize::Keyword(i) => {
-                if i.kw.is_math() {
-                    // Scaling is done in recompute_math_font_size_if_needed().
-                    info = compose_keyword(1.);
-                    // i.kw will always be FontSizeKeyword::Math here. But writing it this
-                    // allows this code to compile for servo where the Math variant is cfg'd out.
-                    info.kw = i.kw;
-                    FontRelativeLength::Em(1.).to_computed_value(
+                    let result =
+                        l.to_computed_value_with_base_size(context, base_size, line_height_base);
+                    if l.should_zoom_text() {
+                        context.maybe_zoom_text(result)
+                    } else {
+                        result
+                    }
+                },
+                FontSize::Length(LengthPercentage::Percentage(pc)) => {
+                    // If the parent font was keyword-derived, this is too.
+                    // Tack the % onto the factor
+                    info = compose_keyword(pc.get());
+                    (base_size.resolve(context).computed_size() * pc.get()).normalized()
+                },
+                FontSize::Length(LengthPercentage::Calc(ref calc)) => {
+                    let calc = calc.to_computed_value_zoomed(context, base_size, line_height_base);
+                    calc.resolve(base_size.resolve(context).computed_size())
+                },
+                FontSize::Keyword(i) => {
+                    if i.kw.is_math() {
+                        // Scaling is done in recompute_math_font_size_if_needed().
+                        info = compose_keyword(1.);
+                        // i.kw will always be FontSizeKeyword::Math here. But writing it this
+                        // allows this code to compile for servo where the Math variant is cfg'd out.
+                        info.kw = i.kw;
+                        NoCalcLength::from_em(1.).to_computed_value_with_base_size(
+                            context,
+                            base_size,
+                            line_height_base,
+                        )
+                    } else {
+                        // As a specified keyword, this is keyword derived
+                        info = i;
+                        i.to_computed_value(context).clamp_to_non_negative()
+                    }
+                },
+                FontSize::Smaller => {
+                    info = compose_keyword(1. / LARGER_FONT_SIZE_RATIO);
+                    NoCalcLength::from_em(1. / LARGER_FONT_SIZE_RATIO)
+                        .to_computed_value_with_base_size(context, base_size, line_height_base)
+                },
+                FontSize::Larger => {
+                    info = compose_keyword(LARGER_FONT_SIZE_RATIO);
+                    NoCalcLength::from_em(LARGER_FONT_SIZE_RATIO).to_computed_value_with_base_size(
                         context,
                         base_size,
                         line_height_base,
                     )
-                } else {
-                    // As a specified keyword, this is keyword derived
-                    info = i;
-                    i.to_computed_value(context).clamp_to_non_negative()
-                }
-            },
-            FontSize::Smaller => {
-                info = compose_keyword(1. / LARGER_FONT_SIZE_RATIO);
-                FontRelativeLength::Em(1. / LARGER_FONT_SIZE_RATIO).to_computed_value(
-                    context,
-                    base_size,
-                    line_height_base,
-                )
-            },
-            FontSize::Larger => {
-                info = compose_keyword(LARGER_FONT_SIZE_RATIO);
-                FontRelativeLength::Em(LARGER_FONT_SIZE_RATIO).to_computed_value(
-                    context,
-                    base_size,
-                    line_height_base,
-                )
-            },
-
-            FontSize::System(_) => {
-                #[cfg(feature = "servo")]
-                {
-                    unreachable!()
-                }
-                #[cfg(feature = "gecko")]
-                {
-                    context
-                        .cached_system_font
-                        .as_ref()
-                        .unwrap()
-                        .font_size
-                        .computed_size()
-                }
-            },
-        };
+                },
+                FontSize::System(_) => {
+                    #[cfg(feature = "servo")]
+                    {
+                        unreachable!()
+                    }
+                    #[cfg(feature = "gecko")]
+                    {
+                        context
+                            .cached_system_font
+                            .as_ref()
+                            .unwrap()
+                            .font_size
+                            .computed_size()
+                            .zoom(context.builder.effective_zoom)
+                    }
+                },
+            };
+        let size = NonNegative(Self::quantize_font_size(size));
         computed::FontSize {
-            computed_size: NonNegative(size),
-            used_size: NonNegative(size),
+            computed_size: size,
+            used_size: size,
             keyword_info: info,
         }
+    }
+
+    /// Quantize a value intended for use as a font size, to avoid creating a near-infinity
+    /// of different styles and font instances when "random" floating-point sizes are used.
+    #[inline]
+    pub fn quantize_font_size(size: CSSPixelLength) -> CSSPixelLength {
+        // If the size is < 1024px, just snap to an integer number of appUnits.
+        if size.px() < 1024.0 {
+            return CSSPixelLength::from(app_units::Au::from_f32_px(size.px()));
+        }
+
+        // Based on the Veltkamp-Dekker float-splitting algorithm, see e.g.
+        // https://indico.cern.ch/event/313684/contributions/1687773/attachments/600513/826490/FPArith-Part2.pdf
+        // A 32-bit float has 24 bits of precision (23 stored, plus an implicit 1 bit
+        // at the start of the mantissa).
+        // (Compare also QuantizeFontSize in dom/canvas/CanvasRenderingContext2D.cpp.)
+        // If we ever change the representation of CSSPixelLength (e.g. to f64 or some fixed-point type)
+        // this will need to be revised.
+        size_of_test!(CSSPixelLength, std::mem::size_of::<f32>());
+        const BITS_TO_DROP: u32 = 14; // leaving 10 bits of precision
+        const SCALE_PLUS_ONE: f32 = ((1 << BITS_TO_DROP) + 1) as f32;
+        const LIMIT: f32 = f32::MAX / SCALE_PLUS_ONE;
+        if size.px() >= LIMIT {
+            return CSSPixelLength::new(LIMIT);
+        }
+        let d = size.px() * SCALE_PLUS_ONE;
+        let t = d - size.px();
+        // Snap the result to integer appUnits.
+        CSSPixelLength::from(app_units::Au::from_f32_px(d - t))
     }
 }
 
@@ -1025,11 +1056,11 @@ impl FontSize {
     }
 
     /// Parses a font-size, with quirks.
-    pub fn parse_quirky<'i, 't>(
+    pub fn parse_quirky(
         context: &ParserContext,
-        input: &mut Parser<'i, 't>,
+        input: &mut Parser,
         allow_quirks: AllowQuirks,
-    ) -> Result<FontSize, ParseError<'i>> {
+    ) -> Result<FontSize, ParseError> {
         if let Ok(lp) = input
             .try_parse(|i| LengthPercentage::parse_non_negative_quirky(context, i, allow_quirks))
         {
@@ -1049,10 +1080,7 @@ impl FontSize {
 
 impl Parse for FontSize {
     /// <length> | <percentage> | <absolute-size> | <relative-size>
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<FontSize, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<FontSize, ParseError> {
         FontSize::parse_quirky(context, input, AllowQuirks::No)
     }
 }
@@ -1083,8 +1111,11 @@ bitflags! {
 #[derive(
     Clone,
     Debug,
+    Deserialize,
+    Hash,
     MallocSizeOf,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToCss,
     ToComputedValue,
@@ -1120,40 +1151,47 @@ pub enum VariantAlternates {
     Clone,
     Debug,
     Default,
+    Deserialize,
+    Hash,
     MallocSizeOf,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(transparent)]
+#[typed(todo_derive_fields)]
 /// List of Variant Alternates
 pub struct FontVariantAlternates(
     #[css(if_empty = "normal", iterable)] crate::OwnedSlice<VariantAlternates>,
 );
 
 impl FontVariantAlternates {
+    /// Returns true if the list is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Iterates over all alternates in the list.
+    pub fn iter(&self) -> impl Iterator<Item = &VariantAlternates> {
+        self.0.iter()
+    }
+
     /// Returns the length of all variant alternates.
     pub fn len(&self) -> usize {
         self.0.iter().fold(0, |acc, alternate| match *alternate {
-            VariantAlternates::Swash(_) |
-            VariantAlternates::Stylistic(_) |
-            VariantAlternates::Ornaments(_) |
-            VariantAlternates::Annotation(_) => acc + 1,
-            VariantAlternates::Styleset(ref slice) |
-            VariantAlternates::CharacterVariant(ref slice) => acc + slice.len(),
+            VariantAlternates::Swash(_)
+            | VariantAlternates::Stylistic(_)
+            | VariantAlternates::Ornaments(_)
+            | VariantAlternates::Annotation(_) => acc + 1,
+            VariantAlternates::Styleset(ref slice)
+            | VariantAlternates::CharacterVariant(ref slice) => acc + slice.len(),
             _ => acc,
         })
-    }
-}
-
-impl FontVariantAlternates {
-    #[inline]
-    /// Get initial specified value with VariantAlternatesList
-    pub fn get_initial_specified_value() -> Self {
-        Default::default()
     }
 }
 
@@ -1166,10 +1204,7 @@ impl Parse for FontVariantAlternates {
     ///    swash(<feature-value-name>)               ||
     ///    ornaments(<feature-value-name>)           ||
     ///    annotation(<feature-value-name>) ]
-    fn parse<'i, 't>(
-        _: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<FontVariantAlternates, ParseError<'i>> {
+    fn parse(_: &ParserContext, input: &mut Parser) -> Result<FontVariantAlternates, ParseError> {
         if input
             .try_parse(|input| input.expect_ident_matching("normal"))
             .is_ok()
@@ -1190,12 +1225,12 @@ impl Parse for FontVariantAlternates {
         macro_rules! check_if_parsed(
             ($input:expr, $flag:path) => (
                 if parsed_alternates.contains($flag) {
-                    return Err($input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+                    return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError))
                 }
                 parsed_alternates |= $flag;
             )
         );
-        while let Ok(_) = input.try_parse(|input| match *input.next()? {
+        while input.try_parse(|input| match *input.next()? {
             Token::Ident(ref value) if value.eq_ignore_ascii_case("historical-forms") => {
                 check_if_parsed!(input, VariantAlternatesParsingFlags::HISTORICAL_FORMS);
                 historical = Some(VariantAlternates::HistoricalForms);
@@ -1245,15 +1280,15 @@ impl Parse for FontVariantAlternates {
                             character_variant = Some(VariantAlternates::CharacterVariant(idents.into()));
                             Ok(())
                         },
-                        _ => return Err(i.new_custom_error(StyleParseErrorKind::UnspecifiedError)),
+                        _ => Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError)),
                     }
                 })
             },
-            _ => Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError)),
-        }) {}
+            _ => Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError)),
+        }).is_ok() {}
 
         if parsed_alternates.is_empty() {
-            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+            return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
         }
 
         // Collect the parsed values in canonical order, so that we'll serialize correctly.
@@ -1281,15 +1316,19 @@ impl Parse for FontVariantAlternates {
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
+    Hash,
     MallocSizeOf,
     PartialEq,
     Parse,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[css(bitflags(
     single = "normal",
@@ -1349,15 +1388,19 @@ impl FontVariantEastAsian {
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
+    Hash,
     MallocSizeOf,
     PartialEq,
     Parse,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[css(bitflags(
     single = "normal,none",
@@ -1398,10 +1441,10 @@ impl FontVariantLigatures {
 
     fn validate_mixed_flags(&self) -> bool {
         // Mixing a value and its disabling value is forbidden.
-        if self.contains(Self::COMMON_LIGATURES | Self::NO_COMMON_LIGATURES) ||
-            self.contains(Self::DISCRETIONARY_LIGATURES | Self::NO_DISCRETIONARY_LIGATURES) ||
-            self.contains(Self::HISTORICAL_LIGATURES | Self::NO_HISTORICAL_LIGATURES) ||
-            self.contains(Self::CONTEXTUAL | Self::NO_CONTEXTUAL)
+        if self.contains(Self::COMMON_LIGATURES | Self::NO_COMMON_LIGATURES)
+            || self.contains(Self::DISCRETIONARY_LIGATURES | Self::NO_DISCRETIONARY_LIGATURES)
+            || self.contains(Self::HISTORICAL_LIGATURES | Self::NO_HISTORICAL_LIGATURES)
+            || self.contains(Self::CONTEXTUAL | Self::NO_CONTEXTUAL)
         {
             return false;
         }
@@ -1414,15 +1457,19 @@ impl FontVariantLigatures {
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
+    Hash,
     MallocSizeOf,
     PartialEq,
     Parse,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[css(bitflags(
     single = "normal",
@@ -1468,9 +1515,9 @@ impl FontVariantNumeric {
     /// <numeric-spacing-values>  = [ proportional-nums | tabular-nums ]
     /// <numeric-fraction-values> = [ diagonal-fractions | stacked-fractions ]
     fn validate_mixed_flags(&self) -> bool {
-        if self.contains(Self::LINING_NUMS | Self::OLDSTYLE_NUMS) ||
-            self.contains(Self::PROPORTIONAL_NUMS | Self::TABULAR_NUMS) ||
-            self.contains(Self::DIAGONAL_FRACTIONS | Self::STACKED_FRACTIONS)
+        if self.contains(Self::LINING_NUMS | Self::OLDSTYLE_NUMS)
+            || self.contains(Self::PROPORTIONAL_NUMS | Self::TABULAR_NUMS)
+            || self.contains(Self::DIAGONAL_FRACTIONS | Self::STACKED_FRACTIONS)
         {
             return false;
         }
@@ -1481,15 +1528,31 @@ impl FontVariantNumeric {
 /// This property provides low-level control over OpenType or TrueType font features.
 pub type FontFeatureSettings = FontSettings<FeatureTagValue<Integer>>;
 
+impl FontFeatureSettings {
+    /// Like `parse`, but rejects calc expressions that cannot be resolved at parse time,
+    /// since @font-face descriptors require concrete values.
+    pub fn parse_for_font_face_rule(
+        context: &ParserContext,
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
+        let settings = FontFeatureSettings::parse(context, input)?;
+        if settings
+            .0
+            .iter()
+            .any(|setting| setting.value.resolve().is_none())
+        {
+            return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+        }
+        Ok(settings)
+    }
+}
+
 /// For font-language-override, use the same representation as the computed value.
 pub use crate::values::computed::font::FontLanguageOverride;
 
 impl Parse for FontLanguageOverride {
     /// normal | <string>
-    fn parse<'i, 't>(
-        _: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<FontLanguageOverride, ParseError<'i>> {
+    fn parse(_: &ParserContext, input: &mut Parser) -> Result<FontLanguageOverride, ParseError> {
         if input
             .try_parse(|input| input.expect_ident_matching("normal"))
             .is_ok()
@@ -1502,7 +1565,7 @@ impl Parse for FontLanguageOverride {
         // The OpenType spec requires tags to be 1 to 4 ASCII characters:
         // https://learn.microsoft.com/en-gb/typography/opentype/spec/otff#data-types
         if string.is_empty() || string.len() > 4 || !string.is_ascii() {
-            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+            return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
         }
 
         let mut bytes = [b' '; 4];
@@ -1520,15 +1583,19 @@ impl Parse for FontLanguageOverride {
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
+    Hash,
     MallocSizeOf,
     Parse,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 pub enum FontSynthesis {
     /// This attribute may be synthesized if not supported by a face.
@@ -1552,6 +1619,7 @@ pub enum FontSynthesis {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 pub enum FontSynthesisStyle {
     /// This attribute may be synthesized if not supported by a face.
@@ -1572,8 +1640,10 @@ pub enum FontSynthesisStyle {
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(C)]
+#[typed(todo_derive_fields)]
 /// Allows authors to choose a palette from those supported by a color font
 /// (and potentially @font-palette-values overrides).
 pub struct FontPalette(Atom);
@@ -1593,11 +1663,7 @@ impl FontPalette {
 
 impl Parse for FontPalette {
     /// normal | light | dark | dashed-ident
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<FontPalette, ParseError<'i>> {
-        let location = input.current_source_location();
+    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<FontPalette, ParseError> {
         let ident = input.expect_ident()?;
         match_ignore_ascii_case! { &ident,
             "normal" => Ok(Self::normal()),
@@ -1606,7 +1672,7 @@ impl Parse for FontPalette {
             _ => if ident.starts_with("--") {
                 Ok(Self(Atom::from(ident.as_ref())))
             } else {
-                Err(location.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(ident.clone())))
+                Err(ParseError::custom(SelectorParseErrorKind::UnexpectedIdent))
             },
         }
     }
@@ -1625,10 +1691,10 @@ impl ToCss for FontPalette {
 /// variations.
 pub type FontVariationSettings = FontSettings<VariationValue<Number>>;
 
-fn parse_one_feature_value<'i, 't>(
+fn parse_one_feature_value(
     context: &ParserContext,
-    input: &mut Parser<'i, 't>,
-) -> Result<Integer, ParseError<'i>> {
+    input: &mut Parser,
+) -> Result<Integer, ParseError> {
     if let Ok(integer) = input.try_parse(|i| Integer::parse_non_negative(context, i)) {
         return Ok(integer);
     }
@@ -1641,10 +1707,7 @@ fn parse_one_feature_value<'i, 't>(
 
 impl Parse for FeatureTagValue<Integer> {
     /// https://drafts.csswg.org/css-fonts-4/#feature-tag-value
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let tag = FontTag::parse(context, input)?;
         let value = input
             .try_parse(|i| parse_one_feature_value(context, i))
@@ -1657,22 +1720,36 @@ impl Parse for FeatureTagValue<Integer> {
 impl Parse for VariationValue<Number> {
     /// This is the `<string> <number>` part of the font-variation-settings
     /// syntax.
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
         let tag = FontTag::parse(context, input)?;
         let value = Number::parse(context, input)?;
         Ok(Self { tag, value })
     }
 }
 
+impl FontVariationSettings {
+    /// Like `parse`, but rejects calc expressions that cannot be resolved at parse time,
+    /// since @font-face descriptors require concrete values.
+    pub fn parse_for_font_face_rule(
+        context: &ParserContext,
+        input: &mut Parser,
+    ) -> Result<Self, ParseError> {
+        let settings = FontVariationSettings::parse(context, input)?;
+        if settings
+            .0
+            .iter()
+            .any(|setting| setting.value.resolve().is_none())
+        {
+            return Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError));
+        }
+        Ok(settings)
+    }
+}
+
 /// A metrics override value for a @font-face descriptor
 ///
 /// https://drafts.csswg.org/css-fonts/#font-metrics-override-desc
-#[derive(
-    Clone, Copy, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem,
-)]
+#[derive(Clone, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
 pub enum MetricsOverride {
     /// A non-negative `<percentage>` of the computed font size
     Override(NonNegativePercentage),
@@ -1690,13 +1767,14 @@ impl MetricsOverride {
     /// The ToComputedValue implementation, used for @font-face descriptors.
     ///
     /// Valid override percentages must be non-negative; we return -1.0 to indicate
-    /// the absence of an override (i.e. 'normal').
+    /// the absence of an override (i.e. 'normal'). Returns None if the value contains
+    /// a calc expression that cannot be resolved at parse time.
     #[inline]
-    pub fn compute(&self) -> ComputedPercentage {
-        match *self {
-            MetricsOverride::Normal => ComputedPercentage(-1.0),
-            MetricsOverride::Override(percent) => ComputedPercentage(percent.0.get()),
-        }
+    pub fn compute(&self) -> Option<ComputedPercentage> {
+        Some(ComputedPercentage(match self {
+            MetricsOverride::Normal => -1.0,
+            MetricsOverride::Override(percent) => percent.compute()?.0,
+        }))
     }
 }
 
@@ -1704,14 +1782,17 @@ impl MetricsOverride {
     Clone,
     Copy,
     Debug,
+    Deserialize,
     MallocSizeOf,
     Parse,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 /// How to do font-size scaling.
@@ -1735,15 +1816,20 @@ impl XTextScale {
 #[derive(
     Clone,
     Debug,
+    Deserialize,
+    Eq,
+    Hash,
     MallocSizeOf,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
+#[repr(transparent)]
 /// Internal property that reflects the lang attribute
 pub struct XLang(#[css(skip)] pub Atom);
 
@@ -1756,20 +1842,16 @@ impl XLang {
 }
 
 impl Parse for XLang {
-    fn parse<'i, 't>(
-        _: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<XLang, ParseError<'i>> {
+    fn parse(_: &ParserContext, _input: &mut Parser) -> Result<XLang, ParseError> {
         debug_assert!(
             false,
             "Should be set directly by presentation attributes only."
         );
-        Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+        Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError))
     }
 }
 
-#[cfg_attr(feature = "gecko", derive(MallocSizeOf))]
-#[derive(Clone, Copy, Debug, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
+#[derive(Clone, Copy, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
 /// Specifies the minimum font size allowed due to changes in scriptlevel.
 /// Ref: https://wiki.mozilla.org/MathML:mstyle
 pub struct MozScriptMinSize(pub NoCalcLength);
@@ -1783,22 +1865,18 @@ impl MozScriptMinSize {
 }
 
 impl Parse for MozScriptMinSize {
-    fn parse<'i, 't>(
-        _: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<MozScriptMinSize, ParseError<'i>> {
+    fn parse(_: &ParserContext, _input: &mut Parser) -> Result<MozScriptMinSize, ParseError> {
         debug_assert!(
             false,
             "Should be set directly by presentation attributes only."
         );
-        Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+        Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError))
     }
 }
 
 /// A value for the `math-depth` property.
 /// https://mathml-refresh.github.io/mathml-core/#the-math-script-level-property
-#[cfg_attr(feature = "gecko", derive(MallocSizeOf))]
-#[derive(Clone, Copy, Debug, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped)]
 pub enum MathDepth {
     /// Increment math-depth if math-style is compact.
     AutoAdd,
@@ -1812,10 +1890,7 @@ pub enum MathDepth {
 }
 
 impl Parse for MathDepth {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<MathDepth, ParseError<'i>> {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<MathDepth, ParseError> {
         if input
             .try_parse(|i| i.expect_ident_matching("auto-add"))
             .is_ok()
@@ -1832,11 +1907,11 @@ impl Parse for MathDepth {
     }
 }
 
-#[cfg_attr(feature = "gecko", derive(MallocSizeOf))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    MallocSizeOf,
     PartialEq,
     SpecifiedValueInfo,
     ToComputedValue,
@@ -1859,15 +1934,15 @@ impl MozScriptSizeMultiplier {
 }
 
 impl Parse for MozScriptSizeMultiplier {
-    fn parse<'i, 't>(
+    fn parse(
         _: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<MozScriptSizeMultiplier, ParseError<'i>> {
+        _input: &mut Parser,
+    ) -> Result<MozScriptSizeMultiplier, ParseError> {
         debug_assert!(
             false,
             "Should be set directly by presentation attributes only."
         );
-        Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+        Err(ParseError::custom(StyleParseErrorKind::UnspecifiedError))
     }
 }
 
@@ -1886,49 +1961,112 @@ impl From<MozScriptSizeMultiplier> for f32 {
 /// A specified value for the `line-height` property.
 pub type LineHeight = GenericLineHeight<NonNegativeNumber, NonNegativeLengthPercentage>;
 
+/// Parses a line height <number> value. Percentages in <number>-typed calc expressions
+/// are allowed in the `line-height` property, relative to the computed value of 1em.
+/// https://drafts.csswg.org/css-inline/#line-height-property
+fn parse_line_height_number(
+    context: &ParserContext,
+    input: &mut Parser,
+) -> Result<NonNegativeNumber, ParseError> {
+    parse_number_with_clamping_mode(
+        context,
+        input,
+        AllowedNumericType::NonNegative,
+        PercentageContext::allowed_with_hint(NumericBaseType::Length),
+    )
+    .map(NonNegative::<Number>)
+}
+
+impl Parse for LineHeight {
+    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ParseError> {
+        if let Ok(v) = input.try_parse(|input| parse_line_height_number(context, input)) {
+            return Ok(GenericLineHeight::Number(v));
+        }
+        if let Ok(v) = input.try_parse(|input| NonNegativeLengthPercentage::parse(context, input)) {
+            return Ok(GenericLineHeight::Length(v));
+        }
+        let ident = input.expect_ident()?;
+        match_ignore_ascii_case! { &ident,
+            "normal" => Ok(GenericLineHeight::Normal),
+            _ => Err(ParseError::custom(SelectorParseErrorKind::UnexpectedIdent)),
+        }
+    }
+}
+
+/// Resolves a line-height length into an absolute pixel value, properly applying text
+/// scaling and ensuring any `lh` lengths are resolved against the inherited line-height.
+fn resolve_line_height_length(context: &Context, length: NoCalcLength) -> CSSPixelLength {
+    let result = length.to_computed_value_with_base_size(
+        context,
+        FontBaseSize::CurrentStyle,
+        LineHeightBase::InheritedStyle,
+    );
+    if length.should_zoom_text() {
+        context.maybe_zoom_text(result)
+    } else {
+        result
+    }
+}
+
+/// Maps a line-height calc leaf into a resolved leaf. Percentages are replaced
+/// with equivalent `em` lengths, and all lengths are resolved to absolute lengths.
+fn map_line_height_leaf(context: &Context, leaf: &Leaf) -> Leaf {
+    let length = match leaf {
+        Leaf::Percentage(p) => NoCalcLength::from_em(p.get()),
+        Leaf::Length(l) => *l,
+        _ => return leaf.clone(),
+    };
+    Leaf::Length(NoCalcLength::from_px(
+        resolve_line_height_length(context, length).px(),
+    ))
+}
+
 impl ToComputedValue for LineHeight {
     type ComputedValue = computed::LineHeight;
 
     #[inline]
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
-        match *self {
+        match self {
             GenericLineHeight::Normal => GenericLineHeight::Normal,
-            #[cfg(feature = "gecko")]
-            GenericLineHeight::MozBlockHeight => GenericLineHeight::MozBlockHeight,
             GenericLineHeight::Number(number) => {
-                GenericLineHeight::Number(number.to_computed_value(context))
-            },
-            GenericLineHeight::Length(ref non_negative_lp) => {
-                let result = match non_negative_lp.0 {
-                    LengthPercentage::Length(NoCalcLength::Absolute(ref abs)) => {
-                        context.maybe_zoom_text(abs.to_computed_value(context))
+                let value = match number.as_calc() {
+                    None => number.to_computed_value(context).0,
+                    Some(calc) => {
+                        let resolved = calc
+                            .node
+                            .resolve_map(|leaf| Ok(map_line_height_leaf(context, leaf)));
+                        let value = match resolved {
+                            Ok(Leaf::Number(n)) => n.get(),
+                            _ => {
+                                debug_assert!(
+                                    false,
+                                    "Unexpected LineHeight number calc without resolved number"
+                                );
+                                f32::NAN
+                            },
+                        };
+                        // The `NonNegative` clamping mode ensures that -infinity isn't produced
+                        calc.clamping_mode
+                            .clamp(crate::values::normalize(value).min(f32::MAX))
                     },
+                };
+                GenericLineHeight::Number(NonNegative(value))
+            },
+            GenericLineHeight::Length(non_negative_lp) => {
+                let result = match non_negative_lp.0 {
                     LengthPercentage::Length(ref length) => {
-                        // line-height units specifically resolve against parent's
-                        // font and line-height properties, while the rest of font
-                        // relative units still resolve against the element's own
-                        // properties.
-                        length.to_computed_value_with_base_size(
+                        resolve_line_height_length(context, *length)
+                    },
+                    LengthPercentage::Percentage(ref p) => {
+                        resolve_line_height_length(context, NoCalcLength::from_em(p.get()))
+                    },
+                    LengthPercentage::Calc(ref calc) => calc
+                        .to_computed_value_zoomed(
                             context,
                             FontBaseSize::CurrentStyle,
                             LineHeightBase::InheritedStyle,
                         )
-                    },
-                    LengthPercentage::Percentage(ref p) => FontRelativeLength::Em(p.0)
-                        .to_computed_value(
-                            context,
-                            FontBaseSize::CurrentStyle,
-                            LineHeightBase::InheritedStyle,
-                        ),
-                    LengthPercentage::Calc(ref calc) => {
-                        let computed_calc = calc.to_computed_value_zoomed(
-                            context,
-                            FontBaseSize::CurrentStyle,
-                            LineHeightBase::InheritedStyle,
-                        );
-                        let base = context.style().get_font().clone_font_size().computed_size();
-                        computed_calc.resolve(base)
-                    },
+                        .resolve(FontBaseSize::CurrentStyle.resolve(context).computed_size()),
                 };
                 GenericLineHeight::Length(result.into())
             },
@@ -1939,8 +2077,6 @@ impl ToComputedValue for LineHeight {
     fn from_computed_value(computed: &Self::ComputedValue) -> Self {
         match *computed {
             GenericLineHeight::Normal => GenericLineHeight::Normal,
-            #[cfg(feature = "gecko")]
-            GenericLineHeight::MozBlockHeight => GenericLineHeight::MozBlockHeight,
             GenericLineHeight::Number(ref number) => {
                 GenericLineHeight::Number(NonNegativeNumber::from_computed_value(number))
             },
@@ -1966,4 +2102,280 @@ bitflags! {
         /// Does the caller need math scales to be retrieved?
         const NEEDS_MATH_SCALES = 1 << 3;
     }
+}
+
+/// https://w3c.github.io/mathml-core/#the-math-shift
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum MathShift {
+    Normal,
+    Compact,
+}
+
+/// https://mathml-refresh.github.io/mathml-core/#the-math-style-property
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum MathStyle {
+    Normal,
+    Compact,
+}
+
+/// Internal (not web-exposed). Presentation attribute for legacy mathml mathvariant.
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum MathVariant {
+    None,
+    Normal,
+    Bold,
+    Italic,
+    BoldItalic,
+    Script,
+    BoldScript,
+    Fraktur,
+    DoubleStruck,
+    BoldFraktur,
+    SansSerif,
+    BoldSansSerif,
+    SansSerifItalic,
+    SansSerifBoldItalic,
+    Monospace,
+    Initial,
+    Tailed,
+    Looped,
+    Stretched,
+}
+
+/// https://drafts.csswg.org/css-fonts/#propdef-font-variant-emoji
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FontVariantEmoji {
+    Normal,
+    Text,
+    Emoji,
+    Unicode,
+}
+
+/// https://www.w3.org/TR/css-fonts-4/#font-optical-sizing-def
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FontOpticalSizing {
+    Auto,
+    None,
+}
+
+/// https://drafts.csswg.org/css-fonts/#propdef-font-kerning
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FontKerning {
+    Auto,
+    None,
+    Normal,
+}
+
+/// Nonstandard (https://developer.mozilla.org/en-US/docs/Web/CSS/font-smooth)
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FontSmoothing {
+    Auto,
+    #[cfg_attr(feature = "gecko", parse(aliases = "antialiased"))]
+    Grayscale,
+    SubpixelAntialiased,
+}
+
+/// https://drafts.csswg.org/css-fonts/#propdef-font-variant-position
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FontVariantPosition {
+    Normal,
+    Sub,
+    Super,
+}
+
+/// https://drafts.csswg.org/css-fonts/#propdef-font-variant-caps
+#[allow(missing_docs)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum FontVariantCaps {
+    Normal,
+    SmallCaps,
+    #[cfg(feature = "gecko")]
+    AllSmallCaps,
+    #[cfg(feature = "gecko")]
+    PetiteCaps,
+    #[cfg(feature = "gecko")]
+    AllPetiteCaps,
+    #[cfg(feature = "gecko")]
+    Unicase,
+    #[cfg(feature = "gecko")]
+    TitlingCaps,
 }

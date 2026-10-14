@@ -21,12 +21,13 @@ import functools
 import inspect
 import logging
 import os
+import re
 import sys
 import textwrap
 import time
 import traceback
 import types
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from concurrent.futures.process import ProcessPoolExecutor
 from io import StringIO
 from itertools import chain
@@ -41,7 +42,6 @@ from mozbuild.util import (
     HierarchicalStringList,
     ReadOnlyDefaultDict,
     cpu_count,
-    memoize,
 )
 
 from .context import (
@@ -288,7 +288,7 @@ class MozbuildSandbox(Sandbox):
 
         self.templates[name] = TemplateFunction(func, self)
 
-    @memoize
+    @functools.cache
     def _create_subcontext(self, cls):
         """Return a function object that creates SubContext instances."""
 
@@ -297,7 +297,7 @@ class MozbuildSandbox(Sandbox):
 
         return fn
 
-    @memoize
+    @functools.cache
     def _create_function(self, function_def):
         """Returns a function object for use within the sandbox for the given
         function definition.
@@ -320,7 +320,7 @@ class MozbuildSandbox(Sandbox):
 
         return function
 
-    @memoize
+    @functools.cache
     def _create_template_wrapper(self, template):
         """Returns a function object for use within the sandbox for the given
         TemplateFunction instance..
@@ -470,7 +470,7 @@ class TemplateFunction:
             return c(
                 ast.Subscript(
                     value=c(ast.Name(id=self._global_name, ctx=ast.Load())),
-                    slice=c(ast.Index(value=c(ast.Str(s=node.id)))),
+                    slice=c(ast.Index(value=c(ast.Constant(value=node.id)))),
                     ctx=node.ctx,
                 )
             )
@@ -498,12 +498,7 @@ class SandboxValidationError(Exception):
         s.write("The error occurred when validating the result of ")
         s.write("the execution. The reported error is:\n")
         s.write("\n")
-        s.write(
-            "".join(
-                "    %s\n" % l
-                for l in super(SandboxValidationError, self).__str__().splitlines()
-            )
-        )
+        s.write("".join("    %s\n" % l for l in super().__str__().splitlines()))
         s.write("\n")
 
         return s.getvalue()
@@ -847,6 +842,9 @@ class BuildReader:
             "testing/mozbase/moztest/tests/data",
             # Ignore object directories.
             "obj*",
+            # Ignore scratch directories that can hold whole checkouts.
+            "artifacts",
+            ".claude/worktrees",
         }
 
         # Also ignore any other directories that could be objdirs, but don't
@@ -879,8 +877,7 @@ class BuildReader:
 
     def summary(self):
         return ExecutionSummary(
-            "Finished reading {file_count:d} moz.build files in "
-            "{execution_time:.2f}s",
+            "Finished reading {file_count:d} moz.build files in {execution_time:.2f}s",
             file_count=self._file_count,
             execution_time=self._execution_time,
         )
@@ -903,8 +900,7 @@ class BuildReader:
         read, a new Context is created and emitted.
         """
         path = mozpath.join(self.config.topsrcdir, "moz.build")
-        for r in self.read_mozbuild(path, self.config):
-            yield r
+        yield from self.read_mozbuild(path, self.config)
         all_gyp_paths = set()
         for g in self._gyp_processors:
             for gyp_context in g.results:
@@ -1002,9 +998,10 @@ class BuildReader:
             <variable name>, <key>, <value>)`. The `key` will only be
             defined if the variable is an object, otherwise it is `None`.
         """
-
         if isinstance(variables, str):
             variables = [variables]
+
+        variables_matcher = re.compile("|".join(variables))
 
         def assigned_variable(node):
             # This is not correct, but we don't care yet.
@@ -1039,8 +1036,8 @@ class BuildReader:
                 else:
                     # Others
                     assert isinstance(target.slice, ast.Index)
-                    assert isinstance(target.slice.value, ast.Str)
-                    key = target.slice.value.s
+                    assert isinstance(target.slice.value, ast.Constant)
+                    key = target.slice.value.value
             elif isinstance(target, ast.Attribute):
                 assert isinstance(target.attr, str)
                 key = target.attr
@@ -1051,11 +1048,11 @@ class BuildReader:
             value = node.value
             if isinstance(value, ast.List):
                 for v in value.elts:
-                    assert isinstance(v, ast.Str)
-                    yield v.s
+                    assert isinstance(v, ast.Constant)
+                    yield v.value
             else:
-                assert isinstance(value, ast.Str)
-                yield value.s
+                assert isinstance(value, ast.Constant)
+                yield value.value
 
         assignments = []
 
@@ -1086,12 +1083,17 @@ class BuildReader:
             mozbuild_paths = self.all_mozbuild_paths()
 
         for p in mozbuild_paths:
-            assignments[:] = []
             full = os.path.join(self.config.topsrcdir, p)
 
-            with open(full, "rb") as fh:
+            with open(full, encoding="utf-8") as fh:
                 source = fh.read()
 
+            # No need to do the heavy parsing if there is no literal mention of
+            # the variables
+            if not re.search(variables_matcher, source):
+                continue
+
+            assignments[:] = []
             tree = ast.parse(source, full)
             Visitor().visit(tree)
 
@@ -1121,10 +1123,9 @@ class BuildReader:
         """
         self._execution_stack.append(path)
         try:
-            for s in self._read_mozbuild(
+            yield from self._read_mozbuild(
                 path, config, descend=descend, metadata=metadata
-            ):
-                yield s
+            )
 
         except BuildReaderError as bre:
             raise bre
@@ -1199,6 +1200,25 @@ class BuildReader:
         hook = config.substs.get("MOZ_BUILD_HOOK")
         if hook:
             sandbox.exec_file(hook, becomes_current_path=False)
+
+        # Add all EXPORTS to SOURCE_HEADERS
+        if exports := context.get("EXPORTS"):
+            exported_headers = {
+                hdr
+                for _, v in exports.walk()
+                for hdr in v
+                if hdr.endswith((".h", ".hpp"))
+            }
+            for source_header in sandbox["SOURCE_HEADERS"]:
+                if source_header in exported_headers:
+                    raise SandboxValidationError(
+                        f"SOURCE_HEADERS lists {source_header} which is already listed in EXPORTS",
+                        context,
+                    )
+
+            exported_headers = sorted(exported_headers, key=str.lower)
+            sandbox["SOURCE_HEADERS"] += exported_headers
+
         self._execution_time += time.monotonic() - time_start
         self._file_count += len(context.all_paths)
 
@@ -1217,7 +1237,7 @@ class BuildReader:
             for v in ("input", "variables"):
                 if not getattr(gyp_dir, v):
                     raise SandboxValidationError(
-                        "Missing value for " 'GYP_DIRS["%s"].%s' % (target_dir, v),
+                        'Missing value for GYP_DIRS["%s"].%s' % (target_dir, v),
                         context,
                     )
 
@@ -1249,15 +1269,14 @@ class BuildReader:
             )
             self._gyp_processors.append(gyp_processor)
 
-        for subcontext in sandbox.subcontexts:
-            yield subcontext
+        yield from sandbox.subcontexts
 
         # Traverse into referenced files.
 
         # It's very tempting to use a set here. Unfortunately, the recursive
         # make backend needs order preserved. Once we autogenerate all backend
         # files, we should be able to convert this to a set.
-        recurse_info = OrderedDict()
+        recurse_info = {}
         for d in dirs:
             if d in recurse_info:
                 raise SandboxValidationError(
@@ -1299,10 +1318,9 @@ class BuildReader:
                 )
             self._read_files[child_relpath] = (relpath, path)
 
-            for res in self.read_mozbuild(
+            yield from self.read_mozbuild(
                 child_path, context.config, metadata=child_metadata
-            ):
-                yield res
+            )
 
         self._execution_stack.pop()
 
@@ -1313,11 +1331,11 @@ class BuildReader:
         is relevant to that path. Let's say we have the following files on disk::
 
            moz.build
-           foo/moz.build
-           foo/baz/moz.build
-           foo/baz/file1
-           other/moz.build
-           other/file2
+           foo / moz.build
+           foo / baz / moz.build
+           foo / baz / file1
+           other / moz.build
+           other / file2
 
         If ``foo/baz/file1`` is passed in, the relevant moz.build files are
         ``moz.build``, ``foo/moz.build``, and ``foo/baz/moz.build``. For
@@ -1330,7 +1348,7 @@ class BuildReader:
         root = self.config.topsrcdir
         result = {}
 
-        @memoize
+        @functools.cache
         def exists(path):
             return self._relevant_mozbuild_finder.get(path) is not None
 
@@ -1416,9 +1434,9 @@ class BuildReader:
             all_contexts.append(context)
 
         result = {}
-        for path, paths in path_mozbuilds.items():
+        for path, mozbuild_paths in path_mozbuilds.items():
             result[path] = functools.reduce(
-                lambda x, y: x + y, (contexts[p] for p in paths), []
+                lambda x, y: x + y, (contexts[p] for p in mozbuild_paths), []
             )
 
         return result, all_contexts

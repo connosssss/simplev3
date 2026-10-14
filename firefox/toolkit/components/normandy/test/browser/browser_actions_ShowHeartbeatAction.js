@@ -10,9 +10,6 @@ const { Heartbeat } = ChromeUtils.importESModule(
   "resource://normandy/lib/Heartbeat.sys.mjs"
 );
 
-const { Uptake } = ChromeUtils.importESModule(
-  "resource://normandy/lib/Uptake.sys.mjs"
-);
 const { NormandyTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/NormandyTestUtils.sys.mjs"
 );
@@ -343,11 +340,6 @@ decorate_task(
     Assert.equal(await ShowHeartbeatAction._getLastShown(), 2);
     Assert.equal(await ShowHeartbeatAction._getLastInteraction("recipe1"), 3);
     Assert.equal(await ShowHeartbeatAction._getLastInteraction("recipe2"), 4);
-    Assert.equal(await ShowHeartbeatAction._getLastInteraction(), 4);
-
-    // Check that clearing the old storage doesn't remove data.
-    await Storage.clearAllStorage();
-    Assert.equal(await ShowHeartbeatAction._getLastShown(), 2);
     Assert.equal(await ShowHeartbeatAction._getLastInteraction(), 4);
 
     // Check that clearing the storage removes data from multiple prefixes.

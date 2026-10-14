@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,18 +5,18 @@
 #include "mozilla/a11y/SelectionManager.h"
 
 #include "DocAccessible-inl.h"
-#include "HyperTextAccessible.h"
 #include "HyperTextAccessible-inl.h"
-#include "nsAccessibilityService.h"
+#include "HyperTextAccessible.h"
+#include "TextLeafRange.h"
+#include "mozilla/PresShell.h"
+#include "mozilla/a11y/DocAccessibleChild.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/Selection.h"
 #include "nsAccUtils.h"
+#include "nsAccessibilityService.h"
 #include "nsCoreUtils.h"
 #include "nsEventShell.h"
 #include "nsFrameSelection.h"
-#include "TextLeafRange.h"
-
-#include "mozilla/PresShell.h"
-#include "mozilla/dom/Selection.h"
-#include "mozilla/dom/Element.h"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
@@ -35,7 +34,7 @@ struct mozilla::a11y::SelData final {
 
  private:
   // Private destructor, to discourage deletion outside of Release():
-  ~SelData() {}
+  ~SelData() = default;
 };
 
 SelectionManager::SelectionManager()
@@ -124,15 +123,40 @@ void SelectionManager::ProcessTextSelChangeEvent(AccEvent* aEvent) {
   // event->mSel is correct.
   if (!selection) selection = event->mSel;
 
-  mCaretOffset = caretCntr->DOMPointToOffset(selection->GetFocusNode(),
-                                             selection->FocusOffset());
-  mAccWithCaret = caretCntr;
-  if (mCaretOffset != -1) {
+  int32_t caretOffset = caretCntr->DOMPointToOffset(selection->GetFocusNode(),
+                                                    selection->FocusOffset());
+  if (caretOffset != -1) {
+    LocalAccessible* focus =
+        FocusMgr() ? FocusMgr()->FocusedLocalAccessible() : nullptr;
+    DocAccessible* caretDoc = caretCntr->Document();
+    if (!focus || caretDoc != focus->Document()) {
+      // The caret isn't in the focused document. Don't update the global caret
+      // cache or fire the event, as this will confuse clients, who expect that
+      // the caret should be related to the focus. However, we still need to
+      // update the RemoteAccessible cache, as this event won't be fired again
+      // if the document gets focus later.
+      if (DocAccessibleChild* ipcDoc = caretDoc->IPCDoc()) {
+        // TextLeafPoint::GetCaret won't use mCaretOffset because mAccWithCaret
+        // is in a different document to caretCntr.
+        TextLeafPoint caret = TextLeafPoint::GetCaret(caretCntr);
+        ipcDoc->SendCaretMoveEvent(
+            caretCntr->ID(),
+            DocAccessibleChild::GetCaretRectForIPCEvent(caretCntr), caretOffset,
+            selection->IsCollapsed(), caret.mIsEndOfLineInsertionPoint,
+            event->GetGranularity(), aEvent->FromUserInput(),
+            /* aSuppressEvent */ true);
+      }
+      return;
+    }
+    mCaretOffset = caretOffset;
+    mAccWithCaret = caretCntr;
+    // It is important that we call TextLeafPoint::GetCaret *after* updating
+    // mCaretOffset because GetCaret will use mCaretOffset.
     TextLeafPoint caret = TextLeafPoint::GetCaret(caretCntr);
-    RefPtr<AccCaretMoveEvent> caretMoveEvent =
-        new AccCaretMoveEvent(caretCntr, mCaretOffset, selection->IsCollapsed(),
-                              caret.mIsEndOfLineInsertionPoint,
-                              event->GetGranularity(), aEvent->FromUserInput());
+    auto caretMoveEvent = MakeRefPtr<AccCaretMoveEvent>(
+        caretCntr, mCaretOffset, selection->IsCollapsed(),
+        caret.mIsEndOfLineInsertionPoint, event->GetGranularity(),
+        aEvent->FromUserInput());
     nsEventShell::FireEvent(caretMoveEvent);
   }
 }
@@ -157,7 +181,7 @@ SelectionManager::NotifySelectionChanged(dom::Document* aDocument,
     // Selection manager has longer lifetime than any document accessible,
     // so that we are guaranteed that the notification is processed before
     // the selection manager is destroyed.
-    RefPtr<SelData> selData = new SelData(aSelection, aReason, aAmount);
+    auto selData = MakeRefPtr<SelData>(aSelection, aReason, aAmount);
     document->HandleNotification<SelectionManager, SelData>(
         this, &SelectionManager::ProcessSelectionChanged, selData);
   }
@@ -169,7 +193,7 @@ void SelectionManager::ProcessSelectionChanged(SelData* aSelData) {
   Selection* selection = aSelData->mSel;
   if (!selection->GetPresShell()) return;
 
-  const nsRange* range = selection->GetAnchorFocusRange();
+  const mozilla::dom::Range* range = selection->GetAnchorFocusRange();
   nsINode* cntrNode = nullptr;
   if (range) {
     cntrNode = range->GetClosestCommonInclusiveAncestor();
@@ -193,7 +217,7 @@ void SelectionManager::ProcessSelectionChanged(SelData* aSelData) {
   }
 
   if (selection->GetType() == SelectionType::eNormal) {
-    RefPtr<AccEvent> event = new AccTextSelChangeEvent(
+    auto event = MakeRefPtr<AccTextSelChangeEvent>(
         text, selection, aSelData->mReason, aSelData->mGranularity);
     text->Document()->FireDelayedEvent(event);
   }
@@ -236,5 +260,3 @@ bool SelectionManager::SelectionRangeChanged(SelectionType aType,
   }
   return true;
 }
-
-SelectionManager::~SelectionManager() = default;

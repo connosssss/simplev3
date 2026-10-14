@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18,10 +17,8 @@
 #include "jspubtd.h"
 
 #include "mozilla/Result.h"
-#include "mozilla/WeakPtr.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsGkAtoms.h"
 #include "nsISupports.h"
 #include "nsWrapperCache.h"
 
@@ -56,9 +53,7 @@ class WebAccessibleResource final {
            (IsHostMatch(aURI) || IsExtensionMatch(aURI));
   }
 
-  bool IsHostMatch(const URLInfo& aURI) {
-    return mMatches && mMatches->Matches(aURI);
-  }
+  bool IsHostMatch(const URLInfo& aURI);
 
   bool IsExtensionMatch(const URLInfo& aURI);
 
@@ -83,11 +78,13 @@ class WebExtensionPolicyCore final {
 
   nsIURI* BaseURI() const { return mBaseURI; }
 
-  bool IsPrivileged() { return mIsPrivileged; }
+  bool IsPrivileged() const { return mIsPrivileged; }
 
   bool TemporarilyInstalled() { return mTemporarilyInstalled; }
 
   const nsString& Name() const { return mName; }
+
+  const nsString& Version() const { return mVersion; }
 
   nsAtom* Type() const { return mType; }
 
@@ -96,6 +93,8 @@ class WebExtensionPolicyCore final {
   const nsString& ExtensionPageCSP() const { return mExtensionPageCSP; }
 
   const nsString& BaseCSP() const { return mBaseCSP; }
+
+  const nsString& SandboxPageCSP() const { return mSandboxPageCSP; }
 
   const nsString& BackgroundWorkerScript() const {
     return mBackgroundWorkerScript;
@@ -109,6 +108,8 @@ class WebExtensionPolicyCore final {
     }
     return false;
   }
+
+  bool IsSandboxPage(nsIURI* aURL) const;
 
   bool SourceMayAccessPath(const URLInfo& aURI, const nsACString& aPath) const;
 
@@ -129,6 +130,8 @@ class WebExtensionPolicyCore final {
     mPermissions = std::move(newPermissions);
   }
 
+  bool FileSchemeAllowed() const;
+
   bool CanAccessURI(const URLInfo& aURI, bool aExplicit = false,
                     bool aCheckRestricted = true,
                     bool aAllowFilePermission = false) const;
@@ -144,6 +147,19 @@ class WebExtensionPolicyCore final {
 
   bool QuarantinedFromDoc(const DocInfo& aDoc) const;
   bool QuarantinedFromURI(const URLInfo& aURI) const MOZ_EXCLUDES(mLock);
+
+  Maybe<dom::ExtensionGuardSource> CheckGuarded(const URLInfo& aURI) const
+      MOZ_EXCLUDES(mLock);
+
+  bool HasRecommendedState() const MOZ_EXCLUDES(mLock) {
+    AutoReadLock lock(mLock);
+    return mHasRecommendedState;
+  }
+
+  void SetHasRecommendedState(bool aHasRecommendedState) MOZ_EXCLUDES(mLock) {
+    AutoWriteLock lock(mLock);
+    mHasRecommendedState = aHasRecommendedState;
+  }
 
   bool PrivateBrowsingAllowed() const;
 
@@ -180,10 +196,14 @@ class WebExtensionPolicyCore final {
   /* const */ nsCOMPtr<nsIURI> mBaseURI;
 
   const nsString mName;
+  const nsString mVersion;
   const RefPtr<nsAtom> mType;
   const uint32_t mManifestVersion;
   /* const */ nsString mExtensionPageCSP;
   /* const */ nsString mBaseCSP;
+
+  /* const */ nsString mSandboxPageCSP;
+  /* const */ dom::Nullable<MatchGlobSet> mSandboxPages;
 
   const bool mIsPrivileged;
   const bool mTemporarilyInstalled;
@@ -195,8 +215,10 @@ class WebExtensionPolicyCore final {
   mutable RWLock mLock{"WebExtensionPolicyCore"};
 
   bool mIgnoreQuarantine MOZ_GUARDED_BY(mLock);
+  bool mHasRecommendedState MOZ_GUARDED_BY(mLock);
   RefPtr<AtomSet> mPermissions MOZ_GUARDED_BY(mLock);
   RefPtr<MatchPatternSetCore> mHostPermissions MOZ_GUARDED_BY(mLock);
+  nsTArray<RefPtr<ExtensionGuardSetCore>> mGuardSets MOZ_GUARDED_BY(mLock);
 };
 
 class WebExtensionPolicy final : public nsISupports, public nsWrapperCache {
@@ -288,6 +310,9 @@ class WebExtensionPolicy final : public nsISupports, public nsWrapperCache {
   const nsString& Name() const { return mCore->Name(); }
   void GetName(nsAString& aName) const { aName = Name(); }
 
+  const nsString& Version() const { return mCore->Version(); }
+  void GetVersion(nsAString& aVersion) const { aVersion = Version(); }
+
   nsAtom* Type() const { return mCore->Type(); }
   void GetType(nsAString& aType) const {
     aType = nsDependentAtomString(Type());
@@ -301,10 +326,25 @@ class WebExtensionPolicy final : public nsISupports, public nsWrapperCache {
   const nsString& BaseCSP() const { return mCore->BaseCSP(); }
   void GetBaseCSP(nsAString& aCSP) const { aCSP = BaseCSP(); }
 
+  const nsString& SandboxPageCSP() const { return mCore->SandboxPageCSP(); }
+  void GetSandboxPageCSP(nsAString& aCSP) const { aCSP = SandboxPageCSP(); }
+
   already_AddRefed<MatchPatternSet> AllowedOrigins() {
     return do_AddRef(mHostPermissions);
   }
   void SetAllowedOrigins(MatchPatternSet& aAllowedOrigins);
+
+  void GetGuardSets(nsTArray<RefPtr<ExtensionGuardSet>>& aResult) const;
+  void SetGuardSets(const nsTArray<OwningNonNull<ExtensionGuardSet>>& aLists);
+
+  dom::Nullable<dom::ExtensionGuardSource> CheckGuarded(
+      const URLInfo& aURI) const {
+    const auto result = mCore->CheckGuarded(aURI);
+    if (result.isSome()) {
+      return dom::Nullable<dom::ExtensionGuardSource>(result.ref());
+    }
+    return {};
+  }
 
   void GetPermissions(nsTArray<nsString>& aResult) const {
     mCore->GetPermissions(aResult);
@@ -313,8 +353,13 @@ class WebExtensionPolicy final : public nsISupports, public nsWrapperCache {
     mCore->SetPermissions(aPermissions);
   }
 
+  bool FileSchemeAllowed() const { return mCore->FileSchemeAllowed(); }
+
   bool IgnoreQuarantine() const { return mCore->IgnoreQuarantine(); }
   void SetIgnoreQuarantine(bool aIgnore);
+
+  bool HasRecommendedState() const { return mCore->HasRecommendedState(); }
+  void SetHasRecommendedState(bool aHasRecommendedState);
 
   void GetContentScripts(ScriptArray& aScripts) const;
   const ScriptArray& ContentScripts() const { return mContentScripts; }
@@ -408,6 +453,9 @@ class WebExtensionPolicy final : public nsISupports, public nsWrapperCache {
   // NOTE: This is a mirror of the object in `mCore`, except with the
   // non-threadsafe wrapper.
   RefPtr<MatchPatternSet> mHostPermissions;
+
+  // NOTE: mirrors mCore->mGuardSets with non-threadsafe wrappers.
+  nsTArray<RefPtr<ExtensionGuardSet>> mGuardSets;
 
   dom::Nullable<nsTArray<nsString>> mBackgroundScripts;
 

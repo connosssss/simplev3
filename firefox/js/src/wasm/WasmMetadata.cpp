@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -9,8 +7,7 @@
 #include "mozilla/BinarySearch.h"
 #include "mozilla/CheckedInt.h"
 
-#include "jsnum.h"  // Int32ToCStringBuf
-
+#include "builtin/Number.h"  // Int32ToCStringBuf
 #include "vm/Logging.h"
 
 using mozilla::CheckedInt;
@@ -223,9 +220,9 @@ static bool AppendFunctionIndexName(uint32_t funcIndex, UTF8Bytes* bytes) {
          bytes->append(afterFuncIndex, strlen(afterFuncIndex));
 }
 
-bool CodeMetadata::getFuncNameForWasm(NameContext ctx, uint32_t funcIndex,
-                                      const ShareableBytes* nameSectionPayload,
-                                      UTF8Bytes* name) const {
+bool CodeMetadata::getFuncName(NameContext ctx, uint32_t funcIndex,
+                               const ShareableBytes* nameSectionPayload,
+                               UTF8Bytes* name) const {
   if (nameSection && nameSection->moduleName.length != 0) {
     if (!AppendName(nameSectionPayload->vector, nameSection->moduleName,
                     name)) {
@@ -236,10 +233,13 @@ bool CodeMetadata::getFuncNameForWasm(NameContext ctx, uint32_t funcIndex,
     }
   }
 
-  if (nameSection && funcIndex < nameSection->funcNames.length() &&
-      nameSection->funcNames[funcIndex].length != 0) {
-    return AppendName(nameSectionPayload->vector,
-                      nameSection->funcNames[funcIndex], name);
+  if (nameSection) {
+    if (auto funcName =
+            nameSection->funcNames.readonlyThreadsafeLookup(funcIndex)) {
+      if (funcName->value().length != 0) {
+        return AppendName(nameSectionPayload->vector, funcName->value(), name);
+      }
+    }
   }
 
   if (ctx == NameContext::BeforeLocation) {
@@ -261,7 +261,6 @@ size_t CodeMetadata::sizeOfExcludingThis(
          SizeOfMaybeExcludingThis(nameSection, mallocSizeOf) +
          funcs.sizeOfExcludingThis(mallocSizeOf) +
          elemSegmentTypes.sizeOfExcludingThis(mallocSizeOf) +
-         asmJSSigToTableIndex.sizeOfExcludingThis(mallocSizeOf) +
          customSectionRanges.sizeOfExcludingThis(mallocSizeOf);
 }
 
@@ -301,8 +300,14 @@ bool ModuleMetadata::addDefinedFunc(
   if (!codeMeta->types->addType(std::move(funcType))) {
     return false;
   }
+  return addDefinedFuncWithType(typeIndex, declareForRef,
+                                std::move(optionalExportedName));
+}
 
-  FuncDesc funcDesc = FuncDesc(typeIndex);
+bool ModuleMetadata::addDefinedFuncWithType(
+    uint32_t funcTypeIndex, bool declareForRef,
+    mozilla::Maybe<CacheableName>&& optionalExportedName) {
+  FuncDesc funcDesc = FuncDesc(funcTypeIndex);
   uint32_t funcIndex = codeMeta->funcs.length();
   if (!codeMeta->funcs.append(funcDesc)) {
     return false;

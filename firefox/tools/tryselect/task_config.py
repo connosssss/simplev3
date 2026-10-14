@@ -7,11 +7,13 @@ Templates provide a way of modifying the task definition of selected tasks.
 They are added to 'try_task_config.json' and processed by the transforms.
 """
 
+import calendar
 import json
 import os
 import pathlib
 import subprocess
 import sys
+import time
 from abc import ABCMeta, abstractmethod
 from argparse import SUPPRESS, Action
 from textwrap import dedent
@@ -19,13 +21,79 @@ from textwrap import dedent
 import mozpack.path as mozpath
 import requests
 from mozbuild.base import BuildEnvironmentNotFoundException, MozbuildObject
-from taskgraph.util import taskcluster
+from mozbuild.util import set_taskcluster_root_url
 
+from . import push
 from .tasks import resolve_tests_by_suite
 from .util.ssh import get_ssh_user
 
 here = pathlib.Path(__file__).parent
 build = MozbuildObject.from_environment(cwd=str(here))
+
+# Set from mach settings in mach_commands.init()
+SKIP_ARTIFACT_BUILD_CHECK = False
+
+# Suffixes of files that are never compiled, so a patch touching only files
+# with these suffixes can safely be tested with artifact builds.
+NON_COMPILED_SUFFIXES = (
+    "^headers^",
+    ".build",
+    ".cjs",
+    ".css",
+    ".headers",
+    ".html",
+    ".ico",
+    ".js",
+    ".json",
+    ".jsx",
+    ".mjs",
+    ".mn",
+    ".png",
+    ".scss",
+    ".sjs",
+    ".svg",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".xhtml",
+)
+
+# `./mach try` is often left unattended, so the artifact build prompt below
+# only blocks for this long before falling back to not using artifact builds.
+ARTIFACT_PROMPT_TIMEOUT = 30
+
+
+def prompt_with_timeout(message, timeout):
+    """Ask a question on stdin, waiting at most `timeout` seconds for an answer.
+
+    Returns the answer, or None if stdin isn't interactive or nothing was
+    entered in time. Callers should then fall back to a default, so that
+    scripted and unattended pushes are never blocked on an answer.
+    """
+    if not sys.stdin or not sys.stdin.isatty():
+        return None
+
+    print(message, end="", flush=True)
+
+    if sys.platform == "win32":
+        import msvcrt
+
+        deadline = time.monotonic() + timeout
+        while not msvcrt.kbhit():
+            if time.monotonic() > deadline:
+                print()
+                return None
+            time.sleep(0.05)
+    else:
+        # `select` can wait on stdin on POSIX platforms, but on Windows it only
+        # supports sockets, hence the `msvcrt` polling above.
+        import select
+
+        if not select.select([sys.stdin], [], [], timeout)[0]:
+            print()
+            return None
+
+    return sys.stdin.readline().strip()
 
 
 class ParameterConfig:
@@ -63,6 +131,36 @@ class TargetTasksMethod(ParameterConfig):
     def get_parameters(self, target_tasks_method: str, **kwargs):
         if target_tasks_method:
             return {"target_tasks_method": target_tasks_method}
+
+
+class PushDate(ParameterConfig):
+    arguments = [
+        [
+            ["--pushdate"],
+            {
+                "default": None,
+                "help": "Override the build date (format: YYYYMMDDHHMMSS) used for this try push.",
+            },
+        ],
+    ]
+
+    def get_parameters(self, pushdate: str, **kwargs):
+        if pushdate is not None:
+            try:
+                build_date = int(
+                    calendar.timegm(time.strptime(pushdate, "%Y%m%d%H%M%S"))
+                )
+            except ValueError:
+                print(
+                    f"error: --pushdate must be in YYYYMMDDHHMMSS format, got: {pushdate}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            return {
+                "build_date": build_date,
+                "moz_build_date": pushdate,
+                "pushdate": build_date,
+            }
 
 
 class TryConfig(ParameterConfig):
@@ -103,6 +201,17 @@ class Artifact(TryConfig):
         except BuildEnvironmentNotFoundException:
             return False
 
+    @classmethod
+    def is_non_compiled_patch(cls):
+        try:
+            changed_files = list(push.vcs.get_outgoing_files())
+        except Exception:
+            return False
+
+        return bool(changed_files) and all(
+            f.endswith(NON_COMPILED_SUFFIXES) for f in changed_files
+        )
+
     def try_config(self, artifact, no_artifact, **kwargs):
         if artifact:
             return {"use-artifact-builds": True, "disable-pgo": True}
@@ -110,9 +219,33 @@ class Artifact(TryConfig):
         if no_artifact:
             return
 
+        # If 'try.noartifact' is set in mach settings, default to non-artifact
+        # try instead of checking current build environment.
+        if SKIP_ARTIFACT_BUILD_CHECK:
+            return
+
         if self.is_artifact_build():
             print("Artifact builds enabled, pass --no-artifact to disable")
             return {"use-artifact-builds": True, "disable-pgo": True}
+
+        if self.is_non_compiled_patch():
+            while True:
+                answer = prompt_with_timeout(
+                    "This patch only touches files that don't require a "
+                    "compiled build (JS/TS/TOML/...). Use artifact builds? "
+                    f"[Y/n] (no answer within {ARTIFACT_PROMPT_TIMEOUT}s "
+                    "means 'n'): ",
+                    ARTIFACT_PROMPT_TIMEOUT,
+                )
+                if answer is None:
+                    print("No answer, not using artifact builds.")
+                    break
+                answer = answer.lower()
+                if answer in ("", "y", "yes"):
+                    return {"use-artifact-builds": True, "disable-pgo": True}
+                if answer in ("n", "no"):
+                    break
+                print(f"Invalid answer: '{answer}'")
 
 
 class Pernosco(TryConfig):
@@ -206,21 +339,40 @@ class Path(TryConfig):
                 "help": "Run tasks containing tests under the specified path(s).",
             },
         ],
+        [
+            ["--allow-testfile-path"],
+            {
+                "dest": "allow_testfile_path",
+                "action": "store_true",
+                "default": None,
+                "help": "Opt in to pass a specific testfile path (ie not only a folder)",
+            },
+        ],
     ]
 
-    def try_config(self, paths, **kwargs):
+    def try_config(self, paths, allow_testfile_path, **kwargs):
         if not paths:
             return
 
-        for p in paths:
+        for i, p in enumerate(paths):
             if not os.path.exists(p):
                 print(f"error: '{p}' is not a valid path.", file=sys.stderr)
                 sys.exit(1)
 
-        paths = [
-            mozpath.relpath(mozpath.join(os.getcwd(), p), build.topsrcdir)
-            for p in paths
-        ]
+            # Passing paths to specific tests doesn't work with the Treeherder
+            # test path filter or test-verify. Re-write it to the containing
+            # directory to avoid confusion.
+            if os.path.isfile(p) and not allow_testfile_path:
+                parent = os.path.dirname(p)
+                print(
+                    f"warning: paths to individual tests may not work, re-writing to {parent}. Pass --allow-testfile-path to override"
+                )
+                paths[i] = parent
+
+            paths[i] = mozpath.relpath(
+                mozpath.join(os.getcwd(), paths[i]), build.topsrcdir
+            )
+
         return {
             "env": {
                 "MOZHARNESS_TEST_PATHS": json.dumps(resolve_tests_by_suite(paths)),
@@ -269,17 +421,107 @@ class Environment(TryConfig):
                 "help": "Get a screen recording of the tests where possible.",
             },
         ],
+        [
+            ["--profiler"],
+            {
+                "action": "store_true",
+                "help": "Enable the profiler with the normal feature set, "
+                "overriding the low-overhead defaults used by the test harness.",
+            },
+        ],
     ]
 
-    def try_config(self, env, record, **kwargs):
+    def try_config(self, env, record, profiler, **kwargs):
         if env is None:
             env = []
         if record:
             env.append("MOZ_RECORD_TEST=1")
+        if profiler:
+            env.append("MOZ_PROFILER_STARTUP=1")
+            # Override the low-overhead feature set and sampling interval
+            # that the test harness enables by default, so pushes with
+            # --profiler get a normally configured profiler.
+            env.append("MOZ_PROFILER_STARTUP_FEATURES=default")
+            env.append("MOZ_PROFILER_STARTUP_INTERVAL=1")
         if not env:
             return
         return {
             "env": dict(e.split("=", 1) for e in env),
+        }
+
+
+class Extensions(TryConfig):
+    AMO_API_ADDON_URL = "https://addons.mozilla.org/api/v5/addons/addon/{addon_id}/"
+
+    arguments = [
+        [
+            ["--extension"],
+            {
+                "action": "append",
+                "default": [],
+                "dest": "extensions",
+                "metavar": "ADDON_ID",
+                "help": "Install an AMO webextension (by addon GUID/slug) into the "
+                "test profile of raptor/browsertime and mozperftest tasks. May be "
+                "specified multiple times. Has no effect on other tasks.",
+            },
+        ],
+    ]
+
+    def resolve_amo_addon(self, addon_id):
+        """Resolve an AMO addon GUID/slug to its current pinned .xpi download URL.
+
+        Resolving at submit time fails fast on a bad id and pins the exact version
+        that the push will install.
+        """
+        api_url = self.AMO_API_ADDON_URL.format(addon_id=addon_id)
+        try:
+            resp = requests.get(api_url, headers={"User-Agent": "mach-try"}, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            raise Exception(
+                f"Could not resolve addon {addon_id!r} from AMO ({api_url}): {e}"
+            )
+
+        current_version = data.get("current_version") or {}
+        # AMO API v5 exposes a single `file`; older shapes used a `files` list.
+        addon_file = current_version.get("file")
+        if addon_file is None:
+            files = current_version.get("files") or []
+            addon_file = files[0] if files else None
+
+        if not addon_file or not addon_file.get("url"):
+            raise Exception(f"No downloadable file found for addon {addon_id!r} on AMO")
+
+        return addon_file["url"]
+
+    def try_config(self, extensions, **kwargs):
+        if not extensions:
+            return
+
+        urls = []
+        for entry in extensions:
+            if entry.startswith(("http://", "https://")):
+                try:
+                    requests.head(
+                        entry, allow_redirects=True, timeout=30
+                    ).raise_for_status()
+                except Exception as e:
+                    raise Exception(f"Could not reach extension URL {entry!r}: {e}")
+                urls.append(entry)
+            elif entry.endswith(".xpi") or "/" in entry or "\\" in entry:
+                raise Exception(
+                    f"--extension does not accept local paths: {entry!r}. "
+                    f"Use an AMO addon GUID/slug or a .xpi URL."
+                )
+            else:
+                urls.append(self.resolve_amo_addon(entry))
+
+        return {
+            "env": {
+                "PERF_FLAGS": "install-extension=" + ",".join(urls),
+            },
         }
 
 
@@ -311,6 +553,10 @@ class ExistingTasks(ParameterConfig):
     ]
 
     def find_decision_task(self, use_existing_tasks):
+        from taskgraph.util import taskcluster
+
+        set_taskcluster_root_url()
+
         branch = "try"
         if use_existing_tasks == "last_try_push":
             # Use existing tasks from user's previous try push.
@@ -337,6 +583,10 @@ class ExistingTasks(ParameterConfig):
     def get_parameters(self, use_existing_tasks, **kwargs):
         if not use_existing_tasks:
             return
+
+        from taskgraph.util import taskcluster
+
+        set_taskcluster_root_url()
 
         if use_existing_tasks.startswith("task-id="):
             tid = use_existing_tasks[len("task-id=") :]
@@ -369,7 +619,7 @@ class Rebuild(TryConfig):
             ["--rebuild"],
             {
                 "action": RangeAction,
-                "min": 2,
+                "min": 1,
                 "max": 20,
                 "default": None,
                 "type": int,
@@ -382,16 +632,17 @@ class Rebuild(TryConfig):
         if not rebuild:
             return
 
-        if (
-            not kwargs.get("new_test_config", False)
-            and kwargs.get("full")
-            and rebuild > 3
-        ):
-            print(
-                "warning: limiting --rebuild to 3 when using --full. "
-                "Use custom push actions to add more."
-            )
-            rebuild = 3
+        if not kwargs.get("new_test_config", False):
+            if rebuild == 1:
+                print(
+                    "warning: setting --rebuild to 1 is the same as not specifying it."
+                )
+            elif kwargs.get("full") and rebuild > 3:
+                print(
+                    "warning: limiting --rebuild to 3 when using --full. "
+                    "Use custom push actions to add more."
+                )
+                rebuild = 3
 
         return {
             "rebuild": rebuild,
@@ -423,17 +674,20 @@ class Routes(TryConfig):
 class ChemspillPrio(TryConfig):
     arguments = [
         [
-            ["--chemspill-prio"],
+            ["--chemspill", "--chemspill-priority"],
             {
                 "action": "store_true",
+                "dest": "chemspill",
                 "help": "Run at a higher priority than most try jobs (chemspills only).",
             },
         ],
     ]
 
-    def try_config(self, chemspill_prio, **kwargs):
-        if chemspill_prio:
-            return {"chemspill-prio": True}
+    def try_config(self, chemspill, **kwargs):
+        if chemspill:
+            # Despite being "low", this is still higher than other tasks on
+            # try, the equivalent of a push to autoland.
+            return {"priority": "low"}
 
 
 class GeckoProfile(TryConfig):
@@ -581,6 +835,50 @@ class NewConfig(TryConfig):
             }
 
 
+class DoNotOptimize(ParameterConfig):
+    arguments = [
+        [
+            ["--do-not-optimize"],
+            {
+                "action": "append",
+                "dest": "do_not_optimize",
+                "default": None,
+                "help": (
+                    "Task labels to not optimize. These tasks will always be built "
+                    "instead of being replaced by indexed tasks. Can be specified multiple times."
+                ),
+            },
+        ],
+    ]
+
+    def get_parameters(self, do_not_optimize, **kwargs):
+        if do_not_optimize:
+            return {"do_not_optimize": do_not_optimize}
+
+
+class BuildCar(ParameterConfig):
+    arguments = [
+        [
+            ["--build-car"],
+            {
+                "action": "store_true",
+                "help": "Force rebuild of custom-car toolchains instead of reusing mozilla-central artifacts.",
+            },
+        ],
+    ]
+
+    CUSTOM_CAR_LABELS = [
+        "toolchain-linux64-custom-car",
+        "toolchain-win64-custom-car",
+        "toolchain-macosx64-aarch64-custom-car",
+        "toolchain-android-custom-car",
+    ]
+
+    def get_parameters(self, build_car, **kwargs):
+        if build_car:
+            return {"do_not_optimize": self.CUSTOM_CAR_LABELS}
+
+
 class WorkerOverrides(TryConfig):
     arguments = [
         [
@@ -695,13 +993,17 @@ class WorkerOverrides(TryConfig):
 all_task_configs = {
     "artifact": Artifact,
     "browsertime": Browsertime,
+    "build-car": BuildCar,
     "chemspill-prio": ChemspillPrio,
     "disable-pgo": DisablePgo,
+    "do-not-optimize": DoNotOptimize,
     "env": Environment,
     "existing-tasks": ExistingTasks,
+    "extensions": Extensions,
     "gecko-profile": GeckoProfile,
     "new-test-config": NewConfig,
     "path": Path,
+    "pushdate": PushDate,
     "test-tag": Tag,
     "pernosco": Pernosco,
     "rebuild": Rebuild,

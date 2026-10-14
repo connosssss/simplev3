@@ -132,7 +132,7 @@ export const ParentProcessWatcherRegistry = {
   /**
    * Return an array of the watcher actors that match the passed browserId
    *
-   * @param {Number} browserId
+   * @param {number} browserId
    * @returns {Array<WatcherActor>} An array of the matching watcher actors
    */
   getWatchersForBrowserId(browserId) {
@@ -336,6 +336,7 @@ const JSProcessActorConfig = {
   // This uses the ParentProcessTarget which inherits from BrowsingContextTarget
   // and is, for now, manually created by the descriptor as the top level target.
   includeParent: true,
+  safeForUntrustedWebProcess: true,
 };
 
 const BrowserToolboxJSProcessActorConfig = {

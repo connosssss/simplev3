@@ -8,13 +8,14 @@ import os
 import platform
 import shutil
 import sys
-import tarfile
 import time
+import zipfile
 
 import mozpack.path as mozpath
 from mach.decorators import Command, CommandArgument, SubCommand
 from mozbuild.base import MachCommandConditions as conditions
-from mozbuild.shellutil import split as shell_split
+from mozfile import load_source
+from mozshellutil import split as shell_split
 
 # Mach's conditions facility doesn't support subcommands.  Print a
 # deprecation message ourselves instead.
@@ -69,10 +70,17 @@ def export(command_context, inputs, args):
     bindings_inputs = list(itertools.chain(*((input, stem(input)) for input in inputs)))
     bindings_args = "-Pgenerate_sdk_bindings_args={}".format(";".join(bindings_inputs))
 
+    # Here rather than next to the SBOM, because this is the Gradle invocation
+    # the build already runs; sbom.json in the top-level moz.build depends on it.
+    sbom_tasks = []
+    if command_context.substs.get("MOZ_GENERATE_SBOM"):
+        sbom_tasks = ["geckoview:writeRuntimeDependencies"]
+
     ret = gradle(
         command_context,
         command_context.substs["GRADLE_ANDROID_GENERATE_GENERATED_JNI_WRAPPERS_TASKS"]
         + command_context.substs["GRADLE_ANDROID_GENERATE_SDK_BINDINGS_TASKS"]
+        + sbom_tasks
         + [bindings_args]
         + args,
         verbose=True,
@@ -125,6 +133,43 @@ def android_checkstyle_REMOVED(command_context):
     return 1
 
 
+# The Gradle builds the android-gradle-dependencies toolchain task enumerates
+# dependencies for, as root directories relative to topsrcdir.
+#
+# `--write-verification-metadata` resolves every resolvable configuration of
+# every project that the requested tasks pull into the build, so a pass requests
+# nothing but `help`. A dependency that is only used conditionally therefore has
+# to be gated on DOWNLOAD_ALL_GRADLE_DEPENDENCIES, which the toolchain task's
+# mozconfig sets, rather than on a Gradle property that a pass would have to
+# name.
+#
+# fenix and focus-android currently resolve nothing the top-level build does
+# not, but they are separate Gradle builds that CI builds standalone, so they
+# get a pass of their own rather than relying on that staying true.
+GRADLE_DEPENDENCY_PASSES = [
+    ".",
+    "mobile/android/fenix",
+    "mobile/android/focus-android",
+    "mobile/android/android-components",
+]
+
+# What `--write-verification-metadata` writes, per Gradle build, and where the
+# passes' copies are collected for the toolchain task to check the packaged
+# dependency cache against.
+DEPENDENCY_INVENTORY = "verification-metadata.dryrun.xml"
+DEPENDENCY_INVENTORY_DIR = "dependency-inventories"
+
+# Asking Gradle to resolve and record rather than to build. Kept here rather than
+# in the callers because a pass means nothing without them, and because they must
+# not reach the `mach build` that precedes the passes in the toolchain task.
+ENUMERATION_FLAGS = [
+    "--no-configuration-cache",
+    "--write-verification-metadata",
+    "sha256",
+    "--dry-run",
+]
+
+
 @SubCommand(
     "android",
     "gradle-dependencies",
@@ -133,16 +178,44 @@ def android_checkstyle_REMOVED(command_context):
 )
 @CommandArgument("args", nargs=argparse.REMAINDER)
 def android_gradle_dependencies(command_context, args):
-    # We don't want to gate producing dependency archives on clean
-    # lint or checkstyle, particularly because toolchain versions
-    # can change the outputs for those processes.
-    gradle(
-        command_context,
-        command_context.substs["GRADLE_ANDROID_DEPENDENCIES_TASKS"]
-        + ["--continue"]
-        + args,
-        verbose=True,
-    )
+    from pathlib import Path
+
+    topsrcdir = Path(command_context.topsrcdir)
+    # Cleared rather than merged into, and the failure to clear is not ignored,
+    # so that a previous run's inventories can never be what gets checked.
+    inventories = topsrcdir / "gradle" / DEPENDENCY_INVENTORY_DIR
+    if inventories.exists():
+        shutil.rmtree(inventories)
+    inventories.mkdir(parents=True)
+
+    for root in GRADLE_DEPENDENCY_PASSES:
+        # Removed first, so that a pass writing nothing is detectable below.
+        inventory = topsrcdir / root / "gradle" / DEPENDENCY_INVENTORY
+        inventory.unlink(missing_ok=True)
+
+        ret = gradle(
+            command_context,
+            ["help"] + ENUMERATION_FLAGS + args,
+            verbose=True,
+            topsrcdir=str(topsrcdir / root),
+        )
+        if ret:
+            return ret
+
+        if not inventory.is_file():
+            command_context.log(
+                logging.ERROR,
+                "gradle-dependencies",
+                {"root": root, "inventory": str(inventory)},
+                "The enumeration pass for {root} wrote no {inventory}. Is "
+                "--write-verification-metadata still in ENUMERATION_FLAGS?",
+            )
+            return 1
+
+        # Named after the whole root, so that two builds whose directories share
+        # a basename cannot quietly overwrite each other's inventory.
+        name = "top-level" if root == "." else root.replace("/", "-")
+        shutil.copyfile(inventory, inventories / f"{name}.xml")
 
     return 0
 
@@ -163,11 +236,11 @@ def create_maven_archive(topobjdir):
     # files which cannot be significantly compressed; attempting to compress
     # the archive is usually expensive in time and results in minimal
     # reduction in size.
-    # Even though the archive is not compressed, use the .xz file extension
-    # so that the taskcluster worker also skips compression.
-    with tarfile.open(os.path.join(gradle_folder, "target.maven.tar.xz"), "w") as tar:
+    with zipfile.ZipFile(
+        os.path.join(gradle_folder, "target.maven.zip"), "w"
+    ) as target_zip:
         for abs_path in get_maven_archive_paths(maven_folder):
-            tar.add(
+            target_zip.write(
                 abs_path,
                 arcname=os.path.join(
                     "geckoview", os.path.relpath(abs_path, maven_folder)
@@ -223,9 +296,17 @@ def android_build_geckoview_example(command_context, args):
 @SubCommand("android", "compile-all", """Build all source files""")
 @CommandArgument("args", nargs=argparse.REMAINDER)
 def android_compile_all(command_context, args):
+    tasks = command_context.substs["GRADLE_ANDROID_COMPILE_ALL_TASKS"]
+
+    # Serialize the indexing build: the semanticdb-javac plugin races when concurrent
+    # compile tasks write its shared output. --no-parallel is insufficient (it only
+    # disables cross-project parallelism), so cap the worker pool to one. See bug 2036411.
+    if command_context.substs.get("ENABLE_MOZSEARCH_PLUGIN"):
+        tasks = tasks + ["--max-workers=1"]
+
     ret = gradle(
         command_context,
-        command_context.substs["GRADLE_ANDROID_COMPILE_ALL_TASKS"] + args,
+        tasks + args,
         verbose=True,
     )
 
@@ -238,9 +319,7 @@ def install_app_bundle(command_context, bundle):
     bundletool = mozpath.join(command_context._mach_context.state_dir, "bundletool.jar")
     device = ADBDeviceFactory(verbose=True)
     bundle_path = mozpath.join(command_context.topobjdir, bundle)
-    java_home = java_home = os.path.dirname(
-        os.path.dirname(command_context.substs["JAVA"])
-    )
+    java_home = os.path.dirname(os.path.dirname(command_context.substs["JAVA"]))
     device.install_app_bundle(bundletool, bundle_path, java_home, timeout=120)
 
 
@@ -266,7 +345,40 @@ def android_install_geckoview_example(command_context, args):
 def android_install_fenix(command_context, args):
     gradle(
         command_context,
-        ["fenix:installFenixDebug"] + args,
+        ["fenix:installDebug"] + args,
+        verbose=True,
+    )
+    return 0
+
+
+@SubCommand("android", "install-fenix-nightly", """Install fenix Nightly""")
+@CommandArgument("args", nargs=argparse.REMAINDER)
+def android_install_fenix_nightly(command_context, args):
+    gradle(
+        command_context,
+        ["fenix:installNightly"] + args,
+        verbose=True,
+    )
+    return 0
+
+
+@SubCommand("android", "install-fenix-beta", """Install fenix Beta""")
+@CommandArgument("args", nargs=argparse.REMAINDER)
+def android_install_fenix_beta(command_context, args):
+    gradle(
+        command_context,
+        ["fenix:installBeta"] + args,
+        verbose=True,
+    )
+    return 0
+
+
+@SubCommand("android", "install-fenix-release", """Install fenix Release""")
+@CommandArgument("args", nargs=argparse.REMAINDER)
+def android_install_fenix_release(command_context, args):
+    gradle(
+        command_context,
+        ["fenix:installRelease"] + args,
         verbose=True,
     )
     return 0
@@ -292,17 +404,6 @@ def android_install_geckoview_test_runner(command_context, args):
         command_context,
         command_context.substs["GRADLE_ANDROID_INSTALL_GECKOVIEW_TEST_RUNNER_TASKS"]
         + args,
-        verbose=True,
-    )
-    return 0
-
-
-@SubCommand("android", "installFenixRelease", """Install fenix Release""")
-@CommandArgument("args", nargs=argparse.REMAINDER)
-def android_install_fenix_release(command_context, args):
-    gradle(
-        command_context,
-        ["-p", "mobile/android/fenix", "installFenixRelease"] + args,
         verbose=True,
     )
     return 0
@@ -492,6 +593,181 @@ def android_geckoview_docs(
     return 0
 
 
+@SubCommand(
+    "android",
+    "update-buildconfig",
+    """Update .buildconfig.yml with latest gradle project configuration.""",
+    virtualenv_name="buildconfig",
+)
+@CommandArgument(
+    "project",
+    choices=["fenix", "focus", "android-components"],
+    help="The project to update (fenix, focus, or android-components).",
+)
+@CommandArgument(
+    "--check",
+    action="store_true",
+    help="Check that .buildconfig.yml is up-to-date instead of updating it.",
+)
+def android_update_buildconfig(command_context, project, check=False):
+    from pathlib import Path
+
+    import yaml
+    from mozversioncontrol import get_repository_object
+
+    _PROJECT_DIRS = {
+        "fenix": "fenix",
+        "focus": "focus-android",
+        "android-components": "android-components",
+    }
+    topsrcdir = Path(command_context.topsrcdir)
+    gradle_root = topsrcdir / "mobile" / "android" / _PROJECT_DIRS[project]
+    build_config_file = gradle_root / ".buildconfig.yml"
+
+    build_config = yaml.safe_load(build_config_file.read_text(encoding="utf-8"))
+
+    os.environ["MOZ_BUILD_CONFIG_LINT"] = "1"
+
+    if project == "android-components":
+        gradle_projects = list(build_config["projects"].keys())
+    else:
+        gradle_projects = ["app"]
+
+    ret = gradle(
+        command_context,
+        ["printProjectDependencies"],
+        verbose=True,
+        topsrcdir=str(gradle_root),
+    )
+    if ret:
+        return ret
+
+    import json
+    from pathlib import Path
+
+    deps_output = Path(gradle_root) / "build" / "printProjectDependencies.json"
+    all_deps = json.loads(deps_output.read_text(encoding="utf-8"))
+
+    for project_name in gradle_projects:
+        build_config["projects"][project_name]["upstream_dependencies"] = all_deps.get(
+            project_name, []
+        )
+
+    if project in ("fenix", "focus"):
+        ret = gradle(
+            command_context,
+            ["printVariants"],
+            verbose=True,
+            topsrcdir=str(gradle_root),
+        )
+        if ret:
+            return ret
+
+        variants_output = Path(gradle_root) / "app" / "build" / "printVariants.json"
+        build_config["variants"] = json.loads(
+            variants_output.read_text(encoding="utf-8")
+        )
+
+    with open(build_config_file, "w", encoding="utf-8", newline="\n") as f:
+        yaml.safe_dump(build_config, f)
+
+    repo = get_repository_object(topsrcdir)
+    changed_files = repo.get_changed_files(diff_filter="M")
+    rel_path = build_config_file.relative_to(topsrcdir).as_posix()
+    changed = rel_path in changed_files
+
+    if changed:
+        if check:
+            task_id = os.environ.get("TASK_ID")
+            if task_id:
+                diff = repo.diff_stream(extensions=[".buildconfig.yml"]).read()
+                output_dir = Path(
+                    os.environ.get("ARTIFACTS_DIR", "/builds/worker/artifacts")
+                )
+                output_dir.mkdir(parents=True, exist_ok=True)
+                diff_file = output_dir / "buildconfig.diff"
+                diff_file.write_text(diff, encoding="utf-8", newline="\n")
+                tc_root_url = os.environ["TASKCLUSTER_ROOT_URL"]
+                artifact_url = (
+                    f"{tc_root_url}/api/queue/v1/task/{task_id}"
+                    "/artifacts/public%2Fbuildconfig.diff"
+                )
+                command_context.log(
+                    logging.ERROR,
+                    "buildconfig",
+                    {"artifact_url": artifact_url},
+                    "[gradle:error] .buildconfig.yml changed! Please update it by running:   "
+                    '"curl --location --compressed {artifact_url} | git apply"   '
+                    "Then commit and push!",
+                )
+            else:
+                command_context.log(
+                    logging.ERROR,
+                    "buildconfig",
+                    {},
+                    ".buildconfig.yml updated! Please commit these changes.",
+                )
+
+            command_context.log(
+                logging.ERROR,
+                "buildconfig",
+                {"rel_path": rel_path},
+                "TEST-UNEXPECTED-FAIL | {rel_path} | build config changed",
+            )
+            return 1
+
+        command_context.log(
+            logging.INFO,
+            "buildconfig",
+            {"path": str(build_config_file)},
+            "Updated {path} with latest Gradle config!",
+        )
+    else:
+        command_context.log(
+            logging.INFO,
+            "buildconfig",
+            {"name": build_config_file.name},
+            "All good! {name} is up-to-date with Gradle.",
+        )
+    return 0
+
+
+@SubCommand(
+    "android",
+    "nimbus-cli",
+    """Download, install and run nimbus-cli against a local Android build.
+
+Arguments are passed through, e.g. `--app fenix --channel developer list`. Use
+`-- --help` for nimbus-cli's own help, and see
+https://experimenter.info/nimbus-cli for the full documentation.""",
+)
+@CommandArgument(
+    "--update",
+    action="store_true",
+    help="Check for a newer nimbus-cli before running, ignoring the cached version.",
+)
+@CommandArgument("args", nargs=argparse.REMAINDER)
+def android_nimbus_cli(command_context, update=False, args=()):
+    if not conditions.is_android(command_context):
+        command_context.log(
+            logging.ERROR,
+            "nimbus-cli",
+            {},
+            "nimbus-cli drives Firefox for Android builds, but no Android build "
+            "was detected.\n"
+            "Switch to a Firefox for Android build context or use 'mach bootstrap'\n"
+            "to setup an Android build environment.",
+        )
+        return 1
+
+    # mobile/android isn't a package, so load the implementation by path rather
+    # than putting this directory on sys.path.
+    nimbus_cli = load_source(
+        "nimbus_cli", os.path.join(os.path.dirname(__file__), "nimbus_cli.py")
+    )
+    return nimbus_cli.run(command_context, args, force_update=update)
+
+
 @Command(
     "gradle",
     category="devenv",
@@ -549,15 +825,13 @@ def gradle(command_context, args, verbose=False, gradle_path=None, topsrcdir=Non
 
     env = os.environ.copy()
 
-    env.update(
-        {
-            "GRADLE_OPTS": "-Dfile.encoding=utf-8",
-            "JAVA_HOME": java_home,
-            "JAVA_TOOL_OPTIONS": "-Dfile.encoding=utf-8",
-            # Let Gradle get the right Python path on Windows
-            "GRADLE_MACH_PYTHON": sys.executable,
-        }
-    )
+    env.update({
+        "GRADLE_OPTS": "-Dfile.encoding=utf-8",
+        "JAVA_HOME": java_home,
+        "JAVA_TOOL_OPTIONS": "-Dfile.encoding=utf-8",
+        # Let Gradle get the right Python path on Windows
+        "GRADLE_MACH_PYTHON": sys.executable,
+    })
     # Set ANDROID_SDK_ROOT if --with-android-sdk was set.
     # See https://bugzilla.mozilla.org/show_bug.cgi?id=1576471
     android_sdk_root = command_context.substs.get("ANDROID_SDK_ROOT", "")

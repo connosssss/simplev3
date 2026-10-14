@@ -64,7 +64,7 @@ impl UniFFITestHelper {
         let cdylib_targets: Vec<&Target> = package
             .targets
             .iter()
-            .filter(|t| t.crate_types.iter().any(|t| *t == CrateType::CDyLib))
+            .filter(|t| t.crate_types.contains(&CrateType::CDyLib))
             .collect();
         let target = match cdylib_targets.len() {
             1 => cdylib_targets[0],
@@ -170,6 +170,7 @@ fn get_cargo_build_messages() -> Vec<Message> {
 
     let mut child = Command::new(env!("CARGO"))
         .arg("test")
+        .arg("--release")
         .arg(features_arg)
         .arg("--no-run")
         .arg("--message-format=json")

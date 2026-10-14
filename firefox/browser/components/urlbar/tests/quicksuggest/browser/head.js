@@ -11,13 +11,13 @@ Services.scriptloader.loadSubScript(
 );
 
 ChromeUtils.defineESModuleGetters(this, {
-  CONTEXTUAL_SERVICES_PING_TYPES:
-    "resource:///modules/PartnerLinkAttribution.sys.mjs",
-  QuickSuggest: "resource:///modules/QuickSuggest.sys.mjs",
+  QUICK_SUGGEST_PING_TYPE:
+    "moz-src:///browser/components/urlbar/private/AmpSuggestions.sys.mjs",
+  QuickSuggest: "moz-src:///browser/components/urlbar/QuickSuggest.sys.mjs",
   Region: "resource://gre/modules/Region.sys.mjs",
   TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.sys.mjs",
   UrlbarProviderQuickSuggest:
-    "resource:///modules/UrlbarProviderQuickSuggest.sys.mjs",
+    "moz-src:///browser/components/urlbar/UrlbarProviderQuickSuggest.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(this, "QuickSuggestTestUtils", () => {
@@ -31,6 +31,14 @@ ChromeUtils.defineLazyGetter(this, "QuickSuggestTestUtils", () => {
 ChromeUtils.defineLazyGetter(this, "MerinoTestUtils", () => {
   const { MerinoTestUtils: module } = ChromeUtils.importESModule(
     "resource://testing-common/MerinoTestUtils.sys.mjs"
+  );
+  module.init(this);
+  return module;
+});
+
+ChromeUtils.defineLazyGetter(this, "GeolocationTestUtils", () => {
+  const { GeolocationTestUtils: module } = ChromeUtils.importESModule(
+    "resource://testing-common/GeolocationTestUtils.sys.mjs"
   );
   module.init(this);
   return module;
@@ -78,6 +86,11 @@ async function updateTopSites(condition, searchShortcuts = false) {
     let sites = AboutNewTab.getTopSites();
     return condition(sites);
   }, "Waiting for top sites to be updated");
+
+  let feed = AboutNewTab.activityStream?.store?.feeds.get(
+    "feeds.system.topsites"
+  );
+  await feed?._latestRefreshPromise;
 }
 
 /**
@@ -282,7 +295,7 @@ async function doImpressionOnlyTest({
       if (
         !otherRow &&
         (r.result.payload.url ||
-          (r.result.type == UrlbarUtils.RESULT_TYPE.SEARCH &&
+          (r.result.type == UrlbarShared.RESULT_TYPE.SEARCH &&
             (r.result.payload.query || r.result.payload.suggestion))) &&
         r.hasAttribute("row-selectable")
       ) {
@@ -591,6 +604,9 @@ function assertQuickSuggestPing(expectedPing) {
     "requestId",
     "source",
     "contextId",
+    "suggestionId",
+    "experimentName",
+    "experimentBranch",
   ];
 
   Assert.ok(
@@ -598,19 +614,19 @@ function assertQuickSuggestPing(expectedPing) {
     "Sanity check: The expected ping should have a 'pingType'"
   );
   switch (expectedPing.pingType) {
-    case CONTEXTUAL_SERVICES_PING_TYPES.QS_IMPRESSION:
+    case QUICK_SUGGEST_PING_TYPE.IMPRESSION:
       expectedKeys.push("isClicked", "reportingUrl");
       break;
-    case CONTEXTUAL_SERVICES_PING_TYPES.QS_SELECTION:
+    case QUICK_SUGGEST_PING_TYPE.CLICK:
       expectedKeys.push("reportingUrl");
       break;
-    case CONTEXTUAL_SERVICES_PING_TYPES.QS_BLOCK:
+    case QUICK_SUGGEST_PING_TYPE.BLOCK:
       expectedKeys.push("iabCategory");
       break;
   }
 
   let expectedValueOverrides = {
-    contextId: expectedPingContextId(),
+    contextId: null,
   };
 
   for (let key of expectedKeys) {

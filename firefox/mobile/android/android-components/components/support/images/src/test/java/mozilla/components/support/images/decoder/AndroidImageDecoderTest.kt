@@ -7,10 +7,10 @@ package mozilla.components.support.images.decoder
 import android.graphics.Bitmap
 import android.util.Size
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlin.test.assertNotNull
 import mozilla.components.support.images.DesiredSize
 import mozilla.components.support.test.any
 import mozilla.components.support.test.mock
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -26,17 +26,18 @@ class AndroidImageDecoderTest {
     fun `WHEN decoding PNG THEN returns non-null bitmap`() {
         val decoder = AndroidImageDecoder()
 
-        val bitmap = decoder.decode(
-            loadImage("png/mozac.png"),
-            DesiredSize(
-                targetSize = 32,
-                minSize = 32,
-                maxSize = 256,
-                maxScaleFactor = 2.0f,
-            ),
-        )
+        val bitmap =
+            decoder.decode(
+                loadImage("png/mozac.png"),
+                DesiredSize(
+                    targetSize = 32,
+                    minSize = 32,
+                    maxSize = 256,
+                    maxScaleFactor = 2.0f,
+                ),
+            )
 
-        assertNotNull(bitmap!!)
+        assertNotNull(bitmap)
     }
 
     @Test
@@ -44,15 +45,16 @@ class AndroidImageDecoderTest {
         val decoder = spy(AndroidImageDecoder())
         doThrow(OutOfMemoryError()).`when`(decoder).decodeBitmap(any(), anyInt())
 
-        val bitmap = decoder.decode(
-            ByteArray(0),
-            DesiredSize(
-                targetSize = 64,
-                minSize = 32,
-                maxSize = 256,
-                maxScaleFactor = 2.0f,
-            ),
-        )
+        val bitmap =
+            decoder.decode(
+                ByteArray(0),
+                DesiredSize(
+                    targetSize = 64,
+                    minSize = 32,
+                    maxSize = 256,
+                    maxScaleFactor = 2.0f,
+                ),
+            )
 
         assertNull(bitmap)
     }
@@ -62,15 +64,16 @@ class AndroidImageDecoderTest {
         val decoder = spy(AndroidImageDecoder())
         doReturn(Size(0, 512)).`when`(decoder).decodeBitmapBounds(any())
 
-        val decodedBitmap = decoder.decode(
-            ByteArray(0),
-            DesiredSize(
-                targetSize = 64,
-                minSize = 32,
-                maxSize = 256,
-                maxScaleFactor = 2.0f,
-            ),
-        )
+        val decodedBitmap =
+            decoder.decode(
+                ByteArray(0),
+                DesiredSize(
+                    targetSize = 64,
+                    minSize = 32,
+                    maxSize = 256,
+                    maxScaleFactor = 2.0f,
+                ),
+            )
 
         assertNull(decodedBitmap)
     }
@@ -80,15 +83,16 @@ class AndroidImageDecoderTest {
         val decoder = spy(AndroidImageDecoder())
         doReturn(Size(512, 0)).`when`(decoder).decodeBitmapBounds(any())
 
-        val decodedBitmap = decoder.decode(
-            ByteArray(0),
-            DesiredSize(
-                targetSize = 64,
-                minSize = 32,
-                maxSize = 256,
-                maxScaleFactor = 2.0f,
-            ),
-        )
+        val decodedBitmap =
+            decoder.decode(
+                ByteArray(0),
+                DesiredSize(
+                    targetSize = 64,
+                    minSize = 32,
+                    maxSize = 256,
+                    maxScaleFactor = 2.0f,
+                ),
+            )
 
         assertNull(decodedBitmap)
     }
@@ -98,15 +102,16 @@ class AndroidImageDecoderTest {
         val decoder = spy(AndroidImageDecoder())
         doReturn(null).`when`(decoder).decodeBitmap(any(), anyInt())
 
-        val decodedBitmap = decoder.decode(
-            ByteArray(0),
-            DesiredSize(
-                targetSize = 64,
-                minSize = 32,
-                maxSize = 256,
-                maxScaleFactor = 2.0f,
-            ),
-        )
+        val decodedBitmap =
+            decoder.decode(
+                ByteArray(0),
+                DesiredSize(
+                    targetSize = 64,
+                    minSize = 32,
+                    maxSize = 256,
+                    maxScaleFactor = 2.0f,
+                ),
+            )
 
         assertNull(decodedBitmap)
     }
@@ -118,15 +123,16 @@ class AndroidImageDecoderTest {
         val decoder = spy(AndroidImageDecoder())
         doReturn(size).`when`(decoder).decodeBitmapBounds(any())
 
-        val decodedBitmap = decoder.decode(
-            ByteArray(0),
-            DesiredSize(
-                targetSize = 256,
-                minSize = 64,
-                maxSize = 256,
-                maxScaleFactor = 1.0f,
-            ),
-        )
+        val decodedBitmap =
+            decoder.decode(
+                ByteArray(0),
+                DesiredSize(
+                    targetSize = 256,
+                    minSize = 64,
+                    maxSize = 256,
+                    maxScaleFactor = 1.0f,
+                ),
+            )
 
         assertNull(decodedBitmap)
     }
@@ -138,15 +144,16 @@ class AndroidImageDecoderTest {
         val decoder = spy(AndroidImageDecoder())
         doReturn(size).`when`(decoder).decodeBitmapBounds(any())
 
-        val decodedBitmap = decoder.decode(
-            ByteArray(0),
-            DesiredSize(
-                targetSize = 256,
-                minSize = 64,
-                maxSize = 256,
-                maxScaleFactor = 1.0f,
-            ),
-        )
+        val decodedBitmap =
+            decoder.decode(
+                ByteArray(0),
+                DesiredSize(
+                    targetSize = 256,
+                    minSize = 64,
+                    maxSize = 256,
+                    maxScaleFactor = 1.0f,
+                ),
+            )
 
         assertNull(decodedBitmap)
     }
@@ -158,15 +165,16 @@ class AndroidImageDecoderTest {
         val decoder = spy(AndroidImageDecoder())
         doReturn(size).`when`(decoder).decodeBitmapBounds(any())
 
-        val decodedBitmap = decoder.decode(
-            ByteArray(0),
-            DesiredSize(
-                targetSize = 256,
-                minSize = 64,
-                maxSize = 256,
-                maxScaleFactor = 0.9f,
-            ),
-        )
+        val decodedBitmap =
+            decoder.decode(
+                ByteArray(0),
+                DesiredSize(
+                    targetSize = 256,
+                    minSize = 64,
+                    maxSize = 256,
+                    maxScaleFactor = 0.9f,
+                ),
+            )
 
         assertNull(decodedBitmap)
     }
@@ -178,15 +186,16 @@ class AndroidImageDecoderTest {
         val decoder = spy(AndroidImageDecoder())
         doReturn(size).`when`(decoder).decodeBitmapBounds(any())
 
-        val decodedBitmap = decoder.decode(
-            ByteArray(0),
-            DesiredSize(
-                targetSize = 256,
-                minSize = 32,
-                maxSize = 256,
-                maxScaleFactor = 1.0f,
-            ),
-        )
+        val decodedBitmap =
+            decoder.decode(
+                ByteArray(0),
+                DesiredSize(
+                    targetSize = 256,
+                    minSize = 32,
+                    maxSize = 256,
+                    maxScaleFactor = 1.0f,
+                ),
+            )
 
         assertNull(decodedBitmap)
     }
@@ -198,15 +207,16 @@ class AndroidImageDecoderTest {
         val decoder = spy(AndroidImageDecoder())
         doReturn(size).`when`(decoder).decodeBitmapBounds(any())
 
-        val decodedBitmap = decoder.decode(
-            ByteArray(0),
-            DesiredSize(
-                targetSize = 256,
-                minSize = 32,
-                maxSize = 256,
-                maxScaleFactor = 1.0f,
-            ),
-        )
+        val decodedBitmap =
+            decoder.decode(
+                ByteArray(0),
+                DesiredSize(
+                    targetSize = 256,
+                    minSize = 32,
+                    maxSize = 256,
+                    maxScaleFactor = 1.0f,
+                ),
+            )
 
         assertNull(decodedBitmap)
     }
@@ -218,15 +228,16 @@ class AndroidImageDecoderTest {
         val decoder = spy(AndroidImageDecoder())
         doReturn(size).`when`(decoder).decodeBitmapBounds(any())
 
-        val decodedBitmap = decoder.decode(
-            ByteArray(0),
-            DesiredSize(
-                targetSize = 256,
-                minSize = 32,
-                maxSize = 256,
-                maxScaleFactor = 0.9f,
-            ),
-        )
+        val decodedBitmap =
+            decoder.decode(
+                ByteArray(0),
+                DesiredSize(
+                    targetSize = 256,
+                    minSize = 32,
+                    maxSize = 256,
+                    maxScaleFactor = 0.9f,
+                ),
+            )
 
         assertNull(decodedBitmap)
     }
@@ -235,25 +246,26 @@ class AndroidImageDecoderTest {
     fun `WHEN bitmap size is good THEN returns non null`() {
         val bitmap: Bitmap = mock()
         val size = Size(128, 128)
-        val decoder = spy(AndroidImageDecoder())
+        val scaler: BitmapScaler = mock()
+        val decoder = spy(AndroidImageDecoder(scaler))
         doReturn(size).`when`(decoder).decodeBitmapBounds(any())
         doReturn(bitmap).`when`(decoder).decodeBitmap(any(), anyInt())
+        doReturn(bitmap).`when`(scaler).scale(bitmap, 256, 256)
 
-        val decodedBitmap = decoder.decode(
-            ByteArray(0),
-            DesiredSize(
-                targetSize = 256,
-                minSize = 64,
-                maxSize = 256,
-                maxScaleFactor = 2.0f,
-            ),
-        )
+        val decodedBitmap =
+            decoder.decode(
+                ByteArray(0),
+                DesiredSize(
+                    targetSize = 256,
+                    minSize = 64,
+                    maxSize = 256,
+                    maxScaleFactor = 2.0f,
+                ),
+            )
 
         assertNotNull(decodedBitmap)
     }
 
     private fun loadImage(fileName: String): ByteArray =
-        javaClass.getResourceAsStream("/$fileName")!!
-            .buffered()
-            .readBytes()
+        javaClass.getResourceAsStream("/$fileName")!!.buffered().readBytes()
 }

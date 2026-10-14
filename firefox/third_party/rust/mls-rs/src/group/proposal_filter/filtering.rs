@@ -29,6 +29,13 @@ use super::{
 #[cfg(feature = "by_ref_proposal")]
 use crate::extension::ExternalSendersExt;
 
+#[cfg(all(
+    feature = "by_ref_proposal",
+    feature = "custom_proposal",
+    feature = "self_remove_proposal"
+))]
+use crate::group::SelfRemoveProposal;
+
 use alloc::vec::Vec;
 use mls_rs_core::{
     error::IntoAnyError,
@@ -105,6 +112,13 @@ where
 
         let proposals = filter_out_reinit_if_other_proposals(strategy.is_ignore(), proposals)?;
         let proposals = filter_out_external_init(strategy, proposals)?;
+
+        #[cfg(all(
+            feature = "by_ref_proposal",
+            feature = "custom_proposal",
+            feature = "self_remove_proposal"
+        ))]
+        let proposals = filter_out_remove_if_self_remove_same_leaf(strategy, proposals)?;
 
         self.apply_proposal_changes(strategy, proposals, commit_time)
             .await
@@ -302,6 +316,35 @@ pub(crate) fn apply_strategy(
         .or_else(|error| strategy.ignore(by_ref).then_some(false).ok_or(error))
 }
 
+#[cfg(all(
+    feature = "by_ref_proposal",
+    feature = "custom_proposal",
+    feature = "self_remove_proposal"
+))]
+fn filter_out_remove_if_self_remove_same_leaf(
+    strategy: FilterStrategy,
+    mut proposals: ProposalBundle,
+) -> Result<ProposalBundle, MlsError> {
+    let self_removed_leaves: Vec<Option<u32>> = proposals
+        .by_type::<SelfRemoveProposal>()
+        .map(|p| match p.sender {
+            Sender::Member(sender) => Some(sender),
+            _ => None,
+        })
+        .collect();
+
+    proposals.retain_by_type::<RemoveProposal, _, _>(|p| {
+        apply_strategy(
+            strategy,
+            p.is_by_reference(),
+            (!self_removed_leaves.contains(&Some(*p.proposal.to_remove)))
+                .then_some(())
+                .ok_or(MlsError::CommitterSelfRemoval),
+        )
+    })?;
+    Ok(proposals)
+}
+
 fn filter_out_update_for_committer(
     strategy: FilterStrategy,
     commit_sender: LeafIndex,
@@ -331,6 +374,23 @@ fn filter_out_removal_of_committer(
             (p.proposal.to_remove != commit_sender)
                 .then_some(())
                 .ok_or(MlsError::CommitterSelfRemoval),
+        )
+    })?;
+    #[cfg(all(
+        feature = "by_ref_proposal",
+        feature = "custom_proposal",
+        feature = "self_remove_proposal"
+    ))]
+    proposals.retain_by_type::<SelfRemoveProposal, _, _>(|p| {
+        apply_strategy(
+            strategy,
+            p.is_by_reference(),
+            match p.sender {
+                Sender::Member(sender) => commit_sender != LeafIndex::try_from(sender)?,
+                _ => false,
+            }
+            .then_some(())
+            .ok_or(MlsError::CommitterSelfRemoval),
         )
     })?;
     Ok(proposals)
@@ -454,13 +514,27 @@ fn filter_out_external_init(
     Ok(proposals)
 }
 
+// Validate that a given sender is allowed to propose a proposal of the given type,
+// considering whether the proposal is by-value, by-reference, or locally injected.
+// Returns Ok(()) if allowed, or Err(InvalidProposalTypeForSender) otherwise.
 pub(crate) fn proposer_can_propose(
     proposer: Sender,
     proposal_type: ProposalType,
     source: &ProposalSource,
 ) -> Result<(), MlsError> {
     let can_propose = match (proposer, source) {
-        (Sender::Member(_), ProposalSource::ByValue | ProposalSource::Local) => matches!(
+        // Local proposals are injected by MlsRules::filter_proposals and are not transmitted
+        // on the wire. The proposer-can-propose rules enforced here apply to wire proposals;
+        // for local proposals, validation is the application's responsibility via
+        // [`MlsRules::filter_proposals`](crate::group::mls_rules::MlsRules::filter_proposals).
+        //
+        // The exception: a NewMemberProposal sender may only locally inject an Add,
+        // because that is the only proposal type this sender is allowed to produce per the spec.
+        (Sender::NewMemberProposal, ProposalSource::Local) => {
+            matches!(proposal_type, ProposalType::ADD)
+        }
+        (_, ProposalSource::Local) => true,
+        (Sender::Member(_), ProposalSource::ByValue) => matches!(
             proposal_type,
             ProposalType::ADD
                 | ProposalType::REMOVE
@@ -468,15 +542,24 @@ pub(crate) fn proposer_can_propose(
                 | ProposalType::RE_INIT
                 | ProposalType::GROUP_CONTEXT_EXTENSIONS
         ),
-        (Sender::Member(_), ProposalSource::ByReference(_)) => matches!(
-            proposal_type,
-            ProposalType::ADD
-                | ProposalType::UPDATE
-                | ProposalType::REMOVE
-                | ProposalType::PSK
-                | ProposalType::RE_INIT
-                | ProposalType::GROUP_CONTEXT_EXTENSIONS
-        ),
+        (Sender::Member(_), ProposalSource::ByReference(_)) => {
+            let can_propose = matches!(
+                proposal_type,
+                ProposalType::ADD
+                    | ProposalType::UPDATE
+                    | ProposalType::REMOVE
+                    | ProposalType::PSK
+                    | ProposalType::RE_INIT
+                    | ProposalType::GROUP_CONTEXT_EXTENSIONS
+            );
+            #[cfg(all(
+                feature = "by_ref_proposal",
+                feature = "custom_proposal",
+                feature = "self_remove_proposal"
+            ))]
+            let can_propose = can_propose || matches!(proposal_type, ProposalType::SELF_REMOVE);
+            can_propose
+        }
         #[cfg(feature = "by_ref_proposal")]
         (Sender::External(_), ProposalSource::ByValue) => false,
         #[cfg(feature = "by_ref_proposal")]
@@ -488,12 +571,12 @@ pub(crate) fn proposer_can_propose(
                 | ProposalType::PSK
                 | ProposalType::GROUP_CONTEXT_EXTENSIONS
         ),
-        (Sender::NewMemberCommit, ProposalSource::ByValue | ProposalSource::Local) => matches!(
+        (Sender::NewMemberCommit, ProposalSource::ByValue) => matches!(
             proposal_type,
             ProposalType::REMOVE | ProposalType::PSK | ProposalType::EXTERNAL_INIT
         ),
         (Sender::NewMemberCommit, ProposalSource::ByReference(_)) => false,
-        (Sender::NewMemberProposal, ProposalSource::ByValue | ProposalSource::Local) => false,
+        (Sender::NewMemberProposal, ProposalSource::ByValue) => false,
         (Sender::NewMemberProposal, ProposalSource::ByReference(_)) => {
             matches!(proposal_type, ProposalType::ADD)
         }
@@ -533,6 +616,20 @@ pub(crate) fn filter_out_invalid_proposers(
 
         if !apply_strategy(strategy, p.is_by_reference(), res)? {
             proposals.remove::<RemoveProposal>(i);
+        }
+    }
+
+    #[cfg(all(
+        feature = "by_ref_proposal",
+        feature = "custom_proposal",
+        feature = "self_remove_proposal"
+    ))]
+    for i in (0..proposals.self_remove_proposals().len()).rev() {
+        let p = &proposals.self_remove_proposals()[i];
+        let res = proposer_can_propose(p.sender, ProposalType::SELF_REMOVE, &p.source);
+
+        if !apply_strategy(strategy, p.is_by_reference(), res)? {
+            proposals.remove::<SelfRemoveProposal>(i);
         }
     }
 
@@ -579,7 +676,7 @@ pub(crate) fn filter_out_invalid_proposers(
 
 fn leaf_index_of_update_sender(p: &ProposalInfo<UpdateProposal>) -> Result<LeafIndex, MlsError> {
     match p.sender {
-        Sender::Member(i) => Ok(LeafIndex(i)),
+        Sender::Member(i) => LeafIndex::try_from(i),
         _ => Err(MlsError::InvalidProposalTypeForSender),
     }
 }
@@ -607,4 +704,175 @@ pub(super) fn filter_out_unsupported_custom_proposals(
                 .ok_or(MlsError::UnsupportedCustomProposal(proposal_type)),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+    use crate::group::{proposal_ref::ProposalRef, ProposalType, Sender};
+    use assert_matches::assert_matches;
+
+    fn by_ref_source() -> ProposalSource {
+        ProposalSource::ByReference(ProposalRef::new_fake(vec![1, 2, 3]))
+    }
+
+    // All proposal types relevant to the function under test.
+    fn all_proposal_types() -> Vec<ProposalType> {
+        let types = vec![
+            ProposalType::ADD,
+            ProposalType::UPDATE,
+            ProposalType::REMOVE,
+            ProposalType::PSK,
+            ProposalType::RE_INIT,
+            ProposalType::EXTERNAL_INIT,
+            ProposalType::GROUP_CONTEXT_EXTENSIONS,
+        ];
+        #[cfg(all(
+            feature = "by_ref_proposal",
+            feature = "custom_proposal",
+            feature = "self_remove_proposal"
+        ))]
+        let types = {
+            let mut t = types;
+            t.push(ProposalType::SELF_REMOVE);
+            t
+        };
+        types
+    }
+
+    /// Helper that asserts proposer_can_propose returns Ok for `allowed` types
+    /// and Err(InvalidProposalTypeForSender) for all others.
+    fn assert_allowed(sender: Sender, source: &ProposalSource, allowed: &[ProposalType]) {
+        for pt in all_proposal_types() {
+            let result = proposer_can_propose(sender, pt, source);
+            if allowed.contains(&pt) {
+                assert!(
+                    result.is_ok(),
+                    "Expected {:?} with {:?} source to be allowed for {:?}, but got Err",
+                    sender,
+                    source,
+                    pt
+                );
+            } else {
+                assert_matches!(result, Err(MlsError::InvalidProposalTypeForSender));
+            }
+        }
+    }
+
+    // --- Local source tests ---
+
+    #[test]
+    fn member_local_allows_all_proposal_types() {
+        let allowed = all_proposal_types();
+        assert_allowed(Sender::Member(0), &ProposalSource::Local, &allowed);
+    }
+
+    #[test]
+    fn new_member_commit_local_allows_all_proposal_types() {
+        let allowed = all_proposal_types();
+        assert_allowed(Sender::NewMemberCommit, &ProposalSource::Local, &allowed);
+    }
+
+    #[cfg(feature = "by_ref_proposal")]
+    #[test]
+    fn external_local_allows_all_proposal_types() {
+        let allowed = all_proposal_types();
+        assert_allowed(Sender::External(0), &ProposalSource::Local, &allowed);
+    }
+
+    #[cfg(feature = "by_ref_proposal")]
+    #[test]
+    fn new_member_proposal_local_allows_only_add() {
+        assert_allowed(
+            Sender::NewMemberProposal,
+            &ProposalSource::Local,
+            &[ProposalType::ADD],
+        );
+    }
+
+    #[test]
+    fn member_by_value_allows_correct_types() {
+        let allowed = vec![
+            ProposalType::ADD,
+            ProposalType::REMOVE,
+            ProposalType::PSK,
+            ProposalType::RE_INIT,
+            ProposalType::GROUP_CONTEXT_EXTENSIONS,
+        ];
+        assert_allowed(Sender::Member(0), &ProposalSource::ByValue, &allowed);
+    }
+
+    #[cfg(feature = "by_ref_proposal")]
+    #[test]
+    fn member_by_reference_allows_correct_types() {
+        let allowed = vec![
+            ProposalType::ADD,
+            ProposalType::UPDATE,
+            ProposalType::REMOVE,
+            ProposalType::PSK,
+            ProposalType::RE_INIT,
+            ProposalType::GROUP_CONTEXT_EXTENSIONS,
+            #[cfg(all(
+                feature = "by_ref_proposal",
+                feature = "custom_proposal",
+                feature = "self_remove_proposal"
+            ))]
+            ProposalType::SELF_REMOVE,
+        ];
+
+        assert_allowed(Sender::Member(0), &by_ref_source(), &allowed);
+    }
+
+    #[cfg(feature = "by_ref_proposal")]
+    #[test]
+    fn external_by_value_rejects_all() {
+        assert_allowed(Sender::External(0), &ProposalSource::ByValue, &[]);
+    }
+
+    #[cfg(feature = "by_ref_proposal")]
+    #[test]
+    fn external_by_reference_allows_correct_types() {
+        let allowed = vec![
+            ProposalType::ADD,
+            ProposalType::REMOVE,
+            ProposalType::RE_INIT,
+            ProposalType::PSK,
+            ProposalType::GROUP_CONTEXT_EXTENSIONS,
+        ];
+        assert_allowed(Sender::External(0), &by_ref_source(), &allowed);
+    }
+
+    #[test]
+    fn new_member_commit_by_value_allows_correct_types() {
+        let allowed = vec![
+            ProposalType::REMOVE,
+            ProposalType::PSK,
+            ProposalType::EXTERNAL_INIT,
+        ];
+        assert_allowed(Sender::NewMemberCommit, &ProposalSource::ByValue, &allowed);
+    }
+
+    #[cfg(feature = "by_ref_proposal")]
+    #[test]
+    fn new_member_commit_by_reference_rejects_all() {
+        assert_allowed(Sender::NewMemberCommit, &by_ref_source(), &[]);
+    }
+
+    #[cfg(feature = "by_ref_proposal")]
+    #[test]
+    fn new_member_proposal_by_value_rejects_all() {
+        assert_allowed(Sender::NewMemberProposal, &ProposalSource::ByValue, &[]);
+    }
+
+    #[cfg(feature = "by_ref_proposal")]
+    #[test]
+    fn new_member_proposal_by_reference_allows_only_add() {
+        assert_allowed(
+            Sender::NewMemberProposal,
+            &by_ref_source(),
+            &[ProposalType::ADD],
+        );
+    }
 }

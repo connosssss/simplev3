@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-use crate::{BinaryReader, BinaryReaderError, Result};
+use crate::{BinaryReader, Error, Result};
 use ::core::fmt;
 use ::core::marker;
 use ::core::ops::Range;
@@ -35,6 +35,19 @@ pub trait FromReader<'a>: Sized {
     /// Attempts to read `Self` from the provided binary reader, returning an
     /// error if it is unable to do so.
     fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self>;
+}
+
+impl<'a> FromReader<'a> for bool {
+    fn from_reader(reader: &mut BinaryReader<'a>) -> Result<Self> {
+        match reader.read_u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(Error::new(
+                "invalid boolean value",
+                reader.original_position() - 1,
+            )),
+        }
+    }
 }
 
 impl<'a> FromReader<'a> for u32 {
@@ -100,13 +113,13 @@ impl<'a, T> SectionLimited<'a, T> {
     }
 
     /// Returns whether the original byte offset of this section.
-    pub fn original_position(&self) -> usize {
+    pub fn original_position(&self) -> u64 {
         self.reader.original_position()
     }
 
     /// Returns the range, as byte offsets, of this section within the original
     /// wasm binary.
-    pub fn range(&self) -> Range<usize> {
+    pub fn range(&self) -> Range<u64> {
         self.reader.range()
     }
 
@@ -169,7 +182,7 @@ pub struct SectionLimitedIntoIter<'a, T> {
 
 impl<T> SectionLimitedIntoIter<'_, T> {
     /// Returns the current byte offset of the section within this iterator.
-    pub fn original_position(&self) -> usize {
+    pub fn original_position(&self) -> u64 {
         self.section.reader.original_position()
     }
 }
@@ -189,7 +202,7 @@ where
             if self.section.reader.eof() {
                 return None;
             }
-            return Some(Err(BinaryReaderError::new(
+            return Some(Err(Error::new(
                 "section size mismatch: unexpected data at the end of the section",
                 self.section.reader.original_position(),
             )));
@@ -217,7 +230,7 @@ impl<'a, T> Iterator for SectionLimitedIntoIterWithOffsets<'a, T>
 where
     T: FromReader<'a>,
 {
-    type Item = Result<(usize, T)>;
+    type Item = Result<(u64, T)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let pos = self.iter.section.reader.original_position();
@@ -264,13 +277,13 @@ impl<'a, T> Subsections<'a, T> {
     }
 
     /// Returns whether the original byte offset of this section.
-    pub fn original_position(&self) -> usize {
+    pub fn original_position(&self) -> u64 {
         self.reader.original_position()
     }
 
     /// Returns the range, as byte offsets, of this section within the original
     /// wasm binary.
-    pub fn range(&self) -> Range<usize> {
+    pub fn range(&self) -> Range<u64> {
         self.reader.range()
     }
 

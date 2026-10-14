@@ -41,7 +41,7 @@ TEST_P(TlsConnectTls13, SharesForBothEcdheAndDhe) {
 
   Connect();
 
-  CheckKeys();
+  CheckKeys(ssl_kea_ecdh, ssl_auth_rsa_sign);
 
   bool ec, dh;
   auto track_group_type = [&ec, &dh](SSLNamedGroup group) {
@@ -622,6 +622,7 @@ class TlsDheSkeChangeSignature : public TlsHandshakeFilter {
   size_t len_;
 };
 
+#ifndef NSS_DISABLE_DSA
 TEST_P(TlsConnectGenericPre13, InvalidDERSignatureFfdhe) {
   const uint8_t kBogusDheSignature[] = {
       0x30, 0x69, 0x3c, 0x02, 0x1c, 0x7d, 0x0b, 0x2f, 0x64, 0x00, 0x27,
@@ -642,6 +643,7 @@ TEST_P(TlsConnectGenericPre13, InvalidDERSignatureFfdhe) {
   ConnectExpectAlert(client_, kTlsAlertDecryptError);
   client_->CheckErrorCode(SSL_ERROR_BAD_HANDSHAKE_HASH_VALUE);
 }
+#endif
 
 TEST_P(TlsConnectTls12, ConnectInconsistentSigAlgDHE) {
   EnableOnlyDheCiphers();
@@ -798,5 +800,134 @@ TEST_P(TlsConnectTls12, ConnectSigAlgDisableGroupByOption3072Dhe) {
   client_->CheckKEA(ssl_kea_dh, ssl_grp_ffdhe_3072, 3072);
   server_->CheckKEA(ssl_kea_dh, ssl_grp_ffdhe_3072, 3072);
 }
+
+#ifndef NSS_DISABLE_DSA
+// RFC 3279, Section 2.3.2 lets a DSA certificate omit the parameters field of
+// its SubjectPublicKeyInfo and inherit p, q and g from its issuer. Resolving
+// them means reading them out of another certificate, so a certificate that
+// relies on this is not self-contained. libssl does not resolve them; it
+// rejects such a certificate instead.
+
+// Encode a certificate for |spki|, issued by |issuer| and signed with |priv|.
+static bool EncodeCert(const std::string& subject, const std::string& issuer,
+                       CERTSubjectPublicKeyInfo* spki, SECKEYPrivateKey* priv,
+                       unsigned int serial, DataBuffer* out) {
+  ScopedCERTName subject_name(CERT_AsciiToName(subject.c_str()));
+  ScopedCERTName issuer_name(CERT_AsciiToName(issuer.c_str()));
+  EXPECT_NE(nullptr, subject_name.get());
+  EXPECT_NE(nullptr, issuer_name.get());
+  if (!subject_name || !issuer_name) return false;
+
+  ScopedCERTCertificateRequest req(
+      CERT_CreateCertificateRequest(subject_name.get(), spki, nullptr));
+  EXPECT_NE(nullptr, req.get());
+  if (!req) return false;
+
+  PRTime now = PR_Now();
+  ScopedCERTValidity validity(
+      CERT_CreateValidity(now - (PRTime)3600 * PR_USEC_PER_SEC,
+                          now + (PRTime)24 * 3600 * PR_USEC_PER_SEC));
+  EXPECT_NE(nullptr, validity.get());
+  if (!validity) return false;
+
+  ScopedCERTCertificate cert(CERT_CreateCertificate(serial, issuer_name.get(),
+                                                    validity.get(), req.get()));
+  EXPECT_NE(nullptr, cert.get());
+  if (!cert) return false;
+
+  // Version 1: the default, encoded implicitly, and carries no extensions.
+  cert->version.data = nullptr;
+  cert->version.len = 0;
+
+  SECStatus rv = SECOID_SetAlgorithmID(
+      cert->arena, &cert->signature,
+      SEC_OID_NIST_DSA_SIGNATURE_WITH_SHA256_DIGEST, nullptr);
+  EXPECT_EQ(SECSuccess, rv);
+  if (rv != SECSuccess) return false;
+
+  SECItem tbs = {siBuffer, nullptr, 0};
+  if (!SEC_ASN1EncodeItem(cert->arena, &tbs, cert.get(),
+                          SEC_ASN1_GET(CERT_CertificateTemplate))) {
+    ADD_FAILURE() << "could not encode certificate";
+    return false;
+  }
+
+  SECItem der = {siBuffer, nullptr, 0};
+  rv = SEC_DerSignDataWithAlgorithmID(cert->arena, &der, tbs.data,
+                                      static_cast<int>(tbs.len), priv,
+                                      &cert->signature);
+  EXPECT_EQ(SECSuccess, rv);
+  if (rv != SECSuccess) return false;
+
+  out->Assign(der.data, der.len);
+  return true;
+}
+
+// A server certificate that inherits its DSA parameters from the CA it is
+// presented with is rejected, even though the CA that carries the parameters
+// is in the chain the peer sent.
+TEST_F(TlsConnectTest, DsaCertWithInheritedParameters) {
+  Reset(TlsAgent::kServerDsa);
+  ConfigureVersion(SSL_LIBRARY_VERSION_TLS_1_2);
+  EnsureTlsSetup();
+
+  ScopedCERTCertificate dsa_cert;
+  ScopedSECKEYPrivateKey dsa_priv;
+  ASSERT_TRUE(
+      TlsAgent::LoadCertificate(TlsAgent::kServerDsa, &dsa_cert, &dsa_priv));
+
+  ScopedSECKEYPublicKey dsa_pub(CERT_ExtractPublicKey(dsa_cert.get()));
+  ASSERT_NE(nullptr, dsa_pub.get());
+
+  // The CA carries the domain parameters.
+  ScopedCERTSubjectPublicKeyInfo ca_spki(
+      SECKEY_CreateSubjectPublicKeyInfo(dsa_pub.get()));
+  ASSERT_NE(nullptr, ca_spki.get());
+  ASSERT_NE(0u, ca_spki->algorithm.parameters.len);
+
+  // The end-entity certificate omits them. The parameters stay owned by the
+  // SubjectPublicKeyInfo's arena; clearing the item makes the encoder leave
+  // the OPTIONAL field out.
+  ScopedCERTSubjectPublicKeyInfo ee_spki(
+      SECKEY_CreateSubjectPublicKeyInfo(dsa_pub.get()));
+  ASSERT_NE(nullptr, ee_spki.get());
+  ee_spki->algorithm.parameters.data = nullptr;
+  ee_spki->algorithm.parameters.len = 0;
+
+  const std::string kCaName = "CN=NSS Inherited DSA Parameters CA";
+  DataBuffer ca_der;
+  DataBuffer ee_der;
+  ASSERT_TRUE(
+      EncodeCert(kCaName, kCaName, ca_spki.get(), dsa_priv.get(), 1, &ca_der));
+  ASSERT_TRUE(EncodeCert("CN=inherited-dsa.example", kCaName, ee_spki.get(),
+                         dsa_priv.get(), 2, &ee_der));
+
+  // Send these in place of the configured chain. ssl3_SendCertificate() writes
+  // every entry of the chain, so this is what the client sees. Neither
+  // certificate is instantiated here, so the CA reaches the client only by way
+  // of the chain it is sent.
+  ScopedPLArenaPool arena(PORT_NewArena(DER_DEFAULT_CHUNKSIZE));
+  ASSERT_NE(nullptr, arena.get());
+  CERTCertificateList* chain = PORT_ArenaZNew(arena.get(), CERTCertificateList);
+  ASSERT_NE(nullptr, chain);
+  chain->arena = arena.get();
+  chain->len = 2;
+  chain->certs = PORT_ArenaZNewArray(arena.get(), SECItem, 2);
+  ASSERT_NE(nullptr, chain->certs);
+  chain->certs[0] = {siBuffer, const_cast<uint8_t*>(ee_der.data()),
+                     static_cast<unsigned int>(ee_der.len())};
+  chain->certs[1] = {siBuffer, const_cast<uint8_t*>(ca_der.data()),
+                     static_cast<unsigned int>(ca_der.len())};
+
+  SSLExtraServerCertData extra = {ssl_auth_null, chain,   nullptr,
+                                  nullptr,       nullptr, nullptr};
+  ASSERT_TRUE(server_->ConfigServerCert(TlsAgent::kServerDsa, true, &extra));
+
+  // The client cannot extract a public key from the end-entity certificate.
+  ConnectExpectAlert(client_, kTlsAlertBadCertificate);
+  client_->CheckErrorCode(SSL_ERROR_EXTRACT_PUBLIC_KEY_FAILURE);
+  server_->CheckErrorCode(SSL_ERROR_BAD_CERT_ALERT);
+}
+#endif  // NSS_DISABLE_DSA
 
 }  // namespace nss_test

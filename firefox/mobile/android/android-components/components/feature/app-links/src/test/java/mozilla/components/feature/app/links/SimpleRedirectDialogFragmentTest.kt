@@ -24,11 +24,10 @@ import org.mockito.Mockito.doNothing
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.spy
 import org.robolectric.Shadows.shadowOf
-import androidx.appcompat.R as appcompatR
 
 @RunWith(AndroidJUnit4::class)
 class SimpleRedirectDialogFragmentTest {
-    private val themeResId = appcompatR.style.Theme_AppCompat_Light
+    private val themeResId = com.google.android.material.R.style.Theme_MaterialComponents_Light
 
     @Before
     fun setUp() {
@@ -56,13 +55,14 @@ class SimpleRedirectDialogFragmentTest {
             }
         }
 
-        val fragment = spy(
-            SimpleRedirectDialogFragment.newInstance(
-                dialogTitleString = "Open in another app",
-                themeResId = themeResId,
-                showCheckbox = true,
-            ),
-        )
+        val fragment =
+            spy(
+                SimpleRedirectDialogFragment.newInstance(
+                    dialogTitleString = "Open in another app",
+                    themeResId = themeResId,
+                    showCheckbox = true,
+                )
+            )
         doNothing().`when`(fragment).dismiss()
 
         doReturn(testContext).`when`(fragment).requireContext()
@@ -97,12 +97,13 @@ class SimpleRedirectDialogFragmentTest {
         val onConfirm = { onConfirmCalled = true }
         val onCancel = { onCancelCalled = true }
 
-        val fragment = spy(
-            SimpleRedirectDialogFragment.newInstance(
-                dialogTitleString = "Open in another app",
-                themeResId = themeResId,
-            ),
-        )
+        val fragment =
+            spy(
+                SimpleRedirectDialogFragment.newInstance(
+                    dialogTitleString = "Open in another app",
+                    themeResId = themeResId,
+                )
+            )
         doNothing().`when`(fragment).dismiss()
 
         doReturn(testContext).`when`(fragment).requireContext()
@@ -129,12 +130,13 @@ class SimpleRedirectDialogFragmentTest {
         val onConfirm = { onConfirmCalled = true }
         val onCancel = { onCancelCalled = true }
 
-        val fragment = spy(
-            SimpleRedirectDialogFragment.newInstance(
-                dialogTitleString = "Open in another app",
-                themeResId = themeResId,
-            ),
-        )
+        val fragment =
+            spy(
+                SimpleRedirectDialogFragment.newInstance(
+                    dialogTitleString = "Open in another app",
+                    themeResId = themeResId,
+                )
+            )
         doNothing().`when`(fragment).dismiss()
 
         doReturn(testContext).`when`(fragment).requireContext()

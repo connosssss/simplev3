@@ -75,7 +75,7 @@ add_task(async function suggestEnabledLocales() {
         {
           query: "amp",
           expectedResults: [
-            QuickSuggestTestUtils.ampResult(),
+            QuickSuggestTestUtils.ampResult({ suggestedIndex: -1 }),
             makeExpectedExposureResult("test-exposure-bbb"),
             makeExpectedExposureResult("test-exposure-aaa"),
           ],
@@ -175,16 +175,10 @@ async function doLocaleTest({
     info("Doing locale test: " + JSON.stringify({ homeRegion, locale }));
 
     // Set the region and locale.
-    await QuickSuggestTestUtils.withLocales({
-      homeRegion,
-      locales: [locale],
+    await QuickSuggestTestUtils.withRegionAndLocale({
+      locale,
+      region: homeRegion,
       callback: async () => {
-        // Reinitialize Suggest, which will set default-branch values for
-        // Suggest prefs appropriate to the locale.
-        info("Reinitializing Suggest");
-        await QuickSuggest._test_reinit();
-        info("Done reinitializing Suggest");
-
         // Sanity-check prefs. At this point, the value of `quickSuggestEnabled`
         // will be the value of its fallback pref, `quicksuggest.enabled`.
         assertSuggestPrefs(expectedQuickSuggestEnabled);
@@ -228,17 +222,13 @@ async function doLocaleTest({
       },
     });
   }
-
-  // Reinitialize Suggest so prefs go back to their defaults now that the app is
-  // back to its default locale.
-  await QuickSuggest._test_reinit();
 }
 
 function assertSuggestPrefs(expectedEnabled) {
   let prefs = [
     "browser.urlbar.quicksuggest.enabled",
+    "browser.urlbar.suggest.quicksuggest.all",
     "browser.urlbar.suggest.quicksuggest.sponsored",
-    "browser.urlbar.suggest.quicksuggest.nonsponsored",
   ];
   for (let p of prefs) {
     Assert.equal(
@@ -256,15 +246,16 @@ function assertSuggestPrefs(expectedEnabled) {
 
 function makeExpectedExposureResult(rsSuggestionType) {
   return {
-    type: UrlbarUtils.RESULT_TYPE.DYNAMIC,
-    source: UrlbarUtils.RESULT_SOURCE.SEARCH,
+    type: UrlbarShared.RESULT_TYPE.DYNAMIC,
+    source: UrlbarShared.RESULT_SOURCE.SEARCH,
     heuristic: false,
-    exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN,
+    exposureTelemetry: UrlbarShared.EXPOSURE_TELEMETRY.HIDDEN,
     payload: {
       rsSuggestionType,
       source: "rust",
       dynamicType: "exposure",
       provider: "Dynamic",
+      suggestionType: rsSuggestionType,
       telemetryType: "exposure",
       isSponsored: false,
     },

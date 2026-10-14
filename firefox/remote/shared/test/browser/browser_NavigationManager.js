@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { TabManager } = ChromeUtils.importESModule(
-  "chrome://remote/content/shared/TabManager.sys.mjs"
+const { NavigableManager } = ChromeUtils.importESModule(
+  "chrome://remote/content/shared/NavigableManager.sys.mjs"
 );
 
 const FIRST_URL = "https://example.com/document-builder.sjs?html=first";
@@ -26,7 +26,7 @@ add_task(async function test_simpleNavigation() {
   const tab = await addTabAndWaitForNavigated(gBrowser, FIRST_URL);
   const browser = tab.linkedBrowser;
 
-  const navigableId = TabManager.getIdForBrowser(browser);
+  const navigableId = NavigableManager.getIdForBrowser(browser);
 
   navigationManager.startMonitoring();
   is(
@@ -37,7 +37,7 @@ add_task(async function test_simpleNavigation() {
   is(events.length, 0, "No event recorded");
 
   await loadURL(browser, SECOND_URL);
-  await BrowserTestUtils.waitForCondition(() => events.length === 2);
+  await TestUtils.waitForCondition(() => events.length === 2);
 
   const firstNavigation = navigationManager.getNavigationForBrowsingContext(
     browser.browsingContext
@@ -53,7 +53,7 @@ add_task(async function test_simpleNavigation() {
   );
 
   await loadURL(browser, THIRD_URL);
-  await BrowserTestUtils.waitForCondition(() => events.length === 4);
+  await TestUtils.waitForCondition(() => events.length === 4);
 
   const secondNavigation = navigationManager.getNavigationForBrowsingContext(
     browser.browsingContext
@@ -97,17 +97,17 @@ add_task(async function test_loadTwoTabsSimultaneously() {
   info("Add two tabs simultaneously");
   const tab1 = addTab(gBrowser, FIRST_URL);
   const browser1 = tab1.linkedBrowser;
-  const navigableId1 = TabManager.getIdForBrowser(browser1);
+  const navigableId1 = NavigableManager.getIdForBrowser(browser1);
   const onLoad1 = BrowserTestUtils.browserLoaded(browser1, false, FIRST_URL);
 
   const tab2 = addTab(gBrowser, SECOND_URL);
   const browser2 = tab2.linkedBrowser;
-  const navigableId2 = TabManager.getIdForBrowser(browser2);
+  const navigableId2 = NavigableManager.getIdForBrowser(browser2);
   const onLoad2 = BrowserTestUtils.browserLoaded(browser2, false, SECOND_URL);
 
   info("Wait for the tabs to load");
   await Promise.all([onLoad1, onLoad2]);
-  await BrowserTestUtils.waitForCondition(() => events.length === 4);
+  await TestUtils.waitForCondition(() => events.length === 4);
 
   is(events.length, 4, "Recorded 4 navigation events");
 
@@ -131,7 +131,7 @@ add_task(async function test_loadTwoTabsSimultaneously() {
     BrowserTestUtils.reloadTab(tab1),
     BrowserTestUtils.reloadTab(tab2),
   ]);
-  await BrowserTestUtils.waitForCondition(() => events.length === 8);
+  await TestUtils.waitForCondition(() => events.length === 8);
 
   is(events.length, 8, "Recorded 8 navigation events");
 
@@ -170,7 +170,7 @@ add_task(async function test_loadPageWithIframes() {
   const tab = addTab(gBrowser, testUrl);
   const browser = tab.linkedBrowser;
   await BrowserTestUtils.browserLoaded(browser, false, testUrl);
-  await BrowserTestUtils.waitForCondition(() => events.length === 8);
+  await TestUtils.waitForCondition(() => events.length === 8);
 
   is(events.length, 8, "Recorded 8 navigation events");
   const contexts = browser.browsingContext.getAllBrowsingContextsInSubtree();
@@ -179,7 +179,7 @@ add_task(async function test_loadPageWithIframes() {
   for (const context of contexts) {
     const navigation =
       navigationManager.getNavigationForBrowsingContext(context);
-    const navigable = TabManager.getIdForBrowsingContext(context);
+    const navigable = NavigableManager.getIdForBrowsingContext(context);
 
     const url = context.currentWindowGlobal.documentURI.spec;
     assertNavigation(navigation, url);
@@ -189,7 +189,7 @@ add_task(async function test_loadPageWithIframes() {
   assertUniqueNavigationIds(...navigations);
 
   await BrowserTestUtils.reloadTab(tab);
-  await BrowserTestUtils.waitForCondition(() => events.length === 16);
+  await TestUtils.waitForCondition(() => events.length === 16);
 
   is(events.length, 16, "Recorded 8 additional navigation events");
   const newContexts = browser.browsingContext.getAllBrowsingContextsInSubtree();
@@ -197,7 +197,7 @@ add_task(async function test_loadPageWithIframes() {
   for (const context of newContexts) {
     const navigation =
       navigationManager.getNavigationForBrowsingContext(context);
-    const navigable = TabManager.getIdForBrowsingContext(context);
+    const navigable = NavigableManager.getIdForBrowsingContext(context);
 
     const url = context.currentWindowGlobal.documentURI.spec;
     assertNavigation(navigation, url);
@@ -224,9 +224,9 @@ add_task(async function test_loadPageWithCoop() {
 
   navigationManager.startMonitoring();
 
-  const navigableId = TabManager.getIdForBrowser(browser);
+  const navigableId = NavigableManager.getIdForBrowser(browser);
   await loadURL(browser, SECOND_COOP_URL);
-  await BrowserTestUtils.waitForCondition(() => events.length === 2);
+  await TestUtils.waitForCondition(() => events.length === 2);
 
   const coopNavigation = navigationManager.getNavigationForBrowsingContext(
     browser.browsingContext
@@ -261,7 +261,7 @@ add_task(async function test_sameDocumentNavigation() {
   const browser = tab.linkedBrowser;
 
   navigationManager.startMonitoring();
-  const navigableId = TabManager.getIdForBrowser(browser);
+  const navigableId = NavigableManager.getIdForBrowser(browser);
 
   is(events.length, 0, "No event recorded");
 
@@ -287,7 +287,7 @@ add_task(async function test_sameDocumentNavigation() {
   // complete.
   info("Perform a regular navigation");
   await loadURL(browser, url);
-  await BrowserTestUtils.waitForCondition(() => events.length === 3);
+  await TestUtils.waitForCondition(() => events.length === 3);
 
   const regularNavigation = navigationManager.getNavigationForBrowsingContext(
     browser.browsingContext

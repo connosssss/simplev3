@@ -1,11 +1,9 @@
 #include "gtest/gtest.h"
-
 #include "mozilla/FilePreferences.h"
-
-#include "nsDirectoryServiceDefs.h"
-#include "nsDirectoryServiceUtils.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/ScopeExit.h"
+#include "nsDirectoryServiceDefs.h"
+#include "nsDirectoryServiceUtils.h"
 #include "nsIDirectoryEnumerator.h"
 
 using namespace mozilla;
@@ -237,3 +235,10 @@ TEST(TestFilePreferencesUnix, Simple)
   rv = forbiddenDir->GetDirectoryEntries(getter_AddRefs(dirEnumerator));
   ASSERT_EQ(rv, NS_ERROR_FILE_ACCESS_DENIED);
 }
+#undef kForbidden
+#undef kForbiddenDir
+#undef kForbiddenFile
+#undef kOther
+#undef kOtherDir
+#undef kOtherFile
+#undef kAllowed

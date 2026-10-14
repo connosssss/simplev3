@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,22 +5,20 @@
 #ifndef mozilla_dom_FetchDriver_h
 #define mozilla_dom_FetchDriver_h
 
+#include "mozilla/ConsoleReportCollector.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/UniquePtr.h"
+#include "mozilla/dom/AbortSignal.h"
+#include "mozilla/dom/SRIMetadata.h"
+#include "mozilla/dom/SafeRefPtr.h"
+#include "mozilla/dom/SerializedStackHolder.h"
 #include "nsIChannelEventSink.h"
 #include "nsIClassifiedChannel.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsINetworkInterceptController.h"
 #include "nsIStreamListener.h"
 #include "nsIThreadRetargetableStreamListener.h"
-#include "mozilla/ConsoleReportCollector.h"
-#include "mozilla/dom/AbortSignal.h"
-#include "mozilla/dom/SafeRefPtr.h"
-#include "mozilla/dom/SerializedStackHolder.h"
-#include "mozilla/dom/SRIMetadata.h"
-#include "mozilla/RefPtr.h"
-#include "mozilla/Mutex.h"
-#include "mozilla/UniquePtr.h"
-
-#include "mozilla/DebugOnly.h"
 
 class nsIConsoleReportCollector;
 class nsICookieJarSettings;
@@ -55,7 +51,10 @@ class FetchDriverObserver {
       : mReporter(new ConsoleReportCollector()), mGotResponseAvailable(false) {}
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(FetchDriverObserver);
-  void OnResponseAvailable(SafeRefPtr<InternalResponse> aResponse);
+  // FIXME: This should be marked as MOZ_CAN_RUN_SCRIPT, but SafeRefPtr is not
+  // treated as safe by the clang-plugin.
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void OnResponseAvailable(
+      SafeRefPtr<InternalResponse> aResponse);
 
   enum EndReason {
     eAborted,
@@ -85,7 +84,7 @@ class FetchDriverObserver {
  protected:
   virtual ~FetchDriverObserver() = default;
 
-  virtual void OnResponseAvailableInternal(
+  MOZ_CAN_RUN_SCRIPT virtual void OnResponseAvailableInternal(
       SafeRefPtr<InternalResponse> aResponse) = 0;
 
   nsCOMPtr<nsIConsoleReportCollector> mReporter;
@@ -116,6 +115,10 @@ class FetchDriver final : public nsIChannelEventSink,
               PerformanceStorage* aPerformanceStorage,
               net::ClassificationFlags aTrackingFlags);
 
+  FetchDriver() = delete;
+  FetchDriver(const FetchDriver&) = delete;
+  FetchDriver& operator=(const FetchDriver&) = delete;
+
   nsresult Fetch(AbortSignalImpl* aSignalImpl, FetchDriverObserver* aObserver);
 
   void SetDocument(Document* aDocument);
@@ -135,8 +138,8 @@ class FetchDriver final : public nsIChannelEventSink,
     mOriginStack = std::move(aOriginStack);
   }
 
-  PerformanceTimingData* GetPerformanceTimingData(nsAString& aInitiatorType,
-                                                  nsAString& aEntryName);
+  UniquePtr<PerformanceTimingData> GetPerformanceTimingData(
+      nsAString& aInitiatorType, nsAString& aEntryName);
 
   // AbortFollower
   void RunAbortAlgorithm() override;
@@ -224,9 +227,6 @@ class FetchDriver final : public nsIChannelEventSink,
 
   friend class AlternativeDataStreamListener;
 
-  FetchDriver() = delete;
-  FetchDriver(const FetchDriver&) = delete;
-  FetchDriver& operator=(const FetchDriver&) = delete;
   ~FetchDriver();
 
   already_AddRefed<PreloaderBase> FindPreload(nsIURI* aURI);
@@ -235,7 +235,7 @@ class FetchDriver final : public nsIChannelEventSink,
 
   nsresult HttpFetch(const nsACString& aPreferredAlternativeDataType = ""_ns);
   // Returns the filtered response sent to the observer.
-  SafeRefPtr<InternalResponse> BeginAndGetFilteredResponse(
+  MOZ_CAN_RUN_SCRIPT SafeRefPtr<InternalResponse> BeginAndGetFilteredResponse(
       SafeRefPtr<InternalResponse> aResponse, bool aFoundOpaqueRedirect);
   // Utility since not all cases need to do any post processing of the filtered
   // response.
@@ -244,7 +244,8 @@ class FetchDriver final : public nsIChannelEventSink,
   void SetRequestHeaders(nsIHttpChannel* aChannel, bool aStripRequestBodyHeader,
                          bool aStripAuthHeader) const;
 
-  void FinishOnStopRequest(AlternativeDataStreamListener* aAltDataListener);
+  MOZ_CAN_RUN_SCRIPT void FinishOnStopRequest(
+      AlternativeDataStreamListener* aAltDataListener);
 };
 
 }  // namespace dom

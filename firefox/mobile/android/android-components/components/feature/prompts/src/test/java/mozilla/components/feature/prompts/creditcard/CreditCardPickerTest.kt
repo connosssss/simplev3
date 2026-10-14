@@ -4,6 +4,7 @@
 
 package mozilla.components.feature.prompts.creditcard
 
+import mozilla.components.browser.state.action.BrowserAction
 import mozilla.components.browser.state.action.ContentAction
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.state.ContentState
@@ -12,7 +13,7 @@ import mozilla.components.browser.state.state.TabSessionState
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.concept.engine.prompt.PromptRequest
 import mozilla.components.concept.storage.CreditCardEntry
-import mozilla.components.support.test.any
+import mozilla.components.support.test.middleware.CaptureActionsMiddleware
 import mozilla.components.support.test.mock
 import mozilla.components.support.test.whenever
 import org.junit.Assert.assertEquals
@@ -20,7 +21,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
 
 class CreditCardPickerTest {
@@ -30,40 +30,42 @@ class CreditCardPickerTest {
     private lateinit var creditCardPicker: CreditCardPicker
     private lateinit var creditCardSelectBar: CreditCardSelectBar
 
-    private val creditCard = CreditCardEntry(
-        guid = "1",
-        name = "Banana Apple",
-        number = "4111111111111110",
-        expiryMonth = "5",
-        expiryYear = "2030",
-        cardType = "",
-    )
+    private val creditCard =
+        CreditCardEntry(
+            guid = "1",
+            name = "Banana Apple",
+            number = "4111111111111110",
+            expiryMonth = "5",
+            expiryYear = "2030",
+            cardType = "",
+        )
     var onDismissCalled = false
     var confirmedCreditCard: CreditCardEntry? = null
-    private val promptRequest = PromptRequest.SelectCreditCard(
-        creditCards = listOf(creditCard),
-        onDismiss = { onDismissCalled = true },
-        onConfirm = { confirmedCreditCard = it },
-    )
+    private val promptRequest =
+        PromptRequest.SelectCreditCard(
+            creditCards = listOf(creditCard),
+            onDismiss = { onDismissCalled = true },
+            onConfirm = { confirmedCreditCard = it },
+        )
 
     var manageCreditCardsCalled = false
     var selectCreditCardCalled = false
     private val manageCreditCardsCallback: () -> Unit = { manageCreditCardsCalled = true }
     private val selectCreditCardCallback: () -> Unit = { selectCreditCardCalled = true }
+    private val captureMiddleware = CaptureActionsMiddleware<BrowserState, BrowserAction>()
 
     @Before
     fun setup() {
-        store = mock()
         state = mock()
+        store = BrowserStore(state, middleware = listOf(captureMiddleware))
         creditCardSelectBar = mock()
-        creditCardPicker = CreditCardPicker(
-            store = store,
-            creditCardSelectBar = creditCardSelectBar,
-            manageCreditCardsCallback = manageCreditCardsCallback,
-            selectCreditCardCallback = selectCreditCardCallback,
-        )
-
-        whenever(store.state).thenReturn(state)
+        creditCardPicker =
+            CreditCardPicker(
+                store = store,
+                creditCardSelectBar = creditCardSelectBar,
+                manageCreditCardsCallback = manageCreditCardsCallback,
+                selectCreditCardCallback = selectCreditCardCallback,
+            )
     }
 
     @Test
@@ -103,7 +105,13 @@ class CreditCardPickerTest {
     @Test
     fun `GIVEN a custom tab and a prompt request WHEN handleSelectCreditCardRequest is called THEN the prompt is shown with the provided request credit cards`() {
         val customTabContent: ContentState = mock()
-        val customTab = CustomTabSessionState(id = "custom-tab", content = customTabContent, trackingProtection = mock(), config = mock())
+        val customTab =
+            CustomTabSessionState(
+                id = "custom-tab",
+                content = customTabContent,
+                trackingProtection = mock(),
+                config = mock(),
+            )
 
         whenever(customTabContent.promptRequests).thenReturn(listOf(promptRequest))
         whenever(state.customTabs).thenReturn(listOf(customTab))
@@ -143,44 +151,56 @@ class CreditCardPickerTest {
     @Test
     fun `WHEN dismissSelectCreditCardRequest is invoked without a parameter THEN the active prompt request is dismissed and removed from the session`() {
         val session = setupSessionState(promptRequest)
-        creditCardPicker = CreditCardPicker(
-            store = store,
-            creditCardSelectBar = creditCardSelectBar,
-            manageCreditCardsCallback = manageCreditCardsCallback,
-            selectCreditCardCallback = selectCreditCardCallback,
-            sessionId = session.id,
-        )
+        creditCardPicker =
+            CreditCardPicker(
+                store = store,
+                creditCardSelectBar = creditCardSelectBar,
+                manageCreditCardsCallback = manageCreditCardsCallback,
+                selectCreditCardCallback = selectCreditCardCallback,
+                sessionId = session.id,
+            )
 
-        verify(store, never()).dispatch(any())
+        captureMiddleware.assertNotDispatched(ContentAction.ConsumePromptRequestAction::class)
+
         creditCardPicker.dismissSelectCreditCardRequest()
 
         assertTrue(onDismissCalled)
-        verify(store).dispatch(ContentAction.ConsumePromptRequestAction(session.id, promptRequest))
+        captureMiddleware.assertFirstAction(ContentAction.ConsumePromptRequestAction::class) { action ->
+            assertEquals(session.id, action.sessionId)
+            assertEquals(promptRequest, action.promptRequest)
+        }
     }
 
     @Test
     fun `WHEN dismissSelectCreditCardRequest is invoked with the active prompt request as parameter THEN the request is dismissed and removed from the session`() {
         val session = setupSessionState(promptRequest)
-        creditCardPicker = CreditCardPicker(
-            store = store,
-            creditCardSelectBar = creditCardSelectBar,
-            manageCreditCardsCallback = manageCreditCardsCallback,
-            selectCreditCardCallback = selectCreditCardCallback,
-            sessionId = session.id,
-        )
+        creditCardPicker =
+            CreditCardPicker(
+                store = store,
+                creditCardSelectBar = creditCardSelectBar,
+                manageCreditCardsCallback = manageCreditCardsCallback,
+                selectCreditCardCallback = selectCreditCardCallback,
+                sessionId = session.id,
+            )
 
-        verify(store, never()).dispatch(any())
+        captureMiddleware.assertNotDispatched(ContentAction.ConsumePromptRequestAction::class)
+
         creditCardPicker.dismissSelectCreditCardRequest(promptRequest)
 
         assertTrue(onDismissCalled)
-        verify(store).dispatch(ContentAction.ConsumePromptRequestAction(session.id, promptRequest))
+        captureMiddleware.assertFirstAction(ContentAction.ConsumePromptRequestAction::class) { action ->
+            assertEquals(session.id, action.sessionId)
+            assertEquals(promptRequest, action.promptRequest)
+        }
     }
 
     private fun setupSessionState(request: PromptRequest? = null): TabSessionState {
         val promptRequest: PromptRequest = request ?: mock()
-        val content: ContentState = mock()
-
-        whenever(content.promptRequests).thenReturn(listOf(promptRequest))
+        val content =
+            ContentState(
+                url = "http://mozilla.org",
+                promptRequests = listOf(promptRequest),
+            )
 
         val selected = TabSessionState("browser-tab", content, mock(), mock())
 

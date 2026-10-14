@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _MTRANSPORTHANDLER_IPC_H__
-#define _MTRANSPORTHANDLER_IPC_H__
+#ifndef MTRANSPORTHANDLER_IPC_H_
+#define MTRANSPORTHANDLER_IPC_H_
 
 #include "jsapi/MediaTransportHandler.h"
 #include "mozilla/dom/PMediaTransportChild.h"
@@ -68,7 +68,7 @@ class MediaTransportHandlerIPC final : public MediaTransportHandler {
 
   void AddIceCandidate(const std::string& aTransportId,
                        const std::string& aCandidate, const std::string& aUfrag,
-                       const std::string& aObfuscatedAddress) override;
+                       const std::string& aResolvedAddress) override;
 
   void UpdateNetworkState(bool aOnline) override;
 
@@ -77,7 +77,6 @@ class MediaTransportHandlerIPC final : public MediaTransportHandler {
 
  private:
   friend class MediaTransportChild;
-  void Destroy() override;
   virtual ~MediaTransportHandlerIPC();
 
   RefPtr<MediaTransportChild> mChild;
@@ -94,4 +93,4 @@ class MediaTransportHandlerIPC final : public MediaTransportHandler {
 
 }  // namespace mozilla
 
-#endif  //_MTRANSPORTHANDLER_IPC_H__
+#endif  // MTRANSPORTHANDLER_IPC_H_

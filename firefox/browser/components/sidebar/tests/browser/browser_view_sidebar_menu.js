@@ -45,3 +45,54 @@ add_task(async function test_megalist_menu() {
   });
   ok(!item.hidden, "Chat sidebar menu item shown");
 });
+
+/**
+ * Check that pref controlled Resource Monitor sidebar menu item is hidden/shown
+ */
+add_task(async function test_resource_monitor_menu() {
+  const { document } = win;
+  const item = document.getElementById("menu_resourceMonitorSidebar");
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.resourceMonitor.enabled", false]],
+  });
+  ok(item.hidden, "Resource Monitor sidebar menu item hidden");
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.resourceMonitor.enabled", true]],
+  });
+  ok(!item.hidden, "Resource Monitor sidebar menu item shown");
+});
+
+/**
+ * Check that a sidebar extension appears in the View > Sidebar menu
+ * and that its checked state is accurate
+ */
+add_task(async function test_sidebar_menu_extension_item() {
+  const { document, SidebarController } = win;
+
+  const extension = ExtensionTestUtils.loadExtension({ ...extData });
+  await extension.startup();
+
+  const menu = document.getElementById("viewSidebarMenu");
+  const extMenuItem = menu.querySelector(".webextension-menuitem");
+
+  ok(extMenuItem, "Extension sidebar menu item appears in View > Sidebar menu");
+  ok(
+    extMenuItem.hasAttribute("auto-accesskey"),
+    "Extension menu item takes its access key from its title"
+  );
+
+  // Check the checked state when the extension sidebar is open
+  ok(
+    extMenuItem.hasAttribute("checked"),
+    "Extension menu item is checked when sidebar is open"
+  );
+
+  SidebarController.hide();
+
+  ok(
+    !extMenuItem.hasAttribute("checked"),
+    "Extension menu item is not checked when sidebar is closed"
+  );
+
+  await extension.unload();
+});

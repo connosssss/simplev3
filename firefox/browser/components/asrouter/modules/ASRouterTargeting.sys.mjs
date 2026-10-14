@@ -1,7 +1,6 @@
-/* This Source Code Form is subject to the terms of the Mozilla PublicddonMa
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
-
 const FXA_ENABLED_PREF = "identity.fxaccounts.enabled";
 const TOPIC_SELECTION_MODAL_LAST_DISPLAYED_PREF =
   "browser.newtabpage.activity-stream.discoverystream.topicSelection.onboarding.lastDisplayed";
@@ -31,7 +30,7 @@ const { NewTabUtils } = ChromeUtils.importESModule(
 
 // eslint-disable-next-line mozilla/use-static-import
 const { ShellService } = ChromeUtils.importESModule(
-  "resource:///modules/ShellService.sys.mjs"
+  "moz-src:///browser/components/shell/ShellService.sys.mjs"
 );
 
 // eslint-disable-next-line mozilla/use-static-import
@@ -39,31 +38,65 @@ const { ClientID } = ChromeUtils.importESModule(
   "resource://gre/modules/ClientID.sys.mjs"
 );
 
+// eslint-disable-next-line mozilla/use-static-import
+const { PlacesUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/PlacesUtils.sys.mjs"
+);
+
+// eslint-disable-next-line mozilla/use-static-import
+const { FirefoxRelay, RELAY_PROFILE_CACHE_INTERVAL } =
+  ChromeUtils.importESModule("resource://gre/modules/FirefoxRelay.sys.mjs");
+
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  AboutNewTabResourceMapping:
+    "resource:///modules/AboutNewTabResourceMapping.sys.mjs",
   AddonManager: "resource://gre/modules/AddonManager.sys.mjs",
+  AgentPageDetector:
+    "moz-src:///browser/components/aiwindow/ui/modules/AgentPageDetector.sys.mjs",
+  AIWindow:
+    "moz-src:///browser/components/aiwindow/ui/modules/AIWindow.sys.mjs",
   AboutNewTab: "resource:///modules/AboutNewTab.sys.mjs",
+  AppProvidedConfigEngine:
+    "moz-src:///toolkit/components/search/ConfigSearchEngine.sys.mjs",
   ASRouterPreferences:
     "resource:///modules/asrouter/ASRouterPreferences.sys.mjs",
-  AttributionCode: "resource:///modules/AttributionCode.sys.mjs",
-  BrowserUtils: "resource://gre/modules/BrowserUtils.sys.mjs",
+  AttributionCode:
+    "moz-src:///browser/components/attribution/AttributionCode.sys.mjs",
+  BackupService: "moz-src:///browser/components/backup/BackupService.sys.mjs",
+  BrowserInitState: "moz-src:///browser/components/BrowserGlue.sys.mjs",
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
   ClientEnvironment: "resource://normandy/lib/ClientEnvironment.sys.mjs",
-  CustomizableUI: "resource:///modules/CustomizableUI.sys.mjs",
+  CustomizableUI:
+    "moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs",
+  ExperimentAPI: "resource://nimbus/ExperimentAPI.sys.mjs",
+  ExtensionUtils: "resource://gre/modules/ExtensionUtils.sys.mjs",
   FeatureCalloutBroker:
     "resource:///modules/asrouter/FeatureCalloutBroker.sys.mjs",
+  FormHistory: "resource://gre/modules/FormHistory.sys.mjs",
   HomePage: "resource:///modules/HomePage.sys.mjs",
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   ProfileAge: "resource://gre/modules/ProfileAge.sys.mjs",
   Region: "resource://gre/modules/Region.sys.mjs",
+  ReinstallCheck: "moz-src:///browser/components/ReinstallCheck.sys.mjs",
+  ResetProfile: "resource://gre/modules/ResetProfile.sys.mjs",
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
   // eslint-disable-next-line mozilla/no-browser-refs-in-toolkit
   SelectableProfileService:
     "resource:///modules/profiles/SelectableProfileService.sys.mjs",
-  SessionStore: "resource:///modules/sessionstore/SessionStore.sys.mjs",
+  SessionStartup:
+    "moz-src:///browser/components/sessionstore/SessionStartup.sys.mjs",
+  SessionStore:
+    "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
+  SmartTabGroupingManager:
+    "moz-src:///browser/components/tabbrowser/SmartTabGrouping.sys.mjs",
   TargetingContext: "resource://messaging-system/targeting/Targeting.sys.mjs",
+  TabNotes: "moz-src:///browser/components/tabnotes/TabNotes.sys.mjs",
+  TaskbarTabs: "moz-src:///browser/components/taskbartabs/TaskbarTabs.sys.mjs",
   TelemetryEnvironment: "resource://gre/modules/TelemetryEnvironment.sys.mjs",
   TelemetrySession: "resource://gre/modules/TelemetrySession.sys.mjs",
-  WindowsLaunchOnLogin: "resource://gre/modules/WindowsLaunchOnLogin.sys.mjs",
+  LaunchOnLogin: "resource://gre/modules/LaunchOnLogin.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "fxAccounts", () => {
@@ -71,6 +104,15 @@ ChromeUtils.defineLazyGetter(lazy, "fxAccounts", () => {
     "resource://gre/modules/FxAccounts.sys.mjs"
   ).getFxAccountsSingleton();
 });
+
+ChromeUtils.defineLazyGetter(
+  lazy,
+  "searchFormHistoryFieldname",
+  () =>
+    ChromeUtils.importESModule(
+      "moz-src:///toolkit/components/search/SearchSuggestionController.sys.mjs"
+    ).DEFAULT_FORM_HISTORY_PARAM
+);
 
 XPCOMUtils.defineLazyPreferenceGetter(
   lazy,
@@ -191,14 +233,24 @@ XPCOMUtils.defineLazyPreferenceGetter(
 );
 
 XPCOMUtils.defineLazyServiceGetters(lazy, {
-  AUS: ["@mozilla.org/updates/update-service;1", "nsIApplicationUpdateService"],
-  BrowserHandler: ["@mozilla.org/browser/clh;1", "nsIBrowserHandler"],
-  ScreenManager: ["@mozilla.org/gfx/screenmanager;1", "nsIScreenManager"],
+  AUS: [
+    "@mozilla.org/updates/update-service;1",
+    Ci.nsIApplicationUpdateService,
+  ],
+  BrowserHandler: ["@mozilla.org/browser/clh;1", Ci.nsIBrowserHandler],
+  ExternalProtocolService: [
+    "@mozilla.org/uriloader/external-protocol-service;1",
+    Ci.nsIExternalProtocolService,
+  ],
+  ScreenManager: ["@mozilla.org/gfx/screenmanager;1", Ci.nsIScreenManager],
   TrackingDBService: [
     "@mozilla.org/tracking-db-service;1",
-    "nsITrackingDBService",
+    Ci.nsITrackingDBService,
   ],
-  UpdateCheckSvc: ["@mozilla.org/updates/update-checker;1", "nsIUpdateChecker"],
+  UpdateCheckSvc: [
+    "@mozilla.org/updates/update-checker;1",
+    Ci.nsIUpdateChecker,
+  ],
 });
 
 const FXA_USERNAME_PREF = "services.sync.username";
@@ -208,13 +260,31 @@ const { activityStreamProvider: asProvider } = NewTabUtils;
 const FRECENT_SITES_UPDATE_INTERVAL = 6 * 60 * 60 * 1000; // Six hours
 const FRECENT_SITES_IGNORE_BLOCKED = false;
 const FRECENT_SITES_NUM_ITEMS = 25;
-const FRECENT_SITES_MIN_FRECENCY = 100;
+// 2 visits, 30 days ago.
+const FRECENT_SITES_MIN_FRECENCY = PlacesUtils.history.pageFrecencyThreshold(
+  30,
+  2,
+  false
+);
 
 const CACHE_EXPIRATION = 5 * 60 * 1000;
 const jexlEvaluationCache = new Map();
 
+function _extractMailDomainFromURI(uriTemplate) {
+  if (!uriTemplate) {
+    return null;
+  }
+  try {
+    return Services.io.newURI(uriTemplate).host;
+  } catch (e) {
+    // Ignore parse errors
+  }
+  return null;
+}
+
 /**
  * CachedTargetingGetter
+ *
  * @param property {string} Name of the method
  * @param options {any=} Options passed to the method
  * @param updateInterval {number?} Update interval for query. Defaults to FRECENT_SITES_UPDATE_INTERVAL
@@ -264,7 +334,11 @@ function CacheUnhandledCampaignAction() {
         if (!lazy.didHandleCampaignAction) {
           const attributionData =
             lazy.AttributionCode.getCachedAttributionData();
-          const ALLOWED_CAMPAIGN_ACTIONS = ["SET_DEFAULT_BROWSER"];
+          const ALLOWED_CAMPAIGN_ACTIONS = [
+            "PIN_AND_DEFAULT",
+            "PIN_FIREFOX_TO_TASKBAR",
+            "SET_DEFAULT_BROWSER",
+          ];
           const campaign = attributionData?.campaign?.toUpperCase();
           if (campaign && ALLOWED_CAMPAIGN_ACTIONS.includes(campaign)) {
             this._value = campaign;
@@ -366,7 +440,13 @@ export const QueryCache = {
       ShellService
     ),
     isDefaultBrowser: new CachedTargetingGetter(
-      "isDefaultBrowser",
+      "isDefaultBrowserAsync",
+      null,
+      FRECENT_SITES_UPDATE_INTERVAL,
+      ShellService
+    ),
+    isOneClickSetDefaultEnabled: new CachedTargetingGetter(
+      "isOneClickSetDefaultEnabled",
       null,
       FRECENT_SITES_UPDATE_INTERVAL,
       ShellService
@@ -389,17 +469,117 @@ export const QueryCache = {
       FRECENT_SITES_UPDATE_INTERVAL,
       ShellService
     ),
+    isDefaultMailtoHandler: new CachedTargetingGetter(
+      "isDefaultHandlerFor",
+      ["mailto"],
+      FRECENT_SITES_UPDATE_INTERVAL,
+      ShellService
+    ),
     defaultPDFHandler: new CachedTargetingGetter(
       "getDefaultPDFHandler",
       null,
       FRECENT_SITES_UPDATE_INTERVAL,
       ShellService
     ),
+    mailtoHandlerHost: new CachedTargetingGetter(
+      "getMailtoHandlerHost",
+      null,
+      FRECENT_SITES_UPDATE_INTERVAL,
+      {
+        getMailtoHandlerHost() {
+          if (AppConstants.platform !== "win") {
+            return null;
+          }
+          try {
+            const handlerInfo =
+              lazy.ExternalProtocolService.getProtocolHandlerInfo("mailto");
+            if (
+              handlerInfo.alwaysAskBeforeHandling ||
+              handlerInfo.preferredAction !== Ci.nsIHandlerInfo.useHelperApp ||
+              !(
+                handlerInfo.preferredApplicationHandler instanceof
+                Ci.nsIWebHandlerApp
+              )
+            ) {
+              return null;
+            }
+            return _extractMailDomainFromURI(
+              handlerInfo.preferredApplicationHandler.uriTemplate
+            );
+          } catch (e) {
+            // No configured handler, or a non-web (local app) handler.
+            return null;
+          }
+        },
+      }
+    ),
     profileGroupId: new CachedTargetingGetter(
       "getCachedProfileGroupID",
       null,
       FRECENT_SITES_UPDATE_INTERVAL,
       ClientID
+    ),
+    profileGroupProfileCount: new CachedTargetingGetter(
+      "getProfileGroupProfileCount",
+      null,
+      FRECENT_SITES_UPDATE_INTERVAL,
+      {
+        getProfileGroupProfileCount() {
+          if (
+            !Services.prefs.getBoolPref("browser.profiles.enabled", false) ||
+            !Services.prefs.getBoolPref("browser.profiles.created", false)
+          ) {
+            return 0;
+          }
+
+          return lazy.SelectableProfileService.getProfileCount();
+        },
+      }
+    ),
+    backupsInfo: new CachedTargetingGetter(
+      "findBackupsInWellKnownLocations",
+      null,
+      FRECENT_SITES_UPDATE_INTERVAL,
+      {
+        async findBackupsInWellKnownLocations() {
+          let bs;
+          try {
+            bs = lazy.BackupService.get();
+          } catch {
+            bs = lazy.BackupService.init();
+          }
+          return bs.findBackupsInWellKnownLocations({
+            source: "onboarding",
+          });
+        },
+      }
+    ),
+    relayProfileInfo: new CachedTargetingGetter(
+      "getRelayProfileInfo",
+      null,
+      RELAY_PROFILE_CACHE_INTERVAL,
+      {
+        async getRelayProfileInfo() {
+          return FirefoxRelay.getRelayProfileInfo();
+        },
+      }
+    ),
+    crashData: new CachedTargetingGetter(
+      "getCrashData",
+      null,
+      FRECENT_SITES_UPDATE_INTERVAL,
+      {
+        async getCrashData() {
+          if (!Services.crashmanager) {
+            return [];
+          }
+          const crashes = await Services.crashmanager.getCrashes();
+          return crashes.map(crash => ({
+            id: crash.id,
+            date: crash.crashDate,
+          }));
+        },
+      }
     ),
   },
 };
@@ -488,11 +668,7 @@ export function getSortedMessages(messages, options = {}) {
  *                    its type (web extenstion or custom url) and the parsed url(s)
  *
  * @param {string} url - A URL string for home page or newtab page
- * @returns {Object} {
- *   isWebExt: boolean,
- *   isCustomUrl: boolean,
- *   urls: Array<{url: string, host: string}>
- * }
+ * @returns  {{isWebExt: boolean, isCustomUrl: boolean, urls: {url: string, host: string}[]}}
  */
 function parseAboutPageURL(url) {
   let ret = {
@@ -500,7 +676,7 @@ function parseAboutPageURL(url) {
     isCustomUrl: false,
     urls: [],
   };
-  if (url.startsWith("moz-extension://")) {
+  if (lazy.ExtensionUtils.isExtensionUrl(url)) {
     ret.isWebExt = true;
     ret.urls.push({ url, host: "" });
   } else {
@@ -529,7 +705,7 @@ function parseAboutPageURL(url) {
 /**
  * Get the number of records in autofill storage, e.g. credit cards/addresses.
  *
- * @param  {Object} [data]
+ * @param  {object} [data]
  * @param  {string} [data.collectionName]
  *         The name used to specify which collection to retrieve records.
  * @param  {string} [data.searchString]
@@ -553,11 +729,8 @@ async function getAutofillRecords(data) {
     // JSActors, but that would import a lot of code for a targeting attribute.
     return 0;
   }
-  let records = await actor?.receiveMessage({
-    name: "FormAutofill:GetRecords",
-    data,
-  });
-  return records?.records?.length ?? 0;
+  let records = await actor?.getRecords(data);
+  return records?.length ?? 0;
 }
 
 // Attribution data can be encoded multiple times so we need this function to
@@ -588,6 +761,19 @@ async function getPinStatus() {
   return await ShellService.doesAppNeedPin();
 }
 
+function getSelectedTabURI() {
+  const win = lazy.BrowserWindowTracker.getTopWindow({
+    private: false,
+    allowFromInactiveWorkspace: true,
+  });
+
+  // null in private windows
+  if (!win || lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
+    return null;
+  }
+  return win.gBrowser?.selectedBrowser?.currentURI ?? null;
+}
+
 const TargetingGetters = {
   get locale() {
     return Services.locale.appLocaleAsBCP47;
@@ -611,6 +797,12 @@ const TargetingGetters = {
   get currentDate() {
     return new Date();
   },
+  // The category of the page open in the active tab ("product-detail",
+  // "shopping-home", "news-home"), or null when it is in none of them.
+  get currentTabPageCategory() {
+    const uri = getSelectedTabURI();
+    return uri ? lazy.AgentPageDetector.getPageCategory(uri) : null;
+  },
   get canCreateSelectableProfiles() {
     if (!AppConstants.MOZ_SELECTABLE_PROFILES) {
       return false;
@@ -625,6 +817,22 @@ const TargetingGetters = {
   },
   get profileAgeReset() {
     return lazy.ProfileAge().then(times => times.reset);
+  },
+  get profileLastUse() {
+    // The lock file records when the profile was last used, but it can be
+    // unreliable, e.g. on NFS or when the previous session ran for a very long
+    // time. Use the prefs.js modification time as a backstop. See bug 1054947
+    // and related bugs.
+    return Math.max(
+      Services.appinfo.replacedLockTime,
+      Services.prefs.userPrefsFileLastModifiedAtStartup
+    );
+  },
+  get canResetProfile() {
+    return lazy.ResetProfile.resetSupported();
+  },
+  get isFirefoxReinstalled() {
+    return lazy.ReinstallCheck.wasReinstalled;
   },
   get usesFirefoxSync() {
     return Services.prefs.prefHasUserValue(FXA_USERNAME_PREF);
@@ -712,23 +920,53 @@ const TargetingGetters = {
       return Promise.resolve(NONE);
     }
     return new Promise(resolve => {
-      // Note: calling init ensures this code is only executed after Search has been initialized
-      Services.search
-        .getAppProvidedEngines()
+      // Note: calling getAppProvidedEngines, calls SearchService.init which
+      // ensures this code is only executed after Search has been initialized.
+      lazy.SearchService.getAppProvidedEngines()
         .then(engines => {
+          let { defaultEngine } = lazy.SearchService;
+          let hasEnteredSearchMode = Object.fromEntries(
+            engines.map(e => [e.id, e.hasBeenUsed])
+          );
+
           resolve({
-            current: Services.search.defaultEngine.identifier,
-            installed: engines.map(engine => engine.identifier),
+            // Skip reporting the id for third party engines.
+            current:
+              defaultEngine instanceof lazy.AppProvidedConfigEngine
+                ? defaultEngine.id
+                : null,
+            // We don't need to filter the id here, as getAppProvidedEngines has
+            // already done that for us.
+            installed: engines.map(engine => engine.id),
+            hasEnteredSearchMode,
           });
         })
         .catch(() => resolve(NONE));
     });
   },
+  get recentSearchCount() {
+    const RECENT_SEARCH_WINDOW_DAYS = 28;
+    // FormHistory times are in microseconds, so we need to multiply by 1000 to get the correct time.
+    const lastUsedStart =
+      (Date.now() - RECENT_SEARCH_WINDOW_DAYS * 24 * 60 * 60 * 1000) * 1000;
+    return lazy.FormHistory.count({
+      fieldname: lazy.searchFormHistoryFieldname,
+      lastUsedStart,
+    }).catch(() => 0);
+  },
   get isDefaultBrowser() {
     return QueryCache.getters.isDefaultBrowser.get().catch(() => null);
   },
   get isDefaultBrowserUncached() {
-    return ShellService.isDefaultBrowser();
+    return ShellService.isDefaultBrowserAsync();
+  },
+  get hasAttemptedSetDefault() {
+    return ShellService.attemptedSetDefaultThisSession;
+  },
+  get isOneClickSetDefaultEnabled() {
+    return QueryCache.getters.isOneClickSetDefaultEnabled
+      .get()
+      .catch(() => null);
   },
   get devToolsOpenedCount() {
     return lazy.devtoolsSelfXSSCount;
@@ -779,7 +1017,9 @@ const TargetingGetters = {
     return lazy.SessionStore.getSavedTabGroups().length;
   },
   get currentTabGroups() {
-    let win = lazy.BrowserWindowTracker.getTopWindow();
+    let win = lazy.BrowserWindowTracker.getTopWindow({
+      allowFromInactiveWorkspace: true,
+    });
     // If there's no window, there can't be any current tab groups.
     if (!win) {
       return 0;
@@ -787,17 +1027,56 @@ const TargetingGetters = {
     let totalTabGroups = win.gBrowser.getAllTabGroups().length;
     return totalTabGroups;
   },
+  get tabsOpenInTopWindow() {
+    let win = lazy.BrowserWindowTracker.getTopWindow({
+      allowFromInactiveWorkspace: true,
+    });
+    if (!win) {
+      return 0;
+    }
+    return win.gBrowser.tabs.length;
+  },
+  get installedWebAppsCount() {
+    return lazy.TaskbarTabs.countTaskbarTabs();
+  },
+  get currentTabInstalledAsWebApp() {
+    let win = lazy.BrowserWindowTracker.getTopWindow({
+      allowFromInactiveWorkspace: true,
+    });
+    if (!win) {
+      // There is no active tab, so it isn't a web app.
+      return false;
+    }
+
+    // Note: this is a promise!
+    return (
+      lazy.TaskbarTabs.findTaskbarTab(
+        win.gBrowser.selectedBrowser.currentURI,
+        win.gBrowser.selectedTab.userContextId
+      )
+        .then(aTaskbarTab => aTaskbarTab !== null)
+        // If this is not an nsIURL (e.g. if it's about:blank), then this will
+        // throw; in that case there isn't a matching web app.
+        .catch(() => false)
+    );
+  },
   get hasPinnedTabs() {
     for (let win of Services.wm.getEnumerator("navigator:browser")) {
-      if (win.closed || !win.ownerGlobal.gBrowser) {
+      if (win.closed || !win.gBrowser) {
         continue;
       }
-      if (win.ownerGlobal.gBrowser.visibleTabs.filter(t => t.pinned).length) {
+      if (win.gBrowser.visibleTabs.filter(t => t.pinned).length) {
         return true;
       }
     }
 
     return false;
+  },
+  get hasActiveAIWindow() {
+    return !!lazy.AIWindow?.hasActiveAIWindows?.();
+  },
+  get isSmartTabGroupingAllowed() {
+    return !!lazy.SmartTabGroupingManager?.isAllowed;
   },
   get hasAccessedFxAPanel() {
     return lazy.hasAccessedFxAPanel;
@@ -848,11 +1127,21 @@ const TargetingGetters = {
         )
       : [];
   },
+  get relayProfileInfo() {
+    return QueryCache.getters.relayProfileInfo.get();
+  },
+  get relayEmailMasksCount() {
+    return QueryCache.getters.relayProfileInfo
+      .get()
+      .then(info => info?.masksCount || 0);
+  },
+  get isRelayFreeTier() {
+    return QueryCache.getters.relayProfileInfo
+      .get()
+      .then(info => info !== null && !info.has_premium);
+  },
   get platformName() {
     return AppConstants.platform;
-  },
-  get isChinaRepack() {
-    return lazy.BrowserUtils.isChinaRepack();
   },
   get userId() {
     return lazy.ClientEnvironment.userId;
@@ -905,7 +1194,9 @@ const TargetingGetters = {
       return false;
     }
 
-    let window = lazy.BrowserWindowTracker.getTopWindow();
+    let window = lazy.BrowserWindowTracker.getTopWindow({
+      allowFromInactiveWorkspace: true,
+    });
 
     // Technically this doesn't mean we have active notifications,
     // but because we use !activeNotifications to check for conflicts, this should return true
@@ -955,6 +1246,13 @@ const TargetingGetters = {
     return QueryCache.queries.UserMonthlyActivity.get();
   },
 
+  get allowedNotificationOrigins() {
+    // getAllByTypes returns denials as well as grants.
+    return Services.perms
+      .getAllByTypes(["desktop-notification"])
+      .filter(perm => perm.capability === Services.perms.ALLOW_ACTION).length;
+  },
+
   get doesAppNeedPin() {
     return (async () => {
       return (
@@ -973,10 +1271,20 @@ const TargetingGetters = {
   },
 
   get launchOnLoginEnabled() {
-    if (AppConstants.platform !== "win") {
+    if (!lazy.LaunchOnLogin.isSupported()) {
       return false;
     }
-    return lazy.WindowsLaunchOnLogin.getLaunchOnLoginEnabled();
+    return lazy.LaunchOnLogin.isEnabled();
+  },
+
+  // Whether launch on login could be enabled, i.e. it isn't overridden by
+  // Windows Settings or enterprise policy. Used to avoid offering launch on
+  // login to users for whom enabling it would silently no-op.
+  get launchOnLoginAllowedByPolicy() {
+    if (!lazy.LaunchOnLogin.isSupported()) {
+      return false;
+    }
+    return lazy.LaunchOnLogin.isAllowed();
   },
 
   get isMSIX() {
@@ -1040,6 +1348,7 @@ const TargetingGetters = {
 
   /**
    * The distribution id, if any.
+   *
    * @return {string}
    */
   get distributionId() {
@@ -1048,7 +1357,9 @@ const TargetingGetters = {
       .getCharPref("distribution.id", "");
   },
 
-  /** Where the Firefox View button is shown, if at all.
+  /**
+   * Where the Firefox View button is shown, if at all.
+   *
    * @return {string} container of the button if it is shown in the toolbar/overflow menu
    * @return {string} `null` if the button has been removed
    */
@@ -1069,10 +1380,17 @@ const TargetingGetters = {
     get pdf() {
       return QueryCache.getters.isDefaultPDFHandler.get();
     },
+    get mailto() {
+      return QueryCache.getters.isDefaultMailtoHandler.get();
+    },
   },
 
   get defaultPDFHandler() {
     return QueryCache.getters.defaultPDFHandler.get();
+  },
+
+  get mailtoHandlerHost() {
+    return QueryCache.getters.mailtoHandlerHost.get();
   },
 
   get creditCardsSaved() {
@@ -1085,6 +1403,7 @@ const TargetingGetters = {
 
   /**
    * Has the user ever used the Migration Wizard to migrate bookmarks?
+   *
    * @return {boolean} `true` if bookmark migration has occurred.
    */
   get hasMigratedBookmarks() {
@@ -1094,6 +1413,7 @@ const TargetingGetters = {
   /**
    * Has the user ever used the Migration Wizard to migrate passwords from
    * a CSV file?
+   *
    * @return {boolean} `true` if CSV passwords have been imported via the
    *   migration wizard.
    */
@@ -1103,6 +1423,7 @@ const TargetingGetters = {
 
   /**
    * Has the user ever used the Migration Wizard to migrate history?
+   *
    * @return {boolean} `true` if history migration has occurred.
    */
   get hasMigratedHistory() {
@@ -1111,6 +1432,7 @@ const TargetingGetters = {
 
   /**
    * Has the user ever used the Migration Wizard to migrate passwords?
+   *
    * @return {boolean} `true` if password migration has occurred.
    */
   get hasMigratedPasswords() {
@@ -1122,6 +1444,7 @@ const TargetingGetters = {
    * wizard in about:welcome by having
    * "browser.migrate.content-modal.about-welcome-behavior" be equal to
    * "embedded".
+   *
    * @return {boolean} `true` if the embedded migration wizard is enabled.
    */
   get useEmbeddedMigrationWizard() {
@@ -1129,7 +1452,18 @@ const TargetingGetters = {
   },
 
   /**
+   * Returns the version number of the New Tab built-in addon being used
+   * by the build.
+   *
+   * @return {string}
+   */
+  get newtabAddonVersion() {
+    return lazy.AboutNewTabResourceMapping.addonVersion;
+  },
+
+  /**
    * Whether the user installed Firefox via the RTAMO flow.
+   *
    * @return {boolean} `true` when RTAMO has been used to download Firefox,
    * `false` otherwise.
    */
@@ -1144,6 +1478,7 @@ const TargetingGetters = {
 
   /**
    * Whether the user installed via the device migration flow.
+   *
    * @return {boolean} `true` when the link to download the browser was part
    * of guidance for device migration. `false` otherwise.
    */
@@ -1154,8 +1489,21 @@ const TargetingGetters = {
   },
 
   /**
+   * Whether the user installed via the Smart Window marketing site.
+   *
+   * @return {boolean} `true` when the link to download the browser was part
+   * of the Smart Window campaign. `false` otherwise.
+   */
+  get isSmartWindowOnboarding() {
+    const { attributionData } = this;
+
+    return attributionData?.campaign === "smart_window";
+  },
+
+  /**
    * Whether the user opted into a special message action represented by an
    * installer attribution campaign and this choice still needs to be honored.
+   *
    * @return {string} A special message action to be executed on first-run. For
    * example, `"SET_DEFAULT_BROWSER"` when the user selected to set as default
    * via the install marketing page and set default has not yet been
@@ -1168,7 +1516,8 @@ const TargetingGetters = {
    * The values of the height and width available to the browser to display
    * web content. The available height and width are each calculated taking
    * into account the presence of menu bars, docks, and other similar OS elements
-   * @returns {Object} resolution The resolution object containing width and height
+   *
+   * @returns {object} resolution The resolution object containing width and height
    * @returns {number} resolution.width The available width of the primary monitor
    * @returns {number} resolution.height The available height of the primary monitor
    */
@@ -1240,10 +1589,233 @@ const TargetingGetters = {
     return lazy.SelectableProfileService.currentProfile.id.toString();
   },
 
+  get profileGroupProfileCount() {
+    return QueryCache.getters.profileGroupProfileCount.get();
+  },
+
   get buildId() {
     return parseInt(AppConstants.MOZ_BUILDID, 10);
   },
+
+  get backupsInfo() {
+    // We're going to skip searching for backups on MacOS and as such not show the
+    // restore screen in about:welcome - Bug 2033325
+    if (AppConstants.platform === "macosx") {
+      return Promise.resolve({
+        found: false,
+      });
+    }
+
+    return QueryCache.getters.backupsInfo.get().catch(() => null);
+  },
+
+  get backupArchiveEnabled() {
+    let bs;
+    try {
+      bs = lazy.BackupService.get();
+    } catch {
+      bs = lazy.BackupService.init();
+    }
+    return bs.archiveEnabledStatus.enabled;
+  },
+
+  get backupRestoreEnabled() {
+    let bs;
+    try {
+      bs = lazy.BackupService.get();
+    } catch {
+      bs = lazy.BackupService.init();
+    }
+    return bs.restoreEnabledStatus.enabled;
+  },
+
+  get isEncryptedBackup() {
+    const isEncryptedBackup =
+      Services.prefs.getStringPref(
+        "messaging-system-action.backupChooser",
+        null
+      ) === "full";
+    return isEncryptedBackup;
+  },
+
+  get isPrivateWindow() {
+    let win = lazy.BrowserWindowTracker.getTopWindow({
+      allowFromInactiveWorkspace: true,
+    });
+    // If there's no window (like in backgroundTask mode), return false
+    if (!win) {
+      return false;
+    }
+    return lazy.PrivateBrowsingUtils.isWindowPrivate(win);
+  },
+
+  get isTaskbarTabWindow() {
+    let win = lazy.BrowserWindowTracker.getTopWindow({
+      allowFromInactiveWorkspace: true,
+    });
+    if (!win) {
+      return false;
+    }
+    return win.document.documentElement.hasAttribute("taskbartab");
+  },
+
+  get canRestoreLastSession() {
+    return lazy.SessionStore.canRestoreLastSession;
+  },
+
+  // This is implemented as a targeting attribute because it is needed for
+  // background task messages, which don't share preferences with the main
+  // browser profile (aside from a short allowlist of synced prefs, but we don't
+  // want to sync this pref and possibly affect behavior in the background
+  // task).
+  get autoRestoreSessionEnabled() {
+    return Services.prefs.getIntPref("browser.startup.page") === 3;
+  },
+
+  /**
+   * @returns {Promise<number>}
+   *   The total number of tab notes the user has stored in their current profile.
+   */
+  get tabNotesCount() {
+    return lazy.TabNotes.init().then(() => lazy.TabNotes.count());
+  },
+
+  // Number of weekdays in the past month the user was active
+  get userWeekdaysActiveInLastMonth() {
+    return QueryCache.queries.UserMonthlyActivity.get().then(activity => {
+      return activity.filter(entry => {
+        const [year, month, date] = String(entry[1]).split("-").map(Number);
+        //JavaScript's Date constructor takes a 0-indexed month — January is 0, December is 11. So if the date string is "2024-01-08", splitting gives you month = 1, and you need to pass 0 to get January.
+        const day = new Date(year, month - 1, date).getDay(); // 0 = Sun, 6 = Sat, local time avoids UTC shift
+        return day !== 0 && day !== 6;
+      }).length;
+    });
+  },
+
+  // Number of days in the past month with 100+ site visits
+  get userActiveDaysWithHundredPlusSites() {
+    return QueryCache.queries.UserMonthlyActivity.get().then(activity => {
+      return activity.filter(entry => entry[0] >= 100).length;
+    });
+  },
+
+  /**
+   * Whether Nimbus has loaded remote experiments at least once.
+   *
+   * @return {boolean}
+   */
+  get experimentsLoaded() {
+    try {
+      // If Nimbus experiments are disabled, we can consider them loaded
+      if (!lazy.ExperimentAPI.enabled) {
+        return true;
+      }
+      // Check if the loader has updated recipes at least once
+      const hasUpdated = lazy.ExperimentAPI._rsLoader?._hasUpdatedOnce ?? false;
+      return hasUpdated;
+    } catch (e) {
+      lazy.ASRouterPreferences.console.error(
+        "nimbusExperimentsLoaded check failed",
+        e
+      );
+      return false;
+    }
+  },
+
+  /**
+   * The total number of crashes the user has experienced, as recorded by the
+   * crash manager at crash time (independent of report submission).
+   *
+   * @returns {Promise<number>}
+   */
+  get crashCount() {
+    return QueryCache.getters.crashData.get().then(crashes => crashes.length);
+  },
+
+  /**
+   * The number of days since the most recent crash, as recorded by the crash
+   * manager at crash time (independent of report submission). If there are no
+   * recorded crashes, returns `null`.
+   *
+   * @returns {Promise<number|null>}
+   */
+  get daysSinceLastCrash() {
+    return QueryCache.getters.crashData.get().then(crashes => {
+      if (!crashes.length) {
+        return null;
+      }
+      const mostRecent = Math.max(...crashes.map(c => c.date));
+      return Math.floor((Date.now() - mostRecent) / (24 * 60 * 60 * 1000));
+    });
+  },
+
+  /**
+   * The number of crashes the user has experienced in the last 24 hours, as
+   * recorded by the crash manager at crash time (independent of report
+   * submission).
+   *
+   * @returns {Promise<number>}
+   */
+  get crashCountInLastDay() {
+    return QueryCache.getters.crashData.get().then(crashes => {
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      return crashes.filter(c => c.date >= cutoff).length;
+    });
+  },
+
+  /**
+   * The number of crashes the user has experienced in the last 7 days, as
+   * recorded by the crash manager at crash time (independent of report
+   * submission).
+   *
+   * @returns {Promise<number>}
+   */
+  get crashCountInLastWeek() {
+    return QueryCache.getters.crashData.get().then(crashes => {
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      return crashes.filter(c => c.date >= cutoff).length;
+    });
+  },
+
+  /**
+   * Whether this Firefox launch was initiated by the OS on login.
+   *
+   * @returns {boolean}
+   */
+  get isLaunchOnLogin() {
+    return lazy.BrowserInitState.isLaunchOnLogin;
+  },
+
+  /**
+   * Whether the previous browser session ended in a crash.
+   *
+   * @returns {boolean}
+   */
+  get previousSessionCrashed() {
+    return lazy.SessionStartup.previousSessionCrashed;
+  },
 };
+
+function addAIWindowTargeting(targeting) {
+  if (!targeting || targeting === "true") {
+    // Default behavior: Classic-only if no targeting is specified
+    return `!isAIWindow`;
+  }
+
+  if (/\bisAIWindow\b/.test(targeting)) {
+    return targeting;
+  }
+
+  return `((${targeting}) && !isAIWindow)`;
+}
+
+/**
+ * Sentinel rejection thrown by per-property promises in
+ * `ASRouterTargeting.getEnvironmentSnapshot` when `quit-application`
+ * fires while the property is still being awaited. Lets the caller
+ * tell a shutdown-induced drop from a real per-property failure.
+ */
+class QuitDuringSnapshotError extends Error {}
 
 export const ASRouterTargeting = {
   Environment: TargetingGetters,
@@ -1265,6 +1837,32 @@ export const ASRouterTargeting = {
   async getEnvironmentSnapshot({
     targets = [ASRouterTargeting.Environment],
   } = {}) {
+    // Each per-property promise races its resolution against this shared
+    // `quit-application` observer. Without the race, a property whose
+    // resolver waits on something that does not unblock until after
+    // shutdown (notably `UpdateService.waitForOtherInstances`, which
+    // can hang for hours when a second Firefox instance holds the update
+    // lock) keeps the `targeting.snapshot` JSON store's
+    // `IOUtils.profileBeforeChange` blocker pending until AsyncShutdown
+    // crashes the process. See bug 1830551.
+    let quitObserver;
+    const quitApplication = new Promise((_unused, reject) => {
+      quitObserver = {
+        QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
+        observe() {
+          reject(
+            new QuitDuringSnapshotError(
+              "shutting down, so not querying targeting environment"
+            )
+          );
+        },
+      };
+      Services.obs.addObserver(quitObserver, "quit-application");
+    });
+    // Absorb the rejection if no per-property race ever subscribes (eg.
+    // short-lived snapshots that finish before `quit-application` fires).
+    quitApplication.catch(() => {});
+
     async function resolve(object) {
       if (typeof object === "object" && object !== null) {
         if (Array.isArray(object)) {
@@ -1277,21 +1875,27 @@ export const ASRouterTargeting = {
 
         // One promise for each named property. Label promises with property name.
         const promises = Object.keys(object).map(async key => {
-          // Each promise needs to check if we're shutting down when it is evaluated.
+          // Fast path: if shutdown has already started by the time this
+          // property is evaluated, bail before invoking the getter. The
+          // race below handles the case where shutdown starts mid-await.
           if (Services.startup.shuttingDown) {
-            throw new Error(
+            throw new QuitDuringSnapshotError(
               "shutting down, so not querying targeting environment"
             );
           }
 
-          const value = await resolve(await object[key]);
+          const property = await Promise.race([object[key], quitApplication]);
+          const value = await resolve(property);
 
           return [key, value];
         });
 
         const resolved = {};
         for (const result of await Promise.allSettled(promises)) {
-          // Ignore properties that are rejected.
+          // Drop rejected properties. The sentinel `QuitDuringSnapshotError`
+          // distinguishes a quit-induced drop from a property's own
+          // resolver rejecting; both are silently ignored today, but the
+          // distinction is preserved so future diagnostics can branch on it.
           if (result.status === "fulfilled") {
             const [key, value] = result.value;
             resolved[key] = value;
@@ -1304,18 +1908,37 @@ export const ASRouterTargeting = {
       return object;
     }
 
-    // We would like to use `TargetingContext.combineContexts`, but `Proxy`
-    // instances complicate iterating with `Object.keys`.  Instead, merge by
-    // hand after resolving.
-    const environment = {};
-    for (let target of targets.toReversed()) {
-      Object.assign(environment, await resolve(target));
+    try {
+      // We would like to use `TargetingContext.combineContexts`, but `Proxy`
+      // instances complicate iterating with `Object.keys`.  Instead, merge by
+      // hand after resolving.
+      const environment = {};
+      for (let target of targets.toReversed()) {
+        Object.assign(environment, await resolve(target));
+      }
+
+      // Should we need to migrate in the future.
+      const snapshot = { environment, version: 1 };
+
+      return snapshot;
+    } finally {
+      Services.obs.removeObserver(quitObserver, "quit-application");
     }
+  },
 
-    // Should we need to migrate in the future.
-    const snapshot = { environment, version: 1 };
-
-    return snapshot;
+  /**
+   * Return the list of trigger objects for a message, normalizing the singular
+   * `trigger` and plural `triggers` forms. When both are present, `triggers`
+   * takes precedence.
+   *
+   * @param {object} message An AS router message
+   * @returns {Array<object>} The message's triggers, or an empty array.
+   */
+  getMessageTriggers(message) {
+    if (Array.isArray(message?.triggers)) {
+      return message.triggers;
+    }
+    return message?.trigger ? [message.trigger] : [];
   },
 
   isTriggerMatch(trigger = {}, candidateMessageTrigger = {}) {
@@ -1386,14 +2009,13 @@ export const ASRouterTargeting = {
       Array.from(arguments) // eslint-disable-line prefer-rest-params
     );
 
-    // If no targeting is specified,
-    if (!message.targeting) {
-      return true;
-    }
+    let { targeting } = message;
+    targeting = addAIWindowTargeting(targeting);
+
     let result;
     try {
       if (shouldCache) {
-        result = this.getCachedEvaluation(message.targeting);
+        result = this.getCachedEvaluation(targeting);
         if (result) {
           return result.value;
         }
@@ -1401,9 +2023,9 @@ export const ASRouterTargeting = {
       // Used to report the source of the targeting error in the case of
       // undesired events
       targetingContext.setTelemetrySource(message.id);
-      result = await targetingContext.evalWithDefault(message.targeting);
+      result = await targetingContext.evalWithDefault(targeting);
       if (shouldCache) {
-        jexlEvaluationCache.set(message.targeting, {
+        jexlEvaluationCache.set(targeting, {
           timestamp: Date.now(),
           value: result,
         });
@@ -1425,13 +2047,14 @@ export const ASRouterTargeting = {
     onError,
     shouldCache = false
   ) {
+    const messageTriggers = this.getMessageTriggers(message);
     return (
       message &&
-      (trigger
-        ? this.isTriggerMatch(trigger, message.trigger)
-        : !message.trigger) &&
-      // If a trigger expression was passed to this function, the message should match it.
-      // Otherwise, we should choose a message with no trigger property (i.e. a message that can show up at any time)
+      // If a trigger with an id was passed, the message must have a matching
+      // trigger. Otherwise, only untriggered messages are eligible.
+      (trigger?.id
+        ? messageTriggers.some(mt => this.isTriggerMatch(trigger, mt))
+        : !messageTriggers.length) &&
       this.checkMessageTargeting(
         message,
         targetingContext,

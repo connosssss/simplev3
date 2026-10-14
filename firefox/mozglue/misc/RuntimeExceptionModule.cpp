@@ -1,14 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "RuntimeExceptionModule.h"
 
-#include <cstdint>
-
 #include "mozilla/ProcessType.h"
+#include <stdlib.h>
 
 #if defined(XP_WIN)
 #  include <windows.h>
@@ -24,10 +21,6 @@ typedef HANDLE HREPORT;
 #    undef WerReportSubmit
 #  endif  // defined(__MINGW32__) || defined(__MINGW64__)
 #  include <stdlib.h>
-
-#  include "mozilla/Unused.h"
-
-using mozilla::Unused;
 #endif
 
 namespace CrashReporter {
@@ -57,21 +50,9 @@ bool GetRuntimeExceptionModulePath(wchar_t* aPath, const size_t aLength) {
 
 void RegisterRuntimeExceptionModule() {
 #ifdef XP_WIN
-#  if defined(DEBUG)
-  // In debug builds, disable the crash reporter by default, and allow to
-  // enable it with the MOZ_CRASHREPORTER environment variable.
-  const char* envvar = getenv("MOZ_CRASHREPORTER");
-  if (!envvar || !*envvar) {
+  if (!CrashReporterIsEnabled()) {
     return;
   }
-#  else
-  // In other builds, enable the crash reporter by default, and allow
-  // disabling it with the MOZ_CRASHREPORTER_DISABLE environment variable.
-  const char* envvar = getenv("MOZ_CRASHREPORTER_DISABLE");
-  if (envvar && *envvar) {
-    return;
-  }
-#  endif
 
   // If sModulePath is set we have already registerd the module.
   if (*sModulePath) {
@@ -97,11 +78,28 @@ void UnregisterRuntimeExceptionModule() {
 #ifdef XP_WIN
   // If sModulePath is set then we have registered the module.
   if (*sModulePath) {
-    Unused << ::WerUnregisterRuntimeExceptionModule(
+    (void)::WerUnregisterRuntimeExceptionModule(
         sModulePath, reinterpret_cast<PVOID>(mozilla::GetGeckoProcessType()));
     *sModulePath = L'\0';
   }
 #endif  // XP_WIN
+}
+
+bool CrashReporterIsEnabled(bool force) {
+  if (force) {
+    return true;
+  }
+#if defined(DEBUG)
+  // In debug builds, disable the crash reporter by default, and allow to
+  // enable it with the MOZ_CRASHREPORTER environment variable.
+  const char* envvar = getenv("MOZ_CRASHREPORTER");
+  return envvar && *envvar;
+#else
+  // In other builds, enable the crash reporter by default, and allow
+  // disabling it with the MOZ_CRASHREPORTER_DISABLE environment variable.
+  const char* envvar = getenv("MOZ_CRASHREPORTER_DISABLE");
+  return !envvar || !*envvar;
+#endif
 }
 
 }  // namespace CrashReporter

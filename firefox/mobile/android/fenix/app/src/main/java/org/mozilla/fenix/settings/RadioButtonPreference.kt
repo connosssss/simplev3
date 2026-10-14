@@ -15,13 +15,16 @@ import androidx.core.content.withStyledAttributes
 import androidx.core.text.HtmlCompat
 import androidx.preference.Preference
 import androidx.preference.PreferenceViewHolder
+import androidx.preference.R as preferenceR
 import org.mozilla.fenix.R
-import org.mozilla.fenix.ext.settings
+import org.mozilla.fenix.ext.components
 import org.mozilla.fenix.utils.view.GroupableRadioButton
 import org.mozilla.fenix.utils.view.uncheckAll
 
 @Suppress("RestrictedApi")
-open class RadioButtonPreference @JvmOverloads constructor(
+open class RadioButtonPreference
+@JvmOverloads
+constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : Preference(context, attrs), GroupableRadioButton {
@@ -44,19 +47,32 @@ open class RadioButtonPreference @JvmOverloads constructor(
             R.styleable.RadioButtonPreference,
             getAttr(
                 context,
-                androidx.preference.R.attr.preferenceStyle,
+                preferenceR.attr.preferenceStyle,
                 android.R.attr.preferenceStyle,
             ),
             0,
         ) {
-            defaultValue = when {
-                hasValue(R.styleable.RadioButtonPreference_defaultValue) ->
-                    getBoolean(R.styleable.RadioButtonPreference_defaultValue, false)
-                hasValue(R.styleable.RadioButtonPreference_android_defaultValue) ->
-                    getBoolean(R.styleable.RadioButtonPreference_android_defaultValue, false)
-                else -> false
-            }
+            defaultValue =
+                when {
+                    hasValue(R.styleable.RadioButtonPreference_defaultValue) ->
+                        getBoolean(R.styleable.RadioButtonPreference_defaultValue, false)
+                    hasValue(R.styleable.RadioButtonPreference_android_defaultValue) ->
+                        getBoolean(R.styleable.RadioButtonPreference_android_defaultValue, false)
+                    else -> false
+                }
         }
+    }
+
+    /**
+     * Sets the default checked state used when no persisted value exists for this key.
+     *
+     * This only updates the fallback used by `preferences.getBoolean(key, defaultValue)`. It does not persist a value
+     * or notify listeners.
+     *
+     * @param defaultValue `true` to make the radio button checked by default, `false` otherwise.
+     */
+    fun setDefaultValue(defaultValue: Boolean) {
+        this.defaultValue = defaultValue
     }
 
     override fun addToRadioGroup(radioButton: GroupableRadioButton) {
@@ -104,13 +120,13 @@ open class RadioButtonPreference @JvmOverloads constructor(
     override fun updateRadioValue(isChecked: Boolean) {
         persistBoolean(isChecked)
         radioButton?.isChecked = isChecked
-        context.settings().preferences.edit { putBoolean(key, isChecked) }
+        context.components.settings.preferences.edit { putBoolean(key, isChecked) }
         onPreferenceChangeListener?.onPreferenceChange(this, isChecked)
     }
 
     private fun bindRadioButton(holder: PreferenceViewHolder) {
         radioButton = holder.findViewById(R.id.radio_button) as RadioButton
-        radioButton?.isChecked = context.settings().preferences.getBoolean(key, defaultValue)
+        radioButton?.isChecked = context.components.settings.preferences.getBoolean(key, defaultValue)
         radioButton?.setStartCheckedIndicator()
     }
 
@@ -135,11 +151,12 @@ open class RadioButtonPreference @JvmOverloads constructor(
         summaryView?.alpha = if (isEnabled) FULL_ALPHA else HALF_ALPHA
         summaryView?.let {
             if (!summary.isNullOrEmpty()) {
-                it.text = if (shouldSummaryBeParsedAsHtmlContent) {
-                    HtmlCompat.fromHtml(summary.toString(), HtmlCompat.FROM_HTML_MODE_COMPACT)
-                } else {
-                    summary
-                }
+                it.text =
+                    if (shouldSummaryBeParsedAsHtmlContent) {
+                        HtmlCompat.fromHtml(summary.toString(), HtmlCompat.FROM_HTML_MODE_COMPACT)
+                    } else {
+                        summary
+                    }
 
                 it.visibility = View.VISIBLE
             } else {

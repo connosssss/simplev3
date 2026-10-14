@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -47,7 +45,8 @@ class IonScriptKey {
 // single IonScript doesn't require an allocation.
 using IonScriptKeyVector = JS::GCVector<IonScriptKey, 1, SystemAllocPolicy>;
 
-// Called from Zone::discardJitCode().
+// Called from Zone::discardJitCode(). Invalidates the Ion code in the zone,
+// except for the realms that are preserving their JIT code.
 void InvalidateAll(JS::GCContext* gcx, JS::Zone* zone);
 void FinishInvalidation(JS::GCContext* gcx, JSScript* script);
 

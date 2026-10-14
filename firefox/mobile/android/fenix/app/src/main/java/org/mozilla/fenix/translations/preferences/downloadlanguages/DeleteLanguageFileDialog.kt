@@ -9,13 +9,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.tooling.preview.PreviewLightDark
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.tooling.preview.PreviewParameter
+import java.util.Locale
 import mozilla.components.compose.base.button.TextButton
+import mozilla.components.compose.base.theme.PreviewThemeProvider
+import mozilla.components.compose.base.theme.Theme
 import mozilla.components.feature.downloads.DefaultFileSizeFormatter
 import mozilla.components.feature.downloads.FileSizeFormatter
 import org.mozilla.fenix.R
 import org.mozilla.fenix.theme.FirefoxTheme
-import java.util.Locale
 
 /**
  * Download Languages Delete Dialog.
@@ -39,40 +42,42 @@ fun DeleteLanguageFileDialog(
     AlertDialog(
         onDismissRequest = {},
         title = {
-            val title: String? = if (isAllLanguagesItemType) {
-                stringResource(
-                    id = R.string.delete_language_all_languages_file_dialog_title,
-                    fileSizeFormatter.formatSizeInBytes(fileSize ?: 0L),
-                )
-            } else {
-                language?.let {
+            val title: String? =
+                if (isAllLanguagesItemType) {
                     stringResource(
-                        id = R.string.delete_language_file_dialog_title,
-                        it,
+                        id = R.string.delete_language_all_languages_file_dialog_title,
                         fileSizeFormatter.formatSizeInBytes(fileSize ?: 0L),
                     )
+                } else {
+                    language?.let {
+                        stringResource(
+                            id = R.string.delete_language_file_dialog_title,
+                            it,
+                            fileSizeFormatter.formatSizeInBytes(fileSize ?: 0L),
+                        )
+                    }
                 }
-            }
 
             title?.let {
                 Text(
                     text = it,
-                    style = FirefoxTheme.typography.headline7,
+                    style = FirefoxTheme.typography.headline5,
                 )
             }
         },
         text = {
-            val message: String = if (isAllLanguagesItemType) {
-                stringResource(
-                    id = R.string.delete_language_all_languages_file_dialog_message,
-                    stringResource(id = R.string.firefox),
-                )
-            } else {
-                stringResource(
-                    id = R.string.delete_language_file_dialog_message,
-                    stringResource(id = R.string.firefox),
-                )
-            }
+            val message: String =
+                if (isAllLanguagesItemType) {
+                    stringResource(
+                        id = R.string.delete_language_all_languages_file_dialog_message,
+                        stringResource(id = R.string.firefox),
+                    )
+                } else {
+                    stringResource(
+                        id = R.string.delete_language_file_dialog_message,
+                        stringResource(id = R.string.firefox),
+                    )
+                }
 
             Text(
                 text = message,
@@ -82,24 +87,22 @@ fun DeleteLanguageFileDialog(
         confirmButton = {
             TextButton(
                 text = stringResource(id = R.string.delete_language_file_dialog_positive_button_text),
-                upperCaseText = false,
                 onClick = { onConfirmDelete() },
             )
         },
         dismissButton = {
             TextButton(
                 text = stringResource(id = R.string.delete_language_file_dialog_negative_button_text),
-                upperCaseText = false,
                 onClick = { onCancel() },
             )
         },
     )
 }
 
+@Preview
 @Composable
-@PreviewLightDark
-private fun DeleteLanguageFileDialogPreview() {
-    FirefoxTheme {
+private fun DeleteLanguageFileDialogPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
         DeleteLanguageFileDialog(
             language = Locale.CHINA.displayLanguage,
             isAllLanguagesItemType = false,
@@ -111,10 +114,10 @@ private fun DeleteLanguageFileDialogPreview() {
     }
 }
 
+@Preview
 @Composable
-@PreviewLightDark
-private fun DeleteAllLanguagesFileDialogPreview() {
-    FirefoxTheme {
+private fun DeleteAllLanguagesFileDialogPreview(@PreviewParameter(PreviewThemeProvider::class) theme: Theme) {
+    FirefoxTheme(theme) {
         DeleteLanguageFileDialog(
             language = Locale.CHINA.displayLanguage,
             isAllLanguagesItemType = true,

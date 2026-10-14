@@ -15,7 +15,7 @@ dnl ========================================================
 dnl = Defaults
 dnl ========================================================
 MOD_MAJOR_VERSION=4
-MOD_MINOR_VERSION=37
+MOD_MINOR_VERSION=40
 MOD_PATCH_VERSION=0
 NSPR_MODNAME=nspr20
 _HAVE_PTHREADS=
@@ -25,7 +25,6 @@ USE_NSPR_THREADS=
 USE_N32=
 USE_X32=
 USE_64=
-USE_CPLUS=
 USE_IPV6=
 USE_MDUPDATE=
 _MACOSX_DEPLOYMENT_TARGET=
@@ -374,12 +373,6 @@ AC_ARG_ENABLE(mdupdate,
 	    USE_MDUPDATE=1
       fi ])
 
-AC_ARG_ENABLE(cplus,
-    [  --enable-cplus          Enable some c++ api routines],
-    [ if test "$enableval" = "yes"; then
-	    USE_CPLUS=1
-      fi])
-
 AC_ARG_WITH(arm-kuser,
     [  --with-arm-kuser        Use kuser helpers (Linux/ARM only)
                           (Requires kernel 2.6.13 or later)],
@@ -532,11 +525,6 @@ AC_PROG_CC
 
 dnl Reenter the conditional blocks after invoking AC_PROG_CC.
 if test "$target" != "$host"; then
-    if test -n "$USE_CPLUS"; then
-        AC_CHECK_PROGS(CXX, $CXX "${target_alias}-g++" "${target}-g++", echo)
-        unset ac_cv_prog_CXX
-        AC_PROG_CXX
-    fi
 
     case "$build:$target" in
       powerpc-apple-darwin8*:i?86-apple-darwin*|*:arm*-apple-darwin*)
@@ -579,13 +567,6 @@ if test "$target" != "$host"; then
     CFLAGS=$_SAVE_CFLAGS
     LDFLAGS=$_SAVE_LDFLAGS
 else
-    if test -n "$USE_CPLUS"; then
-        if test "$CC" = "cl" -a -z "$CXX"; then
-            CXX=$CC
-        else
-            AC_PROG_CXX
-        fi
-    fi
     AC_PROG_RANLIB
     AC_PATH_PROGS(AS, as, $CC)
     AC_PATH_PROGS(AR, ar, echo not_ar)
@@ -1394,148 +1375,6 @@ tools are selected during the Xcode/Developer Tools installation.])
     DSO_LDOPTS='-shared -Wl,-soname -Wl,$(notdir $@)'
     MDCPUCFG_H=_freebsd.cfg
     PR_MD_CSRCS=freebsd.c
-    ;;
-
-*-hpux*)
-    AC_DEFINE(XP_UNIX)
-    AC_DEFINE(HPUX)
-    AC_DEFINE(_HPUX_SOURCE)
-    # HPUX report the POLLHUP event for a socket when the
-    # shutdown(SHUT_WR) operation is called for the remote end, even though
-    # the socket is still writeable. Use select(), instead of poll(), to
-    # workaround this problem.
-    AC_DEFINE(_PR_POLL_WITH_SELECT)
-    AC_DEFINE(_USE_BIG_FDS)
-    DSO_LDOPTS='-b +h $(notdir $@)'
-    PR_MD_CSRCS=hpux.c
-    if test "$OS_TEST" = "ia64"; then
-        DLL_SUFFIX=so
-        DSO_LDOPTS="$DSO_LDOPTS +b '\$\$ORIGIN'"
-        CPU_ARCH_TAG=_$OS_TEST
-        if test -z "$USE_64"; then
-            COMPILER_TAG=_32
-        fi
-        PR_MD_ASFILES=os_HPUX_ia64.s
-    else
-        AC_DEFINE(hppa)
-        DLL_SUFFIX=sl
-        PR_MD_ASFILES=os_HPUX.s
-    fi
-    if test -n "$USE_64"; then
-        MDCPUCFG_H=_hpux64.cfg
-    else
-        MDCPUCFG_H=_hpux32.cfg
-    fi
-    if test -z "$GNU_CC"; then
-        CC="$CC -Ae"
-        CXX="$CXX -ext"
-        DSO_CFLAGS=+Z
-    else
-        DSO_CFLAGS=-fPIC
-        ASFLAGS="$ASFLAGS -x assembler-with-cpp"
-    fi
-
-    if test -n "$MOZILLA_CLIENT"; then
-        DEFAULT_IMPL_STRATEGY=_EMU
-    fi
-
-    if echo "$OS_RELEASE" | egrep '^(A.09|B.10)' >/dev/null; then
-        AC_DEFINE(_PR_NO_LARGE_FILES)
-    fi
-
-    if echo "$OS_RELEASE" | egrep '^(B.10.10|B.10.20)' >/dev/null; then
-        AC_DEFINE(_PR_NEED_H_ERRNO)
-    fi
-
-    if echo "$OS_RELEASE" | egrep '^(B.10.10|B.10.20)' >/dev/null; then
-        AC_DEFINE(HAVE_INT_LOCALTIME_R)
-    fi
-
-    if echo "$OS_RELEASE" | egrep '^(B.10.30|B.11)' >/dev/null; then
-        AC_DEFINE(HAVE_POINTER_LOCALTIME_R)
-    fi
-
-    # HP-UX 11i v2 (B.11.23) or higher
-    changequote(<<,>>)
-    case "$OS_RELEASE" in
-    [C-Z]*|B.[2-9]*|B.1[2-9]*|B.11.[3-9]*|B.11.2[3-9]*)
-        USE_IPV6=1
-        ;;
-    esac
-    changequote([,])
-
-    if test "$OS_RELEASE" = "B.10.01"; then
-        AC_DEFINE(HPUX10)
-        DEFAULT_IMPL_STRATEGY=_EMU
-    fi
-
-    if test "$OS_RELEASE" = "B.10.10"; then
-        AC_DEFINE(HPUX10)
-        AC_DEFINE(HPUX10_10)
-        DEFAULT_IMPL_STRATEGY=_PTH
-    fi
-
-    if test "$OS_RELEASE" = "B.10.20"; then
-        AC_DEFINE(HPUX10)
-        AC_DEFINE(HPUX10_20)
-        if test -z "$GNU_CC"; then
-            CFLAGS="$CFLAGS +DAportable +DS1.1"
-            CXXFLAGS="$CXXFLAGS +DAportable +DS1.1"
-        fi
-        DEFAULT_IMPL_STRATEGY=_PTH
-    fi
-
-    if test "$OS_RELEASE" = "B.10.30"; then
-        AC_DEFINE(HPUX10)
-        AC_DEFINE(HPUX10_30)
-        if test -z "$GNU_CC"; then
-            CFLAGS="$CFLAGS +DAportable +DS1.1"
-            CXXFLAGS="$CXXFLAGS +DAportable +DS1.1"
-        fi
-        DEFAULT_IMPL_STRATEGY=_PTH
-    fi
-
-    if echo "$OS_RELEASE" | grep ^B.11 >/dev/null; then
-        AC_DEFINE(HPUX10)
-        AC_DEFINE(HPUX11)
-        AC_DEFINE(_LARGEFILE64_SOURCE)
-        AC_DEFINE(_PR_HAVE_OFF64_T)
-        AC_DEFINE(HAVE_FCNTL_FILE_LOCKING)
-        if test -z "$GNU_CC"; then
-            if test -z "$USE_64"; then
-                if test "$OS_TEST" = "ia64"; then
-                    CFLAGS="$CFLAGS +DD32"
-                    CXXFLAGS="$CXXFLAGS +DD32"
-                else
-                    CFLAGS="$CFLAGS +DAportable +DS2.0"
-                    CXXFLAGS="$CXXFLAGS +DAportable +DS2.0"
-                fi
-            else
-                if test "$OS_TEST" = "ia64"; then
-                    CFLAGS="$CFLAGS +DD64"
-                    CXXFLAGS="$CXXFLAGS +DD64"
-                else
-                    CFLAGS="$CFLAGS +DA2.0W +DS2.0"
-                    CXXFLAGS="$CXXFLAGS +DA2.0W +DS2.0"
-                fi
-            fi
-        fi
-        DEFAULT_IMPL_STRATEGY=_PTH
-    fi
-
-    if test "$DEFAULT_IMPL_STRATEGY" = "_EMU"; then
-        USE_NSPR_THREADS=1
-        USE_PTHREADS=
-        USE_USER_PTHREADS=
-    elif test "$DEFAULT_IMPL_STRATEGY" = "_PTH"; then
-        USE_PTHREADS=1
-        if test "$USE_NSPR_THREADS"; then
-            USE_PTHREADS=
-        fi
-        if test "$USE_USER_PTHREADS"; then
-            USE_PTHREADS=
-        fi
-    fi
     ;;
 
 *-linux*|*-gnu*|*-k*bsd*-gnu|*-android*|*-linuxandroid*)
@@ -2538,7 +2377,6 @@ AC_SUBST(MOZ_OPTIMIZE)
 AC_SUBST(MOZ_DEBUG)
 AC_SUBST(MOZ_DEBUG_SYMBOLS)
 
-AC_SUBST(USE_CPLUS)
 AC_SUBST(USE_IPV6)
 AC_SUBST(USE_N32)
 AC_SUBST(USE_X32)
@@ -2680,13 +2518,6 @@ elif test -n "$USE_PTHREADS"; then
 elif test -n "$USE_BTHREADS"; then
     MAKEFILES="$MAKEFILES
         pr/src/bthreads/Makefile
-    "
-fi
-
-if test -n "$USE_CPLUS"; then
-    MAKEFILES="$MAKEFILES
-        pr/src/cplus/Makefile
-        pr/src/cplus/tests/Makefile
     "
 fi
 

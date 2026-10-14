@@ -39,9 +39,10 @@ const AdjustableTitle = {
       background-size: 16px 16px;
       background-origin: content-box;
       background-repeat: no-repeat;
-      background-color: var(--in-content-page-background);
-      -moz-context-properties: fill;
+      background-color: var(--background-color-canvas);
+      -moz-context-properties: fill, stroke;
       fill: currentColor;
+      stroke: var(--icon-stroke);
     }
 
     #titleCropper:not([nomaskfade]) {

@@ -5,15 +5,19 @@
 #ifndef mozilla_places_ConcurrentConnection_h_
 #define mozilla_places_ConcurrentConnection_h_
 
+#include "mozilla/EventTargetAndLockCapability.h"
+#include "mozilla/Mutex.h"
 #include "mozilla/storage/StatementCache.h"
 #include "mozIStorageCompletionCallback.h"
 #include "mozIStorageStatementCallback.h"
 #include "Helpers.h"
+#include "mozilla/RefPtr.h"
 #include "nsCOMPtr.h"
 #include "nsDeque.h"
 #include "nsIAsyncShutdown.h"
 #include "nsIObserver.h"
 #include "nsISupportsImpl.h"
+#include "nsITimer.h"
 #include "nsWeakReference.h"
 
 namespace mozilla::places {
@@ -42,6 +46,9 @@ struct PendingQuery final {
  * Since this is lacking any capability of setting up the database file, if it
  * doesn't exist, or has an outdated schema version, it will queue up requests
  * and await for Places to start up fully.
+ *
+ * Available in the parent process only.
+ * Queue() and GetInstance() are safe to call from any thread.
  */
 class ConcurrentConnection final : public nsIObserver,
                                    public nsSupportsWeakReference,
@@ -67,9 +74,11 @@ class ConcurrentConnection final : public nsIObserver,
   ConcurrentConnection();
 
   /**
-   * Get a pointer to the singleton instance.
+   * Get the singleton instance. Returns a strong reference so the instance
+   * stays alive for the caller's use regardless of concurrent shutdown.
+   * Safe to call from any thread.
    */
-  static Maybe<ConcurrentConnection*> GetInstance();
+  static Maybe<RefPtr<ConcurrentConnection>> GetInstance();
 
   /**
    * Enqueue a query or a Runnable.
@@ -92,6 +101,9 @@ class ConcurrentConnection final : public nsIObserver,
       const nsCString& aQuery);
 
  private:
+  void Init();
+  void InitializeOnMainThread();
+
   /**
    * Gets a cached asynchronous statement on the main thread.
    * This is private, as you normally should use Queue.
@@ -143,7 +155,7 @@ class ConcurrentConnection final : public nsIObserver,
   nsresult AttachDatabase(const nsString& aFileName,
                           const nsCString& aSchemaName);
 
-  static ConcurrentConnection* gConcurrentConnection;
+  static void PlacesInitFallbackTimerCallback(nsITimer*, void* aClosure);
 
   ~ConcurrentConnection() = default;
 
@@ -162,7 +174,13 @@ class ConcurrentConnection final : public nsIObserver,
   bool mPlacesIsInitialized = false;
   bool mRetryOpening = true;
   bool mIsShuttingDown = false;
-  bool mIsConnectionReady = false;
+
+  // mIsConnectionReady is only changed on the main-thread, though it may be
+  // read on the helper thread for which it needs a mutex.
+  MainThreadAndLockCapability<Mutex> mConnectionReadyMutex{
+      "ConcurrentConnection::mConnectionReadyMutex"};
+  bool mIsConnectionReady MOZ_GUARDED_BY(mConnectionReadyMutex) = false;
+
   int32_t mSchemaVersion = -1;
 
   // Ideally this should be a mozIStorageAsyncConnection, as that would give us
@@ -182,6 +200,8 @@ class ConcurrentConnection final : public nsIObserver,
    */
   nsRefPtrDeque<PendingQuery> mPendingQueries;
   nsRefPtrDeque<Runnable> mPendingRunnables;
+
+  nsCOMPtr<nsITimer> mPlacesInitFallbackTimer;
 
   /**
    * Statements caches.

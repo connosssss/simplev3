@@ -8,26 +8,28 @@ import android.content.Intent
 import android.os.SystemClock
 import android.view.View
 import androidx.core.view.doOnPreDraw
+import java.util.concurrent.TimeUnit
 import mozilla.components.support.base.log.logger.Logger
+import mozilla.components.support.utils.RunWhenReadyQueue
 import mozilla.components.support.utils.SafeIntent
 import org.mozilla.fenix.GleanMetrics.PerfStartup
 import org.mozilla.fenix.HomeActivity
-import java.util.concurrent.TimeUnit
 
 private val logger = Logger("ColdStartupDuration")
 
 /**
  * A class to record COLD start up telemetry. This class is intended to improve upon our mistakes from the
- * AppStartupTelemetry class by being simple-to-implement and
- * simple-to-analyze (i.e. works in GLAM) rather than being a "perfect" and comprehensive measurement.
+ * AppStartupTelemetry class by being simple-to-implement and simple-to-analyze (i.e. works in GLAM) rather than being a
+ * "perfect" and comprehensive measurement.
  *
- * This class relies on external state providers like [StartupStateProvider] that are tricky to
- * implement correctly so take the results with a grain of salt.
+ * This class relies on external state providers like [StartupStateProvider] that are tricky to implement correctly so
+ * take the results with a grain of salt.
  */
 class ColdStartupDurationTelemetry {
 
+    /** Potentially record telemetry about cold startup reason. */
     fun onHomeActivityOnCreate(
-        visualCompletenessQueue: VisualCompletenessQueue,
+        visualCompletenessQueue: RunWhenReadyQueue,
         startupStateProvider: StartupStateProvider,
         safeIntent: SafeIntent,
         rootContainer: View,
@@ -43,7 +45,7 @@ class ColdStartupDurationTelemetry {
             // This block takes 0ms on a Moto G5: it doesn't seem long enough to optimize.
             val firstFrameNanos = SystemClock.elapsedRealtimeNanos()
             if (startupStateProvider.isColdStartForStartedActivity(HomeActivity::class.java)) {
-                visualCompletenessQueue.queue.runIfReadyOrQueue {
+                visualCompletenessQueue.runIfReadyOrQueue {
                     recordColdStartupTelemetry(safeIntent, firstFrameNanos)
                 }
             }
@@ -58,11 +60,12 @@ class ColdStartupDurationTelemetry {
         // is fragile (e.g. if the browser was open, was it a MAIN w/ session restore or VIEW?) so we
         // use this simpler solution even if it's imperfect. Hopefully, the success cases will
         // outnumber the edge cases into statistical insignificance.
-        val (metric, typeForLog) = when (safeIntent.action) {
-            Intent.ACTION_MAIN -> Pair(PerfStartup.coldMainAppToFirstFrame, "MAIN")
-            Intent.ACTION_VIEW -> Pair(PerfStartup.coldViewAppToFirstFrame, "VIEW")
-            else -> Pair(PerfStartup.coldUnknwnAppToFirstFrame, "UNKNOWN")
-        }
+        val (metric, typeForLog) =
+            when (safeIntent.action) {
+                Intent.ACTION_MAIN -> Pair(PerfStartup.coldMainAppToFirstFrame, "MAIN")
+                Intent.ACTION_VIEW -> Pair(PerfStartup.coldViewAppToFirstFrame, "VIEW")
+                else -> Pair(PerfStartup.coldUnknwnAppToFirstFrame, "UNKNOWN")
+            }
 
         val startNanos = StartupTimeline.frameworkStartMeasurement.applicationInitNanos
         val durationMillis = TimeUnit.NANOSECONDS.toMillis(firstFrameNanos - startNanos)
